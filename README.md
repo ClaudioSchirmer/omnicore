@@ -10,7 +10,7 @@ omnicore is a framework that handles the wire-up of every layer of a DDD service
 ## Install
 
 ```bash
-go get github.com/ClaudioSchirmer/omnicore@v0.1.0
+go get github.com/ClaudioSchirmer/omnicore@v0.3.0
 ```
 
 Requires Go 1.21+ (uses `log/slog` and generics extensively).
