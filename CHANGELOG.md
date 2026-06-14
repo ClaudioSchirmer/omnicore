@@ -13,6 +13,26 @@ with `1.0.0`.
 
 ### Added
 
+- **Parameterized notifications** — translation messages can carry runtime
+  variables substituted from notification payload values. Notifications
+  declare `tvar:"<name>"` struct tags on exported fields; catalog entries
+  use the matching `{<name>}` placeholders; the rendering layer
+  (`application/notifications/convert.go`) auto-resolves and interpolates
+  during pipeline translation. Per-emit overrides via
+  `r.AddNotificationWithVars(field, n, vars, value...)`; escape hatch for
+  unexported / computed values via a `TranslationVars() map[string]string`
+  method on the notification. Context labels (`NotificationContext.Context()`)
+  carry their own variables via `ctx.SetVars(map[string]string{...})`,
+  surfaced through `ctx.ContextVars()`. New API surface:
+  `domain.ExtractVarsFromTags(n)`, `domain.MessageVars(msg)`,
+  `domain.TranslationVarsProvider` interface, `Vars` field on
+  `NotificationMessage`, `Translator.Render(lang, key, vars)`,
+  package-level `translation.Interpolate(s, vars)`. Backwards-compatible:
+  notifications without `tvar` and catalog entries without `{...}`
+  placeholders behave identically to the prior `Get` path. Scanner
+  whitelists `{[A-Za-z_][A-Za-z0-9_]*}`; placeholders missing from the
+  var map are left literal and `slog.Warn`-ed once per
+  `(lang, key, placeholder)` tuple.
 - `infra.UnwrapPgxTx(persistence.TxHandle) pgx.Tx` — the single authorized
   bridge from the opaque `persistence.TxHandle` token to the underlying
   `pgx.Tx`. Lives in `infra/` so only adapters in that layer can call it;

@@ -64,6 +64,31 @@ func (r *Rules) AddNotificationMessage(msg NotificationMessage) {
 	r.ctx.AddNotificationMessage(msg)
 }
 
+// AddNotificationWithVars is the sibling of AddNotification that attaches
+// per-emit translation variables on top of any tag-derived vars the
+// Notification type already carries. Use this when the same notification type
+// ships with default vars from its struct tags but a specific call site needs
+// to inject additional or overriding values (per-emit vars win on key
+// collision). The optional value variadic populates FieldValue with the same
+// semantics as AddNotification.
+//
+// For full-control emits (Err, FuncName, multi-segment Path), use
+// AddNotificationMessage directly.
+func (r *Rules) AddNotificationWithVars(name string, n Notification, vars map[string]string, value ...any) {
+	if r.ctx == nil {
+		return
+	}
+	msg := NotificationMessage{
+		Path:         []PathSegment{{Name: name}},
+		Notification: n,
+		Vars:         vars,
+	}
+	if len(value) > 0 {
+		msg.FieldValue = formatFieldValue(value[0])
+	}
+	r.ctx.AddNotificationMessage(msg)
+}
+
 func (r *Rules) IfInsert(fn func()) *Rules {
 	if r.mode == ModeInsert {
 		fn()

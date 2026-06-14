@@ -77,6 +77,13 @@ type NotificationMessage struct {
 	FuncName     string
 	Err          error
 	Notification Notification
+
+	// Vars carries per-emit translation variables. Merged on top of any
+	// tag-derived vars the Notification type provides (per-message values
+	// win on key collision). nil and empty map behave identically. The
+	// translation layer reads this via domain.MessageVars(msg) so call sites
+	// that do not need overrides pay nothing.
+	Vars map[string]string
 }
 
 // ResolveFieldName returns the effective wire-format field name following the
@@ -96,6 +103,12 @@ func (m NotificationMessage) ResolveFieldName() string {
 type NotificationContext struct {
 	context  string
 	messages []NotificationMessage
+
+	// contextVars carries the translation variables applied to the context
+	// label (not to individual messages). Written via SetVars on the root of
+	// the chain; read via ContextVars from any node (scoped views forward to
+	// the root). nil and empty map behave identically.
+	contextVars map[string]string
 
 	// parent and prefix are set only on scoped views produced by Scoped().
 	// A scoped context does not own messages — Add forwards to parent after
@@ -227,6 +240,31 @@ func (c *NotificationContext) Scoped(segments ...PathSegment) *NotificationConte
 		parent:  root,
 		prefix:  merged,
 	}
+}
+
+// SetVars assigns the translation variables used when the framework renders
+// this context's label. Empty map and nil both clear the slot. Always writes
+// to the root of the chain so scoped views read the same values via
+// ContextVars.
+func (c *NotificationContext) SetVars(vars map[string]string) {
+	root := c.root()
+	if len(vars) == 0 {
+		root.contextVars = nil
+		return
+	}
+	copied := make(map[string]string, len(vars))
+	for k, v := range vars {
+		copied[k] = v
+	}
+	root.contextVars = copied
+}
+
+// ContextVars returns the translation variables registered for this context's
+// label. Scoped views forward to the root — same map every observer reads.
+// Returns nil when no vars were set; callers that want to merge should
+// treat nil and empty identically.
+func (c *NotificationContext) ContextVars() map[string]string {
+	return c.root().contextVars
 }
 
 func (c *NotificationContext) Copy(newContext ...string) *NotificationContext {
