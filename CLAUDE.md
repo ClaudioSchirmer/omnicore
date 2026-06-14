@@ -2663,7 +2663,7 @@ httpClient:
 
 ### Reserved keys
 
-The design schema in `omnicore/tasks/httpclient-design.md` Section 3 names additional blocks (`auth`, `authProviders`, `retry`, `cache`, `circuitBreaker`, `pool`, `tls`, `redaction`, `signing`, `idempotency`, `responseStream`, `responseSSE`). The parser accepts every YAML shape for those keys, but `Validate` rejects any non-empty value with a message naming the phase that will introduce the feature. Operators never silently opt into behavior that is not yet wired.
+Additional blocks reserved for future phases — `auth`, `authProviders`, `retry`, `cache`, `circuitBreaker`, `pool`, `tls`, `redaction`, `signing`, `idempotency`, `responseStream`, `responseSSE`. The parser accepts every YAML shape for those keys, but `Validate` rejects any non-empty value with a message naming the phase that will introduce the feature. Operators never silently opt into behavior that is not yet wired.
 
 ### Defaults cascade
 
