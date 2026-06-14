@@ -1,0 +1,42 @@
+package domain
+
+// AggregateRootProvider is implemented by entities that embed AggregateRoot and
+// want to be persisted atomically with their child collections.
+//
+// Phase 19: signature reduced. Table and FK names are inferred from the Go
+// type names by infra (with optional per-Repository overrides in
+// fwinfra.RepoConfig). Domain DDD-puro doesn't pronounce table/column/FK.
+//
+// Phase 20: the root regains authority over the aggregate boundary —
+// AggregateChildren() declares which AVO types belong to this aggregate.
+// The framework's typed primitives (AddAggregateChild, ChangeAggregateChild,
+// RemoveAggregateChild, ReplaceAggregateChildrenOf) consult this set and
+// reject items whose type is not declared, emitting
+// InvalidAggregateChildNotification on the root's NotificationContext.
+//
+// Cascade is symmetric and universal:
+//   - Archive(root)   → Archive all children
+//   - Unarchive(root) → Unarchive all children archived
+//   - Delete(root)    → Delete all children via FK ON DELETE CASCADE
+//   - Update root with StatusRemoved children → Archive those children
+type AggregateRootProvider interface {
+	// GetAggregateRoot returns the embedded *AggregateRoot so the persister
+	// can iterate child items via AllAggregateItems().
+	GetAggregateRoot() *AggregateRoot
+
+	// AggregateChildren returns one sample instance per AVO type that belongs
+	// to this aggregate. The framework reads classNameOf(sample) via reflect
+	// to build the set of allowed types; the sample values themselves are
+	// never used. Return a fresh slice each call (or a package-level var) —
+	// callers must not mutate it.
+	//
+	// Example:
+	//
+	//	func (u *User) AggregateChildren() []domain.AggregateValueObject {
+	//	    return []domain.AggregateValueObject{Address{}}
+	//	}
+	//
+	// An empty slice declares the root has no aggregate children (still a
+	// valid aggregate — useful for roots that may grow children later).
+	AggregateChildren() []AggregateValueObject
+}

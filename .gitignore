@@ -1,0 +1,34 @@
+# Binaries
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+
+# Test artifacts
+*.test
+*.out
+coverage.txt
+coverage.html
+
+# Dependencies
+vendor/
+
+# Go workspace (developer-local)
+go.work
+go.work.sum
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Editors
+.idea/
+.vscode/
+.claude/
+*.swp
+*.swo
+
+# Env files
+.env
+.env.local

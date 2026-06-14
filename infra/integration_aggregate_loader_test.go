@@ -1,0 +1,361 @@
+//go:build integration
+
+package infra
+
+import (
+	"context"
+	"errors"
+	"testing"
+
+	"github.com/ClaudioSchirmer/omnicore/domain"
+	"github.com/jackc/pgx/v5"
+)
+
+// loaderRoot is a root entity used by AggregateLoader integration tests.
+// It declares two child types (loaderTagVO + loaderNoteVO) so the multi-child
+// path is exercised.
+type loaderRoot struct {
+	domain.AggregateRoot
+	Name  string
+	Email string
+}
+
+func (e *loaderRoot) Modes() []domain.EntityMode { return []domain.EntityMode{domain.ModeInsert} }
+func (*loaderRoot) BuildRules(string, domain.Service, *domain.Rules) {}
+func (e *loaderRoot) GetAggregateRoot() *domain.AggregateRoot         { return &e.AggregateRoot }
+func (*loaderRoot) AggregateChildren() []domain.AggregateValueObject {
+	return []domain.AggregateValueObject{loaderTagVO{}, loaderNoteVO{}}
+}
+
+type loaderTagVO struct {
+	ID    string
+	Label string
+}
+
+func (v loaderTagVO) GetID() string                                    { return v.ID }
+func (v loaderTagVO) BuildRules(string, domain.Service, *domain.Rules) {}
+
+type loaderNoteVO struct {
+	ID   string
+	Body string
+}
+
+func (v loaderNoteVO) GetID() string                                    { return v.ID }
+func (v loaderNoteVO) BuildRules(string, domain.Service, *domain.Rules) {}
+
+func createLoaderTables(t *testing.T, pg *Postgres) {
+	t.Helper()
+	createTable(t, pg, `CREATE TABLE loader_roots (
+		id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+		name TEXT NOT NULL,
+		email TEXT NOT NULL,
+		deleted_at TIMESTAMP,
+		created_at TIMESTAMP NOT NULL DEFAULT NOW(),
+		updated_at TIMESTAMP NOT NULL DEFAULT NOW()
+	)`)
+	createTable(t, pg, `CREATE TABLE loader_tag_vos (
+		id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+		loader_root_id UUID NOT NULL REFERENCES loader_roots(id) ON DELETE CASCADE,
+		label TEXT NOT NULL,
+		deleted_at TIMESTAMP,
+		created_at TIMESTAMP NOT NULL DEFAULT NOW(),
+		updated_at TIMESTAMP NOT NULL DEFAULT NOW()
+	)`)
+	createTable(t, pg, `CREATE TABLE loader_note_vos (
+		id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+		loader_root_id UUID NOT NULL REFERENCES loader_roots(id) ON DELETE CASCADE,
+		body TEXT NOT NULL,
+		deleted_at TIMESTAMP,
+		created_at TIMESTAMP NOT NULL DEFAULT NOW(),
+		updated_at TIMESTAMP NOT NULL DEFAULT NOW()
+	)`)
+}
+
+// --- Auto-scan (Load happy path) ----------------------------------------
+
+func TestAggregateLoader_Load_AutoScanRootAndChildren(t *testing.T) {
+	pg, cleanup := newTestPG(t)
+	defer cleanup()
+	createLoaderTables(t, pg)
+
+	// Seed root + 2 tags + 1 note.
+	var rootID string
+	pg.Pool().QueryRow(context.Background(),
+		`INSERT INTO loader_roots (name, email) VALUES ('R', 'r@x') RETURNING id`).Scan(&rootID)
+	pg.Pool().Exec(context.Background(),
+		`INSERT INTO loader_tag_vos (loader_root_id, label) VALUES ($1, 'a'), ($1, 'b')`, rootID)
+	pg.Pool().Exec(context.Background(),
+		`INSERT INTO loader_note_vos (loader_root_id, body) VALUES ($1, 'note-a')`, rootID)
+
+	loader := NewAggregateLoader[*loaderRoot](pg, func() *loaderRoot { return &loaderRoot{} })
+	loader = WithChild[loaderTagVO](loader)
+	loader = WithChild[loaderNoteVO](loader)
+
+	root, err := loader.Load(context.Background(), domain.NewID(rootID))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if root.Name != "R" || root.Email != "r@x" {
+		t.Errorf("root fields = %+v", root)
+	}
+	tags := domain.GetCurrentItemsOf[loaderTagVO](&root.AggregateRoot)
+	if len(tags) != 2 {
+		t.Errorf("expected 2 tags, got %d", len(tags))
+	}
+	notes := domain.GetCurrentItemsOf[loaderNoteVO](&root.AggregateRoot)
+	if len(notes) != 1 {
+		t.Errorf("expected 1 note, got %d", len(notes))
+	}
+}
+
+func TestAggregateLoader_Load_NotFoundProducesNotFoundError(t *testing.T) {
+	pg, cleanup := newTestPG(t)
+	defer cleanup()
+	createLoaderTables(t, pg)
+
+	loader := NewAggregateLoader[*loaderRoot](pg, func() *loaderRoot { return &loaderRoot{} })
+	loader = WithChild[loaderTagVO](loader)
+	_, err := loader.Load(context.Background(), domain.NewID("00000000-0000-0000-0000-000000000000"))
+	if err == nil {
+		t.Fatal("expected NotFound error")
+	}
+	var carrier domain.NotificationCarrier
+	if !errors.As(err, &carrier) {
+		t.Fatalf("expected NotificationCarrier, got %T", err)
+	}
+	if domain.NotificationKey(carrier.NotificationContexts()[0].Messages()[0].Notification) != "RecordNotFoundNotification" {
+		t.Errorf("expected RecordNotFoundNotification, got %v", carrier.NotificationContexts()[0].Messages()[0].Notification)
+	}
+}
+
+func TestAggregateLoader_LoadIncludingArchived(t *testing.T) {
+	pg, cleanup := newTestPG(t)
+	defer cleanup()
+	createLoaderTables(t, pg)
+
+	var id string
+	pg.Pool().QueryRow(context.Background(),
+		`INSERT INTO loader_roots (name, email, deleted_at) VALUES ('A', 'a@x', NOW()) RETURNING id`).Scan(&id)
+	pg.Pool().Exec(context.Background(),
+		`INSERT INTO loader_tag_vos (loader_root_id, label) VALUES ($1, 't')`, id)
+
+	loader := NewAggregateLoader[*loaderRoot](pg, func() *loaderRoot { return &loaderRoot{} })
+	loader = WithChild[loaderTagVO](loader)
+
+	// Load (active-only) fails.
+	if _, err := loader.Load(context.Background(), domain.NewID(id)); err == nil {
+		t.Error("expected Load to NOT find archived root")
+	}
+	// LoadIncludingArchived succeeds.
+	root, err := loader.LoadIncludingArchived(context.Background(), domain.NewID(id))
+	if err != nil {
+		t.Fatalf("LoadIncludingArchived: %v", err)
+	}
+	if root.Name != "A" {
+		t.Errorf("root = %+v", root)
+	}
+}
+
+func TestAggregateLoader_LoadIncludingArchived_ActiveRootSurfacesAsNotFound(t *testing.T) {
+	pg, cleanup := newTestPG(t)
+	defer cleanup()
+	createLoaderTables(t, pg)
+
+	var id string
+	pg.Pool().QueryRow(context.Background(),
+		`INSERT INTO loader_roots (name, email) VALUES ('Alive', 'l@x') RETURNING id`).Scan(&id)
+
+	loader := NewAggregateLoader[*loaderRoot](pg, func() *loaderRoot { return &loaderRoot{} })
+	if _, err := loader.LoadIncludingArchived(context.Background(), domain.NewID(id)); err == nil {
+		t.Error("expected LoadIncludingArchived to fail on an ACTIVE root (literal 'find archived')")
+	}
+}
+
+// --- Manual root scanner --------------------------------------------------
+
+func TestAggregateLoader_Load_WithManualRootScanner(t *testing.T) {
+	pg, cleanup := newTestPG(t)
+	defer cleanup()
+	createLoaderTables(t, pg)
+
+	var id string
+	pg.Pool().QueryRow(context.Background(),
+		`INSERT INTO loader_roots (name, email) VALUES ('M', 'm@x') RETURNING id`).Scan(&id)
+
+	loader := NewAggregateLoader[*loaderRoot](pg, func() *loaderRoot { return &loaderRoot{} }).
+		WithRootScanner(func(row pgx.Row) (*loaderRoot, error) {
+			r := &loaderRoot{}
+			// SELECT * returns: id, name, email, deleted_at, created_at, updated_at
+			var sink any
+			var name, email string
+			if err := row.Scan(&sink, &name, &email, &sink, &sink, &sink); err != nil {
+				return nil, err
+			}
+			r.Name = name + "_via_manual"
+			r.Email = email
+			return r, nil
+		})
+
+	root, err := loader.Load(context.Background(), domain.NewID(id))
+	if err != nil {
+		t.Fatalf("Load with manual scanner: %v", err)
+	}
+	if root.Name != "M_via_manual" {
+		t.Errorf("Name = %q, want M_via_manual", root.Name)
+	}
+}
+
+func TestAggregateLoader_Load_ManualRootScannerNotFound(t *testing.T) {
+	pg, cleanup := newTestPG(t)
+	defer cleanup()
+	createLoaderTables(t, pg)
+
+	loader := NewAggregateLoader[*loaderRoot](pg, func() *loaderRoot { return &loaderRoot{} }).
+		WithRootScanner(func(row pgx.Row) (*loaderRoot, error) {
+			r := &loaderRoot{}
+			var sink any
+			var name, email string
+			return r, row.Scan(&sink, &name, &email, &sink, &sink, &sink)
+		})
+
+	_, err := loader.Load(context.Background(), domain.NewID("00000000-0000-0000-0000-000000000000"))
+	if err == nil {
+		t.Fatal("expected NotFound")
+	}
+	var carrier domain.NotificationCarrier
+	if !errors.As(err, &carrier) {
+		t.Fatalf("expected NotificationCarrier, got %T", err)
+	}
+}
+
+// --- Manual child scanner -------------------------------------------------
+
+func TestAggregateLoader_Load_WithManualChildScanner(t *testing.T) {
+	pg, cleanup := newTestPG(t)
+	defer cleanup()
+	createLoaderTables(t, pg)
+
+	var id string
+	pg.Pool().QueryRow(context.Background(),
+		`INSERT INTO loader_roots (name, email) VALUES ('X', 'x@x') RETURNING id`).Scan(&id)
+	pg.Pool().Exec(context.Background(),
+		`INSERT INTO loader_tag_vos (loader_root_id, label) VALUES ($1, 'manual')`, id)
+
+	loader := NewAggregateLoader[*loaderRoot](pg, func() *loaderRoot { return &loaderRoot{} }).
+		WithChildScanner("loaderTagVO", func(rows pgx.Rows) (domain.AggregateValueObject, error) {
+			var sink any
+			var idval, label string
+			if err := rows.Scan(&idval, &sink, &label, &sink, &sink, &sink); err != nil {
+				return nil, err
+			}
+			return loaderTagVO{ID: idval, Label: label + "_manual"}, nil
+		})
+
+	root, err := loader.Load(context.Background(), domain.NewID(id))
+	if err != nil {
+		t.Fatalf("Load with manual child: %v", err)
+	}
+	tags := domain.GetCurrentItemsOf[loaderTagVO](&root.AggregateRoot)
+	if len(tags) != 1 || tags[0].Label != "manual_manual" {
+		t.Errorf("manual child not applied: %+v", tags)
+	}
+}
+
+// --- WithContextName + WithConfig overrides -------------------------------
+
+func TestAggregateLoader_WithConfig_TableAndFKOverride(t *testing.T) {
+	pg, cleanup := newTestPG(t)
+	defer cleanup()
+
+	createTable(t, pg, `CREATE TABLE tb_loader_legacy (
+		id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+		name TEXT NOT NULL,
+		email TEXT NOT NULL,
+		deleted_at TIMESTAMP,
+		created_at TIMESTAMP NOT NULL DEFAULT NOW(),
+		updated_at TIMESTAMP NOT NULL DEFAULT NOW()
+	)`)
+	createTable(t, pg, `CREATE TABLE tb_tags (
+		id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+		owner_id UUID NOT NULL REFERENCES tb_loader_legacy(id) ON DELETE CASCADE,
+		label TEXT NOT NULL,
+		deleted_at TIMESTAMP,
+		created_at TIMESTAMP NOT NULL DEFAULT NOW(),
+		updated_at TIMESTAMP NOT NULL DEFAULT NOW()
+	)`)
+
+	var id string
+	pg.Pool().QueryRow(context.Background(),
+		`INSERT INTO tb_loader_legacy (name, email) VALUES ('L', 'l@x') RETURNING id`).Scan(&id)
+	pg.Pool().Exec(context.Background(),
+		`INSERT INTO tb_tags (owner_id, label) VALUES ($1, 'one')`, id)
+
+	loader := NewAggregateLoader[*loaderRoot](pg, func() *loaderRoot { return &loaderRoot{} }).
+		WithContextName("LegacyLoader").
+		WithConfig(RepoConfig{
+			Table:               "tb_loader_legacy",
+			ChildTableOverrides: map[string]string{"loaderTagVO": "tb_tags"},
+			ChildFKOverrides:    map[string]string{"loaderTagVO": "owner_id"},
+		})
+	loader = WithChild[loaderTagVO](loader)
+
+	root, err := loader.Load(context.Background(), domain.NewID(id))
+	if err != nil {
+		t.Fatalf("Load with overrides: %v", err)
+	}
+	if root.Name != "L" {
+		t.Errorf("root.Name = %q, want L", root.Name)
+	}
+	tags := domain.GetCurrentItemsOf[loaderTagVO](&root.AggregateRoot)
+	if len(tags) != 1 || tags[0].Label != "one" {
+		t.Errorf("child not loaded via overrides: %+v", tags)
+	}
+}
+
+// --- No-child path (root-only aggregate) -----------------------------------
+
+func TestAggregateLoader_Load_NoChildRegistered(t *testing.T) {
+	pg, cleanup := newTestPG(t)
+	defer cleanup()
+	createLoaderTables(t, pg)
+
+	var id string
+	pg.Pool().QueryRow(context.Background(),
+		`INSERT INTO loader_roots (name, email) VALUES ('N', 'n@x') RETURNING id`).Scan(&id)
+
+	// Loader with NO child registrations — root loads, children loop is skipped.
+	loader := NewAggregateLoader[*loaderRoot](pg, func() *loaderRoot { return &loaderRoot{} })
+	root, err := loader.Load(context.Background(), domain.NewID(id))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if root.Name != "N" {
+		t.Errorf("root.Name = %q", root.Name)
+	}
+}
+
+// --- Auto-scan no-columns error --------------------------------------------
+
+// emptyEntity has no domain fields (BaseEntity only) — auto-scan finds zero
+// columns and the loader returns an actionable error message.
+type emptyEntity struct {
+	domain.BaseEntity
+}
+
+func (e *emptyEntity) Modes() []domain.EntityMode                { return []domain.EntityMode{domain.ModeInsert} }
+func (*emptyEntity) BuildRules(string, domain.Service, *domain.Rules) {}
+
+func TestAggregateLoader_Load_AutoScanWithNoFieldsErrors(t *testing.T) {
+	pg, cleanup := newTestPG(t)
+	defer cleanup()
+	createTable(t, pg, `CREATE TABLE empty_entities (
+		id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+		deleted_at TIMESTAMP,
+		created_at TIMESTAMP NOT NULL DEFAULT NOW()
+	)`)
+	loader := NewAggregateLoader[*emptyEntity](pg, func() *emptyEntity { return &emptyEntity{} })
+	_, err := loader.Load(context.Background(), domain.NewID("00000000-0000-0000-0000-000000000000"))
+	if err == nil {
+		t.Fatal("expected error from auto-scan with zero columns")
+	}
+}

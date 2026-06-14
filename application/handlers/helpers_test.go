@@ -1,0 +1,206 @@
+package handlers
+
+import (
+	"context"
+
+	"github.com/ClaudioSchirmer/omnicore/application/configuration"
+	"github.com/ClaudioSchirmer/omnicore/application/persistence"
+	"github.com/ClaudioSchirmer/omnicore/application/pipeline"
+	"github.com/ClaudioSchirmer/omnicore/application/queries"
+	"github.com/ClaudioSchirmer/omnicore/application/results"
+	"github.com/ClaudioSchirmer/omnicore/domain"
+	"github.com/google/uuid"
+)
+
+// testEntity is a minimal Entity used by all *_test.go in this package.
+// BuildRulesSeenService captures the last Service received in BuildRules;
+// Service injection tests via Auto handler inspect this field.
+type testEntity struct {
+	domain.BaseEntity
+	Name                  string
+	BuildRulesSeenService domain.Service
+	BuildRulesCalled      bool
+}
+
+func (e *testEntity) Modes() []domain.EntityMode {
+	return []domain.EntityMode{
+		domain.ModeInsert, domain.ModeUpdate, domain.ModeDelete,
+		domain.ModeArchive, domain.ModeUnarchive,
+	}
+}
+func (e *testEntity) RequiresService() bool   { return false }
+func (e *testEntity) TableName() string       { return "test" }
+func (e *testEntity) ToFields() domain.Fields { return domain.Fields{"name": e.Name} }
+func (e *testEntity) BuildRules(_ string, svc domain.Service, _ *domain.Rules) {
+	e.BuildRulesCalled = true
+	e.BuildRulesSeenService = svc
+}
+
+// testService implements domain.Service to verify that the handler's
+// Service reaches the entity's BuildRules.
+type testService struct{ domain.ServiceBase }
+
+// testCmdWithID covers Archive/Delete/Unarchive Commands. The framework's
+// post-ctx interfaces require ApplyTo(ctx, t) + FromEntity(ctx, t) on all
+// 6 verbs — for Archive/Unarchive/Delete the typical shape is "no projection",
+// returning results.None from FromEntity. The test stub is a no-op on
+// ApplyTo (no transient field on testEntity) and returns results.None{} from
+// FromEntity, proving the wiring without depending on any specific business
+// invariant.
+type testCmdWithID struct {
+	pipeline.CommandBaseWithID
+}
+
+func (c *testCmdWithID) ApplyTo(_ *configuration.AppContext, _ *testEntity)              {}
+func (c *testCmdWithID) FromEntity(_ *configuration.AppContext, _ *testEntity) results.None { return results.None{} }
+
+// mockRepo implements persistence.Writer[*testEntity]. Counters track
+// calls; nil error fields make each method succeed by default. Each
+// write method captures the variadic []WriteOption[*testEntity] so the
+// Auto-handler dispatch tests can assert which provider closures the
+// handler folded into the call.
+type mockRepo struct {
+	insertCalled    int
+	updateCalled    int
+	deleteCalled    int
+	archiveCalled   int
+	unarchiveCalled int
+	findByIDCalled  int
+
+	insertErr    error
+	updateErr    error
+	deleteErr    error
+	archiveErr   error
+	unarchiveErr error
+	findErr      error
+
+	insertOpts    []persistence.WriteOption[*testEntity]
+	updateOpts    []persistence.WriteOption[*testEntity]
+	deleteOpts    []persistence.WriteOption[*testEntity]
+	archiveOpts   []persistence.WriteOption[*testEntity]
+	unarchiveOpts []persistence.WriteOption[*testEntity]
+
+	foundData *testEntity
+}
+
+func newMockRepo() *mockRepo {
+	e := &testEntity{Name: "found"}
+	e.SetID(domain.NewID(uuid.NewString()))
+	return &mockRepo{foundData: e}
+}
+
+func (r *mockRepo) Insert(_ domain.Context, _ domain.Insertable, opts ...persistence.WriteOption[*testEntity]) (domain.ID, error) {
+	r.insertCalled++
+	r.insertOpts = opts
+	if r.insertErr != nil {
+		return domain.ID{}, r.insertErr
+	}
+	return domain.NewRandomID(), nil
+}
+
+func (r *mockRepo) Update(_ domain.Context, _ domain.Updatable, opts ...persistence.WriteOption[*testEntity]) error {
+	r.updateCalled++
+	r.updateOpts = opts
+	return r.updateErr
+}
+
+func (r *mockRepo) Delete(_ domain.Context, _ domain.Deletable, opts ...persistence.WriteOption[*testEntity]) error {
+	r.deleteCalled++
+	r.deleteOpts = opts
+	return r.deleteErr
+}
+
+func (r *mockRepo) Archive(_ domain.Context, _ domain.Archivable, opts ...persistence.WriteOption[*testEntity]) error {
+	r.archiveCalled++
+	r.archiveOpts = opts
+	return r.archiveErr
+}
+
+func (r *mockRepo) Unarchive(_ domain.Context, _ domain.Unarchivable, opts ...persistence.WriteOption[*testEntity]) error {
+	r.unarchiveCalled++
+	r.unarchiveOpts = opts
+	return r.unarchiveErr
+}
+
+func (r *mockRepo) FindByID(domain.ID) (*testEntity, error) {
+	r.findByIDCalled++
+	if r.findErr != nil {
+		return nil, r.findErr
+	}
+	return r.foundData, nil
+}
+
+func (r *mockRepo) New() *testEntity {
+	return &testEntity{}
+}
+
+func testCtx() *configuration.AppContext {
+	return configuration.NewAppContextWithRandomID(configuration.LangPTBR)
+}
+
+// spyReader records calls into ReadPage/ReadByID and returns canned values.
+// Used by find_by_params_test.go and find_by_id_test.go.
+type spyReader struct {
+	readPageCalled int
+	readByIDCalled int
+
+	gotView     string
+	gotCriteria queries.ReadCriteria
+	gotID       string
+
+	pageToReturn queries.Page
+	pageErr      error
+	docToReturn  map[string]any
+	docFound     bool
+	docErr       error
+}
+
+func (s *spyReader) ReadPage(_ context.Context, view string, c queries.ReadCriteria) (queries.Page, error) {
+	s.readPageCalled++
+	s.gotView = view
+	s.gotCriteria = c
+	return s.pageToReturn, s.pageErr
+}
+
+func (s *spyReader) ReadByID(_ context.Context, view, id string, c queries.ReadCriteria) (map[string]any, bool, error) {
+	s.readByIDCalled++
+	s.gotView = view
+	s.gotID = id
+	s.gotCriteria = c
+	return s.docToReturn, s.docFound, s.docErr
+}
+
+// testFindParamsQuery is a minimal FindByParamsQuery for handler tests:
+// echoes a Criteria captured at construction time. The recorder lets the
+// test assert that the handler passes the request ctx into ToCriteria.
+type testFindParamsQuery struct {
+	queries.ReadCriteria
+	pipeline.QueryBase
+	gotCtx *configuration.AppContext
+}
+
+func (q *testFindParamsQuery) ToCriteria(ctx *configuration.AppContext) queries.ReadCriteria {
+	q.gotCtx = ctx
+	return q.ReadCriteria
+}
+
+// testFindIDQuery is a minimal FindByIDQuery for handler tests. Honors
+// the Query-side ToCriteria(ctx) contract and records ctx so tests can
+// assert ctx propagation. Mirrors the behavior of FindUserByIDQuery in
+// the canonical example.
+type testFindIDQuery struct {
+	queries.QueryBaseWithID
+	includeArchived bool
+	contextName     string
+	overlay         map[string]any
+	gotCtx          *configuration.AppContext
+}
+
+func (q *testFindIDQuery) ToCriteria(ctx *configuration.AppContext) queries.ReadCriteria {
+	q.gotCtx = ctx
+	return queries.ReadCriteria{
+		IncludeArchived: q.includeArchived,
+		Filter:          q.overlay,
+	}
+}
+func (q testFindIDQuery) ContextName() string { return q.contextName }
