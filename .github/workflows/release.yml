@@ -1,0 +1,114 @@
+name: release
+
+# Auto-publish a GitHub Release whenever a `vMAJOR.MINOR.PATCH` tag is pushed.
+# The release notes body is extracted from the matching `## [X.Y.Z]` section of
+# CHANGELOG.md, so the maintainer's "tag + push" flow stays unchanged and the
+# Release page stops drifting behind the tag list.
+#
+# Prerelease tags (`v0.4.0-rc1`, `v1.0.0-beta`) are published with the
+# `--prerelease` flag so they don't displace the "Latest" badge.
+
+on:
+  push:
+    tags:
+      - 'v[0-9]+.[0-9]+.[0-9]+'         # v1.2.3
+      - 'v[0-9]+.[0-9]+.[0-9]+-*'       # v1.2.3-rc1, v1.2.3-beta.1
+
+permissions:
+  contents: write  # required by `gh release create`
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout (at the tag's commit)
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+          ref: ${{ github.ref }}
+
+      - name: Extract release notes from CHANGELOG.md
+        id: notes
+        shell: bash
+        run: |
+          set -euo pipefail
+          TAG="${GITHUB_REF_NAME}"               # e.g. "v0.4.0" or "v0.4.0-rc1"
+          VERSION="${TAG#v}"                     # strip the leading "v"
+
+          if [ ! -f CHANGELOG.md ]; then
+            echo "::error::CHANGELOG.md not found at the repo root"
+            exit 1
+          fi
+
+          # Pull the body of "## [VERSION]" up to (but not including) the next
+          # "## [" heading. The awk script:
+          #   - starts capturing the line AFTER the matching heading
+          #   - stops on the next "## [" (older version)
+          #   - also stops on the link-reference section "[X.Y.Z]:" at the
+          #     bottom so trailing footer lines don't leak into the notes
+          NOTES_FILE="$RUNNER_TEMP/notes.md"
+          awk -v ver="$VERSION" '
+            $0 ~ "^## \\[" ver "\\]" { active = 1; next }
+            active && /^## \[/        { exit }
+            active && /^\[[^]]+\]:/   { exit }
+            active                    { print }
+          ' CHANGELOG.md > "$NOTES_FILE"
+
+          # Trim leading + trailing blank lines so the rendered notes are tidy.
+          # `awk NF` keeps lines containing any field, but loses blank lines
+          # inside the body. We want internal blanks preserved — strip only the
+          # outer blanks with a small sed.
+          sed -i -e '/./,$!d' "$NOTES_FILE"          # leading blanks
+          sed -i -e ':a;/^$/{$d;N;ba}' "$NOTES_FILE" # trailing blanks
+
+          if [ ! -s "$NOTES_FILE" ]; then
+            echo "::warning::No CHANGELOG entry found for [$VERSION] — release will be created with an empty body"
+          fi
+
+          echo "Release notes preview:"
+          echo "----------------------------------------"
+          cat "$NOTES_FILE"
+          echo "----------------------------------------"
+
+          # Detect prerelease: anything after a hyphen in the version is a SemVer
+          # pre-release tag (`-rc1`, `-beta.2`, etc.) per https://semver.org §9.
+          PRERELEASE_FLAG=""
+          if [[ "$VERSION" == *-* ]]; then
+            PRERELEASE_FLAG="--prerelease"
+          fi
+
+          # Pass outputs to the next step via $GITHUB_OUTPUT.
+          {
+            echo "notes_file=$NOTES_FILE"
+            echo "prerelease_flag=$PRERELEASE_FLAG"
+            echo "version=$VERSION"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ github.ref_name }}
+          TITLE: ${{ github.ref_name }}
+          NOTES_FILE: ${{ steps.notes.outputs.notes_file }}
+          PRERELEASE_FLAG: ${{ steps.notes.outputs.prerelease_flag }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          # `gh release create` errors when the release already exists. We
+          # tolerate that path so re-running the workflow after a transient
+          # failure is idempotent: existing release → edit it with the same
+          # notes; absent release → create.
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "Release $TAG already exists — updating notes in place."
+            gh release edit "$TAG" \
+              --title "$TITLE" \
+              --notes-file "$NOTES_FILE" \
+              $PRERELEASE_FLAG
+          else
+            echo "Creating release $TAG."
+            gh release create "$TAG" \
+              --title "$TITLE" \
+              --notes-file "$NOTES_FILE" \
+              --verify-tag \
+              $PRERELEASE_FLAG
+          fi
