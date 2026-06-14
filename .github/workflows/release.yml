@@ -1,18 +1,38 @@
 name: release
 
-# Auto-publish a GitHub Release whenever a `vMAJOR.MINOR.PATCH` tag is pushed.
-# The release notes body is extracted from the matching `## [X.Y.Z]` section of
-# CHANGELOG.md, so the maintainer's "tag + push" flow stays unchanged and the
+# Auto-publish a GitHub Release whenever a `vMAJOR.MINOR.PATCH` tag lands —
+# either via `git push origin vX.Y.Z` from the CLI OR via the
+# "Draft a new release" flow from the web UI. The release notes body is
+# extracted from the matching `## [X.Y.Z]` section of CHANGELOG.md, so the
+# maintainer can pick whichever path is convenient on the day and the
 # Release page stops drifting behind the tag list.
 #
-# Prerelease tags (`v0.4.0-rc1`, `v1.0.0-beta`) are published with the
-# `--prerelease` flag so they don't displace the "Latest" badge.
+# Both triggers are wired so the workflow stays maintainer-friendly:
+#   - `push: tags:`             fires when the tag is pushed via CLI;
+#                                creates the release if absent.
+#   - `release: [published]`    fires when the release is created via UI;
+#                                edits the existing release in place so the
+#                                body reflects the CHANGELOG section. Any
+#                                notes the maintainer typed into the UI
+#                                are intentionally replaced — CHANGELOG.md
+#                                is the single source of truth.
+#
+# Safety net: when the CHANGELOG has no `## [X.Y.Z]` entry for the tag
+# (forgot to update before tagging), the workflow does NOT overwrite an
+# existing release's body with empty content. The release survives intact
+# and the workflow logs a warning so the gap is visible.
+#
+# Prerelease tags (`v0.4.0-rc1`, `v1.0.0-beta`) get `--prerelease` from the
+# CLI path so they don't displace the "Latest" badge. From the UI path,
+# whatever prerelease flag the maintainer chose in the form is preserved.
 
 on:
   push:
     tags:
       - 'v[0-9]+.[0-9]+.[0-9]+'         # v1.2.3
       - 'v[0-9]+.[0-9]+.[0-9]+-*'       # v1.2.3-rc1, v1.2.3-beta.1
+  release:
+    types: [published]
 
 permissions:
   contents: write  # required by `gh release create`
@@ -84,7 +104,7 @@ jobs:
             echo "version=$VERSION"
           } >> "$GITHUB_OUTPUT"
 
-      - name: Create GitHub Release
+      - name: Create or sync GitHub Release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAG: ${{ github.ref_name }}
@@ -94,16 +114,30 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          # `gh release create` errors when the release already exists. We
-          # tolerate that path so re-running the workflow after a transient
-          # failure is idempotent: existing release → edit it with the same
-          # notes; absent release → create.
+
+          # Detect whether a release already exists for this tag. Two paths
+          # reach here:
+          #   1. push:tags fires → release usually absent → we create it.
+          #   2. release:published fires → release just created via UI → we
+          #      edit it in place to sync the body with CHANGELOG.
+          # `gh release create` is also called repeatedly idempotent when the
+          # workflow re-runs after a transient failure thanks to the same
+          # exists-check.
           if gh release view "$TAG" >/dev/null 2>&1; then
-            echo "Release $TAG already exists — updating notes in place."
-            gh release edit "$TAG" \
-              --title "$TITLE" \
-              --notes-file "$NOTES_FILE" \
-              $PRERELEASE_FLAG
+            if [ -s "$NOTES_FILE" ]; then
+              echo "Release $TAG exists — syncing notes from CHANGELOG."
+              gh release edit "$TAG" \
+                --title "$TITLE" \
+                --notes-file "$NOTES_FILE" \
+                $PRERELEASE_FLAG
+            else
+              # CHANGELOG has no body for this version. The release exists
+              # (maintainer probably typed notes into the UI), so we leave
+              # it alone instead of clobbering the body with an empty
+              # string. The warning surfaces the CHANGELOG drift without
+              # blocking the workflow.
+              echo "::warning::No CHANGELOG section for [$TAG] — leaving release notes untouched"
+            fi
           else
             echo "Creating release $TAG."
             gh release create "$TAG" \
