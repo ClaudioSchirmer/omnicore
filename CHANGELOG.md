@@ -13,79 +13,11 @@ with `1.0.0`.
 
 ### Added
 
-- **Persistence lifecycle hooks.** New `application/persistence/` types
-  declaring the in-TX hook contract — `TxHandle` / `CommandTag` / `Rows`
-  / `Row` (the pgx-free surface exposed to hooks), `AfterBeginHook[T]` /
-  `BeforeCommitHook[T]` (function types), `AfterBeginHookProvider[T]` /
-  `BeforeCommitHookProvider[T]` (detected by Auto handlers via type
-  assertion; Cmds satisfy these by declaring `AfterBegin(ctx, t, tx)` /
-  `BeforeCommit(ctx, t, id, tx)` methods — no prefix, mirroring Go's idiom
-  for struct methods named after the event they respond to),
-  `WriteOption[T]` / `WithAfterBegin[T]` / `WithBeforeCommit[T]`
-  (functional options threaded into write methods — `With*` idiom for the
-  free-function counterparts; each surface follows its own Go convention).
-  Hooks fire INSIDE the persister's TX at position A (BEFORE any framework
-  write) and position D (AFTER data + outbox + audit, BEFORE COMMIT) on
-  both the flat path (`infra/executor.go`) and the aggregate path
-  (`infra/aggregate_persister.go`), with symmetric semantics; granularity B
-  (single firing per `repo.Method()` call). A non-nil error from either
-  hook rolls the TX back; `domain.NotificationCarrier` identity reaches
-  the wire envelope verbatim.
-- **`persistence.Writer[T]` port** — typed write surface carrying the
-  variadic options. `infra.BaseRepository[T]` implements it; Auto Command
-  Handlers consume it for the `Repo` field. Keeps the AppContext-bearing
-  hook types out of the domain layer so `domain.Repository[T]` stays
-  pure (read-only port).
-- **Infra adapters in `infra/tx_handle.go` and `infra/hook_dispatch.go`**
-  — `pgxTxHandle` / `pgxRows` / `pgxRow` wrap `pgx.Tx` behind the
-  application-layer interfaces; `AdaptWriteOptions[T]` translates typed
-  `WriteOption[T]` slices into the type-erased dispatch struct the
-  persister fires.
-- **Observability slog line on hook error** — `persistence.hook.error`
-  carrying `verb` / `hookSlot` / `entityType` / `threadId` / `error`,
-  emitted as best-effort `slog.Warn` whenever a hook returns non-nil
-  error.
-
 ### Changed
 
-- **Auto Command Handlers dispatch.** All six handlers (insert / update /
-  partial_update / archive / unarchive / delete) now type-assert against
-  the optional `AfterBeginHookProvider[T]` / `BeforeCommitHookProvider[T]`
-  at the top of `Handle` and forward the matching method values as
-  `persistence.WriteOption[T]` to the `Writer.Method(ctx, valid, opts...)`
-  call.
-- **`Repo` field on every Auto handler** now references
-  `persistence.Writer[T]` instead of `domain.Repository[T]`. The single
-  `infra.BaseRepository[T]` struct continues to satisfy both ports so
-  consumer code constructs one Repository and plugs it into either slot.
-- **`domain.Repository[T]` reduced to the read port** (`FindByID` +
-  `New`). The write surface lives at `persistence.Writer[T]` in the
-  application layer where the variadic `WriteOption[T]` (referencing
-  `*configuration.AppContext`) can live without violating the domain →
-  stdlib layer rule.
-- **Persister method signatures.** `Postgres.Insert / Update / Archive /
-  Unarchive / Delete` add a `writeHook` parameter that the BaseRepository
-  populates via `AdaptWriteOptions`. `infra.BaseRepository[T]`'s write
-  methods gain the matching variadic `opts ...persistence.WriteOption[T]`.
+### Deprecated
 
 ### Removed
-
-- **`application/persistence/Orchestrator[T]`** entirely — the type was a
-  pass-through wrapper around the Repository with empty pre/post slots
-  that never fired inside the TX. Auto and manual handlers now call the
-  `persistence.Writer[T]` port (the read+write surface implemented by
-  `BaseRepository[T]`) directly, threading `*AppContext` as the first
-  argument and `WriteOption[T]` variadics as trailing arguments.
-- **`Orchestrator.Insert/Update/Archive/Unarchive/Delete/FindByID`'s
-  pre/post callback parameters** — the old `before` / `after` slots ran
-  OUTSIDE the TX and could not deliver atomic in-TX side effects. The new
-  `afterBegin` / `beforeCommit` hooks replace them with the correct firing
-  positions and the correct payload (entity, id, TxHandle).
-- **Write methods on `domain.Repository[T]`** — `Insert` / `Update` /
-  `Delete` / `Archive` / `Unarchive` move to `persistence.Writer[T]`. The
-  `domain.DefaultRepository[T]` placeholder is reduced to the read port.
-
-### Deprecated
 
 ### Fixed
 
@@ -221,5 +153,37 @@ Initial public release.
   `replay-all-as-events` (synthetic INSERTED outbox events for backfill of
   cross-service consumers), `upstream-list-failures` (read-only triage of
   the failure registry).
+- **Persistence lifecycle hooks** — new `application/persistence/` types
+  declaring the in-TX hook contract: `TxHandle` / `CommandTag` / `Rows` /
+  `Row` (the pgx-free surface exposed to hooks), `AfterBeginHook[T]` /
+  `BeforeCommitHook[T]` (function types), `AfterBeginHookProvider[T]` /
+  `BeforeCommitHookProvider[T]` (detected by Auto handlers via type
+  assertion; Cmds satisfy these by declaring `AfterBegin(ctx, t, tx)` /
+  `BeforeCommit(ctx, t, id, tx)` methods — no prefix, mirroring Go's idiom
+  for struct methods named after the event they respond to),
+  `WriteOption[T]` / `WithAfterBegin[T]` / `WithBeforeCommit[T]`
+  (functional options threaded into write methods — `With*` idiom for the
+  free-function counterparts; each surface follows its own Go convention).
+  Hooks fire INSIDE the persister's TX at position A (BEFORE any framework
+  write) and position D (AFTER data + outbox + audit, BEFORE COMMIT) on
+  both the flat path (`infra/executor.go`) and the aggregate path
+  (`infra/aggregate_persister.go`), with symmetric semantics; granularity B
+  (single firing per `repo.Method()` call). A non-nil error from either
+  hook rolls the TX back; `domain.NotificationCarrier` identity reaches
+  the wire envelope verbatim.
+- **`persistence.Writer[T]` port** — typed write surface carrying the
+  variadic options. `infra.BaseRepository[T]` implements it; Auto Command
+  Handlers consume it for the `Repo` field. Keeps the AppContext-bearing
+  hook types out of the domain layer so `domain.Repository[T]` stays the
+  read-only port.
+- **Infra adapters in `infra/tx_handle.go` and `infra/hook_dispatch.go`**
+  — `pgxTxHandle` / `pgxRows` / `pgxRow` wrap `pgx.Tx` behind the
+  application-layer interfaces; `AdaptWriteOptions[T]` translates typed
+  `WriteOption[T]` slices into the type-erased dispatch struct the
+  persister fires.
+- **Observability slog line on hook error** — `persistence.hook.error`
+  carrying `verb` / `hookSlot` / `entityType` / `threadId` / `error`,
+  emitted as best-effort `slog.Warn` whenever a hook returns non-nil
+  error.
 
 [0.1.0]: https://github.com/ClaudioSchirmer/omnicore/releases/tag/v0.1.0
