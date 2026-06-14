@@ -144,7 +144,6 @@ Manual handlers are a sibling path, not a poorer one: `fwweb.HandleCommandWith{B
 
 - [`DOCS.html`](DOCS.html) — single-file public manual; the consumer's source of truth for every exported API.
 - [`CHANGELOG.md`](CHANGELOG.md) — release notes (Keep a Changelog format, SemVer; the API may evolve through `0.x.y`).
-- [`tasks/`](tasks/) — design documents for in-flight and shipped features.
 - [`omnicore-example-users`](https://github.com/ClaudioSchirmer/omnicore-example-users) — canonical reference service that consumes every framework feature, plus end-to-end QA suites (`qa/e2e.sh`, `qa/auth.sh`, `qa/audit.sh`, `qa/httpclient.sh`, `qa/openapi.sh`, `qa/authz.sh`, `qa/schema_evolution.sh`) against real Postgres + Mongo + Kafka + Debezium + Keycloak.
 
 ## Stack
