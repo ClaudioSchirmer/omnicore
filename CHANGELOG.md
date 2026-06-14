@@ -23,9 +23,11 @@ with `1.0.0`.
 
 ### Security
 
-## [0.1.0] - 2026-06-13
+## [0.3.0] - 2026-06-13
 
-Initial public release.
+Initial public release of the rewritten history. Skips `v0.1.0` /
+`v0.2.0` — both versions are frozen on `proxy.golang.org` pointing
+to content from a prior repo that no longer exists.
 
 ### Added
 
@@ -186,4 +188,4 @@ Initial public release.
   emitted as best-effort `slog.Warn` whenever a hook returns non-nil
   error.
 
-[0.1.0]: https://github.com/ClaudioSchirmer/omnicore/releases/tag/v0.1.0
+[0.3.0]: https://github.com/ClaudioSchirmer/omnicore/releases/tag/v0.3.0
