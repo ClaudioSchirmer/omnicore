@@ -948,18 +948,22 @@ func (c *InsertUserCommand) FromEntity(_ *configuration.AppContext, u *User) Ins
     return InsertUserResult{ID: *u.GetID(), Name: u.Name, Email: u.Email}
 }
 
-// Optional in-TX side effect: emit an extra integration-event outbox row
+// Optional in-TX side effect: emit an extra integration-event row
 // atomically with the framework's data write + outbox row + audit row.
+//
+// Application stays SQL-free. The TxHandle exposes Exec/Query/QueryRow so
+// the Cmd can compose with the framework's TX without importing pgx, but
+// inlining `tx.Exec("INSERT INTO foo ...")` would make application depend
+// on the database schema and break the DDD boundary. The canonical shape
+// is a port declared in application/ (or domain/) implemented in infra/;
+// the adapter owns the SQL + table name, the hook calls the port via tx.
 func (c *InsertUserCommand) BeforeCommit(
     ctx *configuration.AppContext, u *User, id domain.ID, tx persistence.TxHandle,
 ) error {
-    _, err := tx.Exec(ctx,
-        `INSERT INTO outbox (aggregate_type, aggregate_id, event_type, payload)
-         VALUES ($1, $2, $3, $4)`,
-        "users", id.String(), "UserActivationRequired",
-        `{"user_id":"`+id.String()+`"}`,
-    )
-    return err
+    // c.NotificationOutbox is a port injected on the Cmd; its adapter in
+    // infra/ owns the SQL emitting the companion integration event
+    // atomically with the framework's data + outbox + audit rows.
+    return c.NotificationOutbox.EnqueueActivationRequested(ctx, tx, id)
 }
 
 // Recommended compile-time safety against typos in the method name.
@@ -972,6 +976,13 @@ var _ persistence.BeforeCommitHookProvider[*User] = (*InsertUserCommand)(nil)</c
         options on the <code>repo.Method(ctx, valid, opts...)</code> call. There is one canonical persister surface;
         Auto and manual differ only in how the closures originate (Cmd method vs explicit closure).
     </p>
+    <p>
+        <strong>Application stays SQL-free on the manual path too</strong> &mdash; the closure receives <code>persistence.TxHandle</code>
+        so it composes with the framework's TX without importing pgx, but inlining <code>tx.Exec("INSERT INTO foo &hellip;")</code>
+        makes the handler depend on the database schema and breaks the DDD boundary. The canonical shape is a port declared in
+        <code>application/</code> (or <code>domain/</code>) implemented in <code>infra/</code> &mdash; the adapter owns the SQL + table name; the
+        closure threads <code>tx</code> through the port so the side effect remains atomic with the framework's writes.
+    </p>
     <pre><code>func (h *CreateUserAdminHandler) Handle(
     ctx *configuration.AppContext, cmd *AdminCreateUserCommand,
 ) (Result, error) {
@@ -983,12 +994,11 @@ var _ persistence.BeforeCommitHookProvider[*User] = (*InsertUserCommand)(nil)</c
         persistence.WithBeforeCommit[*User](func(
             ctx *configuration.AppContext, u *User, id domain.ID, tx persistence.TxHandle,
         ) error {
-            _, err := tx.Exec(ctx,
-                `INSERT INTO outbox (aggregate_type, aggregate_id, event_type, payload)
-                 VALUES ($1, $2, $3, $4)`,
-                "users", id.String(), "AdminUserActivated", `{"by":"admin"}`,
-            )
-            return err
+            // h.NotificationOutbox is a port injected on the handler; its
+            // adapter in infra/ owns the SQL emitting the companion
+            // integration event atomically with the framework's data +
+            // outbox + audit rows.
+            return h.NotificationOutbox.EnqueueAdminUserActivated(ctx, tx, id)
         }),
     )
     if err != nil { return Result{}, err }
