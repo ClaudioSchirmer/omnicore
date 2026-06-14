@@ -673,16 +673,22 @@ func (c InsertUserCommand) FromEntity(_ *configuration.AppContext, u *User) Inse
 // and threads it as a WriteOption[*User] to the Repo.Insert call. Fires
 // INSIDE the framework's TX between the data writes and COMMIT; a non-nil
 // error rolls everything back.
+//
+// ARCHITECTURAL NOTE — application stays SQL-free. The TxHandle exposes
+// Exec/Query/QueryRow so application code composes with the framework's TX
+// without importing pgx. That does NOT authorize embedding SQL strings or
+// table names here: the moment a Cmd writes `tx.Exec("INSERT INTO foo …")`
+// the application layer regains a dependency on the database schema and
+// the DDD boundary collapses. The canonical shape is a port declared in
+// application/ (or domain/) implemented in infra/ — the adapter owns the
+// SQL + table; the hook calls the port through tx.
 func (c InsertUserCommand) BeforeCommit(
     ctx *configuration.AppContext, u *User, id domain.ID, tx persistence.TxHandle,
 ) error {
-    _, err := tx.Exec(ctx,
-        `INSERT INTO outbox (aggregate_type, aggregate_id, event_type, payload)
-         VALUES ($1, $2, $3, $4)`,
-        "users", id.String(), "UserActivationRequired",
-        `{"user_id":"`+id.String()+`"}`,
-    )
-    return err
+    // Example: c.NotificationOutbox is a port injected on the Cmd; its
+    // adapter in infra/ owns the SQL emitting the companion integration
+    // event atomically with the framework's data + outbox + audit rows.
+    return c.NotificationOutbox.EnqueueActivationRequested(ctx, tx, id)
 }
 
 // Recommended compile-time safety to catch typos in the method name.
@@ -757,7 +763,9 @@ The asymmetry is **internal to the handler** — the wire-up in `routes.go` is i
 
 A handler with external IO, an injected domain service, or complex orchestration: continues to be a struct that manually implements `pipeline.Handler[*Cmd, TResult]`. `TResult` is whatever application-layer value the handler returns; the route's `responseProjection` then maps it to the wire `TResp`. It registers on the route with the same `HandleCommand`/`HandleCommandWithID`. Auto and manual coexist in the same API.
 
-**In-TX side effects on the manual path** — the handler reaches the same persister surface as the Auto path. Pass `persistence.WithAfterBegin[T](fn)` / `persistence.WithBeforeCommit[T](fn)` as trailing options on the `repo.Method(ctx, valid, opts...)` call. The closures fire at positions A and D of the TX, with the same `ctx / t / id / tx` payload the Auto path's `AfterBegin` / `BeforeCommit` receive:
+**In-TX side effects on the manual path** — the handler reaches the same persister surface as the Auto path. Pass `persistence.WithAfterBegin[T](fn)` / `persistence.WithBeforeCommit[T](fn)` as trailing options on the `repo.Method(ctx, valid, opts...)` call. The closures fire at positions A and D of the TX, with the same `ctx / t / id / tx` payload the Auto path's `AfterBegin` / `BeforeCommit` receive.
+
+**Application stays SQL-free on the manual path too** — the closure receives `persistence.TxHandle` so it can compose with the framework's TX without importing pgx, but inlining `tx.Exec("INSERT INTO foo …")` makes the handler depend on the database schema and breaks the DDD boundary. The canonical shape is a port declared in `application/` (or `domain/`) implemented in `infra/` — the adapter owns the SQL + table name; the closure threads `tx` through the port so the side effect remains atomic with the framework's writes.
 
 ```go
 func (h *CreateUserAdminHandler) Handle(ctx *configuration.AppContext, cmd *AdminCreateUserCommand) (Result, error) {
@@ -769,11 +777,11 @@ func (h *CreateUserAdminHandler) Handle(ctx *configuration.AppContext, cmd *Admi
         persistence.WithBeforeCommit[*User](func(
             ctx *configuration.AppContext, u *User, id domain.ID, tx persistence.TxHandle,
         ) error {
-            _, err := tx.Exec(ctx,
-                `INSERT INTO outbox (aggregate_type, aggregate_id, event_type, payload) VALUES ($1,$2,$3,$4)`,
-                "users", id.String(), "AdminUserActivated", `{"by":"admin"}`,
-            )
-            return err
+            // h.NotificationOutbox is a port injected on the handler; its
+            // adapter in infra/ owns the SQL emitting the companion
+            // integration event atomically with the framework's data +
+            // outbox + audit rows.
+            return h.NotificationOutbox.EnqueueAdminUserActivated(ctx, tx, id)
         }),
     )
     if err != nil { return Result{}, err }
