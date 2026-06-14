@@ -68,15 +68,29 @@
 >
 > The source code is the ground truth. The maintainer's words are the ground truth for intent. The AI's pattern-matched inference is not.
 
-> **CRITICAL RULE — BRANCH PER CHANGE, MERGE VIA IDE**
+> **CRITICAL RULE — AI DOES NOT COMMIT, PUSH, OR OPEN PRs**
 >
-> The `main` branch is GitHub-protected — direct pushes are rejected. Every approved change ships through a feature branch:
+> The maintainer keeps absolute control of the git tree and the GitHub remote. **The AI is strictly forbidden from running any command that records a commit or writes to the remote:**
+> - `git commit` in any form (including `--amend`, with or without `-m`).
+> - `git push` in any form (fast-forward, force, force-with-lease, tags, releases).
+> - `git tag` (local creation or pushed).
+> - `gh pr create` / `gh release create` / any `gh api` invocation that modifies state.
+> - Any other command that records a commit or modifies remote git state.
 >
-> 1. **Create a branch with a meaningful descriptor** before editing. Prefix by intent (`feature/<slug>` for new behavior, `fix/<slug>` for bug fixes, `docs/<slug>` for doc-only edits, `refactor/<slug>` for internal cleanups). The slug is lowercase-kebab-case and names the *outcome*, not the file edited: `feature/audit-claim-allowlist`, not `feature/edit-auditor`.
-> 2. **Commit + push the branch** to origin and open a PR against `main` with a description matching the CHANGELOG-style sections (what changed, why, observable impact).
-> 3. **The maintainer merges via the IDE / GitHub PR review flow** — never via `git push origin main` from the AI. The AI's job ends when the branch is pushed and the PR is described; the merge is the maintainer's decision and channel.
+> Read-only git inspection (`git status`, `git log`, `git diff`, `git branch --list`) and file edits via the `Edit` / `Read` / `Write` tools remain allowed.
 >
-> Branch hygiene: one logical change per branch. Mixing a feature with an unrelated refactor makes the PR review harder and the CHANGELOG entry ambiguous — split into two branches.
+> **The closed loop the AI follows on every task:**
+>
+> 1. **At task start, create a feature branch with a coherent descriptor.** Prefix by intent (`feature/<slug>` for new behavior, `fix/<slug>` for bug fixes, `docs/<slug>` for doc-only edits, `refactor/<slug>` for internal cleanups). The slug is lowercase-kebab-case and names the *outcome*, not the file edited: `feature/audit-claim-allowlist`, not `feature/edit-auditor`. `git checkout -b <branch>` is the only git-write the AI runs — it is structural setup (local, reversible) so the maintainer's main tree stays clean from in-flight work.
+>
+> 2. **Apply the file changes for the task on that branch** via the `Edit` / `Read` / `Write` tools.
+>
+> 3. **At task end, deliver one commit-message suggestion in English** as plain chat text for the maintainer to copy/use:
+>    - Title in the imperative mood (~72 chars max).
+>    - Optional body in short paragraphs explaining the *why* of the change.
+>    - No `Co-Authored-By` trailer — the suggestion is clean for the maintainer to use verbatim.
+>
+> The maintainer is the sole actor who runs `git commit`, `git push`, creates tags/releases, opens PRs, and merges. The AI's job ends when the file changes are applied to the feature branch and the commit-message suggestion is delivered in chat.
 
 > **CRITICAL RULE — THIS DOCUMENT DESCRIBES THE CURRENT STATE, NOT HISTORY**
 >
