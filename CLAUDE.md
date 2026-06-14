@@ -429,7 +429,7 @@ type CPFAlreadyExistsNotification struct{ domain.DomainNotificationBase }
 
 `NotificationContext` groups messages by context name (entity/aggregate). Methods: `AddNotification(name, n, value...)`, `AddNotificationMessage(msg)`, `Scoped`, `HasErrors`, `Clear`, `ChangeFieldName`, `Copy`, `Messages`. (Previously called `AddField`/`Add` — renamed to make the intent clear; it is a notification, not a field.)
 
-`NotificationMessage` carries optional `Path []PathSegment`, `Override`, `FieldName`, `FieldValue`, `FuncName`, `Err`, plus the typed `Notification`. The wire field is resolved via `ResolveFieldName()` with precedence **Override > rendered Path > FieldName**.
+`NotificationMessage` carries optional `Path []PathSegment`, `Override`, `FieldName`, `FieldValue`, `FuncName`, `Err`, `Vars map[string]string`, plus the typed `Notification`. The wire field is resolved via `ResolveFieldName()` with precedence **Override > rendered Path > FieldName**. The translation variables resolved for rendering come from `domain.MessageVars(msg)`, which merges (a) the notification's `tvar`-tagged exported fields via `domain.ExtractVarsFromTags(n)` with (b) the per-emit `Vars` override (per-emit wins on key collision). See [Parameterized notifications](#parameterized-notifications) below.
 
 **JSON path matching (the wire `field` matches the client's JSON exactly).** Validation messages emit Path-aware field names so the response carries the same path the client sent.
 
@@ -493,6 +493,81 @@ Mechanics:
 - `application/exception.SingleNotificationError(...)` / `exception.FieldErrorWithCause(...) → *ApplicationError`
 
 `ApplicationError` lives in `omnicore/application/exception/` (moved from `pipeline/exception.go`).
+
+### Parameterized notifications
+
+Notifications carry **runtime-driven variables** into their translated messages without exploding the catalog into one entry per value. Canonical use case: a length / count / amount that varies per tenant or per request configuration, surfaced verbatim inside the user-facing message ("excede o tamanho máximo de **100** caracteres", where 100 is the per-tenant limit).
+
+**Declaration — `tvar` struct tag.** The framework reflects over the notification struct's exported fields tagged `tvar:"<name>"` and exposes them as the variables `{<name>}` substitutes against in the catalog string. The struct field name is irrelevant; only the tag value matters.
+
+```go
+type NameMaxLengthExceededNotification struct {
+    domain.DomainNotificationBase
+    MaxLength int `tvar:"maxLength"`
+}
+```
+
+```go
+// ENG catalog
+"NameMaxLengthExceededNotification": "Name exceeds the maximum allowed length of {maxLength} characters.",
+// PTBR catalog
+"NameMaxLengthExceededNotification": "O nome excede o tamanho máximo permitido de {maxLength} caracteres.",
+```
+
+Multiple fields produce multiple placeholders. Pointer fields are dereferenced (nil renders as empty string). Unexported fields are skipped — the framework can only walk the exported surface. The reflection plan is cached per `reflect.Type` in a module-level `sync.Map`, so repeated emissions of the same notification type pay one type lookup + field reads.
+
+**Escape hatch — `TranslationVars()` method.** When the variables cannot be expressed as `tvar` tags (unexported state, computed values, ctx-aware shaping), declare an optional method on the notification:
+
+```go
+type SensitiveLimitNotification struct {
+    domain.DomainNotificationBase
+    threshold int  // unexported — invisible to tag reflection
+}
+func (n SensitiveLimitNotification) TranslationVars() map[string]string {
+    return map[string]string{"threshold": strconv.Itoa(n.threshold)}
+}
+```
+
+The method **replaces** (does not merge with) the tag-based extraction. The expected ratio is ≥95% pure `tvar`, ≤5% method-based. The method is detected via type assertion (`domain.TranslationVarsProvider`), so notifications without it pay nothing.
+
+**Per-emit override — `Vars` on `NotificationMessage`.** When the same notification type ships with default vars from its tags but a specific call site needs to inject additional or overriding values, pass them via the per-emit `Vars` map. Rules DSL exposes the helper:
+
+```go
+r.AddNotificationWithVars(
+    "Name",
+    NameMaxLengthExceededNotification{MaxLength: u.NameMaxLength},
+    map[string]string{"context": "premium-plan"},
+    u.Name,                                  // optional value variadic — same as AddNotification
+)
+```
+
+Resolution order at render time (per-emit wins on key collision): tag-derived vars (or `TranslationVars()` output) ← per-message `Vars`.
+
+**Context label vars — `SetVars` on `NotificationContext`.** The wrapping context label (`"User"`, `"Order"`) goes through the same Translator as messages. Carry runtime variables for the label itself via:
+
+```go
+ctx := domain.NewNotificationContext("UserOf{tenantId}")
+ctx.SetVars(map[string]string{"tenantId": "acme"})
+// catalog: "UserOf{tenantId}": "Usuário de {tenantId}"
+// resolved label on the wire: "Usuário de acme"
+```
+
+Empty map and nil both clear the slot. Scoped views forward to the root (`ContextVars()` reads from the root of the chain), mirroring how the message Path prefix composes.
+
+**Translation surface — `Render` and `Interpolate`.**
+
+```go
+func (t *Translator) Render(lang configuration.Language, key string, vars map[string]string) string
+func Interpolate(s string, vars map[string]string) string
+```
+
+- `Render(lang, key, vars)` resolves the catalog message + interpolates. Scanner accepts the literal placeholder `{<name>}` where `<name>` matches `[A-Za-z_][A-Za-z0-9_]*`; sequences that do not match (`{1bad}`, `{not closed`, isolated `{`) are written verbatim. Missing catalog key → returns `key` as fallback AND emits `slog.Warn("translation.key.missing", ...)` once per `(lang, key)` tuple. Missing placeholder in vars → leaves the literal `{name}` in the output AND emits `slog.Warn("translation.var.missing", ...)` once per `(lang, key, placeholder)` tuple. Both warns dedupe via a process-level `sync.Map`. `vars == nil` and `vars == {}` behave identically: no substitution, no missing-var warn.
+- `Interpolate(s, vars)` is the substitution-only step (no catalog lookup). Missing placeholders are left literal without firing warn-once — `Interpolate` has no `(lang, key)` context.
+- `Get(lang, key)` and `GetOr(lang, key, fallback)` remain the canonical no-interpolation lookups, for synthetic notifications without vars (e.g., `MissingPermissionNotification` in `PermissionGate`, `InternalServerErrorNotification` in `RespondWithInternalServerError`).
+
+**Pipeline integration.** `application/notifications/convert.go::ToContextDTOs` resolves vars automatically through `domain.MessageVars(msg)` and `ctx.ContextVars()`, then renders via `Translator.Render` instead of `Get`. Auto Command Handlers, manual handlers, and audit/events paths inherit the new behavior without code changes — the substitution lives at the boundary that already translates.
+
+**Backwards compatibility.** Notifications without `tvar` tags AND without `TranslationVars()` produce nil from `ExtractVarsFromTags` → `Render` behaves identically to `Get`. Catalog entries without placeholders pass through the scanner unchanged. The new `Vars` field on `NotificationMessage` and `contextVars` on `NotificationContext` default to nil. No existing call site needs editing.
 
 ### Result[T] and Pipeline (`application/pipeline/`)
 
@@ -1543,6 +1618,9 @@ The Semantic enum is **transport-agnostic** — a future gRPC layer would map th
 | New value object | new file in `domain/` |
 | New respond helper | `web/response.go` |
 | New notification with custom HTTP status | service notification overrides `Semantic() domain.NotificationSemantic` (returns one of `SemanticConflict` / `SemanticNotFound` / `SemanticForbidden` / `SemanticUnauthorized` / `SemanticUnavailable` / `SemanticInternal` / `SemanticMethodNotAllowed` / `SemanticPayloadTooLarge`) |
+| New notification carrying runtime variables (length, count, amount per tenant) | declare the struct with `tvar:"<name>"` tags on the exported fields the message should substitute. Catalog entries use the matching `{<name>}` placeholders. Pipeline auto-renders via `MessageVars(msg)` → `Translator.Render`. Escape hatch for unexported/computed values: declare a `TranslationVars() map[string]string` method (replaces tag extraction). See "Parameterized notifications" |
+| Per-emit override on translation variables (same notif type, different vars per call site) | use `r.AddNotificationWithVars(field, n, vars, value...)` instead of `r.AddNotification`. The per-emit map merges on top of any tag-derived vars; per-emit wins on key collision |
+| Parameterize the context label itself (`"UserOf{tenantId}"`) | declare the parameterized name on `domain.NewNotificationContext(name)` and call `ctx.SetVars(map[string]string{"tenantId": "..."})`. Catalog entry uses `{tenantId}` placeholder. Scoped contexts inherit from the root automatically |
 | New audit field | `infra/audit/event.go` (`AuditEvent`/`FieldChange`/`ChildEvent`) — see "Audit event shape" |
 | Want in-TX side effect on Auto path | declare `BeforeCommit(ctx *AppContext, t T, id domain.ID, tx persistence.TxHandle) error` (or `AfterBegin(ctx, t, tx)`) on the Cmd. The Auto handler detects it via type assertion against `persistence.BeforeCommitHookProvider[T]` / `AfterBeginHookProvider[T]` and threads it as a `WriteOption[T]` to the Repo write call. Fires INSIDE the framework's TX — non-nil error rolls everything back. |
 | Want in-TX side effect on manual path | pass `persistence.WithBeforeCommit[T](fn)` (or `persistence.WithAfterBegin[T](fn)`) as a trailing option on `repo.Method(ctx, valid, opts...)`. Same persister slot the Auto path fires; closure shape and TX semantics are identical. |

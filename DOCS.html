@@ -4873,6 +4873,65 @@ if fwtranslation.Default().Has(ctx.Language(), "WelcomeEmailBodyHTML") {
     <p>Keys are arbitrary strings — the framework only imposes a convention for Notifications (struct name via reflection). Manual keys can follow any naming scheme; a common pattern is a domain-style prefix (<code>EmailSubject.Welcome</code>, <code>Audit.UserRestored</code>) to keep them visibly distinct from Notification keys in the catalog. To add a key to N languages, add the same key with translated values to each language's <code>Module</code> — boot importing all of them populates the singleton with one combined map.</p>
 
     <p class="note">No DI, no extra fields on the handler struct, no extra parameter on <code>Mount</code>. <code>Default()</code> after boot is the canonical access point — there is one Translator per process and it already knows everything <code>Wiring.Translations</code> declared.</p>
+
+    <h3>Parameterized notifications</h3>
+    <p>Notifications carry <strong>runtime-driven variables</strong> into their translated messages without exploding the catalog into one entry per value. Canonical use case: a length / count / amount that varies per tenant or per request configuration, surfaced verbatim inside the user-facing message ("excede o tamanho máximo de <strong>100</strong> caracteres", where 100 comes from per-tenant config).</p>
+
+    <h4>Declaration — <code>tvar</code> struct tag</h4>
+    <p>The framework reflects over the notification's exported fields tagged <code>tvar:"&lt;name&gt;"</code> and exposes them as the variables <code>{&lt;name&gt;}</code> substitutes against in the catalog string. The struct field name is irrelevant; only the tag value matters.</p>
+<pre><code>type NameMaxLengthExceededNotification struct {
+    domain.DomainNotificationBase
+    MaxLength int `tvar:"maxLength"`
+}</code></pre>
+<pre><code>// ENG catalog
+"NameMaxLengthExceededNotification": "Name exceeds the maximum allowed length of {maxLength} characters.",
+// PTBR catalog
+"NameMaxLengthExceededNotification": "O nome excede o tamanho máximo permitido de {maxLength} caracteres.",</code></pre>
+    <p>Multiple fields produce multiple placeholders. Pointer fields are dereferenced (nil renders as empty string). Unexported fields are skipped — the framework can only walk the exported surface. The reflection plan is cached per <code>reflect.Type</code> in a module-level <code>sync.Map</code>, so repeated emissions of the same notification type pay one type lookup + field reads.</p>
+
+    <h4>Escape hatch — <code>TranslationVars()</code> method</h4>
+    <p>When the variables cannot be expressed as <code>tvar</code> tags (unexported state, computed values, ctx-aware shaping), declare an optional method:</p>
+<pre><code>type SensitiveLimitNotification struct {
+    domain.DomainNotificationBase
+    threshold int  // unexported — invisible to tag reflection
+}
+func (n SensitiveLimitNotification) TranslationVars() map[string]string {
+    return map[string]string{"threshold": strconv.Itoa(n.threshold)}
+}</code></pre>
+    <p>The method <strong>replaces</strong> (does not merge with) the tag-based extraction. Detected via type assertion (<code>domain.TranslationVarsProvider</code>), so notifications without it pay nothing.</p>
+
+    <h4>Per-emit override — <code>Vars</code> on <code>NotificationMessage</code></h4>
+    <p>When the same notification type ships with default vars from its tags but a specific call site needs to inject additional or overriding values, pass them via the per-emit <code>Vars</code> map. The Rules DSL exposes the helper:</p>
+<pre><code>r.AddNotificationWithVars(
+    "Name",
+    NameMaxLengthExceededNotification{MaxLength: u.NameMaxLength},
+    map[string]string{"context": "premium-plan"},
+    u.Name,                                  // optional value variadic — same as AddNotification
+)</code></pre>
+    <p>Resolution order at render time (per-emit wins on key collision): tag-derived vars (or <code>TranslationVars()</code> output) ← per-message <code>Vars</code>.</p>
+
+    <h4>Context label vars — <code>SetVars</code> on <code>NotificationContext</code></h4>
+    <p>The wrapping context label (<code>"User"</code>, <code>"Order"</code>) goes through the same Translator as messages. Carry runtime variables for the label itself via:</p>
+<pre><code>ctx := domain.NewNotificationContext("UserOf{tenantId}")
+ctx.SetVars(map[string]string{"tenantId": "acme"})
+// catalog: "UserOf{tenantId}": "Usuário de {tenantId}"
+// resolved label on the wire: "Usuário de acme"</code></pre>
+    <p>Empty map and nil both clear the slot. Scoped views forward to the root — <code>ContextVars()</code> always reads from the root of the chain, mirroring how the message Path prefix composes.</p>
+
+    <h4>Translation surface — <code>Render</code> and <code>Interpolate</code></h4>
+<pre><code>func (t *Translator) Render(lang configuration.Language, key string, vars map[string]string) string
+func Interpolate(s string, vars map[string]string) string</code></pre>
+    <ul>
+        <li><code>Render(lang, key, vars)</code> resolves the catalog message + interpolates. Scanner accepts the literal placeholder <code>{&lt;name&gt;}</code> where <code>&lt;name&gt;</code> matches <code>[A-Za-z_][A-Za-z0-9_]*</code>; sequences that do not match (<code>{1bad}</code>, <code>{not closed</code>, isolated <code>{</code>) are written verbatim. Missing catalog key → returns <code>key</code> as fallback AND emits <code>slog.Warn("translation.key.missing", ...)</code> once per <code>(lang, key)</code> tuple. Missing placeholder in vars → leaves the literal <code>{name}</code> in the output AND emits <code>slog.Warn("translation.var.missing", ...)</code> once per <code>(lang, key, placeholder)</code> tuple. Both warns dedupe via a process-level <code>sync.Map</code>. <code>vars == nil</code> and <code>vars == {}</code> behave identically: no substitution, no missing-var warn.</li>
+        <li><code>Interpolate(s, vars)</code> is the substitution-only step (no catalog lookup). Missing placeholders are left literal without firing warn-once — <code>Interpolate</code> has no <code>(lang, key)</code> context to attribute the miss to.</li>
+        <li><code>Get(lang, key)</code> and <code>GetOr(lang, key, fallback)</code> remain the canonical no-interpolation lookups, for synthetic notifications without vars (e.g., <code>MissingPermissionNotification</code> in <code>PermissionGate</code>, <code>InternalServerErrorNotification</code> in <code>RespondWithInternalServerError</code>).</li>
+    </ul>
+
+    <h4>Pipeline integration</h4>
+    <p><code>application/notifications/convert.go::ToContextDTOs</code> resolves vars automatically through <code>domain.MessageVars(msg)</code> and <code>ctx.ContextVars()</code>, then renders via <code>Translator.Render</code> instead of <code>Get</code>. Auto Command Handlers, manual handlers, and audit/events paths inherit the new behavior without code changes — the substitution lives at the boundary that already translates.</p>
+
+    <h4>Backwards compatibility</h4>
+    <p>Notifications without <code>tvar</code> tags AND without <code>TranslationVars()</code> produce nil from <code>ExtractVarsFromTags</code> → <code>Render</code> behaves identically to <code>Get</code>. Catalog entries without placeholders pass through the scanner unchanged. The new <code>Vars</code> field on <code>NotificationMessage</code> and <code>contextVars</code> on <code>NotificationContext</code> default to nil. No existing call site needs editing.</p>
 </section>
 
 <section id="openapi">
