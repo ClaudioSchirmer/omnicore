@@ -1,78 +1,59 @@
 package infra
 
 import (
-	"context"
+	"fmt"
 
 	"github.com/jackc/pgx/v5"
 
 	"github.com/ClaudioSchirmer/omnicore/application/persistence"
 )
 
-// pgxTxHandle adapts pgx.Tx to the application-layer persistence.TxHandle
-// interface. Exposed only via newPgxTxHandle so application code never
-// reaches the pgx symbol through the persistence package.
+// pgxTxHandle is the framework's only implementation of
+// persistence.TxHandle. It carries the live pgx.Tx privately so that
+// only this package can recover it via UnwrapPgxTx. The persister
+// builds one per lifecycle-hook firing and discards it when the TX
+// ends (Commit OR Rollback).
 //
-// The wrapper is stateless beyond the embedded tx; calling Exec / Query /
-// QueryRow forwards verbatim. Returned errors are raw pgx errors per the
-// TxHandle contract (no infra.ConstraintBinding translation — that
-// surface lives at the Repository level).
+// The struct deliberately exposes no SQL surface: every Exec / Query /
+// QueryRow call on the in-TX side effect is owned by an infra/ adapter
+// that calls UnwrapPgxTx to obtain the underlying pgx.Tx. Application
+// code never touches pgx directly.
+//
+// persistence.SealedTxHandle is embedded so that pgxTxHandle inherits
+// the unexported sealing method that persistence.TxHandle requires —
+// Go's canonical "package-private interface satisfier" pattern. The
+// embed lets the concrete adapter live here in infra/ (where it can
+// import pgx) while the seal is enforced by application/persistence/.
 type pgxTxHandle struct {
+	persistence.SealedTxHandle
 	tx pgx.Tx
 }
 
-// newPgxTxHandle is the only constructor for the TxHandle adapter. The
-// persister builds one per lifecycle-hook call and discards it when the
-// TX ends (Commit OR Rollback).
+// newPgxTxHandle is the only constructor for the TxHandle adapter.
+// Returns the sealed interface — callers see no methods other than the
+// private sealing marker.
 func newPgxTxHandle(tx pgx.Tx) persistence.TxHandle {
 	return &pgxTxHandle{tx: tx}
 }
 
-// Exec forwards to pgx.Tx.Exec. The returned CommandTag carries only
-// RowsAffected — sufficient for in-TX hook accounting (e.g. "did the
-// extra outbox row actually land?") without dragging the rest of the
-// pgconn surface into application/.
-func (h *pgxTxHandle) Exec(ctx context.Context, sql string, args ...any) (persistence.CommandTag, error) {
-	ct, err := h.tx.Exec(ctx, sql, args...)
-	if err != nil {
-		return persistence.CommandTag{}, err
+// UnwrapPgxTx recovers the underlying pgx.Tx from a persistence.TxHandle.
+// Used by infra-layer adapters that implement application/domain ports
+// receiving a TxHandle parameter: the adapter owns the SQL + table
+// name, so it needs the live pgx.Tx to execute the side effect inside
+// the framework's TX.
+//
+// Because persistence.TxHandle is a sealed interface — only this
+// package's pgxTxHandle satisfies it — the type assertion below is
+// guaranteed to succeed against any handle the framework hands out.
+// The panic exists as a defense for a foreign implementation that
+// somehow surfaces (test fakes that bypass the sealing intent, or a
+// future caller that mocks the interface incorrectly): failing loudly
+// at the unwrap site is better than producing a nil pgx.Tx that would
+// later NPE inside a SQL call.
+func UnwrapPgxTx(tx persistence.TxHandle) pgx.Tx {
+	h, ok := tx.(*pgxTxHandle)
+	if !ok {
+		panic(fmt.Sprintf("infra.UnwrapPgxTx: foreign persistence.TxHandle implementation %T; only the framework's own pgxTxHandle is supported", tx))
 	}
-	return persistence.CommandTag{RowsAffected: ct.RowsAffected()}, nil
+	return h.tx
 }
-
-// Query forwards to pgx.Tx.Query and wraps the returned rows so the
-// caller iterates against the persistence.Rows surface. Consumers own
-// the iterator: defer rows.Close() is the convention.
-func (h *pgxTxHandle) Query(ctx context.Context, sql string, args ...any) (persistence.Rows, error) {
-	rows, err := h.tx.Query(ctx, sql, args...)
-	if err != nil {
-		return nil, err
-	}
-	return &pgxRows{rows: rows}, nil
-}
-
-// QueryRow forwards to pgx.Tx.QueryRow. pgx delays the error until
-// Scan, so the wrapper mirrors the same shape — returning a Row whose
-// Scan call surfaces the error.
-func (h *pgxTxHandle) QueryRow(ctx context.Context, sql string, args ...any) persistence.Row {
-	return &pgxRow{row: h.tx.QueryRow(ctx, sql, args...)}
-}
-
-// pgxRows adapts pgx.Rows to persistence.Rows. The Close() method is
-// non-error per the persistence contract — pgx.Rows.Close() returns
-// void already, so the adaptation is trivial.
-type pgxRows struct {
-	rows pgx.Rows
-}
-
-func (r *pgxRows) Next() bool                 { return r.rows.Next() }
-func (r *pgxRows) Scan(dest ...any) error     { return r.rows.Scan(dest...) }
-func (r *pgxRows) Err() error                 { return r.rows.Err() }
-func (r *pgxRows) Close()                     { r.rows.Close() }
-
-// pgxRow adapts pgx.Row to persistence.Row. The interface carries only
-// Scan because that is the only method pgx.Row itself exposes.
-type pgxRow struct {
-	row pgx.Row
-}
-
-func (r *pgxRow) Scan(dest ...any) error { return r.row.Scan(dest...) }

@@ -145,7 +145,7 @@ application/
   translation/                Translator + Module interface, CorePTBR/CoreENG/CoreES/CoreFR/CoreDE/CoreIT/CoreNL built-ins
   notifications/              ContextDTO/MessageDTO (carries NotificationKey)
   pipeline/                   Request/Command/Query, Handler[TReq,TRes], Result[T], Pipeline
-  persistence/                Writer[T] write port + TxHandle/CommandTag/Rows/Row +
+  persistence/                Writer[T] write port + TxHandle (sealed marker) +
                               AfterBeginHook[T]/BeforeCommitHook[T] + provider
                               interfaces + WriteOption[T]/WithAfterBegin/WithBeforeCommit
   queries/                    QueryHandler + ViewReader port + ReadCriteria/Page DTOs
@@ -518,13 +518,15 @@ The application layer declares two ports over persistence:
 - **`Writer[T]`** — the typed write port handlers consume. Variadic `opts ...WriteOption[T]` on every write verb (Insert / Update / Delete / Archive / Unarchive); FindByID + New on the read side. `infra.BaseRepository[T]` implements it.
 - **`domain.Repository[T]`** — the read port at the domain layer (FindByID + New only). Kept narrow so the domain layer never references `application/configuration`'s `*AppContext` (which the hook signatures carry). Implementations satisfy both ports with a single struct.
 
-The lifecycle-hook contract carries four supporting types and two provider interfaces:
+The lifecycle-hook contract carries one sealed marker, two hook function types, and two provider interfaces:
 
 ```go
+// Sealed marker — no public methods. The framework's pgxTxHandle (in infra/)
+// is the only implementation. Application code never executes SQL through
+// it; the hook threads the handle to a port whose infra adapter calls
+// fwinfra.UnwrapPgxTx(tx) to recover the underlying pgx.Tx.
 type TxHandle interface {
-    Exec(ctx context.Context, sql string, args ...any) (CommandTag, error)
-    Query(ctx context.Context, sql string, args ...any) (Rows, error)
-    QueryRow(ctx context.Context, sql string, args ...any) Row
+    // txHandle is the unexported sealing method.
 }
 
 type AfterBeginHook[T any]   func(ctx *AppContext, t T, tx TxHandle) error
@@ -537,7 +539,7 @@ func WithAfterBegin[T any](fn AfterBeginHook[T])   WriteOption[T]
 func WithBeforeCommit[T any](fn BeforeCommitHook[T]) WriteOption[T]
 ```
 
-`TxHandle` wraps `*pgx.Tx` so application code stays pgx-free; the concrete adapter lives in `infra/`. `WriteOption[T]` is the functional-option type the variadic carries; the persister fires the resolved closures at two fixed TX positions:
+`TxHandle` is opaque to application code — by construction, a hook cannot pronounce SQL through it. The canonical (and only) shape for an in-TX side effect is: declare a port in `application/` or `domain/` whose method receives a `persistence.TxHandle`, implement the port in `infra/` where the adapter calls `fwinfra.UnwrapPgxTx(tx)` to obtain the live `pgx.Tx` and owns the SQL + table name. The sealing method on `TxHandle` is unexported, so no implementation outside the framework's own `infra/pgxTxHandle` can satisfy the interface — any test fake or alternative transport plugs in by writing its own adapter in `infra/`. `WriteOption[T]` is the functional-option type the variadic carries; the persister fires the resolved closures at two fixed TX positions:
 
 ```
 BEGIN
@@ -674,14 +676,11 @@ func (c InsertUserCommand) FromEntity(_ *configuration.AppContext, u *User) Inse
 // INSIDE the framework's TX between the data writes and COMMIT; a non-nil
 // error rolls everything back.
 //
-// ARCHITECTURAL NOTE — application stays SQL-free. The TxHandle exposes
-// Exec/Query/QueryRow so application code composes with the framework's TX
-// without importing pgx. That does NOT authorize embedding SQL strings or
-// table names here: the moment a Cmd writes `tx.Exec("INSERT INTO foo …")`
-// the application layer regains a dependency on the database schema and
-// the DDD boundary collapses. The canonical shape is a port declared in
-// application/ (or domain/) implemented in infra/ — the adapter owns the
-// SQL + table; the hook calls the port through tx.
+// TxHandle is a sealed marker — the Cmd cannot pronounce SQL through it.
+// The canonical shape is a port declared in application/ (or domain/)
+// whose method receives a persistence.TxHandle; the port's adapter in
+// infra/ calls fwinfra.UnwrapPgxTx(tx) to recover the pgx.Tx and owns
+// the SQL + table name. The hook is just the composition point.
 func (c InsertUserCommand) BeforeCommit(
     ctx *configuration.AppContext, u *User, id domain.ID, tx persistence.TxHandle,
 ) error {
@@ -765,7 +764,7 @@ A handler with external IO, an injected domain service, or complex orchestration
 
 **In-TX side effects on the manual path** — the handler reaches the same persister surface as the Auto path. Pass `persistence.WithAfterBegin[T](fn)` / `persistence.WithBeforeCommit[T](fn)` as trailing options on the `repo.Method(ctx, valid, opts...)` call. The closures fire at positions A and D of the TX, with the same `ctx / t / id / tx` payload the Auto path's `AfterBegin` / `BeforeCommit` receive.
 
-**Application stays SQL-free on the manual path too** — the closure receives `persistence.TxHandle` so it can compose with the framework's TX without importing pgx, but inlining `tx.Exec("INSERT INTO foo …")` makes the handler depend on the database schema and breaks the DDD boundary. The canonical shape is a port declared in `application/` (or `domain/`) implemented in `infra/` — the adapter owns the SQL + table name; the closure threads `tx` through the port so the side effect remains atomic with the framework's writes.
+**Application stays SQL-free on the manual path too** — `persistence.TxHandle` is a sealed marker with no public methods, so the closure cannot pronounce SQL through it by construction. The canonical shape is a port declared in `application/` (or `domain/`) whose method receives a `persistence.TxHandle`; the port's adapter in `infra/` calls `fwinfra.UnwrapPgxTx(tx)` to recover the live `pgx.Tx` and owns the SQL + table name. The closure threads `tx` through the port so the side effect remains atomic with the framework's writes.
 
 ```go
 func (h *CreateUserAdminHandler) Handle(ctx *configuration.AppContext, cmd *AdminCreateUserCommand) (Result, error) {
@@ -780,7 +779,8 @@ func (h *CreateUserAdminHandler) Handle(ctx *configuration.AppContext, cmd *Admi
             // h.NotificationOutbox is a port injected on the handler; its
             // adapter in infra/ owns the SQL emitting the companion
             // integration event atomically with the framework's data +
-            // outbox + audit rows.
+            // outbox + audit rows. The adapter calls fwinfra.UnwrapPgxTx(tx)
+            // to recover the pgx.Tx; the handler never imports pgx.
             return h.NotificationOutbox.EnqueueAdminUserActivated(ctx, tx, id)
         }),
     )
@@ -789,7 +789,7 @@ func (h *CreateUserAdminHandler) Handle(ctx *configuration.AppContext, cmd *Admi
 }
 ```
 
-The closure runs INSIDE the framework's TX between the data writes and COMMIT; a non-nil error rolls everything back. NotificationCarrier identity is preserved end-to-end. The TxHandle is application-layer (`Exec` / `Query` / `QueryRow`), so the manual handler stays pgx-free.
+The closure runs INSIDE the framework's TX between the data writes and COMMIT; a non-nil error rolls everything back. NotificationCarrier identity is preserved end-to-end. The `TxHandle` is an opaque token at the application layer — the only way to obtain the underlying `pgx.Tx` is via `fwinfra.UnwrapPgxTx`, an infra-layer helper not reachable from `application/`.
 
 ## Read-side wrappers (Auto Query Handlers)
 
@@ -1423,7 +1423,7 @@ fwinfra.View("orders").
    - `INSERTED` / `UPDATED` / `UNARCHIVED` → `mongo.Upsert(collection, id, filtered)`
    - `ARCHIVED` + `DeleteOnArchive=false` → `mongo.Upsert` (doc survives with `deleted_at` populated)
    - `ARCHIVED` + `DeleteOnArchive=true`  → `mongo.Delete`
-   - `DELETED` → dispatch by `OnUpstreamDelete` (cascade / anonymize / keep — see §9 of `tasks/mongo_cross_service_composition_final.md`)
+   - `DELETED` → dispatch by `OnUpstreamDelete` (`cascade` removes the local doc; `anonymize` upserts with the `anonymizeFields` allowlist zeroed; `keep` is a no-op for hot-tier mirrors)
 3. On success, triggers **downstream recompose-ripple**: for every B view embedding the collection, finds the local docs whose join field references the changed upstream id (via `MongoDB.FindIDsByField` — index-only thanks to boot guard §8.1) and re-composes + upserts each one.
 4. Failure isolation: per-view recompose errors are logged + counted on the in-memory `upstreamMetrics` counter + **persisted to `omnicore_upstream_failures`** + skipped. The Kafka offset still advances — a deterministic compose error becomes a recoverable stale doc, never a poison pill blocking the consumer group.
 
@@ -1444,6 +1444,7 @@ Best-effort writes: any PG error on `RecordUpstreamFailure` / `ResolveUpstreamFa
 Operational queries (SQL on B's framework PG):
 
 ```sql
+-- noinspection SqlNoDataSourceInspectionForFile
 -- Currently stale entities (waiting on a fresh upstream event or operator reconcile):
 SELECT subscription_topic, view_name, upstream_id, local_id, stage, attempt,
        last_attempt_at, error
@@ -1475,8 +1476,6 @@ The in-memory `upstreamMetrics` counter remains (process-local snapshot for Prom
 **Registry semantics.** The upstream-projected collection counts toward `omnicore_service_registry`'s DB-per-service marker (treated as locally-managed) but does NOT enter `omnicore_mongo_views` — an `UpstreamSubscription` has no `Version`, no `JSONSchema`, no consumer-declared indexes (only Mongo's built-in `_id` is used), so the drift-detection path has nothing to compare against. `Filter` drift is operator-owned: change the YAML + redeploy + run `omnicore-admin replay-all-as-events` against A.
 
 **Bootstrap path** for a new B against an existing A whose Kafka retention does not cover full history: `omnicore-admin replay-all-as-events --aggregate <name>` runs in A's process (via A's `APP_PROFILE` + yaml), reads every active row, and inserts a synthetic `INSERTED` outbox event per row. Debezium picks them up; every B subscriber consumes them as if they were real INSERTs.
-
-Full specification: [`tasks/mongo_cross_service_composition_final.md`](tasks/mongo_cross_service_composition_final.md).
 
 ## HTTP status mapping
 
@@ -1547,7 +1546,7 @@ The Semantic enum is **transport-agnostic** — a future gRPC layer would map th
 | New audit field | `infra/audit/event.go` (`AuditEvent`/`FieldChange`/`ChildEvent`) — see "Audit event shape" |
 | Want in-TX side effect on Auto path | declare `BeforeCommit(ctx *AppContext, t T, id domain.ID, tx persistence.TxHandle) error` (or `AfterBegin(ctx, t, tx)`) on the Cmd. The Auto handler detects it via type assertion against `persistence.BeforeCommitHookProvider[T]` / `AfterBeginHookProvider[T]` and threads it as a `WriteOption[T]` to the Repo write call. Fires INSIDE the framework's TX — non-nil error rolls everything back. |
 | Want in-TX side effect on manual path | pass `persistence.WithBeforeCommit[T](fn)` (or `persistence.WithAfterBegin[T](fn)`) as a trailing option on `repo.Method(ctx, valid, opts...)`. Same persister slot the Auto path fires; closure shape and TX semantics are identical. |
-| Want to read state inside the hook's TX | call `tx.Query(ctx, sql, args...)` / `tx.QueryRow(ctx, sql, args...)` / `tx.Exec(ctx, sql, args...)` inside the hook closure. `TxHandle` is application-layer (no pgx import) and wraps the same `pgx.Tx` the framework opened. Consumer owns the iterator: `defer rows.Close()`. Errors are raw pgx — `infra.ConstraintBinding` translation is not applied at this surface. |
+| Want to read or write state inside the hook's TX | declare a port in `application/` (or `domain/`) whose method takes a `persistence.TxHandle` parameter, e.g. `QuotaPort.AssertTenantQuota(ctx, tx, tenantID) error`. Implement the port in `infra/` — the adapter calls `fwinfra.UnwrapPgxTx(tx)` to recover the live `pgx.Tx`, executes SQL, owns the table name. Inject the port on the Cmd / handler and call it from the hook closure. `TxHandle` is a sealed marker with no public methods, so the hook cannot pronounce SQL directly — the port is the single authorized path. |
 | Want compile-time safety against typo in hook method name | declare `var _ persistence.BeforeCommitHookProvider[*T] = (*Cmd)(nil)` (or the AfterBegin variant) at the bottom of the Cmd file. Catches misspelled / mistyped method signatures at `go build` time; the framework does not enforce it. |
 | Declare aggregate child type | root entity implements `AggregateChildren() []AggregateValueObject` returning sample instances; table/FK inferred by convention. Override per-Repository via `fwinfra.RepoConfig.ChildTableOverrides` / `ChildFKOverrides` |
 | Drop archived rows from the Mongo projection (hot-tier read side) | `fwinfra.View("users").DeleteOnArchive().Root("users").EmbedMany(...)` — opt-in per view. Default keeps archived rows so Mongo mirrors PostgreSQL symmetrically. Cascade: the flag governs root + all embeds (no per-embed override). Reader still defaults to hiding archived; consumer opts in via the existing `IncludeArchived` path (`?includeArchived=true`) — and that path returns 404 on a `DeleteOnArchive` view because the document is absent. |
@@ -1917,6 +1916,7 @@ infra.FormatDowngradeDiagnostic(plans)         // §14.6
 Operator inspection queries:
 
 ```sql
+-- noinspection SqlNoDataSourceInspectionForFile
 -- Anything mid-rebuild right now?
 SELECT view_name, started_at, pid, host, NOW() - started_at AS elapsed
 FROM omnicore_mongo_views
@@ -1944,6 +1944,7 @@ The outbox table is created automatically by the framework's embedded migration 
 Service domain tables (defined by the service's migrations 2+) need to follow these conventions so that SQL generated by the executor and queries by the composer work:
 
 ```sql
+-- noinspection SqlNoDataSourceInspectionForFile
 CREATE TABLE users (
     id          UUID         PRIMARY KEY DEFAULT gen_random_uuid(),
     name        VARCHAR(255) NOT NULL,
@@ -1957,6 +1958,7 @@ CREATE TABLE users (
 **Child tables** of an aggregate (e.g. `addresses` for `users`) follow the convention `<parent_type>_id` for the FK column (`user_id` for parent `User`). Override per-Repository via `fwinfra.RepoConfig.ChildFKOverrides` when the convention does not fit:
 
 ```sql
+-- noinspection SqlNoDataSourceInspectionForFile
 CREATE TABLE addresses (
     id          UUID         PRIMARY KEY DEFAULT gen_random_uuid(),
     user_id     UUID         NOT NULL REFERENCES users (id) ON DELETE CASCADE,
@@ -2240,7 +2242,7 @@ Audit-line shape (top-level flat — see "Audit event shape" above for the full 
   "actorClaims": {"tenant_id": "acme", "roles": ["admin"]},
   "dateTime": "2026-06-09T12:00:00Z",
   "snapshot": {"name": "Jane Doe", "email": "jane@x.test"},
-  "children": {"Address": [{"id": "…", "op": "inserted", "snapshot": {…}}]}
+  "children": {"Address": [{"id": "…", "op": "inserted", "snapshot": {"...": "..."}}]}
 }
 ```
 
@@ -2839,7 +2841,7 @@ httpClient:
       backoff: exponential-jitter      # constant | linear | exponential | exponential-jitter
       initialDelay: 100ms
       maxDelay: 5s
-      retryOn: [502, 503, 504, network, timeout]
+      retryOn: [502, 503, 504, "network", "timeout"]
       respectRetryAfter: true
 
   services:
@@ -3280,25 +3282,26 @@ Reconnection is the caller's responsibility — the framework does not re-dial w
 Per-service `signing:` block declares an HMAC request-signing policy compatible with payment gateways, Twilio-style webhooks, and AWS SigV4-lite upstreams. The framework injects timestamp + content-sha256 + signature headers on every outbound request, with **re-signing per retry attempt** so each dial carries a fresh timestamp.
 
 ```yaml
-services:
-  payment:
-    baseURL: https://pay.example.com
-    signing:
-      type: hmac-sha256                       # required (only supported in this phase)
-      keyId: ${PAY_KEY_ID}                    # optional
-      keyIdHeader: X-Key-Id                   # required when keyId is set
-      secret: ${PAY_SIGNER_SECRET}            # required
-      signedHeaders:                          # required, non-empty
-        - host
-        - x-date
-        - x-content-sha256
-        - x-idempotency-key
-        - content-type
-      timestampHeader: X-Date                 # required
-      timestampFormat: rfc1123                # optional; rfc1123 | iso8601 | unix-seconds
-      contentSHA256Header: X-Content-SHA256   # optional; default X-Content-SHA256; "-" to disable
-      signatureHeader: X-Signature            # required
-      signaturePrefix: ""                     # optional; e.g. "HMAC-SHA256 "
+httpClient:
+  services:
+    payment:
+      baseURL: https://pay.example.com
+      signing:
+        type: hmac-sha256                       # required (only supported in this phase)
+        keyId: ${PAY_KEY_ID}                    # optional
+        keyIdHeader: X-Key-Id                   # required when keyId is set
+        secret: ${PAY_SIGNER_SECRET}            # required
+        signedHeaders:                          # required, non-empty
+          - host
+          - x-date
+          - x-content-sha256
+          - x-idempotency-key
+          - content-type
+        timestampHeader: X-Date                 # required
+        timestampFormat: rfc1123                # optional; rfc1123 | iso8601 | unix-seconds
+        contentSHA256Header: X-Content-SHA256   # optional; default X-Content-SHA256; "-" to disable
+        signatureHeader: X-Signature            # required
+        signaturePrefix: ""                     # optional; e.g. "HMAC-SHA256 "
 ```
 
 **Canonical string (AWS SigV4-lite):**
@@ -3663,7 +3666,8 @@ Anyone needing exotic boot (custom logger, different lifecycle, specific start o
 - **Unarchivable** — symmetric inverse of `Archivable`. `Postgres.Unarchive` does `UPDATE deleted_at = NULL` + outbox `UNARCHIVED`. SyncEngine re-creates the Mongo doc
 - **UpstreamSubscription** — declarative entry (yaml or `Wiring.UpstreamSubscriptions`) that ties one of A's Kafka topics to a local Mongo collection in B's database. The framework's `UpstreamSubscriber` materializes events into the collection and ripples recompose to every B view embedding it via `FromMongo`. The canonical cross-service composition path
 - **FromMongo** — `Source` constructor symmetric to `From` for embeds whose data lives in a local Mongo collection populated by an `UpstreamSubscription`. `Source.IsMongo()` discriminates the composer dispatch. View-on-view (`FromMongo` targeting another local `ViewDefinition.Name()`) is rejected by boot guard §8.3 because the recompose ripple is one-hop and the second view would drift silently
-- **TxHandle** — application-layer interface (`Exec` / `Query` / `QueryRow`) exposed to in-TX lifecycle hooks. Implemented in `infra/` wrapping `*pgx.Tx`. Returns raw pgx errors — `infra.ConstraintBinding` translation is not applied at this surface.
+- **TxHandle** — sealed marker interface at `application/persistence/`, handed to in-TX lifecycle hooks. Carries no public methods (only an unexported sealing method), so application code cannot pronounce SQL through it. The framework's `infra/pgxTxHandle` is the only implementation; infra-layer port adapters call `fwinfra.UnwrapPgxTx(tx)` to recover the underlying `*pgx.Tx` and execute SQL. The canonical pattern for an in-TX side effect from a hook: declare a port in `application/` (or `domain/`) whose method receives a `persistence.TxHandle`; implement the port in `infra/` where the adapter unwraps and owns the SQL.
+- **UnwrapPgxTx** — `fwinfra.UnwrapPgxTx(persistence.TxHandle) pgx.Tx` is the single bridge from the opaque `TxHandle` token to the live `pgx.Tx`. Lives in `infra/`, so only adapters in that layer can call it. Panics with a descriptive diagnostic on a foreign `TxHandle` implementation — defensive, never reached against framework-issued handles.
 - **ValidEntity** — sealed types (`Insertable`/`Updatable`/`Archivable`/`Deletable`/`Unarchivable`/`Batch`) produced only by domain
 - **WriteOption[T]** — functional option consumed by `Writer[T]` write methods. Carries an `AfterBeginHook[T]` and/or a `BeforeCommitHook[T]`. Auto and manual handlers converge on the same option mechanism — Auto populates options by detecting the Cmd's provider interfaces; manual populates them by passing `WithAfterBegin` / `WithBeforeCommit` directly at the call site.
 - **Writer[T]** — typed write port at the application layer (`application/persistence/`). Carries the variadic `opts ...WriteOption[T]` on every write verb. `infra.BaseRepository[T]` implements it; Auto handlers depend on it. Read-side methods (`FindByID`, `New`) included so a single struct serves both the write and read ports.

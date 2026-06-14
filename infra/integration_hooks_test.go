@@ -117,16 +117,29 @@ func TestPostgres_Insert_HookFires_BeforeCommit(t *testing.T) {
 	}
 }
 
+// TestPostgres_Insert_HookCanWriteCompanionRow exercises the canonical
+// path for a hook side effect: the hook calls into an infra-layer
+// adapter (here inlined as a helper for test concision) that recovers
+// the underlying pgx.Tx via UnwrapPgxTx and owns the SQL. The
+// application/hook surface stays SQL-free; only infra/ pronounces the
+// table name.
 func TestPostgres_Insert_HookCanWriteCompanionRow(t *testing.T) {
 	pg, cleanup := newTestPG(t)
 	defer cleanup()
 	createFlatPersonsTable(t, pg)
 	createTable(t, pg, `CREATE TABLE companion (id UUID, note TEXT)`)
 
+	// insertCompanion stands in for an infra-layer port adapter — the
+	// shape services adopt to write extra rows from inside a hook.
+	insertCompanion := func(tx persistence.TxHandle, id domain.ID, note string) error {
+		pgxTx := UnwrapPgxTx(tx)
+		_, err := pgxTx.Exec(context.Background(), `INSERT INTO companion (id, note) VALUES ($1, $2)`, id.Value(), note)
+		return err
+	}
+
 	ins, _ := domain.GetInsertable(&flatPerson{Name: "alice", Email: "a@x"}, nil, "GetInsertable")
 	hook := buildBeforeCommitHook(func(_ domain.Context, _ domain.Entity, id domain.ID, tx persistence.TxHandle) error {
-		_, err := tx.Exec(context.Background(), `INSERT INTO companion (id, note) VALUES ($1, $2)`, id.Value(), "added in hook")
-		return err
+		return insertCompanion(tx, id, "added in hook")
 	})
 	if _, err := pg.Insert(testCtx(), ins, nil, hook); err != nil {
 		t.Fatalf("Insert: %v", err)
@@ -484,10 +497,15 @@ func TestPostgres_HookPayload_ReceivesContextAndEntity(t *testing.T) {
 	}
 }
 
-// TestPostgres_HookPayload_TxHandleIsFunctional proves the TxHandle
-// closure actually maps onto the live pgx.Tx — Query / QueryRow /
-// Exec all reach the same transaction the framework opened.
-func TestPostgres_HookPayload_TxHandleIsFunctional(t *testing.T) {
+// TestPostgres_HookPayload_TxHandleUnwrapsToFrameworkTx proves that
+// UnwrapPgxTx, called from inside a hook closure, recovers the very
+// pgx.Tx the framework opened — Exec / Query / QueryRow on it all
+// participate in the same transaction as the framework's own data +
+// outbox + audit writes. This is the load-bearing claim of the
+// hook contract: a side effect routed through an infra adapter
+// (which is the only place authorized to call UnwrapPgxTx) commits
+// or rolls back atomically with the framework's writes.
+func TestPostgres_HookPayload_TxHandleUnwrapsToFrameworkTx(t *testing.T) {
 	pg, cleanup := newTestPG(t)
 	defer cleanup()
 	createFlatPersonsTable(t, pg)
@@ -495,10 +513,11 @@ func TestPostgres_HookPayload_TxHandleIsFunctional(t *testing.T) {
 
 	ins, _ := domain.GetInsertable(&flatPerson{Name: "alice", Email: "a@x"}, nil, "GetInsertable")
 	hook := buildBeforeCommitHook(func(_ domain.Context, _ domain.Entity, _ domain.ID, tx persistence.TxHandle) error {
-		if _, err := tx.Exec(context.Background(), `INSERT INTO tx_smoke (n) VALUES (1), (2), (3)`); err != nil {
+		pgxTx := UnwrapPgxTx(tx)
+		if _, err := pgxTx.Exec(context.Background(), `INSERT INTO tx_smoke (n) VALUES (1), (2), (3)`); err != nil {
 			return err
 		}
-		rows, err := tx.Query(context.Background(), `SELECT n FROM tx_smoke ORDER BY n`)
+		rows, err := pgxTx.Query(context.Background(), `SELECT n FROM tx_smoke ORDER BY n`)
 		if err != nil {
 			return err
 		}
@@ -515,7 +534,7 @@ func TestPostgres_HookPayload_TxHandleIsFunctional(t *testing.T) {
 			return err
 		}
 		var single int
-		if err := tx.QueryRow(context.Background(), `SELECT n FROM tx_smoke WHERE n = 2`).Scan(&single); err != nil {
+		if err := pgxTx.QueryRow(context.Background(), `SELECT n FROM tx_smoke WHERE n = 2`).Scan(&single); err != nil {
 			return err
 		}
 		if single != 2 {
@@ -527,6 +546,6 @@ func TestPostgres_HookPayload_TxHandleIsFunctional(t *testing.T) {
 		t.Fatalf("Insert: %v", err)
 	}
 	if rowCount(t, pg, "tx_smoke") != 3 {
-		t.Errorf("expected 3 rows from hook Exec")
+		t.Errorf("expected 3 rows from hook Exec routed via UnwrapPgxTx")
 	}
 }

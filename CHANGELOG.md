@@ -13,11 +13,37 @@ with `1.0.0`.
 
 ### Added
 
+- `infra.UnwrapPgxTx(persistence.TxHandle) pgx.Tx` — the single authorized
+  bridge from the opaque `persistence.TxHandle` token to the underlying
+  `pgx.Tx`. Lives in `infra/` so only adapters in that layer can call it;
+  panics with a descriptive diagnostic on a foreign `TxHandle`
+  implementation. Infra-layer port adapters now use this helper to recover
+  the live transaction and execute SQL on behalf of an application-layer
+  port whose method receives a `TxHandle`.
+
 ### Changed
+
+- **`persistence.TxHandle` is now a sealed marker** with no public methods.
+  Application code receives the handle and threads it to a port; the port's
+  adapter in `infra/` calls `UnwrapPgxTx` to obtain the `pgx.Tx`. The
+  sealing method on the interface is unexported, so only the framework's
+  own `infra/pgxTxHandle` satisfies it. Removes a code path where the
+  application layer could pronounce SQL via the handle's previous
+  `Exec` / `Query` / `QueryRow` surface — the new shape makes "application
+  is SQL-free" a type-system guarantee instead of a documentation rule.
 
 ### Deprecated
 
 ### Removed
+
+- `persistence.TxHandle.Exec` / `Query` / `QueryRow` methods — replaced by
+  the sealed-marker shape above. Hooks that need an in-TX side effect now
+  declare a port in `application/` (or `domain/`) and implement the SQL in
+  an `infra/` adapter that calls `UnwrapPgxTx`.
+- `persistence.CommandTag`, `persistence.Rows`, `persistence.Row` types —
+  removed alongside the SQL methods they served. Adapters that need
+  command-tag / iterator / single-row semantics consume the corresponding
+  `pgx` / `pgconn` types directly through the unwrapped `pgx.Tx`.
 
 ### Fixed
 

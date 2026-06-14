@@ -4,9 +4,14 @@
 // The package carries three families of declarations consumed across the
 // stack:
 //
-//   - TxHandle / CommandTag / Rows / Row — minimal in-TX surface exposed to
-//     in-TX lifecycle hooks. Application code never imports pgx; infra/
-//     wraps *pgx.Tx behind these interfaces.
+//   - TxHandle — sealed marker handed to in-TX lifecycle hooks. The
+//     hook never reads SQL through it: TxHandle exposes no public
+//     methods, only a private sealing method that pins the implementation
+//     to the framework's infra adapter. Application code receives the
+//     handle and threads it to a port; the port's adapter in infra/
+//     unwraps the underlying pgx.Tx via infra.UnwrapPgxTx and owns the
+//     SQL + table name. Sealing the interface prevents any code path
+//     where the application layer writes SQL.
 //   - AfterBeginHook[T] / BeforeCommitHook[T] — function types declaring the
 //     hook shape. Slot semantics: afterBegin fires INSIDE the TX before any
 //     framework write; beforeCommit fires INSIDE the TX after all framework
@@ -31,60 +36,46 @@
 //     application/persistence imports into the domain.
 package persistence
 
-import (
-	"context"
-)
-
-// TxHandle is the minimal in-TX surface exposed to lifecycle hooks. The
-// concrete implementation lives in infra/ wrapping *pgx.Tx; application
-// code never imports pgx.
+// TxHandle is the sealed marker handed to in-TX lifecycle hooks. The
+// interface intentionally carries no public methods — application code
+// cannot read or write through it directly. The canonical shape for an
+// in-TX side effect is:
 //
-// The surface is intentionally narrow:
+//  1. Declare a port in application/ (or domain/) — a pure Go interface
+//     whose method receives a persistence.TxHandle parameter.
+//  2. Implement the port in infra/ — the adapter calls
+//     infra.UnwrapPgxTx(tx) to recover the underlying pgx.Tx and owns
+//     the SQL + table name.
+//  3. Inject the port on the Cmd (constructor / wire) and call it from
+//     the hook closure. The framework's TX is honored end to end; the
+//     application layer never pronounces SQL.
 //
-//   - Exec / Query / QueryRow cover the canonical "write companion rows or
-//     read state inside the framework's TX" use cases (extra outbox row,
-//     denormalization, cross-table lookup).
-//   - Begin / Commit / Rollback are absent — the TX lifecycle is the
-//     framework's, not the hook's.
-//   - CopyFrom / SendBatch / Prepare / LargeObjects are absent — advanced
-//     features graduate to manual handlers that own their own TX.
+// The sealing method (txHandle) is unexported, so only types embedding
+// SealedTxHandle (declared in this same package) satisfy the interface.
+// The framework's own infra/pgxTxHandle embeds SealedTxHandle to inherit
+// the method via promotion — a Go-idiomatic seal that prevents foreign
+// implementations without forcing the concrete adapter to live in this
+// package (the adapter imports pgx, which application/ must not).
 //
-// Consumers own the iterator: defer rows.Close() is the convention.
-//
-// Errors returned by Exec / Query / QueryRow are raw pgx errors —
-// constraint-name mapping (infra.ConstraintBinding) lives at the
-// Repository level and is intentionally NOT applied at this surface. A
-// hook that wants "constraint X → typed notification" inspects the pgError
-// and returns the typed notification explicitly via
-// infra.SingleNotificationError or similar.
+// Any future transport (a Mongo-aware TxHandle, an in-memory test handle)
+// plugs in by embedding SealedTxHandle on its own adapter struct — the
+// application contract stays unchanged.
 type TxHandle interface {
-	Exec(ctx context.Context, sql string, args ...any) (CommandTag, error)
-	Query(ctx context.Context, sql string, args ...any) (Rows, error)
-	QueryRow(ctx context.Context, sql string, args ...any) Row
+	// txHandle is the sealing method. Unexported on purpose: only types
+	// embedding SealedTxHandle (defined in this package) satisfy it.
+	txHandle()
 }
 
-// CommandTag is the framework-flat equivalent of pgconn.CommandTag.
-// Carries only RowsAffected because that is the single field hooks
-// actually consume; the rest of the pgx tag (sql verb, OID) belongs to
-// the driver, not the hook contract.
-type CommandTag struct {
-	RowsAffected int64
-}
+// SealedTxHandle is the embed token framework adapters use to satisfy
+// TxHandle. The unexported sealing method is defined here so that any
+// type embedding SealedTxHandle inherits it via promotion — Go's
+// canonical "package-private interface satisfier" pattern. Callers
+// outside the framework cannot embed this type into a TxHandle of their
+// own without also writing an infra-layer adapter, by convention; the
+// type exists to keep the seal mechanical, not to be a public surface.
+type SealedTxHandle struct{}
 
-// Rows mirrors the read-only subset of pgx.Rows the framework permits
-// hooks to consume. Close() is mandatory — the wrapper is a Go iterator
-// over the framework's TX and forgetting to close it leaks the underlying
-// rows handle until GC.
-type Rows interface {
-	Next() bool
-	Scan(dest ...any) error
-	Err() error
-	Close()
-}
-
-// Row mirrors pgx.Row. Scan is the only method — when the query
-// represents at most one row, the QueryRow path returns this directly so
-// hooks can call .Scan on the result without juggling iteration.
-type Row interface {
-	Scan(dest ...any) error
-}
+// txHandle satisfies the TxHandle marker. The method is intentionally a
+// no-op; its existence is the proof that an embedding type is a
+// framework-issued TxHandle.
+func (SealedTxHandle) txHandle() {}
