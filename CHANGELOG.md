@@ -38,6 +38,17 @@ with `1.0.0`.
 
   Consumer services must upgrade in lock-step after the framework tag is cut.
 
+- **Bump `github.com/jackc/pgx/v5` from v5.9.2 to v5.10.0.** No breaking
+  changes. Brings security hardening (cap server-supplied SCRAM iteration
+  count, bound binary decoders against malicious server input,
+  `CancelRequest` over TLS when primary connection used TLS), a few opt-in
+  features (`require_auth` to restrict accepted auth methods,
+  `ParseConfigOptions.ConnStringAllowedKeys`, `StructArgs` /
+  `StrictStructArgs` for `@`-named queries, `pgxpool` expiration check
+  before acquire, `ErrConnClosed` sentinel), and several fixes
+  (`"char"` OID 18 binary scanning, typed-nil `driver.Valuer` in array /
+  composite codecs, race on context cancellation).
+
 ### Removed
 
 - **`web.CORS(origins ...string)`** — removed. Services and bootstrap call
