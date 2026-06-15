@@ -11,6 +11,21 @@ with `1.0.0`.
 
 ## [Unreleased]
 
+### Changed
+
+- **Documentation: outbound HTTP error handling pattern.** New `Outbound error
+  handling` subsection under `httpclient — outbound HTTP` in `DOCS.html`
+  documents the canonical translation path for `*HttpError` returned by
+  `httpclient.Call`: handlers wrap the failure with a service-defined
+  notification via `exception.SingleNotificationError` /
+  `exception.FieldErrorWithCause` (or `infra.FieldErrorWithCause` when the
+  mapping lives inside the adapter). Untranslated failures keep falling through
+  `pipeline.Run` to the canonical 500 `InternalServerErrorNotification`
+  envelope — by design, since only the consumer knows the domain semantic of an
+  upstream error. No runtime change; clarifies an existing surface and
+  discourages per-service `respondWithError` helpers that duplicate the
+  framework's canonical envelope.
+
 ## [0.5.0] - 2026-06-15
 
 ### Changed
