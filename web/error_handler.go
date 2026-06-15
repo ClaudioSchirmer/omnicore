@@ -6,7 +6,7 @@ import (
 	"github.com/ClaudioSchirmer/omnicore/application/notifications"
 	"github.com/ClaudioSchirmer/omnicore/application/pipeline"
 	"github.com/ClaudioSchirmer/omnicore/domain"
-	"github.com/gofiber/fiber/v2"
+	"github.com/gofiber/fiber/v3"
 )
 
 // ErrorHandler returns a fiber.ErrorHandler that funnels every error escaping
@@ -48,7 +48,7 @@ import (
 //	    ErrorHandler: fwweb.ErrorHandler(deps.Pipeline),
 //	})
 func ErrorHandler(pipe *pipeline.Pipeline) fiber.ErrorHandler {
-	return func(c *fiber.Ctx, err error) error {
+	return func(c fiber.Ctx, err error) error {
 		if err == nil {
 			return nil
 		}
@@ -78,14 +78,14 @@ func ErrorHandler(pipe *pipeline.Pipeline) fiber.ErrorHandler {
 // (so Accept-Language is honored) and emits the canonical envelope. Status
 // derives from the messages' Semantic, falling back to 422 when every
 // message is validation-flavored.
-func respondCarrier(c *fiber.Ctx, pipe *pipeline.Pipeline, carrier domain.NotificationCarrier) error {
+func respondCarrier(c fiber.Ctx, pipe *pipeline.Pipeline, carrier domain.NotificationCarrier) error {
 	dtos := notifications.ToContextDTOs(pipe.Translator(), AppContext(c).Language(), carrier.NotificationContexts())
 	return Respond(c, ResponseFromContextDTOs(dtos, statusFromNotifications(dtos), ""))
 }
 
 // respondRouteNotFound emits a single RouteNotFoundNotification carrying
 // "METHOD /path" as FieldName. SemanticNotFound maps to 404.
-func respondRouteNotFound(c *fiber.Ctx, pipe *pipeline.Pipeline) error {
+func respondRouteNotFound(c fiber.Ctx, pipe *pipeline.Pipeline) error {
 	ctx := domain.NewNotificationContext("Route")
 	ctx.AddNotificationMessage(domain.NotificationMessage{
 		FieldName:    c.Method() + " " + c.Path(),
@@ -96,7 +96,7 @@ func respondRouteNotFound(c *fiber.Ctx, pipe *pipeline.Pipeline) error {
 
 // respondMethodNotAllowed emits a single MethodNotAllowedNotification carrying
 // "METHOD /path" as FieldName. SemanticMethodNotAllowed maps to 405.
-func respondMethodNotAllowed(c *fiber.Ctx, pipe *pipeline.Pipeline) error {
+func respondMethodNotAllowed(c fiber.Ctx, pipe *pipeline.Pipeline) error {
 	ctx := domain.NewNotificationContext("Route")
 	ctx.AddNotificationMessage(domain.NotificationMessage{
 		FieldName:    c.Method() + " " + c.Path(),
@@ -107,7 +107,7 @@ func respondMethodNotAllowed(c *fiber.Ctx, pipe *pipeline.Pipeline) error {
 
 // respondPayloadTooLarge emits a single PayloadTooLargeNotification carrying
 // "METHOD /path" as FieldName. SemanticPayloadTooLarge maps to 413.
-func respondPayloadTooLarge(c *fiber.Ctx, pipe *pipeline.Pipeline) error {
+func respondPayloadTooLarge(c fiber.Ctx, pipe *pipeline.Pipeline) error {
 	ctx := domain.NewNotificationContext("Request")
 	ctx.AddNotificationMessage(domain.NotificationMessage{
 		FieldName:    c.Method() + " " + c.Path(),
@@ -120,7 +120,7 @@ func respondPayloadTooLarge(c *fiber.Ctx, pipe *pipeline.Pipeline) error {
 // SemanticInternal maps to 500. The wire envelope deliberately carries no
 // field, no value, no description of the underlying cause — the panic value
 // and stack trace are logged by fwweb.Recover() before reaching this point.
-func respondInternalError(c *fiber.Ctx, pipe *pipeline.Pipeline) error {
+func respondInternalError(c fiber.Ctx, pipe *pipeline.Pipeline) error {
 	ctx := domain.NewNotificationContext("Server")
 	ctx.AddNotificationMessage(domain.NotificationMessage{
 		Notification: notifications.InternalServerErrorNotification{},
@@ -131,7 +131,7 @@ func respondInternalError(c *fiber.Ctx, pipe *pipeline.Pipeline) error {
 // respondViaPipeline routes the synthetic NotificationContext through
 // pipeline.Run so the messages are translated against AppContext.Language()
 // before serialization — same path RespondFromResult uses on Failure.
-func respondViaPipeline(c *fiber.Ctx, pipe *pipeline.Pipeline, ctx *domain.NotificationContext) error {
+func respondViaPipeline(c fiber.Ctx, pipe *pipeline.Pipeline, ctx *domain.NotificationContext) error {
 	derr := domain.NewDomainError([]*domain.NotificationContext{ctx})
 	result := pipeline.Run(pipe, AppContext(c), func() (struct{}, error) {
 		return struct{}{}, derr

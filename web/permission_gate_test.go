@@ -8,7 +8,7 @@ import (
 
 	"github.com/ClaudioSchirmer/omnicore/application/configuration"
 	"github.com/ClaudioSchirmer/omnicore/application/translation"
-	"github.com/gofiber/fiber/v2"
+	"github.com/gofiber/fiber/v3"
 )
 
 func newTestApp() *fiber.App {
@@ -29,7 +29,7 @@ func withAuthzEnabled(t *testing.T) {
 }
 
 func attachIdentity(perms ...string) fiber.Handler {
-	return func(c *fiber.Ctx) error {
+	return func(c fiber.Ctx) error {
 		AppContext(c).SetIdentity(&configuration.Identity{
 			Subject: "tester",
 			Claims:  map[string]any{"permissions": perms},
@@ -43,7 +43,7 @@ func TestPermissionGate_PassesWhenIdentityHasPermission(t *testing.T) {
 	gate := PermissionGate(translation.Default())
 	app := newTestApp()
 	app.Use(attachIdentity("users:read"))
-	app.Get("/x", gate(func(c *fiber.Ctx) error {
+	app.Get("/x", gate(func(c fiber.Ctx) error {
 		return c.SendStatus(204)
 	}, "users:read"))
 
@@ -61,7 +61,7 @@ func TestPermissionGate_BlocksWhenIdentityMissingPermission(t *testing.T) {
 	gate := PermissionGate(translation.Default())
 	app := newTestApp()
 	app.Use(attachIdentity("users:read"))
-	app.Get("/x", gate(func(c *fiber.Ctx) error {
+	app.Get("/x", gate(func(c fiber.Ctx) error {
 		t.Fatal("handler must not be invoked when permission is missing")
 		return nil
 	}, "users:write"))
@@ -108,7 +108,7 @@ func TestPermissionGate_BlocksWhenNoIdentity(t *testing.T) {
 	gate := PermissionGate(translation.Default())
 	app := newTestApp()
 	// no attachIdentity middleware — Identity stays nil
-	app.Get("/x", gate(func(c *fiber.Ctx) error {
+	app.Get("/x", gate(func(c fiber.Ctx) error {
 		t.Fatal("handler must not run when Identity is nil")
 		return nil
 	}, "users:read"))
@@ -127,7 +127,7 @@ func TestPermissionGate_HonorsAcceptLanguageHeader(t *testing.T) {
 	gate := PermissionGate(translation.Default())
 	app := newTestApp()
 	app.Use(attachIdentity("users:read"))
-	app.Get("/x", gate(func(c *fiber.Ctx) error {
+	app.Get("/x", gate(func(c fiber.Ctx) error {
 		return c.SendStatus(204)
 	}, "users:write"))
 
@@ -161,7 +161,7 @@ func TestPermissionGate_NoOpsWhenAuthorizationDisabled(t *testing.T) {
 	// no identity at all — would normally trigger 403; with authz off,
 	// gate must pass through to the handler.
 	called := false
-	app.Get("/x", gate(func(c *fiber.Ctx) error {
+	app.Get("/x", gate(func(c fiber.Ctx) error {
 		called = true
 		return c.SendStatus(204)
 	}, "users:write"))
@@ -183,7 +183,7 @@ func TestPermissionGate_NilTranslatorFallsBackToEnglish(t *testing.T) {
 	gate := PermissionGate(nil)
 	app := newTestApp()
 	app.Use(attachIdentity("users:read"))
-	app.Get("/x", gate(func(c *fiber.Ctx) error { return c.SendStatus(204) }, "users:write"))
+	app.Get("/x", gate(func(c fiber.Ctx) error { return c.SendStatus(204) }, "users:write"))
 
 	resp, err := app.Test(httptest.NewRequest(fiber.MethodGet, "/x", nil))
 	if err != nil {

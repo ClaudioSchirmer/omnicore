@@ -11,7 +11,7 @@ import (
 	"github.com/ClaudioSchirmer/omnicore/application/pipeline"
 	"github.com/ClaudioSchirmer/omnicore/application/queries"
 	"github.com/ClaudioSchirmer/omnicore/web/responses"
-	"github.com/gofiber/fiber/v2"
+	"github.com/gofiber/fiber/v3"
 )
 
 // testFindParamsRequest declares an allowlist for the params endpoint:
@@ -447,7 +447,7 @@ func TestParseCriteria_HappyPath(t *testing.T) {
 	var got queries.ReadCriteria
 	var gotBad string
 	var gotOK bool
-	app.Get("/x", func(c *fiber.Ctx) error {
+	app.Get("/x", func(c fiber.Ctx) error {
 		got, gotBad, gotOK = ParseCriteria(c, testFindParamsRequest{})
 		return c.SendStatus(fiber.StatusOK)
 	})
@@ -471,7 +471,7 @@ func TestParseCriteria_UnknownKey(t *testing.T) {
 	app := fiber.New()
 	var gotBad string
 	var gotOK bool
-	app.Get("/x", func(c *fiber.Ctx) error {
+	app.Get("/x", func(c fiber.Ctx) error {
 		_, gotBad, gotOK = ParseCriteria(c, testFindParamsRequest{})
 		return c.SendStatus(fiber.StatusOK)
 	})
@@ -489,7 +489,7 @@ func TestParseCriteria_BadOperator(t *testing.T) {
 	app := fiber.New()
 	var gotBad string
 	var gotOK bool
-	app.Get("/x", func(c *fiber.Ctx) error {
+	app.Get("/x", func(c fiber.Ctx) error {
 		_, gotBad, gotOK = ParseCriteria(c, testFindParamsRequest{})
 		return c.SendStatus(fiber.StatusOK)
 	})
@@ -507,7 +507,7 @@ func TestParseCriteria_BadOperator(t *testing.T) {
 func TestRespondSchemaViolation_EmitsCanonical400(t *testing.T) {
 	app := fiber.New()
 	pipe := newTestPipeline()
-	app.Get("/x", func(c *fiber.Ctx) error {
+	app.Get("/x", func(c fiber.Ctx) error {
 		return RespondSchemaViolation(c, pipe, "tenant")
 	})
 
@@ -577,7 +577,7 @@ func TestProjectPage_AppliesProjectorPerDoc(t *testing.T) {
 
 func TestRespondPaged_EmitsEnvelope(t *testing.T) {
 	app := fiber.New()
-	app.Get("/x", func(c *fiber.Ctx) error {
+	app.Get("/x", func(c fiber.Ctx) error {
 		page := queries.Page{
 			Items:   []map[string]any{{"id": "1", "name": "A"}},
 			HasNext: false,
@@ -791,7 +791,7 @@ func TestSortParam_PassThroughModeOnParseCriteria(t *testing.T) {
 	// doc shape and assembled its own wire→doc mapping upstream).
 	app := fiber.New()
 	var got queries.ReadCriteria
-	app.Get("/x", func(c *fiber.Ctx) error {
+	app.Get("/x", func(c fiber.Ctx) error {
 		got, _, _ = ParseCriteria(c, testFindParamsRequest{})
 		return c.SendStatus(fiber.StatusOK)
 	})

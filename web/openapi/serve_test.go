@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/gofiber/fiber/v2"
+	"github.com/gofiber/fiber/v3"
 )
 
 type serveSampleResponse struct {
@@ -19,7 +19,7 @@ func TestRegister_OpenAPIJsonReturnsValidSpec(t *testing.T) {
 	app := fiber.New()
 	reg := NewRegistry()
 	Mount(reg, app, fiber.MethodGet, "/users",
-		func(c *fiber.Ctx) error { return c.SendStatus(200) },
+		func(c fiber.Ctx) error { return c.SendStatus(200) },
 		RouteSpec{
 			ResponseType:  reflect.TypeOf(serveSampleResponse{}),
 			SuccessStatus: 200,

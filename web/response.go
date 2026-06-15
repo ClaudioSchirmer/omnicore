@@ -5,7 +5,7 @@ import (
 
 	"github.com/ClaudioSchirmer/omnicore/application/notifications"
 	"github.com/ClaudioSchirmer/omnicore/domain"
-	"github.com/gofiber/fiber/v2"
+	"github.com/gofiber/fiber/v3"
 )
 
 type Response struct {
@@ -64,11 +64,11 @@ type ErrorMessage struct {
 	Semantic string `json:"semantic,omitempty"`
 }
 
-func Respond(c *fiber.Ctx, resp Response) error {
+func Respond(c fiber.Ctx, resp Response) error {
 	return c.Status(resp.Status).JSON(resp)
 }
 
-func RespondWithSuccess(c *fiber.Ctx, status int, data any) error {
+func RespondWithSuccess(c fiber.Ctx, status int, data any) error {
 	return Respond(c, Response{
 		Success:     true,
 		Status:      status,
@@ -77,7 +77,7 @@ func RespondWithSuccess(c *fiber.Ctx, status int, data any) error {
 	})
 }
 
-func RespondWithStatus(c *fiber.Ctx, status int) error {
+func RespondWithStatus(c fiber.Ctx, status int) error {
 	return Respond(c, Response{
 		Success:     status >= 200 && status < 400,
 		Status:      status,
@@ -85,19 +85,19 @@ func RespondWithStatus(c *fiber.Ctx, status int) error {
 	})
 }
 
-func RespondWithBadRequest(c *fiber.Ctx) error {
+func RespondWithBadRequest(c fiber.Ctx) error {
 	return RespondWithStatus(c, fiber.StatusBadRequest)
 }
 
-func RespondWithUnauthorized(c *fiber.Ctx) error {
+func RespondWithUnauthorized(c fiber.Ctx) error {
 	return RespondWithStatus(c, fiber.StatusUnauthorized)
 }
 
-func RespondWithForbidden(c *fiber.Ctx) error {
+func RespondWithForbidden(c fiber.Ctx) error {
 	return RespondWithStatus(c, fiber.StatusForbidden)
 }
 
-func RespondWithNotFound(c *fiber.Ctx) error {
+func RespondWithNotFound(c fiber.Ctx) error {
 	return RespondWithStatus(c, fiber.StatusNotFound)
 }
 
@@ -115,7 +115,7 @@ func RespondWithNotFound(c *fiber.Ctx) error {
 // (RWMutex + map lookup); the original fear of the error-response path
 // cascading a handler panic was overly defensive — the lookup is at most a
 // no-op fallback.
-func RespondWithInternalServerError(c *fiber.Ctx) error {
+func RespondWithInternalServerError(c fiber.Ctx) error {
 	n := notifications.InternalServerErrorNotification{}
 	msg := "Internal server error."
 	if tr := registeredTranslator(); tr != nil {

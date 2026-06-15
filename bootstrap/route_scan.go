@@ -5,7 +5,7 @@ import (
 	"strings"
 
 	"github.com/ClaudioSchirmer/omnicore/web/openapi"
-	"github.com/gofiber/fiber/v2"
+	"github.com/gofiber/fiber/v3"
 )
 
 // scanAuthorization enforces "every non-public route declares

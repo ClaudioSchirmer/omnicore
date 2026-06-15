@@ -21,7 +21,8 @@ import (
 	fwweb "github.com/ClaudioSchirmer/omnicore/web"
 	"github.com/ClaudioSchirmer/omnicore/web/openapi"
 
-	"github.com/gofiber/fiber/v2"
+	"github.com/gofiber/fiber/v3"
+	"github.com/gofiber/fiber/v3/middleware/logger"
 )
 
 // shutdownTimeout is the Fiber drain duration. Constant for simplicity.
@@ -292,13 +293,12 @@ func buildApp(deps Deps, wiring Wiring) (*fiber.App, error) {
 		deps.Config.Auth.Authorization.Enabled)
 
 	app := fiber.New(fiber.Config{
-		AppName:               deps.Config.Service,
-		DisableStartupMessage: true,
-		ErrorHandler:          fwweb.ErrorHandler(deps.Pipeline),
+		AppName:      deps.Config.Service,
+		ErrorHandler: fwweb.ErrorHandler(deps.Pipeline),
 	})
 
 	app.Use(fwweb.Recover())
-	app.Use(fwweb.Logger())
+	app.Use(logger.New())
 	app.Use(fwweb.AppContextMiddleware())
 
 	uiPath := deps.Config.OpenAPI.UIPath
@@ -330,7 +330,7 @@ func buildApp(deps Deps, wiring Wiring) (*fiber.App, error) {
 	}
 
 	openapi.MountRaw(deps.OpenAPIRegistry, app, fiber.MethodGet, "/health",
-		func(c *fiber.Ctx) error {
+		func(c fiber.Ctx) error {
 			return c.JSON(fiber.Map{"status": "ok"})
 		},
 		openapi.RawSpec{
@@ -425,8 +425,8 @@ func registerRootRedirect(app *fiber.App, uiPath string, logger *slog.Logger) {
 			return
 		}
 	}
-	app.Get("/", func(c *fiber.Ctx) error {
-		return c.Redirect(uiPath, fiber.StatusFound)
+	app.Get("/", func(c fiber.Ctx) error {
+		return c.Redirect().Status(fiber.StatusFound).To(uiPath)
 	})
 	logger.Info("openapi root redirect enabled", "from", "/", "to", uiPath)
 }
@@ -484,7 +484,9 @@ func serve(ctx context.Context, deps Deps, wiring Wiring) error {
 
 	errCh := make(chan error, 1)
 	go func() {
-		if err := app.Listen(deps.Config.HTTP.Addr); err != nil {
+		if err := app.Listen(deps.Config.HTTP.Addr, fiber.ListenConfig{
+			DisableStartupMessage: true,
+		}); err != nil {
 			errCh <- err
 		}
 	}()

@@ -11,7 +11,7 @@ import (
 	"github.com/ClaudioSchirmer/omnicore/application/queries"
 	"github.com/ClaudioSchirmer/omnicore/application/translation"
 	"github.com/ClaudioSchirmer/omnicore/web/responses"
-	"github.com/gofiber/fiber/v2"
+	"github.com/gofiber/fiber/v3"
 )
 
 // pagFindRequest opts into the full pagination control surface — both `after`

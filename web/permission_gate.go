@@ -7,7 +7,7 @@ import (
 	"github.com/ClaudioSchirmer/omnicore/application/translation"
 	"github.com/ClaudioSchirmer/omnicore/domain"
 	"github.com/ClaudioSchirmer/omnicore/web/openapi"
-	"github.com/gofiber/fiber/v2"
+	"github.com/gofiber/fiber/v3"
 )
 
 // PermissionGate produces the openapi.Gate the framework registers via
@@ -26,7 +26,7 @@ import (
 // the same two lines themselves.
 func PermissionGate(tr *translation.Translator) openapi.Gate {
 	return func(handler fiber.Handler, permission string) fiber.Handler {
-		return func(c *fiber.Ctx) error {
+		return func(c fiber.Ctx) error {
 			if !authorizationEnabled() {
 				// Master switch off — the spec still carries the
 				// RequiredPermission entry (consumers see the intended
@@ -49,7 +49,7 @@ func PermissionGate(tr *translation.Translator) openapi.Gate {
 // MissingPermissionNotification, field "permission", value = the declared
 // permission string). Translates the message manually via the Translator
 // since the gate has no Pipeline to route through.
-func respondMissingPermission(c *fiber.Ctx, tr *translation.Translator, permission string) error {
+func respondMissingPermission(c fiber.Ctx, tr *translation.Translator, permission string) error {
 	n := notifications.MissingPermissionNotification{}
 	key := domain.NotificationKey(n)
 	msg := "Missing required permission." // English default — matches eng.go catalog

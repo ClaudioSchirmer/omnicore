@@ -3,7 +3,7 @@ package openapi
 import (
 	"sync"
 
-	"github.com/gofiber/fiber/v2"
+	"github.com/gofiber/fiber/v3"
 )
 
 // Gate is the callback the framework registers at boot so Mount / MountRaw

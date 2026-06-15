@@ -7,7 +7,7 @@ import (
 	"sync"
 
 	"github.com/ClaudioSchirmer/omnicore/domain"
-	"github.com/gofiber/fiber/v2"
+	"github.com/gofiber/fiber/v3"
 	"github.com/google/uuid"
 )
 
@@ -158,7 +158,7 @@ func classifyPathFieldType(ft reflect.Type) (pathFieldKind, int, string) {
 // to RespondSchemaViolation); returns ("", true) on success or empty schema.
 // req must be addressable — wrappers pass &req via reflect.ValueOf which
 // the caller already prepared.
-func applyPathBinding(c *fiber.Ctx, schema *pathSchema, reqVal reflect.Value) (string, bool) {
+func applyPathBinding(c fiber.Ctx, schema *pathSchema, reqVal reflect.Value) (string, bool) {
 	if schema == nil || len(schema.fields) == 0 {
 		return "", true
 	}
@@ -262,7 +262,7 @@ func formatPathBootError(t reflect.Type, f reflect.StructField, reason string) s
 // Same cached pathSchema the wrapper uses; mirrors fwweb.ParseCriteria and
 // fwweb.RespondPaged — manual handlers chain BindPath → ParseCriteria →
 // ToCommand/ToQuery → Dispatch.
-func BindPath(c *fiber.Ctx, req any) (string, bool) {
+func BindPath(c fiber.Ctx, req any) (string, bool) {
 	if req == nil {
 		return "", true
 	}

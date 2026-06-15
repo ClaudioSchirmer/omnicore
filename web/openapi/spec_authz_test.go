@@ -4,7 +4,7 @@ import (
 	"reflect"
 	"testing"
 
-	"github.com/gofiber/fiber/v2"
+	"github.com/gofiber/fiber/v3"
 )
 
 type authzSampleResponse struct {
@@ -25,18 +25,18 @@ func authzRegistry(t *testing.T) *Registry {
 	app := fiber.New()
 
 	Mount(reg, app, fiber.MethodPost, "/protected/gated",
-		func(c *fiber.Ctx) error { return nil },
+		func(c fiber.Ctx) error { return nil },
 		RouteSpec{ResponseType: reflect.TypeOf(authzSampleResponse{}), SuccessStatus: 201},
 		Doc{Summary: "Gated route", Description: "Already-existing prose."},
 		RequirePermission("users:write"))
 
 	Mount(reg, app, fiber.MethodGet, "/protected/loose",
-		func(c *fiber.Ctx) error { return nil },
+		func(c fiber.Ctx) error { return nil },
 		RouteSpec{ResponseType: reflect.TypeOf(authzSampleResponse{}), SuccessStatus: 200},
 		Doc{Summary: "Layer-2-only route"})
 
 	Mount(reg, app, fiber.MethodGet, "/public",
-		func(c *fiber.Ctx) error { return nil },
+		func(c fiber.Ctx) error { return nil },
 		RouteSpec{ResponseType: reflect.TypeOf(authzSampleResponse{}), SuccessStatus: 200},
 		Doc{Summary: "Public", Public: true})
 
@@ -151,7 +151,7 @@ func TestSpec_DescriptionSuffix_RawRoute_Gated(t *testing.T) {
 	reg := NewRegistry()
 	app := fiber.New()
 	MountRaw(reg, app, fiber.MethodGet, "/raw/gated",
-		func(c *fiber.Ctx) error { return nil },
+		func(c fiber.Ctx) error { return nil },
 		RawSpec{Summary: "Raw gated", Description: "Raw prose."},
 		RequirePermission("users:read"))
 

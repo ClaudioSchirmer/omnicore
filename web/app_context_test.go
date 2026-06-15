@@ -5,14 +5,14 @@ import (
 	"testing"
 
 	"github.com/ClaudioSchirmer/omnicore/application/configuration"
-	"github.com/gofiber/fiber/v2"
+	"github.com/gofiber/fiber/v3"
 	"github.com/google/uuid"
 )
 
 func TestAppContextMiddleware_NoHeaders_GeneratesUUID(t *testing.T) {
 	app := fiber.New()
 	app.Use(AppContextMiddleware())
-	app.Get("/test", func(c *fiber.Ctx) error {
+	app.Get("/test", func(c fiber.Ctx) error {
 		ctx := AppContext(c)
 		c.Set("Test-ID", ctx.ID().String())
 		return c.SendStatus(200)
@@ -40,7 +40,7 @@ func TestAppContextMiddleware_NoHeaders_GeneratesUUID(t *testing.T) {
 func TestAppContextMiddleware_ValidRequestIDPreserved(t *testing.T) {
 	app := fiber.New()
 	app.Use(AppContextMiddleware())
-	app.Get("/test", func(c *fiber.Ctx) error {
+	app.Get("/test", func(c fiber.Ctx) error {
 		ctx := AppContext(c)
 		c.Set("Test-ID", ctx.ID().String())
 		return c.SendStatus(200)
@@ -67,7 +67,7 @@ func TestAppContextMiddleware_ValidRequestIDPreserved(t *testing.T) {
 func TestAppContextMiddleware_InvalidRequestIDFallsBackToNew(t *testing.T) {
 	app := fiber.New()
 	app.Use(AppContextMiddleware())
-	app.Get("/test", func(c *fiber.Ctx) error { return c.SendStatus(200) })
+	app.Get("/test", func(c fiber.Ctx) error { return c.SendStatus(200) })
 
 	req := httptest.NewRequest("GET", "/test", nil)
 	req.Header.Set("X-Request-ID", "not-a-uuid")
@@ -107,7 +107,7 @@ func TestAppContextMiddleware_AcceptLanguage(t *testing.T) {
 			var got configuration.Language
 			app := fiber.New()
 			app.Use(AppContextMiddleware())
-			app.Get("/test", func(c *fiber.Ctx) error {
+			app.Get("/test", func(c fiber.Ctx) error {
 				got = AppContext(c).Language()
 				return c.SendStatus(200)
 			})
@@ -133,7 +133,7 @@ func TestAppContext_NoMiddlewareFallback(t *testing.T) {
 	var ctx *configuration.AppContext
 
 	app := fiber.New()
-	app.Get("/test", func(c *fiber.Ctx) error {
+	app.Get("/test", func(c fiber.Ctx) error {
 		ctx = AppContext(c)
 		return c.SendStatus(200)
 	})

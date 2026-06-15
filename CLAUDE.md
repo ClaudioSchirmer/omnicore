@@ -118,7 +118,7 @@ Go framework library providing **DDD + CQRS infrastructure** for microservices. 
 ## Stack
 
 - Go ≥ 1.21 required (uses `log/slog` and generics extensively); toolchain currently pinned to `go 1.26.3`
-- Fiber v2 (HTTP layer)
+- Fiber v3 (HTTP layer)
 - pgx v5 (PostgreSQL driver)
 - mongo-driver v2 (MongoDB)
 - segmentio/kafka-go (Kafka consumer)
@@ -682,13 +682,13 @@ Endpoints with body use `HandleCommandWithBody{,ID}` (consume `RequestDTO`); end
 
 1. Allocate `var req TReq`
 2. **Strict path** (handler embeds `pipeline.FullBody`): empty body, missing required field OR malformed JSON → **400** (not 422) with `RequiredFieldNotification`/`SchemaViolationNotification` carrying `SemanticSchema`, `context: "Schema"`.
-3. **BodyParser** populates `req`. Type mismatch (wrong-typed field) → 400 with `SchemaViolationNotification` carrying the field's JSON path (e.g. `"addresses[0].zipCode"`).
+3. **`c.Bind().Body(&req)`** populates `req`. Type mismatch (wrong-typed field) → 400 with `SchemaViolationNotification` carrying the field's JSON path (e.g. `"addresses[0].zipCode"`).
 4. `cmd := req.ToCommand()` produces the Command (in `application/commands/`).
 5. `cmd.SetPathID(c.Params("id"))` on the WithID variant.
 6. `Dispatch(pipe, AppContext(c), cmd, h)` → domain validates → 422 with notifications when applicable.
 7. On Success: `responseProjection(result.Value())` maps `TResult` → wire `TResp`; if the resulting wire shape is `responses.None`, the envelope is emitted with no `data` field; otherwise the success envelope carries `data: wire`. On Failure/Exception: `RespondFromResult` honors each notification's Semantic.
 
-**HandleCommandWithID** (reduced to no-body): just `new(T)` + `SetPathID` + `Dispatch` + response projection (same `respondWithProjection` helper as the body wrappers). Does not call BodyParser. Does not inspect FullBody. Used by Archive/Unarchive/Delete.
+**HandleCommandWithID** (reduced to no-body): just `new(T)` + `SetPathID` + `Dispatch` + response projection (same `respondWithProjection` helper as the body wrappers). Does not call `Bind().Body()`. Does not inspect FullBody. Used by Archive/Unarchive/Delete.
 
 **Sample TReq + `responseProjection` function value** anchor the generic inference — the consumer passes `requests.InsertUserRequest{}` and `requests.InsertUserResponse{}.FromResult` (a method value with signature `func(TResult) TResp`); Go infers TReq + TCmd + TCmdPtr + TResult + TResp from the sample, the projection function, and the handler. For endpoints with no projection, pass the framework's `fwresponses.NoBody` (a `func(fwresults.None) fwresponses.None`).
 
@@ -1106,9 +1106,9 @@ Canonical manual list shape (typed Response opting into `?fields=` / `?sort=`):
 // fields-side guard + sort-side slog.Warn + projection-schema build.
 listParser := fwweb.NewQueryParser[requests.FindXxxCustomRequest, requests.FindXxxCustomResponse]()
 
-g.Get("/", func(c *fiber.Ctx) error {
+g.Get("/", func(c fiber.Ctx) error {
     appCtx := fwweb.AppContext(c)
-    appCtx.SetParent(c.UserContext())
+    appCtx.SetParent(c)
 
     var req requests.FindXxxCustomRequest
     crit, badField, ok := listParser.Parse(c)
@@ -1130,9 +1130,9 @@ By-email lookup shape (`BindPath` chained before the parser):
 ```go
 byEmailParser := fwweb.NewQueryParser[requests.FindXxxByEmailRequest, requests.FindXxxByEmailResponse]()
 
-g.Get("/:email", func(c *fiber.Ctx) error {
+g.Get("/:email", func(c fiber.Ctx) error {
     appCtx := fwweb.AppContext(c)
-    appCtx.SetParent(c.UserContext())
+    appCtx.SetParent(c)
 
     var req requests.FindXxxByEmailRequest
     if badField, ok := fwweb.BindPath(c, &req); !ok {
@@ -1345,9 +1345,9 @@ func (h *CreateUserHandler) Handle(ctx *configuration.AppContext, cmd CreateUser
 }
 
 // HTTP route
-app.Post("/users", func(c *fiber.Ctx) error {
+app.Post("/users", func(c fiber.Ctx) error {
     var cmd CreateUserCommand
-    c.BodyParser(&cmd)
+    c.Bind().Body(&cmd)
     result := pipeline.Dispatch(pipe, appCtx(c), cmd, &CreateUserHandler{repo, auditor})
     return web.RespondFromResult(c, result, fiber.StatusCreated)
 })
@@ -1383,7 +1383,7 @@ Convention of nullable fields: nullable PG types map to **pointer types** in the
 - `application/queries/view_reader.go` — `ViewReader` port + `ReadCriteria` / `Page` transport-agnostic types
 - `application/queries/query_handler.go` — `QueryHandler.Read(ctx, view, criteria)` / `ReadByID(...)` — pure, returns `Page` / `map[string]any`
 - `infra/mongo_view_reader.go` — `MongoViewReader` implements `queries.ViewReader` against MongoDB
-- `web/query_parse.go` — `ParseReadCriteria(*fiber.Ctx) queries.ReadCriteria` translates HTTP query string into application criteria
+- `web/query_parse.go` — `ParseReadCriteria(fiber.Ctx) queries.ReadCriteria` translates HTTP query string into application criteria
 - `web/query_routes.go` — `QueryRouter` Fiber adapter
 
 ### Schema requirements for the read side
@@ -1660,7 +1660,7 @@ The Semantic enum is **transport-agnostic** — a future gRPC layer would map th
 | Fiber route wrapper — paged list GET | `fwweb.HandleQueryWithParams(pipe, requests.FindXxxRequest{}, fwresponses.AutoFromDoc[requests.FindXxxResponse], handler)`. The projector (third arg) is mandatory — `fwresponses.AutoFromDoc[R]` is the tag-driven default; pass `fwresponses.RawDoc` for raw view-doc passthrough, or a consumer-declared `R{}.FromDoc` method for custom projection logic. The Request DTO carries `query:"..." filter:"..."` tags that the wrapper consumes via reflection (cached by `reflect.Type`) for allowlist enforcement. |
 | Fiber route wrapper — by-id GET | `fwweb.HandleQueryWithID(pipe, requests.FindXxxByIDRequest{}, fwresponses.AutoFromDoc[requests.FindXxxByIDResponse], handler)`. Only `?includeArchived` recognized; any other query key produces 400. Same projector rules as the params wrapper. |
 | Manual query handler — validate query string against an allowlist DTO | Construct once at Mount: `parser := fwweb.NewQueryParser[ReqDTO, RespDTO]()` — runs the same boot scan `HandleQueryWithParams` runs (sparse-render guard when `?fields=` is opted in, slog.Warn for `?sort=` opt-in, wire→doc projection schema). Per request: `crit, badField, ok := parser.Parse(c); if !ok { return fwweb.RespondSchemaViolation(c, pipe, badField) }`. Use `fwweb.ParseCriteria(c, requestDTO)` instead when the Response is RawDoc (`map[string]any`) OR the Request does not opt into `?fields=` / `?sort=` — same reflection-based schema, but the projection schema is nil so reserved keys land in pass-through mode (no allowlist, no wire→doc translation, no `_id:0` auto-exclusion). |
-| Bind a URL segment to a Request field declaratively | Declare `path:"name"` on the field (any wrapper with a Request DTO populates it before `ToCommand`/`ToQuery`). On hand-rolled `fiber.Handler` closures, call `if badField, ok := fwweb.BindPath(c, &req); !ok { return fwweb.RespondSchemaViolation(c, pipe, badField) }` before `BodyParser` / `ParseCriteria`. Supported types: string, ints, uints, floats, bool, uuid.UUID, domain.ID. |
+| Bind a URL segment to a Request field declaratively | Declare `path:"name"` on the field (any wrapper with a Request DTO populates it before `ToCommand`/`ToQuery`). On hand-rolled `fiber.Handler` closures, call `if badField, ok := fwweb.BindPath(c, &req); !ok { return fwweb.RespondSchemaViolation(c, pipe, badField) }` before `Bind().Body()` / `ParseCriteria`. Supported types: string, ints, uints, floats, bool, uuid.UUID, domain.ID. |
 | Ensure an auto handler's path ID is populated | Either use a `:id`-canonical wrapper, set `cmd.SetPathID(r.SomeField)` in `ToCommand` (where `r.SomeField` is a `path:`-tagged field), or pull it from a non-path source (JWT subject, header). `handlers.RequirePathID` panics with diagnostics if empty at handler entry. |
 | Manual query handler — emit a paged envelope | `fwweb.RespondPaged(c, fiber.StatusOK, page, fwresponses.AutoFromDoc[ResponseDTO])` (one-liner with the tag-driven default) OR `items, pagination := fwweb.ProjectPage(page, fn); fwweb.Respond(c, fwweb.Response{Success: true, Data: items, Pagination: pagination, ...})` (build the envelope by hand when adding sidecar fields). |
 | Sparse responses on a paged GET endpoint (consumer picks a subset via `?fields=`) | declare `Fields *string \`query:"fields"\`` on the Request DTO + every field on the Response (recursively, including nested struct + slice element types) must be `*T` (or a slice/map) with `,omitempty`. `HandleQueryWithParams` boot guard panics with a path-by-path diagnostic on violation; runtime validates tokens against the Response's wire paths, translates wire→doc via `domain.PascalToSnake` (or `view:` override per segment), auto-adds `_id:0` when `id` is not in the requested list. Unknown tokens emit 400 `SchemaViolationNotification{field:"fields[<bad>]"}`. See "Sparse responses via `?fields=`" |

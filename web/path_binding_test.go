@@ -8,7 +8,7 @@ import (
 	"testing"
 
 	"github.com/ClaudioSchirmer/omnicore/domain"
-	"github.com/gofiber/fiber/v2"
+	"github.com/gofiber/fiber/v3"
 	"github.com/google/uuid"
 )
 
@@ -63,7 +63,7 @@ func TestBindPath_NoTags_IsNoop(t *testing.T) {
 	resetPathSchemaCache()
 	app := fiber.New()
 	var captured string
-	app.Get("/x/:id", func(c *fiber.Ctx) error {
+	app.Get("/x/:id", func(c fiber.Ctx) error {
 		var req emptyReq
 		bad, ok := BindPath(c, &req)
 		if !ok {
@@ -82,7 +82,7 @@ func TestBindPath_SingleSegmentString(t *testing.T) {
 	resetPathSchemaCache()
 	app := fiber.New()
 	var got string
-	app.Get("/users/:email", func(c *fiber.Ctx) error {
+	app.Get("/users/:email", func(c fiber.Ctx) error {
 		var req stringPathReq
 		bad, ok := BindPath(c, &req)
 		if !ok {
@@ -101,7 +101,7 @@ func TestBindPath_MultiSegment(t *testing.T) {
 	resetPathSchemaCache()
 	app := fiber.New()
 	var tenant, user string
-	app.Get("/tenants/:tenantId/users/:userId", func(c *fiber.Ctx) error {
+	app.Get("/tenants/:tenantId/users/:userId", func(c fiber.Ctx) error {
 		var req multiSegmentReq
 		bad, ok := BindPath(c, &req)
 		if !ok {
@@ -123,7 +123,7 @@ func TestBindPath_UUIDAndDomainID(t *testing.T) {
 	const sample = "550e8400-e29b-41d4-a716-446655440000"
 	var gotUUID uuid.UUID
 	var gotDomain domain.ID
-	app.Get("/u/:id", func(c *fiber.Ctx) error {
+	app.Get("/u/:id", func(c fiber.Ctx) error {
 		var r1 uuidPathReq
 		if bad, ok := BindPath(c, &r1); !ok {
 			t.Fatalf("uuid BindPath !ok badField=%q", bad)
@@ -149,7 +149,7 @@ func TestBindPath_ScalarTypes(t *testing.T) {
 	resetPathSchemaCache()
 	app := fiber.New()
 	var captured scalarsReq
-	app.Get("/x/:page/:version/:rate/:flag", func(c *fiber.Ctx) error {
+	app.Get("/x/:page/:version/:rate/:flag", func(c fiber.Ctx) error {
 		var req scalarsReq
 		if bad, ok := BindPath(c, &req); !ok {
 			t.Fatalf("BindPath !ok badField=%q", bad)
@@ -168,7 +168,7 @@ func TestBindPath_ScalarTypes(t *testing.T) {
 func TestBindPath_BadUUID_ReturnsBadField(t *testing.T) {
 	resetPathSchemaCache()
 	app := fiber.New()
-	app.Get("/u/:id", func(c *fiber.Ctx) error {
+	app.Get("/u/:id", func(c fiber.Ctx) error {
 		var req uuidPathReq
 		bad, ok := BindPath(c, &req)
 		if ok {
@@ -185,7 +185,7 @@ func TestBindPath_BadUUID_ReturnsBadField(t *testing.T) {
 func TestBindPath_BadInt_ReturnsBadField(t *testing.T) {
 	resetPathSchemaCache()
 	app := fiber.New()
-	app.Get("/x/:page", func(c *fiber.Ctx) error {
+	app.Get("/x/:page", func(c fiber.Ctx) error {
 		var req struct {
 			Page int64 `path:"page"`
 		}
@@ -204,7 +204,7 @@ func TestBindPath_BadInt_ReturnsBadField(t *testing.T) {
 func TestBindPath_BadBool_ReturnsBadField(t *testing.T) {
 	resetPathSchemaCache()
 	app := fiber.New()
-	app.Get("/x/:flag", func(c *fiber.Ctx) error {
+	app.Get("/x/:flag", func(c fiber.Ctx) error {
 		var req struct {
 			Flag bool `path:"flag"`
 		}
@@ -304,7 +304,7 @@ func TestReflectExpectedJSONKeys_SkipsPathTaggedFields(t *testing.T) {
 func TestBindPath_NilRequest_NoOp(t *testing.T) {
 	resetPathSchemaCache()
 	app := fiber.New()
-	app.Get("/x", func(c *fiber.Ctx) error {
+	app.Get("/x", func(c fiber.Ctx) error {
 		bad, ok := BindPath(c, nil)
 		if !ok || bad != "" {
 			t.Fatalf("nil should be no-op; got bad=%q ok=%v", bad, ok)
@@ -316,7 +316,7 @@ func TestBindPath_NilRequest_NoOp(t *testing.T) {
 
 func TestBindPath_NonPointer_Panics(t *testing.T) {
 	app := fiber.New()
-	app.Get("/x", func(c *fiber.Ctx) error {
+	app.Get("/x", func(c fiber.Ctx) error {
 		defer func() {
 			r := recover()
 			if r == nil {
@@ -346,7 +346,7 @@ func doRequest(t *testing.T, app *fiber.App, method, target string) (int, string
 	if err != nil {
 		t.Fatalf("http.NewRequest failed: %v", err)
 	}
-	resp, err := app.Test(req, -1)
+	resp, err := app.Test(req, fiber.TestConfig{Timeout: 0, FailOnTimeout: false})
 	if err != nil {
 		t.Fatalf("app.Test failed: %v", err)
 	}

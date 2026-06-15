@@ -4,7 +4,7 @@ import (
 	"reflect"
 	"testing"
 
-	"github.com/gofiber/fiber/v2"
+	"github.com/gofiber/fiber/v3"
 )
 
 // specPartialRequest declares the full partial-match allowlist so the spec
@@ -34,7 +34,7 @@ type specMetaFilter struct {
 func TestSpec_PartialOperatorsExpandToParameters(t *testing.T) {
 	reg := NewRegistry()
 	Mount(reg, fiber.New(), fiber.MethodGet, "/users",
-		func(c *fiber.Ctx) error { return nil },
+		func(c fiber.Ctx) error { return nil },
 		RouteSpec{
 			RequestType:   reflect.TypeOf(specPartialRequest{}),
 			ResponseType:  reflect.TypeOf(specListItem{}),
@@ -75,7 +75,7 @@ func TestSpec_PartialOperatorsExpandToParameters(t *testing.T) {
 func TestSpec_NestedEmbedGroupExpandsToDottedParameters(t *testing.T) {
 	reg := NewRegistry()
 	Mount(reg, fiber.New(), fiber.MethodGet, "/users",
-		func(c *fiber.Ctx) error { return nil },
+		func(c fiber.Ctx) error { return nil },
 		RouteSpec{
 			RequestType:   reflect.TypeOf(specNestedRequest{}),
 			ResponseType:  reflect.TypeOf(specListItem{}),

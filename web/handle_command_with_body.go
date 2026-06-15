@@ -9,7 +9,7 @@ import (
 
 	"github.com/ClaudioSchirmer/omnicore/application/pipeline"
 	"github.com/ClaudioSchirmer/omnicore/domain"
-	"github.com/gofiber/fiber/v2"
+	"github.com/gofiber/fiber/v3"
 )
 
 // HandleCommandWithBody creates a fiber.Handler for endpoints with a JSON
@@ -68,7 +68,7 @@ func HandleCommandWithBody[
 	pathSchema := inspectPathTags(reqType)
 	strict, expectedKeys := inspectHandler[TReq](h)
 	warnGroupAMissingPathTag(h, "HandleCommandWithBody", reqType, pathSchema)
-	return func(c *fiber.Ctx) error {
+	return func(c fiber.Ctx) error {
 		body := c.Body()
 
 		if strict && len(expectedKeys) > 0 {
@@ -89,12 +89,12 @@ func HandleCommandWithBody[
 			return respondSchemaViolation[TResult](c, pipe, badField)
 		}
 		if len(body) > 0 {
-			if err := c.BodyParser(&req); err != nil {
+			if err := c.Bind().Body(&req); err != nil {
 				return respondSchemaViolation[TResult](c, pipe, extractBodyParserField(err))
 			}
 		}
 		appCtx := AppContext(c)
-		appCtx.SetParent(c.UserContext())
+		appCtx.SetParent(c)
 		cmd := req.ToCommand()
 		result := pipeline.Dispatch(pipe, appCtx, cmd, h)
 		return respondWithProjection(c, result, successStatus, responseProjection)
@@ -136,7 +136,7 @@ func HandleCommandWithBodyID[
 		panic(formatPathIDConflict("HandleCommandWithBodyID", reqType))
 	}
 	strict, expectedKeys := inspectHandler[TReq](h)
-	return func(c *fiber.Ctx) error {
+	return func(c fiber.Ctx) error {
 		body := c.Body()
 
 		if strict && len(expectedKeys) > 0 {
@@ -157,12 +157,12 @@ func HandleCommandWithBodyID[
 			return respondSchemaViolation[TResult](c, pipe, badField)
 		}
 		if len(body) > 0 {
-			if err := c.BodyParser(&req); err != nil {
+			if err := c.Bind().Body(&req); err != nil {
 				return respondSchemaViolation[TResult](c, pipe, extractBodyParserField(err))
 			}
 		}
 		appCtx := AppContext(c)
-		appCtx.SetParent(c.UserContext())
+		appCtx.SetParent(c)
 		cmd := req.ToCommand()
 		cmd.SetPathID(c.Params("id"))
 		result := pipeline.Dispatch(pipe, appCtx, cmd, h)
@@ -218,7 +218,7 @@ func warnGroupAMissingPathTag(handler any, wrapperName string, reqType reflect.T
 // statusFromNotifications maps Schema → 400 — the status param of
 // RespondFromResult is ignored when the Failure declares non-Validation
 // semantic. Context = "Schema" to distinguish wire-level from domain-level.
-func respondMissingFieldsAsSchema[TRes any](c *fiber.Ctx, pipe *pipeline.Pipeline, missing []string) error {
+func respondMissingFieldsAsSchema[TRes any](c fiber.Ctx, pipe *pipeline.Pipeline, missing []string) error {
 	ctx := domain.NewNotificationContext("Schema")
 	schema := domain.SemanticSchema
 	for _, field := range missing {
@@ -238,7 +238,7 @@ func respondMissingFieldsAsSchema[TRes any](c *fiber.Ctx, pipe *pipeline.Pipelin
 // respondSchemaViolation emits a single SchemaViolationNotification. field is
 // the JSON path of the error (e.g. "addresses[0].zipCode" in case of type
 // mismatch) or "" when the entire body is malformed. Always 400.
-func respondSchemaViolation[TRes any](c *fiber.Ctx, pipe *pipeline.Pipeline, field string) error {
+func respondSchemaViolation[TRes any](c fiber.Ctx, pipe *pipeline.Pipeline, field string) error {
 	ctx := domain.NewNotificationContext("Schema")
 	ctx.AddNotificationMessage(domain.NotificationMessage{
 		FieldName:    field,

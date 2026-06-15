@@ -10,7 +10,7 @@ import (
 	"github.com/ClaudioSchirmer/omnicore/application/pipeline"
 	"github.com/ClaudioSchirmer/omnicore/domain"
 	"github.com/ClaudioSchirmer/omnicore/web/responses"
-	"github.com/gofiber/fiber/v2"
+	"github.com/gofiber/fiber/v3"
 )
 
 // expectedKeysCache memoizes reflectExpectedJSONKeys by reflect.Type. Each
@@ -55,11 +55,11 @@ func HandleCommandWithID[
 	h pipeline.Handler[TCmd, TResult],
 	successStatus int,
 ) fiber.Handler {
-	return func(c *fiber.Ctx) error {
+	return func(c fiber.Ctx) error {
 		cmd := TCmd(new(T))
 		cmd.SetPathID(c.Params("id"))
 		appCtx := AppContext(c)
-		appCtx.SetParent(c.UserContext())
+		appCtx.SetParent(c)
 		result := pipeline.Dispatch(pipe, appCtx, cmd, h)
 		return respondWithProjection(c, result, successStatus, responseProjection)
 	}
@@ -72,7 +72,7 @@ func HandleCommandWithID[
 // the envelope is emitted without a "data" field. On Failure/Exception,
 // delegates to RespondFromResult which honors each notification's Semantic.
 func respondWithProjection[TResult any, TResp any](
-	c *fiber.Ctx,
+	c fiber.Ctx,
 	result pipeline.Result[TResult],
 	successStatus int,
 	project func(TResult) TResp,
@@ -162,7 +162,7 @@ func missingKeys(expected []string, raw map[string]json.RawMessage) []string {
 // handle_command_with_body.go) which triggers 400.
 //
 // Deprecated: for new uses, prefer respondMissingFieldsAsSchema.
-func respondMissingFields[TRes any](c *fiber.Ctx, pipe *pipeline.Pipeline, missing []string) error {
+func respondMissingFields[TRes any](c fiber.Ctx, pipe *pipeline.Pipeline, missing []string) error {
 	ctx := domain.NewNotificationContext("Request")
 	for _, field := range missing {
 		ctx.AddNotificationMessage(domain.NotificationMessage{

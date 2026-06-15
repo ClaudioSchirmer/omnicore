@@ -7,7 +7,7 @@ import (
 	"testing"
 
 	"github.com/ClaudioSchirmer/omnicore/application/translation"
-	"github.com/gofiber/fiber/v2"
+	"github.com/gofiber/fiber/v3"
 )
 
 // resetTranslator restores the registered translator after the test. SetTranslator
@@ -25,7 +25,7 @@ func TestRespondWithInternalServerError_NilTranslatorEnglishFallback(t *testing.
 
 	app := fiber.New()
 	app.Use(AppContextMiddleware())
-	app.Get("/x", func(c *fiber.Ctx) error {
+	app.Get("/x", func(c fiber.Ctx) error {
 		return RespondWithInternalServerError(c)
 	})
 
@@ -50,7 +50,7 @@ func TestRespondWithInternalServerError_TranslatesViaRegisteredTranslator(t *tes
 
 	app := fiber.New()
 	app.Use(AppContextMiddleware())
-	app.Get("/x", func(c *fiber.Ctx) error {
+	app.Get("/x", func(c fiber.Ctx) error {
 		return RespondWithInternalServerError(c)
 	})
 

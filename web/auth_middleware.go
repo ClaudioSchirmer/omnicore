@@ -15,7 +15,7 @@ import (
 	"github.com/ClaudioSchirmer/omnicore/application/pipeline"
 	"github.com/ClaudioSchirmer/omnicore/domain"
 	"github.com/MicahParks/keyfunc/v3"
-	"github.com/gofiber/fiber/v2"
+	"github.com/gofiber/fiber/v3"
 	"github.com/golang-jwt/jwt/v5"
 )
 
@@ -128,7 +128,7 @@ func AuthMiddleware(opts AuthOptions, pipe *pipeline.Pipeline) (fiber.Handler, e
 		jwt.WithLeeway(time.Duration(opts.LeewaySeconds) * time.Second),
 	}
 
-	return func(c *fiber.Ctx) error {
+	return func(c fiber.Ctx) error {
 		if matchPublic(c.Method(), c.Path(), routes) {
 			return c.Next()
 		}
@@ -261,7 +261,7 @@ func buildIdentity(claims jwt.MapClaims) *configuration.Identity {
 // other framework rejections: NotificationContext "Authorization" carrying a
 // single notification, translated against the request's Accept-Language via
 // the Pipeline, with Semantic = Unauthorized → 401.
-func respondAuthFailure(c *fiber.Ctx, pipe *pipeline.Pipeline, n domain.Notification) error {
+func respondAuthFailure(c fiber.Ctx, pipe *pipeline.Pipeline, n domain.Notification) error {
 	ctx := domain.NewNotificationContext("Authorization")
 	ctx.AddNotificationMessage(domain.NotificationMessage{Notification: n})
 	err := exception.NewApplicationError([]*domain.NotificationContext{ctx})

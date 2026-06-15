@@ -5,7 +5,7 @@ import (
 	"reflect"
 	"testing"
 
-	"github.com/gofiber/fiber/v2"
+	"github.com/gofiber/fiber/v3"
 )
 
 type authSampleResponse struct {
@@ -18,7 +18,7 @@ func authRegistryWithRoutes(t *testing.T) *Registry {
 	app := fiber.New()
 	// Protected canonical route.
 	Mount(reg, app, fiber.MethodGet, "/users",
-		func(c *fiber.Ctx) error { return nil },
+		func(c fiber.Ctx) error { return nil },
 		RouteSpec{
 			ResponseType:  reflect.TypeOf(authSampleResponse{}),
 			SuccessStatus: 200,
@@ -26,7 +26,7 @@ func authRegistryWithRoutes(t *testing.T) *Registry {
 		Doc{Summary: "List users", Tags: []string{"Users"}})
 	// Canonical route flagged Public via Doc.
 	Mount(reg, app, fiber.MethodGet, "/version",
-		func(c *fiber.Ctx) error { return nil },
+		func(c fiber.Ctx) error { return nil },
 		RouteSpec{
 			ResponseType:  reflect.TypeOf(authSampleResponse{}),
 			SuccessStatus: 200,
@@ -34,11 +34,11 @@ func authRegistryWithRoutes(t *testing.T) *Registry {
 		Doc{Summary: "Version", Public: true})
 	// Raw route NOT public; framework allowlist will mark it so.
 	MountRaw(reg, app, fiber.MethodGet, "/health",
-		func(c *fiber.Ctx) error { return nil },
+		func(c fiber.Ctx) error { return nil },
 		RawSpec{Summary: "Liveness probe"})
 	// Raw route Public via RawSpec.Public.
 	MountRaw(reg, app, fiber.MethodGet, "/whoami",
-		func(c *fiber.Ctx) error { return nil },
+		func(c fiber.Ctx) error { return nil },
 		RawSpec{Summary: "Whoami", Public: true})
 	return reg
 }

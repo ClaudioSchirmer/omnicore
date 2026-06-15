@@ -5,7 +5,7 @@ import (
 
 	"github.com/ClaudioSchirmer/omnicore/application/translation"
 	"github.com/ClaudioSchirmer/omnicore/web/openapi"
-	"github.com/gofiber/fiber/v2"
+	"github.com/gofiber/fiber/v3"
 )
 
 // Wiring is what the service returns via the Wire callback.

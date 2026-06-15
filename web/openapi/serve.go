@@ -1,7 +1,7 @@
 package openapi
 
 import (
-	"github.com/gofiber/fiber/v2"
+	"github.com/gofiber/fiber/v3"
 )
 
 // SpecPath is the framework-controlled route where the OpenAPI JSON
@@ -73,7 +73,7 @@ func Register(app *fiber.App, cfg Config, registry *Registry, opts ...RegisterOp
 		spec.auth = resolved.auth
 	}
 
-	app.Get(SpecPath, func(c *fiber.Ctx) error {
+	app.Get(SpecPath, func(c fiber.Ctx) error {
 		bytes, err := spec.Build()
 		if err != nil {
 			c.Set(fiber.HeaderContentType, "application/json; charset=utf-8")
@@ -83,7 +83,7 @@ func Register(app *fiber.App, cfg Config, registry *Registry, opts ...RegisterOp
 		return c.Send(bytes)
 	})
 
-	app.Get(resolved.uiPath, func(c *fiber.Ctx) error {
+	app.Get(resolved.uiPath, func(c fiber.Ctx) error {
 		c.Set(fiber.HeaderContentType, "text/html; charset=utf-8")
 		var languages []LanguageOption
 		if cfg.LanguageSelector {

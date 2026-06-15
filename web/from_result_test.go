@@ -9,7 +9,7 @@ import (
 	"github.com/ClaudioSchirmer/omnicore/application/notifications"
 	"github.com/ClaudioSchirmer/omnicore/application/pipeline"
 	"github.com/ClaudioSchirmer/omnicore/domain"
-	"github.com/gofiber/fiber/v2"
+	"github.com/gofiber/fiber/v3"
 )
 
 func TestStatusFromValidationOnly(t *testing.T) {
@@ -101,7 +101,7 @@ func TestRespondFromResult_SuccessBodyCarriesID(t *testing.T) {
 	app := fiber.New()
 	id := domain.NewID("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee")
 
-	app.Post("/things", func(c *fiber.Ctx) error {
+	app.Post("/things", func(c fiber.Ctx) error {
 		return RespondFromResult(c, pipeline.Success(id), fiber.StatusCreated)
 	})
 
@@ -142,7 +142,7 @@ func TestRespondFromResult_SuccessBodyCarriesID(t *testing.T) {
 // for the rationale).
 func TestRespondFromResult_ExceptionBranchCarriesCanonicalEnvelope(t *testing.T) {
 	app := fiber.New()
-	app.Get("/boom", func(c *fiber.Ctx) error {
+	app.Get("/boom", func(c fiber.Ctx) error {
 		return RespondFromResult(c, pipeline.Exception[any](errInjected{}), fiber.StatusOK)
 	})
 

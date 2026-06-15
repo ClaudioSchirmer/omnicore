@@ -6,7 +6,7 @@ import (
 	"testing"
 
 	"github.com/ClaudioSchirmer/omnicore/web/responses"
-	"github.com/gofiber/fiber/v2"
+	"github.com/gofiber/fiber/v3"
 )
 
 // ─── Fixtures ──────────────────────────────────────────────────────────────
@@ -127,7 +127,7 @@ func TestSpec_ContactAndLicensePropagateWhenSet(t *testing.T) {
 func TestSpec_CanonicalCommandWithBody_RendersRequestBodyAndResponse(t *testing.T) {
 	reg := NewRegistry()
 	Mount(reg, fiber.New(), fiber.MethodPost, "/users",
-		func(c *fiber.Ctx) error { return nil },
+		func(c fiber.Ctx) error { return nil },
 		RouteSpec{
 			RequestType:   reflect.TypeOf(specInsertRequest{}),
 			ResponseType:  reflect.TypeOf(specInsertResponse{}),
@@ -179,7 +179,7 @@ func TestSpec_CanonicalCommandWithBody_RendersRequestBodyAndResponse(t *testing.
 func TestSpec_CanonicalStrictBody_MarksBodyRequiredTrue(t *testing.T) {
 	reg := NewRegistry()
 	Mount(reg, fiber.New(), fiber.MethodPut, "/users/:id",
-		func(c *fiber.Ctx) error { return nil },
+		func(c fiber.Ctx) error { return nil },
 		RouteSpec{
 			RequestType:   reflect.TypeOf(specInsertRequest{}),
 			ResponseType:  reflect.TypeOf(specInsertResponse{}),
@@ -219,7 +219,7 @@ func TestSpec_CanonicalStrictBody_MarksBodyRequiredTrue(t *testing.T) {
 func TestSpec_BodylessNoneResponse_EnvelopeOmitsData(t *testing.T) {
 	reg := NewRegistry()
 	Mount(reg, fiber.New(), fiber.MethodDelete, "/users/:id",
-		func(c *fiber.Ctx) error { return nil },
+		func(c fiber.Ctx) error { return nil },
 		RouteSpec{
 			ResponseType:  reflect.TypeOf(responses.None{}),
 			SuccessStatus: fiber.StatusNoContent,
@@ -251,7 +251,7 @@ func TestSpec_BodylessNoneResponse_EnvelopeOmitsData(t *testing.T) {
 func TestSpec_PagedEnvelope_DataIsArrayPlusPaginationRef(t *testing.T) {
 	reg := NewRegistry()
 	Mount(reg, fiber.New(), fiber.MethodGet, "/users",
-		func(c *fiber.Ctx) error { return nil },
+		func(c fiber.Ctx) error { return nil },
 		RouteSpec{
 			RequestType:   reflect.TypeOf(specListRequest{}),
 			ResponseType:  reflect.TypeOf(specListItem{}),
@@ -296,7 +296,7 @@ func TestSpec_PagedEnvelope_DataIsArrayPlusPaginationRef(t *testing.T) {
 func TestSpec_NonPagedEnvelope_KeepsDataSingularAndOmitsPagination(t *testing.T) {
 	reg := NewRegistry()
 	Mount(reg, fiber.New(), fiber.MethodGet, "/users/:id",
-		func(c *fiber.Ctx) error { return nil },
+		func(c fiber.Ctx) error { return nil },
 		RouteSpec{
 			RequestType:   reflect.TypeOf(specByEmailRequest{}),
 			ResponseType:  reflect.TypeOf(specInsertResponse{}),
@@ -334,7 +334,7 @@ func TestMount_PagedWithNoneResponse_Panics(t *testing.T) {
 		}
 	}()
 	Mount(nil, fiber.New(), fiber.MethodGet, "/x",
-		func(c *fiber.Ctx) error { return nil },
+		func(c fiber.Ctx) error { return nil },
 		RouteSpec{
 			ResponseType:  reflect.TypeOf(responses.None{}),
 			SuccessStatus: fiber.StatusOK,
@@ -350,7 +350,7 @@ func TestMount_PagedWithNilResponse_Panics(t *testing.T) {
 		}
 	}()
 	Mount(nil, fiber.New(), fiber.MethodGet, "/x",
-		func(c *fiber.Ctx) error { return nil },
+		func(c fiber.Ctx) error { return nil },
 		RouteSpec{
 			SuccessStatus: fiber.StatusOK,
 			Paged:         true,
@@ -379,7 +379,7 @@ func TestRouteSpecOfPaged_SetsFlag(t *testing.T) {
 func TestSpec_QueryFilterOperatorsExpandToParameters(t *testing.T) {
 	reg := NewRegistry()
 	Mount(reg, fiber.New(), fiber.MethodGet, "/users",
-		func(c *fiber.Ctx) error { return nil },
+		func(c fiber.Ctx) error { return nil },
 		RouteSpec{
 			RequestType:   reflect.TypeOf(specListRequest{}),
 			ResponseType:  reflect.TypeOf(specListItem{}),
@@ -408,7 +408,7 @@ func TestSpec_QueryFilterOperatorsExpandToParameters(t *testing.T) {
 func TestSpec_PathTagRequestEmitsPathParameter(t *testing.T) {
 	reg := NewRegistry()
 	Mount(reg, fiber.New(), fiber.MethodGet, "/users/:email",
-		func(c *fiber.Ctx) error { return nil },
+		func(c fiber.Ctx) error { return nil },
 		RouteSpec{
 			RequestType:   reflect.TypeOf(specByEmailRequest{}),
 			ResponseType:  reflect.TypeOf(specInsertResponse{}),
@@ -455,7 +455,7 @@ type whoamiSpecResponse struct {
 func TestSpec_RawOperation_RendersDeclaredResponses(t *testing.T) {
 	reg := NewRegistry()
 	MountRaw(reg, fiber.New(), fiber.MethodGet, "/whoami",
-		func(c *fiber.Ctx) error { return nil },
+		func(c fiber.Ctx) error { return nil },
 		RawSpec{
 			Summary: "Whoami",
 			Tags:    []string{"Auth"},
@@ -484,7 +484,7 @@ func TestSpec_RawRequestBody_RendersInline(t *testing.T) {
 		Body string `json:"body"`
 	}
 	MountRaw(reg, fiber.New(), fiber.MethodPost, "/echo/signed",
-		func(c *fiber.Ctx) error { return nil },
+		func(c fiber.Ctx) error { return nil },
 		RawSpec{
 			Summary: "Signed echo",
 			RequestBody: &RequestBody{
@@ -513,13 +513,13 @@ func TestSpec_HiddenOperationsExcludedFromPaths(t *testing.T) {
 	reg := NewRegistry()
 	app := fiber.New()
 	MountRaw(reg, app, fiber.MethodGet, "/echo/sse",
-		func(c *fiber.Ctx) error { return nil },
+		func(c fiber.Ctx) error { return nil },
 		RawSpec{Hidden: true})
 	Mount(reg, app, fiber.MethodGet, "/whoami",
-		func(c *fiber.Ctx) error { return nil },
+		func(c fiber.Ctx) error { return nil },
 		RouteSpec{SuccessStatus: 200}, Doc{Hidden: true})
 	Mount(reg, app, fiber.MethodGet, "/visible",
-		func(c *fiber.Ctx) error { return nil },
+		func(c fiber.Ctx) error { return nil },
 		RouteSpec{SuccessStatus: 200}, Doc{Summary: "Visible"})
 
 	out := marshalSpec(t, NewSpec(Config{Title: "T", Version: "1"}, reg))
@@ -538,7 +538,7 @@ func TestSpec_HiddenOperationsExcludedFromPaths(t *testing.T) {
 func TestSpec_BuildIsCached(t *testing.T) {
 	reg := NewRegistry()
 	Mount(reg, fiber.New(), fiber.MethodGet, "/x",
-		func(c *fiber.Ctx) error { return nil },
+		func(c fiber.Ctx) error { return nil },
 		RouteSpec{SuccessStatus: 200}, Doc{Summary: "X"})
 
 	spec := NewSpec(Config{Title: "T", Version: "1"}, reg)
@@ -564,7 +564,7 @@ func TestSpec_BuildIsCached(t *testing.T) {
 func TestSpec_ComponentsIncludesErrorEnvelope(t *testing.T) {
 	reg := NewRegistry()
 	Mount(reg, fiber.New(), fiber.MethodGet, "/x",
-		func(c *fiber.Ctx) error { return nil },
+		func(c fiber.Ctx) error { return nil },
 		RouteSpec{SuccessStatus: 200}, Doc{Summary: "X"})
 
 	out := marshalSpec(t, NewSpec(Config{Title: "T", Version: "1"}, reg))
@@ -583,7 +583,7 @@ func TestSpec_ComponentsIncludesErrorEnvelope(t *testing.T) {
 func TestSpec_SuccessEnvelopePropertiesCarryExamples(t *testing.T) {
 	reg := NewRegistry()
 	Mount(reg, fiber.New(), fiber.MethodPost, "/users",
-		func(c *fiber.Ctx) error { return nil },
+		func(c fiber.Ctx) error { return nil },
 		RouteSpec{
 			RequestType:   reflect.TypeOf(specInsertRequest{}),
 			ResponseType:  reflect.TypeOf(specInsertResponse{}),
@@ -614,7 +614,7 @@ func TestSpec_SuccessEnvelopePropertiesCarryExamples(t *testing.T) {
 func TestSpec_SuccessEnvelopeDefaultsToStatusOKWhenZero(t *testing.T) {
 	reg := NewRegistry()
 	Mount(reg, fiber.New(), fiber.MethodGet, "/x",
-		func(c *fiber.Ctx) error { return nil },
+		func(c fiber.Ctx) error { return nil },
 		RouteSpec{SuccessStatus: 0}, // unset → default 200
 		Doc{Summary: "X"})
 
@@ -634,7 +634,7 @@ func TestSpec_SuccessEnvelopeDefaultsToStatusOKWhenZero(t *testing.T) {
 func TestSpec_ErrorResponsesCarryPerStatusContentExample(t *testing.T) {
 	reg := NewRegistry()
 	Mount(reg, fiber.New(), fiber.MethodPost, "/users",
-		func(c *fiber.Ctx) error { return nil },
+		func(c fiber.Ctx) error { return nil },
 		RouteSpec{
 			RequestType:   reflect.TypeOf(specInsertRequest{}),
 			ResponseType:  reflect.TypeOf(specInsertResponse{}),

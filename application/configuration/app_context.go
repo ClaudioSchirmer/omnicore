@@ -11,9 +11,10 @@ import (
 // AppContext is the application-layer request envelope and the canonical
 // vehicle for per-request state (UUID, Language, metadata). It also implements
 // context.Context by delegating Deadline/Done/Err/Value to an injectable
-// parent — the HTTP wrappers set the parent to c.UserContext() so that a
-// client disconnect or request timeout propagates all the way down to the
-// ViewReader / Repository call without any extra plumbing.
+// parent — the HTTP wrappers set the parent to c (the fiber.Ctx itself, which
+// implements context.Context in Fiber v3) so that a client disconnect or
+// request timeout propagates all the way down to the ViewReader / Repository
+// call without any extra plumbing.
 //
 // When no parent is set (tests, jobs, manual construction), the delegation
 // falls back to context.Background() — never nil.
@@ -149,10 +150,10 @@ func (c *AppContext) ActorClaims() map[string]any {
 	return out
 }
 
-// SetParent injects the cancellation context — typically Fiber's
-// c.UserContext() — so the AppContext propagates request cancellation to
-// downstream IO. Calling SetParent(nil) restores the context.Background()
-// fallback.
+// SetParent injects the cancellation context — typically the Fiber request
+// ctx (`c` itself in v3, since `fiber.Ctx` implements `context.Context`) — so
+// the AppContext propagates request cancellation to downstream IO. Calling
+// SetParent(nil) restores the context.Background() fallback.
 func (c *AppContext) SetParent(ctx context.Context) {
 	c.mu.Lock()
 	c.parent = ctx

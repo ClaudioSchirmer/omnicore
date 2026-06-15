@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/gofiber/fiber/v2"
+	"github.com/gofiber/fiber/v3"
 )
 
 // newAppWithErrorHandler builds a Fiber app wired the same way bootstrap.Run
@@ -45,10 +45,10 @@ func decodeResponse(t *testing.T, body io.Reader) Response {
 // plain text. The panic value itself stays only on the server log.
 func TestErrorHandler_PanicInMiddleware(t *testing.T) {
 	app := newAppWithErrorHandler()
-	app.Use(func(c *fiber.Ctx) error {
+	app.Use(func(c fiber.Ctx) error {
 		panic("boom from middleware")
 	})
-	app.Get("/x", func(c *fiber.Ctx) error {
+	app.Get("/x", func(c fiber.Ctx) error {
 		return c.SendString("never reached")
 	})
 
@@ -100,7 +100,7 @@ func TestErrorHandler_PanicInMiddleware(t *testing.T) {
 // no leak.
 func TestErrorHandler_PanicInHandler(t *testing.T) {
 	app := newAppWithErrorHandler()
-	app.Get("/boom", func(c *fiber.Ctx) error {
+	app.Get("/boom", func(c fiber.Ctx) error {
 		panic("kaboom")
 	})
 
@@ -185,7 +185,7 @@ func TestErrorHandler_TranslatesByAcceptLanguage(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.header, func(t *testing.T) {
 			app := newAppWithErrorHandler()
-			app.Get("/boom", func(c *fiber.Ctx) error {
+			app.Get("/boom", func(c fiber.Ctx) error {
 				panic("ignored")
 			})
 
@@ -215,7 +215,7 @@ func TestErrorHandler_TranslatesByAcceptLanguage(t *testing.T) {
 func TestErrorHandler_MethodNotAllowed(t *testing.T) {
 	const sentinel = "FIBER-405-SENTINEL-XYZ"
 	app := newAppWithErrorHandler()
-	app.All("/users/whoami", func(c *fiber.Ctx) error {
+	app.All("/users/whoami", func(c fiber.Ctx) error {
 		return fiber.NewError(fiber.StatusMethodNotAllowed, sentinel)
 	})
 
@@ -268,7 +268,7 @@ func TestErrorHandler_MethodNotAllowed(t *testing.T) {
 func TestErrorHandler_PayloadTooLarge(t *testing.T) {
 	const sentinel = "FIBER-413-SENTINEL-XYZ"
 	app := newAppWithErrorHandler()
-	app.Post("/echo", func(c *fiber.Ctx) error {
+	app.Post("/echo", func(c fiber.Ctx) error {
 		return fiber.NewError(fiber.StatusRequestEntityTooLarge, sentinel)
 	})
 
@@ -317,7 +317,7 @@ func TestErrorHandler_PayloadTooLarge(t *testing.T) {
 // must emit a NotificationCarrier instead of raising fiber.NewError.
 func TestErrorHandler_FiberErrorOtherCode_FallsThroughToInternal(t *testing.T) {
 	app := newAppWithErrorHandler()
-	app.Get("/teapot", func(c *fiber.Ctx) error {
+	app.Get("/teapot", func(c fiber.Ctx) error {
 		return fiber.NewError(fiber.StatusTeapot, "i am a teapot")
 	})
 

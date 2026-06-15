@@ -148,7 +148,7 @@ Manual handlers are a sibling path, not a poorer one: `fwweb.HandleCommandWith{B
 
 ## Stack
 
-- Fiber v2 (HTTP)
+- Fiber v3 (HTTP)
 - pgx v5 (PostgreSQL)
 - mongo-driver v2 (MongoDB)
 - segmentio/kafka-go (Kafka)

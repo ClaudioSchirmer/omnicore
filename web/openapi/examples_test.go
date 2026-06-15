@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/gofiber/fiber/v2"
+	"github.com/gofiber/fiber/v3"
 )
 
 // ─── Public API ───────────────────────────────────────────────────────────
@@ -70,7 +70,7 @@ type insertResp struct {
 func TestSpec_RequestExamples_RenderAsPluralMap(t *testing.T) {
 	reg := NewRegistry()
 	Mount(reg, fiber.New(), fiber.MethodPost, "/users",
-		func(c *fiber.Ctx) error { return nil },
+		func(c fiber.Ctx) error { return nil },
 		RouteSpec{
 			RequestType:   reflect.TypeOf(insertReq{}),
 			ResponseType:  reflect.TypeOf(insertResp{}),
@@ -117,7 +117,7 @@ func TestSpec_RequestExamples_RenderAsPluralMap(t *testing.T) {
 func TestSpec_RequestExamples_RawMessagePassesThrough(t *testing.T) {
 	reg := NewRegistry()
 	Mount(reg, fiber.New(), fiber.MethodPost, "/users",
-		func(c *fiber.Ctx) error { return nil },
+		func(c fiber.Ctx) error { return nil },
 		RouteSpec{
 			RequestType:   reflect.TypeOf(insertReq{}),
 			ResponseType:  reflect.TypeOf(insertResp{}),
@@ -159,7 +159,7 @@ func TestSpec_RequestExamples_RejectsTypoAtBoot(t *testing.T) {
 		Naem string `json:"naem"` // typo — does not match insertReq.Name
 	}
 	Mount(reg, fiber.New(), fiber.MethodPost, "/users",
-		func(c *fiber.Ctx) error { return nil },
+		func(c fiber.Ctx) error { return nil },
 		RouteSpec{
 			RequestType:   reflect.TypeOf(insertReq{}),
 			ResponseType:  reflect.TypeOf(insertResp{}),
@@ -177,7 +177,7 @@ func TestSpec_RequestExamples_RejectsTypoAtBoot(t *testing.T) {
 func TestSpec_SuccessExamples_WrapsValueInEnvelope(t *testing.T) {
 	reg := NewRegistry()
 	Mount(reg, fiber.New(), fiber.MethodPost, "/users",
-		func(c *fiber.Ctx) error { return nil },
+		func(c fiber.Ctx) error { return nil },
 		RouteSpec{
 			RequestType:   reflect.TypeOf(insertReq{}),
 			ResponseType:  reflect.TypeOf(insertResp{}),
@@ -232,7 +232,7 @@ func TestSpec_SuccessExamples_RejectsBadShapeAtBoot(t *testing.T) {
 		Whatever string `json:"whatever"` // not on insertResp
 	}
 	Mount(reg, fiber.New(), fiber.MethodPost, "/users",
-		func(c *fiber.Ctx) error { return nil },
+		func(c fiber.Ctx) error { return nil },
 		RouteSpec{
 			RequestType:   reflect.TypeOf(insertReq{}),
 			ResponseType:  reflect.TypeOf(insertResp{}),
@@ -252,7 +252,7 @@ func TestSpec_SuccessExamples_RejectsBadShapeAtBoot(t *testing.T) {
 func TestSpec_ErrorExamples_AutoMergesDefault(t *testing.T) {
 	reg := NewRegistry()
 	Mount(reg, fiber.New(), fiber.MethodPost, "/users",
-		func(c *fiber.Ctx) error { return nil },
+		func(c fiber.Ctx) error { return nil },
 		RouteSpec{
 			RequestType:   reflect.TypeOf(insertReq{}),
 			ResponseType:  reflect.TypeOf(insertResp{}),
@@ -293,7 +293,7 @@ func TestSpec_ErrorExamples_ExplicitDefaultOverridesFramework(t *testing.T) {
 	reg := NewRegistry()
 	customDefault := errorEnvelopeValue(422, "User", "OverriddenNotification", "x", "", "Validation")
 	Mount(reg, fiber.New(), fiber.MethodPost, "/users",
-		func(c *fiber.Ctx) error { return nil },
+		func(c fiber.Ctx) error { return nil },
 		RouteSpec{
 			RequestType:   reflect.TypeOf(insertReq{}),
 			ResponseType:  reflect.TypeOf(insertResp{}),
@@ -327,7 +327,7 @@ func TestSpec_ErrorExamples_ExplicitDefaultOverridesFramework(t *testing.T) {
 func TestSpec_ErrorExamples_EmptyDefaultRemovesEntry(t *testing.T) {
 	reg := NewRegistry()
 	Mount(reg, fiber.New(), fiber.MethodPost, "/users",
-		func(c *fiber.Ctx) error { return nil },
+		func(c fiber.Ctx) error { return nil },
 		RouteSpec{
 			RequestType:   reflect.TypeOf(insertReq{}),
 			ResponseType:  reflect.TypeOf(insertResp{}),
@@ -365,7 +365,7 @@ func TestSpec_ErrorExamples_CustomStatusRendersConsumerExamples(t *testing.T) {
 	reg := NewRegistry()
 	conflictEnvelope := errorEnvelopeValue(409, "User", "EmailAlreadyExistsNotification", "email", "alice@x", "Conflict")
 	Mount(reg, fiber.New(), fiber.MethodPost, "/users",
-		func(c *fiber.Ctx) error { return nil },
+		func(c fiber.Ctx) error { return nil },
 		RouteSpec{
 			RequestType:   reflect.TypeOf(insertReq{}),
 			ResponseType:  reflect.TypeOf(insertResp{}),
@@ -422,7 +422,7 @@ func TestSpec_ErrorExamples_NoDeclarationKeepsSingular(t *testing.T) {
 	// renderer keeps the pre-Phase-2 singular `example` shape.
 	reg := NewRegistry()
 	Mount(reg, fiber.New(), fiber.MethodPost, "/users",
-		func(c *fiber.Ctx) error { return nil },
+		func(c fiber.Ctx) error { return nil },
 		RouteSpec{
 			RequestType:   reflect.TypeOf(insertReq{}),
 			ResponseType:  reflect.TypeOf(insertResp{}),
@@ -454,7 +454,7 @@ func TestSpec_RawSpec_RequestBodyExamples(t *testing.T) {
 		Body string `json:"body"`
 	}
 	MountRaw(reg, fiber.New(), fiber.MethodPost, "/echo/signed",
-		func(c *fiber.Ctx) error { return nil },
+		func(c fiber.Ctx) error { return nil },
 		RawSpec{
 			Summary: "Signed echo",
 			RequestBody: &RequestBody{
@@ -485,7 +485,7 @@ func TestSpec_RawSpec_ResponseExamplesRenderRaw(t *testing.T) {
 	// verbatim, no envelope injection. Symmetric to RequestBody behavior.
 	reg := NewRegistry()
 	MountRaw(reg, fiber.New(), fiber.MethodGet, "/whoami",
-		func(c *fiber.Ctx) error { return nil },
+		func(c fiber.Ctx) error { return nil },
 		RawSpec{
 			Summary: "Whoami",
 			Responses: map[int]ResponseSpec{

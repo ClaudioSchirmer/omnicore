@@ -14,7 +14,7 @@ import (
 	"github.com/ClaudioSchirmer/omnicore/infra"
 	"github.com/ClaudioSchirmer/omnicore/web/openapi"
 
-	"github.com/gofiber/fiber/v2"
+	"github.com/gofiber/fiber/v3"
 )
 
 // --- fixtures ---
@@ -27,7 +27,7 @@ func (f *writeOnlyFeature) Mount(app *fiber.App, d Deps) {
 	// Phase-5 scan does not flag them. Public:true short-circuits the
 	// authz scan when it is also active.
 	openapi.MountRaw(d.OpenAPIRegistry, app, fiber.MethodGet, "/write-only",
-		func(c *fiber.Ctx) error { return c.SendString("wo") },
+		func(c fiber.Ctx) error { return c.SendString("wo") },
 		openapi.RawSpec{Summary: "test fixture", Public: true})
 }
 
@@ -39,7 +39,7 @@ type readableFeature struct {
 func (f *readableFeature) Mount(app *fiber.App, d Deps) {
 	f.mounted = true
 	openapi.MountRaw(d.OpenAPIRegistry, app, fiber.MethodGet, "/readable",
-		func(c *fiber.Ctx) error { return c.SendString("rd") },
+		func(c fiber.Ctx) error { return c.SendString("rd") },
 		openapi.RawSpec{Summary: "test fixture", Public: true})
 }
 
