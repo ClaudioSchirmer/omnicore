@@ -5,13 +5,13 @@ import (
 	"reflect"
 	"testing"
 
-	"github.com/gofiber/fiber/v2"
+	"github.com/gofiber/fiber/v3"
 )
 
 func TestMount_NilRegistry_StillRegistersOnFiber(t *testing.T) {
 	app := fiber.New()
 	called := false
-	Mount(nil, app, fiber.MethodGet, "/ping", func(c *fiber.Ctx) error {
+	Mount(nil, app, fiber.MethodGet, "/ping", func(c fiber.Ctx) error {
 		called = true
 		return c.SendStatus(fiber.StatusNoContent)
 	}, RouteSpec{}, Doc{})
@@ -33,7 +33,7 @@ func TestMount_RegisterOnAppUsesPathVerbatim(t *testing.T) {
 	app := fiber.New()
 	reg := NewRegistry()
 	Mount(reg, app, fiber.MethodGet, "/health",
-		func(c *fiber.Ctx) error { return c.SendStatus(200) },
+		func(c fiber.Ctx) error { return c.SendStatus(200) },
 		RouteSpec{SuccessStatus: 200},
 		Doc{Summary: "Liveness probe"})
 
@@ -54,11 +54,11 @@ func TestMount_RegisterOnGroupPrependsPrefix(t *testing.T) {
 	reg := NewRegistry()
 	users := app.Group("/users")
 	Mount(reg, users, fiber.MethodPost, "/",
-		func(c *fiber.Ctx) error { return c.SendStatus(201) },
+		func(c fiber.Ctx) error { return c.SendStatus(201) },
 		RouteSpec{SuccessStatus: 201},
 		Doc{Summary: "Create a user"})
 	Mount(reg, users, fiber.MethodPatch, "/:id/archive",
-		func(c *fiber.Ctx) error { return c.SendStatus(200) },
+		func(c fiber.Ctx) error { return c.SendStatus(200) },
 		RouteSpec{SuccessStatus: 200, HasPathID: true},
 		Doc{Summary: "Archive a user"})
 
@@ -91,7 +91,7 @@ func TestMount_PropagatesSpec(t *testing.T) {
 		HasPathID:     false,
 	}
 	Mount(reg, app, fiber.MethodPost, "/things",
-		func(c *fiber.Ctx) error { return c.SendStatus(201) },
+		func(c fiber.Ctx) error { return c.SendStatus(201) },
 		spec, Doc{Tags: []string{"Things"}})
 
 	op := reg.Operations()[0]

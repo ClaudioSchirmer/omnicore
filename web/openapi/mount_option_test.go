@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/gofiber/fiber/v2"
+	"github.com/gofiber/fiber/v3"
 )
 
 // resetGate restores no-gate state after a test. Required because SetGate
@@ -24,7 +24,7 @@ func noopGate(handler fiber.Handler, _ string) fiber.Handler { return handler }
 // blockingGate returns a 403-like 999 status so tests can detect that the
 // gate, not the underlying handler, served the request.
 func blockingGate(_ fiber.Handler, _ string) fiber.Handler {
-	return func(c *fiber.Ctx) error { return c.SendStatus(999) }
+	return func(c fiber.Ctx) error { return c.SendStatus(999) }
 }
 
 func TestRequirePermission_EmptyPanics(t *testing.T) {
@@ -74,7 +74,7 @@ func TestRequirePermission_DuplicatePanics(t *testing.T) {
 		}
 	}()
 	Mount(nil, app, fiber.MethodGet, "/x",
-		func(c *fiber.Ctx) error { return c.SendStatus(200) },
+		func(c fiber.Ctx) error { return c.SendStatus(200) },
 		RouteSpec{}, Doc{},
 		RequirePermission("users:read"), RequirePermission("users:write"))
 }
@@ -94,7 +94,7 @@ func TestMount_PublicPlusRequirePermissionPanics(t *testing.T) {
 		}
 	}()
 	Mount(nil, app, fiber.MethodGet, "/x",
-		func(c *fiber.Ctx) error { return c.SendStatus(200) },
+		func(c fiber.Ctx) error { return c.SendStatus(200) },
 		RouteSpec{}, Doc{Public: true},
 		RequirePermission("users:read"))
 }
@@ -114,7 +114,7 @@ func TestMount_NoGateRegisteredPanics(t *testing.T) {
 		}
 	}()
 	Mount(nil, app, fiber.MethodGet, "/x",
-		func(c *fiber.Ctx) error { return c.SendStatus(200) },
+		func(c fiber.Ctx) error { return c.SendStatus(200) },
 		RouteSpec{}, Doc{},
 		RequirePermission("users:read"))
 }
@@ -125,7 +125,7 @@ func TestMount_RequirePermission_PatchesSpec(t *testing.T) {
 	app := fiber.New()
 	reg := NewRegistry()
 	Mount(reg, app, fiber.MethodGet, "/x",
-		func(c *fiber.Ctx) error { return c.SendStatus(200) },
+		func(c fiber.Ctx) error { return c.SendStatus(200) },
 		RouteSpec{SuccessStatus: 200}, Doc{},
 		RequirePermission("users:read"))
 
@@ -143,7 +143,7 @@ func TestMount_RequirePermission_WrapsHandler(t *testing.T) {
 	SetGate(blockingGate)
 	app := fiber.New()
 	Mount(nil, app, fiber.MethodGet, "/x",
-		func(c *fiber.Ctx) error { return c.SendStatus(200) },
+		func(c fiber.Ctx) error { return c.SendStatus(200) },
 		RouteSpec{}, Doc{},
 		RequirePermission("users:read"))
 
@@ -162,7 +162,7 @@ func TestMount_NoOptions_HandlerRunsAsUsual(t *testing.T) {
 	SetGate(blockingGate) // gate would block IF wired, but no option = no wrap
 	app := fiber.New()
 	Mount(nil, app, fiber.MethodGet, "/x",
-		func(c *fiber.Ctx) error { return c.SendStatus(204) },
+		func(c fiber.Ctx) error { return c.SendStatus(204) },
 		RouteSpec{}, Doc{})
 
 	req := httptest.NewRequest(fiber.MethodGet, "/x", nil)
@@ -181,7 +181,7 @@ func TestMountRaw_RequirePermission_PatchesSpec(t *testing.T) {
 	app := fiber.New()
 	reg := NewRegistry()
 	MountRaw(reg, app, fiber.MethodGet, "/x",
-		func(c *fiber.Ctx) error { return c.SendStatus(200) },
+		func(c fiber.Ctx) error { return c.SendStatus(200) },
 		RawSpec{Summary: "demo"},
 		RequirePermission("users:read"))
 
@@ -207,7 +207,7 @@ func TestMountRaw_PublicPlusRequirePermissionPanics(t *testing.T) {
 		}
 	}()
 	MountRaw(nil, app, fiber.MethodGet, "/x",
-		func(c *fiber.Ctx) error { return c.SendStatus(200) },
+		func(c fiber.Ctx) error { return c.SendStatus(200) },
 		RawSpec{Public: true},
 		RequirePermission("users:read"))
 }

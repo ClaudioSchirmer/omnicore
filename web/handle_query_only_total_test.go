@@ -9,7 +9,7 @@ import (
 	"github.com/ClaudioSchirmer/omnicore/application/configuration"
 	"github.com/ClaudioSchirmer/omnicore/application/queries"
 	"github.com/ClaudioSchirmer/omnicore/web/responses"
-	"github.com/gofiber/fiber/v2"
+	"github.com/gofiber/fiber/v3"
 )
 
 // testOnlyTotalRequest opts into the full reserved-key set + a couple of
@@ -264,7 +264,7 @@ func TestOnlyTotal_ParseCriteriaPropagatesFlag(t *testing.T) {
 	var got queries.ReadCriteria
 	var gotBad string
 	var gotOK bool
-	app.Get("/x", func(c *fiber.Ctx) error {
+	app.Get("/x", func(c fiber.Ctx) error {
 		got, gotBad, gotOK = ParseCriteria(c, testOnlyTotalRequest{})
 		return c.SendStatus(fiber.StatusOK)
 	})
@@ -282,7 +282,7 @@ func TestOnlyTotal_ParseCriteriaRejectsConflict(t *testing.T) {
 	app := fiber.New()
 	var gotBad string
 	var gotOK bool
-	app.Get("/x", func(c *fiber.Ctx) error {
+	app.Get("/x", func(c fiber.Ctx) error {
 		_, gotBad, gotOK = ParseCriteria(c, testOnlyTotalRequest{})
 		return c.SendStatus(fiber.StatusOK)
 	})
@@ -300,7 +300,7 @@ func TestOnlyTotal_ParseCriteriaRejectsConflict(t *testing.T) {
 
 func TestRespondPaged_OnlyTotalEmitsDedicatedShape(t *testing.T) {
 	app := fiber.New()
-	app.Get("/x", func(c *fiber.Ctx) error {
+	app.Get("/x", func(c fiber.Ctx) error {
 		page := queries.Page{OnlyTotal: true, Total: 7}
 		return RespondPaged(c, fiber.StatusOK, page, summaryFromDoc)
 	})

@@ -12,7 +12,7 @@ import (
 	fwresults "github.com/ClaudioSchirmer/omnicore/application/results"
 	"github.com/ClaudioSchirmer/omnicore/application/translation"
 	"github.com/ClaudioSchirmer/omnicore/web/responses"
-	"github.com/gofiber/fiber/v2"
+	"github.com/gofiber/fiber/v3"
 )
 
 type testNoBodyCmd struct {

@@ -4,7 +4,7 @@ import (
 	"github.com/ClaudioSchirmer/omnicore/application/notifications"
 	"github.com/ClaudioSchirmer/omnicore/application/pipeline"
 	"github.com/ClaudioSchirmer/omnicore/domain"
-	"github.com/gofiber/fiber/v2"
+	"github.com/gofiber/fiber/v3"
 )
 
 // RespondFromResult renders a pipeline.Result[T] to the HTTP response:
@@ -20,7 +20,7 @@ import (
 // The Failure status is the first non-Validation Semantic found in the result's
 // notifications, mapped via semanticToStatus. Falls through to 422 otherwise.
 // Notifications declare their Semantic themselves — no global registration.
-func RespondFromResult[T any](c *fiber.Ctx, result pipeline.Result[T], successStatus int) error {
+func RespondFromResult[T any](c fiber.Ctx, result pipeline.Result[T], successStatus int) error {
 	switch {
 	case result.IsSuccess():
 		return RespondWithSuccess(c, successStatus, result.Value())

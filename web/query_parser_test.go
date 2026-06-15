@@ -10,7 +10,7 @@ import (
 	"testing"
 
 	"github.com/ClaudioSchirmer/omnicore/application/queries"
-	"github.com/gofiber/fiber/v2"
+	"github.com/gofiber/fiber/v3"
 )
 
 // QueryParser closes the asymmetry between HandleQueryWithParams and
@@ -100,7 +100,7 @@ func TestQueryParser_Parse_FieldsTranslatesWireToDocAndAddsIDExclusion(t *testin
 	parser := NewQueryParser[testFindParamsRequest, sparseUser]()
 	app := fiber.New()
 	var crit queries.ReadCriteria
-	app.Get("/x", func(c *fiber.Ctx) error {
+	app.Get("/x", func(c fiber.Ctx) error {
 		got, _, _ := parser.Parse(c)
 		crit = got
 		return c.SendStatus(fiber.StatusOK)
@@ -123,7 +123,7 @@ func TestQueryParser_Parse_SortTranslatesWireToDocAndHonorsMinusPrefix(t *testin
 	parser := NewQueryParser[testFindParamsRequest, sparseUser]()
 	app := fiber.New()
 	var crit queries.ReadCriteria
-	app.Get("/x", func(c *fiber.Ctx) error {
+	app.Get("/x", func(c fiber.Ctx) error {
 		got, _, _ := parser.Parse(c)
 		crit = got
 		return c.SendStatus(fiber.StatusOK)
@@ -146,7 +146,7 @@ func TestQueryParser_Parse_UnknownFieldsTokenSurfacesBracketedField(t *testing.T
 	parser := NewQueryParser[testFindParamsRequest, sparseUser]()
 	app := fiber.New()
 	pipe := newTestPipeline()
-	app.Get("/x", func(c *fiber.Ctx) error {
+	app.Get("/x", func(c fiber.Ctx) error {
 		_, badField, ok := parser.Parse(c)
 		if !ok {
 			return RespondSchemaViolation(c, pipe, badField)
@@ -175,7 +175,7 @@ func TestQueryParser_Parse_UnknownSortTokenSurfacesBracketedField(t *testing.T) 
 	parser := NewQueryParser[testFindParamsRequest, sparseUser]()
 	app := fiber.New()
 	pipe := newTestPipeline()
-	app.Get("/x", func(c *fiber.Ctx) error {
+	app.Get("/x", func(c fiber.Ctx) error {
 		_, badField, ok := parser.Parse(c)
 		if !ok {
 			return RespondSchemaViolation(c, pipe, badField)
@@ -215,7 +215,7 @@ func TestNewQueryParser_RawDocResponseFallsBackToPassThrough(t *testing.T) {
 
 	app := fiber.New()
 	var crit queries.ReadCriteria
-	app.Get("/x", func(c *fiber.Ctx) error {
+	app.Get("/x", func(c fiber.Ctx) error {
 		got, _, _ := parser.Parse(c)
 		crit = got
 		return c.SendStatus(fiber.StatusOK)

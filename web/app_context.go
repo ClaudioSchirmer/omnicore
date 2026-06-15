@@ -4,7 +4,7 @@ import (
 	"strings"
 
 	"github.com/ClaudioSchirmer/omnicore/application/configuration"
-	"github.com/gofiber/fiber/v2"
+	"github.com/gofiber/fiber/v3"
 	"github.com/google/uuid"
 )
 
@@ -23,7 +23,7 @@ const appContextKey = "omnicore.appCtx"
 //
 //	app.Use(fwweb.AppContextMiddleware())
 func AppContextMiddleware() fiber.Handler {
-	return func(c *fiber.Ctx) error {
+	return func(c fiber.Ctx) error {
 		id := parseRequestID(c.Get("X-Request-ID"))
 		lang := parseLanguage(c.Get("Accept-Language"))
 		ctx := configuration.NewAppContext(id, lang)
@@ -35,7 +35,7 @@ func AppContextMiddleware() fiber.Handler {
 
 // AppContext extracts the AppContext from the request, with a safe fallback
 // if the middleware was bypassed (tests, route outside the middleware tree).
-func AppContext(c *fiber.Ctx) *configuration.AppContext {
+func AppContext(c fiber.Ctx) *configuration.AppContext {
 	if v, ok := c.Locals(appContextKey).(*configuration.AppContext); ok {
 		return v
 	}

@@ -12,7 +12,7 @@ import (
 	"github.com/ClaudioSchirmer/omnicore/application/pipeline"
 	fwresults "github.com/ClaudioSchirmer/omnicore/application/results"
 	"github.com/ClaudioSchirmer/omnicore/web/responses"
-	"github.com/gofiber/fiber/v2"
+	"github.com/gofiber/fiber/v3"
 )
 
 // ---- test types -----------------------------------------------------------

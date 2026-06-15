@@ -5,7 +5,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/gofiber/fiber/v2"
+	"github.com/gofiber/fiber/v3"
 )
 
 // Mount registers handler on the Fiber group AND records the operation
@@ -84,7 +84,7 @@ func Mount(
 		handler = gate(handler, cfg.requiredPermission)
 	}
 
-	group.Add(method, path, handler)
+	group.Add([]string{method}, path, handler)
 	if registry == nil {
 		return
 	}

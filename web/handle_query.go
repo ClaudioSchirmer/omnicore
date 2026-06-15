@@ -13,7 +13,7 @@ import (
 	"github.com/ClaudioSchirmer/omnicore/application/pipeline"
 	"github.com/ClaudioSchirmer/omnicore/application/queries"
 	"github.com/ClaudioSchirmer/omnicore/domain"
-	"github.com/gofiber/fiber/v2"
+	"github.com/gofiber/fiber/v3"
 )
 
 // Operator constants for filter declarations in a Request DTO's `filter:"..."`
@@ -155,7 +155,7 @@ func HandleQueryWithParams[TReq HasToParamsQuery[TQ], TQ queries.FindByParamsQue
 			"request", reqType.String(),
 			"sortable_wire_paths", paths)
 	}
-	return func(c *fiber.Ctx) error {
+	return func(c fiber.Ctx) error {
 		crit, badField, ok := buildCriteria(c, schema, projSchema)
 		if !ok {
 			return respondSchemaViolation[queries.Page](c, pipe, badField)
@@ -165,7 +165,7 @@ func HandleQueryWithParams[TReq HasToParamsQuery[TQ], TQ queries.FindByParamsQue
 			return respondSchemaViolation[queries.Page](c, pipe, bad)
 		}
 		appCtx := AppContext(c)
-		appCtx.SetParent(c.UserContext())
+		appCtx.SetParent(c)
 		q := req.ToQuery(crit)
 		result := pipeline.Dispatch(pipe, appCtx, q, h)
 		if result.IsSuccess() {
@@ -205,19 +205,19 @@ func HandleQueryWithID[TReq HasToIDQuery[TQ], TQ queries.FindByIDQuery, R any](
 	if hasPathSegment(reqType, "id") {
 		panic(formatPathIDConflict("HandleQueryWithID", reqType))
 	}
-	return func(c *fiber.Ctx) error {
+	return func(c fiber.Ctx) error {
 		if bad, ok := validateByIDQuery(c); !ok {
 			return respondSchemaViolation[map[string]any](c, pipe, bad)
 		}
 		var req TReq
-		if err := c.QueryParser(&req); err != nil {
+		if err := c.Bind().Query(&req); err != nil {
 			return respondSchemaViolation[map[string]any](c, pipe, "includeArchived")
 		}
 		if bad, ok := applyPathBinding(c, pathSchema, reflect.ValueOf(&req)); !ok {
 			return respondSchemaViolation[map[string]any](c, pipe, bad)
 		}
 		appCtx := AppContext(c)
-		appCtx.SetParent(c.UserContext())
+		appCtx.SetParent(c)
 		q := req.ToQuery()
 		q.SetPathID(c.Params("id"))
 		result := pipeline.Dispatch(pipe, appCtx, q, h)
@@ -258,7 +258,7 @@ func HandleQueryWithID[TReq HasToIDQuery[TQ], TQ queries.FindByIDQuery, R any](
 // Manual handlers that prefer to assemble the criteria differently can ignore
 // both helpers and build the ReadCriteria by hand — the framework does not
 // require either.
-func ParseCriteria(c *fiber.Ctx, requestDTO any) (queries.ReadCriteria, string, bool) {
+func ParseCriteria(c fiber.Ctx, requestDTO any) (queries.ReadCriteria, string, bool) {
 	schema := extractAllowedKeys(reflect.TypeOf(requestDTO))
 	// Manual handlers do not declare a typed Response to the wrapper, so
 	// the projection schema is nil — `?fields=` works in pass-through mode
@@ -369,7 +369,7 @@ func NewQueryParser[Req any, Resp any]() *QueryParser[Req, Resp] {
 //	if !ok {
 //	    return fwweb.RespondSchemaViolation(c, pipe, badField)
 //	}
-func (p *QueryParser[Req, Resp]) Parse(c *fiber.Ctx) (queries.ReadCriteria, string, bool) {
+func (p *QueryParser[Req, Resp]) Parse(c fiber.Ctx) (queries.ReadCriteria, string, bool) {
 	return buildCriteria(c, p.schema, p.projSchema)
 }
 
@@ -387,7 +387,7 @@ func (p *QueryParser[Req, Resp]) Parse(c *fiber.Ctx) (queries.ReadCriteria, stri
 // Pass an empty field when the violation is body-shaped rather than
 // field-scoped (malformed JSON, missing root object). The wire envelope
 // stays the same; only the per-field name is omitted.
-func RespondSchemaViolation(c *fiber.Ctx, pipe *pipeline.Pipeline, field string) error {
+func RespondSchemaViolation(c fiber.Ctx, pipe *pipeline.Pipeline, field string) error {
 	return respondSchemaViolation[any](c, pipe, field)
 }
 
@@ -425,7 +425,7 @@ func ProjectPage[R any](page queries.Page, fn func(map[string]any) R) ([]R, *Pag
 // solely Total. The listing-only fields (has_next/has_prev/cursors) are not
 // emitted — they would carry zero-value noise that misleads consumers in
 // count mode.
-func RespondPaged[R any](c *fiber.Ctx, status int, page queries.Page, fn func(map[string]any) R) error {
+func RespondPaged[R any](c fiber.Ctx, status int, page queries.Page, fn func(map[string]any) R) error {
 	if page.OnlyTotal {
 		return Respond(c, Response{
 			Success:     true,
@@ -677,7 +677,7 @@ var knownOps = map[string]bool{
 // `_id` inclusion is dropped from the wire shape. When projSchema is nil,
 // the legacy pass-through behavior applies: every token becomes an
 // inclusion entry verbatim (no allowlist, no translation).
-func buildCriteria(c *fiber.Ctx, s *requestSchema, projSchema *projectionSchema) (queries.ReadCriteria, string, bool) {
+func buildCriteria(c fiber.Ctx, s *requestSchema, projSchema *projectionSchema) (queries.ReadCriteria, string, bool) {
 	crit := queries.ReadCriteria{Filter: map[string]any{}}
 	// Pre-scan onlyTotal: VisitAll's iteration order is non-deterministic, so
 	// we cannot rely on observing onlyTotal before a conflicting key. Reading
@@ -819,7 +819,7 @@ func validateCursorAgainstCriteria(cursorStr string, crit queries.ReadCriteria, 
 
 // validateByIDQuery enforces the by-id allowlist: only `includeArchived` is
 // allowed. Returns ("", true) on a clean query string, (badKey, false) otherwise.
-func validateByIDQuery(c *fiber.Ctx) (string, bool) {
+func validateByIDQuery(c fiber.Ctx) (string, bool) {
 	var bad string
 	ok := true
 	c.Request().URI().QueryArgs().VisitAll(func(k, _ []byte) {

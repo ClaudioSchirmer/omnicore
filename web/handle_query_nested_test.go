@@ -9,7 +9,7 @@ import (
 	"github.com/ClaudioSchirmer/omnicore/application/pipeline"
 	"github.com/ClaudioSchirmer/omnicore/application/queries"
 	"github.com/ClaudioSchirmer/omnicore/web/responses"
-	"github.com/gofiber/fiber/v2"
+	"github.com/gofiber/fiber/v3"
 )
 
 // Address-side embed group used by the nested tests. View tag intentionally
@@ -209,7 +209,7 @@ func TestNested_ViewTagOverridesDocSegment(t *testing.T) {
 	app := fiber.New()
 	pipe := newTestPipeline()
 	captured := &queries.ReadCriteria{}
-	app.Get("/x", func(c *fiber.Ctx) error {
+	app.Get("/x", func(c fiber.Ctx) error {
 		crit, bad, ok := ParseCriteria(c, Req{})
 		if !ok {
 			return RespondSchemaViolation(c, pipe, bad)
@@ -261,7 +261,7 @@ func TestNested_PointerToNestedStructAlsoWorks(t *testing.T) {
 	app := fiber.New()
 	pipe := newTestPipeline()
 	captured := &queries.ReadCriteria{}
-	app.Get("/x", func(c *fiber.Ctx) error {
+	app.Get("/x", func(c fiber.Ctx) error {
 		crit, bad, ok := ParseCriteria(c, Req{})
 		if !ok {
 			return RespondSchemaViolation(c, pipe, bad)

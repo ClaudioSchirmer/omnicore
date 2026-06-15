@@ -5,7 +5,7 @@ import (
 	"reflect"
 	"testing"
 
-	"github.com/gofiber/fiber/v2"
+	"github.com/gofiber/fiber/v3"
 )
 
 type whoamiResponseFixture struct {
@@ -17,7 +17,7 @@ func TestMountRaw_NilRegistry_StillRegistersOnFiber(t *testing.T) {
 	app := fiber.New()
 	called := false
 	MountRaw(nil, app, fiber.MethodGet, "/whoami",
-		func(c *fiber.Ctx) error {
+		func(c fiber.Ctx) error {
 			called = true
 			return c.SendStatus(fiber.StatusOK)
 		},
@@ -39,7 +39,7 @@ func TestMountRaw_RegisterStoresRawNotSpec(t *testing.T) {
 	app := fiber.New()
 	reg := NewRegistry()
 	MountRaw(reg, app, fiber.MethodGet, "/whoami",
-		func(c *fiber.Ctx) error { return c.SendStatus(200) },
+		func(c fiber.Ctx) error { return c.SendStatus(200) },
 		RawSpec{
 			Summary: "Returns the authenticated identity",
 			Tags:    []string{"Auth"},
@@ -81,7 +81,7 @@ func TestMountRaw_PathParameterAlwaysRequired(t *testing.T) {
 	app := fiber.New()
 	reg := NewRegistry()
 	MountRaw(reg, app, fiber.MethodGet, "/showcase/keycloak/admin/:id",
-		func(c *fiber.Ctx) error { return c.SendStatus(200) },
+		func(c fiber.Ctx) error { return c.SendStatus(200) },
 		RawSpec{
 			Summary: "Fetch a Keycloak user",
 			Parameters: []Parameter{
@@ -107,7 +107,7 @@ func TestMountRaw_GroupPrefixApplied(t *testing.T) {
 	reg := NewRegistry()
 	showcase := app.Group("/showcase")
 	MountRaw(reg, showcase, fiber.MethodGet, "/keycloak/realm",
-		func(c *fiber.Ctx) error { return c.SendStatus(200) },
+		func(c fiber.Ctx) error { return c.SendStatus(200) },
 		RawSpec{Summary: "Keycloak realm info"})
 
 	op := reg.Operations()[0]
@@ -120,7 +120,7 @@ func TestMountRaw_HiddenAndPublicFlagsPropagate(t *testing.T) {
 	app := fiber.New()
 	reg := NewRegistry()
 	MountRaw(reg, app, fiber.MethodGet, "/echo/sse",
-		func(c *fiber.Ctx) error { return c.SendStatus(200) },
+		func(c fiber.Ctx) error { return c.SendStatus(200) },
 		RawSpec{Hidden: true, Public: true, Deprecated: true})
 	op := reg.Operations()[0]
 	if op.Raw == nil {
@@ -138,7 +138,7 @@ func TestMountRaw_RequestBodyPropagates(t *testing.T) {
 		Body string `json:"body"`
 	}
 	MountRaw(reg, app, fiber.MethodPost, "/echo/signed",
-		func(c *fiber.Ctx) error { return c.SendStatus(200) },
+		func(c fiber.Ctx) error { return c.SendStatus(200) },
 		RawSpec{
 			Summary: "HMAC-signed echo",
 			RequestBody: &RequestBody{
@@ -166,12 +166,12 @@ func TestMountRaw_AndMountCoexistInSameRegistry(t *testing.T) {
 
 	// Canonical Mount (RouteSpec branch).
 	Mount(reg, users, fiber.MethodPost, "/",
-		func(c *fiber.Ctx) error { return c.SendStatus(201) },
+		func(c fiber.Ctx) error { return c.SendStatus(201) },
 		RouteSpec{SuccessStatus: 201}, Doc{Summary: "Create"})
 
 	// MountRaw (RawSpec branch).
 	MountRaw(reg, app, fiber.MethodGet, "/whoami",
-		func(c *fiber.Ctx) error { return c.SendStatus(200) },
+		func(c fiber.Ctx) error { return c.SendStatus(200) },
 		RawSpec{Summary: "Whoami"})
 
 	ops := reg.Operations()

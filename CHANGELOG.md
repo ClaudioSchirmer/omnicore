@@ -11,6 +11,49 @@ with `1.0.0`.
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-06-15
+
+### Changed
+
+- **Upgrade Fiber v2 → v3.** Breaking change throughout the HTTP layer:
+  - Handler signature now uses `fiber.Ctx` (interface), no pointer. Every
+    `func(c *fiber.Ctx) error` in the public surface becomes
+    `func(c fiber.Ctx) error`.
+  - `c.BodyParser(&req)` / `c.QueryParser(&req)` replaced by the unified Bind
+    API: `c.Bind().Body(&req)` / `c.Bind().Query(&req)`.
+  - `c.UserContext()` removed upstream — `fiber.Ctx` now implements
+    `context.Context` directly. `AppContext.SetParent(c)` replaces
+    `AppContext.SetParent(c.UserContext())`.
+  - `app.Add(method, path, handler)` now takes `[]string` for methods:
+    `app.Add([]string{method}, path, handler)`.
+  - `c.Redirect(uri, status)` replaced by builder chain:
+    `c.Redirect().Status(status).To(uri)`.
+  - `app.Test(req, -1)` (timeout disable) replaced by
+    `app.Test(req, fiber.TestConfig{Timeout: 0, FailOnTimeout: false})`.
+  - `fiber.Config.DisableStartupMessage` moved to `fiber.ListenConfig`:
+    `app.Listen(addr, fiber.ListenConfig{DisableStartupMessage: true})`.
+  - `cors.Config.AllowOrigins` is now `[]string` (was comma-separated string).
+  - `recover` middleware's `StackTraceHandler` signature updated to
+    `func(c fiber.Ctx, e any)`.
+
+  Consumer services must upgrade in lock-step after the framework tag is cut.
+
+### Removed
+
+- **`web.CORS(origins ...string)`** — removed. Services and bootstrap call
+  `cors.New(cors.Config{AllowOrigins: []string{...}, ...})` directly, the
+  Fiber v3 idiomatic pattern.
+- **`web.Logger() fiber.Handler`** — removed. Bootstrap calls
+  `logger.New()` directly.
+- **`web.RateLimit(max int) fiber.Handler`** — removed. Services call
+  `limiter.New(limiter.Config{Max: max})` directly.
+
+  Rationale: these three wrappers were thin delegations over Fiber middleware
+  with no omnicore-specific value. Removing them aligns the framework with
+  the Fiber v3 documented surface and reduces API drift. `web.Recover()` is
+  kept because it carries omnicore-specific logic (slog-integrated
+  `StackTraceHandler` that emits structured panic logs).
+
 ## [0.4.0] - 2026-06-14
 
 ### Added
@@ -236,5 +279,6 @@ to content from a prior repo that no longer exists.
   emitted as best-effort `slog.Warn` whenever a hook returns non-nil
   error.
 
+[0.5.0]: https://github.com/ClaudioSchirmer/omnicore/releases/tag/v0.5.0
 [0.4.0]: https://github.com/ClaudioSchirmer/omnicore/releases/tag/v0.4.0
 [0.3.0]: https://github.com/ClaudioSchirmer/omnicore/releases/tag/v0.3.0

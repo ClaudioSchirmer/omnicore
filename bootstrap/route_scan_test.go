@@ -5,7 +5,7 @@ import (
 	"testing"
 
 	"github.com/ClaudioSchirmer/omnicore/web/openapi"
-	"github.com/gofiber/fiber/v2"
+	"github.com/gofiber/fiber/v3"
 )
 
 // resetGate clears any registered openapi.Gate. The scans don't invoke it,
@@ -39,7 +39,7 @@ func TestScanAuthorization_EveryRouteGated_NoPanic(t *testing.T) {
 	app := fiber.New()
 
 	openapi.Mount(reg, app, fiber.MethodPost, "/a",
-		func(c *fiber.Ctx) error { return nil },
+		func(c fiber.Ctx) error { return nil },
 		openapi.RouteSpec{SuccessStatus: 201}, openapi.Doc{Summary: "a"},
 		openapi.RequirePermission("users:write"))
 
@@ -50,7 +50,7 @@ func TestScanAuthorization_UngatedNonPublicRoute_Panics(t *testing.T) {
 	reg := openapi.NewRegistry()
 	app := fiber.New()
 	openapi.Mount(reg, app, fiber.MethodGet, "/u",
-		func(c *fiber.Ctx) error { return nil },
+		func(c fiber.Ctx) error { return nil },
 		openapi.RouteSpec{SuccessStatus: 200}, openapi.Doc{Summary: "u"})
 
 	defer func() {
@@ -70,7 +70,7 @@ func TestScanAuthorization_PublicViaDoc_NoPanic(t *testing.T) {
 	reg := openapi.NewRegistry()
 	app := fiber.New()
 	openapi.Mount(reg, app, fiber.MethodGet, "/p",
-		func(c *fiber.Ctx) error { return nil },
+		func(c fiber.Ctx) error { return nil },
 		openapi.RouteSpec{SuccessStatus: 200},
 		openapi.Doc{Summary: "p", Public: true})
 
@@ -81,7 +81,7 @@ func TestScanAuthorization_PublicViaAllowlist_NoPanic(t *testing.T) {
 	reg := openapi.NewRegistry()
 	app := fiber.New()
 	openapi.Mount(reg, app, fiber.MethodGet, "/p",
-		func(c *fiber.Ctx) error { return nil },
+		func(c fiber.Ctx) error { return nil },
 		openapi.RouteSpec{SuccessStatus: 200}, openapi.Doc{Summary: "p"})
 
 	scanAuthorization(reg, []string{"GET /p"}) // public via the publicRoutes list
@@ -91,7 +91,7 @@ func TestScanAuthorization_PublicRawViaSpec_NoPanic(t *testing.T) {
 	reg := openapi.NewRegistry()
 	app := fiber.New()
 	openapi.MountRaw(reg, app, fiber.MethodGet, "/r",
-		func(c *fiber.Ctx) error { return nil },
+		func(c fiber.Ctx) error { return nil },
 		openapi.RawSpec{Summary: "r", Public: true})
 
 	scanAuthorization(reg, nil)
@@ -104,17 +104,17 @@ func TestScanAuthorization_MixedRoutes_PanicListsAll(t *testing.T) {
 	app := fiber.New()
 
 	openapi.Mount(reg, app, fiber.MethodGet, "/a",
-		func(c *fiber.Ctx) error { return nil },
+		func(c fiber.Ctx) error { return nil },
 		openapi.RouteSpec{SuccessStatus: 200}, openapi.Doc{Summary: "a"})
 	openapi.Mount(reg, app, fiber.MethodPost, "/b",
-		func(c *fiber.Ctx) error { return nil },
+		func(c fiber.Ctx) error { return nil },
 		openapi.RouteSpec{SuccessStatus: 201}, openapi.Doc{Summary: "b"})
 	openapi.Mount(reg, app, fiber.MethodPut, "/c",
-		func(c *fiber.Ctx) error { return nil },
+		func(c fiber.Ctx) error { return nil },
 		openapi.RouteSpec{SuccessStatus: 200}, openapi.Doc{Summary: "c"},
 		openapi.RequirePermission("c:write"))
 	openapi.Mount(reg, app, fiber.MethodGet, "/d",
-		func(c *fiber.Ctx) error { return nil },
+		func(c fiber.Ctx) error { return nil },
 		openapi.RouteSpec{SuccessStatus: 200}, openapi.Doc{Summary: "d", Public: true})
 
 	defer func() {
@@ -150,7 +150,7 @@ func TestScanRouteRegistration_AllRoutesViaMount_NoPanic(t *testing.T) {
 	app := fiber.New()
 	reg := openapi.NewRegistry()
 	openapi.MountRaw(reg, app, fiber.MethodGet, "/x",
-		func(c *fiber.Ctx) error { return nil },
+		func(c fiber.Ctx) error { return nil },
 		openapi.RawSpec{Summary: "x", Public: true})
 
 	scanRouteRegistration(app, reg)
@@ -160,7 +160,7 @@ func TestScanRouteRegistration_RouteOutsideMount_Panics(t *testing.T) {
 	app := fiber.New()
 	reg := openapi.NewRegistry()
 	// Off-canon: direct app.Get bypassing the registry.
-	app.Get("/off-canon", func(c *fiber.Ctx) error { return nil })
+	app.Get("/off-canon", func(c fiber.Ctx) error { return nil })
 
 	defer func() {
 		r := recover()
@@ -179,10 +179,10 @@ func TestScanRouteRegistration_MixedRoutes_PanicListsOffenders(t *testing.T) {
 	app := fiber.New()
 	reg := openapi.NewRegistry()
 	openapi.MountRaw(reg, app, fiber.MethodGet, "/ok",
-		func(c *fiber.Ctx) error { return nil },
+		func(c fiber.Ctx) error { return nil },
 		openapi.RawSpec{Summary: "ok", Public: true})
-	app.Get("/bad1", func(c *fiber.Ctx) error { return nil })
-	app.Post("/bad2", func(c *fiber.Ctx) error { return nil })
+	app.Get("/bad1", func(c fiber.Ctx) error { return nil })
+	app.Post("/bad2", func(c fiber.Ctx) error { return nil })
 
 	defer func() {
 		r := recover()

@@ -5,7 +5,7 @@ import (
 	"fmt"
 
 	"github.com/ClaudioSchirmer/omnicore/infra"
-	"github.com/gofiber/fiber/v2"
+	"github.com/gofiber/fiber/v3"
 )
 
 // Feature is a declared capability of the service. Each feature knows how to

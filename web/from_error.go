@@ -7,7 +7,7 @@ import (
 	"github.com/ClaudioSchirmer/omnicore/application/notifications"
 	"github.com/ClaudioSchirmer/omnicore/application/translation"
 	"github.com/ClaudioSchirmer/omnicore/domain"
-	"github.com/gofiber/fiber/v2"
+	"github.com/gofiber/fiber/v3"
 )
 
 // ResponseFromError discriminates the error type:
@@ -38,6 +38,6 @@ func ResponseFromError(err error, translator *translation.Translator, lang confi
 	}
 }
 
-func RespondFromError(c *fiber.Ctx, err error, translator *translation.Translator, lang configuration.Language) error {
+func RespondFromError(c fiber.Ctx, err error, translator *translation.Translator, lang configuration.Language) error {
 	return Respond(c, ResponseFromError(err, translator, lang))
 }

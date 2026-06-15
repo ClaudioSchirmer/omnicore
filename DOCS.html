@@ -261,7 +261,7 @@ li { margin: 6px 0; }
     <div class="meta">
         <span class="badge">github.com/ClaudioSchirmer/omnicore</span>
         <span class="badge">Go ≥ 1.21</span>
-        <span class="badge">Fiber v2 · pgx v5 · mongo-driver v2 · kafka-go</span>
+        <span class="badge">Fiber v3 · pgx v5 · mongo-driver v2 · kafka-go</span>
     </div>
 </header>
 
@@ -414,7 +414,7 @@ li { margin: 6px 0; }
   </ul>
 
   <p>In any Fiber handler:</p>
-  <pre><code>func myHandler(c *fiber.Ctx) error {
+  <pre><code>func myHandler(c fiber.Ctx) error {
     ctx := fwweb.AppContext(c)  // *configuration.AppContext
     // ctx.ID(), ctx.Language()
     if id := ctx.Identity(); id != nil {
@@ -1262,7 +1262,7 @@ HTTP 201 Created
             <th>Who does it</th>
             <th>Where</th>
         </tr>
-        <tr><td>Parse the HTTP body</td><td><span class="tag manual">manual</span></td><td>on the Fiber route (<code>c.BodyParser</code>)</td></tr>
+        <tr><td>Parse the HTTP body</td><td><span class="tag manual">manual</span></td><td>on the Fiber route (<code>c.Bind().Body()</code>)</td></tr>
         <tr><td>Build the <code>AppContext</code></td><td><span class="tag manual">manual</span></td><td>middleware (1 line)</td></tr>
         <tr><td>Construct the domain entity</td><td><span class="tag manual">manual</span></td><td>Handler</td></tr>
         <tr><td>Define validation rules</td><td><span class="tag manual">manual</span></td><td>entity's <code>BuildRules</code></td></tr>
@@ -1416,9 +1416,9 @@ func (h *CreateCustomerHandler) Handle(
 
     <h4>4. Wire the route</h4>
     <pre><code>// internal/web/router.go
-app.Post("/customers", func(c *fiber.Ctx) error {
+app.Post("/customers", func(c fiber.Ctx) error {
     var cmd commands.CreateCustomerCommand
-    if err := c.BodyParser(&cmd); err != nil {
+    if err := c.Bind().Body(&cmd); err != nil {
         return web.RespondWithBadRequest(c)
     }
 
@@ -1759,7 +1759,7 @@ fwinfra.WithChild[Address](r.loader)</code></pre>
     <ul>
         <li><code>fwweb.HandleCommandWithBody(pipe, sample, responseProjection, h, status)</code> — endpoint with body, without path ID (POST). Allocates <code>TReq</code> via <code>new</code>, validates schema, calls <code>req.ToCommand()</code> on the web→application boundary (no ctx — Request DTO is body-only), Dispatch (handler receives ctx and forwards to <code>cmd.ToEntity(ctx)</code>).</li>
         <li><code>fwweb.HandleCommandWithBodyID(pipe, sample, responseProjection, h, status)</code> — endpoint with body, with path ID (PUT/PATCH). Same + <code>cmd.SetPathID(c.Params("id"))</code> before Dispatch.</li>
-        <li><code>fwweb.HandleCommandWithID(pipe, responseProjection, h, status)</code> — endpoint <strong>without body</strong>, with path ID (Archive/Unarchive/Delete). Does not call BodyParser, does not inspect FullBody.</li>
+        <li><code>fwweb.HandleCommandWithID(pipe, responseProjection, h, status)</code> — endpoint <strong>without body</strong>, with path ID (Archive/Unarchive/Delete). Does not call <code>Bind().Body()</code>, does not inspect FullBody.</li>
     </ul>
     <p>
         The <code>responseProjection</code> is a <code>func(TResult) TResp</code> — typically a method value like
@@ -2997,9 +2997,9 @@ users.Get("/:id", fwweb.HandleQueryWithID(d.Pipeline,
 // fields-side guard + sort-side slog.Warn + projection-schema build.
 listParser := fwweb.NewQueryParser[requests.FindXxxCustomRequest, requests.FindXxxCustomResponse]()
 
-g.Get("/", func(c *fiber.Ctx) error {
+g.Get("/", func(c fiber.Ctx) error {
     appCtx := fwweb.AppContext(c)
-    appCtx.SetParent(c.UserContext())
+    appCtx.SetParent(c)
 
     var req requests.FindXxxCustomRequest
     // Same allowlist + wire→doc translation HandleQueryWithParams runs
@@ -3024,9 +3024,9 @@ g.Get("/", func(c *fiber.Ctx) error {
     <p>By-email lookup shape — chain <code>BindPath</code> before the parser:</p>
     <pre><code>byEmailParser := fwweb.NewQueryParser[requests.FindXxxByEmailRequest, requests.FindXxxByEmailResponse]()
 
-g.Get("/:email", func(c *fiber.Ctx) error {
+g.Get("/:email", func(c fiber.Ctx) error {
     appCtx := fwweb.AppContext(c)
-    appCtx.SetParent(c.UserContext())
+    appCtx.SetParent(c)
 
     var req requests.FindXxxByEmailRequest
     // Same path-binding the wrappers run internally — populates fields
@@ -3097,7 +3097,7 @@ type UpdateOnTenantRequest struct {
         Manual <code>fiber.Handler</code> closures opt out of the wrappers — call
         <code>fwweb.BindPath(c, &amp;req)</code> explicitly (same helper as <code>ParseCriteria</code>).
         See <code>omnicore-example-users/web/user_custom_routes.go</code> for the canonical example
-        of <code>BindPath → BodyParser → ToCommand → Dispatch</code>.
+        of <code>BindPath → Bind().Body() → ToCommand → Dispatch</code>.
     </p>
     <p>
         Supported field types: <code>string</code>, signed/unsigned ints of any width,
@@ -5200,7 +5200,7 @@ fwopenapi.Mount(d.OpenAPIRegistry, users, fiber.MethodPost, "/",
     fwopenapi.Doc{Summary: "Create a user", Tags: []string{"Users"}})</code></pre>
 
     <h3>Manual handlers with a typed Request DTO</h3>
-    <p>A handler that hand-rolls its dispatch (<code>BodyParser → ParseCriteria → BindPath → ToCommand → Pipeline.Dispatch</code>) still owns the same kind of DTOs the canonical path owns. <code>openapi.Mount</code> covers them too — pair it with <code>fwopenapi.RouteSpecOf[TReq, TResp](status)</code> so the consumer just names the Request / Response DTOs:</p>
+    <p>A handler that hand-rolls its dispatch (<code>Bind().Body() → ParseCriteria → BindPath → ToCommand → Pipeline.Dispatch</code>) still owns the same kind of DTOs the canonical path owns. <code>openapi.Mount</code> covers them too — pair it with <code>fwopenapi.RouteSpecOf[TReq, TResp](status)</code> so the consumer just names the Request / Response DTOs:</p>
     <pre><code>fwopenapi.Mount(d.OpenAPIRegistry, group, fiber.MethodPost, "/",
     customInsertUser(d.Pipeline, repo, svc),
     fwopenapi.RouteSpecOf[requests.InsertUserCustomRequest, responses.UserCustomResponse](

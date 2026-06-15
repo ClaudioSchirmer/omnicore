@@ -9,7 +9,7 @@ import (
 	"testing"
 
 	"github.com/ClaudioSchirmer/omnicore/application/queries"
-	"github.com/gofiber/fiber/v2"
+	"github.com/gofiber/fiber/v3"
 )
 
 // ─── projectionSchema (extractProjectionSchema + walkProjectionLevel) ─────
@@ -286,7 +286,7 @@ func TestFieldsParam_PassThroughModeOnParseCriteria(t *testing.T) {
 	// each token becomes an inclusion entry verbatim.
 	app := fiber.New()
 	var got queries.ReadCriteria
-	app.Get("/x", func(c *fiber.Ctx) error {
+	app.Get("/x", func(c fiber.Ctx) error {
 		got, _, _ = ParseCriteria(c, testFindParamsRequest{})
 		return c.SendStatus(fiber.StatusOK)
 	})

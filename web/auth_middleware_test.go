@@ -16,7 +16,7 @@ import (
 	"github.com/ClaudioSchirmer/omnicore/application/configuration"
 	"github.com/ClaudioSchirmer/omnicore/application/pipeline"
 	"github.com/ClaudioSchirmer/omnicore/application/translation"
-	"github.com/gofiber/fiber/v2"
+	"github.com/gofiber/fiber/v3"
 	"github.com/golang-jwt/jwt/v5"
 )
 
@@ -92,7 +92,7 @@ func makeApp(t *testing.T, opts AuthOptions) *fiber.App {
 	app := fiber.New()
 	app.Use(AppContextMiddleware())
 	app.Use(mw)
-	app.Get("/protected", func(c *fiber.Ctx) error {
+	app.Get("/protected", func(c fiber.Ctx) error {
 		id := AppContext(c).Identity()
 		if id == nil {
 			return c.SendStatus(fiber.StatusInternalServerError)
@@ -101,7 +101,7 @@ func makeApp(t *testing.T, opts AuthOptions) *fiber.App {
 	})
 	// Surfaces both Identity().Subject and BearerToken() so tests can assert
 	// that the middleware populated the verified raw token on AppContext.
-	app.Get("/protected-bearer", func(c *fiber.Ctx) error {
+	app.Get("/protected-bearer", func(c fiber.Ctx) error {
 		ac := AppContext(c)
 		out := fiber.Map{"bearer": ac.BearerToken()}
 		if id := ac.Identity(); id != nil {
@@ -109,7 +109,7 @@ func makeApp(t *testing.T, opts AuthOptions) *fiber.App {
 		}
 		return c.JSON(out)
 	})
-	app.Get("/health", func(c *fiber.Ctx) error {
+	app.Get("/health", func(c fiber.Ctx) error {
 		return c.SendString("ok")
 	})
 	return app
@@ -270,7 +270,7 @@ func sendRequest(t *testing.T, app *fiber.App, method, path, bearer string) (int
 	if bearer != "" {
 		req.Header.Set("Authorization", "Bearer "+bearer)
 	}
-	resp, err := app.Test(req, -1)
+	resp, err := app.Test(req, fiber.TestConfig{Timeout: 0, FailOnTimeout: false})
 	if err != nil {
 		t.Fatalf("app.Test: %v", err)
 	}
@@ -681,7 +681,7 @@ func TestAuthMiddleware_TenantRequired_RejectsBeforeHandler(t *testing.T) {
 	app.Use(AppContextMiddleware())
 	app.Use(mw)
 	called := false
-	app.Get("/protected", func(c *fiber.Ctx) error {
+	app.Get("/protected", func(c fiber.Ctx) error {
 		called = true
 		return c.SendStatus(200)
 	})

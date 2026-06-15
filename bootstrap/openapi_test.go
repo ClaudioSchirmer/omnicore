@@ -11,7 +11,7 @@ import (
 	"github.com/ClaudioSchirmer/omnicore/application/translation"
 	"github.com/ClaudioSchirmer/omnicore/web/openapi"
 
-	"github.com/gofiber/fiber/v2"
+	"github.com/gofiber/fiber/v3"
 )
 
 // silentDepsWithRegistry is silentDeps + a pre-allocated OpenAPIRegistry,
@@ -266,7 +266,7 @@ type rootMountingFeature struct{}
 
 func (rootMountingFeature) Mount(app *fiber.App, d Deps) {
 	openapi.MountRaw(d.OpenAPIRegistry, app, fiber.MethodGet, "/",
-		func(c *fiber.Ctx) error { return c.SendString("custom root") },
+		func(c fiber.Ctx) error { return c.SendString("custom root") },
 		openapi.RawSpec{Summary: "test root fixture", Public: true})
 }
 

@@ -4,7 +4,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/gofiber/fiber/v2"
+	"github.com/gofiber/fiber/v3"
 )
 
 // MountRaw is the manual-pure counterpart of Mount: it registers handler
@@ -68,7 +68,7 @@ func MountRaw(
 		handler = gate(handler, cfg.requiredPermission)
 	}
 
-	group.Add(method, path, handler)
+	group.Add([]string{method}, path, handler)
 	if registry == nil {
 		return
 	}
