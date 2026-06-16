@@ -11,8 +11,65 @@ with `1.0.0`.
 
 ## [Unreleased]
 
+### Added
+
+- **Cross-service integration events — canonical write-side async path.**
+  New package `omnicore/infra/integration` carries the producer surface
+  (`Dispatch(ctx, eventKey, payload, opts...)` with `WithTx`/`WithAggregateID`/
+  `WithCorrelation`/`WithCausation`) and the consumer surface (`Registry`,
+  `Receiver`, `ConsumerPool`, `RequestWithCommand` via reflection on the
+  wire DTO's `ToCommand()`). Wire `event_type` strings live in YAML;
+  Go-side code references the YAML keys (`eventKey`, `sourceKey`) so a
+  wire rename is a YAML edit, not a code sweep. Handlers are invariant
+  across transports: a single `pipeline.Handler[TCmd, TResult]` Mounts
+  on HTTP via `fwweb.HandleCommandWithBody` AND on Kafka via
+  `reg.From(source).On(eventKey, sample, handler)`.
+- **`IntegrationFeature` interface** under `omnicore/bootstrap` — opt-in
+  via type assertion (mirror of `ReadableFeature`). Bootstrap calls
+  `MountReceivers(reg, deps)` on every feature implementing it during
+  Phase Receivers, between Phase HTTP and ConsumerPool start.
+- **`Deps.IntegrationRegistry` + `Deps.UpstreamSubscribers`.**
+  Consumer admin surfaces walk both slices to expose retry
+  endpoints. The upstream subscriber slice was previously documented
+  as "not surfaced on Deps" — gap closed in the same round as the
+  integration receivers since the admin retry pattern is identical
+  across the two surfaces.
+- **YAML blocks `integration:` and `shutdown:`** under
+  `microservice.<profile>.yaml`. `integration.publishes.events.<key>`
+  declares producer-side wire metadata; `integration.subscribes.<src>.
+  events.<key>` declares subscriber-side wire metadata. `integration.
+  defaults` seeds consumer-group / worker / startFrom across sources.
+  `shutdown.drainTimeoutSeconds` caps the coordinated drain (default
+  30s).
+- **Embedded migration `0002_integration_events.{up,down}.sql`.**
+  Creates three tables: `integration_events` (producer-side
+  authoritative store; written in the same TX as the data row +
+  outbox + audit when `WithTx(tx)` is supplied), `omnicore_integration_
+  failures` (consumer-side failure registry, mirrors `omnicore_
+  upstream_failures` shape for parity in operator tooling), and
+  `omnicore_integration_processed` (per-(event_id, consumer_group)
+  dedup table with BRIN index for time-window pruning).
+- **`AppContext.CorrelationID` / `CausationID` accessors + setters.**
+  Concurrent-safe via the existing `sync.RWMutex`. Receiver pipeline
+  populates from inbound event metadata; outbound `Dispatch` reads
+  them as fallback when `WithCorrelation` / `WithCausation` are
+  omitted — events emitted inside a receiver handler automatically
+  carry the inbound trace chain.
+- **`UpstreamSubscriber.Shutdown(ctx) error`.** Drains in-flight
+  ripple ops under the supplied drain context. Fills the previously
+  documented gap where a SIGTERM mid-ripple would drop the in-flight
+  recompose on the floor.
+
 ### Changed
 
+- **`bootstrap.Run` Phase Receivers + coordinated drain.** After
+  Phase HTTP (`f.Mount`) bootstrap iterates every `IntegrationFeature`
+  and calls `MountReceivers(reg, deps)`. The ConsumerPool then starts
+  one supervisor per receiver before `app.Listen`. On SIGINT/SIGTERM
+  the HTTP server, integration consumer pool, and upstream
+  subscribers drain in parallel under the shared `shutdown.
+  drainTimeoutSeconds` budget — drains that exceed surface as
+  `slog.Warn` lines so the operator knows what did not finish.
 - **Documentation: outbound HTTP error handling pattern.** New `Outbound error
   handling` subsection under `httpclient — outbound HTTP` in `DOCS.html`
   documents the canonical translation path for `*HttpError` returned by

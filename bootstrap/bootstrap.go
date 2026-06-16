@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/signal"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -16,6 +17,7 @@ import (
 	"github.com/ClaudioSchirmer/omnicore/infra"
 	"github.com/ClaudioSchirmer/omnicore/infra/audit"
 	"github.com/ClaudioSchirmer/omnicore/infra/httpclient"
+	"github.com/ClaudioSchirmer/omnicore/infra/integration"
 	"reflect"
 
 	fwweb "github.com/ClaudioSchirmer/omnicore/web"
@@ -193,7 +195,7 @@ func runWithConfig(cfg *Config, wire func(Deps) Wiring) error {
 		// subscriber + the local SyncEngine path both reach the same
 		// composer (shared via the explicit handle) so cross-store
 		// embeds resolve consistently.
-		startUpstreamSubscribers(ctx, deps, cfg, upstreamSubs, views)
+		deps.UpstreamSubscribers = startUpstreamSubscribers(ctx, deps, cfg, upstreamSubs, views)
 
 		syncEngine.Start(ctx)
 		deps.Logger.Info("sync engine started",
@@ -207,7 +209,7 @@ func runWithConfig(cfg *Config, wire func(Deps) Wiring) error {
 		// Mongo collection (operator may consume via mongosh or a
 		// custom adapter); the recompose-ripple is a no-op since no
 		// view embeds the collection.
-		startUpstreamSubscribers(ctx, deps, cfg, upstreamSubs, views)
+		deps.UpstreamSubscribers = startUpstreamSubscribers(ctx, deps, cfg, upstreamSubs, views)
 	}
 
 	return serve(ctx, deps, wiring)
@@ -252,15 +254,25 @@ func buildDeps(cfg *Config) (Deps, error) {
 		logger.Info("httpclient configured")
 	}
 
+	// Integration registry is constructed unconditionally so consumer
+	// features can stash the pointer from their constructor; Configure
+	// makes the producer-side singleton available BEFORE feature mounts
+	// so a feature's BeforeCommit closure can reference fwintegration.Dispatch
+	// without nil-checking. Services that emit nothing AND consume
+	// nothing pay only the empty struct cost.
+	integration.Configure(cfg.Integration, pg, logger)
+	integrationRegistry := integration.NewRegistry()
+
 	return Deps{
-		Config:     cfg,
-		Logger:     logger,
-		Postgres:   pg,
-		Mongo:      mg,
-		Translator: tr,
-		Pipeline:   pipe,
-		ViewReader: viewReader,
-		HttpClient: hc,
+		Config:              cfg,
+		Logger:              logger,
+		Postgres:            pg,
+		Mongo:               mg,
+		Translator:          tr,
+		Pipeline:            pipe,
+		ViewReader:          viewReader,
+		HttpClient:          hc,
+		IntegrationRegistry: integrationRegistry,
 	}, nil
 }
 
@@ -347,6 +359,18 @@ func buildApp(deps Deps, wiring Wiring) (*fiber.App, error) {
 
 	for _, f := range wiring.Features {
 		f.Mount(app, deps)
+	}
+
+	// Phase Receivers — runs AFTER Phase HTTP (Mount) so a single
+	// feature can register HTTP routes AND integration receivers from
+	// the same struct. Opt-in via the IntegrationFeature interface
+	// (type assertion). The registry now exposes the populated slice
+	// to bootstrap.serve, which spins one ConsumerPool covering every
+	// receiver.
+	for _, f := range wiring.Features {
+		if ifeat, ok := f.(IntegrationFeature); ok {
+			ifeat.MountReceivers(deps.IntegrationRegistry, deps)
+		}
 	}
 
 	if wiring.BeforeServe != nil {
@@ -482,6 +506,25 @@ func serve(ctx context.Context, deps Deps, wiring Wiring) error {
 		return err
 	}
 
+	// Start the integration ConsumerPool AFTER Phase Receivers (which
+	// ran inside buildApp) so every Receiver is resolved against YAML
+	// before any goroutine pulls a message. nil registry / empty
+	// receivers makes Start a no-op.
+	var consumerPool *integration.ConsumerPool
+	if deps.IntegrationRegistry != nil && !deps.IntegrationRegistry.IsEmpty() {
+		consumerPool = integration.NewConsumerPool(
+			deps.IntegrationRegistry,
+			deps.Config.Integration,
+			deps.Postgres,
+			deps.Config.Kafka.Brokers,
+			deps.Pipeline,
+			deps.Logger,
+		)
+		if err := consumerPool.Start(ctx); err != nil {
+			return fmt.Errorf("bootstrap: integration consumer pool: %w", err)
+		}
+	}
+
 	errCh := make(chan error, 1)
 	go func() {
 		if err := app.Listen(deps.Config.HTTP.Addr, fiber.ListenConfig{
@@ -499,11 +542,38 @@ func serve(ctx context.Context, deps Deps, wiring Wiring) error {
 		return fmt.Errorf("bootstrap: http listen: %w", err)
 	}
 
-	shutdownCtx, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
-	defer cancel()
-	if err := app.ShutdownWithContext(shutdownCtx); err != nil {
-		deps.Logger.Warn("http shutdown", "err", err)
+	drainSeconds := deps.Config.Shutdown.DrainTimeoutSeconds
+	if drainSeconds <= 0 {
+		drainSeconds = FrameworkDefaultShutdownTimeoutSeconds
 	}
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), time.Duration(drainSeconds)*time.Second)
+	defer cancel()
+
+	// Coordinated drain: HTTP server + integration consumer pool +
+	// upstream subscribers run their drains in parallel under the
+	// shared shutdownCtx so one slow drain does not eat the whole
+	// timeout budget.
+	var drainWG sync.WaitGroup
+	drain := func(label string, fn func() error) {
+		drainWG.Add(1)
+		go func() {
+			defer drainWG.Done()
+			if err := fn(); err != nil {
+				deps.Logger.Warn("drain timeout", "stage", label, "err", err)
+			}
+		}()
+	}
+
+	drain("http", func() error { return app.ShutdownWithContext(shutdownCtx) })
+	if consumerPool != nil {
+		drain("integration", func() error { return consumerPool.Shutdown(shutdownCtx) })
+	}
+	for i, sub := range deps.UpstreamSubscribers {
+		i, sub := i, sub
+		drain(fmt.Sprintf("upstream[%d]", i), func() error { return sub.Shutdown(shutdownCtx) })
+	}
+	drainWG.Wait()
+
 	if wiring.OnShutdown != nil {
 		if err := wiring.OnShutdown(shutdownCtx); err != nil {
 			deps.Logger.Warn("OnShutdown hook", "err", err)

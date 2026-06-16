@@ -190,6 +190,30 @@ func uuidNew(t *testing.T) uuid.UUID {
 	return uuid.New()
 }
 
+func TestAppContext_CorrelationCausationDefaults(t *testing.T) {
+	ctx := NewAppContextWithRandomID(LangENG)
+	if ctx.CorrelationID() != uuid.Nil {
+		t.Errorf("expected zero CorrelationID, got %v", ctx.CorrelationID())
+	}
+	if ctx.CausationID() != uuid.Nil {
+		t.Errorf("expected zero CausationID, got %v", ctx.CausationID())
+	}
+}
+
+func TestAppContext_CorrelationCausationSetGet(t *testing.T) {
+	ctx := NewAppContextWithRandomID(LangENG)
+	corr := uuid.New()
+	caus := uuid.New()
+	ctx.SetCorrelationID(corr)
+	ctx.SetCausationID(caus)
+	if ctx.CorrelationID() != corr {
+		t.Errorf("CorrelationID mismatch: %v vs %v", ctx.CorrelationID(), corr)
+	}
+	if ctx.CausationID() != caus {
+		t.Errorf("CausationID mismatch: %v vs %v", ctx.CausationID(), caus)
+	}
+}
+
 func TestAppContext_SetParentNilRestoresBackground(t *testing.T) {
 	ctx := NewAppContextWithRandomID(LangPTBR)
 	parent, cancel := context.WithCancel(context.Background())
