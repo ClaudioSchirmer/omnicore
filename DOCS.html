@@ -3623,6 +3623,29 @@ type Address struct {
         Audit stores the <strong>catalog key</strong>, not the rendered string — the row is immutable, but the catalog can evolve and the compliance team may read in any locale. Same shape on child cascade: <code>children["Address"][0].changes[0].fieldLabelKey</code> carries the key for the AVO field.
     </p>
 
+    <h4>Reading audit rows — <code>audit.FindByID</code> and <code>audit.FindByAggregate</code></h4>
+    <p>
+        Two canonical helpers retrieve audit rows from the <code>audit_events</code> table when the destinations list includes <code>database</code>:
+    </p>
+<pre><code>// Forensic single-row lookup — you saw an id in the slog echo and want the full row.
+ev, err := audit.FindByID(ctx, deps.Postgres.Pool(), eventID)
+if errors.Is(err, audit.ErrAuditNotFound) {
+    // no row with that id — partition pruned? archived?
+}
+
+// Timeline by aggregate — index-served by audit_events_entity_timeline_idx
+// (entity_type, aggregate_id, occurred_at DESC). Newest first.
+events, err := audit.FindByAggregate(ctx, deps.Postgres.Pool(), "User", userID.String())
+for _, ev := range events {
+    // walk the row's lifetime
+}</code></pre>
+    <p>
+        Both helpers consume the minimal <code>pgExec</code> interface — <code>*pgxpool.Pool</code>, <code>*pgxpool.Conn</code>, <code>*pgx.Conn</code>, and <code>pgx.Tx</code> all satisfy it — so calls inside and outside an open transaction share the same surface. The returned <code>*AuditEvent</code> mirrors what the persister wrote: top-level columns map directly; the <code>payload jsonb</code> blob is unmarshaled back into <code>Snapshot</code> / <code>Changes</code> / <code>Children</code>.
+    </p>
+    <p>
+        Caveats: <code>FindByID</code> issues a multi-partition index scan because the PK is composite <code>(id, created_at)</code>; the common case (recent rows from a slog id) is fast, but archived partitions add cost — pass <code>created_at</code> explicitly via raw SQL when the lookup goes deep. <code>FindByAggregate</code> returns every matching row; aggregates with very long timelines should slice the result downstream or call raw SQL with explicit <code>LIMIT</code> / <code>OFFSET</code>. JSON round-trip on the payload returns <code>float64</code> / <code>string</code> / <code>bool</code> / <code>map</code> / <code>slice</code> — assert on stringified values, not on Go-typed scalars.
+    </p>
+
     <h4>Reading the audit row — <code>audit.RenderLabels</code> and <code>audit.RenderLabelsInJSON</code></h4>
     <p>
         The framework ships an in-place audit renderer that consumes <code>fieldLabelKey</code> and replaces it with <code>fieldLabel</code> rendered in any locale the catalog supports. The post-render shape matches the canonical notification wire (<code>fieldLabel</code> populated, <code>fieldLabelKey</code> elided via <code>omitempty</code>) so a UI / dashboard reads both surfaces uniformly.

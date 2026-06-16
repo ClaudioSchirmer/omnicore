@@ -44,6 +44,14 @@ with `1.0.0`.
   existing `Translator.Render` fallback (raw key + `slog.Warn` once per
   `(lang, key)`). Snapshot blocks are intentionally not touched — they
   carry `map[col]value` with no schema for labels.
+- **`audit.FindByID(ctx, exec, id)` + `audit.FindByAggregate(ctx, exec, entityType, aggregateID)`.**
+  Canonical reader helpers for the `audit_events` table. Forensic lookups
+  by row id and timeline reads by aggregate (index-served by
+  `audit_events_entity_timeline_idx`). Compose with `audit.RenderLabels`
+  for translated read in three lines. Both take the minimal `pgExec`
+  interface (`*pgxpool.Pool` / `*pgxpool.Conn` / `*pgx.Conn` / `pgx.Tx`
+  satisfy it). `ErrAuditNotFound` sentinel exported for the miss path on
+  `FindByID`.
 - **`Rules.entityType reflect.Type`** plus a third parameter on `NewRules`
   (internal framework signature). `r.AddNotification` reads the field's
   `label` tag at emit and writes the catalog key onto
