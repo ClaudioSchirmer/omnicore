@@ -122,6 +122,16 @@ type UpstreamSubscriber struct {
 	logger           *slog.Logger
 	metrics          *upstreamMetrics
 	offsetSeekTarget *int64 // populated when cfg.StartFrom is "offset:<N>"
+
+	// inflight counts in-flight processMessage invocations. Drained by
+	// Shutdown so coordinated shutdown can wait for every in-flight ripple
+	// to commit (or the drain timeout to elapse) before infra deps close.
+	inflight sync.WaitGroup
+	// stop signals the supervisor loop to exit. Closed by Shutdown so the
+	// reader.ReadMessage call unblocks promptly without waiting for the
+	// shared shutdown context to time out at the Kafka socket level.
+	stop     chan struct{}
+	stopOnce sync.Once
 }
 
 // NewUpstreamSubscriber wires the subscriber. dependentViews is the slice
@@ -171,6 +181,7 @@ func NewUpstreamSubscriber(
 		brokers:        brokers,
 		logger:         logger,
 		metrics:        newUpstreamMetrics(),
+		stop:           make(chan struct{}),
 	}
 	if err := s.parseOffsetSeek(); err != nil {
 		return nil, err
@@ -302,7 +313,9 @@ func (s *UpstreamSubscriber) run(ctx context.Context) {
 		go func(q <-chan kafka.Message, idx int) {
 			defer wg.Done()
 			for msg := range q {
+				s.inflight.Add(1)
 				s.processMessage(ctx, msg, idx)
+				s.inflight.Done()
 			}
 		}(queues[i], i)
 	}
@@ -321,10 +334,20 @@ func (s *UpstreamSubscriber) run(ctx context.Context) {
 		"dependentViews", len(s.dependentViews))
 
 	for {
+		select {
+		case <-s.stop:
+			return
+		default:
+		}
 		msg, err := r.ReadMessage(ctx)
 		if err != nil {
 			if ctx.Err() != nil {
 				return
+			}
+			select {
+			case <-s.stop:
+				return
+			default:
 			}
 			s.logger.Error("upstream subscriber: read error",
 				"topic", s.cfg.Topic, "err", err)
@@ -334,7 +357,43 @@ func (s *UpstreamSubscriber) run(ctx context.Context) {
 		case queues[bucketOf(decodeAggregateID(msg.Key), s.cfg.Workers)] <- msg:
 		case <-ctx.Done():
 			return
+		case <-s.stop:
+			return
 		}
+	}
+}
+
+// Shutdown signals the supervisor to stop reading new messages and waits
+// for every in-flight processMessage to finish (or for drainCtx to expire,
+// whichever comes first). Returns drainCtx.Err() on timeout so the
+// coordinated drain in bootstrap can surface partial drains in a single
+// shutdown summary. Safe to call from any goroutine; idempotent against
+// multiple invocations (Shutdown via close-once on the stop channel).
+//
+// Fills the gap previously documented in CLAUDE.md: a SIGTERM mid-ripple
+// would drop the in-flight recompose on the floor, leaving stale Mongo
+// docs without an `omnicore_upstream_failures` row to surface them. With
+// Shutdown wired into bootstrap's coordinated drain, every in-flight
+// ripple either completes (offset advances naturally; failure registry is
+// updated; Mongo state matches PG state) or surfaces as a slog.Warn drain
+// timeout so the operator knows which subscribers did not finish.
+func (s *UpstreamSubscriber) Shutdown(drainCtx context.Context) error {
+	if s == nil {
+		return nil
+	}
+	// Signal the supervisor to exit at the next loop iteration. sync.Once
+	// guards against repeated Shutdown calls panicking on a closed channel.
+	s.stopOnce.Do(func() { close(s.stop) })
+	done := make(chan struct{})
+	go func() {
+		s.inflight.Wait()
+		close(done)
+	}()
+	select {
+	case <-done:
+		return nil
+	case <-drainCtx.Done():
+		return drainCtx.Err()
 	}
 }
 

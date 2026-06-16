@@ -1701,6 +1701,110 @@ The Semantic enum is **transport-agnostic** — a future gRPC layer would map th
 | Reuse the framework's canonical error envelope | `openapi.DefaultErrorExample(status int) (openapi.Example, bool)` returns the canonical entry; `openapi.DefaultErrorExamples() map[int]openapi.Example` returns a fresh copy of every status the framework covers (400/401/404/422/500). Useful for customizing the default (override Description) or for assembling a Responses map programmatically |
 | Exclude a route from the spec entirely | set `Doc.Hidden = true` (canonical) or `RawSpec.Hidden = true` (raw). The route still registers on Fiber — only the documentation surface omits it. Use for internal upstream/scaffolding routes (`/echo/*` showcase producers) |
 | Mark a route as public (no bearerAuth in spec) | set `Doc.Public = true` (canonical) or `RawSpec.Public = true` (raw), OR list `METHOD /path` in `auth.publicRoutes` of `microservice.<profile>.yaml`. Either path is sufficient; both feed the same spec-assembly check |
+| Emit a cross-service integration event | declare `integration.publishes.events.<key>` in `microservice.<profile>.yaml` (with `eventType`, optional `aggregate`, optional `version`) + call `fwintegration.Dispatch(ctx, key, payload, opts...)`. From inside a `BeforeCommit` hook pass `fwintegration.WithTx(tx)` so the row lands in the same TX as the data write + outbox + audit. Standalone events omit `WithTx`; the framework writes the row via single-statement autocommit on the PG pool |
+| React to a cross-service integration event | declare `integration.subscribes.<source>.events.<key>` in YAML + implement `bootstrap.IntegrationFeature` on the feature struct. `MountReceivers(reg, deps)` registers via `reg.From(source).On(eventKey, sampleDTO, handler)`. The handler is the SAME `pipeline.Handler[TCmd, TResult]` HTTP routes consume; the sample DTO carries `ToCommand()` (same convention web `Request.ToCommand` follows) |
+| Retry pending integration / upstream failures | consumer service exposes admin HTTP route (canonical pattern: `POST /admin/retries/integration` walks `d.IntegrationRegistry.Receivers()` calling `Receiver.RetryPendingFailures(ctx, exec, pipe, logger)`; `POST /admin/retries/upstream` loops `d.UpstreamSubscribers` calling `UpstreamSubscriber.RetryPendingFailures(ctx)`). Both behind `RequirePermission("admin:retry")`, under Swagger tag `Admin` |
+
+## Integration events
+
+The cross-service async-messaging surface — the canonical write-side counterpart to the sync `httpclient` + the read-side `UpstreamSubscription` paths. Producers emit typed events into the `integration_events` table (atomic with the data write when invoked from a `BeforeCommit` hook closure with `WithTx(tx)`); subscribers consume Kafka messages via the framework's `Receiver` registry, route each payload through the SAME `pipeline.Handler[TCmd, TResult]` HTTP routes consume, and dedup per consumer group via `omnicore_integration_processed`.
+
+### Producer
+
+```go
+fwintegration.Dispatch(ctx, "userActivated", UserActivatedPayload{Email: email},
+    fwintegration.WithTx(tx),                  // atomic with data row + outbox + audit
+    fwintegration.WithAggregateID(userID),     // required when YAML declares `aggregate:`
+    fwintegration.WithCorrelation(corrID),     // optional — defaults to ctx.CorrelationID()
+    fwintegration.WithCausation(causID),       // optional — defaults to ctx.CausationID()
+)
+```
+
+YAML:
+
+```yaml
+integration:
+  publishes:
+    events:
+      userActivated:
+        eventType: UserActivated   # wire header value
+        aggregate: User            # optional — omit for standalone events
+        version: 1                 # optional — defaults to 1
+```
+
+Lazy validation: an unknown `eventKey` at the first Dispatch call surfaces as `ErrIntegrationEventNotConfigured` — same posture httpclient adopts for unknown service/endpoint references. Matches the framework's "validate at call time, not at boot" rule for emission paths that may stay empty on consumer-only services.
+
+**`WithTx` is the atomicity hook.** Threaded from inside a `BeforeCommit` hook closure where the framework already opened the TX for the entity write. The `integration_events` row lands in the same Postgres TX as the data row + outbox + audit; any error from Dispatch aborts the entire TX (the persister's `defer tx.Rollback(ctx)` runs). Without `WithTx`, the row commits via single-statement autocommit on the package's PG pool — independent of any other write.
+
+Framework auto-fills `event_id` (`uuid.New()` per row), `thread_id` (`ctx.ID()`), `actor` (`ctx.ActorSubject()` — non-empty by contract, falls back to `"anonymous"`), `created_at` (`NOW()`). `correlation_id` and `causation_id` default to `ctx.CorrelationID()` / `ctx.CausationID()` when the receiver pipeline populated them — events emitted inside a receiver handler automatically carry the inbound trace chain.
+
+### Subscriber
+
+```go
+// bootstrap/users_feature.go
+func (f *UsersFeature) MountReceivers(reg *fwintegration.Registry, d bootstrap.Deps) {
+    appweb.MountUserReceivers(reg, f.repo, d)
+}
+
+// web/user_receivers.go — parallel to web/user_routes.go
+func MountUserReceivers(reg *fwintegration.Registry, repo userRepo, d bootstrap.Deps) {
+    insertHandler := &handlers.InsertCommandHandler[*appdomain.User, *appcommands.InsertUserCommand, appcommands.InsertUserResult]{
+        Repo: repo,
+    }
+    reg.From("partners").
+        On("partnerOnboarded", requests.PartnerOnboardedRequest{}, insertHandler)
+}
+```
+
+YAML:
+
+```yaml
+integration:
+  defaults:
+    consumerGroup: "${INTEGRATION_GROUP_ID:my-service-integration}"
+    workers: 4
+    startFrom: latest                          # latest | earliest
+  subscribes:
+    partners:                                  # source key (Go reference)
+      topic: partners.integration.events       # Kafka topic name
+      events:
+        partnerOnboarded:                      # event key (Go reference)
+          eventType: PartnerOnboarded          # wire header value
+      workers: 8                               # per-source override (optional)
+```
+
+**Handler invariance.** The handler the consumer registers is the SAME `pipeline.Handler[TCmd, TResult]` instance an HTTP route consumes. The sample DTO carries `ToCommand()` (same convention web `Request.ToCommand` follows). The framework reflects on the sample's type once at MountReceivers time to plan the dispatch; per-message hot path is allocation-light (allocate request, `json.Unmarshal`, invoke `ToCommand()`, call `handler.Handle(ctx, cmd)`).
+
+**Per-message pipeline (no outer TX).**
+
+1. Read `event_id` from header (or `msg.Key`).
+2. Pre-check `omnicore_integration_processed` — hit → ack Kafka, skip handler (already processed by this consumer group).
+3. Build a fresh `*AppContext` for the invocation: `ID()` = new UUID; `ActorSubject()` = inbound `actor` header (falls back to `"anonymous"`); `CorrelationID()` = inbound `correlation_id` header or `event_id` fallback; `CausationID()` = `event_id`.
+4. Unmarshal payload into a freshly-allocated sample DTO, call `ToCommand()`, dispatch the resulting Cmd via the registered handler.
+5. Handler success → `INSERT INTO omnicore_integration_processed ... ON CONFLICT DO NOTHING` → ack Kafka.
+6. Handler error → `RecordIntegrationFailure(...)` row written; Kafka offset still advances (failure isolation contract).
+
+**At-least-once delivery.** Race window of milliseconds between handler COMMIT and the dedup INSERT may produce a double-invoke after a crash. Handlers MUST be idempotent by design — UPSERT on PG writes (the framework's `BaseRepository.ConstraintBindings` already supports this via `ON CONFLICT`), idempotency keys at the external side for side effects to non-PG systems (email, payment provider, downstream API).
+
+**Failure registry + operator-driven retry.** Every handler failure is persisted to `omnicore_integration_failures` (mirror of `omnicore_upstream_failures` shape). `Receiver.RetryPendingFailures(ctx, exec, pipe, logger)` re-dispatches every pending row for the receiver's natural key — same posture upstream subscribers adopt. Consumer service exposes admin routes (`POST /admin/retries/integration`, `POST /admin/retries/upstream`) so operators drive retry explicitly; the framework does NOT auto-retry.
+
+### DTO ownership and schema evolution
+
+Per-consumer copy. Each service owns its own Go types for integration event payloads. The wire format (JSON) is the contract between producer and consumer; the Go struct is implementation detail per side. JSON unmarshal silently ignores unmapped fields, so additive producer-side changes are non-breaking. Breaking changes use sibling event keys (`userActivated` → `userActivatedV2`) with distinct `eventType` + `version` in YAML — old and new coexist during the migration window.
+
+### Storage layout
+
+| Table | Owner | Purpose |
+|---|---|---|
+| `integration_events` | producer side | authoritative store of every emitted event; written in-TX with the data row when `WithTx(tx)` supplied; forensic timeline indexed by `(aggregate_type, aggregate_id, created_at)` |
+| `omnicore_integration_failures` | consumer side | one row per handler failure under natural key `(consumer_group, source_key, event_key, event_id)`; mirror of `omnicore_upstream_failures` shape |
+| `omnicore_integration_processed` | consumer side | per-(event_id, consumer_group) dedup; BRIN index on `processed_at` for time-window pruning |
+
+All three tables ship via framework migration `0002_integration_events.{up,down}.sql`. The `outbox` table stays UNTOUCHED — `integration_events` is a separate concept with its own retention semantics (long retention for replay / audit / compliance; outbox is throwaway after Debezium consumes). Operator-driven pruning via `DELETE WHERE created_at < NOW() - INTERVAL '30 days'` on `integration_events` is recommended; framework does not auto-prune.
+
+### Coordinated shutdown
+
+`shutdown.drainTimeoutSeconds` in YAML caps the parallel drain on SIGINT/SIGTERM (default 30s; aligns with kubernetes `terminationGracePeriodSeconds`). The framework drains HTTP server, integration consumer pool, upstream subscribers in parallel under the shared `shutdownCtx`. Per-stage drain timeouts surface as `slog.Warn` lines naming the stage so the operator knows what did not finish.
 
 ## Critical invariants
 
@@ -1718,6 +1822,9 @@ The Semantic enum is **transport-agnostic** — a future gRPC layer would map th
 12. **Hook error rolls the TX back; type identity is preserved end-to-end.** A non-nil error returned by the hook closure aborts the TX (the persister's `defer tx.Rollback(ctx)` runs) and propagates verbatim through the `repo.Method()` return. `domain.NotificationCarrier` identity reaches `pipeline.Run` unchanged → `Result.Failure` with the typed notification at the carrier's `Semantic()` HTTP status; non-carrier errors become `Result.Exception` (500). The persister emits a `slog.Warn("persistence.hook.error", verb, hookSlot, entityType, threadId, error)` line as a best-effort observability echo.
 13. **Hook panic rolls the TX back AND propagates the panic.** `defer tx.Rollback(ctx)` fires automatically when the panic unwinds through the persister; the panic continues up to `pipeline.Run`'s `defer/recover`, which converts it to `Result.Exception` (500). The persister has no own recover — there is one canonical recover point.
 14. **`DOCS.html` is the source of truth for the public surface.** Every approved change that alters the exposed API (new method, new type param, contract change, new convention, deprecation) **must update `DOCS.html`** in the same round. `CLAUDE.md` (this file) is the agent/maintainer view; `DOCS.html` is the consumer-user view. The two must tell the same story. Purely internal changes (refactor without surface change, private helper, comment-only) may omit `DOCS.html` — record the rationale in the commit/PR. See mandatory flow at the top of this file.
+15. **Integration events are at-least-once delivered; consumer handlers must be idempotent by design.** The framework provides best-effort dedup via `omnicore_integration_processed` keyed by `(event_id, consumer_group)`; a race window of milliseconds between handler COMMIT and the dedup INSERT may produce a double-invoke after a crash. Handlers MUST be idempotent (UPSERT / natural-key constraints / external idempotency keys on side effects to non-PG systems).
+16. **`integration_events` table IS the producer-side audit; `audit_events` is unchanged and never carries integration-event payload.** Cross-reference between an audit row and a related integration event is via `thread_id` (carried by both tables), not by extending the audit schema. Conflating the two would blur both contracts — audit is "data write forensics" (granularity B, aggregate as event unit); integration events are "cross-service emission" (per-Dispatch row, business-named).
+17. **No outer TX on the Receiver path.** Each `Repo.Method` inside a handler invoked via a Receiver opens its own short TX, identical to the HTTP path. The framework does NOT inject a `TxHandle` into ctx for receiver invocations; persister code path is unchanged. The race window of milliseconds is documented — handlers designed idempotent absorb it without an outer TX's cost (long-lived TX during handler execution, connection pool pressure, replication lag risk).
 
 ## Migrations
 
@@ -3749,3 +3856,12 @@ Anyone needing exotic boot (custom logger, different lifecycle, specific start o
 - **ValidEntity** — sealed types (`Insertable`/`Updatable`/`Archivable`/`Deletable`/`Unarchivable`/`Batch`) produced only by domain
 - **WriteOption[T]** — functional option consumed by `Writer[T]` write methods. Carries an `AfterBeginHook[T]` and/or a `BeforeCommitHook[T]`. Auto and manual handlers converge on the same option mechanism — Auto populates options by detecting the Cmd's provider interfaces; manual populates them by passing `WithAfterBegin` / `WithBeforeCommit` directly at the call site.
 - **Writer[T]** — typed write port at the application layer (`application/persistence/`). Carries the variadic `opts ...WriteOption[T]` on every write verb. `infra.BaseRepository[T]` implements it; Auto handlers depend on it. Read-side methods (`FindByID`, `New`) included so a single struct serves both the write and read ports.
+- **fwintegration.Dispatch** — `infra/integration.Dispatch(ctx, eventKey, payload, opts...)` — the canonical producer entry point for cross-service async events. Resolves `eventKey` against `integration.publishes.events.<key>` in the loaded YAML; lazy validation surfaces an unknown key as `ErrIntegrationEventNotConfigured`. With `WithTx(tx)` from a `BeforeCommit` closure the row lands atomically with the data write + outbox + audit; without `WithTx` it commits standalone via the framework's PG pool.
+- **Registry** — `*fwintegration.Registry` — receiver collection mounted by `bootstrap.IntegrationFeature.MountReceivers(reg, deps)`. Symmetric with `*fiber.App` for the HTTP transport: consumer features register receivers inline via `reg.From(source).On(eventKey, sample, handler)`. Constructed once in `buildDeps` and surfaced on `Deps.IntegrationRegistry`.
+- **Receiver** — one entry in the Registry, representing one (sourceKey, eventKey) pair. Holds the reflection-based dispatch plan computed at MountReceivers time. `Receiver.RetryPendingFailures(ctx, exec, pipe, logger)` re-dispatches every pending row from `omnicore_integration_failures` matching the receiver's natural key — wired through the consumer service's admin HTTP route.
+- **ConsumerPool** — `*fwintegration.ConsumerPool` — owner of the Kafka consumer goroutines that drive every Receiver. Spun by `bootstrap.serve` between Phase Receivers and `app.Listen`. `Shutdown(drainCtx)` drains every in-flight `processOne` (or returns `drainCtx.Err()` on timeout). Mirrors `UpstreamSubscriber.Shutdown` shape so the coordinated shutdown path drives both with the same shared `shutdownCtx`.
+- **IntegrationFeature** — `bootstrap.IntegrationFeature` — opt-in interface a Feature satisfies to register integration receivers via `MountReceivers(reg, deps)`. Mirror of `ReadableFeature`. Detected via type assertion at Phase Receivers.
+- **eventKey / sourceKey** — Go-side string identifiers consumer code passes to `Dispatch` and `From(source).On(eventKey, ...)`. The wire-side `event_type` lives in YAML; eventKey is stable across schema migrations. Renaming a wire `event_type` is a YAML edit, not a code sweep.
+- **wire event_type** — the literal string the producer emits as the Kafka header value and the subscriber matches against. Lives ONLY in YAML (`integration.publishes.events.<key>.eventType` and `integration.subscribes.<src>.events.<key>.eventType`); never appears as a Go literal at a Dispatch / On call site.
+- **omnicore_integration_failures** — consumer-side failure registry table. One row per (consumer_group, source_key, event_key, event_id) natural key; payload preserved verbatim for replay. Resolved via `ResolveIntegrationFailures` after `Receiver.RetryPendingFailures` re-dispatches successfully. Mirror of `omnicore_upstream_failures` shape.
+- **omnicore_integration_processed** — consumer-side dedup table. Composite PK `(event_id, consumer_group)` so N consumer groups dedup the same event independently. BRIN index on `processed_at` for operator-driven pruning. Race-resilient via `ON CONFLICT DO NOTHING` on the post-success INSERT.

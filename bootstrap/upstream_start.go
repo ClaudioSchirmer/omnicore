@@ -25,10 +25,11 @@ func startUpstreamSubscribers(
 	cfg *Config,
 	subs []UpstreamSubscription,
 	views []*infra.ViewDefinition,
-) {
+) []*infra.UpstreamSubscriber {
 	if len(subs) == 0 {
-		return
+		return nil
 	}
+	started := make([]*infra.UpstreamSubscriber, 0, len(subs))
 	composer := infra.NewComposerWithMongo(deps.Postgres, deps.Mongo)
 	for _, s := range subs {
 		runtimeCfg := infra.UpstreamSubscriberConfig{
@@ -61,6 +62,7 @@ func startUpstreamSubscribers(
 			continue
 		}
 		sub.Start(ctx)
+		started = append(started, sub)
 		deps.Logger.Info("upstream subscriber started",
 			"topic", s.Topic,
 			"collection", s.Collection,
@@ -71,4 +73,5 @@ func startUpstreamSubscribers(
 			"deleteOnArchive", s.DeleteOnArchive,
 			"startFrom", s.StartFrom)
 	}
+	return started
 }

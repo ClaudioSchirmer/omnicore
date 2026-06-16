@@ -9,6 +9,7 @@ import (
 
 	"github.com/ClaudioSchirmer/omnicore/infra/audit"
 	"github.com/ClaudioSchirmer/omnicore/infra/httpclient"
+	"github.com/ClaudioSchirmer/omnicore/infra/integration"
 )
 
 // AutoRunMode is the closed set of values for migrations.autoRun and
@@ -160,6 +161,44 @@ type Config struct {
 	// (bootstrap.Build + Serve) and integration tests, with the
 	// merge rule documented on Wiring.UpstreamSubscriptions.
 	UpstreamSubscriptions []UpstreamSubscription `yaml:"upstreamSubscriptions"`
+
+	// Integration is the cross-service async-messaging surface — the
+	// publishes/subscribes block consumed by fwintegration.Dispatch
+	// (producer side) and by the Receiver registry / ConsumerPool
+	// (subscriber side). nil when the YAML omits the block entirely;
+	// services not yet on integration events pay zero runtime cost.
+	// Configure runs from bootstrap.Run BEFORE feature mounts so the
+	// first Dispatch call site can resolve eventKey lookups even from
+	// a feature's constructor.
+	Integration *integration.Config `yaml:"integration"`
+
+	// Shutdown configures the coordinated drain triggered by SIGINT /
+	// SIGTERM. DrainTimeoutSeconds caps how long the framework waits
+	// for HTTP server drain, integration consumer pool drain,
+	// UpstreamSubscriber drain, and SyncEngine drain to complete
+	// before forcing infra deps closed. 0 (or absent) defers to the
+	// framework's existing 30s default.
+	Shutdown ShutdownConfig `yaml:"shutdown"`
+}
+
+// ShutdownConfig holds operator-tunable knobs for the coordinated
+// shutdown path. Kept as a struct (not a bare seconds field) so future
+// knobs (per-drain timeout overrides, drain-stage trace level, etc.)
+// land here without breaking YAML grammar.
+type ShutdownConfig struct {
+	DrainTimeoutSeconds int `yaml:"drainTimeoutSeconds"`
+}
+
+// FrameworkDefaultShutdownTimeoutSeconds is the drain ceiling honored
+// when the YAML omits a value or sets 0. 30s aligns with common
+// kubernetes terminationGracePeriodSeconds (30s) so the pod-evicted
+// drain completes inside the orchestrator's window.
+const FrameworkDefaultShutdownTimeoutSeconds = 30
+
+func (s *ShutdownConfig) applyDefaults() {
+	if s.DrainTimeoutSeconds <= 0 {
+		s.DrainTimeoutSeconds = FrameworkDefaultShutdownTimeoutSeconds
+	}
 }
 
 // OpenAPIConfig configures HOW the OpenAPI spec is served. WHAT the spec
@@ -356,6 +395,10 @@ func (c *Config) applyDefaults() {
 	c.Auth.applyDefaults()
 	c.Audit.ApplyDefaults()
 	c.OpenAPI.applyDefaults()
+	c.Shutdown.applyDefaults()
+	if c.Integration != nil {
+		c.Integration.ApplyDefaults(c.Service)
+	}
 }
 
 // applyProfileDefaults resolves the defaults whose value depends on the
@@ -422,6 +465,14 @@ func (c *Config) Validate() error {
 	}
 	if err := c.Mongo.Rebuild.validate(); err != nil {
 		return fmt.Errorf("bootstrap: %w", err)
+	}
+	if c.Integration != nil {
+		if err := c.Integration.Validate(); err != nil {
+			return fmt.Errorf("bootstrap: %w", err)
+		}
+	}
+	if c.Shutdown.DrainTimeoutSeconds < 0 {
+		return fmt.Errorf("bootstrap: shutdown.drainTimeoutSeconds must be >= 0 (got %d)", c.Shutdown.DrainTimeoutSeconds)
 	}
 	return nil
 }

@@ -8,6 +8,7 @@ import (
 	"github.com/ClaudioSchirmer/omnicore/application/translation"
 	"github.com/ClaudioSchirmer/omnicore/infra"
 	"github.com/ClaudioSchirmer/omnicore/infra/httpclient"
+	"github.com/ClaudioSchirmer/omnicore/infra/integration"
 	"github.com/ClaudioSchirmer/omnicore/web/openapi"
 )
 
@@ -41,4 +42,20 @@ type Deps struct {
 	// registry as a passthrough, so features can forward d.OpenAPIRegistry
 	// to those calls uniformly without nil-checking.
 	OpenAPIRegistry *openapi.Registry
+
+	// IntegrationRegistry collects every Receiver the service's
+	// IntegrationFeature implementations register during Phase
+	// Receivers. Non-nil when bootstrap.Run runs; consumer features
+	// receive it via MountReceivers(reg, deps). Also surfaced for
+	// admin retry routes that walk Receivers() to drain pending
+	// failure rows.
+	IntegrationRegistry *integration.Registry
+
+	// UpstreamSubscribers exposes the live cross-service composition
+	// subscribers spun by bootstrap.Run. Surfaced so consumer admin
+	// surfaces (HTTP routes, CLI tools) can call
+	// UpstreamSubscriber.RetryPendingFailures(ctx) without re-resolving
+	// the slice through internal package state. nil when the service
+	// declared zero upstream subscriptions in YAML / Wiring.
+	UpstreamSubscribers []*infra.UpstreamSubscriber
 }

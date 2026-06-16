@@ -19,13 +19,15 @@ import (
 // When no parent is set (tests, jobs, manual construction), the delegation
 // falls back to context.Background() — never nil.
 type AppContext struct {
-	mu          sync.RWMutex
-	id          uuid.UUID
-	language    Language
-	metadata    map[string]any
-	identity    *Identity
-	bearerToken string
-	parent      context.Context
+	mu            sync.RWMutex
+	id            uuid.UUID
+	language      Language
+	metadata      map[string]any
+	identity      *Identity
+	bearerToken   string
+	correlationID uuid.UUID
+	causationID   uuid.UUID
+	parent        context.Context
 }
 
 func NewAppContext(id uuid.UUID, lang Language) *AppContext {
@@ -148,6 +150,49 @@ func (c *AppContext) ActorClaims() map[string]any {
 		out[k] = v
 	}
 	return out
+}
+
+// CorrelationID returns the cross-service trace identifier of the request,
+// or the zero UUID when none is set. Populated by the integration receiver
+// path when the inbound event carried correlation_id; outbound
+// fwintegration.Dispatch reads it as fallback when WithCorrelation is
+// omitted, so events emitted inside a receiver handler automatically carry
+// the inbound trace chain. Defensive against the zero value: callers
+// branch on the boolean second return shape via != uuid.Nil.
+func (c *AppContext) CorrelationID() uuid.UUID {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.correlationID
+}
+
+// SetCorrelationID overwrites the correlation identifier. Concurrent-safe
+// via the same mutex protecting language/metadata/identity. The integration
+// receiver pipeline calls it on every invocation; consumer code can also
+// set it from a custom inbound carrier (HTTP header, vendor envelope) if a
+// trace chain comes through a non-framework path.
+func (c *AppContext) SetCorrelationID(id uuid.UUID) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.correlationID = id
+}
+
+// CausationID returns the identifier of the event that caused the current
+// invocation, or the zero UUID when none is set. The integration receiver
+// pipeline populates it with the inbound event_id so outbound Dispatch
+// calls automatically thread "this event happened because of that event"
+// into the integration_events row.
+func (c *AppContext) CausationID() uuid.UUID {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.causationID
+}
+
+// SetCausationID overwrites the causation identifier. Same semantics as
+// SetCorrelationID.
+func (c *AppContext) SetCausationID(id uuid.UUID) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.causationID = id
 }
 
 // SetParent injects the cancellation context — typically the Fiber request

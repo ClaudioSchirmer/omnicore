@@ -5,6 +5,7 @@ import (
 	"fmt"
 
 	"github.com/ClaudioSchirmer/omnicore/infra"
+	"github.com/ClaudioSchirmer/omnicore/infra/integration"
 	"github.com/gofiber/fiber/v3"
 )
 
@@ -27,6 +28,25 @@ type Feature interface {
 type ReadableFeature interface {
 	Feature
 	Views() []*infra.ViewDefinition
+}
+
+// IntegrationFeature is the opt-in for the consumer side of the
+// cross-service async-messaging surface. Bootstrap calls
+// MountReceivers(reg, deps) on every feature that satisfies the
+// interface after Phase HTTP (Mount) finishes, BEFORE the
+// IntegrationConsumerPool starts. The receiver registry passed in is
+// the same one Deps.IntegrationRegistry exposes, so the consumer
+// service can register receivers via reg.From("...").On("...", ...)
+// from inside the feature.
+//
+// Mirrors the role ReadableFeature plays for the read side: opt-in
+// via type assertion. Features that emit integration events but do
+// NOT consume any pay zero cost — fwintegration.Dispatch reads the
+// publishes block straight from the package singleton; no per-Feature
+// hook is required on the producer side.
+type IntegrationFeature interface {
+	Feature
+	MountReceivers(reg *integration.Registry, deps Deps)
 }
 
 // collectViews iterates features, aggregates views from those that implement
