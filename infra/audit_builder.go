@@ -3,10 +3,55 @@ package infra
 import (
 	"reflect"
 	"sort"
+	"sync"
 
 	"github.com/ClaudioSchirmer/omnicore/domain"
 	"github.com/ClaudioSchirmer/omnicore/infra/audit"
 )
+
+// labelKeyByColumnCache memoizes the snake_case column → catalog key map for
+// each entity / value-object type the auditor sees. Symmetric with
+// domain/field_label.go's labelPlanCache (which is keyed by Go field name);
+// audit consumes the snake_case form because computeChanges already operates
+// on column-name diffs and feeding it the Go-name map would force a second
+// lookup per field.
+var labelKeyByColumnCache sync.Map // map[reflect.Type]map[string]string
+
+// labelKeysByColumn returns column-name → catalog key for every exported
+// field of t whose `label:"<catalogKey>"` struct tag declares a non-empty
+// value (and is not `label:"-"` and not paired with `transient:"-"`).
+// Skip rules mirror domain/field_label.go::resolveLabelKey + the existing
+// InferColumns filter (transient + unexported + "id" already pruned).
+// Returns nil when t carries no label tags so callers can short-circuit.
+func labelKeysByColumn(t reflect.Type) map[string]string {
+	if t == nil {
+		return nil
+	}
+	if t.Kind() == reflect.Ptr {
+		t = t.Elem()
+	}
+	if t.Kind() != reflect.Struct {
+		return nil
+	}
+	if cached, ok := labelKeyByColumnCache.Load(t); ok {
+		return cached.(map[string]string)
+	}
+	cols := InferColumns(t, nil)
+	var out map[string]string
+	for _, c := range cols {
+		f := t.Field(c.FieldIndex)
+		tag, ok := f.Tag.Lookup("label")
+		if !ok || tag == "" || tag == "-" {
+			continue
+		}
+		if out == nil {
+			out = map[string]string{}
+		}
+		out[c.Column] = tag
+	}
+	labelKeyByColumnCache.Store(t, out)
+	return out
+}
 
 // tenantClaim is the JWT claim name from which audit pulls TenantID. The
 // default Auth0/Keycloak convention; customizable tenant claims declared via
@@ -42,6 +87,7 @@ func BuildInsertEvent(ctx domain.Context, i domain.Insertable, id domain.ID, aud
 func BuildUpdateEvent(ctx domain.Context, u domain.Updatable, auditClaims []string) audit.AuditEvent {
 	prev := oldFieldsOf(u.Source())
 	cur := FieldsFromEntity(u.Source(), nil)
+	labels := labelKeysByColumn(reflect.TypeOf(u.Source()))
 	ev := audit.AuditEvent{
 		EntityType: u.EntityName(),
 		EntityID:   u.ID(),
@@ -49,7 +95,7 @@ func BuildUpdateEvent(ctx domain.Context, u domain.Updatable, auditClaims []stri
 		ActionName: u.ActionName(),
 		Kind:       "delta",
 		DateTime:   u.DateTime(),
-		Changes:    computeChanges(prev, cur),
+		Changes:    computeChanges(prev, cur, labels),
 		Children:   childrenOf(u.Source(), "update"),
 	}
 	populateContext(&ev, ctx, auditClaims)
@@ -196,11 +242,17 @@ func oldFieldsOf(e domain.Entity) map[string]any {
 // kind=delta carries only the diff, no redundancy with snapshot. Returns nil
 // when prev and cur are equal across every key (no observable change).
 //
+// labelsByCol carries the snake_case column → catalog key map produced by
+// labelKeysByColumn(reflect.TypeOf(entity)). Pass nil when the caller does
+// not have a type in hand or when no `label` tags are declared on the
+// source struct — every emitted FieldChange then carries FieldLabelKey=""
+// and the omitempty elides it from the wire.
+//
 // Keys present in one map but not the other are emitted with the missing
 // side as nil. In practice this only happens when the entity's schema
 // changed between snapshot capture and current state, which the framework
 // avoids by capturing within the same transaction.
-func computeChanges(prev, cur map[string]any) []audit.FieldChange {
+func computeChanges(prev, cur map[string]any, labelsByCol map[string]string) []audit.FieldChange {
 	seen := map[string]struct{}{}
 	for k := range prev {
 		seen[k] = struct{}{}
@@ -219,7 +271,12 @@ func computeChanges(prev, cur map[string]any) []audit.FieldChange {
 		if reflect.DeepEqual(a, b) {
 			continue
 		}
-		out = append(out, audit.FieldChange{Field: k, From: a, To: b})
+		out = append(out, audit.FieldChange{
+			Field:         k,
+			FieldLabelKey: labelsByCol[k],
+			From:          a,
+			To:            b,
+		})
 	}
 	if len(out) == 0 {
 		return nil
@@ -367,7 +424,7 @@ func childEventOf(
 		case domain.StatusAdded:
 			return audit.ChildEvent{ID: id, Op: "inserted", Snapshot: currentFields()}, true
 		case domain.StatusChanged:
-			return audit.ChildEvent{ID: id, Op: "updated", Changes: computeChanges(prevFields(), currentFields())}, true
+			return audit.ChildEvent{ID: id, Op: "updated", Changes: computeChanges(prevFields(), currentFields(), labelKeysByColumn(reflect.TypeOf(it.Item)))}, true
 		case domain.StatusRemoved:
 			return audit.ChildEvent{ID: id, Op: "archived", Snapshot: prevFields()}, true
 		default:

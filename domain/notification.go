@@ -84,6 +84,16 @@ type NotificationMessage struct {
 	// translation layer reads this via domain.MessageVars(msg) so call sites
 	// that do not need overrides pay nothing.
 	Vars map[string]string
+
+	// LabelKey is the catalog key the translation layer renders into the
+	// MessageDTO.FieldLabel wire field. Populated by Rules.AddNotification at
+	// emit time (resolved via the `label:"..."` struct tag on the field that
+	// triggered the notification — see domain/field_label.go::resolveLabelKey).
+	// Empty when the source field has no `label` tag; the wire elides the
+	// fieldLabel via json:"fieldLabel,omitempty" in that case. Consumers that
+	// build NotificationMessage directly via AddNotificationMessage may set
+	// LabelKey themselves to surface a label on a manual emission.
+	LabelKey string
 }
 
 // ResolveFieldName returns the effective wire-format field name following the

@@ -11,6 +11,59 @@ with `1.0.0`.
 
 ## [Unreleased]
 
+### Added
+
+- **Field labels — `label:"<catalogKey>"` struct tag on entity / value-object
+  fields.** Resolves through the same `Translator.Render` already used for
+  notification messages and produces translated human-readable identifiers
+  alongside the technical `field` / column name on every reactive output:
+  - **`MessageDTO.FieldLabel`** (new, `json:"fieldLabel,omitempty"`) carries
+    the rendered string in the actor's locale next to `FieldName`. Channels
+    without a frontend (e-mail, SMS, push) read it directly so the recipient
+    sees "CEP é inválido" instead of "addresses[0].zipCode é inválido".
+  - **`ErrorMessage.FieldLabel`** (new, `json:"fieldLabel,omitempty"`) on the
+    web envelope — `ResponseFromContextDTOs` + `ResponseFromContexts` both
+    propagate the value through so the wire HTTP response carries the
+    rendered label as published by the consumer.
+  - **`FieldChange.FieldLabelKey`** (new, `json:"fieldLabelKey,omitempty"`)
+    carries the catalog key on every audit row (root delta + child cascade).
+    Render-at-read fits compliance flows where the auditor reads in a locale
+    that may differ from the actor's; the key persists across catalog
+    evolution.
+  - **`FieldChange.FieldLabel`** (new, `json:"fieldLabel,omitempty"`) is the
+    read-time slot the audit renderer populates after consuming
+    `FieldLabelKey`. Mutually exclusive with `FieldLabelKey` in practice —
+    the in-flight write carries the key; the rendered read carries the text.
+- **`audit.RenderLabels(ev, t, lang)` + `audit.RenderLabelsInJSON(doc, t, lang)`.**
+  In-place audit read renderers. Walk every `FieldChange` (root + child
+  cascade), pop `FieldLabelKey`, and write the translated string to
+  `FieldLabel` via `Translator.Render(lang, key, nil)`. The typed
+  variant operates on `*audit.AuditEvent` for in-process Go readers; the
+  JSON variant operates on `map[string]any` for BI / SQL tools that parse
+  the `audit_events.jsonb` payload directly. Catalog miss inherits the
+  existing `Translator.Render` fallback (raw key + `slog.Warn` once per
+  `(lang, key)`). Snapshot blocks are intentionally not touched — they
+  carry `map[col]value` with no schema for labels.
+- **`Rules.entityType reflect.Type`** plus a third parameter on `NewRules`
+  (internal framework signature). `r.AddNotification` reads the field's
+  `label` tag at emit and writes the catalog key onto
+  `NotificationMessage.LabelKey`; the convert layer renders it via
+  `Translator.Render(lang, key, nil)` next to the existing Message render.
+  Same caching shape as the `tvar` extraction (`sync.Map` per `reflect.Type`).
+- **Documentation of the existing three-path field-name override surface.**
+  CLAUDE.md + DOCS.html now describe `AddFieldNameAlias` (entity-stable
+  rename), `ChangeFieldName` (request-conditional rename), and the default
+  PascalCase → camelCase emission side by side. Behavior unchanged — the
+  docs were lagging.
+
+### Changed
+
+- **`NewRules` signature gained `entityType reflect.Type` (3rd arg).** All
+  framework call sites updated (`entity_base.go` × 5, `aggregate_root.go` × 1,
+  `runAggregateValidations` × 2). Consumer code does NOT call `NewRules`
+  directly; the change is internal. Tests that exercise Rules in isolation
+  pass `nil` to opt out of label resolution.
+
 ## [0.6.0] - 2026-06-16
 
 ### Added

@@ -389,7 +389,7 @@ func ValidateAggregateChild(
 	scoped := rootCtx.Scoped(NameSegment(collectionName), IndexSegment(idx))
 	before := len(scoped.Messages())
 	mode := modeFromActionName(actionName)
-	item.BuildRules(actionName, svc, NewRules(mode, scoped))
+	item.BuildRules(actionName, svc, NewRules(mode, scoped, reflect.TypeOf(item)))
 	return len(scoped.Messages()) == before
 }
 

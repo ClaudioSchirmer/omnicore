@@ -63,10 +63,27 @@ type AuditEvent struct {
 // (same convention as the persistence layer). From and To are the pre- and
 // post-mutation values; both are JSON round-tripable so future recovery
 // code can apply the inverse delta back through the same wire format.
+//
+// FieldLabelKey carries the catalog key declared on the source struct's
+// `label:"<catalogKey>"` tag at write time. Stored as the raw key (not the
+// rendered string) so future audit readers can render the label in any
+// locale the catalog supports — preserving the immutability of the audit
+// row across catalog evolution. Empty when the source field has no `label`
+// tag; the omitempty elides it from both the audit_events JSON payload and
+// the slog echo so existing rows stay byte-identical.
+//
+// FieldLabel is the read-time slot the framework's RenderLabels populates
+// after consuming FieldLabelKey: the renderer clears the key, looks it up
+// via Translator.Render, and stores the rendered string here. Mutually
+// exclusive in practice with FieldLabelKey (omitempty on both): the
+// in-flight write carries FieldLabelKey, the rendered read carries
+// FieldLabel.
 type FieldChange struct {
-	Field string `json:"field"`
-	From  any    `json:"from"`
-	To    any    `json:"to"`
+	Field         string `json:"field"`
+	FieldLabelKey string `json:"fieldLabelKey,omitempty"`
+	FieldLabel    string `json:"fieldLabel,omitempty"`
+	From          any    `json:"from"`
+	To            any    `json:"to"`
 }
 
 // ChildEvent describes one cascade entry under AuditEvent.Children[typeName].
