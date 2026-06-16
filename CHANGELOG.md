@@ -11,6 +11,8 @@ with `1.0.0`.
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-06-16
+
 ### Added
 
 - **Field labels — `label:"<catalogKey>"` struct tag on entity / value-object
@@ -425,6 +427,7 @@ to content from a prior repo that no longer exists.
   emitted as best-effort `slog.Warn` whenever a hook returns non-nil
   error.
 
+[0.7.0]: https://github.com/ClaudioSchirmer/omnicore/releases/tag/v0.7.0
 [0.6.0]: https://github.com/ClaudioSchirmer/omnicore/releases/tag/v0.6.0
 [0.5.0]: https://github.com/ClaudioSchirmer/omnicore/releases/tag/v0.5.0
 [0.4.0]: https://github.com/ClaudioSchirmer/omnicore/releases/tag/v0.4.0
