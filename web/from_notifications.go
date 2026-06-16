@@ -20,6 +20,7 @@ func ResponseFromContextDTOs(dtos []notifications.ContextDTO, status int, descri
 			messages = append(messages, ErrorMessage{
 				NotificationKey: m.NotificationKey,
 				Field:           m.FieldName,
+				FieldLabel:      m.FieldLabel,
 				Value:           m.FieldValue,
 				FuncName:        m.FuncName,
 				Message:         m.Message,
@@ -58,6 +59,7 @@ func ResponseFromContexts(contexts []*domain.NotificationContext, status int, de
 			messages = append(messages, ErrorMessage{
 				NotificationKey: key,
 				Field:           m.ResolveFieldName(),
+				FieldLabel:      m.LabelKey, // no-translator path: raw key parallel to Message=key
 				Value:           m.FieldValue,
 				FuncName:        m.FuncName,
 				Message:         key,

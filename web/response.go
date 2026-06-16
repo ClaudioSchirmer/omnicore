@@ -54,9 +54,15 @@ type ErrorMessage struct {
 	// parsing translated message strings.
 	NotificationKey string `json:"notificationKey,omitempty"`
 	Field           string `json:"field,omitempty"`
-	Value           string `json:"value,omitempty"`
-	FuncName        string `json:"funcName,omitempty"`
-	Message         string `json:"message"`
+	// FieldLabel is the translated human-readable name of the source field,
+	// rendered in the actor's locale from the `label:"<catalogKey>"` struct tag
+	// on the entity / value-object field that triggered the notification.
+	// Empty when no tag is declared — the omitempty elides it from the wire.
+	// Channels without a frontend (e-mail, SMS, push) read this slot directly.
+	FieldLabel string `json:"fieldLabel,omitempty"`
+	Value      string `json:"value,omitempty"`
+	FuncName   string `json:"funcName,omitempty"`
+	Message    string `json:"message"`
 	// Semantic is the transport-agnostic classification of the source Notification
 	// as a string ("Validation", "NotFound", "Conflict", "Forbidden",
 	// "Unauthorized", "Unavailable"). Clients can branch UI without parsing the

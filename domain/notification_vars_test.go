@@ -169,7 +169,7 @@ func TestExtractVarsFromTags_CacheHitOnRepeatCall(t *testing.T) {
 
 func TestAddNotificationWithVars_PopulatesVarsAndFieldValue(t *testing.T) {
 	ctx := NewNotificationContext("Test")
-	r := NewRules(ModeInsert, ctx)
+	r := NewRules(ModeInsert, ctx, nil)
 
 	r.AddNotificationWithVars(
 		"Name",

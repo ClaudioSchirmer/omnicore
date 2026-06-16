@@ -20,14 +20,25 @@ func ToContextDTOs(
 		dtoMsgs := make([]MessageDTO, 0, len(msgs))
 		for _, m := range msgs {
 			key := domain.NotificationKey(m.Notification)
-			dtoMsgs = append(dtoMsgs, MessageDTO{
+			dto := MessageDTO{
 				NotificationKey: key,
 				FieldName:       m.ResolveFieldName(),
 				FieldValue:      m.FieldValue,
 				FuncName:        m.FuncName,
 				Message:         t.Render(lang, key, domain.MessageVars(m)),
 				Semantic:        m.Notification.Semantic(),
-			})
+			}
+			// Render the field's human label when the source struct declared
+			// a `label:"<catalogKey>"` tag (resolved at emit time by
+			// Rules.AddNotification and carried on m.LabelKey). Translator.Render
+			// applies its existing fallback-to-key + warn-once-per-(lang, key)
+			// posture on catalog miss, identical to how Message is handled
+			// one line above. Empty LabelKey skips the render — omitempty
+			// then elides FieldLabel from the wire.
+			if m.LabelKey != "" {
+				dto.FieldLabel = t.Render(lang, m.LabelKey, nil)
+			}
+			dtoMsgs = append(dtoMsgs, dto)
 		}
 		out = append(out, ContextDTO{
 			Context:  t.Render(lang, ctx.Context(), ctx.ContextVars()),

@@ -353,7 +353,7 @@ func getArchivable(e Entity, service Service, actionName string) (Archivable, er
 	// uniform with Insert/Update/Delete.
 	if checkSvcErr := checkService(e, actionName); checkSvcErr == nil {
 		e.setMode(ModeUpdate)
-		rules := NewRules(ModeUpdate, e.NotificationContext())
+		rules := NewRules(ModeUpdate, e.NotificationContext(), reflect.TypeOf(e))
 		e.BuildRules(actionName, e.getService(), rules)
 	}
 
@@ -398,7 +398,7 @@ func getUnarchivable(e Entity, service Service, actionName string) (Unarchivable
 	// dedicated actionName so IfUpdate fires for the unarchive transition.
 	if checkSvcErr := checkService(e, actionName); checkSvcErr == nil {
 		e.setMode(ModeUpdate)
-		rules := NewRules(ModeUpdate, e.NotificationContext())
+		rules := NewRules(ModeUpdate, e.NotificationContext(), reflect.TypeOf(e))
 		e.BuildRules(actionName, e.getService(), rules)
 	}
 
@@ -434,7 +434,7 @@ func validateForInsert(e Entity, actionName string) error {
 	if err := checkService(e, actionName); err != nil {
 		return err
 	}
-	rules := NewRules(ModeInsert, e.NotificationContext())
+	rules := NewRules(ModeInsert, e.NotificationContext(), reflect.TypeOf(e))
 	e.BuildRules(actionName, e.getService(), rules)
 
 	if !modeAllowed(e, ModeInsert) {
@@ -462,7 +462,7 @@ func validateForUpdate(e Entity, actionName string) error {
 	if err := checkService(e, actionName); err != nil {
 		return err
 	}
-	rules := NewRules(ModeUpdate, e.NotificationContext())
+	rules := NewRules(ModeUpdate, e.NotificationContext(), reflect.TypeOf(e))
 	e.BuildRules(actionName, e.getService(), rules)
 
 	if !modeAllowed(e, ModeUpdate) {
@@ -491,7 +491,7 @@ func validateForDelete(e Entity, actionName string) error {
 	if err := checkService(e, actionName); err != nil {
 		return err
 	}
-	rules := NewRules(ModeDelete, e.NotificationContext())
+	rules := NewRules(ModeDelete, e.NotificationContext(), reflect.TypeOf(e))
 	e.BuildRules(actionName, e.getService(), rules)
 
 	if !modeAllowed(e, ModeDelete) {
@@ -578,7 +578,7 @@ func runAggregateValidations(e Entity, mode EntityMode, actionName string) {
 						NameSegment(collectionName),
 						IndexSegment(idx),
 					)
-					item.Item.BuildRules(actionName, e.getService(), NewRules(mode, scoped))
+					item.Item.BuildRules(actionName, e.getService(), NewRules(mode, scoped, reflect.TypeOf(item.Item)))
 					idx++
 				}
 			}
@@ -590,7 +590,7 @@ func runAggregateValidations(e Entity, mode EntityMode, actionName string) {
 			continue
 		}
 		scoped := rootCtx.Scoped(NameSegment(entry.name))
-		entry.avo.BuildRules(actionName, e.getService(), NewRules(mode, scoped))
+		entry.avo.BuildRules(actionName, e.getService(), NewRules(mode, scoped, reflect.TypeOf(entry.avo)))
 	}
 }
 

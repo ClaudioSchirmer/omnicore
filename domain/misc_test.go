@@ -10,7 +10,7 @@ import (
 
 func TestRules_Mode_Context(t *testing.T) {
 	ctx := NewNotificationContext("X")
-	r := NewRules(ModeInsert, ctx)
+	r := NewRules(ModeInsert, ctx, nil)
 	if r.Mode() != ModeInsert {
 		t.Errorf("Mode() = %v", r.Mode())
 	}
@@ -20,14 +20,14 @@ func TestRules_Mode_Context(t *testing.T) {
 }
 
 func TestRules_AddNotification_NilCtxNoOp(t *testing.T) {
-	r := NewRules(ModeInsert, nil)
+	r := NewRules(ModeInsert, nil, nil)
 	r.AddNotification("x", RequiredFieldNotification{}) // must not panic
 	r.AddNotificationMessage(NotificationMessage{Notification: RequiredFieldNotification{}})
 }
 
 func TestRules_AddNotification_Forwards(t *testing.T) {
 	ctx := NewNotificationContext("Root")
-	r := NewRules(ModeInsert, ctx)
+	r := NewRules(ModeInsert, ctx, nil)
 	r.AddNotification("name", RequiredFieldNotification{})
 	r.AddNotification("email", RequiredFieldNotification{}, "x@y")
 
@@ -42,7 +42,7 @@ func TestRules_AddNotification_Forwards(t *testing.T) {
 
 func TestRules_AddNotificationMessage_Forwards(t *testing.T) {
 	ctx := NewNotificationContext("Root")
-	r := NewRules(ModeInsert, ctx)
+	r := NewRules(ModeInsert, ctx, nil)
 	r.AddNotificationMessage(NotificationMessage{
 		FieldName:    "service",
 		Err:          errors.New("boom"),
@@ -65,7 +65,7 @@ func TestRules_IfInsert_FiresOnlyOnInsert(t *testing.T) {
 	}
 	for _, tc := range cases {
 		ran := false
-		ret := NewRules(tc.mode, nil).IfInsert(func() { ran = true })
+		ret := NewRules(tc.mode, nil, nil).IfInsert(func() { ran = true })
 		if ret == nil {
 			t.Error("IfInsert should return *Rules")
 		}
@@ -78,7 +78,7 @@ func TestRules_IfInsert_FiresOnlyOnInsert(t *testing.T) {
 func TestRules_IfUpdate_FiresOnlyOnUpdate(t *testing.T) {
 	for _, m := range []EntityMode{ModeInsert, ModeUpdate, ModeDelete} {
 		ran := false
-		NewRules(m, nil).IfUpdate(func() { ran = true })
+		NewRules(m, nil, nil).IfUpdate(func() { ran = true })
 		if ran != (m == ModeUpdate) {
 			t.Errorf("mode=%v IfUpdate ran=%v", m, ran)
 		}
@@ -88,7 +88,7 @@ func TestRules_IfUpdate_FiresOnlyOnUpdate(t *testing.T) {
 func TestRules_IfDelete_FiresOnlyOnDelete(t *testing.T) {
 	for _, m := range []EntityMode{ModeInsert, ModeUpdate, ModeDelete} {
 		ran := false
-		NewRules(m, nil).IfDelete(func() { ran = true })
+		NewRules(m, nil, nil).IfDelete(func() { ran = true })
 		if ran != (m == ModeDelete) {
 			t.Errorf("mode=%v IfDelete ran=%v", m, ran)
 		}
@@ -98,7 +98,7 @@ func TestRules_IfDelete_FiresOnlyOnDelete(t *testing.T) {
 func TestRules_IfInsertOrUpdate(t *testing.T) {
 	for _, m := range []EntityMode{ModeInsert, ModeUpdate, ModeDelete, ModeDisplay} {
 		ran := false
-		NewRules(m, nil).IfInsertOrUpdate(func() { ran = true })
+		NewRules(m, nil, nil).IfInsertOrUpdate(func() { ran = true })
 		want := m == ModeInsert || m == ModeUpdate
 		if ran != want {
 			t.Errorf("mode=%v IfInsertOrUpdate ran=%v, want %v", m, ran, want)
@@ -109,7 +109,7 @@ func TestRules_IfInsertOrUpdate(t *testing.T) {
 func TestRules_IfDisplay(t *testing.T) {
 	for _, m := range []EntityMode{ModeInsert, ModeDisplay} {
 		ran := false
-		NewRules(m, nil).IfDisplay(func() { ran = true })
+		NewRules(m, nil, nil).IfDisplay(func() { ran = true })
 		if ran != (m == ModeDisplay) {
 			t.Errorf("mode=%v IfDisplay ran=%v", m, ran)
 		}

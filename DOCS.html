@@ -1118,11 +1118,11 @@ var _ persistence.BeforeCommitHookProvider[*User] = (*InsertUserCommand)(nil)</c
   "actorClaims": { "tenant_id": "acme" },
   "dateTime": "2026-06-09T12:00:00Z",
   "changes": [
-    { "field": "email", "from": "a@x.com", "to": "b@x.com" }
+    { "field": "email", "fieldLabelKey": "UserEmailField", "from": "a@x.com", "to": "b@x.com" }
   ],
   "children": {
     "Address": [
-      { "id": "addr-1", "op": "updated",  "changes": [{ "field": "label", "from": "home", "to": "home renamed" }] },
+      { "id": "addr-1", "op": "updated",  "changes": [{ "field": "label", "fieldLabelKey": "AddressLabelField", "from": "home", "to": "home renamed" }] },
       { "id": "addr-2", "op": "archived", "snapshot": { "label": "work" } },
       { "id": "",       "op": "inserted", "snapshot": { "label": "vacation" } }
     ]
@@ -3485,12 +3485,59 @@ type NotificationMessage struct {
     Notification Notification
 }
 
-func (m NotificationMessage) ResolveFieldName() string  // wire layer calls this</code></pre>
+func (m NotificationMessage) ResolveFieldName() string  // wire layer calls this
 
-    <h4>Manual override in a handler</h4>
+// On the BaseEntity surface — declarative alias mechanism.
+func (b *BaseEntity) AddFieldNameAlias(orig, new string)
+
+// On the NotificationContext surface — imperative override.
+func (c *NotificationContext) ChangeFieldName(orig, new string)</code></pre>
+
+    <h4>Controlling the wire field name</h4>
     <p>
-        <code>NotificationContext.ChangeFieldName(old, new)</code> compares against each message's <code>ResolveFieldName()</code> and sets <code>Override = new</code> on the ones that match. Path/FieldName originals stay preserved for diagnosis; only the wire changes. Used by the example's <code>PatchUserHandler</code> to reclassify <code>archived</code> when it appears with other fields.
+        Three paths feed <code>ResolveFieldName()</code>. Pick by lifetime of the rule — entity-wide and stable, per-request and conditional, or no override at all.
     </p>
+
+    <table>
+        <tr><th>Path</th><th>Where it lives</th><th>When to reach for it</th></tr>
+        <tr>
+            <td>Default emission</td>
+            <td><code>r.AddNotification(name, n)</code> inside <code>BuildRules</code></td>
+            <td>The Go identifier already matches the wire name (after acronym-aware <code>toLowerCamel</code>). The most common case — no extra plumbing needed.</td>
+        </tr>
+        <tr>
+            <td><code>BaseEntity.AddFieldNameAlias(orig, new)</code></td>
+            <td>Domain method on the entity (e.g. inside a constructor or a method called before validation runs)</td>
+            <td>The renaming is a <strong>stable rule of the entity</strong> — every message about <code>orig</code>, regardless of which handler triggered it, should surface as <code>new</code> on the wire. Applied automatically inside <code>checkAllNotifications</code> via <code>applyFieldAliases</code> before contexts are collected, so consumers never call <code>ChangeFieldName</code> by hand for this case.</td>
+        </tr>
+        <tr>
+            <td><code>NotificationContext.ChangeFieldName(orig, new)</code></td>
+            <td>Imperative call in a manual handler (or anywhere the consumer holds the <code>*NotificationContext</code>)</td>
+            <td>The renaming is <strong>conditional / per-endpoint</strong> — only this specific flow renames the field. Compares each message via <code>ResolveFieldName()</code> and sets <code>Override = new</code> on the ones that match. Path/FieldName originals stay preserved for diagnosis; only the wire changes.</td>
+        </tr>
+    </table>
+
+    <p>
+        Internally both override paths populate the same slot — <code>NotificationMessage.Override</code> — which sits at the top of the <code>ResolveFieldName()</code> precedence. The choice between <code>AddFieldNameAlias</code> and <code>ChangeFieldName</code> is purely about <em>when</em> the decision is taken: at entity definition time (declarative) versus at request-handling time (imperative).
+    </p>
+
+<pre><code>// Declarative — every emission about "Email" on this entity surfaces as "primaryEmail":
+func NewUser(...) *User {
+    u := &amp;User{...}
+    u.AddFieldNameAlias("Email", "primaryEmail")
+    return u
+}
+
+// Imperative — only this handler's response renames the field:
+func (h *AdminPatchHandler) Handle(ctx *configuration.AppContext, cmd *AdminPatchCommand) (...) {
+    // ... after Dispatch, before returning:
+    if errCarrier, ok := err.(domain.NotificationCarrier); ok {
+        for _, c := range errCarrier.NotificationContexts() {
+            c.ChangeFieldName("archived", "status")
+        }
+    }
+    // ...
+}</code></pre>
 
     <h4>Wire example</h4>
     <pre><code>POST /users  { "name": "", "addresses": [{ "zipCode": "" }] }
@@ -3505,6 +3552,165 @@ func (m NotificationMessage) ResolveFieldName() string  // wire layer calls this
     ]
   }]
 }</code></pre>
+
+    <h3 id="field-labels">Field labels — translated human identifier per field</h3>
+    <p>
+        The wire <code>field</code> and the audit <code>field</code> are technical identifiers — stable but not human-readable. Channels without a frontend (e-mail, SMS, push, audit read by compliance / ouvidoria / BI) consume the envelope directly and benefit from a translated label next to the technical identifier. <em>"CEP é inválido"</em> reads naturally; <em>"addresses[0].zipCode é inválido"</em> does not.
+    </p>
+    <p>
+        The mechanism reuses the existing <code>Translator</code> surface — no new translator, no boot phase, no schema endpoint. A <code>label:"&lt;catalogKey&gt;"</code> struct tag on the field declares which catalog entry renders the human label. The framework reads the tag at notification emit time and at audit write time, then surfaces the rendered string (on the notification wire) and the raw key (on the audit row) so future audit readers can re-render in any locale.
+    </p>
+
+    <h4>Declaration on the domain struct</h4>
+<pre><code>type User struct {
+    domain.AggregateRoot
+    Name  string  `label:"UserNameField"`
+    Email string  `label:"UserEmailField"`
+    Phone *string                            // no label tag — wire elides fieldLabel via omitempty
+}
+
+type Address struct {
+    Street  string `label:"AddressStreetField"`
+    ZipCode string `label:"AddressZipCodeField"`
+}</code></pre>
+
+    <h4>Catalog entries</h4>
+    <p>One entry per declared key, in every <code>translation.Module</code> the service registers:</p>
+<pre><code>// application/translations/ptbr.go
+"UserNameField":       "Nome",
+"UserEmailField":      "E-mail",
+"AddressStreetField":  "Rua",
+"AddressZipCodeField": "CEP",
+
+// application/translations/eng.go
+"UserNameField":       "Name",
+"UserEmailField":      "Email",
+"AddressStreetField":  "Street",
+"AddressZipCodeField": "ZIP Code",</code></pre>
+
+    <h4>Wire envelope (notification, PT-BR)</h4>
+<pre><code>POST /users  { "addresses": [{ "zipCode": "ABC" }] }
+
+→ 422 Unprocessable Entity
+{
+  "errors": [{
+    "context": "User",
+    "messages": [{
+      "notificationKey": "InvalidZipCodeNotification",
+      "field":           "addresses[0].zipCode",
+      "fieldLabel":      "CEP",
+      "value":           "ABC",
+      "message":         "O CEP é inválido."
+    }]
+  }]
+}</code></pre>
+    <p>
+        The same request under <code>Accept-Language: en-US</code> emits <code>"fieldLabel": "ZIP Code"</code>. Fields without a <code>label</code> tag emit <strong>no</strong> <code>fieldLabel</code> at all — the <code>omitempty</code> elides the slot, so services without label declarations see byte-identical envelopes to the pre-feature behavior.
+    </p>
+
+    <h4>Audit row (update, root delta)</h4>
+<pre><code>{
+  "verb":   "update",
+  "kind":   "delta",
+  "changes": [{
+    "field":          "name",
+    "fieldLabelKey": "UserNameField",
+    "from":           "Jane Doe",
+    "to":             "Jane Smith"
+  }]
+}</code></pre>
+    <p>
+        Audit stores the <strong>catalog key</strong>, not the rendered string — the row is immutable, but the catalog can evolve and the compliance team may read in any locale. Same shape on child cascade: <code>children["Address"][0].changes[0].fieldLabelKey</code> carries the key for the AVO field.
+    </p>
+
+    <h4>Reading audit rows — <code>audit.FindByID</code> and <code>audit.FindByAggregate</code></h4>
+    <p>
+        Two canonical helpers retrieve audit rows from the <code>audit_events</code> table when the destinations list includes <code>database</code>:
+    </p>
+<pre><code>// Forensic single-row lookup — you saw an id in the slog echo and want the full row.
+ev, err := audit.FindByID(ctx, deps.Postgres.Pool(), eventID)
+if errors.Is(err, audit.ErrAuditNotFound) {
+    // no row with that id — partition pruned? archived?
+}
+
+// Timeline by aggregate — index-served by audit_events_entity_timeline_idx
+// (entity_type, aggregate_id, occurred_at DESC). Newest first.
+events, err := audit.FindByAggregate(ctx, deps.Postgres.Pool(), "User", userID.String())
+for _, ev := range events {
+    // walk the row's lifetime
+}</code></pre>
+    <p>
+        Both helpers consume the minimal <code>pgExec</code> interface — <code>*pgxpool.Pool</code>, <code>*pgxpool.Conn</code>, <code>*pgx.Conn</code>, and <code>pgx.Tx</code> all satisfy it — so calls inside and outside an open transaction share the same surface. The returned <code>*AuditEvent</code> mirrors what the persister wrote: top-level columns map directly; the <code>payload jsonb</code> blob is unmarshaled back into <code>Snapshot</code> / <code>Changes</code> / <code>Children</code>.
+    </p>
+    <p>
+        Caveats: <code>FindByID</code> issues a multi-partition index scan because the PK is composite <code>(id, created_at)</code>; the common case (recent rows from a slog id) is fast, but archived partitions add cost — pass <code>created_at</code> explicitly via raw SQL when the lookup goes deep. <code>FindByAggregate</code> returns every matching row; aggregates with very long timelines should slice the result downstream or call raw SQL with explicit <code>LIMIT</code> / <code>OFFSET</code>. JSON round-trip on the payload returns <code>float64</code> / <code>string</code> / <code>bool</code> / <code>map</code> / <code>slice</code> — assert on stringified values, not on Go-typed scalars.
+    </p>
+
+    <h4>Reading the audit row — <code>audit.RenderLabels</code> and <code>audit.RenderLabelsInJSON</code></h4>
+    <p>
+        The framework ships an in-place audit renderer that consumes <code>fieldLabelKey</code> and replaces it with <code>fieldLabel</code> rendered in any locale the catalog supports. The post-render shape matches the canonical notification wire (<code>fieldLabel</code> populated, <code>fieldLabelKey</code> elided via <code>omitempty</code>) so a UI / dashboard reads both surfaces uniformly.
+    </p>
+<pre><code>// Typed path — in-process Go reader holding *audit.AuditEvent.
+audit.RenderLabels(ev, deps.Translator, configuration.LangPTBR)
+//   ev.Changes[0].FieldLabelKey == ""
+//   ev.Changes[0].FieldLabel    == "CEP"
+//   ev.Children["Address"][0].Changes[0].FieldLabel == "CEP"
+
+// JSON path — BI / SQL tools parsing the audit_events.jsonb payload as
+// a generic map[string]any.
+var doc map[string]any
+_ = json.Unmarshal(jsonbBytes, &amp;doc)
+audit.RenderLabelsInJSON(doc, deps.Translator, configuration.LangPTBR)
+//   doc["changes"][0]["fieldLabel"]    == "CEP"
+//   doc["changes"][0]["fieldLabelKey"] is deleted</code></pre>
+    <p>
+        Both helpers mutate the input in place (one-shot read; no copy ceremony) and walk the same audit shape — top-level <code>changes</code> plus <code>children.&lt;typeName&gt;[].changes</code>. Catalog miss inherits the existing <code>Translator.Render</code> fallback: the raw key reaches <code>fieldLabel</code> and a <code>slog.Warn("translation.key.missing", "lang", lang, "key", key)</code> fires once per <code>(lang, key)</code> tuple. <code>snapshot</code> blocks (Insert / Delete events) are intentionally not touched — they carry <code>map[column]value</code> with no schema for labels.
+    </p>
+
+    <h4>Resolution rules</h4>
+    <table>
+        <tr><th>Tag form</th><th>What happens</th></tr>
+        <tr>
+            <td><code>label:"&lt;catalogKey&gt;"</code></td>
+            <td>The field participates. <code>MessageDTO.FieldLabel</code> carries the rendered string in the actor's locale; <code>FieldChange.FieldLabelKey</code> carries the raw key on audit.</td>
+        </tr>
+        <tr>
+            <td>(no tag)</td>
+            <td>Field is invisible to the label surface. Both wire <code>fieldLabel</code> and audit <code>fieldLabelKey</code> stay empty — <code>omitempty</code> elides them.</td>
+        </tr>
+        <tr>
+            <td><code>label:"-"</code></td>
+            <td>Explicit opt-out (mirror of <code>json:"-"</code>). Empty tag value behaves the same.</td>
+        </tr>
+        <tr>
+            <td><code>transient:"-"</code></td>
+            <td>Transient fields are runtime-only — the framework's persister and audit already skip them, and label resolution skips them too. Tagging makes no sense but stays silent if the consumer drifts.</td>
+        </tr>
+        <tr>
+            <td>(catalog miss)</td>
+            <td><code>Translator.Render</code> falls back to the raw key as the rendered string and emits <code>slog.Warn("translation.key.missing", "lang", lang, "key", key)</code> once per <code>(lang, key)</code> tuple. Same posture <code>Translator.Render</code> already applies to <code>MessageDTO.Message</code>; no boot validator.</td>
+        </tr>
+    </table>
+
+    <h4>Catalog key naming (recommendation, not enforced)</h4>
+    <p>
+        <code>&lt;Entity&gt;&lt;Field&gt;Field</code> mirrors the framework's existing <code>&lt;What&gt;Notification</code> convention. The framework does not validate the shape — service catalogs can use any string. The recommendation only matters for keeping the catalog navigable and avoiding collisions with notification keys (notification keys end in <code>Notification</code>; label keys end in <code>Field</code>).
+    </p>
+
+    <h4>Interaction with <code>AddFieldNameAlias</code> / <code>ChangeFieldName</code></h4>
+    <p>
+        Label resolution operates on the <strong>Go field name</strong> the rule passed: <code>r.AddNotification("Email", n)</code> reads the <code>label</code> tag on the <code>Email</code> struct field. Wire renames affect only <code>FieldName</code> rendering — <code>AddFieldNameAlias("Email", "primaryEmail")</code> makes the wire say <code>"field": "primaryEmail"</code> while <code>"fieldLabel"</code> stays the translation of the tag on <code>Email</code>. The two surfaces are independent on purpose: alias renames the technical identifier; label translates the human identifier. Both reach the wire together but resolve through different paths.
+    </p>
+
+    <h4>Manual emission via <code>AddNotificationMessage</code></h4>
+    <p>
+        Consumer code that builds a <code>NotificationMessage</code> directly (rare escape hatch for <code>Err</code>/<code>FuncName</code>/<code>Override</code> cases) carries <code>LabelKey == ""</code> by default and gets no <code>fieldLabel</code> on the wire. Setting <code>msg.LabelKey = "&lt;catalogKey&gt;"</code> explicitly on the manual message reaches the same render path the canonical <code>r.AddNotification</code> uses.
+    </p>
+
+    <h4>Why backend, not frontend</h4>
+    <p>
+        Frontends typically own the labels of their forms (offline-capable mobile apps ship with their own i18n bundle). Backend-side labels exist because notifications reach the user via channels <strong>other than the frontend</strong> — e-mail, SMS, push, audit logs — where there is no JS engine to interpolate. Frontend i18n bundles and backend label catalogs are independent surfaces with independent owners; they describe the same field from different sides. There is intentional, controlled duplication between them.
+    </p>
 </section>
 
 <section id="httpclient">

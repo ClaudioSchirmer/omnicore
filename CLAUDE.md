@@ -397,7 +397,7 @@ Body block — exactly one of the three regimes applies per event, selected by `
 | `kind` | Verbs | Carries | What's in the block |
 |---|---|---|---|
 | `snapshot` | `insert`, `delete` | `snapshot: map[column]value` | Full state (post-insert for Insert; pre-delete via Old() for Delete) |
-| `delta` | `update` | `changes: []{field,from,to}` sorted by `field` | Only mutated columns; unchanged ones absent |
+| `delta` | `update` | `changes: []{field,fieldLabelKey,from,to}` sorted by `field` | Only mutated columns; unchanged ones absent. `fieldLabelKey` (omitempty) carries the catalog key declared on the source field's `label:"..."` struct tag — see "Field labels" under [Notification system](#notification-system-domainnotificationgo) |
 | `transition` | `archive`, `unarchive` | (neither block) | The verb itself is the recovery hint (symmetric inverse) |
 
 `PartialUpdate` (PATCH) shares `verb=update` with PUT (SQL is identical). The PUT vs PATCH distinction lives in `actionName` (`GetUpdatable` vs `GetPartialUpdatable`). Same unification the domain already applies — `IfUpdate` fires for both verbs. `Updatable.IsPartial()` is preserved on the type for non-audit callers but no longer routes the audit verb.
@@ -471,12 +471,89 @@ Wire format of each one:
 
 Mechanics:
 
-1. **Rules carries ctx.** `NewRules(mode, ctx)` packages the EntityMode + destination NotificationContext. `r.AddNotification`/`r.AddNotificationMessage` delegate to the internal ctx. For the root, ctx is the entity's own `e.NotificationContext()`; for an AVO, ctx is a `Scoped(NameSegment(collection), IndexSegment(i))` view of the root's ctx.
+1. **Rules carries ctx + entityType.** `NewRules(mode, ctx, entityType)` packages the EntityMode + destination NotificationContext + the Go `reflect.Type` of the entity / value object that owns this Rules. `r.AddNotification`/`r.AddNotificationMessage` delegate to the internal ctx; the entityType lets `AddNotification` read the field's `label:"..."` struct tag at emit time and stamp `LabelKey` on the emitted message (see "Field labels" below). For the root, ctx is the entity's own `e.NotificationContext()` and entityType is `reflect.TypeOf(self)`; for an AVO, ctx is a `Scoped(NameSegment(collection), IndexSegment(i))` view of the root's ctx and entityType is `reflect.TypeOf(self)` of the AVO struct.
 2. **Collection name inferred by convention.** `runAggregateValidations` iterates `root.AllAggregateItems()` and uses `PluralizeSnake(PascalToSnake(typeName))` as the collection segment name (`"addresses"`, `"order_items"`, etc). No per-entity declaration needed — the convention matches the table name inference used by infra.
 3. **Render `toLowerCamel` acronym-aware.** A Go identifier becomes camelCase: `Name`→`name`, `CPF`→`cpf`, `ZipCode`→`zipCode`, `URLPath`→`urlPath`. Strings already in lowercase pass through — so the legacy `FieldName: "id"` in mode validators remains intact.
 4. **Wire layer reads `ResolveFieldName()`** (`web/from_notifications.go`, `application/notifications/convert.go`) with precedence **Override > rendered Path > FieldName**.
 
-**Manual override.** `ctx.ChangeFieldName(old, new)` walks messages and sets `Override = new` on matching ones. The original Path/FieldName remain preserved for diagnosis; only the wire changes. Used by the example's `PatchUserHandler` to reclassify `archived` when it appears with other fields.
+**Controlling the wire field name — three paths.** All three feed `ResolveFieldName()`; pick by lifetime of the rule:
+
+- **Default emission** — `r.AddNotification("Name", n)` inside `BuildRules`. The acronym-aware `toLowerCamel` render produces the wire name (`"name"`, `"zipCode"`, `"urlPath"`). The common case — no override needed.
+- **`BaseEntity.AddFieldNameAlias(orig, new)`** — declarative on the entity. Every emission about `orig` surfaces as `new` on the wire, regardless of which handler triggered it. Applied automatically inside `checkAllNotifications` via `applyFieldAliases` before contexts are collected — consumers never call `ChangeFieldName` by hand for this case. Use when the renaming is a stable rule of the entity (legacy-compat shim, public-vs-internal naming).
+- **`NotificationContext.ChangeFieldName(orig, new)`** — imperative in a manual handler. Walks messages, compares each against `ResolveFieldName()`, sets `Override = new` on the ones that match. Path/FieldName originals stay preserved for diagnosis; only the wire changes. Use when the renaming is conditional / per-endpoint.
+
+Both override paths populate the same slot (`NotificationMessage.Override`) which sits at the top of the `ResolveFieldName()` precedence. The choice is purely about *when* the decision is taken — entity-definition time vs request-handling time.
+
+**Field labels — `label:"<catalogKey>"` struct tag.** The wire `field` (`addresses[0].zipCode`) and the audit `field` (`addresses[0].zip_code`) are technical identifiers. They are stable but not human-readable. Channels without a frontend (e-mail / SMS / push / audit read by compliance) consume the envelope directly and benefit from a translated label next to the technical identifier — "CEP é inválido" reads naturally; "addresses[0].zipCode é inválido" does not.
+
+The mechanism extends the existing translation surface (no new translator, no boot phase): a `label:"<catalogKey>"` struct tag on the field declares which catalog entry renders the human label. `Rules.AddNotification` reads the tag at emit time via `reflect.Type` and writes the catalog key on `NotificationMessage.LabelKey`; the translation layer (`application/notifications/convert.go::ToContextDTOs`) renders the key via `Translator.Render(lang, key, nil)` alongside the existing `Message` render and surfaces the result on `MessageDTO.FieldLabel`. The audit pipeline (`infra/audit_builder.go::computeChanges`) walks the same tag and writes the raw key on `FieldChange.FieldLabelKey`; `audit.RenderLabels` (typed) and `audit.RenderLabelsInJSON` (map-form) consume the key at read time and replace it with `FieldLabel` rendered in the chosen locale.
+
+```go
+// consumer side — domain/user.go
+type User struct {
+    domain.AggregateRoot
+    Name  string  `label:"UserNameField"`
+    Email string  `label:"UserEmailField"`
+    Phone *string                            // no label tag — nothing emitted
+}
+
+type Address struct {
+    Street  string `label:"AddressStreetField"`
+    ZipCode string `label:"AddressZipCodeField"`
+}
+```
+
+```go
+// consumer side — application/translations/ptbr.go (one entry per declared key)
+"UserNameField":       "Nome",
+"UserEmailField":      "E-mail",
+"AddressStreetField":  "Rua",
+"AddressZipCodeField": "CEP",
+```
+
+Wire envelope on a notification rendered in PT-BR with `label:"AddressZipCodeField"` on `Address.ZipCode`:
+
+```json
+{
+  "context": "User",
+  "messages": [{
+    "notificationKey": "InvalidZipCodeNotification",
+    "field": "addresses[0].zipCode",
+    "fieldLabel": "CEP",
+    "value": "ABC",
+    "message": "O CEP é inválido."
+  }]
+}
+```
+
+Audit row (root delta on `Name`) with `label:"UserNameField"` on `User.Name`:
+
+```json
+{
+  "verb": "update",
+  "kind": "delta",
+  "changes": [{
+    "field": "name",
+    "fieldLabelKey": "UserNameField",
+    "from": "Jane Doe",
+    "to": "Jane Smith"
+  }]
+}
+```
+
+Rules:
+
+- **Tag value = catalog key.** Lookup goes through the standard `Translator.Render(lang, key, nil)` — same primitive `MessageDTO.Message` uses today.
+- **No tag = no label.** The wire `MessageDTO.FieldLabel` and the audit `FieldChange.FieldLabelKey` are `omitempty` — services without `label` tags see byte-identical envelopes.
+- **`label:"-"`** opts a field out explicitly (mirror of `json:"-"`); empty tag value is treated the same.
+- **`transient:"-"` skips the label too.** A transient field is runtime-only; the framework never surfaces it on the wire or in audit, label included.
+- **Catalog miss → raw key fallback.** Same posture `Translator.Render` already applies to `MessageDTO.Message`: returns the catalog key as the rendered string AND emits `slog.Warn("translation.key.missing", "lang", lang, "key", key)` once per `(lang, key)` tuple. No boot-time validator.
+- **Audit stores the key, not the rendered string.** Immutable artifact — the catalog evolves; the key remains. Readers render in the locale they want via `audit.RenderLabels(ev, t, lang)` (typed `*AuditEvent`) or `audit.RenderLabelsInJSON(doc, t, lang)` (parsed `map[string]any` from the `audit_events.jsonb` payload). Both helpers walk top-level `changes` + `children.<typeName>[].changes`, pop `fieldLabelKey`, and write `fieldLabel` rendered via `Translator.Render`. Snapshot blocks (Insert / Delete) are intentionally not touched — they carry `map[column]value` with no schema for labels.
+- **Resolution is by the Go field name the rule passed.** `r.AddNotification("Email", n)` reads the `label` tag on `Email`. `AddFieldNameAlias("Email", "primaryEmail")` renames the wire `field` only — `fieldLabel` stays the translation of the tag on `Email`. The two surfaces are independent.
+- **Naming convention (recommendation).** `<Entity><Field>Field` (e.g. `UserNameField`, `AddressZipCodeField`) mirrors the `<What>Notification` convention. Not enforced — any catalog key string works.
+- **Manual emission via `AddNotificationMessage`** carries `LabelKey == ""` by default. Set `msg.LabelKey = "<catalogKey>"` explicitly on the message when the manual path needs a label.
+
+Reflection plan cached per `reflect.Type` (`sync.Map` in `domain/field_label.go`) — first emission on a given type pays one walk; subsequent emissions are direct map reads. Same shape as the `tvar` extraction cache.
 
 **`r.AddNotification(field, n, value)` covers the common case.** The variadic `value` becomes `FieldValue` and supports `string`, `*string` (safe deref), nil, and any other type (via `fmt.Sprint`). For messages that need `Err`, `FuncName`, `Override`, or multi-segment Path, use `r.AddNotificationMessage(NotificationMessage{...})` — rare escape hatch.
 
@@ -1635,7 +1712,11 @@ The Semantic enum is **transport-agnostic** — a future gRPC layer would map th
 | Unlock `?search=` on a view (text index required by Mongo $text) | declare `fwinfra.TextIndex("field1", "field2", ...)` on the view's `.Indexes(...)`. Without it, the view's `?search=` requests crash at runtime with Mongo error 27 ("text index required for $text query"). At most one `TextIndex` per view — Mongo's limit. |
 | Emit validation msg (root OR AVO) | inside `BuildRules`: `r.AddNotification("GoIdentifier", n)` — same shape on both. To echo the rejected input: `r.AddNotification("Email", n, u.Email)`. For messages with Err/FuncName/Override: `r.AddNotificationMessage(NotificationMessage{...})` |
 | Implement AVO validation | `func (a Address) BuildRules(svc Service, r *Rules)` — same shape as `Entity.BuildRules`, only loses `actionName` |
-| Override wire field in manual handler | `ctx.ChangeFieldName(resolvedOldName, newName)` — sets `Override` on matching messages without losing Path/FieldName |
+| Rename a wire field for the whole entity (stable rule) | `u.AddFieldNameAlias("Email", "primaryEmail")` on `*BaseEntity` (typically in the constructor). Applied automatically inside `checkAllNotifications` via `applyFieldAliases` — every message about `Email` surfaces as `primaryEmail` on the wire, regardless of which handler triggered it |
+| Rename a wire field for one request (conditional) | `ctx.ChangeFieldName(resolvedOldName, newName)` — imperative in a manual handler; sets `Override` on matching messages without losing Path/FieldName |
+| Expose a translated human label for a field (notifications + audit) | declare `label:"<catalogKey>"` on the struct field (e.g. `ZipCode string \`label:"AddressZipCodeField"\``) and add the catalog entry in each `translation.Module`. `Rules.AddNotification` reads the tag at emit; `MessageDTO.FieldLabel` carries the rendered string in the actor's locale; `FieldChange.FieldLabelKey` carries the raw key for audit (render-at-read). Missing catalog entry → raw key on wire + `slog.Warn` once per `(lang, key)`. Independent of `AddFieldNameAlias`/`ChangeFieldName` — alias renames `FieldName`, label translates `FieldLabel` |
+| Render an audit row's field labels at read time | `audit.RenderLabels(ev, deps.Translator, lang)` for a typed `*audit.AuditEvent` held in-process; `audit.RenderLabelsInJSON(doc, deps.Translator, lang)` for a `map[string]any` parsed off the `audit_events.jsonb` payload (BI / SQL consumers). Both mutate in place: walk `changes` + `children.<typeName>[].changes`, pop `fieldLabelKey`, and write `fieldLabel` rendered via `Translator.Render`. Snapshot blocks untouched. Catalog miss → raw key + `slog.Warn` once per `(lang, key)` |
+| Read an audit row by id or timeline by aggregate | `audit.FindByID(ctx, exec, uuid)` returns `(*AuditEvent, error)`; miss surfaces as `audit.ErrAuditNotFound`. `audit.FindByAggregate(ctx, exec, entityType, aggregateID)` returns `[]*AuditEvent` newest-first (index-served by `audit_events_entity_timeline_idx`). Both consume the minimal `pgExec` interface (`*pgxpool.Pool` / `*pgxpool.Conn` / `*pgx.Conn` / `pgx.Tx`). Compose with `audit.RenderLabels` for translated read in three lines |
 | 1-message error in domain | `domain.SingleNotificationError(ctx, field, n)` / `domain.NotFoundError(ctx, field, value)` / `domain.FieldErrorWithCause(ctx, field, cause, n)` |
 | 1-message error in infra / application | `infra.SingleNotificationError(...)` / `infra.FieldErrorWithCause(...)` / `exception.SingleNotificationError(...)` / `exception.FieldErrorWithCause(...)` |
 | Get AppContext in a Fiber handler | `fwweb.AppContext(c)` (already populated by `bootstrap.Run`'s default middleware) |
