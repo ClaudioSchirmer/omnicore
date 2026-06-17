@@ -3739,6 +3739,35 @@ func cache.SetJSON[T any](ctx, c cache.Cache, key string, value T, ttl time.Dura
   <p>The distinction is enforced at the <strong>dependency-injection level</strong>, not via a flag on Set/Get. Code that wants to write a shared value writes to <code>Deps.SharedCache</code>; code that doesn't is structurally unable to. Default safety: <code>Deps.SharedCache</code> is <code>nil</code> unless declared — feature code touching it MUST guard explicitly. The httpclient response cache uses <code>Deps.Cache</code> (private) unconditionally.</p>
   <p class="note"><strong><code>cache.shared.store: memory</code> is REJECTED at boot.</strong> An in-process LRU cannot honor cross-service reads; the framework forces the operator to pick <code>redis</code> or <code>custom</code> for the shared cache.</p>
 
+  <h3>Which combination has which scope</h3>
+  <p>The scope of a cached value is decided by TWO axes, not one. The <strong>slot</strong> (<code>Deps.Cache</code> vs <code>Deps.SharedCache</code>) decides <em>who is allowed to read it</em> — the same service, or any service in the cluster. The <strong>backend</strong> (<code>memory</code> vs <code>redis</code>/<code>custom</code>) decides <em>where the bytes live</em> — inside this one process, or in a shared store that survives restarts and is visible to every replica. Cross those two axes and three meaningful combinations fall out:</p>
+  <table>
+    <thead>
+      <tr><th>Scope you want</th><th>Slot</th><th>Backend</th><th>What it means concretely</th></tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td><strong>Only this microservice instance</strong> (per-process, per-pod)</td>
+        <td><code>Deps.Cache</code></td>
+        <td><code>memory</code></td>
+        <td>In-process LRU+TTL. Each replica has its own copy; entries are <strong>lost on restart</strong> and never visible to another pod. The only combination that is local to a single running instance.</td>
+      </tr>
+      <tr>
+        <td><strong>This microservice, independent of the instance</strong> (shared across all its replicas, survives restarts)</td>
+        <td><code>Deps.Cache</code></td>
+        <td><code>redis</code> (or <code>custom</code>)</td>
+        <td>All replicas of the service read/write the same backend; entries <strong>survive restarts</strong>. The service's own <code>keyPrefix</code> namespaces the keys so other services don't read them — private to the service, but not tied to any one instance.</td>
+      </tr>
+      <tr>
+        <td><strong>Shared between different microservices</strong> (cross-service)</td>
+        <td><code>Deps.SharedCache</code></td>
+        <td><code>redis</code> (or <code>custom</code>)</td>
+        <td>Populated only when <code>cache.shared:</code> is declared. Intended for keys other services in the cluster read — feature flags coordinated across services, cluster-wide rate limits, sessions consumed by an API gateway. <code>memory</code> is rejected at boot here.</td>
+      </tr>
+    </tbody>
+  </table>
+  <p>Two practical notes. First, the two slots can point at the <strong>same Redis instance</strong> — what separates "private to the service" from "shared across services" is the slot + the <code>keyPrefix</code> (<code>${SERVICE}-cache</code> vs <code>${TEAM}-shared</code>), not a second server. Second, the only structural rule the framework enforces at boot is that <code>cache.shared.store</code> may never be <code>memory</code> — an in-process LRU cannot, by definition, be shared across services. Everything else is the operator's choice.</p>
+
   <h3>YAML — top-level <code>cache:</code> block</h3>
 <pre><code>cache:
   store: memory                     # memory (default) | redis | custom
