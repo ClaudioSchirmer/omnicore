@@ -436,7 +436,9 @@ func TestMongoViewReader_DefaultLimitWhenZero(t *testing.T) {
 
 	col := m.Collection("users")
 	ctx := context.Background()
-	for i := 0; i < 25; i++ {
+	// Insert more than the framework default ceiling (100) so the "no ?limit="
+	// default cap is observable.
+	for i := 0; i < 105; i++ {
 		col.InsertOne(ctx, bson.M{"_id": i, "deleted_at": nil})
 	}
 
@@ -445,16 +447,17 @@ func TestMongoViewReader_DefaultLimitWhenZero(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ReadPage: %v", err)
 	}
-	// defaultReadLimit is 20.
-	if len(page.Items) != 20 {
-		t.Errorf("default page size = %d, want 20", len(page.Items))
+	// With no per-view / yaml override, the ceiling is
+	// FrameworkDefaultMaxReadLimit (100); an absent limit defers to the ceiling.
+	if len(page.Items) != 100 {
+		t.Errorf("default page size = %d, want 100 (framework ceiling)", len(page.Items))
 	}
 	if !page.HasNext {
-		t.Error("expected HasNext=true with 25 items")
+		t.Error("expected HasNext=true with 105 items under a 100 ceiling")
 	}
 }
 
-func TestMongoViewReader_CursorRoundTrip_BadInputFalls(t *testing.T) {
+func TestMongoViewReader_BadCursorRejected(t *testing.T) {
 	m, cleanup := newTestMongo(t)
 	defer cleanup()
 
@@ -463,13 +466,11 @@ func TestMongoViewReader_CursorRoundTrip_BadInputFalls(t *testing.T) {
 	col.InsertOne(ctx, bson.M{"_id": "1", "deleted_at": nil})
 
 	reader := NewMongoViewReader(m)
-	// A garbage cursor should be silently ignored (decodeCursor failure path).
-	page, err := reader.ReadPage(ctx, "users", queries.ReadCriteria{After: "garbage-cursor"})
-	if err != nil {
-		t.Fatalf("ReadPage with bad cursor should not fail, got %v", err)
-	}
-	if len(page.Items) != 1 {
-		t.Errorf("expected to fall back to full page, got %d items", len(page.Items))
+	// A malformed cursor is strictly rejected (keyset contract: an invalid
+	// cursor surfaces as an error, mapped to the canonical 400 upstream —
+	// never silently ignored).
+	if _, err := reader.ReadPage(ctx, "users", queries.ReadCriteria{After: "garbage-cursor"}); err == nil {
+		t.Error("expected an error for a malformed cursor, got nil")
 	}
 }
 

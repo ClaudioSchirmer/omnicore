@@ -151,6 +151,25 @@ func createFrameworkTables(ctx context.Context, pool *pgxpool.Pool) error {
 			applied_by TEXT NOT NULL,
 			code_version TEXT
 		)`,
+		`CREATE TABLE audit_events (
+			id            UUID         NOT NULL DEFAULT gen_random_uuid(),
+			aggregate_id  UUID         NOT NULL,
+			entity_type   VARCHAR(255) NOT NULL,
+			verb          VARCHAR(32)  NOT NULL,
+			action_name   VARCHAR(64)  NOT NULL,
+			kind          VARCHAR(16)  NOT NULL,
+			actor         VARCHAR(255),
+			actor_issuer  VARCHAR(255),
+			tenant_id     VARCHAR(255),
+			thread_id     UUID         NOT NULL,
+			occurred_at   TIMESTAMP    NOT NULL,
+			created_at    TIMESTAMP    NOT NULL DEFAULT NOW(),
+			payload       JSONB        NOT NULL,
+			PRIMARY KEY (id, created_at)
+		) PARTITION BY RANGE (created_at)`,
+		`CREATE TABLE audit_events_default PARTITION OF audit_events DEFAULT`,
+		`CREATE INDEX audit_events_entity_timeline_idx
+			ON audit_events (entity_type, aggregate_id, occurred_at DESC)`,
 	}
 	for _, s := range stmts {
 		if _, err := pool.Exec(ctx, s); err != nil {
