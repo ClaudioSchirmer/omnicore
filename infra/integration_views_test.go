@@ -302,28 +302,10 @@ func TestView_EmbedAddsOneToOneSource(t *testing.T) {
 	}
 }
 
-func TestFrom_MarksIsMongoFalse(t *testing.T) {
-	s := From("t").On("v_id")
-	if s.IsMongo() {
-		t.Error("From should mark IsMongo=false")
-	}
-	if s.JoinKey() != "v_id" {
-		t.Errorf("JoinKey() = %q", s.JoinKey())
-	}
-}
-
-func TestFromMongo_MarksIsMongoTrue(t *testing.T) {
-	s := FromMongo("c").On("v_id")
-	if !s.IsMongo() {
-		t.Error("FromMongo should mark IsMongo=true")
-	}
-	if s.Collection() != "c" {
-		t.Errorf("Collection() = %q", s.Collection())
-	}
-	if s.JoinKey() != "v_id" {
-		t.Errorf("JoinKey() = %q", s.JoinKey())
-	}
-}
+// TestFrom_MarksIsMongoFalse and TestFromMongo_MarksIsMongoTrue live in
+// view_unit_test.go (no build tag) so they run in the default unit suite —
+// they are pure builder checks with no integration dependency. Keeping them
+// here too would redeclare them under -tags=integration.
 
 func TestSource_EmbedAndEmbedManyAppend(t *testing.T) {
 	s := From("a").Embed("b", From("b")).EmbedMany("c", From("c"))

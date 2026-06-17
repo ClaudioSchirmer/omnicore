@@ -29,8 +29,6 @@ import (
 	mongoopts "go.mongodb.org/mongo-driver/v2/mongo/options"
 
 	"github.com/ClaudioSchirmer/omnicore/application/configuration"
-	"github.com/ClaudioSchirmer/omnicore/application/persistence"
-	"github.com/ClaudioSchirmer/omnicore/domain"
 )
 
 const (
@@ -38,10 +36,11 @@ const (
 	defaultMongoURI   = "mongodb://localhost:27018"
 )
 
-// testCtx returns a persistence.RequestContext suitable for integration tests. The
-// underlying *AppContext carries a random request id; tests calling the
-// persister methods pass this in as the first arg.
-func testCtx() persistence.RequestContext {
+// testCtx returns the *AppContext used across the integration tests. It
+// carries a random request id and satisfies persistence.RequestContext, so
+// it feeds both the *Postgres methods (which take RequestContext) and
+// BaseRepository.Scope (which takes the concrete *AppContext).
+func testCtx() *configuration.AppContext {
 	return configuration.NewAppContextWithRandomID(configuration.LangENG)
 }
 
