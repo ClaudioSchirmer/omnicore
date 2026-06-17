@@ -4,6 +4,7 @@ import (
 	"context"
 
 	"github.com/ClaudioSchirmer/omnicore/application/translation"
+	"github.com/ClaudioSchirmer/omnicore/infra/cache"
 	"github.com/ClaudioSchirmer/omnicore/web/openapi"
 	"github.com/gofiber/fiber/v3"
 )
@@ -44,4 +45,18 @@ type Wiring struct {
 	// Empty/nil means the service does no cross-service composition.
 	// See tasks/mongo_cross_service_composition_final.md.
 	UpstreamSubscriptions []UpstreamSubscription
+
+	// Cache is the escape hatch for cache.store: custom in YAML. When
+	// set, the framework uses this implementation as Deps.Cache; the
+	// conflict matrix (declared in cache_config.go::resolveCache)
+	// rejects every YAML store value other than "custom" so the
+	// configuration always describes the intent.
+	Cache cache.Cache
+
+	// SharedCache is the escape hatch for cache.shared.store: custom.
+	// Same conflict matrix as Cache, with the additional rule that
+	// cache.shared.store: memory is rejected at boot regardless of
+	// Wiring — an in-process LRU cannot satisfy the cross-service
+	// read contract.
+	SharedCache cache.Cache
 }

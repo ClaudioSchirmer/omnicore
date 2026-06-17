@@ -101,6 +101,29 @@ func runWithConfig(cfg *Config, wire func(Deps) Wiring) error {
 		return err
 	}
 
+	// Late cache injection — when cfg.Cache.Store == "custom" (or
+	// cache.shared.store == "custom"), buildDeps left the matching
+	// Deps.Cache / Deps.SharedCache nil because the implementation
+	// arrives via Wiring. Now that Wire(deps) has run, reconcile:
+	// resolveCache pairs the YAML intent with the injected instance,
+	// rejects mismatches (e.g. Wire.Cache set but store: memory), and
+	// the httpclient picks up the resolved private cache via SetCache
+	// — late binding through the atomic pointer means in-flight chain
+	// reads see the new instance without rebuild.
+	if c, err := resolveCache(cfg.Cache, wiring.Cache); err != nil {
+		return fmt.Errorf("bootstrap: cache (post-wire): %w", err)
+	} else if c != nil && c != deps.Cache {
+		deps.Cache = c
+		if deps.HttpClient != nil {
+			deps.HttpClient.SetCache(c)
+		}
+	}
+	if c, err := resolveSharedCache(cfg.Cache, wiring.SharedCache); err != nil {
+		return fmt.Errorf("bootstrap: shared cache (post-wire): %w", err)
+	} else if c != nil && c != deps.SharedCache {
+		deps.SharedCache = c
+	}
+
 	if wiring.OpenAPI != nil {
 		deps.OpenAPIRegistry = openapi.NewRegistry()
 		deps.Logger.Info("openapi enabled",
@@ -243,9 +266,35 @@ func buildDeps(cfg *Config) (Deps, error) {
 	pg.WithAudit(&cfg.Audit, logger, cfg.Auth.AuditClaims)
 	viewReader := infra.NewMongoViewReader(mg)
 
+	// Resolve the SERVICE-PRIVATE cache from cfg only (no Wire
+	// injection at this stage). If cfg.Cache.Store == "custom", the
+	// resolution returns nil + error pointing operator to the
+	// Build+Serve flow with Wiring.Cache. memory / redis backends
+	// resolve directly.
+	privateCache, err := resolveCache(cfg.Cache, nil)
+	if err != nil {
+		pg.Close()
+		_ = mg.Close(context.Background())
+		return Deps{}, fmt.Errorf("bootstrap: cache init: %w", err)
+	}
+	sharedCache, err := resolveSharedCache(cfg.Cache, nil)
+	if err != nil {
+		pg.Close()
+		_ = mg.Close(context.Background())
+		return Deps{}, fmt.Errorf("bootstrap: shared cache init: %w", err)
+	}
+	if privateCache != nil {
+		logger.Info("cache configured", "store", cfgCacheStore(cfg.Cache))
+	}
+	if sharedCache != nil {
+		logger.Info("shared cache configured", "store", cfgSharedStore(cfg.Cache))
+	}
+
 	var hc *httpclient.HttpClient
 	if cfg.HttpClient != nil {
-		hc, err = httpclient.New(cfg.HttpClient, httpclient.WithLogger(logger))
+		hc, err = httpclient.New(cfg.HttpClient,
+			httpclient.WithLogger(logger),
+			httpclient.WithCache(privateCache))
 		if err != nil {
 			pg.Close()
 			_ = mg.Close(context.Background())
@@ -271,9 +320,31 @@ func buildDeps(cfg *Config) (Deps, error) {
 		Translator:          tr,
 		Pipeline:            pipe,
 		ViewReader:          viewReader,
+		Cache:               privateCache,
+		SharedCache:         sharedCache,
 		HttpClient:          hc,
 		IntegrationRegistry: integrationRegistry,
 	}, nil
+}
+
+// cfgCacheStore returns the operator-declared store value (or the
+// effective default "memory") for logging. Defensive guard so a missing
+// block is reported as "" rather than panicking.
+func cfgCacheStore(cfg *CacheConfig) string {
+	if cfg == nil {
+		return ""
+	}
+	if cfg.Store == "" {
+		return "memory"
+	}
+	return cfg.Store
+}
+
+func cfgSharedStore(cfg *CacheConfig) string {
+	if cfg == nil || cfg.Shared == nil {
+		return ""
+	}
+	return cfg.Shared.Store
 }
 
 // buildApp assembles the *fiber.App with default middlewares, /health route

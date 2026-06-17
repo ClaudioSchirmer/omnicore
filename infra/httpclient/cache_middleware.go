@@ -5,13 +5,17 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/url"
 	"sort"
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/ClaudioSchirmer/omnicore/infra/cache"
 )
 
 // cacheMiddleware is the GET/HEAD cache layer at chain position 6. On a hit
@@ -19,19 +23,21 @@ import (
 // on a miss it delegates and stores 2xx responses (plus acceptable-status
 // responses when cacheAcceptable is true on the endpoint).
 //
-// Bypass paths (obs.CacheStatus = "bypass"): policy disabled, method other
-// than GET/HEAD, per-call CallConfig.NoCache, or Cache-Control: no-store
-// on the response.
+// Bypass paths (obs.CacheStatus = "bypass"): policy disabled, the backing
+// cache.Cache is nil (operator omitted the top-level cache: block in YAML),
+// method other than GET/HEAD, per-call CallConfig.NoCache, or
+// Cache-Control: no-store on the response.
 //
-// Backend errors are surfaced verbatim. The middleware does not translate
-// them or swallow them — failure policy (open / closed) lives on the
-// backend. Backends that opt into fail-open swallow transport errors
-// internally and return (nil, false, nil) on Get (treated as miss) /
-// nil on Set (treated as no-op write). Backends that opt into
-// fail-closed return the error and the call aborts at this layer.
-func cacheMiddleware(serviceName, endpointName string, store Cache, policy cachePolicy, cacheAcceptable bool, acceptableStatus map[int]struct{}) roundTripper {
+// The backing cache.Cache is read from the HttpClient through `cacheRef`
+// — a getter, not a value — so a late SetCache by the bootstrap path
+// (Wiring.Cache + cache.store: custom) reaches the middleware without
+// rebuilding the chain. Errors returned by cache.Cache propagate verbatim:
+// the cache backend's failMode (open / closed) decides whether transport
+// errors collapse to a miss internally or bubble up here.
+func cacheMiddleware(serviceName, endpointName string, cacheRef func() cache.Cache, policy cachePolicy, cacheAcceptable bool, acceptableStatus map[int]struct{}, logger *slog.Logger) roundTripper {
 	return rtFunc(func(ctx context.Context, req *http.Request, obs *observation, next roundTripper) (*http.Response, error) {
-		if !policy.enabled || !isCacheableMethod(req.Method) {
+		store := cacheRef()
+		if store == nil || !policy.enabled || !isCacheableMethod(req.Method) {
 			obs.CacheStatus = "bypass"
 			return next.RoundTrip(ctx, req, obs, nil)
 		}
@@ -43,13 +49,27 @@ func cacheMiddleware(serviceName, endpointName string, store Cache, policy cache
 		if key == "" {
 			key = buildCacheKey(serviceName, endpointName, req, policy)
 		}
-		entry, ok, err := store.Get(ctx, key)
+		raw, ok, err := store.Get(ctx, key)
 		if err != nil {
 			return nil, err
 		}
 		if ok {
-			obs.CacheStatus = "hit"
-			return materializeResponse(req, entry), nil
+			var entry cacheEntry
+			if decErr := json.Unmarshal(raw, &entry); decErr != nil {
+				// Corrupt entry — treat as miss, log, and proceed to upstream.
+				// Not a transport error; the next store.Set will overwrite it
+				// with a fresh well-formed value.
+				if logger != nil {
+					logger.Warn("httpclient.cache.decode.error",
+						slog.String("service", serviceName),
+						slog.String("endpoint", endpointName),
+						slog.String("key", key),
+						slog.String("error", decErr.Error()))
+				}
+			} else {
+				obs.CacheStatus = "hit"
+				return materializeResponse(req, &entry), nil
+			}
 		}
 		obs.CacheStatus = "miss"
 		resp, err := next.RoundTrip(ctx, req, obs, nil)
@@ -59,13 +79,20 @@ func cacheMiddleware(serviceName, endpointName string, store Cache, policy cache
 		if !shouldStore(resp, policy, cacheAcceptable, acceptableStatus) {
 			return resp, nil
 		}
+		ttl := effectiveTTL(resp, policy)
+		// TTL == 0 from Cache-Control: max-age=0 means "do not store this
+		// response" per HTTP semantics. The byte-cache layer treats 0 as
+		// "no expiration" (which would be the opposite of what max-age=0
+		// asks for), so we short-circuit here.
+		if ttl <= 0 {
+			return resp, nil
+		}
 		bodyBytes, readErr := io.ReadAll(resp.Body)
 		_ = resp.Body.Close()
 		if readErr != nil {
 			return nil, readErr
 		}
-		ttl := effectiveTTL(resp, policy)
-		newEntry := &CacheEntry{
+		entry := cacheEntry{
 			Body:          bodyBytes,
 			Headers:       cloneHeader(resp.Header),
 			Status:        resp.StatusCode,
@@ -73,13 +100,36 @@ func cacheMiddleware(serviceName, endpointName string, store Cache, policy cache
 			ContentLength: int64(len(bodyBytes)),
 			ExpiresAt:     time.Now().Add(ttl),
 		}
-		if setErr := store.Set(ctx, key, newEntry); setErr != nil {
+		encoded, encErr := json.Marshal(entry)
+		if encErr != nil {
+			// cacheEntry only carries primitives + http.Header → json.Marshal
+			// cannot fail in practice. Defensive: surface the error.
+			return nil, encErr
+		}
+		if setErr := store.Set(ctx, key, encoded, ttl); setErr != nil {
 			return nil, setErr
 		}
 		resp.Body = io.NopCloser(bytes.NewReader(bodyBytes))
-		resp.ContentLength = newEntry.ContentLength
+		resp.ContentLength = entry.ContentLength
 		return resp, nil
 	})
+}
+
+// cacheEntry is the wire shape the httpclient persists into the byte-
+// level cache.Cache. JSON-encoded so the value round-trips through any
+// backend (memory store, Redis, custom) and stays human-debuggable via
+// the backend's CLI (e.g. `redis-cli GET <key>`).
+//
+// Field order / json tag stability matters across releases — backends
+// may store entries written by an older binary that a newer binary
+// reads after a deploy.
+type cacheEntry struct {
+	Body          []byte      `json:"body"`
+	Headers       http.Header `json:"headers"`
+	Status        int         `json:"status"`
+	ContentType   string      `json:"contentType"`
+	ContentLength int64       `json:"contentLength"`
+	ExpiresAt     time.Time   `json:"expiresAt"`
 }
 
 // isCacheableMethod reports whether the HTTP method is one the cache layer
@@ -113,8 +163,7 @@ func shouldStore(resp *http.Response, policy cachePolicy, cacheAcceptable bool, 
 
 // effectiveTTL picks the TTL for the entry. When honorCacheControl is on
 // and the response carries Cache-Control: max-age=N, N seconds wins over
-// the configured TTL (capped by frameworkCacheDefaultTTL only if N is
-// nonsensically large — we trust the upstream).
+// the configured TTL.
 func effectiveTTL(resp *http.Response, policy cachePolicy) time.Duration {
 	if policy.honorCacheControl {
 		if d, ok := maxAgeFromCacheControl(resp.Header.Get("Cache-Control")); ok {
@@ -125,9 +174,7 @@ func effectiveTTL(resp *http.Response, policy cachePolicy) time.Duration {
 }
 
 // hasNoStore reports whether the response's Cache-Control header tells the
-// client not to store this response (no-store) or revalidate every time
-// (no-cache, treated as no-store in the current phase — full revalidation
-// arrives with the redaction expansion phase).
+// client not to store this response.
 func hasNoStore(resp *http.Response) bool {
 	v := resp.Header.Get("Cache-Control")
 	if v == "" {
@@ -164,8 +211,6 @@ func maxAgeFromCacheControl(v string) (time.Duration, bool) {
 
 // buildCacheKey composes the deterministic key from service, endpoint and
 // the request shape, optionally varied by selected header / query values.
-// The format is a flat pipe-delimited string; consumers should treat it as
-// opaque (it is internal to the cache subsystem).
 func buildCacheKey(service, endpoint string, req *http.Request, policy cachePolicy) string {
 	var b strings.Builder
 	b.WriteString(service)
@@ -194,8 +239,6 @@ func buildCacheKey(service, endpoint string, req *http.Request, policy cachePoli
 	return b.String()
 }
 
-// sortedQuery returns the query string with parameters in lexicographic
-// order so a=1&b=2 and b=2&a=1 hash to the same key.
 func sortedQuery(u *url.URL) string {
 	if u == nil {
 		return ""
@@ -227,15 +270,11 @@ func sortedQuery(u *url.URL) string {
 	return b.String()
 }
 
-// hashString produces the SHA-256 hex of s, used so varyOn values don't
-// leak verbatim into the key (which may end up in metrics or debug logs).
 func hashString(s string) string {
 	h := sha256.Sum256([]byte(s))
 	return hex.EncodeToString(h[:])
 }
 
-// cloneHeader produces a deep copy so the cache entry is decoupled from
-// the original response.
 func cloneHeader(h http.Header) http.Header {
 	if len(h) == 0 {
 		return http.Header{}
@@ -249,10 +288,7 @@ func cloneHeader(h http.Header) http.Header {
 	return out
 }
 
-// materializeResponse rebuilds an *http.Response from a cached entry. The
-// body is wrapped in a fresh NopCloser so multiple hits each get a
-// rewindable reader.
-func materializeResponse(req *http.Request, entry *CacheEntry) *http.Response {
+func materializeResponse(req *http.Request, entry *cacheEntry) *http.Response {
 	return &http.Response{
 		Status:        http.StatusText(entry.Status),
 		StatusCode:    entry.Status,

@@ -135,6 +135,14 @@ type Config struct {
 	// it without crossing the dependency boundary back to bootstrap.
 	Audit audit.Config `yaml:"audit"`
 
+	// Cache is the top-level cache: block describing the framework's
+	// generic key-value cache. nil when absent — Deps.Cache stays nil
+	// and the httpclient response-cache middleware bypasses. Present
+	// with a Store value drives construction of the private cache;
+	// the optional Shared sub-block drives the cross-service cache
+	// (Deps.SharedCache).
+	Cache *CacheConfig `yaml:"cache,omitempty"`
+
 	// HttpClient is non-nil when microservice.<profile>.yaml carries an
 	// httpClient: block (with or without children). bootstrap.Build forwards
 	// it to httpclient.New and exposes the result on Deps.HttpClient; when
@@ -470,6 +478,9 @@ func (c *Config) Validate() error {
 		if err := c.Integration.Validate(); err != nil {
 			return fmt.Errorf("bootstrap: %w", err)
 		}
+	}
+	if cacheErrs := validateCache(c.Cache); len(cacheErrs) > 0 {
+		return fmt.Errorf("bootstrap: %s", strings.Join(cacheErrs, "; "))
 	}
 	if c.Shutdown.DrainTimeoutSeconds < 0 {
 		return fmt.Errorf("bootstrap: shutdown.drainTimeoutSeconds must be >= 0 (got %d)", c.Shutdown.DrainTimeoutSeconds)

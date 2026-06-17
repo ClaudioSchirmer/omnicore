@@ -7,6 +7,7 @@ import (
 	"github.com/ClaudioSchirmer/omnicore/application/queries"
 	"github.com/ClaudioSchirmer/omnicore/application/translation"
 	"github.com/ClaudioSchirmer/omnicore/infra"
+	"github.com/ClaudioSchirmer/omnicore/infra/cache"
 	"github.com/ClaudioSchirmer/omnicore/infra/httpclient"
 	"github.com/ClaudioSchirmer/omnicore/infra/integration"
 	"github.com/ClaudioSchirmer/omnicore/web/openapi"
@@ -29,6 +30,32 @@ type Deps struct {
 	Translator *translation.Translator
 	Pipeline   *pipeline.Pipeline
 	ViewReader queries.ViewReader
+
+	// Cache is the SERVICE-PRIVATE key-value cache. Non-nil when the
+	// YAML carries a top-level cache: block. Use for everything scoped
+	// to this service: domain cache, computed-value memoization, the
+	// outbound httpclient response cache (the framework wires its own
+	// middleware to consume this same instance).
+	//
+	// nil when the cache: block is absent — feature code that relies
+	// on it must guard at composition time or use the typed helpers
+	// (cache.GetJSON/SetJSON) which tolerate a nil Cache and degrade
+	// to a no-op.
+	Cache cache.Cache
+
+	// SharedCache is the CROSS-SERVICE key-value cache. Non-nil ONLY
+	// when the YAML carries a cache.shared: sub-block. Use for keys
+	// that other services in the cluster are expected to read
+	// (feature flags coordinated across services, cluster-wide rate
+	// limits, sessions consumed by an API gateway, …).
+	//
+	// nil when cache.shared: is absent — feature code that uses it
+	// MUST guard explicitly: an in-process LRU cannot honor cross-
+	// service reads, so the framework rejects cache.shared.store:
+	// memory at boot. Reaching for SharedCache without the operator
+	// declaring it is a programming bug; the nil guard makes the
+	// mistake immediate at the call site.
+	SharedCache cache.Cache
 
 	// HttpClient is the outbound HTTP registry; non-nil when the YAML carries
 	// an httpClient: block. Features that talk to external services forward

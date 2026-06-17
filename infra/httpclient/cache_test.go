@@ -1,7 +1,6 @@
 package httpclient
 
 import (
-	"context"
 	"io"
 	"log/slog"
 	"net/http"
@@ -12,73 +11,15 @@ import (
 	"time"
 
 	"github.com/ClaudioSchirmer/omnicore/application/configuration"
+	"github.com/ClaudioSchirmer/omnicore/infra/cache"
 )
 
-// --- memoryCache unit tests ---------------------------------------------
-
-func TestMemoryCache_SetGet(t *testing.T) {
-	c := newMemoryCache(10)
-	if err := c.Set(context.Background(), "k", &CacheEntry{Body: []byte("v"), ExpiresAt: time.Now().Add(time.Minute)}); err != nil {
-		t.Fatalf("Set: %v", err)
-	}
-	e, ok, err := c.Get(context.Background(), "k")
-	if err != nil {
-		t.Fatalf("Get: %v", err)
-	}
-	if !ok || string(e.Body) != "v" {
-		t.Errorf("Get returned (%v, %v)", e, ok)
-	}
-}
-
-func TestMemoryCache_TTLExpiry(t *testing.T) {
-	c := newMemoryCache(10)
-	_ = c.Set(context.Background(), "k", &CacheEntry{Body: []byte("v"), ExpiresAt: time.Now().Add(-time.Second)})
-	if _, ok, _ := c.Get(context.Background(), "k"); ok {
-		t.Errorf("expired entry should not be returned")
-	}
-	if c.len() != 0 {
-		t.Errorf("expired entry should be evicted; len=%d", c.len())
-	}
-}
-
-func TestMemoryCache_LRU_Eviction(t *testing.T) {
-	c := newMemoryCache(3)
-	ctx := context.Background()
-	for _, k := range []string{"a", "b", "c"} {
-		_ = c.Set(ctx, k, &CacheEntry{Body: []byte(k), ExpiresAt: time.Now().Add(time.Minute)})
-	}
-	_, _, _ = c.Get(ctx, "a") // a most recent
-	_ = c.Set(ctx, "d", &CacheEntry{Body: []byte("d"), ExpiresAt: time.Now().Add(time.Minute)})
-	if _, ok, _ := c.Get(ctx, "b"); ok {
-		t.Errorf("b should have been evicted (oldest after a touched)")
-	}
-	for _, k := range []string{"a", "c", "d"} {
-		if _, ok, _ := c.Get(ctx, k); !ok {
-			t.Errorf("expected %q to remain", k)
-		}
-	}
-}
-
-func TestMemoryCache_ConcurrentSafe(t *testing.T) {
-	c := newMemoryCache(100)
-	var wg int32
-	done := make(chan struct{}, 20)
-	for i := 0; i < 20; i++ {
-		atomic.AddInt32(&wg, 1)
-		go func(i int) {
-			ctx := context.Background()
-			for j := 0; j < 200; j++ {
-				k := string(rune('a' + i%26))
-				_ = c.Set(ctx, k, &CacheEntry{Body: []byte("x"), ExpiresAt: time.Now().Add(time.Minute)})
-				_, _, _ = c.Get(ctx, k)
-			}
-			done <- struct{}{}
-		}(i)
-	}
-	for i := 0; i < 20; i++ {
-		<-done
-	}
-}
+// Backend-level Cache tests (memory, redis, JSON helpers) live in
+// `omnicore/infra/cache/cache_test.go`. The cases below cover the
+// httpclient cache MIDDLEWARE — key formula, validation cascade,
+// hit/miss/bypass policy against a real httptest.Server. They all
+// drive the middleware through a real *HttpClient + cache.NewMemory
+// to exercise the same code path bootstrap takes at runtime.
 
 // --- cache key formula ---------------------------------------------------
 
@@ -165,7 +106,13 @@ func newCacheClient(t *testing.T, server *httptest.Server, ep EndpointConfig, de
 			"svc": {BaseURL: server.URL, Endpoints: map[string]EndpointConfig{"call": ep}},
 		},
 	}
-	c, err := New(cfg, WithLogger(slog.New(slog.NewTextHandler(io.Discard, nil))))
+	// Bootstrap resolves cache.Cache from the top-level cache: yaml block
+	// and forwards it via WithCache. The middleware test bench mirrors
+	// that wiring with a vanilla in-process memory backend so the cases
+	// exercise the same code path the production boot takes.
+	c, err := New(cfg,
+		WithLogger(slog.New(slog.NewTextHandler(io.Discard, nil))),
+		WithCache(cache.NewMemory(0)))
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}

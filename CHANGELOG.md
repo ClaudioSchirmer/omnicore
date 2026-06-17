@@ -11,57 +11,94 @@ with `1.0.0`.
 
 ## [Unreleased]
 
+## [0.8.0] - 2026-06-16
+
 ### Added
 
-- **Pluggable cache backend for `infra/httpclient` (chain position 6).** Two
-  canonical implementations are now selected declaratively via
-  `defaults.cache.store: memory | redis` in `microservice.<profile>.yaml`,
-  plus a third (`custom`) that wires a consumer-provided adapter for shared-
-  cache backends the framework does not ship (Memcached, Valkey, Hazelcast,
-  etc.). The `memory` backend is the framework default and preserves the
-  pre-existing behavior — services without a `cache.store` entry are
-  byte-identical to the previous boot.
-  - **`httpclient.Cache`** (new exported interface) with
-    `Get(ctx, key) (*CacheEntry, bool, error)` and
-    `Set(ctx, key, entry) error`. Storage port for the GET cache middleware;
-    `(ctx, error)` shape lets network-backed adapters propagate timeouts and
-    transport failures instead of swallowing them silently.
-  - **`httpclient.CacheEntry`** (new exported struct) carries the on-wire
-    shape (`Body`, `Headers`, `Status`, `ContentType`, `ContentLength`,
-    `ExpiresAt`). Only primitives + `http.Header`, so any serialization
-    format (JSON / gob / protobuf / msgpack) preserves the contract.
-  - **`httpclient.WithCacheStore(Cache) Option`** (new functional option for
-    `httpclient.New`) registers a consumer-provided implementation.
-    Symmetric to `WithResolver` for `BaseURLResolver`.
-  - **`defaults.cache.store: redis`** ships with the framework's Redis
-    adapter (`github.com/redis/go-redis/v9`). JSON-encoded entries (debug
-    via `redis-cli GET <key>`); lazy connection (Redis unreachable at boot
-    does not block `New()`); per-op timeout governed by `timeoutMs` (default
-    100ms); namespace via `keyPrefix`; opt-in fail-mode policy.
-  - **`defaults.cache.redis.failMode: open | closed`** governs the Redis
-    adapter's behavior on transport failure. `open` (default) emits
-    `slog.Warn "httpclient.cache.redis.transport.error"` + returns
-    `(nil, false, nil)` on Get / `nil` on Set so the call proceeds to
-    upstream as if cache were disabled; `closed` propagates the error and
-    aborts the call at the cache layer wrapped in `*HttpError`. Logical
-    misses (`redis.Nil`) and corrupted entries (JSON decode failure) are
-    NOT errors — always behave as miss regardless of `failMode`.
-  - **Boot-time conflict matrix** at `New()` — declaring `store: custom`
-    without `WithCacheStore`, OR passing `WithCacheStore` with any other
-    `store` value, OR passing `WithCacheStore` when no endpoint declares a
-    `cache:` block, fails the boot with a structural-coherence error. The
-    YAML always describes the intent; misconfiguration surfaces at boot,
-    not at runtime.
+- **`omnicore/infra/cache/` package — generic byte-level key-value cache
+  subsystem.** Single interface (`cache.Cache`) with three operations
+  (`Get(ctx, key)`, `Set(ctx, key, value, ttl)`, `Delete(ctx, key)`) and
+  two canonical implementations: in-process LRU+TTL (`cache.NewMemory`)
+  and Redis (`cache.NewRedis`). Consumer code, domain services,
+  infrastructure adapters, and the outbound httpclient all consult the
+  same port via `bootstrap.Deps.Cache` (private) or
+  `bootstrap.Deps.SharedCache` (cross-service).
+  - Package-level typed helpers `cache.GetJSON[T]` /
+    `cache.SetJSON[T]` round-trip Go values through `encoding/json`
+    without polluting the interface. Both tolerate a nil `Cache` and
+    degrade to no-op (consumer features can opt the cache in/out by
+    declaring the YAML block).
+  - `cache.RedisConfig` is exported so consumers can construct a
+    Redis-backed cache programmatically (tests, alternative wiring)
+    with the same diagnostics the YAML loader emits.
+- **Top-level `cache:` block in `microservice.<profile>.yaml`** drives
+  the framework's cache subsystem from the operator side:
+  - `cache.store: memory | redis | custom` — backend selection. Default
+    `memory` (in-process LRU+TTL) covers single-replica services. `redis`
+    ships with the framework's `go-redis/v9`-backed adapter (lazy
+    connection, JSON-encoded entries debug-able via `redis-cli GET`,
+    per-op timeout governed by `timeoutMs`, namespace via `keyPrefix`).
+    `custom` requires `bootstrap.Wiring.Cache` to be set.
+  - `cache.shared:` sub-block declares a SECOND cache exposed on
+    `Deps.SharedCache`. nil unless declared. `cache.shared.store:
+    memory` is REJECTED at boot — an in-process LRU cannot honor cross-
+    service reads. Supports `redis` and `custom` only.
+  - `cache.redis.failMode: open | closed`. `open` (default) swallows
+    transport errors + emits `slog.Warn "cache.redis.transport.error"`
+    + returns miss (Get) / nil (Set/Delete) so the call proceeds to
+    upstream. `closed` propagates the error.
+  - `cache.maxEntries` caps the in-process LRU (only relevant for
+    `store: memory`). 0 falls back to the framework default 10k.
+- **`bootstrap.Deps.Cache` and `bootstrap.Deps.SharedCache`** expose
+  the resolved instances to every Feature. The httpclient cache
+  middleware consumes `Deps.Cache` automatically — operators no longer
+  declare a separate backend under `httpClient`.
+- **`bootstrap.Wiring.Cache` and `bootstrap.Wiring.SharedCache`** are
+  the escape hatches for `cache.store: custom` and
+  `cache.shared.store: custom`. Mismatched wiring (e.g. `store: memory`
+  + Wiring.Cache injected) fails the boot with a structural-coherence
+  error so misconfiguration surfaces at startup, not at runtime.
+- **`httpclient.WithCache(cache.Cache) Option`** binds the byte-level
+  cache the GET cache middleware reads / writes through. Bootstrap
+  forwards `Deps.Cache` automatically; manual lifecycles (tests,
+  alternative wiring) call it directly. `httpclient.HttpClient.SetCache`
+  is the runtime swap used by bootstrap to honor late `Wiring.Cache`
+  injection without rebuilding the middleware chain.
 
 ### Changed
 
-- **`infra/httpclient/cache_middleware.go` propagates `Cache` errors verbatim.**
-  Backend Get errors now bubble up through the chain (the previous
-  package-private contract returned only `(value, ok)`). Existing callers
-  see no behavior difference — `memory` never returns an error, and the
-  Redis adapter's fail-open mode collapses transport errors to `(nil,
-  false, nil)` internally. Fail-closed mode is the only path on which an
-  error reaches the caller; that mode is opt-in by `failMode: closed`.
+- **`httpClient.defaults.cache:` no longer carries the backend choice.**
+  The block is reduced to POLICY knobs only: `enabled`, `defaultTTL`,
+  `honorCacheControl`. The backend is read from `Deps.Cache` (declared
+  at the top-level `cache:` block). Per-endpoint `cache: { ttl, varyOn }`
+  and `cacheAcceptable: true | false` semantics are unchanged.
+- **`infra/httpclient/cache_middleware.go` is now a thin wrapper over
+  `cache.Cache`.** The middleware encodes its internal `cacheEntry`
+  (response body + headers + status + content-type + content-length +
+  expiresAt) as JSON before storage and decodes on hit. Stored entries
+  remain debug-able via `redis-cli GET <key>` + `json.loads`.
+- **HTTP response cache TTL = 0 from `Cache-Control: max-age=0` no
+  longer stores the response.** The new byte-cache layer treats `ttl == 0`
+  as "no expiration" (the opposite of what the upstream asked for), so
+  the middleware short-circuits the store. Pre-existing behavior was
+  identical from the consumer's perspective (the entry expired
+  immediately) — the explicit skip avoids polluting the cache with
+  entries that would only be served once.
+
+### Removed
+
+- **`httpclient.Cache` interface** — replaced by the framework's
+  top-level `cache.Cache`. Consumers who implemented custom backends
+  via `httpclient.WithCacheStore` migrate to `cache.Cache` (same shape,
+  with `Delete` added).
+- **`httpclient.CacheEntry`** is now an internal type
+  (`httpclient/cache_middleware.go::cacheEntry`). The previous public
+  exposure was a draft contract from the in-flight feature branch and
+  never shipped in a tagged release.
+- **`httpclient.WithCacheStore(Cache) Option`** — replaced by
+  `httpclient.WithCache(cache.Cache) Option`.
+- **`httpClient.defaults.cache.store` and `httpClient.defaults.cache.redis`
+  YAML keys** — moved to the top-level `cache:` block.
 
 ## [0.7.0] - 2026-06-16
 
@@ -479,6 +516,7 @@ to content from a prior repo that no longer exists.
   emitted as best-effort `slog.Warn` whenever a hook returns non-nil
   error.
 
+[0.8.0]: https://github.com/ClaudioSchirmer/omnicore/releases/tag/v0.8.0
 [0.7.0]: https://github.com/ClaudioSchirmer/omnicore/releases/tag/v0.7.0
 [0.6.0]: https://github.com/ClaudioSchirmer/omnicore/releases/tag/v0.6.0
 [0.5.0]: https://github.com/ClaudioSchirmer/omnicore/releases/tag/v0.5.0

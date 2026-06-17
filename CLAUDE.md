@@ -2802,6 +2802,112 @@ The Swagger UI HTML at `/docs` loads `swagger-ui-dist` from unpkg.com CDN by def
 - **Hidden=true**: operation is excluded from the rendered spec entirely. Still registers on Fiber so the route works at runtime; only the documentation surface omits it. Use for internal upstreams (the `/echo/*` showcase producer routes) that have no business appearing in a public spec.
 - **Public=true**: operation appears in the spec WITHOUT `security: [{bearerAuth: []}]` and WITHOUT the 401 entry. Use for routes that genuinely bypass auth (health probes, OIDC discovery proxies, identity demos).
 
+## Cache subsystem
+
+`omnicore/infra/cache` is the framework's generic byte-level key-value cache subsystem. The `Cache` port is the single contract consumer code, domain services, infrastructure adapters, and the outbound httpclient all consult — there is no per-component cache anymore. Two canonical implementations ship with the framework (in-process LRU+TTL via `cache.NewMemory`, Redis via `cache.NewRedis`); consumers wanting a different backend (Memcached, Valkey, Hazelcast, …) implement the same `cache.Cache` interface and inject the implementation via `bootstrap.Wiring.Cache` / `bootstrap.Wiring.SharedCache`.
+
+### Interface
+
+```go
+type Cache interface {
+    Get(ctx context.Context, key string) ([]byte, bool, error)
+    Set(ctx context.Context, key string, value []byte, ttl time.Duration) error
+    Delete(ctx context.Context, key string) error
+}
+```
+
+Intentionally narrow:
+
+- `Get` returns `(value, true, nil)` on hit, `(nil, false, nil)` on logical miss, `(nil, false, err)` on transport / decode failure.
+- `Set` accepts `ttl == 0` as "no expiration" (backends with a native no-expire honor it; memory uses a zero `ExpiresAt` sentinel; Redis writes `SET` without `EX`/`PX`). Negative TTLs are rejected with `cache.ErrInvalidTTL`.
+- `Delete` is idempotent — missing keys are not an error.
+- No `Has` (use `Get`); no `Clear` (operator-owned via the backend's CLI; "wipe everything" is too sharp to expose as code); no batch ops yet.
+
+**Typed JSON helpers** sit outside the interface so backends don't have to think about Go types:
+
+```go
+func cache.GetJSON[T any](ctx context.Context, c cache.Cache, key string) (T, bool, error)
+func cache.SetJSON[T any](ctx context.Context, c cache.Cache, key string, value T, ttl time.Duration) error
+```
+
+Both tolerate a nil `Cache` and degrade to no-op (miss / no-op write) so feature code that opts the cache in-or-out via YAML doesn't need a nil guard around every call site.
+
+### Two cache instances per service — Private and Shared
+
+The framework exposes TWO `cache.Cache` instances on `bootstrap.Deps`:
+
+| Field | Scope | When populated | Use for |
+|---|---|---|---|
+| `Deps.Cache` | Service-private | YAML `cache:` block declared | Anything scoped to this service — domain memoization, computed-value caching, the outbound httpclient response cache (framework wires its own middleware to consume this same instance) |
+| `Deps.SharedCache` | Cross-service | YAML `cache.shared:` sub-block declared | Keys other services in the cluster are expected to read — feature flags coordinated across services, cluster-wide rate limits, sessions consumed by an API gateway |
+
+The distinction is enforced at the **dependency-injection level**, not via a flag on the method. Code that wants to write a shared value writes to `Deps.SharedCache`; code that doesn't is structurally unable to. Default safety: `Deps.SharedCache` is `nil` unless the operator declares `cache.shared:` — feature code touching it MUST guard explicitly. The httpclient response cache uses `Deps.Cache` (private) unconditionally.
+
+**`cache.shared.store: memory` is REJECTED at boot.** An in-process LRU cannot honor cross-service reads; the framework forces the operator to pick `redis` or `custom` for the shared cache.
+
+### YAML — top-level `cache:` block
+
+```yaml
+cache:
+  store: memory                     # memory (default) | redis | custom
+  maxEntries: 10000                 # only memory; default 10000
+  redis:                            # required when store: redis, rejected otherwise
+    addr: ${REDIS_ADDR:localhost:6379}
+    password: ${REDIS_PASSWORD}
+    db: 0
+    keyPrefix: "${SERVICE}-cache"
+    failMode: open                  # open (default) | closed
+    timeoutMs: 100
+
+  shared:                           # OPTIONAL second cache instance
+    store: redis                    # redis | custom — memory rejected at boot
+    redis:
+      addr: ${SHARED_REDIS_ADDR}
+      keyPrefix: "${TEAM}-shared"
+      failMode: open
+      timeoutMs: 100
+```
+
+When the top-level `cache:` block is omitted entirely, `Deps.Cache` stays nil — the httpclient cache layer bypasses, and `cache.GetJSON`/`SetJSON` degrade to no-ops. Services that don't need caching pay zero cost.
+
+### Backend selection cascade
+
+The same matrix applies independently to `cache.store` and `cache.shared.store`. Mismatched wiring fails the boot with a structural-coherence error:
+
+| `store` | `Wiring.Cache` (or `Wiring.SharedCache`) | Result |
+|---|---|---|
+| `memory` (or unset) | nil   | in-process LRU runs |
+| `memory` (or unset) | non-nil | boot panic — "declare `store: custom` to use `Wiring.Cache`" |
+| `redis`             | nil   | go-redis backed adapter constructed from `redis:` sub-block |
+| `redis`             | non-nil | boot panic — same message |
+| `custom`            | nil   | boot panic — "`Wiring.Cache` required when `store: custom`" |
+| `custom`            | non-nil | injected instance runs |
+
+`cache.shared.store: memory` is additionally rejected at boot — only `redis` and `custom` are accepted for the shared cache.
+
+### Redis adapter — `failMode`
+
+The framework's Redis backend (`cache.NewRedis(*RedisConfig)`) resolves the configured `failMode` internally:
+
+- **`open` (default)** — swallows transport errors, emits `slog.Warn "cache.redis.transport.error"` with `{op, key, error, failOpen}`, and returns `(nil, false, nil)` on `Get` / `nil` on `Set`/`Delete`. The caller sees a miss; the call proceeds as if the cache were disabled for that request.
+- **`closed`** — propagates the error verbatim. The middleware aborts (or the consumer code surfaces the error).
+
+Logical misses (`redis.Nil`) and corrupted entries are NOT errors — they always behave as miss regardless of `failMode`. The connection is lazy — Redis unreachable at boot does NOT block `New()`; the first `Get`/`Set` surfaces the failure through `failMode`.
+
+### Late injection — `Wiring.Cache` and `Wiring.SharedCache`
+
+`Wiring.Cache` and `Wiring.SharedCache` are the escape hatches for `cache.store: custom`. The framework resolves them AFTER the `wire(deps)` callback runs, so consumer code that constructs the custom backend can use any infrastructure available to features (additional connections, secrets manager handles, …). The httpclient picks up the late-resolved private cache via `httpclient.HttpClient.SetCache` (atomic pointer swap; no chain rebuild).
+
+### Quick reference — common patterns
+
+| Need | Path |
+|---|---|
+| Read or write a private cache value from a handler | `value, ok, err := cache.GetJSON[Profile](ctx, deps.Cache, "user:42:profile")` / `cache.SetJSON(ctx, deps.Cache, "user:42:profile", v, 5*time.Minute)` |
+| Read or write a shared cache value | Same helpers but against `deps.SharedCache` — guard against nil first if the operator may have omitted `cache.shared:` |
+| Plug a custom backend (Memcached / Valkey / Hazelcast / …) | Implement `cache.Cache`, declare `cache.store: custom` (or `cache.shared.store: custom`) in YAML, inject the implementation via `bootstrap.Wiring.Cache` / `bootstrap.Wiring.SharedCache` |
+| Disable the cache entirely | Omit the top-level `cache:` block. `Deps.Cache` and `Deps.SharedCache` stay nil; httpclient cache middleware short-circuits as `"bypass"` |
+| Override the httpclient response cache TTL per endpoint | `httpClient.services.X.endpoints.Y.cache.ttl: 1m` — endpoint TTL wins over `httpClient.defaults.cache.defaultTTL`. The backend is whatever `Deps.Cache` resolved to |
+
 ## httpclient package
 
 `omnicore/infra/httpclient` is the outbound HTTP subsystem. Services describe the external systems they talk to in `microservice.<profile>.yaml` under the `httpClient:` block; the framework constructs a singleton `*httpclient.HttpClient` registry on `bootstrap.Deps.HttpClient`. Each declared service gets its own `http.Transport` and `http.Client` so a misbehaving upstream cannot starve the pool of well-behaved ones.
@@ -3142,24 +3248,15 @@ The body is replayed on each attempt from `obs.RequestBody` (the logging middlew
 
 ### Cache
 
-The chain inserts the cache middleware at position 6 — before retry, so a hit short-circuits without traversing the retry loop. Configuration is declarative; the backend is selected via `defaults.cache.store`. The framework ships two canonical implementations (`memory` — in-process LRU+TTL bounded by `defaults.cache.maxEntries`; `redis` — declarative, shared across pods of the same service) and exposes the `httpclient.Cache` interface plus the `httpclient.WithCacheStore(Cache)` option at `New()` for consumer adapters (Memcached, Valkey, Hazelcast, etc.).
+The chain inserts the cache middleware at position 6 — before retry, so a hit short-circuits without traversing the retry loop. The **backend** is the framework's top-level cache subsystem (see ["Cache subsystem"](#cache-subsystem) below for the `cache:` YAML block, the `cache.Cache` port, and the memory / redis / custom backends). The `httpClient.defaults.cache:` block keeps only the POLICY knobs — whether the layer runs, the default TTL, Cache-Control honoring, per-endpoint `cache: { ttl, varyOn }` and `cacheAcceptable`.
 
 ```yaml
 httpClient:
   defaults:
     cache:
       enabled: true                   # default true
-      store: memory                   # memory (default) | redis | custom
       defaultTTL: 5m                  # framework default 5m
-      maxEntries: 10000               # framework default 10000 (only memory)
       honorCacheControl: true         # default true
-      redis:                          # required when store: redis, rejected otherwise
-        addr: ${REDIS_ADDR:localhost:6379}
-        password: ${REDIS_PASSWORD}
-        db: 3                         # logical DB; default 0
-        keyPrefix: "${SERVICE}-httpcache"  # optional namespace; empty by default
-        failMode: open                # open (default) | closed
-        timeoutMs: 100                # per-op timeout against Redis; default 100ms
 
   services:
     keycloak:
@@ -3175,59 +3272,24 @@ httpClient:
           cacheAcceptable: false      # default false; opt-in to cache 404 etc.
 ```
 
-Cascade: an endpoint with a `cache:` block participates in caching, subject to `defaults.cache.enabled`. Endpoint `ttl` overrides `defaults.defaultTTL`; the framework default fills in when neither sets a value.
-
-**Backend selection (`store`).** Three values are accepted; mismatched wiring fails loudly at `New()`:
-
-- `memory` (default) — in-process LRU+TTL keyed by the framework key formula. Pod-local; restart wipes the cache; ideal for single-replica services or per-pod isolation.
-- `redis` — go-redis backed; declarative via the `redis:` sub-block. Shared across replicas of the same service; JSON encoded on the wire (debug via `redis-cli GET <key>`). Connection is lazy — Redis unreachable at boot does not block `New()`; the first Get/Set surfaces the failure through `failMode`.
-- `custom` — consumer-provided `httpclient.Cache` via `WithCacheStore(impl)`. YAML declaration mandatory so the config describes the intent.
-
-**Conflict matrix at `New()`** — structural coherence between YAML `store` and Wire injection. Anything mismatched fails the boot:
-
-| `defaults.cache.store` | `WithCacheStore(impl)` passed? | Result |
-|---|---|---|
-| `memory` (or unset) | no  | in-process LRU runs |
-| `memory` (or unset) | yes | boot panic — "declare `store: custom` to use `WithCacheStore`" |
-| `redis`             | no  | Redis adapter built from `redis:` sub-block |
-| `redis`             | yes | boot panic — same message |
-| `custom`            | no  | boot panic — "`WithCacheStore` required at `New()`" |
-| `custom`            | yes | injected store runs |
-| any                 | yes (but no endpoint declares `cache:`) | boot panic — "the cache layer is disabled, the injected store would never run" |
-
-**Redis `failMode`.** `open` (default) swallows transport errors + emits `slog.Warn "httpclient.cache.redis.transport.error"` + returns `(nil, false, nil)` on Get / `nil` on Set so the call proceeds to upstream as if cache were disabled for that request. `closed` propagates the error and the call aborts at the cache layer with the underlying Redis error wrapped in `*HttpError`. Logical misses (`redis.Nil`) and corrupted entries (JSON decode failure) are NOT errors — they always behave as miss regardless of `failMode`.
+Cascade: an endpoint with a `cache:` block participates in caching, subject to `defaults.cache.enabled` AND a non-nil `Deps.Cache` at boot. Endpoint `ttl` overrides `defaults.defaultTTL`; the framework default fills in when neither sets a value. When the operator omits the top-level `cache:` block entirely, the httpclient cache layer is silently disabled (the middleware short-circuits as `"bypass"`).
 
 **Cacheable methods.** Only GET and HEAD enter the cache. Any other method bypasses unconditionally (`obs.CacheStatus = "bypass"`). The validator rejects `cache:` on POST/PATCH/PUT/DELETE endpoints at boot.
 
 **Storable responses.** 2xx responses are stored by default. Responses whose status appears in `acceptableStatus` (e.g. 404 on a presence check) are stored only when `cacheAcceptable: true` on the endpoint — opt-in by design.
 
-**Key formula.** `service|endpoint|method|path|sortedQuery|h:hash(value)...|q:hash(value)...`. Query parameters are sorted alphabetically so `?a=1&b=2` and `?b=2&a=1` hash to the same key. `varyOn` accepts `header:Name` and `query:Name` entries; values are SHA-256 hashed so they never leak verbatim into the key. The `service` segment guarantees no cross-service collision when several services share a Redis DB; `keyPrefix` adds an extra namespace scope across deployments.
+**Key formula.** `service|endpoint|method|path|sortedQuery|h:hash(value)...|q:hash(value)...`. Query parameters are sorted alphabetically so `?a=1&b=2` and `?b=2&a=1` hash to the same key. `varyOn` accepts `header:Name` and `query:Name` entries; values are SHA-256 hashed so they never leak verbatim into the key. The `service` segment guarantees no cross-service collision when several services share a Redis DB; the backend's `keyPrefix` (declared on the top-level `cache.redis:` block) adds an extra namespace scope across deployments.
 
 **Cache-Control honoring** (when `honorCacheControl: true`):
 - `Cache-Control: max-age=N` overrides the configured TTL with N seconds
+- `Cache-Control: max-age=0` short-circuits the store entirely (the new byte-cache layer treats `ttl == 0` as "no expiration", which would be the opposite of what the upstream asked for, so the middleware skips persistence)
 - `Cache-Control: no-store` or `no-cache` prevents storing the response
 
 **Per-call overrides.** `WithoutCache()` bypasses the cache for one call without touching configuration; `WithCacheKey(key)` overrides the computed key (rare — typically for tenant-aware key schemes).
 
-**Observation.** `obs.CacheStatus` is `"hit"`, `"miss"`, or `"bypass"` in the single slog record per call. Redis transport failures additionally emit `slog.Warn "httpclient.cache.redis.transport.error"` with `{op, key, error, failOpen}` so operators see the underlying problem regardless of `failMode`.
+**Wire shape.** The middleware persists an internal `cacheEntry` JSON envelope (`body`, `headers`, `status`, `contentType`, `contentLength`, `expiresAt`) through the byte-level `cache.Cache` port. Stored entries remain operator-debuggable via the backend's CLI (e.g. `redis-cli GET <key>` + `json.loads`).
 
-**Custom backend (`Memcached` / `Valkey` / etc.).** Implement the `httpclient.Cache` interface:
-
-```go
-type Cache interface {
-    Get(ctx context.Context, key string) (*CacheEntry, bool, error)
-    Set(ctx context.Context, key string, entry *CacheEntry) error
-}
-```
-
-Declare `defaults.cache.store: custom` in YAML and inject at `New()`:
-
-```go
-store := myadapter.NewValkeyCache(...)
-client, err := httpclient.New(cfg, httpclient.WithCacheStore(store))
-```
-
-Implementations MUST be safe for concurrent use. `CacheEntry` carries only primitives + `http.Header`, so any serialization format (JSON / gob / protobuf / msgpack) preserves the contract verbatim. Logical miss returns `(nil, false, nil)`; transport errors return the error and the middleware aborts the call (mirror the framework's Redis adapter and resolve `failMode` internally for fail-open behavior).
+**Observation.** `obs.CacheStatus` is `"hit"`, `"miss"`, or `"bypass"` in the single slog record per call. The cache backend (when Redis) additionally emits `slog.Warn "cache.redis.transport.error"` on transport failures so operators see the underlying problem regardless of the backend's `failMode`.
 
 ### Circuit breaker
 
@@ -3964,9 +4026,10 @@ Anyone needing exotic boot (custom logger, different lifecycle, specific start o
 - **AggregateChildren** — method of the `AggregateRootProvider` interface. Returns sample instances of the types that belong to the aggregate. The framework reads `classNameOf` via reflect; samples are never instantiated for real value. Equivalent to the "aggregate boundary" — domain definition, separated from table/FK (infra)
 - **Audit** — structured `AuditEvent` (flat top-level slog attrs) emitted after every successful write, plus emission of accumulated domain events. Best-effort, non-blocking. Body discriminated by `kind`: `snapshot` (Insert/Delete), `delta` (Update/PartialUpdate), `transition` (Archive/Unarchive)
 - **Old** — pre-mutation snapshot of an entity captured by the framework's `Get*` functions. Exposed via `Entity.Old() Entity` and the typed wrapper `domain.Old[T](e) T`. Consumed by `BuildRules` (transition-aware invariants) and by the auditor (diff computation + Delete forensics)
-- **Cache (httpclient)** — public interface in `infra/httpclient` declaring `Get(ctx, key) (*CacheEntry, bool, error)` + `Set(ctx, key, entry) error`. Storage port for the GET cache middleware (chain position 6). Framework ships `memory` (in-process LRU+TTL) and `redis` (go-redis backed) as canonical implementations selected via `defaults.cache.store: memory|redis`; consumers wanting a different backend (Memcached, Valkey, Hazelcast, …) implement the interface and inject the store via `httpclient.WithCacheStore` at `New()` paired with `store: custom` in YAML.
-- **CacheEntry (httpclient)** — exported struct carrying `Body []byte`, `Headers http.Header`, `Status int`, `ContentType string`, `ContentLength int64`, `ExpiresAt time.Time`. Wire shape consumer-side `Cache` implementations serialize / deserialize against; only primitives + stdlib types so any encoding format (JSON / gob / protobuf / msgpack) preserves the contract verbatim.
-- **WithCacheStore** — functional option `httpclient.WithCacheStore(Cache) Option` consumed by `httpclient.New(cfg, opts...)`. Registers a consumer-provided `Cache` implementation for the GET cache layer. The YAML MUST declare `defaults.cache.store: custom`; any other store value combined with `WithCacheStore` (or `store: custom` without a `WithCacheStore`) aborts `New()` with a structural-coherence error. Symmetric to `WithResolver` for `BaseURLResolver`.
+- **Cache** — `cache.Cache` interface in `infra/cache` declaring `Get(ctx, key) ([]byte, bool, error)`, `Set(ctx, key, value, ttl) error`, `Delete(ctx, key) error`. The framework's single byte-level key-value port — consumed by domain handlers, infrastructure adapters, and the outbound httpclient response cache. Two canonical implementations ship: `cache.NewMemory` (in-process LRU+TTL) and `cache.NewRedis` (go-redis backed); custom backends (Memcached, Valkey, Hazelcast, …) implement the interface and inject via `Wiring.Cache` / `Wiring.SharedCache` paired with `cache.store: custom` in YAML.
+- **Deps.Cache (private) / Deps.SharedCache (shared)** — the two cache instances exposed by `bootstrap.Deps`. Private is service-scoped, populated when the top-level `cache:` YAML block is declared (any store including memory). Shared is cross-service, populated when `cache.shared:` is declared (memory rejected at boot — an in-process LRU cannot honor cross-service reads). The distinction is enforced at the dependency-injection level, not via a flag on Set / Get. Default safety: SharedCache nil unless declared.
+- **`cache.GetJSON[T]` / `cache.SetJSON[T]`** — typed package-level helpers that marshal Go values through `encoding/json` against `cache.Cache`. Tolerate a nil Cache and degrade to no-op so feature code that opts the cache in-or-out via YAML doesn't need a nil guard around every call.
+- **`httpclient.WithCache(cache.Cache) Option` / `httpclient.HttpClient.SetCache`** — the wiring point between the outbound HTTP cache middleware and the byte-level cache backend. Bootstrap forwards `Deps.Cache` to `WithCache` at httpclient construction; the runtime swap (`SetCache`) honors late `Wiring.Cache` injection (`cache.store: custom` cases) without rebuilding the middleware chain.
 - **Carrier** — short for `domain.NotificationCarrier`: any error with `NotificationContexts() []*NotificationContext`. Cross-layer error contract
 - **Context** (`domain.Context`) — minimal interface `ID() uuid.UUID`. `AppContext` extends with Language and metadata
 - **Domain event** — `DomainEvent` accumulated on entity via `RegisterEvent`, attached to ValidEntity, published by `events.Publisher` after persistence
