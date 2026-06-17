@@ -240,6 +240,7 @@ li { margin: 6px 0; }
             </ul>
         </li>
         <li><a href="#status-mapping">HTTP Status Mapping</a></li>
+        <li><a href="#cache-subsystem">Cache subsystem</a></li>
         <li><a href="#httpclient">httpclient — outbound HTTP</a></li>
         <li><a href="#integration-events">Integration events</a></li>
         <li><a href="#bootstrap">Bootstrap</a>
@@ -6232,6 +6233,13 @@ ORDER BY applied_at DESC LIMIT 20;</code></pre>
         <tr><td><code>audit.InsertAuditEvent</code></td><td><code>infra/audit</code></td><td>In-TX writer to <code>audit_events</code> (atomic with the data row + outbox)</td></tr>
         <tr><td><code>audit.EchoSlog</code></td><td><code>infra/audit</code></td><td>Post-commit slog emitter (observability echo)</td></tr>
         <tr><td><code>audit.EnsureFuturePartitions</code></td><td><code>infra/audit</code></td><td>Idempotent monthly partition creation, called at boot after migrations</td></tr>
+        <tr><td><code>cache.Cache</code></td><td><code>infra/cache</code></td><td>Byte-level key-value port: <code>Get(ctx,key)</code> / <code>Set(ctx,key,value,ttl)</code> / <code>Delete(ctx,key)</code>. Consumed by HTTP handlers, Kafka integration receivers, background jobs, and the outbound httpclient response cache. Read off <code>Deps.Cache</code> (private) or <code>Deps.SharedCache</code> (cross-service)</td></tr>
+        <tr><td><code>cache.NewMemory(maxEntries)</code></td><td><code>infra/cache</code></td><td>In-process LRU+TTL backend. Local only — rejected at boot for the shared slot since an in-process LRU cannot honor cross-service reads</td></tr>
+        <tr><td><code>cache.NewRedis(*RedisConfig)</code></td><td><code>infra/cache</code></td><td>go-redis/v9 backend. Lazy connect, JSON entries, per-op timeout, <code>failMode: open|closed</code>, optional <code>KeyPrefix</code>. Supports both private and shared scopes</td></tr>
+        <tr><td><code>cache.GetJSON[T]</code> / <code>cache.SetJSON[T]</code></td><td><code>infra/cache</code></td><td>Typed helpers that marshal Go values through <code>encoding/json</code>. Tolerate a nil <code>Cache</code> and degrade to no-op so feature code that opts the cache in/out via YAML doesn't need a nil guard around every call site</td></tr>
+        <tr><td><code>Deps.Cache</code> / <code>Deps.SharedCache</code></td><td><code>bootstrap</code></td><td>Two <code>cache.Cache</code> instances exposed by bootstrap. Private populated when <code>cache:</code> declared; shared populated only when <code>cache.shared:</code> declared. Distinction at the dependency-injection level, not via a flag on Set</td></tr>
+        <tr><td><code>Wiring.Cache</code> / <code>Wiring.SharedCache</code></td><td><code>bootstrap</code></td><td>Escape hatches for <code>cache.store: custom</code>. Mismatched wiring fails the boot with a structural-coherence error so misconfiguration surfaces at startup, not at runtime</td></tr>
+        <tr><td><code>httpclient.WithCache</code> / <code>HttpClient.SetCache</code></td><td><code>infra/httpclient</code></td><td>Wiring point between the outbound HTTP cache middleware and the byte-level cache backend. Bootstrap forwards <code>Deps.Cache</code>; the runtime swap (<code>SetCache</code>) honors late <code>Wiring.Cache</code> injection without rebuilding the middleware chain</td></tr>
         <tr><td><code>Response/Error/ErrorMessage</code></td><td><code>web</code></td><td>Standardized JSON shape</td></tr>
     </table>
 
