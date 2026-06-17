@@ -1,6 +1,7 @@
 package httpclient
 
 import (
+	"context"
 	"io"
 	"log/slog"
 	"net/http"
@@ -17,8 +18,13 @@ import (
 
 func TestMemoryCache_SetGet(t *testing.T) {
 	c := newMemoryCache(10)
-	c.Set("k", &cacheEntry{Body: []byte("v"), ExpiresAt: time.Now().Add(time.Minute)})
-	e, ok := c.Get("k")
+	if err := c.Set(context.Background(), "k", &CacheEntry{Body: []byte("v"), ExpiresAt: time.Now().Add(time.Minute)}); err != nil {
+		t.Fatalf("Set: %v", err)
+	}
+	e, ok, err := c.Get(context.Background(), "k")
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
 	if !ok || string(e.Body) != "v" {
 		t.Errorf("Get returned (%v, %v)", e, ok)
 	}
@@ -26,8 +32,8 @@ func TestMemoryCache_SetGet(t *testing.T) {
 
 func TestMemoryCache_TTLExpiry(t *testing.T) {
 	c := newMemoryCache(10)
-	c.Set("k", &cacheEntry{Body: []byte("v"), ExpiresAt: time.Now().Add(-time.Second)})
-	if _, ok := c.Get("k"); ok {
+	_ = c.Set(context.Background(), "k", &CacheEntry{Body: []byte("v"), ExpiresAt: time.Now().Add(-time.Second)})
+	if _, ok, _ := c.Get(context.Background(), "k"); ok {
 		t.Errorf("expired entry should not be returned")
 	}
 	if c.len() != 0 {
@@ -37,16 +43,17 @@ func TestMemoryCache_TTLExpiry(t *testing.T) {
 
 func TestMemoryCache_LRU_Eviction(t *testing.T) {
 	c := newMemoryCache(3)
+	ctx := context.Background()
 	for _, k := range []string{"a", "b", "c"} {
-		c.Set(k, &cacheEntry{Body: []byte(k), ExpiresAt: time.Now().Add(time.Minute)})
+		_ = c.Set(ctx, k, &CacheEntry{Body: []byte(k), ExpiresAt: time.Now().Add(time.Minute)})
 	}
-	_, _ = c.Get("a") // a most recent
-	c.Set("d", &cacheEntry{Body: []byte("d"), ExpiresAt: time.Now().Add(time.Minute)})
-	if _, ok := c.Get("b"); ok {
+	_, _, _ = c.Get(ctx, "a") // a most recent
+	_ = c.Set(ctx, "d", &CacheEntry{Body: []byte("d"), ExpiresAt: time.Now().Add(time.Minute)})
+	if _, ok, _ := c.Get(ctx, "b"); ok {
 		t.Errorf("b should have been evicted (oldest after a touched)")
 	}
 	for _, k := range []string{"a", "c", "d"} {
-		if _, ok := c.Get(k); !ok {
+		if _, ok, _ := c.Get(ctx, k); !ok {
 			t.Errorf("expected %q to remain", k)
 		}
 	}
@@ -59,10 +66,11 @@ func TestMemoryCache_ConcurrentSafe(t *testing.T) {
 	for i := 0; i < 20; i++ {
 		atomic.AddInt32(&wg, 1)
 		go func(i int) {
+			ctx := context.Background()
 			for j := 0; j < 200; j++ {
 				k := string(rune('a' + i%26))
-				c.Set(k, &cacheEntry{Body: []byte("x"), ExpiresAt: time.Now().Add(time.Minute)})
-				_, _ = c.Get(k)
+				_ = c.Set(ctx, k, &CacheEntry{Body: []byte("x"), ExpiresAt: time.Now().Add(time.Minute)})
+				_, _, _ = c.Get(ctx, k)
 			}
 			done <- struct{}{}
 		}(i)

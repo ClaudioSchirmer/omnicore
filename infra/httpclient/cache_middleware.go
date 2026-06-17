@@ -22,6 +22,13 @@ import (
 // Bypass paths (obs.CacheStatus = "bypass"): policy disabled, method other
 // than GET/HEAD, per-call CallConfig.NoCache, or Cache-Control: no-store
 // on the response.
+//
+// Backend errors are surfaced verbatim. The middleware does not translate
+// them or swallow them — failure policy (open / closed) lives on the
+// backend. Backends that opt into fail-open swallow transport errors
+// internally and return (nil, false, nil) on Get (treated as miss) /
+// nil on Set (treated as no-op write). Backends that opt into
+// fail-closed return the error and the call aborts at this layer.
 func cacheMiddleware(serviceName, endpointName string, store Cache, policy cachePolicy, cacheAcceptable bool, acceptableStatus map[int]struct{}) roundTripper {
 	return rtFunc(func(ctx context.Context, req *http.Request, obs *observation, next roundTripper) (*http.Response, error) {
 		if !policy.enabled || !isCacheableMethod(req.Method) {
@@ -36,7 +43,11 @@ func cacheMiddleware(serviceName, endpointName string, store Cache, policy cache
 		if key == "" {
 			key = buildCacheKey(serviceName, endpointName, req, policy)
 		}
-		if entry, ok := store.Get(key); ok {
+		entry, ok, err := store.Get(ctx, key)
+		if err != nil {
+			return nil, err
+		}
+		if ok {
 			obs.CacheStatus = "hit"
 			return materializeResponse(req, entry), nil
 		}
@@ -54,7 +65,7 @@ func cacheMiddleware(serviceName, endpointName string, store Cache, policy cache
 			return nil, readErr
 		}
 		ttl := effectiveTTL(resp, policy)
-		entry := &cacheEntry{
+		newEntry := &CacheEntry{
 			Body:          bodyBytes,
 			Headers:       cloneHeader(resp.Header),
 			Status:        resp.StatusCode,
@@ -62,9 +73,11 @@ func cacheMiddleware(serviceName, endpointName string, store Cache, policy cache
 			ContentLength: int64(len(bodyBytes)),
 			ExpiresAt:     time.Now().Add(ttl),
 		}
-		store.Set(key, entry)
+		if setErr := store.Set(ctx, key, newEntry); setErr != nil {
+			return nil, setErr
+		}
 		resp.Body = io.NopCloser(bytes.NewReader(bodyBytes))
-		resp.ContentLength = entry.ContentLength
+		resp.ContentLength = newEntry.ContentLength
 		return resp, nil
 	})
 }
@@ -239,7 +252,7 @@ func cloneHeader(h http.Header) http.Header {
 // materializeResponse rebuilds an *http.Response from a cached entry. The
 // body is wrapped in a fresh NopCloser so multiple hits each get a
 // rewindable reader.
-func materializeResponse(req *http.Request, entry *cacheEntry) *http.Response {
+func materializeResponse(req *http.Request, entry *CacheEntry) *http.Response {
 	return &http.Response{
 		Status:        http.StatusText(entry.Status),
 		StatusCode:    entry.Status,

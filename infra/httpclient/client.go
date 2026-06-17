@@ -37,6 +37,11 @@ type HttpClient struct {
 	// (YAML baseURL used verbatim). See BaseURLResolver for the cascade
 	// with the YAML configuration.
 	resolver BaseURLResolver
+	// injectedCacheStore holds the consumer-provided Cache from
+	// WithCacheStore. New() resolves the effective cacheStore from this
+	// field cross-checked against defaults.cache.store; the value is
+	// consumed at construction time and never read again.
+	injectedCacheStore Cache
 }
 
 // Option customizes the constructor without changing the YAML schema.
@@ -61,6 +66,26 @@ func WithLogger(l *slog.Logger) Option {
 func WithResolver(r BaseURLResolver) Option {
 	return func(c *HttpClient) {
 		c.resolver = r
+	}
+}
+
+// WithCacheStore registers a consumer-provided Cache implementation for
+// the GET cache layer. The Cache contract is documented on the Cache
+// interface; the framework ships memory (in-process LRU+TTL) and redis
+// (declarative via YAML) as canonical backends, so reach for this option
+// only when neither fits — typically when the operator already pays for
+// a different shared-cache infrastructure (Memcached, Valkey, Hazelcast).
+//
+// Wiring rule: the YAML MUST declare `defaults.cache.store: custom` so
+// the configuration describes the intent. Any other store value combined
+// with WithCacheStore aborts New(). Conversely, declaring `store: custom`
+// without injecting a Cache via this option also aborts New().
+//
+// Pass nil to clear a previously-injected store (rarely useful — option
+// composition is order-sensitive, so the last non-nil value wins).
+func WithCacheStore(s Cache) Option {
+	return func(c *HttpClient) {
+		c.injectedCacheStore = s
 	}
 }
 
@@ -108,7 +133,13 @@ func New(cfg *Config, opts ...Option) (*HttpClient, error) {
 		}
 	}
 	if anyCacheEnabled {
-		c.cacheStore = newMemoryCache(resolveMaxEntries(cfg.Defaults.Cache))
+		store, err := resolveCacheStore(cfg.Defaults.Cache, c.injectedCacheStore)
+		if err != nil {
+			return nil, err
+		}
+		c.cacheStore = store
+	} else if c.injectedCacheStore != nil {
+		return nil, fmt.Errorf("httpclient: WithCacheStore was passed but no endpoint declares a cache: block — the cache layer is disabled, the injected store would never run")
 	}
 	if len(cfg.AuthProviders) > 0 {
 		reg, revocation, err := buildAuthRegistry(cfg.AuthProviders)

@@ -11,6 +11,58 @@ with `1.0.0`.
 
 ## [Unreleased]
 
+### Added
+
+- **Pluggable cache backend for `infra/httpclient` (chain position 6).** Two
+  canonical implementations are now selected declaratively via
+  `defaults.cache.store: memory | redis` in `microservice.<profile>.yaml`,
+  plus a third (`custom`) that wires a consumer-provided adapter for shared-
+  cache backends the framework does not ship (Memcached, Valkey, Hazelcast,
+  etc.). The `memory` backend is the framework default and preserves the
+  pre-existing behavior — services without a `cache.store` entry are
+  byte-identical to the previous boot.
+  - **`httpclient.Cache`** (new exported interface) with
+    `Get(ctx, key) (*CacheEntry, bool, error)` and
+    `Set(ctx, key, entry) error`. Storage port for the GET cache middleware;
+    `(ctx, error)` shape lets network-backed adapters propagate timeouts and
+    transport failures instead of swallowing them silently.
+  - **`httpclient.CacheEntry`** (new exported struct) carries the on-wire
+    shape (`Body`, `Headers`, `Status`, `ContentType`, `ContentLength`,
+    `ExpiresAt`). Only primitives + `http.Header`, so any serialization
+    format (JSON / gob / protobuf / msgpack) preserves the contract.
+  - **`httpclient.WithCacheStore(Cache) Option`** (new functional option for
+    `httpclient.New`) registers a consumer-provided implementation.
+    Symmetric to `WithResolver` for `BaseURLResolver`.
+  - **`defaults.cache.store: redis`** ships with the framework's Redis
+    adapter (`github.com/redis/go-redis/v9`). JSON-encoded entries (debug
+    via `redis-cli GET <key>`); lazy connection (Redis unreachable at boot
+    does not block `New()`); per-op timeout governed by `timeoutMs` (default
+    100ms); namespace via `keyPrefix`; opt-in fail-mode policy.
+  - **`defaults.cache.redis.failMode: open | closed`** governs the Redis
+    adapter's behavior on transport failure. `open` (default) emits
+    `slog.Warn "httpclient.cache.redis.transport.error"` + returns
+    `(nil, false, nil)` on Get / `nil` on Set so the call proceeds to
+    upstream as if cache were disabled; `closed` propagates the error and
+    aborts the call at the cache layer wrapped in `*HttpError`. Logical
+    misses (`redis.Nil`) and corrupted entries (JSON decode failure) are
+    NOT errors — always behave as miss regardless of `failMode`.
+  - **Boot-time conflict matrix** at `New()` — declaring `store: custom`
+    without `WithCacheStore`, OR passing `WithCacheStore` with any other
+    `store` value, OR passing `WithCacheStore` when no endpoint declares a
+    `cache:` block, fails the boot with a structural-coherence error. The
+    YAML always describes the intent; misconfiguration surfaces at boot,
+    not at runtime.
+
+### Changed
+
+- **`infra/httpclient/cache_middleware.go` propagates `Cache` errors verbatim.**
+  Backend Get errors now bubble up through the chain (the previous
+  package-private contract returned only `(value, ok)`). Existing callers
+  see no behavior difference — `memory` never returns an error, and the
+  Redis adapter's fail-open mode collapses transport errors to `(nil,
+  false, nil)` internally. Fail-closed mode is the only path on which an
+  error reaches the caller; that mode is opt-in by `failMode: closed`.
+
 ## [0.7.0] - 2026-06-16
 
 ### Added
