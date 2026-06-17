@@ -31,7 +31,7 @@ import (
 // after the delete completes.
 type DeleteCommandHandler[T domain.Entity, Cmd pipeline.DeleteCommand[T, TResult], TResult any] struct {
 	pipeline.PathIDRequired
-	Repo    persistence.Writer[T]
+	Repo    persistence.ScopedRepository[T]
 	Service domain.Service
 }
 
@@ -48,7 +48,7 @@ func (h *DeleteCommandHandler[T, Cmd, TResult]) Handle(ctx *configuration.AppCon
 		return zero, err
 	}
 	opts := collectWriteOptions[T, Cmd](cmd)
-	if err := h.Repo.Delete(ctx, deletable, opts...); err != nil {
+	if err := h.Repo.Scope(ctx, opts...).Delete(deletable); err != nil {
 		return zero, err
 	}
 	return cmd.FromEntity(ctx, current), nil

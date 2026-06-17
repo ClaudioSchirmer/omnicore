@@ -358,7 +358,7 @@ func TestMongoViewReader_ReadPage_Projection(t *testing.T) {
 
 	reader := NewMongoViewReader(m)
 	page, err := reader.ReadPage(ctx, "users", queries.ReadCriteria{
-		Projection: []string{"email"},
+		Projection: map[string]int{"email": 1},
 	})
 	if err != nil {
 		t.Fatalf("ReadPage: %v", err)
@@ -436,7 +436,9 @@ func TestMongoViewReader_DefaultLimitWhenZero(t *testing.T) {
 
 	col := m.Collection("users")
 	ctx := context.Background()
-	for i := 0; i < 25; i++ {
+	// Insert more than the framework default ceiling (100) so the "no ?limit="
+	// default cap is observable.
+	for i := 0; i < 105; i++ {
 		col.InsertOne(ctx, bson.M{"_id": i, "deleted_at": nil})
 	}
 
@@ -445,16 +447,17 @@ func TestMongoViewReader_DefaultLimitWhenZero(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ReadPage: %v", err)
 	}
-	// defaultReadLimit is 20.
-	if len(page.Items) != 20 {
-		t.Errorf("default page size = %d, want 20", len(page.Items))
+	// With no per-view / yaml override, the ceiling is
+	// FrameworkDefaultMaxReadLimit (100); an absent limit defers to the ceiling.
+	if len(page.Items) != 100 {
+		t.Errorf("default page size = %d, want 100 (framework ceiling)", len(page.Items))
 	}
 	if !page.HasNext {
-		t.Error("expected HasNext=true with 25 items")
+		t.Error("expected HasNext=true with 105 items under a 100 ceiling")
 	}
 }
 
-func TestMongoViewReader_CursorRoundTrip_BadInputFalls(t *testing.T) {
+func TestMongoViewReader_BadCursorRejected(t *testing.T) {
 	m, cleanup := newTestMongo(t)
 	defer cleanup()
 
@@ -463,51 +466,19 @@ func TestMongoViewReader_CursorRoundTrip_BadInputFalls(t *testing.T) {
 	col.InsertOne(ctx, bson.M{"_id": "1", "deleted_at": nil})
 
 	reader := NewMongoViewReader(m)
-	// A garbage cursor should be silently ignored (decodeCursor failure path).
-	page, err := reader.ReadPage(ctx, "users", queries.ReadCriteria{After: "garbage-cursor"})
-	if err != nil {
-		t.Fatalf("ReadPage with bad cursor should not fail, got %v", err)
-	}
-	if len(page.Items) != 1 {
-		t.Errorf("expected to fall back to full page, got %d items", len(page.Items))
+	// A malformed cursor is strictly rejected (keyset contract: an invalid
+	// cursor surfaces as an error, mapped to the canonical 400 upstream —
+	// never silently ignored).
+	if _, err := reader.ReadPage(ctx, "users", queries.ReadCriteria{After: "garbage-cursor"}); err == nil {
+		t.Error("expected an error for a malformed cursor, got nil")
 	}
 }
 
-// --- decodeCursor edge cases ----------------------------------------------
-
-func TestEncodeDecodeCursor_RoundTrip(t *testing.T) {
-	enc := encodeCursor("abc-123")
-	got, err := decodeCursor(enc)
-	if err != nil || got != "abc-123" {
-		t.Errorf("round trip = (%q, %v), want abc-123", got, err)
-	}
-}
-
-func TestDecodeCursor_NotBase64IsError(t *testing.T) {
-	if _, err := decodeCursor("not&base64"); err == nil {
-		t.Error("expected base64 decode error")
-	}
-}
-
-func TestDecodeCursor_NotJSONIsError(t *testing.T) {
-	// valid base64 but contents are not the expected JSON shape
-	bad := "bm90LWpzb24=" // "not-json"
-	if _, err := decodeCursor(bad); err == nil {
-		t.Error("expected json unmarshal error")
-	}
-}
-
-func TestDecodeCursor_MissingIDIsError(t *testing.T) {
-	enc := encodeCursor("") // shape is {"id":""}
-	// missing key test: encode a payload that has a different key.
-	bad := "eyJ4IjoiYWJjIn0=" // {"x":"abc"}
-	if _, err := decodeCursor(bad); err == nil {
-		t.Error("expected error when cursor JSON has no id")
-	}
-	if got, err := decodeCursor(enc); err != nil || got != "" {
-		t.Errorf("empty-id cursor should still round-trip to \"\", got (%q,%v)", got, err)
-	}
-}
+// Cursor encode/decode round-trip + edge cases live in
+// application/queries/cursor_test.go, exercising the keyset cursor API
+// (queries.EncodeCursor / DecodeCursor). The old simple-string
+// encodeCursor/decodeCursor helpers were removed, so the tests that
+// referenced them are gone — coverage moved with the API.
 
 // --- normalizeSQLValue: UUID -----------------------------------------------
 

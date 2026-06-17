@@ -3,6 +3,7 @@ package infra
 import (
 	"testing"
 
+	"github.com/ClaudioSchirmer/omnicore/application/persistence"
 	"github.com/ClaudioSchirmer/omnicore/domain"
 )
 
@@ -60,13 +61,14 @@ func TestBaseAggregateRepository_ChildRegistrationViaLoader(t *testing.T) {
 }
 
 // Compile-time check: a struct that only embeds BaseAggregateRepository
-// satisfies domain.Repository[T] and domain.ArchivedFinder[T] — FindByID,
-// FindArchivedByID and New() are all promoted via embed.
+// satisfies persistence.ScopedRepository[T] (domain.Reader[T] + Scope) and
+// domain.ArchivedFinder[T] — FindByID, New() and Scope are all promoted via
+// embed, FindArchivedByID is provided by BaseAggregateRepository itself.
 type barUserRepo struct {
 	BaseAggregateRepository[*barTestEntity]
 }
 
 var (
-	_ domain.Repository[*barTestEntity]      = (*barUserRepo)(nil)
-	_ domain.ArchivedFinder[*barTestEntity]  = (*barUserRepo)(nil)
+	_ persistence.ScopedRepository[*barTestEntity] = (*barUserRepo)(nil)
+	_ domain.ArchivedFinder[*barTestEntity]        = (*barUserRepo)(nil)
 )

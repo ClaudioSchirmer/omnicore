@@ -380,7 +380,7 @@ func TestBaseRepository_InsertUpdateArchiveUnarchiveDelete(t *testing.T) {
 	// Insert via repo.
 	e := &flatPerson{Name: "R", Email: "r@x"}
 	ins, _ := domain.GetInsertable(e, nil, "GetInsertable")
-	id, err := repo.Insert(testCtx(), ins)
+	id, err := repo.Scope(testCtx()).Insert(ins)
 	if err != nil {
 		t.Fatalf("repo Insert: %v", err)
 	}
@@ -392,7 +392,7 @@ func TestBaseRepository_InsertUpdateArchiveUnarchiveDelete(t *testing.T) {
 	e2 := &flatPerson{Name: "R", Email: "r@x"}
 	e2.SetID(id)
 	upd, _ := domain.GetUpdatable(e2, func(p *flatPerson) { p.Name = "R2" }, nil, "GetUpdatable")
-	if err := repo.Update(testCtx(), upd); err != nil {
+	if err := repo.Scope(testCtx()).Update(upd); err != nil {
 		t.Fatalf("repo Update: %v", err)
 	}
 
@@ -400,7 +400,7 @@ func TestBaseRepository_InsertUpdateArchiveUnarchiveDelete(t *testing.T) {
 	a := &flatPerson{Name: "R2", Email: "r@x"}
 	a.SetID(id)
 	arch, _ := domain.GetArchivable(a, nil, "GetArchivable")
-	if err := repo.Archive(testCtx(), arch); err != nil {
+	if err := repo.Scope(testCtx()).Archive(arch); err != nil {
 		t.Fatalf("repo Archive: %v", err)
 	}
 	if activeCount(t, pg, "flat_persons") != 0 {
@@ -410,7 +410,7 @@ func TestBaseRepository_InsertUpdateArchiveUnarchiveDelete(t *testing.T) {
 	u := &flatPerson{Name: "R2", Email: "r@x"}
 	u.SetID(id)
 	una, _ := domain.GetUnarchivable(u, nil, "GetUnarchivable")
-	if err := repo.Unarchive(testCtx(), una); err != nil {
+	if err := repo.Scope(testCtx()).Unarchive(una); err != nil {
 		t.Fatalf("repo Unarchive: %v", err)
 	}
 
@@ -418,7 +418,7 @@ func TestBaseRepository_InsertUpdateArchiveUnarchiveDelete(t *testing.T) {
 	d := &flatPerson{Name: "R2", Email: "r@x"}
 	d.SetID(id)
 	del, _ := domain.GetDeletable(d, nil, "GetDeletable")
-	if err := repo.Delete(testCtx(), del); err != nil {
+	if err := repo.Scope(testCtx()).Delete(del); err != nil {
 		t.Fatalf("repo Delete: %v", err)
 	}
 	if rowCount(t, pg, "flat_persons") != 0 {
@@ -451,13 +451,13 @@ func TestBaseRepository_ConstraintBindingMapsTo23505Notification(t *testing.T) {
 
 	e1 := &flatPerson{Name: "A", Email: "same@x"}
 	ins1, _ := domain.GetInsertable(e1, nil, "GetInsertable")
-	if _, err := repo.Insert(testCtx(), ins1); err != nil {
+	if _, err := repo.Scope(testCtx()).Insert(ins1); err != nil {
 		t.Fatalf("first insert: %v", err)
 	}
 
 	e2 := &flatPerson{Name: "B", Email: "same@x"}
 	ins2, _ := domain.GetInsertable(e2, nil, "GetInsertable")
-	_, err := repo.Insert(testCtx(), ins2)
+	_, err := repo.Scope(testCtx()).Insert(ins2)
 	if err == nil {
 		t.Fatal("expected duplicate to fail")
 	}
@@ -496,7 +496,7 @@ func TestBaseRepository_ConstraintCodeOtherThan23505ReturnsRaw(t *testing.T) {
 	loaded.SetID(domain.NewID(uuid.NewString()))
 	upd, _ := domain.GetUpdatable(loaded, func(*flatPerson) {}, nil, "GetUpdatable")
 
-	err := repo.Update(testCtx(), upd)
+	err := repo.Scope(testCtx()).Update(upd)
 	if err == nil {
 		t.Fatal("expected error when updating a non-existent row")
 	}

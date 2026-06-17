@@ -113,8 +113,9 @@ func (c *AppContext) SetBearerToken(token string) {
 }
 
 // ActorSubject returns the JWT `sub` of the request, or the sentinel
-// domain.AnonymousActor when no Identity is attached. Consumed by the
-// audit/event pipelines so every log line carries "who did this".
+// "anonymous" (persistence.AnonymousActor) when no Identity is attached.
+// Consumed by the audit/event pipelines so every log line carries
+// "who did this".
 func (c *AppContext) ActorSubject() string {
 	c.mu.RLock()
 	defer c.mu.RUnlock()

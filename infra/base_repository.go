@@ -5,6 +5,7 @@ import (
 
 	"github.com/jackc/pgx/v5/pgconn"
 
+	"github.com/ClaudioSchirmer/omnicore/application/configuration"
 	"github.com/ClaudioSchirmer/omnicore/application/persistence"
 	"github.com/ClaudioSchirmer/omnicore/domain"
 )
@@ -83,33 +84,54 @@ type BaseRepository[T any] struct {
 	Config RepoConfig
 }
 
-// Insert routes through *Postgres and threads the variadic WriteOption[T]
-// to the persister via AdaptWriteOptions — the typed afterBegin /
-// beforeCommit closures the Cmd (Auto path) or the caller (manual path)
-// supplied land at positions A and D of the TX.
-func (r *BaseRepository[T]) Insert(ctx domain.Context, i domain.Insertable, opts ...persistence.WriteOption[T]) (domain.ID, error) {
-	res, err := r.Postgres.Insert(ctx, i, &r.Config, AdaptWriteOptions(opts))
+// Scope binds the request-scoped concerns — the ctx (cancellation → pgx,
+// actor → audit) and the optional in-TX lifecycle hooks carried by the
+// WriteOption[T] variadic — and returns a pure domain.Writer ready to
+// persist a ValidEntity. The returned boundWriter closes over the ctx and
+// the resolved hook; its Insert/Update/Archive/Unarchive/Delete take only
+// a ValidEntity, so the domain port never pronounces the ctx.
+//
+// AdaptWriteOptions folds the typed afterBegin / beforeCommit closures the
+// Cmd (Auto path) or the caller (manual path) supplied into the type-erased
+// writeHook the persister fires at positions A and D of the TX.
+func (r *BaseRepository[T]) Scope(ctx *configuration.AppContext, opts ...persistence.WriteOption[T]) domain.Writer {
+	return boundWriter[T]{repo: r, ctx: ctx, hook: AdaptWriteOptions(opts)}
+}
+
+// boundWriter is the request-scoped domain.Writer Scope returns. It holds
+// the BaseRepository (for the Postgres adapter, the RepoConfig, and the
+// constraint-violation mapErr), the bound ctx, and the resolved hook. Each
+// write delegates to *Postgres with the captured ctx — the pure domain
+// signature (ValidEntity in, outcome out) is preserved.
+type boundWriter[T any] struct {
+	repo *BaseRepository[T]
+	ctx  *configuration.AppContext
+	hook writeHook
+}
+
+func (w boundWriter[T]) Insert(i domain.Insertable) (domain.ID, error) {
+	res, err := w.repo.Postgres.Insert(w.ctx, i, &w.repo.Config, w.hook)
 	if err != nil {
-		return domain.ID{}, r.mapErr(err)
+		return domain.ID{}, w.repo.mapErr(err)
 	}
 	return domain.NewID(res.ID), nil
 }
 
-func (r *BaseRepository[T]) Update(ctx domain.Context, u domain.Updatable, opts ...persistence.WriteOption[T]) error {
-	_, err := r.Postgres.Update(ctx, u, &r.Config, AdaptWriteOptions(opts))
-	return r.mapErr(err)
+func (w boundWriter[T]) Update(u domain.Updatable) error {
+	_, err := w.repo.Postgres.Update(w.ctx, u, &w.repo.Config, w.hook)
+	return w.repo.mapErr(err)
 }
 
-func (r *BaseRepository[T]) Delete(ctx domain.Context, d domain.Deletable, opts ...persistence.WriteOption[T]) error {
-	return r.mapErr(r.Postgres.Delete(ctx, d, &r.Config, AdaptWriteOptions(opts)))
+func (w boundWriter[T]) Delete(d domain.Deletable) error {
+	return w.repo.mapErr(w.repo.Postgres.Delete(w.ctx, d, &w.repo.Config, w.hook))
 }
 
-func (r *BaseRepository[T]) Archive(ctx domain.Context, a domain.Archivable, opts ...persistence.WriteOption[T]) error {
-	return r.mapErr(r.Postgres.Archive(ctx, a, &r.Config, AdaptWriteOptions(opts)))
+func (w boundWriter[T]) Archive(a domain.Archivable) error {
+	return w.repo.mapErr(w.repo.Postgres.Archive(w.ctx, a, &w.repo.Config, w.hook))
 }
 
-func (r *BaseRepository[T]) Unarchive(ctx domain.Context, u domain.Unarchivable, opts ...persistence.WriteOption[T]) error {
-	return r.mapErr(r.Postgres.Unarchive(ctx, u, &r.Config, AdaptWriteOptions(opts)))
+func (w boundWriter[T]) Unarchive(u domain.Unarchivable) error {
+	return w.repo.mapErr(w.repo.Postgres.Unarchive(w.ctx, u, &w.repo.Config, w.hook))
 }
 
 // New returns an empty instance of T via the injected factory. Panics if

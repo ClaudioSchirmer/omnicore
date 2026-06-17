@@ -6,6 +6,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/ClaudioSchirmer/omnicore/application/configuration"
+	"github.com/ClaudioSchirmer/omnicore/application/persistence"
 	"github.com/ClaudioSchirmer/omnicore/domain"
 )
 
@@ -24,11 +25,11 @@ func (e *builderTestEntity) Modes() []domain.EntityMode {
 }
 func (e *builderTestEntity) BuildRules(string, domain.Service, *domain.Rules) {}
 
-func newBuilderCtx() domain.Context {
+func newBuilderCtx() persistence.RequestContext {
 	return configuration.NewAppContextWithRandomID(configuration.LangENG)
 }
 
-func newBuilderCtxWithIdentity(subject, issuer string, claims map[string]any) domain.Context {
+func newBuilderCtxWithIdentity(subject, issuer string, claims map[string]any) persistence.RequestContext {
 	ctx := configuration.NewAppContextWithRandomID(configuration.LangENG)
 	ctx.SetIdentity(&configuration.Identity{
 		Subject: subject,
@@ -199,8 +200,8 @@ func TestPopulateContext_AnonymousActorWhenNoIdentity(t *testing.T) {
 	ev := BuildInsertEvent(newBuilderCtx(),
 		insertableOf(t, &builderTestEntity{Name: "x"}),
 		domain.NewID(uuid.NewString()), nil)
-	if ev.Actor != domain.AnonymousActor {
-		t.Errorf("Actor = %q, want %q (anonymous when no Identity attached)", ev.Actor, domain.AnonymousActor)
+	if ev.Actor != persistence.AnonymousActor {
+		t.Errorf("Actor = %q, want %q (anonymous when no Identity attached)", ev.Actor, persistence.AnonymousActor)
 	}
 	if ev.ActorIssuer != "" {
 		t.Errorf("ActorIssuer = %q, want empty when no Identity", ev.ActorIssuer)

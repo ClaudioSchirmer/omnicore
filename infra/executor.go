@@ -7,13 +7,14 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/ClaudioSchirmer/omnicore/application/persistence"
 	"github.com/ClaudioSchirmer/omnicore/domain"
 	"github.com/ClaudioSchirmer/omnicore/infra/audit"
 	"github.com/jackc/pgx/v5"
 )
 
 // Phase 19 + audit: Postgres.Insert/Update/Archive/Delete/Unarchive receive
-// the request-scoped domain.Context (carries actor + threadId + cancellation)
+// the request-scoped persistence.RequestContext (carries actor + threadId + cancellation)
 // and an optional RepoConfig (convention overrides). The simple path here
 // dispatches to the aggregate variant when AggregateInfo() reports true.
 //
@@ -25,7 +26,7 @@ import (
 // Both branches share a single audit.AuditEvent built once after the data
 // row is materialized (Insert needs the generated id).
 
-func (p *Postgres) Insert(ctx domain.Context, entity domain.Insertable, cfg *RepoConfig, hook writeHook) (domain.WriteResult, error) {
+func (p *Postgres) Insert(ctx persistence.RequestContext, entity domain.Insertable, cfg *RepoConfig, hook writeHook) (domain.WriteResult, error) {
 	if _, isAggregate := entity.AggregateInfo(); isAggregate {
 		return p.insertAggregate(ctx, entity, cfg, hook)
 	}
@@ -76,7 +77,7 @@ func (p *Postgres) Insert(ctx domain.Context, entity domain.Insertable, cfg *Rep
 	return domain.WriteResult{ID: id, Fields: fields}, nil
 }
 
-func (p *Postgres) Update(ctx domain.Context, entity domain.Updatable, cfg *RepoConfig, hook writeHook) (domain.WriteResult, error) {
+func (p *Postgres) Update(ctx persistence.RequestContext, entity domain.Updatable, cfg *RepoConfig, hook writeHook) (domain.WriteResult, error) {
 	if _, isAggregate := entity.AggregateInfo(); isAggregate {
 		return p.updateAggregate(ctx, entity, cfg, hook)
 	}
@@ -125,7 +126,7 @@ func (p *Postgres) Update(ctx domain.Context, entity domain.Updatable, cfg *Repo
 	return domain.WriteResult{ID: id, Fields: fields}, nil
 }
 
-func (p *Postgres) Archive(ctx domain.Context, entity domain.Archivable, cfg *RepoConfig, hook writeHook) error {
+func (p *Postgres) Archive(ctx persistence.RequestContext, entity domain.Archivable, cfg *RepoConfig, hook writeHook) error {
 	if _, isAggregate := entity.AggregateInfo(); isAggregate {
 		return p.archiveAggregate(ctx, entity, cfg, hook)
 	}
@@ -172,7 +173,7 @@ func (p *Postgres) Archive(ctx domain.Context, entity domain.Archivable, cfg *Re
 	return nil
 }
 
-func (p *Postgres) Unarchive(ctx domain.Context, entity domain.Unarchivable, cfg *RepoConfig, hook writeHook) error {
+func (p *Postgres) Unarchive(ctx persistence.RequestContext, entity domain.Unarchivable, cfg *RepoConfig, hook writeHook) error {
 	if _, isAggregate := entity.AggregateInfo(); isAggregate {
 		return p.unarchiveAggregate(ctx, entity, cfg, hook)
 	}
@@ -219,7 +220,7 @@ func (p *Postgres) Unarchive(ctx domain.Context, entity domain.Unarchivable, cfg
 	return nil
 }
 
-func (p *Postgres) Delete(ctx domain.Context, entity domain.Deletable, cfg *RepoConfig, hook writeHook) error {
+func (p *Postgres) Delete(ctx persistence.RequestContext, entity domain.Deletable, cfg *RepoConfig, hook writeHook) error {
 	if _, isAggregate := entity.AggregateInfo(); isAggregate {
 		return p.deleteAggregate(ctx, entity, cfg, hook)
 	}

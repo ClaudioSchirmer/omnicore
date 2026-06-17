@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/ClaudioSchirmer/omnicore/application/configuration"
+	"github.com/ClaudioSchirmer/omnicore/application/persistence"
 	"github.com/ClaudioSchirmer/omnicore/domain"
 )
 
@@ -19,11 +20,11 @@ func newCapture() (*SlogPublisher, *bytes.Buffer) {
 	return NewSlogPublisher(slog.New(handler)), buf
 }
 
-func newCtx() domain.Context {
+func newCtx() persistence.RequestContext {
 	return configuration.NewAppContextWithRandomID(configuration.LangENG)
 }
 
-func newCtxWithIdentity(sub, iss string) domain.Context {
+func newCtxWithIdentity(sub, iss string) persistence.RequestContext {
 	ctx := configuration.NewAppContextWithRandomID(configuration.LangENG)
 	ctx.SetIdentity(&configuration.Identity{Subject: sub, Issuer: iss})
 	return ctx

@@ -313,7 +313,7 @@ func TestPostgres_Batch_RunsMultipleOpsInOneTx(t *testing.T) {
 	ins1, _ := domain.GetInsertable(e1, nil, "GetInsertable")
 	ins2, _ := domain.GetInsertable(e2, nil, "GetInsertable")
 
-	results, err := pg.Batch(domain.NewBatch([]domain.ValidEntity{ins1, ins2}))
+	results, err := pg.Batch(testCtx(), domain.NewBatch([]domain.ValidEntity{ins1, ins2}))
 	if err != nil {
 		t.Fatalf("Batch: %v", err)
 	}
@@ -363,7 +363,7 @@ func TestPostgres_Batch_AllOpKindsInOneTx(t *testing.T) {
 	d.SetID(domain.NewID(r3.ID))
 	del, _ := domain.GetDeletable(d, nil, "GetDeletable")
 
-	results, err := pg.Batch(domain.NewBatch([]domain.ValidEntity{newIns, upd, arch, del}))
+	results, err := pg.Batch(testCtx(), domain.NewBatch([]domain.ValidEntity{newIns, upd, arch, del}))
 	if err != nil {
 		t.Fatalf("Batch: %v", err)
 	}
@@ -399,7 +399,7 @@ func TestPostgres_Batch_AllOpKindsAndUnarchive(t *testing.T) {
 	u.SetID(domain.NewID(r.ID))
 	una, _ := domain.GetUnarchivable(u, nil, "GetUnarchivable")
 
-	if _, err := pg.Batch(domain.NewBatch([]domain.ValidEntity{una})); err != nil {
+	if _, err := pg.Batch(testCtx(), domain.NewBatch([]domain.ValidEntity{una})); err != nil {
 		t.Fatalf("Batch Unarchive: %v", err)
 	}
 	if activeCount(t, pg, "flat_persons") != 1 {
@@ -420,7 +420,7 @@ func TestPostgres_Batch_ErrorRollsBackEverything(t *testing.T) {
 	bad.SetID(domain.NewID(uuid.NewString()))
 	badUpd, _ := domain.GetUpdatable(bad, func(*flatPerson) {}, nil, "GetUpdatable")
 
-	_, err := pg.Batch(domain.NewBatch([]domain.ValidEntity{goodIns, badUpd}))
+	_, err := pg.Batch(testCtx(), domain.NewBatch([]domain.ValidEntity{goodIns, badUpd}))
 	if err == nil {
 		t.Fatal("expected Batch to fail when an op errors")
 	}

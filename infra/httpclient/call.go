@@ -8,7 +8,7 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/ClaudioSchirmer/omnicore/domain"
+	"github.com/ClaudioSchirmer/omnicore/application/persistence"
 	"github.com/ClaudioSchirmer/omnicore/infra/httpclient/binding"
 )
 
@@ -303,14 +303,14 @@ func applyTimeout(ctx context.Context, d time.Duration) (context.Context, contex
 }
 
 // correlationID resolves the request's correlation identifier from the
-// context. AppContext satisfies domain.Context, so this works for both the
-// typical request flow and any direct domain.Context implementation in
+// context. AppContext satisfies persistence.RequestContext, so this works for both the
+// typical request flow and any direct persistence.RequestContext implementation in
 // tests or background jobs. Returns "" when neither interface is present.
 func correlationID(ctx context.Context) string {
 	if ctx == nil {
 		return ""
 	}
-	if dc, ok := ctx.(domain.Context); ok {
+	if dc, ok := ctx.(persistence.RequestContext); ok {
 		return dc.ID().String()
 	}
 	return ""

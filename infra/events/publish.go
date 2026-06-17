@@ -5,6 +5,7 @@ import (
 	"log/slog"
 	"time"
 
+	"github.com/ClaudioSchirmer/omnicore/application/persistence"
 	"github.com/ClaudioSchirmer/omnicore/domain"
 )
 
@@ -14,8 +15,8 @@ import (
 // write — distinct from the audit line itself (which carries snapshot/
 // changes/transition semantics).
 type Publisher interface {
-	Publish(ctx domain.Context, event domain.Event) error
-	PublishAll(ctx domain.Context, events []domain.DomainEvent) error
+	Publish(ctx persistence.RequestContext, event domain.Event) error
+	PublishAll(ctx persistence.RequestContext, events []domain.DomainEvent) error
 }
 
 // SlogPublisher writes each domain event as a flat slog line with top-level
@@ -36,7 +37,7 @@ func NewSlogPublisher(logger *slog.Logger) *SlogPublisher {
 	return &SlogPublisher{logger: logger}
 }
 
-func (p *SlogPublisher) Publish(ctx domain.Context, event domain.Event) error {
+func (p *SlogPublisher) Publish(ctx persistence.RequestContext, event domain.Event) error {
 	ev := EventLog{
 		ThreadID:    ctx.ID().String(),
 		EntityType:  event.ClassName(),
@@ -74,7 +75,7 @@ func (p *SlogPublisher) Publish(ctx domain.Context, event domain.Event) error {
 	return nil
 }
 
-func (p *SlogPublisher) PublishAll(ctx domain.Context, events []domain.DomainEvent) error {
+func (p *SlogPublisher) PublishAll(ctx persistence.RequestContext, events []domain.DomainEvent) error {
 	for _, e := range events {
 		if err := p.Publish(ctx, e); err != nil {
 			return err

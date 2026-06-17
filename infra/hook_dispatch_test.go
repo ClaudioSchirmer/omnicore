@@ -152,10 +152,10 @@ func TestAssertEntity_PanicsOnTypeMismatch(t *testing.T) {
 	_ = hook.AfterBegin(ctx, &wrongEntity{}, nil)
 }
 
-// nonAppContext satisfies domain.Context without being the configured
+// nonAppContext satisfies persistence.RequestContext without being the configured
 // *AppContext type — used to drive the assertAppContext panic path.
 type nonAppContext struct {
-	domain.Context
+	persistence.RequestContext
 }
 
 // wrongEntity satisfies domain.Entity but does not match the T the

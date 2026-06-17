@@ -48,13 +48,13 @@ func withRecordingLogger(t *testing.T, pg *Postgres) *bytes.Buffer {
 
 // buildAfterBeginHook constructs a writeHook firing only the afterBegin
 // slot with the supplied closure.
-func buildAfterBeginHook(fn func(ctx domain.Context, src domain.Entity, tx persistence.TxHandle) error) writeHook {
+func buildAfterBeginHook(fn func(ctx persistence.RequestContext, src domain.Entity, tx persistence.TxHandle) error) writeHook {
 	return writeHook{AfterBegin: fn}
 }
 
 // buildBeforeCommitHook constructs a writeHook firing only the beforeCommit
 // slot.
-func buildBeforeCommitHook(fn func(ctx domain.Context, src domain.Entity, id domain.ID, tx persistence.TxHandle) error) writeHook {
+func buildBeforeCommitHook(fn func(ctx persistence.RequestContext, src domain.Entity, id domain.ID, tx persistence.TxHandle) error) writeHook {
 	return writeHook{BeforeCommit: fn}
 }
 
@@ -83,7 +83,7 @@ func TestPostgres_Insert_HookFires_AfterBegin(t *testing.T) {
 
 	called := false
 	ins, _ := domain.GetInsertable(&flatPerson{Name: "alice", Email: "a@x"}, nil, "GetInsertable")
-	hook := buildAfterBeginHook(func(_ domain.Context, _ domain.Entity, _ persistence.TxHandle) error {
+	hook := buildAfterBeginHook(func(_ persistence.RequestContext, _ domain.Entity, _ persistence.TxHandle) error {
 		called = true
 		return nil
 	})
@@ -105,7 +105,7 @@ func TestPostgres_Insert_HookFires_BeforeCommit(t *testing.T) {
 
 	var gotID domain.ID
 	ins, _ := domain.GetInsertable(&flatPerson{Name: "alice", Email: "a@x"}, nil, "GetInsertable")
-	hook := buildBeforeCommitHook(func(_ domain.Context, _ domain.Entity, id domain.ID, _ persistence.TxHandle) error {
+	hook := buildBeforeCommitHook(func(_ persistence.RequestContext, _ domain.Entity, id domain.ID, _ persistence.TxHandle) error {
 		gotID = id
 		return nil
 	})
@@ -138,7 +138,7 @@ func TestPostgres_Insert_HookCanWriteCompanionRow(t *testing.T) {
 	}
 
 	ins, _ := domain.GetInsertable(&flatPerson{Name: "alice", Email: "a@x"}, nil, "GetInsertable")
-	hook := buildBeforeCommitHook(func(_ domain.Context, _ domain.Entity, id domain.ID, tx persistence.TxHandle) error {
+	hook := buildBeforeCommitHook(func(_ persistence.RequestContext, _ domain.Entity, id domain.ID, tx persistence.TxHandle) error {
 		return insertCompanion(tx, id, "added in hook")
 	})
 	if _, err := pg.Insert(testCtx(), ins, nil, hook); err != nil {
@@ -157,7 +157,7 @@ func TestPostgres_Insert_AfterBeginError_RollsBack(t *testing.T) {
 
 	wantErr := errors.New("afterBegin rejects")
 	ins, _ := domain.GetInsertable(&flatPerson{Name: "alice", Email: "a@x"}, nil, "GetInsertable")
-	hook := buildAfterBeginHook(func(domain.Context, domain.Entity, persistence.TxHandle) error { return wantErr })
+	hook := buildAfterBeginHook(func(persistence.RequestContext, domain.Entity, persistence.TxHandle) error { return wantErr })
 
 	_, err := pg.Insert(testCtx(), ins, nil, hook)
 	if !errors.Is(err, wantErr) {
@@ -182,7 +182,7 @@ func TestPostgres_Insert_BeforeCommitError_RollsBack(t *testing.T) {
 
 	wantErr := errors.New("beforeCommit rejects")
 	ins, _ := domain.GetInsertable(&flatPerson{Name: "alice", Email: "a@x"}, nil, "GetInsertable")
-	hook := buildBeforeCommitHook(func(domain.Context, domain.Entity, domain.ID, persistence.TxHandle) error { return wantErr })
+	hook := buildBeforeCommitHook(func(persistence.RequestContext, domain.Entity, domain.ID, persistence.TxHandle) error { return wantErr })
 
 	_, err := pg.Insert(testCtx(), ins, nil, hook)
 	if !errors.Is(err, wantErr) {
@@ -206,7 +206,7 @@ func TestPostgres_Insert_HookError_EmitsSlogWarn(t *testing.T) {
 	buf := withRecordingLogger(t, pg)
 
 	ins, _ := domain.GetInsertable(&flatPerson{Name: "alice", Email: "a@x"}, nil, "GetInsertable")
-	hook := buildBeforeCommitHook(func(domain.Context, domain.Entity, domain.ID, persistence.TxHandle) error {
+	hook := buildBeforeCommitHook(func(persistence.RequestContext, domain.Entity, domain.ID, persistence.TxHandle) error {
 		return errors.New("rejects")
 	})
 	_, _ = pg.Insert(testCtx(), ins, nil, hook)
@@ -273,11 +273,11 @@ func TestPostgres_Update_HookFires_BothSlots(t *testing.T) {
 
 	abCalled, bcCalled := false, false
 	hook := writeHook{
-		AfterBegin: func(domain.Context, domain.Entity, persistence.TxHandle) error {
+		AfterBegin: func(persistence.RequestContext, domain.Entity, persistence.TxHandle) error {
 			abCalled = true
 			return nil
 		},
-		BeforeCommit: func(domain.Context, domain.Entity, domain.ID, persistence.TxHandle) error {
+		BeforeCommit: func(persistence.RequestContext, domain.Entity, domain.ID, persistence.TxHandle) error {
 			bcCalled = true
 			return nil
 		},
@@ -303,7 +303,7 @@ func TestPostgres_Update_BeforeCommitError_RollsBack(t *testing.T) {
 	original := outboxCount(t, pg)
 	e.Name = "alice2"
 	upd, _ := domain.GetUpdatable(e, func(*flatPerson) {}, nil, "GetUpdatable")
-	hook := buildBeforeCommitHook(func(domain.Context, domain.Entity, domain.ID, persistence.TxHandle) error {
+	hook := buildBeforeCommitHook(func(persistence.RequestContext, domain.Entity, domain.ID, persistence.TxHandle) error {
 		return errors.New("rejects")
 	})
 	if _, err := pg.Update(testCtx(), upd, nil, hook); err == nil {
@@ -332,7 +332,7 @@ func TestPostgres_Archive_HookFires(t *testing.T) {
 
 	arch, _ := domain.GetArchivable(e, nil, "GetArchivable")
 	bcCalled := false
-	hook := buildBeforeCommitHook(func(domain.Context, domain.Entity, domain.ID, persistence.TxHandle) error {
+	hook := buildBeforeCommitHook(func(persistence.RequestContext, domain.Entity, domain.ID, persistence.TxHandle) error {
 		bcCalled = true
 		return nil
 	})
@@ -358,7 +358,7 @@ func TestPostgres_Unarchive_HookFires(t *testing.T) {
 
 	una, _ := domain.GetUnarchivable(e, nil, "GetUnarchivable")
 	bcCalled := false
-	hook := buildBeforeCommitHook(func(domain.Context, domain.Entity, domain.ID, persistence.TxHandle) error {
+	hook := buildBeforeCommitHook(func(persistence.RequestContext, domain.Entity, domain.ID, persistence.TxHandle) error {
 		bcCalled = true
 		return nil
 	})
@@ -381,7 +381,7 @@ func TestPostgres_Delete_HookFires_AndRollback(t *testing.T) {
 	e.SetID(domain.NewID(res.ID))
 
 	del, _ := domain.GetDeletable(e, nil, "GetDeletable")
-	hook := buildBeforeCommitHook(func(domain.Context, domain.Entity, domain.ID, persistence.TxHandle) error {
+	hook := buildBeforeCommitHook(func(persistence.RequestContext, domain.Entity, domain.ID, persistence.TxHandle) error {
 		return errors.New("rejects")
 	})
 	if err := pg.Delete(testCtx(), del, nil, hook); err == nil {
@@ -407,7 +407,7 @@ func TestPostgres_InsertAggregate_HookFires_BeforeCommit(t *testing.T) {
 	}
 
 	bcCalled := false
-	hook := buildBeforeCommitHook(func(_ domain.Context, _ domain.Entity, id domain.ID, _ persistence.TxHandle) error {
+	hook := buildBeforeCommitHook(func(_ persistence.RequestContext, _ domain.Entity, id domain.ID, _ persistence.TxHandle) error {
 		bcCalled = true
 		if id.IsEmpty() {
 			t.Error("beforeCommit on aggregate received empty id")
@@ -430,7 +430,7 @@ func TestPostgres_InsertAggregate_BeforeCommitError_RollsBackEverything(t *testi
 	u := &aggCustomer{Name: "alice", Email: "a@x"}
 	domain.AddAggregateChild(u, aggChannel{Label: "email"})
 	ins, _ := domain.GetInsertable(u, nil, "GetInsertable")
-	hook := buildBeforeCommitHook(func(domain.Context, domain.Entity, domain.ID, persistence.TxHandle) error {
+	hook := buildBeforeCommitHook(func(persistence.RequestContext, domain.Entity, domain.ID, persistence.TxHandle) error {
 		return errors.New("rejects")
 	})
 	if _, err := pg.Insert(testCtx(), ins, nil, hook); err == nil {
@@ -458,7 +458,7 @@ func TestPostgres_HookSlogWarn_AggregatePath(t *testing.T) {
 	u := &aggCustomer{Name: "alice", Email: "a@x"}
 	domain.AddAggregateChild(u, aggChannel{Label: "email"})
 	ins, _ := domain.GetInsertable(u, nil, "GetInsertable")
-	hook := buildAfterBeginHook(func(domain.Context, domain.Entity, persistence.TxHandle) error {
+	hook := buildAfterBeginHook(func(persistence.RequestContext, domain.Entity, persistence.TxHandle) error {
 		return errors.New("rejects")
 	})
 	_, _ = pg.Insert(testCtx(), ins, nil, hook)
@@ -479,9 +479,9 @@ func TestPostgres_HookPayload_ReceivesContextAndEntity(t *testing.T) {
 	wantEntity := &flatPerson{Name: "alice", Email: "a@x"}
 	ins, _ := domain.GetInsertable(wantEntity, nil, "GetInsertable")
 
-	var gotCtx domain.Context
+	var gotCtx persistence.RequestContext
 	var gotSrc domain.Entity
-	hook := buildBeforeCommitHook(func(ctx domain.Context, src domain.Entity, _ domain.ID, _ persistence.TxHandle) error {
+	hook := buildBeforeCommitHook(func(ctx persistence.RequestContext, src domain.Entity, _ domain.ID, _ persistence.TxHandle) error {
 		gotCtx = ctx
 		gotSrc = src
 		return nil
@@ -512,7 +512,7 @@ func TestPostgres_HookPayload_TxHandleUnwrapsToFrameworkTx(t *testing.T) {
 	createTable(t, pg, `CREATE TABLE tx_smoke (n INTEGER)`)
 
 	ins, _ := domain.GetInsertable(&flatPerson{Name: "alice", Email: "a@x"}, nil, "GetInsertable")
-	hook := buildBeforeCommitHook(func(_ domain.Context, _ domain.Entity, _ domain.ID, tx persistence.TxHandle) error {
+	hook := buildBeforeCommitHook(func(_ persistence.RequestContext, _ domain.Entity, _ domain.ID, tx persistence.TxHandle) error {
 		pgxTx := UnwrapPgxTx(tx)
 		if _, err := pgxTx.Exec(context.Background(), `INSERT INTO tx_smoke (n) VALUES (1), (2), (3)`); err != nil {
 			return err

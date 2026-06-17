@@ -34,7 +34,7 @@ import (
 // after the unarchive completes.
 type UnarchiveCommandHandler[T domain.Entity, Cmd pipeline.UnarchiveCommand[T, TResult], TResult any] struct {
 	pipeline.PathIDRequired
-	Repo    persistence.Writer[T]
+	Repo    persistence.ScopedRepository[T]
 	Service domain.Service
 }
 
@@ -61,7 +61,7 @@ func (h *UnarchiveCommandHandler[T, Cmd, TResult]) Handle(ctx *configuration.App
 		return zero, err
 	}
 	opts := collectWriteOptions[T, Cmd](cmd)
-	if err := h.Repo.Unarchive(ctx, unarchivable, opts...); err != nil {
+	if err := h.Repo.Scope(ctx, opts...).Unarchive(unarchivable); err != nil {
 		return zero, err
 	}
 	return cmd.FromEntity(ctx, sample), nil

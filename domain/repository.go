@@ -1,30 +1,45 @@
 package domain
 
-// Repository is the per-entity read port at the domain layer. The
-// write surface lives at the application layer as
-// persistence.Writer[T] — the write methods carry a typed variadic of
-// hook options (afterBegin / beforeCommit lifecycle), and those option
-// types reference *configuration.AppContext from the application
-// layer; pulling that import into the domain would break the
-// dependency rule (domain → stdlib + google/uuid only).
-//
-// Keeping the read methods (FindByID, New) here preserves the DDD
-// repository surface every consumer constructs in the domain layer
-// (e.g., `type UserRepository struct { ... }` returning *User on
-// FindByID). The Auto Command Handlers consume persistence.Writer[T]
-// instead of domain.Repository[T] for the write-side variadic; a
-// concrete BaseRepository[T] in infra/ implements both surfaces, so
-// the consumer service constructs one struct and threads it wherever
-// the matching port is expected.
-//
-// T is the "usable" type of the entity (typically a pointer like
-// *User) — FindByID returns T directly because T already carries the
-// indirection when applicable. This fits the domain.Entity constraint
-// of the Auto Command Handlers, which requires a type with
-// pointer-receiver methods (e.g. *User).
-type Repository[TEntity any] interface {
+// Reader is the read port at the domain layer. It speaks pure business
+// vocabulary — an ID in, the live entity out — and carries no
+// request-scoped concern (no context, no cancellation, no actor). The
+// concrete implementation (infra) uses whatever ctx it needs internally;
+// the domain contract does not pronounce it.
+type Reader[TEntity any] interface {
 	FindByID(id ID) (TEntity, error)
 	New() TEntity
+}
+
+// Writer is the write port at the domain layer. Each method takes a
+// ValidEntity (the validation attestation produced only by the domain
+// Get* functions) and returns the persistence outcome. It is NOT generic
+// on the entity type because the ValidEntity flavors already are the
+// contract — Insertable/Updatable/Archivable/Unarchivable/Deletable carry
+// the source entity internally.
+//
+// Writer carries NO request-scoped concern (no context, no actor, no
+// lifecycle hooks). Those are infrastructure details bound BELOW the port:
+// the application obtains a request-scoped Writer via
+// persistence.ScopedRepository[T].Scope(ctx, opts...), and the infra
+// adapter the Scope returns closes over the ctx + hooks. The domain port
+// stays pure.
+type Writer interface {
+	Insert(i Insertable) (ID, error)
+	Update(u Updatable) error
+	Archive(a Archivable) error
+	Unarchive(u Unarchivable) error
+	Delete(d Deletable) error
+}
+
+// Repository is the full per-entity port — read + write — every consumer
+// declares in the domain layer (e.g., `type UserRepository interface {
+// domain.Repository[*User]; FindByEmail(...) }`). Pure: stdlib +
+// google/uuid only, no application import. A request-scoped instance whose
+// write methods are bound to a ctx is produced by
+// persistence.ScopedRepository[T].Scope(ctx, opts...).
+type Repository[TEntity any] interface {
+	Reader[TEntity]
+	Writer
 }
 
 // ArchivedFinder is an optional capability: Repositories that can load
@@ -40,9 +55,10 @@ type ArchivedFinder[TEntity any] interface {
 }
 
 // DefaultRepository[T] is a zero-state read-port implementation that
-// returns RepositoryFunctionNotImplemented for every method. Useful as
-// a placeholder during scaffolding or as a base type the consumer
-// embeds and selectively overrides.
+// returns RepositoryFunctionNotImplemented for FindByID and a zero value
+// for New. Useful as a placeholder during scaffolding or as a base type
+// the consumer embeds and selectively overrides. It satisfies Reader[T]
+// (not the write side — a placeholder never persists).
 type DefaultRepository[TEntity any] struct {
 	Name string
 }

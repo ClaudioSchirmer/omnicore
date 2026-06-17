@@ -30,7 +30,7 @@ import (
 // after the partial update completes.
 type PartialUpdateCommandHandler[T domain.Entity, Cmd pipeline.PartialUpdateCommand[T, TResult], TResult any] struct {
 	pipeline.PathIDRequired
-	Repo    persistence.Writer[T]
+	Repo    persistence.ScopedRepository[T]
 	Service domain.Service
 }
 
@@ -47,7 +47,7 @@ func (h *PartialUpdateCommandHandler[T, Cmd, TResult]) Handle(ctx *configuration
 		return zero, err
 	}
 	opts := collectWriteOptions[T, Cmd](cmd)
-	if err := h.Repo.Update(ctx, updatable, opts...); err != nil {
+	if err := h.Repo.Scope(ctx, opts...).Update(updatable); err != nil {
 		return zero, err
 	}
 	return cmd.FromEntity(ctx, current), nil

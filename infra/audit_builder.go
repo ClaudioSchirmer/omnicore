@@ -5,6 +5,7 @@ import (
 	"sort"
 	"sync"
 
+	"github.com/ClaudioSchirmer/omnicore/application/persistence"
 	"github.com/ClaudioSchirmer/omnicore/domain"
 	"github.com/ClaudioSchirmer/omnicore/infra/audit"
 )
@@ -64,7 +65,7 @@ const tenantClaim = "tenant_id"
 // successful insertion of insertable, carrying its post-write state.
 // auditClaims filters which JWT claims appear in ActorClaims; pass nil or
 // empty to omit the block entirely.
-func BuildInsertEvent(ctx domain.Context, i domain.Insertable, id domain.ID, auditClaims []string) audit.AuditEvent {
+func BuildInsertEvent(ctx persistence.RequestContext, i domain.Insertable, id domain.ID, auditClaims []string) audit.AuditEvent {
 	ev := audit.AuditEvent{
 		EntityType: i.EntityName(),
 		EntityID:   id.Value(),
@@ -84,7 +85,7 @@ func BuildInsertEvent(ctx domain.Context, i domain.Insertable, id domain.ID, aud
 // columns — unchanged ones absent — and is computed against Old() captured
 // before the apply closure ran. Verb is "update" for both PUT and PATCH
 // (identical SQL fingerprint); the distinction lives in ActionName.
-func BuildUpdateEvent(ctx domain.Context, u domain.Updatable, auditClaims []string) audit.AuditEvent {
+func BuildUpdateEvent(ctx persistence.RequestContext, u domain.Updatable, auditClaims []string) audit.AuditEvent {
 	prev := oldFieldsOf(u.Source())
 	cur := FieldsFromEntity(u.Source(), nil)
 	labels := labelKeysByColumn(reflect.TypeOf(u.Source()))
@@ -105,7 +106,7 @@ func BuildUpdateEvent(ctx domain.Context, u domain.Updatable, auditClaims []stri
 // BuildArchiveEvent assembles a kind=transition audit.AuditEvent describing the
 // successful archive of archivable. The verb itself encodes the recovery
 // path (the symmetric unarchive); no Snapshot or Changes block is emitted.
-func BuildArchiveEvent(ctx domain.Context, a domain.Archivable, auditClaims []string) audit.AuditEvent {
+func BuildArchiveEvent(ctx persistence.RequestContext, a domain.Archivable, auditClaims []string) audit.AuditEvent {
 	ev := audit.AuditEvent{
 		EntityType: a.EntityName(),
 		EntityID:   a.ID(),
@@ -120,7 +121,7 @@ func BuildArchiveEvent(ctx domain.Context, a domain.Archivable, auditClaims []st
 }
 
 // BuildUnarchiveEvent is the symmetric inverse of BuildArchiveEvent.
-func BuildUnarchiveEvent(ctx domain.Context, u domain.Unarchivable, auditClaims []string) audit.AuditEvent {
+func BuildUnarchiveEvent(ctx persistence.RequestContext, u domain.Unarchivable, auditClaims []string) audit.AuditEvent {
 	ev := audit.AuditEvent{
 		EntityType: u.EntityName(),
 		EntityID:   u.ID(),
@@ -139,7 +140,7 @@ func BuildUnarchiveEvent(ctx domain.Context, u domain.Unarchivable, auditClaims 
 // function entry, captured before the delete SQL fired) and falls back to
 // the live source only when Old() is nil (entity built outside the
 // framework's GetDeletable path).
-func BuildDeleteEvent(ctx domain.Context, d domain.Deletable, auditClaims []string) audit.AuditEvent {
+func BuildDeleteEvent(ctx persistence.RequestContext, d domain.Deletable, auditClaims []string) audit.AuditEvent {
 	snap := oldFieldsOf(d.Source())
 	if snap == nil {
 		snap = FieldsFromEntity(d.Source(), nil)
@@ -162,7 +163,7 @@ func BuildDeleteEvent(ctx domain.Context, d domain.Deletable, auditClaims []stri
 // ActorIssuer, ActorClaims, TenantID) from ctx. ActorClaims is filtered
 // through auditClaims; TenantID is read from the raw claim map at the
 // canonical "tenant_id" key.
-func populateContext(ev *audit.AuditEvent, ctx domain.Context, auditClaims []string) {
+func populateContext(ev *audit.AuditEvent, ctx persistence.RequestContext, auditClaims []string) {
 	if ctx == nil {
 		return
 	}
