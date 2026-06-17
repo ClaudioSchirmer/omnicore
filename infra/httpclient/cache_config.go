@@ -8,21 +8,22 @@ import (
 )
 
 // Framework defaults applied when the cache: block is present but a field
-// is omitted. Picked for production sanity — 5 minute TTL, 10k entries
-// covers most read paths without unbounded growth.
+// is omitted. The backend selection (memory | redis | custom) lives on the
+// top-level cache: block consumed by bootstrap; httpclient receives a
+// cache.Cache instance via WithCache and the YAML knobs here govern only
+// the policy (whether the layer runs, the default TTL, Cache-Control
+// honoring, per-endpoint variations).
 const (
 	frameworkCacheDefaultTTL        = 5 * time.Minute
-	frameworkCacheMaxEntries        = 10000
 	frameworkCacheHonorCacheControl = true
 )
 
-// CacheDefaults is the defaults-level cache: block. Endpoint-level cache
-// blocks describe per-endpoint deviations (TTL, varyOn); the global
-// defaults control whether cache runs at all and the store sizing.
+// CacheDefaults is the defaults-level cache: block under httpClient. Carries
+// ONLY policy knobs — backend is the framework's top-level cache subsystem
+// (cache.Cache injected by bootstrap), not chosen per-httpclient.
 type CacheDefaults struct {
 	Enabled           *bool    `yaml:"enabled"`
 	DefaultTTL        Duration `yaml:"defaultTTL"`
-	MaxEntries        int      `yaml:"maxEntries"`
 	HonorCacheControl *bool    `yaml:"honorCacheControl"`
 }
 
@@ -50,18 +51,9 @@ type cachePolicy struct {
 // surprises (no spaces, no JSONPath, no glob).
 var varyOnEntryRE = regexp.MustCompile(`^(header|query):([A-Za-z][A-Za-z0-9_-]*)$`)
 
-// resolveCachePolicy merges defaults and endpoint cache config. The
-// endpoint block enables caching for that endpoint; the defaults block
-// gates whether the runtime layer participates at all.
-//
-// Cascade rules:
-//   - When defaults.enabled is false → policy disabled regardless of endpoint
-//   - When endpoint has no cache block → policy disabled for that endpoint
-//   - Endpoint.TTL overrides defaults.DefaultTTL; defaults.DefaultTTL falls
-//     back to the framework constant when unset.
-//
-// honorCacheControl flows from defaults; endpoint cannot override (the
-// design keeps that as a service-level knob, expressed via defaults).
+// resolveCachePolicy merges defaults and endpoint cache config. The endpoint
+// block enables caching for that endpoint; the defaults block gates whether
+// the runtime layer participates at all.
 func resolveCachePolicy(defaults *CacheDefaults, endpoint *EndpointCacheConfig) cachePolicy {
 	if endpoint == nil {
 		return cachePolicy{}
@@ -100,18 +92,7 @@ func resolveCachePolicy(defaults *CacheDefaults, endpoint *EndpointCacheConfig) 
 	return p
 }
 
-// resolveMaxEntries returns the cache size cap to use when constructing
-// the in-memory store. Defaults to the framework constant; explicit
-// values in the YAML override.
-func resolveMaxEntries(defaults *CacheDefaults) int {
-	if defaults == nil || defaults.MaxEntries == 0 {
-		return frameworkCacheMaxEntries
-	}
-	return defaults.MaxEntries
-}
-
-// validateCacheDefaults runs schema checks on the defaults-level block and
-// returns a list of error strings the global validator joins together.
+// validateCacheDefaults runs schema checks on the defaults-level block.
 func validateCacheDefaults(prefix string, cfg *CacheDefaults) []string {
 	if cfg == nil {
 		return nil
@@ -120,15 +101,10 @@ func validateCacheDefaults(prefix string, cfg *CacheDefaults) []string {
 	if cfg.DefaultTTL < 0 {
 		errs = append(errs, fmt.Sprintf("%s.defaultTTL: must be non-negative", prefix))
 	}
-	if cfg.MaxEntries < 0 {
-		errs = append(errs, fmt.Sprintf("%s.maxEntries: must be non-negative (0 disables the cap)", prefix))
-	}
 	return errs
 }
 
 // validateEndpointCache runs schema checks on an endpoint-level cache block.
-// The method check enforces "GET / HEAD only" so a misconfigured POST
-// endpoint with caching fails the boot rather than silently never caching.
 func validateEndpointCache(prefix, method string, cfg *EndpointCacheConfig) []string {
 	if cfg == nil {
 		return nil

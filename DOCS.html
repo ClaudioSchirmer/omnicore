@@ -3713,6 +3713,83 @@ audit.RenderLabelsInJSON(doc, deps.Translator, configuration.LangPTBR)
     </p>
 </section>
 
+<section id="cache-subsystem">
+  <h2>Cache subsystem</h2>
+  <p><code>omnicore/infra/cache</code> is the framework's generic byte-level key-value cache subsystem. The <code>cache.Cache</code> port is the single contract consumer code, domain services, infrastructure adapters, and the outbound httpclient all consult — there is no per-component cache anymore. Two canonical implementations ship: in-process LRU+TTL via <code>cache.NewMemory</code>, Redis via <code>cache.NewRedis</code>. Consumers wanting a different backend (Memcached, Valkey, Hazelcast, …) implement the same <code>cache.Cache</code> interface and inject the implementation via <code>bootstrap.Wiring.Cache</code> / <code>bootstrap.Wiring.SharedCache</code>.</p>
+
+  <h3>Interface</h3>
+<pre><code>type Cache interface {
+    Get(ctx context.Context, key string) ([]byte, bool, error)
+    Set(ctx context.Context, key string, value []byte, ttl time.Duration) error
+    Delete(ctx context.Context, key string) error
+}</code></pre>
+  <p>Intentionally narrow — <code>Get</code> returns <code>(value, true, nil)</code> on hit / <code>(nil, false, nil)</code> on miss / <code>(nil, false, err)</code> on transport failure; <code>Set</code> accepts <code>ttl == 0</code> as "no expiration"; <code>Delete</code> is idempotent (missing keys are not an error). No <code>Has</code> (use <code>Get</code>); no <code>Clear</code> (operator-owned via the backend's CLI); no batch ops.</p>
+  <p><strong>Typed JSON helpers</strong> sit outside the interface so backends don't have to think about Go types:</p>
+<pre><code>func cache.GetJSON[T any](ctx, c cache.Cache, key string) (T, bool, error)
+func cache.SetJSON[T any](ctx, c cache.Cache, key string, value T, ttl time.Duration) error</code></pre>
+  <p>Both tolerate a nil <code>Cache</code> and degrade to no-op (miss / no-op write) so feature code that opts the cache in-or-out via YAML doesn't need a nil guard around every call site.</p>
+
+  <h3>Two cache instances per service — Private and Shared</h3>
+  <p>The framework exposes TWO <code>cache.Cache</code> instances on <code>bootstrap.Deps</code>:</p>
+  <ul>
+    <li><strong><code>Deps.Cache</code></strong> — service-private. Populated when the top-level <code>cache:</code> YAML block is declared (any store including memory). Use for anything scoped to this service — domain memoization, computed-value caching, the outbound httpclient response cache (the framework wires its own middleware to consume this same instance).</li>
+    <li><strong><code>Deps.SharedCache</code></strong> — cross-service. Populated only when <code>cache.shared:</code> is declared. Use for keys other services in the cluster are expected to read — feature flags coordinated across services, cluster-wide rate limits, sessions consumed by an API gateway.</li>
+  </ul>
+  <p>The distinction is enforced at the <strong>dependency-injection level</strong>, not via a flag on Set/Get. Code that wants to write a shared value writes to <code>Deps.SharedCache</code>; code that doesn't is structurally unable to. Default safety: <code>Deps.SharedCache</code> is <code>nil</code> unless declared — feature code touching it MUST guard explicitly. The httpclient response cache uses <code>Deps.Cache</code> (private) unconditionally.</p>
+  <p class="note"><strong><code>cache.shared.store: memory</code> is REJECTED at boot.</strong> An in-process LRU cannot honor cross-service reads; the framework forces the operator to pick <code>redis</code> or <code>custom</code> for the shared cache.</p>
+
+  <h3>YAML — top-level <code>cache:</code> block</h3>
+<pre><code>cache:
+  store: memory                     # memory (default) | redis | custom
+  maxEntries: 10000                 # only memory; default 10000
+  redis:                            # required when store: redis, rejected otherwise
+    addr: ${REDIS_ADDR:localhost:6379}
+    password: ${REDIS_PASSWORD}
+    db: 0
+    keyPrefix: "${SERVICE}-cache"
+    failMode: open                  # open (default) | closed
+    timeoutMs: 100                  # per-op timeout against Redis; default 100ms
+
+  shared:                           # OPTIONAL second cache instance
+    store: redis                    # redis | custom — memory rejected at boot
+    redis:
+      addr: ${SHARED_REDIS_ADDR}
+      keyPrefix: "${TEAM}-shared"
+      failMode: open
+      timeoutMs: 100</code></pre>
+  <p>When the top-level <code>cache:</code> block is omitted entirely, <code>Deps.Cache</code> stays nil — the httpclient cache layer bypasses, and <code>cache.GetJSON</code>/<code>SetJSON</code> degrade to no-ops. Services that don't need caching pay zero cost.</p>
+
+  <h3>Backend selection cascade</h3>
+  <p>The same matrix applies independently to <code>cache.store</code> and <code>cache.shared.store</code>. Mismatched wiring fails the boot with a structural-coherence error:</p>
+  <ul>
+    <li><code>store: memory</code> (or unset) + no <code>Wiring.Cache</code> → in-process LRU runs.</li>
+    <li><code>store: memory</code> or <code>store: redis</code> + <code>Wiring.Cache</code> injected → boot panic ("declare <code>store: custom</code> to use <code>Wiring.Cache</code>").</li>
+    <li><code>store: redis</code> + no <code>Wiring.Cache</code> → go-redis backed adapter built from <code>redis:</code> sub-block.</li>
+    <li><code>store: custom</code> + no <code>Wiring.Cache</code> → boot panic ("<code>Wiring.Cache</code> required").</li>
+    <li><code>store: custom</code> + <code>Wiring.Cache</code> injected → injected instance runs.</li>
+  </ul>
+  <p><code>cache.shared.store: memory</code> is additionally rejected at boot — only <code>redis</code> and <code>custom</code> are accepted for the shared cache.</p>
+
+  <h3>Redis adapter — <code>failMode</code></h3>
+  <p>The framework's Redis backend (<code>cache.NewRedis(*RedisConfig)</code>) resolves the configured <code>failMode</code> internally:</p>
+  <ul>
+    <li><strong><code>open</code> (default)</strong> — swallows transport errors, emits <code>slog.Warn "cache.redis.transport.error"</code> with <code>{op, key, error, failOpen}</code>, and returns <code>(nil, false, nil)</code> on <code>Get</code> / <code>nil</code> on <code>Set</code>/<code>Delete</code>. The caller sees a miss; the call proceeds as if the cache were disabled for that request.</li>
+    <li><strong><code>closed</code></strong> — propagates the error verbatim. The middleware (or consumer code) surfaces it.</li>
+  </ul>
+  <p>Logical misses (<code>redis.Nil</code>) and corrupted entries are NOT errors — they always behave as miss regardless of <code>failMode</code>. The connection is lazy — Redis unreachable at boot does NOT block <code>New()</code>; the first <code>Get</code>/<code>Set</code> surfaces the failure through <code>failMode</code>.</p>
+
+  <h3>Late injection — <code>Wiring.Cache</code> and <code>Wiring.SharedCache</code></h3>
+  <p><code>Wiring.Cache</code> and <code>Wiring.SharedCache</code> are the escape hatches for <code>cache.store: custom</code>. The framework resolves them AFTER the <code>wire(deps)</code> callback runs, so consumer code that constructs the custom backend can use any infrastructure available to features (additional connections, secrets manager handles, …). The httpclient picks up the late-resolved private cache via <code>httpclient.HttpClient.SetCache</code> (atomic pointer swap; no chain rebuild).</p>
+
+  <h3>Common patterns</h3>
+  <ul>
+    <li><strong>Read or write a private cache value:</strong> <code>value, ok, err := cache.GetJSON[Profile](ctx, deps.Cache, "user:42:profile")</code> / <code>cache.SetJSON(ctx, deps.Cache, "user:42:profile", v, 5*time.Minute)</code></li>
+    <li><strong>Read or write a shared cache value:</strong> same helpers but against <code>deps.SharedCache</code> — guard against nil first if the operator may have omitted <code>cache.shared:</code></li>
+    <li><strong>Plug a custom backend</strong> (Memcached / Valkey / Hazelcast / …): implement <code>cache.Cache</code>, declare <code>cache.store: custom</code> (or <code>cache.shared.store: custom</code>) in YAML, inject the implementation via <code>bootstrap.Wiring.Cache</code> / <code>bootstrap.Wiring.SharedCache</code></li>
+    <li><strong>Disable the cache entirely:</strong> omit the top-level <code>cache:</code> block. <code>Deps.Cache</code> and <code>Deps.SharedCache</code> stay nil; httpclient cache middleware short-circuits as <code>"bypass"</code></li>
+  </ul>
+</section>
+
 <section id="httpclient">
   <h2>httpclient — outbound HTTP</h2>
   <p><code>omnicore/infra/httpclient</code> is the framework's outbound HTTP subsystem. Services describe the external systems they talk to in <a href="#microservice-yaml"><code>microservice.&lt;profile&gt;.yaml</code></a> under the <code>httpClient:</code> block; the framework constructs a singleton <code>*httpclient.HttpClient</code> registry on <code>bootstrap.Deps.HttpClient</code>. Each declared service gets its own <code>http.Transport</code> and <code>http.Client</code> so a misbehaving upstream cannot starve the pool of the rest.</p>
@@ -4185,13 +4262,12 @@ func customerAuthToInline(cfg CustomerAuthConfig) *httpclient.InlineAuth {
   <p>The body is replayed on each attempt from <code>obs.RequestBody</code> (the logging middleware buffers it at chain position 2), so request handlers see the same payload byte-for-byte every time.</p>
 
   <h3>Cache</h3>
-  <p>The chain inserts the cache middleware at position 6 — before retry, so a hit short-circuits without traversing the retry loop. Configuration is declarative; the runtime store is a shared in-memory LRU+TTL bounded by <code>defaults.cache.maxEntries</code>.</p>
+  <p>The chain inserts the cache middleware at position 6 — before retry, so a hit short-circuits without traversing the retry loop. The <strong>backend</strong> is the framework's top-level cache subsystem (see the <a href="#cache-subsystem">Cache subsystem</a> section for the <code>cache:</code> YAML block, the <code>cache.Cache</code> port, and the memory / redis / custom backends). The <code>httpClient.defaults.cache:</code> block keeps only the POLICY knobs — whether the layer runs, the default TTL, Cache-Control honoring, per-endpoint <code>cache: { ttl, varyOn }</code> and <code>cacheAcceptable</code>.</p>
 <pre><code>httpClient:
   defaults:
     cache:
       enabled: true                   # default true
       defaultTTL: 5m                  # framework default 5m
-      maxEntries: 10000               # framework default 10000
       honorCacheControl: true         # default true
 
   services:
@@ -4206,17 +4282,19 @@ func customerAuthToInline(cfg CustomerAuthConfig) *httpclient.InlineAuth {
             varyOn: [header:Accept-Language, query:tenant]
           acceptableStatus: [404]
           cacheAcceptable: false      # default false; opt-in to cache 404 etc.</code></pre>
-  <p>Cascade: an endpoint with a <code>cache:</code> block participates in caching, subject to <code>defaults.cache.enabled</code>. Endpoint <code>ttl</code> overrides <code>defaults.defaultTTL</code>; the framework default fills in when neither sets a value.</p>
+  <p>Cascade: an endpoint with a <code>cache:</code> block participates in caching, subject to <code>defaults.cache.enabled</code> AND a non-nil <code>Deps.Cache</code> at boot. Endpoint <code>ttl</code> overrides <code>defaults.defaultTTL</code>; the framework default fills in when neither sets a value. When the operator omits the top-level <code>cache:</code> block entirely, the httpclient cache layer is silently disabled (the middleware short-circuits as <code>"bypass"</code>).</p>
   <p><strong>Cacheable methods.</strong> Only GET and HEAD enter the cache. Any other method bypasses unconditionally (<code>obs.CacheStatus = "bypass"</code>). The validator rejects <code>cache:</code> on POST/PATCH/PUT/DELETE endpoints at boot.</p>
   <p><strong>Storable responses.</strong> 2xx responses are stored by default. Responses whose status appears in <code>acceptableStatus</code> (e.g. 404 on a presence check) are stored only when <code>cacheAcceptable: true</code> on the endpoint — opt-in by design.</p>
-  <p><strong>Key formula.</strong> <code>service|endpoint|method|path|sortedQuery|h:hash(value)...|q:hash(value)...</code>. Query parameters are sorted alphabetically so <code>?a=1&amp;b=2</code> and <code>?b=2&amp;a=1</code> hash to the same key. <code>varyOn</code> accepts <code>header:Name</code> and <code>query:Name</code> entries; values are SHA-256 hashed so they never leak verbatim into the key.</p>
+  <p><strong>Key formula.</strong> <code>service|endpoint|method|path|sortedQuery|h:hash(value)...|q:hash(value)...</code>. Query parameters are sorted alphabetically so <code>?a=1&amp;b=2</code> and <code>?b=2&amp;a=1</code> hash to the same key. <code>varyOn</code> accepts <code>header:Name</code> and <code>query:Name</code> entries; values are SHA-256 hashed so they never leak verbatim into the key. The <code>service</code> segment guarantees no cross-service collision when several services share a Redis DB; the backend's <code>keyPrefix</code> (declared on the top-level <code>cache.redis:</code> block) adds an extra namespace scope across deployments.</p>
   <p><strong>Cache-Control honoring</strong> (when <code>honorCacheControl: true</code>):</p>
   <ul>
     <li><code>Cache-Control: max-age=N</code> overrides the configured TTL with N seconds</li>
+    <li><code>Cache-Control: max-age=0</code> short-circuits the store entirely (the byte-cache layer treats <code>ttl == 0</code> as "no expiration", the opposite of what the upstream asked for, so the middleware skips persistence)</li>
     <li><code>Cache-Control: no-store</code> or <code>no-cache</code> prevents storing the response</li>
   </ul>
   <p><strong>Per-call overrides.</strong> <code>WithoutCache()</code> bypasses the cache for one call without touching configuration; <code>WithCacheKey(key)</code> overrides the computed key (rare — typically for tenant-aware key schemes).</p>
-  <p><strong>Observation.</strong> <code>obs.CacheStatus</code> is <code>"hit"</code>, <code>"miss"</code>, or <code>"bypass"</code> in the single slog record per call.</p>
+  <p><strong>Wire shape.</strong> The middleware persists an internal <code>cacheEntry</code> JSON envelope (<code>body</code>, <code>headers</code>, <code>status</code>, <code>contentType</code>, <code>contentLength</code>, <code>expiresAt</code>) through the byte-level <code>cache.Cache</code> port. Stored entries remain operator-debuggable via the backend's CLI (e.g. <code>redis-cli GET &lt;key&gt;</code> + <code>json.loads</code>).</p>
+  <p><strong>Observation.</strong> <code>obs.CacheStatus</code> is <code>"hit"</code>, <code>"miss"</code>, or <code>"bypass"</code> in the single slog record per call. The cache backend (when Redis) additionally emits <code>slog.Warn "cache.redis.transport.error"</code> on transport failures so operators see the underlying problem regardless of the backend's <code>failMode</code>.</p>
 
   <h3>Circuit breaker</h3>
   <p>The chain inserts the circuit breaker middleware INSIDE the retry middleware — so the retry loop observes the breaker on every attempt. The state machine is per <code>(service, endpoint)</code> pair; configuration is shared at <code>defaults.circuitBreaker</code> (the design does not document per-endpoint overrides).</p>

@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/ClaudioSchirmer/omnicore/infra/cache"
 	"github.com/ClaudioSchirmer/omnicore/infra/httpclient/auth"
 )
 
@@ -181,7 +182,7 @@ func transportMiddleware(svc *serviceClient) roundTripper {
 // the framework rule, and middlewares cannot be reordered by the consumer.
 // Future phases register their layer at the documented position without
 // changing the surrounding ones.
-func buildChain(svc *serviceClient, serviceName, endpointName string, ep endpointSpec, effectiveRetry retryPolicy, store Cache, breaker *breakerState, provider auth.AuthProvider, revocationOnUnauthorized bool, logger *slog.Logger) *chain {
+func buildChain(svc *serviceClient, serviceName, endpointName string, ep endpointSpec, effectiveRetry retryPolicy, cacheGetter func() cache.Cache, breaker *breakerState, provider auth.AuthProvider, revocationOnUnauthorized bool, logger *slog.Logger) *chain {
 	layers := []roundTripper{
 		correlationMiddleware(svc), // 1
 		loggingMiddleware(logger),  // 2
@@ -192,8 +193,8 @@ func buildChain(svc *serviceClient, serviceName, endpointName string, ep endpoin
 	if ep.idempotency.enabled {
 		layers = append(layers, idempotencyMiddleware(ep.idempotency)) // 4 (idempotency runs before signing so the key can be in signedHeaders)
 	}
-	if store != nil && ep.cache.enabled {
-		layers = append(layers, cacheMiddleware(serviceName, endpointName, store, ep.cache, ep.cacheAcceptable, ep.acceptableStatus)) // 5
+	if cacheGetter != nil && ep.cache.enabled {
+		layers = append(layers, cacheMiddleware(serviceName, endpointName, cacheGetter, ep.cache, ep.cacheAcceptable, ep.acceptableStatus, logger)) // 5
 	}
 	// retry (outer) → breaker (inner) → signing (innermost before
 	// transport). Reasoning:

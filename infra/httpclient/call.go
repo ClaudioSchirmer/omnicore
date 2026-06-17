@@ -147,7 +147,7 @@ func Call[Req any, Resp any](
 	if cfg.retryOverride != nil {
 		effectiveRetry = resolveRetryOverride(meta.Method, cfg.retryOverride, ep.idempotency.enabled)
 	}
-	ch := buildChain(effectiveSvc, service, endpoint, ep, effectiveRetry, c.cacheStore, c.breaker(service, endpoint), provider, revocation, c.logger)
+	ch := buildChain(effectiveSvc, service, endpoint, ep, effectiveRetry, c.cacheStoreGetter(), c.breaker(service, endpoint), provider, revocation, c.logger)
 	resp, err := ch.dispatch(callCtx, httpReq, obs)
 	if err != nil {
 		return zero, buildHttpError(service, endpoint, httpReq, nil, nil, 0, err, time.Duration(obs.DurationMS)*time.Millisecond, obs.Attempt)

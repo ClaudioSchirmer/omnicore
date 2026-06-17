@@ -4,7 +4,9 @@ import (
 	"fmt"
 	"log/slog"
 	"strings"
+	"sync/atomic"
 
+	"github.com/ClaudioSchirmer/omnicore/infra/cache"
 	"github.com/ClaudioSchirmer/omnicore/infra/httpclient/auth"
 )
 
@@ -18,9 +20,15 @@ import (
 // generic on the package level is the only consumer-facing entry point;
 // internals (services map, logger, defaults) stay unexported.
 type HttpClient struct {
-	services     map[string]*serviceClient
-	logger       *slog.Logger
-	cacheStore   Cache
+	services map[string]*serviceClient
+	logger   *slog.Logger
+	// cacheStore is the byte-level cache the GET cache middleware reads /
+	// writes through. Stored as an atomic.Pointer so bootstrap can swap
+	// the implementation AFTER New (typically when Wiring.Cache supplies
+	// a custom backend resolved post-Wire) without rebuilding the chain.
+	// nil pointer means the cache layer is disabled at the runtime
+	// boundary — the middleware short-circuits as "bypass".
+	cacheStore   atomic.Pointer[cache.Cache]
 	breakerStore map[string]*breakerState
 	auth         *auth.Registry
 	// authRevocation tracks the revocationOnUnauthorized flag per provider
@@ -64,6 +72,53 @@ func WithResolver(r BaseURLResolver) Option {
 	}
 }
 
+// WithCache binds the byte-level cache.Cache the GET cache middleware
+// reads / writes through. Pass nil to keep the cache layer disabled
+// (the middleware short-circuits as "bypass"). Symmetric with
+// WithResolver: the consumer / bootstrap supplies the dependency, the
+// httpclient consumes it.
+//
+// The backend selection (memory | redis | custom) lives on the top-
+// level cache: block in microservice.<profile>.yaml, resolved by
+// bootstrap.buildDeps and forwarded here. Consumers building the
+// HttpClient manually (tests, custom lifecycle) pass any cache.Cache
+// implementation directly.
+func WithCache(c cache.Cache) Option {
+	return func(hc *HttpClient) {
+		hc.SetCache(c)
+	}
+}
+
+// SetCache atomically swaps the cache backend the GET cache middleware
+// consults. Called by bootstrap AFTER Wire(deps) when Wiring.Cache
+// supplies a custom backend that could not be resolved at New() time
+// (custom backends depend on consumer code that runs in the Wire
+// callback). Safe to call concurrently with in-flight requests — the
+// middleware reads the pointer per call.
+//
+// Passing nil disables the cache layer (subsequent requests bypass);
+// passing a non-nil value re-enables it.
+func (c *HttpClient) SetCache(store cache.Cache) {
+	if store == nil {
+		c.cacheStore.Store(nil)
+		return
+	}
+	c.cacheStore.Store(&store)
+}
+
+// cacheStoreGetter returns a closure the middleware reads at request
+// time — late binding so SetCache after construction takes effect
+// without chain rebuild.
+func (c *HttpClient) cacheStoreGetter() func() cache.Cache {
+	return func() cache.Cache {
+		p := c.cacheStore.Load()
+		if p == nil {
+			return nil
+		}
+		return *p
+	}
+}
+
 // New constructs the HttpClient from cfg. cfg may be nil (no httpClient: block
 // in the YAML) — the resulting client is a valid type carrier with no
 // services; Call rejects unknown service names rather than dialing nowhere.
@@ -91,24 +146,17 @@ func New(cfg *Config, opts ...Option) (*HttpClient, error) {
 	c.services = make(map[string]*serviceClient, len(cfg.Services))
 	breakerPolicy := resolveBreakerConfig(cfg.Defaults.CircuitBreaker)
 	c.breakerStore = make(map[string]*breakerState)
-	anyCacheEnabled := false
 	for name, sc := range cfg.Services {
 		svc, err := buildServiceClient(name, sc, cfg.Defaults)
 		if err != nil {
 			return nil, err
 		}
 		c.services[name] = svc
-		for epName, ep := range c.services[name].endpoints {
-			if ep.cache.enabled {
-				anyCacheEnabled = true
-			}
+		for epName := range c.services[name].endpoints {
 			if breakerPolicy.enabled {
 				c.breakerStore[name+"|"+epName] = newBreakerState(breakerPolicy)
 			}
 		}
-	}
-	if anyCacheEnabled {
-		c.cacheStore = newMemoryCache(resolveMaxEntries(cfg.Defaults.Cache))
 	}
 	if len(cfg.AuthProviders) > 0 {
 		reg, revocation, err := buildAuthRegistry(cfg.AuthProviders)
