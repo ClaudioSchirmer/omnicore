@@ -178,7 +178,7 @@ func resolveActor(ctx *configuration.AppContext) string {
 	if a := ctx.ActorSubject(); a != "" {
 		return a
 	}
-	return domain.AnonymousActor
+	return persistence.AnonymousActor
 }
 
 // resolveCorrelation picks WithCorrelation override first, then falls

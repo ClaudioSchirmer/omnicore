@@ -26,8 +26,8 @@ import (
 // when it reaches position D; surfacing it on the signature spares the
 // consumer one t.GetID() call inside their hook.
 type writeHook struct {
-	AfterBegin   func(ctx domain.Context, source domain.Entity, tx persistence.TxHandle) error
-	BeforeCommit func(ctx domain.Context, source domain.Entity, id domain.ID, tx persistence.TxHandle) error
+	AfterBegin   func(ctx persistence.RequestContext, source domain.Entity, tx persistence.TxHandle) error
+	BeforeCommit func(ctx persistence.RequestContext, source domain.Entity, id domain.ID, tx persistence.TxHandle) error
 }
 
 // hookContext describes the slot the persister is about to fire. Used
@@ -44,7 +44,7 @@ type hookContext struct {
 // NotificationCarrier identity end-to-end. The slog.Warn emission is
 // best-effort and never blocks the rollback path.
 func (p *Postgres) fireAfterBegin(
-	ctx domain.Context,
+	ctx persistence.RequestContext,
 	tx pgx.Tx,
 	source domain.Entity,
 	hook writeHook,
@@ -64,7 +64,7 @@ func (p *Postgres) fireAfterBegin(
 // the open TX, AFTER all framework writes (data + outbox + audit) and
 // BEFORE COMMIT. Mirrors fireAfterBegin's error + observability shape.
 func (p *Postgres) fireBeforeCommit(
-	ctx domain.Context,
+	ctx persistence.RequestContext,
 	tx pgx.Tx,
 	source domain.Entity,
 	id domain.ID,
@@ -84,7 +84,7 @@ func (p *Postgres) fireBeforeCommit(
 // logHookError emits the Topic 7 observability line. Best-effort: a nil
 // logger falls back to slog.Default so the line still lands somewhere
 // even when the framework boot path skipped WithAudit's logger arg.
-func (p *Postgres) logHookError(ctx domain.Context, hctx hookContext, slot string, err error) {
+func (p *Postgres) logHookError(ctx persistence.RequestContext, hctx hookContext, slot string, err error) {
 	logger := p.logger
 	if logger == nil {
 		logger = slog.Default()
@@ -120,19 +120,19 @@ func AdaptWriteOptions[T any](opts []persistence.WriteOption[T]) writeHook {
 	afterBegin, beforeCommit := persistence.ResolveWriteOptions(opts)
 	hook := writeHook{}
 	if afterBegin != nil {
-		hook.AfterBegin = func(ctx domain.Context, source domain.Entity, tx persistence.TxHandle) error {
+		hook.AfterBegin = func(ctx persistence.RequestContext, source domain.Entity, tx persistence.TxHandle) error {
 			return afterBegin(assertAppContext(ctx), assertEntity[T](source), tx)
 		}
 	}
 	if beforeCommit != nil {
-		hook.BeforeCommit = func(ctx domain.Context, source domain.Entity, id domain.ID, tx persistence.TxHandle) error {
+		hook.BeforeCommit = func(ctx persistence.RequestContext, source domain.Entity, id domain.ID, tx persistence.TxHandle) error {
 			return beforeCommit(assertAppContext(ctx), assertEntity[T](source), id, tx)
 		}
 	}
 	return hook
 }
 
-// assertAppContext casts domain.Context to *configuration.AppContext.
+// assertAppContext casts persistence.RequestContext to *configuration.AppContext.
 // The framework's middleware always installs an AppContext on the
 // request, so the cast succeeds in production code paths. A mismatch
 // indicates a wiring bug (test fixture forgot to use AppContext, custom
@@ -140,7 +140,7 @@ func AdaptWriteOptions[T any](opts []persistence.WriteOption[T]) writeHook {
 // convention for "the caller asked for behavior that the contract does
 // not permit": defer tx.Rollback() in the persister still fires, the
 // panic propagates to pipeline.Run's recover → Result.Exception (500).
-func assertAppContext(ctx domain.Context) *configuration.AppContext {
+func assertAppContext(ctx persistence.RequestContext) *configuration.AppContext {
 	appCtx, ok := ctx.(*configuration.AppContext)
 	if !ok {
 		panic("persistence: hook fired without *configuration.AppContext on the request — wiring bug, AppContextMiddleware skipped?")

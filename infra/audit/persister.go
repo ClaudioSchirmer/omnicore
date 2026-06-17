@@ -7,7 +7,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
-	"github.com/ClaudioSchirmer/omnicore/domain"
+	"github.com/ClaudioSchirmer/omnicore/application/persistence"
 )
 
 // insertAuditEventSQL is the canonical SQL for the in-TX audit write. The
@@ -33,7 +33,7 @@ INSERT INTO audit_events (
 // the database destination.
 //
 // Sentinel handling:
-//   - Actor == "" or domain.AnonymousActor → NULL on the row so the
+//   - Actor == "" or persistence.AnonymousActor → NULL on the row so the
 //     audit_events_actor_idx (partial: WHERE actor IS NOT NULL) excludes
 //     anonymous writes. Filters for "what alice did" stay on the index.
 //   - ActorIssuer / TenantID empty → NULL on the row, same rationale.
@@ -85,7 +85,7 @@ func buildAuditPayload(ev AuditEvent) ([]byte, error) {
 // sentinel — both map to a NULL column. Any other value passes through so
 // the row's actor column carries the JWT sub verbatim.
 func nullableActor(actor string) any {
-	if actor == "" || actor == domain.AnonymousActor {
+	if actor == "" || actor == persistence.AnonymousActor {
 		return nil
 	}
 	return actor

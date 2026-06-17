@@ -37,7 +37,7 @@ import (
 // BuildRules receives the Service injected here; leave nil to keep the
 // default behavior for handlers that do not need a domain service.
 type InsertCommandHandler[T domain.Entity, Cmd pipeline.InsertCommand[T, TResult], TResult any] struct {
-	Repo    persistence.Writer[T]
+	Repo    persistence.ScopedRepository[T]
 	Service domain.Service
 }
 
@@ -49,7 +49,7 @@ func (h *InsertCommandHandler[T, Cmd, TResult]) Handle(ctx *configuration.AppCon
 		return zero, err
 	}
 	opts := collectWriteOptions[T, Cmd](cmd)
-	id, err := h.Repo.Insert(ctx, insertable, opts...)
+	id, err := h.Repo.Scope(ctx, opts...).Insert(insertable)
 	if err != nil {
 		return zero, err
 	}

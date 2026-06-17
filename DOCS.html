@@ -310,7 +310,7 @@ li { margin: 6px 0; }
                 <li>Fluent DSL: <code>OnSuccess</code>, <code>OnFailure</code>, <code>OnException</code></li>
                 <li><code>AppContext</code> with UUID + Language per request</li>
                 <li>Multi-language <code>Translator</code> (PT_BR + ENG + ES + FR + DE + IT + NL built-in)</li>
-                <li><code>persistence.Writer[T]</code> port with Insert/Update/Archive/<strong>Unarchive</strong>/Delete carrying the <code>WriteOption[T]</code> variadic for in-TX lifecycle hooks (<code>afterBegin</code> / <code>beforeCommit</code>); threads <code>*AppContext</code> end-to-end so the persistence layer can carry the actor + thread id + cancellation</li>
+                <li><code>persistence.ScopedRepository[T]</code> binding (<code>domain.Reader[T]</code> + <code>Scope(ctx, opts...) domain.Writer</code>) — reads stay direct on the handle, writes bind the request ctx + the <code>WriteOption[T]</code> in-TX lifecycle hooks (<code>afterBegin</code> / <code>beforeCommit</code>) via <code>Scope</code> and return a pure <code>domain.Writer</code> (Insert/Update/Archive/<strong>Unarchive</strong>/Delete); the bound writer carries the actor + thread id + cancellation so the domain port never pronounces the ctx</li>
                 <li><code>MessageDTO.NotificationKey</code> — typed identity preserved post-translation</li>
             </ul>
         </div>
@@ -358,9 +358,9 @@ li { margin: 6px 0; }
 │    translation/    Translator, PT_BR/ENG/ES/FR/DE/IT/NL modules     │
 │    notifications/  ContextDTO/MessageDTO (with NotificationKey)     │
 │    pipeline/       Pipeline, Result[T], Request/Command/Query       │
-│    persistence/    Writer[T] (Insert/Update/Archive/Unarchive/      │
-│                    Delete) — variadic WriteOption[T] +              │
-│                    TxHandle + AfterBegin/BeforeCommit hook types    │
+│    persistence/    ScopedRepository[T] = Reader[T] + Scope          │
+│                    (binds ctx + WriteOption hooks) → domain.Writer   │
+│                    TxHandle + AfterBegin/BeforeCommit hook types     │
 │    queries/        FindByParamsQuery + FindByIDQuery + ViewReader  │
 │  domain/          Pure business rules (zero IO)                    │
 │                   AggregateChildren, AggregateRootProvider          │
@@ -499,7 +499,7 @@ li { margin: 6px 0; }
   }
 }</code></pre>
 
-  <p>The fan-out is automatic for both Auto Command Handlers and manual handlers — every write goes through <code>repo.Method(ctx, valid, opts...)</code> on the <code>persistence.Writer[T]</code> port, and <code>ctx</code> IS the request <code>*AppContext</code>. <code>infra.Postgres</code> reads the actor from the same context, builds the <code>AuditEvent</code>, writes the row in-TX, and emits the slog line post-commit. A manual handler does not need to touch any new API to benefit from the actor information.</p>
+  <p>The fan-out is automatic for both Auto Command Handlers and manual handlers — every write goes through <code>repo.Scope(ctx, opts...).Method(valid)</code> on the <code>persistence.ScopedRepository[T]</code> binding, and <code>ctx</code> IS the request <code>*AppContext</code>. <code>infra.Postgres</code> reads the actor from the same context, builds the <code>AuditEvent</code>, writes the row in-TX, and emits the slog line post-commit. A manual handler does not need to touch any new API to benefit from the actor information.</p>
 
   <p>Domain events emitted via <code>infra/events.SlogPublisher</code> mirror the same pattern (<code>actor</code> + <code>actorIssuer</code>) but never carry <code>actorClaims</code> — the audit allowlist is the only place that can broaden the claim surface logged, by design.</p>
 
@@ -975,7 +975,7 @@ var _ persistence.BeforeCommitHookProvider[*User] = (*InsertUserCommand)(nil)</c
     <p>
         The same persister surface serves the manual path — the closure is supplied directly via
         <code>persistence.WithAfterBegin[T](fn)</code> / <code>persistence.WithBeforeCommit[T](fn)</code> as trailing
-        options on the <code>repo.Method(ctx, valid, opts...)</code> call. There is one canonical persister surface;
+        options on the <code>repo.Scope(ctx, opts...).Method(valid)</code> binding. There is one canonical persister surface;
         Auto and manual differ only in how the closures originate (Cmd method vs explicit closure).
     </p>
     <p>
@@ -993,7 +993,7 @@ var _ persistence.BeforeCommitHookProvider[*User] = (*InsertUserCommand)(nil)</c
     insertable, err := domain.GetInsertable(user, h.svc, "AdminCreate")
     if err != nil { return Result{}, err }
 
-    id, err := h.repo.Insert(ctx, insertable,
+    id, err := h.repo.Scope(ctx,
         persistence.WithBeforeCommit[*User](func(
             ctx *configuration.AppContext, u *User, id domain.ID, tx persistence.TxHandle,
         ) error {
@@ -1004,7 +1004,7 @@ var _ persistence.BeforeCommitHookProvider[*User] = (*InsertUserCommand)(nil)</c
             // to obtain the pgx.Tx; the handler never imports pgx.
             return h.NotificationOutbox.EnqueueAdminUserActivated(ctx, tx, id)
         }),
-    )
+    ).Insert(insertable)
     if err != nil { return Result{}, err }
     return Result{ID: id}, nil
 }</code></pre>
@@ -1226,7 +1226,7 @@ var _ persistence.BeforeCommitHookProvider[*User] = (*InsertUserCommand)(nil)</c
 <span class="auto">opts := []WriteOption[*Customer]{}</span>  (derived from cmd.AfterBegin / cmd.BeforeCommit when declared)
    │
    ▼
-<span class="auto">repo.Insert(ctx, insertable, opts...)</span>
+<span class="auto">repo.Scope(ctx, opts...).Insert(insertable)</span>
    │   └─► <span class="auto">infra.Postgres.Insert(ctx, insertable, &cfg, hook)</span>:
    │       <span class="auto">BEGIN TX</span>
    │         ▸ <span class="auto">afterBegin(ctx, customer, txHandle)</span>  ← position A (rolls back on error)
@@ -1395,10 +1395,10 @@ type CreateCustomerCommand struct {
 }
 
 type CreateCustomerHandler struct {
-    repo persistence.Writer[*Customer]
+    repo persistence.ScopedRepository[*Customer]
 }
 
-func NewCreateCustomerHandler(repo persistence.Writer[*Customer]) *CreateCustomerHandler {
+func NewCreateCustomerHandler(repo persistence.ScopedRepository[*Customer]) *CreateCustomerHandler {
     return &CreateCustomerHandler{repo: repo}
 }
 
@@ -1411,9 +1411,10 @@ func (h *CreateCustomerHandler) Handle(
     if err != nil {
         return domain.ID{}, err
     }
-    // ctx threads the request scope through to the persister; any in-TX
-    // lifecycle hooks would land as trailing variadic options on this call.
-    return h.repo.Insert(ctx, insertable)
+    // Scope binds the request ctx + any in-TX lifecycle hooks (passed as
+    // Scope opts) and returns a pure domain.Writer; the domain port never
+    // pronounces the ctx.
+    return h.repo.Scope(ctx).Insert(insertable)
 }</code></pre>
 
     <h4>4. Wire the route</h4>
@@ -1474,9 +1475,8 @@ func NewUserRepository(pg *fwinfra.Postgres) *UserRepository {
 }
 
 var (
-    _ persistence.Writer[*User]    = (*UserRepository)(nil)
-    _ domain.Repository[*User]     = (*UserRepository)(nil)
-    _ domain.ArchivedFinder[*User] = (*UserRepository)(nil)
+    _ persistence.ScopedRepository[*User] = (*UserRepository)(nil)
+    _ domain.ArchivedFinder[*User]        = (*UserRepository)(nil)
 )</code></pre>
     <p>
         <code>FindByID</code> and <code>FindArchivedByID</code> come promoted via embed; <code>New()</code>
@@ -1773,7 +1773,7 @@ fwinfra.WithChild[Address](r.loader)</code></pre>
     </p>
     <pre><code>type UpdateCommandHandler[T, Cmd, TResult] struct {
     pipeline.FullBody  // marker — wrapper activates strict body check
-    Repo    persistence.Writer[T]
+    Repo    persistence.ScopedRepository[T]
     Service domain.Service     // optional — see "Domain Service via Auto handler"
     // No Auditor field — audit is owned by infra.Postgres, configured at boot.
     // No Project field — projection lives on the Cmd as cmd.FromEntity(ctx, T) TResult.
@@ -1991,8 +1991,8 @@ users.Post("/", fwweb.HandleCommandWithBody(d.Pipeline,
     <p>
         The asymmetry is <strong>internal to the handler</strong>: the wire-up in <code>routes.go</code> is
         identical to the other Auto handlers — only <code>Repo</code> (audit emission is handled automatically by <code>infra.Postgres</code>).
-        <code>Repo.New() T</code> is a mandatory method of both the <code>domain.Repository[T]</code> read port and the
-        <code>persistence.Writer[T]</code> write port; anyone using <code>BaseRepository[T]</code> injects a single
+        <code>Repo.New() T</code> is a mandatory method of the <code>domain.Reader[T]</code> read port (carried by
+        <code>persistence.ScopedRepository[T]</code>); anyone using <code>BaseRepository[T]</code> injects a single
         <code>NewEntity func() T</code> into the constructor (typically the same factory shared with the
         <code>AggregateLoader</code>) and <code>New()</code> comes promoted via embed.
     </p>
@@ -6290,7 +6290,7 @@ ORDER BY applied_at DESC LIMIT 20;</code></pre>
         <tr><td><code>NotificationCarrier</code></td><td><code>domain</code></td><td>Interface common to DomainError/ApplicationError/InfrastructureError</td></tr>
         <tr><td><code>Schema</code></td><td><code>domain</code></td><td>Schema-style validator (legacy, no BaseEntity)</td></tr>
         <tr><td><code>Repository[T]</code></td><td><code>domain</code></td><td>Read port: <code>FindByID</code> + <code>New</code></td></tr>
-        <tr><td><code>Writer[T]</code></td><td><code>application/persistence</code></td><td>Typed write port carrying the <code>WriteOption[T]</code> variadic on every write verb plus read-side <code>FindByID</code> / <code>New</code>. Implemented by <code>infra.BaseRepository[T]</code></td></tr>
+        <tr><td><code>ScopedRepository[T]</code></td><td><code>application/persistence</code></td><td>Write binding: <code>domain.Reader[T]</code> (<code>FindByID</code> / <code>New</code>) + <code>Scope(ctx, opts...) domain.Writer</code>. Reads direct on the handle; writes bind ctx + <code>WriteOption[T]</code> hooks via <code>Scope</code>. <code>Scope</code> implemented by <code>infra.BaseRepository[T]</code></td></tr>
         <tr><td><code>TxHandle</code></td><td><code>application/persistence</code></td><td>Sealed marker handed to in-TX lifecycle hooks; carries no public methods. Application code threads it to a port whose <code>infra/</code> adapter calls <code>fwinfra.UnwrapPgxTx(tx)</code> to recover the underlying <code>pgx.Tx</code> and execute SQL. Application stays pgx-free and SQL-free</td></tr>
         <tr><td><code>UnwrapPgxTx</code></td><td><code>infra</code></td><td>Single bridge from the opaque <code>persistence.TxHandle</code> token to the live <code>pgx.Tx</code>. Lives in infra so only adapters in that layer can call it. Panics on a foreign <code>TxHandle</code> implementation &mdash; defensive, never reached against framework-issued handles</td></tr>
         <tr><td><code>AfterBeginHook[T]</code> / <code>BeforeCommitHook[T]</code></td><td><code>application/persistence</code></td><td>Function types fired by the persister INSIDE the TX at positions A (before any framework write) and D (after data + outbox + audit, before COMMIT). Non-nil error rolls back; carrier identity preserved</td></tr>

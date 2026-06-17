@@ -4,7 +4,7 @@ import (
 	"encoding/json"
 	"testing"
 
-	"github.com/ClaudioSchirmer/omnicore/domain"
+	"github.com/ClaudioSchirmer/omnicore/application/persistence"
 )
 
 // Unit tests cover the pure helpers that build the SQL parameters. The
@@ -52,7 +52,7 @@ func TestBuildAuditPayload_CarriesPopulatedBlocks(t *testing.T) {
 }
 
 func TestNullableActor_AnonymousSentinelBecomesNull(t *testing.T) {
-	if v := nullableActor(domain.AnonymousActor); v != nil {
+	if v := nullableActor(persistence.AnonymousActor); v != nil {
 		t.Errorf("AnonymousActor → %v, want nil (NULL in DB)", v)
 	}
 	if v := nullableActor(""); v != nil {

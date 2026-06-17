@@ -34,7 +34,7 @@ import (
 // after the archive completes.
 type ArchiveCommandHandler[T domain.Entity, Cmd pipeline.ArchiveCommand[T, TResult], TResult any] struct {
 	pipeline.PathIDRequired
-	Repo    persistence.Writer[T]
+	Repo    persistence.ScopedRepository[T]
 	Service domain.Service
 }
 
@@ -51,7 +51,7 @@ func (h *ArchiveCommandHandler[T, Cmd, TResult]) Handle(ctx *configuration.AppCo
 		return zero, err
 	}
 	opts := collectWriteOptions[T, Cmd](cmd)
-	if err := h.Repo.Archive(ctx, archivable, opts...); err != nil {
+	if err := h.Repo.Scope(ctx, opts...).Archive(archivable); err != nil {
 		return zero, err
 	}
 	return cmd.FromEntity(ctx, current), nil

@@ -145,7 +145,8 @@ application/
   translation/                Translator + Module interface, CorePTBR/CoreENG/CoreES/CoreFR/CoreDE/CoreIT/CoreNL built-ins
   notifications/              ContextDTO/MessageDTO (carries NotificationKey)
   pipeline/                   Request/Command/Query, Handler[TReq,TRes], Result[T], Pipeline
-  persistence/                Writer[T] write port + TxHandle (sealed marker) +
+  persistence/                ScopedRepository[T] (Reader[T] + Scope) write
+                              binding + RequestContext + TxHandle (sealed marker) +
                               AfterBeginHook[T]/BeforeCommitHook[T] + provider
                               interfaces + WriteOption[T]/WithAfterBegin/WithBeforeCommit
   queries/                    QueryHandler + ViewReader port + ReadCriteria/Page DTOs
@@ -665,10 +666,16 @@ return web.RespondFromResult(c, result, fiber.StatusCreated)
 
 ### Persistence ports (`application/persistence/`)
 
-The application layer declares two ports over persistence:
+The **domain** layer declares the pure repository ports; the **application**
+layer adds the request-scoped write binding. The domain ports carry NO
+context, NO actor, NO hooks — those are infrastructure and bind below the port:
 
-- **`Writer[T]`** — the typed write port handlers consume. Variadic `opts ...WriteOption[T]` on every write verb (Insert / Update / Delete / Archive / Unarchive); FindByID + New on the read side. `infra.BaseRepository[T]` implements it.
-- **`domain.Repository[T]`** — the read port at the domain layer (FindByID + New only). Kept narrow so the domain layer never references `application/configuration`'s `*AppContext` (which the hook signatures carry). Implementations satisfy both ports with a single struct.
+- **`domain.Reader[T]`** (domain) — the read port: `FindByID(id) (T, error)` + `New() T`. Pure, ctx-less; reads carry no request-scoped concern.
+- **`domain.Writer`** (domain) — the write port: `Insert(Insertable) (ID, error)` / `Update` / `Archive` / `Unarchive` / `Delete`. Pure — each method takes only a ValidEntity (no ctx, no hooks). Non-generic because the ValidEntity flavors already carry the source entity.
+- **`domain.Repository[T]`** (domain) — the full port, `Reader[T] + Writer`. What a consumer names when declaring a read+write repository (`type UserRepository interface { domain.Repository[*User]; FindByEmail(...) }`). Pure: stdlib + google/uuid only, zero application import.
+- **`persistence.ScopedRepository[T]`** (application) — the binding the Auto Command Handlers hold: `domain.Reader[T]` + `Scope(ctx *AppContext, opts ...WriteOption[T]) domain.Writer`. Reads stay direct on the handle; writes go through `Scope`, which binds the ctx (cancellation → pgx, actor → audit) and the in-TX hooks and returns a pure `domain.Writer`. `infra.BaseRepository[T]` implements `Scope`; the consumer's repository (embedding it + a loader that provides `FindByID`) satisfies `ScopedRepository[T]` with no extra code.
+
+The request-scoped ctx the persister consumes is **`persistence.RequestContext`** — an application interface embedding `context.Context` + `ID()`/`ActorSubject()`/`ActorIssuer()`/`ActorClaims()`, satisfied by `*configuration.AppContext`. The domain layer never pronounces it; that is the whole point of the Scope split. There is no `domain.Context` — request scope is an application concern.
 
 The lifecycle-hook contract carries one sealed marker, two hook function types, and two provider interfaces:
 
@@ -709,7 +716,7 @@ Flat-path (`infra.Postgres` for non-aggregate entities) and aggregate-path (`inf
 
 For trivial CRUD — the logic fits entirely on the Entity via `BuildRules` — the framework provides **ready-made generic handlers**. The service writes only the Command — `ToEntity`/`ApplyTo`/`ApplyPartiallyTo` on the way in AND `FromEntity` on the way out, both as methods on the Cmd struct. The wire `Response.FromResult` finishes the projection at the web layer. The handler becomes `&handlers.InsertCommandHandler[*User, *InsertUserCommand, results.InsertUserResult]{Repo: repo}` in a single line — no `Project` field, no `Auditor` field. They coexist with manual handlers (DDD preserved).
 
-**In-TX side effects are opt-in via Cmd methods.** A Cmd that declares `AfterBegin(ctx *AppContext, t T, tx persistence.TxHandle) error` and/or `BeforeCommit(ctx *AppContext, t T, id domain.ID, tx persistence.TxHandle) error` satisfies the matching provider interface; every Auto handler detects both at the top of `Handle` via type assertion and forwards them as `WriteOption[T]` closures to the `Writer[T]` call. The closures fire INSIDE the persister's TX (positions A and D — see "Persistence ports" above). Compile-time safety to catch typos: declare `var _ persistence.BeforeCommitHookProvider[*T] = (*Cmd)(nil)` at the bottom of the Cmd file.
+**In-TX side effects are opt-in via Cmd methods.** A Cmd that declares `AfterBegin(ctx *AppContext, t T, tx persistence.TxHandle) error` and/or `BeforeCommit(ctx *AppContext, t T, id domain.ID, tx persistence.TxHandle) error` satisfies the matching provider interface; every Auto handler detects both at the top of `Handle` via type assertion and forwards them as `WriteOption[T]` closures to the `Repo.Scope(ctx, opts...)` write binding. The closures fire INSIDE the persister's TX (positions A and D — see "Persistence ports" above). Compile-time safety to catch typos: declare `var _ persistence.BeforeCommitHookProvider[*T] = (*Cmd)(nil)` at the bottom of the Cmd file.
 
 ### Canonical vocabulary
 
@@ -899,7 +906,7 @@ For Update (PUT) / Partial Update (PATCH) / Archive / Delete / Unarchive: each o
 
 `UnarchiveCommandHandler` does NOT call `FindByID` (record is archived, `Repository.FindByID` filters `WHERE deleted_at IS NULL`). Instead it obtains an empty sample via `Repo.New()`, sets the path ID, and passes it to `GetUnarchivable`. Cascade of archived children is via direct SQL in `aggregate_persister.unarchiveAggregate`.
 
-The asymmetry is **internal to the handler** — the wire-up in `routes.go` is identical to the other Auto handlers. `Repo.New()` is the mandatory method of the `domain.Repository[T]` contract that every implementation exposes; anyone using `BaseRepository[T]` injects a single `NewEntity func() T` in the constructor and `New()` comes promoted via embed.
+The asymmetry is **internal to the handler** — the wire-up in `routes.go` is identical to the other Auto handlers. `Repo.New()` is a method of the `domain.Reader[T]` contract (carried by `persistence.ScopedRepository[T]`) that every implementation exposes; anyone using `BaseRepository[T]` injects a single `NewEntity func() T` in the constructor and `New()` comes promoted via embed.
 
 ```go
 &handlers.UnarchiveCommandHandler[*User, *UnarchiveUserCommand, fwresults.None]{
@@ -914,7 +921,7 @@ The asymmetry is **internal to the handler** — the wire-up in `routes.go` is i
 
 A handler with external IO, an injected domain service, or complex orchestration: continues to be a struct that manually implements `pipeline.Handler[*Cmd, TResult]`. `TResult` is whatever application-layer value the handler returns; the route's `responseProjection` then maps it to the wire `TResp`. It registers on the route with the same `HandleCommand`/`HandleCommandWithID`. Auto and manual coexist in the same API.
 
-**In-TX side effects on the manual path** — the handler reaches the same persister surface as the Auto path. Pass `persistence.WithAfterBegin[T](fn)` / `persistence.WithBeforeCommit[T](fn)` as trailing options on the `repo.Method(ctx, valid, opts...)` call. The closures fire at positions A and D of the TX, with the same `ctx / t / id / tx` payload the Auto path's `AfterBegin` / `BeforeCommit` receive.
+**In-TX side effects on the manual path** — the handler reaches the same persister surface as the Auto path. Pass `persistence.WithAfterBegin[T](fn)` / `persistence.WithBeforeCommit[T](fn)` as options on the `repo.Scope(ctx, opts...).Method(valid)` write binding. The closures fire at positions A and D of the TX, with the same `ctx / t / id / tx` payload the Auto path's `AfterBegin` / `BeforeCommit` receive.
 
 **Application stays SQL-free on the manual path too** — `persistence.TxHandle` is a sealed marker with no public methods, so the closure cannot pronounce SQL through it by construction. The canonical shape is a port declared in `application/` (or `domain/`) whose method receives a `persistence.TxHandle`; the port's adapter in `infra/` calls `fwinfra.UnwrapPgxTx(tx)` to recover the live `pgx.Tx` and owns the SQL + table name. The closure threads `tx` through the port so the side effect remains atomic with the framework's writes.
 
@@ -924,7 +931,7 @@ func (h *CreateUserAdminHandler) Handle(ctx *configuration.AppContext, cmd *Admi
     insertable, err := domain.GetInsertable(user, h.svc, "AdminCreate")
     if err != nil { return Result{}, err }
 
-    id, err := h.repo.Insert(ctx, insertable,
+    id, err := h.repo.Scope(ctx,
         persistence.WithBeforeCommit[*User](func(
             ctx *configuration.AppContext, u *User, id domain.ID, tx persistence.TxHandle,
         ) error {
@@ -935,7 +942,7 @@ func (h *CreateUserAdminHandler) Handle(ctx *configuration.AppContext, cmd *Admi
             // to recover the pgx.Tx; the handler never imports pgx.
             return h.NotificationOutbox.EnqueueAdminUserActivated(ctx, tx, id)
         }),
-    )
+    ).Insert(insertable)
     if err != nil { return Result{}, err }
     return Result{ID: id}, nil
 }
@@ -1373,8 +1380,8 @@ pipe := pipeline.New(translator)
 // routes through it without an Auditor singleton.
 // pg.WithAudit(&cfg.Audit, slog.Default(), cfg.Auth.AuditClaims)
 
-// Per-domain Repository — embed fwinfra.BaseRepository[T] for the 5 writes
-// + AggregateLoader[T] for FindByID
+// Per-domain Repository — embed fwinfra.BaseRepository[T] for the write
+// binding (Scope → 5 writes) + AggregateLoader[T] for FindByID
 type UserRepository struct {
     infra.BaseRepository[*User]
     loader *infra.AggregateLoader[*User]
@@ -1411,8 +1418,8 @@ func (r *UserRepository) FindByID(id domain.ID) (*User, error) {
 //     - For non-trivial queries (JOIN, CASE, COALESCE) use WithRootScanner
 //       and WithChildScanner — they coexist in the same config.
 
-// Handler — calls the Writer port directly; ctx threads as first arg,
-// any in-TX hook closures land as trailing variadic opts.
+// Handler — binds the write scope via Scope(ctx, opts...) and calls the
+// pure domain.Writer; any in-TX hook closures land as Scope opts.
 func (h *CreateUserHandler) Handle(ctx *configuration.AppContext, cmd CreateUserCommand) (domain.ID, error) {
     user := &User{Name: cmd.Name, /* ... */}
     for _, addr := range cmd.Addresses { user.AddAddress(addr, nil) }
@@ -1420,7 +1427,7 @@ func (h *CreateUserHandler) Handle(ctx *configuration.AppContext, cmd CreateUser
     insertable, err := domain.GetInsertable(user, nil, "GetInsertable")
     if err != nil { return domain.ID{}, err }
 
-    return h.repo.Insert(ctx, insertable)
+    return h.repo.Scope(ctx).Insert(insertable)
 }
 
 // HTTP route
@@ -1432,7 +1439,7 @@ app.Post("/users", func(c fiber.Ctx) error {
 })
 ```
 
-**`infra.BaseRepository[T]`** implements the 5 writes (Insert/Update/Archive/Unarchive/Delete) as one-liners delegating to `infra.Postgres` + provides `New() T` via the injected `NewEntity` factory — just embed it. **`NewEntity` is mandatory** (`New()` panics if nil): every framework Repository needs to construct T somehow, and centralizing this eliminates duplication with `AggregateLoader` or handlers (the same factory is typically shared with the `AggregateLoader`). **`infra.ConstraintBinding`** translates unique violations (PG SQLSTATE `23505`) into `*InfrastructureError` carrying the typed notification via `infra.FieldErrorWithCause` — replaces the manual `mapPGError`. Unregistered constraints, codes other than `23505`, and non-pgErr errors are returned raw.
+**`infra.BaseRepository[T]`** implements `Scope(ctx, opts...) domain.Writer` — the returned `boundWriter` carries the 5 writes (Insert/Update/Archive/Unarchive/Delete) as one-liners delegating to `infra.Postgres` with the bound ctx — and provides `New() T` via the injected `NewEntity` factory — just embed it. **`NewEntity` is mandatory** (`New()` panics if nil): every framework Repository needs to construct T somehow, and centralizing this eliminates duplication with `AggregateLoader` or handlers (the same factory is typically shared with the `AggregateLoader`). **`infra.ConstraintBinding`** translates unique violations (PG SQLSTATE `23505`) into `*InfrastructureError` carrying the typed notification via `infra.FieldErrorWithCause` — replaces the manual `mapPGError`. Unregistered constraints, codes other than `23505`, and non-pgErr errors are returned raw.
 
 **`infra.AggregateLoader[T]`** loads live aggregates (root + children) via the entity search engine — `FindOne(ctx, *criteria.Query)` / `FindAll(ctx, *criteria.Query)` (see [Entity search engine](#entity-search-engine-criteria)). It scans the matched rows in one of two coexisting modes:
 
@@ -1725,7 +1732,7 @@ The Semantic enum is **transport-agnostic** — a future gRPC layer would map th
 | Parameterize the context label itself (`"UserOf{tenantId}"`) | declare the parameterized name on `domain.NewNotificationContext(name)` and call `ctx.SetVars(map[string]string{"tenantId": "..."})`. Catalog entry uses `{tenantId}` placeholder. Scoped contexts inherit from the root automatically |
 | New audit field | `infra/audit/event.go` (`AuditEvent`/`FieldChange`/`ChildEvent`) — see "Audit event shape" |
 | Want in-TX side effect on Auto path | declare `BeforeCommit(ctx *AppContext, t T, id domain.ID, tx persistence.TxHandle) error` (or `AfterBegin(ctx, t, tx)`) on the Cmd. The Auto handler detects it via type assertion against `persistence.BeforeCommitHookProvider[T]` / `AfterBeginHookProvider[T]` and threads it as a `WriteOption[T]` to the Repo write call. Fires INSIDE the framework's TX — non-nil error rolls everything back. |
-| Want in-TX side effect on manual path | pass `persistence.WithBeforeCommit[T](fn)` (or `persistence.WithAfterBegin[T](fn)`) as a trailing option on `repo.Method(ctx, valid, opts...)`. Same persister slot the Auto path fires; closure shape and TX semantics are identical. |
+| Want in-TX side effect on manual path | pass `persistence.WithBeforeCommit[T](fn)` (or `persistence.WithAfterBegin[T](fn)`) as an option on `repo.Scope(ctx, opts...).Method(valid)`. Same persister slot the Auto path fires; closure shape and TX semantics are identical. |
 | Want to read or write state inside the hook's TX | declare a port in `application/` (or `domain/`) whose method takes a `persistence.TxHandle` parameter, e.g. `QuotaPort.AssertTenantQuota(ctx, tx, tenantID) error`. Implement the port in `infra/` — the adapter calls `fwinfra.UnwrapPgxTx(tx)` to recover the live `pgx.Tx`, executes SQL, owns the table name. Inject the port on the Cmd / handler and call it from the hook closure. `TxHandle` is a sealed marker with no public methods, so the hook cannot pronounce SQL directly — the port is the single authorized path. |
 | Want compile-time safety against typo in hook method name | declare `var _ persistence.BeforeCommitHookProvider[*T] = (*Cmd)(nil)` (or the AfterBegin variant) at the bottom of the Cmd file. Catches misspelled / mistyped method signatures at `go build` time; the framework does not enforce it. |
 | Declare aggregate child type | root entity implements `AggregateChildren() []AggregateValueObject` returning sample instances; table/FK inferred by convention. Override per-Repository via `fwinfra.RepoConfig.ChildTableOverrides` / `ChildFKOverrides` |
@@ -1747,7 +1754,7 @@ The Semantic enum is **transport-agnostic** — a future gRPC layer would map th
 | Get AppContext in a Fiber handler | `fwweb.AppContext(c)` (already populated by `bootstrap.Run`'s default middleware) |
 | Get authenticated principal | `ctx.Identity()` returns `*configuration.Identity` (or nil for public routes / `auth.mode=disabled` / pre-middleware). Fields: `Subject`, `Issuer`, `ExpiresAt`, `Claims map[string]any` (raw JWT claims) |
 | Get raw verified bearer of the request | `ctx.BearerToken()` returns the raw JWT the `AuthMiddleware` verified, or `""` when no bearer is attached (public route, `auth.mode=disabled`, pre-middleware, failed authentication). Consumed exclusively by the `forward-bearer` httpclient auth provider so it can propagate the inbound user's credential downstream. Services should keep reading `Identity()` for principal data — the raw token carries no parsed information |
-| Read actor in audit/event sinks | `ctx.ActorSubject()` → `sub` or `"anonymous"`; `ctx.ActorIssuer()` → `iss` or `""`; `ctx.ActorClaims()` → fresh copy of raw claim map or nil. These three methods are on `domain.Context` so the audit builders and `SlogPublisher` read them without depending on `application/configuration` |
+| Read actor in audit/event sinks | `ctx.ActorSubject()` → `sub` or `"anonymous"`; `ctx.ActorIssuer()` → `iss` or `""`; `ctx.ActorClaims()` → fresh copy of raw claim map or nil. These three methods are on `persistence.RequestContext` (satisfied by `*AppContext`) so the audit builders and `SlogPublisher` read them through the request-scoped interface |
 | Configure which claims appear in audit | `auth.auditClaims: [tenant_id, roles, …]` in `microservice.<profile>.yaml`. Empty list → `actorClaims` block omitted. Audit-only — events never widen the claim surface |
 | Mark a route as public (bypass auth) | declare `METHOD /path` under `auth.publicRoutes` in `microservice.<profile>.yaml`. Exact match — no globs |
 | Auth failure notifications | `application/notifications/core.go`: `MissingAuthorizationNotification`, `InvalidTokenNotification`, `ExpiredTokenNotification` — all `SemanticUnauthorized → 401`. Translated by the catalogs |
@@ -2280,7 +2287,7 @@ Cross-service data is materialized into **B's own Mongo database** via `Upstream
 | `infra.SyncEngine` | Yes (single consumer goroutine) | Singleton per service (run as goroutine via `Start(ctx)`) |
 | `infra.Postgres` (audit hooks) | Yes (audit emission is per-write, no shared state beyond the pool/config) | Singleton per service, configured once via `WithAudit` |
 
-**Implication for HTTP handlers**: handlers hold the `persistence.Writer[T]` singleton (the same `BaseRepository[T]` struct that also satisfies `domain.Repository[T]` on the read side) and call `repo.Method(ctx, valid, opts...)` directly — `ctx` is the request `*AppContext`, `opts` is the variadic of any `WriteOption[T]` the Auto handler derived from the Cmd's optional `AfterBegin` / `BeforeCommit` methods. Audit emission is automatic — configured once at boot on the `Postgres` adapter, every write call routes through `infra.Postgres` which builds and emits the event according to `audit.destinations`. Handlers never thread an Auditor.
+**Implication for HTTP handlers**: handlers hold the `persistence.ScopedRepository[T]` singleton (the same `BaseRepository[T]`-based struct, which exposes `FindByID`/`New` directly and `Scope` for writes) and call `repo.Scope(ctx, opts...).Method(valid)` — `ctx` is the request `*AppContext`, `opts` is the variadic of any `WriteOption[T]` the Auto handler derived from the Cmd's optional `AfterBegin` / `BeforeCommit` methods. Audit emission is automatic — configured once at boot on the `Postgres` adapter, every write call routes through `infra.Postgres` which builds and emits the event according to `audit.destinations`. Handlers never thread an Auditor.
 
 ## Go pitfalls specific to this codebase
 
@@ -2329,7 +2336,7 @@ Cross-service data is materialized into **B's own Mongo database** via `Upstream
             └─ extractAggregateMeta(user) populates *aggregateMeta
             └─ build Insertable with aggregate metadata attached
          └─ opts := derive WriteOption[*User] from Cmd's AfterBegin / BeforeCommit (when declared)
-         └─ repo.Insert(ctx, insertable, opts...) [your UserRepository.Insert]
+         └─ repo.Scope(ctx, opts...).Insert(insertable) [your UserRepository.Scope]
             └─ Postgres.Insert(ctx, insertable, &Config, AdaptWriteOptions(opts))
                └─ AggregateInfo() returns ok=true → dispatch to insertAggregate
                   └─ BEGIN TX
@@ -2510,13 +2517,13 @@ The validator is constructed at boot via `newExternalValidator`; invalid config 
 
 ### Audit and events carry the actor
 
-The audit pipeline and `infra/events.SlogPublisher` both read the authenticated principal from the request `domain.Context` and surface it on every emitted artifact (audit row + slog line + domain event):
+The audit pipeline and `infra/events.SlogPublisher` both read the authenticated principal from the request `persistence.RequestContext` and surface it on every emitted artifact (audit row + slog line + domain event):
 
 - `actor` — JWT `sub`, or the sentinel `"anonymous"` when no `Identity` is attached (auth disabled, public route, background job)
 - `actorIssuer` — JWT `iss`, omitted when empty
 - `actorClaims` — opt-in subset declared by `auth.auditClaims` (audit only; the events publisher never widens the claim surface)
 
-The propagation works for **both Auto and manual handlers** without any code change in the handler itself, because every write goes through `repo.Method(ctx, valid, opts...)` and `ctx` IS the `*AppContext` the middleware populated — `*AppContext` satisfies `domain.Context` with `ActorSubject()` / `ActorIssuer()` / `ActorClaims()`, so the audit builder running inside the persister reads the actor straight from the request scope.
+The propagation works for **both Auto and manual handlers** without any code change in the handler itself, because every write goes through `repo.Scope(ctx, opts...).Method(valid)` and `ctx` IS the `*AppContext` the middleware populated — `*AppContext` satisfies `persistence.RequestContext` with `ActorSubject()` / `ActorIssuer()` / `ActorClaims()`, so the audit builder running inside the persister reads the actor straight from the request scope.
 
 Audit-line shape (top-level flat — see "Audit event shape" above for the full grammar):
 
@@ -4057,7 +4064,7 @@ Anyone needing exotic boot (custom logger, different lifecycle, specific start o
 - **`cache.GetJSON[T]` / `cache.SetJSON[T]`** — typed package-level helpers that marshal Go values through `encoding/json` against `cache.Cache`. Tolerate a nil Cache and degrade to no-op so feature code that opts the cache in-or-out via YAML doesn't need a nil guard around every call.
 - **`httpclient.WithCache(cache.Cache) Option` / `httpclient.HttpClient.SetCache`** — the wiring point between the outbound HTTP cache middleware and the byte-level cache backend. Bootstrap forwards `Deps.Cache` to `WithCache` at httpclient construction; the runtime swap (`SetCache`) honors late `Wiring.Cache` injection (`cache.store: custom` cases) without rebuilding the middleware chain.
 - **Carrier** — short for `domain.NotificationCarrier`: any error with `NotificationContexts() []*NotificationContext`. Cross-layer error contract
-- **Context** (`domain.Context`) — minimal interface `ID() uuid.UUID`. `AppContext` extends with Language and metadata
+- **RequestContext** (`persistence.RequestContext`) — request-scoped interface (`context.Context` + `ID()` + `ActorSubject()`/`ActorIssuer()`/`ActorClaims()`) the persistence/audit pipelines consume; satisfied by `*AppContext`. An application concern — the domain layer has NO context type (no `domain.Context`)
 - **Domain event** — `DomainEvent` accumulated on entity via `RegisterEvent`, attached to ValidEntity, published by `events.Publisher` after persistence
 - **Granularity B** — one outbox row per aggregate operation, regardless of how many child rows changed. Aggregate is the event unit
 - **Notification** — typed marker (struct embeds a base) that the domain emits. Translation key = its Go type name
@@ -4073,8 +4080,9 @@ Anyone needing exotic boot (custom logger, different lifecycle, specific start o
 - **TxHandle** — sealed marker interface at `application/persistence/`, handed to in-TX lifecycle hooks. Carries no public methods (only an unexported sealing method), so application code cannot pronounce SQL through it. The framework's `infra/pgxTxHandle` is the only implementation; infra-layer port adapters call `fwinfra.UnwrapPgxTx(tx)` to recover the underlying `*pgx.Tx` and execute SQL. The canonical pattern for an in-TX side effect from a hook: declare a port in `application/` (or `domain/`) whose method receives a `persistence.TxHandle`; implement the port in `infra/` where the adapter unwraps and owns the SQL.
 - **UnwrapPgxTx** — `fwinfra.UnwrapPgxTx(persistence.TxHandle) pgx.Tx` is the single bridge from the opaque `TxHandle` token to the live `pgx.Tx`. Lives in `infra/`, so only adapters in that layer can call it. Panics with a descriptive diagnostic on a foreign `TxHandle` implementation — defensive, never reached against framework-issued handles.
 - **ValidEntity** — sealed types (`Insertable`/`Updatable`/`Archivable`/`Deletable`/`Unarchivable`/`Batch`) produced only by domain
-- **WriteOption[T]** — functional option consumed by `Writer[T]` write methods. Carries an `AfterBeginHook[T]` and/or a `BeforeCommitHook[T]`. Auto and manual handlers converge on the same option mechanism — Auto populates options by detecting the Cmd's provider interfaces; manual populates them by passing `WithAfterBegin` / `WithBeforeCommit` directly at the call site.
-- **Writer[T]** — typed write port at the application layer (`application/persistence/`). Carries the variadic `opts ...WriteOption[T]` on every write verb. `infra.BaseRepository[T]` implements it; Auto handlers depend on it. Read-side methods (`FindByID`, `New`) included so a single struct serves both the write and read ports.
+- **WriteOption[T]** — functional option consumed by the `Scope(ctx, opts...)` write binding. Carries an `AfterBeginHook[T]` and/or a `BeforeCommitHook[T]`. Auto and manual handlers converge on the same option mechanism — Auto populates options by detecting the Cmd's provider interfaces; manual populates them by passing `WithAfterBegin` / `WithBeforeCommit` directly at the Scope call.
+- **Reader[T] / Writer / Repository[T]** — the pure domain repository ports (`domain/repository.go`). `Reader[T]` = `FindByID` + `New`; `Writer` = `Insert/Update/Archive/Unarchive/Delete` taking only a ValidEntity (non-generic, no ctx); `Repository[T]` = `Reader[T] + Writer`. Pure (stdlib + google/uuid only) — what a consumer names for a read+write repository. No request-scoped concern crosses these signatures.
+- **ScopedRepository[T]** — the application-layer write binding (`application/persistence/`): `domain.Reader[T]` + `Scope(ctx *AppContext, opts ...WriteOption[T]) domain.Writer`. Reads are direct on the handle; writes bind the ctx + hooks via `Scope` and return a pure `domain.Writer`. `infra.BaseRepository[T]` implements `Scope`; Auto handlers depend on `ScopedRepository[T]`.
 - **fwintegration.Dispatch** — `infra/integration.Dispatch(ctx, eventKey, payload, opts...)` — the canonical producer entry point for cross-service async events. Resolves `eventKey` against `integration.publishes.events.<key>` in the loaded YAML; lazy validation surfaces an unknown key as `ErrIntegrationEventNotConfigured`. With `WithTx(tx)` from a `BeforeCommit` closure the row lands atomically with the data write + outbox + audit; without `WithTx` it commits standalone via the framework's PG pool.
 - **Registry** — `*fwintegration.Registry` — receiver collection mounted by `bootstrap.IntegrationFeature.MountReceivers(reg, deps)`. Symmetric with `*fiber.App` for the HTTP transport: consumer features register receivers inline via `reg.From(source).On(eventKey, sample, handler)`. Constructed once in `buildDeps` and surfaced on `Deps.IntegrationRegistry`.
 - **Receiver** — one entry in the Registry, representing one (sourceKey, eventKey) pair. Holds the reflection-based dispatch plan computed at MountReceivers time. `Receiver.RetryPendingFailures(ctx, exec, pipe, logger)` re-dispatches every pending row from `omnicore_integration_failures` matching the receiver's natural key — wired through the consumer service's admin HTTP route.

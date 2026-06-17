@@ -5,13 +5,14 @@ import (
 	"fmt"
 	"reflect"
 
+	"github.com/ClaudioSchirmer/omnicore/application/persistence"
 	"github.com/ClaudioSchirmer/omnicore/domain"
 	"github.com/ClaudioSchirmer/omnicore/infra/audit"
 	"github.com/jackc/pgx/v5"
 )
 
 // Phase 19 + audit: aggregate-aware persistence consumes the request
-// domain.Context (audit + cancellation) plus the convention-overrides
+// persistence.RequestContext (audit + cancellation) plus the convention-overrides
 // RepoConfig. Each method threads ctx through pgx and emits the audit
 // event in lockstep with the data write (in-TX database INSERT + post-
 // commit slog echo) — same pattern the simple-path methods follow in
@@ -30,7 +31,7 @@ import (
 //   - Unarchive of root restores all archived children
 //   - Hard Delete of root relies on FK ON DELETE CASCADE in the schema
 
-func (p *Postgres) insertAggregate(ctx domain.Context, entity domain.Insertable, cfg *RepoConfig, hook writeHook) (domain.WriteResult, error) {
+func (p *Postgres) insertAggregate(ctx persistence.RequestContext, entity domain.Insertable, cfg *RepoConfig, hook writeHook) (domain.WriteResult, error) {
 	root, _ := entity.AggregateInfo()
 	src := entity.Source()
 	rootTable := resolveTable(src, cfg)
@@ -88,7 +89,7 @@ func (p *Postgres) insertAggregate(ctx domain.Context, entity domain.Insertable,
 	return domain.WriteResult{ID: rootID, Fields: rootFields}, nil
 }
 
-func (p *Postgres) updateAggregate(ctx domain.Context, entity domain.Updatable, cfg *RepoConfig, hook writeHook) (domain.WriteResult, error) {
+func (p *Postgres) updateAggregate(ctx persistence.RequestContext, entity domain.Updatable, cfg *RepoConfig, hook writeHook) (domain.WriteResult, error) {
 	root, _ := entity.AggregateInfo()
 	src := entity.Source()
 	rootTable := resolveTable(src, cfg)
@@ -141,7 +142,7 @@ func (p *Postgres) updateAggregate(ctx domain.Context, entity domain.Updatable, 
 	return domain.WriteResult{ID: rootID, Fields: rootFields}, nil
 }
 
-func (p *Postgres) archiveAggregate(ctx domain.Context, entity domain.Archivable, cfg *RepoConfig, hook writeHook) error {
+func (p *Postgres) archiveAggregate(ctx persistence.RequestContext, entity domain.Archivable, cfg *RepoConfig, hook writeHook) error {
 	root, _ := entity.AggregateInfo()
 	src := entity.Source()
 	rootTable := resolveTable(src, cfg)
@@ -202,7 +203,7 @@ func (p *Postgres) archiveAggregate(ctx domain.Context, entity domain.Archivable
 	return nil
 }
 
-func (p *Postgres) deleteAggregate(ctx domain.Context, entity domain.Deletable, cfg *RepoConfig, hook writeHook) error {
+func (p *Postgres) deleteAggregate(ctx persistence.RequestContext, entity domain.Deletable, cfg *RepoConfig, hook writeHook) error {
 	// Children removed via FK ON DELETE CASCADE in the schema. Only DELETE on the root.
 	src := entity.Source()
 	rootTable := resolveTable(src, cfg)
@@ -246,7 +247,7 @@ func (p *Postgres) deleteAggregate(ctx domain.Context, entity domain.Deletable, 
 	return nil
 }
 
-func (p *Postgres) unarchiveAggregate(ctx domain.Context, entity domain.Unarchivable, cfg *RepoConfig, hook writeHook) error {
+func (p *Postgres) unarchiveAggregate(ctx persistence.RequestContext, entity domain.Unarchivable, cfg *RepoConfig, hook writeHook) error {
 	root, _ := entity.AggregateInfo()
 	src := entity.Source()
 	rootTable := resolveTable(src, cfg)

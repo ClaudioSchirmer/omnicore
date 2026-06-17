@@ -29,6 +29,7 @@ import (
 	mongoopts "go.mongodb.org/mongo-driver/v2/mongo/options"
 
 	"github.com/ClaudioSchirmer/omnicore/application/configuration"
+	"github.com/ClaudioSchirmer/omnicore/application/persistence"
 	"github.com/ClaudioSchirmer/omnicore/domain"
 )
 
@@ -37,10 +38,10 @@ const (
 	defaultMongoURI   = "mongodb://localhost:27018"
 )
 
-// testCtx returns a domain.Context suitable for integration tests. The
+// testCtx returns a persistence.RequestContext suitable for integration tests. The
 // underlying *AppContext carries a random request id; tests calling the
 // persister methods pass this in as the first arg.
-func testCtx() domain.Context {
+func testCtx() persistence.RequestContext {
 	return configuration.NewAppContextWithRandomID(configuration.LangENG)
 }
 

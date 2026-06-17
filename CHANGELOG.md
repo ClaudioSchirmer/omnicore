@@ -32,16 +32,48 @@ with `1.0.0`.
   `BaseAggregateRepository[T]`. The single SQL-building path: by-id loads
   (`FindByID`/`FindArchivedByID`) and any alternate-key lookup all route through
   the engine.
+- **Pure domain repository ports — `domain.Reader[T]`, `domain.Writer`,
+  `domain.Repository[T]`.** `Reader[T]` = `FindByID` + `New`; `Writer` =
+  `Insert/Update/Archive/Unarchive/Delete` taking only a ValidEntity
+  (non-generic, no ctx); `Repository[T]` = `Reader[T] + Writer`. Pure (stdlib +
+  google/uuid only) — what a consumer names for a read+write repository
+  interface declared in the domain layer, with zero application import.
+- **`persistence.ScopedRepository[T]` + `BaseRepository[T].Scope(ctx, opts...)
+  domain.Writer`.** The write binding: reads stay direct on the handle
+  (`domain.Reader[T]`), writes go through `Scope`, which binds the request ctx
+  (cancellation → pgx, actor → audit) and the in-TX lifecycle hooks and returns
+  a pure `domain.Writer`. The domain port never pronounces the ctx.
+- **`persistence.RequestContext`** — request-scoped interface (`context.Context`
+  + `ID()`/`ActorSubject()`/`ActorIssuer()`/`ActorClaims()`) the persistence and
+  audit pipelines consume, satisfied by `*configuration.AppContext`. Relocated
+  from the deleted `domain.Context`; `persistence.AnonymousActor` moved likewise.
+
+### Changed
+
+- **The write path is now Scope-bound.** Auto Command Handlers and the manual
+  path call `repo.Scope(ctx, opts...).Insert(valid)` (etc.) instead of
+  `repo.Insert(ctx, valid, opts...)`. Handlers depend on
+  `persistence.ScopedRepository[T]` instead of the removed `persistence.Writer[T]`.
+  Audit, cancellation, and the in-TX hook semantics are unchanged — the ctx +
+  actor are captured by the bound writer internally.
 
 ### Removed
 
+- **`domain.Context`** — deleted. The domain layer no longer declares a
+  request-scoped context type (it carried `context.Context` + actor/claims, none
+  of which are domain concepts). Relocated to `persistence.RequestContext`; the
+  domain repository ports are now pure (no ctx in any signature).
+- **`persistence.Writer[T]`** — replaced by `persistence.ScopedRepository[T]`
+  (read port + `Scope`) on the handler side and the pure `domain.Writer` on the
+  port side. Write call sites change from `repo.Insert(ctx, valid, opts...)` to
+  `repo.Scope(ctx, opts...).Insert(valid)`.
 - **`AggregateLoader[T].Load` / `LoadIncludingArchived`** — replaced by
   `FindOne(criteria.ByID(id))` / `FindOne(criteria.ByID(id).OnlyArchived())`.
-  Small `infra`-API removal; the domain/application repository contracts
-  (`Repository[T].FindByID`, `Writer[T]`, `ArchivedFinder[T].FindArchivedByID`)
-  are unchanged. A manual `WithRootScanner` used with `FindOne`/`FindAll` must
-  now populate the entity id (scan it + `SetID`) — the framework no longer
-  injects it on the criteria path (there is no input id).
+  Small `infra`-API removal; the domain/application repository read contract
+  (`Reader[T].FindByID`, `ArchivedFinder[T].FindArchivedByID`) is unchanged. A
+  manual `WithRootScanner` used with `FindOne`/`FindAll` must now populate the
+  entity id (scan it + `SetID`) — the framework no longer injects it on the
+  criteria path (there is no input id).
 
 ## [0.8.0] - 2026-06-16
 

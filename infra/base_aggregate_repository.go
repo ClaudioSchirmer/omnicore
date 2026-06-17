@@ -10,8 +10,9 @@ import (
 // BaseAggregateRepository[T] composes the canonical building blocks of an
 // aggregate-aware Repository: embeds BaseRepository[T] (5 writes + New()) and
 // holds an internal (public) *AggregateLoader[T] already initialized. Promotes
-// FindByID and FindArchivedByID — satisfies domain.Repository[T] and
-// domain.ArchivedFinder[T] without the service writing manual wrappers.
+// FindByID, FindArchivedByID, New() and Scope — satisfies
+// persistence.ScopedRepository[T] and domain.ArchivedFinder[T] without the
+// service writing manual wrappers.
 //
 // When to use (common case):
 //

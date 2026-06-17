@@ -54,11 +54,12 @@ type testCmdWithID struct {
 func (c *testCmdWithID) ApplyTo(_ *configuration.AppContext, _ *testEntity)              {}
 func (c *testCmdWithID) FromEntity(_ *configuration.AppContext, _ *testEntity) results.None { return results.None{} }
 
-// mockRepo implements persistence.Writer[*testEntity]. Counters track
-// calls; nil error fields make each method succeed by default. Each
-// write method captures the variadic []WriteOption[*testEntity] so the
-// Auto-handler dispatch tests can assert which provider closures the
-// handler folded into the call.
+// mockRepo implements persistence.ScopedRepository[*testEntity]. Counters
+// track calls; nil error fields make each method succeed by default. The
+// writes live on the mockWriter that Scope returns; each write captures the
+// variadic []WriteOption[*testEntity] (folded into the call at Scope time)
+// so the Auto-handler dispatch tests can assert which provider closures the
+// handler threaded.
 type mockRepo struct {
 	insertCalled    int
 	updateCalled    int
@@ -89,37 +90,49 @@ func newMockRepo() *mockRepo {
 	return &mockRepo{foundData: e}
 }
 
-func (r *mockRepo) Insert(_ domain.Context, _ domain.Insertable, opts ...persistence.WriteOption[*testEntity]) (domain.ID, error) {
-	r.insertCalled++
-	r.insertOpts = opts
-	if r.insertErr != nil {
-		return domain.ID{}, r.insertErr
+// Scope binds the opts at call time and returns the mockWriter that
+// records each write against the parent mockRepo.
+func (r *mockRepo) Scope(_ *configuration.AppContext, opts ...persistence.WriteOption[*testEntity]) domain.Writer {
+	return &mockWriter{repo: r, opts: opts}
+}
+
+// mockWriter is the request-scoped domain.Writer mockRepo.Scope returns.
+type mockWriter struct {
+	repo *mockRepo
+	opts []persistence.WriteOption[*testEntity]
+}
+
+func (w *mockWriter) Insert(_ domain.Insertable) (domain.ID, error) {
+	w.repo.insertCalled++
+	w.repo.insertOpts = w.opts
+	if w.repo.insertErr != nil {
+		return domain.ID{}, w.repo.insertErr
 	}
 	return domain.NewRandomID(), nil
 }
 
-func (r *mockRepo) Update(_ domain.Context, _ domain.Updatable, opts ...persistence.WriteOption[*testEntity]) error {
-	r.updateCalled++
-	r.updateOpts = opts
-	return r.updateErr
+func (w *mockWriter) Update(_ domain.Updatable) error {
+	w.repo.updateCalled++
+	w.repo.updateOpts = w.opts
+	return w.repo.updateErr
 }
 
-func (r *mockRepo) Delete(_ domain.Context, _ domain.Deletable, opts ...persistence.WriteOption[*testEntity]) error {
-	r.deleteCalled++
-	r.deleteOpts = opts
-	return r.deleteErr
+func (w *mockWriter) Delete(_ domain.Deletable) error {
+	w.repo.deleteCalled++
+	w.repo.deleteOpts = w.opts
+	return w.repo.deleteErr
 }
 
-func (r *mockRepo) Archive(_ domain.Context, _ domain.Archivable, opts ...persistence.WriteOption[*testEntity]) error {
-	r.archiveCalled++
-	r.archiveOpts = opts
-	return r.archiveErr
+func (w *mockWriter) Archive(_ domain.Archivable) error {
+	w.repo.archiveCalled++
+	w.repo.archiveOpts = w.opts
+	return w.repo.archiveErr
 }
 
-func (r *mockRepo) Unarchive(_ domain.Context, _ domain.Unarchivable, opts ...persistence.WriteOption[*testEntity]) error {
-	r.unarchiveCalled++
-	r.unarchiveOpts = opts
-	return r.unarchiveErr
+func (w *mockWriter) Unarchive(_ domain.Unarchivable) error {
+	w.repo.unarchiveCalled++
+	w.repo.unarchiveOpts = w.opts
+	return w.repo.unarchiveErr
 }
 
 func (r *mockRepo) FindByID(domain.ID) (*testEntity, error) {

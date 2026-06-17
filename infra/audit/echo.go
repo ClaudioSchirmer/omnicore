@@ -4,7 +4,7 @@ import (
 	"context"
 	"log/slog"
 
-	"github.com/ClaudioSchirmer/omnicore/domain"
+	"github.com/ClaudioSchirmer/omnicore/application/persistence"
 )
 
 // EchoSlog emits ev as a structured slog line at LevelInfo with msg="audit".
@@ -18,7 +18,7 @@ import (
 // the audit_events row remains the source of truth.
 //
 // logger may be nil — falls back to slog.Default().
-func EchoSlog(ctx domain.Context, logger *slog.Logger, ev AuditEvent) {
+func EchoSlog(ctx persistence.RequestContext, logger *slog.Logger, ev AuditEvent) {
 	if logger == nil {
 		logger = slog.Default()
 	}

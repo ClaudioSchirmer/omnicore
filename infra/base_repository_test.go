@@ -4,6 +4,7 @@ import (
 	"errors"
 	"testing"
 
+	"github.com/ClaudioSchirmer/omnicore/application/persistence"
 	"github.com/ClaudioSchirmer/omnicore/domain"
 	"github.com/jackc/pgx/v5/pgconn"
 )
@@ -102,7 +103,7 @@ func (r *baseRepoTestRepo) FindByID(domain.ID) (*baseRepoTestEntity, error) {
 	return nil, nil
 }
 
-var _ domain.Repository[*baseRepoTestEntity] = (*baseRepoTestRepo)(nil)
+var _ persistence.ScopedRepository[*baseRepoTestEntity] = (*baseRepoTestRepo)(nil)
 
 func TestNew_Configured(t *testing.T) {
 	r := BaseRepository[*baseRepoTestEntity]{

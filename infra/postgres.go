@@ -8,7 +8,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
-	"github.com/ClaudioSchirmer/omnicore/domain"
+	"github.com/ClaudioSchirmer/omnicore/application/persistence"
 	"github.com/ClaudioSchirmer/omnicore/infra/audit"
 )
 
@@ -70,7 +70,7 @@ func (p *Postgres) writeAuditRow(ctx context.Context, tx pgx.Tx, ev *audit.Audit
 // echoAuditSlog emits the slog audit line post-commit when the slog
 // destination is active. No-op when audit is off or the event was never
 // built.
-func (p *Postgres) echoAuditSlog(ctx domain.Context, ev *audit.AuditEvent) {
+func (p *Postgres) echoAuditSlog(ctx persistence.RequestContext, ev *audit.AuditEvent) {
 	if ev == nil || p.auditCfg == nil || !p.auditCfg.Includes(audit.DestinationSlog) {
 		return
 	}
