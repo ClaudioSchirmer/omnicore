@@ -2,11 +2,11 @@ package infra
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"reflect"
 	"strings"
 
+	"github.com/ClaudioSchirmer/omnicore/criteria"
 	"github.com/ClaudioSchirmer/omnicore/domain"
 	"github.com/jackc/pgx/v5"
 )
@@ -27,6 +27,7 @@ type ChildScanner func(pgx.Rows) (domain.AggregateValueObject, error)
 // resolveChildTable(typeName, cfg), where cfg.ChildTableOverrides[typeName]
 // takes priority over InferTableName(typeName).
 type childAutoSpec struct {
+	typ      reflect.Type
 	columns  []string
 	scanInto func(pgx.Rows) (domain.AggregateValueObject, error)
 }
@@ -127,6 +128,7 @@ func WithChild[V domain.AggregateValueObject, T domain.Entity](
 	cols := domainColumns(t)
 	typeName := t.Name()
 	l.childAuto[typeName] = childAutoSpec{
+		typ:     t,
 		columns: cols,
 		scanInto: func(rows pgx.Rows) (domain.AggregateValueObject, error) {
 			vp := reflect.New(t)
@@ -139,121 +141,198 @@ func WithChild[V domain.AggregateValueObject, T domain.Entity](
 	return l
 }
 
-// Load executes SELECT root + N SELECT children and assembles the entity. Filters
-// deleted_at IS NULL; missing root → *DomainError with
-// RecordNotFoundNotification (HTTP 404).
-//
-// Phase 19: root table inferred via resolveTable(sample, &l.config); same
-// for children via resolveChildTable. RepoConfig overrides applied when
-// present.
-func (l *AggregateLoader[T]) Load(ctx context.Context, id domain.ID) (T, error) {
-	return l.load(ctx, id, false)
-}
-
-// LoadIncludingArchived returns the *archived* aggregate — root whose deleted_at
-// IS NOT NULL. Used by UnarchiveCommandHandler to hydrate the archived snapshot
-// before dispatch; the cascade SQL in aggregate_persister sees the children's
-// typeNames via root.AllAggregateItems() and restores the corresponding
-// archived child rows.
-//
-// Phase 20.3: an active root (deleted_at IS NULL) surfaces as NotFound — the
-// method name is literal ("archived"), and attempting to unarchive an active
-// record is semantically "that archived does not exist", not a silent no-op.
-// Children continue to be loaded without the deleted_at filter so that
-// AllAggregateItems() has at least one item per typeName that the persister
-// needs to cascade (the cascade SQL already filters `AND deleted_at IS NOT NULL`
-// in the UPDATE).
-func (l *AggregateLoader[T]) LoadIncludingArchived(ctx context.Context, id domain.ID) (T, error) {
-	return l.load(ctx, id, true)
-}
-
-func (l *AggregateLoader[T]) load(ctx context.Context, id domain.ID, includeArchived bool) (T, error) {
-	sample := l.newEntity()
-	table := resolveTable(sample, &l.config)
-
-	root, err := l.loadRoot(ctx, table, id, sample, includeArchived)
+// FindOne loads exactly one aggregate matching the criteria — root + children,
+// the live domain entity ready for a command. Returns a *DomainError with
+// RecordNotFoundNotification (HTTP 404) when nothing matches, and an error when
+// the criteria matches more than one row (the contract is "expected one"; >1 is
+// a developer mistake surfaced loudly rather than silently picking the first).
+// A LIMIT 2 probe bounds the >1 check; any Limit set on the Query is overridden.
+func (l *AggregateLoader[T]) FindOne(ctx context.Context, q *criteria.Query) (T, error) {
+	entities, ids, err := l.findRoots(ctx, q, 2)
 	if err != nil {
 		return *new(T), err
 	}
-	root.SetID(id)
-
-	provider, ok := any(root).(domain.AggregateRootProvider)
-	if !ok {
-		return root, nil
+	if len(entities) == 0 {
+		return *new(T), domain.NotFoundError(l.effectiveContextName(), "criteria", "")
 	}
-	if err := l.loadChildren(ctx, id, provider, reflect.TypeOf(sample), includeArchived); err != nil {
+	if len(entities) > 1 {
+		return *new(T), fmt.Errorf(
+			"AggregateLoader[%s].FindOne: criteria matched more than one row — use FindAll or a more specific criterion",
+			l.effectiveContextName(),
+		)
+	}
+	if err := l.hydrateChildren(ctx, entities, ids, reflect.TypeOf(l.newEntity()), q.Scope()); err != nil {
 		return *new(T), err
 	}
-	return root, nil
+	return entities[0], nil
 }
 
-// loadRoot dispatches to the manual rootScanner or auto-scan. includeArchived
-// inverts the filter: `deleted_at IS NULL` (default, Load) → `deleted_at IS NOT
-// NULL` (LoadIncludingArchived). The method is "find archived", so active rows
-// surface as pgx.ErrNoRows → NotFound — blocks unarchive of an active record
-// at the source level (loader), without needing a check in the upper layer.
-func (l *AggregateLoader[T]) loadRoot(ctx context.Context, table string, id domain.ID, sample T, includeArchived bool) (T, error) {
-	filter := "AND deleted_at IS NULL"
-	if includeArchived {
-		filter = "AND deleted_at IS NOT NULL"
+// FindAll loads every aggregate matching the criteria — root + children — under
+// the Query's order/limit/scope. Children are loaded in one batched SELECT per
+// child type (WHERE fk IN (...)) and grouped in Go, so the query count is
+// 1 + (number of child types), not 1 + (number of roots). Returns an empty
+// slice (not NotFound) when nothing matches.
+func (l *AggregateLoader[T]) FindAll(ctx context.Context, q *criteria.Query) ([]T, error) {
+	entities, ids, err := l.findRoots(ctx, q, 0)
+	if err != nil {
+		return nil, err
 	}
-	if l.rootScanner != nil {
-		sql := fmt.Sprintf(
-			"SELECT * FROM %s WHERE id = $1 %s",
-			validIdentifier(table), filter,
-		)
-		row := l.pg.Pool().QueryRow(ctx, sql, id.Value())
-		root, err := l.rootScanner(row)
-		if err != nil {
-			if errors.Is(err, pgx.ErrNoRows) {
-				return *new(T), domain.NotFoundError(l.effectiveContextName(), "id", id.Value())
-			}
-			return *new(T), err
-		}
-		return root, nil
+	if len(entities) == 0 {
+		return []T{}, nil
+	}
+	if err := l.hydrateChildren(ctx, entities, ids, reflect.TypeOf(l.newEntity()), q.Scope()); err != nil {
+		return nil, err
+	}
+	return entities, nil
+}
+
+// findRoots compiles the criteria into a root SELECT and scans the matched
+// roots, recovering each row's id (FindOne/FindAll do not know the id a priori).
+// limitOverride > 0 replaces the Query's limit (FindOne uses 2).
+//
+// Two root-scan modes, mirroring the load contract:
+//
+//   - Auto-scan (default): the framework controls the SELECT, prepends `id` and
+//     reads it back positionally (the root struct does not expose id as a field).
+//   - Manual scanner (WithRootScanner): the developer controls the row scan via
+//     `SELECT *`. Because the framework no longer injects the id (there is no
+//     input id on the criteria path), the manual scanner MUST populate the id
+//     (scan it and call SetID); findRoots recovers it via GetID(). An empty id
+//     is a configuration error surfaced loudly.
+func (l *AggregateLoader[T]) findRoots(ctx context.Context, q *criteria.Query, limitOverride int64) ([]T, []string, error) {
+	sample := l.newEntity()
+	table := resolveTable(sample, &l.config)
+	resolve := newFieldResolver(reflect.TypeOf(sample), l.config.FieldOverrides)
+
+	where, args, err := compileWhere(q.Condition(), resolve)
+	if err != nil {
+		return nil, nil, err
+	}
+	orderSQL, err := compileOrder(q.OrderFields(), resolve)
+	if err != nil {
+		return nil, nil, err
+	}
+	clause := buildWhereClause(where, scopeGate(q.Scope()))
+	limit := q.LimitValue()
+	if limitOverride > 0 {
+		limit = limitOverride
 	}
 
+	// Manual root scanner: SELECT * + dev-controlled scan; id via GetID().
+	if l.rootScanner != nil {
+		sql := "SELECT * FROM " + validIdentifier(table)
+		sql += tailClause(clause, orderSQL, limit)
+		rows, err := l.pg.Pool().Query(ctx, sql, args...)
+		if err != nil {
+			return nil, nil, err
+		}
+		defer rows.Close()
+		var (
+			entities []T
+			ids      []string
+		)
+		for rows.Next() {
+			root, err := l.rootScanner(rows)
+			if err != nil {
+				return nil, nil, err
+			}
+			idp := root.GetID()
+			if idp == nil || idp.IsEmpty() {
+				return nil, nil, fmt.Errorf(
+					"AggregateLoader[%s]: a manual root scanner used with FindOne/FindAll must populate the id "+
+						"(scan it and call SetID) — the framework injects no id on the criteria path",
+					l.effectiveContextName(),
+				)
+			}
+			entities = append(entities, root)
+			ids = append(ids, idp.Value())
+		}
+		if err := rows.Err(); err != nil {
+			return nil, nil, err
+		}
+		return entities, ids, nil
+	}
+
+	// Auto-scan: SELECT id, <cols> + positional scan with id read back.
 	cols := domainColumnsOf(sample)
 	if len(cols) == 0 {
-		return *new(T), fmt.Errorf(
+		return nil, nil, fmt.Errorf(
 			"AggregateLoader[%s]: auto-scan found no columns — %T exposes no domain fields. "+
 				"Use WithRootScanner to provide a manual scanner",
 			l.effectiveContextName(), sample,
 		)
 	}
-	sql := fmt.Sprintf(
-		"SELECT %s FROM %s WHERE id = $1 %s",
-		strings.Join(quoteIdentifiers(cols), ", "),
-		validIdentifier(table), filter,
-	)
-	root := l.newEntity()
-	row := l.pg.Pool().QueryRow(ctx, sql, id.Value())
-	if err := scanRowIntoStruct(row, any(root), cols); err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			return *new(T), domain.NotFoundError(l.effectiveContextName(), "id", id.Value())
-		}
-		return *new(T), err
+	sql := "SELECT id, " + strings.Join(quoteIdentifiers(cols), ", ") + " FROM " + validIdentifier(table)
+	sql += tailClause(clause, orderSQL, limit)
+	rows, err := l.pg.Pool().Query(ctx, sql, args...)
+	if err != nil {
+		return nil, nil, err
 	}
-	return root, nil
+	defer rows.Close()
+
+	var (
+		entities []T
+		ids      []string
+	)
+	for rows.Next() {
+		root := l.newEntity()
+		id, err := scanLeadingKey(rows, any(root), cols)
+		if err != nil {
+			return nil, nil, err
+		}
+		root.SetID(domain.NewID(id))
+		entities = append(entities, root)
+		ids = append(ids, id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, nil, err
+	}
+	return entities, ids, nil
 }
 
-// loadChildren executes one SELECT per configured typeName (manual or auto) and
-// aggregates results via AggregateConstructor. Phase 19: table/FK inferred.
-func (l *AggregateLoader[T]) loadChildren(
-	ctx context.Context, rootID domain.ID,
-	provider domain.AggregateRootProvider,
-	rootType reflect.Type,
-	includeArchived bool,
-) error {
-	filter := "AND deleted_at IS NULL"
-	if includeArchived {
-		filter = ""
+// tailClause renders the " WHERE … [ORDER BY …] [LIMIT n]" suffix shared by the
+// auto-scan and manual-scanner root SELECTs (each part already validated).
+func tailClause(clause, orderSQL string, limit int64) string {
+	var sb strings.Builder
+	if clause != "" {
+		sb.WriteByte(' ')
+		sb.WriteString(clause)
 	}
-	if len(l.childScanners) == 0 && len(l.childAuto) == 0 {
+	if orderSQL != "" {
+		sb.WriteByte(' ')
+		sb.WriteString(orderSQL)
+	}
+	if limit > 0 {
+		fmt.Fprintf(&sb, " LIMIT %d", limit)
+	}
+	return sb.String()
+}
+
+// hydrateChildren loads + attaches children for the given roots. Auto-scan
+// children are loaded in one batched SELECT per type (WHERE fk IN (...)) and
+// grouped by FK; a manual ChildScanner falls back to one SELECT per root (it
+// cannot expose the FK generically). Child rows honor the scope the same way
+// the root gate does — see childScopeFilter (active → deleted_at IS NULL; any
+// archived scope → unfiltered, so the unarchive cascade sees every child via
+// AllAggregateItems()).
+func (l *AggregateLoader[T]) hydrateChildren(ctx context.Context, entities []T, ids []string, rootType reflect.Type, scope criteria.Scope) error {
+	if len(entities) == 0 || (len(l.childScanners) == 0 && len(l.childAuto) == 0) {
 		return nil
 	}
 
-	var avos []domain.AggregateValueObject
+	providersByID := make(map[string]domain.AggregateRootProvider, len(entities))
+	rootIDs := make([]string, 0, len(entities))
+	for i, e := range entities {
+		p, ok := any(e).(domain.AggregateRootProvider)
+		if !ok {
+			return nil // flat entity — nothing to hydrate
+		}
+		providersByID[ids[i]] = p
+		rootIDs = append(rootIDs, ids[i])
+	}
+
+	childFilter := childScopeFilter(scope)
+	avosByRoot := make(map[string][]domain.AggregateValueObject, len(providersByID))
 
 	seen := map[string]bool{}
 	for typeName := range l.childScanners {
@@ -267,47 +346,67 @@ func (l *AggregateLoader[T]) loadChildren(
 		childTable := resolveChildTable(typeName, &l.config)
 		fkCol := resolveChildFK(rootType, typeName, &l.config)
 
-		var (
-			sql     string
-			scanner func(pgx.Rows) (domain.AggregateValueObject, error)
-		)
 		if manual, ok := l.childScanners[typeName]; ok {
-			sql = fmt.Sprintf(
+			sql := fmt.Sprintf(
 				"SELECT * FROM %s WHERE %s = $1 %s",
-				validIdentifier(childTable),
-				validIdentifier(fkCol),
-				filter,
+				validIdentifier(childTable), validIdentifier(fkCol), childFilter,
 			)
-			scanner = manual
-		} else {
-			auto := l.childAuto[typeName]
-			if len(auto.columns) == 0 {
-				return fmt.Errorf(
-					"AggregateLoader[%s] child %q: auto-scan found no columns — type has no domain fields",
-					l.effectiveContextName(), typeName,
-				)
+			for _, id := range rootIDs {
+				rows, err := l.pg.Pool().Query(ctx, sql, id)
+				if err != nil {
+					return err
+				}
+				for rows.Next() {
+					avo, err := manual(rows)
+					if err != nil {
+						rows.Close()
+						return err
+					}
+					avosByRoot[id] = append(avosByRoot[id], avo)
+				}
+				if err := rows.Err(); err != nil {
+					rows.Close()
+					return err
+				}
+				rows.Close()
 			}
-			sql = fmt.Sprintf(
-				"SELECT %s FROM %s WHERE %s = $1 %s",
-				strings.Join(quoteIdentifiers(auto.columns), ", "),
-				validIdentifier(childTable),
-				validIdentifier(fkCol),
-				filter,
-			)
-			scanner = auto.scanInto
+			continue
 		}
 
-		rows, err := l.pg.Pool().Query(ctx, sql, rootID.Value())
+		auto := l.childAuto[typeName]
+		if len(auto.columns) == 0 {
+			return fmt.Errorf(
+				"AggregateLoader[%s] child %q: auto-scan found no columns — type has no domain fields",
+				l.effectiveContextName(), typeName,
+			)
+		}
+		placeholders := make([]string, len(rootIDs))
+		qargs := make([]any, len(rootIDs))
+		for i, id := range rootIDs {
+			placeholders[i] = fmt.Sprintf("$%d", i+1)
+			qargs[i] = id
+		}
+		sql := fmt.Sprintf(
+			"SELECT %s, %s FROM %s WHERE %s IN (%s) %s",
+			validIdentifier(fkCol),
+			strings.Join(quoteIdentifiers(auto.columns), ", "),
+			validIdentifier(childTable),
+			validIdentifier(fkCol),
+			strings.Join(placeholders, ", "),
+			childFilter,
+		)
+		rows, err := l.pg.Pool().Query(ctx, sql, qargs...)
 		if err != nil {
 			return err
 		}
 		for rows.Next() {
-			avo, err := scanner(rows)
+			vp := reflect.New(auto.typ)
+			fk, err := scanLeadingKey(rows, vp.Interface(), auto.columns)
 			if err != nil {
 				rows.Close()
 				return err
 			}
-			avos = append(avos, avo)
+			avosByRoot[fk] = append(avosByRoot[fk], vp.Elem().Interface().(domain.AggregateValueObject))
 		}
 		if err := rows.Err(); err != nil {
 			rows.Close()
@@ -316,8 +415,10 @@ func (l *AggregateLoader[T]) loadChildren(
 		rows.Close()
 	}
 
-	if len(avos) > 0 {
-		provider.GetAggregateRoot().AggregateConstructor(avos)
+	for id, prov := range providersByID {
+		if avos := avosByRoot[id]; len(avos) > 0 {
+			prov.GetAggregateRoot().AggregateConstructor(avos)
+		}
 	}
 	return nil
 }

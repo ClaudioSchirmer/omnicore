@@ -1492,16 +1492,55 @@ var (
         per Repository.
     </p>
 
-    <h3 id="aggregate-loader">AggregateLoader[T] — FindByID with its own SQL engine</h3>
+    <h3 id="aggregate-loader">AggregateLoader[T] — loading aggregates with the criteria engine</h3>
     <p>
-        The <code>AggregateLoader</code> has its <strong>own SQL engine</strong>: it inspects your entity via
-        reflection, discovers the columns, generates the correct <code>SELECT</code> and populates the struct.
-        You don't need to write the SQL or the scanner. For exotic queries the engine doesn't cover
-        (JOIN, CASE, COALESCE, lookups by non-id fields), there is an escape hatch where you
-        write the query and the scanner manually — both paths coexist.
+        The <code>AggregateLoader</code> loads <strong>live domain aggregates</strong> (root + children) from
+        PostgreSQL through the <a href="#criteria-engine">entity search engine</a>: you hand it a
+        <code>criteria.Query</code> and it returns the entity ready for a command. Two entry points —
+        <code>FindOne(ctx, *criteria.Query)</code> (one match, or <code>RecordNotFound</code>; more than one
+        is an error) and <code>FindAll(ctx, *criteria.Query)</code> (a slice; children batched). It has its
+        <strong>own SQL engine</strong>: it inspects your entity via reflection, discovers the columns,
+        generates the <code>SELECT</code> and populates the struct — you write neither the SQL nor the scanner.
+        For exotic decoding the auto-scan doesn't cover (JOIN, CASE, COALESCE) there is a manual-scanner
+        escape hatch; both scan modes coexist.
     </p>
 
-    <h4 id="aggregate-loader-auto">Automatic mode (recommended default)</h4>
+    <h4 id="criteria-engine">Loading by criteria — <code>FindOne</code> / <code>FindAll</code></h4>
+    <p>
+        <code>omnicore/criteria</code> is a small, pure DSL (stdlib only) you compose in Go inside your
+        <code>infra</code> repository. It is the developer-facing, compile-time way to load the
+        authoritative aggregate — distinct from the Mongo read side, which is the end-user-facing query
+        facade over the eventually-consistent projection. Your <em>repository interface</em> stays in
+        business vocabulary (<code>FindByID</code>, <code>FindByEmail</code>, …); the engine is how the
+        <code>infra</code> implementation fulfills it.
+    </p>
+    <pre><code>// Primary-key shortcut (assumes the ID↔id convention):
+u, err := repo.FindOne(ctx, criteria.ByID(id))
+
+// Any alternate key — no hand-rolled SQL:
+u, err := repo.FindOne(ctx, criteria.Where(criteria.Eq("Email", email)))
+
+// Boolean composition + order + limit; FindAll returns []*User (children batched):
+users, err := repo.FindAll(ctx, criteria.Where(criteria.And(
+    criteria.Eq("TenantID", t),
+    criteria.Or(criteria.Eq("Status", "active"), criteria.ILike("Name", "bob%")),
+    criteria.IsNull("DeletedReason"),
+)).OrderByDesc("CreatedAt").Limit(50))
+
+// Archived scope (soft-delete gate) lives on the Query, not in the predicate:
+archived, err := repo.FindOne(ctx, criteria.ByID(id).OnlyArchived())</code></pre>
+    <p>
+        Operators: <code>Eq/Ne/In/Nin/Gt/Gte/Lt/Lte/Like/ILike/IsNull/NotNull</code>, combinators
+        <code>And/Or/Not</code> (nestable), and sugar <code>Contains/StartsWith/EndsWith</code>
+        (case-insensitive, wildcards escaped) + <code>Between</code>. Field names are your <strong>Go field
+        names</strong> ("Email"), resolved to columns by the same convention auto-scan uses
+        (snake_case, or <code>RepoConfig.FieldOverrides</code>). Values are always parameterized;
+        a <code>domain.ID</code> value is unwrapped automatically. <code>FindByID</code> /
+        <code>FindArchivedByID</code> (promoted by <code>BaseAggregateRepository</code>) are themselves
+        thin wrappers over <code>FindOne(criteria.ByID(id))</code> — one SQL-building path for every load.
+    </p>
+
+    <h4 id="aggregate-loader-auto">Automatic scan mode (recommended default)</h4>
     <p>
         No scanner passed. The loader inspects the entity's <em>exported fields</em>
         and the children's, assembles <code>SELECT col1, col2, ... FROM table WHERE id=$1 AND deleted_at IS NULL</code>
@@ -1537,12 +1576,12 @@ func NewUserRepository(pg *fwinfra.Postgres) *UserRepository {
     <p>
         The loader generates:
     </p>
-    <pre><code>-- Root
-SELECT name, email, cpf, phone FROM users
+    <pre><code>-- Root (FindOne(criteria.ByID(id)) — id read back; criteria drives the WHERE)
+SELECT id, name, email, cpf, phone FROM users
  WHERE id = $1 AND deleted_at IS NULL;
 
--- Per child registered in WithChild
-SELECT id, label, street, number, complement, neighborhood, city, state, zip_code, country
+-- Per child registered in WithChild (FindAll batches with fk IN ($1,$2,...))
+SELECT user_id, id, label, street, number, complement, neighborhood, city, state, zip_code, country
   FROM addresses
  WHERE user_id = $1 AND deleted_at IS NULL;</code></pre>
 
@@ -1614,13 +1653,16 @@ SELECT id, label, street, number, complement, neighborhood, city, state, zip_cod
         <code>WithRootScanner</code> and/or <code>WithChildScanner</code>. The loader keeps handling
         children dispatch and <code>AggregateConstructor</code>; only the decoding is up to you.
     </p>
-    <pre><code>// Hypothetical scenario: User with a composite name from a JOIN view
+    <pre><code>// Manual mode runs SELECT * — scan id first (the framework no longer injects
+// it on the criteria path) and SetID, then decode the rest however you like.
 r.loader = fwinfra.NewAggregateLoader[*User](pg, factory).
     WithRootScanner(func(row pgx.Row) (*User, error) {
         u := &amp;User{}
-        var firstName, lastName string
-        err := row.Scan(&amp;firstName, &amp;lastName, &amp;u.Email, &amp;u.CPF)
-        if err != nil { return nil, err }
+        var id, firstName, lastName string
+        if err := row.Scan(&amp;id, &amp;firstName, &amp;lastName /* …, &amp;u.Email, etc */); err != nil {
+            return nil, err
+        }
+        u.SetID(domain.NewID(id)) // REQUIRED: FindOne/FindAll recover the id via GetID()
         u.Name = firstName + " " + lastName
         return u, nil
     })
@@ -1629,21 +1671,28 @@ fwinfra.WithChild[Address](r.loader)</code></pre>
     <p>
         Auto and manual <strong>coexist per typeName</strong>: for the same child,
         the manual scanner wins over auto when both are registered. The manual mode
-        uses <code>SELECT *</code> (compatible with custom queries you may write)
-        — if you want an explicit SELECT in the manual path, just do <code>QueryRow</code>
-        directly instead of using the Loader.
+        uses <code>SELECT *</code> (compatible with custom queries you may write).
     </p>
+    <div class="box warn">
+        <strong>Manual root scanner + <code>FindOne</code>/<code>FindAll</code>:</strong> the scanner
+        <strong>must populate the entity id</strong> (scan it and call <code>SetID</code>). The criteria
+        path has no input id to inject (unlike the old by-id load), so the framework recovers the id via
+        <code>GetID()</code> after your scanner runs — an empty id is a configuration error. Auto-scan reads
+        the id back automatically; only the manual path carries this requirement.
+    </div>
 
     <h4>Errors and edge cases</h4>
     <ul>
         <li><strong>Root not found</strong> → <code>*DomainError</code> with
             <code>RecordNotFoundNotification</code> (→ 404 HTTP via
             <a href="#status-mapping">Semantic mapping</a>).</li>
+        <li><strong>More than one match in <code>FindOne</code></strong> → error ("expected one"):
+            the contract is a single match; use <code>FindAll</code> or a more specific criterion.</li>
         <li><strong>Aggregate without children</strong> — omit <code>WithChild</code>/
-            <code>WithChildScanner</code> and <code>Load</code> only does <code>SELECT root</code>.</li>
+            <code>WithChildScanner</code> and the load only does <code>SELECT root</code>.</li>
         <li><strong>Entity without exported domain fields</strong> in auto mode:
-            <code>Load</code> returns a descriptive error suggesting <code>WithRootScanner</code>
-            (typically means a bug — an entity with no data at all is rare).</li>
+            <code>FindOne</code>/<code>FindAll</code> return a descriptive error suggesting
+            <code>WithRootScanner</code> (typically a bug — an entity with no data at all is rare).</li>
         <li><strong>Type registered in <code>WithChildScanner</code> without an entry in
             <code>AggregateChildren()</code></strong> — silently ignored
             (compatible with evolving aggregate).</li>

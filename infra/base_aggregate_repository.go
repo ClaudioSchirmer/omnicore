@@ -3,6 +3,7 @@ package infra
 import (
 	"context"
 
+	"github.com/ClaudioSchirmer/omnicore/criteria"
 	"github.com/ClaudioSchirmer/omnicore/domain"
 )
 
@@ -52,16 +53,19 @@ func NewBaseAggregateRepository[T domain.Entity](pg *Postgres, newEntity func() 
 	}
 }
 
-// FindByID delegates to Loader.Load with context.Background() — same semantics
-// as the manual wrappers this struct replaces. A caller that needs a custom
-// context uses the Loader directly.
+// FindByID resolves the primary-key lookup through the entity search engine —
+// criteria.ByID(id) is the single SQL-building path. Uses context.Background()
+// (the contract carries no ctx); a caller that needs a custom context uses the
+// Loader's FindOne directly.
 func (r *BaseAggregateRepository[T]) FindByID(id domain.ID) (T, error) {
-	return r.Loader.Load(context.Background(), id)
+	return r.Loader.FindOne(context.Background(), criteria.ByID(id))
 }
 
-// FindArchivedByID delegates to Loader.LoadIncludingArchived. Satisfies
-// domain.ArchivedFinder[T], which UnarchiveCommandHandler consumes to hydrate
-// the archived aggregate before cascading unarchive on the children.
+// FindArchivedByID loads the archived aggregate (deleted_at IS NOT NULL) via the
+// same engine with the OnlyArchived scope. Satisfies domain.ArchivedFinder[T],
+// which UnarchiveCommandHandler consumes to hydrate the archived aggregate
+// (children loaded unfiltered under the archived scope) before cascading
+// unarchive on the children.
 func (r *BaseAggregateRepository[T]) FindArchivedByID(id domain.ID) (T, error) {
-	return r.Loader.LoadIncludingArchived(context.Background(), id)
+	return r.Loader.FindOne(context.Background(), criteria.ByID(id).OnlyArchived())
 }

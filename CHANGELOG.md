@@ -11,6 +11,38 @@ with `1.0.0`.
 
 ## [Unreleased]
 
+### Added
+
+- **`omnicore/criteria/` package — backend-neutral query DSL for loading live
+  domain aggregates from PostgreSQL by an arbitrary criterion.** A sealed
+  expression tree (`Expr`) with a fluent builder — `Eq/Ne/In/Nin/Gt/Gte/Lt/Lte/
+  Like/ILike/IsNull/NotNull`, `And/Or/Not`, sugar `Contains/StartsWith/EndsWith/
+  Between` — wrapped in a `Query` carrying `WHERE` + `OrderBy`/`OrderByDesc` +
+  `Limit` + an archived `Scope` (`Active`/`IncludeArchived`/`OnlyArchived`).
+  `criteria.ByID(id)` is the primary-key shortcut. Pure (stdlib only, zero IO);
+  the SQL translation lives behind the `Visitor` seam so other backends can be
+  added without touching the tree. Consumed only inside `infra` repository
+  implementations — `domain` and `application` keep business-vocabulary
+  repository interfaces and never import `criteria`.
+- **`AggregateLoader[T].FindOne(ctx, *criteria.Query)` and `FindAll(ctx,
+  *criteria.Query)`** — load one (or `RecordNotFound`; error on >1) or many
+  live aggregates (root + children) matching a criterion. `FindAll` batches
+  children with `WHERE fk IN (...)` (one query per child type, not per root).
+  Both honor the archived scope on root and children. Promoted on
+  `BaseAggregateRepository[T]`. The single SQL-building path: by-id loads
+  (`FindByID`/`FindArchivedByID`) and any alternate-key lookup all route through
+  the engine.
+
+### Removed
+
+- **`AggregateLoader[T].Load` / `LoadIncludingArchived`** — replaced by
+  `FindOne(criteria.ByID(id))` / `FindOne(criteria.ByID(id).OnlyArchived())`.
+  Small `infra`-API removal; the domain/application repository contracts
+  (`Repository[T].FindByID`, `Writer[T]`, `ArchivedFinder[T].FindArchivedByID`)
+  are unchanged. A manual `WithRootScanner` used with `FindOne`/`FindAll` must
+  now populate the entity id (scan it + `SetID`) — the framework no longer
+  injects it on the criteria path (there is no input id).
+
 ## [0.8.0] - 2026-06-16
 
 ### Added

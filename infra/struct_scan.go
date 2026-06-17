@@ -178,3 +178,38 @@ func scanRowIntoStruct(row pgx.Row, dst any, columns []string) error {
 	}
 	return row.Scan(targets...)
 }
+
+// keyedRow is satisfied by both pgx.Row and pgx.Rows (Scan(dest ...any) error).
+type keyedRow interface {
+	Scan(dest ...any) error
+}
+
+// scanLeadingKey scans a row shaped (key, col1, col2, …) into dst's fields for
+// the given domain columns and returns the leading key column as a string.
+// Used by the entity search engine where the row carries an identifier the
+// struct does not expose as a field: the root id (FindOne/FindAll do not know
+// it a priori) and the child foreign key (needed to group batched children by
+// root). The key is scanned into a string — the same uuid→string scan the
+// executor's `RETURNING id` path uses.
+func scanLeadingKey(row keyedRow, dst any, columns []string) (string, error) {
+	v := reflect.ValueOf(dst)
+	if v.Kind() != reflect.Ptr || v.IsNil() {
+		return "", fmt.Errorf("scanLeadingKey: dst must be a non-nil pointer, got %T", dst)
+	}
+	v = v.Elem()
+	if v.Kind() != reflect.Struct {
+		return "", fmt.Errorf("scanLeadingKey: dst must point to a struct, got %s", v.Kind())
+	}
+	idx := loadStructIndex(v.Type())
+	var key string
+	targets := make([]any, 0, len(columns)+1)
+	targets = append(targets, &key)
+	for _, col := range columns {
+		pos, ok := idx.byCol[col]
+		if !ok {
+			return "", fmt.Errorf("scanLeadingKey: column %q has no corresponding field in %s", col, v.Type().Name())
+		}
+		targets = append(targets, v.Field(idx.order[pos].fieldIndex).Addr().Interface())
+	}
+	return key, row.Scan(targets...)
+}

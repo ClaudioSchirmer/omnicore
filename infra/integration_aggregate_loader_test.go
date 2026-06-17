@@ -7,6 +7,7 @@ import (
 	"errors"
 	"testing"
 
+	"github.com/ClaudioSchirmer/omnicore/criteria"
 	"github.com/ClaudioSchirmer/omnicore/domain"
 	"github.com/jackc/pgx/v5"
 )
@@ -91,7 +92,7 @@ func TestAggregateLoader_Load_AutoScanRootAndChildren(t *testing.T) {
 	loader = WithChild[loaderTagVO](loader)
 	loader = WithChild[loaderNoteVO](loader)
 
-	root, err := loader.Load(context.Background(), domain.NewID(rootID))
+	root, err := loader.FindOne(context.Background(), criteria.ByID(rootID))
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
@@ -115,7 +116,7 @@ func TestAggregateLoader_Load_NotFoundProducesNotFoundError(t *testing.T) {
 
 	loader := NewAggregateLoader[*loaderRoot](pg, func() *loaderRoot { return &loaderRoot{} })
 	loader = WithChild[loaderTagVO](loader)
-	_, err := loader.Load(context.Background(), domain.NewID("00000000-0000-0000-0000-000000000000"))
+	_, err := loader.FindOne(context.Background(), criteria.ByID("00000000-0000-0000-0000-000000000000"))
 	if err == nil {
 		t.Fatal("expected NotFound error")
 	}
@@ -143,11 +144,11 @@ func TestAggregateLoader_LoadIncludingArchived(t *testing.T) {
 	loader = WithChild[loaderTagVO](loader)
 
 	// Load (active-only) fails.
-	if _, err := loader.Load(context.Background(), domain.NewID(id)); err == nil {
+	if _, err := loader.FindOne(context.Background(), criteria.ByID(id)); err == nil {
 		t.Error("expected Load to NOT find archived root")
 	}
 	// LoadIncludingArchived succeeds.
-	root, err := loader.LoadIncludingArchived(context.Background(), domain.NewID(id))
+	root, err := loader.FindOne(context.Background(), criteria.ByID(id).OnlyArchived())
 	if err != nil {
 		t.Fatalf("LoadIncludingArchived: %v", err)
 	}
@@ -166,7 +167,7 @@ func TestAggregateLoader_LoadIncludingArchived_ActiveRootSurfacesAsNotFound(t *t
 		`INSERT INTO loader_roots (name, email) VALUES ('Alive', 'l@x') RETURNING id`).Scan(&id)
 
 	loader := NewAggregateLoader[*loaderRoot](pg, func() *loaderRoot { return &loaderRoot{} })
-	if _, err := loader.LoadIncludingArchived(context.Background(), domain.NewID(id)); err == nil {
+	if _, err := loader.FindOne(context.Background(), criteria.ByID(id).OnlyArchived()); err == nil {
 		t.Error("expected LoadIncludingArchived to fail on an ACTIVE root (literal 'find archived')")
 	}
 }
@@ -185,18 +186,21 @@ func TestAggregateLoader_Load_WithManualRootScanner(t *testing.T) {
 	loader := NewAggregateLoader[*loaderRoot](pg, func() *loaderRoot { return &loaderRoot{} }).
 		WithRootScanner(func(row pgx.Row) (*loaderRoot, error) {
 			r := &loaderRoot{}
-			// SELECT * returns: id, name, email, deleted_at, created_at, updated_at
+			// SELECT * returns: id, name, email, deleted_at, created_at, updated_at.
+			// On the criteria path a manual scanner MUST populate the id (the
+			// framework no longer injects it), so scan it and SetID.
 			var sink any
-			var name, email string
-			if err := row.Scan(&sink, &name, &email, &sink, &sink, &sink); err != nil {
+			var idv, name, email string
+			if err := row.Scan(&idv, &name, &email, &sink, &sink, &sink); err != nil {
 				return nil, err
 			}
+			r.SetID(domain.NewID(idv))
 			r.Name = name + "_via_manual"
 			r.Email = email
 			return r, nil
 		})
 
-	root, err := loader.Load(context.Background(), domain.NewID(id))
+	root, err := loader.FindOne(context.Background(), criteria.ByID(id))
 	if err != nil {
 		t.Fatalf("Load with manual scanner: %v", err)
 	}
@@ -218,7 +222,7 @@ func TestAggregateLoader_Load_ManualRootScannerNotFound(t *testing.T) {
 			return r, row.Scan(&sink, &name, &email, &sink, &sink, &sink)
 		})
 
-	_, err := loader.Load(context.Background(), domain.NewID("00000000-0000-0000-0000-000000000000"))
+	_, err := loader.FindOne(context.Background(), criteria.ByID("00000000-0000-0000-0000-000000000000"))
 	if err == nil {
 		t.Fatal("expected NotFound")
 	}
@@ -251,7 +255,7 @@ func TestAggregateLoader_Load_WithManualChildScanner(t *testing.T) {
 			return loaderTagVO{ID: idval, Label: label + "_manual"}, nil
 		})
 
-	root, err := loader.Load(context.Background(), domain.NewID(id))
+	root, err := loader.FindOne(context.Background(), criteria.ByID(id))
 	if err != nil {
 		t.Fatalf("Load with manual child: %v", err)
 	}
@@ -299,7 +303,7 @@ func TestAggregateLoader_WithConfig_TableAndFKOverride(t *testing.T) {
 		})
 	loader = WithChild[loaderTagVO](loader)
 
-	root, err := loader.Load(context.Background(), domain.NewID(id))
+	root, err := loader.FindOne(context.Background(), criteria.ByID(id))
 	if err != nil {
 		t.Fatalf("Load with overrides: %v", err)
 	}
@@ -325,7 +329,7 @@ func TestAggregateLoader_Load_NoChildRegistered(t *testing.T) {
 
 	// Loader with NO child registrations — root loads, children loop is skipped.
 	loader := NewAggregateLoader[*loaderRoot](pg, func() *loaderRoot { return &loaderRoot{} })
-	root, err := loader.Load(context.Background(), domain.NewID(id))
+	root, err := loader.FindOne(context.Background(), criteria.ByID(id))
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
@@ -354,8 +358,107 @@ func TestAggregateLoader_Load_AutoScanWithNoFieldsErrors(t *testing.T) {
 		created_at TIMESTAMP NOT NULL DEFAULT NOW()
 	)`)
 	loader := NewAggregateLoader[*emptyEntity](pg, func() *emptyEntity { return &emptyEntity{} })
-	_, err := loader.Load(context.Background(), domain.NewID("00000000-0000-0000-0000-000000000000"))
+	_, err := loader.FindOne(context.Background(), criteria.ByID("00000000-0000-0000-0000-000000000000"))
 	if err == nil {
 		t.Fatal("expected error from auto-scan with zero columns")
+	}
+}
+
+// --- Criteria engine: FindOne / FindAll by arbitrary fields ----------------
+
+func TestAggregateLoader_FindOne_ByNonIDField(t *testing.T) {
+	pg, cleanup := newTestPG(t)
+	defer cleanup()
+	createLoaderTables(t, pg)
+
+	var id string
+	pg.Pool().QueryRow(context.Background(),
+		`INSERT INTO loader_roots (name, email) VALUES ('Bob', 'bob@x') RETURNING id`).Scan(&id)
+	pg.Pool().Exec(context.Background(),
+		`INSERT INTO loader_tag_vos (loader_root_id, label) VALUES ($1, 'one'), ($1, 'two')`, id)
+
+	loader := NewAggregateLoader[*loaderRoot](pg, func() *loaderRoot { return &loaderRoot{} })
+	loader = WithChild[loaderTagVO](loader)
+
+	root, err := loader.FindOne(context.Background(), criteria.Where(criteria.Eq("Email", "bob@x")))
+	if err != nil {
+		t.Fatalf("FindOne by email: %v", err)
+	}
+	if root.GetID().Value() != id {
+		t.Errorf("id = %q, want %q", root.GetID().Value(), id)
+	}
+	if root.Name != "Bob" {
+		t.Errorf("name = %q", root.Name)
+	}
+	if tags := domain.GetCurrentItemsOf[loaderTagVO](&root.AggregateRoot); len(tags) != 2 {
+		t.Errorf("expected 2 tags hydrated, got %d", len(tags))
+	}
+}
+
+func TestAggregateLoader_FindOne_MultipleMatchesErrors(t *testing.T) {
+	pg, cleanup := newTestPG(t)
+	defer cleanup()
+	createLoaderTables(t, pg)
+
+	pg.Pool().Exec(context.Background(),
+		`INSERT INTO loader_roots (name, email) VALUES ('Dup', 'a@x'), ('Dup', 'b@x')`)
+
+	loader := NewAggregateLoader[*loaderRoot](pg, func() *loaderRoot { return &loaderRoot{} })
+
+	_, err := loader.FindOne(context.Background(), criteria.Where(criteria.Eq("Name", "Dup")))
+	if err == nil {
+		t.Fatal("expected FindOne to error on more than one match")
+	}
+}
+
+func TestAggregateLoader_FindAll_OperatorsOrderLimitAndChildBatch(t *testing.T) {
+	pg, cleanup := newTestPG(t)
+	defer cleanup()
+	createLoaderTables(t, pg)
+
+	for _, name := range []string{"Ann", "Bea", "Cyd"} {
+		var id string
+		pg.Pool().QueryRow(context.Background(),
+			`INSERT INTO loader_roots (name, email) VALUES ($1, $2) RETURNING id`,
+			name, name+"@x").Scan(&id)
+		pg.Pool().Exec(context.Background(),
+			`INSERT INTO loader_tag_vos (loader_root_id, label) VALUES ($1, $2)`, id, name+"-tag")
+	}
+
+	loader := NewAggregateLoader[*loaderRoot](pg, func() *loaderRoot { return &loaderRoot{} })
+	loader = WithChild[loaderTagVO](loader)
+
+	// In + ORDER BY DESC + LIMIT; children must arrive grouped per root.
+	roots, err := loader.FindAll(context.Background(),
+		criteria.Where(criteria.In("Name", "Ann", "Bea", "Cyd")).OrderByDesc("Name").Limit(2))
+	if err != nil {
+		t.Fatalf("FindAll: %v", err)
+	}
+	if len(roots) != 2 {
+		t.Fatalf("expected 2 roots (limit), got %d", len(roots))
+	}
+	if roots[0].Name != "Cyd" || roots[1].Name != "Bea" {
+		t.Errorf("order wrong: %q, %q", roots[0].Name, roots[1].Name)
+	}
+	for _, r := range roots {
+		tags := domain.GetCurrentItemsOf[loaderTagVO](&r.AggregateRoot)
+		if len(tags) != 1 || tags[0].Label != r.Name+"-tag" {
+			t.Errorf("child batch grouping wrong for %q: %+v", r.Name, tags)
+		}
+	}
+}
+
+func TestAggregateLoader_FindAll_EmptyResultIsNotError(t *testing.T) {
+	pg, cleanup := newTestPG(t)
+	defer cleanup()
+	createLoaderTables(t, pg)
+
+	loader := NewAggregateLoader[*loaderRoot](pg, func() *loaderRoot { return &loaderRoot{} })
+	roots, err := loader.FindAll(context.Background(), criteria.Where(criteria.Eq("Name", "none")))
+	if err != nil {
+		t.Fatalf("FindAll empty: %v", err)
+	}
+	if len(roots) != 0 {
+		t.Errorf("expected 0 roots, got %d", len(roots))
 	}
 }

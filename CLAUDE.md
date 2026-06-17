@@ -1352,12 +1352,14 @@ func NewUserRepository(pg *fwinfra.Postgres) *UserRepository {
 }
 
 func (r *UserRepository) FindByID(id domain.ID) (*User, error) {
-    return r.loader.Load(context.Background(), id)
+    return r.loader.FindOne(context.Background(), criteria.ByID(id))
 }
 func (r *UserRepository) FindArchivedByID(id domain.ID) (*User, error) {
-    return r.loader.LoadIncludingArchived(context.Background(), id)
+    return r.loader.FindOne(context.Background(), criteria.ByID(id).OnlyArchived())
 }
 ```
+
+> The common case skips this boilerplate by embedding `BaseAggregateRepository[T]`, which promotes `FindByID`/`FindArchivedByID` (and `FindOne`/`FindAll`) routed through the engine — see [Entity search engine](#entity-search-engine-criteria).
 
 ## Persistence
 
@@ -1397,7 +1399,7 @@ func NewUserRepository(pg *infra.Postgres) *UserRepository {
     return r
 }
 func (r *UserRepository) FindByID(id domain.ID) (*User, error) {
-    return r.loader.Load(context.Background(), id)
+    return r.loader.FindOne(context.Background(), criteria.ByID(id))
 }
 // ↑ Insert/Update/Archive/Unarchive/Delete come embedded — do not write by hand.
 //   Aggregate-aware dispatch happens inside Postgres.Insert/etc.
@@ -1432,13 +1434,36 @@ app.Post("/users", func(c fiber.Ctx) error {
 
 **`infra.BaseRepository[T]`** implements the 5 writes (Insert/Update/Archive/Unarchive/Delete) as one-liners delegating to `infra.Postgres` + provides `New() T` via the injected `NewEntity` factory — just embed it. **`NewEntity` is mandatory** (`New()` panics if nil): every framework Repository needs to construct T somehow, and centralizing this eliminates duplication with `AggregateLoader` or handlers (the same factory is typically shared with the `AggregateLoader`). **`infra.ConstraintBinding`** translates unique violations (PG SQLSTATE `23505`) into `*InfrastructureError` carrying the typed notification via `infra.FieldErrorWithCause` — replaces the manual `mapPGError`. Unregistered constraints, codes other than `23505`, and non-pgErr errors are returned raw.
 
-**`infra.AggregateLoader[T]`** provides `FindByID` in two coexisting modes:
+**`infra.AggregateLoader[T]`** loads live aggregates (root + children) via the entity search engine — `FindOne(ctx, *criteria.Query)` / `FindAll(ctx, *criteria.Query)` (see [Entity search engine](#entity-search-engine-criteria)). It scans the matched rows in one of two coexisting modes:
 
-- **Auto-scan (default)** — framework discovers root and children columns via reflection on T's exported fields (private fields of `AggregateRoot`/`BaseEntity` are ignored — anonymous/private). Name mapping: tag `db:"col"` if present, otherwise snake_case of the field (`ZipCode` → `zip_code`, `CPF` → `cpf`). pgx normalizes names on the query side (`fieldPosByName`, rows.go:834) — snake_case convention matches transparently. Loader assembles `SELECT col1, col2, ... FROM table WHERE id=$1 AND deleted_at IS NULL`. Zero scanner in the service. API: absence of `WithRootScanner` activates root auto-scan; `WithChildAutoScan[V](loader, typeName, table)` activates child auto-scan for V (top-level function due to extra type param). Column→field mapping cached by `reflect.Type` in `sync.Map` — first Load pays the inspection, subsequent ones are direct lookups. Benchmark against manual scanner: **reflection cost 916 B/op + 11 allocs vs 1380 B/op + 26 allocs of manual**, ~same latency (cache + direct addresses vs allocated local pointers).
+- **Auto-scan (default)** — framework discovers root and children columns via reflection on T's exported fields (private fields of `AggregateRoot`/`BaseEntity` are ignored — anonymous/private). Name mapping: snake_case of the field (`ZipCode` → `zip_code`, `CPF` → `cpf`), overridable per-Repository via `RepoConfig.FieldOverrides`. pgx normalizes names on the query side (`fieldPosByName`) — snake_case convention matches transparently. The loader assembles `SELECT id, col1, col2, ... FROM table WHERE <criteria> AND <scope gate>` and reads the `id` back (the criteria path does not know it a priori). Zero scanner in the service. API: absence of `WithRootScanner` activates root auto-scan; `WithChild[V](loader)` activates child auto-scan for V. Column→field mapping cached by `reflect.Type` in `sync.Map`.
 
-- **Manual (`WithRootScanner`/`WithChildScanner`)** — service provides the scan function. Kept as an escape hatch for non-trivial queries (JOIN, CASE, COALESCE, SQL aggregations, computed denormalizations) and for cases where absolute control of decoding brings measurable gain. Coexists with auto-scan (root may be manual and child auto, or vice versa; per typeName, manual scanner wins over auto when both are registered).
+- **Manual (`WithRootScanner`/`WithChildScanner`)** — service provides the scan function. Escape hatch for non-trivial decoding (JOIN, CASE, COALESCE, computed denormalizations). Coexists with auto-scan (per typeName, manual scanner wins over auto when both are registered). **A manual root scanner used with `FindOne`/`FindAll` must populate the entity id (scan it + `SetID`)** — the engine recovers it via `GetID()` because, unlike the removed by-id `Load`, there is no input id on the criteria path.
 
-In both modes: `deleted_at IS NULL` filtered consistent with `composer.go`. Nonexistent root → `*DomainError` with `RecordNotFoundNotification` (→ 404 HTTP). Aggregate without children: omit both `WithChild*` — Load only performs `SELECT root`. T must satisfy `domain.Entity` (any entity embedding `BaseEntity` or `AggregateRoot` satisfies). For truly exotic queries (lookup by non-id field, external materialized view), ignore the Loader and implement `FindByID` manually via `pg.Pool()`.
+In both modes: the archived scope governs the `deleted_at` gate (root and children). Nonexistent root → `*DomainError` with `RecordNotFoundNotification` (→ 404 HTTP). Aggregate without children: omit `WithChild*` — only the root SELECT runs. T must satisfy `domain.Entity`. A lookup by any non-id field (email, tenant, …) is now a first-class `FindOne(criteria.Where(...))` — no hand-rolled SQL needed.
+
+### Entity search engine (`criteria`)
+
+`omnicore/criteria` is the framework's backend-neutral query DSL for loading **live domain aggregates** from the authoritative store (PostgreSQL). It is the **dev-facing, compile-time** counterpart to the end-user-facing Mongo read side: the developer composes a criterion in Go inside an `infra` repository implementation; the engine returns the source-of-truth aggregate ready for a command (`GetUpdatable`). It does NOT replace the read side (`ViewReader.ReadByID`/`ReadPage`) — that serves the eventually-consistent projection and returns documents, not entities.
+
+- **Pure DSL (`criteria` package, stdlib only).** Sealed `Expr` tree + fluent builder: `Eq/Ne/In/Nin/Gt/Gte/Lt/Lte/Like/ILike/IsNull/NotNull`, `And/Or/Not` (nestable), sugar `Contains/StartsWith/EndsWith` (case-insensitive, LIKE-metachar escaped) + `Between`. Field names are **Go field names** ("Email"), resolved to columns by the loader. Wrapped in a `Query` carrying `WHERE` + `OrderBy`/`OrderByDesc` + `Limit` + an archived `Scope`; `criteria.ByID(id)` is the PK shortcut (assumes the `ID`↔`id` convention). The archived scope (`Active` default / `IncludeArchived` / `OnlyArchived`) is a `Query` method, NOT part of the boolean algebra — the `Expr` tree stays soft-delete-agnostic.
+- **Encapsulated PG translator (unexported in `infra`).** A `Visitor` walks the tree → `WHERE` fragment + `$n` args; identifiers pass through `validIdentifier`, values are parameterized, `domain.ID` args unwrapped via `.Value()`. The `Visitor` interface is the seam a future backend (e.g. Mongo → bson) implements; the IR is the neutral contract.
+- **Layer posture.** `criteria` is imported only by `infra` (framework + the consumer's own infra repository impls). `domain` and `application` never import it — repository interfaces there stay in business vocabulary (`FindByID`, `FindByEmail`, …) and the infra impl is the only place that consumes the engine.
+
+```go
+// infra repository implementation — alternate-key lookup, no hand-rolled SQL:
+func (r *UserRepository) FindByEmail(email string) (*User, error) {
+    return r.FindOne(context.Background(), criteria.Where(criteria.Eq("Email", email)))
+}
+
+// richer: boolean composition + order + limit, returns []*User (children batched):
+users, err := r.FindAll(ctx, criteria.Where(criteria.And(
+    criteria.Eq("TenantID", t),
+    criteria.Or(criteria.Eq("Status", "active"), criteria.ILike("Name", "bob%")),
+)).OrderByDesc("CreatedAt").Limit(50))
+```
+
+`FindOne` returns one match or `RecordNotFoundNotification`; **>1 matches is an error** (the contract is "expected one"). `FindAll` returns a possibly-empty slice and loads children in one batched `WHERE fk IN (...)` per child type (no N+1).
 
 Convention of nullable fields: nullable PG types map to **pointer types** in the domain (`Phone *string`, `Label *string`). pgx writes NULL when nil; reads NULL as nil. No wrapping mechanism in the framework — pointer is the canonical form.
 
@@ -1759,8 +1784,9 @@ The Semantic enum is **transport-agnostic** — a future gRPC layer would map th
 | PATCH endpoint (partial body, optional fields) | `&handlers.PartialUpdateCommandHandler[T, *Cmd, TResult]{...}` + `Cmd impl pipeline.PartialUpdateCommand[T, TResult]` (`ApplyPartiallyTo(ctx, T)` + `FromEntity(ctx, T) TResult`) |
 | Custom strict handler (imposing full body) | embed `pipeline.FullBody` in the handler struct — wrapper enforces presence of all exported fields |
 | Repository with 5 writes + constraint mapping | embed `fwinfra.BaseRepository[T]` + declare `NewEntity func() T` (mandatory) + optional `Constraints map[string]ConstraintBinding` |
-| FindByID of aggregate (root + children) — auto-scan default | `fwinfra.NewAggregateLoader[T](pg, factory).WithContextName(...)` + `fwinfra.WithChildAutoScan[V](loader, typeName, table)` + `loader.Load(ctx, id)` |
-| FindByID with manual scanner (non-trivial queries) | same fluent API + `WithRootScanner(fn)` and/or `WithChildScanner(typeName, fn)`. Coexists with auto per typeName. |
+| FindByID of aggregate (root + children) — auto-scan default | `fwinfra.NewAggregateLoader[T](pg, factory)` + `fwinfra.WithChild[V](loader)` + `loader.FindOne(ctx, criteria.ByID(id))` (or embed `BaseAggregateRepository[T]` which promotes `FindByID`) |
+| Load an aggregate by any non-id field / a list by criteria | `loader.FindOne(ctx, criteria.Where(criteria.Eq("Email", v)))` (one or `RecordNotFound`; >1 errors) · `loader.FindAll(ctx, criteria.Where(expr).OrderByDesc("CreatedAt").Limit(50))` (children batched via `fk IN`). Archived scope via `.IncludeArchived()` / `.OnlyArchived()` on the `Query`. See "Entity search engine (`criteria`)" |
+| FindByID with manual scanner (non-trivial queries) | same fluent API + `WithRootScanner(fn)` and/or `WithChildScanner(typeName, fn)`. Coexists with auto per typeName. A manual root scanner used with `FindOne`/`FindAll` must populate the id (scan it + `SetID`). |
 | Load microservice config from YAML | `bootstrap.LoadConfig()` reads `APP_PROFILE` env (required, non-empty; `dev` and `prd` are canonical, extra variants like `prd-pem` accepted) and loads `./microservice.${APP_PROFILE}.yaml` (override via `OMNICORE_CONFIG_PATH`); interpolates `${VAR:default}`; validates required; rejects boot when `auth.mode=disabled` under non-`dev` profile |
 | Manage migrations (auto-run, status, force, down) | `migration.New(pg.Pool(), dir)` in `omnicore/infra/migration`. `bootstrap.Run` calls `Up` automatically when `cfg.Migrations.AutoRun=true`; the default is profile-aware (dev=true, else=false). Strict mode in non-dev profiles aborts boot with a rich diagnostic naming pending versions when drift is detected — `mgr.Pending(ctx)` exposes the same list for tooling |
 | Reconcile a Mongo view shape change (drift detection + rebuild) | `bootstrap.Run` calls `infra.DetectViewDrift` between `ApplyMongoSpecs` and `SyncEngine.Start`; dispatch over the 8-case matrix. `SyncEngine.ExecuteRebuild` runs the rebuild sequence on a pinned `pgxpool.Conn` (advisory lock + status column transitions + aggregation cleanup + compose+upsert + orphan reconciliation + EndRebuild). Knobs in `mongo.rebuild` yaml block: `autoRun: check|true|false`, `orphan: delete|warn`, `allowDowngrade: false`. Default in non-dev: `autoRun=check` — every non-None decision aborts boot with the matching §14 diagnostic naming the manual SQL reconcile. See "Mongo schema evolution" for the full matrix |
