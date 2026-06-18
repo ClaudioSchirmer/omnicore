@@ -1,0 +1,127 @@
+<h2>Old-state snapshot</h2>
+    <p>
+        Domain owns the “what did the entity look like before this write?” snapshot. The framework's
+        <code>Get*</code> functions capture it automatically; <code>BuildRules</code> consumes it via the typed
+        helper <code>domain.Old[T](e) T</code>; the audit builder consumes it to compute <code>changes</code> (kind=delta)
+        or to emit <code>snapshot</code> (kind=snapshot on Delete). Powers both
+        <strong>transition-aware invariants</strong> in the domain and <strong>timeline reconstruction</strong> in audit.
+    </p>
+
+    <h3>Read the old state inside <code>BuildRules</code></h3>
+    <pre><code>func (u *User) BuildRules(actionName string, svc domain.Service, r *domain.Rules) {
+    r.IfUpdate(func() {
+        if old := domain.Old(u); old != nil {
+            if old.Email != u.Email &amp;&amp; u.Activated {
+                r.AddNotification("Email", EmailLockedAfterActivationNotification{})
+            }
+        }
+    })
+}</code></pre>
+    <p>
+        For aggregates, <code>domain.Old(u)</code> also exposes the prior children via the usual helpers
+        (e.g. <code>domain.GetCurrentItemsOf[Address](&amp;domain.Old(u).AggregateRoot)</code>). Use it to express
+        invariants spanning the boundary across the transition.
+    </p>
+
+    <h3>How the snapshot is captured</h3>
+    <ul>
+        <li><strong>Update / Patch (closure form):</strong> <code>domain.GetUpdatable[T](loaded, apply, svc)</code>
+            and <code>domain.GetPartialUpdatable[T](loaded, apply, svc)</code> snapshot the entity <strong>before</strong>
+            running the <code>apply</code> closure. The mutation happens <em>inside</em> the domain function — the
+            caller passes <code>cmd.ApplyTo</code> or <code>cmd.ApplyPartiallyTo</code> directly (signature
+            <code>func(T)</code>). Auto handlers do this automatically; manual handlers follow the same pattern.</li>
+        <li><strong>Delete / Archive / Unarchive:</strong> <code>domain.GetDeletable / GetArchivable / GetUnarchivable</code>
+            snapshot at function entry (no mutation step in these flows). <code>Old()</code> returns the entity
+            in its pre-transition state — used both in BuildRules (e.g.,
+            <code>r.IfDelete</code> rule using the loaded balance) and for audit forensics.</li>
+        <li><strong>Insert:</strong> NO snapshot. A freshly created entity has no prior state by definition. Inside
+            BuildRules, <code>domain.Old(u)</code> returns the typed zero value; defensive code with
+            <code>if old != nil</code> guards Update-only rules.</li>
+    </ul>
+
+    <h3>What the clone looks like</h3>
+    <p>
+        The clone is produced via a JSON round-trip (<code>encoding/json</code>) — only exported fields cross. Private
+        <code>BaseEntity</code>/<code>AggregateRoot</code> state (<code>notifCtx</code>, <code>events</code>,
+        <code>signature</code>) is intentionally NOT cloned, so the clone is a read-only “ghost”: calling
+        mutator domain methods on it is a silent no-op because its <code>notifCtx</code> is nil. The aggregate path
+        also deep-copies the items map so <code>Old()</code> reflects the children as they were before mutation.
+    </p>
+
+    <h3>Audit event shape</h3>
+    <p>
+        The audit pipeline emits flat top-level fields — both as slog attrs on the echo line AND as top-level columns + JSONB payload on the <code>audit_events</code> row — with no nested envelope. The <code>kind</code> field discriminates the
+        body block: <code>snapshot</code> (Insert / Delete), <code>delta</code> (Update / PartialUpdate),
+        <code>transition</code> (Archive / Unarchive). Exactly one body block applies per event.
+    </p>
+    <pre><code>{
+  "msg": "audit",
+  "threadId": "5f25…",
+  "entityType": "User",
+  "entityId": "abc-123",
+  "verb": "update",
+  "actionName": "GetUpdatable",
+  "kind": "delta",
+  "actor": "user-42",
+  "actorIssuer": "https://idp.example",
+  "actorClaims": { "tenant_id": "acme" },
+  "dateTime": "2026-06-09T12:00:00Z",
+  "changes": [
+    { "field": "email", "fieldLabelKey": "UserEmailField", "from": "a@x.com", "to": "b@x.com" }
+  ],
+  "children": {
+    "Address": [
+      { "id": "addr-1", "op": "updated",  "changes": [{ "field": "label", "fieldLabelKey": "AddressLabelField", "from": "home", "to": "home renamed" }] },
+      { "id": "addr-2", "op": "archived", "snapshot": { "label": "work" } },
+      { "id": "",       "op": "inserted", "snapshot": { "label": "vacation" } }
+    ]
+  }
+}</code></pre>
+    <p>
+        PUT and PATCH share <code>verb: "update"</code> — SQL fingerprint is identical
+        (<code>UPDATE col=val, updated_at=NOW()</code>), so the audit verb is identical. The PUT vs PATCH distinction
+        lives in <code>actionName</code> (<code>GetUpdatable</code> vs <code>GetPartialUpdatable</code>) — same way
+        the domain unifies them via <code>IfUpdate</code>. Unchanged columns never appear in <code>changes</code>
+        — no redundancy with the snapshot.
+    </p>
+
+    <h3>Aggregate children block</h3>
+    <p>
+        For aggregate roots (entities implementing <code>AggregateRootProvider</code>), the audit builder expands the
+        event with a nested <code>children</code> map keyed by child typeName. Each entry carries <code>{id, op,
+        snapshot}</code> or <code>{id, op, changes}</code> following the same kind discipline as the root event —
+        enough to reconstruct a per-child timeline in ELK without parsing the outbox payload. Granularity stays B:
+        <strong>one audit event per write</strong>, children nested inside, matching the “aggregate = event
+        unit” semantic of the outbox.
+    </p>
+    <p>
+        Child <code>op</code> is <strong>SQL-grounded</strong> — every value echoes the SQL fingerprint of what
+        the persister emitted on the row. Same vocabulary as the root verb, no exceptions. See the
+        <a href="#lifecycle-map">Canonical write lifecycle</a> section for the full SQL ↔ op mapping; the table below summarizes the child cascade per root verb.
+    </p>
+    <table>
+        <thead><tr><th>Verb</th><th>Children included</th><th>Per-child <code>op</code></th><th>Body block</th></tr></thead>
+        <tbody>
+            <tr><td>insert</td><td>all current items</td><td><code>"inserted"</code></td><td><code>snapshot</code></td></tr>
+            <tr><td>update — StatusAdded</td><td>via <code>AddAggregateChild</code></td><td><code>"inserted"</code></td><td><code>snapshot</code></td></tr>
+            <tr><td>update — StatusChanged</td><td>via <code>ChangeAggregateChild</code></td><td><code>"updated"</code></td><td><code>changes</code> (diff vs pre-mutation child)</td></tr>
+            <tr><td>update — StatusRemoved</td><td>via <code>RemoveAggregateChild</code> / <code>ReplaceAggregateChildrenOf</code></td><td><code>"archived"</code> <span class="muted">(SQL is <code>UPDATE deleted_at=NOW()</code> — row stays in the DB)</span></td><td><code>snapshot</code> (pre-archive state)</td></tr>
+            <tr><td>update — StatusConstructor</td><td colspan="3"><em>untouched — skipped (no SQL)</em></td></tr>
+            <tr><td>archive</td><td>every loaded active child (cascade)</td><td><code>"archived"</code></td><td><code>snapshot</code></td></tr>
+            <tr><td>unarchive</td><td>every loaded child (cascade restore)</td><td><code>"unarchived"</code></td><td><code>snapshot</code></td></tr>
+            <tr><td>delete</td><td>every loaded child (FK <code>ON DELETE CASCADE</code>)</td><td><code>"deleted"</code></td><td><code>snapshot</code></td></tr>
+        </tbody>
+    </table>
+    <p>
+        UPDATED children pair pre/post by <code>GetID()</code> against the deep-copied prior root's aggregates map
+        (the snapshot logic above clones the items map for aggregates). Flat entities (no
+        <code>AggregateRootProvider</code>) do not emit the <code>children</code> block — their audit shape is unchanged.
+    </p>
+
+    <h3>Custom infra escape hatch</h3>
+    <p>
+        Implementations that bypass the framework's <code>Get*</code> path (raw SQL building an
+        <code>Updatable</code> by hand — not exposed by the public API today, but conceptually) will not have
+        <code>Old()</code> populated. On Update the audit builder's <code>changes</code> degrade to every column with
+        <code>from: null</code>; on Delete it falls back to the live source's snapshot. Graceful degrade, not error.
+    </p>

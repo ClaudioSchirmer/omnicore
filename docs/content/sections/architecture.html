@@ -1,0 +1,57 @@
+<h2>Architecture</h2>
+
+    <h3 id="layers">The 4 layers</h3>
+    <div class="layer-diagram"><pre>┌──────────────────────────────────────────────────────────────────┐
+│  web/             HTTP transport, response shape, middleware       │
+│                   semanticToStatus (Semantic → 404/409/403/422/…)  │
+│  application/                                                       │
+│    configuration/  AppContext, Language                             │
+│    translation/    Translator, PT_BR/ENG/ES/FR/DE/IT/NL modules     │
+│    notifications/  ContextDTO/MessageDTO (with NotificationKey)     │
+│    pipeline/       Pipeline, Result[T], Request/Command/Query       │
+│    persistence/    ScopedRepository[T] = Reader[T] + Scope          │
+│                    (binds ctx + WriteOption hooks) → domain.Writer   │
+│                    TxHandle + AfterBegin/BeforeCommit hook types     │
+│    queries/        FindByParamsQuery + FindByIDQuery + ViewReader  │
+│  domain/          Pure business rules (zero IO)                    │
+│                   AggregateChildren, AggregateRootProvider          │
+│  infra/           Postgres, Mongo, Kafka, audit/events/log         │
+│                   aggregate_persister (automatic dispatch)          │
+└──────────────────────────────────────────────────────────────────┘</pre></div>
+
+    <h3 id="dependencies">Dependency rules</h3>
+    <table>
+        <tbody><tr>
+            <th>Layer</th>
+            <th>May import</th>
+            <th>NEVER imports</th>
+        </tr>
+        <tr>
+            <td><code>domain</code></td>
+            <td>stdlib + <code>google/uuid</code> only</td>
+            <td>everything else</td>
+        </tr>
+        <tr>
+            <td><code>application/*</code></td>
+            <td><code>domain</code>, other <code>application/*</code></td>
+            <td><code>infra</code>, <code>web</code></td>
+        </tr>
+        <tr>
+            <td><code>infra</code></td>
+            <td><code>domain</code> (the persistence layer implements the <code>Repository</code> port; audit emission is owned by infra itself)</td>
+            <td><code>web</code></td>
+        </tr>
+        <tr>
+            <td><code>web</code></td>
+            <td><code>domain</code>, <code>application/*</code></td>
+            <td><code>infra</code> directly</td>
+        </tr>
+    </tbody></table>
+    <div class="box">
+        <strong>How errors traverse layers without cross-imports:</strong>
+        the <code>domain.NotificationCarrier</code> interface (<code>error</code> +
+        <code>NotificationContexts() []*NotificationContext</code>) is implemented
+        by <code>DomainError</code>, <code>ApplicationError</code>, and
+        <code>InfrastructureError</code>. The Pipeline uses <code>errors.As(err, &amp;carrier)</code>
+        and handles any of them uniformly — without needing to import specific packages.
+    </div>

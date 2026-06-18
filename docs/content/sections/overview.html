@@ -1,0 +1,25 @@
+<div class="hero">
+  <div class="hero-kicker">Framework Documentation</div>
+  <h1 class="hero-title">OmniCore</h1>
+  <p class="hero-tag">A Go framework for DDD + CQRS microservices</p>
+  <div class="hero-badges">
+    <span class="badge">github.com/ClaudioSchirmer/omnicore</span>
+    <span class="badge">Go ≥ 1.21</span>
+    <span class="badge">Fiber v3 · pgx v5 · mongo-driver v2 · kafka-go</span>
+  </div>
+</div>
+    <h2>Overview</h2>
+    <p>
+        OmniCore is a Go library that provides all the technical and architectural infrastructure
+        for building microservices with <strong>Domain-Driven Design</strong> and
+        <strong>CQRS</strong> following the idiomatic Go pattern. Services import the module
+        and automatically gain: typed validation, atomic persistence with outbox,
+        guaranteed auditing, multi-language, structured logging, CQRS pipeline, and a
+        standardized HTTP layer via Fiber.
+    </p>
+    <div class="box">
+        <strong>Philosophy:</strong> the framework <em>orchestrates</em> the critical flows
+        (validation, transaction, outbox, audit, translation, HTTP response) and lets the
+        developer focus exclusively on the <em>business rules</em>.
+        Essential functionality cannot be forgotten — the framework guarantees it.
+    </div>

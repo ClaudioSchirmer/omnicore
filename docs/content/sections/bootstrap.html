@@ -1,0 +1,425 @@
+<h2>Bootstrap — main.go in 10 lines</h2>
+    <p>The <code>omnicore/bootstrap</code> package orchestrates the whole service boot from the <a href="#microservice-yaml"><code>microservice.&lt;profile&gt;.yaml</code></a> + a <code>Wire</code> callback returning <code>Wiring</code>.</p>
+
+    <h3 id="env-vars">Environment variables</h3>
+    <p>The framework reads <strong>exactly four</strong> process environment variables at boot. Every other env var that may appear inside a YAML value via the <code>${VAR:default}</code> interpolation pattern (e.g. <code>DATABASE_URL</code>, <code>MONGO_URI</code>, <code>KC_URL</code>) is <em>consumer-defined</em> — see the <a href="#microservice-yaml">YAML subsection below</a> for the interpolation syntax. The four framework-reserved vars are:</p>
+
+    <table>
+        <tbody><tr>
+            <th>Variable</th>
+            <th>Required</th>
+            <th>Default</th>
+            <th>What it controls</th>
+            <th>Read by</th>
+        </tr>
+        <tr>
+            <td><code>APP_PROFILE</code></td>
+            <td>yes</td>
+            <td>— (boot aborts if empty)</td>
+            <td>Selects the YAML config: <code>./microservice.${APP_PROFILE}.yaml</code>. <code>dev</code> and <code>prd</code> are the canonical pair; any other non-empty string (<code>prd-pem</code>, <code>prd-external</code>, <code>qa-canary</code>, …) is also accepted so QA suites and ops setups can swap whole configurations without competing with the canonical pair. <code>dev</code> is the only profile under which <code>auth.mode=disabled</code> is allowed; every other profile rejects boot on that combination.</td>
+            <td><code>bootstrap.LoadConfig</code></td>
+        </tr>
+        <tr>
+            <td><code>OMNICORE_CONFIG_PATH</code></td>
+            <td>no</td>
+            <td><code>./microservice.${APP_PROFILE}.yaml</code></td>
+            <td>Overrides the YAML path. Useful for tests, sidecar layouts, custom directories where the file does not live next to the binary's CWD. Still requires <code>APP_PROFILE</code> set, because profile-aware guards (e.g. <code>auth.mode=disabled</code>) consult it independently.</td>
+            <td><code>bootstrap.LoadConfig</code></td>
+        </tr>
+        <tr>
+            <td><code>OMNICORE_MONGO_FORCE_REBUILD</code></td>
+            <td>no</td>
+            <td>unset (= strict)</td>
+            <td>When the literal value is <code>"true"</code>, <code>fwinfra.ApplyMongoSpecs</code> drops divergent indexes and recreates them from the declared spec. Operator escape for index conflicts surfacing at boot. Scope is intentionally narrow: <strong>does NOT authorize dropping collections</strong> (collection-level divergence on collation / capped / time-series is always strict — operator owns the migration) and <strong>does NOT trigger the document rebuild path</strong> (that is controlled by <code>mongo.rebuild.autoRun</code>). Comparison is exact: <code>"True"</code>, <code>"1"</code>, <code>"yes"</code> all leave the strict default in place — eliminates the "I thought I had turned it on" failure mode.</td>
+            <td><code>fwinfra.ApplyMongoSpecs</code> (called by <code>bootstrap.Run</code> after <code>collectViews</code>)</td>
+        </tr>
+        <tr>
+            <td><code>OMNICORE_CODE_VERSION</code></td>
+            <td>no</td>
+            <td>unset (= empty)</td>
+            <td>Optional build-time identifier (typically a git SHA injected at compile) stamped on the <code>code_version</code> column of <code>omnicore_mongo_views</code> when the registry row is written (init / artifact-only refresh / rebuild end). Useful for "which deploy ran this?" forensics. Empty when unset; never a boot blocker.</td>
+            <td><code>infra.InitViewRegistry</code> / <code>infra.EndRebuild</code> (called by <code>SyncEngine.InitRegistryOnly</code> / <code>RefreshRegistryArtifactOnly</code> / <code>ExecuteRebuild</code>)</td>
+        </tr>
+    </tbody></table>
+
+    <p><strong>Why these are env vars and not YAML fields.</strong> The YAML is checked into git → carrying a one-shot override like <code>forceRebuild: true</code> there would deploy the override into the next release by accident. Env vars are scoped to the process lifetime; a reboot without them returns to the canonical posture. The same posture explains the <code>auth.mode=disabled</code> guard: a loose-auth knob exists in the YAML schema, but the loader rejects boot on any non-<code>dev</code> profile — destructive / loose decisions stay out of versioned artifacts. <code>OMNICORE_CONFIG_PATH</code> is env-only for a different reason: it tells the loader where the YAML lives, so it logically cannot itself live in the YAML.</p>
+
+    <p><strong>How operators set them.</strong> Three canonical patterns, picked by deployment shape:</p>
+
+<pre><code># Local shell — one run:
+APP_PROFILE=dev go run ./bootstrap
+OMNICORE_MONGO_FORCE_REBUILD=true APP_PROFILE=prd ./bootstrap
+
+# docker-compose.yml — service environment block:
+services:
+  api:
+    image: my-service:1.4.0
+    environment:
+      - APP_PROFILE=prd
+      - OMNICORE_MONGO_FORCE_REBUILD=true
+
+# Kubernetes Deployment — spec.template.spec.containers[].env:
+env:
+  - name: APP_PROFILE
+    value: prd
+  - name: OMNICORE_MONGO_FORCE_REBUILD
+    value: "true"
+</code></pre>
+
+    <h3 id="microservice-yaml">microservice.&lt;profile&gt;.yaml</h3>
+    <p>Each service declares infra config in a profile-specific YAML file at the root. <code>bootstrap.LoadConfig</code> reads the <code>APP_PROFILE</code> environment variable (required, non-empty) and loads <code>./microservice.${APP_PROFILE}.yaml</code> — override the path via <code>OMNICORE_CONFIG_PATH</code> when needed (tests, custom layouts). <code>dev</code> and <code>prd</code> are the canonical pair; any other non-empty string (<code>prd-pem</code>, <code>prd-external</code>, <code>qa-canary</code>, ...) is also accepted so QA suites and ops setups can swap whole configurations via extra files without competing with the canonical pair. See <a href="#env-vars">Environment variables</a> for the complete list of framework-reserved env vars.</p>
+
+    <p>Separate files per profile is intentional: the artifact deployed to prd does not carry dev configuration at all, so a service cannot accidentally ship with a dev knob enabled. The profile is also <strong>not</strong> a YAML field — its source of truth is the environment, and the loader rejects boot with <code>auth.mode=disabled</code> under any profile other than <code>dev</code> (canonical-prd and every QA variant are treated identically by this guard — only <code>dev</code> unlocks the disabled-auth shortcut).</p>
+
+<pre><code># microservice.prd.yaml
+service: my-service
+http:
+  addr: ":8080"
+postgres:
+  dsn: "${DATABASE_URL:postgres://localhost:5432/mydb}"
+mongo:
+  uri: "${MONGO_URI:mongodb://localhost:27017}"
+  database: "${MONGO_DB:my_views}"
+  rebuild:                               # see "Mongo schema evolution"
+    autoRun: check                       # check | true | false — profile-aware default: dev=true / else=check
+    orphan: delete                       # delete | warn — default delete (reconcile orphan Mongo docs)
+    allowDowngrade: false                # default; opt-in for canary / blue-green rollback
+kafka:
+  brokers: ["${KAFKA_BROKERS:localhost:9092}"]
+  syncGroupId: "${SYNC_GROUP_ID:my-service-sync}"
+  syncWorkers: 4       # optional; default runtime.NumCPU(); 1 = serial
+migrations:
+  dir: ./migrations
+  autoRun: true
+openapi:                                 # only honored when Wiring.OpenAPI != nil; see "OpenAPI / Swagger UI"
+  uiPath: /docs                          # default; route where Swagger UI is served
+  rootRedirect: false                    # default; when true, GET / → 302 uiPath
+auth:
+  mode: jwt            # jwt | disabled (disabled rejected unless APP_PROFILE=dev)
+  jwt:
+    algorithms: [RS256, ES256, EdDSA]   # optional; default = all three asymmetric algos
+    issuer: https://idp.example.com
+    audience: my-service
+    leewaySeconds: 30  # optional; clock skew tolerance for exp/nbf
+    jwksUrl: https://idp.example.com/.well-known/jwks.json
+    # OR (mutually exclusive with jwksUrl):
+    # publicKeyPem: |
+    #   -----BEGIN PUBLIC KEY-----
+    #   ...
+  externalValidator:                     # optional revocation check against the IdP
+    method: POST
+    url: https://idp.example.com/realms/x/protocol/openid-connect/token/introspect
+    tokenPlacement: form_field           # bearer_header | form_field | json_body | query_param
+    tokenField: token                    # required unless tokenPlacement=bearer_header
+    extraHeaders:
+      Authorization: "Basic ${IDP_CLIENT_CREDS}"
+    success:
+      jsonPath: $.active                 # JSONPath in the IdP response
+      expectedValue: true                # value the field must equal
+    timeoutMs: 2000                      # optional; default 2000
+    failMode: closed                     # closed | open; default closed (reject on validator error)
+    cacheTtlSeconds: 0                   # 0 (default) disables; &gt; 0 caches positive answers for N seconds (revocation window of up to TTL)
+  publicRoutes:                          # routes that bypass the auth middleware
+    - GET /health
+    - GET /ready
+  auditClaims:                           # JWT claims surfaced on the AuditEvent's actorClaims block (forensics)
+    - tenant_id
+    - roles
+audit:                                   # optional; omitted block = framework default = both destinations active
+  destinations:
+    - slog                               # post-commit echo (observability via ELK / Loki / stdout collector)
+    - database                           # in-TX row in audit_events (atomic with the write — source of truth)
+  # destinations: []                     # explicit empty list disables audit entirely</code></pre>
+
+    <h3>Audit routing — <code>audit.destinations</code></h3>
+    <p>
+        Every successful write produces one <code>AuditEvent</code> (granularity B: the aggregate is the event unit,
+        identical to the outbox row). <code>audit.destinations</code> controls where it lands:
+    </p>
+    <ul>
+        <li>
+            <strong><code>database</code></strong> → <code>audit.InsertAuditEvent</code> writes a row to the
+            <code>audit_events</code> table <strong>inside the same <code>pgx.Tx</code></strong> as the data row + outbox row.
+            The row IS the audit — atomic with the write by construction. Source of truth for compliance and forensics:
+            if COMMIT succeeded, the audit exists in PG.
+        </li>
+        <li>
+            <strong><code>slog</code></strong> → <code>audit.EchoSlog</code> emits a flat top-level slog line after COMMIT.
+            Read-side echo for observability; lossy if the shipper drops events, but the PG row remains the authority.
+            Format is unchanged from the previous best-effort posture — ELK pipelines and dashboards continue working
+            without changes.
+        </li>
+    </ul>
+    <table>
+        <thead>
+            <tr><th>YAML</th><th>Effect</th></tr>
+        </thead>
+        <tbody>
+            <tr>
+                <td><code>destinations: [slog, database]</code> (default; block absent)</td>
+                <td>Both active — recommended posture. Atomic durability + cross-service ELK consolidation.</td>
+            </tr>
+            <tr><td><code>destinations: [database]</code></td><td>Only the PG row. Lowest log volume; pair with SQL dashboards.</td></tr>
+            <tr><td><code>destinations: [slog]</code></td><td>Only the slog line. Matches the framework's pre-redesign best-effort posture.</td></tr>
+            <tr><td><code>destinations: []</code></td><td>Explicitly disables audit. Table stays provisioned by migration 0001 but no row is written; no slog line is emitted.</td></tr>
+        </tbody>
+    </table>
+    <p>
+        Unknown destination tokens (<code>destinations: [kafka]</code>) and duplicates (<code>destinations: [slog, slog]</code>)
+        abort the boot with a diagnostic naming the offender — operator typos surface at startup, not as silent runtime drift.
+        <code>audit.destinations</code> is the only audit knob; the <code>auth.auditClaims</code> allowlist controls which JWT
+        claims appear inside the <code>AuditEvent</code>'s payload and stays under <code>auth:</code> because it is a security
+        concern (whitelist what leaves the JWT envelope), not a routing concern.
+    </p>
+
+    <p>Interpolation supports three forms inside <code>${...}</code>:</p>
+    <ul>
+        <li><code>${VAR}</code> / <code>${VAR:default}</code> — environment variable (Spring Boot style). Env value wins when set and non-empty; otherwise the default after <code>:</code> is used. Default may contain <code>:</code> freely (regex <code>[^}]*</code>). No <code>:default</code> and env unset → empty string. Env misses are silent — they support dev defaults.</li>
+        <li><code>${file:/abs/path}</code> — file contents read once at boot. A trailing <code>\n</code> or <code>\r\n</code> is trimmed; everything else is preserved verbatim, so PEM blocks and similar multi-line payloads round-trip. Missing file or any I/O failure aborts the boot with the path in the error.</li>
+        <li><code>${vault:store/path#field}</code> — delegated to the registered <code>bootstrap.SecretResolver</code>. Without a registered resolver the default returns <code>ErrUnsupportedResolver</code> and the boot aborts. Plug a real implementation (HashiCorp Vault, AWS Secrets Manager, …) via <code>bootstrap.RegisterSecretResolver(impl)</code> at process init.</li>
+    </ul>
+    <p>The reserved names <code>file</code> and <code>vault</code> shadow same-named env vars inside <code>${...}</code> — env-var conventions are uppercase, so the collision is theoretical. <code>file:</code> and <code>vault:</code> failures are strict (boot aborts) on purpose: a missing file or unresolved secret in production is an operational bug, not a silent empty-string default.</p>
+
+    <p>Mandatory fields: <code>service</code>, <code>postgres.dsn</code>, <code>mongo.uri</code>, <code>mongo.database</code>, <code>kafka.brokers</code>, <code>kafka.syncGroupId</code>. <code>bootstrap.LoadConfig</code> fails with an error listing missing ones.</p>
+
+    <p>The <code>auth:</code> block is optional and defaults to <code>{mode: disabled}</code> when absent — convenient for local development under <code>APP_PROFILE=dev</code>, but rejected at boot under any other profile so prd cannot ship without authentication wired. When <code>mode: jwt</code>, the schema requires <code>issuer</code> + <code>audience</code> + exactly one of <code>jwksUrl</code> / <code>publicKeyPem</code>; the <code>externalValidator</code> sub-block is optional. The external-validator cache is opt-in via <code>cacheTtlSeconds</code> and default off — see the Authentication section for the revocation-vs-throughput trade-off.</p>
+
+    <p class="note"><strong>Limitations:</strong> no recursion (<code>${A:${B:c}}</code> doesn't work — 1 pass); default cannot contain literal <code>}</code>; when the value can be ambiguous with bool/null in YAML, use double quotes.</p>
+
+    <p>Programmatic load (rarely needed — <code>bootstrap.Run</code> does it under the hood):</p>
+<pre><code>cfg, err := bootstrap.LoadConfig()         // reads APP_PROFILE, selects microservice.&lt;profile&gt;.yaml
+cfg, err := bootstrap.LoadConfigFrom(path) // explicit path; no profile guard</code></pre>
+
+    <h3>API</h3>
+    <ul>
+        <li><code>bootstrap.Run(wire func(Deps) Wiring) error</code> — default path. Loads yaml, builds singletons, calls wire, registers default middlewares, brings up HTTP, runs until SIGINT/SIGTERM.</li>
+        <li><code>bootstrap.Build() (Deps, *Config, error)</code> — only builds deps, without serving. Useful for tests or custom lifecycle.</li>
+        <li><code>bootstrap.Serve(ctx context.Context, deps Deps, wiring Wiring) error</code> — uses pre-built deps. <strong>Does not</strong> import translations nor start the SyncEngine — those using manual Build/Serve handle that.</li>
+    </ul>
+
+    <h3>Types</h3>
+    <p><code>bootstrap.Deps</code> — built singletons: <code>Config</code>, <code>Logger</code>, <code>Postgres</code> (already configured with audit destinations + claims via <code>WithAudit</code>), <code>Mongo</code>, <code>Translator</code>, <code>Pipeline</code>, <code>ViewReader</code> (<code>queries.ViewReader</code>), <code>HttpClient</code> (<code>*httpclient.HttpClient</code>; <code>nil</code> when <code>microservice.&lt;profile&gt;.yaml</code> carries no <code>httpClient:</code> block), <code>OpenAPIRegistry</code> (<code>*openapi.Registry</code>; <code>nil</code> when <code>Wiring.OpenAPI</code> is unset — <code>openapi.Mount</code> / <code>openapi.MountRaw</code> treat a nil registry as a Fiber-only passthrough). Audit is not an explicit dependency — every <code>Postgres.Insert/Update/Archive/Unarchive/Delete</code> emits the configured destinations automatically (in-TX <code>audit_events</code> row for <code>database</code>, post-commit slog line for <code>slog</code>).</p>
+
+    <p><code>bootstrap.Wiring</code> — service declarations: <code>Translations []translation.Module</code>, <code>Features []bootstrap.Feature</code>, <code>BeforeServe func(*fiber.App, Deps) error</code> (optional), <code>OnShutdown func(context.Context) error</code> (optional), <code>OpenAPI *openapi.Config</code> (optional — opt-in to <code>/openapi.json</code> + Swagger UI; see "OpenAPI / Swagger UI").</p>
+
+    <p><code>bootstrap.Feature</code> — interface every service capability implements: <code>Mount(app *fiber.App, deps Deps)</code>. Each feature knows how to register its own routes.</p>
+
+    <p><code>bootstrap.ReadableFeature</code> — opt-in for the read side: <code>Feature + Views() []*infra.ViewDefinition</code>. Bootstrap automatically collects the views from every <code>ReadableFeature</code> declared in <code>Wiring.Features</code> and passes them to the SyncEngine. A slice (not a single view) covers the case where a feature exposes multiple projections (e.g.: <code>users</code> + <code>users_summary</code>).</p>
+
+    <h3>Canonical main.go</h3>
+<pre><code>// service main — any package main, in any directory
+func main() {
+    if err := bootstrap.Run(Wire); err != nil {
+        log.Fatal(err)
+    }
+}
+
+// Wire — function (Deps) Wiring, in any package
+func Wire(d bootstrap.Deps) bootstrap.Wiring {
+    return bootstrap.Wiring{
+        Translations: []translation.Module{apptrans.PTBR(), apptrans.ENG(), apptrans.ESP(), apptrans.FRA(), apptrans.DEU(), apptrans.ITA(), apptrans.NLD()},
+        Features: []bootstrap.Feature{
+            NewUsersFeature(d),
+        },
+    }
+}
+
+// Feature struct per aggregate — implements bootstrap.ReadableFeature
+type UsersFeature struct {
+    repo *appinfra.UserRepository
+    view *fwinfra.ViewDefinition
+}
+
+func NewUsersFeature(d bootstrap.Deps) *UsersFeature {
+    return &amp;UsersFeature{
+        repo: appinfra.NewUserRepository(d.Postgres),
+        view: appinfra.UserView(), // called ONCE
+    }
+}
+
+// Views satisfies bootstrap.ReadableFeature (opt-in read side).
+func (f *UsersFeature) Views() []*fwinfra.ViewDefinition {
+    return []*fwinfra.ViewDefinition{f.view}
+}
+
+// Mount satisfies bootstrap.Feature — delegates HTTP registration to the web/ package.
+func (f *UsersFeature) Mount(app *fiber.App, d bootstrap.Deps) {
+    appweb.MountUsers(app, f.repo, f.view, d)
+}</code></pre>
+
+    <p class="note">The <strong>composition layer</strong> (Feature struct + Wire + <code>main</code>) is separated from the DDD layers: <code>domain/</code> (pure rules), <code>application/</code> (commands/handlers), <code>infra/</code> (domain ports implementation), <code>web/</code> (owner of the routes). The feature's <code>Mount</code> <strong>delegates</strong> to <code>web.MountXxx</code> instead of registering routes directly — preserves the DDD ruler "web owns the routes". Where the composition layer lives in the filesystem is the service's decision — the framework only wires up via <code>bootstrap.Run(wireFn)</code>.</p>
+
+    <p class="note"><strong>Common layouts</strong> (all supported, none required):</p>
+    <ul>
+        <li><strong>Consolidated:</strong> <code>bootstrap/</code> (<code>package main</code>) with <code>main.go</code> + <code>wire.go</code> + <code>&lt;aggregate&gt;_feature.go</code> side by side. Run: <code>go run ./bootstrap</code>. It's the layout used by <code>omnicore-example-users</code> (canonical reference)</li>
+        <li><strong>Go <code>cmd/</code> convention:</strong> <code>cmd/&lt;binary&gt;/main.go</code> + separate package (<code>app/</code>, <code>boot/</code>, etc.) for Wire and Features. Useful for services with multiple binaries</li>
+        <li><strong>Flat:</strong> <code>main.go</code> at the root + Wire/Features in a sibling package. Useful for small services</li>
+    </ul>
+
+    <p class="note">Migrations and CDC artifacts (Debezium connector JSONs, registration scripts) may live at the root (<code>migrations/</code>, <code>debezium/</code>) or co-located with the owning layer (<code>infra/migrations/</code>, <code>infra/debezium/</code>). The example uses the co-located form — semantically they are infra concerns (Postgres schema, CDC config); Go ignores non-<code>.go</code> files in package directories. Override the path via <code>migrations.dir</code> in <code>microservice.&lt;profile&gt;.yaml</code>.</p>
+
+    <h3>What the framework does behind the scenes</h3>
+    <ol>
+        <li>Reads <code>APP_PROFILE</code> from the environment and loads <code>./microservice.${APP_PROFILE}.yaml</code> (or <code>$OMNICORE_CONFIG_PATH</code> override); rejects boot if <code>auth.mode=disabled</code> under any profile other than <code>dev</code></li>
+        <li><code>signal.NotifyContext(SIGINT, SIGTERM)</code></li>
+        <li><code>infra.NewPostgres</code> + <code>infra.NewMongoDB</code> (defer Close in reverse order)</li>
+        <li><code>translation.Default()</code>, <code>pipeline.New(tr).WithLogger(logger)</code>, <code>infra.NewMongoViewReader</code>; configures audit on the Postgres adapter via <code>pg.WithAudit(&amp;cfg.Audit, logger, cfg.Auth.AuditClaims)</code></li>
+        <li><code>wire(deps)</code> returns the service's <code>Wiring</code></li>
+        <li><code>validateWiring</code> — rejects boot if <code>Features == nil &amp;&amp; BeforeServe == nil</code> (nothing to serve)</li>
+        <li><code>Translator.Import</code> of modules in <code>Wiring.Translations</code></li>
+        <li>Migrations (<code>ValidateDownExists</code> + <code>Up</code>) if <code>cfg.Migrations.AutoRun=true</code></li>
+        <li><code>collectViews(wiring.Features)</code> — aggregates Views from <code>ReadableFeature</code>s; rejects boot if 2 features declare the same view name (captures Mongo collection collision)</li>
+        <li>Log <code>"feature registered"</code> per feature with flag <code>readable: true|false</code></li>
+        <li><code>SyncEngine.Start</code> only if there are collected views (services without CDC don't connect Kafka)</li>
+        <li>Fiber app + default middlewares <code>fwweb.Recover()</code>, <code>logger.New()</code> (Fiber's request logger), <code>fwweb.AppContextMiddleware()</code>, and <code>fwweb.AuthMiddleware</code> when <code>auth.mode: jwt</code></li>
+        <li><strong><code>GET /health</code> registered automatically</strong> (response <code>{"status":"ok"}</code>) — k8s/docker liveness probe without the service programming anything</li>
+        <li><code>f.Mount(app, deps)</code> for each feature in declaration order</li>
+        <li><code>Wiring.BeforeServe(app, deps)</code> if set (escape hatch for routes/middlewares outside the Feature model)</li>
+        <li><code>app.Listen(cfg.HTTP.Addr)</code> in a goroutine; awaits <code>ctx.Done()</code></li>
+        <li>HTTP drain in 10s (<code>app.ShutdownWithContext</code>); then <code>Wiring.OnShutdown</code> if set</li>
+    </ol>
+
+    <p class="note">Custom health (DB ping, external dependencies) must be exposed on another route (<code>/healthz</code>, <code>/ready</code>) via feature or <code>BeforeServe</code> — the framework's <code>/health</code> is pure liveness.</p>
+
+    <p class="note">JSON logger on <code>stdout</code> at <code>Info</code> level is the only default. Anyone needing a custom logger (file, datadog) uses <code>Build()</code> + <code>Serve()</code> with their own <code>slog.Logger</code> in <code>Deps</code>, or registers in <code>BeforeServe</code>.</p>
+
+    <h3>Service-specific translations</h3>
+<pre><code>// application/translations/customer_eng.go
+type customerENG struct{}
+
+func (customerENG) Language() configuration.Language { return configuration.LangENG }
+func (customerENG) Translations() map[string]string {
+    return map[string]string{
+        "EmailAlreadyExistsNotification": "Email already registered.",
+        "InvalidEmailFormatNotification": "Invalid email format.",
+    }
+}
+
+// In the wire callback:
+return bootstrap.Wiring{
+    Translations: []translation.Module{customerPTBR{}, customerENG{}},
+    // ...
+}</code></pre>
+
+    <h3>Manual lookup</h3>
+    <p>Most translation in OmniCore is <em>automatic</em> — the Pipeline runs <code>Translator.GetOr</code> on every <code>NotificationKey</code> of the response envelope using <code>AppContext.Language()</code>, and the consumer writes zero lookup code. The escape hatch — for strings that flow <strong>outside</strong> the Notification path (email subjects, audit lines, human-readable messages on a custom Response, fallback copy for a missing UI string, etc.) — is to call the <code>Translator</code> directly.</p>
+
+    <h4>The Translator is a process-wide singleton</h4>
+    <p><code>translation.Default()</code> returns a singleton guarded by <code>sync.Once</code>. On the first call it builds an empty <code>*Translator</code> and imports the seven built-in <code>Core*</code> Modules (<code>CorePTBR</code>, <code>CoreENG</code>, <code>CoreES</code>, <code>CoreFR</code>, <code>CoreDE</code>, <code>CoreIT</code>, <code>CoreNL</code>) — at that point it only knows framework Notification keys.</p>
+    <p><code>bootstrap.Run</code> calls <code>translation.Default()</code> once and then imports every <code>translation.Module</code> declared in <code>Wiring.Translations</code> into the same instance. After boot the singleton carries <strong>framework + service</strong> catalogs in a single map; any code path that needs to translate fetches it without going through dependency injection:</p>
+<pre><code>import fwtranslation "github.com/ClaudioSchirmer/omnicore/application/translation"
+
+// In any place that has *AppContext on hand:
+subject := fwtranslation.Default().GetOr(ctx.Language(), "WelcomeEmailSubject", "Welcome")</code></pre>
+    <p>The <code>fwtranslation</code> alias follows the workspace's <code>fw&lt;segment&gt;</code> convention (<code>fwinfra</code>, <code>fwweb</code>, <code>fwqueries</code>, <code>fwresults</code>, <code>fwresponses</code>) — used whenever the framework's short package name could collide with a consumer package of the same name. The reference example uses the plural <code>translations</code> package and therefore needs no alias in its existing files; doc examples here adopt <code>fwtranslation</code> for unambiguity.</p>
+
+    <h4>The three lookup methods</h4>
+    <table>
+        <thead><tr><th>Method</th><th>Signature</th><th>When to use</th></tr></thead>
+        <tbody>
+            <tr><td><code>GetOr</code></td><td><code>(lang, key, fallback string) string</code></td><td>Default. Missing key → returns the fallback silently. Most handlers want this.</td></tr>
+            <tr><td><code>Get</code></td><td><code>(lang, key string) (string, error)</code></td><td>You want to <em>know</em> a key is missing — for alerting on incomplete catalogs, or when the fallback is expensive to build. Error is always <code>*NotFoundError</code> (carries <code>Language</code> + <code>Key</code>).</td></tr>
+            <tr><td><code>Has</code></td><td><code>(lang, key string) bool</code></td><td>You're branching code based on existence (e.g. "if there is a rich HTML version, send rich; otherwise plain text").</td></tr>
+        </tbody>
+    </table>
+<pre><code>// GetOr — common case
+subject := fwtranslation.Default().GetOr(ctx.Language(), "WelcomeEmailSubject", "Welcome")
+
+// Get — alert on missing key, build fallback dynamically
+subject, err := fwtranslation.Default().Get(ctx.Language(), "WelcomeEmailSubject")
+if err != nil {
+    var nf *fwtranslation.NotFoundError
+    if errors.As(err, &amp;nf) {
+        slog.Warn("missing translation", "key", nf.Key, "lang", nf.Language)
+    }
+    subject = buildFallbackSubject(user)
+}
+
+// Has — branch on existence
+if fwtranslation.Default().Has(ctx.Language(), "WelcomeEmailBodyHTML") {
+    body = renderHTML(fwtranslation.Default().GetOr(ctx.Language(), "WelcomeEmailBodyHTML", ""))
+} else {
+    body = renderPlain(fwtranslation.Default().GetOr(ctx.Language(), "WelcomeEmailBody", "Welcome."))
+}</code></pre>
+
+    <h4>Where to call from</h4>
+    <ul>
+        <li><strong>Manual handler</strong> — directly inside <code>Handle(ctx, cmd)</code>. <code>ctx.Language()</code> is the request's language; the handler does not need to receive the <code>Translator</code> via DI.</li>
+        <li><strong>Auto Command Handler</strong> — the canonical hook is the Command at both boundaries: <code>Cmd.ToEntity(ctx)</code> / <code>ApplyTo(ctx, t)</code> / <code>ApplyPartiallyTo(ctx, t)</code> on the input side, and <code>Cmd.FromEntity(ctx, t) TResult</code> on the output side. All four receive <code>*AppContext</code> and live in the application layer (Cmd is the only layer allowed to translate ctx-derived data into business fields). The handler exposes no projection field — the projection method lives on the Cmd alongside its input mapping.</li>
+        <li><strong>Background job / outbox consumer</strong> — no <code>*AppContext</code>. Pass the language explicitly: <code>fwtranslation.Default().GetOr(configuration.LangPTBR, key, fb)</code>. The recipient's preferred language usually comes from the entity (e.g. <code>user.PreferredLanguage</code>), not from a request header.</li>
+        <li><strong>Domain <code>BuildRules</code></strong> — <strong>do not</strong>. The domain layer cannot import <code>application/translation</code>; emit a typed <code>Notification</code> and let the Pipeline translate it via the same singleton on the way out. This keeps <code>domain/</code> pure (zero IO, zero application imports).</li>
+    </ul>
+
+    <h4>Keys live where the Notifications do</h4>
+    <p>The singleton has no separate "manual keys" bucket — adding one is a single line in any <code>translation.Module</code> the service already registers. The same <code>customerENG.Translations()</code> map that carries <code>"EmailAlreadyExistsNotification"</code> for the Notification path also carries <code>"WelcomeEmailSubject"</code> for the manual path:</p>
+<pre><code>func (customerENG) Translations() map[string]string {
+    return map[string]string{
+        // Notification key — consumed automatically by the Pipeline
+        "EmailAlreadyExistsNotification": "Email already registered.",
+
+        // Manual key — consumed by Translator.GetOr / Get / Has
+        "WelcomeEmailSubject":            "Welcome to our service",
+    }
+}</code></pre>
+    <p>Keys are arbitrary strings — the framework only imposes a convention for Notifications (struct name via reflection). Manual keys can follow any naming scheme; a common pattern is a domain-style prefix (<code>EmailSubject.Welcome</code>, <code>Audit.UserRestored</code>) to keep them visibly distinct from Notification keys in the catalog. To add a key to N languages, add the same key with translated values to each language's <code>Module</code> — boot importing all of them populates the singleton with one combined map.</p>
+
+    <p class="note">No DI, no extra fields on the handler struct, no extra parameter on <code>Mount</code>. <code>Default()</code> after boot is the canonical access point — there is one Translator per process and it already knows everything <code>Wiring.Translations</code> declared.</p>
+
+    <h3>Parameterized notifications</h3>
+    <p>Notifications carry <strong>runtime-driven variables</strong> into their translated messages without exploding the catalog into one entry per value. Canonical use case: a length / count / amount that varies per tenant or per request configuration, surfaced verbatim inside the user-facing message ("excede o tamanho máximo de <strong>100</strong> caracteres", where 100 comes from per-tenant config).</p>
+
+    <h4>Declaration — <code>tvar</code> struct tag</h4>
+    <p>The framework reflects over the notification's exported fields tagged <code>tvar:"&lt;name&gt;"</code> and exposes them as the variables <code>{&lt;name&gt;}</code> substitutes against in the catalog string. The struct field name is irrelevant; only the tag value matters.</p>
+<pre><code>type NameMaxLengthExceededNotification struct {
+    domain.DomainNotificationBase
+    MaxLength int `tvar:"maxLength"`
+}</code></pre>
+<pre><code>// ENG catalog
+"NameMaxLengthExceededNotification": "Name exceeds the maximum allowed length of {maxLength} characters.",
+// PTBR catalog
+"NameMaxLengthExceededNotification": "O nome excede o tamanho máximo permitido de {maxLength} caracteres.",</code></pre>
+    <p>Multiple fields produce multiple placeholders. Pointer fields are dereferenced (nil renders as empty string). Unexported fields are skipped — the framework can only walk the exported surface. The reflection plan is cached per <code>reflect.Type</code> in a module-level <code>sync.Map</code>, so repeated emissions of the same notification type pay one type lookup + field reads.</p>
+
+    <h4>Escape hatch — <code>TranslationVars()</code> method</h4>
+    <p>When the variables cannot be expressed as <code>tvar</code> tags (unexported state, computed values, ctx-aware shaping), declare an optional method:</p>
+<pre><code>type SensitiveLimitNotification struct {
+    domain.DomainNotificationBase
+    threshold int  // unexported — invisible to tag reflection
+}
+func (n SensitiveLimitNotification) TranslationVars() map[string]string {
+    return map[string]string{"threshold": strconv.Itoa(n.threshold)}
+}</code></pre>
+    <p>The method <strong>replaces</strong> (does not merge with) the tag-based extraction. Detected via type assertion (<code>domain.TranslationVarsProvider</code>), so notifications without it pay nothing.</p>
+
+    <h4>Per-emit override — <code>Vars</code> on <code>NotificationMessage</code></h4>
+    <p>When the same notification type ships with default vars from its tags but a specific call site needs to inject additional or overriding values, pass them via the per-emit <code>Vars</code> map. The Rules DSL exposes the helper:</p>
+<pre><code>r.AddNotificationWithVars(
+    "Name",
+    NameMaxLengthExceededNotification{MaxLength: u.NameMaxLength},
+    map[string]string{"context": "premium-plan"},
+    u.Name,                                  // optional value variadic — same as AddNotification
+)</code></pre>
+    <p>Resolution order at render time (per-emit wins on key collision): tag-derived vars (or <code>TranslationVars()</code> output) ← per-message <code>Vars</code>.</p>
+
+    <h4>Context label vars — <code>SetVars</code> on <code>NotificationContext</code></h4>
+    <p>The wrapping context label (<code>"User"</code>, <code>"Order"</code>) goes through the same Translator as messages. Carry runtime variables for the label itself via:</p>
+<pre><code>ctx := domain.NewNotificationContext("UserOf{tenantId}")
+ctx.SetVars(map[string]string{"tenantId": "acme"})
+// catalog: "UserOf{tenantId}": "Usuário de {tenantId}"
+// resolved label on the wire: "Usuário de acme"</code></pre>
+    <p>Empty map and nil both clear the slot. Scoped views forward to the root — <code>ContextVars()</code> always reads from the root of the chain, mirroring how the message Path prefix composes.</p>
+
+    <h4>Translation surface — <code>Render</code> and <code>Interpolate</code></h4>
+<pre><code>func (t *Translator) Render(lang configuration.Language, key string, vars map[string]string) string
+func Interpolate(s string, vars map[string]string) string</code></pre>
+    <ul>
+        <li><code>Render(lang, key, vars)</code> resolves the catalog message + interpolates. Scanner accepts the literal placeholder <code>{&lt;name&gt;}</code> where <code>&lt;name&gt;</code> matches <code>[A-Za-z_][A-Za-z0-9_]*</code>; sequences that do not match (<code>{1bad}</code>, <code>{not closed</code>, isolated <code>{</code>) are written verbatim. Missing catalog key → returns <code>key</code> as fallback AND emits <code>slog.Warn("translation.key.missing", ...)</code> once per <code>(lang, key)</code> tuple. Missing placeholder in vars → leaves the literal <code>{name}</code> in the output AND emits <code>slog.Warn("translation.var.missing", ...)</code> once per <code>(lang, key, placeholder)</code> tuple. Both warns dedupe via a process-level <code>sync.Map</code>. <code>vars == nil</code> and <code>vars == {}</code> behave identically: no substitution, no missing-var warn.</li>
+        <li><code>Interpolate(s, vars)</code> is the substitution-only step (no catalog lookup). Missing placeholders are left literal without firing warn-once — <code>Interpolate</code> has no <code>(lang, key)</code> context to attribute the miss to.</li>
+        <li><code>Get(lang, key)</code> and <code>GetOr(lang, key, fallback)</code> remain the canonical no-interpolation lookups, for synthetic notifications without vars (e.g., <code>MissingPermissionNotification</code> in <code>PermissionGate</code>, <code>InternalServerErrorNotification</code> in <code>RespondWithInternalServerError</code>).</li>
+    </ul>
+
+    <h4>Pipeline integration</h4>
+    <p><code>application/notifications/convert.go::ToContextDTOs</code> resolves vars automatically through <code>domain.MessageVars(msg)</code> and <code>ctx.ContextVars()</code>, then renders via <code>Translator.Render</code> instead of <code>Get</code>. Auto Command Handlers, manual handlers, and audit/events paths inherit the new behavior without code changes — the substitution lives at the boundary that already translates.</p>
+
+    <h4>Backwards compatibility</h4>
+    <p>Notifications without <code>tvar</code> tags AND without <code>TranslationVars()</code> produce nil from <code>ExtractVarsFromTags</code> → <code>Render</code> behaves identically to <code>Get</code>. Catalog entries without placeholders pass through the scanner unchanged. The new <code>Vars</code> field on <code>NotificationMessage</code> and <code>contextVars</code> on <code>NotificationContext</code> default to nil. No existing call site needs editing.</p>

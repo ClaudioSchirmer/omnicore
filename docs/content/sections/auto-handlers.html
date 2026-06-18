@@ -1,0 +1,300 @@
+<h2>Auto Command Handlers</h2>
+    <p>
+        For trivial CRUD — the logic fits entirely on the Entity via <code>BuildRules</code> — the framework provides
+        ready-made generic handlers. The service writes only the Command — <code>ToEntity(ctx)</code> /
+        <code>ApplyTo(ctx, t)</code> / <code>ApplyPartiallyTo(ctx, t)</code> on the way in AND
+        <code>FromEntity(ctx, t) TResult</code> on the way out, both as methods on the Cmd struct. The wire layer
+        finishes the projection with <code>Response.FromResult(Result) Response</code>. No handler struct to write.
+    </p>
+    <p>
+        For CRUD with extra rules (cross-service IO, injected domain services), keep writing
+        a manual Handler — they coexist in the same API.
+    </p>
+
+    <h3>The 6 handlers</h3>
+    <p>
+        Every Cmd implements input boundary + output boundary as methods on its own struct.
+        <code>FromEntity(ctx, T) TResult</code> is required on all 6 verbs — bodyless verbs (Archive/Unarchive/Delete)
+        typically declare <code>TResult = fwresults.None</code> and have <code>FromEntity</code> return
+        <code>fwresults.None{}</code>.
+    </p>
+    <table>
+        <thead>
+            <tr><th>HTTP verb</th><th>Handler</th><th>Cmd input method</th><th>Cmd output method</th><th>Strict body?</th></tr>
+        </thead>
+        <tbody>
+            <tr><td>POST</td><td><code>InsertCommandHandler[T, *Cmd, TResult]</code></td><td><code>ToEntity(ctx) T</code></td><td><code>FromEntity(ctx, T) TResult</code></td><td>no</td></tr>
+            <tr><td><strong>PUT</strong></td><td><code>UpdateCommandHandler[T, *Cmd, TResult]</code></td><td><code>ApplyTo(ctx, T)</code></td><td><code>FromEntity(ctx, T) TResult</code></td><td><strong>yes</strong> (embeds <code>pipeline.FullBody</code>)</td></tr>
+            <tr><td><strong>PATCH</strong></td><td><code>PartialUpdateCommandHandler[T, *Cmd, TResult]</code></td><td><code>ApplyPartiallyTo(ctx, T)</code></td><td><code>FromEntity(ctx, T) TResult</code></td><td>no</td></tr>
+            <tr><td>DELETE</td><td><code>DeleteCommandHandler[T, *Cmd, TResult]</code></td><td><code>ApplyTo(ctx, T)</code> (transients)</td><td><code>FromEntity(ctx, T) TResult</code> (typ. <code>fwresults.None</code>)</td><td>no</td></tr>
+            <tr><td>PATCH (archive)</td><td><code>ArchiveCommandHandler[T, *Cmd, TResult]</code></td><td><code>ApplyTo(ctx, T)</code> (transients)</td><td><code>FromEntity(ctx, T) TResult</code> (typ. <code>fwresults.None</code>)</td><td>no</td></tr>
+            <tr><td>PATCH (unarchive)</td><td><code>UnarchiveCommandHandler[T, *Cmd, TResult]</code></td><td><code>ApplyTo(ctx, T)</code> (transients)</td><td><code>FromEntity(ctx, T) TResult</code> (typ. <code>fwresults.None</code>)</td><td>no</td></tr>
+        </tbody>
+    </table>
+
+    <p>
+        Each Command declares <code>FromEntity(ctx *AppContext, t T) TResult</code> as a method on the Cmd struct
+        (symmetric with the input boundary <code>ToEntity</code>/<code>ApplyTo</code>). The handler calls it after the
+        Writer's write succeeds (for Insert: with the DB-assigned ID set back on the entity via
+        <code>entity.SetID(id)</code>). The Fiber wrapper then runs the consumer's
+        <code>responseProjection func(TResult) TResp</code> to map the Result into the wire Response. For endpoints
+        that do not want to expose anything beyond the success envelope, the Cmd's <code>FromEntity</code> simply
+        returns <code>fwresults.None{}</code> and the wrapper takes <code>fwresponses.NoBody</code> — the runtime
+        detects <code>responses.None</code> and emits the success envelope WITHOUT a "data" field (matches "204 No
+        Content"-style shape).
+    </p>
+
+    <p>
+        <strong>PUT vs PATCH is HTTP rule, not convention.</strong> PUT replaces the entire resource → all fields
+        mandatory; PATCH updates partially → each field optional. The framework enforces it via type:
+        <code>UpdateCommand[T, TResult]</code> (PUT, <code>ApplyTo</code>) and <code>PartialUpdateCommand[T, TResult]</code> (PATCH,
+        <code>ApplyPartiallyTo</code>) are distinct interfaces, consumed by distinct handlers.
+        <code>UpdateCommandHandler</code> embeds the <code>pipeline.FullBody</code> marker that activates strict body
+        check in the Fiber wrapper — missing field → 400 with one <code>RequiredFieldNotification</code> per field
+        before dispatch.
+    </p>
+
+    <h3>Strict body via marker <code>pipeline.FullBody</code></h3>
+    <p>
+        Handlers that need to require all Cmd fields present in the JSON body embed the empty struct
+        <code>pipeline.FullBody</code>. The <code>enforceFullBody()</code> method is unexported — only those embedding
+        the marker satisfy the <code>FullBodyEnforcer</code> interface, preventing accidental satisfaction outside the
+        package.
+    </p>
+    <pre><code>type UpdateCommandHandler[T, Cmd, TResult] struct {
+    pipeline.FullBody  // marker — wrapper activates strict body check
+    Repo    persistence.ScopedRepository[T]
+    Service domain.Service     // optional — see "Domain Service via Auto handler"
+    // No Auditor field — audit is owned by infra.Postgres, configured at boot.
+    // No Project field — projection lives on the Cmd as cmd.FromEntity(ctx, T) TResult.
+    // In-TX side effects opt in via Cmd's optional AfterBegin / BeforeCommit
+    // methods — the handler detects them via type assertion and threads them as
+    // WriteOption[T] to the Repo.Update call.
+}</code></pre>
+    <p>
+        The wrappers <code>HandleCommandWithBody{,ID}</code> type-assert to
+        <code>FullBodyEnforcer</code> at construction and, when present, reflect on
+        <code>*TReq</code> (Request DTO) once (cached by <code>reflect.Type</code>) to list
+        exported fields (skipping anonymous embedded and <code>json:"-"</code> tags). Per
+        request: <code>json.Unmarshal</code> of the body into <code>map[string]json.RawMessage</code>
+        + set diff; missing field → <strong>400</strong> with 1 <code>RequiredFieldNotification</code>
+        per field via the normal pipeline (semantic <code>SemanticSchema</code>).
+    </p>
+    <p>
+        <strong>Closed rule — no per-field opt-out.</strong> Those who want flexibility use PATCH (handler without
+        marker). PUT is the strict contract.
+    </p>
+
+    <h3>Fiber route wrappers</h3>
+    <p>
+        Wire format (JSON) is separated from application vocabulary:
+        <code>web/requests/</code> in the service carries the <strong>Request DTOs</strong> with
+        <code>json:"..."</code> tags and a <code>ToCommand()</code> method (no ctx — web boundary is dumb mapping);
+        <code>application/commands/</code> carries the pure <strong>Commands</strong> without JSON.
+        <code>AppContext</code> reaches the application layer through <code>cmd.ToEntity(ctx)</code> /
+        <code>ApplyTo(ctx, T)</code> / <code>ApplyPartiallyTo(ctx, T)</code> — symmetric with the read side's
+        <code>Query.ToCriteria(ctx)</code>. The Command (or Query) is the only layer that may translate
+        identity-derived claims into business-named entity fields (or persistence criteria). The current
+        wrappers:
+    </p>
+    <ul>
+        <li><code>fwweb.HandleCommandWithBody(pipe, sample, responseProjection, h, status)</code> — endpoint with body, without path ID (POST). Allocates <code>TReq</code> via <code>new</code>, validates schema, calls <code>req.ToCommand()</code> on the web→application boundary (no ctx — Request DTO is body-only), Dispatch (handler receives ctx and forwards to <code>cmd.ToEntity(ctx)</code>).</li>
+        <li><code>fwweb.HandleCommandWithBodyID(pipe, sample, responseProjection, h, status)</code> — endpoint with body, with path ID (PUT/PATCH). Same + <code>cmd.SetPathID(c.Params("id"))</code> before Dispatch.</li>
+        <li><code>fwweb.HandleCommandWithID(pipe, responseProjection, h, status)</code> — endpoint <strong>without body</strong>, with path ID (Archive/Unarchive/Delete). Does not call <code>Bind().Body()</code>, does not inspect FullBody.</li>
+    </ul>
+    <p>
+        The <code>responseProjection</code> is a <code>func(TResult) TResp</code> — typically a method value like
+        <code>requests.InsertUserResponse{}.FromResult</code>. For endpoints with no projection, pass
+        <code>fwresponses.NoBody</code> (a <code>func(fwresults.None) fwresponses.None</code>) and use
+        <code>fwresults.None</code> as the handler's <code>TResult</code>.
+    </p>
+    <div class="note">
+        The whole family starts with <code>HandleCommand</code> — suffixes communicate what the endpoint accepts (body,
+        ID, both). The wrapper always dispatches a Command; Request is only the wire DTO that becomes a Command via
+        <code>ToCommand(ctx)</code> at the boundary.
+    </div>
+    <p>Body behavior in <code>HandleCommandWithBody{,ID}</code>:</p>
+    <ul>
+        <li><strong>Strict handler (FullBody marker):</strong> missing body → 400 (all fields missing, semantic Schema); malformed JSON → 400 with <code>SchemaViolationNotification</code>; type mismatch → 400 with <code>SchemaViolationNotification</code> carrying the field's JSON path; missing field → 400 with one <code>RequiredFieldNotification</code> per field.</li>
+        <li><strong>Lenient handler (no marker):</strong> missing body OK (Request zero-value); malformed JSON → 400 with <code>SchemaViolationNotification</code>; partial body OK.</li>
+    </ul>
+    <div class="note">
+        <strong>HTTP error semantics</strong>: 400 = wire contract violated (Request schema doesn't match);
+        422 = domain rejects values (notifications via <code>BuildRules</code>). Semantic distinction
+        in the notification type: <code>SemanticSchema</code> → 400, <code>SemanticValidation</code> → 422.
+        Wire notifications: <code>SchemaViolationNotification</code> (always Schema) +
+        <code>RequiredFieldNotification{}.WithSemantic(SemanticSchema)</code> (same domain struct,
+        semantic overridden per-instance).
+    </div>
+
+    <h3>End-to-end example</h3>
+    <pre><code>// 1. Command + Result co-located — application/commands/insert_user.go
+package commands
+
+// Input
+type InsertUserCommand struct {
+    pipeline.CommandBase
+    Name  string
+    Email string
+    Phone *string
+}
+// ToEntity receives *AppContext — Command is the only layer that translates
+// ctx into business-named entity fields. Domain sees only business fields.
+func (c *InsertUserCommand) ToEntity(_ *configuration.AppContext) *User {
+    return &amp;User{Name: c.Name, Email: c.Email, Phone: c.Phone}
+}
+
+// Output method ON THE CMD (symmetric with ToEntity on the input side).
+// Receives ctx — same boundary, same translation point.
+func (c InsertUserCommand) FromEntity(_ *configuration.AppContext, u *User) InsertUserResult {
+    return InsertUserResult{ID: *u.GetID(), Name: u.Name, Email: u.Email, Phone: u.Phone}
+}
+
+// Output shape — pure data, no methods.
+type InsertUserResult struct {
+    ID    domain.ID
+    Name  string
+    Email string
+    Phone *string
+}
+
+// 2. Request + Response co-located — web/requests/insert_user_request.go
+package requests
+
+// Input (wire format — JSON tags)
+type InsertUserRequest struct {
+    Name  string  `json:"name"`
+    Email string  `json:"email"`
+    Phone *string `json:"phone,omitempty"`
+}
+// ToCommand is body-only — no ctx parameter. Web layer stays free of
+// identity interpretation.
+func (r InsertUserRequest) ToCommand() *commands.InsertUserCommand {
+    return &amp;commands.InsertUserCommand{Name: r.Name, Email: r.Email, Phone: r.Phone}
+}
+
+// Output (wire format — JSON tags)
+type InsertUserResponse struct {
+    ID    domain.ID `json:"id"`
+    Name  string    `json:"name"`
+    Email string    `json:"email"`
+    Phone *string   `json:"phone,omitempty"`
+}
+func (InsertUserResponse) FromResult(r commands.InsertUserResult) InsertUserResponse {
+    return InsertUserResponse{ID: r.ID, Name: r.Name, Email: r.Email, Phone: r.Phone}
+}
+
+// 3. Route — sample Request + responseProjection function value anchor generic inference.
+// The handler has NO Project field — projection lives on the Cmd as
+// `func (c InsertUserCommand) FromEntity(ctx *AppContext, u *User) InsertUserResult`,
+// declared in the same file as the Cmd (symmetric with ToEntity on the input side).
+users.Post("/", fwweb.HandleCommandWithBody(d.Pipeline,
+    requests.InsertUserRequest{},
+    requests.InsertUserResponse{}.FromResult,
+    &amp;handlers.InsertCommandHandler[*User, *InsertUserCommand, commands.InsertUserResult]{
+        Repo: repo,
+    },
+    fiber.StatusCreated))</code></pre>
+    <p>
+        <strong>Request ≡ Command shape ruler</strong>: required field → <code>string</code> on both
+        (absence in JSON triggers 400 before dispatch); optional field → <code>*string</code> on both
+        (<code>ToCommand</code> is 1:1 assignment without normalization). Consumer sends <code>""</code>
+        explicitly → Request stores <code>*""</code> → Command receives <code>*""</code> → domain decides
+        whether to reject. No silent <code>"" → nil</code> normalization at the boundary.
+    </p>
+
+    <h3>Uniform pointer Cmd pattern</h3>
+    <p>
+        The handler's second type param is always <code>*Cmd</code> (not <code>Cmd</code> by value).
+        Reason: <code>SetPathID</code> needs a pointer receiver to mutate; using uniform <code>*Cmd</code>
+        (even on Insert) keeps a single mental model. <code>ToEntity</code>/<code>ApplyTo</code> may have
+        a value-receiver OR a pointer-receiver — Go promotes value-receiver methods to the pointer type.
+    </p>
+
+    <h3>Manual path (cross-service, side effects)</h3>
+    <p>
+        Handler with external IO, injected domain service, or complex orchestration: continues to be a
+        struct that implements <code>pipeline.Handler[*Cmd, TResult]</code> — exactly as before. <code>TResult</code>
+        is whatever application-layer value the handler returns; the route's <code>responseProjection</code> then
+        maps it to the wire <code>TResp</code>. It is registered on the route with the same
+        <code>HandleCommand</code>/<code>HandleCommandWithID</code>.
+    </p>
+
+    <h3>Domain Service via Auto handler (optional <code>Service</code> field)</h3>
+    <p>
+        The 6 Auto handlers expose an optional <code>Service domain.Service</code> field. When set,
+        it is propagated to the entity's <code>BuildRules</code> (which receives the service as the second argument).
+        This enables infra-dependent queries inside domain rules without falling back to the manual path
+        — e.g., uniqueness invariant that needs a DB query.
+    </p>
+    <pre><code>// Domain — interface declarada no pacote da entity, embeda ServiceBase.
+type UserService interface {
+    domain.Service
+    EmailExists(email string, excludeID domain.ID) bool
+}
+
+func (u *User) RequiresService() bool { return true }
+
+func (u *User) BuildRules(actionName string, svc domain.Service, r *domain.Rules) {
+    r.IfInsertOrUpdate(func() {
+        if u.Email != "" {
+            if us, ok := svc.(UserService); ok &amp;&amp; us.EmailExists(u.Email, *u.GetID()) {
+                r.AddNotification("Email", EmailAlreadyExistsNotification{}, u.Email)
+            }
+        }
+    })
+}
+
+// Wire-up — handler gets the service injected.
+users.Post("/", fwweb.HandleCommandWithBody(d.Pipeline,
+    requests.InsertUserRequest{},
+    requests.InsertUserResponse{}.FromResult,
+    &amp;handlers.InsertCommandHandler[*User, *InsertUserCommand, commands.InsertUserResult]{
+        Repo: repo, Service: userService,
+    }, fiber.StatusCreated))</code></pre>
+    <p>
+        <strong>Compat:</strong> leaving <code>Service</code> nil keeps default behavior
+        (entity receives nil in <code>BuildRules</code>). Pre-existing handlers don't break.
+    </p>
+    <p>
+        <strong>Where Service is consumed:</strong> <code>BuildRules</code> runs on every write — Insert (mode
+        <code>Insert</code>), PUT / PATCH (mode <code>Update</code>), <strong>Archive</strong> and
+        <strong>Unarchive</strong> (also mode <code>Update</code> with distinct <code>actionName</code>
+        values <code>"GetArchivable"</code>/<code>"GetUnarchivable"</code> — service branches on
+        <code>actionName</code> inside <code>IfUpdate</code> when an archive-specific rule is needed),
+        and Delete (mode <code>Delete</code>). The <code>Service</code> field is the same on all 6
+        handlers; <code>RequiresService() true</code> on the entity raises
+        <code>ServiceIsRequiredNotification</code> when the field is nil and the handler is invoked.
+    </p>
+    <div class="note">
+        Defense in depth: the <code>BuildRules</code> check does not replace unique constraints in the DB —
+        between <code>EmailExists</code> and the <code>COMMIT</code> there is room for a race condition. The unique index +
+        <code>ConstraintBinding</code> on the Repository remains the atomic enforcement. The domain check
+        gives a cleaner error message on the happy path and keeps the rule declared where one would expect.
+    </div>
+
+    <h3>UnarchiveCommandHandler asymmetry</h3>
+    <p>
+        <code>UnarchiveCommandHandler</code> does NOT call <code>FindByID</code> (record is archived;
+        <code>Repository.FindByID</code> filters <code>WHERE deleted_at IS NULL</code> by convention).
+        Instead, it obtains an empty sample via <code>Repo.New()</code>, sets the path ID, and generates
+        <code>Unarchivable</code>. Cascade of archived children is via direct SQL in
+        <code>aggregate_persister.unarchiveAggregate</code>.
+    </p>
+    <p>
+        The asymmetry is <strong>internal to the handler</strong>: the wire-up in <code>routes.go</code> is
+        identical to the other Auto handlers — only <code>Repo</code> (audit emission is handled automatically by <code>infra.Postgres</code>).
+        <code>Repo.New() T</code> is a mandatory method of the <code>domain.Reader[T]</code> read port (carried by
+        <code>persistence.ScopedRepository[T]</code>); anyone using <code>BaseRepository[T]</code> injects a single
+        <code>NewEntity func() T</code> into the constructor (typically the same factory shared with the
+        <code>AggregateLoader</code>) and <code>New()</code> comes promoted via embed.
+    </p>
+    <pre><code>// UnarchiveUserCommand declares the bodyless verb shape:
+//   func (*UnarchiveUserCommand) ApplyTo(_ *AppContext, _ *User) {}
+//   func (*UnarchiveUserCommand) FromEntity(_ *AppContext, _ *User) fwresults.None { return fwresults.None{} }
+users.Patch("/:id/unarchive", fwweb.HandleCommandWithID(d.Pipeline,
+    fwresponses.NoBody,
+    &amp;handlers.UnarchiveCommandHandler[*User, *UnarchiveUserCommand, fwresults.None]{
+        Repo: repo,
+        // Service: userService,  // optional — see "Domain Service via Auto handler"
+    }, fiber.StatusOK))</code></pre>

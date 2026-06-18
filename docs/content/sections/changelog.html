@@ -1,0 +1,69 @@
+<h2>Changelog</h2>
+<p>Notable changes to the framework, newest first — a consumer-facing digest of the public surface. The exhaustive, per-symbol list (Keep a Changelog format, SemVer) lives in <code>CHANGELOG.md</code> at the repository root. While in <code>0.x.y</code> the public API may change between minor versions; breaking changes are called out under <em>Changed</em>. When you ship a feature, add a new <code>release</code> block at the top and bump the <code>v…</code> badge in <code>index.html</code>.</p>
+<div class="changelog">
+    <div class="release">
+        <div class="release-head"><span class="release-tag">v0.10.0</span><span class="release-date">June 17, 2026</span></div>
+        <ul>
+            <li><strong>Changed</strong> — moved the <code>criteria</code> query DSL from <code>omnicore/criteria</code> to <code>omnicore/infra/criteria</code>. The package name is unchanged; only the import path moves. The DSL is consumed solely by the <code>infra</code> layer, so it no longer sits at the root.</li>
+        </ul>
+    </div>
+
+    <div class="release">
+        <div class="release-head"><span class="release-tag">v0.9.0</span><span class="release-date">June 17, 2026</span></div>
+        <ul>
+            <li><strong>Added</strong> — entity search engine: the backend-neutral <code>criteria</code> query DSL plus <code>AggregateLoader[T].FindOne</code> / <code>FindAll(ctx, *criteria.Query)</code> to load live aggregates (root + children, batched — no N+1) by any criterion, not just by id.</li>
+            <li><strong>Added</strong> — pure domain repository ports <code>domain.Reader[T]</code>, <code>domain.Writer</code>, <code>domain.Repository[T]</code> (ctx-less, hook-less).</li>
+            <li><strong>Changed</strong> — the write path is now <code>Scope</code>-bound: <code>repo.Scope(ctx, opts...).Insert(valid)</code> binds the request ctx + in-TX lifecycle hooks and returns a pure <code>domain.Writer</code>. Reads stay direct on the handle via <code>persistence.ScopedRepository[T]</code>.</li>
+            <li><strong>Removed</strong> — <code>domain.Context</code>, <code>persistence.Writer[T]</code>, and <code>AggregateLoader.Load</code> / <code>LoadIncludingArchived</code> (the last replaced by <code>FindOne(criteria.ByID(id))</code>).</li>
+        </ul>
+    </div>
+
+    <div class="release">
+        <div class="release-head"><span class="release-tag">v0.8.0</span><span class="release-date">June 16, 2026</span></div>
+        <ul>
+            <li><strong>Added</strong> — generic byte-level cache subsystem (<code>omnicore/infra/cache</code>): one <code>cache.Cache</code> port (<code>Get</code> / <code>Set</code> / <code>Delete</code>), in-process LRU+TTL and Redis backends, typed <code>GetJSON</code> / <code>SetJSON</code> helpers, and private + shared instances on <code>Deps</code> driven by a top-level <code>cache:</code> YAML block.</li>
+            <li><strong>Changed</strong> — the outbound httpclient response cache now consumes <code>Deps.Cache</code>; the <code>httpClient.defaults.cache</code> block keeps policy knobs only.</li>
+            <li><strong>Removed</strong> — <code>httpclient.Cache</code> / <code>WithCacheStore</code>, superseded by <code>cache.Cache</code> / <code>WithCache</code>.</li>
+        </ul>
+    </div>
+
+    <div class="release">
+        <div class="release-head"><span class="release-tag">v0.7.0</span><span class="release-date">June 16, 2026</span></div>
+        <ul>
+            <li><strong>Added</strong> — field labels: a <code>label:"&lt;catalogKey&gt;"</code> struct tag renders a translated human-readable label next to the technical field name on every reactive output (<code>MessageDTO.FieldLabel</code> on the wire, <code>FieldChange.FieldLabelKey</code> rendered at read on audit rows).</li>
+            <li><strong>Added</strong> — audit read helpers <code>audit.RenderLabels</code> / <code>RenderLabelsInJSON</code> and reader helpers <code>audit.FindByID</code> / <code>FindByAggregate</code>.</li>
+        </ul>
+    </div>
+
+    <div class="release">
+        <div class="release-head"><span class="release-tag">v0.6.0</span><span class="release-date">June 16, 2026</span></div>
+        <ul>
+            <li><strong>Added</strong> — cross-service integration events (<code>omnicore/infra/integration</code>): the producer surface (<code>Dispatch</code> with <code>WithTx</code> / <code>WithAggregateID</code> / correlation) and the consumer surface (<code>Registry</code>, <code>Receiver</code>, <code>ConsumerPool</code>). Handlers are invariant across HTTP and Kafka transports.</li>
+            <li><strong>Added</strong> — <code>IntegrationFeature</code> bootstrap hook, <code>integration:</code> + <code>shutdown:</code> YAML blocks, embedded migration <code>0002_integration_events</code>, and correlation/causation propagation on <code>AppContext</code>.</li>
+        </ul>
+    </div>
+
+    <div class="release">
+        <div class="release-head"><span class="release-tag">v0.5.0</span><span class="release-date">June 15, 2026</span></div>
+        <ul>
+            <li><strong>Changed</strong> — upgraded Fiber v2 → v3. Breaking across the HTTP layer: handlers take <code>fiber.Ctx</code> (interface, no pointer), body/query binding moves to the unified <code>c.Bind()</code> API, and several config shapes change. Consumer services upgrade in lock-step after the framework tag is cut.</li>
+            <li><strong>Changed</strong> — bumped <code>pgx</code> to v5.10.0 (security hardening, no breaking changes).</li>
+            <li><strong>Removed</strong> — thin wrappers <code>web.CORS</code>, <code>web.Logger</code>, <code>web.RateLimit</code> (call the Fiber v3 middleware directly). <code>web.Recover()</code> is kept for its slog-integrated stack handler.</li>
+        </ul>
+    </div>
+
+    <div class="release">
+        <div class="release-head"><span class="release-tag">v0.4.0</span><span class="release-date">June 14, 2026</span></div>
+        <ul>
+            <li><strong>Added</strong> — parameterized notifications: <code>tvar:"&lt;name&gt;"</code> struct tags substitute runtime values into translated messages, with per-emit <code>Vars</code> overrides and the new <code>Translator.Render</code> / <code>Interpolate</code> surface.</li>
+            <li><strong>Changed</strong> — <code>persistence.TxHandle</code> is now a sealed marker with no public methods; <code>infra.UnwrapPgxTx</code> is the single authorized bridge to the underlying <code>pgx.Tx</code>, making "application is SQL-free" a type-system guarantee.</li>
+        </ul>
+    </div>
+
+    <div class="release">
+        <div class="release-head"><span class="release-tag">v0.3.0</span><span class="release-date">June 13, 2026</span></div>
+        <ul>
+            <li><strong>Added</strong> — initial public release of the rewritten history (skips <code>v0.1.0</code> / <code>v0.2.0</code>, both frozen on the module proxy from a prior repo). Ships the whole framework: DDD layering with enforced boundaries, sealed <code>ValidEntity</code> types, aggregate-aware persistence with universal symmetric cascade, the Rules DSL, the typed notification system, <code>Result[T]</code> + Pipeline, Auto Command and Query Handlers, OpenAPI 3.1 + Swagger UI, JWT auth with three-layer authorization, dual-destination audit, the <code>httpclient</code> outbound subsystem, cross-service composition, Mongo schema evolution, migrations, declarative YAML config, and <code>bootstrap.Run</code>.</li>
+        </ul>
+    </div>
+</div>

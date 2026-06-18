@@ -1,0 +1,1049 @@
+<h2>httpclient — outbound HTTP</h2>
+  <p><code>omnicore/infra/httpclient</code> is the framework's outbound HTTP subsystem. Services describe the external systems they talk to in <a href="#microservice-yaml"><code>microservice.&lt;profile&gt;.yaml</code></a> under the <code>httpClient:</code> block; the framework constructs a singleton <code>*httpclient.HttpClient</code> registry on <code>bootstrap.Deps.HttpClient</code>. Each declared service gets its own <code>http.Transport</code> and <code>http.Client</code> so a misbehaving upstream cannot starve the pool of the rest.</p>
+  <p class="note">The runtime is feature-complete: <code>Call[Req, Resp]</code> generic, request/response binding via <code>http:"..."</code> tags, three body codecs (json/xml/form-urlencoded), middleware chain (correlation, logging, auth, idempotency, cache, retry, breaker, signing, transport), error model, slog observability with cascaded redaction, six auth provider types, OAuth2 token cache + single-flight + revocation, per-service TLS and connection pool, <a href="#httpclient">HMAC request signing</a> (AWS SigV4-lite canonical), <a href="#httpclient">streaming surfaces</a> (download stream, upload stream, multipart upload, Server-Sent Events), the per-call <code>InvokeOption</code> family, the <a href="#httpclient"><code>NewFake</code> testing harness</a>, and dynamic <a href="#httpclient">service discovery via <code>BaseURLResolver</code></a>. All design-doc phases delivered.</p>
+
+  <h3>YAML schema</h3>
+<pre><code>httpClient:
+  defaults:
+    timeout: 30s                       # default 30s
+    threadIdHeader: X-Thread-Id        # default X-Thread-Id
+    requestIdHeader: X-Request-ID      # default X-Request-ID
+    logBodies: true                    # default true
+    headers:
+      User-Agent: "omnicore-svc/1.0"
+
+  services:
+    keycloak:
+      baseURL: https://kc.example.com           # mandatory
+      timeout: 10s                              # optional, overrides defaults.timeout
+      headers:                                  # optional, merged after defaults.headers
+        X-Tenant: acme
+      endpoints:
+        getUser:
+          method: GET                           # mandatory (GET/POST/PUT/PATCH/DELETE/HEAD)
+          path: /users/{id}                     # mandatory (must start with '/')
+          requestCodec: json                    # optional, default json
+          responseCodec: json                   # optional, default json
+          acceptableStatus: [404]               # optional, default []
+          headers:                              # optional, merged after service.headers
+            Accept: application/json</code></pre>
+
+  <h3>Validation guarantees at boot</h3>
+  <p><code>httpclient.New(cfg)</code> runs <code>applyDefaults</code> then <code>Validate</code> before constructing any transport. Issues are accumulated and emitted in a single error so the operator sees the whole list on one boot attempt:</p>
+  <ul>
+    <li><code>services.&lt;name&gt;.baseURL</code> required + must parse as an absolute URL</li>
+    <li><code>services.&lt;name&gt;.endpoints</code> must declare at least one endpoint</li>
+    <li><code>endpoints.&lt;name&gt;.method</code> required + must be one of <code>GET/POST/PUT/PATCH/DELETE/HEAD</code> (case-insensitive)</li>
+    <li><code>endpoints.&lt;name&gt;.path</code> required + must start with <code>/</code></li>
+    <li><code>requestCodec</code> / <code>responseCodec</code> must be one of <code>json</code>, <code>xml</code>, or <code>form-urlencoded</code></li>
+    <li><code>acceptableStatus</code> values must be in <code>100..599</code></li>
+    <li><code>timeout</code> must be non-negative</li>
+    <li>per-block validation runs for <code>auth</code>, <code>retry</code>, <code>cache</code>, <code>circuitBreaker</code>, <code>tls</code>, <code>pool</code>, <code>redaction</code>, and <code>idempotency</code> (see the dedicated subsections below for the exact rules each one enforces)</li>
+  </ul>
+
+  <h3>Config blocks</h3>
+  <p>Every documented <code>httpClient</code> block is implemented and validated at boot: <code>auth</code>, <code>authProviders</code>, <code>retry</code>, <code>cache</code>, <code>circuitBreaker</code>, <code>pool</code>, <code>tls</code>, <code>redaction</code>, <code>idempotency</code>, <code>signing</code>, and the per-endpoint streaming flags <code>responseStream</code> / <code>responseSSE</code>.</p>
+
+  <h3>Defaults cascade</h3>
+  <p>Headers compose <code>defaults → service → endpoint</code> (last write wins) at construction time, so the request path performs zero map lookups against the declarative YAML. Timeout cascades <code>service → defaults → 30s framework fallback</code>. Pool defaults applied to every per-service <code>http.Transport</code>:</p>
+  <ul>
+    <li><code>MaxIdleConnsPerHost: 100</code></li>
+    <li><code>MaxConnsPerHost: 200</code></li>
+    <li><code>IdleConnTimeout: 90s</code></li>
+  </ul>
+  <p>Per-service <code>pool:</code> overrides apply field-by-field over these defaults — see the <strong>TLS + connection pool</strong> subsection below.</p>
+
+  <h3>Tag binding</h3>
+  <p>DTOs that drive a request carry <code>http:"..."</code> tags on exported fields. The binding subpackage parses each tag once per <code>reflect.Type</code> (cached in a <code>sync.Map</code>) and the call path walks the pre-built plan — there is no reflection on the hot path beyond the cached lookup.</p>
+  <table>
+    <thead><tr><th>Tag form</th><th>Destination</th><th>Accepted field type</th></tr></thead>
+    <tbody>
+      <tr><td><code>http:"path,id"</code></td><td>URL path placeholder <code>{id}</code></td><td>string / numeric / bool / pointer to those</td></tr>
+      <tr><td><code>http:"query,verbose"</code></td><td><code>?verbose=…</code></td><td>same as path; empty values are omitted from the URL</td></tr>
+      <tr><td><code>http:"query,tags,csv"</code></td><td><code>?tags=a,b,c</code></td><td>slice / array of scalars</td></tr>
+      <tr><td><code>http:"query,tags,multi"</code></td><td><code>?tags=a&amp;tags=b</code></td><td>slice / array of scalars</td></tr>
+      <tr><td><code>http:"header,X-Tenant"</code></td><td>request header</td><td>string-convertible scalar</td></tr>
+      <tr><td><code>http:"headers"</code></td><td>dynamic headers</td><td><code>map[string]string</code></td></tr>
+      <tr><td><code>http:"body,json"</code></td><td>request body</td><td>any JSON-marshalable value</td></tr>
+      <tr><td><code>http:"body,xml"</code></td><td>request body</td><td>struct with <code>xml:"..."</code> tags</td></tr>
+      <tr><td><code>http:"body,form"</code> (alias of <code>body,form-urlencoded</code>)</td><td>request body</td><td><code>url.Values</code>, <code>map[string]string</code>, or struct with optional <code>form:"key,omitempty"</code> tags</td></tr>
+    </tbody>
+  </table>
+  <p>Inspection enforces structural invariants at request build time so misuse fails fast:</p>
+  <ul>
+    <li>Every <code>{placeholder}</code> in <code>Path</code> must have a <code>http:"path,name"</code> field on the request DTO, and vice-versa.</li>
+    <li>Only one <code>http:"body,..."</code> field per request DTO.</li>
+    <li>The kind must match the field type (e.g. <code>csv</code>/<code>multi</code> require a slice/array; <code>headers</code> requires <code>map[string]string</code>).</li>
+    <li>Body codecs accepted: <code>body,json</code>, <code>body,xml</code>, <code>body,form</code> (alias of <code>body,form-urlencoded</code>); unknown codec names abort the boot.</li>
+  </ul>
+  <p>The response DTO follows the same convention. A response field tagged <code>http:"header,ETag"</code> is populated from the corresponding response header; the body field tagged <code>http:"body,json"</code> is decoded via the endpoint's <code>responseCodec</code>. When the response DTO has no tagged fields the entire struct is decoded as the body — the common case. An empty <code>struct{}</code> discards the body silently.</p>
+<pre><code>type GetUserRequest struct {
+    ID       string            `http:"path,id"`
+    Verbose  bool              `http:"query,verbose"`
+    TenantID string            `http:"header,X-Tenant-ID"`
+    Extra    map[string]string `http:"headers"`
+}
+
+type GetUserResponse struct {
+    ID    string `json:"id"`
+    Email string `json:"email"`
+}</code></pre>
+
+  <h3>Codecs</h3>
+  <p>The codec registry is <strong>package-private</strong> — there is no <code>httpclient.RegisterCodec</code> and no consumer-facing extension surface. Three codecs ship today:</p>
+  <ul>
+    <li><code>json</code> (default) — <code>encoding/json</code>; Content-Type <code>application/json</code></li>
+    <li><code>xml</code> — <code>encoding/xml</code>; Content-Type <code>application/xml</code>; struct fields use <code>xml:"..."</code> tags</li>
+    <li><code>form-urlencoded</code> — <code>net/url.Values.Encode</code>; Content-Type <code>application/x-www-form-urlencoded</code>. Accepts <code>url.Values</code>, <code>map[string]string</code>/<code>map[string][]string</code>, or struct (field name lowercased by default; override with <code>form:"key[,omitempty]"</code>). <code>form</code> is the short alias on the tag side.</li>
+  </ul>
+  <p>A YAML or tag that names an unknown codec rejects at boot.</p>
+
+  <h3>Call surface</h3>
+  <p><code>httpclient.Call[Req, Resp]</code> is the single typed entry point. There is no parallel untyped public path. The signature is:</p>
+<pre><code>func Call[Req any, Resp any](
+    ctx context.Context,            // AppContext satisfies it
+    c *HttpClient,
+    service, endpoint string,       // YAML keys
+    req Req,                        // typed struct with http:"..." tags
+    opts ...InvokeOption,
+) (Resp, error)</code></pre>
+  <p>The <code>InvokeOption</code> family is tight by design — three categories, each with a distinct rationale:</p>
+
+  <h4>1. <code>WithConfig(CallConfig)</code> — canonical per-call YAML overrides</h4>
+  <p>Every YAML-declared knob that makes sense to flip at call time is a field on <code>CallConfig</code>. One option, discoverable via IDE autocomplete, and adding a new YAML field automatically becomes runtime-overridable when the same field lands on the struct.</p>
+  <table>
+    <thead><tr><th>Field</th><th>Overrides</th></tr></thead>
+    <tbody>
+      <tr><td><code>BaseURL string</code></td><td><code>services.&lt;name&gt;.baseURL</code> (wins over the resolver too)</td></tr>
+      <tr><td><code>Timeout time.Duration</code></td><td>service / defaults timeout (0 = inherit)</td></tr>
+      <tr><td><code>AuthProvider string</code></td><td><code>services.&lt;name&gt;.auth.provider</code> (selects a YAML-declared provider)</td></tr>
+      <tr><td><code>Method string</code></td><td><code>endpoint.method</code></td></tr>
+      <tr><td><code>Path string</code></td><td><code>endpoint.path</code> (must start with <code>/</code>)</td></tr>
+      <tr><td><code>RequestCodec string</code></td><td><code>endpoint.requestCodec</code></td></tr>
+      <tr><td><code>ResponseCodec string</code></td><td><code>endpoint.responseCodec</code></td></tr>
+      <tr><td><code>AcceptableStatus []int</code></td><td>extends <code>endpoint.acceptableStatus</code> (union)</td></tr>
+      <tr><td><code>NoCache bool</code></td><td>bypasses the GET cache when true</td></tr>
+      <tr><td><code>CacheKey string</code></td><td>overrides the framework-computed cache key</td></tr>
+      <tr><td><code>IdempotencyKey string</code></td><td>supplies the explicit key when <code>source: explicit</code></td></tr>
+      <tr><td><code>Retry *RetryOverride</code></td><td>replaces <code>endpoint.retry</code> with a per-call policy</td></tr>
+      <tr><td><code>InlineAuth *InlineAuth</code></td><td>runtime credentials (Bearer / APIKey / Basic)</td></tr>
+    </tbody>
+  </table>
+
+  <h4><code>InlineAuth</code> — credentials supplied per call</h4>
+
+  <p>YAML-declared auth providers (<code>oauth2-client-credentials</code>, <code>bearer-static</code>, <code>basic</code>, etc.) cover the case where the framework knows the credentials at boot time — one client of the upstream, one provider declared, picked by every call. <code>InlineAuth</code> is the inverse case: <strong>the credentials are runtime values</strong> the framework cannot know in advance.</p>
+
+  <p>Canonical motivation: a webhook delivery service that has thousands of customer rows in the DB, each carrying its own Bearer token / API key / Basic password. Registering one named YAML provider per customer is not viable; instead the handler reads the customer row and passes the credential inline on each call.</p>
+
+  <p><strong>Struct shape:</strong></p>
+
+<pre><code>type InlineAuth struct {
+    Bearer string      // → Authorization: Bearer &lt;Bearer&gt;
+    APIKey *APIKeyAuth // → custom header (default X-API-Key)
+    Basic  *BasicAuth  // → Authorization: Basic base64(Username:Password)
+}
+
+type APIKeyAuth struct {
+    Header string  // header name; defaults to "X-API-Key" when empty
+    Value  string  // required
+}
+
+type BasicAuth struct {
+    Username string  // required
+    Password string  // required
+}</code></pre>
+
+  <p><strong>Exactly one scheme must be set.</strong> The framework picks whichever of <code>Bearer</code> / <code>APIKey</code> / <code>Basic</code> is populated. Setting zero schemes (a non-nil <code>*InlineAuth</code> with all three empty/nil) or more than one returns <code>*HttpError{Cause: ErrTokenAcquire}</code> <strong>before dialing</strong> — the framework refuses ambiguous shapes rather than guessing.</p>
+
+  <p><strong>What each scheme produces on the wire:</strong></p>
+  <table>
+    <thead><tr><th>Scheme</th><th>Outbound header</th><th>Header value</th></tr></thead>
+    <tbody>
+      <tr><td><code>Bearer: "abc123"</code></td><td><code>Authorization</code></td><td><code>Bearer abc123</code></td></tr>
+      <tr><td><code>APIKey: &amp;APIKeyAuth{Value: "k"}</code></td><td><code>X-API-Key</code> (default)</td><td><code>k</code></td></tr>
+      <tr><td><code>APIKey: &amp;APIKeyAuth{Header: "X-Tenant-Key", Value: "k"}</code></td><td><code>X-Tenant-Key</code></td><td><code>k</code></td></tr>
+      <tr><td><code>Basic: &amp;BasicAuth{Username: "u", Password: "p"}</code></td><td><code>Authorization</code></td><td><code>Basic dTpw</code> (base64 of <code>u:p</code>)</td></tr>
+    </tbody>
+  </table>
+
+  <p><strong>Precedence vs YAML providers.</strong> Setting <code>InlineAuth</code> alongside <code>AuthProvider</code> in the same <code>CallConfig</code> is allowed — <code>InlineAuth</code> wins, the named YAML provider is ignored for that call. This makes "override the service's default provider only for this customer" a single-field change.</p>
+
+  <p><strong>Observability.</strong> The slog observation field <code>authProvider</code> logs <code>inline:bearer</code>, <code>inline:apikey</code>, or <code>inline:basic</code> so dashboards can split inline calls from named-provider calls without parsing extra fields.</p>
+
+  <p><strong>Middleware integration.</strong> The framework materializes <code>InlineAuth</code> into an ephemeral <code>auth.AuthProvider</code> internally and runs it through the same auth middleware (position 3 of the chain). Every other layer — logging, idempotency, cache, retry, breaker, transport — behaves identically to a YAML-provider call.</p>
+
+  <p><strong>What does NOT come with InlineAuth.</strong> Inline credentials are static for the duration of one call: there is no token cache (the credential was already supplied), no single-flight (no acquisition happens), no <code>revocationOnUnauthorized</code> retry (no provider to invalidate). Those features only make sense for OAuth-style flows where the framework owns the token lifecycle. If you need OAuth client-credentials per customer dynamically, declare a <code>credentials-exchange</code> provider in YAML with <code>requestFieldsFromCtx</code> instead — that path does have a per-identity token cache.</p>
+
+  <p><strong>End-to-end webhook example:</strong></p>
+
+<pre><code>// Handler receives an inbound event; loads the destination customer's
+// webhook config from the DB; delivers the event to the customer.
+func (h *EventDeliveryHandler) Handle(ctx *configuration.AppContext, evt OrderEvent) error {
+    cust, err := h.customers.Load(ctx, evt.CustomerID)
+    if err != nil {
+        return err
+    }
+    _, err = httpclient.Call[deliverEventRequest, struct{}](
+        ctx, h.http,
+        "webhooks", "deliver",         // placeholder endpoint in YAML
+        deliverEventRequest{Body: evt.Payload},
+        httpclient.WithConfig(httpclient.CallConfig{
+            // URL + method + path from the customer's stored config
+            BaseURL: cust.WebhookHost,
+            Method:  cust.WebhookMethod,   // "POST" / "PUT" / "PATCH"
+            Path:    cust.WebhookPath,
+
+            // Credentials from the customer row — no YAML provider per customer
+            InlineAuth: customerAuthToInline(cust.AuthConfig),
+
+            // Per-customer retry policy (some are flaky)
+            Retry: &amp;httpclient.RetryOverride{
+                MaxAttempts:  cust.MaxAttempts,
+                Backoff:      "exponential-jitter",
+                InitialDelay: 200 * time.Millisecond,
+                MaxDelay:     10 * time.Second,
+                RetryOn:      []string{"502", "503", "504", "network", "timeout"},
+            },
+        }),
+    )
+    return err
+}
+
+// customerAuthToInline picks the right scheme based on what the customer
+// stored. Returns nil when the customer chose unauthenticated webhooks.
+func customerAuthToInline(cfg CustomerAuthConfig) *httpclient.InlineAuth {
+    switch cfg.Kind {
+    case "bearer":
+        return &amp;httpclient.InlineAuth{Bearer: cfg.Token}
+    case "apikey":
+        return &amp;httpclient.InlineAuth{APIKey: &amp;httpclient.APIKeyAuth{
+            Header: cfg.HeaderName,  // empty → defaults to X-API-Key
+            Value:  cfg.APIKey,
+        }}
+    case "basic":
+        return &amp;httpclient.InlineAuth{Basic: &amp;httpclient.BasicAuth{
+            Username: cfg.Username,
+            Password: cfg.Password,
+        }}
+    }
+    return nil
+}</code></pre>
+
+  <p>The YAML endpoint <code>webhooks.deliver</code> is a placeholder: it declares <code>method: POST</code> and <code>path: /</code> (defaults) just so the YAML schema validates; every dimension that matters at runtime comes from <code>CallConfig</code>. The handler is the only place that knows the call crossed the network — the middleware chain, logging, redaction, and metrics treat it identically to any other outbound call.</p>
+
+  <p><strong><code>RetryOverride</code></strong> fully replaces the endpoint's YAML retry policy when non-nil — no field-level merging. The framework defaults fill any field the caller leaves zero (<code>MaxAttempts</code> falls back to the enabled-default 3, <code>Backoff</code> falls back to <code>exponential-jitter</code>). The POST/PATCH safety gate still applies: even an override forcing <code>MaxAttempts &gt; 1</code> is clamped to 1 unless the endpoint declares idempotency.</p>
+
+  <h4>2. Additive runtime injection</h4>
+  <ul>
+    <li><code>WithExtraHeader(key, value)</code> — per-call header on top of the cascade</li>
+    <li><code>WithExtraQuery(key, value)</code> — per-call query parameter</li>
+  </ul>
+  <p>Pure runtime concerns the YAML cannot anticipate (per-call tenant id generated in the handler, ad-hoc query parameter). Not overrides of any YAML field — true additions on top of the cascade.</p>
+
+  <h4>3. <code>WithClientCert(tls.Certificate)</code></h4>
+  <p>Binary <code>tls.Certificate</code> value, not a YAML-declarable string. Builds an ephemeral cloned transport so the registry's pool stays clean. Use for vault-rotated certs delivered via the secrets manager.</p>
+
+  <p class="note"><strong>Why not include TLS minVersion / cipher suites / CA bundle / pool sizes in <code>CallConfig</code>?</strong> Those are bound to the <code>http.Transport</code> materialized once at <code>New</code>. Overriding them per-call would require rebuilding the transport for that single call, invalidating the connection pool and defeating keep-alive. Declare those in YAML and reboot to change.</p>
+
+  <h4>Static (YAML) ↔ Dynamic (runtime) — complete reference</h4>
+  <p>Every YAML field and its per-call equivalent (if any). <strong>Override semantic column:</strong> <em>replaces</em> = the YAML value is ignored when the override is set; <em>extends</em> = the YAML value and the override are unioned; <em>additive</em> = there is no YAML equivalent, the runtime value is layered on top; <em>—</em> = no runtime override exists, declare in YAML and reboot to change.</p>
+
+  <p><strong>Defaults block (<code>httpClient.defaults.*</code>):</strong></p>
+  <table>
+    <thead><tr><th>YAML field</th><th>Dynamic equivalent</th><th>Override semantic</th></tr></thead>
+    <tbody>
+      <tr><td><code>defaults.timeout</code></td><td><code>CallConfig.Timeout</code></td><td>replaces (0 = inherit)</td></tr>
+      <tr><td><code>defaults.threadIdHeader</code></td><td>—</td><td>boot-only</td></tr>
+      <tr><td><code>defaults.requestIdHeader</code></td><td>—</td><td>boot-only</td></tr>
+      <tr><td><code>defaults.logBodies</code></td><td>—</td><td>boot-only</td></tr>
+      <tr><td><code>defaults.headers</code></td><td><code>WithExtraHeader(k, v)</code></td><td>additive (last value wins on conflict)</td></tr>
+      <tr><td><code>defaults.retry.*</code></td><td><code>CallConfig.Retry *RetryOverride</code></td><td>replaces (total — no field-level merge)</td></tr>
+      <tr><td><code>defaults.cache.enabled</code></td><td><code>CallConfig.NoCache bool</code></td><td>bypass-only (cannot force-enable)</td></tr>
+      <tr><td><code>defaults.cache.defaultTTL / maxEntries / honorCacheControl</code></td><td>—</td><td>boot-only</td></tr>
+      <tr><td><code>defaults.circuitBreaker.*</code></td><td>—</td><td>boot-only (state shared across calls)</td></tr>
+      <tr><td><code>defaults.pool.*</code></td><td>—</td><td>boot-only (transport-bound)</td></tr>
+      <tr><td><code>defaults.tls.minVersion</code></td><td>—</td><td>boot-only (transport-bound)</td></tr>
+      <tr><td><code>defaults.tls.cipherSuites</code></td><td>—</td><td>boot-only (transport-bound)</td></tr>
+      <tr><td><code>defaults.tls.insecureSkipVerify</code></td><td>—</td><td>boot-only (transport-bound)</td></tr>
+      <tr><td><code>defaults.redaction.headers</code></td><td>—</td><td>boot-only</td></tr>
+      <tr><td><code>defaults.redaction.bodyJSONPath</code></td><td>—</td><td>boot-only</td></tr>
+      <tr><td><code>defaults.redaction.queryKeys</code></td><td>—</td><td>boot-only</td></tr>
+    </tbody>
+  </table>
+
+  <p><strong>Per-service block (<code>httpClient.services.&lt;name&gt;.*</code>):</strong></p>
+  <table>
+    <thead><tr><th>YAML field</th><th>Dynamic equivalent</th><th>Override semantic</th></tr></thead>
+    <tbody>
+      <tr><td><code>services.&lt;name&gt;.baseURL</code></td><td><code>CallConfig.BaseURL</code></td><td>replaces (wins over BaseURLResolver too)</td></tr>
+      <tr><td><code>services.&lt;name&gt;.timeout</code></td><td><code>CallConfig.Timeout</code></td><td>replaces (0 = inherit)</td></tr>
+      <tr><td><code>services.&lt;name&gt;.auth.provider</code></td><td><code>CallConfig.AuthProvider</code></td><td>replaces (selects another YAML provider by name)</td></tr>
+      <tr><td><em>(runtime credentials — no YAML equivalent)</em></td><td><code>CallConfig.InlineAuth *InlineAuth</code></td><td>additive; wins over AuthProvider when both set</td></tr>
+      <tr><td><code>services.&lt;name&gt;.headers</code></td><td><code>WithExtraHeader(k, v)</code></td><td>additive</td></tr>
+      <tr><td><code>services.&lt;name&gt;.tls.clientCertFile</code> / <code>clientKeyFile</code></td><td><code>WithClientCert(tls.Certificate)</code></td><td>replaces (ephemeral transport clone)</td></tr>
+      <tr><td><code>services.&lt;name&gt;.tls.caBundle</code></td><td>—</td><td>boot-only (transport-bound)</td></tr>
+      <tr><td><code>services.&lt;name&gt;.tls.minVersion</code> / <code>cipherSuites</code> / <code>insecureSkipVerify</code></td><td>—</td><td>boot-only (transport-bound)</td></tr>
+      <tr><td><code>services.&lt;name&gt;.pool.*</code></td><td>—</td><td>boot-only (transport-bound)</td></tr>
+      <tr><td><code>services.&lt;name&gt;.redaction.*</code></td><td>—</td><td>boot-only (cascade on top of defaults)</td></tr>
+      <tr><td><code>services.&lt;name&gt;.signing.*</code></td><td>—</td><td>boot-only (signing is part of the API contract)</td></tr>
+    </tbody>
+  </table>
+
+  <p><strong>Per-endpoint block (<code>httpClient.services.&lt;name&gt;.endpoints.&lt;name&gt;.*</code>):</strong></p>
+  <table>
+    <thead><tr><th>YAML field</th><th>Dynamic equivalent</th><th>Override semantic</th></tr></thead>
+    <tbody>
+      <tr><td><code>endpoints.&lt;name&gt;.method</code></td><td><code>CallConfig.Method</code></td><td>replaces</td></tr>
+      <tr><td><code>endpoints.&lt;name&gt;.path</code></td><td><code>CallConfig.Path</code></td><td>replaces (must start with <code>/</code>)</td></tr>
+      <tr><td><code>endpoints.&lt;name&gt;.requestCodec</code></td><td><code>CallConfig.RequestCodec</code></td><td>replaces (json | xml | form-urlencoded)</td></tr>
+      <tr><td><code>endpoints.&lt;name&gt;.responseCodec</code></td><td><code>CallConfig.ResponseCodec</code></td><td>replaces</td></tr>
+      <tr><td><code>endpoints.&lt;name&gt;.headers</code></td><td><code>WithExtraHeader(k, v)</code></td><td>additive</td></tr>
+      <tr><td><code>endpoints.&lt;name&gt;.acceptableStatus</code></td><td><code>CallConfig.AcceptableStatus []int</code></td><td>extends (union; cannot remove a YAML-accepted status)</td></tr>
+      <tr><td><code>endpoints.&lt;name&gt;.cache</code> (block presence)</td><td><code>CallConfig.NoCache bool</code></td><td>bypass-only (cannot force-enable)</td></tr>
+      <tr><td><em>(framework-computed key)</em></td><td><code>CallConfig.CacheKey string</code></td><td>replaces the computed key</td></tr>
+      <tr><td><code>endpoints.&lt;name&gt;.cache.ttl / varyOn</code></td><td>—</td><td>boot-only (key formula / TTL fixed at boot)</td></tr>
+      <tr><td><code>endpoints.&lt;name&gt;.cacheAcceptable</code></td><td>—</td><td>boot-only</td></tr>
+      <tr><td><code>endpoints.&lt;name&gt;.retry.*</code></td><td><code>CallConfig.Retry *RetryOverride</code></td><td>replaces (total — no field-level merge)</td></tr>
+      <tr><td><code>endpoints.&lt;name&gt;.idempotency.header / source</code></td><td>—</td><td>boot-only (policy shape)</td></tr>
+      <tr><td><em>(key value when <code>source: explicit</code>)</em></td><td><code>CallConfig.IdempotencyKey string</code></td><td>required; supplies the key value</td></tr>
+    </tbody>
+  </table>
+
+  <p><strong>Auth providers block (<code>httpClient.authProviders.*</code>):</strong></p>
+  <table>
+    <thead><tr><th>YAML field</th><th>Dynamic equivalent</th><th>Override semantic</th></tr></thead>
+    <tbody>
+      <tr><td><code>authProviders.&lt;name&gt;.*</code> (definitions)</td><td>—</td><td>boot-only (provider materialized at New)</td></tr>
+      <tr><td><em>(select which provider per call)</em></td><td><code>CallConfig.AuthProvider</code></td><td>replaces the service's default by name</td></tr>
+      <tr><td><em>(supply credentials per call without YAML provider)</em></td><td><code>CallConfig.InlineAuth</code></td><td>additive; ephemeral inline provider</td></tr>
+    </tbody>
+  </table>
+
+  <p><strong>Runtime-only (no YAML equivalent):</strong></p>
+  <table>
+    <thead><tr><th>Dynamic surface</th><th>Use case</th></tr></thead>
+    <tbody>
+      <tr><td><code>WithExtraQuery(k, v)</code></td><td>Per-call query parameter the YAML cannot anticipate (request tags cover the typed query; this is for ad-hoc cases)</td></tr>
+      <tr><td><code>CallConfig.InlineAuth</code></td><td>Credentials drawn from the request payload or DB row (no provider registered in advance)</td></tr>
+    </tbody>
+  </table>
+
+  <p class="note"><strong>Reading the column "Override semantic".</strong> <em>replaces</em> means the override fully takes over when set — leave it at the zero value to keep the YAML. <em>extends</em> means the override is unioned with the YAML — there's no way to subtract. <em>additive</em> means there's no YAML field to override; the runtime value layers on the cascade. <em>boot-only</em> means there is no runtime knob; declare the YAML correctly or reboot to change. For <code>CallConfig.Retry</code> specifically, "replaces (total)" is important: a non-nil <code>RetryOverride</code> throws away the YAML's resolved policy AND substitutes framework defaults for any field the caller leaves zero — there is no field-level merge with the YAML.</p>
+
+  <p>Flow:</p>
+  <ol>
+    <li>Resolve the service + endpoint from the YAML (unknown name → descriptive error before dialing).</li>
+    <li>Apply <code>InvokeOption</code>s cumulatively.</li>
+    <li><code>binding.BuildRequest</code> assembles the <code>*http.Request</code> (path placeholders, query, headers, body).</li>
+    <li>Correlation headers are injected from <code>AppContext.ID()</code>: <code>ThreadIDHeader</code> and <code>RequestIDHeader</code> both carry the same value (the codebase has a single per-request identifier).</li>
+    <li>Per-call extras layer on top (header overrides existing, query appends).</li>
+    <li><code>service.httpClient.Do(req)</code> dials.</li>
+    <li>Response body is read in full, the slog observation is emitted (one record per call), then the response is decoded.</li>
+  </ol>
+  <p>Status branching:</p>
+  <ul>
+    <li><code>2xx</code> → decoded <code>Resp</code>, <code>nil</code> error.</li>
+    <li>Status in the endpoint's <code>acceptableStatus</code> or in <code>WithAcceptableStatus(...)</code> → decoded <code>Resp</code> <em>and</em> <code>*HttpError{Acceptable: true}</code>. The consumer uses <code>IsAcceptableStatus(err, codes...)</code> to branch.</li>
+    <li>Other non-<code>2xx</code> → zero <code>Resp</code> and <code>*HttpError</code>.</li>
+    <li>Transport failure / decode failure → zero <code>Resp</code> and <code>*HttpError</code> with <code>Cause</code> wrapping the underlying error.</li>
+  </ul>
+
+  <h3>Error model</h3>
+<pre><code>type HttpError struct {
+    Service, Endpoint string
+    Method, URL       string
+    Status            int
+    Headers           http.Header
+    Body              []byte
+    Duration          time.Duration
+    Cause             error
+    Acceptable        bool
+    Attempt           int  // attempt index — the retry middleware increments this on every retry
+}</code></pre>
+  <p>Helpers:</p>
+  <ul>
+    <li><code>IsAcceptableStatus(err error, codes ...int) bool</code> — true only for <code>*HttpError{Acceptable: true}</code> whose <code>Status</code> matches one of <code>codes</code> (or any acceptable status when no codes are given).</li>
+    <li><code>IsRetriable(err error) bool</code> — true for 502/503/504, timeouts, DNS failures, generic <code>net.OpError</code>. False for caller cancellation, <code>ErrCircuitOpen</code>, and <code>ErrTokenAcquire</code> — both terminate the retry loop instead of burning attempts on a stuck breaker / IdP.</li>
+    <li><code>IsCircuitOpen(err error) bool</code> — pattern-matches <code>ErrCircuitOpen</code>; returns true when the breaker rejected the call without dialing.</li>
+  </ul>
+  <p>Sentinels: <code>ErrRequestBuild</code>, <code>ErrResponseDecode</code>, <code>ErrTokenAcquire</code>, <code>ErrCircuitOpen</code> — all active.</p>
+
+  <h3>Slog observation</h3>
+  <p>Every outbound call writes one structured record at <code>LogAttrs(level=Info|Warn, msg="http.outbound", ...)</code>. Default fields:</p>
+  <table>
+    <thead><tr><th>Field</th><th>Source</th></tr></thead>
+    <tbody>
+      <tr><td><code>threadId</code></td><td><code>AppContext.ID()</code></td></tr>
+      <tr><td><code>downstreamThreadId</code></td><td>response header (when present and differs from outbound)</td></tr>
+      <tr><td><code>service</code>, <code>endpoint</code>, <code>method</code>, <code>url</code></td><td>call arguments + computed</td></tr>
+      <tr><td><code>status</code>, <code>durationMs</code>, <code>requestBytes</code>, <code>responseBytes</code></td><td>response + timing</td></tr>
+      <tr><td><code>requestHeaders</code>, <code>responseHeaders</code></td><td>with default block-list redaction (see below)</td></tr>
+      <tr><td><code>requestBody</code>, <code>responseBody</code></td><td>only when <code>defaults.logBodies = true</code>; subject to JSONPath body redaction</td></tr>
+      <tr><td><code>attempt</code></td><td>retry attempt index (1 on a first-try success; 2+ when retry middleware looped)</td></tr>
+      <tr><td><code>cacheStatus</code></td><td><code>"hit"</code> / <code>"miss"</code> / <code>"bypass"</code></td></tr>
+      <tr><td><code>breakerState</code></td><td><code>"closed"</code> / <code>"open"</code> / <code>"half-open"</code></td></tr>
+      <tr><td><code>authProvider</code></td><td>provider name from <code>httpClient.authProviders</code>; empty when the service declares no auth</td></tr>
+      <tr><td><code>idempotencyKey</code></td><td>populated when the endpoint's <code>idempotency:</code> block is active</td></tr>
+    </tbody>
+  </table>
+  <p>The level is <code>Warn</code> when the call ended in error, <code>Info</code> otherwise.</p>
+  <p>Redaction is cascaded — framework defaults always apply, then the YAML's <code>defaults.redaction</code> block extends, then per-service <code>redaction:</code> blocks extend further. Removal of an entry is not possible; the cascade is union-only.</p>
+<pre><code>httpClient:
+  defaults:
+    redaction:
+      headers: [X-Internal-Trace]                          # framework defaults always apply
+      bodyJSONPath: [$.password, $.creditCard.number]      # JSON-only; non-JSON bodies emitted verbatim
+      queryKeys: [client_secret]                           # extends framework token/api_key/access_token/signature/code
+
+  services:
+    keycloak:
+      baseURL: https://kc.example.com
+      redaction:
+        headers: [X-KC-Internal]                           # per-service adds on top
+        bodyJSONPath: [$.credentials.password]</code></pre>
+  <p><strong>Framework defaults always applied</strong> (cannot be removed):</p>
+  <ul>
+    <li><strong>Headers</strong> (canonical MIME names): <code>Authorization</code>, <code>Proxy-Authorization</code>, <code>Cookie</code>, <code>Set-Cookie</code>, <code>X-API-Key</code>.</li>
+    <li><strong>Query keys</strong> (case-insensitive): <code>token</code>, <code>api_key</code>, <code>access_token</code>, <code>signature</code>, <code>code</code>.</li>
+    <li><strong>Body JSONPath</strong>: no defaults — operators opt in to mask sensitive request/response fields.</li>
+  </ul>
+  <p><strong>Body redaction.</strong> Best-effort JSON: the framework tries <code>json.Unmarshal</code>, walks each configured dot-notation path (e.g. <code>$.user.password</code>), replaces the leaf with <code>"[REDACTED]"</code>, and re-encodes. Non-JSON bodies and parse failures fall through verbatim — the slog line never fails because of a redaction step.</p>
+  <p><strong>Query redaction.</strong> URL query parameters whose key (case-insensitive) matches any entry in the policy's queryKeys set have their value replaced with <code>"[REDACTED]"</code> in <code>obs.URL</code> before the slog line is written. The path and unlisted parameters survive unchanged.</p>
+  <p>The original headers, bodies, and URL on the wire are <strong>never</strong> modified — redaction only affects what slog observes.</p>
+
+  <h3>Middleware chain</h3>
+  <p><code>Call</code> dispatches every request through a fixed middleware chain. The order is canonical, not configurable by service or by call — there is one path that every outbound call traverses.</p>
+  <p>Chain layers (active when the relevant config block is present):</p>
+  <table>
+    <thead><tr><th>Position</th><th>Layer</th><th>What it does</th></tr></thead>
+    <tbody>
+      <tr><td>1 (outermost)</td><td><code>correlationMiddleware</code></td><td>Injects <code>X-Thread-Id</code> and <code>X-Request-ID</code> from <code>AppContext.ID()</code>, records <code>obs.ThreadID</code> and the configured header name, threads the per-service redaction policy onto the observation</td></tr>
+      <tr><td>2</td><td><code>loggingMiddleware</code></td><td>Captures request body, times the round-trip, buffers and captures response body, emits the single slog observation record, recovers <code>downstreamThreadId</code> from the response</td></tr>
+      <tr><td>3</td><td><code>authMiddleware</code></td><td>Applies the resolved auth provider; honors <code>revocationOnUnauthorized</code> by invalidating + re-applying on 401</td></tr>
+      <tr><td>4</td><td><code>idempotencyMiddleware</code></td><td>Generates a UUIDv7 (source <code>ctx</code>) or attaches the supplied key (source <code>explicit</code>); the header persists across retry attempts</td></tr>
+      <tr><td>5</td><td><code>cacheMiddleware</code></td><td>GET/HEAD-only cache backed by <code>Deps.Cache</code>; short-circuits on hit so retry doesn't run; honors <code>Cache-Control: no-store</code> / <code>max-age</code></td></tr>
+      <tr><td>6 (outer of breaker)</td><td><code>retryMiddleware</code></td><td>Loops up to <code>maxAttempts</code>, replays the body on each attempt, applies the configured backoff and <code>Retry-After</code></td></tr>
+      <tr><td>7 (inner of retry)</td><td><code>breakerMiddleware</code></td><td>Per-(service, endpoint) state machine. Sits inside retry per Q7: each retry attempt counts as a breaker observation</td></tr>
+      <tr><td>8</td><td><code>signingMiddleware</code></td><td>Computes timestamp + content-sha256 + HMAC signature on every attempt. Inside the breaker (rejected attempts skip signing), outside transport (the dialed request carries the headers)</td></tr>
+      <tr><td>9 (terminal)</td><td><code>transportMiddleware</code></td><td>Dials via the per-service <code>http.Client</code> (own <code>http.Transport</code>, own pool, own TLS config)</td></tr>
+    </tbody>
+  </table>
+  <p>Positions 1, 2, 6, 7, 8, 9 are always wired; positions 3 (auth), 4 (idempotency), 5 (cache) are added only when the endpoint declares the matching policy. Retry (6) sits <em>outside</em> the breaker (7) so each retry attempt counts as a breaker observation — see the "Circuit breaker" subsection.</p>
+  <p>A middleware that short-circuits (e.g. a cache hit) returns without calling <code>next</code>; the chain stops there. Layers form a stack: pre-work happens on the way down, post-work on the way back up.</p>
+
+  <h3>Retry</h3>
+  <p>The chain places the retry middleware at position 6 — wrapping the breaker (7) so each attempt counts as a breaker observation. Configuration is declarative:</p>
+<pre><code>httpClient:
+  defaults:
+    retry:
+      maxAttempts: 3
+      backoff: exponential-jitter      # constant | linear | exponential | exponential-jitter
+      initialDelay: 100ms
+      maxDelay: 5s
+      retryOn: [502, 503, 504, network, timeout]
+      respectRetryAfter: true
+
+  services:
+    keycloak:
+      baseURL: https://kc.example.com
+      endpoints:
+        getUser:
+          method: GET
+          path: /users/{id}
+          retry:
+            maxAttempts: 5             # endpoint overrides defaults field by field</code></pre>
+  <p>Cascade: endpoint values override defaults field by field; framework defaults fill the gaps. When neither block is declared, the policy is single-attempt (no retry).</p>
+  <p>Backoff strategies (<code>n</code> is the 1-indexed attempt; the sleep happens <strong>after</strong> attempt <code>n</code> failed and before attempt <code>n+1</code>):</p>
+  <table>
+    <thead><tr><th>Strategy</th><th>Formula</th></tr></thead>
+    <tbody>
+      <tr><td><code>constant</code></td><td><code>initialDelay</code></td></tr>
+      <tr><td><code>linear</code></td><td><code>initialDelay * n</code></td></tr>
+      <tr><td><code>exponential</code></td><td><code>initialDelay * 2^(n-1)</code></td></tr>
+      <tr><td><code>exponential-jitter</code> (default)</td><td><code>random(0, min(initialDelay * 2^(n-1), maxDelay))</code> (full jitter)</td></tr>
+    </tbody>
+  </table>
+  <p>All durations are capped at <code>maxDelay</code>. <code>respectRetryAfter</code> honors RFC 7231 <code>Retry-After</code> headers (seconds or HTTP-date) and caps them at <code>maxDelay</code> too.</p>
+  <p><code>retryOn</code> accepts numeric status codes and the sentinels <code>network</code>, <code>timeout</code>, <code>dns</code>. Caller cancellation (<code>context.Canceled</code>) is <strong>never</strong> retried even when <code>timeout</code>/<code>network</code> would otherwise match.</p>
+  <p><strong>POST/PATCH gate.</strong> Non-idempotent methods are restricted to <code>maxAttempts: 1</code> by default. Declaring an <code>idempotency:</code> block on the same endpoint unlocks higher attempt counts — the upstream sees the same idempotency key on every retry attempt and dedupes. Without <code>idempotency:</code>, a <code>retry: {maxAttempts: 2+}</code> on POST/PATCH aborts boot.</p>
+  <p>The body is replayed on each attempt from <code>obs.RequestBody</code> (the logging middleware buffers it at chain position 2), so request handlers see the same payload byte-for-byte every time.</p>
+
+  <h3>Cache</h3>
+  <p>The chain inserts the cache middleware at position 6 — before retry, so a hit short-circuits without traversing the retry loop. The <strong>backend</strong> is the framework's top-level cache subsystem (see the <a href="#cache-subsystem">Cache subsystem</a> section for the <code>cache:</code> YAML block, the <code>cache.Cache</code> port, and the memory / redis / custom backends). The <code>httpClient.defaults.cache:</code> block keeps only the POLICY knobs — whether the layer runs, the default TTL, Cache-Control honoring, per-endpoint <code>cache: { ttl, varyOn }</code> and <code>cacheAcceptable</code>.</p>
+<pre><code>httpClient:
+  defaults:
+    cache:
+      enabled: true                   # default true
+      defaultTTL: 5m                  # framework default 5m
+      honorCacheControl: true         # default true
+
+  services:
+    keycloak:
+      baseURL: https://kc.example.com
+      endpoints:
+        getUser:
+          method: GET
+          path: /users/{id}
+          cache:
+            ttl: 1m                   # endpoint-specific TTL
+            varyOn: [header:Accept-Language, query:tenant]
+          acceptableStatus: [404]
+          cacheAcceptable: false      # default false; opt-in to cache 404 etc.</code></pre>
+  <p>Cascade: an endpoint with a <code>cache:</code> block participates in caching, subject to <code>defaults.cache.enabled</code> AND a non-nil <code>Deps.Cache</code> at boot. Endpoint <code>ttl</code> overrides <code>defaults.defaultTTL</code>; the framework default fills in when neither sets a value. When the operator omits the top-level <code>cache:</code> block entirely, the httpclient cache layer is silently disabled (the middleware short-circuits as <code>"bypass"</code>).</p>
+  <p><strong>Cacheable methods.</strong> Only GET and HEAD enter the cache. Any other method bypasses unconditionally (<code>obs.CacheStatus = "bypass"</code>). The validator rejects <code>cache:</code> on POST/PATCH/PUT/DELETE endpoints at boot.</p>
+  <p><strong>Storable responses.</strong> 2xx responses are stored by default. Responses whose status appears in <code>acceptableStatus</code> (e.g. 404 on a presence check) are stored only when <code>cacheAcceptable: true</code> on the endpoint — opt-in by design.</p>
+  <p><strong>Key formula.</strong> <code>service|endpoint|method|path|sortedQuery|h:hash(value)...|q:hash(value)...</code>. Query parameters are sorted alphabetically so <code>?a=1&amp;b=2</code> and <code>?b=2&amp;a=1</code> hash to the same key. <code>varyOn</code> accepts <code>header:Name</code> and <code>query:Name</code> entries; values are SHA-256 hashed so they never leak verbatim into the key. The <code>service</code> segment guarantees no cross-service collision when several services share a Redis DB; the backend's <code>keyPrefix</code> (declared on the top-level <code>cache.redis:</code> block) adds an extra namespace scope across deployments.</p>
+  <p><strong>Cache-Control honoring</strong> (when <code>honorCacheControl: true</code>):</p>
+  <ul>
+    <li><code>Cache-Control: max-age=N</code> overrides the configured TTL with N seconds</li>
+    <li><code>Cache-Control: max-age=0</code> short-circuits the store entirely (the byte-cache layer treats <code>ttl == 0</code> as "no expiration", the opposite of what the upstream asked for, so the middleware skips persistence)</li>
+    <li><code>Cache-Control: no-store</code> or <code>no-cache</code> prevents storing the response</li>
+  </ul>
+  <p><strong>Per-call overrides.</strong> <code>WithoutCache()</code> bypasses the cache for one call without touching configuration; <code>WithCacheKey(key)</code> overrides the computed key (rare — typically for tenant-aware key schemes).</p>
+  <p><strong>Wire shape.</strong> The middleware persists an internal <code>cacheEntry</code> JSON envelope (<code>body</code>, <code>headers</code>, <code>status</code>, <code>contentType</code>, <code>contentLength</code>, <code>expiresAt</code>) through the byte-level <code>cache.Cache</code> port. Stored entries remain operator-debuggable via the backend's CLI (e.g. <code>redis-cli GET &lt;key&gt;</code> + <code>json.loads</code>).</p>
+  <p><strong>Observation.</strong> <code>obs.CacheStatus</code> is <code>"hit"</code>, <code>"miss"</code>, or <code>"bypass"</code> in the single slog record per call. The cache backend (when Redis) additionally emits <code>slog.Warn "cache.redis.transport.error"</code> on transport failures so operators see the underlying problem regardless of the backend's <code>failMode</code>.</p>
+
+  <h3>Circuit breaker</h3>
+  <p>The chain inserts the circuit breaker middleware INSIDE the retry middleware — so the retry loop observes the breaker on every attempt. The state machine is per <code>(service, endpoint)</code> pair; configuration is shared at <code>defaults.circuitBreaker</code> (the design does not document per-endpoint overrides).</p>
+<pre><code>httpClient:
+  defaults:
+    circuitBreaker:
+      enabled: true             # default true (when block present)
+      failureThreshold: 5       # default 5 consecutive failures trip
+      successThreshold: 2       # default 2 successes in half-open close
+      openFor: 30s              # default 30s recovery window</code></pre>
+  <p><strong>State machine.</strong> <code>closed → open → half-open → closed</code>:</p>
+  <ul>
+    <li><strong>Closed</strong>: every call passes through. A success resets the failure counter. <code>failureThreshold</code> consecutive failures transition to <strong>open</strong>.</li>
+    <li><strong>Open</strong>: every call is rejected with <code>*HttpError{Cause: ErrCircuitOpen}</code> without dialing. After <code>openFor</code> since the open transition, the next call is admitted as the half-open probe.</li>
+    <li><strong>Half-open</strong>: one probe at a time (subsequent concurrent half-open requests are rejected as open). Each success counts toward <code>successThreshold</code>; reaching it transitions to <strong>closed</strong>. Any failure transitions back to <strong>open</strong>.</li>
+  </ul>
+  <p><strong>Failure attribution.</strong> Transport errors and 5xx responses count as failures; 2xx responses count as successes. 4xx is treated as a success — a client-side rejection is not an upstream health signal.</p>
+  <p><strong>Chain ordering — explicit deviation from design Section 15.</strong> The design lists <code>circuitBreaker (7)</code> outer of <code>retry (8)</code>. Open question Q7 of the design then explicitly decides that <strong>each retry attempt counts as a breaker observation</strong>. That decision is only achievable when the breaker sits INSIDE retry — otherwise the breaker sees a single retry-exhausted outcome per call. The implementation honors Q7: the layer slice ends with <code>retry → breaker → transport</code>. The framework documentation is the source of truth on chain order.</p>
+  <p>When the breaker rejects a call, <code>shouldRetry</code> returns false on <code>ErrCircuitOpen</code> so the retry loop terminates without burning attempts on an open breaker.</p>
+  <p><strong>Observation.</strong> <code>obs.BreakerState</code> reflects the state in effect for the call (<code>"closed"</code>/<code>"open"</code>/<code>"half-open"</code>).</p>
+
+  <h3>Idempotency</h3>
+  <p>The chain inserts the idempotency middleware at position 5 — after logging, before cache and retry. Header injection runs once per call; the header is set on the <code>*http.Request</code> and persists naturally across retry attempts because the retry middleware replays the same request with a fresh body reader. The shared header is what lets the upstream dedupe retried writes.</p>
+<pre><code>endpoints:
+  charge:
+    method: POST
+    path: /charges
+    idempotency:
+      header: X-Idempotency-Key       # required; outbound header name
+      source: ctx                     # ctx (default) | explicit
+    retry:
+      maxAttempts: 3                  # POST allowed because idempotency is configured</code></pre>
+  <p><strong>Source semantics.</strong></p>
+  <ul>
+    <li><code>source: ctx</code> (default) — the framework generates a UUIDv7 per call (sortable by creation time for upstream dedup logs). The same key is reused across all retry attempts of the same call.</li>
+    <li><code>source: explicit</code> — the caller must supply the key via <code>WithIdempotencyKey(key)</code>. Missing key returns <code>*HttpError{Cause: …requires WithIdempotencyKey}</code> before dialing.</li>
+  </ul>
+  <p><strong>POST/PATCH retry unlock.</strong> Retry restricts non-idempotent methods to <code>maxAttempts: 1</code> by default. Declaring <code>idempotency:</code> on the endpoint signals that the framework can safely retry — the upstream sees the same key on each attempt and dedupes. The boot validator accepts <code>retry: {maxAttempts: 2+}</code> on POST/PATCH only when <code>idempotency:</code> is present; the runtime <code>resolveRetryPolicy</code> mirrors the same gate.</p>
+  <p><strong>AppContext propagation.</strong> When the context implements <code>Set(key, value any)</code> (AppContext does), the middleware writes the chosen key under <code>httpclient.idempotency-key</code>. Consumers that need to thread the same value to a parallel pipeline (audit, custom middleware) can read it via <code>AppContext.Get(httpclient.AppContextIdempotencyKey)</code>.</p>
+  <p><strong>Observation.</strong> <code>obs.IdempotencyKey</code> carries the key into the single slog record per call when active.</p>
+
+  <h3>Auth providers</h3>
+  <p>The chain inserts the auth middleware at position 3 — after logging (so the slog observation sees the headers post-attach) and before signing (so the HMAC signature signs the request including the auth header). Static providers always succeed; dynamic providers (<code>forward-bearer</code>, <code>oauth2-*</code>) can fail at token acquisition.</p>
+<pre><code>httpClient:
+  services:
+    keycloak:
+      baseURL: https://kc.example.com
+      auth: { provider: kc-api-key }
+      endpoints:
+        getUser:
+          method: GET
+          path: /users/{id}
+
+  authProviders:
+    kc-api-key:
+      type: header-static
+      attach:
+        as: header
+        name: X-API-Key
+        value: ${KC_API_KEY}
+
+    vendor-basic:
+      type: basic
+      username: ${VENDOR_USER}
+      password: ${VENDOR_PASS}
+
+    legacy-bearer:
+      type: bearer-static
+      token: ${LEGACY_TOKEN}
+
+    mtls-only:
+      type: none</code></pre>
+  <p><strong>Provider types:</strong></p>
+  <table>
+    <thead><tr><th>Type</th><th>Behavior</th><th>Required fields</th></tr></thead>
+    <tbody>
+      <tr><td><code>none</code></td><td>No-op (mTLS handles identity, or anonymous call)</td><td>—</td></tr>
+      <tr><td><code>header-static</code></td><td>Raw value via <code>attach</code></td><td><code>attach.name</code>, <code>attach.value</code></td></tr>
+      <tr><td><code>bearer-static</code></td><td>Static token; default <code>Authorization: Bearer {token}</code></td><td><code>token</code></td></tr>
+      <tr><td><code>basic</code></td><td>RFC 7617 base64(user:pass); default <code>Authorization: Basic ...</code></td><td><code>username</code>, <code>password</code></td></tr>
+      <tr><td><code>forward-bearer</code></td><td>Propagates the inbound JWT from <code>AppContext.BearerToken()</code>; default <code>Authorization: Bearer {token}</code>; <strong>never cached</strong> by design</td><td>— (depends on <code>AppContext</code> carrying a bearer)</td></tr>
+      <tr><td><code>oauth2-client-credentials</code></td><td>RFC 6749 client_credentials grant; POSTs form-urlencoded to the token endpoint; token cached per-provider; single-flight collapses concurrent acquisitions; optional revocation-on-401</td><td><code>tokenEndpoint</code>, <code>clientId</code>, <code>clientSecret</code>, <code>tokenCache.source</code></td></tr>
+      <tr><td><code>credentials-exchange</code></td><td>Generic "POST credentials, get token" path. Configurable body codec (json/form-urlencoded), arbitrary <code>requestFields</code> (k/v), optional <code>requestHeaders</code> (e.g. Basic Auth), JSONPath token extraction. Reuses tokenCache + single-flight + revocation</td><td><code>tokenEndpoint</code>, <code>requestFields</code>, <code>responseTokenPath</code>, <code>tokenCache.source</code></td></tr>
+    </tbody>
+  </table>
+  <p><code>oauth2-password</code> and <code>oauth2-refresh</code> from the original design are subsumed by <code>credentials-exchange</code> — declare the grant body via <code>requestFields</code> with the canonical RFC names. No dedicated provider types are planned for them.</p>
+  <p><strong>credentials-exchange details.</strong> Generic escape hatch for IdPs that diverge from RFC 6749 — custom field names, JSON body instead of form-urlencoded, non-standard response shape. The provider POSTs <code>requestFields</code> (in the configured codec) to <code>tokenEndpoint</code>, applies any <code>requestHeaders</code> (e.g. Basic Auth for confidential clients), and extracts the token via <code>responseTokenPath</code> (dot-notation JSONPath).</p>
+<pre><code># Custom Keycloak-style endpoint expecting JSON body with non-standard field names
+authProviders:
+  kc-custom:
+    type: credentials-exchange
+    tokenEndpoint: https://kc.example.com/realms/x/auth/exchange
+    requestCodec: json                # json | form-urlencoded (default form-urlencoded)
+    requestFields:
+      user: ${KC_USER}                # arbitrary keys
+      pass: ${KC_PASS}
+    responseTokenPath: $.access_token # dot-notation JSONPath; required
+    tokenCache:
+      source: response-field
+      jsonPath: $.expires_in
+      unit: seconds
+      skew: 30s
+    revocationOnUnauthorized: true
+
+# RFC OAuth2 Resource Owner Password Credentials grant via credentials-exchange
+  kc-password-rfc:
+    type: credentials-exchange
+    tokenEndpoint: https://kc/realms/x/.../token
+    requestCodec: form-urlencoded
+    requestFields:
+      grant_type: password
+      client_id: ${KC_CLIENT_ID}
+      username: ${KC_USER}
+      password: ${KC_PASS}
+      scope: api.read
+    requestHeaders:                   # confidential client → Basic Auth header
+      Authorization: "Basic ${KC_BASIC}"
+    responseTokenPath: $.access_token
+    tokenCache: { source: jwt-exp, skew: 30s }</code></pre>
+  <p>Token cache, single-flight, and <code>revocationOnUnauthorized</code> work the same way as in <code>oauth2-client-credentials</code>. The provider implements <code>RevocableProvider</code>, so the auth middleware honors the 401-invalidate-retry loop when configured.</p>
+
+  <p><strong>Multi-tenant via <code>requestFieldsFromCtx</code>.</strong> When the credentials change per request (per-tenant SaaS, on-behalf-of-user calls), declare <code>requestFieldsFromCtx</code> mapping body field name → <code>AppContext</code> key. Values are read at <code>Apply</code> time and the token cache becomes per-identity (SHA-256 hash of the resolved values keys the cache slot — the raw credentials never leak into the key).</p>
+<pre><code>authProviders:
+  kc-multitenant:
+    type: credentials-exchange
+    tokenEndpoint: https://kc.example.com/auth/exchange
+    requestCodec: json
+    requestFields:                    # optional: static fields
+      grant_type: password
+      client_id: ${KC_CLIENT_ID}
+    requestFieldsFromCtx:             # body field → AppContext key
+      username: idp.username
+      password: idp.password
+    responseTokenPath: $.access_token
+    tokenCache:
+      source: response-field
+      jsonPath: $.expires_in
+      unit: seconds
+      skew: 30s
+    revocationOnUnauthorized: true</code></pre>
+  <p>Code at the handler / external service:</p>
+<pre><code>ctx.Set("idp.username", runtimeUser)
+ctx.Set("idp.password", runtimePass)
+// httpclient.Call automatically resolves the token per tenant and caches it.</code></pre>
+  <p>Static and ctx fields are merged into a single body; on a same-named field, ctx wins. A missing key in AppContext (or a context that isn't an <code>AppContext</code>) returns an <code>ErrTokenAcquire</code>-shaped error before dialing. Per-tenant single-flight collapses concurrent first-time-misses for the same tenant; different tenants run independently.</p>
+  <p><strong>Security tradeoff.</strong> The per-tenant cache holds bearer tokens in memory keyed by identity hash. Same surface area as the single-tenant cache, just multiplied by tenant count. Pair with <code>revocationOnUnauthorized</code> so a tenant's revoked session does not linger.</p>
+
+  <p><strong>oauth2-client-credentials details.</strong></p>
+<pre><code>authProviders:
+  keycloak-svc:
+    type: oauth2-client-credentials
+    tokenEndpoint: https://kc.internal/realms/main/protocol/openid-connect/token
+    clientId: ${KC_CLIENT_ID}
+    clientSecret: ${KC_CLIENT_SECRET}
+    scope: ["api.read", "api.write"]
+    audience: pay.example.com           # optional
+    tokenCache:
+      source: jwt-exp                   # jwt-exp | response-field | ttl
+      skew: 30s                         # default 30s buffer before expiry
+      singleFlight: true                # default true
+    revocationOnUnauthorized: true      # default false; opt-in</code></pre>
+  <p>The token endpoint is called via <code>POST application/x-www-form-urlencoded</code> with the standard <code>grant_type=client_credentials</code> body. The response's <code>access_token</code> is cached per-provider; concurrent cache misses collapse to a single endpoint call via single-flight.</p>
+  <p><strong>Token TTL source.</strong></p>
+  <ul>
+    <li><code>jwt-exp</code> — the framework decodes the JWT payload (no signature verification — the upstream IdP signed it) and reads the <code>exp</code> claim.</li>
+    <li><code>response-field</code> — extract the expiry from the token endpoint's JSON response via dot-notation JSONPath (e.g. <code>$.expires_in</code>) with <code>unit: seconds|millis|iso8601</code> (default seconds).</li>
+    <li><code>ttl</code> — explicit duration (e.g. <code>ttl: 10m</code>).</li>
+  </ul>
+  <p>In all three cases the cached entry is treated as expired <code>skew</code> seconds before its actual expiry, so the next call refreshes preemptively rather than racing against the upstream clock.</p>
+  <p><strong>revocationOnUnauthorized.</strong> When true, a 401 from the resource server triggers the auth middleware to call <code>provider.Invalidate()</code>, re-acquire a fresh token, and dispatch the original request one more time. The retry happens inside the auth middleware — independent of the retry middleware's policy — so a cached-but-stale credential recovers transparently. Default is false because the optimistic-then-refresh path adds one round-trip on every 401 from the upstream; only opt in when the IdP supports key rotation or revocation paths that can outpace the cache TTL.</p>
+
+  <p><strong>forward-bearer details.</strong> Reads the verified raw JWT the framework's <code>AuthMiddleware</code> stored on the inbound request via <code>AppContext.SetBearerToken</code>. The token is never cached — it IS the inbound user's credential, and caching would require keying by a hash of the token, risking cross-user contamination. Without a bearer on the AppContext (public route, <code>auth.mode=disabled</code>, background job), the provider returns an <code>Apply</code> error that the middleware wraps in <code>ErrTokenAcquire</code>; <code>shouldRetry</code> returns false on that sentinel so the call fails fast instead of looping.</p>
+  <p><strong>attach block.</strong></p>
+<pre><code>attach:
+  as: header                    # header (default) | query | cookie
+  name: X-API-Key               # header/query/cookie name
+  format: "Bearer {token}"       # optional; {token} placeholder
+  value: literal                # header-static only</code></pre>
+  <p>Defaults apply when omitted: <code>as: header</code>, <code>name: Authorization</code> (for <code>bearer-static</code>/<code>basic</code>), <code>format: Bearer {token}</code> (for <code>bearer-static</code>). <code>basic</code> ignores <code>format</code> because the value already contains the scheme.</p>
+  <p><strong>Per-call override.</strong> <code>WithAuthOverride(providerName)</code> substitutes the provider for one call. Unknown names produce <code>*HttpError{Cause: ErrTokenAcquire}</code> before dialing.</p>
+  <p><strong>Q5 short-circuit.</strong> When a provider returns an error from <code>Apply</code>, the middleware wraps it in <code>*HttpError{Cause: ErrTokenAcquire}</code> and <code>shouldRetry</code> returns false on that sentinel — burning retry attempts on a stuck IdP would only add load. Static providers never trigger this path; dynamic providers (forward-bearer, oauth2) will use it.</p>
+  <p><strong>Observation.</strong> <code>obs.AuthProvider</code> carries the provider name on every slog record when auth is active.</p>
+
+  <h3>TLS + connection pool</h3>
+  <p>Each per-service <code>http.Transport</code> is built once at boot from the cascaded <code>tls:</code> and <code>pool:</code> blocks. Service entries override defaults field by field; framework defaults fill any remaining gap.</p>
+<pre><code>httpClient:
+  defaults:
+    tls:
+      minVersion: "1.2"             # default 1.2 (use 1.3 for modern services)
+      cipherSuites: modern          # modern | intermediate | legacy | [explicit names]
+      insecureSkipVerify: false     # default false (test/dev only)
+    pool:
+      maxIdleConnsPerHost: 100      # framework defaults
+      maxConnsPerHost: 200
+      idleConnTimeout: 90s
+      disableKeepAlives: false
+
+  services:
+    payment:
+      baseURL: https://pay.example.com
+      tls:
+        clientCertFile: /etc/secrets/pay-client.pem
+        clientKeyFile: /etc/secrets/pay-client-key.pem
+        caBundle: /etc/secrets/pay-ca.pem
+      pool:
+        maxConnsPerHost: 20          # gateway-imposed limit
+      endpoints:
+        charge:
+          method: POST
+          path: /charges
+    legacy:
+      baseURL: https://soap.legacy.example.com
+      tls:
+        minVersion: "1.0"            # downgrade for legacy SOAP backends</code></pre>
+  <p><strong>Cipher suite presets.</strong> Follow Mozilla's published recommendations:</p>
+  <table>
+    <thead><tr><th>Preset</th><th>Recommended for</th></tr></thead>
+    <tbody>
+      <tr><td><code>modern</code> (default)</td><td>TLS 1.3-only ciphers (AES-GCM + ChaCha20-Poly1305)</td></tr>
+      <tr><td><code>intermediate</code></td><td>TLS 1.2+ ECDHE suites — broadest compatibility</td></tr>
+      <tr><td><code>legacy</code></td><td>TLS 1.0+ with CBC/RSA suites for ancient backends</td></tr>
+    </tbody>
+  </table>
+  <p>Operators may also list explicit cipher names (any value in the framework's <code>explicitCipherNames</code> map). Unknown names abort the boot.</p>
+  <p><strong>mTLS.</strong> Set <code>clientCertFile</code> and <code>clientKeyFile</code> (both required) to a PEM-encoded cert/key pair on disk. The loader runs once at boot; vault-rotated certs use the per-call <code>WithClientCert(tls.Certificate)</code> option, which builds an ephemeral cloned transport for the single call without polluting the service's pool.</p>
+  <p><strong>Custom CA bundle.</strong> Set <code>caBundle</code> to a PEM file path; the bundle <strong>replaces</strong> (does not merge with) the system roots.</p>
+  <p><strong>Pool tuning.</strong> Service overrides flow into <code>http.Transport</code> directly. Use <code>maxConnsPerHost</code> to match upstream-imposed limits; <code>disableKeepAlives: true</code> is the escape hatch for backends that misbehave under connection reuse.</p>
+
+  <h3>Streaming — download, upload, multipart, SSE</h3>
+  <p>Four streaming surfaces bypass the default "buffer the whole body" path.</p>
+
+  <h4>Download streaming (<code>responseStream: true</code>)</h4>
+  <p>YAML marks the endpoint; Resp must be <code>httpclient.StreamResponse</code>. The framework hands the open response body to the caller — the caller MUST close it.</p>
+
+<pre><code>endpoints:
+  downloadReceipt:
+    method: GET
+    path: /receipts/{id}/pdf
+    responseStream: true</code></pre>
+
+<pre><code>type Req struct { ID string `http:"path,id"` }
+resp, err := httpclient.Call[Req, httpclient.StreamResponse](ctx, c, "pay", "downloadReceipt", Req{ID: "ch_42"})
+if err != nil { return err }
+defer resp.Body.Close()
+_, err = io.Copy(out, resp.Body)</code></pre>
+
+  <p><code>StreamResponse.ContentLength</code> is <code>-1</code> when the upstream uses chunked transfer.</p>
+
+  <h4>Upload streaming (<code>http:"body,stream"</code> tag)</h4>
+  <p>Field type is <code>io.Reader</code>. The framework pipes the reader to the wire without buffering. Content-Type comes from a <code>http:"header,Content-Type"</code> field or <code>WithExtraHeader</code>. Used for arbitrary binary uploads.</p>
+
+<pre><code>type UploadAvatarRequest struct {
+    UserID string    `http:"path,id"`
+    Body   io.Reader `http:"body,stream"`
+    Mime   string    `http:"header,Content-Type"`
+}</code></pre>
+
+  <h4>Multipart upload (<code>http:"body,multipart"</code> tag, <code>httpclient.Multipart</code> value)</h4>
+  <p>Combines text fields with file streams. The framework writes the multipart body through an <code>io.Pipe</code>, so file content is never fully buffered.</p>
+
+<pre><code>type UploadDocRequest struct {
+    UserID string             `http:"path,id"`
+    Body   httpclient.Multipart `http:"body,multipart"`
+}
+req := UploadDocRequest{
+    UserID: "u42",
+    Body: httpclient.Multipart{
+        Fields: []httpclient.MultipartField{{Name: "category", Value: "id-proof"}},
+        Files: []httpclient.MultipartFile{{
+            Name: "file", Filename: "passport.pdf", MimeType: "application/pdf",
+            Content: openedFile,
+        }},
+    },
+}</code></pre>
+
+  <h4>Server-Sent Events (<code>responseSSE: true</code>)</h4>
+  <p>YAML marks the endpoint; Resp must be <code>httpclient.SSEResponse</code>. The framework spawns a goroutine that parses the upstream's <code>text/event-stream</code> per the WHATWG EventSource spec and delivers events on a buffered channel. The caller MUST call <code>Close()</code> to stop the goroutine and release the connection. <code>Accept: text/event-stream</code> is auto-injected when the request struct does not set it.</p>
+
+<pre><code>resp, err := httpclient.Call[Req, httpclient.SSEResponse](ctx, c, "stream", "subscribe", Req{Topic: "orders"})
+if err != nil { return err }
+defer resp.Close()
+for ev := range resp.Events {
+    handle(ev) // ev.ID, ev.Event, ev.Data, ev.Retry
+}</code></pre>
+
+  <p>Reconnection is the caller's responsibility — the framework does not re-dial when the stream ends. The upstream's <code>retry:</code> hint is surfaced on <code>SSEvent.Retry</code> so the caller can honor it.</p>
+
+  <h4>Middleware interactions — the constraints</h4>
+  <table>
+    <thead><tr><th>Constraint</th><th>Reason</th></tr></thead>
+    <tbody>
+      <tr><td><code>responseStream</code> + <code>cache</code> → boot reject</td><td>caching a stream is undefined</td></tr>
+      <tr><td><code>responseSSE</code> + <code>cache</code> → boot reject</td><td>same</td></tr>
+      <tr><td><code>responseStream</code> + <code>responseSSE</code> → boot reject</td><td>mutually exclusive endpoint shapes</td></tr>
+      <tr><td>Streaming upload + retry → forced <code>maxAttempts: 1</code> at runtime</td><td>one-shot <code>io.Reader</code>; second attempt would send empty body</td></tr>
+      <tr><td>Streaming upload + signing → call-time reject</td><td>signing needs SHA256(body); cannot hash a stream without buffering</td></tr>
+      <tr><td>Streaming endpoints + logging</td><td>request/response body bytes NOT captured in slog (status, headers, byte counts still emitted)</td></tr>
+    </tbody>
+  </table>
+
+  <p class="note"><strong>Out of scope:</strong> automatic SSE reconnection (consumer's responsibility), seekable-body retry for uploads (could be added later via a body-factory callback), per-call streaming overrides via <code>CallConfig</code> (streaming is an endpoint-level contract).</p>
+
+  <h3>HMAC request signing</h3>
+  <p>Per-service <code>signing:</code> block declares an HMAC request-signing policy compatible with payment gateways, Twilio-style webhooks, and AWS SigV4-lite upstreams. The framework injects timestamp + content-sha256 + signature headers on every outbound request, with <strong>re-signing per retry attempt</strong> so each dial carries a fresh timestamp.</p>
+
+<pre><code>services:
+  payment:
+    baseURL: https://pay.example.com
+    signing:
+      type: hmac-sha256                       # required (the supported signing type)
+      keyId: ${PAY_KEY_ID}                    # optional
+      keyIdHeader: X-Key-Id                   # required when keyId is set
+      secret: ${PAY_SIGNER_SECRET}            # required
+      signedHeaders:                          # required, non-empty
+        - host
+        - x-date
+        - x-content-sha256
+        - x-idempotency-key
+        - content-type
+      timestampHeader: X-Date                 # required
+      timestampFormat: rfc1123                # optional; rfc1123 | iso8601 | unix-seconds
+      contentSHA256Header: X-Content-SHA256   # optional; default X-Content-SHA256; "-" to disable
+      signatureHeader: X-Signature            # required
+      signaturePrefix: ""                     # optional; e.g. "HMAC-SHA256 "</code></pre>
+
+  <p><strong>Canonical string (AWS SigV4-lite shape):</strong></p>
+
+<pre><code>METHOD\nPATH\nQUERY_CANONICAL\nHEADERS_CANONICAL\nSIGNED_HEADERS_LIST\nSHA256_HEX(BODY)</code></pre>
+
+  <ul>
+    <li><code>METHOD</code> — uppercased HTTP verb</li>
+    <li><code>PATH</code> — URL path component (no query); empty path becomes <code>/</code></li>
+    <li><code>QUERY_CANONICAL</code> — sorted alphabetically by key; each <code>key=value</code> URL-encoded; repeated keys sorted by value</li>
+    <li><code>HEADERS_CANONICAL</code> — for each header in <code>signedHeaders</code> (lowercased + sorted): <code>name:trimmed_value\n</code>; multi-value headers joined by <code>,</code></li>
+    <li><code>SIGNED_HEADERS_LIST</code> — <code>signedHeaders</code> joined by <code>;</code></li>
+    <li><code>SHA256_HEX(BODY)</code> — lowercase hex of SHA256(body); SHA256 of empty input when body is absent (<code>e3b0c4...</code>)</li>
+  </ul>
+
+  <p><strong>Signature:</strong> <code>hex(HMAC_SHA256(secret, canonical))</code>. Lowercase hex output. Written to <code>signatureHeader</code> with <code>signaturePrefix</code> prepended.</p>
+
+  <p><strong>Chain position 8 — inner of retry and breaker, just before transport.</strong></p>
+  <ul>
+    <li>Inner of retry → each attempt re-signs with a fresh timestamp (idempotent on the upstream side when the idempotency key is in <code>signedHeaders</code>).</li>
+    <li>Inner of breaker → a rejected attempt does not waste signing work.</li>
+    <li>Outer of transport → the request that actually dials carries the signature headers.</li>
+    <li>Cache hits (short-circuit at position 5) skip signing entirely — correct, because no dial happens.</li>
+  </ul>
+
+  <p><strong>What can be in <code>signedHeaders</code>.</strong> Only headers that are present when signing runs (position 8): <code>host</code>, <code>authorization</code> (set by auth at position 3), <code>x-idempotency-key</code> (set by idempotency at position 4), <code>content-type</code> / any header from the defaults/service/endpoint cascade, <code>WithExtraHeader</code> / <code>CallConfig</code> overrides, plus the framework-injected <code>timestampHeader</code> and <code>contentSHA256Header</code>. Headers added by anything downstream of position 8 (none today) cannot be referenced.</p>
+
+  <p><strong>Auto-redaction.</strong> The framework automatically adds <code>signatureHeader</code> and <code>keyIdHeader</code> (when set) to the per-service redaction policy — the values are redacted in slog observations but transmitted untouched on the wire. The redaction cascade is union-only; operators cannot un-redact.</p>
+
+  <p><strong>Per-call override:</strong> none. Signing is part of the API contract; change the YAML and reboot.</p>
+
+  <h3>Composition pattern</h3>
+  <p>Application handlers never depend on <code>*httpclient.HttpClient</code> directly. The DDD layering is:</p>
+  <ol>
+    <li><code>bootstrap.Deps.HttpClient</code> exposes the registry singleton.</li>
+    <li>Each feature constructs an <code>infra/external/&lt;svc&gt;.go</code> service struct, passing <code>d.HttpClient</code> to its constructor (e.g. <code>appexternal.NewIdPService(d.HttpClient)</code>).</li>
+    <li>The infra service struct holds the typed Call surface (request/response DTOs with <code>http:"..."</code> tags, mapping vendor→domain) and exposes business-vocabulary methods.</li>
+    <li>The handler in <code>application/handlers/</code> depends on the infra service struct and calls business methods — it never imports <code>httpclient</code> and never knows the call crossed the network.</li>
+  </ol>
+  <p>Swapping HTTP for gRPC or a fake never touches <code>application/</code>.</p>
+
+  <h3>Outbound error handling</h3>
+  <p>A <code>*HttpError</code> returned by <code>httpclient.Call</code> does <strong>not</strong> implement <code>domain.NotificationCarrier</code>. That is deliberate: only the consumer knows whether a 404 from Keycloak is "the user does not exist in our domain" (→&nbsp;404 with a typed not-found notification), "the gateway is misconfigured" (→&nbsp;502), or "the upstream is down" (→&nbsp;503). The framework refuses to guess.</p>
+
+  <p>The flow inside a Command/Query handler is the canonical one — every outbound failure that is not translated by the handler falls through to <code>pipeline.Run</code>'s default branch:</p>
+  <ol>
+    <li>Handler calls the <code>infra/external/&lt;svc&gt;.go</code> service struct → receives <code>*HttpError</code>.</li>
+    <li>Handler returns the error verbatim → <code>pipeline.Run</code> tests against <code>NotificationCarrier</code>, the test fails, the error becomes <code>Result.Exception</code>.</li>
+    <li><code>RespondFromResult</code> on the Exception branch emits <strong>500 <code>InternalServerErrorNotification</code></strong> with the English default message; the underlying cause stays on the server log and never leaks to the wire.</li>
+  </ol>
+  <p>That is the correct outcome for an <em>untranslated</em> failure — same posture the framework already takes for any panic or non-carrier escape from a handler. To surface a different status with typed identity, the handler translates the <code>*HttpError</code> into a service-defined notification before returning, exactly like it would for a domain rejection. Pair a custom <code>Notification</code> declaring <code>Semantic()</code> with one of the wrappers documented in <a href="#reference">Quick reference → Error helpers</a> (<code>exception.SingleNotificationError</code> / <code>exception.FieldErrorWithCause</code> for application handlers; <code>infra.FieldErrorWithCause</code> when the translation lives inside the adapter):</p>
+
+<pre><code>// service-defined notifications — each carries its own Semantic
+type KeycloakUserNotFoundNotification struct{ domain.ApplicationNotificationBase }
+func (KeycloakUserNotFoundNotification) Semantic() domain.NotificationSemantic {
+    return domain.SemanticNotFound  // → 404
+}
+
+type KeycloakUnavailableNotification struct{ domain.ApplicationNotificationBase }
+func (KeycloakUnavailableNotification) Semantic() domain.NotificationSemantic {
+    return domain.SemanticUnavailable  // → 503
+}
+
+// handler — translates the outbound failure into the service's domain vocabulary
+func (h *FetchUserHandler) Handle(ctx *configuration.AppContext, cmd *FetchUserCommand) (UserResult, error) {
+    user, err := h.kc.FetchUser(ctx, cmd.ID)
+    if err != nil {
+        var httpErr *httpclient.HttpError
+        if errors.As(err, &amp;httpErr) {
+            switch {
+            case httpclient.IsAcceptableStatus(err, 404):
+                return UserResult{}, exception.SingleNotificationError(
+                    "Keycloak", "id", KeycloakUserNotFoundNotification{})
+            case httpErr.Status &gt;= 500 || httpErr.Status == 0:
+                // 5xx OR Status==0 (transport / breaker open / token acquire) → 503
+                return UserResult{}, exception.FieldErrorWithCause(
+                    "Keycloak", "service", err, KeycloakUnavailableNotification{})
+            }
+        }
+        // anything the handler chooses NOT to translate falls through to 500 InternalServerError
+        return UserResult{}, err
+    }
+    return projectUser(user), nil
+}</code></pre>
+
+  <p>The returned <code>*ApplicationError</code> implements <code>NotificationCarrier</code>, so <code>pipeline.Run</code> lands on the <code>Failure</code> branch, <code>RespondFromResult</code> reads each notification's <code>Semantic()</code>, and the wire envelope carries the right status plus the typed <code>notificationKey</code> the client can branch on — symmetric with how a domain <code>BuildRules</code> rejection reaches the wire. No <code>respondWithError</code> helper lives in the consumer; the same canonical envelope flows for every failure mode.</p>
+
+  <p><strong>Translate inside the adapter when the mapping is fixed.</strong> When the same upstream status always maps to the same domain semantic regardless of caller, the <code>infra/external/&lt;svc&gt;.go</code> struct itself can wrap the <code>*HttpError</code> via <code>infra.FieldErrorWithCause(...)</code> and expose a typed sentinel (e.g. <code>ErrKeycloakUserNotFound</code>) — the handler just checks <code>errors.Is</code>. Keep this for mappings that are part of the adapter's contract (a missing user is a missing user); leave caller-specific translation in the handler. Both paths produce a <code>NotificationCarrier</code>; the trade-off is where the policy lives.</p>
+
+  <p><strong>The 500 fallback is a feature, not a gap.</strong> Any outbound failure the handler does <em>not</em> explicitly translate stays a 500 — the same envelope that surfaces a panic, a nil-pointer dereference, or any other escaped error. A consumer-facing 500 with no further detail is the framework saying "this code path was not designed to handle this outcome"; it surfaces as a bug to fix in the handler, not as a number to negotiate over the wire. Treat 5xx envelopes from your own service as missing translations: add the <code>switch</code> arm + the typed notification.</p>
+
+  <h3>Service discovery — <code>BaseURLResolver</code></h3>
+  <p>The per-service <code>baseURL</code> in YAML covers the common case — one static URL per service per environment. For dynamic routing (Consul, Kubernetes Service DNS, per-tenant URL maps, region-aware failover) register a <code>BaseURLResolver</code>:</p>
+
+<pre><code>type BaseURLResolver interface {
+    Resolve(ctx context.Context, service string) (string, error)
+}
+
+client, err := httpclient.New(cfg, httpclient.WithResolver(myResolver))</code></pre>
+
+  <p>When a resolver is registered, <strong>every call</strong> consults it before dialing — implementations are responsible for their own cache / refresh policy; the framework does not memoize.</p>
+
+  <p><strong>Cascade with the YAML:</strong></p>
+  <table>
+    <thead><tr><th>Source</th><th>Effective baseURL</th></tr></thead>
+    <tbody>
+      <tr><td>Per-call <code>WithConfig(CallConfig{BaseURL: "..."})</code> non-empty</td><td>Wins over everything below; resolver is not consulted</td></tr>
+      <tr><td>Resolver not registered (nil)</td><td>YAML baseURL verbatim (zero-overhead hot path)</td></tr>
+      <tr><td>Resolver returns <code>(url, nil)</code> with non-empty url</td><td><code>url</code> overrides the YAML for this call</td></tr>
+      <tr><td>Resolver returns <code>("", nil)</code></td><td>Fall back to the YAML baseURL — resolver can opt out per-service</td></tr>
+      <tr><td>Resolver returns <code>(_, err)</code></td><td>Call aborts with <code>*HttpError{Cause: err}</code> before dialing</td></tr>
+      <tr><td>Resolver and YAML both empty (no per-call override either)</td><td>Call aborts with <code>*HttpError</code> describing the missing baseURL</td></tr>
+    </tbody>
+  </table>
+
+  <p><strong>Schema implication.</strong> <code>services.&lt;name&gt;.baseURL</code> is <strong>optional</strong> in YAML — services that delegate routing to a resolver leave it empty. A non-empty value is still validated as an absolute URL at boot so typos surface immediately. The "both empty" error happens at call time, with the service name in the message.</p>
+
+  <p><strong>Reference impl.</strong> <code>StaticBaseURLResolver</code> is a <code>map[string]string</code> that returns the entry verbatim and <code>""</code> for unknown services (fall-through). Useful in tests and for static per-environment maps the YAML cannot express directly:</p>
+
+<pre><code>resolver := httpclient.StaticBaseURLResolver{
+    "keycloak": "https://kc.east.example.com",
+    "payment":  "https://pay.east.example.com",
+}
+client, _ := httpclient.New(cfg, httpclient.WithResolver(resolver))</code></pre>
+
+  <p><strong>Per-request routing via <code>AppContext</code>.</strong> The <code>ctx</code> passed to <code>Resolve</code> is the same one the framework will use for the dial — <code>AppContext</code> satisfies it, so a resolver can read <code>Identity()</code>, <code>Get("key")</code>, or any custom value the caller stored on the context. Per-tenant routing is the canonical example:</p>
+
+<pre><code>type TenantResolver struct{ Mapping map[string]string }
+
+func (r TenantResolver) Resolve(ctx context.Context, service string) (string, error) {
+    if appCtx, ok := ctx.(*configuration.AppContext); ok {
+        if tenantID, _ := appCtx.Get("tenant.id").(string); tenantID != "" {
+            if url := r.Mapping[service+"|"+tenantID]; url != "" {
+                return url, nil
+            }
+        }
+    }
+    return "", nil // fall back to YAML
+}</code></pre>
+
+  <p>The handler stores the tenant id on <code>AppContext</code> before calling out (typically via service middleware after <code>AppContextMiddleware</code>); every outbound call automatically reaches the right upstream without per-call wiring. The same pattern works for feature-flag-driven routing, A/B testing, region failover, on-behalf-of-user calls.</p>
+
+  <p><strong>Versioning / path prefix via the resolver.</strong> The resolver returns a baseURL that is concatenated with the endpoint's YAML <code>path</code> verbatim, so a path prefix lives naturally in the baseURL — useful for API versioning, per-tenant URL prefixes, gradual cutover between v1 and v2. The endpoint <code>path: /users</code> in YAML stays unchanged; only the resolver decides what comes before it:</p>
+
+<pre><code>// Endpoint declared as: path: /users
+// Per-tenant version selection via the resolver.
+func (r VersionResolver) Resolve(ctx context.Context, service string) (string, error) {
+    if appCtx, ok := ctx.(*configuration.AppContext); ok {
+        if tier, _ := appCtx.Get("tenant.tier").(string); tier == "early-adopter" {
+            return "https://api.example.com/v2", nil // → https://api.example.com/v2/users
+        }
+    }
+    return "https://api.example.com/v1", nil         // → https://api.example.com/v1/users
+}</code></pre>
+
+  <p><strong>Path placeholders are runtime by design.</strong> The endpoint's <code>path</code> template (<code>/users/{id}</code>) lets the request DTO supply placeholder values via <code>http:"path,name"</code> tags — that is the canonical "same endpoint, parameter varies per call" surface and never needs the resolver. Path <em>templates that vary in shape</em> across calls are not supported at runtime — declare each as its own endpoint in YAML and let the caller choose by endpoint name, so log/audit/observability stay tied to one HTTP semantic per endpoint name.</p>
+
+  <p><strong>Per-call escape hatch — <code>WithConfig(CallConfig{BaseURL: "..."})</code>.</strong> Some shapes of dynamic routing do not fit the resolver pattern cleanly because the URL comes from the <em>current request</em> rather than from ambient context. The canonical cases:</p>
+  <ul>
+    <li><strong>Webhook callbacks</strong> — the target URL arrives inside the request payload (<code>{"callback_url": "..."}</code>).</li>
+    <li><strong>Payload-driven sharded routing</strong> — the shard identifier comes from the request body, not from <code>AppContext</code>.</li>
+    <li><strong>OAuth federation</strong> — the IdP URL is discovered per request rather than known at boot.</li>
+    <li><strong>Migration scripts / CLI tools</strong> — a one-off binary that needs to target a specific endpoint without wiring a resolver.</li>
+    <li><strong>Integration tests</strong> — pointing at an <code>httptest.Server</code> without constructing a resolver around it.</li>
+  </ul>
+  <p>For these, the per-call <code>CallConfig.BaseURL</code> takes precedence over both the resolver and the YAML — the URL is used as-is for this call only; the next call goes back through the normal cascade. Webhook callbacks typically need to vary method and path too — set <code>CallConfig.Method</code> and <code>CallConfig.Path</code> alongside; per-customer credentials come through <code>CallConfig.InlineAuth</code>. For cross-cutting ambient routing (per-tenant, per-region, feature-flag-based) the resolver is still the right tool — it centralizes the decision and runs on every call without per-call wiring.</p>
+
+  <p><strong>Also out of scope.</strong> A refresh interface (the resolver owns its lifecycle) and framework-level memoization of resolver returns (the resolver decides what is cheap to recompute).</p>
+
+  <h3>Testing surface — <code>NewFake</code></h3>
+  <p><code>httpclient.NewFake()</code> constructs an in-memory test harness wrapping a <code>*HttpClient</code>. The fake's <code>Client()</code> drops into any constructor parameter typed <code>*HttpClient</code> — production code does not change. The fake short-circuits the middleware chain (no retry, cache, breaker, auth, or transport runs), but the real <code>binding/</code> layer still validates the request struct's <code>http:"..."</code> tags and serializes / decodes bodies, so handler bugs around tag misuse surface in fake tests too.</p>
+
+<pre><code>fake := httpclient.NewFake()
+fake.WhenCalled("kc", "fetchUser").
+    MatchPath("id", "abc").
+    Return(KeycloakUser{ID: "abc", Email: "x@y"})
+
+svc := appexternal.NewKeycloakService(fake.Client())
+user, err := svc.FetchUser(ctx, "abc")
+
+require.NoError(t, err)
+require.Equal(t, 1, len(fake.Calls("kc", "fetchUser")))
+require.NoError(t, fake.AssertExpectations())</code></pre>
+
+  <p><strong>Stub builder</strong> (<code>*FakeStub</code>):</p>
+  <table>
+    <thead><tr><th>Method</th><th>Effect</th></tr></thead>
+    <tbody>
+      <tr><td><code>Return(value any)</code></td><td>200 OK with JSON-marshaled value (default <code>Content-Type: application/json</code>)</td></tr>
+      <tr><td><code>ReturnBytes(body, contentType)</code></td><td>200 OK with raw body and explicit Content-Type</td></tr>
+      <tr><td><code>ReturnError(status, body)</code></td><td>Non-2xx response with body; <code>Call</code> returns <code>*HttpError</code></td></tr>
+      <tr><td><code>ReturnTransportError(cause)</code></td><td>Simulated dial/transport failure; <code>*HttpError{Status: 0, Cause: cause}</code></td></tr>
+      <tr><td><code>Status(code)</code></td><td>Override response status</td></tr>
+      <tr><td><code>WithHeader(key, value)</code></td><td>Add response header</td></tr>
+      <tr><td><code>Times(n)</code></td><td>Match exactly <code>n</code> calls (default 1). For "must not be called", omit the stub and assert <code>len(fake.Calls(...)) == 0</code></td></tr>
+      <tr><td><code>Always()</code></td><td>Match unlimited calls; skipped by <code>AssertExpectations</code></td></tr>
+      <tr><td><code>Match(pred)</code></td><td>Custom predicate over the recorded <code>FakeCall</code></td></tr>
+      <tr><td><code>MatchPath(name, value)</code></td><td>Predicate over a path placeholder</td></tr>
+      <tr><td><code>MatchQuery(key, value)</code></td><td>Predicate over a query parameter</td></tr>
+      <tr><td><code>MatchHeader(key, value)</code></td><td>Predicate over an outbound request header</td></tr>
+    </tbody>
+  </table>
+
+  <p><strong>Harness handle</strong> (<code>*Fake</code>):</p>
+  <table>
+    <thead><tr><th>Method</th><th>Effect</th></tr></thead>
+    <tbody>
+      <tr><td><code>Client() *HttpClient</code></td><td>Returns the in-memory client to inject into consumer code</td></tr>
+      <tr><td><code>Register(service, endpoint, binding.EndpointMeta)</code></td><td>Explicit endpoint metadata (method, path with <code>{placeholders}</code>, codecs). Optional — <code>WhenCalled</code> auto-registers <code>GET /{endpoint}</code> with json/json codecs on first use</td></tr>
+      <tr><td><code>WhenCalled(service, endpoint) *FakeStub</code></td><td>Register a stub; auto-registers default metadata if absent</td></tr>
+      <tr><td><code>Calls(service, endpoint) []FakeCall</code></td><td>Recorded calls in invocation order</td></tr>
+      <tr><td><code>Reset()</code></td><td>Clear stubs and recorded calls (useful between subtests)</td></tr>
+      <tr><td><code>AssertExpectations() error</code></td><td>Non-nil when any non-<code>Always()</code> stub did not match its <code>Times(n)</code> value</td></tr>
+    </tbody>
+  </table>
+
+  <p><code>FakeCall</code> carries <code>Service</code>, <code>Endpoint</code>, <code>Method</code>, <code>URL</code>, parsed <code>Path map[string]string</code>, <code>Query url.Values</code>, <code>Headers http.Header</code>, and the raw <code>Body []byte</code> — the data tests need to assert "the consumer sent the right thing".</p>
+
+  <p><strong>Sentinel.</strong> Unmatched calls return <code>*HttpError{Status: 0, Cause: httpclient.ErrFakeUnstubbed}</code> — branch with <code>errors.Is(err, httpclient.ErrFakeUnstubbed)</code>.</p>
+
+  <p><strong>Trade-off (deliberate).</strong> The fake tests <em>intent</em> — request shape, code path, error handling — not <em>runtime middleware behavior</em> (retry / cache / breaker / auth acquisition). Verifying middleware semantics belongs to integration tests against <code>httptest.Server</code> or to the <code>omnicore-example-users/qa/</code> suite. The fake stays small, deterministic, and free of timers / clocks.</p>

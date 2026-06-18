@@ -1,0 +1,192 @@
+<h2>Canonical write lifecycle — end-to-end layer map</h2>
+    <p>
+        Cross-layer reference: for each of the framework's 5 canonical write verbs, this table follows the request
+        from the HTTP wrapper down through the Auto handler, the domain entry-point (Get* function + which
+        <code>IfXxx</code> closures fire), the infra layer (SQL emitted + outbox event + Mongo operation on the
+        read side), all the way to the audit event the consumer reads in slog/ELK. Everything is anchored in the
+        SQL fingerprint — <strong>identical SQL ⇒ identical audit verb ⇒ identical Mongo op</strong>.
+        This is what makes PUT and PATCH share <code>verb: "update"</code> in audit: the SQL is the same.
+    </p>
+    <p>
+        Only the canonical surface (Auto handlers / <code>UpdateCommandHandler</code>-family) is shown to keep the
+        map readable. Manual handlers have full control of every layer and can opt out of any step; what they
+        cannot opt out of is the SQL the persister and Postgres emit, which is what the audit verb echoes.
+    </p>
+
+    <h3>Root verbs</h3>
+    <table>
+        <thead>
+            <tr>
+                <th>HTTP wrapper</th>
+                <th>Auto handler</th>
+                <th>Domain entry &amp; rule mode</th>
+                <th>SQL on the root table</th>
+                <th>Outbox <code>event_type</code></th>
+                <th>Mongo op (default view)</th>
+                <th>Audit <code>verb</code></th>
+            </tr>
+        </thead>
+        <tbody>
+            <tr>
+                <td><code>HandleCommandWithBody</code><br><span class="muted">POST /users</span></td>
+                <td><code>InsertCommandHandler</code></td>
+                <td>
+                    <code>GetInsertable(e, svc, "GetInsertable")</code><br>
+                    Mode <code>ModeInsert</code> → <code>IfInsert</code> + <code>IfInsertOrUpdate</code> fire on root and on every AVO via <code>runAggregateValidations</code>
+                </td>
+                <td><code>INSERT INTO users (...) RETURNING id</code></td>
+                <td><code>INSERTED</code></td>
+                <td><code>Upsert</code> (compose + insert)</td>
+                <td><code>insert</code></td>
+            </tr>
+            <tr>
+                <td><code>HandleCommandWithBodyID</code> (strict)<br><span class="muted">PUT /users/:id</span></td>
+                <td><code>UpdateCommandHandler</code></td>
+                <td>
+                    <code>GetUpdatable(loaded, apply, svc, "GetUpdatable")</code><br>
+                    Mode <code>ModeUpdate</code> → <code>IfUpdate</code> + <code>IfInsertOrUpdate</code> fire; AVOs validated the same way; <code>actionName="GetUpdatable"</code> available for verb-specific branches
+                </td>
+                <td><code>UPDATE users SET col=val, updated_at=NOW() WHERE id=$1</code></td>
+                <td><code>UPDATED</code></td>
+                <td><code>Upsert</code> (re-compose + replace)</td>
+                <td><code>update</code></td>
+            </tr>
+            <tr>
+                <td><code>HandleCommandWithBodyID</code> (lenient)<br><span class="muted">PATCH /users/:id</span></td>
+                <td><code>PartialUpdateCommandHandler</code></td>
+                <td>
+                    <code>GetPartialUpdatable(loaded, applyPartial, svc, "GetPartialUpdatable")</code><br>
+                    Mode <code>ModeUpdate</code> → <strong>same <code>IfUpdate</code> as PUT</strong>; <code>actionName="GetPartialUpdatable"</code> differentiates when the rule needs to branch
+                </td>
+                <td><code>UPDATE users SET col=val, updated_at=NOW() WHERE id=$1</code> <span class="muted">(identical to PUT)</span></td>
+                <td><code>UPDATED</code> <span class="muted">(identical to PUT)</span></td>
+                <td><code>Upsert</code> <span class="muted">(identical to PUT)</span></td>
+                <td><code>update</code> <span class="muted">(same as PUT — SQL fingerprint identical; PUT vs PATCH lives in <code>actionName</code>)</span></td>
+            </tr>
+            <tr>
+                <td><code>HandleCommandWithID</code><br><span class="muted">PATCH /users/:id/archive</span></td>
+                <td><code>ArchiveCommandHandler</code></td>
+                <td>
+                    <code>GetArchivable(loaded, svc, "GetArchivable")</code><br>
+                    Mode <code>ModeUpdate</code> + <code>actionName="GetArchivable"</code> → <code>IfUpdate</code> fires; rule branches on <code>actionName</code> for archive-specific invariants (owner check etc.). State-transition guard then verifies <code>ModeArchive</code> is declared
+                </td>
+                <td><code>UPDATE users SET deleted_at=NOW() WHERE id=$1</code></td>
+                <td><code>ARCHIVED</code></td>
+                <td><code>Upsert</code> (default — document survives with <code>deleted_at</code> populated) — <code>Delete</code> on views with <code>DeleteOnArchive()</code></td>
+                <td><code>archive</code></td>
+            </tr>
+            <tr>
+                <td><code>HandleCommandWithID</code><br><span class="muted">PATCH /users/:id/unarchive</span></td>
+                <td><code>UnarchiveCommandHandler</code></td>
+                <td>
+                    <code>GetUnarchivable(loaded, svc, "GetUnarchivable")</code><br>
+                    Mode <code>ModeUpdate</code> + <code>actionName="GetUnarchivable"</code> → <code>IfUpdate</code> fires the same way; state-transition guard verifies <code>ModeUnarchive</code>
+                </td>
+                <td><code>UPDATE users SET deleted_at=NULL WHERE id=$1</code></td>
+                <td><code>UNARCHIVED</code></td>
+                <td><code>Upsert</code> (re-compose — unconditional, regardless of <code>DeleteOnArchive</code>)</td>
+                <td><code>unarchive</code></td>
+            </tr>
+            <tr>
+                <td><code>HandleCommandWithID</code><br><span class="muted">DELETE /users/:id</span></td>
+                <td><code>DeleteCommandHandler</code></td>
+                <td>
+                    <code>GetDeletable(loaded, svc, "GetDeletable")</code><br>
+                    Mode <code>ModeDelete</code> → <code>IfDelete</code> fires; AVOs the same way. State-transition guard verifies <code>ModeDelete</code>
+                </td>
+                <td><code>DELETE FROM users WHERE id=$1</code></td>
+                <td><code>DELETED</code></td>
+                <td><code>Delete</code> (unconditional — <code>DeleteOnArchive</code> does not apply to hard delete)</td>
+                <td><code>delete</code></td>
+            </tr>
+        </tbody>
+    </table>
+
+    <h3>Child cascade (aggregate)</h3>
+    <p>
+        Children of an <code>AggregateRoot</code> don't have their own outbox event or Mongo op — granularity B
+        means one outbox row per aggregate operation, and the read side re-composes the whole doc from the root's
+        event. What children DO have, per row, is per-status SQL emitted by <code>applyChildChanges</code> +
+        cascade SQL emitted by <code>archiveAggregate</code>/<code>unarchiveAggregate</code>/<code>deleteAggregate</code>,
+        and a per-row audit <code>op</code> that mirrors the SQL fingerprint identically to the root verb.
+    </p>
+    <table>
+        <thead>
+            <tr>
+                <th>Trigger (root verb + child status)</th>
+                <th>Domain primitive on the root</th>
+                <th>SQL on the child row</th>
+                <th>Audit child <code>op</code></th>
+            </tr>
+        </thead>
+        <tbody>
+            <tr>
+                <td><code>insert</code> — any status</td>
+                <td><code>User.AddAddress(addr, svc)</code> → <code>AddAggregateChild</code></td>
+                <td><code>INSERT INTO addresses (..., user_id) RETURNING id</code></td>
+                <td><code>inserted</code></td>
+            </tr>
+            <tr>
+                <td><code>update</code> — <code>StatusAdded</code></td>
+                <td><code>User.AddAddress</code> on a loaded aggregate → <code>AddAggregateChild</code></td>
+                <td><code>INSERT INTO addresses (..., user_id) RETURNING id</code></td>
+                <td><code>inserted</code></td>
+            </tr>
+            <tr>
+                <td><code>update</code> — <code>StatusChanged</code></td>
+                <td><code>User.ChangeAddressByID(id, replacement)</code> → <code>ChangeAggregateChild</code></td>
+                <td><code>UPDATE addresses SET col=val, updated_at=NOW() WHERE id=$1</code></td>
+                <td><code>updated</code></td>
+            </tr>
+            <tr>
+                <td><code>update</code> — <code>StatusRemoved</code></td>
+                <td><code>User.ReplaceAddresses(addrs)</code> → <code>ReplaceAggregateChildrenOf</code> (or <code>RemoveAggregateChild</code> direct)</td>
+                <td><code>UPDATE addresses SET deleted_at=NOW() WHERE id=$1</code> <span class="muted">(the row stays in the DB, recoverable via unarchive)</span></td>
+                <td><code>archived</code> <span class="muted">(same op as the cascade below — same SQL)</span></td>
+            </tr>
+            <tr>
+                <td><code>update</code> — <code>StatusConstructor</code></td>
+                <td>(no domain call — untouched item loaded from DB)</td>
+                <td>(no SQL)</td>
+                <td>(skipped — the entry doesn't appear in the audit children block)</td>
+            </tr>
+            <tr>
+                <td><code>archive</code> — cascade</td>
+                <td><code>archiveAggregate</code> walks active children</td>
+                <td><code>UPDATE addresses SET deleted_at=NOW() WHERE user_id=$1 AND deleted_at IS NULL</code></td>
+                <td><code>archived</code></td>
+            </tr>
+            <tr>
+                <td><code>unarchive</code> — cascade</td>
+                <td><code>unarchiveAggregate</code> walks archived children (symmetric: restores EVERY archived child of the root, including PUT-replace casualties)</td>
+                <td><code>UPDATE addresses SET deleted_at=NULL WHERE user_id=$1 AND deleted_at IS NOT NULL</code></td>
+                <td><code>unarchived</code></td>
+            </tr>
+            <tr>
+                <td><code>delete</code> — cascade</td>
+                <td>(no framework SQL — relies on Postgres <code>FK ON DELETE CASCADE</code> declared in the schema)</td>
+                <td>(Postgres-issued <code>DELETE</code>)</td>
+                <td><code>deleted</code></td>
+            </tr>
+        </tbody>
+    </table>
+
+    <h3>The SQL-grounded vocabulary — one rule, no exceptions</h3>
+    <p>
+        Reading the two tables top-to-bottom, the rule the framework follows is:
+    </p>
+    <div class="note">
+        <strong>Audit <code>verb</code> (root) and audit <code>op</code> (child) both echo the SQL fingerprint of
+        the row-level change. Identical SQL ⇒ identical audit token. Distinct SQL ⇒ distinct audit
+        token.</strong> Consumer intent (PUT vs PATCH, archive cascade vs PUT-replace soft-delete) lives in
+        the <code>actionName</code> field at the root and in the <code>verb</code> field on the surrounding event;
+        the per-row <code>op</code>/<code>verb</code> stays anchored to what physically hit the database.
+    </div>
+    <p>
+        This gives consumers a forensically honest record: an audit log entry saying <code>op="archived"</code>
+        always means "this row still exists in the DB with <code>deleted_at</code> populated, can be restored",
+        regardless of whether the trigger was a PATCH /archive or a PUT-replace. Same way <code>op="deleted"</code>
+        always means "this row is gone, only the cascade/snapshot in the audit can reconstruct what it was".
+        Future tooling for reversal of state changes (rebuilding the prior aggregate from audit) only needs to
+        know the SQL contract, not the verb hierarchy of every endpoint that ever produced the change.
+    </p>
