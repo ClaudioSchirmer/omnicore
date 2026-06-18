@@ -11,41 +11,52 @@ with `1.0.0`.
 
 ## [Unreleased]
 
+## [0.10.0] - 2026-06-17
+
+### Changed
+
+- **Moved the `criteria` package from `omnicore/criteria` to
+  `omnicore/infra/criteria`.** The query DSL is consumed only by the `infra`
+  layer (the framework loader/translator + consumers' own infra repository
+  implementations), so nesting it under `infra` removes the stray root-level
+  package. The package name is unchanged (`criteria`); only the import path
+  moves — update `omnicore/criteria` → `omnicore/infra/criteria`.
+
 ## [0.9.0] - 2026-06-17
 
 ### Added
 
-- **`omnicore/criteria/` package — backend-neutral query DSL for loading live
+- **`omnicore/criteria/` package â backend-neutral query DSL for loading live
   domain aggregates from PostgreSQL by an arbitrary criterion.** A sealed
-  expression tree (`Expr`) with a fluent builder — `Eq/Ne/In/Nin/Gt/Gte/Lt/Lte/
+  expression tree (`Expr`) with a fluent builder â `Eq/Ne/In/Nin/Gt/Gte/Lt/Lte/
   Like/ILike/IsNull/NotNull`, `And/Or/Not`, sugar `Contains/StartsWith/EndsWith/
-  Between` — wrapped in a `Query` carrying `WHERE` + `OrderBy`/`OrderByDesc` +
+  Between` â wrapped in a `Query` carrying `WHERE` + `OrderBy`/`OrderByDesc` +
   `Limit` + an archived `Scope` (`Active`/`IncludeArchived`/`OnlyArchived`).
   `criteria.ByID(id)` is the primary-key shortcut. Pure (stdlib only, zero IO);
   the SQL translation lives behind the `Visitor` seam so other backends can be
   added without touching the tree. Consumed only inside `infra` repository
-  implementations — `domain` and `application` keep business-vocabulary
+  implementations â `domain` and `application` keep business-vocabulary
   repository interfaces and never import `criteria`.
 - **`AggregateLoader[T].FindOne(ctx, *criteria.Query)` and `FindAll(ctx,
-  *criteria.Query)`** — load one (or `RecordNotFound`; error on >1) or many
+  *criteria.Query)`** â load one (or `RecordNotFound`; error on >1) or many
   live aggregates (root + children) matching a criterion. `FindAll` batches
   children with `WHERE fk IN (...)` (one query per child type, not per root).
   Both honor the archived scope on root and children. Promoted on
   `BaseAggregateRepository[T]`. The single SQL-building path: by-id loads
   (`FindByID`/`FindArchivedByID`) and any alternate-key lookup all route through
   the engine.
-- **Pure domain repository ports — `domain.Reader[T]`, `domain.Writer`,
+- **Pure domain repository ports â `domain.Reader[T]`, `domain.Writer`,
   `domain.Repository[T]`.** `Reader[T]` = `FindByID` + `New`; `Writer` =
   `Insert/Update/Archive/Unarchive/Delete` taking only a ValidEntity
   (non-generic, no ctx); `Repository[T]` = `Reader[T] + Writer`. Pure (stdlib +
-  google/uuid only) — what a consumer names for a read+write repository
+  google/uuid only) â what a consumer names for a read+write repository
   interface declared in the domain layer, with zero application import.
 - **`persistence.ScopedRepository[T]` + `BaseRepository[T].Scope(ctx, opts...)
   domain.Writer`.** The write binding: reads stay direct on the handle
   (`domain.Reader[T]`), writes go through `Scope`, which binds the request ctx
-  (cancellation → pgx, actor → audit) and the in-TX lifecycle hooks and returns
+  (cancellation â pgx, actor â audit) and the in-TX lifecycle hooks and returns
   a pure `domain.Writer`. The domain port never pronounces the ctx.
-- **`persistence.RequestContext`** — request-scoped interface (`context.Context`
+- **`persistence.RequestContext`** â request-scoped interface (`context.Context`
   + `ID()`/`ActorSubject()`/`ActorIssuer()`/`ActorClaims()`) the persistence and
   audit pipelines consume, satisfied by `*configuration.AppContext`. Relocated
   from the deleted `domain.Context`; `persistence.AnonymousActor` moved likewise.
@@ -56,32 +67,32 @@ with `1.0.0`.
   path call `repo.Scope(ctx, opts...).Insert(valid)` (etc.) instead of
   `repo.Insert(ctx, valid, opts...)`. Handlers depend on
   `persistence.ScopedRepository[T]` instead of the removed `persistence.Writer[T]`.
-  Audit, cancellation, and the in-TX hook semantics are unchanged — the ctx +
+  Audit, cancellation, and the in-TX hook semantics are unchanged â the ctx +
   actor are captured by the bound writer internally.
 
 ### Removed
 
-- **`domain.Context`** — deleted. The domain layer no longer declares a
+- **`domain.Context`** â deleted. The domain layer no longer declares a
   request-scoped context type (it carried `context.Context` + actor/claims, none
   of which are domain concepts). Relocated to `persistence.RequestContext`; the
   domain repository ports are now pure (no ctx in any signature).
-- **`persistence.Writer[T]`** — replaced by `persistence.ScopedRepository[T]`
+- **`persistence.Writer[T]`** â replaced by `persistence.ScopedRepository[T]`
   (read port + `Scope`) on the handler side and the pure `domain.Writer` on the
   port side. Write call sites change from `repo.Insert(ctx, valid, opts...)` to
   `repo.Scope(ctx, opts...).Insert(valid)`.
-- **`AggregateLoader[T].Load` / `LoadIncludingArchived`** — replaced by
+- **`AggregateLoader[T].Load` / `LoadIncludingArchived`** â replaced by
   `FindOne(criteria.ByID(id))` / `FindOne(criteria.ByID(id).OnlyArchived())`.
   Small `infra`-API removal; the domain/application repository read contract
   (`Reader[T].FindByID`, `ArchivedFinder[T].FindArchivedByID`) is unchanged. A
   manual `WithRootScanner` used with `FindOne`/`FindAll` must now populate the
-  entity id (scan it + `SetID`) — the framework no longer injects it on the
+  entity id (scan it + `SetID`) â the framework no longer injects it on the
   criteria path (there is no input id).
 
 ## [0.8.0] - 2026-06-16
 
 ### Added
 
-- **`omnicore/infra/cache/` package — generic byte-level key-value cache
+- **`omnicore/infra/cache/` package â generic byte-level key-value cache
   subsystem.** Single interface (`cache.Cache`) with three operations
   (`Get(ctx, key)`, `Set(ctx, key, value, ttl)`, `Delete(ctx, key)`) and
   two canonical implementations: in-process LRU+TTL (`cache.NewMemory`)
@@ -99,7 +110,7 @@ with `1.0.0`.
     with the same diagnostics the YAML loader emits.
 - **Top-level `cache:` block in `microservice.<profile>.yaml`** drives
   the framework's cache subsystem from the operator side:
-  - `cache.store: memory | redis | custom` — backend selection. Default
+  - `cache.store: memory | redis | custom` â backend selection. Default
     `memory` (in-process LRU+TTL) covers single-replica services. `redis`
     ships with the framework's `go-redis/v9`-backed adapter (lazy
     connection, JSON-encoded entries debug-able via `redis-cli GET`,
@@ -107,7 +118,7 @@ with `1.0.0`.
     `custom` requires `bootstrap.Wiring.Cache` to be set.
   - `cache.shared:` sub-block declares a SECOND cache exposed on
     `Deps.SharedCache`. nil unless declared. `cache.shared.store:
-    memory` is REJECTED at boot — an in-process LRU cannot honor cross-
+    memory` is REJECTED at boot â an in-process LRU cannot honor cross-
     service reads. Supports `redis` and `custom` only.
   - `cache.redis.failMode: open | closed`. `open` (default) swallows
     transport errors + emits `slog.Warn "cache.redis.transport.error"`
@@ -117,7 +128,7 @@ with `1.0.0`.
     `store: memory`). 0 falls back to the framework default 10k.
 - **`bootstrap.Deps.Cache` and `bootstrap.Deps.SharedCache`** expose
   the resolved instances to every Feature. The httpclient cache
-  middleware consumes `Deps.Cache` automatically — operators no longer
+  middleware consumes `Deps.Cache` automatically â operators no longer
   declare a separate backend under `httpClient`.
 - **`bootstrap.Wiring.Cache` and `bootstrap.Wiring.SharedCache`** are
   the escape hatches for `cache.store: custom` and
@@ -148,12 +159,12 @@ with `1.0.0`.
   as "no expiration" (the opposite of what the upstream asked for), so
   the middleware short-circuits the store. Pre-existing behavior was
   identical from the consumer's perspective (the entry expired
-  immediately) — the explicit skip avoids polluting the cache with
+  immediately) â the explicit skip avoids polluting the cache with
   entries that would only be served once.
 
 ### Removed
 
-- **`httpclient.Cache` interface** — replaced by the framework's
+- **`httpclient.Cache` interface** â replaced by the framework's
   top-level `cache.Cache`. Consumers who implemented custom backends
   via `httpclient.WithCacheStore` migrate to `cache.Cache` (same shape,
   with `Delete` added).
@@ -161,25 +172,25 @@ with `1.0.0`.
   (`httpclient/cache_middleware.go::cacheEntry`). The previous public
   exposure was a draft contract from the in-flight feature branch and
   never shipped in a tagged release.
-- **`httpclient.WithCacheStore(Cache) Option`** — replaced by
+- **`httpclient.WithCacheStore(Cache) Option`** â replaced by
   `httpclient.WithCache(cache.Cache) Option`.
 - **`httpClient.defaults.cache.store` and `httpClient.defaults.cache.redis`
-  YAML keys** — moved to the top-level `cache:` block.
+  YAML keys** â moved to the top-level `cache:` block.
 
 ## [0.7.0] - 2026-06-16
 
 ### Added
 
-- **Field labels — `label:"<catalogKey>"` struct tag on entity / value-object
+- **Field labels â `label:"<catalogKey>"` struct tag on entity / value-object
   fields.** Resolves through the same `Translator.Render` already used for
   notification messages and produces translated human-readable identifiers
   alongside the technical `field` / column name on every reactive output:
   - **`MessageDTO.FieldLabel`** (new, `json:"fieldLabel,omitempty"`) carries
     the rendered string in the actor's locale next to `FieldName`. Channels
     without a frontend (e-mail, SMS, push) read it directly so the recipient
-    sees "CEP é inválido" instead of "addresses[0].zipCode é inválido".
+    sees "CEP Ã© invÃ¡lido" instead of "addresses[0].zipCode Ã© invÃ¡lido".
   - **`ErrorMessage.FieldLabel`** (new, `json:"fieldLabel,omitempty"`) on the
-    web envelope — `ResponseFromContextDTOs` + `ResponseFromContexts` both
+    web envelope â `ResponseFromContextDTOs` + `ResponseFromContexts` both
     propagate the value through so the wire HTTP response carries the
     rendered label as published by the consumer.
   - **`FieldChange.FieldLabelKey`** (new, `json:"fieldLabelKey,omitempty"`)
@@ -189,7 +200,7 @@ with `1.0.0`.
     evolution.
   - **`FieldChange.FieldLabel`** (new, `json:"fieldLabel,omitempty"`) is the
     read-time slot the audit renderer populates after consuming
-    `FieldLabelKey`. Mutually exclusive with `FieldLabelKey` in practice —
+    `FieldLabelKey`. Mutually exclusive with `FieldLabelKey` in practice â
     the in-flight write carries the key; the rendered read carries the text.
 - **`audit.RenderLabels(ev, t, lang)` + `audit.RenderLabelsInJSON(doc, t, lang)`.**
   In-place audit read renderers. Walk every `FieldChange` (root + child
@@ -199,7 +210,7 @@ with `1.0.0`.
   JSON variant operates on `map[string]any` for BI / SQL tools that parse
   the `audit_events.jsonb` payload directly. Catalog miss inherits the
   existing `Translator.Render` fallback (raw key + `slog.Warn` once per
-  `(lang, key)`). Snapshot blocks are intentionally not touched — they
+  `(lang, key)`). Snapshot blocks are intentionally not touched â they
   carry `map[col]value` with no schema for labels.
 - **`audit.FindByID(ctx, exec, id)` + `audit.FindByAggregate(ctx, exec, entityType, aggregateID)`.**
   Canonical reader helpers for the `audit_events` table. Forensic lookups
@@ -218,14 +229,14 @@ with `1.0.0`.
 - **Documentation of the existing three-path field-name override surface.**
   CLAUDE.md + DOCS.html now describe `AddFieldNameAlias` (entity-stable
   rename), `ChangeFieldName` (request-conditional rename), and the default
-  PascalCase → camelCase emission side by side. Behavior unchanged — the
+  PascalCase â camelCase emission side by side. Behavior unchanged â the
   docs were lagging.
 
 ### Changed
 
 - **`NewRules` signature gained `entityType reflect.Type` (3rd arg).** All
-  framework call sites updated (`entity_base.go` × 5, `aggregate_root.go` × 1,
-  `runAggregateValidations` × 2). Consumer code does NOT call `NewRules`
+  framework call sites updated (`entity_base.go` Ã 5, `aggregate_root.go` Ã 1,
+  `runAggregateValidations` Ã 2). Consumer code does NOT call `NewRules`
   directly; the change is internal. Tests that exercise Rules in isolation
   pass `nil` to opt out of label resolution.
 
@@ -233,7 +244,7 @@ with `1.0.0`.
 
 ### Added
 
-- **Cross-service integration events — canonical write-side async path.**
+- **Cross-service integration events â canonical write-side async path.**
   New package `omnicore/infra/integration` carries the producer surface
   (`Dispatch(ctx, eventKey, payload, opts...)` with `WithTx`/`WithAggregateID`/
   `WithCorrelation`/`WithCausation`) and the consumer surface (`Registry`,
@@ -244,14 +255,14 @@ with `1.0.0`.
   across transports: a single `pipeline.Handler[TCmd, TResult]` Mounts
   on HTTP via `fwweb.HandleCommandWithBody` AND on Kafka via
   `reg.From(source).On(eventKey, sample, handler)`.
-- **`IntegrationFeature` interface** under `omnicore/bootstrap` — opt-in
+- **`IntegrationFeature` interface** under `omnicore/bootstrap` â opt-in
   via type assertion (mirror of `ReadableFeature`). Bootstrap calls
   `MountReceivers(reg, deps)` on every feature implementing it during
   Phase Receivers, between Phase HTTP and ConsumerPool start.
 - **`Deps.IntegrationRegistry` + `Deps.UpstreamSubscribers`.**
   Consumer admin surfaces walk both slices to expose retry
   endpoints. The upstream subscriber slice was previously documented
-  as "not surfaced on Deps" — gap closed in the same round as the
+  as "not surfaced on Deps" â gap closed in the same round as the
   integration receivers since the admin retry pattern is identical
   across the two surfaces.
 - **YAML blocks `integration:` and `shutdown:`** under
@@ -273,7 +284,7 @@ with `1.0.0`.
   Concurrent-safe via the existing `sync.RWMutex`. Receiver pipeline
   populates from inbound event metadata; outbound `Dispatch` reads
   them as fallback when `WithCorrelation` / `WithCausation` are
-  omitted — events emitted inside a receiver handler automatically
+  omitted â events emitted inside a receiver handler automatically
   carry the inbound trace chain.
 - **`UpstreamSubscriber.Shutdown(ctx) error`.** Drains in-flight
   ripple ops under the supplied drain context. Fills the previously
@@ -288,17 +299,17 @@ with `1.0.0`.
   one supervisor per receiver before `app.Listen`. On SIGINT/SIGTERM
   the HTTP server, integration consumer pool, and upstream
   subscribers drain in parallel under the shared `shutdown.
-  drainTimeoutSeconds` budget — drains that exceed surface as
+  drainTimeoutSeconds` budget â drains that exceed surface as
   `slog.Warn` lines so the operator knows what did not finish.
 - **Documentation: outbound HTTP error handling pattern.** New `Outbound error
-  handling` subsection under `httpclient — outbound HTTP` in `DOCS.html`
+  handling` subsection under `httpclient â outbound HTTP` in `DOCS.html`
   documents the canonical translation path for `*HttpError` returned by
   `httpclient.Call`: handlers wrap the failure with a service-defined
   notification via `exception.SingleNotificationError` /
   `exception.FieldErrorWithCause` (or `infra.FieldErrorWithCause` when the
   mapping lives inside the adapter). Untranslated failures keep falling through
   `pipeline.Run` to the canonical 500 `InternalServerErrorNotification`
-  envelope — by design, since only the consumer knows the domain semantic of an
+  envelope â by design, since only the consumer knows the domain semantic of an
   upstream error. No runtime change; clarifies an existing surface and
   discourages per-service `respondWithError` helpers that duplicate the
   framework's canonical envelope.
@@ -307,13 +318,13 @@ with `1.0.0`.
 
 ### Changed
 
-- **Upgrade Fiber v2 → v3.** Breaking change throughout the HTTP layer:
+- **Upgrade Fiber v2 â v3.** Breaking change throughout the HTTP layer:
   - Handler signature now uses `fiber.Ctx` (interface), no pointer. Every
     `func(c *fiber.Ctx) error` in the public surface becomes
     `func(c fiber.Ctx) error`.
   - `c.BodyParser(&req)` / `c.QueryParser(&req)` replaced by the unified Bind
     API: `c.Bind().Body(&req)` / `c.Bind().Query(&req)`.
-  - `c.UserContext()` removed upstream — `fiber.Ctx` now implements
+  - `c.UserContext()` removed upstream â `fiber.Ctx` now implements
     `context.Context` directly. `AppContext.SetParent(c)` replaces
     `AppContext.SetParent(c.UserContext())`.
   - `app.Add(method, path, handler)` now takes `[]string` for methods:
@@ -343,12 +354,12 @@ with `1.0.0`.
 
 ### Removed
 
-- **`web.CORS(origins ...string)`** — removed. Services and bootstrap call
+- **`web.CORS(origins ...string)`** â removed. Services and bootstrap call
   `cors.New(cors.Config{AllowOrigins: []string{...}, ...})` directly, the
   Fiber v3 idiomatic pattern.
-- **`web.Logger() fiber.Handler`** — removed. Bootstrap calls
+- **`web.Logger() fiber.Handler`** â removed. Bootstrap calls
   `logger.New()` directly.
-- **`web.RateLimit(max int) fiber.Handler`** — removed. Services call
+- **`web.RateLimit(max int) fiber.Handler`** â removed. Services call
   `limiter.New(limiter.Config{Max: max})` directly.
 
   Rationale: these three wrappers were thin delegations over Fiber middleware
@@ -361,7 +372,7 @@ with `1.0.0`.
 
 ### Added
 
-- **Parameterized notifications** — translation messages can carry runtime
+- **Parameterized notifications** â translation messages can carry runtime
   variables substituted from notification payload values. Notifications
   declare `tvar:"<name>"` struct tags on exported fields; catalog entries
   use the matching `{<name>}` placeholders; the rendering layer
@@ -381,7 +392,7 @@ with `1.0.0`.
   whitelists `{[A-Za-z_][A-Za-z0-9_]*}`; placeholders missing from the
   var map are left literal and `slog.Warn`-ed once per
   `(lang, key, placeholder)` tuple.
-- `infra.UnwrapPgxTx(persistence.TxHandle) pgx.Tx` — the single authorized
+- `infra.UnwrapPgxTx(persistence.TxHandle) pgx.Tx` â the single authorized
   bridge from the opaque `persistence.TxHandle` token to the underlying
   `pgx.Tx`. Lives in `infra/` so only adapters in that layer can call it;
   panics with a descriptive diagnostic on a foreign `TxHandle`
@@ -397,18 +408,18 @@ with `1.0.0`.
   sealing method on the interface is unexported, so only the framework's
   own `infra/pgxTxHandle` satisfies it. Removes a code path where the
   application layer could pronounce SQL via the handle's previous
-  `Exec` / `Query` / `QueryRow` surface — the new shape makes "application
+  `Exec` / `Query` / `QueryRow` surface â the new shape makes "application
   is SQL-free" a type-system guarantee instead of a documentation rule.
 
 ### Deprecated
 
 ### Removed
 
-- `persistence.TxHandle.Exec` / `Query` / `QueryRow` methods — replaced by
+- `persistence.TxHandle.Exec` / `Query` / `QueryRow` methods â replaced by
   the sealed-marker shape above. Hooks that need an in-TX side effect now
   declare a port in `application/` (or `domain/`) and implement the SQL in
   an `infra/` adapter that calls `UnwrapPgxTx`.
-- `persistence.CommandTag`, `persistence.Rows`, `persistence.Row` types —
+- `persistence.CommandTag`, `persistence.Rows`, `persistence.Row` types â
   removed alongside the SQL methods they served. Adapters that need
   command-tag / iterator / single-row semantics consume the corresponding
   `pgx` / `pgconn` types directly through the unwrapped `pgx.Tx`.
@@ -420,20 +431,20 @@ with `1.0.0`.
 ## [0.3.0] - 2026-06-13
 
 Initial public release of the rewritten history. Skips `v0.1.0` /
-`v0.2.0` — both versions are frozen on `proxy.golang.org` pointing
+`v0.2.0` â both versions are frozen on `proxy.golang.org` pointing
 to content from a prior repo that no longer exists.
 
 ### Added
 
-- **DDD layering with enforced boundaries** — `domain` (pure rules, zero I/O),
+- **DDD layering with enforced boundaries** â `domain` (pure rules, zero I/O),
   `application` (pipeline, orchestrator, queries), `infra` (Postgres + outbox,
   Mongo, Kafka SyncEngine, Composer, Audit), `web` (Fiber transport). Cross-layer
   error contract via `domain.NotificationCarrier`.
 - **Sealed `ValidEntity` types** (`Insertable` / `Updatable` / `Archivable` /
   `Deletable` / `Unarchivable` / `Batch`) produced only by `domain` package
   functions; compile-time enforcement via private `entity()` method.
-- **`AggregateRoot` with universal symmetric cascade** — root archive → children
-  archive, root unarchive → children unarchive, root delete → FK ON DELETE
+- **`AggregateRoot` with universal symmetric cascade** â root archive â children
+  archive, root unarchive â children unarchive, root delete â FK ON DELETE
   CASCADE. Top-level primitives `AddAggregateChild` / `ChangeAggregateChild` /
   `RemoveAggregateChild` / `ReplaceAggregateChildrenOf` with declarative
   boundary via `AggregateChildren() []AggregateValueObject`.
@@ -442,56 +453,56 @@ to content from a prior repo that no longer exists.
   `BuildRules` for transition-aware invariants and by the auditor for change
   computation.
 - **Rules DSL** (`r.IfInsert` / `r.IfUpdate` / `r.IfDelete` / `r.IfInsertOrUpdate` /
-  `r.IfDisplay`) — mode-scoped validation closures. Archive/Unarchive fire
+  `r.IfDisplay`) â mode-scoped validation closures. Archive/Unarchive fire
   `IfUpdate` with a distinct `actionName` for state-transition branching.
 - **Notification system** with typed structs (translation key = struct name),
   scoped `NotificationContext`, path-aware field names for nested aggregates,
   manual override via `ChangeFieldName`. Wire format carries `NotificationKey`
   + `Semantic` so clients can branch UI without parsing status codes.
-- **Result[T] and Pipeline** — discriminated value (`Success` / `Failure` /
+- **Result[T] and Pipeline** â discriminated value (`Success` / `Failure` /
   `Exception`); generic top-level `Run[T]` and `Dispatch[TReq, TRes]`.
-- **Auto Command Handlers** — `InsertCommandHandler` / `UpdateCommandHandler` /
+- **Auto Command Handlers** â `InsertCommandHandler` / `UpdateCommandHandler` /
   `PartialUpdateCommandHandler` / `ArchiveCommandHandler` /
   `UnarchiveCommandHandler` / `DeleteCommandHandler`. Cmd declares
   `ToEntity(ctx) T` (Insert) or `ApplyTo(ctx, T)` / `ApplyPartiallyTo(ctx, T)`
   (others) + `FromEntity(ctx, T) TResult` on every verb.
-- **Auto Query Handlers** — `FindByIDQueryHandler` and `FindByParamsQueryHandler`
+- **Auto Query Handlers** â `FindByIDQueryHandler` and `FindByParamsQueryHandler`
   with full read-side feature set: sparse responses via `?fields=`, sort
   allowlist via `?sort=`, keyset pagination via `?after=` / `?before=`, count-only
   mode via `?onlyTotal=true`, per-view `?limit=` ceiling cascade, full filter
   operator catalog (`eq`, `ne`, `in`, `nin`, `gte`/`lte`/`gt`/`lt`, `startswith`,
-  `contains`, `ieq`, `iin`, `istartswith`, `icontains`, …), nested embed groups.
-- **Route wrappers** — `HandleCommandWithBody{,ID}`, `HandleCommandWithID`,
+  `contains`, `ieq`, `iin`, `istartswith`, `icontains`, â¦), nested embed groups.
+- **Route wrappers** â `HandleCommandWithBody{,ID}`, `HandleCommandWithID`,
   `HandleQueryWithParams`, `HandleQueryWithID`. Universal URL-segment binding
   via `path:"X"` struct tag. Strict body marker `pipeline.FullBody`. Schema
-  violations → 400; domain rejections → 422; not-found → 404; recovered
-  panic → 500. All emitted through the canonical `Response` envelope.
+  violations â 400; domain rejections â 422; not-found â 404; recovered
+  panic â 500. All emitted through the canonical `Response` envelope.
 - **OpenAPI 3.1 + Swagger UI auto-generated** from the same Go types the
   HTTP wrappers consume. Reflection-driven projection of `json:` / `path:` /
   `query:` / `filter:` / `view:` / `example:` tags into the schema. Optional
   language selector dropdown in the UI. Inline favicon (SVG) and apple-touch
   data URI links to suppress browser fallback 404s.
-- **AuthMiddleware** for JWT validation — JWKS (`MicahParks/keyfunc`),
+- **AuthMiddleware** for JWT validation â JWKS (`MicahParks/keyfunc`),
   PEM-encoded public key, external introspection (RFC 7662) with optional
   in-memory positive-only cache. Four canonical modes: `prd` (JWKS), `prd-pem`,
   `prd-external`, `prd-external-cached`.
-- **Authorization** in three layers — Layer 1 coarse-grained declarative gate
+- **Authorization** in three layers â Layer 1 coarse-grained declarative gate
   (`fwopenapi.RequirePermission("users:write")`), Layer 2 fine-grained
   programmatic rules in `BuildRules`, Layer 3 cross-cutting tenant scoping.
   Boot-time validation rejects non-public routes without permission when
   authorization is enabled.
-- **Audit dual-destination** — `audit_events` row inside the same `pgx.Tx`
+- **Audit dual-destination** â `audit_events` row inside the same `pgx.Tx`
   as the data write + outbox row (atomic source of truth) plus optional
   post-commit slog echo for observability. Per-verb event shape: `snapshot`
   (insert/delete), `delta` (update), `transition` (archive/unarchive).
   Children block carries SQL-grounded ops (`inserted` / `updated` / `archived` /
   `unarchived` / `deleted`).
-- **`httpclient` package** — declarative outbound HTTP. Per-service YAML
+- **`httpclient` package** â declarative outbound HTTP. Per-service YAML
   describes baseURL, timeout, endpoints (method/path/codecs). Typed `Call[Req,
   Resp]` generic with `http:"..."` tag binding (path / query / header / headers /
   body+codec). Codecs: JSON, XML, form-urlencoded.
-  Middleware chain: correlation → logging → auth → idempotency → cache →
-  retry → breaker → signing → transport. Auth providers: `none`,
+  Middleware chain: correlation â logging â auth â idempotency â cache â
+  retry â breaker â signing â transport. Auth providers: `none`,
   `header-static`, `bearer-static`, `basic`, `forward-bearer`,
   `oauth2-client-credentials`, `credentials-exchange` (with per-tenant
   `requestFieldsFromCtx`). Retry with backoff strategies + RFC 7231
@@ -500,7 +511,7 @@ to content from a prior repo that no longer exists.
   (AWS SigV4-lite canonical string). TLS + connection pool tuning per
   service. Streaming (download / upload / multipart / SSE). `BaseURLResolver`
   plug-in for dynamic routing. `NewFake` test harness.
-- **Cross-service composition** — `UpstreamSubscription` (YAML or
+- **Cross-service composition** â `UpstreamSubscription` (YAML or
   `Wiring.UpstreamSubscriptions`) materializes another service's Kafka events
   into a local Mongo collection. `fwinfra.FromMongo("collection").On("fk")`
   embeds it into local views. `UpstreamSubscriber` runs the consumer, applies
@@ -509,7 +520,7 @@ to content from a prior repo that no longer exists.
   errors logged + counted + persisted to `omnicore_upstream_failures`
   (queryable list of currently stale entities). `RetryPendingFailures`
   runtime API + `omnicore-admin upstream-list-failures` inspection CLI.
-- **Mongo schema evolution** — `Version(N)` mandatory per `ViewDefinition`.
+- **Mongo schema evolution** â `Version(N)` mandatory per `ViewDefinition`.
   Three-mode `mongo.rebuild.autoRun`: `check` / `true` / `false` (profile-aware
   defaults). PG-backed control plane (`omnicore_mongo_views`) with hybrid
   concurrency (`pg_advisory_lock` + `status='processing'` column). Eight-branch
@@ -518,11 +529,11 @@ to content from a prior repo that no longer exists.
   / DriftDowngrade). Rebuild orchestration via `SyncEngine.ExecuteRebuild`:
   advisory lock + status transitions + cleanup + compose+upsert + orphan
   reconciliation + EndRebuild on a pinned `pgxpool.Conn`.
-- **Declarative MongoDB surface** — fluent builders on `ViewDefinition`:
+- **Declarative MongoDB surface** â fluent builders on `ViewDefinition`:
   `Indexes` (single / compound / unique / partial / sparse / TTL / text /
   2dsphere / hashed), `JSONSchema`, `Collation`, `Capped`, `TimeSeries`.
   `ApplyMongoSpecs` idempotent at boot. Per-view `MaxLimit(N)` override.
-- **Read-side keep-by-default** — `ViewDefinition` mirrors PostgreSQL
+- **Read-side keep-by-default** â `ViewDefinition` mirrors PostgreSQL
   symmetrically by default (archived rows survive in Mongo with `deleted_at`
   populated). Opt-in `.DeleteOnArchive()` for hot-tier projections that drop
   archived rows.
@@ -531,10 +542,10 @@ to content from a prior repo that no longer exists.
   `.down.sql` mandatory (validated at boot). Three-mode `migrations.autoRun`
   (`check` / `true` / `false`) symmetric to Mongo rebuild. Strict mode aborts
   boot in non-dev profiles on drift.
-- **Declarative YAML config** — `microservice.${APP_PROFILE}.yaml` per profile.
+- **Declarative YAML config** â `microservice.${APP_PROFILE}.yaml` per profile.
   Substitution syntax: `${VAR:default}`, `${file:/path}`, `${vault:store#field}`
   (vault via pluggable `bootstrap.SecretResolver`). Profile names beyond
-  `dev` / `prd` accepted (`prd-pem`, `prd-external-cached`, …). Strict YAML
+  `dev` / `prd` accepted (`prd-pem`, `prd-external-cached`, â¦). Strict YAML
   decoding on critical blocks rejects unknown keys at boot.
 - **`bootstrap.Run(wire)`** orchestrates the whole service boot: loads YAML,
   builds singletons (`Postgres`, `Mongo`, `Translator`, `Pipeline`, `ViewReader`,
@@ -542,23 +553,23 @@ to content from a prior repo that no longer exists.
   middlewares + `/health`, mounts features, starts SyncEngine if any view was
   collected, serves HTTP until SIGINT/SIGTERM. Sibling `bootstrap.Build()` +
   `bootstrap.Serve(ctx, deps, wiring)` for custom lifecycle.
-- **Built-in translations** — seven languages: PT-BR, English, Spanish,
+- **Built-in translations** â seven languages: PT-BR, English, Spanish,
   French, German, Italian, Dutch. Consumer-supplied catalogs compose on top
   via `Wiring.Translations`.
-- **`cmd/omnicore-admin`** — operational CLI. Subcommands:
+- **`cmd/omnicore-admin`** â operational CLI. Subcommands:
   `replay-all-as-events` (synthetic INSERTED outbox events for backfill of
   cross-service consumers), `upstream-list-failures` (read-only triage of
   the failure registry).
-- **Persistence lifecycle hooks** — new `application/persistence/` types
+- **Persistence lifecycle hooks** â new `application/persistence/` types
   declaring the in-TX hook contract: `TxHandle` / `CommandTag` / `Rows` /
   `Row` (the pgx-free surface exposed to hooks), `AfterBeginHook[T]` /
   `BeforeCommitHook[T]` (function types), `AfterBeginHookProvider[T]` /
   `BeforeCommitHookProvider[T]` (detected by Auto handlers via type
   assertion; Cmds satisfy these by declaring `AfterBegin(ctx, t, tx)` /
-  `BeforeCommit(ctx, t, id, tx)` methods — no prefix, mirroring Go's idiom
+  `BeforeCommit(ctx, t, id, tx)` methods â no prefix, mirroring Go's idiom
   for struct methods named after the event they respond to),
   `WriteOption[T]` / `WithAfterBegin[T]` / `WithBeforeCommit[T]`
-  (functional options threaded into write methods — `With*` idiom for the
+  (functional options threaded into write methods â `With*` idiom for the
   free-function counterparts; each surface follows its own Go convention).
   Hooks fire INSIDE the persister's TX at position A (BEFORE any framework
   write) and position D (AFTER data + outbox + audit, BEFORE COMMIT) on
@@ -567,21 +578,22 @@ to content from a prior repo that no longer exists.
   (single firing per `repo.Method()` call). A non-nil error from either
   hook rolls the TX back; `domain.NotificationCarrier` identity reaches
   the wire envelope verbatim.
-- **`persistence.Writer[T]` port** — typed write surface carrying the
+- **`persistence.Writer[T]` port** â typed write surface carrying the
   variadic options. `infra.BaseRepository[T]` implements it; Auto Command
   Handlers consume it for the `Repo` field. Keeps the AppContext-bearing
   hook types out of the domain layer so `domain.Repository[T]` stays the
   read-only port.
 - **Infra adapters in `infra/tx_handle.go` and `infra/hook_dispatch.go`**
-  — `pgxTxHandle` / `pgxRows` / `pgxRow` wrap `pgx.Tx` behind the
+  â `pgxTxHandle` / `pgxRows` / `pgxRow` wrap `pgx.Tx` behind the
   application-layer interfaces; `AdaptWriteOptions[T]` translates typed
   `WriteOption[T]` slices into the type-erased dispatch struct the
   persister fires.
-- **Observability slog line on hook error** — `persistence.hook.error`
+- **Observability slog line on hook error** â `persistence.hook.error`
   carrying `verb` / `hookSlot` / `entityType` / `threadId` / `error`,
   emitted as best-effort `slog.Warn` whenever a hook returns non-nil
   error.
 
+[0.10.0]: https://github.com/ClaudioSchirmer/omnicore/releases/tag/v0.10.0
 [0.9.0]: https://github.com/ClaudioSchirmer/omnicore/releases/tag/v0.9.0
 [0.8.0]: https://github.com/ClaudioSchirmer/omnicore/releases/tag/v0.8.0
 [0.7.0]: https://github.com/ClaudioSchirmer/omnicore/releases/tag/v0.7.0

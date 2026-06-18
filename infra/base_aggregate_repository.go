@@ -3,7 +3,7 @@ package infra
 import (
 	"context"
 
-	"github.com/ClaudioSchirmer/omnicore/criteria"
+	"github.com/ClaudioSchirmer/omnicore/infra/criteria"
 	"github.com/ClaudioSchirmer/omnicore/domain"
 )
 
