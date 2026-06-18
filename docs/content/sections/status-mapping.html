@@ -1,5 +1,13 @@
 <h2>HTTP Status Mapping</h2>
     <p>
+        Status mapping is a <strong>pipeline-level concern</strong>, shared by both the
+        <a href="#command-handler">write</a> and <a href="#query-side">read</a> paths: every
+        response — a 201 from a POST, a 422 from a failed <code>BuildRules</code>, a 404 from a
+        missing view document, a 400 from a malformed query string — is shaped here, at the boundary
+        where the pipeline's <code>Result</code> becomes an HTTP envelope. That is why it lives
+        outside the Write side / Read side groups.
+    </p>
+    <p>
         Each <code>Notification</code> declares its semantic nature via the
         <code>Semantic()</code> method. The framework maps <code>Semantic → HTTP status</code>
         automatically — <strong>there is no global registry anymore</strong>.

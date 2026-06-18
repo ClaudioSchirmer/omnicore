@@ -76,8 +76,21 @@
     "items": [
       {
         "id": "query-side",
-        "label": "Query side · CQRS"
+        "label": "QueryHandler · CQRS"
       },
+      {
+        "id": "auto-query-handlers",
+        "label": "Auto query handlers"
+      },
+      {
+        "id": "read-lifecycle-map",
+        "label": "Read lifecycle map"
+      }
+    ]
+  },
+  {
+    "group": "Pipeline",
+    "items": [
       {
         "id": "status-mapping",
         "label": "HTTP status mapping"

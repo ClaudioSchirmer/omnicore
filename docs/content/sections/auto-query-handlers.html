@@ -1,0 +1,473 @@
+<h2>Auto query handlers</h2>
+    <p>
+        Symmetric to the <a href="#auto-handlers">Auto command handlers</a> on the write side:
+        for the common read — a paged listing or a by-id lookup served straight from a
+        pre-composed Mongo view — the framework ships <strong>ready-made generic query
+        handlers</strong> plus the HTTP wrappers that wire them. The consumer writes zero handler
+        code; it declares the Request DTO allowlist (which fields and operators the endpoint
+        accepts) and the Response shape, and the framework owns the rest: query-string parsing,
+        allowlist enforcement, the <code>ReadCriteria</code> assembly, the <code>ViewReader</code>
+        call, pagination, and projection.
+    </p>
+    <table>
+        <tbody><tr><th>Operation</th><th>HTTP wrapper</th><th>Auto handler</th><th>ViewReader call</th></tr>
+        <tr><td>Paged listing (<code>GET /users</code>)</td><td><code>fwweb.HandleQueryWithParams</code></td><td><code>FindByParamsQueryHandler[*Q]</code></td><td><code>ReadPage</code></td></tr>
+        <tr><td>By-id lookup (<code>GET /users/:id</code>)</td><td><code>fwweb.HandleQueryWithID</code></td><td><code>FindByIDQueryHandler[*Q]</code></td><td><code>ReadByID</code></td></tr>
+    </tbody></table>
+    <p>
+        The two wrappers, the Query/Request wiring, the projector contract, the SyncEngine that
+        keeps the view populated, and the manual escape hatch all live on the
+        <a href="#query-side">QueryHandler · CQRS</a> page — including the full end-to-end example.
+        This page documents the <strong>features the auto wrappers enforce on the query string</strong>:
+        the allowlist, nested embed groups, sparse responses (<code>?fields=</code>), sortable
+        response paths (<code>?sort=</code>), keyset pagination (<code>?after=</code> /
+        <code>?before=</code>) with the per-view <code>?limit=</code> ceiling, and count-only mode
+        (<code>?onlyTotal=true</code>). They are the read-side counterpart to the
+        <code>FullBody</code> strict-body marker on the write side — capabilities the canonical
+        wrapper provides out of the box, which the manual path opts into via
+        <code>fwweb.NewQueryParser</code> / <code>fwweb.ParseCriteria</code> (see the manual query
+        handlers section on the <a href="#query-side">QueryHandler · CQRS</a> page).
+    </p>
+
+    <h3 id="qry-allowlist">Allowlist via struct tags</h3>
+    <p>
+        Each filter field on the Request DTO declares its set of allowed operators via the
+        <code>filter:"eq,in"</code> tag. The wrapper inspects the type (cached by
+        <code>reflect.Type</code> in a module-level <code>sync.Map</code>) and rejects any
+        query-string key outside the declared set with 400 <code>SchemaViolationNotification</code>.
+        Reserved pagination/control keys (<code>limit</code>, <code>after</code>, <code>before</code>,
+        <code>sort</code>, <code>fields</code>, <code>search</code>, <code>includeArchived</code>) are declared
+        with only the <code>query:"..."</code> tag (no filter tag) — recognized only at the top
+        level, never inside an embed group.
+    </p>
+
+    <h3 id="qry-nested">Nested embed groups</h3>
+    <p>
+        A struct-typed field carrying <code>query:"prefix"</code> (no <code>filter:</code>) is an
+        <strong>embed group</strong> — the walker recurses, and every leaf below it produces a wire key
+        prefixed by <code>prefix.</code>. Symmetric with the Response side, where nested structs
+        project nested doc paths via <code>AutoFromDoc</code>.
+    </p>
+    <pre><code>type FindUsersByParamsRequest struct {
+    Name      *string             `query:"name"  filter:"eq,startswith"`
+    Email     *string             `query:"email" filter:"eq,in"`
+    Addresses AddressFilterParams `query:"addresses"`
+
+    Limit *int64 `query:"limit"`
+}
+
+type AddressFilterParams struct {
+    City    *string `query:"city"    filter:"eq,istartswith"`
+    ZipCode *string `query:"zipCode" filter:"eq,startswith"`  // auto-snake → addresses.zip_code
+}</code></pre>
+    <p>
+        Wire shape: <code>?addresses.city=Berlin</code>, <code>?addresses.zipCode.startswith=10001</code>.
+        Doc path: derived per-leaf via <code>domain.PascalToSnake</code> (the same convention applied to
+        Postgres column names) — <code>zipCode</code> defaults to doc field <code>zip_code</code>; no
+        <code>view:</code> tag needed for the common camelCase case. Declare <code>view:"&lt;name&gt;"</code>
+        per-leaf only when the convention does not fit (legacy schemas, vendor-shaped projections).
+        Pointer-to-struct embed groups (<code>*AddressFilterParams</code>) recurse identically.
+    </p>
+
+    <h3 id="qry-fields">Sparse responses via <code>?fields=</code></h3>
+    <p>
+        Opt-in field projection — the consumer asks for a subset of the Response shape and the
+        framework strips everything else end to end. The Request DTO opts in by declaring
+        <code>Fields *string `query:"fields"`</code> (no <code>filter:</code> tag — it's a reserved
+        control key, not a filter leaf). When the parameter is declared <em>and</em> the wrapper's
+        Response type <code>R</code> is a struct, three things happen automatically:
+    </p>
+    <ol>
+        <li>
+            <strong>Boot guard.</strong> At wrapper construction
+            (<code>HandleQueryWithParams</code> /
+            <code>HandleQueryWithParamsSpec</code>), the framework walks <code>R</code> recursively
+            and panics if any exported field is not <code>*T</code> (or a slice/map) <em>and</em>
+            does not carry <code>,omitempty</code> in its <code>json</code> tag. The panic
+            diagnostic names every offending field path
+            (<code>FindXxxResponse.addresses.zipCode: missing ,omitempty…</code>) — fail loud at
+            boot so the contract cannot ship.
+        </li>
+        <li>
+            <strong>Allowlist + wire→doc translation.</strong> Each comma-separated token in
+            <code>?fields=</code> is validated against the Response DTO's declared wire paths and
+            translated to the corresponding Mongo doc path via the same convention used elsewhere
+            on the read side (<code>domain.PascalToSnake</code> by default, <code>view:</code> tag
+            override per segment). Unknown tokens emit 400 with
+            <code>SchemaViolationNotification</code> on field <code>fields[&lt;bad&gt;]</code>.
+            Nested paths are walked segment-by-segment, so
+            <code>?fields=addresses.zipCode</code> projects to Mongo as
+            <code>{"addresses.zip_code":1}</code>, and <code>?fields=addresses</code> projects the
+            whole subtree.
+        </li>
+        <li>
+            <strong>Auto-exclusion of <code>_id</code>.</strong> Mongo always returns <code>_id</code>
+            unless excluded. When the wire <code>fields</code> list does <em>not</em> include
+            <code>id</code>, the framework adds <code>_id: 0</code> to the projection so the typed
+            Response stays clean (no phantom <code>id</code> the consumer didn't ask for). When
+            <code>id</code> is among the tokens, no <code>_id: 0</code> is added — Mongo returns
+            both <code>id</code> and <code>_id</code>, and <code>AutoFromDoc</code>'s existing
+            fallback (<code>id ← _id</code> when <code>id</code> absent) keeps the wire output
+            stable across both cases. Mongo's projection rules allow <code>_id: 0</code> to be
+            mixed with inclusion entries — it is the only permitted exclusion in an otherwise-
+            inclusion projection.
+        </li>
+    </ol>
+    <p>
+        Why the boot guard? Mongo strips the unwanted columns from the document; the projector
+        (<code>AutoFromDoc[R]</code> by default) populates only the fields it finds in the doc; the
+        remaining fields stay at their zero value. For pointer fields with <code>omitempty</code>,
+        <code>encoding/json</code> elides them on the wire. For non-pointer fields (or pointer
+        fields missing <code>omitempty</code>), the zero value still renders
+        (<code>"name":""</code>, <code>"addresses":[]</code>), defeating the point of
+        <code>?fields=</code>. The contract enforced at boot is the cheapest way to keep wire
+        output coherent with what the consumer asked for.
+    </p>
+    <p>
+        The boot guard is opt-in by declaration: a Request DTO that does not carry
+        <code>query:"fields"</code> imposes no constraint on its Response type; the
+        <code>HandleQueryWithParams</code> wrapper paired with a custom projector returning
+        <code>map[string]any</code> (e.g. <code>fwresponses.RawDoc</code>) also bypasses the
+        guard — there is no typed Response shape to enforce. Manual handlers via
+        <code>fwweb.ParseCriteria</code> operate in pass-through mode: each <code>?fields=</code>
+        token becomes an inclusion entry verbatim, no allowlist, no translation, no
+        <code>_id: 0</code> auto-exclusion. The canonical surface is the
+        <code>HandleQueryWithParams</code> wrapper.
+    </p>
+    <pre><code>// Request DTO opts in to the parameter.
+type FindUsersByParamsRequest struct {
+    Name   *string `query:"name"   filter:"eq"`
+    Email  *string `query:"email"  filter:"eq,in"`
+
+    Limit  *int64  `query:"limit"`
+    Fields *string `query:"fields"`   // declares the parameter
+}
+
+// Response satisfies the sparse-render contract: every field — at every
+// depth — is *T (or a slice) and carries ,omitempty. Slice fields can stay
+// []T because omitempty already handles nil/empty slices.
+type FindUsersByParamsResponse struct {
+    ID        *string                          `json:"id,omitempty"`
+    Name      *string                          `json:"name,omitempty"`
+    Email     *string                          `json:"email,omitempty"`
+    Phone     *string                          `json:"phone,omitempty"`
+    Addresses []FindUsersByParamsAddressOutput `json:"addresses,omitempty"`
+}
+
+type FindUsersByParamsAddressOutput struct {
+    ID      *string `json:"id,omitempty"`
+    City    *string `json:"city,omitempty"`
+    ZipCode *string `json:"zipCode,omitempty"` // doc key zip_code (auto PascalToSnake)
+}</code></pre>
+    <table>
+        <tbody><tr><th>Wire form</th><th>Mongo projection emitted</th><th>Notes</th></tr>
+        <tr><td><code>?fields=name,email</code></td><td><code>{name:1, email:1, _id:0}</code></td><td><code>id</code> not requested → <code>_id:0</code> added; wire response omits <code>id</code></td></tr>
+        <tr><td><code>?fields=id,name</code></td><td><code>{id:1, name:1}</code></td><td><code>id</code> requested → no <code>_id:0</code>; Mongo auto-includes <code>_id</code>; <code>AutoFromDoc</code> resolves <code>id</code> from the doc</td></tr>
+        <tr><td><code>?fields=addresses</code></td><td><code>{addresses:1, _id:0}</code></td><td>Whole nested subtree returned</td></tr>
+        <tr><td><code>?fields=addresses.zipCode</code></td><td><code>{"addresses.zip_code":1, _id:0}</code></td><td>Auto PascalToSnake on the leaf; only <code>City</code>-equivalent per element is populated; siblings render absent via <code>omitempty</code></td></tr>
+        <tr><td><code>?fields=bogus</code></td><td>(none — request rejected)</td><td>400 with <code>SchemaViolationNotification</code> on field <code>fields[bogus]</code></td></tr>
+    </tbody></table>
+    <p>
+        Empty slices follow the omitempty rule: a <code>?fields=name</code> request returns
+        <code>{"name":"…"}</code> on the wire — the <code>addresses</code> field is absent
+        entirely (omitempty elides nil/empty slices). The framework does not synthesize an empty
+        <code>"addresses":[]</code> when the consumer did not ask for it; consistent with the
+        sparse-render contract.
+    </p>
+
+    <h3 id="qry-sort">Sortable response paths via <code>?sort=</code></h3>
+    <p>
+        Symmetric to <code>?fields=</code>: the consumer asks the framework to order results by
+        Response-declared paths and the wrapper validates + translates the tokens end to end. The
+        Request DTO opts in by declaring <code>Sort *string `query:"sort"`</code> (no
+        <code>filter:</code> tag — it's a reserved control key, not a filter leaf). When the
+        parameter is declared <em>and</em> the wrapper's Response type <code>R</code> is a struct,
+        two things happen automatically:
+    </p>
+    <ol>
+        <li>
+            <strong>Allowlist + wire→doc translation.</strong> Each comma-separated token is
+            stripped of an optional <code>-</code> prefix (descending; bare token = ascending),
+            validated against the Response DTO's declared wire paths, and translated to the
+            corresponding Mongo doc path via the same convention used by <code>?fields=</code>
+            (<code>domain.PascalToSnake</code> by default, <code>view:</code> tag override per
+            segment). Unknown tokens emit 400 with <code>SchemaViolationNotification</code> on
+            field <code>sort[&lt;token&gt;]</code>; the rejected token is surfaced verbatim
+            including any <code>-</code> prefix the consumer sent. The resulting
+            <code>SortField{Field: docPath, Desc: bool}</code> entries land on
+            <code>ReadCriteria.Sort</code> and the canonical <code>MongoViewReader</code> emits
+            the corresponding <code>bson.D</code> on <code>findOpts.SetSort</code>.
+        </li>
+        <li>
+            <strong>Boot warning when sort is declared.</strong> The wrapper has no way to verify
+            from its construction site that the Mongo view declares indexes covering the sortable
+            paths — the <code>ViewDefinition</code> lives in the consumer's
+            <code>ReadableFeature.Views()</code>, separated from the route registration. When
+            <code>Sort</code> opt-in is detected and a typed Response is in scope, the framework
+            emits a single <code>slog.Warn</code> at boot listing every sortable wire path so the
+            operator can compare it against the view's <code>.Indexes(…)</code> declaration in
+            the same boot pass and add covering indexes
+            (<code>fwinfra.Index</code> / <code>fwinfra.Compound</code>) where missing — sort
+            queries against non-indexed fields scale poorly on large collections.
+        </li>
+    </ol>
+    <p>
+        There is <em>no</em> boot guard analogous to <code>fields</code>' pointer + omitempty rule.
+        <code>?sort=</code> only consumes the wire→doc path map; the Response shape is not
+        constrained by it. When <code>fields</code> is also opt-in, the existing guard still fires
+        — it is the <code>fields</code>-side rule, untouched by <code>sort</code>.
+    </p>
+    <p>
+        The allowlist is opt-in by declaration: a Request DTO without <code>query:"sort"</code>
+        does not get the allowlist (and does not consume the <code>?sort=</code> wire key);
+        <code>HandleQueryWithParams</code> paired with a custom projector returning
+        <code>map[string]any</code> (e.g. <code>fwresponses.RawDoc</code>) also bypasses the
+        allowlist — there is no typed Response shape to enforce. Manual handlers via
+        <code>fwweb.ParseCriteria</code> operate in pass-through mode: each <code>?sort=</code>
+        token becomes a <code>SortField</code> verbatim (no allowlist, no translation, no boot
+        warning). The canonical surface is the <code>HandleQueryWithParams</code> wrapper.
+    </p>
+    <table>
+        <tbody><tr><th>Wire form</th><th>SortField emitted</th><th>Notes</th></tr>
+        <tr><td><code>?sort=name</code></td><td><code>{Field:"name", Desc:false}</code></td><td>Bare token → ascending</td></tr>
+        <tr><td><code>?sort=-name</code></td><td><code>{Field:"name", Desc:true}</code></td><td><code>-</code> prefix → descending</td></tr>
+        <tr><td><code>?sort=addresses.zipCode</code></td><td><code>{Field:"addresses.zip_code", Desc:false}</code></td><td>Auto <code>PascalToSnake</code> per segment</td></tr>
+        <tr><td><code>?sort=addresses.state</code></td><td><code>{Field:"addresses.st", Desc:false}</code></td><td>Honors <code>view:"st"</code> override</td></tr>
+        <tr><td><code>?sort=name,-email</code></td><td>2 entries, independent directions</td><td>Multi-key sort applied in declaration order</td></tr>
+        <tr><td><code>?sort=bogus</code></td><td>(none — request rejected)</td><td>400 <code>SchemaViolationNotification</code> on field <code>sort[bogus]</code></td></tr>
+        <tr><td><code>?sort=-bogus</code></td><td>(none — request rejected)</td><td>400 <code>SchemaViolationNotification</code> on field <code>sort[-bogus]</code> (prefix preserved)</td></tr>
+    </tbody></table>
+
+    <h3 id="qry-keyset">Keyset pagination via <code>?after=</code> / <code>?before=</code> + per-view <code>?limit=</code> ceiling</h3>
+    <p>
+        The read side is <strong>keyset-paginated over <code>(sort_value..., _id)</code></strong>. The cursor
+        encodes the value tuple of the boundary doc (last for forward, first for backward) and the
+        reader walks from that point. The reader <strong>always</strong> appends <code>_id</code>
+        ASC as the stable tiebreaker so the result set is deterministic across pages even when the
+        underlying collection is being written to concurrently; consumer-declared <code>?sort=</code>
+        fields layer in front of the <code>_id</code> slot. The <code>?before=</code> path queries
+        Mongo in inverted sort order and reverses the slice in Go so the caller always sees the
+        canonical requested order.
+    </p>
+    <p>
+        <strong>Cursor format.</strong> Opaque to consumers — <code>base64(URLEncoding)</code> of
+        <code>{"v":1, "k":[&lt;sort_values..&gt;, "&lt;_id&gt;"], "h":"&lt;context_sha256&gt;"}</code>.
+        URL-safe so <code>+</code> / <code>/</code> are never produced in the encoded string. The
+        <code>v</code> field carries the schema version (currently <code>1</code>); a future bump
+        rejects older cursors with the same 400 envelope so the consumer surfaces the drift instead
+        of navigating against a stale layout. The <code>h</code> field is the canonical SHA-256 of
+        the issuing call's <strong>full listing context</strong>
+        (<code>queries.HashContext</code>) — every axis that shapes the result set the cursor walks:
+        <code>Filter</code> + <code>Sort</code> (field + Desc per entry, declaration order matters) +
+        <code>Search</code> + <code>IncludeArchived</code>. Empty (omitted on the wire) when the
+        issuing call carried the canonical default context (no filter, no sort, no search, archived
+        excluded).
+    </p>
+    <p>
+        <strong>Cursors are scoped to the full listing context.</strong> A cursor only navigates
+        correctly inside the result set that issued it. The wrapper validates
+        <code>len(cursor.K)-1 == len(criteria.Sort)</code> (structural pre-check protecting the
+        reader's keyset builder) AND
+        <code>cursor.H == HashContext(filter, sort, search, includeArchived)</code> (covers every
+        listing axis) after parsing the query string. Any mismatch — sort field added/removed/
+        reordered, sort direction flipped, filter value changed, <code>?search=</code> value
+        changed, <code>?includeArchived=</code> flipped — is rejected with 400
+        <code>SchemaViolationNotification</code> on the cursor's wire key (<code>after</code> or
+        <code>before</code>). Stateless by design: there is no server-side session, no per-cursor
+        TTL, no token store. The whole "is this cursor still valid?" check runs in the wrapper
+        against the wire request alone. Cursors persist arbitrarily — across requests, across
+        browser tabs, across user devices — as long as the deploy's schema version and the full
+        listing context match.
+    </p>
+    <p>
+        The strict check exists to convert silent consumer-side bugs (frontend changes one knob,
+        server returns wrong/empty results, user blames the data) into loud, explicit failures
+        with a clear remediation: <em>"request page 1 of the new context"</em>.
+    </p>
+    <p>
+        <strong>Symmetric envelope.</strong> The reader emits <code>NextCursor</code> and
+        <code>PrevCursor</code> on every non-terminal page in both forward and backward navigation,
+        so a UI can drive both "next" and "previous" buttons symmetrically. <code>HasNext</code> /
+        <code>HasPrev</code> reflect the actual presence of more docs in either direction.
+    </p>
+    <table>
+        <tbody><tr><th>Wire</th><th>Outcome</th></tr>
+        <tr><td><code>?limit=N</code> only</td><td>First page; <code>_id</code> ASC; emits <code>next_cursor</code> when the dataset overflows N</td></tr>
+        <tr><td><code>?after=&lt;cursor&gt;</code></td><td>Forward keyset — <code>$or</code> cascade with <code>$gt</code> (asc) / <code>$lt</code> (desc) per slot</td></tr>
+        <tr><td><code>?before=&lt;cursor&gt;</code></td><td>Backward keyset — same cascade with inverted operators; reader reverses the returned slice so caller sees canonical sort</td></tr>
+        <tr><td><code>?sort=name&amp;after=&lt;cursor with 1-elem tuple&gt;</code></td><td>400 — <code>SchemaViolationNotification{field:"after"}</code>: consumer changed <code>?sort=</code> mid-navigation; request page 1 of the new sort first</td></tr>
+        <tr><td><code>?name.startswith=B&amp;after=&lt;cursor issued without filter&gt;</code></td><td>400 — <code>SchemaViolationNotification{field:"after"}</code>: consumer changed filter mid-navigation</td></tr>
+        <tr><td><code>?sort=-name&amp;after=&lt;cursor with asc sort&gt;</code></td><td>400 — consumer flipped sort direction mid-navigation</td></tr>
+        <tr><td><code>?search=newterm&amp;after=&lt;cursor without search&gt;</code></td><td>400 — consumer changed <code>?search=</code> mid-navigation</td></tr>
+        <tr><td><code>?includeArchived=true&amp;after=&lt;cursor with archived excluded&gt;</code></td><td>400 — consumer flipped archived gate mid-navigation</td></tr>
+        <tr><td><code>?after=&lt;c&gt;&amp;before=&lt;c&gt;</code></td><td>400 — <code>SchemaViolationNotification{field:"after,before"}</code>: mutually exclusive</td></tr>
+        <tr><td><code>?after=not-base64</code> / corrupt JSON / wrong <code>v</code></td><td>400 — <code>SchemaViolationNotification{field:"after"}</code> (<code>?before=</code> mirrors)</td></tr>
+        <tr><td><code>?limit=abc</code> / <code>0</code> / <code>-5</code></td><td>400 — <code>SchemaViolationNotification{field:"limit"}</code></td></tr>
+        <tr><td><code>?limit=N</code> where <code>N &gt; resolvedMax</code></td><td>400 — <code>LimitExceededNotification{field:"limit", value:"&lt;resolvedMax&gt;"}</code> (translatable per language)</td></tr>
+    </tbody></table>
+    <p>
+        <strong>Per-view <code>?limit=</code> ceiling — single cascade, three levels.</strong> Every
+        paged GET is bounded by a resolved-at-read-time ceiling computed in this order:
+    </p>
+    <ol>
+        <li><code>ViewDefinition.MaxLimit(N)</code> — declarative per-view override
+            (<code>fwinfra.View("users").MaxLimit(500)</code>). Applies uniformly to every endpoint
+            consulting the view, regardless of how many handlers point at it — the cap describes the
+            cost of reading this specific dataset, not of any single endpoint.</li>
+        <li><code>cfg.Query.MaxLimit</code> — yaml-supplied service-wide default
+            (<code>microservice.&lt;profile&gt;.yaml: query: { maxLimit: 200 }</code>).</li>
+        <li>Framework constant <code>100</code> — conservative fallback when neither is declared.</li>
+    </ol>
+    <p>
+        The resolved ceiling is <strong>always &gt; 0</strong>. When the consumer sends no
+        <code>?limit=</code>, the reader returns up to that ceiling (no separate hardcoded
+        default page size). When the consumer sends <code>?limit=N</code> and
+        <code>N ≤ resolvedMax</code>, that value wins. When <code>N &gt; resolvedMax</code>, the
+        reader rejects with 400 <code>LimitExceededNotification</code> carrying the effective
+        ceiling as <code>FieldValue</code> so the consumer can show "max is X" without parsing the
+        translated message.
+    </p>
+    <p>
+        <code>MaxLimit(N)</code> does NOT participate in <code>RebuildHash</code> /
+        <code>ArtifactHash</code> — the cap is operational state, not projection shape. Bumping it
+        neither triggers a Mongo rebuild nor requires a <code>Version(N)</code> bump.
+    </p>
+    <pre><code>// Per-view override — applies to every endpoint reading "users":
+fwinfra.View("users").
+    Version(1).
+    Root("users").
+    EmbedMany("addresses", fwinfra.From("addresses").On("user_id")).
+    MaxLimit(500)
+</code></pre>
+    <pre><code># microservice.&lt;profile&gt;.yaml — service-wide default (consumed by every view
+# that does NOT declare its own MaxLimit):
+query:
+  maxLimit: 200
+</code></pre>
+    <p>
+        <strong>Compound cursor + <code>?fields=</code> interaction.</strong> When the consumer
+        requests <code>?fields=name</code> AND <code>?sort=created_at</code>, the doc would otherwise
+        not carry <code>created_at</code> (projected away) and the reader could not assemble the
+        cursor. The reader transparently re-includes every active sort field path in the Mongo
+        projection, then strips them from the returned doc after the cursor is built. The wire
+        shape stays exactly as the consumer requested via <code>?fields=</code>.
+    </p>
+
+    <h3 id="qry-only-total">Count-only mode via <code>?onlyTotal=true</code></h3>
+    <p>
+        Boolean reserved control key. When set to <code>true</code> the wrapper short-circuits the
+        read into a count primitive — the reader runs <code>CountDocuments</code> against the
+        assembled <code>Filter</code> (including identity-derived overlays, the archived gate, and
+        any <code>?search=</code>) and the wire envelope carries solely
+        <code>pagination.total</code>. No documents are materialized, no projection is applied,
+        no cursor is decoded. The use case is a frontend that needs the total count of a filtered
+        subset (pagination calculation, "matches" badge) without paying for the document fetch.
+    </p>
+    <p>
+        Like every reserved control key on the read side, <code>?onlyTotal=</code> is opt-in per
+        endpoint: the consumer declares <code>OnlyTotal *bool <code>`query:"onlyTotal"`</code></code> on
+        the Request DTO. Endpoints that did not declare it reject the wire key with the canonical
+        400 — same posture as <code>?fields=</code> / <code>?sort=</code> / <code>?includeArchived=</code>.
+    </p>
+    <p>
+        <strong>Conflict matrix.</strong> The listing-only reserved controls have no meaningful
+        effect when no documents are emitted, so combining them with <code>onlyTotal=true</code> is
+        a consumer-side bug. The wrapper rejects the combination with 400
+        <code>SchemaViolationNotification</code> on field <code>onlyTotal[&lt;conflict&gt;]</code>.
+        Filter leaves (declared via <code>filter:"ops"</code>) plus <code>?search=</code> and
+        <code>?includeArchived=</code> stay valid — counting a filtered subset is the canonical use case.
+    </p>
+    <table>
+        <tbody><tr><th>Wire form</th><th>Outcome</th></tr>
+        <tr><td><code>?onlyTotal=true</code></td><td>200 — envelope <code>{success, status, description, pagination: {total: N}}</code> (no <code>data</code>, no <code>has_next</code>/<code>has_prev</code>/cursors)</td></tr>
+        <tr><td><code>?onlyTotal=true&amp;name.startswith=Bo</code></td><td>200 — counts only docs whose <code>name</code> starts with "Bo"</td></tr>
+        <tr><td><code>?onlyTotal=true&amp;search=foo</code></td><td>200 — text-index count of "foo" matches</td></tr>
+        <tr><td><code>?onlyTotal=true&amp;includeArchived=true</code></td><td>200 — counts archived rows too (skips the soft-delete gate)</td></tr>
+        <tr><td><code>?onlyTotal=true&amp;fields=name</code></td><td>400 — <code>onlyTotal[fields]</code></td></tr>
+        <tr><td><code>?onlyTotal=true&amp;sort=-name</code></td><td>400 — <code>onlyTotal[sort]</code></td></tr>
+        <tr><td><code>?onlyTotal=true&amp;limit=10</code></td><td>400 — <code>onlyTotal[limit]</code></td></tr>
+        <tr><td><code>?onlyTotal=true&amp;after=cur-xyz</code></td><td>400 — <code>onlyTotal[after]</code></td></tr>
+        <tr><td><code>?onlyTotal=true&amp;before=cur-xyz</code></td><td>400 — <code>onlyTotal[before]</code></td></tr>
+        <tr><td><code>?onlyTotal=true</code> on endpoint that did not declare it</td><td>400 — unknown wire key</td></tr>
+        <tr><td><code>?onlyTotal=false</code> (or omitted)</td><td>Listing envelope unchanged</td></tr>
+    </tbody></table>
+    <p>
+        On the response side, the <code>Response.Pagination</code> slot is typed <code>any</code>
+        precisely because it carries two legitimate Go shapes: <code>*PaginationInfo</code> on
+        listing requests (has_next/has_prev/cursors + total) and <code>*TotalOnlyPagination</code>
+        on count-only requests (only total). Both are typed structs — no untyped map ever reaches
+        the wire. The dedicated shape exists so the JSON does NOT carry zero-value
+        <code>has_next: false</code> / empty cursors that would mislead the consumer in count mode.
+    </p>
+    <p>
+        Manual handlers via <code>fwweb.ParseCriteria</code> get the same treatment: the
+        <code>OnlyTotal</code> flag flows into <code>ReadCriteria.OnlyTotal</code> and conflicts
+        are rejected with the same field shape, so the canonical wire contract is shared with the
+        canonical wrapper path. The downstream branch on <code>queries.Page.OnlyTotal</code> is
+        what <code>RespondPaged</code> consumes to pick the envelope shape; manual handlers that
+        assemble the envelope by hand can read the same field on the returned Page.
+    </p>
+
+    <pre><code>// Operator constants — used in the filter tag.
+const (
+    OpEq           = "eq"
+    OpNe           = "ne"
+    OpIn           = "in"
+    OpNin          = "nin"
+    OpGte          = "gte"
+    OpLte          = "lte"
+    OpGt           = "gt"
+    OpLt           = "lt"
+    OpStartsWith   = "startswith"
+    OpContains     = "contains"
+    OpIEq          = "ieq"          // case-insensitive equality
+    OpINe          = "ine"          // case-insensitive inequality
+    OpIIn          = "iin"          // case-insensitive in-list
+    OpINin         = "inin"         // case-insensitive not-in-list
+    OpIStartsWith  = "istartswith"  // case-insensitive prefix
+    OpIContains    = "icontains"    // case-insensitive substring
+)</code></pre>
+    <p>
+        String operators come in case-sensitive and case-insensitive variants — the <code>i</code>
+        prefix is the case-folded twin. The consumer declares whichever set the endpoint accepts
+        (<code>filter:"eq,startswith,icontains"</code> means exact, prefix, and case-insensitive
+        substring); operators outside the declared list are rejected with 400. Numeric operators
+        (<code>gte</code>/<code>lte</code>/<code>gt</code>/<code>lt</code>) have no <code>i</code>
+        variant by design — case-folding has no meaning on ordinal comparisons.
+    </p>
+    <p>
+        User-supplied values feeding the regex operators are escaped via <code>regexp.QuoteMeta</code>
+        so wire metacharacters are treated as literals — <code>?name.contains=a.b*c</code> matches
+        the literal string <code>a.b*c</code>, never the regex pattern. The <code>iin</code> and
+        <code>inin</code> operators emit a <code>queries.RegexMatchList</code> sentinel that
+        <code>MongoViewReader</code> translates into <code>{$in: [bson.Regex, ...]}</code> /
+        <code>{$nin: [bson.Regex, ...]}</code> — Mongo requires the native regex type inside
+        <code>$in</code>, so the translation is owned by the infra adapter rather than emitted
+        from the wire layer.
+    </p>
+    <p>
+        <strong>Multiple operators on the same field are AND-ed.</strong> When the wire delivers
+        more than one operator targeting the same field (e.g. <code>?age.gte=18&amp;age.lte=65</code>
+        or <code>?name.startswith=Bob&amp;name.icontains=ob</code>), the wrapper folds the clauses
+        into a <code>queries.MultiClause</code> sentinel on
+        <code>ReadCriteria.Filter[field]</code> instead of overwriting the previous entry on the
+        map. <code>MongoViewReader</code> expands the sentinel into a top-level <code>$and</code>
+        array — each clause becomes a <code>{field: translatedValue}</code> entry so every
+        declared operator is honored simultaneously. A single operator on a field stays as the
+        plain <code>{field: value}</code> shape so Mongo indexes remain usable without an outer
+        <code>$and</code>.
+    </p>
+    <table>
+        <tbody><tr><th>Wire form</th><th>Outcome</th></tr>
+        <tr><td><code>?name=Jane</code> with tag <code>filter:"eq"</code></td><td>OK — equality recognized as the empty operator</td></tr>
+        <tr><td><code>?email.in=a@x,b@y</code> with tag <code>filter:"eq,in"</code></td><td>OK — <code>$in</code> applied</td></tr>
+        <tr><td><code>?name.startswith=Bob</code> with tag <code>filter:"eq,startswith"</code></td><td>OK — matches "Bob", "Bob Diego"; case-sensitive</td></tr>
+        <tr><td><code>?name.icontains=OB</code> with tag <code>filter:"eq,icontains"</code></td><td>OK — matches "Bob", "Roberto"; case-folded</td></tr>
+        <tr><td><code>?name.iin=bob,alice</code> with tag <code>filter:"eq,iin"</code></td><td>OK — matches "Bob", "ALICE"; sentinel expanded by MongoViewReader</td></tr>
+        <tr><td><code>?age.gte=18&amp;age.lte=65</code> with tag <code>filter:"gte,lte"</code></td><td>OK — both clauses AND-ed via top-level <code>$and</code></td></tr>
+        <tr><td><code>?role=admin</code> with no field declared</td><td>400 — unknown field</td></tr>
+        <tr><td><code>?email.gte=X</code> with tag <code>filter:"eq,in"</code></td><td>400 — operator outside declared list</td></tr>
+        <tr><td><code>?includeArchived=true</code> on by-id endpoint</td><td>OK — reserved</td></tr>
+        <tr><td><code>?role=admin</code> on by-id endpoint</td><td>400 — only <code>includeArchived</code> is reserved by-id</td></tr>
+    </tbody></table>
+
