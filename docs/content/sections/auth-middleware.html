@@ -1,5 +1,5 @@
 <h2>Authentication middleware</h2>
-  <p>When <code>auth.mode: jwt</code> in <a href="#microservice-yaml"><code>microservice.&lt;profile&gt;.yaml</code></a>, <code>bootstrap.Run</code> auto-registers <code>fwweb.AuthMiddleware</code> right after <code>AppContextMiddleware</code>. Every request is validated end-to-end before it reaches a Feature route; on success the middleware populates <code>AppContext.Identity</code>. When <code>auth.mode: disabled</code>, the middleware is not registered at all — there is no runtime cost and <code>Identity()</code> stays <code>nil</code>.</p>
+  <p>When <code>auth.mode: jwt</code> in <a href="#bootstrap~microservice-yaml"><code>microservice.&lt;profile&gt;.yaml</code></a>, <code>bootstrap.Run</code> auto-registers <code>fwweb.AuthMiddleware</code> right after <code>AppContextMiddleware</code>. Every request is validated end-to-end before it reaches a Feature route; on success the middleware populates <code>AppContext.Identity</code>. When <code>auth.mode: disabled</code>, the middleware is not registered at all — there is no runtime cost and <code>Identity()</code> stays <code>nil</code>.</p>
 
   <h3>Validation flow</h3>
   <ol>

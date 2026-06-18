@@ -249,7 +249,7 @@ app.Post("/customers", func(c fiber.Ctx) error {
 })</code></pre>
 
     <h3>BaseRepository[T] — 5 ready-made writes + New() T</h3>
-    <p>The service embeds <code>fwinfra.BaseRepository[T]</code> and gains Insert/Update/Archive/Unarchive/Delete without writing a line — plus <code>New() T</code>, which materializes the constructor of T (consumed by <code>UnarchiveCommandHandler</code> and available for any scenario needing an empty entity). <code>FindByID</code> is the service's responsibility (see <a href="#aggregate-loader">AggregateLoader</a>).</p>
+    <p>The service embeds <code>fwinfra.BaseRepository[T]</code> and gains Insert/Update/Archive/Unarchive/Delete without writing a line — plus <code>New() T</code>, which materializes the constructor of T (consumed by <code>UnarchiveCommandHandler</code> and available for any scenario needing an empty entity). <code>FindByID</code> is the service's responsibility (see <a href="#command-handler~aggregate-loader">AggregateLoader</a>).</p>
     <pre><code>type UserRepository struct {
     fwinfra.BaseRepository[*User]
     loader *fwinfra.AggregateLoader[*User]  // for FindByID
@@ -313,7 +313,7 @@ var (
     <h3 id="aggregate-loader">AggregateLoader[T] — loading aggregates with the criteria engine</h3>
     <p>
         The <code>AggregateLoader</code> loads <strong>live domain aggregates</strong> (root + children) from
-        PostgreSQL through the <a href="#criteria-engine">entity search engine</a>: you hand it a
+        PostgreSQL through the <a href="#command-handler~criteria-engine">entity search engine</a>: you hand it a
         <code>criteria.Query</code> and it returns the entity ready for a command. Two entry points —
         <code>FindOne(ctx, *criteria.Query)</code> (one match, or <code>RecordNotFound</code>; more than one
         is an error) and <code>FindAll(ctx, *criteria.Query)</code> (a slice; children batched). It has its

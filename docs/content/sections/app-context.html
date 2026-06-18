@@ -3,7 +3,7 @@
   <ul>
     <li><strong>ID</strong> — UUID from the <code>X-Request-ID</code> header (or a new one if missing/invalid). Always returned in the response for correlation.</li>
     <li><strong>Language</strong> — prefix match of <code>Accept-Language</code> against the <code>configuration.Language</code> enum (built-ins: <code>pt</code>→<code>LangPTBR</code>, <code>en</code>→<code>LangENG</code>, <code>es</code>→<code>LangES</code>, <code>fr</code>→<code>LangFR</code>, <code>de</code>→<code>LangDE</code>, <code>it</code>→<code>LangIT</code>, <code>nl</code>→<code>LangNL</code>). Default <code>LangENG</code> — header absent or naming a language the framework does not ship a catalog for both resolve to English.</li>
-    <li><strong>Identity</strong> — the authenticated principal of the request (<code>*configuration.Identity</code>). Populated by the auth middleware after a successful JWT validation; <code>nil</code> when the route is public, <code>auth.mode=disabled</code>, or the middleware has not yet run. See <a href="#microservice-yaml">microservice.&lt;profile&gt;.yaml</a> for how to wire the <code>auth:</code> block.</li>
+    <li><strong>Identity</strong> — the authenticated principal of the request (<code>*configuration.Identity</code>). Populated by the auth middleware after a successful JWT validation; <code>nil</code> when the route is public, <code>auth.mode=disabled</code>, or the middleware has not yet run. See <a href="#bootstrap~microservice-yaml">microservice.&lt;profile&gt;.yaml</a> for how to wire the <code>auth:</code> block.</li>
   </ul>
 
   <p>In any Fiber handler:</p>
