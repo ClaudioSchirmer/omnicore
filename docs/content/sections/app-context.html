@@ -17,4 +17,73 @@
 
   <p><code>configuration.Identity</code> carries the standard JWT claims <code>Subject</code> (<code>sub</code>), <code>Issuer</code> (<code>iss</code>), <code>ExpiresAt</code> (<code>exp</code>), plus a raw <code>Claims map[string]any</code> for custom claims (roles, email, tenant, …) — the framework does not opine on which custom claims a service expects.</p>
 
+  <h3 id="ctx-injection-seams">Where AppContext flows below the web boundary</h3>
+  <p>
+    <code>Identity()</code> is read in Fiber handlers, but the request <code>*AppContext</code> also travels
+    one layer deeper — into the application layer — through <strong>exactly two symmetric seams</strong>.
+    Both exist for the same purpose: translate a claim into a business-named value and inject it where it
+    is needed. The web boundary stays dumb (<code>Request.ToCommand()</code> / <code>ToQuery()</code> carry
+    no ctx), the domain stays IO-free, and infra never sees the JWT — identity translation lives in exactly
+    these two methods and nowhere else.
+  </p>
+  <table>
+    <thead><tr><th>Side</th><th>Seam</th><th>Injects the claim into</th></tr></thead>
+    <tbody>
+      <tr>
+        <td>Write</td>
+        <td><code>Command.ToEntity(ctx)</code> / <code>ApplyTo(ctx, t)</code> / <code>ApplyPartiallyTo(ctx, t)</code></td>
+        <td>a field on the <strong>entity</strong> — either a <em>transient</em> field (tag
+          <code>transient:"-"</code>, runtime-only, feeds <code>BuildRules</code> and is never persisted)
+          or a <em>persisted</em> field (a real column)</td>
+      </tr>
+      <tr>
+        <td>Read</td>
+        <td><code>Query.ToCriteria(ctx)</code></td>
+        <td>the <code>ReadCriteria.Filter</code> the handler forwards to <code>ViewReader.ReadPage</code> /
+          <code>ReadByID</code></td>
+      </tr>
+    </tbody>
+  </table>
+  <p>
+    The two are mirror images: the Command (or Query) is the only layer below the web boundary that may
+    consume <code>*AppContext</code>. The write-side and read-side mechanics are detailed under
+    <a href="#auto-handlers">Auto command handlers</a> (and <a href="#command-handler">CommandHandler</a>
+    for the manual flow) and <a href="#query-side">QueryHandler · CQRS</a>.
+  </p>
+
+  <h4 id="ctx-stamp-filter-cycle">Stamp a claim on insert, filter by it on read</h4>
+  <p>
+    When the write-side field is <strong>persisted</strong> (not transient), the two seams compose into a
+    canonical cycle: <code>ToEntity(ctx)</code> <strong>stamps</strong> the claim onto a real column at
+    insert time, and <code>ToCriteria(ctx)</code> later <strong>filters</strong> rows by that same column.
+    This is the general pattern for any claim that must become a persistent scope — owner-by-subject,
+    tenant isolation, region, etc. <code>tenant_id</code> / <code>owner_id</code> are the canonical
+    instances; the full write-stamp + read-filter + match-invariant cycle (with the tenant gate and
+    <code>TenantMismatchNotification</code>) lives under <a href="#authz-seams">Authorization</a>, Layer 3.
+  </p>
+  <pre><code>// WRITE — stamp the JWT subject onto a PERSISTED column (no transient:"-" tag → real column owner_id).
+func (c InsertDocumentCommand) ToEntity(ctx *configuration.AppContext) *Document {
+    d := &amp;Document{Title: c.Title /* ... */}
+    if id := ctx.Identity(); id != nil {
+        d.OwnerID = id.Subject          // claim → persisted field; the INSERT writes column owner_id
+    }
+    return d
+}
+
+// READ — filter by that same column from the same claim.
+func (q FindDocumentsQuery) ToCriteria(ctx *configuration.AppContext) fwqueries.ReadCriteria {
+    crit := q.Criteria
+    if id := ctx.Identity(); id != nil {
+        if crit.Filter == nil { crit.Filter = map[string]any{} }
+        crit.Filter["owner_id"] = id.Subject   // overlay → only the caller's own documents return
+    }
+    return crit
+}</code></pre>
+  <p class="note">
+    Contrast with the <em>transient</em> case: a field tagged <code>transient:"-"</code> (e.g.
+    <code>RequestingPrincipalEmail</code> populated by <code>ApplyTo(ctx, t)</code> to feed an owner-check
+    in <code>BuildRules</code>) is runtime-only — it never reaches a column, so it cannot be filtered on
+    later. Persist the claim only when a later read must scope by it.
+  </p>
+
   <p class="note">Extra request-scoped state beyond <code>Identity</code> (e.g., feature flags resolved per request) goes in middleware AFTER the default, via <code>ctx.Set(key, val)</code>.</p>
