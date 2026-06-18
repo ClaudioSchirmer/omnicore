@@ -1,0 +1,126 @@
+<h2>Canonical read lifecycle — end-to-end layer map</h2>
+    <p>
+        Cross-layer reference, symmetric to the <a href="#lifecycle-map">Write lifecycle map</a>: for
+        each canonical read shape this table follows the request from the HTTP wrapper down through
+        the Auto query handler, the Query entry points (<code>ToQuery</code> at the web boundary +
+        <code>ToCriteria(ctx)</code> in the application layer, where JWT-derived overlays land), the
+        <code>queries.ViewReader</code> port, the MongoDB operation, all the way up to the response
+        envelope the wrapper emits. Everything is anchored in the criteria → bson translation —
+        <strong>identical <code>ReadCriteria</code> ⇒ identical Mongo query ⇒ identical result set</strong>.
+    </p>
+    <p>
+        Only the canonical surface (the two Auto query wrappers + the <code>FindBy*QueryHandler</code>
+        family) is shown to keep the map readable. Manual handlers
+        (<a href="#query-side">QueryHandler · CQRS</a> → manual query handlers) hand-roll the dispatch
+        but consume the same <code>ViewReader</code> port and emit the same envelope.
+    </p>
+
+    <h3>Read shapes</h3>
+    <table>
+        <thead>
+            <tr>
+                <th>HTTP wrapper</th>
+                <th>Auto handler</th>
+                <th>Query entry &amp; ctx seam</th>
+                <th>ViewReader method</th>
+                <th>Mongo operation</th>
+                <th>Response envelope</th>
+            </tr>
+        </thead>
+        <tbody>
+            <tr>
+                <td><code>HandleQueryWithParams</code><br><span class="muted">GET /users</span></td>
+                <td><code>FindByParamsQueryHandler</code></td>
+                <td>
+                    <code>req.ToQuery(criteria)</code> (web boundary — no ctx) →
+                    <code>q.ToCriteria(ctx)</code> (overlays: tenant_id / owner_id layer onto <code>Filter</code>)
+                </td>
+                <td><code>ReadPage(view, criteria)</code></td>
+                <td><code>Find(filter, sort, limit+1)</code> + <code>CountDocuments(filter)</code> — <code>_id</code> ASC appended as the stable tiebreaker</td>
+                <td><code>{ data: []R, pagination: *PaginationInfo }</code> — items projected per doc</td>
+            </tr>
+            <tr>
+                <td><code>HandleQueryWithID</code><br><span class="muted">GET /users/:id</span></td>
+                <td><code>FindByIDQueryHandler</code></td>
+                <td>
+                    <code>req.ToQuery()</code> + <code>q.SetPathID(c.Params("id"))</code> →
+                    <code>q.ToCriteria(ctx)</code> (<code>IncludeArchived</code> + overlays)
+                </td>
+                <td><code>ReadByID(view, id, criteria)</code></td>
+                <td><code>findOne(_id=$1)</code> + <code>deleted_at</code> gate unless <code>IncludeArchived</code></td>
+                <td><code>{ data: R }</code>; miss (or filtered out by an overlay) → 404 <code>RecordNotFoundNotification</code></td>
+            </tr>
+            <tr>
+                <td><code>HandleQueryWithParams</code> + <code>?onlyTotal=true</code><br><span class="muted">GET /users?onlyTotal=true</span></td>
+                <td><code>FindByParamsQueryHandler</code></td>
+                <td>same as the listing row; <code>OnlyTotal</code> flows into <code>ReadCriteria.OnlyTotal</code></td>
+                <td><code>ReadPage</code> short-circuits</td>
+                <td><code>CountDocuments(filter)</code> only — no documents fetched, no projection</td>
+                <td><code>{ pagination: *TotalOnlyPagination{total} }</code> — no <code>data</code>, no cursors</td>
+            </tr>
+        </tbody>
+    </table>
+
+    <h3>Query-string axes — the criteria → bson translation</h3>
+    <p>
+        Each wire axis the <a href="#auto-query-handlers">Auto query handlers</a> validate lands on a
+        field of <code>queries.ReadCriteria</code>; the canonical <code>MongoViewReader</code> emits
+        the matching bson. The list endpoint composes all axes into one <code>Find</code>; the by-id
+        endpoint honors only <code>Filter</code> (overlays) + <code>IncludeArchived</code> by design.
+    </p>
+    <table>
+        <thead>
+            <tr><th>Wire axis</th><th><code>ReadCriteria</code> field</th><th>Mongo emission</th></tr>
+        </thead>
+        <tbody>
+            <tr>
+                <td><code>?name.in=a,b</code> (filter leaf)</td>
+                <td><code>Filter[field]</code> = value / <code>MultiClause</code> / <code>RegexMatchList</code> sentinel</td>
+                <td><code>{name: {$in: ["a","b"]}}</code>; multiple operators on one field fold into a top-level <code>$and</code></td>
+            </tr>
+            <tr>
+                <td><code>?sort=-created_at</code></td>
+                <td><code>Sort []SortField</code> (+ <code>_id</code> ASC appended)</td>
+                <td><code>findOpts.SetSort(bson.D{{"created_at",-1},{"_id",1}})</code></td>
+            </tr>
+            <tr>
+                <td><code>?fields=name,email</code></td>
+                <td><code>Projection</code></td>
+                <td><code>findOpts.SetProjection({name:1, email:1, _id:0})</code> — <code>_id:0</code> added when <code>id</code> not requested</td>
+            </tr>
+            <tr>
+                <td><code>?after=</code> / <code>?before=</code></td>
+                <td>decoded cursor tuple <code>(sort_values…, _id)</code> + context hash <code>h</code></td>
+                <td><code>$or</code> cascade with <code>$gt</code> (asc) / <code>$lt</code> (desc) per slot; <code>?before=</code> runs inverted + reverses in Go</td>
+            </tr>
+            <tr>
+                <td><code>?search=foo</code></td>
+                <td><code>Search</code></td>
+                <td><code>{$text: {$search: "foo"}}</code> — requires a <code>TextIndex</code> on the view</td>
+            </tr>
+            <tr>
+                <td><code>?includeArchived=true</code></td>
+                <td><code>IncludeArchived</code></td>
+                <td>omits the <code>{deleted_at: null}</code> gate (default applies it)</td>
+            </tr>
+        </tbody>
+    </table>
+
+    <h3>The criteria-grounded contract — one rule, no exceptions</h3>
+    <div class="note">
+        <strong>The result set is a deterministic function of the assembled <code>ReadCriteria</code>.</strong>
+        Identical criteria ⇒ identical bson ⇒ identical page. The reader always appends <code>_id</code>
+        ASC as the last sort key, so the <code>+1</code> overflow trick that powers <code>has_next</code>
+        stays meaningful even under concurrent writes, and a cursor emitted on one page applies cleanly
+        on the next.
+    </div>
+    <p>
+        Because the read side is <strong>stateless</strong> (no server-side session, no cursor store),
+        the cursor carries a SHA-256 hash of its issuing <em>full listing context</em>
+        (<code>Filter</code> + <code>Sort</code> + <code>Search</code> + <code>IncludeArchived</code>).
+        The wrapper rejects a cursor whose context hash no longer matches the current request with 400
+        <code>SchemaViolationNotification</code> — converting a silent "frontend changed one knob,
+        results look wrong" bug into a loud failure with a clear remediation: request page 1 of the new
+        context. This is the read-side analogue of the write side's SQL-fingerprint discipline: the
+        contract is anchored in what physically shapes the query, not in the endpoint's intent.
+    </p>

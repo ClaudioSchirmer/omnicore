@@ -6,6 +6,7 @@
         read side), all the way to the audit event the consumer reads in slog/ELK. Everything is anchored in the
         SQL fingerprint — <strong>identical SQL ⇒ identical audit verb ⇒ identical Mongo op</strong>.
         This is what makes PUT and PATCH share <code>verb: "update"</code> in audit: the SQL is the same.
+        The read-side counterpart is the <a href="#read-lifecycle-map">Read lifecycle map</a>.
     </p>
     <p>
         Only the canonical surface (Auto handlers / <code>UpdateCommandHandler</code>-family) is shown to keep the
