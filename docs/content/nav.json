@@ -105,6 +105,10 @@
     "group": "Infrastructure",
     "items": [
       {
+        "id": "service-to-service",
+        "label": "Service-to-service"
+      },
+      {
         "id": "cache-subsystem",
         "label": "Cache subsystem"
       },

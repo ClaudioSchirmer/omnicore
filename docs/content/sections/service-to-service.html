@@ -1,0 +1,35 @@
+<h2>Service-to-service communication</h2>
+
+    <p>Four infrastructure surfaces carry traffic across service boundaries. The choice is driven by <strong>temporal coupling</strong> — whether the caller must block on the answer — not by which call is most convenient to write. Pick the mechanism by the question you are actually answering; the framework exposes exactly one canonical path for each.</p>
+
+    <table>
+        <tbody><tr>
+            <th>I need to…</th>
+            <th>Use</th>
+            <th>Why</th>
+        </tr>
+        <tr>
+            <td>Get an answer <em>now</em> and my response to the caller depends on it</td>
+            <td><a href="#httpclient"><code>httpclient</code></a> (sync)</td>
+            <td>The temporal coupling is inherent — there is no answer to give until the other service replies. Request/response over the per-service registry (breaker, pool, TLS, auth, cache).</td>
+        </tr>
+        <tr>
+            <td>Read another service's state inside <em>my own</em> queries</td>
+            <td><a href="#query-side~qry-auto-vs-manual"><code>UpstreamSubscription</code> + <code>FromMongo</code></a> (read-side)</td>
+            <td>You do not need a call — you need the data local. The framework materializes the upstream collection from its event stream and ripples recompose into every view that embeds it. Reads never leave the process. See the <a href="#query-side~qry-example">cross-service composition example</a>.</td>
+        </tr>
+        <tr>
+            <td>Signal that something happened so other services can react</td>
+            <td><a href="#integration-events"><code>integration</code> events</a> (async)</td>
+            <td>Decouple in time: emit a typed event into <code>integration_events</code> (atomic with the data write) and let subscribers consume it on their own clock. No blocking, no fan-out coupling in the producer.</td>
+        </tr>
+        <tr>
+            <td>Send a command to another service with no return value (rare)</td>
+            <td>↳ reformulate as an <a href="#integration-events">integration event</a></td>
+            <td>There is no separate fire-and-forget primitive, by design. A subscriber's <code>Receiver.On</code> runs the <strong>same</strong> <code>pipeline.Handler</code> an HTTP route would, and the event DTO carries <code>ToCommand()</code> — so "command without return" <em>is</em> "event + reaction". Modeling it as an event keeps the producer decoupled from the consumer's command surface.</td>
+        </tr>
+    </tbody></table>
+
+    <p class="note"><strong>The read-side path and the event path share one spine.</strong> <code>FromMongo</code> is not a parallel universe to integration events — the upstream collection it reads is itself materialized by the framework consuming an event stream. "Read another service's state" and "react to another service's event" are two consumer-facing surfaces over the same CDC backbone; the difference is whether you want the <em>data</em> projected locally or a <em>handler</em> invoked.</p>
+
+    <p><a href="#cache-subsystem">Cache</a> is orthogonal to all four — a cross-cutting accelerator for the sync path (<code>httpclient</code> response cache) and read amplification, never a transport in its own right.</p>
