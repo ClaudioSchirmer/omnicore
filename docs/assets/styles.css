@@ -386,7 +386,8 @@ td code { font-size: 12px; }
 .flow .manual { background: var(--warn-bg); color: var(--warn); box-shadow: inset 0 0 0 1px var(--warn-line); }
 
 /* ---------- Architecture layer diagram (HTML, theme-aware) ---------- */
-.arch { display: flex; flex-direction: column; gap: 10px; margin: 18px 0; }
+.arch { position: relative; display: flex; flex-direction: column; gap: 10px; margin: 18px 0; }
+.arch:hover .copy-btn { opacity: 1; }
 .arch-layer {
     border: 1px solid var(--border); border-radius: 11px;
     background: var(--surface); box-shadow: var(--shadow-soft); overflow: hidden;
