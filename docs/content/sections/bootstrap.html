@@ -1,8 +1,8 @@
 <h2>Bootstrap — main.go in 10 lines</h2>
-    <p>The <code>omnicore/bootstrap</code> package orchestrates the whole service boot from the <a href="#microservice-yaml"><code>microservice.&lt;profile&gt;.yaml</code></a> + a <code>Wire</code> callback returning <code>Wiring</code>.</p>
+    <p>The <code>omnicore/bootstrap</code> package orchestrates the whole service boot from the <a href="#bootstrap~microservice-yaml"><code>microservice.&lt;profile&gt;.yaml</code></a> + a <code>Wire</code> callback returning <code>Wiring</code>.</p>
 
     <h3 id="env-vars">Environment variables</h3>
-    <p>The framework reads <strong>exactly four</strong> process environment variables at boot. Every other env var that may appear inside a YAML value via the <code>${VAR:default}</code> interpolation pattern (e.g. <code>DATABASE_URL</code>, <code>MONGO_URI</code>, <code>KC_URL</code>) is <em>consumer-defined</em> — see the <a href="#microservice-yaml">YAML subsection below</a> for the interpolation syntax. The four framework-reserved vars are:</p>
+    <p>The framework reads <strong>exactly four</strong> process environment variables at boot. Every other env var that may appear inside a YAML value via the <code>${VAR:default}</code> interpolation pattern (e.g. <code>DATABASE_URL</code>, <code>MONGO_URI</code>, <code>KC_URL</code>) is <em>consumer-defined</em> — see the <a href="#bootstrap~microservice-yaml">YAML subsection below</a> for the interpolation syntax. The four framework-reserved vars are:</p>
 
     <table>
         <tbody><tr>
@@ -67,7 +67,7 @@ env:
 </code></pre>
 
     <h3 id="microservice-yaml">microservice.&lt;profile&gt;.yaml</h3>
-    <p>Each service declares infra config in a profile-specific YAML file at the root. <code>bootstrap.LoadConfig</code> reads the <code>APP_PROFILE</code> environment variable (required, non-empty) and loads <code>./microservice.${APP_PROFILE}.yaml</code> — override the path via <code>OMNICORE_CONFIG_PATH</code> when needed (tests, custom layouts). <code>dev</code> and <code>prd</code> are the canonical pair; any other non-empty string (<code>prd-pem</code>, <code>prd-external</code>, <code>qa-canary</code>, ...) is also accepted so QA suites and ops setups can swap whole configurations via extra files without competing with the canonical pair. See <a href="#env-vars">Environment variables</a> for the complete list of framework-reserved env vars.</p>
+    <p>Each service declares infra config in a profile-specific YAML file at the root. <code>bootstrap.LoadConfig</code> reads the <code>APP_PROFILE</code> environment variable (required, non-empty) and loads <code>./microservice.${APP_PROFILE}.yaml</code> — override the path via <code>OMNICORE_CONFIG_PATH</code> when needed (tests, custom layouts). <code>dev</code> and <code>prd</code> are the canonical pair; any other non-empty string (<code>prd-pem</code>, <code>prd-external</code>, <code>qa-canary</code>, ...) is also accepted so QA suites and ops setups can swap whole configurations via extra files without competing with the canonical pair. See <a href="#bootstrap~env-vars">Environment variables</a> for the complete list of framework-reserved env vars.</p>
 
     <p>Separate files per profile is intentional: the artifact deployed to prd does not carry dev configuration at all, so a service cannot accidentally ship with a dev knob enabled. The profile is also <strong>not</strong> a YAML field — its source of truth is the environment, and the loader rejects boot with <code>auth.mode=disabled</code> under any profile other than <code>dev</code> (canonical-prd and every QA variant are treated identically by this guard — only <code>dev</code> unlocks the disabled-auth shortcut).</p>
 

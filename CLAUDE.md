@@ -1960,7 +1960,7 @@ migrations/
 
 Filename: `{version}_{name}.{up|down}.sql`. `version` is a monotonic integer.
 
-**Version 1 is reserved for the framework's control plane** — injected via `embed.FS` (`omnicore/infra/migration/embedded/0001_outbox.{up,down}.sql`). Creates **two** tables in the same migration: `outbox` (CDC source for the Debezium Outbox Event Router) and `omnicore_mongo_views` (the registry of materialized Mongo view shapes — see "Mongo schema evolution"). Services start at `0002+`. Do not write the framework SQL manually; both signatures are guaranteed identical across services (Debezium depends on the outbox shape; the Mongo schema-evolution path depends on the registry shape).
+**Versions 1 and 2 are reserved for the framework's control plane** — injected via `embed.FS` from `omnicore/infra/migration/embedded/`. Version 1 (`0001_outbox.{up,down}.sql`) creates **two** tables: `outbox` (CDC source for the Debezium Outbox Event Router) and `omnicore_mongo_views` (the registry of materialized Mongo view shapes — see "Mongo schema evolution"). Version 2 (`0002_integration_events.{up,down}.sql`) creates the integration-events tables (`integration_events` + `omnicore_integration_failures` + `omnicore_integration_processed` — see "Integration events"). The framework tracks them in its own `omnicore_framework_migrations` table, so a service's own migrations start at `0002+` in the separate `omnicore_migrations` table with no collision. Do not write the framework SQL manually; the signatures are guaranteed identical across services (Debezium depends on the outbox shape; the Mongo schema-evolution path depends on the registry shape).
 
 `.down.sql` is mandatory — validated by `Manager.ValidateDownExists` at startup. It may contain `-- intentionally empty: down not feasible` or no-op SQL when the migration has no technical reverse (DROP COLUMN, ALTER TYPE).
 
@@ -1970,10 +1970,10 @@ Two tracking tables, created automatically by `golang-migrate` on first executio
 
 | Table | Who writes | Contains |
 |---|---|---|
-| `omnicore_framework_migrations` | Framework (embedded outbox) | version 1 (outbox) |
+| `omnicore_framework_migrations` | Framework (embedded) | version 1 (outbox + mongo views), version 2 (integration events) |
 | `omnicore_migrations` | Service (files in `cfg.Migrations.Dir`) | service version 2+ |
 
-Separate tables avoid version collisions — framework and service may both have "version 1" without conflict because each has its own history.
+Separate tables avoid version collisions — the framework table (versions 1–2) and a service's table (2+) can both carry a "version 2" row without conflict because each has its own history.
 
 Each table stores only `(version BIGINT PRIMARY KEY, dirty BOOLEAN)`. A migration that fails mid-way leaves `dirty=true` — blocks subsequent calls to `Up` until remediated via `Force`. The `.down.sql` is **not stored**; it is read from disk/embed at the time of `Down(N)`.
 
@@ -2988,9 +2988,9 @@ httpClient:
 - `acceptableStatus` values must be in `100..599`
 - `timeout` must be non-negative
 
-### Reserved keys
+### Config block coverage
 
-Additional blocks reserved for future phases — `auth`, `authProviders`, `retry`, `cache`, `circuitBreaker`, `pool`, `tls`, `redaction`, `signing`, `idempotency`, `responseStream`, `responseSSE`. The parser accepts every YAML shape for those keys, but `Validate` rejects any non-empty value with a message naming the phase that will introduce the feature. Operators never silently opt into behavior that is not yet wired.
+Every `httpClient` block is implemented and validated at boot — `auth`, `authProviders`, `retry`, `cache`, `circuitBreaker`, `pool`, `tls`, `redaction`, `idempotency`, `signing`, and the per-endpoint streaming flags `responseStream` / `responseSSE`. `Validate` runs per-block coherence checks (see the dedicated subsections); there are no reserved-and-rejected blocks.
 
 ### Defaults cascade
 
