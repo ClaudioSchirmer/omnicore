@@ -68,6 +68,10 @@
       {
         "id": "lifecycle-map",
         "label": "Write lifecycle map"
+      },
+      {
+        "id": "audit",
+        "label": "Audit"
       }
     ]
   },
@@ -120,6 +124,10 @@
       {
         "id": "bootstrap",
         "label": "Bootstrap"
+      },
+      {
+        "id": "yaml-reference",
+        "label": "YAML Reference"
       },
       {
         "id": "openapi",

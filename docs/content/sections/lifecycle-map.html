@@ -3,7 +3,8 @@
         Cross-layer reference: for each of the framework's 5 canonical write verbs, this table follows the request
         from the HTTP wrapper down through the Auto handler, the domain entry-point (Get* function + which
         <code>IfXxx</code> closures fire), the infra layer (SQL emitted + outbox event + Mongo operation on the
-        read side), all the way to the audit event the consumer reads in slog/ELK. Everything is anchored in the
+        read side), all the way to the audit event the consumer reads in slog/ELK (detailed in
+        <a href="#audit">Audit</a>). Everything is anchored in the
         SQL fingerprint — <strong>identical SQL ⇒ identical audit verb ⇒ identical Mongo op</strong>.
         This is what makes PUT and PATCH share <code>verb: "update"</code> in audit: the SQL is the same.
         The read-side counterpart is the <a href="#read-lifecycle-map">Read lifecycle map</a>.
