@@ -182,7 +182,7 @@ HTTP 200 OK
         </tr>
         <tr><td>Define the <code>ViewDefinition</code> (canonical case, single aggregate)</td><td><span class="tag auto">automatic</span></td><td><code>fwinfra.ViewOf[*T]()</code> infers collection/root/embeds from <code>T.AggregateChildren()</code></td></tr>
         <tr><td>Define the <code>ViewDefinition</code> (legacy / custom pattern)</td><td><span class="tag manual">manual</span></td><td><code>fwinfra.View(name).Root(...).EmbedMany(...)</code> fluent</td></tr>
-        <tr><td>Define cross-service <code>Embed</code>s (composition via cache)</td><td><span class="tag manual">manual</span></td><td>in the <code>ViewDefinition</code> — not derivable from the aggregate</td></tr>
+        <tr><td>Define cross-service <code>Embed</code>s (<code>FromMongo</code> over an upstream-projected collection)</td><td><span class="tag manual">manual</span></td><td>in the <code>ViewDefinition</code> via <code>fwinfra.FromMongo("coll").On("fk")</code> — not derivable from the aggregate; the projection + recompose ripple is automatic (next row)</td></tr>
         <tr><td>Drop archived rows from the projection (hot-tier read side)</td><td><span class="tag manual">manual</span></td><td><code>fwinfra.View(...).DeleteOnArchive().Root(...)</code> — opt-in per view; cascade governs root + embeds. Default keeps archived rows so Mongo mirrors PostgreSQL symmetrically.</td></tr>
         <tr><td>Create MongoDB indexes (single-field, compound, partial, sparse, TTL, text, 2dsphere, hashed)</td><td><span class="tag auto">automatic</span></td><td><code>fwinfra.View(...).Indexes(fwinfra.Index("email").Unique(), fwinfra.Compound("email","created_at"), fwinfra.TextIndex("name","email").DefaultLanguage("portuguese"), ...)</code> — declared on the same builder; <code>bootstrap.Run</code> calls <code>fwinfra.ApplyMongoSpecs</code> right after <code>collectViews</code> and before <code>SyncEngine.Start</code>. Idempotent on steady state; strict-on-divergence by default; <code>OMNICORE_MONGO_FORCE_REBUILD=true</code> as operator escape (drops divergent indexes and recreates from the declared spec; never auto-enabled).</td></tr>
         <tr><td>Collection-level features ($jsonSchema validator, collation, capped, time-series)</td><td><span class="tag auto">automatic</span></td><td><code>fwinfra.View(...).JSONSchema(bson.M{...}).Collation(&amp;fwinfra.CollationSpec{Locale:"pt",Strength:1}).Capped(&amp;fwinfra.CappedSpec{SizeBytes: 1&lt;&lt;30}).TimeSeries(&amp;fwinfra.TimeSeriesSpec{TimeField:"ts"})</code> — same builder; framework forwards onto <code>createCollection</code> for fresh collections, <code>collMod</code> for validator updates on existing ones. <code>Capped</code> ⊕ <code>TimeSeries</code> (boot rejects both); collation is immutable on existing collections (divergence aborts boot, never auto-drops).</td></tr>
@@ -214,8 +214,8 @@ HTTP 200 OK
     <p>
         Canonical case (single aggregate, convention matches): <code>fwinfra.ViewOf[*T]()</code>
         infers Mongo collection, root table, and <code>EmbedMany</code> from the children declared
-        in <code>T.AggregateChildren()</code>. Custom pattern (cross-service via cache,
-        external materialized view) still via fluent <code>View(name).Root(...).EmbedMany(...)</code>
+        in <code>T.AggregateChildren()</code>. Custom pattern (cross-service via <code>FromMongo</code>
+        over an upstream-projected collection) still via fluent <code>View(name).Root(...).EmbedMany(...)</code>
         — they coexist.
     </p>
     <pre><code>// internal/views/customer.go
