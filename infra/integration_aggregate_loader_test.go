@@ -7,7 +7,7 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/ClaudioSchirmer/omnicore/criteria"
+	"github.com/ClaudioSchirmer/omnicore/infra/criteria"
 	"github.com/ClaudioSchirmer/omnicore/domain"
 	"github.com/jackc/pgx/v5"
 )

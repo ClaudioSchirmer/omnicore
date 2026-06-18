@@ -1,0 +1,513 @@
+<h2>OpenAPI / Swagger UI</h2>
+    <p>
+        The framework generates an OpenAPI 3.1.0 document from the same Go types the HTTP wrappers already consume —
+        Request DTOs (with <code>json:</code>/<code>path:</code>/<code>query:</code>/<code>filter:</code> tags),
+        Response DTOs (with <code>json:</code>/<code>view:</code> tags),
+        the <code>pipeline.FullBody</code> marker, the <code>HasPathID</code> interface assertions.
+        No <code>swag init</code>, no hand-written YAML, no separate annotations: the spec is a reflection-driven
+        projection of the routes the consumer already wired.
+    </p>
+
+    <h3>Enable the spec</h3>
+    <p>One line on the wire callback opts in:</p>
+    <pre><code>func Wire(d bootstrap.Deps) bootstrap.Wiring {
+    return bootstrap.Wiring{
+        Translations: []translation.Module{...},
+        Features:     []bootstrap.Feature{NewUsersFeature(d)},
+        OpenAPI: &amp;openapi.Config{
+            Title:       "My Service",
+            Version:     "1.0.0",
+            Description: "Reference microservice for the OmniCore framework.",
+            Servers: []openapi.Server{
+                {URL: "https://api.example.com", Description: "Production"},
+            },
+            Contact: &amp;openapi.Contact{Name: "Maintainer", Email: "ops@example.com"},
+            License: &amp;openapi.License{Name: "Apache-2.0", URL: "https://apache.org/licenses/LICENSE-2.0"},
+        },
+    }
+}</code></pre>
+    <p><code>openapi.Config</code> is the operator-facing identity of the generated document; the framework folds it into the spec's <code>info</code> + <code>servers</code> blocks at boot. Every field beyond <code>Title</code> + <code>Version</code> is optional and omitted from the rendered spec when zero:</p>
+    <table>
+        <thead><tr><th>Field</th><th>Type</th><th>OpenAPI placement</th></tr></thead>
+        <tbody>
+            <tr><td><code>Title</code></td><td>string (required)</td><td><code>info.title</code></td></tr>
+            <tr><td><code>Version</code></td><td>string (required)</td><td><code>info.version</code></td></tr>
+            <tr><td><code>Description</code></td><td>string</td><td><code>info.description</code></td></tr>
+            <tr><td><code>Servers</code></td><td><code>[]Server{URL, Description}</code></td><td><code>servers[]</code></td></tr>
+            <tr><td><code>Contact</code></td><td><code>*Contact{Name, Email, URL}</code></td><td><code>info.contact</code></td></tr>
+            <tr><td><code>License</code></td><td><code>*License{Name, URL}</code></td><td><code>info.license</code></td></tr>
+        </tbody>
+    </table>
+    <p>With <code>OpenAPI</code> set:</p>
+    <ul>
+        <li><code>Deps.OpenAPIRegistry</code> becomes a non-nil <code>*openapi.Registry</code> threaded into every <code>Feature.Mount(app, deps)</code> call.</li>
+        <li>The framework auto-registers <code>GET /openapi.json</code> + the Swagger UI route (default <code>GET /docs</code>; configurable via <code>openapi.uiPath</code> in the YAML — see "Operator-tunable serving" below) after every feature has mounted.</li>
+        <li><code>GET /health</code> goes through <code>openapi.MountRaw</code> automatically so it appears in the spec.</li>
+        <li>When <code>auth.mode: jwt</code> is active, the <code>AuthMiddleware.publicRoutes</code> list is auto-extended with <code>GET /openapi.json</code> + the resolved UI path, so the documentation surface never sits behind the bearer wall.</li>
+    </ul>
+    <p>Leaving <code>Wiring.OpenAPI</code> nil keeps everything off: <code>Deps.OpenAPIRegistry</code> stays nil, no spec routes are registered, and <code>openapi.Mount</code> / <code>MountRaw</code> become Fiber-only passthroughs (zero documentation cost).</p>
+
+    <h3>Operator-tunable serving</h3>
+    <p><code>Wiring.OpenAPI</code> carries the spec identity (Title, Version, Description, Servers, Contact, License) because that is code-time information about WHAT the service exposes. The <em>operational</em> bits — where the Swagger UI is mounted and whether <code>/</code> redirects to it — live in <code>microservice.&lt;profile&gt;.yaml</code> under <code>openapi:</code> so they can vary per environment without a recompile:</p>
+    <pre><code>openapi:
+  uiPath: /docs           # default: /docs. Path where Swagger UI is served.
+  rootRedirect: false     # default: false. When true, GET / → 302 uiPath.</code></pre>
+    <ul>
+        <li><strong>Block is optional.</strong> Absent → defaults (canonical <code>/docs</code>, no redirect). Present but <code>Wiring.OpenAPI</code> is nil → ignored (no spec means no UI to redirect to).</li>
+        <li><strong><code>uiPath</code></strong> moves the Swagger UI route. <code>/openapi.json</code> stays canonical because it is internal plumbing the UI fetches — tooling that scrapes the spec relies on a predictable path. Validated at boot: must start with <code>/</code>; must not collide with <code>/openapi.json</code> or <code>/health</code>.</li>
+        <li><strong><code>rootRedirect</code></strong>, when <code>true</code>, registers <code>GET /</code> → 302 <code>uiPath</code>. Registration happens AFTER feature mounts and <code>BeforeServe</code>, so a service that owns <code>/</code> wins by registration order; the framework logs <code>slog.Warn</code> and skips on collision. Under <code>auth.mode: jwt</code> the redirect route is added to <code>publicRoutes</code> automatically so opening the host root in a browser does not trigger a 401.</li>
+    </ul>
+
+    <h3>Language selector (Swagger UI dropdown)</h3>
+    <p>By default Swagger UI does not let the operator choose what <code>Accept-Language</code> goes on the wire — every "Try it out" call ships whatever the browser sent. <code>openapi.Config.LanguageSelector bool</code> (default <code>false</code>) opts into a global dropdown at the top of the rendered page that injects <code>Accept-Language</code> into every request via Swagger UI's <code>requestInterceptor</code>. Useful to exercise translated error messages without juggling a curl command per language.</p>
+    <pre><code>OpenAPI: &amp;openapi.Config{
+    Title:            "MyService API",
+    Version:          "1.0.0",
+    LanguageSelector: true, // turn it on; bootstrap fills the rest
+}</code></pre>
+    <p><strong><code>Wiring.Translations</code> is mandatory.</strong> Independent of <code>LanguageSelector</code>, the boot guard <code>validateWiring</code> rejects an empty <code>Wiring.Translations</code> slice — notifications, error envelopes (<code>ErrorMessage.Message</code>), and audit fields all flow through the <code>Translator</code>; running with an empty Translator silently produces blank strings in production. Loud-at-boot is the chosen failure mode: every consumer declares at least one <code>translation.Module</code>.</p>
+    <p>The dropdown content lives on <code>openapi.Config.Languages []LanguageOption</code> (<code>{Label, Value}</code> pairs). Under <code>bootstrap.Run</code> the slice is <strong>auto-populated</strong> from <code>Wiring.Translations</code> when <code>LanguageSelector=true</code> AND the consumer left <code>Languages</code> empty:</p>
+    <ul>
+        <li>Bootstrap walks <code>Wiring.Translations</code> and dedupes by <code>configuration.Language</code> — a service that registers both the framework's <code>CorePTBR</code> and its own <code>apptrans.PTBR()</code> collapses to a single <code>PT_BR</code> entry.</li>
+        <li><strong>The microservice has the final word</strong> on which languages appear in the dropdown — registering only <code>apptrans.PTBR()</code> shows only <code>PT_BR</code>, even though <code>translation.Default()</code> loads seven behind the scenes.</li>
+        <li><strong>English-first default.</strong> When <code>LangENG</code> is among the surviving entries, the bootstrap rotates it to position 0 so HTML's natural <code>&lt;select&gt;</code> behavior makes English the dropdown's default selection. Declaration order is otherwise preserved (after the rotation). When ENG is absent, declaration order is preserved as-is — the first declared language wins the default slot.</li>
+        <li>Each surviving entry emits <code>{Label: lang.String(), Value: lang.HTTPPrefix()}</code> — Label is what the operator sees in the <code>&lt;option&gt;</code> tag (e.g. <code>PT_BR</code>, <code>ENG</code>), Value is what gets written to the <code>Accept-Language</code> header (e.g. <code>pt</code>, <code>en</code>) and matches the prefix <code>AppContextMiddleware</code> reads at the request boundary.</li>
+        <li><code>LangUnknown</code> and any language with an empty <code>HTTPPrefix()</code> are skipped (an empty <code>Accept-Language</code> on the wire would be meaningless).</li>
+    </ul>
+    <p>Adding a 5th language to the service is just "register a new <code>translation.Module</code>" — the dropdown picks it up on the next boot without touching <code>openapi.Config</code>.</p>
+    <p><strong>Override path.</strong> An explicit non-empty <code>Languages</code> slice on <code>openapi.Config</code> bypasses auto-discovery — useful for manual <code>Wire</code> flows that bypass <code>bootstrap.Run</code>, or for relabeling entries. The framework does not apply ENG-first rotation on an explicit slice (the consumer is in control of order):</p>
+    <pre><code>OpenAPI: &amp;openapi.Config{
+    Title:            "MyService API",
+    Version:          "1.0.0",
+    LanguageSelector: true,
+    Languages: []openapi.LanguageOption{
+        {Label: "English", Value: "en"},
+        {Label: "Português", Value: "pt"},
+    },
+}</code></pre>
+    <p><strong>Empty <code>Languages</code> after auto-discovery → no selector rendered.</strong> A service that opts in but whose Translations all map to languages with an empty <code>HTTPPrefix()</code> still boots normally — the <code>/docs</code> page is byte-identical to the no-selector baseline (no extra CSS, no extra DOM, no <code>requestInterceptor</code>). Label/Value are HTML-escaped on render, so consumer-controlled strings cannot inject script into the page.</p>
+
+    <h3>Two registration paths</h3>
+    <p>Every documented route flows through one of two entry points:</p>
+    <table>
+        <thead><tr><th>Path</th><th>Used by</th><th>Carries</th></tr></thead>
+        <tbody>
+            <tr>
+                <td><code>openapi.Mount(registry, group, method, path, handler, spec, doc)</code></td>
+                <td>Canonical wrappers (via the <code>*Spec</code> siblings) AND manual handlers that still parse a typed Request DTO</td>
+                <td><code>RouteSpec</code> (mechanical) + <code>Doc</code> (prose + examples)</td>
+            </tr>
+            <tr>
+                <td><code>openapi.MountRaw(registry, group, method, path, handler, raw)</code></td>
+                <td>Routes without a typed Request DTO — auth identity demos, in-process upstreams, vendor-shaped showcase handlers</td>
+                <td><code>RawSpec</code> (everything inline)</td>
+            </tr>
+        </tbody>
+    </table>
+    <p>Both helpers are nil-safe — calling them with a <code>nil</code> registry registers the handler on Fiber and short-circuits the documentation step, so consumers can pass <code>d.OpenAPIRegistry</code> uniformly without nil-checking.</p>
+
+    <h3>Reference — spec carriers</h3>
+    <p>Every field on every carrier, so a consumer building a route knows exactly what is available without grepping the framework source.</p>
+
+    <p><strong><code>RouteSpec</code></strong> — the mechanical sidecar of every <code>Mount</code> call. Populated automatically by <code>*Spec</code> wrapper siblings; hand-rolled (or via <code>RouteSpecOf[TReq, TResp]</code>) on manual routes:</p>
+    <table>
+        <thead><tr><th>Field</th><th>Type</th><th>Effect on the spec</th></tr></thead>
+        <tbody>
+            <tr><td><code>RequestType</code></td><td><code>reflect.Type</code></td><td>Drives the <code>requestBody.content.application/json.schema</code>. <code>nil</code> → no body schema. Fields tagged <code>path:</code> / <code>query:</code> are pulled out as parameters (see below).</td></tr>
+            <tr><td><code>ResponseType</code></td><td><code>reflect.Type</code></td><td>Drives the success-status <code>responses.&lt;code&gt;.content.application/json.schema</code> wrapped in the canonical Response envelope. <code>responses.None</code> sentinel → envelope without <code>data</code>.</td></tr>
+            <tr><td><code>SuccessStatus</code></td><td>int</td><td>HTTP status code emitted on success. <code>0</code> → defaults to 200.</td></tr>
+            <tr><td><code>Strict</code></td><td>bool</td><td>Marks the body as <code>required: true</code> + every kept field as <code>required[]</code>. Auto-detected by the <code>*Spec</code> sibling via <code>pipeline.FullBodyEnforcer</code> type-assertion.</td></tr>
+            <tr><td><code>HasPathID</code></td><td>bool</td><td>Adds a string-typed <code>:id</code> path parameter when the route's Fiber path contains <code>:id</code> and the Request DTO didn't tag it. Auto-set on every wrapper that consumes <code>pipeline.CommandWithID</code> / <code>queries.FindByIDQuery</code>.</td></tr>
+            <tr><td><code>Paged</code></td><td>bool</td><td>Selects the paged success envelope: <code>data</code> becomes an array of <code>ResponseType</code> items and a top-level <code>pagination</code> property is added (<code>$ref</code> into <code>#/components/schemas/PaginationInfo</code>). Mirrors the runtime <code>fwweb.RespondPaged</code> shape. Auto-set on <code>HandleQueryWithParamsSpec</code>; manual mounts opt in via <code>RouteSpecOfPaged[TReq, TResp]</code>. Paired with <code>fwresponses.None</code> or <code>nil ResponseType</code> → panic at <code>Mount</code>.</td></tr>
+        </tbody>
+    </table>
+
+    <p><strong><code>Doc</code></strong> — the prose sidecar of every <code>Mount</code> call. Every field optional; absent fields are omitted from the rendered operation:</p>
+    <table>
+        <thead><tr><th>Field</th><th>Type</th><th>Effect on the spec</th></tr></thead>
+        <tbody>
+            <tr><td><code>Summary</code></td><td>string</td><td><code>operation.summary</code> — one-line label shown in Swagger UI's sidebar.</td></tr>
+            <tr><td><code>Description</code></td><td>string</td><td><code>operation.description</code> — markdown rendered under the operation.</td></tr>
+            <tr><td><code>OperationID</code></td><td>string</td><td><code>operation.operationId</code> — canonical identifier consumers code-gen against.</td></tr>
+            <tr><td><code>Tags</code></td><td><code>[]string</code></td><td><code>operation.tags</code> — grouping label in Swagger UI's sidebar.</td></tr>
+            <tr><td><code>Deprecated</code></td><td>bool</td><td><code>operation.deprecated</code> — strikethrough in Swagger UI.</td></tr>
+            <tr><td><code>Hidden</code></td><td>bool</td><td>Excludes the operation from the rendered spec entirely (Fiber still serves it). Use for internal-only routes.</td></tr>
+            <tr><td><code>Public</code></td><td>bool</td><td>Omits the <code>security: [{bearerAuth: []}]</code> entry + the 401 response. Use for routes that bypass auth.</td></tr>
+            <tr><td><code>RequestExamples</code></td><td><code>map[string]Example</code></td><td>Named exemplar payloads folded into <code>requestBody.content.application/json.examples</code>.</td></tr>
+            <tr><td><code>ResponseExamples</code></td><td><code>map[int]map[string]Example</code></td><td>Named exemplar payloads per status. Success status: wrapped in the Response envelope. Error statuses: rendered raw + auto-merge of canonical default under <code>"default"</code>.</td></tr>
+        </tbody>
+    </table>
+
+    <p><strong><code>RawSpec</code></strong> — the all-in-one carrier of every <code>MountRaw</code> call. No <code>RouteSpec</code> companion, no <code>Doc</code> — every field lives here:</p>
+    <table>
+        <thead><tr><th>Field</th><th>Type</th><th>Effect on the spec</th></tr></thead>
+        <tbody>
+            <tr><td><code>Summary</code></td><td>string</td><td>Same as <code>Doc.Summary</code>.</td></tr>
+            <tr><td><code>Description</code></td><td>string</td><td>Same as <code>Doc.Description</code>.</td></tr>
+            <tr><td><code>OperationID</code></td><td>string</td><td>Same as <code>Doc.OperationID</code>.</td></tr>
+            <tr><td><code>Tags</code></td><td><code>[]string</code></td><td>Same as <code>Doc.Tags</code>.</td></tr>
+            <tr><td><code>Deprecated</code></td><td>bool</td><td>Same as <code>Doc.Deprecated</code>.</td></tr>
+            <tr><td><code>Hidden</code></td><td>bool</td><td>Same as <code>Doc.Hidden</code>.</td></tr>
+            <tr><td><code>Public</code></td><td>bool</td><td>Same as <code>Doc.Public</code>.</td></tr>
+            <tr><td><code>Parameters</code></td><td><code>[]Parameter</code></td><td>Path, query, and header parameters, declared inline (no DTO-tag extraction on raw routes).</td></tr>
+            <tr><td><code>RequestBody</code></td><td><code>*RequestBody</code></td><td>Body shape on the wire. <code>nil</code> → no body. See sub-table below.</td></tr>
+            <tr><td><code>Responses</code></td><td><code>map[int]ResponseSpec</code></td><td>Response shape per status. See sub-table below.</td></tr>
+        </tbody>
+    </table>
+
+    <p><strong><code>Parameter</code></strong> — one path, query, or header parameter inside <code>RawSpec.Parameters</code>:</p>
+    <table>
+        <thead><tr><th>Field</th><th>Type</th><th>Notes</th></tr></thead>
+        <tbody>
+            <tr><td><code>In</code></td><td><code>ParameterIn</code></td><td><code>InPath</code> / <code>InQuery</code> / <code>InHeader</code>. Cookie parameters out of scope.</td></tr>
+            <tr><td><code>Name</code></td><td>string</td><td>Wire name of the parameter.</td></tr>
+            <tr><td><code>Description</code></td><td>string</td><td>Rendered next to the parameter in Swagger UI.</td></tr>
+            <tr><td><code>Required</code></td><td>bool</td><td>Auto-normalized to <code>true</code> for <code>InPath</code> at registration (OpenAPI 3.1 §4.4.4 requires it).</td></tr>
+            <tr><td><code>Type</code></td><td><code>reflect.Type</code></td><td>Drives the parameter's schema. <code>nil</code> defaults to <code>{type: string}</code>. Any reflect.Type runs through the schema generator (so <code>int64</code>, <code>uuid.UUID</code>, struct types, etc. all render consistently).</td></tr>
+        </tbody>
+    </table>
+
+    <p><strong><code>RequestBody</code></strong> — the body shape on a <code>MountRaw</code> route:</p>
+    <table>
+        <thead><tr><th>Field</th><th>Type</th><th>Notes</th></tr></thead>
+        <tbody>
+            <tr><td><code>Description</code></td><td>string</td><td>Rendered above the body schema.</td></tr>
+            <tr><td><code>Required</code></td><td>bool</td><td>Marks the body as required.</td></tr>
+            <tr><td><code>ContentType</code></td><td>string</td><td>Defaults to <code>application/json</code> when empty.</td></tr>
+            <tr><td><code>Type</code></td><td><code>reflect.Type</code></td><td>Body schema via the schema generator. <code>nil</code> + non-empty <code>Examples</code> still renders the examples map.</td></tr>
+            <tr><td><code>Examples</code></td><td><code>map[string]Example</code></td><td>Same shape as <code>Doc.RequestExamples</code>. Boot-validated against <code>Type</code> when <code>Type</code> is non-nil; otherwise checked for JSON validity only.</td></tr>
+        </tbody>
+    </table>
+
+    <p><strong><code>ResponseSpec</code></strong> — one entry inside <code>RawSpec.Responses</code> (keyed by HTTP status):</p>
+    <table>
+        <thead><tr><th>Field</th><th>Type</th><th>Notes</th></tr></thead>
+        <tbody>
+            <tr><td><code>Description</code></td><td>string</td><td>Defaults to <code>"Response"</code> when empty.</td></tr>
+            <tr><td><code>ContentType</code></td><td>string</td><td>Defaults to <code>application/json</code> when empty.</td></tr>
+            <tr><td><code>Type</code></td><td><code>reflect.Type</code></td><td>Response schema via the schema generator. <code>nil</code> → empty body (typical 204).</td></tr>
+            <tr><td><code>Examples</code></td><td><code>map[string]Example</code></td><td>Same shape as <code>Doc.ResponseExamples[status]</code>. Boot-validated against <code>Type</code> when non-nil. Always rendered verbatim — no envelope wrap on raw responses.</td></tr>
+        </tbody>
+    </table>
+
+    <p><strong><code>Example</code></strong> — one entry in any <code>Examples</code> map:</p>
+    <table>
+        <thead><tr><th>Field</th><th>Type</th><th>Notes</th></tr></thead>
+        <tbody>
+            <tr><td><code>Summary</code></td><td>string</td><td>Short label shown in Swagger UI's dropdown picker.</td></tr>
+            <tr><td><code>Description</code></td><td>string</td><td>Markdown rendered under the selected entry.</td></tr>
+            <tr><td><code>Value</code></td><td><code>any</code></td><td>The actual payload. Any JSON-marshalable Go value OR <code>json.RawMessage</code> for hand-authored JSON that round-trips verbatim. An empty <code>Example{}</code> declared under the key <code>"default"</code> removes the canonical entry on auto-merged error statuses.</td></tr>
+        </tbody>
+    </table>
+
+    <h3>Helpers — type-parameterized shortcuts</h3>
+    <p>Five helpers spare the consumer the verbose struct literals while still leaving the underlying types fully accessible when finer control is needed:</p>
+    <table>
+        <thead><tr><th>Helper</th><th>Returns</th><th>Use when</th></tr></thead>
+        <tbody>
+            <tr>
+                <td><code>RouteSpecOf[TReq, TResp any](status int) RouteSpec</code></td>
+                <td><code>RouteSpec{RequestType, ResponseType, SuccessStatus}</code></td>
+                <td>Manual <code>Mount</code> call with a typed Request + Response DTO. Saves <code>reflect.TypeOf(T{})</code> at every site.</td>
+            </tr>
+            <tr>
+                <td><code>RouteSpecOfPaged[TReq, TResp any](status int) RouteSpec</code></td>
+                <td><code>RouteSpec{RequestType, ResponseType, SuccessStatus, Paged: true}</code></td>
+                <td>Manual <code>Mount</code> call for a paged GET that emits via <code>fwweb.RespondPaged</code>. Sibling of <code>RouteSpecOf</code> with the <code>Paged</code> flag flipped so the spec renders <code>data: array&lt;TResp&gt;</code> + <code>pagination: $ref(PaginationInfo)</code>. Pairing with <code>fwresponses.None</code> panics at <code>Mount</code>.</td>
+            </tr>
+            <tr>
+                <td><code>ResponseOf[T any](description string) ResponseSpec</code></td>
+                <td><code>ResponseSpec{Description, Type}</code></td>
+                <td>Inside <code>RawSpec.Responses[status]</code> when the response carries a typed shape. Same intent on the raw side that <code>RouteSpecOf</code> has on the canonical side. Composable — assign <code>Examples</code> / <code>ContentType</code> on the returned value before storing.</td>
+            </tr>
+            <tr>
+                <td><code>PathParam(name, description string) Parameter</code></td>
+                <td><code>Parameter{In: InPath, Name, Description, Required: true}</code></td>
+                <td>Declaring path parameters on a <code>MountRaw</code> route. Defaults to <code>{type: string}</code>; for typed segments use the <code>Parameter</code> literal directly with <code>Type: reflect.TypeOf(int64(0))</code>.</td>
+            </tr>
+            <tr>
+                <td><code>QueryParam(name, description string, t reflect.Type) Parameter</code></td>
+                <td><code>Parameter{In: InQuery, Name, Description, Type}</code></td>
+                <td>Declaring query parameters on a <code>MountRaw</code> route. <code>Required</code> defaults to <code>false</code> — flip on the returned value when needed.</td>
+            </tr>
+        </tbody>
+    </table>
+    <p>None of these is the ONLY path — every helper has an equivalent struct literal that produces the same result. They are the common-case shortcuts.</p>
+
+    <h3>Spec-aware wrapper siblings</h3>
+    <p>Every canonical wrapper has a <code>*Spec</code> sibling that returns <code>(fiber.Handler, openapi.RouteSpec)</code>:</p>
+    <ul>
+        <li><code>fwweb.HandleCommandWithBodySpec</code></li>
+        <li><code>fwweb.HandleCommandWithBodyIDSpec</code></li>
+        <li><code>fwweb.HandleCommandWithIDSpec</code></li>
+        <li><code>fwweb.HandleQueryWithParamsSpec</code></li>
+        <li><code>fwweb.HandleQueryWithIDSpec</code></li>
+    </ul>
+    <p>Same generics, same arguments, same handler behavior. The sibling extracts <code>Strict</code> via type-assertion to <code>pipeline.FullBodyEnforcer</code> and sets <code>HasPathID=true</code> for every wrapper that auto-binds the Fiber <code>:id</code> segment.</p>
+
+    <pre><code>// Before — works, but does not appear in /openapi.json:
+users.Post("/", fwweb.HandleCommandWithBody(d.Pipeline,
+    requests.InsertUserRequest{},
+    requests.InsertUserResponse{}.FromResult,
+    &amp;handlers.InsertCommandHandler[...]{...},
+    fiber.StatusCreated))
+
+// After — sibling + Mount; appears in the spec as well:
+insertH, insertSpec := fwweb.HandleCommandWithBodySpec(d.Pipeline,
+    requests.InsertUserRequest{},
+    requests.InsertUserResponse{}.FromResult,
+    &amp;handlers.InsertCommandHandler[...]{...},
+    fiber.StatusCreated)
+fwopenapi.Mount(d.OpenAPIRegistry, users, fiber.MethodPost, "/",
+    insertH, insertSpec,
+    fwopenapi.Doc{Summary: "Create a user", Tags: []string{"Users"}})</code></pre>
+
+    <h3>Manual handlers with a typed Request DTO</h3>
+    <p>A handler that hand-rolls its dispatch (<code>Bind().Body() → ParseCriteria → BindPath → ToCommand → Pipeline.Dispatch</code>) still owns the same kind of DTOs the canonical path owns. <code>openapi.Mount</code> covers them too — pair it with <code>fwopenapi.RouteSpecOf[TReq, TResp](status)</code> so the consumer just names the Request / Response DTOs:</p>
+    <pre><code>fwopenapi.Mount(d.OpenAPIRegistry, group, fiber.MethodPost, "/",
+    customInsertUser(d.Pipeline, repo, svc),
+    fwopenapi.RouteSpecOf[requests.InsertUserCustomRequest, responses.UserCustomResponse](
+        fiber.StatusCreated),
+    fwopenapi.Doc{Summary: "Create (manual showcase)", Tags: []string{"Users — manual"}})</code></pre>
+    <p>For state-transition endpoints (<code>DELETE</code> → 204, archive/unarchive returning the envelope without a <code>data</code> field), pass <code>fwresponses.None</code> as <code>TResp</code> — the spec assembler recognizes the sentinel and emits the envelope without <code>data</code>, mirroring the canonical wrappers' <code>fwresults.None</code> / <code>fwresponses.NoBody</code> pairing:</p>
+    <pre><code>fwopenapi.Mount(d.OpenAPIRegistry, group, fiber.MethodDelete, "/:email",
+    customDeleteUser(d.Pipeline, repo, svc),
+    fwopenapi.RouteSpecOf[requests.UserCustomKeyRequest, fwresponses.None](
+        fiber.StatusNoContent),
+    fwopenapi.Doc{Summary: "Hard-delete (manual showcase)", Tags: []string{"Users — manual"}})</code></pre>
+    <p>Consumers that need <code>RouteSpec.Strict</code> or <code>RouteSpec.HasPathID</code> (rare on the manual path — neither marker is auto-derivable from the hand-rolled handler) build a hand-written <code>RouteSpec</code> literal instead. <code>RouteSpecOf</code> is the common-case shortcut, not the only path.</p>
+
+    <p>For a manual paged GET that emits via <code>fwweb.RespondPaged</code>, pair the same <code>openapi.Mount</code> with the paged sibling <code>fwopenapi.RouteSpecOfPaged[TReq, TResp]</code>. The flag flips the success envelope to <code>data: array&lt;TResp&gt;</code> + <code>pagination: $ref(PaginationInfo)</code> so the rendered spec matches the wire shape — same flag the canonical <code>HandleQueryWithParamsSpec</code> sets automatically:</p>
+    <pre><code>fwopenapi.Mount(d.OpenAPIRegistry, group, fiber.MethodGet, "/",
+    customListUsers(d.Pipeline, h, parser),
+    fwopenapi.RouteSpecOfPaged[requests.FindUsersCustomRequest, requests.FindUsersCustomResponse](
+        fiber.StatusOK),
+    fwopenapi.Doc{Summary: "List users (manual showcase)", Tags: []string{"Users — manual"}})</code></pre>
+    <p>The <code>?onlyTotal=true</code> runtime variant (envelope collapses to <code>pagination: TotalOnlyPagination{total}</code> and drops <code>data</code>) is documented in prose on each paged operation's <code>Doc.Description</code> — the spec's success schema stays the canonical listing shape so Swagger UI's default render isn't cluttered with a <code>oneOf</code> union on the common path.</p>
+
+    <h3>Free-form routes via MountRaw</h3>
+    <p>Routes without a typed Request DTO declare their shape inline. Parameters, request body and responses are explicit; the schema generator still walks the Go types passed under <code>Type</code> fields so primitives, pointers, structs, time/UUID, and named structs (via <code>$ref</code>) render consistently with the canonical path.</p>
+    <pre><code>fwopenapi.MountRaw(d.OpenAPIRegistry, app, fiber.MethodGet, "/whoami",
+    whoami,
+    fwopenapi.RawSpec{
+        Summary: "Returns the authenticated identity",
+        Tags:    []string{"Auth"},
+        Public:  true,
+        Responses: map[int]fwopenapi.ResponseSpec{
+            200: fwopenapi.ResponseOf[WhoamiResponse]("Authenticated identity or anonymous placeholder"),
+        },
+    })</code></pre>
+    <p><code>fwopenapi.ResponseOf[T](description)</code> is the symmetric counterpart of <code>RouteSpecOf[TReq, TResp]</code> on the canonical side — both spare the consumer the <code>reflect.TypeOf(T{})</code> invocation by carrying the type through a generic parameter. For responses that need <code>ContentType</code> or <code>Examples</code>, capture the helper output in a variable and assign the extra fields before storing it in the map:</p>
+    <pre><code>spec := fwopenapi.ResponseOf[WhoamiResponse]("Authenticated identity")
+spec.Examples = map[string]fwopenapi.Example{"alice": {Value: WhoamiResponse{Subject: "alice-uuid"}}}
+// Responses: map[int]fwopenapi.ResponseSpec{200: spec}</code></pre>
+    <p>Use the <code>ResponseSpec</code> struct literal directly when keeping every field on screen is the preference — both paths coexist; the helper is the common-case shortcut, not the only path.</p>
+
+    <h3>Parameter extraction — path, query, header</h3>
+    <p>The framework derives parameters from the route's Fiber path AND the Request DTO's struct tags. Five mechanisms feed the rendered <code>parameters[]</code> block:</p>
+    <ol>
+        <li><strong>Fiber path → <code>{name}</code> templating.</strong> Every <code>:name</code> segment in the route's Fiber path becomes <code>{name}</code> on the OpenAPI path. <code>/users/:id/archive</code> renders as <code>/users/{id}/archive</code>; <code>/tenants/:tenantId/users/:id</code> renders as <code>/tenants/{tenantId}/users/{id}</code>.</li>
+        <li><strong>Request DTO <code>path:"X"</code> tag.</strong> Each tagged field of the Request DTO emits one <code>parameters[].in=path</code> entry with the field's reflected type driving the schema. The same field is skipped from the body schema.</li>
+        <li><strong>Auto-stubbed <code>:id</code>.</strong> When <code>RouteSpec.HasPathID</code> is true (every framework wrapper that auto-binds <code>:id</code>) AND the Request DTO didn't tag <code>path:"id"</code>, the spec assembler adds a string-typed <code>id</code> path parameter automatically. Combined with custom path tags so compound routes like <code>/tenants/:tenantId/users/:id</code> document every segment without per-route configuration.</li>
+        <li><strong>Request DTO <code>query:"X" filter:"ops"</code> tag.</strong> Each leaf emits one query parameter per declared operator: <code>query:"name" filter:"eq,in,startswith"</code> produces <code>?name</code>, <code>?name.in</code>, and <code>?name.startswith</code> (the bare <code>eq</code> form has no suffix; every other operator surfaces as <code>name.&lt;op&gt;</code>). The same field is skipped from the body schema.</li>
+        <li><strong>Nested embed groups.</strong> A struct-typed Request field carrying <code>query:"prefix"</code> (no <code>filter:</code>) is an embed group — every leaf below contributes a wire key prefixed by its parent. Example: <code>Addresses AddressFilter \`query:"addresses"\`</code> with <code>City *string \`query:"city" filter:"eq,istartswith"\`</code> inside renders <code>?addresses.city</code> + <code>?addresses.city.istartswith</code>.</li>
+        <li><strong><code>RawSpec.Parameters</code>.</strong> Raw routes declare each parameter inline via <code>PathParam</code> / <code>QueryParam</code> or a <code>Parameter</code> literal. The framework normalizes <code>Required=true</code> for every <code>InPath</code> entry at registration time.</li>
+    </ol>
+
+    <p><strong>Operator coverage</strong> — the operators a <code>filter:</code> tag may declare match the operators <code>HandleQueryWithParams</code> recognizes at runtime: <code>eq</code> (default, no suffix), <code>ne</code>, <code>in</code>, <code>nin</code>, <code>gte</code>, <code>lte</code>, <code>gt</code>, <code>lt</code>, <code>startswith</code>, <code>contains</code>, <code>ieq</code>, <code>ine</code>, <code>iin</code>, <code>inin</code>, <code>istartswith</code>, <code>icontains</code>. Each surfaces as its own query parameter in the rendered spec.</p>
+
+    <h3>Spec lifecycle — Registry, Components, lazy build</h3>
+    <p>The framework builds the spec lazily and caches it for the lifetime of the service. The relevant types:</p>
+    <ul>
+        <li><strong><code>Registry</code></strong> — collects every <code>Operation</code> registered via <code>Mount</code> / <code>MountRaw</code>. One per service (constructed by <code>bootstrap.Run</code> when <code>Wiring.OpenAPI</code> is non-nil). Preserves insertion order so the rendered spec mirrors the order features were wired (useful for diff-friendly snapshots and for Swagger UI's sidebar layout). Last-write-wins on <code>(METHOD, path)</code> collisions.</li>
+        <li><strong><code>Components</code></strong> — the dedup pool for named-struct schemas the schema generator encounters while walking the type graph. Owned by the Registry and shared across every route. Same named struct referenced from N different DTOs surfaces ONCE in <code>components.schemas</code>; every site emits a <code>$ref: #/components/schemas/&lt;Name&gt;</code> pointer.</li>
+        <li><strong><code>Spec</code></strong> — the lazily-built document. Built on the first call to <code>Build()</code> or <code>MarshalJSON()</code>; subsequent calls return the cached byte slice. Safe for concurrent use; the spec is immutable for the lifetime of the value, matching the "registry assembled at boot, served forever" pattern.</li>
+        <li><strong>Self-referential types.</strong> A struct that owns a pointer to itself (linked list, tree, anything with a <code>*Self</code> field) does not infinite-loop the generator. The first encounter inserts a placeholder under the type's name in <code>Components</code> BEFORE walking its fields; the recursive site finds the placeholder and emits the <code>$ref</code> on its way back up.</li>
+    </ul>
+
+    <h3>Boot-time guarantees</h3>
+    <p>Everything that can be checked at boot, is — so the operator finds out about a broken declaration at start time, not when a consumer opens <code>/docs</code>:</p>
+    <ul>
+        <li><strong>OpenAPI <code>uiPath</code> validation.</strong> Must start with <code>/</code>; must not collide with <code>/openapi.json</code> or <code>/health</code>. Violations abort boot with a descriptive error.</li>
+        <li><strong>Examples validated against types.</strong> Every <code>Doc.RequestExamples</code> + every success-status <code>Doc.ResponseExamples</code> + every <code>RequestBody.Examples</code> + every typed <code>ResponseSpec.Examples</code> is run through <code>json.Marshal</code> + <code>json.Unmarshal</code> with <code>DisallowUnknownFields</code> at <code>Mount</code> / <code>MountRaw</code> time. A typo aborts the boot with <code>"openapi: example &lt;name&gt; on &lt;METHOD path&gt; &lt;slot&gt;: &lt;reason&gt;"</code>.</li>
+        <li><strong>Error-status examples loosely validated.</strong> Examples on non-success statuses are only checked for JSON validity (the <code>ErrorEnvelope</code> shape is shared and accepts arbitrary <code>errors[]</code> content). The boot still rejects payloads that aren't JSON-marshalable.</li>
+        <li><strong>Per-property <code>example:</code> tag parsing.</strong> Failure to parse the tag value against the field's reflected type → boot panic naming the struct + field.</li>
+        <li><strong>Path parameter completeness.</strong> A struct field carrying <code>path:"name"</code> that does not match any <code>:name</code> segment on the route, OR a <code>:name</code> segment without a tag AND without <code>HasPathID</code>, surfaces a runtime parameter-stub mismatch (visible in the rendered spec) — the framework does not boot-validate the alignment today, but the runtime <code>BindPath</code> rejects the request at first call.</li>
+    </ul>
+
+    <h3>Schema generator coverage</h3>
+    <table>
+        <thead><tr><th>Go type</th><th>OpenAPI schema</th></tr></thead>
+        <tbody>
+            <tr><td><code>string</code> / <code>*string</code></td><td><code>{type: string, nullable?: true}</code></td></tr>
+            <tr><td><code>int*</code> / <code>uint*</code></td><td><code>{type: integer, format: int32 | int64}</code></td></tr>
+            <tr><td><code>float32</code> / <code>float64</code></td><td><code>{type: number, format: float | double}</code></td></tr>
+            <tr><td><code>bool</code> / <code>*bool</code></td><td><code>{type: boolean, nullable?: true}</code></td></tr>
+            <tr><td><code>time.Time</code> / <code>*time.Time</code></td><td><code>{type: string, format: date-time, nullable?: true}</code></td></tr>
+            <tr><td><code>uuid.UUID</code> / <code>domain.ID</code></td><td><code>{type: string, format: uuid}</code></td></tr>
+            <tr><td><code>[]T</code></td><td><code>{type: array, items: &lt;T&gt;}</code></td></tr>
+            <tr><td><code>[]byte</code></td><td><code>{type: string, format: byte}</code> (base64 per encoding/json)</td></tr>
+            <tr><td><code>map[string]T</code></td><td><code>{type: object, additionalProperties: &lt;T&gt;}</code></td></tr>
+            <tr><td><code>map[string]any</code></td><td><code>{type: object, additionalProperties: true}</code> (free-form)</td></tr>
+            <tr><td>Named struct</td><td><code>$ref: '#/components/schemas/&lt;Name&gt;'</code> — registered once, referenced everywhere</td></tr>
+            <tr><td>Anonymous embed</td><td>Flattened inline (mirrors <code>encoding/json</code> field promotion)</td></tr>
+            <tr><td>Field with <code>json:"-"</code></td><td>Skipped</td></tr>
+            <tr><td>Field with <code>path:"X"</code></td><td>Skipped from body schema; emitted as a path parameter</td></tr>
+            <tr><td>Field with <code>query:"X" filter:"ops"</code></td><td>Skipped from body schema; one query parameter per declared operator</td></tr>
+            <tr><td>Field with <code>view:"docKey"</code></td><td>Tag ignored — internal doc→wire mapping for <code>fwresponses.AutoFromDoc</code></td></tr>
+            <tr><td>Field with <code>example:"value"</code></td><td>Sets the property's <code>example</code> in the rendered schema. Supports <code>string</code>, <code>bool</code>, signed/unsigned ints, floats, <code>uuid.UUID</code>, <code>domain.ID</code>, <code>time.Time</code> (RFC3339), and pointers to any of the above. Composite types (struct / slice / map) reject at boot with guidance toward <code>Doc.RequestExamples</code> / <code>Doc.ResponseExamples</code>. Parse failure → boot panic naming the offending struct + field.</td></tr>
+        </tbody>
+    </table>
+    <p><strong>Required-field rule.</strong> Strict (handler embeds <code>pipeline.FullBody</code>): every kept field is required. Lenient: required when the field is non-pointer AND the json tag does not carry <code>,omitempty</code>.</p>
+
+    <p><strong>Per-property <code>example:</code> tag.</strong> Annotate scalar fields on Request and Response DTOs to seed concrete values into Swagger UI. The generator reads <code>f.Tag.Get("example")</code> in <code>walkFields</code>, converts the raw string via the field's reflected type, and sets the schema's <code>example</code> — Swagger UI then aggregates per-property examples into a composite object example automatically. Use this for the common case (one representative payload per DTO field). The <code>Doc.RequestExamples</code> / <code>Doc.ResponseExamples</code> map remains the path for N exemplos per status or shapes a single tag cannot express (arrays of structs with specific items, multi-field objects with cross-field semantics).</p>
+    <pre><code>type InsertUserRequest struct {
+    Name  string  `json:"name"            example:"Alice"`
+    Email string  `json:"email"           example:"alice@example.com"`
+    Phone *string `json:"phone,omitempty" example:"+5511999998888"`
+}
+type InsertUserResponse struct {
+    ID    domain.ID `json:"id"    example:"7b3c1f10-3c7e-4a8d-9f0e-9d2a8e6d4b51"`
+    Name  string    `json:"name"  example:"Alice"`
+    Email string    `json:"email" example:"alice@example.com"`
+}</code></pre>
+
+    <h3>N exemplos per route — <code>Doc.RequestExamples</code> / <code>Doc.ResponseExamples</code></h3>
+    <p>When a single tag per field is not enough — multiple representative payloads ("minimal", "withAddress", "edgeCase"), or shapes that compose nested arrays of structs that the tag cannot express — declare them on the <code>Mount</code> call's <code>Doc</code>. Each entry is an <code>openapi.Example</code> with optional <code>Summary</code> (dropdown label), optional <code>Description</code> (markdown), and the actual <code>Value</code> (any JSON-marshalable Go value or <code>json.RawMessage</code>):</p>
+    <pre><code>fwopenapi.Mount(d.OpenAPIRegistry, users, fiber.MethodPost, "/", h, spec,
+    fwopenapi.Doc{
+        Summary: "Create a user",
+        Tags:    []string{"Users"},
+        RequestExamples: map[string]fwopenapi.Example{
+            "minimal": {
+                Summary: "Minimal valid payload",
+                Value:   requests.InsertUserRequest{Name: "Alice", Email: "alice@example.com"},
+            },
+            "withAddress": {
+                Summary: "With one address",
+                Value: requests.InsertUserRequest{
+                    Name: "Bob", Email: "bob@example.com",
+                    Addresses: []requests.AddressInput{{Street: "Main St", ZipCode: "10001"}},
+                },
+            },
+        },
+        ResponseExamples: map[int]map[string]fwopenapi.Example{
+            fiber.StatusCreated: {
+                "happyPath": {
+                    Summary: "Created — domain.ID assigned by Postgres",
+                    Value:   requests.InsertUserResponse{ID: "u_abc123", Name: "Alice"},
+                },
+            },
+            fiber.StatusUnprocessableEntity: {
+                "duplicateEmail": {
+                    Summary: "Email already in use",
+                    Value:   json.RawMessage(`{"success":false,...}`),
+                },
+            },
+        },
+    })</code></pre>
+
+    <p><strong>Success status wraps; error status renders raw.</strong> The framework treats the operation's <code>SuccessStatus</code> as the "happy" envelope and automatically wraps each example's <code>Value</code> in the canonical Response envelope (<code>success:true</code>, <code>status</code>, <code>description</code>, <code>data:&lt;value&gt;</code>). The consumer only provides the inner <code>data</code> shape — same Go type the runtime handler emits via <code>ResponseType</code>. Every other status (404, 422, 409, …) is rendered verbatim — the consumer fully controls the envelope, typically <code>success:false</code> with a custom <code>errors[]</code> shape. Mirror behavior on <code>MountRaw</code>: <code>RequestBody.Examples</code> and <code>ResponseSpec.Examples</code> always render verbatim (raw routes are entirely consumer-controlled).</p>
+
+    <p><strong>Auto-merge of canonical default on error statuses.</strong> When the consumer declares examples on a status the framework documents by default (400/401/404/422/500), the canonical entry auto-merges under the key <code>"default"</code> in the rendered <code>examples</code> map. The consumer can:</p>
+    <ul>
+        <li><strong>Coexist with the default</strong>: declare any number of named entries (<code>"happyPath"</code>, <code>"duplicateEmail"</code>, …) — the framework's canonical envelope appears alongside them under <code>"default"</code> in the dropdown.</li>
+        <li><strong>Override the default</strong>: declare <code>"default"</code> explicitly with a custom Value — the explicit entry wins.</li>
+        <li><strong>Remove the default</strong>: declare <code>"default"</code> with an empty Value (<code>fwopenapi.Example{}</code>) — the canonical entry is omitted from the rendered spec.</li>
+    </ul>
+    <p>When the consumer declares <strong>nothing</strong> for an error status, the renderer emits the singular <code>example</code> field carrying the framework's canonical envelope (no examples dropdown) — the common case for routes that don't customize error bodies.</p>
+
+    <p><strong>Boot-time validation.</strong> Every <code>Value</code> is validated once at <code>Mount</code> / <code>MountRaw</code> time. Request and success-status examples are checked strictly against the declared type via <code>json.Marshal</code> + <code>json.Unmarshal</code> with <code>DisallowUnknownFields</code> — a typo on a field name aborts the boot with a diagnostic naming the route + slot + example name + cause. Error-status examples are checked only for JSON validity (the <code>ErrorEnvelope</code> shape is shared and accepts arbitrary <code>errors[]</code> content). <code>json.RawMessage</code> passes through verbatim.</p>
+
+    <p><strong>Public default-error registry — <code>openapi.DefaultErrorExample(status)</code>.</strong> The canonical entry the framework auto-merges is exposed via two public helpers:</p>
+    <ul>
+        <li><code>DefaultErrorExample(status int) (Example, bool)</code> — the entry for one status. <code>ok=false</code> for statuses outside the framework's set (400/401/404/422/500).</li>
+        <li><code>DefaultErrorExamples() map[int]Example</code> — a fresh copy of every entry, keyed by status. Mutating the returned map does not affect the framework's internal registry.</li>
+    </ul>
+    <p>Use these when customizing the canonical entry without reauthoring its payload (override <code>Description</code> only), or when assembling a <code>Responses</code> map programmatically:</p>
+    <pre><code>def, _ := fwopenapi.DefaultErrorExample(fiber.StatusUnprocessableEntity)
+def.Description = "Falha de validação no campo `email`."
+
+ResponseExamples: map[int]map[string]fwopenapi.Example{
+    fiber.StatusUnprocessableEntity: {
+        "default":     def,   // consumer-customized default
+        "duplicate":   {Value: ...},
+    },
+}</code></pre>
+
+    <h3>Response envelope and standard errors</h3>
+    <p>Successful responses wrap the consumer's <code>ResponseType</code> in the framework's <code>web.Response</code> envelope (<code>success</code>, <code>status</code>, <code>description</code>, <code>data</code>). When the projection lands on <code>responses.None</code> (the <code>fwresults.None</code> / <code>fwresponses.NoBody</code> default for Archive/Unarchive/Delete), the envelope is emitted WITHOUT the <code>data</code> field — matching the runtime behavior of <code>respondWithProjection</code>.</p>
+    <p>Standard error envelopes are added per route based on its shape:</p>
+    <table>
+        <thead><tr><th>Status</th><th>Added when</th></tr></thead>
+        <tbody>
+            <tr><td>400 Bad Request</td><td>Route carries a request body (canonical <code>RequestType</code> with body fields OR <code>RawSpec.RequestBody</code>)</td></tr>
+            <tr><td>401 Unauthorized</td><td>Auth is enabled AND the route is not public</td></tr>
+            <tr><td>404 Not Found</td><td><code>HasPathID=true</code> OR <code>RawSpec</code> declares a path parameter</td></tr>
+            <tr><td>422 Unprocessable Entity</td><td>Always (every route can produce domain-validation rejections)</td></tr>
+            <tr><td>500 Internal Server Error</td><td>Always (recovered panic / escaped error)</td></tr>
+        </tbody>
+    </table>
+    <p><strong>Custom error status via <code>Doc.ResponseExamples</code>.</strong> A canonical route may emit a status outside the table above — typically when a service notification overrides <code>Semantic()</code> to <code>Conflict</code>/<code>Unavailable</code>/etc. Declaring <code>Doc.ResponseExamples[N]</code> for that status auto-creates the response entry on the rendered spec, reusing the shared <code>ErrorEnvelope</code> schema; the consumer's examples render under <code>content.application/json.examples</code>, and the description comes from <code>http.StatusText(N)</code>. The <code>default</code> auto-merge described below applies only on statuses with a <code>DefaultErrorExample</code> entry (400/401/403/404/422/500); non-default statuses surface exactly the consumer's declared examples, no canonical merge.</p>
+    <p>All error responses share the single <code>ErrorEnvelope</code> schema in <code>components/schemas</code> — mirrors <code>web/response.go::Response</code> with <code>errors[]</code> populated and the typed <code>ErrorMessage</code> shape. Registered exactly once in the components pool; every error response references it via <code>$ref</code>:</p>
+    <pre><code>{
+  "ErrorEnvelope": {
+    "type": "object",
+    "required": ["description", "errors", "status", "success"],
+    "properties": {
+      "success":     {"type": "boolean"},
+      "status":      {"type": "integer", "format": "int32"},
+      "description": {"type": "string"},
+      "errors": {
+        "type": "array",
+        "items": {
+          "type": "object",
+          "required": ["context", "messages"],
+          "properties": {
+            "context": {"type": "string"},
+            "messages": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "required": ["message"],
+                "properties": {
+                  "notificationKey": {"type": "string"},
+                  "field":           {"type": "string"},
+                  "value":           {"type": "string"},
+                  "funcName":        {"type": "string"},
+                  "message":         {"type": "string"},
+                  "semantic":        {"type": "string"}
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}</code></pre>
+    <p>The <code>notificationKey</code> + <code>semantic</code> fields propagate the typed identity through to the wire — clients can branch UI on the key (e.g. show an inline "duplicate email" warning) without parsing the HTTP status code. <code>field</code> uses the JSON path the consumer sent (<code>addresses[0].zipCode</code> for nested aggregate validation failures, <code>email</code> for root field failures), matching the wire shape exactly.</p>
+
+    <p><strong>Concrete examples in Swagger UI.</strong> The framework populates examples so the rendered page shows realistic envelopes instead of the type-default placeholders (<code>success: true</code>, <code>status: 0</code>) that Swagger UI fabricates from bare types:</p>
+    <ul>
+        <li><strong>Success</strong>: per-property <code>example</code> on the inline envelope schema — <code>success: true</code>, <code>status</code> = the operation's <code>SuccessStatus</code>, <code>description</code> = the matching HTTP reason phrase. The <code>data</code> field's example is derived from the <code>ResponseType</code> schema.</li>
+        <li><strong>Errors</strong>: a content-level <code>example</code> per status (400/401/404/422/500) overrides the shared <code>$ref</code>'s default — <code>success: false</code>, <code>status</code> matching the response code, and a representative <code>errors[]</code> entry carrying the typed notification the framework actually emits for that status (<code>SchemaViolationNotification</code> on 400, <code>RequiredFieldNotification</code> on 422, <code>InternalServerErrorNotification</code> on 500, etc.). The <code>ErrorEnvelope</code> schema stays a single dedup'd entry in <code>components/schemas</code>.</li>
+    </ul>
+
+    <h3>Auth declarations</h3>
+    <p>When <code>auth.mode: jwt</code>, the framework calls <code>openapi.Register</code> with <code>WithAuth(AuthContext{PublicRoutes: ...})</code>. The rendered document gains:</p>
+    <ul>
+        <li><code>components.securitySchemes.bearerAuth</code> (<code>http</code> / <code>bearer</code> / <code>JWT</code>).</li>
+        <li><code>security: [{bearerAuth: []}]</code> on every operation that is NOT public.</li>
+        <li>An automatic <code>401 Unauthorized</code> entry in the operation's <code>responses</code> block.</li>
+    </ul>
+    <p>An operation is treated as public when <code>Doc.Public</code> / <code>RawSpec.Public</code> is true OR when its <code>METHOD /path</code> appears in <code>auth.publicRoutes</code> from <code>microservice.&lt;profile&gt;.yaml</code> — the same allowlist <code>AuthMiddleware</code> enforces at runtime.</p>
+
+    <h3>Hidden vs Public</h3>
+    <ul>
+        <li><strong>Hidden=true</strong>: the operation is excluded from the rendered spec entirely. Still registers on Fiber so the route works at runtime; only the documentation surface omits it. Use for internal upstream / scaffolding routes that have no business appearing in a public spec.</li>
+        <li><strong>Public=true</strong>: the operation appears in the spec WITHOUT <code>security: [{bearerAuth: []}]</code> and WITHOUT the 401 entry. Use for routes that genuinely bypass auth (health probes, OIDC discovery proxies, identity demos).</li>
+    </ul>
+
+    <h3>Swagger UI HTML</h3>
+    <p>The UI route (default <code>/docs</code>; overridable via <code>openapi.uiPath</code>) serves a minimal HTML page that loads <code>swagger-ui-dist</code> from the unpkg.com CDN and points at <code>/openapi.json</code>. Consumers needing fully offline operation override the UI route after <code>Register</code> returns (Fiber's last-write-wins) and serve their own HTML pointing at the same JSON endpoint.</p>

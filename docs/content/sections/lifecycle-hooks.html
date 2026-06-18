@@ -1,0 +1,144 @@
+<h2>In-TX side effects via lifecycle hooks</h2>
+    <p>
+        The framework exposes two lifecycle slots on every write verb (Insert / Update / Archive / Unarchive / Delete) — both
+        fire <strong>INSIDE the persister's TX</strong>, so a hook can write companion rows, denormalizations, or extra
+        outbox events atomically with the framework's own writes. The names anchor on the TX verbs themselves so the
+        consumer reads the trigger directly:
+    </p>
+    <table>
+        <thead><tr><th>Slot</th><th>Position</th><th>Use case</th></tr></thead>
+        <tbody>
+            <tr><td><code>afterBegin</code></td><td>INSIDE the TX, BEFORE any framework write (data + outbox + audit)</td><td>Acquire an advisory lock; consult adjacent state under serializable isolation; enforce a cross-aggregate precondition the data write itself depends on.</td></tr>
+            <tr><td><code>beforeCommit</code></td><td>INSIDE the TX, AFTER all framework writes, BEFORE COMMIT</td><td>Emit an extra outbox row with a different <code>event_type</code>; write a denormalization row; perform a cross-table read-then-write that needs the post-write state of the aggregate.</td></tr>
+        </tbody>
+    </table>
+    <p>
+        A non-nil error returned by either slot rolls back the entire TX. <code>domain.NotificationCarrier</code>
+        identity is preserved end-to-end — a typed notification returned from the hook reaches the wire envelope verbatim,
+        at the notification's own HTTP status. A panic inside the hook propagates through <code>pipeline.Run</code>'s
+        <code>defer/recover</code> and renders as 500; <code>defer tx.Rollback()</code> fires automatically.
+    </p>
+    <p>
+        The persister always emits a <code>slog.Warn("persistence.hook.error", verb, hookSlot, entityType, threadId, error)</code>
+        line on every hook error as a best-effort observability echo; the line is non-blocking, so a slog handler failure never
+        masks the rollback.
+    </p>
+
+    <h3>Auto handler path (declarative — methods on the Cmd)</h3>
+    <p>
+        The Cmd opts in by declaring an <code>AfterBegin</code> and/or <code>BeforeCommit</code> method matching the
+        provider interface for the consumer's entity type. The Auto Command Handler detects each via type assertion at the
+        top of <code>Handle</code> and forwards the method values as <code>WriteOption[T]</code> closures to the
+        <code>repo.Scope(ctx, opts...)</code> binding, then calls the resulting pure <code>domain.Writer</code> (e.g. <code>.Insert(valid)</code>).
+    </p>
+    <pre><code>// application/commands/insert_user.go
+type InsertUserCommand struct {
+    pipeline.CommandBase
+    Name  string
+    Email string
+}
+
+func (c *InsertUserCommand) ToEntity(_ *configuration.AppContext) *User {
+    return &amp;User{Name: c.Name, Email: c.Email}
+}
+func (c *InsertUserCommand) FromEntity(_ *configuration.AppContext, u *User) InsertUserResult {
+    return InsertUserResult{ID: *u.GetID(), Name: u.Name, Email: u.Email}
+}
+
+// Optional in-TX side effect: emit an extra integration-event row
+// atomically with the framework's data write + outbox row + audit row.
+//
+// TxHandle is a sealed marker — it carries no public methods. The Cmd
+// cannot pronounce SQL through it. The canonical (and only) shape is a
+// port declared in application/ (or domain/) whose method receives a
+// persistence.TxHandle; the port's adapter in infra/ calls
+// fwinfra.UnwrapPgxTx(tx) to recover the pgx.Tx and owns the SQL +
+// table name. The hook is just the composition point.
+func (c *InsertUserCommand) BeforeCommit(
+    ctx *configuration.AppContext, u *User, id domain.ID, tx persistence.TxHandle,
+) error {
+    // c.NotificationOutbox is a port injected on the Cmd; its adapter in
+    // infra/ owns the SQL emitting the companion integration event
+    // atomically with the framework's data + outbox + audit rows.
+    return c.NotificationOutbox.EnqueueActivationRequested(ctx, tx, id)
+}
+
+// Recommended compile-time safety against typos in the method name.
+var _ persistence.BeforeCommitHookProvider[*User] = (*InsertUserCommand)(nil)</code></pre>
+
+    <h3>Manual handler path (closure passed at the call site)</h3>
+    <p>
+        The same persister surface serves the manual path — the closure is supplied directly via
+        <code>persistence.WithAfterBegin[T](fn)</code> / <code>persistence.WithBeforeCommit[T](fn)</code> as trailing
+        options on the <code>repo.Scope(ctx, opts...).Method(valid)</code> binding. There is one canonical persister surface;
+        Auto and manual differ only in how the closures originate (Cmd method vs explicit closure).
+    </p>
+    <p>
+        <strong>Application stays SQL-free on the manual path too</strong> — <code>persistence.TxHandle</code> is a
+        sealed marker with no public methods, so the closure cannot pronounce SQL through it by construction. The
+        canonical shape is a port declared in <code>application/</code> (or <code>domain/</code>) whose method receives
+        a <code>persistence.TxHandle</code>; the port's adapter in <code>infra/</code> calls
+        <code>fwinfra.UnwrapPgxTx(tx)</code> to recover the live <code>pgx.Tx</code> and owns the SQL + table name. The
+        closure threads <code>tx</code> through the port so the side effect remains atomic with the framework's writes.
+    </p>
+    <pre><code>func (h *CreateUserAdminHandler) Handle(
+    ctx *configuration.AppContext, cmd *AdminCreateUserCommand,
+) (Result, error) {
+    user := buildUser(cmd)
+    insertable, err := domain.GetInsertable(user, h.svc, "AdminCreate")
+    if err != nil { return Result{}, err }
+
+    id, err := h.repo.Scope(ctx,
+        persistence.WithBeforeCommit[*User](func(
+            ctx *configuration.AppContext, u *User, id domain.ID, tx persistence.TxHandle,
+        ) error {
+            // h.NotificationOutbox is a port injected on the handler; its
+            // adapter in infra/ owns the SQL emitting the companion
+            // integration event atomically with the framework's data +
+            // outbox + audit rows. The adapter calls fwinfra.UnwrapPgxTx(tx)
+            // to obtain the pgx.Tx; the handler never imports pgx.
+            return h.NotificationOutbox.EnqueueAdminUserActivated(ctx, tx, id)
+        }),
+    ).Insert(insertable)
+    if err != nil { return Result{}, err }
+    return Result{ID: id}, nil
+}</code></pre>
+
+    <h3><code>TxHandle</code> — sealed marker</h3>
+    <p>
+        Hooks receive the framework's TX as <code>persistence.TxHandle</code> — a sealed interface with no public
+        methods. The single sealing method on it is unexported, so the only implementation is the framework's own
+        <code>pgxTxHandle</code> in <code>omnicore/infra/</code>, which carries the live <code>pgx.Tx</code> privately.
+        Application code cannot read or write SQL through the handle by construction.
+    </p>
+    <p>
+        The canonical (and only) shape for an in-TX side effect from a hook:
+    </p>
+    <ol>
+        <li>Declare a port in <code>application/</code> (or <code>domain/</code>) — a pure Go interface whose
+            method receives a <code>persistence.TxHandle</code> parameter.</li>
+        <li>Implement the port in <code>infra/</code> — the adapter calls
+            <code>fwinfra.UnwrapPgxTx(tx) pgx.Tx</code> to recover the underlying transaction and owns the SQL +
+            table name. <code>UnwrapPgxTx</code> lives in <code>infra/</code>, so only adapters in that layer can
+            call it.</li>
+        <li>Inject the port on the Cmd (or manual handler) and call it from the hook closure. The framework's TX is
+            honored end-to-end; the application layer never pronounces SQL.</li>
+    </ol>
+    <p>
+        <code>UnwrapPgxTx</code> panics with a descriptive diagnostic if passed a foreign <code>TxHandle</code>
+        implementation — defensive, never reached against framework-issued handles because the interface is
+        sealed. Advanced pgx features (<code>CopyFrom</code>, <code>SendBatch</code>, <code>Prepare</code>) are
+        reachable from the adapter via the unwrapped <code>pgx.Tx</code>, but constraint-binding translation
+        (<code>infra.ConstraintBinding</code>) is not applied at this surface — it lives at the Repository level
+        for the parent entity's declared constraints.
+    </p>
+
+    <h3>Aggregate-path symmetry</h3>
+    <p>
+        Both persister paths — flat (non-aggregate entities) and aggregate (entities implementing
+        <code>AggregateRootProvider</code>) — fire the hooks at the same analogous positions, with the same generic
+        signature, the same firing cardinality (single firing per <code>repo.Method()</code> call, granularity B,
+        matching outbox and audit row cardinality). The hook receives the root entity with all aggregate children
+        reachable via the usual <code>domain.GetCurrentItemsOf[VO]</code> helpers. Consumer code does not know which
+        dispatch path the persister took.
+    </p>

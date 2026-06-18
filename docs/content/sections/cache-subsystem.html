@@ -1,0 +1,103 @@
+<h2>Cache subsystem</h2>
+  <p><code>omnicore/infra/cache</code> is the framework's generic byte-level key-value cache subsystem. The <code>cache.Cache</code> port is the single contract consumer code, domain services, infrastructure adapters, and the outbound httpclient all consult — there is no per-component cache anymore. Two canonical implementations ship: in-process LRU+TTL via <code>cache.NewMemory</code>, Redis via <code>cache.NewRedis</code>. Consumers wanting a different backend (Memcached, Valkey, Hazelcast, …) implement the same <code>cache.Cache</code> interface and inject the implementation via <code>bootstrap.Wiring.Cache</code> / <code>bootstrap.Wiring.SharedCache</code>.</p>
+
+  <h3>Interface</h3>
+<pre><code>type Cache interface {
+    Get(ctx context.Context, key string) ([]byte, bool, error)
+    Set(ctx context.Context, key string, value []byte, ttl time.Duration) error
+    Delete(ctx context.Context, key string) error
+}</code></pre>
+  <p>Intentionally narrow — <code>Get</code> returns <code>(value, true, nil)</code> on hit / <code>(nil, false, nil)</code> on miss / <code>(nil, false, err)</code> on transport failure; <code>Set</code> accepts <code>ttl == 0</code> as "no expiration"; <code>Delete</code> is idempotent (missing keys are not an error). No <code>Has</code> (use <code>Get</code>); no <code>Clear</code> (operator-owned via the backend's CLI); no batch ops.</p>
+  <p><strong>Typed JSON helpers</strong> sit outside the interface so backends don't have to think about Go types:</p>
+<pre><code>func cache.GetJSON[T any](ctx, c cache.Cache, key string) (T, bool, error)
+func cache.SetJSON[T any](ctx, c cache.Cache, key string, value T, ttl time.Duration) error</code></pre>
+  <p>Both tolerate a nil <code>Cache</code> and degrade to no-op (miss / no-op write) so feature code that opts the cache in-or-out via YAML doesn't need a nil guard around every call site.</p>
+
+  <h3>Two cache instances per service — Private and Shared</h3>
+  <p>The framework exposes TWO <code>cache.Cache</code> instances on <code>bootstrap.Deps</code>:</p>
+  <ul>
+    <li><strong><code>Deps.Cache</code></strong> — service-private. Populated when the top-level <code>cache:</code> YAML block is declared (any store including memory). Use for anything scoped to this service — domain memoization, computed-value caching, the outbound httpclient response cache (the framework wires its own middleware to consume this same instance).</li>
+    <li><strong><code>Deps.SharedCache</code></strong> — cross-service. Populated only when <code>cache.shared:</code> is declared. Use for keys other services in the cluster are expected to read — feature flags coordinated across services, cluster-wide rate limits, sessions consumed by an API gateway.</li>
+  </ul>
+  <p>The distinction is enforced at the <strong>dependency-injection level</strong>, not via a flag on Set/Get. Code that wants to write a shared value writes to <code>Deps.SharedCache</code>; code that doesn't is structurally unable to. Default safety: <code>Deps.SharedCache</code> is <code>nil</code> unless declared — feature code touching it MUST guard explicitly. The httpclient response cache uses <code>Deps.Cache</code> (private) unconditionally.</p>
+  <p class="note"><strong><code>cache.shared.store: memory</code> is REJECTED at boot.</strong> An in-process LRU cannot honor cross-service reads; the framework forces the operator to pick <code>redis</code> or <code>custom</code> for the shared cache.</p>
+
+  <h3>Which combination has which scope</h3>
+  <p>The scope of a cached value is decided by TWO axes, not one. The <strong>slot</strong> (<code>Deps.Cache</code> vs <code>Deps.SharedCache</code>) decides <em>who is allowed to read it</em> — the same service, or any service in the cluster. The <strong>backend</strong> (<code>memory</code> vs <code>redis</code>/<code>custom</code>) decides <em>where the bytes live</em> — inside this one process, or in a shared store that survives restarts and is visible to every replica. Cross those two axes and three meaningful combinations fall out:</p>
+  <table>
+    <thead>
+      <tr><th>Scope you want</th><th>Slot</th><th>Backend</th><th>What it means concretely</th></tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td><strong>Only this microservice instance</strong> (per-process, per-pod)</td>
+        <td><code>Deps.Cache</code></td>
+        <td><code>memory</code></td>
+        <td>In-process LRU+TTL. Each replica has its own copy; entries are <strong>lost on restart</strong> and never visible to another pod. The only combination that is local to a single running instance.</td>
+      </tr>
+      <tr>
+        <td><strong>This microservice, independent of the instance</strong> (shared across all its replicas, survives restarts)</td>
+        <td><code>Deps.Cache</code></td>
+        <td><code>redis</code> (or <code>custom</code>)</td>
+        <td>All replicas of the service read/write the same backend; entries <strong>survive restarts</strong>. The service's own <code>keyPrefix</code> namespaces the keys so other services don't read them — private to the service, but not tied to any one instance.</td>
+      </tr>
+      <tr>
+        <td><strong>Shared between different microservices</strong> (cross-service)</td>
+        <td><code>Deps.SharedCache</code></td>
+        <td><code>redis</code> (or <code>custom</code>)</td>
+        <td>Populated only when <code>cache.shared:</code> is declared. Intended for keys other services in the cluster read — feature flags coordinated across services, cluster-wide rate limits, sessions consumed by an API gateway. <code>memory</code> is rejected at boot here.</td>
+      </tr>
+    </tbody>
+  </table>
+  <p>Two practical notes. First, the two slots can point at the <strong>same Redis instance</strong> — what separates "private to the service" from "shared across services" is the slot + the <code>keyPrefix</code> (<code>${SERVICE}-cache</code> vs <code>${TEAM}-shared</code>), not a second server. Second, the only structural rule the framework enforces at boot is that <code>cache.shared.store</code> may never be <code>memory</code> — an in-process LRU cannot, by definition, be shared across services. Everything else is the operator's choice.</p>
+
+  <h3>YAML — top-level <code>cache:</code> block</h3>
+<pre><code>cache:
+  store: memory                     # memory (default) | redis | custom
+  maxEntries: 10000                 # only memory; default 10000
+  redis:                            # required when store: redis, rejected otherwise
+    addr: ${REDIS_ADDR:localhost:6379}
+    password: ${REDIS_PASSWORD}
+    db: 0
+    keyPrefix: "${SERVICE}-cache"
+    failMode: open                  # open (default) | closed
+    timeoutMs: 100                  # per-op timeout against Redis; default 100ms
+
+  shared:                           # OPTIONAL second cache instance
+    store: redis                    # redis | custom — memory rejected at boot
+    redis:
+      addr: ${SHARED_REDIS_ADDR}
+      keyPrefix: "${TEAM}-shared"
+      failMode: open
+      timeoutMs: 100</code></pre>
+  <p>When the top-level <code>cache:</code> block is omitted entirely, <code>Deps.Cache</code> stays nil — the httpclient cache layer bypasses, and <code>cache.GetJSON</code>/<code>SetJSON</code> degrade to no-ops. Services that don't need caching pay zero cost.</p>
+
+  <h3>Backend selection cascade</h3>
+  <p>The same matrix applies independently to <code>cache.store</code> and <code>cache.shared.store</code>. Mismatched wiring fails the boot with a structural-coherence error:</p>
+  <ul>
+    <li><code>store: memory</code> (or unset) + no <code>Wiring.Cache</code> → in-process LRU runs.</li>
+    <li><code>store: memory</code> or <code>store: redis</code> + <code>Wiring.Cache</code> injected → boot panic ("declare <code>store: custom</code> to use <code>Wiring.Cache</code>").</li>
+    <li><code>store: redis</code> + no <code>Wiring.Cache</code> → go-redis backed adapter built from <code>redis:</code> sub-block.</li>
+    <li><code>store: custom</code> + no <code>Wiring.Cache</code> → boot panic ("<code>Wiring.Cache</code> required").</li>
+    <li><code>store: custom</code> + <code>Wiring.Cache</code> injected → injected instance runs.</li>
+  </ul>
+  <p><code>cache.shared.store: memory</code> is additionally rejected at boot — only <code>redis</code> and <code>custom</code> are accepted for the shared cache.</p>
+
+  <h3>Redis adapter — <code>failMode</code></h3>
+  <p>The framework's Redis backend (<code>cache.NewRedis(*RedisConfig)</code>) resolves the configured <code>failMode</code> internally:</p>
+  <ul>
+    <li><strong><code>open</code> (default)</strong> — swallows transport errors, emits <code>slog.Warn "cache.redis.transport.error"</code> with <code>{op, key, error, failOpen}</code>, and returns <code>(nil, false, nil)</code> on <code>Get</code> / <code>nil</code> on <code>Set</code>/<code>Delete</code>. The caller sees a miss; the call proceeds as if the cache were disabled for that request.</li>
+    <li><strong><code>closed</code></strong> — propagates the error verbatim. The middleware (or consumer code) surfaces it.</li>
+  </ul>
+  <p>Logical misses (<code>redis.Nil</code>) and corrupted entries are NOT errors — they always behave as miss regardless of <code>failMode</code>. The connection is lazy — Redis unreachable at boot does NOT block <code>New()</code>; the first <code>Get</code>/<code>Set</code> surfaces the failure through <code>failMode</code>.</p>
+
+  <h3>Late injection — <code>Wiring.Cache</code> and <code>Wiring.SharedCache</code></h3>
+  <p><code>Wiring.Cache</code> and <code>Wiring.SharedCache</code> are the escape hatches for <code>cache.store: custom</code>. The framework resolves them AFTER the <code>wire(deps)</code> callback runs, so consumer code that constructs the custom backend can use any infrastructure available to features (additional connections, secrets manager handles, …). The httpclient picks up the late-resolved private cache via <code>httpclient.HttpClient.SetCache</code> (atomic pointer swap; no chain rebuild).</p>
+
+  <h3>Common patterns</h3>
+  <ul>
+    <li><strong>Read or write a private cache value:</strong> <code>value, ok, err := cache.GetJSON[Profile](ctx, deps.Cache, "user:42:profile")</code> / <code>cache.SetJSON(ctx, deps.Cache, "user:42:profile", v, 5*time.Minute)</code></li>
+    <li><strong>Read or write a shared cache value:</strong> same helpers but against <code>deps.SharedCache</code> — guard against nil first if the operator may have omitted <code>cache.shared:</code></li>
+    <li><strong>Plug a custom backend</strong> (Memcached / Valkey / Hazelcast / …): implement <code>cache.Cache</code>, declare <code>cache.store: custom</code> (or <code>cache.shared.store: custom</code>) in YAML, inject the implementation via <code>bootstrap.Wiring.Cache</code> / <code>bootstrap.Wiring.SharedCache</code></li>
+    <li><strong>Disable the cache entirely:</strong> omit the top-level <code>cache:</code> block. <code>Deps.Cache</code> and <code>Deps.SharedCache</code> stay nil; httpclient cache middleware short-circuits as <code>"bypass"</code></li>
+  </ul>

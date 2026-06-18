@@ -1,0 +1,118 @@
+<h2>Authorization</h2>
+  <p>Authentication is solved by <a href="#auth-middleware"><code>AuthMiddleware</code></a> populating <code>AppContext.Identity</code> from the verified JWT. Authorization — what the authenticated principal is allowed to do — travels through <strong>three concentric layers</strong>, each with its own surface. All three consume <code>AppContext.Identity()</code> and surface rejections through the canonical envelope with HTTP 403. The framework does NOT enforce identity at the infra layer.</p>
+
+  <table>
+    <thead><tr><th>Layer</th><th>Surface</th><th>Where</th><th>What it enforces</th></tr></thead>
+    <tbody>
+      <tr><td>1 — coarse / declarative</td><td><code>fwopenapi.RequirePermission(p)</code> as <code>MountOption</code></td><td>Route registration call</td><td>"This endpoint requires permission X" — static across all requests</td></tr>
+      <tr><td>2 — fine / programmatic</td><td><code>BuildRules</code> with <code>actionName</code> branching</td><td><code>domain/&lt;entity&gt;.go</code></td><td>Rules that depend on resource state vs principal (owner-check, "cannot delete last admin", state-transition guards)</td></tr>
+      <tr><td>3 — cross-cutting tenant</td><td>Middleware gate + <code>Query.ToCriteria(ctx)</code> + <code>BuildRules</code></td><td>YAML + <code>application/</code> + <code>domain/</code></td><td>Multi-tenant isolation — principals in tenant A do not see resources of tenant B</td></tr>
+    </tbody>
+  </table>
+
+  <h3>Layer 1 — declarative gate via <code>RequirePermission</code></h3>
+  <p>The single canonical way to gate a route on a permission. The same option covers the three route registration paths (canonical via <code>*Spec</code> siblings, manual-with-pipeline with hand-rolled <code>RouteSpec</code>, raw via <code>MountRaw</code>):</p>
+
+  <pre><code>// Canonical
+fwopenapi.Mount(d.OpenAPIRegistry, users, fiber.MethodPost, "/",
+    insertH, insertSpec,
+    fwopenapi.Doc{Summary: "Create a user", Tags: tags},
+    fwopenapi.RequirePermission("users:write"))
+
+// Raw (free-form / vendor-shaped handlers)
+fwopenapi.MountRaw(d.OpenAPIRegistry, app, fiber.MethodGet, "/whoami",
+    whoamiHandler,
+    fwopenapi.RawSpec{Summary: "Whoami", Tags: tags},
+    fwopenapi.RequirePermission("users:profile:read"))</code></pre>
+
+  <p>On receiving the option, Mount/MountRaw patches <code>spec.RequiredPermission</code> AND wraps the handler with the framework's permission gate which short-circuits with the canonical 403 envelope carrying <code>MissingPermissionNotification</code> when <code>Identity.HasPermission(p)</code> returns false. The OpenAPI generator appends <code>**Required permission:** `&lt;p&gt;`</code> to the description ONLY when the runtime gate is actually enforcing (<code>auth.mode: jwt</code> AND <code>auth.authorization.enabled: true</code>) — under <code>disabled</code> or jwt-without-authz the value stays on <code>spec.RequiredPermission</code> for introspection (codegen, contract diffs), but the description suffix is suppressed so the spec never advertises a constraint the server is not honoring.</p>
+
+  <p><strong>The 403 entry is auto-emitted in <code>/openapi.json</code> on every non-public route</strong> when <code>auth.mode: jwt</code> is in effect, independent of whether <code>RequirePermission</code> is declared — any authenticated route can produce a Forbidden outcome via Layer 2 or Layer 3.</p>
+
+  <p><strong>Permission string format: <code>resource:action</code></strong> (Auth0 / AWS / Stripe convention). The IdP emits a <code>permissions</code> claim carrying an array of strings; <code>Identity.HasPermission(p)</code> matches with three rules:</p>
+
+  <table>
+    <thead><tr><th>Claim entry</th><th>Matches request</th></tr></thead>
+    <tbody>
+      <tr><td><code>users:read</code></td><td>exactly <code>users:read</code></td></tr>
+      <tr><td><code>users:*</code></td><td>any <code>users:&lt;anything&gt;</code></td></tr>
+      <tr><td><code>*:*</code></td><td>any request (super-admin)</td></tr>
+    </tbody>
+  </table>
+
+  <p><strong>Wildcards on the caller side panic at runtime.</strong> <code>ctx.Identity().HasPermission("users:*")</code> is a programming bug — the claim wildcards; the route declares the exact action. Compose "any of A or B" with explicit OR over concrete actions.</p>
+
+  <p><strong>Master switch — <code>auth.authorization.enabled</code>.</strong> Default false. When false, the runtime gate no-ops (handlers run regardless of <code>RequirePermission</code>) AND the spec's <code>**Required permission:** `&lt;p&gt;`</code> description suffix is suppressed — so the documentation never advertises a constraint the server is not honoring. The value stays on <code>spec.RequiredPermission</code> for introspection (codegen, contract diffs), and the <code>403</code> auto-emission still applies whenever auth is on. Flipping the YAML to <code>true</code> turns on both enforcement AND the description suffix together, so spec and runtime stay in sync.</p>
+
+  <p><strong>Boot-time enforcement.</strong> When <code>authorization.enabled: true</code>, bootstrap scans the Registry AFTER <code>Wiring.BeforeServe</code> and BEFORE <code>openapi.Register</code> — every non-public route MUST declare <code>RequirePermission(...)</code>, else the boot panics with the offender list. A parallel <code>scanRouteRegistration</code> runs whenever <code>Wiring.OpenAPI != nil</code> (independent of authz) and panics on any Fiber route registered outside <code>Mount</code>/<code>MountRaw</code> — the canonical channel is structural to the framework.</p>
+
+  <h3>Layer 2 — programmatic rule in <code>BuildRules</code></h3>
+  <p>Rules that depend on the specific resource state, the principal's claims, or the relationship between them. Anything Layer 1's static "needs permission X" cannot express ("only the owner can archive", "cannot delete the last admin", "email cannot change after activation unless admin").</p>
+
+  <p>Every write verb routes through <code>domain.GetXxx</code> → <code>BuildRules</code> BEFORE the SQL fires. The <code>actionName</code> parameter tells the entity which verb is firing (<code>"GetInsertable"</code> / <code>"GetUpdatable"</code> / <code>"GetPartialUpdatable"</code> / <code>"GetArchivable"</code> / <code>"GetUnarchivable"</code> / <code>"GetDeletable"</code>); the rule body branches on it. The identity-derived value reaches the entity via the Command's mapper — the canonical place to translate <code>ctx.Identity()</code> into business-named transient fields.</p>
+
+  <pre><code>// Command mapper — application layer, the only layer that may translate ctx
+// into business-named entity fields. Transient fields carry `transient:"-"`
+// (domain's own declaration that the field is runtime-only) so the framework's
+// reflection-based persister skips them on read and write.
+func (*ArchiveUserCommand) ApplyTo(ctx *configuration.AppContext, u *User) {
+    if id := ctx.Identity(); id != nil {
+        if email, _ := id.Claims["email"].(string); email != "" {
+            u.RequestingPrincipalEmail = email
+        }
+        u.RequestingPrincipalIsAdmin = id.HasPermission("users:admin")
+    }
+}
+
+// BuildRules — domain layer, branches by actionName to scope the check
+// to specific verbs. Notification carries SemanticForbidden → 403.
+func (u *User) BuildRules(actionName string, svc domain.Service, r *domain.Rules) {
+    r.IfUpdate(func() {
+        if actionName == "GetArchivable" &amp;&amp; u.RequestingPrincipalEmail != "" {
+            if u.Email != u.RequestingPrincipalEmail &amp;&amp; !u.RequestingPrincipalIsAdmin {
+                r.AddNotification("ID", domain.ArchiveNotAllowedNotification{})
+            }
+        }
+    })
+}</code></pre>
+
+  <h3>Layer 3 — tenant scoping (cross-cutting)</h3>
+  <p>Multi-tenant isolation — a principal in tenant A cannot see or modify resources of tenant B. Three pieces, all wired by the same yaml block:</p>
+
+  <ul>
+    <li><strong>Claim presence gate at the middleware</strong> (<code>auth.authorization.tenant.required: true</code>) — after JWT validation succeeds, <code>AuthMiddleware</code> rejects any non-public request whose <code>Identity.TenantID()</code> returns empty, with <code>TenantMissingNotification (403)</code> before any handler runs. Uniform across the service.</li>
+    <li><strong>Reads</strong> — <code>Query.ToCriteria(ctx)</code> injects <code>crit.Filter["tenant_id"] = ctx.Identity().TenantID()</code>. When the middleware gate is on, the value is guaranteed non-empty.</li>
+    <li><strong>Writes</strong> — the Command's mapper populates <code>entity.TenantID</code>; <code>BuildRules</code> enforces that the resource's <code>TenantID</code> matches the principal's claim, emitting <code>TenantMismatchNotification (403)</code> on mismatch.</li>
+  </ul>
+
+  <pre><code>func (q *FindUserByParamsQuery) ToCriteria(ctx *configuration.AppContext) fwqueries.ReadCriteria {
+    crit := q.WireCriteria
+    if t := ctx.Identity().TenantID(); t != "" {
+        crit.Filter["tenant_id"] = t
+    }
+    return crit
+}</code></pre>
+
+  <h3>YAML configuration</h3>
+  <pre><code>auth:
+  mode: jwt
+  jwt: { issuer: ..., audience: ..., jwksUrl: ... }
+  publicRoutes: [GET /health]
+  authorization:                  # default nil (off; identity helpers still work)
+    enabled: true                 # master switch — when false, runtime gate no-ops
+    permissionsClaim: permissions # default "permissions"
+    tenant:
+      enabled: false              # default false
+      claim: tenant_id            # default "tenant_id"
+      required: false             # true → middleware rejects empty TenantID with 403</code></pre>
+
+  <p><strong>Strict YAML decoding on <code>authorization</code> + <code>tenant</code>.</strong> Unknown keys (e.g. <code>permissionClaim</code> typo) abort the boot with a diagnostic naming the offending key.</p>
+
+  <h3>Identity helpers</h3>
+  <pre><code>func (i *Identity) HasPermission(p string) bool
+func (i *Identity) TenantID() string</code></pre>
+
+  <p>Both are nil-safe. <code>HasPermission</code> tolerates multiple claim shapes (<code>[]string</code>, <code>[]any</code>, space-separated, comma-separated); panics on caller-side wildcards. <code>TenantID</code> tolerates <code>string</code>, <code>[]string{one}</code>, <code>[]any{one}</code> shapes; anything else returns "". The parsed permissions set is cached on the <code>Identity</code> after the first call.</p>
+
+  <h3>Why defense-in-depth at infra is deliberately absent</h3>
+  <p><code>Postgres.Insert/Update/Archive/Unarchive/Delete</code> and <code>MongoViewReader.ReadPage/ReadByID</code> execute what the application layer validated; they do not pronounce identity. Adding a <code>ScopeFilter</code> knob to <code>RepoConfig</code> would force the infra adapters to know domain concepts (tenant, owner, role) — violating the dependency ruler and creating two sources of truth for the same rule. A bug bypassing <code>BuildRules</code> or <code>ToCriteria(ctx)</code> is a domain/application bug, fixed at that layer — not papered over by infra duplication.</p>

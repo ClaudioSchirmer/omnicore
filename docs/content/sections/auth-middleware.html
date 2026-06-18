@@ -1,0 +1,77 @@
+<h2>Authentication middleware</h2>
+  <p>When <code>auth.mode: jwt</code> in <a href="#microservice-yaml"><code>microservice.&lt;profile&gt;.yaml</code></a>, <code>bootstrap.Run</code> auto-registers <code>fwweb.AuthMiddleware</code> right after <code>AppContextMiddleware</code>. Every request is validated end-to-end before it reaches a Feature route; on success the middleware populates <code>AppContext.Identity</code>. When <code>auth.mode: disabled</code>, the middleware is not registered at all — there is no runtime cost and <code>Identity()</code> stays <code>nil</code>.</p>
+
+  <h3>Validation flow</h3>
+  <ol>
+    <li><strong>publicRoutes bypass.</strong> Exact <code>METHOD /path</code> match against <code>auth.publicRoutes</code> — health/ready probes, login endpoints, anything else the service declares. Match → request proceeds without auth.</li>
+    <li><strong>Bearer extraction.</strong> Reads <code>Authorization: Bearer &lt;token&gt;</code> (scheme match is case-insensitive). Empty or malformed → <code>MissingAuthorizationNotification</code>, <strong>401</strong>.</li>
+    <li><strong>Local JWT validation.</strong> Signature verified against <code>jwksUrl</code> (preferred, supports rotation via <a href="https://github.com/MicahParks/keyfunc">MicahParks/keyfunc</a>) or <code>publicKeyPem</code> (RSA/ECDSA/Ed25519 in <code>SubjectPublicKeyInfo</code> form). The <code>alg</code> header must be in the configured allowlist (default <code>RS256, ES256, EdDSA</code>); <code>iss</code> must match <code>auth.jwt.issuer</code>; <code>aud</code> must contain <code>auth.jwt.audience</code>; <code>exp</code> must be in the future after applying <code>leewaySeconds</code>.</li>
+    <li><strong>Identity attachment.</strong> On success, <code>AppContext.SetIdentity</code> attaches a <code>*Identity</code> carrying <code>Subject</code>/<code>Issuer</code>/<code>ExpiresAt</code> and a copy of the raw claim map (so handler mutations cannot leak back). The middleware also calls <code>AppContext.SetBearerToken(token)</code> with the verified raw JWT — consumed exclusively by the <code>forward-bearer</code> httpclient auth provider. Handlers should keep reading <code>Identity()</code> for principal data; <code>BearerToken()</code> is for downstream credential propagation, not for parsed claim access.</li>
+  </ol>
+
+  <h3>Error responses</h3>
+  <p>Failures use the same response envelope as other framework rejections, translated to the request's <code>Accept-Language</code>, with <code>Semantic = Unauthorized → 401</code>:</p>
+  <table>
+    <thead><tr><th>Scenario</th><th>NotificationKey</th></tr></thead>
+    <tbody>
+      <tr><td>No <code>Authorization</code> header, or header doesn't match <code>Bearer &lt;token&gt;</code></td><td><code>MissingAuthorizationNotification</code></td></tr>
+      <tr><td>Token malformed, signature mismatch, wrong <code>iss</code>/<code>aud</code>, disallowed <code>alg</code></td><td><code>InvalidTokenNotification</code></td></tr>
+      <tr><td>Token <code>exp</code> in the past (after leeway)</td><td><code>ExpiredTokenNotification</code></td></tr>
+    </tbody>
+  </table>
+  <p><code>Expired</code> is split from <code>Invalid</code> so clients can branch on refreshing the token vs. re-authenticating from scratch.</p>
+
+  <h3>External validator (revocation check)</h3>
+  <p>When <code>auth.externalValidator</code> is set, the middleware adds one more step <strong>after</strong> local validation passes: an outbound HTTP call to the IdP (RFC 7662 introspection endpoint or any compatible API). This catches revoked tokens — a JWT that locally still has a valid signature and an unexpired <code>exp</code> claim can already be revoked at the IdP, and only the IdP knows.</p>
+
+  <p><strong>Cache is opt-in, default off.</strong> Set <code>cacheTtlSeconds</code> to a positive integer to enable an in-memory positive-only cache keyed by the SHA-256 hash of the bearer token (the raw token is never stored). Only successful validator answers are memoized — negative answers and transport errors deliberately bypass the cache so a revocation is honored on the very next request. The trade-off: tokens that were already cached as valid can keep passing for up to TTL seconds after they get revoked at the IdP. Default <code>0</code> disables the cache entirely and every authenticated request calls the IdP.</p>
+
+  <h4>Token placement</h4>
+  <p>The token is carried in the outgoing request according to <code>tokenPlacement</code>:</p>
+  <table>
+    <thead><tr><th>Placement</th><th>Shape</th><th>Typical use</th></tr></thead>
+    <tbody>
+      <tr><td><code>bearer_header</code></td><td><code>Authorization: Bearer &lt;token&gt;</code></td><td>Auth0, custom resource-server APIs</td></tr>
+      <tr><td><code>form_field</code></td><td><code>application/x-www-form-urlencoded</code> body, <code>tokenField=&lt;token&gt;</code></td><td>Keycloak introspection (RFC 7662)</td></tr>
+      <tr><td><code>json_body</code></td><td><code>application/json</code> body, <code>{"&lt;tokenField&gt;": "&lt;token&gt;"}</code></td><td>Custom JSON APIs</td></tr>
+      <tr><td><code>query_param</code></td><td>URL query, <code>?&lt;tokenField&gt;=&lt;token&gt;</code></td><td>Legacy query-string APIs</td></tr>
+    </tbody>
+  </table>
+
+  <h4>Success check</h4>
+  <p>The response body is parsed as JSON, then <code>success.jsonPath</code> (dot notation, e.g. <code>$.active</code> or <code>$.data.is_active</code>) is matched against <code>success.expectedValue</code>. Equality is Go's <code>==</code> on <code>any</code>: types and values must both match (<code>true</code> != <code>"true"</code>). Path not found, type mismatch, or value mismatch → reject (401 <code>InvalidTokenNotification</code>).</p>
+
+  <h4>Fail mode</h4>
+  <p><code>failMode: closed</code> (default) rejects the request on any validator-side error — transport failure, timeout, non-2xx status, malformed body. Safer: a token whose validity cannot be confirmed is not honored.</p>
+
+  <p><code>failMode: open</code> swallows transport-level errors when the local pre-validation already passed — useful when the IdP is operationally fragile and you prefer availability over instant revocation. Explicit "not active" answers still reject under <code>failMode: open</code>; only ambiguous validator errors are suppressed.</p>
+
+  <h3>Audit log carries the actor</h3>
+  <p>Every <code>AuditEvent</code> emitted by the framework — both the <code>audit_events</code> row written in-TX by the database destination and the slog line emitted post-commit by the slog destination — includes the authenticated principal of the request: Subject (JWT <code>sub</code>), Issuer (JWT <code>iss</code>), and an opt-in subset of custom Claims (<code>tenant_id</code>, <code>roles</code>, etc.) declared in <code>auth.auditClaims</code>. Anonymous requests (auth disabled, public route, background job) surface as <code>actor: "anonymous"</code> in the slog line and as <code>NULL</code> in the row's <code>actor</code> column (the partial index <code>audit_events_actor_idx</code> excludes them so identified-actor queries stay on a narrow path).</p>
+
+  <pre><code>// Audit line shape
+{
+  "msg": "audit",
+  "threadId": "5f25...",
+  "actor": "user-42",                    // JWT sub (or "anonymous")
+  "actorIssuer": "https://idp.example",  // JWT iss (omitted when empty)
+  "actorClaims": {                       // omitted when allowlist is empty or no claim matched
+    "tenant_id": "acme",
+    "roles": ["admin"]
+  },
+  "entityType": "User",
+  "entityId": "abc-123",
+  "verb": "insert",
+  "actionName": "GetInsertable",
+  "kind": "snapshot",
+  "dateTime": "2026-06-09T12:00:00Z",
+  "snapshot": { "name": "Jane Doe", "email": "jane@x.test" },
+  "children": { "Address": [{ "id": "...", "op": "inserted", "snapshot": {...} }] }
+}</code></pre>
+
+  <p>The fan-out is automatic for both Auto Command Handlers and manual handlers — every write goes through <code>repo.Scope(ctx, opts...).Method(valid)</code> on the <code>persistence.ScopedRepository[T]</code> binding, and <code>ctx</code> IS the request <code>*AppContext</code>. <code>infra.Postgres</code> reads the actor from the same context, builds the <code>AuditEvent</code>, writes the row in-TX, and emits the slog line post-commit. A manual handler does not need to touch any new API to benefit from the actor information.</p>
+
+  <p>Domain events emitted via <code>infra/events.SlogPublisher</code> mirror the same pattern (<code>actor</code> + <code>actorIssuer</code>) but never carry <code>actorClaims</code> — the audit allowlist is the only place that can broaden the claim surface logged, by design.</p>
+
+  <h3>Token issuance</h3>
+  <p>The framework <strong>only validates</strong> — it does not mint tokens. The IdP (Keycloak, Auth0, an in-house auth service, etc.) issues tokens; each service consumes them. Login endpoints, refresh, and credential storage live in the IdP or in a dedicated auth service.</p>

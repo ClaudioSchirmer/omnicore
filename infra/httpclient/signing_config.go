@@ -170,7 +170,7 @@ func resolveContentSHA256Header(s string) string {
 	// "use default" so omitting the field works the same as not having
 	// it). The middleware treats the empty string returned here as
 	// "inject the default name"; "-" returns empty downstream to skip
-	// injection. Documented in DOCS.html.
+	// injection. Documented in the docs site (httpclient section).
 	t := strings.TrimSpace(s)
 	if t == "" {
 		return "X-Content-SHA256"

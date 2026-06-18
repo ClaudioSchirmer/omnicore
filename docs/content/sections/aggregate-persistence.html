@@ -1,0 +1,215 @@
+<h2>Aggregate Persistence (transparent dispatch)</h2>
+    <p>
+        Entities that need to persist a root together with collections of child value objects
+        opt-in by implementing <code>domain.AggregateRootProvider</code>. The framework then
+        guarantees atomicity <em>without changing the public API</em>: <code>pg.Insert/Update/Archive/Delete/Unarchive</code>
+        detect the metadata and dispatch to the aggregate-aware path automatically.
+    </p>
+
+    <h3>Opt-in interface</h3>
+    <pre><code>type AggregateRootProvider interface {
+    GetAggregateRoot() *AggregateRoot
+
+    // Explicitly declares which types belong to the aggregate.
+    // Sample instances (zero value) are enough — framework reads classNameOf via reflect.
+    AggregateChildren() []AggregateValueObject
+}</code></pre>
+
+    <p>
+        The interface keeps table/FK declaration out of the domain — children types are discovered via reflection on <code>root.AllAggregateItems()</code>; child table and FK are inferred from the Go typeName via convention (<code>PluralizeSnake(PascalToSnake(typeName))</code> for the table; <code>PascalToSnake(rootType) + "_id"</code> for the FK). Per-Repository override via <code>fwinfra.RepoConfig</code> (<code>ChildTableOverrides</code>, <code>ChildFKOverrides</code>) when the convention doesn't fit.
+    </p>
+
+    <p>
+        The root holds authority over the aggregate boundary without infra leaking into the domain.
+        <code>AggregateChildren()</code> declares <em>which types</em> belong to the aggregate — a
+        domain definition (orthodox DDD), separated from "which table/FK" (infra, inferred by convention). The top-level primitives
+        <code>AddAggregateChild</code>, <code>ChangeAggregateChild</code>, <code>RemoveAggregateChild</code> and
+        <code>ReplaceAggregateChildrenOf</code> consult this list and reject VOs of undeclared types by emitting
+        <code>InvalidAggregateChildNotification</code> (422 Validation). The internal
+        <code>addAggregateItem</code>/<code>changeAggregateItem</code>/<code>removeAggregateItem</code> methods are used
+        only by <code>AggregateConstructor</code> (DB load path, with types coming from infra's <code>WithChild[V]</code>)
+        and by the top-level primitives after the type-guard.
+    </p>
+
+    <p>
+        <code>AggregateValueObject</code> requires <code>BuildRules(actionName string, svc Service, r *Rules)</code> — signature identical to <code>Entity.BuildRules</code> — plus <code>GetID()</code>. Infra extracts columns via reflection on exported fields. Tag <code>transient:"-"</code> is the domain's own declaration that a field is runtime-only (request input, computed value, in-memory cache, runtime bookkeeping) and the framework skips it on read and write; the <code>ID</code> field is skipped on INSERT/UPDATE (DB-gen + WHERE clause); the FK to the root is injected by infra.
+    </p>
+
+    <h3>Universal symmetric cascade</h3>
+    <p>
+        Operations on the root cascade symmetrically and universally — no per-child <code>HardDelete</code> flag:
+    </p>
+    <ul>
+        <li><strong>Archive(root)</strong> → Archive on all active children</li>
+        <li><strong>Unarchive(root)</strong> → Unarchive on all archived children (requires <code>domain.ArchivedFinder</code> on the Repository to hydrate the aggregate)</li>
+        <li><strong>Delete(root)</strong> → Delete on all children via FK <code>ON DELETE CASCADE</code> in the schema</li>
+        <li><strong>Update(root) with items <code>StatusRemoved</code></strong> → Archive of those specific items</li>
+    </ul>
+
+    <h3>Guarantees of the aggregate path</h3>
+    <table>
+        <tbody><tr><th>Guarantee</th><th>Where</th></tr>
+        <tr><td>A single <code>pgx.Tx</code> for the root + all children</td><td><code>infra/aggregate_persister.go</code></td></tr>
+        <tr><td>Exactly <strong>one outbox row</strong> per operation (granularity B — the aggregate is the event unit)</td><td><code>insertAggregate / updateAggregate</code></td></tr>
+        <tr><td>FK injected before the child INSERT</td><td><code>insertChild</code></td></tr>
+        <tr><td>Status iteration: Added→INSERT, Changed→UPDATE, Removed→Archive (UPDATE <code>deleted_at</code>; the row stays in the DB, recoverable via unarchive), Constructor→no-op (update) or INSERT (insert)</td><td><code>applyChildChanges</code></td></tr>
+        <tr><td>Archive of the root cascades archive on all active children</td><td><code>archiveAggregate</code></td></tr>
+        <tr><td>Unarchive of the root restores all archived children of that root</td><td><code>unarchiveAggregate</code></td></tr>
+        <tr><td>Hard Delete of the root depends on FK <code>ON DELETE CASCADE</code> in the schema</td><td><code>deleteAggregate</code></td></tr>
+    </tbody></table>
+
+    <div class="box">
+        <strong>Archive and Unarchive run BuildRules and consult Modes().</strong> Archive and Unarchive are
+        <em>state transitions</em> (touch <code>deleted_at</code>, not fields). They <strong>run <code>BuildRules</code> in <code>ModeUpdate</code></strong>
+        with a distinct <code>actionName</code> (<code>"GetArchivable"</code> / <code>"GetUnarchivable"</code>) — so the existing
+        <code>IfUpdate</code> DSL fires for state-transition verbs too — AND they <strong>consult <code>Modes()</code></strong>: an entity
+        that does not declare <code>ModeArchive</code> receives <code>ArchiveNotAllowedNotification</code> (403 Forbidden) when
+        calling <code>GetArchivable</code>; same for <code>ModeUnarchive</code>/<code>UnarchiveNotAllowedNotification</code>.
+        These modes are <strong>independent</strong> of <code>ModeUpdate</code> — declaring Update does not enable Archive.
+        <br><br>
+        Usage patterns: append-only declares <code>[ModeDisplay, ModeInsert]</code> and is immune to accidental
+        archive; full CRUD with soft delete declares all 6 modes; "freeze-once" entity
+        (configure once, archive when obsolete) declares <code>[ModeDisplay, ModeInsert, ModeArchive, ModeUnarchive]</code>
+        without allowing Update/Delete.
+    </div>
+
+    <h3>Example</h3>
+    <pre><code>type User struct {
+    domain.AggregateRoot
+    Name, Email, CPF, Phone string
+}
+
+func (u *User) Modes() []domain.EntityMode { return []domain.EntityMode{...} }
+func (u *User) GetAggregateRoot() *domain.AggregateRoot { return &amp;u.AggregateRoot }
+func (u *User) BuildRules(...) { ... }
+
+// Domain declares which types belong to the aggregate.
+func (u *User) AggregateChildren() []domain.AggregateValueObject {
+    return []domain.AggregateValueObject{Address{}}
+}
+
+// Domain vocabulary. Commands do not speak directly to primitives —
+// they call root methods, which run invariants spanning children and delegate.
+func (u *User) AddAddress(addr Address, svc domain.Service) {
+    for _, existing := range domain.GetCurrentItemsOf[Address](&amp;u.AggregateRoot) {
+        if existing.sameBusinessIdentity(addr) {
+            u.AddNotification("Address", DuplicateAddressNotification{})
+            return
+        }
+    }
+    domain.AddAggregateChild(u, addr)  // type-guard against AggregateChildren()
+}
+
+func (u *User) ChangeAddress(original, replacement Address) {
+    domain.ChangeAggregateChild(u, original, replacement)
+}
+
+func (u *User) RemoveAddress(addr Address) {
+    domain.RemoveAggregateChild(u, addr)
+}
+
+func (u *User) ReplaceAddresses(addrs []Address) {
+    domain.ReplaceAggregateChildrenOf(u, addrs)
+}
+
+// Zero declaration of table/column/FK. Everything inferred:
+//   - Table "users" via PluralizeSnake(PascalToSnake("User"))
+//   - Columns "name/email/cpf/phone" from exported fields
+//   - Child table "addresses" via PluralizeSnake(PascalToSnake("Address"))
+//   - FK "user_id" via PascalToSnake("User") + "_id"
+//
+// Repository unchanged — Insert/Update/etc are one-liners delegating to pg.
+// The aggregate path activates automatically because GetInsertable populated the metadata.</code></pre>
+
+    <h3>Domain methods on the root</h3>
+    <p>
+        Children mutations go through root methods named in the domain vocabulary
+        (<code>AddAddress</code>, <code>ChangeAddress</code>, <code>RemoveAddress</code>, <code>ReplaceAddresses</code>) —
+        never directly through the <code>AddAggregateChild</code> &amp; co. primitives from commands.
+        This is what makes the root the <em>consistency boundary</em>:
+    </p>
+    <ul>
+        <li><strong>Tell, don't ask</strong> — command says "User, add this address", not "User, let me mess with your internal list"</li>
+        <li><strong>Invariants spanning children</strong> live in root methods (duplicate, "cannot remove the last one", cross rules)</li>
+        <li><strong>Ubiquitous vocabulary</strong> — <code>AddAddress</code> is business language; <code>AddAggregateChild</code> is framework jargon</li>
+        <li><strong>Service injected per method</strong> when needed — no global plumbing in the framework. <code>AddAddress</code>'s <code>svc</code> enables external lookups (e.g., "is this ZIP code already in use by another user?") without touching the primitives' contract</li>
+    </ul>
+
+    <div class="box">
+        <strong>Construction-time notifications survive to the boundary.</strong>
+        Root methods must call <code>domain.EnsureInitialized(u)</code> on the first line. Without it,
+        notifications emitted in the constructor (e.g., duplicate detection in <code>AddAddress</code>) would be
+        silently lost because <code>BaseEntity.AddNotification</code> is a no-op when
+        <code>notifCtx == nil</code> (the natural state of an entity freshly constructed via <code>&amp;User{}</code>;
+        <code>GetInsertable</code> only initializes the context LATER). <code>resetEntity</code>
+        called by <code>getInsertable/getUpdatable/getDeletable</code> <strong>does not clear</strong> the
+        <code>NotificationContext</code> — notifications accumulated during construction survive
+        until <code>checkAllNotifications</code>. <code>IsValid</code> (re-check) calls <code>Clear()</code>
+        explicitly before re-validating. The type-guarded primitives also call
+        <code>ensureRootInit</code> internally as defense in depth.
+    </div>
+
+    <h3>Replacing the children collection</h3>
+    <p>For full-replace Update (replace all items), the root method delegates to the framework's generic helper:</p>
+    <pre><code>func (c UpdateUserCommand) ApplyTo(_ *configuration.AppContext, u *appdomain.User) {
+    u.Name = c.Name
+    addrs := make([]appdomain.Address, len(c.Addresses))
+    for i, a := range c.Addresses { addrs[i] = a.toAddress() }
+    u.ReplaceAddresses(addrs)  // delegates to domain.ReplaceAggregateChildrenOf(u, addrs)
+}</code></pre>
+    <p>Equivalent to <code>ClearAggregateItemsOfType("Address")</code> + <code>AddAggregateChild</code> loop, but type-safe — every item goes through the type-guard, items of types not declared in <code>AggregateChildren()</code> are rejected with <code>InvalidAggregateChildNotification</code>.</p>
+
+    <h3>Optional inline validation</h3>
+    <p>
+        By default, AVO's <code>BuildRules</code> runs at the boundary (<code>GetInsertable/Update/Delete</code>) via
+        <code>runAggregateValidations</code> — same lifecycle as the root's <code>BuildRules</code>. Mutations
+        accumulate, validation runs once. For those who want immediate feedback inside a root method, the framework
+        provides <code>domain.ValidateAggregateChild(root, item, actionName, svc) bool</code>:
+        runs <code>item.BuildRules</code> with a <code>NotificationContext</code> scoped just like the boundary
+        would; returns <code>true</code> if it passed. Pitfall: if you use it inline AND the item enters the collection,
+        the boundary runs <code>BuildRules</code> again and produces a duplicate notification. Use one path OR the other
+        per item.
+    </p>
+
+    <h3>Children validation is also transparent</h3>
+    <p>
+        <code>runAggregateValidations</code> (called inside <code>validateForInsert/Update/Delete</code>) detects
+        <code>AggregateRootProvider</code> and iterates <code>root.AllAggregateItems()</code> automatically:
+        for each typeName present, it fires <code>BuildRules(actionName, svc, r)</code> on each item of the
+        <code>AggregateRoot</code> with <code>CurrentStatus != Removed</code>, with <code>r</code> carrying a
+        <code>NotificationContext</code> already scoped at <code>[NameSegment(collection), IndexSegment(i)]</code> —
+        collection name inferred via <code>PluralizeSnake(PascalToSnake(typeName))</code>.
+        <strong>The root's <code>BuildRules</code> does not need to register children manually</strong>
+        for the child's to run. Since the type-guard on the primitives ensures only types declared in
+        <code>AggregateChildren()</code> enter the collection, iterating the map equals iterating the declared list.
+    </p>
+    <p>
+        Inside the AVO's <code>BuildRules</code>, <code>r.IfInsert/IfUpdate/IfInsertOrUpdate/...</code> dispatches by mode —
+        same DSL as the root. For example, <code>Address.BuildRules</code> in <code>omnicore-example-users</code> only runs
+        rules inside <code>r.IfInsertOrUpdate</code>, but the framework doesn't enforce that —
+        entities may have Delete-specific rules (e.g., "cannot delete primary address"),
+        or general cross-mode rules applied to the item.
+    </p>
+    <p>
+        <code>AddAggregateValueObject</code> remains available for typeNames <strong>outside</strong> the declared
+        boundary (VOs without their own table, e.g.: tags serialized in a JSONB column). TypeNames covered by the
+        automatic step are ignored in the manual slice to avoid double validation.
+    </p>
+
+    <pre><code>// Root declares the aggregate boundary via AggregateChildren().
+// Framework iterates root.AllAggregateItems() inside validateForInsert/Update/Delete
+// and fires Address.BuildRules per item — no manual re-iteration needed.
+func (u *User) AggregateChildren() []domain.AggregateValueObject {
+    return []domain.AggregateValueObject{Address{}}
+}
+
+func (u *User) BuildRules(_ string, _ domain.Service, r *domain.Rules) {
+    r.IfInsertOrUpdate(func() { /* root fields only */ })
+}</code></pre>
+
+    <div class="box">
+        <strong>No new public methods on <code>Postgres</code>.</strong>
+        The API remains <code>Insert(Insertable)</code>/<code>Update(Updatable)</code>/etc.
+        Aggregate behavior is transparent — whoever implements <code>AggregateRootProvider</code> gains it
+        (automatic persistence <em>and</em> validation of children); whoever doesn't follows the traditional single-table path.
+    </div>

@@ -1,0 +1,53 @@
+<h2>Rules DSL — <code>IfXxx</code> and <code>actionName</code> dispatch</h2>
+  <p><code>Rules</code> (<code>domain/rules.go</code>) exposes a mode-scoped DSL inside <code>BuildRules</code>: five <code>IfXxx</code> closures, each gating its body on the current <code>EntityMode</code>. The framework picks the mode; the caller picks the <code>actionName</code> (third parameter on every <code>Get*</code> entry point). Auto handlers pass the canonical PascalCase string (<code>"GetInsertable"</code>, etc.); manual handlers may pass any string. Service code branches by <code>actionName</code> inside the closure when a rule should fire only for a specific verb (typical use case: archive-only invariants under <code>IfUpdate</code>) or only for a specific endpoint flavor (e.g. <code>"AdminCreate"</code> vs canonical <code>"GetInsertable"</code>).</p>
+
+  <pre><code>r.IfInsert(func() { ... })
+r.IfUpdate(func() { ... })          // fires for PUT, PATCH, Archive, Unarchive
+r.IfDelete(func() { ... })
+r.IfInsertOrUpdate(func() { ... })  // fires for Insert + every Update verb
+r.IfDisplay(func() { ... })         // see "key facts" below — inert today</code></pre>
+
+  <h3>Dispatch table — entry point → mode + <code>actionName</code></h3>
+  <table>
+    <thead><tr><th>Trigger</th><th>Mode dispatched</th><th><code>actionName</code> reaching <code>BuildRules</code></th></tr></thead>
+    <tbody>
+      <tr><td><code>domain.GetInsertable(e, svc, an)</code></td><td><code>ModeInsert</code></td><td><code>an</code> (Auto handler default: <code>"GetInsertable"</code>)</td></tr>
+      <tr><td><code>domain.GetUpdatable[T](e, apply, svc, an)</code></td><td><code>ModeUpdate</code></td><td><code>an</code> (Auto handler default: <code>"GetUpdatable"</code>)</td></tr>
+      <tr><td><code>domain.GetPartialUpdatable[T](e, apply, svc, an)</code></td><td><code>ModeUpdate</code></td><td><code>an</code> (Auto handler default: <code>"GetPartialUpdatable"</code>)</td></tr>
+      <tr><td><code>domain.GetArchivable(e, svc, an)</code></td><td><code>ModeUpdate</code></td><td><code>an</code> (Auto handler default: <code>"GetArchivable"</code>)</td></tr>
+      <tr><td><code>domain.GetUnarchivable(e, svc, an)</code></td><td><code>ModeUpdate</code></td><td><code>an</code> (Auto handler default: <code>"GetUnarchivable"</code>)</td></tr>
+      <tr><td><code>domain.GetDeletable(e, svc, an)</code></td><td><code>ModeDelete</code></td><td><code>an</code> (Auto handler default: <code>"GetDeletable"</code>)</td></tr>
+      <tr><td><code>domain.IsValid(e, ModeInsert, svc)</code></td><td><code>ModeInsert</code></td><td><code>"isValid"</code> (fixed)</td></tr>
+      <tr><td><code>domain.IsValid(e, ModeUpdate, svc)</code></td><td><code>ModeUpdate</code></td><td><code>"isValid"</code> (fixed)</td></tr>
+      <tr><td><code>domain.IsValid(e, ModeDelete, svc)</code></td><td><code>ModeDelete</code></td><td><code>"isValid"</code> (fixed)</td></tr>
+      <tr><td><code>domain.IsValid(e, ModeArchive / ModeUnarchive / ModeDisplay, svc)</code></td><td>—</td><td><code>BuildRules</code> not invoked; <code>IsValid</code> just re-collects existing notifications</td></tr>
+    </tbody>
+  </table>
+
+  <h3>Reverse view — what each <code>IfXxx</code> may observe</h3>
+  <table>
+    <thead><tr><th>Closure</th><th>Modes that trigger it</th><th><code>actionName</code>s it may receive</th></tr></thead>
+    <tbody>
+      <tr><td><code>IfInsert</code></td><td><code>ModeInsert</code></td><td><code>"GetInsertable"</code> (Auto default), <code>"isValid"</code>, or any custom string a manual handler passes</td></tr>
+      <tr><td><code>IfUpdate</code></td><td><code>ModeUpdate</code></td><td><code>"GetUpdatable"</code>, <code>"GetPartialUpdatable"</code>, <code>"GetArchivable"</code>, <code>"GetUnarchivable"</code> (Auto defaults), <code>"isValid"</code>, or any custom string</td></tr>
+      <tr><td><code>IfDelete</code></td><td><code>ModeDelete</code></td><td><code>"GetDeletable"</code> (Auto default), <code>"isValid"</code>, or any custom string</td></tr>
+      <tr><td><code>IfInsertOrUpdate</code></td><td><code>ModeInsert</code> OR <code>ModeUpdate</code></td><td>union of the <code>IfInsert</code> + <code>IfUpdate</code> rows</td></tr>
+      <tr><td><code>IfDisplay</code></td><td><code>ModeDisplay</code></td><td>(no framework path invokes <code>BuildRules</code> in <code>ModeDisplay</code> — the closure is inert today, present for DSL symmetry)</td></tr>
+    </tbody>
+  </table>
+
+  <h3>Key facts</h3>
+  <ul>
+    <li><strong>Archive and Unarchive fire <code>IfUpdate</code>, not a dedicated <code>IfArchive</code>.</strong> Both run in <code>ModeUpdate</code> with a distinct <code>actionName</code> so the existing DSL covers state-transition verbs without growing the closure surface. Branch by <code>actionName</code> when archive-specific logic is needed (e.g. <code>if actionName == "GetArchivable" { ... }</code>).</li>
+    <li><strong><code>actionName</code> is case-sensitive.</strong> The <code>Get*</code> family emits PascalCase (<code>"GetInsertable"</code>); <code>IsValid</code> emits lowercase <code>"isValid"</code>. Custom callers passing their own <code>actionName</code> (e.g. <code>"AdminCreate"</code> for stricter validation) must match the string exactly inside <code>BuildRules</code>.</li>
+    <li><strong><code>AggregateValueObject.BuildRules</code> receives the SAME <code>actionName</code> as the root.</strong> <code>runAggregateValidations</code> propagates the root's <code>actionName</code> verbatim when firing the AVO closures per child — so an AVO branching on <code>actionName == "GetArchivable"</code> matches the verb archiving the aggregate.</li>
+    <li><strong><code>IfDisplay</code> is inert in the canonical dispatch.</strong> <code>ModeDisplay</code> is the default mode of a freshly constructed <code>BaseEntity</code>, but no framework path calls <code>NewRules(ModeDisplay, ctx)</code>. The closure exists in the DSL for symmetry; using it today produces dead code unless an external caller wires its own dispatch.</li>
+  </ul>
+
+  <pre><code>func (u *User) BuildRules(actionName string, svc domain.Service, r *domain.Rules) {
+    r.IfUpdate(func() {
+        if actionName == "GetArchivable" {
+            // archive-specific: e.g., "cannot archive primary account"
+        }
+    })
+}</code></pre>

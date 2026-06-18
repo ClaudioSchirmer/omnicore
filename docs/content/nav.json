@@ -1,0 +1,143 @@
+[
+  {
+    "group": "Getting started",
+    "items": [
+      {
+        "id": "overview",
+        "label": "Overview"
+      },
+      {
+        "id": "features",
+        "label": "What the framework does"
+      },
+      {
+        "id": "architecture",
+        "label": "Architecture"
+      }
+    ]
+  },
+  {
+    "group": "Requests & security",
+    "items": [
+      {
+        "id": "app-context",
+        "label": "AppContext middleware"
+      },
+      {
+        "id": "auth-middleware",
+        "label": "Authentication"
+      },
+      {
+        "id": "authz-seams",
+        "label": "Authorization"
+      }
+    ]
+  },
+  {
+    "group": "Domain & persistence",
+    "items": [
+      {
+        "id": "rules-dsl",
+        "label": "Rules DSL"
+      },
+      {
+        "id": "aggregate-persistence",
+        "label": "Aggregate persistence"
+      },
+      {
+        "id": "lifecycle-hooks",
+        "label": "Lifecycle hooks"
+      },
+      {
+        "id": "old-state",
+        "label": "Old-state snapshot"
+      }
+    ]
+  },
+  {
+    "group": "Write side",
+    "items": [
+      {
+        "id": "command-handler",
+        "label": "CommandHandler"
+      },
+      {
+        "id": "auto-handlers",
+        "label": "Auto command handlers"
+      },
+      {
+        "id": "lifecycle-map",
+        "label": "Write lifecycle map"
+      }
+    ]
+  },
+  {
+    "group": "Read side",
+    "items": [
+      {
+        "id": "query-side",
+        "label": "Query side · CQRS"
+      },
+      {
+        "id": "status-mapping",
+        "label": "HTTP status mapping"
+      }
+    ]
+  },
+  {
+    "group": "Infrastructure",
+    "items": [
+      {
+        "id": "cache-subsystem",
+        "label": "Cache subsystem"
+      },
+      {
+        "id": "httpclient",
+        "label": "httpclient · outbound HTTP"
+      },
+      {
+        "id": "integration-events",
+        "label": "Integration events"
+      }
+    ]
+  },
+  {
+    "group": "Operations",
+    "items": [
+      {
+        "id": "bootstrap",
+        "label": "Bootstrap"
+      },
+      {
+        "id": "openapi",
+        "label": "OpenAPI / Swagger UI"
+      },
+      {
+        "id": "migrations",
+        "label": "Migrations"
+      },
+      {
+        "id": "mongo-schema-evolution",
+        "label": "Mongo schema evolution"
+      }
+    ]
+  },
+  {
+    "group": "Reference",
+    "items": [
+      {
+        "id": "reference",
+        "label": "Quick reference"
+      }
+    ]
+  },
+  {
+    "group": "About",
+    "items": [
+      {
+        "id": "changelog",
+        "label": "Changelog"
+      }
+    ]
+  }
+]

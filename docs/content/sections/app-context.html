@@ -1,0 +1,20 @@
+<h2>AppContext middleware</h2>
+  <p><code>bootstrap.Run</code> automatically registers <code>fwweb.AppContextMiddleware()</code> as a default middleware. Per request, it populates <code>*configuration.AppContext</code> with:</p>
+  <ul>
+    <li><strong>ID</strong> — UUID from the <code>X-Request-ID</code> header (or a new one if missing/invalid). Always returned in the response for correlation.</li>
+    <li><strong>Language</strong> — prefix match of <code>Accept-Language</code> against the <code>configuration.Language</code> enum (built-ins: <code>pt</code>→<code>LangPTBR</code>, <code>en</code>→<code>LangENG</code>, <code>es</code>→<code>LangES</code>, <code>fr</code>→<code>LangFR</code>, <code>de</code>→<code>LangDE</code>, <code>it</code>→<code>LangIT</code>, <code>nl</code>→<code>LangNL</code>). Default <code>LangENG</code> — header absent or naming a language the framework does not ship a catalog for both resolve to English.</li>
+    <li><strong>Identity</strong> — the authenticated principal of the request (<code>*configuration.Identity</code>). Populated by the auth middleware after a successful JWT validation; <code>nil</code> when the route is public, <code>auth.mode=disabled</code>, or the middleware has not yet run. See <a href="#microservice-yaml">microservice.&lt;profile&gt;.yaml</a> for how to wire the <code>auth:</code> block.</li>
+  </ul>
+
+  <p>In any Fiber handler:</p>
+  <pre><code>func myHandler(c fiber.Ctx) error {
+    ctx := fwweb.AppContext(c)  // *configuration.AppContext
+    // ctx.ID(), ctx.Language()
+    if id := ctx.Identity(); id != nil {
+        // id.Subject, id.Issuer, id.ExpiresAt, id.Claims (map[string]any)
+    }
+}</code></pre>
+
+  <p><code>configuration.Identity</code> carries the standard JWT claims <code>Subject</code> (<code>sub</code>), <code>Issuer</code> (<code>iss</code>), <code>ExpiresAt</code> (<code>exp</code>), plus a raw <code>Claims map[string]any</code> for custom claims (roles, email, tenant, …) — the framework does not opine on which custom claims a service expects.</p>
+
+  <p class="note">Extra request-scoped state beyond <code>Identity</code> (e.g., feature flags resolved per request) goes in middleware AFTER the default, via <code>ctx.Set(key, val)</code>.</p>

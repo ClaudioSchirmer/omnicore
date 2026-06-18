@@ -1,0 +1,54 @@
+<h2>Migrations</h2>
+    <p>Framework manages numbered SQL migration files, with up/down, versioning via its own table, and dirty state recovery. Wrapper over <a href="https://github.com/golang-migrate/migrate"><code>golang-migrate/migrate v4</code></a> — we don't reimplement lock/recovery/parsing.</p>
+
+    <h3>Filename convention</h3>
+    <pre><code>migrations/
+  0002_init.up.sql          # service schema
+  0002_init.down.sql        # reverse (mandatory)
+  0003_add_phone.up.sql
+  0003_add_phone.down.sql</code></pre>
+    <p>The framework owns its own embedded migrations via <code>embed.FS</code> — version <strong>1</strong> creates the outbox (<code>omnicore/infra/migration/embedded/0001_outbox.{up,down}.sql</code>) and version <strong>2</strong> creates the integration-events tables (<code>0002_integration_events.{up,down}.sql</code>). They are tracked in their own table (<code>omnicore_framework_migrations</code>), so a service's own migrations start at <code>0002+</code> in the separate <code>omnicore_migrations</code> table with no collision. Do not write the framework SQL manually; the framework guarantees an identical signature across all services (Debezium depends on the outbox shape).</p>
+
+    <h3>Default behavior at boot</h3>
+    <ul>
+        <li><code>bootstrap.Run</code> applies all pending migrations <strong>before</strong> serving HTTP when <code>cfg.Migrations.AutoRun=true</code> (default)</li>
+        <li>Order: <code>wire(deps)</code> → <code>ValidateDownExists</code> → <code>Up(framework)</code> → <code>Up(service)</code> → SyncEngine → <code>serve</code></li>
+        <li>Migration failure prevents the service from starting (boot returns error)</li>
+        <li>Each migration runs in an isolated transaction — failure = rollback + <code>dirty=true</code> persisted in the tracking table</li>
+        <li><code>.down.sql</code> mandatory (validated at startup); may be a no-op when reverse is technically infeasible</li>
+    </ul>
+
+    <h3>Tracking</h3>
+    <p>Two separate tables, created automatically by <code>golang-migrate</code> on first execution (no embed SQL for them):</p>
+    <table>
+        <tbody><tr><th>Table</th><th>Who writes</th><th>Contains</th></tr>
+        <tr><td><code>omnicore_framework_migrations</code></td><td>Framework (embedded)</td><td>version 1 (outbox), version 2 (integration events)</td></tr>
+        <tr><td><code>omnicore_migrations</code></td><td>Service (files in <code>cfg.Migrations.Dir</code>)</td><td>version 2+</td></tr>
+    </tbody></table>
+    <p>Separate tables avoid version collision — the framework table and the service table may both carry a "version 2" row without conflict.</p>
+    <p>Each table stores only <code>(version BIGINT PRIMARY KEY, dirty BOOLEAN)</code>. The <code>.down.sql</code> <strong>is not stored</strong> — it is read from disk/embed at <code>Down(N)</code> time.</p>
+
+    <h3>API</h3>
+    <pre><code>// dir is any path relative to CWD — "./migrations" is just the YAML default
+mgr := migration.New(pg.Pool(), "./migrations")
+mgr.Up(ctx)              // applies pending (framework + service)
+mgr.Down(ctx, 1)         // reverts N service migrations
+mgr.Status(ctx)          // (version uint, dirty bool, err error) — service only
+mgr.Pending(ctx)         // ([]uint, error) — versions on disk but not yet applied
+mgr.Force(ctx, 5)        // recovery: marks version=5, dirty=false
+mgr.ValidateDownExists() // checks .down.sql counterpart for each .up.sql</code></pre>
+
+    <h3>Profile-aware default and strict mode</h3>
+    <p><code>cfg.Migrations.AutoRun</code> resolves to <code>true</code> under <code>APP_PROFILE=dev</code> and to <code>false</code> under any other profile when the YAML leaves it unset. An explicit YAML value (<code>true</code> or <code>false</code>) wins regardless of profile.</p>
+    <p>Under the strict default in non-dev profiles, <code>bootstrap.Run</code> does NOT apply migrations automatically. Instead it reads <code>mgr.Status</code> and <code>mgr.Pending</code> and:</p>
+    <ul>
+        <li>If <code>dirty=true</code>: aborts boot with a diagnostic naming the version + the <code>Force</code> recovery option.</li>
+        <li>If <code>Pending</code> returns non-empty: aborts boot with a diagnostic listing every pending version + the current DB version + the operator's recovery options (flip <code>autoRun=true</code> + restart, or run the migration out of band).</li>
+        <li>Otherwise: logs "migrations up to date (strict mode)" and proceeds.</li>
+    </ul>
+
+    <h3>Recovery (dirty state)</h3>
+    <p>A migration that fails mid-way leaves <code>dirty=true</code> persisted. Subsequent <code>Up</code> calls fail until <code>Force(version)</code> is called. <code>Force</code> does not create/undo schema — it only resets the tracking pointer. The operator must manually fix the DB state first.</p>
+
+    <h3>Pool adapter</h3>
+    <p>Adapter <code>pgxpool.Pool</code> → <code>*sql.DB</code> via <code>pgx/v5/stdlib.OpenDBFromPool</code>. The package's official comment guarantees that <code>Close()</code> on the sql.DB <strong>does not close the pool</strong> — every <code>open/close</code> of <code>migrate.Migrate</code> is isolated, the pool stays alive for the rest of the service.</p>

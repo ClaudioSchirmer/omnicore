@@ -1,0 +1,525 @@
+<h2>CommandHandler</h2>
+    <p>
+        The CommandHandler is the processing unit for a <strong>write</strong> (POST/PUT/PATCH/DELETE).
+        In the recommended pattern, it is a struct that implements
+        <code>pipeline.Handler[TReq, TRes]</code> and is dispatched via <code>pipeline.Dispatch</code>.
+    </p>
+
+    <h3 id="cmd-flow">Full flow of a POST</h3>
+    <p>Example: <code>POST /customers</code> with body <code>{"name":"John","email":"j@x.com"}</code>.</p>
+
+    <div class="flow">HTTP Request
+   │
+   ▼
+<span class="manual">Fiber middleware</span>: builds <span class="manual">AppContext</span>(UUID + Language)
+   │
+   ▼
+<span class="manual">Route handler</span>: parses body → CreateCustomerCommand
+   │
+   ▼
+<span class="auto">pipeline.Dispatch(p, ctx, cmd, handler)</span>
+   │   └─► defer/recover (panics → Exception)
+   ▼
+<span class="manual">CreateCustomerHandler.Handle(ctx, cmd)</span>
+   │
+   ▼
+<span class="manual">customer := &amp;Customer{Name: cmd.Name, Email: cmd.Email}</span>
+   │
+   ▼
+<span class="auto">domain.GetInsertable(customer, nil)</span>
+   │   ├─► <span class="auto">ensureInit</span>: creates NotificationContext("Customer")
+   │   ├─► <span class="auto">resetEntity</span>: clears state, generates a new signature
+   │   ├─► <span class="auto">validateForInsert</span>:
+   │   │     ├─► <span class="manual">customer.BuildRules()</span> ← your rules
+   │   │     ├─► <span class="auto">checkService</span> (if RequiresService)
+   │   │     ├─► <span class="auto">modeAllowed</span>: checks Modes()
+   │   │     ├─► <span class="auto">id check</span>: insert cannot carry an ID
+   │   │     ├─► <span class="auto">runValueObjectValidations</span>
+   │   │     └─► <span class="auto">runAggregateValidations</span>
+   │   ├─► <span class="auto">checkAllNotifications</span> → if errors: return *DomainError
+   │   └─► <span class="auto">build Insertable</span> with metadata
+   │       (signature, entityName, dateTime, events)
+   │
+   ▼
+<span class="auto">opts := []WriteOption[*Customer]{}</span>  (derived from cmd.AfterBegin / cmd.BeforeCommit when declared)
+   │
+   ▼
+<span class="auto">repo.Scope(ctx, opts...).Insert(insertable)</span>
+   │   └─► <span class="auto">infra.Postgres.Insert(ctx, insertable, &amp;cfg, hook)</span>:
+   │       <span class="auto">BEGIN TX</span>
+   │         ▸ <span class="auto">afterBegin(ctx, customer, txHandle)</span>  ← position A (rolls back on error)
+   │         <span class="auto">INSERT INTO customers (...)</span>
+   │         <span class="auto">INSERT INTO outbox (...)</span>  ← atomic!
+   │         IF cfg.Audit.Includes(<span class="auto">database</span>):
+   │           ▸ <span class="auto">audit.InsertAuditEvent(ctx, tx, ev)</span>  ← source of truth (audit_events row)
+   │         ▸ <span class="auto">beforeCommit(ctx, customer, id, txHandle)</span>  ← position D (rolls back on error)
+   │       <span class="auto">COMMIT</span>
+   │   (POST-COMMIT, best-effort echo:)
+   │   └─► IF cfg.Audit.Includes(<span class="auto">slog</span>):
+   │       └─► <span class="auto">audit.EchoSlog(ctx, logger, ev)</span>  ← observability echo
+   │           ├─► <span class="auto">slog.Info("audit", Export{Header, Data})</span>
+   │           └─► <span class="auto">publisher.PublishAll(insertable.Events())</span>
+   │
+   ▼
+<span class="auto">pipeline returns Result[ID] = Success(id)</span>
+   │
+   ▼
+<span class="auto">web.RespondFromResult(c, result, fiber.StatusCreated)</span>
+   │
+   ▼
+HTTP 201 Created
+{
+  "success": true,
+  "status": 201,
+  "description": "Created",
+  "data": "generated-uuid"
+}</div>
+
+    <h3 id="cmd-auto-vs-manual">Automatic × Manual</h3>
+    <table>
+        <tbody><tr>
+            <th>Responsibility</th>
+            <th>Who does it</th>
+            <th>Where</th>
+        </tr>
+        <tr><td>Parse the HTTP body</td><td><span class="tag manual">manual</span></td><td>on the Fiber route (<code>c.Bind().Body()</code>)</td></tr>
+        <tr><td>Build the <code>AppContext</code></td><td><span class="tag manual">manual</span></td><td>middleware (1 line)</td></tr>
+        <tr><td>Construct the domain entity</td><td><span class="tag manual">manual</span></td><td>Handler</td></tr>
+        <tr><td>Define validation rules</td><td><span class="tag manual">manual</span></td><td>entity's <code>BuildRules</code></td></tr>
+        <tr><td>Execute the rules (mode-aware)</td><td><span class="tag auto">automatic</span></td><td><code>domain.GetInsertable</code></td></tr>
+        <tr><td>Validate registered ValueObjects</td><td><span class="tag auto">automatic</span></td><td><code>runValueObjectValidations</code></td></tr>
+        <tr><td>Validate allowed modes</td><td><span class="tag auto">automatic</span></td><td>via <code>Modes()</code> annotation</td></tr>
+        <tr><td>Validate ID per mode</td><td><span class="tag auto">automatic</span></td><td>Insert does not allow ID; Update/Delete require it</td></tr>
+        <tr><td>Build <code>ValidEntity</code> with metadata</td><td><span class="tag auto">automatic</span></td><td>after validation OK</td></tr>
+        <tr><td>Implement <code>Repository.Insert</code></td><td><span class="tag manual">manual</span></td><td>delegates to <code>infra.Postgres</code></td></tr>
+        <tr><td>Dynamic SQL <code>INSERT</code></td><td><span class="tag auto">automatic</span></td><td><code>infra.Postgres.Insert</code></td></tr>
+        <tr><td>Write outbox in the same transaction</td><td><span class="tag auto">automatic</span></td><td><code>infra/executor.go</code> + <code>outbox.go</code></td></tr>
+        <tr><td>Write the <code>audit_events</code> row (in-TX, atomic with the data + outbox)</td><td><span class="tag auto">automatic</span></td><td><code>infra.Postgres</code> when <code>audit.destinations</code> includes <code>database</code></td></tr>
+        <tr><td>Echo the audit slog line (post-commit, best-effort)</td><td><span class="tag auto">automatic</span></td><td><code>infra.Postgres</code> when <code>audit.destinations</code> includes <code>slog</code></td></tr>
+        <tr><td>Publish domain events</td><td><span class="tag auto">automatic</span></td><td><code>SlogPublisher</code></td></tr>
+        <tr><td>Catch domain errors</td><td><span class="tag auto">automatic</span></td><td><code>pipeline.Run</code> via <code>NotificationCarrier</code></td></tr>
+        <tr><td>Notification translation</td><td><span class="tag auto">automatic</span></td><td><code>Pipeline</code> uses <code>Translator</code> + <code>AppContext.Language()</code></td></tr>
+        <tr><td>Panic recovery</td><td><span class="tag auto">automatic</span></td><td><code>defer/recover</code> in <code>pipeline.Run</code></td></tr>
+        <tr><td>Conversion to HTTP Response</td><td><span class="tag auto">automatic</span></td><td><code>web.RespondFromResult</code></td></tr>
+    </tbody></table>
+
+    <h3 id="cmd-example">Full example</h3>
+    <h4>1. Define the domain entity</h4>
+    <pre><code>// internal/domain/customer.go
+package domain
+
+import (
+    "github.com/ClaudioSchirmer/omnicore/domain"
+)
+
+type Customer struct {
+    domain.BaseEntity
+    Name  string `json:"name"`
+    Email string `json:"email"`
+}
+
+// Include only the modes this entity supports. Missing modes are
+// blocked by the framework with *NotAllowedNotification (403):
+//   ModeDisplay   — read
+//   ModeInsert    — create
+//   ModeUpdate    — field mutation
+//   ModeDelete    — hard delete
+//   ModeArchive   — soft delete (state transition)
+//   ModeUnarchive — restoration (state transition)
+// Append-only: declare only Display + Insert. Archiving an entity without
+// ModeArchive in Modes() responds with ArchiveNotAllowedNotification.
+func (c *Customer) Modes() []domain.EntityMode {
+    return []domain.EntityMode{
+        domain.ModeDisplay, domain.ModeInsert, domain.ModeUpdate, domain.ModeDelete,
+        domain.ModeArchive, domain.ModeUnarchive,
+    }
+}
+
+// RequiresService omitted — inherits default `false` from *BaseEntity (via embed).
+// Declare only if the entity needs domain.Service in BuildRules
+// (e.g., cross-entity lookups), returning true.
+
+// NO TableName/ToFields. Infra infers "customers" and {name, email}
+// via convention (PluralizeSnake + PascalToSnake over exported fields).
+
+func (c *Customer) BuildRules(actionName string, service domain.Service, r *domain.Rules) {
+    r.IfInsertOrUpdate(func() {
+        if c.Name == "" {
+            r.AddNotification("Name", domain.RequiredFieldNotification{})
+        }
+        if c.Email == "" {
+            r.AddNotification("Email", domain.RequiredFieldNotification{})
+        } else if !validEmail(c.Email) {
+            // optional value becomes FieldValue — echo of rejected input in the response
+            r.AddNotification("Email", InvalidEmailNotification{}, c.Email)
+        }
+    })
+}</code></pre>
+
+    <h4>2. Implement the Repository</h4>
+    <pre><code>// internal/repository/customer_repo.go
+package repository
+
+import (
+    "github.com/ClaudioSchirmer/omnicore/domain"
+    "github.com/ClaudioSchirmer/omnicore/infra"
+)
+
+type CustomerRepo struct {
+    pg *infra.Postgres
+}
+
+func NewCustomerRepo(pg *infra.Postgres) *CustomerRepo {
+    return &amp;CustomerRepo{pg: pg}
+}
+
+// Insert delegates to infra.Postgres, inheriting atomic outbox.
+func (r *CustomerRepo) Insert(i domain.Insertable) (domain.ID, error) {
+    res, err := r.pg.Insert(i)
+    if err != nil {
+        return domain.ID{}, err
+    }
+    return domain.NewID(res.ID), nil
+}
+
+func (r *CustomerRepo) Update(u domain.Updatable) error {
+    _, err := r.pg.Update(u)
+    return err
+}
+
+func (r *CustomerRepo) Delete(d domain.Deletable) error  { return r.pg.Delete(d) }
+func (r *CustomerRepo) Archive(a domain.Archivable) error { return r.pg.Archive(a) }
+
+func (r *CustomerRepo) FindByID(id domain.ID) (*Customer, error) {
+    // SELECT * FROM customers WHERE id = $1 AND deleted_at IS NULL
+    // ... unmarshal into Customer
+}</code></pre>
+
+    <h4>3. Define the Command and the Handler</h4>
+    <pre><code>// internal/commands/create_customer.go
+package commands
+
+import (
+    "github.com/ClaudioSchirmer/omnicore/application/configuration"
+    "github.com/ClaudioSchirmer/omnicore/application/persistence"
+    "github.com/ClaudioSchirmer/omnicore/application/pipeline"
+    "github.com/ClaudioSchirmer/omnicore/domain"
+)
+
+type CreateCustomerCommand struct {
+    pipeline.CommandBase
+    Name  string `json:"name"`
+    Email string `json:"email"`
+}
+
+type CreateCustomerHandler struct {
+    repo persistence.ScopedRepository[*Customer]
+}
+
+func NewCreateCustomerHandler(repo persistence.ScopedRepository[*Customer]) *CreateCustomerHandler {
+    return &amp;CreateCustomerHandler{repo: repo}
+}
+
+func (h *CreateCustomerHandler) Handle(
+    ctx *configuration.AppContext,
+    cmd CreateCustomerCommand,
+) (domain.ID, error) {
+    customer := &amp;Customer{Name: cmd.Name, Email: cmd.Email}
+    insertable, err := domain.GetInsertable(customer, nil, "GetInsertable")
+    if err != nil {
+        return domain.ID{}, err
+    }
+    // Scope binds the request ctx + any in-TX lifecycle hooks (passed as
+    // Scope opts) and returns a pure domain.Writer; the domain port never
+    // pronounces the ctx.
+    return h.repo.Scope(ctx).Insert(insertable)
+}</code></pre>
+
+    <h4>4. Wire the route</h4>
+    <pre><code>// internal/web/router.go
+app.Post("/customers", func(c fiber.Ctx) error {
+    var cmd commands.CreateCustomerCommand
+    if err := c.Bind().Body(&amp;cmd); err != nil {
+        return web.RespondWithBadRequest(c)
+    }
+
+    appCtx := c.Locals("appCtx").(*configuration.AppContext)
+    result := pipeline.Dispatch(pipe, appCtx, cmd, createCustomerHandler)
+    return web.RespondFromResult(c, result, fiber.StatusCreated)
+})</code></pre>
+
+    <h3>BaseRepository[T] — 5 ready-made writes + New() T</h3>
+    <p>The service embeds <code>fwinfra.BaseRepository[T]</code> and gains Insert/Update/Archive/Unarchive/Delete without writing a line — plus <code>New() T</code>, which materializes the constructor of T (consumed by <code>UnarchiveCommandHandler</code> and available for any scenario needing an empty entity). <code>FindByID</code> is the service's responsibility (see <a href="#aggregate-loader">AggregateLoader</a>).</p>
+    <pre><code>type UserRepository struct {
+    fwinfra.BaseRepository[*User]
+    loader *fwinfra.AggregateLoader[*User]  // for FindByID
+}
+
+newUser := func() *User { return &amp;User{} }  // single factory source
+
+base := fwinfra.BaseRepository[*User]{
+    Postgres:  pg,
+    NewEntity: newUser,                       // mandatory: feeds Repo.New()
+    Constraints: map[string]fwinfra.ConstraintBinding{
+        "users_email_active_idx": {Notification: EmailAlreadyExistsNotification{}, Field: "email"},
+    },
+}</code></pre>
+    <p><strong><code>NewEntity</code> is mandatory.</strong> <code>New()</code> panics with a clear message if nil — it's a configuration bug detected at boot/first call, not in a hot request. The same factory is typically shared with the <code>AggregateLoader</code> to avoid duplication.</p>
+    <p><strong><code>ContextName</code> is optional.</strong> When empty, derived from the Go type T via reflect (<code>T=*User → "User"</code>) — that's the framework's convention. Set explicitly only when you need to customize (e.g., two Repositories over the same entity with distinct names in the notification context).</p>
+    <p>Unique violations (PG code <code>23505</code>) are translated into <code>*InfrastructureError</code> carrying the typed notification — no manual <code>mapPGError</code>. Unregistered constraints, codes other than <code>23505</code>, and non-<code>pgconn.PgError</code> errors return raw.</p>
+
+    <h3 id="base-aggregate-repository">BaseAggregateRepository[T] — canonical composition</h3>
+    <p>
+        Almost every aggregate-aware Repository has the same shape: <code>BaseRepository[T]</code> (writes) +
+        <code>*AggregateLoader[T]</code> (FindByID/FindArchivedByID). <code>fwinfra.BaseAggregateRepository[T]</code>
+        bundles both and promotes the trivial wrappers — the service no longer declares
+        <code>FindByID</code> and <code>FindArchivedByID</code> manually. The common case fits in 8–10 lines.
+    </p>
+    <pre><code>type UserRepository struct {
+    fwinfra.BaseAggregateRepository[*User]
+}
+
+func NewUserRepository(pg *fwinfra.Postgres) *UserRepository {
+    r := &amp;UserRepository{
+        BaseAggregateRepository: fwinfra.NewBaseAggregateRepository[*User](
+            pg, func() *User { return &amp;User{} },
+        ),
+    }
+    r.Constraints = map[string]fwinfra.ConstraintBinding{
+        "users_email_active_idx": {Notification: EmailAlreadyExistsNotification{}, Field: "email"},
+    }
+    fwinfra.WithChild[Address](r.Loader)   // children via public Loader
+    return r
+}
+
+var (
+    _ persistence.ScopedRepository[*User] = (*UserRepository)(nil)
+    _ domain.ArchivedFinder[*User]        = (*UserRepository)(nil)
+)</code></pre>
+    <p>
+        <code>FindByID</code> and <code>FindArchivedByID</code> come promoted via embed; <code>New()</code>
+        and the 5 writes also come from <code>BaseRepository</code> via embed. The <code>*AggregateLoader[T]</code>
+        is exposed as a public <code>Loader</code> field — call <code>WithChild[V]</code>,
+        <code>WithChildScanner</code>, <code>WithRootScanner</code>, <code>WithConfig</code> on it directly.
+    </p>
+    <p>
+        <strong>When NOT to use it</strong> (keep the old pattern of direct embed
+        <code>BaseRepository[T]</code> + carrying <code>*AggregateLoader[T]</code> separately): custom magic
+        pattern where the Loader is not the canonical source of <code>FindByID</code>
+        (e.g., read replica + main, materialized view). Manual and composite coexist — choose
+        per Repository.
+    </p>
+
+    <h3 id="aggregate-loader">AggregateLoader[T] — loading aggregates with the criteria engine</h3>
+    <p>
+        The <code>AggregateLoader</code> loads <strong>live domain aggregates</strong> (root + children) from
+        PostgreSQL through the <a href="#criteria-engine">entity search engine</a>: you hand it a
+        <code>criteria.Query</code> and it returns the entity ready for a command. Two entry points —
+        <code>FindOne(ctx, *criteria.Query)</code> (one match, or <code>RecordNotFound</code>; more than one
+        is an error) and <code>FindAll(ctx, *criteria.Query)</code> (a slice; children batched). It has its
+        <strong>own SQL engine</strong>: it inspects your entity via reflection, discovers the columns,
+        generates the <code>SELECT</code> and populates the struct — you write neither the SQL nor the scanner.
+        For exotic decoding the auto-scan doesn't cover (JOIN, CASE, COALESCE) there is a manual-scanner
+        escape hatch; both scan modes coexist.
+    </p>
+
+    <h4 id="criteria-engine">Loading by criteria — <code>FindOne</code> / <code>FindAll</code></h4>
+    <p>
+        <code>omnicore/infra/criteria</code> is a small, pure DSL (stdlib only) you compose in Go inside your
+        <code>infra</code> repository. It is the developer-facing, compile-time way to load the
+        authoritative aggregate — distinct from the Mongo read side, which is the end-user-facing query
+        facade over the eventually-consistent projection. Your <em>repository interface</em> stays in
+        business vocabulary (<code>FindByID</code>, <code>FindByEmail</code>, …); the engine is how the
+        <code>infra</code> implementation fulfills it.
+    </p>
+    <pre><code>// Primary-key shortcut (assumes the ID↔id convention):
+u, err := repo.FindOne(ctx, criteria.ByID(id))
+
+// Any alternate key — no hand-rolled SQL:
+u, err := repo.FindOne(ctx, criteria.Where(criteria.Eq("Email", email)))
+
+// Boolean composition + order + limit; FindAll returns []*User (children batched):
+users, err := repo.FindAll(ctx, criteria.Where(criteria.And(
+    criteria.Eq("TenantID", t),
+    criteria.Or(criteria.Eq("Status", "active"), criteria.ILike("Name", "bob%")),
+    criteria.IsNull("DeletedReason"),
+)).OrderByDesc("CreatedAt").Limit(50))
+
+// Archived scope (soft-delete gate) lives on the Query, not in the predicate:
+archived, err := repo.FindOne(ctx, criteria.ByID(id).OnlyArchived())</code></pre>
+    <p>
+        Operators: <code>Eq/Ne/In/Nin/Gt/Gte/Lt/Lte/Like/ILike/IsNull/NotNull</code>, combinators
+        <code>And/Or/Not</code> (nestable), and sugar <code>Contains/StartsWith/EndsWith</code>
+        (case-insensitive, wildcards escaped) + <code>Between</code>. Field names are your <strong>Go field
+        names</strong> ("Email"), resolved to columns by the same convention auto-scan uses
+        (snake_case, or <code>RepoConfig.FieldOverrides</code>). Values are always parameterized;
+        a <code>domain.ID</code> value is unwrapped automatically. <code>FindByID</code> /
+        <code>FindArchivedByID</code> (promoted by <code>BaseAggregateRepository</code>) are themselves
+        thin wrappers over <code>FindOne(criteria.ByID(id))</code> — one SQL-building path for every load.
+    </p>
+
+    <h4 id="aggregate-loader-auto">Automatic scan mode (recommended default)</h4>
+    <p>
+        No scanner passed. The loader inspects the entity's <em>exported fields</em>
+        and the children's, assembles <code>SELECT col1, col2, ... FROM table WHERE id=$1 AND deleted_at IS NULL</code>
+        and writes directly into the field addresses via <code>row.Scan</code>. Private fields
+        (including all those of <code>AggregateRoot</code> and <code>BaseEntity</code> that your entity embeds)
+        are ignored by reflection — they don't leak into SQL.
+    </p>
+    <pre><code>// User with 4 exported domain fields
+type User struct {
+    domain.AggregateRoot      // embed; private fields, invisible to the engine
+    Name  string
+    Email string
+    CPF   string
+    Phone *string             // nullable: pointer maps directly to NULL
+}
+
+// Canonical Repository: BaseAggregateRepository bundles loader + writes.
+// FindByID / FindArchivedByID promoted via embed — zero manual wrappers.
+type UserRepository struct {
+    fwinfra.BaseAggregateRepository[*User]
+}
+
+func NewUserRepository(pg *fwinfra.Postgres) *UserRepository {
+    r := &amp;UserRepository{
+        BaseAggregateRepository: fwinfra.NewBaseAggregateRepository[*User](
+            pg, func() *User { return &amp;User{} },
+        ),
+    }
+    // Children registered via auto-scan (top-level due to extra type param):
+    fwinfra.WithChild[Address](r.Loader)
+    return r
+}</code></pre>
+    <p>
+        The loader generates:
+    </p>
+    <pre><code>-- Root (FindOne(criteria.ByID(id)) — id read back; criteria drives the WHERE)
+SELECT id, name, email, cpf, phone FROM users
+ WHERE id = $1 AND deleted_at IS NULL;
+
+-- Per child registered in WithChild (FindAll batches with fk IN ($1,$2,...))
+SELECT user_id, id, label, street, number, complement, neighborhood, city, state, zip_code, country
+  FROM addresses
+ WHERE user_id = $1 AND deleted_at IS NULL;</code></pre>
+
+    <h4>Column ↔ field name convention</h4>
+    <p>
+        The engine uses <code>pgx</code>'s internal normalization to match names
+        (<code>strings.ReplaceAll(name, "_", "")</code> + <code>strings.EqualFold</code>):
+    </p>
+    <table>
+        <thead><tr><th>Go field</th><th>Matching SQL column</th></tr></thead>
+        <tbody>
+            <tr><td><code>Name</code></td><td><code>name</code></td></tr>
+            <tr><td><code>Email</code></td><td><code>email</code></td></tr>
+            <tr><td><code>CPF</code></td><td><code>cpf</code> (acronym)</td></tr>
+            <tr><td><code>ZipCode</code></td><td><code>zip_code</code></td></tr>
+            <tr><td><code>PostalCodeV2</code></td><td><code>postal_code_v2</code></td></tr>
+            <tr><td><code>HTTPStatus</code></td><td><code>http_status</code></td></tr>
+        </tbody>
+    </table>
+    <p>
+        If you need a different name, declare a <code>db:"..."</code> tag on the field
+        (one-off override). Tag <code>db:"-"</code> makes the engine ignore that field
+        (it doesn't go into <code>SELECT</code> and is not populated). Tag adoption is fully opt-in;
+        the domain stays <em>zero IO</em> with no tag declared.
+    </p>
+    <pre><code>type Customer struct {
+    domain.AggregateRoot
+    DisplayName  string `db:"name"`        // override: "name" column instead of "display_name"
+    Internal     string `db:"-"`           // engine ignores — does not go into SELECT
+    Email        string                    // no tag — uses snake_case convention ("email")
+}</code></pre>
+
+    <h4>Nullables</h4>
+    <p>
+        <code>NULL</code>-able columns map to <strong>pointer types</strong> in the domain
+        (<code>*string</code>, <code>*int64</code>, <code>*time.Time</code>). <code>pgx</code>
+        writes <code>NULL</code> when the pointer is <code>nil</code>; reads <code>NULL</code> as
+        <code>nil</code> on auto-scan. Recommended boundary convention: <em>empty JSON input
+        becomes <code>nil</code> via a local helper</em> (e.g., <code>NilIfEmpty(s string) *string</code>
+        in your service's <code>commands</code> package).
+    </p>
+
+    <h4>Performance</h4>
+    <p>
+        The engine caches the <code>column → field index</code> mapping by <code>reflect.Type</code>
+        in <code>sync.Map</code>. The first call pays the reflection (~µs); subsequent calls
+        do direct lookup and <code>row.Scan</code> writes into the field address
+        with no intermediate allocations. Benchmark against the manual scanner (8 columns, 1 row,
+        Apple M4 Max):
+    </p>
+    <table>
+        <thead><tr><th>Variant</th><th>ns/op</th><th>B/op</th><th>allocs/op</th></tr></thead>
+        <tbody>
+            <tr><td>Manual scanner</td><td>116478</td><td>1380</td><td>26</td></tr>
+            <tr><td>Auto-scan (cached reflection)</td><td><strong>115094</strong></td><td><strong>916</strong></td><td><strong>11</strong></td></tr>
+        </tbody>
+    </table>
+    <p>
+        Auto-scan came out <strong>slightly faster</strong> and allocates less memory than the
+        manual scanner, because the manual path allocates temporary pointers (<code>var phone *string;
+        var deletedAt *time.Time</code>) that auto-scan avoids — it writes directly into the fields.
+    </p>
+
+    <h4 id="aggregate-loader-manual">Manual mode (escape hatch)</h4>
+    <p>
+        When the query needs something the engine does not generate — JOIN with another table,
+        <code>CASE</code>/<code>COALESCE</code>, aggregate SQL expressions, lookup by non-id field,
+        external materialized view — you provide the scan function via
+        <code>WithRootScanner</code> and/or <code>WithChildScanner</code>. The loader keeps handling
+        children dispatch and <code>AggregateConstructor</code>; only the decoding is up to you.
+    </p>
+    <pre><code>// Manual mode runs SELECT * — scan id first (the framework no longer injects
+// it on the criteria path) and SetID, then decode the rest however you like.
+r.loader = fwinfra.NewAggregateLoader[*User](pg, factory).
+    WithRootScanner(func(row pgx.Row) (*User, error) {
+        u := &amp;User{}
+        var id, firstName, lastName string
+        if err := row.Scan(&amp;id, &amp;firstName, &amp;lastName /* …, &amp;u.Email, etc */); err != nil {
+            return nil, err
+        }
+        u.SetID(domain.NewID(id)) // REQUIRED: FindOne/FindAll recover the id via GetID()
+        u.Name = firstName + " " + lastName
+        return u, nil
+    })
+// Address keeps auto:
+fwinfra.WithChild[Address](r.loader)</code></pre>
+    <p>
+        Auto and manual <strong>coexist per typeName</strong>: for the same child,
+        the manual scanner wins over auto when both are registered. The manual mode
+        uses <code>SELECT *</code> (compatible with custom queries you may write).
+    </p>
+    <div class="box warn">
+        <strong>Manual root scanner + <code>FindOne</code>/<code>FindAll</code>:</strong> the scanner
+        <strong>must populate the entity id</strong> (scan it and call <code>SetID</code>). The criteria
+        path has no input id to inject (unlike the old by-id load), so the framework recovers the id via
+        <code>GetID()</code> after your scanner runs — an empty id is a configuration error. Auto-scan reads
+        the id back automatically; only the manual path carries this requirement.
+    </div>
+
+    <h4>Errors and edge cases</h4>
+    <ul>
+        <li><strong>Root not found</strong> → <code>*DomainError</code> with
+            <code>RecordNotFoundNotification</code> (→ 404 HTTP via
+            <a href="#status-mapping">Semantic mapping</a>).</li>
+        <li><strong>More than one match in <code>FindOne</code></strong> → error ("expected one"):
+            the contract is a single match; use <code>FindAll</code> or a more specific criterion.</li>
+        <li><strong>Aggregate without children</strong> — omit <code>WithChild</code>/
+            <code>WithChildScanner</code> and the load only does <code>SELECT root</code>.</li>
+        <li><strong>Entity without exported domain fields</strong> in auto mode:
+            <code>FindOne</code>/<code>FindAll</code> return a descriptive error suggesting
+            <code>WithRootScanner</code> (typically a bug — an entity with no data at all is rare).</li>
+        <li><strong>Type registered in <code>WithChildScanner</code> without an entry in
+            <code>AggregateChildren()</code></strong> — silently ignored
+            (compatible with evolving aggregate).</li>
+    </ul>
+
+    <div class="box good">
+        <strong>Result:</strong> with ~40 lines of code per entity you get
+        typed validation and i18n, atomic transaction with outbox, structured audit,
+        event publication, standardized HTTP response and automatic error
+        translation per <code>AppContext.Language()</code>, and
+        <code>FindByID</code> comes for free via auto-scan.
+    </div>
