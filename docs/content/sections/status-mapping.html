@@ -408,7 +408,9 @@ type Address struct {
 
     <h4>Reading audit rows — <code>audit.FindByID</code> and <code>audit.FindByAggregate</code></h4>
     <p>
-        Two canonical helpers retrieve audit rows from the <code>audit_events</code> table when the destinations list includes <code>database</code>:
+        See the consolidated <a href="#audit">Audit</a> section for the full event shape, the two
+        destinations, and the children cascade. Two canonical helpers retrieve audit rows from the
+        <code>audit_events</code> table when the destinations list includes <code>database</code>:
     </p>
 <pre><code>// Forensic single-row lookup — you saw an id in the slog echo and want the full row.
 ev, err := audit.FindByID(ctx, deps.Postgres.Pool(), eventID)

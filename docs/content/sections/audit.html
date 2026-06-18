@@ -1,0 +1,320 @@
+<h2>Audit</h2>
+    <p>
+        Every successful write emits exactly one <code>AuditEvent</code> — the forensic record of
+        what changed, who changed it, and when. Audit <strong>travels with the persister</strong>:
+        each <code>Postgres.Insert</code> / <code>Update</code> / <code>Archive</code> /
+        <code>Unarchive</code> / <code>Delete</code> builds the event and routes it according to the
+        boot-time <code>audit.destinations</code> configuration. There is no <code>Auditor</code>
+        singleton to thread through handlers — it is configured once at boot
+        (<code>pg.WithAudit(...)</code>) and every write, Auto or manual, is covered without a line
+        of handler code.
+    </p>
+    <p>
+        The event is the byproduct of the write path documented in the
+        <a href="#lifecycle-map">Write lifecycle map</a> (whose last column is the audit
+        <code>verb</code>). This page details the event itself: its JSON shape, the
+        <code>snapshot</code>/<code>delta</code>/<code>transition</code> body discriminator, the
+        children cascade, the actor stamping, the translated field labels, and the two destinations —
+        <code>slog</code> (observability echo, ELK/Loki/Datadog) and <code>database</code> (an
+        atomic, in-transaction row in <code>audit_events</code> for compliance) — plus the pre-built
+        PostgreSQL read helpers.
+    </p>
+
+    <h3 id="audit-how">How it works — granularity B, atomic with the write</h3>
+    <p>
+        The audit unit is the <strong>aggregate operation</strong> (granularity B), mirroring the
+        single outbox row the same write produces. One <code>repo.Method()</code> call → one
+        <code>AuditEvent</code>, regardless of how many child rows the aggregate touched; children
+        contribute to the event's <code>children</code> block, not to separate events. The
+        <code>dateTime</code> is captured at <code>ValidEntity</code> construction, so it reflects
+        the moment the domain accepted the operation, not when the row was flushed.
+    </p>
+    <div class="flow"><span class="auto">infra.Postgres.Insert/Update/Archive/Unarchive/Delete</span>
+   │
+   ▼
+<span class="auto">BEGIN TX</span>
+   │   data write (root + children when aggregate)
+   │   INSERT outbox            ← one row, granularity B
+   │   IF destinations ∋ <span class="auto">database</span>:
+   │     <span class="auto">audit.InsertAuditEvent(ctx, tx, ev)</span>  ← row in audit_events, SAME TX
+   ▼
+<span class="auto">COMMIT</span>
+   │
+   ▼ (POST-COMMIT, best-effort echo)
+   IF destinations ∋ <span class="auto">slog</span>:
+     <span class="auto">audit.EchoSlog(ctx, logger, ev)</span>  ← flat slog line for shippers</div>
+    <p>
+        The <code>database</code> row is written <strong>inside the same <code>pgx.Tx</code></strong>
+        as the data row and the outbox row — so a crash between writes can never leave an audit gap.
+        If <code>COMMIT</code> succeeded, the audit row exists. The <code>slog</code> echo fires
+        <em>after</em> <code>COMMIT</code> and is best-effort: lossy if the log shipper drops the
+        line, but the PG row stays authoritative. The shapes live in
+        <code>infra/audit/event.go</code> (the event), <code>infra/audit/persister.go</code> (the
+        in-TX writer), <code>infra/audit/echo.go</code> (the slog echo), and
+        <code>infra/audit_builder.go</code> (the per-verb builders).
+    </p>
+
+    <h3 id="audit-destinations">Two destinations — <code>slog</code> and <code>database</code></h3>
+    <table>
+        <tbody><tr><th>Destination</th><th>Mechanism</th><th>When</th><th>Guarantee</th><th>Use for</th></tr>
+        <tr>
+            <td><code>database</code></td>
+            <td><code>audit.InsertAuditEvent</code> → row in <code>audit_events</code></td>
+            <td>inside the write's <code>pgx.Tx</code></td>
+            <td><strong>atomic</strong> — the row IS the audit; if the write committed, the audit exists</td>
+            <td>compliance, forensics, source-of-truth timelines joinable to other PG state</td>
+        </tr>
+        <tr>
+            <td><code>slog</code></td>
+            <td><code>audit.EchoSlog</code> → flat top-level slog line</td>
+            <td>after <code>COMMIT</code></td>
+            <td>best-effort echo — lossy if the shipper drops it</td>
+            <td>observability pipelines (ELK / Loki / Datadog / stdout collector)</td>
+        </tr>
+    </tbody></table>
+    <p>
+        Routing is declared in <code>microservice.&lt;profile&gt;.yaml</code>. The block is optional;
+        an absent block (or absent <code>destinations:</code> key) defaults to <strong>both</strong>
+        destinations active — the recommended posture (PG row guarantees compliance; the slog echo
+        feeds whatever observability stack the operator already runs).
+    </p>
+<pre><code># Default posture (both) when the block is omitted entirely.
+audit:
+  destinations:
+    - slog        # post-commit echo for ELK / Loki / stdout collectors
+    - database    # in-TX row in audit_events (atomic with the write — source of truth)
+  # destinations: [database]   # only the PG row — highest signal/noise, lowest log volume
+  # destinations: [slog]       # only the slog line — observability-only posture
+  # destinations: []           # explicitly disables audit (no row, no slog line)</code></pre>
+    <table>
+        <tbody><tr><th>Value</th><th>Effect</th></tr>
+        <tr><td>block absent / <code>destinations:</code> absent</td><td>both <code>slog</code> + <code>database</code> active</td></tr>
+        <tr><td><code>[database]</code></td><td>only the PG row</td></tr>
+        <tr><td><code>[slog]</code></td><td>only the slog line (pre-redesign observability-only posture)</td></tr>
+        <tr><td><code>[]</code></td><td>audit disabled — no row, no line</td></tr>
+        <tr><td><code>[kafka]</code> (unknown) / <code>[slog, slog]</code> (duplicate)</td><td><strong>boot aborts</strong> with a diagnostic naming the offender</td></tr>
+    </tbody></table>
+    <p>
+        The <code>audit_events</code> table is provisioned unconditionally by the framework's
+        embedded migration <code>0001</code> — even with <code>destinations: []</code> the table
+        exists; it just never receives a row. The companion knob
+        <code>auth.auditClaims</code> (a JWT-claim allowlist) lives under <code>auth:</code> because
+        it is a security concern — it whitelists which claims leave the JWT envelope into
+        <code>actorClaims</code>; it is not a routing knob.
+    </p>
+
+    <h3 id="audit-shape">The event shape (JSON)</h3>
+    <p>Every event carries these top-level fields:</p>
+    <table>
+        <tbody><tr><th>Field</th><th>Type</th><th>Note</th></tr>
+        <tr><td><code>threadId</code></td><td>UUID string</td><td>per-request identifier from <code>AppContext.ID()</code> — cross-references the related integration event / log lines</td></tr>
+        <tr><td><code>entityType</code></td><td>string</td><td>Go type name of the root entity</td></tr>
+        <tr><td><code>entityId</code></td><td>string</td><td>aggregate root id</td></tr>
+        <tr><td><code>verb</code></td><td>string</td><td><code>insert</code> | <code>update</code> | <code>archive</code> | <code>unarchive</code> | <code>delete</code> — <strong>SQL-grounded</strong>: same SQL fingerprint → same verb. PUT and PATCH both emit <code>update</code> (the SQL is identical); the distinction lives in <code>actionName</code></td></tr>
+        <tr><td><code>actionName</code></td><td>string</td><td>the <code>actionName</code> passed to the <code>Get*</code> call (<code>GetInsertable</code> / <code>GetUpdatable</code> / <code>GetPartialUpdatable</code> / … or a custom string)</td></tr>
+        <tr><td><code>kind</code></td><td>string</td><td><code>snapshot</code> | <code>delta</code> | <code>transition</code> — discriminates the body block</td></tr>
+        <tr><td><code>actor</code></td><td>string</td><td>JWT <code>sub</code> or the sentinel <code>"anonymous"</code></td></tr>
+        <tr><td><code>actorIssuer</code></td><td>string (omitempty)</td><td>JWT <code>iss</code> when present</td></tr>
+        <tr><td><code>actorClaims</code></td><td>object (omitempty)</td><td>filtered by the <code>auth.auditClaims</code> allowlist</td></tr>
+        <tr><td><code>dateTime</code></td><td>RFC3339Nano</td><td>captured at <code>ValidEntity</code> construction</td></tr>
+    </table>
+    <p>A full <code>insert</code> event of an aggregate (slog echo shape — <code>database</code> stores the same payload as a row + <code>jsonb</code> blob):</p>
+<pre><code>{
+  "msg":         "audit",
+  "threadId":    "5f25e8b0-…",
+  "entityType":  "User",
+  "entityId":    "abc-123-…",
+  "verb":        "insert",
+  "actionName":  "GetInsertable",
+  "kind":        "snapshot",
+  "actor":       "user-42",
+  "actorIssuer": "https://idp.example",
+  "actorClaims": { "tenant_id": "acme", "roles": ["admin"] },
+  "dateTime":    "2026-06-09T12:00:00.123456Z",
+  "snapshot":    { "name": "Jane Doe", "email": "jane@x.test" },
+  "children":    { "Address": [
+                    { "id": "…", "op": "inserted", "snapshot": { "city": "Berlin" } }
+                 ] }
+}</code></pre>
+
+    <h3 id="audit-kind">Body block — <code>snapshot</code> / <code>delta</code> / <code>transition</code></h3>
+    <p>
+        Exactly one body regime applies per event, selected by <code>kind</code>:
+    </p>
+    <table>
+        <tbody><tr><th><code>kind</code></th><th>Verbs</th><th>Carries</th><th>What's in the block</th></tr>
+        <tr>
+            <td><code>snapshot</code></td>
+            <td><code>insert</code>, <code>delete</code></td>
+            <td><code>snapshot: map[column]value</code></td>
+            <td>full state — post-insert for Insert; pre-delete (via <code>Old()</code>) for Delete</td>
+        </tr>
+        <tr>
+            <td><code>delta</code></td>
+            <td><code>update</code></td>
+            <td><code>changes: [{field, fieldLabelKey, from, to}]</code> sorted by <code>field</code></td>
+            <td>only mutated columns; unchanged ones absent. <code>fieldLabelKey</code> (omitempty) carries the catalog key from the field's <code>label:"…"</code> tag</td>
+        </tr>
+        <tr>
+            <td><code>transition</code></td>
+            <td><code>archive</code>, <code>unarchive</code></td>
+            <td>(neither block)</td>
+            <td>the verb itself is the recovery hint — a symmetric inverse</td>
+        </tr>
+    </table>
+    <p>
+        <code>PartialUpdate</code> (PATCH) shares <code>verb: "update"</code> with PUT because the
+        SQL is identical (<code>UPDATE … SET col=val, updated_at=NOW()</code>); the PUT-vs-PATCH
+        distinction lives in <code>actionName</code> (<code>GetUpdatable</code> vs
+        <code>GetPartialUpdatable</code>) — the same unification the domain applies, where
+        <code>IfUpdate</code> fires for both. See the <a href="#lifecycle-map">Write lifecycle map</a>
+        for the full verb → SQL → audit table.
+    </p>
+
+    <h3 id="audit-children">Children cascade</h3>
+    <p>
+        The <code>children</code> map appears when the source implements
+        <code>AggregateRootProvider</code> and at least one child is observable for the verb. Keyed
+        by Go type name (<code>Address</code>, <code>OrderLine</code>); each entry carries
+        <code>{id, op, snapshot}</code> or <code>{id, op, changes}</code> following the same
+        <code>kind</code> discipline. <strong>Child ops are SQL-grounded</strong> — the same 5-verb
+        vocabulary as the root, every op echoing the SQL fingerprint of the row-level change:
+    </p>
+    <table>
+        <tbody><tr><th>Root verb</th><th>Children included</th><th>Per-child <code>op</code></th><th>SQL on the child row</th></tr>
+        <tr><td><code>insert</code></td><td>all current</td><td><code>inserted</code></td><td><code>INSERT INTO addresses (...)</code></td></tr>
+        <tr><td><code>update</code> — Added</td><td>appended via <code>AddAggregateChild</code></td><td><code>inserted</code></td><td><code>INSERT INTO addresses (...)</code></td></tr>
+        <tr><td><code>update</code> — Changed</td><td>replaced via <code>ChangeAggregateChild</code></td><td><code>updated</code></td><td><code>UPDATE addresses SET col=val, updated_at=NOW()</code></td></tr>
+        <tr><td><code>update</code> — Removed</td><td>marked via <code>RemoveAggregateChild</code> / <code>ReplaceAggregateChildrenOf</code></td><td><code>archived</code></td><td><code>UPDATE addresses SET deleted_at=NOW()</code> (row stays, recoverable)</td></tr>
+        <tr><td><code>update</code> — Constructor</td><td>(untouched — <strong>skipped</strong>)</td><td>—</td><td>(no SQL)</td></tr>
+        <tr><td><code>archive</code></td><td>every loaded active child (cascade)</td><td><code>archived</code></td><td><code>UPDATE addresses SET deleted_at=NOW() WHERE user_id=$1 AND deleted_at IS NULL</code></td></tr>
+        <tr><td><code>unarchive</code></td><td>every loaded archived child (cascade)</td><td><code>unarchived</code></td><td><code>UPDATE addresses SET deleted_at=NULL WHERE user_id=$1 AND deleted_at IS NOT NULL</code></td></tr>
+        <tr><td><code>delete</code></td><td>every loaded child</td><td><code>deleted</code></td><td>Postgres <code>FK ON DELETE CASCADE</code></td></tr>
+    </table>
+    <p>
+        For flat entities (no <code>AggregateRootProvider</code>) the <code>children</code> block is
+        absent. UPDATED children pair pre/post by <code>GetID()</code> against the deep-copied prior
+        root's aggregates map (see <a href="#old-state">Old-state snapshot</a>).
+    </p>
+
+    <h3 id="audit-actor">Actor &amp; claims</h3>
+    <p>
+        The persister reads the authenticated principal straight from the request scope
+        (<code>persistence.RequestContext</code>, satisfied by <code>*AppContext</code>) — so the
+        actor is stamped for <strong>both Auto and manual handlers</strong> without any handler-side
+        code, because every write goes through <code>repo.Scope(ctx, …)</code> and <code>ctx</code>
+        IS the <code>*AppContext</code> the auth middleware populated.
+    </p>
+    <ul>
+        <li><code>actor</code> — JWT <code>sub</code>, or <code>"anonymous"</code> when no Identity is attached (auth disabled, public route, background job).</li>
+        <li><code>actorIssuer</code> — JWT <code>iss</code>; omitted when empty.</li>
+        <li><code>actorClaims</code> — the subset declared by <code>auth.auditClaims</code>. Empty / absent allowlist → the block is omitted entirely; the signing-secret-style claims you never declared do not leak.</li>
+    </ul>
+
+    <h3 id="audit-labels">Field labels — translated identifier on the audit row</h3>
+    <p>
+        The audit <code>field</code> (<code>name</code>, <code>addresses[0].zip_code</code>) is a
+        technical identifier — stable but not human-readable. For compliance / ouvidoria / BI readers
+        a <code>label:"&lt;catalogKey&gt;"</code> struct tag on the domain field declares a catalog
+        key the audit pipeline writes onto <code>FieldChange.FieldLabelKey</code> in every
+        <code>delta</code> change (top-level and child). The full declaration mechanism — shared with
+        the notification wire — lives under
+        <a href="#status-mapping">HTTP status mapping → Field labels</a>; here is the audit-side
+        behavior.
+    </p>
+    <p>
+        <strong>Audit stores the key, not the rendered string.</strong> The row is an immutable
+        artifact; the catalog evolves and a compliance team may read in any locale, so the key
+        persists and the label is rendered <em>at read time</em>.
+    </p>
+<pre><code>{
+  "verb":   "update",
+  "kind":   "delta",
+  "changes": [{
+    "field":          "name",
+    "fieldLabelKey":  "UserNameField",
+    "from":           "Jane Doe",
+    "to":             "Jane Smith"
+  }]
+}</code></pre>
+    <p>
+        <code>snapshot</code> blocks (Insert / Delete) carry <code>map[column]value</code> with no
+        schema for labels and are intentionally not labeled. Fields without a <code>label</code> tag
+        emit no <code>fieldLabelKey</code> (omitempty elides it).
+    </p>
+
+    <h3 id="audit-read">Reading audit rows from PostgreSQL — pre-built helpers</h3>
+    <p>
+        When <code>destinations</code> includes <code>database</code>, two canonical helpers retrieve
+        rows from <code>audit_events</code>. Both consume the minimal <code>pgExec</code> interface —
+        <code>*pgxpool.Pool</code>, <code>*pgxpool.Conn</code>, <code>*pgx.Conn</code>, and
+        <code>pgx.Tx</code> all satisfy it — so calls inside and outside an open transaction share
+        the same surface.
+    </p>
+<pre><code>// Forensic single-row lookup — you saw an id in the slog echo and want the full row.
+ev, err := audit.FindByID(ctx, deps.Postgres.Pool(), eventID)
+if errors.Is(err, audit.ErrAuditNotFound) {
+    // no row with that id — partition pruned? archived?
+}
+
+// Timeline by aggregate — index-served by audit_events_entity_timeline_idx
+// (entity_type, aggregate_id, occurred_at DESC). Newest first.
+events, err := audit.FindByAggregate(ctx, deps.Postgres.Pool(), "User", userID.String())
+for _, ev := range events {
+    // walk the row's lifetime
+}</code></pre>
+    <p>
+        The returned <code>*AuditEvent</code> mirrors what the persister wrote: top-level columns map
+        directly; the <code>payload jsonb</code> blob unmarshals back into <code>Snapshot</code> /
+        <code>Changes</code> / <code>Children</code>. Render the catalog labels in any locale at read
+        time:
+    </p>
+<pre><code>// Typed path — in-process Go reader holding *audit.AuditEvent.
+audit.RenderLabels(ev, deps.Translator, configuration.LangPTBR)
+//   ev.Changes[0].FieldLabelKey == ""        (popped)
+//   ev.Changes[0].FieldLabel    == "CEP"     (rendered)
+//   ev.Children["Address"][0].Changes[0].FieldLabel == "CEP"
+
+// JSON path — BI / SQL tools parsing the audit_events.jsonb payload as map[string]any.
+var doc map[string]any
+_ = json.Unmarshal(jsonbBytes, &amp;doc)
+audit.RenderLabelsInJSON(doc, deps.Translator, configuration.LangPTBR)
+//   doc["changes"][0]["fieldLabel"]    == "CEP"
+//   doc["changes"][0]["fieldLabelKey"] is deleted</code></pre>
+    <p>
+        Both renderers mutate in place and walk the same shape — top-level <code>changes</code> plus
+        <code>children.&lt;typeName&gt;[].changes</code>; <code>snapshot</code> blocks are untouched.
+        Catalog miss inherits the <code>Translator.Render</code> fallback: the raw key reaches
+        <code>fieldLabel</code> and a <code>slog.Warn("translation.key.missing", …)</code> fires once
+        per <code>(lang, key)</code> tuple.
+    </p>
+    <p>
+        Caveats: <code>FindByID</code> issues a multi-partition index scan (composite PK
+        <code>(id, created_at)</code>) — fast for recent rows, costlier into archived partitions
+        (pass <code>created_at</code> via raw SQL when the lookup goes deep). <code>FindByAggregate</code>
+        returns every matching row; long timelines should slice downstream or use raw SQL with
+        explicit <code>LIMIT</code>/<code>OFFSET</code>. The JSON round-trip yields
+        <code>float64</code>/<code>string</code>/<code>bool</code>/<code>map</code>/<code>slice</code>
+        — assert on stringified values, not Go-typed scalars.
+    </p>
+
+    <h3 id="audit-elk">ELK / SQL consumption — reconstructing a timeline</h3>
+    <p>
+        Both destinations expose the same vocabulary, so a timeline of one aggregate reconstructs
+        identically from either side:
+    </p>
+<pre><code># ELK / Loki — query the slog wire fields:
+entityType:User AND entityId:&lt;uuid&gt;   sorted by dateTime ASC
+
+-- PostgreSQL — query the authoritative row directly (joinable to other PG state):
+SELECT verb, action_name, kind, actor, occurred_at, payload
+FROM audit_events
+WHERE entity_type = 'User' AND aggregate_id = '&lt;uuid&gt;'
+ORDER BY occurred_at ASC;</code></pre>
+    <p>
+        The <code>threadId</code> on every event ties an audit row to the related integration event
+        and request log lines (both tables carry it) — the cross-reference is by <code>threadId</code>,
+        never by widening the audit schema with foreign payloads. Audit is "data-write forensics";
+        <a href="#integration-events">integration events</a> are "cross-service emission" — two
+        contracts kept deliberately separate.
+    </p>

@@ -1,0 +1,359 @@
+<h2>YAML Reference</h2>
+    <p>
+        One place for everything that lives in <code>microservice.&lt;profile&gt;.yaml</code> — the
+        single declarative channel between a service and the framework. This page is the
+        file-first view: every block, every key, its default, and whether it is mandatory, annotated
+        inline with <code>#</code> comments. When you want to understand a <em>feature</em>, follow
+        the cross-link to its dedicated section; when you just need to know "what does this key do?"
+        you are already in the right place.
+    </p>
+    <p>
+        Each block below maps 1:1 to a field on the framework's parsed config. Keys not shown here do
+        not exist — unknown keys under the strict-decoded blocks
+        (<code>mongo.rebuild</code>, <code>auth.authorization</code>, <code>auth.authorization.tenant</code>,
+        each <code>upstreamSubscriptions</code> entry) abort the boot naming the offender.
+    </p>
+
+    <h3>Profiles, env vars &amp; interpolation</h3>
+    <p>
+        One file per profile at the module root — <code>microservice.dev.yaml</code> and
+        <code>microservice.prd.yaml</code> are the canonical pair; extra variants
+        (<code>microservice.prd-pem.yaml</code>, …) are accepted. The framework reads exactly four
+        process env vars (full detail on the <a href="#bootstrap">Bootstrap</a> page); the profile is
+        an env var, never a YAML field, so the same file cannot drift between profiles.
+    </p>
+<pre><code># Selected at boot by APP_PROFILE (required, non-empty). dev and prd are canonical;
+# dev is the ONLY profile where auth.mode=disabled is allowed and where
+# migrations.autoRun / mongo.rebuild.autoRun default to "true".
+#
+#   APP_PROFILE=prd ./service          # loads ./microservice.prd.yaml
+#   OMNICORE_CONFIG_PATH=/etc/x.yaml   # overrides the path (tests/sidecars)
+#   OMNICORE_MONGO_FORCE_REBUILD=true  # operator escape: drop+recreate divergent indexes
+#   OMNICORE_CODE_VERSION=&lt;git-sha&gt;    # stamped on omnicore_mongo_views.code_version</code></pre>
+    <p>Three substitution forms are expanded inside <code>${...}</code> at load time:</p>
+<pre><code>dsn: "${DATABASE_URL:postgres://localhost:5432/mydb}"  # env var, ":" gives a default
+key: "${file:/etc/secrets/key.pem}"                    # file contents (trailing \n trimmed)
+pwd: "${vault:secret/data/db#password}"                # delegated to a registered SecretResolver
+
+# Notes: single pass (no recursion — ${A:${B:c}} does NOT work); a default cannot
+# contain a literal "}"; file:/vault: failures abort the boot (a missing secret in
+# prod is an operational bug, not a silent empty string). env misses are silent.</code></pre>
+
+    <h3>Top-level blocks at a glance</h3>
+    <table>
+        <tbody><tr><th>Block</th><th>Required?</th><th>Purpose</th><th>Detail</th></tr>
+        <tr><td><code>service</code></td><td><strong>yes</strong></td><td>service name (registry, consumer-group defaults)</td><td>below</td></tr>
+        <tr><td><code>http</code></td><td>no</td><td>listen address</td><td>below</td></tr>
+        <tr><td><code>postgres</code></td><td><strong>yes</strong></td><td>write-side DSN</td><td>below</td></tr>
+        <tr><td><code>mongo</code></td><td><strong>yes</strong></td><td>read-side URI/db + rebuild policy</td><td>below · <a href="#mongo-schema-evolution">rebuild</a></td></tr>
+        <tr><td><code>kafka</code></td><td><strong>yes</strong></td><td>brokers + SyncEngine group/workers</td><td>below</td></tr>
+        <tr><td><code>migrations</code></td><td>no</td><td>SQL migration dir + autoRun mode</td><td>below · <a href="#migrations">Migrations</a></td></tr>
+        <tr><td><code>query</code></td><td>no</td><td>read-side <code>?limit=</code> ceiling</td><td>below · <a href="#auto-query-handlers">Auto query handlers</a></td></tr>
+        <tr><td><code>auth</code></td><td>no*</td><td>JWT auth + external validator + authz</td><td>below · <a href="#auth-middleware">Authentication</a> · <a href="#authz-seams">Authorization</a></td></tr>
+        <tr><td><code>audit</code></td><td>no</td><td>audit event destinations</td><td>below · <a href="#audit">Audit</a></td></tr>
+        <tr><td><code>cache</code></td><td>no</td><td>private + shared key-value cache</td><td>below · <a href="#cache-subsystem">Cache subsystem</a></td></tr>
+        <tr><td><code>openapi</code></td><td>no</td><td>how the Swagger UI is served</td><td>below · <a href="#openapi">OpenAPI</a></td></tr>
+        <tr><td><code>shutdown</code></td><td>no</td><td>coordinated drain timeout</td><td>below</td></tr>
+        <tr><td><code>upstreamSubscriptions</code></td><td>no</td><td>cross-service Mongo projection</td><td>below · <a href="#query-side">QueryHandler</a></td></tr>
+        <tr><td><code>integration</code></td><td>no</td><td>cross-service async events</td><td>below · <a href="#integration-events">Integration events</a></td></tr>
+        <tr><td><code>httpClient</code></td><td>no</td><td>outbound HTTP subsystem</td><td>below · <a href="#httpclient">httpclient</a></td></tr>
+    </tbody></table>
+    <p>*<code>auth</code> defaults to <code>{mode: disabled}</code> when absent — accepted only under <code>APP_PROFILE=dev</code>; any other profile aborts the boot without it.</p>
+
+    <h3>Core — service · http · postgres · mongo · kafka · migrations · query</h3>
+<pre><code>service: my-service                      # MANDATORY — registry marker + consumer-group default seed
+
+http:
+  addr: ":8080"                          # default ":8080"
+
+postgres:
+  dsn: "${DATABASE_URL}"                 # MANDATORY — pgx v5 DSN for the write side
+
+mongo:
+  uri: "${MONGO_URI}"                    # MANDATORY — read-side projection store
+  database: "${MONGO_DB}"                # MANDATORY — DB-per-service
+  rebuild:                               # boot-time Mongo view reconciliation (strict-decoded block)
+    autoRun: check                       # check | true | false — default: dev=true / else=check
+    orphan: delete                       # delete | warn — default delete (reconcile docs whose source vanished)
+    allowDowngrade: false                # default false — opt-in for canary/blue-green rollback
+
+kafka:
+  brokers: ["${KAFKA_BROKERS:localhost:9092}"]  # MANDATORY — broker list
+  syncGroupId: "${SYNC_GROUP_ID}"        # MANDATORY — SyncEngine consumer group
+  syncWorkers: 4                         # 0/unset → runtime.NumCPU(); 1 = serial (per-aggregate ordering always kept)
+
+migrations:
+  dir: ./migrations                      # default ./migrations
+  autoRun: check                         # check | true | false — default: dev=true / else=check
+
+query:
+  maxLimit: 200                          # service-wide ceiling on ?limit=; 0/unset → framework default 100
+                                         # (per-view override via fwinfra.View(...).MaxLimit(N))</code></pre>
+
+    <h3>auth</h3>
+    <p>
+        Optional block; defaults to <code>{mode: disabled}</code>. When <code>mode: jwt</code>, the
+        <code>jwt:</code> sub-block is required with <code>issuer</code> + <code>audience</code> +
+        <strong>exactly one</strong> of <code>jwksUrl</code> / <code>publicKeyPem</code>. See
+        <a href="#auth-middleware">Authentication</a> and <a href="#authz-seams">Authorization</a>.
+    </p>
+<pre><code>auth:
+  mode: jwt                              # jwt | disabled — default disabled (disabled rejected unless APP_PROFILE=dev)
+
+  jwt:                                   # required when mode=jwt
+    algorithms: [RS256, ES256, EdDSA]    # default all three asymmetric; HMAC intentionally excluded
+    issuer: https://idp.example.com      # MANDATORY (mode=jwt)
+    audience: my-service                 # MANDATORY (mode=jwt)
+    leewaySeconds: 30                    # optional clock-skew leeway on exp
+    jwksUrl: https://idp/.well-known/jwks.json   # exactly ONE of jwksUrl / publicKeyPem
+    # publicKeyPem: "${file:/etc/idp.pem}"       # inline PEM alternative
+
+  externalValidator:                     # optional — per-request revocation check (RFC 7662-style)
+    method: POST                         # GET | POST — default POST
+    url: https://idp/introspect          # MANDATORY (when block present)
+    tokenPlacement: form_field           # bearer_header | form_field | json_body | query_param
+    tokenField: token                    # required unless tokenPlacement=bearer_header
+    extraHeaders:                        # optional
+      Authorization: "Basic ${IDP_CREDS}"
+    success:
+      jsonPath: $.active                 # MANDATORY — dot-path into the response body
+      expectedValue: true                # MANDATORY — value the field must equal (Go == on any)
+    timeoutMs: 2000                      # default 2000
+    failMode: closed                     # closed | open — default closed (reject when validator errors)
+    cacheTtlSeconds: 0                   # default 0 = OFF; >0 caches POSITIVE answers only (key = SHA-256(token))
+
+  publicRoutes:                          # bypass auth entirely — exact "METHOD /path", no globs
+    - GET /health
+    - GET /ready
+
+  auditClaims: [tenant_id, roles]        # allowlist of JWT claims surfaced in audit actorClaims; empty → omitted
+
+  authorization:                         # optional (strict-decoded) — declarative authz layer
+    enabled: true                        # default false — boot scan requires RequirePermission on every non-public route; needs mode=jwt
+    permissionsClaim: permissions        # default "permissions" — claim Identity.HasPermission reads
+    tenant:                              # optional (strict-decoded) — multi-tenant gate
+      enabled: false                     # default false — toggles Identity.TenantID() lookup
+      claim: tenant_id                   # default "tenant_id"
+      required: false                    # default false — reject requests with empty tenant (needs tenant.enabled=true)</code></pre>
+
+    <h3>audit</h3>
+    <p>
+        Routes the <code>AuditEvent</code> produced by every successful write. Absent block (or absent
+        <code>destinations:</code> key) defaults to <strong>both</strong>. See <a href="#audit">Audit</a>.
+    </p>
+<pre><code>audit:
+  destinations:                          # absent → [slog, database]; [] → audit OFF; unknown/duplicate token aborts boot
+    - slog                               # post-commit echo (ELK / Loki / stdout collector)
+    - database                           # in-TX row in audit_events (atomic with the write — source of truth)</code></pre>
+
+    <h3>cache</h3>
+    <p>
+        Absent block → <code>Deps.Cache</code> nil and the subsystem is dormant. <code>store</code> is
+        mandatory when the block is present. The optional <code>shared:</code> sub-block declares a
+        second, cross-service instance (<code>store: memory</code> rejected there). See
+        <a href="#cache-subsystem">Cache subsystem</a>.
+    </p>
+<pre><code>cache:
+  store: redis                           # memory (default when present) | redis | custom
+  maxEntries: 10000                      # memory only; 0 → framework default 10000
+  redis:                                 # required when store=redis, rejected otherwise
+    addr: "${REDIS_ADDR:localhost:6379}" # MANDATORY (redis)
+    password: "${REDIS_PASSWORD}"        # optional; empty = no AUTH
+    db: 0                                # default 0 (use a dedicated DB per service)
+    keyPrefix: "${SERVICE}-cache"        # optional namespace prefix
+    failMode: open                       # open (default — swallow + slog.Warn + miss) | closed (propagate error)
+    timeoutMs: 100                       # default 100 — caps every Get/Set/Delete
+
+  shared:                                # OPTIONAL second instance → Deps.SharedCache
+    store: redis                         # redis | custom — memory REJECTED (cannot share an in-process LRU)
+    redis:
+      addr: "${SHARED_REDIS_ADDR}"
+      keyPrefix: "${TEAM}-shared"</code></pre>
+
+    <h3>openapi · shutdown</h3>
+    <p>
+        <code>openapi:</code> tunes <em>how</em> the Swagger UI is served (the spec identity —
+        Title/Version — stays in code on <code>Wiring.OpenAPI</code>). <code>shutdown:</code> caps the
+        coordinated drain on SIGINT/SIGTERM. See <a href="#openapi">OpenAPI</a>.
+    </p>
+<pre><code>openapi:
+  uiPath: /docs                          # default /docs; must start with "/"; cannot be /openapi.json or /health
+  rootRedirect: false                    # default false — when true registers GET / → 302 uiPath
+
+shutdown:
+  drainTimeoutSeconds: 30                # default 30 (0/absent → 30); aligns with k8s terminationGracePeriodSeconds</code></pre>
+
+    <h3>upstreamSubscriptions</h3>
+    <p>
+        List — one entry per upstream entity type materialized into a local Mongo collection. Each
+        entry is strict-decoded (unknown keys abort the boot). See cross-service composition under
+        <a href="#query-side">QueryHandler · CQRS</a>.
+    </p>
+<pre><code>upstreamSubscriptions:
+  - topic: users.events                  # MANDATORY — Kafka topic produced by the upstream service
+    collection: users                    # MANDATORY — local Mongo collection (no collision with views/other subs)
+    consumerGroup: ""                    # default "&lt;service&gt;-upstream-&lt;topic&gt;"
+    workers: 2                            # default 1 (aggregate-id hashed → ordered per aggregate)
+    filter: [id, name, email]            # allowlist of surviving fields; nil/empty → full payload kept
+    deleteOnArchive: false               # default false (ARCHIVED keeps doc with deleted_at); true → remove doc
+    startFrom: latest                    # latest (default) | earliest | offset:&lt;N&gt;
+    onUpstreamDelete: cascade            # cascade (default) | anonymize | keep — GDPR propagation on DELETED
+    anonymizeFields: [name, email]       # REQUIRED when onUpstreamDelete=anonymize; ignored otherwise
+    acknowledgeOffsetReset: false        # REQUIRED true for startFrom: offset:&lt;N&gt; under a non-dev profile</code></pre>
+
+    <h3>integration</h3>
+    <p>
+        Cross-service async messaging — <code>publishes</code> (events this service emits via
+        <code>Dispatch</code>) + <code>subscribes</code> (events it consumes). Go code references the
+        YAML <em>keys</em> (<code>eventKey</code> / <code>sourceKey</code>); the wire
+        <code>eventType</code> lives only here, so a wire rename is a YAML edit. See
+        <a href="#integration-events">Integration events</a>.
+    </p>
+<pre><code>integration:
+  defaults:                              # seed every subscribe entry that omits the field
+    consumerGroup: "${INTEGRATION_GROUP_ID:my-service-integration}"  # default "&lt;service&gt;-integration"
+    workers: 4                           # 0/unset → runtime.NumCPU()
+    startFrom: latest                    # latest (default) | earliest
+
+  publishes:
+    events:
+      userActivated:                     # eventKey (Go-side identifier passed to Dispatch)
+        eventType: UserActivated         # MANDATORY — wire header value consumers match
+        aggregate: User                  # optional — omit for standalone events
+        version: 1                       # optional integer stamped on event_version
+
+  subscribes:
+    partners:                            # sourceKey (Go reference)
+      topic: partners.integration.events # MANDATORY — Kafka topic
+      workers: 8                         # optional per-source override (defaults.workers otherwise)
+      consumerGroup: ""                  # optional per-source override (defaults.consumerGroup otherwise)
+      startFrom: ""                      # optional per-source override (defaults.startFrom otherwise)
+      events:
+        partnerOnboarded:                # eventKey
+          eventType: PartnerOnboarded    # MANDATORY — wire eventType the producer emits</code></pre>
+
+    <h3>httpClient</h3>
+    <p>
+        Outbound HTTP subsystem. Absent block → <code>Deps.HttpClient</code> nil. The block is large;
+        the full per-field semantics (middleware chain, auth provider types, retry/cache/breaker
+        behavior, signing, streaming, redaction cascade) live on the dedicated
+        <a href="#httpclient">httpclient</a> page. The complete schema skeleton:
+    </p>
+<pre><code>httpClient:
+  defaults:                              # cross-service knobs; service/endpoint override field-by-field
+    timeout: 30s                         # default 30s
+    threadIdHeader: X-Thread-Id          # default X-Thread-Id
+    requestIdHeader: X-Request-ID        # default X-Request-ID
+    logBodies: true                      # default true — include req/resp bodies in the slog line (redacted)
+    headers:                             # merged into every request (defaults → service → endpoint, last wins)
+      User-Agent: "omnicore-svc/1.0"
+    retry:                               # endpoint retry overrides this field-by-field
+      maxAttempts: 3                     # absent block → 1 (no retry); present without this → 3
+      backoff: exponential-jitter        # constant | linear | exponential | exponential-jitter (default)
+      initialDelay: 100ms                # default 100ms
+      maxDelay: 5s                       # default 5s
+      retryOn: [502, 503, 504, network, timeout]   # default; numeric codes + network/timeout/dns sentinels
+      respectRetryAfter: true            # default true — honor RFC 7231 Retry-After (capped at maxDelay)
+    cache:                               # response-cache POLICY (backend is the top-level cache: block)
+      enabled: true                      # default true
+      defaultTTL: 5m                     # default 5m
+      honorCacheControl: true            # default true
+    circuitBreaker:                      # shared config; per-(service,endpoint) runtime state
+      enabled: true                      # default true (when block present)
+      failureThreshold: 5                # default 5 consecutive failures trip
+      successThreshold: 2                # default 2 half-open successes close
+      openFor: 30s                       # default 30s recovery window
+    pool:                                # per-service http.Transport tuning
+      maxIdleConnsPerHost: 100           # default 100
+      maxConnsPerHost: 200               # default 200
+      idleConnTimeout: 90s               # default 90s
+      disableKeepAlives: false           # default false
+    tls:
+      minVersion: "1.2"                  # default 1.2
+      cipherSuites: modern               # modern (default) | intermediate | legacy | [explicit names]
+      insecureSkipVerify: false          # default false (test/dev only)
+      clientCertFile: ""                 # mTLS — set with clientKeyFile
+      clientKeyFile: ""
+      caBundle: ""                       # PEM path; REPLACES system roots (concatenate if you need both)
+    redaction:                           # EXTENDS the framework block list (union-only, never removes)
+      headers: [X-Internal-Trace]
+      bodyJSONPath: [$.password]
+      queryKeys: [client_secret]
+
+  services:
+    keycloak:
+      baseURL: https://kc.example.com    # MANDATORY (unless a BaseURLResolver is registered)
+      timeout: 10s                       # optional — overrides defaults.timeout
+      headers: { X-Tenant: acme }        # optional — merged after defaults.headers
+      auth: { provider: kc-api-key }     # optional — references an authProviders entry
+      tls: { ... }                       # optional — overrides defaults.tls field-by-field
+      pool: { maxConnsPerHost: 20 }      # optional — overrides defaults.pool
+      redaction: { headers: [X-KC-Internal] }   # optional — extends the cascade
+      signing:                           # optional — HMAC request signing (AWS SigV4-lite canonical)
+        type: hmac-sha256                # MANDATORY (only supported type)
+        keyId: "${PAY_KEY_ID}"           # optional
+        keyIdHeader: X-Key-Id            # required when keyId is set
+        secret: "${PAY_SIGNER_SECRET}"   # MANDATORY
+        signedHeaders: [host, x-date, x-content-sha256, content-type]   # MANDATORY, non-empty
+        timestampHeader: X-Date          # MANDATORY
+        timestampFormat: rfc1123         # rfc1123 | iso8601 | unix-seconds
+        contentSHA256Header: X-Content-SHA256   # default X-Content-SHA256; "-" disables
+        signatureHeader: X-Signature     # MANDATORY
+        signaturePrefix: ""              # optional, e.g. "HMAC-SHA256 "
+      endpoints:
+        getUser:
+          method: GET                    # MANDATORY (GET/POST/PUT/PATCH/DELETE/HEAD)
+          path: /users/{id}              # MANDATORY (must start with "/"; {placeholders} bind to http:"path,..")
+          requestCodec: json             # json (default) | xml | form-urlencoded
+          responseCodec: json            # json (default) | xml | form-urlencoded
+          acceptableStatus: [404]        # non-error statuses the caller expects; default []
+          headers: { Accept: application/json }
+          cacheAcceptable: false         # default false — cache only 2xx (true also caches acceptableStatus)
+          cache: { ttl: 1m, varyOn: [header:Accept-Language, query:tenant] }   # opt-in per endpoint
+          retry: { maxAttempts: 5 }      # overrides defaults.retry (POST/PATCH need idempotency to retry)
+          idempotency: { header: X-Idempotency-Key, source: ctx }   # source: ctx (default, UUIDv7) | explicit
+          responseStream: false          # download streaming (Resp = StreamResponse); excludes cache/SSE
+          responseSSE: false             # Server-Sent Events (Resp = SSEResponse); excludes cache/stream
+
+  authProviders:                         # named providers referenced by services.&lt;name&gt;.auth.provider
+    kc-api-key:
+      type: header-static                # none | header-static | bearer-static | basic | forward-bearer | oauth2-client-credentials | credentials-exchange
+      attach: { as: header, name: X-API-Key, value: "${KC_API_KEY}" }   # as: header(default)|query|cookie; format optional ("Bearer {token}")
+    vendor-basic:
+      type: basic
+      username: "${VENDOR_USER}"
+      password: "${VENDOR_PASS}"
+    legacy-bearer:
+      type: bearer-static
+      token: "${LEGACY_TOKEN}"
+    keycloak-svc:
+      type: oauth2-client-credentials
+      tokenEndpoint: https://kc/realms/main/protocol/openid-connect/token   # MANDATORY
+      clientId: "${KC_CLIENT_ID}"
+      clientSecret: "${KC_CLIENT_SECRET}"
+      scope: ["api.read", "api.write"]
+      audience: pay.example.com          # optional
+      revocationOnUnauthorized: true     # default false — on 401, invalidate token + re-acquire + retry once
+      tokenCache:
+        source: jwt-exp                  # jwt-exp | response-field | ttl
+        skew: 30s                        # default 30s — refresh this long before expiry
+        singleFlight: true               # default true — collapse concurrent acquisitions
+        jsonPath: $.expires_in           # for source=response-field
+        unit: seconds                    # seconds (default) | millis | iso8601
+        ttl: 10m                         # for source=ttl
+    kc-multitenant:
+      type: credentials-exchange         # generic "POST credentials, get token" path
+      tokenEndpoint: https://kc/auth/exchange
+      requestCodec: json                 # json | form-urlencoded (default form-urlencoded)
+      requestFields: { grant_type: password, client_id: "${KC_CLIENT_ID}" }   # static body fields
+      requestFieldsFromCtx: { username: idp.username, password: idp.password } # body field → AppContext key (per-tenant)
+      requestHeaders: { Authorization: "Basic ${KC_BASIC}" }                   # extra request headers
+      responseTokenPath: $.access_token  # MANDATORY — JSONPath to the token
+      tokenCache: { source: response-field, jsonPath: $.expires_in, unit: seconds, skew: 30s }
+      revocationOnUnauthorized: true</code></pre>
+    <div class="note">
+        <strong>Per-call overrides.</strong> Several <code>httpClient</code> knobs are also overridable
+        at the call site via the <code>InvokeOption</code> family (<code>WithConfig</code>,
+        <code>WithExtraHeader</code>, <code>WithClientCert</code>, …) — those are Go API, not YAML.
+        See the <a href="#httpclient">httpclient</a> page.
+    </div>
