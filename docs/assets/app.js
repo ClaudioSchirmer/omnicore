@@ -131,6 +131,20 @@
             });
             wrap.appendChild(btn);
         });
+        // copy button for HTML diagrams (.arch) — copies the embedded ASCII version
+        sec.querySelectorAll('.arch').forEach(arch => {
+            const tpl = arch.querySelector('template.arch-ascii');
+            if (!tpl) return;
+            const text = tpl.content.textContent;
+            const btn = document.createElement('button'); btn.className = 'copy-btn'; btn.type = 'button'; btn.textContent = 'Copy';
+            btn.addEventListener('click', () => {
+                navigator.clipboard.writeText(text).then(() => {
+                    btn.textContent = 'Copied'; btn.classList.add('done');
+                    setTimeout(() => { btn.textContent = 'Copy'; btn.classList.remove('done'); }, 1400);
+                });
+            });
+            arch.appendChild(btn);
+        });
         // eyebrow above the h2 (skip overview, which has the hero)
         if (!sec.querySelector('.hero')) {
             const h2 = sec.querySelector('h2');

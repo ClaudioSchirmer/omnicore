@@ -370,7 +370,7 @@ tbody tr:hover { background: var(--surface-2); }
 td code { font-size: 12px; }
 
 /* ---------- Flow + diagram blocks ---------- */
-.flow, .layer-diagram {
+.flow {
     background: var(--code-bg);
     border: 1px solid var(--border);
     border-radius: 11px;
@@ -384,6 +384,30 @@ td code { font-size: 12px; }
 .flow .auto, .flow .manual { padding: 1px 5px; border-radius: 4px; }
 .flow .auto { background: var(--good-bg); color: var(--good); box-shadow: inset 0 0 0 1px var(--good-line); }
 .flow .manual { background: var(--warn-bg); color: var(--warn); box-shadow: inset 0 0 0 1px var(--warn-line); }
+
+/* ---------- Architecture layer diagram (HTML, theme-aware) ---------- */
+.arch { position: relative; display: flex; flex-direction: column; gap: 10px; margin: 18px 0; }
+.arch:hover .copy-btn { opacity: 1; }
+.arch-layer {
+    border: 1px solid var(--border); border-radius: 11px;
+    background: var(--surface); box-shadow: var(--shadow-soft); overflow: hidden;
+}
+.arch-row {
+    display: flex; flex-wrap: wrap; align-items: baseline;
+    column-gap: 12px; row-gap: 2px;
+    padding: 8px 15px; border-top: 1px solid var(--border-soft);
+}
+.arch-row:first-child { border-top: none; }
+.arch-head { background: var(--accent-soft); }
+.arch-sub-indent { padding-left: 30px; }
+.arch-pkg {
+    font-family: "JetBrains Mono", SFMono-Regular, Consolas, monospace;
+    font-size: 13px; font-weight: 600; color: var(--accent-ink);
+    white-space: nowrap; flex: none;
+}
+.arch-pkg.sub { font-weight: 500; color: var(--ink-soft); }
+.arch-desc { font-size: 13.5px; color: var(--muted); }
+.arch-head .arch-desc { color: var(--ink-soft); font-size: 14px; }
 
 /* ---------- Tag pills ---------- */
 .tag {
@@ -489,6 +513,6 @@ mark.search-hit { background: #ffe39c; color: #3a2f12; border-radius: 3px; paddi
     .collapse-body { display: block !important; }
     h3.collapsible { cursor: auto; }
     h3.collapsible .chev { display: none; }
-    .code-wrap pre, .flow, .layer-diagram, .table-wrap, .card, .box { break-inside: avoid; }
+    .code-wrap pre, .flow, .arch-layer, .table-wrap, .card, .box { break-inside: avoid; }
     body { background: #fff; }
 }

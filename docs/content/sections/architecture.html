@@ -1,23 +1,55 @@
 <h2>Architecture</h2>
 
     <h3 id="layers">The 4 layers</h3>
-    <div class="layer-diagram"><pre>┌──────────────────────────────────────────────────────────────────┐
-│  web/             HTTP transport, response shape, middleware       │
-│                   semanticToStatus (Semantic → 404/409/403/422/…)  │
-│  application/                                                       │
-│    configuration/  AppContext, Language                             │
-│    translation/    Translator, PT_BR/ENG/ES/FR/DE/IT/NL modules     │
-│    notifications/  ContextDTO/MessageDTO (with NotificationKey)     │
-│    pipeline/       Pipeline, Result[T], Request/Command/Query       │
-│    persistence/    ScopedRepository[T] = Reader[T] + Scope          │
-│                    (binds ctx + WriteOption hooks) → domain.Writer   │
-│                    TxHandle + AfterBegin/BeforeCommit hook types     │
-│    queries/        FindByParamsQuery + FindByIDQuery + ViewReader  │
-│  domain/          Pure business rules (zero IO)                    │
-│                   AggregateChildren, AggregateRootProvider          │
-│  infra/           Postgres, Mongo, Kafka, audit/events/log         │
-│                   aggregate_persister (automatic dispatch)          │
-└──────────────────────────────────────────────────────────────────┘</pre></div>
+    <div class="arch">
+        <div class="arch-layer">
+            <div class="arch-row arch-head"><span class="arch-pkg">web/</span><span class="arch-desc">HTTP transport (Fiber v3), JWT auth middleware · Semantic → HTTP status · canonical response envelope</span></div>
+            <div class="arch-row arch-sub-indent"><span class="arch-pkg sub">openapi/</span><span class="arch-desc">OpenAPI 3.1 + Swagger UI, generated from your Go types</span></div>
+        </div>
+        <div class="arch-layer">
+            <div class="arch-row arch-head"><span class="arch-pkg">application/</span></div>
+            <div class="arch-row arch-sub-indent"><span class="arch-pkg sub">configuration/</span><span class="arch-desc">AppContext (UUID + Language + Identity)</span></div>
+            <div class="arch-row arch-sub-indent"><span class="arch-pkg sub">translation/</span><span class="arch-desc">Translator + 7 language modules (PT-BR / ENG / ES / FR / DE / IT / NL)</span></div>
+            <div class="arch-row arch-sub-indent"><span class="arch-pkg sub">notifications/</span><span class="arch-desc">ContextDTO / MessageDTO (carries NotificationKey + Semantic)</span></div>
+            <div class="arch-row arch-sub-indent"><span class="arch-pkg sub">pipeline/</span><span class="arch-desc">Handler[TReq,TRes], Result[T], Pipeline, Request / Command / Query</span></div>
+            <div class="arch-row arch-sub-indent"><span class="arch-pkg sub">persistence/</span><span class="arch-desc">ScopedRepository[T] = Reader[T] + Scope · TxHandle + AfterBegin / BeforeCommit hooks</span></div>
+            <div class="arch-row arch-sub-indent"><span class="arch-pkg sub">queries/</span><span class="arch-desc">QueryHandler + ViewReader · keyset pagination, sparse ?fields=, sort, filters</span></div>
+            <div class="arch-row arch-sub-indent"><span class="arch-pkg sub">handlers/</span><span class="arch-desc">Auto Command + Query Handlers — generic CRUD with zero handler code</span></div>
+        </div>
+        <div class="arch-layer">
+            <div class="arch-row arch-head"><span class="arch-pkg">domain/</span><span class="arch-desc">Pure business rules — ZERO IO (stdlib + google/uuid only)</span></div>
+            <div class="arch-row arch-sub-indent"><span class="arch-desc">ValidEntity (Insertable / Updatable / Archivable / Deletable / Unarchivable / Batch)</span></div>
+            <div class="arch-row arch-sub-indent"><span class="arch-desc">AggregateRoot + AggregateRootProvider · Rules DSL · Old-state snapshot</span></div>
+            <div class="arch-row arch-sub-indent"><span class="arch-desc">Typed Notification system (translation key = struct name)</span></div>
+        </div>
+        <div class="arch-layer">
+            <div class="arch-row arch-head"><span class="arch-pkg">infra/</span><span class="arch-desc">Postgres (+ transactional outbox + audit), Mongo views, Kafka SyncEngine</span></div>
+            <div class="arch-row arch-sub-indent"><span class="arch-desc">aggregate_persister (automatic dispatch) · composer · rebuild (Mongo schema evolution)</span></div>
+            <div class="arch-row arch-sub-indent"><span class="arch-desc">cache/ · httpclient/ · integration/ (events) · criteria/ (entity search engine)</span></div>
+            <div class="arch-row arch-sub-indent"><span class="arch-desc">migration/ · upstream_subscriber (cross-service) · audit / events / log</span></div>
+        </div>
+        <template class="arch-ascii">┌─────────────────────────────────────────────────────────────────────┐
+│   web/              HTTP transport (Fiber v3), JWT auth middleware  │
+│                     Semantic → HTTP status, canonical envelope      │
+│     openapi/        OpenAPI 3.1 + Swagger UI from your Go types     │
+│   application/                                                      │
+│     configuration/  AppContext (UUID + Language + Identity)         │
+│     translation/    Translator + 7 langs (PT/EN/ES/FR/DE/IT/NL)     │
+│     notifications/  ContextDTO/MessageDTO (NotificationKey)         │
+│     pipeline/       Handler[T], Result[T], Pipeline, Cmd/Query      │
+│     persistence/    ScopedRepository[T] = Reader[T] + Scope         │
+│                     TxHandle + AfterBegin/BeforeCommit hooks        │
+│     queries/        QueryHandler + ViewReader; keyset, ?fields=     │
+│     handlers/       Auto Command + Query Handlers (zero code)       │
+│   domain/           Pure business rules, ZERO IO                    │
+│                     ValidEntity, AggregateRoot, Rules, Old()        │
+│                     Notification system (typed, translated)         │
+│   infra/            Postgres (+outbox +audit), Mongo, Kafka sync    │
+│                     aggregate_persister, composer, rebuild          │
+│                     cache/ httpclient/ integration/ criteria/       │
+│                     migration/, upstream_subscriber, events/log     │
+└─────────────────────────────────────────────────────────────────────┘</template>
+    </div>
 
     <h3 id="dependencies">Dependency rules</h3>
     <table>
@@ -38,7 +70,7 @@
         </tr>
         <tr>
             <td><code>infra</code></td>
-            <td><code>domain</code> (the persistence layer implements the <code>Repository</code> port; audit emission is owned by infra itself)</td>
+            <td><code>domain</code>, <code>application/persistence</code> (infra implements the <code>ScopedRepository</code> write binding + <code>TxHandle</code>/hook interfaces; audit emission is owned by infra itself)</td>
             <td><code>web</code></td>
         </tr>
         <tr>
