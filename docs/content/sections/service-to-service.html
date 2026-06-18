@@ -23,13 +23,10 @@
             <td><a href="#integration-events"><code>integration</code> events</a> (async)</td>
             <td>Decouple in time: emit a typed event into <code>integration_events</code> (atomic with the data write) and let subscribers consume it on their own clock. No blocking, no fan-out coupling in the producer.</td>
         </tr>
-        <tr>
-            <td>Send a command to another service with no return value (rare)</td>
-            <td>↳ reformulate as an <a href="#integration-events">integration event</a></td>
-            <td>There is no separate fire-and-forget primitive, by design. A subscriber's <code>Receiver.On</code> runs the <strong>same</strong> <code>pipeline.Handler</code> an HTTP route would, and the event DTO carries <code>ToCommand()</code> — so "command without return" <em>is</em> "event + reaction". Modeling it as an event keeps the producer decoupled from the consumer's command surface.</td>
-        </tr>
     </tbody></table>
+
+    <p><strong>What about sending a <em>command</em> to another service — "do X", no return value?</strong> There is no fourth mechanism, by design. The instinct to issue a cross-service command is almost always a <em>fact</em> in disguise: instead of telling <code>orders</code> → <code>email</code> "send the confirmation", the <code>orders</code> service announces "order confirmed" and <code>email</code> reacts. Modeling it as an event keeps the producer from knowing who consumes it — add a second reactor (loyalty points, analytics) and the producer doesn't change. So a cross-service command collapses into the async path above: a subscriber's <code>Receiver.On</code> runs the <strong>same</strong> <code>pipeline.Handler</code> an HTTP route would, and the event DTO's <code>ToCommand()</code> is where the event becomes a local command inside the consumer. The imperative verb (<code>InsertUser</code>, <code>SendEmail</code>) still exists — but as <code>B</code>'s internal detail, never as a contract between <code>A</code> and <code>B</code>. The genuinely-rare case where you <em>do</em> want a directed imperative (an explicit saga orchestrator, a "refund transaction X" addressed to one actor) travels the same integration-event path.</p>
 
     <p class="note"><strong>The read-side path and the event path share one spine.</strong> <code>FromMongo</code> is not a parallel universe to integration events — the upstream collection it reads is itself materialized by the framework consuming an event stream. "Read another service's state" and "react to another service's event" are two consumer-facing surfaces over the same CDC backbone; the difference is whether you want the <em>data</em> projected locally or a <em>handler</em> invoked.</p>
 
-    <p><a href="#cache-subsystem">Cache</a> is orthogonal to all four — a cross-cutting accelerator for the sync path (<code>httpclient</code> response cache) and read amplification, never a transport in its own right.</p>
+    <p><a href="#cache-subsystem">Cache</a> is orthogonal to all three — a cross-cutting accelerator for the sync path (<code>httpclient</code> response cache) and read amplification, never a transport in its own right.</p>
