@@ -30,9 +30,17 @@ with `1.0.0`.
   `export.CSV(export.WithDelimiter(r))` is the first encoder, with the field
   separator chosen at mount time. The format-neutral core —
   `queries.ExportPlan` (built by `infra.(*ViewDefinition).ExportPlan()`),
-  `export.Generate`, and the `export.Encoder`/`Sink` boundary — means a future
-  format (XLSX) is a new encoder with no change to the plan, the generator, or
-  the HTTP wrapper.
+  `export.Generate`, and the `export.Encoder`/`Sink` boundary — means a new
+  format is a new encoder with no change to the plan, the generator, or the
+  HTTP wrapper.
+- **XLSX (Excel) export** — `export.XLSX(export.WithSheetName(...))` encoder +
+  the convenience wrapper `fwweb.HandleQueryAsXLSX[TReq, TQ]`, a drop-in sibling
+  of `HandleQueryAsCSV` sharing the same plan, generator, and criteria handling.
+  Header rows are bold and numeric/typed cells keep their type (`Cell.Value any`
+  on the neutral `Row` carries the type through to the encoder). Built on
+  `github.com/xuri/excelize/v2` via its streaming writer (memory bounded by
+  `maxExportRows`); the per-level offset becomes the spreadsheet's own column
+  offset. Adds `github.com/xuri/excelize/v2` as a dependency.
 - **`ViewDefinition.MaxExportRows(n)` + `query.maxExportRows` yaml** — per-view
   and service-wide ceilings on the number of rows a tabular export streams,
   resolved via `ViewDefinition.ResolveMaxExportRows(yamlDefault)` (cascade:

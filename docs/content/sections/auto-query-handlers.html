@@ -530,9 +530,12 @@ fwopenapi.MountRaw(d.OpenAPIRegistry, app, fiber.MethodGet, "/users.csv", csvH,
         <strong>Format is pluggable.</strong> The walk, the per-level offset, the labelKey headers,
         and the <code>?fields=</code> pruning are format-neutral — a <code>queries.ExportPlan</code>
         plus the read documents are turned into a stream of <code>export.Row</code> events that a
-        <code>export.Encoder</code> serializes. <code>export.CSV(opts…)</code> is the first encoder
-        (its <code>export.WithDelimiter(r)</code> option sets the field separator at mount time). A
-        future format — XLSX — is a new <code>Encoder</code>, with no change to the plan, the
-        generator, or the HTTP wrapper.
+        <code>export.Encoder</code> serializes. Two encoders ship:
+        <code>export.CSV(export.WithDelimiter(r))</code> (delimiter chosen at mount) and
+        <code>export.XLSX(export.WithSheetName(s))</code> (Excel — bold header rows, numeric/typed
+        cells kept typed, built on <code>excelize</code>'s streaming writer). The matching
+        convenience wrappers are <code>fwweb.HandleQueryAsCSV</code> and
+        <code>fwweb.HandleQueryAsXLSX</code>; a further format is a new <code>Encoder</code>, with
+        no change to the plan, the generator, or the HTTP wrapper.
     </p>
 

@@ -117,6 +117,23 @@ func HandleQueryAsCSV[TReq HasToParamsQuery[TQ], TQ queries.FindByParamsQuery](
 	return HandleQueryExport(pipe, sample, plan, translator, maxRows, filenameBase, export.CSV(csvOpts...), h)
 }
 
+// HandleQueryAsXLSX is the Excel-format convenience over HandleQueryExport —
+// a drop-in sibling of HandleQueryAsCSV sharing the same plan, generator, and
+// criteria handling; only the encoder differs. Optional xlsxOpts (e.g.
+// export.WithSheetName("Users")) are the per-route serialization choices.
+func HandleQueryAsXLSX[TReq HasToParamsQuery[TQ], TQ queries.FindByParamsQuery](
+	pipe *pipeline.Pipeline,
+	sample TReq,
+	plan *queries.ExportPlan,
+	translator *translation.Translator,
+	maxRows int64,
+	filenameBase string,
+	h pipeline.Handler[TQ, queries.Page],
+	xlsxOpts ...export.XLSXOption,
+) fiber.Handler {
+	return HandleQueryExport(pipe, sample, plan, translator, maxRows, filenameBase, export.XLSX(xlsxOpts...), h)
+}
+
 // buildExportCriteria parses the export route's query string. Filters come from
 // the Request DTO schema (reusing the JSON allowlist); `?fields=` / `?sort=` are
 // validated/translated against the plan; `?search=` / `?includeArchived=` flow
