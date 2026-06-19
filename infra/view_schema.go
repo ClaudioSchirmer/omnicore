@@ -39,7 +39,11 @@ func newViewNode(schema *TableSchema, embeds []embedDef) *viewNode {
 		if e.source == nil {
 			continue
 		}
-		seg := e.source.goSegment
+		// Parent-side Go segment: explicit .As, else derived from the source's
+		// Go type (local), else the doc field as a last-resort (the boot guard
+		// ValidateViewSchemas rejects an external embed that reaches this with
+		// no resolvable segment, so this fallback is defensive only).
+		seg := resolveGoSegment(e)
 		if seg == "" {
 			seg = e.field
 		}
@@ -54,14 +58,16 @@ func newViewNode(schema *TableSchema, embeds []embedDef) *viewNode {
 	return n
 }
 
-// hasSchema reports whether this node carries a TableSchema. When false the
-// translator degrades to identity (keys pass through as physical columns) — the
-// no-schema fallback for views declared without .Schema(...).
+// hasSchema reports whether this node carries a TableSchema. A registered view
+// ALWAYS does (schema is mandatory, enforced at boot); this stays false only for
+// the defensive empty node the reader returns for a view name it has no
+// definition for — there is no schema-optional mode for a real view.
 func (n *viewNode) hasSchema() bool { return n != nil && n.schema != nil }
 
 // columnPath translates a Go field path (e.g. ["Addresses","ZipCode"]) into the
 // physical doc/column path (e.g. ["addresses","zip"]). Returns ok=false for an
-// unknown field. With no schema it returns the path unchanged (identity).
+// unknown field. A node with no schema (an unregistered view name only) can't
+// translate, so it passes the path through unchanged.
 func (n *viewNode) columnPath(goPath []string) ([]string, bool) {
 	if n == nil || len(goPath) == 0 {
 		return nil, false
@@ -88,10 +94,12 @@ func (n *viewNode) columnPath(goPath []string) ([]string, bool) {
 }
 
 // softDeleteColumn returns the view root's soft-delete column (and whether
-// enabled). Empty/false means no archived gate is applied.
+// enabled). Empty/false means no archived gate is applied. There is no invented
+// "deleted_at" fallback — if the schema declares no soft-delete, the view has
+// none; an unregistered (schema-less) node likewise yields no gate.
 func (n *viewNode) softDeleteColumn() (string, bool) {
 	if !n.hasSchema() {
-		return "deleted_at", true // identity fallback keeps the historical gate
+		return "", false
 	}
 	return n.schema.softDeleteColumn()
 }

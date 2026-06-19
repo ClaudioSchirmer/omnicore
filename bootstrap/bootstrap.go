@@ -189,19 +189,13 @@ func runWithConfig(cfg *Config, wire func(Deps) Wiring) error {
 		}
 	}
 
-	// Schema-less FromMongo embed advisory — runs unconditionally over every
-	// collected view (independent of whether any subscription is declared). A
-	// FromMongo embed without .Schema(...) degrades the reader to identity
-	// pass-through; warn rather than abort because pass-through is a legitimate
-	// mode (RawDoc projector / upstream columns already Go-named).
-	for _, sl := range findSchemaLessMongoEmbeds(views) {
-		deps.Logger.Warn(
-			"view.embed.schemaless: FromMongo embed declared without .Schema(...) — reader "+
-				"falls back to identity pass-through (the wire Response speaks the upstream's "+
-				"physical column names verbatim; the soft-delete gate falls back to the literal "+
-				"\"deleted_at\" column; managed-column read-back under logical names is unavailable)",
-			"view", sl.View, "collection", sl.Collection,
-		)
+	// Schema is mandatory on every view — the read membrane (Go↔column) and the
+	// composer (PK + soft-delete) resolve through it, so a view without a root
+	// schema would have no lossless mapping. Embed schemas are guaranteed by
+	// construction (FromSchema is the only source constructor); the root schema
+	// is the one a consumer could forget, so it is enforced here.
+	if err := infra.ValidateViewSchemas(views); err != nil {
+		return err
 	}
 
 	if len(views) > 0 {

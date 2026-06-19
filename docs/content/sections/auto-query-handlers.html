@@ -340,7 +340,8 @@ type FindUsersByParamsAddressOutput struct {
 fwinfra.View("users").
     Version(1).
     Root("users").
-    EmbedMany("addresses", fwinfra.From("addresses").On("user_id")).
+    Schema(UserSchema()).
+    EmbedMany("addresses", fwinfra.FromSchema(AddressSchema())).
     MaxLimit(500)
 </code></pre>
     <pre><code># microservice.&lt;profile&gt;.yaml — service-wide default (consumed by every view
@@ -369,7 +370,7 @@ query:
     </p>
     <p>
         Like every reserved control key on the read side, <code>?onlyTotal=</code> is opt-in per
-        endpoint: the consumer declares <code>OnlyTotal *bool <code>`query:"onlyTotal"`</code></code> on
+        endpoint: the consumer declares <code>OnlyTotal *bool `query:"onlyTotal"`</code> on
         the Request DTO. Endpoints that did not declare it reject the wire key with the canonical
         400 — same posture as <code>?fields=</code> / <code>?sort=</code> / <code>?includeArchived=</code>.
     </p>

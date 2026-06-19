@@ -18,7 +18,7 @@ with `1.0.0`.
   map from 0.11.0. Built with `NewTableSchema[T](table)` (type-anchored —
   validates each field against `T` at construction; a `Field` naming a missing
   or unexported field panics at boot) or `NewExternalSchema(table)` (type-less,
-  for `FromMongo` upstream sources). Chainable builder: `PK(go, col)`,
+  for external `FromSchema` upstream sources). Chainable builder: `PK(go, col)`,
   `FK(col)` (child), `Field(go, col)`, `SoftDelete(col)`, `CreatedAt(col)`,
   `UpdatedAt(col)`, `Child(*TableSchema)`. There is no name inference: every
   persisted field is declared, and an undeclared exported field is runtime-only
@@ -27,26 +27,30 @@ with `1.0.0`.
   into the write binding AND the read loader (write SQL + criteria + auto-scan).
   Aggregate children come from the schema's `Child(...)` declarations.
 - **The same `TableSchema` drives the Mongo read side.** `ViewDefinition.Schema(ts)`
-  attaches the root map; `Source.Schema(ts)` + `Source.As(goSegment)` attach the
-  embed's map and parent-side Go segment. The composer writes physical columns;
-  the `MongoViewReader` translates each leaf back to its Go field name (and the
-  embed doc field to its Go segment) using these schemas, so the typed Response
-  speaks Go names with only `json:` tags.
+  attaches the root map; `fwinfra.FromSchema(ts)` constructs each embed source from a
+  schema (table/collection, store kind, and `EmbedMany` join FK all derived from it).
+  The composer writes physical columns; the `MongoViewReader` translates each leaf
+  back to its Go field name using these schemas, so the typed Response speaks Go names
+  with only `json:` tags.
 - **Three managed columns by presence, not a bool** — calling
   `SoftDelete/CreatedAt/UpdatedAt(col)` enables; omitting disables. `created_at`
   and `updated_at` are actively stamped `NOW()` on write (no reliance on a DB
   default); on the read path they are readable under fixed logical Go names
   `CreatedAt`/`UpdatedAt`/`DeletedAt`.
-- **`Source.SchemaDef() *TableSchema`** — exported accessor returning an embed
-  source's schema (nil when declared without `.Schema(...)`); symmetric with
-  `ViewDefinition.SchemaDef()`.
-- **Schema-less `FromMongo` embed advisory** — `bootstrap.Run` emits a boot
-  `slog.Warn` (`view.embed.schemaless`, naming the view + collection) for every
-  `FromMongo` embed declared without a `.Schema(...)`, at any nesting depth and
-  independent of whether any subscription is declared. Such an embed degrades the
-  reader to identity pass-through (wire speaks the upstream's physical column
-  names; soft-delete gate falls back to `deleted_at`). A warning, not an abort —
-  pass-through is a legitimate mode for `RawDoc` projectors.
+- **`fwinfra.FromSchema(*TableSchema) *Source`** — the single embed source
+  constructor. Table/collection, store kind (type-anchored `NewTableSchema[T]` →
+  local Postgres; type-less `NewExternalSchema` → external/Mongo — the schema's
+  type IS the signal), and the `EmbedMany` join FK are all derived from the schema.
+  A local embed derives its parent-side Go segment from the schema's Go type
+  (pluralized for `EmbedMany`); `.As(...)` is an optional override there and is
+  **required** on an external embed. `.On(key)` is one-to-one-`Embed`-only (the
+  parent doc FK pointing at the source PK).
+- **`infra.ValidateViewSchemas(views)`** — fatal boot enforcement (called by
+  `bootstrap.Run`) that every view root and every embed declares a schema, and
+  every external embed declares `.As(...)`. There is no optional / pass-through /
+  schema-less mode.
+- **`domain.PluralizeWord` exported** — used by infra to derive the local embed's
+  Go segment (pluralized for `EmbedMany`).
 
 ### Removed
 
@@ -54,7 +58,15 @@ with `1.0.0`.
 - **`WithChild[V]` / `WithChildAutoScan` / `WithConfig`** — children are declared
   on the schema via `Child(...)` and threaded via `WithSchema`.
 - **`ViewOf[*T]()`** — views are declared explicitly via
-  `View(name).Version(n).Root(table).Schema(ts).EmbedMany(field, From(...).On(fk).As(go).Schema(childTs))`.
+  `View(name).Version(n).Root(table).Schema(ts).EmbedMany(field, FromSchema(childTs))`.
+- **`From(string)` / `FromMongo(string)` string constructors and the
+  `Source.Schema(ts)` method** — replaced by `FromSchema(ts)`, which derives the
+  table, store kind, and `EmbedMany` join FK from the schema. (`Source.SchemaDef()`
+  and the schema-less detection helper are gone with them.)
+- **The `view.embed.schemaless` boot advisory + identity pass-through fallback** —
+  schema is now mandatory on every view (root + every embed), not optional. There
+  is no `slog.Warn` and no pass-through mode; a missing root schema or an external
+  embed missing `.As(...)` is a fatal boot error via `infra.ValidateViewSchemas`.
 - **The `view:"<docKey>"` Response struct tag** — the reader returns a Go-keyed
   document, so the Response carries only `json:` tags; there is no source-key
   override on the read projection.
@@ -72,6 +84,10 @@ with `1.0.0`.
   columns, and child FKs are declared in the `TableSchema`; a typo is a boot
   panic, not a silent miss. **Breaking** — every consumer Repository and view
   must declare a `TableSchema` and call `WithSchema`.
+- **Every view must declare a schema on the root AND on every embed** (breaking).
+  The embed's table, join FK, and store kind come from the schema via `FromSchema`;
+  `.On` is now one-to-one-`Embed`-only (no longer used by `EmbedMany`, whose FK
+  comes from the schema); external embeds must declare `.As(...)`.
 - **Read-side wire↔doc translation is now a two-hop pivot.** The web layer maps
   a wire path to the **Go field path** via the Response's `json:` tags;
   the `MongoViewReader` translates the Go path → physical Mongo column via the

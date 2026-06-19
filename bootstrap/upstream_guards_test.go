@@ -7,45 +7,38 @@ import (
 	"github.com/ClaudioSchirmer/omnicore/infra"
 )
 
-func TestFindSchemaLessMongoEmbeds_FlagsEmbedWithoutSchema(t *testing.T) {
-	v := infra.View("orders").Root("orders").
-		Embed("buyer", infra.FromMongo("users").On("buyer_id")). // no .Schema(...)
-		Version(1)
-	got := findSchemaLessMongoEmbeds([]*infra.ViewDefinition{v})
-	if len(got) != 1 || got[0].View != "orders" || got[0].Collection != "users" {
-		t.Errorf("expected one finding {orders,users}, got %+v", got)
+// extEmbed builds an external (Mongo) embed source from a type-less schema for
+// the guard tests — table + FK from the schema, .As supplies the Go segment.
+func extEmbed(collection, fk, as string) *infra.Source {
+	return infra.FromSchema(infra.NewExternalSchema(collection).PK("ID", "id").FK(fk)).On(fk).As(as)
+}
+
+func TestValidateViewSchemas_RejectsMissingRootSchema(t *testing.T) {
+	v := infra.View("orders").Root("orders").Version(1) // no .Schema(...)
+	err := infra.ValidateViewSchemas([]*infra.ViewDefinition{v})
+	if err == nil || !strings.Contains(err.Error(), "no root") {
+		t.Errorf("expected missing-root-schema error, got %v", err)
 	}
 }
 
-func TestFindSchemaLessMongoEmbeds_SilentWithSchema(t *testing.T) {
+func TestValidateViewSchemas_RejectsExternalEmbedWithoutAs(t *testing.T) {
 	v := infra.View("orders").Root("orders").
-		Embed("buyer", infra.FromMongo("users").On("buyer_id").
-			Schema(infra.NewExternalSchema("users").PK("ID", "id").Field("Name", "name"))).
+		Schema(infra.NewExternalSchema("orders").PK("ID", "id")).
+		Embed("buyer", infra.FromSchema(infra.NewExternalSchema("users").PK("ID", "id")).On("buyer_id")). // no .As
 		Version(1)
-	if got := findSchemaLessMongoEmbeds([]*infra.ViewDefinition{v}); len(got) != 0 {
-		t.Errorf("expected no findings when the embed declares a schema, got %+v", got)
+	err := infra.ValidateViewSchemas([]*infra.ViewDefinition{v})
+	if err == nil || !strings.Contains(err.Error(), ".As(") {
+		t.Errorf("expected external-embed-missing-.As error, got %v", err)
 	}
 }
 
-func TestFindSchemaLessMongoEmbeds_IgnoresLocalFrom(t *testing.T) {
-	// A local From source without a schema is NOT flagged — only FromMongo.
-	v := infra.View("users").Root("users").
-		EmbedMany("addresses", infra.From("addresses").On("user_id")).
-		Version(1)
-	if got := findSchemaLessMongoEmbeds([]*infra.ViewDefinition{v}); len(got) != 0 {
-		t.Errorf("local From embed must not be flagged, got %+v", got)
-	}
-}
-
-func TestFindSchemaLessMongoEmbeds_RecursesNested(t *testing.T) {
-	// FromMongo nested inside a local embed — the detector must descend.
+func TestValidateViewSchemas_PassesWhenComplete(t *testing.T) {
 	v := infra.View("orders").Root("orders").
-		EmbedMany("lines", infra.From("order_lines").On("order_id").
-			Embed("product", infra.FromMongo("products").On("product_id"))). // no .Schema
+		Schema(infra.NewExternalSchema("orders").PK("ID", "id")).
+		Embed("buyer", extEmbed("users", "buyer_id", "Buyer")).
 		Version(1)
-	got := findSchemaLessMongoEmbeds([]*infra.ViewDefinition{v})
-	if len(got) != 1 || got[0].Collection != "products" {
-		t.Errorf("expected one nested finding for products, got %+v", got)
+	if err := infra.ValidateViewSchemas([]*infra.ViewDefinition{v}); err != nil {
+		t.Errorf("expected no error for a complete view, got %v", err)
 	}
 }
 
@@ -104,7 +97,7 @@ func TestGuardCollectionCollision_SubLocalView(t *testing.T) {
 
 func TestGuardMaterializingSource_RejectsUnknownCollection(t *testing.T) {
 	v := infra.View("orders").Root("orders").
-		Embed("buyer", infra.FromMongo("users").On("buyer_id")).
+		Embed("buyer", extEmbed("users", "buyer_id", "Buyer")).
 		Version(1)
 	errs := guardMaterializingSource(nil, []*infra.ViewDefinition{v})
 	if len(errs) != 1 || !strings.Contains(errs[0], "§8.3") ||
@@ -116,7 +109,7 @@ func TestGuardMaterializingSource_RejectsUnknownCollection(t *testing.T) {
 func TestGuardMaterializingSource_AcceptsSubscriptionCollection(t *testing.T) {
 	subs := []UpstreamSubscription{{Topic: "users.events", Collection: "users"}}
 	v := infra.View("orders").Root("orders").
-		Embed("buyer", infra.FromMongo("users").On("buyer_id")).
+		Embed("buyer", extEmbed("users", "buyer_id", "Buyer")).
 		Version(1)
 	errs := guardMaterializingSource(subs, []*infra.ViewDefinition{v})
 	if len(errs) != 0 {
@@ -132,7 +125,7 @@ func TestGuardMaterializingSource_RejectsLocalView(t *testing.T) {
 	// accumulate. The guard catches the trap before any subscriber starts.
 	views := []*infra.ViewDefinition{
 		infra.View("orders").Root("orders").
-			Embed("derivative", infra.FromMongo("derivative_view").On("orders_id")).
+			Embed("derivative", extEmbed("derivative_view", "orders_id", "Derivative")).
 			Version(1),
 		infra.View("derivative_view").Root("derivative_table").Version(1),
 	}
@@ -146,7 +139,7 @@ func TestGuardMaterializingSource_RejectsLocalView(t *testing.T) {
 
 func TestGuardJoinFieldIndex_RejectsMissingIndex(t *testing.T) {
 	v := infra.View("orders").Root("orders").
-		Embed("buyer", infra.FromMongo("users").On("buyer_id")).
+		Embed("buyer", extEmbed("users", "buyer_id", "Buyer")).
 		Version(1)
 	errs := guardJoinFieldIndex([]*infra.ViewDefinition{v})
 	if len(errs) != 1 || !strings.Contains(errs[0], "§8.1") ||
@@ -157,7 +150,7 @@ func TestGuardJoinFieldIndex_RejectsMissingIndex(t *testing.T) {
 
 func TestGuardJoinFieldIndex_AcceptsSingleFieldIndex(t *testing.T) {
 	v := infra.View("orders").Root("orders").
-		Embed("buyer", infra.FromMongo("users").On("buyer_id")).
+		Embed("buyer", extEmbed("users", "buyer_id", "Buyer")).
 		Indexes(infra.Index("buyer_id")).
 		Version(1)
 	errs := guardJoinFieldIndex([]*infra.ViewDefinition{v})
@@ -168,7 +161,7 @@ func TestGuardJoinFieldIndex_AcceptsSingleFieldIndex(t *testing.T) {
 
 func TestGuardJoinFieldIndex_AcceptsCompoundIndexJoinFieldFirst(t *testing.T) {
 	v := infra.View("orders").Root("orders").
-		Embed("buyer", infra.FromMongo("users").On("buyer_id")).
+		Embed("buyer", extEmbed("users", "buyer_id", "Buyer")).
 		Indexes(infra.Compound("buyer_id", "created_at")).
 		Version(1)
 	errs := guardJoinFieldIndex([]*infra.ViewDefinition{v})
@@ -179,7 +172,7 @@ func TestGuardJoinFieldIndex_AcceptsCompoundIndexJoinFieldFirst(t *testing.T) {
 
 func TestGuardJoinFieldIndex_RejectsCompoundIndexJoinFieldNotFirst(t *testing.T) {
 	v := infra.View("orders").Root("orders").
-		Embed("buyer", infra.FromMongo("users").On("buyer_id")).
+		Embed("buyer", extEmbed("users", "buyer_id", "Buyer")).
 		Indexes(infra.Compound("created_at", "buyer_id")).
 		Version(1)
 	errs := guardJoinFieldIndex([]*infra.ViewDefinition{v})
@@ -233,7 +226,7 @@ func TestValidateUpstreamSubscriptions_AccumulatesAllViolations(t *testing.T) {
 	views := []*infra.ViewDefinition{
 		// §8.1 — FromMongo without covering index
 		infra.View("orders").Root("orders").
-			Embed("buyer", infra.FromMongo("users").On("buyer_id")).
+			Embed("buyer", extEmbed("users", "buyer_id", "Buyer")).
 			Version(1),
 	}
 	err := validateUpstreamSubscriptions(subs, views, profileDev)

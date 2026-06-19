@@ -71,12 +71,15 @@ func itoa(i int) string {
 // no longer has column/table convention; this is the one remaining wire-naming
 // derivation, and it stays camelCase.
 func childCollectionSegment(typeName string) string {
-	return pluralizeWord(toLowerCamel(typeName))
+	return PluralizeWord(toLowerCamel(typeName))
 }
 
-// pluralizeWord applies basic English plural rules to a camelCase word (the
-// last word carries the plural). Irregulars are not covered.
-func pluralizeWord(s string) string {
+// PluralizeWord applies basic English plural rules to a word, preserving its
+// case (the last word carries the plural): "Address" → "Addresses",
+// "OrderLine" → "OrderLines", "Category" → "Categories". Irregulars are not
+// covered. Exported so infra can derive a local view embed's Go segment from
+// its schema's type name.
+func PluralizeWord(s string) string {
 	if s == "" {
 		return ""
 	}

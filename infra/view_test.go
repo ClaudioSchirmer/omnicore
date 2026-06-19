@@ -2,6 +2,29 @@ package infra
 
 import "testing"
 
+// ─── test embed-source helpers ───────────────────────────────────────────────
+//
+// pgEmbed / mongoEmbed build a FromSchema source with a minimal schema (PK + FK)
+// for tests. pgEmbed is type-anchored (local PG); mongoEmbed is type-less
+// (external/Mongo). For a one-to-one Embed, pass fk="" and set the parent join
+// via .On(...).
+type embedFixture struct{ ID string }
+
+func pgEmbed(table, fk string) *Source {
+	return FromSchema(NewTableSchema[embedFixture](table).PK("ID", "id").FK(fk))
+}
+
+func mongoEmbed(table, fk string) *Source {
+	return FromSchema(NewExternalSchema(table).PK("ID", "id").FK(fk))
+}
+
+// rootSchema is a minimal type-anchored schema for a composing test view's root
+// (PK + soft-delete). The composer only reads PK + soft-delete from the root
+// schema; row columns are read generically, so the dummy type suffices.
+func rootSchema(table string) *TableSchema {
+	return NewTableSchema[embedFixture](table).PK("ID", "id").SoftDelete("deleted_at")
+}
+
 // ─── DeleteOnArchive opt-in ──────────────────────────────────────────────────
 
 func TestViewDefinition_DeleteOnArchiveDefaultFalse_Flat(t *testing.T) {
@@ -13,7 +36,7 @@ func TestViewDefinition_DeleteOnArchiveDefaultFalse_Flat(t *testing.T) {
 
 func TestViewDefinition_DeleteOnArchiveDefaultFalse_Aggregate(t *testing.T) {
 	v := View("users").Root("users").
-		EmbedMany("addresses", From("addresses").On("user_id"))
+		EmbedMany("addresses", pgEmbed("addresses", "user_id"))
 	if v.DeletesOnArchive() {
 		t.Fatal("DeletesOnArchive() must default to false on an aggregate view")
 	}
@@ -34,7 +57,7 @@ func TestViewDefinition_DeleteOnArchiveBuilder_Flat(t *testing.T) {
 
 func TestViewDefinition_DeleteOnArchiveBuilder_Aggregate(t *testing.T) {
 	v := View("users").DeleteOnArchive().Root("users").
-		EmbedMany("addresses", From("addresses").On("user_id"))
+		EmbedMany("addresses", pgEmbed("addresses", "user_id"))
 	if !v.DeletesOnArchive() {
 		t.Fatal("expected DeletesOnArchive() = true after builder on aggregate view")
 	}
@@ -43,15 +66,21 @@ func TestViewDefinition_DeleteOnArchiveBuilder_Aggregate(t *testing.T) {
 	}
 }
 
-func TestSource_SchemaDef_NilWhenUnset(t *testing.T) {
-	bare := From("addresses").On("user_id")
-	if bare.SchemaDef() != nil {
-		t.Error("SchemaDef() must be nil when .Schema(...) was not called")
+func TestSource_SchemaDef_AndKindFromSchema(t *testing.T) {
+	ext := NewExternalSchema("users").PK("ID", "id")
+	mongo := FromSchema(ext)
+	if mongo.SchemaDef() != ext {
+		t.Error("SchemaDef() must return the schema FromSchema was built with")
 	}
-	ts := NewExternalSchema("users").PK("ID", "id")
-	withSchema := FromMongo("users").On("buyer_id").Schema(ts)
-	if withSchema.SchemaDef() != ts {
-		t.Error("SchemaDef() must return the schema passed to .Schema(...)")
+	if !mongo.IsMongo() {
+		t.Error("FromSchema(NewExternalSchema(...)) must be a Mongo source")
+	}
+	pg := FromSchema(NewTableSchema[embedFixture]("addresses").PK("ID", "id"))
+	if pg.IsMongo() {
+		t.Error("FromSchema(NewTableSchema[...]) must be a PG source")
+	}
+	if pg.Table() != "addresses" {
+		t.Errorf("Table() = %q, want addresses (from schema)", pg.Table())
 	}
 }
 
@@ -80,7 +109,7 @@ func TestViewNode_TranslatesGoPathToColumnAndBack(t *testing.T) {
 		Field("ZipCode", "zip")
 
 	v := View("people").Root("people").Schema(rootSchema).
-		EmbedMany("addresses", From("tags").On("person_ref").As("Addresses").Schema(childSchema))
+		EmbedMany("addresses", FromSchema(childSchema).As("Addresses"))
 
 	node := v.buildViewNode()
 

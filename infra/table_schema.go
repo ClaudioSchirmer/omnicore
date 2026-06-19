@@ -253,6 +253,22 @@ func (s *TableSchema) columnForRead(goName string) (string, bool) {
 	return "", false
 }
 
+// isExternal reports whether the schema is type-less (built via
+// NewExternalSchema, no Go struct anchor). A view embed's source kind is derived
+// from this: an external schema describes an upstream Mongo collection
+// (FromSchema → isMongo), a type-anchored schema a local PG table.
+func (s *TableSchema) isExternal() bool { return s.typ == nil }
+
+// typeName returns the schema's Go type name ("Address"), or "" for a type-less
+// external schema. A local view embed derives its Go segment from this; an
+// external embed has none, so it must declare the segment via .As(...).
+func (s *TableSchema) typeName() string {
+	if s.typ == nil {
+		return ""
+	}
+	return s.typ.Name()
+}
+
 func (s *TableSchema) softDeleteColumn() (string, bool) { return s.softDelete, s.softDelete != "" }
 func (s *TableSchema) createdAtColumn() (string, bool)  { return s.createdAt, s.createdAt != "" }
 func (s *TableSchema) updatedAtColumn() (string, bool)  { return s.updatedAt, s.updatedAt != "" }

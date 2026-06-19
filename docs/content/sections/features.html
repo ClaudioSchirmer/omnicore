@@ -35,8 +35,8 @@
                 <li><code>infra.MongoDB</code> — driver with Upsert/Delete</li>
                 <li><code>SyncEngine</code> — Kafka consumer reads metadata from <strong>headers/key</strong> (Debezium Outbox Router native); DELETED always → delete; ARCHIVED → compose+upsert by default (document survives with <code>deleted_at</code> populated, mirroring PostgreSQL), delete when the view opted in via <code>DeleteOnArchive()</code>; UNARCHIVED → upsert</li>
                 <li><code>Composer</code> omits the <code>deleted_at IS NULL</code> filter by default; <code>DeleteOnArchive()</code> views apply the filter on root + every embed (cascade)</li>
-                <li><code>UpstreamSubscriber</code> — materializes upstream events into a local Mongo collection and ripples recompose to every view embedding it via <code>FromMongo</code></li>
-                <li><code>ViewDefinition</code> with fluent builder (<code>Embed</code>/<code>EmbedMany</code>/<code>DeleteOnArchive</code>)</li>
+                <li><code>UpstreamSubscriber</code> — materializes upstream events into a local Mongo collection and ripples recompose to every view embedding it via an external <code>FromSchema</code> embed</li>
+                <li><code>ViewDefinition</code> with fluent builder (<code>Embed</code>/<code>EmbedMany</code>/<code>FromSchema</code>/<code>DeleteOnArchive</code>) — schema mandatory on root + every embed</li>
                 <li><strong>Audit pipeline</strong> — every successful write produces an <code>AuditEvent</code> routed by <code>audit.destinations</code>: <code>database</code> writes an <code>audit_events</code> row <strong>inside the same TX</strong> as the data row + outbox row (atomic source of truth); <code>slog</code> emits a flat top-level slog line post-commit (observability echo). Plus <code>SlogPublisher</code> for domain events.</li>
             </ul>
         </div>

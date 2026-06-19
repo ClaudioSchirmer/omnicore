@@ -656,7 +656,7 @@ func (s *UpstreamSubscriber) joinFieldFor(v *ViewDefinition) string {
 func findMongoJoinField(embeds []embedDef, collection string) string {
 	for _, e := range embeds {
 		if e.source != nil && e.source.IsMongo() && e.source.Collection() == collection {
-			return e.source.JoinKey()
+			return e.JoinColumn()
 		}
 		if jf := findMongoJoinField(e.source.embeds, collection); jf != "" {
 			return jf

@@ -37,23 +37,12 @@ func NewComposerWithMongo(pg *Postgres, mongo *MongoDB) *Composer {
 	return &Composer{pg: pg, mongo: mongo}
 }
 
-// schemaPK returns the source's PK column, falling back to "id" when the source
-// has no schema (schema-less view / test).
-func schemaPK(s *TableSchema) string {
-	if s != nil {
-		return s.PKColumn()
-	}
-	return "id"
-}
-
-// schemaSoftDelete returns the source's soft-delete column (and whether it has
-// one), falling back to "deleted_at" when the source has no schema.
-func schemaSoftDelete(s *TableSchema) (string, bool) {
-	if s != nil {
-		return s.softDeleteColumn()
-	}
-	return "deleted_at", true
-}
+// schemaPK / schemaSoftDelete read the source's physical PK + soft-delete column
+// straight from its TableSchema. The schema is mandatory on every view (root and
+// embed), so there is no convention fallback — a view declared without a schema
+// is rejected at boot, not silently mapped to "id"/"deleted_at".
+func schemaPK(s *TableSchema) string                    { return s.PKColumn() }
+func schemaSoftDelete(s *TableSchema) (string, bool)    { return s.softDeleteColumn() }
 
 func (c *Composer) Compose(ctx context.Context, view *ViewDefinition, rootID string) (bson.M, error) {
 	includeArchived := !view.deleteOnArchive
@@ -116,7 +105,8 @@ func (c *Composer) fetchPGEmbed(ctx context.Context, doc bson.M, parentPK string
 			return nil
 		}
 		idStr := fmt.Sprintf("%v", id)
-		rows, err := c.fetchWhere(ctx, e.source.table, e.source.joinKey, idStr, sd, includeArchived)
+		// One-to-many join key is the child FK declared on the source schema.
+		rows, err := c.fetchWhere(ctx, e.source.table, e.JoinColumn(), idStr, sd, includeArchived)
 		if err != nil {
 			return err
 		}
@@ -129,8 +119,8 @@ func (c *Composer) fetchPGEmbed(ctx context.Context, doc bson.M, parentPK string
 		return nil
 	}
 
-	// One-to-one: the parent holds the FK pointing to the source's PK.
-	fk, ok := doc[e.source.joinKey]
+	// One-to-one: the parent holds the FK pointing to the source's PK (.On).
+	fk, ok := doc[e.JoinColumn()]
 	if !ok || fk == nil {
 		return nil
 	}
@@ -159,7 +149,7 @@ func (c *Composer) fetchMongoEmbed(ctx context.Context, doc bson.M, parentPK str
 		if !ok || id == nil {
 			return nil
 		}
-		docs, err := c.mongo.FindManyByField(ctx, e.source.table, e.source.joinKey, id)
+		docs, err := c.mongo.FindManyByField(ctx, e.source.table, e.JoinColumn(), id)
 		if err != nil {
 			return err
 		}
@@ -171,7 +161,7 @@ func (c *Composer) fetchMongoEmbed(ctx context.Context, doc bson.M, parentPK str
 		doc[e.field] = docs
 		return nil
 	}
-	fk, ok := doc[e.source.joinKey]
+	fk, ok := doc[e.JoinColumn()]
 	if !ok || fk == nil {
 		return nil
 	}

@@ -73,8 +73,8 @@
 <p>
     A type-anchored schema validates every field against the Go type <strong>at construction</strong> — a
     <code>Field</code> naming a missing or unexported field panics immediately, which is the enforcement that replaces
-    convention. A type-less external schema describes an upstream service's columns for a <code>FromMongo</code> view
-    source (there is no local struct to validate against).
+    convention. A type-less external schema describes an upstream service's columns for an external
+    <code>FromSchema</code> embed source (there is no local struct to validate against).
 </p>
 <pre><code>// Type-anchored — validated against *User at call time.
 func UserSchema() *fwinfra.TableSchema {
@@ -100,7 +100,7 @@ func AddressSchema() *fwinfra.TableSchema {
         UpdatedAt("updated_at")
 }
 
-// Type-less — for an upstream-projected FromMongo source (no local struct).
+// Type-less — for an upstream-projected external FromSchema source (no local struct).
 fwinfra.NewExternalSchema("users").PK("ID", "id").Field("Email", "mail")</code></pre>
 <p>
     The Go-side primary-key field is conventionally <code>ID</code> (the <code>BaseEntity</code> contract);
@@ -163,22 +163,23 @@ fwinfra.NewExternalSchema("users").PK("ID", "id").Field("Email", "mail")</code><
 <h3>The same schema drives the Mongo view</h3>
 <p>
     The read-side <code>ViewDefinition</code> reuses the very same schemas. The root schema is attached via
-    <code>.Schema(...)</code>; each embed source declares its own schema via <code>.Schema(...)</code> and its parent-side
-    Go segment via <code>.As(...)</code>. The composer writes physical columns to Mongo; the reader translates each leaf
-    back to its Go field name using these schemas (so <code>mail</code> → <code>Email</code>, <code>zip_code</code> →
-    <code>ZipCode</code>), and the embed doc field becomes the declared Go segment (so the doc field
-    <code>addresses</code> → the Go segment <code>Addresses</code>). The view also honors the schema's soft-delete column
-    when <code>DeleteOnArchive</code> is set.
+    <code>.Schema(...)</code>; each embed source is constructed from a schema via <code>fwinfra.FromSchema(...)</code> — the
+    single embed source constructor. From the schema the framework derives the table/collection
+    (<code>ts.Table()</code>), the store kind (a type-anchored <code>NewTableSchema[T]</code> → a local Postgres source;
+    a type-less <code>NewExternalSchema</code> → an external/Mongo source), and — for an <code>EmbedMany</code> — the join
+    FK (<code>ts.FKColumn()</code>). The composer writes physical columns to Mongo; the reader translates each leaf back to
+    its Go field name using these schemas (so <code>mail</code> → <code>Email</code>, <code>zip_code</code> →
+    <code>ZipCode</code>). For a local (type-anchored) embed the parent-side Go segment is <em>derived</em> from the
+    schema's Go type — pluralized for an <code>EmbedMany</code> (<code>Address</code> → <code>Addresses</code>), the type
+    name for a one-to-one <code>Embed</code> — so <code>.As(...)</code> is only an optional override. The view also honors
+    the schema's soft-delete column when <code>DeleteOnArchive</code> is set.
 </p>
 <pre><code>func UserView() *fwinfra.ViewDefinition {
     return fwinfra.View("users").
         Version(1).
         Root("users").
         Schema(UserSchema()).
-        EmbedMany("addresses",
-            fwinfra.From("addresses").On("user_id").
-                As("Addresses").           // parent-side Go segment for the Response/criteria
-                Schema(AddressSchema())).  // child Go ↔ column map for read-back translation
+        EmbedMany("addresses", fwinfra.FromSchema(AddressSchema())).  // segment derived → "Addresses"
         Indexes( /* … */ )
 }</code></pre>
 <p>
@@ -190,11 +191,15 @@ fwinfra.NewExternalSchema("users").PK("ID", "id").Field("Email", "mail")</code><
 </p>
 <p>
     <strong>External (cross-service) embeds — no local struct.</strong> When a view embeds data owned by another service
-    (materialized locally via an <a href="#service-to-service">UpstreamSubscription</a> and referenced with
-    <code>fwinfra.FromMongo</code>), there is no Go struct in this service to anchor the embed's schema. Use the type-less
-    <code>NewExternalSchema(collection)</code>: the left side of each <code>Field</code> is the <em>logical Go name</em> the
-    local view's Response/criteria speak; the right side names the <em>upstream's physical column</em>. It is validated by
-    bijection (no two fields share a column) but not against any type — there is none.
+    (materialized locally via an <a href="#service-to-service">UpstreamSubscription</a>), there is no Go struct in this
+    service to anchor the embed's schema. Build the source from a type-less <code>NewExternalSchema(collection)</code> and
+    pass it to <code>fwinfra.FromSchema(...)</code> — the schema being type-less is the very signal that makes it an
+    external/Mongo source (no separate <code>FromMongo</code> constructor). The left side of each <code>Field</code> is the
+    <em>logical Go name</em> the local view's Response/criteria speak; the right side names the <em>upstream's physical
+    column</em>. It is validated by bijection (no two fields share a column) but not against any type — there is none.
+    Because an external source has no Go type to derive a segment from, <code>.As(...)</code> is <strong>required</strong>
+    (a fatal boot error otherwise). <code>.On(...)</code> is the parent document's FK column pointing at the source's PK —
+    used only on a one-to-one <code>Embed</code>.
 </p>
 <pre><code>// Cross-service embed — buyer projected from the upstream users service.
 func OrdersView() *fwinfra.ViewDefinition {
@@ -202,25 +207,22 @@ func OrdersView() *fwinfra.ViewDefinition {
         Version(1).
         Root("orders").
         Schema(OrderSchema()).
-        Embed("buyer",
-            fwinfra.FromMongo("users").On("buyer_id").
-                As("Buyer").                                // parent-side Go segment (Response/criteria)
-                Schema(fwinfra.NewExternalSchema("users").  // type-less: names the UPSTREAM's columns
-                    PK("ID", "id").
-                    Field("Name", "name").
-                    Field("Email", "mail"))).               // logical Go name ↔ upstream column
-        Indexes(fwinfra.Index("buyer_id"))                  // boot guard requires the join-field index
+        Embed("buyer", fwinfra.FromSchema(
+            fwinfra.NewExternalSchema("users").  // type-less: names the UPSTREAM's columns
+                PK("ID", "id").
+                Field("Name", "name").
+                Field("Email", "mail")).         // logical Go name ↔ upstream column
+            On("buyer_id").                      // parent doc FK pointing at the source PK
+            As("Buyer")).                        // REQUIRED — external embeds have no Go type to derive from
+        Indexes(fwinfra.Index("buyer_id"))       // boot guard requires the join-field index
 }</code></pre>
 <p>
-    <strong>Omitting <code>.Schema(...)</code> on a source — identity pass-through.</strong> A view source declared without
-    a schema makes the reader's translator schema-less: it degrades to <em>identity pass-through</em> — the composed
-    document reaches the wire keyed by the physical column names (no <code>mail</code> → <code>Email</code> translation),
-    the soft-delete gate falls back to the literal <code>deleted_at</code> column, and the managed-column read-back logical
-    names (<code>CreatedAt</code>/<code>UpdatedAt</code>/<code>DeletedAt</code>) are unavailable. That is a legitimate mode
-    for a <code>RawDoc</code> projector or an upstream whose columns already match the Go names — but a sharp edge for a
-    typed Response. For every <code>FromMongo</code> embed missing a <code>.Schema(...)</code>, <code>bootstrap.Run</code>
-    emits a boot <code>slog.Warn</code> (<code>view.embed.schemaless</code>) naming the view and the collection, so the
-    operator sees the pass-through rather than discovering it through mis-keyed wire output.
+    <strong>Schema is mandatory on every view.</strong> The root (<code>ViewDefinition.Schema(ts)</code>) and every embed
+    (<code>FromSchema</code> always carries one) must declare a schema. A missing root schema, or an external embed missing
+    <code>.As(...)</code>, is a <strong>fatal boot error</strong> via <code>infra.ValidateViewSchemas(views)</code> (called
+    by <code>bootstrap.Run</code>). There is no optional / pass-through / schema-less mode. Local (type-anchored) embeds
+    derive their parent-side Go segment from the schema's Go type, so <code>.As(...)</code> is an optional override there;
+    external (type-less) embeds inherit nothing from Go and must declare the segment via <code>.As(...)</code>.
 </p>
 
 <h3>Boot checks</h3>

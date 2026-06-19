@@ -30,7 +30,7 @@ func TestSyncEngine_Process_InsertEventUpsertsDoc(t *testing.T) {
 	pg.Pool().QueryRow(context.Background(),
 		`INSERT INTO syn_persons (name) VALUES ('Alice') RETURNING id`).Scan(&id)
 
-	view := View("syn_persons").Root("syn_persons").Version(1)
+	view := View("syn_persons").Root("syn_persons").Schema(rootSchema("syn_persons")).Version(1)
 	engine := NewSyncEngine(pg, m, nil, "", []*ViewDefinition{view}, 1)
 
 	err := engine.process(context.Background(), kafkaEvent{
@@ -67,7 +67,7 @@ func TestSyncEngine_Process_DeletedRemovesDoc(t *testing.T) {
 	m.Upsert(context.Background(), "syn_x", id, bson.M{"_id": id, "name": "Bob"})
 	pg.Pool().Exec(context.Background(), `DELETE FROM syn_x WHERE id = $1`, id)
 
-	view := View("syn_x").Root("syn_x").Version(1)
+	view := View("syn_x").Root("syn_x").Schema(rootSchema("syn_x")).Version(1)
 	engine := NewSyncEngine(pg, m, nil, "", []*ViewDefinition{view}, 1)
 	err := engine.process(context.Background(), kafkaEvent{
 		AggregateType: "syn_x",
@@ -99,7 +99,7 @@ func TestSyncEngine_Process_ArchivedDefault_KeepsDoc(t *testing.T) {
 	pg.Pool().QueryRow(context.Background(),
 		`INSERT INTO syn_kept (name, deleted_at) VALUES ('C', NOW()) RETURNING id`).Scan(&id)
 
-	view := View("syn_kept").Root("syn_kept").Version(1) // default keep-on-archive
+	view := View("syn_kept").Root("syn_kept").Schema(rootSchema("syn_kept")).Version(1) // default keep-on-archive
 	engine := NewSyncEngine(pg, m, nil, "", []*ViewDefinition{view}, 1)
 	if err := engine.process(context.Background(), kafkaEvent{
 		AggregateType: "syn_kept",
@@ -131,7 +131,7 @@ func TestSyncEngine_Process_ArchivedDeleteOnArchive_RemovesDoc(t *testing.T) {
 		`INSERT INTO syn_hot (name, deleted_at) VALUES ('D', NOW()) RETURNING id`).Scan(&id)
 	m.Upsert(context.Background(), "syn_hot", id, bson.M{"_id": id, "name": "D"})
 
-	view := View("syn_hot").Root("syn_hot").DeleteOnArchive().Version(1)
+	view := View("syn_hot").Root("syn_hot").Schema(rootSchema("syn_hot")).DeleteOnArchive().Version(1)
 	engine := NewSyncEngine(pg, m, nil, "", []*ViewDefinition{view}, 1)
 	if err := engine.process(context.Background(), kafkaEvent{
 		AggregateType: "syn_hot",
@@ -151,7 +151,7 @@ func TestSyncEngine_Process_UnknownAggregateTypeIsSilentNoop(t *testing.T) {
 	m, cleanupMongo := newTestMongo(t)
 	defer cleanupMongo()
 
-	view := View("known").Root("known").Version(1)
+	view := View("known").Root("known").Schema(rootSchema("known")).Version(1)
 	engine := NewSyncEngine(pg, m, nil, "", []*ViewDefinition{view}, 1)
 	err := engine.process(context.Background(), kafkaEvent{
 		AggregateType: "ghost",
@@ -174,7 +174,7 @@ func TestSyncEngine_Process_AbsentRootSkipsUpsert(t *testing.T) {
 		name TEXT NOT NULL,
 		deleted_at TIMESTAMP
 	)`)
-	view := View("syn_absent").Root("syn_absent").Version(1)
+	view := View("syn_absent").Root("syn_absent").Schema(rootSchema("syn_absent")).Version(1)
 	engine := NewSyncEngine(pg, m, nil, "", []*ViewDefinition{view}, 1)
 
 	// Event for an id that does not exist in PG → composer returns nil → no upsert.
@@ -297,7 +297,7 @@ func TestInfrastructureFieldErrorWithCause(t *testing.T) {
 // --- View / Source builder methods (Embed / FromMongo) ---
 
 func TestView_EmbedAddsOneToOneSource(t *testing.T) {
-	v := View("v").Root("v").Embed("child", From("child").On("v_id")).Version(1)
+	v := View("v").Root("v").Schema(rootSchema("v")).Embed("child", pgEmbed("child", "").On("v_id")).Version(1)
 	if len(v.Embeds()) != 1 || v.Embeds()[0].many {
 		t.Errorf("Embed should mark many=false, got %+v", v.Embeds())
 	}
@@ -309,7 +309,7 @@ func TestView_EmbedAddsOneToOneSource(t *testing.T) {
 // here too would redeclare them under -tags=integration.
 
 func TestSource_EmbedAndEmbedManyAppend(t *testing.T) {
-	s := From("a").Embed("b", From("b")).EmbedMany("c", From("c"))
+	s := pgEmbed("a", "").Embed("b", pgEmbed("b", "")).EmbedMany("c", pgEmbed("c", ""))
 	if len(s.Embeds()) != 2 {
 		t.Errorf("Source embeds len = %d", len(s.Embeds()))
 	}

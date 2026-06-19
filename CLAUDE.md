@@ -159,7 +159,8 @@ domain/                       Pure business rules, ZERO IO
                               infra maps table/columns via the Repository's TableSchema
   path_render.go              childCollectionSegment(typeName) — camelCase pluralizer
                               for the aggregate-child notification path segment
-                              (Address→addresses, OrderLine→orderLines) + pluralizeWord
+                              (Address→addresses, OrderLine→orderLines) + exported
+                              PluralizeWord (used by infra to derive the local embed segment)
 infra/
   audit/                      AuditEvent + Config (destinations) + persister + echo + partitions
   events/                     Publisher + SlogPublisher
@@ -1103,7 +1104,8 @@ The resolved ceiling is **always > 0**. When the consumer sends no `?limit=`, th
 fwinfra.View("users").
     Version(1).
     Root("users").
-    EmbedMany("addresses", fwinfra.From("addresses").On("user_id")).
+    Schema(UserSchema()).
+    EmbedMany("addresses", fwinfra.FromSchema(AddressSchema())).
     MaxLimit(500)
 ```
 
@@ -1498,7 +1500,7 @@ One `TableSchema` drives the write path (INSERT/UPDATE/archive SQL), the criteri
 
 **Three-name model.** A field carries up to three names, resolved at two membranes: wire (`json:`/`query:` tags, in `web/`) ↔ Go field (`Email`, the single name every layer above infra uses) ↔ physical column (`mail`, `TableSchema.Field("Email","mail")` in `infra/`). The web membrane translates JSON↔Go; the infra membrane (`TableSchema`) translates Go↔column. Wire and physical names are invisible to the developer manipulating data.
 
-**Declaring a schema.** A type-anchored schema validates every field against the Go type **at construction** — a `Field` naming a missing/unexported field panics immediately (the enforcement that replaces convention). A type-less external schema describes an upstream service's columns for a `FromMongo` source.
+**Declaring a schema.** A type-anchored schema validates every field against the Go type **at construction** — a `Field` naming a missing/unexported field panics immediately (the enforcement that replaces convention). A type-less external schema describes an upstream service's columns for an external `FromSchema` embed source.
 
 ```go
 func UserSchema() *fwinfra.TableSchema {
@@ -1521,7 +1523,7 @@ func AddressSchema() *fwinfra.TableSchema {
         SoftDelete("deleted_at").CreatedAt("created_at").UpdatedAt("updated_at")
 }
 
-// Type-less — for an upstream-projected FromMongo source (no local struct).
+// Type-less — for an upstream-projected external FromSchema source (no local struct).
 fwinfra.NewExternalSchema("users").PK("ID", "id").Field("Email", "mail")
 ```
 
@@ -1531,13 +1533,12 @@ The Go-side PK field is conventionally `ID` (the `BaseEntity` contract); `PK("ID
 
 **One declaration, every consumer — `WithSchema`.** `BaseAggregateRepository.WithSchema(schema)` threads the schema into BOTH the write binding (`BaseRepository.Schema`) and the read loader (`Loader.WithSchema`). Children come from `schema.children` (`.Child(...)`), NOT a separate `WithChild` call. The `Modes() ⟺ SoftDelete` boot check runs here; the field-existence and bijection checks already ran while the schema was built. A misconfiguration panics at construction, not on the first request.
 
-**The same schema drives the Mongo view.** The `ViewDefinition` reuses the schemas: the root via `.Schema(UserSchema())`, each embed via `.Schema(...)` + `.As("Addresses")` (the parent-side Go segment vs the EmbedMany doc field). The composer writes physical columns to Mongo; the reader translates each column back to its Go field name using these schemas (`mail`→`Email`, `zip_code`→`ZipCode`) before the typed Response projects to the wire — so the wire speaks Go names with no per-Response source-key override (`ViewOf` is gone).
+**The same schema drives the Mongo view.** The `ViewDefinition` reuses the schemas: the root via `.Schema(UserSchema())`, each embed via `fwinfra.FromSchema(...)` — the single embed source constructor. From the schema the framework derives the embed's table/collection, the store kind (type-anchored `NewTableSchema[T]` → local Postgres; type-less `NewExternalSchema` → external/Mongo), and — for an `EmbedMany` — the join FK. The composer writes physical columns to Mongo; the reader translates each column back to its Go field name using these schemas (`mail`→`Email`, `zip_code`→`ZipCode`) before the typed Response projects to the wire — so the wire speaks Go names with no per-Response source-key override (`ViewOf` is gone). For a local embed the parent-side Go segment is **derived** from the schema's Go type (pluralized for `EmbedMany` — `Address`→`Addresses`; the type name for a one-to-one `Embed`), so `.As(...)` is an optional override; an external embed has no Go type to derive from, so `.As(...)` is **required** there (uses the now-exported `domain.PluralizeWord` to pluralize the local segment).
 
 ```go
 fwinfra.View("users").Version(1).Root("users").
     Schema(UserSchema()).
-    EmbedMany("addresses",
-        fwinfra.From("addresses").On("user_id").As("Addresses").Schema(AddressSchema()))
+    EmbedMany("addresses", fwinfra.FromSchema(AddressSchema()))   // segment derived → "Addresses"
 ```
 
 **Boot checks** (panic at construction): field-exists on the type (a typo is a boot panic, not a silent miss); bijection over each source's full column set (mapped fields + PK + every declared managed column — no two map to the same physical column); `Modes() ⟺ SoftDelete`; single-column PK only.
@@ -1550,7 +1551,7 @@ fwinfra.View("users").Version(1).Root("users").
 
 ## Read side (CQRS)
 
-- `infra/view.go` — `View(name).Root(table).Embed("field", From("source").On("fk")).EmbedMany(...)` defines `ViewDefinition`s. Opt in to dropping archived rows from the projection with `.DeleteOnArchive()` (default: archived rows survive in the projection — Mongo mirrors PostgreSQL symmetrically).
+- `infra/view.go` — `View(name).Root(table).Schema(ts).EmbedMany("field", FromSchema(childTs)).Embed("field", FromSchema(externalTs).On("fk").As("Seg"))` defines `ViewDefinition`s. `FromSchema` is the single embed source constructor; schema is mandatory on the root and every embed. Opt in to dropping archived rows from the projection with `.DeleteOnArchive()` (default: archived rows survive in the projection — Mongo mirrors PostgreSQL symmetrically).
 - `infra/composer.go` — composes documents from PostgreSQL using ViewDefinitions
   - **Omits the `WHERE deleted_at IS NULL` filter** in all three fetch helpers (fetchRow, fetchWhere, fetchAll) by default — Mongo views mirror PostgreSQL symmetrically (archived rows survive with `deleted_at` populated). When the `ViewDefinition` opted in via `.DeleteOnArchive()`, the filter is applied on the root SELECT and on every embed source (cascade: the flag governs the whole aggregate projection — there is no per-embed override).
   - `EmbedMany` uses the root's `id` to match the child's FK column (`source.joinKey`)
@@ -1561,7 +1562,7 @@ fwinfra.View("users").Version(1).Root("users").
   - `DELETED` → `mongo.Delete` (hard delete is unconditional, regardless of `DeleteOnArchive`)
   - `ARCHIVED` → **compose + upsert** by default (document survives with `deleted_at` populated); `mongo.Delete` when the view opted in via `.DeleteOnArchive()`
   - `UNARCHIVED` → re-compose + upsert (always — covers both modes; for default views it just clears `deleted_at` on the existing document)
-- `infra/upstream_subscriber.go` — `UpstreamSubscriber` materializes upstream service A's events into local Mongo collection B owns, and triggers downstream recompose on every view embedding the collection via `fwinfra.FromMongo`. One instance per `bootstrap.UpstreamSubscription` declared in yaml or `Wiring.UpstreamSubscriptions`. See "Cross-service composition" below.
+- `infra/upstream_subscriber.go` — `UpstreamSubscriber` materializes upstream service A's events into local Mongo collection B owns, and triggers downstream recompose on every view embedding the collection via an external `fwinfra.FromSchema` embed. One instance per `bootstrap.UpstreamSubscription` declared in yaml or `Wiring.UpstreamSubscriptions`. See "Cross-service composition" below.
 - `infra/rebuild.go` — `RebuildView`, `RebuildViewSince`, `RebuildAllViews` for offline reconstruction
 - `application/queries/view_reader.go` — `ViewReader` port + `ReadCriteria` / `Page` transport-agnostic types
 - `application/queries/query_handler.go` — `QueryHandler.Read(ctx, view, criteria)` / `ReadByID(...)` — pure, returns `Page` / `map[string]any`
@@ -1661,17 +1662,20 @@ upstreamSubscriptions:
     anonymizeFields: [name, email]
 ```
 
-**Embed** — views consume the upstream-projected collection via `fwinfra.FromMongo`:
+**Embed** — views consume the upstream-projected collection via an external `fwinfra.FromSchema` (a type-less `NewExternalSchema` marks the source external; `.On` is the parent doc FK on a one-to-one `Embed`; `.As` is required because an external source has no Go type to derive the segment from):
 
 ```go
 fwinfra.View("orders").
+    Version(1).
     Root("orders").
-    Embed("buyer", fwinfra.FromMongo("users").On("buyer_id")).
-    EmbedMany("lines", fwinfra.From("order_lines").On("order_id")).
+    Schema(OrderSchema()).
+    Embed("buyer", fwinfra.FromSchema(
+        fwinfra.NewExternalSchema("users").PK("ID","id").Field("Name","name").Field("Email","mail")).
+        On("buyer_id").As("Buyer")).
+    EmbedMany("lines", fwinfra.FromSchema(OrderLineSchema())).
     Indexes(
         fwinfra.Index("buyer_id"), // boot guard §8.1 requires it
-    ).
-    Version(1)
+    )
 ```
 
 **Runtime** — for every event on A's topic, `infra.UpstreamSubscriber`:
@@ -1726,12 +1730,12 @@ The in-memory `upstreamMetrics` counter remains (process-local snapshot for Prom
 
 **Four boot guards** (`bootstrap.validateUpstreamSubscriptions`) enforce structural invariants before any subscriber goroutine spins. All four execute deterministically; every violation surfaces in a single diagnostic:
 
-- §8.1 — every view's `FromMongo` embed declares a covering index on the join field (single-field or compound where the join field is FIRST).
+- §8.1 — every view's external `FromSchema` embed (the upstream-collection sources) declares a covering index on the join field (single-field or compound where the join field is FIRST).
 - §8.2 — collection names do not collide subscription↔subscription, nor subscription↔local view (two writers on the same Mongo collection would race).
-- §8.3 — every `FromMongo("X")` resolves to an `UpstreamSubscription.Collection=X` (no silently-empty embeds). View-on-view via `FromMongo` — `FromMongo` targeting another local `ViewDefinition.Name()` — is rejected at boot: the recompose ripple is one-hop (the subscriber consults `viewIndex.byMongoColl` populated from subscription collections only), so a change upstream of view Y would recompose Y but never re-ripple to view X that embeds Y. Drift would silently accumulate. The diagnostic suggests the supported alternatives (embed the upstream collection directly, or model the JOIN at the Postgres root via `From`).
+- §8.3 — every external `FromSchema` embed over collection X resolves to an `UpstreamSubscription.Collection=X` (no silently-empty embeds). View-on-view — an external `FromSchema` targeting another local `ViewDefinition.Name()` — is rejected at boot: the recompose ripple is one-hop (the subscriber consults `viewIndex.byMongoColl` populated from subscription collections only), so a change upstream of view Y would recompose Y but never re-ripple to view X that embeds Y. Drift would silently accumulate. The diagnostic suggests the supported alternatives (embed the upstream collection directly, or model the JOIN at the Postgres root via a local `FromSchema` embed).
 - §8.4 — `onUpstreamDelete: anonymize` requires non-empty `anonymizeFields`.
 
-**Schema-less embed advisory (warn, not abort).** Separately from the four aborting guards, `bootstrap.Run` walks every collected view (at any embed nesting depth, independent of whether any subscription is declared) and emits a boot `slog.Warn` (`view.embed.schemaless`, naming the view + collection) for each `FromMongo` embed declared without a `.Schema(...)`. A schema-less source degrades the reader to identity pass-through: the document reaches the wire keyed by the upstream's physical column names (no Go↔column translation), the soft-delete gate falls back to the literal `deleted_at` column, and the managed-column read-back logical names are unavailable. It is a warning rather than a boot abort because pass-through is a legitimate mode (a `RawDoc` projector, or an upstream whose columns already match the Go names). Detection is the pure function `findSchemaLessMongoEmbeds(views)`; `infra.Source.SchemaDef()` exposes the embed's schema (nil when unset) across the package boundary.
+**Schema is mandatory on every view (fatal boot enforcement).** `infra.ValidateViewSchemas(views)` (called by `bootstrap.Run`) walks every collected view at any embed nesting depth and aborts boot when the root declares no `.Schema(...)`, or when an external (type-less) embed is missing `.As(...)` — an external source has no Go type to derive the parent-side segment from. There is no optional / pass-through / schema-less mode and no `slog.Warn` advisory: every view root and every embed (`FromSchema` always carries a schema) must declare one. Local (type-anchored) embeds derive their Go segment from the schema's type; external embeds must declare it via `.As(...)`.
 
 **Registry semantics.** The upstream-projected collection counts toward `omnicore_service_registry`'s DB-per-service marker (treated as locally-managed) but does NOT enter `omnicore_mongo_views` — an `UpstreamSubscription` has no `Version`, no `JSONSchema`, no consumer-declared indexes (only Mongo's built-in `_id` is used), so the drift-detection path has nothing to compare against. `Filter` drift is operator-owned: change the YAML + redeploy + run `omnicore-admin replay-all-as-events` against A.
 
@@ -1813,7 +1817,7 @@ The Semantic enum is **transport-agnostic** — a future gRPC layer would map th
 | Want compile-time safety against typo in hook method name | declare `var _ persistence.BeforeCommitHookProvider[*T] = (*Cmd)(nil)` (or the AfterBegin variant) at the bottom of the Cmd file. Catches misspelled / mistyped method signatures at `go build` time; the framework does not enforce it. |
 | Declare aggregate child type | root entity implements `AggregateChildren() []AggregateValueObject` returning sample instances (the domain boundary). Table/columns/FK are declared in the child `TableSchema` via `root.Child(fwinfra.NewTableSchema[Child]("table").PK("ID","id").FK("col").Field(...)...)` — see "Schema mapping" |
 | Drop archived rows from the Mongo projection (hot-tier read side) | `fwinfra.View("users").DeleteOnArchive().Root("users").EmbedMany(...)` — opt-in per view. Default keeps archived rows so Mongo mirrors PostgreSQL symmetrically. Cascade: the flag governs root + all embeds (no per-embed override). Reader still defaults to hiding archived; consumer opts in via the existing `IncludeArchived` path (`?includeArchived=true`) — and that path returns 404 on a `DeleteOnArchive` view because the document is absent. |
-| Materialize an upstream service's events into a local Mongo collection (cross-service composition) | declare an `UpstreamSubscription` in `microservice.<profile>.yaml` (canonical) or `Wiring.UpstreamSubscriptions` (manual lifecycle / tests) with `topic`, `collection`, `filter`, `onUpstreamDelete`, optional `anonymizeFields`. Embed in a view via `fwinfra.FromMongo("collection").On("join_field")`. Boot guard §8.1 requires a covering index on the join field. The framework runs one `UpstreamSubscriber` per declared entry and ripples recompose to every embedding view on each upstream event. See "Cross-service composition" under [Read side (CQRS)](#read-side-cqrs). |
+| Materialize an upstream service's events into a local Mongo collection (cross-service composition) | declare an `UpstreamSubscription` in `microservice.<profile>.yaml` (canonical) or `Wiring.UpstreamSubscriptions` (manual lifecycle / tests) with `topic`, `collection`, `filter`, `onUpstreamDelete`, optional `anonymizeFields`. Embed in a view via an external `fwinfra.FromSchema(fwinfra.NewExternalSchema("collection")…).On("join_field").As("Seg")`. Boot guard §8.1 requires a covering index on the join field. The framework runs one `UpstreamSubscriber` per declared entry and ripples recompose to every embedding view on each upstream event. See "Cross-service composition" under [Read side (CQRS)](#read-side-cqrs). |
 | Declare MongoDB indexes on a view | `fwinfra.View(...).Indexes(fwinfra.Index("email").Unique(), fwinfra.Compound("email","created_at"), fwinfra.Index("deleted_at").Partial(fwinfra.Exists("deleted_at", false)), fwinfra.TextIndex("name","email").DefaultLanguage("portuguese"))` — single-field, compound, partial, sparse, TTL, text, 2dsphere, hashed. Materialized by `bootstrap.Run` via `fwinfra.ApplyMongoSpecs` between `collectViews` and `SyncEngine.Start`. Idempotent steady state; strict-on-divergence default; `OMNICORE_MONGO_FORCE_REBUILD=true` env var as operator escape (drops divergent indexes only; never collections). See "Declarative Mongo surface". |
 | Declare a `$jsonSchema` validator on a view's collection | `fwinfra.View("users").JSONSchema(bson.M{"bsonType":"object","required":[]string{"_id","email"}}).JSONSchemaValidationLevel(fwinfra.ValidationLevelStrict).JSONSchemaValidationAction(fwinfra.ValidationActionError)` — defaults to `strict` / `error`. Framework uses `createCollection` for fresh collections and `collMod` for existing ones (idempotent). |
 | Declare collection-level features (collation / capped / time-series) | `fwinfra.View(...).Collation(&fwinfra.CollationSpec{Locale:"pt",Strength:1}).Capped(&fwinfra.CappedSpec{SizeBytes: 1<<30}).TimeSeries(&fwinfra.TimeSeriesSpec{TimeField:"ts",Granularity:"seconds"})`. `Capped` ⊕ `TimeSeries` (boot rejects both). Collation is immutable on existing collections — divergence aborts boot; operator owns the migration. |
@@ -2122,7 +2126,8 @@ Every `ViewDefinition` declares a mandatory `Version(N)` (positive integer). The
 fwinfra.View("users").
     Version(3).                                                    // ← mandatory
     Root("users").
-    EmbedMany("addresses", fwinfra.From("addresses").On("user_id")).
+    Schema(UserSchema()).                                          // ← mandatory on every view
+    EmbedMany("addresses", fwinfra.FromSchema(AddressSchema())).
     Indexes(fwinfra.Index("email").Unique())
 ```
 
@@ -2349,7 +2354,7 @@ CREATE INDEX addresses_user_id_idx ON addresses (user_id);
 
 Universal symmetric cascade: root archive → `UPDATE addresses SET deleted_at = NOW() WHERE user_id = $1` in the same TX; root unarchive → restores all archived children; root delete → relies on FK `ON DELETE CASCADE`.
 
-Cross-service data is materialized into **B's own Mongo database** via `UpstreamSubscription` — there is no local PG cache table convention anymore. The local Mongo collection (e.g. `users` projected into B's database) is upsert-managed by the framework's `UpstreamSubscriber`; embeds reference it via `fwinfra.FromMongo("users")`. See "Cross-service composition" under [Read side (CQRS)](#read-side-cqrs) for the full surface.
+Cross-service data is materialized into **B's own Mongo database** via `UpstreamSubscription` — there is no local PG cache table convention anymore. The local Mongo collection (e.g. `users` projected into B's database) is upsert-managed by the framework's `UpstreamSubscriber`; embeds reference it via an external `fwinfra.FromSchema(fwinfra.NewExternalSchema("users")…)`. See "Cross-service composition" under [Read side (CQRS)](#read-side-cqrs) for the full surface.
 
 ## Concurrency and lifecycle
 
@@ -4152,8 +4157,8 @@ Anyone needing exotic boot (custom logger, different lifecycle, specific start o
 - **Result[T]** — discriminated value: Success/Failure/Exception. Success carries `T`; Failure carries translated `[]ContextDTO`; Exception carries raw error
 - **Service** (`domain.Service`) — marker interface for domain services injectable into an entity's `BuildRules`
 - **Unarchivable** — symmetric inverse of `Archivable`. `Postgres.Unarchive` does `UPDATE deleted_at = NULL` + outbox `UNARCHIVED`. SyncEngine re-creates the Mongo doc
-- **UpstreamSubscription** — declarative entry (yaml or `Wiring.UpstreamSubscriptions`) that ties one of A's Kafka topics to a local Mongo collection in B's database. The framework's `UpstreamSubscriber` materializes events into the collection and ripples recompose to every B view embedding it via `FromMongo`. The canonical cross-service composition path
-- **FromMongo** — `Source` constructor symmetric to `From` for embeds whose data lives in a local Mongo collection populated by an `UpstreamSubscription`. `Source.IsMongo()` discriminates the composer dispatch. View-on-view (`FromMongo` targeting another local `ViewDefinition.Name()`) is rejected by boot guard §8.3 because the recompose ripple is one-hop and the second view would drift silently
+- **UpstreamSubscription** — declarative entry (yaml or `Wiring.UpstreamSubscriptions`) that ties one of A's Kafka topics to a local Mongo collection in B's database. The framework's `UpstreamSubscriber` materializes events into the collection and ripples recompose to every B view embedding it via an external `FromSchema` embed. The canonical cross-service composition path
+- **FromSchema** — `fwinfra.FromSchema(*TableSchema) *Source`, the single embed source constructor. From the schema the framework derives the table/collection (`ts.Table()`), the store kind (type-anchored `NewTableSchema[T]` → local Postgres; type-less `NewExternalSchema` → external/Mongo — the schema's type IS the signal, no separate `From`/`FromMongo`), and — for an `EmbedMany` — the join FK (`ts.FKColumn()`). A local embed derives its parent-side Go segment from the schema's Go type (`.As(...)` optional); an external embed must declare `.As(...)`. `.On(key)` is one-to-one-`Embed`-only (the parent doc FK pointing at the source PK). `Source.IsMongo()` (type-less schema) discriminates the composer dispatch. View-on-view (an external `FromSchema` targeting another local `ViewDefinition.Name()`) is rejected by boot guard §8.3 because the recompose ripple is one-hop and the second view would drift silently
 - **TxHandle** — sealed marker interface at `application/persistence/`, handed to in-TX lifecycle hooks. Carries no public methods (only an unexported sealing method), so application code cannot pronounce SQL through it. The framework's `infra/pgxTxHandle` is the only implementation; infra-layer port adapters call `fwinfra.UnwrapPgxTx(tx)` to recover the underlying `*pgx.Tx` and execute SQL. The canonical pattern for an in-TX side effect from a hook: declare a port in `application/` (or `domain/`) whose method receives a `persistence.TxHandle`; implement the port in `infra/` where the adapter unwraps and owns the SQL.
 - **UnwrapPgxTx** — `fwinfra.UnwrapPgxTx(persistence.TxHandle) pgx.Tx` is the single bridge from the opaque `TxHandle` token to the live `pgx.Tx`. Lives in `infra/`, so only adapters in that layer can call it. Panics with a descriptive diagnostic on a foreign `TxHandle` implementation — defensive, never reached against framework-issued handles.
 - **ValidEntity** — sealed types (`Insertable`/`Updatable`/`Archivable`/`Deletable`/`Unarchivable`/`Batch`) produced only by domain
