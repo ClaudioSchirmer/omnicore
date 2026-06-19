@@ -87,6 +87,53 @@ func scanRouteRegistration(app *fiber.App, reg *openapi.Registry) {
 		"Routes registered outside that channel:\n  " + strings.Join(offenders, "\n  "))
 }
 
+// scanPublicRoutes validates the operator-declared auth.publicRoutes against
+// the routes actually registered on the app. The AuthMiddleware matches a
+// public route by EXACT "METHOD /path" string (web.matchPublic), so a typo
+// (GET /helth), a wrong method, or a trailing slash silently leaves the
+// intended route behind the bearer wall — and a path carrying a Fiber
+// parameter or wildcard (GET /users/:id) can NEVER match a concrete request
+// path, so it stays private with no diagnostic. Both sides of the reference
+// are in hand at boot: the parsed publicRoutes and app.GetRoutes(true). Every
+// offender is listed in a single panic so the operator fixes them in one pass.
+//
+// Runs only on the operator's own list — the framework-added documentation
+// routes (the OpenAPI spec + UI, the optional root redirect) are correct by
+// construction and not re-validated here. Skipped when app is nil or no
+// publicRoutes are declared.
+func scanPublicRoutes(app *fiber.App, publicRoutes []string) {
+	if app == nil || len(publicRoutes) == 0 {
+		return
+	}
+	registered := make(map[string]struct{})
+	for _, route := range app.GetRoutes(true) {
+		registered[strings.ToUpper(route.Method)+" "+route.Path] = struct{}{}
+	}
+	var offenders []string
+	for _, raw := range publicRoutes {
+		parts := strings.Fields(raw)
+		if len(parts) != 2 {
+			offenders = append(offenders, raw+` (must be "METHOD /path")`)
+			continue
+		}
+		method, path := strings.ToUpper(parts[0]), parts[1]
+		if strings.ContainsAny(path, ":*") {
+			offenders = append(offenders, method+" "+path+
+				" (carries a path parameter or wildcard — auth.publicRoutes is matched by exact path and can never match a concrete request; mark the route Doc.Public=true / RawSpec.Public=true instead)")
+			continue
+		}
+		if _, ok := registered[method+" "+path]; !ok {
+			offenders = append(offenders, method+" "+path+" (no route is registered under this method+path)")
+		}
+	}
+	if len(offenders) == 0 {
+		return
+	}
+	sort.Strings(offenders)
+	panic("bootstrap: auth.publicRoutes must reference routes that exist and are matchable by exact method+path. Offending entr(ies):\n  " +
+		strings.Join(offenders, "\n  "))
+}
+
 func buildPublicRouteSet(publicRoutes []string) map[string]struct{} {
 	set := make(map[string]struct{}, len(publicRoutes))
 	for _, r := range publicRoutes {

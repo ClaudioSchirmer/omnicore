@@ -512,6 +512,13 @@ func buildApp(deps Deps, wiring Wiring) (*fiber.App, error) {
 		}
 	}
 
+	// Validate the operator-declared auth.publicRoutes against the fully
+	// registered route set (features + /health + the OpenAPI spec/UI + the
+	// optional root redirect). Runs last so every route the service exposes
+	// is observable, and before serving HTTP so a typo / unmatchable param
+	// path aborts the boot rather than silently leaving a route behind auth.
+	scanPublicRoutes(app, deps.Config.Auth.PublicRoutes)
+
 	return app, nil
 }
 
@@ -588,6 +595,17 @@ func serve(ctx context.Context, deps Deps, wiring Wiring) error {
 	app, err := buildApp(deps, wiring)
 	if err != nil {
 		return err
+	}
+
+	// Every subscription declared in YAML must have a registered receiver.
+	// Runs BEFORE the IsEmpty short-circuit below so a service that declares
+	// integration.subscribes but forgets MountReceivers entirely (registry
+	// empty) still aborts the boot instead of silently consuming nothing.
+	if deps.Config.Integration != nil {
+		if err := integration.ValidateSubscriptionsCovered(
+			deps.Config.Integration, deps.IntegrationRegistry.Receivers()); err != nil {
+			return fmt.Errorf("bootstrap: %w", err)
+		}
 	}
 
 	// Start the integration ConsumerPool AFTER Phase Receivers (which

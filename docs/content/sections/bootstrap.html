@@ -120,7 +120,7 @@ auth:
     failMode: closed                     # closed | open; default closed (reject on validator error)
     cacheTtlSeconds: 0                   # 0 (default) disables; &gt; 0 caches positive answers for N seconds (revocation window of up to TTL)
   publicRoutes:                          # routes that bypass the auth middleware
-    - GET /health
+    - GET /health                        # validated at boot against the registered routes
     - GET /ready
   auditClaims:                           # JWT claims surfaced on the AuditEvent's actorClaims block (forensics)
     - tenant_id
@@ -275,6 +275,7 @@ func (f *UsersFeature) Mount(app *fiber.App, d bootstrap.Deps) {
         <li><strong><code>GET /health</code> registered automatically</strong> (response <code>{"status":"ok"}</code>) — k8s/docker liveness probe without the service programming anything</li>
         <li><code>f.Mount(app, deps)</code> for each feature in declaration order</li>
         <li><code>Wiring.BeforeServe(app, deps)</code> if set (escape hatch for routes/middlewares outside the Feature model)</li>
+        <li>once every route is registered, each <code>auth.publicRoutes</code> entry is validated against the registered route set — a typo / wrong method / trailing slash (no matching route) or a path parameter / wildcard (which the exact-match auth middleware can never honor — mark the route <code>Doc.Public=true</code> instead) aborts the boot</li>
         <li><code>app.Listen(cfg.HTTP.Addr)</code> in a goroutine; awaits <code>ctx.Done()</code></li>
         <li>HTTP drain in 10s (<code>app.ShutdownWithContext</code>); then <code>Wiring.OnShutdown</code> if set</li>
     </ol>

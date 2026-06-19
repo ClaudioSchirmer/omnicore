@@ -66,6 +66,46 @@ with `1.0.0`.
   schema-less mode.
 - **`domain.PluralizeWord` exported** — used by infra to derive the local embed's
   Go segment (pluralized for `EmbedMany`).
+- **Boot-time configuration guards (fail-fast on misconfigurations the boot
+  already has full knowledge of).** Each aborts the boot with a single,
+  aggregated diagnostic instead of letting the misconfiguration surface as a
+  runtime error or a silent no-op:
+  - **`auth.publicRoutes` are validated against the registered route set.** An
+    entry that matches no registered `METHOD /path` (a typo, wrong method, or
+    trailing slash) or that carries a Fiber path parameter / wildcard (which the
+    exact-match `AuthMiddleware` can never honor — mark the route
+    `Doc.Public=true` instead) aborts the boot. Runs after every route
+    (features, `/health`, the OpenAPI spec/UI, the optional root redirect) is
+    registered.
+  - **Declared `integration.subscribes` entries must have a registered
+    receiver.** A subscription declared in YAML with no matching
+    `reg.From(source).On(eventKey, …)` (the inverse of the existing receiver→YAML
+    check) would spin no consumer and silently drop every message; boot now
+    aborts via `integration.ValidateSubscriptionsCovered`.
+  - **`integration.subscribes.<src>.startFrom` / `defaults.startFrom` are
+    enum-validated** (`earliest` | `latest`); a typo previously resolved
+    silently to `latest`.
+  - **Migration filenames without a parseable `{version}_{name}` prefix abort
+    the boot** (`Manager.ValidateDownExists` + `MigrationFilenameInvalidNotification`).
+    golang-migrate silently ignores such files, so the operator's SQL would never
+    run while boot reported success.
+  - **The aggregate boundary the domain declares (`AggregateChildren()`) and the
+    children the `TableSchema` declares (`.Child(...)`) must name the same set**
+    — `BaseAggregateRepository.WithSchema` panics on any drift (a child declared
+    on only one side).
+  - **`httpClient.authProviders.<name>.tokenEndpoint` is validated as an absolute
+    URL** (`oauth2-client-credentials` + `credentials-exchange`), mirroring the
+    `services.<name>.baseURL` check — a typo'd scheme / host-less value aborts the
+    boot instead of failing on the first token acquisition.
+  - **`httpClient` signing `signedHeaders` may not name the policy's own
+    `signatureHeader` / `keyIdHeader`** — those are set after the canonical string
+    is built, so signing them signs an always-empty value and every signed
+    request would be rejected upstream.
+- **`BaseRepository.WithSchema(*TableSchema)`** — the validated canonical way to
+  bind a schema on a flat (non-aggregate) repository: runs the PK-declared,
+  aggregate-depth, and `Modes()` ⟺ `SoftDelete` checks (the same the aggregate
+  path runs) at construction instead of on the first write. Setting `r.Schema`
+  directly remains supported as the unchecked escape hatch.
 
 ### Removed
 

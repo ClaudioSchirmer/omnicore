@@ -63,7 +63,7 @@ func MountUserReceivers(reg *fwintegration.Registry, repo userRepo, d bootstrap.
         partnerOnboarded:                      # event key (Go reference)
           eventType: PartnerOnboarded          # wire header value</code></pre>
 
-    <p><strong>Eager validation.</strong> <code>reg.From("X").On("Y", ...)</code> during MountReceivers fails boot if <code>integration.subscribes.X.events.Y</code> does not exist in the loaded YAML — boot diagnostic names the missing key. Mismatched sample / handler types panic at Mount time too (sample carries no <code>ToCommand</code>, ToCommand returns the wrong Cmd type for the handler, etc.).</p>
+    <p><strong>Eager validation (both directions).</strong> <code>reg.From("X").On("Y", ...)</code> during MountReceivers fails boot if <code>integration.subscribes.X.events.Y</code> does not exist in the loaded YAML — boot diagnostic names the missing key. The inverse is also enforced: a declared <code>integration.subscribes.X.events.Y</code> with no matching registered receiver aborts the boot (otherwise no goroutine would consume that topic and every message would be silently dropped). Mismatched sample / handler types panic at Mount time too (sample carries no <code>ToCommand</code>, ToCommand returns the wrong Cmd type for the handler, etc.). <code>startFrom</code> (per-source and <code>defaults</code>) is enum-validated at boot (<code>earliest</code> | <code>latest</code>) — a typo previously resolved silently to <code>latest</code>.</p>
 
     <h3>Handler invariance — HTTP and Kafka are interchangeable transports</h3>
 

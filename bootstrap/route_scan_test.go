@@ -133,6 +133,115 @@ func TestScanAuthorization_MixedRoutes_PanicListsAll(t *testing.T) {
 	scanAuthorization(reg, nil)
 }
 
+// --- scanPublicRoutes -------------------------------------------------------
+
+func TestScanPublicRoutes_NilApp_NoOp(t *testing.T) {
+	scanPublicRoutes(nil, []string{"GET /health"})
+}
+
+func TestScanPublicRoutes_EmptyList_NoOp(t *testing.T) {
+	app := fiber.New()
+	scanPublicRoutes(app, nil)
+}
+
+func TestScanPublicRoutes_AllMatch_NoPanic(t *testing.T) {
+	app := fiber.New()
+	app.Get("/health", func(c fiber.Ctx) error { return nil })
+	app.Post("/login", func(c fiber.Ctx) error { return nil })
+
+	scanPublicRoutes(app, []string{"GET /health", "POST /login"})
+}
+
+func TestScanPublicRoutes_TypoPath_Panics(t *testing.T) {
+	app := fiber.New()
+	app.Get("/health", func(c fiber.Ctx) error { return nil })
+
+	defer func() {
+		r := recover()
+		if r == nil {
+			t.Fatal("expected panic for unregistered public route")
+		}
+		msg, _ := r.(string)
+		if !strings.Contains(msg, "GET /helth") {
+			t.Errorf("panic must name the offending entry; got %q", msg)
+		}
+	}()
+	scanPublicRoutes(app, []string{"GET /helth"})
+}
+
+func TestScanPublicRoutes_WrongMethod_Panics(t *testing.T) {
+	app := fiber.New()
+	app.Get("/health", func(c fiber.Ctx) error { return nil })
+
+	defer func() {
+		if recover() == nil {
+			t.Fatal("expected panic for wrong method on public route")
+		}
+	}()
+	scanPublicRoutes(app, []string{"POST /health"})
+}
+
+func TestScanPublicRoutes_PathParam_Panics(t *testing.T) {
+	app := fiber.New()
+	app.Get("/users/:id", func(c fiber.Ctx) error { return nil })
+
+	defer func() {
+		r := recover()
+		if r == nil {
+			t.Fatal("expected panic for path-param public route (unmatchable by exact path)")
+		}
+		msg, _ := r.(string)
+		if !strings.Contains(msg, "GET /users/:id") {
+			t.Errorf("panic must name the param route; got %q", msg)
+		}
+	}()
+	scanPublicRoutes(app, []string{"GET /users/:id"})
+}
+
+func TestScanPublicRoutes_Wildcard_Panics(t *testing.T) {
+	app := fiber.New()
+	app.Get("/files/*", func(c fiber.Ctx) error { return nil })
+
+	defer func() {
+		if recover() == nil {
+			t.Fatal("expected panic for wildcard public route")
+		}
+	}()
+	scanPublicRoutes(app, []string{"GET /files/*"})
+}
+
+func TestScanPublicRoutes_Malformed_Panics(t *testing.T) {
+	app := fiber.New()
+	app.Get("/health", func(c fiber.Ctx) error { return nil })
+
+	defer func() {
+		if recover() == nil {
+			t.Fatal("expected panic for malformed public route entry")
+		}
+	}()
+	scanPublicRoutes(app, []string{"/health"}) // missing method
+}
+
+func TestScanPublicRoutes_PanicListsAllOffenders(t *testing.T) {
+	app := fiber.New()
+	app.Get("/health", func(c fiber.Ctx) error { return nil })
+
+	defer func() {
+		r := recover()
+		if r == nil {
+			t.Fatal("expected panic")
+		}
+		msg, _ := r.(string)
+		if !strings.Contains(msg, "GET /helth") || !strings.Contains(msg, "GET /users/:id") {
+			t.Errorf("panic must list every offender; got %q", msg)
+		}
+		if strings.Contains(msg, "GET /health\n") {
+			t.Errorf("the valid route must not be flagged; got %q", msg)
+		}
+	}()
+	scanPublicRoutes(app, []string{"GET /health", "GET /helth", "GET /users/:id"})
+}
+
 // --- scanRouteRegistration --------------------------------------------------
 
 func TestScanRouteRegistration_NilRegistry_NoOp(t *testing.T) {

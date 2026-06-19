@@ -2,6 +2,7 @@ package infra
 
 import (
 	"errors"
+	"fmt"
 
 	"github.com/jackc/pgx/v5/pgconn"
 
@@ -108,6 +109,34 @@ func (w boundWriter[T]) Archive(a domain.Archivable) error {
 
 func (w boundWriter[T]) Unarchive(u domain.Unarchivable) error {
 	return w.repo.mapErr(w.repo.Postgres.Unarchive(w.ctx, u, w.repo.Schema, w.hook))
+}
+
+// WithSchema declares the mandatory TableSchema and runs the construction-time
+// boot checks before binding it: PK-declared, aggregate-depth (no
+// grandchildren), and — when T exposes Modes() — the Modes() ⟺ SoftDelete
+// invariant. The field-existence + bijection checks already ran while the
+// TableSchema was built. A violation panics at construction, not on the first
+// request, so a flat (non-aggregate) repository gets the same fail-fast the
+// aggregate path has via BaseAggregateRepository.WithSchema.
+//
+// Setting r.Schema directly stays supported (the escape hatch) but bypasses
+// these checks; WithSchema is the validated canonical path. Calling it also
+// surfaces a nil NewEntity factory at construction (via r.New()) instead of on
+// the first write.
+func (r *BaseRepository[T]) WithSchema(schema *TableSchema) *BaseRepository[T] {
+	if !schema.hasPKDeclared() {
+		panic(fmt.Sprintf(
+			"infra.TableSchema(%s): no primary key declared — declare .PK(goField, column); "+
+				"there is no default, the developer must declare it",
+			schema.Table(),
+		))
+	}
+	schema.validateChildDepth()
+	if m, ok := any(r.New()).(interface{ Modes() []domain.EntityMode }); ok {
+		schema.validateModes(m.Modes())
+	}
+	r.Schema = schema
+	return r
 }
 
 // New returns an empty instance of T via the injected factory. Panics if

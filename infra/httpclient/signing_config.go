@@ -209,6 +209,25 @@ func validateSigningConfig(prefix string, cfg *SigningConfig) []string {
 				break
 			}
 		}
+		// signatureHeader and keyIdHeader are Set on the request AFTER the
+		// canonical string is computed, so naming them in signedHeaders signs
+		// an always-empty value while the wire carries a non-empty one — every
+		// signed request would be rejected upstream. Both names are known at
+		// boot; reject the self-reference.
+		signedSet := make(map[string]struct{}, len(cfg.SignedHeaders))
+		for _, h := range cfg.SignedHeaders {
+			signedSet[strings.ToLower(strings.TrimSpace(h))] = struct{}{}
+		}
+		if sig := strings.ToLower(strings.TrimSpace(cfg.SignatureHeader)); sig != "" {
+			if _, ok := signedSet[sig]; ok {
+				errs = append(errs, fmt.Sprintf("%s.signedHeaders: must not contain the signatureHeader %q — it is set after the canonical string is built and would sign an empty value", prefix, cfg.SignatureHeader))
+			}
+		}
+		if kid := strings.ToLower(strings.TrimSpace(cfg.KeyIdHeader)); kid != "" {
+			if _, ok := signedSet[kid]; ok {
+				errs = append(errs, fmt.Sprintf("%s.signedHeaders: must not contain the keyIdHeader %q — it is set after the canonical string is built and would sign an empty value", prefix, cfg.KeyIdHeader))
+			}
+		}
 	}
 	if strings.TrimSpace(cfg.TimestampHeader) == "" {
 		errs = append(errs, fmt.Sprintf("%s.timestampHeader: required", prefix))

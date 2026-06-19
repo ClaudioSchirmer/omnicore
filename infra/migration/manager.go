@@ -202,8 +202,9 @@ func (m *Manager) ValidateDownExists() error {
 		return fmt.Errorf("migration: read dir %q: %w", m.dir, err)
 	}
 
-	ups := map[string]string{}    // base (e.g. "0002_init") → up filename
+	ups := map[string]string{}     // base (e.g. "0002_init") → up filename
 	downs := map[string]struct{}{} // base → present
+	var malformed []string         // files whose name carries no parseable version prefix
 	for _, e := range entries {
 		if e.IsDir() {
 			continue
@@ -212,9 +213,26 @@ func (m *Manager) ValidateDownExists() error {
 		switch {
 		case strings.HasSuffix(name, ".up.sql"):
 			ups[strings.TrimSuffix(name, ".up.sql")] = name
+			if _, ok := parseMigrationVersion(name); !ok {
+				malformed = append(malformed, name)
+			}
 		case strings.HasSuffix(name, ".down.sql"):
 			downs[strings.TrimSuffix(name, ".down.sql")] = struct{}{}
+			if _, ok := parseMigrationVersion(name); !ok {
+				malformed = append(malformed, name)
+			}
 		}
+	}
+
+	// A filename without a parseable "{version}_{name}" prefix is silently
+	// dropped by golang-migrate's loader — the SQL never runs yet boot
+	// reports success. Surface it loudly rather than let it slip through.
+	if len(malformed) > 0 {
+		sort.Strings(malformed)
+		cause := fmt.Errorf(`migration file(s) without a parseable "{version}_{name}" prefix: %s`,
+			strings.Join(malformed, ", "))
+		return fwinfra.FieldErrorWithCause("Migration", filepath.Clean(m.dir), cause,
+			MigrationFilenameInvalidNotification{})
 	}
 
 	var missing []string

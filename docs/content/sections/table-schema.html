@@ -259,7 +259,18 @@ func OrdersView() *fwinfra.ViewDefinition {
         <code>Child(...)</code> panics at <code>WithSchema</code> (write side); an embed source whose schema carries
         <code>Child(...)</code> is a fatal error in <code>ValidateViewSchemas</code> (read side). Width is unlimited;
         depth is one.</li>
+    <li><strong>Aggregate boundary agreement</strong> — the types the domain declares via
+        <code>AggregateChildren()</code> and the types the schema declares via <code>.Child(...)</code> must name the same
+        set. <code>BaseAggregateRepository.WithSchema</code> panics naming any type declared on only one side: a
+        <code>.Child(...)</code> with no <code>AggregateChildren()</code> entry would be silently load-only; an
+        <code>AggregateChildren()</code> entry with no <code>.Child(...)</code> would error per-write deep in the persister.</li>
 </ul>
+<p>These checks run inside <code>WithSchema</code> on <em>both</em> repository shapes:
+    <code>BaseAggregateRepository.WithSchema</code> (aggregate) and <code>BaseRepository.WithSchema</code> (flat, non-aggregate)
+    each run the PK-declared, aggregate-depth, and <code>Modes()</code> ⟺ <code>SoftDelete</code> checks at construction (the
+    aggregate path additionally runs the boundary-agreement check and threads the schema into the read loader). Calling
+    <code>WithSchema</code> also surfaces a nil <code>NewEntity</code> factory at construction. Assigning <code>r.Schema</code>
+    directly still works as the unchecked escape hatch — <code>WithSchema</code> is the validated canonical entry.</p>
 
 <h3>Audit stays in the domain vocabulary</h3>
 <p>
