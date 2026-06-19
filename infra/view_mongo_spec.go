@@ -2,6 +2,8 @@ package infra
 
 import (
 	"fmt"
+	"sort"
+	"strings"
 	"time"
 
 	"go.mongodb.org/mongo-driver/v2/bson"
@@ -500,6 +502,11 @@ func (v *ViewDefinition) TimeSeriesDeclaration() *TimeSeriesSpec { return v.mong
 //  6. Every IndexSpec must declare at least one key.
 //  7. JSONSchemaSpec.ValidationLevel ∈ {strict, moderate, off}.
 //  8. JSONSchemaSpec.ValidationAction ∈ {error, warn}.
+//  9. Every index key names a column the composer emits (no dead index on
+//     a typo'd / undeclared field). Skipped for a schema-less view.
+//  10. Every top-level $jsonSchema.required entry names a column the
+//     composer emits (else, with validationAction=error, every upsert is
+//     rejected and the projection silently stops updating).
 func (v *ViewDefinition) ValidateMongoSpec() error {
 	ms := &v.mongoSpec
 
@@ -552,5 +559,114 @@ func (v *ViewDefinition) ValidateMongoSpec() error {
 		}
 	}
 
+	// Shape guards (rules 9 + 10): an index key, or a top-level
+	// $jsonSchema.required entry, must name a physical column the composer
+	// actually emits. Only runs on a real registered view — schema present,
+	// guaranteed by ValidateViewSchemas before ApplyMongoSpecs; the
+	// schema-less views some unit tests build in isolation are skipped (no
+	// column set to compare against).
+	if v.schema != nil && (len(ms.indexes) > 0 || (ms.jsonSchema != nil && ms.jsonSchema.Schema != nil)) {
+		cols := v.composedColumnSet()
+		for i, s := range ms.indexes {
+			for _, key := range s.KeyNames() {
+				if _, ok := cols[key]; !ok {
+					return fmt.Errorf("view %q: index #%d key %q is not a column the composer emits — "+
+						"the index would never be used (typo, or a field not declared in the view's TableSchema). "+
+						"Emitted columns: %s", v.name, i, key, sortedColumns(cols))
+				}
+			}
+		}
+		if ms.jsonSchema != nil && ms.jsonSchema.Schema != nil {
+			if req, ok := ms.jsonSchema.Schema["required"]; ok {
+				for _, field := range stringList(req) {
+					if _, ok := cols[field]; !ok {
+						return fmt.Errorf("view %q: $jsonSchema.required entry %q is not a column the composer emits — "+
+							"with validationAction=error every SyncEngine upsert would be rejected and the projection would silently stop updating. "+
+							"Emitted columns: %s", v.name, field, sortedColumns(cols))
+					}
+				}
+			}
+		}
+	}
+
 	return nil
+}
+
+// composedColumnSet returns the set of physical column PATHS (dotted for
+// embeds) the composer can emit for this view: every root column + the
+// columns of every embed subtree (prefixed by the embed's doc field), plus
+// "_id" at the root. A field outside this set is one the composed Mongo
+// document never carries — so an index on it is dead (never used) and a
+// $jsonSchema.required on it (with the default error action) rejects every
+// upsert.
+func (v *ViewDefinition) composedColumnSet() map[string]struct{} {
+	set := map[string]struct{}{"_id": {}}
+	collectComposedColumns(v.schema, v.embeds, "", set)
+	return set
+}
+
+// collectComposedColumns walks a schema + its embeds, adding every physical
+// column path into set. The embed's whole subtree is addressable at its doc
+// field (e.g. "addresses"), and each nested column is prefixed by it (e.g.
+// "addresses.zip_code"). FK + the three managed columns are included so a
+// legitimately-indexed soft-delete / FK column is not flagged.
+func collectComposedColumns(schema *TableSchema, embeds []embedDef, prefix string, set map[string]struct{}) {
+	add := func(col string) {
+		if col == "" {
+			return
+		}
+		if prefix == "" {
+			set[col] = struct{}{}
+		} else {
+			set[prefix+"."+col] = struct{}{}
+		}
+	}
+	if schema != nil {
+		add(schema.pkColumn)
+		add(schema.fkColumn)
+		add(schema.softDelete)
+		add(schema.createdAt)
+		add(schema.updatedAt)
+		for col := range schema.byCol {
+			add(col)
+		}
+	}
+	for _, e := range embeds {
+		if e.source == nil {
+			continue
+		}
+		add(e.field)
+		childPrefix := e.field
+		if prefix != "" {
+			childPrefix = prefix + "." + e.field
+		}
+		collectComposedColumns(e.source.schema, e.source.embeds, childPrefix, set)
+	}
+}
+
+// stringList normalizes a $jsonSchema "required" value (typically []string
+// or bson.A) into a []string, dropping non-string entries.
+func stringList(v any) []string {
+	items, ok := asAnySlice(v)
+	if !ok {
+		return nil
+	}
+	out := make([]string, 0, len(items))
+	for _, it := range items {
+		if s, ok := it.(string); ok {
+			out = append(out, s)
+		}
+	}
+	return out
+}
+
+// sortedColumns renders the emitted-column set as a sorted comma list for
+// the diagnostic so the operator sees exactly what the view does carry.
+func sortedColumns(set map[string]struct{}) string {
+	out := make([]string, 0, len(set))
+	for c := range set {
+		out = append(out, c)
+	}
+	sort.Strings(out)
+	return strings.Join(out, ", ")
 }

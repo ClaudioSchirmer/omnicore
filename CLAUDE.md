@@ -1628,6 +1628,8 @@ Boot invariants enforced by `ValidateMongoSpec()`:
 7. Every `IndexSpec` must declare at least one key.
 8. `JSONSchemaSpec.ValidationLevel` ∈ `{"strict", "moderate", "off"}`.
 9. `JSONSchemaSpec.ValidationAction` ∈ `{"error", "warn"}`.
+10. Every index key names a **column the composer emits** — the root columns (PK + mapped fields + the three managed columns + FK) and each embed subtree (addressable by its doc field, e.g. `addresses` and `addresses.zip_code`), plus `_id`. A key outside that set is a typo / undeclared field the document never carries, so the index would be dead (never used); boot aborts naming the key and listing the emitted columns. Runs only on a real (schema-bearing) view. Index keys are **physical column paths**, not Go field names (`addresses.zip_code`, not `addresses.zipCode`).
+11. Every top-level `$jsonSchema.required` entry names a column the composer emits — the same set as rule 10. A `required` field the document never carries, under the default `validationAction: error`, makes Mongo reject **every** SyncEngine upsert, silently freezing the projection; boot aborts instead.
 
 **Apply semantics (idempotent):**
 

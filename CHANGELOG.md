@@ -101,6 +101,16 @@ with `1.0.0`.
     `signatureHeader` / `keyIdHeader`** — those are set after the canonical string
     is built, so signing them signs an always-empty value and every signed
     request would be rejected upstream.
+  - **A Mongo view index key must name a column the composer emits**
+    (`ValidateMongoSpec`) — an index on a typo'd / undeclared field (e.g.
+    `Index("emial")` or a Go field name `addresses.zipCode` instead of the
+    column `addresses.zip_code`) would be dead (never used); boot aborts naming
+    the key and the emitted column set. Keys are validated against the root
+    columns + each embed subtree + `_id`.
+  - **A top-level `$jsonSchema.required` entry must name a column the composer
+    emits** (`ValidateMongoSpec`) — a `required` field the document never carries,
+    under the default `validationAction: error`, makes Mongo reject every
+    SyncEngine upsert and silently freeze the projection; boot aborts instead.
 - **`BaseRepository.WithSchema(*TableSchema)`** — the validated canonical way to
   bind a schema on a flat (non-aggregate) repository: runs the PK-declared,
   aggregate-depth, and `Modes()` ⟺ `SoftDelete` checks (the same the aggregate
