@@ -13,6 +13,44 @@ with `1.0.0`.
 
 ### Added
 
+- **Tabular export of a view query (CSV today, format-pluggable).**
+  `fwweb.HandleQueryExport[TReq, TQ]` and the convenience `fwweb.HandleQueryAsCSV[TReq, TQ]`
+  mount a route that streams the same view read as a paged GET — reusing the
+  same Request DTO + query handler — rendered as a flat file. The layout is
+  hierarchical: root columns start at column 0, each embed one column deeper
+  (infinite nesting). Headers come from each column's `labelKey` resolved per
+  `Accept-Language` (falling back to the Go field name). `?fields=` narrows the
+  columns (allowlist driven by the view schema, not a Response DTO);
+  filters / `?search` / `?sort` / `?includeArchived` behave like the JSON list;
+  user pagination (`?limit` / `?after` / `?before` / `?onlyTotal`) is ignored —
+  the export returns the full filtered set, capped at the resolved export
+  ceiling (the wrapper sets the new `queries.ReadCriteria.BypassMaxLimit` so its
+  operator-set ceiling is honored verbatim instead of being rejected by the
+  per-view page `?limit` ceiling). The format is a pluggable `web/export.Encoder`;
+  `export.CSV(export.WithDelimiter(r))` is the first encoder, with the field
+  separator chosen at mount time. The format-neutral core —
+  `queries.ExportPlan` (built by `infra.(*ViewDefinition).ExportPlan()`),
+  `export.Generate`, and the `export.Encoder`/`Sink` boundary — means a future
+  format (XLSX) is a new encoder with no change to the plan, the generator, or
+  the HTTP wrapper.
+- **`ViewDefinition.MaxExportRows(n)` + `query.maxExportRows` yaml** — per-view
+  and service-wide ceilings on the number of rows a tabular export streams,
+  resolved via `ViewDefinition.ResolveMaxExportRows(yamlDefault)` (cascade:
+  per-view override > yaml default > `infra.DefaultMaxExportRows` = 10000).
+  Operational state — NOT part of `RebuildHash` / `ArtifactHash`, mirroring
+  `MaxLimit`.
+- **External-schema field labels.** `NewExternalSchema(table).Field(go, col, labelKey)`
+  declares a header catalog key inline on a type-less view source (an upstream
+  collection that has no Go struct to carry a `labelKey:"…"` tag — the
+  "mini-domain"). External-only: passing a labelKey on a type-anchored
+  `NewTableSchema[T]` is a boot panic, because that schema declares the label
+  via the field's struct tag (never two ways to express one domain concept).
+  `Field`'s signature gains an optional trailing `labelKey ...string` (backward
+  compatible); the audit/export label resolver (`labelKeysByGoField`) now
+  resolves both the inline label and the struct tag.
+- **`domain.ToLowerCamel(s)`** — exported acronym-aware lowerCamel (mirrors the
+  existing `PluralizeWord`), used by the export plan to derive a column's wire
+  token (`ZipCode` → `zipCode`).
 - **`TableSchema` — the single, mandatory, explicit Go-field↔physical-column
   map**, superseding the convention/inference model and the `RepoConfig` schema
   map from 0.11.0. Built with `NewTableSchema[T](table)` (type-anchored —

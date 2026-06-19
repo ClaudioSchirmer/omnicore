@@ -148,8 +148,10 @@ func (r *MongoViewReader) ReadPage(ctx context.Context, view string, c queries.R
 	// Limit cascade — the resolved max is always > 0 (framework fallback).
 	// Consumer-supplied limit greater than the ceiling is rejected with the
 	// canonical 400 envelope; absent or zero limit defers to the ceiling so
-	// every Mongo Find always carries a bounded SetLimit.
-	if c.Limit > maxLimit {
+	// every Mongo Find always carries a bounded SetLimit. A trusted internal
+	// caller (the tabular-export wrapper) may set BypassMaxLimit to use its own
+	// operator-set ceiling (maxExportRows) verbatim instead of the page ceiling.
+	if !c.BypassMaxLimit && c.Limit > maxLimit {
 		return queries.Page{}, LimitExceededError(maxLimit)
 	}
 	limit := c.Limit

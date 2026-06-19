@@ -54,6 +54,14 @@ type schemaField struct {
 	goName string
 	column string
 	index  int // reflect field index in the struct; -1 = not a struct field
+
+	// labelKey is the header catalog key declared inline on the schema. It is
+	// EXTERNAL-ONLY (NewExternalSchema): a type-less schema has no Go struct to
+	// carry a labelKey:"…" tag, so the "mini-domain" declares the label here.
+	// On a type-anchored schema the struct tag is the single source (declaring
+	// a schema-level label there is a boot panic — never two ways to express
+	// one domain concept). "" when none.
+	labelKey string
 }
 
 // NewTableSchema starts a type-anchored schema for table over Go type T. Field
@@ -174,7 +182,16 @@ func (s *TableSchema) FK(column string) *TableSchema {
 // Field declares one persisted Go field ↔ column pair. The field must exist and
 // be exported on T (panic otherwise); the column must be unique within the
 // schema (bijection).
-func (s *TableSchema) Field(goName, column string) *TableSchema {
+//
+// The optional trailing labelKey declares the field's header catalog key inline
+// on the schema. It is EXTERNAL-ONLY: passing a non-empty labelKey on a
+// type-anchored schema (NewTableSchema[T]) is a boot panic, because that schema
+// already declares the label via the field's labelKey:"…" struct tag — there is
+// never two ways to express one domain concept. A type-less external schema
+// (NewExternalSchema) has no struct to read, so the schema-level labelKey is the
+// only place it can live (the "mini-domain" for upstream columns). At most one
+// labelKey may be passed.
+func (s *TableSchema) Field(goName, column string, labelKey ...string) *TableSchema {
 	idx := -1
 	if s.typ != nil {
 		idx = exportedFieldIndex(s.typ, goName)
@@ -194,7 +211,21 @@ func (s *TableSchema) Field(goName, column string) *TableSchema {
 	if column == s.pkColumn || column == s.softDelete || column == s.createdAt || column == s.updatedAt {
 		panic(fmt.Sprintf("infra.TableSchema(%s): field column %q collides with a PK/managed column", s.table, column))
 	}
-	fd := schemaField{goName: goName, column: column, index: idx}
+	lk := ""
+	switch len(labelKey) {
+	case 0:
+	case 1:
+		lk = labelKey[0]
+	default:
+		panic(fmt.Sprintf("infra.TableSchema(%s): field %q accepts at most one labelKey", s.table, goName))
+	}
+	if lk != "" && s.typ != nil {
+		panic(fmt.Sprintf(
+			"infra.TableSchema(%s): schema-level labelKey on field %q is external-only; a type-anchored schema declares the header via the `labelKey:\"…\"` struct tag, not here",
+			s.table, goName,
+		))
+	}
+	fd := schemaField{goName: goName, column: column, index: idx, labelKey: lk}
 	s.fields = append(s.fields, fd)
 	s.byGo[goName] = fd
 	s.byCol[column] = fd

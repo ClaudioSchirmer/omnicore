@@ -18,10 +18,18 @@ import (
 var labelKeyBySchemaCache sync.Map // map[*TableSchema]map[string]string
 
 // labelKeysByGoField returns Go-field-name → catalog key for every declared
-// field of the schema whose `labelKey:"<catalogKey>"` struct tag is non-empty (and
-// not `labelKey:"-"`). Returns nil when no field carries a label tag.
+// field of the schema that carries a header label. Resolution is single-source
+// per schema kind:
+//
+//   - schema-declared labelKey (NewExternalSchema, via Field(go, col, labelKey))
+//     wins — it is the only source a type-less external schema can have;
+//   - else, on a type-anchored schema, the field's `labelKey:"<catalogKey>"`
+//     struct tag (today's behavior, unchanged).
+//
+// `labelKey:"-"` and the empty string opt out. Returns nil when no field carries
+// a label.
 func labelKeysByGoField(schema *TableSchema) map[string]string {
-	if schema == nil || schema.typ == nil {
+	if schema == nil {
 		return nil
 	}
 	if cached, ok := labelKeyBySchemaCache.Load(schema); ok {
@@ -29,11 +37,13 @@ func labelKeysByGoField(schema *TableSchema) map[string]string {
 	}
 	var out map[string]string
 	for _, f := range schema.fields {
-		if f.index < 0 {
-			continue
+		tag := f.labelKey
+		if tag == "" && schema.typ != nil && f.index >= 0 {
+			if t, ok := schema.typ.Field(f.index).Tag.Lookup("labelKey"); ok {
+				tag = t
+			}
 		}
-		tag, ok := schema.typ.Field(f.index).Tag.Lookup("labelKey")
-		if !ok || tag == "" || tag == "-" {
+		if tag == "" || tag == "-" {
 			continue
 		}
 		if out == nil {

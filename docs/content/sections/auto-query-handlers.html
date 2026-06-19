@@ -476,3 +476,63 @@ const (
         <tr><td><code>?role=admin</code> on by-id endpoint</td><td>400 — only <code>includeArchived</code> is reserved by-id</td></tr>
     </tbody></table>
 
+    <h3 id="qry-export">Tabular export — CSV (format-pluggable)</h3>
+    <p>
+        Alongside the JSON list, a view can be exposed as a downloadable flat file. The wrapper
+        <code>fwweb.HandleQueryAsCSV[TReq, TQ]</code> (a thin convenience over the generic
+        <code>HandleQueryExport</code>) reuses the <strong>same Request DTO and the same query
+        handler</strong> as <code>HandleQueryWithParams</code> — there is no second handler, no
+        second query, no hand-written CSV. Mount it as another route:
+    </p>
+    <pre><code>csvH := fwweb.HandleQueryAsCSV(d.Pipeline,
+    requests.FindUsersByParamsRequest{},   // same Request DTO as the JSON list
+    view.ExportPlan(),                     // column tree built from the view's TableSchema
+    d.Translator,
+    view.ResolveMaxExportRows(d.Config.Query.MaxExportRows),
+    "users",                               // file base name → users.csv
+    &amp;handlers.FindByParamsQueryHandler[*queries.FindUserByParamsQuery]{
+        Reader: d.ViewReader, View: view.Name(),
+    },
+    export.WithDelimiter(';'))             // CSV-specific option, fixed at mount
+fwopenapi.MountRaw(d.OpenAPIRegistry, app, fiber.MethodGet, "/users.csv", csvH,
+    fwopenapi.RawSpec{Summary: "Export users as CSV", Tags: []string{"Users"},
+        Responses: map[int]fwopenapi.ResponseSpec{200: {Description: "CSV file", ContentType: "text/csv"}}},
+    fwopenapi.RequirePermission("users:read"))</code></pre>
+    <p>
+        <strong>Hierarchical layout — one column per nesting level.</strong> The view's embed tree
+        is rendered depth-first: root columns start at column A, each embed one column to the right
+        (addresses at column B, a grandchild collection at column C, …), to the view's full depth.
+        For each parent row the wrapper emits the parent's data, then — offset one column — a header
+        row plus a data row per child, recursively. A column's header is its
+        <code>labelKey</code> rendered through the <code>Translator</code> in the request's
+        <code>Accept-Language</code>, falling back to the Go field name when a column carries no
+        label.
+    </p>
+    <p>
+        <strong>Columns.</strong> By default every business column the view's <code>TableSchema</code>
+        declares (the surrogate id and the framework-managed <code>created_at</code>/<code>updated_at</code>/<code>deleted_at</code>
+        are excluded). <code>?fields=</code> narrows them, exactly like the JSON list — the allowlist
+        is driven by the view schema (not a Response DTO), so <code>?fields=name,addresses.zipCode</code>
+        keeps only those columns at their proper depth, and an unknown token returns
+        <code>400 SchemaViolationNotification{field:"fields[&lt;token&gt;]"}</code>.
+    </p>
+    <p>
+        <strong>Scope.</strong> Filters, <code>?search</code>, <code>?sort</code>, and
+        <code>?includeArchived</code> behave like the JSON list. User pagination
+        (<code>?limit</code> / <code>?after</code> / <code>?before</code> / <code>?onlyTotal</code>)
+        is <em>ignored</em> — an export returns the full filtered set, capped at the resolved
+        ceiling sent as the read limit. The ceiling resolves per-view
+        (<code>ViewDefinition.MaxExportRows(n)</code>) &gt; yaml (<code>query.maxExportRows</code>) &gt;
+        framework default <code>infra.DefaultMaxExportRows</code> (10000), via
+        <code>ResolveMaxExportRows</code>.
+    </p>
+    <p>
+        <strong>Format is pluggable.</strong> The walk, the per-level offset, the labelKey headers,
+        and the <code>?fields=</code> pruning are format-neutral — a <code>queries.ExportPlan</code>
+        plus the read documents are turned into a stream of <code>export.Row</code> events that a
+        <code>export.Encoder</code> serializes. <code>export.CSV(opts…)</code> is the first encoder
+        (its <code>export.WithDelimiter(r)</code> option sets the field separator at mount time). A
+        future format — XLSX — is a new <code>Encoder</code>, with no change to the plan, the
+        generator, or the HTTP wrapper.
+    </p>
+

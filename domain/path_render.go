@@ -138,6 +138,13 @@ func toLowerCamel(s string) string {
 	return string(runes)
 }
 
+// ToLowerCamel is the exported form of toLowerCamel. Infra uses it to derive a
+// field's JSON-friendly wire token (the same acronym-aware camelCase the
+// notification wire paths use) when building a view's tabular-export plan, so a
+// CSV/Excel `?fields=` token matches the wire name the rest of the framework
+// produces ("ZipCode" → "zipCode", "URLPath" → "urlPath").
+func ToLowerCamel(s string) string { return toLowerCamel(s) }
+
 func isUpperRune(r rune) bool { return r >= 'A' && r <= 'Z' }
 
 func toLowerRune(r rune) rune {

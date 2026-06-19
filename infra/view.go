@@ -22,6 +22,11 @@ type ViewDefinition struct {
 	// is operational and may be tuned without triggering a Mongo rebuild or a
 	// version bump.
 	maxLimit int64
+	// maxExportRows caps the row count a tabular export (CSV/XLSX) of this view
+	// streams. Zero (unset) defers to the yaml default (cfg.Query.MaxExportRows),
+	// then to DefaultMaxExportRows. Like maxLimit it is operational state — NOT
+	// part of RebuildHash / ArtifactHash.
+	maxExportRows int64
 }
 
 type embedDef struct {

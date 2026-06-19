@@ -109,6 +109,19 @@ fwinfra.NewExternalSchema("users").PK("ID", "id").Field("Email", "mail")</code><
     <code>Field("Go", "column")</code> pair.
 </p>
 
+<div class="box">
+    <strong>Field labels on external schemas — <code>Field(go, col, labelKey)</code>.</strong>
+    The human-facing field label (consumed by notifications, audit, and the tabular export's
+    column headers) normally comes from a <code>labelKey:"&lt;catalogKey&gt;"</code> struct tag on
+    the domain field. A type-less <code>NewExternalSchema</code> has no struct to carry that tag, so
+    it declares the label inline as an optional third argument:
+    <code>NewExternalSchema("users").Field("Name", "name", "PartnerNameField")</code>. This is the
+    "mini-domain" for upstream columns that have no real domain home. It is
+    <strong>external-only</strong>: passing a label on a type-anchored <code>NewTableSchema[T]</code>
+    is a boot panic — that schema declares the label through the field's <code>labelKey:</code> tag,
+    and the framework never offers two ways to express one domain concept.
+</div>
+
 <div class="box warn">
     <strong>Aggregate depth is exactly one — no grandchildren in the schema.</strong>
     A root may declare <em>any number</em> of child types (one <code>Child(...)</code> per
