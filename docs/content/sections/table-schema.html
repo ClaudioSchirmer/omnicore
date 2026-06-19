@@ -1,0 +1,193 @@
+<h2>TableSchema — Go ↔ column mapping (PG + Mongo views)</h2>
+<p>
+    Everything above infrastructure speaks the <strong>Go field name</strong> (PascalCase) — <code>domain</code>,
+    <code>application</code>, and <code>web</code>. The criteria you write is <code>criteria.Eq("Email", v)</code>; the
+    audit timeline says <code>Email</code>; repository signatures speak the domain. The <em>only</em> place a physical
+    column or table name appears is the persistence boundary, and it appears in exactly one artifact:
+    <code>TableSchema</code>. A schema is the <strong>mandatory, explicit, complete</strong> map between a Go type's
+    fields and its physical columns — Go field on one side, DB column on the other. There is no convention, no
+    name-inference, no <code>transient</code> tag: every persisted field is declared, and an undeclared exported field
+    is simply never persisted, scanned, or audited.
+</p>
+<p>
+    One <code>TableSchema</code> drives <strong>three</strong> consumers from a single declaration: the write path
+    (INSERT/UPDATE/archive SQL), the criteria engine (the <code>WHERE</code> a Go-named criterion compiles to), and the
+    auto-scan read-back (column → Go field). The same schema is reused by the read-side <code>ViewDefinition</code>, so
+    the Mongo projection speaks the same names. Because every name is declared in one place, a column rename round-trips
+    everywhere automatically — write, criteria, scan, and the Mongo view all move together.
+</p>
+
+<h3>The three-name model</h3>
+<p>
+    A field can carry up to three independent names, resolved at two membranes:
+</p>
+<table>
+    <thead><tr><th>Surface</th><th>Name</th><th>Declared by</th></tr></thead>
+    <tbody>
+        <tr><td>Wire (JSON / query string)</td><td><code>myEmail</code></td><td><code>json:"…"</code> / <code>query:"…"</code> tags in <code>web/</code></td></tr>
+        <tr><td>App / domain (Go field)</td><td><code>Email</code></td><td>the Go struct field — the single name every layer above infra uses</td></tr>
+        <tr><td>Physical (PG column / Mongo doc key)</td><td><code>mail</code></td><td><code>TableSchema.Field("Email", "mail")</code> in <code>infra/</code></td></tr>
+    </tbody>
+</table>
+<p>
+    The wire name and the physical name are <strong>invisible to the developer</strong> manipulating data — handlers,
+    commands, queries, and <code>BuildRules</code> only ever say <code>Email</code>. The web membrane
+    (<code>json</code>/<code>query</code> tags) translates JSON ↔ Go; the infra membrane (<code>TableSchema</code>)
+    translates Go ↔ column. Mongo mirrors PostgreSQL physically (the composer writes columns verbatim), and the reader
+    translates each column back to its Go field name before the typed Response projects to the wire — so the wire surface
+    speaks Go names without any per-Response source-key override.
+</p>
+
+<h3>Declaring a schema</h3>
+<p>
+    A type-anchored schema validates every field against the Go type <strong>at construction</strong> — a
+    <code>Field</code> naming a missing or unexported field panics immediately, which is the enforcement that replaces
+    convention. A type-less external schema describes an upstream service's columns for a <code>FromMongo</code> view
+    source (there is no local struct to validate against).
+</p>
+<pre><code>// Type-anchored — validated against *User at call time.
+func UserSchema() *fwinfra.TableSchema {
+    return fwinfra.NewTableSchema[*User]("users").
+        PK("ID", "id").                 // Go "ID" ↔ column "id" (single-column PK)
+        Field("Name", "name").
+        Field("Email", "mail").         // renamed column
+        Field("Phone", "phone").
+        SoftDelete("deleted_at").       // managed: presence enables the predicate
+        CreatedAt("created_at").        // managed: framework stamps NOW() on INSERT
+        UpdatedAt("updated_at").        // managed: framework stamps NOW() on INSERT + UPDATE
+        Child(AddressSchema())          // aggregate child, keyed by Go type name
+}
+
+func AddressSchema() *fwinfra.TableSchema {
+    return fwinfra.NewTableSchema[Address]("addresses").
+        PK("ID", "id").
+        FK("user_id").                  // FK to the root — injected by the persister
+        Field("Street", "street").
+        Field("ZipCode", "zip_code").
+        SoftDelete("deleted_at").
+        CreatedAt("created_at").
+        UpdatedAt("updated_at")
+}
+
+// Type-less — for an upstream-projected FromMongo source (no local struct).
+fwinfra.NewExternalSchema("users").PK("ID", "id").Field("Email", "mail")</code></pre>
+<p>
+    The Go-side primary-key field is conventionally <code>ID</code> (the <code>BaseEntity</code> contract);
+    <code>PK("ID", "col")</code> declares both sides. <code>FK</code> names the child's foreign-key column referencing the
+    root — it is injected by the persister and is <strong>not</strong> a struct field. Every other persisted field is a
+    <code>Field("Go", "column")</code> pair.
+</p>
+
+<h3>The three managed columns — by presence, not a flag</h3>
+<p>
+    Soft-delete, created-at, and updated-at are declared by <em>calling</em> the matching builder method with the column
+    name. Omitting the call disables the behavior — there is no boolean knob.
+</p>
+<table>
+    <thead><tr><th>Builder</th><th>Declared</th><th>Omitted</th></tr></thead>
+    <tbody>
+        <tr>
+            <td><code>SoftDelete(col)</code></td>
+            <td>the read scope-gate uses <code>col IS NULL</code>; Archive/Unarchive write <code>col = NOW()</code> / <code>col = NULL</code></td>
+            <td>no scope-gate; Archive/Unarchive unavailable (boot check + runtime guard)</td>
+        </tr>
+        <tr>
+            <td><code>CreatedAt(col)</code></td>
+            <td>the framework stamps <code>col = NOW()</code> on INSERT</td>
+            <td>no creation timestamp stamped</td>
+        </tr>
+        <tr>
+            <td><code>UpdatedAt(col)</code></td>
+            <td>the framework stamps <code>col = NOW()</code> on INSERT and UPDATE</td>
+            <td><code>buildUpdate</code> omits the <code>SET</code></td>
+        </tr>
+    </tbody>
+</table>
+<p>
+    The framework <strong>actively generates</strong> these timestamps — it never relies on a DB <code>DEFAULT NOW()</code>
+    it does not own. The soft-delete predicate shape is fixed (nullable timestamp: <code>IS NULL</code> = active); the
+    schema controls only the column's <em>name and presence</em>. On the read path these three columns are also readable
+    under fixed logical Go names (<code>CreatedAt</code>, <code>UpdatedAt</code>, <code>DeletedAt</code>) so a view can
+    project them without a domain Go field.
+</p>
+
+<h3>One declaration, every consumer — <code>WithSchema</code></h3>
+<p>
+    Declare the schema once and thread it with <code>BaseAggregateRepository.WithSchema(schema)</code>: it feeds BOTH the
+    write binding and the read loader, so the write path, the criteria translator, and the scan-back all agree on the
+    same columns. The <code>Modes() ⟺ SoftDelete</code> boot check runs here; the field-existence and bijection checks
+    already ran while the schema was built. A misconfiguration panics at construction, not on the first request.
+</p>
+<pre><code>func NewUserRepository(pg *fwinfra.Postgres) *UserRepository {
+    r := &amp;UserRepository{
+        BaseAggregateRepository: fwinfra.NewBaseAggregateRepository[*User](
+            pg, func() *User { return &amp;User{} },
+        ),
+    }
+    r.Constraints = map[string]fwinfra.ConstraintBinding{ /* … */ }
+    r.WithSchema(UserSchema())   // one schema → write + criteria + scan + children
+    return r
+}</code></pre>
+
+<h3>The same schema drives the Mongo view</h3>
+<p>
+    The read-side <code>ViewDefinition</code> reuses the very same schemas. The root schema is attached via
+    <code>.Schema(...)</code>; each embed source declares its own schema via <code>.Schema(...)</code> and its parent-side
+    Go segment via <code>.As(...)</code>. The composer writes physical columns to Mongo; the reader translates each leaf
+    back to its Go field name using these schemas (so <code>mail</code> → <code>Email</code>, <code>zip_code</code> →
+    <code>ZipCode</code>), and the embed doc field becomes the declared Go segment (so the doc field
+    <code>addresses</code> → the Go segment <code>Addresses</code>). The view also honors the schema's soft-delete column
+    when <code>DeleteOnArchive</code> is set.
+</p>
+<pre><code>func UserView() *fwinfra.ViewDefinition {
+    return fwinfra.View("users").
+        Version(1).
+        Root("users").
+        Schema(UserSchema()).
+        EmbedMany("addresses",
+            fwinfra.From("addresses").On("user_id").
+                As("Addresses").           // parent-side Go segment for the Response/criteria
+                Schema(AddressSchema())).  // child Go ↔ column map for read-back translation
+        Indexes( /* … */ )
+}</code></pre>
+<p>
+    Filter keys on the read side are always Go paths (the request DTO's <code>filter:</code> leaves resolve to Go field
+    names, translated to columns by the schema). Sort and projection translate Go → column only when a typed Response is
+    in scope; <code>RawDoc</code> / <code>ParseCriteria</code> callers pass through verbatim. The typed Response projector
+    (<code>AutoFromDoc</code>) keys by the Go field name — the reader already translated the doc — so the
+    <code>view:</code> source-key override is gone; the only tag that governs the wire shape is <code>json:</code>.
+</p>
+
+<h3>Boot checks</h3>
+<ul>
+    <li><strong>Field exists on the type</strong> — <code>NewTableSchema[T]</code> + <code>Field</code> panic at
+        construction when the named field is absent, unexported, or promoted from an embed. This is what replaces
+        convention: a typo is a boot panic, not a silent miss.</li>
+    <li><strong>Bijection over the whole column set</strong> — across each source's mapped fields + the PK column + every
+        declared managed column, no two map to the same physical column. The collision panic names both offenders.</li>
+    <li><strong>Modes() ⟺ SoftDelete</strong> — an entity declaring <code>ModeArchive</code>/<code>ModeUnarchive</code>
+        without <code>SoftDelete</code> panics; a runtime guard backs it up.</li>
+    <li><strong>Single-column PK</strong> — the framework supports only single-column primary keys.</li>
+</ul>
+
+<h3>Audit stays in the domain vocabulary</h3>
+<p>
+    Audit does <strong>not</strong> consume the schema. The timeline's <code>snapshot</code> keys and
+    <code>changes[].field</code> are the faithful Go field name (<code>Email</code>, <code>ZipCode</code>), never the
+    physical column. A column rename therefore never disturbs the audit history. The <code>label:"…"</code> field labels
+    resolve by Go field name too.
+</p>
+
+<h3>Manual scanners bypass the schema by design</h3>
+<p>
+    <code>WithRootScanner</code> / <code>WithChildScanner</code> hand the SELECT and the scan to the developer, who owns
+    the column names directly. The schema governs the auto-scan path; the manual path stays a full escape hatch (a manual
+    root scanner used with <code>FindOne</code>/<code>FindAll</code> must populate the id itself).
+</p>
+
+<h3>Out of scope</h3>
+<ul>
+    <li><strong>Third-party / legacy database adoption.</strong> Predicate-shaped soft-delete (boolean/enum), composite
+        PK, exotic types — rejected. The scope is "an explicit map over the schema the framework manages", not "adapt to
+        any arbitrary schema".</li>
+</ul>

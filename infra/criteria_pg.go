@@ -2,7 +2,6 @@ package infra
 
 import (
 	"fmt"
-	"reflect"
 	"strings"
 
 	"github.com/ClaudioSchirmer/omnicore/infra/criteria"
@@ -10,48 +9,13 @@ import (
 )
 
 // fieldResolver maps a Go field name to its SQL column. The loader builds it
-// from the entity's struct index + RepoConfig.FieldOverrides. ok=false for an
+// from the entity's TableSchema (TableSchema.fieldResolver). ok=false for an
 // unknown / non-persisted field → the translator fails fast (developer bug).
 type fieldResolver func(goField string) (column string, ok bool)
 
-// newFieldResolver builds a resolver for entity type t. Keys are Go field
-// names (PascalCase); values are the resolved columns. transient/anonymous/
-// private fields are excluded (they are not in the struct index), so a
-// criterion referencing them is rejected as "unknown field". RepoConfig
-// FieldOverrides (GoField → column) take priority over the snake_case
-// convention.
-func newFieldResolver(t reflect.Type, overrides map[string]string) fieldResolver {
-	if t.Kind() == reflect.Ptr {
-		t = t.Elem()
-	}
-	// Seed the fixed primary-key convention: the Go field "ID" ↔ column "id".
-	// The id is managed by BaseEntity (a private field), so it does not appear
-	// in the struct index — but criteria.ByID("ID") must always resolve, and
-	// the framework hardcodes `id` as the PK column everywhere. An entity that
-	// also exposes an exported ID field resolves to the same "id" via the loop.
-	byField := map[string]string{"ID": "id"}
-	if t.Kind() == reflect.Struct {
-		idx := loadStructIndex(t)
-		for _, fi := range idx.order {
-			name := t.Field(fi.fieldIndex).Name
-			col := fi.col
-			if overrides != nil {
-				if o, ok := overrides[name]; ok && o != "" {
-					col = o
-				}
-			}
-			byField[name] = col
-		}
-	}
-	return func(goField string) (string, bool) {
-		c, ok := byField[goField]
-		return c, ok
-	}
-}
-
 // pgVisitor walks a criteria.Expr and accumulates a WHERE fragment + bound
 // args. Unexported — the developer never constructs or sees it. Identifiers
-// pass through validIdentifier (columns are framework/RepoConfig-derived, never
+// pass through validIdentifier (columns are framework/TableSchema-derived, never
 // user input); values are parameterized; domain.ID args are unwrapped to their
 // string value.
 type pgVisitor struct {
@@ -185,25 +149,36 @@ func compileWhere(e criteria.Expr, resolve fieldResolver) (string, []any, error)
 	return v.sb.String(), v.args, nil
 }
 
-// scopeGate returns the soft-delete condition for the scope ("" = no gate).
-func scopeGate(s criteria.Scope) string {
+// scopeGate returns the soft-delete condition for the scope on the source's
+// resolved soft-delete column ("" = no gate). A source with soft-delete
+// disabled has no marker column, so every scope yields no gate.
+func scopeGate(s criteria.Scope, schema *TableSchema) string {
+	col, ok := schema.softDeleteColumn()
+	if !ok {
+		return ""
+	}
 	switch s {
 	case criteria.ScopeOnlyArchived:
-		return "deleted_at IS NOT NULL"
+		return validIdentifier(col) + " IS NOT NULL"
 	case criteria.ScopeIncludeArchived:
 		return ""
 	default:
-		return "deleted_at IS NULL"
+		return validIdentifier(col) + " IS NULL"
 	}
 }
 
-// childScopeFilter maps the scope to the trailing child filter clause: active
-// children are gated on deleted_at IS NULL; under any archived scope children
-// load unfiltered so the unarchive cascade sees every child via
-// AllAggregateItems().
-func childScopeFilter(s criteria.Scope) string {
+// childScopeFilter maps the scope to the trailing child filter clause on the
+// child source's soft-delete column: active children are gated on
+// <col> IS NULL; under any archived scope children load unfiltered so the
+// unarchive cascade sees every child via AllAggregateItems(). A child with
+// soft-delete disabled is never gated.
+func childScopeFilter(s criteria.Scope, schema *TableSchema) string {
+	col, ok := schema.softDeleteColumn()
+	if !ok {
+		return ""
+	}
 	if s == criteria.ScopeActive {
-		return "AND deleted_at IS NULL"
+		return "AND " + validIdentifier(col) + " IS NULL"
 	}
 	return ""
 }

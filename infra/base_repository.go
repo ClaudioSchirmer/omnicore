@@ -21,34 +21,8 @@ type ConstraintBinding struct {
 	Field        string
 }
 
-// RepoConfig declares convention overrides for a specific Repository.
-// Common case: zero value — all names come from inference (InferTableName,
-// InferColumns with snake_case of the field, InferForeignKey).
-//
-// Overrides cover cases where convention does not fit — legacy schema,
-// non-Go naming, edge cases:
-//
-//	Config: fwinfra.RepoConfig{
-//	    Table: "tb_users",                              // override root table
-//	    FieldOverrides: map[string]string{
-//	        "Email": "mail",                             // GoField → SQL column
-//	    },
-//	    ChildTableOverrides: map[string]string{
-//	        "Address": "tb_addresses",                  // ChildTypeName → SQL table
-//	    },
-//	    ChildFKOverrides: map[string]string{
-//	        "Address": "owner_id",                      // ChildTypeName → FK column
-//	    },
-//	}
-//
-// Phase 19: DDD-pure domain does not pronounce table/column/FK names; override
-// is a per-service/per-schema decision and lives here in the infra layer.
-type RepoConfig struct {
-	Table               string
-	FieldOverrides      map[string]string
-	ChildTableOverrides map[string]string
-	ChildFKOverrides    map[string]string
-}
+// TableSchema — the per-Repository Go-field↔column map — is declared in
+// table_schema.go and threaded via BaseAggregateRepository.WithSchema.
 
 // BaseRepository[T] implements the 5 write methods of domain.Repository[T]
 // (Insert/Update/Archive/Unarchive/Delete) as one-liners that delegate to
@@ -79,9 +53,11 @@ type BaseRepository[T any] struct {
 	Constraints map[string]ConstraintBinding
 	NewEntity   func() T
 
-	// Config is optional. Zero value = pure inference by convention (common
-	// case). Populate overrides for legacy schema, non-Go naming, etc.
-	Config RepoConfig
+	// Schema is the mandatory explicit Go↔column map for this repository's
+	// entity (root + aggregate children). Set it directly or via
+	// BaseAggregateRepository.WithSchema. There is no convention fallback — a
+	// write with a nil Schema panics.
+	Schema *TableSchema
 }
 
 // Scope binds the request-scoped concerns — the ctx (cancellation → pgx,
@@ -99,7 +75,7 @@ func (r *BaseRepository[T]) Scope(ctx *configuration.AppContext, opts ...persist
 }
 
 // boundWriter is the request-scoped domain.Writer Scope returns. It holds
-// the BaseRepository (for the Postgres adapter, the RepoConfig, and the
+// the BaseRepository (for the Postgres adapter, the TableSchema, and the
 // constraint-violation mapErr), the bound ctx, and the resolved hook. Each
 // write delegates to *Postgres with the captured ctx — the pure domain
 // signature (ValidEntity in, outcome out) is preserved.
@@ -110,7 +86,7 @@ type boundWriter[T any] struct {
 }
 
 func (w boundWriter[T]) Insert(i domain.Insertable) (domain.ID, error) {
-	res, err := w.repo.Postgres.Insert(w.ctx, i, &w.repo.Config, w.hook)
+	res, err := w.repo.Postgres.Insert(w.ctx, i, w.repo.Schema, w.hook)
 	if err != nil {
 		return domain.ID{}, w.repo.mapErr(err)
 	}
@@ -118,20 +94,20 @@ func (w boundWriter[T]) Insert(i domain.Insertable) (domain.ID, error) {
 }
 
 func (w boundWriter[T]) Update(u domain.Updatable) error {
-	_, err := w.repo.Postgres.Update(w.ctx, u, &w.repo.Config, w.hook)
+	_, err := w.repo.Postgres.Update(w.ctx, u, w.repo.Schema, w.hook)
 	return w.repo.mapErr(err)
 }
 
 func (w boundWriter[T]) Delete(d domain.Deletable) error {
-	return w.repo.mapErr(w.repo.Postgres.Delete(w.ctx, d, &w.repo.Config, w.hook))
+	return w.repo.mapErr(w.repo.Postgres.Delete(w.ctx, d, w.repo.Schema, w.hook))
 }
 
 func (w boundWriter[T]) Archive(a domain.Archivable) error {
-	return w.repo.mapErr(w.repo.Postgres.Archive(w.ctx, a, &w.repo.Config, w.hook))
+	return w.repo.mapErr(w.repo.Postgres.Archive(w.ctx, a, w.repo.Schema, w.hook))
 }
 
 func (w boundWriter[T]) Unarchive(u domain.Unarchivable) error {
-	return w.repo.mapErr(w.repo.Postgres.Unarchive(w.ctx, u, &w.repo.Config, w.hook))
+	return w.repo.mapErr(w.repo.Postgres.Unarchive(w.ctx, u, w.repo.Schema, w.hook))
 }
 
 // New returns an empty instance of T via the injected factory. Panics if

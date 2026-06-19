@@ -19,29 +19,15 @@ type RootScanner[T domain.Entity] func(pgx.Row) (T, error)
 // ChildScanner deserializes a Postgres row into an AggregateValueObject.
 type ChildScanner func(pgx.Rows) (domain.AggregateValueObject, error)
 
-// childAutoSpec stores, per type name, the configuration for loading a child
-// via auto-scan: reflect type + computed columns + factory that creates an
-// empty AggregateValueObject that can be filled by scan.
+// AggregateLoader[T] loads an aggregate root + its children from Postgres. The
+// root and children tables/columns come from the TableSchema attached via
+// WithSchema (the same schema the write side uses) — no convention inference.
 //
-// Phase 19: table is NO LONGER stored here — it is resolved at Load time via
-// resolveChildTable(typeName, cfg), where cfg.ChildTableOverrides[typeName]
-// takes priority over InferTableName(typeName).
-type childAutoSpec struct {
-	typ      reflect.Type
-	columns  []string
-	scanInto func(pgx.Rows) (domain.AggregateValueObject, error)
-}
-
-// AggregateLoader[T] loads an aggregate root + active children from Postgres.
-// Phase 19: convention-based — root and children tables inferred from the
-// Go type via InferTableName; child FK inferred from the root type via
-// InferForeignKey. Overrides via WithConfig(RepoConfig).
+// Two scan paths coexist:
 //
-// Two paths coexist:
-//
-//  1. Auto-scan (default) — framework discovers columns via reflection on the
-//     exported fields of T (and of child types), generates explicit SELECT,
-//     scans directly into the addresses. Children declared via WithChild[V](loader).
+//  1. Auto-scan (default) — the framework reads each declared child schema and
+//     scans the columns directly into the struct. Every child declared on the
+//     schema (root.Child(...)) is auto-scanned unless a manual scanner is set.
 //
 //  2. Manual scanners — service provides RootScanner/ChildScanner via
 //     WithRootScanner/WithChildScanner. Required for non-trivial queries.
@@ -50,20 +36,18 @@ type childAutoSpec struct {
 //
 //	loader := infra.NewAggregateLoader[*appdomain.User](pg, func() *appdomain.User {
 //	    return &appdomain.User{}
-//	}).WithContextName("User")
-//	loader = infra.WithChild[appdomain.Address](loader)
+//	}).WithContextName("User").WithSchema(userSchema)
 //
 //	func (r *UserRepository) FindByID(id domain.ID) (*appdomain.User, error) {
-//	    return loader.Load(context.Background(), id)
+//	    return loader.FindOne(context.Background(), criteria.ByID(id))
 //	}
 type AggregateLoader[T domain.Entity] struct {
 	pg            *Postgres
 	newEntity     func() T
 	contextName   string
-	config        RepoConfig
+	schema        *TableSchema
 	rootScanner   RootScanner[T]
 	childScanners map[string]ChildScanner
-	childAuto     map[string]childAutoSpec
 }
 
 // NewAggregateLoader initializes a loader.
@@ -72,7 +56,6 @@ func NewAggregateLoader[T domain.Entity](pg *Postgres, newEntity func() T) *Aggr
 		pg:            pg,
 		newEntity:     newEntity,
 		childScanners: map[string]ChildScanner{},
-		childAuto:     map[string]childAutoSpec{},
 	}
 }
 
@@ -93,11 +76,11 @@ func (l *AggregateLoader[T]) effectiveContextName() string {
 	return TypeName[T]()
 }
 
-// WithConfig attaches the BaseRepository's RepoConfig so the loader can resolve
-// table/FK/column overrides. Calling with the same &r.Config shares the
-// configuration between write and read sides of a Repository.
-func (l *AggregateLoader[T]) WithConfig(cfg RepoConfig) *AggregateLoader[T] {
-	l.config = cfg
+// WithSchema attaches the repository's TableSchema (root + child schemas) so the
+// loader resolves table/PK/FK/column from the same explicit map the write side
+// uses. Shared between write and read sides of a Repository.
+func (l *AggregateLoader[T]) WithSchema(schema *TableSchema) *AggregateLoader[T] {
+	l.schema = schema
 	return l
 }
 
@@ -111,33 +94,6 @@ func (l *AggregateLoader[T]) WithRootScanner(fn RootScanner[T]) *AggregateLoader
 // typeName must match the Go type name of the AVO (e.g. "Address").
 func (l *AggregateLoader[T]) WithChildScanner(typeName string, fn ChildScanner) *AggregateLoader[T] {
 	l.childScanners[typeName] = fn
-	return l
-}
-
-// WithChild registers a child via auto-scan. Phase 19: table and FK are inferred
-// at Load time — no need to declare the table here.
-//
-//	infra.WithChild[Address](loader)   // typeName="Address", inferred table "addresses"
-//
-// V must be the concrete AggregateValueObject type (not an interface).
-// Address is a value type: WithChild[Address](loader).
-func WithChild[V domain.AggregateValueObject, T domain.Entity](
-	l *AggregateLoader[T],
-) *AggregateLoader[T] {
-	t := reflect.TypeOf((*V)(nil)).Elem()
-	cols := domainColumns(t)
-	typeName := t.Name()
-	l.childAuto[typeName] = childAutoSpec{
-		typ:     t,
-		columns: cols,
-		scanInto: func(rows pgx.Rows) (domain.AggregateValueObject, error) {
-			vp := reflect.New(t)
-			if err := scanRowIntoStruct(rows, vp.Interface(), cols); err != nil {
-				return nil, err
-			}
-			return vp.Elem().Interface().(domain.AggregateValueObject), nil
-		},
-	}
 	return l
 }
 
@@ -161,7 +117,7 @@ func (l *AggregateLoader[T]) FindOne(ctx context.Context, q *criteria.Query) (T,
 			l.effectiveContextName(),
 		)
 	}
-	if err := l.hydrateChildren(ctx, entities, ids, reflect.TypeOf(l.newEntity()), q.Scope()); err != nil {
+	if err := l.hydrateChildren(ctx, entities, ids, q.Scope()); err != nil {
 		return *new(T), err
 	}
 	return entities[0], nil
@@ -180,7 +136,7 @@ func (l *AggregateLoader[T]) FindAll(ctx context.Context, q *criteria.Query) ([]
 	if len(entities) == 0 {
 		return []T{}, nil
 	}
-	if err := l.hydrateChildren(ctx, entities, ids, reflect.TypeOf(l.newEntity()), q.Scope()); err != nil {
+	if err := l.hydrateChildren(ctx, entities, ids, q.Scope()); err != nil {
 		return nil, err
 	}
 	return entities, nil
@@ -201,8 +157,8 @@ func (l *AggregateLoader[T]) FindAll(ctx context.Context, q *criteria.Query) ([]
 //     is a configuration error surfaced loudly.
 func (l *AggregateLoader[T]) findRoots(ctx context.Context, q *criteria.Query, limitOverride int64) ([]T, []string, error) {
 	sample := l.newEntity()
-	table := resolveTable(sample, &l.config)
-	resolve := newFieldResolver(reflect.TypeOf(sample), l.config.FieldOverrides)
+	table := l.schema.Table()
+	resolve := l.schema.fieldResolver()
 
 	where, args, err := compileWhere(q.Condition(), resolve)
 	if err != nil {
@@ -212,7 +168,7 @@ func (l *AggregateLoader[T]) findRoots(ctx context.Context, q *criteria.Query, l
 	if err != nil {
 		return nil, nil, err
 	}
-	clause := buildWhereClause(where, scopeGate(q.Scope()))
+	clause := buildWhereClause(where, scopeGate(q.Scope(), l.schema))
 	limit := q.LimitValue()
 	if limitOverride > 0 {
 		limit = limitOverride
@@ -253,16 +209,16 @@ func (l *AggregateLoader[T]) findRoots(ctx context.Context, q *criteria.Query, l
 		return entities, ids, nil
 	}
 
-	// Auto-scan: SELECT id, <cols> + positional scan with id read back.
-	cols := domainColumnsOf(sample)
+	// Auto-scan: SELECT <pk>, <cols> + positional scan with the PK read back.
+	cols, byCol := l.schema.scanPlan()
 	if len(cols) == 0 {
 		return nil, nil, fmt.Errorf(
-			"AggregateLoader[%s]: auto-scan found no columns — %T exposes no domain fields. "+
+			"AggregateLoader[%s]: schema declares no columns — %T exposes no persisted fields. "+
 				"Use WithRootScanner to provide a manual scanner",
 			l.effectiveContextName(), sample,
 		)
 	}
-	sql := "SELECT id, " + strings.Join(quoteIdentifiers(cols), ", ") + " FROM " + validIdentifier(table)
+	sql := "SELECT " + validIdentifier(l.schema.PKColumn()) + ", " + strings.Join(quoteIdentifiers(cols), ", ") + " FROM " + validIdentifier(table)
 	sql += tailClause(clause, orderSQL, limit)
 	rows, err := l.pg.Pool().Query(ctx, sql, args...)
 	if err != nil {
@@ -276,7 +232,7 @@ func (l *AggregateLoader[T]) findRoots(ctx context.Context, q *criteria.Query, l
 	)
 	for rows.Next() {
 		root := l.newEntity()
-		id, err := scanLeadingKey(rows, any(root), cols)
+		id, err := scanLeadingKey(rows, any(root), cols, byCol)
 		if err != nil {
 			return nil, nil, err
 		}
@@ -315,8 +271,8 @@ func tailClause(clause, orderSQL string, limit int64) string {
 // the root gate does — see childScopeFilter (active → deleted_at IS NULL; any
 // archived scope → unfiltered, so the unarchive cascade sees every child via
 // AllAggregateItems()).
-func (l *AggregateLoader[T]) hydrateChildren(ctx context.Context, entities []T, ids []string, rootType reflect.Type, scope criteria.Scope) error {
-	if len(entities) == 0 || (len(l.childScanners) == 0 && len(l.childAuto) == 0) {
+func (l *AggregateLoader[T]) hydrateChildren(ctx context.Context, entities []T, ids []string, scope criteria.Scope) error {
+	if len(entities) == 0 || (len(l.childScanners) == 0 && len(l.schema.children) == 0) {
 		return nil
 	}
 
@@ -331,20 +287,30 @@ func (l *AggregateLoader[T]) hydrateChildren(ctx context.Context, entities []T, 
 		rootIDs = append(rootIDs, ids[i])
 	}
 
-	childFilter := childScopeFilter(scope)
 	avosByRoot := make(map[string][]domain.AggregateValueObject, len(providersByID))
 
+	// The schema declares the aggregate children; a child with a manual scanner
+	// (WithChildScanner) uses it, every other declared child is auto-scanned
+	// from its TableSchema.
 	seen := map[string]bool{}
 	for typeName := range l.childScanners {
 		seen[typeName] = true
 	}
-	for typeName := range l.childAuto {
+	for typeName := range l.schema.children {
 		seen[typeName] = true
 	}
 
 	for typeName := range seen {
-		childTable := resolveChildTable(typeName, &l.config)
-		fkCol := resolveChildFK(rootType, typeName, &l.config)
+		child := l.schema.childSchema(typeName)
+		if child == nil {
+			return fmt.Errorf(
+				"AggregateLoader[%s] child %q: no TableSchema declared (root.Child(...))",
+				l.effectiveContextName(), typeName,
+			)
+		}
+		childTable := child.Table()
+		fkCol := child.FKColumn()
+		childFilter := childScopeFilter(scope, child)
 
 		if manual, ok := l.childScanners[typeName]; ok {
 			sql := fmt.Sprintf(
@@ -373,10 +339,10 @@ func (l *AggregateLoader[T]) hydrateChildren(ctx context.Context, entities []T, 
 			continue
 		}
 
-		auto := l.childAuto[typeName]
-		if len(auto.columns) == 0 {
+		childCols, childByCol := child.scanPlan()
+		if len(childCols) == 0 {
 			return fmt.Errorf(
-				"AggregateLoader[%s] child %q: auto-scan found no columns — type has no domain fields",
+				"AggregateLoader[%s] child %q: schema declares no columns",
 				l.effectiveContextName(), typeName,
 			)
 		}
@@ -389,7 +355,7 @@ func (l *AggregateLoader[T]) hydrateChildren(ctx context.Context, entities []T, 
 		sql := fmt.Sprintf(
 			"SELECT %s, %s FROM %s WHERE %s IN (%s) %s",
 			validIdentifier(fkCol),
-			strings.Join(quoteIdentifiers(auto.columns), ", "),
+			strings.Join(quoteIdentifiers(childCols), ", "),
 			validIdentifier(childTable),
 			validIdentifier(fkCol),
 			strings.Join(placeholders, ", "),
@@ -400,8 +366,8 @@ func (l *AggregateLoader[T]) hydrateChildren(ctx context.Context, entities []T, 
 			return err
 		}
 		for rows.Next() {
-			vp := reflect.New(auto.typ)
-			fk, err := scanLeadingKey(rows, vp.Interface(), auto.columns)
+			vp := reflect.New(child.typ)
+			fk, err := scanLeadingKey(rows, vp.Interface(), childCols, childByCol)
 			if err != nil {
 				rows.Close()
 				return err
@@ -421,19 +387,6 @@ func (l *AggregateLoader[T]) hydrateChildren(ctx context.Context, entities []T, 
 		}
 	}
 	return nil
-}
-
-// domainColumnsOf extracts columns from an entity instance (which may be a pointer
-// or value). Wrapper over domainColumns.
-func domainColumnsOf(v any) []string {
-	t := reflect.TypeOf(v)
-	if t == nil {
-		return nil
-	}
-	if t.Kind() == reflect.Ptr {
-		t = t.Elem()
-	}
-	return domainColumns(t)
 }
 
 // quoteIdentifiers escapes names via validIdentifier (SQL-injection defense).

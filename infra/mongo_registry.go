@@ -18,8 +18,8 @@ import (
 // service writes a per-boot marker so the DB-per-service guard can detect
 // when a database is being shared across services. The name uses the
 // "omnicore_" prefix so it cannot collide with any service-declared
-// ViewDefinition collection name (PascalToSnake never produces a leading
-// underscore name).
+// ViewDefinition collection name (a service collection name never starts with
+// the reserved "omnicore_" prefix).
 const RegistryCollectionName = "omnicore_service_registry"
 
 // DevProfile is the single profile name under which the guard downgrades

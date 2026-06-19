@@ -547,10 +547,10 @@ func runValueObjectValidations(e Entity) {
 // (AddAggregateValueObject) remains available for typeNames OUTSIDE the
 // AggregateRoot (VOs without their own table, e.g. tags in a JSONB column).
 //
-// Collection name in the wire path is inferred by convention (PluralizeSnake +
-// PascalToSnake of the Go typeName): Address → "addresses", OrderLine →
-// "order_lines". Repository table override does NOT change the wire path —
-// the path mirrors the client JSON (plural snake_case of the type).
+// Collection name in the wire path is the camelCase plural of the Go typeName
+// (childCollectionSegment = toLowerCamel + pluralize): Address → "addresses",
+// OrderLine → "orderLines". It is a JSON wire segment, so the convention is
+// camelCase — independent of the physical table name declared in the TableSchema.
 //
 // The framework passes to AVO.BuildRules a *Rules whose NotificationContext
 // is scoped with the prefix:
@@ -568,7 +568,7 @@ func runAggregateValidations(e Entity, mode EntityMode, actionName string) {
 			all := root.AllAggregateItems()
 			for typeName, items := range all {
 				mappedTypeNames[typeName] = struct{}{}
-				collectionName := PluralizeSnake(PascalToSnake(typeName))
+				collectionName := childCollectionSegment(typeName)
 				idx := 0
 				for _, item := range items {
 					if item.CurrentStatus == StatusRemoved {

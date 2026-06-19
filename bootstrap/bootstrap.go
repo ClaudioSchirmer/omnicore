@@ -163,6 +163,10 @@ func runWithConfig(cfg *Config, wire func(Deps) Wiring) error {
 	// hook by design — they own their own limit policy.
 	if mvr, ok := deps.ViewReader.(*infra.MongoViewReader); ok {
 		mvr.SetMaxLimitResolver(buildViewMaxLimitResolver(views, cfg.Query.MaxLimit))
+		// Register the views so the reader can translate criteria/documents
+		// between Go field names and physical columns via each view's
+		// TableSchema tree.
+		mvr.SetViews(views)
 	}
 
 	for _, f := range wiring.Features {

@@ -23,7 +23,7 @@ func (ar *AggregateRoot) ensureAggregates() {
 }
 
 // AggregateConstructor is the load-from-DB path. typeNames here come from the
-// infra loader (which registered children via WithChild[V]) and are trusted —
+// infra loader (which declares children on the TableSchema) and are trusted —
 // no type-guard runs. End-users should not call this directly; use the
 // AddAggregateChild / ChangeAggregateChild / RemoveAggregateChild top-level
 // functions instead, which enforce the type set declared by the root.
@@ -348,7 +348,7 @@ func ReplaceAggregateChildrenOf[VO AggregateValueObject](root AggregateRootProvi
 // ValidateAggregateChild is the optional inline validation primitive (Phase 20).
 // Runs item.BuildRules with a NotificationContext scoped exactly the same way
 // runAggregateValidations would scope it at the boundary (collection name from
-// PluralizeSnake(PascalToSnake(typeName)), index = len(current items) of that
+// childCollectionSegment(typeName) — camelCase plural, index = len(current items) of that
 // type). Returns true when the scoped context accumulated no notifications,
 // false otherwise. Notifications, when emitted, are attached to the root's
 // NotificationContext via the scoped child — same shape as boundary validation.
@@ -378,7 +378,7 @@ func ValidateAggregateChild(
 		return false
 	}
 	typeName := classNameOf(item)
-	collectionName := PluralizeSnake(PascalToSnake(typeName))
+	collectionName := childCollectionSegment(typeName)
 	existing := ar.aggregates[typeName]
 	idx := 0
 	for _, e := range existing {

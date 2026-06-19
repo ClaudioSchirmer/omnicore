@@ -10,47 +10,63 @@ import (
 	"github.com/ClaudioSchirmer/omnicore/infra/audit"
 )
 
-// labelKeyByColumnCache memoizes the snake_case column → catalog key map for
-// each entity / value-object type the auditor sees. Symmetric with
-// domain/field_label.go's labelPlanCache (which is keyed by Go field name);
-// audit consumes the snake_case form because computeChanges already operates
-// on column-name diffs and feeding it the Go-name map would force a second
-// lookup per field.
-var labelKeyByColumnCache sync.Map // map[reflect.Type]map[string]string
+// labelKeyBySchemaCache memoizes the Go-field-name → catalog key map for each
+// TableSchema the auditor sees. Audit speaks the faithful domain vocabulary (the
+// raw Go field name) and derives its field set from the schema (the single
+// source of "what is persisted"); it never consumes the physical column, so a
+// column rename never disturbs the audit history.
+var labelKeyBySchemaCache sync.Map // map[*TableSchema]map[string]string
 
-// labelKeysByColumn returns column-name → catalog key for every exported
-// field of t whose `label:"<catalogKey>"` struct tag declares a non-empty
-// value (and is not `label:"-"` and not paired with `transient:"-"`).
-// Skip rules mirror domain/field_label.go::resolveLabelKey + the existing
-// InferColumns filter (transient + unexported + "id" already pruned).
-// Returns nil when t carries no label tags so callers can short-circuit.
-func labelKeysByColumn(t reflect.Type) map[string]string {
-	if t == nil {
+// labelKeysByGoField returns Go-field-name → catalog key for every declared
+// field of the schema whose `label:"<catalogKey>"` struct tag is non-empty (and
+// not `label:"-"`). Returns nil when no field carries a label tag.
+func labelKeysByGoField(schema *TableSchema) map[string]string {
+	if schema == nil || schema.typ == nil {
 		return nil
 	}
-	if t.Kind() == reflect.Ptr {
-		t = t.Elem()
-	}
-	if t.Kind() != reflect.Struct {
-		return nil
-	}
-	if cached, ok := labelKeyByColumnCache.Load(t); ok {
+	if cached, ok := labelKeyBySchemaCache.Load(schema); ok {
 		return cached.(map[string]string)
 	}
-	cols := InferColumns(t, nil)
 	var out map[string]string
-	for _, c := range cols {
-		f := t.Field(c.FieldIndex)
-		tag, ok := f.Tag.Lookup("label")
+	for _, f := range schema.fields {
+		if f.index < 0 {
+			continue
+		}
+		tag, ok := schema.typ.Field(f.index).Tag.Lookup("label")
 		if !ok || tag == "" || tag == "-" {
 			continue
 		}
 		if out == nil {
 			out = map[string]string{}
 		}
-		out[c.Column] = tag
+		out[f.goName] = tag
 	}
-	labelKeyByColumnCache.Store(t, out)
+	labelKeyBySchemaCache.Store(schema, out)
+	return out
+}
+
+// goFieldValues returns the declared persisted fields of e keyed by Go field
+// name (PascalCase) — the faithful domain vocabulary the audit timeline speaks.
+// Driven by the schema (the persisted set), excluding the PK (it travels on the
+// event's EntityID / ChildEvent.ID). Map-blind: never the physical column.
+func goFieldValues(schema *TableSchema, e any) map[string]any {
+	if schema == nil {
+		return map[string]any{}
+	}
+	v := reflect.ValueOf(e)
+	for v.Kind() == reflect.Ptr {
+		v = v.Elem()
+	}
+	if v.Kind() != reflect.Struct {
+		return map[string]any{}
+	}
+	out := make(map[string]any, len(schema.fields))
+	for _, f := range schema.fields {
+		if f.index < 0 {
+			continue
+		}
+		out[f.goName] = v.Field(f.index).Interface()
+	}
 	return out
 }
 
@@ -65,7 +81,7 @@ const tenantClaim = "tenant_id"
 // successful insertion of insertable, carrying its post-write state.
 // auditClaims filters which JWT claims appear in ActorClaims; pass nil or
 // empty to omit the block entirely.
-func BuildInsertEvent(ctx persistence.RequestContext, i domain.Insertable, id domain.ID, auditClaims []string) audit.AuditEvent {
+func BuildInsertEvent(ctx persistence.RequestContext, i domain.Insertable, id domain.ID, schema *TableSchema, auditClaims []string) audit.AuditEvent {
 	ev := audit.AuditEvent{
 		EntityType: i.EntityName(),
 		EntityID:   id.Value(),
@@ -73,8 +89,8 @@ func BuildInsertEvent(ctx persistence.RequestContext, i domain.Insertable, id do
 		ActionName: i.ActionName(),
 		Kind:       "snapshot",
 		DateTime:   i.DateTime(),
-		Snapshot:   FieldsFromEntity(i.Source(), nil),
-		Children:   childrenOf(i.Source(), "insert"),
+		Snapshot:   goFieldValues(schema, i.Source()),
+		Children:   childrenOf(schema, i.Source(), "insert"),
 	}
 	populateContext(&ev, ctx, auditClaims)
 	return ev
@@ -85,10 +101,10 @@ func BuildInsertEvent(ctx persistence.RequestContext, i domain.Insertable, id do
 // columns — unchanged ones absent — and is computed against Old() captured
 // before the apply closure ran. Verb is "update" for both PUT and PATCH
 // (identical SQL fingerprint); the distinction lives in ActionName.
-func BuildUpdateEvent(ctx persistence.RequestContext, u domain.Updatable, auditClaims []string) audit.AuditEvent {
-	prev := oldFieldsOf(u.Source())
-	cur := FieldsFromEntity(u.Source(), nil)
-	labels := labelKeysByColumn(reflect.TypeOf(u.Source()))
+func BuildUpdateEvent(ctx persistence.RequestContext, u domain.Updatable, schema *TableSchema, auditClaims []string) audit.AuditEvent {
+	prev := oldFieldsOf(schema, u.Source())
+	cur := goFieldValues(schema, u.Source())
+	labels := labelKeysByGoField(schema)
 	ev := audit.AuditEvent{
 		EntityType: u.EntityName(),
 		EntityID:   u.ID(),
@@ -97,7 +113,7 @@ func BuildUpdateEvent(ctx persistence.RequestContext, u domain.Updatable, auditC
 		Kind:       "delta",
 		DateTime:   u.DateTime(),
 		Changes:    computeChanges(prev, cur, labels),
-		Children:   childrenOf(u.Source(), "update"),
+		Children:   childrenOf(schema, u.Source(), "update"),
 	}
 	populateContext(&ev, ctx, auditClaims)
 	return ev
@@ -106,7 +122,7 @@ func BuildUpdateEvent(ctx persistence.RequestContext, u domain.Updatable, auditC
 // BuildArchiveEvent assembles a kind=transition audit.AuditEvent describing the
 // successful archive of archivable. The verb itself encodes the recovery
 // path (the symmetric unarchive); no Snapshot or Changes block is emitted.
-func BuildArchiveEvent(ctx persistence.RequestContext, a domain.Archivable, auditClaims []string) audit.AuditEvent {
+func BuildArchiveEvent(ctx persistence.RequestContext, a domain.Archivable, schema *TableSchema, auditClaims []string) audit.AuditEvent {
 	ev := audit.AuditEvent{
 		EntityType: a.EntityName(),
 		EntityID:   a.ID(),
@@ -114,14 +130,14 @@ func BuildArchiveEvent(ctx persistence.RequestContext, a domain.Archivable, audi
 		ActionName: a.ActionName(),
 		Kind:       "transition",
 		DateTime:   a.DateTime(),
-		Children:   childrenOf(a.Source(), "archive"),
+		Children:   childrenOf(schema, a.Source(), "archive"),
 	}
 	populateContext(&ev, ctx, auditClaims)
 	return ev
 }
 
 // BuildUnarchiveEvent is the symmetric inverse of BuildArchiveEvent.
-func BuildUnarchiveEvent(ctx persistence.RequestContext, u domain.Unarchivable, auditClaims []string) audit.AuditEvent {
+func BuildUnarchiveEvent(ctx persistence.RequestContext, u domain.Unarchivable, schema *TableSchema, auditClaims []string) audit.AuditEvent {
 	ev := audit.AuditEvent{
 		EntityType: u.EntityName(),
 		EntityID:   u.ID(),
@@ -129,7 +145,7 @@ func BuildUnarchiveEvent(ctx persistence.RequestContext, u domain.Unarchivable, 
 		ActionName: u.ActionName(),
 		Kind:       "transition",
 		DateTime:   u.DateTime(),
-		Children:   childrenOf(u.Source(), "unarchive"),
+		Children:   childrenOf(schema, u.Source(), "unarchive"),
 	}
 	populateContext(&ev, ctx, auditClaims)
 	return ev
@@ -140,10 +156,10 @@ func BuildUnarchiveEvent(ctx persistence.RequestContext, u domain.Unarchivable, 
 // function entry, captured before the delete SQL fired) and falls back to
 // the live source only when Old() is nil (entity built outside the
 // framework's GetDeletable path).
-func BuildDeleteEvent(ctx persistence.RequestContext, d domain.Deletable, auditClaims []string) audit.AuditEvent {
-	snap := oldFieldsOf(d.Source())
+func BuildDeleteEvent(ctx persistence.RequestContext, d domain.Deletable, schema *TableSchema, auditClaims []string) audit.AuditEvent {
+	snap := oldFieldsOf(schema, d.Source())
 	if snap == nil {
-		snap = FieldsFromEntity(d.Source(), nil)
+		snap = goFieldValues(schema, d.Source())
 	}
 	ev := audit.AuditEvent{
 		EntityType: d.EntityName(),
@@ -153,7 +169,7 @@ func BuildDeleteEvent(ctx persistence.RequestContext, d domain.Deletable, auditC
 		Kind:       "snapshot",
 		DateTime:   d.DateTime(),
 		Snapshot:   snap,
-		Children:   childrenOf(d.Source(), "delete"),
+		Children:   childrenOf(schema, d.Source(), "delete"),
 	}
 	populateContext(&ev, ctx, auditClaims)
 	return ev
@@ -224,10 +240,10 @@ func filterClaims(all map[string]any, allowlist []string) map[string]any {
 	return out
 }
 
-// oldFieldsOf returns the pre-mutation snapshot of e as a column-name map,
+// oldFieldsOf returns the pre-mutation snapshot of e keyed by Go field name,
 // or nil when e has no Old (Insert path, or entity hydrated outside the
 // framework loader).
-func oldFieldsOf(e domain.Entity) map[string]any {
+func oldFieldsOf(schema *TableSchema, e domain.Entity) map[string]any {
 	if e == nil {
 		return nil
 	}
@@ -235,7 +251,7 @@ func oldFieldsOf(e domain.Entity) map[string]any {
 	if prev == nil {
 		return nil
 	}
-	return FieldsFromEntity(prev, nil)
+	return goFieldValues(schema, prev)
 }
 
 // computeChanges returns a deterministic []audit.FieldChange (sorted by field name)
@@ -243,8 +259,8 @@ func oldFieldsOf(e domain.Entity) map[string]any {
 // kind=delta carries only the diff, no redundancy with snapshot. Returns nil
 // when prev and cur are equal across every key (no observable change).
 //
-// labelsByCol carries the snake_case column → catalog key map produced by
-// labelKeysByColumn(reflect.TypeOf(entity)). Pass nil when the caller does
+// labelsByField carries the Go-field-name → catalog key map produced by
+// labelKeysByGoField(reflect.TypeOf(entity)). Pass nil when the caller does
 // not have a type in hand or when no `label` tags are declared on the
 // source struct — every emitted FieldChange then carries FieldLabelKey=""
 // and the omitempty elides it from the wire.
@@ -253,7 +269,7 @@ func oldFieldsOf(e domain.Entity) map[string]any {
 // side as nil. In practice this only happens when the entity's schema
 // changed between snapshot capture and current state, which the framework
 // avoids by capturing within the same transaction.
-func computeChanges(prev, cur map[string]any, labelsByCol map[string]string) []audit.FieldChange {
+func computeChanges(prev, cur map[string]any, labelsByField map[string]string) []audit.FieldChange {
 	seen := map[string]struct{}{}
 	for k := range prev {
 		seen[k] = struct{}{}
@@ -274,7 +290,7 @@ func computeChanges(prev, cur map[string]any, labelsByCol map[string]string) []a
 		}
 		out = append(out, audit.FieldChange{
 			Field:         k,
-			FieldLabelKey: labelsByCol[k],
+			FieldLabelKey: labelsByField[k],
 			From:          a,
 			To:            b,
 		})
@@ -291,8 +307,8 @@ func computeChanges(prev, cur map[string]any, labelsByCol map[string]string) []a
 // childEventOf for the discrimination rules. The returned map is keyed by
 // the Go type name of the AggregateValueObject (e.g. "Address"); iteration
 // order over typeNames is sorted so the audit line is deterministic.
-func childrenOf(src domain.Entity, verb string) map[string][]audit.ChildEvent {
-	if src == nil {
+func childrenOf(schema *TableSchema, src domain.Entity, verb string) map[string][]audit.ChildEvent {
+	if src == nil || schema == nil {
 		return nil
 	}
 	provider, ok := src.(domain.AggregateRootProvider)
@@ -303,7 +319,7 @@ func childrenOf(src domain.Entity, verb string) map[string][]audit.ChildEvent {
 	if root == nil {
 		return nil
 	}
-	prevByTypeID := oldChildrenIndex(src)
+	prevByTypeID := oldChildrenIndex(schema, src)
 	all := root.AllAggregateItems()
 	typeNames := make([]string, 0, len(all))
 	for typeName := range all {
@@ -314,9 +330,10 @@ func childrenOf(src domain.Entity, verb string) map[string][]audit.ChildEvent {
 	out := map[string][]audit.ChildEvent{}
 	for _, typeName := range typeNames {
 		items := all[typeName]
+		child := schema.childSchema(typeName)
 		var entries []audit.ChildEvent
 		for _, it := range items {
-			entry, include := childEventOf(it, typeName, verb, prevByTypeID)
+			entry, include := childEventOf(it, child, typeName, verb, prevByTypeID)
 			if !include {
 				continue
 			}
@@ -336,8 +353,8 @@ func childrenOf(src domain.Entity, verb string) map[string][]audit.ChildEvent {
 // typeName → child ID, used by childEventOf to compute CHANGED diffs and
 // to surface REMOVED snapshots. Returns nil when src has no Old (Insert
 // path or entity hydrated outside the framework loader).
-func oldChildrenIndex(src domain.Entity) map[string]map[string]map[string]any {
-	if src == nil {
+func oldChildrenIndex(schema *TableSchema, src domain.Entity) map[string]map[string]map[string]any {
+	if src == nil || schema == nil {
 		return nil
 	}
 	prev := src.Old()
@@ -354,13 +371,14 @@ func oldChildrenIndex(src domain.Entity) map[string]map[string]map[string]any {
 	}
 	out := map[string]map[string]map[string]any{}
 	for typeName, items := range prevRoot.AllAggregateItems() {
+		child := schema.childSchema(typeName)
 		inner := map[string]map[string]any{}
 		for _, it := range items {
 			id := it.Item.GetID()
 			if id == "" {
 				continue
 			}
-			inner[id] = FieldsFromEntity(it.Item, nil)
+			inner[id] = goFieldValues(child, it.Item)
 		}
 		if len(inner) > 0 {
 			out[typeName] = inner
@@ -401,6 +419,7 @@ func oldChildrenIndex(src domain.Entity) map[string]map[string]map[string]any {
 //	delete     : non-Removed items → deleted + snapshot
 func childEventOf(
 	it domain.AggregateItem[domain.AggregateValueObject],
+	child *TableSchema,
 	typeName, verb string,
 	prevByTypeID map[string]map[string]map[string]any,
 ) (audit.ChildEvent, bool) {
@@ -415,7 +434,7 @@ func childEventOf(
 		}
 		return inner[id]
 	}
-	currentFields := func() map[string]any { return FieldsFromEntity(it.Item, nil) }
+	currentFields := func() map[string]any { return goFieldValues(child, it.Item) }
 
 	switch verb {
 	case "insert":
@@ -425,7 +444,7 @@ func childEventOf(
 		case domain.StatusAdded:
 			return audit.ChildEvent{ID: id, Op: "inserted", Snapshot: currentFields()}, true
 		case domain.StatusChanged:
-			return audit.ChildEvent{ID: id, Op: "updated", Changes: computeChanges(prevFields(), currentFields(), labelKeysByColumn(reflect.TypeOf(it.Item)))}, true
+			return audit.ChildEvent{ID: id, Op: "updated", Changes: computeChanges(prevFields(), currentFields(), labelKeysByGoField(child))}, true
 		case domain.StatusRemoved:
 			return audit.ChildEvent{ID: id, Op: "archived", Snapshot: prevFields()}, true
 		default:

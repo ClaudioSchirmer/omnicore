@@ -108,10 +108,10 @@ func TestQueryParser_Parse_FieldsTranslatesWireToDocAndAddsIDExclusion(t *testin
 
 	_, _ = app.Test(httptest.NewRequest("GET", "/x?fields=name,addresses.zipCode", nil))
 
-	if v, ok := crit.Projection["name"]; !ok || v != 1 {
+	if v, ok := crit.Projection["Name"]; !ok || v != 1 {
 		t.Errorf("expected name:1, got %v", crit.Projection)
 	}
-	if v, ok := crit.Projection["addresses.zip_code"]; !ok || v != 1 {
+	if v, ok := crit.Projection["Addresses.ZipCode"]; !ok || v != 1 {
 		t.Errorf("expected addresses.zip_code:1 (auto PascalToSnake), got %v", crit.Projection)
 	}
 	if v, ok := crit.Projection["_id"]; !ok || v != 0 {
@@ -134,10 +134,10 @@ func TestQueryParser_Parse_SortTranslatesWireToDocAndHonorsMinusPrefix(t *testin
 	if len(crit.Sort) != 2 {
 		t.Fatalf("expected 2 SortFields, got %d (%+v)", len(crit.Sort), crit.Sort)
 	}
-	if crit.Sort[0].Field != "addresses.zip_code" || !crit.Sort[0].Desc {
+	if crit.Sort[0].Field != "Addresses.ZipCode" || !crit.Sort[0].Desc {
 		t.Errorf("expected addresses.zip_code desc, got %+v", crit.Sort[0])
 	}
-	if crit.Sort[1].Field != "name" || crit.Sort[1].Desc {
+	if crit.Sort[1].Field != "Name" || crit.Sort[1].Desc {
 		t.Errorf("expected name asc, got %+v", crit.Sort[1])
 	}
 }

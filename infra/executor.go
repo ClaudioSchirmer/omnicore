@@ -3,7 +3,6 @@ package infra
 import (
 	"context"
 	"fmt"
-	"reflect"
 	"sort"
 	"strings"
 
@@ -13,9 +12,9 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
-// Phase 19 + audit: Postgres.Insert/Update/Archive/Delete/Unarchive receive
-// the request-scoped persistence.RequestContext (carries actor + threadId + cancellation)
-// and an optional RepoConfig (convention overrides). The simple path here
+// Postgres.Insert/Update/Archive/Delete/Unarchive receive the request-scoped
+// persistence.RequestContext (carries actor + threadId + cancellation) and the
+// entity's *TableSchema (the explicit Go-field↔column map). The simple path here
 // dispatches to the aggregate variant when AggregateInfo() reports true.
 //
 // Audit hooks per method:
@@ -26,14 +25,14 @@ import (
 // Both branches share a single audit.AuditEvent built once after the data
 // row is materialized (Insert needs the generated id).
 
-func (p *Postgres) Insert(ctx persistence.RequestContext, entity domain.Insertable, cfg *RepoConfig, hook writeHook) (domain.WriteResult, error) {
+func (p *Postgres) Insert(ctx persistence.RequestContext, entity domain.Insertable, schema *TableSchema, hook writeHook) (domain.WriteResult, error) {
 	if _, isAggregate := entity.AggregateInfo(); isAggregate {
-		return p.insertAggregate(ctx, entity, cfg, hook)
+		return p.insertAggregate(ctx, entity, schema, hook)
 	}
 
 	src := entity.Source()
-	table := resolveTable(src, cfg)
-	fields := resolveFields(src, cfg)
+	table := schema.Table()
+	fields := schema.writeFields(src)
 	hctx := hookContext{verb: "Insert", entityType: entity.EntityName()}
 
 	tx, err := p.pool.Begin(ctx)
@@ -47,7 +46,7 @@ func (p *Postgres) Insert(ctx persistence.RequestContext, entity domain.Insertab
 		return domain.WriteResult{}, err
 	}
 
-	sql, args := buildInsert(table, fields)
+	sql, args := buildInsert(table, fields, schema.PKColumn(), schema.insertNowColumns())
 	var id string
 	if err := tx.QueryRow(ctx, sql, args...).Scan(&id); err != nil {
 		return domain.WriteResult{}, err
@@ -58,7 +57,7 @@ func (p *Postgres) Insert(ctx persistence.RequestContext, entity domain.Insertab
 
 	var ev *audit.AuditEvent
 	if p.auditEnabled() {
-		built := BuildInsertEvent(ctx, entity, domain.NewID(id), p.auditClaims)
+		built := BuildInsertEvent(ctx, entity, domain.NewID(id), schema, p.auditClaims)
 		ev = &built
 	}
 	if err := p.writeAuditRow(ctx, tx, ev); err != nil {
@@ -77,14 +76,14 @@ func (p *Postgres) Insert(ctx persistence.RequestContext, entity domain.Insertab
 	return domain.WriteResult{ID: id, Fields: fields}, nil
 }
 
-func (p *Postgres) Update(ctx persistence.RequestContext, entity domain.Updatable, cfg *RepoConfig, hook writeHook) (domain.WriteResult, error) {
+func (p *Postgres) Update(ctx persistence.RequestContext, entity domain.Updatable, schema *TableSchema, hook writeHook) (domain.WriteResult, error) {
 	if _, isAggregate := entity.AggregateInfo(); isAggregate {
-		return p.updateAggregate(ctx, entity, cfg, hook)
+		return p.updateAggregate(ctx, entity, schema, hook)
 	}
 
 	src := entity.Source()
-	table := resolveTable(src, cfg)
-	fields := resolveFields(src, cfg)
+	table := schema.Table()
+	fields := schema.writeFields(src)
 	hctx := hookContext{verb: "Update", entityType: entity.EntityName()}
 
 	tx, err := p.pool.Begin(ctx)
@@ -97,7 +96,7 @@ func (p *Postgres) Update(ctx persistence.RequestContext, entity domain.Updatabl
 		return domain.WriteResult{}, err
 	}
 
-	sql, args := buildUpdate(table, entity.ID(), fields)
+	sql, args := buildUpdate(table, schema.PKColumn(), entity.ID(), fields, schema.updateNowColumns())
 	var id string
 	if err := tx.QueryRow(ctx, sql, args...).Scan(&id); err != nil {
 		return domain.WriteResult{}, err
@@ -108,7 +107,7 @@ func (p *Postgres) Update(ctx persistence.RequestContext, entity domain.Updatabl
 
 	var ev *audit.AuditEvent
 	if p.auditEnabled() {
-		built := BuildUpdateEvent(ctx, entity, p.auditClaims)
+		built := BuildUpdateEvent(ctx, entity, schema, p.auditClaims)
 		ev = &built
 	}
 	if err := p.writeAuditRow(ctx, tx, ev); err != nil {
@@ -126,14 +125,19 @@ func (p *Postgres) Update(ctx persistence.RequestContext, entity domain.Updatabl
 	return domain.WriteResult{ID: id, Fields: fields}, nil
 }
 
-func (p *Postgres) Archive(ctx persistence.RequestContext, entity domain.Archivable, cfg *RepoConfig, hook writeHook) error {
+func (p *Postgres) Archive(ctx persistence.RequestContext, entity domain.Archivable, schema *TableSchema, hook writeHook) error {
 	if _, isAggregate := entity.AggregateInfo(); isAggregate {
-		return p.archiveAggregate(ctx, entity, cfg, hook)
+		return p.archiveAggregate(ctx, entity, schema, hook)
 	}
 
 	src := entity.Source()
-	table := resolveTable(src, cfg)
+	table := schema.Table()
 	hctx := hookContext{verb: "Archive", entityType: entity.EntityName()}
+
+	sdCol, err := requireSoftDelete(schema, entity.EntityName())
+	if err != nil {
+		return err
+	}
 
 	tx, err := p.pool.Begin(ctx)
 	if err != nil {
@@ -145,8 +149,7 @@ func (p *Postgres) Archive(ctx persistence.RequestContext, entity domain.Archiva
 		return err
 	}
 
-	q := fmt.Sprintf("UPDATE %s SET deleted_at = NOW() WHERE id = $1", validIdentifier(table))
-	if _, err := tx.Exec(ctx, q, entity.ID()); err != nil {
+	if _, err := tx.Exec(ctx, archiveSQL(table, sdCol, schema.PKColumn()), entity.ID()); err != nil {
 		return err
 	}
 	if err := writeOutbox(ctx, tx, table, "ARCHIVED", entity.ID(), nil); err != nil {
@@ -155,7 +158,7 @@ func (p *Postgres) Archive(ctx persistence.RequestContext, entity domain.Archiva
 
 	var ev *audit.AuditEvent
 	if p.auditEnabled() {
-		built := BuildArchiveEvent(ctx, entity, p.auditClaims)
+		built := BuildArchiveEvent(ctx, entity, schema, p.auditClaims)
 		ev = &built
 	}
 	if err := p.writeAuditRow(ctx, tx, ev); err != nil {
@@ -173,14 +176,19 @@ func (p *Postgres) Archive(ctx persistence.RequestContext, entity domain.Archiva
 	return nil
 }
 
-func (p *Postgres) Unarchive(ctx persistence.RequestContext, entity domain.Unarchivable, cfg *RepoConfig, hook writeHook) error {
+func (p *Postgres) Unarchive(ctx persistence.RequestContext, entity domain.Unarchivable, schema *TableSchema, hook writeHook) error {
 	if _, isAggregate := entity.AggregateInfo(); isAggregate {
-		return p.unarchiveAggregate(ctx, entity, cfg, hook)
+		return p.unarchiveAggregate(ctx, entity, schema, hook)
 	}
 
 	src := entity.Source()
-	table := resolveTable(src, cfg)
+	table := schema.Table()
 	hctx := hookContext{verb: "Unarchive", entityType: entity.EntityName()}
+
+	sdCol, err := requireSoftDelete(schema, entity.EntityName())
+	if err != nil {
+		return err
+	}
 
 	tx, err := p.pool.Begin(ctx)
 	if err != nil {
@@ -192,8 +200,7 @@ func (p *Postgres) Unarchive(ctx persistence.RequestContext, entity domain.Unarc
 		return err
 	}
 
-	q := fmt.Sprintf("UPDATE %s SET deleted_at = NULL WHERE id = $1", validIdentifier(table))
-	if _, err := tx.Exec(ctx, q, entity.ID()); err != nil {
+	if _, err := tx.Exec(ctx, unarchiveSQL(table, sdCol, schema.PKColumn()), entity.ID()); err != nil {
 		return err
 	}
 	if err := writeOutbox(ctx, tx, table, "UNARCHIVED", entity.ID(), nil); err != nil {
@@ -202,7 +209,7 @@ func (p *Postgres) Unarchive(ctx persistence.RequestContext, entity domain.Unarc
 
 	var ev *audit.AuditEvent
 	if p.auditEnabled() {
-		built := BuildUnarchiveEvent(ctx, entity, p.auditClaims)
+		built := BuildUnarchiveEvent(ctx, entity, schema, p.auditClaims)
 		ev = &built
 	}
 	if err := p.writeAuditRow(ctx, tx, ev); err != nil {
@@ -220,13 +227,13 @@ func (p *Postgres) Unarchive(ctx persistence.RequestContext, entity domain.Unarc
 	return nil
 }
 
-func (p *Postgres) Delete(ctx persistence.RequestContext, entity domain.Deletable, cfg *RepoConfig, hook writeHook) error {
+func (p *Postgres) Delete(ctx persistence.RequestContext, entity domain.Deletable, schema *TableSchema, hook writeHook) error {
 	if _, isAggregate := entity.AggregateInfo(); isAggregate {
-		return p.deleteAggregate(ctx, entity, cfg, hook)
+		return p.deleteAggregate(ctx, entity, schema, hook)
 	}
 
 	src := entity.Source()
-	table := resolveTable(src, cfg)
+	table := schema.Table()
 	hctx := hookContext{verb: "Delete", entityType: entity.EntityName()}
 
 	tx, err := p.pool.Begin(ctx)
@@ -239,8 +246,7 @@ func (p *Postgres) Delete(ctx persistence.RequestContext, entity domain.Deletabl
 		return err
 	}
 
-	q := fmt.Sprintf("DELETE FROM %s WHERE id = $1", validIdentifier(table))
-	if _, err := tx.Exec(ctx, q, entity.ID()); err != nil {
+	if _, err := tx.Exec(ctx, deleteSQL(table, schema.PKColumn()), entity.ID()); err != nil {
 		return err
 	}
 	if err := writeOutbox(ctx, tx, table, "DELETED", entity.ID(), nil); err != nil {
@@ -249,7 +255,7 @@ func (p *Postgres) Delete(ctx persistence.RequestContext, entity domain.Deletabl
 
 	var ev *audit.AuditEvent
 	if p.auditEnabled() {
-		built := BuildDeleteEvent(ctx, entity, p.auditClaims)
+		built := BuildDeleteEvent(ctx, entity, schema, p.auditClaims)
 		ev = &built
 	}
 	if err := p.writeAuditRow(ctx, tx, ev); err != nil {
@@ -267,21 +273,24 @@ func (p *Postgres) Delete(ctx persistence.RequestContext, entity domain.Deletabl
 	return nil
 }
 
-// Batch executes a set of operations in a single TX. Each op resolves
-// table/fields via inference (no cfg — batch is the simple path). Audit
-// emission for Batch members is intentionally skipped today; the helper
-// has no public surface in the framework's Repository interface and the
-// rollout focuses on the per-verb write methods.
-func (p *Postgres) Batch(ctx context.Context, entity domain.Batch) ([]domain.WriteResult, error) {
+// Batch executes a set of operations in a single TX, each under its own
+// TableSchema (the schema is mandatory — there is no convention fallback). The
+// caller supplies one schema per operation, aligned positionally with
+// entity.Operations(). Audit emission for Batch members is intentionally skipped.
+func (p *Postgres) Batch(ctx context.Context, entity domain.Batch, schemas []*TableSchema) ([]domain.WriteResult, error) {
+	ops := entity.Operations()
+	if len(schemas) != len(ops) {
+		return nil, fmt.Errorf("infra: Batch requires one TableSchema per operation (got %d schemas for %d ops)", len(schemas), len(ops))
+	}
 	tx, err := p.pool.Begin(ctx)
 	if err != nil {
 		return nil, err
 	}
 	defer tx.Rollback(ctx)
 
-	results := make([]domain.WriteResult, 0, len(entity.Operations()))
-	for _, op := range entity.Operations() {
-		wr, err := execWithTx(ctx, tx, op, nil)
+	results := make([]domain.WriteResult, 0, len(ops))
+	for i, op := range ops {
+		wr, err := execWithTx(ctx, tx, op, schemas[i])
 		if err != nil {
 			return nil, err
 		}
@@ -293,63 +302,63 @@ func (p *Postgres) Batch(ctx context.Context, entity domain.Batch) ([]domain.Wri
 	return results, nil
 }
 
-func execWithTx(ctx context.Context, tx pgx.Tx, entity domain.ValidEntity, cfg *RepoConfig) (domain.WriteResult, error) {
+func execWithTx(ctx context.Context, tx pgx.Tx, entity domain.ValidEntity, schema *TableSchema) (domain.WriteResult, error) {
 	switch e := entity.(type) {
 	case domain.Insertable:
-		table := resolveTable(e.Source(), cfg)
-		fields := resolveFields(e.Source(), cfg)
-		sql, args := buildInsert(table, fields)
+		fields := schema.writeFields(e.Source())
+		sql, args := buildInsert(schema.Table(), fields, schema.PKColumn(), schema.insertNowColumns())
 		var id string
 		if err := tx.QueryRow(ctx, sql, args...).Scan(&id); err != nil {
 			return domain.WriteResult{}, err
 		}
-		if err := writeOutbox(ctx, tx, table, "INSERTED", id, fields); err != nil {
+		if err := writeOutbox(ctx, tx, schema.Table(), "INSERTED", id, fields); err != nil {
 			return domain.WriteResult{}, err
 		}
 		return domain.WriteResult{ID: id, Fields: fields}, nil
 
 	case domain.Updatable:
-		table := resolveTable(e.Source(), cfg)
-		fields := resolveFields(e.Source(), cfg)
-		sql, args := buildUpdate(table, e.ID(), fields)
+		fields := schema.writeFields(e.Source())
+		sql, args := buildUpdate(schema.Table(), schema.PKColumn(), e.ID(), fields, schema.updateNowColumns())
 		var id string
 		if err := tx.QueryRow(ctx, sql, args...).Scan(&id); err != nil {
 			return domain.WriteResult{}, err
 		}
-		if err := writeOutbox(ctx, tx, table, "UPDATED", id, fields); err != nil {
+		if err := writeOutbox(ctx, tx, schema.Table(), "UPDATED", id, fields); err != nil {
 			return domain.WriteResult{}, err
 		}
 		return domain.WriteResult{ID: id, Fields: fields}, nil
 
 	case domain.Archivable:
-		table := resolveTable(e.Source(), cfg)
-		q := fmt.Sprintf("UPDATE %s SET deleted_at = NOW() WHERE id = $1", validIdentifier(table))
-		if _, err := tx.Exec(ctx, q, e.ID()); err != nil {
+		sdCol, err := requireSoftDelete(schema, e.EntityName())
+		if err != nil {
 			return domain.WriteResult{}, err
 		}
-		if err := writeOutbox(ctx, tx, table, "ARCHIVED", e.ID(), nil); err != nil {
+		if _, err := tx.Exec(ctx, archiveSQL(schema.Table(), sdCol, schema.PKColumn()), e.ID()); err != nil {
+			return domain.WriteResult{}, err
+		}
+		if err := writeOutbox(ctx, tx, schema.Table(), "ARCHIVED", e.ID(), nil); err != nil {
 			return domain.WriteResult{}, err
 		}
 		return domain.WriteResult{ID: e.ID()}, nil
 
 	case domain.Unarchivable:
-		table := resolveTable(e.Source(), cfg)
-		q := fmt.Sprintf("UPDATE %s SET deleted_at = NULL WHERE id = $1", validIdentifier(table))
-		if _, err := tx.Exec(ctx, q, e.ID()); err != nil {
+		sdCol, err := requireSoftDelete(schema, e.EntityName())
+		if err != nil {
 			return domain.WriteResult{}, err
 		}
-		if err := writeOutbox(ctx, tx, table, "UNARCHIVED", e.ID(), nil); err != nil {
+		if _, err := tx.Exec(ctx, unarchiveSQL(schema.Table(), sdCol, schema.PKColumn()), e.ID()); err != nil {
+			return domain.WriteResult{}, err
+		}
+		if err := writeOutbox(ctx, tx, schema.Table(), "UNARCHIVED", e.ID(), nil); err != nil {
 			return domain.WriteResult{}, err
 		}
 		return domain.WriteResult{ID: e.ID()}, nil
 
 	case domain.Deletable:
-		table := resolveTable(e.Source(), cfg)
-		q := fmt.Sprintf("DELETE FROM %s WHERE id = $1", validIdentifier(table))
-		if _, err := tx.Exec(ctx, q, e.ID()); err != nil {
+		if _, err := tx.Exec(ctx, deleteSQL(schema.Table(), schema.PKColumn()), e.ID()); err != nil {
 			return domain.WriteResult{}, err
 		}
-		if err := writeOutbox(ctx, tx, table, "DELETED", e.ID(), nil); err != nil {
+		if err := writeOutbox(ctx, tx, schema.Table(), "DELETED", e.ID(), nil); err != nil {
 			return domain.WriteResult{}, err
 		}
 		return domain.WriteResult{ID: e.ID()}, nil
@@ -357,65 +366,92 @@ func execWithTx(ctx context.Context, tx pgx.Tx, entity domain.ValidEntity, cfg *
 	return domain.WriteResult{}, fmt.Errorf("infra: unknown entity type %T", entity)
 }
 
-// resolveTable: cfg.Table takes priority; otherwise InferTableName(typeof(e)).
-func resolveTable(e domain.Entity, cfg *RepoConfig) string {
-	if cfg != nil && cfg.Table != "" {
-		return cfg.Table
-	}
-	return InferTableName(reflect.TypeOf(e))
+// archiveSQL / unarchiveSQL / deleteSQL build the soft-delete and hard-delete
+// statements on the resolved soft-delete column + PK column.
+func archiveSQL(table, sdCol, pk string) string {
+	return fmt.Sprintf("UPDATE %s SET %s = NOW() WHERE %s = $1",
+		validIdentifier(table), validIdentifier(sdCol), validIdentifier(pk))
 }
 
-// resolveFields: uses cfg.FieldOverrides (if any) to map GoField→column.
-func resolveFields(e domain.Entity, cfg *RepoConfig) domain.Fields {
-	var overrides map[string]string
-	if cfg != nil {
-		overrides = cfg.FieldOverrides
-	}
-	return FieldsFromEntity(e, overrides)
+func unarchiveSQL(table, sdCol, pk string) string {
+	return fmt.Sprintf("UPDATE %s SET %s = NULL WHERE %s = $1",
+		validIdentifier(table), validIdentifier(sdCol), validIdentifier(pk))
 }
 
-func buildInsert(table string, fields domain.Fields) (string, []any) {
+func deleteSQL(table, pk string) string {
+	return fmt.Sprintf("DELETE FROM %s WHERE %s = $1",
+		validIdentifier(table), validIdentifier(pk))
+}
+
+// requireSoftDelete is the runtime backstop for the boot-time Modes() ⟺
+// SoftDelete check: a write path that needs the soft-delete column on a schema
+// that did not declare it fails loudly instead of emitting broken SQL.
+func requireSoftDelete(s *TableSchema, entityName string) (string, error) {
+	col, ok := s.softDeleteColumn()
+	if !ok {
+		return "", fmt.Errorf(
+			"infra: %s did not declare SoftDelete in its TableSchema — archive/unarchive is unavailable",
+			entityName,
+		)
+	}
+	return col, nil
+}
+
+// buildInsert builds the INSERT for the given bound columns plus the managed
+// NOW() columns (created_at/updated_at when enabled), returning the PK column.
+func buildInsert(table string, fields domain.Fields, pk string, nowCols []string) (string, []any) {
 	keys := sortedKeys(fields)
-	cols := make([]string, len(keys))
-	params := make([]string, len(keys))
-	vals := make([]any, len(keys))
+	cols := make([]string, 0, len(keys)+len(nowCols))
+	params := make([]string, 0, len(keys)+len(nowCols))
+	vals := make([]any, 0, len(keys))
 	for i, k := range keys {
-		cols[i] = k
-		params[i] = fmt.Sprintf("$%d", i+1)
-		vals[i] = fields[k]
+		cols = append(cols, k)
+		params = append(params, fmt.Sprintf("$%d", i+1))
+		vals = append(vals, fields[k])
+	}
+	for _, nc := range nowCols {
+		cols = append(cols, validIdentifier(nc))
+		params = append(params, "NOW()")
 	}
 	sql := fmt.Sprintf(
-		"INSERT INTO %s (%s) VALUES (%s) RETURNING id",
+		"INSERT INTO %s (%s) VALUES (%s) RETURNING %s",
 		validIdentifier(table),
 		strings.Join(cols, ", "),
 		strings.Join(params, ", "),
+		validIdentifier(pk),
 	)
 	return sql, vals
 }
 
-func buildUpdate(table, id string, fields domain.Fields) (string, []any) {
+// buildUpdate builds the UPDATE for the given bound columns plus the managed
+// NOW() columns (updated_at when enabled), keyed on the PK column.
+func buildUpdate(table, pk, id string, fields domain.Fields, nowCols []string) (string, []any) {
 	keys := sortedKeys(fields)
-	sets := make([]string, len(keys))
-	vals := make([]any, len(keys)+1)
+	sets := make([]string, 0, len(keys)+len(nowCols))
+	vals := make([]any, 0, len(keys)+1)
 	for i, k := range keys {
-		sets[i] = fmt.Sprintf("%s = $%d", k, i+1)
-		vals[i] = fields[k]
+		sets = append(sets, fmt.Sprintf("%s = $%d", k, i+1))
+		vals = append(vals, fields[k])
 	}
-	vals[len(keys)] = id
+	for _, nc := range nowCols {
+		sets = append(sets, validIdentifier(nc)+" = NOW()")
+	}
+	idParam := len(keys) + 1
+	vals = append(vals, id)
 	sql := fmt.Sprintf(
-		"UPDATE %s SET %s, updated_at = NOW() WHERE id = $%d RETURNING id",
+		"UPDATE %s SET %s WHERE %s = $%d RETURNING %s",
 		validIdentifier(table),
 		strings.Join(sets, ", "),
-		len(keys)+1,
+		validIdentifier(pk),
+		idParam,
+		validIdentifier(pk),
 	)
 	return sql, vals
 }
 
-// FieldsFromEntity is the canonical helper that returns map[column]value
-// via reflection on the struct (skips anonymous embeds, unexported fields,
-// tag `transient:"-"`, field "ID"). Overrides applied via
-// fieldOverrides[goFieldName] = columnName.
-// (defined in infer.go)
+// The column→value map for INSERT/UPDATE comes from TableSchema.writeFields,
+// which reads only the schema's declared fields (Go field → column) — no
+// reflection-by-convention, no transient tag, no overrides map.
 
 func sortedKeys(fields domain.Fields) []string {
 	keys := make([]string, 0, len(fields))

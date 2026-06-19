@@ -36,22 +36,22 @@ func TestAutoFromDoc_HappyPath_AllFieldsPopulated(t *testing.T) {
 	label := "home"
 	complement := "Apt 12"
 	doc := map[string]any{
-		"id":    "user-1",
-		"name":  "Jane",
-		"email": "jane@example.com",
-		"phone": phone,
-		"addresses": []any{
+		"ID":    "user-1",
+		"Name":  "Jane",
+		"Email": "jane@example.com",
+		"Phone": phone,
+		"Addresses": []any{
 			map[string]any{
-				"id":           "addr-1",
-				"label":        label,
-				"street":       "1 Infinite Loop",
-				"number":       "1",
-				"complement":   complement,
-				"neighborhood": "Mariani",
-				"city":         "Cupertino",
-				"state":        "CA",
-				"zip_code":     "95014", // ← matches the composer's real output
-				"country":      "US",
+				"ID":           "addr-1",
+				"Label":        label,
+				"Street":       "1 Infinite Loop",
+				"Number":       "1",
+				"Complement":   complement,
+				"Neighborhood": "Mariani",
+				"City":         "Cupertino",
+				"State":        "CA",
+				"ZipCode":     "95014", // ← matches the composer's real output
+				"Country":      "US",
 			},
 		},
 	}
@@ -111,7 +111,7 @@ func TestAutoFromDoc_ViewTag_RenamesSourceKey(t *testing.T) {
 	type R struct {
 		Nickname string `json:"apelido" view:"nome"`
 	}
-	doc := map[string]any{"nome": "Janete"}
+	doc := map[string]any{"Nickname": "Janete"}
 	got := AutoFromDoc[R](doc)
 	if got.Nickname != "Janete" {
 		t.Errorf("view: rename failed — want Janete, got %q", got.Nickname)
@@ -122,7 +122,7 @@ func TestAutoFromDoc_ViewTag_AbsentFallsBackToJSONTag(t *testing.T) {
 	type R struct {
 		Name string `json:"name"`
 	}
-	doc := map[string]any{"name": "Bob"}
+	doc := map[string]any{"Name": "Bob"}
 	got := AutoFromDoc[R](doc)
 	if got.Name != "Bob" {
 		t.Errorf("json: fallback failed — want Bob, got %q", got.Name)
@@ -137,7 +137,7 @@ func TestAutoFromDoc_NoJSONTag_FallsBackToGoFieldName(t *testing.T) {
 		Name    string
 		ZipCode string
 	}
-	doc := map[string]any{"name": "Alice", "zip_code": "12345"}
+	doc := map[string]any{"Name": "Alice", "ZipCode": "12345"}
 	got := AutoFromDoc[R](doc)
 	if got.Name != "Alice" {
 		t.Errorf("Go field name fallback (Name → name): want Alice, got %q", got.Name)
@@ -151,7 +151,7 @@ func TestAutoFromDoc_JSONTagWithOmitempty_NameOnlyTakesFirstSegment(t *testing.T
 	type R struct {
 		Phone string `json:"phone,omitempty"`
 	}
-	doc := map[string]any{"phone": "555"}
+	doc := map[string]any{"Phone": "555"}
 	got := AutoFromDoc[R](doc)
 	if got.Phone != "555" {
 		t.Errorf(",omitempty stripping failed — want 555, got %q", got.Phone)
@@ -163,7 +163,7 @@ func TestAutoFromDoc_JSONTagSkipsField(t *testing.T) {
 		ID     string `json:"id"`
 		Secret string `json:"-"`
 	}
-	doc := map[string]any{"id": "x", "Secret": "leak", "secret": "leak"}
+	doc := map[string]any{"ID": "x", "Secret": "leak", "secret": "leak"}
 	got := AutoFromDoc[R](doc)
 	if got.ID != "x" {
 		t.Errorf("ID: want x, got %q", got.ID)
@@ -180,7 +180,7 @@ func TestAutoFromDoc_ViewTagDash_TreatedAsAbsent(t *testing.T) {
 	type R struct {
 		Name string `json:"name" view:"-"`
 	}
-	doc := map[string]any{"name": "Carol"}
+	doc := map[string]any{"Name": "Carol"}
 	got := AutoFromDoc[R](doc)
 	if got.Name != "Carol" {
 		t.Errorf(`view:"-" should fall back to json: tag — want Carol, got %q`, got.Name)
@@ -203,7 +203,7 @@ func TestAutoFromDoc_IDFallback_IDWinsWhenBothPresent(t *testing.T) {
 	type R struct {
 		ID string `json:"id"`
 	}
-	got := AutoFromDoc[R](map[string]any{"id": "primary", "_id": "shadow"})
+	got := AutoFromDoc[R](map[string]any{"ID": "primary", "_id": "shadow"})
 	if got.ID != "primary" {
 		t.Errorf("id should win over _id — want primary, got %q", got.ID)
 	}
@@ -229,8 +229,8 @@ func TestAutoFromDoc_IDFallback_TopLevelOnly(t *testing.T) {
 		Child Child `json:"child"`
 	}
 	doc := map[string]any{
-		"id":    "root",
-		"child": map[string]any{"_id": "should-be-ignored"},
+		"ID":    "root",
+		"Child": map[string]any{"_id": "should-be-ignored"},
 	}
 	got := AutoFromDoc[R](doc)
 	if got.Child.ID != "" {
@@ -245,7 +245,7 @@ func TestAutoFromDoc_NilSlice_NormalizedToEmpty(t *testing.T) {
 		ID        string        `json:"id"`
 		Addresses []addrFixture `json:"addresses"`
 	}
-	got := AutoFromDoc[R](map[string]any{"id": "x"})
+	got := AutoFromDoc[R](map[string]any{"ID": "x"})
 	if got.Addresses == nil {
 		t.Fatal("nil slice should be normalized to empty")
 	}
@@ -264,8 +264,8 @@ func TestAutoFromDoc_PrefilledSlice_NotOverwritten(t *testing.T) {
 		Addresses []addrFixture `json:"addresses"`
 	}
 	doc := map[string]any{
-		"addresses": []any{
-			map[string]any{"id": "a1", "street": "S", "zip_code": "00000"},
+		"Addresses": []any{
+			map[string]any{"ID": "a1", "Street": "S", "ZipCode": "00000"},
 		},
 	}
 	got := AutoFromDoc[R](doc)
@@ -299,7 +299,7 @@ func TestAutoFromDoc_NestedNilSlice_NormalizedInsideEachElement(t *testing.T) {
 		Items []Inner `json:"items"`
 	}
 	doc := map[string]any{
-		"items": []any{
+		"Items": []any{
 			map[string]any{}, // no "tags" key — should become [] inside
 		},
 	}
@@ -328,7 +328,7 @@ func TestAutoFromDoc_PointerField_PopulatedWhenPresent(t *testing.T) {
 	type R struct {
 		Phone *string `json:"phone,omitempty"`
 	}
-	got := AutoFromDoc[R](map[string]any{"phone": "555"})
+	got := AutoFromDoc[R](map[string]any{"Phone": "555"})
 	if got.Phone == nil || *got.Phone != "555" {
 		t.Errorf("present optional should populate — got %v", got.Phone)
 	}
@@ -346,9 +346,9 @@ func TestAutoFromDoc_EmbeddedStruct_FieldsPromoted(t *testing.T) {
 		ID             string `json:"id"`
 	}
 	doc := map[string]any{
-		"id":         "u1",
-		"created_at": "2026-06-01",
-		"updated_at": "2026-06-02",
+		"ID":         "u1",
+		"CreatedAt": "2026-06-01",
+		"UpdatedAt": "2026-06-02",
 	}
 	got := AutoFromDoc[R](doc)
 	if got.ID != "u1" {
@@ -372,9 +372,9 @@ func TestAutoFromDoc_ViewTagInsideSliceElement_RenamesPerElement(t *testing.T) {
 		Items []Item `json:"items"`
 	}
 	doc := map[string]any{
-		"items": []any{
-			map[string]any{"codigo": "A"},
-			map[string]any{"codigo": "B"},
+		"Items": []any{
+			map[string]any{"Code": "A"},
+			map[string]any{"Code": "B"},
 		},
 	}
 	got := AutoFromDoc[R](doc)
@@ -391,7 +391,7 @@ func TestAutoFromDoc_ViewTagOnSliceField_RenamesSourceKey(t *testing.T) {
 		Items []Item `json:"items" view:"itens"`
 	}
 	doc := map[string]any{
-		"itens": []any{map[string]any{"id": "1"}},
+		"Items": []any{map[string]any{"ID": "1"}},
 	}
 	got := AutoFromDoc[R](doc)
 	if len(got.Items) != 1 || got.Items[0].ID != "1" {
@@ -406,7 +406,7 @@ func TestAutoFromDoc_ExtraDocKeys_Ignored(t *testing.T) {
 		ID string `json:"id"`
 	}
 	doc := map[string]any{
-		"id":         "u1",
+		"ID":         "u1",
 		"deleted_at": nil,
 		"_internal":  "ignored",
 	}
@@ -463,7 +463,7 @@ func TestAutoFromDoc_HandlesNamedMapType(t *testing.T) {
 		Inner R `json:"inner"`
 	}
 	doc := map[string]any{
-		"inner": namedMap{"name": "Carol"},
+		"Inner": namedMap{"Name": "Carol"},
 	}
 	got := AutoFromDoc[Outer](doc)
 	if got.Inner.Name != "Carol" {
@@ -479,9 +479,9 @@ func TestAutoFromDoc_HandlesNamedSliceType(t *testing.T) {
 		Items []Inner `json:"items"`
 	}
 	doc := map[string]any{
-		"items": namedSlice{
-			namedMap{"codigo": "A"},
-			namedMap{"codigo": "B"},
+		"Items": namedSlice{
+			namedMap{"Code": "A"},
+			namedMap{"Code": "B"},
 		},
 	}
 	got := AutoFromDoc[Outer](doc)

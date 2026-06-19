@@ -64,6 +64,40 @@ func itoa(i int) string {
 	return string(buf[pos:])
 }
 
+// childCollectionSegment renders an aggregate child's collection segment for the
+// notification wire path: the type name in camelCase, pluralized. JSON-facing —
+// the wire path is camelCase everywhere, so this is too (Address → addresses,
+// OrderLine → orderLines), matching the client's JSON array name. The framework
+// no longer has column/table convention; this is the one remaining wire-naming
+// derivation, and it stays camelCase.
+func childCollectionSegment(typeName string) string {
+	return pluralizeWord(toLowerCamel(typeName))
+}
+
+// pluralizeWord applies basic English plural rules to a camelCase word (the
+// last word carries the plural). Irregulars are not covered.
+func pluralizeWord(s string) string {
+	if s == "" {
+		return ""
+	}
+	n := len(s)
+	if n >= 2 {
+		tail := s[n-2:]
+		if tail == "sh" || tail == "ch" {
+			return s + "es"
+		}
+	}
+	switch s[n-1] {
+	case 's', 'x', 'z':
+		return s + "es"
+	case 'y':
+		if n >= 2 && !isVowelByte(s[n-2]) {
+			return s[:n-1] + "ies"
+		}
+	}
+	return s + "s"
+}
+
 // toLowerCamel converts a Go identifier to a JSON-friendly camelCase string.
 // Acronym handling: a run of two or more leading uppercase runes is fully
 // lowercased ("CPF" → "cpf", "URLPath" → "urlPath", "HTTPStatusCode" →
@@ -108,4 +142,12 @@ func toLowerRune(r rune) rune {
 		return r + ('a' - 'A')
 	}
 	return r
+}
+
+func isVowelByte(b byte) bool {
+	switch b {
+	case 'a', 'e', 'i', 'o', 'u':
+		return true
+	}
+	return false
 }

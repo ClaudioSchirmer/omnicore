@@ -209,7 +209,7 @@ func TestBaseAggregateRepository_FindByID(t *testing.T) {
 		`INSERT INTO loader_roots (name, email) VALUES ('Y', 'y@x') RETURNING id`).Scan(&id)
 
 	bar := NewBaseAggregateRepository[*loaderRoot](pg, func() *loaderRoot { return &loaderRoot{} })
-	WithChild[loaderTagVO](bar.Loader)
+	bar.WithSchema(loaderRootSchemaTagsOnly())
 
 	root, err := bar.FindByID(domain.NewID(id))
 	if err != nil {
@@ -230,6 +230,7 @@ func TestBaseAggregateRepository_FindArchivedByID(t *testing.T) {
 		`INSERT INTO loader_roots (name, email, deleted_at) VALUES ('A', 'a@x', NOW()) RETURNING id`).Scan(&id)
 
 	bar := NewBaseAggregateRepository[*loaderRoot](pg, func() *loaderRoot { return &loaderRoot{} })
+	bar.WithSchema(loaderRootSchemaFlat())
 	root, err := bar.FindArchivedByID(domain.NewID(id))
 	if err != nil {
 		t.Fatalf("FindArchivedByID: %v", err)
@@ -317,15 +318,3 @@ func TestSource_EmbedAndEmbedManyAppend(t *testing.T) {
 	}
 }
 
-// --- ColumnsOnly + small helpers ---
-
-func TestColumnsOnly(t *testing.T) {
-	specs := []ColumnSpec{
-		{Column: "name", FieldIndex: 1},
-		{Column: "email", FieldIndex: 2},
-	}
-	got := ColumnsOnly(specs)
-	if len(got) != 2 || got[0] != "name" || got[1] != "email" {
-		t.Errorf("ColumnsOnly = %v", got)
-	}
-}

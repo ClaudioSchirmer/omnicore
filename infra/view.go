@@ -1,15 +1,10 @@
 package infra
 
-import (
-	"reflect"
-
-	"github.com/ClaudioSchirmer/omnicore/domain"
-)
-
 type ViewDefinition struct {
 	name            string
 	version         int
 	rootTable       string
+	schema          *TableSchema
 	embeds          []embedDef
 	deleteOnArchive bool
 	mongoSpec       mongoSpec
@@ -58,75 +53,35 @@ func (e embedDef) Many() bool { return e.many }
 // `table` resolves either to an UpstreamSubscription.Collection or to a local
 // ViewDefinition.Name().
 type Source struct {
-	table   string
-	joinKey string
-	isMongo bool
-	embeds  []embedDef
+	table     string
+	joinKey   string
+	isMongo   bool
+	schema    *TableSchema
+	goSegment string
+	embeds    []embedDef
 }
 
 func View(name string) *ViewDefinition {
 	return &ViewDefinition{name: name}
 }
 
-// ViewOf is the generic variant of View(name) — infers the Mongo collection,
-// the Postgres root table and the children EmbedMany from the Go type T via
-// reflection. Conventions (same as the write side, Phases 19+20):
-//
-//   - Mongo collection / root table = InferTableName(T) → "users"
-//   - Children discovered via T.AggregateChildren() (Phase 20). For each
-//     sample VO:
-//     • Mongo doc field + Postgres child table = PluralizeSnake of the VO
-//     type name → "addresses"
-//     • Child FK pointing to root.id = InferForeignKey(rootType) →
-//     "user_id"
-//
-// Use when the convention fits (canonical case). For a custom magic pattern
-// (legacy naming, embeds that do not come from AggregateChildren — e.g.
-// cross-aggregate cache table, external materialized view), keep the fluent
-// View(name).Root(table).EmbedMany(...) and/or extend the return of ViewOf[T]()
-// (ViewDefinition is mutable via Embed/EmbedMany after creation).
-//
-//	v := fwinfra.ViewOf[*appdomain.User]()
-//	// equivalent to:
-//	v := fwinfra.View("users").Root("users").
-//	    EmbedMany("addresses", fwinfra.From("addresses").On("user_id"))
-//
-// An entity without AggregateRootProvider returns a view with no embeds —
-// flat aggregate with pure root.
-func ViewOf[T domain.Entity]() *ViewDefinition {
-	rootRefType := reflect.TypeOf((*T)(nil)).Elem()
-	t := rootRefType
-	if t.Kind() == reflect.Ptr {
-		t = t.Elem()
-	}
-	table := InferTableName(t)
-
-	v := View(table).Root(table)
-
-	// AggregateChildren needs an instance — reflect.New(t).Interface()
-	// returns a *t that satisfies interfaces declared with receiver T or *T.
-	sample := reflect.New(t).Interface()
-	provider, ok := sample.(domain.AggregateRootProvider)
-	if !ok {
-		return v
-	}
-
-	fk := InferForeignKey(rootRefType)
-	for _, child := range provider.AggregateChildren() {
-		childType := reflect.TypeOf(child)
-		if childType.Kind() == reflect.Ptr {
-			childType = childType.Elem()
-		}
-		childTable := InferTableName(childType)
-		v = v.EmbedMany(childTable, From(childTable).On(fk))
-	}
-	return v
-}
-
 func (v *ViewDefinition) Root(table string) *ViewDefinition {
 	v.rootTable = table
 	return v
 }
+
+// Schema attaches the view's root TableSchema (Go↔column + PK + soft-delete) —
+// the same schema the repository declares. The composer uses it for the root
+// PK + soft-delete column; the reader uses it to translate root leaf fields
+// between Go field names and physical columns. Reuse the repo's schema so write
+// and read agree.
+func (v *ViewDefinition) Schema(ts *TableSchema) *ViewDefinition {
+	v.schema = ts
+	return v
+}
+
+// SchemaDef returns the view's root TableSchema (nil when unset).
+func (v *ViewDefinition) SchemaDef() *TableSchema { return v.schema }
 
 // Version declares the shape version of the view. Mandatory — the framework
 // rejects views with version <= 0 at boot via ValidateMongoSpec.
@@ -233,6 +188,24 @@ func FromMongo(collection string) *Source {
 
 func (s *Source) On(key string) *Source {
 	s.joinKey = key
+	return s
+}
+
+// Schema attaches the embed source's TableSchema (Go↔column map + PK +
+// soft-delete). For a local From source, reuse the child's repository schema;
+// for a FromMongo source, declare an external schema describing the upstream's
+// columns. The reader uses it to translate the embed's leaf fields both ways.
+func (s *Source) Schema(ts *TableSchema) *Source {
+	s.schema = ts
+	return s
+}
+
+// As declares the parent-side Go field name (segment) for this embed — what the
+// criteria/Response refer to (e.g. "Addresses"), as opposed to the doc field
+// where the composer lands the embed (the EmbedMany field, e.g. "addresses").
+// Defaults to the doc field when unset.
+func (s *Source) As(goSegment string) *Source {
+	s.goSegment = goSegment
 	return s
 }
 

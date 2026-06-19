@@ -62,6 +62,24 @@ func createAggregateTables(t *testing.T, pg *Postgres) {
 	)`)
 }
 
+// aggCustomerSchema declares the aggCustomer aggregate (root + aggChannel child).
+func aggCustomerSchema() *TableSchema {
+	return NewTableSchema[*aggCustomer]("agg_customers").
+		PK("ID", "id").
+		Field("Name", "name").
+		Field("Email", "email").
+		SoftDelete("deleted_at").
+		CreatedAt("created_at").
+		UpdatedAt("updated_at").
+		Child(NewTableSchema[aggChannel]("agg_channels").
+			PK("ID", "id").
+			FK("agg_customer_id").
+			Field("Label", "label").
+			SoftDelete("deleted_at").
+			CreatedAt("created_at").
+			UpdatedAt("updated_at"))
+}
+
 // --- insertAggregate -----------------------------------------------------
 
 func TestPostgres_InsertAggregate_PersistsRootAndChildren(t *testing.T) {
@@ -77,7 +95,7 @@ func TestPostgres_InsertAggregate_PersistsRootAndChildren(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetInsertable: %v", err)
 	}
-	res, err := pg.Insert(testCtx(), ins, nil, noHook)
+	res, err := pg.Insert(testCtx(), ins, aggCustomerSchema(), noHook)
 	if err != nil {
 		t.Fatalf("Insert aggregate: %v", err)
 	}
@@ -116,7 +134,7 @@ func TestPostgres_UpdateAggregate_AppliesChildChanges(t *testing.T) {
 	domain.AddAggregateChild(root, aggChannel{Label: "email"})
 	domain.AddAggregateChild(root, aggChannel{Label: "sms"})
 	ins, _ := domain.GetInsertable(root, nil, "GetInsertable")
-	res, err := pg.Insert(testCtx(), ins, nil, noHook)
+	res, err := pg.Insert(testCtx(), ins, aggCustomerSchema(), noHook)
 	if err != nil {
 		t.Fatalf("seed: %v", err)
 	}
@@ -161,7 +179,7 @@ func TestPostgres_UpdateAggregate_AppliesChildChanges(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetUpdatable: %v", err)
 	}
-	if _, err := pg.Update(testCtx(), upd, nil, noHook); err != nil {
+	if _, err := pg.Update(testCtx(), upd, aggCustomerSchema(), noHook); err != nil {
 		t.Fatalf("Update aggregate: %v", err)
 	}
 
@@ -189,7 +207,7 @@ func TestPostgres_ArchiveAggregate_CascadesActiveChildren(t *testing.T) {
 	domain.AddAggregateChild(root, aggChannel{Label: "a"})
 	domain.AddAggregateChild(root, aggChannel{Label: "b"})
 	ins, _ := domain.GetInsertable(root, nil, "GetInsertable")
-	res, _ := pg.Insert(testCtx(), ins, nil, noHook)
+	res, _ := pg.Insert(testCtx(), ins, aggCustomerSchema(), noHook)
 
 	loaded := &aggCustomer{Name: "G", Email: "g@x"}
 	loaded.SetID(domain.NewID(res.ID))
@@ -199,7 +217,7 @@ func TestPostgres_ArchiveAggregate_CascadesActiveChildren(t *testing.T) {
 	loaded.AggregateConstructor([]domain.AggregateValueObject{aggChannel{}})
 
 	arch, _ := domain.GetArchivable(loaded, nil, "GetArchivable")
-	if err := pg.Archive(testCtx(), arch, nil, noHook); err != nil {
+	if err := pg.Archive(testCtx(), arch, aggCustomerSchema(), noHook); err != nil {
 		t.Fatalf("Archive aggregate: %v", err)
 	}
 	if activeCount(t, pg, "agg_customers") != 0 {
@@ -220,7 +238,7 @@ func TestPostgres_UnarchiveAggregate_RestoresArchivedChildren(t *testing.T) {
 	root := &aggCustomer{Name: "U", Email: "u@x"}
 	domain.AddAggregateChild(root, aggChannel{Label: "x"})
 	ins, _ := domain.GetInsertable(root, nil, "GetInsertable")
-	res, _ := pg.Insert(testCtx(), ins, nil, noHook)
+	res, _ := pg.Insert(testCtx(), ins, aggCustomerSchema(), noHook)
 
 	id := domain.NewID(res.ID)
 
@@ -229,7 +247,7 @@ func TestPostgres_UnarchiveAggregate_RestoresArchivedChildren(t *testing.T) {
 	loaded.SetID(id)
 	loaded.AggregateConstructor([]domain.AggregateValueObject{aggChannel{}})
 	arch, _ := domain.GetArchivable(loaded, nil, "GetArchivable")
-	if err := pg.Archive(testCtx(), arch, nil, noHook); err != nil {
+	if err := pg.Archive(testCtx(), arch, aggCustomerSchema(), noHook); err != nil {
 		t.Fatalf("Archive: %v", err)
 	}
 
@@ -238,7 +256,7 @@ func TestPostgres_UnarchiveAggregate_RestoresArchivedChildren(t *testing.T) {
 	loaded2.SetID(id)
 	loaded2.AggregateConstructor([]domain.AggregateValueObject{aggChannel{}})
 	una, _ := domain.GetUnarchivable(loaded2, nil, "GetUnarchivable")
-	if err := pg.Unarchive(testCtx(), una, nil, noHook); err != nil {
+	if err := pg.Unarchive(testCtx(), una, aggCustomerSchema(), noHook); err != nil {
 		t.Fatalf("Unarchive aggregate: %v", err)
 	}
 
@@ -261,12 +279,12 @@ func TestPostgres_DeleteAggregate_FKDeleteCascade(t *testing.T) {
 	domain.AddAggregateChild(root, aggChannel{Label: "x"})
 	domain.AddAggregateChild(root, aggChannel{Label: "y"})
 	ins, _ := domain.GetInsertable(root, nil, "GetInsertable")
-	res, _ := pg.Insert(testCtx(), ins, nil, noHook)
+	res, _ := pg.Insert(testCtx(), ins, aggCustomerSchema(), noHook)
 
 	loaded := &aggCustomer{Name: "D", Email: "d@x"}
 	loaded.SetID(domain.NewID(res.ID))
 	del, _ := domain.GetDeletable(loaded, nil, "GetDeletable")
-	if err := pg.Delete(testCtx(), del, nil, noHook); err != nil {
+	if err := pg.Delete(testCtx(), del, aggCustomerSchema(), noHook); err != nil {
 		t.Fatalf("Delete aggregate: %v", err)
 	}
 	if rowCount(t, pg, "agg_customers") != 0 {
@@ -288,7 +306,7 @@ func TestUpdateChild_WithoutIDIsError(t *testing.T) {
 	root := &aggCustomer{Name: "U", Email: "u@x"}
 	domain.AddAggregateChild(root, aggChannel{Label: "first"})
 	ins, _ := domain.GetInsertable(root, nil, "GetInsertable")
-	res, _ := pg.Insert(testCtx(), ins, nil, noHook)
+	res, _ := pg.Insert(testCtx(), ins, aggCustomerSchema(), noHook)
 
 	loaded := &aggCustomer{Name: "U", Email: "u@x"}
 	loaded.SetID(domain.NewID(res.ID))
@@ -299,7 +317,7 @@ func TestUpdateChild_WithoutIDIsError(t *testing.T) {
 		domain.ChangeAggregateChild(c, current[0], aggChannel{Label: "renamed"}) // empty ID still
 	}, nil, "GetUpdatable")
 
-	_, err := pg.Update(testCtx(), upd, nil, noHook)
+	_, err := pg.Update(testCtx(), upd, aggCustomerSchema(), noHook)
 	if err == nil {
 		t.Error("expected Update to fail when changed child carries no ID")
 	}
@@ -353,11 +371,20 @@ func TestPostgres_InsertAggregate_RespectsChildTableAndFKOverride(t *testing.T) 
 	domain.AddAggregateChild(root, lineItem{Amount: 100})
 	ins, _ := domain.GetInsertable(root, nil, "GetInsertable")
 
-	cfg := &RepoConfig{
-		ChildTableOverrides: map[string]string{"lineItem": "tb_lines"},
-		ChildFKOverrides:    map[string]string{"lineItem": "invoice_id"},
-	}
-	if _, err := pg.Insert(testCtx(), ins, cfg, noHook); err != nil {
+	schema := NewTableSchema[*aggInvoice]("agg_invoices").
+		PK("ID", "id").
+		Field("Reference", "reference").
+		SoftDelete("deleted_at").
+		CreatedAt("created_at").
+		UpdatedAt("updated_at").
+		Child(NewTableSchema[lineItem]("tb_lines").
+			PK("ID", "id").
+			FK("invoice_id").
+			Field("Amount", "amount").
+			SoftDelete("deleted_at").
+			CreatedAt("created_at").
+			UpdatedAt("updated_at"))
+	if _, err := pg.Insert(testCtx(), ins, schema, noHook); err != nil {
 		t.Fatalf("Insert with overrides: %v", err)
 	}
 	if rowCount(t, pg, "tb_lines") != 1 {
@@ -375,6 +402,7 @@ func TestBaseRepository_InsertUpdateArchiveUnarchiveDelete(t *testing.T) {
 	repo := &BaseRepository[*flatPerson]{
 		Postgres:  pg,
 		NewEntity: func() *flatPerson { return &flatPerson{} },
+		Schema:    flatPersonSchema(),
 	}
 
 	// Insert via repo.
@@ -441,6 +469,7 @@ func TestBaseRepository_ConstraintBindingMapsTo23505Notification(t *testing.T) {
 		Postgres:    pg,
 		NewEntity:   func() *flatPerson { return &flatPerson{} },
 		ContextName: "Person",
+		Schema:      flatPersonSchema(),
 		Constraints: map[string]ConstraintBinding{
 			"persons_email_uq": {
 				Notification: domain.EntityAlreadyAddedNotification{},
@@ -486,6 +515,7 @@ func TestBaseRepository_ConstraintCodeOtherThan23505ReturnsRaw(t *testing.T) {
 	repo := &BaseRepository[*flatPerson]{
 		Postgres:  pg,
 		NewEntity: func() *flatPerson { return &flatPerson{} },
+		Schema:    flatPersonSchema(),
 		Constraints: map[string]ConstraintBinding{
 			"any_name": {Notification: domain.RequiredFieldNotification{}, Field: "x"},
 		},

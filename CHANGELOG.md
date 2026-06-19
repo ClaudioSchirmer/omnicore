@@ -11,6 +11,121 @@ with `1.0.0`.
 
 ## [Unreleased]
 
+### Added
+
+- **`TableSchema` — the single, mandatory, explicit Go-field↔physical-column
+  map**, superseding the convention/inference model and the `RepoConfig` schema
+  map from 0.11.0. Built with `NewTableSchema[T](table)` (type-anchored —
+  validates each field against `T` at construction; a `Field` naming a missing
+  or unexported field panics at boot) or `NewExternalSchema(table)` (type-less,
+  for `FromMongo` upstream sources). Chainable builder: `PK(go, col)`,
+  `FK(col)` (child), `Field(go, col)`, `SoftDelete(col)`, `CreatedAt(col)`,
+  `UpdatedAt(col)`, `Child(*TableSchema)`. There is no name inference: every
+  persisted field is declared, and an undeclared exported field is runtime-only
+  by construction (never persisted, scanned, or audited).
+- **`BaseAggregateRepository.WithSchema(*TableSchema)`** threads the one schema
+  into the write binding AND the read loader (write SQL + criteria + auto-scan).
+  Aggregate children come from the schema's `Child(...)` declarations.
+- **The same `TableSchema` drives the Mongo read side.** `ViewDefinition.Schema(ts)`
+  attaches the root map; `Source.Schema(ts)` + `Source.As(goSegment)` attach the
+  embed's map and parent-side Go segment. The composer writes physical columns;
+  the `MongoViewReader` translates each leaf back to its Go field name (and the
+  embed doc field to its Go segment) using these schemas, so the typed Response
+  speaks Go names with only `json:` tags.
+- **Three managed columns by presence, not a bool** — calling
+  `SoftDelete/CreatedAt/UpdatedAt(col)` enables; omitting disables. `created_at`
+  and `updated_at` are actively stamped `NOW()` on write (no reliance on a DB
+  default); on the read path they are readable under fixed logical Go names
+  `CreatedAt`/`UpdatedAt`/`DeletedAt`.
+
+### Removed
+
+- **`RepoConfig`, `SourceMap`, `ManagedColumn`** — replaced by `TableSchema`.
+- **`WithChild[V]` / `WithChildAutoScan` / `WithConfig`** — children are declared
+  on the schema via `Child(...)` and threaded via `WithSchema`.
+- **`ViewOf[*T]()`** — views are declared explicitly via
+  `View(name).Version(n).Root(table).Schema(ts).EmbedMany(field, From(...).On(fk).As(go).Schema(childTs))`.
+- **The `view:"<docKey>"` Response struct tag** — the reader returns a Go-keyed
+  document, so the Response carries only `json:` tags; there is no source-key
+  override on the read projection.
+- **Name-inference helpers for persistence** (`PascalToSnake`/`PluralizeSnake`
+  used to derive tables/columns/FKs, `ColumnsOnly`/`ColumnSpec`) — gone.
+  (`domain.PascalToSnake` itself is no longer used to map persistence names.)
+- **The `transient:"-"` tag is removed entirely** — no longer read by any layer
+  (persistence is driven by the explicit `TableSchema`; the field-label resolver
+  dropped its vestigial opt-out). A field is persisted iff it is declared in the
+  `TableSchema`; a field gets a label iff it carries a `label:` tag.
+
+### Changed
+
+- **Persistence names are no longer derived from Go identifiers.** Tables,
+  columns, and child FKs are declared in the `TableSchema`; a typo is a boot
+  panic, not a silent miss. **Breaking** — every consumer Repository and view
+  must declare a `TableSchema` and call `WithSchema`.
+- **Read-side wire↔doc translation is now a two-hop pivot.** The web layer maps
+  a wire path to the **Go field path** via the Response's `json:` tags;
+  the `MongoViewReader` translates the Go path → physical Mongo column via the
+  view's `TableSchema`. Filter keys are always Go field paths; sort/projection
+  translate Go→column only with a typed Response (pass-through for `RawDoc` /
+  `ParseCriteria`).
+- **`Postgres.Insert/Update/Archive/Unarchive/Delete` and `Batch`, the
+  `AggregateLoader`, and the criteria/scan internals take `*TableSchema`** instead
+  of `*RepoConfig`. The aggregate-child notification path segment is now camelCase
+  (`toLowerCamel(typeName)`, e.g. `OrderLine` → `orderLines`) — JSON wire output —
+  replacing the snake_case `PluralizeSnake(PascalToSnake(...))` segment.
+- **Audit emits the faithful domain field name** (Go field, not the column) and
+  is map-blind, so a column rename never disturbs the timeline (unchanged from
+  0.11.0).
+
+## [0.11.0] - 2026-06-19
+
+### Added
+
+- **PG schema mapping — `RepoConfig` is now the single, complete per-Repository
+  schema map.** Root mapping is declared flat on `RepoConfig`
+  (`Table` / `PK` / `Fields` / `SoftDelete` / `UpdatedAt` / `CreatedAt`); each
+  aggregate child declares its own `SourceMap` under `Children`, keyed by the Go
+  child type name. New exported types: `SourceMap`, `ManagedColumn{Disabled, Column}`.
+  Everything in the framework speaks the Go field name (PascalCase); the map is
+  the only place a physical column/table name appears, and a column rename
+  propagates to the Mongo read side automatically (composer `SELECT *`).
+- **`BaseAggregateRepository.WithSchema(cfg RepoConfig)`** — declares the map
+  once and threads it into both the write binding (`BaseRepository.Config`) and
+  the read loader (`Loader.WithConfig`), eliminating the two-source split. Runs
+  boot checks at construction: column bijection over each source's full column
+  set (mapped fields + PK + enabled managed columns), every `Fields` key names a
+  real persistable field, and `Modes()` ⟺ `SoftDelete`.
+- **Managed `created_at` / `updated_at` are now actively stamped on INSERT**
+  (`created_at = NOW()`, `updated_at = NOW()`). The framework no longer relies on
+  a DB `DEFAULT NOW()` it does not own; each managed column is renamable and can
+  be disabled via `ManagedColumn`.
+
+### Fixed
+
+- **The read/scan-back path now honors column renames (latent bug).** A field
+  mapped to a non-convention column (e.g. `Email` → `mail`) was written and
+  filtered correctly but scanned back by the convention column, so the row could
+  not be read through `FindByID`/`FindOne`. The SELECT list and the scanner now
+  share a per-Repository `mappedColumn → fieldIndex` resolver
+  (`sourceColumnPlan`); root SELECT/`RETURNING`/`WHERE` and the criteria PK seed
+  use the configured PK column.
+
+### Changed
+
+- **Audit emits the faithful domain field name.** `snapshot` keys and
+  `changes[].field` now carry the raw Go field name (`Email`, `ZipCode`) instead
+  of the snake_case column; field labels resolve by Go field name. Audit is
+  map-blind — it does not consume `RepoConfig`, so a column rename never disturbs
+  the timeline. **Breaking for consumers keying audit on the old snake_case
+  field names** (e.g. ELK/BI pipelines).
+- **`RepoConfig.FieldOverrides` / `ChildTableOverrides` / `ChildFKOverrides` are
+  replaced** by `RepoConfig.Fields` (root) and per-child `SourceMap`
+  (`Table` / `FK` / `Fields`) under `RepoConfig.Children`.
+- **`scopeGate` / `childScopeFilter` / `newFieldResolver` (internal)** take the
+  source's `SourceMap` so the soft-delete column and PK are resolved from the
+  map; archive/unarchive/delete SQL key on the configured PK and soft-delete
+  columns.
+
 ## [0.10.0] - 2026-06-17
 
 ### Changed

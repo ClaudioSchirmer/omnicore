@@ -42,6 +42,21 @@ func createFlatPersonsTable(t *testing.T, pg *Postgres) {
 	)`)
 }
 
+// flatPersonSchema declares the flatPerson table mapping — the explicit map
+// the executor write path resolves from. flatPersonSchemaOn renames the table.
+func flatPersonSchema() *TableSchema { return flatPersonSchemaOn("flat_persons") }
+
+func flatPersonSchemaOn(table string) *TableSchema {
+	return NewTableSchema[*flatPerson](table).
+		PK("ID", "id").
+		Field("Name", "name").
+		Field("Email", "email").
+		Field("Phone", "phone").
+		SoftDelete("deleted_at").
+		CreatedAt("created_at").
+		UpdatedAt("updated_at")
+}
+
 // --- Insert (simple path) -------------------------------------------------
 
 func TestPostgres_Insert_PersistsRowAndOutbox(t *testing.T) {
@@ -55,7 +70,7 @@ func TestPostgres_Insert_PersistsRowAndOutbox(t *testing.T) {
 		t.Fatalf("GetInsertable: %v", err)
 	}
 
-	res, err := pg.Insert(testCtx(), ins, nil, noHook)
+	res, err := pg.Insert(testCtx(), ins, flatPersonSchema(), noHook)
 	if err != nil {
 		t.Fatalf("Insert: %v", err)
 	}
@@ -95,7 +110,7 @@ func TestPostgres_Insert_NotNullViolationPropagates(t *testing.T) {
 	// adjust the row by hand to assert the error path: actually simpler is to
 	// invoke INSERT with an extra constraint violation by adding a UNIQUE
 	// constraint and inserting the same email twice.
-	if _, err := pg.Insert(testCtx(), ins, nil, noHook); err != nil {
+	if _, err := pg.Insert(testCtx(), ins, flatPersonSchema(), noHook); err != nil {
 		t.Fatalf("first Insert err = %v", err)
 	}
 
@@ -104,13 +119,13 @@ func TestPostgres_Insert_NotNullViolationPropagates(t *testing.T) {
 
 	e2 := &flatPerson{Name: "Bob2", Email: "bob@x"}
 	ins2, _ := domain.GetInsertable(e2, nil, "GetInsertable")
-	_, err := pg.Insert(testCtx(), ins2, nil, noHook)
+	_, err := pg.Insert(testCtx(), ins2, flatPersonSchema(), noHook)
 	if err == nil {
 		t.Error("expected unique violation on duplicate email")
 	}
 }
 
-func TestPostgres_Insert_HonorsRepoConfigTableOverride(t *testing.T) {
+func TestPostgres_Insert_HonorsSchemaTableOverride(t *testing.T) {
 	pg, cleanup := newTestPG(t)
 	defer cleanup()
 	createTable(t, pg, `CREATE TABLE tb_legacy_persons (
@@ -125,9 +140,7 @@ func TestPostgres_Insert_HonorsRepoConfigTableOverride(t *testing.T) {
 
 	e := &flatPerson{Name: "X", Email: "x@x"}
 	ins, _ := domain.GetInsertable(e, nil, "GetInsertable")
-	cfg := &RepoConfig{Table: "tb_legacy_persons"}
-
-	res, err := pg.Insert(testCtx(), ins, cfg, noHook)
+	res, err := pg.Insert(testCtx(), ins, flatPersonSchemaOn("tb_legacy_persons"), noHook)
 	if err != nil {
 		t.Fatalf("Insert with override: %v", err)
 	}
@@ -149,7 +162,7 @@ func TestPostgres_Update_PersistsAndEmitsOutbox(t *testing.T) {
 	// Seed an existing row via Insert.
 	seed := &flatPerson{Name: "Old", Email: "old@x"}
 	ins, _ := domain.GetInsertable(seed, nil, "GetInsertable")
-	res, err := pg.Insert(testCtx(), ins, nil, noHook)
+	res, err := pg.Insert(testCtx(), ins, flatPersonSchema(), noHook)
 	if err != nil {
 		t.Fatalf("seed: %v", err)
 	}
@@ -162,7 +175,7 @@ func TestPostgres_Update_PersistsAndEmitsOutbox(t *testing.T) {
 		t.Fatalf("GetUpdatable: %v", err)
 	}
 
-	if _, err := pg.Update(testCtx(), upd, nil, noHook); err != nil {
+	if _, err := pg.Update(testCtx(), upd, flatPersonSchema(), noHook); err != nil {
 		t.Fatalf("Update: %v", err)
 	}
 
@@ -189,7 +202,7 @@ func TestPostgres_Update_BadIDReturnsError(t *testing.T) {
 	loaded.SetID(domain.NewID(uuid.NewString()))
 	upd, _ := domain.GetUpdatable(loaded, func(*flatPerson) {}, nil, "GetUpdatable")
 
-	_, err := pg.Update(testCtx(), upd, nil, noHook)
+	_, err := pg.Update(testCtx(), upd, flatPersonSchema(), noHook)
 	if err == nil {
 		t.Error("expected error when updating a non-existent ID (no row returned)")
 	}
@@ -204,7 +217,7 @@ func TestPostgres_Archive_FlipsDeletedAtAndEmitsOutbox(t *testing.T) {
 
 	seed := &flatPerson{Name: "Archive", Email: "a@x"}
 	ins, _ := domain.GetInsertable(seed, nil, "GetInsertable")
-	res, err := pg.Insert(testCtx(), ins, nil, noHook)
+	res, err := pg.Insert(testCtx(), ins, flatPersonSchema(), noHook)
 	if err != nil {
 		t.Fatalf("seed: %v", err)
 	}
@@ -215,7 +228,7 @@ func TestPostgres_Archive_FlipsDeletedAtAndEmitsOutbox(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetArchivable: %v", err)
 	}
-	if err := pg.Archive(testCtx(), arch, nil, noHook); err != nil {
+	if err := pg.Archive(testCtx(), arch, flatPersonSchema(), noHook); err != nil {
 		t.Fatalf("Archive: %v", err)
 	}
 
@@ -239,14 +252,14 @@ func TestPostgres_Unarchive_RestoresAndEmitsOutbox(t *testing.T) {
 
 	seed := &flatPerson{Name: "U", Email: "u@x"}
 	ins, _ := domain.GetInsertable(seed, nil, "GetInsertable")
-	res, _ := pg.Insert(testCtx(), ins, nil, noHook)
+	res, _ := pg.Insert(testCtx(), ins, flatPersonSchema(), noHook)
 
 	id := domain.NewID(res.ID)
 	loaded := &flatPerson{Name: "U", Email: "u@x"}
 	loaded.SetID(id)
 
 	arch, _ := domain.GetArchivable(loaded, nil, "GetArchivable")
-	if err := pg.Archive(testCtx(), arch, nil, noHook); err != nil {
+	if err := pg.Archive(testCtx(), arch, flatPersonSchema(), noHook); err != nil {
 		t.Fatalf("Archive: %v", err)
 	}
 	if activeCount(t, pg, "flat_persons") != 0 {
@@ -259,7 +272,7 @@ func TestPostgres_Unarchive_RestoresAndEmitsOutbox(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetUnarchivable: %v", err)
 	}
-	if err := pg.Unarchive(testCtx(), una, nil, noHook); err != nil {
+	if err := pg.Unarchive(testCtx(), una, flatPersonSchema(), noHook); err != nil {
 		t.Fatalf("Unarchive: %v", err)
 	}
 	if activeCount(t, pg, "flat_persons") != 1 {
@@ -281,7 +294,7 @@ func TestPostgres_Delete_RemovesRowAndEmitsOutbox(t *testing.T) {
 
 	seed := &flatPerson{Name: "D", Email: "d@x"}
 	ins, _ := domain.GetInsertable(seed, nil, "GetInsertable")
-	res, _ := pg.Insert(testCtx(), ins, nil, noHook)
+	res, _ := pg.Insert(testCtx(), ins, flatPersonSchema(), noHook)
 
 	loaded := &flatPerson{Name: "D", Email: "d@x"}
 	loaded.SetID(domain.NewID(res.ID))
@@ -289,7 +302,7 @@ func TestPostgres_Delete_RemovesRowAndEmitsOutbox(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetDeletable: %v", err)
 	}
-	if err := pg.Delete(testCtx(), del, nil, noHook); err != nil {
+	if err := pg.Delete(testCtx(), del, flatPersonSchema(), noHook); err != nil {
 		t.Fatalf("Delete: %v", err)
 	}
 	if rowCount(t, pg, "flat_persons") != 0 {
@@ -313,7 +326,7 @@ func TestPostgres_Batch_RunsMultipleOpsInOneTx(t *testing.T) {
 	ins1, _ := domain.GetInsertable(e1, nil, "GetInsertable")
 	ins2, _ := domain.GetInsertable(e2, nil, "GetInsertable")
 
-	results, err := pg.Batch(testCtx(), domain.NewBatch([]domain.ValidEntity{ins1, ins2}))
+	results, err := pg.Batch(testCtx(), domain.NewBatch([]domain.ValidEntity{ins1, ins2}), []*TableSchema{flatPersonSchema(), flatPersonSchema()})
 	if err != nil {
 		t.Fatalf("Batch: %v", err)
 	}
@@ -340,9 +353,9 @@ func TestPostgres_Batch_AllOpKindsInOneTx(t *testing.T) {
 	ins1, _ := domain.GetInsertable(seed1, nil, "GetInsertable")
 	ins2, _ := domain.GetInsertable(seed2, nil, "GetInsertable")
 	ins3, _ := domain.GetInsertable(seed3, nil, "GetInsertable")
-	r1, _ := pg.Insert(testCtx(), ins1, nil, noHook)
-	r2, _ := pg.Insert(testCtx(), ins2, nil, noHook)
-	r3, _ := pg.Insert(testCtx(), ins3, nil, noHook)
+	r1, _ := pg.Insert(testCtx(), ins1, flatPersonSchema(), noHook)
+	r2, _ := pg.Insert(testCtx(), ins2, flatPersonSchema(), noHook)
+	r3, _ := pg.Insert(testCtx(), ins3, flatPersonSchema(), noHook)
 
 	// New insert.
 	newOne := &flatPerson{Name: "New", Email: "new@x"}
@@ -363,7 +376,7 @@ func TestPostgres_Batch_AllOpKindsInOneTx(t *testing.T) {
 	d.SetID(domain.NewID(r3.ID))
 	del, _ := domain.GetDeletable(d, nil, "GetDeletable")
 
-	results, err := pg.Batch(testCtx(), domain.NewBatch([]domain.ValidEntity{newIns, upd, arch, del}))
+	results, err := pg.Batch(testCtx(), domain.NewBatch([]domain.ValidEntity{newIns, upd, arch, del}), []*TableSchema{flatPersonSchema(), flatPersonSchema(), flatPersonSchema(), flatPersonSchema()})
 	if err != nil {
 		t.Fatalf("Batch: %v", err)
 	}
@@ -388,18 +401,18 @@ func TestPostgres_Batch_AllOpKindsAndUnarchive(t *testing.T) {
 	// Seed and archive a row, then batch-unarchive it.
 	seed := &flatPerson{Name: "U", Email: "u@x"}
 	ins, _ := domain.GetInsertable(seed, nil, "GetInsertable")
-	r, _ := pg.Insert(testCtx(), ins, nil, noHook)
+	r, _ := pg.Insert(testCtx(), ins, flatPersonSchema(), noHook)
 
 	a := &flatPerson{Name: "U", Email: "u@x"}
 	a.SetID(domain.NewID(r.ID))
 	arch, _ := domain.GetArchivable(a, nil, "GetArchivable")
-	_ = pg.Archive(testCtx(), arch, nil, noHook)
+	_ = pg.Archive(testCtx(), arch, flatPersonSchema(), noHook)
 
 	u := &flatPerson{Name: "U", Email: "u@x"}
 	u.SetID(domain.NewID(r.ID))
 	una, _ := domain.GetUnarchivable(u, nil, "GetUnarchivable")
 
-	if _, err := pg.Batch(testCtx(), domain.NewBatch([]domain.ValidEntity{una})); err != nil {
+	if _, err := pg.Batch(testCtx(), domain.NewBatch([]domain.ValidEntity{una}), []*TableSchema{flatPersonSchema()}); err != nil {
 		t.Fatalf("Batch Unarchive: %v", err)
 	}
 	if activeCount(t, pg, "flat_persons") != 1 {
@@ -420,7 +433,7 @@ func TestPostgres_Batch_ErrorRollsBackEverything(t *testing.T) {
 	bad.SetID(domain.NewID(uuid.NewString()))
 	badUpd, _ := domain.GetUpdatable(bad, func(*flatPerson) {}, nil, "GetUpdatable")
 
-	_, err := pg.Batch(testCtx(), domain.NewBatch([]domain.ValidEntity{goodIns, badUpd}))
+	_, err := pg.Batch(testCtx(), domain.NewBatch([]domain.ValidEntity{goodIns, badUpd}), []*TableSchema{flatPersonSchema(), flatPersonSchema()})
 	if err == nil {
 		t.Fatal("expected Batch to fail when an op errors")
 	}

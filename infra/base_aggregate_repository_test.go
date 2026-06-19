@@ -51,12 +51,15 @@ func TestBaseAggregateRepository_ContextNameSharedDerivation(t *testing.T) {
 	}
 }
 
-func TestBaseAggregateRepository_ChildRegistrationViaLoader(t *testing.T) {
+func TestBaseAggregateRepository_WithSchemaThreadsBothSides(t *testing.T) {
 	bar := NewBaseAggregateRepository[*barTestEntity](nil, newBARTestEntity)
-	WithChild[fakeVO](bar.Loader)
-
-	if _, ok := bar.Loader.childAuto["fakeVO"]; !ok {
-		t.Error("WithChild via the public Loader must register typeName")
+	schema := NewTableSchema[*barTestEntity]("bars").PK("ID", "id").SoftDelete("deleted_at")
+	bar.WithSchema(schema)
+	if bar.Schema != schema {
+		t.Error("WithSchema must set the write-side Schema")
+	}
+	if bar.Loader.schema != schema {
+		t.Error("WithSchema must thread the schema into the Loader")
 	}
 }
 

@@ -3,7 +3,6 @@ package infra
 import (
 	"context"
 	"fmt"
-	"reflect"
 
 	"github.com/ClaudioSchirmer/omnicore/application/persistence"
 	"github.com/ClaudioSchirmer/omnicore/domain"
@@ -11,19 +10,15 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
-// Phase 19 + audit: aggregate-aware persistence consumes the request
-// persistence.RequestContext (audit + cancellation) plus the convention-overrides
-// RepoConfig. Each method threads ctx through pgx and emits the audit
-// event in lockstep with the data write (in-TX database INSERT + post-
-// commit slog echo) — same pattern the simple-path methods follow in
-// executor.go.
+// Aggregate-aware persistence consumes the request persistence.RequestContext
+// (audit + cancellation) plus the entity's TableSchema (explicit Go↔column map,
+// root + child schemas). Each method threads ctx through pgx and emits the audit
+// event in lockstep with the data write — same pattern executor.go follows.
 //
 // Guarantees (preserved):
 //   - Single pgx.Tx for root + all children
 //   - Exactly one outbox row per call (granularity B)
-//   - Exactly one audit_events row per call when database destination
-//     active (same granularity B; the AuditEvent's children block carries
-//     the per-VO cascade)
+//   - Exactly one audit_events row per call when the database destination is on
 //   - FK injected from root id before the child INSERT
 //   - Status iteration: Added→INSERT; Changed→UPDATE; Removed→Archive (symmetric
 //     universal cascade); Constructor→no-op (update) or INSERT (insert).
@@ -31,11 +26,11 @@ import (
 //   - Unarchive of root restores all archived children
 //   - Hard Delete of root relies on FK ON DELETE CASCADE in the schema
 
-func (p *Postgres) insertAggregate(ctx persistence.RequestContext, entity domain.Insertable, cfg *RepoConfig, hook writeHook) (domain.WriteResult, error) {
+func (p *Postgres) insertAggregate(ctx persistence.RequestContext, entity domain.Insertable, schema *TableSchema, hook writeHook) (domain.WriteResult, error) {
 	root, _ := entity.AggregateInfo()
 	src := entity.Source()
-	rootTable := resolveTable(src, cfg)
-	rootFields := resolveFields(src, cfg)
+	rootTable := schema.Table()
+	rootFields := schema.writeFields(src)
 	hctx := hookContext{verb: "Insert", entityType: entity.EntityName()}
 
 	tx, err := p.pool.Begin(ctx)
@@ -49,25 +44,24 @@ func (p *Postgres) insertAggregate(ctx persistence.RequestContext, entity domain
 		return domain.WriteResult{}, err
 	}
 
-	sql, args := buildInsert(rootTable, rootFields)
+	sql, args := buildInsert(rootTable, rootFields, schema.PKColumn(), schema.insertNowColumns())
 	var rootID string
 	if err := tx.QueryRow(ctx, sql, args...).Scan(&rootID); err != nil {
 		return domain.WriteResult{}, err
 	}
 
-	rootType := reflect.TypeOf(src)
-	if err := insertChildren(ctx, tx, root, rootType, cfg, rootID); err != nil {
+	if err := insertChildren(ctx, tx, root, schema, rootID); err != nil {
 		return domain.WriteResult{}, err
 	}
 
-	payload := buildAggregatePayload(rootFields, root, cfg)
+	payload := buildAggregatePayload(rootFields, root, schema)
 	if err := writeOutbox(ctx, tx, rootTable, "INSERTED", rootID, payload); err != nil {
 		return domain.WriteResult{}, err
 	}
 
 	var ev *audit.AuditEvent
 	if p.auditEnabled() {
-		built := BuildInsertEvent(ctx, entity, domain.NewID(rootID), p.auditClaims)
+		built := BuildInsertEvent(ctx, entity, domain.NewID(rootID), schema, p.auditClaims)
 		ev = &built
 	}
 	if err := p.writeAuditRow(ctx, tx, ev); err != nil {
@@ -75,9 +69,6 @@ func (p *Postgres) insertAggregate(ctx persistence.RequestContext, entity domain
 	}
 
 	// Position D — AFTER root + children + outbox + audit, BEFORE COMMIT.
-	// Single firing per orch.Method() call (granularity B); the hook
-	// receives the root entity with all its aggregate children available
-	// via the usual helpers.
 	if err := p.fireBeforeCommit(ctx, tx, src, domain.NewID(rootID), hook, hctx); err != nil {
 		return domain.WriteResult{}, err
 	}
@@ -89,11 +80,11 @@ func (p *Postgres) insertAggregate(ctx persistence.RequestContext, entity domain
 	return domain.WriteResult{ID: rootID, Fields: rootFields}, nil
 }
 
-func (p *Postgres) updateAggregate(ctx persistence.RequestContext, entity domain.Updatable, cfg *RepoConfig, hook writeHook) (domain.WriteResult, error) {
+func (p *Postgres) updateAggregate(ctx persistence.RequestContext, entity domain.Updatable, schema *TableSchema, hook writeHook) (domain.WriteResult, error) {
 	root, _ := entity.AggregateInfo()
 	src := entity.Source()
-	rootTable := resolveTable(src, cfg)
-	rootFields := resolveFields(src, cfg)
+	rootTable := schema.Table()
+	rootFields := schema.writeFields(src)
 	hctx := hookContext{verb: "Update", entityType: entity.EntityName()}
 
 	tx, err := p.pool.Begin(ctx)
@@ -106,25 +97,24 @@ func (p *Postgres) updateAggregate(ctx persistence.RequestContext, entity domain
 		return domain.WriteResult{}, err
 	}
 
-	sql, args := buildUpdate(rootTable, entity.ID(), rootFields)
+	sql, args := buildUpdate(rootTable, schema.PKColumn(), entity.ID(), rootFields, schema.updateNowColumns())
 	var rootID string
 	if err := tx.QueryRow(ctx, sql, args...).Scan(&rootID); err != nil {
 		return domain.WriteResult{}, err
 	}
 
-	rootType := reflect.TypeOf(src)
-	if err := applyChildChanges(ctx, tx, root, rootType, cfg, rootID); err != nil {
+	if err := applyChildChanges(ctx, tx, root, schema, rootID); err != nil {
 		return domain.WriteResult{}, err
 	}
 
-	payload := buildAggregatePayload(rootFields, root, cfg)
+	payload := buildAggregatePayload(rootFields, root, schema)
 	if err := writeOutbox(ctx, tx, rootTable, "UPDATED", rootID, payload); err != nil {
 		return domain.WriteResult{}, err
 	}
 
 	var ev *audit.AuditEvent
 	if p.auditEnabled() {
-		built := BuildUpdateEvent(ctx, entity, p.auditClaims)
+		built := BuildUpdateEvent(ctx, entity, schema, p.auditClaims)
 		ev = &built
 	}
 	if err := p.writeAuditRow(ctx, tx, ev); err != nil {
@@ -142,12 +132,16 @@ func (p *Postgres) updateAggregate(ctx persistence.RequestContext, entity domain
 	return domain.WriteResult{ID: rootID, Fields: rootFields}, nil
 }
 
-func (p *Postgres) archiveAggregate(ctx persistence.RequestContext, entity domain.Archivable, cfg *RepoConfig, hook writeHook) error {
+func (p *Postgres) archiveAggregate(ctx persistence.RequestContext, entity domain.Archivable, schema *TableSchema, hook writeHook) error {
 	root, _ := entity.AggregateInfo()
 	src := entity.Source()
-	rootTable := resolveTable(src, cfg)
-	rootType := reflect.TypeOf(src)
+	rootTable := schema.Table()
 	hctx := hookContext{verb: "Archive", entityType: entity.EntityName()}
+
+	sdCol, err := requireSoftDelete(schema, entity.EntityName())
+	if err != nil {
+		return err
+	}
 
 	tx, err := p.pool.Begin(ctx)
 	if err != nil {
@@ -159,19 +153,24 @@ func (p *Postgres) archiveAggregate(ctx persistence.RequestContext, entity domai
 		return err
 	}
 
-	q := fmt.Sprintf("UPDATE %s SET deleted_at = NOW() WHERE id = $1", validIdentifier(rootTable))
-	if _, err := tx.Exec(ctx, q, entity.ID()); err != nil {
+	if _, err := tx.Exec(ctx, archiveSQL(rootTable, sdCol, schema.PKColumn()), entity.ID()); err != nil {
 		return err
 	}
 
-	// Cascade Archive: iterates typeNames discovered in the AggregateRoot.
+	// Cascade Archive. A child with soft-delete disabled has no marker and is skipped.
 	if root != nil {
 		for typeName := range root.AllAggregateItems() {
-			childTable := resolveChildTable(typeName, cfg)
-			fkCol := resolveChildFK(rootType, typeName, cfg)
+			child := schema.childSchema(typeName)
+			if child == nil {
+				continue
+			}
+			childSd, ok := child.softDeleteColumn()
+			if !ok {
+				continue
+			}
 			cq := fmt.Sprintf(
-				"UPDATE %s SET deleted_at = NOW() WHERE %s = $1 AND deleted_at IS NULL",
-				validIdentifier(childTable), validIdentifier(fkCol),
+				"UPDATE %s SET %s = NOW() WHERE %s = $1 AND %s IS NULL",
+				validIdentifier(child.Table()), validIdentifier(childSd), validIdentifier(child.FKColumn()), validIdentifier(childSd),
 			)
 			if _, err := tx.Exec(ctx, cq, entity.ID()); err != nil {
 				return err
@@ -185,7 +184,7 @@ func (p *Postgres) archiveAggregate(ctx persistence.RequestContext, entity domai
 
 	var ev *audit.AuditEvent
 	if p.auditEnabled() {
-		built := BuildArchiveEvent(ctx, entity, p.auditClaims)
+		built := BuildArchiveEvent(ctx, entity, schema, p.auditClaims)
 		ev = &built
 	}
 	if err := p.writeAuditRow(ctx, tx, ev); err != nil {
@@ -203,10 +202,10 @@ func (p *Postgres) archiveAggregate(ctx persistence.RequestContext, entity domai
 	return nil
 }
 
-func (p *Postgres) deleteAggregate(ctx persistence.RequestContext, entity domain.Deletable, cfg *RepoConfig, hook writeHook) error {
+func (p *Postgres) deleteAggregate(ctx persistence.RequestContext, entity domain.Deletable, schema *TableSchema, hook writeHook) error {
 	// Children removed via FK ON DELETE CASCADE in the schema. Only DELETE on the root.
 	src := entity.Source()
-	rootTable := resolveTable(src, cfg)
+	rootTable := schema.Table()
 	hctx := hookContext{verb: "Delete", entityType: entity.EntityName()}
 
 	tx, err := p.pool.Begin(ctx)
@@ -219,8 +218,7 @@ func (p *Postgres) deleteAggregate(ctx persistence.RequestContext, entity domain
 		return err
 	}
 
-	q := fmt.Sprintf("DELETE FROM %s WHERE id = $1", validIdentifier(rootTable))
-	if _, err := tx.Exec(ctx, q, entity.ID()); err != nil {
+	if _, err := tx.Exec(ctx, deleteSQL(rootTable, schema.PKColumn()), entity.ID()); err != nil {
 		return err
 	}
 	if err := writeOutbox(ctx, tx, rootTable, "DELETED", entity.ID(), nil); err != nil {
@@ -229,7 +227,7 @@ func (p *Postgres) deleteAggregate(ctx persistence.RequestContext, entity domain
 
 	var ev *audit.AuditEvent
 	if p.auditEnabled() {
-		built := BuildDeleteEvent(ctx, entity, p.auditClaims)
+		built := BuildDeleteEvent(ctx, entity, schema, p.auditClaims)
 		ev = &built
 	}
 	if err := p.writeAuditRow(ctx, tx, ev); err != nil {
@@ -247,12 +245,16 @@ func (p *Postgres) deleteAggregate(ctx persistence.RequestContext, entity domain
 	return nil
 }
 
-func (p *Postgres) unarchiveAggregate(ctx persistence.RequestContext, entity domain.Unarchivable, cfg *RepoConfig, hook writeHook) error {
+func (p *Postgres) unarchiveAggregate(ctx persistence.RequestContext, entity domain.Unarchivable, schema *TableSchema, hook writeHook) error {
 	root, _ := entity.AggregateInfo()
 	src := entity.Source()
-	rootTable := resolveTable(src, cfg)
-	rootType := reflect.TypeOf(src)
+	rootTable := schema.Table()
 	hctx := hookContext{verb: "Unarchive", entityType: entity.EntityName()}
+
+	sdCol, err := requireSoftDelete(schema, entity.EntityName())
+	if err != nil {
+		return err
+	}
 
 	tx, err := p.pool.Begin(ctx)
 	if err != nil {
@@ -264,19 +266,24 @@ func (p *Postgres) unarchiveAggregate(ctx persistence.RequestContext, entity dom
 		return err
 	}
 
-	q := fmt.Sprintf("UPDATE %s SET deleted_at = NULL WHERE id = $1", validIdentifier(rootTable))
-	if _, err := tx.Exec(ctx, q, entity.ID()); err != nil {
+	if _, err := tx.Exec(ctx, unarchiveSQL(rootTable, sdCol, schema.PKColumn()), entity.ID()); err != nil {
 		return err
 	}
 
-	// Cascade Unarchive.
+	// Cascade Unarchive. A child with soft-delete disabled is skipped.
 	if root != nil {
 		for typeName := range root.AllAggregateItems() {
-			childTable := resolveChildTable(typeName, cfg)
-			fkCol := resolveChildFK(rootType, typeName, cfg)
+			child := schema.childSchema(typeName)
+			if child == nil {
+				continue
+			}
+			childSd, ok := child.softDeleteColumn()
+			if !ok {
+				continue
+			}
 			cq := fmt.Sprintf(
-				"UPDATE %s SET deleted_at = NULL WHERE %s = $1 AND deleted_at IS NOT NULL",
-				validIdentifier(childTable), validIdentifier(fkCol),
+				"UPDATE %s SET %s = NULL WHERE %s = $1 AND %s IS NOT NULL",
+				validIdentifier(child.Table()), validIdentifier(childSd), validIdentifier(child.FKColumn()), validIdentifier(childSd),
 			)
 			if _, err := tx.Exec(ctx, cq, entity.ID()); err != nil {
 				return err
@@ -290,7 +297,7 @@ func (p *Postgres) unarchiveAggregate(ctx persistence.RequestContext, entity dom
 
 	var ev *audit.AuditEvent
 	if p.auditEnabled() {
-		built := BuildUnarchiveEvent(ctx, entity, p.auditClaims)
+		built := BuildUnarchiveEvent(ctx, entity, schema, p.auditClaims)
 		ev = &built
 	}
 	if err := p.writeAuditRow(ctx, tx, ev); err != nil {
@@ -308,20 +315,33 @@ func (p *Postgres) unarchiveAggregate(ctx persistence.RequestContext, entity dom
 	return nil
 }
 
+// childSchemaOrErr resolves the declared schema for an aggregate child type,
+// erroring loudly when the child is undeclared (every persisted aggregate child
+// must have its own TableSchema registered via root.Child(...)).
+func childSchemaOrErr(schema *TableSchema, typeName string) (*TableSchema, error) {
+	child := schema.childSchema(typeName)
+	if child == nil {
+		return nil, fmt.Errorf("infra: aggregate child %q has no TableSchema declared on %q", typeName, schema.Table())
+	}
+	return child, nil
+}
+
 // insertChildren INSERTs items with status Added or Constructor for each
 // typeName discovered in the AggregateRoot. FK injected from rootID.
-func insertChildren(ctx context.Context, tx pgx.Tx, root *domain.AggregateRoot, rootType reflect.Type, cfg *RepoConfig, rootID string) error {
+func insertChildren(ctx context.Context, tx pgx.Tx, root *domain.AggregateRoot, schema *TableSchema, rootID string) error {
 	if root == nil {
 		return nil
 	}
 	for typeName, items := range root.AllAggregateItems() {
-		childTable := resolveChildTable(typeName, cfg)
-		fkCol := resolveChildFK(rootType, typeName, cfg)
+		child, err := childSchemaOrErr(schema, typeName)
+		if err != nil {
+			return err
+		}
 		for _, it := range items {
 			if it.CurrentStatus != domain.StatusAdded && it.CurrentStatus != domain.StatusConstructor {
 				continue
 			}
-			if err := insertChild(ctx, tx, childTable, fkCol, cfg, it.Item, rootID); err != nil {
+			if err := insertChild(ctx, tx, child, it.Item, rootID); err != nil {
 				return err
 			}
 		}
@@ -330,27 +350,29 @@ func insertChildren(ctx context.Context, tx pgx.Tx, root *domain.AggregateRoot, 
 }
 
 // applyChildChanges processes Added/Changed/Removed items during aggregate
-// update. Constructor items are no-op. Phase 19: symmetric universal cascade
-// — Removed always performs Archive (UPDATE deleted_at); no HardDelete flag.
-func applyChildChanges(ctx context.Context, tx pgx.Tx, root *domain.AggregateRoot, rootType reflect.Type, cfg *RepoConfig, rootID string) error {
+// update. Constructor items are no-op. Removed always performs Archive
+// (symmetric universal cascade; no per-child HardDelete).
+func applyChildChanges(ctx context.Context, tx pgx.Tx, root *domain.AggregateRoot, schema *TableSchema, rootID string) error {
 	if root == nil {
 		return nil
 	}
 	for typeName, items := range root.AllAggregateItems() {
-		childTable := resolveChildTable(typeName, cfg)
-		fkCol := resolveChildFK(rootType, typeName, cfg)
+		child, err := childSchemaOrErr(schema, typeName)
+		if err != nil {
+			return err
+		}
 		for _, it := range items {
 			switch it.CurrentStatus {
 			case domain.StatusAdded:
-				if err := insertChild(ctx, tx, childTable, fkCol, cfg, it.Item, rootID); err != nil {
+				if err := insertChild(ctx, tx, child, it.Item, rootID); err != nil {
 					return err
 				}
 			case domain.StatusChanged:
-				if err := updateChild(ctx, tx, childTable, cfg, it.Item); err != nil {
+				if err := updateChild(ctx, tx, child, it.Item); err != nil {
 					return err
 				}
 			case domain.StatusRemoved:
-				if err := archiveChild(ctx, tx, childTable, it.Item); err != nil {
+				if err := archiveChild(ctx, tx, child, typeName, it.Item); err != nil {
 					return err
 				}
 			}
@@ -359,65 +381,61 @@ func applyChildChanges(ctx context.Context, tx pgx.Tx, root *domain.AggregateRoo
 	return nil
 }
 
-func insertChild(ctx context.Context, tx pgx.Tx, table, fkCol string, cfg *RepoConfig, item domain.AggregateValueObject, rootID string) error {
-	var overrides map[string]string
-	if cfg != nil {
-		overrides = cfg.FieldOverrides
-	}
-	fields := FieldsFromEntity(item, overrides)
-	fields[fkCol] = rootID
-	sql, args := buildInsert(table, fields)
+func insertChild(ctx context.Context, tx pgx.Tx, child *TableSchema, item domain.AggregateValueObject, rootID string) error {
+	fields := child.writeFields(item)
+	fields[child.FKColumn()] = rootID
+	sql, args := buildInsert(child.Table(), fields, child.PKColumn(), child.insertNowColumns())
 	var id string
 	return tx.QueryRow(ctx, sql, args...).Scan(&id)
 }
 
-func updateChild(ctx context.Context, tx pgx.Tx, table string, cfg *RepoConfig, item domain.AggregateValueObject) error {
+func updateChild(ctx context.Context, tx pgx.Tx, child *TableSchema, item domain.AggregateValueObject) error {
 	id := item.GetID()
 	if id == "" {
-		return fmt.Errorf("infra: cannot update child %q without id", table)
+		return fmt.Errorf("infra: cannot update child %q without id", child.Table())
 	}
-	var overrides map[string]string
-	if cfg != nil {
-		overrides = cfg.FieldOverrides
-	}
-	fields := FieldsFromEntity(item, overrides)
-	sql, args := buildUpdate(table, id, fields)
+	fields := child.writeFields(item)
+	sql, args := buildUpdate(child.Table(), child.PKColumn(), id, fields, child.updateNowColumns())
 	var returned string
 	return tx.QueryRow(ctx, sql, args...).Scan(&returned)
 }
 
-// Phase 19: Removed → always Archive (no per-child HardDelete).
-func archiveChild(ctx context.Context, tx pgx.Tx, table string, item domain.AggregateValueObject) error {
+// archiveChild: Removed → Archive. A child with soft-delete disabled cannot be
+// archived — surfaced as an error.
+func archiveChild(ctx context.Context, tx pgx.Tx, child *TableSchema, typeName string, item domain.AggregateValueObject) error {
 	id := item.GetID()
 	if id == "" {
-		return fmt.Errorf("infra: cannot archive child %q without id", table)
+		return fmt.Errorf("infra: cannot archive child %q without id", child.Table())
 	}
-	q := fmt.Sprintf("UPDATE %s SET deleted_at = NOW() WHERE id = $1", validIdentifier(table))
-	_, err := tx.Exec(ctx, q, id)
+	sdCol, err := requireSoftDelete(child, typeName)
+	if err != nil {
+		return err
+	}
+	_, err = tx.Exec(ctx, archiveSQL(child.Table(), sdCol, child.PKColumn()), id)
 	return err
 }
 
 // buildAggregatePayload assembles the outbox JSON snapshot: root fields + active
 // children grouped by typeName.
-func buildAggregatePayload(rootFields domain.Fields, root *domain.AggregateRoot, cfg *RepoConfig) map[string]any {
+func buildAggregatePayload(rootFields domain.Fields, root *domain.AggregateRoot, schema *TableSchema) map[string]any {
 	payload := map[string]any{
 		"root": rootFields,
 	}
 	if root == nil {
 		return payload
 	}
-	var overrides map[string]string
-	if cfg != nil {
-		overrides = cfg.FieldOverrides
-	}
 	children := map[string][]domain.Fields{}
 	for typeName, items := range root.AllAggregateItems() {
+		child := schema.childSchema(typeName)
+		if child == nil {
+			continue
+		}
 		active := []domain.Fields{}
 		for _, it := range items {
 			if it.CurrentStatus == domain.StatusRemoved {
 				continue
 			}
-			active = append(active, FieldsFromEntity(it.Item, overrides))
+			active = append(active, child.writeFields(it.Item))
 		}
 		if len(active) > 0 {
 			children[typeName] = active
@@ -427,26 +445,4 @@ func buildAggregatePayload(rootFields domain.Fields, root *domain.AggregateRoot,
 		payload["children"] = children
 	}
 	return payload
-}
-
-// resolveChildTable: cfg.ChildTableOverrides[typeName] takes priority; otherwise
-// InferTableName by convention (PluralizeSnake + PascalToSnake of the typeName).
-func resolveChildTable(typeName string, cfg *RepoConfig) string {
-	if cfg != nil {
-		if t, ok := cfg.ChildTableOverrides[typeName]; ok && t != "" {
-			return t
-		}
-	}
-	return domain.PluralizeSnake(domain.PascalToSnake(typeName))
-}
-
-// resolveChildFK: cfg.ChildFKOverrides[typeName] takes priority; otherwise
-// InferForeignKey(rootType).
-func resolveChildFK(rootType reflect.Type, typeName string, cfg *RepoConfig) string {
-	if cfg != nil {
-		if fk, ok := cfg.ChildFKOverrides[typeName]; ok && fk != "" {
-			return fk
-		}
-	}
-	return InferForeignKey(rootType)
 }

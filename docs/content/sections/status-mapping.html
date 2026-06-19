@@ -232,7 +232,7 @@ func (a Address) BuildRules(actionName string, svc domain.Service, r *domain.Rul
     <h4>How it works — no new interface per entity</h4>
     <ol>
         <li><strong><code>Rules</code> carries the ctx + entityType.</strong> <code>NewRules(mode, ctx, entityType)</code> packages the <code>EntityMode</code> + <code>NotificationContext</code> + the Go <code>reflect.Type</code> of the entity/VO that owns the Rules (the <code>entityType</code> lets <code>AddNotification</code> read the field's <code>label:"..."</code> tag at emit). <code>r.AddNotification</code>/<code>r.AddNotificationMessage</code> delegate to the internal ctx. For root, the ctx is the entity's own <code>e.NotificationContext()</code>. For AVO, the ctx is a <code>Scoped(NameSegment(collection), IndexSegment(i))</code> view of the root's ctx.</li>
-        <li><strong>Collection name inferred by convention.</strong> <code>runAggregateValidations</code> iterates <code>root.AllAggregateItems()</code> and uses <code>PluralizeSnake(PascalToSnake(typeName))</code> (<code>"addresses"</code>, <code>"order_items"</code>) as the collection segment name. Same convention infra uses for the child table, so the wire field name matches the persistence layout <strong>without a new interface on the service</strong>.</li>
+        <li><strong>Collection segment name is the JSON wire name.</strong> <code>runAggregateValidations</code> iterates <code>root.AllAggregateItems()</code> and uses <code>toLowerCamel(typeName)</code> pluralized in camelCase (<code>"addresses"</code>, <code>"orderLines"</code>) as the collection segment name — it is JSON wire output, so the convention is camelCase, not snake_case. No new interface on the service.</li>
         <li><strong>Acronym-aware <code>toLowerCamel</code> render:</strong> <code>Name</code>→<code>name</code>, <code>CPF</code>→<code>cpf</code>, <code>ZipCode</code>→<code>zipCode</code>, <code>URLPath</code>→<code>urlPath</code>. Strings already in lowercase pass through (<code>"id"</code>→<code>"id"</code>) — the legacy <code>FieldName: "id"</code> in mode validators remains intact.</li>
         <li><strong>Wire layer</strong> (<code>web/from_notifications.go</code>, <code>application/notifications/convert.go</code>) reads <code>m.ResolveFieldName()</code> with precedence <strong>Override &gt; rendered Path &gt; FieldName</strong>.</li>
     </ol>
@@ -396,7 +396,7 @@ type Address struct {
   "verb":   "update",
   "kind":   "delta",
   "changes": [{
-    "field":          "name",
+    "field":          "Name",
     "fieldLabelKey": "UserNameField",
     "from":           "Jane Doe",
     "to":             "Jane Smith"
@@ -449,7 +449,7 @@ audit.RenderLabelsInJSON(doc, deps.Translator, configuration.LangPTBR)
 //   doc["changes"][0]["fieldLabel"]    == "CEP"
 //   doc["changes"][0]["fieldLabelKey"] is deleted</code></pre>
     <p>
-        Both helpers mutate the input in place (one-shot read; no copy ceremony) and walk the same audit shape — top-level <code>changes</code> plus <code>children.&lt;typeName&gt;[].changes</code>. Catalog miss inherits the existing <code>Translator.Render</code> fallback: the raw key reaches <code>fieldLabel</code> and a <code>slog.Warn("translation.key.missing", "lang", lang, "key", key)</code> fires once per <code>(lang, key)</code> tuple. <code>snapshot</code> blocks (Insert / Delete events) are intentionally not touched — they carry <code>map[column]value</code> with no schema for labels.
+        Both helpers mutate the input in place (one-shot read; no copy ceremony) and walk the same audit shape — top-level <code>changes</code> plus <code>children.&lt;typeName&gt;[].changes</code>. Catalog miss inherits the existing <code>Translator.Render</code> fallback: the raw key reaches <code>fieldLabel</code> and a <code>slog.Warn("translation.key.missing", "lang", lang, "key", key)</code> fires once per <code>(lang, key)</code> tuple. <code>snapshot</code> blocks (Insert / Delete events) are intentionally not touched — they carry <code>map[goFieldName]value</code> with no schema for labels.
     </p>
 
     <h4>Resolution rules</h4>
@@ -468,8 +468,8 @@ audit.RenderLabelsInJSON(doc, deps.Translator, configuration.LangPTBR)
             <td>Explicit opt-out (mirror of <code>json:"-"</code>). Empty tag value behaves the same.</td>
         </tr>
         <tr>
-            <td><code>transient:"-"</code></td>
-            <td>Transient fields are runtime-only — the framework's persister and audit already skip them, and label resolution skips them too. Tagging makes no sense but stays silent if the consumer drifts.</td>
+            <td>not declared in TableSchema (runtime-only)</td>
+            <td>An undeclared exported field is runtime-only by construction — the persister and audit never see it, and label resolution skips it too. No tag is involved.</td>
         </tr>
         <tr>
             <td>(catalog miss)</td>

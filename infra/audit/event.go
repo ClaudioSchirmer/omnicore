@@ -16,8 +16,9 @@ import "time"
 //
 //   - "delta": Changes is populated, Snapshot is empty. Used for Update and
 //     PartialUpdate. Each FieldChange carries {field, from, to} for one root
-//     column whose value differed between Old() and current. Unchanged
-//     columns are omitted (no redundancy with snapshot).
+//     field (named in the domain vocabulary — the Go field name) whose value
+//     differed between Old() and current. Unchanged fields are omitted (no
+//     redundancy with snapshot).
 //
 //   - "transition": neither Snapshot nor Changes is populated. Used for
 //     Archive and Unarchive. The verb itself encodes the transition; the
@@ -58,11 +59,13 @@ type AuditEvent struct {
 	Children    map[string][]ChildEvent `json:"children,omitempty"`
 }
 
-// FieldChange describes a single column diff on a kind=delta event.
-// Field is the snake_case column name resolved by infra.FieldsFromEntity
-// (same convention as the persistence layer). From and To are the pre- and
-// post-mutation values; both are JSON round-tripable so future recovery
-// code can apply the inverse delta back through the same wire format.
+// FieldChange describes a single field diff on a kind=delta event.
+// Field is the faithful domain name — the raw Go field name (PascalCase, e.g.
+// "Email", "ZipCode") — NOT the physical column. Audit speaks the domain
+// vocabulary and is map-blind, so a TableSchema column rename never disturbs the
+// audit timeline. From and To are the pre- and post-mutation values; both are
+// JSON round-tripable so future recovery code can apply the inverse delta back
+// through the same wire format.
 //
 // FieldLabelKey carries the catalog key declared on the source struct's
 // `label:"<catalogKey>"` tag at write time. Stored as the raw key (not the

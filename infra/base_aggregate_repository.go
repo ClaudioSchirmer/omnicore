@@ -17,8 +17,9 @@ import (
 // When to use (common case):
 //
 //   - Aggregate-aware Repository with symmetric universal cascade.
-//   - FindByID via Load auto-scan or manual scanner registered in the Loader.
-//   - Children registered via WithChild[V](r.Loader) or WithChildScanner.
+//   - FindByID via schema-driven auto-scan or a manual scanner on the Loader.
+//   - Children declared on the TableSchema via Child(...); manual decoding via
+//     WithChildScanner when a child needs a non-trivial scan.
 //
 // When NOT to use (keep the old pattern of direct BaseRepository[T] embed
 // + a separate *AggregateLoader[T]):
@@ -52,6 +53,19 @@ func NewBaseAggregateRepository[T domain.Entity](pg *Postgres, newEntity func() 
 		},
 		Loader: NewAggregateLoader[T](pg, newEntity),
 	}
+}
+
+// WithSchema declares the mandatory TableSchema once and threads it into BOTH
+// the write binding (BaseRepository.Schema) and the read loader
+// (Loader.WithSchema) — one declaration feeds write, criteria and scan. The
+// Modes() ⟺ SoftDelete boot check runs here; the field-existence + bijection
+// checks already ran while the TableSchema was built. A violation panics at
+// construction, not on the first request.
+func (r *BaseAggregateRepository[T]) WithSchema(schema *TableSchema) *BaseAggregateRepository[T] {
+	schema.validateModes(r.New().Modes())
+	r.Schema = schema
+	r.Loader.WithSchema(schema)
+	return r
 }
 
 // FindByID resolves the primary-key lookup through the entity search engine —

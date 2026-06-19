@@ -16,7 +16,6 @@ type fixtureUser struct {
 	SkippedV1 string  `label:"-"`
 	SkippedV2 string  `label:""`
 	private   string  `label:"NeverReached"` // unexported; reflection plan does not see it
-	Transient string  `transient:"-" label:"AlsoSkipped"`
 }
 
 type fixtureAddress struct {
@@ -95,12 +94,6 @@ func TestResolveLabelKey_UnexportedFieldSkipped(t *testing.T) {
 	// defensive contract.
 	if got := resolveLabelKey(reflect.TypeOf(fixtureUser{}), "private"); got != "" {
 		t.Errorf("resolveLabelKey(private) = %q, want empty", got)
-	}
-}
-
-func TestResolveLabelKey_TransientFieldSkipped(t *testing.T) {
-	if got := resolveLabelKey(reflect.TypeOf(fixtureUser{}), "Transient"); got != "" {
-		t.Errorf("resolveLabelKey(Transient with transient:-) = %q, want empty", got)
 	}
 }
 

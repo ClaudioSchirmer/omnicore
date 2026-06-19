@@ -354,7 +354,6 @@ spec.Examples = map[string]fwopenapi.Example{"alice": {Value: WhoamiResponse{Sub
             <tr><td>Field with <code>json:"-"</code></td><td>Skipped</td></tr>
             <tr><td>Field with <code>path:"X"</code></td><td>Skipped from body schema; emitted as a path parameter</td></tr>
             <tr><td>Field with <code>query:"X" filter:"ops"</code></td><td>Skipped from body schema; one query parameter per declared operator</td></tr>
-            <tr><td>Field with <code>view:"docKey"</code></td><td>Tag ignored — internal doc→wire mapping for <code>fwresponses.AutoFromDoc</code></td></tr>
             <tr><td>Field with <code>example:"value"</code></td><td>Sets the property's <code>example</code> in the rendered schema. Supports <code>string</code>, <code>bool</code>, signed/unsigned ints, floats, <code>uuid.UUID</code>, <code>domain.ID</code>, <code>time.Time</code> (RFC3339), and pointers to any of the above. Composite types (struct / slice / map) reject at boot with guidance toward <code>Doc.RequestExamples</code> / <code>Doc.ResponseExamples</code>. Parse failure → boot panic naming the offending struct + field.</td></tr>
         </tbody>
     </table>

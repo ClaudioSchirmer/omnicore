@@ -105,6 +105,10 @@
     "group": "Infrastructure",
     "items": [
       {
+        "id": "table-schema",
+        "label": "TableSchema (PG + views)"
+      },
+      {
         "id": "service-to-service",
         "label": "Service-to-service"
       },

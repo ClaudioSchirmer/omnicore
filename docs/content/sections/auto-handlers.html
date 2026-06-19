@@ -26,9 +26,9 @@
             <tr><td>POST</td><td><code>InsertCommandHandler[T, *Cmd, TResult]</code></td><td><code>ToEntity(ctx) T</code></td><td><code>FromEntity(ctx, T) TResult</code></td><td>no</td></tr>
             <tr><td><strong>PUT</strong></td><td><code>UpdateCommandHandler[T, *Cmd, TResult]</code></td><td><code>ApplyTo(ctx, T)</code></td><td><code>FromEntity(ctx, T) TResult</code></td><td><strong>yes</strong> (embeds <code>pipeline.FullBody</code>)</td></tr>
             <tr><td><strong>PATCH</strong></td><td><code>PartialUpdateCommandHandler[T, *Cmd, TResult]</code></td><td><code>ApplyPartiallyTo(ctx, T)</code></td><td><code>FromEntity(ctx, T) TResult</code></td><td>no</td></tr>
-            <tr><td>DELETE</td><td><code>DeleteCommandHandler[T, *Cmd, TResult]</code></td><td><code>ApplyTo(ctx, T)</code> (transients)</td><td><code>FromEntity(ctx, T) TResult</code> (typ. <code>fwresults.None</code>)</td><td>no</td></tr>
-            <tr><td>PATCH (archive)</td><td><code>ArchiveCommandHandler[T, *Cmd, TResult]</code></td><td><code>ApplyTo(ctx, T)</code> (transients)</td><td><code>FromEntity(ctx, T) TResult</code> (typ. <code>fwresults.None</code>)</td><td>no</td></tr>
-            <tr><td>PATCH (unarchive)</td><td><code>UnarchiveCommandHandler[T, *Cmd, TResult]</code></td><td><code>ApplyTo(ctx, T)</code> (transients)</td><td><code>FromEntity(ctx, T) TResult</code> (typ. <code>fwresults.None</code>)</td><td>no</td></tr>
+            <tr><td>DELETE</td><td><code>DeleteCommandHandler[T, *Cmd, TResult]</code></td><td><code>ApplyTo(ctx, T)</code> (runtime authz fields)</td><td><code>FromEntity(ctx, T) TResult</code> (typ. <code>fwresults.None</code>)</td><td>no</td></tr>
+            <tr><td>PATCH (archive)</td><td><code>ArchiveCommandHandler[T, *Cmd, TResult]</code></td><td><code>ApplyTo(ctx, T)</code> (runtime authz fields)</td><td><code>FromEntity(ctx, T) TResult</code> (typ. <code>fwresults.None</code>)</td><td>no</td></tr>
+            <tr><td>PATCH (unarchive)</td><td><code>UnarchiveCommandHandler[T, *Cmd, TResult]</code></td><td><code>ApplyTo(ctx, T)</code> (runtime authz fields)</td><td><code>FromEntity(ctx, T) TResult</code> (typ. <code>fwresults.None</code>)</td><td>no</td></tr>
         </tbody>
     </table>
 

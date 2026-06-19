@@ -55,11 +55,13 @@
         <tr>
             <td><code>fwresponses.AutoFromDoc[R]</code></td>
             <td>Tag-driven projection — the default. <code>R</code> is a typed Response struct
-                with <code>json:"&lt;wire&gt;"</code> (wire name) and optional
-                <code>view:"&lt;docKey&gt;"</code> (source-key override) tags. Recursive through
-                nested structs, slices of structs, and pointer-to-struct fields. Normalizes
-                top-level <code>_id → id</code> and nil slices → empty typed slices at every
-                depth. Drop it in place of a manually-written <code>FromDoc</code> whenever
+                with <code>json:"&lt;wire&gt;"</code> tags only. The doc handed to the projector is
+                already Go-keyed (the reader translated columns → Go field names via the view's
+                <code>TableSchema</code>), so <code>AutoFromDoc</code> keys by the Go field name and
+                the <code>json:</code> tag governs only the wire shape — there is no source-key
+                override. Recursive through nested structs, slices of structs, and pointer-to-struct
+                fields. Normalizes top-level <code>_id → id</code> and nil slices → empty typed slices
+                at every depth. Drop it in place of a manually-written <code>FromDoc</code> whenever
                 the projection is mechanical.</td>
         </tr>
         <tr>
@@ -76,27 +78,25 @@
         </tr>
     </tbody></table>
     <p>
-        <strong>The <code>view:</code> tag — explicit source-key override (rare).</strong>
-        The projector consumes two tags on the Response struct. <code>json:"&lt;wire&gt;"</code> is
-        the standard <code>encoding/json</code> contract — names the field on the outgoing JSON.
-        <code>view:"&lt;docKey&gt;"</code> is the explicit override — names the field inside the
-        view document <em>when the framework default does not fit</em>. The default doc key is
-        <code>domain.PascalToSnake(jsonName)</code>, the same convention the framework uses on the
-        Postgres write side (<code>ZipCode</code> → column <code>zip_code</code>). So
-        <code>json:"zipCode"</code> defaults to doc field <code>zip_code</code>, matching the
-        composer's snake_case output without any tag declaration. Declare <code>view:</code> only
-        for exotic schemas where the doc name truly diverges:
+        <strong>The Response carries <code>json:</code> only — no source-key override exists.</strong>
+        The typed Response struct declares <code>json:"&lt;wire&gt;"</code> tags and nothing else. The
+        document handed to <code>AutoFromDoc</code> is <em>already Go-keyed</em>: the reader
+        (MongoViewReader) translated each physical column to its Go field name using the view's
+        <code>TableSchema</code> tree before the doc ever reaches the projector. So there is no
+        <code>view:</code> tag and no <code>PascalToSnake</code> at the Response layer — the
+        <code>json:</code> tag governs the wire shape (Go field → JSON), and the
+        <code>TableSchema</code> on the infra side governs the column shape (Go field → column):
     </p>
     <pre><code>type AddressOutput struct {
-    Street     string `json:"street"`                        // doc["street"]
-    ZipCode    string `json:"zipCode"`                       // doc["zip_code"] (auto-snake)
-    PostalArea string `json:"postalArea" view:"cep"`         // doc["cep"]      (legacy schema)
+    Street     string `json:"street"`        // Go field Street → wire "street"
+    ZipCode    string `json:"zipCode"`       // Go field ZipCode → wire "zipCode"
+    PostalArea string `json:"postalArea"`    // Go field PostalArea → wire "postalArea"
 }</code></pre>
     <p>
-        When <code>view:</code> is absent, the helper applies <code>PascalToSnake</code> to the
-        <code>json:</code> name (or to the Go field name when there's no json tag).
-        <code>view:"-"</code> is treated as absent — <code>json:"-"</code> already covers "skip this
-        field" semantics.
+        A column whose physical name diverges from the Go field is handled entirely on the infra side:
+        <code>TableSchema.Field("PostalArea", "cep")</code> maps the Go field <code>PostalArea</code> to
+        the legacy column <code>cep</code>. The Response stays oblivious — it only ever pronounces the Go
+        field name and its wire name.
     </p>
     <p>
         Consumers typically declare a typed <code>FindXxxResponse</code> struct in
@@ -180,8 +180,7 @@ HTTP 200 OK
             <th>Who does it</th>
             <th>Where</th>
         </tr>
-        <tr><td>Define the <code>ViewDefinition</code> (canonical case, single aggregate)</td><td><span class="tag auto">automatic</span></td><td><code>fwinfra.ViewOf[*T]()</code> infers collection/root/embeds from <code>T.AggregateChildren()</code></td></tr>
-        <tr><td>Define the <code>ViewDefinition</code> (legacy / custom pattern)</td><td><span class="tag manual">manual</span></td><td><code>fwinfra.View(name).Root(...).EmbedMany(...)</code> fluent</td></tr>
+        <tr><td>Define the <code>ViewDefinition</code> (every case — single aggregate, legacy, cross-service)</td><td><span class="tag manual">manual</span></td><td><code>fwinfra.View(name).Version(1).Root(table).Schema(TSchema()).EmbedMany("field", fwinfra.From("child").On("fk").As("GoSegment").Schema(ChildSchema()))</code> — explicit; <code>.Schema(...)</code> attaches the Go↔column map for the root/embed</td></tr>
         <tr><td>Define cross-service <code>Embed</code>s (<code>FromMongo</code> over an upstream-projected collection)</td><td><span class="tag manual">manual</span></td><td>in the <code>ViewDefinition</code> via <code>fwinfra.FromMongo("coll").On("fk")</code> — not derivable from the aggregate; the projection + recompose ripple is automatic (next row)</td></tr>
         <tr><td>Drop archived rows from the projection (hot-tier read side)</td><td><span class="tag manual">manual</span></td><td><code>fwinfra.View(...).DeleteOnArchive().Root(...)</code> — opt-in per view; cascade governs root + embeds. Default keeps archived rows so Mongo mirrors PostgreSQL symmetrically.</td></tr>
         <tr><td>Create MongoDB indexes (single-field, compound, partial, sparse, TTL, text, 2dsphere, hashed)</td><td><span class="tag auto">automatic</span></td><td><code>fwinfra.View(...).Indexes(fwinfra.Index("email").Unique(), fwinfra.Compound("email","created_at"), fwinfra.TextIndex("name","email").DefaultLanguage("portuguese"), ...)</code> — declared on the same builder; <code>bootstrap.Run</code> calls <code>fwinfra.ApplyMongoSpecs</code> right after <code>collectViews</code> and before <code>SyncEngine.Start</code>. Idempotent on steady state; strict-on-divergence by default; <code>OMNICORE_MONGO_FORCE_REBUILD=true</code> as operator escape (drops divergent indexes and recreates from the declared spec; never auto-enabled).</td></tr>
@@ -189,7 +188,7 @@ HTTP 200 OK
         <tr><td>DB-per-service guard (foreign-collection detection)</td><td><span class="tag auto">automatic</span></td><td><code>fwinfra.CheckServiceRegistry</code> runs at boot via <code>bootstrap.Run</code>. Service writes a marker doc under <code>omnicore_service_registry</code>, then lists collections and reports any outside the declared view set + the framework-owned allowlist. <code>APP_PROFILE=dev</code> → <code>slog.Warn</code> (lets hot-reload + ad-hoc mongosh work); any other profile → boot aborts with the foreign list.</td></tr>
         <tr><td>Set up <code>SyncEngine</code> to populate the view</td><td><span class="tag manual">manual</span></td><td>service boot</td></tr>
         <tr><td>Declare the allowlist of fields + operators</td><td><span class="tag manual">manual</span></td><td>Request DTO struct tags (<code>query:"X" filter:"ops"</code>)</td></tr>
-        <tr><td>Declare the wire output shape</td><td><span class="tag manual">manual</span></td><td>Response DTO struct with <code>json:"&lt;wire&gt;"</code> and optional <code>view:"&lt;docKey&gt;"</code> tags, co-located with the Request in the same <code>web/requests/find_xxx_request.go</code> file. Pair with <code>fwresponses.AutoFromDoc[Response]</code> (tag-driven default), <code>fwresponses.RawDoc</code> (raw passthrough), or a consumer <code>Response{}.FromDoc</code> method (custom logic).</td></tr>
+        <tr><td>Declare the wire output shape</td><td><span class="tag manual">manual</span></td><td>Response DTO struct with <code>json:"&lt;wire&gt;"</code> tags only (the doc is already Go-keyed by the reader — no source-key override), co-located with the Request in the same <code>web/requests/find_xxx_request.go</code> file. Pair with <code>fwresponses.AutoFromDoc[Response]</code> (tag-driven default), <code>fwresponses.RawDoc</code> (raw passthrough), or a consumer <code>Response{}.FromDoc</code> method (custom logic).</td></tr>
         <tr><td>Query string parsing (filters, sort, fields, pagination)</td><td><span class="tag auto">automatic</span></td><td><code>HandleQueryWithParams</code> wrapper</td></tr>
         <tr><td>Reject unknown field / disallowed operator with 400</td><td><span class="tag auto">automatic</span></td><td><code>HandleQueryWithParams</code> + <code>SchemaViolationNotification</code></td></tr>
         <tr><td>Project each <code>page.Items</code> doc to the wire shape</td><td><span class="tag auto">automatic</span></td><td><code>HandleQueryWithParams</code> applies the consumer's projector per doc; <code>fwweb.ProjectPage</code> / <code>fwweb.RespondPaged</code> available for manual handlers</td></tr>
@@ -212,11 +211,11 @@ HTTP 200 OK
     <h3 id="qry-example">Full example</h3>
     <h4>1. Define the ViewDefinition</h4>
     <p>
-        Canonical case (single aggregate, convention matches): <code>fwinfra.ViewOf[*T]()</code>
-        infers Mongo collection, root table, and <code>EmbedMany</code> from the children declared
-        in <code>T.AggregateChildren()</code>. Custom pattern (cross-service via <code>FromMongo</code>
-        over an upstream-projected collection) still via fluent <code>View(name).Root(...).EmbedMany(...)</code>
-        — they coexist.
+        Every view is declared explicitly with the fluent <code>View(name)</code> builder. <code>.Schema(...)</code>
+        attaches the root/embed <code>TableSchema</code> (the Go↔column map the reader uses to translate documents
+        back to Go field names), <code>.As("Addresses")</code> declares the parent-side Go segment (what the
+        Response and criteria refer to) versus the <code>EmbedMany</code> doc field (<code>"addresses"</code>).
+        The same schemas that drive the PG write side drive the Mongo view.
     </p>
     <pre><code>// internal/views/customer.go
 package views
@@ -226,10 +225,14 @@ import (
     appdomain "github.com/ClaudioSchirmer/myservice/domain"
 )
 
-// Canonical path — 1 line. Infers collection "customers", root table
-// "customers" and EmbedMany from the children declared in
-// Customer.AggregateChildren().
-var CustomerView = infra.ViewOf[*appdomain.Customer]()
+// Explicit declaration. .Schema(...) attaches the Go↔column map for the root
+// and each embed; the same schemas drive the PG write side.
+var CustomerView = infra.View("customers").
+    Version(1).
+    Root("customers").
+    Schema(views.CustomerSchema()).
+    EmbedMany("addresses", infra.From("addresses").On("customer_id").
+        As("Addresses").Schema(views.AddressSchema()))
 
 // Custom pattern — fluent when crossing bounded contexts via UpstreamSubscription
 // (cross-service Embed is NOT derivable from the aggregate). FromMongo resolves to
@@ -262,7 +265,13 @@ var SaleView = infra.View("sales_view").
 //
 // Hard DELETE always removes the document from Mongo regardless of the
 // flag (it covers soft delete only).
-var HotTierUserView = infra.ViewOf[*appdomain.User]().DeleteOnArchive()</code></pre>
+var HotTierUserView = infra.View("users").
+    Version(1).
+    Root("users").
+    Schema(views.UserSchema()).
+    EmbedMany("addresses", infra.From("addresses").On("user_id").
+        As("Addresses").Schema(views.AddressSchema())).
+    DeleteOnArchive()</code></pre>
 
     <h4>2. Declare the Request DTO (allowlist) + Query (transport)</h4>
     <p>
@@ -558,8 +567,8 @@ g.Get("/:email", func(c fiber.Ctx) error {
         <code>fwresponses.AutoFromDoc[R]</code> (tag-driven default) or <code>fwresponses.RawDoc</code>
         (passthrough) — the same projectors the canonical wrappers consume. Hand-rolling a
         <code>FromDoc</code> that walks <code>doc["id"]</code>, <code>doc["name"]</code>, etc. is a
-        redundant rewrite of what <code>AutoFromDoc</code> already does (json:/view: tags, <code>_id → id</code>
-        fallback, <code>PascalToSnake</code> source-key translation, nil→empty-slice normalization).
+        redundant rewrite of what <code>AutoFromDoc</code> already does (<code>json:</code> tags, <code>_id → id</code>
+        fallback, Go-keyed doc from the reader, nil→empty-slice normalization).
         Declare a consumer <code>R{}.FromDoc</code> method only when the projection needs logic
         AutoFromDoc cannot express (derived fields computed from multiple doc keys, conditional shaping,
         ctx-aware projection).

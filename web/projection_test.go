@@ -31,34 +31,34 @@ type sparseUser struct {
 
 func TestExtractProjectionSchema_TopLevelPathsUseSnakeCase(t *testing.T) {
 	s := extractProjectionSchema(reflect.TypeOf(sparseUser{}))
-	if got := s.paths["id"]; got != "id" {
+	if got := s.paths["id"]; got != "ID" {
 		t.Errorf("id → %q, want id", got)
 	}
-	if got := s.paths["name"]; got != "name" {
+	if got := s.paths["name"]; got != "Name" {
 		t.Errorf("name → %q, want name", got)
 	}
 }
 
 func TestExtractProjectionSchema_NestedSliceOfStructPathsTranslated(t *testing.T) {
 	s := extractProjectionSchema(reflect.TypeOf(sparseUser{}))
-	if got := s.paths["addresses"]; got != "addresses" {
+	if got := s.paths["addresses"]; got != "Addresses" {
 		t.Errorf("addresses → %q, want addresses", got)
 	}
-	if got := s.paths["addresses.id"]; got != "addresses.id" {
+	if got := s.paths["addresses.id"]; got != "Addresses.ID" {
 		t.Errorf("addresses.id → %q, want addresses.id", got)
 	}
-	if got := s.paths["addresses.city"]; got != "addresses.city" {
+	if got := s.paths["addresses.city"]; got != "Addresses.City" {
 		t.Errorf("addresses.city → %q, want addresses.city", got)
 	}
-	if got := s.paths["addresses.zipCode"]; got != "addresses.zip_code" {
-		t.Errorf("addresses.zipCode → %q, want addresses.zip_code (auto PascalToSnake)", got)
+	if got := s.paths["addresses.zipCode"]; got != "Addresses.ZipCode" {
+		t.Errorf("addresses.zipCode → %q, want addresses.zip_code (Go field path)", got)
 	}
 }
 
 func TestExtractProjectionSchema_ViewTagOverridesAutoSnake(t *testing.T) {
 	s := extractProjectionSchema(reflect.TypeOf(sparseUser{}))
-	if got := s.paths["addresses.state"]; got != "addresses.st" {
-		t.Errorf("addresses.state → %q, want addresses.st (view: override)", got)
+	if got := s.paths["addresses.state"]; got != "Addresses.State" {
+		t.Errorf("addresses.state → %q, want addresses.st (Go field path (view: removed))", got)
 	}
 }
 
@@ -198,10 +198,10 @@ func TestFieldsParam_ProjectionIncludesAutoIDExclusionWhenIDNotRequested(t *test
 
 	_, _ = app.Test(httptest.NewRequest("GET", "/users?fields=name,email", nil))
 	got := h.got.Criteria.Projection
-	if v, ok := got["name"]; !ok || v != 1 {
+	if v, ok := got["Name"]; !ok || v != 1 {
 		t.Errorf("expected name:1 in projection, got %v", got)
 	}
-	if v, ok := got["email"]; !ok || v != 1 {
+	if v, ok := got["Email"]; !ok || v != 1 {
 		t.Errorf("expected email:1 in projection, got %v", got)
 	}
 	if v, ok := got["_id"]; !ok || v != 0 {
@@ -219,10 +219,10 @@ func TestFieldsParam_ProjectionOmitsIDExclusionWhenIDRequested(t *testing.T) {
 
 	_, _ = app.Test(httptest.NewRequest("GET", "/users?fields=id,name", nil))
 	got := h.got.Criteria.Projection
-	if v, ok := got["id"]; !ok || v != 1 {
+	if v, ok := got["ID"]; !ok || v != 1 {
 		t.Errorf("expected id:1 in projection, got %v", got)
 	}
-	if v, ok := got["name"]; !ok || v != 1 {
+	if v, ok := got["Name"]; !ok || v != 1 {
 		t.Errorf("expected name:1 in projection, got %v", got)
 	}
 	if _, hasIDExclusion := got["_id"]; hasIDExclusion {
@@ -240,7 +240,7 @@ func TestFieldsParam_NestedPathTranslatesViaAutoSnake(t *testing.T) {
 
 	_, _ = app.Test(httptest.NewRequest("GET", "/users?fields=addresses.zipCode", nil))
 	got := h.got.Criteria.Projection
-	if v, ok := got["addresses.zip_code"]; !ok || v != 1 {
+	if v, ok := got["Addresses.ZipCode"]; !ok || v != 1 {
 		t.Errorf("expected addresses.zip_code:1 (PascalToSnake), got %v", got)
 	}
 	if v, ok := got["_id"]; !ok || v != 0 {
@@ -258,8 +258,8 @@ func TestFieldsParam_NestedPathHonorsViewOverride(t *testing.T) {
 
 	_, _ = app.Test(httptest.NewRequest("GET", "/users?fields=addresses.state", nil))
 	got := h.got.Criteria.Projection
-	if v, ok := got["addresses.st"]; !ok || v != 1 {
-		t.Errorf("expected addresses.st:1 (view: override), got %v", got)
+	if v, ok := got["Addresses.State"]; !ok || v != 1 {
+		t.Errorf("expected addresses.st:1 (Go field path (view: removed)), got %v", got)
 	}
 }
 
@@ -273,7 +273,7 @@ func TestFieldsParam_WholeAggregateProjectsSubtree(t *testing.T) {
 
 	_, _ = app.Test(httptest.NewRequest("GET", "/users?fields=addresses", nil))
 	got := h.got.Criteria.Projection
-	if v, ok := got["addresses"]; !ok || v != 1 {
+	if v, ok := got["Addresses"]; !ok || v != 1 {
 		t.Errorf("expected addresses:1 (whole subtree), got %v", got)
 	}
 	if v, ok := got["_id"]; !ok || v != 0 {
