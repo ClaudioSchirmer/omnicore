@@ -158,6 +158,20 @@ with `1.0.0`.
   is map-blind, so a column rename never disturbs the timeline (unchanged from
   0.11.0).
 
+### Fixed
+
+- **Integration consumer topology: a source with ≥2 events no longer drops
+  messages.** The Kafka consumer is now one reader per `(topic, consumerGroup)`
+  that demultiplexes by `event_type` to the matching receiver, instead of one
+  reader per receiver. Previously, `reg.From(s).On(A).On(B)` produced two readers
+  sharing the same `(topic, consumerGroup)`; Kafka split the topic's partitions
+  between them and — because the reader auto-commits — each silently dropped the
+  events meant for the other (~half of every event type lost, no error). The
+  fix reads every message exactly once and routes it by `event_type`; an event
+  type matching no receiver is skipped (foreign event on the topic). Two
+  receivers resolving to the same `(topic, consumerGroup, event_type)` now abort
+  the boot (one event type cannot route to two handlers).
+
 ## [0.11.0] - 2026-06-19
 
 ### Added
