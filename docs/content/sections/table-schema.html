@@ -109,6 +109,19 @@ fwinfra.NewExternalSchema("users").PK("ID", "id").Field("Email", "mail")</code><
     <code>Field("Go", "column")</code> pair.
 </p>
 
+<div class="box warn">
+    <strong>Aggregate depth is exactly one — no grandchildren in the schema.</strong>
+    A root may declare <em>any number</em> of child types (one <code>Child(...)</code> per
+    <code>AggregateValueObject</code> type) and each child may have <em>any number</em> of instances — width is
+    unlimited. <strong>Depth is not:</strong> calling <code>Child(...)</code> on a schema that is itself a child (a
+    grandchild) is a <strong>boot panic</strong>. Aggregate persistence is root + one level in a single transaction; a
+    grandchild would silently never persist. Model the sub-collection as a <strong>separate aggregate</strong> (its own
+    root + FK). Need nesting on the <em>read side</em>? That <strong>is</strong> supported — but through nested
+    <code>EmbedMany(...)</code> / <code>Embed(...)</code> on the view's embed source, <strong>never</strong> through the
+    schema's <code>Child(...)</code>; an embed source whose schema carries <code>Child(...)</code> is a fatal view-validation
+    error at boot.
+</div>
+
 <h3>The three managed columns — by presence, not a flag</h3>
 <p>
     Soft-delete, created-at, and updated-at are declared by <em>calling</em> the matching builder method with the column
@@ -234,7 +247,18 @@ func OrdersView() *fwinfra.ViewDefinition {
         declared managed column, no two map to the same physical column. The collision panic names both offenders.</li>
     <li><strong>Modes() ⟺ SoftDelete</strong> — an entity declaring <code>ModeArchive</code>/<code>ModeUnarchive</code>
         without <code>SoftDelete</code> panics; a runtime guard backs it up.</li>
-    <li><strong>Single-column PK</strong> — the framework supports only single-column primary keys.</li>
+    <li><strong>PK is mandatory (no default) + single-column</strong> — there is no <code>"ID"</code>/<code>"id"</code>
+        guessing: every schema (root, child, embed source) must declare <code>PK(goField, column)</code>, which rejects
+        empty names. A schema reaching <code>WithSchema</code> / <code>Child</code> / <code>ValidateViewSchemas</code>
+        without a declared PK is a boot failure. Single-column only.</li>
+    <li><strong>FK on children + embed join keys</strong> — an aggregate <code>Child(...)</code> without <code>.FK(col)</code>
+        panics (the persister injects the root id into it). On the read side, an <code>EmbedMany</code> source without
+        <code>.FK(col)</code>, and a one-to-one <code>Embed</code> without <code>.On(col)</code>, are fatal
+        <code>ValidateViewSchemas</code> errors.</li>
+    <li><strong>Aggregate depth = 1 (no grandchildren)</strong> — a child schema that declares its own
+        <code>Child(...)</code> panics at <code>WithSchema</code> (write side); an embed source whose schema carries
+        <code>Child(...)</code> is a fatal error in <code>ValidateViewSchemas</code> (read side). Width is unlimited;
+        depth is one.</li>
 </ul>
 
 <h3>Audit stays in the domain vocabulary</h3>

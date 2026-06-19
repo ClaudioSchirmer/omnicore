@@ -2,6 +2,7 @@ package infra
 
 import (
 	"context"
+	"fmt"
 
 	"github.com/ClaudioSchirmer/omnicore/infra/criteria"
 	"github.com/ClaudioSchirmer/omnicore/domain"
@@ -58,11 +59,20 @@ func NewBaseAggregateRepository[T domain.Entity](pg *Postgres, newEntity func() 
 // WithSchema declares the mandatory TableSchema once and threads it into BOTH
 // the write binding (BaseRepository.Schema) and the read loader
 // (Loader.WithSchema) — one declaration feeds write, criteria and scan. The
-// Modes() ⟺ SoftDelete boot check runs here; the field-existence + bijection
-// checks already ran while the TableSchema was built. A violation panics at
-// construction, not on the first request.
+// Modes() ⟺ SoftDelete and the aggregate-depth (no grandchildren) boot checks
+// run here; the field-existence + bijection checks already ran while the
+// TableSchema was built. A violation panics at construction, not on the first
+// request.
 func (r *BaseAggregateRepository[T]) WithSchema(schema *TableSchema) *BaseAggregateRepository[T] {
+	if !schema.hasPKDeclared() {
+		panic(fmt.Sprintf(
+			"infra.TableSchema(%s): no primary key declared — declare .PK(goField, column); "+
+				"there is no default, the developer must declare it",
+			schema.Table(),
+		))
+	}
 	schema.validateModes(r.New().Modes())
+	schema.validateChildDepth()
 	r.Schema = schema
 	r.Loader.WithSchema(schema)
 	return r

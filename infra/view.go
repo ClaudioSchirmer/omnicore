@@ -280,6 +280,10 @@ func ValidateViewSchemas(views []*ViewDefinition) error {
 	for _, v := range views {
 		if v.schema == nil {
 			problems = append(problems, fmt.Sprintf("view %q: no root .Schema(...) declared", v.Name()))
+		} else if !v.schema.hasPKDeclared() {
+			problems = append(problems, fmt.Sprintf(
+				"view %q: root schema (table %q) declares no primary key — declare .PK(goField, column)",
+				v.Name(), v.schema.Table()))
 		}
 		problems = appendEmbedSchemaProblems(problems, v.Name(), v.embeds)
 	}
@@ -300,11 +304,50 @@ func appendEmbedSchemaProblems(acc []string, viewName string, embeds []embedDef)
 		}
 		if e.source.schema == nil {
 			acc = append(acc, fmt.Sprintf("view %q: embed %q (source %q) has no schema", viewName, e.field, e.source.table))
-		} else if resolveGoSegment(e) == "" {
-			acc = append(acc, fmt.Sprintf(
-				"view %q: external embed %q (source %q) has no Go segment — declare it via .As(\"...\") "+
-					"(an external/type-less schema cannot derive it from a Go type)",
-				viewName, e.field, e.source.table))
+		} else {
+			if resolveGoSegment(e) == "" {
+				acc = append(acc, fmt.Sprintf(
+					"view %q: external embed %q (source %q) has no Go segment — declare it via .As(\"...\") "+
+						"(an external/type-less schema cannot derive it from a Go type)",
+					viewName, e.field, e.source.table))
+			}
+			if !e.source.schema.hasPKDeclared() {
+				acc = append(acc, fmt.Sprintf(
+					"view %q: embed %q (source %q) declares no primary key — declare .PK(goField, column)",
+					viewName, e.field, e.source.table))
+			}
+			// Grandchild-via-schema: an embed source whose TableSchema carries
+			// Child(...) is a misconfiguration — the composer recurses over the
+			// embed's own .Embed/.EmbedMany, never over schema.children, so those
+			// nested schemas are silently ignored. Views DO support depth — just
+			// not through the schema. (The view ROOT schema is the reused write
+			// schema and legitimately carries Child(...); only embed SOURCES are
+			// flagged here.)
+			if len(e.source.schema.children) > 0 {
+				acc = append(acc, fmt.Sprintf(
+					"view %q: embed %q (source %q) declares Child(...) on its TableSchema — "+
+						"grandchildren ARE supported by views, but NOT through the schema's Child(...). "+
+						"Nest the projection with EmbedMany(...) / Embed(...) directly on the embed "+
+						"source, as many levels as you need.",
+					viewName, e.field, e.source.table))
+			}
+			// Join key is mandatory: EmbedMany joins on the child's FK (declared on
+			// its schema via .FK), a one-to-one Embed joins on the parent's FK
+			// (declared via .On). Either missing makes the composer emit broken SQL,
+			// so reject it at boot instead.
+			if e.many {
+				if e.source.schema.fkColumn == "" {
+					acc = append(acc, fmt.Sprintf(
+						"view %q: EmbedMany %q (source %q) declares no foreign key — declare .FK(col) on "+
+							"its schema; the composer joins the child rows on it (child_fk = parent_pk)",
+						viewName, e.field, e.source.table))
+				}
+			} else if e.source.joinKey == "" {
+				acc = append(acc, fmt.Sprintf(
+					"view %q: one-to-one Embed %q (source %q) declares no parent join key — declare "+
+						".On(col) naming the parent column that holds the FK to this source's PK",
+					viewName, e.field, e.source.table))
+			}
 		}
 		acc = appendEmbedSchemaProblems(acc, viewName, e.source.embeds)
 	}

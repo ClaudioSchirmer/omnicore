@@ -100,7 +100,7 @@ func TestChildSchema_ScanPlanIncludesPK(t *testing.T) {
 func TestAggregateLoader_WithSchema_DrivesChildren(t *testing.T) {
 	manualScanner := func(pgx.Rows) (domain.AggregateValueObject, error) { return nil, nil }
 	root := NewTableSchema[*aggLoaderTestEntity]("agg").
-		Child(NewTableSchema[fakeVO]("tags").PK("ID", "id").Field("Label", "label"))
+		Child(NewTableSchema[fakeVO]("tags").PK("ID", "id").FK("agg_id").Field("Label", "label"))
 	l := NewAggregateLoader[*aggLoaderTestEntity](nil, newAggLoaderTestEntity).
 		WithSchema(root).
 		WithChildScanner("Manual", manualScanner)

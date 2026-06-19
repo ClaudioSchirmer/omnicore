@@ -1,6 +1,9 @@
 package infra
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 // ─── test embed-source helpers ───────────────────────────────────────────────
 //
@@ -23,6 +26,99 @@ func mongoEmbed(table, fk string) *Source {
 // schema; row columns are read generically, so the dummy type suffices.
 func rootSchema(table string) *TableSchema {
 	return NewTableSchema[embedFixture](table).PK("ID", "id").SoftDelete("deleted_at")
+}
+
+// ─── grandchild-via-schema on an embed source (read side) ────────────────────
+
+// TestValidateViewSchemas_RejectsEmbedSourceWithChildren proves an embed source
+// whose TableSchema carries Child(...) is a fatal view-validation error — views
+// support depth via nested EmbedMany/Embed, never via the schema's children.
+func TestValidateViewSchemas_RejectsEmbedSourceWithChildren(t *testing.T) {
+	grand := NewTableSchema[embedFixture]("tags").PK("ID", "id").FK("address_id")
+	src := FromSchema(NewTableSchema[embedFixture]("addresses").
+		PK("ID", "id").FK("user_id").Child(grand))
+	v := View("users").Version(1).Root("users").
+		Schema(rootSchema("users")).
+		EmbedMany("addresses", src)
+
+	err := ValidateViewSchemas([]*ViewDefinition{v})
+	if err == nil {
+		t.Fatal("expected a validation error for an embed source carrying Child(...)")
+	}
+	if !strings.Contains(err.Error(), "grandchildren ARE supported by views") {
+		t.Errorf("error should carry the read-side message, got: %v", err)
+	}
+}
+
+// TestValidateViewSchemas_RootSchemaWithChildrenOK confirms the view ROOT schema
+// may carry Child(...) (the reused write schema) — only embed SOURCES are flagged.
+func TestValidateViewSchemas_RootSchemaWithChildrenOK(t *testing.T) {
+	rootWithChild := NewTableSchema[embedFixture]("users").PK("ID", "id").SoftDelete("deleted_at").
+		Child(NewTableSchema[schemaSample]("addresses").PK("ID", "id").FK("user_id"))
+	v := View("users").Version(1).Root("users").
+		Schema(rootWithChild).
+		EmbedMany("addresses", pgEmbed("addresses", "user_id"))
+
+	if err := ValidateViewSchemas([]*ViewDefinition{v}); err != nil {
+		t.Fatalf("root schema with one-level children must pass view validation, got: %v", err)
+	}
+}
+
+// ─── mandatory PK on every view schema (read side) ───────────────────────────
+
+// TestValidateViewSchemas_RejectsRootWithoutPK proves a view root schema with no
+// explicit PK is a fatal view-validation error.
+func TestValidateViewSchemas_RejectsRootWithoutPK(t *testing.T) {
+	v := View("users").Version(1).Root("users").
+		Schema(NewTableSchema[embedFixture]("users").SoftDelete("deleted_at")). // no .PK
+		EmbedMany("addresses", pgEmbed("addresses", "user_id"))
+	err := ValidateViewSchemas([]*ViewDefinition{v})
+	if err == nil || !strings.Contains(err.Error(), "no primary key") {
+		t.Errorf("expected root-without-PK error, got %v", err)
+	}
+}
+
+// TestValidateViewSchemas_RejectsEmbedSourceWithoutPK proves an embed source
+// with no explicit PK is a fatal view-validation error.
+func TestValidateViewSchemas_RejectsEmbedSourceWithoutPK(t *testing.T) {
+	src := FromSchema(NewTableSchema[embedFixture]("addresses").FK("user_id")) // no .PK
+	v := View("users").Version(1).Root("users").
+		Schema(rootSchema("users")).
+		EmbedMany("addresses", src)
+	err := ValidateViewSchemas([]*ViewDefinition{v})
+	if err == nil || !strings.Contains(err.Error(), "no primary key") {
+		t.Errorf("expected embed-source-without-PK error, got %v", err)
+	}
+}
+
+// ─── mandatory join keys on embed sources (read side) ────────────────────────
+
+// TestValidateViewSchemas_RejectsEmbedManyWithoutFK proves an EmbedMany source
+// without a foreign key is a fatal view-validation error — the composer joins
+// the child rows on it.
+func TestValidateViewSchemas_RejectsEmbedManyWithoutFK(t *testing.T) {
+	src := FromSchema(NewTableSchema[embedFixture]("addresses").PK("ID", "id")) // no .FK
+	v := View("users").Version(1).Root("users").
+		Schema(rootSchema("users")).
+		EmbedMany("addresses", src)
+	err := ValidateViewSchemas([]*ViewDefinition{v})
+	if err == nil || !strings.Contains(err.Error(), "no foreign key") {
+		t.Errorf("expected EmbedMany-without-FK error, got %v", err)
+	}
+}
+
+// TestValidateViewSchemas_RejectsOneToOneEmbedWithoutOn proves a one-to-one
+// Embed without .On is a fatal view-validation error — it joins on the parent's
+// FK column, which must be named.
+func TestValidateViewSchemas_RejectsOneToOneEmbedWithoutOn(t *testing.T) {
+	src := FromSchema(NewTableSchema[embedFixture]("buyer").PK("ID", "id")) // no .On
+	v := View("orders").Version(1).Root("orders").
+		Schema(rootSchema("orders")).
+		Embed("buyer", src)
+	err := ValidateViewSchemas([]*ViewDefinition{v})
+	if err == nil || !strings.Contains(err.Error(), "parent join key") {
+		t.Errorf("expected one-to-one-Embed-without-.On error, got %v", err)
+	}
 }
 
 // ─── DeleteOnArchive opt-in ──────────────────────────────────────────────────

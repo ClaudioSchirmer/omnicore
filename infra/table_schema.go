@@ -56,11 +56,11 @@ type schemaField struct {
 	index  int // reflect field index in the struct; -1 = not a struct field
 }
 
-const tableSchemaDefaultPK = "id"
-
 // NewTableSchema starts a type-anchored schema for table over Go type T. Field
 // declarations are validated against T at call time (panic on a missing or
-// unexported field) — that is the enforcement that replaces convention.
+// unexported field) — that is the enforcement that replaces convention. The
+// primary key is NOT assumed: the developer must declare it via PK(go, col)
+// (no "ID"/"id" default).
 func NewTableSchema[T any](table string) *TableSchema {
 	t := reflect.TypeOf((*T)(nil)).Elem()
 	for t.Kind() == reflect.Ptr {
@@ -71,7 +71,6 @@ func NewTableSchema[T any](table string) *TableSchema {
 	}
 	s := newSchema(table)
 	s.typ = t
-	s.pkIndex = exportedFieldIndex(t, "ID")
 	return s
 }
 
@@ -86,15 +85,20 @@ func NewExternalSchema(table string) *TableSchema {
 
 func newSchema(table string) *TableSchema {
 	return &TableSchema{
-		table:    table,
-		pkGo:     "ID",
-		pkColumn: tableSchemaDefaultPK,
+		table: table,
+		// No PK default — pkGo/pkColumn stay empty until PK(...) is declared
+		// (the developer must declare it; there is no "ID"/"id" guessing).
 		pkIndex:  -1,
 		byGo:     map[string]schemaField{},
 		byCol:    map[string]schemaField{},
 		children: map[string]*TableSchema{},
 	}
 }
+
+// hasPKDeclared reports whether PK(...) was explicitly declared. There is NO
+// default primary key — a schema without an explicit PK is a boot failure at
+// every consumer checkpoint (WithSchema, Child, ValidateViewSchemas).
+func (s *TableSchema) hasPKDeclared() bool { return s.pkColumn != "" }
 
 // exportedFieldIndex returns the single-depth field index of an exported field
 // named goName, or -1 when absent / unexported / promoted from an embed.
@@ -141,9 +145,17 @@ func (s *TableSchema) ensureColumnFree(column, self string) {
 	}
 }
 
-// PK declares the primary-key mapping. The Go side is the BaseEntity contract
-// field "ID"; the column defaults to "id" and is overridden here. Single-column.
+// PK declares the primary-key mapping — mandatory, no default. The Go side is
+// conventionally the BaseEntity field "ID"; both sides are declared explicitly
+// here (the framework never guesses). Single-column. Empty names are rejected.
 func (s *TableSchema) PK(goName, column string) *TableSchema {
+	if goName == "" || column == "" {
+		panic(fmt.Sprintf(
+			"infra.TableSchema(%s): PK requires a non-empty Go field and column (got %q ↔ %q) — "+
+				"a single-column primary key is mandatory on every schema",
+			s.table, goName, column,
+		))
+	}
 	s.ensureColumnFree(column, "PK")
 	s.pkGo = goName
 	s.pkColumn = column
@@ -215,9 +227,26 @@ func (s *TableSchema) UpdatedAt(col string) *TableSchema {
 }
 
 // Child registers an aggregate child's schema, keyed by the child Go type name.
+// An aggregate child MUST declare its foreign key to the root via .FK(col) — the
+// persister injects the root id into that column on every child write — so a
+// child without an FK is rejected here at construction.
 func (s *TableSchema) Child(child *TableSchema) *TableSchema {
 	if child == nil || child.typ == nil {
 		panic(fmt.Sprintf("infra.TableSchema(%s): Child requires a type-anchored schema", s.table))
+	}
+	if !child.hasPKDeclared() {
+		panic(fmt.Sprintf(
+			"infra.TableSchema(%s): aggregate child %q declares no primary key — declare .PK(goField, column) "+
+				"(there is no default; every schema must declare its PK)",
+			s.table, child.typ.Name(),
+		))
+	}
+	if child.fkColumn == "" {
+		panic(fmt.Sprintf(
+			"infra.TableSchema(%s): aggregate child %q declares no foreign key — declare .FK(col) on its "+
+				"schema; the persister injects the root id into that column on every child write",
+			s.table, child.typ.Name(),
+		))
 	}
 	s.children[child.typ.Name()] = child
 	return s
@@ -394,6 +423,26 @@ func (s *TableSchema) scanPlan() (cols []string, byCol map[string]int) {
 func (s *TableSchema) fieldResolver() fieldResolver {
 	return func(goField string) (string, bool) {
 		return s.ColumnOf(goField)
+	}
+}
+
+// validateChildDepth panics when any declared aggregate child carries its own
+// Child(...) — i.e. a grandchild. Aggregate persistence is root + exactly one
+// level of children (insertChildren/applyChildChanges/the cascade all iterate
+// root.AllAggregateItems() once and never recurse into a child's children), so a
+// grandchild declared on the schema would silently never persist. Turn that
+// no-op into a loud boot failure that names the alternative.
+func (s *TableSchema) validateChildDepth() {
+	for _, child := range s.children {
+		if len(child.children) > 0 {
+			panic(fmt.Sprintf(
+				"infra.TableSchema(%s): aggregate child %q declares its own Child(...) — "+
+					"grandchildren are NOT supported by aggregate persistence (an aggregate is its "+
+					"root plus exactly one level of children, persisted in a single transaction). "+
+					"Model the sub-collection as a SEPARATE aggregate with its own root table + FK.",
+				s.table, child.typ.Name(),
+			))
+		}
 	}
 }
 

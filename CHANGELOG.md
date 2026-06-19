@@ -22,7 +22,18 @@ with `1.0.0`.
   `FK(col)` (child), `Field(go, col)`, `SoftDelete(col)`, `CreatedAt(col)`,
   `UpdatedAt(col)`, `Child(*TableSchema)`. There is no name inference: every
   persisted field is declared, and an undeclared exported field is runtime-only
-  by construction (never persisted, scanned, or audited).
+  by construction (never persisted, scanned, or audited). Aggregate depth is
+  one level: a child schema that declares its own `Child(...)` (a grandchild)
+  panics at `WithSchema` (write side — model the sub-collection as a separate
+  aggregate), and an embed source whose schema carries `Child(...)` is a fatal
+  `ValidateViewSchemas` error (read side — nest projections via `EmbedMany`/
+  `Embed`, never the schema's `Child(...)`). Width (child types + instances)
+  is unlimited. PK is mandatory, single-column, and has no default — every
+  schema (root, child, embed source) must declare `PK(go, col)` (no `"ID"`/`"id"`
+  guessing), which rejects empty names; an aggregate `Child(...)` must declare its FK
+  (`.FK(col)`) or it panics, and on the read side an `EmbedMany` source without
+  `.FK(col)` or a one-to-one `Embed` without `.On(col)` is a fatal
+  `ValidateViewSchemas` error.
 - **`BaseAggregateRepository.WithSchema(*TableSchema)`** threads the one schema
   into the write binding AND the read loader (write SQL + criteria + auto-scan).
   Aggregate children come from the schema's `Child(...)` declarations.

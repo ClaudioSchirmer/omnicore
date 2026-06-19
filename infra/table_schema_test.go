@@ -51,6 +51,60 @@ func TestTableSchema_ManagedColumnBijection(t *testing.T) {
 	})
 }
 
+// TestTableSchema_GrandchildRejected proves validateChildDepth (run by
+// WithSchema) panics when a declared aggregate child carries its own Child(...) —
+// grandchildren are unsupported on the write side (root + one level).
+func TestTableSchema_GrandchildRejected(t *testing.T) {
+	grand := NewTableSchema[embedFixture]("grand").PK("ID", "id").FK("child_id")
+	child := NewTableSchema[schemaSample]("child").PK("ID", "id").FK("root_id").Child(grand)
+	root := NewTableSchema[schemaSample]("root").PK("ID", "id").Child(child)
+	assertPanics(t, "child declares its own Child(...)", func() {
+		root.validateChildDepth()
+	})
+}
+
+// TestTableSchema_OneLevelChildOK confirms a root with a single level of
+// children (the supported depth) passes the depth check.
+func TestTableSchema_OneLevelChildOK(t *testing.T) {
+	defer func() {
+		if r := recover(); r != nil {
+			t.Fatalf("one-level aggregate panicked: %v", r)
+		}
+	}()
+	child := NewTableSchema[embedFixture]("child").PK("ID", "id").FK("root_id")
+	NewTableSchema[schemaSample]("root").PK("ID", "id").Child(child).validateChildDepth()
+}
+
+// TestTableSchema_PKMandatory proves PK rejects an empty Go field or column —
+// a single-column primary key is mandatory on every schema.
+func TestTableSchema_PKMandatory(t *testing.T) {
+	assertPanics(t, "empty PK column", func() {
+		NewTableSchema[schemaSample]("t").PK("ID", "")
+	})
+	assertPanics(t, "empty PK Go field", func() {
+		NewTableSchema[schemaSample]("t").PK("", "id")
+	})
+}
+
+// TestTableSchema_ChildRequiresPK proves an aggregate child registered without
+// an explicit PK is rejected at Child() — there is no default primary key.
+func TestTableSchema_ChildRequiresPK(t *testing.T) {
+	assertPanics(t, "child without PK", func() {
+		NewTableSchema[schemaSample]("root").PK("ID", "id").
+			Child(NewTableSchema[embedFixture]("child").FK("root_id")) // no .PK
+	})
+}
+
+// TestTableSchema_ChildRequiresFK proves an aggregate child registered without a
+// foreign key is rejected at Child() — the persister injects the root id into
+// the child FK on every write, so it cannot be empty.
+func TestTableSchema_ChildRequiresFK(t *testing.T) {
+	assertPanics(t, "child without FK", func() {
+		NewTableSchema[schemaSample]("root").PK("ID", "id").
+			Child(NewTableSchema[embedFixture]("child").PK("ID", "id")) // no .FK
+	})
+}
+
 // TestTableSchema_ValidDeclarationDoesNotPanic confirms a well-formed schema —
 // distinct columns across PK, fields, and all three managed slots — constructs
 // cleanly. PK("ID","id") matching the default column must not self-collide.
