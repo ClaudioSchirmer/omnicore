@@ -157,6 +157,40 @@ fwinfra.NewExternalSchema("users").PK("ID", "id").Field("Email", "mail")</code><
     (<code>AutoFromDoc</code>) keys by the Go field name — the reader already translated the doc — so the
     <code>view:</code> source-key override is gone; the only tag that governs the wire shape is <code>json:</code>.
 </p>
+<p>
+    <strong>External (cross-service) embeds — no local struct.</strong> When a view embeds data owned by another service
+    (materialized locally via an <a href="#service-to-service">UpstreamSubscription</a> and referenced with
+    <code>fwinfra.FromMongo</code>), there is no Go struct in this service to anchor the embed's schema. Use the type-less
+    <code>NewExternalSchema(collection)</code>: the left side of each <code>Field</code> is the <em>logical Go name</em> the
+    local view's Response/criteria speak; the right side names the <em>upstream's physical column</em>. It is validated by
+    bijection (no two fields share a column) but not against any type — there is none.
+</p>
+<pre><code>// Cross-service embed — buyer projected from the upstream users service.
+func OrdersView() *fwinfra.ViewDefinition {
+    return fwinfra.View("orders").
+        Version(1).
+        Root("orders").
+        Schema(OrderSchema()).
+        Embed("buyer",
+            fwinfra.FromMongo("users").On("buyer_id").
+                As("Buyer").                                // parent-side Go segment (Response/criteria)
+                Schema(fwinfra.NewExternalSchema("users").  // type-less: names the UPSTREAM's columns
+                    PK("ID", "id").
+                    Field("Name", "name").
+                    Field("Email", "mail"))).               // logical Go name ↔ upstream column
+        Indexes(fwinfra.Index("buyer_id"))                  // boot guard requires the join-field index
+}</code></pre>
+<p>
+    <strong>Omitting <code>.Schema(...)</code> on a source — identity pass-through.</strong> A view source declared without
+    a schema makes the reader's translator schema-less: it degrades to <em>identity pass-through</em> — the composed
+    document reaches the wire keyed by the physical column names (no <code>mail</code> → <code>Email</code> translation),
+    the soft-delete gate falls back to the literal <code>deleted_at</code> column, and the managed-column read-back logical
+    names (<code>CreatedAt</code>/<code>UpdatedAt</code>/<code>DeletedAt</code>) are unavailable. That is a legitimate mode
+    for a <code>RawDoc</code> projector or an upstream whose columns already match the Go names — but a sharp edge for a
+    typed Response. For every <code>FromMongo</code> embed missing a <code>.Schema(...)</code>, <code>bootstrap.Run</code>
+    emits a boot <code>slog.Warn</code> (<code>view.embed.schemaless</code>) naming the view and the collection, so the
+    operator sees the pass-through rather than discovering it through mis-keyed wire output.
+</p>
 
 <h3>Boot checks</h3>
 <ul>

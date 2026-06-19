@@ -50,6 +50,54 @@ func applyUpstreamSubscriptionDefaults(subs []UpstreamSubscription, service stri
 	return subs
 }
 
+// schemaLessEmbed names one FromMongo embed declared without .Schema(...).
+type schemaLessEmbed struct {
+	View       string
+	Collection string
+}
+
+// findSchemaLessMongoEmbeds walks every view and every embed at any nesting
+// depth, collecting FromMongo (IsMongo) sources that carry no TableSchema.
+//
+// A schema-less Mongo embed degrades the reader to identity pass-through: the
+// composed document reaches the wire keyed by the upstream's PHYSICAL column
+// names (no Go↔column translation), and the soft-delete gate falls back to the
+// literal "deleted_at" column. That is a legitimate mode (a RawDoc projector,
+// or an upstream whose columns already match the Go names), so the caller emits
+// a boot slog.Warn rather than aborting — distinct from the §8 guards, which
+// reject runtime-breaking structural errors. Returns findings as data so the
+// detection is unit-testable without capturing log output.
+//
+// Only FromMongo sources are flagged: a local From source reuses the repo's
+// type-anchored TableSchema, and the established sharp edge is the external
+// (no-local-struct) case.
+func findSchemaLessMongoEmbeds(views []*infra.ViewDefinition) []schemaLessEmbed {
+	var out []schemaLessEmbed
+	for _, v := range views {
+		for _, e := range v.Embeds() {
+			out = appendSchemaLessMongoEmbeds(out, v.Name(), e.Source())
+		}
+	}
+	return out
+}
+
+// appendSchemaLessMongoEmbeds recurses a source and its nested embeds, appending
+// a finding for each FromMongo source missing a schema. Takes *infra.Source (an
+// exported, nameable type) so the recursion crosses the package boundary without
+// naming the unexported embedDef — the nested embeds are ranged inline.
+func appendSchemaLessMongoEmbeds(acc []schemaLessEmbed, viewName string, src *infra.Source) []schemaLessEmbed {
+	if src == nil {
+		return acc
+	}
+	if src.IsMongo() && src.SchemaDef() == nil {
+		acc = append(acc, schemaLessEmbed{View: viewName, Collection: src.Collection()})
+	}
+	for _, e := range src.Embeds() {
+		acc = appendSchemaLessMongoEmbeds(acc, viewName, e.Source())
+	}
+	return acc
+}
+
 // validateUpstreamSubscriptions runs the four boot guards from §8 of
 // mongo_cross_service_composition_final.md and the per-entry shape guard
 // (§5 yaml validation that survives manual Wiring entries). All checks

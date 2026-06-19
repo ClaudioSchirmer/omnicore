@@ -37,6 +37,16 @@ with `1.0.0`.
   and `updated_at` are actively stamped `NOW()` on write (no reliance on a DB
   default); on the read path they are readable under fixed logical Go names
   `CreatedAt`/`UpdatedAt`/`DeletedAt`.
+- **`Source.SchemaDef() *TableSchema`** — exported accessor returning an embed
+  source's schema (nil when declared without `.Schema(...)`); symmetric with
+  `ViewDefinition.SchemaDef()`.
+- **Schema-less `FromMongo` embed advisory** — `bootstrap.Run` emits a boot
+  `slog.Warn` (`view.embed.schemaless`, naming the view + collection) for every
+  `FromMongo` embed declared without a `.Schema(...)`, at any nesting depth and
+  independent of whether any subscription is declared. Such an embed degrades the
+  reader to identity pass-through (wire speaks the upstream's physical column
+  names; soft-delete gate falls back to `deleted_at`). A warning, not an abort —
+  pass-through is a legitimate mode for `RawDoc` projectors.
 
 ### Removed
 

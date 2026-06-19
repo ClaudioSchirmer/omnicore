@@ -7,6 +7,48 @@ import (
 	"github.com/ClaudioSchirmer/omnicore/infra"
 )
 
+func TestFindSchemaLessMongoEmbeds_FlagsEmbedWithoutSchema(t *testing.T) {
+	v := infra.View("orders").Root("orders").
+		Embed("buyer", infra.FromMongo("users").On("buyer_id")). // no .Schema(...)
+		Version(1)
+	got := findSchemaLessMongoEmbeds([]*infra.ViewDefinition{v})
+	if len(got) != 1 || got[0].View != "orders" || got[0].Collection != "users" {
+		t.Errorf("expected one finding {orders,users}, got %+v", got)
+	}
+}
+
+func TestFindSchemaLessMongoEmbeds_SilentWithSchema(t *testing.T) {
+	v := infra.View("orders").Root("orders").
+		Embed("buyer", infra.FromMongo("users").On("buyer_id").
+			Schema(infra.NewExternalSchema("users").PK("ID", "id").Field("Name", "name"))).
+		Version(1)
+	if got := findSchemaLessMongoEmbeds([]*infra.ViewDefinition{v}); len(got) != 0 {
+		t.Errorf("expected no findings when the embed declares a schema, got %+v", got)
+	}
+}
+
+func TestFindSchemaLessMongoEmbeds_IgnoresLocalFrom(t *testing.T) {
+	// A local From source without a schema is NOT flagged — only FromMongo.
+	v := infra.View("users").Root("users").
+		EmbedMany("addresses", infra.From("addresses").On("user_id")).
+		Version(1)
+	if got := findSchemaLessMongoEmbeds([]*infra.ViewDefinition{v}); len(got) != 0 {
+		t.Errorf("local From embed must not be flagged, got %+v", got)
+	}
+}
+
+func TestFindSchemaLessMongoEmbeds_RecursesNested(t *testing.T) {
+	// FromMongo nested inside a local embed — the detector must descend.
+	v := infra.View("orders").Root("orders").
+		EmbedMany("lines", infra.From("order_lines").On("order_id").
+			Embed("product", infra.FromMongo("products").On("product_id"))). // no .Schema
+		Version(1)
+	got := findSchemaLessMongoEmbeds([]*infra.ViewDefinition{v})
+	if len(got) != 1 || got[0].Collection != "products" {
+		t.Errorf("expected one nested finding for products, got %+v", got)
+	}
+}
+
 func TestResolveUpstreamSubscriptions_MergesCfgAndWiring(t *testing.T) {
 	cfg := &Config{UpstreamSubscriptions: []UpstreamSubscription{
 		{Topic: "users.events", Collection: "users"},

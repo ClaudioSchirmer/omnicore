@@ -225,6 +225,13 @@ func (s *Source) IsMongo() bool      { return s.isMongo }
 func (s *Source) Collection() string { return s.table }
 func (s *Source) Embeds() []embedDef { return s.embeds }
 
+// SchemaDef returns the embed source's TableSchema, or nil when the embed was
+// declared without .Schema(...). Symmetric with ViewDefinition.SchemaDef();
+// consumed by the bootstrap-side schema-less-embed advisory guard, which must
+// inspect schema presence across the package boundary without reaching into
+// the private field.
+func (s *Source) SchemaDef() *TableSchema { return s.schema }
+
 // viewIndex splits the rebuild lookup by source kind. The original
 // single-map implementation conflated Postgres tables and Mongo collection
 // names — a PG-root view named "users" would collide in the lookup with a

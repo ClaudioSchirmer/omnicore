@@ -43,6 +43,18 @@ func TestViewDefinition_DeleteOnArchiveBuilder_Aggregate(t *testing.T) {
 	}
 }
 
+func TestSource_SchemaDef_NilWhenUnset(t *testing.T) {
+	bare := From("addresses").On("user_id")
+	if bare.SchemaDef() != nil {
+		t.Error("SchemaDef() must be nil when .Schema(...) was not called")
+	}
+	ts := NewExternalSchema("users").PK("ID", "id")
+	withSchema := FromMongo("users").On("buyer_id").Schema(ts)
+	if withSchema.SchemaDef() != ts {
+		t.Error("SchemaDef() must return the schema passed to .Schema(...)")
+	}
+}
+
 // ─── Schema-driven view translation tree ─────────────────────────────────────
 
 type vsRoot struct {
