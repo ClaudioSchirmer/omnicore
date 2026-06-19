@@ -145,6 +145,13 @@ with `1.0.0`.
 
 ### Changed
 
+- **The field-label struct tag is now `labelKey:"<catalogKey>"`** (was `label:`).
+  The tag value has always been a *catalog key* the framework resolves to the
+  rendered, locale-specific label — `FieldLabelKey` vs `FieldLabel` already names
+  both ends internally; the tag now matches that vocabulary and stops colliding
+  with domain fields literally named `Label`. The opt-out spelling becomes
+  `labelKey:"-"`. **Breaking** — every consumer field declaring `label:"…"` must
+  rename the tag to `labelKey:"…"`; resolution is otherwise unchanged.
 - **Persistence names are no longer derived from Go identifiers.** Tables,
   columns, and child FKs are declared in the `TableSchema`; a typo is a boot
   panic, not a silent miss. **Breaking** — every consumer Repository and view

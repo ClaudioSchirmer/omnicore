@@ -153,7 +153,7 @@ audit:
             <td><code>delta</code></td>
             <td><code>update</code></td>
             <td><code>changes: [{field, fieldLabelKey, from, to}]</code> sorted by <code>field</code></td>
-            <td>only mutated fields; unchanged ones absent. <code>field</code> is the faithful domain name (the raw Go field name, e.g. <code>Email</code>) — audit is map-blind, never the physical column. <code>fieldLabelKey</code> (omitempty) carries the catalog key from the field's <code>label:"…"</code> tag</td>
+            <td>only mutated fields; unchanged ones absent. <code>field</code> is the faithful domain name (the raw Go field name, e.g. <code>Email</code>) — audit is map-blind, never the physical column. <code>fieldLabelKey</code> (omitempty) carries the catalog key from the field's <code>labelKey:"…"</code> tag</td>
         </tr>
         <tr>
             <td><code>transition</code></td>
@@ -215,7 +215,7 @@ audit:
     <p>
         The audit <code>field</code> (the raw Go field name, e.g. <code>Name</code>, <code>ZipCode</code>) is a
         technical identifier — stable but not human-readable. For compliance / ouvidoria / BI readers
-        a <code>label:"&lt;catalogKey&gt;"</code> struct tag on the domain field declares a catalog
+        a <code>labelKey:"&lt;catalogKey&gt;"</code> struct tag on the domain field declares a catalog
         key the audit pipeline writes onto <code>FieldChange.FieldLabelKey</code> in every
         <code>delta</code> change (top-level and child). The full declaration mechanism — shared with
         the notification wire — lives under

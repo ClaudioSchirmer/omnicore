@@ -61,7 +61,7 @@ func (r *Rules) Context() *NotificationContext {
 // input on Invalid* notifications); pass *string and it is dereferenced safely.
 //
 // The emitted NotificationMessage carries LabelKey resolved from the field's
-// `label:"..."` struct tag on r.entityType (or "" when no tag is declared, or
+// `labelKey:"..."` struct tag on r.entityType (or "" when no tag is declared, or
 // when r.entityType is nil). The translation layer (application/notifications/
 // convert.go::ToContextDTOs) renders the key into MessageDTO.FieldLabel at
 // the same call site that already renders Message — one round-trip per

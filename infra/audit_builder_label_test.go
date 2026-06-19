@@ -8,12 +8,12 @@ import (
 	"github.com/ClaudioSchirmer/omnicore/domain"
 )
 
-// labelTestEntity exercises `label:"..."` tags on flat fields. Only Name is
+// labelTestEntity exercises `labelKey:"..."` tags on flat fields. Only Name is
 // labeled — Email is intentionally bare so the test can assert both branches
 // of the FieldLabelKey rule (populated vs omitted) inside one Changes slice.
 type labelTestEntity struct {
 	domain.BaseEntity
-	Name  string `label:"UserNameField"`
+	Name  string `labelKey:"UserNameField"`
 	Email string
 }
 
@@ -28,7 +28,7 @@ func (e *labelTestEntity) BuildRules(string, domain.Service, *domain.Rules) {}
 // ChildEvent.Changes when the root is updated and the child changes.
 type labelTestAddress struct {
 	ID      string
-	ZipCode string `label:"AddressZipCodeField"`
+	ZipCode string `labelKey:"AddressZipCodeField"`
 	Bare    string
 }
 
@@ -38,7 +38,7 @@ func (a labelTestAddress) BuildRules(string, domain.Service, *domain.Rules) {}
 // labelTestAggregate roots the aggregate so the auditor's children path fires.
 type labelTestAggregate struct {
 	domain.AggregateRoot
-	Name string `label:"AggregateNameField"`
+	Name string `labelKey:"AggregateNameField"`
 }
 
 func (e *labelTestAggregate) Modes() []domain.EntityMode {
@@ -69,10 +69,10 @@ var labelTestAggSchema = NewTableSchema[*labelTestAggregate]("label_test_aggrega
 		Field("Bare", "bare"))
 
 type labelFixture struct {
-	Tagged   string `label:"TaggedKey"`
+	Tagged   string `labelKey:"TaggedKey"`
 	Bare     string
-	Dashed   string `label:"-"`
-	EmptyTag string `label:""`
+	Dashed   string `labelKey:"-"`
+	EmptyTag string `labelKey:""`
 }
 
 var labelFixtureSchema = NewTableSchema[labelFixture]("label_fixtures").

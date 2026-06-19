@@ -15,7 +15,7 @@ type MessageDTO struct {
 	NotificationKey string `json:"notificationKey,omitempty"`
 	FieldName       string `json:"field,omitempty"`
 	// FieldLabel is the translated human-readable name of the source field,
-	// rendered in the actor's locale from the `label:"<catalogKey>"` struct tag
+	// rendered in the actor's locale from the `labelKey:"<catalogKey>"` struct tag
 	// declared on the entity / value-object field that triggered the
 	// notification. Empty when the source field carries no `label` tag — the
 	// omitempty elides it from the wire entirely in that case, so existing

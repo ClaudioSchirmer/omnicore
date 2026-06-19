@@ -231,7 +231,7 @@ func (a Address) BuildRules(actionName string, svc domain.Service, r *domain.Rul
 
     <h4>How it works — no new interface per entity</h4>
     <ol>
-        <li><strong><code>Rules</code> carries the ctx + entityType.</strong> <code>NewRules(mode, ctx, entityType)</code> packages the <code>EntityMode</code> + <code>NotificationContext</code> + the Go <code>reflect.Type</code> of the entity/VO that owns the Rules (the <code>entityType</code> lets <code>AddNotification</code> read the field's <code>label:"..."</code> tag at emit). <code>r.AddNotification</code>/<code>r.AddNotificationMessage</code> delegate to the internal ctx. For root, the ctx is the entity's own <code>e.NotificationContext()</code>. For AVO, the ctx is a <code>Scoped(NameSegment(collection), IndexSegment(i))</code> view of the root's ctx.</li>
+        <li><strong><code>Rules</code> carries the ctx + entityType.</strong> <code>NewRules(mode, ctx, entityType)</code> packages the <code>EntityMode</code> + <code>NotificationContext</code> + the Go <code>reflect.Type</code> of the entity/VO that owns the Rules (the <code>entityType</code> lets <code>AddNotification</code> read the field's <code>labelKey:"..."</code> tag at emit). <code>r.AddNotification</code>/<code>r.AddNotificationMessage</code> delegate to the internal ctx. For root, the ctx is the entity's own <code>e.NotificationContext()</code>. For AVO, the ctx is a <code>Scoped(NameSegment(collection), IndexSegment(i))</code> view of the root's ctx.</li>
         <li><strong>Collection segment name is the JSON wire name.</strong> <code>runAggregateValidations</code> iterates <code>root.AllAggregateItems()</code> and uses <code>toLowerCamel(typeName)</code> pluralized in camelCase (<code>"addresses"</code>, <code>"orderLines"</code>) as the collection segment name — it is JSON wire output, so the convention is camelCase, not snake_case. No new interface on the service.</li>
         <li><strong>Acronym-aware <code>toLowerCamel</code> render:</strong> <code>Name</code>→<code>name</code>, <code>URL</code>→<code>url</code>, <code>ZipCode</code>→<code>zipCode</code>, <code>URLPath</code>→<code>urlPath</code>. Strings already in lowercase pass through (<code>"id"</code>→<code>"id"</code>) — the legacy <code>FieldName: "id"</code> in mode validators remains intact.</li>
         <li><strong>Wire layer</strong> (<code>web/from_notifications.go</code>, <code>application/notifications/convert.go</code>) reads <code>m.ResolveFieldName()</code> with precedence <strong>Override &gt; rendered Path &gt; FieldName</strong>.</li>
@@ -241,7 +241,7 @@ func (a Address) BuildRules(actionName string, svc domain.Service, r *domain.Rul
     <pre><code>type Rules struct {
     mode       EntityMode
     ctx        *NotificationContext  // pre-applied scope on AVO; root-ctx on root
-    entityType reflect.Type          // owner type — drives label:"..." tag resolution
+    entityType reflect.Type          // owner type — drives labelKey:"..." tag resolution
 }
 
 // Common form — name + notification + optional value (becomes FieldValue).
@@ -341,20 +341,20 @@ func (h *AdminPatchHandler) Handle(ctx *configuration.AppContext, cmd *AdminPatc
         The wire <code>field</code> and the audit <code>field</code> are technical identifiers — stable but not human-readable. Channels without a frontend (e-mail, SMS, push, audit read by compliance / ouvidoria / BI) consume the envelope directly and benefit from a translated label next to the technical identifier. <em>"CEP é inválido"</em> reads naturally; <em>"addresses[0].zipCode é inválido"</em> does not.
     </p>
     <p>
-        The mechanism reuses the existing <code>Translator</code> surface — no new translator, no boot phase, no schema endpoint. A <code>label:"&lt;catalogKey&gt;"</code> struct tag on the field declares which catalog entry renders the human label. The framework reads the tag at notification emit time and at audit write time, then surfaces the rendered string (on the notification wire) and the raw key (on the audit row) so future audit readers can re-render in any locale.
+        The mechanism reuses the existing <code>Translator</code> surface — no new translator, no boot phase, no schema endpoint. A <code>labelKey:"&lt;catalogKey&gt;"</code> struct tag on the field declares which catalog entry renders the human label. The framework reads the tag at notification emit time and at audit write time, then surfaces the rendered string (on the notification wire) and the raw key (on the audit row) so future audit readers can re-render in any locale.
     </p>
 
     <h4>Declaration on the domain struct</h4>
 <pre><code>type User struct {
     domain.AggregateRoot
-    Name  string  `label:"UserNameField"`
-    Email string  `label:"UserEmailField"`
+    Name  string  `labelKey:"UserNameField"`
+    Email string  `labelKey:"UserEmailField"`
     Phone *string                            // no label tag — wire elides fieldLabel via omitempty
 }
 
 type Address struct {
-    Street  string `label:"AddressStreetField"`
-    ZipCode string `label:"AddressZipCodeField"`
+    Street  string `labelKey:"AddressStreetField"`
+    ZipCode string `labelKey:"AddressZipCodeField"`
 }</code></pre>
 
     <h4>Catalog entries</h4>
@@ -456,7 +456,7 @@ audit.RenderLabelsInJSON(doc, deps.Translator, configuration.LangPTBR)
     <table>
         <tbody><tr><th>Tag form</th><th>What happens</th></tr>
         <tr>
-            <td><code>label:"&lt;catalogKey&gt;"</code></td>
+            <td><code>labelKey:"&lt;catalogKey&gt;"</code></td>
             <td>The field participates. <code>MessageDTO.FieldLabel</code> carries the rendered string in the actor's locale; <code>FieldChange.FieldLabelKey</code> carries the raw key on audit.</td>
         </tr>
         <tr>
@@ -464,7 +464,7 @@ audit.RenderLabelsInJSON(doc, deps.Translator, configuration.LangPTBR)
             <td>Field is invisible to the label surface. Both wire <code>fieldLabel</code> and audit <code>fieldLabelKey</code> stay empty — <code>omitempty</code> elides them.</td>
         </tr>
         <tr>
-            <td><code>label:"-"</code></td>
+            <td><code>labelKey:"-"</code></td>
             <td>Explicit opt-out (mirror of <code>json:"-"</code>). Empty tag value behaves the same.</td>
         </tr>
         <tr>

@@ -68,7 +68,7 @@ type AuditEvent struct {
 // through the same wire format.
 //
 // FieldLabelKey carries the catalog key declared on the source struct's
-// `label:"<catalogKey>"` tag at write time. Stored as the raw key (not the
+// `labelKey:"<catalogKey>"` tag at write time. Stored as the raw key (not the
 // rendered string) so future audit readers can render the label in any
 // locale the catalog supports — preserving the immutability of the audit
 // row across catalog evolution. Empty when the source field has no `label`

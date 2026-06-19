@@ -18,8 +18,8 @@ import (
 var labelKeyBySchemaCache sync.Map // map[*TableSchema]map[string]string
 
 // labelKeysByGoField returns Go-field-name → catalog key for every declared
-// field of the schema whose `label:"<catalogKey>"` struct tag is non-empty (and
-// not `label:"-"`). Returns nil when no field carries a label tag.
+// field of the schema whose `labelKey:"<catalogKey>"` struct tag is non-empty (and
+// not `labelKey:"-"`). Returns nil when no field carries a label tag.
 func labelKeysByGoField(schema *TableSchema) map[string]string {
 	if schema == nil || schema.typ == nil {
 		return nil
@@ -32,7 +32,7 @@ func labelKeysByGoField(schema *TableSchema) map[string]string {
 		if f.index < 0 {
 			continue
 		}
-		tag, ok := schema.typ.Field(f.index).Tag.Lookup("label")
+		tag, ok := schema.typ.Field(f.index).Tag.Lookup("labelKey")
 		if !ok || tag == "" || tag == "-" {
 			continue
 		}

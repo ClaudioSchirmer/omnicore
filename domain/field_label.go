@@ -14,7 +14,7 @@ import (
 // time by Go identifier).
 var labelPlanCache sync.Map // map[reflect.Type]map[string]string
 
-// resolveLabelKey returns the catalog key declared on the `label:"..."` struct
+// resolveLabelKey returns the catalog key declared on the `labelKey:"..."` struct
 // tag of t's field named fieldName, or "" when no such tag exists.
 //
 // The function is the single primitive consumed by both Rules.AddNotification
@@ -81,7 +81,7 @@ func buildLabelPlan(t reflect.Type) map[string]string {
 			}
 			continue
 		}
-		tag, ok := f.Tag.Lookup("label")
+		tag, ok := f.Tag.Lookup("labelKey")
 		if !ok || tag == "" || tag == "-" {
 			continue
 		}

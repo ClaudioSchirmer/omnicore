@@ -81,7 +81,11 @@
 >
 > **The closed loop the AI follows on every task:**
 >
-> 1. **At task start, create a feature branch with a coherent descriptor.** Prefix by intent (`feature/<slug>` for new behavior, `fix/<slug>` for bug fixes, `docs/<slug>` for doc-only edits, `refactor/<slug>` for internal cleanups). The slug is lowercase-kebab-case and names the *outcome*, not the file edited: `feature/audit-claim-allowlist`, not `feature/edit-auditor`. `git checkout -b <branch>` is the only git-write the AI runs — it is structural setup (local, reversible) so the maintainer's main tree stays clean from in-flight work.
+> 1. **At task start, get onto a coherent feature branch.** Prefix by intent (`feature/<slug>` for new behavior, `fix/<slug>` for bug fixes, `docs/<slug>` for doc-only edits, `refactor/<slug>` for internal cleanups). The slug is lowercase-kebab-case and names the *outcome*, not the file edited: `feature/audit-claim-allowlist`, not `feature/edit-auditor`.
+>    - **If the repo is on `main`** (or another already-merged base), create a fresh branch off it: `git checkout -b <branch>`.
+>    - **If the repo is already on an unmerged feature branch**, do NOT branch fresh off `main` (that would orphan the in-flight work) and do NOT stack a second branch on top. Rename the existing branch to a descriptor coherent with the work now landing on it — `git branch -m <newname>` — and continue on it.
+>
+>    `git checkout -b` and `git branch -m` are the only git-writes the AI runs — both are structural setup (local, reversible) so the maintainer's main tree stays clean from in-flight work.
 >
 > 2. **Apply the file changes for the task on that branch** via the `Edit` / `Read` / `Write` tools.
 >
@@ -400,7 +404,7 @@ Body block — exactly one of the three regimes applies per event, selected by `
 | `kind` | Verbs | Carries | What's in the block |
 |---|---|---|---|
 | `snapshot` | `insert`, `delete` | `snapshot: map[goFieldName]value` | Full state (post-insert for Insert; pre-delete via Old() for Delete) |
-| `delta` | `update` | `changes: []{field,fieldLabelKey,from,to}` sorted by `field` | Only mutated fields; unchanged ones absent. `field` is the faithful domain name (the raw Go field name, e.g. `Email`/`ZipCode`) — audit is map-blind and never carries the physical column. `fieldLabelKey` (omitempty) carries the catalog key declared on the source field's `label:"..."` struct tag — see "Field labels" under [Notification system](#notification-system-domainnotificationgo) |
+| `delta` | `update` | `changes: []{field,fieldLabelKey,from,to}` sorted by `field` | Only mutated fields; unchanged ones absent. `field` is the faithful domain name (the raw Go field name, e.g. `Email`/`ZipCode`) — audit is map-blind and never carries the physical column. `fieldLabelKey` (omitempty) carries the catalog key declared on the source field's `labelKey:"..."` struct tag — see "Field labels" under [Notification system](#notification-system-domainnotificationgo) |
 | `transition` | `archive`, `unarchive` | (neither block) | The verb itself is the recovery hint (symmetric inverse) |
 
 `PartialUpdate` (PATCH) shares `verb=update` with PUT (SQL is identical). The PUT vs PATCH distinction lives in `actionName` (`GetUpdatable` vs `GetPartialUpdatable`). Same unification the domain already applies — `IfUpdate` fires for both verbs. `Updatable.IsPartial()` is preserved on the type for non-audit callers but no longer routes the audit verb.
@@ -474,7 +478,7 @@ Wire format of each one:
 
 Mechanics:
 
-1. **Rules carries ctx + entityType.** `NewRules(mode, ctx, entityType)` packages the EntityMode + destination NotificationContext + the Go `reflect.Type` of the entity / value object that owns this Rules. `r.AddNotification`/`r.AddNotificationMessage` delegate to the internal ctx; the entityType lets `AddNotification` read the field's `label:"..."` struct tag at emit time and stamp `LabelKey` on the emitted message (see "Field labels" below). For the root, ctx is the entity's own `e.NotificationContext()` and entityType is `reflect.TypeOf(self)`; for an AVO, ctx is a `Scoped(NameSegment(collection), IndexSegment(i))` view of the root's ctx and entityType is `reflect.TypeOf(self)` of the AVO struct.
+1. **Rules carries ctx + entityType.** `NewRules(mode, ctx, entityType)` packages the EntityMode + destination NotificationContext + the Go `reflect.Type` of the entity / value object that owns this Rules. `r.AddNotification`/`r.AddNotificationMessage` delegate to the internal ctx; the entityType lets `AddNotification` read the field's `labelKey:"..."` struct tag at emit time and stamp `LabelKey` on the emitted message (see "Field labels" below). For the root, ctx is the entity's own `e.NotificationContext()` and entityType is `reflect.TypeOf(self)`; for an AVO, ctx is a `Scoped(NameSegment(collection), IndexSegment(i))` view of the root's ctx and entityType is `reflect.TypeOf(self)` of the AVO struct.
 2. **Notification path segment is camelCase.** `runAggregateValidations` iterates `root.AllAggregateItems()` and uses `childCollectionSegment(typeName)` — `toLowerCamel(typeName)` pluralized in camelCase (`Address`→`"addresses"`, `OrderLine`→`"orderLines"`) — as the path segment name. It matches the JSON wire segment of the child collection, not the physical table name.
 3. **Render `toLowerCamel` acronym-aware.** A Go identifier becomes camelCase: `Name`→`name`, `URL`→`url`, `ZipCode`→`zipCode`, `URLPath`→`urlPath`. Strings already in lowercase pass through — so the legacy `FieldName: "id"` in mode validators remains intact.
 4. **Wire layer reads `ResolveFieldName()`** (`web/from_notifications.go`, `application/notifications/convert.go`) with precedence **Override > rendered Path > FieldName**.
@@ -487,22 +491,22 @@ Mechanics:
 
 Both override paths populate the same slot (`NotificationMessage.Override`) which sits at the top of the `ResolveFieldName()` precedence. The choice is purely about *when* the decision is taken — entity-definition time vs request-handling time.
 
-**Field labels — `label:"<catalogKey>"` struct tag.** The wire `field` (`addresses[0].zipCode`) and the audit `field` (the raw Go field name, e.g. `ZipCode`) are technical identifiers. They are stable but not human-readable. Channels without a frontend (e-mail / SMS / push / audit read by compliance) consume the envelope directly and benefit from a translated label next to the technical identifier — "CEP é inválido" reads naturally; "addresses[0].zipCode é inválido" does not.
+**Field labels — `labelKey:"<catalogKey>"` struct tag.** The wire `field` (`addresses[0].zipCode`) and the audit `field` (the raw Go field name, e.g. `ZipCode`) are technical identifiers. They are stable but not human-readable. Channels without a frontend (e-mail / SMS / push / audit read by compliance) consume the envelope directly and benefit from a translated label next to the technical identifier — "CEP é inválido" reads naturally; "addresses[0].zipCode é inválido" does not.
 
-The mechanism extends the existing translation surface (no new translator, no boot phase): a `label:"<catalogKey>"` struct tag on the field declares which catalog entry renders the human label. `Rules.AddNotification` reads the tag at emit time via `reflect.Type` and writes the catalog key on `NotificationMessage.LabelKey`; the translation layer (`application/notifications/convert.go::ToContextDTOs`) renders the key via `Translator.Render(lang, key, nil)` alongside the existing `Message` render and surfaces the result on `MessageDTO.FieldLabel`. The audit pipeline (`infra/audit_builder.go::computeChanges`) walks the same tag and writes the raw key on `FieldChange.FieldLabelKey`; `audit.RenderLabels` (typed) and `audit.RenderLabelsInJSON` (map-form) consume the key at read time and replace it with `FieldLabel` rendered in the chosen locale.
+The mechanism extends the existing translation surface (no new translator, no boot phase): a `labelKey:"<catalogKey>"` struct tag on the field declares which catalog entry renders the human label. `Rules.AddNotification` reads the tag at emit time via `reflect.Type` and writes the catalog key on `NotificationMessage.LabelKey`; the translation layer (`application/notifications/convert.go::ToContextDTOs`) renders the key via `Translator.Render(lang, key, nil)` alongside the existing `Message` render and surfaces the result on `MessageDTO.FieldLabel`. The audit pipeline (`infra/audit_builder.go::computeChanges`) walks the same tag and writes the raw key on `FieldChange.FieldLabelKey`; `audit.RenderLabels` (typed) and `audit.RenderLabelsInJSON` (map-form) consume the key at read time and replace it with `FieldLabel` rendered in the chosen locale.
 
 ```go
 // consumer side — domain/user.go
 type User struct {
     domain.AggregateRoot
-    Name  string  `label:"UserNameField"`
-    Email string  `label:"UserEmailField"`
+    Name  string  `labelKey:"UserNameField"`
+    Email string  `labelKey:"UserEmailField"`
     Phone *string                            // no label tag — nothing emitted
 }
 
 type Address struct {
-    Street  string `label:"AddressStreetField"`
-    ZipCode string `label:"AddressZipCodeField"`
+    Street  string `labelKey:"AddressStreetField"`
+    ZipCode string `labelKey:"AddressZipCodeField"`
 }
 ```
 
@@ -514,7 +518,7 @@ type Address struct {
 "AddressZipCodeField": "CEP",
 ```
 
-Wire envelope on a notification rendered in PT-BR with `label:"AddressZipCodeField"` on `Address.ZipCode`:
+Wire envelope on a notification rendered in PT-BR with `labelKey:"AddressZipCodeField"` on `Address.ZipCode`:
 
 ```json
 {
@@ -529,7 +533,7 @@ Wire envelope on a notification rendered in PT-BR with `label:"AddressZipCodeFie
 }
 ```
 
-Audit row (root delta on `Name`) with `label:"UserNameField"` on `User.Name`:
+Audit row (root delta on `Name`) with `labelKey:"UserNameField"` on `User.Name`:
 
 ```json
 {
@@ -548,7 +552,7 @@ Rules:
 
 - **Tag value = catalog key.** Lookup goes through the standard `Translator.Render(lang, key, nil)` — same primitive `MessageDTO.Message` uses today.
 - **No tag = no label.** The wire `MessageDTO.FieldLabel` and the audit `FieldChange.FieldLabelKey` are `omitempty` — services without `label` tags see byte-identical envelopes.
-- **`label:"-"`** opts a field out explicitly (mirror of `json:"-"`); empty tag value is treated the same.
+- **`labelKey:"-"`** opts a field out explicitly (mirror of `json:"-"`); empty tag value is treated the same.
 - **A field not declared in the `TableSchema` carries no label.** Such a field is runtime-only — the framework never persists, scans, or audits it, so it never surfaces on the wire or in audit, label included.
 - **Catalog miss → raw key fallback.** Same posture `Translator.Render` already applies to `MessageDTO.Message`: returns the catalog key as the rendered string AND emits `slog.Warn("translation.key.missing", "lang", lang, "key", key)` once per `(lang, key)` tuple. No boot-time validator.
 - **Audit stores the key, not the rendered string.** Immutable artifact — the catalog evolves; the key remains. Readers render in the locale they want via `audit.RenderLabels(ev, t, lang)` (typed `*AuditEvent`) or `audit.RenderLabelsInJSON(doc, t, lang)` (parsed `map[string]any` from the `audit_events.jsonb` payload). Both helpers walk top-level `changes` + `children.<typeName>[].changes`, pop `fieldLabelKey`, and write `fieldLabel` rendered via `Translator.Render`. Snapshot blocks (Insert / Delete) are intentionally not touched — they carry `map[column]value` with no schema for labels.
@@ -1545,7 +1549,7 @@ fwinfra.View("users").Version(1).Root("users").
 
 **Where the boot checks run — `WithSchema`, on both the flat and aggregate paths.** `BaseRepository.WithSchema(schema)` (flat) and `BaseAggregateRepository.WithSchema(schema)` (aggregate) both run PK-declared + aggregate-depth + `Modes() ⟺ SoftDelete` at construction (the aggregate path adds the boundary-agreement check and threads the schema into the read loader). Calling `WithSchema` also surfaces a nil `NewEntity` factory at construction (it calls `r.New()`) instead of on the first write. Assigning `r.Schema = schema` directly stays supported as the unchecked escape hatch — `WithSchema` is the validated canonical entry.
 
-**Audit stays map-blind.** Audit does NOT consume the schema — the `snapshot` keys and `changes[].field` are the faithful Go field name (`Email`, `ZipCode`), never the physical column. A column rename never disturbs the timeline; `label:"…"` field labels resolve by Go field name too.
+**Audit stays map-blind.** Audit does NOT consume the schema — the `snapshot` keys and `changes[].field` are the faithful Go field name (`Email`, `ZipCode`), never the physical column. A column rename never disturbs the timeline; `labelKey:"…"` field labels resolve by Go field name too.
 
 **Manual scanners bypass the schema by design.** `WithRootScanner`/`WithChildScanner` (the latter takes the child Go type name) hand the SELECT + scan to the developer, who owns the column names directly. The schema governs the auto-scan path; the manual path stays a full escape hatch.
 
@@ -1830,7 +1834,7 @@ The Semantic enum is **transport-agnostic** — a future gRPC layer would map th
 | Implement AVO validation | `func (a Address) BuildRules(svc Service, r *Rules)` — same shape as `Entity.BuildRules`, only loses `actionName` |
 | Rename a wire field for the whole entity (stable rule) | `u.AddFieldNameAlias("Email", "primaryEmail")` on `*BaseEntity` (typically in the constructor). Applied automatically inside `checkAllNotifications` via `applyFieldAliases` — every message about `Email` surfaces as `primaryEmail` on the wire, regardless of which handler triggered it |
 | Rename a wire field for one request (conditional) | `ctx.ChangeFieldName(resolvedOldName, newName)` — imperative in a manual handler; sets `Override` on matching messages without losing Path/FieldName |
-| Expose a translated human label for a field (notifications + audit) | declare `label:"<catalogKey>"` on the struct field (e.g. `ZipCode string \`label:"AddressZipCodeField"\``) and add the catalog entry in each `translation.Module`. `Rules.AddNotification` reads the tag at emit; `MessageDTO.FieldLabel` carries the rendered string in the actor's locale; `FieldChange.FieldLabelKey` carries the raw key for audit (render-at-read). Missing catalog entry → raw key on wire + `slog.Warn` once per `(lang, key)`. Independent of `AddFieldNameAlias`/`ChangeFieldName` — alias renames `FieldName`, label translates `FieldLabel` |
+| Expose a translated human label for a field (notifications + audit) | declare `labelKey:"<catalogKey>"` on the struct field (e.g. `ZipCode string \`labelKey:"AddressZipCodeField"\``) and add the catalog entry in each `translation.Module`. `Rules.AddNotification` reads the tag at emit; `MessageDTO.FieldLabel` carries the rendered string in the actor's locale; `FieldChange.FieldLabelKey` carries the raw key for audit (render-at-read). Missing catalog entry → raw key on wire + `slog.Warn` once per `(lang, key)`. Independent of `AddFieldNameAlias`/`ChangeFieldName` — alias renames `FieldName`, label translates `FieldLabel` |
 | Render an audit row's field labels at read time | `audit.RenderLabels(ev, deps.Translator, lang)` for a typed `*audit.AuditEvent` held in-process; `audit.RenderLabelsInJSON(doc, deps.Translator, lang)` for a `map[string]any` parsed off the `audit_events.jsonb` payload (BI / SQL consumers). Both mutate in place: walk `changes` + `children.<typeName>[].changes`, pop `fieldLabelKey`, and write `fieldLabel` rendered via `Translator.Render`. Snapshot blocks untouched. Catalog miss → raw key + `slog.Warn` once per `(lang, key)` |
 | Read an audit row by id or timeline by aggregate | `audit.FindByID(ctx, exec, uuid)` returns `(*AuditEvent, error)`; miss surfaces as `audit.ErrAuditNotFound`. `audit.FindByAggregate(ctx, exec, entityType, aggregateID)` returns `[]*AuditEvent` newest-first (index-served by `audit_events_entity_timeline_idx`). Both consume the minimal `pgExec` interface (`*pgxpool.Pool` / `*pgxpool.Conn` / `*pgx.Conn` / `pgx.Tx`). Compose with `audit.RenderLabels` for translated read in three lines |
 | 1-message error in domain | `domain.SingleNotificationError(ctx, field, n)` / `domain.NotFoundError(ctx, field, value)` / `domain.FieldErrorWithCause(ctx, field, cause, n)` |

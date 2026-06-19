@@ -276,7 +276,7 @@ func OrdersView() *fwinfra.ViewDefinition {
 <p>
     Audit does <strong>not</strong> consume the schema. The timeline's <code>snapshot</code> keys and
     <code>changes[].field</code> are the faithful Go field name (<code>Email</code>, <code>ZipCode</code>), never the
-    physical column. A column rename therefore never disturbs the audit history. The <code>label:"…"</code> field labels
+    physical column. A column rename therefore never disturbs the audit history. The <code>labelKey:"…"</code> field labels
     resolve by Go field name too.
 </p>
 
