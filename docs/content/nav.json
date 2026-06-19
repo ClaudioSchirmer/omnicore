@@ -13,6 +13,10 @@
       {
         "id": "architecture",
         "label": "Architecture"
+      },
+      {
+        "id": "handler-invariance",
+        "label": "Handler invariance"
       }
     ]
   },

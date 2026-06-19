@@ -48,7 +48,7 @@ pwd: "${vault:secret/data/db#password}"                # delegated to a register
         <tr><td><code>mongo</code></td><td><strong>yes</strong></td><td>read-side URI/db + rebuild policy</td><td>below · <a href="#mongo-schema-evolution">rebuild</a></td></tr>
         <tr><td><code>kafka</code></td><td><strong>yes</strong></td><td>brokers + SyncEngine group/workers</td><td>below</td></tr>
         <tr><td><code>migrations</code></td><td>no</td><td>SQL migration dir + autoRun mode</td><td>below · <a href="#migrations">Migrations</a></td></tr>
-        <tr><td><code>query</code></td><td>no</td><td>read-side <code>?limit=</code> ceiling</td><td>below · <a href="#auto-query-handlers">Auto query handlers</a></td></tr>
+        <tr><td><code>query</code></td><td>no</td><td>read-side <code>?limit=</code> ceiling + tabular-export row ceiling</td><td>below · <a href="#auto-query-handlers">Auto query handlers</a></td></tr>
         <tr><td><code>auth</code></td><td>no*</td><td>JWT auth + external validator + authz</td><td>below · <a href="#auth-middleware">Authentication</a> · <a href="#authz-seams">Authorization</a></td></tr>
         <tr><td><code>audit</code></td><td>no</td><td>audit event destinations</td><td>below · <a href="#audit">Audit</a></td></tr>
         <tr><td><code>cache</code></td><td>no</td><td>private + shared key-value cache</td><td>below · <a href="#cache-subsystem">Cache subsystem</a></td></tr>
@@ -88,7 +88,9 @@ migrations:
 
 query:
   maxLimit: 200                          # service-wide ceiling on ?limit=; 0/unset → framework default 100
-                                         # (per-view override via fwinfra.View(...).MaxLimit(N))</code></pre>
+                                         # (per-view override via fwinfra.View(...).MaxLimit(N))
+  maxExportRows: 5000                    # ceiling on rows a tabular export (CSV/XLSX) streams; 0/unset → framework
+                                         # default 10000 (per-view override via fwinfra.View(...).MaxExportRows(N))</code></pre>
 
     <h3>auth</h3>
     <p>

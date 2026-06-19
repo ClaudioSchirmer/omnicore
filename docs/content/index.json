@@ -1,6 +1,11 @@
 {
   "layers": "architecture",
   "dependencies": "architecture",
+  "hi-command": "handler-invariance",
+  "hi-query": "handler-invariance",
+  "hi-matrix": "handler-invariance",
+  "hi-why": "handler-invariance",
+  "qry-export": "auto-query-handlers",
   "cmd-flow": "command-handler",
   "cmd-auto-vs-manual": "command-handler",
   "cmd-example": "command-handler",

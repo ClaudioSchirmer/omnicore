@@ -536,6 +536,9 @@ fwopenapi.MountRaw(d.OpenAPIRegistry, app, fiber.MethodGet, "/users.csv", csvH,
         cells kept typed, built on <code>excelize</code>'s streaming writer). The matching
         convenience wrappers are <code>fwweb.HandleQueryAsCSV</code> and
         <code>fwweb.HandleQueryAsXLSX</code>; a further format is a new <code>Encoder</code>, with
-        no change to the plan, the generator, or the HTTP wrapper.
+        no change to the plan, the generator, or the HTTP wrapper. Attaching the same query handler
+        to JSON, CSV, and Excel is one half of a broader pattern — see
+        <a href="#handler-invariance">Handler invariance</a> (queries → JSON/CSV/Excel, commands →
+        HTTP/Kafka).
     </p>
 
