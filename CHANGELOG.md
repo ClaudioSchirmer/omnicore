@@ -36,7 +36,11 @@ with `1.0.0`.
   `SoftDelete/CreatedAt/UpdatedAt(col)` enables; omitting disables. `created_at`
   and `updated_at` are actively stamped `NOW()` on write (no reliance on a DB
   default); on the read path they are readable under fixed logical Go names
-  `CreatedAt`/`UpdatedAt`/`DeletedAt`.
+  `CreatedAt`/`UpdatedAt`/`DeletedAt`. Column declarations are a strict bijection
+  over the full physical column set: `PK`, every `Field`, and the three managed
+  columns panic at construction when two map to the same physical column —
+  enforced regardless of declaration order (a managed column declared after the
+  field it collides with, or two managed slots sharing a column, fail loudly).
 - **`fwinfra.FromSchema(*TableSchema) *Source`** — the single embed source
   constructor. Table/collection, store kind (type-anchored `NewTableSchema[T]` →
   local Postgres; type-less `NewExternalSchema` → external/Mongo — the schema's

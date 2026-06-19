@@ -19,8 +19,10 @@ import (
 // soft-delete column. A schema-less source falls back to id / deleted_at.
 //
 // Dispatch per embed on Source.IsMongo():
-//   - PG source (From): fetchRow / fetchWhere against the connection pool.
-//   - Mongo source (FromMongo): MongoDB.FindManyByField against the local DB.
+//   - PG source (FromSchema over a type-anchored schema): fetchRow / fetchWhere
+//     against the connection pool.
+//   - Mongo source (FromSchema over a type-less NewExternalSchema):
+//     MongoDB.FindManyByField against the local DB.
 type Composer struct {
 	pg    *Postgres
 	mongo *MongoDB

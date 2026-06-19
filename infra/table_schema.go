@@ -20,8 +20,8 @@ import (
 //
 // Type-anchored: NewTableSchema[T] binds the schema to the Go type so the boot
 // validates every declared field exists on T and resolves its field index once.
-// External view sources (fwinfra.FromMongo, whose physical columns belong to an
-// upstream service) declare a type-less schema via NewExternalSchema.
+// External view sources (fwinfra.FromSchema over a type-less NewExternalSchema,
+// whose physical columns belong to an upstream service) carry no Go struct.
 type TableSchema struct {
 	table string
 	typ   reflect.Type // nil for external (type-less) schemas
@@ -76,7 +76,7 @@ func NewTableSchema[T any](table string) *TableSchema {
 }
 
 // NewExternalSchema starts a type-less schema for a Mongo view source whose
-// physical columns belong to an upstream service (fwinfra.FromMongo). Field
+// physical columns belong to an upstream service (consumed via fwinfra.FromSchema). Field
 // declarations carry logical Go names (consumed by the composite view's
 // criteria/Response) mapped to the upstream's doc columns; there is no struct
 // to validate against.
@@ -106,9 +106,45 @@ func exportedFieldIndex(t reflect.Type, goName string) int {
 	return f.Index[0]
 }
 
+// ensureColumnFree panics when column is already claimed by the PK, a mapped
+// field, or another managed column — enforcing the bijection over the full
+// physical column set (PK + every Field + soft-delete/created/updated)
+// regardless of the order PK/Field/SoftDelete/CreatedAt/UpdatedAt are declared.
+// `self` names the slot being (re)assigned so reassigning it to the same column
+// is not flagged as a self-collision. Field() runs its own equivalent check at
+// declaration time; this covers every managed setter + PK so a collision is a
+// boot panic no matter which side is declared second.
+func (s *TableSchema) ensureColumnFree(column, self string) {
+	if column == "" {
+		return
+	}
+	collide := func(role string) {
+		panic(fmt.Sprintf(
+			"infra.TableSchema(%s): column %q claimed by both %s and %s — the map must be a bijection",
+			s.table, column, role, self,
+		))
+	}
+	if self != "PK" && column == s.pkColumn {
+		collide("PK")
+	}
+	if _, dup := s.byCol[column]; dup {
+		collide("a mapped field")
+	}
+	if self != "SoftDelete" && column == s.softDelete {
+		collide("SoftDelete")
+	}
+	if self != "CreatedAt" && column == s.createdAt {
+		collide("CreatedAt")
+	}
+	if self != "UpdatedAt" && column == s.updatedAt {
+		collide("UpdatedAt")
+	}
+}
+
 // PK declares the primary-key mapping. The Go side is the BaseEntity contract
 // field "ID"; the column defaults to "id" and is overridden here. Single-column.
 func (s *TableSchema) PK(goName, column string) *TableSchema {
+	s.ensureColumnFree(column, "PK")
 	s.pkGo = goName
 	s.pkColumn = column
 	if s.typ != nil {
@@ -156,15 +192,27 @@ func (s *TableSchema) Field(goName, column string) *TableSchema {
 // SoftDelete enables the soft-delete predicate on col (read scope-gate +
 // archive/unarchive SQL). Omitting it disables soft-delete: Archive/Unarchive
 // are unavailable and the read gate is never applied.
-func (s *TableSchema) SoftDelete(col string) *TableSchema { s.softDelete = col; return s }
+func (s *TableSchema) SoftDelete(col string) *TableSchema {
+	s.ensureColumnFree(col, "SoftDelete")
+	s.softDelete = col
+	return s
+}
 
 // CreatedAt enables a framework-stamped created_at column: the framework writes
 // col = NOW() on INSERT (it never relies on a DB DEFAULT it does not own).
-func (s *TableSchema) CreatedAt(col string) *TableSchema { s.createdAt = col; return s }
+func (s *TableSchema) CreatedAt(col string) *TableSchema {
+	s.ensureColumnFree(col, "CreatedAt")
+	s.createdAt = col
+	return s
+}
 
 // UpdatedAt enables a framework-stamped updated_at column: col = NOW() on
 // INSERT and UPDATE.
-func (s *TableSchema) UpdatedAt(col string) *TableSchema { s.updatedAt = col; return s }
+func (s *TableSchema) UpdatedAt(col string) *TableSchema {
+	s.ensureColumnFree(col, "UpdatedAt")
+	s.updatedAt = col
+	return s
+}
 
 // Child registers an aggregate child's schema, keyed by the child Go type name.
 func (s *TableSchema) Child(child *TableSchema) *TableSchema {

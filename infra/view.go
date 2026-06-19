@@ -47,8 +47,9 @@ func (e embedDef) Field() string { return e.field }
 func (e embedDef) Many() bool { return e.many }
 
 // Source describes one fetch leaf inside a ViewDefinition. The `table` field
-// carries either a Postgres table (for sources produced by From) or a Mongo
-// collection name (for sources produced by FromMongo); isMongo discriminates.
+// carries either a Postgres table (for FromSchema over a type-anchored schema)
+// or a Mongo collection name (for FromSchema over a type-less
+// NewExternalSchema); isMongo discriminates.
 // The composer dispatches on IsMongo() to pick the underlying store:
 //
 //   - false (default): fetch via Postgres pool (fetchRow / fetchWhere)
@@ -186,9 +187,9 @@ func (v *ViewDefinition) MaxLimitValue() int64 { return v.maxLimit }
 //
 // The schema is required on every embed: the read membrane translates Go↔column
 // through it, so there is no convention fallback (no inferred "id"/"deleted_at",
-// no identity pass-through). A local From source reuses the child's repository
-// schema; an upstream FromMongo source declares a NewExternalSchema for the
-// upstream's columns.
+// no identity pass-through). A local FromSchema source (type-anchored schema)
+// reuses the child's repository schema; an upstream FromSchema source over a
+// NewExternalSchema describes the upstream's columns.
 func FromSchema(ts *TableSchema) *Source {
 	return &Source{table: ts.Table(), isMongo: ts.isExternal(), schema: ts}
 }
@@ -313,7 +314,7 @@ func appendEmbedSchemaProblems(acc []string, viewName string, embeds []embedDef)
 // viewIndex splits the rebuild lookup by source kind. The original
 // single-map implementation conflated Postgres tables and Mongo collection
 // names — a PG-root view named "users" would collide in the lookup with a
-// view embedding FromMongo("users"). The split keeps the namespaces separate:
+// view embedding FromSchema(NewExternalSchema("users")). The split keeps the namespaces separate:
 //
 //   - byPGTable: SyncEngine consults this on each Kafka message
 //     (aggregate_type ≡ PG root table) to find every view that needs to be
@@ -332,7 +333,7 @@ type viewIndex struct {
 }
 
 // DependentMongoViews returns the subset of views that embed the named
-// Mongo collection via fwinfra.FromMongo (at any nesting level). Used by
+// Mongo collection via an external fwinfra.FromSchema (at any nesting level). Used by
 // bootstrap when wiring UpstreamSubscriber instances — the subscriber
 // receives this slice as its recompose-ripple targets.
 //

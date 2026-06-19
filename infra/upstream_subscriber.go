@@ -97,7 +97,7 @@ func (m *upstreamMetrics) Snapshot() map[string]uint64 {
 
 // UpstreamSubscriber materializes one upstream topic into a local Mongo
 // collection and triggers downstream recompose-ripple on every view that
-// embeds the collection via fwinfra.FromMongo. One instance per
+// embeds the collection via an external fwinfra.FromSchema. One instance per
 // bootstrap.UpstreamSubscription declared in the service Wiring / yaml.
 //
 // The subscriber's lifecycle is owned by bootstrap.Run, which spawns one
@@ -135,7 +135,7 @@ type UpstreamSubscriber struct {
 }
 
 // NewUpstreamSubscriber wires the subscriber. dependentViews is the slice
-// of B views that embed cfg.Collection via FromMongo — bootstrap looks
+// of B views that embed cfg.Collection via an external FromSchema — bootstrap looks
 // this up from viewIndex.byMongoColl after collectViews returns and
 // passes the result here so the subscriber's per-message recompose loop
 // is index-only.
@@ -528,7 +528,7 @@ func (s *UpstreamSubscriber) ripple(ctx context.Context, upstreamID string) {
 		joinField := s.joinFieldFor(v)
 		if joinField == "" {
 			// Defensive — bootstrap.validateUpstreamSubscriptions
-			// rejected views with FromMongo embeds without a
+			// rejected views with external FromSchema embeds without a
 			// join field. If we land here, the view's shape
 			// changed at runtime (impossible today) — log and skip.
 			s.logger.Error("upstream subscriber: view embeds collection but no join field declared",
@@ -639,7 +639,7 @@ func (s *UpstreamSubscriber) resolveFailures(ctx context.Context, viewName, upst
 }
 
 // joinFieldFor walks v.Embeds() looking for the embed that points at
-// s.cfg.Collection via FromMongo. Used by ripple to compute the Mongo
+// s.cfg.Collection via an external FromSchema. Used by ripple to compute the Mongo
 // query "which docs reference the changed upstream id?".
 //
 // A view typically declares a single embed per upstream collection, but

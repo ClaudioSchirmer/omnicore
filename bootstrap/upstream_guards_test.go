@@ -118,7 +118,7 @@ func TestGuardMaterializingSource_AcceptsSubscriptionCollection(t *testing.T) {
 }
 
 func TestGuardMaterializingSource_RejectsLocalView(t *testing.T) {
-	// View-on-view via FromMongo (FromMongo targeting another local
+	// View-on-view via an external FromSchema (targeting another local
 	// ViewDefinition.Name()) is rejected at boot: the recompose ripple is
 	// one-hop, so a change upstream of derivative_view would recompose
 	// derivative_view but never re-ripple to orders. Drift would silently
@@ -224,7 +224,7 @@ func TestValidateUpstreamSubscriptions_AccumulatesAllViolations(t *testing.T) {
 			StartFrom:        StartFromLatest},
 	}
 	views := []*infra.ViewDefinition{
-		// §8.1 — FromMongo without covering index
+		// §8.1 — external FromSchema without covering index
 		infra.View("orders").Root("orders").
 			Embed("buyer", extEmbed("users", "buyer_id", "Buyer")).
 			Version(1),

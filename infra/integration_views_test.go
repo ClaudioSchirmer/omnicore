@@ -294,7 +294,7 @@ func TestInfrastructureFieldErrorWithCause(t *testing.T) {
 	}
 }
 
-// --- View / Source builder methods (Embed / FromMongo) ---
+// --- View / Source builder methods (Embed / FromSchema) ---
 
 func TestView_EmbedAddsOneToOneSource(t *testing.T) {
 	v := View("v").Root("v").Schema(rootSchema("v")).Embed("child", pgEmbed("child", "").On("v_id")).Version(1)
@@ -303,7 +303,7 @@ func TestView_EmbedAddsOneToOneSource(t *testing.T) {
 	}
 }
 
-// TestFrom_MarksIsMongoFalse and TestFromMongo_MarksIsMongoTrue live in
+// TestFromSchema_AnchoredIsPG and TestFromSchema_ExternalIsMongo live in
 // view_unit_test.go (no build tag) so they run in the default unit suite —
 // they are pure builder checks with no integration dependency. Keeping them
 // here too would redeclare them under -tags=integration.

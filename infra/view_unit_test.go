@@ -57,7 +57,7 @@ func TestBuildViewIndex_SplitsByKind(t *testing.T) {
 	if len(idx.byPGTable["invoices"]) != 1 {
 		t.Errorf("byPGTable[invoices] = %d, want 1", len(idx.byPGTable["invoices"]))
 	}
-	// Mongo side: only FromMongo embeds
+	// Mongo side: only external FromSchema embeds
 	if len(idx.byMongoColl["users"]) != 1 {
 		t.Errorf("byMongoColl[users] = %d, want 1", len(idx.byMongoColl["users"]))
 	}

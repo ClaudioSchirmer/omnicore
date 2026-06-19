@@ -11,7 +11,7 @@ import (
 // UpstreamSubscription declares one Kafka topic produced by an upstream
 // service A whose payload service B wants to materialize into a local Mongo
 // collection. After every successful local upsert, every B view that embeds
-// the collection via fwinfra.FromMongo is recomposed transparently by the
+// the collection via an external fwinfra.FromSchema is recomposed transparently by the
 // framework — B writes no code per upstream change and never reads from A's
 // database or HTTP surface on the request path.
 //

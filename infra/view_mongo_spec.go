@@ -449,7 +449,7 @@ func (v *ViewDefinition) TimeSeries(ts *TimeSeriesSpec) *ViewDefinition {
 // IndexSpecs returns the declared indexes — consumed by Phase B's
 // ApplyMongoSpecs to feed Collection.Indexes().CreateMany, and by the
 // boot guards in bootstrap/upstream_guards.go to check coverage on
-// FromMongo embed join fields (§8.1).
+// external FromSchema embed join fields (§8.1).
 func (v *ViewDefinition) IndexSpecs() []*IndexSpec { return v.mongoSpec.indexes }
 
 // KeyNames returns the field names of the spec's keys in declaration
