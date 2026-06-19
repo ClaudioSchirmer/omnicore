@@ -174,14 +174,14 @@ func TestReflectExpectedJSONKeys_Cached(t *testing.T) {
 }
 
 func TestMissingKeys(t *testing.T) {
-	expected := []string{"cpf", "email", "name", "phone"}
+	expected := []string{"email", "name", "phone", "username"}
 	cases := []struct {
 		raw  map[string]json.RawMessage
 		want []string
 	}{
-		{map[string]json.RawMessage{"name": json.RawMessage(`"x"`), "email": nil, "cpf": nil, "phone": nil}, []string{}},
-		{map[string]json.RawMessage{"name": nil, "email": nil, "cpf": nil}, []string{"phone"}},
-		{map[string]json.RawMessage{}, []string{"cpf", "email", "name", "phone"}},
+		{map[string]json.RawMessage{"name": json.RawMessage(`"x"`), "email": nil, "username": nil, "phone": nil}, []string{}},
+		{map[string]json.RawMessage{"name": nil, "email": nil, "username": nil}, []string{"phone"}},
+		{map[string]json.RawMessage{}, []string{"email", "name", "phone", "username"}},
 	}
 	for i, tc := range cases {
 		got := missingKeys(expected, tc.raw)

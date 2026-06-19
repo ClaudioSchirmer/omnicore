@@ -427,7 +427,7 @@ sync.Start(ctx)
 return bootstrap.Wiring{
     UpstreamSubscriptions: []bootstrap.UpstreamSubscription{
         {Topic: "people.customers.events", Collection: "customers",
-         Filter: []string{"id", "name", "cpf"},
+         Filter: []string{"id", "name", "username"},
          OnUpstreamDelete: bootstrap.UpstreamDeleteCascade},
         {Topic: "catalog.products.events", Collection: "products",
          Filter: []string{"id", "name", "price"},

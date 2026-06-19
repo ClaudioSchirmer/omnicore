@@ -4,7 +4,7 @@ import "strings"
 
 // renderPath turns a structured PathSegment slice into the wire-format field
 // string. Name segments are rendered via lowerCamel (PascalCase → camelCase,
-// acronym-aware: "CPF" → "cpf", "ZipCode" → "zipCode"); names that already
+// acronym-aware: "URL" → "url", "ZipCode" → "zipCode"); names that already
 // start with a lowercase character are passed through verbatim so legacy
 // already-lowercase identifiers ("id", "name") stay unchanged. Index segments
 // are appended in the form "[N]" with no preceding separator.
@@ -12,7 +12,7 @@ import "strings"
 // Examples:
 //
 //	[{Name:"Name"}]                                       → "name"
-//	[{Name:"CPF"}]                                        → "cpf"
+//	[{Name:"URL"}]                                        → "url"
 //	[{Name:"ZipCode"}]                                    → "zipCode"
 //	[{Name:"Addresses"}, {Index:0}, {Name:"ZipCode"}]     → "addresses[0].zipCode"
 //	[{Name:"id"}]                                         → "id"
@@ -100,7 +100,7 @@ func pluralizeWord(s string) string {
 
 // toLowerCamel converts a Go identifier to a JSON-friendly camelCase string.
 // Acronym handling: a run of two or more leading uppercase runes is fully
-// lowercased ("CPF" → "cpf", "URLPath" → "urlPath", "HTTPStatusCode" →
+// lowercased ("URL" → "url", "URLPath" → "urlPath", "HTTPStatusCode" →
 // "httpStatusCode"). A single leading uppercase becomes a single lowercase
 // ("Name" → "name"). Strings starting with a non-uppercase rune are returned
 // as-is so already-lowercase literals ("id", "service") stay stable.

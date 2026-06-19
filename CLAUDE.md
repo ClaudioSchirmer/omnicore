@@ -426,7 +426,7 @@ The child op vocabulary is the same 5-verb set as the root verb (`inserted`/`upd
 - Translation key is the struct's type name via `reflect.TypeOf(n).Name()` — same pattern as Kotlin's `::class.simpleName`
 
 ```go
-type CPFAlreadyExistsNotification struct{ domain.DomainNotificationBase }
+type UsernameAlreadyExistsNotification struct{ domain.DomainNotificationBase }
 ```
 
 `NotificationContext` groups messages by context name (entity/aggregate). Methods: `AddNotification(name, n, value...)`, `AddNotificationMessage(msg)`, `Scoped`, `HasErrors`, `Clear`, `ChangeFieldName`, `Copy`, `Messages`. (Previously called `AddField`/`Add` — renamed to make the intent clear; it is a notification, not a field.)
@@ -475,7 +475,7 @@ Mechanics:
 
 1. **Rules carries ctx + entityType.** `NewRules(mode, ctx, entityType)` packages the EntityMode + destination NotificationContext + the Go `reflect.Type` of the entity / value object that owns this Rules. `r.AddNotification`/`r.AddNotificationMessage` delegate to the internal ctx; the entityType lets `AddNotification` read the field's `label:"..."` struct tag at emit time and stamp `LabelKey` on the emitted message (see "Field labels" below). For the root, ctx is the entity's own `e.NotificationContext()` and entityType is `reflect.TypeOf(self)`; for an AVO, ctx is a `Scoped(NameSegment(collection), IndexSegment(i))` view of the root's ctx and entityType is `reflect.TypeOf(self)` of the AVO struct.
 2. **Notification path segment is camelCase.** `runAggregateValidations` iterates `root.AllAggregateItems()` and uses `childCollectionSegment(typeName)` — `toLowerCamel(typeName)` pluralized in camelCase (`Address`→`"addresses"`, `OrderLine`→`"orderLines"`) — as the path segment name. It matches the JSON wire segment of the child collection, not the physical table name.
-3. **Render `toLowerCamel` acronym-aware.** A Go identifier becomes camelCase: `Name`→`name`, `CPF`→`cpf`, `ZipCode`→`zipCode`, `URLPath`→`urlPath`. Strings already in lowercase pass through — so the legacy `FieldName: "id"` in mode validators remains intact.
+3. **Render `toLowerCamel` acronym-aware.** A Go identifier becomes camelCase: `Name`→`name`, `URL`→`url`, `ZipCode`→`zipCode`, `URLPath`→`urlPath`. Strings already in lowercase pass through — so the legacy `FieldName: "id"` in mode validators remains intact.
 4. **Wire layer reads `ResolveFieldName()`** (`web/from_notifications.go`, `application/notifications/convert.go`) with precedence **Override > rendered Path > FieldName**.
 
 **Controlling the wire field name — three paths.** All three feed `ResolveFieldName()`; pick by lifetime of the rule:
@@ -1313,7 +1313,7 @@ Child table/FK are declared in the child's `TableSchema` (`.Child(fwinfra.NewTab
 ```go
 type User struct {
     domain.AggregateRoot
-    Name, Email, CPF, Phone string
+    Name, Email, Username, Phone string
 }
 
 func (u *User) Modes() []domain.EntityMode { return []domain.EntityMode{...} }
@@ -1345,7 +1345,7 @@ func UserSchema() *fwinfra.TableSchema {
         PK("ID", "id").
         Field("Name", "name").
         Field("Email", "email").
-        Field("CPF", "cpf").
+        Field("Username", "username").
         Field("Phone", "phone").
         SoftDelete("deleted_at").
         CreatedAt("created_at").
@@ -1407,7 +1407,7 @@ func NewUserRepository(pg *infra.Postgres) *UserRepository {
             NewEntity:   newUser, // feeds Repo.New() (consumed by UnarchiveCommandHandler)
             Constraints: map[string]infra.ConstraintBinding{
                 "users_email_active_idx": {Notification: EmailAlreadyExistsNotification{}, Field: "email"},
-                "users_cpf_active_idx":   {Notification: CPFAlreadyExistsNotification{},   Field: "cpf"},
+                "users_username_active_idx": {Notification: UsernameAlreadyExistsNotification{}, Field: "username"},
             },
         },
     }
@@ -1493,6 +1493,8 @@ Convention of nullable fields: nullable PG types map to **pointer types** in the
 Everything above infrastructure speaks the **Go field name** (PascalCase) — domain, application, web. The criteria is `criteria.Eq("Email", v)`; the audit timeline says `Email`; repository signatures speak the domain. The only place a physical column/table name appears is the persistence boundary, in exactly one artifact: `TableSchema`. A schema is the **mandatory, explicit, complete** map between a Go type's fields and its physical columns. There is no convention, no name-inference, no `transient` tag: every persisted field is declared, and an undeclared exported field is simply never persisted, scanned, or audited.
 
 One `TableSchema` drives the write path (INSERT/UPDATE/archive SQL), the criteria engine (the `WHERE` a Go-named criterion compiles to), and the auto-scan read-back (column → Go field). The **same** schema is reused by the read-side `ViewDefinition`, so the Mongo projection speaks the same names — a column rename round-trips everywhere automatically.
+
+**Why it is mandatory + manual (design rationale).** The hand-declared map is deliberate, buying four things a convention cannot: (1) **a pure DDD domain** — domain/application/web speak only business vocabulary; the sole place a physical name lives is the `TableSchema` in `infra/`; (2) **transparent mapping flexibility** — any Go field → any column, transparent to every line of implemented code; a rename lives in one place and round-trips everywhere; (3) **adoption of existing/external tables** — point the framework at a schema you don't control (or an upstream collection via `NewExternalSchema`), field by field, with the one structural requirement of a **single, non-composite primary key**; (4) **no failed, tiring conventions** — name-inference is lossy/acronym-hostile (`UserID`/`UserId` → `user_id`, `URLPath`, `IPv4`) and silently wrong on divergence, whereas an explicit map makes a wrong name a boot panic. The map is the single lossless, unambiguous source of truth the persistence + read membrane depends on, so the framework refuses to fabricate it.
 
 **Three-name model.** A field carries up to three names, resolved at two membranes: wire (`json:`/`query:` tags, in `web/`) ↔ Go field (`Email`, the single name every layer above infra uses) ↔ physical column (`mail`, `TableSchema.Field("Email","mail")` in `infra/`). The web membrane translates JSON↔Go; the infra membrane (`TableSchema`) translates Go↔column. Wire and physical names are invisible to the developer manipulating data.
 
@@ -1785,7 +1787,7 @@ The Semantic enum is **transport-agnostic** — a future gRPC layer would map th
 
 | Item | Convention | Example |
 |---|---|---|
-| Notification struct | `<What>Notification` | `RequiredFieldNotification`, `CPFAlreadyExistsNotification` |
+| Notification struct | `<What>Notification` | `RequiredFieldNotification`, `UsernameAlreadyExistsNotification` |
 | Translation key | identical to notification struct name | `"RequiredFieldNotification": "Required field."` |
 | Enum description key | `<Type>.<VALUE>` | `"EntityMode.INSERT": "Inserir"` |
 | Entity files (in services) | lowercase singular | `customer.go`, `order.go` |
@@ -2395,7 +2397,7 @@ Cross-service data is materialized into **B's own Mongo database** via `Upstream
 
 ## Full request flow (concrete)
 
-`POST /users` with body `{"name":"John","email":"j@x.com","cpf":"...","addresses":[{...}]}`:
+`POST /users` with body `{"name":"John","email":"j@x.com","username":"...","addresses":[{...}]}`:
 
 ```
 1. Fiber middleware: build AppContext (UUID + Language from headers)

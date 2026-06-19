@@ -76,7 +76,7 @@
     <h3>Example</h3>
     <pre><code>type User struct {
     domain.AggregateRoot
-    Name, Email, CPF, Phone string
+    Name, Email, Username, Phone string
 }
 
 func (u *User) Modes() []domain.EntityMode { return []domain.EntityMode{...} }
@@ -119,7 +119,7 @@ func UserSchema() *fwinfra.TableSchema {
         PK("ID", "id").
         Field("Name", "name").
         Field("Email", "email").
-        Field("CPF", "cpf").
+        Field("Username", "username").
         Field("Phone", "phone").
         SoftDelete("deleted_at").
         CreatedAt("created_at").

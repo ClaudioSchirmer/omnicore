@@ -374,7 +374,7 @@ type User struct {
     domain.AggregateRoot      // embed; private fields, invisible to the engine
     Name  string
     Email string
-    CPF   string
+    Username string
     Phone *string             // nullable: pointer maps directly to NULL
 }
 
@@ -399,7 +399,7 @@ func NewUserRepository(pg *fwinfra.Postgres) *UserRepository {
         The loader generates:
     </p>
     <pre><code>-- Root (FindOne(criteria.ByID(id)) — id read back; criteria drives the WHERE)
-SELECT id, name, email, cpf, phone FROM users
+SELECT id, name, email, username, phone FROM users
  WHERE id = $1 AND deleted_at IS NULL;
 
 -- Per child declared via .Child(...) on the schema (FindAll batches with fk IN ($1,$2,...))
@@ -407,34 +407,33 @@ SELECT user_id, id, label, street, number, complement, neighborhood, city, state
   FROM addresses
  WHERE user_id = $1 AND deleted_at IS NULL;</code></pre>
 
-    <h4>Column ↔ field name convention</h4>
+    <h4>Column ↔ field mapping</h4>
     <p>
-        The engine uses <code>pgx</code>'s internal normalization to match names
-        (<code>strings.ReplaceAll(name, "_", "")</code> + <code>strings.EqualFold</code>):
+        Names are not inferred — the auto-scan resolves each column to its Go field through the
+        repository's <code>TableSchema</code> (the same map that drives the write path). At boot the
+        schema records, per declared field, a <code>column → struct-field-index</code> plan
+        (<code>TableSchema.scanPlan</code>); the loader builds the <code>SELECT</code> from exactly
+        those columns and scans each row straight into the matched field by index. There is no
+        <code>pgx</code> name normalization and no convention — see
+        <a href="#table-schema">TableSchema (PG + views)</a>.
     </p>
-    <table>
-        <thead><tr><th>Go field</th><th>Matching SQL column</th></tr></thead>
-        <tbody>
-            <tr><td><code>Name</code></td><td><code>name</code></td></tr>
-            <tr><td><code>Email</code></td><td><code>email</code></td></tr>
-            <tr><td><code>CPF</code></td><td><code>cpf</code> (acronym)</td></tr>
-            <tr><td><code>ZipCode</code></td><td><code>zip_code</code></td></tr>
-            <tr><td><code>PostalCodeV2</code></td><td><code>postal_code_v2</code></td></tr>
-            <tr><td><code>HTTPStatus</code></td><td><code>http_status</code></td></tr>
-        </tbody>
-    </table>
-    <p>
-        If you need a different name, declare a <code>db:"..."</code> tag on the field
-        (one-off override). Tag <code>db:"-"</code> makes the engine ignore that field
-        (it doesn't go into <code>SELECT</code> and is not populated). Tag adoption is fully opt-in;
-        the domain stays <em>zero IO</em> with no tag declared.
-    </p>
-    <pre><code>type Customer struct {
-    domain.AggregateRoot
-    DisplayName  string `db:"name"`        // override: "name" column instead of "display_name"
-    Internal     string `db:"-"`           // engine ignores — does not go into SELECT
-    Email        string                    // no tag — uses snake_case convention ("email")
+    <pre><code>func UserSchema() *fwinfra.TableSchema {
+    return fwinfra.NewTableSchema[*User]("users").
+        PK("ID", "id").
+        Field("Name", "name").
+        Field("DisplayName", "display_name").  // any Go field ↔ any column
+        Field("Email", "mail").                // a rename lives only here
+        SoftDelete("deleted_at").
+        CreatedAt("created_at").
+        UpdatedAt("updated_at")
 }</code></pre>
+    <p>
+        To map a Go field to a differently-named column, declare it explicitly with
+        <code>Field("Go", "column")</code> — a typo on either side is a boot panic, not a silent
+        mismatch. To keep a field out of persistence, simply do not declare it in the schema: an
+        undeclared exported field is runtime-only by construction (never written, scanned, or
+        audited) — no <code>db:"-"</code> tag, the domain stays <em>zero IO</em> with no tag at all.
+    </p>
 
     <h4>Nullables</h4>
     <p>
