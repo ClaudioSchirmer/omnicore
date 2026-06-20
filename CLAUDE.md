@@ -56,7 +56,7 @@
 >
 > **The only exception** is translation strings inside `application/translation/` — the framework's built-in i18n catalog. By design it ships with **seven languages**: PT-BR (`ptbr.go`), English (`eng.go`), Spanish (`esp.go`), French (`fra.go`), German (`deu.go`), Italian (`ita.go`), and Dutch (`nld.go`). Those seven modules are the *only* place in this module where non-English text is allowed; the surrounding Go code (struct names, function names, identifiers, comments) stays English even inside the translation package.
 >
-> Maintainer ↔ Claude conversations can happen in any language. The language of the chat does not affect what gets written to disk: framework artifacts are always English (except the four translation modules above).
+> Maintainer ↔ Claude conversations can happen in any language. The language of the chat does not affect what gets written to disk: framework artifacts are always English (except the seven translation modules above).
 
 > **CRITICAL RULE — DO NOT GUESS, VERIFY BEFORE ASSERTING OR PLANNING**
 >
@@ -2924,7 +2924,7 @@ The Swagger UI HTML at `/docs` loads `swagger-ui-dist` from unpkg.com CDN by def
 
 **`Wiring.Translations` is mandatory.** `validateWiring` rejects boot when the slice is empty — independent of `LanguageSelector`. Notification messages, error envelopes (`ErrorMessage.Message`), and audit fields all flow through the `Translator`; booting with an empty Translator silently produces blank strings in production. Loud at boot is the framework's chosen failure mode: every consumer **must** declare at least one `translation.Module`.
 
-**Auto-population.** Under `bootstrap.Run`, `Languages` is filled automatically when `LanguageSelector=true` AND the consumer left `Languages` empty. The bootstrap walks `Wiring.Translations`, dedupes by `configuration.Language` (a service that registers both the framework's `CorePTBR` and its own `apptrans.PTBR()` collapses to a single `PT_BR` entry), and emits `{Label: Lang.String(), Value: Lang.HTTPPrefix()}` per surviving entry. The microservice has the final word on **which languages appear in the dropdown** — registering only `apptrans.PTBR()` shows only `PT_BR`, even though `translation.Default()` loads four behind the scenes. `LangUnknown` and any language with an empty `HTTPPrefix()` are skipped.
+**Auto-population.** Under `bootstrap.Run`, `Languages` is filled automatically when `LanguageSelector=true` AND the consumer left `Languages` empty. The bootstrap walks `Wiring.Translations`, dedupes by `configuration.Language` (a service that registers both the framework's `CorePTBR` and its own `apptrans.PTBR()` collapses to a single `PT_BR` entry), and emits `{Label: Lang.String(), Value: Lang.HTTPPrefix()}` per surviving entry. The microservice has the final word on **which languages appear in the dropdown** — registering only `apptrans.PTBR()` shows only `PT_BR`, even though `translation.Default()` loads seven behind the scenes. `LangUnknown` and any language with an empty `HTTPPrefix()` are skipped.
 
 **English-first default.** When `LangENG` is among the surviving entries, the bootstrap rotates it to position 0 so HTML's natural `<select>` behavior selects English as the default. Declaration order is otherwise preserved (after the rotation). When ENG is absent, declaration order is preserved as-is — the first declared language wins the default slot.
 

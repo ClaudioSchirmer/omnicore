@@ -226,8 +226,8 @@ func (u *User) BuildRules(_ string, _ domain.Service, r *domain.Rules) {
 }</code></pre>
 
     <div class="box">
-        <strong>No new public methods on <code>Postgres</code>.</strong>
-        The API remains <code>Insert(Insertable)</code>/<code>Update(Updatable)</code>/etc.
+        <strong>No separate aggregate write method.</strong>
+        The consumer-facing write port is unchanged — <code>repo.Scope(ctx).Insert(Insertable)</code> / <code>Update(Updatable)</code> / etc. (the underlying <code>Postgres.Insert/Update/…</code> also receive the <code>*TableSchema</code> + resolved hook, but the consumer never spells those out).
         Aggregate behavior is transparent — whoever implements <code>AggregateRootProvider</code> gains it
         (automatic persistence <em>and</em> validation of children); whoever doesn't follows the traditional single-table path.
     </div>

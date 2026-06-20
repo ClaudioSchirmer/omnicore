@@ -474,11 +474,13 @@ var onlyTotalConflicts = map[string]bool{
 }
 
 // filterSpec lists the operators declared by a single filter leaf via the
-// `filter:"eq,in"` struct tag, together with the document path the leaf maps
+// `filter:"eq,in"` struct tag, together with the Go field path the leaf maps
 // to and the leaf's declared Go base kind used to coerce wire values into
-// typed criteria. docPath defaults to the wire key (dotted, including the
-// embed prefix) and is overridden segment-by-segment by `view:"name"` tags
-// on the way down. goKind drives value coercion at runtime — a `*string`
+// typed criteria. docPath holds the dotted Go field path (the `query:` keys
+// joined down the embed groups, e.g. `Addresses.ZipCode`); the
+// MongoViewReader translates it to the physical column via the view's
+// TableSchema. There is no `view:` tag. goKind drives value coercion at
+// runtime — a `*string`
 // leaf keeps "95014" as the literal string "95014" (no silent int parse),
 // matching the column type Mongo stored; a `*int64` leaf parses "25" into
 // int64(25) so the criteria type matches the field's stored type.
@@ -506,17 +508,16 @@ var schemaCache sync.Map // map[reflect.Type]*requestSchema
 // schema. Three field kinds per level:
 //
 //   - leaf filter — `query:"X" filter:"ops..."` declares wire key X (prefixed
-//     by parent embed when nested) and the operator allowlist. Optional
-//     `view:"docName"` overrides the doc field at this segment.
+//     by parent embed when nested) and the operator allowlist. The leaf maps
+//     to the Go field path; the reader translates it to the column via the
+//     view's TableSchema (no `view:` tag).
 //   - reserved control — `query:"limit"` (etc.) with no `filter:` tag. Only
 //     honored at the TOP LEVEL; reserved keys inside an embed group are
 //     ignored at runtime (the framework's reserved set is endpoint-wide,
 //     not per-embed).
 //   - embed group — `query:"prefix"` on a struct-typed field with no
-//     `filter:` tag. Recurses into the inner type, prefixing both wire keys
-//     and doc paths. Carries an optional `view:"docPrefix"` to rename the
-//     doc-side prefix independently of the wire prefix (mirrors `view:` at
-//     the leaf level).
+//     `filter:` tag. Recurses into the inner type, prefixing both the wire
+//     keys and the Go field paths with the group segment.
 //
 // Pointer-to-struct is supported transparently — both pointer and value
 // nested groups recurse the underlying struct type.

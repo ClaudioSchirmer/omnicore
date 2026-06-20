@@ -116,6 +116,7 @@ audit:
         <tr><td><code>actor</code></td><td>string</td><td>JWT <code>sub</code> or the sentinel <code>"anonymous"</code></td></tr>
         <tr><td><code>actorIssuer</code></td><td>string (omitempty)</td><td>JWT <code>iss</code> when present</td></tr>
         <tr><td><code>actorClaims</code></td><td>object (omitempty)</td><td>filtered by the <code>auth.auditClaims</code> allowlist</td></tr>
+        <tr><td><code>tenantId</code></td><td>string (omitempty)</td><td>multi-tenant scope of the request, read from the JWT <code>tenant_id</code> claim (the fixed key — audit does not honor the <code>auth.authorization.tenant.claim</code> override); backed by the <code>audit_events_tenant_idx</code> column</td></tr>
         <tr><td><code>dateTime</code></td><td>RFC3339Nano</td><td>captured at <code>ValidEntity</code> construction</td></tr>
     </table>
     <p>A full <code>insert</code> event of an aggregate (slog echo shape — <code>database</code> stores the same payload as a row + <code>jsonb</code> blob):</p>
@@ -239,7 +240,7 @@ audit:
 }</code></pre>
     <p>
         <code>snapshot</code> blocks (Insert / Delete) carry <code>map[goFieldName]value</code> with no
-        schema for labels and are intentionally not labeled. Fields without a <code>label</code> tag
+        schema for labels and are intentionally not labeled. Fields without a <code>labelKey</code> tag
         emit no <code>fieldLabelKey</code> (omitempty elides it).
     </p>
 

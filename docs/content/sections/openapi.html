@@ -119,7 +119,8 @@
             <tr><td><code>Strict</code></td><td>bool</td><td>Marks the body as <code>required: true</code> + every kept field as <code>required[]</code>. Auto-detected by the <code>*Spec</code> sibling via <code>pipeline.FullBodyEnforcer</code> type-assertion.</td></tr>
             <tr><td><code>HasPathID</code></td><td>bool</td><td>Adds a string-typed <code>:id</code> path parameter when the route's Fiber path contains <code>:id</code> and the Request DTO didn't tag it. Auto-set on every wrapper that consumes <code>pipeline.CommandWithID</code> / <code>queries.FindByIDQuery</code>.</td></tr>
             <tr><td><code>Paged</code></td><td>bool</td><td>Selects the paged success envelope: <code>data</code> becomes an array of <code>ResponseType</code> items and a top-level <code>pagination</code> property is added (<code>$ref</code> into <code>#/components/schemas/PaginationInfo</code>). Mirrors the runtime <code>fwweb.RespondPaged</code> shape. Auto-set on <code>HandleQueryWithParamsSpec</code>; manual mounts opt in via <code>RouteSpecOfPaged[TReq, TResp]</code>. Paired with <code>fwresponses.None</code> or <code>nil ResponseType</code> → panic at <code>Mount</code>.</td></tr>
-            <tr><td><code>FileResponse</code></td><td><code>*FileResponseSpec</code></td><td>When non-nil, the success status is a raw <strong>file/stream download</strong> of <code>FileResponse.ContentType</code> (rendered as <code>content.&lt;type&gt;.schema = {type: string, format: binary}</code>) instead of the JSON envelope — completing the response taxonomy <code>{ResponseType envelope | Paged envelope | FileResponse}</code>. <code>RequestType</code> still drives the query/filter parameters and the error envelopes (401/422/500) are unchanged, so a typed query route can return a CSV/XLSX/PDF without leaving the canonical path or dropping to <code>MountRaw</code>. Set automatically by <code>HandleQueryAsCSVSpec</code> / <code>HandleQueryAsXLSXSpec</code>. Mutually exclusive with <code>Paged</code> and a non-nil <code>ResponseType</code> → panic at <code>Mount</code>.</td></tr>
+            <tr><td><code>FileResponse</code></td><td><code>*FileResponseSpec</code></td><td>When non-nil, the success status is a raw <strong>file/stream download</strong> of <code>FileResponse.ContentType</code> (rendered as <code>content.&lt;type&gt;.schema = {type: string, format: binary}</code>) instead of the JSON envelope — completing the response taxonomy <code>{ResponseType envelope | Paged envelope | FileResponse}</code>. <code>RequestType</code> still drives the query/filter parameters and the error envelopes (401/403/422/500) are unchanged, so a typed query route can return a CSV/XLSX/PDF without leaving the canonical path or dropping to <code>MountRaw</code>. Set automatically by <code>HandleQueryAsCSVSpec</code> / <code>HandleQueryAsXLSXSpec</code>. Mutually exclusive with <code>Paged</code> and a non-nil <code>ResponseType</code> → panic at <code>Mount</code>; an empty <code>ContentType</code> also panics at <code>Mount</code>.</td></tr>
+            <tr><td><code>RequiredPermission</code></td><td>string</td><td>The <code>resource:action</code> permission gated by <code>fwopenapi.RequirePermission(...)</code>. Appends <code>**Required permission:** `&lt;p&gt;`</code> to the operation description (suppressed when <code>auth.authorization.enabled=false</code> so the spec never advertises an unenforced constraint). Set by the <code>RequirePermission</code> <code>MountOption</code>, not by hand.</td></tr>
             <tr><td><code>OmittedQueryParams</code></td><td><code>[]string</code></td><td>Query parameter names (the <code>query:"X"</code> wire keys reflected from <code>RequestType</code>) to drop from the rendered parameters even though the Request DTO declares them. For a route that reuses a richer DTO but honors only a subset of its query knobs: the export <code>*Spec</code> wrappers reuse the JSON list's Request DTO yet ignore pagination, so they list <code>limit</code>/<code>after</code>/<code>before</code>/<code>onlyTotal</code> here and Swagger stops advertising a control the export does not honor. Matched by exact name against the query parameters; path parameters and honored filters are untouched. Empty for every other route.</td></tr>
         </tbody>
     </table>
@@ -134,7 +135,7 @@
             <tr><td><code>Tags</code></td><td><code>[]string</code></td><td><code>operation.tags</code> — grouping label in Swagger UI's sidebar.</td></tr>
             <tr><td><code>Deprecated</code></td><td>bool</td><td><code>operation.deprecated</code> — strikethrough in Swagger UI.</td></tr>
             <tr><td><code>Hidden</code></td><td>bool</td><td>Excludes the operation from the rendered spec entirely (Fiber still serves it). Use for internal-only routes.</td></tr>
-            <tr><td><code>Public</code></td><td>bool</td><td>Omits the <code>security: [{bearerAuth: []}]</code> entry + the 401 response. Use for routes that bypass auth.</td></tr>
+            <tr><td><code>Public</code></td><td>bool</td><td>Omits the <code>security: [{bearerAuth: []}]</code> entry + the auto-added 401/403 responses. Use for routes that bypass auth.</td></tr>
             <tr><td><code>RequestExamples</code></td><td><code>map[string]Example</code></td><td>Named exemplar payloads folded into <code>requestBody.content.application/json.examples</code>.</td></tr>
             <tr><td><code>ResponseExamples</code></td><td><code>map[int]map[string]Example</code></td><td>Named exemplar payloads per status. Success status: wrapped in the Response envelope. Error statuses: rendered raw + auto-merge of canonical default under <code>"default"</code>.</td></tr>
         </tbody>
@@ -244,6 +245,7 @@
         <li><code>fwweb.HandleCommandWithIDSpec</code></li>
         <li><code>fwweb.HandleQueryWithParamsSpec</code></li>
         <li><code>fwweb.HandleQueryWithIDSpec</code></li>
+        <li><code>fwweb.HandleQueryAsCSVSpec</code> / <code>fwweb.HandleQueryAsXLSXSpec</code> (and the generic <code>HandleQueryExportSpec</code>) — return <code>(handler, RouteSpec)</code> with <code>RequestType</code> + <code>FileResponse</code> + <code>OmittedQueryParams</code> prefilled, so a tabular export mounts via the canonical <code>Mount</code> just like any JSON route</li>
     </ul>
     <p>Same generics, same arguments, same handler behavior. The sibling extracts <code>Strict</code> via type-assertion to <code>pipeline.FullBodyEnforcer</code> and sets <code>HasPathID=true</code> for every wrapper that auto-binds the Fiber <code>:id</code> segment.</p>
 
@@ -410,7 +412,7 @@ type InsertUserResponse struct {
 
     <p><strong>Success status wraps; error status renders raw.</strong> The framework treats the operation's <code>SuccessStatus</code> as the "happy" envelope and automatically wraps each example's <code>Value</code> in the canonical Response envelope (<code>success:true</code>, <code>status</code>, <code>description</code>, <code>data:&lt;value&gt;</code>). The consumer only provides the inner <code>data</code> shape — same Go type the runtime handler emits via <code>ResponseType</code>. Every other status (404, 422, 409, …) is rendered verbatim — the consumer fully controls the envelope, typically <code>success:false</code> with a custom <code>errors[]</code> shape. Mirror behavior on <code>MountRaw</code>: <code>RequestBody.Examples</code> and <code>ResponseSpec.Examples</code> always render verbatim (raw routes are entirely consumer-controlled).</p>
 
-    <p><strong>Auto-merge of canonical default on error statuses.</strong> When the consumer declares examples on a status the framework documents by default (400/401/404/422/500), the canonical entry auto-merges under the key <code>"default"</code> in the rendered <code>examples</code> map. The consumer can:</p>
+    <p><strong>Auto-merge of canonical default on error statuses.</strong> When the consumer declares examples on a status the framework documents by default (400/401/403/404/422/500), the canonical entry auto-merges under the key <code>"default"</code> in the rendered <code>examples</code> map. The consumer can:</p>
     <ul>
         <li><strong>Coexist with the default</strong>: declare any number of named entries (<code>"happyPath"</code>, <code>"duplicateEmail"</code>, …) — the framework's canonical envelope appears alongside them under <code>"default"</code> in the dropdown.</li>
         <li><strong>Override the default</strong>: declare <code>"default"</code> explicitly with a custom Value — the explicit entry wins.</li>
@@ -422,7 +424,7 @@ type InsertUserResponse struct {
 
     <p><strong>Public default-error registry — <code>openapi.DefaultErrorExample(status)</code>.</strong> The canonical entry the framework auto-merges is exposed via two public helpers:</p>
     <ul>
-        <li><code>DefaultErrorExample(status int) (Example, bool)</code> — the entry for one status. <code>ok=false</code> for statuses outside the framework's set (400/401/404/422/500).</li>
+        <li><code>DefaultErrorExample(status int) (Example, bool)</code> — the entry for one status. <code>ok=false</code> for statuses outside the framework's set (400/401/403/404/422/500).</li>
         <li><code>DefaultErrorExamples() map[int]Example</code> — a fresh copy of every entry, keyed by status. Mutating the returned map does not affect the framework's internal registry.</li>
     </ul>
     <p>Use these when customizing the canonical entry without reauthoring its payload (override <code>Description</code> only), or when assembling a <code>Responses</code> map programmatically:</p>
@@ -444,6 +446,7 @@ ResponseExamples: map[int]map[string]fwopenapi.Example{
         <tbody>
             <tr><td>400 Bad Request</td><td>Route carries a request body (canonical <code>RequestType</code> with body fields OR <code>RawSpec.RequestBody</code>)</td></tr>
             <tr><td>401 Unauthorized</td><td>Auth is enabled AND the route is not public</td></tr>
+            <tr><td>403 Forbidden</td><td>Auth is enabled AND the route is not public (any authenticated route can produce a Forbidden outcome via authorization Layer 2 / Layer 3)</td></tr>
             <tr><td>404 Not Found</td><td><code>HasPathID=true</code> OR <code>RawSpec</code> declares a path parameter</td></tr>
             <tr><td>422 Unprocessable Entity</td><td>Always (every route can produce domain-validation rejections)</td></tr>
             <tr><td>500 Internal Server Error</td><td>Always (recovered panic / escaped error)</td></tr>
@@ -492,7 +495,7 @@ ResponseExamples: map[int]map[string]fwopenapi.Example{
     <p><strong>Concrete examples in Swagger UI.</strong> The framework populates examples so the rendered page shows realistic envelopes instead of the type-default placeholders (<code>success: true</code>, <code>status: 0</code>) that Swagger UI fabricates from bare types:</p>
     <ul>
         <li><strong>Success</strong>: per-property <code>example</code> on the inline envelope schema — <code>success: true</code>, <code>status</code> = the operation's <code>SuccessStatus</code>, <code>description</code> = the matching HTTP reason phrase. The <code>data</code> field's example is derived from the <code>ResponseType</code> schema.</li>
-        <li><strong>Errors</strong>: a content-level <code>example</code> per status (400/401/404/422/500) overrides the shared <code>$ref</code>'s default — <code>success: false</code>, <code>status</code> matching the response code, and a representative <code>errors[]</code> entry carrying the typed notification the framework actually emits for that status (<code>SchemaViolationNotification</code> on 400, <code>RequiredFieldNotification</code> on 422, <code>InternalServerErrorNotification</code> on 500, etc.). The <code>ErrorEnvelope</code> schema stays a single dedup'd entry in <code>components/schemas</code>.</li>
+        <li><strong>Errors</strong>: a content-level <code>example</code> per status (400/401/403/404/422/500) overrides the shared <code>$ref</code>'s default — <code>success: false</code>, <code>status</code> matching the response code, and a representative <code>errors[]</code> entry carrying the typed notification the framework actually emits for that status (<code>SchemaViolationNotification</code> on 400, <code>RequiredFieldNotification</code> on 422, <code>InternalServerErrorNotification</code> on 500, etc.). The <code>ErrorEnvelope</code> schema stays a single dedup'd entry in <code>components/schemas</code>.</li>
     </ul>
 
     <h3>Auth declarations</h3>
@@ -500,14 +503,14 @@ ResponseExamples: map[int]map[string]fwopenapi.Example{
     <ul>
         <li><code>components.securitySchemes.bearerAuth</code> (<code>http</code> / <code>bearer</code> / <code>JWT</code>).</li>
         <li><code>security: [{bearerAuth: []}]</code> on every operation that is NOT public.</li>
-        <li>An automatic <code>401 Unauthorized</code> entry in the operation's <code>responses</code> block.</li>
+        <li>Automatic <code>401 Unauthorized</code> and <code>403 Forbidden</code> entries in the operation's <code>responses</code> block (any authenticated route can produce a Forbidden outcome via authorization Layer 2 / Layer 3).</li>
     </ul>
     <p>An operation is treated as public when <code>Doc.Public</code> / <code>RawSpec.Public</code> is true OR when its <code>METHOD /path</code> appears in <code>auth.publicRoutes</code> from <code>microservice.&lt;profile&gt;.yaml</code> — the same allowlist <code>AuthMiddleware</code> enforces at runtime.</p>
 
     <h3>Hidden vs Public</h3>
     <ul>
         <li><strong>Hidden=true</strong>: the operation is excluded from the rendered spec entirely. Still registers on Fiber so the route works at runtime; only the documentation surface omits it. Use for internal upstream / scaffolding routes that have no business appearing in a public spec.</li>
-        <li><strong>Public=true</strong>: the operation appears in the spec WITHOUT <code>security: [{bearerAuth: []}]</code> and WITHOUT the 401 entry. Use for routes that genuinely bypass auth (health probes, OIDC discovery proxies, identity demos).</li>
+        <li><strong>Public=true</strong>: the operation appears in the spec WITHOUT <code>security: [{bearerAuth: []}]</code> and WITHOUT the auto-added 401/403 entries. Use for routes that genuinely bypass auth (health probes, OIDC discovery proxies, identity demos).</li>
     </ul>
 
     <h3>Swagger UI HTML</h3>

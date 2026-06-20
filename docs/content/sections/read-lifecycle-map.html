@@ -58,6 +58,14 @@
                 <td><code>CountDocuments(filter)</code> only — no documents fetched, no projection</td>
                 <td><code>{ pagination: *TotalOnlyPagination{total} }</code> — no <code>data</code>, no cursors</td>
             </tr>
+            <tr>
+                <td><code>HandleQueryAsCSV</code> / <code>HandleQueryAsXLSX</code><br><span class="muted">GET /users.csv · .xlsx</span></td>
+                <td><code>FindByParamsQueryHandler</code> (the SAME handler as the listing row)</td>
+                <td>same as the listing row; the wrapper sets <code>ReadCriteria.BypassMaxLimit</code> and drops user pagination (<code>limit</code>/<code>after</code>/<code>before</code>/<code>onlyTotal</code>)</td>
+                <td><code>ReadPage(view, criteria)</code></td>
+                <td><code>Find(filter, sort)</code> — full filtered set capped at the resolved export ceiling (per-view <code>MaxExportRows</code> &gt; <code>query.maxExportRows</code> &gt; 10000)</td>
+                <td>raw file stream (<code>text/csv</code> / <code>.xlsx</code>) rendered hierarchically via <code>web/export.Encoder</code> — no JSON envelope</td>
+            </tr>
         </tbody>
     </table>
 

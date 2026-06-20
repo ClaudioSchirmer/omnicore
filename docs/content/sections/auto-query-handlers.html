@@ -233,10 +233,10 @@ type FindUsersByParamsAddressOutput struct {
     </p>
     <table>
         <tbody><tr><th>Wire form</th><th>SortField emitted</th><th>Notes</th></tr>
-        <tr><td><code>?sort=name</code></td><td><code>{Field:"name", Desc:false}</code></td><td>Bare token → ascending</td></tr>
-        <tr><td><code>?sort=-name</code></td><td><code>{Field:"name", Desc:true}</code></td><td><code>-</code> prefix → descending</td></tr>
-        <tr><td><code>?sort=addresses.zipCode</code></td><td><code>{Field:"addresses.zip_code", Desc:false}</code></td><td>Go path <code>Addresses.ZipCode</code>; reader maps <code>ZipCode</code> → <code>zip_code</code> via the view <code>TableSchema</code></td></tr>
-        <tr><td><code>?sort=addresses.state</code></td><td><code>{Field:"addresses.st", Desc:false}</code></td><td>Column differs because <code>TableSchema.Field("State","st")</code> declares it</td></tr>
+        <tr><td><code>?sort=name</code></td><td><code>{Field:"Name", Desc:false}</code></td><td>Bare token → ascending; <code>SortField</code> carries the Go field path</td></tr>
+        <tr><td><code>?sort=-name</code></td><td><code>{Field:"Name", Desc:true}</code></td><td><code>-</code> prefix → descending</td></tr>
+        <tr><td><code>?sort=addresses.zipCode</code></td><td><code>{Field:"Addresses.ZipCode", Desc:false}</code></td><td>Go field path; reader maps <code>ZipCode</code> → column <code>zip_code</code> via the view <code>TableSchema</code></td></tr>
+        <tr><td><code>?sort=addresses.state</code></td><td><code>{Field:"Addresses.State", Desc:false}</code></td><td>reader maps <code>State</code> → column <code>st</code> because <code>TableSchema.Field("State","st")</code> declares it</td></tr>
         <tr><td><code>?sort=name,-email</code></td><td>2 entries, independent directions</td><td>Multi-key sort applied in declaration order</td></tr>
         <tr><td><code>?sort=bogus</code></td><td>(none — request rejected)</td><td>400 <code>SchemaViolationNotification</code> on field <code>sort[bogus]</code></td></tr>
         <tr><td><code>?sort=-bogus</code></td><td>(none — request rejected)</td><td>400 <code>SchemaViolationNotification</code> on field <code>sort[-bogus]</code> (prefix preserved)</td></tr>
