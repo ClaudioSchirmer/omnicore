@@ -1,10 +1,20 @@
 package audit
 
 import (
+	"context"
 	"strings"
 	"testing"
 	"time"
 )
+
+func TestEnsureFuturePartitions_NilPoolIsConfigError(t *testing.T) {
+	// A nil pool is a configuration error — audit cannot create partitions
+	// without database access. The guard returns before touching any DB.
+	err := EnsureFuturePartitions(context.Background(), nil, 3)
+	if err == nil || !strings.Contains(err.Error(), "non-nil pool") {
+		t.Errorf("expected non-nil-pool error, got %v", err)
+	}
+}
 
 func TestBuildPartitionStatements_ZeroOrNegativeReturnsNil(t *testing.T) {
 	for _, n := range []int{0, -1, -100} {
@@ -39,9 +49,9 @@ func TestBuildPartitionStatements_BoundariesAreContiguousMonthlyRanges(t *testin
 	// Inspect each statement's SQL — the test confirms the boundary literals,
 	// not the SQL idiom (which is exercised by the integration suite).
 	checks := []struct {
-		idx           int
-		wantFromIncl  string
-		wantToExcl    string
+		idx          int
+		wantFromIncl string
+		wantToExcl   string
 	}{
 		{0, "2026-06-01", "2026-07-01"},
 		{1, "2026-07-01", "2026-08-01"},
