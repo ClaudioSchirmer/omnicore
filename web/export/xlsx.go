@@ -72,6 +72,12 @@ type xlsxSink struct {
 }
 
 func (s *xlsxSink) Write(r Row) error {
+	// Blank separator row (zero cells) — advance the row counter without writing,
+	// leaving an empty worksheet row. StreamWriter tolerates the gap.
+	if len(r.Cells) == 0 {
+		s.row++
+		return nil
+	}
 	s.row++
 	// Anchor the row at column (Depth+1) so the first Depth columns stay empty —
 	// the per-level offset, in the spreadsheet's own coordinate system rather

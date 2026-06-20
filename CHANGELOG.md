@@ -35,7 +35,9 @@ with `1.0.0`.
   mount a route that streams the same view read as a paged GET — reusing the
   same Request DTO + query handler — rendered as a flat file. The layout is
   hierarchical: root columns start at column 0, each embed one column deeper
-  (infinite nesting). Headers come from each column's `labelKey` resolved per
+  (infinite nesting), with a blank separator line after each aggregate /
+  sub-aggregate concludes (consecutive blanks collapse). Headers come from each
+  column's `labelKey` resolved per
   `Accept-Language` (falling back to the Go field name). `?fields=` narrows the
   columns (allowlist driven by the view schema, not a Response DTO);
   filters / `?search` / `?sort` / `?includeArchived` behave like the JSON list;

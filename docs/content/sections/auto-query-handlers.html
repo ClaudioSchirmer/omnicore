@@ -517,7 +517,11 @@ fwopenapi.Mount(d.OpenAPIRegistry, app, fiber.MethodGet, "/users.csv", csvH, csv
         row plus a data row per child, recursively. A column's header is its
         <code>labelKey</code> rendered through the <code>Translator</code> in the request's
         <code>Accept-Language</code>, falling back to the Go field name when a column carries no
-        label.
+        label. A <strong>blank separator line</strong> follows each item's cascade once it
+        concludes, so every aggregate (and sub-aggregate) is visually delimited; consecutive blanks
+        from several levels concluding at once collapse into one. This applies identically to
+        locally-mapped embeds and cross-service external (<code>FromSchema</code>) embeds, in both
+        CSV (an empty record) and Excel (an empty worksheet row).
     </p>
     <p>
         <strong>Columns.</strong> By default every business column the view's <code>TableSchema</code>

@@ -14,47 +14,88 @@ import "github.com/ClaudioSchirmer/omnicore/application/queries"
 //
 // Layout — depth-first, header once per node group (each group is one
 // invocation under a parent item), data row per item, then each child group at
-// depth+1:
+// depth+1, and a BLANK separator line after each item's cascade concludes so
+// every aggregate (and sub-aggregate) is visually delimited:
 //
 //	[root header]            depth 0
 //	[root item 1 data]
 //	  [addresses header]     depth 1
 //	  [addr 1 data]
 //	  [addr 2 data]
+//	<blank>                  ← root item 1's cascade concluded
 //	[root item 2 data]
 //	  [addresses header]
 //	  [addr 1 data]
+//	<blank>
+//
+// With deeper nesting the separator lands at each conclusion (after a
+// grandchild group, then the child group) and consecutive blanks from several
+// levels popping at once collapse into one — so a leaf cascade gets one blank,
+// not a stack. A blank line is a zero-cell Row{}; the encoder realizes it (CSV:
+// an empty record; XLSX: an empty worksheet row). Identical for locally-mapped
+// embeds and cross-service external (FromSchema) embeds — the walk is over the
+// plan tree + the Go-keyed document, agnostic to the embed's store.
 func Generate(plan *queries.ExportPlan, items []map[string]any, label func(labelKey, goField string) string, sink Sink) error {
 	if plan == nil || plan.Root == nil {
 		return nil
 	}
-	return renderNode(plan.Root, items, 0, label, sink)
+	e := &emitter{sink: sink, label: label}
+	e.renderNode(plan.Root, items, 0)
+	return e.err
 }
 
-func renderNode(node *queries.ExportNode, items []map[string]any, depth int, label func(string, string) string, sink Sink) error {
+// emitter threads the sink + a "last row was a blank separator" flag through the
+// recursive walk, so blanks land after each cascade and consecutive blanks (when
+// multiple nesting levels conclude at the same boundary) collapse into one.
+type emitter struct {
+	sink  Sink
+	label func(string, string) string
+	err   error
+	blank bool // the last row written was a blank separator
+}
+
+func (e *emitter) write(r Row) {
+	if e.err != nil {
+		return
+	}
+	e.err = e.sink.Write(r)
+	e.blank = false
+}
+
+// separator emits one blank line, collapsing it when the previous row was
+// already blank (so popping several levels at once yields a single blank).
+func (e *emitter) separator() {
+	if e.err != nil || e.blank {
+		return
+	}
+	e.err = e.sink.Write(Row{}) // zero-cell row = blank separator
+	e.blank = true
+}
+
+func (e *emitter) renderNode(node *queries.ExportNode, items []map[string]any, depth int) {
 	hasCols := len(node.Columns) > 0
 	if hasCols {
-		if err := sink.Write(headerRow(node, depth, label)); err != nil {
-			return err
-		}
+		e.write(headerRow(node, depth, e.label))
 	}
 	for _, item := range items {
 		if hasCols {
-			if err := sink.Write(dataRow(node, depth, item)); err != nil {
-				return err
-			}
+			e.write(dataRow(node, depth, item))
 		}
+		cascaded := false
 		for _, child := range node.Children {
 			childItems := extractChildItems(item[child.GoSegment])
 			if len(childItems) == 0 {
 				continue
 			}
-			if err := renderNode(child, childItems, depth+1, label, sink); err != nil {
-				return err
-			}
+			e.renderNode(child, childItems, depth+1)
+			cascaded = true
+		}
+		// Blank line once this item's full cascade concludes, before the walk
+		// returns to the parent level — one separator per aggregate conclusion.
+		if cascaded {
+			e.separator()
 		}
 	}
-	return nil
 }
 
 func headerRow(node *queries.ExportNode, depth int, label func(string, string) string) Row {

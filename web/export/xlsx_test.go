@@ -61,3 +61,28 @@ func TestXLSXEncoder_OffsetsAndTypedCells(t *testing.T) {
 		t.Errorf("expected header cell to carry a distinct (bold) style; both = %d", hStyle)
 	}
 }
+
+func TestXLSXEncoder_BlankRowLeavesEmptyWorksheetRow(t *testing.T) {
+	var buf bytes.Buffer
+	sink, err := XLSX(WithSheetName("S")).Open(&buf)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = sink.Write(Row{Cells: []Cell{{Value: "A"}}}) // row 1
+	_ = sink.Write(Row{})                            // blank → row 2 stays empty
+	_ = sink.Write(Row{Cells: []Cell{{Value: "C"}}}) // row 3
+	if err := sink.Close(); err != nil {
+		t.Fatal(err)
+	}
+	f, err := excelize.OpenReader(bytes.NewReader(buf.Bytes()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	a1, _ := f.GetCellValue("S", "A1")
+	a2, _ := f.GetCellValue("S", "A2")
+	a3, _ := f.GetCellValue("S", "A3")
+	if a1 != "A" || a2 != "" || a3 != "C" {
+		t.Fatalf("blank Row must leave the worksheet row empty: A1=%q A2=%q A3=%q", a1, a2, a3)
+	}
+}
