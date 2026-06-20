@@ -37,7 +37,8 @@
         upstream service's collection via <code>NewExternalSchema</code> — declaring field by field how each maps to your
         domain. What this buys is freedom over <strong>names</strong> (column and table), not over structural
         <em>shape</em>: the table must still fit the framework's assumptions — a single-column non-composite primary key,
-        a timestamp-based soft-delete column when the entity is archivable, and standard column types. Adopting a schema
+        a timestamp-based soft-delete column when the entity is archivable, and one of the
+        <a href="#table-schema~supported-column-shapes-go-postgresql">supported column shapes</a>. Adopting a schema
         that breaks those assumptions is explicitly <a href="#table-schema~out-of-scope">out of scope</a>.</li>
     <li><strong>No failed, tiring conventions.</strong> Name-inference (PascalToSnake + pluralize) is lossy and
         acronym-hostile: <code>UserID</code> and <code>UserId</code> both collapse to <code>user_id</code>;
@@ -303,11 +304,113 @@ func OrdersView() *fwinfra.ViewDefinition {
     root scanner used with <code>FindOne</code>/<code>FindAll</code> must populate the id itself).
 </p>
 
+<h3>Supported column shapes — Go ↔ PostgreSQL</h3>
+
+<div class="box warn">
+    <strong>The framework is fixed to two engines — PostgreSQL and MongoDB.</strong>
+    There is no pluggable database layer today. <strong>PostgreSQL</strong> is the authoritative write store and the
+    only backend the SQL/criteria engine emits for: the executor (<code>INSERT</code>/<code>UPDATE</code>/archive),
+    the entity-search <code>criteria</code> engine, and the auto-scan read-back are all PostgreSQL-specific (driven by
+    <code>pgx</code> v5). <strong>MongoDB</strong> is the only read-side projection store — the composer, the
+    <code>ViewDefinition</code> surface, the Mongo schema-evolution control plane, and the <code>?fields</code> /
+    <code>?sort</code> / keyset-pagination reader all target MongoDB exclusively. The <code>criteria</code> package keeps
+    a backend-neutral <code>Visitor</code> seam (the IR a future translator could implement), but the <em>only</em>
+    translator that ships is the PostgreSQL one. Everything below describes the Go ↔ <strong>PostgreSQL</strong> column
+    shapes the write/criteria/scan engine handles.
+</div>
+
+<p>
+    The schema declares <em>which</em> Go field maps to <em>which</em> column; this section is about <em>what types</em>
+    those columns may be. The engine does <strong>no custom type registration</strong>: on write,
+    <code>TableSchema.writeFields</code> binds the <em>raw Go value</em> (<code>reflect</code> <code>Field(i).Interface()</code>)
+    straight to <code>pgx</code>; on read, the auto-scanner passes the <em>address of the Go field</em> straight to
+    <code>pgx.Scan</code>; in the criteria engine, only <code>domain.ID</code> is unwrapped (to its <code>string</code>
+    value) before binding. So the supported set is exactly <strong><code>pgx</code> v5's default codec set</strong> —
+    nothing the framework adds, nothing it takes away.
+</p>
+
+<table>
+    <thead><tr><th>Go field type</th><th>PostgreSQL column type</th><th>Notes</th></tr></thead>
+    <tbody>
+        <tr>
+            <td><code>string</code></td>
+            <td><code>TEXT</code>, <code>VARCHAR(n)</code>, <code>CHAR(n)</code>, <code>NAME</code></td>
+            <td>the text family — the workhorse for names, emails, addresses</td>
+        </tr>
+        <tr>
+            <td><code>string</code> &nbsp;<span class="muted">(<code>domain.ID</code> at the entity boundary)</span></td>
+            <td><code>UUID</code></td>
+            <td><strong>the framework's canonical UUID representation.</strong> The PK and every FK are bound and scanned
+                as Go <code>string</code>s — <code>pgx</code> parses the textual form into / out of the <code>uuid</code>
+                column. There is <em>no</em> <code>google/uuid.UUID</code> field mapping (see the note below).</td>
+        </tr>
+        <tr>
+            <td><code>bool</code></td>
+            <td><code>BOOLEAN</code></td>
+            <td>—</td>
+        </tr>
+        <tr>
+            <td><code>int16</code> / <code>int32</code> / <code>int64</code> &nbsp;<span class="muted">(also <code>int</code>)</span></td>
+            <td><code>SMALLINT</code> / <code>INTEGER</code> / <code>BIGINT</code></td>
+            <td>pick the Go width to match the column; <code>pgx</code> widens on scan</td>
+        </tr>
+        <tr>
+            <td><code>float32</code> / <code>float64</code></td>
+            <td><code>REAL</code> / <code>DOUBLE PRECISION</code></td>
+            <td>binary floats — not for money</td>
+        </tr>
+        <tr>
+            <td><code>string</code> &nbsp;<span class="muted">(or <code>float64</code>)</span></td>
+            <td><code>NUMERIC</code> / <code>DECIMAL</code></td>
+            <td>exact decimals (money): prefer <code>string</code> to keep full precision; <code>float64</code> rounds</td>
+        </tr>
+        <tr>
+            <td><code>time.Time</code></td>
+            <td><code>TIMESTAMP</code>, <code>TIMESTAMPTZ</code>, <code>DATE</code>, <code>TIME</code></td>
+            <td>the managed <code>created_at</code> / <code>updated_at</code> / <code>deleted_at</code> columns are this
+                type, server-stamped via <code>NOW()</code> (not a struct field)</td>
+        </tr>
+        <tr>
+            <td><code>[]byte</code></td>
+            <td><code>BYTEA</code></td>
+            <td>raw binary</td>
+        </tr>
+        <tr>
+            <td><code>[]byte</code> / <code>json.RawMessage</code> / <code>string</code> / a struct or map</td>
+            <td><code>JSON</code> / <code>JSONB</code></td>
+            <td><code>pgx</code> applies <code>encoding/json</code> on the way in and out</td>
+        </tr>
+        <tr>
+            <td>Go slice (<code>[]string</code>, <code>[]int64</code>, …)</td>
+            <td>PostgreSQL array (<code>TEXT[]</code>, <code>BIGINT[]</code>, …)</td>
+            <td><code>pgx</code> encodes / decodes native arrays</td>
+        </tr>
+    </tbody>
+</table>
+
+<p>
+    <strong>Nullability is a pointer.</strong> A column declared <code>NULL</code>-able maps to a Go <strong>pointer</strong>
+    (<code>*string</code>, <code>*int64</code>, <code>*time.Time</code>, …): <code>pgx</code> writes <code>NULL</code> for a
+    <code>nil</code> pointer and reads <code>NULL</code> back as <code>nil</code>. There is no wrapper type — the pointer is
+    the canonical nullable form. A non-pointer field on a nullable column will fail to scan a <code>NULL</code> row.
+</p>
+
+<p>
+    <strong>The escape hatch for anything <code>pgx</code> does not know natively.</strong> Because the engine registers no
+    custom codecs, a Go type <code>pgx</code> cannot encode/decode out of the box — <code>google/uuid.UUID</code>, a typed Go
+    enum, a PostGIS geometry, a bespoke domain type — cannot be a persisted field <em>as-is</em>. Two supported ways out:
+    (1) map the column to one of the <code>pgx</code>-native Go types above (a <code>UUID</code> column → Go <code>string</code>,
+    an enum → its underlying <code>string</code>/<code>int</code>); or (2) drop to a manual scanner
+    (<code>WithRootScanner</code> / <code>WithChildScanner</code>), where you own the <code>SELECT</code> and the
+    <code>Scan</code> and can decode any shape <code>pgx</code> supports through an explicit target.
+</p>
+
 <h3>Out of scope</h3>
 <ul>
     <li><strong>Adapting to non-conforming structural conventions.</strong> The schema maps <em>names</em>, it does not
         reshape a schema. Mapping a renamed column on an otherwise-conforming legacy table <a href="#table-schema~why-it-exists-and-why-it-is-mandatory">is supported</a>;
         adapting to a <em>shape</em> the framework does not manage is not — predicate-shaped soft-delete (a boolean/enum
-        flag instead of a timestamp column), a composite PK, and exotic column types are all rejected. The scope is "an
-        explicit map over the schema the framework manages", not "adapt to any arbitrary schema".</li>
+        flag instead of a timestamp column), a composite PK, and exotic column types outside the
+        <a href="#table-schema~supported-column-shapes-go-postgresql">supported shapes</a> are all rejected. The scope is
+        "an explicit map over the schema the framework manages", not "adapt to any arbitrary schema".</li>
 </ul>
