@@ -26,6 +26,7 @@ type fakePool struct {
 	beginErr     error
 	queryHandler func(sql string, args []any) (pgx.Rows, error)
 	execHandler  func(sql string, args []any) (pgconn.CommandTag, error)
+	queryRowFn   func(sql string, args []any) pgx.Row
 }
 
 func newFakePool() *fakePool {
@@ -59,6 +60,9 @@ func (p *fakePool) Query(ctx context.Context, sql string, args ...any) (pgx.Rows
 }
 
 func (p *fakePool) QueryRow(ctx context.Context, sql string, args ...any) pgx.Row {
+	if p.queryRowFn != nil {
+		return p.queryRowFn(sql, args)
+	}
 	return &fakeRow{}
 }
 
@@ -81,6 +85,7 @@ type fakeTx struct {
 	commitErr   error                                          // forced error from Commit
 	rollbackErr error                                          // forced error from Rollback
 	queryFn     func(sql string, args []any) (pgx.Rows, error) // overrides Query when set
+	queryRowFn  func(sql string, args []any) pgx.Row           // overrides QueryRow when set
 	execCalls   []string                                       // captured Exec SQL (outbox, audit, child writes)
 	committed   bool
 	rolledBack  bool
@@ -116,6 +121,9 @@ func (t *fakeTx) Query(ctx context.Context, sql string, args ...any) (pgx.Rows, 
 }
 
 func (t *fakeTx) QueryRow(ctx context.Context, sql string, args ...any) pgx.Row {
+	if t.queryRowFn != nil {
+		return t.queryRowFn(sql, args)
+	}
 	return &fakeRow{id: t.scanID, err: t.queryRowErr}
 }
 
