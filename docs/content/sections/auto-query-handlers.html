@@ -476,16 +476,20 @@ const (
         <tr><td><code>?role=admin</code> on by-id endpoint</td><td>400 — only <code>includeArchived</code> is reserved by-id</td></tr>
     </tbody></table>
 
-    <h3 id="qry-export">Tabular export — CSV (format-pluggable)</h3>
+    <h3 id="qry-export">Tabular export — CSV / Excel (format-pluggable)</h3>
     <p>
-        Alongside the JSON list, a view can be exposed as a downloadable flat file. The wrapper
-        <code>fwweb.HandleQueryAsCSV[TReq, TQ]</code> (a thin convenience over the generic
-        <code>HandleQueryExport</code>) reuses the <strong>same Request DTO and the same query
-        handler</strong> as <code>HandleQueryWithParams</code> — there is no second handler, no
-        second query, no hand-written CSV. Mount it as another route:
+        Alongside the JSON list, a view can be exposed as a downloadable flat file. The
+        OpenAPI-aware wrapper <code>fwweb.HandleQueryAsCSVSpec[TReq, TQ]</code> (and
+        <code>HandleQueryAsXLSXSpec</code>) reuses the <strong>same Request DTO and the same query
+        handler</strong> as <code>HandleQueryWithParams</code> — no second handler, no second query,
+        no hand-written CSV — and returns <code>(handler, openapi.RouteSpec)</code>, so it mounts on
+        the <strong>canonical <code>fwopenapi.Mount</code></strong> exactly like the JSON list. The
+        returned <code>RouteSpec</code> carries <code>RequestType</code> (so the filters render in
+        Swagger) and <code>FileResponse</code> (so the 200 is documented as a download), keeping
+        <code>MountRaw</code> out of the picture:
     </p>
-    <pre><code>csvH := fwweb.HandleQueryAsCSV(d.Pipeline,
-    requests.FindUsersByParamsRequest{},   // same Request DTO as the JSON list
+    <pre><code>csvH, csvSpec := fwweb.HandleQueryAsCSVSpec(d.Pipeline,
+    requests.FindUsersByParamsRequest{},   // same Request DTO as the JSON list → filters in Swagger
     view.ExportPlan(),                     // column tree built from the view's TableSchema
     d.Translator,
     view.ResolveMaxExportRows(d.Config.Query.MaxExportRows),
@@ -494,10 +498,17 @@ const (
         Reader: d.ViewReader, View: view.Name(),
     },
     export.WithDelimiter(';'))             // CSV-specific option, fixed at mount
-fwopenapi.MountRaw(d.OpenAPIRegistry, app, fiber.MethodGet, "/users.csv", csvH,
-    fwopenapi.RawSpec{Summary: "Export users as CSV", Tags: []string{"Users"},
-        Responses: map[int]fwopenapi.ResponseSpec{200: {Description: "CSV file", ContentType: "text/csv"}}},
-    fwopenapi.RequirePermission("users:read"))</code></pre>
+fwopenapi.Mount(d.OpenAPIRegistry, app, fiber.MethodGet, "/users.csv", csvH, csvSpec,
+    fwopenapi.Doc{Summary: "Export users as CSV", Tags: []string{"Users"}},
+    fwopenapi.RequirePermission("users:read"))
+// Excel is the same shape: HandleQueryAsXLSXSpec(..., export.WithSheetName("Users")) → fwopenapi.Mount</code></pre>
+    <p>
+        The success response is declared via <code>RouteSpec.FileResponse</code> (a typed
+        download descriptor on the canonical path) — see
+        <a href="#openapi">OpenAPI / Swagger UI</a>. The plain
+        <code>HandleQueryAsCSV</code> / <code>HandleQueryAsXLSX</code> (handler-only) remain for
+        services without OpenAPI.
+    </p>
     <p>
         <strong>Hierarchical layout — one column per nesting level.</strong> The view's embed tree
         is rendered depth-first: root columns start at column A, each embed one column to the right

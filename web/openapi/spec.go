@@ -452,6 +452,22 @@ func canonicalSuccess(op Operation, gen *Generator) map[string]any {
 		status = http.StatusOK
 	}
 	desc := http.StatusText(status)
+
+	// File/download success — a raw file/stream of the declared content type,
+	// not the JSON envelope. Parameters (from RequestType) and the standard
+	// error envelopes are assembled by the surrounding canonical path
+	// unchanged; only the success body differs.
+	if op.Spec.FileResponse != nil {
+		return map[string]any{
+			"description": desc,
+			"content": map[string]any{
+				op.Spec.FileResponse.ContentType: map[string]any{
+					"schema": map[string]any{"type": "string", "format": "binary"},
+				},
+			},
+		}
+	}
+
 	out := map[string]any{"description": desc}
 	envelope := successEnvelopeSchema(op, gen)
 	media := map[string]any{"schema": envelope}

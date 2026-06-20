@@ -10,6 +10,7 @@ import (
 	"github.com/ClaudioSchirmer/omnicore/application/queries"
 	"github.com/ClaudioSchirmer/omnicore/application/translation"
 	"github.com/ClaudioSchirmer/omnicore/web/export"
+	"github.com/ClaudioSchirmer/omnicore/web/openapi"
 	"github.com/gofiber/fiber/v3"
 )
 
@@ -132,6 +133,64 @@ func HandleQueryAsXLSX[TReq HasToParamsQuery[TQ], TQ queries.FindByParamsQuery](
 	xlsxOpts ...export.XLSXOption,
 ) fiber.Handler {
 	return HandleQueryExport(pipe, sample, plan, translator, maxRows, filenameBase, export.XLSX(xlsxOpts...), h)
+}
+
+// HandleQueryExportSpec is the OpenAPI-aware sibling of HandleQueryExport — it
+// returns the handler AND the openapi.RouteSpec describing it, so the export
+// mounts on the canonical fwopenapi.Mount path (exactly like
+// HandleQueryWithParamsSpec). RequestType captures TReq, so the assembler
+// reflects the same `query:"X" filter:"ops"` parameter set the JSON list
+// renders; FileResponse marks the success response as a file/download of the
+// encoder's content type instead of the JSON envelope. The consumer mounts with
+// fwopenapi.Mount(reg, group, GET, path, handler, spec, Doc{…}, RequirePermission(…)).
+func HandleQueryExportSpec[TReq HasToParamsQuery[TQ], TQ queries.FindByParamsQuery](
+	pipe *pipeline.Pipeline,
+	sample TReq,
+	plan *queries.ExportPlan,
+	translator *translation.Translator,
+	maxRows int64,
+	filenameBase string,
+	enc export.Encoder,
+	h pipeline.Handler[TQ, queries.Page],
+) (fiber.Handler, openapi.RouteSpec) {
+	handler := HandleQueryExport(pipe, sample, plan, translator, maxRows, filenameBase, enc, h)
+	return handler, openapi.RouteSpec{
+		RequestType:   reflect.TypeOf((*TReq)(nil)).Elem(),
+		SuccessStatus: fiber.StatusOK,
+		FileResponse:  &openapi.FileResponseSpec{ContentType: enc.ContentType()},
+	}
+}
+
+// HandleQueryAsCSVSpec is the OpenAPI-aware, self-sufficient CSV sibling: it
+// returns (handler, RouteSpec) for fwopenapi.Mount. csvOpts (e.g.
+// export.WithDelimiter(';')) are the per-route CSV options chosen at mount.
+func HandleQueryAsCSVSpec[TReq HasToParamsQuery[TQ], TQ queries.FindByParamsQuery](
+	pipe *pipeline.Pipeline,
+	sample TReq,
+	plan *queries.ExportPlan,
+	translator *translation.Translator,
+	maxRows int64,
+	filenameBase string,
+	h pipeline.Handler[TQ, queries.Page],
+	csvOpts ...export.CSVOption,
+) (fiber.Handler, openapi.RouteSpec) {
+	return HandleQueryExportSpec(pipe, sample, plan, translator, maxRows, filenameBase, export.CSV(csvOpts...), h)
+}
+
+// HandleQueryAsXLSXSpec is the OpenAPI-aware, self-sufficient Excel sibling: it
+// returns (handler, RouteSpec) for fwopenapi.Mount. xlsxOpts (e.g.
+// export.WithSheetName("Users")) are the per-route XLSX options chosen at mount.
+func HandleQueryAsXLSXSpec[TReq HasToParamsQuery[TQ], TQ queries.FindByParamsQuery](
+	pipe *pipeline.Pipeline,
+	sample TReq,
+	plan *queries.ExportPlan,
+	translator *translation.Translator,
+	maxRows int64,
+	filenameBase string,
+	h pipeline.Handler[TQ, queries.Page],
+	xlsxOpts ...export.XLSXOption,
+) (fiber.Handler, openapi.RouteSpec) {
+	return HandleQueryExportSpec(pipe, sample, plan, translator, maxRows, filenameBase, export.XLSX(xlsxOpts...), h)
 }
 
 // buildExportCriteria parses the export route's query string. Filters come from

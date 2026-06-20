@@ -13,7 +13,24 @@ with `1.0.0`.
 
 ### Added
 
-- **Tabular export of a view query (CSV today, format-pluggable).**
+- **File/download success responses on the canonical `Mount` path.**
+  `openapi.RouteSpec` gains an optional `FileResponse *FileResponseSpec`
+  (`{ContentType string}`): when set, the success status is documented as a raw
+  file/stream of that content type (`{type: string, format: binary}`) instead of
+  the JSON envelope, while the query/filter parameters (reflected from
+  `RequestType`) and the standard error envelopes (401/422/500) render unchanged.
+  Mutually exclusive with `Paged` and a non-nil `ResponseType` (boot panic at
+  `Mount`). This completes `RouteSpec`'s response taxonomy
+  (`{ResponseType envelope | Paged envelope | FileResponse}`) so a typed query
+  route can return a file without leaving the canonical path or dropping to
+  `MountRaw`. The tabular-export routes now mount via `Mount` (not `MountRaw`),
+  so CSV/XLSX exports document their filters in Swagger.
+- **Self-sufficient export `*Spec` wrappers** — `fwweb.HandleQueryAsCSVSpec` /
+  `HandleQueryAsXLSXSpec` (and the generic `HandleQueryExportSpec`) return
+  `(fiber.Handler, openapi.RouteSpec)` with `RequestType` + `FileResponse`
+  prefilled, so the consumer mounts an export with the same `openapi.Mount` call
+  as any JSON query route (symmetric with `HandleQueryWithParamsSpec`).
+- **Tabular export of a view query (CSV + XLSX, format-pluggable).**
   `fwweb.HandleQueryExport[TReq, TQ]` and the convenience `fwweb.HandleQueryAsCSV[TReq, TQ]`
   mount a route that streams the same view read as a paged GET — reusing the
   same Request DTO + query handler — rendered as a flat file. The layout is

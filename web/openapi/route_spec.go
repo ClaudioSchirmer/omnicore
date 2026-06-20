@@ -140,6 +140,29 @@ type RouteSpec struct {
 	// responses.None is a semantic contradiction — paging requires
 	// per-item shape — and panics at Mount time.
 	Paged bool
+
+	// FileResponse, when non-nil, makes the success response a raw
+	// file/stream (a download) of FileResponse.ContentType instead of the
+	// canonical JSON envelope — completing the response taxonomy
+	// {ResponseType envelope | Paged envelope | FileResponse}. The success
+	// status is rendered as content: {ContentType: {schema: {type: string,
+	// format: binary}}}; RequestType still drives the query/filter
+	// parameters and the standard error envelopes (401/422/500) are
+	// unchanged, so a typed query route can return a file (CSV/XLSX/…)
+	// without leaving the canonical Mount path. Mutually exclusive with
+	// Paged and with a non-nil ResponseType (the success body is the file,
+	// not a typed/paged envelope) — enforced at Mount. Set by the
+	// tabular-export *Spec wrappers (HandleQueryAsCSVSpec / …XLSXSpec).
+	FileResponse *FileResponseSpec
+}
+
+// FileResponseSpec describes a raw file/stream success response on a
+// canonical (RouteSpec) route — a download rather than the JSON envelope.
+// ContentType is the success media type (e.g. "text/csv" or the xlsx
+// mime); the 200 body is documented as a binary string. Carried on
+// RouteSpec.FileResponse.
+type FileResponseSpec struct {
+	ContentType string
 }
 
 // Doc carries the prose the spec-assembly phase folds into the
