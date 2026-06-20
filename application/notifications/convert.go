@@ -29,7 +29,7 @@ func ToContextDTOs(
 				Semantic:        m.Notification.Semantic(),
 			}
 			// Render the field's human label when the source struct declared
-			// a `label:"<catalogKey>"` tag (resolved at emit time by
+			// a `labelKey:"<catalogKey>"` tag (resolved at emit time by
 			// Rules.AddNotification and carried on m.LabelKey). Translator.Render
 			// applies its existing fallback-to-key + warn-once-per-(lang, key)
 			// posture on catalog miss, identical to how Message is handled

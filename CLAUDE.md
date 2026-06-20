@@ -56,7 +56,7 @@
 >
 > **The only exception** is translation strings inside `application/translation/` — the framework's built-in i18n catalog. By design it ships with **seven languages**: PT-BR (`ptbr.go`), English (`eng.go`), Spanish (`esp.go`), French (`fra.go`), German (`deu.go`), Italian (`ita.go`), and Dutch (`nld.go`). Those seven modules are the *only* place in this module where non-English text is allowed; the surrounding Go code (struct names, function names, identifiers, comments) stays English even inside the translation package.
 >
-> Maintainer ↔ Claude conversations can happen in any language. The language of the chat does not affect what gets written to disk: framework artifacts are always English (except the four translation modules above).
+> Maintainer ↔ Claude conversations can happen in any language. The language of the chat does not affect what gets written to disk: framework artifacts are always English (except the seven translation modules above).
 
 > **CRITICAL RULE — DO NOT GUESS, VERIFY BEFORE ASSERTING OR PLANNING**
 >
@@ -81,7 +81,11 @@
 >
 > **The closed loop the AI follows on every task:**
 >
-> 1. **At task start, create a feature branch with a coherent descriptor.** Prefix by intent (`feature/<slug>` for new behavior, `fix/<slug>` for bug fixes, `docs/<slug>` for doc-only edits, `refactor/<slug>` for internal cleanups). The slug is lowercase-kebab-case and names the *outcome*, not the file edited: `feature/audit-claim-allowlist`, not `feature/edit-auditor`. `git checkout -b <branch>` is the only git-write the AI runs — it is structural setup (local, reversible) so the maintainer's main tree stays clean from in-flight work.
+> 1. **At task start, get onto a coherent feature branch.** Prefix by intent (`feature/<slug>` for new behavior, `fix/<slug>` for bug fixes, `docs/<slug>` for doc-only edits, `refactor/<slug>` for internal cleanups). The slug is lowercase-kebab-case and names the *outcome*, not the file edited: `feature/audit-claim-allowlist`, not `feature/edit-auditor`.
+>    - **If the repo is on `main`** (or another already-merged base), create a fresh branch off it: `git checkout -b <branch>`.
+>    - **If the repo is already on an unmerged feature branch**, do NOT branch fresh off `main` (that would orphan the in-flight work) and do NOT stack a second branch on top. Rename the existing branch to a descriptor coherent with the work now landing on it — `git branch -m <newname>` — and continue on it.
+>
+>    `git checkout -b` and `git branch -m` are the only git-writes the AI runs — both are structural setup (local, reversible) so the maintainer's main tree stays clean from in-flight work.
 >
 > 2. **Apply the file changes for the task on that branch** via the `Edit` / `Read` / `Write` tools.
 >
@@ -153,12 +157,14 @@ application/
 domain/                       Pure business rules, ZERO IO
   aggregate_mapping.go        AggregateRootProvider (GetAggregateRoot +
                               AggregateChildren — domain declarations; table/FK
-                              inferred by infra via convention)
+                              declared in infra via an explicit TableSchema)
   entity.go                   ValidEntity sealed types (Insertable/Updatable/Archivable/
                               Deletable/Unarchivable/Batch) — carry Entity directly;
-                              infra resolves table/fields via reflection
-  identifier_render.go        PascalToSnake + PluralizeSnake (shared with infra
-                              to infer table/column/collection name by convention)
+                              infra maps table/columns via the Repository's TableSchema
+  path_render.go              childCollectionSegment(typeName) — camelCase pluralizer
+                              for the aggregate-child notification path segment
+                              (Address→addresses, OrderLine→orderLines) + exported
+                              PluralizeWord (used by infra to derive the local embed segment)
 infra/
   audit/                      AuditEvent + Config (destinations) + persister + echo + partitions
   events/                     Publisher + SlogPublisher
@@ -224,7 +230,7 @@ Embeddable struct for user entities. Provides:
 - Private framework methods used by `GetInsertable/Updatable/Archivable/Deletable/Unarchivable`
 - **Default `RequiresService() bool { return false }`** promoted via embed — an entity that needs `domain.Service` in `BuildRules` overrides by declaring its own method returning `true`. The other entries of the `Entity` interface (`Modes`, `BuildRules`) remain mandatory.
 
-The `Entity` interface has no `TableName()` or `ToFields()`. Infra resolves via reflection (PascalToSnake / PluralizeSnake) with per-Repository overrides via `fwinfra.RepoConfig`.
+The `Entity` interface has no `TableName()` or `ToFields()`. Infra maps Go fields to physical columns via an explicit `TableSchema` declared per Repository — no reflection-by-convention.
 
 User entities embed `BaseEntity` and implement the `Entity` interface:
 
@@ -239,8 +245,8 @@ func (c *Customer) Modes() []domain.EntityMode {
     return []domain.EntityMode{domain.ModeInsert, domain.ModeUpdate, domain.ModeDelete, domain.ModeArchive, domain.ModeUnarchive}
 }
 // RequiresService omitted — *BaseEntity promotes the default `false` via embed.
-// NO TableName/ToFields — infra infers "customers" and {name, email}
-// by convention (PluralizeSnake/PascalToSnake over exported fields).
+// NO TableName/ToFields — the Repository declares a TableSchema mapping
+// {ID,Name,Email} → {id,name,mail} for the "customers" table.
 func (c *Customer) BuildRules(actionName string, service domain.Service, r *domain.Rules) {
     r.IfInsertOrUpdate(func() {
         if c.Name == "" {
@@ -285,7 +291,7 @@ type AggregateValueObject interface {
 }
 ```
 
-**Convention:** infra extracts columns via reflection on exported fields; tag `transient:"-"` declares the field as runtime-only (request input / computed / in-memory cache / runtime bookkeeping) and the framework skips it on read and write; `ID` field is skipped on write (DB-gen + WHERE) and read via auto-scan; FK to the root is injected by infra (does not belong to the struct).
+**Mapping:** infra maps the child's columns via its `TableSchema` (`AddressSchema()`); only declared fields are persisted/scanned/audited. `ID` is the PK — skipped on the INSERT/UPDATE write list (DB-gen) and used in the WHERE clause. FK to the root is declared via `.FK("user_id")` and injected by the persister (it is not a struct field). An exported field NOT declared in the schema is runtime-only — never persisted, scanned, or audited.
 
 ### Rules DSL (`domain/rules.go`)
 
@@ -397,8 +403,8 @@ Body block — exactly one of the three regimes applies per event, selected by `
 
 | `kind` | Verbs | Carries | What's in the block |
 |---|---|---|---|
-| `snapshot` | `insert`, `delete` | `snapshot: map[column]value` | Full state (post-insert for Insert; pre-delete via Old() for Delete) |
-| `delta` | `update` | `changes: []{field,fieldLabelKey,from,to}` sorted by `field` | Only mutated columns; unchanged ones absent. `fieldLabelKey` (omitempty) carries the catalog key declared on the source field's `label:"..."` struct tag — see "Field labels" under [Notification system](#notification-system-domainnotificationgo) |
+| `snapshot` | `insert`, `delete` | `snapshot: map[goFieldName]value` | Full state (post-insert for Insert; pre-delete via Old() for Delete) |
+| `delta` | `update` | `changes: []{field,fieldLabelKey,from,to}` sorted by `field` | Only mutated fields; unchanged ones absent. `field` is the faithful domain name (the raw Go field name, e.g. `Email`/`ZipCode`) — audit is map-blind and never carries the physical column. `fieldLabelKey` (omitempty) carries the catalog key declared on the source field's `labelKey:"..."` struct tag — see "Field labels" under [Notification system](#notification-system-domainnotificationgo) |
 | `transition` | `archive`, `unarchive` | (neither block) | The verb itself is the recovery hint (symmetric inverse) |
 
 `PartialUpdate` (PATCH) shares `verb=update` with PUT (SQL is identical). The PUT vs PATCH distinction lives in `actionName` (`GetUpdatable` vs `GetPartialUpdatable`). Same unification the domain already applies — `IfUpdate` fires for both verbs. `Updatable.IsPartial()` is preserved on the type for non-audit callers but no longer routes the audit verb.
@@ -425,7 +431,7 @@ The child op vocabulary is the same 5-verb set as the root verb (`inserted`/`upd
 - Translation key is the struct's type name via `reflect.TypeOf(n).Name()` — same pattern as Kotlin's `::class.simpleName`
 
 ```go
-type CPFAlreadyExistsNotification struct{ domain.DomainNotificationBase }
+type UsernameAlreadyExistsNotification struct{ domain.DomainNotificationBase }
 ```
 
 `NotificationContext` groups messages by context name (entity/aggregate). Methods: `AddNotification(name, n, value...)`, `AddNotificationMessage(msg)`, `Scoped`, `HasErrors`, `Clear`, `ChangeFieldName`, `Copy`, `Messages`. (Previously called `AddField`/`Add` — renamed to make the intent clear; it is a notification, not a field.)
@@ -472,9 +478,9 @@ Wire format of each one:
 
 Mechanics:
 
-1. **Rules carries ctx + entityType.** `NewRules(mode, ctx, entityType)` packages the EntityMode + destination NotificationContext + the Go `reflect.Type` of the entity / value object that owns this Rules. `r.AddNotification`/`r.AddNotificationMessage` delegate to the internal ctx; the entityType lets `AddNotification` read the field's `label:"..."` struct tag at emit time and stamp `LabelKey` on the emitted message (see "Field labels" below). For the root, ctx is the entity's own `e.NotificationContext()` and entityType is `reflect.TypeOf(self)`; for an AVO, ctx is a `Scoped(NameSegment(collection), IndexSegment(i))` view of the root's ctx and entityType is `reflect.TypeOf(self)` of the AVO struct.
-2. **Collection name inferred by convention.** `runAggregateValidations` iterates `root.AllAggregateItems()` and uses `PluralizeSnake(PascalToSnake(typeName))` as the collection segment name (`"addresses"`, `"order_items"`, etc). No per-entity declaration needed — the convention matches the table name inference used by infra.
-3. **Render `toLowerCamel` acronym-aware.** A Go identifier becomes camelCase: `Name`→`name`, `CPF`→`cpf`, `ZipCode`→`zipCode`, `URLPath`→`urlPath`. Strings already in lowercase pass through — so the legacy `FieldName: "id"` in mode validators remains intact.
+1. **Rules carries ctx + entityType.** `NewRules(mode, ctx, entityType)` packages the EntityMode + destination NotificationContext + the Go `reflect.Type` of the entity / value object that owns this Rules. `r.AddNotification`/`r.AddNotificationMessage` delegate to the internal ctx; the entityType lets `AddNotification` read the field's `labelKey:"..."` struct tag at emit time and stamp `LabelKey` on the emitted message (see "Field labels" below). For the root, ctx is the entity's own `e.NotificationContext()` and entityType is `reflect.TypeOf(self)`; for an AVO, ctx is a `Scoped(NameSegment(collection), IndexSegment(i))` view of the root's ctx and entityType is `reflect.TypeOf(self)` of the AVO struct.
+2. **Notification path segment is camelCase.** `runAggregateValidations` iterates `root.AllAggregateItems()` and uses `childCollectionSegment(typeName)` — `toLowerCamel(typeName)` pluralized in camelCase (`Address`→`"addresses"`, `OrderLine`→`"orderLines"`) — as the path segment name. It matches the JSON wire segment of the child collection, not the physical table name.
+3. **Render `toLowerCamel` acronym-aware.** A Go identifier becomes camelCase: `Name`→`name`, `URL`→`url`, `ZipCode`→`zipCode`, `URLPath`→`urlPath`. Strings already in lowercase pass through — so the legacy `FieldName: "id"` in mode validators remains intact.
 4. **Wire layer reads `ResolveFieldName()`** (`web/from_notifications.go`, `application/notifications/convert.go`) with precedence **Override > rendered Path > FieldName**.
 
 **Controlling the wire field name — three paths.** All three feed `ResolveFieldName()`; pick by lifetime of the rule:
@@ -485,22 +491,22 @@ Mechanics:
 
 Both override paths populate the same slot (`NotificationMessage.Override`) which sits at the top of the `ResolveFieldName()` precedence. The choice is purely about *when* the decision is taken — entity-definition time vs request-handling time.
 
-**Field labels — `label:"<catalogKey>"` struct tag.** The wire `field` (`addresses[0].zipCode`) and the audit `field` (`addresses[0].zip_code`) are technical identifiers. They are stable but not human-readable. Channels without a frontend (e-mail / SMS / push / audit read by compliance) consume the envelope directly and benefit from a translated label next to the technical identifier — "CEP é inválido" reads naturally; "addresses[0].zipCode é inválido" does not.
+**Field labels — `labelKey:"<catalogKey>"` struct tag.** The wire `field` (`addresses[0].zipCode`) and the audit `field` (the raw Go field name, e.g. `ZipCode`) are technical identifiers. They are stable but not human-readable. Channels without a frontend (e-mail / SMS / push / audit read by compliance) consume the envelope directly and benefit from a translated label next to the technical identifier — "CEP é inválido" reads naturally; "addresses[0].zipCode é inválido" does not.
 
-The mechanism extends the existing translation surface (no new translator, no boot phase): a `label:"<catalogKey>"` struct tag on the field declares which catalog entry renders the human label. `Rules.AddNotification` reads the tag at emit time via `reflect.Type` and writes the catalog key on `NotificationMessage.LabelKey`; the translation layer (`application/notifications/convert.go::ToContextDTOs`) renders the key via `Translator.Render(lang, key, nil)` alongside the existing `Message` render and surfaces the result on `MessageDTO.FieldLabel`. The audit pipeline (`infra/audit_builder.go::computeChanges`) walks the same tag and writes the raw key on `FieldChange.FieldLabelKey`; `audit.RenderLabels` (typed) and `audit.RenderLabelsInJSON` (map-form) consume the key at read time and replace it with `FieldLabel` rendered in the chosen locale.
+The mechanism extends the existing translation surface (no new translator, no boot phase): a `labelKey:"<catalogKey>"` struct tag on the field declares which catalog entry renders the human label. `Rules.AddNotification` reads the tag at emit time via `reflect.Type` and writes the catalog key on `NotificationMessage.LabelKey`; the translation layer (`application/notifications/convert.go::ToContextDTOs`) renders the key via `Translator.Render(lang, key, nil)` alongside the existing `Message` render and surfaces the result on `MessageDTO.FieldLabel`. The audit pipeline (`infra/audit_builder.go::computeChanges`) walks the same tag and writes the raw key on `FieldChange.FieldLabelKey`; `audit.RenderLabels` (typed) and `audit.RenderLabelsInJSON` (map-form) consume the key at read time and replace it with `FieldLabel` rendered in the chosen locale.
 
 ```go
 // consumer side — domain/user.go
 type User struct {
     domain.AggregateRoot
-    Name  string  `label:"UserNameField"`
-    Email string  `label:"UserEmailField"`
+    Name  string  `labelKey:"UserNameField"`
+    Email string  `labelKey:"UserEmailField"`
     Phone *string                            // no label tag — nothing emitted
 }
 
 type Address struct {
-    Street  string `label:"AddressStreetField"`
-    ZipCode string `label:"AddressZipCodeField"`
+    Street  string `labelKey:"AddressStreetField"`
+    ZipCode string `labelKey:"AddressZipCodeField"`
 }
 ```
 
@@ -512,7 +518,7 @@ type Address struct {
 "AddressZipCodeField": "CEP",
 ```
 
-Wire envelope on a notification rendered in PT-BR with `label:"AddressZipCodeField"` on `Address.ZipCode`:
+Wire envelope on a notification rendered in PT-BR with `labelKey:"AddressZipCodeField"` on `Address.ZipCode`:
 
 ```json
 {
@@ -527,14 +533,14 @@ Wire envelope on a notification rendered in PT-BR with `label:"AddressZipCodeFie
 }
 ```
 
-Audit row (root delta on `Name`) with `label:"UserNameField"` on `User.Name`:
+Audit row (root delta on `Name`) with `labelKey:"UserNameField"` on `User.Name`:
 
 ```json
 {
   "verb": "update",
   "kind": "delta",
   "changes": [{
-    "field": "name",
+    "field": "Name",
     "fieldLabelKey": "UserNameField",
     "from": "Jane Doe",
     "to": "Jane Smith"
@@ -546,8 +552,8 @@ Rules:
 
 - **Tag value = catalog key.** Lookup goes through the standard `Translator.Render(lang, key, nil)` — same primitive `MessageDTO.Message` uses today.
 - **No tag = no label.** The wire `MessageDTO.FieldLabel` and the audit `FieldChange.FieldLabelKey` are `omitempty` — services without `label` tags see byte-identical envelopes.
-- **`label:"-"`** opts a field out explicitly (mirror of `json:"-"`); empty tag value is treated the same.
-- **`transient:"-"` skips the label too.** A transient field is runtime-only; the framework never surfaces it on the wire or in audit, label included.
+- **`labelKey:"-"`** opts a field out explicitly (mirror of `json:"-"`); empty tag value is treated the same.
+- **A field not declared in the `TableSchema` carries no label.** Such a field is runtime-only — the framework never persists, scans, or audits it, so it never surfaces on the wire or in audit, label included.
 - **Catalog miss → raw key fallback.** Same posture `Translator.Render` already applies to `MessageDTO.Message`: returns the catalog key as the rendered string AND emits `slog.Warn("translation.key.missing", "lang", lang, "key", key)` once per `(lang, key)` tuple. No boot-time validator.
 - **Audit stores the key, not the rendered string.** Immutable artifact — the catalog evolves; the key remains. Readers render in the locale they want via `audit.RenderLabels(ev, t, lang)` (typed `*AuditEvent`) or `audit.RenderLabelsInJSON(doc, t, lang)` (parsed `map[string]any` from the `audit_events.jsonb` payload). Both helpers walk top-level `changes` + `children.<typeName>[].changes`, pop `fieldLabelKey`, and write `fieldLabel` rendered via `Translator.Render`. Snapshot blocks (Insert / Delete) are intentionally not touched — they carry `map[column]value` with no schema for labels.
 - **Resolution is by the Go field name the rule passed.** `r.AddNotification("Email", n)` reads the `label` tag on `Email`. `AddFieldNameAlias("Email", "primaryEmail")` renames the wire `field` only — `fieldLabel` stays the translation of the tag on `Email`. The two surfaces are independent.
@@ -727,9 +733,9 @@ Every Cmd implements **input boundary + output boundary** as methods on its own 
 | Insert | `InsertXxxCommand` (`pipeline.CommandBase`) | `ToEntity(ctx) T` | `FromEntity(ctx, T) TResult` | `handlers.InsertCommandHandler[T, *Cmd, TResult]` | no | POST |
 | Update (full) | `UpdateXxxCommand` (`pipeline.CommandBaseWithID`) | `ApplyTo(ctx, T)` | `FromEntity(ctx, T) TResult` | `handlers.UpdateCommandHandler[T, *Cmd, TResult]` (embeds `pipeline.FullBody`) | **yes** | **PUT** |
 | Partial Update | `PatchXxxCommand` (`pipeline.CommandBaseWithID`) — fields typically as pointers | `ApplyPartiallyTo(ctx, T)` | `FromEntity(ctx, T) TResult` | `handlers.PartialUpdateCommandHandler[T, *Cmd, TResult]` | no | **PATCH** |
-| Archive | `ArchiveXxxCommand` (`pipeline.CommandBaseWithID`) | `ApplyTo(ctx, T)` (transients) | `FromEntity(ctx, T) TResult` (typ. `fwresults.None`) | `handlers.ArchiveCommandHandler[T, *Cmd, TResult]` | no | PATCH/DELETE |
-| Unarchive | `UnarchiveXxxCommand` (`pipeline.CommandBaseWithID`) | `ApplyTo(ctx, T)` (transients) | `FromEntity(ctx, T) TResult` (typ. `fwresults.None`) | `handlers.UnarchiveCommandHandler[T, *Cmd, TResult]` | no | PATCH |
-| Delete | `DeleteXxxCommand` (`pipeline.CommandBaseWithID`) | `ApplyTo(ctx, T)` (transients) | `FromEntity(ctx, T) TResult` (typ. `fwresults.None`) | `handlers.DeleteCommandHandler[T, *Cmd, TResult]` | no | DELETE |
+| Archive | `ArchiveXxxCommand` (`pipeline.CommandBaseWithID`) | `ApplyTo(ctx, T)` (runtime authz fields) | `FromEntity(ctx, T) TResult` (typ. `fwresults.None`) | `handlers.ArchiveCommandHandler[T, *Cmd, TResult]` | no | PATCH/DELETE |
+| Unarchive | `UnarchiveXxxCommand` (`pipeline.CommandBaseWithID`) | `ApplyTo(ctx, T)` (runtime authz fields) | `FromEntity(ctx, T) TResult` (typ. `fwresults.None`) | `handlers.UnarchiveCommandHandler[T, *Cmd, TResult]` | no | PATCH |
+| Delete | `DeleteXxxCommand` (`pipeline.CommandBaseWithID`) | `ApplyTo(ctx, T)` (runtime authz fields) | `FromEntity(ctx, T) TResult` (typ. `fwresults.None`) | `handlers.DeleteCommandHandler[T, *Cmd, TResult]` | no | DELETE |
 
 **Cmd owns the application boundary — input AND output.** Every Auto handler receives the request `*AppContext` and threads it to the Cmd at TWO symmetric points:
 
@@ -738,7 +744,7 @@ Every Cmd implements **input boundary + output boundary** as methods on its own 
 
 The handler does NOT expose a `Project` field — the projection method lives on the Cmd, just like every other application-layer boundary on the use case. The **Request DTO does NOT receive ctx** — `Request.ToCommand()` is a pure body mapper. This keeps web ctx-free (transport-only) and concentrates identity-derived translation in application code (the Cmd) where the layer rules allow consuming AppContext.
 
-The same `ApplyTo(ctx, t)` + `FromEntity(ctx, t)` pair exists on all 6 Auto Command interfaces — including Archive/Unarchive/Delete (which have no body). On the state-transition verbs ApplyTo is the hook for "consume ctx + populate transient field for authz"; FromEntity typically returns `fwresults.None{}` for the "no data on the wire" shape. A Command that doesn't need ctx just ignores both parameters.
+The same `ApplyTo(ctx, t)` + `FromEntity(ctx, t)` pair exists on all 6 Auto Command interfaces — including Archive/Unarchive/Delete (which have no body). On the state-transition verbs ApplyTo is the hook for "consume ctx + populate a runtime authz field"; FromEntity typically returns `fwresults.None{}` for the "no data on the wire" shape. A Command that doesn't need ctx just ignores both parameters.
 
 **Where Result and Response live.**
 
@@ -990,11 +996,11 @@ type FindUsersByParamsRequest struct {
 
 type AddressFilterParams struct {
     City    *string `query:"city"    filter:"eq,istartswith"`
-    ZipCode *string `query:"zipCode" filter:"eq,startswith"` // auto-snake → addresses.zip_code
+    ZipCode *string `query:"zipCode" filter:"eq,startswith"` // Go path Addresses.ZipCode → column zip_code via the view TableSchema
 }
 ```
 
-Wire: `?addresses.city=Berlin`, `?addresses.zipCode.startswith=10001`. Doc path: derived from each leaf's wire name via `domain.PascalToSnake` (the same convention applied to Postgres column names), so `zipCode` defaults to doc field `zip_code` — no `view:` declaration needed for the common camelCase case. Override per-leaf with `view:"<doc>"` only for exotic schemas. Reserved pagination keys (`limit`, `after`, etc.) are honored only at the top level — embed groups carry filter leaves, not pagination controls. Pointer-to-struct (`*AddressFilterParams`) recurses identically.
+Wire: `?addresses.city=Berlin`, `?addresses.zipCode.startswith=10001`. Each leaf's wire name resolves to a **Go field path** (`Addresses.ZipCode`) via the Request DTO's `query:` tags; the `MongoViewReader` then translates that Go path to the physical Mongo column path using the view's `TableSchema`, so `Addresses.ZipCode` becomes the doc path `addresses.zip_code` because `AddressSchema().Field("ZipCode","zip_code")` says so — no `view:` tag, no `PascalToSnake` at this layer. Reserved pagination keys (`limit`, `after`, etc.) are honored only at the top level — embed groups carry filter leaves, not pagination controls. Pointer-to-struct (`*AddressFilterParams`) recurses identically.
 
 **Filter operators.** A field declared `query:"X" filter:"ops"` accepts the operators listed (comma-separated). The wire shape is `?X.<op>=value` (no suffix for `eq`); operators outside the declared set are rejected with 400 `SchemaViolationNotification`. Exhaustive list:
 
@@ -1024,7 +1030,7 @@ The numeric operators (`gte`/`lte`/`gt`/`lt`) have no `i` variant — case-foldi
 
 1. **Boot guard.** `HandleQueryWithParams` (and its `Spec` sibling) walks R recursively at construction. Every exported field — at every depth, including struct fields inside slices — must be either `*T` (pointer to scalar/struct) or a slice/map AND must carry `,omitempty` in its `json` tag. Violations are accumulated and surfaced as a boot panic naming every offending path (`FindXxxResponse.addresses.zipCode: missing ,omitempty in json tag`). Fail loud at construction — the contract cannot ship.
 
-2. **Allowlist + wire→doc translation.** Each comma-separated token in `?fields=` is validated against R's declared wire paths and translated to the Mongo doc path via the same convention used elsewhere on the read side (`domain.PascalToSnake` by default; `view:` tag override per segment). Unknown tokens emit 400 with `SchemaViolationNotification` on field `fields[<bad>]`. Nested paths walk segment-by-segment, so `?fields=addresses.zipCode` projects to Mongo as `{"addresses.zip_code":1}`, and `?fields=addresses` projects the whole nested subtree.
+2. **Allowlist + wire→Go→column translation.** Each comma-separated token in `?fields=` is validated against R's declared wire paths (the Response's `json:` tags) and translated to the **Go field path**; the `MongoViewReader` then maps the Go path to the physical Mongo column path via the view's `TableSchema`. Unknown tokens emit 400 with `SchemaViolationNotification` on field `fields[<bad>]`. Nested paths walk segment-by-segment, so `?fields=addresses.zipCode` projects to Mongo as `{"addresses.zip_code":1}` — the `zip_code` comes from `AddressSchema().Field("ZipCode","zip_code")`, not from `PascalToSnake` — and `?fields=addresses` projects the whole nested subtree.
 
 3. **Auto-exclusion of `_id`.** Mongo always returns `_id` unless explicitly excluded (the only mixed-mode projection it permits — exclusion of `_id` alongside inclusion of others). When the wire `fields` list does not include `id`, the framework adds `_id: 0` to the projection so the typed Response stays clean. When `id` is among the tokens, no `_id: 0` is added — Mongo returns both `id` and `_id`, and `AutoFromDoc`'s existing `id ← _id` fallback resolves the wire output identically across both cases.
 
@@ -1033,7 +1039,7 @@ The numeric operators (`gte`/`lte`/`gt`/`lt`) have no `i` variant — case-foldi
 | `?fields=name,email` | `{name:1, email:1, _id:0}` | `id` not requested → `_id:0` added |
 | `?fields=id,name` | `{id:1, name:1}` | `id` requested → no `_id:0`; Mongo auto-includes `_id` |
 | `?fields=addresses` | `{addresses:1, _id:0}` | Whole subtree |
-| `?fields=addresses.zipCode` | `{"addresses.zip_code":1, _id:0}` | Auto PascalToSnake per segment |
+| `?fields=addresses.zipCode` | `{"addresses.zip_code":1, _id:0}` | `zip_code` from the view `TableSchema` (`Field("ZipCode","zip_code")`) |
 | `?fields=bogus` | (rejected) | 400 `SchemaViolationNotification{field:"fields[bogus]"}` |
 
 **Why pointer + omitempty.** Mongo strips the unwanted columns, the projector populates only what it finds, the remaining Go fields stay at their zero value. Pointer + `omitempty` lets `encoding/json` elide absent fields; without it, the zero value still renders (`"name":""`, `"addresses":[]`), defeating the point of `?fields=`. The boot guard is the cheapest way to make the wire shape coherent with what the consumer asked for. Empty slices are elided too (`omitempty` honors `len==0`) — a `?fields=name` request returns `{"name":"…"}` without an empty `"addresses":[]`.
@@ -1042,7 +1048,7 @@ The numeric operators (`gte`/`lte`/`gt`/`lt`) have no `i` variant — case-foldi
 
 **Sortable response paths via `?sort=`.** Symmetric to `?fields=`: opt-in allowlist over the Response DTO's wire paths, applied to the ordering of results. The Request DTO opts in by declaring `Sort *string query:"sort"` (no `filter:` tag — reserved control key). When the parameter is declared AND the wrapper's Response type R is a struct, two pieces fire automatically:
 
-1. **Allowlist + wire→doc translation.** Each comma-separated token is stripped of an optional `-` prefix (descending; bare token = ascending), validated against R's declared wire paths (the same `projectionSchema` `?fields=` consumes), and translated to the doc path via `domain.PascalToSnake` (default) / `view:` override per segment. Unknown tokens emit 400 with `SchemaViolationNotification` on field `sort[<token>]` — the rejected token is surfaced verbatim including any `-` prefix. The resulting `SortField{Field: docPath, Desc: bool}` entries land on `ReadCriteria.Sort`; `MongoViewReader` emits the matching `bson.D` on `findOpts.SetSort`.
+1. **Allowlist + wire→Go translation.** Each comma-separated token is stripped of an optional `-` prefix (descending; bare token = ascending), validated against R's declared wire paths (the same `projectionSchema` `?fields=` consumes), and resolved to the **Go field path**. Unknown tokens emit 400 with `SchemaViolationNotification` on field `sort[<token>]` — the rejected token is surfaced verbatim including any `-` prefix. The resulting `SortField{Field: goPath, Desc: bool}` entries land on `ReadCriteria.Sort` carrying the Go path; `MongoViewReader` translates each Go path to its physical column via the view's `TableSchema` and emits the matching `bson.D` on `findOpts.SetSort`.
 
 2. **Boot warning.** The wrapper has no way to verify at construction time that the Mongo view declares indexes covering the sortable paths — the `ViewDefinition` lives separately in `ReadableFeature.Views()`. When sort opt-in is detected and a typed Response is in scope, the framework emits a single `slog.Warn("query.sort.opt-in: …", "request", "<TReq>", "sortable_wire_paths", [...])` listing every sortable path so the operator can compare it against the view's `.Indexes(…)` (`fwinfra.Index` / `fwinfra.Compound`) during the same boot. No enforcement, no boot panic — pure operator-facing advisory, because the framework cannot know which index shape (single, compound ESR, partial) covers a given workload.
 
@@ -1050,8 +1056,8 @@ The numeric operators (`gte`/`lte`/`gt`/`lt`) have no `i` variant — case-foldi
 |---|---|---|
 | `?sort=name` | `{Field:"name", Desc:false}` | Bare token → ascending |
 | `?sort=-name` | `{Field:"name", Desc:true}` | `-` prefix → descending |
-| `?sort=addresses.zipCode` | `{Field:"addresses.zip_code", Desc:false}` | Auto `PascalToSnake` per segment |
-| `?sort=addresses.state` | `{Field:"addresses.st", Desc:false}` | Honors `view:"st"` override |
+| `?sort=addresses.zipCode` | `{Field:"Addresses.ZipCode", Desc:false}` | reader → column `addresses.zip_code` via the view `TableSchema` |
+| `?sort=addresses.state` | `{Field:"Addresses.State", Desc:false}` | reader → column `addresses.st` via `AddressSchema().Field("State","st")` |
 | `?sort=name,-email` | 2 entries, independent directions | Multi-key sort applied in declaration order |
 | `?sort=bogus` | (rejected) | 400 `SchemaViolationNotification{field:"sort[bogus]"}` |
 | `?sort=-bogus` | (rejected) | 400 `SchemaViolationNotification{field:"sort[-bogus]"}` — `-` preserved |
@@ -1102,7 +1108,8 @@ The resolved ceiling is **always > 0**. When the consumer sends no `?limit=`, th
 fwinfra.View("users").
     Version(1).
     Root("users").
-    EmbedMany("addresses", fwinfra.From("addresses").On("user_id")).
+    Schema(UserSchema()).
+    EmbedMany("addresses", fwinfra.FromSchema(AddressSchema())).
     MaxLimit(500)
 ```
 
@@ -1111,6 +1118,7 @@ fwinfra.View("users").
 # that does NOT declare its own MaxLimit):
 query:
   maxLimit: 200
+  maxExportRows: 5000
 ```
 
 **Compound cursor + `?fields=` interaction.** When the consumer requests `?fields=name` AND `?sort=created_at`, the doc would otherwise not carry `created_at` (projected away) and the reader could not assemble the cursor. The reader transparently re-includes every active sort field path in the Mongo projection, then strips them from the returned doc after the cursor is built. The wire shape stays exactly as the consumer requested via `?fields=`.
@@ -1120,6 +1128,8 @@ query:
 `onlyTotal=true` is incompatible with the listing-only reserved controls (`fields`, `sort`, `limit`, `after`, `before`); combining any of them is a consumer-side bug and rejects at the schema layer with 400 `SchemaViolationNotification{field: "onlyTotal[<conflict>]"}` — strict rejection rather than silent ignore so the bug surfaces immediately. Filter leaves (declared via `filter:"ops"`) plus `?search=` and `?includeArchived=` stay valid — counting a filtered subset is the canonical use case. Manual handlers via `fwweb.ParseCriteria` get the same treatment: the flag flows into `ReadCriteria.OnlyTotal`, conflicts are rejected with the same field shape, and the downstream branch on `queries.Page.OnlyTotal` is what `RespondPaged` consumes to pick the envelope shape.
 
 `Response.Pagination` is typed `any` precisely because the slot carries two legitimate Go shapes: `*PaginationInfo` on listing requests and `*TotalOnlyPagination` on count-only requests. Both are typed structs — no untyped map on the wire.
+
+**Tabular export (CSV + XLSX, format-pluggable).** `fwweb.HandleQueryExport[TReq, TQ]` (and the convenience `fwweb.HandleQueryAsCSV[TReq, TQ]`) mount a route that streams the same view read as a paged GET — reusing the SAME Request DTO + `pipeline.Handler[TQ, queries.Page]` — rendered as a flat file. No second handler, no second query, no hand-written CSV. The layout is **hierarchical, one column per nesting level**: the view's embed tree is walked depth-first, root columns at column 0, each embed one column deeper (`Address` at 1, a grandchild collection at 2, …) to the view's full depth; per parent row the wrapper emits the parent data, then — offset one column — a header row + a data row per child, recursively. A **blank separator line** is emitted after each item's cascade concludes (after a grandchild group, then the child group), so every aggregate and sub-aggregate is visually delimited; consecutive blanks from several nesting levels popping at the same boundary collapse into one (a leaf cascade gets one blank, not a stack). The blank logic lives in the format-neutral generator over the plan tree + the Go-keyed doc, so it applies identically to locally-mapped embeds and cross-service external (`FromSchema`) embeds, in both CSV and XLSX (CSV: an empty record; XLSX: an empty worksheet row). A column's header is its `labelKey` rendered through the `Translator` in the request's `Accept-Language`, falling back to the Go field name. Columns default to every business column the view's `TableSchema` declares (PK + managed `created_at`/`updated_at`/`deleted_at` excluded); `?fields=` narrows them with the allowlist driven by the **view schema** (not a Response DTO) — `?fields=name,addresses.zipCode` keeps those at their depth, an unknown token is 400 `SchemaViolationNotification{field:"fields[<token>]"}`. Filters / `?search` / `?sort` / `?includeArchived` behave like the JSON list; **user pagination (`?limit`/`?after`/`?before`/`?onlyTotal`) is ignored** — the export returns the full filtered set, capped at the resolved ceiling sent as the read `Limit` (with `ReadCriteria.BypassMaxLimit=true` so the reader honors the export's operator-set ceiling instead of rejecting it against the per-view page `?limit` ceiling). The ceiling resolves per-view `ViewDefinition.MaxExportRows(n)` > yaml `query.maxExportRows` > framework `infra.DefaultMaxExportRows` (10000) via `ViewDefinition.ResolveMaxExportRows(yamlDefault)`. The format is a pluggable `web/export.Encoder`: the format-neutral core (`queries.ExportPlan` built by `infra.(*ViewDefinition).ExportPlan()`, `export.Generate` emitting `export.Row{Depth, Header, Cells}`, and the `Encoder`/`Sink` boundary) does the plan walk + offset + labelKey + `?fields=` work once. Two encoders ship: **`export.CSV(export.WithDelimiter(r))`** (separator fixed at mount; via `fwweb.HandleQueryAsCSV`) and **`export.XLSX(export.WithSheetName(s))`** (Excel — bold header rows, numeric/typed cells kept typed because `Cell.Value any` carries the type through; built on `github.com/xuri/excelize/v2`'s streaming writer; via `fwweb.HandleQueryAsXLSX`). A further format is a new `Encoder` with no change to the plan, the generator, or the wrapper. The OpenAPI-aware siblings `HandleQueryAsCSVSpec` / `HandleQueryAsXLSXSpec` return `(handler, openapi.RouteSpec)` and mount on the **canonical `openapi.Mount`** (not `MountRaw`): the RouteSpec carries `RequestType` (so the filters + `?fields`/`?sort`/`?search`/`?includeArchived` render in Swagger like the JSON list), `FileResponse{ContentType}` (so the 200 is documented as a file download, `{type:string, format:binary}`, instead of the JSON envelope), and `OmittedQueryParams` set to the four ignored pagination keys (`limit`/`after`/`before`/`onlyTotal`) so the spec assembler strips them — Swagger never advertises a knob the export does not honor (the same set `buildExportCriteria` drops at runtime, declared once in `exportIgnoredQueryParams`). `RouteSpec.FileResponse` is mutually exclusive with `Paged`/`ResponseType` (panic at `Mount`). All four export wrappers take the view as a `web.ExportView` interface (the `*ViewDefinition` satisfies it structurally — `web` imports no `infra`, the "accept interfaces" inversion) plus a `web.ExportDeps{Translator, MaxExportRows}` bundle pre-packaged on `bootstrap.Deps.Export` (the Translator + the yaml `query.maxExportRows` default). The wrapper resolves the plan (`view.ExportPlan()`), the effective row ceiling (`view.ResolveMaxExportRows(deps.MaxExportRows)`), and the download filename base (`view.Name()`) internally — so the consumer threads `view, d.Export` rather than spelling out `view.ExportPlan()` + `d.Translator` + `view.ResolveMaxExportRows(d.Config.Query.MaxExportRows)` + a filename string at every export route. The handler-only `HandleQueryAsCSV`/`HandleQueryAsXLSX` remain for services without OpenAPI.
 
 ```go
 // Request DTO opts in.
@@ -1146,7 +1156,7 @@ type FindUsersByParamsResponse struct {
 type FindUsersByParamsAddressOutput struct {
     ID      *string `json:"id,omitempty"`
     City    *string `json:"city,omitempty"`
-    ZipCode *string `json:"zipCode,omitempty"` // doc key zip_code via PascalToSnake
+    ZipCode *string `json:"zipCode,omitempty"` // Go field ZipCode; reader already translated column zip_code → ZipCode via the view TableSchema
 }
 ```
 
@@ -1154,21 +1164,19 @@ type FindUsersByParamsAddressOutput struct {
 
 | Projector | Use when |
 |---|---|
-| `fwresponses.AutoFromDoc[R]` | Tag-driven projection. R is a typed struct with `json:"<wire>"` and optional `view:"<docKey>"` tags. Recursive — works through nested structs, slices of structs, and pointer-to-struct fields. Normalizes top-level `_id → id` (mongo-ism) and nil slices → empty typed slices at every depth. **This is the default**; reach for it whenever the projection is mechanical. |
+| `fwresponses.AutoFromDoc[R]` | Tag-driven projection. R is a typed struct with `json:"<wire>"` tags only. It keys into the doc by the **Go field name** (the `MongoViewReader` already returned a Go-keyed doc, having translated column→Go via the view `TableSchema`); the `json:` tag governs solely the outgoing wire shape. Recursive — works through nested structs, slices of structs, and pointer-to-struct fields. Normalizes top-level `_id → id` (mongo-ism) and nil slices → empty typed slices at every depth. **This is the default**; reach for it whenever the projection is mechanical. |
 | `fwresponses.RawDoc` | Identity passthrough — `func(map[string]any) map[string]any`. Use when the view doc shape IS the wire contract and a typed Response would just mirror it. |
 | Consumer-declared `R{}.FromDoc(map[string]any) R` method | Custom logic — derived fields, conditional projection, ctx-aware shaping, or anything beyond tag-driven. The wrapper signature accepts any `func(map[string]any) R`. |
 
-**`view:` tag — source-key override (rare).** The framework projector consumes two tags on the Response struct. `json:"<wire>"` is the standard encoding/json contract — names the field on the outgoing JSON. `view:"<docKey>"` is the explicit source-key override — names the field inside the view document when it diverges from the framework's default convention. Without `view:`, the doc key is `domain.PascalToSnake(<json name>)` (or `domain.PascalToSnake(<Go field name>)` when there's no json tag), aligning the read side with the same snake_case convention the Postgres auto-inference uses for column names. So `json:"zipCode"` defaults to doc field `zip_code`, `json:"createdAt"` defaults to `created_at`, `json:"name"` stays `name`, `json:"CPF"` stays `cpf`. Declare `view:` only when the convention does not fit:
+**No source-key override on the Response.** The projector consumes a single tag on the Response struct — `json:"<wire>"`, the standard encoding/json contract that names the field on the outgoing JSON. There is no `view:` tag: the doc the projector reads is already keyed by **Go field name**, because the `MongoViewReader` translated every physical column back to its Go field via the view's `TableSchema` before projection. A renamed column (`mail`, `cep`, `st`) is handled entirely on the infra side by `TableSchema.Field("Email","mail")` / `Field("PostalArea","cep")` — the Response never pronounces a physical name:
 
 ```go
 type AddressOutput struct {
-    Street     string `json:"street"`                         // doc["street"]
-    ZipCode    string `json:"zipCode"`                        // doc["zip_code"] (auto-snake)
-    PostalArea string `json:"postalArea" view:"cep"`          // doc["cep"] (legacy schema)
+    Street     string `json:"street"`      // doc key "Street" → wire "street"
+    ZipCode    string `json:"zipCode"`     // doc key "ZipCode" (reader already mapped column zip_code) → wire "zipCode"
+    PostalArea string `json:"postalArea"`  // doc key "PostalArea" (reader mapped column cep via AddressSchema().Field("PostalArea","cep")) → wire "postalArea"
 }
 ```
-
-`view:"-"` is treated as absent — `json:"-"` already covers "skip this field" semantics; a second meaning for `view:"-"` would be supercilious.
 
 Co-located co-location convention still applies: `FindXxxResponse` struct and any `FromDoc` method live in the same `web/requests/find_xxx_request.go` file as the Request DTO.
 
@@ -1288,13 +1296,13 @@ type AggregateRootProvider interface {
 }
 ```
 
-Child table/FK are inferred from the Go typeName (per-Repository override in `fwinfra.RepoConfig.ChildTableOverrides` / `ChildFKOverrides`). Universal symmetric cascade: root archive → children archive; root delete → children delete (via FK ON DELETE CASCADE); root unarchive → children unarchive.
+Child table/FK are declared in the child's `TableSchema` (`.Child(fwinfra.NewTableSchema[Child]("table").FK("col")...)` on the root schema). Universal symmetric cascade: root archive → children archive; root delete → children delete (via FK ON DELETE CASCADE); root unarchive → children unarchive.
 
-`AggregateChildren()` declares **which types** belong to the aggregate — a domain definition, separated from infra. The top-level primitives (`AddAggregateChild`/`ChangeAggregateChild`/`RemoveAggregateChild`/`ReplaceAggregateChildrenOf`) consult this list and reject VOs of undeclared types with `InvalidAggregateChildNotification` (422). `AggregateConstructor` (DB load) bypasses the type-guard — types come from infra's `WithChild[V]`, already trusted.
+`AggregateChildren()` declares **which types** belong to the aggregate — a domain definition, separated from infra. The top-level primitives (`AddAggregateChild`/`ChangeAggregateChild`/`RemoveAggregateChild`/`ReplaceAggregateChildrenOf`) consult this list and reject VOs of undeclared types with `InvalidAggregateChildNotification` (422). `AggregateConstructor` (DB load) bypasses the type-guard — types come from the schema's `Child(...)` declarations, already trusted.
 
-`GetInsertable/GetUpdatable/GetArchivable/GetDeletable/GetUnarchivable` detect the interface and attach `*aggregateMeta` (carries only the root pointer) to the ValidEntity. `infra.Postgres.Insert/Update/Archive/Delete/Unarchive` check `entity.AggregateInfo()` at the start and dispatch to the aggregate path. They receive `*RepoConfig` (third argument, nullable) to resolve overrides + the resolved `writeHook` (fourth argument) the BaseRepository builds from the typed `WriteOption[T]` variadic. Both paths fire lifecycle hooks at the same TX positions — see "Persistence ports" above.
+`GetInsertable/GetUpdatable/GetArchivable/GetDeletable/GetUnarchivable` detect the interface and attach `*aggregateMeta` (carries only the root pointer) to the ValidEntity. `infra.Postgres.Insert/Update/Archive/Delete/Unarchive` check `entity.AggregateInfo()` at the start and dispatch to the aggregate path. They receive `*TableSchema` (third argument) for the Go↔column map + the resolved `writeHook` (fourth argument) the BaseRepository builds from the typed `WriteOption[T]` variadic. Both paths fire lifecycle hooks at the same TX positions — see "Persistence ports" above.
 
-**Validation of children is also transparent.** `runAggregateValidations` (called inside `validateForInsert/Update/Delete`) detects `AggregateRootProvider` and iterates `root.AllAggregateItems()` automatically: for each typeName present, it fires `BuildRules(actionName, svc, r)` on each item of the `AggregateRoot` with `CurrentStatus != Removed`, with `r` carrying a `NotificationContext` already scoped at `[NameSegment(collection), IndexSegment(i)]` (collection name inferred by `PluralizeSnake(PascalToSnake(typeName))`). **The root's `BuildRules` does not need to manually register children** for theirs to run. The type-guard on the primitives ensures only types declared in `AggregateChildren()` reach the map, so iterating the map is equivalent to iterating the declared list. The AVO uses `r.IfInsert/IfUpdate/IfInsertOrUpdate` to decide what to validate — e.g., `Address.BuildRules` in the example only runs rules on Insert/Update, but the framework doesn't enforce it (entities may have Delete-specific rules, like "cannot delete primary address"). `AddAggregateValueObject` is still available for typeNames **outside** `AggregateChildren()` (VOs without their own table, e.g. tags in a JSONB column): typeNames present in the map are ignored in the manual slice to avoid double validation.
+**Validation of children is also transparent.** `runAggregateValidations` (called inside `validateForInsert/Update/Delete`) detects `AggregateRootProvider` and iterates `root.AllAggregateItems()` automatically: for each typeName present, it fires `BuildRules(actionName, svc, r)` on each item of the `AggregateRoot` with `CurrentStatus != Removed`, with `r` carrying a `NotificationContext` already scoped at `[NameSegment(collection), IndexSegment(i)]` (path segment via camelCase `toLowerCamel(typeName)` — `Address`→`addresses`, `OrderLine`→`orderLines`). **The root's `BuildRules` does not need to manually register children** for theirs to run. The type-guard on the primitives ensures only types declared in `AggregateChildren()` reach the map, so iterating the map is equivalent to iterating the declared list. The AVO uses `r.IfInsert/IfUpdate/IfInsertOrUpdate` to decide what to validate — e.g., `Address.BuildRules` in the example only runs rules on Insert/Update, but the framework doesn't enforce it (entities may have Delete-specific rules, like "cannot delete primary address"). `AddAggregateValueObject` is still available for typeNames **outside** `AggregateChildren()` (VOs without their own table, e.g. tags in a JSONB column): typeNames present in the map are ignored in the manual slice to avoid double validation.
 
 ### Guarantees of the aggregate path
 
@@ -1314,7 +1322,7 @@ Child table/FK are inferred from the Go typeName (per-Repository override in `fw
 ```go
 type User struct {
     domain.AggregateRoot
-    Name, Email, CPF, Phone string
+    Name, Email, Username, Phone string
 }
 
 func (u *User) Modes() []domain.EntityMode { return []domain.EntityMode{...} }
@@ -1340,30 +1348,43 @@ func (u *User) ChangeAddress(o, r Address)         { domain.ChangeAggregateChild
 func (u *User) RemoveAddress(a Address)            { domain.RemoveAggregateChild(u, a) }
 func (u *User) ReplaceAddresses(as []Address)      { domain.ReplaceAggregateChildrenOf(u, as) }
 
-// Repository — zero declaration of table/column/FK. Everything inferred.
+// Schema — the single, explicit Go↔column map (lives in infra).
+func UserSchema() *fwinfra.TableSchema {
+    return fwinfra.NewTableSchema[*User]("users").
+        PK("ID", "id").
+        Field("Name", "name").
+        Field("Email", "email").
+        Field("Username", "username").
+        Field("Phone", "phone").
+        SoftDelete("deleted_at").
+        CreatedAt("created_at").
+        UpdatedAt("updated_at").
+        Child(fwinfra.NewTableSchema[Address]("addresses").
+            PK("ID", "id").
+            FK("user_id").
+            Field("Street", "street").
+            Field("ZipCode", "zip_code").
+            SoftDelete("deleted_at").
+            CreatedAt("created_at").
+            UpdatedAt("updated_at"))
+}
+
+// Repository — declares the mapping once via WithSchema; children come from
+// the schema's Child(...) declarations.
 type UserRepository struct {
-    fwinfra.BaseRepository[*User]
-    loader *fwinfra.AggregateLoader[*User]
+    fwinfra.BaseAggregateRepository[*User]
 }
 
 func NewUserRepository(pg *fwinfra.Postgres) *UserRepository {
-    newUser := func() *User { return &User{} }
     r := &UserRepository{
-        BaseRepository: fwinfra.BaseRepository[*User]{
-            Postgres: pg, NewEntity: newUser,
-        },
+        BaseAggregateRepository: fwinfra.NewBaseAggregateRepository[*User](
+            pg, func() *User { return &User{} },
+        ),
     }
-    r.loader = fwinfra.NewAggregateLoader(pg, newUser)
-    r.loader = fwinfra.WithChild[Address](r.loader)
+    r.WithSchema(UserSchema())   // one schema → write + criteria + scan + children
     return r
 }
-
-func (r *UserRepository) FindByID(id domain.ID) (*User, error) {
-    return r.loader.FindOne(context.Background(), criteria.ByID(id))
-}
-func (r *UserRepository) FindArchivedByID(id domain.ID) (*User, error) {
-    return r.loader.FindOne(context.Background(), criteria.ByID(id).OnlyArchived())
-}
+// FindByID / FindArchivedByID are promoted by BaseAggregateRepository[*User].
 ```
 
 > The common case skips this boilerplate by embedding `BaseAggregateRepository[T]`, which promotes `FindByID`/`FindArchivedByID` (and `FindOne`/`FindAll`) routed through the engine — see [Entity search engine](#entity-search-engine-criteria).
@@ -1395,14 +1416,15 @@ func NewUserRepository(pg *infra.Postgres) *UserRepository {
             NewEntity:   newUser, // feeds Repo.New() (consumed by UnarchiveCommandHandler)
             Constraints: map[string]infra.ConstraintBinding{
                 "users_email_active_idx": {Notification: EmailAlreadyExistsNotification{}, Field: "email"},
-                "users_cpf_active_idx":   {Notification: CPFAlreadyExistsNotification{},   Field: "cpf"},
+                "users_username_active_idx": {Notification: UsernameAlreadyExistsNotification{}, Field: "username"},
             },
         },
     }
+    schema := UserSchema()        // the explicit Go↔column map (see "Schema mapping")
+    r.Schema = schema             // feeds the write binding
     r.loader = infra.NewAggregateLoader[*User](pg, newUser).
-        WithContextName("User")
-    // Children registered via auto-scan (zero scanner code):
-    r.loader = infra.WithChildAutoScan[Address](r.loader, "Address", "addresses")
+        WithContextName("User").
+        WithSchema(schema)        // same schema drives root + child auto-scan
     return r
 }
 func (r *UserRepository) FindByID(id domain.ID) (*User, error) {
@@ -1412,11 +1434,12 @@ func (r *UserRepository) FindByID(id domain.ID) (*User, error) {
 //   Aggregate-aware dispatch happens inside Postgres.Insert/etc.
 //   FindByID comes from the AggregateLoader in auto-scan mode:
 //     - Without calling WithRootScanner → framework generates the SELECT from
-//       the exported fields of *User and populates via row.Scan directly.
-//       Private fields of AggregateRoot/BaseEntity are ignored by reflection.
-//     - WithChildAutoScan[Address] does the same for the child collection.
+//       the columns the TableSchema declares for *User and populates via
+//       row.Scan directly.
+//     - The schema's Child(...) declarations drive child auto-scan for the
+//       child collection.
 //     - For non-trivial queries (JOIN, CASE, COALESCE) use WithRootScanner
-//       and WithChildScanner — they coexist in the same config.
+//       and WithChildScanner — they coexist with the schema-driven auto-scan.
 
 // Handler — binds the write scope via Scope(ctx, opts...) and calls the
 // pure domain.Writer; any in-TX hook closures land as Scope opts.
@@ -1443,11 +1466,11 @@ app.Post("/users", func(c fiber.Ctx) error {
 
 **`infra.AggregateLoader[T]`** loads live aggregates (root + children) via the entity search engine — `FindOne(ctx, *criteria.Query)` / `FindAll(ctx, *criteria.Query)` (see [Entity search engine](#entity-search-engine-criteria)). It scans the matched rows in one of two coexisting modes:
 
-- **Auto-scan (default)** — framework discovers root and children columns via reflection on T's exported fields (private fields of `AggregateRoot`/`BaseEntity` are ignored — anonymous/private). Name mapping: snake_case of the field (`ZipCode` → `zip_code`, `CPF` → `cpf`), overridable per-Repository via `RepoConfig.FieldOverrides`. pgx normalizes names on the query side (`fieldPosByName`) — snake_case convention matches transparently. The loader assembles `SELECT id, col1, col2, ... FROM table WHERE <criteria> AND <scope gate>` and reads the `id` back (the criteria path does not know it a priori). Zero scanner in the service. API: absence of `WithRootScanner` activates root auto-scan; `WithChild[V](loader)` activates child auto-scan for V. Column→field mapping cached by `reflect.Type` in `sync.Map`.
+- **Auto-scan (default)** — the columns for root and children come from the `TableSchema` (`Field("ZipCode","zip_code")`, …) threaded via `WithSchema`. The SELECT list and the scanner share the one schema's `column ↔ Go field` map, so a renamed column round-trips (write → criteria → read-back) — see "Schema mapping". The loader assembles `SELECT <pk>, col1, col2, ... FROM table WHERE <criteria> AND <scope gate>` and reads the PK back (the criteria path does not know it a priori). Zero scanner in the service. API: absence of `WithRootScanner` activates root auto-scan; the schema's `Child(...)` declarations activate child auto-scan per child type.
 
 - **Manual (`WithRootScanner`/`WithChildScanner`)** — service provides the scan function. Escape hatch for non-trivial decoding (JOIN, CASE, COALESCE, computed denormalizations). Coexists with auto-scan (per typeName, manual scanner wins over auto when both are registered). **A manual root scanner used with `FindOne`/`FindAll` must populate the entity id (scan it + `SetID`)** — the engine recovers it via `GetID()` because, unlike the removed by-id `Load`, there is no input id on the criteria path.
 
-In both modes: the archived scope governs the `deleted_at` gate (root and children). Nonexistent root → `*DomainError` with `RecordNotFoundNotification` (→ 404 HTTP). Aggregate without children: omit `WithChild*` — only the root SELECT runs. T must satisfy `domain.Entity`. A lookup by any non-id field (email, tenant, …) is now a first-class `FindOne(criteria.Where(...))` — no hand-rolled SQL needed.
+In both modes: the archived scope governs the `deleted_at` gate (root and children). Nonexistent root → `*DomainError` with `RecordNotFoundNotification` (→ 404 HTTP). Aggregate without children: declare no children on the schema — only the root SELECT runs. T must satisfy `domain.Entity`. A lookup by any non-id field (email, tenant, …) is now a first-class `FindOne(criteria.Where(...))` — no hand-rolled SQL needed.
 
 ### Entity search engine (`criteria`)
 
@@ -1474,9 +1497,72 @@ users, err := r.FindAll(ctx, criteria.Where(criteria.And(
 
 Convention of nullable fields: nullable PG types map to **pointer types** in the domain (`Phone *string`, `Label *string`). pgx writes NULL when nil; reads NULL as nil. No wrapping mechanism in the framework — pointer is the canonical form.
 
+### Schema mapping (`TableSchema`)
+
+Everything above infrastructure speaks the **Go field name** (PascalCase) — domain, application, web. The criteria is `criteria.Eq("Email", v)`; the audit timeline says `Email`; repository signatures speak the domain. The only place a physical column/table name appears is the persistence boundary, in exactly one artifact: `TableSchema`. A schema is the **mandatory, explicit, complete** map between a Go type's fields and its physical columns. There is no convention, no name-inference, no `transient` tag: every persisted field is declared, and an undeclared exported field is simply never persisted, scanned, or audited.
+
+One `TableSchema` drives the write path (INSERT/UPDATE/archive SQL), the criteria engine (the `WHERE` a Go-named criterion compiles to), and the auto-scan read-back (column → Go field). The **same** schema is reused by the read-side `ViewDefinition`, so the Mongo projection speaks the same names — a column rename round-trips everywhere automatically.
+
+**Why it is mandatory + manual (design rationale).** The hand-declared map is deliberate, buying four things a convention cannot: (1) **a pure DDD domain** — domain/application/web speak only business vocabulary; the sole place a physical name lives is the `TableSchema` in `infra/`; (2) **transparent mapping flexibility** — any Go field → any column, transparent to every line of implemented code; a rename lives in one place and round-trips everywhere; (3) **adoption of existing/external tables** — point the framework at a schema you don't control (or an upstream collection via `NewExternalSchema`), field by field, with the one structural requirement of a **single, non-composite primary key**; (4) **no failed, tiring conventions** — name-inference is lossy/acronym-hostile (`UserID`/`UserId` → `user_id`, `URLPath`, `IPv4`) and silently wrong on divergence, whereas an explicit map makes a wrong name a boot panic. The map is the single lossless, unambiguous source of truth the persistence + read membrane depends on, so the framework refuses to fabricate it.
+
+**Three-name model.** A field carries up to three names, resolved at two membranes: wire (`json:`/`query:` tags, in `web/`) ↔ Go field (`Email`, the single name every layer above infra uses) ↔ physical column (`mail`, `TableSchema.Field("Email","mail")` in `infra/`). The web membrane translates JSON↔Go; the infra membrane (`TableSchema`) translates Go↔column. Wire and physical names are invisible to the developer manipulating data.
+
+**Declaring a schema.** A type-anchored schema validates every field against the Go type **at construction** — a `Field` naming a missing/unexported field panics immediately (the enforcement that replaces convention). A type-less external schema describes an upstream service's columns for an external `FromSchema` embed source.
+
+```go
+func UserSchema() *fwinfra.TableSchema {
+    return fwinfra.NewTableSchema[*User]("users").
+        PK("ID", "id").                 // Go "ID" ↔ column "id" (single-column PK)
+        Field("Name", "name").
+        Field("Email", "mail").         // renamed column
+        SoftDelete("deleted_at").       // managed: presence enables the predicate
+        CreatedAt("created_at").        // managed: framework stamps NOW() on INSERT
+        UpdatedAt("updated_at").        // managed: framework stamps NOW() on INSERT + UPDATE
+        Child(AddressSchema())          // aggregate child, keyed by Go type name
+}
+
+func AddressSchema() *fwinfra.TableSchema {
+    return fwinfra.NewTableSchema[Address]("addresses").
+        PK("ID", "id").
+        FK("user_id").                  // FK to the root — injected by the persister, NOT a struct field
+        Field("Street", "street").
+        Field("ZipCode", "zip_code").
+        SoftDelete("deleted_at").CreatedAt("created_at").UpdatedAt("updated_at")
+}
+
+// Type-less — for an upstream-projected external FromSchema source (no local struct).
+fwinfra.NewExternalSchema("users").PK("ID", "id").Field("Email", "mail")
+```
+
+The Go-side PK field is conventionally `ID` (the `BaseEntity` contract); `PK("ID","col")` declares both sides. `FK` names the child's foreign-key column referencing the root — injected by the persister, not a struct field. Every other persisted field is a `Field("Go","column")` pair.
+
+**Three managed columns — by presence, not a flag.** Calling `SoftDelete(col)` / `CreatedAt(col)` / `UpdatedAt(col)` enables the behavior; omitting the call disables it (no boolean knob). `created_at`/`updated_at` are **actively stamped** `NOW()` on write — the framework never relies on a DB `DEFAULT NOW()` it does not own. `SoftDelete` present → read scope-gate `col IS NULL` + Archive/Unarchive write `col = NOW()` / `NULL`; omitted → no gate, Archive/Unarchive unavailable (boot check + runtime guard). On the read path these three are also readable under fixed logical Go names `CreatedAt`/`UpdatedAt`/`DeletedAt` so a view can project them without a domain field.
+
+**One declaration, every consumer — `WithSchema`.** `BaseAggregateRepository.WithSchema(schema)` threads the schema into BOTH the write binding (`BaseRepository.Schema`) and the read loader (`Loader.WithSchema`). Children come from `schema.children` (`.Child(...)`), NOT a separate `WithChild` call. The `Modes() ⟺ SoftDelete` boot check runs here; the field-existence and bijection checks already ran while the schema was built. A misconfiguration panics at construction, not on the first request.
+
+**The same schema drives the Mongo view.** The `ViewDefinition` reuses the schemas: the root via `.Schema(UserSchema())`, each embed via `fwinfra.FromSchema(...)` — the single embed source constructor. From the schema the framework derives the embed's table/collection, the store kind (type-anchored `NewTableSchema[T]` → local Postgres; type-less `NewExternalSchema` → external/Mongo), and — for an `EmbedMany` — the join FK. The composer writes physical columns to Mongo; the reader translates each column back to its Go field name using these schemas (`mail`→`Email`, `zip_code`→`ZipCode`) before the typed Response projects to the wire — so the wire speaks Go names with no per-Response source-key override (`ViewOf` is gone). For a local embed the parent-side Go segment is **derived** from the schema's Go type (pluralized for `EmbedMany` — `Address`→`Addresses`; the type name for a one-to-one `Embed`), so `.As(...)` is an optional override; an external embed has no Go type to derive from, so `.As(...)` is **required** there (uses the now-exported `domain.PluralizeWord` to pluralize the local segment).
+
+```go
+fwinfra.View("users").Version(1).Root("users").
+    Schema(UserSchema()).
+    EmbedMany("addresses", fwinfra.FromSchema(AddressSchema()))   // segment derived → "Addresses"
+```
+
+**Boot checks** (panic at construction): field-exists on the type (a typo is a boot panic, not a silent miss); bijection over each source's full column set (mapped fields + PK + every declared managed column — no two map to the same physical column); `Modes() ⟺ SoftDelete`; **PK mandatory + single-column, no default** (`PK(go,col)` must be declared on every schema — root, child, embed source — and rejects empty names; there is no `"ID"`/`"id"` guessing); **FK mandatory on aggregate children** (`Child(...)` without `.FK(col)` panics; on the read side an `EmbedMany` source without `.FK(col)` and a one-to-one `Embed` without `.On(col)` are fatal `ValidateViewSchemas` errors); **aggregate depth = 1** — a child schema that declares its own `Child(...)` (a grandchild) panics at `WithSchema` (write side: grandchildren are unsupported — model the sub-collection as a separate aggregate), and an embed source whose schema carries `Child(...)` is a fatal `ValidateViewSchemas` error (read side: depth IS supported, but via nested `EmbedMany`/`Embed`, never the schema's `Child(...)`); **aggregate boundary agreement** — the types the domain declares via `AggregateChildren()` and the types the schema declares via `.Child(...)` must name the same set, else `BaseAggregateRepository.WithSchema` panics naming the type declared on only one side (a `.Child(...)` without an `AggregateChildren()` entry would be load-only/silent; an `AggregateChildren()` entry without a `.Child(...)` would error per-write deep in the persister). Width (number of child types + instances) is unlimited.
+
+**Where the boot checks run — `WithSchema`, on both the flat and aggregate paths.** `BaseRepository.WithSchema(schema)` (flat) and `BaseAggregateRepository.WithSchema(schema)` (aggregate) both run PK-declared + aggregate-depth + `Modes() ⟺ SoftDelete` at construction (the aggregate path adds the boundary-agreement check and threads the schema into the read loader). Calling `WithSchema` also surfaces a nil `NewEntity` factory at construction (it calls `r.New()`) instead of on the first write. Assigning `r.Schema = schema` directly stays supported as the unchecked escape hatch — `WithSchema` is the validated canonical entry.
+
+**Audit stays map-blind.** Audit does NOT consume the schema — the `snapshot` keys and `changes[].field` are the faithful Go field name (`Email`, `ZipCode`), never the physical column. A column rename never disturbs the timeline; `labelKey:"…"` field labels resolve by Go field name too.
+
+**Field labels — external schemas declare them inline.** The human-facing field label (consumed by notifications, audit `FieldChange.FieldLabelKey`, and the tabular-export column headers) normally comes from a `labelKey:"<catalogKey>"` struct tag on the domain field. A type-less `NewExternalSchema` has no struct to carry the tag, so it declares the label as an optional third arg: `NewExternalSchema("users").Field("Name", "name", "PartnerNameField")`. This is **external-only** — passing a label on a type-anchored `NewTableSchema[T]` is a boot panic (that schema declares the label via the struct tag; never two ways to express one domain concept). The resolver `labelKeysByGoField` consults the inline label first, then the struct tag.
+
+**Manual scanners bypass the schema by design.** `WithRootScanner`/`WithChildScanner` (the latter takes the child Go type name) hand the SELECT + scan to the developer, who owns the column names directly. The schema governs the auto-scan path; the manual path stays a full escape hatch.
+
+**Out of scope:** third-party/legacy database adoption (predicate-shaped soft-delete, composite PK, exotic types — rejected). The scope is "an explicit map over the schema the framework manages".
+
 ## Read side (CQRS)
 
-- `infra/view.go` — `View(name).Root(table).Embed("field", From("source").On("fk")).EmbedMany(...)` defines `ViewDefinition`s. Opt in to dropping archived rows from the projection with `.DeleteOnArchive()` (default: archived rows survive in the projection — Mongo mirrors PostgreSQL symmetrically).
+- `infra/view.go` — `View(name).Root(table).Schema(ts).EmbedMany("field", FromSchema(childTs)).Embed("field", FromSchema(externalTs).On("fk").As("Seg"))` defines `ViewDefinition`s. `FromSchema` is the single embed source constructor; schema is mandatory on the root and every embed. Opt in to dropping archived rows from the projection with `.DeleteOnArchive()` (default: archived rows survive in the projection — Mongo mirrors PostgreSQL symmetrically).
 - `infra/composer.go` — composes documents from PostgreSQL using ViewDefinitions
   - **Omits the `WHERE deleted_at IS NULL` filter** in all three fetch helpers (fetchRow, fetchWhere, fetchAll) by default — Mongo views mirror PostgreSQL symmetrically (archived rows survive with `deleted_at` populated). When the `ViewDefinition` opted in via `.DeleteOnArchive()`, the filter is applied on the root SELECT and on every embed source (cascade: the flag governs the whole aggregate projection — there is no per-embed override).
   - `EmbedMany` uses the root's `id` to match the child's FK column (`source.joinKey`)
@@ -1487,7 +1573,7 @@ Convention of nullable fields: nullable PG types map to **pointer types** in the
   - `DELETED` → `mongo.Delete` (hard delete is unconditional, regardless of `DeleteOnArchive`)
   - `ARCHIVED` → **compose + upsert** by default (document survives with `deleted_at` populated); `mongo.Delete` when the view opted in via `.DeleteOnArchive()`
   - `UNARCHIVED` → re-compose + upsert (always — covers both modes; for default views it just clears `deleted_at` on the existing document)
-- `infra/upstream_subscriber.go` — `UpstreamSubscriber` materializes upstream service A's events into local Mongo collection B owns, and triggers downstream recompose on every view embedding the collection via `fwinfra.FromMongo`. One instance per `bootstrap.UpstreamSubscription` declared in yaml or `Wiring.UpstreamSubscriptions`. See "Cross-service composition" below.
+- `infra/upstream_subscriber.go` — `UpstreamSubscriber` materializes upstream service A's events into local Mongo collection B owns, and triggers downstream recompose on every view embedding the collection via an external `fwinfra.FromSchema` embed. One instance per `bootstrap.UpstreamSubscription` declared in yaml or `Wiring.UpstreamSubscriptions`. See "Cross-service composition" below.
 - `infra/rebuild.go` — `RebuildView`, `RebuildViewSince`, `RebuildAllViews` for offline reconstruction
 - `application/queries/view_reader.go` — `ViewReader` port + `ReadCriteria` / `Page` transport-agnostic types
 - `application/queries/query_handler.go` — `QueryHandler.Read(ctx, view, criteria)` / `ReadByID(...)` — pure, returns `Page` / `map[string]any`
@@ -1551,6 +1637,8 @@ Boot invariants enforced by `ValidateMongoSpec()`:
 7. Every `IndexSpec` must declare at least one key.
 8. `JSONSchemaSpec.ValidationLevel` ∈ `{"strict", "moderate", "off"}`.
 9. `JSONSchemaSpec.ValidationAction` ∈ `{"error", "warn"}`.
+10. Every index key names a **column the composer emits** — the root columns (PK + mapped fields + the three managed columns + FK) and each embed subtree (addressable by its doc field, e.g. `addresses` and `addresses.zip_code`), plus `_id`. A key outside that set is a typo / undeclared field the document never carries, so the index would be dead (never used); boot aborts naming the key and listing the emitted columns. Runs only on a real (schema-bearing) view. Index keys are **physical column paths**, not Go field names (`addresses.zip_code`, not `addresses.zipCode`).
+11. Every top-level `$jsonSchema.required` entry names a column the composer emits — the same set as rule 10. A `required` field the document never carries, under the default `validationAction: error`, makes Mongo reject **every** SyncEngine upsert, silently freezing the projection; boot aborts instead.
 
 **Apply semantics (idempotent):**
 
@@ -1587,17 +1675,20 @@ upstreamSubscriptions:
     anonymizeFields: [name, email]
 ```
 
-**Embed** — views consume the upstream-projected collection via `fwinfra.FromMongo`:
+**Embed** — views consume the upstream-projected collection via an external `fwinfra.FromSchema` (a type-less `NewExternalSchema` marks the source external; `.On` is the parent doc FK on a one-to-one `Embed`; `.As` is required because an external source has no Go type to derive the segment from):
 
 ```go
 fwinfra.View("orders").
+    Version(1).
     Root("orders").
-    Embed("buyer", fwinfra.FromMongo("users").On("buyer_id")).
-    EmbedMany("lines", fwinfra.From("order_lines").On("order_id")).
+    Schema(OrderSchema()).
+    Embed("buyer", fwinfra.FromSchema(
+        fwinfra.NewExternalSchema("users").PK("ID","id").Field("Name","name").Field("Email","mail")).
+        On("buyer_id").As("Buyer")).
+    EmbedMany("lines", fwinfra.FromSchema(OrderLineSchema())).
     Indexes(
         fwinfra.Index("buyer_id"), // boot guard §8.1 requires it
-    ).
-    Version(1)
+    )
 ```
 
 **Runtime** — for every event on A's topic, `infra.UpstreamSubscriber`:
@@ -1652,10 +1743,12 @@ The in-memory `upstreamMetrics` counter remains (process-local snapshot for Prom
 
 **Four boot guards** (`bootstrap.validateUpstreamSubscriptions`) enforce structural invariants before any subscriber goroutine spins. All four execute deterministically; every violation surfaces in a single diagnostic:
 
-- §8.1 — every view's `FromMongo` embed declares a covering index on the join field (single-field or compound where the join field is FIRST).
+- §8.1 — every view's external `FromSchema` embed (the upstream-collection sources) declares a covering index on the join field (single-field or compound where the join field is FIRST).
 - §8.2 — collection names do not collide subscription↔subscription, nor subscription↔local view (two writers on the same Mongo collection would race).
-- §8.3 — every `FromMongo("X")` resolves to an `UpstreamSubscription.Collection=X` (no silently-empty embeds). View-on-view via `FromMongo` — `FromMongo` targeting another local `ViewDefinition.Name()` — is rejected at boot: the recompose ripple is one-hop (the subscriber consults `viewIndex.byMongoColl` populated from subscription collections only), so a change upstream of view Y would recompose Y but never re-ripple to view X that embeds Y. Drift would silently accumulate. The diagnostic suggests the supported alternatives (embed the upstream collection directly, or model the JOIN at the Postgres root via `From`).
+- §8.3 — every external `FromSchema` embed over collection X resolves to an `UpstreamSubscription.Collection=X` (no silently-empty embeds). View-on-view — an external `FromSchema` targeting another local `ViewDefinition.Name()` — is rejected at boot: the recompose ripple is one-hop (the subscriber consults `viewIndex.byMongoColl` populated from subscription collections only), so a change upstream of view Y would recompose Y but never re-ripple to view X that embeds Y. Drift would silently accumulate. The diagnostic suggests the supported alternatives (embed the upstream collection directly, or model the JOIN at the Postgres root via a local `FromSchema` embed).
 - §8.4 — `onUpstreamDelete: anonymize` requires non-empty `anonymizeFields`.
+
+**Schema is mandatory on every view (fatal boot enforcement).** `infra.ValidateViewSchemas(views)` (called by `bootstrap.Run`) walks every collected view at any embed nesting depth and aborts boot when the root declares no `.Schema(...)`, or when an external (type-less) embed is missing `.As(...)` — an external source has no Go type to derive the parent-side segment from. There is no optional / pass-through / schema-less mode and no `slog.Warn` advisory: every view root and every embed (`FromSchema` always carries a schema) must declare one. Local (type-anchored) embeds derive their Go segment from the schema's type; external embeds must declare it via `.As(...)`.
 
 **Registry semantics.** The upstream-projected collection counts toward `omnicore_service_registry`'s DB-per-service marker (treated as locally-managed) but does NOT enter `omnicore_mongo_views` — an `UpstreamSubscription` has no `Version`, no `JSONSchema`, no consumer-declared indexes (only Mongo's built-in `_id` is used), so the drift-detection path has nothing to compare against. `Filter` drift is operator-owned: change the YAML + redeploy + run `omnicore-admin replay-all-as-events` against A.
 
@@ -1711,7 +1804,7 @@ The Semantic enum is **transport-agnostic** — a future gRPC layer would map th
 
 | Item | Convention | Example |
 |---|---|---|
-| Notification struct | `<What>Notification` | `RequiredFieldNotification`, `CPFAlreadyExistsNotification` |
+| Notification struct | `<What>Notification` | `RequiredFieldNotification`, `UsernameAlreadyExistsNotification` |
 | Translation key | identical to notification struct name | `"RequiredFieldNotification": "Required field."` |
 | Enum description key | `<Type>.<VALUE>` | `"EntityMode.INSERT": "Inserir"` |
 | Entity files (in services) | lowercase singular | `customer.go`, `order.go` |
@@ -1735,9 +1828,9 @@ The Semantic enum is **transport-agnostic** — a future gRPC layer would map th
 | Want in-TX side effect on manual path | pass `persistence.WithBeforeCommit[T](fn)` (or `persistence.WithAfterBegin[T](fn)`) as an option on `repo.Scope(ctx, opts...).Method(valid)`. Same persister slot the Auto path fires; closure shape and TX semantics are identical. |
 | Want to read or write state inside the hook's TX | declare a port in `application/` (or `domain/`) whose method takes a `persistence.TxHandle` parameter, e.g. `QuotaPort.AssertTenantQuota(ctx, tx, tenantID) error`. Implement the port in `infra/` — the adapter calls `fwinfra.UnwrapPgxTx(tx)` to recover the live `pgx.Tx`, executes SQL, owns the table name. Inject the port on the Cmd / handler and call it from the hook closure. `TxHandle` is a sealed marker with no public methods, so the hook cannot pronounce SQL directly — the port is the single authorized path. |
 | Want compile-time safety against typo in hook method name | declare `var _ persistence.BeforeCommitHookProvider[*T] = (*Cmd)(nil)` (or the AfterBegin variant) at the bottom of the Cmd file. Catches misspelled / mistyped method signatures at `go build` time; the framework does not enforce it. |
-| Declare aggregate child type | root entity implements `AggregateChildren() []AggregateValueObject` returning sample instances; table/FK inferred by convention. Override per-Repository via `fwinfra.RepoConfig.ChildTableOverrides` / `ChildFKOverrides` |
+| Declare aggregate child type | root entity implements `AggregateChildren() []AggregateValueObject` returning sample instances (the domain boundary). Table/columns/FK are declared in the child `TableSchema` via `root.Child(fwinfra.NewTableSchema[Child]("table").PK("ID","id").FK("col").Field(...)...)` — see "Schema mapping" |
 | Drop archived rows from the Mongo projection (hot-tier read side) | `fwinfra.View("users").DeleteOnArchive().Root("users").EmbedMany(...)` — opt-in per view. Default keeps archived rows so Mongo mirrors PostgreSQL symmetrically. Cascade: the flag governs root + all embeds (no per-embed override). Reader still defaults to hiding archived; consumer opts in via the existing `IncludeArchived` path (`?includeArchived=true`) — and that path returns 404 on a `DeleteOnArchive` view because the document is absent. |
-| Materialize an upstream service's events into a local Mongo collection (cross-service composition) | declare an `UpstreamSubscription` in `microservice.<profile>.yaml` (canonical) or `Wiring.UpstreamSubscriptions` (manual lifecycle / tests) with `topic`, `collection`, `filter`, `onUpstreamDelete`, optional `anonymizeFields`. Embed in a view via `fwinfra.FromMongo("collection").On("join_field")`. Boot guard §8.1 requires a covering index on the join field. The framework runs one `UpstreamSubscriber` per declared entry and ripples recompose to every embedding view on each upstream event. See "Cross-service composition" under [Read side (CQRS)](#read-side-cqrs). |
+| Materialize an upstream service's events into a local Mongo collection (cross-service composition) | declare an `UpstreamSubscription` in `microservice.<profile>.yaml` (canonical) or `Wiring.UpstreamSubscriptions` (manual lifecycle / tests) with `topic`, `collection`, `filter`, `onUpstreamDelete`, optional `anonymizeFields`. Embed in a view via an external `fwinfra.FromSchema(fwinfra.NewExternalSchema("collection")…).On("join_field").As("Seg")`. Boot guard §8.1 requires a covering index on the join field. The framework runs one `UpstreamSubscriber` per declared entry and ripples recompose to every embedding view on each upstream event. See "Cross-service composition" under [Read side (CQRS)](#read-side-cqrs). |
 | Declare MongoDB indexes on a view | `fwinfra.View(...).Indexes(fwinfra.Index("email").Unique(), fwinfra.Compound("email","created_at"), fwinfra.Index("deleted_at").Partial(fwinfra.Exists("deleted_at", false)), fwinfra.TextIndex("name","email").DefaultLanguage("portuguese"))` — single-field, compound, partial, sparse, TTL, text, 2dsphere, hashed. Materialized by `bootstrap.Run` via `fwinfra.ApplyMongoSpecs` between `collectViews` and `SyncEngine.Start`. Idempotent steady state; strict-on-divergence default; `OMNICORE_MONGO_FORCE_REBUILD=true` env var as operator escape (drops divergent indexes only; never collections). See "Declarative Mongo surface". |
 | Declare a `$jsonSchema` validator on a view's collection | `fwinfra.View("users").JSONSchema(bson.M{"bsonType":"object","required":[]string{"_id","email"}}).JSONSchemaValidationLevel(fwinfra.ValidationLevelStrict).JSONSchemaValidationAction(fwinfra.ValidationActionError)` — defaults to `strict` / `error`. Framework uses `createCollection` for fresh collections and `collMod` for existing ones (idempotent). |
 | Declare collection-level features (collation / capped / time-series) | `fwinfra.View(...).Collation(&fwinfra.CollationSpec{Locale:"pt",Strength:1}).Capped(&fwinfra.CappedSpec{SizeBytes: 1<<30}).TimeSeries(&fwinfra.TimeSeriesSpec{TimeField:"ts",Granularity:"seconds"})`. `Capped` ⊕ `TimeSeries` (boot rejects both). Collation is immutable on existing collections — divergence aborts boot; operator owns the migration. |
@@ -1746,7 +1839,7 @@ The Semantic enum is **transport-agnostic** — a future gRPC layer would map th
 | Implement AVO validation | `func (a Address) BuildRules(svc Service, r *Rules)` — same shape as `Entity.BuildRules`, only loses `actionName` |
 | Rename a wire field for the whole entity (stable rule) | `u.AddFieldNameAlias("Email", "primaryEmail")` on `*BaseEntity` (typically in the constructor). Applied automatically inside `checkAllNotifications` via `applyFieldAliases` — every message about `Email` surfaces as `primaryEmail` on the wire, regardless of which handler triggered it |
 | Rename a wire field for one request (conditional) | `ctx.ChangeFieldName(resolvedOldName, newName)` — imperative in a manual handler; sets `Override` on matching messages without losing Path/FieldName |
-| Expose a translated human label for a field (notifications + audit) | declare `label:"<catalogKey>"` on the struct field (e.g. `ZipCode string \`label:"AddressZipCodeField"\``) and add the catalog entry in each `translation.Module`. `Rules.AddNotification` reads the tag at emit; `MessageDTO.FieldLabel` carries the rendered string in the actor's locale; `FieldChange.FieldLabelKey` carries the raw key for audit (render-at-read). Missing catalog entry → raw key on wire + `slog.Warn` once per `(lang, key)`. Independent of `AddFieldNameAlias`/`ChangeFieldName` — alias renames `FieldName`, label translates `FieldLabel` |
+| Expose a translated human label for a field (notifications + audit) | declare `labelKey:"<catalogKey>"` on the struct field (e.g. `ZipCode string \`labelKey:"AddressZipCodeField"\``) and add the catalog entry in each `translation.Module`. `Rules.AddNotification` reads the tag at emit; `MessageDTO.FieldLabel` carries the rendered string in the actor's locale; `FieldChange.FieldLabelKey` carries the raw key for audit (render-at-read). Missing catalog entry → raw key on wire + `slog.Warn` once per `(lang, key)`. Independent of `AddFieldNameAlias`/`ChangeFieldName` — alias renames `FieldName`, label translates `FieldLabel` |
 | Render an audit row's field labels at read time | `audit.RenderLabels(ev, deps.Translator, lang)` for a typed `*audit.AuditEvent` held in-process; `audit.RenderLabelsInJSON(doc, deps.Translator, lang)` for a `map[string]any` parsed off the `audit_events.jsonb` payload (BI / SQL consumers). Both mutate in place: walk `changes` + `children.<typeName>[].changes`, pop `fieldLabelKey`, and write `fieldLabel` rendered via `Translator.Render`. Snapshot blocks untouched. Catalog miss → raw key + `slog.Warn` once per `(lang, key)` |
 | Read an audit row by id or timeline by aggregate | `audit.FindByID(ctx, exec, uuid)` returns `(*AuditEvent, error)`; miss surfaces as `audit.ErrAuditNotFound`. `audit.FindByAggregate(ctx, exec, entityType, aggregateID)` returns `[]*AuditEvent` newest-first (index-served by `audit_events_entity_timeline_idx`). Both consume the minimal `pgExec` interface (`*pgxpool.Pool` / `*pgxpool.Conn` / `*pgx.Conn` / `pgx.Tx`). Compose with `audit.RenderLabels` for translated read in three lines |
 | 1-message error in domain | `domain.SingleNotificationError(ctx, field, n)` / `domain.NotFoundError(ctx, field, value)` / `domain.FieldErrorWithCause(ctx, field, cause, n)` |
@@ -1760,11 +1853,12 @@ The Semantic enum is **transport-agnostic** — a future gRPC layer would map th
 | Auth failure notifications | `application/notifications/core.go`: `MissingAuthorizationNotification`, `InvalidTokenNotification`, `ExpiredTokenNotification` — all `SemanticUnauthorized → 401`. Translated by the catalogs |
 | Authz failure notifications | `application/notifications/core.go`: `MissingPermissionNotification` (Layer 1 gate), `TenantMissingNotification` (Layer 3 middleware), `TenantMismatchNotification` (Layer 3 service code) — all `SemanticForbidden → 403` |
 | Gate a route on a permission (Layer 1) | `fwopenapi.RequirePermission("users:write")` as a variadic `MountOption` on `openapi.Mount` / `openapi.MountRaw`. Same syntax across canonical, manual-with-pipeline, and raw paths. Boot panic on `Public:true + RequirePermission`, on duplicate `RequirePermission` in the same call, on caller-side wildcards (`users:*`), and on empty/no-colon strings |
-| Test if the principal has a permission (Layer 2 / inline branching) | `ctx.Identity().HasPermission("users:write")`. Returns false on nil Identity; panics on caller-side wildcards. Layer-2 rules typically populate transient fields from inside `Command.ApplyTo(ctx, t)` and consult them in `BuildRules` (`u.RequestingPrincipalIsAdmin = id.HasPermission("users:admin")`) |
+| Test if the principal has a permission (Layer 2 / inline branching) | `ctx.Identity().HasPermission("users:write")`. Returns false on nil Identity; panics on caller-side wildcards. Layer-2 rules typically populate runtime authz fields from inside `Command.ApplyTo(ctx, t)` and consult them in `BuildRules` (`u.RequestingPrincipalIsAdmin = id.HasPermission("users:admin")`) |
 | Read the tenant claim (Layer 3) | `ctx.Identity().TenantID()`. Reads the configured claim (default `tenant_id`; configurable via `auth.authorization.tenant.claim`). Returns "" on nil/missing/multi-valued shapes |
 | Enable authorization in yaml | `auth.authorization.enabled: true` (master switch — when false, runtime gate no-ops; identity helpers still work). Requires `auth.mode: jwt`. Optional `permissionsClaim:` to override the claim name; optional `tenant: {enabled, claim, required}` sub-block for Layer 3. Unknown keys under `authorization` / `tenant` abort the boot |
 | Boot-time authz enforcement | When `auth.authorization.enabled: true`, bootstrap scans the Registry AFTER `Wiring.BeforeServe` and BEFORE `openapi.Register` — panics with the offender list when a non-public route lacks `RequirePermission(...)` |
 | Boot-time route-registration enforcement | When `Wiring.OpenAPI != nil`, bootstrap compares `app.GetRoutes(true)` vs `Registry.Operations()` and panics on any Fiber route registered outside `Mount`/`MountRaw`. Active regardless of `authorization.enabled` — the canonical channel is structural to the framework |
+| Boot-time public-routes validation | After every route is registered, bootstrap validates each `auth.publicRoutes` entry against the registered route set and panics on (a) an entry matching no `METHOD /path` (typo, wrong method, trailing slash) or (b) an entry carrying a Fiber path parameter / wildcard (`GET /users/:id`) — the `AuthMiddleware` matches public routes by exact path and can never honor a parameterized one, so mark such a route `Doc.Public=true` / `RawSpec.Public=true` instead. Runs on the operator's own list (the framework-added doc/redirect routes are correct by construction) |
 | Extra request-scoped state beyond Identity | service middleware AFTER `fwweb.AppContextMiddleware`; uses `ctx.Set(key, val)` |
 | Trivial CRUD without writing a handler | import `omnicore/application/handlers`: `Insert/Update/PartialUpdate/Archive/Unarchive/DeleteCommandHandler[T, *Cmd, TResult]` — the Cmd declares `ToEntity`/`ApplyTo` AND `FromEntity(ctx, T) TResult` as methods; no `Project` field on the handler |
 | Fiber route wrapper — endpoint WITH body | `fwweb.HandleCommandWithBody(pipe, requests.XxxRequest{}, requests.XxxResponse{}.FromResult, h, status)` (POST) or `fwweb.HandleCommandWithBodyID(...)` (PUT/PATCH). Consumes `RequestDTO` (in `web/requests/`) that produces Command via `ToCommand()`. |
@@ -1776,13 +1870,14 @@ The Semantic enum is **transport-agnostic** — a future gRPC layer would map th
 | Bind a URL segment to a Request field declaratively | Declare `path:"name"` on the field (any wrapper with a Request DTO populates it before `ToCommand`/`ToQuery`). On hand-rolled `fiber.Handler` closures, call `if badField, ok := fwweb.BindPath(c, &req); !ok { return fwweb.RespondSchemaViolation(c, pipe, badField) }` before `Bind().Body()` / `ParseCriteria`. Supported types: string, ints, uints, floats, bool, uuid.UUID, domain.ID. |
 | Ensure an auto handler's path ID is populated | Either use a `:id`-canonical wrapper, set `cmd.SetPathID(r.SomeField)` in `ToCommand` (where `r.SomeField` is a `path:`-tagged field), or pull it from a non-path source (JWT subject, header). `handlers.RequirePathID` panics with diagnostics if empty at handler entry. |
 | Manual query handler — emit a paged envelope | `fwweb.RespondPaged(c, fiber.StatusOK, page, fwresponses.AutoFromDoc[ResponseDTO])` (one-liner with the tag-driven default) OR `items, pagination := fwweb.ProjectPage(page, fn); fwweb.Respond(c, fwweb.Response{Success: true, Data: items, Pagination: pagination, ...})` (build the envelope by hand when adding sidecar fields). |
-| Sparse responses on a paged GET endpoint (consumer picks a subset via `?fields=`) | declare `Fields *string \`query:"fields"\`` on the Request DTO + every field on the Response (recursively, including nested struct + slice element types) must be `*T` (or a slice/map) with `,omitempty`. `HandleQueryWithParams` boot guard panics with a path-by-path diagnostic on violation; runtime validates tokens against the Response's wire paths, translates wire→doc via `domain.PascalToSnake` (or `view:` override per segment), auto-adds `_id:0` when `id` is not in the requested list. Unknown tokens emit 400 `SchemaViolationNotification{field:"fields[<bad>]"}`. See "Sparse responses via `?fields=`" |
-| Restrict sortable fields on a paged GET endpoint via `?sort=` | declare `Sort *string \`query:"sort"\`` on the Request DTO. When the Response is a struct, `HandleQueryWithParams` validates each comma-separated token (optional `-` prefix → descending) against the Response's declared wire paths and translates wire→doc via `domain.PascalToSnake` (or `view:` override per segment). Unknown tokens emit 400 `SchemaViolationNotification{field:"sort[<token>]"}` — the `-` prefix is preserved in the rejected token. A single `slog.Warn` fires at boot per endpoint listing every sortable wire path, so the operator can compare it against the Mongo view's `.Indexes(…)` declaration (`fwinfra.Index` / `fwinfra.Compound`). No boot guard on the Response shape — `?sort=` only consumes the path map. RawDoc Responses and `fwweb.ParseCriteria` callers get pass-through (tokens verbatim, no allowlist). See "Sortable response paths via `?sort=`" |
+| Sparse responses on a paged GET endpoint (consumer picks a subset via `?fields=`) | declare `Fields *string \`query:"fields"\`` on the Request DTO + every field on the Response (recursively, including nested struct + slice element types) must be `*T` (or a slice/map) with `,omitempty`. `HandleQueryWithParams` boot guard panics with a path-by-path diagnostic on violation; runtime validates tokens against the Response's wire paths, translates the wire path to the Go field path (the reader maps Go→column via the view `TableSchema`), auto-adds `_id:0` when `id` is not in the requested list. Unknown tokens emit 400 `SchemaViolationNotification{field:"fields[<bad>]"}`. See "Sparse responses via `?fields=`" |
+| Restrict sortable fields on a paged GET endpoint via `?sort=` | declare `Sort *string \`query:"sort"\`` on the Request DTO. When the Response is a struct, `HandleQueryWithParams` validates each comma-separated token (optional `-` prefix → descending) against the Response's declared wire paths and translates the wire path to the Go field path (the reader maps Go→column via the view `TableSchema`). Unknown tokens emit 400 `SchemaViolationNotification{field:"sort[<token>]"}` — the `-` prefix is preserved in the rejected token. A single `slog.Warn` fires at boot per endpoint listing every sortable wire path, so the operator can compare it against the Mongo view's `.Indexes(…)` declaration (`fwinfra.Index` / `fwinfra.Compound`). No boot guard on the Response shape — `?sort=` only consumes the path map. RawDoc Responses and `fwweb.ParseCriteria` callers get pass-through (tokens verbatim, no allowlist). See "Sortable response paths via `?sort=`" |
+| Export a view query as a downloadable file (CSV or XLSX) | canonical (OpenAPI): `fwweb.HandleQueryAsCSVSpec(d.Pipeline, requests.FindXxxRequest{}, view, d.Export, handler, export.WithDelimiter(';'))` — or `fwweb.HandleQueryAsXLSXSpec(..., export.WithSheetName("..."))` for Excel — paired with `fwopenapi.Mount(...)`. Handler-only (no OpenAPI): `fwweb.HandleQueryAsCSV(d.Pipeline, requests.FindXxxRequest{}, view, d.Export, handler, export.WithDelimiter(';'))`. `view` satisfies `web.ExportView` (structural — the `*ViewDefinition` fits, no `web`→`infra` import); `d.Export` is the `web.ExportDeps{Translator, MaxExportRows}` bundle pre-packaged on `Deps`. The wrapper derives the plan, the row ceiling, and the download filename (`view.Name()`) internally. Reuses the SAME Request DTO + query handler as the JSON list; renders hierarchical (one column per nesting level), headers from `labelKey`, `?fields=` narrows columns; user pagination ignored, full set capped at `query.maxExportRows` / `ViewDefinition.MaxExportRows`. Format is a pluggable `web/export.Encoder` (`export.CSV` / `export.XLSX`; a further format = a new encoder). See "Tabular export". |
 | Count-only response on a paged GET endpoint via `?onlyTotal=true` | declare `OnlyTotal *bool \`query:"onlyTotal"\`` on the Request DTO. The reader short-circuits to `CountDocuments(filter)` and `RespondPaged` emits an envelope with no `data` and `pagination = &TotalOnlyPagination{Total: N}` — no `has_next`/`has_prev`/cursors zero-value noise. Conflict matrix `{fields, sort, limit, after, before}` rejects at the schema layer with 400 `SchemaViolationNotification{field:"onlyTotal[<conflict>]"}`. Filter leaves + `?search=` + `?includeArchived=` stay valid (counting a filtered subset is the canonical use case). Manual handlers via `fwweb.ParseCriteria` get the same treatment; the downstream branch lives on `queries.Page.OnlyTotal`. See "Count-only mode via `?onlyTotal=true`" |
 | Keyset pagination via `?after=` / `?before=` | declare `After *string \`query:"after"\`` and `Before *string \`query:"before"\`` on the Request DTO. Cursors are opaque `base64(URLEncoding)` of `{"v":1,"k":[<sort_values..>,"<_id>"]}`. The reader always appends `_id` ASC as the stable tiebreaker; `?sort=` fields layer in front. `?before=` queries Mongo in inverted sort and reverses the slice in Go so the caller sees canonical order. Strict 400 `SchemaViolationNotification` on: malformed cursor (bad base64/JSON, `v != 1`), cursor↔sort tuple-length mismatch, `?after=` + `?before=` together. See "Keyset pagination via `?after=` / `?before=`" |
 | Cap `?limit=` per view (read-side ceiling) | declare `fwinfra.View("users").MaxLimit(500)` for a per-view override OR set `query.maxLimit: 200` in the yaml for a service-wide default. Framework fallback when neither is declared: 100. Resolution cascade at read time: per-view > yaml > framework constant. `MaxLimit(N)` does NOT participate in `RebuildHash` / `ArtifactHash` — operational state, not projection shape. `?limit=N` above the resolved ceiling rejects with 400 `LimitExceededNotification{field:"limit", value:"<ceiling>"}` (translatable per language). Consumer omitting `?limit=` receives up to the resolved ceiling — no separate hardcoded default page size. |
 | Reject malformed pagination params strictly | the wrapper rejects with 400 `SchemaViolationNotification`: `?limit=abc`/`0`/`-5`, `?after=<corrupt>`, `?before=<corrupt>`, `?after=<c>&before=<c>` (mutually exclusive), `?sort=name&after=<no-sort-cursor>` (tuple/sort mismatch), context-change mid-navigation (cursor's `h` hash differs from current `HashContext(filter, sort, search, includeArchived)`). Cursor schema versioning (`v:1`) — a future bump rejects older cursors with the same envelope. |
-| Tag-driven projection of a Mongo view doc | `fwresponses.AutoFromDoc[R]` — generic projector that maps the view doc onto a typed Response struct using `json:"<wire>"` (wire name) and optional `view:"<docKey>"` (source-key override) tags. Recursive through nested structs/slices/pointers; normalizes top-level `_id → id` and nil slices → empty typed slices. Default projector for typed Responses; drop in place of a manually-written `FromDoc` whenever the projection is mechanical. |
+| Tag-driven projection of a Mongo view doc | `fwresponses.AutoFromDoc[R]` — generic projector that maps the view doc onto a typed Response struct using `json:"<wire>"` tags only, keying into the doc by the **Go field name** (the reader already returned a Go-keyed doc). Recursive through nested structs/slices/pointers; normalizes top-level `_id → id` and nil slices → empty typed slices. Default projector for typed Responses; drop in place of a manually-written `FromDoc` whenever the projection is mechanical. |
 | Raw view-doc passthrough on a GET | `fwresponses.RawDoc` — identity projector `func(map[string]any) map[string]any`. Use when the view doc shape IS the wire contract and a typed Response would just mirror it. Same role on read side that `fwresponses.NoBody` plays on the no-body command path. |
 | Request DTO (JSON wire format) | `web/requests/xxx_user_request.go` in the service. Struct with `json:"..."` tags + method `ToCommand() *XxxCommand` (1:1 assignment). Shape mirrors the Command — pointer types for optionals. Co-located in the same file: `XxxUserResponse` (also wire format) + `FromResult(XxxUserResult) XxxUserResponse` |
 | Result DTO (application-layer projection of the persisted entity) | `application/commands/xxx_user.go` in the service, **co-located with the Command**. Plain Go struct, **no methods** — projection logic lives on the Cmd via `func (c *XxxUserCommand) FromEntity(ctx *AppContext, t T) XxxUserResult`. Wrapped by the wire `XxxUserResponse` |
@@ -1791,7 +1886,7 @@ The Semantic enum is **transport-agnostic** — a future gRPC layer would map th
 | PATCH endpoint (partial body, optional fields) | `&handlers.PartialUpdateCommandHandler[T, *Cmd, TResult]{...}` + `Cmd impl pipeline.PartialUpdateCommand[T, TResult]` (`ApplyPartiallyTo(ctx, T)` + `FromEntity(ctx, T) TResult`) |
 | Custom strict handler (imposing full body) | embed `pipeline.FullBody` in the handler struct — wrapper enforces presence of all exported fields |
 | Repository with 5 writes + constraint mapping | embed `fwinfra.BaseRepository[T]` + declare `NewEntity func() T` (mandatory) + optional `Constraints map[string]ConstraintBinding` |
-| FindByID of aggregate (root + children) — auto-scan default | `fwinfra.NewAggregateLoader[T](pg, factory)` + `fwinfra.WithChild[V](loader)` + `loader.FindOne(ctx, criteria.ByID(id))` (or embed `BaseAggregateRepository[T]` which promotes `FindByID`) |
+| FindByID of aggregate (root + children) — auto-scan default | `fwinfra.NewAggregateLoader[T](pg, factory).WithSchema(schema)` (children come from the schema's `Child(...)` declarations) + `loader.FindOne(ctx, criteria.ByID(id))` (or embed `BaseAggregateRepository[T]` + `WithSchema(schema)`, which promotes `FindByID`) |
 | Load an aggregate by any non-id field / a list by criteria | `loader.FindOne(ctx, criteria.Where(criteria.Eq("Email", v)))` (one or `RecordNotFound`; >1 errors) · `loader.FindAll(ctx, criteria.Where(expr).OrderByDesc("CreatedAt").Limit(50))` (children batched via `fk IN`). Archived scope via `.IncludeArchived()` / `.OnlyArchived()` on the `Query`. See "Entity search engine (`criteria`)" |
 | FindByID with manual scanner (non-trivial queries) | same fluent API + `WithRootScanner(fn)` and/or `WithChildScanner(typeName, fn)`. Coexists with auto per typeName. A manual root scanner used with `FindOne`/`FindAll` must populate the id (scan it + `SetID`). |
 | Load microservice config from YAML | `bootstrap.LoadConfig()` reads `APP_PROFILE` env (required, non-empty; `dev` and `prd` are canonical, extra variants like `prd-pem` accepted) and loads `./microservice.${APP_PROFILE}.yaml` (override via `OMNICORE_CONFIG_PATH`); interpolates `${VAR:default}`; validates required; rejects boot when `auth.mode=disabled` under non-`dev` profile |
@@ -1889,6 +1984,10 @@ integration:
 
 **Handler invariance.** The handler the consumer registers is the SAME `pipeline.Handler[TCmd, TResult]` instance an HTTP route consumes. The sample DTO carries `ToCommand()` (same convention web `Request.ToCommand` follows). The framework reflects on the sample's type once at MountReceivers time to plan the dispatch; per-message hot path is allocation-light (allocate request, `json.Unmarshal`, invoke `ToCommand()`, call `handler.Handle(ctx, cmd)`).
 
+**Boot guards (both directions of the subscribe contract).** A registered receiver whose `(sourceKey, eventKey)` is not declared under `integration.subscribes` aborts the boot (`Receiver.resolveAgainstYAML`). The inverse is also enforced: `integration.ValidateSubscriptionsCovered` (run by `bootstrap.serve` before the consumer pool spins, BEFORE the empty-registry short-circuit) aborts when a declared `integration.subscribes.<src>.events.<key>` has no registered receiver — otherwise no goroutine would consume that topic and every message would be silently dropped. `startFrom` (per-source and `defaults`) is enum-validated at boot (`earliest` | `latest`); an unrecognized value aborts the boot rather than reaching the consumer pool, where any non-`earliest` value resolves to `latest`.
+
+**Consumer-group topology — one reader per `(topic, consumerGroup)`, demultiplexed by `event_type`.** A source's `topic` and `consumerGroup` are resolved per-source, so a source declaring multiple events (`From(s).On(A).On(B)`) shares one `(topic, consumerGroup)` across both events. The ConsumerPool runs **one** Kafka reader per distinct `(topic, consumerGroup)` and routes each message to the receiver whose `wireEventType` matches the message's `event_type` header — the canonical "one topic, many event types, many handlers" shape. (Running one reader per receiver would be wrong: Kafka gives each partition to a single group member, so two readers sharing the coordinate would split the partitions and, under auto-commit, each would silently drop the events meant for the other.) A message whose `event_type` matches no receiver is a foreign event on the topic and is skipped (offset auto-commits). Two receivers resolving to the same `(topic, consumerGroup, event_type)` abort the boot — one event type cannot route to two handlers.
+
 **Per-message pipeline (no outer TX).**
 
 1. Read `event_id` from header (or `msg.Key`).
@@ -1962,7 +2061,7 @@ Filename: `{version}_{name}.{up|down}.sql`. `version` is a monotonic integer.
 
 **Versions 1 and 2 are reserved for the framework's control plane** — injected via `embed.FS` from `omnicore/infra/migration/embedded/`. Version 1 (`0001_outbox.{up,down}.sql`) creates **two** tables: `outbox` (CDC source for the Debezium Outbox Event Router) and `omnicore_mongo_views` (the registry of materialized Mongo view shapes — see "Mongo schema evolution"). Version 2 (`0002_integration_events.{up,down}.sql`) creates the integration-events tables (`integration_events` + `omnicore_integration_failures` + `omnicore_integration_processed` — see "Integration events"). The framework tracks them in its own `omnicore_framework_migrations` table, so a service's own migrations start at `0002+` in the separate `omnicore_migrations` table with no collision. Do not write the framework SQL manually; the signatures are guaranteed identical across services (Debezium depends on the outbox shape; the Mongo schema-evolution path depends on the registry shape).
 
-`.down.sql` is mandatory — validated by `Manager.ValidateDownExists` at startup. It may contain `-- intentionally empty: down not feasible` or no-op SQL when the migration has no technical reverse (DROP COLUMN, ALTER TYPE).
+`.down.sql` is mandatory — validated by `Manager.ValidateDownExists` at startup. It may contain `-- intentionally empty: down not feasible` or no-op SQL when the migration has no technical reverse (DROP COLUMN, ALTER TYPE). The same check also rejects any `*.up.sql` / `*.down.sql` whose name lacks a parseable `{version}_{name}` prefix (`init.up.sql`, `v2_init.up.sql`) with `MigrationFilenameInvalidNotification` — golang-migrate silently ignores such files, so without the check the operator's SQL would never run while boot reported success.
 
 ### Tracking
 
@@ -2046,7 +2145,8 @@ Every `ViewDefinition` declares a mandatory `Version(N)` (positive integer). The
 fwinfra.View("users").
     Version(3).                                                    // ← mandatory
     Root("users").
-    EmbedMany("addresses", fwinfra.From("addresses").On("user_id")).
+    Schema(UserSchema()).                                          // ← mandatory on every view
+    EmbedMany("addresses", fwinfra.FromSchema(AddressSchema())).
     Indexes(fwinfra.Index("email").Unique())
 ```
 
@@ -2248,13 +2348,15 @@ CREATE TABLE users (
     id          UUID         PRIMARY KEY DEFAULT gen_random_uuid(),
     name        VARCHAR(255) NOT NULL,
     -- ... domain columns ...
-    deleted_at  TIMESTAMP,                   -- MANDATORY: archive support + composer filter
-    created_at  TIMESTAMP    NOT NULL DEFAULT NOW(),
-    updated_at  TIMESTAMP    NOT NULL DEFAULT NOW()   -- auto-touched on Update
+    deleted_at  TIMESTAMP,                   -- soft-delete marker (name/presence declared via TableSchema.SoftDelete)
+    created_at  TIMESTAMP    NOT NULL,        -- framework stamps NOW() on INSERT (no DB DEFAULT needed)
+    updated_at  TIMESTAMP    NOT NULL         -- framework stamps NOW() on INSERT + UPDATE
 );
 ```
 
-**Child tables** of an aggregate (e.g. `addresses` for `users`) follow the convention `<parent_type>_id` for the FK column (`user_id` for parent `User`). Override per-Repository via `fwinfra.RepoConfig.ChildFKOverrides` when the convention does not fit:
+The framework actively stamps `created_at` and `updated_at` with `NOW()` (it does not rely on a DB `DEFAULT` it does not own), so the `DEFAULT NOW()` is optional; declare each column's name/presence via `TableSchema.CreatedAt(col)` / `UpdatedAt(col)`. `deleted_at` is the soft-delete marker — required only when the entity is archivable; declare it via `TableSchema.SoftDelete(col)` (presence enables, omission disables). See "Schema mapping".
+
+**Child tables** of an aggregate (e.g. `addresses` for `users`) carry an FK column to the root. The column name is declared explicitly in the child `TableSchema` via `.FK("user_id")` — the persister injects the root id into it on child INSERT:
 
 ```sql
 -- noinspection SqlNoDataSourceInspectionForFile
@@ -2271,7 +2373,7 @@ CREATE INDEX addresses_user_id_idx ON addresses (user_id);
 
 Universal symmetric cascade: root archive → `UPDATE addresses SET deleted_at = NOW() WHERE user_id = $1` in the same TX; root unarchive → restores all archived children; root delete → relies on FK `ON DELETE CASCADE`.
 
-Cross-service data is materialized into **B's own Mongo database** via `UpstreamSubscription` — there is no local PG cache table convention anymore. The local Mongo collection (e.g. `users` projected into B's database) is upsert-managed by the framework's `UpstreamSubscriber`; embeds reference it via `fwinfra.FromMongo("users")`. See "Cross-service composition" under [Read side (CQRS)](#read-side-cqrs) for the full surface.
+Cross-service data is materialized into **B's own Mongo database** via `UpstreamSubscription` — there is no local PG cache table convention anymore. The local Mongo collection (e.g. `users` projected into B's database) is upsert-managed by the framework's `UpstreamSubscriber`; embeds reference it via an external `fwinfra.FromSchema(fwinfra.NewExternalSchema("users")…)`. See "Cross-service composition" under [Read side (CQRS)](#read-side-cqrs) for the full surface.
 
 ## Concurrency and lifecycle
 
@@ -2319,7 +2421,7 @@ Cross-service data is materialized into **B's own Mongo database** via `Upstream
 
 ## Full request flow (concrete)
 
-`POST /users` with body `{"name":"John","email":"j@x.com","cpf":"...","addresses":[{...}]}`:
+`POST /users` with body `{"name":"John","email":"j@x.com","username":"...","addresses":[{...}]}`:
 
 ```
 1. Fiber middleware: build AppContext (UUID + Language from headers)
@@ -2331,7 +2433,7 @@ Cross-service data is materialized into **B's own Mongo database** via `Upstream
          └─ domain.GetInsertable(user, nil, "GetInsertable")
             └─ ensureInit / resetEntity / validateForInsert
                └─ BuildRules: validate root fields (children auto-iterated downstream)
-               └─ runAggregateValidations: iterates root.AllAggregateItems() → Address.BuildRules(actionName, svc, scopedRules) for each item with CurrentStatus != Removed (collection name inferred by PluralizeSnake/PascalToSnake)
+               └─ runAggregateValidations: iterates root.AllAggregateItems() → Address.BuildRules(actionName, svc, scopedRules) for each item with CurrentStatus != Removed (path segment via camelCase toLowerCamel(typeName))
                └─ checkAllNotifications → *DomainError if any
             └─ extractAggregateMeta(user) populates *aggregateMeta
             └─ build Insertable with aggregate metadata attached
@@ -2411,6 +2513,7 @@ migrations:
   autoRun: check       # check | true | false — profile-aware default: dev=true / else=check
 query:
   maxLimit: 200        # service-wide ceiling on `?limit=`; 0/absent → framework default 100; per-view override via fwinfra.View("...").MaxLimit(N)
+  maxExportRows: 5000  # ceiling on rows a tabular export (CSV/XLSX) streams; 0/absent → framework default 10000; per-view override via fwinfra.View("...").MaxExportRows(N)
 auth:
   mode: jwt            # jwt | disabled (disabled rejected unless APP_PROFILE=dev)
   jwt:
@@ -2641,7 +2744,7 @@ func (*ArchiveUserCommand) ApplyTo(ctx *configuration.AppContext, u *User) {
 }
 ```
 
-The Command is the only place identity → business field translation lives. Web stays Fiber-only (no ctx in `Request.ToCommand()`), domain stays IO-free, infra never sees the JWT. Transient fields on the entity carry `transient:"-"` — domain's own declaration that the field is runtime-only (request inputs, computed values, in-memory caches, runtime bookkeeping) — so the framework's reflection-based persister skips them automatically.
+The Command is the only place identity → business field translation lives. Web stays Fiber-only (no ctx in `Request.ToCommand()`), domain stays IO-free, infra never sees the JWT. These runtime authz fields are runtime-only simply because they are NOT declared in the `TableSchema` — the persister never writes, scans, or audits an undeclared field, so request inputs, computed values, and runtime bookkeeping stay in memory automatically.
 
 Once `BuildRules` emits the notification, the SQL `INSERT` / `UPDATE` / `DELETE` never runs; the wire response carries the canonical envelope with status from the notification's `Semantic()` (kernel `Update/Delete/Archive/UnarchiveNotAllowedNotification` all return `SemanticForbidden → 403`). Service-specific notifications (`NonOwnerArchiveForbiddenNotification`, `EmailLockedAfterActivationNotification`) follow the same pattern with their own typed identity.
 
@@ -2709,17 +2812,17 @@ All four carry `SemanticForbidden → 403`. The Layer 1 emission carries `FieldN
 
 ### Why defense-in-depth at infra is deliberately absent
 
-Adding a `ScopeFilter` knob to `RepoConfig` (e.g. an auto-appended `AND tenant_id = $X` on every write WHERE, or a forced filter entry on every read criteria) would force `infra/postgres.go` and `MongoViewReader` to pronounce domain concepts (tenant, owner, role). This violates the dependency rule (infra → domain only) and creates two sources of truth for the same rule — when domain and infra disagree, which wins? The canonical design keeps identity exclusively inside `application/` and `domain/`; infra executes what they approved. A bug bypassing `BuildRules` or `ToCriteria(ctx)` is a domain/application bug, fixed at that layer — not papered over by infra duplication.
+Adding a `ScopeFilter` knob to the `TableSchema` (e.g. an auto-appended `AND tenant_id = $X` on every write WHERE, or a forced filter entry on every read criteria) would force `infra/postgres.go` and `MongoViewReader` to pronounce domain concepts (tenant, owner, role). This violates the dependency rule (infra → domain only) and creates two sources of truth for the same rule — when domain and infra disagree, which wins? The canonical design keeps identity exclusively inside `application/` and `domain/`; infra executes what they approved. A bug bypassing `BuildRules` or `ToCriteria(ctx)` is a domain/application bug, fixed at that layer — not papered over by infra duplication.
 
 ## OpenAPI / Swagger UI
 
-`omnicore/web/openapi` generates an OpenAPI 3.1.0 document from the same Go types the HTTP wrappers already consume — Request DTOs (with `json:`/`path:`/`query:`/`filter:` tags), Response DTOs (with `json:`/`view:` tags), the FullBody marker, the HasPathID interface assertions. No `swag init`, no hand-written YAML, no separate annotations: the spec is a reflection-driven projection of the routes the consumer already wired.
+`omnicore/web/openapi` generates an OpenAPI 3.1.0 document from the same Go types the HTTP wrappers already consume — Request DTOs (with `json:`/`path:`/`query:`/`filter:` tags), Response DTOs (with `json:` tags), the FullBody marker, the HasPathID interface assertions. No `swag init`, no hand-written YAML, no separate annotations: the spec is a reflection-driven projection of the routes the consumer already wired.
 
 ### One registration path for typed routes, one for free-form routes
 
 | Path | Used by | Carries |
 |---|---|---|
-| `openapi.Mount(registry, group, method, path, handler, spec, doc)` | Canonical wrappers (via `HandleCommand*Spec` / `HandleQuery*Spec` siblings) AND manual handlers that still parse a typed Request DTO | `RouteSpec{RequestType, ResponseType, SuccessStatus, Strict, HasPathID, Paged}` + `Doc{Summary, Description, OperationID, Tags, Deprecated, Hidden, Public}` |
+| `openapi.Mount(registry, group, method, path, handler, spec, doc)` | Canonical wrappers (via `HandleCommand*Spec` / `HandleQuery*Spec` siblings) AND manual handlers that still parse a typed Request DTO | `RouteSpec{RequestType, ResponseType, SuccessStatus, Strict, HasPathID, Paged, FileResponse, OmittedQueryParams}` + `Doc{Summary, Description, OperationID, Tags, Deprecated, Hidden, Public}` |
 | `openapi.MountRaw(registry, group, method, path, handler, raw)` | Routes without a typed Request DTO — auth identity demos, in-process upstreams, vendor-shaped showcase handlers | `RawSpec{Summary, Description, OperationID, Tags, Deprecated, Hidden, Public, Parameters, RequestBody, Responses}` |
 
 Canonical wrappers expose **`*Spec` siblings** that return `(fiber.Handler, openapi.RouteSpec)`:
@@ -2763,7 +2866,6 @@ Routes that emit via `fwweb.RespondPaged` have a different envelope from routes 
 | Field with `json:"-"` | Skipped |
 | Field with `path:"X"` | Skipped from body schema; surfaces as a path parameter |
 | Field with `query:"X" filter:"ops"` | Skipped from body schema; surfaces as one query parameter per operator (`name`, `name.in`, `name.gte`, `name.startswith`, `name.icontains`, …) |
-| Field with `view:"docKey"` | Tag ignored — internal doc→wire mapping consumed by `fwresponses.AutoFromDoc` |
 | Field with `example:"value"` | Sets the property's `example` in the rendered schema — Swagger UI shows the concrete value instead of the type-default placeholder. Supported types: string, bool, signed/unsigned ints, floats, `uuid.UUID`, `domain.ID`, `time.Time` (RFC3339), and pointers to any of these. Composite types (struct / slice / map) on the same field → boot panic with a message pointing at `Doc.RequestExamples` / `Doc.ResponseExamples` (the map-based path for N exemplos / shapes the tag cannot express). Parse failure (`example:"not-a-number"` on int) → boot panic naming the struct + field |
 
 Required-field rule:
@@ -2822,7 +2924,7 @@ The Swagger UI HTML at `/docs` loads `swagger-ui-dist` from unpkg.com CDN by def
 
 **`Wiring.Translations` is mandatory.** `validateWiring` rejects boot when the slice is empty — independent of `LanguageSelector`. Notification messages, error envelopes (`ErrorMessage.Message`), and audit fields all flow through the `Translator`; booting with an empty Translator silently produces blank strings in production. Loud at boot is the framework's chosen failure mode: every consumer **must** declare at least one `translation.Module`.
 
-**Auto-population.** Under `bootstrap.Run`, `Languages` is filled automatically when `LanguageSelector=true` AND the consumer left `Languages` empty. The bootstrap walks `Wiring.Translations`, dedupes by `configuration.Language` (a service that registers both the framework's `CorePTBR` and its own `apptrans.PTBR()` collapses to a single `PT_BR` entry), and emits `{Label: Lang.String(), Value: Lang.HTTPPrefix()}` per surviving entry. The microservice has the final word on **which languages appear in the dropdown** — registering only `apptrans.PTBR()` shows only `PT_BR`, even though `translation.Default()` loads four behind the scenes. `LangUnknown` and any language with an empty `HTTPPrefix()` are skipped.
+**Auto-population.** Under `bootstrap.Run`, `Languages` is filled automatically when `LanguageSelector=true` AND the consumer left `Languages` empty. The bootstrap walks `Wiring.Translations`, dedupes by `configuration.Language` (a service that registers both the framework's `CorePTBR` and its own `apptrans.PTBR()` collapses to a single `PT_BR` entry), and emits `{Label: Lang.String(), Value: Lang.HTTPPrefix()}` per surviving entry. The microservice has the final word on **which languages appear in the dropdown** — registering only `apptrans.PTBR()` shows only `PT_BR`, even though `translation.Default()` loads seven behind the scenes. `LangUnknown` and any language with an empty `HTTPPrefix()` are skipped.
 
 **English-first default.** When `LangENG` is among the surviving entries, the bootstrap rotates it to position 0 so HTML's natural `<select>` behavior selects English as the default. Declaration order is otherwise preserved (after the rotation). When ENG is absent, declaration order is preserved as-is — the first declared language wins the default slot.
 
@@ -2987,6 +3089,8 @@ httpClient:
 - `requestCodec` / `responseCodec` must be `json` (other codecs arrive in the codec expansion phase)
 - `acceptableStatus` values must be in `100..599`
 - `timeout` must be non-negative
+- `authProviders.<name>.tokenEndpoint` (`oauth2-client-credentials` + `credentials-exchange`) must parse as an absolute URL — same standard as `services.<name>.baseURL`, so a typo'd scheme / host-less value aborts the boot instead of failing on the first token acquisition
+- `signing.signedHeaders` must not name the policy's own `signatureHeader` / `keyIdHeader` — those are set on the request AFTER the canonical string is computed, so signing them signs an always-empty value while the wire carries a non-empty one (every signed request would be rejected upstream)
 
 ### Config block coverage
 
@@ -4075,8 +4179,8 @@ Anyone needing exotic boot (custom logger, different lifecycle, specific start o
 - **Result[T]** — discriminated value: Success/Failure/Exception. Success carries `T`; Failure carries translated `[]ContextDTO`; Exception carries raw error
 - **Service** (`domain.Service`) — marker interface for domain services injectable into an entity's `BuildRules`
 - **Unarchivable** — symmetric inverse of `Archivable`. `Postgres.Unarchive` does `UPDATE deleted_at = NULL` + outbox `UNARCHIVED`. SyncEngine re-creates the Mongo doc
-- **UpstreamSubscription** — declarative entry (yaml or `Wiring.UpstreamSubscriptions`) that ties one of A's Kafka topics to a local Mongo collection in B's database. The framework's `UpstreamSubscriber` materializes events into the collection and ripples recompose to every B view embedding it via `FromMongo`. The canonical cross-service composition path
-- **FromMongo** — `Source` constructor symmetric to `From` for embeds whose data lives in a local Mongo collection populated by an `UpstreamSubscription`. `Source.IsMongo()` discriminates the composer dispatch. View-on-view (`FromMongo` targeting another local `ViewDefinition.Name()`) is rejected by boot guard §8.3 because the recompose ripple is one-hop and the second view would drift silently
+- **UpstreamSubscription** — declarative entry (yaml or `Wiring.UpstreamSubscriptions`) that ties one of A's Kafka topics to a local Mongo collection in B's database. The framework's `UpstreamSubscriber` materializes events into the collection and ripples recompose to every B view embedding it via an external `FromSchema` embed. The canonical cross-service composition path
+- **FromSchema** — `fwinfra.FromSchema(*TableSchema) *Source`, the single embed source constructor. From the schema the framework derives the table/collection (`ts.Table()`), the store kind (type-anchored `NewTableSchema[T]` → local Postgres; type-less `NewExternalSchema` → external/Mongo — the schema's type IS the signal, no separate `From`/`FromMongo`), and — for an `EmbedMany` — the join FK (`ts.FKColumn()`). A local embed derives its parent-side Go segment from the schema's Go type (`.As(...)` optional); an external embed must declare `.As(...)`. `.On(key)` is one-to-one-`Embed`-only (the parent doc FK pointing at the source PK). `Source.IsMongo()` (type-less schema) discriminates the composer dispatch. View-on-view (an external `FromSchema` targeting another local `ViewDefinition.Name()`) is rejected by boot guard §8.3 because the recompose ripple is one-hop and the second view would drift silently
 - **TxHandle** — sealed marker interface at `application/persistence/`, handed to in-TX lifecycle hooks. Carries no public methods (only an unexported sealing method), so application code cannot pronounce SQL through it. The framework's `infra/pgxTxHandle` is the only implementation; infra-layer port adapters call `fwinfra.UnwrapPgxTx(tx)` to recover the underlying `*pgx.Tx` and execute SQL. The canonical pattern for an in-TX side effect from a hook: declare a port in `application/` (or `domain/`) whose method receives a `persistence.TxHandle`; implement the port in `infra/` where the adapter unwraps and owns the SQL.
 - **UnwrapPgxTx** — `fwinfra.UnwrapPgxTx(persistence.TxHandle) pgx.Tx` is the single bridge from the opaque `TxHandle` token to the live `pgx.Tx`. Lives in `infra/`, so only adapters in that layer can call it. Panics with a descriptive diagnostic on a foreign `TxHandle` implementation — defensive, never reached against framework-issued handles.
 - **ValidEntity** — sealed types (`Insertable`/`Updatable`/`Archivable`/`Deletable`/`Unarchivable`/`Batch`) produced only by domain
@@ -4086,7 +4190,7 @@ Anyone needing exotic boot (custom logger, different lifecycle, specific start o
 - **fwintegration.Dispatch** — `infra/integration.Dispatch(ctx, eventKey, payload, opts...)` — the canonical producer entry point for cross-service async events. Resolves `eventKey` against `integration.publishes.events.<key>` in the loaded YAML; lazy validation surfaces an unknown key as `ErrIntegrationEventNotConfigured`. With `WithTx(tx)` from a `BeforeCommit` closure the row lands atomically with the data write + outbox + audit; without `WithTx` it commits standalone via the framework's PG pool.
 - **Registry** — `*fwintegration.Registry` — receiver collection mounted by `bootstrap.IntegrationFeature.MountReceivers(reg, deps)`. Symmetric with `*fiber.App` for the HTTP transport: consumer features register receivers inline via `reg.From(source).On(eventKey, sample, handler)`. Constructed once in `buildDeps` and surfaced on `Deps.IntegrationRegistry`.
 - **Receiver** — one entry in the Registry, representing one (sourceKey, eventKey) pair. Holds the reflection-based dispatch plan computed at MountReceivers time. `Receiver.RetryPendingFailures(ctx, exec, pipe, logger)` re-dispatches every pending row from `omnicore_integration_failures` matching the receiver's natural key — wired through the consumer service's admin HTTP route.
-- **ConsumerPool** — `*fwintegration.ConsumerPool` — owner of the Kafka consumer goroutines that drive every Receiver. Spun by `bootstrap.serve` between Phase Receivers and `app.Listen`. `Shutdown(drainCtx)` drains every in-flight `processOne` (or returns `drainCtx.Err()` on timeout). Mirrors `UpstreamSubscriber.Shutdown` shape so the coordinated shutdown path drives both with the same shared `shutdownCtx`.
+- **ConsumerPool** — `*fwintegration.ConsumerPool` — owner of the Kafka consumer goroutines. Spun by `bootstrap.serve` between Phase Receivers and `app.Listen`. Runs **one reader per `(topic, consumerGroup)`** (not per receiver) and demultiplexes each message by `event_type` to the matching Receiver, so a source declaring multiple events is consumed correctly without partition-splitting losses. `Shutdown(drainCtx)` drains every in-flight message (or returns `drainCtx.Err()` on timeout). Mirrors `UpstreamSubscriber.Shutdown` shape so the coordinated shutdown path drives both with the same shared `shutdownCtx`.
 - **IntegrationFeature** — `bootstrap.IntegrationFeature` — opt-in interface a Feature satisfies to register integration receivers via `MountReceivers(reg, deps)`. Mirror of `ReadableFeature`. Detected via type assertion at Phase Receivers.
 - **eventKey / sourceKey** — Go-side string identifiers consumer code passes to `Dispatch` and `From(source).On(eventKey, ...)`. The wire-side `event_type` lives in YAML; eventKey is stable across schema migrations. Renaming a wire `event_type` is a YAML edit, not a code sweep.
 - **wire event_type** — the literal string the producer emits as the Kafka header value and the subscriber matches against. Lives ONLY in YAML (`integration.publishes.events.<key>.eventType` and `integration.subscribes.<src>.events.<key>.eventType`); never appears as a Go literal at a Dispatch / On call site.

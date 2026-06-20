@@ -236,7 +236,7 @@ func TestPagination_Cursor_FilterHashMismatch_Rejected(t *testing.T) {
 	app, h := mountPaginationWrapper()
 	// Cursor issued for filter {name="Alice"}; current request carries
 	// {name="Bob"}. Hash mismatch → 400 SchemaViolation.
-	cursorHash := queries.HashContext(map[string]any{"name": "Alice"}, nil, "", false)
+	cursorHash := queries.HashContext(map[string]any{"Name": "Alice"}, nil, "", false)
 	encoded, err := queries.EncodeCursor([]any{"abc-123"}, cursorHash)
 	if err != nil {
 		t.Fatalf("EncodeCursor: %v", err)
@@ -256,7 +256,7 @@ func TestPagination_Cursor_FilterHashMatch_Passes(t *testing.T) {
 	app, h := mountPaginationWrapper()
 	// Cursor issued for filter {name="Alice"}; current request carries the
 	// same filter. Hash match → request flows through.
-	filter := map[string]any{"name": "Alice"}
+	filter := map[string]any{"Name": "Alice"}
 	cursorHash := queries.HashContext(filter, nil, "", false)
 	encoded, err := queries.EncodeCursor([]any{"abc-123"}, cursorHash)
 	if err != nil {

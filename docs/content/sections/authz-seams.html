@@ -49,12 +49,11 @@ fwopenapi.MountRaw(d.OpenAPIRegistry, app, fiber.MethodGet, "/whoami",
   <h3>Layer 2 — programmatic rule in <code>BuildRules</code></h3>
   <p>Rules that depend on the specific resource state, the principal's claims, or the relationship between them. Anything Layer 1's static "needs permission X" cannot express ("only the owner can archive", "cannot delete the last admin", "email cannot change after activation unless admin").</p>
 
-  <p>Every write verb routes through <code>domain.GetXxx</code> → <code>BuildRules</code> BEFORE the SQL fires. The <code>actionName</code> parameter tells the entity which verb is firing (<code>"GetInsertable"</code> / <code>"GetUpdatable"</code> / <code>"GetPartialUpdatable"</code> / <code>"GetArchivable"</code> / <code>"GetUnarchivable"</code> / <code>"GetDeletable"</code>); the rule body branches on it. The identity-derived value reaches the entity via the Command's mapper — the canonical place to translate <code>ctx.Identity()</code> into business-named transient fields.</p>
+  <p>Every write verb routes through <code>domain.GetXxx</code> → <code>BuildRules</code> BEFORE the SQL fires. The <code>actionName</code> parameter tells the entity which verb is firing (<code>"GetInsertable"</code> / <code>"GetUpdatable"</code> / <code>"GetPartialUpdatable"</code> / <code>"GetArchivable"</code> / <code>"GetUnarchivable"</code> / <code>"GetDeletable"</code>); the rule body branches on it. The identity-derived value reaches the entity via the Command's mapper — the canonical place to translate <code>ctx.Identity()</code> into business-named runtime-only fields (not declared in the <code>TableSchema</code>).</p>
 
   <pre><code>// Command mapper — application layer, the only layer that may translate ctx
-// into business-named entity fields. Transient fields carry `transient:"-"`
-// (domain's own declaration that the field is runtime-only) so the framework's
-// reflection-based persister skips them on read and write.
+// into business-named entity fields. Runtime-only fields are simply not declared
+// in the TableSchema, so the persister never persists or scans them.
 func (*ArchiveUserCommand) ApplyTo(ctx *configuration.AppContext, u *User) {
     if id := ctx.Identity(); id != nil {
         if email, _ := id.Claims["email"].(string); email != "" {
@@ -115,4 +114,4 @@ func (i *Identity) TenantID() string</code></pre>
   <p>Both are nil-safe. <code>HasPermission</code> tolerates multiple claim shapes (<code>[]string</code>, <code>[]any</code>, space-separated, comma-separated); panics on caller-side wildcards. <code>TenantID</code> tolerates <code>string</code>, <code>[]string{one}</code>, <code>[]any{one}</code> shapes; anything else returns "". The parsed permissions set is cached on the <code>Identity</code> after the first call.</p>
 
   <h3>Why defense-in-depth at infra is deliberately absent</h3>
-  <p><code>Postgres.Insert/Update/Archive/Unarchive/Delete</code> and <code>MongoViewReader.ReadPage/ReadByID</code> execute what the application layer validated; they do not pronounce identity. Adding a <code>ScopeFilter</code> knob to <code>RepoConfig</code> would force the infra adapters to know domain concepts (tenant, owner, role) — violating the dependency ruler and creating two sources of truth for the same rule. A bug bypassing <code>BuildRules</code> or <code>ToCriteria(ctx)</code> is a domain/application bug, fixed at that layer — not papered over by infra duplication.</p>
+  <p><code>Postgres.Insert/Update/Archive/Unarchive/Delete</code> and <code>MongoViewReader.ReadPage/ReadByID</code> execute what the application layer validated; they do not pronounce identity. Adding a scope-filter knob to the <code>TableSchema</code> would force the infra adapters to know domain concepts (tenant, owner, role) — violating the dependency ruler and creating two sources of truth for the same rule. A bug bypassing <code>BuildRules</code> or <code>ToCriteria(ctx)</code> is a domain/application bug, fixed at that layer — not papered over by infra duplication.</p>

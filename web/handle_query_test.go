@@ -116,9 +116,9 @@ func TestHandleQueryWithParams_AllowedOperatorAssemblesCriteria(t *testing.T) {
 	if h.got == nil {
 		t.Fatal("expected handler to be called")
 	}
-	emailFilter, ok := h.got.Criteria.Filter["email"].(map[string]any)
+	emailFilter, ok := h.got.Criteria.Filter["Email"].(map[string]any)
 	if !ok {
-		t.Fatalf("expected email filter to be a map, got %T", h.got.Criteria.Filter["email"])
+		t.Fatalf("expected email filter to be a map, got %T", h.got.Criteria.Filter["Email"])
 	}
 	in, ok := emailFilter["$in"].([]any)
 	if !ok || len(in) != 2 || in[0] != "a@x.com" || in[1] != "b@y.com" {
@@ -459,8 +459,8 @@ func TestParseCriteria_HappyPath(t *testing.T) {
 	if !gotOK || gotBad != "" {
 		t.Errorf("expected ok=true, badField empty; got ok=%v, badField=%q", gotOK, gotBad)
 	}
-	if got.Filter["name"] != "Jane" {
-		t.Errorf("expected filter name=Jane, got %v", got.Filter["name"])
+	if got.Filter["Name"] != "Jane" {
+		t.Errorf("expected filter name=Jane, got %v", got.Filter["Name"])
 	}
 	if got.Limit != 5 {
 		t.Errorf("expected limit=5, got %d", got.Limit)
@@ -714,7 +714,7 @@ func TestSortParam_KnownTokenTranslatesToDocPath(t *testing.T) {
 	if len(h.got.Criteria.Sort) != 1 {
 		t.Fatalf("expected 1 SortField, got %d", len(h.got.Criteria.Sort))
 	}
-	if h.got.Criteria.Sort[0].Field != "addresses.zip_code" {
+	if h.got.Criteria.Sort[0].Field != "Addresses.ZipCode" {
 		t.Errorf("expected Field=addresses.zip_code (PascalToSnake), got %q", h.got.Criteria.Sort[0].Field)
 	}
 	if h.got.Criteria.Sort[0].Desc {
@@ -737,7 +737,7 @@ func TestSortParam_NestedViewTagOverride(t *testing.T) {
 	if len(h.got.Criteria.Sort) != 1 {
 		t.Fatalf("expected 1 SortField, got %d", len(h.got.Criteria.Sort))
 	}
-	if h.got.Criteria.Sort[0].Field != "addresses.st" {
+	if h.got.Criteria.Sort[0].Field != "Addresses.State" {
 		t.Errorf("expected Field=addresses.st (view: override), got %q", h.got.Criteria.Sort[0].Field)
 	}
 }
@@ -757,8 +757,8 @@ func TestSortParam_MinusPrefixSetsDesc(t *testing.T) {
 	if len(h.got.Criteria.Sort) != 1 {
 		t.Fatalf("expected 1 SortField, got %d", len(h.got.Criteria.Sort))
 	}
-	if h.got.Criteria.Sort[0].Field != "name" || !h.got.Criteria.Sort[0].Desc {
-		t.Errorf("expected Field=name,Desc=true, got %+v", h.got.Criteria.Sort[0])
+	if h.got.Criteria.Sort[0].Field != "Name" || !h.got.Criteria.Sort[0].Desc {
+		t.Errorf("expected Field=Name,Desc=true, got %+v", h.got.Criteria.Sort[0])
 	}
 }
 
@@ -777,10 +777,10 @@ func TestSortParam_MultipleTokensIndependentDirections(t *testing.T) {
 	if len(h.got.Criteria.Sort) != 2 {
 		t.Fatalf("expected 2 SortFields, got %d", len(h.got.Criteria.Sort))
 	}
-	if h.got.Criteria.Sort[0].Field != "name" || h.got.Criteria.Sort[0].Desc {
+	if h.got.Criteria.Sort[0].Field != "Name" || h.got.Criteria.Sort[0].Desc {
 		t.Errorf("expected first SortField=name asc, got %+v", h.got.Criteria.Sort[0])
 	}
-	if h.got.Criteria.Sort[1].Field != "email" || !h.got.Criteria.Sort[1].Desc {
+	if h.got.Criteria.Sort[1].Field != "Email" || !h.got.Criteria.Sort[1].Desc {
 		t.Errorf("expected second SortField=email desc, got %+v", h.got.Criteria.Sort[1])
 	}
 }
@@ -844,7 +844,7 @@ func TestSortParam_OptInWithoutFieldsBuildsProjSchema(t *testing.T) {
 		t.Fatal("expected handler called")
 	}
 	if len(h2.got.Criteria.Sort) != 1 ||
-		h2.got.Criteria.Sort[0].Field != "addresses.zip_code" ||
+		h2.got.Criteria.Sort[0].Field != "Addresses.ZipCode" ||
 		!h2.got.Criteria.Sort[0].Desc {
 		t.Errorf("expected SortField=addresses.zip_code desc, got %+v", h2.got.Criteria.Sort)
 	}

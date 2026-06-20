@@ -45,6 +45,59 @@ func TestValidate_ServiceReferencesUnknownProvider(t *testing.T) {
 	}
 }
 
+func TestValidate_OAuth2TokenEndpointNotAbsoluteURL(t *testing.T) {
+	c := &Config{
+		AuthProviders: map[string]AuthProviderConfig{
+			"kc": {
+				Type:          "oauth2-client-credentials",
+				TokenEndpoint: "kc.example.com/token", // no scheme/host
+				ClientID:      "id",
+				ClientSecret:  "secret",
+				TokenCache:    &TokenCacheConfig{Source: "jwt-exp"},
+			},
+		},
+	}
+	err := c.Validate()
+	if err == nil || !strings.Contains(err.Error(), "tokenEndpoint") || !strings.Contains(err.Error(), "absolute URL") {
+		t.Errorf("expected tokenEndpoint absolute-URL error; got %v", err)
+	}
+}
+
+func TestValidate_CredentialsExchangeTokenEndpointRelative(t *testing.T) {
+	c := &Config{
+		AuthProviders: map[string]AuthProviderConfig{
+			"x": {
+				Type:              "credentials-exchange",
+				TokenEndpoint:     "/realms/x/token", // relative — no scheme/host
+				RequestFields:     map[string]string{"grant_type": "password"},
+				ResponseTokenPath: "$.access_token",
+				TokenCache:        &TokenCacheConfig{Source: "jwt-exp"},
+			},
+		},
+	}
+	err := c.Validate()
+	if err == nil || !strings.Contains(err.Error(), "absolute URL") {
+		t.Errorf("expected absolute-URL error for a relative tokenEndpoint; got %v", err)
+	}
+}
+
+func TestValidate_OAuth2TokenEndpointAbsoluteURLOK(t *testing.T) {
+	c := &Config{
+		AuthProviders: map[string]AuthProviderConfig{
+			"kc": {
+				Type:          "oauth2-client-credentials",
+				TokenEndpoint: "https://kc.example.com/realms/x/token",
+				ClientID:      "id",
+				ClientSecret:  "secret",
+				TokenCache:    &TokenCacheConfig{Source: "jwt-exp"},
+			},
+		},
+	}
+	if err := c.Validate(); err != nil {
+		t.Errorf("a valid absolute tokenEndpoint must pass; got %v", err)
+	}
+}
+
 // --- E2E -----------------------------------------------------------------
 
 func newAuthClient(t *testing.T, server *httptest.Server, providers map[string]AuthProviderConfig, serviceAuth *ServiceAuthConfig) *HttpClient {

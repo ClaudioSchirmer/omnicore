@@ -164,7 +164,7 @@ type Config struct {
 	// surface — for each entry, bootstrap.Run spins a Kafka consumer
 	// + worker pool that materializes A's events into a local Mongo
 	// collection and triggers recompose on every B view embedding it
-	// via fwinfra.FromMongo. YAML is the canonical source; Wiring
+	// via an external fwinfra.FromSchema. YAML is the canonical source; Wiring
 	// exposes the same slice for manual lifecycle paths
 	// (bootstrap.Build + Serve) and integration tests, with the
 	// merge rule documented on Wiring.UpstreamSubscriptions.
@@ -349,6 +349,13 @@ type QueryConfig struct {
 	// ViewDefinition.MaxLimit. Zero (or unset) defers to the framework
 	// default 100. Negative values are rejected at boot.
 	MaxLimit int64 `yaml:"maxLimit"`
+
+	// MaxExportRows is the default ceiling on the number of rows a tabular
+	// export (CSV/XLSX) streams, applied to every export route that does not
+	// opt into a per-view override via ViewDefinition.MaxExportRows. Zero (or
+	// unset) defers to infra.DefaultMaxExportRows. Negative values are rejected
+	// at boot. The consumer forwards it to ViewDefinition.ResolveMaxExportRows.
+	MaxExportRows int64 `yaml:"maxExportRows"`
 }
 
 // FrameworkDefaultMaxLimit is the read-side `?limit=` ceiling honored when
@@ -365,6 +372,9 @@ func (q *QueryConfig) applyDefaults() {
 func (q *QueryConfig) validate() error {
 	if q.MaxLimit < 0 {
 		return fmt.Errorf("query.maxLimit must be > 0 (got %d)", q.MaxLimit)
+	}
+	if q.MaxExportRows < 0 {
+		return fmt.Errorf("query.maxExportRows must be >= 0 (got %d)", q.MaxExportRows)
 	}
 	return nil
 }

@@ -139,8 +139,9 @@ func (c *Customer) Modes() []domain.EntityMode {
 // Declare only if the entity needs domain.Service in BuildRules
 // (e.g., cross-entity lookups), returning true.
 
-// NO TableName/ToFields. Infra infers "customers" and {name, email}
-// via convention (PluralizeSnake + PascalToSnake over exported fields).
+// NO TableName/ToFields. Infra maps the entity via an explicit TableSchema
+// (NewTableSchema[*Customer]("customers").Field("Name","name")...), threaded
+// onto the Repository with WithSchema — no name inference.
 
 func (c *Customer) BuildRules(actionName string, service domain.Service, r *domain.Rules) {
     r.IfInsertOrUpdate(func() {
@@ -288,7 +289,7 @@ func NewUserRepository(pg *fwinfra.Postgres) *UserRepository {
     r.Constraints = map[string]fwinfra.ConstraintBinding{
         "users_email_active_idx": {Notification: EmailAlreadyExistsNotification{}, Field: "email"},
     }
-    fwinfra.WithChild[Address](r.Loader)   // children via public Loader
+    r.WithSchema(UserSchema())   // children come from the schema's .Child(...) declarations
     return r
 }
 
@@ -298,9 +299,11 @@ var (
 )</code></pre>
     <p>
         <code>FindByID</code> and <code>FindArchivedByID</code> come promoted via embed; <code>New()</code>
-        and the 5 writes also come from <code>BaseRepository</code> via embed. The <code>*AggregateLoader[T]</code>
-        is exposed as a public <code>Loader</code> field — call <code>WithChild[V]</code>,
-        <code>WithChildScanner</code>, <code>WithRootScanner</code>, <code>WithConfig</code> on it directly.
+        and the 5 writes also come from <code>BaseRepository</code> via embed. <code>WithSchema(schema)</code>
+        declares the <code>TableSchema</code> once and feeds both the write binding and the read loader; child
+        tables come from the schema's <code>.Child(...)</code> declarations. The <code>*AggregateLoader[T]</code>
+        is exposed as a public <code>Loader</code> field — call the manual-scanner escape hatches
+        <code>WithRootScanner</code> / <code>WithChildScanner</code> on it directly when auto-scan does not fit.
     </p>
     <p>
         <strong>When NOT to use it</strong> (keep the old pattern of direct embed
@@ -351,8 +354,8 @@ archived, err := repo.FindOne(ctx, criteria.ByID(id).OnlyArchived())</code></pre
         Operators: <code>Eq/Ne/In/Nin/Gt/Gte/Lt/Lte/Like/ILike/IsNull/NotNull</code>, combinators
         <code>And/Or/Not</code> (nestable), and sugar <code>Contains/StartsWith/EndsWith</code>
         (case-insensitive, wildcards escaped) + <code>Between</code>. Field names are your <strong>Go field
-        names</strong> ("Email"), resolved to columns by the same convention auto-scan uses
-        (snake_case, or <code>RepoConfig.FieldOverrides</code>). Values are always parameterized;
+        names</strong> ("Email"), resolved to columns by the same <code>TableSchema</code> auto-scan uses
+        (declared in the schema via <code>Field("Email", "email")</code>). Values are always parameterized;
         a <code>domain.ID</code> value is unwrapped automatically. <code>FindByID</code> /
         <code>FindArchivedByID</code> (promoted by <code>BaseAggregateRepository</code>) are themselves
         thin wrappers over <code>FindOne(criteria.ByID(id))</code> — one SQL-building path for every load.
@@ -371,7 +374,7 @@ type User struct {
     domain.AggregateRoot      // embed; private fields, invisible to the engine
     Name  string
     Email string
-    CPF   string
+    Username string
     Phone *string             // nullable: pointer maps directly to NULL
 }
 
@@ -387,50 +390,50 @@ func NewUserRepository(pg *fwinfra.Postgres) *UserRepository {
             pg, func() *User { return &amp;User{} },
         ),
     }
-    // Children registered via auto-scan (top-level due to extra type param):
-    fwinfra.WithChild[Address](r.Loader)
+    // Children declared on the schema via .Child(...); WithSchema threads it
+    // into the write binding AND the read loader (auto-scan).
+    r.WithSchema(UserSchema())
     return r
 }</code></pre>
     <p>
         The loader generates:
     </p>
     <pre><code>-- Root (FindOne(criteria.ByID(id)) — id read back; criteria drives the WHERE)
-SELECT id, name, email, cpf, phone FROM users
+SELECT id, name, email, username, phone FROM users
  WHERE id = $1 AND deleted_at IS NULL;
 
--- Per child registered in WithChild (FindAll batches with fk IN ($1,$2,...))
+-- Per child declared via .Child(...) on the schema (FindAll batches with fk IN ($1,$2,...))
 SELECT user_id, id, label, street, number, complement, neighborhood, city, state, zip_code, country
   FROM addresses
  WHERE user_id = $1 AND deleted_at IS NULL;</code></pre>
 
-    <h4>Column ↔ field name convention</h4>
+    <h4>Column ↔ field mapping</h4>
     <p>
-        The engine uses <code>pgx</code>'s internal normalization to match names
-        (<code>strings.ReplaceAll(name, "_", "")</code> + <code>strings.EqualFold</code>):
+        Names are not inferred — the auto-scan resolves each column to its Go field through the
+        repository's <code>TableSchema</code> (the same map that drives the write path). At boot the
+        schema records, per declared field, a <code>column → struct-field-index</code> plan
+        (<code>TableSchema.scanPlan</code>); the loader builds the <code>SELECT</code> from exactly
+        those columns and scans each row straight into the matched field by index. There is no
+        <code>pgx</code> name normalization and no convention — see
+        <a href="#table-schema">TableSchema (PG + views)</a>.
     </p>
-    <table>
-        <thead><tr><th>Go field</th><th>Matching SQL column</th></tr></thead>
-        <tbody>
-            <tr><td><code>Name</code></td><td><code>name</code></td></tr>
-            <tr><td><code>Email</code></td><td><code>email</code></td></tr>
-            <tr><td><code>CPF</code></td><td><code>cpf</code> (acronym)</td></tr>
-            <tr><td><code>ZipCode</code></td><td><code>zip_code</code></td></tr>
-            <tr><td><code>PostalCodeV2</code></td><td><code>postal_code_v2</code></td></tr>
-            <tr><td><code>HTTPStatus</code></td><td><code>http_status</code></td></tr>
-        </tbody>
-    </table>
-    <p>
-        If you need a different name, declare a <code>db:"..."</code> tag on the field
-        (one-off override). Tag <code>db:"-"</code> makes the engine ignore that field
-        (it doesn't go into <code>SELECT</code> and is not populated). Tag adoption is fully opt-in;
-        the domain stays <em>zero IO</em> with no tag declared.
-    </p>
-    <pre><code>type Customer struct {
-    domain.AggregateRoot
-    DisplayName  string `db:"name"`        // override: "name" column instead of "display_name"
-    Internal     string `db:"-"`           // engine ignores — does not go into SELECT
-    Email        string                    // no tag — uses snake_case convention ("email")
+    <pre><code>func UserSchema() *fwinfra.TableSchema {
+    return fwinfra.NewTableSchema[*User]("users").
+        PK("ID", "id").
+        Field("Name", "name").
+        Field("DisplayName", "display_name").  // any Go field ↔ any column
+        Field("Email", "mail").                // a rename lives only here
+        SoftDelete("deleted_at").
+        CreatedAt("created_at").
+        UpdatedAt("updated_at")
 }</code></pre>
+    <p>
+        To map a Go field to a differently-named column, declare it explicitly with
+        <code>Field("Go", "column")</code> — a typo on either side is a boot panic, not a silent
+        mismatch. To keep a field out of persistence, simply do not declare it in the schema: an
+        undeclared exported field is runtime-only by construction (never written, scanned, or
+        audited) — no <code>db:"-"</code> tag, the domain stays <em>zero IO</em> with no tag at all.
+    </p>
 
     <h4>Nullables</h4>
     <p>
@@ -484,8 +487,9 @@ r.loader = fwinfra.NewAggregateLoader[*User](pg, factory).
         u.Name = firstName + " " + lastName
         return u, nil
     })
-// Address keeps auto:
-fwinfra.WithChild[Address](r.loader)</code></pre>
+// Address keeps auto: it is declared on the schema via .Child(...) and the
+// schema is threaded with r.WithSchema(UserSchema()); WithRootScanner overrides
+// only the root decode.</code></pre>
     <p>
         Auto and manual <strong>coexist per typeName</strong>: for the same child,
         the manual scanner wins over auto when both are registered. The manual mode
@@ -506,8 +510,8 @@ fwinfra.WithChild[Address](r.loader)</code></pre>
             <a href="#status-mapping">Semantic mapping</a>).</li>
         <li><strong>More than one match in <code>FindOne</code></strong> → error ("expected one"):
             the contract is a single match; use <code>FindAll</code> or a more specific criterion.</li>
-        <li><strong>Aggregate without children</strong> — omit <code>WithChild</code>/
-            <code>WithChildScanner</code> and the load only does <code>SELECT root</code>.</li>
+        <li><strong>Aggregate without children</strong> — declare no <code>.Child(...)</code> on the schema
+            (and no <code>WithChildScanner</code>) and the load only does <code>SELECT root</code>.</li>
         <li><strong>Entity without exported domain fields</strong> in auto mode:
             <code>FindOne</code>/<code>FindAll</code> return a descriptive error suggesting
             <code>WithRootScanner</code> (typically a bug — an entity with no data at all is rare).</li>

@@ -45,6 +45,42 @@ func TestConfigValidateMissingFields(t *testing.T) {
 	}
 }
 
+func TestConfigValidateStartFromInvalid(t *testing.T) {
+	c := &Config{
+		Subscribes: map[string]SubscribeEntry{
+			"src": {
+				Topic:     "t",
+				StartFrom: "earlist", // typo
+				Events:    map[string]SubscribeEvent{"y": {EventType: "Y"}},
+			},
+		},
+		Defaults: SubscriberDefaults{StartFrom: "beginning"}, // also invalid
+	}
+	err := c.Validate()
+	if err == nil {
+		t.Fatal("expected validation error for invalid startFrom")
+	}
+	if !strings.Contains(err.Error(), "subscribes.src.startFrom") {
+		t.Errorf("expected per-source startFrom diagnostic, got: %v", err)
+	}
+	if !strings.Contains(err.Error(), "defaults.startFrom") {
+		t.Errorf("expected defaults startFrom diagnostic, got: %v", err)
+	}
+}
+
+func TestConfigValidateStartFromAccepted(t *testing.T) {
+	for _, v := range []string{"", "earliest", "latest"} {
+		c := &Config{
+			Subscribes: map[string]SubscribeEntry{
+				"src": {Topic: "t", StartFrom: v, Events: map[string]SubscribeEvent{"y": {EventType: "Y"}}},
+			},
+		}
+		if err := c.Validate(); err != nil {
+			t.Errorf("startFrom %q must be accepted, got: %v", v, err)
+		}
+	}
+}
+
 func TestConfigLookupPublish(t *testing.T) {
 	c := &Config{
 		Publishes: PublishConfig{

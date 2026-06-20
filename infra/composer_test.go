@@ -60,7 +60,7 @@ func TestBuildFetchSQL_IncludeArchivedOmitsFilter(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			got := buildFetchSQL(c.verb, c.table, c.keyCol, true)
+			got := buildFetchSQL(c.verb, c.table, c.keyCol, "deleted_at", true)
 			if got != c.want {
 				t.Fatalf("buildFetchSQL(%q, %q, %q, true) = %q, want %q",
 					c.verb, c.table, c.keyCol, got, c.want)
@@ -88,7 +88,7 @@ func TestBuildFetchSQL_DeleteOnArchiveAppliesFilter(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			got := buildFetchSQL(c.verb, c.table, c.keyCol, false)
+			got := buildFetchSQL(c.verb, c.table, c.keyCol, "deleted_at", false)
 			if got != c.want {
 				t.Fatalf("buildFetchSQL(%q, %q, %q, false) = %q, want %q",
 					c.verb, c.table, c.keyCol, got, c.want)
@@ -109,7 +109,7 @@ func TestCompose_CascadeFromViewFlag_DefaultKeep_Root(t *testing.T) {
 		t.Fatal("default view must report DeletesOnArchive()=false")
 	}
 	include := !v.DeletesOnArchive()
-	sql := buildFetchSQL("row", v.RootTable(), "id", include)
+	sql := buildFetchSQL("row", v.RootTable(), "id", "deleted_at", include)
 	if strings.Contains(sql, "deleted_at") {
 		t.Fatalf("default view must omit deleted_at filter on root SELECT, got %q", sql)
 	}
@@ -123,17 +123,17 @@ func TestCompose_CascadeFromViewFlag_DefaultKeep_Root(t *testing.T) {
 // projection.
 func TestCompose_CascadeFromViewFlag_DefaultKeep_Aggregate(t *testing.T) {
 	v := View("users").Root("users").
-		EmbedMany("addresses", From("addresses").On("user_id"))
+		EmbedMany("addresses", pgEmbed("addresses", "user_id"))
 	if v.DeletesOnArchive() {
 		t.Fatal("default aggregate view must report DeletesOnArchive()=false")
 	}
 	include := !v.DeletesOnArchive()
-	rootSQL := buildFetchSQL("row", v.RootTable(), "id", include)
+	rootSQL := buildFetchSQL("row", v.RootTable(), "id", "deleted_at", include)
 	if strings.Contains(rootSQL, "deleted_at") {
 		t.Fatalf("default aggregate view must omit deleted_at on root, got %q", rootSQL)
 	}
 	for _, e := range v.Embeds() {
-		childSQL := buildFetchSQL("where", e.source.table, e.source.joinKey, include)
+		childSQL := buildFetchSQL("where", e.source.table, e.JoinColumn(), "deleted_at", include)
 		if strings.Contains(childSQL, "deleted_at") {
 			t.Fatalf("default aggregate view must omit deleted_at on embed %q, got %q",
 				e.field, childSQL)
@@ -153,7 +153,7 @@ func TestCompose_CascadeFromViewFlag_DeleteOnArchive_Root(t *testing.T) {
 		t.Fatal("DeleteOnArchive() view must report DeletesOnArchive()=true")
 	}
 	include := !v.DeletesOnArchive()
-	sql := buildFetchSQL("row", v.RootTable(), "id", include)
+	sql := buildFetchSQL("row", v.RootTable(), "id", "deleted_at", include)
 	if !strings.Contains(sql, "AND deleted_at IS NULL") {
 		t.Fatalf("DeleteOnArchive view must apply deleted_at filter on root, got %q", sql)
 	}
@@ -165,17 +165,17 @@ func TestCompose_CascadeFromViewFlag_DeleteOnArchive_Root(t *testing.T) {
 // — the flag governs the whole projection symmetrically).
 func TestCompose_CascadeFromViewFlag_DeleteOnArchive_Aggregate(t *testing.T) {
 	v := View("users").DeleteOnArchive().Root("users").
-		EmbedMany("addresses", From("addresses").On("user_id"))
+		EmbedMany("addresses", pgEmbed("addresses", "user_id"))
 	if !v.DeletesOnArchive() {
 		t.Fatal("DeleteOnArchive() aggregate view must report DeletesOnArchive()=true")
 	}
 	include := !v.DeletesOnArchive()
-	rootSQL := buildFetchSQL("row", v.RootTable(), "id", include)
+	rootSQL := buildFetchSQL("row", v.RootTable(), "id", "deleted_at", include)
 	if !strings.Contains(rootSQL, "AND deleted_at IS NULL") {
 		t.Fatalf("DeleteOnArchive aggregate must apply filter on root, got %q", rootSQL)
 	}
 	for _, e := range v.Embeds() {
-		childSQL := buildFetchSQL("where", e.source.table, e.source.joinKey, include)
+		childSQL := buildFetchSQL("where", e.source.table, e.JoinColumn(), "deleted_at", include)
 		if !strings.Contains(childSQL, "AND deleted_at IS NULL") {
 			t.Fatalf("DeleteOnArchive aggregate must apply filter on embed %q, got %q",
 				e.field, childSQL)

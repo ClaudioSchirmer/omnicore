@@ -1,7 +1,8 @@
 package infra
 
 import (
-	"reflect"
+	"fmt"
+	"strings"
 
 	"github.com/ClaudioSchirmer/omnicore/domain"
 )
@@ -10,6 +11,7 @@ type ViewDefinition struct {
 	name            string
 	version         int
 	rootTable       string
+	schema          *TableSchema
 	embeds          []embedDef
 	deleteOnArchive bool
 	mongoSpec       mongoSpec
@@ -20,6 +22,11 @@ type ViewDefinition struct {
 	// is operational and may be tuned without triggering a Mongo rebuild or a
 	// version bump.
 	maxLimit int64
+	// maxExportRows caps the row count a tabular export (CSV/XLSX) of this view
+	// streams. Zero (unset) defers to the yaml default (cfg.Query.MaxExportRows),
+	// then to DefaultMaxExportRows. Like maxLimit it is operational state — NOT
+	// part of RebuildHash / ArtifactHash.
+	maxExportRows int64
 }
 
 type embedDef struct {
@@ -45,8 +52,9 @@ func (e embedDef) Field() string { return e.field }
 func (e embedDef) Many() bool { return e.many }
 
 // Source describes one fetch leaf inside a ViewDefinition. The `table` field
-// carries either a Postgres table (for sources produced by From) or a Mongo
-// collection name (for sources produced by FromMongo); isMongo discriminates.
+// carries either a Postgres table (for FromSchema over a type-anchored schema)
+// or a Mongo collection name (for FromSchema over a type-less
+// NewExternalSchema); isMongo discriminates.
 // The composer dispatches on IsMongo() to pick the underlying store:
 //
 //   - false (default): fetch via Postgres pool (fetchRow / fetchWhere)
@@ -58,75 +66,35 @@ func (e embedDef) Many() bool { return e.many }
 // `table` resolves either to an UpstreamSubscription.Collection or to a local
 // ViewDefinition.Name().
 type Source struct {
-	table   string
-	joinKey string
-	isMongo bool
-	embeds  []embedDef
+	table     string
+	joinKey   string
+	isMongo   bool
+	schema    *TableSchema
+	goSegment string
+	embeds    []embedDef
 }
 
 func View(name string) *ViewDefinition {
 	return &ViewDefinition{name: name}
 }
 
-// ViewOf is the generic variant of View(name) — infers the Mongo collection,
-// the Postgres root table and the children EmbedMany from the Go type T via
-// reflection. Conventions (same as the write side, Phases 19+20):
-//
-//   - Mongo collection / root table = InferTableName(T) → "users"
-//   - Children discovered via T.AggregateChildren() (Phase 20). For each
-//     sample VO:
-//     • Mongo doc field + Postgres child table = PluralizeSnake of the VO
-//     type name → "addresses"
-//     • Child FK pointing to root.id = InferForeignKey(rootType) →
-//     "user_id"
-//
-// Use when the convention fits (canonical case). For a custom magic pattern
-// (legacy naming, embeds that do not come from AggregateChildren — e.g.
-// cross-aggregate cache table, external materialized view), keep the fluent
-// View(name).Root(table).EmbedMany(...) and/or extend the return of ViewOf[T]()
-// (ViewDefinition is mutable via Embed/EmbedMany after creation).
-//
-//	v := fwinfra.ViewOf[*appdomain.User]()
-//	// equivalent to:
-//	v := fwinfra.View("users").Root("users").
-//	    EmbedMany("addresses", fwinfra.From("addresses").On("user_id"))
-//
-// An entity without AggregateRootProvider returns a view with no embeds —
-// flat aggregate with pure root.
-func ViewOf[T domain.Entity]() *ViewDefinition {
-	rootRefType := reflect.TypeOf((*T)(nil)).Elem()
-	t := rootRefType
-	if t.Kind() == reflect.Ptr {
-		t = t.Elem()
-	}
-	table := InferTableName(t)
-
-	v := View(table).Root(table)
-
-	// AggregateChildren needs an instance — reflect.New(t).Interface()
-	// returns a *t that satisfies interfaces declared with receiver T or *T.
-	sample := reflect.New(t).Interface()
-	provider, ok := sample.(domain.AggregateRootProvider)
-	if !ok {
-		return v
-	}
-
-	fk := InferForeignKey(rootRefType)
-	for _, child := range provider.AggregateChildren() {
-		childType := reflect.TypeOf(child)
-		if childType.Kind() == reflect.Ptr {
-			childType = childType.Elem()
-		}
-		childTable := InferTableName(childType)
-		v = v.EmbedMany(childTable, From(childTable).On(fk))
-	}
-	return v
-}
-
 func (v *ViewDefinition) Root(table string) *ViewDefinition {
 	v.rootTable = table
 	return v
 }
+
+// Schema attaches the view's root TableSchema (Go↔column + PK + soft-delete) —
+// the same schema the repository declares. The composer uses it for the root
+// PK + soft-delete column; the reader uses it to translate root leaf fields
+// between Go field names and physical columns. Reuse the repo's schema so write
+// and read agree.
+func (v *ViewDefinition) Schema(ts *TableSchema) *ViewDefinition {
+	v.schema = ts
+	return v
+}
+
+// SchemaDef returns the view's root TableSchema (nil when unset).
+func (v *ViewDefinition) SchemaDef() *TableSchema { return v.schema }
 
 // Version declares the shape version of the view. Mandatory — the framework
 // rejects views with version <= 0 at boot via ValidateMongoSpec.
@@ -212,27 +180,41 @@ func (v *ViewDefinition) DeletesOnArchive() bool   { return v.deleteOnArchive }
 // to the yaml / framework defaults when this returns 0.
 func (v *ViewDefinition) MaxLimitValue() int64 { return v.maxLimit }
 
-// From produces a Postgres-kind Source. The composer reads from the connection
-// pool (fetchRow / fetchWhere) using the joinKey set via .On(...). Use this for
-// every embed whose data lives in the same Postgres database as the view's root
-// table — the canonical case for local aggregate children.
-func From(table string) *Source {
-	return &Source{table: table}
+// FromSchema produces an embed source from a TableSchema — the single,
+// mandatory source constructor. Everything physical is derived from the schema:
+//
+//   - the table / collection is ts.Table();
+//   - the source kind is the schema's kind — a type-less NewExternalSchema
+//     describes an upstream Mongo collection (Mongo source), a type-anchored
+//     NewTableSchema a local Postgres table;
+//   - for an EmbedMany the join key is the schema's FK column (declared via
+//     .FK(...)), so it is never repeated on the embed.
+//
+// The schema is required on every embed: the read membrane translates Go↔column
+// through it, so there is no convention fallback (no inferred "id"/"deleted_at",
+// no identity pass-through). A local FromSchema source (type-anchored schema)
+// reuses the child's repository schema; an upstream FromSchema source over a
+// NewExternalSchema describes the upstream's columns.
+func FromSchema(ts *TableSchema) *Source {
+	return &Source{table: ts.Table(), isMongo: ts.isExternal(), schema: ts}
 }
 
-// FromMongo produces a Mongo-kind Source. The composer reads from the local
-// MongoDB via FindManyByField/fetchRow on the named collection. Use this for
-// embeds whose data is upstream-projected into a B.Mongo collection by an
-// UpstreamSubscription, or for composing one local Mongo view inside another.
-// The collection name MUST resolve at boot to either an UpstreamSubscription
-// or a local ViewDefinition.Name() — boot guard §8.3 enforces this and aborts
-// otherwise so a typo never lands as a silently empty embed in production.
-func FromMongo(collection string) *Source {
-	return &Source{table: collection, isMongo: true}
-}
-
+// On declares the join key for a one-to-one Embed: the column on the PARENT
+// document holding the foreign key that points at this source's primary key.
+// It is NOT used for EmbedMany — there the join is the child FK declared on the
+// source's own schema via .FK(...). Has no effect on an EmbedMany source.
 func (s *Source) On(key string) *Source {
 	s.joinKey = key
+	return s
+}
+
+// As declares the parent-side Go field name (segment) for this embed — what the
+// criteria/Response refer to (e.g. "Addresses"), as opposed to the doc field
+// where the composer lands the embed (the EmbedMany field, e.g. "addresses").
+// Required when the two differ (the common case: snake doc field vs PascalCase
+// Go field); defaults to the doc field when unset.
+func (s *Source) As(goSegment string) *Source {
+	s.goSegment = goSegment
 	return s
 }
 
@@ -252,10 +234,135 @@ func (s *Source) IsMongo() bool      { return s.isMongo }
 func (s *Source) Collection() string { return s.table }
 func (s *Source) Embeds() []embedDef { return s.embeds }
 
+// SchemaDef returns the embed source's TableSchema (always set — FromSchema is
+// the only constructor). Symmetric with ViewDefinition.SchemaDef().
+func (s *Source) SchemaDef() *TableSchema { return s.schema }
+
+// JoinColumn returns the physical column the composer joins this embed on:
+// the source's FK column (from the schema) for a one-to-many embed, or the
+// parent-side FK declared via .On for a one-to-one embed.
+func (e embedDef) JoinColumn() string {
+	if e.many {
+		return e.source.schema.FKColumn()
+	}
+	return e.source.joinKey
+}
+
+// resolveGoSegment returns the parent-side Go field name for an embed (what the
+// criteria/Response refer to). Resolution:
+//
+//   - an explicit .As value wins;
+//   - otherwise, for a LOCAL (type-anchored) source it is derived from the
+//     schema's Go type — pluralized for a one-to-many EmbedMany ("Address" →
+//     "Addresses"), the type name itself for a one-to-one Embed;
+//   - for an EXTERNAL (type-less) source with no .As it returns "" — there is
+//     no Go type to inherit from, so .As is required; the boot guard rejects it.
+func resolveGoSegment(e embedDef) string {
+	if e.source == nil {
+		return ""
+	}
+	if e.source.goSegment != "" {
+		return e.source.goSegment
+	}
+	name := e.source.schema.typeName() // "" for an external schema
+	if name == "" {
+		return ""
+	}
+	if e.many {
+		return domain.PluralizeWord(name)
+	}
+	return name
+}
+
+// ValidateViewSchemas enforces the view-side mandatory-schema rule: every view
+// declares a root schema, every embed declares one, and every external (type-
+// less) embed declares its Go segment via .As(...) (a local embed derives it
+// from its Go type). Returns a single error listing every offender so the
+// operator sees them all in one boot attempt — a missing declaration is a fatal
+// boot error, never a silent convention fallback.
+func ValidateViewSchemas(views []*ViewDefinition) error {
+	var problems []string
+	for _, v := range views {
+		if v.schema == nil {
+			problems = append(problems, fmt.Sprintf("view %q: no root .Schema(...) declared", v.Name()))
+		} else if !v.schema.hasPKDeclared() {
+			problems = append(problems, fmt.Sprintf(
+				"view %q: root schema (table %q) declares no primary key — declare .PK(goField, column)",
+				v.Name(), v.schema.Table()))
+		}
+		problems = appendEmbedSchemaProblems(problems, v.Name(), v.embeds)
+	}
+	if len(problems) == 0 {
+		return nil
+	}
+	return fmt.Errorf(
+		"view schema(s) incomplete — every view (root + every embed) must declare a TableSchema, "+
+			"and every external embed must declare its Go segment via .As(...):\n  - %s",
+		strings.Join(problems, "\n  - "),
+	)
+}
+
+func appendEmbedSchemaProblems(acc []string, viewName string, embeds []embedDef) []string {
+	for _, e := range embeds {
+		if e.source == nil {
+			continue
+		}
+		if e.source.schema == nil {
+			acc = append(acc, fmt.Sprintf("view %q: embed %q (source %q) has no schema", viewName, e.field, e.source.table))
+		} else {
+			if resolveGoSegment(e) == "" {
+				acc = append(acc, fmt.Sprintf(
+					"view %q: external embed %q (source %q) has no Go segment — declare it via .As(\"...\") "+
+						"(an external/type-less schema cannot derive it from a Go type)",
+					viewName, e.field, e.source.table))
+			}
+			if !e.source.schema.hasPKDeclared() {
+				acc = append(acc, fmt.Sprintf(
+					"view %q: embed %q (source %q) declares no primary key — declare .PK(goField, column)",
+					viewName, e.field, e.source.table))
+			}
+			// Grandchild-via-schema: an embed source whose TableSchema carries
+			// Child(...) is a misconfiguration — the composer recurses over the
+			// embed's own .Embed/.EmbedMany, never over schema.children, so those
+			// nested schemas are silently ignored. Views DO support depth — just
+			// not through the schema. (The view ROOT schema is the reused write
+			// schema and legitimately carries Child(...); only embed SOURCES are
+			// flagged here.)
+			if len(e.source.schema.children) > 0 {
+				acc = append(acc, fmt.Sprintf(
+					"view %q: embed %q (source %q) declares Child(...) on its TableSchema — "+
+						"grandchildren ARE supported by views, but NOT through the schema's Child(...). "+
+						"Nest the projection with EmbedMany(...) / Embed(...) directly on the embed "+
+						"source, as many levels as you need.",
+					viewName, e.field, e.source.table))
+			}
+			// Join key is mandatory: EmbedMany joins on the child's FK (declared on
+			// its schema via .FK), a one-to-one Embed joins on the parent's FK
+			// (declared via .On). Either missing makes the composer emit broken SQL,
+			// so reject it at boot instead.
+			if e.many {
+				if e.source.schema.fkColumn == "" {
+					acc = append(acc, fmt.Sprintf(
+						"view %q: EmbedMany %q (source %q) declares no foreign key — declare .FK(col) on "+
+							"its schema; the composer joins the child rows on it (child_fk = parent_pk)",
+						viewName, e.field, e.source.table))
+				}
+			} else if e.source.joinKey == "" {
+				acc = append(acc, fmt.Sprintf(
+					"view %q: one-to-one Embed %q (source %q) declares no parent join key — declare "+
+						".On(col) naming the parent column that holds the FK to this source's PK",
+					viewName, e.field, e.source.table))
+			}
+		}
+		acc = appendEmbedSchemaProblems(acc, viewName, e.source.embeds)
+	}
+	return acc
+}
+
 // viewIndex splits the rebuild lookup by source kind. The original
 // single-map implementation conflated Postgres tables and Mongo collection
 // names — a PG-root view named "users" would collide in the lookup with a
-// view embedding FromMongo("users"). The split keeps the namespaces separate:
+// view embedding FromSchema(NewExternalSchema("users")). The split keeps the namespaces separate:
 //
 //   - byPGTable: SyncEngine consults this on each Kafka message
 //     (aggregate_type ≡ PG root table) to find every view that needs to be
@@ -274,7 +381,7 @@ type viewIndex struct {
 }
 
 // DependentMongoViews returns the subset of views that embed the named
-// Mongo collection via fwinfra.FromMongo (at any nesting level). Used by
+// Mongo collection via an external fwinfra.FromSchema (at any nesting level). Used by
 // bootstrap when wiring UpstreamSubscriber instances — the subscriber
 // receives this slice as its recompose-ripple targets.
 //

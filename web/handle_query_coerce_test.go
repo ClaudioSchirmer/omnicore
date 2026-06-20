@@ -71,9 +71,9 @@ func TestCoerce_StringLeafKeepsDigitsAsString(t *testing.T) {
 	if status != fiber.StatusOK {
 		t.Fatalf("expected 200, got %d", status)
 	}
-	got, ok := crit.Filter["code"].(string)
+	got, ok := crit.Filter["Code"].(string)
 	if !ok {
-		t.Fatalf("expected Filter[code] to be string, got %T (%v)", crit.Filter["code"], crit.Filter["code"])
+		t.Fatalf("expected Filter[code] to be string, got %T (%v)", crit.Filter["Code"], crit.Filter["Code"])
 	}
 	if got != "95014" {
 		t.Errorf("expected '95014' verbatim, got %q", got)
@@ -87,8 +87,8 @@ func TestCoerce_StringLeafKeepsTrueAsString(t *testing.T) {
 	if status != fiber.StatusOK {
 		t.Fatalf("expected 200, got %d", status)
 	}
-	if crit.Filter["code"] != "true" {
-		t.Errorf("expected 'true' string, got %v (%T)", crit.Filter["code"], crit.Filter["code"])
+	if crit.Filter["Code"] != "true" {
+		t.Errorf("expected 'true' string, got %v (%T)", crit.Filter["Code"], crit.Filter["Code"])
 	}
 }
 
@@ -97,8 +97,8 @@ func TestCoerce_Int64LeafParsesDecimal(t *testing.T) {
 	if status != fiber.StatusOK {
 		t.Fatalf("expected 200, got %d", status)
 	}
-	if got, ok := crit.Filter["age"].(int64); !ok || got != 25 {
-		t.Errorf("expected int64(25), got %v (%T)", crit.Filter["age"], crit.Filter["age"])
+	if got, ok := crit.Filter["Age"].(int64); !ok || got != 25 {
+		t.Errorf("expected int64(25), got %v (%T)", crit.Filter["Age"], crit.Filter["Age"])
 	}
 }
 
@@ -111,8 +111,8 @@ func TestCoerce_Int64LeafFallsBackToStringOnParseFailure(t *testing.T) {
 	if status != fiber.StatusOK {
 		t.Fatalf("expected 200, got %d", status)
 	}
-	if crit.Filter["age"] != "abc" {
-		t.Errorf("expected string fallback 'abc', got %v (%T)", crit.Filter["age"], crit.Filter["age"])
+	if crit.Filter["Age"] != "abc" {
+		t.Errorf("expected string fallback 'abc', got %v (%T)", crit.Filter["Age"], crit.Filter["Age"])
 	}
 }
 
@@ -121,8 +121,8 @@ func TestCoerce_Float64LeafParsesDecimal(t *testing.T) {
 	if status != fiber.StatusOK {
 		t.Fatalf("expected 200, got %d", status)
 	}
-	if got, ok := crit.Filter["score"].(float64); !ok || got != 4.5 {
-		t.Errorf("expected float64(4.5), got %v (%T)", crit.Filter["score"], crit.Filter["score"])
+	if got, ok := crit.Filter["Score"].(float64); !ok || got != 4.5 {
+		t.Errorf("expected float64(4.5), got %v (%T)", crit.Filter["Score"], crit.Filter["Score"])
 	}
 }
 
@@ -131,8 +131,8 @@ func TestCoerce_BoolLeafParsesTrueFalse(t *testing.T) {
 	if status != fiber.StatusOK {
 		t.Fatalf("expected 200, got %d", status)
 	}
-	if got, ok := crit.Filter["active"].(bool); !ok || got != true {
-		t.Errorf("expected bool(true), got %v (%T)", crit.Filter["active"], crit.Filter["active"])
+	if got, ok := crit.Filter["Active"].(bool); !ok || got != true {
+		t.Errorf("expected bool(true), got %v (%T)", crit.Filter["Active"], crit.Filter["Active"])
 	}
 }
 
@@ -141,7 +141,7 @@ func TestCoerce_InListPreservesPerElementType(t *testing.T) {
 	if status != fiber.StatusOK {
 		t.Fatalf("expected 200, got %d", status)
 	}
-	sub, _ := crit.Filter["age"].(map[string]any)
+	sub, _ := crit.Filter["Age"].(map[string]any)
 	arr, ok := sub["$in"].([]any)
 	if !ok || len(arr) != 3 {
 		t.Fatalf("expected $in array of 3, got %v", sub["$in"])
@@ -160,7 +160,7 @@ func TestCoerce_StringInListKeepsStringPerElement(t *testing.T) {
 	if status != fiber.StatusOK {
 		t.Fatalf("expected 200, got %d", status)
 	}
-	sub, _ := crit.Filter["code"].(map[string]any)
+	sub, _ := crit.Filter["Code"].(map[string]any)
 	arr, ok := sub["$in"].([]any)
 	if !ok || len(arr) != 2 {
 		t.Fatalf("expected $in of 2, got %v", sub["$in"])

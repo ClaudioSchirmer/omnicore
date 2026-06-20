@@ -1,112 +1,128 @@
 package infra
 
 import (
+	"strings"
 	"testing"
-
-	"github.com/ClaudioSchirmer/omnicore/domain"
 )
 
-// ─── ViewOf root with no children ────────────────────────────────────────────
+// ─── test embed-source helpers ───────────────────────────────────────────────
+//
+// pgEmbed / mongoEmbed build a FromSchema source with a minimal schema (PK + FK)
+// for tests. pgEmbed is type-anchored (local PG); mongoEmbed is type-less
+// (external/Mongo). For a one-to-one Embed, pass fk="" and set the parent join
+// via .On(...).
+type embedFixture struct{ ID string }
 
-type viewFlatEntity struct {
-	domain.BaseEntity
-	Name string
+func pgEmbed(table, fk string) *Source {
+	return FromSchema(NewTableSchema[embedFixture](table).PK("ID", "id").FK(fk))
 }
 
-func (e *viewFlatEntity) Modes() []domain.EntityMode {
-	return []domain.EntityMode{domain.ModeInsert, domain.ModeUpdate}
-}
-func (e *viewFlatEntity) BuildRules(string, domain.Service, *domain.Rules) {}
-
-func TestViewOf_FlatEntity_NoEmbeds(t *testing.T) {
-	v := ViewOf[*viewFlatEntity]()
-	if v.Name() != "view_flat_entities" {
-		t.Errorf("collection name = %q, want %q", v.Name(), "view_flat_entities")
-	}
-	if v.RootTable() != "view_flat_entities" {
-		t.Errorf("rootTable = %q, want %q", v.RootTable(), "view_flat_entities")
-	}
-	if got := len(v.Embeds()); got != 0 {
-		t.Errorf("embeds = %d, want 0", got)
-	}
+func mongoEmbed(table, fk string) *Source {
+	return FromSchema(NewExternalSchema(table).PK("ID", "id").FK(fk))
 }
 
-// ─── ViewOf root with children declared via AggregateChildren ────────────────
-
-type viewChildItem struct {
-	Label string
+// rootSchema is a minimal type-anchored schema for a composing test view's root
+// (PK + soft-delete). The composer only reads PK + soft-delete from the root
+// schema; row columns are read generically, so the dummy type suffices.
+func rootSchema(table string) *TableSchema {
+	return NewTableSchema[embedFixture](table).PK("ID", "id").SoftDelete("deleted_at")
 }
 
-func (v viewChildItem) GetID() string                                    { return "" }
-func (v viewChildItem) BuildRules(string, domain.Service, *domain.Rules) {}
+// ─── grandchild-via-schema on an embed source (read side) ────────────────────
 
-type viewAggEntity struct {
-	domain.AggregateRoot
-	Name string
-}
+// TestValidateViewSchemas_RejectsEmbedSourceWithChildren proves an embed source
+// whose TableSchema carries Child(...) is a fatal view-validation error — views
+// support depth via nested EmbedMany/Embed, never via the schema's children.
+func TestValidateViewSchemas_RejectsEmbedSourceWithChildren(t *testing.T) {
+	grand := NewTableSchema[embedFixture]("tags").PK("ID", "id").FK("address_id")
+	src := FromSchema(NewTableSchema[embedFixture]("addresses").
+		PK("ID", "id").FK("user_id").Child(grand))
+	v := View("users").Version(1).Root("users").
+		Schema(rootSchema("users")).
+		EmbedMany("addresses", src)
 
-func (e *viewAggEntity) Modes() []domain.EntityMode {
-	return []domain.EntityMode{domain.ModeInsert, domain.ModeUpdate}
-}
-func (e *viewAggEntity) BuildRules(string, domain.Service, *domain.Rules) {}
-func (e *viewAggEntity) GetAggregateRoot() *domain.AggregateRoot         { return &e.AggregateRoot }
-func (e *viewAggEntity) AggregateChildren() []domain.AggregateValueObject {
-	return []domain.AggregateValueObject{viewChildItem{}}
-}
-
-func TestViewOf_AggregateChildAutoEmbed(t *testing.T) {
-	v := ViewOf[*viewAggEntity]()
-
-	if v.Name() != "view_agg_entities" {
-		t.Errorf("collection = %q, want %q", v.Name(), "view_agg_entities")
+	err := ValidateViewSchemas([]*ViewDefinition{v})
+	if err == nil {
+		t.Fatal("expected a validation error for an embed source carrying Child(...)")
 	}
-	if v.RootTable() != "view_agg_entities" {
-		t.Errorf("rootTable = %q, want %q", v.RootTable(), "view_agg_entities")
-	}
-
-	embeds := v.Embeds()
-	if len(embeds) != 1 {
-		t.Fatalf("embeds = %d, want 1", len(embeds))
-	}
-	e := embeds[0]
-	if e.field != "view_child_items" {
-		t.Errorf("embed field = %q, want %q", e.field, "view_child_items")
-	}
-	if !e.many {
-		t.Error("embed should be EmbedMany (collection)")
-	}
-	if e.source.table != "view_child_items" {
-		t.Errorf("source.table = %q, want %q", e.source.table, "view_child_items")
-	}
-	if e.source.joinKey != "view_agg_entity_id" {
-		t.Errorf("source.joinKey = %q, want %q", e.source.joinKey, "view_agg_entity_id")
+	if !strings.Contains(err.Error(), "grandchildren ARE supported by views") {
+		t.Errorf("error should carry the read-side message, got: %v", err)
 	}
 }
 
-// ─── ViewOf allows post-construction extension ───────────────────────────────
+// TestValidateViewSchemas_RootSchemaWithChildrenOK confirms the view ROOT schema
+// may carry Child(...) (the reused write schema) — only embed SOURCES are flagged.
+func TestValidateViewSchemas_RootSchemaWithChildrenOK(t *testing.T) {
+	rootWithChild := NewTableSchema[embedFixture]("users").PK("ID", "id").SoftDelete("deleted_at").
+		Child(NewTableSchema[schemaSample]("addresses").PK("ID", "id").FK("user_id"))
+	v := View("users").Version(1).Root("users").
+		Schema(rootWithChild).
+		EmbedMany("addresses", pgEmbed("addresses", "user_id"))
 
-func TestViewOf_IsMutableAfterCreation(t *testing.T) {
-	v := ViewOf[*viewFlatEntity]().
-		EmbedMany("custom_table", From("custom_table").On("flat_id"))
-
-	embeds := v.Embeds()
-	if len(embeds) != 1 {
-		t.Fatalf("expected 1 extra embed after extension, got %d", len(embeds))
+	if err := ValidateViewSchemas([]*ViewDefinition{v}); err != nil {
+		t.Fatalf("root schema with one-level children must pass view validation, got: %v", err)
 	}
-	if embeds[0].field != "custom_table" {
-		t.Errorf("custom embed field = %q", embeds[0].field)
+}
+
+// ─── mandatory PK on every view schema (read side) ───────────────────────────
+
+// TestValidateViewSchemas_RejectsRootWithoutPK proves a view root schema with no
+// explicit PK is a fatal view-validation error.
+func TestValidateViewSchemas_RejectsRootWithoutPK(t *testing.T) {
+	v := View("users").Version(1).Root("users").
+		Schema(NewTableSchema[embedFixture]("users").SoftDelete("deleted_at")). // no .PK
+		EmbedMany("addresses", pgEmbed("addresses", "user_id"))
+	err := ValidateViewSchemas([]*ViewDefinition{v})
+	if err == nil || !strings.Contains(err.Error(), "no primary key") {
+		t.Errorf("expected root-without-PK error, got %v", err)
+	}
+}
+
+// TestValidateViewSchemas_RejectsEmbedSourceWithoutPK proves an embed source
+// with no explicit PK is a fatal view-validation error.
+func TestValidateViewSchemas_RejectsEmbedSourceWithoutPK(t *testing.T) {
+	src := FromSchema(NewTableSchema[embedFixture]("addresses").FK("user_id")) // no .PK
+	v := View("users").Version(1).Root("users").
+		Schema(rootSchema("users")).
+		EmbedMany("addresses", src)
+	err := ValidateViewSchemas([]*ViewDefinition{v})
+	if err == nil || !strings.Contains(err.Error(), "no primary key") {
+		t.Errorf("expected embed-source-without-PK error, got %v", err)
+	}
+}
+
+// ─── mandatory join keys on embed sources (read side) ────────────────────────
+
+// TestValidateViewSchemas_RejectsEmbedManyWithoutFK proves an EmbedMany source
+// without a foreign key is a fatal view-validation error — the composer joins
+// the child rows on it.
+func TestValidateViewSchemas_RejectsEmbedManyWithoutFK(t *testing.T) {
+	src := FromSchema(NewTableSchema[embedFixture]("addresses").PK("ID", "id")) // no .FK
+	v := View("users").Version(1).Root("users").
+		Schema(rootSchema("users")).
+		EmbedMany("addresses", src)
+	err := ValidateViewSchemas([]*ViewDefinition{v})
+	if err == nil || !strings.Contains(err.Error(), "no foreign key") {
+		t.Errorf("expected EmbedMany-without-FK error, got %v", err)
+	}
+}
+
+// TestValidateViewSchemas_RejectsOneToOneEmbedWithoutOn proves a one-to-one
+// Embed without .On is a fatal view-validation error — it joins on the parent's
+// FK column, which must be named.
+func TestValidateViewSchemas_RejectsOneToOneEmbedWithoutOn(t *testing.T) {
+	src := FromSchema(NewTableSchema[embedFixture]("buyer").PK("ID", "id")) // no .On
+	v := View("orders").Version(1).Root("orders").
+		Schema(rootSchema("orders")).
+		Embed("buyer", src)
+	err := ValidateViewSchemas([]*ViewDefinition{v})
+	if err == nil || !strings.Contains(err.Error(), "parent join key") {
+		t.Errorf("expected one-to-one-Embed-without-.On error, got %v", err)
 	}
 }
 
 // ─── DeleteOnArchive opt-in ──────────────────────────────────────────────────
 
-// TestViewDefinition_DeleteOnArchiveDefaultFalse_Flat locks the canonical
-// default for a root-only view: without the opt-in, DeletesOnArchive() is
-// false → ARCHIVED events go through compose+upsert (the Mongo projection
-// mirrors PostgreSQL symmetrically — archived rows survive with deleted_at
-// populated). Default-false matters because the framework's documented
-// contract is keep-by-default; flipping it is the consumer's explicit
-// hot-tier choice.
 func TestViewDefinition_DeleteOnArchiveDefaultFalse_Flat(t *testing.T) {
 	v := View("things").Root("things")
 	if v.DeletesOnArchive() {
@@ -114,14 +130,9 @@ func TestViewDefinition_DeleteOnArchiveDefaultFalse_Flat(t *testing.T) {
 	}
 }
 
-// TestViewDefinition_DeleteOnArchiveDefaultFalse_Aggregate locks the same
-// default for a view with embedded children — the flag governs the whole
-// aggregate projection (root + every embed) as a single cascade, so the
-// default must be observable identically whether or not the view has
-// EmbedMany/Embed entries declared.
 func TestViewDefinition_DeleteOnArchiveDefaultFalse_Aggregate(t *testing.T) {
 	v := View("users").Root("users").
-		EmbedMany("addresses", From("addresses").On("user_id"))
+		EmbedMany("addresses", pgEmbed("addresses", "user_id"))
 	if v.DeletesOnArchive() {
 		t.Fatal("DeletesOnArchive() must default to false on an aggregate view")
 	}
@@ -130,9 +141,6 @@ func TestViewDefinition_DeleteOnArchiveDefaultFalse_Aggregate(t *testing.T) {
 	}
 }
 
-// TestViewDefinition_DeleteOnArchiveBuilder_Flat verifies the fluent builder
-// both flips the flag and returns *ViewDefinition for chaining — canonical
-// usage on a root-only view is View("x").DeleteOnArchive().Root("x").
 func TestViewDefinition_DeleteOnArchiveBuilder_Flat(t *testing.T) {
 	v := View("things").DeleteOnArchive().Root("things")
 	if !v.DeletesOnArchive() {
@@ -143,49 +151,106 @@ func TestViewDefinition_DeleteOnArchiveBuilder_Flat(t *testing.T) {
 	}
 }
 
-// TestViewDefinition_DeleteOnArchiveBuilder_Aggregate verifies the builder
-// composes with EmbedMany so the opt-in survives an aggregate definition
-// (canonical usage View("users").DeleteOnArchive().Root("users").EmbedMany(...)
-// for the hot-tier projection of an aggregate). The cascade is structural —
-// the same flag value drives root + every child fetch in Compose — so the
-// view-level state is what every embed consults.
 func TestViewDefinition_DeleteOnArchiveBuilder_Aggregate(t *testing.T) {
 	v := View("users").DeleteOnArchive().Root("users").
-		EmbedMany("addresses", From("addresses").On("user_id"))
+		EmbedMany("addresses", pgEmbed("addresses", "user_id"))
 	if !v.DeletesOnArchive() {
 		t.Fatal("expected DeletesOnArchive() = true after builder on aggregate view")
-	}
-	if v.RootTable() != "users" {
-		t.Errorf("chaining broken: RootTable = %q, want %q", v.RootTable(), "users")
 	}
 	if len(v.Embeds()) != 1 {
 		t.Fatalf("aggregate view should carry 1 embed, got %d", len(v.Embeds()))
 	}
 }
 
-// TestViewOf_FlatEntity_DefaultsToKeep documents that ViewOf — the convention
-// path that infers collection/table from the type — produces a view that
-// keeps archived rows in the projection by default, matching the framework's
-// canonical default. A consumer that wants the hot-tier projection extends
-// the returned *ViewDefinition with .DeleteOnArchive() (ViewDefinition is
-// mutable after creation).
-func TestViewOf_FlatEntity_DefaultsToKeep(t *testing.T) {
-	v := ViewOf[*viewFlatEntity]()
-	if v.DeletesOnArchive() {
-		t.Fatal("ViewOf default must keep archived rows (DeletesOnArchive() = false)")
+func TestSource_SchemaDef_AndKindFromSchema(t *testing.T) {
+	ext := NewExternalSchema("users").PK("ID", "id")
+	mongo := FromSchema(ext)
+	if mongo.SchemaDef() != ext {
+		t.Error("SchemaDef() must return the schema FromSchema was built with")
+	}
+	if !mongo.IsMongo() {
+		t.Error("FromSchema(NewExternalSchema(...)) must be a Mongo source")
+	}
+	pg := FromSchema(NewTableSchema[embedFixture]("addresses").PK("ID", "id"))
+	if pg.IsMongo() {
+		t.Error("FromSchema(NewTableSchema[...]) must be a PG source")
+	}
+	if pg.Table() != "addresses" {
+		t.Errorf("Table() = %q, want addresses (from schema)", pg.Table())
 	}
 }
 
-// TestViewOf_AggregateEntity_DefaultsToKeep is the same guarantee for the
-// aggregate path of ViewOf: the convention-derived view of an aggregate
-// (with auto-discovered EmbedMany) keeps archived rows by default. The
-// opt-in is identical: `ViewOf[*User]().DeleteOnArchive()`.
-func TestViewOf_AggregateEntity_DefaultsToKeep(t *testing.T) {
-	v := ViewOf[*viewAggEntity]()
-	if v.DeletesOnArchive() {
-		t.Fatal("ViewOf default must keep archived rows on aggregate views")
+// ─── Schema-driven view translation tree ─────────────────────────────────────
+
+type vsRoot struct {
+	Email string
+}
+
+type vsChild struct {
+	ID      string
+	ZipCode string
+}
+
+func (v vsChild) GetID() string { return v.ID }
+
+func TestViewNode_TranslatesGoPathToColumnAndBack(t *testing.T) {
+	rootSchema := NewTableSchema[vsRoot]("people").
+		PK("ID", "person_pk").
+		Field("Email", "mail").
+		SoftDelete("removed_at").
+		CreatedAt("created_at")
+	childSchema := NewExternalSchema("tags").
+		PK("ID", "tag_pk").
+		FK("person_ref").
+		Field("ZipCode", "zip")
+
+	v := View("people").Root("people").Schema(rootSchema).
+		EmbedMany("addresses", FromSchema(childSchema).As("Addresses"))
+
+	node := v.buildViewNode()
+
+	// Go path → column path
+	if col, ok := node.columnPath([]string{"Email"}); !ok || col[0] != "mail" {
+		t.Errorf("Email → %v,%v want [mail]", col, ok)
 	}
-	if len(v.Embeds()) != 1 {
-		t.Fatalf("ViewOf aggregate should carry 1 embed, got %d", len(v.Embeds()))
+	if col, ok := node.columnPath([]string{"Addresses", "ZipCode"}); !ok || col[0] != "addresses" || col[1] != "zip" {
+		t.Errorf("Addresses.ZipCode → %v,%v want [addresses zip]", col, ok)
+	}
+	if sd, ok := node.softDeleteColumn(); !ok || sd != "removed_at" {
+		t.Errorf("soft-delete = %q,%v want removed_at", sd, ok)
+	}
+	// Managed columns translate forward (Go logical name → column) symmetrically
+	// with the read-back, so a typed Response can sort/project on them.
+	if col, ok := node.columnPath([]string{"CreatedAt"}); !ok || col[0] != "created_at" {
+		t.Errorf("CreatedAt → %v,%v want [created_at]", col, ok)
+	}
+	if col, ok := node.columnPath([]string{"DeletedAt"}); !ok || col[0] != "removed_at" {
+		t.Errorf("DeletedAt → %v,%v want [removed_at]", col, ok)
+	}
+
+	// column doc → Go doc (read-back), recursive into the embed
+	doc := map[string]any{
+		"person_pk":  "p1",
+		"mail":       "a@x.test",
+		"created_at": "2026-06-19T00:00:00Z",
+		"addresses":  []any{map[string]any{"tag_pk": "t1", "zip": "10001", "person_ref": "p1"}},
+	}
+	got := node.toGoDoc(doc)
+	if got["Email"] != "a@x.test" {
+		t.Errorf("read-back Email = %v", got["Email"])
+	}
+	if got["CreatedAt"] != "2026-06-19T00:00:00Z" {
+		t.Errorf("read-back CreatedAt = %v", got["CreatedAt"])
+	}
+	if got["ID"] != "p1" {
+		t.Errorf("read-back ID = %v want p1", got["ID"])
+	}
+	addrs, ok := got["Addresses"].([]any)
+	if !ok || len(addrs) != 1 {
+		t.Fatalf("read-back Addresses = %v", got["Addresses"])
+	}
+	child := addrs[0].(map[string]any)
+	if child["ZipCode"] != "10001" || child["ID"] != "t1" {
+		t.Errorf("read-back child = %v", child)
 	}
 }

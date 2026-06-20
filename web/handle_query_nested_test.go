@@ -76,7 +76,7 @@ func TestNested_LeafWireKeyMapsToDottedDocPath(t *testing.T) {
 	if status != fiber.StatusOK {
 		t.Fatalf("expected 200, got %d", status)
 	}
-	if crit.Filter["addresses.city"] != "Berlin" {
+	if crit.Filter["Addresses.City"] != "Berlin" {
 		t.Errorf("expected Filter[addresses.city]=Berlin, got %v", crit.Filter)
 	}
 }
@@ -90,7 +90,7 @@ func TestNested_AutoSnakeAppliesToLeafName(t *testing.T) {
 	if status != fiber.StatusOK {
 		t.Fatalf("expected 200, got %d", status)
 	}
-	if crit.Filter["addresses.zip_code"] != "SW1A2AA" {
+	if crit.Filter["Addresses.ZipCode"] != "SW1A2AA" {
 		t.Errorf("expected Filter[addresses.zip_code]=SW1A2AA, got %v", crit.Filter)
 	}
 	if _, lingering := crit.Filter["addresses.zipCode"]; lingering {
@@ -103,9 +103,9 @@ func TestNested_OperatorSuffixOnNestedLeaf(t *testing.T) {
 	if status != fiber.StatusOK {
 		t.Fatalf("expected 200, got %d", status)
 	}
-	got, ok := crit.Filter["addresses.zip_code"].(map[string]any)
+	got, ok := crit.Filter["Addresses.ZipCode"].(map[string]any)
 	if !ok {
-		t.Fatalf("expected nested filter to be a regex map, got %T (%v)", crit.Filter["addresses.zip_code"], crit.Filter["addresses.zip_code"])
+		t.Fatalf("expected nested filter to be a regex map, got %T (%v)", crit.Filter["Addresses.ZipCode"], crit.Filter["Addresses.ZipCode"])
 	}
 	if got["$regex"] != "^100" {
 		t.Errorf("expected $regex='^100', got %v", got["$regex"])
@@ -117,9 +117,9 @@ func TestNested_OperatorSuffixOnNestedLeaf_IStartsWith(t *testing.T) {
 	if status != fiber.StatusOK {
 		t.Fatalf("expected 200, got %d", status)
 	}
-	got, ok := crit.Filter["addresses.city"].(map[string]any)
+	got, ok := crit.Filter["Addresses.City"].(map[string]any)
 	if !ok {
-		t.Fatalf("expected map, got %T", crit.Filter["addresses.city"])
+		t.Fatalf("expected map, got %T", crit.Filter["Addresses.City"])
 	}
 	if got["$regex"] != "^ber" || got["$options"] != "i" {
 		t.Errorf("expected {$regex:^ber, $options:i}, got %v", got)
@@ -132,7 +132,7 @@ func TestNested_TopLevelEqStillWorks(t *testing.T) {
 	if status != fiber.StatusOK {
 		t.Fatalf("expected 200, got %d", status)
 	}
-	if crit.Filter["name"] != "Bob" {
+	if crit.Filter["Name"] != "Bob" {
 		t.Errorf("expected Filter[name]=Bob, got %v", crit.Filter)
 	}
 }
@@ -142,9 +142,9 @@ func TestNested_TopLevelOperatorSuffix(t *testing.T) {
 	if status != fiber.StatusOK {
 		t.Fatalf("expected 200, got %d", status)
 	}
-	got, ok := crit.Filter["name"].(map[string]any)
+	got, ok := crit.Filter["Name"].(map[string]any)
 	if !ok {
-		t.Fatalf("expected map, got %T", crit.Filter["name"])
+		t.Fatalf("expected map, got %T", crit.Filter["Name"])
 	}
 	if got["$regex"] != "^Bob" {
 		t.Errorf("expected $regex='^Bob', got %v", got["$regex"])
@@ -221,7 +221,7 @@ func TestNested_ViewTagOverridesDocSegment(t *testing.T) {
 	if resp.StatusCode != fiber.StatusOK {
 		t.Fatalf("expected 200, got %d", resp.StatusCode)
 	}
-	if captured.Filter["locations.municipality"] != "Berlin" {
+	if captured.Filter["Loc.City"] != "Berlin" {
 		t.Errorf("expected Filter[locations.municipality]=Berlin, got %v", captured.Filter)
 	}
 }
@@ -239,13 +239,13 @@ func TestNested_SchemaCacheCarriesDocPaths(t *testing.T) {
 		t.Fatal("expected schemaCache to contain entry")
 	}
 	schema, _ := v.(*requestSchema)
-	if got := schema.filters["addresses.zipCode"].docPath; got != "addresses.zip_code" {
+	if got := schema.filters["addresses.zipCode"].docPath; got != "Addresses.ZipCode" {
 		t.Errorf("expected addresses.zipCode → addresses.zip_code, got %q", got)
 	}
-	if got := schema.filters["addresses.city"].docPath; got != "addresses.city" {
+	if got := schema.filters["addresses.city"].docPath; got != "Addresses.City" {
 		t.Errorf("expected addresses.city → addresses.city, got %q", got)
 	}
-	if got := schema.filters["name"].docPath; got != "name" {
+	if got := schema.filters["name"].docPath; got != "Name" {
 		t.Errorf("expected name → name, got %q", got)
 	}
 }
@@ -273,7 +273,7 @@ func TestNested_PointerToNestedStructAlsoWorks(t *testing.T) {
 	if resp.StatusCode != fiber.StatusOK {
 		t.Fatalf("expected 200, got %d", resp.StatusCode)
 	}
-	if captured.Filter["meta.tag"] != "urgent" {
+	if captured.Filter["Meta.Tag"] != "urgent" {
 		t.Errorf("expected Filter[meta.tag]=urgent, got %v", captured.Filter)
 	}
 }

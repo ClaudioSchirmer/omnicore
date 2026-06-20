@@ -5,14 +5,14 @@ import (
 	"reflect"
 	"strings"
 	"sync"
-
-	"github.com/ClaudioSchirmer/omnicore/domain"
 )
 
-// AutoFromDoc projects a Mongo view document into the typed wire shape R
-// using R's struct tags. The framework's canonical tag-driven projector for
-// HandleQueryWith{Params,ID} when the wire contract is declared but the
-// projection logic is mechanical:
+// AutoFromDoc projects a view document into the typed wire shape R using R's
+// json tags. The MongoViewReader returns documents already keyed by Go field
+// name (it translated the physical columns via the view's TableSchema), so this
+// projector simply reads doc[<GoFieldName>] and writes it under the field's
+// json wire name — the canonical tag-driven projector for
+// HandleQueryWith{Params,ID}:
 //
 //	users.Get("/:id", fwweb.HandleQueryWithID(d.Pipeline,
 //	    requests.FindUserByIDRequest{},
@@ -22,28 +22,14 @@ import (
 // Tag semantics:
 //
 //	json:"<wire>"  declares the field's name on the outgoing JSON envelope.
-//	               Same meaning as encoding/json everywhere else.
-//
-//	view:"<key>"   declares the field's source key inside the view document.
-//	               Optional — when absent, the helper looks up the field
-//	               under domain.PascalToSnake(jsonName), matching the
-//	               framework's Postgres column-naming convention
-//	               (zipCode → zip_code, createdAt → created_at, CPF → cpf).
-//	               Declare view: only when the doc field truly diverges from
-//	               that default (legacy schemas, vendor-shaped projections):
-//
-//	                   type AddressOutput struct {
-//	                       PostalCode string `json:"postalCode" view:"cep"`
-//	                   }
-//
+//	               Same meaning as encoding/json everywhere else. The source
+//	               key inside the (Go-keyed) document is the Go field name.
 //	               Recurses through nested structs, slices of structs, and
-//	               pointer-to-struct fields. The tag on a slice field
-//	               renames the source key at that level; tags inside the
-//	               element type rename inside each element.
+//	               pointer-to-struct fields.
 //
 // Normalizations applied:
-//   - Top-level _id → id when "id" is absent and "_id" is a string. Matches
-//     the consumer FromDoc convention and parallels the RawDoc passthrough.
+//   - Top-level "ID" ← _id when "ID" is absent and "_id" is a string (covers
+//     schema-less / RawDoc paths).
 //   - Nil slice fields → empty typed slice at every level. Wire output
 //     carries "[]" rather than "null".
 //
@@ -62,15 +48,16 @@ func AutoFromDoc[R any](doc map[string]any) R {
 	return out
 }
 
-// applyIDFallback returns a doc with id ← _id when "id" is absent and "_id"
-// is a string. Top-level only — Mongo's _id is a property of the document
-// root; embedded sub-documents never carry one. Does not mutate the input;
-// allocates a shallow copy only when a rewrite is needed.
+// applyIDFallback returns a doc with the Go PK field "ID" ← _id when "ID" is
+// absent and "_id" is a string. The reader maps the PK column to the Go field
+// "ID"; this covers schema-less / RawDoc paths where the doc carries only the
+// Mongo _id. Top-level only. Does not mutate the input; allocates a shallow
+// copy only when a rewrite is needed.
 func applyIDFallback(doc map[string]any) map[string]any {
 	if doc == nil {
 		return doc
 	}
-	if _, hasID := doc["id"]; hasID {
+	if _, hasID := doc["ID"]; hasID {
 		return doc
 	}
 	v, ok := doc["_id"]
@@ -85,7 +72,7 @@ func applyIDFallback(doc map[string]any) map[string]any {
 	for k, val := range doc {
 		patched[k] = val
 	}
-	patched["id"] = s
+	patched["ID"] = s
 	return patched
 }
 
@@ -173,7 +160,10 @@ func buildPlan(plan *typePlan, t reflect.Type, basePath []int) {
 		if skip {
 			continue
 		}
-		sourceKey := docSourceKey(f, destKey)
+		// The reader returns documents keyed by Go field name (it translated
+		// the physical columns via the view's TableSchema). So the source key
+		// is the Go field name; the json tag names the wire output.
+		sourceKey := f.Name
 
 		entry := fieldEntry{
 			fieldIndex: path,
@@ -225,18 +215,6 @@ func wireName(f reflect.StructField) (string, bool) {
 	return name, false
 }
 
-// docSourceKey returns the source key used to look up f's value inside the
-// view doc. The view: tag wins when present and non-"-"; otherwise the
-// fallback (the wire name) is converted via domain.PascalToSnake to align
-// with the framework's Postgres column-naming convention (zipCode →
-// zip_code, ID-as-is, CPF → cpf). The conversion is idempotent on names
-// that are already snake_case.
-func docSourceKey(f reflect.StructField, fallback string) string {
-	if v := f.Tag.Get("view"); v != "" && v != "-" {
-		return v
-	}
-	return domain.PascalToSnake(fallback)
-}
 
 // remapDoc produces a new doc where each entry's key is the wire name and
 // each value has been recursively remapped according to plan. Entries that

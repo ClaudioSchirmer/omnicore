@@ -10,6 +10,7 @@ import (
 	"github.com/ClaudioSchirmer/omnicore/infra/cache"
 	"github.com/ClaudioSchirmer/omnicore/infra/httpclient"
 	"github.com/ClaudioSchirmer/omnicore/infra/integration"
+	"github.com/ClaudioSchirmer/omnicore/web"
 	"github.com/ClaudioSchirmer/omnicore/web/openapi"
 )
 
@@ -30,6 +31,14 @@ type Deps struct {
 	Translator *translation.Translator
 	Pipeline   *pipeline.Pipeline
 	ViewReader queries.ViewReader
+
+	// Export pre-packages the service-ambient inputs every tabular export
+	// (CSV/XLSX) shares — the Translator (labelKey header rendering) and the
+	// yaml default row ceiling (cfg.Query.MaxExportRows). The consumer threads
+	// it straight into fwweb.HandleQueryAsCSVSpec / …XLSXSpec alongside the
+	// view, so export routes stop spelling out d.Translator +
+	// d.Config.Query.MaxExportRows by hand. Always populated by bootstrap.Run.
+	Export web.ExportDeps
 
 	// Cache is the SERVICE-PRIVATE key-value cache. Non-nil when the
 	// YAML carries a top-level cache: block. Use for everything scoped

@@ -23,3 +23,11 @@
         developer focus exclusively on the <em>business rules</em>.
         Essential functionality cannot be forgotten — the framework guarantees it.
     </div>
+    <p>
+        A throughline worth knowing up front: a handler is written <strong>once</strong> and is
+        <strong>invariant</strong> across the surface it is attached to. A command handler attaches
+        to <strong>HTTP</strong> or to <strong>Kafka</strong>; a query handler attaches to
+        <strong>HTTP/JSON</strong>, to <strong>CSV</strong>, or to <strong>Excel</strong> — the same
+        handler, the surface decides only the I/O shape. Serving a new channel is a new attachment,
+        not new logic. See <a href="#handler-invariance">Handler invariance</a>.
+    </p>

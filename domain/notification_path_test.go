@@ -10,7 +10,7 @@ func TestToLowerCamel(t *testing.T) {
 		{"Name", "name"},
 		{"Email", "email"},
 		{"ZipCode", "zipCode"},
-		{"CPF", "cpf"},
+		{"URL", "url"},
 		{"ID", "id"},
 		{"URLPath", "urlPath"},
 		{"HTTPStatusCode", "httpStatusCode"},
@@ -40,7 +40,7 @@ func TestRenderPath_RootField(t *testing.T) {
 		want string
 	}{
 		{[]PathSegment{{Name: "Name"}}, "name"},
-		{[]PathSegment{{Name: "CPF"}}, "cpf"},
+		{[]PathSegment{{Name: "URL"}}, "url"},
 		{[]PathSegment{{Name: "ZipCode"}}, "zipCode"},
 		{[]PathSegment{{Name: "id"}}, "id"},
 	}

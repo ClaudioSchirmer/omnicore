@@ -4,7 +4,7 @@ import "strings"
 
 // renderPath turns a structured PathSegment slice into the wire-format field
 // string. Name segments are rendered via lowerCamel (PascalCase → camelCase,
-// acronym-aware: "CPF" → "cpf", "ZipCode" → "zipCode"); names that already
+// acronym-aware: "URL" → "url", "ZipCode" → "zipCode"); names that already
 // start with a lowercase character are passed through verbatim so legacy
 // already-lowercase identifiers ("id", "name") stay unchanged. Index segments
 // are appended in the form "[N]" with no preceding separator.
@@ -12,7 +12,7 @@ import "strings"
 // Examples:
 //
 //	[{Name:"Name"}]                                       → "name"
-//	[{Name:"CPF"}]                                        → "cpf"
+//	[{Name:"URL"}]                                        → "url"
 //	[{Name:"ZipCode"}]                                    → "zipCode"
 //	[{Name:"Addresses"}, {Index:0}, {Name:"ZipCode"}]     → "addresses[0].zipCode"
 //	[{Name:"id"}]                                         → "id"
@@ -64,9 +64,46 @@ func itoa(i int) string {
 	return string(buf[pos:])
 }
 
+// childCollectionSegment renders an aggregate child's collection segment for the
+// notification wire path: the type name in camelCase, pluralized. JSON-facing —
+// the wire path is camelCase everywhere, so this is too (Address → addresses,
+// OrderLine → orderLines), matching the client's JSON array name. The framework
+// no longer has column/table convention; this is the one remaining wire-naming
+// derivation, and it stays camelCase.
+func childCollectionSegment(typeName string) string {
+	return PluralizeWord(toLowerCamel(typeName))
+}
+
+// PluralizeWord applies basic English plural rules to a word, preserving its
+// case (the last word carries the plural): "Address" → "Addresses",
+// "OrderLine" → "OrderLines", "Category" → "Categories". Irregulars are not
+// covered. Exported so infra can derive a local view embed's Go segment from
+// its schema's type name.
+func PluralizeWord(s string) string {
+	if s == "" {
+		return ""
+	}
+	n := len(s)
+	if n >= 2 {
+		tail := s[n-2:]
+		if tail == "sh" || tail == "ch" {
+			return s + "es"
+		}
+	}
+	switch s[n-1] {
+	case 's', 'x', 'z':
+		return s + "es"
+	case 'y':
+		if n >= 2 && !isVowelByte(s[n-2]) {
+			return s[:n-1] + "ies"
+		}
+	}
+	return s + "s"
+}
+
 // toLowerCamel converts a Go identifier to a JSON-friendly camelCase string.
 // Acronym handling: a run of two or more leading uppercase runes is fully
-// lowercased ("CPF" → "cpf", "URLPath" → "urlPath", "HTTPStatusCode" →
+// lowercased ("URL" → "url", "URLPath" → "urlPath", "HTTPStatusCode" →
 // "httpStatusCode"). A single leading uppercase becomes a single lowercase
 // ("Name" → "name"). Strings starting with a non-uppercase rune are returned
 // as-is so already-lowercase literals ("id", "service") stay stable.
@@ -101,6 +138,13 @@ func toLowerCamel(s string) string {
 	return string(runes)
 }
 
+// ToLowerCamel is the exported form of toLowerCamel. Infra uses it to derive a
+// field's JSON-friendly wire token (the same acronym-aware camelCase the
+// notification wire paths use) when building a view's tabular-export plan, so a
+// CSV/Excel `?fields=` token matches the wire name the rest of the framework
+// produces ("ZipCode" → "zipCode", "URLPath" → "urlPath").
+func ToLowerCamel(s string) string { return toLowerCamel(s) }
+
 func isUpperRune(r rune) bool { return r >= 'A' && r <= 'Z' }
 
 func toLowerRune(r rune) rune {
@@ -108,4 +152,12 @@ func toLowerRune(r rune) rune {
 		return r + ('a' - 'A')
 	}
 	return r
+}
+
+func isVowelByte(b byte) bool {
+	switch b {
+	case 'a', 'e', 'i', 'o', 'u':
+		return true
+	}
+	return false
 }

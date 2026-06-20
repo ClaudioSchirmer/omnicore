@@ -8,17 +8,17 @@ import (
 	"github.com/ClaudioSchirmer/omnicore/domain"
 )
 
-type cpfDuplicateNotification struct{ domain.DomainNotificationBase }
+type usernameDuplicateNotification struct{ domain.DomainNotificationBase }
 
-func (cpfDuplicateNotification) Semantic() domain.NotificationSemantic {
+func (usernameDuplicateNotification) Semantic() domain.NotificationSemantic {
 	return domain.SemanticConflict
 }
 
 func TestSemanticPropagatesToDTO(t *testing.T) {
 	ctx := domain.NewNotificationContext("User")
 	ctx.AddNotificationMessage(domain.NotificationMessage{
-		FieldName:    "cpf",
-		Notification: cpfDuplicateNotification{},
+		FieldName:    "username",
+		Notification: usernameDuplicateNotification{},
 	})
 	ctx.AddNotificationMessage(domain.NotificationMessage{
 		FieldName:    "name",

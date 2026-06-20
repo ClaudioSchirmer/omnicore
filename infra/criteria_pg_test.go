@@ -1,7 +1,6 @@
 package infra
 
 import (
-	"reflect"
 	"testing"
 
 	"github.com/ClaudioSchirmer/omnicore/infra/criteria"
@@ -134,25 +133,37 @@ func TestPgVisitor_PlaceholderNumberingMonotonic(t *testing.T) {
 }
 
 func TestScopeGate(t *testing.T) {
-	if scopeGate(criteria.ScopeActive) != "deleted_at IS NULL" {
+	std := NewExternalSchema("t").SoftDelete("deleted_at")
+	if scopeGate(criteria.ScopeActive, std) != "deleted_at IS NULL" {
 		t.Error("active")
 	}
-	if scopeGate(criteria.ScopeIncludeArchived) != "" {
+	if scopeGate(criteria.ScopeIncludeArchived, std) != "" {
 		t.Error("include")
 	}
-	if scopeGate(criteria.ScopeOnlyArchived) != "deleted_at IS NOT NULL" {
+	if scopeGate(criteria.ScopeOnlyArchived, std) != "deleted_at IS NOT NULL" {
 		t.Error("only")
+	}
+	// Renamed soft-delete column flows through the gate.
+	renamed := NewExternalSchema("t").SoftDelete("removed_at")
+	if scopeGate(criteria.ScopeActive, renamed) != "removed_at IS NULL" {
+		t.Error("renamed soft-delete column")
+	}
+	// No soft-delete declared → no gate under any scope.
+	off := NewExternalSchema("t")
+	if scopeGate(criteria.ScopeActive, off) != "" || scopeGate(criteria.ScopeOnlyArchived, off) != "" {
+		t.Error("disabled soft-delete must yield no gate")
 	}
 }
 
 func TestChildScopeFilter(t *testing.T) {
-	if childScopeFilter(criteria.ScopeActive) != "AND deleted_at IS NULL" {
+	std := NewExternalSchema("t").SoftDelete("deleted_at")
+	if childScopeFilter(criteria.ScopeActive, std) != "AND deleted_at IS NULL" {
 		t.Error("active children gated")
 	}
-	if childScopeFilter(criteria.ScopeIncludeArchived) != "" {
+	if childScopeFilter(criteria.ScopeIncludeArchived, std) != "" {
 		t.Error("include: children unfiltered")
 	}
-	if childScopeFilter(criteria.ScopeOnlyArchived) != "" {
+	if childScopeFilter(criteria.ScopeOnlyArchived, std) != "" {
 		t.Error("only: children unfiltered (cascade visibility)")
 	}
 }
@@ -189,24 +200,26 @@ func TestBuildWhereClause(t *testing.T) {
 	}
 }
 
-func TestNewFieldResolver(t *testing.T) {
-	// loaderRoot-like type lives only behind the integration tag; use a local
-	// struct mirroring the convention (snake_case + FieldOverrides).
-	type sample struct {
-		domain.BaseEntity
-		Name    string
-		ZipCode string
-	}
-	r := newFieldResolver(reflect.TypeOf(&sample{}), map[string]string{"Name": "full_name"})
-	// PK convention is always seeded even though ID is not an exported field.
+type fieldResolverSample struct {
+	domain.BaseEntity
+	Name    string
+	ZipCode string
+}
+
+func TestSchemaFieldResolver(t *testing.T) {
+	r := NewTableSchema[fieldResolverSample]("t").
+		PK("ID", "id").
+		Field("Name", "full_name").
+		Field("ZipCode", "zip_code").
+		fieldResolver()
 	if c, ok := r("ID"); !ok || c != "id" {
 		t.Errorf("ID = %q,%v, want id,true", c, ok)
 	}
 	if c, ok := r("Name"); !ok || c != "full_name" {
-		t.Errorf("Name override = %q,%v", c, ok)
+		t.Errorf("Name = %q,%v, want full_name", c, ok)
 	}
 	if c, ok := r("ZipCode"); !ok || c != "zip_code" {
-		t.Errorf("ZipCode snake = %q,%v", c, ok)
+		t.Errorf("ZipCode = %q,%v, want zip_code", c, ok)
 	}
 	if _, ok := r("Missing"); ok {
 		t.Error("Missing should not resolve")

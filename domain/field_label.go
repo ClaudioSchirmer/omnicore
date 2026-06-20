@@ -14,7 +14,7 @@ import (
 // time by Go identifier).
 var labelPlanCache sync.Map // map[reflect.Type]map[string]string
 
-// resolveLabelKey returns the catalog key declared on the `label:"..."` struct
+// resolveLabelKey returns the catalog key declared on the `labelKey:"..."` struct
 // tag of t's field named fieldName, or "" when no such tag exists.
 //
 // The function is the single primitive consumed by both Rules.AddNotification
@@ -29,10 +29,8 @@ var labelPlanCache sync.Map // map[reflect.Type]map[string]string
 //   - Unexported field → "" (the framework never reads tags off unexported
 //     state; AddNotification is called with exported Go identifiers in
 //     practice).
-//   - Tag value "-" → "" (mirror of `json:"-"` / `transient:"-"` opt-out).
+//   - Tag value "-" → "" (mirror of `json:"-"` opt-out).
 //   - Tag value "" → "" (empty declaration is a no-op).
-//   - Field also carries `transient:"-"` → "" (a transient field is runtime-only
-//     and must not appear on the label surface even if mistakenly tagged).
 //
 // The plan is built once per (type, fieldName) tuple inside the type's plan
 // map and cached so repeated emissions on the same field do not pay the
@@ -65,8 +63,7 @@ func loadLabelPlan(t reflect.Type) map[string]string {
 }
 
 // buildLabelPlan walks t's exported fields once, recording each field whose
-// `label` tag is present, non-empty, non-"-", and not paired with
-// `transient:"-"`. Anonymous embedded structs flatten into the same plan so
+// `label` tag is present, non-empty, and non-"-". Anonymous embedded structs flatten into the same plan so
 // promoted-field lookups (e.g. via BaseEntity embed) reach their label tag
 // through the same Go identifier the caller used on the outer type.
 func buildLabelPlan(t reflect.Type) map[string]string {
@@ -84,10 +81,7 @@ func buildLabelPlan(t reflect.Type) map[string]string {
 			}
 			continue
 		}
-		if transient, ok := f.Tag.Lookup("transient"); ok && transient == "-" {
-			continue
-		}
-		tag, ok := f.Tag.Lookup("label")
+		tag, ok := f.Tag.Lookup("labelKey")
 		if !ok || tag == "" || tag == "-" {
 			continue
 		}

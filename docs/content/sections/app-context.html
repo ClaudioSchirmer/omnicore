@@ -32,9 +32,9 @@
       <tr>
         <td>Write</td>
         <td><code>Command.ToEntity(ctx)</code> / <code>ApplyTo(ctx, t)</code> / <code>ApplyPartiallyTo(ctx, t)</code></td>
-        <td>a field on the <strong>entity</strong> — either a <em>transient</em> field (tag
-          <code>transient:"-"</code>, runtime-only, feeds <code>BuildRules</code> and is never persisted)
-          or a <em>persisted</em> field (a real column)</td>
+        <td>a field on the <strong>entity</strong> — either a <em>runtime-only</em> field (not declared in
+          the <code>TableSchema</code>, feeds <code>BuildRules</code> and is never persisted)
+          or a <em>persisted</em> field (declared via <code>TableSchema.Field("OwnerID","owner_id")</code> → a real column)</td>
       </tr>
       <tr>
         <td>Read</td>
@@ -53,7 +53,7 @@
 
   <h4 id="ctx-stamp-filter-cycle">Stamp a claim on insert, filter by it on read</h4>
   <p>
-    When the write-side field is <strong>persisted</strong> (not transient), the two seams compose into a
+    When the write-side field is <strong>persisted</strong> (declared in the <code>TableSchema</code>), the two seams compose into a
     canonical cycle: <code>ToEntity(ctx)</code> <strong>stamps</strong> the claim onto a real column at
     insert time, and <code>ToCriteria(ctx)</code> later <strong>filters</strong> rows by that same column.
     This is the general pattern for any claim that must become a persistent scope — owner-by-subject,
@@ -61,7 +61,7 @@
     instances; the full write-stamp + read-filter + match-invariant cycle (with the tenant gate and
     <code>TenantMismatchNotification</code>) lives under <a href="#authz-seams">Authorization</a>, Layer 3.
   </p>
-  <pre><code>// WRITE — stamp the JWT subject onto a PERSISTED column (no transient:"-" tag → real column owner_id).
+  <pre><code>// WRITE — stamp the JWT subject onto a PERSISTED column (declared via TableSchema.Field("OwnerID","owner_id") → real column owner_id).
 func (c InsertDocumentCommand) ToEntity(ctx *configuration.AppContext) *Document {
     d := &amp;Document{Title: c.Title /* ... */}
     if id := ctx.Identity(); id != nil {
@@ -80,9 +80,9 @@ func (q FindDocumentsQuery) ToCriteria(ctx *configuration.AppContext) fwqueries.
     return crit
 }</code></pre>
   <p class="note">
-    Contrast with the <em>transient</em> case: a field tagged <code>transient:"-"</code> (e.g.
+    Contrast with the <em>runtime-only</em> case: a field not declared in the <code>TableSchema</code> (e.g.
     <code>RequestingPrincipalEmail</code> populated by <code>ApplyTo(ctx, t)</code> to feed an owner-check
-    in <code>BuildRules</code>) is runtime-only — it never reaches a column, so it cannot be filtered on
+    in <code>BuildRules</code>) never reaches a column, so it cannot be filtered on
     later. Persist the claim only when a later read must scope by it.
   </p>
 

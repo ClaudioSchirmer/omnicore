@@ -9,19 +9,18 @@ import (
 // will use plus the corner cases the resolver must skip silently.
 
 type fixtureUser struct {
-	Name      string  `label:"UserNameField"`
-	Email     string  `label:"UserEmailField"`
-	Phone     *string `label:"UserPhoneField"`
+	Name      string  `labelKey:"UserNameField"`
+	Email     string  `labelKey:"UserEmailField"`
+	Phone     *string `labelKey:"UserPhoneField"`
 	NoTag     string
-	SkippedV1 string  `label:"-"`
-	SkippedV2 string  `label:""`
-	private   string  `label:"NeverReached"` // unexported; reflection plan does not see it
-	Transient string  `transient:"-" label:"AlsoSkipped"`
+	SkippedV1 string  `labelKey:"-"`
+	SkippedV2 string  `labelKey:""`
+	private   string  `labelKey:"NeverReached"` // unexported; reflection plan does not see it
 }
 
 type fixtureAddress struct {
-	Street  string `label:"AddressStreetField"`
-	ZipCode string `label:"AddressZipCodeField"`
+	Street  string `labelKey:"AddressStreetField"`
+	ZipCode string `labelKey:"AddressZipCodeField"`
 }
 
 // Embedded struct exercising the anonymous-embed flattening. The embedded
@@ -31,12 +30,12 @@ type fixtureAddress struct {
 // fields entirely. The canonical framework embeds (BaseEntity, AggregateRoot)
 // are exported, so this matches real-world consumer code.
 type FixtureBase struct {
-	BaseField string `label:"BaseFieldKey"`
+	BaseField string `labelKey:"BaseFieldKey"`
 }
 
 type fixtureChildWithEmbed struct {
 	FixtureBase
-	Own string `label:"OwnFieldKey"`
+	Own string `labelKey:"OwnFieldKey"`
 }
 
 // Anonymous field whose later-declared parent override SHADOWS the embedded
@@ -46,7 +45,7 @@ type fixtureChildWithEmbed struct {
 // it via the unconditional `out[f.Name] = tag`.
 type fixtureShadowEmbed struct {
 	FixtureBase
-	BaseField string `label:"ParentLevelKey"` // parent shadows embed (Go semantic)
+	BaseField string `labelKey:"ParentLevelKey"` // parent shadows embed (Go semantic)
 }
 
 func TestResolveLabelKey_TagOnExportedField(t *testing.T) {
@@ -98,12 +97,6 @@ func TestResolveLabelKey_UnexportedFieldSkipped(t *testing.T) {
 	}
 }
 
-func TestResolveLabelKey_TransientFieldSkipped(t *testing.T) {
-	if got := resolveLabelKey(reflect.TypeOf(fixtureUser{}), "Transient"); got != "" {
-		t.Errorf("resolveLabelKey(Transient with transient:-) = %q, want empty", got)
-	}
-}
-
 func TestResolveLabelKey_AbsentFieldName(t *testing.T) {
 	// Defensive — typo'd field name from a BuildRules caller should not panic;
 	// just returns empty.
@@ -144,8 +137,8 @@ func TestResolveLabelKey_EmbeddedFieldFlattened(t *testing.T) {
 }
 
 func TestResolveLabelKey_ParentShadowsEmbed(t *testing.T) {
-	// fixtureShadowEmbed declares its own BaseField with `label:"ParentLevelKey"`
-	// while also embedding FixtureBase which has BaseField with `label:"BaseFieldKey"`.
+	// fixtureShadowEmbed declares its own BaseField with `labelKey:"ParentLevelKey"`
+	// while also embedding FixtureBase which has BaseField with `labelKey:"BaseFieldKey"`.
 	// Mirroring Go's field-promotion semantics (outer field shadows embedded
 	// field of the same name), the parent label wins.
 	if got := resolveLabelKey(reflect.TypeOf(fixtureShadowEmbed{}), "BaseField"); got != "ParentLevelKey" {

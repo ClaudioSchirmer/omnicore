@@ -30,12 +30,92 @@ const FrameworkDefaultMaxReadLimit int64 = 100
 // default. When the resolver is nil (manual construction in tests / custom
 // adapters), every view falls back to FrameworkDefaultMaxReadLimit.
 type MongoViewReader struct {
-	mongo          *MongoDB
-	maxLimitFn     func(view string) int64
+	mongo      *MongoDB
+	maxLimitFn func(view string) int64
+	viewNodes  map[string]*viewNode
 }
 
 func NewMongoViewReader(m *MongoDB) *MongoViewReader {
 	return &MongoViewReader{mongo: m}
+}
+
+// SetViews registers the collected ViewDefinitions so the reader can translate
+// criteria/documents between Go field paths and physical columns via each view's
+// TableSchema tree. Bootstrap calls this with the views aggregated from every
+// ReadableFeature. A view absent from the map (or a view declared without a
+// schema) falls back to identity translation (keys are treated as physical doc
+// columns) so schema-less views and tests keep working.
+func (r *MongoViewReader) SetViews(views []*ViewDefinition) *MongoViewReader {
+	r.viewNodes = make(map[string]*viewNode, len(views))
+	for _, v := range views {
+		r.viewNodes[v.Name()] = v.buildViewNode()
+	}
+	return r
+}
+
+// resolveViewSchema returns the translator for view, or an empty (identity)
+// node when none is registered.
+func (r *MongoViewReader) resolveViewSchema(view string) *viewNode {
+	if r.viewNodes != nil {
+		if n := r.viewNodes[view]; n != nil {
+			return n
+		}
+	}
+	return &viewNode{}
+}
+
+// translateFilterKeys rewrites a Go-field-path-keyed filter into a
+// physical-column-keyed filter via the view node. Keys that do not resolve are
+// passed through unchanged (defensive; the web allowlist validates first).
+func translateFilterKeys(node *viewNode, src map[string]any) map[string]any {
+	if len(src) == 0 {
+		return src
+	}
+	out := make(map[string]any, len(src))
+	for k, v := range src {
+		out[translateDotted(node, k)] = v
+	}
+	return out
+}
+
+// translateSortFields rewrites Go-field-path sort terms into physical columns.
+func translateSortFields(node *viewNode, src []queries.SortField) []queries.SortField {
+	if len(src) == 0 {
+		return src
+	}
+	out := make([]queries.SortField, len(src))
+	for i, s := range src {
+		out[i] = queries.SortField{Field: translateDotted(node, s.Field), Desc: s.Desc}
+	}
+	return out
+}
+
+// translateProjectionKeys rewrites a Go-field-path projection into physical
+// columns. The reserved "_id" key passes through untranslated.
+func translateProjectionKeys(node *viewNode, src map[string]int) map[string]int {
+	if len(src) == 0 {
+		return src
+	}
+	out := make(map[string]int, len(src))
+	for k, v := range src {
+		if k == "_id" {
+			out[k] = v
+			continue
+		}
+		out[translateDotted(node, k)] = v
+	}
+	return out
+}
+
+// translateDotted translates a dotted Go field path into the dotted physical
+// column path, leaving it unchanged when the node cannot resolve it.
+func translateDotted(node *viewNode, dotted string) string {
+	parts := strings.Split(dotted, ".")
+	col, ok := node.columnPath(parts)
+	if !ok {
+		return dotted
+	}
+	return strings.Join(col, ".")
 }
 
 // SetMaxLimitResolver installs the per-view max-limit lookup the reader
@@ -68,8 +148,10 @@ func (r *MongoViewReader) ReadPage(ctx context.Context, view string, c queries.R
 	// Limit cascade — the resolved max is always > 0 (framework fallback).
 	// Consumer-supplied limit greater than the ceiling is rejected with the
 	// canonical 400 envelope; absent or zero limit defers to the ceiling so
-	// every Mongo Find always carries a bounded SetLimit.
-	if c.Limit > maxLimit {
+	// every Mongo Find always carries a bounded SetLimit. A trusted internal
+	// caller (the tabular-export wrapper) may set BypassMaxLimit to use its own
+	// operator-set ceiling (maxExportRows) verbatim instead of the page ceiling.
+	if !c.BypassMaxLimit && c.Limit > maxLimit {
 		return queries.Page{}, LimitExceededError(maxLimit)
 	}
 	limit := c.Limit
@@ -86,10 +168,16 @@ func (r *MongoViewReader) ReadPage(ctx context.Context, view string, c queries.R
 		return queries.Page{}, fmt.Errorf("read criteria: after and before are mutually exclusive")
 	}
 
+	node := r.resolveViewSchema(view)
+	colFilter := translateFilterKeys(node, c.Filter)
+	colSort := translateSortFields(node, c.Sort)
+	colProj := translateProjectionKeys(node, c.Projection)
+	sdCol, sdOn := node.softDeleteColumn()
+
 	filter := bson.M{}
-	applyFilter(filter, c.Filter)
-	if !c.IncludeArchived {
-		filter["deleted_at"] = nil
+	applyFilter(filter, colFilter)
+	if !c.IncludeArchived && sdOn {
+		filter[sdCol] = nil
 	}
 	if c.Search != "" {
 		filter["$text"] = bson.M{"$search": c.Search}
@@ -117,7 +205,7 @@ func (r *MongoViewReader) ReadPage(ctx context.Context, view string, c queries.R
 	// the N docs immediately preceding the cursor — we reverse the slice in
 	// Go before returning so the caller always sees results in the canonical
 	// requested order.
-	sortDoc := buildStableSortDoc(c.Sort, backward)
+	sortDoc := buildStableSortDoc(colSort, backward)
 	findOpts := options.Find().SetLimit(limit + 1).SetSort(sortDoc)
 
 	// Cursor → keyset $or cascade. The cursor's tuple aligns positionally
@@ -150,7 +238,7 @@ func (r *MongoViewReader) ReadPage(ctx context.Context, view string, c queries.R
 		if backward {
 			direction = -1
 		}
-		keyset := buildKeysetFilter(cursor.K, c.Sort, direction)
+		keyset := buildKeysetFilter(cursor.K, colSort, direction)
 		appendKeysetClause(filter, keyset)
 	}
 
@@ -159,9 +247,9 @@ func (r *MongoViewReader) ReadPage(ctx context.Context, view string, c queries.R
 	// sort field paths so the doc carries the values we need for NextCursor /
 	// PrevCursor. Strip them from the returned doc after the cursor build so
 	// the wire shape stays exactly as the consumer asked.
-	autoIncluded := projectionAutoIncluded(c.Projection, c.Sort)
-	if len(c.Projection) > 0 {
-		findOpts.SetProjection(buildProjection(c.Projection, autoIncluded))
+	autoIncluded := projectionAutoIncluded(colProj, colSort)
+	if len(colProj) > 0 {
+		findOpts.SetProjection(buildProjection(colProj, autoIncluded))
 	}
 
 	cur, err := col.Find(ctx, filter, findOpts)
@@ -201,8 +289,8 @@ func (r *MongoViewReader) ReadPage(ctx context.Context, view string, c queries.R
 	if len(docs) > 0 {
 		first := docs[0]
 		last := docs[len(docs)-1]
-		nextCursorStr = encodeTupleCursor(last, c.Sort, contextHash)
-		prevCursorStr = encodeTupleCursor(first, c.Sort, contextHash)
+		nextCursorStr = encodeTupleCursor(last, colSort, contextHash)
+		prevCursorStr = encodeTupleCursor(first, colSort, contextHash)
 	}
 
 	// Strip the sort-field auto-includes so the wire shape matches the
@@ -215,7 +303,7 @@ func (r *MongoViewReader) ReadPage(ctx context.Context, view string, c queries.R
 
 	items := make([]map[string]any, 0, len(docs))
 	for _, d := range docs {
-		items = append(items, map[string]any(d))
+		items = append(items, node.toGoDoc(map[string]any(d)))
 	}
 
 	isFirstForward := c.After == "" && c.Before == ""
@@ -248,11 +336,13 @@ func (r *MongoViewReader) ReadPage(ctx context.Context, view string, c queries.R
 }
 
 func (r *MongoViewReader) ReadByID(ctx context.Context, view, id string, c queries.ReadCriteria) (map[string]any, bool, error) {
+	node := r.resolveViewSchema(view)
+	sdCol, sdOn := node.softDeleteColumn()
 	col := r.mongo.Collection(view)
 	filter := bson.M{"_id": id}
-	applyFilter(filter, c.Filter)
-	if !c.IncludeArchived {
-		filter["deleted_at"] = nil
+	applyFilter(filter, translateFilterKeys(node, c.Filter))
+	if !c.IncludeArchived && sdOn {
+		filter[sdCol] = nil
 	}
 	var doc bson.M
 	err := col.FindOne(ctx, filter).Decode(&doc)
@@ -262,7 +352,7 @@ func (r *MongoViewReader) ReadByID(ctx context.Context, view, id string, c queri
 	if err != nil {
 		return nil, false, err
 	}
-	return map[string]any(doc), true, nil
+	return node.toGoDoc(map[string]any(doc)), true, nil
 }
 
 // buildStableSortDoc produces the canonical sort document. `_id` is always

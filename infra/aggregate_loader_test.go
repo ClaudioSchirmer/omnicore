@@ -79,46 +79,37 @@ type fakeVO struct {
 func (v fakeVO) GetID() string                                    { return v.ID }
 func (v fakeVO) BuildRules(string, domain.Service, *domain.Rules) {}
 
-func TestAggregateLoader_NewInitializesChildAutoMap(t *testing.T) {
-	l := NewAggregateLoader[*aggLoaderTestEntity](nil, newAggLoaderTestEntity)
-	if l.childAuto == nil {
-		t.Fatal("childAuto map must be initialized")
-	}
-	if len(l.childAuto) != 0 {
-		t.Errorf("childAuto map must be empty, got %d", len(l.childAuto))
-	}
-}
-
-// Phase 19: WithChild[V] auto-registers typeName via reflect.Type.Name() and cols
-// via reflection on the exported fields. The table is resolved at Load time via
-// resolveChildTable (not stored in the spec).
-func TestAggregateLoader_WithChild_RegistersTypeNameAndCols(t *testing.T) {
-	l := NewAggregateLoader[*aggLoaderTestEntity](nil, newAggLoaderTestEntity)
-	l = WithChild[fakeVO](l)
-
-	spec, ok := l.childAuto["fakeVO"]
-	if !ok {
-		t.Fatal("fakeVO should be registered in childAuto")
-	}
-	// Read side via domainColumns INCLUDES "id" (needed to populate the struct).
-	// Write side (InferColumns in infer.go) is what filters "id" out.
+// A child's read column plan comes from its TableSchema (the same the write
+// side uses); scanPlan INCLUDES the PK column (the child's ID is scanned).
+func TestChildSchema_ScanPlanIncludesPK(t *testing.T) {
+	child := NewTableSchema[fakeVO]("tags").
+		PK("ID", "id").
+		Field("Label", "label")
+	cols, byCol := child.scanPlan()
 	wantCols := []string{"id", "label"}
-	if got := spec.columns; len(got) != 2 || got[0] != wantCols[0] || got[1] != wantCols[1] {
-		t.Errorf("cols = %v, want %v", got, wantCols)
+	if len(cols) != 2 || cols[0] != wantCols[0] || cols[1] != wantCols[1] {
+		t.Errorf("cols = %v, want %v", cols, wantCols)
 	}
-	if spec.scanInto == nil {
-		t.Error("scanInto must be set")
+	if _, ok := byCol["id"]; !ok {
+		t.Error("byCol must resolve the id column")
 	}
 }
 
-func TestAggregateLoader_AutoAndManualCoexist(t *testing.T) {
+// The loader auto-scans every child declared on the schema unless a manual
+// scanner overrides it by type name.
+func TestAggregateLoader_WithSchema_DrivesChildren(t *testing.T) {
 	manualScanner := func(pgx.Rows) (domain.AggregateValueObject, error) { return nil, nil }
+	root := NewTableSchema[*aggLoaderTestEntity]("agg").
+		Child(NewTableSchema[fakeVO]("tags").PK("ID", "id").FK("agg_id").Field("Label", "label"))
 	l := NewAggregateLoader[*aggLoaderTestEntity](nil, newAggLoaderTestEntity).
+		WithSchema(root).
 		WithChildScanner("Manual", manualScanner)
-	l = WithChild[fakeVO](l)
 
-	if len(l.childScanners) != 1 || len(l.childAuto) != 1 {
-		t.Errorf("manual=%d auto=%d, want 1 e 1", len(l.childScanners), len(l.childAuto))
+	if l.schema == nil || l.schema.childSchema("fakeVO") == nil {
+		t.Fatal("schema child fakeVO must be registered")
+	}
+	if len(l.childScanners) != 1 {
+		t.Errorf("manual scanners = %d, want 1", len(l.childScanners))
 	}
 }
 

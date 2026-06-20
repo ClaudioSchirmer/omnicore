@@ -3,9 +3,9 @@ package domain
 // AggregateRootProvider is implemented by entities that embed AggregateRoot and
 // want to be persisted atomically with their child collections.
 //
-// Phase 19: signature reduced. Table and FK names are inferred from the Go
-// type names by infra (with optional per-Repository overrides in
-// fwinfra.RepoConfig). Domain DDD-puro doesn't pronounce table/column/FK.
+// Table and FK names are declared explicitly in infra via the per-Repository
+// fwinfra.TableSchema (root + Child schemas). Domain stays DDD-pure — it does
+// not pronounce table/column/FK.
 //
 // Phase 20: the root regains authority over the aggregate boundary —
 // AggregateChildren() declares which AVO types belong to this aggregate.

@@ -7,25 +7,25 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/ClaudioSchirmer/omnicore/domain"
 )
 
 // projectionSchema is the cached reflection result for a Response DTO:
-// every accepted dotted wire path → its corresponding doc path. Used by
-// HandleQueryWithParams to validate `?fields=` tokens against the
-// declared Response shape and translate them into Mongo's doc-key
-// vocabulary (PascalToSnake default; `view:` override; nested struct +
-// slice-of-struct paths walked segment-by-segment).
+// every accepted dotted wire path → its corresponding Go field path. Used by
+// HandleQueryWithParams to validate `?fields=` / `?sort=` tokens against the
+// declared Response shape and translate them into the Go field vocabulary
+// (the struct field-name path; nested struct + slice-of-struct paths walked
+// segment-by-segment). The MongoViewReader then maps the Go path → physical
+// column via the view's TableSchema — there is no `view:` tag or snake
+// convention at this layer.
 //
 // Built once per reflect.Type at wrapper construction time (sync.Map
 // cache). The boot guard validateFieldsResponse runs in the same place,
 // so a Response DTO that opted into `?fields=` is guaranteed to satisfy
 // the all-pointer-with-omitempty rule before any request lands.
 type projectionSchema struct {
-	// paths maps wire path → doc path. Top-level "id" maps to itself by
-	// default (the framework stores the PG `id` column verbatim in Mongo
-	// alongside the Upsert-injected `_id`); a Response declaring
-	// `view:"_id"` would override it.
+	// paths maps wire path → Go field path. The reader translates the Go path
+	// to the physical Mongo column (top-level "ID" → the PK column, etc.) using
+	// the view's TableSchema.
 	paths map[string]string
 }
 
@@ -83,11 +83,10 @@ func walkProjectionLevel(t reflect.Type, wirePrefix, docPrefix string, s *projec
 			continue
 		}
 		wirePath := joinPath(wirePrefix, wireName)
-		docSeg := domain.PascalToSnake(wireName)
-		if v := f.Tag.Get("view"); v != "" && v != "-" {
-			docSeg = v
-		}
-		docPath := joinPath(docPrefix, docSeg)
+		// The schema maps the wire path to the Go field path (struct field name
+		// path) — the criteria vocabulary. The reader translates Go→column via
+		// the view's TableSchema; there is no `view:` tag or snake convention.
+		docPath := joinPath(docPrefix, f.Name)
 		s.paths[wirePath] = docPath
 		// Recurse into struct / slice-of-struct element type so nested wire
 		// paths (addresses.city, addresses.lines.qty) are discoverable.

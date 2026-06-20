@@ -16,7 +16,8 @@
     <pre><code>fwinfra.View("users").
     Version(3).                                                    // ← mandatory
     Root("users").
-    EmbedMany("addresses", fwinfra.From("addresses").On("user_id")).
+    Schema(UserSchema()).                                          // ← mandatory on every view
+    EmbedMany("addresses", fwinfra.FromSchema(AddressSchema())).
     Indexes(fwinfra.Index("email").Unique())</code></pre>
     <p><code>Version(N)</code> participates in <code>RebuildHash</code>, so the framework detects:</p>
     <ul>

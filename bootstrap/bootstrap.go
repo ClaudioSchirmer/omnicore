@@ -163,6 +163,10 @@ func runWithConfig(cfg *Config, wire func(Deps) Wiring) error {
 	// hook by design — they own their own limit policy.
 	if mvr, ok := deps.ViewReader.(*infra.MongoViewReader); ok {
 		mvr.SetMaxLimitResolver(buildViewMaxLimitResolver(views, cfg.Query.MaxLimit))
+		// Register the views so the reader can translate criteria/documents
+		// between Go field names and physical columns via each view's
+		// TableSchema tree.
+		mvr.SetViews(views)
 	}
 
 	for _, f := range wiring.Features {
@@ -183,6 +187,15 @@ func runWithConfig(cfg *Config, wire func(Deps) Wiring) error {
 		if err := validateUpstreamSubscriptions(upstreamSubs, views, cfg.Profile); err != nil {
 			return err
 		}
+	}
+
+	// Schema is mandatory on every view — the read membrane (Go↔column) and the
+	// composer (PK + soft-delete) resolve through it, so a view without a root
+	// schema would have no lossless mapping. Embed schemas are guaranteed by
+	// construction (FromSchema is the only source constructor); the root schema
+	// is the one a consumer could forget, so it is enforced here.
+	if err := infra.ValidateViewSchemas(views); err != nil {
+		return err
 	}
 
 	if len(views) > 0 {
@@ -320,6 +333,7 @@ func buildDeps(cfg *Config) (Deps, error) {
 		Translator:          tr,
 		Pipeline:            pipe,
 		ViewReader:          viewReader,
+		Export:              fwweb.ExportDeps{Translator: tr, MaxExportRows: cfg.Query.MaxExportRows},
 		Cache:               privateCache,
 		SharedCache:         sharedCache,
 		HttpClient:          hc,
@@ -499,6 +513,13 @@ func buildApp(deps Deps, wiring Wiring) (*fiber.App, error) {
 		}
 	}
 
+	// Validate the operator-declared auth.publicRoutes against the fully
+	// registered route set (features + /health + the OpenAPI spec/UI + the
+	// optional root redirect). Runs last so every route the service exposes
+	// is observable, and before serving HTTP so a typo / unmatchable param
+	// path aborts the boot rather than silently leaving a route behind auth.
+	scanPublicRoutes(app, deps.Config.Auth.PublicRoutes)
+
 	return app, nil
 }
 
@@ -575,6 +596,17 @@ func serve(ctx context.Context, deps Deps, wiring Wiring) error {
 	app, err := buildApp(deps, wiring)
 	if err != nil {
 		return err
+	}
+
+	// Every subscription declared in YAML must have a registered receiver.
+	// Runs BEFORE the IsEmpty short-circuit below so a service that declares
+	// integration.subscribes but forgets MountReceivers entirely (registry
+	// empty) still aborts the boot instead of silently consuming nothing.
+	if deps.Config.Integration != nil {
+		if err := integration.ValidateSubscriptionsCovered(
+			deps.Config.Integration, deps.IntegrationRegistry.Receivers()); err != nil {
+			return fmt.Errorf("bootstrap: %w", err)
+		}
 	}
 
 	// Start the integration ConsumerPool AFTER Phase Receivers (which

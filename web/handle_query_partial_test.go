@@ -70,9 +70,9 @@ func TestPartialOps_StartsWith_EmitsAnchoredRegex(t *testing.T) {
 	if status != fiber.StatusOK {
 		t.Fatalf("expected 200, got %d", status)
 	}
-	got, ok := crit.Filter["name"].(map[string]any)
+	got, ok := crit.Filter["Name"].(map[string]any)
 	if !ok {
-		t.Fatalf("expected name to be a map, got %T (%v)", crit.Filter["name"], crit.Filter["name"])
+		t.Fatalf("expected name to be a map, got %T (%v)", crit.Filter["Name"], crit.Filter["Name"])
 	}
 	if got["$regex"] != "^Bob" {
 		t.Errorf("expected $regex='^Bob', got %v", got["$regex"])
@@ -87,7 +87,7 @@ func TestPartialOps_Contains_EmitsUnanchoredRegex(t *testing.T) {
 	if status != fiber.StatusOK {
 		t.Fatalf("expected 200, got %d", status)
 	}
-	got, _ := crit.Filter["name"].(map[string]any)
+	got, _ := crit.Filter["Name"].(map[string]any)
 	if got["$regex"] != "ob" {
 		t.Errorf("expected $regex='ob', got %v", got["$regex"])
 	}
@@ -98,7 +98,7 @@ func TestPartialOps_IStartsWith_AddsInsensitiveOption(t *testing.T) {
 	if status != fiber.StatusOK {
 		t.Fatalf("expected 200, got %d", status)
 	}
-	got, _ := crit.Filter["name"].(map[string]any)
+	got, _ := crit.Filter["Name"].(map[string]any)
 	if got["$regex"] != "^bob" {
 		t.Errorf("expected $regex='^bob', got %v", got["$regex"])
 	}
@@ -112,7 +112,7 @@ func TestPartialOps_IContains_AddsInsensitiveOption(t *testing.T) {
 	if status != fiber.StatusOK {
 		t.Fatalf("expected 200, got %d", status)
 	}
-	got, _ := crit.Filter["name"].(map[string]any)
+	got, _ := crit.Filter["Name"].(map[string]any)
 	if got["$regex"] != "OB" {
 		t.Errorf("expected $regex='OB', got %v", got["$regex"])
 	}
@@ -126,7 +126,7 @@ func TestPartialOps_IEq_AnchoredRegexWithInsensitive(t *testing.T) {
 	if status != fiber.StatusOK {
 		t.Fatalf("expected 200, got %d", status)
 	}
-	got, _ := crit.Filter["name"].(map[string]any)
+	got, _ := crit.Filter["Name"].(map[string]any)
 	if got["$regex"] != "^bob$" {
 		t.Errorf("expected $regex='^bob$', got %v", got["$regex"])
 	}
@@ -140,7 +140,7 @@ func TestPartialOps_INe_WrapsRegexInNot(t *testing.T) {
 	if status != fiber.StatusOK {
 		t.Fatalf("expected 200, got %d", status)
 	}
-	got, _ := crit.Filter["name"].(map[string]any)
+	got, _ := crit.Filter["Name"].(map[string]any)
 	inner, ok := got["$not"].(map[string]any)
 	if !ok {
 		t.Fatalf("expected $not sub-document, got %v", got["$not"])
@@ -155,9 +155,9 @@ func TestPartialOps_IIn_EmitsRegexMatchListSentinel(t *testing.T) {
 	if status != fiber.StatusOK {
 		t.Fatalf("expected 200, got %d", status)
 	}
-	got, ok := crit.Filter["name"].(queries.RegexMatchList)
+	got, ok := crit.Filter["Name"].(queries.RegexMatchList)
 	if !ok {
-		t.Fatalf("expected RegexMatchList sentinel, got %T", crit.Filter["name"])
+		t.Fatalf("expected RegexMatchList sentinel, got %T", crit.Filter["Name"])
 	}
 	if !got.CaseInsensitive || got.Negate {
 		t.Errorf("expected CaseInsensitive=true Negate=false, got %+v", got)
@@ -172,9 +172,9 @@ func TestPartialOps_INin_EmitsNegatedSentinel(t *testing.T) {
 	if status != fiber.StatusOK {
 		t.Fatalf("expected 200, got %d", status)
 	}
-	got, ok := crit.Filter["name"].(queries.RegexMatchList)
+	got, ok := crit.Filter["Name"].(queries.RegexMatchList)
 	if !ok {
-		t.Fatalf("expected RegexMatchList sentinel, got %T", crit.Filter["name"])
+		t.Fatalf("expected RegexMatchList sentinel, got %T", crit.Filter["Name"])
 	}
 	if !got.Negate {
 		t.Errorf("expected Negate=true, got %+v", got)
@@ -189,7 +189,7 @@ func TestPartialOps_MetacharsAreEscaped(t *testing.T) {
 	if status != fiber.StatusOK {
 		t.Fatalf("expected 200, got %d", status)
 	}
-	got, _ := crit.Filter["name"].(map[string]any)
+	got, _ := crit.Filter["Name"].(map[string]any)
 	if got["$regex"] != `a\.b\*c` {
 		t.Errorf("expected metacharacters escaped, got %v", got["$regex"])
 	}
@@ -209,8 +209,8 @@ func TestPartialOps_CoexistWithEqOnSameField(t *testing.T) {
 	if status != fiber.StatusOK {
 		t.Fatalf("expected 200, got %d", status)
 	}
-	if crit.Filter["name"] != "Bob" {
-		t.Errorf("expected plain value Bob, got %v (%T)", crit.Filter["name"], crit.Filter["name"])
+	if crit.Filter["Name"] != "Bob" {
+		t.Errorf("expected plain value Bob, got %v (%T)", crit.Filter["Name"], crit.Filter["Name"])
 	}
 }
 
@@ -250,9 +250,9 @@ func TestPartialOps_MultipleOpsOnSameField_FoldIntoMultiClause(t *testing.T) {
 	if status != fiber.StatusOK {
 		t.Fatalf("expected 200, got %d", status)
 	}
-	mc, ok := crit.Filter["name"].(queries.MultiClause)
+	mc, ok := crit.Filter["Name"].(queries.MultiClause)
 	if !ok {
-		t.Fatalf("expected MultiClause for name, got %T (%v)", crit.Filter["name"], crit.Filter["name"])
+		t.Fatalf("expected MultiClause for name, got %T (%v)", crit.Filter["Name"], crit.Filter["Name"])
 	}
 	if len(mc.Clauses) != 4 {
 		t.Fatalf("expected 4 folded clauses, got %d (%v)", len(mc.Clauses), mc.Clauses)
@@ -288,9 +288,9 @@ func TestPartialOps_TwoOpsOnSameField_PromotesToMultiClause(t *testing.T) {
 	if status != fiber.StatusOK {
 		t.Fatalf("expected 200, got %d", status)
 	}
-	mc, ok := crit.Filter["name"].(queries.MultiClause)
+	mc, ok := crit.Filter["Name"].(queries.MultiClause)
 	if !ok {
-		t.Fatalf("expected MultiClause for name, got %T", crit.Filter["name"])
+		t.Fatalf("expected MultiClause for name, got %T", crit.Filter["Name"])
 	}
 	if len(mc.Clauses) != 2 {
 		t.Fatalf("expected 2 clauses, got %d", len(mc.Clauses))
@@ -305,11 +305,11 @@ func TestPartialOps_SingleOpStillPlainValue(t *testing.T) {
 	if status != fiber.StatusOK {
 		t.Fatalf("expected 200, got %d", status)
 	}
-	if _, ok := crit.Filter["name"].(queries.MultiClause); ok {
+	if _, ok := crit.Filter["Name"].(queries.MultiClause); ok {
 		t.Fatalf("expected single-clause to stay plain, got MultiClause")
 	}
-	if _, ok := crit.Filter["name"].(map[string]any); !ok {
-		t.Fatalf("expected sub-document, got %T", crit.Filter["name"])
+	if _, ok := crit.Filter["Name"].(map[string]any); !ok {
+		t.Fatalf("expected sub-document, got %T", crit.Filter["Name"])
 	}
 }
 
@@ -321,14 +321,14 @@ func TestPartialOps_DifferentFieldsStayFlat(t *testing.T) {
 	if status != fiber.StatusOK {
 		t.Fatalf("expected 200, got %d", status)
 	}
-	if _, ok := crit.Filter["name"].(queries.MultiClause); ok {
+	if _, ok := crit.Filter["Name"].(queries.MultiClause); ok {
 		t.Fatalf("name must not promote to MultiClause when alone")
 	}
-	if _, ok := crit.Filter["email"].(queries.MultiClause); ok {
+	if _, ok := crit.Filter["Email"].(queries.MultiClause); ok {
 		t.Fatalf("email must not promote to MultiClause when alone")
 	}
-	if crit.Filter["email"] != "jane@x" {
-		t.Errorf("expected email='jane@x', got %v", crit.Filter["email"])
+	if crit.Filter["Email"] != "jane@x" {
+		t.Errorf("expected email='jane@x', got %v", crit.Filter["Email"])
 	}
 }
 
@@ -340,7 +340,7 @@ func TestPartialOps_BlankValueStillEscapes(t *testing.T) {
 	if status != fiber.StatusOK {
 		t.Fatalf("expected 200, got %d", status)
 	}
-	got, _ := crit.Filter["name"].(map[string]any)
+	got, _ := crit.Filter["Name"].(map[string]any)
 	if got["$regex"] != "" {
 		t.Errorf("expected empty $regex, got %v", got["$regex"])
 	}

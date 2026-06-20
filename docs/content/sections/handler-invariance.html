@@ -1,0 +1,134 @@
+<h2>Handler invariance</h2>
+<p>
+    A handler in OmniCore is written <strong>once</strong> and stays <strong>invariant</strong>
+    across the surface it is attached to. The handler carries the business logic; the
+    <em>surface</em> — an HTTP route, a Kafka receiver, a CSV download, an Excel download — decides
+    only the shape of what goes in and what comes out. You do not rewrite a handler to serve a new
+    channel; you attach the same handler to another wrapper.
+</p>
+<div class="box">
+    <strong>The principle:</strong> a handler is a pure <code>pipeline.Handler[TReq, TRes]</code>.
+    It never learns which surface invoked it. The request context (<code>*AppContext</code>) is the
+    single, uniform vehicle on every surface, so identity, language, cancellation, and
+    authorization overlays apply the same way whether the request arrived over HTTP or off a Kafka
+    topic. <em>Convenience</em> is the payoff: a new demand is a new attachment, not new logic.
+</div>
+
+<p>
+    Two families, each with more than one attachment surface:
+</p>
+<ul>
+    <li><strong>Command handlers</strong> (the write side) attach to <strong>HTTP</strong> or to
+        <strong>Kafka</strong>.</li>
+    <li><strong>Query handlers</strong> (the read side) attach to <strong>HTTP/JSON</strong>, to
+        <strong>CSV</strong>, or to <strong>Excel</strong>.</li>
+</ul>
+
+<h3 id="hi-command">Command handlers — HTTP or Kafka</h3>
+<p>
+    One <code>pipeline.Handler[TCmd, TResult]</code> (an Auto Command Handler or a hand-rolled one)
+    serves a synchronous HTTP endpoint and an asynchronous cross-service Kafka receiver from the
+    same instance. The wire payload is adapted to the same Cmd by each side's DTO
+    <code>ToCommand()</code>; everything below the boundary — <code>BuildRules</code> validation,
+    the sealed <code>ValidEntity</code>, the transactional outbox, the audit row — is identical.
+</p>
+<pre><code>// one handler instance
+h := &amp;handlers.InsertCommandHandler[*User, *commands.InsertUserCommand, commands.InsertUserResult]{Repo: repo}
+
+// attach to HTTP (sync request/response)
+fwweb.HandleCommandWithBody(d.Pipeline,
+    requests.InsertUserRequest{}, requests.InsertUserResponse{}.FromResult,
+    h, fiber.StatusCreated)
+
+// attach the SAME h to Kafka (async, cross-service event)
+reg.From("partners").On("partnerOnboarded", requests.PartnerOnboardedRequest{}, h)</code></pre>
+<p>
+    The async path additionally gets the framework's canonical guarantees — transactional emission
+    via <code>fwintegration.Dispatch(...WithTx(tx))</code> from a <code>BeforeCommit</code> closure,
+    at-least-once delivery with per-consumer-group dedup, and an operator-driven retry surface —
+    without the handler being aware of any of it. Migrating an endpoint between transports, or
+    exposing it on both at once, never touches the handler. See
+    <a href="#integration-events">Integration events</a>.
+</p>
+
+<h3 id="hi-query">Query handlers — HTTP, CSV, or Excel</h3>
+<p>
+    One <code>pipeline.Handler[TQ, queries.Page]</code> (Auto or hand-rolled) feeds a JSON list, a
+    CSV download, and an Excel download from the same instance and the <strong>same Request
+    DTO</strong> — the same filter allowlist, the same <code>?fields=</code> narrowing, the same
+    <code>?search</code> / <code>?sort</code> / <code>?includeArchived</code>, the same
+    <code>ToCriteria(ctx)</code> authorization overlays. Only the <em>rendering</em> differs.
+</p>
+<pre><code>// one handler instance
+h := &amp;handlers.FindByParamsQueryHandler[*queries.FindUserByParamsQuery]{
+    Reader: d.ViewReader, View: view.Name()}
+
+// attach to HTTP/JSON (paged envelope)
+fwweb.HandleQueryWithParams(d.Pipeline,
+    requests.FindUsersByParamsRequest{},
+    fwresponses.AutoFromDoc[requests.FindUsersByParamsResponse], h)
+
+// attach the SAME h to a CSV download — view + d.Export carry the rest
+fwweb.HandleQueryAsCSV(d.Pipeline,
+    requests.FindUsersByParamsRequest{}, view, d.Export, h,
+    export.WithDelimiter(';'))
+
+// ...or to an Excel (.xlsx) download
+fwweb.HandleQueryAsXLSX(d.Pipeline,
+    requests.FindUsersByParamsRequest{}, view, d.Export, h,
+    export.WithSheetName("Users"))</code></pre>
+<p>
+    CSV and Excel share a single format-neutral export core — the column plan
+    (<code>ViewDefinition.ExportPlan()</code>), the hierarchical walk
+    (<code>export.Generate</code>), the labelKey headers, the <code>?fields=</code> pruning — and
+    differ only by a pluggable <code>web/export.Encoder</code>. Adding a third format is a new
+    encoder, not a new wrapper. See <a href="#auto-query-handlers">Auto query handlers</a> →
+    Tabular export.
+</p>
+
+<h3 id="hi-matrix">Attachment matrix</h3>
+<table>
+    <tbody>
+    <tr><th>Family</th><th>Surface</th><th>Attach via</th><th>The surface decides</th><th>Invariant below the boundary</th></tr>
+    <tr>
+        <td rowspan="2"><strong>Command</strong></td>
+        <td>HTTP (sync)</td>
+        <td><code>HandleCommandWith{Body,BodyID,ID}</code> + <code>openapi.Mount</code></td>
+        <td>wire payload (Request DTO <code>ToCommand</code>), HTTP status</td>
+        <td rowspan="2">the Cmd, <code>BuildRules</code>, the sealed <code>ValidEntity</code>, transactional outbox, audit, pipeline semantics</td>
+    </tr>
+    <tr>
+        <td>Kafka (async)</td>
+        <td><code>reg.From(src).On(event, sample, handler)</code></td>
+        <td>event payload (sample <code>ToCommand</code>), at-least-once + dedup + retry</td>
+    </tr>
+    <tr>
+        <td rowspan="3"><strong>Query</strong></td>
+        <td>HTTP / JSON</td>
+        <td><code>HandleQueryWith{Params,ID}</code></td>
+        <td>JSON envelope + pagination block</td>
+        <td rowspan="3">the Query, <code>ToCriteria(ctx)</code>, the filter allowlist, the <code>ViewReader</code> read</td>
+    </tr>
+    <tr>
+        <td>CSV</td>
+        <td><code>HandleQueryAsCSV</code></td>
+        <td><code>text/csv</code>, hierarchical layout, delimiter</td>
+    </tr>
+    <tr>
+        <td>Excel</td>
+        <td><code>HandleQueryAsXLSX</code></td>
+        <td><code>.xlsx</code> workbook, typed cells, bold headers</td>
+    </tr>
+    </tbody>
+</table>
+
+<h3 id="hi-why">Why it matters</h3>
+<p>
+    The value is not the individual wrappers — it is that they all converge on the same handler
+    contract. A product asks for "the users list, but as a spreadsheet"; you add one
+    <code>HandleQueryAsXLSX</code> line pointing at the query handler you already have. A partner
+    integration needs your "create user" use case driven off their Kafka topic instead of an HTTP
+    call; you register the existing command handler on a receiver. No business logic is copied, no
+    validation is re-implemented, no audit/outbox guarantee is re-derived — because the handler
+    never moved. The surfaces are interchangeable precisely because the handler is invariant.
+</p>

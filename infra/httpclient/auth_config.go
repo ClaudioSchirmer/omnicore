@@ -2,6 +2,7 @@ package httpclient
 
 import (
 	"fmt"
+	"net/url"
 	"strings"
 
 	"github.com/ClaudioSchirmer/omnicore/infra/httpclient/auth"
@@ -127,6 +128,15 @@ func validateAuthProviders(cfg map[string]AuthProviderConfig) []string {
 
 // validateAuthProviderShape checks the type-specific field requirements
 // once the type itself is known and supported.
+// isAbsoluteURL mirrors the services.<name>.baseURL check in validate.go so a
+// token endpoint is held to the same standard as a service base URL — a
+// typo'd scheme or a host-less value is rejected at boot rather than on the
+// first token acquisition.
+func isAbsoluteURL(raw string) bool {
+	u, err := url.Parse(raw)
+	return err == nil && u.Scheme != "" && u.Host != ""
+}
+
 func validateAuthProviderShape(prefix, t string, p AuthProviderConfig) []string {
 	var errs []string
 	if p.Attach != nil {
@@ -156,6 +166,8 @@ func validateAuthProviderShape(prefix, t string, p AuthProviderConfig) []string 
 	case "oauth2-client-credentials":
 		if p.TokenEndpoint == "" {
 			errs = append(errs, fmt.Sprintf("%s.tokenEndpoint: required for oauth2-client-credentials", prefix))
+		} else if !isAbsoluteURL(p.TokenEndpoint) {
+			errs = append(errs, fmt.Sprintf("%s.tokenEndpoint: %q is not a valid absolute URL", prefix, p.TokenEndpoint))
 		}
 		if p.ClientID == "" {
 			errs = append(errs, fmt.Sprintf("%s.clientId: required for oauth2-client-credentials", prefix))
@@ -167,6 +179,8 @@ func validateAuthProviderShape(prefix, t string, p AuthProviderConfig) []string 
 	case "credentials-exchange":
 		if p.TokenEndpoint == "" {
 			errs = append(errs, fmt.Sprintf("%s.tokenEndpoint: required for credentials-exchange", prefix))
+		} else if !isAbsoluteURL(p.TokenEndpoint) {
+			errs = append(errs, fmt.Sprintf("%s.tokenEndpoint: %q is not a valid absolute URL", prefix, p.TokenEndpoint))
 		}
 		if len(p.RequestFields) == 0 && len(p.RequestFieldsFromCtx) == 0 {
 			errs = append(errs, fmt.Sprintf("%s: requires requestFields and/or requestFieldsFromCtx (non-empty)", prefix))

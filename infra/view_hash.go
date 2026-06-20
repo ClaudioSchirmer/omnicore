@@ -124,7 +124,9 @@ func writeEmbedList(w *canonicalWriter, embeds []embedDef) {
 		}
 		w.writeTag("source")
 		w.writeString(e.source.table)
-		w.writeString(e.source.joinKey)
+		// Effective join column: the schema FK for one-to-many, the parent .On
+		// for one-to-one — so an FK change still moves the rebuild hash.
+		w.writeString(e.JoinColumn())
 		w.writeBool(e.source.isMongo)
 		writeEmbedList(w, e.source.embeds)
 	}

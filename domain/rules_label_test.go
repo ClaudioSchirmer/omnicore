@@ -10,7 +10,7 @@ import (
 // surface it exercises.
 
 type ruleFixture struct {
-	Name string `label:"RuleFixtureNameField"`
+	Name string `labelKey:"RuleFixtureNameField"`
 	Bare string // no label tag
 }
 

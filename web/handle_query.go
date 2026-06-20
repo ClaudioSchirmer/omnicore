@@ -12,7 +12,6 @@ import (
 
 	"github.com/ClaudioSchirmer/omnicore/application/pipeline"
 	"github.com/ClaudioSchirmer/omnicore/application/queries"
-	"github.com/ClaudioSchirmer/omnicore/domain"
 	"github.com/gofiber/fiber/v3"
 )
 
@@ -475,11 +474,13 @@ var onlyTotalConflicts = map[string]bool{
 }
 
 // filterSpec lists the operators declared by a single filter leaf via the
-// `filter:"eq,in"` struct tag, together with the document path the leaf maps
+// `filter:"eq,in"` struct tag, together with the Go field path the leaf maps
 // to and the leaf's declared Go base kind used to coerce wire values into
-// typed criteria. docPath defaults to the wire key (dotted, including the
-// embed prefix) and is overridden segment-by-segment by `view:"name"` tags
-// on the way down. goKind drives value coercion at runtime — a `*string`
+// typed criteria. docPath holds the dotted Go field path (the `query:` keys
+// joined down the embed groups, e.g. `Addresses.ZipCode`); the
+// MongoViewReader translates it to the physical column via the view's
+// TableSchema. There is no `view:` tag. goKind drives value coercion at
+// runtime — a `*string`
 // leaf keeps "95014" as the literal string "95014" (no silent int parse),
 // matching the column type Mongo stored; a `*int64` leaf parses "25" into
 // int64(25) so the criteria type matches the field's stored type.
@@ -507,17 +508,16 @@ var schemaCache sync.Map // map[reflect.Type]*requestSchema
 // schema. Three field kinds per level:
 //
 //   - leaf filter — `query:"X" filter:"ops..."` declares wire key X (prefixed
-//     by parent embed when nested) and the operator allowlist. Optional
-//     `view:"docName"` overrides the doc field at this segment.
+//     by parent embed when nested) and the operator allowlist. The leaf maps
+//     to the Go field path; the reader translates it to the column via the
+//     view's TableSchema (no `view:` tag).
 //   - reserved control — `query:"limit"` (etc.) with no `filter:` tag. Only
 //     honored at the TOP LEVEL; reserved keys inside an embed group are
 //     ignored at runtime (the framework's reserved set is endpoint-wide,
 //     not per-embed).
 //   - embed group — `query:"prefix"` on a struct-typed field with no
-//     `filter:` tag. Recurses into the inner type, prefixing both wire keys
-//     and doc paths. Carries an optional `view:"docPrefix"` to rename the
-//     doc-side prefix independently of the wire prefix (mirrors `view:` at
-//     the leaf level).
+//     `filter:` tag. Recurses into the inner type, prefixing both the wire
+//     keys and the Go field paths with the group segment.
 //
 // Pointer-to-struct is supported transparently — both pointer and value
 // nested groups recurse the underlying struct type.
@@ -555,15 +555,11 @@ func walkSchemaLevel(t reflect.Type, wirePrefix, docPrefix string, s *requestSch
 			continue
 		}
 		wirePath := joinPath(wirePrefix, qkey)
-		// Default doc segment uses the framework's snake-case convention
-		// (zipCode → zip_code), matching the auto-inferred Postgres column
-		// name. The `view:` tag overrides verbatim for legacy schemas or
-		// vendor-shaped projections that diverge from the convention.
-		docSegment := domain.PascalToSnake(qkey)
-		if v := f.Tag.Get("view"); v != "" {
-			docSegment = v
-		}
-		docPath := joinPath(docPrefix, docSegment)
+		// The criteria key is the Go field path (the struct field name, e.g.
+		// "Email" / "Addresses.ZipCode") — NOT a physical column. The reader
+		// translates it to the column via the view's TableSchema. No convention,
+		// no `view:` tag.
+		goPath := joinPath(docPrefix, f.Name)
 
 		ftag := f.Tag.Get("filter")
 		if ftag != "" {
@@ -579,7 +575,7 @@ func walkSchemaLevel(t reflect.Type, wirePrefix, docPrefix string, s *requestSch
 			for leafType.Kind() == reflect.Pointer {
 				leafType = leafType.Elem()
 			}
-			s.filters[wirePath] = filterSpec{ops: ops, docPath: docPath, goKind: leafType.Kind()}
+			s.filters[wirePath] = filterSpec{ops: ops, docPath: goPath, goKind: leafType.Kind()}
 			continue
 		}
 
@@ -588,9 +584,8 @@ func walkSchemaLevel(t reflect.Type, wirePrefix, docPrefix string, s *requestSch
 			ft = ft.Elem()
 		}
 		if ft.Kind() == reflect.Struct {
-			// Embed group — recurse with the prefixes extended. View at the
-			// embed renames the doc-side prefix without touching the wire.
-			walkSchemaLevel(ft, wirePath, docPath, s, false)
+			// Embed group — recurse with the Go-path prefix extended.
+			walkSchemaLevel(ft, wirePath, goPath, s, false)
 			continue
 		}
 
@@ -669,9 +664,9 @@ var knownOps = map[string]bool{
 //
 // projSchema is consulted only when the wire carries `?fields=`. When
 // non-nil, each comma-separated token is validated against the Response
-// DTO's declared wire paths and translated to the corresponding doc path
-// (PascalToSnake by default, `view:` override). An unknown token surfaces
-// the bad field on the canonical 400 envelope as `fields[<token>]`. Top-
+// DTO's declared wire paths and translated to the corresponding Go field
+// path (the reader maps Go → column via the view's TableSchema). An unknown
+// token surfaces the bad field on the canonical 400 envelope as `fields[<token>]`. Top-
 // level `id` triggers the framework's auto-exclusion: when the consumer
 // did NOT request `id`, the projection adds `_id: 0` so Mongo's default
 // `_id` inclusion is dropped from the wire shape. When projSchema is nil,
@@ -990,9 +985,9 @@ func quoteList(value string, anchored bool) []string {
 // SortField entries. Each token may carry a `-` prefix (descending);
 // otherwise ascending. When projSchema is non-nil, the wire name (without
 // the prefix) is validated against the Response DTO's declared paths and
-// translated to the corresponding doc path (PascalToSnake by default;
-// `view:` override; nested paths walked segment-by-segment). An unknown
-// token returns the verbatim wire token (including any `-` prefix) so the
+// translated to the corresponding Go field path (nested paths walked
+// segment-by-segment); the reader maps Go → column via the view's TableSchema.
+// An unknown token returns the verbatim wire token (including any `-` prefix) so the
 // caller can surface it on the canonical 400 envelope as `sort[<token>]`.
 // When projSchema is nil — manual handlers via ParseCriteria, or wrappers
 // paired with a RawDoc-style projector that carries no typed Response —
@@ -1027,11 +1022,12 @@ func parseSortWithSchema(s string, projSchema *projectionSchema) (sortFields []q
 	return sortFields, "", true
 }
 
-// parseProjection turns a comma-separated wire value into a Mongo-shaped
-// projection map keyed by doc path (value=1 for inclusion). When projSchema
-// is non-nil, each token is validated against the Response DTO's declared
-// wire paths and translated to the corresponding doc path (PascalToSnake by
-// default; `view:` override; nested paths walked segment-by-segment). An
+// parseProjection turns a comma-separated wire value into a projection map
+// keyed by Go field path (value=1 for inclusion); the reader translates each
+// Go path to the physical Mongo column via the view's TableSchema. When
+// projSchema is non-nil, each token is validated against the Response DTO's
+// declared wire paths and translated to the corresponding Go field path
+// (nested paths walked segment-by-segment). An
 // unknown token returns (nil, nil, token, false). When projSchema is nil
 // (manual handlers via ParseCriteria), tokens become inclusion entries
 // verbatim — legacy pass-through.

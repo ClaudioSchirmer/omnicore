@@ -255,6 +255,58 @@ func TestSigning_Validate_KeyIdNeedsHeader(t *testing.T) {
 	}
 }
 
+func TestSigning_Validate_SignedHeadersRejectsSignatureHeader(t *testing.T) {
+	errs := validateSigningConfig("x.signing", &SigningConfig{
+		Type:            "hmac-sha256",
+		Secret:          "s",
+		SignedHeaders:   []string{"host", "X-Signature"}, // case-insensitive self-reference
+		TimestampHeader: "X-Date",
+		SignatureHeader: "X-Signature",
+	})
+	if !containsBit(errs, "signatureHeader") {
+		t.Fatalf("expected rejection of signatureHeader inside signedHeaders; got %v", errs)
+	}
+}
+
+func TestSigning_Validate_SignedHeadersRejectsKeyIdHeader(t *testing.T) {
+	errs := validateSigningConfig("x.signing", &SigningConfig{
+		Type:            "hmac-sha256",
+		Secret:          "s",
+		KeyId:           "k",
+		KeyIdHeader:     "X-Key-Id",
+		SignedHeaders:   []string{"host", "x-key-id"}, // lower-cased self-reference
+		TimestampHeader: "X-Date",
+		SignatureHeader: "X-Signature",
+	})
+	if !containsBit(errs, "keyIdHeader") {
+		t.Fatalf("expected rejection of keyIdHeader inside signedHeaders; got %v", errs)
+	}
+}
+
+func TestSigning_Validate_SignedHeadersCleanIsOK(t *testing.T) {
+	errs := validateSigningConfig("x.signing", &SigningConfig{
+		Type:            "hmac-sha256",
+		Secret:          "s",
+		KeyId:           "k",
+		KeyIdHeader:     "X-Key-Id",
+		SignedHeaders:   []string{"host", "x-date", "x-content-sha256"},
+		TimestampHeader: "X-Date",
+		SignatureHeader: "X-Signature",
+	})
+	if len(errs) != 0 {
+		t.Fatalf("clean signedHeaders must pass; got %v", errs)
+	}
+}
+
+func containsBit(errs []string, bit string) bool {
+	for _, e := range errs {
+		if strings.Contains(e, bit) {
+			return true
+		}
+	}
+	return false
+}
+
 // --- Retry replay reuses fresh timestamp + signature ---------------------
 
 func TestSigning_RetryReplay_FreshSignaturePerAttempt(t *testing.T) {

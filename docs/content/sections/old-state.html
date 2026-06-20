@@ -67,13 +67,13 @@
   "actorClaims": { "tenant_id": "acme" },
   "dateTime": "2026-06-09T12:00:00Z",
   "changes": [
-    { "field": "email", "fieldLabelKey": "UserEmailField", "from": "a@x.com", "to": "b@x.com" }
+    { "field": "Email", "fieldLabelKey": "UserEmailField", "from": "a@x.com", "to": "b@x.com" }
   ],
   "children": {
     "Address": [
-      { "id": "addr-1", "op": "updated",  "changes": [{ "field": "label", "fieldLabelKey": "AddressLabelField", "from": "home", "to": "home renamed" }] },
-      { "id": "addr-2", "op": "archived", "snapshot": { "label": "work" } },
-      { "id": "",       "op": "inserted", "snapshot": { "label": "vacation" } }
+      { "id": "addr-1", "op": "updated",  "changes": [{ "field": "Label", "fieldLabelKey": "AddressLabelField", "from": "home", "to": "home renamed" }] },
+      { "id": "addr-2", "op": "archived", "snapshot": { "Label": "work" } },
+      { "id": "",       "op": "inserted", "snapshot": { "Label": "vacation" } }
     ]
   }
 }</code></pre>

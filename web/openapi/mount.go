@@ -67,6 +67,21 @@ func Mount(
 			"wire shape on ResponseType; pick one")
 	}
 
+	if spec.FileResponse != nil {
+		if spec.Paged {
+			panic("openapi.Mount: route " + routeID + " declares FileResponse with Paged:true — " +
+				"a file/download success is not a paged envelope; pick one")
+		}
+		if spec.ResponseType != nil && !isResponseNone(spec.ResponseType) {
+			panic("openapi.Mount: route " + routeID + " declares FileResponse with a non-nil " +
+				"ResponseType — the success body is the file, not a typed JSON envelope; pick one")
+		}
+		if spec.FileResponse.ContentType == "" {
+			panic("openapi.Mount: route " + routeID + " declares FileResponse with an empty " +
+				"ContentType — set the download media type (e.g. \"text/csv\")")
+		}
+	}
+
 	cfg := processOptions(opts, routeID)
 	if cfg.requiredPermission != "" {
 		if doc.Public {

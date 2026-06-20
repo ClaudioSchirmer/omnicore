@@ -2,6 +2,10 @@ package infra
 
 import (
 	"context"
+	"fmt"
+	"reflect"
+	"sort"
+	"strings"
 
 	"github.com/ClaudioSchirmer/omnicore/infra/criteria"
 	"github.com/ClaudioSchirmer/omnicore/domain"
@@ -17,8 +21,9 @@ import (
 // When to use (common case):
 //
 //   - Aggregate-aware Repository with symmetric universal cascade.
-//   - FindByID via Load auto-scan or manual scanner registered in the Loader.
-//   - Children registered via WithChild[V](r.Loader) or WithChildScanner.
+//   - FindByID via schema-driven auto-scan or a manual scanner on the Loader.
+//   - Children declared on the TableSchema via Child(...); manual decoding via
+//     WithChildScanner when a child needs a non-trivial scan.
 //
 // When NOT to use (keep the old pattern of direct BaseRepository[T] embed
 // + a separate *AggregateLoader[T]):
@@ -52,6 +57,78 @@ func NewBaseAggregateRepository[T domain.Entity](pg *Postgres, newEntity func() 
 		},
 		Loader: NewAggregateLoader[T](pg, newEntity),
 	}
+}
+
+// WithSchema declares the mandatory TableSchema once and threads it into BOTH
+// the write binding (BaseRepository.Schema) and the read loader
+// (Loader.WithSchema) — one declaration feeds write, criteria and scan. The
+// Modes() ⟺ SoftDelete and the aggregate-depth (no grandchildren) boot checks
+// run here; the field-existence + bijection checks already ran while the
+// TableSchema was built. A violation panics at construction, not on the first
+// request.
+func (r *BaseAggregateRepository[T]) WithSchema(schema *TableSchema) *BaseAggregateRepository[T] {
+	// PK-declared + aggregate-depth + Modes() ⟺ SoftDelete run in the shared
+	// BaseRepository.WithSchema (which also sets r.Schema). The aggregate path
+	// adds the boundary cross-check below + threads the schema into the loader.
+	r.BaseRepository.WithSchema(schema)
+	r.validateDeclaredChildren(schema)
+	r.Loader.WithSchema(schema)
+	return r
+}
+
+// validateDeclaredChildren asserts the aggregate boundary the domain declares
+// (root.AggregateChildren()) and the children the TableSchema declares
+// (.Child(...)) name the SAME set of types. The two are independent
+// declarations — one in domain vocabulary, one in infra — and both are known
+// at construction. A drift between them slips through to runtime: a type in
+// AggregateChildren() without a matching .Child(...) errors per-write deep in
+// the persister; a .Child(...) without a matching AggregateChildren() entry is
+// silently load-only (the loader bypasses the domain type-guard). Catch both
+// at boot. A non-aggregate entity (no AggregateRootProvider) contributes the
+// empty set, so a schema that declares children for a flat entity is flagged
+// too.
+func (r *BaseAggregateRepository[T]) validateDeclaredChildren(schema *TableSchema) {
+	declared := map[string]struct{}{}
+	if p, ok := any(r.New()).(domain.AggregateRootProvider); ok {
+		for _, child := range p.AggregateChildren() {
+			t := reflect.TypeOf(child)
+			for t != nil && t.Kind() == reflect.Ptr {
+				t = t.Elem()
+			}
+			if t != nil {
+				declared[t.Name()] = struct{}{}
+			}
+		}
+	}
+
+	var missingSchema []string // declared in AggregateChildren() but no .Child(...)
+	for name := range declared {
+		if _, ok := schema.children[name]; !ok {
+			missingSchema = append(missingSchema, name)
+		}
+	}
+	var missingDomain []string // declared via .Child(...) but not in AggregateChildren()
+	for name := range schema.children {
+		if _, ok := declared[name]; !ok {
+			missingDomain = append(missingDomain, name)
+		}
+	}
+	if len(missingSchema) == 0 && len(missingDomain) == 0 {
+		return
+	}
+	sort.Strings(missingSchema)
+	sort.Strings(missingDomain)
+	msg := fmt.Sprintf("infra.TableSchema(%s): aggregate boundary mismatch between the domain's "+
+		"AggregateChildren() and the schema's Child(...) declarations", schema.Table())
+	if len(missingSchema) > 0 {
+		msg += fmt.Sprintf("\n  declared in AggregateChildren() but missing a .Child(...) schema: %s",
+			strings.Join(missingSchema, ", "))
+	}
+	if len(missingDomain) > 0 {
+		msg += fmt.Sprintf("\n  declared via .Child(...) but absent from AggregateChildren(): %s",
+			strings.Join(missingDomain, ", "))
+	}
+	panic(msg)
 }
 
 // FindByID resolves the primary-key lookup through the entity search engine —

@@ -89,7 +89,7 @@ func TestUpstreamSubscriber_ParseOffsetSeek_Numeric(t *testing.T) {
 func TestUpstreamSubscriber_JoinFieldFor_DirectEmbed(t *testing.T) {
 	s := &UpstreamSubscriber{cfg: UpstreamSubscriberConfig{Collection: "users"}}
 	v := View("orders").Root("orders").
-		Embed("buyer", FromMongo("users").On("buyer_id")).
+		Embed("buyer", mongoEmbed("users", "").On("buyer_id").As("Buyer")).
 		Version(1)
 	if got := s.joinFieldFor(v); got != "buyer_id" {
 		t.Errorf("joinFieldFor = %q, want buyer_id", got)
@@ -99,7 +99,7 @@ func TestUpstreamSubscriber_JoinFieldFor_DirectEmbed(t *testing.T) {
 func TestUpstreamSubscriber_JoinFieldFor_NonMatchingCollectionReturnsEmpty(t *testing.T) {
 	s := &UpstreamSubscriber{cfg: UpstreamSubscriberConfig{Collection: "products"}}
 	v := View("orders").Root("orders").
-		Embed("buyer", FromMongo("users").On("buyer_id")).
+		Embed("buyer", mongoEmbed("users", "").On("buyer_id").As("Buyer")).
 		Version(1)
 	if got := s.joinFieldFor(v); got != "" {
 		t.Errorf("non-matching collection should return empty, got %q", got)
@@ -109,7 +109,7 @@ func TestUpstreamSubscriber_JoinFieldFor_NonMatchingCollectionReturnsEmpty(t *te
 func TestUpstreamSubscriber_FindMongoJoinField_NestedEmbed(t *testing.T) {
 	// Build an outer source whose embed targets an upstream Mongo
 	// collection (rare but legal — nested composition).
-	outer := From("level1").EmbedMany("inner", FromMongo("upstream_x").On("level1_id"))
+	outer := pgEmbed("level1", "").EmbedMany("inner", mongoEmbed("upstream_x", "level1_id").As("Inner"))
 	embeds := []embedDef{{field: "level0", source: outer, many: false}}
 	if got := findMongoJoinField(embeds, "upstream_x"); got != "level1_id" {
 		t.Errorf("expected nested Mongo join field, got %q", got)

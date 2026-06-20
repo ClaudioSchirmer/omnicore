@@ -30,7 +30,7 @@ func canonicalParameters(op Operation, gen *Generator) []map[string]any {
 				out = append(out, p)
 				covered[p["name"].(string)] = true
 			}
-			out = append(out, walkQueryTags(t, gen)...)
+			out = append(out, omitQueryParams(walkQueryTags(t, gen), op.Spec.OmittedQueryParams)...)
 		}
 	}
 
@@ -46,6 +46,30 @@ func canonicalParameters(op Operation, gen *Generator) []map[string]any {
 		})
 	}
 	return out
+}
+
+// omitQueryParams drops the query parameter objects whose name appears in
+// the omit list (RouteSpec.OmittedQueryParams). Used when a route reuses a
+// richer Request DTO but honors only a subset of its query keys — e.g. the
+// tabular-export routes reuse the JSON list's DTO yet ignore pagination, so
+// limit/after/before/onlyTotal are removed from the rendered spec. Returns the
+// input untouched when the omit list is empty (the common case).
+func omitQueryParams(params []map[string]any, omit []string) []map[string]any {
+	if len(omit) == 0 {
+		return params
+	}
+	skip := make(map[string]bool, len(omit))
+	for _, n := range omit {
+		skip[n] = true
+	}
+	kept := make([]map[string]any, 0, len(params))
+	for _, p := range params {
+		if name, _ := p["name"].(string); skip[name] {
+			continue
+		}
+		kept = append(kept, p)
+	}
+	return kept
 }
 
 // rawParameters maps the MountRaw-declared []Parameter to OpenAPI

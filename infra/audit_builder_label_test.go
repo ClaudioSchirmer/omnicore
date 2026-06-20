@@ -1,7 +1,6 @@
 package infra
 
 import (
-	"reflect"
 	"testing"
 
 	"github.com/google/uuid"
@@ -9,12 +8,12 @@ import (
 	"github.com/ClaudioSchirmer/omnicore/domain"
 )
 
-// labelTestEntity exercises `label:"..."` tags on flat fields. Only Name is
+// labelTestEntity exercises `labelKey:"..."` tags on flat fields. Only Name is
 // labeled — Email is intentionally bare so the test can assert both branches
 // of the FieldLabelKey rule (populated vs omitted) inside one Changes slice.
 type labelTestEntity struct {
 	domain.BaseEntity
-	Name  string `label:"UserNameField"`
+	Name  string `labelKey:"UserNameField"`
 	Email string
 }
 
@@ -29,7 +28,7 @@ func (e *labelTestEntity) BuildRules(string, domain.Service, *domain.Rules) {}
 // ChildEvent.Changes when the root is updated and the child changes.
 type labelTestAddress struct {
 	ID      string
-	ZipCode string `label:"AddressZipCodeField"`
+	ZipCode string `labelKey:"AddressZipCodeField"`
 	Bare    string
 }
 
@@ -39,7 +38,7 @@ func (a labelTestAddress) BuildRules(string, domain.Service, *domain.Rules) {}
 // labelTestAggregate roots the aggregate so the auditor's children path fires.
 type labelTestAggregate struct {
 	domain.AggregateRoot
-	Name string `label:"AggregateNameField"`
+	Name string `labelKey:"AggregateNameField"`
 }
 
 func (e *labelTestAggregate) Modes() []domain.EntityMode {
@@ -55,6 +54,33 @@ func (e *labelTestAggregate) AggregateChildren() []domain.AggregateValueObject {
 	return []domain.AggregateValueObject{labelTestAddress{}}
 }
 
+var labelTestEntitySchema = NewTableSchema[*labelTestEntity]("label_test_entities").
+	PK("ID", "id").
+	Field("Name", "name").
+	Field("Email", "email")
+
+var labelTestAggSchema = NewTableSchema[*labelTestAggregate]("label_test_aggregates").
+	PK("ID", "id").
+	Field("Name", "name").
+	Child(NewTableSchema[labelTestAddress]("label_test_addresses").
+		PK("ID", "id").
+		FK("label_test_aggregate_id").
+		Field("ZipCode", "zip_code").
+		Field("Bare", "bare"))
+
+type labelFixture struct {
+	Tagged   string `labelKey:"TaggedKey"`
+	Bare     string
+	Dashed   string `labelKey:"-"`
+	EmptyTag string `labelKey:""`
+}
+
+var labelFixtureSchema = NewTableSchema[labelFixture]("label_fixtures").
+	Field("Tagged", "tagged").
+	Field("Bare", "bare").
+	Field("Dashed", "dashed").
+	Field("EmptyTag", "empty_tag")
+
 func TestBuildUpdateEvent_FieldChangeCarriesLabelKeyWhenTagPresent(t *testing.T) {
 	e := &labelTestEntity{Name: "alice", Email: "a@x.com"}
 	e.SetID(domain.NewID(uuid.NewString()))
@@ -67,17 +93,17 @@ func TestBuildUpdateEvent_FieldChangeCarriesLabelKeyWhenTagPresent(t *testing.T)
 		t.Fatalf("GetUpdatable: %v", err)
 	}
 
-	ev := BuildUpdateEvent(newBuilderCtx(), u, nil)
+	ev := BuildUpdateEvent(newBuilderCtx(), u, labelTestEntitySchema, nil)
 	if ev.Kind != "delta" {
 		t.Fatalf("Kind = %q, want delta", ev.Kind)
 	}
 
 	var nameChange, emailChange *struct{ field, key string }
 	for _, ch := range ev.Changes {
-		if ch.Field == "name" {
+		if ch.Field == "Name" {
 			nameChange = &struct{ field, key string }{ch.Field, ch.FieldLabelKey}
 		}
-		if ch.Field == "email" {
+		if ch.Field == "Email" {
 			emailChange = &struct{ field, key string }{ch.Field, ch.FieldLabelKey}
 		}
 	}
@@ -110,7 +136,7 @@ func TestBuildUpdateEvent_ChildEventChangesCarryLabelKey(t *testing.T) {
 		t.Fatalf("GetUpdatable: %v", err)
 	}
 
-	ev := BuildUpdateEvent(newBuilderCtx(), u, nil)
+	ev := BuildUpdateEvent(newBuilderCtx(), u, labelTestAggSchema, nil)
 	children, ok := ev.Children["labelTestAddress"]
 	if !ok || len(children) == 0 {
 		t.Fatalf("expected at least one labelTestAddress child event; got %+v", ev.Children)
@@ -122,10 +148,10 @@ func TestBuildUpdateEvent_ChildEventChangesCarryLabelKey(t *testing.T) {
 			continue
 		}
 		for _, fc := range ch.Changes {
-			if fc.Field == "zip_code" {
+			if fc.Field == "ZipCode" {
 				found = &struct{ field, key string }{fc.Field, fc.FieldLabelKey}
 			}
-			if fc.Field == "bare" {
+			if fc.Field == "Bare" {
 				bareFound = &struct{ field, key string }{fc.Field, fc.FieldLabelKey}
 			}
 		}
@@ -152,25 +178,18 @@ func TestComputeChanges_NilLabelMapEmitsEmptyKeys(t *testing.T) {
 	}
 }
 
-func TestLabelKeysByColumn_BuildsFromExportedTaggedFields(t *testing.T) {
-	// Direct unit on the resolver — independent of the higher-level path.
-	type fixture struct {
-		Tagged   string `label:"TaggedKey"`
-		Bare     string
-		Dashed   string `label:"-"`
-		EmptyTag string `label:""`
+func TestLabelKeysByGoField_BuildsFromExportedTaggedFields(t *testing.T) {
+	got := labelKeysByGoField(labelFixtureSchema)
+	if got["Tagged"] != "TaggedKey" {
+		t.Errorf("Tagged field missing or wrong: %+v", got)
 	}
-	got := labelKeysByColumn(reflect.TypeOf((*fixture)(nil)))
-	if got["tagged"] != "TaggedKey" {
-		t.Errorf("Tagged column missing or wrong: %+v", got)
+	if _, has := got["Bare"]; has {
+		t.Errorf("Bare field must not appear in label map (no tag)")
 	}
-	if _, has := got["bare"]; has {
-		t.Errorf("Bare column must not appear in label map (no tag)")
+	if _, has := got["Dashed"]; has {
+		t.Errorf("Dashed field must not appear (label:\"-\")")
 	}
-	if _, has := got["dashed"]; has {
-		t.Errorf("Dashed column must not appear (label:\"-\")")
-	}
-	if _, has := got["empty_tag"]; has {
-		t.Errorf("EmptyTag column must not appear (label:\"\")")
+	if _, has := got["EmptyTag"]; has {
+		t.Errorf("EmptyTag field must not appear (label:\"\")")
 	}
 }

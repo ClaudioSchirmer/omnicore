@@ -38,6 +38,8 @@
     <li><code>requestCodec</code> / <code>responseCodec</code> must be one of <code>json</code>, <code>xml</code>, or <code>form-urlencoded</code></li>
     <li><code>acceptableStatus</code> values must be in <code>100..599</code></li>
     <li><code>timeout</code> must be non-negative</li>
+    <li><code>authProviders.&lt;name&gt;.tokenEndpoint</code> (<code>oauth2-client-credentials</code> + <code>credentials-exchange</code>) must parse as an absolute URL — same standard as <code>baseURL</code>, so a typo'd scheme / host-less value aborts the boot instead of failing on the first token acquisition</li>
+    <li><code>signing.signedHeaders</code> may not name the policy's own <code>signatureHeader</code> / <code>keyIdHeader</code> — those are set after the canonical string is built, so signing them signs an always-empty value and every signed request would be rejected upstream</li>
     <li>per-block validation runs for <code>auth</code>, <code>retry</code>, <code>cache</code>, <code>circuitBreaker</code>, <code>tls</code>, <code>pool</code>, <code>redaction</code>, and <code>idempotency</code> (see the dedicated subsections below for the exact rules each one enforces)</li>
   </ul>
 

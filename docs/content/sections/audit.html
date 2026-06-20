@@ -116,6 +116,7 @@ audit:
         <tr><td><code>actor</code></td><td>string</td><td>JWT <code>sub</code> or the sentinel <code>"anonymous"</code></td></tr>
         <tr><td><code>actorIssuer</code></td><td>string (omitempty)</td><td>JWT <code>iss</code> when present</td></tr>
         <tr><td><code>actorClaims</code></td><td>object (omitempty)</td><td>filtered by the <code>auth.auditClaims</code> allowlist</td></tr>
+        <tr><td><code>tenantId</code></td><td>string (omitempty)</td><td>multi-tenant scope of the request, read from the JWT <code>tenant_id</code> claim (the fixed key — audit does not honor the <code>auth.authorization.tenant.claim</code> override); backed by the <code>audit_events_tenant_idx</code> column</td></tr>
         <tr><td><code>dateTime</code></td><td>RFC3339Nano</td><td>captured at <code>ValidEntity</code> construction</td></tr>
     </table>
     <p>A full <code>insert</code> event of an aggregate (slog echo shape — <code>database</code> stores the same payload as a row + <code>jsonb</code> blob):</p>
@@ -131,9 +132,9 @@ audit:
   "actorIssuer": "https://idp.example",
   "actorClaims": { "tenant_id": "acme", "roles": ["admin"] },
   "dateTime":    "2026-06-09T12:00:00.123456Z",
-  "snapshot":    { "name": "Jane Doe", "email": "jane@x.test" },
+  "snapshot":    { "Name": "Jane Doe", "Email": "jane@x.test" },
   "children":    { "Address": [
-                    { "id": "…", "op": "inserted", "snapshot": { "city": "Berlin" } }
+                    { "id": "…", "op": "inserted", "snapshot": { "City": "Berlin" } }
                  ] }
 }</code></pre>
 
@@ -146,14 +147,14 @@ audit:
         <tr>
             <td><code>snapshot</code></td>
             <td><code>insert</code>, <code>delete</code></td>
-            <td><code>snapshot: map[column]value</code></td>
+            <td><code>snapshot: map[goFieldName]value</code></td>
             <td>full state — post-insert for Insert; pre-delete (via <code>Old()</code>) for Delete</td>
         </tr>
         <tr>
             <td><code>delta</code></td>
             <td><code>update</code></td>
             <td><code>changes: [{field, fieldLabelKey, from, to}]</code> sorted by <code>field</code></td>
-            <td>only mutated columns; unchanged ones absent. <code>fieldLabelKey</code> (omitempty) carries the catalog key from the field's <code>label:"…"</code> tag</td>
+            <td>only mutated fields; unchanged ones absent. <code>field</code> is the faithful domain name (the raw Go field name, e.g. <code>Email</code>) — audit is map-blind, never the physical column. <code>fieldLabelKey</code> (omitempty) carries the catalog key from the field's <code>labelKey:"…"</code> tag</td>
         </tr>
         <tr>
             <td><code>transition</code></td>
@@ -213,9 +214,9 @@ audit:
 
     <h3 id="audit-labels">Field labels — translated identifier on the audit row</h3>
     <p>
-        The audit <code>field</code> (<code>name</code>, <code>addresses[0].zip_code</code>) is a
+        The audit <code>field</code> (the raw Go field name, e.g. <code>Name</code>, <code>ZipCode</code>) is a
         technical identifier — stable but not human-readable. For compliance / ouvidoria / BI readers
-        a <code>label:"&lt;catalogKey&gt;"</code> struct tag on the domain field declares a catalog
+        a <code>labelKey:"&lt;catalogKey&gt;"</code> struct tag on the domain field declares a catalog
         key the audit pipeline writes onto <code>FieldChange.FieldLabelKey</code> in every
         <code>delta</code> change (top-level and child). The full declaration mechanism — shared with
         the notification wire — lives under
@@ -231,15 +232,15 @@ audit:
   "verb":   "update",
   "kind":   "delta",
   "changes": [{
-    "field":          "name",
+    "field":          "Name",
     "fieldLabelKey":  "UserNameField",
     "from":           "Jane Doe",
     "to":             "Jane Smith"
   }]
 }</code></pre>
     <p>
-        <code>snapshot</code> blocks (Insert / Delete) carry <code>map[column]value</code> with no
-        schema for labels and are intentionally not labeled. Fields without a <code>label</code> tag
+        <code>snapshot</code> blocks (Insert / Delete) carry <code>map[goFieldName]value</code> with no
+        schema for labels and are intentionally not labeled. Fields without a <code>labelKey</code> tag
         emit no <code>fieldLabelKey</code> (omitempty elides it).
     </p>
 

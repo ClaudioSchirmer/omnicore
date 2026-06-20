@@ -4,10 +4,10 @@ import (
 	"testing"
 )
 
-func TestFromMongo_MarksIsMongoTrue(t *testing.T) {
-	s := FromMongo("users").On("buyer_id")
+func TestFromSchema_ExternalIsMongo(t *testing.T) {
+	s := mongoEmbed("users", "").On("buyer_id")
 	if !s.IsMongo() {
-		t.Error("FromMongo should mark IsMongo=true")
+		t.Error("FromSchema(NewExternalSchema) should mark IsMongo=true")
 	}
 	if s.Collection() != "users" {
 		t.Errorf("Collection() = %q", s.Collection())
@@ -17,10 +17,10 @@ func TestFromMongo_MarksIsMongoTrue(t *testing.T) {
 	}
 }
 
-func TestFrom_MarksIsMongoFalse(t *testing.T) {
-	s := From("addresses").On("user_id")
+func TestFromSchema_AnchoredIsPG(t *testing.T) {
+	s := pgEmbed("addresses", "user_id")
 	if s.IsMongo() {
-		t.Error("From should mark IsMongo=false")
+		t.Error("FromSchema(NewTableSchema) should mark IsMongo=false")
 	}
 	if s.Table() != "addresses" {
 		t.Errorf("Table() = %q", s.Table())
@@ -28,8 +28,8 @@ func TestFrom_MarksIsMongoFalse(t *testing.T) {
 }
 
 func TestSource_CollectionAliasesTable(t *testing.T) {
-	pg := From("addresses")
-	mg := FromMongo("users")
+	pg := pgEmbed("addresses", "")
+	mg := mongoEmbed("users", "")
 	if pg.Collection() != pg.Table() {
 		t.Errorf("Collection should alias Table for PG source")
 	}
@@ -40,11 +40,11 @@ func TestSource_CollectionAliasesTable(t *testing.T) {
 
 func TestBuildViewIndex_SplitsByKind(t *testing.T) {
 	v1 := View("orders").Root("orders").
-		EmbedMany("lines", From("order_lines").On("order_id")).
-		Embed("buyer", FromMongo("users").On("buyer_id")).
+		EmbedMany("lines", pgEmbed("order_lines", "order_id")).
+		Embed("buyer", mongoEmbed("users", "").On("buyer_id")).
 		Version(1)
 	v2 := View("invoices").Root("invoices").
-		Embed("order", FromMongo("orders_view").On("order_id")).
+		Embed("order", mongoEmbed("orders_view", "").On("order_id")).
 		Version(1)
 	idx := buildViewIndex([]*ViewDefinition{v1, v2})
 	// PG side: roots + PG embeds
@@ -57,7 +57,7 @@ func TestBuildViewIndex_SplitsByKind(t *testing.T) {
 	if len(idx.byPGTable["invoices"]) != 1 {
 		t.Errorf("byPGTable[invoices] = %d, want 1", len(idx.byPGTable["invoices"]))
 	}
-	// Mongo side: only FromMongo embeds
+	// Mongo side: only external FromSchema embeds
 	if len(idx.byMongoColl["users"]) != 1 {
 		t.Errorf("byMongoColl[users] = %d, want 1", len(idx.byMongoColl["users"]))
 	}
@@ -72,11 +72,11 @@ func TestBuildViewIndex_SplitsByKind(t *testing.T) {
 
 func TestDependentMongoViews_FindsEmbedders(t *testing.T) {
 	v1 := View("orders").Root("orders").
-		Embed("buyer", FromMongo("users").On("buyer_id")).
+		Embed("buyer", mongoEmbed("users", "").On("buyer_id")).
 		Version(1)
 	v2 := View("invoices").Root("invoices").Version(1) // no Mongo embed
 	v3 := View("audit").Root("audit").
-		EmbedMany("perpetrator", FromMongo("users").On("audit_id")).
+		EmbedMany("perpetrator", mongoEmbed("users", "").On("audit_id")).
 		Version(1)
 	got := DependentMongoViews([]*ViewDefinition{v1, v2, v3}, "users")
 	if len(got) != 2 {
@@ -86,7 +86,7 @@ func TestDependentMongoViews_FindsEmbedders(t *testing.T) {
 
 func TestDependentMongoViews_EmptyWhenNoMatches(t *testing.T) {
 	v := View("orders").Root("orders").
-		Embed("buyer", FromMongo("users").On("buyer_id")).
+		Embed("buyer", mongoEmbed("users", "").On("buyer_id")).
 		Version(1)
 	got := DependentMongoViews([]*ViewDefinition{v}, "products")
 	if len(got) != 0 {
@@ -96,7 +96,7 @@ func TestDependentMongoViews_EmptyWhenNoMatches(t *testing.T) {
 
 func TestEmbedDef_AccessorsExposeSourceAndField(t *testing.T) {
 	v := View("orders").Root("orders").
-		Embed("buyer", FromMongo("users").On("buyer_id")).
+		Embed("buyer", mongoEmbed("users", "").On("buyer_id")).
 		Version(1)
 	embeds := v.Embeds()
 	if len(embeds) != 1 {

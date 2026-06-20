@@ -55,7 +55,7 @@ type ErrorMessage struct {
 	NotificationKey string `json:"notificationKey,omitempty"`
 	Field           string `json:"field,omitempty"`
 	// FieldLabel is the translated human-readable name of the source field,
-	// rendered in the actor's locale from the `label:"<catalogKey>"` struct tag
+	// rendered in the actor's locale from the `labelKey:"<catalogKey>"` struct tag
 	// on the entity / value-object field that triggered the notification.
 	// Empty when no tag is declared — the omitempty elides it from the wire.
 	// Channels without a frontend (e-mail, SMS, push) read this slot directly.

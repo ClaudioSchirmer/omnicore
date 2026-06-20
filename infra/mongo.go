@@ -61,7 +61,7 @@ func (m *MongoDB) Delete(ctx context.Context, collection, id string) error {
 }
 
 // FindManyByField returns every document in collection where field == value.
-// Used by the composer's Mongo dispatch when it follows a FromMongo embed:
+// Used by the composer's Mongo dispatch when it follows an external FromSchema embed:
 // the field is the joinKey declared via .On(...) and the value comes from
 // the parent document. Empty slice when nothing matches — the caller is
 // expected to handle "no embed" by simply omitting the field, identical to

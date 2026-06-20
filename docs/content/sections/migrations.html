@@ -16,6 +16,7 @@
         <li>Migration failure prevents the service from starting (boot returns error)</li>
         <li>Each migration runs in an isolated transaction — failure = rollback + <code>dirty=true</code> persisted in the tracking table</li>
         <li><code>.down.sql</code> mandatory (validated at startup); may be a no-op when reverse is technically infeasible</li>
+        <li>filenames must carry a parseable <code>{version}_{name}</code> prefix (<code>0002_init</code>) — a file like <code>init.up.sql</code> or <code>v2_init.up.sql</code> is silently ignored by the migration loader, so the same startup validation rejects it rather than letting the SQL never run while boot reports success</li>
     </ul>
 
     <h3>Tracking</h3>

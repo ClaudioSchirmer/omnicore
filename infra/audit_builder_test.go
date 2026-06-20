@@ -25,6 +25,14 @@ func (e *builderTestEntity) Modes() []domain.EntityMode {
 }
 func (e *builderTestEntity) BuildRules(string, domain.Service, *domain.Rules) {}
 
+var builderTestSchema = NewTableSchema[*builderTestEntity]("builder_test_entities").
+	PK("ID", "id").
+	Field("Name", "name").
+	Field("Email", "email").
+	SoftDelete("deleted_at").
+	CreatedAt("created_at").
+	UpdatedAt("updated_at")
+
 func newBuilderCtx() persistence.RequestContext {
 	return configuration.NewAppContextWithRandomID(configuration.LangENG)
 }
@@ -48,7 +56,7 @@ func TestBuildInsertEvent_KindSnapshot(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetInsertable: %v", err)
 	}
-	ev := BuildInsertEvent(newBuilderCtx(), i, id, nil)
+	ev := BuildInsertEvent(newBuilderCtx(), i, id, builderTestSchema, nil)
 
 	if ev.Verb != "insert" {
 		t.Errorf("Verb = %q, want insert", ev.Verb)
@@ -68,7 +76,7 @@ func TestBuildInsertEvent_KindSnapshot(t *testing.T) {
 	if ev.Snapshot == nil {
 		t.Fatal("Snapshot is nil, want populated")
 	}
-	if ev.Snapshot["name"] != "alice" || ev.Snapshot["email"] != "a@x.com" {
+	if ev.Snapshot["Name"] != "alice" || ev.Snapshot["Email"] != "a@x.com" {
 		t.Errorf("Snapshot = %+v", ev.Snapshot)
 	}
 	if ev.Changes != nil {
@@ -85,7 +93,7 @@ func TestBuildUpdateEvent_KindDeltaWithChangesOnly(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetUpdatable: %v", err)
 	}
-	ev := BuildUpdateEvent(newBuilderCtx(), u, nil)
+	ev := BuildUpdateEvent(newBuilderCtx(), u, builderTestSchema, nil)
 
 	if ev.Verb != "update" {
 		t.Errorf("Verb = %q, want update", ev.Verb)
@@ -99,7 +107,7 @@ func TestBuildUpdateEvent_KindDeltaWithChangesOnly(t *testing.T) {
 	if len(ev.Changes) != 1 {
 		t.Fatalf("Changes len = %d, want 1 (only name mutated): %+v", len(ev.Changes), ev.Changes)
 	}
-	if ev.Changes[0].Field != "name" || ev.Changes[0].From != "alice" || ev.Changes[0].To != "bob" {
+	if ev.Changes[0].Field != "Name" || ev.Changes[0].From != "alice" || ev.Changes[0].To != "bob" {
 		t.Errorf("Changes[0] = %+v", ev.Changes[0])
 	}
 }
@@ -115,7 +123,7 @@ func TestBuildUpdateEvent_PartialUpdateSharesUpdateVerb(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetPartialUpdatable: %v", err)
 	}
-	ev := BuildUpdateEvent(newBuilderCtx(), u, nil)
+	ev := BuildUpdateEvent(newBuilderCtx(), u, builderTestSchema, nil)
 	if ev.Verb != "update" {
 		t.Errorf("Verb = %q, want update (PATCH shares the verb)", ev.Verb)
 	}
@@ -131,7 +139,7 @@ func TestBuildArchiveEvent_KindTransition(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetArchivable: %v", err)
 	}
-	ev := BuildArchiveEvent(newBuilderCtx(), ar, nil)
+	ev := BuildArchiveEvent(newBuilderCtx(), ar, builderTestSchema, nil)
 
 	if ev.Verb != "archive" {
 		t.Errorf("Verb = %q", ev.Verb)
@@ -154,7 +162,7 @@ func TestBuildUnarchiveEvent_KindTransition(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetUnarchivable: %v", err)
 	}
-	ev := BuildUnarchiveEvent(newBuilderCtx(), un, nil)
+	ev := BuildUnarchiveEvent(newBuilderCtx(), un, builderTestSchema, nil)
 	if ev.Verb != "unarchive" || ev.Kind != "transition" {
 		t.Errorf("verb=%q kind=%q want unarchive/transition", ev.Verb, ev.Kind)
 	}
@@ -167,12 +175,12 @@ func TestBuildDeleteEvent_KindSnapshotForForensics(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetDeletable: %v", err)
 	}
-	ev := BuildDeleteEvent(newBuilderCtx(), d, nil)
+	ev := BuildDeleteEvent(newBuilderCtx(), d, builderTestSchema, nil)
 
 	if ev.Verb != "delete" || ev.Kind != "snapshot" {
 		t.Errorf("verb=%q kind=%q want delete/snapshot", ev.Verb, ev.Kind)
 	}
-	if ev.Snapshot == nil || ev.Snapshot["name"] != "alice" {
+	if ev.Snapshot == nil || ev.Snapshot["Name"] != "alice" {
 		t.Errorf("Delete snapshot should capture pre-delete state, got %+v", ev.Snapshot)
 	}
 }
@@ -183,7 +191,7 @@ func TestPopulateContext_ActorAndThreadID(t *testing.T) {
 	ctx := newBuilderCtxWithIdentity("alice-42", "https://idp.test", nil)
 	e := &builderTestEntity{Name: "x"}
 	i, _ := domain.GetInsertable(e, nil, "GetInsertable")
-	ev := BuildInsertEvent(ctx, i, domain.NewID(uuid.NewString()), nil)
+	ev := BuildInsertEvent(ctx, i, domain.NewID(uuid.NewString()), builderTestSchema, nil)
 
 	if ev.Actor != "alice-42" {
 		t.Errorf("Actor = %q, want alice-42", ev.Actor)
@@ -199,7 +207,7 @@ func TestPopulateContext_ActorAndThreadID(t *testing.T) {
 func TestPopulateContext_AnonymousActorWhenNoIdentity(t *testing.T) {
 	ev := BuildInsertEvent(newBuilderCtx(),
 		insertableOf(t, &builderTestEntity{Name: "x"}),
-		domain.NewID(uuid.NewString()), nil)
+		domain.NewID(uuid.NewString()), builderTestSchema, nil)
 	if ev.Actor != persistence.AnonymousActor {
 		t.Errorf("Actor = %q, want %q (anonymous when no Identity attached)", ev.Actor, persistence.AnonymousActor)
 	}
@@ -215,7 +223,7 @@ func TestPopulateContext_TenantIDExtractedFromClaim(t *testing.T) {
 	})
 	ev := BuildInsertEvent(ctx,
 		insertableOf(t, &builderTestEntity{Name: "x"}),
-		domain.NewID(uuid.NewString()), nil)
+		domain.NewID(uuid.NewString()), builderTestSchema, nil)
 	if ev.TenantID != "acme" {
 		t.Errorf("TenantID = %q, want acme", ev.TenantID)
 	}
@@ -225,7 +233,7 @@ func TestPopulateContext_TenantIDEmptyWhenClaimAbsent(t *testing.T) {
 	ctx := newBuilderCtxWithIdentity("alice", "iss", map[string]any{"roles": []string{"admin"}})
 	ev := BuildInsertEvent(ctx,
 		insertableOf(t, &builderTestEntity{Name: "x"}),
-		domain.NewID(uuid.NewString()), nil)
+		domain.NewID(uuid.NewString()), builderTestSchema, nil)
 	if ev.TenantID != "" {
 		t.Errorf("TenantID = %q, want empty (no tenant_id claim)", ev.TenantID)
 	}
@@ -239,7 +247,7 @@ func TestPopulateContext_TenantIDFromSingletonSlice(t *testing.T) {
 	})
 	ev := BuildInsertEvent(ctx,
 		insertableOf(t, &builderTestEntity{Name: "x"}),
-		domain.NewID(uuid.NewString()), nil)
+		domain.NewID(uuid.NewString()), builderTestSchema, nil)
 	if ev.TenantID != "acme" {
 		t.Errorf("TenantID = %q, want acme (from []any{string})", ev.TenantID)
 	}
@@ -256,7 +264,7 @@ func TestPopulateContext_ActorClaimsFilteredByAllowlist(t *testing.T) {
 	allowlist := []string{"preferred_username", "roles"}
 	ev := BuildInsertEvent(ctx,
 		insertableOf(t, &builderTestEntity{Name: "x"}),
-		domain.NewID(uuid.NewString()), allowlist)
+		domain.NewID(uuid.NewString()), builderTestSchema, allowlist)
 
 	if len(ev.ActorClaims) != 2 {
 		t.Fatalf("ActorClaims len = %d, want 2: %+v", len(ev.ActorClaims), ev.ActorClaims)
@@ -273,7 +281,7 @@ func TestPopulateContext_ActorClaimsNilWhenAllowlistEmpty(t *testing.T) {
 	ctx := newBuilderCtxWithIdentity("alice", "iss", map[string]any{"tenant_id": "acme"})
 	ev := BuildInsertEvent(ctx,
 		insertableOf(t, &builderTestEntity{Name: "x"}),
-		domain.NewID(uuid.NewString()), nil) // empty allowlist
+		domain.NewID(uuid.NewString()), builderTestSchema, nil) // empty allowlist
 	if ev.ActorClaims != nil {
 		t.Errorf("ActorClaims = %+v, want nil (empty allowlist drops the block)", ev.ActorClaims)
 	}
@@ -283,7 +291,7 @@ func TestPopulateContext_NilCtxLeavesFieldsZero(t *testing.T) {
 	// Build* tolerates a nil ctx so direct callers (tests, fixtures, future
 	// fire-and-forget code paths) need not synthesize a stub.
 	ev := BuildInsertEvent(nil, insertableOf(t, &builderTestEntity{Name: "x"}),
-		domain.NewID(uuid.NewString()), nil)
+		domain.NewID(uuid.NewString()), builderTestSchema, nil)
 	if ev.Actor != "" || ev.ActorIssuer != "" || ev.ThreadID != "" {
 		t.Errorf("nil ctx should leave actor/issuer/threadId empty, got actor=%q issuer=%q threadId=%q",
 			ev.Actor, ev.ActorIssuer, ev.ThreadID)

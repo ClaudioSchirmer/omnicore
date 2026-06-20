@@ -16,23 +16,23 @@
 }</code></pre>
 
     <p>
-        The interface keeps table/FK declaration out of the domain — children types are discovered via reflection on <code>root.AllAggregateItems()</code>; child table and FK are inferred from the Go typeName via convention (<code>PluralizeSnake(PascalToSnake(typeName))</code> for the table; <code>PascalToSnake(rootType) + "_id"</code> for the FK). Per-Repository override via <code>fwinfra.RepoConfig</code> (<code>ChildTableOverrides</code>, <code>ChildFKOverrides</code>) when the convention doesn't fit.
+        The interface keeps table/FK declaration out of the domain — children types are discovered via reflection on <code>root.AllAggregateItems()</code>; the child table and FK are declared explicitly in the root's <code>TableSchema</code> via <code>.Child(fwinfra.NewTableSchema[Address]("addresses").FK("user_id")...)</code>. There is no name inference — the <code>TableSchema</code> is the single mandatory map between each Go field and its physical column — see <a href="#table-schema">TableSchema (PG + views)</a>.
     </p>
 
     <p>
         The root holds authority over the aggregate boundary without infra leaking into the domain.
         <code>AggregateChildren()</code> declares <em>which types</em> belong to the aggregate — a
-        domain definition (orthodox DDD), separated from "which table/FK" (infra, inferred by convention). The top-level primitives
+        domain definition (orthodox DDD), separated from "which table/FK" (infra, declared in the <code>TableSchema</code>). The top-level primitives
         <code>AddAggregateChild</code>, <code>ChangeAggregateChild</code>, <code>RemoveAggregateChild</code> and
         <code>ReplaceAggregateChildrenOf</code> consult this list and reject VOs of undeclared types by emitting
         <code>InvalidAggregateChildNotification</code> (422 Validation). The internal
         <code>addAggregateItem</code>/<code>changeAggregateItem</code>/<code>removeAggregateItem</code> methods are used
-        only by <code>AggregateConstructor</code> (DB load path, with types coming from infra's <code>WithChild[V]</code>)
+        only by <code>AggregateConstructor</code> (DB load path, with types coming from the child schemas declared via <code>.Child(...)</code> on the root's <code>TableSchema</code>)
         and by the top-level primitives after the type-guard.
     </p>
 
     <p>
-        <code>AggregateValueObject</code> requires <code>BuildRules(actionName string, svc Service, r *Rules)</code> — signature identical to <code>Entity.BuildRules</code> — plus <code>GetID()</code>. Infra extracts columns via reflection on exported fields. Tag <code>transient:"-"</code> is the domain's own declaration that a field is runtime-only (request input, computed value, in-memory cache, runtime bookkeeping) and the framework skips it on read and write; the <code>ID</code> field is skipped on INSERT/UPDATE (DB-gen + WHERE clause); the FK to the root is injected by infra.
+        <code>AggregateValueObject</code> requires <code>BuildRules(actionName string, svc Service, r *Rules)</code> — signature identical to <code>Entity.BuildRules</code> — plus <code>GetID()</code>. Infra maps columns via the child's <code>TableSchema</code>; an undeclared exported field is runtime-only by construction (the schema simply does not list it, so it is never persisted/scanned/audited); <code>ID</code> is the PK (skipped on INSERT/UPDATE write list, used in the WHERE clause); the FK to the root is injected by infra (it is not a struct field).
     </p>
 
     <h3>Universal symmetric cascade</h3>
@@ -76,7 +76,7 @@
     <h3>Example</h3>
     <pre><code>type User struct {
     domain.AggregateRoot
-    Name, Email, CPF, Phone string
+    Name, Email, Username, Phone string
 }
 
 func (u *User) Modes() []domain.EntityMode { return []domain.EntityMode{...} }
@@ -112,13 +112,31 @@ func (u *User) ReplaceAddresses(addrs []Address) {
     domain.ReplaceAggregateChildrenOf(u, addrs)
 }
 
-// Zero declaration of table/column/FK. Everything inferred:
-//   - Table "users" via PluralizeSnake(PascalToSnake("User"))
-//   - Columns "name/email/cpf/phone" from exported fields
-//   - Child table "addresses" via PluralizeSnake(PascalToSnake("Address"))
-//   - FK "user_id" via PascalToSnake("User") + "_id"
-//
-// Repository unchanged — Insert/Update/etc are one-liners delegating to pg.
+// Explicit schema map — every Go field names its physical column, the
+// child table + FK are declared via .Child(...). No name inference anywhere.
+func UserSchema() *fwinfra.TableSchema {
+    return fwinfra.NewTableSchema[*User]("users").
+        PK("ID", "id").
+        Field("Name", "name").
+        Field("Email", "email").
+        Field("Username", "username").
+        Field("Phone", "phone").
+        SoftDelete("deleted_at").
+        CreatedAt("created_at").
+        UpdatedAt("updated_at").
+        Child(fwinfra.NewTableSchema[Address]("addresses").
+            FK("user_id").                 // injected by the persister, not a struct field
+            PK("ID", "id").
+            Field("Street", "street").
+            Field("ZipCode", "zip_code").
+            SoftDelete("deleted_at"))
+}
+
+// Declare once and thread it — WithSchema feeds the write binding AND the
+// read loader (write SQL + criteria + auto-scan); children come from the
+// schema's .Child(...) declarations.
+r.WithSchema(UserSchema())
+// Repository Insert/Update/etc are one-liners delegating to pg.
 // The aggregate path activates automatically because GetInsertable populated the metadata.</code></pre>
 
     <h3>Domain methods on the root</h3>
@@ -178,7 +196,7 @@ func (u *User) ReplaceAddresses(addrs []Address) {
         for each typeName present, it fires <code>BuildRules(actionName, svc, r)</code> on each item of the
         <code>AggregateRoot</code> with <code>CurrentStatus != Removed</code>, with <code>r</code> carrying a
         <code>NotificationContext</code> already scoped at <code>[NameSegment(collection), IndexSegment(i)]</code> —
-        collection name inferred via <code>PluralizeSnake(PascalToSnake(typeName))</code>.
+        the collection segment is the JSON wire name, <code>toLowerCamel(typeName)</code> pluralized in camelCase (<code>Address</code> → <code>addresses</code>, <code>OrderLine</code> → <code>orderLines</code>).
         <strong>The root's <code>BuildRules</code> does not need to register children manually</strong>
         for the child's to run. Since the type-guard on the primitives ensures only types declared in
         <code>AggregateChildren()</code> enter the collection, iterating the map equals iterating the declared list.
@@ -208,8 +226,8 @@ func (u *User) BuildRules(_ string, _ domain.Service, r *domain.Rules) {
 }</code></pre>
 
     <div class="box">
-        <strong>No new public methods on <code>Postgres</code>.</strong>
-        The API remains <code>Insert(Insertable)</code>/<code>Update(Updatable)</code>/etc.
+        <strong>No separate aggregate write method.</strong>
+        The consumer-facing write port is unchanged — <code>repo.Scope(ctx).Insert(Insertable)</code> / <code>Update(Updatable)</code> / etc. (the underlying <code>Postgres.Insert/Update/…</code> also receive the <code>*TableSchema</code> + resolved hook, but the consumer never spells those out).
         Aggregate behavior is transparent — whoever implements <code>AggregateRootProvider</code> gains it
         (automatic persistence <em>and</em> validation of children); whoever doesn't follows the traditional single-table path.
     </div>

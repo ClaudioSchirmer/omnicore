@@ -8,7 +8,7 @@ import (
 
 // startUpstreamSubscribers spins one infra.UpstreamSubscriber goroutine
 // per declared subscription, wired with its recompose-ripple targets
-// (every view embedding the subscription's Collection via FromMongo).
+// (every view embedding the subscription's Collection via an external FromSchema).
 //
 // Lifecycle: the subscribers share the same ctx as SyncEngine + HTTP
 // server, so SIGINT/SIGTERM cancels them in parallel. Each subscriber

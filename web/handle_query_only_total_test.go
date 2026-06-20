@@ -199,7 +199,7 @@ func TestOnlyTotal_PreservesFilterLeaves(t *testing.T) {
 		t.Error("expected OnlyTotal preserved alongside filter leaf")
 	}
 	// Filter leaf must reach the criteria.
-	if _, has := h.got.Criteria.Filter["name"]; !has {
+	if _, has := h.got.Criteria.Filter["Name"]; !has {
 		t.Errorf("expected filter['name'] populated, got %v", h.got.Criteria.Filter)
 	}
 }

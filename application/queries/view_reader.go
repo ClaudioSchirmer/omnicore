@@ -41,6 +41,14 @@ type ReadCriteria struct {
 	Search          string
 	IncludeArchived bool
 	OnlyTotal       bool
+
+	// BypassMaxLimit skips the per-view `?limit=` ceiling enforcement in
+	// ReadPage and uses Limit verbatim. It is for trusted internal callers that
+	// enforce their OWN, operator-set ceiling — the tabular-export wrapper sets
+	// Limit to the resolved maxExportRows (which is deliberately larger than the
+	// page-read MaxLimit) and ignores the user's `?limit`. It is never set from
+	// a wire parameter, so a client cannot use it to lift the page ceiling.
+	BypassMaxLimit bool
 }
 
 // Page is the transport-agnostic result of a paged read. The wire wrapper

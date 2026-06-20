@@ -124,7 +124,7 @@ func NewSyncEngine(pg *Postgres, mongo *MongoDB, brokers []string, groupID strin
 	return &SyncEngine{
 		pg:    pg,
 		mongo: mongo,
-		// NewComposerWithMongo so views embedding FromMongo collections
+		// NewComposerWithMongo so views embedding external FromSchema collections
 		// resolve correctly through the composer during recompose.
 		composer: NewComposerWithMongo(pg, mongo),
 		index:    buildViewIndex(views),

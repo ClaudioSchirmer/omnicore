@@ -222,8 +222,8 @@ func TestValidateAggregateChild_EmitsReturnsFalse(t *testing.T) {
 	if len(msgs) != 1 {
 		t.Fatalf("expected 1 notification accumulated on root via scoped ctx, got %d", len(msgs))
 	}
-	// Path should be inferred collection + index 0: "emitting_avos[0].street"
-	want := "emitting_avos[0].street"
+	// Path is the camelCase collection segment + index 0: "emittingAVOs[0].street"
+	want := "emittingAVOs[0].street"
 	if got := msgs[0].ResolveFieldName(); got != want {
 		t.Fatalf("expected field %q, got %q", want, got)
 	}

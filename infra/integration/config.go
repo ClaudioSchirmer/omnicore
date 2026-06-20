@@ -186,6 +186,9 @@ func (c *Config) Validate() error {
 		if src.Workers < 0 {
 			problems = append(problems, fmt.Sprintf("integration.subscribes.%s.workers must be >= 0 (got %d)", srcKey, src.Workers))
 		}
+		if !validStartFrom(src.StartFrom) {
+			problems = append(problems, fmt.Sprintf("integration.subscribes.%s.startFrom %q is not one of earliest|latest", srcKey, src.StartFrom))
+		}
 		for evKey, ev := range src.Events {
 			if ev.EventType == "" {
 				problems = append(problems, fmt.Sprintf("integration.subscribes.%s.events.%s.eventType is required", srcKey, evKey))
@@ -195,11 +198,27 @@ func (c *Config) Validate() error {
 	if c.Defaults.Workers < 0 {
 		problems = append(problems, fmt.Sprintf("integration.defaults.workers must be >= 0 (got %d)", c.Defaults.Workers))
 	}
+	if !validStartFrom(c.Defaults.StartFrom) {
+		problems = append(problems, fmt.Sprintf("integration.defaults.startFrom %q is not one of earliest|latest", c.Defaults.StartFrom))
+	}
 	if len(problems) > 0 {
 		return fmt.Errorf("integration config: %d problem(s):\n  - %s",
 			len(problems), joinProblems(problems))
 	}
 	return nil
+}
+
+// validStartFrom reports whether s is an accepted startFrom symbol. Empty is
+// accepted because ApplyDefaults fills it ("latest") and a fresh Validate may
+// run before that; "earliest" and "latest" are the only values the
+// ConsumerPool honors (every other value would silently resolve to "latest").
+func validStartFrom(s string) bool {
+	switch s {
+	case "", "earliest", "latest":
+		return true
+	default:
+		return false
+	}
 }
 
 func joinProblems(p []string) string {
