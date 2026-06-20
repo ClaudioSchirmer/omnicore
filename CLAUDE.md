@@ -1503,7 +1503,7 @@ Everything above infrastructure speaks the **Go field name** (PascalCase) — do
 
 One `TableSchema` drives the write path (INSERT/UPDATE/archive SQL), the criteria engine (the `WHERE` a Go-named criterion compiles to), and the auto-scan read-back (column → Go field). The **same** schema is reused by the read-side `ViewDefinition`, so the Mongo projection speaks the same names — a column rename round-trips everywhere automatically.
 
-**Why it is mandatory + manual (design rationale).** The hand-declared map is deliberate, buying four things a convention cannot: (1) **a pure DDD domain** — domain/application/web speak only business vocabulary; the sole place a physical name lives is the `TableSchema` in `infra/`; (2) **transparent mapping flexibility** — any Go field → any column, transparent to every line of implemented code; a rename lives in one place and round-trips everywhere; (3) **adoption of existing/external tables** — point the framework at a schema you don't control (or an upstream collection via `NewExternalSchema`), field by field, with the one structural requirement of a **single, non-composite primary key**; (4) **no failed, tiring conventions** — name-inference is lossy/acronym-hostile (`UserID`/`UserId` → `user_id`, `URLPath`, `IPv4`) and silently wrong on divergence, whereas an explicit map makes a wrong name a boot panic. The map is the single lossless, unambiguous source of truth the persistence + read membrane depends on, so the framework refuses to fabricate it.
+**Why it is mandatory + manual (design rationale).** The hand-declared map is deliberate, buying four things a convention cannot: (1) **a pure DDD domain** — domain/application/web speak only business vocabulary; the sole place a physical name lives is the `TableSchema` in `infra/`; (2) **transparent mapping flexibility** — any Go field → any column, transparent to every line of implemented code; a rename lives in one place and round-trips everywhere; (3) **mapping columns whose names you don't control** — point the framework at a table whose physical names you did not choose (or an upstream collection via `NewExternalSchema`), field by field. This is freedom over **names** (column/table), not over structural **shape**: the table must still fit the framework's assumptions (single-column non-composite PK, timestamp-based soft-delete when archivable, standard column types) — adapting to a schema that breaks them is out of scope (below); (4) **no failed, tiring conventions** — name-inference is lossy/acronym-hostile (`UserID`/`UserId` → `user_id`, `URLPath`, `IPv4`) and silently wrong on divergence, whereas an explicit map makes a wrong name a boot panic. The map is the single lossless, unambiguous source of truth the persistence + read membrane depends on, so the framework refuses to fabricate it.
 
 **Three-name model.** A field carries up to three names, resolved at two membranes: wire (`json:`/`query:` tags, in `web/`) ↔ Go field (`Email`, the single name every layer above infra uses) ↔ physical column (`mail`, `TableSchema.Field("Email","mail")` in `infra/`). The web membrane translates JSON↔Go; the infra membrane (`TableSchema`) translates Go↔column. Wire and physical names are invisible to the developer manipulating data.
 
@@ -1558,7 +1558,7 @@ fwinfra.View("users").Version(1).Root("users").
 
 **Manual scanners bypass the schema by design.** `WithRootScanner`/`WithChildScanner` (the latter takes the child Go type name) hand the SELECT + scan to the developer, who owns the column names directly. The schema governs the auto-scan path; the manual path stays a full escape hatch.
 
-**Out of scope:** third-party/legacy database adoption (predicate-shaped soft-delete, composite PK, exotic types — rejected). The scope is "an explicit map over the schema the framework manages".
+**Out of scope:** adapting to non-conforming structural conventions. The schema maps *names*, it does not reshape a schema — mapping a renamed column on an otherwise-conforming legacy table is supported (rationale (3) above); adapting to a *shape* the framework does not manage is not (predicate-shaped soft-delete via a boolean/enum flag instead of a timestamp, composite PK, exotic column types — all rejected). The scope is "an explicit map over the schema the framework manages".
 
 ## Read side (CQRS)
 
@@ -1937,7 +1937,7 @@ integration:
     events:
       userActivated:
         eventType: UserActivated   # wire header value
-        aggregate: User            # optional — omit for standalone events
+        aggregate: User            # optional — but if declared, Dispatch requires WithAggregateID (omit both for standalone events)
         version: 1                 # optional — defaults to 1
 ```
 

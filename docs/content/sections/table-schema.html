@@ -32,10 +32,13 @@
         and <code>BuildRules</code> are written against the Go field and never change when a column is named differently.
         A rename lives in exactly one place and round-trips across the write path, the criteria engine, the scan-back and
         the Mongo view at once.</li>
-    <li><strong>Adoption of existing / external tables.</strong> Because the map is explicit, you can point the framework
-        at a table whose columns you do not control — a pre-existing schema, or an upstream service's collection via
-        <code>NewExternalSchema</code> — declaring field by field how it maps to your domain. The one structural
-        requirement is a <strong>single, non-composite primary key</strong>.</li>
+    <li><strong>Mapping columns whose names you do not control.</strong> Because the map is explicit, you can point the
+        framework at a table whose physical names you did not choose — a column renamed away from its Go field, or an
+        upstream service's collection via <code>NewExternalSchema</code> — declaring field by field how each maps to your
+        domain. What this buys is freedom over <strong>names</strong> (column and table), not over structural
+        <em>shape</em>: the table must still fit the framework's assumptions — a single-column non-composite primary key,
+        a timestamp-based soft-delete column when the entity is archivable, and standard column types. Adopting a schema
+        that breaks those assumptions is explicitly <a href="#table-schema~out-of-scope">out of scope</a>.</li>
     <li><strong>No failed, tiring conventions.</strong> Name-inference (PascalToSnake + pluralize) is lossy and
         acronym-hostile: <code>UserID</code> and <code>UserId</code> both collapse to <code>user_id</code>;
         <code>URLPath</code>, <code>IPv4</code>, <code>HTTPStatus</code> mangle; and the moment the real column diverges
@@ -302,7 +305,9 @@ func OrdersView() *fwinfra.ViewDefinition {
 
 <h3>Out of scope</h3>
 <ul>
-    <li><strong>Third-party / legacy database adoption.</strong> Predicate-shaped soft-delete (boolean/enum), composite
-        PK, exotic types — rejected. The scope is "an explicit map over the schema the framework manages", not "adapt to
-        any arbitrary schema".</li>
+    <li><strong>Adapting to non-conforming structural conventions.</strong> The schema maps <em>names</em>, it does not
+        reshape a schema. Mapping a renamed column on an otherwise-conforming legacy table <a href="#table-schema~why-it-exists-and-why-it-is-mandatory">is supported</a>;
+        adapting to a <em>shape</em> the framework does not manage is not — predicate-shaped soft-delete (a boolean/enum
+        flag instead of a timestamp column), a composite PK, and exotic column types are all rejected. The scope is "an
+        explicit map over the schema the framework manages", not "adapt to any arbitrary schema".</li>
 </ul>

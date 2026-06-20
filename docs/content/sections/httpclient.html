@@ -2,6 +2,33 @@
   <p><code>omnicore/infra/httpclient</code> is the framework's outbound HTTP subsystem. Services describe the external systems they talk to in <a href="#bootstrap~microservice-yaml"><code>microservice.&lt;profile&gt;.yaml</code></a> under the <code>httpClient:</code> block; the framework constructs a singleton <code>*httpclient.HttpClient</code> registry on <code>bootstrap.Deps.HttpClient</code>. Each declared service gets its own <code>http.Transport</code> and <code>http.Client</code> so a misbehaving upstream cannot starve the pool of the rest.</p>
   <p class="note">The runtime is feature-complete: <code>Call[Req, Resp]</code> generic, request/response binding via <code>http:"..."</code> tags, three body codecs (json/xml/form-urlencoded), middleware chain (correlation, logging, auth, idempotency, cache, retry, breaker, signing, transport), error model, slog observability with cascaded redaction, six auth provider types, OAuth2 token cache + single-flight + revocation, per-service TLS and connection pool, <a href="#httpclient">HMAC request signing</a> (AWS SigV4-lite canonical), <a href="#httpclient">streaming surfaces</a> (download stream, upload stream, multipart upload, Server-Sent Events), the per-call <code>InvokeOption</code> family, the <a href="#httpclient"><code>NewFake</code> testing harness</a>, and dynamic <a href="#httpclient">service discovery via <code>BaseURLResolver</code></a>. All design-doc phases delivered.</p>
 
+  <h3>At a glance — one typed call</h3>
+  <p>Before the peculiarities below, the whole happy path: declare the endpoint in YAML, write a request struct and a response struct, make one typed call. The registry resolves <code>service</code> + <code>endpoint</code> from the YAML, builds the request from the <code>http:"..."</code> tags, dials, and hands back the decoded response — no client wiring, no manual URL building, no JSON plumbing at the call site.</p>
+<pre><code># microservice.&lt;profile&gt;.yaml
+httpClient:
+  services:
+    keycloak:
+      baseURL: https://kc.example.com
+      endpoints:
+        getUser:
+          method: GET
+          path: /users/{id}</code></pre>
+<pre><code>// Request — one path placeholder. Response — a plain struct decoded from the JSON body.
+type GetUserRequest  struct { ID string `http:"path,id"` }
+type GetUserResponse struct {
+    ID    string `json:"id"`
+    Email string `json:"email"`
+}
+
+// One call. d.HttpClient is the singleton registry; resp comes back typed + decoded.
+resp, err := httpclient.Call[GetUserRequest, GetUserResponse](
+    ctx, d.HttpClient, "keycloak", "getUser",
+    GetUserRequest{ID: "abc"},
+)
+if err != nil { return err }
+use(resp.Email)</code></pre>
+  <p>That is the entire surface for the common case. Everything past this point — the full YAML schema, the codecs, the <code>InvokeOption</code> family, auth providers, retry, cache, breaker, signing, streaming — is depth you reach for when a specific endpoint needs it, never ceremony the simple call pays. In a real service this call lives behind an <a href="#httpclient~composition-pattern"><code>infra/external/&lt;svc&gt;.go</code> struct</a> so handlers depend on a business method, not on <code>httpclient</code> directly.</p>
+
   <h3>YAML schema</h3>
 <pre><code>httpClient:
   defaults:
