@@ -57,3 +57,20 @@ func TestRecordNotFoundPropagatesSemantic(t *testing.T) {
 		t.Fatalf("expected SemanticNotFound, got %v", got)
 	}
 }
+
+func TestToContextDTOs_SkipsNilContexts(t *testing.T) {
+	ctx := domain.NewNotificationContext("User")
+	ctx.AddNotificationMessage(domain.NotificationMessage{
+		FieldName:    "name",
+		Notification: domain.RequiredFieldNotification{},
+	})
+	// A nil entry interleaved with a real context must be skipped, not panic.
+	dtos := ToContextDTOs(translation.Default(), configuration.LangPTBR,
+		[]*domain.NotificationContext{nil, ctx, nil})
+	if len(dtos) != 1 {
+		t.Fatalf("expected nil contexts skipped → 1 DTO, got %d", len(dtos))
+	}
+	if dtos[0].Context == "" || len(dtos[0].Messages) != 1 {
+		t.Fatalf("expected the non-nil context rendered, got %#v", dtos[0])
+	}
+}

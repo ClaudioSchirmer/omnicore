@@ -108,6 +108,80 @@ func TestAutoFromDoc_ScalarSlicePresentPassesThrough(t *testing.T) {
 	}
 }
 
+// buildPlan must deref an anonymous pointer-to-struct embed and promote its
+// fields, mirroring encoding/json (covers the pointer-deref loop in the
+// f.Anonymous branch). The doc populates the promoted field so json allocates
+// the embed pointer before normalizeSlices walks the promoted index path.
+type embedWithNote struct {
+	Note string `json:"note"`
+}
+
+type ptrEmbedResponse struct {
+	*embedWithNote
+	ID string `json:"id"`
+}
+
+func TestPlanFor_AnonymousPointerEmbed_FieldsPromoted(t *testing.T) {
+	plan := planFor(reflect.TypeOf(ptrEmbedResponse{}))
+	if plan == nil {
+		t.Fatal("plan must be built for a struct R")
+	}
+	var promoted bool
+	for _, f := range plan.fields {
+		if f.sourceKey == "Note" && f.destKey == "note" {
+			promoted = true
+		}
+	}
+	if !promoted {
+		t.Errorf("anonymous *struct embed fields must be promoted, got %+v", plan.fields)
+	}
+}
+
+// buildPlan must skip an unexported, non-anonymous field (the IsExported guard).
+type unexportedFieldResponse struct {
+	Name   string `json:"name"`
+	secret string //nolint:unused // exercised via reflection (must be skipped)
+}
+
+func TestBuildPlan_SkipsUnexportedNonAnonymousField(t *testing.T) {
+	got := AutoFromDoc[unexportedFieldResponse](map[string]any{"Name": "n", "secret": "s"})
+	if got.Name != "n" {
+		t.Errorf("Name: want n, got %q", got.Name)
+	}
+	if got.secret != "" {
+		t.Errorf("unexported field must not be projected, got %q", got.secret)
+	}
+}
+
+// A non-struct R yields a nil plan, so normalizeSlices returns at its plan==nil
+// guard and the JSON round-trip is a best-effort no-op.
+func TestAutoFromDoc_NonStructType_NilPlanNoOp(t *testing.T) {
+	if got := AutoFromDoc[int](map[string]any{"x": 1}); got != 0 {
+		t.Errorf("non-struct R must yield the zero value, got %d", got)
+	}
+}
+
+// normalizeSlices returns early on an invalid reflect.Value (the !v.IsValid()
+// guard) — called directly with a non-nil plan to isolate the branch.
+func TestNormalizeSlices_InvalidValueReturns(t *testing.T) {
+	plan := planFor(reflect.TypeOf(scalarSliceResponse{}))
+	// Must not panic on an invalid Value.
+	normalizeSlices(reflect.Value{}, plan)
+}
+
+// A []*struct with a nil pointer element exercises the nil-pointer break inside
+// normalizeSlices' fkSliceOfStruct deref loop. The source doc carries a null
+// element which json unmarshals to a nil *innerNorm.
+func TestNormalizeSlices_SliceOfPointerStruct_NilElementSkipped(t *testing.T) {
+	got := AutoFromDoc[sliceOfPtrResponse](map[string]any{"Items": []any{nil}})
+	if len(got.Items) != 1 {
+		t.Fatalf("expected 1 item, got %d", len(got.Items))
+	}
+	if got.Items[0] != nil {
+		t.Errorf("expected nil element to survive as nil, got %+v", got.Items[0])
+	}
+}
+
 // A nested struct field whose source value is NOT a map exercises remapValue's
 // fkStruct fall-through (asMap returns false → value passes verbatim).
 type wrapperResponse struct {

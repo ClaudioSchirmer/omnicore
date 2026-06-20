@@ -185,6 +185,51 @@ func TestCompose_EmbedOneToOne(t *testing.T) {
 	}
 }
 
+func TestCompose_EmbedOneToOne_QueryError(t *testing.T) {
+	pool := newFakePool()
+	pool.queryHandler = func(sql string, args []any) (pgx.Rows, error) {
+		switch {
+		case strings.Contains(sql, "FROM orders"):
+			return &composerRows{
+				cols: []string{"id", "name", "buyer_id"},
+				data: [][]any{{"o1", "first", "b1"}},
+			}, nil
+		case strings.Contains(sql, "FROM buyers"):
+			return nil, errFake
+		}
+		return &composerRows{}, nil
+	}
+	c := NewComposer(newFakePostgres(pool))
+	view := View("orders").Version(1).Root("orders").Schema(composerRootSchema()).
+		Embed("buyer", FromSchema(composerBuyerSchema()).On("buyer_id").As("Buyer"))
+
+	if _, err := c.Compose(context.Background(), view, "o1"); err == nil {
+		t.Fatal("expected the one-to-one embed fetchRow error to surface")
+	}
+}
+
+func TestCompose_EmbedOneToOne_MissingFK(t *testing.T) {
+	pool := newFakePool()
+	pool.queryHandler = func(sql string, args []any) (pgx.Rows, error) {
+		if strings.Contains(sql, "FROM orders") {
+			// Root row has no buyer_id column → the one-to-one embed is skipped.
+			return &composerRows{cols: []string{"id", "name"}, data: [][]any{{"o1", "first"}}}, nil
+		}
+		return &composerRows{}, nil
+	}
+	c := NewComposer(newFakePostgres(pool))
+	view := View("orders").Version(1).Root("orders").Schema(composerRootSchema()).
+		Embed("buyer", FromSchema(composerBuyerSchema()).On("buyer_id").As("Buyer"))
+
+	doc, err := c.Compose(context.Background(), view, "o1")
+	if err != nil {
+		t.Fatalf("Compose: %v", err)
+	}
+	if _, present := doc["buyer"]; present {
+		t.Errorf("missing FK must skip the embed, got %v", doc["buyer"])
+	}
+}
+
 func TestComposeAll(t *testing.T) {
 	pool := newFakePool()
 	pool.queryHandler = func(sql string, args []any) (pgx.Rows, error) {

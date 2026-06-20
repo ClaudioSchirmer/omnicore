@@ -167,6 +167,24 @@ func TestParsePublicRoutes_Invalid(t *testing.T) {
 	}
 }
 
+// buildKeyfunc's JWKS branch: a local JWKS endpoint is enough to drive
+// keyfunc.NewDefaultCtx to a usable Keyfunc (no real network — httptest).
+func TestBuildKeyfunc_JWKSSource(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"keys":[]}`))
+	}))
+	defer srv.Close()
+
+	kf, err := buildKeyfunc(AuthOptions{JWKSURL: srv.URL})
+	if err != nil {
+		t.Fatalf("buildKeyfunc with a JWKS URL: %v", err)
+	}
+	if kf == nil {
+		t.Fatal("expected a non-nil Keyfunc from the JWKS source")
+	}
+}
+
 func TestParsePublicKeyPEM_InvalidPEM(t *testing.T) {
 	if _, err := parsePublicKeyPEM([]byte("not a pem")); err == nil {
 		t.Fatal("expected error for non-PEM input")

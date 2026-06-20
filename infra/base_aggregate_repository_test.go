@@ -63,6 +63,57 @@ func TestBaseAggregateRepository_WithSchemaThreadsBothSides(t *testing.T) {
 	}
 }
 
+// ptrChildVO is an AggregateValueObject implemented on a pointer receiver and
+// returned as a pointer from AggregateChildren — so validateDeclaredChildren
+// walks the reflect.Ptr deref loop before matching the schema's Child(...).
+type ptrChildVO struct {
+	ID    string
+	Label string
+}
+
+func (c *ptrChildVO) GetID() string                                    { return c.ID }
+func (c *ptrChildVO) BuildRules(string, domain.Service, *domain.Rules) {}
+
+type ptrAggEntity struct {
+	domain.AggregateRoot
+	Name string
+}
+
+func (e *ptrAggEntity) Modes() []domain.EntityMode {
+	return []domain.EntityMode{domain.ModeInsert, domain.ModeUpdate, domain.ModeArchive, domain.ModeUnarchive}
+}
+func (e *ptrAggEntity) BuildRules(string, domain.Service, *domain.Rules) {}
+func (e *ptrAggEntity) GetAggregateRoot() *domain.AggregateRoot          { return &e.AggregateRoot }
+func (e *ptrAggEntity) AggregateChildren() []domain.AggregateValueObject {
+	return []domain.AggregateValueObject{&ptrChildVO{}}
+}
+
+func TestValidateDeclaredChildren_PointerVO(t *testing.T) {
+	bar := NewBaseAggregateRepository[*ptrAggEntity](nil, func() *ptrAggEntity { return &ptrAggEntity{} })
+	schema := NewTableSchema[*ptrAggEntity]("ptr_aggs").PK("ID", "id").Field("Name", "name").SoftDelete("deleted_at").
+		Child(NewTableSchema[*ptrChildVO]("ptr_children").
+			PK("ID", "id").FK("ptr_agg_id").Field("Label", "label").SoftDelete("deleted_at"))
+	// Boundaries agree (pointer VO derefs to ptrChildVO == schema child key) →
+	// no panic; the deref loop is the branch under test.
+	bar.WithSchema(schema)
+	if _, ok := schema.children["ptrChildVO"]; !ok {
+		t.Error("pointer child VO must register under its dereferenced type name")
+	}
+}
+
+func TestValidateDeclaredChildren_BoundaryMismatchPanics(t *testing.T) {
+	bar := NewBaseAggregateRepository[*ptrAggEntity](nil, func() *ptrAggEntity { return &ptrAggEntity{} })
+	// Schema declares no Child while AggregateChildren() names ptrChildVO →
+	// boundary mismatch panic.
+	schema := NewTableSchema[*ptrAggEntity]("ptr_aggs").PK("ID", "id").Field("Name", "name").SoftDelete("deleted_at")
+	defer func() {
+		if recover() == nil {
+			t.Fatal("expected aggregate boundary mismatch panic")
+		}
+	}()
+	bar.WithSchema(schema)
+}
+
 // Compile-time check: a struct that only embeds BaseAggregateRepository
 // satisfies persistence.ScopedRepository[T] (domain.Reader[T] + Scope) and
 // domain.ArchivedFinder[T] — FindByID, New() and Scope are all promoted via

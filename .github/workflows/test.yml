@@ -11,48 +11,17 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-
-      # Skip the expensive Go steps when the change touches only docs/.
-      # The job itself always runs, so the required "test" status check
-      # always reports a result (a docs-only PR turns green in seconds
-      # instead of staying pending and blocking the merge).
-      - name: Detect non-docs changes
-        id: filter
-        run: |
-          if [ "${{ github.event_name }}" = "pull_request" ]; then
-            base="${{ github.event.pull_request.base.sha }}"
-            head="${{ github.event.pull_request.head.sha }}"
-          else
-            base="${{ github.event.before }}"
-            head="${{ github.sha }}"
-          fi
-          # New branch / unknown base → run the full suite to stay safe.
-          if ! git cat-file -e "${base}^{commit}" 2>/dev/null; then
-            echo "code=true" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-          if git diff --name-only "$base" "$head" | grep -qvE '^docs/'; then
-            echo "code=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "code=false" >> "$GITHUB_OUTPUT"
-          fi
 
       - uses: actions/setup-go@v5
-        if: steps.filter.outputs.code == 'true'
         with:
           go-version: '1.26.x'
           check-latest: true
 
       - name: Build
-        if: steps.filter.outputs.code == 'true'
         run: go build ./...
 
       - name: Vet
-        if: steps.filter.outputs.code == 'true'
         run: go vet ./...
 
       - name: Test
-        if: steps.filter.outputs.code == 'true'
         run: go test ./... -count=1

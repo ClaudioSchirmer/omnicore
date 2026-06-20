@@ -81,6 +81,47 @@ func TestRegister_DocsReturnsHTML(t *testing.T) {
 	}
 }
 
+// WithUIPath("") must fall back to the default "/docs" (bootstrap passes ""
+// to mean "use the default").
+func TestRegister_EmptyUIPathFallsBackToDocs(t *testing.T) {
+	app := fiber.New()
+	reg := NewRegistry()
+	Register(app, Config{Title: "Test API", Version: "1.0.0"}, reg, WithUIPath(""))
+
+	resp, err := app.Test(httptest.NewRequest(fiber.MethodGet, "/docs", nil))
+	if err != nil {
+		t.Fatalf("Test /docs: %v", err)
+	}
+	if resp.StatusCode != 200 {
+		t.Fatalf("empty UI path should fall back to /docs; got %d", resp.StatusCode)
+	}
+}
+
+// LanguageSelector=true makes the /docs handler thread cfg.Languages into the
+// rendered HTML (the language <select>).
+func TestRegister_DocsWithLanguageSelector(t *testing.T) {
+	app := fiber.New()
+	reg := NewRegistry()
+	Register(app, Config{
+		Title:            "Test API",
+		Version:          "1.0.0",
+		LanguageSelector: true,
+		Languages:        []LanguageOption{{Label: "English", Value: "en"}, {Label: "Português", Value: "pt-BR"}},
+	}, reg)
+
+	resp, err := app.Test(httptest.NewRequest(fiber.MethodGet, "/docs", nil))
+	if err != nil {
+		t.Fatalf("Test /docs: %v", err)
+	}
+	if resp.StatusCode != 200 {
+		t.Fatalf("status: got %d, want 200", resp.StatusCode)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	if !strings.Contains(string(body), "pt-BR") {
+		t.Fatalf("language selector value not rendered into HTML; body=%s", string(body))
+	}
+}
+
 func TestSwaggerUIHTML_EscapesTitle(t *testing.T) {
 	html := SwaggerUIHTML("<script>alert(1)</script>", SpecPath, nil)
 	if strings.Contains(html, "<script>alert(1)</script>") {
