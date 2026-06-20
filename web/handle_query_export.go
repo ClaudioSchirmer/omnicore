@@ -36,17 +36,52 @@ import (
 // Headers are rendered from each column's labelKey via the Translator in the
 // request's Accept-Language, falling back to the Go field name when a column
 // carries no label.
+// ExportView is the read-side projection surface a tabular export needs from a
+// ViewDefinition, expressed as an interface so omnicore/web stays free of any
+// infra import — the concrete *infra.ViewDefinition satisfies it structurally
+// ("accept interfaces"). All three methods return / take only types web already
+// names (the plan lives in application/queries; the ceiling and the filename are
+// primitives), so the "web must not import infra" rule holds without a bridge.
+type ExportView interface {
+	// ExportPlan is the format-neutral column tree (root + embeds) the encoder walks.
+	ExportPlan() *queries.ExportPlan
+	// ResolveMaxExportRows resolves the row ceiling: the per-view override when
+	// declared, else the supplied yaml default, else the framework fallback.
+	ResolveMaxExportRows(yamlDefault int64) int64
+	// Name is the Mongo collection name, used as the default download filename base.
+	Name() string
+}
+
+// ExportDeps bundles the service-ambient inputs every tabular export shares —
+// the Translator singleton (labelKey header rendering) and the yaml default
+// row ceiling (query.maxExportRows). bootstrap.Run pre-packages it on
+// Deps.Export so the consumer threads one value instead of spelling out
+// d.Translator + d.Config.Query.MaxExportRows at every export route.
+type ExportDeps struct {
+	// Translator renders each column's labelKey header in the request's language.
+	Translator *translation.Translator
+	// MaxExportRows is the yaml-supplied default ceiling (cfg.Query.MaxExportRows),
+	// fed to ExportView.ResolveMaxExportRows; a per-view override still wins.
+	MaxExportRows int64
+}
+
 func HandleQueryExport[TReq HasToParamsQuery[TQ], TQ queries.FindByParamsQuery](
 	pipe *pipeline.Pipeline,
 	sample TReq,
-	plan *queries.ExportPlan,
-	translator *translation.Translator,
-	maxRows int64,
-	filenameBase string,
+	view ExportView,
+	deps ExportDeps,
 	enc export.Encoder,
 	h pipeline.Handler[TQ, queries.Page],
 ) fiber.Handler {
 	_ = sample
+	// Resolve the view-derived + ambient inputs once: the plan tree, the
+	// labelKey Translator, the effective row ceiling (per-view override > yaml
+	// default > framework fallback), and the download filename base (the view's
+	// collection name). The rest of the body is format-neutral.
+	plan := view.ExportPlan()
+	translator := deps.Translator
+	maxRows := view.ResolveMaxExportRows(deps.MaxExportRows)
+	filenameBase := view.Name()
 	reqType := reflect.TypeOf(sample)
 	if reqType.Kind() == reflect.Pointer {
 		reqType = reqType.Elem()
@@ -108,14 +143,12 @@ func HandleQueryExport[TReq HasToParamsQuery[TQ], TQ queries.FindByParamsQuery](
 func HandleQueryAsCSV[TReq HasToParamsQuery[TQ], TQ queries.FindByParamsQuery](
 	pipe *pipeline.Pipeline,
 	sample TReq,
-	plan *queries.ExportPlan,
-	translator *translation.Translator,
-	maxRows int64,
-	filenameBase string,
+	view ExportView,
+	deps ExportDeps,
 	h pipeline.Handler[TQ, queries.Page],
 	csvOpts ...export.CSVOption,
 ) fiber.Handler {
-	return HandleQueryExport(pipe, sample, plan, translator, maxRows, filenameBase, export.CSV(csvOpts...), h)
+	return HandleQueryExport(pipe, sample, view, deps, export.CSV(csvOpts...), h)
 }
 
 // HandleQueryAsXLSX is the Excel-format convenience over HandleQueryExport —
@@ -125,14 +158,12 @@ func HandleQueryAsCSV[TReq HasToParamsQuery[TQ], TQ queries.FindByParamsQuery](
 func HandleQueryAsXLSX[TReq HasToParamsQuery[TQ], TQ queries.FindByParamsQuery](
 	pipe *pipeline.Pipeline,
 	sample TReq,
-	plan *queries.ExportPlan,
-	translator *translation.Translator,
-	maxRows int64,
-	filenameBase string,
+	view ExportView,
+	deps ExportDeps,
 	h pipeline.Handler[TQ, queries.Page],
 	xlsxOpts ...export.XLSXOption,
 ) fiber.Handler {
-	return HandleQueryExport(pipe, sample, plan, translator, maxRows, filenameBase, export.XLSX(xlsxOpts...), h)
+	return HandleQueryExport(pipe, sample, view, deps, export.XLSX(xlsxOpts...), h)
 }
 
 // HandleQueryExportSpec is the OpenAPI-aware sibling of HandleQueryExport — it
@@ -146,14 +177,12 @@ func HandleQueryAsXLSX[TReq HasToParamsQuery[TQ], TQ queries.FindByParamsQuery](
 func HandleQueryExportSpec[TReq HasToParamsQuery[TQ], TQ queries.FindByParamsQuery](
 	pipe *pipeline.Pipeline,
 	sample TReq,
-	plan *queries.ExportPlan,
-	translator *translation.Translator,
-	maxRows int64,
-	filenameBase string,
+	view ExportView,
+	deps ExportDeps,
 	enc export.Encoder,
 	h pipeline.Handler[TQ, queries.Page],
 ) (fiber.Handler, openapi.RouteSpec) {
-	handler := HandleQueryExport(pipe, sample, plan, translator, maxRows, filenameBase, enc, h)
+	handler := HandleQueryExport(pipe, sample, view, deps, enc, h)
 	return handler, openapi.RouteSpec{
 		RequestType:   reflect.TypeOf((*TReq)(nil)).Elem(),
 		SuccessStatus: fiber.StatusOK,
@@ -167,14 +196,12 @@ func HandleQueryExportSpec[TReq HasToParamsQuery[TQ], TQ queries.FindByParamsQue
 func HandleQueryAsCSVSpec[TReq HasToParamsQuery[TQ], TQ queries.FindByParamsQuery](
 	pipe *pipeline.Pipeline,
 	sample TReq,
-	plan *queries.ExportPlan,
-	translator *translation.Translator,
-	maxRows int64,
-	filenameBase string,
+	view ExportView,
+	deps ExportDeps,
 	h pipeline.Handler[TQ, queries.Page],
 	csvOpts ...export.CSVOption,
 ) (fiber.Handler, openapi.RouteSpec) {
-	return HandleQueryExportSpec(pipe, sample, plan, translator, maxRows, filenameBase, export.CSV(csvOpts...), h)
+	return HandleQueryExportSpec(pipe, sample, view, deps, export.CSV(csvOpts...), h)
 }
 
 // HandleQueryAsXLSXSpec is the OpenAPI-aware, self-sufficient Excel sibling: it
@@ -183,14 +210,12 @@ func HandleQueryAsCSVSpec[TReq HasToParamsQuery[TQ], TQ queries.FindByParamsQuer
 func HandleQueryAsXLSXSpec[TReq HasToParamsQuery[TQ], TQ queries.FindByParamsQuery](
 	pipe *pipeline.Pipeline,
 	sample TReq,
-	plan *queries.ExportPlan,
-	translator *translation.Translator,
-	maxRows int64,
-	filenameBase string,
+	view ExportView,
+	deps ExportDeps,
 	h pipeline.Handler[TQ, queries.Page],
 	xlsxOpts ...export.XLSXOption,
 ) (fiber.Handler, openapi.RouteSpec) {
-	return HandleQueryExportSpec(pipe, sample, plan, translator, maxRows, filenameBase, export.XLSX(xlsxOpts...), h)
+	return HandleQueryExportSpec(pipe, sample, view, deps, export.XLSX(xlsxOpts...), h)
 }
 
 // buildExportCriteria parses the export route's query string. Filters come from

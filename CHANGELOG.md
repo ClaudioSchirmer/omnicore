@@ -30,6 +30,16 @@ with `1.0.0`.
   `(fiber.Handler, openapi.RouteSpec)` with `RequestType` + `FileResponse`
   prefilled, so the consumer mounts an export with the same `openapi.Mount` call
   as any JSON query route (symmetric with `HandleQueryWithParamsSpec`).
+- **Export wrappers take `web.ExportView` + `web.ExportDeps`.** All four export
+  wrappers (`HandleQueryExport{,Spec}`, `HandleQueryAsCSV{,Spec}`,
+  `HandleQueryAsXLSX{,Spec}`) accept the view as a `web.ExportView` interface
+  (the `*infra.ViewDefinition` satisfies it structurally, so `web` imports no
+  `infra`) plus a `web.ExportDeps{Translator, MaxExportRows}` bundle
+  pre-packaged on the new `bootstrap.Deps.Export` field. The wrapper resolves
+  the plan, the row ceiling, and the download filename (`view.Name()`)
+  internally, so the consumer threads `view, d.Export` at an export route
+  instead of spelling out `view.ExportPlan()` + `d.Translator` +
+  `view.ResolveMaxExportRows(d.Config.Query.MaxExportRows)` + a filename by hand.
 - **Tabular export of a view query (CSV + XLSX, format-pluggable).**
   `fwweb.HandleQueryExport[TReq, TQ]` and the convenience `fwweb.HandleQueryAsCSV[TReq, TQ]`
   mount a route that streams the same view read as a paged GET — reusing the

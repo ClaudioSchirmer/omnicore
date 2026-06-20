@@ -68,16 +68,14 @@ fwweb.HandleQueryWithParams(d.Pipeline,
     requests.FindUsersByParamsRequest{},
     fwresponses.AutoFromDoc[requests.FindUsersByParamsResponse], h)
 
-// attach the SAME h to a CSV download
+// attach the SAME h to a CSV download — view + d.Export carry the rest
 fwweb.HandleQueryAsCSV(d.Pipeline,
-    requests.FindUsersByParamsRequest{}, view.ExportPlan(), d.Translator,
-    view.ResolveMaxExportRows(d.Config.Query.MaxExportRows), "users", h,
+    requests.FindUsersByParamsRequest{}, view, d.Export, h,
     export.WithDelimiter(';'))
 
 // ...or to an Excel (.xlsx) download
 fwweb.HandleQueryAsXLSX(d.Pipeline,
-    requests.FindUsersByParamsRequest{}, view.ExportPlan(), d.Translator,
-    view.ResolveMaxExportRows(d.Config.Query.MaxExportRows), "users", h,
+    requests.FindUsersByParamsRequest{}, view, d.Export, h,
     export.WithSheetName("Users"))</code></pre>
 <p>
     CSV and Excel share a single format-neutral export core — the column plan

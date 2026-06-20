@@ -53,6 +53,24 @@ func (h *expCSVHandler) Handle(ctx *configuration.AppContext, q *expCSVQuery) (q
 	return h.page, h.err
 }
 
+// fakeExportView satisfies web.ExportView with no infra import — proving the
+// "accept interfaces" decoupling: the wrapper resolves plan / ceiling / filename
+// off this fake exactly as it would off a *infra.ViewDefinition.
+type fakeExportView struct {
+	plan *queries.ExportPlan
+	max  int64
+	name string
+}
+
+func (f fakeExportView) ExportPlan() *queries.ExportPlan { return f.plan }
+func (f fakeExportView) ResolveMaxExportRows(yamlDefault int64) int64 {
+	if f.max > 0 {
+		return f.max
+	}
+	return yamlDefault
+}
+func (f fakeExportView) Name() string { return f.name }
+
 func expCSVPlan() *queries.ExportPlan {
 	return &queries.ExportPlan{Root: &queries.ExportNode{
 		Columns: []queries.ExportColumn{
@@ -77,7 +95,12 @@ func mountCSV(app *fiber.App, h *expCSVHandler) {
 	tr := translation.Default()
 	tr.Import(expLabelModule{})
 	pipe := pipeline.New(tr)
-	app.Get("/users.csv", HandleQueryAsCSV(pipe, expCSVReq{}, expCSVPlan(), tr, 100, "users", h, export.WithDelimiter(';')))
+	// The view carries no per-view override (max=0), so the yaml default
+	// (ExportDeps.MaxExportRows=100) wins through ResolveMaxExportRows; the
+	// filename base comes from the view's Name() ("users").
+	view := fakeExportView{plan: expCSVPlan(), name: "users"}
+	deps := ExportDeps{Translator: tr, MaxExportRows: 100}
+	app.Get("/users.csv", HandleQueryAsCSV(pipe, expCSVReq{}, view, deps, h, export.WithDelimiter(';')))
 }
 
 func parseSemicolonCSV(t *testing.T, body io.Reader) [][]string {

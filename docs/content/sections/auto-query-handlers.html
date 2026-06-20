@@ -490,10 +490,8 @@ const (
     </p>
     <pre><code>csvH, csvSpec := fwweb.HandleQueryAsCSVSpec(d.Pipeline,
     requests.FindUsersByParamsRequest{},   // same Request DTO as the JSON list → filters in Swagger
-    view.ExportPlan(),                     // column tree built from the view's TableSchema
-    d.Translator,
-    view.ResolveMaxExportRows(d.Config.Query.MaxExportRows),
-    "users",                               // file base name → users.csv
+    view,                                  // web.ExportView → plan, row ceiling, filename (view.Name())
+    d.Export,                              // web.ExportDeps{Translator, MaxExportRows} pre-packaged on Deps
     &amp;handlers.FindByParamsQueryHandler[*queries.FindUserByParamsQuery]{
         Reader: d.ViewReader, View: view.Name(),
     },
@@ -508,6 +506,18 @@ fwopenapi.Mount(d.OpenAPIRegistry, app, fiber.MethodGet, "/users.csv", csvH, csv
         <a href="#openapi">OpenAPI / Swagger UI</a>. The plain
         <code>HandleQueryAsCSV</code> / <code>HandleQueryAsXLSX</code> (handler-only) remain for
         services without OpenAPI.
+    </p>
+    <p>
+        <strong>Inputs.</strong> Every export wrapper takes the view as a
+        <code>web.ExportView</code> interface — the <code>*ViewDefinition</code> satisfies it
+        structurally, so <code>web</code> never imports <code>infra</code> — plus a
+        <code>web.ExportDeps{Translator, MaxExportRows}</code> bundle pre-packaged on
+        <code>Deps.Export</code> (the Translator for labelKey headers + the yaml
+        <code>query.maxExportRows</code> default). The wrapper resolves the column plan
+        (<code>view.ExportPlan()</code>), the effective row ceiling
+        (<code>view.ResolveMaxExportRows(...)</code>), and the download filename base
+        (<code>view.Name()</code>) internally — so a route passes just <code>view, d.Export</code>
+        instead of spelling those out by hand at every export endpoint.
     </p>
     <p>
         <strong>Hierarchical layout — one column per nesting level.</strong> The view's embed tree

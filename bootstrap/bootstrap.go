@@ -333,6 +333,7 @@ func buildDeps(cfg *Config) (Deps, error) {
 		Translator:          tr,
 		Pipeline:            pipe,
 		ViewReader:          viewReader,
+		Export:              fwweb.ExportDeps{Translator: tr, MaxExportRows: cfg.Query.MaxExportRows},
 		Cache:               privateCache,
 		SharedCache:         sharedCache,
 		HttpClient:          hc,
