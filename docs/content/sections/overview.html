@@ -23,11 +23,10 @@
         developer focus exclusively on the <em>business rules</em>.
         Essential functionality cannot be forgotten — the framework guarantees it.
     </div>
-    <p>
-        A throughline worth knowing up front: a handler is written <strong>once</strong> and is
-        <strong>invariant</strong> across the surface it is attached to. A command handler attaches
-        to <strong>HTTP</strong> or to <strong>Kafka</strong>; a query handler attaches to
-        <strong>HTTP/JSON</strong>, to <strong>CSV</strong>, or to <strong>Excel</strong> — the same
-        handler, the surface decides only the I/O shape. Serving a new channel is a new attachment,
-        not new logic. See <a href="#handler-invariance">Handler invariance</a>.
-    </p>
+    <div class="box good">
+        <strong>Battle-tested:</strong> the framework ships with
+        <strong>90.1% unit-test coverage</strong> of its statements. That confidence is backed by
+        <strong>59,338 lines of tests</strong> against <strong>40,522 lines of production code</strong>
+        — a <strong>1.46 : 1 test-to-code ratio</strong>: there is roughly half again as much test
+        code as there is framework code exercising it.
+    </div>
