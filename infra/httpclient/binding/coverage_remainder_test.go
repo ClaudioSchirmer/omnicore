@@ -189,3 +189,139 @@ func TestDecodeResponse_WholeStructBadCodec(t *testing.T) {
 		t.Fatalf("expected unknown-codec error on whole-struct path, got %v", err)
 	}
 }
+
+// ─── validateFieldType — pointer field type is dereferenced before checking ──
+
+func TestValidateFieldType_PointerScalarAccepted(t *testing.T) {
+	resetPlanCache()
+	type req struct {
+		H *string `http:"header,X-Token"` // *string derefs to string scalar — valid
+	}
+	plan, err := inspectRequestType(reflect.TypeOf(req{}), "/x")
+	if err != nil {
+		t.Fatalf("expected pointer-to-scalar to validate, got %v", err)
+	}
+	if len(plan.bindings) != 1 || plan.bindings[0].kind != bindHeader {
+		t.Errorf("unexpected plan: %+v", plan.bindings)
+	}
+}
+
+// ─── validatePathCoverage — empty path short-circuits ───────────────────────
+
+func TestInspectRequestType_EmptyPathNoPlaceholders(t *testing.T) {
+	resetPlanCache()
+	type req struct {
+		Q string `http:"query,q"`
+	}
+	// Empty path with no path-tagged fields → validatePathCoverage returns nil.
+	if _, err := inspectRequestType(reflect.TypeOf(req{}), ""); err != nil {
+		t.Fatalf("empty path with no placeholders should be valid, got %v", err)
+	}
+}
+
+// ─── BuildRequest — error branches ──────────────────────────────────────────
+
+func TestBuildRequest_InspectError(t *testing.T) {
+	type req struct {
+		A payloadStruct `http:"body,json"`
+		B payloadStruct `http:"body,json"`
+	}
+	_, err := BuildRequest(context.Background(), "http://x",
+		EndpointMeta{Method: "POST", Path: "/x"}, req{})
+	if err == nil || !strings.Contains(err.Error(), "more than one") {
+		t.Fatalf("expected inspect error to surface from BuildRequest, got %v", err)
+	}
+}
+
+func TestBuildRequest_QueryCSVElementNotScalar(t *testing.T) {
+	type req struct {
+		Items []payloadStruct `http:"query,items,csv"`
+	}
+	_, err := BuildRequest(context.Background(), "http://x",
+		EndpointMeta{Method: "GET", Path: "/x"}, req{Items: []payloadStruct{{Name: "a"}}})
+	if err == nil || !strings.Contains(err.Error(), "csv") {
+		t.Fatalf("expected csv element conversion error, got %v", err)
+	}
+}
+
+func TestBuildRequest_QueryMultiElementNotScalar(t *testing.T) {
+	type req struct {
+		Items []payloadStruct `http:"query,items,multi"`
+	}
+	_, err := BuildRequest(context.Background(), "http://x",
+		EndpointMeta{Method: "GET", Path: "/x"}, req{Items: []payloadStruct{{Name: "a"}}})
+	if err == nil || !strings.Contains(err.Error(), "multi") {
+		t.Fatalf("expected multi element conversion error, got %v", err)
+	}
+}
+
+func TestBuildRequest_BodyUnknownCodec(t *testing.T) {
+	type req struct {
+		Body payloadStruct `http:"body,bogus"`
+	}
+	// The body codec name is validated at tag-parse time, so BuildRequest
+	// surfaces the rejection from its inspection step.
+	_, err := BuildRequest(context.Background(), "http://x",
+		EndpointMeta{Method: "POST", Path: "/x"}, req{Body: payloadStruct{Name: "n"}})
+	if err == nil || !strings.Contains(err.Error(), "is not one of") {
+		t.Fatalf("expected unknown body codec error, got %v", err)
+	}
+}
+
+func TestBuildRequest_BodyEncodeError(t *testing.T) {
+	type req struct {
+		Body chan int `http:"body,json"`
+	}
+	_, err := BuildRequest(context.Background(), "http://x",
+		EndpointMeta{Method: "POST", Path: "/x"}, req{Body: make(chan int)})
+	if err == nil {
+		t.Fatalf("expected json encode error for a channel body, got nil")
+	}
+}
+
+func TestBuildRequest_PathAlreadyHasQuery(t *testing.T) {
+	type req struct {
+		Q string `http:"query,q"`
+	}
+	httpReq, err := BuildRequest(context.Background(), "http://x",
+		EndpointMeta{Method: "GET", Path: "/search?fixed=1"}, req{Q: "go"})
+	if err != nil {
+		t.Fatalf("BuildRequest: %v", err)
+	}
+	u := httpReq.URL.String()
+	if !strings.Contains(u, "fixed=1") || !strings.Contains(u, "q=go") {
+		t.Errorf("expected both query params, got %q", u)
+	}
+	if !strings.Contains(u, "&") {
+		t.Errorf("expected '&' joining the existing query, got %q", u)
+	}
+}
+
+func TestBuildRequest_InvalidMethod(t *testing.T) {
+	type req struct {
+		Q string `http:"query,q"`
+	}
+	_, err := BuildRequest(context.Background(), "http://x",
+		EndpointMeta{Method: "BAD METHOD", Path: "/x"}, req{Q: "go"})
+	if err == nil || !strings.Contains(err.Error(), "build request") {
+		t.Fatalf("expected NewRequestWithContext error for invalid method, got %v", err)
+	}
+}
+
+// ─── DecodeResponse — codec decode error on the body-tag path ───────────────
+
+func TestDecodeResponse_BodyTagDecodeError(t *testing.T) {
+	type resp struct {
+		Body payloadStruct `http:"body,json"`
+	}
+	httpResp := &http.Response{
+		StatusCode: 200,
+		Header:     http.Header{},
+		Body:       io.NopCloser(strings.NewReader(`{not json`)),
+	}
+	var out resp
+	err := DecodeResponse(httpResp, EndpointMeta{ResponseCodec: "json"}, &out)
+	if err == nil {
+		t.Fatalf("expected decode error on malformed body, got nil")
+	}
+}

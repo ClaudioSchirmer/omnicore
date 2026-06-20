@@ -97,6 +97,29 @@ func TestExportPlan_PruneEmptyReturnsAll(t *testing.T) {
 	}
 }
 
+func TestExportPlan_WireToGoPaths_NilPlanAndNilRoot(t *testing.T) {
+	var nilPlan *ExportPlan
+	if got := nilPlan.WireToGoPaths(); len(got) != 0 {
+		t.Fatalf("nil plan should yield empty map, got %v", got)
+	}
+	rootless := &ExportPlan{}
+	if got := rootless.WireToGoPaths(); len(got) != 0 {
+		t.Fatalf("plan with nil Root should yield empty map, got %v", got)
+	}
+}
+
+func TestJoinExportPath(t *testing.T) {
+	if got := joinExportPath("", "name"); got != "name" {
+		t.Fatalf("empty prefix should return the segment, got %q", got)
+	}
+	if got := joinExportPath("addresses", ""); got != "addresses" {
+		t.Fatalf("empty segment should return the prefix, got %q", got)
+	}
+	if got := joinExportPath("addresses", "zipCode"); got != "addresses.zipCode" {
+		t.Fatalf("expected dotted join, got %q", got)
+	}
+}
+
 func TestSplitFields(t *testing.T) {
 	got := SplitFields(" name , addresses.zipCode ,, ")
 	want := []string{"name", "addresses.zipCode"}

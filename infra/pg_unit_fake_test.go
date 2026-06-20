@@ -3,6 +3,7 @@ package infra
 import (
 	"context"
 	"errors"
+	"strings"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
@@ -79,16 +80,17 @@ func newFakePostgres(pool pgxPool) *Postgres {
 type fakeTx struct {
 	pgx.Tx
 
-	scanID      string                                         // value handed back by QueryRow().Scan(&id)
-	queryRowErr error                                          // forced error from QueryRow().Scan
-	execErr     error                                          // forced error from Exec
-	commitErr   error                                          // forced error from Commit
-	rollbackErr error                                          // forced error from Rollback
-	queryFn     func(sql string, args []any) (pgx.Rows, error) // overrides Query when set
-	queryRowFn  func(sql string, args []any) pgx.Row           // overrides QueryRow when set
-	execCalls   []string                                       // captured Exec SQL (outbox, audit, child writes)
-	committed   bool
-	rolledBack  bool
+	scanID        string                                         // value handed back by QueryRow().Scan(&id)
+	queryRowErr   error                                          // forced error from QueryRow().Scan
+	execErr       error                                          // forced error from Exec (every call)
+	execErrSubstr string                                         // forced error from Exec only when the SQL contains this substring
+	commitErr     error                                          // forced error from Commit
+	rollbackErr   error                                          // forced error from Rollback
+	queryFn       func(sql string, args []any) (pgx.Rows, error) // overrides Query when set
+	queryRowFn    func(sql string, args []any) pgx.Row           // overrides QueryRow when set
+	execCalls     []string                                       // captured Exec SQL (outbox, audit, child writes)
+	committed     bool
+	rolledBack    bool
 }
 
 func newFakeTx() *fakeTx { return &fakeTx{scanID: "00000000-0000-0000-0000-000000000001"} }
@@ -109,6 +111,9 @@ func (t *fakeTx) Exec(ctx context.Context, sql string, args ...any) (pgconn.Comm
 	t.execCalls = append(t.execCalls, sql)
 	if t.execErr != nil {
 		return pgconn.CommandTag{}, t.execErr
+	}
+	if t.execErrSubstr != "" && strings.Contains(sql, t.execErrSubstr) {
+		return pgconn.CommandTag{}, errFake
 	}
 	return pgconn.NewCommandTag("OK 1"), nil
 }

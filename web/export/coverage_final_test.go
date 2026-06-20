@@ -88,6 +88,33 @@ func TestXLSXSink_CloseWriteError(t *testing.T) {
 	}
 }
 
+// A Row with a negative Depth produces an invalid anchor column (Depth+1 <= 0),
+// so excelize.CoordinatesToCellName rejects it — directly exercising Write's
+// error branch (otherwise a defensive guard, since Generate never emits a
+// negative Depth).
+func TestXLSXSink_WriteInvalidDepthReturnsError(t *testing.T) {
+	var buf bytes.Buffer
+	sink, err := XLSX().Open(&buf)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	if err := sink.Write(Row{Depth: -1, Cells: []Cell{{Value: "x"}}}); err == nil {
+		t.Fatal("expected Write to reject a negative-Depth anchor coordinate")
+	}
+}
+
+// Open must surface SetSheetName's error when the configured sheet name is
+// invalid (excelize rejects names containing the reserved characters
+// : \ / ? * [ ]). The temporary excelize.File is closed and the error returned
+// rather than yielding a half-built Sink.
+func TestXLSX_OpenInvalidSheetNameReturnsError(t *testing.T) {
+	var buf bytes.Buffer
+	_, err := XLSX(WithSheetName("bad:name?")).Open(&buf)
+	if err == nil {
+		t.Fatal("expected Open to fail for an invalid worksheet name")
+	}
+}
+
 // Writing a row whose anchor coordinate is invalid is not reachable through the
 // public API (Depth is always >= 0 and row counter increments), so the
 // CoordinatesToCellName error branch in Write stays as a defensive guard.

@@ -189,6 +189,17 @@ func TestResolveUpstreamFailures_PassesArgsToExec(t *testing.T) {
 	}
 }
 
+func TestResolveUpstreamFailures_PropagatesExecError(t *testing.T) {
+	fake := &fakePgExec{execErr: errors.New("boom")}
+	err := ResolveUpstreamFailures(context.Background(), fake, "users.events", "orders", "u1")
+	if err == nil {
+		t.Fatal("expected the Exec error to surface")
+	}
+	if !strings.Contains(err.Error(), "resolve upstream failures") {
+		t.Errorf("error not wrapped: %v", err)
+	}
+}
+
 func TestListPendingUpstreamFailuresByTopic_RejectsEmpty(t *testing.T) {
 	_, err := ListPendingUpstreamFailuresByTopic(context.Background(), &fakePgExec{}, "")
 	if err == nil || !strings.Contains(err.Error(), "subscription_topic") {

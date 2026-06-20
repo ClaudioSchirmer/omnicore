@@ -119,6 +119,26 @@ func TestMount_NoGateRegisteredPanics(t *testing.T) {
 		RequirePermission("users:read"))
 }
 
+func TestMountRaw_NoGateRegisteredPanics(t *testing.T) {
+	resetGate(t)
+	SetGate(nil)
+	app := fiber.New()
+	defer func() {
+		r := recover()
+		if r == nil {
+			t.Fatal("MountRaw with RequirePermission and no Gate must panic")
+		}
+		msg, _ := r.(string)
+		if !strings.Contains(msg, "Gate") {
+			t.Errorf("panic message should mention 'Gate', got %q", msg)
+		}
+	}()
+	MountRaw(nil, app, fiber.MethodGet, "/x",
+		func(c fiber.Ctx) error { return c.SendStatus(200) },
+		RawSpec{},
+		RequirePermission("users:read"))
+}
+
 func TestMount_RequirePermission_PatchesSpec(t *testing.T) {
 	resetGate(t)
 	SetGate(noopGate)

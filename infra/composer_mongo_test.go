@@ -86,6 +86,41 @@ func TestFetchMongoEmbed_OneToOne_NoMatch(t *testing.T) {
 	}
 }
 
+func TestFetchMongoEmbed_OneToOne_MissingFK(t *testing.T) {
+	pool := newFakePool()
+	pool.queryHandler = func(sql string, args []any) (pgx.Rows, error) {
+		// Root row lacks the buyer_id FK column → the one-to-one embed is skipped.
+		return &composerRows{cols: []string{"id", "name"}, data: [][]any{{"o1", "first"}}}, nil
+	}
+	c := NewComposerWithMongo(newFakePostgres(pool), newFakeMongo(&fakeColl{}))
+	external := FromSchema(NewExternalSchema("buyers").PK("ID", "id")).On("buyer_id").As("Buyer")
+	view := View("orders").Version(1).Root("orders").Schema(composerRootSchema()).
+		Embed("buyer", external)
+
+	doc, err := c.Compose(context.Background(), view, "o1")
+	if err != nil {
+		t.Fatalf("Compose: %v", err)
+	}
+	if _, present := doc["buyer"]; present {
+		t.Error("missing FK must skip the one-to-one mongo embed")
+	}
+}
+
+func TestFetchMongoEmbed_OneToOne_FindError(t *testing.T) {
+	pool := newFakePool()
+	pool.queryHandler = func(sql string, args []any) (pgx.Rows, error) {
+		return &composerRows{cols: []string{"id", "buyer_id", "name"}, data: [][]any{{"o1", "u1", "first"}}}, nil
+	}
+	c := NewComposerWithMongo(newFakePostgres(pool), newFakeMongo(&fakeColl{findErr: context.Canceled}))
+	external := FromSchema(NewExternalSchema("buyers").PK("ID", "id")).On("buyer_id").As("Buyer")
+	view := View("orders").Version(1).Root("orders").Schema(composerRootSchema()).
+		Embed("buyer", external)
+
+	if _, err := c.Compose(context.Background(), view, "o1"); err == nil {
+		t.Fatal("expected one-to-one FindManyByField error to surface")
+	}
+}
+
 func TestFetchMongoEmbed_NilHandle(t *testing.T) {
 	pool := newFakePool()
 	pool.queryHandler = func(sql string, args []any) (pgx.Rows, error) {
