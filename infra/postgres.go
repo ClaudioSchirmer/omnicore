@@ -12,13 +12,28 @@ import (
 	"github.com/ClaudioSchirmer/omnicore/infra/audit"
 )
 
+// pgxPool is the minimal pool surface the persister, loader, and composer
+// consume. It is unexported and never leaves the infra package, so the
+// abstraction does not cross a layer boundary. *pgxpool.Pool satisfies it
+// in production; a fake satisfies it in unit tests, letting the
+// transactional core run without a live database. It embeds pgExec (the
+// Exec/Query/QueryRow trio the registry helpers already share) and adds the
+// pool-only Begin/Close. The pool-only Acquire (pinned connection for the
+// rebuild advisory lock) stays off the interface and is reached via the
+// acquire helper, which asserts the concrete pool.
+type pgxPool interface {
+	pgExec
+	Begin(ctx context.Context) (pgx.Tx, error)
+	Close()
+}
+
 // Postgres is the persistence adapter. After construction the audit
 // surface is configured via WithAudit — without that call the persister
 // runs in a fully audit-disabled posture (no in-TX row, no slog echo)
 // which is correct for tests + integration fixtures that construct the
 // pool directly. bootstrap.Run wires it in production after Build.
 type Postgres struct {
-	pool        *pgxpool.Pool
+	pool        pgxPool
 	auditCfg    *audit.Config
 	logger      *slog.Logger
 	auditClaims []string
@@ -84,9 +99,33 @@ func (p *Postgres) Close() {
 // Pool returns the underlying pgxpool so repositories can run custom SELECTs
 // (FindByID with JOINs, paginated lookups, etc.) that don't fit the write
 // API. Use only for reads — writes must go through Insert/Update/Archive/
-// Delete/Unarchive to preserve the outbox + audit guarantees.
+// Delete/Unarchive to preserve the outbox + audit guarantees. In production
+// the adapter always holds a *pgxpool.Pool; a unit-test fake yields nil here
+// (such tests exercise the write API, never Pool()).
 func (p *Postgres) Pool() *pgxpool.Pool {
-	return p.pool
+	if pool, ok := p.pool.(*pgxpool.Pool); ok {
+		return pool
+	}
+	return nil
+}
+
+// querier exposes the pool as the minimal Exec/Query/QueryRow surface for
+// read helpers (the aggregate loader's SELECTs). It returns the internal
+// seam so those helpers run against a unit-test fake as well as a live
+// pool, without widening the public surface — Pool() stays the public,
+// concrete read handle for consumer repositories.
+func (p *Postgres) querier() pgExec { return p.pool }
+
+// acquire pins a connection from the underlying pool for the rebuild
+// advisory-lock path. Acquire is pool-only (no Tx/Conn equivalent), so it
+// stays off the pgxPool interface and is reached through this concrete
+// assertion. Production always holds a real pool.
+func (p *Postgres) acquire(ctx context.Context) (*pgxpool.Conn, error) {
+	pool, ok := p.pool.(*pgxpool.Pool)
+	if !ok {
+		return nil, fmt.Errorf("infra: connection acquire requires a live pgx pool")
+	}
+	return pool.Acquire(ctx)
 }
 
 func validIdentifier(name string) string {

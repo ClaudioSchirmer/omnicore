@@ -224,7 +224,7 @@ func (s *UpstreamSubscriber) RetryPendingFailures(ctx context.Context) (int, err
 	if s.pg == nil {
 		return 0, fmt.Errorf("retry pending upstream failures: subscriber has no Postgres handle")
 	}
-	pendings, err := ListPendingUpstreamFailuresByTopic(ctx, s.pg.Pool(), s.cfg.Topic)
+	pendings, err := ListPendingUpstreamFailuresByTopic(ctx, s.pg.querier(), s.cfg.Topic)
 	if err != nil {
 		return 0, err
 	}
@@ -612,7 +612,7 @@ func (s *UpstreamSubscriber) recordFailure(
 		Stage:             stage,
 		Error:             msg,
 	}
-	if err := RecordUpstreamFailure(ctx, s.pg.Pool(), rec); err != nil {
+	if err := RecordUpstreamFailure(ctx, s.pg.querier(), rec); err != nil {
 		s.logger.Warn("upstream.recompose.record_failure_failed",
 			"subscription", s.cfg.Topic,
 			"view", viewName,
@@ -629,7 +629,7 @@ func (s *UpstreamSubscriber) resolveFailures(ctx context.Context, viewName, upst
 	if s.pg == nil {
 		return
 	}
-	if err := ResolveUpstreamFailures(ctx, s.pg.Pool(), s.cfg.Topic, viewName, upstreamID); err != nil {
+	if err := ResolveUpstreamFailures(ctx, s.pg.querier(), s.cfg.Topic, viewName, upstreamID); err != nil {
 		s.logger.Warn("upstream.recompose.resolve_failures_failed",
 			"subscription", s.cfg.Topic,
 			"view", viewName,

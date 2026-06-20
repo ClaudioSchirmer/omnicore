@@ -235,7 +235,7 @@ func decideDrift(registry *ViewRegistryRow, populated bool, specVersion int, spe
 // carry framework-reserved _id documents under the PG control plane —
 // every doc is a domain doc.
 func hasUserDocuments(ctx context.Context, m *MongoDB, collection string) (bool, error) {
-	col := m.Collection(collection)
+	col := m.collFn(collection)
 	count, err := col.CountDocuments(ctx, bson.M{}, options.Count().SetLimit(1))
 	if err != nil {
 		return false, fmt.Errorf("count documents on %q: %w", collection, err)

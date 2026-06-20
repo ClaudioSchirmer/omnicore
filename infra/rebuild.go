@@ -73,7 +73,7 @@ func (s *SyncEngine) ExecuteRebuild(ctx context.Context, plan DriftPlan, cfg Reb
 	// Step 1 — pin a connection from the pool. The advisory lock is
 	// bound to this specific connection; releasing it at the end of the
 	// rebuild also releases the lock.
-	conn, err := s.pg.pool.Acquire(ctx)
+	conn, err := s.pg.acquire(ctx)
 	if err != nil {
 		return fmt.Errorf("acquire pg connection for rebuild on %q: %w", collection, err)
 	}

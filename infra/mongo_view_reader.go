@@ -183,7 +183,7 @@ func (r *MongoViewReader) ReadPage(ctx context.Context, view string, c queries.R
 		filter["$text"] = bson.M{"$search": c.Search}
 	}
 
-	col := r.mongo.Collection(view)
+	col := r.mongo.collFn(view)
 
 	total, err := col.CountDocuments(ctx, filter)
 	if err != nil {
@@ -338,7 +338,7 @@ func (r *MongoViewReader) ReadPage(ctx context.Context, view string, c queries.R
 func (r *MongoViewReader) ReadByID(ctx context.Context, view, id string, c queries.ReadCriteria) (map[string]any, bool, error) {
 	node := r.resolveViewSchema(view)
 	sdCol, sdOn := node.softDeleteColumn()
-	col := r.mongo.Collection(view)
+	col := r.mongo.collFn(view)
 	filter := bson.M{"_id": id}
 	applyFilter(filter, translateFilterKeys(node, c.Filter))
 	if !c.IncludeArchived && sdOn {

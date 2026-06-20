@@ -178,7 +178,7 @@ func (l *AggregateLoader[T]) findRoots(ctx context.Context, q *criteria.Query, l
 	if l.rootScanner != nil {
 		sql := "SELECT * FROM " + validIdentifier(table)
 		sql += tailClause(clause, orderSQL, limit)
-		rows, err := l.pg.Pool().Query(ctx, sql, args...)
+		rows, err := l.pg.querier().Query(ctx, sql, args...)
 		if err != nil {
 			return nil, nil, err
 		}
@@ -220,7 +220,7 @@ func (l *AggregateLoader[T]) findRoots(ctx context.Context, q *criteria.Query, l
 	}
 	sql := "SELECT " + validIdentifier(l.schema.PKColumn()) + ", " + strings.Join(quoteIdentifiers(cols), ", ") + " FROM " + validIdentifier(table)
 	sql += tailClause(clause, orderSQL, limit)
-	rows, err := l.pg.Pool().Query(ctx, sql, args...)
+	rows, err := l.pg.querier().Query(ctx, sql, args...)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -318,7 +318,7 @@ func (l *AggregateLoader[T]) hydrateChildren(ctx context.Context, entities []T, 
 				validIdentifier(childTable), validIdentifier(fkCol), childFilter,
 			)
 			for _, id := range rootIDs {
-				rows, err := l.pg.Pool().Query(ctx, sql, id)
+				rows, err := l.pg.querier().Query(ctx, sql, id)
 				if err != nil {
 					return err
 				}
@@ -361,7 +361,7 @@ func (l *AggregateLoader[T]) hydrateChildren(ctx context.Context, entities []T, 
 			strings.Join(placeholders, ", "),
 			childFilter,
 		)
-		rows, err := l.pg.Pool().Query(ctx, sql, qargs...)
+		rows, err := l.pg.querier().Query(ctx, sql, qargs...)
 		if err != nil {
 			return err
 		}
