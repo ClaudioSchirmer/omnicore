@@ -154,6 +154,19 @@ type RouteSpec struct {
 	// not a typed/paged envelope) — enforced at Mount. Set by the
 	// tabular-export *Spec wrappers (HandleQueryAsCSVSpec / …XLSXSpec).
 	FileResponse *FileResponseSpec
+
+	// OmittedQueryParams lists query parameter names (the `query:"X"` wire
+	// keys reflected from RequestType) that must NOT be rendered in the
+	// generated OpenAPI parameters, even though the Request DTO declares
+	// them. The use case is a route that reuses a richer DTO but honors only
+	// a subset of its query knobs: the tabular-export wrappers reuse the JSON
+	// list's Request DTO yet ignore pagination (limit/after/before/onlyTotal),
+	// so they list those keys here and Swagger stops advertising a control the
+	// export does not honor. Matched by exact parameter name against the query
+	// parameters; path parameters and honored filters are untouched. Empty for
+	// every other route. Set by the export *Spec wrappers; manual mounts may
+	// populate it directly.
+	OmittedQueryParams []string
 }
 
 // FileResponseSpec describes a raw file/stream success response on a

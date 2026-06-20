@@ -75,7 +75,7 @@ func TestRouteSpecOf_EquivalentToHandRolledRouteSpec(t *testing.T) {
 		SuccessStatus: 200,
 	}
 
-	if got != want {
+	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("Spec helper diverged from hand-rolled literal:\n got=%+v\nwant=%+v", got, want)
 	}
 }

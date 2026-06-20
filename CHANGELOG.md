@@ -40,6 +40,14 @@ with `1.0.0`.
   internally, so the consumer threads `view, d.Export` at an export route
   instead of spelling out `view.ExportPlan()` + `d.Translator` +
   `view.ResolveMaxExportRows(d.Config.Query.MaxExportRows)` + a filename by hand.
+- **`openapi.RouteSpec.OmittedQueryParams []string`** — query parameter names to
+  drop from the generated OpenAPI parameters even though `RequestType` declares
+  them. The export `*Spec` wrappers reuse the JSON list's Request DTO but ignore
+  pagination at runtime, so they list `limit`/`after`/`before`/`onlyTotal` here;
+  the spec assembler strips exactly those, keeping the honored filters / `fields`
+  / `sort` / `search` / `includeArchived`. Swagger no longer advertises the four
+  pagination knobs on a CSV/XLSX export — the spec stops claiming a control the
+  export does not honor. Empty (no-op) for every other route.
 - **Tabular export of a view query (CSV + XLSX, format-pluggable).**
   `fwweb.HandleQueryExport[TReq, TQ]` and the convenience `fwweb.HandleQueryAsCSV[TReq, TQ]`
   mount a route that streams the same view read as a paged GET — reusing the

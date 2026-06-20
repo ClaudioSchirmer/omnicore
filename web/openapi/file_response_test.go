@@ -59,6 +59,52 @@ func TestSpec_FileResponse_SuccessIsBinaryFileWithReflectedParams(t *testing.T) 
 	}
 }
 
+// OmittedQueryParams removes the listed query keys from the rendered
+// parameters even though RequestType declares them — the export wrappers use it
+// to hide the pagination knobs they accept-but-ignore, while honored
+// filters/controls stay.
+func TestSpec_OmittedQueryParams_HidesListedKeys(t *testing.T) {
+	type exportReq struct {
+		Name      *string `query:"name" filter:"eq,in"`
+		Search    *string `query:"search"`
+		Fields    *string `query:"fields"`
+		Limit     *int64  `query:"limit"`
+		After     *string `query:"after"`
+		Before    *string `query:"before"`
+		OnlyTotal *bool   `query:"onlyTotal"`
+	}
+	reg := NewRegistry()
+	Mount(reg, fiber.New(), fiber.MethodGet, "/users.csv",
+		func(c fiber.Ctx) error { return nil },
+		RouteSpec{
+			RequestType:        reflect.TypeOf(exportReq{}),
+			SuccessStatus:      fiber.StatusOK,
+			FileResponse:       &FileResponseSpec{ContentType: "text/csv"},
+			OmittedQueryParams: []string{"limit", "after", "before", "onlyTotal"},
+		},
+		Doc{Summary: "Export", Tags: []string{"Users"}})
+
+	out := marshalSpec(t, NewSpec(Config{Title: "T", Version: "1"}, reg))
+	get := out["paths"].(map[string]any)["/users.csv"].(map[string]any)["get"].(map[string]any)
+	params, _ := get["parameters"].([]any)
+	names := map[string]bool{}
+	for _, p := range params {
+		names[p.(map[string]any)["name"].(string)] = true
+	}
+	// Honored knobs survive (filters + the export-honored control keys).
+	for _, want := range []string{"name", "name.in", "search", "fields"} {
+		if !names[want] {
+			t.Fatalf("honored param %q must stay in the spec; got %v", want, names)
+		}
+	}
+	// Ignored pagination knobs are stripped — Swagger never advertises them.
+	for _, gone := range []string{"limit", "after", "before", "onlyTotal"} {
+		if names[gone] {
+			t.Fatalf("omitted param %q must NOT appear in the spec; got %v", gone, names)
+		}
+	}
+}
+
 func TestMount_FileResponseWithPaged_Panics(t *testing.T) {
 	defer func() {
 		if recover() == nil {

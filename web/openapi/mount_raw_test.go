@@ -57,9 +57,10 @@ func TestMountRaw_RegisterStoresRawNotSpec(t *testing.T) {
 		t.Fatal("MountRaw must populate Operation.Raw")
 	}
 	// Spec must stay at zero so the spec assembler can branch on
-	// (Raw != nil) deterministically.
+	// (Raw != nil) deterministically. RouteSpec carries a slice field
+	// (OmittedQueryParams), so it is no longer == comparable — use DeepEqual.
 	zero := RouteSpec{}
-	if op.Spec != zero {
+	if !reflect.DeepEqual(op.Spec, zero) {
 		t.Fatalf("Spec must stay at zero on a Raw operation; got %+v", op.Spec)
 	}
 	if op.Raw.Summary != "Returns the authenticated identity" {

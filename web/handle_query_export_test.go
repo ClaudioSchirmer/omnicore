@@ -191,6 +191,33 @@ func TestHandleQueryAsCSV_FieldsNarrowing(t *testing.T) {
 	}
 }
 
+// The export *Spec wrapper lists the reserved pagination keys on
+// RouteSpec.OmittedQueryParams so the OpenAPI generator strips them — the
+// export accepts-but-ignores them at runtime, so the spec must not advertise
+// them. Filters and the honored control keys stay (RequestType is reflected).
+func TestHandleQueryAsCSVSpec_OmitsPaginationFromSpec(t *testing.T) {
+	tr := translation.Default()
+	pipe := pipeline.New(tr)
+	view := fakeExportView{plan: expCSVPlan(), name: "users"}
+	deps := ExportDeps{Translator: tr, MaxExportRows: 100}
+
+	_, spec := HandleQueryAsCSVSpec(pipe, expCSVReq{}, view, deps,
+		&expCSVHandler{}, export.WithDelimiter(';'))
+
+	got := map[string]bool{}
+	for _, k := range spec.OmittedQueryParams {
+		got[k] = true
+	}
+	for _, want := range []string{"limit", "after", "before", "onlyTotal"} {
+		if !got[want] {
+			t.Fatalf("export spec must omit %q; OmittedQueryParams=%v", want, spec.OmittedQueryParams)
+		}
+	}
+	if spec.RequestType == nil {
+		t.Fatal("export spec must still reflect RequestType so filters render in Swagger")
+	}
+}
+
 func TestHandleQueryAsCSV_UnknownQueryKeyReturns400(t *testing.T) {
 	app := fiber.New()
 	h := newExportHandler()

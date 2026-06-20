@@ -549,7 +549,11 @@ fwopenapi.Mount(d.OpenAPIRegistry, app, fiber.MethodGet, "/users.csv", csvH, csv
         ceiling sent as the read limit. The ceiling resolves per-view
         (<code>ViewDefinition.MaxExportRows(n)</code>) &gt; yaml (<code>query.maxExportRows</code>) &gt;
         framework default <code>infra.DefaultMaxExportRows</code> (10000), via
-        <code>ResolveMaxExportRows</code>.
+        <code>ResolveMaxExportRows</code>. Those four pagination keys are also <strong>omitted from
+        the generated OpenAPI parameters</strong> (the export <code>*Spec</code> wrappers list them
+        on <code>RouteSpec.OmittedQueryParams</code>), so Swagger never advertises a knob the export
+        does not honor — the filters, <code>?fields</code>, <code>?sort</code>, <code>?search</code>
+        and <code>?includeArchived</code> still render, exactly as on the JSON list.
     </p>
     <p>
         <strong>Format is pluggable.</strong> The walk, the per-level offset, the labelKey headers,

@@ -65,6 +65,24 @@ type ExportDeps struct {
 	MaxExportRows int64
 }
 
+// exportIgnoredQueryParams are the reserved pagination/control keys an export
+// route accepts on the wire but deliberately ignores — an export streams the
+// full filtered set, not a page. Declared once so the SAME set is dropped in
+// buildExportCriteria (runtime) AND listed on RouteSpec.OmittedQueryParams
+// (OpenAPI), keeping the spec honest: Swagger never renders a knob the export
+// does not honor. Every other reserved key the export DOES honor (filters,
+// fields, sort, search, includeArchived) stays in the spec.
+var exportIgnoredQueryParams = []string{"limit", "after", "before", "onlyTotal"}
+
+func isExportIgnoredParam(key string) bool {
+	for _, k := range exportIgnoredQueryParams {
+		if k == key {
+			return true
+		}
+	}
+	return false
+}
+
 func HandleQueryExport[TReq HasToParamsQuery[TQ], TQ queries.FindByParamsQuery](
 	pipe *pipeline.Pipeline,
 	sample TReq,
@@ -184,9 +202,10 @@ func HandleQueryExportSpec[TReq HasToParamsQuery[TQ], TQ queries.FindByParamsQue
 ) (fiber.Handler, openapi.RouteSpec) {
 	handler := HandleQueryExport(pipe, sample, view, deps, enc, h)
 	return handler, openapi.RouteSpec{
-		RequestType:   reflect.TypeOf((*TReq)(nil)).Elem(),
-		SuccessStatus: fiber.StatusOK,
-		FileResponse:  &openapi.FileResponseSpec{ContentType: enc.ContentType()},
+		RequestType:        reflect.TypeOf((*TReq)(nil)).Elem(),
+		SuccessStatus:      fiber.StatusOK,
+		FileResponse:       &openapi.FileResponseSpec{ContentType: enc.ContentType()},
+		OmittedQueryParams: exportIgnoredQueryParams,
 	}
 }
 
@@ -239,10 +258,14 @@ func buildExportCriteria(c fiber.Ctx, schema *requestSchema, plan *queries.Expor
 		}
 		key := string(k)
 		val := string(v)
-		switch key {
-		case "limit", "after", "before", "onlyTotal":
-			// Export ignores user pagination; the row count is bounded by maxRows.
+		// Reserved pagination/control keys are accepted but ignored — an export
+		// streams the full filtered set, not a page. The same set is omitted
+		// from the generated OpenAPI parameters (RouteSpec.OmittedQueryParams),
+		// so Swagger never advertises a knob the export does not honor.
+		if isExportIgnoredParam(key) {
 			return
+		}
+		switch key {
 		case "search":
 			crit.Search = val
 			return
