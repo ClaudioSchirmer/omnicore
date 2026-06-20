@@ -20,7 +20,7 @@
     events:
       userActivated:
         eventType: UserActivated   # wire header value
-        aggregate: User            # optional — omit for standalone events
+        aggregate: User            # optional — but if declared, Dispatch requires WithAggregateID (omit both for standalone events)
         version: 1                 # optional — defaults to 1</code></pre>
 
     <p><strong>Lazy validation.</strong> An unknown <code>eventKey</code> at the first Dispatch call site surfaces as <code>ErrIntegrationEventNotConfigured</code> — same posture <code>httpclient</code> adopts for unknown service/endpoint references. The empty <code>publishes</code> block stays a valid steady state for services that only consume integration events; a typo on the producer side fails at the call site with a clear diagnostic rather than break the boot of an otherwise-functional service.</p>
