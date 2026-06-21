@@ -11,6 +11,17 @@ with `1.0.0`.
 
 ## [Unreleased]
 
+### Changed
+
+- **`TableSchema.PK` now takes only the column: `PK(column string)`** (was
+  `PK(goName, column string)`). The Go side of the primary key is fixed to the
+  `domain.Entity`/`BaseEntity` contract's `ID` (roots carry it privately and
+  expose `GetID`/`SetID`; AVOs/children expose the exported `ID` field), so it
+  was never a free parameter — only the physical column varies (`id`,
+  `person_pk`, an upstream schema's own name). This aligns `PK` with the
+  single-argument managed-column setters (`CreatedAt`/`UpdatedAt`/`SoftDelete`).
+  Call sites change from `PK("ID", "id")` to `PK("id")`. Breaking surface change.
+
 ## [0.11.0] - 2026-06-19
 
 ### Added

@@ -19,7 +19,7 @@ import (
 // EmbedMany child so the reader's nested toGoDoc mapping runs.
 func aggViewFixture(coll mongoColl) *MongoViewReader {
 	childSchema := NewExternalSchema("addresses").
-		PK("ID", "id").FK("user_id").Field("ZipCode", "zip")
+		PK("id").FK("user_id").Field("ZipCode", "zip")
 	agg := View("agg_view").Version(1).Root("builder_test_entities").
 		Schema(builderTestSchema).
 		EmbedMany("addresses", FromSchema(childSchema).As("Addresses"))

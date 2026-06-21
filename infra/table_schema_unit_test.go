@@ -26,41 +26,41 @@ func TestNewTableSchema_NonStructPanics(t *testing.T) {
 
 func TestField_MissingFieldPanics(t *testing.T) {
 	mustPanic(t, "unknown field", func() {
-		NewTableSchema[*builderTestEntity]("t").PK("ID", "id").Field("Nope", "nope")
+		NewTableSchema[*builderTestEntity]("t").PK("id").Field("Nope", "nope")
 	})
 }
 
 func TestField_DuplicateGoFieldPanics(t *testing.T) {
 	mustPanic(t, "duplicate go field", func() {
-		NewTableSchema[*builderTestEntity]("t").PK("ID", "id").
+		NewTableSchema[*builderTestEntity]("t").PK("id").
 			Field("Name", "name").Field("Name", "other")
 	})
 }
 
 func TestField_DuplicateColumnPanics(t *testing.T) {
 	mustPanic(t, "duplicate column", func() {
-		NewTableSchema[*builderTestEntity]("t").PK("ID", "id").
+		NewTableSchema[*builderTestEntity]("t").PK("id").
 			Field("Name", "shared").Field("Email", "shared")
 	})
 }
 
 func TestField_LabelKeyOnTypeAnchoredPanics(t *testing.T) {
 	mustPanic(t, "labelKey external-only", func() {
-		NewTableSchema[*builderTestEntity]("t").PK("ID", "id").
+		NewTableSchema[*builderTestEntity]("t").PK("id").
 			Field("Name", "name", "SomeLabelKey")
 	})
 }
 
 func TestField_TooManyLabelKeysPanics(t *testing.T) {
 	mustPanic(t, "two labelKeys", func() {
-		NewExternalSchema("ext").PK("ID", "id").Field("Name", "name", "a", "b")
+		NewExternalSchema("ext").PK("id").Field("Name", "name", "a", "b")
 	})
 }
 
 func TestEnsureColumnFree_EmptyColumnIsNoop(t *testing.T) {
 	// SoftDelete("") drives ensureColumnFree's empty-column early return without
 	// claiming any column.
-	s := NewTableSchema[*builderTestEntity]("t").PK("ID", "id").Field("Name", "name")
+	s := NewTableSchema[*builderTestEntity]("t").PK("id").Field("Name", "name")
 	s.ensureColumnFree("", "SoftDelete") // must not panic
 	if _, ok := s.softDeleteColumn(); ok {
 		t.Error("no soft-delete should be set")
@@ -71,22 +71,22 @@ func TestEnsureColumnFree_UpdatedAtCollisionPanics(t *testing.T) {
 	mustPanic(t, "updated_at collision", func() {
 		// UpdatedAt claims "ts"; declaring SoftDelete on the same column must
 		// trip the UpdatedAt collision arm of ensureColumnFree.
-		NewTableSchema[*builderTestEntity]("t").PK("ID", "id").
+		NewTableSchema[*builderTestEntity]("t").PK("id").
 			UpdatedAt("ts").SoftDelete("ts")
 	})
 }
 
 func TestChild_RequiresTypeAnchoredPanics(t *testing.T) {
 	mustPanic(t, "external child", func() {
-		NewTableSchema[*covAgg]("cov").PK("ID", "id").Field("Name", "name").
-			Child(NewExternalSchema("cov_children").PK("ID", "id").FK("cov_agg_id"))
+		NewTableSchema[*covAgg]("cov").PK("id").Field("Name", "name").
+			Child(NewExternalSchema("cov_children").PK("id").FK("cov_agg_id"))
 	})
 }
 
 // External (type-less) schemas carry fields with index < 0, so writeFields and
 // scanPlan take the index<0 skip branch — exercised here via direct calls.
 func TestExternalSchema_WriteFieldsSkipsUnindexed(t *testing.T) {
-	ext := NewExternalSchema("users").PK("ID", "id").Field("Name", "name")
+	ext := NewExternalSchema("users").PK("id").Field("Name", "name")
 	out := ext.writeFields(struct{ Name string }{Name: "x"})
 	if len(out) != 0 {
 		t.Errorf("external writeFields must skip unindexed fields, got %v", out)
@@ -94,7 +94,7 @@ func TestExternalSchema_WriteFieldsSkipsUnindexed(t *testing.T) {
 }
 
 func TestExternalSchema_ScanPlanSkipsUnindexed(t *testing.T) {
-	ext := NewExternalSchema("users").PK("ID", "id").Field("Name", "name")
+	ext := NewExternalSchema("users").PK("id").Field("Name", "name")
 	cols, byCol := ext.scanPlan()
 	// pkIndex is -1 for a type-less schema, and each field index is -1, so the
 	// scan plan is empty.
@@ -112,7 +112,7 @@ func TestWithSchema_NoPKPanics(t *testing.T) {
 }
 
 func TestValidateModes_ArchiveWithoutSoftDeletePanics(t *testing.T) {
-	noSD := NewTableSchema[*builderTestEntity]("t").PK("ID", "id").Field("Name", "name")
+	noSD := NewTableSchema[*builderTestEntity]("t").PK("id").Field("Name", "name")
 	mustPanic(t, "validateModes", func() {
 		noSD.validateModes([]domain.EntityMode{domain.ModeArchive})
 	})

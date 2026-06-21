@@ -102,7 +102,7 @@ func TestArchiveChild_EmptyID_Errors(t *testing.T) {
 // archiveChild surfaces an error when the child schema declares no SoftDelete.
 func TestArchiveChild_NoSoftDelete_Errors(t *testing.T) {
 	noSD := NewTableSchema[covChild]("cov_children").
-		PK("ID", "id").FK("cov_agg_id").Field("Label", "label")
+		PK("id").FK("cov_agg_id").Field("Label", "label")
 	err := archiveChild(newBuilderCtx(), newFakePool().tx, noSD, "covChild", covChild{ID: "c1", Label: "x"})
 	if err == nil {
 		t.Fatal("expected error archiving child without SoftDelete column")
@@ -226,7 +226,7 @@ func TestChildEventOf_RemainingBranches(t *testing.T) {
 // flatNoSoftDelete is builderTestEntity's schema without SoftDelete, so the
 // Archive/Unarchive requireSoftDelete error branch in execWithTx is reachable.
 var flatNoSoftDelete = NewTableSchema[*builderTestEntity]("builder_test_entities").
-	PK("ID", "id").Field("Name", "name").Field("Email", "email")
+	PK("id").Field("Name", "name").Field("Email", "email")
 
 func runBatchOp(t *testing.T, op domain.ValidEntity, schema *TableSchema, mutate func(*fakePool)) error {
 	t.Helper()

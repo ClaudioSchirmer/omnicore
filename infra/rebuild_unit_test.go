@@ -186,7 +186,7 @@ func TestRebuildAllViews_EmptyTables(t *testing.T) {
 	}
 	// A view with a PG root + an external Mongo embed so both byPGTable and
 	// byMongoColl index buckets are walked.
-	external := FromSchema(NewExternalSchema("buyers").PK("ID", "id").FK("order_id")).As("Buyers")
+	external := FromSchema(NewExternalSchema("buyers").PK("id").FK("order_id")).As("Buyers")
 	v := View("orders").Version(1).Root("orders").Schema(composerRootSchema()).
 		EmbedMany("buyers", external)
 	s := rebuildSyncEngine(pool, &fakeColl{}, []*ViewDefinition{v})

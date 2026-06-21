@@ -419,7 +419,7 @@ SELECT user_id, id, label, street, number, complement, neighborhood, city, state
     </p>
     <pre><code>func UserSchema() *fwinfra.TableSchema {
     return fwinfra.NewTableSchema[*User]("users").
-        PK("ID", "id").
+        PK("id").
         Field("Name", "name").
         Field("DisplayName", "display_name").  // any Go field ↔ any column
         Field("Email", "mail").                // a rename lives only here

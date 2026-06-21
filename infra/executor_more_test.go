@@ -284,7 +284,7 @@ func TestFlatVerbs_BeforeCommitHookError_RollsBack(t *testing.T) {
 // requireSoftDelete backstop before any TX is opened.
 func TestArchiveUnarchive_RequireSoftDelete(t *testing.T) {
 	noSD := NewTableSchema[*builderTestEntity]("flat_no_sd").
-		PK("ID", "id").
+		PK("id").
 		Field("Name", "name").
 		Field("Email", "email")
 

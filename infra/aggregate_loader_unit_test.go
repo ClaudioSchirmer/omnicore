@@ -16,7 +16,7 @@ import (
 
 func loaderSchema() *TableSchema {
 	return NewTableSchema[*aggLoaderTestEntity]("agg_loader").
-		PK("ID", "id").
+		PK("id").
 		SoftDelete("deleted_at")
 }
 

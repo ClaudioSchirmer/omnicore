@@ -53,7 +53,7 @@ func TestBaseAggregateRepository_ContextNameSharedDerivation(t *testing.T) {
 
 func TestBaseAggregateRepository_WithSchemaThreadsBothSides(t *testing.T) {
 	bar := NewBaseAggregateRepository[*barTestEntity](nil, newBARTestEntity)
-	schema := NewTableSchema[*barTestEntity]("bars").PK("ID", "id").SoftDelete("deleted_at")
+	schema := NewTableSchema[*barTestEntity]("bars").PK("id").SoftDelete("deleted_at")
 	bar.WithSchema(schema)
 	if bar.Schema != schema {
 		t.Error("WithSchema must set the write-side Schema")
@@ -90,9 +90,9 @@ func (e *ptrAggEntity) AggregateChildren() []domain.AggregateValueObject {
 
 func TestValidateDeclaredChildren_PointerVO(t *testing.T) {
 	bar := NewBaseAggregateRepository[*ptrAggEntity](nil, func() *ptrAggEntity { return &ptrAggEntity{} })
-	schema := NewTableSchema[*ptrAggEntity]("ptr_aggs").PK("ID", "id").Field("Name", "name").SoftDelete("deleted_at").
+	schema := NewTableSchema[*ptrAggEntity]("ptr_aggs").PK("id").Field("Name", "name").SoftDelete("deleted_at").
 		Child(NewTableSchema[*ptrChildVO]("ptr_children").
-			PK("ID", "id").FK("ptr_agg_id").Field("Label", "label").SoftDelete("deleted_at"))
+			PK("id").FK("ptr_agg_id").Field("Label", "label").SoftDelete("deleted_at"))
 	// Boundaries agree (pointer VO derefs to ptrChildVO == schema child key) →
 	// no panic; the deref loop is the branch under test.
 	bar.WithSchema(schema)
@@ -105,7 +105,7 @@ func TestValidateDeclaredChildren_BoundaryMismatchPanics(t *testing.T) {
 	bar := NewBaseAggregateRepository[*ptrAggEntity](nil, func() *ptrAggEntity { return &ptrAggEntity{} })
 	// Schema declares no Child while AggregateChildren() names ptrChildVO →
 	// boundary mismatch panic.
-	schema := NewTableSchema[*ptrAggEntity]("ptr_aggs").PK("ID", "id").Field("Name", "name").SoftDelete("deleted_at")
+	schema := NewTableSchema[*ptrAggEntity]("ptr_aggs").PK("id").Field("Name", "name").SoftDelete("deleted_at")
 	defer func() {
 		if recover() == nil {
 			t.Fatal("expected aggregate boundary mismatch panic")

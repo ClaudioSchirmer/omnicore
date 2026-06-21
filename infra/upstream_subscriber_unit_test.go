@@ -46,7 +46,7 @@ func upstreamFakeMongo(colls map[string]*fakeColl) *MongoDB {
 // "buyer_id" — exactly the shape UpstreamSubscriber.ripple recomposes.
 func ordersBuyerView() *ViewDefinition {
 	external := FromSchema(
-		NewExternalSchema("users").PK("ID", "id").Field("Name", "name")).
+		NewExternalSchema("users").PK("id").Field("Name", "name")).
 		On("buyer_id").As("Buyer")
 	return View("orders").Version(1).Root("orders").Schema(composerRootSchema()).
 		Embed("buyer", external)
@@ -358,7 +358,7 @@ func TestRipple_ComposeReturnsNilDoc(t *testing.T) {
 func TestRipple_NoJoinField(t *testing.T) {
 	// A view that does NOT embed the upstream collection → joinFieldFor == ""
 	// → ripple logs and skips it (defensive branch).
-	other := FromSchema(NewExternalSchema("partners").PK("ID", "id")).On("partner_id").As("Partner")
+	other := FromSchema(NewExternalSchema("partners").PK("id")).On("partner_id").As("Partner")
 	view := View("orders").Version(1).Root("orders").Schema(composerRootSchema()).Embed("partner", other)
 	mongo := upstreamFakeMongo(happyColls())
 	composer := NewComposerWithMongo(newFakePostgres(ordersRootPool()), mongo)
@@ -435,7 +435,7 @@ func TestJoinFieldFor(t *testing.T) {
 		t.Errorf("expected join field buyer_id, got %q", jf)
 	}
 	other := View("x").Version(1).Root("orders").Schema(composerRootSchema()).
-		Embed("partner", FromSchema(NewExternalSchema("partners").PK("ID", "id")).On("partner_id").As("Partner"))
+		Embed("partner", FromSchema(NewExternalSchema("partners").PK("id")).On("partner_id").As("Partner"))
 	if jf := s.joinFieldFor(other); jf != "" {
 		t.Errorf("view not embedding the upstream collection must yield empty join field, got %q", jf)
 	}

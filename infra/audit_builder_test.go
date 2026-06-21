@@ -26,7 +26,7 @@ func (e *builderTestEntity) Modes() []domain.EntityMode {
 func (e *builderTestEntity) BuildRules(string, domain.Service, *domain.Rules) {}
 
 var builderTestSchema = NewTableSchema[*builderTestEntity]("builder_test_entities").
-	PK("ID", "id").
+	PK("id").
 	Field("Name", "name").
 	Field("Email", "email").
 	SoftDelete("deleted_at").

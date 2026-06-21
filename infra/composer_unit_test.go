@@ -54,14 +54,14 @@ func (r *composerRows) Err() error { return nil }
 
 func composerRootSchema() *TableSchema {
 	return NewTableSchema[*builderTestEntity]("orders").
-		PK("ID", "id").
+		PK("id").
 		Field("Name", "name").
 		SoftDelete("deleted_at")
 }
 
 func composerLineSchema() *TableSchema {
 	return NewTableSchema[fakeVO]("lines").
-		PK("ID", "id").
+		PK("id").
 		FK("order_id").
 		Field("Label", "label").
 		SoftDelete("deleted_at")
@@ -69,7 +69,7 @@ func composerLineSchema() *TableSchema {
 
 func composerBuyerSchema() *TableSchema {
 	return NewTableSchema[fakeVO]("buyers").
-		PK("ID", "id").
+		PK("id").
 		Field("Label", "label")
 }
 

@@ -287,7 +287,7 @@ func ValidateViewSchemas(views []*ViewDefinition) error {
 			problems = append(problems, fmt.Sprintf("view %q: no root .Schema(...) declared", v.Name()))
 		} else if !v.schema.hasPKDeclared() {
 			problems = append(problems, fmt.Sprintf(
-				"view %q: root schema (table %q) declares no primary key — declare .PK(goField, column)",
+				"view %q: root schema (table %q) declares no primary key — declare .PK(column)",
 				v.Name(), v.schema.Table()))
 		}
 		problems = appendEmbedSchemaProblems(problems, v.Name(), v.embeds)
@@ -318,7 +318,7 @@ func appendEmbedSchemaProblems(acc []string, viewName string, embeds []embedDef)
 			}
 			if !e.source.schema.hasPKDeclared() {
 				acc = append(acc, fmt.Sprintf(
-					"view %q: embed %q (source %q) declares no primary key — declare .PK(goField, column)",
+					"view %q: embed %q (source %q) declares no primary key — declare .PK(column)",
 					viewName, e.field, e.source.table))
 			}
 			// Grandchild-via-schema: an embed source whose TableSchema carries

@@ -208,7 +208,7 @@ type fieldResolverSample struct {
 
 func TestSchemaFieldResolver(t *testing.T) {
 	r := NewTableSchema[fieldResolverSample]("t").
-		PK("ID", "id").
+		PK("id").
 		Field("Name", "full_name").
 		Field("ZipCode", "zip_code").
 		fieldResolver()

@@ -41,7 +41,7 @@ func (v schemaTag) BuildRules(string, domain.Service, *domain.Rules) {}
 
 func schemaPersonSchema() *TableSchema {
 	return NewTableSchema[*schemaPerson]("tb_people").
-		PK("ID", "person_pk").
+		PK("person_pk").
 		Field("FullName", "full_name").
 		Field("Email", "mail").
 		SoftDelete("removed_at").
@@ -49,7 +49,7 @@ func schemaPersonSchema() *TableSchema {
 		UpdatedAt("updated_at").
 		Child(
 			NewTableSchema[schemaTag]("tb_tags").
-				PK("ID", "tag_pk").
+				PK("tag_pk").
 				FK("person_ref").
 				Field("Label", "caption").
 				SoftDelete("removed_at").

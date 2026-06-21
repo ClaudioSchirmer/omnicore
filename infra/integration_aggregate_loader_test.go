@@ -76,7 +76,7 @@ func createLoaderTables(t *testing.T, pg *Postgres) {
 // (loaderTagVO + loaderNoteVO) — the explicit map the loader resolves from.
 func loaderRootSchema() *TableSchema {
 	return NewTableSchema[*loaderRoot]("loader_roots").
-		PK("ID", "id").
+		PK("id").
 		Field("Name", "name").
 		Field("Email", "email").
 		SoftDelete("deleted_at").
@@ -84,7 +84,7 @@ func loaderRootSchema() *TableSchema {
 		UpdatedAt("updated_at").
 		Child(loaderTagSchema()).
 		Child(NewTableSchema[loaderNoteVO]("loader_note_vos").
-			PK("ID", "id").
+			PK("id").
 			FK("loader_root_id").
 			Field("Body", "body").
 			SoftDelete("deleted_at").
@@ -96,7 +96,7 @@ func loaderRootSchema() *TableSchema {
 // loaderTagVO child — for tests that exercise a single child type.
 func loaderRootSchemaTagsOnly() *TableSchema {
 	return NewTableSchema[*loaderRoot]("loader_roots").
-		PK("ID", "id").
+		PK("id").
 		Field("Name", "name").
 		Field("Email", "email").
 		SoftDelete("deleted_at").
@@ -109,7 +109,7 @@ func loaderRootSchemaTagsOnly() *TableSchema {
 // the root-only path.
 func loaderRootSchemaFlat() *TableSchema {
 	return NewTableSchema[*loaderRoot]("loader_roots").
-		PK("ID", "id").
+		PK("id").
 		Field("Name", "name").
 		Field("Email", "email").
 		SoftDelete("deleted_at").
@@ -119,7 +119,7 @@ func loaderRootSchemaFlat() *TableSchema {
 
 func loaderTagSchema() *TableSchema {
 	return NewTableSchema[loaderTagVO]("loader_tag_vos").
-		PK("ID", "id").
+		PK("id").
 		FK("loader_root_id").
 		Field("Label", "label").
 		SoftDelete("deleted_at").
@@ -355,14 +355,14 @@ func TestAggregateLoader_Schema_TableAndFKOverride(t *testing.T) {
 	loader := NewAggregateLoader[*loaderRoot](pg, func() *loaderRoot { return &loaderRoot{} }).
 		WithContextName("LegacyLoader").
 		WithSchema(NewTableSchema[*loaderRoot]("tb_loader_legacy").
-			PK("ID", "id").
+			PK("id").
 			Field("Name", "name").
 			Field("Email", "email").
 			SoftDelete("deleted_at").
 			CreatedAt("created_at").
 			UpdatedAt("updated_at").
 			Child(NewTableSchema[loaderTagVO]("tb_tags").
-				PK("ID", "id").
+				PK("id").
 				FK("owner_id").
 				Field("Label", "label").
 				SoftDelete("deleted_at").
@@ -425,7 +425,7 @@ func TestAggregateLoader_Load_AutoScanWithNoFieldsErrors(t *testing.T) {
 		created_at TIMESTAMP NOT NULL DEFAULT NOW()
 	)`)
 	loader := NewAggregateLoader[*emptyEntity](pg, func() *emptyEntity { return &emptyEntity{} }).
-		WithSchema(NewTableSchema[*emptyEntity]("empty_entities").PK("ID", "id").SoftDelete("deleted_at").CreatedAt("created_at"))
+		WithSchema(NewTableSchema[*emptyEntity]("empty_entities").PK("id").SoftDelete("deleted_at").CreatedAt("created_at"))
 	_, err := loader.FindOne(context.Background(), criteria.ByID("00000000-0000-0000-0000-000000000000"))
 	if err == nil {
 		t.Fatal("expected error from auto-scan with zero columns")
