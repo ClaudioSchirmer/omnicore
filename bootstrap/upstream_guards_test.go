@@ -10,7 +10,7 @@ import (
 // extEmbed builds an external (Mongo) embed source from a type-less schema for
 // the guard tests — table + FK from the schema, .As supplies the Go segment.
 func extEmbed(collection, fk, as string) *infra.Source {
-	return infra.FromSchema(infra.NewExternalSchema(collection).PK("ID", "id").FK(fk)).On(fk).As(as)
+	return infra.FromSchema(infra.NewExternalSchema(collection).PK("id").FK(fk)).On(fk).As(as)
 }
 
 func TestValidateViewSchemas_RejectsMissingRootSchema(t *testing.T) {
@@ -23,8 +23,8 @@ func TestValidateViewSchemas_RejectsMissingRootSchema(t *testing.T) {
 
 func TestValidateViewSchemas_RejectsExternalEmbedWithoutAs(t *testing.T) {
 	v := infra.View("orders").Root("orders").
-		Schema(infra.NewExternalSchema("orders").PK("ID", "id")).
-		Embed("buyer", infra.FromSchema(infra.NewExternalSchema("users").PK("ID", "id")).On("buyer_id")). // no .As
+		Schema(infra.NewExternalSchema("orders").PK("id")).
+		Embed("buyer", infra.FromSchema(infra.NewExternalSchema("users").PK("id")).On("buyer_id")). // no .As
 		Version(1)
 	err := infra.ValidateViewSchemas([]*infra.ViewDefinition{v})
 	if err == nil || !strings.Contains(err.Error(), ".As(") {
@@ -34,7 +34,7 @@ func TestValidateViewSchemas_RejectsExternalEmbedWithoutAs(t *testing.T) {
 
 func TestValidateViewSchemas_PassesWhenComplete(t *testing.T) {
 	v := infra.View("orders").Root("orders").
-		Schema(infra.NewExternalSchema("orders").PK("ID", "id")).
+		Schema(infra.NewExternalSchema("orders").PK("id")).
 		Embed("buyer", extEmbed("users", "buyer_id", "Buyer")).
 		Version(1)
 	if err := infra.ValidateViewSchemas([]*infra.ViewDefinition{v}); err != nil {

@@ -154,7 +154,7 @@ func TestFindRoots_RowsErr(t *testing.T) {
 func TestFindRoots_NoColumnsSchema(t *testing.T) {
 	// A schema with only a PK declares no scan columns and no manual scanner:
 	// findRoots returns the "schema declares no columns" config error.
-	bare := NewTableSchema[*builderTestEntity]("bare").PK("ID", "id")
+	bare := NewTableSchema[*builderTestEntity]("bare").PK("id")
 	pg := loaderPostgres(func(string, []any) (pgx.Rows, error) {
 		return &fakeRows{}, nil
 	})

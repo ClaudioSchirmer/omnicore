@@ -48,7 +48,7 @@ func TestGuardJoinFieldIndex_RejectsMissingJoinField(t *testing.T) {
 	// guard reports the missing-join-field diagnostic rather than the
 	// missing-index one.
 	v := infra.View("orders").Root("orders").
-		Embed("buyer", infra.FromSchema(infra.NewExternalSchema("users").PK("ID", "id")).As("Buyer")).
+		Embed("buyer", infra.FromSchema(infra.NewExternalSchema("users").PK("id")).As("Buyer")).
 		Version(1)
 	errs := guardJoinFieldIndex([]*infra.ViewDefinition{v})
 	if len(errs) != 1 || !strings.Contains(errs[0], "§8.1") ||

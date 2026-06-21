@@ -14,18 +14,18 @@ import (
 type embedFixture struct{ ID string }
 
 func pgEmbed(table, fk string) *Source {
-	return FromSchema(NewTableSchema[embedFixture](table).PK("ID", "id").FK(fk))
+	return FromSchema(NewTableSchema[embedFixture](table).PK("id").FK(fk))
 }
 
 func mongoEmbed(table, fk string) *Source {
-	return FromSchema(NewExternalSchema(table).PK("ID", "id").FK(fk))
+	return FromSchema(NewExternalSchema(table).PK("id").FK(fk))
 }
 
 // rootSchema is a minimal type-anchored schema for a composing test view's root
 // (PK + soft-delete). The composer only reads PK + soft-delete from the root
 // schema; row columns are read generically, so the dummy type suffices.
 func rootSchema(table string) *TableSchema {
-	return NewTableSchema[embedFixture](table).PK("ID", "id").SoftDelete("deleted_at")
+	return NewTableSchema[embedFixture](table).PK("id").SoftDelete("deleted_at")
 }
 
 // ─── grandchild-via-schema on an embed source (read side) ────────────────────
@@ -34,9 +34,9 @@ func rootSchema(table string) *TableSchema {
 // whose TableSchema carries Child(...) is a fatal view-validation error — views
 // support depth via nested EmbedMany/Embed, never via the schema's children.
 func TestValidateViewSchemas_RejectsEmbedSourceWithChildren(t *testing.T) {
-	grand := NewTableSchema[embedFixture]("tags").PK("ID", "id").FK("address_id")
+	grand := NewTableSchema[embedFixture]("tags").PK("id").FK("address_id")
 	src := FromSchema(NewTableSchema[embedFixture]("addresses").
-		PK("ID", "id").FK("user_id").Child(grand))
+		PK("id").FK("user_id").Child(grand))
 	v := View("users").Version(1).Root("users").
 		Schema(rootSchema("users")).
 		EmbedMany("addresses", src)
@@ -53,8 +53,8 @@ func TestValidateViewSchemas_RejectsEmbedSourceWithChildren(t *testing.T) {
 // TestValidateViewSchemas_RootSchemaWithChildrenOK confirms the view ROOT schema
 // may carry Child(...) (the reused write schema) — only embed SOURCES are flagged.
 func TestValidateViewSchemas_RootSchemaWithChildrenOK(t *testing.T) {
-	rootWithChild := NewTableSchema[embedFixture]("users").PK("ID", "id").SoftDelete("deleted_at").
-		Child(NewTableSchema[schemaSample]("addresses").PK("ID", "id").FK("user_id"))
+	rootWithChild := NewTableSchema[embedFixture]("users").PK("id").SoftDelete("deleted_at").
+		Child(NewTableSchema[schemaSample]("addresses").PK("id").FK("user_id"))
 	v := View("users").Version(1).Root("users").
 		Schema(rootWithChild).
 		EmbedMany("addresses", pgEmbed("addresses", "user_id"))
@@ -97,7 +97,7 @@ func TestValidateViewSchemas_RejectsEmbedSourceWithoutPK(t *testing.T) {
 // without a foreign key is a fatal view-validation error — the composer joins
 // the child rows on it.
 func TestValidateViewSchemas_RejectsEmbedManyWithoutFK(t *testing.T) {
-	src := FromSchema(NewTableSchema[embedFixture]("addresses").PK("ID", "id")) // no .FK
+	src := FromSchema(NewTableSchema[embedFixture]("addresses").PK("id")) // no .FK
 	v := View("users").Version(1).Root("users").
 		Schema(rootSchema("users")).
 		EmbedMany("addresses", src)
@@ -111,7 +111,7 @@ func TestValidateViewSchemas_RejectsEmbedManyWithoutFK(t *testing.T) {
 // Embed without .On is a fatal view-validation error — it joins on the parent's
 // FK column, which must be named.
 func TestValidateViewSchemas_RejectsOneToOneEmbedWithoutOn(t *testing.T) {
-	src := FromSchema(NewTableSchema[embedFixture]("buyer").PK("ID", "id")) // no .On
+	src := FromSchema(NewTableSchema[embedFixture]("buyer").PK("id")) // no .On
 	v := View("orders").Version(1).Root("orders").
 		Schema(rootSchema("orders")).
 		Embed("buyer", src)
@@ -163,7 +163,7 @@ func TestViewDefinition_DeleteOnArchiveBuilder_Aggregate(t *testing.T) {
 }
 
 func TestSource_SchemaDef_AndKindFromSchema(t *testing.T) {
-	ext := NewExternalSchema("users").PK("ID", "id")
+	ext := NewExternalSchema("users").PK("id")
 	mongo := FromSchema(ext)
 	if mongo.SchemaDef() != ext {
 		t.Error("SchemaDef() must return the schema FromSchema was built with")
@@ -171,7 +171,7 @@ func TestSource_SchemaDef_AndKindFromSchema(t *testing.T) {
 	if !mongo.IsMongo() {
 		t.Error("FromSchema(NewExternalSchema(...)) must be a Mongo source")
 	}
-	pg := FromSchema(NewTableSchema[embedFixture]("addresses").PK("ID", "id"))
+	pg := FromSchema(NewTableSchema[embedFixture]("addresses").PK("id"))
 	if pg.IsMongo() {
 		t.Error("FromSchema(NewTableSchema[...]) must be a PG source")
 	}
@@ -195,12 +195,12 @@ func (v vsChild) GetID() string { return v.ID }
 
 func TestViewNode_TranslatesGoPathToColumnAndBack(t *testing.T) {
 	rootSchema := NewTableSchema[vsRoot]("people").
-		PK("ID", "person_pk").
+		PK("person_pk").
 		Field("Email", "mail").
 		SoftDelete("removed_at").
 		CreatedAt("created_at")
 	childSchema := NewExternalSchema("tags").
-		PK("ID", "tag_pk").
+		PK("tag_pk").
 		FK("person_ref").
 		Field("ZipCode", "zip")
 

@@ -22,14 +22,14 @@ type shapeChild struct {
 // cols) with an embedded addresses(id, user_id FK, zip_code) collection.
 func shapeView() *ViewDefinition {
 	root := NewTableSchema[shapeRoot]("users").
-		PK("ID", "id").
+		PK("id").
 		Field("Email", "email").
 		Field("Name", "name").
 		SoftDelete("deleted_at").
 		CreatedAt("created_at").
 		UpdatedAt("updated_at")
 	child := NewTableSchema[shapeChild]("addresses").
-		PK("ID", "id").
+		PK("id").
 		FK("user_id").
 		Field("ZipCode", "zip_code")
 	return View("users").Version(1).Root("users").

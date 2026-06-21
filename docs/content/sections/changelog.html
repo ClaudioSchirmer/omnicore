@@ -3,7 +3,9 @@
 <div class="changelog">
     <div class="release">
         <div class="release-head"><span class="release-tag">Unreleased</span><span class="release-date">—</span></div>
-        <ul></ul>
+        <ul>
+            <li><strong>Changed</strong> — <strong>breaking</strong>: <code>TableSchema.PK</code> now takes only the column — <code>PK("id")</code> instead of <code>PK("ID", "id")</code>. The Go side of the primary key was never a free parameter: the <code>domain.Entity</code>/<code>BaseEntity</code> contract fixes identity to <code>ID</code> (an aggregate root carries it privately and exposes <code>GetID</code>/<code>SetID</code>; an AVO/child exposes the exported field <code>ID</code>), so only the physical column varies (<code>id</code>, <code>person_pk</code>, an upstream schema's own name). This aligns <code>PK</code> with the single-argument managed-column setters (<code>CreatedAt</code> / <code>UpdatedAt</code> / <code>SoftDelete</code>). Every call site drops the first argument. See <a href="#table-schema">TableSchema (PG + views)</a>.</li>
+        </ul>
     </div>
 
     <div class="release">

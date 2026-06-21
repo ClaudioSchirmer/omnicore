@@ -10,7 +10,7 @@ import (
 // + all three managed columns, reused across the resolution-helper tests.
 func fullSchema() *TableSchema {
 	return NewTableSchema[schemaSample]("t").
-		PK("ID", "id").
+		PK("id").
 		Field("Name", "name").
 		CreatedAt("created_at").
 		UpdatedAt("updated_at").
@@ -43,7 +43,7 @@ func TestTableSchema_NowColumns(t *testing.T) {
 }
 
 func TestTableSchema_NowColumns_WhenManagedAbsent(t *testing.T) {
-	s := NewTableSchema[schemaSample]("t").PK("ID", "id").Field("Name", "name")
+	s := NewTableSchema[schemaSample]("t").PK("id").Field("Name", "name")
 	if got := s.insertNowColumns(); got != nil {
 		t.Errorf("insertNowColumns with no managed cols = %v, want nil", got)
 	}
@@ -130,7 +130,7 @@ func TestTableSchema_ColumnForRead(t *testing.T) {
 
 func TestTableSchema_ReadHelpers_ManagedAbsentMissing(t *testing.T) {
 	// Without managed columns, the fixed logical names resolve to ok=false.
-	s := NewTableSchema[schemaSample]("t").PK("ID", "id").Field("Name", "name")
+	s := NewTableSchema[schemaSample]("t").PK("id").Field("Name", "name")
 	for _, col := range []string{"created_at", "updated_at", "deleted_at"} {
 		if _, ok := s.goNameForRead(col); ok {
 			t.Errorf("goNameForRead(%q) should be false when managed columns are absent", col)
@@ -158,7 +158,7 @@ func TestTableSchema_TypeName(t *testing.T) {
 	if got := fullSchema().typeName(); got != "schemaSample" {
 		t.Errorf("typeName = %q, want schemaSample", got)
 	}
-	ext := NewExternalSchema("users").PK("ID", "id").Field("Name", "name")
+	ext := NewExternalSchema("users").PK("id").Field("Name", "name")
 	if got := ext.typeName(); got != "" {
 		t.Errorf("external typeName = %q, want empty", got)
 	}
@@ -183,7 +183,7 @@ func TestModeName(t *testing.T) {
 
 func TestViewDefinition_Getters(t *testing.T) {
 	root := fullSchema()
-	child := NewTableSchema[schemaSample]("c").PK("ID", "id").FK("t_id").Field("Name", "name")
+	child := NewTableSchema[schemaSample]("c").PK("id").FK("t_id").Field("Name", "name")
 	v := View("users").Version(4).Root("t").Schema(root).
 		EmbedMany("kids", FromSchema(child))
 

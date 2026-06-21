@@ -83,7 +83,7 @@
 <pre><code>// Type-anchored — validated against *User at call time.
 func UserSchema() *fwinfra.TableSchema {
     return fwinfra.NewTableSchema[*User]("users").
-        PK("ID", "id").                 // Go "ID" ↔ column "id" (single-column PK)
+        PK("id").                       // column "id" — Go side fixed to ID (single-column PK)
         Field("Name", "name").
         Field("Email", "mail").         // renamed column
         Field("Phone", "phone").
@@ -95,7 +95,7 @@ func UserSchema() *fwinfra.TableSchema {
 
 func AddressSchema() *fwinfra.TableSchema {
     return fwinfra.NewTableSchema[Address]("addresses").
-        PK("ID", "id").
+        PK("id").
         FK("user_id").                  // FK to the root — injected by the persister
         Field("Street", "street").
         Field("ZipCode", "zip_code").
@@ -105,10 +105,11 @@ func AddressSchema() *fwinfra.TableSchema {
 }
 
 // Type-less — for an upstream-projected external FromSchema source (no local struct).
-fwinfra.NewExternalSchema("users").PK("ID", "id").Field("Email", "mail")</code></pre>
+fwinfra.NewExternalSchema("users").PK("id").Field("Email", "mail")</code></pre>
 <p>
-    The Go-side primary-key field is conventionally <code>ID</code> (the <code>BaseEntity</code> contract);
-    <code>PK("ID", "col")</code> declares both sides. <code>FK</code> names the child's foreign-key column referencing the
+    The Go-side primary-key field is fixed to <code>ID</code> by the <code>BaseEntity</code>/AVO contract (an aggregate
+    root carries it privately and exposes <code>GetID</code>/<code>SetID</code>; an AVO exposes the exported field
+    <code>ID</code>), so <code>PK("col")</code> declares only the column. <code>FK</code> names the child's foreign-key column referencing the
     root — it is injected by the persister and is <strong>not</strong> a struct field. Every other persisted field is a
     <code>Field("Go", "column")</code> pair.
 </p>
@@ -239,7 +240,7 @@ func OrdersView() *fwinfra.ViewDefinition {
         Schema(OrderSchema()).
         Embed("buyer", fwinfra.FromSchema(
             fwinfra.NewExternalSchema("users").  // type-less: names the UPSTREAM's columns
-                PK("ID", "id").
+                PK("id").
                 Field("Name", "name").
                 Field("Email", "mail")).         // logical Go name ↔ upstream column
             On("buyer_id").                      // parent doc FK pointing at the source PK
@@ -264,10 +265,11 @@ func OrdersView() *fwinfra.ViewDefinition {
         declared managed column, no two map to the same physical column. The collision panic names both offenders.</li>
     <li><strong>Modes() ⟺ SoftDelete</strong> — an entity declaring <code>ModeArchive</code>/<code>ModeUnarchive</code>
         without <code>SoftDelete</code> panics; a runtime guard backs it up.</li>
-    <li><strong>PK is mandatory (no default) + single-column</strong> — there is no <code>"ID"</code>/<code>"id"</code>
-        guessing: every schema (root, child, embed source) must declare <code>PK(goField, column)</code>, which rejects
-        empty names. A schema reaching <code>WithSchema</code> / <code>Child</code> / <code>ValidateViewSchemas</code>
-        without a declared PK is a boot failure. Single-column only.</li>
+    <li><strong>PK is mandatory (no default) + single-column</strong> — every schema (root, child, embed source) must
+        declare its PK column via <code>PK(column)</code>, which rejects an empty column. The Go side is fixed to the
+        Entity contract's <code>ID</code> (never guessed from the column name). A schema reaching
+        <code>WithSchema</code> / <code>Child</code> / <code>ValidateViewSchemas</code> without a declared PK is a boot
+        failure. Single-column only.</li>
     <li><strong>FK on children + embed join keys</strong> — an aggregate <code>Child(...)</code> without <code>.FK(col)</code>
         panics (the persister injects the root id into it). On the read side, an <code>EmbedMany</code> source without
         <code>.FK(col)</code>, and a one-to-one <code>Embed</code> without <code>.On(col)</code>, are fatal

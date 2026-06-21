@@ -174,8 +174,8 @@ func TestViewNode_ColumnPathEdges(t *testing.T) {
 	if _, ok := nilNode.columnPath([]string{"X"}); ok {
 		t.Error("nil node must not resolve")
 	}
-	rootSchema := NewTableSchema[vsRoot]("people").PK("ID", "person_pk").Field("Email", "mail")
-	childSchema := NewExternalSchema("tags").PK("ID", "tag_pk").FK("person_ref").Field("ZipCode", "zip")
+	rootSchema := NewTableSchema[vsRoot]("people").PK("person_pk").Field("Email", "mail")
+	childSchema := NewExternalSchema("tags").PK("tag_pk").FK("person_ref").Field("ZipCode", "zip")
 	v := View("people").Root("people").Schema(rootSchema).
 		EmbedMany("addresses", FromSchema(childSchema).As("Addresses"))
 	node := v.buildViewNode()
@@ -195,8 +195,8 @@ func TestViewNode_ColumnPathEdges(t *testing.T) {
 }
 
 func TestViewNode_ToGoDoc_OneToOneEmbedAndDrop(t *testing.T) {
-	rootSchema := NewTableSchema[vsRoot]("people").PK("ID", "person_pk").Field("Email", "mail")
-	buyerSchema := NewExternalSchema("buyers").PK("ID", "b_pk").Field("Email", "b_mail")
+	rootSchema := NewTableSchema[vsRoot]("people").PK("person_pk").Field("Email", "mail")
+	buyerSchema := NewExternalSchema("buyers").PK("b_pk").Field("Email", "b_mail")
 	v := View("people").Root("people").Schema(rootSchema).
 		Embed("buyer", FromSchema(buyerSchema).On("buyer_ref").As("Buyer"))
 	node := v.buildViewNode()
@@ -221,7 +221,7 @@ func TestViewNode_ToGoDoc_OneToOneEmbedAndDrop(t *testing.T) {
 }
 
 func TestTranslateValue_MapAndPassthrough(t *testing.T) {
-	childSchema := NewExternalSchema("tags").PK("ID", "tag_pk").FK("ref").Field("ZipCode", "zip")
+	childSchema := NewExternalSchema("tags").PK("tag_pk").FK("ref").Field("ZipCode", "zip")
 	node := newViewNode(childSchema, nil)
 	e := &viewEmbed{goSegment: "Addresses", docField: "addresses", node: node}
 
@@ -273,7 +273,7 @@ func TestNewViewNode_NilSourceAndSegmentFallback(t *testing.T) {
 		t.Error("nil-source embed must be skipped")
 	}
 	// An external embed with no .As falls back to the doc field as the segment.
-	ext := FromSchema(NewExternalSchema("u").PK("ID", "id"))
+	ext := FromSchema(NewExternalSchema("u").PK("id"))
 	n2 := newViewNode(builderTestSchema, []embedDef{{field: "buyer", source: ext}})
 	if _, ok := n2.embeds["buyer"]; !ok {
 		t.Errorf("segment fallback to doc field expected, embeds=%v", n2.embeds)
@@ -283,15 +283,15 @@ func TestNewViewNode_NilSourceAndSegmentFallback(t *testing.T) {
 // ─── view.go: Source.Embeds, resolveGoSegment, DependentMongoViews, index ────
 
 func TestSource_Embeds(t *testing.T) {
-	src := FromSchema(NewTableSchema[embedFixture]("orders").PK("ID", "id")).
-		EmbedMany("lines", FromSchema(NewTableSchema[embedFixture]("lines").PK("ID", "id").FK("order_id")))
+	src := FromSchema(NewTableSchema[embedFixture]("orders").PK("id")).
+		EmbedMany("lines", FromSchema(NewTableSchema[embedFixture]("lines").PK("id").FK("order_id")))
 	if len(src.Embeds()) != 1 {
 		t.Fatalf("Source.Embeds() = %d, want 1", len(src.Embeds()))
 	}
 }
 
 func TestResolveGoSegment_ExternalNoAsIsEmpty(t *testing.T) {
-	ext := FromSchema(NewExternalSchema("users").PK("ID", "id"))
+	ext := FromSchema(NewExternalSchema("users").PK("id"))
 	e := embedDef{field: "buyer", source: ext, many: false}
 	if seg := resolveGoSegment(e); seg != "" {
 		t.Errorf("external embed without .As must resolve to empty segment, got %q", seg)
@@ -303,7 +303,7 @@ func TestResolveGoSegment_ExternalNoAsIsEmpty(t *testing.T) {
 }
 
 func TestValidateViewSchemas_ExternalEmbedMissingAs(t *testing.T) {
-	src := FromSchema(NewExternalSchema("users").PK("ID", "id").FK("user_id")) // no .As
+	src := FromSchema(NewExternalSchema("users").PK("id").FK("user_id")) // no .As
 	v := View("orders").Version(1).Root("orders").
 		Schema(rootSchema("orders")).
 		EmbedMany("buyers", src)
@@ -316,8 +316,8 @@ func TestValidateViewSchemas_ExternalEmbedMissingAs(t *testing.T) {
 func TestDependentMongoViews_NestedMatch(t *testing.T) {
 	// A view embedding an external (Mongo) collection at a nested level must be
 	// reported by DependentMongoViews / viewEmbedsMongoCollection.
-	nestedMongo := FromSchema(NewExternalSchema("users").PK("ID", "id").FK("order_id")).As("Buyer").On("buyer_id")
-	pgLines := FromSchema(NewTableSchema[embedFixture]("lines").PK("ID", "id").FK("order_id")).
+	nestedMongo := FromSchema(NewExternalSchema("users").PK("id").FK("order_id")).As("Buyer").On("buyer_id")
+	pgLines := FromSchema(NewTableSchema[embedFixture]("lines").PK("id").FK("order_id")).
 		Embed("buyer", nestedMongo)
 	v := View("orders").Version(1).Root("orders").Schema(rootSchema("orders")).
 		EmbedMany("lines", pgLines)
@@ -333,8 +333,8 @@ func TestDependentMongoViews_NestedMatch(t *testing.T) {
 }
 
 func TestBuildViewIndex_PGAndMongo(t *testing.T) {
-	mongoSrc := FromSchema(NewExternalSchema("users").PK("ID", "id").FK("order_id")).As("Buyers")
-	pgSrc := FromSchema(NewTableSchema[embedFixture]("lines").PK("ID", "id").FK("order_id"))
+	mongoSrc := FromSchema(NewExternalSchema("users").PK("id").FK("order_id")).As("Buyers")
+	pgSrc := FromSchema(NewTableSchema[embedFixture]("lines").PK("id").FK("order_id"))
 	v := View("orders").Version(1).Root("orders").Schema(rootSchema("orders")).
 		EmbedMany("lines", pgSrc).
 		EmbedMany("buyers", mongoSrc)
@@ -465,7 +465,7 @@ func TestComposer_EmbedChildQueryError(t *testing.T) {
 // ─── view_schema.go: toGoDoc _id passthrough ─────────────────────────────────
 
 func TestToGoDoc_IDPassthrough(t *testing.T) {
-	rootSchema := NewTableSchema[vsRoot]("people").PK("ID", "person_pk").Field("Email", "mail")
+	rootSchema := NewTableSchema[vsRoot]("people").PK("person_pk").Field("Email", "mail")
 	node := newViewNode(rootSchema, nil)
 	got := node.toGoDoc(map[string]any{"_id": "doc-1", "mail": "a@x"})
 	if got["_id"] != "doc-1" {
@@ -501,8 +501,8 @@ func TestValidateViewSchemas_NoRootSchema(t *testing.T) {
 }
 
 func TestBuildViewIndex_NestedEmbedRecursion(t *testing.T) {
-	grandchild := FromSchema(NewTableSchema[embedFixture]("tags").PK("ID", "id").FK("line_id"))
-	lines := FromSchema(NewTableSchema[embedFixture]("lines").PK("ID", "id").FK("order_id")).
+	grandchild := FromSchema(NewTableSchema[embedFixture]("tags").PK("id").FK("line_id"))
+	lines := FromSchema(NewTableSchema[embedFixture]("lines").PK("id").FK("order_id")).
 		EmbedMany("tags", grandchild)
 	v := View("orders").Version(1).Root("orders").Schema(rootSchema("orders")).
 		EmbedMany("lines", lines)

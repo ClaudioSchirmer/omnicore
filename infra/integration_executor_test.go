@@ -48,7 +48,7 @@ func flatPersonSchema() *TableSchema { return flatPersonSchemaOn("flat_persons")
 
 func flatPersonSchemaOn(table string) *TableSchema {
 	return NewTableSchema[*flatPerson](table).
-		PK("ID", "id").
+		PK("id").
 		Field("Name", "name").
 		Field("Email", "email").
 		Field("Phone", "phone").

@@ -65,14 +65,14 @@ func createAggregateTables(t *testing.T, pg *Postgres) {
 // aggCustomerSchema declares the aggCustomer aggregate (root + aggChannel child).
 func aggCustomerSchema() *TableSchema {
 	return NewTableSchema[*aggCustomer]("agg_customers").
-		PK("ID", "id").
+		PK("id").
 		Field("Name", "name").
 		Field("Email", "email").
 		SoftDelete("deleted_at").
 		CreatedAt("created_at").
 		UpdatedAt("updated_at").
 		Child(NewTableSchema[aggChannel]("agg_channels").
-			PK("ID", "id").
+			PK("id").
 			FK("agg_customer_id").
 			Field("Label", "label").
 			SoftDelete("deleted_at").
@@ -372,13 +372,13 @@ func TestPostgres_InsertAggregate_RespectsChildTableAndFKOverride(t *testing.T) 
 	ins, _ := domain.GetInsertable(root, nil, "GetInsertable")
 
 	schema := NewTableSchema[*aggInvoice]("agg_invoices").
-		PK("ID", "id").
+		PK("id").
 		Field("Reference", "reference").
 		SoftDelete("deleted_at").
 		CreatedAt("created_at").
 		UpdatedAt("updated_at").
 		Child(NewTableSchema[lineItem]("tb_lines").
-			PK("ID", "id").
+			PK("id").
 			FK("invoice_id").
 			Field("Amount", "amount").
 			SoftDelete("deleted_at").

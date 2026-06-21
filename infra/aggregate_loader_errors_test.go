@@ -81,9 +81,9 @@ func TestFindRoots_ManualScanner_EmptyIDErrors(t *testing.T) {
 // when the schema declares children.
 func TestHydrateChildren_FlatEntityReturnsNil(t *testing.T) {
 	schema := NewTableSchema[*aggLoaderTestEntity]("agg_loader").
-		PK("ID", "id").SoftDelete("deleted_at").
+		PK("id").SoftDelete("deleted_at").
 		Child(NewTableSchema[covChild]("cov_children").
-			PK("ID", "id").FK("agg_loader_id").Field("Label", "label").SoftDelete("deleted_at"))
+			PK("id").FK("agg_loader_id").Field("Label", "label").SoftDelete("deleted_at"))
 	l := NewAggregateLoader[*aggLoaderTestEntity](newFakePostgres(newFakePool()), newAggLoaderTestEntity).
 		WithSchema(schema)
 
@@ -101,7 +101,7 @@ func newCovAggLoader(pool *fakePool, schema *TableSchema) *AggregateLoader[*covA
 // A child type with a scanner but no .Child(...) schema is a configuration bug
 // surfaced as an error.
 func TestHydrateChildren_UndeclaredChildSchemaErrors(t *testing.T) {
-	schema := NewTableSchema[*covAgg]("cov_aggs").PK("ID", "id").Field("Name", "name").SoftDelete("deleted_at")
+	schema := NewTableSchema[*covAgg]("cov_aggs").PK("id").Field("Name", "name").SoftDelete("deleted_at")
 	l := newCovAggLoader(newFakePool(), schema).
 		WithChildScanner("Ghost", func(pgx.Rows) (domain.AggregateValueObject, error) { return nil, nil })
 

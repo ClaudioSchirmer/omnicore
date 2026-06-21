@@ -776,7 +776,7 @@ A type-anchored `NewTableSchema[T]` validates every `Field` against the Go type 
 ```go
 func UserSchema() *fwinfra.TableSchema {
     return fwinfra.NewTableSchema[*User]("users").
-        PK("ID", "id").                 // single-column PK
+        PK("id").                       // single-column PK column (Go side fixed to ID by the Entity contract)
         Field("Name", "name").
         Field("Email", "mail").         // renamed column
         SoftDelete("deleted_at").       // managed: enables the predicate
@@ -786,13 +786,13 @@ func UserSchema() *fwinfra.TableSchema {
 }
 func AddressSchema() *fwinfra.TableSchema {
     return fwinfra.NewTableSchema[Address]("addresses").
-        PK("ID", "id").
+        PK("id").
         FK("user_id").                  // FK to root — injected by persister, NOT a struct field
         Field("Street", "street").Field("ZipCode", "zip_code").
         SoftDelete("deleted_at").CreatedAt("created_at").UpdatedAt("updated_at")
 }
 // Type-less external source (no local struct):
-fwinfra.NewExternalSchema("users").PK("ID", "id").Field("Email", "mail")
+fwinfra.NewExternalSchema("users").PK("id").Field("Email", "mail")
 ```
 
 **Three managed columns — by presence, not a flag.** Calling `SoftDelete`/`CreatedAt`/`UpdatedAt` enables the behavior; omitting disables it. `created_at`/`updated_at` are actively stamped `NOW()` (never a DB `DEFAULT`). `SoftDelete` present → read gate `col IS NULL` + Archive/Unarchive write `col = NOW()`/`NULL`; omitted → Archive/Unarchive unavailable. On the read path the three are also readable under fixed logical names `CreatedAt`/`UpdatedAt`/`DeletedAt`.
@@ -886,7 +886,7 @@ upstreamSubscriptions:
 ```go
 fwinfra.View("orders").Version(1).Root("orders").Schema(OrderSchema()).
     Embed("buyer", fwinfra.FromSchema(
-        fwinfra.NewExternalSchema("users").PK("ID","id").Field("Name","name").Field("Email","mail")).
+        fwinfra.NewExternalSchema("users").PK("id").Field("Name","name").Field("Email","mail")).
         On("buyer_id").As("Buyer")).
     EmbedMany("lines", fwinfra.FromSchema(OrderLineSchema())).
     Indexes(fwinfra.Index("buyer_id"))   // boot guard §8.1 requires it

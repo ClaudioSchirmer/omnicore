@@ -19,7 +19,7 @@ import (
 // must fail at requireSoftDelete before opening a TX).
 func covAggNoSDSchema() *TableSchema {
 	return NewTableSchema[*covAgg]("cov_aggs").
-		PK("ID", "id").
+		PK("id").
 		Field("Name", "name")
 }
 
@@ -27,7 +27,7 @@ func covAggNoSDSchema() *TableSchema {
 // loop hits the child==nil continue arm.
 func covAggNoChildSchema() *TableSchema {
 	return NewTableSchema[*covAgg]("cov_aggs").
-		PK("ID", "id").
+		PK("id").
 		Field("Name", "name").
 		SoftDelete("deleted_at")
 }
@@ -36,11 +36,11 @@ func covAggNoChildSchema() *TableSchema {
 // hits the !ok continue arm.
 func covAggChildNoSDSchema() *TableSchema {
 	return NewTableSchema[*covAgg]("cov_aggs").
-		PK("ID", "id").
+		PK("id").
 		Field("Name", "name").
 		SoftDelete("deleted_at").
 		Child(NewTableSchema[covChild]("cov_children").
-			PK("ID", "id").
+			PK("id").
 			FK("cov_agg_id").
 			Field("Label", "label"))
 }

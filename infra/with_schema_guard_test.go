@@ -24,7 +24,7 @@ func (e *flatArchivable) BuildRules(string, domain.Service, *domain.Rules) {}
 
 func TestBaseRepositoryWithSchema_ModesVsSoftDelete_Panics(t *testing.T) {
 	repo := &BaseRepository[*flatArchivable]{NewEntity: func() *flatArchivable { return &flatArchivable{} }}
-	schema := NewTableSchema[*flatArchivable]("flats").PK("ID", "id") // no SoftDelete
+	schema := NewTableSchema[*flatArchivable]("flats").PK("id") // no SoftDelete
 	defer func() {
 		r := recover()
 		if r == nil {
@@ -39,7 +39,7 @@ func TestBaseRepositoryWithSchema_ModesVsSoftDelete_Panics(t *testing.T) {
 
 func TestBaseRepositoryWithSchema_Valid_SetsSchema(t *testing.T) {
 	repo := &BaseRepository[*flatArchivable]{NewEntity: func() *flatArchivable { return &flatArchivable{} }}
-	schema := NewTableSchema[*flatArchivable]("flats").PK("ID", "id").SoftDelete("deleted_at")
+	schema := NewTableSchema[*flatArchivable]("flats").PK("id").SoftDelete("deleted_at")
 	repo.WithSchema(schema)
 	if repo.Schema != schema {
 		t.Error("WithSchema must bind the schema on the happy path")
@@ -48,7 +48,7 @@ func TestBaseRepositoryWithSchema_Valid_SetsSchema(t *testing.T) {
 
 func TestBaseRepositoryWithSchema_NilFactory_Panics(t *testing.T) {
 	repo := &BaseRepository[*flatArchivable]{} // NewEntity nil
-	schema := NewTableSchema[*flatArchivable]("flats").PK("ID", "id").SoftDelete("deleted_at")
+	schema := NewTableSchema[*flatArchivable]("flats").PK("id").SoftDelete("deleted_at")
 	defer func() {
 		if recover() == nil {
 			t.Fatal("expected panic: nil NewEntity surfaced at WithSchema construction")
@@ -79,19 +79,19 @@ func (a *guardAggRoot) AggregateChildren() []domain.AggregateValueObject {
 }
 
 func guardChildSchema() *TableSchema {
-	return NewTableSchema[guardChildVO]("guard_children").PK("ID", "id").FK("root_id")
+	return NewTableSchema[guardChildVO]("guard_children").PK("id").FK("root_id")
 }
 
 func TestAggregateChildrenGuard_Match_OK(t *testing.T) {
 	bar := NewBaseAggregateRepository[*guardAggRoot](nil, func() *guardAggRoot { return &guardAggRoot{} })
-	schema := NewTableSchema[*guardAggRoot]("guards").PK("ID", "id").SoftDelete("deleted_at").
+	schema := NewTableSchema[*guardAggRoot]("guards").PK("id").SoftDelete("deleted_at").
 		Child(guardChildSchema())
 	bar.WithSchema(schema) // boundaries agree — must not panic
 }
 
 func TestAggregateChildrenGuard_DeclaredButNoChildSchema_Panics(t *testing.T) {
 	bar := NewBaseAggregateRepository[*guardAggRoot](nil, func() *guardAggRoot { return &guardAggRoot{} })
-	schema := NewTableSchema[*guardAggRoot]("guards").PK("ID", "id").SoftDelete("deleted_at") // no Child
+	schema := NewTableSchema[*guardAggRoot]("guards").PK("id").SoftDelete("deleted_at") // no Child
 	defer func() {
 		r := recover()
 		if r == nil {
@@ -110,7 +110,7 @@ func TestAggregateChildrenGuard_ChildSchemaButNotDeclared_Panics(t *testing.T) {
 	// AggregateRootProvider, so its declared boundary is empty — a schema with
 	// a Child(...) must be flagged.
 	bar := NewBaseAggregateRepository[*barTestEntity](nil, newBARTestEntity)
-	schema := NewTableSchema[*barTestEntity]("bars").PK("ID", "id").SoftDelete("deleted_at").
+	schema := NewTableSchema[*barTestEntity]("bars").PK("id").SoftDelete("deleted_at").
 		Child(guardChildSchema())
 	defer func() {
 		r := recover()

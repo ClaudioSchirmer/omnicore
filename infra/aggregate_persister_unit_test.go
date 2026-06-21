@@ -86,7 +86,7 @@ func TestInsertAggregate_RootQueryRowError_RollsBack(t *testing.T) {
 // has no TableSchema registered on the root schema.
 func TestInsertAggregate_UndeclaredChildSchema_Errors(t *testing.T) {
 	noChild := NewTableSchema[*covAgg]("cov_aggs").
-		PK("ID", "id").
+		PK("id").
 		Field("Name", "name").
 		SoftDelete("deleted_at")
 

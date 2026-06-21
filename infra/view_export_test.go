@@ -25,16 +25,16 @@ func (a expAddr) BuildRules(string, domain.Service, *domain.Rules) {}
 
 func buildExportTestView() *ViewDefinition {
 	userSchema := NewTableSchema[*expUser]("users").
-		PK("ID", "id").
+		PK("id").
 		Field("Name", "name").
 		Field("Email", "email")
 	addrSchema := NewTableSchema[expAddr]("addresses").
-		PK("ID", "id").
+		PK("id").
 		FK("user_id").
 		Field("ZipCode", "zip_code")
 	// External (type-less) source carries its labelKey inline — the "mini-domain".
 	partnerSchema := NewExternalSchema("partners").
-		PK("ID", "id").
+		PK("id").
 		Field("PartnerName", "name", "PartnerNameField")
 
 	return View("users").Version(1).Root("users").

@@ -116,7 +116,7 @@ func (u *User) ReplaceAddresses(addrs []Address) {
 // child table + FK are declared via .Child(...). No name inference anywhere.
 func UserSchema() *fwinfra.TableSchema {
     return fwinfra.NewTableSchema[*User]("users").
-        PK("ID", "id").
+        PK("id").
         Field("Name", "name").
         Field("Email", "email").
         Field("Username", "username").
@@ -126,7 +126,7 @@ func UserSchema() *fwinfra.TableSchema {
         UpdatedAt("updated_at").
         Child(fwinfra.NewTableSchema[Address]("addresses").
             FK("user_id").                 // injected by the persister, not a struct field
-            PK("ID", "id").
+            PK("id").
             Field("Street", "street").
             Field("ZipCode", "zip_code").
             SoftDelete("deleted_at"))

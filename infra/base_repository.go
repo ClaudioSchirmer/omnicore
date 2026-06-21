@@ -126,7 +126,7 @@ func (w boundWriter[T]) Unarchive(u domain.Unarchivable) error {
 func (r *BaseRepository[T]) WithSchema(schema *TableSchema) *BaseRepository[T] {
 	if !schema.hasPKDeclared() {
 		panic(fmt.Sprintf(
-			"infra.TableSchema(%s): no primary key declared — declare .PK(goField, column); "+
+			"infra.TableSchema(%s): no primary key declared — declare .PK(column); "+
 				"there is no default, the developer must declare it",
 			schema.Table(),
 		))
