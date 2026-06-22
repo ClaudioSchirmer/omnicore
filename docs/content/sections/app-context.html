@@ -62,22 +62,22 @@
     <code>TenantMismatchNotification</code>) lives under <a href="#authz-seams">Authorization</a>, Layer 3.
   </p>
   <pre><code>// WRITE — stamp the JWT subject onto a PERSISTED column (declared via TableSchema.Field("OwnerID","owner_id") → real column owner_id).
-func (c InsertDocumentCommand) ToEntity(ctx *configuration.AppContext) *Document {
+func (c InsertDocumentCommand) ToEntity(ctx *configuration.AppContext) (*Document, error) {
     d := &amp;Document{Title: c.Title /* ... */}
     if id := ctx.Identity(); id != nil {
         d.OwnerID = id.Subject          // claim → persisted field; the INSERT writes column owner_id
     }
-    return d
+    return d, nil
 }
 
 // READ — filter by that same column from the same claim.
-func (q FindDocumentsQuery) ToCriteria(ctx *configuration.AppContext) fwqueries.ReadCriteria {
+func (q FindDocumentsQuery) ToCriteria(ctx *configuration.AppContext) (fwqueries.ReadCriteria, error) {
     crit := q.Criteria
     if id := ctx.Identity(); id != nil {
         if crit.Filter == nil { crit.Filter = map[string]any{} }
         crit.Filter["owner_id"] = id.Subject   // overlay → only the caller's own documents return
     }
-    return crit
+    return crit, nil
 }</code></pre>
   <p class="note">
     Contrast with the <em>runtime-only</em> case: a field not declared in the <code>TableSchema</code> (e.g.

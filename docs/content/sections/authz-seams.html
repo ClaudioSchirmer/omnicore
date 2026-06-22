@@ -54,13 +54,14 @@ fwopenapi.MountRaw(d.OpenAPIRegistry, app, fiber.MethodGet, "/whoami",
   <pre><code>// Command mapper — application layer, the only layer that may translate ctx
 // into business-named entity fields. Runtime-only fields are simply not declared
 // in the TableSchema, so the persister never persists or scans them.
-func (*ArchiveUserCommand) ApplyTo(ctx *configuration.AppContext, u *User) {
+func (*ArchiveUserCommand) ApplyTo(ctx *configuration.AppContext, u *User) error {
     if id := ctx.Identity(); id != nil {
         if email, _ := id.Claims["email"].(string); email != "" {
             u.RequestingPrincipalEmail = email
         }
         u.RequestingPrincipalIsAdmin = id.HasPermission("users:admin")
     }
+    return nil
 }
 
 // BuildRules — domain layer, branches by actionName to scope the check
@@ -84,12 +85,12 @@ func (u *User) BuildRules(actionName string, svc domain.Service, r *domain.Rules
     <li><strong>Writes</strong> — the Command's mapper populates <code>entity.TenantID</code>; <code>BuildRules</code> enforces that the resource's <code>TenantID</code> matches the principal's claim, emitting <code>TenantMismatchNotification (403)</code> on mismatch.</li>
   </ul>
 
-  <pre><code>func (q *FindUserByParamsQuery) ToCriteria(ctx *configuration.AppContext) fwqueries.ReadCriteria {
+  <pre><code>func (q *FindUserByParamsQuery) ToCriteria(ctx *configuration.AppContext) (fwqueries.ReadCriteria, error) {
     crit := q.WireCriteria
     if t := ctx.Identity().TenantID(); t != "" {
         crit.Filter["tenant_id"] = t
     }
-    return crit
+    return crit, nil
 }</code></pre>
 
   <h3>YAML configuration</h3>

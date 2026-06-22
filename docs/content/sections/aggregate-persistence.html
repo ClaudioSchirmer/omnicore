@@ -169,11 +169,12 @@ r.WithSchema(UserSchema())
 
     <h3>Replacing the children collection</h3>
     <p>For full-replace Update (replace all items), the root method delegates to the framework's generic helper:</p>
-    <pre><code>func (c UpdateUserCommand) ApplyTo(_ *configuration.AppContext, u *appdomain.User) {
+    <pre><code>func (c UpdateUserCommand) ApplyTo(_ *configuration.AppContext, u *appdomain.User) error {
     u.Name = c.Name
     addrs := make([]appdomain.Address, len(c.Addresses))
     for i, a := range c.Addresses { addrs[i] = a.toAddress() }
     u.ReplaceAddresses(addrs)  // delegates to domain.ReplaceAggregateChildrenOf(u, addrs)
+    return nil
 }</code></pre>
     <p>Equivalent to <code>ClearAggregateItemsOfType("Address")</code> + <code>AddAggregateChild</code> loop, but type-safe — every item goes through the type-guard, items of types not declared in <code>AggregateChildren()</code> are rejected with <code>InvalidAggregateChildNotification</code>.</p>
 

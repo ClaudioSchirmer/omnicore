@@ -38,11 +38,11 @@ type InsertUserCommand struct {
     Email string
 }
 
-func (c *InsertUserCommand) ToEntity(_ *configuration.AppContext) *User {
-    return &amp;User{Name: c.Name, Email: c.Email}
+func (c *InsertUserCommand) ToEntity(_ *configuration.AppContext) (*User, error) {
+    return &amp;User{Name: c.Name, Email: c.Email}, nil
 }
-func (c *InsertUserCommand) FromEntity(_ *configuration.AppContext, u *User) InsertUserResult {
-    return InsertUserResult{ID: *u.GetID(), Name: u.Name, Email: u.Email}
+func (c *InsertUserCommand) FromEntity(_ *configuration.AppContext, u *User) (InsertUserResult, error) {
+    return InsertUserResult{ID: *u.GetID(), Name: u.Name, Email: u.Email}, nil
 }
 
 // Optional in-TX side effect: emit an extra integration-event row
