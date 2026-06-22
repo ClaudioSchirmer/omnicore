@@ -45,7 +45,10 @@ type FindByIDQueryHandler[Q queries.FindByIDQuery] struct {
 func (h *FindByIDQueryHandler[Q]) Handle(ctx *configuration.AppContext, q Q) (map[string]any, error) {
 	RequirePathID(q.GetID().Value(), "FindByIDQueryHandler")
 	id := q.GetID().String()
-	crit := q.ToCriteria(ctx)
+	crit, err := q.ToCriteria(ctx)
+	if err != nil {
+		return nil, err
+	}
 	doc, found, err := h.Reader.ReadByID(ctx, h.View, id, crit)
 	if err != nil {
 		return nil, err

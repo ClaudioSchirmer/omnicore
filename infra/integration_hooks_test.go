@@ -269,7 +269,7 @@ func TestPostgres_Update_HookFires_BothSlots(t *testing.T) {
 	e.SetID(domain.NewID(res.ID))
 
 	e.Name = "alice2"
-	upd, _ := domain.GetUpdatable(e, func(*flatPerson) {}, nil, "GetUpdatable")
+	upd, _ := domain.GetUpdatable(e, func(*flatPerson) error { return nil }, nil, "GetUpdatable")
 
 	abCalled, bcCalled := false, false
 	hook := writeHook{
@@ -302,7 +302,7 @@ func TestPostgres_Update_BeforeCommitError_RollsBack(t *testing.T) {
 
 	original := outboxCount(t, pg)
 	e.Name = "alice2"
-	upd, _ := domain.GetUpdatable(e, func(*flatPerson) {}, nil, "GetUpdatable")
+	upd, _ := domain.GetUpdatable(e, func(*flatPerson) error { return nil }, nil, "GetUpdatable")
 	hook := buildBeforeCommitHook(func(persistence.RequestContext, domain.Entity, domain.ID, persistence.TxHandle) error {
 		return errors.New("rejects")
 	})

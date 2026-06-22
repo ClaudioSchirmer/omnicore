@@ -42,7 +42,7 @@ func (h *UpdateCommandHandler[T, Cmd, TResult]) Handle(ctx *configuration.AppCon
 	if err != nil {
 		return zero, err
 	}
-	apply := func(entity T) { cmd.ApplyTo(ctx, entity) }
+	apply := func(entity T) error { return cmd.ApplyTo(ctx, entity) }
 	updatable, err := domain.GetUpdatable(current, apply, h.Service, "GetUpdatable")
 	if err != nil {
 		return zero, err
@@ -51,5 +51,9 @@ func (h *UpdateCommandHandler[T, Cmd, TResult]) Handle(ctx *configuration.AppCon
 	if err := h.Repo.Scope(ctx, opts...).Update(updatable); err != nil {
 		return zero, err
 	}
-	return cmd.FromEntity(ctx, current), nil
+	result, err := cmd.FromEntity(ctx, current)
+	if err != nil {
+		return zero, err
+	}
+	return result, nil
 }

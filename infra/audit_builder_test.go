@@ -88,7 +88,7 @@ func TestBuildUpdateEvent_KindDeltaWithChangesOnly(t *testing.T) {
 	e := &builderTestEntity{Name: "alice", Email: "a@x.com"}
 	e.SetID(domain.NewID(uuid.NewString()))
 
-	apply := func(x *builderTestEntity) { x.Name = "bob" }
+	apply := func(x *builderTestEntity) error { x.Name = "bob"; return nil }
 	u, err := domain.GetUpdatable(e, apply, nil, "GetUpdatable")
 	if err != nil {
 		t.Fatalf("GetUpdatable: %v", err)
@@ -118,7 +118,7 @@ func TestBuildUpdateEvent_PartialUpdateSharesUpdateVerb(t *testing.T) {
 	e := &builderTestEntity{Name: "alice", Email: "a@x.com"}
 	e.SetID(domain.NewID(uuid.NewString()))
 
-	apply := func(x *builderTestEntity) { x.Name = "bob" }
+	apply := func(x *builderTestEntity) error { x.Name = "bob"; return nil }
 	u, err := domain.GetPartialUpdatable(e, apply, nil, "GetPartialUpdatable")
 	if err != nil {
 		t.Fatalf("GetPartialUpdatable: %v", err)

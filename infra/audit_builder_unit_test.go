@@ -93,7 +93,7 @@ func TestChildrenOf_UpdateConstructorChildSkipped(t *testing.T) {
 	root := &covAgg{Name: "a"}
 	root.SetID(domain.NewID(uuid.NewString()))
 	root.AggregateConstructor([]domain.AggregateValueObject{covChild{ID: "c1", Label: "x"}})
-	u, err := domain.GetUpdatable(root, func(*covAgg) {}, nil, "GetUpdatable")
+	u, err := domain.GetUpdatable(root, func(*covAgg) error { return nil }, nil, "GetUpdatable")
 	if err != nil {
 		t.Fatalf("GetUpdatable: %v", err)
 	}

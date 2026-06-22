@@ -13,6 +13,22 @@ with `1.0.0`.
 
 ### Changed
 
+- **Application mappers now raise notifications by return — every fallible mapper
+  returns `error`.** The Auto command/query contracts gain an `error` result on
+  the developer-written boundary methods: `InsertCommand.ToEntity` →
+  `(T, error)`; `FromEntity` → `(TResult, error)` on all six command contracts;
+  `ApplyTo`/`ApplyPartiallyTo` → `error`; `FindByParamsQuery`/`FindByIDQuery`'s
+  `ToCriteria` → `(ReadCriteria, error)`. `domain.GetUpdatable` /
+  `GetPartialUpdatable` accept `apply func(T) error` (propagated before
+  validation). This lets Application (and Infra) raise a notification from a
+  mapper — e.g. an external-service failure inside `ToEntity` — via the idiomatic
+  Go return path (`errors.As` at `pipeline.Run`), instead of being forced through
+  the domain. The accumulate-then-gate facilitator stays domain-only, justified
+  by the domain being the one sealed construction path (`ValidEntity` cannot be
+  hand-built). Auto handlers propagate each mapper's `error`; `pipeline.Run` is
+  unchanged. Breaking surface change — consumer mappers add `, error` and a
+  `nil`/propagated return.
+
 - **`TableSchema.PK` now takes only the column: `PK(column string)`** (was
   `PK(goName, column string)`). The Go side of the primary key is fixed to the
   `domain.Entity`/`BaseEntity` contract's `ID` (roots carry it privately and

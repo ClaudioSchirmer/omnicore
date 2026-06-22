@@ -24,9 +24,11 @@ type capturingInsertCmd struct {
 	entity *testEntity
 }
 
-func (c *capturingInsertCmd) ToEntity(_ *configuration.AppContext) *testEntity { return c.entity }
-func (c *capturingInsertCmd) FromEntity(_ *configuration.AppContext, _ *testEntity) fwresults.None {
-	return fwresults.None{}
+func (c *capturingInsertCmd) ToEntity(_ *configuration.AppContext) (*testEntity, error) {
+	return c.entity, nil
+}
+func (c *capturingInsertCmd) FromEntity(_ *configuration.AppContext, _ *testEntity) (fwresults.None, error) {
+	return fwresults.None{}, nil
 }
 
 // ─── Insert ──────────────────────────────────────────────────────────────────
@@ -54,7 +56,7 @@ func TestInsertCommandHandler_NilServiceIsBackwardsCompat(t *testing.T) {
 	repo := newMockRepo()
 	entity := &testEntity{Name: "no-service"}
 	h := &InsertCommandHandler[*testEntity, *capturingInsertCmd, fwresults.None]{
-		Repo:    repo,
+		Repo: repo,
 	}
 
 	if _, err := h.Handle(testCtx(), &capturingInsertCmd{entity: entity}); err != nil {
@@ -94,7 +96,7 @@ func TestUpdateCommandHandler_PassesServiceToBuildRules(t *testing.T) {
 func TestUpdateCommandHandler_NilServiceIsBackwardsCompat(t *testing.T) {
 	repo := newMockRepo()
 	h := &UpdateCommandHandler[*testEntity, *testUpdateCmd, fwresults.None]{
-		Repo:    repo,
+		Repo: repo,
 	}
 
 	cmd := &testUpdateCmd{Name: "renamed"}
@@ -135,7 +137,7 @@ func TestPartialUpdateCommandHandler_PassesServiceToBuildRules(t *testing.T) {
 func TestPartialUpdateCommandHandler_NilServiceIsBackwardsCompat(t *testing.T) {
 	repo := newMockRepo()
 	h := &PartialUpdateCommandHandler[*testEntity, *testPatchCmd, fwresults.None]{
-		Repo:    repo,
+		Repo: repo,
 	}
 
 	newName := "patched"
@@ -176,7 +178,7 @@ func TestDeleteCommandHandler_PassesServiceToBuildRules(t *testing.T) {
 func TestDeleteCommandHandler_NilServiceIsBackwardsCompat(t *testing.T) {
 	repo := newMockRepo()
 	h := &DeleteCommandHandler[*testEntity, *testCmdWithID, fwresults.None]{
-		Repo:    repo,
+		Repo: repo,
 	}
 
 	cmd := &testCmdWithID{}

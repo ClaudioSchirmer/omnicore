@@ -47,7 +47,7 @@ func covAggChildNoSDSchema() *TableSchema {
 
 func TestUpdateAggregate_RootQueryRowError_RollsBack(t *testing.T) {
 	root := newCovAgg(t, covChild{ID: "c1", Label: "x"})
-	u, _ := domain.GetUpdatable(root, func(*covAgg) {}, nil, "GetUpdatable")
+	u, _ := domain.GetUpdatable(root, func(*covAgg) error { return nil }, nil, "GetUpdatable")
 	pool := newFakePool()
 	pool.tx.queryRowErr = errFake
 	pg := newFakePostgres(pool)
@@ -221,7 +221,7 @@ func TestInsertUpdateAggregate_AuditError(t *testing.T) {
 	})
 	t.Run("update", func(t *testing.T) {
 		root := newCovAgg(t, covChild{ID: "c1", Label: "x"})
-		u, _ := domain.GetUpdatable(root, func(*covAgg) {}, nil, "GetUpdatable")
+		u, _ := domain.GetUpdatable(root, func(*covAgg) error { return nil }, nil, "GetUpdatable")
 		pool := newFakePool()
 		pool.tx.execErrSubstr = "audit_events"
 		if _, err := auditedPostgres(pool).Update(newBuilderCtx(), u, covAggSchema, writeHook{}); err == nil {

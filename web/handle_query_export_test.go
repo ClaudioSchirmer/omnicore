@@ -33,9 +33,9 @@ type expCSVQuery struct {
 	Criteria queries.ReadCriteria
 }
 
-func (q *expCSVQuery) ToCriteria(ctx *configuration.AppContext) queries.ReadCriteria {
+func (q *expCSVQuery) ToCriteria(ctx *configuration.AppContext) (queries.ReadCriteria, error) {
 	_ = ctx
-	return q.Criteria
+	return q.Criteria, nil
 }
 
 func (r expCSVReq) ToQuery(c queries.ReadCriteria) *expCSVQuery {

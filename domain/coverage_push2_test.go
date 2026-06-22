@@ -169,7 +169,7 @@ func (u *updateDeleteServiceEntity) RequiresService() bool              { return
 func TestValidateForUpdate_NilServiceRejected(t *testing.T) {
 	e := &updateDeleteServiceEntity{}
 	e.SetID(NewID("abc"))
-	if _, err := GetUpdatable(e, func(*updateDeleteServiceEntity) {}, nil, "GetUpdatable"); err == nil {
+	if _, err := GetUpdatable(e, func(*updateDeleteServiceEntity) error { return nil }, nil, "GetUpdatable"); err == nil {
 		t.Fatal("expected GetUpdatable to fail when a required service is nil")
 	}
 }

@@ -371,7 +371,9 @@ type actionAwareRoot struct {
 	rec *actionRecorder
 }
 
-func (a *actionAwareRoot) Modes() []EntityMode { return []EntityMode{ModeInsert, ModeUpdate, ModeDelete} }
+func (a *actionAwareRoot) Modes() []EntityMode {
+	return []EntityMode{ModeInsert, ModeUpdate, ModeDelete}
+}
 func (a *actionAwareRoot) BuildRules(actionName string, _ Service, _ *Rules) {
 	if a.rec != nil {
 		a.rec.root = append(a.rec.root, actionName)
@@ -416,7 +418,7 @@ func TestGetUpdatable_PropagatesCustomActionName(t *testing.T) {
 	root.SetID(NewRandomID())
 	AddAggregateChild(root, actionAwareChild{ID: "1", rec: rec})
 
-	if _, err := GetUpdatable(root, func(*actionAwareRoot) {}, nil, "StrictUpdate"); err != nil {
+	if _, err := GetUpdatable(root, func(*actionAwareRoot) error { return nil }, nil, "StrictUpdate"); err != nil {
 		t.Fatalf("GetUpdatable failed: %v", err)
 	}
 

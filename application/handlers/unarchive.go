@@ -55,7 +55,9 @@ func (h *UnarchiveCommandHandler[T, Cmd, TResult]) Handle(ctx *configuration.App
 		sample.SetID(id)
 	}
 
-	cmd.ApplyTo(ctx, sample)
+	if err := cmd.ApplyTo(ctx, sample); err != nil {
+		return zero, err
+	}
 	unarchivable, err := domain.GetUnarchivable(sample, h.Service, "GetUnarchivable")
 	if err != nil {
 		return zero, err
@@ -64,5 +66,9 @@ func (h *UnarchiveCommandHandler[T, Cmd, TResult]) Handle(ctx *configuration.App
 	if err := h.Repo.Scope(ctx, opts...).Unarchive(unarchivable); err != nil {
 		return zero, err
 	}
-	return cmd.FromEntity(ctx, sample), nil
+	result, err := cmd.FromEntity(ctx, sample)
+	if err != nil {
+		return zero, err
+	}
+	return result, nil
 }

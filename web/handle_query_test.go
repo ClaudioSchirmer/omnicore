@@ -39,9 +39,9 @@ type testFindParamsQuery struct {
 	SeenLang configuration.Language
 }
 
-func (q *testFindParamsQuery) ToCriteria(ctx *configuration.AppContext) queries.ReadCriteria {
+func (q *testFindParamsQuery) ToCriteria(ctx *configuration.AppContext) (queries.ReadCriteria, error) {
 	q.SeenLang = ctx.Language()
-	return q.Criteria
+	return q.Criteria, nil
 }
 
 func (r testFindParamsRequest) ToQuery(crit queries.ReadCriteria) *testFindParamsQuery {
@@ -56,7 +56,7 @@ type capturingParamsHandler struct {
 
 func (h *capturingParamsHandler) Handle(ctx *configuration.AppContext, q *testFindParamsQuery) (queries.Page, error) {
 	h.got = q
-	_ = q.ToCriteria(ctx)
+	_, _ = q.ToCriteria(ctx)
 	return queries.Page{
 		Items:   []map[string]any{{"id": "abc"}},
 		HasNext: true,
@@ -307,9 +307,9 @@ type testFindIDQuery struct {
 	SeenLang        configuration.Language
 }
 
-func (q *testFindIDQuery) ToCriteria(ctx *configuration.AppContext) queries.ReadCriteria {
+func (q *testFindIDQuery) ToCriteria(ctx *configuration.AppContext) (queries.ReadCriteria, error) {
 	q.SeenLang = ctx.Language()
-	return queries.ReadCriteria{IncludeArchived: q.IncludeArchived}
+	return queries.ReadCriteria{IncludeArchived: q.IncludeArchived}, nil
 }
 func (q *testFindIDQuery) ContextName() string { return "" }
 
@@ -327,7 +327,7 @@ type capturingIDHandler struct {
 
 func (h *capturingIDHandler) Handle(ctx *configuration.AppContext, q *testFindIDQuery) (map[string]any, error) {
 	h.got = q
-	_ = q.ToCriteria(ctx)
+	_, _ = q.ToCriteria(ctx)
 	return map[string]any{"id": q.GetID().String()}, nil
 }
 

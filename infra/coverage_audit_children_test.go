@@ -65,8 +65,9 @@ func TestChildEventOf_UpdateAddedChild(t *testing.T) {
 	root := &covAgg{Name: "a"}
 	root.SetID(domain.NewID(uuid.NewString()))
 	root.AggregateConstructor([]domain.AggregateValueObject{})
-	u, err := domain.GetUpdatable(root, func(r *covAgg) {
+	u, err := domain.GetUpdatable(root, func(r *covAgg) error {
 		domain.AddAggregateChild(r, covChild{ID: "c2", Label: "y"})
+		return nil
 	}, nil, "GetUpdatable")
 	if err != nil {
 		t.Fatalf("GetUpdatable: %v", err)
@@ -82,8 +83,9 @@ func TestChildEventOf_UpdateRemovedChild(t *testing.T) {
 	root := &covAgg{Name: "a"}
 	root.SetID(domain.NewID(uuid.NewString()))
 	root.AggregateConstructor([]domain.AggregateValueObject{covChild{ID: "c1", Label: "x"}})
-	u, err := domain.GetUpdatable(root, func(r *covAgg) {
+	u, err := domain.GetUpdatable(root, func(r *covAgg) error {
 		domain.RemoveAggregateChild(r, covChild{ID: "c1", Label: "x"})
+		return nil
 	}, nil, "GetUpdatable")
 	if err != nil {
 		t.Fatalf("GetUpdatable: %v", err)

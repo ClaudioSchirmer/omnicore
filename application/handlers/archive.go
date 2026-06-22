@@ -45,7 +45,9 @@ func (h *ArchiveCommandHandler[T, Cmd, TResult]) Handle(ctx *configuration.AppCo
 	if err != nil {
 		return zero, err
 	}
-	cmd.ApplyTo(ctx, current)
+	if err := cmd.ApplyTo(ctx, current); err != nil {
+		return zero, err
+	}
 	archivable, err := domain.GetArchivable(current, h.Service, "GetArchivable")
 	if err != nil {
 		return zero, err
@@ -54,5 +56,9 @@ func (h *ArchiveCommandHandler[T, Cmd, TResult]) Handle(ctx *configuration.AppCo
 	if err := h.Repo.Scope(ctx, opts...).Archive(archivable); err != nil {
 		return zero, err
 	}
-	return cmd.FromEntity(ctx, current), nil
+	result, err := cmd.FromEntity(ctx, current)
+	if err != nil {
+		return zero, err
+	}
+	return result, nil
 }

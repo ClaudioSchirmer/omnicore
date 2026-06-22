@@ -34,8 +34,8 @@ type testNestedQuery struct {
 	Criteria queries.ReadCriteria
 }
 
-func (q *testNestedQuery) ToCriteria(_ *configuration.AppContext) queries.ReadCriteria {
-	return q.Criteria
+func (q *testNestedQuery) ToCriteria(_ *configuration.AppContext) (queries.ReadCriteria, error) {
+	return q.Criteria, nil
 }
 
 func (r testNestedRequest) ToQuery(crit queries.ReadCriteria) *testNestedQuery {

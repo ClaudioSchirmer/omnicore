@@ -42,7 +42,7 @@ type countOnlyHandler struct {
 
 func (h *countOnlyHandler) Handle(ctx *configuration.AppContext, q *testFindParamsQuery) (queries.Page, error) {
 	h.got = q
-	_ = q.ToCriteria(ctx)
+	_, _ = q.ToCriteria(ctx)
 	if q.Criteria.OnlyTotal {
 		return queries.Page{OnlyTotal: true, Total: 42}, nil
 	}

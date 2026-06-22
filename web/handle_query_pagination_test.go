@@ -31,8 +31,8 @@ type pagQuery struct {
 	Criteria queries.ReadCriteria
 }
 
-func (q *pagQuery) ToCriteria(_ *configuration.AppContext) queries.ReadCriteria {
-	return q.Criteria
+func (q *pagQuery) ToCriteria(_ *configuration.AppContext) (queries.ReadCriteria, error) {
+	return q.Criteria, nil
 }
 
 func (r pagFindRequest) ToQuery(crit queries.ReadCriteria) *pagQuery {

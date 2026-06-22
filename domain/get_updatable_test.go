@@ -32,7 +32,7 @@ func TestGetUpdatable_ClosureCapturesPreMutationState(t *testing.T) {
 	e := &transitionEntity{Email: "alice@x.com", Activated: true}
 	e.SetID(NewID(uuid.NewString()))
 
-	apply := func(x *transitionEntity) { x.Email = "alice2@x.com" }
+	apply := func(x *transitionEntity) error { x.Email = "alice2@x.com"; return nil }
 
 	_, err := GetUpdatable(e, apply, nil, "GetUpdatable")
 	if err == nil {
@@ -46,7 +46,7 @@ func TestGetUpdatable_NoFailureWhenInvariantSatisfied(t *testing.T) {
 	e := &transitionEntity{Email: "alice@x.com", Activated: false}
 	e.SetID(NewID(uuid.NewString()))
 
-	apply := func(x *transitionEntity) { x.Email = "alice2@x.com" }
+	apply := func(x *transitionEntity) error { x.Email = "alice2@x.com"; return nil }
 
 	if _, err := GetUpdatable(e, apply, nil, "GetUpdatable"); err != nil {
 		t.Fatalf("expected GetUpdatable to succeed when Activated=false, got %v", err)
@@ -57,7 +57,7 @@ func TestGetUpdatable_AppliesMutation(t *testing.T) {
 	e := &transitionEntity{Email: "alice@x.com"}
 	e.SetID(NewID(uuid.NewString()))
 
-	apply := func(x *transitionEntity) { x.Email = "new@x.com" }
+	apply := func(x *transitionEntity) error { x.Email = "new@x.com"; return nil }
 
 	_, err := GetUpdatable(e, apply, nil, "GetUpdatable")
 	if err != nil {
@@ -72,7 +72,7 @@ func TestGetPartialUpdatable_RunsClosureAndSnapshot(t *testing.T) {
 	e := &transitionEntity{Email: "alice@x.com", Activated: true}
 	e.SetID(NewID(uuid.NewString()))
 
-	apply := func(x *transitionEntity) { x.Email = "patched@x.com" }
+	apply := func(x *transitionEntity) error { x.Email = "patched@x.com"; return nil }
 
 	_, err := GetPartialUpdatable(e, apply, nil, "GetPartialUpdatable")
 	if err == nil {

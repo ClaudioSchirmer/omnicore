@@ -51,8 +51,10 @@ type testCmdWithID struct {
 	pipeline.CommandBaseWithID
 }
 
-func (c *testCmdWithID) ApplyTo(_ *configuration.AppContext, _ *testEntity)              {}
-func (c *testCmdWithID) FromEntity(_ *configuration.AppContext, _ *testEntity) results.None { return results.None{} }
+func (c *testCmdWithID) ApplyTo(_ *configuration.AppContext, _ *testEntity) error { return nil }
+func (c *testCmdWithID) FromEntity(_ *configuration.AppContext, _ *testEntity) (results.None, error) {
+	return results.None{}, nil
+}
 
 // mockRepo implements persistence.ScopedRepository[*testEntity]. Counters
 // track calls; nil error fields make each method succeed by default. The
@@ -192,9 +194,9 @@ type testFindParamsQuery struct {
 	gotCtx *configuration.AppContext
 }
 
-func (q *testFindParamsQuery) ToCriteria(ctx *configuration.AppContext) queries.ReadCriteria {
+func (q *testFindParamsQuery) ToCriteria(ctx *configuration.AppContext) (queries.ReadCriteria, error) {
 	q.gotCtx = ctx
-	return q.ReadCriteria
+	return q.ReadCriteria, nil
 }
 
 // testFindIDQuery is a minimal FindByIDQuery for handler tests. Honors
@@ -209,11 +211,11 @@ type testFindIDQuery struct {
 	gotCtx          *configuration.AppContext
 }
 
-func (q *testFindIDQuery) ToCriteria(ctx *configuration.AppContext) queries.ReadCriteria {
+func (q *testFindIDQuery) ToCriteria(ctx *configuration.AppContext) (queries.ReadCriteria, error) {
 	q.gotCtx = ctx
 	return queries.ReadCriteria{
 		IncludeArchived: q.includeArchived,
 		Filter:          q.overlay,
-	}
+	}, nil
 }
 func (q testFindIDQuery) ContextName() string { return q.contextName }

@@ -13,9 +13,12 @@ type testUpdateCmd struct {
 	Name string
 }
 
-func (c *testUpdateCmd) ApplyTo(_ *configuration.AppContext, e *testEntity) { e.Name = c.Name }
-func (c *testUpdateCmd) FromEntity(_ *configuration.AppContext, _ *testEntity) fwresults.None {
-	return fwresults.None{}
+func (c *testUpdateCmd) ApplyTo(_ *configuration.AppContext, e *testEntity) error {
+	e.Name = c.Name
+	return nil
+}
+func (c *testUpdateCmd) FromEntity(_ *configuration.AppContext, _ *testEntity) (fwresults.None, error) {
+	return fwresults.None{}, nil
 }
 
 func TestUpdateCommandHandler_HappyPath(t *testing.T) {
@@ -51,10 +54,13 @@ type testUpdateCmdString struct {
 	seen string // captured at FromEntity time so the test asserts ctx symmetry
 }
 
-func (c *testUpdateCmdString) ApplyTo(_ *configuration.AppContext, e *testEntity) { e.Name = c.Name }
-func (c *testUpdateCmdString) FromEntity(_ *configuration.AppContext, e *testEntity) string {
+func (c *testUpdateCmdString) ApplyTo(_ *configuration.AppContext, e *testEntity) error {
+	e.Name = c.Name
+	return nil
+}
+func (c *testUpdateCmdString) FromEntity(_ *configuration.AppContext, e *testEntity) (string, error) {
 	c.seen = e.Name
-	return e.Name
+	return e.Name, nil
 }
 
 // TestUpdateCommandHandler_FromEntityReceivesPostApplyEntity proves cmd.FromEntity
