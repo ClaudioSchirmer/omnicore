@@ -2,8 +2,54 @@ package queries
 
 import (
 	"reflect"
+	"sort"
 	"testing"
 )
+
+func collectExportGoPaths(p *ExportPlan) []string {
+	var out []string
+	var walk func(n *ExportNode, prefix string)
+	walk = func(n *ExportNode, prefix string) {
+		for _, c := range n.Columns {
+			out = append(out, joinExportPath(prefix, c.GoField))
+		}
+		for _, ch := range n.Children {
+			walk(ch, joinExportPath(prefix, ch.GoSegment))
+		}
+	}
+	if p != nil && p.Root != nil {
+		walk(p.Root, "")
+	}
+	sort.Strings(out)
+	return out
+}
+
+func TestExportPlan_PruneToProjection(t *testing.T) {
+	all := []string{"Addresses.Geo.Lat", "Addresses.Street", "Addresses.ZipCode", "Email", "Name"}
+	cases := []struct {
+		name string
+		proj map[string]int
+		want []string
+	}{
+		{"nil → whole doc", nil, all},
+		{"empty → whole doc", map[string]int{}, all},
+		{"_id:0 only → whole doc", map[string]int{"_id": 0}, all},
+		{"include leaf", map[string]int{"Name": 1}, []string{"Name"}},
+		{"include leaf + nested leaf", map[string]int{"Name": 1, "Addresses.ZipCode": 1}, []string{"Addresses.ZipCode", "Name"}},
+		{"include subtree keeps whole subtree", map[string]int{"Addresses": 1}, []string{"Addresses.Geo.Lat", "Addresses.Street", "Addresses.ZipCode"}},
+		{"exclude leaf", map[string]int{"Email": 0}, []string{"Addresses.Geo.Lat", "Addresses.Street", "Addresses.ZipCode", "Name"}},
+		{"exclude nested leaf", map[string]int{"Addresses.Street": 0}, []string{"Addresses.Geo.Lat", "Addresses.ZipCode", "Email", "Name"}},
+		{"exclude subtree drops whole subtree", map[string]int{"Addresses": 0}, []string{"Email", "Name"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := collectExportGoPaths(sampleExportPlan().PruneToProjection(tc.proj))
+			if !reflect.DeepEqual(got, tc.want) {
+				t.Fatalf("PruneToProjection(%v) = %v, want %v", tc.proj, got, tc.want)
+			}
+		})
+	}
+}
 
 func sampleExportPlan() *ExportPlan {
 	return &ExportPlan{Root: &ExportNode{

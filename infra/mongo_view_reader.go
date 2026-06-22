@@ -321,10 +321,11 @@ func (r *MongoViewReader) ReadPage(ctx context.Context, view string, c queries.R
 	}
 
 	page := queries.Page{
-		Items:   items,
-		HasNext: hasNext,
-		HasPrev: hasPrev,
-		Total:   total,
+		Items:      items,
+		HasNext:    hasNext,
+		HasPrev:    hasPrev,
+		Total:      total,
+		Projection: c.Projection, // echo the effective projection for export plan pruning
 	}
 	if hasNext {
 		page.NextCursor = nextCursorStr

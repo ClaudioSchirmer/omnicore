@@ -108,7 +108,7 @@ func HandleQueryExport[TReq HasToParamsQuery[TQ], TQ queries.FindByParamsQuery](
 	pathSchema := inspectPathTags(reqType)
 
 	return func(c fiber.Ctx) error {
-		crit, fields, badField, ok := buildExportCriteria(c, schema, plan, maxRows)
+		crit, badField, ok := buildExportCriteria(c, schema, plan, maxRows)
 		if !ok {
 			return respondSchemaViolation[queries.Page](c, pipe, badField)
 		}
@@ -125,7 +125,13 @@ func HandleQueryExport[TReq HasToParamsQuery[TQ], TQ queries.FindByParamsQuery](
 		}
 		page := result.Value()
 
-		pruned := plan.Prune(fields)
+		// Prune the column plan to the projection the read actually used
+		// (post-ToCriteria, echoed on page.Projection) — not the pre-dispatch
+		// wire ?fields — so a field a Query hid via the criteria drops its
+		// CSV/XLSX column (header included), keeping ToCriteria the single
+		// source of truth across JSON + export. ?fields still feeds the read
+		// projection (and its validation) in buildExportCriteria.
+		pruned := plan.PruneToProjection(page.Projection)
 		lang := appCtx.Language()
 		label := func(labelKey, goField string) string {
 			if labelKey == "" {
@@ -241,15 +247,15 @@ func HandleQueryAsXLSXSpec[TReq HasToParamsQuery[TQ], TQ queries.FindByParamsQue
 // the Request DTO schema (reusing the JSON allowlist); `?fields=` / `?sort=` are
 // validated/translated against the plan; `?search=` / `?includeArchived=` flow
 // through. Pagination keys are ignored — the export forces Limit=maxRows and
-// walks the full filtered set. Returns the criteria, the requested `?fields=`
-// tokens (for plan pruning), and the first bad field on a 400.
-func buildExportCriteria(c fiber.Ctx, schema *requestSchema, plan *queries.ExportPlan, maxRows int64) (queries.ReadCriteria, []string, string, bool) {
+// walks the full filtered set. `?fields=` flows into crit.Projection (validated
+// against the plan), which the reader echoes on Page.Projection for the export
+// plan pruning. Returns the criteria and the first bad field on a 400.
+func buildExportCriteria(c fiber.Ctx, schema *requestSchema, plan *queries.ExportPlan, maxRows int64) (queries.ReadCriteria, string, bool) {
 	// BypassMaxLimit: the export enforces its own operator-set ceiling
 	// (maxRows = resolved maxExportRows), which is deliberately larger than the
 	// per-view page `?limit` ceiling — the reader must not reject it.
 	crit := queries.ReadCriteria{Filter: map[string]any{}, Limit: maxRows, BypassMaxLimit: true}
 	wireToGo := plan.WireToGoPaths()
-	var fields []string
 	var bad string
 	ok := true
 	c.Request().URI().QueryArgs().VisitAll(func(k, v []byte) {
@@ -279,7 +285,6 @@ func buildExportCriteria(c fiber.Ctx, schema *requestSchema, plan *queries.Expor
 				return
 			}
 			crit.Projection = plan.Projection(tokens)
-			fields = tokens
 			return
 		case "sort":
 			sf, b, sok := parseExportSort(val, wireToGo)
@@ -307,9 +312,9 @@ func buildExportCriteria(c fiber.Ctx, schema *requestSchema, plan *queries.Expor
 		applyFilterParam(crit.Filter, spec, op, val)
 	})
 	if !ok {
-		return crit, nil, bad, false
+		return crit, bad, false
 	}
-	return crit, fields, "", true
+	return crit, "", true
 }
 
 // parseExportSort resolves a comma-separated `?sort=` value against the plan's

@@ -11,6 +11,21 @@ with `1.0.0`.
 
 ## [Unreleased]
 
+### Fixed
+
+- **Tabular export (CSV/XLSX) now respects the effective read projection** — so
+  `ToCriteria` is the single source of truth for which fields surface in every
+  format. Previously a field a Query removed from `ReadCriteria.Projection`
+  vanished from the JSON and from the CSV/XLSX *values*, but its **column header
+  survived**: the export pruned its column plan by the wire `?fields` alone,
+  independent of `ToCriteria`. Now `queries.Page` carries a `Projection
+  map[string]int` (stamped by `MongoViewReader.ReadPage` from the read criteria),
+  and the export narrows its plan via the new `ExportPlan.PruneToProjection` (the
+  Go-path counterpart of `Prune`, honoring include/exclude/whole-doc modes) — so
+  the header drops too. `?fields` still drives the read projection and its
+  validation; the export no longer needs the wire-token list for pruning. Build
+  step toward field-level read `Hide()`.
+
 ### Changed
 
 - **Application mappers now raise notifications by return — every fallible mapper

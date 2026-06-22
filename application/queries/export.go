@@ -147,6 +147,94 @@ func pruneExportNode(n *ExportNode, wirePrefix string, set map[string]bool, keep
 	return out, len(cols) > 0 || len(children) > 0
 }
 
+// PruneToProjection returns a copy of the plan restricted to the effective read
+// projection (Go-field-path → 1 include / 0 exclude) — the export counterpart of
+// Prune. Where Prune narrows by the wire `?fields=` tokens, this narrows by the
+// projection the read actually used (Page.Projection, post-ToCriteria), so a
+// field a Query removed from the criteria (e.g. via ReadCriteria.Hide) disappears
+// from the tabular columns — header included — not just from the JSON. This keeps
+// ToCriteria the single source of truth for which fields surface in every format.
+//
+//   - empty projection        → whole doc → every column survives
+//   - inclusion mode (any 1)  → a column survives iff its Go-path, or an ancestor
+//                               subtree path, is flagged 1
+//   - exclusion mode (only 0) → every column survives except those flagged 0, or
+//                               under an ancestor flagged 0
+func (p *ExportPlan) PruneToProjection(proj map[string]int) *ExportPlan {
+	if p == nil || p.Root == nil || !projectionNarrows(proj) {
+		return p
+	}
+	include := projectionIncludes(proj)
+	root, _ := pruneNodeByProjection(p.Root, "", proj, include, !include)
+	if root == nil {
+		root = &ExportNode{}
+	}
+	return &ExportPlan{Root: root}
+}
+
+// projectionNarrows reports whether proj restricts anything. A nil/empty map — or
+// one carrying only the `_id:0` auto-exclusion (no real column) — is whole-doc.
+func projectionNarrows(proj map[string]int) bool {
+	for k := range proj {
+		if k != "_id" {
+			return true
+		}
+	}
+	return false
+}
+
+// projectionIncludes reports inclusion mode: any real column flagged 1.
+func projectionIncludes(proj map[string]int) bool {
+	for k, v := range proj {
+		if v == 1 && k != "_id" {
+			return true
+		}
+	}
+	return false
+}
+
+func pruneNodeByProjection(n *ExportNode, goPrefix string, proj map[string]int, include, keepAll bool) (*ExportNode, bool) {
+	var cols []ExportColumn
+	for _, col := range n.Columns {
+		gp := joinExportPath(goPrefix, col.GoField)
+		var keep bool
+		if include {
+			keep = keepAll || proj[gp] == 1
+		} else {
+			// Exclusion mode: keep unless this path is EXPLICITLY flagged 0. An
+			// absent key is a zero value, not an exclusion — check presence.
+			v, present := proj[gp]
+			keep = keepAll && !(present && v == 0)
+		}
+		if keep {
+			cols = append(cols, col)
+		}
+	}
+	var children []*ExportNode
+	for _, child := range n.Children {
+		cg := joinExportPath(goPrefix, child.GoSegment)
+		childKeepAll := keepAll
+		if include {
+			if proj[cg] == 1 {
+				childKeepAll = true // an included subtree path keeps the whole subtree
+			}
+		} else if v, present := proj[cg]; present && v == 0 {
+			childKeepAll = false // an explicitly-excluded subtree path drops the whole subtree
+		}
+		pc, kept := pruneNodeByProjection(child, cg, proj, include, childKeepAll)
+		if kept {
+			children = append(children, pc)
+		}
+	}
+	out := &ExportNode{
+		GoSegment:   n.GoSegment,
+		WireSegment: n.WireSegment,
+		Columns:     cols,
+		Children:    children,
+	}
+	return out, len(cols) > 0 || len(children) > 0
+}
+
 func joinExportPath(prefix, segment string) string {
 	if prefix == "" {
 		return segment

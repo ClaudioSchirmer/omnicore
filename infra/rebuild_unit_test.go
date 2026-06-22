@@ -47,7 +47,7 @@ func TestExecuteRebuild_AcquireError(t *testing.T) {
 	}
 }
 
-func TestRegistryCombinedOrNone(t *testing.T) {
+func TestRegistryCombinedOrNone_Unit(t *testing.T) {
 	if got := registryCombinedOrNone(nil); got != "<none>" {
 		t.Errorf("nil registry = %q, want <none>", got)
 	}
@@ -106,7 +106,7 @@ func TestInitRegistryOnly(t *testing.T) {
 	}
 }
 
-func TestRefreshRegistryArtifactOnly(t *testing.T) {
+func TestRefreshRegistryArtifactOnly_Unit(t *testing.T) {
 	// EndRebuild runs against s.pg.pool.Exec; the fake CommandTag reports 1 row.
 	s := rebuildSyncEngine(newFakePool(), &fakeColl{}, []*ViewDefinition{rebuildView()})
 	plan := DriftPlan{
