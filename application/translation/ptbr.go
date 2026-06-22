@@ -74,9 +74,10 @@ func (corePTBR) Translations() map[string]string {
 		"ExpiredTokenNotification":         "Token de autenticação expirado.",
 
 		// Authorization
-		"MissingPermissionNotification": "Permissão necessária ausente.",
-		"TenantMissingNotification":     "Identificador do tenant ausente no principal autenticado.",
-		"TenantMismatchNotification":    "Recurso pertence a outro tenant.",
+		"MissingPermissionNotification":    "Permissão necessária ausente.",
+		"TenantMissingNotification":        "Identificador do tenant ausente no principal autenticado.",
+		"TenantMismatchNotification":       "Recurso pertence a outro tenant.",
+		"FieldAccessForbiddenNotification": "Campo não acessível.",
 
 		// Server / routing
 		"InternalServerErrorNotification": "Erro interno do servidor.",

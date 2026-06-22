@@ -74,9 +74,10 @@ func (coreIT) Translations() map[string]string {
 		"ExpiredTokenNotification":         "Il token di autenticazione è scaduto.",
 
 		// Authorization
-		"MissingPermissionNotification": "Permesso richiesto mancante.",
-		"TenantMissingNotification":     "Identificatore del tenant assente nel principal autenticato.",
-		"TenantMismatchNotification":    "La risorsa appartiene a un altro tenant.",
+		"MissingPermissionNotification":    "Permesso richiesto mancante.",
+		"TenantMissingNotification":        "Identificatore del tenant assente nel principal autenticato.",
+		"TenantMismatchNotification":       "La risorsa appartiene a un altro tenant.",
+		"FieldAccessForbiddenNotification": "Campo non accessibile.",
 
 		// Server / routing
 		"InternalServerErrorNotification": "Errore interno del server.",

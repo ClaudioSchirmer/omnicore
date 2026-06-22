@@ -11,6 +11,22 @@ with `1.0.0`.
 
 ## [Unreleased]
 
+### Added
+
+- **`ReadCriteria.Restrict(goFieldPath)` — field-level read authorization.** A
+  Query calls it inside `ToCriteria(ctx)`, after deciding from the `AppContext`
+  identity that the caller may not see a field, to remove that field from the read
+  entirely: it is not projected (so it never surfaces in the JSON **or** the
+  tabular export — header included, thanks to the projection-aware export pruning),
+  not sorted by, and not filtered on. If the request **actively** referenced the
+  field — a `?sort=`, `?filters=`, or explicit `?fields=` on it — `Restrict`
+  returns a 403 `*ApplicationError` (`FieldAccessForbiddenNotification`,
+  `SemanticForbidden`): trying to use a hidden field is refused rather than
+  silently ignored, which also closes the inference leak a dropped sort/filter
+  would leave. A passive read (the field simply not requested) gets the silent
+  omission. The decision stays in the application layer (the Query reads
+  `Identity`); infra stays authz-blind. Pairs with the export projection fix.
+
 ### Fixed
 
 - **Tabular export (CSV/XLSX) now respects the effective read projection** — so

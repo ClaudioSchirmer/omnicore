@@ -74,9 +74,10 @@ func (coreFR) Translations() map[string]string {
 		"ExpiredTokenNotification":         "Le jeton d'authentification a expiré.",
 
 		// Authorization
-		"MissingPermissionNotification": "Permission requise manquante.",
-		"TenantMissingNotification":     "Identifiant de tenant absent du principal authentifié.",
-		"TenantMismatchNotification":    "La ressource appartient à un autre tenant.",
+		"MissingPermissionNotification":    "Permission requise manquante.",
+		"TenantMissingNotification":        "Identifiant de tenant absent du principal authentifié.",
+		"TenantMismatchNotification":       "La ressource appartient à un autre tenant.",
+		"FieldAccessForbiddenNotification": "Champ non accessible.",
 
 		// Server / routing
 		"InternalServerErrorNotification": "Erreur interne du serveur.",

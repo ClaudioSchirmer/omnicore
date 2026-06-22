@@ -93,6 +93,35 @@ func (u *User) BuildRules(actionName string, svc domain.Service, r *domain.Rules
     return crit, nil
 }</code></pre>
 
+  <h3>Field-level read access — <code>ReadCriteria.Restrict</code></h3>
+  <p>
+    Layers 1–3 gate <em>rows</em> and <em>operations</em>; <code>Restrict</code> gates
+    <em>columns</em> on the read. A Query calls it inside <code>ToCriteria(ctx)</code>,
+    after deciding from the identity that the caller may not see a field, to remove that
+    field from the read entirely — it is not projected, sorted by, or filtered on. Because
+    the tabular export prunes its column plan to the same effective projection, the field
+    drops from the JSON <strong>and</strong> the CSV/XLSX (header included), so
+    <code>ToCriteria</code> is the single source of truth across every format.
+  </p>
+  <pre><code>func (q FindUserByParamsQuery) ToCriteria(ctx *configuration.AppContext) (fwqueries.ReadCriteria, error) {
+    crit := q.Criteria
+    if id := ctx.Identity(); id == nil || !id.HasPermission("users:admin") {
+        if err := crit.Restrict("Salary"); err != nil {
+            return crit, err   // 403 when the request actively asked for the field
+        }
+    }
+    return crit, nil
+}</code></pre>
+  <p>
+    Two outcomes by intent: a <strong>passive</strong> read (the field simply not requested)
+    gets the silent omission; an <strong>active</strong> reference — a <code>?sort=</code>,
+    <code>?filters=</code>, or explicit <code>?fields=</code> on the restricted field —
+    returns a 403 <code>FieldAccessForbiddenNotification</code>. Refusing the active attempt
+    is more honest than silently ignoring the knob, and it closes the inference leak a
+    dropped sort/filter would otherwise leave. The decision lives in the application layer
+    (the Query reads <code>Identity</code>); infra never sees it.
+  </p>
+
   <h3>YAML configuration</h3>
   <pre><code>auth:
   mode: jwt

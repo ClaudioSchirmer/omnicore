@@ -1,6 +1,11 @@
 package queries
 
-import "context"
+import (
+	"context"
+
+	"github.com/ClaudioSchirmer/omnicore/application/exception"
+	"github.com/ClaudioSchirmer/omnicore/application/notifications"
+)
 
 // SortField is one sort term in a ReadCriteria.
 // Desc=true → descending; false → ascending.
@@ -49,6 +54,73 @@ type ReadCriteria struct {
 	// page-read MaxLimit) and ignores the user's `?limit`. It is never set from
 	// a wire parameter, so a client cannot use it to lift the page ceiling.
 	BypassMaxLimit bool
+}
+
+// Restrict removes a field from this read entirely — it is not projected (so it
+// never surfaces in the JSON or the tabular export, header included), not sorted
+// by, and not filtered on. goFieldPath is the Go field path ("Salary",
+// "Addresses.ZipCode"). It is the field-level read-authorization primitive a
+// Query calls inside ToCriteria after deciding (from the AppContext identity)
+// that the caller may not see the field.
+//
+// If the request ACTIVELY referenced the field — a ?sort=, ?filters=, or an
+// explicit ?fields= on it — Restrict returns a 403 *ApplicationError
+// (FieldAccessForbiddenNotification): the caller tried to use a field it may not
+// see, so refusing is more honest than silently ignoring the knob — and it
+// closes the inference leak a silently-dropped sort/filter would leave. A
+// passive read (the field simply not requested) gets the silent omission. The
+// field is scrubbed from the criteria either way, so nothing leaks even on the
+// 403 path.
+func (c *ReadCriteria) Restrict(goFieldPath string) error {
+	active := c.referencesField(goFieldPath)
+	c.scrubField(goFieldPath)
+	if active {
+		return exception.SingleNotificationError("Query", goFieldPath, notifications.FieldAccessForbiddenNotification{})
+	}
+	return nil
+}
+
+// referencesField reports whether the request actively named the field — in a
+// sort term, a filter clause, or an explicit ?fields= inclusion.
+func (c *ReadCriteria) referencesField(goFieldPath string) bool {
+	if _, ok := c.Filter[goFieldPath]; ok {
+		return true
+	}
+	if c.Projection[goFieldPath] == 1 {
+		return true
+	}
+	for _, s := range c.Sort {
+		if s.Field == goFieldPath {
+			return true
+		}
+	}
+	return false
+}
+
+// scrubField removes the field from the projection (mode-aware), the sort, and
+// the filter so it reaches neither the store nor the wire.
+func (c *ReadCriteria) scrubField(goFieldPath string) {
+	if c.Projection == nil {
+		c.Projection = map[string]int{}
+	}
+	if projectionIncludes(c.Projection) {
+		// Inclusion mode (?fields=): drop the include — Mongo forbids mixing an
+		// exclusion into an otherwise-inclusion projection.
+		delete(c.Projection, goFieldPath)
+	} else {
+		// Whole-doc or exclusion mode: a pure exclusion strips the field.
+		c.Projection[goFieldPath] = 0
+	}
+	if len(c.Sort) > 0 {
+		kept := c.Sort[:0]
+		for _, s := range c.Sort {
+			if s.Field != goFieldPath {
+				kept = append(kept, s)
+			}
+		}
+		c.Sort = kept
+	}
+	delete(c.Filter, goFieldPath)
 }
 
 // Page is the transport-agnostic result of a paged read. The wire wrapper
