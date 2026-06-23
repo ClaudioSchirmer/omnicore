@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"io"
 	"net/http/httptest"
-	"reflect"
 	"testing"
 
 	"github.com/ClaudioSchirmer/omnicore/application/configuration"
@@ -199,34 +198,6 @@ func TestHandleQueryWithParams_ResponseEnvelopeShape(t *testing.T) {
 	}
 	if pag["total"] != float64(1) {
 		t.Errorf("expected pagination.total=1, got %v", pag["total"])
-	}
-}
-
-func TestHandleQueryWithParams_SchemaCacheHit(t *testing.T) {
-	// First call seeds the cache; second call must find the same entry.
-	pipe := newTestPipeline()
-	h := &capturingParamsHandler{}
-	app := fiber.New()
-	app.Get("/users", HandleQueryWithParams(pipe, testFindParamsRequest{}, responses.RawDoc, h))
-
-	resp, _ := app.Test(httptest.NewRequest("GET", "/users?name=Jane", nil))
-	if resp.StatusCode != fiber.StatusOK {
-		t.Fatalf("expected 200, got %d", resp.StatusCode)
-	}
-
-	v, ok := schemaCache.Load(reflect.TypeOf(testFindParamsRequest{}))
-	if !ok {
-		t.Fatal("expected schemaCache to contain entry for testFindParamsRequest")
-	}
-	schema, _ := v.(*requestSchema)
-	if schema == nil {
-		t.Fatal("expected cached value to be *requestSchema")
-	}
-	if _, has := schema.filters["name"]; !has {
-		t.Error("expected cached schema to declare 'name' as filter")
-	}
-	if _, has := schema.reserved["limit"]; !has {
-		t.Error("expected cached schema to declare 'limit' as reserved")
 	}
 }
 

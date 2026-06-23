@@ -2,7 +2,6 @@ package web
 
 import (
 	"net/http/httptest"
-	"reflect"
 	"testing"
 
 	"github.com/ClaudioSchirmer/omnicore/application/configuration"
@@ -223,30 +222,6 @@ func TestNested_ViewTagOverridesDocSegment(t *testing.T) {
 	}
 	if captured.Filter["Loc.City"] != "Berlin" {
 		t.Errorf("expected Filter[locations.municipality]=Berlin, got %v", captured.Filter)
-	}
-}
-
-func TestNested_SchemaCacheCarriesDocPaths(t *testing.T) {
-	pipe := newTestPipeline()
-	h := &capturingNestedHandler{}
-	app := fiber.New()
-	app.Get("/users", HandleQueryWithParams(pipe, testNestedRequest{}, responses.RawDoc, h))
-
-	_, _ = app.Test(httptest.NewRequest("GET", "/users", nil))
-
-	v, ok := schemaCache.Load(reflect.TypeOf(testNestedRequest{}))
-	if !ok {
-		t.Fatal("expected schemaCache to contain entry")
-	}
-	schema, _ := v.(*requestSchema)
-	if got := schema.filters["addresses.zipCode"].docPath; got != "Addresses.ZipCode" {
-		t.Errorf("expected addresses.zipCode → addresses.zip_code, got %q", got)
-	}
-	if got := schema.filters["addresses.city"].docPath; got != "Addresses.City" {
-		t.Errorf("expected addresses.city → addresses.city, got %q", got)
-	}
-	if got := schema.filters["name"].docPath; got != "Name" {
-		t.Errorf("expected name → name, got %q", got)
 	}
 }
 

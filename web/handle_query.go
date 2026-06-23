@@ -4,44 +4,13 @@ import (
 	"log/slog"
 	"net/http"
 	"reflect"
-	"regexp"
 	"sort"
 	"strconv"
-	"strings"
-	"sync"
 
 	"github.com/ClaudioSchirmer/omnicore/application/pipeline"
 	"github.com/ClaudioSchirmer/omnicore/application/queries"
+	"github.com/ClaudioSchirmer/omnicore/web/queryschema"
 	"github.com/gofiber/fiber/v3"
-)
-
-// Operator constants for filter declarations in a Request DTO's `filter:"..."`
-// struct tag. The Op prefix avoids collision with any consumer-defined Op
-// values (e.g. an OpenAPI operation enum) and groups them as a coherent set.
-//
-// The string operators come in case-sensitive and case-insensitive variants
-// (prefixed with `i`): a field declaring `filter:"eq,ieq,startswith,istartswith"`
-// accepts `?name=Bob` (exact), `?name.ieq=bob` (case-insensitive equality),
-// `?name.startswith=Bob` (prefix), and `?name.istartswith=bob` (case-insensitive
-// prefix) — each is opt-in per call. Numeric operators (gte/lte/gt/lt) have no
-// `i` variant by design — case-folding has no meaning on ordinal comparisons.
-const (
-	OpEq           = "eq"
-	OpNe           = "ne"
-	OpIn           = "in"
-	OpNin          = "nin"
-	OpGte          = "gte"
-	OpLte          = "lte"
-	OpGt           = "gt"
-	OpLt           = "lt"
-	OpStartsWith   = "startswith"
-	OpContains     = "contains"
-	OpIEq          = "ieq"
-	OpINe          = "ine"
-	OpIIn          = "iin"
-	OpINin         = "inin"
-	OpIStartsWith  = "istartswith"
-	OpIContains    = "icontains"
 )
 
 // HasToParamsQuery is the contract for Request DTOs that produce a
@@ -68,8 +37,8 @@ type HasToIDQuery[TQ queries.FindByIDQuery] interface {
 // envelope with top-level pagination); the application layer stays Fiber-agnostic.
 //
 // Flow:
-//  1. extractAllowedKeys(sample) — inspects TReq's `query:"X" filter:"ops"`
-//     tags. Cached by reflect.Type.
+//  1. queryschema.ExtractRequestSchema(sample) — inspects TReq's
+//     `query:"X" filter:"ops"` tags. Cached by reflect.Type.
 //  2. Walks the query string; rejects any key outside the allowlist or any
 //     operator outside the declared list with 400 SchemaViolationNotification.
 //  3. Builds queries.ReadCriteria with filters + pagination controls.
@@ -107,7 +76,7 @@ func HandleQueryWithParams[TReq HasToParamsQuery[TQ], TQ queries.FindByParamsQue
 	if reqType.Kind() == reflect.Pointer {
 		reqType = reqType.Elem()
 	}
-	schema := extractAllowedKeys(reqType)
+	schema := queryschema.ExtractRequestSchema(reqType)
 	pathSchema := inspectPathTags(reqType)
 	// projSchema is the Response-side mapping (wire path → doc path) used to
 	// validate and translate `?fields=` AND `?sort=` values when the Request
@@ -120,9 +89,9 @@ func HandleQueryWithParams[TReq HasToParamsQuery[TQ], TQ queries.FindByParamsQue
 	// the wire→doc path map). When the Response is map[string]any (RawDoc-
 	// style projectors), projSchema stays nil and both keys fall back to
 	// pass-through mode at the buildCriteria layer.
-	var projSchema *projectionSchema
-	fieldsOptIn := schema.reserved["fields"]
-	sortOptIn := schema.reserved["sort"]
+	var projSchema *queryschema.ProjectionSchema
+	fieldsOptIn := schema.Reserved["fields"]
+	sortOptIn := schema.Reserved["sort"]
 	if fieldsOptIn || sortOptIn {
 		respType := reflect.TypeOf((*R)(nil)).Elem()
 		for respType.Kind() == reflect.Pointer {
@@ -130,11 +99,11 @@ func HandleQueryWithParams[TReq HasToParamsQuery[TQ], TQ queries.FindByParamsQue
 		}
 		if respType.Kind() == reflect.Struct {
 			if fieldsOptIn {
-				if errs := validateFieldsResponse(respType); len(errs) > 0 {
-					panic(formatFieldsResponseGuard(respType, errs))
+				if errs := queryschema.ValidateFieldsResponse(respType); len(errs) > 0 {
+					panic(queryschema.FormatFieldsResponseGuard(respType, errs))
 				}
 			}
-			projSchema = extractProjectionSchema(respType)
+			projSchema = queryschema.ExtractProjectionSchema(respType)
 		}
 	}
 	// Boot-time advisory when the Request DTO accepts ?sort=. The framework
@@ -145,8 +114,8 @@ func HandleQueryWithParams[TReq HasToParamsQuery[TQ], TQ queries.FindByParamsQue
 	// operator can compare it against the view's .Indexes(...) declaration
 	// during the same boot.
 	if sortOptIn && projSchema != nil {
-		paths := make([]string, 0, len(projSchema.paths))
-		for wirePath := range projSchema.paths {
+		paths := make([]string, 0, len(projSchema.Paths))
+		for wirePath := range projSchema.Paths {
 			paths = append(paths, wirePath)
 		}
 		sort.Strings(paths)
@@ -258,7 +227,7 @@ func HandleQueryWithID[TReq HasToIDQuery[TQ], TQ queries.FindByIDQuery, R any](
 // both helpers and build the ReadCriteria by hand — the framework does not
 // require either.
 func ParseCriteria(c fiber.Ctx, requestDTO any) (queries.ReadCriteria, string, bool) {
-	schema := extractAllowedKeys(reflect.TypeOf(requestDTO))
+	schema := queryschema.ExtractRequestSchema(reflect.TypeOf(requestDTO))
 	// Manual handlers do not declare a typed Response to the wrapper, so
 	// the projection schema is nil — `?fields=` works in pass-through mode
 	// (each comma-separated token becomes an inclusion entry verbatim; no
@@ -276,13 +245,13 @@ func ParseCriteria(c fiber.Ctx, requestDTO any) (queries.ReadCriteria, string, b
 //
 //   - The construction (in [NewQueryParser]) runs the exact same boot scan
 //     the canonical wrapper runs at lines parallel to its sample-driven
-//     reflection: [validateFieldsResponse] panics on Responses that violate
-//     the sparse-render contract (every field at every depth must be *T or
-//     a slice/map with `,omitempty`); [extractProjectionSchema] builds the
-//     wire→doc path map; an `slog.Warn` advisory enumerates the sortable
-//     wire paths when the Request opts into `?sort=` so the operator can
-//     compare them against the Mongo view's declared indexes during the
-//     same boot.
+//     reflection: [queryschema.ValidateFieldsResponse] panics on Responses
+//     that violate the sparse-render contract (every field at every depth
+//     must be *T or a slice/map with `,omitempty`);
+//     [queryschema.ExtractProjectionSchema] builds the wire→doc path map; an
+//     `slog.Warn` advisory enumerates the sortable wire paths when the
+//     Request opts into `?sort=` so the operator can compare them against the
+//     Mongo view's declared indexes during the same boot.
 //   - The [QueryParser.Parse] call walks the request query string against
 //     the cached schema + projection — runtime allowlist + wire→doc
 //     translation are enabled when applicable, so a `?fields=addresses.zipCode`
@@ -311,8 +280,8 @@ func ParseCriteria(c fiber.Ctx, requestDTO any) (queries.ReadCriteria, string, b
 // warn — so consumers can adopt it uniformly across mounts regardless of
 // whether the Response is typed.
 type QueryParser[Req any, Resp any] struct {
-	schema     *requestSchema
-	projSchema *projectionSchema
+	schema     *queryschema.RequestSchema
+	projSchema *queryschema.ProjectionSchema
 }
 
 // NewQueryParser builds a [QueryParser] at Mount time. Runs the boot scan
@@ -326,11 +295,11 @@ func NewQueryParser[Req any, Resp any]() *QueryParser[Req, Resp] {
 	for reqType.Kind() == reflect.Pointer {
 		reqType = reqType.Elem()
 	}
-	schema := extractAllowedKeys(reqType)
+	schema := queryschema.ExtractRequestSchema(reqType)
 
-	var projSchema *projectionSchema
-	fieldsOptIn := schema.reserved["fields"]
-	sortOptIn := schema.reserved["sort"]
+	var projSchema *queryschema.ProjectionSchema
+	fieldsOptIn := schema.Reserved["fields"]
+	sortOptIn := schema.Reserved["sort"]
 	if fieldsOptIn || sortOptIn {
 		respType := reflect.TypeOf((*Resp)(nil)).Elem()
 		for respType.Kind() == reflect.Pointer {
@@ -338,16 +307,16 @@ func NewQueryParser[Req any, Resp any]() *QueryParser[Req, Resp] {
 		}
 		if respType.Kind() == reflect.Struct {
 			if fieldsOptIn {
-				if errs := validateFieldsResponse(respType); len(errs) > 0 {
-					panic(formatFieldsResponseGuard(respType, errs))
+				if errs := queryschema.ValidateFieldsResponse(respType); len(errs) > 0 {
+					panic(queryschema.FormatFieldsResponseGuard(respType, errs))
 				}
 			}
-			projSchema = extractProjectionSchema(respType)
+			projSchema = queryschema.ExtractProjectionSchema(respType)
 		}
 	}
 	if sortOptIn && projSchema != nil {
-		paths := make([]string, 0, len(projSchema.paths))
-		for wirePath := range projSchema.paths {
+		paths := make([]string, 0, len(projSchema.Paths))
+		for wirePath := range projSchema.Paths {
 			paths = append(paths, wirePath)
 		}
 		sort.Strings(paths)
@@ -473,190 +442,6 @@ var onlyTotalConflicts = map[string]bool{
 	"before": true,
 }
 
-// filterSpec lists the operators declared by a single filter leaf via the
-// `filter:"eq,in"` struct tag, together with the Go field path the leaf maps
-// to and the leaf's declared Go base kind used to coerce wire values into
-// typed criteria. docPath holds the dotted Go field path (the `query:` keys
-// joined down the embed groups, e.g. `Addresses.ZipCode`); the
-// MongoViewReader translates it to the physical column via the view's
-// TableSchema. There is no `view:` tag. goKind drives value coercion at
-// runtime — a `*string`
-// leaf keeps "95014" as the literal string "95014" (no silent int parse),
-// matching the column type Mongo stored; a `*int64` leaf parses "25" into
-// int64(25) so the criteria type matches the field's stored type.
-type filterSpec struct {
-	ops     map[string]bool
-	docPath string
-	goKind  reflect.Kind
-}
-
-// requestSchema is the cached reflection result for a Request DTO type:
-// every accepted wire key (flat or dotted) → its filterSpec, plus the
-// reserved pagination/control set (top-level only — embed groups carry
-// filter leaves, not pagination keys).
-type requestSchema struct {
-	filters  map[string]filterSpec
-	reserved map[string]bool
-}
-
-// schemaCache memoizes extractAllowedKeys by reflect.Type. The first wrapper
-// construction pays the inspection; later wrappers for the same Request DTO
-// reuse the schema.
-var schemaCache sync.Map // map[reflect.Type]*requestSchema
-
-// extractAllowedKeys inspects a Request DTO's struct tags to produce its
-// schema. Three field kinds per level:
-//
-//   - leaf filter — `query:"X" filter:"ops..."` declares wire key X (prefixed
-//     by parent embed when nested) and the operator allowlist. The leaf maps
-//     to the Go field path; the reader translates it to the column via the
-//     view's TableSchema (no `view:` tag).
-//   - reserved control — `query:"limit"` (etc.) with no `filter:` tag. Only
-//     honored at the TOP LEVEL; reserved keys inside an embed group are
-//     ignored at runtime (the framework's reserved set is endpoint-wide,
-//     not per-embed).
-//   - embed group — `query:"prefix"` on a struct-typed field with no
-//     `filter:` tag. Recurses into the inner type, prefixing both the wire
-//     keys and the Go field paths with the group segment.
-//
-// Pointer-to-struct is supported transparently — both pointer and value
-// nested groups recurse the underlying struct type.
-func extractAllowedKeys(t reflect.Type) *requestSchema {
-	if t.Kind() == reflect.Pointer {
-		t = t.Elem()
-	}
-	if v, ok := schemaCache.Load(t); ok {
-		return v.(*requestSchema)
-	}
-	s := &requestSchema{
-		filters:  map[string]filterSpec{},
-		reserved: map[string]bool{},
-	}
-	walkSchemaLevel(t, "", "", s, true)
-	schemaCache.Store(t, s)
-	return s
-}
-
-// walkSchemaLevel recurses through a Request DTO type, accumulating leaf
-// filters into s.filters keyed by the dotted wire path. wirePrefix and
-// docPrefix carry the path built so far; topLevel gates the recognition of
-// reserved pagination keys (only honored at depth 0).
-func walkSchemaLevel(t reflect.Type, wirePrefix, docPrefix string, s *requestSchema, topLevel bool) {
-	if t.Kind() == reflect.Pointer {
-		t = t.Elem()
-	}
-	if t.Kind() != reflect.Struct {
-		return
-	}
-	for i := 0; i < t.NumField(); i++ {
-		f := t.Field(i)
-		qkey := f.Tag.Get("query")
-		if qkey == "" {
-			continue
-		}
-		wirePath := joinPath(wirePrefix, qkey)
-		// The criteria key is the Go field path (the struct field name, e.g.
-		// "Email" / "Addresses.ZipCode") — NOT a physical column. The reader
-		// translates it to the column via the view's TableSchema. No convention,
-		// no `view:` tag.
-		goPath := joinPath(docPrefix, f.Name)
-
-		ftag := f.Tag.Get("filter")
-		if ftag != "" {
-			ops := map[string]bool{}
-			for _, op := range strings.Split(ftag, ",") {
-				ops[strings.TrimSpace(op)] = true
-			}
-			// Capture the leaf's base kind for type-driven value coercion.
-			// Pointer indirection is collapsed — `*string` leaves coerce
-			// identically to `string`. Composite kinds (slices, structs)
-			// fall back to string at the coercion site below.
-			leafType := f.Type
-			for leafType.Kind() == reflect.Pointer {
-				leafType = leafType.Elem()
-			}
-			s.filters[wirePath] = filterSpec{ops: ops, docPath: goPath, goKind: leafType.Kind()}
-			continue
-		}
-
-		ft := f.Type
-		if ft.Kind() == reflect.Pointer {
-			ft = ft.Elem()
-		}
-		if ft.Kind() == reflect.Struct {
-			// Embed group — recurse with the Go-path prefix extended.
-			walkSchemaLevel(ft, wirePath, goPath, s, false)
-			continue
-		}
-
-		// Reserved pagination/control keys are recognized only at the top
-		// level. An embed group's "limit" (or similar) is silently ignored
-		// — only the endpoint-wide reserved set is honored.
-		if topLevel {
-			s.reserved[qkey] = true
-		}
-	}
-}
-
-// joinPath concatenates two non-empty segments with a single dot, returning
-// either one verbatim when the other is empty.
-func joinPath(prefix, segment string) string {
-	if prefix == "" {
-		return segment
-	}
-	if segment == "" {
-		return prefix
-	}
-	return prefix + "." + segment
-}
-
-// parseKeyAgainstSchema resolves a wire key into (wirePath, op). The logic
-// is whole-key-first: if the literal key is a declared filter, no operator
-// is peeled (handles fields whose name happens to match an op, e.g. a leaf
-// declared `query:"in"`). Otherwise, if the key ends in a known operator
-// suffix and the remaining prefix is a declared filter, the suffix is
-// honored as the operator. Returns ("", "") when the key matches neither —
-// caller surfaces the wire key verbatim in the 400 envelope.
-func parseKeyAgainstSchema(key string, s *requestSchema) (string, string) {
-	if _, ok := s.filters[key]; ok {
-		return key, ""
-	}
-	idx := strings.LastIndexByte(key, '.')
-	if idx < 0 {
-		return "", ""
-	}
-	wirePath, op := key[:idx], key[idx+1:]
-	if !knownOps[op] {
-		return "", ""
-	}
-	if _, ok := s.filters[wirePath]; !ok {
-		return "", ""
-	}
-	return wirePath, op
-}
-
-// knownOps is the membership set of every declared operator constant. Drives
-// parseKeyAgainstSchema's "peel only if last segment is a known op" rule —
-// keeping it in sync with the OpXxx constants below is the contract.
-var knownOps = map[string]bool{
-	OpEq:          true,
-	OpNe:          true,
-	OpIn:          true,
-	OpNin:         true,
-	OpGte:         true,
-	OpLte:         true,
-	OpGt:          true,
-	OpLt:          true,
-	OpStartsWith:  true,
-	OpContains:    true,
-	OpIEq:         true,
-	OpINe:         true,
-	OpIIn:         true,
-	OpINin:        true,
-	OpIStartsWith: true,
-	OpIContains:   true,
-}
-
 // buildCriteria walks the query string, validates each key against the schema,
 // and produces ReadCriteria. Returns (criteria, "", true) on success or
 // (zero, badKey, false) on the first violation (unknown wire path OR operator
@@ -672,15 +457,15 @@ var knownOps = map[string]bool{
 // `_id` inclusion is dropped from the wire shape. When projSchema is nil,
 // the legacy pass-through behavior applies: every token becomes an
 // inclusion entry verbatim (no allowlist, no translation).
-func buildCriteria(c fiber.Ctx, s *requestSchema, projSchema *projectionSchema) (queries.ReadCriteria, string, bool) {
+func buildCriteria(c fiber.Ctx, s *queryschema.RequestSchema, projSchema *queryschema.ProjectionSchema) (queries.ReadCriteria, string, bool) {
 	crit := queries.ReadCriteria{Filter: map[string]any{}}
 	// Pre-scan onlyTotal: VisitAll's iteration order is non-deterministic, so
 	// we cannot rely on observing onlyTotal before a conflicting key. Reading
 	// it explicitly up front lets the loop reject conflicts on first sight.
 	// The flag is only honored when the Request DTO declared `query:"onlyTotal"`
-	// (s.reserved gates opt-in, same posture as `includeArchived` / `search` /
+	// (s.Reserved gates opt-in, same posture as `includeArchived` / `search` /
 	// `fields` / `sort`).
-	onlyTotalOn := s.reserved["onlyTotal"] && c.Query("onlyTotal") == "true"
+	onlyTotalOn := s.Reserved["onlyTotal"] && c.Query("onlyTotal") == "true"
 	if onlyTotalOn {
 		crit.OnlyTotal = true
 	}
@@ -703,13 +488,13 @@ func buildCriteria(c fiber.Ctx, s *requestSchema, projSchema *projectionSchema) 
 			return
 		}
 
-		if s.reserved[key] && reservedParamKeys[key] {
+		if s.Reserved[key] && reservedParamKeys[key] {
 			if key == "onlyTotal" {
 				// Already absorbed by the pre-scan; nothing else to apply.
 				return
 			}
 			if key == "fields" {
-				proj, wireSet, bad, projOk := parseProjection(val, projSchema)
+				proj, wireSet, bad, projOk := queryschema.ParseProjection(val, projSchema)
 				if !projOk {
 					badField = "fields[" + bad + "]"
 					ok = false
@@ -726,7 +511,7 @@ func buildCriteria(c fiber.Ctx, s *requestSchema, projSchema *projectionSchema) 
 				return
 			}
 			if key == "sort" {
-				sortFields, bad, sortOk := parseSortWithSchema(val, projSchema)
+				sortFields, bad, sortOk := queryschema.ParseSortWithSchema(val, projSchema)
 				if !sortOk {
 					badField = "sort[" + bad + "]"
 					ok = false
@@ -743,24 +528,24 @@ func buildCriteria(c fiber.Ctx, s *requestSchema, projSchema *projectionSchema) 
 			return
 		}
 
-		wirePath, op := parseKeyAgainstSchema(key, s)
+		wirePath, op := queryschema.ParseKeyAgainstSchema(key, s)
 		if wirePath == "" {
 			badField = key
 			ok = false
 			return
 		}
-		spec := s.filters[wirePath]
+		spec := s.Filters[wirePath]
 
 		effective := op
 		if effective == "" {
 			effective = OpEq
 		}
-		if !spec.ops[effective] {
+		if !spec.Ops[effective] {
 			badField = key
 			ok = false
 			return
 		}
-		applyFilterParam(crit.Filter, spec, op, val)
+		queryschema.ApplyFilterParam(crit.Filter, spec, op, val)
 	})
 	if !ok {
 		return crit, badField, ok
@@ -872,246 +657,4 @@ func applyReservedParam(crit *queries.ReadCriteria, key, val string) (string, bo
 		crit.IncludeArchived = val == "true"
 	}
 	return "", true
-}
-
-// applyFilterParam writes a single filter into the criteria map under the
-// operator declared on the wire. Empty op maps to equality; the others use
-// Mongo-style operator keys ($in, $gte, …) because that is what the canonical
-// MongoViewReader consumes verbatim.
-//
-// Value coercion is driven by spec.goKind (the leaf's declared Go base
-// type). A `*string` leaf keeps "95014" as the literal string "95014"; a
-// `*int64` leaf coerces "25" into int64(25). This matches the column type
-// the read-side adapter stored so `eq` / `in` / `gte` queries hit the
-// canonical index without silent type mismatches.
-//
-// Partial-match operators (`startswith`, `contains`) and case-insensitive
-// variants (`ieq`, `ine`, `istartswith`, `icontains`) emit Mongo `$regex`
-// sub-documents at field level — every metacharacter in the user-supplied
-// value is escaped via regexp.QuoteMeta so the wire input is treated as a
-// literal. The list variants (`iin`, `inin`) emit a queries.RegexMatchList
-// sentinel because Mongo `$in` requires the native bson.Regex type, which
-// MongoViewReader assembles via translateFilter.
-//
-// When the same field receives more than one operator on the same call
-// (e.g. `?name.startswith=Bob&name.icontains=ob`), the clauses are folded
-// into a queries.MultiClause sentinel via mergeClause — the canonical
-// MongoViewReader expands MultiClause into a top-level `$and` array so
-// every declared operator is honored simultaneously instead of having only
-// the last one survive on the map.
-func applyFilterParam(filter map[string]any, spec filterSpec, op, value string) {
-	field := spec.docPath
-	var clause any
-	switch op {
-	case "", OpEq:
-		clause = coerceValue(value, spec.goKind)
-	case OpIn:
-		clause = map[string]any{"$in": coerceList(value, spec.goKind)}
-	case OpNin:
-		clause = map[string]any{"$nin": coerceList(value, spec.goKind)}
-	case OpNe:
-		clause = map[string]any{"$ne": coerceValue(value, spec.goKind)}
-	case OpGte:
-		clause = map[string]any{"$gte": coerceValue(value, spec.goKind)}
-	case OpLte:
-		clause = map[string]any{"$lte": coerceValue(value, spec.goKind)}
-	case OpGt:
-		clause = map[string]any{"$gt": coerceValue(value, spec.goKind)}
-	case OpLt:
-		clause = map[string]any{"$lt": coerceValue(value, spec.goKind)}
-	case OpStartsWith:
-		clause = map[string]any{"$regex": "^" + regexp.QuoteMeta(value)}
-	case OpContains:
-		clause = map[string]any{"$regex": regexp.QuoteMeta(value)}
-	case OpIEq:
-		clause = map[string]any{"$regex": "^" + regexp.QuoteMeta(value) + "$", "$options": "i"}
-	case OpINe:
-		clause = map[string]any{"$not": map[string]any{"$regex": "^" + regexp.QuoteMeta(value) + "$", "$options": "i"}}
-	case OpIStartsWith:
-		clause = map[string]any{"$regex": "^" + regexp.QuoteMeta(value), "$options": "i"}
-	case OpIContains:
-		clause = map[string]any{"$regex": regexp.QuoteMeta(value), "$options": "i"}
-	case OpIIn:
-		clause = queries.RegexMatchList{Patterns: quoteList(value, true), CaseInsensitive: true}
-	case OpINin:
-		clause = queries.RegexMatchList{Patterns: quoteList(value, true), CaseInsensitive: true, Negate: true}
-	default:
-		return
-	}
-	mergeClause(filter, field, clause)
-}
-
-// mergeClause folds a new clause into the criteria map under field. The
-// first clause for a field lands as a plain value (scalar for `eq`, the
-// operator sub-document for the variants); a second clause for the same
-// field promotes both into queries.MultiClause; further clauses append to
-// the existing MultiClause. The canonical MongoViewReader expands
-// MultiClause into a top-level `$and` array — every declared operator is
-// honored simultaneously instead of having only the last write on the map
-// survive.
-func mergeClause(filter map[string]any, field string, clause any) {
-	existing, ok := filter[field]
-	if !ok {
-		filter[field] = clause
-		return
-	}
-	if mc, isMulti := existing.(queries.MultiClause); isMulti {
-		mc.Clauses = append(mc.Clauses, clause)
-		filter[field] = mc
-		return
-	}
-	filter[field] = queries.MultiClause{Clauses: []any{existing, clause}}
-}
-
-// quoteList splits a comma-separated value and applies regexp.QuoteMeta to
-// each entry, optionally wrapping with ^...$ to preserve the equality
-// semantic of the `iin` / `inin` operators (each pattern matches the whole
-// value, not a substring).
-func quoteList(value string, anchored bool) []string {
-	parts := strings.Split(value, ",")
-	out := make([]string, 0, len(parts))
-	for _, p := range parts {
-		p = strings.TrimSpace(p)
-		q := regexp.QuoteMeta(p)
-		if anchored {
-			q = "^" + q + "$"
-		}
-		out = append(out, q)
-	}
-	return out
-}
-
-// parseSortWithSchema turns a comma-separated wire value into a list of
-// SortField entries. Each token may carry a `-` prefix (descending);
-// otherwise ascending. When projSchema is non-nil, the wire name (without
-// the prefix) is validated against the Response DTO's declared paths and
-// translated to the corresponding Go field path (nested paths walked
-// segment-by-segment); the reader maps Go → column via the view's TableSchema.
-// An unknown token returns the verbatim wire token (including any `-` prefix) so the
-// caller can surface it on the canonical 400 envelope as `sort[<token>]`.
-// When projSchema is nil — manual handlers via ParseCriteria, or wrappers
-// paired with a RawDoc-style projector that carries no typed Response —
-// tokens become SortField entries verbatim (no allowlist, no translation).
-func parseSortWithSchema(s string, projSchema *projectionSchema) (sortFields []queries.SortField, badToken string, ok bool) {
-	if s == "" {
-		return nil, "", true
-	}
-	tokens := strings.Split(s, ",")
-	sortFields = make([]queries.SortField, 0, len(tokens))
-	for _, t := range tokens {
-		t = strings.TrimSpace(t)
-		if t == "" {
-			continue
-		}
-		desc := false
-		wireName := t
-		if strings.HasPrefix(t, "-") {
-			desc = true
-			wireName = t[1:]
-		}
-		if projSchema == nil {
-			sortFields = append(sortFields, queries.SortField{Field: wireName, Desc: desc})
-			continue
-		}
-		docPath, allowed := projSchema.paths[wireName]
-		if !allowed {
-			return nil, t, false
-		}
-		sortFields = append(sortFields, queries.SortField{Field: docPath, Desc: desc})
-	}
-	return sortFields, "", true
-}
-
-// parseProjection turns a comma-separated wire value into a projection map
-// keyed by Go field path (value=1 for inclusion); the reader translates each
-// Go path to the physical Mongo column via the view's TableSchema. When
-// projSchema is non-nil, each token is validated against the Response DTO's
-// declared wire paths and translated to the corresponding Go field path
-// (nested paths walked segment-by-segment). An
-// unknown token returns (nil, nil, token, false). When projSchema is nil
-// (manual handlers via ParseCriteria), tokens become inclusion entries
-// verbatim — legacy pass-through.
-//
-// wireSet returns which wire names appeared in the input; the caller uses
-// it to drive the top-level `id` auto-exclusion (the framework adds
-// `_id: 0` when `id` is absent from the wire set).
-func parseProjection(s string, projSchema *projectionSchema) (proj map[string]int, wireSet map[string]bool, badToken string, ok bool) {
-	if s == "" {
-		return nil, nil, "", true
-	}
-	tokens := strings.Split(s, ",")
-	proj = make(map[string]int, len(tokens))
-	wireSet = make(map[string]bool, len(tokens))
-	for _, t := range tokens {
-		t = strings.TrimSpace(t)
-		if t == "" {
-			continue
-		}
-		if projSchema == nil {
-			proj[t] = 1
-			wireSet[t] = true
-			continue
-		}
-		docPath, allowed := projSchema.paths[t]
-		if !allowed {
-			return nil, nil, t, false
-		}
-		proj[docPath] = 1
-		wireSet[t] = true
-	}
-	return proj, wireSet, "", true
-}
-
-// coerceList splits a comma-separated wire value and coerces each element
-// to spec.goKind. Used by the in/nin operators where the wire is one key
-// carrying multiple values.
-func coerceList(value string, kind reflect.Kind) []any {
-	vals := strings.Split(value, ",")
-	items := make([]any, len(vals))
-	for i, v := range vals {
-		items[i] = coerceValue(strings.TrimSpace(v), kind)
-	}
-	return items
-}
-
-// coerceValue converts a wire string into the Go type declared by the leaf.
-// String-typed leaves keep the value verbatim (no silent int/float parse —
-// "95014" stays "95014" so it matches a string-typed Mongo field). Numeric
-// leaves attempt the matching parse; on parse failure the value falls back
-// to the string verbatim so the downstream query simply returns zero hits
-// instead of crashing the wrapper. The kind is the leaf's base kind after
-// pointer stripping (collected in walkSchemaLevel).
-func coerceValue(s string, kind reflect.Kind) any {
-	switch kind {
-	case reflect.String:
-		return s
-	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
-		if n, err := strconv.ParseInt(s, 10, 64); err == nil {
-			return n
-		}
-		return s
-	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
-		if n, err := strconv.ParseUint(s, 10, 64); err == nil {
-			return n
-		}
-		return s
-	case reflect.Float32, reflect.Float64:
-		if f, err := strconv.ParseFloat(s, 64); err == nil {
-			return f
-		}
-		return s
-	case reflect.Bool:
-		if s == "true" {
-			return true
-		}
-		if s == "false" {
-			return false
-		}
-		return s
-	default:
-		// Unknown / composite kinds (slice, struct surrogates) — pass through
-		// as string. The walker only stores scalar leaves today, so this
-		// branch is defensive.
-		return s
-	}
 }

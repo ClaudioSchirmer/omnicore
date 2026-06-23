@@ -311,28 +311,6 @@ func TestNewQueryParser_PointerReqAndPointerResp(t *testing.T) {
 	}
 }
 
-// ─── walkSchemaLevel — pointer deref / non-struct / untagged field ──────────
-
-func TestWalkSchemaLevel_PointerNonStructAndUntaggedField(t *testing.T) {
-	s := &requestSchema{filters: map[string]filterSpec{}, reserved: map[string]bool{}}
-
-	// Non-struct type → early return, nothing accumulated.
-	walkSchemaLevel(reflect.TypeOf(0), "", "", s, true)
-	if len(s.filters) != 0 || len(s.reserved) != 0 {
-		t.Fatalf("non-struct must accumulate nothing, got filters=%v reserved=%v", s.filters, s.reserved)
-	}
-
-	// Pointer-to-struct → deref + walk; the untagged Other field is skipped.
-	type inner struct {
-		Name  *string `query:"name" filter:"eq"`
-		Other string  // no query tag → skipped
-	}
-	walkSchemaLevel(reflect.PointerTo(reflect.TypeOf(inner{})), "", "", s, true)
-	if _, ok := s.filters["name"]; !ok {
-		t.Errorf("pointer-to-struct must be deref'd and walked: %v", s.filters)
-	}
-}
-
 // ─── HandleQueryAsCSV — path-binding failure ────────────────────────────────
 
 type pathExportReq struct {
@@ -442,24 +420,4 @@ func TestUnexportedPathField_PanicsAtInspect(t *testing.T) {
 		}
 	}()
 	inspectPathTags(reflect.TypeOf(unexportedPathReq{}))
-}
-
-// ─── projection — walkResponseGuard derefs an anonymous pointer embed ───────
-
-type guardEmbedBase struct {
-	Name *string `json:"name,omitempty"`
-}
-
-type guardAnonPtrEmbed struct {
-	*guardEmbedBase
-	ID *string `json:"id,omitempty"`
-}
-
-func TestValidateFieldsResponse_AnonymousPointerEmbed(t *testing.T) {
-	// All fields are *T + ,omitempty, so a compliant anonymous *struct embed
-	// yields no violations — and the deref loop in walkResponseGuard runs.
-	errs := validateFieldsResponse(reflect.TypeOf(guardAnonPtrEmbed{}))
-	if len(errs) != 0 {
-		t.Errorf("expected no violations for a compliant anonymous *struct embed, got %v", errs)
-	}
 }

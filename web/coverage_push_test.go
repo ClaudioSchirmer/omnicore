@@ -6,26 +6,11 @@ import (
 	"crypto/x509"
 	"encoding/pem"
 	"reflect"
-	"strings"
 	"testing"
 
 	"github.com/ClaudioSchirmer/omnicore/domain"
 	"github.com/google/uuid"
 )
-
-// --- joinPath: empty-segment branch ---
-
-func TestJoinPath_EmptySegmentReturnsPrefix(t *testing.T) {
-	if got := joinPath("prefix", ""); got != "prefix" {
-		t.Errorf("empty segment must return prefix, got %q", got)
-	}
-	if got := joinPath("", "seg"); got != "seg" {
-		t.Errorf("empty prefix must return segment, got %q", got)
-	}
-	if got := joinPath("a", "b"); got != "a.b" {
-		t.Errorf("expected dotted join, got %q", got)
-	}
-}
 
 // --- buildKeyfunc: config-arity + PEM branches (no network) ---
 
@@ -198,75 +183,4 @@ func TestBindPath_PointerToNonStructPanics(t *testing.T) {
 	}()
 	n := 5
 	BindPath(nil, &n)
-}
-
-// --- projection: extractProjectionSchema + walkProjectionLevel + guard ---
-
-type projChild struct {
-	City *string `json:"city,omitempty"`
-}
-
-type projEmbed struct {
-	Embedded *string `json:"embedded,omitempty"`
-}
-
-type projResp struct {
-	*projEmbed              // anonymous pointer-to-struct → promoted
-	Name       *string      `json:"name,omitempty"`
-	Hidden     *string      `json:"-"` // skipped
-	NoTag      *string      // empty json tag → falls back to field name
-	Self       *projChild   `json:"self,omitempty"`
-	Lines      []*projChild `json:"lines,omitempty"`
-}
-
-func TestExtractProjectionSchema_PointerAndNested(t *testing.T) {
-	s := extractProjectionSchema(reflect.PointerTo(reflect.TypeOf(projResp{})))
-	for _, wire := range []string{"name", "embedded", "NoTag", "self", "self.city", "lines", "lines.city"} {
-		if _, ok := s.paths[wire]; !ok {
-			t.Errorf("expected wire path %q in %v", wire, s.paths)
-		}
-	}
-	if _, ok := s.paths["Hidden"]; ok {
-		t.Error("json:\"-\" field must be skipped")
-	}
-}
-
-func TestExtractProjectionSchema_NonStructIsEmpty(t *testing.T) {
-	s := extractProjectionSchema(reflect.TypeOf(0))
-	if len(s.paths) != 0 {
-		t.Errorf("non-struct must yield empty schema, got %v", s.paths)
-	}
-}
-
-// invalidResp violates the sparse-render contract in several ways so
-// walkResponseGuard reports every rule branch.
-type invalidGuardChild struct {
-	City string `json:"city,omitempty"` // non-pointer scalar → violation
-}
-
-type invalidGuardEmbed struct {
-	Promoted string `json:"promoted,omitempty"` // non-pointer scalar
-}
-
-type invalidResp struct {
-	invalidGuardEmbed                      // anonymous struct → recurse
-	Scalar            string               `json:"scalar"`        // missing omitempty + non-pointer
-	Hidden            string               `json:"-"`             // skipped
-	Bag               map[string]any       `json:"bag,omitempty"` // map → accepted
-	Children          []*invalidGuardChild `json:"children,omitempty"`
-}
-
-func TestValidateFieldsResponse_ReportsViolations(t *testing.T) {
-	errs := validateFieldsResponse(reflect.TypeOf(invalidResp{}))
-	joined := strings.Join(errs, "\n")
-	for _, want := range []string{"scalar", "promoted", "children.city"} {
-		if !strings.Contains(joined, want) {
-			t.Errorf("expected a violation mentioning %q in:\n%s", want, joined)
-		}
-	}
-	// The boot-panic formatter should render the collected violations.
-	msg := formatFieldsResponseGuard(reflect.TypeOf(invalidResp{}), errs)
-	if !strings.Contains(msg, "sparse-render contract") {
-		t.Errorf("unexpected guard message: %s", msg)
-	}
 }

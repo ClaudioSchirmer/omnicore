@@ -2,7 +2,6 @@ package web
 
 import (
 	"net/http/httptest"
-	"reflect"
 	"testing"
 
 	"github.com/ClaudioSchirmer/omnicore/application/configuration"
@@ -211,31 +210,6 @@ func TestPartialOps_CoexistWithEqOnSameField(t *testing.T) {
 	}
 	if crit.Filter["Name"] != "Bob" {
 		t.Errorf("expected plain value Bob, got %v (%T)", crit.Filter["Name"], crit.Filter["Name"])
-	}
-}
-
-func TestPartialOps_SchemaCacheIncludesNewOperators(t *testing.T) {
-	// Force a wrapper construction to seed the cache, then assert the cached
-	// schema enumerates the new operators as accepted ones on the Name field.
-	pipe := newTestPipeline()
-	h := &capturingPartialHandler{}
-	app := fiber.New()
-	app.Get("/users", HandleQueryWithParams(pipe, testFindPartialRequest{}, responses.RawDoc, h))
-
-	_, _ = app.Test(httptest.NewRequest("GET", "/users", nil))
-
-	v, ok := schemaCache.Load(reflect.TypeOf(testFindPartialRequest{}))
-	if !ok {
-		t.Fatal("expected schemaCache to contain entry for testFindPartialRequest")
-	}
-	schema, _ := v.(*requestSchema)
-	if schema == nil {
-		t.Fatal("expected cached value to be *requestSchema")
-	}
-	for _, op := range []string{OpStartsWith, OpContains, OpIEq, OpINe, OpIIn, OpINin, OpIStartsWith, OpIContains} {
-		if !schema.filters["name"].ops[op] {
-			t.Errorf("expected schema.filters[name].ops[%q]=true", op)
-		}
 	}
 }
 
