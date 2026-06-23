@@ -74,9 +74,10 @@ func (coreNL) Translations() map[string]string {
 		"ExpiredTokenNotification":         "Authenticatietoken is verlopen.",
 
 		// Authorization
-		"MissingPermissionNotification": "Vereiste machtiging ontbreekt.",
-		"TenantMissingNotification":     "Tenant-identificatie ontbreekt in de geauthenticeerde principal.",
-		"TenantMismatchNotification":    "De resource behoort tot een andere tenant.",
+		"MissingPermissionNotification":    "Vereiste machtiging ontbreekt.",
+		"TenantMissingNotification":        "Tenant-identificatie ontbreekt in de geauthenticeerde principal.",
+		"TenantMismatchNotification":       "De resource behoort tot een andere tenant.",
+		"FieldAccessForbiddenNotification": "Veld niet toegankelijk.",
 
 		// Server / routing
 		"InternalServerErrorNotification": "Interne serverfout.",

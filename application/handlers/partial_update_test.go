@@ -14,13 +14,14 @@ type testPatchCmd struct {
 	NewName *string
 }
 
-func (c *testPatchCmd) ApplyPartiallyTo(_ *configuration.AppContext, e *testEntity) {
+func (c *testPatchCmd) ApplyPartiallyTo(_ *configuration.AppContext, e *testEntity) error {
 	if c.NewName != nil {
 		e.Name = *c.NewName
 	}
+	return nil
 }
-func (c *testPatchCmd) FromEntity(_ *configuration.AppContext, _ *testEntity) fwresults.None {
-	return fwresults.None{}
+func (c *testPatchCmd) FromEntity(_ *configuration.AppContext, _ *testEntity) (fwresults.None, error) {
+	return fwresults.None{}, nil
 }
 
 func TestPartialUpdateCommandHandler_HappyPath(t *testing.T) {

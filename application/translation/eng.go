@@ -74,9 +74,10 @@ func (coreENG) Translations() map[string]string {
 		"ExpiredTokenNotification":         "Authentication token has expired.",
 
 		// Authorization
-		"MissingPermissionNotification": "Missing required permission.",
-		"TenantMissingNotification":     "Tenant identifier is missing from the authenticated principal.",
-		"TenantMismatchNotification":    "Resource belongs to a different tenant.",
+		"MissingPermissionNotification":    "Missing required permission.",
+		"TenantMissingNotification":        "Tenant identifier is missing from the authenticated principal.",
+		"TenantMismatchNotification":       "Resource belongs to a different tenant.",
+		"FieldAccessForbiddenNotification": "Field is not accessible.",
 
 		// Server / routing
 		"InternalServerErrorNotification": "Internal server error.",

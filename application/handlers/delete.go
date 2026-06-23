@@ -42,7 +42,9 @@ func (h *DeleteCommandHandler[T, Cmd, TResult]) Handle(ctx *configuration.AppCon
 	if err != nil {
 		return zero, err
 	}
-	cmd.ApplyTo(ctx, current)
+	if err := cmd.ApplyTo(ctx, current); err != nil {
+		return zero, err
+	}
 	deletable, err := domain.GetDeletable(current, h.Service, "GetDeletable")
 	if err != nil {
 		return zero, err
@@ -51,5 +53,9 @@ func (h *DeleteCommandHandler[T, Cmd, TResult]) Handle(ctx *configuration.AppCon
 	if err := h.Repo.Scope(ctx, opts...).Delete(deletable); err != nil {
 		return zero, err
 	}
-	return cmd.FromEntity(ctx, current), nil
+	result, err := cmd.FromEntity(ctx, current)
+	if err != nil {
+		return zero, err
+	}
+	return result, nil
 }

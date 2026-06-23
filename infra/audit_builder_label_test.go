@@ -32,7 +32,7 @@ type labelTestAddress struct {
 	Bare    string
 }
 
-func (a labelTestAddress) GetID() string { return a.ID }
+func (a labelTestAddress) GetID() string                                    { return a.ID }
 func (a labelTestAddress) BuildRules(string, domain.Service, *domain.Rules) {}
 
 // labelTestAggregate roots the aggregate so the auditor's children path fires.
@@ -85,9 +85,10 @@ func TestBuildUpdateEvent_FieldChangeCarriesLabelKeyWhenTagPresent(t *testing.T)
 	e := &labelTestEntity{Name: "alice", Email: "a@x.com"}
 	e.SetID(domain.NewID(uuid.NewString()))
 
-	u, err := domain.GetUpdatable(e, func(t *labelTestEntity) {
+	u, err := domain.GetUpdatable(e, func(t *labelTestEntity) error {
 		t.Name = "alicia"   // labeled change
 		t.Email = "b@x.com" // unlabeled change
+		return nil
 	}, nil, "GetUpdatable")
 	if err != nil {
 		t.Fatalf("GetUpdatable: %v", err)
@@ -124,13 +125,14 @@ func TestBuildUpdateEvent_ChildEventChangesCarryLabelKey(t *testing.T) {
 		labelTestAddress{ID: "addr-1", ZipCode: "10000", Bare: "before"},
 	})
 
-	u, err := domain.GetUpdatable(root, func(r *labelTestAggregate) {
+	u, err := domain.GetUpdatable(root, func(r *labelTestAggregate) error {
 		// Replace the same child with mutated values → CurrentStatus=Changed,
 		// surfacing via ChildEvent.Changes.
 		domain.ChangeAggregateChild(r,
 			labelTestAddress{ID: "addr-1", ZipCode: "10000", Bare: "before"},
 			labelTestAddress{ID: "addr-1", ZipCode: "20000", Bare: "after"},
 		)
+		return nil
 	}, nil, "GetUpdatable")
 	if err != nil {
 		t.Fatalf("GetUpdatable: %v", err)

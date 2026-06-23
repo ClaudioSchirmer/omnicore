@@ -33,9 +33,9 @@ type expCSVQuery struct {
 	Criteria queries.ReadCriteria
 }
 
-func (q *expCSVQuery) ToCriteria(ctx *configuration.AppContext) queries.ReadCriteria {
+func (q *expCSVQuery) ToCriteria(ctx *configuration.AppContext) (queries.ReadCriteria, error) {
 	_ = ctx
-	return q.Criteria
+	return q.Criteria, nil
 }
 
 func (r expCSVReq) ToQuery(c queries.ReadCriteria) *expCSVQuery {
@@ -50,7 +50,18 @@ type expCSVHandler struct {
 
 func (h *expCSVHandler) Handle(ctx *configuration.AppContext, q *expCSVQuery) (queries.Page, error) {
 	h.got = q
-	return h.page, h.err
+	if h.err != nil {
+		return queries.Page{}, h.err
+	}
+	crit, err := q.ToCriteria(ctx)
+	if err != nil {
+		return queries.Page{}, err
+	}
+	// Mirror MongoViewReader.ReadPage: echo the effective projection so the
+	// export plan pruning narrows to the same fields the read used.
+	page := h.page
+	page.Projection = crit.Projection
+	return page, nil
 }
 
 // fakeExportView satisfies web.ExportView with no infra import — proving the
@@ -188,6 +199,71 @@ func TestHandleQueryAsCSV_FieldsNarrowing(t *testing.T) {
 	}
 	if recs[0][0] != "Full Name" || recs[1][0] != "John" || recs[2][0] != "Jane" {
 		t.Fatalf("narrowed rows = %v", recs)
+	}
+}
+
+// expHideQuery simulates a Query that removes a field from the read via the
+// criteria (the ReadCriteria.Hide / field-access case): ToCriteria excludes
+// Email, so the export plan pruning must drop the Email column AND its header,
+// not just blank the cells.
+type expHideQuery struct {
+	pipeline.QueryBase
+	Criteria queries.ReadCriteria
+}
+
+func (q *expHideQuery) ToCriteria(_ *configuration.AppContext) (queries.ReadCriteria, error) {
+	crit := q.Criteria
+	if crit.Projection == nil {
+		crit.Projection = map[string]int{}
+	}
+	crit.Projection["Email"] = 0 // exclusion overlay — whole-doc read minus Email
+	return crit, nil
+}
+
+type expHideReq struct{}
+
+func (expHideReq) ToQuery(c queries.ReadCriteria) *expHideQuery { return &expHideQuery{Criteria: c} }
+
+type expHideHandler struct{ page queries.Page }
+
+func (h *expHideHandler) Handle(ctx *configuration.AppContext, q *expHideQuery) (queries.Page, error) {
+	crit, err := q.ToCriteria(ctx)
+	if err != nil {
+		return queries.Page{}, err
+	}
+	page := h.page
+	page.Projection = crit.Projection // mirror MongoViewReader.ReadPage
+	return page, nil
+}
+
+func TestHandleQueryAsCSV_ToCriteriaExclusionDropsColumnAndHeader(t *testing.T) {
+	app := fiber.New()
+	tr := translation.Default()
+	tr.Import(expLabelModule{})
+	pipe := pipeline.New(tr)
+	view := fakeExportView{plan: expCSVPlan(), name: "users"}
+	deps := ExportDeps{Translator: tr, MaxExportRows: 100}
+	h := &expHideHandler{page: queries.Page{Items: []map[string]any{
+		{"Name": "John", "Email": "j@x"},
+		{"Name": "Jane", "Email": "j@y"},
+	}}}
+	app.Get("/users.csv", HandleQueryAsCSV(pipe, expHideReq{}, view, deps, h, export.WithDelimiter(';')))
+
+	resp, _ := app.Test(httptest.NewRequest("GET", "/users.csv", nil))
+	if resp.StatusCode != fiber.StatusOK {
+		t.Fatalf("status=%d", resp.StatusCode)
+	}
+	recs := parseSemicolonCSV(t, resp.Body)
+	// Email must be gone entirely — header AND values — across every row.
+	for _, r := range recs {
+		for _, cell := range r {
+			if cell == "Email" || cell == "j@x" || cell == "j@y" {
+				t.Fatalf("Email leaked despite ToCriteria exclusion: %v", recs)
+			}
+		}
+	}
+	if len(recs) == 0 || recs[0][0] != "Full Name" {
+		t.Fatalf("expected surviving Name header 'Full Name', got %v", recs)
 	}
 }
 

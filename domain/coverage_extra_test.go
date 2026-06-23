@@ -321,13 +321,13 @@ func TestValidEntity_EntitySeals(t *testing.T) {
 	}
 	ins.entity()
 
-	upd, err := GetUpdatable(newSeal(), func(*sealEntity) {}, nil, "GetUpdatable")
+	upd, err := GetUpdatable(newSeal(), func(*sealEntity) error { return nil }, nil, "GetUpdatable")
 	if err != nil {
 		t.Fatalf("GetUpdatable: %v", err)
 	}
 	upd.entity()
 
-	pat, err := GetPartialUpdatable(newSeal(), func(*sealEntity) {}, nil, "GetPartialUpdatable")
+	pat, err := GetPartialUpdatable(newSeal(), func(*sealEntity) error { return nil }, nil, "GetPartialUpdatable")
 	if err != nil {
 		t.Fatalf("GetPartialUpdatable: %v", err)
 	}

@@ -3,7 +3,7 @@
         For trivial CRUD — the logic fits entirely on the Entity via <code>BuildRules</code> — the framework provides
         ready-made generic handlers. The service writes only the Command — <code>ToEntity(ctx)</code> /
         <code>ApplyTo(ctx, t)</code> / <code>ApplyPartiallyTo(ctx, t)</code> on the way in AND
-        <code>FromEntity(ctx, t) TResult</code> on the way out, both as methods on the Cmd struct. The wire layer
+        <code>FromEntity(ctx, t) (TResult, error)</code> on the way out, both as methods on the Cmd struct. The wire layer
         finishes the projection with <code>Response.FromResult(Result) Response</code>. No handler struct to write.
     </p>
     <p>
@@ -14,26 +14,36 @@
     <h3>The 6 handlers</h3>
     <p>
         Every Cmd implements input boundary + output boundary as methods on its own struct.
-        <code>FromEntity(ctx, T) TResult</code> is required on all 6 verbs — bodyless verbs (Archive/Unarchive/Delete)
+        <code>FromEntity(ctx, T) (TResult, error)</code> is required on all 6 verbs — bodyless verbs (Archive/Unarchive/Delete)
         typically declare <code>TResult = fwresults.None</code> and have <code>FromEntity</code> return
         <code>fwresults.None{}</code>.
+    </p>
+    <p>
+        <strong>Mappers raise notifications by return.</strong> Every mapper returns <code>error</code>: a fallible
+        step inside <code>ToEntity</code> / <code>ApplyTo</code> / <code>FromEntity</code> (e.g. an external-service
+        lookup, or a field-access reject in a query's <code>ToCriteria</code>) raises a notification through the
+        idiomatic Go return path — the handler propagates it and <code>errors.As</code> at <code>pipeline.Run</code>
+        turns the carrier into a <code>Failure</code> envelope with the notification's HTTP semantic. A mapper that
+        cannot fail returns <code>nil</code>. This is the application-layer counterpart of the domain's
+        accumulate-then-gate: only the <em>sealed</em> domain (a <code>ValidEntity</code> cannot be hand-built) keeps
+        the gate; the open application/infra layers raise by return.
     </p>
     <table>
         <thead>
             <tr><th>HTTP verb</th><th>Handler</th><th>Cmd input method</th><th>Cmd output method</th><th>Strict body?</th></tr>
         </thead>
         <tbody>
-            <tr><td>POST</td><td><code>InsertCommandHandler[T, *Cmd, TResult]</code></td><td><code>ToEntity(ctx) T</code></td><td><code>FromEntity(ctx, T) TResult</code></td><td>no</td></tr>
-            <tr><td><strong>PUT</strong></td><td><code>UpdateCommandHandler[T, *Cmd, TResult]</code></td><td><code>ApplyTo(ctx, T)</code></td><td><code>FromEntity(ctx, T) TResult</code></td><td><strong>yes</strong> (embeds <code>pipeline.FullBody</code>)</td></tr>
-            <tr><td><strong>PATCH</strong></td><td><code>PartialUpdateCommandHandler[T, *Cmd, TResult]</code></td><td><code>ApplyPartiallyTo(ctx, T)</code></td><td><code>FromEntity(ctx, T) TResult</code></td><td>no</td></tr>
-            <tr><td>DELETE</td><td><code>DeleteCommandHandler[T, *Cmd, TResult]</code></td><td><code>ApplyTo(ctx, T)</code> (runtime authz fields)</td><td><code>FromEntity(ctx, T) TResult</code> (typ. <code>fwresults.None</code>)</td><td>no</td></tr>
-            <tr><td>PATCH (archive)</td><td><code>ArchiveCommandHandler[T, *Cmd, TResult]</code></td><td><code>ApplyTo(ctx, T)</code> (runtime authz fields)</td><td><code>FromEntity(ctx, T) TResult</code> (typ. <code>fwresults.None</code>)</td><td>no</td></tr>
-            <tr><td>PATCH (unarchive)</td><td><code>UnarchiveCommandHandler[T, *Cmd, TResult]</code></td><td><code>ApplyTo(ctx, T)</code> (runtime authz fields)</td><td><code>FromEntity(ctx, T) TResult</code> (typ. <code>fwresults.None</code>)</td><td>no</td></tr>
+            <tr><td>POST</td><td><code>InsertCommandHandler[T, *Cmd, TResult]</code></td><td><code>ToEntity(ctx) (T, error)</code></td><td><code>FromEntity(ctx, T) (TResult, error)</code></td><td>no</td></tr>
+            <tr><td><strong>PUT</strong></td><td><code>UpdateCommandHandler[T, *Cmd, TResult]</code></td><td><code>ApplyTo(ctx, T) error</code></td><td><code>FromEntity(ctx, T) (TResult, error)</code></td><td><strong>yes</strong> (embeds <code>pipeline.FullBody</code>)</td></tr>
+            <tr><td><strong>PATCH</strong></td><td><code>PartialUpdateCommandHandler[T, *Cmd, TResult]</code></td><td><code>ApplyPartiallyTo(ctx, T) error</code></td><td><code>FromEntity(ctx, T) (TResult, error)</code></td><td>no</td></tr>
+            <tr><td>DELETE</td><td><code>DeleteCommandHandler[T, *Cmd, TResult]</code></td><td><code>ApplyTo(ctx, T) error</code> (runtime authz fields)</td><td><code>FromEntity(ctx, T) (TResult, error)</code> (typ. <code>fwresults.None</code>)</td><td>no</td></tr>
+            <tr><td>PATCH (archive)</td><td><code>ArchiveCommandHandler[T, *Cmd, TResult]</code></td><td><code>ApplyTo(ctx, T) error</code> (runtime authz fields)</td><td><code>FromEntity(ctx, T) (TResult, error)</code> (typ. <code>fwresults.None</code>)</td><td>no</td></tr>
+            <tr><td>PATCH (unarchive)</td><td><code>UnarchiveCommandHandler[T, *Cmd, TResult]</code></td><td><code>ApplyTo(ctx, T) error</code> (runtime authz fields)</td><td><code>FromEntity(ctx, T) (TResult, error)</code> (typ. <code>fwresults.None</code>)</td><td>no</td></tr>
         </tbody>
     </table>
 
     <p>
-        Each Command declares <code>FromEntity(ctx *AppContext, t T) TResult</code> as a method on the Cmd struct
+        Each Command declares <code>FromEntity(ctx *AppContext, t T) (TResult, error)</code> as a method on the Cmd struct
         (symmetric with the input boundary <code>ToEntity</code>/<code>ApplyTo</code>). The handler calls it after the
         Writer's write succeeds (for Insert: with the DB-assigned ID set back on the entity via
         <code>entity.SetID(id)</code>). The Fiber wrapper then runs the consumer's
@@ -66,7 +76,7 @@
     Repo    persistence.ScopedRepository[T]
     Service domain.Service     // optional — see "Domain Service via Auto handler"
     // No Auditor field — audit is owned by infra.Postgres, configured at boot.
-    // No Project field — projection lives on the Cmd as cmd.FromEntity(ctx, T) TResult.
+    // No Project field — projection lives on the Cmd as cmd.FromEntity(ctx, T) (TResult, error).
     // In-TX side effects opt in via Cmd's optional AfterBegin / BeforeCommit
     // methods — the handler detects them via type assertion and threads them as
     // WriteOption[T] to the Repo.Update call.
@@ -92,7 +102,7 @@
         <code>json:"..."</code> tags and a <code>ToCommand()</code> method (no ctx — web boundary is dumb mapping);
         <code>application/commands/</code> carries the pure <strong>Commands</strong> without JSON.
         <code>AppContext</code> reaches the application layer through <code>cmd.ToEntity(ctx)</code> /
-        <code>ApplyTo(ctx, T)</code> / <code>ApplyPartiallyTo(ctx, T)</code> — symmetric with the read side's
+        <code>ApplyTo(ctx, T) error</code> / <code>ApplyPartiallyTo(ctx, T) error</code> — symmetric with the read side's
         <code>Query.ToCriteria(ctx)</code>. The Command (or Query) is the only layer that may translate
         identity-derived claims into business-named entity fields (or persistence criteria). The current
         wrappers:
@@ -140,14 +150,14 @@ type InsertUserCommand struct {
 }
 // ToEntity receives *AppContext — Command is the only layer that translates
 // ctx into business-named entity fields. Domain sees only business fields.
-func (c *InsertUserCommand) ToEntity(_ *configuration.AppContext) *User {
-    return &amp;User{Name: c.Name, Email: c.Email, Phone: c.Phone}
+func (c *InsertUserCommand) ToEntity(_ *configuration.AppContext) (*User, error) {
+    return &amp;User{Name: c.Name, Email: c.Email, Phone: c.Phone}, nil
 }
 
 // Output method ON THE CMD (symmetric with ToEntity on the input side).
 // Receives ctx — same boundary, same translation point.
-func (c InsertUserCommand) FromEntity(_ *configuration.AppContext, u *User) InsertUserResult {
-    return InsertUserResult{ID: *u.GetID(), Name: u.Name, Email: u.Email, Phone: u.Phone}
+func (c InsertUserCommand) FromEntity(_ *configuration.AppContext, u *User) (InsertUserResult, error) {
+    return InsertUserResult{ID: *u.GetID(), Name: u.Name, Email: u.Email, Phone: u.Phone}, nil
 }
 
 // Output shape — pure data, no methods.
@@ -186,7 +196,7 @@ func (InsertUserResponse) FromResult(r commands.InsertUserResult) InsertUserResp
 
 // 3. Route — sample Request + responseProjection function value anchor generic inference.
 // The handler has NO Project field — projection lives on the Cmd as
-// `func (c InsertUserCommand) FromEntity(ctx *AppContext, u *User) InsertUserResult`,
+// `func (c InsertUserCommand) FromEntity(ctx *AppContext, u *User) (InsertUserResult, error)`,
 // declared in the same file as the Cmd (symmetric with ToEntity on the input side).
 users.Post("/", fwweb.HandleCommandWithBody(d.Pipeline,
     requests.InsertUserRequest{},
@@ -290,8 +300,8 @@ users.Post("/", fwweb.HandleCommandWithBody(d.Pipeline,
         <code>AggregateLoader</code>) and <code>New()</code> comes promoted via embed.
     </p>
     <pre><code>// UnarchiveUserCommand declares the bodyless verb shape:
-//   func (*UnarchiveUserCommand) ApplyTo(_ *AppContext, _ *User) {}
-//   func (*UnarchiveUserCommand) FromEntity(_ *AppContext, _ *User) fwresults.None { return fwresults.None{} }
+//   func (*UnarchiveUserCommand) ApplyTo(_ *AppContext, _ *User) error { return nil }
+//   func (*UnarchiveUserCommand) FromEntity(_ *AppContext, _ *User) (fwresults.None, error) { return fwresults.None{}, nil }
 users.Patch("/:id/unarchive", fwweb.HandleCommandWithID(d.Pipeline,
     fwresponses.NoBody,
     &amp;handlers.UnarchiveCommandHandler[*User, *UnarchiveUserCommand, fwresults.None]{

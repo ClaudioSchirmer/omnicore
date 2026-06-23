@@ -520,6 +520,16 @@ fwopenapi.Mount(d.OpenAPIRegistry, app, fiber.MethodGet, "/users.csv", csvH, csv
         instead of spelling those out by hand at every export endpoint.
     </p>
     <p>
+        <strong>Columns follow the effective read projection — <code>ToCriteria</code> is the single
+        source of truth.</strong> The export prunes its column plan to <code>page.Projection</code>
+        (the projection the read actually used, echoed by <code>MongoViewReader.ReadPage</code> from the
+        post-<code>ToCriteria</code> criteria) via <code>ExportPlan.PruneToProjection</code>. So a field
+        a Query removes from the criteria — a future <code>ReadCriteria.Hide</code>, a tenant/owner
+        overlay, or just <code>?fields=</code> — drops its CSV/XLSX <em>column and header</em>, not only
+        its cell values. JSON and the tabular export narrow by the same source, so they never disagree
+        on which fields surface.
+    </p>
+    <p>
         <strong>Hierarchical layout — one column per nesting level.</strong> The view's embed tree
         is rendered depth-first: root columns start at column A, each embed one column to the right
         (addresses at column B, a grandchild collection at column C, …), to the view's full depth.

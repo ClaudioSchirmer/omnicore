@@ -112,3 +112,15 @@ type TenantMismatchNotification struct{ domain.ApplicationNotificationBase }
 func (TenantMismatchNotification) Semantic() domain.NotificationSemantic {
 	return domain.SemanticForbidden
 }
+
+// FieldAccessForbiddenNotification is emitted by ReadCriteria.Restrict when a
+// read ACTIVELY references a field the requesting principal may not see — a
+// ?sort=, ?filters=, or explicit ?fields= on a field the Query restricted in
+// ToCriteria. The field is removed from the read either way; the 403 marks the
+// active attempt (a passively-omitted field gets no notification, just absence).
+// The restricted Go field path is carried as the notification's FieldName.
+type FieldAccessForbiddenNotification struct{ domain.ApplicationNotificationBase }
+
+func (FieldAccessForbiddenNotification) Semantic() domain.NotificationSemantic {
+	return domain.SemanticForbidden
+}

@@ -32,5 +32,9 @@ type FindByParamsQueryHandler[Q queries.FindByParamsQuery] struct {
 }
 
 func (h *FindByParamsQueryHandler[Q]) Handle(ctx *configuration.AppContext, q Q) (queries.Page, error) {
-	return h.Reader.ReadPage(ctx, h.View, q.ToCriteria(ctx))
+	crit, err := q.ToCriteria(ctx)
+	if err != nil {
+		return queries.Page{}, err
+	}
+	return h.Reader.ReadPage(ctx, h.View, crit)
 }

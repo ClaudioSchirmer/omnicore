@@ -35,11 +35,11 @@ type withAfterBeginCmd struct {
 	afterBeginCalled bool
 }
 
-func (c *withAfterBeginCmd) ToEntity(_ *configuration.AppContext) *testEntity {
-	return &testEntity{Name: "alice"}
+func (c *withAfterBeginCmd) ToEntity(_ *configuration.AppContext) (*testEntity, error) {
+	return &testEntity{Name: "alice"}, nil
 }
-func (c *withAfterBeginCmd) FromEntity(_ *configuration.AppContext, _ *testEntity) fwresults.None {
-	return fwresults.None{}
+func (c *withAfterBeginCmd) FromEntity(_ *configuration.AppContext, _ *testEntity) (fwresults.None, error) {
+	return fwresults.None{}, nil
 }
 func (c *withAfterBeginCmd) AfterBegin(_ *configuration.AppContext, _ *testEntity, _ persistence.TxHandle) error {
 	c.afterBeginCalled = true
@@ -52,11 +52,11 @@ type withBeforeCommitCmd struct {
 	beforeCommitCalled bool
 }
 
-func (c *withBeforeCommitCmd) ToEntity(_ *configuration.AppContext) *testEntity {
-	return &testEntity{Name: "alice"}
+func (c *withBeforeCommitCmd) ToEntity(_ *configuration.AppContext) (*testEntity, error) {
+	return &testEntity{Name: "alice"}, nil
 }
-func (c *withBeforeCommitCmd) FromEntity(_ *configuration.AppContext, _ *testEntity) fwresults.None {
-	return fwresults.None{}
+func (c *withBeforeCommitCmd) FromEntity(_ *configuration.AppContext, _ *testEntity) (fwresults.None, error) {
+	return fwresults.None{}, nil
 }
 func (c *withBeforeCommitCmd) BeforeCommit(_ *configuration.AppContext, _ *testEntity, _ domain.ID, _ persistence.TxHandle) error {
 	c.beforeCommitCalled = true
@@ -70,11 +70,11 @@ type withBothHooksCmd struct {
 	beforeCommitCalled bool
 }
 
-func (c *withBothHooksCmd) ToEntity(_ *configuration.AppContext) *testEntity {
-	return &testEntity{Name: "alice"}
+func (c *withBothHooksCmd) ToEntity(_ *configuration.AppContext) (*testEntity, error) {
+	return &testEntity{Name: "alice"}, nil
 }
-func (c *withBothHooksCmd) FromEntity(_ *configuration.AppContext, _ *testEntity) fwresults.None {
-	return fwresults.None{}
+func (c *withBothHooksCmd) FromEntity(_ *configuration.AppContext, _ *testEntity) (fwresults.None, error) {
+	return fwresults.None{}, nil
 }
 func (c *withBothHooksCmd) AfterBegin(_ *configuration.AppContext, _ *testEntity, _ persistence.TxHandle) error {
 	c.afterBeginCalled = true
@@ -90,11 +90,11 @@ type noHooksCmd struct {
 	pipeline.CommandBase
 }
 
-func (c *noHooksCmd) ToEntity(_ *configuration.AppContext) *testEntity {
-	return &testEntity{Name: "alice"}
+func (c *noHooksCmd) ToEntity(_ *configuration.AppContext) (*testEntity, error) {
+	return &testEntity{Name: "alice"}, nil
 }
-func (c *noHooksCmd) FromEntity(_ *configuration.AppContext, _ *testEntity) fwresults.None {
-	return fwresults.None{}
+func (c *noHooksCmd) FromEntity(_ *configuration.AppContext, _ *testEntity) (fwresults.None, error) {
+	return fwresults.None{}, nil
 }
 
 // --- InsertCommandHandler dispatch ----------------------------------------
@@ -153,10 +153,12 @@ type withAfterBeginIDCmd struct {
 	pipeline.CommandBaseWithID
 }
 
-func (c *withAfterBeginIDCmd) ApplyTo(_ *configuration.AppContext, _ *testEntity)              {}
-func (c *withAfterBeginIDCmd) ApplyPartiallyTo(_ *configuration.AppContext, _ *testEntity)     {}
-func (c *withAfterBeginIDCmd) FromEntity(_ *configuration.AppContext, _ *testEntity) fwresults.None {
-	return fwresults.None{}
+func (c *withAfterBeginIDCmd) ApplyTo(_ *configuration.AppContext, _ *testEntity) error { return nil }
+func (c *withAfterBeginIDCmd) ApplyPartiallyTo(_ *configuration.AppContext, _ *testEntity) error {
+	return nil
+}
+func (c *withAfterBeginIDCmd) FromEntity(_ *configuration.AppContext, _ *testEntity) (fwresults.None, error) {
+	return fwresults.None{}, nil
 }
 func (c *withAfterBeginIDCmd) AfterBegin(_ *configuration.AppContext, _ *testEntity, _ persistence.TxHandle) error {
 	return nil
@@ -166,10 +168,12 @@ type withBeforeCommitIDCmd struct {
 	pipeline.CommandBaseWithID
 }
 
-func (c *withBeforeCommitIDCmd) ApplyTo(_ *configuration.AppContext, _ *testEntity)              {}
-func (c *withBeforeCommitIDCmd) ApplyPartiallyTo(_ *configuration.AppContext, _ *testEntity)     {}
-func (c *withBeforeCommitIDCmd) FromEntity(_ *configuration.AppContext, _ *testEntity) fwresults.None {
-	return fwresults.None{}
+func (c *withBeforeCommitIDCmd) ApplyTo(_ *configuration.AppContext, _ *testEntity) error { return nil }
+func (c *withBeforeCommitIDCmd) ApplyPartiallyTo(_ *configuration.AppContext, _ *testEntity) error {
+	return nil
+}
+func (c *withBeforeCommitIDCmd) FromEntity(_ *configuration.AppContext, _ *testEntity) (fwresults.None, error) {
+	return fwresults.None{}, nil
 }
 func (c *withBeforeCommitIDCmd) BeforeCommit(_ *configuration.AppContext, _ *testEntity, _ domain.ID, _ persistence.TxHandle) error {
 	return nil
@@ -179,10 +183,12 @@ type withBothHooksIDCmd struct {
 	pipeline.CommandBaseWithID
 }
 
-func (c *withBothHooksIDCmd) ApplyTo(_ *configuration.AppContext, _ *testEntity)              {}
-func (c *withBothHooksIDCmd) ApplyPartiallyTo(_ *configuration.AppContext, _ *testEntity)     {}
-func (c *withBothHooksIDCmd) FromEntity(_ *configuration.AppContext, _ *testEntity) fwresults.None {
-	return fwresults.None{}
+func (c *withBothHooksIDCmd) ApplyTo(_ *configuration.AppContext, _ *testEntity) error { return nil }
+func (c *withBothHooksIDCmd) ApplyPartiallyTo(_ *configuration.AppContext, _ *testEntity) error {
+	return nil
+}
+func (c *withBothHooksIDCmd) FromEntity(_ *configuration.AppContext, _ *testEntity) (fwresults.None, error) {
+	return fwresults.None{}, nil
 }
 func (c *withBothHooksIDCmd) AfterBegin(_ *configuration.AppContext, _ *testEntity, _ persistence.TxHandle) error {
 	return nil
@@ -196,10 +202,10 @@ type noHooksIDCmd struct {
 	pipeline.CommandBaseWithID
 }
 
-func (c *noHooksIDCmd) ApplyTo(_ *configuration.AppContext, _ *testEntity)              {}
-func (c *noHooksIDCmd) ApplyPartiallyTo(_ *configuration.AppContext, _ *testEntity)     {}
-func (c *noHooksIDCmd) FromEntity(_ *configuration.AppContext, _ *testEntity) fwresults.None {
-	return fwresults.None{}
+func (c *noHooksIDCmd) ApplyTo(_ *configuration.AppContext, _ *testEntity) error          { return nil }
+func (c *noHooksIDCmd) ApplyPartiallyTo(_ *configuration.AppContext, _ *testEntity) error { return nil }
+func (c *noHooksIDCmd) FromEntity(_ *configuration.AppContext, _ *testEntity) (fwresults.None, error) {
+	return fwresults.None{}, nil
 }
 
 // withIDPath sets a fresh UUID on the path field so RequirePathID does
@@ -474,8 +480,8 @@ type errorCmd struct {
 }
 
 func (c *errorCmd) ToEntity(_ *configuration.AppContext) *testEntity { return &testEntity{} }
-func (c *errorCmd) FromEntity(_ *configuration.AppContext, _ *testEntity) fwresults.None {
-	return fwresults.None{}
+func (c *errorCmd) FromEntity(_ *configuration.AppContext, _ *testEntity) (fwresults.None, error) {
+	return fwresults.None{}, nil
 }
 func (c *errorCmd) BeforeCommit(_ *configuration.AppContext, _ *testEntity, _ domain.ID, _ persistence.TxHandle) error {
 	return c.wantErr

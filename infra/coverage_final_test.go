@@ -590,8 +590,9 @@ func aggInsert(t *testing.T, pg *Postgres) error {
 
 func aggUpdateWithChangedChild(t *testing.T, pg *Postgres) error {
 	root := newCovAgg(t, covChild{ID: "c1", Label: "old"})
-	u, err := domain.GetUpdatable(root, func(r *covAgg) {
+	u, err := domain.GetUpdatable(root, func(r *covAgg) error {
 		domain.ChangeAggregateChild(r, covChild{ID: "c1", Label: "old"}, covChild{ID: "c1", Label: "new"})
+		return nil
 	}, nil, "GetUpdatable")
 	if err != nil {
 		t.Fatalf("GetUpdatable: %v", err)
@@ -680,7 +681,7 @@ func TestAggregateVerbs_HookErrors(t *testing.T) {
 			_, e := pg.Insert(newBuilderCtx(), ins, covAggSchema, hook)
 			return e
 		case "Update":
-			u, _ := domain.GetUpdatable(newCovAgg(t, covChild{ID: "c1", Label: "x"}), func(*covAgg) {}, nil, "GetUpdatable")
+			u, _ := domain.GetUpdatable(newCovAgg(t, covChild{ID: "c1", Label: "x"}), func(*covAgg) error { return nil }, nil, "GetUpdatable")
 			_, e := pg.Update(newBuilderCtx(), u, covAggSchema, hook)
 			return e
 		case "Archive":

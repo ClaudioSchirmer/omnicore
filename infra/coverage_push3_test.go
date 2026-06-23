@@ -42,8 +42,9 @@ func TestInsertAggregate_ChildInsertError(t *testing.T) {
 
 func TestUpdateAggregate_AddedChildInsertError(t *testing.T) {
 	root := newCovAgg(t)
-	u, _ := domain.GetUpdatable(root, func(r *covAgg) {
+	u, _ := domain.GetUpdatable(root, func(r *covAgg) error {
 		domain.AddAggregateChild(r, covChild{ID: "c2", Label: "new"})
+		return nil
 	}, nil, "GetUpdatable")
 
 	pool := newFakePool()
@@ -56,8 +57,9 @@ func TestUpdateAggregate_AddedChildInsertError(t *testing.T) {
 
 func TestUpdateAggregate_ChangedChildUpdateError(t *testing.T) {
 	root := newCovAgg(t, covChild{ID: "c1", Label: "old"})
-	u, _ := domain.GetUpdatable(root, func(r *covAgg) {
+	u, _ := domain.GetUpdatable(root, func(r *covAgg) error {
 		domain.ChangeAggregateChild(r, covChild{ID: "c1", Label: "old"}, covChild{ID: "c1", Label: "changed"})
+		return nil
 	}, nil, "GetUpdatable")
 
 	pool := newFakePool()
@@ -70,8 +72,9 @@ func TestUpdateAggregate_ChangedChildUpdateError(t *testing.T) {
 
 func TestUpdateAggregate_RemovedChildArchiveError(t *testing.T) {
 	root := newCovAgg(t, covChild{ID: "c1", Label: "gone"})
-	u, _ := domain.GetUpdatable(root, func(r *covAgg) {
+	u, _ := domain.GetUpdatable(root, func(r *covAgg) error {
 		domain.RemoveAggregateChild(r, covChild{ID: "c1", Label: "gone"})
+		return nil
 	}, nil, "GetUpdatable")
 
 	// The Removed child triggers archiveChild → tx.Exec; force it (and every
@@ -172,7 +175,7 @@ func TestOldFieldsOf_Branches(t *testing.T) {
 	}
 	// Entity carrying Old (update path) → pre-mutation snapshot.
 	e := newFlatEntity()
-	u, err := domain.GetUpdatable(e, func(x *builderTestEntity) { x.Name = "bob" }, nil, "GetUpdatable")
+	u, err := domain.GetUpdatable(e, func(x *builderTestEntity) error { x.Name = "bob"; return nil }, nil, "GetUpdatable")
 	if err != nil {
 		t.Fatalf("GetUpdatable: %v", err)
 	}

@@ -102,7 +102,7 @@ func TestMongoViewReader_ReadPage_SortSearchArchived(t *testing.T) {
 	}
 }
 
-func TestMongoViewReader_ReadPage_Projection(t *testing.T) {
+func TestMongoViewReader_ReadPage_ProjectionStripsAutoIncludedSortField(t *testing.T) {
 	coll := &fakeColl{
 		count: 1,
 		docs: []any{
@@ -127,6 +127,24 @@ func TestMongoViewReader_ReadPage_Projection(t *testing.T) {
 	// Email was auto-included for the cursor then stripped from the wire doc.
 	if _, present := page.Items[0]["Email"]; present {
 		t.Errorf("auto-included sort field must be stripped, got %v", page.Items[0])
+	}
+}
+
+func TestMongoViewReader_ReadPage_EchoesEffectiveProjection(t *testing.T) {
+	coll := &fakeColl{
+		count: 1,
+		docs:  []any{map[string]any{"_id": "u1", "name": "alice", "mail": "a@x"}},
+	}
+	r := viewReaderFixture(coll)
+	proj := map[string]int{"_id": 0, "Name": 1}
+	page, err := r.ReadPage(context.Background(), "builder_view", queries.ReadCriteria{Limit: 1, Projection: proj})
+	if err != nil {
+		t.Fatalf("ReadPage: %v", err)
+	}
+	// The tabular-export plan pruning relies on page.Projection echoing the
+	// criteria's effective projection (post-ToCriteria).
+	if got := page.Projection; len(got) != len(proj) || got["Name"] != 1 || got["_id"] != 0 {
+		t.Errorf("page.Projection = %v, want echoed %v", got, proj)
 	}
 }
 

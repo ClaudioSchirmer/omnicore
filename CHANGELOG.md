@@ -9,9 +9,56 @@ While in `0.x.y`, the public API may change between minor versions; breaking
 changes are highlighted under **Changed**. Stable contract semantics arrive
 with `1.0.0`.
 
-## [Unreleased]
+## [0.12.0] - 2026-06-22
+
+### Added
+
+- **`ReadCriteria.Restrict(goFieldPath)` — field-level read authorization.** A
+  Query calls it inside `ToCriteria(ctx)`, after deciding from the `AppContext`
+  identity that the caller may not see a field, to remove that field from the read
+  entirely: it is not projected (so it never surfaces in the JSON **or** the
+  tabular export — header included, thanks to the projection-aware export pruning),
+  not sorted by, and not filtered on. If the request **actively** referenced the
+  field — a `?sort=`, `?filters=`, or explicit `?fields=` on it — `Restrict`
+  returns a 403 `*ApplicationError` (`FieldAccessForbiddenNotification`,
+  `SemanticForbidden`): trying to use a hidden field is refused rather than
+  silently ignored, which also closes the inference leak a dropped sort/filter
+  would leave. A passive read (the field simply not requested) gets the silent
+  omission. The decision stays in the application layer (the Query reads
+  `Identity`); infra stays authz-blind. Pairs with the export projection fix.
+
+### Fixed
+
+- **Tabular export (CSV/XLSX) now respects the effective read projection** — so
+  `ToCriteria` is the single source of truth for which fields surface in every
+  format. Previously a field a Query removed from `ReadCriteria.Projection`
+  vanished from the JSON and from the CSV/XLSX *values*, but its **column header
+  survived**: the export pruned its column plan by the wire `?fields` alone,
+  independent of `ToCriteria`. Now `queries.Page` carries a `Projection
+  map[string]int` (stamped by `MongoViewReader.ReadPage` from the read criteria),
+  and the export narrows its plan via the new `ExportPlan.PruneToProjection` (the
+  Go-path counterpart of `Prune`, honoring include/exclude/whole-doc modes) — so
+  the header drops too. `?fields` still drives the read projection and its
+  validation; the export no longer needs the wire-token list for pruning. Build
+  step toward field-level read `Hide()`.
 
 ### Changed
+
+- **Application mappers now raise notifications by return — every fallible mapper
+  returns `error`.** The Auto command/query contracts gain an `error` result on
+  the developer-written boundary methods: `InsertCommand.ToEntity` →
+  `(T, error)`; `FromEntity` → `(TResult, error)` on all six command contracts;
+  `ApplyTo`/`ApplyPartiallyTo` → `error`; `FindByParamsQuery`/`FindByIDQuery`'s
+  `ToCriteria` → `(ReadCriteria, error)`. `domain.GetUpdatable` /
+  `GetPartialUpdatable` accept `apply func(T) error` (propagated before
+  validation). This lets Application (and Infra) raise a notification from a
+  mapper — e.g. an external-service failure inside `ToEntity` — via the idiomatic
+  Go return path (`errors.As` at `pipeline.Run`), instead of being forced through
+  the domain. The accumulate-then-gate facilitator stays domain-only, justified
+  by the domain being the one sealed construction path (`ValidEntity` cannot be
+  hand-built). Auto handlers propagate each mapper's `error`; `pipeline.Run` is
+  unchanged. Breaking surface change — consumer mappers add `, error` and a
+  `nil`/propagated return.
 
 - **`TableSchema.PK` now takes only the column: `PK(column string)`** (was
   `PK(goName, column string)`). The Go side of the primary key is fixed to the
@@ -870,6 +917,7 @@ to content from a prior repo that no longer exists.
   emitted as best-effort `slog.Warn` whenever a hook returns non-nil
   error.
 
+[0.12.0]: https://github.com/ClaudioSchirmer/omnicore/releases/tag/v0.12.0
 [0.11.0]: https://github.com/ClaudioSchirmer/omnicore/releases/tag/v0.11.0
 [0.10.0]: https://github.com/ClaudioSchirmer/omnicore/releases/tag/v0.10.0
 [0.9.0]: https://github.com/ClaudioSchirmer/omnicore/releases/tag/v0.9.0

@@ -27,7 +27,7 @@ func (e *aggCustomer) Modes() []domain.EntityMode {
 	}
 }
 func (*aggCustomer) BuildRules(string, domain.Service, *domain.Rules) {}
-func (e *aggCustomer) GetAggregateRoot() *domain.AggregateRoot       { return &e.AggregateRoot }
+func (e *aggCustomer) GetAggregateRoot() *domain.AggregateRoot        { return &e.AggregateRoot }
 func (*aggCustomer) AggregateChildren() []domain.AggregateValueObject {
 	return []domain.AggregateValueObject{aggChannel{}}
 }
@@ -169,12 +169,13 @@ func TestPostgres_UpdateAggregate_AppliesChildChanges(t *testing.T) {
 	}
 	loaded.AggregateConstructor(asChildren)
 
-	upd, err := domain.GetUpdatable(loaded, func(c *aggCustomer) {
+	upd, err := domain.GetUpdatable(loaded, func(c *aggCustomer) error {
 		// Change first; remove second; add a new third.
 		current := domain.GetCurrentItemsOf[aggChannel](&c.AggregateRoot)
 		domain.ChangeAggregateChild(c, current[0], aggChannel{ID: current[0].ID, Label: current[0].Label + "-upd"})
 		domain.RemoveAggregateChild(c, current[1])
 		domain.AddAggregateChild(c, aggChannel{Label: "webhook"})
+		return nil
 	}, nil, "GetUpdatable")
 	if err != nil {
 		t.Fatalf("GetUpdatable: %v", err)
@@ -312,9 +313,10 @@ func TestUpdateChild_WithoutIDIsError(t *testing.T) {
 	loaded.SetID(domain.NewID(res.ID))
 	// Load one child but give it NO id — Change request → updateChild requires id.
 	loaded.AggregateConstructor([]domain.AggregateValueObject{aggChannel{ID: "", Label: "first"}})
-	upd, _ := domain.GetUpdatable(loaded, func(c *aggCustomer) {
+	upd, _ := domain.GetUpdatable(loaded, func(c *aggCustomer) error {
 		current := domain.GetCurrentItemsOf[aggChannel](&c.AggregateRoot)
 		domain.ChangeAggregateChild(c, current[0], aggChannel{Label: "renamed"}) // empty ID still
+		return nil
 	}, nil, "GetUpdatable")
 
 	_, err := pg.Update(testCtx(), upd, aggCustomerSchema(), noHook)
@@ -334,7 +336,7 @@ func (e *aggInvoice) Modes() []domain.EntityMode {
 	return []domain.EntityMode{domain.ModeInsert}
 }
 func (*aggInvoice) BuildRules(string, domain.Service, *domain.Rules) {}
-func (e *aggInvoice) GetAggregateRoot() *domain.AggregateRoot      { return &e.AggregateRoot }
+func (e *aggInvoice) GetAggregateRoot() *domain.AggregateRoot        { return &e.AggregateRoot }
 func (*aggInvoice) AggregateChildren() []domain.AggregateValueObject {
 	return []domain.AggregateValueObject{lineItem{}}
 }
@@ -419,7 +421,7 @@ func TestBaseRepository_InsertUpdateArchiveUnarchiveDelete(t *testing.T) {
 	// Update via repo.
 	e2 := &flatPerson{Name: "R", Email: "r@x"}
 	e2.SetID(id)
-	upd, _ := domain.GetUpdatable(e2, func(p *flatPerson) { p.Name = "R2" }, nil, "GetUpdatable")
+	upd, _ := domain.GetUpdatable(e2, func(p *flatPerson) error { p.Name = "R2"; return nil }, nil, "GetUpdatable")
 	if err := repo.Scope(testCtx()).Update(upd); err != nil {
 		t.Fatalf("repo Update: %v", err)
 	}
@@ -524,7 +526,7 @@ func TestBaseRepository_ConstraintCodeOtherThan23505ReturnsRaw(t *testing.T) {
 	// Force an error that is NOT 23505 — e.g. inserting NULL into NOT NULL via direct SQL.
 	loaded := &flatPerson{Name: "X", Email: "x@x"}
 	loaded.SetID(domain.NewID(uuid.NewString()))
-	upd, _ := domain.GetUpdatable(loaded, func(*flatPerson) {}, nil, "GetUpdatable")
+	upd, _ := domain.GetUpdatable(loaded, func(*flatPerson) error { return nil }, nil, "GetUpdatable")
 
 	err := repo.Scope(testCtx()).Update(upd)
 	if err == nil {

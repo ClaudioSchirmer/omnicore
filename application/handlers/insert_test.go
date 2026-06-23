@@ -13,15 +13,15 @@ type testInsertCmd struct {
 	Name string
 }
 
-func (c testInsertCmd) ToEntity(_ *configuration.AppContext) *testEntity {
-	return &testEntity{Name: c.Name}
+func (c testInsertCmd) ToEntity(_ *configuration.AppContext) (*testEntity, error) {
+	return &testEntity{Name: c.Name}, nil
 }
 
 // FromEntity returns the entity verbatim so the test below can observe
 // SetID was called after orch.Insert. Cmd-side projection is the canonical
 // post-ctx pattern — symmetric with ToEntity on the input side.
-func (c testInsertCmd) FromEntity(_ *configuration.AppContext, e *testEntity) *testEntity {
-	return e
+func (c testInsertCmd) FromEntity(_ *configuration.AppContext, e *testEntity) (*testEntity, error) {
+	return e, nil
 }
 
 // TestInsertCommandHandler_HappyPath verifies that cmd.FromEntity is called
@@ -56,11 +56,11 @@ type testInsertCmdNone struct {
 	Name string
 }
 
-func (c testInsertCmdNone) ToEntity(_ *configuration.AppContext) *testEntity {
-	return &testEntity{Name: c.Name}
+func (c testInsertCmdNone) ToEntity(_ *configuration.AppContext) (*testEntity, error) {
+	return &testEntity{Name: c.Name}, nil
 }
-func (c testInsertCmdNone) FromEntity(_ *configuration.AppContext, _ *testEntity) fwresults.None {
-	return fwresults.None{}
+func (c testInsertCmdNone) FromEntity(_ *configuration.AppContext, _ *testEntity) (fwresults.None, error) {
+	return fwresults.None{}, nil
 }
 
 // TestInsertCommandHandler_NoneDefault proves the "no projection" pattern

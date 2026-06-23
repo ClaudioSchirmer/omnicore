@@ -43,7 +43,10 @@ type InsertCommandHandler[T domain.Entity, Cmd pipeline.InsertCommand[T, TResult
 
 func (h *InsertCommandHandler[T, Cmd, TResult]) Handle(ctx *configuration.AppContext, cmd Cmd) (TResult, error) {
 	var zero TResult
-	entity := cmd.ToEntity(ctx)
+	entity, err := cmd.ToEntity(ctx)
+	if err != nil {
+		return zero, err
+	}
 	insertable, err := domain.GetInsertable(entity, h.Service, "GetInsertable")
 	if err != nil {
 		return zero, err
@@ -54,5 +57,9 @@ func (h *InsertCommandHandler[T, Cmd, TResult]) Handle(ctx *configuration.AppCon
 		return zero, err
 	}
 	entity.SetID(id)
-	return cmd.FromEntity(ctx, entity), nil
+	result, err := cmd.FromEntity(ctx, entity)
+	if err != nil {
+		return zero, err
+	}
+	return result, nil
 }

@@ -20,8 +20,8 @@ import (
 // business-named fields.
 type InsertCommand[T domain.Entity, TResult any] interface {
 	Command
-	ToEntity(ctx *configuration.AppContext) T
-	FromEntity(ctx *configuration.AppContext, entity T) TResult
+	ToEntity(ctx *configuration.AppContext) (T, error)
+	FromEntity(ctx *configuration.AppContext, entity T) (TResult, error)
 }
 
 // UpdateCommand is the contract consumed by handlers.UpdateCommandHandler[T, Cmd, TResult].
@@ -42,8 +42,8 @@ type InsertCommand[T domain.Entity, TResult any] interface {
 // shaping. Domain sees only business fields, never ctx.
 type UpdateCommand[T domain.Entity, TResult any] interface {
 	CommandWithID
-	ApplyTo(ctx *configuration.AppContext, entity T)
-	FromEntity(ctx *configuration.AppContext, entity T) TResult
+	ApplyTo(ctx *configuration.AppContext, entity T) error
+	FromEntity(ctx *configuration.AppContext, entity T) (TResult, error)
 }
 
 // PartialUpdateCommand is the contract consumed by
@@ -56,8 +56,8 @@ type UpdateCommand[T domain.Entity, TResult any] interface {
 // entity back into the Result with full ctx access.
 type PartialUpdateCommand[T domain.Entity, TResult any] interface {
 	CommandWithID
-	ApplyPartiallyTo(ctx *configuration.AppContext, entity T)
-	FromEntity(ctx *configuration.AppContext, entity T) TResult
+	ApplyPartiallyTo(ctx *configuration.AppContext, entity T) error
+	FromEntity(ctx *configuration.AppContext, entity T) (TResult, error)
 }
 
 // ArchiveCommand is the contract consumed by handlers.ArchiveCommandHandler[T, Cmd, TResult].
@@ -79,8 +79,8 @@ type PartialUpdateCommand[T domain.Entity, TResult any] interface {
 // ArchiveCommand that doesn't need ctx just ignores both parameters.
 type ArchiveCommand[T domain.Entity, TResult any] interface {
 	CommandWithID
-	ApplyTo(ctx *configuration.AppContext, entity T)
-	FromEntity(ctx *configuration.AppContext, entity T) TResult
+	ApplyTo(ctx *configuration.AppContext, entity T) error
+	FromEntity(ctx *configuration.AppContext, entity T) (TResult, error)
 }
 
 // UnarchiveCommand is the symmetric inverse of ArchiveCommand — same shape,
@@ -90,8 +90,8 @@ type ArchiveCommand[T domain.Entity, TResult any] interface {
 // transition. FromEntity projects the post-unarchive entity into TResult.
 type UnarchiveCommand[T domain.Entity, TResult any] interface {
 	CommandWithID
-	ApplyTo(ctx *configuration.AppContext, entity T)
-	FromEntity(ctx *configuration.AppContext, entity T) TResult
+	ApplyTo(ctx *configuration.AppContext, entity T) error
+	FromEntity(ctx *configuration.AppContext, entity T) (TResult, error)
 }
 
 // DeleteCommand is consumed by handlers.DeleteCommandHandler[T, Cmd, TResult].
@@ -102,6 +102,6 @@ type UnarchiveCommand[T domain.Entity, TResult any] interface {
 // TResult — useful when the wire response wants to echo the deleted shape.
 type DeleteCommand[T domain.Entity, TResult any] interface {
 	CommandWithID
-	ApplyTo(ctx *configuration.AppContext, entity T)
-	FromEntity(ctx *configuration.AppContext, entity T) TResult
+	ApplyTo(ctx *configuration.AppContext, entity T) error
+	FromEntity(ctx *configuration.AppContext, entity T) (TResult, error)
 }

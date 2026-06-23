@@ -16,10 +16,10 @@ import (
 // wrapper. The wire is always strings; the criteria carries the typed
 // values that match each field's stored type in Mongo.
 type testCoerceRequest struct {
-	Code   *string  `query:"code"   filter:"eq,in"`      // string — keep verbatim
-	Age    *int64   `query:"age"    filter:"eq,in,gte"`  // int64  — parse decimal
-	Score  *float64 `query:"score"  filter:"eq,gte"`     // float  — parse float
-	Active *bool    `query:"active" filter:"eq"`         // bool   — parse "true"/"false"
+	Code   *string  `query:"code"   filter:"eq,in"`     // string — keep verbatim
+	Age    *int64   `query:"age"    filter:"eq,in,gte"` // int64  — parse decimal
+	Score  *float64 `query:"score"  filter:"eq,gte"`    // float  — parse float
+	Active *bool    `query:"active" filter:"eq"`        // bool   — parse "true"/"false"
 
 	Limit *int64 `query:"limit"`
 }
@@ -29,8 +29,8 @@ type testCoerceQuery struct {
 	Criteria queries.ReadCriteria
 }
 
-func (q *testCoerceQuery) ToCriteria(_ *configuration.AppContext) queries.ReadCriteria {
-	return q.Criteria
+func (q *testCoerceQuery) ToCriteria(_ *configuration.AppContext) (queries.ReadCriteria, error) {
+	return q.Criteria, nil
 }
 
 func (r testCoerceRequest) ToQuery(crit queries.ReadCriteria) *testCoerceQuery {

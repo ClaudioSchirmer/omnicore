@@ -19,8 +19,8 @@ type specParamsQuery struct {
 	criteria queries.ReadCriteria
 }
 
-func (q *specParamsQuery) ToCriteria(_ *configuration.AppContext) queries.ReadCriteria {
-	return q.criteria
+func (q *specParamsQuery) ToCriteria(_ *configuration.AppContext) (queries.ReadCriteria, error) {
+	return q.criteria, nil
 }
 
 type specParamsReq struct {
@@ -53,8 +53,8 @@ type specByIDQuery struct {
 	queries.QueryBaseWithID
 }
 
-func (specByIDQuery) ToCriteria(_ *configuration.AppContext) queries.ReadCriteria {
-	return queries.ReadCriteria{}
+func (specByIDQuery) ToCriteria(_ *configuration.AppContext) (queries.ReadCriteria, error) {
+	return queries.ReadCriteria{}, nil
 }
 
 func (specByIDQuery) ContextName() string { return "Spec" }

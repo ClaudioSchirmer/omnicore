@@ -106,10 +106,11 @@ func TestUpdateAggregate_AddedChangedRemoved(t *testing.T) {
 		covChild{ID: "c1", Label: "old"},
 		covChild{ID: "c3", Label: "gone"},
 	)
-	u, err := domain.GetUpdatable(root, func(r *covAgg) {
+	u, err := domain.GetUpdatable(root, func(r *covAgg) error {
 		domain.AddAggregateChild(r, covChild{ID: "c2", Label: "new"})
 		domain.ChangeAggregateChild(r, covChild{ID: "c1", Label: "old"}, covChild{ID: "c1", Label: "changed"})
 		domain.RemoveAggregateChild(r, covChild{ID: "c3", Label: "gone"})
+		return nil
 	}, nil, "GetUpdatable")
 	if err != nil {
 		t.Fatalf("GetUpdatable: %v", err)
@@ -131,8 +132,9 @@ func TestUpdateAggregate_AddedChangedRemoved(t *testing.T) {
 
 func TestUpdateAggregate_ChangedChildWithoutID_Errors(t *testing.T) {
 	root := newCovAgg(t, covChild{ID: "c1", Label: "old"})
-	u, err := domain.GetUpdatable(root, func(r *covAgg) {
+	u, err := domain.GetUpdatable(root, func(r *covAgg) error {
 		domain.ChangeAggregateChild(r, covChild{ID: "c1", Label: "old"}, covChild{ID: "", Label: "noid"})
+		return nil
 	}, nil, "GetUpdatable")
 	if err != nil {
 		t.Fatalf("GetUpdatable: %v", err)
@@ -220,7 +222,7 @@ func TestAggregateVerbs_BeginError(t *testing.T) {
 			return pg.Delete(newBuilderCtx(), d, covAggSchema, writeHook{})
 		}},
 		{"Update", func(pg *Postgres) error {
-			u, _ := domain.GetUpdatable(mkRoot(), func(*covAgg) {}, nil, "GetUpdatable")
+			u, _ := domain.GetUpdatable(mkRoot(), func(*covAgg) error { return nil }, nil, "GetUpdatable")
 			_, err := pg.Update(newBuilderCtx(), u, covAggSchema, writeHook{})
 			return err
 		}},

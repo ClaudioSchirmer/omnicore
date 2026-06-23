@@ -28,8 +28,8 @@ type testFindPartialQuery struct {
 	Criteria queries.ReadCriteria
 }
 
-func (q *testFindPartialQuery) ToCriteria(_ *configuration.AppContext) queries.ReadCriteria {
-	return q.Criteria
+func (q *testFindPartialQuery) ToCriteria(_ *configuration.AppContext) (queries.ReadCriteria, error) {
+	return q.Criteria, nil
 }
 
 func (r testFindPartialRequest) ToQuery(crit queries.ReadCriteria) *testFindPartialQuery {

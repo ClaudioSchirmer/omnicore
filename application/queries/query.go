@@ -44,7 +44,7 @@ func (q QueryBaseWithID) GetID() domain.ID     { return q.id }
 // vocabulary (criteria, security filters injected from AppContext).
 type FindByParamsQuery interface {
 	pipeline.Query
-	ToCriteria(ctx *configuration.AppContext) ReadCriteria
+	ToCriteria(ctx *configuration.AppContext) (ReadCriteria, error)
 }
 
 // FindByIDQuery is the role interface consumed by
@@ -62,6 +62,6 @@ type FindByParamsQuery interface {
 // handler fall back to the view name.
 type FindByIDQuery interface {
 	QueryWithID
-	ToCriteria(ctx *configuration.AppContext) ReadCriteria
+	ToCriteria(ctx *configuration.AppContext) (ReadCriteria, error)
 	ContextName() string
 }

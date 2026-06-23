@@ -58,29 +58,31 @@ type badInsertCmd struct {
 	Name string
 }
 
-func (c badInsertCmd) ToEntity(_ *configuration.AppContext) *noModeEntity {
-	return &noModeEntity{Name: c.Name}
+func (c badInsertCmd) ToEntity(_ *configuration.AppContext) (*noModeEntity, error) {
+	return &noModeEntity{Name: c.Name}, nil
 }
-func (c badInsertCmd) FromEntity(_ *configuration.AppContext, _ *noModeEntity) fwresults.None {
-	return fwresults.None{}
+func (c badInsertCmd) FromEntity(_ *configuration.AppContext, _ *noModeEntity) (fwresults.None, error) {
+	return fwresults.None{}, nil
 }
 
 type badIDCmd struct {
 	pipeline.CommandBaseWithID
 }
 
-func (c *badIDCmd) ApplyTo(_ *configuration.AppContext, _ *noModeEntity) {}
-func (c *badIDCmd) FromEntity(_ *configuration.AppContext, _ *noModeEntity) fwresults.None {
-	return fwresults.None{}
+func (c *badIDCmd) ApplyTo(_ *configuration.AppContext, _ *noModeEntity) error { return nil }
+func (c *badIDCmd) FromEntity(_ *configuration.AppContext, _ *noModeEntity) (fwresults.None, error) {
+	return fwresults.None{}, nil
 }
 
 type badPatchCmd struct {
 	pipeline.CommandBaseWithID
 }
 
-func (c *badPatchCmd) ApplyPartiallyTo(_ *configuration.AppContext, _ *noModeEntity) {}
-func (c *badPatchCmd) FromEntity(_ *configuration.AppContext, _ *noModeEntity) fwresults.None {
-	return fwresults.None{}
+func (c *badPatchCmd) ApplyPartiallyTo(_ *configuration.AppContext, _ *noModeEntity) error {
+	return nil
+}
+func (c *badPatchCmd) FromEntity(_ *configuration.AppContext, _ *noModeEntity) (fwresults.None, error) {
+	return fwresults.None{}, nil
 }
 
 // --- validation-error branch coverage (domain.Get* returns error) ---

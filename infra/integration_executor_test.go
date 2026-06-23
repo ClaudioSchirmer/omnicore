@@ -170,7 +170,7 @@ func TestPostgres_Update_PersistsAndEmitsOutbox(t *testing.T) {
 	// Build an Updatable.
 	loaded := &flatPerson{Name: "Old", Email: "old@x"}
 	loaded.SetID(domain.NewID(res.ID))
-	upd, err := domain.GetUpdatable(loaded, func(p *flatPerson) { p.Name = "New" }, nil, "GetUpdatable")
+	upd, err := domain.GetUpdatable(loaded, func(p *flatPerson) error { p.Name = "New"; return nil }, nil, "GetUpdatable")
 	if err != nil {
 		t.Fatalf("GetUpdatable: %v", err)
 	}
@@ -200,7 +200,7 @@ func TestPostgres_Update_BadIDReturnsError(t *testing.T) {
 
 	loaded := &flatPerson{Name: "X", Email: "x@x"}
 	loaded.SetID(domain.NewID(uuid.NewString()))
-	upd, _ := domain.GetUpdatable(loaded, func(*flatPerson) {}, nil, "GetUpdatable")
+	upd, _ := domain.GetUpdatable(loaded, func(*flatPerson) error { return nil }, nil, "GetUpdatable")
 
 	_, err := pg.Update(testCtx(), upd, flatPersonSchema(), noHook)
 	if err == nil {
@@ -364,7 +364,7 @@ func TestPostgres_Batch_AllOpKindsInOneTx(t *testing.T) {
 	// Update.
 	u := &flatPerson{Name: "S1", Email: "s1@x"}
 	u.SetID(domain.NewID(r1.ID))
-	upd, _ := domain.GetUpdatable(u, func(p *flatPerson) { p.Name = "S1upd" }, nil, "GetUpdatable")
+	upd, _ := domain.GetUpdatable(u, func(p *flatPerson) error { p.Name = "S1upd"; return nil }, nil, "GetUpdatable")
 
 	// Archive.
 	a := &flatPerson{Name: "S2", Email: "s2@x"}
@@ -431,7 +431,7 @@ func TestPostgres_Batch_ErrorRollsBackEverything(t *testing.T) {
 
 	bad := &flatPerson{Name: "B", Email: "b@x"}
 	bad.SetID(domain.NewID(uuid.NewString()))
-	badUpd, _ := domain.GetUpdatable(bad, func(*flatPerson) {}, nil, "GetUpdatable")
+	badUpd, _ := domain.GetUpdatable(bad, func(*flatPerson) error { return nil }, nil, "GetUpdatable")
 
 	_, err := pg.Batch(testCtx(), domain.NewBatch([]domain.ValidEntity{goodIns, badUpd}), []*TableSchema{flatPersonSchema(), flatPersonSchema()})
 	if err == nil {

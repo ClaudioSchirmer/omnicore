@@ -32,7 +32,7 @@ func newFlatEntity() *builderTestEntity {
 
 func mustUpdatable(t *testing.T, e *builderTestEntity) domain.Updatable {
 	t.Helper()
-	u, err := domain.GetUpdatable(e, func(x *builderTestEntity) { x.Name = "bob" }, nil, "GetUpdatable")
+	u, err := domain.GetUpdatable(e, func(x *builderTestEntity) error { x.Name = "bob"; return nil }, nil, "GetUpdatable")
 	if err != nil {
 		t.Fatalf("GetUpdatable: %v", err)
 	}

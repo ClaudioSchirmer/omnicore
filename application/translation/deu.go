@@ -74,9 +74,10 @@ func (coreDE) Translations() map[string]string {
 		"ExpiredTokenNotification":         "Authentifizierungstoken ist abgelaufen.",
 
 		// Authorization
-		"MissingPermissionNotification": "Erforderliche Berechtigung fehlt.",
-		"TenantMissingNotification":     "Mandantenkennung fehlt im authentifizierten Principal.",
-		"TenantMismatchNotification":    "Die Ressource gehört zu einem anderen Mandanten.",
+		"MissingPermissionNotification":    "Erforderliche Berechtigung fehlt.",
+		"TenantMissingNotification":        "Mandantenkennung fehlt im authentifizierten Principal.",
+		"TenantMismatchNotification":       "Die Ressource gehört zu einem anderen Mandanten.",
+		"FieldAccessForbiddenNotification": "Feld nicht zugänglich.",
 
 		// Server / routing
 		"InternalServerErrorNotification": "Interner Serverfehler.",

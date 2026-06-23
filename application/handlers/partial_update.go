@@ -41,7 +41,7 @@ func (h *PartialUpdateCommandHandler[T, Cmd, TResult]) Handle(ctx *configuration
 	if err != nil {
 		return zero, err
 	}
-	apply := func(entity T) { cmd.ApplyPartiallyTo(ctx, entity) }
+	apply := func(entity T) error { return cmd.ApplyPartiallyTo(ctx, entity) }
 	updatable, err := domain.GetPartialUpdatable(current, apply, h.Service, "GetPartialUpdatable")
 	if err != nil {
 		return zero, err
@@ -50,5 +50,9 @@ func (h *PartialUpdateCommandHandler[T, Cmd, TResult]) Handle(ctx *configuration
 	if err := h.Repo.Scope(ctx, opts...).Update(updatable); err != nil {
 		return zero, err
 	}
-	return cmd.FromEntity(ctx, current), nil
+	result, err := cmd.FromEntity(ctx, current)
+	if err != nil {
+		return zero, err
+	}
+	return result, nil
 }

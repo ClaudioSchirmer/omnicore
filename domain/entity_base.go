@@ -194,7 +194,7 @@ func GetInsertable(e Entity, service Service, actionName string) (Insertable, er
 // produce an Updatable from an already-mutated entity; in that case Old()
 // captures the post-mutation state and the transition-aware invariants do
 // not work. The recommended path is to always pass a real apply.
-func GetUpdatable[T Entity](e T, apply func(T), service Service, actionName string) (Updatable, error) {
+func GetUpdatable[T Entity](e T, apply func(T) error, service Service, actionName string) (Updatable, error) {
 	return getUpdatable(e, apply, service, actionName, false)
 }
 
@@ -204,7 +204,7 @@ func GetUpdatable[T Entity](e T, apply func(T), service Service, actionName stri
 // cmd.ApplyPartiallyTo. Pass a custom actionName to differentiate strictness
 // per endpoint. The resulting Updatable carries IsPartial() == true so the
 // auditor emits verb=partialUpdate (PUT vs PATCH distinction at the wire).
-func GetPartialUpdatable[T Entity](e T, apply func(T), service Service, actionName string) (Updatable, error) {
+func GetPartialUpdatable[T Entity](e T, apply func(T) error, service Service, actionName string) (Updatable, error) {
 	return getUpdatable(e, apply, service, actionName, true)
 }
 
@@ -287,7 +287,7 @@ func getInsertable(e Entity, service Service, actionName string) (Insertable, er
 	return builder.insertable(e, e.GetID()), nil
 }
 
-func getUpdatable[T Entity](e T, apply func(T), service Service, actionName string, partial bool) (Updatable, error) {
+func getUpdatable[T Entity](e T, apply func(T) error, service Service, actionName string, partial bool) (Updatable, error) {
 	ensureInit(e)
 	// Snapshot BEFORE the apply mutates the entity. The clone is a "ghost":
 	// exported fields only, no events / notifCtx / aggregate state machinery.
@@ -295,7 +295,9 @@ func getUpdatable[T Entity](e T, apply func(T), service Service, actionName stri
 	// so domain.Old(e) exposes the prior children too.
 	captureOld(e)
 	if apply != nil {
-		apply(e)
+		if err := apply(e); err != nil {
+			return Updatable{}, err
+		}
 	}
 	e.resetEntity()
 	e.setService(service)
