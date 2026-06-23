@@ -12,6 +12,7 @@ require (
 	github.com/jackc/pgx/v5 v5.10.0
 	github.com/redis/go-redis/v9 v9.20.1
 	github.com/segmentio/kafka-go v0.4.51
+	github.com/vektah/gqlparser/v2 v2.5.35
 	github.com/xuri/excelize/v2 v2.10.1
 	go.mongodb.org/mongo-driver/v2 v2.6.0
 	gopkg.in/yaml.v3 v3.0.1
@@ -19,6 +20,7 @@ require (
 
 require (
 	github.com/MicahParks/jwkset v0.11.0 // indirect
+	github.com/agnivade/levenshtein v1.2.1 // indirect
 	github.com/andybalholm/brotli v1.2.1 // indirect
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
 	github.com/gofiber/schema v1.7.1 // indirect

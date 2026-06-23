@@ -1,0 +1,331 @@
+// Package graphql exposes the framework's read/write handlers through a single
+// POST /graphql endpoint whose schema is reflected from the same Request/
+// Response DTOs the REST wrappers consume. A consumer "just attaches"
+// handlers to a registry; the SDL, the argument set (where/pagination/sort),
+// the Relay connection envelope and the criteria translation are derived
+// automatically.
+//
+// The schema is emitted as SDL and loaded/validated by vektah/gqlparser; the
+// framework owns only the executor (a sibling file). The package sits above
+// web/queryschema (the shared read-side reflection + operator vocabulary) and
+// depends on application/* exactly like the REST wrappers — never on infra.
+package graphql
+
+import (
+	"reflect"
+	"strings"
+	"time"
+
+	"github.com/ClaudioSchirmer/omnicore/domain"
+	"github.com/ClaudioSchirmer/omnicore/web/queryschema"
+	"github.com/google/uuid"
+)
+
+var (
+	timeType    = reflect.TypeOf(time.Time{})
+	uuidType    = reflect.TypeOf(uuid.UUID{})
+	domainIDTyp = reflect.TypeOf(domain.ID{})
+)
+
+// sdlBuilder accumulates the SDL type definitions a schema needs, deduped by
+// type name (GraphQL requires unique names per schema) and emitted in a stable
+// order so the generated document is reproducible.
+type sdlBuilder struct {
+	defs         map[string]string
+	order        []string
+	objectByType map[reflect.Type]string // Go type → emitted object name (recursion break)
+	needDateTime bool
+}
+
+func newSDLBuilder() *sdlBuilder {
+	return &sdlBuilder{
+		defs:         map[string]string{},
+		order:        []string{},
+		objectByType: map[reflect.Type]string{},
+	}
+}
+
+// put registers a named definition once. The first writer wins; later calls
+// for the same name are ignored (the body is identical by construction).
+func (b *sdlBuilder) put(name, body string) {
+	if _, ok := b.defs[name]; ok {
+		return
+	}
+	b.defs[name] = body
+	b.order = append(b.order, name)
+}
+
+// scalarName returns the GraphQL scalar name for a Go scalar / well-known type,
+// or "" when t is not a leaf scalar. time.Time maps to the custom DateTime
+// scalar (flagged for declaration); uuid.UUID / domain.ID map to ID.
+func (b *sdlBuilder) scalarName(t reflect.Type) string {
+	for t.Kind() == reflect.Pointer {
+		t = t.Elem()
+	}
+	switch t {
+	case timeType:
+		b.needDateTime = true
+		return "DateTime"
+	case uuidType, domainIDTyp:
+		return "ID"
+	}
+	switch t.Kind() {
+	case reflect.String:
+		return "String"
+	case reflect.Bool:
+		return "Boolean"
+	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64,
+		reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
+		return "Int"
+	case reflect.Float32, reflect.Float64:
+		return "Float"
+	}
+	return ""
+}
+
+// typeRef returns the SDL type reference for a Response DTO field type,
+// registering any named object types it reaches. Scalars map directly;
+// structs become (registered) objects; slices become list types; unknown
+// shapes degrade to String so the schema still loads.
+func (b *sdlBuilder) typeRef(t reflect.Type) string {
+	for t.Kind() == reflect.Pointer {
+		t = t.Elem()
+	}
+	if s := b.scalarName(t); s != "" {
+		return s
+	}
+	switch t.Kind() {
+	case reflect.Struct:
+		return b.objectType(t)
+	case reflect.Slice, reflect.Array:
+		elem := t.Elem()
+		for elem.Kind() == reflect.Pointer {
+			elem = elem.Elem()
+		}
+		if elem.Kind() == reflect.Uint8 { // []byte → base64 string
+			return "String"
+		}
+		return "[" + b.typeRef(elem) + "]"
+	default:
+		// maps and anything exotic — expose as String of the marshaled value.
+		return "String"
+	}
+}
+
+// objectType registers (once) the SDL object for a Response struct under its
+// Go type name and returns it. Used for nested object types reached while
+// walking a Response.
+func (b *sdlBuilder) objectType(t reflect.Type) string {
+	return b.objectTypeAs(graphqlName(t), t)
+}
+
+// objectTypeAs registers (once) the SDL object for a Response struct under the
+// given name and returns it. The root node of a registered entity is emitted
+// under the entity name (e.g. "User"), not the Go Response DTO name; nested
+// objects fall back to their Go type name via objectType. Fields are named by
+// their wire (json) name; the value the executor resolves against is the
+// Go-field-keyed view document.
+func (b *sdlBuilder) objectTypeAs(name string, t reflect.Type) string {
+	for t.Kind() == reflect.Pointer {
+		t = t.Elem()
+	}
+	if existing, ok := b.objectByType[t]; ok {
+		return existing
+	}
+	b.objectByType[t] = name // break recursion before walking fields
+	fields := exportedJSONFields(t)
+	var sb strings.Builder
+	sb.WriteString("type " + name + " {\n")
+	for _, f := range fields {
+		sb.WriteString("  " + f.wire + ": " + b.typeRef(f.field.Type) + "\n")
+	}
+	sb.WriteString("}")
+	b.put(name, sb.String())
+	return name
+}
+
+// whereInput registers the `<Entity>WhereInput` input object and its per-leaf
+// operator inputs from a Request DTO's filter leaves. Returns the input type
+// name and whether any filter leaf exists (when false, the field omits the
+// `where` argument).
+func (b *sdlBuilder) whereInput(entity string, reqType reflect.Type) (string, bool) {
+	leaves := filterLeaves(reqType)
+	if len(leaves) == 0 {
+		return "", false
+	}
+	var sb strings.Builder
+	whereName := entity + "WhereInput"
+	sb.WriteString("input " + whereName + " {\n")
+	for _, leaf := range leaves {
+		opName := b.operatorInput(entity, leaf)
+		sb.WriteString("  " + wireLeafName(leaf.WirePath) + ": " + opName + "\n")
+	}
+	sb.WriteString("}")
+	b.put(whereName, sb.String())
+	return whereName, true
+}
+
+// operatorInput registers (once) the per-leaf operator input object — one
+// field per declared operator, the list operators (in/nin/iin/inin) taking a
+// list of the leaf's scalar.
+func (b *sdlBuilder) operatorInput(entity string, leaf queryschema.RequestField) string {
+	name := entity + "_" + sanitize(leaf.WirePath) + "_Op"
+	scalar := b.scalarName(leaf.Field.Type)
+	if scalar == "" {
+		scalar = "String"
+	}
+	var sb strings.Builder
+	sb.WriteString("input " + name + " {\n")
+	for _, op := range leaf.Ops {
+		switch op {
+		case queryschema.OpIn, queryschema.OpNin, queryschema.OpIIn, queryschema.OpINin:
+			sb.WriteString("  " + op + ": [" + scalar + "!]\n")
+		default:
+			sb.WriteString("  " + op + ": " + scalar + "\n")
+		}
+	}
+	sb.WriteString("}")
+	b.put(name, sb.String())
+	return name
+}
+
+// connection registers the Relay connection + edge types for an entity over
+// the given node object, plus the shared PageInfo once. Returns the connection
+// type name.
+func (b *sdlBuilder) connection(entity, nodeType string) string {
+	b.put("PageInfo", "type PageInfo {\n"+
+		"  hasNextPage: Boolean!\n"+
+		"  hasPreviousPage: Boolean!\n"+
+		"  startCursor: String\n"+
+		"  endCursor: String\n}")
+	edge := entity + "Edge"
+	b.put(edge, "type "+edge+" {\n  node: "+nodeType+"!\n  cursor: String!\n}")
+	conn := entity + "Connection"
+	b.put(conn, "type "+conn+" {\n"+
+		"  edges: ["+edge+"!]!\n"+
+		"  pageInfo: PageInfo!\n"+
+		"  totalCount: Int\n}")
+	return conn
+}
+
+// queryFieldSDL returns the SDL line for one read root field: the connection
+// return type plus the where / keyset-pagination / sort / search /
+// includeArchived arguments the resolver honors.
+func (b *sdlBuilder) queryFieldSDL(name, entity string, reqType, respType reflect.Type) string {
+	node := b.objectTypeAs(entity, respType)
+	conn := b.connection(entity, node)
+	args := []string{}
+	if whereName, ok := b.whereInput(entity, reqType); ok {
+		args = append(args, "where: "+whereName)
+	}
+	args = append(args,
+		"first: Int", "after: String", "last: Int", "before: String",
+		"orderBy: [String!]", "search: String", "includeArchived: Boolean",
+	)
+	return "  " + name + "(" + strings.Join(args, ", ") + "): " + conn + "!"
+}
+
+// document assembles the full SDL: the custom scalar (when used), the
+// accumulated type definitions in registration order, and the supplied root
+// blocks (Query / Mutation). Root blocks are passed in by the registry so this
+// builder stays read/write-agnostic.
+func (b *sdlBuilder) document(roots ...string) string {
+	var sb strings.Builder
+	if b.needDateTime {
+		sb.WriteString("scalar DateTime\n\n")
+	}
+	for _, name := range b.order {
+		sb.WriteString(b.defs[name])
+		sb.WriteString("\n\n")
+	}
+	for _, r := range roots {
+		sb.WriteString(r)
+		sb.WriteString("\n\n")
+	}
+	return strings.TrimRight(sb.String(), "\n") + "\n"
+}
+
+// ── reflection helpers (Response field walk + name sanitizing) ──────────────
+
+type jsonField struct {
+	field reflect.StructField
+	wire  string
+}
+
+// exportedJSONFields returns the wire-relevant fields of a Response struct in
+// declaration order: exported, not `json:"-"`, anonymous structs promoted
+// (mirroring encoding/json and queryschema's projection reflection).
+func exportedJSONFields(t reflect.Type) []jsonField {
+	for t.Kind() == reflect.Pointer {
+		t = t.Elem()
+	}
+	var out []jsonField
+	if t.Kind() != reflect.Struct {
+		return out
+	}
+	for i := 0; i < t.NumField(); i++ {
+		f := t.Field(i)
+		if f.Anonymous {
+			ft := f.Type
+			for ft.Kind() == reflect.Pointer {
+				ft = ft.Elem()
+			}
+			if ft.Kind() == reflect.Struct {
+				out = append(out, exportedJSONFields(ft)...)
+				continue
+			}
+		}
+		if !f.IsExported() {
+			continue
+		}
+		tag := f.Tag.Get("json")
+		if tag == "-" {
+			continue
+		}
+		wire := f.Name
+		if tag != "" {
+			if name, _, _ := strings.Cut(tag, ","); name != "" {
+				wire = name
+			}
+		}
+		out = append(out, jsonField{field: f, wire: wire})
+	}
+	return out
+}
+
+// filterLeaves returns the filter leaves of a Request DTO in declaration order
+// via the shared queryschema traversal.
+func filterLeaves(reqType reflect.Type) []queryschema.RequestField {
+	var out []queryschema.RequestField
+	for _, f := range queryschema.WalkRequest(reqType) {
+		if f.Ops != nil {
+			out = append(out, f)
+		}
+	}
+	return out
+}
+
+// graphqlName returns the GraphQL type name for a Go type — its bare Go type
+// name, or a stable synthetic name for anonymous types.
+func graphqlName(t reflect.Type) string {
+	if n := t.Name(); n != "" {
+		return n
+	}
+	return "Anon" + sanitize(t.String())
+}
+
+// wireLeafName flattens a dotted filter wire path into a single GraphQL input
+// field name (dots are illegal in GraphQL names): `addresses.zipCode` →
+// `addresses_zipCode`.
+func wireLeafName(wirePath string) string { return strings.ReplaceAll(wirePath, ".", "_") }
+
+// sanitize keeps only GraphQL-name-legal runes.
+func sanitize(s string) string {
+	b := make([]rune, 0, len(s))
+	for _, r := range s {
+		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '_' {
+			b = append(b, r)
+		}
+	}
+	return string(b)
+}
