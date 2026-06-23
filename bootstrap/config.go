@@ -160,6 +160,13 @@ type Config struct {
 	// to redirect to.
 	OpenAPI OpenAPIConfig `yaml:"openapi"`
 
+	// GraphQL carries the operator-tunable bits of the GraphQL endpoint — the
+	// path it is served on and whether GET / redirects to it. The schema and
+	// the attached handlers (the WHAT) live on Wiring.GraphQL in code. GraphQL
+	// is its own web surface, never part of the OpenAPI/Swagger document. When
+	// Wiring.GraphQL is nil this block is ignored.
+	GraphQL GraphQLConfig `yaml:"graphql"`
+
 	// UpstreamSubscriptions declares the cross-service composition
 	// surface — for each entry, bootstrap.Run spins a Kafka consumer
 	// + worker pool that materializes A's events into a local Mongo
@@ -223,6 +230,76 @@ type OpenAPIConfig struct {
 	// that owns "/" wins; on collision the framework logs a slog.Warn and
 	// skips the redirect registration.
 	RootRedirect bool `yaml:"rootRedirect"`
+}
+
+// GraphQLConfig configures HOW the GraphQL endpoint is served. WHAT it exposes
+// (the schema, the attached handlers) lives on Wiring.GraphQL in code. GraphQL
+// is its own web surface — it never goes through openapi.Mount/MountRaw, never
+// appears in the Swagger document, and is not policed by the REST route scans;
+// the only thing shared with REST is the application-layer handlers it
+// dispatches to.
+type GraphQLConfig struct {
+	// Path is the Fiber route the GraphQL endpoint is served on (POST).
+	// Default "/graphql". Must start with "/" and must not collide with the
+	// framework's reserved routes.
+	Path string `yaml:"path"`
+
+	// UIPath is the Fiber route (GET) where the GraphiQL playground is served
+	// when Playground is true. Default "/graphql/ui". Must start with "/" and
+	// not collide with reserved routes or Path.
+	UIPath string `yaml:"uiPath"`
+
+	// Playground, when true, serves a GraphiQL page at UIPath. On/off like the
+	// Swagger UI; off by default (opt-in). Pair with Introspection so the
+	// playground can populate its schema docs / autocomplete.
+	Playground bool `yaml:"playground"`
+
+	// Introspection, when true, answers `__schema` / `__type` queries. On/off,
+	// off by default — an operator opts in (typically in dev). Independent of
+	// Playground, though the playground's autocomplete needs it.
+	Introspection bool `yaml:"introspection"`
+
+	// RootRedirect, when true, registers GET / → 302 Path. Mutually exclusive
+	// with openapi.rootRedirect — only one surface can own "/".
+	RootRedirect bool `yaml:"rootRedirect"`
+}
+
+func (g *GraphQLConfig) applyDefaults() {
+	if g.Path == "" {
+		g.Path = defaultGraphQLPath
+	}
+	if g.UIPath == "" {
+		g.UIPath = defaultGraphQLUIPath
+	}
+}
+
+func (g *GraphQLConfig) validate() error {
+	if !strings.HasPrefix(g.Path, "/") {
+		return fmt.Errorf("graphql.path %q must start with %q", g.Path, "/")
+	}
+	if g.collidesFramework(g.Path) {
+		return fmt.Errorf("graphql.path %q collides with a framework route", g.Path)
+	}
+	if g.Playground {
+		if !strings.HasPrefix(g.UIPath, "/") {
+			return fmt.Errorf("graphql.uiPath %q must start with %q", g.UIPath, "/")
+		}
+		if g.collidesFramework(g.UIPath) {
+			return fmt.Errorf("graphql.uiPath %q collides with a framework route", g.UIPath)
+		}
+		if g.UIPath == g.Path {
+			return fmt.Errorf("graphql.uiPath %q must differ from graphql.path", g.UIPath)
+		}
+	}
+	return nil
+}
+
+func (g *GraphQLConfig) collidesFramework(path string) bool {
+	switch path {
+	case "/openapi.json", "/health", "/docs":
+		return true
+	}
+	return false
 }
 
 // MongoRebuildConfig governs the boot-time reconciliation of Mongo
@@ -340,6 +417,12 @@ func (m *MongoRebuildConfig) validate() error {
 // defaultOpenAPIUIPath is the canonical UI route.
 const defaultOpenAPIUIPath = "/docs"
 
+// defaultGraphQLPath is the canonical GraphQL endpoint route.
+const defaultGraphQLPath = "/graphql"
+
+// defaultGraphQLUIPath is the canonical GraphiQL playground route.
+const defaultGraphQLUIPath = "/graphql/ui"
+
 // QueryConfig collects the cross-cutting read-side knobs. Currently the
 // global ceiling on `?limit=`; future fields land here without spinning a
 // new yaml block per concern.
@@ -413,6 +496,7 @@ func (c *Config) applyDefaults() {
 	c.Auth.applyDefaults()
 	c.Audit.ApplyDefaults()
 	c.OpenAPI.applyDefaults()
+	c.GraphQL.applyDefaults()
 	c.Shutdown.applyDefaults()
 	if c.Integration != nil {
 		c.Integration.ApplyDefaults(c.Service)
@@ -479,6 +563,9 @@ func (c *Config) Validate() error {
 		return fmt.Errorf("bootstrap: %w", err)
 	}
 	if err := c.OpenAPI.validate(); err != nil {
+		return fmt.Errorf("bootstrap: %w", err)
+	}
+	if err := c.GraphQL.validate(); err != nil {
 		return fmt.Errorf("bootstrap: %w", err)
 	}
 	if err := c.Mongo.Rebuild.validate(); err != nil {

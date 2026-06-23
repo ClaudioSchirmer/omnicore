@@ -219,20 +219,22 @@ func (r *MongoViewReader) ReadPage(ctx context.Context, view string, c queries.R
 		}
 		cursor, decErr := queries.DecodeCursor(cursorStr)
 		if decErr != nil {
-			return queries.Page{}, fmt.Errorf("read criteria: invalid cursor: %w", decErr)
+			return queries.Page{}, InvalidCursorError(fmt.Errorf("invalid cursor: %w", decErr))
 		}
 		if len(cursor.K)-1 != len(c.Sort) {
-			return queries.Page{}, fmt.Errorf("read criteria: cursor tuple length %d does not match sort field count %d",
-				len(cursor.K)-1, len(c.Sort))
+			return queries.Page{}, InvalidCursorError(fmt.Errorf("cursor tuple length %d does not match sort field count %d",
+				len(cursor.K)-1, len(c.Sort)))
 		}
-		// Context alignment — defense in depth (the wrapper already rejects
-		// this case before dispatch). The hash covers the full listing
-		// context (filter + sort + search + includeArchived); ANY mismatch
-		// means a programming bug at the manual handler that hand-rolled
-		// the criteria. We surface it rather than silently honoring a
-		// cursor against a different result set.
+		// Context alignment. The hash covers the full listing context (filter +
+		// sort + search + includeArchived); ANY mismatch means the cursor was
+		// issued against a different result set (consumer changed the query
+		// mid-navigation, or carried a cursor from another listing). The REST
+		// wrapper rejects this before dispatch; surfaces that do not pre-validate
+		// (GraphQL) reach here, so we return the SAME Schema notification rather
+		// than a plain error (which would surface as 500/Internal) — and never
+		// silently honor a cursor against a different result set.
 		if cursor.H != queries.HashContext(c.Filter, c.Sort, c.Search, c.IncludeArchived) {
-			return queries.Page{}, fmt.Errorf("read criteria: cursor context hash does not match current criteria")
+			return queries.Page{}, InvalidCursorError(errors.New("cursor context hash does not match current criteria"))
 		}
 		direction := 1
 		if backward {
@@ -286,11 +288,20 @@ func (r *MongoViewReader) ReadPage(ctx context.Context, view string, c queries.R
 	// result set.
 	contextHash := queries.HashContext(c.Filter, c.Sort, c.Search, c.IncludeArchived)
 	var nextCursorStr, prevCursorStr string
+	// Per-item cursors, positionally aligned with the docs (and thus the
+	// Items built below) in canonical order. Built from the SAME physical doc
+	// the edge cursors use — before the sort-field auto-includes are stripped,
+	// since the Go-field-keyed Items no longer carry them. Transports that need
+	// a cursor per element (the GraphQL Relay connection) read Page.ItemCursors;
+	// the edge NextCursor / PrevCursor stay the first / last of this list.
+	var itemCursors []string
 	if len(docs) > 0 {
-		first := docs[0]
-		last := docs[len(docs)-1]
-		nextCursorStr = encodeTupleCursor(last, colSort, contextHash)
-		prevCursorStr = encodeTupleCursor(first, colSort, contextHash)
+		itemCursors = make([]string, len(docs))
+		for i, d := range docs {
+			itemCursors[i] = encodeTupleCursor(d, colSort, contextHash)
+		}
+		prevCursorStr = itemCursors[0]
+		nextCursorStr = itemCursors[len(itemCursors)-1]
 	}
 
 	// Strip the sort-field auto-includes so the wire shape matches the
@@ -321,11 +332,12 @@ func (r *MongoViewReader) ReadPage(ctx context.Context, view string, c queries.R
 	}
 
 	page := queries.Page{
-		Items:      items,
-		HasNext:    hasNext,
-		HasPrev:    hasPrev,
-		Total:      total,
-		Projection: c.Projection, // echo the effective projection for export plan pruning
+		Items:       items,
+		HasNext:     hasNext,
+		HasPrev:     hasPrev,
+		Total:       total,
+		ItemCursors: itemCursors,
+		Projection:  c.Projection, // echo the effective projection for export plan pruning
 	}
 	if hasNext {
 		page.NextCursor = nextCursorStr

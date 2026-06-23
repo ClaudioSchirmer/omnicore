@@ -1,0 +1,249 @@
+<h2>GraphQL</h2>
+<p>
+    The framework exposes the same application handlers REST consumes through a single
+    <code>POST /graphql</code> endpoint whose schema is reflected from the same Go types — Request DTOs
+    (<code>query:</code>/<code>filter:</code> on the read side, <code>json:</code> on the write side) and
+    Response/Result DTOs. A consumer <strong>attaches handlers to a registry</strong>; the SDL, the
+    argument set (<code>where</code> / pagination / <code>orderBy</code>), the Relay connection envelope,
+    the input objects, and the criteria translation are all derived automatically. There is no
+    schema-first SDL to hand-write and no codegen step.
+</p>
+<div class="box">
+    <strong>GraphQL is its own web surface.</strong> It does <em>not</em> go through the REST
+    <code>openapi.Mount</code>/<code>MountRaw</code> machinery, it is <strong>never part of the
+    Swagger/OpenAPI document</strong>, and it is not policed by the REST route scans. The only thing
+    shared with REST is the <strong>application-layer handlers</strong> the resolvers dispatch to
+    (<code>pipeline.Handler[TQ, queries.Page]</code> for reads,
+    <code>pipeline.Handler[*Cmd, TResult]</code> for writes). The web layer is deliberately a different
+    registry so each transport keeps its native shape — Relay connections + selection sets here, the
+    JSON envelope + pagination block there. See <a href="#handler-invariance">Handler invariance</a>.
+</div>
+
+<h3>Engine — gqlparser + a framework executor</h3>
+<p>
+    Parsing and validation ride <a href="https://github.com/vektah/gqlparser" target="_blank" rel="noopener"><code>vektah/gqlparser/v2</code></a>
+    (the parser <code>gqlgen</code> itself uses): the framework reflects the registry into an SDL
+    document, loads it into a validated <code>*ast.Schema</code>, and per request <code>gqlparser</code>
+    parses + validates the query against that schema. The framework owns only the <strong>executor</strong>
+    — walking the selection set, dispatching through the registered handlers, mapping
+    <code>queries.Page</code> / <code>pipeline.Result</code> to the wire, and answering introspection.
+    A schema-first/codegen engine was rejected because it inverts the runtime "just attach" model;
+    a frozen runtime-schema library was rejected as an unmaintained framework-core dependency.
+</p>
+
+<h3>Enable the endpoint</h3>
+<p>The consumer builds a registry on the dispatch pipeline and attaches it to the wire callback:</p>
+<pre><code>func Wire(d bootstrap.Deps) bootstrap.Wiring {
+    gql := fwgraphql.New(d.Pipeline).
+        // read: one Query field per query handler → a Relay connection
+        Register(fwgraphql.Query[requests.FindUsersByParamsRequest,
+                                 requests.FindUsersByParamsResponse](
+            "users", "User",
+            &amp;handlers.FindByParamsQueryHandler[*queries.FindUserByParamsQuery]{
+                Reader: d.ViewReader, View: view.Name()},
+            fwgraphql.RequirePermission("users:read"))).
+        // write: one Mutation field per command handler
+        Register(fwgraphql.Mutation[requests.InsertUserRequest](
+            "createUser", requests.InsertUserResponse{}.FromResult,
+            &amp;handlers.InsertCommandHandler[*User, *commands.InsertUserCommand, commands.InsertUserResult]{Repo: repo},
+            fwgraphql.RequirePermission("users:write")))
+
+    return bootstrap.Wiring{
+        Translations: []translation.Module{...},
+        Features:     []bootstrap.Feature{NewUsersFeature(d)},
+        GraphQL:      gql,
+    }
+}</code></pre>
+<p>
+    With <code>Wiring.GraphQL</code> set, <code>bootstrap.Run</code> mounts a single
+    <code>POST &lt;path&gt;</code> (default <code>/graphql</code>) as its own surface, after the REST boot
+    scans. The <code>AuthMiddleware</code> (matched by path at request time) still authenticates it when
+    <code>auth.mode: jwt</code>; authorization is per-field in the resolver (see "Authorization" below).
+    Leaving <code>Wiring.GraphQL</code> nil keeps everything off — no endpoint, zero cost.
+</p>
+
+<h3>Operator-tunable serving</h3>
+<p>
+    The serving knobs live in <code>microservice.&lt;profile&gt;.yaml</code> under <code>graphql:</code>,
+    mirroring the OpenAPI posture — WHAT the schema exposes (the attached handlers) is code on
+    <code>Wiring.GraphQL</code>; HOW it is served is environment config:
+</p>
+<pre><code>graphql:
+  path: /graphql          # default. POST endpoint route.
+  uiPath: /graphql/ui     # default. GET route for the GraphiQL playground (when playground: true).
+  playground: false       # default off. Serve a GraphiQL page at uiPath.
+  introspection: false    # default off. Answer __schema / __type queries.
+  rootRedirect: false     # default off. GET / → 302 path. Both this and openapi.rootRedirect → boot panic.</code></pre>
+<ul>
+    <li><strong>Block optional.</strong> Absent → defaults. Present but <code>Wiring.GraphQL</code> nil → ignored.</li>
+    <li><strong><code>path</code></strong> validated at boot: must start with <code>/</code>, must not collide with <code>/openapi.json</code>, <code>/health</code>, or <code>/docs</code>.</li>
+    <li><strong><code>playground</code></strong> serves GraphiQL at <code>uiPath</code> (loaded from a CDN, like the Swagger UI). Pair it with <code>introspection: true</code> so the playground can populate its schema docs / autocomplete. <code>uiPath</code> is validated (leading slash, no framework-route collision, must differ from <code>path</code>) only when <code>playground</code> is on.</li>
+    <li><strong><code>introspection</code></strong> gates <code>__schema</code> / <code>__type</code>. Independent of the playground; off by default so a closed endpoint does not advertise its shape. Typically on in dev.</li>
+    <li><strong><code>rootRedirect</code></strong> registers <code>GET /</code> → 302 <code>path</code>. The boot <strong>panics</strong> when both <code>openapi.rootRedirect</code> and <code>graphql.rootRedirect</code> are enabled (and both surfaces wired) — only one surface can own <code>/</code>.</li>
+</ul>
+
+<h3>The registry — attach queries and mutations</h3>
+<p>
+    <code>fwgraphql.New(pipe)</code> returns a registry; each <code>Register(...)</code> adds one root field.
+    The generic constructors capture the typed handler into the SDL emitter and the resolver; the only
+    surface shared with REST is the <code>pipeline.Handler</code> instance.
+</p>
+<table>
+    <thead><tr><th>Constructor</th><th>Maps</th><th>GraphQL field</th></tr></thead>
+    <tbody>
+        <tr><td><code>Query[TReq, R]</code></td><td>read handler <code>pipeline.Handler[TQ, queries.Page]</code></td><td><code>users(where, first, after, last, before, orderBy, search, includeArchived): UserConnection!</code></td></tr>
+        <tr><td><code>Mutation[TReq]</code></td><td>insert-style command (body, no id)</td><td><code>createUser(input: InsertUserInput!): InsertUserResponse!</code></td></tr>
+        <tr><td><code>MutationWithID[TReq]</code></td><td>update/patch (body + id)</td><td><code>updateUser(id: ID!, input: UpdateUserInput!): UpdateUserResponse!</code></td></tr>
+        <tr><td><code>MutationByID</code></td><td>archive/unarchive/delete (id, no body)</td><td><code>archiveUser(id: ID!): MutationResult!</code></td></tr>
+    </tbody>
+</table>
+<p>
+    <strong>You name only the type params Go cannot infer.</strong> Those are the <em>reflection-only</em>
+    ones — used inside the constructor via reflection but absent from every parameter: <code>TReq</code> (the
+    Request DTO) on the body forms, plus <code>R</code> (the Response DTO / connection node) on
+    <code>Query</code>. Everything else — the command type, its pointer, the result, the response, the query
+    type — is inferred from the handler argument and the DTO's <code>ToCommand</code>/<code>ToQuery</code>
+    constraint, so <code>MutationByID</code> needs no type args at all. (<code>Query</code>'s list is ordered
+    <code>[TReq, R, TQ]</code> precisely so the inferable <code>TQ</code> trails and is elided.) These are the
+    same DTOs the REST wrappers anchor; canonical (Auto) and hand-rolled handlers attach identically because
+    both implement the same <code>pipeline.Handler</code> interface — the registry cannot tell them apart,
+    exactly as the REST wrappers cannot.
+</p>
+
+<h3>Reflected schema</h3>
+<p>The SDL is generated once at boot from the registered DTOs and loaded into a validated schema:</p>
+<ul>
+    <li><strong>Node object</strong> — the Response DTO becomes an object type named after the entity
+        (<code>User</code>, not <code>FindUsersByParamsResponse</code>); fields are named by their
+        <code>json:</code> wire name and resolved from the Go-field-keyed view document. Nested structs
+        and slices recurse into nested object types.</li>
+    <li><strong>Relay connection</strong> — each read field returns
+        <code>{ edges { node, cursor }, pageInfo { hasNextPage, hasPreviousPage, startCursor, endCursor }, totalCount }</code>.
+        <code>edges[].cursor</code> is the per-row keyset cursor (see "Pagination" below).</li>
+    <li><strong><code>where</code> input</strong> — one input field per filter leaf (the same
+        <code>query:"X" filter:"ops"</code> allowlist the REST endpoint uses), each exposing the declared
+        operators: <code>where: { name: { startswith: "Bob" }, age: { gte: 18 } }</code>. Nested embed
+        leaves flatten (<code>addresses.zipCode</code> → <code>addresses_zipCode</code>). The operator set is
+        the same one REST recognizes (<code>eq</code>, <code>ne</code>, <code>in</code>, <code>nin</code>,
+        <code>gte</code>, <code>lte</code>, <code>gt</code>, <code>lt</code>, <code>startswith</code>,
+        <code>contains</code>, <code>ieq</code>, <code>ine</code>, <code>iin</code>, <code>inin</code>,
+        <code>istartswith</code>, <code>icontains</code>) — list operators take a list value.</li>
+    <li><strong>Mutation input</strong> — the write Request DTO becomes an <code>...Input</code> object
+        (json tags drive the field names; nested structs become nested input objects). A field is
+        <code>NonNull</code> when the handler embeds <code>pipeline.FullBody</code> (strict, every field
+        required) or, leniently, when it is non-pointer and lacks <code>,omitempty</code> — the same
+        required rule the REST/OpenAPI side applies. Missing-required-field is enforced by gqlparser
+        validation, not a separate runtime check.</li>
+    <li><strong><code>scalar DateTime</code></strong> is declared when any <code>time.Time</code> field is
+        reached; <code>uuid.UUID</code> / <code>domain.ID</code> map to <code>ID</code>.</li>
+</ul>
+
+<h3>The reflection core is shared with REST/OpenAPI</h3>
+<p>
+    The operator vocabulary, the filter allowlist reflection, and the wire↔Go projection map all come
+    from one internal package (<code>web/queryschema</code>) consumed by the REST wrappers, the OpenAPI
+    generator, and the GraphQL schema builder. A new operator or a change to the wire↔Go translation
+    lives in exactly one place — the GraphQL <code>where</code> input and the REST <code>?name.op=</code>
+    query parameter cannot drift apart. GraphQL's <code>where</code> folds through the identical criteria
+    emission, so <code>where: { name: { startswith: "Bo" } }</code> produces the same Mongo clause as the
+    REST <code>?name.startswith=Bo</code>.
+</p>
+
+<h3>Execution</h3>
+<p>Per request the executor:</p>
+<ol>
+    <li>lets gqlparser parse + validate the query against the schema (an undeclared field, operator, or argument is rejected here and surfaces in <code>errors</code>);</li>
+    <li>builds a <code>queries.ReadCriteria</code> (read) or a Command input (write) from the GraphQL arguments, reusing the shared criteria emission;</li>
+    <li>dispatches through the registered <code>pipeline.Handler</code> with the request <code>*AppContext</code> — so <code>Query.ToCriteria(ctx)</code> tenant/owner overlays, <code>BuildRules</code>, the outbox, and audit all apply unchanged;</li>
+    <li>maps <code>Page</code> → Relay connection / <code>Result</code> → the projected Response, reshaped to the wire (json) names, then <strong>trims the tree to the selection set</strong> (fragments and inline fragments flattened). A field's nested selection becomes the effective projection.</li>
+</ol>
+
+<h3>Pagination — Relay connections + per-item cursor</h3>
+<p>
+    The keyset pagination the REST side exposes (<code>?first/after/before</code> + an opaque cursor with a
+    context hash) maps to Relay: <code>first</code> → limit, <code>after</code>/<code>before</code> → the
+    cursor, <code>orderBy: ["-name"]</code> → the sort terms, <code>totalCount</code> → the count.
+    <strong>Strict Relay needs a cursor per edge</strong>, which cannot be reconstructed above the reader
+    (the reader strips the physical keyset values from the returned Go-field-keyed items) — so the reader
+    emits <code>queries.Page.ItemCursors</code>, the per-row keyset cursor, and the connection's
+    <code>edges[].cursor</code> reads it. The cursor round-trips through the reader's <code>after</code> /
+    <code>before</code> path unchanged. REST ignores <code>ItemCursors</code>.
+</p>
+<p>
+    A <strong>stale or foreign cursor</strong> — one whose context hash no longer matches the current
+    <code>where</code> / <code>orderBy</code> / <code>search</code> / <code>includeArchived</code> (the client
+    changed the query mid-navigation), or that is malformed — is rejected with a <em>legible</em>
+    <code>SchemaViolationNotification</code> (<code>semantic: "Schema"</code>, <code>field: "cursor"</code>)
+    in <code>errors[]</code>, not an opaque <code>Internal</code>. The REST wrapper pre-validates the cursor
+    before dispatch; the GraphQL endpoint does not, so the reader itself returns the typed Schema rejection
+    rather than a bare error — same notification either surface reports.
+</p>
+
+<h3>Authorization</h3>
+<p>
+    Layers 2 (<code>BuildRules</code>) and 3 (tenant via <code>ToCriteria</code>) live below the dispatch
+    boundary and apply unchanged — they are inherited the moment the resolver dispatches the same handler.
+    Layer 1 (coarse <code>resource:action</code> permission) is route-shaped in REST
+    (<code>fwopenapi.RequirePermission</code>); on a single GraphQL endpoint it moves <strong>into the
+    resolver, per field</strong>, declared with <code>fwgraphql.RequirePermission("resource:action")</code> —
+    a <code>FieldOption</code> on <code>Query</code> / <code>Mutation</code> / <code>MutationWithID</code> /
+    <code>MutationByID</code>, the GraphQL twin of <code>fwopenapi.RequirePermission</code> with the same
+    <code>resource:action</code> validation (wildcards are the IdP's to grant, never the caller's to declare):
+</p>
+<pre><code>reg.Register(fwgraphql.Query[Req, Resp](
+    "users", "User", readHandler,
+    fwgraphql.RequirePermission("users:read")))
+
+reg.Register(fwgraphql.MutationByID(
+    "deleteUser", deleteHandler,
+    fwgraphql.RequirePermission("users:delete")))</code></pre>
+<p>
+    The gate is enforced behind the same master switch as REST —
+    <code>Registry.EnableAuthorization(cfg.Auth.Authorization.Enabled)</code>, wired by bootstrap next to
+    <code>EnableIntrospection</code> — so a <code>RequirePermission</code> annotation is inert until
+    <code>auth.authorization.enabled</code> (the same incremental-rollout posture as REST). When the switch is
+    on and the request's <code>Identity</code> lacks the declared permission, the field resolves to a denial
+    <strong>before the handler runs</strong>: HTTP 200 with the canonical
+    <code>MissingPermissionNotification</code> (<code>semantic: "Forbidden"</code>,
+    <code>field: "permission"</code>) in <code>errors[].extensions</code> — the same notification the REST
+    gate returns as 403. The endpoint itself is authenticated by the <code>AuthMiddleware</code>
+    when <code>auth.mode: jwt</code> (a valid bearer is required unless the operator lists
+    <code>POST /graphql</code> in <code>auth.publicRoutes</code>); a missing bearer is rejected by the
+    middleware with 401 before the gate is reached.
+</p>
+<p>
+    <strong>Field-level read access</strong> is enforced too. The read resolver maps the Relay node
+    selection set (<code>edges { node { … } }</code>) to <code>ReadCriteria.Projection</code> before
+    <code>ToQuery</code>, so a field a <code>Query.ToCriteria</code> restricts (via
+    <code>ReadCriteria.Restrict</code>, e.g. an admin-only column) trips the same
+    <code>FieldAccessForbiddenNotification</code> (<code>semantic: "Forbidden"</code>) the REST
+    <code>?fields=</code> path returns <em>when the field is explicitly selected</em>. A passively
+    unselected restricted field is simply scrubbed — never returned — so a non-privileged caller never
+    sees it on either surface. As a side effect the projection is pushed down to Mongo: only the requested
+    fields are read, exactly like the REST <code>?fields=</code> path.
+</p>
+
+<h3>Errors</h3>
+<p>
+    GraphQL always returns HTTP 200 with a <code>{ data, errors }</code> body — request faults
+    (parse/validation) and field faults (domain notifications) travel in <code>errors</code>, never the
+    status line. Each domain notification becomes one <code>errors[]</code> entry carrying the typed
+    identity in <code>extensions</code>: <code>{ "message": ..., "extensions": { "notificationKey": ...,
+    "semantic": ..., "field": ... } }</code> — the GraphQL counterpart of the REST envelope's
+    <code>notificationKey</code> / <code>semantic</code>, so clients branch on the same typed identity.
+    A recovered panic surfaces as an opaque <code>{ semantic: "Internal" }</code> error; the panic value
+    and stack stay server-side, mirroring the REST 500 posture.
+</p>
+
+<h3>Introspection &amp; playground</h3>
+<p>
+    When <code>introspection: true</code>, the executor answers <code>__schema</code> / <code>__type</code>
+    over the parsed schema so tooling (the playground, client codegen) can discover types. The introspection
+    result is spec-compliant — the introspection meta-fields (<code>__schema</code>, <code>__type</code>,
+    <code>__typename</code>) are <em>not</em> listed among an object type's <code>fields</code>, which the
+    GraphQL spec forbids and GraphiQL's client-side schema validation hard-rejects — so the playground and
+    codegen tools accept the schema. When <code>playground: true</code>, a GraphiQL page is served at
+    <code>uiPath</code> (pinned React 18 + GraphiQL 3 UMD bundles from a CDN). Both are off by default and
+    toggled independently in YAML, the same on/off posture as the Swagger UI. With introspection off, an
+    <code>__schema</code> query simply does not resolve.
+</p>

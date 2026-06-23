@@ -42,7 +42,9 @@ Tests sit next to the file under test (`foo.go` ↔ `foo_test.go`). Integration 
 ## Architecture — 4-layer DDD with strict boundaries
 
 ```
-web/                  HTTP transport only; openapi/ = OpenAPI 3.1 + Swagger UI
+web/                  HTTP transport only; openapi/ = OpenAPI 3.1 + Swagger UI;
+                      graphql/ = GraphQL endpoint (own surface); queryschema/ =
+                      shared read-side DTO reflection (REST + OpenAPI + GraphQL)
 application/
   configuration/      AppContext (UUID + language + Identity), Language, Identity
   translation/        Translator + Module; Core{PTBR,ENG,ES,FR,DE,IT,NL} built-ins
@@ -983,6 +985,7 @@ func (EmailAlreadyExistsNotification) Semantic() domain.NotificationSemantic {
 | Mongo drift reconcile | `infra.DetectViewDrift` + `SyncEngine.ExecuteRebuild`; `mongo.rebuild` yaml |
 | Service capability | implement `bootstrap.Feature` / `ReadableFeature`; bundle in `Wiring.Features` |
 | OpenAPI + Swagger | `Wiring.OpenAPI = &openapi.Config{...}`; document via `*Spec` wrappers + `openapi.Mount`/`MountRaw` |
+| GraphQL endpoint | `Wiring.GraphQL = fwgraphql.New(d.Pipeline).Register(fwgraphql.Query/Mutation[...])`; own surface, not in Swagger; `graphql:` yaml knobs |
 | Emit integration event | declare `integration.publishes.events.<key>` + `fwintegration.Dispatch(ctx, key, payload, opts...)` |
 | React to integration event | declare `integration.subscribes...` + implement `bootstrap.IntegrationFeature` |
 | Retry pending failures | admin routes calling `Receiver.RetryPendingFailures` / `UpstreamSubscriber.RetryPendingFailures` |
@@ -1609,6 +1612,51 @@ Custom error status via `Doc.ResponseExamples[N]` auto-creates the entry; `defau
 - **Language selector** — `openapi.Config.LanguageSelector bool` (default false) adds a `<select>` + a `requestInterceptor` writing the choice into `Accept-Language` on every "Try it out". `Languages []LanguageOption` ({Label, Value}); when empty + selector on, bootstrap auto-populates from `Wiring.Translations` (dedup by `Language`, `LangENG` rotated to position 0). `Wiring.Translations` is mandatory regardless (notifications/errors/audit all render through the `Translator`).
 - **Hidden** = excluded from spec, still routed on Fiber (internal upstreams). **Public** = appears in spec WITHOUT `security`/401 (health probes, OIDC discovery, identity demos).
 
+## GraphQL
+
+`omnicore/web/graphql` exposes the same application handlers REST consumes through a single `POST /graphql` endpoint whose schema is reflected from the same DTOs. **GraphQL is its own web surface — separate from REST/OpenAPI.** It never goes through `openapi.Mount`/`MountRaw`, never appears in the Swagger document, and is not policed by the REST route scans (`scanRouteRegistration`/`scanAuthorization`). The ONLY thing shared with REST is the application-layer handlers the resolvers dispatch to (`pipeline.Handler[TQ, queries.Page]` read, `pipeline.Handler[*Cmd, TResult]` write). Engine: `vektah/gqlparser/v2` (parse + validate) + a framework-owned executor + introspection.
+
+### Registry — attach handlers
+
+`fwgraphql.New(d.Pipeline)` → `.Register(...)` per root field. Canonical (Auto) and manual handlers attach identically (same `pipeline.Handler`).
+
+| Constructor | Maps | Field |
+|---|---|---|
+| `Query[TReq, TQ, R]` | read `pipeline.Handler[TQ, queries.Page]` | `users(where, first, after, last, before, orderBy, search, includeArchived): UserConnection!` |
+| `Mutation[TReq, TCmd, *TCmd, TResult, TResp]` | insert (body, no id) | `createUser(input: InsertUserInput!): InsertUserResponse!` |
+| `MutationWithID[…]` | update/patch (body + id) | `updateUser(id: ID!, input: …!): …!` |
+| `MutationByID[TCmd, *TCmd, TResult]` | archive/unarchive/delete (id, no body) | `archiveUser(id: ID!): MutationResult!` |
+
+### Reflected schema + execution
+
+- **Node object** named after the entity (not the Go Response type); fields by `json:` wire name, resolved from the Go-field-keyed view doc.
+- **Relay connection** `{edges{node,cursor}, pageInfo{hasNextPage,hasPreviousPage,startCursor,endCursor}, totalCount}`; `edges[].cursor` = `Page.ItemCursors[i]` (the per-row keyset cursor the reader emits — it cannot be rebuilt above the reader once the physical keyset values are stripped).
+- **`where` input** from the `filter:` allowlist; one input field per leaf exposing the declared operators (nested embed leaves flatten `addresses.zipCode`→`addresses_zipCode`). Folds through the SAME criteria emission as REST (`queryschema.ApplyFilterParam`), so `where:{name:{startswith:"Bo"}}` == REST `?name.startswith=Bo`.
+- **Mutation input** from `json:` tags; NonNull under `pipeline.FullBody` (strict) else non-pointer-without-omitempty (same rule as REST/OpenAPI). Missing-required is enforced by gqlparser validation.
+- **Args → criteria/command** reuse `web/queryschema`; selection set → projection (trim); `pipeline.Dispatch` with the request `*AppContext` (so `ToCriteria(ctx)` overlays, `BuildRules`, outbox, audit apply unchanged).
+- **Errors**: always HTTP 200 `{data,errors}`; notifications → `errors[].extensions{notificationKey, semantic, field}` (GraphQL sibling of `RespondFromResult`); panic → opaque `{semantic:"Internal"}`.
+
+### Shared reflection core (`web/queryschema`)
+
+The filter operator vocabulary (`Op*`, `knownOps`) + emission, the Request filter allowlist (`ExtractRequestSchema`/`WalkRequest`), and the Response projection map + sparse-render guard live in one internal package consumed by the REST wrappers, the OpenAPI generator, AND the GraphQL builder — one traversal, three projections. `fwweb.Op*` are re-exports.
+
+### Authorization
+
+Layers 2 (`BuildRules`) and 3 (tenant via `ToCriteria`) ride inside `Dispatch` — inherited unchanged. Layer 1 (coarse `RequirePermission`) is route-shaped in REST; on the single GraphQL endpoint it moves **per-field into the resolver** via `fwgraphql.RequirePermission("resource:action")` (a `FieldOption` on `Query`/`Mutation`/`MutationWithID`/`MutationByID`, the GraphQL twin of `fwopenapi.RequirePermission` with the same `resource:action` validation). Enforced behind the same master switch as REST — `Registry.EnableAuthorization(cfg.Auth.Authorization.Enabled)`, wired by bootstrap next to `EnableIntrospection` — so the annotation is inert until `auth.authorization.enabled`. A denied field returns HTTP 200 with `MissingPermissionNotification` (`semantic: "Forbidden"`, `field: "permission"`) in `errors[].extensions`, the same notification the REST gate emits as 403; the handler never runs. `AuthMiddleware` (matched by path) still authenticates `/graphql` when `auth.mode: jwt`. **Field-level read access** is also inherited: the read resolver maps the Relay node selection set (`edges { node { … } }`) to `ReadCriteria.Projection` before `ToQuery`, so a field a `Query.ToCriteria` restricts via `ReadCriteria.Restrict` produces the same `FieldAccessForbiddenNotification` (semantic Forbidden) the REST `?fields=` path returns when the field is explicitly selected — and Mongo projects only the requested fields (pushdown). A passively unselected restricted field is scrubbed (never leaked) on both surfaces.
+
+### Bootstrap integration
+
+`Wiring.GraphQL *graphql.Registry` opt-in (nil → nothing mounted). `bootstrap.GraphQLConfig` (yaml `graphql:`) carries the serving knobs. bootstrap mounts `POST <path>` as its own surface AFTER the REST scans (like the framework's own non-spec routes), enables introspection from config, and serves the GraphiQL playground at `uiPath` when `playground: true`.
+
+```yaml
+graphql:
+  path: /graphql          # POST endpoint (default)
+  uiPath: /graphql/ui     # GET GraphiQL playground (when playground: true)
+  playground: false       # serve GraphiQL at uiPath
+  introspection: false    # answer __schema / __type
+  rootRedirect: false     # GET / → 302 path; both this + openapi.rootRedirect → boot panic
+```
+
 ## Cache subsystem
 
 `omnicore/infra/cache` is the framework's generic byte-level key-value cache. The `cache.Cache` port is the single contract for domain services, infra adapters, and the outbound httpclient response cache. Two implementations ship: `cache.NewMemory` (in-process LRU+TTL) and `cache.NewRedis` (go-redis). Other backends implement the interface and inject via `Wiring.Cache` / `Wiring.SharedCache`.
@@ -1741,7 +1789,7 @@ The framework reads exactly four process env vars; everything else in `${VAR:def
 | `bootstrap.Serve(ctx, deps, wiring) error` | serve with deps already built (manual path owns translations + SyncEngine) |
 
 - `Deps` — built singletons: `Config`, `Logger`, `Postgres` (audit pre-wired via `WithAudit`), `Mongo`, `Translator`, `Pipeline`, `ViewReader`, `Export` (tabular export ambient inputs), `Cache`, `SharedCache`, `HttpClient` (nil w/o `httpClient:`), `OpenAPIRegistry` (nil w/o `Wiring.OpenAPI`), `IntegrationRegistry`, `UpstreamSubscribers` (nil w/o declared upstream subscriptions).
-- `Wiring` — `Translations`, `Features`, optional `BeforeServe`, `OnShutdown`, `OpenAPI *openapi.Config`, `Cache`/`SharedCache`, `UpstreamSubscriptions`.
+- `Wiring` — `Translations`, `Features`, optional `BeforeServe`, `OnShutdown`, `OpenAPI *openapi.Config`, `GraphQL *graphql.Registry`, `Cache`/`SharedCache`, `UpstreamSubscriptions`.
 - `Feature` — `Mount(app *fiber.App, deps Deps)`. `ReadableFeature` — `Feature + Views() []*infra.ViewDefinition` (collected for the SyncEngine).
 
 ### `Run` behavior

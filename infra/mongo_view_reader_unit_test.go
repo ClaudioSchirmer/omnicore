@@ -130,3 +130,73 @@ func TestMongoDB_FindIDsByField(t *testing.T) {
 		t.Errorf("ids = %v, want 2", ids)
 	}
 }
+
+func TestMongoViewReader_ReadPage_ItemCursorsAlignedAndDecodable(t *testing.T) {
+	coll := &fakeColl{
+		count: 2,
+		docs: []any{
+			map[string]any{"_id": "u1", "name": "alice", "mail": "a@x.com"},
+			map[string]any{"_id": "u2", "name": "bob", "mail": "b@x.com"},
+		},
+	}
+	r := viewReaderFixture(coll)
+
+	// No sort → keyset tuple is [_id]; context hash is empty.
+	page, err := r.ReadPage(context.Background(), "builder_view", queries.ReadCriteria{Limit: 10})
+	if err != nil {
+		t.Fatalf("ReadPage: %v", err)
+	}
+	if len(page.ItemCursors) != len(page.Items) {
+		t.Fatalf("ItemCursors len=%d, Items len=%d — must align", len(page.ItemCursors), len(page.Items))
+	}
+	wantIDs := []string{"u1", "u2"}
+	for i, cur := range page.ItemCursors {
+		dec, derr := queries.DecodeCursor(cur)
+		if derr != nil {
+			t.Fatalf("ItemCursors[%d] did not decode: %v", i, derr)
+		}
+		if len(dec.K) != 1 {
+			t.Fatalf("no-sort tuple must be [_id], got %v", dec.K)
+		}
+		if dec.K[0] != wantIDs[i] {
+			t.Errorf("ItemCursors[%d] _id = %v, want %s", i, dec.K[0], wantIDs[i])
+		}
+		if dec.H != "" {
+			t.Errorf("empty context must hash to \"\", got %q", dec.H)
+		}
+	}
+	// Edge cursors are the first / last item cursors.
+	if page.PrevCursor != "" && page.PrevCursor != page.ItemCursors[0] {
+		t.Errorf("PrevCursor must equal the first item cursor")
+	}
+}
+
+func TestMongoViewReader_ReadPage_ItemCursorsCarrySortValue(t *testing.T) {
+	coll := &fakeColl{
+		count: 1,
+		docs:  []any{map[string]any{"_id": "u1", "name": "alice", "mail": "a@x.com"}},
+	}
+	r := viewReaderFixture(coll)
+
+	// Sort by Name → tuple is [name, _id]; context hash is non-empty.
+	page, err := r.ReadPage(context.Background(), "builder_view", queries.ReadCriteria{
+		Limit: 10,
+		Sort:  []queries.SortField{{Field: "Name"}},
+	})
+	if err != nil {
+		t.Fatalf("ReadPage: %v", err)
+	}
+	if len(page.ItemCursors) != 1 {
+		t.Fatalf("expected 1 item cursor, got %d", len(page.ItemCursors))
+	}
+	dec, derr := queries.DecodeCursor(page.ItemCursors[0])
+	if derr != nil {
+		t.Fatalf("decode: %v", derr)
+	}
+	if len(dec.K) != 2 || dec.K[0] != "alice" || dec.K[1] != "u1" {
+		t.Errorf("tuple = %v, want [alice u1]", dec.K)
+	}
+	if dec.H == "" {
+		t.Error("a sorted context must carry a non-empty hash")
+	}
+}

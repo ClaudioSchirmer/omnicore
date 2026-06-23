@@ -1,4 +1,4 @@
-package web
+package queryschema
 
 import (
 	"fmt"
@@ -7,9 +7,10 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/ClaudioSchirmer/omnicore/application/queries"
 )
 
-// projectionSchema is the cached reflection result for a Response DTO:
+// ProjectionSchema is the cached reflection result for a Response DTO:
 // every accepted dotted wire path → its corresponding Go field path. Used by
 // HandleQueryWithParams to validate `?fields=` / `?sort=` tokens against the
 // declared Response shape and translate them into the Go field vocabulary
@@ -18,32 +19,32 @@ import (
 // column via the view's TableSchema — there is no `view:` tag or snake
 // convention at this layer.
 //
-// Built once per reflect.Type at wrapper construction time (sync.Map
-// cache). The boot guard validateFieldsResponse runs in the same place,
+// Built once per reflect.Type at consumer construction time (sync.Map
+// cache). The boot guard ValidateFieldsResponse runs in the same place,
 // so a Response DTO that opted into `?fields=` is guaranteed to satisfy
 // the all-pointer-with-omitempty rule before any request lands.
-type projectionSchema struct {
-	// paths maps wire path → Go field path. The reader translates the Go path
+type ProjectionSchema struct {
+	// Paths maps wire path → Go field path. The reader translates the Go path
 	// to the physical Mongo column (top-level "ID" → the PK column, etc.) using
 	// the view's TableSchema.
-	paths map[string]string
+	Paths map[string]string
 }
 
-var projectionSchemaCache sync.Map // reflect.Type → *projectionSchema
+var projectionSchemaCache sync.Map // reflect.Type → *ProjectionSchema
 
-// extractProjectionSchema returns (and memoizes) the projection schema for
+// ExtractProjectionSchema returns (and memoizes) the projection schema for
 // the Response DTO type t. Pointer types are dereferenced; non-struct
 // types yield a schema with no paths (which causes every `?fields=` token
 // to surface as a 400 — the boot guard already rejects the case at
 // construction, so the runtime branch is defensive).
-func extractProjectionSchema(t reflect.Type) *projectionSchema {
+func ExtractProjectionSchema(t reflect.Type) *ProjectionSchema {
 	for t.Kind() == reflect.Pointer {
 		t = t.Elem()
 	}
 	if v, ok := projectionSchemaCache.Load(t); ok {
-		return v.(*projectionSchema)
+		return v.(*ProjectionSchema)
 	}
-	s := &projectionSchema{paths: map[string]string{}}
+	s := &ProjectionSchema{Paths: map[string]string{}}
 	if t.Kind() == reflect.Struct {
 		walkProjectionLevel(t, "", "", s)
 	}
@@ -52,9 +53,9 @@ func extractProjectionSchema(t reflect.Type) *projectionSchema {
 }
 
 // walkProjectionLevel recurses through t, accumulating dotted wire paths
-// into s.paths keyed by the wire name and valued by the doc key.
+// into s.Paths keyed by the wire name and valued by the doc key.
 // wirePrefix/docPrefix carry the path built so far.
-func walkProjectionLevel(t reflect.Type, wirePrefix, docPrefix string, s *projectionSchema) {
+func walkProjectionLevel(t reflect.Type, wirePrefix, docPrefix string, s *ProjectionSchema) {
 	for t.Kind() == reflect.Pointer {
 		t = t.Elem()
 	}
@@ -87,7 +88,7 @@ func walkProjectionLevel(t reflect.Type, wirePrefix, docPrefix string, s *projec
 		// path) — the criteria vocabulary. The reader translates Go→column via
 		// the view's TableSchema; there is no `view:` tag or snake convention.
 		docPath := joinPath(docPrefix, f.Name)
-		s.paths[wirePath] = docPath
+		s.Paths[wirePath] = docPath
 		// Recurse into struct / slice-of-struct element type so nested wire
 		// paths (addresses.city, addresses.lines.qty) are discoverable.
 		ft := f.Type
@@ -128,7 +129,88 @@ func projectionWireName(f reflect.StructField) (string, bool) {
 	return name, false
 }
 
-// validateFieldsResponse walks t recursively and reports every Response
+// ParseProjection turns a comma-separated wire value into a projection map
+// keyed by Go field path (value=1 for inclusion); the reader translates each
+// Go path to the physical Mongo column via the view's TableSchema. When
+// projSchema is non-nil, each token is validated against the Response DTO's
+// declared wire paths and translated to the corresponding Go field path
+// (nested paths walked segment-by-segment). An unknown token returns
+// (nil, nil, token, false). When projSchema is nil (manual handlers via
+// ParseCriteria), tokens become inclusion entries verbatim — legacy
+// pass-through.
+//
+// wireSet returns which wire names appeared in the input; the caller uses
+// it to drive the top-level `id` auto-exclusion (the framework adds
+// `_id: 0` when `id` is absent from the wire set).
+func ParseProjection(s string, projSchema *ProjectionSchema) (proj map[string]int, wireSet map[string]bool, badToken string, ok bool) {
+	if s == "" {
+		return nil, nil, "", true
+	}
+	tokens := strings.Split(s, ",")
+	proj = make(map[string]int, len(tokens))
+	wireSet = make(map[string]bool, len(tokens))
+	for _, t := range tokens {
+		t = strings.TrimSpace(t)
+		if t == "" {
+			continue
+		}
+		if projSchema == nil {
+			proj[t] = 1
+			wireSet[t] = true
+			continue
+		}
+		docPath, allowed := projSchema.Paths[t]
+		if !allowed {
+			return nil, nil, t, false
+		}
+		proj[docPath] = 1
+		wireSet[t] = true
+	}
+	return proj, wireSet, "", true
+}
+
+// ParseSortWithSchema turns a comma-separated wire value into a list of
+// SortField entries. Each token may carry a `-` prefix (descending);
+// otherwise ascending. When projSchema is non-nil, the wire name (without
+// the prefix) is validated against the Response DTO's declared paths and
+// translated to the corresponding Go field path (nested paths walked
+// segment-by-segment); the reader maps Go → column via the view's TableSchema.
+// An unknown token returns the verbatim wire token (including any `-` prefix) so the
+// caller can surface it on the canonical 400 envelope as `sort[<token>]`.
+// When projSchema is nil — manual handlers via ParseCriteria, or wrappers
+// paired with a RawDoc-style projector that carries no typed Response —
+// tokens become SortField entries verbatim (no allowlist, no translation).
+func ParseSortWithSchema(s string, projSchema *ProjectionSchema) (sortFields []queries.SortField, badToken string, ok bool) {
+	if s == "" {
+		return nil, "", true
+	}
+	tokens := strings.Split(s, ",")
+	sortFields = make([]queries.SortField, 0, len(tokens))
+	for _, t := range tokens {
+		t = strings.TrimSpace(t)
+		if t == "" {
+			continue
+		}
+		desc := false
+		wireName := t
+		if strings.HasPrefix(t, "-") {
+			desc = true
+			wireName = t[1:]
+		}
+		if projSchema == nil {
+			sortFields = append(sortFields, queries.SortField{Field: wireName, Desc: desc})
+			continue
+		}
+		docPath, allowed := projSchema.Paths[wireName]
+		if !allowed {
+			return nil, t, false
+		}
+		sortFields = append(sortFields, queries.SortField{Field: docPath, Desc: desc})
+	}
+	return sortFields, "", true
+}
+
+// ValidateFieldsResponse walks t recursively and reports every Response
 // field that violates the "pointer + omitempty" rule the `?fields=` path
 // relies on. The rule:
 //
@@ -146,8 +228,8 @@ func projectionWireName(f reflect.StructField) (string, bool) {
 //
 // Returns the empty slice when the type is fully compliant; otherwise
 // the slice of human-readable violation lines used by
-// formatFieldsResponseGuard to assemble the boot panic.
-func validateFieldsResponse(t reflect.Type) []string {
+// FormatFieldsResponseGuard to assemble the boot panic.
+func ValidateFieldsResponse(t reflect.Type) []string {
 	var errs []string
 	walkResponseGuard(t, "", &errs)
 	return errs
@@ -229,12 +311,12 @@ func hasOmitempty(tag string) bool {
 	return false
 }
 
-// formatFieldsResponseGuard builds the boot-panic diagnostic emitted when
+// FormatFieldsResponseGuard builds the boot-panic diagnostic emitted when
 // a Response DTO opts into `?fields=` but does not satisfy the all-
 // pointer-with-omitempty rule. The framework's posture for structural
 // contract violations is boot panic — fail loud at construction so the
 // shape is impossible to ship.
-func formatFieldsResponseGuard(t reflect.Type, errs []string) string {
+func FormatFieldsResponseGuard(t reflect.Type, errs []string) string {
 	// Deterministic ordering so the diagnostic is stable across runs.
 	sortedErrs := append([]string(nil), errs...)
 	sort.Strings(sortedErrs)

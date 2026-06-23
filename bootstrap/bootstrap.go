@@ -513,6 +513,40 @@ func buildApp(deps Deps, wiring Wiring) (*fiber.App, error) {
 		}
 	}
 
+	// GraphQL is its own web surface — mounted here, AFTER the REST boot scans
+	// (scanRouteRegistration / scanAuthorization police only the OpenAPI route
+	// contract) and outside the Swagger document, exactly like the framework's
+	// own non-spec routes. The AuthMiddleware (matched by path at request time)
+	// still authenticates it when auth.mode=jwt; authorization is per-field in
+	// the resolver. The only thing shared with REST is the application-layer
+	// handlers the resolvers dispatch to.
+	if wiring.GraphQL != nil {
+		gqlCfg := deps.Config.GraphQL
+		// Only one surface can own GET /. When both the OpenAPI UI and the
+		// GraphQL endpoint are wired AND both opt into rootRedirect, the boot
+		// is structurally ambiguous — fail loud rather than let one silently
+		// win the registration race.
+		if gqlCfg.RootRedirect && wiring.OpenAPI != nil && deps.Config.OpenAPI.RootRedirect {
+			panic("bootstrap: openapi.rootRedirect and graphql.rootRedirect are both enabled — only one surface can own GET /; disable one")
+		}
+		wiring.GraphQL.EnableIntrospection(gqlCfg.Introspection)
+		// Layer-1 permission gate master switch — same source as the REST gate
+		// (fwweb.SetAuthorizationEnabled above), so RequirePermission on a
+		// GraphQL field enforces under auth.authorization.enabled and stays
+		// inert otherwise (incremental-rollout parity).
+		wiring.GraphQL.EnableAuthorization(deps.Config.Auth.Authorization != nil && deps.Config.Auth.Authorization.Enabled)
+		app.Post(gqlCfg.Path, wiring.GraphQL.Handler())
+		deps.Logger.Info("graphql served", "path", gqlCfg.Path,
+			"introspection", gqlCfg.Introspection, "playground", gqlCfg.Playground)
+		if gqlCfg.Playground {
+			app.Get(gqlCfg.UIPath, wiring.GraphQL.Playground(gqlCfg.Path))
+			deps.Logger.Info("graphql playground served", "ui", gqlCfg.UIPath)
+		}
+		if gqlCfg.RootRedirect {
+			registerRootRedirect(app, gqlCfg.Path, deps.Logger)
+		}
+	}
+
 	// Validate the operator-declared auth.publicRoutes against the fully
 	// registered route set (features + /health + the OpenAPI spec/UI + the
 	// optional root redirect). Runs last so every route the service exposes

@@ -11,6 +11,7 @@ import (
 	"github.com/ClaudioSchirmer/omnicore/application/translation"
 	"github.com/ClaudioSchirmer/omnicore/web/export"
 	"github.com/ClaudioSchirmer/omnicore/web/openapi"
+	"github.com/ClaudioSchirmer/omnicore/web/queryschema"
 	"github.com/gofiber/fiber/v3"
 )
 
@@ -104,7 +105,7 @@ func HandleQueryExport[TReq HasToParamsQuery[TQ], TQ queries.FindByParamsQuery](
 	if reqType.Kind() == reflect.Pointer {
 		reqType = reqType.Elem()
 	}
-	schema := extractAllowedKeys(reqType)
+	schema := queryschema.ExtractRequestSchema(reqType)
 	pathSchema := inspectPathTags(reqType)
 
 	return func(c fiber.Ctx) error {
@@ -250,7 +251,7 @@ func HandleQueryAsXLSXSpec[TReq HasToParamsQuery[TQ], TQ queries.FindByParamsQue
 // walks the full filtered set. `?fields=` flows into crit.Projection (validated
 // against the plan), which the reader echoes on Page.Projection for the export
 // plan pruning. Returns the criteria and the first bad field on a 400.
-func buildExportCriteria(c fiber.Ctx, schema *requestSchema, plan *queries.ExportPlan, maxRows int64) (queries.ReadCriteria, string, bool) {
+func buildExportCriteria(c fiber.Ctx, schema *queryschema.RequestSchema, plan *queries.ExportPlan, maxRows int64) (queries.ReadCriteria, string, bool) {
 	// BypassMaxLimit: the export enforces its own operator-set ceiling
 	// (maxRows = resolved maxExportRows), which is deliberately larger than the
 	// per-view page `?limit` ceiling — the reader must not reject it.
@@ -295,21 +296,21 @@ func buildExportCriteria(c fiber.Ctx, schema *requestSchema, plan *queries.Expor
 			crit.Sort = sf
 			return
 		}
-		wirePath, op := parseKeyAgainstSchema(key, schema)
+		wirePath, op := queryschema.ParseKeyAgainstSchema(key, schema)
 		if wirePath == "" {
 			bad, ok = key, false
 			return
 		}
-		spec := schema.filters[wirePath]
+		spec := schema.Filters[wirePath]
 		eff := op
 		if eff == "" {
 			eff = OpEq
 		}
-		if !spec.ops[eff] {
+		if !spec.Ops[eff] {
 			bad, ok = key, false
 			return
 		}
-		applyFilterParam(crit.Filter, spec, op, val)
+		queryschema.ApplyFilterParam(crit.Filter, spec, op, val)
 	})
 	if !ok {
 		return crit, bad, false

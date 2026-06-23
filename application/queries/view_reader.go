@@ -142,6 +142,20 @@ type Page struct {
 	Total      int64
 	OnlyTotal  bool
 
+	// ItemCursors is the per-row keyset cursor, positionally aligned with
+	// Items (ItemCursors[i] addresses Items[i]). It exists for transports that
+	// need a cursor per element rather than only the page-edge NextCursor /
+	// PrevCursor — the GraphQL endpoint's Relay connection populates
+	// edges[].cursor from it. The cursor is built from the same keyset tuple +
+	// context hash the edge cursors use, so it round-trips through the reader's
+	// ?after / ?before path unchanged.
+	//
+	// It MUST be built by the reader (the layer that owns the physical keyset
+	// tuple — the sort-field values and _id are stripped from the returned
+	// Go-field-keyed Items, so no upper layer can reconstruct it). The REST
+	// wrapper ignores this field; it stays nil for count-only reads.
+	ItemCursors []string
+
 	// Projection is the effective per-field include/exclude map the read used —
 	// the post-ToCriteria ReadCriteria.Projection echoed back. The tabular-export
 	// wrapper prunes its column plan to this (ExportPlan.PruneToProjection), so a

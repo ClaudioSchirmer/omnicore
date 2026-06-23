@@ -2,9 +2,9 @@
 <p>
     A handler in OmniCore is written <strong>once</strong> and stays <strong>invariant</strong>
     across the surface it is attached to. The handler carries the business logic; the
-    <em>surface</em> — an HTTP route, a Kafka receiver, a CSV download, an Excel download — decides
-    only the shape of what goes in and what comes out. You do not rewrite a handler to serve a new
-    channel; you attach the same handler to another wrapper.
+    <em>surface</em> — an HTTP route, a Kafka receiver, a CSV download, an Excel download, a GraphQL
+    field — decides only the shape of what goes in and what comes out. You do not rewrite a handler to
+    serve a new channel; you attach the same handler to another wrapper.
 </p>
 <div class="box">
     <strong>The principle:</strong> a handler is a pure <code>pipeline.Handler[TReq, TRes]</code>.
@@ -18,10 +18,10 @@
     Two families, each with more than one attachment surface:
 </p>
 <ul>
-    <li><strong>Command handlers</strong> (the write side) attach to <strong>HTTP</strong> or to
-        <strong>Kafka</strong>.</li>
+    <li><strong>Command handlers</strong> (the write side) attach to <strong>HTTP/JSON</strong>, to
+        <strong>Kafka</strong>, or as a <strong>GraphQL mutation</strong>.</li>
     <li><strong>Query handlers</strong> (the read side) attach to <strong>HTTP/JSON</strong>, to
-        <strong>CSV</strong>, or to <strong>Excel</strong>.</li>
+        <strong>CSV</strong>, to <strong>Excel</strong>, or as a <strong>GraphQL query</strong>.</li>
 </ul>
 
 <h3 id="hi-command">Command handlers — HTTP or Kafka</h3>
@@ -41,7 +41,11 @@ fwweb.HandleCommandWithBody(d.Pipeline,
     h, fiber.StatusCreated)
 
 // attach the SAME h to Kafka (async, cross-service event)
-reg.From("partners").On("partnerOnboarded", requests.PartnerOnboardedRequest{}, h)</code></pre>
+reg.From("partners").On("partnerOnboarded", requests.PartnerOnboardedRequest{}, h)
+
+// ...or as a GraphQL mutation (input object reflected from the Request DTO)
+gql.Register(fwgraphql.Mutation[requests.InsertUserRequest](
+    "createUser", requests.InsertUserResponse{}.FromResult, h))</code></pre>
 <p>
     The async path additionally gets the framework's canonical guarantees — transactional emission
     via <code>fwintegration.Dispatch(...WithTx(tx))</code> from a <code>BeforeCommit</code> closure,
@@ -76,7 +80,12 @@ fwweb.HandleQueryAsCSV(d.Pipeline,
 // ...or to an Excel (.xlsx) download
 fwweb.HandleQueryAsXLSX(d.Pipeline,
     requests.FindUsersByParamsRequest{}, view, d.Export, h,
-    export.WithSheetName("Users"))</code></pre>
+    export.WithSheetName("Users"))
+
+// ...or as a GraphQL query returning a Relay connection
+gql.Register(fwgraphql.Query[requests.FindUsersByParamsRequest,
+    requests.FindUsersByParamsResponse](
+    "users", "User", h))</code></pre>
 <p>
     CSV and Excel share a single format-neutral export core — the column plan
     (<code>ViewDefinition.ExportPlan()</code>), the hierarchical walk
@@ -91,11 +100,11 @@ fwweb.HandleQueryAsXLSX(d.Pipeline,
     <tbody>
     <tr><th>Family</th><th>Surface</th><th>Attach via</th><th>The surface decides</th><th>Invariant below the boundary</th></tr>
     <tr>
-        <td rowspan="2"><strong>Command</strong></td>
+        <td rowspan="3"><strong>Command</strong></td>
         <td>HTTP (sync)</td>
         <td><code>HandleCommandWith{Body,BodyID,ID}</code> + <code>openapi.Mount</code></td>
         <td>wire payload (Request DTO <code>ToCommand</code>), HTTP status</td>
-        <td rowspan="2">the Cmd, <code>BuildRules</code>, the sealed <code>ValidEntity</code>, transactional outbox, audit, pipeline semantics</td>
+        <td rowspan="3">the Cmd, <code>BuildRules</code>, the sealed <code>ValidEntity</code>, transactional outbox, audit, pipeline semantics</td>
     </tr>
     <tr>
         <td>Kafka (async)</td>
@@ -103,11 +112,16 @@ fwweb.HandleQueryAsXLSX(d.Pipeline,
         <td>event payload (sample <code>ToCommand</code>), at-least-once + dedup + retry</td>
     </tr>
     <tr>
-        <td rowspan="3"><strong>Query</strong></td>
+        <td>GraphQL mutation</td>
+        <td><code>fwgraphql.{Mutation,MutationWithID,MutationByID}</code></td>
+        <td>input object (reflected from the Request DTO), <code>{data,errors}</code></td>
+    </tr>
+    <tr>
+        <td rowspan="4"><strong>Query</strong></td>
         <td>HTTP / JSON</td>
         <td><code>HandleQueryWith{Params,ID}</code></td>
         <td>JSON envelope + pagination block</td>
-        <td rowspan="3">the Query, <code>ToCriteria(ctx)</code>, the filter allowlist, the <code>ViewReader</code> read</td>
+        <td rowspan="4">the Query, <code>ToCriteria(ctx)</code>, the filter allowlist, the <code>ViewReader</code> read</td>
     </tr>
     <tr>
         <td>CSV</td>
@@ -118,6 +132,11 @@ fwweb.HandleQueryAsXLSX(d.Pipeline,
         <td>Excel</td>
         <td><code>HandleQueryAsXLSX</code></td>
         <td><code>.xlsx</code> workbook, typed cells, bold headers</td>
+    </tr>
+    <tr>
+        <td>GraphQL query</td>
+        <td><code>fwgraphql.Query</code></td>
+        <td>Relay connection (<code>edges</code>/<code>pageInfo</code>/<code>totalCount</code>), selection set</td>
     </tr>
     </tbody>
 </table>

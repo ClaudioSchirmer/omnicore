@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"io"
 	"net/http/httptest"
-	"reflect"
 	"strings"
 	"testing"
 
@@ -12,13 +11,15 @@ import (
 	"github.com/gofiber/fiber/v3"
 )
 
-// ─── projectionSchema (extractProjectionSchema + walkProjectionLevel) ─────
+// Response fixtures for the runtime ?fields= behavior. The reflection of these
+// shapes (projection paths, sparse-render guard) is unit-tested in
+// web/queryschema; here they drive the end-to-end wrapper behavior.
 
 type sparseAddress struct {
 	ID      *string `json:"id,omitempty"`
 	City    *string `json:"city,omitempty"`
 	ZipCode *string `json:"zipCode,omitempty"`
-	State   *string `json:"state,omitempty" view:"st"`
+	State   *string `json:"state,omitempty"`
 }
 
 type sparseUser struct {
@@ -29,115 +30,8 @@ type sparseUser struct {
 	Addresses []sparseAddress `json:"addresses,omitempty"`
 }
 
-func TestExtractProjectionSchema_TopLevelPathsUseSnakeCase(t *testing.T) {
-	s := extractProjectionSchema(reflect.TypeOf(sparseUser{}))
-	if got := s.paths["id"]; got != "ID" {
-		t.Errorf("id → %q, want id", got)
-	}
-	if got := s.paths["name"]; got != "Name" {
-		t.Errorf("name → %q, want name", got)
-	}
-}
-
-func TestExtractProjectionSchema_NestedSliceOfStructPathsTranslated(t *testing.T) {
-	s := extractProjectionSchema(reflect.TypeOf(sparseUser{}))
-	if got := s.paths["addresses"]; got != "Addresses" {
-		t.Errorf("addresses → %q, want addresses", got)
-	}
-	if got := s.paths["addresses.id"]; got != "Addresses.ID" {
-		t.Errorf("addresses.id → %q, want addresses.id", got)
-	}
-	if got := s.paths["addresses.city"]; got != "Addresses.City" {
-		t.Errorf("addresses.city → %q, want addresses.city", got)
-	}
-	if got := s.paths["addresses.zipCode"]; got != "Addresses.ZipCode" {
-		t.Errorf("addresses.zipCode → %q, want addresses.zip_code (Go field path)", got)
-	}
-}
-
-func TestExtractProjectionSchema_ViewTagOverridesAutoSnake(t *testing.T) {
-	s := extractProjectionSchema(reflect.TypeOf(sparseUser{}))
-	if got := s.paths["addresses.state"]; got != "Addresses.State" {
-		t.Errorf("addresses.state → %q, want addresses.st (Go field path (view: removed))", got)
-	}
-}
-
-func TestExtractProjectionSchema_CachedByReflectType(t *testing.T) {
-	s1 := extractProjectionSchema(reflect.TypeOf(sparseUser{}))
-	s2 := extractProjectionSchema(reflect.TypeOf(sparseUser{}))
-	if s1 != s2 {
-		t.Errorf("expected the same *projectionSchema pointer on the second call (cache hit)")
-	}
-}
-
-// ─── validateFieldsResponse (boot guard) ───────────────────────────────────
-
-func TestValidateFieldsResponse_AcceptsPointerWithOmitempty(t *testing.T) {
-	errs := validateFieldsResponse(reflect.TypeOf(sparseUser{}))
-	if len(errs) != 0 {
-		t.Errorf("expected no violations, got %v", errs)
-	}
-}
-
-type guardMissingOmitempty struct {
-	Name *string `json:"name"`
-}
-
-func TestValidateFieldsResponse_RejectsMissingOmitempty(t *testing.T) {
-	errs := validateFieldsResponse(reflect.TypeOf(guardMissingOmitempty{}))
-	if len(errs) == 0 {
-		t.Fatal("expected violations for missing ,omitempty")
-	}
-	joined := strings.Join(errs, "\n")
-	if !strings.Contains(joined, "name") || !strings.Contains(joined, "omitempty") {
-		t.Errorf("expected diagnostic to mention name + omitempty, got: %s", joined)
-	}
-}
-
 type guardNonPointerScalar struct {
 	Name string `json:"name,omitempty"`
-}
-
-func TestValidateFieldsResponse_RejectsNonPointerScalar(t *testing.T) {
-	errs := validateFieldsResponse(reflect.TypeOf(guardNonPointerScalar{}))
-	if len(errs) == 0 {
-		t.Fatal("expected violations for non-pointer scalar field")
-	}
-	joined := strings.Join(errs, "\n")
-	if !strings.Contains(joined, "name") || !strings.Contains(joined, "must be") {
-		t.Errorf("expected diagnostic to demand pointer for name, got: %s", joined)
-	}
-}
-
-type guardNestedBad struct {
-	ID *string             `json:"id,omitempty"`
-	A  []guardNestedItemA  `json:"a,omitempty"`
-}
-
-type guardNestedItemA struct {
-	Label string `json:"label,omitempty"` // violation — non-pointer scalar at depth 2
-}
-
-func TestValidateFieldsResponse_RecursesIntoSliceOfStruct(t *testing.T) {
-	errs := validateFieldsResponse(reflect.TypeOf(guardNestedBad{}))
-	if len(errs) == 0 {
-		t.Fatal("expected nested violation on a[].label")
-	}
-	joined := strings.Join(errs, "\n")
-	if !strings.Contains(joined, "a.label") {
-		t.Errorf("expected diagnostic to mention path a.label, got: %s", joined)
-	}
-}
-
-func TestValidateFieldsResponse_JSONHyphenSkipsField(t *testing.T) {
-	type withSkip struct {
-		Name   *string `json:"name,omitempty"`
-		Hidden string  `json:"-"`
-	}
-	errs := validateFieldsResponse(reflect.TypeOf(withSkip{}))
-	if len(errs) != 0 {
-		t.Errorf("expected no violations (json:- skipped), got %v", errs)
-	}
 }
 
 // ─── HandleQueryWithParams boot guard integration ──────────────────────────
@@ -301,4 +195,3 @@ func TestFieldsParam_PassThroughModeOnParseCriteria(t *testing.T) {
 		t.Errorf("pass-through mode should not add _id:0, got %v", got.Projection)
 	}
 }
-

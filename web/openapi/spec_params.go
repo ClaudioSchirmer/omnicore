@@ -2,7 +2,8 @@ package openapi
 
 import (
 	"reflect"
-	"strings"
+
+	"github.com/ClaudioSchirmer/omnicore/web/queryschema"
 )
 
 // canonicalParameters extracts the parameter list for a canonical
@@ -133,70 +134,41 @@ func walkPathTags(t reflect.Type, gen *Generator) []map[string]any {
 	return out
 }
 
-// walkQueryTags iterates the Request DTO's fields and emits query
-// parameter objects from `query:"X"` (+ optional `filter:"ops"`) tags.
-// Recurses into nested struct fields carrying `query:"prefix"` (with no
-// `filter:` tag) — each leaf below them appears with the prefix as a
-// dotted parameter name (e.g. `addresses.city`, `addresses.city.istartswith`),
-// matching the wire shape extractAllowedKeys accepts at runtime.
+// walkQueryTags emits query parameter objects from a Request DTO's
+// `query:"X"` (+ optional `filter:"ops"`) tags. It consumes the shared
+// queryschema.WalkRequest traversal — the single source of the tag-walk
+// rules (embed-group recursion, the eq-has-no-suffix operator convention,
+// dotted wire paths) the runtime allowlist also folds — so the parameter set
+// the spec advertises cannot drift from the keys the wrapper accepts.
 //
 // A field with `query:"q"` and no `filter:` tag and a scalar type is a
 // reserved pagination/control key — emits ONE query parameter named "q".
 // A field with `query:"name" filter:"eq,in,gte"` emits THREE query
 // parameters: "name", "name.in", "name.gte". A struct-typed field with
-// `query:"addresses"` and no filter tag is an embed group — the walker
-// recurses with the prefix attached.
+// `query:"addresses"` and no filter tag is an embed group — WalkRequest
+// recurses and each leaf below it appears with the prefix as a dotted
+// parameter name (e.g. `addresses.city`, `addresses.city.istartswith`).
 func walkQueryTags(t reflect.Type, gen *Generator) []map[string]any {
-	return walkQueryTagsAt(t, "", gen)
-}
-
-func walkQueryTagsAt(t reflect.Type, wirePrefix string, gen *Generator) []map[string]any {
-	if t.Kind() == reflect.Pointer {
-		t = t.Elem()
-	}
 	out := []map[string]any{}
-	for i := 0; i < t.NumField(); i++ {
-		f := t.Field(i)
-		if !f.IsExported() {
+	for _, leaf := range queryschema.WalkRequest(t) {
+		// Generate the field schema for every query-tagged field, including
+		// embed-group markers, so the type graph each field references is
+		// registered in Components exactly as before — even though a group
+		// emits no parameter of its own.
+		schema := gen.Generate(leaf.Field.Type)
+		if leaf.Group {
 			continue
 		}
-		qkey := f.Tag.Get("query")
-		if qkey == "" {
+		if len(leaf.Ops) == 0 {
+			out = append(out, queryEntry(leaf.WirePath, schema, leaf.Field))
 			continue
 		}
-		wireName := qkey
-		if wirePrefix != "" {
-			wireName = wirePrefix + "." + qkey
-		}
-		ftag := f.Tag.Get("filter")
-		fieldSchema := gen.Generate(f.Type)
-
-		if ftag == "" {
-			// No filter tag — either a reserved control key (top-level
-			// scalar like limit/sort) or an embed group when the field
-			// type is a struct. Recurse into the struct; emit a single
-			// query entry otherwise.
-			ft := f.Type
-			if ft.Kind() == reflect.Pointer {
-				ft = ft.Elem()
+		for _, op := range leaf.Ops {
+			name := leaf.WirePath
+			if op != queryschema.OpEq {
+				name = leaf.WirePath + "." + op
 			}
-			if ft.Kind() == reflect.Struct {
-				out = append(out, walkQueryTagsAt(ft, wireName, gen)...)
-				continue
-			}
-			out = append(out, queryEntry(wireName, fieldSchema, f))
-			continue
-		}
-		for _, op := range strings.Split(ftag, ",") {
-			op = strings.TrimSpace(op)
-			if op == "" {
-				continue
-			}
-			name := wireName
-			if op != "eq" {
-				name = wireName + "." + op
-			}
-			out = append(out, queryEntry(name, fieldSchema, f))
+			out = append(out, queryEntry(name, schema, leaf.Field))
 		}
 	}
 	return out
