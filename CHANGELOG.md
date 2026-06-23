@@ -9,7 +9,7 @@ While in `0.x.y`, the public API may change between minor versions; breaking
 changes are highlighted under **Changed**. Stable contract semantics arrive
 with `1.0.0`.
 
-## [Unreleased]
+## [0.12.0] - 2026-06-22
 
 ### Added
 
@@ -917,6 +917,7 @@ to content from a prior repo that no longer exists.
   emitted as best-effort `slog.Warn` whenever a hook returns non-nil
   error.
 
+[0.12.0]: https://github.com/ClaudioSchirmer/omnicore/releases/tag/v0.12.0
 [0.11.0]: https://github.com/ClaudioSchirmer/omnicore/releases/tag/v0.11.0
 [0.10.0]: https://github.com/ClaudioSchirmer/omnicore/releases/tag/v0.10.0
 [0.9.0]: https://github.com/ClaudioSchirmer/omnicore/releases/tag/v0.9.0
