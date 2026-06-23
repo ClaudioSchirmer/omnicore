@@ -32,11 +32,11 @@ func Mutation[
 	},
 	TResult any,
 	TResp any,
-](name string, project func(TResult) TResp, h pipeline.Handler[TCmdPtr, TResult]) Field {
+](name string, project func(TResult) TResp, h pipeline.Handler[TCmdPtr, TResult], opts ...FieldOption) Field {
 	reqType := reflect.TypeOf((*TReq)(nil)).Elem()
 	respType := reflect.TypeOf((*TResp)(nil)).Elem()
 	strict := isFullBody(h)
-	return Field{
+	return applyOptions(Field{
 		name:       name,
 		isMutation: true,
 		sdlLine: func(b *sdlBuilder) string {
@@ -54,7 +54,7 @@ func Mutation[
 				return mutationOutput(res, project)
 			}
 		},
-	}
+	}, opts)
 }
 
 // MutationWithID registers an update/patch-style command handler (body + path
@@ -69,11 +69,11 @@ func MutationWithID[
 	},
 	TResult any,
 	TResp any,
-](name string, project func(TResult) TResp, h pipeline.Handler[TCmdPtr, TResult]) Field {
+](name string, project func(TResult) TResp, h pipeline.Handler[TCmdPtr, TResult], opts ...FieldOption) Field {
 	reqType := reflect.TypeOf((*TReq)(nil)).Elem()
 	respType := reflect.TypeOf((*TResp)(nil)).Elem()
 	strict := isFullBody(h)
-	return Field{
+	return applyOptions(Field{
 		name:       name,
 		isMutation: true,
 		sdlLine: func(b *sdlBuilder) string {
@@ -93,7 +93,7 @@ func MutationWithID[
 				return mutationOutput(res, project)
 			}
 		},
-	}
+	}, opts)
 }
 
 // MutationByID registers a bodyless command handler (archive / unarchive /
@@ -107,8 +107,8 @@ func MutationByID[
 		pipeline.CommandWithID
 	},
 	TResult any,
-](name string, h pipeline.Handler[TCmdPtr, TResult]) Field {
-	return Field{
+](name string, h pipeline.Handler[TCmdPtr, TResult], opts ...FieldOption) Field {
+	return applyOptions(Field{
 		name:       name,
 		isMutation: true,
 		sdlLine: func(b *sdlBuilder) string {
@@ -131,7 +131,7 @@ func MutationByID[
 				}
 			}
 		},
-	}
+	}, opts)
 }
 
 // decodeInput materializes a write Request DTO from the GraphQL `input`

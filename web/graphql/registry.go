@@ -2,11 +2,14 @@ package graphql
 
 import (
 	"reflect"
+	"strconv"
 	"strings"
 
 	"github.com/ClaudioSchirmer/omnicore/application/configuration"
+	"github.com/ClaudioSchirmer/omnicore/application/notifications"
 	"github.com/ClaudioSchirmer/omnicore/application/pipeline"
 	"github.com/ClaudioSchirmer/omnicore/application/queries"
+	"github.com/ClaudioSchirmer/omnicore/domain"
 	"github.com/vektah/gqlparser/v2"
 	"github.com/vektah/gqlparser/v2/ast"
 )
@@ -27,10 +30,52 @@ type resolver func(ctx *configuration.AppContext, args map[string]any) (any, []G
 // constructors (Query, and the future Mutation) capture the typed handler into
 // the SDL emitter + the resolver factory; the Registry binds the pipeline.
 type Field struct {
-	name        string
-	isMutation  bool
-	sdlLine     func(b *sdlBuilder) string
-	makeResolve func(pipe *pipeline.Pipeline) resolver
+	name               string
+	isMutation         bool
+	requiredPermission string // Layer-1 gate; empty = no permission required
+	sdlLine            func(b *sdlBuilder) string
+	makeResolve        func(pipe *pipeline.Pipeline) resolver
+}
+
+// FieldOption customizes a Field at registration. It is the GraphQL twin of
+// openapi.MountOption — the per-field knobs a consumer attaches when wiring a
+// Query / Mutation into the registry.
+type FieldOption func(*Field)
+
+// RequirePermission declares the permission the request's Identity must carry
+// for this field to resolve — the GraphQL twin of openapi.RequirePermission,
+// the Layer-1 declarative gate. The permission string is "resource:action"
+// (wildcards are the IdP's to grant, never the caller's to declare). The gate
+// is enforced in the resolver, behind the same master switch the REST gate
+// uses (EnableAuthorization, set at boot from auth.authorization.enabled): when
+// the switch is off the annotation is inert (incremental-rollout parity with
+// REST). On a denied request the resolver emits the canonical
+// MissingPermissionNotification (semantic Forbidden) in errors[].extensions —
+// the same notification the REST permission gate returns as 403.
+func RequirePermission(permission string) FieldOption {
+	if permission == "" || !strings.Contains(permission, ":") {
+		panic("graphql.RequirePermission: permission must be \"resource:action\"; got " + strconv.Quote(permission))
+	}
+	if strings.Contains(permission, "*") {
+		panic("graphql.RequirePermission: wildcards on the caller side are not allowed; got " +
+			strconv.Quote(permission) + ". The IdP grants wildcards; the field declares the exact action")
+	}
+	return func(f *Field) {
+		if f.requiredPermission != "" {
+			panic("graphql.RequirePermission: duplicate option on the same field (previous=" +
+				strconv.Quote(f.requiredPermission) + ", new=" + strconv.Quote(permission) +
+				"). Combine via a compound permission at the IdP, not via multiple RequirePermission options")
+		}
+		f.requiredPermission = permission
+	}
+}
+
+// applyOptions folds the variadic FieldOptions into a constructed Field.
+func applyOptions(f Field, opts []FieldOption) Field {
+	for _, o := range opts {
+		o(&f)
+	}
+	return f
 }
 
 // Registry is the "list of queries/mutations" a consumer attaches handlers to.
@@ -40,6 +85,7 @@ type Registry struct {
 	pipe          *pipeline.Pipeline
 	fields        []Field
 	introspection bool
+	authorization bool
 	schema        *ast.Schema
 	sdl           string
 	resolvers     map[string]resolver
@@ -71,6 +117,20 @@ func (r *Registry) EnableIntrospection(on bool) *Registry {
 	return r
 }
 
+// EnableAuthorization toggles the Layer-1 permission gate master switch the
+// resolvers consult per request. bootstrap sets it from
+// auth.authorization.enabled (mirroring fwweb.SetAuthorizationEnabled for the
+// REST gate); off by default so RequirePermission annotations sit inert until
+// the operator opts in — the same incremental-rollout posture as REST.
+// Invalidates any built schema so the next execution re-binds the guarded
+// resolvers.
+func (r *Registry) EnableAuthorization(on bool) *Registry {
+	r.authorization = on
+	r.schema = nil
+	r.buildErr = nil
+	return r
+}
+
 // Query registers a read handler as a root Query field returning a Relay
 // connection. TReq is the read Request DTO, TQ its Query, R the Response DTO
 // (the connection node). The argument set (where / first / after / last /
@@ -79,11 +139,12 @@ func (r *Registry) EnableIntrospection(on bool) *Registry {
 func Query[TReq HasToParamsQuery[TQ], TQ queries.FindByParamsQuery, R any](
 	name, entity string,
 	h pipeline.Handler[TQ, queries.Page],
+	opts ...FieldOption,
 ) Field {
 	reqType := reflect.TypeOf((*TReq)(nil)).Elem()
 	respType := reflect.TypeOf((*R)(nil)).Elem()
 	plan := newCriteriaPlan(reqType, respType)
-	return Field{
+	return applyOptions(Field{
 		name:    name,
 		sdlLine: func(b *sdlBuilder) string { return b.queryFieldSDL(name, entity, reqType, respType) },
 		makeResolve: func(pipe *pipeline.Pipeline) resolver {
@@ -104,7 +165,44 @@ func Query[TReq HasToParamsQuery[TQ], TQ queries.FindByParamsQuery, R any](
 				}
 			}
 		},
+	}, opts)
+}
+
+// guardPermission wraps a resolver with the Layer-1 permission check. Behind
+// the EnableAuthorization master switch (off → pass-through, REST-parity
+// incremental rollout): when on, the request's Identity must carry the declared
+// permission, else the resolver short-circuits with the canonical
+// MissingPermissionNotification (semantic Forbidden) instead of running the
+// handler.
+func (r *Registry) guardPermission(permission string, inner resolver) resolver {
+	return func(ctx *configuration.AppContext, args map[string]any) (any, []GraphQLError) {
+		if r.authorization {
+			id := ctx.Identity()
+			if id == nil || !id.HasPermission(permission) {
+				return nil, r.missingPermission(ctx, permission)
+			}
+		}
+		return inner(ctx, args)
 	}
+}
+
+// missingPermission renders the 403-equivalent rejection through the same
+// translation + DTO path a handler failure takes, so the GraphQL error carries
+// the identical notification triple the REST gate emits (semantic Forbidden,
+// notificationKey MissingPermissionNotification, field "permission"; the
+// declared permission is the field value). Routed through pipeline.Run so the
+// message is translated against the request language.
+func (r *Registry) missingPermission(ctx *configuration.AppContext, permission string) []GraphQLError {
+	res := pipeline.Run(r.pipe, ctx, func() (any, error) {
+		nc := domain.NewNotificationContext("Authorization")
+		nc.AddNotificationMessage(domain.NotificationMessage{
+			FieldName:    "permission",
+			FieldValue:   permission,
+			Notification: notifications.MissingPermissionNotification{},
+		})
+		return nil, domain.NewDomainError([]*domain.NotificationContext{nc})
+	})
+	return fromNotifications(res.Notifications())
 }
 
 // SDL returns the generated schema document (building it if needed). Useful for
@@ -132,7 +230,11 @@ func (r *Registry) build() error {
 		} else {
 			queryLines = append(queryLines, line)
 		}
-		resolvers[f.name] = f.makeResolve(r.pipe)
+		res := f.makeResolve(r.pipe)
+		if f.requiredPermission != "" {
+			res = r.guardPermission(f.requiredPermission, res)
+		}
+		resolvers[f.name] = res
 	}
 	// GraphQL requires a Query root type; supply a stub when only mutations are
 	// registered so a mutation-only service still produces a valid schema.

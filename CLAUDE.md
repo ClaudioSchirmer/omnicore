@@ -1642,7 +1642,7 @@ The filter operator vocabulary (`Op*`, `knownOps`) + emission, the Request filte
 
 ### Authorization
 
-Layers 2 (`BuildRules`) and 3 (tenant via `ToCriteria`) ride inside `Dispatch` — inherited unchanged. Layer 1 (coarse `RequirePermission`) is route-shaped in REST; on the single GraphQL endpoint it moves **per-field into the resolver**. `AuthMiddleware` (matched by path) still authenticates `/graphql` when `auth.mode: jwt`.
+Layers 2 (`BuildRules`) and 3 (tenant via `ToCriteria`) ride inside `Dispatch` — inherited unchanged. Layer 1 (coarse `RequirePermission`) is route-shaped in REST; on the single GraphQL endpoint it moves **per-field into the resolver** via `fwgraphql.RequirePermission("resource:action")` (a `FieldOption` on `Query`/`Mutation`/`MutationWithID`/`MutationByID`, the GraphQL twin of `fwopenapi.RequirePermission` with the same `resource:action` validation). Enforced behind the same master switch as REST — `Registry.EnableAuthorization(cfg.Auth.Authorization.Enabled)`, wired by bootstrap next to `EnableIntrospection` — so the annotation is inert until `auth.authorization.enabled`. A denied field returns HTTP 200 with `MissingPermissionNotification` (`semantic: "Forbidden"`, `field: "permission"`) in `errors[].extensions`, the same notification the REST gate emits as 403; the handler never runs. `AuthMiddleware` (matched by path) still authenticates `/graphql` when `auth.mode: jwt`.
 
 ### Bootstrap integration
 

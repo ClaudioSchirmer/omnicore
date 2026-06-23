@@ -530,6 +530,11 @@ func buildApp(deps Deps, wiring Wiring) (*fiber.App, error) {
 			panic("bootstrap: openapi.rootRedirect and graphql.rootRedirect are both enabled — only one surface can own GET /; disable one")
 		}
 		wiring.GraphQL.EnableIntrospection(gqlCfg.Introspection)
+		// Layer-1 permission gate master switch — same source as the REST gate
+		// (fwweb.SetAuthorizationEnabled above), so RequirePermission on a
+		// GraphQL field enforces under auth.authorization.enabled and stays
+		// inert otherwise (incremental-rollout parity).
+		wiring.GraphQL.EnableAuthorization(deps.Config.Auth.Authorization != nil && deps.Config.Auth.Authorization.Enabled)
 		app.Post(gqlCfg.Path, wiring.GraphQL.Handler())
 		deps.Logger.Info("graphql served", "path", gqlCfg.Path,
 			"introspection", gqlCfg.Introspection, "playground", gqlCfg.Playground)

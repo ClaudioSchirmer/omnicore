@@ -36,8 +36,15 @@ with `1.0.0`.
   `Wiring.GraphQL *graphql.Registry`; serving knobs (`path`, `uiPath`,
   `playground`, `introspection`, `rootRedirect`) live under `graphql:` in
   `microservice.<profile>.yaml`. The endpoint is authenticated by
-  `AuthMiddleware` when `auth.mode: jwt`; authorization is per-field in the
-  resolver. Adds the `github.com/vektah/gqlparser/v2` dependency.
+  `AuthMiddleware` when `auth.mode: jwt`; the Layer-1 permission gate is
+  declared per field via `fwgraphql.RequirePermission("resource:action")` (the
+  GraphQL twin of `openapi.RequirePermission`) and enforced in the resolver
+  behind the same `auth.authorization.enabled` master switch as REST (wired via
+  `Registry.EnableAuthorization`, mirroring `EnableIntrospection`); a denied
+  request returns HTTP 200 with the canonical `MissingPermissionNotification`
+  (`semantic: "Forbidden"`, `field: "permission"`) in `errors[].extensions`,
+  the same notification the REST gate returns as 403. Adds the
+  `github.com/vektah/gqlparser/v2` dependency.
 
 - **`queries.Page.ItemCursors []string`** — the per-row keyset cursor,
   positionally aligned with `Items`, filled by `MongoViewReader` from the same

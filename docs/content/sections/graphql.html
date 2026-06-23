@@ -170,9 +170,31 @@
     boundary and apply unchanged — they are inherited the moment the resolver dispatches the same handler.
     Layer 1 (coarse <code>resource:action</code> permission) is route-shaped in REST
     (<code>fwopenapi.RequirePermission</code>); on a single GraphQL endpoint it moves <strong>into the
-    resolver, per field</strong>. The endpoint itself is authenticated by the <code>AuthMiddleware</code>
+    resolver, per field</strong>, declared with <code>fwgraphql.RequirePermission("resource:action")</code> —
+    a <code>FieldOption</code> on <code>Query</code> / <code>Mutation</code> / <code>MutationWithID</code> /
+    <code>MutationByID</code>, the GraphQL twin of <code>fwopenapi.RequirePermission</code> with the same
+    <code>resource:action</code> validation (wildcards are the IdP's to grant, never the caller's to declare):
+</p>
+<pre><code>reg.Register(fwgraphql.Query[Req, *Query, Resp](
+    "users", "User", readHandler,
+    fwgraphql.RequirePermission("users:read")))
+
+reg.Register(fwgraphql.MutationByID[DeleteCmd, *DeleteCmd, results.None](
+    "deleteUser", deleteHandler,
+    fwgraphql.RequirePermission("users:delete")))</code></pre>
+<p>
+    The gate is enforced behind the same master switch as REST —
+    <code>Registry.EnableAuthorization(cfg.Auth.Authorization.Enabled)</code>, wired by bootstrap next to
+    <code>EnableIntrospection</code> — so a <code>RequirePermission</code> annotation is inert until
+    <code>auth.authorization.enabled</code> (the same incremental-rollout posture as REST). When the switch is
+    on and the request's <code>Identity</code> lacks the declared permission, the field resolves to a denial
+    <strong>before the handler runs</strong>: HTTP 200 with the canonical
+    <code>MissingPermissionNotification</code> (<code>semantic: "Forbidden"</code>,
+    <code>field: "permission"</code>) in <code>errors[].extensions</code> — the same notification the REST
+    gate returns as 403. The endpoint itself is authenticated by the <code>AuthMiddleware</code>
     when <code>auth.mode: jwt</code> (a valid bearer is required unless the operator lists
-    <code>POST /graphql</code> in <code>auth.publicRoutes</code>).
+    <code>POST /graphql</code> in <code>auth.publicRoutes</code>); a missing bearer is rejected by the
+    middleware with 401 before the gate is reached.
 </p>
 
 <h3>Errors</h3>
