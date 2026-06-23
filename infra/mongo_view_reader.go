@@ -286,11 +286,20 @@ func (r *MongoViewReader) ReadPage(ctx context.Context, view string, c queries.R
 	// result set.
 	contextHash := queries.HashContext(c.Filter, c.Sort, c.Search, c.IncludeArchived)
 	var nextCursorStr, prevCursorStr string
+	// Per-item cursors, positionally aligned with the docs (and thus the
+	// Items built below) in canonical order. Built from the SAME physical doc
+	// the edge cursors use — before the sort-field auto-includes are stripped,
+	// since the Go-field-keyed Items no longer carry them. Transports that need
+	// a cursor per element (the GraphQL Relay connection) read Page.ItemCursors;
+	// the edge NextCursor / PrevCursor stay the first / last of this list.
+	var itemCursors []string
 	if len(docs) > 0 {
-		first := docs[0]
-		last := docs[len(docs)-1]
-		nextCursorStr = encodeTupleCursor(last, colSort, contextHash)
-		prevCursorStr = encodeTupleCursor(first, colSort, contextHash)
+		itemCursors = make([]string, len(docs))
+		for i, d := range docs {
+			itemCursors[i] = encodeTupleCursor(d, colSort, contextHash)
+		}
+		prevCursorStr = itemCursors[0]
+		nextCursorStr = itemCursors[len(itemCursors)-1]
 	}
 
 	// Strip the sort-field auto-includes so the wire shape matches the
@@ -321,11 +330,12 @@ func (r *MongoViewReader) ReadPage(ctx context.Context, view string, c queries.R
 	}
 
 	page := queries.Page{
-		Items:      items,
-		HasNext:    hasNext,
-		HasPrev:    hasPrev,
-		Total:      total,
-		Projection: c.Projection, // echo the effective projection for export plan pruning
+		Items:       items,
+		HasNext:     hasNext,
+		HasPrev:     hasPrev,
+		Total:       total,
+		ItemCursors: itemCursors,
+		Projection:  c.Projection, // echo the effective projection for export plan pruning
 	}
 	if hasNext {
 		page.NextCursor = nextCursorStr
