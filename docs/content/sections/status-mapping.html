@@ -159,8 +159,12 @@ func (EmailAlreadyExistsNotification) Semantic() domain.NotificationSemantic {
     <div class="box good">
         <strong>domain↔transport advantage:</strong> <code>NotificationSemantic</code>
         is a domain semantic enum (does not import <code>net/http</code> or Fiber).
-        Future layers (gRPC, GraphQL) would map the same enum to their own
-        codes without touching notification definitions.
+        The <strong>GraphQL</strong> surface already maps the same enum to its own
+        wire shape — <code>Semantic().String()</code> becomes
+        <code>errors[].extensions.semantic</code> (alongside <code>notificationKey</code>
+        and <code>field</code>) with HTTP always 200, per the GraphQL convention —
+        without touching notification definitions. A future gRPC layer would map the
+        identical enum to its status codes the same way.
     </div>
 
     <h3>Wire format includes <code>notificationKey</code> + <code>semantic</code></h3>

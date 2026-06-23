@@ -12,7 +12,7 @@ import (
 func newIntrospectableRegistry(on bool) (*Registry, *configuration.AppContext) {
 	h := &fakeReadHandler{page: queries.Page{}}
 	reg := New(pipeline.New(translation.Default())).
-		Register(Query[execRequest, *execQuery, execResponse]("users", "User", h)).
+		Register(Query[execRequest, execResponse]("users", "User", h)).
 		EnableIntrospection(on)
 	return reg, configuration.NewAppContextWithRandomID(configuration.LangENG)
 }

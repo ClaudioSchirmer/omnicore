@@ -54,7 +54,7 @@ func (h *fakeReadHandler) Handle(_ *configuration.AppContext, q *execQuery) (que
 func newExecRegistry(h *fakeReadHandler) (*Registry, *configuration.AppContext) {
 	pipe := pipeline.New(translation.Default())
 	reg := New(pipe).Register(
-		Query[execRequest, *execQuery, execResponse]("users", "User", h),
+		Query[execRequest, execResponse]("users", "User", h),
 	)
 	return reg, configuration.NewAppContextWithRandomID(configuration.LangENG)
 }
@@ -201,7 +201,7 @@ func (h *failReadHandler) Handle(_ *configuration.AppContext, _ *execQuery) (que
 func TestExecute_DomainFailureMapsToErrorExtensions(t *testing.T) {
 	pipe := pipeline.New(translation.Default())
 	reg := New(pipe).Register(
-		Query[execRequest, *execQuery, execResponse]("users", "User", &failReadHandler{}),
+		Query[execRequest, execResponse]("users", "User", &failReadHandler{}),
 	)
 	ctx := configuration.NewAppContextWithRandomID(configuration.LangENG)
 

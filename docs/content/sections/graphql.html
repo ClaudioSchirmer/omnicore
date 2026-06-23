@@ -37,17 +37,16 @@
     gql := fwgraphql.New(d.Pipeline).
         // read: one Query field per query handler → a Relay connection
         Register(fwgraphql.Query[requests.FindUsersByParamsRequest,
-                                 *queries.FindUserByParamsQuery,
                                  requests.FindUsersByParamsResponse](
             "users", "User",
             &amp;handlers.FindByParamsQueryHandler[*queries.FindUserByParamsQuery]{
-                Reader: d.ViewReader, View: view.Name()})).
+                Reader: d.ViewReader, View: view.Name()},
+            fwgraphql.RequirePermission("users:read"))).
         // write: one Mutation field per command handler
-        Register(fwgraphql.Mutation[requests.InsertUserRequest, commands.InsertUserCommand,
-                                    *commands.InsertUserCommand,
-                                    commands.InsertUserResult, requests.InsertUserResponse](
+        Register(fwgraphql.Mutation[requests.InsertUserRequest](
             "createUser", requests.InsertUserResponse{}.FromResult,
-            &amp;handlers.InsertCommandHandler[*User, *commands.InsertUserCommand, commands.InsertUserResult]{Repo: repo}))
+            &amp;handlers.InsertCommandHandler[*User, *commands.InsertUserCommand, commands.InsertUserResult]{Repo: repo},
+            fwgraphql.RequirePermission("users:write")))
 
     return bootstrap.Wiring{
         Translations: []translation.Module{...},
@@ -92,16 +91,23 @@
 <table>
     <thead><tr><th>Constructor</th><th>Maps</th><th>GraphQL field</th></tr></thead>
     <tbody>
-        <tr><td><code>Query[TReq, TQ, R]</code></td><td>read handler <code>pipeline.Handler[TQ, queries.Page]</code></td><td><code>users(where, first, after, last, before, orderBy, search, includeArchived): UserConnection!</code></td></tr>
-        <tr><td><code>Mutation[TReq, TCmd, *TCmd, TResult, TResp]</code></td><td>insert-style command (body, no id)</td><td><code>createUser(input: InsertUserInput!): InsertUserResponse!</code></td></tr>
-        <tr><td><code>MutationWithID[TReq, TCmd, *TCmd, TResult, TResp]</code></td><td>update/patch (body + id)</td><td><code>updateUser(id: ID!, input: UpdateUserInput!): UpdateUserResponse!</code></td></tr>
-        <tr><td><code>MutationByID[TCmd, *TCmd, TResult]</code></td><td>archive/unarchive/delete (id, no body)</td><td><code>archiveUser(id: ID!): MutationResult!</code></td></tr>
+        <tr><td><code>Query[TReq, R]</code></td><td>read handler <code>pipeline.Handler[TQ, queries.Page]</code></td><td><code>users(where, first, after, last, before, orderBy, search, includeArchived): UserConnection!</code></td></tr>
+        <tr><td><code>Mutation[TReq]</code></td><td>insert-style command (body, no id)</td><td><code>createUser(input: InsertUserInput!): InsertUserResponse!</code></td></tr>
+        <tr><td><code>MutationWithID[TReq]</code></td><td>update/patch (body + id)</td><td><code>updateUser(id: ID!, input: UpdateUserInput!): UpdateUserResponse!</code></td></tr>
+        <tr><td><code>MutationByID</code></td><td>archive/unarchive/delete (id, no body)</td><td><code>archiveUser(id: ID!): MutationResult!</code></td></tr>
     </tbody>
 </table>
 <p>
-    The first two type params anchor the same DTOs the REST wrappers anchor; canonical (Auto) and
-    hand-rolled handlers attach identically because both implement the same <code>pipeline.Handler</code>
-    interface — the registry cannot tell them apart, exactly as the REST wrappers cannot.
+    <strong>You name only the type params Go cannot infer.</strong> Those are the <em>reflection-only</em>
+    ones — used inside the constructor via reflection but absent from every parameter: <code>TReq</code> (the
+    Request DTO) on the body forms, plus <code>R</code> (the Response DTO / connection node) on
+    <code>Query</code>. Everything else — the command type, its pointer, the result, the response, the query
+    type — is inferred from the handler argument and the DTO's <code>ToCommand</code>/<code>ToQuery</code>
+    constraint, so <code>MutationByID</code> needs no type args at all. (<code>Query</code>'s list is ordered
+    <code>[TReq, R, TQ]</code> precisely so the inferable <code>TQ</code> trails and is elided.) These are the
+    same DTOs the REST wrappers anchor; canonical (Auto) and hand-rolled handlers attach identically because
+    both implement the same <code>pipeline.Handler</code> interface — the registry cannot tell them apart,
+    exactly as the REST wrappers cannot.
 </p>
 
 <h3>Reflected schema</h3>
@@ -163,6 +169,15 @@
     <code>edges[].cursor</code> reads it. The cursor round-trips through the reader's <code>after</code> /
     <code>before</code> path unchanged. REST ignores <code>ItemCursors</code>.
 </p>
+<p>
+    A <strong>stale or foreign cursor</strong> — one whose context hash no longer matches the current
+    <code>where</code> / <code>orderBy</code> / <code>search</code> / <code>includeArchived</code> (the client
+    changed the query mid-navigation), or that is malformed — is rejected with a <em>legible</em>
+    <code>SchemaViolationNotification</code> (<code>semantic: "Schema"</code>, <code>field: "cursor"</code>)
+    in <code>errors[]</code>, not an opaque <code>Internal</code>. The REST wrapper pre-validates the cursor
+    before dispatch; the GraphQL endpoint does not, so the reader itself returns the typed Schema rejection
+    rather than a bare error — same notification either surface reports.
+</p>
 
 <h3>Authorization</h3>
 <p>
@@ -175,11 +190,11 @@
     <code>MutationByID</code>, the GraphQL twin of <code>fwopenapi.RequirePermission</code> with the same
     <code>resource:action</code> validation (wildcards are the IdP's to grant, never the caller's to declare):
 </p>
-<pre><code>reg.Register(fwgraphql.Query[Req, *Query, Resp](
+<pre><code>reg.Register(fwgraphql.Query[Req, Resp](
     "users", "User", readHandler,
     fwgraphql.RequirePermission("users:read")))
 
-reg.Register(fwgraphql.MutationByID[DeleteCmd, *DeleteCmd, results.None](
+reg.Register(fwgraphql.MutationByID(
     "deleteUser", deleteHandler,
     fwgraphql.RequirePermission("users:delete")))</code></pre>
 <p>
@@ -223,8 +238,12 @@ reg.Register(fwgraphql.MutationByID[DeleteCmd, *DeleteCmd, results.None](
 <h3>Introspection &amp; playground</h3>
 <p>
     When <code>introspection: true</code>, the executor answers <code>__schema</code> / <code>__type</code>
-    over the parsed schema so tooling (the playground, client codegen) can discover types. When
-    <code>playground: true</code>, a GraphiQL page is served at <code>uiPath</code>. Both are off by default
-    and toggled independently in YAML, the same on/off posture as the Swagger UI. With introspection off, an
+    over the parsed schema so tooling (the playground, client codegen) can discover types. The introspection
+    result is spec-compliant — the introspection meta-fields (<code>__schema</code>, <code>__type</code>,
+    <code>__typename</code>) are <em>not</em> listed among an object type's <code>fields</code>, which the
+    GraphQL spec forbids and GraphiQL's client-side schema validation hard-rejects — so the playground and
+    codegen tools accept the schema. When <code>playground: true</code>, a GraphiQL page is served at
+    <code>uiPath</code> (pinned React 18 + GraphiQL 3 UMD bundles from a CDN). Both are off by default and
+    toggled independently in YAML, the same on/off posture as the Swagger UI. With introspection off, an
     <code>__schema</code> query simply does not resolve.
 </p>

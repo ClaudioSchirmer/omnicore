@@ -15,10 +15,14 @@ with `1.0.0`.
 
 - **GraphQL endpoint (`web/graphql`)** — a web surface of its own that reuses the
   same application handlers REST consumes. A consumer attaches handlers to a
-  registry: `fwgraphql.New(d.Pipeline).Register(fwgraphql.Query[TReq, TQ, R](
+  registry: `fwgraphql.New(d.Pipeline).Register(fwgraphql.Query[TReq, R](
   "users", "User", h))` for reads (returning a Relay connection), and
-  `Mutation[TReq, TCmd, *TCmd, TResult, TResp]` / `MutationWithID` /
-  `MutationByID` for writes. The SDL, the `where` input (the same
+  `Mutation[TReq](…)` / `MutationWithID[TReq](…)` / `MutationByID(…)` for writes.
+  Only the reflection-only type params must be named — `TReq` (Request DTO) for
+  every form, plus `R` (Response DTO) on `Query`; the command/result/query types
+  are inferred from the handler + the `ToCommand`/`ToQuery` constraint (so
+  `MutationByID` needs none). `Query`'s type-param list is ordered `[TReq, R, TQ]`
+  so the inferable `TQ` trails and is elided. The SDL, the `where` input (the same
   `query:"X" filter:"ops"` operator allowlist as REST), the pagination /
   `orderBy` / `search` / `includeArchived` arguments, the mutation input objects
   (NonNull under `pipeline.FullBody`), and the criteria translation are all

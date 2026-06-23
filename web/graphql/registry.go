@@ -135,11 +135,14 @@ func (r *Registry) EnableAuthorization(on bool) *Registry {
 }
 
 // Query registers a read handler as a root Query field returning a Relay
-// connection. TReq is the read Request DTO, TQ its Query, R the Response DTO
-// (the connection node). The argument set (where / first / after / last /
-// before / orderBy / search / includeArchived) and the node/where/connection
-// types are reflected from TReq + R.
-func Query[TReq HasToParamsQuery[TQ], TQ queries.FindByParamsQuery, R any](
+// connection. TReq is the read Request DTO, R the Response DTO (the connection
+// node), TQ its Query. The argument set (where / first / after / last / before /
+// orderBy / search / includeArchived) and the node/where/connection types are
+// reflected from TReq + R — both are reflection-only (they appear in no
+// parameter) and must be named; TQ is inferred from TReq's ToQuery + the
+// handler, so a call passes just `Query[TReq, R](...)`. TQ trails the type-param
+// list precisely so it can be elided as the inferable suffix.
+func Query[TReq HasToParamsQuery[TQ], R any, TQ queries.FindByParamsQuery](
 	name, entity string,
 	h pipeline.Handler[TQ, queries.Page],
 	opts ...FieldOption,

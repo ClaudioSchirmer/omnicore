@@ -16,7 +16,7 @@ import (
 func newGraphQLApp(h *fakeReadHandler) *fiber.App {
 	pipe := pipeline.New(translation.Default())
 	reg := New(pipe).Register(
-		Query[execRequest, *execQuery, execResponse]("users", "User", h),
+		Query[execRequest, execResponse]("users", "User", h),
 	)
 	app := fiber.New()
 	app.Post("/graphql", reg.Handler())

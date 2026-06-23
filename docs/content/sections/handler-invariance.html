@@ -44,8 +44,7 @@ fwweb.HandleCommandWithBody(d.Pipeline,
 reg.From("partners").On("partnerOnboarded", requests.PartnerOnboardedRequest{}, h)
 
 // ...or as a GraphQL mutation (input object reflected from the Request DTO)
-gql.Register(fwgraphql.Mutation[requests.InsertUserRequest, commands.InsertUserCommand,
-    *commands.InsertUserCommand, commands.InsertUserResult, requests.InsertUserResponse](
+gql.Register(fwgraphql.Mutation[requests.InsertUserRequest](
     "createUser", requests.InsertUserResponse{}.FromResult, h))</code></pre>
 <p>
     The async path additionally gets the framework's canonical guarantees — transactional emission
@@ -85,7 +84,7 @@ fwweb.HandleQueryAsXLSX(d.Pipeline,
 
 // ...or as a GraphQL query returning a Relay connection
 gql.Register(fwgraphql.Query[requests.FindUsersByParamsRequest,
-    *queries.FindUserByParamsQuery, requests.FindUsersByParamsResponse](
+    requests.FindUsersByParamsResponse](
     "users", "User", h))</code></pre>
 <p>
     CSV and Excel share a single format-neutral export core — the column plan
