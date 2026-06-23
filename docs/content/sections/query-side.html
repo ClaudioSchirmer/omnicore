@@ -195,7 +195,7 @@ HTTP 200 OK
         <tr><td>Validate the query string in a manual handler (typed Response, may opt into <code>?fields=</code> / <code>?sort=</code>)</td><td><span class="tag auto">automatic</span></td><td><code>fwweb.NewQueryParser[Req, Resp]()</code> at Mount — runs the canonical boot scan (sparse-render guard + sort opt-in <code>slog.Warn</code> + projection schema). Per request: <code>parser.Parse(c)</code>; pair with <code>fwweb.RespondSchemaViolation</code>.</td></tr>
         <tr><td>Validate the query string in a manual handler (RawDoc Response OR no reserved-key opt-in)</td><td><span class="tag auto">automatic</span></td><td><code>fwweb.ParseCriteria(c, requestDTO)</code> — same reflection-based allowlist, projection schema nil (pass-through); pair with <code>fwweb.RespondSchemaViolation</code></td></tr>
         <tr><td>Filter operators (<code>.gte/.lte/.gt/.lt/.ne/.in/.nin</code>)</td><td><span class="tag auto">automatic</span></td><td><code>applyFilterParam</code></td></tr>
-        <tr><td>Type coercion (int/float/bool/string)</td><td><span class="tag auto">automatic</span></td><td><code>parseValue</code></td></tr>
+        <tr><td>Type coercion (int/float/bool/string)</td><td><span class="tag auto">automatic</span></td><td><code>coerceValue</code></td></tr>
         <tr><td>Soft-delete filter (<code>deleted_at = null</code>)</td><td><span class="tag auto">automatic</span></td><td><code>MongoViewReader</code> applies when <code>!IncludeArchived</code></td></tr>
         <tr><td>Cursor pagination (encode/decode base64)</td><td><span class="tag auto">automatic</span></td><td><code>infra/mongo_view_reader.go</code></td></tr>
         <tr><td>Detect <code>has_next</code> via limit+1</td><td><span class="tag auto">automatic</span></td><td><code>MongoViewReader.ReadPage</code></td></tr>
@@ -327,21 +327,27 @@ type FindUserByParamsQuery struct {
 
 // ToCriteria(ctx) is the read-side equivalent of the write-side
 // ToEntity(ctx) — the only layer below the web boundary that may consume
-// *AppContext. JWT-derived overlays (tenant id, owner id) layer here onto
-// the wire criteria; the framework's FindByParamsQueryHandler calls
-// ToCriteria(ctx) and forwards the result to ViewReader.ReadPage.
+// *AppContext. It returns (ReadCriteria, error) so field-level read
+// authorization and overlay assembly can fail the read; the framework's
+// FindByParamsQueryHandler calls ToCriteria(ctx), propagates the error
+// (pipeline.Run is unchanged — errors.As still routes it), and forwards the
+// criteria to ViewReader.ReadPage.
 func (q FindUserByParamsQuery) ToCriteria(
     ctx *configuration.AppContext,
-) fwqueries.ReadCriteria {
+) (fwqueries.ReadCriteria, error) {
     crit := q.Criteria
-    // Example: tenant_id is a custom claim attached to ctx.Identity().Claims
-    //   if id := ctx.Identity(); id != nil {
-    //       if v, ok := id.Claims["tenant_id"]; ok {
-    //           if crit.Filter == nil { crit.Filter = map[string]any{} }
-    //           crit.Filter["tenant_id"] = v
-    //       }
-    //   }
-    return crit
+    var err error
+    // Field-level read authorization: drop "Phone" from the projection/sort/
+    // filter unless the caller holds users:admin. ReadCriteria.Restrict returns
+    // a 403 (FieldAccessForbiddenNotification) if the request actively
+    // referenced the field, or silently omits it otherwise — infra stays
+    // authz-blind.
+    if id := ctx.Identity(); id != nil && !id.HasPermission("users:admin") {
+        err = crit.Restrict("Phone")
+    }
+    // JWT-derived overlays (tenant id, owner id) also layer here onto crit.Filter,
+    // e.g. tenant_id read from a custom claim on ctx.Identity().Claims.
+    return crit, err
 }
 
 // By-id companion — same pattern. The Query owns IncludeArchived + JWT overlays
@@ -366,8 +372,8 @@ type FindUserByIDQuery struct {
 // Projection are ignored by ReadByID by design.
 func (q FindUserByIDQuery) ToCriteria(
     _ *configuration.AppContext,
-) fwqueries.ReadCriteria {
-    return fwqueries.ReadCriteria{IncludeArchived: q.IncludeArchived}
+) (fwqueries.ReadCriteria, error) {
+    return fwqueries.ReadCriteria{IncludeArchived: q.IncludeArchived}, nil
 }
 
 // ContextName seeds the NotificationContext of the 404 emitted when the

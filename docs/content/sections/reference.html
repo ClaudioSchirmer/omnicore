@@ -22,7 +22,7 @@
         <tr><td><code>Result[T]</code></td><td><code>application/pipeline</code></td><td>Success/Failure/Exception</td></tr>
         <tr><td><code>AppContext</code></td><td><code>application/configuration</code></td><td>Per-request: UUID + Language + metadata</td></tr>
         <tr><td><code>Translator</code></td><td><code>application/translation</code></td><td>i18n with pluggable modules</td></tr>
-        <tr><td><code>Postgres</code></td><td><code>infra</code></td><td>pgx pool + Insert/Update/Archive/Delete with outbox</td></tr>
+        <tr><td><code>Postgres</code></td><td><code>infra</code></td><td>pgx pool + Insert/Update/Archive/Unarchive/Delete with outbox</td></tr>
         <tr><td><code>MongoDB</code></td><td><code>infra</code></td><td>Mongo client + Upsert/Delete</td></tr>
         <tr><td><code>SyncEngine</code></td><td><code>infra</code></td><td>Kafka → MongoDB sync</td></tr>
         <tr><td><code>UpstreamSubscriber</code></td><td><code>infra</code></td><td>Kafka → local Mongo projection + downstream recompose-ripple on dependent views</td></tr>
@@ -61,7 +61,7 @@
 
     <h3>Built-in notification types</h3>
     <p><strong>Domain (20):</strong> RequiredField, UnableToInsertWithID, UnableToUpdateWithoutID, UnableToDeleteWithoutID, InsertNotAllowed, UpdateNotAllowed, DeleteNotAllowed, ArchiveNotAllowed, UnarchiveNotAllowed, ServiceIsRequired, EntityAlreadyAdded, EntityDoesNotExist, EntityIsNotActive, RepositoryFunctionNotImplemented, InvalidIDUUID, InvalidEventType, RecordNotFound, InvalidAggregateChild, LimitExceeded, SchemaViolation.</p>
-    <p><strong>Application (13):</strong> ContextNotInitialized, ServiceUnavailable, InvalidLanguageDomain, MissingAuthorization, InvalidToken, ExpiredToken, MissingPermission, TenantMissing, TenantMismatch, RouteNotFound, MethodNotAllowed, PayloadTooLarge, InternalServerError.</p>
+    <p><strong>Application (14):</strong> ContextNotInitialized, ServiceUnavailable, InvalidLanguageDomain, MissingAuthorization, InvalidToken, ExpiredToken, MissingPermission, TenantMissing, TenantMismatch, FieldAccessForbidden, RouteNotFound, MethodNotAllowed, PayloadTooLarge, InternalServerError.</p>
     <p><strong>Infrastructure (2):</strong> MigrationDownMissing, MigrationFilenameInvalid.</p>
 
     <h3>Invariants</h3>

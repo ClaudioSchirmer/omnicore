@@ -373,7 +373,7 @@ func customerAuthToInline(cfg CustomerAuthConfig) *httpclient.InlineAuth {
   <p>Status branching:</p>
   <ul>
     <li><code>2xx</code> → decoded <code>Resp</code>, <code>nil</code> error.</li>
-    <li>Status in the endpoint's <code>acceptableStatus</code> or in <code>WithAcceptableStatus(...)</code> → decoded <code>Resp</code> <em>and</em> <code>*HttpError{Acceptable: true}</code>. The consumer uses <code>IsAcceptableStatus(err, codes...)</code> to branch.</li>
+    <li>Status in the endpoint's <code>acceptableStatus</code> or in <code>CallConfig.AcceptableStatus</code> → decoded <code>Resp</code> <em>and</em> <code>*HttpError{Acceptable: true}</code>. The consumer uses <code>IsAcceptableStatus(err, codes...)</code> to branch.</li>
     <li>Other non-<code>2xx</code> → zero <code>Resp</code> and <code>*HttpError</code>.</li>
     <li>Transport failure / decode failure → zero <code>Resp</code> and <code>*HttpError</code> with <code>Cause</code> wrapping the underlying error.</li>
   </ul>
@@ -499,7 +499,7 @@ func customerAuthToInline(cfg CustomerAuthConfig) *httpclient.InlineAuth {
   <p>The body is replayed on each attempt from <code>obs.RequestBody</code> (the logging middleware buffers it at chain position 2), so request handlers see the same payload byte-for-byte every time.</p>
 
   <h3>Cache</h3>
-  <p>The chain inserts the cache middleware at position 6 — before retry, so a hit short-circuits without traversing the retry loop. The <strong>backend</strong> is the framework's top-level cache subsystem (see the <a href="#cache-subsystem">Cache subsystem</a> section for the <code>cache:</code> YAML block, the <code>cache.Cache</code> port, and the memory / redis / custom backends). The <code>httpClient.defaults.cache:</code> block keeps only the POLICY knobs — whether the layer runs, the default TTL, Cache-Control honoring, per-endpoint <code>cache: { ttl, varyOn }</code> and <code>cacheAcceptable</code>.</p>
+  <p>The chain inserts the cache middleware at position 5 — before retry, so a hit short-circuits without traversing the retry loop. The <strong>backend</strong> is the framework's top-level cache subsystem (see the <a href="#cache-subsystem">Cache subsystem</a> section for the <code>cache:</code> YAML block, the <code>cache.Cache</code> port, and the memory / redis / custom backends). The <code>httpClient.defaults.cache:</code> block keeps only the POLICY knobs — whether the layer runs, the default TTL, Cache-Control honoring, per-endpoint <code>cache: { ttl, varyOn }</code> and <code>cacheAcceptable</code>.</p>
 <pre><code>httpClient:
   defaults:
     cache:
@@ -529,7 +529,7 @@ func customerAuthToInline(cfg CustomerAuthConfig) *httpclient.InlineAuth {
     <li><code>Cache-Control: max-age=0</code> short-circuits the store entirely (the byte-cache layer treats <code>ttl == 0</code> as "no expiration", the opposite of what the upstream asked for, so the middleware skips persistence)</li>
     <li><code>Cache-Control: no-store</code> or <code>no-cache</code> prevents storing the response</li>
   </ul>
-  <p><strong>Per-call overrides.</strong> <code>WithoutCache()</code> bypasses the cache for one call without touching configuration; <code>WithCacheKey(key)</code> overrides the computed key (rare — typically for tenant-aware key schemes).</p>
+  <p><strong>Per-call overrides.</strong> <code>WithConfig(CallConfig{NoCache: true})</code> bypasses the cache for one call without touching configuration; <code>WithConfig(CallConfig{CacheKey: key})</code> overrides the computed key (rare — typically for tenant-aware key schemes).</p>
   <p><strong>Wire shape.</strong> The middleware persists an internal <code>cacheEntry</code> JSON envelope (<code>body</code>, <code>headers</code>, <code>status</code>, <code>contentType</code>, <code>contentLength</code>, <code>expiresAt</code>) through the byte-level <code>cache.Cache</code> port. Stored entries remain operator-debuggable via the backend's CLI (e.g. <code>redis-cli GET &lt;key&gt;</code> + <code>json.loads</code>).</p>
   <p><strong>Observation.</strong> <code>obs.CacheStatus</code> is <code>"hit"</code>, <code>"miss"</code>, or <code>"bypass"</code> in the single slog record per call. The cache backend (when Redis) additionally emits <code>slog.Warn "cache.redis.transport.error"</code> on transport failures so operators see the underlying problem regardless of the backend's <code>failMode</code>.</p>
 
@@ -554,7 +554,7 @@ func customerAuthToInline(cfg CustomerAuthConfig) *httpclient.InlineAuth {
   <p><strong>Observation.</strong> <code>obs.BreakerState</code> reflects the state in effect for the call (<code>"closed"</code>/<code>"open"</code>/<code>"half-open"</code>).</p>
 
   <h3>Idempotency</h3>
-  <p>The chain inserts the idempotency middleware at position 5 — after logging, before cache and retry. Header injection runs once per call; the header is set on the <code>*http.Request</code> and persists naturally across retry attempts because the retry middleware replays the same request with a fresh body reader. The shared header is what lets the upstream dedupe retried writes.</p>
+  <p>The chain inserts the idempotency middleware at position 4 — after auth, before cache and retry. Header injection runs once per call; the header is set on the <code>*http.Request</code> and persists naturally across retry attempts because the retry middleware replays the same request with a fresh body reader. The shared header is what lets the upstream dedupe retried writes.</p>
 <pre><code>endpoints:
   charge:
     method: POST
@@ -567,7 +567,7 @@ func customerAuthToInline(cfg CustomerAuthConfig) *httpclient.InlineAuth {
   <p><strong>Source semantics.</strong></p>
   <ul>
     <li><code>source: ctx</code> (default) — the framework generates a UUIDv7 per call (sortable by creation time for upstream dedup logs). The same key is reused across all retry attempts of the same call.</li>
-    <li><code>source: explicit</code> — the caller must supply the key via <code>WithIdempotencyKey(key)</code>. Missing key returns <code>*HttpError{Cause: …requires WithIdempotencyKey}</code> before dialing.</li>
+    <li><code>source: explicit</code> — the caller must supply the key via <code>WithConfig(CallConfig{IdempotencyKey: key})</code>. Missing key returns <code>*HttpError{Cause: …requires CallConfig.IdempotencyKey (source=explicit)}</code> before dialing.</li>
   </ul>
   <p><strong>POST/PATCH retry unlock.</strong> Retry restricts non-idempotent methods to <code>maxAttempts: 1</code> by default. Declaring <code>idempotency:</code> on the endpoint signals that the framework can safely retry — the upstream sees the same key on each attempt and dedupes. The boot validator accepts <code>retry: {maxAttempts: 2+}</code> on POST/PATCH only when <code>idempotency:</code> is present; the runtime <code>resolveRetryPolicy</code> mirrors the same gate.</p>
   <p><strong>AppContext propagation.</strong> When the context implements <code>Set(key, value any)</code> (AppContext does), the middleware writes the chosen key under <code>httpclient.idempotency-key</code>. Consumers that need to thread the same value to a parallel pipeline (audit, custom middleware) can read it via <code>AppContext.Get(httpclient.AppContextIdempotencyKey)</code>.</p>
@@ -711,7 +711,7 @@ ctx.Set("idp.password", runtimePass)
   format: "Bearer {token}"       # optional; {token} placeholder
   value: literal                # header-static only</code></pre>
   <p>Defaults apply when omitted: <code>as: header</code>, <code>name: Authorization</code> (for <code>bearer-static</code>/<code>basic</code>), <code>format: Bearer {token}</code> (for <code>bearer-static</code>). <code>basic</code> ignores <code>format</code> because the value already contains the scheme.</p>
-  <p><strong>Per-call override.</strong> <code>WithAuthOverride(providerName)</code> substitutes the provider for one call. Unknown names produce <code>*HttpError{Cause: ErrTokenAcquire}</code> before dialing.</p>
+  <p><strong>Per-call override.</strong> <code>WithConfig(CallConfig{AuthProvider: providerName})</code> substitutes the provider for one call. Unknown names produce <code>*HttpError{Cause: ErrTokenAcquire}</code> before dialing.</p>
   <p><strong>Q5 short-circuit.</strong> When a provider returns an error from <code>Apply</code>, the middleware wraps it in <code>*HttpError{Cause: ErrTokenAcquire}</code> and <code>shouldRetry</code> returns false on that sentinel — burning retry attempts on a stuck IdP would only add load. Static providers never trigger this path; dynamic providers (forward-bearer, oauth2) will use it.</p>
   <p><strong>Observation.</strong> <code>obs.AuthProvider</code> carries the provider name on every slog record when auth is active.</p>
 

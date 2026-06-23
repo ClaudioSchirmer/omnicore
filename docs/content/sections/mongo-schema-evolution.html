@@ -37,9 +37,9 @@ v.Hash()          // Combined identity stamped on the registry row</code></pre>
     <p>The framework migration 0001 creates the table alongside <code>outbox</code>. Every managed view has one row keyed by <code>view_name</code>:</p>
     <pre><code>view_name              TEXT PRIMARY KEY
 version                INTEGER NOT NULL CHECK (version &gt; 0)
-rebuild_hash           VARCHAR(64)
-artifact_hash          VARCHAR(64)
-combined_hash          VARCHAR(64)
+rebuild_hash           VARCHAR(64) NOT NULL
+artifact_hash          VARCHAR(64) NOT NULL
+combined_hash          VARCHAR(64) NOT NULL
 previous_version       INTEGER
 previous_combined_hash VARCHAR(64)
 previous_applied_at    TIMESTAMP

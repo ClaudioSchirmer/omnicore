@@ -151,7 +151,7 @@ func pruneExportNode(n *ExportNode, wirePrefix string, set map[string]bool, keep
 // projection (Go-field-path → 1 include / 0 exclude) — the export counterpart of
 // Prune. Where Prune narrows by the wire `?fields=` tokens, this narrows by the
 // projection the read actually used (Page.Projection, post-ToCriteria), so a
-// field a Query removed from the criteria (e.g. via ReadCriteria.Hide) disappears
+// field a Query removed from the criteria (e.g. via ReadCriteria.Restrict) disappears
 // from the tabular columns — header included — not just from the JSON. This keeps
 // ToCriteria the single source of truth for which fields surface in every format.
 //
