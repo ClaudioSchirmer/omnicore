@@ -18,7 +18,7 @@ type covEmbedBody struct {
 //   - *struct embed with a body field  → hasBodyFields anonymous deref
 //   - path field with a description tag → walkPathTags description branch
 //   - unexported path/query fields      → IsExported guards
-//   - filter:"eq,,in" with an empty op  → walkQueryTagsAt empty-op continue
+//   - filter:"eq,,in" with an empty op  → splitOps drops the empty token
 type covCanonReq struct {
 	*covEmbedBody
 	ID     string  `path:"id" description:"the resource id"`
@@ -140,11 +140,11 @@ func TestBuildErrorExamplesMap_EmptyReturnsNil(t *testing.T) {
 	}
 }
 
-// walkQueryTagsAt derefs a pointer type before walking (defensive branch — the
-// normal recursion always passes a deref'd struct).
-func TestWalkQueryTagsAt_PointerTypeDeref(t *testing.T) {
+// walkQueryTags derefs a pointer type before walking (queryschema.WalkRequest
+// handles the top-level pointer transparently).
+func TestWalkQueryTags_PointerTypeDeref(t *testing.T) {
 	gen := NewGenerator(nil)
-	out := walkQueryTagsAt(reflect.PointerTo(reflect.TypeOf(covCanonReq{})), "", gen)
+	out := walkQueryTags(reflect.PointerTo(reflect.TypeOf(covCanonReq{})), gen)
 	var sawStatus bool
 	for _, p := range out {
 		if p["name"] == "status" {

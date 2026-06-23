@@ -65,25 +65,53 @@ func TestExtractRequestSchema_IncludesPartialOperators(t *testing.T) {
 	}
 }
 
-// ─── walkSchemaLevel: pointer deref / non-struct / untagged field ────────────
+// ─── WalkRequest: pointer deref / non-struct / untagged-field skip / embed ───
 
-func TestWalkSchemaLevel_PointerNonStructAndUntaggedField(t *testing.T) {
-	s := &RequestSchema{Filters: map[string]FilterSpec{}, Reserved: map[string]bool{}}
-
-	// Non-struct type → early return, nothing accumulated.
-	walkSchemaLevel(reflect.TypeOf(0), "", "", s, true)
-	if len(s.Filters) != 0 || len(s.Reserved) != 0 {
-		t.Fatalf("non-struct must accumulate nothing, got filters=%v reserved=%v", s.Filters, s.Reserved)
+func TestWalkRequest_NonStructIsEmpty(t *testing.T) {
+	if fields := WalkRequest(reflect.TypeOf(0)); len(fields) != 0 {
+		t.Fatalf("non-struct must yield no fields, got %v", fields)
 	}
+}
 
-	// Pointer-to-struct → deref + walk; the untagged Other field is skipped.
+func TestWalkRequest_PointerDerefAndUntaggedSkip(t *testing.T) {
 	type inner struct {
 		Name  *string `query:"name" filter:"eq"`
 		Other string  // no query tag → skipped
+		Limit *int64  `query:"limit"` // reserved scalar
 	}
-	walkSchemaLevel(reflect.PointerTo(reflect.TypeOf(inner{})), "", "", s, true)
-	if _, ok := s.Filters["name"]; !ok {
-		t.Errorf("pointer-to-struct must be deref'd and walked: %v", s.Filters)
+	fields := WalkRequest(reflect.PointerTo(reflect.TypeOf(inner{})))
+	if len(fields) != 2 {
+		t.Fatalf("expected 2 query-tagged fields (name, limit), got %d: %+v", len(fields), fields)
+	}
+	if fields[0].WirePath != "name" || fields[0].Ops == nil || !fields[0].TopLevel {
+		t.Errorf("name leaf = %+v, want filter leaf at top level", fields[0])
+	}
+	if fields[1].WirePath != "limit" || fields[1].Ops != nil || fields[1].Group {
+		t.Errorf("limit leaf = %+v, want reserved scalar", fields[1])
+	}
+}
+
+func TestWalkRequest_EmbedGroupMarkerThenInnerLeaves(t *testing.T) {
+	fields := WalkRequest(reflect.TypeOf(reqNestedEmbedRequest{}))
+	// Declaration order: name (leaf), addresses (group marker), addresses.zipCode,
+	// addresses.city (inner leaves), limit (reserved).
+	var sawGroup, sawInner bool
+	for _, f := range fields {
+		if f.WirePath == "addresses" {
+			if !f.Group {
+				t.Errorf("addresses must be an embed-group marker, got %+v", f)
+			}
+			sawGroup = true
+		}
+		if f.WirePath == "addresses.zipCode" {
+			if f.GoPath != "Addresses.ZipCode" || f.Ops == nil {
+				t.Errorf("addresses.zipCode inner leaf = %+v", f)
+			}
+			sawInner = true
+		}
+	}
+	if !sawGroup || !sawInner {
+		t.Fatalf("expected both the group marker and an inner leaf, got %+v", fields)
 	}
 }
 
