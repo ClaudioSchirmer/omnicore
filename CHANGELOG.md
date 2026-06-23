@@ -9,6 +9,68 @@ While in `0.x.y`, the public API may change between minor versions; breaking
 changes are highlighted under **Changed**. Stable contract semantics arrive
 with `1.0.0`.
 
+## [0.13.0] - 2026-06-23
+
+### Added
+
+- **GraphQL endpoint (`web/graphql`)** — a web surface of its own that reuses the
+  same application handlers REST consumes. A consumer attaches handlers to a
+  registry: `fwgraphql.New(d.Pipeline).Register(fwgraphql.Query[TReq, TQ, R](
+  "users", "User", h))` for reads (returning a Relay connection), and
+  `Mutation[TReq, TCmd, *TCmd, TResult, TResp]` / `MutationWithID` /
+  `MutationByID` for writes. The SDL, the `where` input (the same
+  `query:"X" filter:"ops"` operator allowlist as REST), the pagination /
+  `orderBy` / `search` / `includeArchived` arguments, the mutation input objects
+  (NonNull under `pipeline.FullBody`), and the criteria translation are all
+  reflected from the same Request/Response DTOs. Parsing + validation ride
+  `vektah/gqlparser/v2`; the framework owns the executor (selection-set trim,
+  dispatch through the registered `pipeline.Handler`, `Page`/`Result` → wire) and
+  introspection. **GraphQL is deliberately a separate surface from REST/OpenAPI:**
+  it never goes through `openapi.Mount`/`MountRaw`, never appears in the Swagger
+  document, and is not policed by the REST route scans — the only shared surface
+  is the `pipeline.Handler` the resolvers dispatch to. `where` folds through the
+  identical criteria emission, so `where: { name: { startswith: "Bo" } }`
+  produces the same Mongo clause as the REST `?name.startswith=Bo`. GraphQL
+  always returns HTTP 200 `{ data, errors }`; domain notifications map to
+  `errors[].extensions{notificationKey, semantic, field}`. Opt in via
+  `Wiring.GraphQL *graphql.Registry`; serving knobs (`path`, `uiPath`,
+  `playground`, `introspection`, `rootRedirect`) live under `graphql:` in
+  `microservice.<profile>.yaml`. The endpoint is authenticated by
+  `AuthMiddleware` when `auth.mode: jwt`; authorization is per-field in the
+  resolver. Adds the `github.com/vektah/gqlparser/v2` dependency.
+
+- **`queries.Page.ItemCursors []string`** — the per-row keyset cursor,
+  positionally aligned with `Items`, filled by `MongoViewReader` from the same
+  keyset tuple + context hash the edge cursors (`NextCursor`/`PrevCursor`) use.
+  It lets a transport expose a cursor per element (the GraphQL Relay
+  connection's `edges[].cursor`), which cannot be reconstructed above the reader
+  once the physical keyset values are stripped from the returned Go-field-keyed
+  items. REST ignores the field; it stays nil for count-only reads.
+
+- **`infra.InvalidCursorError(cause error)`** — wraps a keyset-cursor rejection
+  (undecodable, tuple-length mismatch, or context-hash mismatch) in the canonical
+  Schema envelope via the kernel `SchemaViolationNotification`. The
+  `MongoViewReader` now returns it instead of a plain `fmt.Errorf` for the three
+  cursor-validation paths, so a surface that does not pre-validate the cursor
+  (the GraphQL endpoint — the REST wrapper rejects it before dispatch) surfaces a
+  legible Schema rejection (`errors[].extensions.semantic = "Schema"`,
+  `notificationKey = "SchemaViolationNotification"`, `field = "cursor"`) instead
+  of an opaque `500`/`Internal`. REST behavior is unchanged (it still pre-validates
+  and reports the identical notification).
+
+### Changed
+
+- Internal: the read-side DTO reflection — the filter operator vocabulary
+  (`Op*` constants, `knownOps`) and its criteria emission, the Request filter
+  allowlist reflection, the Response projection map, and the sparse-render boot
+  guard — is extracted into a single internal package (`web/queryschema`) now
+  consumed by the REST wrappers, the OpenAPI generator, and the GraphQL schema
+  builder. One ordered traversal (`queryschema.WalkRequest`) with two
+  projections (the runtime allowlist + the OpenAPI parameter set) plus the
+  GraphQL builder, so a new operator or a wire↔Go translation rule lives in
+  exactly one place. No public-surface change: the `fwweb.Op*` constants are
+  preserved as re-exports.
+
 ## [0.12.0] - 2026-06-22
 
 ### Added

@@ -146,6 +146,10 @@
         "label": "OpenAPI / Swagger UI"
       },
       {
+        "id": "graphql",
+        "label": "GraphQL"
+      },
+      {
         "id": "migrations",
         "label": "Migrations"
       },

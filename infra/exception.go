@@ -54,3 +54,20 @@ func LimitExceededError(maxLimit int64) *InfrastructureError {
 		Notification: domain.LimitExceededNotification{},
 	})
 }
+
+// InvalidCursorError packages a keyset-cursor rejection (undecodable, tuple-
+// length mismatch, or context-hash mismatch) in the canonical Schema envelope.
+// FieldName is "cursor"; the cause is carried for diagnostics. Wired to
+// SemanticSchema → 400-equivalent via the kernel SchemaViolationNotification —
+// the SAME notification the REST wrapper's pre-dispatch check emits, so both
+// surfaces report an identical notificationKey. The reader reaches this only
+// on surfaces that do not pre-validate the cursor (the REST wrapper rejects it
+// before dispatch); without it, a stale/foreign cursor would surface as a
+// plain error → 500/Internal instead of a legible Schema rejection.
+func InvalidCursorError(cause error) *InfrastructureError {
+	return NewInfrastructureErrorWith("Schema", domain.NotificationMessage{
+		FieldName:    "cursor",
+		Err:          cause,
+		Notification: domain.SchemaViolationNotification{},
+	})
+}

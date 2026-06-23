@@ -521,11 +521,24 @@ func buildApp(deps Deps, wiring Wiring) (*fiber.App, error) {
 	// the resolver. The only thing shared with REST is the application-layer
 	// handlers the resolvers dispatch to.
 	if wiring.GraphQL != nil {
-		path := deps.Config.GraphQL.Path
-		app.Post(path, wiring.GraphQL.Handler())
-		deps.Logger.Info("graphql served", "path", path)
-		if deps.Config.GraphQL.RootRedirect {
-			registerRootRedirect(app, path, deps.Logger)
+		gqlCfg := deps.Config.GraphQL
+		// Only one surface can own GET /. When both the OpenAPI UI and the
+		// GraphQL endpoint are wired AND both opt into rootRedirect, the boot
+		// is structurally ambiguous — fail loud rather than let one silently
+		// win the registration race.
+		if gqlCfg.RootRedirect && wiring.OpenAPI != nil && deps.Config.OpenAPI.RootRedirect {
+			panic("bootstrap: openapi.rootRedirect and graphql.rootRedirect are both enabled — only one surface can own GET /; disable one")
+		}
+		wiring.GraphQL.EnableIntrospection(gqlCfg.Introspection)
+		app.Post(gqlCfg.Path, wiring.GraphQL.Handler())
+		deps.Logger.Info("graphql served", "path", gqlCfg.Path,
+			"introspection", gqlCfg.Introspection, "playground", gqlCfg.Playground)
+		if gqlCfg.Playground {
+			app.Get(gqlCfg.UIPath, wiring.GraphQL.Playground(gqlCfg.Path))
+			deps.Logger.Info("graphql playground served", "ui", gqlCfg.UIPath)
+		}
+		if gqlCfg.RootRedirect {
+			registerRootRedirect(app, gqlCfg.Path, deps.Logger)
 		}
 	}
 

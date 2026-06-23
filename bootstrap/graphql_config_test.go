@@ -14,8 +14,23 @@ func TestGraphQLConfig_DefaultsWhenAbsent(t *testing.T) {
 	if cfg.GraphQL.Path != defaultGraphQLPath {
 		t.Errorf("Path default = %q, want %q", cfg.GraphQL.Path, defaultGraphQLPath)
 	}
-	if cfg.GraphQL.RootRedirect {
-		t.Errorf("RootRedirect default = true, want false")
+	if cfg.GraphQL.UIPath != defaultGraphQLUIPath {
+		t.Errorf("UIPath default = %q, want %q", cfg.GraphQL.UIPath, defaultGraphQLUIPath)
+	}
+	if cfg.GraphQL.RootRedirect || cfg.GraphQL.Playground || cfg.GraphQL.Introspection {
+		t.Errorf("toggles must default off, got %+v", cfg.GraphQL)
+	}
+}
+
+func TestGraphQLConfig_PlaygroundUIPathCollisionRejected(t *testing.T) {
+	yml := validYAMLAllRequired + `graphql:
+  playground: true
+  uiPath: /docs
+`
+	path := writeTemp(t, yml)
+	_, err := LoadConfigFrom(path)
+	if err == nil || !strings.Contains(err.Error(), "collides") {
+		t.Fatalf("expected uiPath collision error, got: %v", err)
 	}
 }
 
@@ -59,15 +74,3 @@ func TestGraphQLConfig_ValidateRejectsFrameworkRouteCollision(t *testing.T) {
 	}
 }
 
-func TestGraphQLConfig_RootRedirectMutuallyExclusiveWithOpenAPI(t *testing.T) {
-	yml := validYAMLAllRequired + `openapi:
-  rootRedirect: true
-graphql:
-  rootRedirect: true
-`
-	path := writeTemp(t, yml)
-	_, err := LoadConfigFrom(path)
-	if err == nil || !strings.Contains(err.Error(), "mutually exclusive") {
-		t.Fatalf("expected the rootRedirect mutual-exclusion error, got: %v", err)
-	}
-}

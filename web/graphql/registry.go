@@ -37,12 +37,13 @@ type Field struct {
 // New(pipe) → Register(Query(...)) → mount the Handler. The schema is built
 // lazily (and cached) on the first execution.
 type Registry struct {
-	pipe      *pipeline.Pipeline
-	fields    []Field
-	schema    *ast.Schema
-	sdl       string
-	resolvers map[string]resolver
-	buildErr  error
+	pipe          *pipeline.Pipeline
+	fields        []Field
+	introspection bool
+	schema        *ast.Schema
+	sdl           string
+	resolvers     map[string]resolver
+	buildErr      error
 }
 
 // New constructs a Registry bound to the dispatch pipeline.
@@ -54,6 +55,17 @@ func New(pipe *pipeline.Pipeline) *Registry {
 // schema so the next execution rebuilds. Returns the Registry for chaining.
 func (r *Registry) Register(f Field) *Registry {
 	r.fields = append(r.fields, f)
+	r.schema = nil
+	r.buildErr = nil
+	return r
+}
+
+// EnableIntrospection toggles whether `__schema` / `__type` are answered.
+// bootstrap sets it from Config.GraphQL.Introspection; off by default so an
+// operator opts in (the playground's autocomplete needs it). Invalidates any
+// built schema so the next execution re-binds the introspection resolvers.
+func (r *Registry) EnableIntrospection(on bool) *Registry {
+	r.introspection = on
 	r.schema = nil
 	r.buildErr = nil
 	return r
@@ -139,6 +151,11 @@ func (r *Registry) build() error {
 	}
 	r.schema = schema
 	r.sdl = doc
+	if r.introspection {
+		for name, res := range r.introspectionResolvers() {
+			resolvers[name] = res
+		}
+	}
 	r.resolvers = resolvers
 	return nil
 }

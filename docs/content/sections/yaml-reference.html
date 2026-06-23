@@ -53,6 +53,7 @@ pwd: "${vault:secret/data/db#password}"                # delegated to a register
         <tr><td><code>audit</code></td><td>no</td><td>audit event destinations</td><td>below · <a href="#audit">Audit</a></td></tr>
         <tr><td><code>cache</code></td><td>no</td><td>private + shared key-value cache</td><td>below · <a href="#cache-subsystem">Cache subsystem</a></td></tr>
         <tr><td><code>openapi</code></td><td>no</td><td>how the Swagger UI is served</td><td>below · <a href="#openapi">OpenAPI</a></td></tr>
+        <tr><td><code>graphql</code></td><td>no</td><td>how the GraphQL endpoint is served</td><td>below · <a href="#graphql">GraphQL</a></td></tr>
         <tr><td><code>shutdown</code></td><td>no</td><td>coordinated drain timeout</td><td>below</td></tr>
         <tr><td><code>upstreamSubscriptions</code></td><td>no</td><td>cross-service Mongo projection</td><td>below · <a href="#query-side">QueryHandler</a></td></tr>
         <tr><td><code>integration</code></td><td>no</td><td>cross-service async events</td><td>below · <a href="#integration-events">Integration events</a></td></tr>
@@ -172,15 +173,24 @@ query:
       addr: "${SHARED_REDIS_ADDR}"
       keyPrefix: "${TEAM}-shared"</code></pre>
 
-    <h3>openapi · shutdown</h3>
+    <h3>openapi · graphql · shutdown</h3>
     <p>
         <code>openapi:</code> tunes <em>how</em> the Swagger UI is served (the spec identity —
-        Title/Version — stays in code on <code>Wiring.OpenAPI</code>). <code>shutdown:</code> caps the
-        coordinated drain on SIGINT/SIGTERM. See <a href="#openapi">OpenAPI</a>.
+        Title/Version — stays in code on <code>Wiring.OpenAPI</code>). <code>graphql:</code> tunes how the
+        GraphQL endpoint is served (the schema + handlers stay in code on <code>Wiring.GraphQL</code>);
+        GraphQL is its own surface, never in the Swagger document. <code>shutdown:</code> caps the
+        coordinated drain on SIGINT/SIGTERM. See <a href="#openapi">OpenAPI</a> · <a href="#graphql">GraphQL</a>.
     </p>
 <pre><code>openapi:
   uiPath: /docs                          # default /docs; must start with "/"; cannot be /openapi.json or /health
   rootRedirect: false                    # default false — when true registers GET / → 302 uiPath
+
+graphql:                                 # ignored unless Wiring.GraphQL is set
+  path: /graphql                         # default. POST endpoint route
+  uiPath: /graphql/ui                    # default. GET GraphiQL playground (when playground: true)
+  playground: false                      # default off — serve GraphiQL at uiPath
+  introspection: false                   # default off — answer __schema / __type
+  rootRedirect: false                    # default off — GET / → 302 path; both this + openapi.rootRedirect → boot panic
 
 shutdown:
   drainTimeoutSeconds: 30                # default 30 (0/absent → 30); aligns with k8s terminationGracePeriodSeconds</code></pre>

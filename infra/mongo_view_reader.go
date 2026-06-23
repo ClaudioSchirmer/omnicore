@@ -219,20 +219,22 @@ func (r *MongoViewReader) ReadPage(ctx context.Context, view string, c queries.R
 		}
 		cursor, decErr := queries.DecodeCursor(cursorStr)
 		if decErr != nil {
-			return queries.Page{}, fmt.Errorf("read criteria: invalid cursor: %w", decErr)
+			return queries.Page{}, InvalidCursorError(fmt.Errorf("invalid cursor: %w", decErr))
 		}
 		if len(cursor.K)-1 != len(c.Sort) {
-			return queries.Page{}, fmt.Errorf("read criteria: cursor tuple length %d does not match sort field count %d",
-				len(cursor.K)-1, len(c.Sort))
+			return queries.Page{}, InvalidCursorError(fmt.Errorf("cursor tuple length %d does not match sort field count %d",
+				len(cursor.K)-1, len(c.Sort)))
 		}
-		// Context alignment — defense in depth (the wrapper already rejects
-		// this case before dispatch). The hash covers the full listing
-		// context (filter + sort + search + includeArchived); ANY mismatch
-		// means a programming bug at the manual handler that hand-rolled
-		// the criteria. We surface it rather than silently honoring a
-		// cursor against a different result set.
+		// Context alignment. The hash covers the full listing context (filter +
+		// sort + search + includeArchived); ANY mismatch means the cursor was
+		// issued against a different result set (consumer changed the query
+		// mid-navigation, or carried a cursor from another listing). The REST
+		// wrapper rejects this before dispatch; surfaces that do not pre-validate
+		// (GraphQL) reach here, so we return the SAME Schema notification rather
+		// than a plain error (which would surface as 500/Internal) — and never
+		// silently honor a cursor against a different result set.
 		if cursor.H != queries.HashContext(c.Filter, c.Sort, c.Search, c.IncludeArchived) {
-			return queries.Page{}, fmt.Errorf("read criteria: cursor context hash does not match current criteria")
+			return queries.Page{}, InvalidCursorError(errors.New("cursor context hash does not match current criteria"))
 		}
 		direction := 1
 		if backward {

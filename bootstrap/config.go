@@ -244,6 +244,21 @@ type GraphQLConfig struct {
 	// framework's reserved routes.
 	Path string `yaml:"path"`
 
+	// UIPath is the Fiber route (GET) where the GraphiQL playground is served
+	// when Playground is true. Default "/graphql/ui". Must start with "/" and
+	// not collide with reserved routes or Path.
+	UIPath string `yaml:"uiPath"`
+
+	// Playground, when true, serves a GraphiQL page at UIPath. On/off like the
+	// Swagger UI; off by default (opt-in). Pair with Introspection so the
+	// playground can populate its schema docs / autocomplete.
+	Playground bool `yaml:"playground"`
+
+	// Introspection, when true, answers `__schema` / `__type` queries. On/off,
+	// off by default — an operator opts in (typically in dev). Independent of
+	// Playground, though the playground's autocomplete needs it.
+	Introspection bool `yaml:"introspection"`
+
 	// RootRedirect, when true, registers GET / → 302 Path. Mutually exclusive
 	// with openapi.rootRedirect — only one surface can own "/".
 	RootRedirect bool `yaml:"rootRedirect"`
@@ -253,17 +268,38 @@ func (g *GraphQLConfig) applyDefaults() {
 	if g.Path == "" {
 		g.Path = defaultGraphQLPath
 	}
+	if g.UIPath == "" {
+		g.UIPath = defaultGraphQLUIPath
+	}
 }
 
 func (g *GraphQLConfig) validate() error {
 	if !strings.HasPrefix(g.Path, "/") {
 		return fmt.Errorf("graphql.path %q must start with %q", g.Path, "/")
 	}
-	switch g.Path {
-	case "/openapi.json", "/health", "/docs":
+	if g.collidesFramework(g.Path) {
 		return fmt.Errorf("graphql.path %q collides with a framework route", g.Path)
 	}
+	if g.Playground {
+		if !strings.HasPrefix(g.UIPath, "/") {
+			return fmt.Errorf("graphql.uiPath %q must start with %q", g.UIPath, "/")
+		}
+		if g.collidesFramework(g.UIPath) {
+			return fmt.Errorf("graphql.uiPath %q collides with a framework route", g.UIPath)
+		}
+		if g.UIPath == g.Path {
+			return fmt.Errorf("graphql.uiPath %q must differ from graphql.path", g.UIPath)
+		}
+	}
 	return nil
+}
+
+func (g *GraphQLConfig) collidesFramework(path string) bool {
+	switch path {
+	case "/openapi.json", "/health", "/docs":
+		return true
+	}
+	return false
 }
 
 // MongoRebuildConfig governs the boot-time reconciliation of Mongo
@@ -383,6 +419,9 @@ const defaultOpenAPIUIPath = "/docs"
 
 // defaultGraphQLPath is the canonical GraphQL endpoint route.
 const defaultGraphQLPath = "/graphql"
+
+// defaultGraphQLUIPath is the canonical GraphiQL playground route.
+const defaultGraphQLUIPath = "/graphql/ui"
 
 // QueryConfig collects the cross-cutting read-side knobs. Currently the
 // global ceiling on `?limit=`; future fields land here without spinning a
@@ -528,9 +567,6 @@ func (c *Config) Validate() error {
 	}
 	if err := c.GraphQL.validate(); err != nil {
 		return fmt.Errorf("bootstrap: %w", err)
-	}
-	if c.OpenAPI.RootRedirect && c.GraphQL.RootRedirect {
-		return fmt.Errorf("bootstrap: openapi.rootRedirect and graphql.rootRedirect are mutually exclusive — only one surface can own GET /")
 	}
 	if err := c.Mongo.Rebuild.validate(); err != nil {
 		return fmt.Errorf("bootstrap: %w", err)

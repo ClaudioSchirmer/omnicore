@@ -7,6 +7,7 @@ import (
 	"github.com/ClaudioSchirmer/omnicore/application/pipeline"
 	"github.com/ClaudioSchirmer/omnicore/application/queries"
 	"github.com/ClaudioSchirmer/omnicore/application/translation"
+	"github.com/ClaudioSchirmer/omnicore/domain"
 )
 
 // ── fixtures: a read endpoint quad (Request / Query / Response / handler) ────
@@ -39,10 +40,14 @@ type execResponse struct {
 type fakeReadHandler struct {
 	captured queries.ReadCriteria
 	page     queries.Page
+	err      error // when non-nil, Handle returns it (exercises the failure path)
 }
 
 func (h *fakeReadHandler) Handle(_ *configuration.AppContext, q *execQuery) (queries.Page, error) {
 	h.captured = q.crit
+	if h.err != nil {
+		return queries.Page{}, h.err
+	}
 	return h.page, nil
 }
 
@@ -182,5 +187,39 @@ func TestExecute_UnknownTopLevelFieldRejected(t *testing.T) {
 	resp := reg.Execute(ctx, `{ bogus { totalCount } }`, nil, "")
 	if len(resp.Errors) == 0 {
 		t.Fatal("expected validation to reject an unknown root field")
+	}
+}
+
+// ── domain failure → errors[].extensions{notificationKey, semantic, field} ──
+
+type failReadHandler struct{}
+
+func (h *failReadHandler) Handle(_ *configuration.AppContext, _ *execQuery) (queries.Page, error) {
+	return queries.Page{}, domain.SingleNotificationError("User", "email", domain.RecordNotFoundNotification{})
+}
+
+func TestExecute_DomainFailureMapsToErrorExtensions(t *testing.T) {
+	pipe := pipeline.New(translation.Default())
+	reg := New(pipe).Register(
+		Query[execRequest, *execQuery, execResponse]("users", "User", &failReadHandler{}),
+	)
+	ctx := configuration.NewAppContextWithRandomID(configuration.LangENG)
+
+	resp := reg.Execute(ctx, `{ users { totalCount } }`, nil, "")
+	if len(resp.Errors) == 0 {
+		t.Fatal("a domain Result.Failure must surface in errors[]")
+	}
+	ext := resp.Errors[0].Extensions
+	if ext["notificationKey"] != "RecordNotFoundNotification" {
+		t.Errorf("extensions.notificationKey = %v, want RecordNotFoundNotification", ext["notificationKey"])
+	}
+	if ext["semantic"] != "NotFound" {
+		t.Errorf("extensions.semantic = %v, want NotFound", ext["semantic"])
+	}
+	if ext["field"] != "email" {
+		t.Errorf("extensions.field = %v, want email", ext["field"])
+	}
+	if resp.Errors[0].Message == "" {
+		t.Error("error message should be translated, not empty")
 	}
 }

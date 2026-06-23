@@ -1,6 +1,7 @@
 package graphql
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/ClaudioSchirmer/omnicore/application/configuration"
@@ -118,5 +119,124 @@ func TestMutationByID_BodylessReturnsMutationResult(t *testing.T) {
 	out := resp.Data["deleteThing"].(map[string]any)
 	if out["success"] != true || out["id"] != "u9" {
 		t.Errorf("deleteThing = %v, want {success:true id:u9}", out)
+	}
+}
+
+// ── update-style command quad (body + path id) ──────────────────────────────
+
+type mutUpdCmd struct {
+	pipeline.CommandBaseWithID
+	Name string
+}
+
+type mutUpdRequest struct {
+	Name string `json:"name"`
+}
+
+func (r mutUpdRequest) ToCommand() *mutUpdCmd { return &mutUpdCmd{Name: r.Name} }
+
+type mutUpdResult struct {
+	ID   string
+	Name string
+}
+
+type mutUpdResponse struct {
+	ID   string `json:"id"`
+	Name string `json:"name"`
+}
+
+func (mutUpdResponse) FromResult(r mutUpdResult) mutUpdResponse {
+	return mutUpdResponse{ID: r.ID, Name: r.Name}
+}
+
+type fakeUpdHandler struct {
+	captured *mutUpdCmd
+}
+
+func (h *fakeUpdHandler) Handle(_ *configuration.AppContext, c *mutUpdCmd) (mutUpdResult, error) {
+	h.captured = c
+	return mutUpdResult{ID: c.PathID(), Name: c.Name}, nil
+}
+
+func TestMutationWithID_InjectsPathIDAndInput(t *testing.T) {
+	h := &fakeUpdHandler{}
+	pipe := pipeline.New(translation.Default())
+	reg := New(pipe).Register(
+		MutationWithID[mutUpdRequest, mutUpdCmd, *mutUpdCmd, mutUpdResult, mutUpdResponse](
+			"updateThing", mutUpdResponse{}.FromResult, h),
+	)
+	ctx := configuration.NewAppContextWithRandomID(configuration.LangENG)
+
+	resp := reg.Execute(ctx, `mutation { updateThing(id: "u7", input: { name: "Renamed" }) { id name } }`, nil, "")
+	if len(resp.Errors) != 0 {
+		t.Fatalf("errors: %+v", resp.Errors)
+	}
+	if h.captured == nil || h.captured.PathID() != "u7" {
+		t.Fatalf("path id not injected via SetPathID, got %+v", h.captured)
+	}
+	if h.captured.Name != "Renamed" {
+		t.Errorf("input not decoded into the command, got name=%q", h.captured.Name)
+	}
+	out := resp.Data["updateThing"].(map[string]any)
+	if out["id"] != "u7" || out["name"] != "Renamed" {
+		t.Errorf("updateThing output = %v, want {id:u7 name:Renamed}", out)
+	}
+}
+
+func TestMutationWithID_SchemaCarriesIDArg(t *testing.T) {
+	pipe := pipeline.New(translation.Default())
+	reg := New(pipe).Register(
+		MutationWithID[mutUpdRequest, mutUpdCmd, *mutUpdCmd, mutUpdResult, mutUpdResponse](
+			"updateThing", mutUpdResponse{}.FromResult, &fakeUpdHandler{}),
+	)
+	sdl, err := reg.SDL()
+	if err != nil {
+		t.Fatalf("SDL: %v", err)
+	}
+	if !strings.Contains(sdl, "updateThing(id: ID!, input:") {
+		t.Errorf("MutationWithID must expose an id: ID! arg + input, SDL:\n%s", sdl)
+	}
+}
+
+// ── FullBody marker → strict input (every field NonNull) ────────────────────
+
+type mutStrictCmd struct {
+	pipeline.CommandBase
+	Note *string
+}
+
+type mutStrictRequest struct {
+	Note *string `json:"note,omitempty"`
+}
+
+func (r mutStrictRequest) ToCommand() *mutStrictCmd { return &mutStrictCmd{Note: r.Note} }
+
+type mutStrictResult struct{ ID string }
+
+type mutStrictResponse struct {
+	ID string `json:"id"`
+}
+
+func (mutStrictResponse) FromResult(r mutStrictResult) mutStrictResponse {
+	return mutStrictResponse{ID: r.ID}
+}
+
+type fakeStrictHandler struct{ pipeline.FullBody }
+
+func (h *fakeStrictHandler) Handle(_ *configuration.AppContext, _ *mutStrictCmd) (mutStrictResult, error) {
+	return mutStrictResult{ID: "x"}, nil
+}
+
+func TestMutation_FullBodyMakesInputStrict(t *testing.T) {
+	reg := New(pipeline.New(translation.Default())).Register(
+		Mutation[mutStrictRequest, mutStrictCmd, *mutStrictCmd, mutStrictResult, mutStrictResponse](
+			"createStrict", mutStrictResponse{}.FromResult, &fakeStrictHandler{}),
+	)
+	sdl, err := reg.SDL()
+	if err != nil {
+		t.Fatalf("SDL: %v", err)
+	}
+	if !strings.Contains(sdl, "note: String!") {
+		t.Errorf("FullBody must make even an optional field NonNull in the input, SDL:\n%s", sdl)
 	}
 }
