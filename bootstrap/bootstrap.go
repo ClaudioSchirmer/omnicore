@@ -513,6 +513,22 @@ func buildApp(deps Deps, wiring Wiring) (*fiber.App, error) {
 		}
 	}
 
+	// GraphQL is its own web surface — mounted here, AFTER the REST boot scans
+	// (scanRouteRegistration / scanAuthorization police only the OpenAPI route
+	// contract) and outside the Swagger document, exactly like the framework's
+	// own non-spec routes. The AuthMiddleware (matched by path at request time)
+	// still authenticates it when auth.mode=jwt; authorization is per-field in
+	// the resolver. The only thing shared with REST is the application-layer
+	// handlers the resolvers dispatch to.
+	if wiring.GraphQL != nil {
+		path := deps.Config.GraphQL.Path
+		app.Post(path, wiring.GraphQL.Handler())
+		deps.Logger.Info("graphql served", "path", path)
+		if deps.Config.GraphQL.RootRedirect {
+			registerRootRedirect(app, path, deps.Logger)
+		}
+	}
+
 	// Validate the operator-declared auth.publicRoutes against the fully
 	// registered route set (features + /health + the OpenAPI spec/UI + the
 	// optional root redirect). Runs last so every route the service exposes

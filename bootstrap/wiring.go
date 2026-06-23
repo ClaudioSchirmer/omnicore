@@ -5,6 +5,7 @@ import (
 
 	"github.com/ClaudioSchirmer/omnicore/application/translation"
 	"github.com/ClaudioSchirmer/omnicore/infra/cache"
+	"github.com/ClaudioSchirmer/omnicore/web/graphql"
 	"github.com/ClaudioSchirmer/omnicore/web/openapi"
 	"github.com/gofiber/fiber/v3"
 )
@@ -34,6 +35,16 @@ type Wiring struct {
 	BeforeServe  func(app *fiber.App, deps Deps) error
 	OnShutdown   func(ctx context.Context) error
 	OpenAPI      *openapi.Config
+
+	// GraphQL is an opt-in, self-contained web surface: a graphql.Registry the
+	// service builds with graphql.New(deps.Pipeline) and attaches read/write
+	// handlers to. When non-nil, bootstrap mounts a single POST endpoint
+	// (Config.GraphQL.Path) serving it. GraphQL is deliberately separate from
+	// REST/OpenAPI — it never goes through openapi.Mount/MountRaw, never
+	// appears in the Swagger document, and is not policed by the REST route
+	// scans; the only shared surface is the application-layer handlers it
+	// dispatches to. nil disables GraphQL entirely.
+	GraphQL *graphql.Registry
 
 	// UpstreamSubscriptions is the manual-lifecycle counterpart of
 	// Config.UpstreamSubscriptions — populated when callers want to
