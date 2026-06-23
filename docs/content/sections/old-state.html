@@ -29,7 +29,7 @@
             and <code>domain.GetPartialUpdatable[T](loaded, apply, svc)</code> snapshot the entity <strong>before</strong>
             running the <code>apply</code> closure. The mutation happens <em>inside</em> the domain function — the
             caller passes <code>cmd.ApplyTo</code> or <code>cmd.ApplyPartiallyTo</code> directly (signature
-            <code>func(T)</code>). Auto handlers do this automatically; manual handlers follow the same pattern.</li>
+            <code>func(T) error</code>, so a mapper can raise a notification before validation). Auto handlers do this automatically; manual handlers follow the same pattern.</li>
         <li><strong>Delete / Archive / Unarchive:</strong> <code>domain.GetDeletable / GetArchivable / GetUnarchivable</code>
             snapshot at function entry (no mutation step in these flows). <code>Old()</code> returns the entity
             in its pre-transition state — used both in BuildRules (e.g.,

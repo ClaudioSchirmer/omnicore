@@ -88,13 +88,13 @@ Constructed via the high-level `Get*` path (all take `actionName string`; all va
 | Function | Form |
 |---|---|
 | `GetInsertable(e Entity, svc Service, actionName string)` | no closure (no prior state; no snapshot) |
-| `GetUpdatable[T](e T, apply func(T), svc Service, actionName string)` | closure; snapshots BEFORE `apply` |
-| `GetPartialUpdatable[T](e T, apply func(T), svc Service, actionName string)` | closure; snapshots BEFORE `apply` |
+| `GetUpdatable[T](e T, apply func(T) error, svc Service, actionName string)` | closure; snapshots BEFORE `apply` |
+| `GetPartialUpdatable[T](e T, apply func(T) error, svc Service, actionName string)` | closure; snapshots BEFORE `apply` |
 | `GetArchivable(e Entity, svc Service, actionName string)` | no closure; snapshot at entry |
 | `GetUnarchivable(e Entity, svc Service, actionName string)` | no closure; snapshot at entry |
 | `GetDeletable(e Entity, svc Service, actionName string)` | no closure; snapshot at entry |
 
-The framework runs `apply` (= `cmd.ApplyTo` / `cmd.ApplyPartiallyTo`, both `func(T)`) inside the domain function, so `domain.Old[T](e)` in `BuildRules` returns the pre-mutation state.
+The framework runs `apply` (= `cmd.ApplyTo` / `cmd.ApplyPartiallyTo`, both `func(T) error`) inside the domain function, so `domain.Old[T](e)` in `BuildRules` returns the pre-mutation state.
 
 ### EntityMode + `Modes()`
 
@@ -382,23 +382,23 @@ For trivial CRUD — logic fits entirely on the Entity via `BuildRules` — the 
 
 ### Canonical vocabulary
 
-Every Cmd implements input + output as methods on its own struct. `FromEntity(ctx, T) TResult` is required on all 6 verbs; bodyless verbs (Archive/Unarchive/Delete) typically set `TResult = fwresults.None` and return `fwresults.None{}`.
+Every Cmd implements input + output as methods on its own struct. `FromEntity(ctx, T) (TResult, error)` is required on all 6 verbs; bodyless verbs (Archive/Unarchive/Delete) typically set `TResult = fwresults.None` and return `fwresults.None{}, nil`.
 
 | Operation | Command (base) | Input method | Framework handler | Strict body? | Verb |
 |---|---|---|---|---|---|
-| Insert | `InsertXxxCommand` (`CommandBase`) | `ToEntity(ctx) T` | `InsertCommandHandler[T,*Cmd,TResult]` | no | POST |
-| Update (full) | `UpdateXxxCommand` (`CommandBaseWithID`) | `ApplyTo(ctx, T)` | `UpdateCommandHandler` (embeds `pipeline.FullBody`) | **yes** | PUT |
-| Partial Update | `PatchXxxCommand` (`CommandBaseWithID`, ptr fields) | `ApplyPartiallyTo(ctx, T)` | `PartialUpdateCommandHandler` | no | PATCH |
-| Archive | `ArchiveXxxCommand` (`CommandBaseWithID`) | `ApplyTo(ctx, T)` | `ArchiveCommandHandler` | no | PATCH/DELETE |
-| Unarchive | `UnarchiveXxxCommand` (`CommandBaseWithID`) | `ApplyTo(ctx, T)` | `UnarchiveCommandHandler` | no | PATCH |
-| Delete | `DeleteXxxCommand` (`CommandBaseWithID`) | `ApplyTo(ctx, T)` | `DeleteCommandHandler` | no | DELETE |
+| Insert | `InsertXxxCommand` (`CommandBase`) | `ToEntity(ctx) (T, error)` | `InsertCommandHandler[T,*Cmd,TResult]` | no | POST |
+| Update (full) | `UpdateXxxCommand` (`CommandBaseWithID`) | `ApplyTo(ctx, T) error` | `UpdateCommandHandler` (embeds `pipeline.FullBody`) | **yes** | PUT |
+| Partial Update | `PatchXxxCommand` (`CommandBaseWithID`, ptr fields) | `ApplyPartiallyTo(ctx, T) error` | `PartialUpdateCommandHandler` | no | PATCH |
+| Archive | `ArchiveXxxCommand` (`CommandBaseWithID`) | `ApplyTo(ctx, T) error` | `ArchiveCommandHandler` | no | PATCH/DELETE |
+| Unarchive | `UnarchiveXxxCommand` (`CommandBaseWithID`) | `ApplyTo(ctx, T) error` | `UnarchiveCommandHandler` | no | PATCH |
+| Delete | `DeleteXxxCommand` (`CommandBaseWithID`) | `ApplyTo(ctx, T) error` | `DeleteCommandHandler` | no | DELETE |
 
 The Cmd owns input AND output; the handler threads the request `*AppContext` to both boundaries (`ToEntity`/`ApplyTo` in, `FromEntity` out — same ctx, the hook for identity-aware translation/projection). State-transition verbs use `ApplyTo` to consume ctx + populate runtime authz fields. The handler exposes no `Project` field. `Request.ToCommand()` is a pure body mapper — **no ctx** — keeping web transport-only.
 
 **Where Result and Response live.**
-- `application/commands/xxx_user.go`: `XxxUserResult` (Go-pure, no JSON tags, no methods) + `Cmd.FromEntity(ctx, T) Result`.
+- `application/commands/xxx_user.go`: `XxxUserResult` (Go-pure, no JSON tags, no methods) + `Cmd.FromEntity(ctx, T) (Result, error)`.
 - `web/requests/xxx_user_request.go`: `XxxUserResponse` (JSON tags) + `func (XxxUserResponse) FromResult(XxxUserResult) XxxUserResponse`.
-- No projection: `TResult = fwresults.None`, `FromEntity` returns `fwresults.None{}`, pair with `fwresponses.NoBody`. Runtime detects `responses.None` and emits the success envelope with no `data` field.
+- No projection: `TResult = fwresults.None`, `FromEntity` returns `fwresults.None{}, nil`, pair with `fwresponses.NoBody`. Runtime detects `responses.None` and emits the success envelope with no `data` field.
 
 `Cmd.FromEntity` lives in application (app→domain ✓); `Response.FromResult` in web (web→application ✓). Domain never sees JSON tags; application never sees wire shape.
 
@@ -449,12 +449,12 @@ type InsertUserCommand struct {
     Phone       *string
 }
 // ToEntity gets *AppContext: only layer translating ctx → business fields.
-func (c InsertUserCommand) ToEntity(_ *configuration.AppContext) *User {
-    return &User{Name: c.Name, Email: c.Email, Phone: c.Phone}
+func (c InsertUserCommand) ToEntity(_ *configuration.AppContext) (*User, error) {
+    return &User{Name: c.Name, Email: c.Email, Phone: c.Phone}, nil
 }
 // FromEntity is symmetric output on the Cmd, same ctx boundary.
-func (c InsertUserCommand) FromEntity(_ *configuration.AppContext, u *User) InsertUserResult {
-    return InsertUserResult{ID: *u.GetID(), Name: u.Name, Email: u.Email, Phone: u.Phone}
+func (c InsertUserCommand) FromEntity(_ *configuration.AppContext, u *User) (InsertUserResult, error) {
+    return InsertUserResult{ID: *u.GetID(), Name: u.Name, Email: u.Email, Phone: u.Phone}, nil
 }
 // Optional in-TX side effect via convention; detected by type assertion.
 // TxHandle is sealed — a port in application/ receives it; its infra/ adapter
@@ -1493,11 +1493,12 @@ func (u *User) BuildRules(actionName string, svc domain.Service, r *domain.Rules
 Identity-derived fields reach the entity via the Command mapper (`ToEntity(ctx)`/`ApplyTo(ctx, t)`):
 
 ```go
-func (*ArchiveUserCommand) ApplyTo(ctx *configuration.AppContext, u *User) {
+func (*ArchiveUserCommand) ApplyTo(ctx *configuration.AppContext, u *User) error {
     if id := ctx.Identity(); id != nil {
         if email, _ := id.Claims["email"].(string); email != "" { u.RequestingPrincipalEmail = email }
         u.RequestingPrincipalIsAdmin = id.HasPermission("users:admin")
     }
+    return nil
 }
 ```
 
@@ -1739,7 +1740,7 @@ The framework reads exactly four process env vars; everything else in `${VAR:def
 | `bootstrap.Build() (Deps, *Config, error)` | build singletons without serving |
 | `bootstrap.Serve(ctx, deps, wiring) error` | serve with deps already built (manual path owns translations + SyncEngine) |
 
-- `Deps` — built singletons: `Config`, `Logger`, `Postgres` (audit pre-wired via `WithAudit`), `Mongo`, `Translator`, `Pipeline`, `ViewReader`, `QueryHandler`, `HttpClient` (nil w/o `httpClient:`), `OpenAPIRegistry` (nil w/o `Wiring.OpenAPI`), `Cache`, `SharedCache`, `IntegrationRegistry`.
+- `Deps` — built singletons: `Config`, `Logger`, `Postgres` (audit pre-wired via `WithAudit`), `Mongo`, `Translator`, `Pipeline`, `ViewReader`, `Export` (tabular export ambient inputs), `Cache`, `SharedCache`, `HttpClient` (nil w/o `httpClient:`), `OpenAPIRegistry` (nil w/o `Wiring.OpenAPI`), `IntegrationRegistry`, `UpstreamSubscribers` (nil w/o declared upstream subscriptions).
 - `Wiring` — `Translations`, `Features`, optional `BeforeServe`, `OnShutdown`, `OpenAPI *openapi.Config`, `Cache`/`SharedCache`, `UpstreamSubscriptions`.
 - `Feature` — `Mount(app *fiber.App, deps Deps)`. `ReadableFeature` — `Feature + Views() []*infra.ViewDefinition` (collected for the SyncEngine).
 

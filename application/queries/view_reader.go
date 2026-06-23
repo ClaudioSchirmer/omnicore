@@ -145,7 +145,7 @@ type Page struct {
 	// Projection is the effective per-field include/exclude map the read used —
 	// the post-ToCriteria ReadCriteria.Projection echoed back. The tabular-export
 	// wrapper prunes its column plan to this (ExportPlan.PruneToProjection), so a
-	// field a Query removed from the criteria (e.g. via ReadCriteria.Hide)
+	// field a Query removed from the criteria (e.g. via ReadCriteria.Restrict)
 	// disappears from the CSV/XLSX columns — header included — not just from the
 	// JSON, which keeps ToCriteria the single source of truth for which fields
 	// surface across all formats. Empty/nil = whole-doc read (every column).

@@ -121,7 +121,7 @@
     <div class="note">
         The whole family starts with <code>HandleCommand</code> — suffixes communicate what the endpoint accepts (body,
         ID, both). The wrapper always dispatches a Command; Request is only the wire DTO that becomes a Command via
-        <code>ToCommand(ctx)</code> at the boundary.
+        <code>ToCommand()</code> at the boundary.
     </div>
     <p>Body behavior in <code>HandleCommandWithBody{,ID}</code>:</p>
     <ul>
@@ -287,9 +287,12 @@ users.Post("/", fwweb.HandleCommandWithBody(d.Pipeline,
     <p>
         <code>UnarchiveCommandHandler</code> does NOT call <code>FindByID</code> (record is archived;
         <code>Repository.FindByID</code> filters <code>WHERE deleted_at IS NULL</code> by convention).
-        Instead, it obtains an empty sample via <code>Repo.New()</code>, sets the path ID, and generates
-        <code>Unarchivable</code>. Cascade of archived children is via direct SQL in
-        <code>aggregate_persister.unarchiveAggregate</code>.
+        Instead, when the Repository implements <code>domain.ArchivedFinder[T]</code> it hydrates the
+        archived aggregate via <code>FindArchivedByID</code> (so the cascade SQL sees the archived
+        children via <code>root.AllAggregateItems()</code>); when it does not, it falls back to an empty
+        sample via <code>Repo.New()</code> + <code>SetID</code>. It then runs <code>cmd.ApplyTo</code> and
+        generates <code>Unarchivable</code> via <code>GetUnarchivable</code>. Cascade of archived children
+        is via direct SQL in <code>aggregate_persister.unarchiveAggregate</code>.
     </p>
     <p>
         The asymmetry is <strong>internal to the handler</strong>: the wire-up in <code>routes.go</code> is

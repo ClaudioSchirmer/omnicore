@@ -11,7 +11,7 @@
 
     <h3>Default behavior at boot</h3>
     <ul>
-        <li><code>bootstrap.Run</code> applies all pending migrations <strong>before</strong> serving HTTP when <code>cfg.Migrations.AutoRun=true</code> (default)</li>
+        <li><code>bootstrap.Run</code> applies all pending migrations <strong>before</strong> serving HTTP when <code>cfg.Migrations.AutoRun</code> resolves to <code>true</code> (profile-aware default — see below)</li>
         <li>Order: <code>wire(deps)</code> → <code>ValidateDownExists</code> → <code>Up(framework)</code> → <code>Up(service)</code> → SyncEngine → <code>serve</code></li>
         <li>Migration failure prevents the service from starting (boot returns error)</li>
         <li>Each migration runs in an isolated transaction — failure = rollback + <code>dirty=true</code> persisted in the tracking table</li>
@@ -40,8 +40,8 @@ mgr.Force(ctx, 5)        // recovery: marks version=5, dirty=false
 mgr.ValidateDownExists() // checks .down.sql counterpart for each .up.sql</code></pre>
 
     <h3>Profile-aware default and strict mode</h3>
-    <p><code>cfg.Migrations.AutoRun</code> resolves to <code>true</code> under <code>APP_PROFILE=dev</code> and to <code>false</code> under any other profile when the YAML leaves it unset. An explicit YAML value (<code>true</code> or <code>false</code>) wins regardless of profile.</p>
-    <p>Under the strict default in non-dev profiles, <code>bootstrap.Run</code> does NOT apply migrations automatically. Instead it reads <code>mgr.Status</code> and <code>mgr.Pending</code> and:</p>
+    <p><code>cfg.Migrations.AutoRun</code> is a closed-set <code>AutoRunMode</code> enum — <strong><code>check | true | false</code></strong> — sharing the same three-mode semantic as <code>mongo.rebuild.autoRun</code> (<code>true</code> = validate + apply pending; <code>check</code> = validate only, abort boot on pending/dirty; <code>false</code> = skip both validation and application). A bare YAML bool (<code>true</code>/<code>false</code>) normalizes to the matching string. When the YAML leaves it unset it resolves to <code>true</code> under <code>APP_PROFILE=dev</code> and to <code>check</code> (the strict validation mode) under any other profile. An explicit YAML value wins regardless of profile.</p>
+    <p>Under the strict <code>check</code> default in non-dev profiles, <code>bootstrap.Run</code> does NOT apply migrations automatically. Instead it reads <code>mgr.Status</code> and <code>mgr.Pending</code> and:</p>
     <ul>
         <li>If <code>dirty=true</code>: aborts boot with a diagnostic naming the version + the <code>Force</code> recovery option.</li>
         <li>If <code>Pending</code> returns non-empty: aborts boot with a diagnostic listing every pending version + the current DB version + the operator's recovery options (flip <code>autoRun=true</code> + restart, or run the migration out of band).</li>

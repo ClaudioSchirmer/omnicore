@@ -26,7 +26,7 @@
 <span class="manual">customer := &amp;Customer{Name: cmd.Name, Email: cmd.Email}</span>
    │
    ▼
-<span class="auto">domain.GetInsertable(customer, nil)</span>
+<span class="auto">domain.GetInsertable(customer, nil, "GetInsertable")</span>
    │   ├─► <span class="auto">ensureInit</span>: creates NotificationContext("Customer")
    │   ├─► <span class="auto">resetEntity</span>: clears state, generates a new signature
    │   ├─► <span class="auto">validateForInsert</span>:
@@ -45,7 +45,7 @@
    │
    ▼
 <span class="auto">repo.Scope(ctx, opts...).Insert(insertable)</span>
-   │   └─► <span class="auto">infra.Postgres.Insert(ctx, insertable, &amp;cfg, hook)</span>:
+   │   └─► <span class="auto">infra.Postgres.Insert(ctx, insertable, schema, hook)</span>:
    │       <span class="auto">BEGIN TX</span>
    │         ▸ <span class="auto">afterBegin(ctx, customer, txHandle)</span>  ← position A (rolls back on error)
    │         <span class="auto">INSERT INTO customers (...)</span>
@@ -162,38 +162,37 @@ func (c *Customer) BuildRules(actionName string, service domain.Service, r *doma
 package repository
 
 import (
+    "context"
+
     "github.com/ClaudioSchirmer/omnicore/domain"
     "github.com/ClaudioSchirmer/omnicore/infra"
+    "github.com/ClaudioSchirmer/omnicore/infra/criteria"
 )
 
+// Embed BaseRepository[*Customer] to inherit Scope(ctx, opts...) →
+// Insert/Update/Archive/Unarchive/Delete and New() — no hand-written writes.
+// The writes route through infra.Postgres with the atomic outbox preserved;
+// the Go↔column map is declared once via WithSchema (no name inference).
 type CustomerRepo struct {
-    pg *infra.Postgres
+    infra.BaseRepository[*Customer]
+    loader *infra.AggregateLoader[*Customer]   // for FindByID
 }
 
 func NewCustomerRepo(pg *infra.Postgres) *CustomerRepo {
-    return &amp;CustomerRepo{pg: pg}
-}
-
-// Insert delegates to infra.Postgres, inheriting atomic outbox.
-func (r *CustomerRepo) Insert(i domain.Insertable) (domain.ID, error) {
-    res, err := r.pg.Insert(i)
-    if err != nil {
-        return domain.ID{}, err
+    newCustomer := func() *Customer { return &amp;Customer{} }   // single factory source
+    r := &amp;CustomerRepo{
+        BaseRepository: infra.BaseRepository[*Customer]{
+            Postgres: pg, ContextName: "Customer", NewEntity: newCustomer,
+        },
+        loader: infra.NewAggregateLoader[*Customer](pg, newCustomer),
     }
-    return domain.NewID(res.ID), nil
+    r.WithSchema(CustomerSchema())   // NewTableSchema[*Customer]("customers").PK("id").Field("Name","name")...
+    return r
 }
 
-func (r *CustomerRepo) Update(u domain.Updatable) error {
-    _, err := r.pg.Update(u)
-    return err
-}
-
-func (r *CustomerRepo) Delete(d domain.Deletable) error  { return r.pg.Delete(d) }
-func (r *CustomerRepo) Archive(a domain.Archivable) error { return r.pg.Archive(a) }
-
+// FindByID is the service's responsibility — delegate to the loader.
 func (r *CustomerRepo) FindByID(id domain.ID) (*Customer, error) {
-    // SELECT * FROM customers WHERE id = $1 AND deleted_at IS NULL
-    // ... unmarshal into Customer
+    return r.loader.FindOne(context.Background(), criteria.ByID(id))
 }</code></pre>
 
     <h4>3. Define the Command and the Handler</h4>
