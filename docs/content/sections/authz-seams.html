@@ -4,7 +4,7 @@
   <table>
     <thead><tr><th>Layer</th><th>Surface</th><th>Where</th><th>What it enforces</th></tr></thead>
     <tbody>
-      <tr><td>1 — coarse / declarative</td><td><code>fwopenapi.RequirePermission(p)</code> as <code>MountOption</code></td><td>Route registration call</td><td>"This endpoint requires permission X" — static across all requests</td></tr>
+      <tr><td>1 — coarse / declarative</td><td><code>fwopenapi.RequirePermission(p)</code> as <code>MountOption</code> (REST) · <code>fwgraphql.RequirePermission(p)</code> as <code>FieldOption</code> (GraphQL)</td><td>Route registration call / GraphQL field registration</td><td>"This endpoint requires permission X" — static across all requests</td></tr>
       <tr><td>2 — fine / programmatic</td><td><code>BuildRules</code> with <code>actionName</code> branching</td><td><code>domain/&lt;entity&gt;.go</code></td><td>Rules that depend on resource state vs principal (owner-check, "cannot delete last admin", state-transition guards)</td></tr>
       <tr><td>3 — cross-cutting tenant</td><td>Middleware gate + <code>Query.ToCriteria(ctx)</code> + <code>BuildRules</code></td><td>YAML + <code>application/</code> + <code>domain/</code></td><td>Multi-tenant isolation — principals in tenant A do not see resources of tenant B</td></tr>
     </tbody>
@@ -120,6 +120,14 @@ func (u *User) BuildRules(actionName string, svc domain.Service, r *domain.Rules
     is more honest than silently ignoring the knob, and it closes the inference leak a
     dropped sort/filter would otherwise leave. The decision lives in the application layer
     (the Query reads <code>Identity</code>); infra never sees it.
+  </p>
+  <p>
+    Because the rule lives in <code>ToCriteria</code>, it is <strong>surface-agnostic</strong>: the
+    <a href="#graphql">GraphQL</a> read enforces it too. There the node selection set
+    (<code>edges { node { … } }</code>) is mapped to <code>ReadCriteria.Projection</code> before
+    <code>ToCriteria</code>, so explicitly selecting a restricted field is the "active" reference that
+    trips the same <code>FieldAccessForbiddenNotification</code> (<code>semantic: "Forbidden"</code> in
+    <code>errors[].extensions</code>), while an unselected one is passively scrubbed — never returned.
   </p>
 
   <h3>YAML configuration</h3>
