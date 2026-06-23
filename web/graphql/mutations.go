@@ -8,6 +8,7 @@ import (
 
 	"github.com/ClaudioSchirmer/omnicore/application/configuration"
 	"github.com/ClaudioSchirmer/omnicore/application/pipeline"
+	"github.com/vektah/gqlparser/v2/ast"
 )
 
 // CommandRequest is the write Request DTO contract — the body-only mapper to a
@@ -45,7 +46,7 @@ func Mutation[
 			return "  " + name + "(input: " + in + "!): " + out + "!"
 		},
 		makeResolve: func(pipe *pipeline.Pipeline) resolver {
-			return func(ctx *configuration.AppContext, args map[string]any) (any, []GraphQLError) {
+			return func(ctx *configuration.AppContext, args map[string]any, _ ast.SelectionSet, _ ast.FragmentDefinitionList) (any, []GraphQLError) {
 				req, gerr := decodeInput[TReq](args)
 				if gerr != nil {
 					return nil, []GraphQLError{*gerr}
@@ -82,7 +83,7 @@ func MutationWithID[
 			return "  " + name + "(id: ID!, input: " + in + "!): " + out + "!"
 		},
 		makeResolve: func(pipe *pipeline.Pipeline) resolver {
-			return func(ctx *configuration.AppContext, args map[string]any) (any, []GraphQLError) {
+			return func(ctx *configuration.AppContext, args map[string]any, _ ast.SelectionSet, _ ast.FragmentDefinitionList) (any, []GraphQLError) {
 				req, gerr := decodeInput[TReq](args)
 				if gerr != nil {
 					return nil, []GraphQLError{*gerr}
@@ -116,7 +117,7 @@ func MutationByID[
 			return "  " + name + "(id: ID!): MutationResult!"
 		},
 		makeResolve: func(pipe *pipeline.Pipeline) resolver {
-			return func(ctx *configuration.AppContext, args map[string]any) (any, []GraphQLError) {
+			return func(ctx *configuration.AppContext, args map[string]any, _ ast.SelectionSet, _ ast.FragmentDefinitionList) (any, []GraphQLError) {
 				cmd := TCmdPtr(new(TCmd))
 				id := asString(args["id"])
 				cmd.SetPathID(id)

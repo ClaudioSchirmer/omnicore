@@ -43,8 +43,15 @@ with `1.0.0`.
   `Registry.EnableAuthorization`, mirroring `EnableIntrospection`); a denied
   request returns HTTP 200 with the canonical `MissingPermissionNotification`
   (`semantic: "Forbidden"`, `field: "permission"`) in `errors[].extensions`,
-  the same notification the REST gate returns as 403. Adds the
-  `github.com/vektah/gqlparser/v2` dependency.
+  the same notification the REST gate returns as 403. Field-level read access is
+  enforced too: the Relay node selection set (`edges { node { … } }`) is mapped to
+  `ReadCriteria.Projection` before `ToCriteria`, so a field a `Query.ToCriteria`
+  restricts (via `ReadCriteria.Restrict`) trips the same
+  `FieldAccessForbiddenNotification` (`semantic: "Forbidden"`) the REST
+  `?fields=` path returns when explicitly selected — and Mongo projects only the
+  requested fields (pushdown), the same reader path `?fields=` uses. A passively
+  unselected restricted field is scrubbed (never leaked) on either surface. Adds
+  the `github.com/vektah/gqlparser/v2` dependency.
 
 - **`queries.Page.ItemCursors []string`** — the per-row keyset cursor,
   positionally aligned with `Items`, filled by `MongoViewReader` from the same

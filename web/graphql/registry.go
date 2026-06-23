@@ -23,8 +23,11 @@ type HasToParamsQuery[TQ queries.FindByParamsQuery] interface {
 }
 
 // resolver runs one root field: GraphQL args → a wire-shaped value tree (or
-// errors). The executor trims the tree by the field's selection set.
-type resolver func(ctx *configuration.AppContext, args map[string]any) (any, []GraphQLError)
+// errors). The executor trims the tree by the field's selection set. The
+// selection set + fragments are also passed IN so a read resolver can derive a
+// projection from the requested fields (field-access enforcement + Mongo
+// pushdown); write/introspection resolvers ignore them.
+type resolver func(ctx *configuration.AppContext, args map[string]any, sel ast.SelectionSet, frags ast.FragmentDefinitionList) (any, []GraphQLError)
 
 // Field is a registered GraphQL root field (query or mutation). The generic
 // constructors (Query, and the future Mutation) capture the typed handler into
@@ -148,10 +151,17 @@ func Query[TReq HasToParamsQuery[TQ], TQ queries.FindByParamsQuery, R any](
 		name:    name,
 		sdlLine: func(b *sdlBuilder) string { return b.queryFieldSDL(name, entity, reqType, respType) },
 		makeResolve: func(pipe *pipeline.Pipeline) resolver {
-			return func(ctx *configuration.AppContext, args map[string]any) (any, []GraphQLError) {
+			return func(ctx *configuration.AppContext, args map[string]any, sel ast.SelectionSet, frags ast.FragmentDefinitionList) (any, []GraphQLError) {
 				crit, gerr := plan.buildCriteria(args)
 				if gerr != nil {
 					return nil, []GraphQLError{*gerr}
+				}
+				// Selection set → projection: an explicitly selected restricted
+				// field trips ReadCriteria.Restrict's active-reference 403 (parity
+				// with the REST ?fields= path), and Mongo projects only the
+				// requested fields (pushdown). Empty node selection → nil → whole-doc.
+				if proj := plan.projectionFromSelection(sel, frags); len(proj) > 0 {
+					crit.Projection = proj
 				}
 				var req TReq
 				res := pipeline.Dispatch(pipe, ctx, req.ToQuery(crit), h)
@@ -175,14 +185,14 @@ func Query[TReq HasToParamsQuery[TQ], TQ queries.FindByParamsQuery, R any](
 // MissingPermissionNotification (semantic Forbidden) instead of running the
 // handler.
 func (r *Registry) guardPermission(permission string, inner resolver) resolver {
-	return func(ctx *configuration.AppContext, args map[string]any) (any, []GraphQLError) {
+	return func(ctx *configuration.AppContext, args map[string]any, sel ast.SelectionSet, frags ast.FragmentDefinitionList) (any, []GraphQLError) {
 		if r.authorization {
 			id := ctx.Identity()
 			if id == nil || !id.HasPermission(permission) {
 				return nil, r.missingPermission(ctx, permission)
 			}
 		}
-		return inner(ctx, args)
+		return inner(ctx, args, sel, frags)
 	}
 }
 

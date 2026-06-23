@@ -26,10 +26,10 @@ func (r *Registry) introspectionResolvers() map[string]resolver {
 		}
 	}
 	return map[string]resolver{
-		"__schema": func(_ *configuration.AppContext, _ map[string]any) (any, []GraphQLError) {
+		"__schema": func(_ *configuration.AppContext, _ map[string]any, _ ast.SelectionSet, _ ast.FragmentDefinitionList) (any, []GraphQLError) {
 			return schemaData, nil
 		},
-		"__type": func(_ *configuration.AppContext, args map[string]any) (any, []GraphQLError) {
+		"__type": func(_ *configuration.AppContext, args map[string]any, _ ast.SelectionSet, _ ast.FragmentDefinitionList) (any, []GraphQLError) {
 			name, _ := args["name"].(string)
 			if t, ok := typesByName[name]; ok {
 				return t, nil

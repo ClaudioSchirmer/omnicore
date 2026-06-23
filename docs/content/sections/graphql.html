@@ -196,6 +196,17 @@ reg.Register(fwgraphql.MutationByID[DeleteCmd, *DeleteCmd, results.None](
     <code>POST /graphql</code> in <code>auth.publicRoutes</code>); a missing bearer is rejected by the
     middleware with 401 before the gate is reached.
 </p>
+<p>
+    <strong>Field-level read access</strong> is enforced too. The read resolver maps the Relay node
+    selection set (<code>edges { node { … } }</code>) to <code>ReadCriteria.Projection</code> before
+    <code>ToQuery</code>, so a field a <code>Query.ToCriteria</code> restricts (via
+    <code>ReadCriteria.Restrict</code>, e.g. an admin-only column) trips the same
+    <code>FieldAccessForbiddenNotification</code> (<code>semantic: "Forbidden"</code>) the REST
+    <code>?fields=</code> path returns <em>when the field is explicitly selected</em>. A passively
+    unselected restricted field is simply scrubbed — never returned — so a non-privileged caller never
+    sees it on either surface. As a side effect the projection is pushed down to Mongo: only the requested
+    fields are read, exactly like the REST <code>?fields=</code> path.
+</p>
 
 <h3>Errors</h3>
 <p>

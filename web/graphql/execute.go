@@ -39,7 +39,7 @@ func (r *Registry) Execute(ctx *configuration.AppContext, query string, vars map
 			data[key] = nil
 			continue
 		}
-		val, gerrs := res(ctx, fld.ArgumentMap(vars))
+		val, gerrs := res(ctx, fld.ArgumentMap(vars), fld.SelectionSet, doc.Fragments)
 		if len(gerrs) > 0 {
 			for i := range gerrs {
 				if gerrs[i].Path == nil {

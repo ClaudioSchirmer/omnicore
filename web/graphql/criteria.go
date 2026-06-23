@@ -7,6 +7,7 @@ import (
 
 	"github.com/ClaudioSchirmer/omnicore/application/queries"
 	"github.com/ClaudioSchirmer/omnicore/web/queryschema"
+	"github.com/vektah/gqlparser/v2/ast"
 )
 
 // criteriaPlan is the per-field reflection captured once at schema build: the
@@ -93,6 +94,66 @@ func (p *criteriaPlan) buildCriteria(args map[string]any) (queries.ReadCriteria,
 		}
 	}
 	return crit, nil
+}
+
+// projectionFromSelection derives a ReadCriteria.Projection (Go field path → 1)
+// from the Relay node sub-selection (`edges { node { … } }`) of a read field's
+// selection set. Two effects, both matching the REST `?fields=` path: (1) an
+// explicitly selected restricted field trips ReadCriteria.Restrict's
+// active-reference 403 in ToCriteria (referencesField sees Projection[goPath]==1),
+// and (2) Mongo projects only the requested fields (pushdown). Returns nil when no
+// node leaf is selected — the resolver then leaves Projection empty (whole-doc,
+// the prior behavior). The selection set was already validated against the schema
+// by gqlparser, so every leaf resolves through projSchema; a stray token (defensive)
+// drops the projection rather than erroring.
+func (p *criteriaPlan) projectionFromSelection(sel ast.SelectionSet, frags ast.FragmentDefinitionList) map[string]int {
+	nodeSel := relayNodeSelection(sel, frags)
+	if nodeSel == nil {
+		return nil
+	}
+	paths := flattenWirePaths("", nodeSel, frags)
+	if len(paths) == 0 {
+		return nil
+	}
+	proj, _, _, ok := queryschema.ParseProjection(strings.Join(paths, ","), p.projSchema)
+	if !ok {
+		return nil
+	}
+	return proj
+}
+
+// relayNodeSelection returns the selection set under `edges { node { … } }` of a
+// connection field, or nil when the query selects no node (e.g. only totalCount).
+func relayNodeSelection(sel ast.SelectionSet, frags ast.FragmentDefinitionList) ast.SelectionSet {
+	for _, f := range collectFields(sel, frags) {
+		if f.Name == "edges" {
+			for _, ef := range collectFields(f.SelectionSet, frags) {
+				if ef.Name == "node" {
+					return ef.SelectionSet
+				}
+			}
+		}
+	}
+	return nil
+}
+
+// flattenWirePaths flattens a node selection into dotted wire paths
+// (`addresses.city`), recursing into nested object selections; leaf fields (no
+// sub-selection) terminate a path. Fragments are flattened via collectFields.
+func flattenWirePaths(prefix string, sel ast.SelectionSet, frags ast.FragmentDefinitionList) []string {
+	var out []string
+	for _, f := range collectFields(sel, frags) {
+		wp := f.Name
+		if prefix != "" {
+			wp = prefix + "." + f.Name
+		}
+		if len(f.SelectionSet) == 0 {
+			out = append(out, wp)
+		} else {
+			out = append(out, flattenWirePaths(wp, f.SelectionSet, frags)...)
+		}
+	}
+	return out
 }
 
 // gqlValueToWire renders a GraphQL argument value into the string form
