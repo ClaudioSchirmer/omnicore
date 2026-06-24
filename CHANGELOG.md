@@ -9,6 +9,20 @@ While in `0.x.y`, the public API may change between minor versions; breaking
 changes are highlighted under **Changed**. Stable contract semantics arrive
 with `1.0.0`.
 
+## [Unreleased]
+
+### Added
+
+- **Domain-event publishing wired into the persister** — domain events accumulated
+  on an entity via `entity.RegisterEvent(DomainEvent{…})` are now forwarded
+  post-commit, best-effort, through a configurable `events.Publisher` (default
+  `events.SlogPublisher`, one flat slog line per event). It fires at the same
+  post-commit position as the audit slog echo, on both the flat and aggregate
+  write paths, so it is automatic for Auto and manual handlers alike and a no-op
+  when the entity registered no events. Swap the transport (Kafka, etc.) via
+  `pg.WithEventPublisher(publisher)`. The `events.Publisher` / `SlogPublisher`
+  type existed before but was never invoked on any write path.
+
 ## [0.13.0] - 2026-06-23
 
 ### Added

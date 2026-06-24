@@ -77,6 +77,7 @@ func (p *Postgres) insertAggregate(ctx persistence.RequestContext, entity domain
 		return domain.WriteResult{}, err
 	}
 	p.echoAuditSlog(ctx, ev)
+	p.publishEvents(ctx, entity.Events())
 	return domain.WriteResult{ID: rootID, Fields: rootFields}, nil
 }
 
@@ -129,6 +130,7 @@ func (p *Postgres) updateAggregate(ctx persistence.RequestContext, entity domain
 		return domain.WriteResult{}, err
 	}
 	p.echoAuditSlog(ctx, ev)
+	p.publishEvents(ctx, entity.Events())
 	return domain.WriteResult{ID: rootID, Fields: rootFields}, nil
 }
 
@@ -199,6 +201,7 @@ func (p *Postgres) archiveAggregate(ctx persistence.RequestContext, entity domai
 		return err
 	}
 	p.echoAuditSlog(ctx, ev)
+	p.publishEvents(ctx, entity.Events())
 	return nil
 }
 
@@ -242,6 +245,7 @@ func (p *Postgres) deleteAggregate(ctx persistence.RequestContext, entity domain
 		return err
 	}
 	p.echoAuditSlog(ctx, ev)
+	p.publishEvents(ctx, entity.Events())
 	return nil
 }
 
@@ -312,6 +316,7 @@ func (p *Postgres) unarchiveAggregate(ctx persistence.RequestContext, entity dom
 		return err
 	}
 	p.echoAuditSlog(ctx, ev)
+	p.publishEvents(ctx, entity.Events())
 	return nil
 }
 

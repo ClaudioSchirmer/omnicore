@@ -73,6 +73,7 @@ func (p *Postgres) Insert(ctx persistence.RequestContext, entity domain.Insertab
 		return domain.WriteResult{}, err
 	}
 	p.echoAuditSlog(ctx, ev)
+	p.publishEvents(ctx, entity.Events())
 	return domain.WriteResult{ID: id, Fields: fields}, nil
 }
 
@@ -122,6 +123,7 @@ func (p *Postgres) Update(ctx persistence.RequestContext, entity domain.Updatabl
 		return domain.WriteResult{}, err
 	}
 	p.echoAuditSlog(ctx, ev)
+	p.publishEvents(ctx, entity.Events())
 	return domain.WriteResult{ID: id, Fields: fields}, nil
 }
 
@@ -173,6 +175,7 @@ func (p *Postgres) Archive(ctx persistence.RequestContext, entity domain.Archiva
 		return err
 	}
 	p.echoAuditSlog(ctx, ev)
+	p.publishEvents(ctx, entity.Events())
 	return nil
 }
 
@@ -224,6 +227,7 @@ func (p *Postgres) Unarchive(ctx persistence.RequestContext, entity domain.Unarc
 		return err
 	}
 	p.echoAuditSlog(ctx, ev)
+	p.publishEvents(ctx, entity.Events())
 	return nil
 }
 
@@ -270,6 +274,7 @@ func (p *Postgres) Delete(ctx persistence.RequestContext, entity domain.Deletabl
 		return err
 	}
 	p.echoAuditSlog(ctx, ev)
+	p.publishEvents(ctx, entity.Events())
 	return nil
 }
 

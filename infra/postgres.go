@@ -9,7 +9,9 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/ClaudioSchirmer/omnicore/application/persistence"
+	"github.com/ClaudioSchirmer/omnicore/domain"
 	"github.com/ClaudioSchirmer/omnicore/infra/audit"
+	"github.com/ClaudioSchirmer/omnicore/infra/events"
 )
 
 // pgxPool is the minimal pool surface the persister, loader, and composer
@@ -37,6 +39,7 @@ type Postgres struct {
 	auditCfg    *audit.Config
 	logger      *slog.Logger
 	auditClaims []string
+	publisher   events.Publisher
 }
 
 func NewPostgres(ctx context.Context, dsn string) (*Postgres, error) {
@@ -90,6 +93,36 @@ func (p *Postgres) echoAuditSlog(ctx persistence.RequestContext, ev *audit.Audit
 		return
 	}
 	audit.EchoSlog(ctx, p.logger, *ev)
+}
+
+// WithEventPublisher wires the transport for domain events accumulated on
+// entities via entity.RegisterEvent. Returns the receiver so the call can
+// chain at boot. A nil publisher (the default) disables publishing — events
+// are still carried on the ValidEntity, simply not forwarded. bootstrap.Run
+// wires events.NewSlogPublisher in production; a consumer can inject any
+// events.Publisher (Kafka, etc.) to override the transport.
+func (p *Postgres) WithEventPublisher(pub events.Publisher) *Postgres {
+	p.publisher = pub
+	return p
+}
+
+// publishEvents forwards the entity's accumulated domain events post-commit,
+// best-effort: a transport error is logged at Warn and swallowed so a failing
+// publisher never affects the already-committed write. No-op when no publisher
+// is wired or the entity registered no events. Fires on the same post-commit
+// position as echoAuditSlog — on both the flat and aggregate paths — so Auto
+// and manual handlers behave identically.
+func (p *Postgres) publishEvents(ctx persistence.RequestContext, evs []domain.DomainEvent) {
+	if p.publisher == nil || len(evs) == 0 {
+		return
+	}
+	if err := p.publisher.PublishAll(ctx, evs); err != nil {
+		logger := p.logger
+		if logger == nil {
+			logger = slog.Default()
+		}
+		logger.Warn("event.publish.error", "err", err)
+	}
 }
 
 func (p *Postgres) Close() {

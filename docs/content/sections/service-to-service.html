@@ -15,7 +15,7 @@
         </tr>
         <tr>
             <td>Read another service's state inside <em>my own</em> queries</td>
-            <td><a href="#query-side~qry-auto-vs-manual"><code>UpstreamSubscription</code> + an external <code>FromSchema</code> embed</a> (read-side)</td>
+            <td><a href="#auto-query-handlers~qry-auto-vs-manual"><code>UpstreamSubscription</code> + an external <code>FromSchema</code> embed</a> (read-side)</td>
             <td>You do not need a call — you need the data local. The framework materializes the upstream collection from its event stream and ripples recompose into every view that embeds it. Reads never leave the process. See the <a href="#table-schema">TableSchema</a> page for the external <code>FromSchema</code> embed wiring.</td>
         </tr>
         <tr>
