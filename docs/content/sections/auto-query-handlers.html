@@ -144,13 +144,16 @@
     <h3 id="qry-allowlist">Allowlist via struct tags</h3>
     <p>
         Each filter field on the Request DTO declares its set of allowed operators via the
-        <code>filter:"eq,in"</code> tag. The wrapper inspects the type (cached by
-        <code>reflect.Type</code> in a module-level <code>sync.Map</code>) and rejects any
-        query-string key outside the declared set with 400 <code>SchemaViolationNotification</code>.
-        Reserved pagination/control keys (<code>limit</code>, <code>after</code>, <code>before</code>,
-        <code>sort</code>, <code>fields</code>, <code>search</code>, <code>includeArchived</code>) are declared
-        with only the <code>query:"..."</code> tag (no filter tag) — recognized only at the top
-        level, never inside an embed group.
+        <code>filter:"eq,in"</code> tag — the operator vocabulary itself (the <code>Op*</code> constants,
+        case-insensitive twins, AND-ing, regex escaping) is documented once on the
+        <a href="#query-side~qry-operators">QueryHandler · CQRS</a> trunk, since the custom path reads the
+        same tag. The wrapper inspects the type (cached by <code>reflect.Type</code> in a module-level
+        <code>sync.Map</code>) and rejects any query-string key outside the declared set with 400
+        <code>SchemaViolationNotification</code>. Reserved pagination/control keys (<code>limit</code>,
+        <code>after</code>, <code>before</code>, <code>sort</code>, <code>fields</code>, <code>search</code>,
+        <code>includeArchived</code>, <code>onlyTotal</code>) are declared with only the
+        <code>query:"..."</code> tag (no filter tag) — recognized only at the top level, never inside an embed
+        group.
     </p>
 
     <h3 id="qry-nested">Nested embed groups</h3>
@@ -525,68 +528,13 @@ query:
         assemble the envelope by hand can read the same field on the returned Page.
     </p>
 
-    <pre><code>// Operator constants — used in the filter tag.
-const (
-    OpEq           = "eq"
-    OpNe           = "ne"
-    OpIn           = "in"
-    OpNin          = "nin"
-    OpGte          = "gte"
-    OpLte          = "lte"
-    OpGt           = "gt"
-    OpLt           = "lt"
-    OpStartsWith   = "startswith"
-    OpContains     = "contains"
-    OpIEq          = "ieq"          // case-insensitive equality
-    OpINe          = "ine"          // case-insensitive inequality
-    OpIIn          = "iin"          // case-insensitive in-list
-    OpINin         = "inin"         // case-insensitive not-in-list
-    OpIStartsWith  = "istartswith"  // case-insensitive prefix
-    OpIContains    = "icontains"    // case-insensitive substring
-)</code></pre>
-    <p>
-        String operators come in case-sensitive and case-insensitive variants — the <code>i</code>
-        prefix is the case-folded twin. The consumer declares whichever set the endpoint accepts
-        (<code>filter:"eq,startswith,icontains"</code> means exact, prefix, and case-insensitive
-        substring); operators outside the declared list are rejected with 400. Numeric operators
-        (<code>gte</code>/<code>lte</code>/<code>gt</code>/<code>lt</code>) have no <code>i</code>
-        variant by design — case-folding has no meaning on ordinal comparisons.
-    </p>
-    <p>
-        User-supplied values feeding the regex operators are escaped via <code>regexp.QuoteMeta</code>
-        so wire metacharacters are treated as literals — <code>?name.contains=a.b*c</code> matches
-        the literal string <code>a.b*c</code>, never the regex pattern. The <code>iin</code> and
-        <code>inin</code> operators emit a <code>queries.RegexMatchList</code> sentinel that
-        <code>MongoViewReader</code> translates into <code>{$in: [bson.Regex, ...]}</code> /
-        <code>{$nin: [bson.Regex, ...]}</code> — Mongo requires the native regex type inside
-        <code>$in</code>, so the translation is owned by the infra adapter rather than emitted
-        from the wire layer.
-    </p>
-    <p>
-        <strong>Multiple operators on the same field are AND-ed.</strong> When the wire delivers
-        more than one operator targeting the same field (e.g. <code>?age.gte=18&amp;age.lte=65</code>
-        or <code>?name.startswith=Bob&amp;name.icontains=ob</code>), the wrapper folds the clauses
-        into a <code>queries.MultiClause</code> sentinel on
-        <code>ReadCriteria.Filter[field]</code> instead of overwriting the previous entry on the
-        map. <code>MongoViewReader</code> expands the sentinel into a top-level <code>$and</code>
-        array — each clause becomes a <code>{field: translatedValue}</code> entry so every
-        declared operator is honored simultaneously. A single operator on a field stays as the
-        plain <code>{field: value}</code> shape so Mongo indexes remain usable without an outer
-        <code>$and</code>.
-    </p>
-    <table>
-        <tbody><tr><th>Wire form</th><th>Outcome</th></tr>
-        <tr><td><code>?name=Jane</code> with tag <code>filter:"eq"</code></td><td>OK — equality recognized as the empty operator</td></tr>
-        <tr><td><code>?email.in=a@x,b@y</code> with tag <code>filter:"eq,in"</code></td><td>OK — <code>$in</code> applied</td></tr>
-        <tr><td><code>?name.startswith=Bob</code> with tag <code>filter:"eq,startswith"</code></td><td>OK — matches "Bob", "Bob Diego"; case-sensitive</td></tr>
-        <tr><td><code>?name.icontains=OB</code> with tag <code>filter:"eq,icontains"</code></td><td>OK — matches "Bob", "Roberto"; case-folded</td></tr>
-        <tr><td><code>?name.iin=bob,alice</code> with tag <code>filter:"eq,iin"</code></td><td>OK — matches "Bob", "ALICE"; sentinel expanded by MongoViewReader</td></tr>
-        <tr><td><code>?age.gte=18&amp;age.lte=65</code> with tag <code>filter:"gte,lte"</code></td><td>OK — both clauses AND-ed via top-level <code>$and</code></td></tr>
-        <tr><td><code>?role=admin</code> with no field declared</td><td>400 — unknown field</td></tr>
-        <tr><td><code>?email.gte=X</code> with tag <code>filter:"eq,in"</code></td><td>400 — operator outside declared list</td></tr>
-        <tr><td><code>?includeArchived=true</code> on by-id endpoint</td><td>OK — reserved</td></tr>
-        <tr><td><code>?role=admin</code> on by-id endpoint</td><td>400 — only <code>includeArchived</code> is reserved by-id</td></tr>
-    </tbody></table>
+    <div class="note">
+        The <strong>filter operator vocabulary</strong> — the <code>Op*</code> constants, the case-insensitive
+        <code>i</code>-twins, the AND-ing of multiple operators on one field, and the
+        <code>regexp.QuoteMeta</code> escaping — lives on the <a href="#query-side~qry-operators">QueryHandler
+        · CQRS</a> trunk, since it applies verbatim to the custom path too. This page covers only what is
+        specific to the automatic wrapper: the allowlist enforcement above and the reserved control keys below.
+    </div>
 
     <h3 id="qry-export">Tabular export — CSV / Excel (format-pluggable)</h3>
     <p>

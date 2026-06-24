@@ -1,127 +1,286 @@
 <h2>Custom query handler</h2>
     <p>
-        When the canonical <a href="#auto-query-handlers">Auto query handlers</a> don't fit — an alternative
-        identifier, a vendor-specific lookup, a bespoke envelope — drop down to the building blocks the
-        wrappers are made of, covered below. For a complete runnable reference, see
-        <code>omnicore-example-users/web/user_custom_routes.go</code> and the hand-written query handlers under
-        <code>application/queries/handlers/*_custom_handler.go</code>.
+        The <a href="#auto-query-handlers">Auto query handlers</a> hide every read step behind a one-line
+        generic handler. This page builds the same read <strong>from scratch</strong> — a hand-written
+        <code>pipeline.Handler</code> and explicit route wiring — and names the facilitator the framework
+        offers at each step. It is the escape hatch for <em>wiring control</em>: an alternate identifier
+        (<code>:email</code> instead of <code>:id</code>), a vendor-shaped envelope, a bespoke lookup the
+        <code>ViewReader.ReadByID</code> primary-key path does not cover. It is not a lesser tier — the same
+        <code>ReadCriteria</code>, the same <code>ViewReader</code>, the same pagination and projection apply,
+        byte-for-byte identical to the canonical path.
+    </p>
+    <p>
+        Every step below maps onto the <a href="#query-side~qry-flow">full flow of a GET</a>. The shared
+        vocabulary — what <code>ReadCriteria</code> carries, the <a href="#query-side~qry-operators">filter
+        operators</a>, and the <a href="#query-side~qry-tocriteria"><code>ToCriteria(ctx)</code></a> overlay +
+        field-restriction seam — lives on the <a href="#query-side">QueryHandler · CQRS</a> trunk and is not
+        repeated here. For a complete runnable reference, see
+        <code>omnicore-example-users/web/user_custom_routes.go</code> and the hand-written query handlers
+        under <code>application/queries/handlers/*_custom_handler.go</code>.
     </p>
 
-    <h3 id="qry-manual">Manual query handlers — same building blocks</h3>
+    <h3 id="cqry-example">Full example — read a user by email</h3>
     <p>
-        Routes that need a custom shape (alternative identifier, vendor-specific lookup, bespoke envelope)
-        opt out of the wrapper but still get the canonical allowlist + envelope by composing the building
-        blocks the wrapper itself uses. Two helpers cover the query-string allowlist depending on whether
-        the Response is typed:
+        The canonical <code>GET /users/:id</code> is keyed by the document's primary key, so its
+        <code>FindByIDQueryHandler</code> dispatches to <code>ViewReader.ReadByID</code>. Switching the public
+        identifier to <strong>email</strong> needs an arbitrary filter — which is exactly what
+        <code>ReadPage</code> already supports. Going manual on the read side is the whole motivation. The Mongo
+        view is unchanged (it already denormalizes the root's email into the document).
+    </p>
+
+    <h4>1. Reuse the read model</h4>
+    <p>
+        Nothing new on the read model — the custom route reads the <strong>same</strong>
+        <a href="#auto-query-handlers~qry-example"><code>ViewDefinition</code></a>, the same Mongo collection,
+        the same <code>SyncEngine</code> subscription. POSTing on the canonical surface and reading here returns
+        the same persisted state. The only things that change below are the application handler and the wire
+        shape.
+    </p>
+
+    <h4>2. Define the Query + <code>ToCriteria(ctx)</code></h4>
+    <p>
+        The Query is the transport carrying the alternate key. <code>ToCriteria(ctx)</code> turns it into a
+        <code>ReadCriteria</code> — here <code>Filter[Email]=&lt;value&gt;</code> with <code>Limit:1</code> —
+        and is the seam where the <a href="#query-side~qry-tocriteria">overlays + <code>Restrict</code></a> would
+        layer on. <strong>Facilitator:</strong> embed <code>pipeline.QueryBase</code>; the Query owns its
+        persistence shape end to end so the wire never knows how the lookup is shaped at the Mongo layer.
+    </p>
+    <pre><code>// application/queries/find_user_by_email_custom_query.go
+package queries
+
+type FindUserByEmailQuery struct {
+    pipeline.QueryBase
+    Email           string
+    IncludeArchived bool
+}
+
+// ToCriteria(ctx) is the only layer below the web boundary that consumes
+// *AppContext. Email becomes a Filter clause; Limit:1 makes it a single-item
+// read. Tenant/owner overlays and crit.Restrict(...) would layer here — same
+// seam the Auto handlers honor (see QueryHandler · CQRS).
+func (q FindUserByEmailQuery) ToCriteria(
+    _ *configuration.AppContext,
+) (fwqueries.ReadCriteria, error) {
+    return fwqueries.ReadCriteria{
+        Filter:          map[string]any{"Email": q.Email},
+        Limit:           1,
+        IncludeArchived: q.IncludeArchived,
+    }, nil
+}</code></pre>
+
+    <h4>3. Write the QueryHandler by hand</h4>
+    <p>
+        The handler implements <code>pipeline.Handler[*Q, R]</code> directly. It calls
+        <code>ToCriteria(ctx)</code>, runs the read through the <strong>same <code>ViewReader</code> port</strong>
+        the framework uses (<code>d.ViewReader</code>), and maps an empty result to the canonical 404 — the same
+        status the canonical by-id surface emits for a missing row. <strong>Facilitator:</strong>
+        <code>queries.ViewReader.ReadPage</code> (the read engine) + <code>domain.NotFoundError</code> (the typed
+        404 carrier). The handler returns the raw Go-keyed document; projection happens at the web layer.
+    </p>
+    <pre><code>// application/queries/handlers/find_user_by_email_custom_handler.go
+package handlers
+
+type FindUserByEmailCustomQueryHandler struct {
+    Reader queries.ViewReader
+    View   string
+}
+
+func (h *FindUserByEmailCustomQueryHandler) Handle(
+    ctx *configuration.AppContext, q *appqueries.FindUserByEmailQuery,
+) (map[string]any, error) {
+    criteria, err := q.ToCriteria(ctx)
+    if err != nil {
+        return nil, err  // e.g. a Restrict 403 — errors.As routes it at pipeline.Run
+    }
+
+    // ─── Row-level access-control seam (the reason this manual handler exists) ──
+    // Filter keys are Go field names; the MongoViewReader translates each to its
+    // physical column via the view schema. Typical overlays:
+    //   criteria.Filter["TenantID"] = ctx.Identity().TenantID()   // multi-tenant
+    //   criteria.Filter["OwnerID"]  = ctx.ActorSubject()          // owner-only
+    // If the overlay rejects the row, ReadPage returns 0 items → canonical 404.
+    // ───────────────────────────────────────────────────────────────────────────
+
+    page, err := h.Reader.ReadPage(ctx, h.View, criteria)
+    if err != nil {
+        return nil, err
+    }
+    if len(page.Items) == 0 {
+        return nil, domain.NotFoundError("User", "email", q.Email)  // → 404
+    }
+    return page.Items[0], nil
+}</code></pre>
+
+    <h4>4. Declare the Request DTO (allowlist) + Response</h4>
+    <p>
+        The Request DTO carries the wire allowlist exactly like the canonical surface. The <code>:email</code>
+        URL segment binds via the <code>path:"email"</code> tag; <code>?includeArchived</code> is the only other
+        recognized key. <code>ToQuery(criteria)</code> is the pure body→application boundary (no ctx).
+        <strong>Facilitator:</strong> the <a href="#custom-query-handler~cqry-path"><code>path:</code> tag</a> (URL-segment binding)
+        + <code>query:</code> tags (allowlist). The Response is a plain struct with <code>json:</code> tags,
+        projected by <code>fwresponses.AutoFromDoc[R]</code> — the same tag-driven default the canonical surface
+        uses (see <a href="#custom-query-handler~cqry-projection">Projection is shared infrastructure</a>).
+    </p>
+    <pre><code>// web/requests/find_user_by_email_custom_request.go
+package requests
+
+type FindUserByEmailCustomRequest struct {
+    Email           string `path:"email"`              // bound from c.Params("email")
+    IncludeArchived *bool  `query:"includeArchived"`   // the only allowed query key
+}
+
+// ToQuery — pure body mapping, no ctx. Reads req.Email (populated by BindPath
+// from the URL) and the validated criteria from the parser.
+func (r FindUserByEmailCustomRequest) ToQuery(crit fwqueries.ReadCriteria) *queries.FindUserByEmailQuery {
+    return &amp;queries.FindUserByEmailQuery{Email: r.Email, IncludeArchived: crit.IncludeArchived}
+}
+
+// Reduced wire shape — id + name + email only (phone/addresses dropped at
+// projection). *string + ,omitempty keeps it ready to opt into ?fields= later.
+type FindUserByEmailCustomResponse struct {
+    ID    *string `json:"id,omitempty"`
+    Name  *string `json:"name,omitempty"`
+    Email *string `json:"email,omitempty"`
+}</code></pre>
+
+    <h4>5. Wire the route by hand</h4>
+    <p>
+        This is the step the wrapper hides — and the point of going manual. The Fiber closure performs, in
+        order, every move <code>HandleQueryWithID</code> would: build the <code>AppContext</code> and propagate
+        cancellation, bind the path segment, validate the query string against the allowlist, map to the Query,
+        dispatch, and project on success. <strong>Facilitators</strong> (each replaces one hidden wrapper step):
     </p>
     <ul>
-        <li>
-            <code>fwweb.NewQueryParser[Req, Resp]()</code> — typed Mount-time parser when the Request opts
-            into <code>?fields=</code> / <code>?sort=</code> AND the Response is typed. Construction runs the
-            same boot scan <code>HandleQueryWithParams</code> runs internally: sparse-render guard on the
-            Response (panic when any field at any depth is not <code>*T</code> or a slice/map with
-            <code>,omitempty</code>), <code>slog.Warn</code> advisory listing every sortable wire path so
-            operators can compare against the Mongo view's index declaration, plus
-            <code>extractProjectionSchema</code> for runtime wire→doc translation. Per-request
-            <code>parser.Parse(c)</code> returns the same <code>(criteria, badField, ok)</code> shape as
-            <code>ParseCriteria</code> but with allowlist enforcement and translation enabled. Constructed
-            once per route and reused; schema caches are shared with the canonical wrapper.
-        </li>
-        <li>
-            <code>fwweb.ParseCriteria(c, requestDTO)</code> — un-typed escape hatch for handlers that have
-            no typed Response (RawDoc projectors, vendor-shaped envelopes) OR whose Request does not opt
-            into <code>?fields=</code> / <code>?sort=</code>. Same reflection-based allowlist applies, but
-            the projection schema is nil so reserved keys land in pass-through mode (tokens verbatim, no
-            <code>_id:0</code> auto-exclusion, no snake_case translation).
-        </li>
+        <li><code>fwweb.BindPath(c, &amp;req)</code> — fills <code>path:</code>-tagged fields from <code>c.Params</code>.</li>
+        <li><code>fwweb.NewQueryParser[Req, Resp]()</code> — constructed once at Mount; <code>parser.Parse(c)</code> applies the same allowlist + wire→doc translation the wrapper runs (see <a href="#custom-query-handler~cqry-blocks">building blocks</a>).</li>
+        <li><code>fwweb.RespondSchemaViolation(c, pipe, badField)</code> — the canonical 400 envelope on a bad key.</li>
+        <li><code>fwresponses.AutoFromDoc[Resp]</code> — the shared projector.</li>
     </ul>
-    <p>Canonical manual list shape (typed Response opting into <code>?fields=</code> / <code>?sort=</code>):</p>
-    <pre><code>// At Mount time — once per route. Boot scan fires here:
-// fields-side guard + sort-side slog.Warn + projection-schema build.
-listParser := fwweb.NewQueryParser[requests.FindXxxCustomRequest, requests.FindXxxCustomResponse]()
+    <pre><code>// web/user_custom_routes.go — parser built ONCE at Mount (runs the boot scan).
+byEmailParser := fwweb.NewQueryParser[requests.FindUserByEmailCustomRequest,
+    requests.FindUserByEmailCustomResponse]()
+
+g.Get("/:email", func(c fiber.Ctx) error {
+    appCtx := fwweb.AppContext(c)
+    appCtx.SetParent(c)                          // propagate request cancellation
+
+    var req requests.FindUserByEmailCustomRequest
+    if badField, ok := fwweb.BindPath(c, &amp;req); !ok {   // :email → req.Email
+        return fwweb.RespondSchemaViolation(c, pipe, badField)
+    }
+    crit, badField, ok := byEmailParser.Parse(c)        // allowlist + translation
+    if !ok {
+        return fwweb.RespondSchemaViolation(c, pipe, badField)
+    }
+
+    q := req.ToQuery(crit)
+    h := &amp;appquery.FindUserByEmailCustomQueryHandler{Reader: reader, View: "users"}
+
+    result := pipeline.Dispatch(pipe, appCtx, q, h)
+    if result.IsSuccess() {
+        return fwweb.RespondWithSuccess(c, fiber.StatusOK,
+            fwresponses.AutoFromDoc[requests.FindUserByEmailCustomResponse](result.Value()))
+    }
+    return fwweb.RespondFromResult(c, result, fiber.StatusOK)  // honors Semantic → 404/403/500
+})</code></pre>
+
+    <h3 id="cqry-list">Paged-list variant</h3>
+    <p>
+        A list is the same chain with two differences: the handler returns <code>queries.Page</code> (so the
+        cursor envelope survives), and the route assembles the paged envelope with
+        <code>fwweb.RespondPaged</code> — which applies the projector per item and emits <code>data</code> +
+        top-level <code>pagination</code>, exactly the wrapper's output. The list handler's
+        <code>Handle</code> returns <code>h.Reader.ReadPage(ctx, h.View, criteria)</code> verbatim.
+    </p>
+    <pre><code>listParser := fwweb.NewQueryParser[requests.FindUsersCustomRequest,
+    requests.FindUsersCustomResponse]()   // fields-guard + sort-warn fire here at boot
 
 g.Get("/", func(c fiber.Ctx) error {
     appCtx := fwweb.AppContext(c)
     appCtx.SetParent(c)
 
-    var req requests.FindXxxCustomRequest
-    // Same allowlist + wire→doc translation HandleQueryWithParams runs
-    // internally.
+    var req requests.FindUsersCustomRequest
     crit, badField, ok := listParser.Parse(c)
     if !ok {
-        // Canonical 400 envelope with SchemaViolationNotification — same
-        // shape consumers already parse from the auto path.
         return fwweb.RespondSchemaViolation(c, pipe, badField)
     }
 
     q := req.ToQuery(crit)
+    h := &amp;appquery.FindUsersCustomQueryHandler{Reader: reader, View: "users"}
+
     result := pipeline.Dispatch(pipe, appCtx, q, h)
     if !result.IsSuccess() {
         return fwweb.RespondFromResult(c, result, fiber.StatusOK)
     }
-    // Same envelope HandleQueryWithParams emits — items projected per doc,
-    // top-level pagination block.
+    // RespondPaged projects each item + assembles the canonical paged envelope.
     return fwweb.RespondPaged(c, fiber.StatusOK, result.Value(),
-        fwresponses.AutoFromDoc[requests.FindXxxCustomResponse])
+        fwresponses.AutoFromDoc[requests.FindUsersCustomResponse])
 })</code></pre>
-    <p>By-email lookup shape — chain <code>BindPath</code> before the parser:</p>
-    <pre><code>byEmailParser := fwweb.NewQueryParser[requests.FindXxxByEmailRequest, requests.FindXxxByEmailResponse]()
 
-g.Get("/:email", func(c fiber.Ctx) error {
-    appCtx := fwweb.AppContext(c)
-    appCtx.SetParent(c)
-
-    var req requests.FindXxxByEmailRequest
-    // Same path-binding the wrappers run internally — populates fields
-    // tagged `path:"&lt;name&gt;"` from c.Params("&lt;name&gt;").
-    if badField, ok := fwweb.BindPath(c, &amp;req); !ok {
-        return fwweb.RespondSchemaViolation(c, pipe, badField)
-    }
-    crit, badField, ok := byEmailParser.Parse(c)
-    if !ok {
-        return fwweb.RespondSchemaViolation(c, pipe, badField)
-    }
-    q := req.ToQuery(crit)
-    result := pipeline.Dispatch(pipe, appCtx, q, h)
-    if result.IsSuccess() {
-        return fwweb.RespondWithSuccess(c, fiber.StatusOK,
-            fwresponses.AutoFromDoc[requests.FindXxxByEmailResponse](result.Value()))
-    }
-    return fwweb.RespondFromResult(c, result, fiber.StatusOK)
-})</code></pre>
+    <h3 id="cqry-blocks">The building blocks</h3>
     <p>
-        <strong>Projection is shared infrastructure.</strong> Manual query handlers should pair with
-        <code>fwresponses.AutoFromDoc[R]</code> (tag-driven default) or <code>fwresponses.RawDoc</code>
-        (passthrough) — the same projectors the canonical wrappers consume. Hand-rolling a
-        <code>FromDoc</code> that walks <code>doc["id"]</code>, <code>doc["name"]</code>, etc. is a
-        redundant rewrite of what <code>AutoFromDoc</code> already does (<code>json:</code> tags, <code>_id → id</code>
-        fallback, Go-keyed doc from the reader, nil→empty-slice normalization).
-        Declare a consumer <code>R{}.FromDoc</code> method only when the projection needs logic
-        AutoFromDoc cannot express (derived fields computed from multiple doc keys, conditional shaping,
-        ctx-aware projection).
+        These are the helpers the canonical wrappers are themselves made of — pick the ones the manual route
+        needs. There are two query-string parsers, depending on whether the Response is typed:
     </p>
+    <table>
+        <tbody><tr><th>Helper</th><th>Replaces wrapper step</th><th>Notes</th></tr>
+        <tr>
+            <td><code>fwweb.NewQueryParser[Req, Resp]()</code></td>
+            <td>query-string allowlist + <code>?fields=</code>/<code>?sort=</code> translation</td>
+            <td><strong>Typed-Response parser.</strong> Construct once at Mount. Construction runs the same boot
+                scan the wrapper runs: the sparse-render guard on <code>Resp</code> (panic when any field at any
+                depth is not <code>*T</code>/slice/map with <code>,omitempty</code>, when <code>?fields=</code> is
+                opted in), the <code>slog.Warn</code> advisory listing every sortable wire path (when
+                <code>?sort=</code> is opted in), and the wire→doc projection schema.
+                <code>parser.Parse(c)</code> → <code>(criteria, badField, ok)</code> with allowlist +
+                translation. Schema caches are shared with the canonical wrapper.</td>
+        </tr>
+        <tr>
+            <td><code>fwweb.ParseCriteria(c, req)</code></td>
+            <td>same allowlist, pass-through projection</td>
+            <td><strong>Un-typed escape hatch.</strong> For handlers with no typed Response (RawDoc, vendor
+                envelopes) or whose Request does not opt into <code>?fields=</code>/<code>?sort=</code>. Same
+                reflection-based allowlist, but the projection schema is nil — reserved keys pass through verbatim
+                (no <code>_id:0</code> auto-exclusion, no snake_case translation).</td>
+        </tr>
+        <tr><td><code>fwweb.BindPath(c, &amp;req)</code></td><td>auto-bind of <code>:id</code></td><td>fills every <code>path:"&lt;name&gt;"</code> field from <code>c.Params</code>; returns <code>("", true)</code> when there are no <code>path:</code> tags. See <a href="#custom-query-handler~cqry-path">below</a>.</td></tr>
+        <tr><td><code>fwweb.RespondSchemaViolation(c, pipe, field)</code></td><td>the 400 on a bad key</td><td>canonical <code>SchemaViolationNotification</code> envelope.</td></tr>
+        <tr><td><code>fwweb.RespondPaged(c, status, page, fn)</code> / <code>fwweb.ProjectPage[R](page, fn)</code></td><td>per-item projection + paged envelope</td><td><code>RespondPaged</code> writes the envelope; <code>ProjectPage</code> returns the projected items + pagination for handlers that build the envelope themselves (sidecar fields).</td></tr>
+        <tr><td><code>fwresponses.AutoFromDoc[R]</code> / <code>fwresponses.RawDoc</code></td><td>the projector</td><td>tag-driven default / raw passthrough — the same projectors the canonical wrappers consume.</td></tr>
+    </tbody></table>
     <p>
-        For envelopes that need sidecar fields (custom keys outside <code>data</code>/<code>pagination</code>),
-        use <code>fwweb.ProjectPage</code> instead of <code>RespondPaged</code> and build the
-        <code>Response</code> struct by hand — the projector and the pagination cursor are still
-        framework-managed.
+        Canonical chain: <code>BindPath → NewQueryParser.Parse (or ParseCriteria) → ToQuery → Dispatch →
+        RespondPaged / RespondWithSuccess</code>.
     </p>
 
-    <h3 id="qry-path"><code>path:</code> tag — universal URL-segment binding</h3>
+    <h3 id="cqry-projection">Projection is shared infrastructure</h3>
     <p>
-        Every Request DTO field tagged <code>path:"&lt;name&gt;"</code> is populated from the matching
-        Fiber URL segment (<code>c.Params("&lt;name&gt;")</code>) before <code>ToCommand</code> /
-        <code>ToQuery</code> runs. Closes the asymmetry between the canonical wrappers (which only
-        auto-bind <code>:id</code> via the <code>pipeline.CommandWithID</code> / <code>queries.FindByIDQuery</code>
-        interface) and routes with custom identifier segments (<code>:email</code>, <code>:tenantId</code>, …)
-        or compound paths (<code>/tenants/:tenantId/users/:id</code>).
+        "Manual" means controlling the <em>wiring</em>, not re-implementing primitives the framework already
+        ships. Pair a manual query handler with <code>fwresponses.AutoFromDoc[R]</code> (tag-driven default) or
+        <code>fwresponses.RawDoc</code> (passthrough) — the same projectors the canonical wrappers use.
+        Hand-rolling a <code>FromDoc</code> that walks <code>doc["id"]</code>, <code>doc["name"]</code>, … is a
+        redundant rewrite of what <code>AutoFromDoc</code> already does (<code>json:</code> tags,
+        <code>_id → id</code> fallback, Go-keyed doc from the reader, nil→empty-slice normalization). Declare a
+        consumer <code>R{}.FromDoc</code> method only when the projection needs logic <code>AutoFromDoc</code>
+        cannot express (derived fields from multiple doc keys, conditional shaping, ctx-aware projection). For
+        envelopes that need sidecar fields outside <code>data</code>/<code>pagination</code>, use
+        <code>fwweb.ProjectPage</code> and build the Response by hand — the projector and the pagination cursor
+        stay framework-managed.
+    </p>
+
+    <h3 id="cqry-path"><code>path:</code> tag — universal URL-segment binding</h3>
+    <p>
+        Every Request DTO field tagged <code>path:"&lt;name&gt;"</code> is populated from the matching Fiber URL
+        segment (<code>c.Params("&lt;name&gt;")</code>) before <code>ToCommand</code> / <code>ToQuery</code> runs.
+        It closes the asymmetry between the canonical wrappers (which only auto-bind <code>:id</code>) and routes
+        with custom identifier segments (<code>:email</code>, <code>:tenantId</code>, …) or compound paths
+        (<code>/tenants/:tenantId/users/:id</code>). It works the same on the write and read sides.
     </p>
     <pre><code>// Read by-email — single segment route
 type FindUserByEmailRequest struct {
     Email           string `path:"email"`
     IncludeArchived *bool  `query:"includeArchived"`
 }
-func (r FindUserByEmailRequest) ToQuery(crit fwqueries.ReadCriteria) *queries.FindUserByEmailQuery { ... }
 
 // Compound route — both segments via tag
 type UpdateOnTenantRequest struct {
@@ -129,51 +288,31 @@ type UpdateOnTenantRequest struct {
     Name     string `json:"name"`
 }</code></pre>
     <p>
-        Per-wrapper behavior — <code>:id</code>-binding wrappers (<code>HandleCommandWithBodyID</code>,
-        <code>HandleQueryWithID</code>) panic at boot if the Request declares <code>path:"id"</code>
-        (it would set the same value twice); Group A wrappers (<code>HandleCommandWithBody</code>,
-        <code>HandleQueryWithParams</code>) accept <code>path:"id"</code> for compound routes —
-        map <code>cmd.SetPathID(r.ID)</code> inside <code>ToCommand</code>. <code>HandleCommandWithID</code>
-        has no Request DTO and is excluded from path-binding entirely.
-    </p>
-    <p>
         Manual <code>fiber.Handler</code> closures opt out of the wrappers — call
-        <code>fwweb.BindPath(c, &amp;req)</code> explicitly (same helper as <code>ParseCriteria</code>).
-        See <code>omnicore-example-users/web/user_custom_routes.go</code> for the canonical example
-        of <code>BindPath → Bind().Body() → ToCommand → Dispatch</code>.
+        <code>fwweb.BindPath(c, &amp;req)</code> explicitly (the same helper <code>NewQueryParser</code> /
+        <code>ParseCriteria</code> sit beside). See <code>omnicore-example-users/web/user_custom_routes.go</code>
+        for the canonical <code>BindPath → Parse → ToQuery → Dispatch</code> chain.
     </p>
     <p>
-        Supported field types: <code>string</code>, signed/unsigned ints of any width,
+        <strong>Supported field types:</strong> <code>string</code>, signed/unsigned ints of any width,
         <code>float32</code>/<code>float64</code>, <code>bool</code>, <code>uuid.UUID</code>,
-        <code>domain.ID</code>. Pointer/slice/struct types are rejected at boot. Conversion failure
-        returns 400 <code>SchemaViolationNotification</code> with the segment name.
+        <code>domain.ID</code>. Pointer/slice/struct types are rejected at boot. Conversion failure returns
+        400 <code>SchemaViolationNotification</code> with the segment name.
     </p>
     <p>
-        <strong>FullBody interaction.</strong> The strict-body check in
-        <code>HandleCommandWithBody{,ID}</code> skips fields carrying a <code>path:</code> tag —
-        their value comes from the URL, not the body. Declaring both <code>path:"X"</code> and
-        <code>json:"X"</code> on the same field is a boot panic; the same value cannot come from
-        two sources.
-    </p>
-    <p>
-        <strong>Group A wrapper + ID-requiring handler warning.</strong> When
-        <code>HandleCommandWithBody</code> (no <code>:id</code> auto-bind) is paired with an ID-requiring
-        auto handler (<code>Update</code>/<code>PartialUpdate</code>/<code>Archive</code>/<code>Unarchive</code>/<code>Delete</code>)
-        AND the Request DTO declares no <code>path:</code> tag at all, the wrapper logs a single
-        <code>slog.Warn</code> at construction time. Catches the misconfiguration of "I expected
-        the wrapper to populate the ID" — the runtime guard
-        <code>handlers.RequirePathID</code> still catches the actual failure if the warning is
-        ignored. The read side needs no such warning: the only ID-requiring query handler
-        (<code>FindByIDQueryHandler</code>) does not compile against <code>HandleQueryWithParams</code>,
-        so the mismatch cannot be wired in the first place.
-    </p>
-    <p>
-        <strong>Runtime guard.</strong> Each ID-requiring auto handler calls
-        <code>handlers.RequirePathID(&lt;pathID&gt;, "&lt;HandlerName&gt;")</code> as the first line
-        of <code>Handle</code>. Empty path ID → developer-focused panic, caught by
-        <code>pipeline.Run</code>'s <code>defer/recover</code>, surfaced to the wire as 500
-        <code>InternalServerErrorNotification</code>; full diagnostic on slog. Each handler also
-        embeds <code>pipeline.PathIDRequired</code> so the wrappers can detect the requirement via
-        type assertion at construction time (zero per-request cost).
+        <strong>Per-wrapper behavior.</strong> The <code>:id</code>-binding wrappers
+        (<code>HandleQueryWithID</code>, <code>HandleCommandWithBodyID</code>) panic at boot if the Request
+        declares <code>path:"id"</code> (it would set the same value twice); the no-<code>:id</code> wrappers
+        (<code>HandleQueryWithParams</code>, <code>HandleCommandWithBody</code>) accept <code>path:"id"</code> for
+        compound routes. <strong>FullBody interaction:</strong> the strict-body check skips fields carrying a
+        <code>path:</code> tag — their value comes from the URL, not the body; declaring both <code>path:"X"</code>
+        and <code>json:"X"</code> on one field is a boot panic.
     </p>
 
+    <div class="box good">
+        <strong>Result:</strong> with a thin Query owning its <code>ToCriteria</code>, a hand-written handler that
+        calls the same <code>ViewReader</code>, a Request DTO declaring the allowlist, and a Fiber closure
+        chaining the building blocks, you get a read keyed by any identifier you like — with the same allowlist
+        enforcement, the same cursor pagination, the same projection, and the same 404/403/500 semantics the
+        canonical wrappers produce.
+    </div>
