@@ -15,6 +15,17 @@
     const host = document.getElementById('sectionHost');
     const toastEl = document.getElementById('toast');
 
+    /* ----- cache-bust fetched content per release -----
+       The #verBadge (bumped every release) is the single source of truth: a new
+       version changes the query string, forcing the browser to refetch nav.json
+       and every section instead of serving the stale GitHub Pages / browser-cached
+       fragment. No per-release maintenance beyond the badge bump already in the
+       release checklist. Empty when the badge is absent (degrades to no bust). */
+    const verBadge = document.getElementById('verBadge');
+    const CACHE_BUST = verBadge && verBadge.textContent.trim()
+        ? '?v=' + encodeURIComponent(verBadge.textContent.trim())
+        : '';
+
     /* ----- theme (applied early to avoid flash) ----- */
     const THEME_KEY = 'omnicore-theme';
     let theme = localStorage.getItem(THEME_KEY) || (matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light');
@@ -153,6 +164,49 @@
                 sec.insertBefore(eb, h2);
             }
         }
+        // changelog: color each release tag by its highest-severity entry
+        decorateReleases(sec);
+    }
+
+    /* ----- changelog release severity (auto-derived from entry categories) -----
+       No new markup convention: each <li> already starts with its Keep a Changelog
+       category (<strong>Added</strong>/Changed/Fixed/Removed) and breaking changes
+       carry a standalone <strong>breaking</strong>. We take the highest severity in
+       the release and tint its tag + prepend a shape-distinct icon (▲/◆/✚) so the
+       signal survives red-green color blindness; the icon carries an aria-label for
+       screen readers. Zero per-release maintenance — driven by the entries. */
+    function decorateReleases(sec) {
+        sec.querySelectorAll('.release').forEach(rel => {
+            let rank = 0; // 1 = new · 2 = fix/change · 3 = breaking
+            rel.querySelectorAll('li').forEach(li => {
+                const strongs = li.querySelectorAll('strong');
+                if (!strongs.length) return;
+                const cat = strongs[0].textContent.trim().toLowerCase();
+                let breaking = false;
+                strongs.forEach(s => { if (s.textContent.trim().toLowerCase() === 'breaking') breaking = true; });
+                let r;
+                if (breaking || cat === 'removed' || cat === 'security') r = 3;
+                else if (cat === 'added') r = 1;
+                else r = 2; // changed / fixed / deprecated / other
+                if (r > rank) rank = r;
+            });
+            if (!rank) return;
+            const variant = rank === 3 ? 'breaking' : rank === 2 ? 'change' : 'new';
+            const label = rank === 3 ? 'Breaking-change release'
+                : rank === 2 ? 'Fix / behavior-change release'
+                : 'New-features release';
+            const glyph = rank === 3 ? '▲' : rank === 2 ? '◆' : '✚';
+            rel.classList.add('sev-' + variant);
+            const head = rel.querySelector('.release-head');
+            if (head && !head.querySelector('.sev-icon')) {
+                const ic = document.createElement('span');
+                ic.className = 'sev-icon sev-' + variant;
+                ic.setAttribute('role', 'img');
+                ic.setAttribute('aria-label', label);
+                ic.textContent = glyph;
+                head.insertBefore(ic, head.firstChild);
+            }
+        });
     }
 
     /* ----- fetch + cache a section ----- */
@@ -161,7 +215,7 @@
         const sec = document.createElement('section');
         sec.id = id; sec.className = 'doc-section';
         try {
-            const res = await fetch('content/sections/' + id + '.html');
+            const res = await fetch('content/sections/' + id + '.html' + CACHE_BUST);
             if (!res.ok) throw new Error(res.status);
             sec.innerHTML = await res.text();
             enhance(sec);
@@ -367,7 +421,7 @@
     /* ----- boot ----- */
     (async function boot() {
         try {
-            const res = await fetch('content/nav.json');
+            const res = await fetch('content/nav.json' + CACHE_BUST);
             NAV = await res.json();
         } catch (e) {
             host.innerHTML = '<h2>Couldn\u2019t load the navigation</h2><p class="muted">Tried <code>content/nav.json</code>. Serve this over http instead of opening the file directly \u2014 e.g. <code>python3 -m http.server</code> \u2014 since browsers block <code>fetch()</code> on <code>file://</code>.</p>';
