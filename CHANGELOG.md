@@ -11,6 +11,20 @@ with `1.0.0`.
 
 ## [Unreleased]
 
+## [0.14.1] - 2026-06-24
+
+### Fixed
+
+- **GraphQL error `extensions` now mirror the REST `ErrorMessage` fully.** Domain
+  notifications surfaced over GraphQL carried only `notificationKey` / `semantic` /
+  `field` in `errors[].extensions`, silently dropping the translated `fieldLabel`
+  (from the `labelKey` tag), the echoed `value`, and `funcName` — all of which the
+  REST envelope already carries and which the shared `notifications.MessageDTO`
+  already holds. GraphQL clients (and frontend-less channels relying on the
+  human-readable label) now read the same fields on both surfaces. The three added
+  keys are emitted only when non-empty (omitempty parity), so services that don't
+  use them see a byte-identical envelope.
+
 ## [0.14.0] - 2026-06-24
 
 ### Added

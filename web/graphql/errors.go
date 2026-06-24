@@ -43,6 +43,21 @@ func fromNotifications(ctxs []notifications.ContextDTO) []GraphQLError {
 			if m.FieldName != "" {
 				ext["field"] = m.FieldName
 			}
+			// Mirror the REST ErrorMessage (web/from_notifications.go): the
+			// translated human label (from the `labelKey` tag), the echoed
+			// value, and the funcName all travel in extensions so a GraphQL
+			// client reads the same vocabulary the REST envelope carries.
+			// Each is emitted only when non-empty, matching the wire's
+			// omitempty so services that don't use these stay byte-identical.
+			if m.FieldLabel != "" {
+				ext["fieldLabel"] = m.FieldLabel
+			}
+			if m.FieldValue != "" {
+				ext["value"] = m.FieldValue
+			}
+			if m.FuncName != "" {
+				ext["funcName"] = m.FuncName
+			}
 			out = append(out, GraphQLError{Message: m.Message, Extensions: ext})
 		}
 	}
