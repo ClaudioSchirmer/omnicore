@@ -1,59 +1,52 @@
 <h2>What the framework does</h2>
+    <p>
+        Importing the module gives a service the full DDD + CQRS spine — typed validation,
+        atomic persistence with outbox, guaranteed audit, multi-language, structured logging,
+        the CQRS pipeline, and standardized REST <em>and</em> GraphQL surfaces. This page is a
+        map: each capability links to the section that documents it in depth. The dedicated
+        sections are the source of truth — start here, then dive in.
+    </p>
+
     <div class="grid-2">
         <div class="card">
-            <h4>Domain Layer</h4>
+            <h4>Domain — pure business rules</h4>
             <ul>
-                <li>Embeddable <code>BaseEntity</code> with signature, mode, notification context</li>
-                <li>Sealed <code>ValidEntity</code> (Insertable/Updatable/Archivable/Deletable/<strong>Unarchivable</strong>/Batch)</li>
-                <li><code>Rules</code> DSL with <code>IfInsert/IfUpdate/IfDelete/IfInsertOrUpdate</code></li>
-                <li><code>AggregateRoot</code> with status tracking (Constructor/Added/Changed/Removed) + type-guarded top-level primitives (<code>AddAggregateChild</code>, <code>ChangeAggregateChild</code>, <code>RemoveAggregateChild</code>, <code>ReplaceAggregateChildrenOf</code>)</li>
-                <li><strong><code>AggregateRootProvider</code></strong> — opt-in for atomic aggregate-aware persistence <em>and</em> children auto-validation. <code>AggregateChildren()</code> declares the aggregate boundary; primitives reject VOs of undeclared types</li>
-                <li>Generic <code>ValueObject[T]</code> + <code>EnumValueObject[T]</code></li>
-                <li>Typed <code>ID</code> validating UUID</li>
-                <li><code>Schema</code> validator with 5 types (String/Int/Float/Bool/UUID)</li>
-                <li>Typed notification system (25+ built-in types)</li>
+                <li><a href="#rules-dsl">Rules DSL</a> — <code>IfInsert</code>/<code>IfUpdate</code>/<code>IfDelete</code>/<code>IfInsertOrUpdate</code> mode-scoped validation on the entity</li>
+                <li><a href="#aggregate-persistence">Aggregate persistence</a> — <code>AggregateRoot</code> with status tracking + type-guarded child primitives; <code>AggregateRootProvider</code> opts into atomic aggregate-aware persistence and child auto-validation</li>
+                <li><a href="#old-state">Old-state snapshot</a> — pre-mutation entity available to <code>BuildRules</code> and the auditor</li>
+                <li><a href="#status-mapping">Typed notification system</a> — translation key = struct name; <code>NotificationKey</code> + <code>Semantic</code> carried to the wire</li>
             </ul>
         </div>
         <div class="card">
-            <h4>Application Layer</h4>
+            <h4>Application — pipeline &amp; ports</h4>
             <ul>
-                <li><code>Pipeline</code> dispatcher with exception/panic capture</li>
-                <li>Generic <code>Result[T]</code> (Success/Failure/Exception)</li>
-                <li>Fluent DSL: <code>OnSuccess</code>, <code>OnFailure</code>, <code>OnException</code></li>
-                <li><code>AppContext</code> with UUID + Language per request</li>
-                <li>Multi-language <code>Translator</code> (PT_BR + ENG + ES + FR + DE + IT + NL built-in)</li>
-                <li><code>persistence.ScopedRepository[T]</code> binding (<code>domain.Reader[T]</code> + <code>Scope(ctx, opts...) domain.Writer</code>) — reads stay direct on the handle, writes bind the request ctx + the <code>WriteOption[T]</code> in-TX lifecycle hooks (<code>afterBegin</code> / <code>beforeCommit</code>) via <code>Scope</code> and return a pure <code>domain.Writer</code> (Insert/Update/Archive/<strong>Unarchive</strong>/Delete); the bound writer carries the actor + thread id + cancellation so the domain port never pronounces the ctx</li>
-                <li><code>MessageDTO.NotificationKey</code> — typed identity preserved post-translation</li>
+                <li><a href="#command-handler">CommandHandler</a> / <a href="#query-side">QueryHandler</a> — the <code>Pipeline</code> dispatcher with exception/panic capture and generic <code>Result[T]</code> (Success/Failure/Exception)</li>
+                <li><a href="#auto-handlers">Auto command</a> + <a href="#auto-query-handlers">auto query handlers</a> — generic CRUD with zero handler code</li>
+                <li><a href="#app-context">AppContext</a> — UUID + Language + Identity per request</li>
+                <li><a href="#status-mapping">Translator</a> — 7 built-in catalogs (PT-BR / ENG / ES / FR / DE / IT / NL)</li>
+                <li><a href="#lifecycle-hooks">ScopedRepository[T] + lifecycle hooks</a> — reads stay direct on the handle; writes bind ctx + actor + the in-TX <code>afterBegin</code> / <code>beforeCommit</code> hooks via <code>Scope</code></li>
             </ul>
         </div>
         <div class="card">
-            <h4>Infrastructure Layer</h4>
+            <h4>Infrastructure — persistence &amp; sync</h4>
             <ul>
-                <li><code>infra.Postgres</code> — pgx pool with Insert/Update/Archive/<strong>Unarchive</strong>/Delete + <code>Pool()</code> accessor</li>
-                <li><strong>Atomic outbox</strong> in the same SQL transaction</li>
-                <li><strong>Transparent aggregate-aware</strong> — one transaction covers root + children + a single outbox row</li>
-                <li><code>infra.MongoDB</code> — driver with Upsert/Delete</li>
-                <li><code>SyncEngine</code> — Kafka consumer reads metadata from <strong>headers/key</strong> (Debezium Outbox Router native); DELETED always → delete; ARCHIVED → compose+upsert by default (document survives with <code>deleted_at</code> populated, mirroring PostgreSQL), delete when the view opted in via <code>DeleteOnArchive()</code>; UNARCHIVED → upsert</li>
-                <li><code>Composer</code> omits the <code>deleted_at IS NULL</code> filter by default; <code>DeleteOnArchive()</code> views apply the filter on root + every embed (cascade)</li>
-                <li><code>UpstreamSubscriber</code> — materializes upstream events into a local Mongo collection and ripples recompose to every view embedding it via an external <code>FromSchema</code> embed</li>
-                <li><code>ViewDefinition</code> with fluent builder (<code>Embed</code>/<code>EmbedMany</code>/<code>FromSchema</code>/<code>DeleteOnArchive</code>) — schema mandatory on root + every embed</li>
-                <li><strong>Audit pipeline</strong> — every successful write produces an <code>AuditEvent</code> routed by <code>audit.destinations</code>: <code>database</code> writes an <code>audit_events</code> row <strong>inside the same TX</strong> as the data row + outbox row (atomic source of truth); <code>slog</code> emits a flat top-level slog line post-commit (observability echo). Plus <code>SlogPublisher</code> for domain events.</li>
+                <li><a href="#table-schema">TableSchema</a> — one explicit Go-field↔column map driving PG write + criteria + scan + the Mongo view</li>
+                <li><a href="#lifecycle-map">Atomic outbox + transparent aggregate persistence</a> — one transaction covers root + children + a single outbox row</li>
+                <li><a href="#audit">Audit pipeline</a> — every write emits an <code>AuditEvent</code> routed by <code>audit.destinations</code> (in-TX <code>audit_events</code> row and/or post-commit slog echo)</li>
+                <li><a href="#read-lifecycle-map">SyncEngine + Composer</a> — Kafka consumer materializes Mongo views from the outbox; Mongo mirrors PostgreSQL (archived rows survive unless <code>DeleteOnArchive()</code>)</li>
+                <li><a href="#service-to-service">UpstreamSubscriber</a> — materializes upstream events into a local Mongo collection and ripples recompose to every embedding view</li>
+                <li><a href="#cache-subsystem">Cache</a> · <a href="#httpclient">httpclient</a> · <a href="#integration-events">integration events</a> — the cross-service plumbing</li>
             </ul>
         </div>
         <div class="card">
-            <h4>Web Layer</h4>
+            <h4>Web — REST, GraphQL &amp; export</h4>
             <ul>
-                <li><code>Response</code>/<code>Error</code>/<code>ErrorMessage</code> standardized JSON shape (with <code>notificationKey</code> + <code>semantic</code>)</li>
-                <li><code>RespondFromResult[T]</code> — renders <code>Result[T]</code> as HTTP; status derived from each notification's <code>Semantic()</code></li>
-                <li><strong><code>NotificationSemantic</code></strong> — transport-agnostic enum (<code>Validation</code>/<code>NotFound</code>/<code>Conflict</code>/<code>Forbidden</code>/<code>Unauthorized</code>/<code>Unavailable</code>) declared by the notification itself</li>
-                <li><code>RespondFromError</code> — discriminates error via <code>NotificationCarrier</code></li>
-                <li>Helpers: <code>RespondWithSuccess/NotFound/BadRequest/...</code></li>
-                <li>Middleware: <code>Recover</code> (slog-integrated panic handler). Bootstrap registers <code>fwweb.Recover()</code> + Fiber's request logger (<code>logger.New()</code>) by default; CORS and rate limiting are the service's call when needed, via Fiber's own <code>cors.New</code> / <code>limiter.New</code></li>
-                <li><code>ParseBody</code>, <code>ParseID</code></li>
-                <li><code>HandleQueryWithParams</code> / <code>HandleQueryWithID</code> — read-side wrappers; allowlist via <code>query:"..." filter:"ops"</code> struct tags; mandatory projector <code>func(map[string]any) R</code> (<code>fwresponses.AutoFromDoc[R]</code> tag-driven default, <code>fwresponses.RawDoc</code> passthrough, or consumer's <code>Response{}.FromDoc</code>); the Response carries only <code>json:</code> tags — the reader already returns a Go-keyed document (columns translated via the view's <code>TableSchema</code>); <code>Response.Pagination</code> top-level</li>
-                <li><code>NewQueryParser</code> / <code>ParseCriteria</code> / <code>BindPath</code> / <code>RespondSchemaViolation</code> / <code>ProjectPage</code> / <code>RespondPaged</code> — building blocks for manual query handlers (same allowlist + sparse-render guard + path-binding + envelope as the auto wrappers)</li>
-                <li><strong><code>HandleQueryAsCSV</code> / <code>HandleQueryAsXLSX</code></strong> — attach the SAME query handler + Request DTO to a downloadable CSV or Excel export: hierarchical (one column per nesting level), labelKey-rendered headers per <code>Accept-Language</code>, <code>?fields=</code>-narrowed, capped at <code>query.maxExportRows</code>; format is a pluggable <code>web/export.Encoder</code>. See <a href="#handler-invariance">Handler invariance</a></li>
-                <li><code>path:"&lt;name&gt;"</code> struct tag — universal URL-segment binding; every Request DTO field tagged is populated from <code>c.Params("&lt;name&gt;")</code> before <code>ToCommand</code> / <code>ToQuery</code>; symmetric to <code>json:</code>/<code>query:</code>/<code>filter:</code>; supported by every wrapper with a Request DTO</li>
+                <li><a href="#status-mapping">Canonical envelope + HTTP status mapping</a> — <code>RespondFromResult[T]</code> derives the status from each notification's transport-agnostic <code>Semantic()</code></li>
+                <li><a href="#auto-query-handlers">Query wrappers</a> — allowlist via <code>query:</code>/<code>filter:</code> tags, keyset pagination, sparse <code>?fields=</code>, sort; <code>path:</code> tag for universal URL-segment binding</li>
+                <li><a href="#auto-query-handlers">Tabular export</a> — <code>HandleQueryAsCSV</code> / <code>HandleQueryAsXLSX</code> attach the SAME query handler to a downloadable CSV or Excel file (hierarchical, labelKey headers, <code>?fields=</code>-narrowed, capped at <code>query.maxExportRows</code>)</li>
+                <li><a href="#openapi">OpenAPI 3.1 + Swagger UI</a> — generated by reflection over your Go DTOs, no codegen</li>
+                <li><a href="#graphql">GraphQL</a> — the same application handlers behind a single <code>POST /graphql</code>; SDL, Relay connections, and <code>where</code> filters reflected from the same DTOs. Its own web surface, never in the Swagger document</li>
+                <li><a href="#auth-middleware">JWT auth</a> + <a href="#authz-seams">3-layer authorization</a> — middleware validation + permission gate + tenant scoping, shared across REST and GraphQL</li>
             </ul>
         </div>
     </div>
