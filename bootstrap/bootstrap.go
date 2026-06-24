@@ -16,6 +16,7 @@ import (
 	"github.com/ClaudioSchirmer/omnicore/application/translation"
 	"github.com/ClaudioSchirmer/omnicore/infra"
 	"github.com/ClaudioSchirmer/omnicore/infra/audit"
+	"github.com/ClaudioSchirmer/omnicore/infra/events"
 	"github.com/ClaudioSchirmer/omnicore/infra/httpclient"
 	"github.com/ClaudioSchirmer/omnicore/infra/integration"
 	"reflect"
@@ -277,6 +278,10 @@ func buildDeps(cfg *Config) (Deps, error) {
 	// destinations automatically. nil cfg.Audit destinations slice would
 	// have been populated by applyDefaults already.
 	pg.WithAudit(&cfg.Audit, logger, cfg.Auth.AuditClaims)
+	// Domain events accumulated via entity.RegisterEvent are forwarded
+	// post-commit through the slog transport by default; a consumer can swap
+	// the transport with pg.WithEventPublisher(customPublisher) before serving.
+	pg.WithEventPublisher(events.NewSlogPublisher(logger))
 	viewReader := infra.NewMongoViewReader(mg)
 
 	// Resolve the SERVICE-PRIVATE cache from cfg only (no Wire

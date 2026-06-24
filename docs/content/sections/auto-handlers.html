@@ -7,9 +7,41 @@
         finishes the projection with <code>Response.FromResult(Result) Response</code>. No handler struct to write.
     </p>
     <p>
-        For CRUD with extra rules (cross-service IO, injected domain services), keep writing
-        a manual Handler — they coexist in the same API.
+        For CRUD with extra rules (cross-service IO, injected domain services), keep writing a manual Handler (see <a href="#custom-command-handler">Custom command handler</a>) — they coexist in the same API.
     </p>
+
+    <p>
+        The <a href="#command-handler~cmd-flow">full flow of a POST</a> runs the same on both paths; this
+        table maps each responsibility to who owns it — what the framework automates versus what your code
+        provides.
+    </p>
+    <h3 id="cmd-auto-vs-manual">Automatic × Manual</h3>
+    <table>
+        <tbody><tr>
+            <th>Responsibility</th>
+            <th>Who does it</th>
+            <th>Where</th>
+        </tr>
+        <tr><td>Parse the HTTP body</td><td><span class="tag manual">manual</span></td><td>on the Fiber route (<code>c.Bind().Body()</code>)</td></tr>
+        <tr><td>Build the <code>AppContext</code></td><td><span class="tag manual">manual</span></td><td>middleware (1 line)</td></tr>
+        <tr><td>Construct the domain entity</td><td><span class="tag manual">manual</span></td><td>Handler</td></tr>
+        <tr><td>Define validation rules</td><td><span class="tag manual">manual</span></td><td>entity's <code>BuildRules</code></td></tr>
+        <tr><td>Execute the rules (mode-aware)</td><td><span class="tag auto">automatic</span></td><td><code>domain.GetInsertable</code></td></tr>
+        <tr><td>Validate registered ValueObjects</td><td><span class="tag auto">automatic</span></td><td><code>runValueObjectValidations</code></td></tr>
+        <tr><td>Validate allowed modes</td><td><span class="tag auto">automatic</span></td><td>via <code>Modes()</code> annotation</td></tr>
+        <tr><td>Validate ID per mode</td><td><span class="tag auto">automatic</span></td><td>Insert does not allow ID; Update/Delete require it</td></tr>
+        <tr><td>Build <code>ValidEntity</code> with metadata</td><td><span class="tag auto">automatic</span></td><td>after validation OK</td></tr>
+        <tr><td>Implement <code>Repository.Insert</code></td><td><span class="tag manual">manual</span></td><td>delegates to <code>infra.Postgres</code></td></tr>
+        <tr><td>Dynamic SQL <code>INSERT</code></td><td><span class="tag auto">automatic</span></td><td><code>infra.Postgres.Insert</code></td></tr>
+        <tr><td>Write outbox in the same transaction</td><td><span class="tag auto">automatic</span></td><td><code>infra/executor.go</code> + <code>outbox.go</code></td></tr>
+        <tr><td>Write the <code>audit_events</code> row (in-TX, atomic with the data + outbox)</td><td><span class="tag auto">automatic</span></td><td><code>infra.Postgres</code> when <code>audit.destinations</code> includes <code>database</code></td></tr>
+        <tr><td>Echo the audit slog line (post-commit, best-effort)</td><td><span class="tag auto">automatic</span></td><td><code>infra.Postgres</code> when <code>audit.destinations</code> includes <code>slog</code></td></tr>
+        <tr><td>Publish domain events registered via <code>RegisterEvent</code> (post-commit, best-effort)</td><td><span class="tag auto">automatic</span></td><td><code>infra.Postgres</code> forwards them through the wired <code>events.Publisher</code> (<code>SlogPublisher</code> default; no-op when the entity registered none)</td></tr>
+        <tr><td>Catch domain errors</td><td><span class="tag auto">automatic</span></td><td><code>pipeline.Run</code> via <code>NotificationCarrier</code></td></tr>
+        <tr><td>Notification translation</td><td><span class="tag auto">automatic</span></td><td><code>Pipeline</code> uses <code>Translator</code> + <code>AppContext.Language()</code></td></tr>
+        <tr><td>Panic recovery</td><td><span class="tag auto">automatic</span></td><td><code>defer/recover</code> in <code>pipeline.Run</code></td></tr>
+        <tr><td>Conversion to HTTP Response</td><td><span class="tag auto">automatic</span></td><td><code>web.RespondFromResult</code></td></tr>
+    </tbody></table>
 
     <h3>The 6 handlers</h3>
     <p>
@@ -72,7 +104,8 @@
         package.
     </p>
     <pre><code>type UpdateCommandHandler[T, Cmd, TResult] struct {
-    pipeline.FullBody  // marker — wrapper activates strict body check
+    pipeline.FullBody       // marker — wrapper activates strict body check
+    pipeline.PathIDRequired // marker — ID-requiring handler (wrapper detects; RequirePathID enforces)
     Repo    persistence.ScopedRepository[T]
     Service domain.Service     // optional — see "Domain Service via Auto handler"
     // No Auditor field — audit is owned by infra.Postgres, configured at boot.
@@ -221,15 +254,6 @@ users.Post("/", fwweb.HandleCommandWithBody(d.Pipeline,
         a value-receiver OR a pointer-receiver — Go promotes value-receiver methods to the pointer type.
     </p>
 
-    <h3>Manual path (cross-service, side effects)</h3>
-    <p>
-        Handler with external IO, injected domain service, or complex orchestration: continues to be a
-        struct that implements <code>pipeline.Handler[*Cmd, TResult]</code> — exactly as before. <code>TResult</code>
-        is whatever application-layer value the handler returns; the route's <code>responseProjection</code> then
-        maps it to the wire <code>TResp</code>. It is registered on the route with the same
-        <code>HandleCommand</code>/<code>HandleCommandWithID</code>.
-    </p>
-
     <h3>Domain Service via Auto handler (optional <code>Service</code> field)</h3>
     <p>
         The 6 Auto handlers expose an optional <code>Service domain.Service</code> field. When set,
@@ -237,7 +261,7 @@ users.Post("/", fwweb.HandleCommandWithBody(d.Pipeline,
         This enables infra-dependent queries inside domain rules without falling back to the manual path
         — e.g., uniqueness invariant that needs a DB query.
     </p>
-    <pre><code>// Domain — interface declarada no pacote da entity, embeda ServiceBase.
+    <pre><code>// Domain — interface declared in the entity package, embeds ServiceBase.
 type UserService interface {
     domain.Service
     EmailExists(email string, excludeID domain.ID) bool

@@ -1842,7 +1842,7 @@ Layouts (all supported): consolidated `bootstrap/` package main (canonical `omni
 - **Cache** — `cache.Cache` byte-level port in `infra/cache` (Get/Set/Delete); impls `NewMemory`/`NewRedis`, custom via `Wiring.Cache`/`SharedCache` + `store: custom`.
 - **Carrier** — `domain.NotificationCarrier`: error with `NotificationContexts()`. Cross-layer error contract.
 - **RequestContext** — request-scoped `persistence.RequestContext` (context + `ID()` + actor accessors) satisfied by `*AppContext`; domain has no context type.
-- **Domain event** — `DomainEvent` accumulated via `RegisterEvent`, published by `events.Publisher` after persistence.
+- **Domain event** — `DomainEvent` accumulated via `RegisterEvent` (carried on the ValidEntity); published post-commit, best-effort, by the wired `events.Publisher` (default `SlogPublisher`) — automatic for Auto and manual handlers via the persister, no-op when none registered.
 - **Granularity B** — one outbox row per aggregate operation regardless of child count.
 - **Notification / NotificationKey** — typed marker the domain emits (translation key = Go type name); `NotificationKey` is that struct-name identity preserved through translation to the wire.
 - **Outbox** — domain row + event row in one TX; Debezium tails it to Kafka.
