@@ -161,8 +161,9 @@ func (EmailAlreadyExistsNotification) Semantic() domain.NotificationSemantic {
         is a domain semantic enum (does not import <code>net/http</code> or Fiber).
         The <strong>GraphQL</strong> surface already maps the same enum to its own
         wire shape — <code>Semantic().String()</code> becomes
-        <code>errors[].extensions.semantic</code> (alongside <code>notificationKey</code>
-        and <code>field</code>) with HTTP always 200, per the GraphQL convention —
+        <code>errors[].extensions.semantic</code> (alongside <code>notificationKey</code>,
+        <code>field</code>, <code>fieldLabel</code>, <code>value</code> and <code>funcName</code> —
+        the same fields the REST <code>ErrorMessage</code> carries) with HTTP always 200, per the GraphQL convention —
         without touching notification definitions. A future gRPC layer would map the
         identical enum to its status codes the same way.
     </div>

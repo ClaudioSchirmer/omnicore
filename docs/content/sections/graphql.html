@@ -244,8 +244,11 @@ reg.Register(fwgraphql.MutationByID(
     (parse/validation) and field faults (domain notifications) travel in <code>errors</code>, never the
     status line. Each domain notification becomes one <code>errors[]</code> entry carrying the typed
     identity in <code>extensions</code>: <code>{ "message": ..., "extensions": { "notificationKey": ...,
-    "semantic": ..., "field": ... } }</code> — the GraphQL counterpart of the REST envelope's
-    <code>notificationKey</code> / <code>semantic</code>, so clients branch on the same typed identity.
+    "semantic": ..., "field": ..., "fieldLabel": ..., "value": ..., "funcName": ... } }</code> — a faithful
+    mirror of the REST envelope's <code>ErrorMessage</code>, so clients branch on the same typed identity and
+    frontend-less channels read the same translated <code>fieldLabel</code> (from the <code>labelKey</code> tag)
+    and echoed <code>value</code>. <code>fieldLabel</code> / <code>value</code> / <code>funcName</code> are
+    emitted only when present (omitempty parity), so services that don't use them keep a byte-identical envelope.
     A recovered panic surfaces as an opaque <code>{ semantic: "Internal" }</code> error; the panic value
     and stack stay server-side, mirroring the REST 500 posture.
 </p>

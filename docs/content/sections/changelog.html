@@ -2,6 +2,13 @@
 <p>Notable changes to the framework, newest first — a consumer-facing digest of the public surface. The exhaustive, per-symbol list (Keep a Changelog format, SemVer) lives in <code>CHANGELOG.md</code> at the repository root. While in <code>0.x.y</code> the public API may change between minor versions; breaking changes are called out under <em>Changed</em>. When you ship a feature, add a new <code>release</code> block at the top and bump the <code>v…</code> badge in <code>index.html</code>.</p>
 <div class="changelog">
     <div class="release">
+        <div class="release-head"><span class="release-tag">v0.14.1</span><span class="release-date">June 24, 2026</span></div>
+        <ul>
+            <li><strong>Fixed</strong> — <strong>GraphQL error <code>extensions</code> now mirror the REST <code>ErrorMessage</code> in full.</strong> Domain notifications surfaced over GraphQL carried only <code>notificationKey</code> / <code>semantic</code> / <code>field</code>, silently dropping the translated <code>fieldLabel</code> (from the <code>labelKey</code> tag), the echoed <code>value</code>, and <code>funcName</code> — all of which the REST envelope already carries and which the shared <code>notifications.MessageDTO</code> already holds. GraphQL clients, and frontend-less channels relying on the human-readable label, now read the same fields on both surfaces. The three added keys are emitted only when present (omitempty parity), so services that don't use them keep a byte-identical envelope. See <a href="#graphql">GraphQL</a>.</li>
+        </ul>
+    </div>
+
+    <div class="release">
         <div class="release-head"><span class="release-tag">v0.14.0</span><span class="release-date">June 24, 2026</span></div>
         <ul>
             <li><strong>Added</strong> — <strong>domain events now publish post-commit.</strong> Events an entity accumulates via <code>entity.RegisterEvent(DomainEvent{…})</code> are forwarded after a successful write, best-effort, through a configurable <code>events.Publisher</code> — the default <code>events.SlogPublisher</code> writes one flat slog line per event, with the same top-level vocabulary as the audit echo (<code>threadId</code>, <code>entityType</code>, <code>actor</code>, …). It fires at the same post-commit position as the audit slog echo, on both the flat and aggregate write paths, so it is <strong>automatic for Auto and manual handlers alike</strong> and a no-op when the entity registered no events. Swap the transport (Kafka, etc.) with <code>pg.WithEventPublisher(publisher)</code>. The publisher type shipped before but was never invoked on any write path. See <a href="#command-handler">CommandHandler</a> and <a href="#auto-handlers">Auto command handlers</a>.</li>
