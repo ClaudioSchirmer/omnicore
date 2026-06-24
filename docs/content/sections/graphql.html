@@ -243,11 +243,14 @@ reg.Register(fwgraphql.MutationByID(
     GraphQL always returns HTTP 200 with a <code>{ data, errors }</code> body — request faults
     (parse/validation) and field faults (domain notifications) travel in <code>errors</code>, never the
     status line. Each domain notification becomes one <code>errors[]</code> entry carrying the typed
-    identity in <code>extensions</code>: <code>{ "message": ..., "extensions": { "notificationKey": ...,
-    "semantic": ..., "field": ..., "fieldLabel": ..., "value": ..., "funcName": ... } }</code> — a faithful
+    identity in <code>extensions</code>: <code>{ "message": ..., "extensions": { "context": ...,
+    "notificationKey": ..., "semantic": ..., "field": ..., "fieldLabel": ..., "value": ..., "funcName": ... } }</code> — a faithful
     mirror of the REST envelope's <code>ErrorMessage</code>, so clients branch on the same typed identity and
     frontend-less channels read the same translated <code>fieldLabel</code> (from the <code>labelKey</code> tag)
-    and echoed <code>value</code>. <code>fieldLabel</code> / <code>value</code> / <code>funcName</code> are
+    and echoed <code>value</code>. The REST envelope groups messages under a translated <code>context</code>
+    (e.g. <code>"User"</code>); the flat GraphQL <code>errors[]</code> has no grouping level, so that
+    <code>context</code> rides per message in <code>extensions</code> instead. <code>context</code> /
+    <code>fieldLabel</code> / <code>value</code> / <code>funcName</code> are
     emitted only when present (omitempty parity), so services that don't use them keep a byte-identical envelope.
     A recovered panic surfaces as an opaque <code>{ semantic: "Internal" }</code> error; the panic value
     and stack stay server-side, mirroring the REST 500 posture.

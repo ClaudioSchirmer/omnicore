@@ -11,6 +11,17 @@ with `1.0.0`.
 
 ## [Unreleased]
 
+### Fixed
+
+- **GraphQL error `extensions` now carry the REST envelope's `context`.** The REST
+  error envelope groups messages under a translated `context` (e.g. `"User"`); the
+  flat GraphQL `errors[]` has no grouping level, so the context was silently dropped
+  — the one piece of notification data that survived on REST but not GraphQL.
+  `errors[].extensions.context` now rides per message, closing the last data gap
+  between the two surfaces (the envelope *shape* legitimately differs; the *data* no
+  longer does). Emitted only when non-empty (omitempty parity), so services that
+  don't name a context see a byte-identical envelope.
+
 ## [0.14.1] - 2026-06-24
 
 ### Fixed

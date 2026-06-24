@@ -1634,7 +1634,7 @@ Custom error status via `Doc.ResponseExamples[N]` auto-creates the entry; `defau
 - **`where` input** from the `filter:` allowlist; one input field per leaf exposing the declared operators (nested embed leaves flatten `addresses.zipCode`→`addresses_zipCode`). Folds through the SAME criteria emission as REST (`queryschema.ApplyFilterParam`), so `where:{name:{startswith:"Bo"}}` == REST `?name.startswith=Bo`.
 - **Mutation input** from `json:` tags; NonNull under `pipeline.FullBody` (strict) else non-pointer-without-omitempty (same rule as REST/OpenAPI). Missing-required is enforced by gqlparser validation.
 - **Args → criteria/command** reuse `web/queryschema`; selection set → projection (trim); `pipeline.Dispatch` with the request `*AppContext` (so `ToCriteria(ctx)` overlays, `BuildRules`, outbox, audit apply unchanged).
-- **Errors**: always HTTP 200 `{data,errors}`; notifications → `errors[].extensions{notificationKey, semantic, field, fieldLabel, value, funcName}` — a faithful mirror of the REST `ErrorMessage` (`fieldLabel`/`value`/`funcName` omitempty), the GraphQL sibling of `RespondFromResult`; panic → opaque `{semantic:"Internal"}`.
+- **Errors**: always HTTP 200 `{data,errors}`; notifications → `errors[].extensions{context, notificationKey, semantic, field, fieldLabel, value, funcName}` — a faithful mirror of the REST `ErrorMessage` plus the REST envelope's grouping `context` (the flat GraphQL `errors[]` has no grouping level, so the context rides per message); the GraphQL sibling of `RespondFromResult` (`context`/`fieldLabel`/`value`/`funcName` omitempty); panic → opaque `{semantic:"Internal"}`.
 
 ### Shared reflection core (`web/queryschema`)
 
