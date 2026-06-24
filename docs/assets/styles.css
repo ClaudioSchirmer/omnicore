@@ -502,6 +502,18 @@ mark.search-hit { background: #ffe39c; color: #3a2f12; border-radius: 3px; paddi
 .release-head { display: flex; align-items: center; gap: 12px; margin: 22px 0 8px; }
 .release-tag { font-family: "JetBrains Mono", monospace; font-size: 13px; font-weight: 600; color: var(--accent-ink); background: var(--accent-soft); border: 1px solid var(--accent-line); border-radius: 7px; padding: 3px 10px; }
 .release-date { font-size: 13px; color: var(--faint); }
+/* release severity — icon + tag tint applied by app.js (decorateReleases).
+   Shape-distinct icons (▲/◆/✚) carry the meaning so it survives red-green
+   color blindness; color reinforces. Reuses the theme's --good/--warn/--bad. */
+.sev-icon { font-family: "JetBrains Mono", monospace; font-size: 12px; line-height: 1; flex: none; }
+.sev-icon.sev-breaking { color: var(--bad); }
+.sev-icon.sev-change   { color: var(--warn); }
+.sev-icon.sev-new      { color: var(--good); }
+.release.sev-breaking .release-tag { color: var(--bad);  background: var(--bad-bg);  border-color: var(--bad-line); }
+.release.sev-change   .release-tag { color: var(--warn); background: var(--warn-bg); border-color: var(--warn-line); }
+.release.sev-new      .release-tag { color: var(--good); background: var(--good-bg); border-color: var(--good-line); }
+.changelog-legend { display: flex; flex-wrap: wrap; gap: 18px; margin: 12px 0 20px; font-size: 13px; color: var(--muted); }
+.changelog-legend .legend-item { display: inline-flex; align-items: center; gap: 6px; }
 
 @media print {
     .sidebar, .topbar, .rail, .pager, .copy-btn, .h3-anchor, .scrim, .toast { display: none !important; }
