@@ -14,17 +14,19 @@
     topic. <em>Convenience</em> is the payoff: a new demand is a new attachment, not new logic.
 </div>
 
-<p>
-    Two families, each with more than one attachment surface:
-</p>
-<ul>
-    <li><strong>Command handlers</strong> (the write side) attach to <strong>HTTP/JSON</strong>, to
-        <strong>Kafka</strong>, or as a <strong>GraphQL mutation</strong>.</li>
-    <li><strong>Query handlers</strong> (the read side) attach to <strong>HTTP/JSON</strong>, to
-        <strong>CSV</strong>, to <strong>Excel</strong>, or as a <strong>GraphQL query</strong>.</li>
-</ul>
+<div class="box good">
+    <strong>Every way to attach a handler.</strong> Two families, each interchangeable across more
+    than one surface — the same handler instance, no rewrite:
+    <ul>
+        <li><strong>Command handlers</strong> (the write side) attach to <strong>HTTP/JSON</strong>,
+            to <strong>Kafka</strong>, or as a <strong>GraphQL mutation</strong>.</li>
+        <li><strong>Query handlers</strong> (the read side) attach to <strong>HTTP/JSON</strong>, to
+            a <strong>CSV</strong> download, to an <strong>Excel</strong> download, or as a
+            <strong>GraphQL query</strong>.</li>
+    </ul>
+</div>
 
-<h3 id="hi-command">Command handlers — HTTP or Kafka</h3>
+<h3 id="hi-command">Command handlers</h3>
 <p>
     One <code>pipeline.Handler[TCmd, TResult]</code> (an Auto Command Handler or a hand-rolled one)
     serves a synchronous HTTP endpoint and an asynchronous cross-service Kafka receiver from the
@@ -55,7 +57,7 @@ gql.Register(fwgraphql.Mutation[requests.InsertUserRequest](
     <a href="#integration-events">Integration events</a>.
 </p>
 
-<h3 id="hi-query">Query handlers — HTTP, CSV, or Excel</h3>
+<h3 id="hi-query">Query handlers</h3>
 <p>
     One <code>pipeline.Handler[TQ, queries.Page]</code> (Auto or hand-rolled) feeds a JSON list, a
     CSV download, and an Excel download from the same instance and the <strong>same Request
