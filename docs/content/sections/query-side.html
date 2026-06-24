@@ -3,26 +3,34 @@
         The QueryHandler is the processing unit for a <strong>read</strong> (GET), symmetric to the
         <a href="#command-handler">CommandHandler</a> on the write side:
         <code>Request → Query → Handler</code> on the read path mirrors
-        <code>Request → Command → Handler</code> on the write path. The framework's generic
-        <code>FindByParamsQueryHandler</code> / <code>FindByIDQueryHandler</code> implement
-        <code>pipeline.Handler[*Q, R]</code> and resolve the read through the
-        <code>queries.ViewReader</code> port (<code>ReadPage</code> / <code>ReadByID</code>), so the
-        consumer writes no handler code for the common case. Reads come from MongoDB (pre-composed
-        view) and support dynamic filters, cursor pagination, sorting, field projection, and text
-        search — all derived from the query string and the <code>ViewDefinition</code>.
+        <code>Request → Command → Handler</code> on the write path. Reads come from MongoDB (a
+        pre-composed view) and support dynamic filters, cursor pagination, sorting, field projection,
+        and text search — all expressed as one transport-agnostic value, <code>queries.ReadCriteria</code>,
+        and resolved through the <code>queries.ViewReader</code> port (<code>ReadPage</code> /
+        <code>ReadByID</code>).
     </p>
-
     <p>
-        This page covers the QueryHandler concept and the end-to-end flow of a GET. Two canonical wrappers
-        serve the common reads — <code>fwweb.HandleQueryWithParams</code> (paged listing) and
-        <code>fwweb.HandleQueryWithID</code> (by-id lookup) — documented in full, together with the
-        projector contract, the query-string capabilities (allowlist, nested embed groups,
-        <code>?fields=</code>, <code>?sort=</code>, keyset pagination with the per-view
-        <code>?limit=</code> ceiling, <code>?onlyTotal=true</code>) and the complete wiring example, under
-        <a href="#auto-query-handlers">Auto query handlers</a>. Routes that need a custom shape opt out of
-        the wrappers — see <a href="#custom-query-handler">Custom query handler</a>. The end-to-end layer
-        trace (wrapper → handler → <code>ToCriteria</code> → <code>ViewReader</code> → Mongo → envelope)
-        lives in the <a href="#read-lifecycle-map">Read lifecycle map</a>.
+        This page is the <strong>shared trunk</strong> of the read side: the concept, the end-to-end flow
+        of a GET, the shape every read carries (<code>ReadCriteria</code>), the <strong>filter operator
+        vocabulary</strong>, and the <code>ToCriteria(ctx)</code> seam where security overlays and
+        field-level read authorization live. Everything here applies <strong>identically whether the route
+        is wired through the framework's wrappers or hand-rolled</strong> — the two branches only differ in
+        how the <code>ReadCriteria</code> gets assembled and how the result is projected:
+    </p>
+    <ul>
+        <li><a href="#auto-query-handlers">Auto query handlers</a> — the canonical path: declare the
+            Request DTO allowlist + Response shape, get the wrapper that parses the query string,
+            enforces the allowlist, assembles the criteria, calls the reader, paginates, and projects.
+            Zero handler code.</li>
+        <li><a href="#custom-query-handler">Custom query handler</a> — the same read built from scratch
+            (a hand-written <code>pipeline.Handler</code> + explicit route wiring), for an alternate
+            identifier (<code>:email</code>), a vendor-shaped envelope, or any wiring the wrapper does not
+            cover. Same pipeline, same criteria, same projection — the escape hatch is for <em>wiring
+            control</em>, not a poorer tier.</li>
+    </ul>
+    <p>
+        The end-to-end layer trace (wrapper → handler → <code>ToCriteria</code> → <code>ViewReader</code> →
+        Mongo → envelope) lives in the <a href="#read-lifecycle-map">Read lifecycle map</a>.
     </p>
 
     <h3 id="qry-flow">Full flow of a GET</h3>
@@ -40,8 +48,8 @@
    │
    ▼
 <span class="auto">extractAllowedKeys(reflect.Type)</span>  ← cached schema
-   │   ├─► filters: name(eq), email(eq,in), …
-   │   └─► reserved: limit/after/before/sort/fields/search/includeArchived
+   │   ├─► filters: name(eq), email(eq,in), …          ← from `filter:"ops"` tags
+   │   └─► reserved: limit/after/before/sort/fields/search/includeArchived/onlyTotal
    │
    ▼
 <span class="auto">walk query string + validate allowlist</span>  ← 400 on first violation
@@ -59,7 +67,7 @@
 <span class="auto">pipeline.Dispatch(pipe, appCtx, q, h)</span>
    │     └─► <span class="auto">FindByParamsQueryHandler.Handle</span>: q.ToCriteria(ctx) → ViewReader.ReadPage
    │                                              ↑
-   │            AppContext-derived overlays (tenant_id, owner_id) layer here
+   │            AppContext-derived overlays (tenant_id, owner_id) + field restriction layer here
    │           └─► <span class="auto">infra.MongoViewReader</span>: adapts Criteria → bson
    │                 ├─► applies deleted_at=null if !IncludeArchived
    │                 ├─► $text search if Search!=""
@@ -92,4 +100,160 @@ HTTP 200 OK
     "total": 847
   }
 }</div>
+    <p>
+        The shaded steps run the same on both paths. The wrapper (auto) does the
+        <span class="auto">automatic</span> steps for you; a custom route does them with the same
+        framework helpers, in code you can read. The rest of this page is the vocabulary both paths
+        speak.
+    </p>
 
+    <h3 id="qry-criteria">What a read carries — <code>ReadCriteria</code></h3>
+    <p>
+        Every read — list or by-id, auto or custom — is one value: <code>queries.ReadCriteria</code>.
+        The Request DTO declares which parts of it the <em>wire</em> may set (the allowlist); the
+        Query's <code>ToCriteria(ctx)</code> finalizes it; the handler hands it to
+        <code>ViewReader.ReadPage</code> / <code>ReadByID</code>. Nothing below the application layer
+        invents criteria — it is the single contract the read side passes around.
+    </p>
+    <table>
+        <tbody><tr><th>Field</th><th>Carries</th></tr>
+        <tr><td><code>Filter map[string]any</code></td><td>field → value or operator clause. Keys are <strong>Go field names</strong> (the reader translates them to physical columns via the view <code>TableSchema</code>). Built from the <code>filter:"ops"</code> tags.</td></tr>
+        <tr><td><code>Sort []SortField</code></td><td>ordered list of <code>{Field, Desc}</code> (Go field paths). From <code>?sort=</code>.</td></tr>
+        <tr><td><code>Projection map[string]int</code></td><td>per-field include (<code>1</code>) / exclude (<code>0</code>). From <code>?fields=</code> and from <code>Restrict</code>.</td></tr>
+        <tr><td><code>Limit int64</code></td><td>page size, bounded by the per-view ceiling. From <code>?limit=</code>.</td></tr>
+        <tr><td><code>After / Before string</code></td><td>opaque keyset cursors. From <code>?after=</code> / <code>?before=</code>.</td></tr>
+        <tr><td><code>Search string</code></td><td><code>$text</code> term. From <code>?search=</code>.</td></tr>
+        <tr><td><code>IncludeArchived bool</code></td><td>lifts the <code>deleted_at IS NULL</code> gate. From <code>?includeArchived=true</code>.</td></tr>
+        <tr><td><code>OnlyTotal bool</code></td><td>count-only short-circuit. From <code>?onlyTotal=true</code>.</td></tr>
+    </tbody></table>
+    <p>
+        The reserved control keys (<code>?fields=</code>, <code>?sort=</code>, <code>?after=</code>/<code>?before=</code>,
+        <code>?limit=</code>, <code>?search=</code>, <code>?includeArchived=</code>, <code>?onlyTotal=</code>) and
+        their edge cases are documented on the <a href="#auto-query-handlers">Auto query handlers</a> page —
+        the wrapper is where they are parsed and enforced. The two items below — the <strong>filter operator
+        vocabulary</strong> and <strong><code>ToCriteria</code></strong> — are the parts shared verbatim by the
+        custom path, so they live here on the trunk.
+    </p>
+
+    <h3 id="qry-operators">Filter operators</h3>
+    <p>
+        A filterable field declares the operators it accepts with the <code>filter:"ops"</code> struct tag on
+        the Request DTO; the wire form is <code>?field.op=value</code> (no suffix for <code>eq</code>). An
+        operator outside the declared set is rejected with 400 <code>SchemaViolationNotification</code>. The
+        <strong>same tag and the same vocabulary drive both paths</strong> — the auto wrapper
+        (<code>HandleQueryWithParams</code>) and the custom parser
+        (<code>fwweb.NewQueryParser</code> / <code>fwweb.ParseCriteria</code>) read it identically.
+    </p>
+    <pre><code>// Operator constants — used in the filter tag (web/handle_query.go; re-exported as fwweb.Op*).
+const (
+    OpEq          = "eq"           // exact equality (the default — no .op suffix on the wire)
+    OpNe          = "ne"           // inequality
+    OpIn          = "in"           // in list (comma-separated)
+    OpNin         = "nin"          // not in list
+    OpGte         = "gte"          // ≥   (ordinal — no case-insensitive variant)
+    OpLte         = "lte"          // ≤
+    OpGt          = "gt"           // >
+    OpLt          = "lt"           // <
+    OpStartsWith  = "startswith"   // prefix      (case-sensitive)
+    OpContains    = "contains"     // substring   (case-sensitive)
+    OpIEq         = "ieq"          // case-insensitive equality
+    OpINe         = "ine"          // case-insensitive inequality
+    OpIIn         = "iin"          // case-insensitive in-list
+    OpINin        = "inin"         // case-insensitive not-in-list
+    OpIStartsWith = "istartswith"  // case-insensitive prefix
+    OpIContains   = "icontains"    // case-insensitive substring
+)</code></pre>
+    <p>
+        String operators come in case-sensitive and case-insensitive twins — the <code>i</code> prefix is the
+        case-folded variant. The consumer declares whichever set the endpoint accepts
+        (<code>filter:"eq,startswith,icontains"</code> = exact, prefix, and case-insensitive substring). The
+        ordinal operators (<code>gte</code>/<code>lte</code>/<code>gt</code>/<code>lt</code>) have no
+        <code>i</code> variant — case-folding is meaningless on comparisons.
+    </p>
+    <p>
+        <strong>Multiple operators on one field are AND-ed.</strong> When the wire delivers more than one
+        operator for the same field (<code>?age.gte=18&amp;age.lte=65</code>,
+        <code>?name.startswith=Bob&amp;name.icontains=ob</code>), the clauses fold into a
+        <code>queries.MultiClause</code> sentinel that <code>MongoViewReader</code> expands into a top-level
+        <code>$and</code> — every declared operator is honored. A single operator stays the plain
+        <code>{field: value}</code> shape so Mongo indexes remain usable.
+    </p>
+    <p>
+        <strong>Values are always escaped.</strong> User input feeding the regex operators
+        (<code>startswith</code>/<code>contains</code> and their <code>i</code> twins) is passed through
+        <code>regexp.QuoteMeta</code>, so <code>?name.contains=a.b*c</code> matches the literal string
+        <code>a.b*c</code>, never a pattern. The <code>iin</code>/<code>inin</code> operators emit a
+        <code>queries.RegexMatchList</code> sentinel the reader expands into <code>{$in:[bson.Regex,…]}</code>.
+    </p>
+    <table>
+        <tbody><tr><th>Wire</th><th>Tag on the field</th><th>Result</th></tr>
+        <tr><td><code>?name=Jane</code></td><td><code>filter:"eq"</code></td><td>equality (the empty operator)</td></tr>
+        <tr><td><code>?email.in=a@x,b@y</code></td><td><code>filter:"eq,in"</code></td><td><code>$in</code></td></tr>
+        <tr><td><code>?name.startswith=Bob</code></td><td><code>filter:"eq,startswith"</code></td><td>"Bob", "Bob Diego" — case-sensitive</td></tr>
+        <tr><td><code>?name.icontains=OB</code></td><td><code>filter:"eq,icontains"</code></td><td>"Bob", "Roberto" — case-folded</td></tr>
+        <tr><td><code>?age.gte=18&amp;age.lte=65</code></td><td><code>filter:"gte,lte"</code></td><td>both clauses AND-ed</td></tr>
+        <tr><td><code>?email.gte=x</code></td><td><code>filter:"eq,in"</code></td><td>400 — operator outside the declared set</td></tr>
+        <tr><td><code>?role=admin</code></td><td>(field not declared)</td><td>400 — unknown field</td></tr>
+    </tbody></table>
+
+    <h3 id="qry-tocriteria"><code>ToCriteria(ctx)</code> — overlays and field restriction</h3>
+    <p>
+        The Query owns <code>ToCriteria(ctx) (ReadCriteria, error)</code> — the read-side twin of the write
+        side's <code>ToEntity(ctx)</code>, and the <strong>only layer below the web boundary that may consume
+        <code>*AppContext</code></strong>. Both the framework's Auto handlers and a hand-written handler call
+        it before hitting the reader, so this seam works the same on both paths. It does two jobs.
+    </p>
+    <p>
+        <strong>1. Security overlays.</strong> Layer identity-derived filters onto <code>crit.Filter</code> —
+        multi-tenant scope, owner-only reads, business overlays. The keys are Go field names declared in the
+        view <code>TableSchema</code>; the reader translates them to columns. Infra never pronounces a tenant
+        or owner — it executes what the Query assembled.
+    </p>
+    <p>
+        <strong>2. Field-level read authorization — <code>crit.Restrict(goFieldPath)</code>.</strong> Removes
+        a field from the read <em>entirely</em>: it is not projected (never on the wire or the CSV/XLSX export,
+        header included), not sorted by, not filtered on. The behavior depends on whether the request
+        <em>actively</em> referenced the field:
+    </p>
+    <table>
+        <tbody><tr><th>Request referenced the field via…</th><th><code>Restrict</code> returns</th><th>Effect</th></tr>
+        <tr><td>nothing (passive — just not asked for)</td><td><code>nil</code></td><td>silently omitted; nothing leaks</td></tr>
+        <tr><td><code>?fields=phone</code>, <code>?sort=phone</code>, or <code>?phone.eq=…</code> (active)</td><td>403 <code>FieldAccessForbiddenNotification</code></td><td>field scrubbed first, then the read is refused</td></tr>
+    </tbody></table>
+    <p>
+        Refusing the active reference (rather than silently ignoring the knob) is the honest answer and closes
+        the inference leak a silently-dropped sort/filter would leave. The field is scrubbed from the criteria
+        on both paths, so nothing leaks even on the 403. <code>ToCriteria</code> returning an error routes
+        through <code>pipeline.Run</code> via <code>errors.As</code> with no special wiring — the carrier's
+        <code>SemanticForbidden</code> becomes a 403.
+    </p>
+    <pre><code>func (q FindUserByParamsQuery) ToCriteria(
+    ctx *configuration.AppContext,
+) (fwqueries.ReadCriteria, error) {
+    crit := q.Criteria
+    var err error
+
+    // Field-level read authorization: a non-admin caller may not see Phone.
+    // Active reference (?fields=phone / ?sort=phone / ?phone.eq=…) → 403;
+    // passive → silently omitted. Infra stays authz-blind either way.
+    if id := ctx.Identity(); id != nil &amp;&amp; !id.HasPermission("users:admin") {
+        err = crit.Restrict("Phone")
+    }
+
+    // Security overlay: scope every read to the requesting tenant.
+    if id := ctx.Identity(); id != nil {
+        if tenant, _ := id.Claims["tenant_id"].(string); tenant != "" {
+            if crit.Filter == nil {
+                crit.Filter = map[string]any{}
+            }
+            crit.Filter["TenantID"] = tenant
+        }
+    }
+    return crit, err
+}</code></pre>
+    <div class="note">
+        The same <code>ToCriteria(ctx)</code> is consumed by the Auto <code>FindByParamsQueryHandler</code> and
+        by any hand-written handler — so tenant scoping and field restriction never require going manual.
+        Going manual buys an arbitrary identifier (e.g. <code>:email</code>) or a bespoke envelope, not the
+        authz seam. See <a href="#authz-seams">Authorization</a> for the three-layer model.
+    </div>
