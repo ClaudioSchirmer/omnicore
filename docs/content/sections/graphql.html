@@ -178,6 +178,21 @@
     before dispatch; the GraphQL endpoint does not, so the reader itself returns the typed Schema rejection
     rather than a bare error — same notification either surface reports.
 </p>
+<p>
+    <strong>Count-only</strong> — the REST <code>?onlyTotal=true</code> short-circuit (skip the items, return
+    just the count) maps to the natural GraphQL shape: a connection selection of <strong>only
+    <code>totalCount</code></strong>, with no <code>edges</code> and no <code>pageInfo</code>. The resolver
+    detects it from the selection set and sets <code>ReadCriteria.OnlyTotal</code>, so the reader
+    short-circuits to <code>CountDocuments</code> — no item materialization, no cursor work — exactly as
+    the REST path does. The count still honors <code>where</code> / <code>search</code> /
+    <code>includeArchived</code>. Selecting <code>pageInfo</code> alongside <code>totalCount</code> forces
+    the full read, because its cursors derive from the page items. A pagination or sort argument
+    (<code>first</code> / <code>last</code> / <code>after</code> / <code>before</code> / <code>orderBy</code>)
+    passed with a <code>totalCount</code>-only selection is a <strong>conflict</strong> — there is no page to
+    order or seek into when only the count is asked — and is rejected with a
+    <code>SchemaViolationNotification</code> (<code>semantic: "Schema"</code>, the offending argument as
+    <code>field</code>), the GraphQL parity of REST's onlyTotal-vs-pagination 400.
+</p>
 
 <h3>Authorization</h3>
 <p>

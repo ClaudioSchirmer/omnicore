@@ -137,6 +137,44 @@ func relayNodeSelection(sel ast.SelectionSet, frags ast.FragmentDefinitionList) 
 	return nil
 }
 
+// onlyTotalSelected reports whether the connection selection requests totalCount
+// and neither edges nor pageInfo — the GraphQL idiom for REST's ?onlyTotal=true.
+// When true the resolver sets ReadCriteria.OnlyTotal so the reader short-circuits
+// to CountDocuments, skipping item materialization and cursor work. __typename is
+// a meta field and does not count as a data selection. pageInfo forces the full
+// read because its cursors derive from the page items. Filter / search /
+// includeArchived still bound the count; a pagination/sort argument
+// (conflictingPaginationArg) is instead rejected by the resolver — see there.
+func onlyTotalSelected(sel ast.SelectionSet, frags ast.FragmentDefinitionList) bool {
+	sawTotal := false
+	for _, f := range collectFields(sel, frags) {
+		switch f.Name {
+		case "totalCount":
+			sawTotal = true
+		case "edges", "pageInfo":
+			return false
+		}
+	}
+	return sawTotal
+}
+
+// conflictingPaginationArg returns the name of the first pagination/sort
+// argument present (first / last / after / before / orderBy), or "" when none.
+// These conflict with a count-only (totalCount-only) selection — there is no
+// page to order or seek into when only the count is asked — so the resolver
+// rejects the combination with a SchemaViolation, REST parity with
+// handle_query.go's onlyTotalConflicts (sort / limit / after / before). Filter
+// arguments (where / search / includeArchived) are NOT here: they bound the
+// count and stay compatible, exactly as REST keeps them valid with onlyTotal.
+func conflictingPaginationArg(args map[string]any) string {
+	for _, k := range []string{"first", "last", "after", "before", "orderBy"} {
+		if v, ok := args[k]; ok && v != nil {
+			return k
+		}
+	}
+	return ""
+}
+
 // flattenWirePaths flattens a node selection into dotted wire paths
 // (`addresses.city`), recursing into nested object selections; leaf fields (no
 // sub-selection) terminate a path. Fragments are flattened via collectFields.
