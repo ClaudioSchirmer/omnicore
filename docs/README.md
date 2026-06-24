@@ -46,6 +46,26 @@ That's it — nav, routing, prev/next, search, and "On this page" pick it up aut
 - Cards: `<div class="grid-2"><div class="card">...</div>...</div>`.
 - Status pills: `<span class="tag auto">automatic</span>` / `<span class="tag manual">manual</span>`.
 
-## Changelog
+## Releasing — version-bump checklist
 
-Edit `content/sections/changelog.html` — add a new `.release` block at the top and bump the `v…` badge in `index.html` (`#verBadge`).
+Every place that must change when cutting `vX.Y.Z`. Miss one and the site/spec drifts
+from the tag.
+
+1. **`../CHANGELOG.md`** — rename `## [Unreleased]` → `## [X.Y.Z] - YYYY-MM-DD`; add a
+   fresh empty `## [Unreleased]` above it. (The `[X.Y.Z]: …/releases/tag/vX.Y.Z` link
+   reference at the bottom is optional — the convention lapsed after 0.12.0.)
+2. **`index.html`** — bump the `#verBadge` span (`v…`).
+3. **`content/sections/changelog.html`** — add a new `.release` block at the top
+   (`<span class="release-tag">vX.Y.Z</span><span class="release-date">Month D, YYYY</span>`),
+   mirroring the CHANGELOG.md entry.
+4. **`content/sections/overview.html`** — refresh the "Battle-tested" stats box.
+   Recompute with these exact commands (pinned so the figures never drift on method):
+   - coverage: `go test ./... -coverpkg=./... -coverprofile=/tmp/c.out && go tool cover -func=/tmp/c.out | tail -1` (pure unit, all packages in the denominator)
+   - test LOC: `find . -name '*_test.go' | xargs wc -l | tail -1`
+   - prod LOC: `find . -name '*.go' ! -name '*_test.go' | xargs wc -l | tail -1`
+   - ratio = test LOC ÷ prod LOC.
+5. **Tag (maintainer only):** `git commit` → `git tag vX.Y.Z` → push. The Go module
+   version IS the tag — there is no version constant in code.
+6. **`../../omnicore-example-users/go.mod`** — bump `require …/omnicore vX.Y.Z` once the
+   tag is published, so the consumer's clean-clone / CI builds against the release
+   (locally `go.work` overlays the in-tree checkout and masks a stale `require`).

@@ -11,6 +11,8 @@ with `1.0.0`.
 
 ## [Unreleased]
 
+## [0.14.0] - 2026-06-24
+
 ### Added
 
 - **Domain-event publishing wired into the persister** — domain events accumulated
@@ -22,6 +24,18 @@ with `1.0.0`.
   when the entity registered no events. Swap the transport (Kafka, etc.) via
   `pg.WithEventPublisher(publisher)`. The `events.Publisher` / `SlogPublisher`
   type existed before but was never invoked on any write path.
+
+- **GraphQL count-only reads** — a connection selection of only `totalCount`
+  (no `edges`, no `pageInfo`) now sets `ReadCriteria.OnlyTotal`, so the reader
+  short-circuits to `CountDocuments` instead of materializing and discarding the
+  full page — the GraphQL idiom for REST's `?onlyTotal=true`. The count still
+  honors `where` / `search` / `includeArchived`; selecting `pageInfo` alongside
+  `totalCount` forces the full read (its cursors derive from the page items); a
+  pagination/sort argument (`first` / `last` / `after` / `before` / `orderBy`)
+  passed with a `totalCount`-only selection is rejected with a
+  `SchemaViolationNotification` (semantic Schema) — the GraphQL parity of REST's
+  onlyTotal-vs-pagination 400. No schema change — no new argument. Closes the
+  lone count-only parity gap between the GraphQL surface and REST.
 
 ## [0.13.0] - 2026-06-23
 

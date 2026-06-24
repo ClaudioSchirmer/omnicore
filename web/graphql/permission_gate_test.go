@@ -26,7 +26,7 @@ func guardedRegistry(authz bool) *Registry {
 func TestPermissionGate_OffIsPassThrough(t *testing.T) {
 	reg := guardedRegistry(false)
 	ctx := configuration.NewAppContextWithRandomID(configuration.LangENG) // no identity
-	resp := reg.Execute(ctx, `query { users(first: 1) { totalCount } }`, nil, "")
+	resp := reg.Execute(ctx, `query { users(first: 1) { edges { node { id } } } }`, nil, "")
 	if len(resp.Errors) != 0 {
 		t.Fatalf("authz off must pass through; got errors %+v", resp.Errors)
 	}
@@ -38,7 +38,7 @@ func TestPermissionGate_OffIsPassThrough(t *testing.T) {
 func TestPermissionGate_OnDeniesWithoutPermission(t *testing.T) {
 	reg := guardedRegistry(true)
 	ctx := configuration.NewAppContextWithRandomID(configuration.LangENG) // nil identity
-	resp := reg.Execute(ctx, `query { users(first: 1) { totalCount } }`, nil, "")
+	resp := reg.Execute(ctx, `query { users(first: 1) { edges { node { id } } } }`, nil, "")
 	if len(resp.Errors) == 0 {
 		t.Fatal("authz on + no permission must be denied")
 	}
@@ -65,7 +65,7 @@ func TestPermissionGate_OnAllowsWithPermission(t *testing.T) {
 	ctx.SetIdentity(&configuration.Identity{
 		Claims: map[string]any{"permissions": []string{"users:read"}},
 	})
-	resp := reg.Execute(ctx, `query { users(first: 1) { totalCount } }`, nil, "")
+	resp := reg.Execute(ctx, `query { users(first: 1) { edges { node { id } } } }`, nil, "")
 	if len(resp.Errors) != 0 {
 		t.Fatalf("identity with users:read must pass; got %+v", resp.Errors)
 	}

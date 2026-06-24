@@ -159,6 +159,19 @@ func Query[TReq HasToParamsQuery[TQ], R any, TQ queries.FindByParamsQuery](
 				if gerr != nil {
 					return nil, []GraphQLError{*gerr}
 				}
+				// Count-only: a selection of just totalCount (no edges/pageInfo)
+				// maps to ReadCriteria.OnlyTotal, the GraphQL idiom for REST's
+				// ?onlyTotal=true — the reader short-circuits to CountDocuments.
+				// A pagination/sort argument alongside it is a conflict (no page
+				// to order or seek into), rejected with a SchemaViolation, REST
+				// parity with onlyTotalConflicts. Mutually exclusive with the
+				// projection below (no node → nil proj).
+				if onlyTotalSelected(sel, frags) {
+					if conflict := conflictingPaginationArg(args); conflict != "" {
+						return nil, schemaViolation(pipe, ctx, conflict)
+					}
+					crit.OnlyTotal = true
+				}
 				// Selection set → projection: an explicitly selected restricted
 				// field trips ReadCriteria.Restrict's active-reference 403 (parity
 				// with the REST ?fields= path), and Mongo projects only the
@@ -212,6 +225,25 @@ func (r *Registry) missingPermission(ctx *configuration.AppContext, permission s
 			FieldName:    "permission",
 			FieldValue:   permission,
 			Notification: notifications.MissingPermissionNotification{},
+		})
+		return nil, domain.NewDomainError([]*domain.NotificationContext{nc})
+	})
+	return fromNotifications(res.Notifications())
+}
+
+// schemaViolation renders a SchemaViolationNotification (semantic Schema) the
+// same way a handler failure surfaces — through pipeline.Run so the message is
+// translated against the request language and carries the typed triple
+// (notificationKey SchemaViolationNotification, field = the offending argument).
+// Used for the count-only-vs-pagination conflict, REST parity with the
+// onlyTotalConflicts 400. Package-level (the read resolver holds pipe, not the
+// Registry).
+func schemaViolation(pipe *pipeline.Pipeline, ctx *configuration.AppContext, field string) []GraphQLError {
+	res := pipeline.Run(pipe, ctx, func() (any, error) {
+		nc := domain.NewNotificationContext("Schema")
+		nc.AddNotificationMessage(domain.NotificationMessage{
+			FieldName:    field,
+			Notification: domain.SchemaViolationNotification{},
 		})
 		return nil, domain.NewDomainError([]*domain.NotificationContext{nc})
 	})
