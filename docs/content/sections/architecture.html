@@ -3,8 +3,10 @@
     <h3 id="layers">The 4 layers</h3>
     <div class="arch">
         <div class="arch-layer">
-            <div class="arch-row arch-head"><span class="arch-pkg">web/</span><span class="arch-desc">HTTP transport (Fiber v3), JWT auth middleware · Semantic → HTTP status · canonical response envelope</span></div>
+            <div class="arch-row arch-head"><span class="arch-pkg">web/</span><span class="arch-desc">HTTP transport (Fiber v3), JWT auth middleware · Semantic → HTTP status · canonical response envelope · CSV/XLSX export</span></div>
             <div class="arch-row arch-sub-indent"><span class="arch-pkg sub">openapi/</span><span class="arch-desc">OpenAPI 3.1 + Swagger UI, generated from your Go types</span></div>
+            <div class="arch-row arch-sub-indent"><span class="arch-pkg sub">graphql/</span><span class="arch-desc">GraphQL endpoint — own surface, reflected from the same DTOs, never in Swagger</span></div>
+            <div class="arch-row arch-sub-indent"><span class="arch-pkg sub">queryschema/</span><span class="arch-desc">shared read-side DTO reflection (REST + OpenAPI + GraphQL) — one traversal, three projections</span></div>
         </div>
         <div class="arch-layer">
             <div class="arch-row arch-head"><span class="arch-pkg">application/</span></div>
@@ -32,6 +34,8 @@
 │   web/              HTTP transport (Fiber v3), JWT auth middleware  │
 │                     Semantic → HTTP status, canonical envelope      │
 │     openapi/        OpenAPI 3.1 + Swagger UI from your Go types     │
+│     graphql/        GraphQL endpoint, own surface, not in Swagger   │
+│     queryschema/    shared read-side reflection (REST/OAS/GraphQL)  │
 │   application/                                                      │
 │     configuration/  AppContext (UUID + Language + Identity)         │
 │     translation/    Translator + 7 langs (PT/EN/ES/FR/DE/IT/NL)     │
