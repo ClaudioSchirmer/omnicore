@@ -129,7 +129,15 @@ audit:                                   # optional; omitted block = framework d
   destinations:
     - slog                               # post-commit echo (observability via ELK / Loki / stdout collector)
     - database                           # in-TX row in audit_events (atomic with the write — source of truth)
-  # destinations: []                     # explicit empty list disables audit entirely</code></pre>
+  # destinations: []                     # explicit empty list disables audit entirely
+observability:                           # optional; omitted block = tracing off (no-op tracer)
+  tracing:
+    enabled: false                       # master switch; off → no SDK/exporter/propagation
+    exporter: otlp                       # otlp | stdout (debug-only) | none (propagate, export nothing)
+    endpoint: "${OTEL_EXPORTER_OTLP_ENDPOINT:localhost:4317}"
+    sampler: parentbased_traceratio      # dev default always_on; else parentbased_traceratio
+    ratio: 0.1                           # keep fraction for the *traceratio samplers
+    instrument: [http, pgx, mongo, kafka, httpclient]   # empty → all five</code></pre>
 
     <h3>Audit routing — <code>audit.destinations</code></h3>
     <p>

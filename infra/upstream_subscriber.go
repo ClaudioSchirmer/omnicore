@@ -13,6 +13,8 @@ import (
 
 	"github.com/segmentio/kafka-go"
 	"go.mongodb.org/mongo-driver/v2/bson"
+
+	"github.com/ClaudioSchirmer/omnicore/infra/tracing"
 )
 
 // defaultUpstreamCommitInterval mirrors SyncEngine's CommitInterval —
@@ -132,6 +134,17 @@ type UpstreamSubscriber struct {
 	// shared shutdown context to time out at the Kafka socket level.
 	stop     chan struct{}
 	stopOnce sync.Once
+	// traceKafka gates the per-message consumer span (the tracing `kafka`
+	// instrument toggle). bootstrap sets it via WithKafkaTracing; false (the
+	// default) leaves the ripple loop untraced and pays nothing.
+	traceKafka bool
+}
+
+// WithKafkaTracing enables the consumer span on each processed message. bootstrap
+// passes tracing.Instruments(SubKafka); off (the default) keeps the loop untraced.
+func (s *UpstreamSubscriber) WithKafkaTracing(on bool) *UpstreamSubscriber {
+	s.traceKafka = on
+	return s
 }
 
 // NewUpstreamSubscriber wires the subscriber. dependentViews is the slice
@@ -405,6 +418,10 @@ func (s *UpstreamSubscriber) processMessage(ctx context.Context, msg kafka.Messa
 	_ = workerIdx // reserved for per-worker tagging if instrumentation grows
 	bumpUpstreamSubscriberCounter()
 	event := extractEvent(msg)
+	ctx, span := tracing.StartConsumerSpanIf(s.traceKafka, ctx,
+		"github.com/ClaudioSchirmer/omnicore/infra/upstream",
+		"upstream "+event.AggregateType, event.Traceparent)
+	defer span.End()
 	if event.AggregateID == "" || event.EventType == "" {
 		s.logger.Warn("upstream subscriber: incomplete metadata, skipping",
 			"topic", s.cfg.Topic,

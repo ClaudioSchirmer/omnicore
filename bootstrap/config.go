@@ -135,6 +135,11 @@ type Config struct {
 	// it without crossing the dependency boundary back to bootstrap.
 	Audit audit.Config `yaml:"audit"`
 
+	// Observability carries the cross-cutting telemetry block. Currently the
+	// opt-in distributed-tracing sub-block (observability.tracing); default off,
+	// so an absent block installs the OTel no-op tracer and costs nothing.
+	Observability ObservabilityConfig `yaml:"observability"`
+
 	// Cache is the top-level cache: block describing the framework's
 	// generic key-value cache. nil when absent — Deps.Cache stays nil
 	// and the httpclient response-cache middleware bypasses. Present
@@ -497,6 +502,7 @@ func (c *Config) applyDefaults() {
 	c.Audit.ApplyDefaults()
 	c.OpenAPI.applyDefaults()
 	c.GraphQL.applyDefaults()
+	c.Observability.applyDefaults()
 	c.Shutdown.applyDefaults()
 	if c.Integration != nil {
 		c.Integration.ApplyDefaults(c.Service)
@@ -530,6 +536,7 @@ func (c *Config) applyProfileDefaults(profile string) {
 			c.Mongo.Rebuild.AutoRun = AutoRunCheck
 		}
 	}
+	c.Observability.applyProfileDefaults(profile)
 }
 
 // Validate checks required fields. Returns an error listing the missing ones.
@@ -581,6 +588,9 @@ func (c *Config) Validate() error {
 	}
 	if c.Shutdown.DrainTimeoutSeconds < 0 {
 		return fmt.Errorf("bootstrap: shutdown.drainTimeoutSeconds must be >= 0 (got %d)", c.Shutdown.DrainTimeoutSeconds)
+	}
+	if err := c.Observability.validate(); err != nil {
+		return fmt.Errorf("bootstrap: %w", err)
 	}
 	return nil
 }

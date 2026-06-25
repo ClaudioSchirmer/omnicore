@@ -36,6 +36,11 @@ import "time"
 // before reaching this struct; events.Publisher never widens that surface.
 type AuditEvent struct {
 	ThreadID    string                  `json:"threadId"`
+	// TraceID is the active span's trace id (32-char hex) when tracing is on,
+	// else empty. The single source both audit destinations mirror — the
+	// in-TX audit_events.trace_id column and the slog echo's traceId attribute —
+	// so a forensic row or echo line pivots to its trace in the collector.
+	TraceID     string                  `json:"traceId,omitempty"`
 	EntityType  string                  `json:"entityType"`
 	EntityID    string                  `json:"entityId"`
 	Verb        string                  `json:"verb"`

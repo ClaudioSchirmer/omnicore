@@ -358,6 +358,9 @@ func (r *Receiver) handleMessage(
 	// = inbound event's actor header, correlation = inbound correlation
 	// (fallback event_id), causation = inbound event_id.
 	appCtx := buildReceiverAppContext(rawHeaders, eventID)
+	// Thread the consumer span (carried on ctx) onto the fresh AppContext so
+	// the dispatch span of the handler links under it. No-op when tracing off.
+	appCtx.SetTraceContext(ctx)
 
 	reqPtr, reqAny := r.plan.newRequest()
 	if err := json.Unmarshal(rawPayload, reqAny); err != nil {

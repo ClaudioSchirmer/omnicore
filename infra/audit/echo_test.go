@@ -108,6 +108,38 @@ func TestEchoSlog_TenantIDEmittedWhenPopulated(t *testing.T) {
 	}
 }
 
+func TestEchoSlog_TraceIDMirroredToEcho(t *testing.T) {
+	// The slog echo must carry the same trace_id the in-TX audit_events row
+	// does, so both audit destinations pivot to the trace.
+	logger, buf := newCaptureLogger()
+	EchoSlog(nil, logger, AuditEvent{
+		ThreadID:   "t",
+		TraceID:    "4bf92f3577b34da6a3ce929d0e0e4736",
+		EntityType: "T",
+		EntityID:   "id",
+		Verb:       "insert",
+		ActionName: "GetInsertable",
+		Kind:       "snapshot",
+		DateTime:   time.Now(),
+	})
+	line := extractAuditLogLine(t, buf)
+	if line["traceId"] != "4bf92f3577b34da6a3ce929d0e0e4736" {
+		t.Errorf("traceId = %v, want the stamped hex", line["traceId"])
+	}
+}
+
+func TestEchoSlog_TraceIDOmittedWhenEmpty(t *testing.T) {
+	logger, buf := newCaptureLogger()
+	EchoSlog(nil, logger, AuditEvent{
+		ThreadID: "t", EntityType: "T", EntityID: "id", Verb: "insert",
+		ActionName: "GetInsertable", Kind: "snapshot", DateTime: time.Now(),
+	})
+	line := extractAuditLogLine(t, buf)
+	if _, ok := line["traceId"]; ok {
+		t.Error("traceId must be omitted when tracing is off (empty)")
+	}
+}
+
 func TestEchoSlog_ChildrenBlockEmittedWhenPopulated(t *testing.T) {
 	logger, buf := newCaptureLogger()
 	EchoSlog(nil, logger, AuditEvent{

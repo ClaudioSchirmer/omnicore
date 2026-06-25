@@ -182,11 +182,19 @@ func transportMiddleware(svc *serviceClient) roundTripper {
 // the framework rule, and middlewares cannot be reordered by the consumer.
 // Future phases register their layer at the documented position without
 // changing the surrounding ones.
-func buildChain(svc *serviceClient, serviceName, endpointName string, ep endpointSpec, effectiveRetry retryPolicy, cacheGetter func() cache.Cache, breaker *breakerState, provider auth.AuthProvider, revocationOnUnauthorized bool, logger *slog.Logger) *chain {
-	layers := []roundTripper{
-		correlationMiddleware(svc), // 1
-		loggingMiddleware(logger),  // 2
+func buildChain(svc *serviceClient, serviceName, endpointName string, ep endpointSpec, effectiveRetry retryPolicy, cacheGetter func() cache.Cache, breaker *breakerState, provider auth.AuthProvider, revocationOnUnauthorized bool, logger *slog.Logger, traceClient bool) *chain {
+	layers := []roundTripper{}
+	if traceClient {
+		// Outermost so the client span times the full call (retries included)
+		// and the traceparent it injects names this span as the downstream's
+		// parent. Omitted entirely when client tracing is off — the chain is
+		// then byte-identical to the untraced path.
+		layers = append(layers, tracingMiddleware(serviceName, endpointName)) // 1 (tracing)
 	}
+	layers = append(layers,
+		correlationMiddleware(svc), // 1/2
+		loggingMiddleware(logger),  // 2/3
+	)
 	if provider != nil {
 		layers = append(layers, authMiddleware(provider, revocationOnUnauthorized)) // 3
 	}

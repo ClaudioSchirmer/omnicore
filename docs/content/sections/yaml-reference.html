@@ -51,6 +51,7 @@ pwd: "${vault:secret/data/db#password}"                # delegated to a register
         <tr><td><code>query</code></td><td>no</td><td>read-side <code>?limit=</code> ceiling + tabular-export row ceiling</td><td>below · <a href="#auto-query-handlers">Auto query handlers</a></td></tr>
         <tr><td><code>auth</code></td><td>no*</td><td>JWT auth + external validator + authz</td><td>below · <a href="#auth-middleware">Authentication</a> · <a href="#authz-seams">Authorization</a></td></tr>
         <tr><td><code>audit</code></td><td>no</td><td>audit event destinations</td><td>below · <a href="#audit">Audit</a></td></tr>
+        <tr><td><code>observability</code></td><td>no</td><td>distributed tracing (OpenTelemetry); default off</td><td>below · <a href="#tracing">Distributed tracing</a></td></tr>
         <tr><td><code>cache</code></td><td>no</td><td>private + shared key-value cache</td><td>below · <a href="#cache-subsystem">Cache subsystem</a></td></tr>
         <tr><td><code>openapi</code></td><td>no</td><td>how the Swagger UI is served</td><td>below · <a href="#openapi">OpenAPI</a></td></tr>
         <tr><td><code>graphql</code></td><td>no</td><td>how the GraphQL endpoint is served</td><td>below · <a href="#graphql">GraphQL</a></td></tr>
@@ -148,6 +149,34 @@ query:
   destinations:                          # absent → [slog, database]; [] → audit OFF; unknown/duplicate token aborts boot
     - slog                               # post-commit echo (ELK / Loki / stdout collector)
     - database                           # in-TX row in audit_events (atomic with the write — source of truth)</code></pre>
+
+    <h3>observability</h3>
+    <p>
+        Opt-in OpenTelemetry distributed tracing. An absent block (or <code>enabled: false</code>) installs the
+        OTel no-op tracer — no SDK, no exporter, no propagation, essentially zero cost. When enabled, tracing is an
+        <em>additional</em> destination (OTLP → a collector such as Jaeger/Tempo), never stdout; records emitted with a
+        span-carrying context simply gain <code>traceId</code>/<code>spanId</code>. See
+        <a href="#tracing">Distributed tracing</a>.
+    </p>
+<pre><code>observability:
+  tracing:
+    enabled: false                       # master switch; off → no-op tracer, costs nothing
+    exporter: otlp                       # otlp (a collector) | stdout (DEBUG ONLY — interleaves spans with logs) | none (record + propagate traceparent, export nothing)
+    endpoint: "${OTEL_EXPORTER_OTLP_ENDPOINT:localhost:4317}"   # OTLP/gRPC collector; read only for exporter=otlp
+    sampler: parentbased_traceratio      # always_on | always_off | traceratio | parentbased_traceratio — dev default always_on; else parentbased_traceratio
+    ratio: 0.1                           # keep fraction (0..1) for the *traceratio samplers; 0 treated as unset
+    serviceName: "${service}"            # label in the collector; defaults to the top-level service identity
+    instrument: [http, pgx, mongo, kafka, httpclient]   # edge-subsystem allowlist; empty/absent → all five</code></pre>
+    <p>
+        Defaults (applied only when <code>enabled: true</code>): <code>exporter=otlp</code>, <code>endpoint=localhost:4317</code>,
+        <code>ratio=0.1</code>, and the profile-aware <code>sampler</code>. The <strong>dispatch</strong> span (one business
+        unit-of-work per request) is always on when enabled — it is <em>not</em> a member of <code>instrument</code>.
+        Each of the five <code>instrument</code> tokens is honored at construction: dropping one means that subsystem's
+        spans are never started (cost is zero, not merely no-op). Dropping <code>http</code> additionally skips the inbound
+        W3C <code>traceparent</code> extraction and the <code>CorrelationID == trace_id</code> bridge at the edge — the
+        <code>dispatch</code> span then roots the trace locally. An invalid exporter/sampler/ratio/instrument token aborts
+        boot when enabled.
+    </p>
 
     <h3>cache</h3>
     <p>

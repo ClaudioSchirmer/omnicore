@@ -10,6 +10,7 @@ import (
 	"github.com/ClaudioSchirmer/omnicore/application/persistence"
 	"github.com/ClaudioSchirmer/omnicore/domain"
 	"github.com/ClaudioSchirmer/omnicore/infra"
+	"github.com/ClaudioSchirmer/omnicore/infra/tracing"
 
 	"github.com/google/uuid"
 )
@@ -221,8 +222,8 @@ type dispatchRow struct {
 const sqlInsertIntegrationEvent = `
 INSERT INTO integration_events
   (event_id, aggregate_type, aggregate_id, event_type, event_version,
-   payload, correlation_id, causation_id, thread_id, actor)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`
+   payload, correlation_id, causation_id, thread_id, actor, traceparent)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`
 
 // writeIntegrationEvent dispatches between the in-TX path (WithTx
 // supplied) and the standalone path (Dispatch without WithTx). The
@@ -246,6 +247,9 @@ func writeIntegrationEvent(
 		nullableUUID(row.Causation),
 		row.ThreadID,
 		row.Actor,
+		// W3C traceparent of the producing request so the Receiver can link the
+		// consumed event back to this trace; NULL when tracing is off.
+		nullableString(tracing.TraceparentFromContext(ctx)),
 	}
 
 	if tx != nil {

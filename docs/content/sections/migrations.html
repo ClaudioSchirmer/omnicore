@@ -7,7 +7,7 @@
   0002_init.down.sql        # reverse (mandatory)
   0003_add_phone.up.sql
   0003_add_phone.down.sql</code></pre>
-    <p>The framework owns its own embedded migrations via <code>embed.FS</code> — version <strong>1</strong> creates the outbox (<code>omnicore/infra/migration/embedded/0001_outbox.{up,down}.sql</code>) and version <strong>2</strong> creates the integration-events tables (<code>0002_integration_events.{up,down}.sql</code>). They are tracked in their own table (<code>omnicore_framework_migrations</code>), so a service's own migrations start at <code>0002+</code> in the separate <code>omnicore_migrations</code> table with no collision. Do not write the framework SQL manually; the framework guarantees an identical signature across all services (Debezium depends on the outbox shape).</p>
+    <p>The framework owns its own embedded migrations via <code>embed.FS</code> — version <strong>1</strong> creates the outbox (<code>omnicore/infra/migration/embedded/0001_outbox.{up,down}.sql</code>), version <strong>2</strong> creates the integration-events tables (<code>0002_integration_events.{up,down}.sql</code>), and version <strong>3</strong> adds the distributed-tracing carrier columns (<code>0003_outbox_traceparent.{up,down}.sql</code> — <code>outbox.traceparent</code>, <code>integration_events.traceparent</code>, <code>audit_events.trace_id</code>, all nullable). They are tracked in their own table (<code>omnicore_framework_migrations</code>), so a service's own migrations start at <code>0002+</code> in the separate <code>omnicore_migrations</code> table with no collision. Do not write the framework SQL manually; the framework guarantees an identical signature across all services (Debezium depends on the outbox shape).</p>
 
     <h3>Default behavior at boot</h3>
     <ul>
@@ -23,7 +23,7 @@
     <p>Two separate tables, created automatically by <code>golang-migrate</code> on first execution (no embed SQL for them):</p>
     <table>
         <tbody><tr><th>Table</th><th>Who writes</th><th>Contains</th></tr>
-        <tr><td><code>omnicore_framework_migrations</code></td><td>Framework (embedded)</td><td>version 1 (outbox), version 2 (integration events)</td></tr>
+        <tr><td><code>omnicore_framework_migrations</code></td><td>Framework (embedded)</td><td>version 1 (outbox), version 2 (integration events), version 3 (tracing carrier columns)</td></tr>
         <tr><td><code>omnicore_migrations</code></td><td>Service (files in <code>cfg.Migrations.Dir</code>)</td><td>version 2+</td></tr>
     </tbody></table>
     <p>Separate tables avoid version collision — the framework table and the service table may both carry a "version 2" row without conflict.</p>

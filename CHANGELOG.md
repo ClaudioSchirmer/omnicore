@@ -11,6 +11,41 @@ with `1.0.0`.
 
 ## [Unreleased]
 
+### Added
+
+- **Distributed tracing (OpenTelemetry).** New opt-in `observability.tracing`
+  block wires OTel across the framework; default off installs the no-op tracer
+  so a service that does not declare it pays essentially nothing. Knobs:
+  `enabled`, `exporter` (`otlp`|`stdout` debug-only|`none`), `endpoint`, `sampler`
+  (`always_on`|`always_off`|`traceratio`|`parentbased_traceratio`; profile
+  default dev→`always_on`, else→`parentbased_traceratio`), `ratio`,
+  `serviceName` (defaults to `service`), and a per-subsystem `instrument`
+  allowlist (`http`, `pgx`, `mongo`, `kafka`, `httpclient`). The synchronous
+  path is traced end to end — inbound server span → the business
+  `dispatch <Command/Query>` span (inherited identically by Auto, manual, REST
+  and GraphQL since all funnel through `pipeline.Dispatch`) → pgx / mongo /
+  outbound httpclient spans, with the W3C `traceparent` injected on outbound
+  calls so the downstream service continues the same trace. The async path
+  re-links across Debezium/Kafka via a new `traceparent` carried on the
+  `outbox` and `integration_events` rows; the SyncEngine, integration Receiver
+  and UpstreamSubscriber open consumer spans linked to the producing trace.
+  `AppContext.CorrelationID()` is kept equal to the active `trace_id`, so logs,
+  traces and `integration_events.correlation_id` all join on one value; when
+  tracing is enabled, slog records emitted with a span-carrying context (the
+  `http.outbound` line, pipeline failures/exceptions, and any code using the
+  `*Context` slog methods) gain `traceId`/`spanId`, and the audit event carries
+  a `trace_id` mirrored to BOTH destinations — the in-TX `audit_events.trace_id`
+  column and the slog audit echo's `traceId` attribute. Export is asynchronous
+  and batched (off the request path; a down collector never back-pressures a
+  call).
+- **Framework migration `0003`.** Adds `outbox.traceparent`,
+  `integration_events.traceparent` (W3C trace context carried to the consumer
+  for cross-process trace linking) and `audit_events.trace_id` (a pivot column
+  to jump from a forensic row to its trace). All nullable; existing rows and
+  writes made with tracing disabled store NULL. To map `outbox.traceparent` to a
+  Kafka header, add `traceparent:header:traceparent` to the Debezium Outbox
+  Event Router's `table.fields.additional.placement`.
+
 ## [0.15.0] - 2026-06-25
 
 ### Added

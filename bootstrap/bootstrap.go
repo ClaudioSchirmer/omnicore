@@ -19,6 +19,7 @@ import (
 	"github.com/ClaudioSchirmer/omnicore/infra/events"
 	"github.com/ClaudioSchirmer/omnicore/infra/httpclient"
 	"github.com/ClaudioSchirmer/omnicore/infra/integration"
+	"github.com/ClaudioSchirmer/omnicore/infra/tracing"
 	"reflect"
 
 	fwweb "github.com/ClaudioSchirmer/omnicore/web"
@@ -217,7 +218,8 @@ func runWithConfig(cfg *Config, wire func(Deps) Wiring) error {
 		}
 
 		syncEngine := infra.NewSyncEngine(deps.Postgres, deps.Mongo,
-			cfg.Kafka.Brokers, cfg.Kafka.SyncGroupID, views, cfg.Kafka.SyncWorkers)
+			cfg.Kafka.Brokers, cfg.Kafka.SyncGroupID, views, cfg.Kafka.SyncWorkers).
+			WithKafkaTracing(cfg.Observability.Tracing.Resolve(cfg.Service).Instruments(tracing.SubKafka))
 
 		// Drift detection + rebuild reconciliation. Runs AFTER
 		// ApplyMongoSpecs (collection shape reconciled) and BEFORE
@@ -253,18 +255,40 @@ func runWithConfig(cfg *Config, wire func(Deps) Wiring) error {
 }
 
 func buildDeps(cfg *Config) (Deps, error) {
-	logger := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo}))
-	slog.SetDefault(logger)
-
 	ctx := context.Background()
 
-	pg, err := infra.NewPostgres(ctx, cfg.Postgres.DSN)
+	// Tracing is installed first so the logger can be wrapped to stamp
+	// traceId/spanId onto context-carrying records, and so PG/Mongo
+	// constructors (instrumentation wired in later stages) observe the
+	// installed globals. Inert + free when observability.tracing is off.
+	tracingCfg := cfg.Observability.Tracing.Resolve(cfg.Service)
+	tracingProvider, err := tracing.Setup(ctx, tracingCfg)
+	if err != nil {
+		return Deps{}, fmt.Errorf("bootstrap: tracing setup: %w", err)
+	}
+
+	var logHandler slog.Handler = slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo})
+	if tracingCfg.Enabled {
+		logHandler = tracing.NewSlogHandler(logHandler)
+	}
+	logger := slog.New(logHandler)
+	slog.SetDefault(logger)
+	if tracingCfg.Enabled {
+		logger.Info("tracing enabled",
+			"exporter", string(tracingCfg.Exporter),
+			"sampler", string(tracingCfg.Sampler),
+			"endpoint", tracingCfg.Endpoint)
+	}
+
+	pg, err := infra.NewPostgres(ctx, cfg.Postgres.DSN,
+		infra.WithPgxTracing(tracingCfg.Instruments(tracing.SubPgx)))
 	if err != nil {
 		return Deps{}, fmt.Errorf("bootstrap: postgres connect: %w", err)
 	}
 	logger.Info("postgres connected", "dsn", redact(cfg.Postgres.DSN))
 
-	mg, err := infra.NewMongoDB(ctx, cfg.Mongo.URI, cfg.Mongo.Database)
+	mg, err := infra.NewMongoDB(ctx, cfg.Mongo.URI, cfg.Mongo.Database,
+		infra.WithMongoTracing(tracingCfg.Instruments(tracing.SubMongo)))
 	if err != nil {
 		pg.Close()
 		return Deps{}, fmt.Errorf("bootstrap: mongo connect: %w", err)
@@ -312,7 +336,8 @@ func buildDeps(cfg *Config) (Deps, error) {
 	if cfg.HttpClient != nil {
 		hc, err = httpclient.New(cfg.HttpClient,
 			httpclient.WithLogger(logger),
-			httpclient.WithCache(privateCache))
+			httpclient.WithCache(privateCache),
+			httpclient.WithClientTracing(tracingCfg.Instruments(tracing.SubHTTPClient)))
 		if err != nil {
 			pg.Close()
 			_ = mg.Close(context.Background())
@@ -333,6 +358,7 @@ func buildDeps(cfg *Config) (Deps, error) {
 	return Deps{
 		Config:              cfg,
 		Logger:              logger,
+		Tracing:             tracingProvider,
 		Postgres:            pg,
 		Mongo:               mg,
 		Translator:          tr,
@@ -401,7 +427,10 @@ func buildApp(deps Deps, wiring Wiring) (*fiber.App, error) {
 
 	app.Use(fwweb.Recover())
 	app.Use(logger.New())
-	app.Use(fwweb.AppContextMiddleware())
+	// The inbound server span is gated by the tracing `http` instrument toggle;
+	// off (or tracing disabled) → the middleware builds only the AppContext.
+	traceHTTP := deps.Config.Observability.Tracing.Resolve(deps.Config.Service).Instruments(tracing.SubHTTP)
+	app.Use(fwweb.AppContextMiddleware(fwweb.WithServerSpanTracing(traceHTTP)))
 
 	uiPath := deps.Config.OpenAPI.UIPath
 	if uiPath == "" {
@@ -661,7 +690,7 @@ func serve(ctx context.Context, deps Deps, wiring Wiring) error {
 			deps.Config.Kafka.Brokers,
 			deps.Pipeline,
 			deps.Logger,
-		)
+		).WithKafkaTracing(deps.Config.Observability.Tracing.Resolve(deps.Config.Service).Instruments(tracing.SubKafka))
 		if err := consumerPool.Start(ctx); err != nil {
 			return fmt.Errorf("bootstrap: integration consumer pool: %w", err)
 		}
@@ -715,6 +744,13 @@ func serve(ctx context.Context, deps Deps, wiring Wiring) error {
 		drain(fmt.Sprintf("upstream[%d]", i), func() error { return sub.Shutdown(shutdownCtx) })
 	}
 	drainWG.Wait()
+
+	// Flush buffered spans AFTER the servers stopped accepting work, so the
+	// final in-flight requests' spans reach the collector. Nil-safe + no-op on
+	// the disabled path.
+	if err := deps.Tracing.Shutdown(shutdownCtx); err != nil {
+		deps.Logger.Warn("drain timeout", "stage", "tracing", "err", err)
+	}
 
 	if wiring.OnShutdown != nil {
 		if err := wiring.OnShutdown(shutdownCtx); err != nil {

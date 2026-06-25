@@ -52,6 +52,11 @@ type HttpClient struct {
 	// (YAML baseURL used verbatim). See BaseURLResolver for the cascade
 	// with the YAML configuration.
 	resolver BaseURLResolver
+	// traceClient gates the outbound client span + traceparent injection
+	// middleware. Set by bootstrap from tracing.Instruments(SubHTTPClient) —
+	// false (the default) keeps the chain byte-identical to the untraced path,
+	// so a client built without tracing pays nothing.
+	traceClient bool
 }
 
 // registry is the immutable snapshot of the service/provider maps a client
@@ -155,6 +160,18 @@ func WithLogger(l *slog.Logger) Option {
 func WithResolver(r BaseURLResolver) Option {
 	return func(c *HttpClient) {
 		c.resolver = r
+	}
+}
+
+// WithClientTracing enables the outbound client span + W3C traceparent
+// injection on every Call. bootstrap passes tracing.Instruments(SubHTTPClient)
+// here; left false (default) the tracing middleware is never added to the chain.
+// When enabled but no tracer provider is installed the span is a no-op, so the
+// flag is safe to set whenever the operator lists "httpclient" in the
+// instrument allowlist.
+func WithClientTracing(enabled bool) Option {
+	return func(c *HttpClient) {
+		c.traceClient = enabled
 	}
 }
 

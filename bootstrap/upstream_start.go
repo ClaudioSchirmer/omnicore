@@ -4,6 +4,7 @@ import (
 	"context"
 
 	"github.com/ClaudioSchirmer/omnicore/infra"
+	"github.com/ClaudioSchirmer/omnicore/infra/tracing"
 )
 
 // startUpstreamSubscribers spins one infra.UpstreamSubscriber goroutine
@@ -61,6 +62,7 @@ func startUpstreamSubscribers(
 				"topic", s.Topic, "err", err)
 			continue
 		}
+		sub.WithKafkaTracing(cfg.Observability.Tracing.Resolve(cfg.Service).Instruments(tracing.SubKafka))
 		sub.Start(ctx)
 		started = append(started, sub)
 		deps.Logger.Info("upstream subscriber started",

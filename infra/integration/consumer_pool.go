@@ -11,6 +11,7 @@ import (
 
 	"github.com/ClaudioSchirmer/omnicore/application/pipeline"
 	"github.com/ClaudioSchirmer/omnicore/infra"
+	"github.com/ClaudioSchirmer/omnicore/infra/tracing"
 
 	"github.com/google/uuid"
 	"github.com/segmentio/kafka-go"
@@ -43,6 +44,17 @@ type ConsumerPool struct {
 	stopOnce sync.Once
 	inflight sync.WaitGroup
 	workers  sync.WaitGroup
+	// traceKafka gates the per-message consumer span (the tracing `kafka`
+	// instrument toggle). bootstrap sets it via WithKafkaTracing; false (the
+	// default) leaves the receiver loop untraced and pays nothing.
+	traceKafka bool
+}
+
+// WithKafkaTracing enables the consumer span on each received message. bootstrap
+// passes tracing.Instruments(SubKafka); off (the default) keeps the loop untraced.
+func (p *ConsumerPool) WithKafkaTracing(on bool) *ConsumerPool {
+	p.traceKafka = on
+	return p
 }
 
 // NewConsumerPool wires the pool. brokers + pipe are framework
@@ -276,6 +288,10 @@ func (p *ConsumerPool) processGroupMessage(ctx context.Context, g *receiverGroup
 	if r == nil {
 		return
 	}
+	ctx, span := tracing.StartConsumerSpanIf(p.traceKafka, ctx,
+		"github.com/ClaudioSchirmer/omnicore/infra/integration",
+		"receive "+headers["event_type"], headers["traceparent"])
+	defer span.End()
 	eventID := parseEventID(headers["event_id"], msg.Key)
 	_ = r.handleMessage(ctx, p.pg.Pool(), headers, eventID, msg.Value, p.pipe, p.logger)
 }

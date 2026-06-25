@@ -1,0 +1,147 @@
+<h2>Distributed tracing</h2>
+<p>
+    OpenTelemetry tracing is an <strong>opt-in</strong> overlay that reconstructs how a request flows
+    through your services — the inbound call, the business handler, every database query, every
+    outbound call, and the asynchronous projection that follows. It is <strong>off by default</strong>:
+    an undeclared service installs the OTel no-op tracer and pays essentially nothing.
+</p>
+<p>
+    Tracing is an <strong>additional destination</strong> — spans leave over OTLP to a collector
+    (Jaeger, Tempo, Datadog, …), <strong>never your stdout</strong>. Your logs and the audit echo are
+    untouched, except that when tracing is enabled every context-carrying log line gains a
+    <code>traceId</code>/<code>spanId</code> so you can pivot from a log straight to the trace.
+</p>
+
+<h3 id="tracing-config">Turning it on</h3>
+<p>Add the <code>observability.tracing</code> block to <code>microservice.&lt;profile&gt;.yaml</code>:</p>
+<pre><code>observability:
+  tracing:
+    enabled: true
+    exporter: otlp          # otlp | none (none = propagate traceparent, export nothing)
+    endpoint: "${OTEL_EXPORTER_OTLP_ENDPOINT:localhost:4317}"
+    sampler: parentbased_traceratio   # dev default always_on; else this
+    ratio: 0.1              # keep fraction for the *traceratio samplers
+    serviceName: "${service}"         # defaults to the top-level service identity
+    instrument: [http, pgx, mongo, kafka, httpclient]   # empty list = all</code></pre>
+<ul>
+    <li><strong><code>enabled</code></strong> — master switch. Off installs no SDK, no exporter, no
+        propagation.</li>
+    <li><strong><code>exporter</code></strong> — <code>otlp</code> ships spans to a collector;
+        <code>stdout</code> prints them to the terminal (debug-only — see the note below);
+        <code>none</code> records and propagates the <code>traceparent</code> to downstreams but
+        exports nothing (a middle service with no collector of its own yet).</li>
+    <li><strong><code>sampler</code></strong> — <code>always_on</code> / <code>always_off</code> /
+        <code>traceratio</code> / <code>parentbased_traceratio</code>. The profile default is
+        <code>always_on</code> in <code>dev</code> and <code>parentbased_traceratio</code> elsewhere.
+        <em>Parent-based</em> matters in a mesh: when a request already carries a trace, the keep/drop
+        decision is honored, so a distributed trace is never split in half.</li>
+    <li><strong><code>ratio</code></strong> — the keep fraction (0–1) for the <code>*traceratio</code>
+        samplers. <code>0.1</code> = 10% of traces are recorded.</li>
+    <li><strong><code>instrument</code></strong> — the edge-subsystem allowlist (the full set today is in
+        the table below). An empty list enables all; drop <code>pgx</code>/<code>mongo</code> on a
+        high-QPS service to cut the per-query span volume.</li>
+</ul>
+
+<p>The complete set of toggles — listing all five enables the same as an empty list:</p>
+<table>
+    <thead>
+        <tr><th>Toggle</th><th>What it spans</th><th>Layer</th></tr>
+    </thead>
+    <tbody>
+        <tr><td><code>http</code></td><td>the inbound server span (one per request)</td><td>web</td></tr>
+        <tr><td><code>pgx</code></td><td>one span per PostgreSQL statement</td><td>infra</td></tr>
+        <tr><td><code>mongo</code></td><td>one span per Mongo command</td><td>infra</td></tr>
+        <tr><td><code>kafka</code></td><td>consumer spans on the async paths (SyncEngine, integration Receiver, UpstreamSubscriber)</td><td>infra</td></tr>
+        <tr><td><code>httpclient</code></td><td>the outbound client span + W3C <code>traceparent</code> injection</td><td>infra</td></tr>
+    </tbody>
+</table>
+<p class="note">
+    The business <strong><code>dispatch &lt;Command/Query&gt;</code> span is NOT a toggle</strong> — it is
+    always on when tracing is enabled. It is one span per request (cheap) and the highest-value level, so
+    it is never opted out. The five toggles above are the <em>edge</em> spans, whose volume (a span per
+    query for <code>pgx</code>/<code>mongo</code>) or library maturity warrants the fine-grained control.
+</p>
+<p class="note">
+    <strong><code>exporter: stdout</code> is debug-only — it is your right to use it, but it is not the
+    recommended mode.</strong> It exists so you can confirm a trace is forming locally without standing
+    up a collector. Two reasons to switch back to <code>otlp</code> once you have looked: (1) it writes
+    spans to the <em>same stdout stream</em> as your application logs and the audit echo — the exact
+    noise tracing otherwise keeps off stdout, and the thing that makes a trace hard to tell apart from a
+    log line; (2) it writes <em>synchronously</em>, on the request path, whereas <code>otlp</code>
+    exports asynchronously in batches and never makes a request wait. Use it for a quick local look,
+    then go back to <code>otlp</code> (or a local Jaeger).
+</p>
+<p>
+    Cost is controlled and never on the hot path: export is <strong>asynchronous and batched</strong>,
+    so a request never waits on the collector and a down collector simply drops the batch. A subsystem
+    left out of <code>instrument</code> installs <strong>no</strong> tracer for that layer — the cost is
+    zero, not merely a no-op.
+</p>
+<p class="note">
+    Dropping <code>http</code> has one extra consequence beyond skipping the server span: the inbound W3C
+    <code>traceparent</code> is no longer extracted at the edge and the <code>CorrelationID == trace_id</code>
+    bridge does not run, so the <code>dispatch</code> span <em>roots</em> the trace locally instead of
+    continuing an upstream one. Keep <code>http</code> enabled on any service that sits inside a distributed
+    trace; drop it only on a true edge where no upstream <code>traceparent</code> ever arrives.
+</p>
+
+<h3 id="tracing-sync">The synchronous trace</h3>
+<p>A request produces one continuous trace, automatically:</p>
+<pre><code>POST /users                         server span        (web)
+  └─ dispatch InsertUserCommand     business unit       (application)
+      ├─ pg INSERT users            query span          (pgx)
+      ├─ pg INSERT outbox           query span          (pgx)
+      ├─ call keycloak/getUser      client span → continues in the downstream service
+      └─ mongo find                 command span        (mongo)</code></pre>
+<p>
+    The <code>dispatch &lt;Command/Query&gt;</code> span is the business unit of work. Because every
+    handler — Auto or manual, REST or GraphQL — funnels through <code>pipeline.Dispatch</code>, the
+    span is <strong>inherited identically</strong> with no per-handler code. Outbound
+    <code>httpclient</code> calls inject the W3C <code>traceparent</code> header, so the downstream
+    service continues the very same trace.
+</p>
+
+<h3 id="tracing-async">The asynchronous trace (Debezium / Kafka)</h3>
+<p>
+    The eventually-consistent projection (outbox → Debezium → Kafka → read model) is reconnected to its
+    producing trace by a <strong><code>traceparent</code> carried on the <code>outbox</code> and
+    <code>integration_events</code> rows</strong> (framework migration <code>0003</code>). The
+    SyncEngine, the integration Receiver and the UpstreamSubscriber open a <strong>consumer span linked
+    to the producing trace</strong> (the messaging convention — a link, not a parent, because producer
+    and consumer are temporally far apart).
+</p>
+<p>
+    One operator step is required for the link to cross Debezium: map the column to a Kafka header in
+    the Outbox Event Router config of your connector —
+</p>
+<pre><code>"transforms.outbox.table.fields.additional.placement": "traceparent:header:traceparent"</code></pre>
+<p>
+    Debezium itself is a separate process, so its latency is a blind spot — it shows as the time
+    <em>gap</em> between the producer span ending and the consumer span starting, not as a measured
+    span.
+</p>
+
+<h3 id="tracing-bridge">One id ties logs, traces and events together</h3>
+<p>
+    The framework keeps <code>AppContext.CorrelationID()</code> equal to the active span's
+    <code>trace_id</code> (a UUID is 128 bits — exactly an OTel trace id). So the same value appears as
+    the <code>traceId</code> on your logs, the trace id in the collector, and the
+    <code>correlation_id</code> column on <code>integration_events</code>. Read an error in stdout, copy
+    its <code>traceId</code>, open the whole request in Jaeger.
+</p>
+<p>
+    For forensics, the audit event carries a <code>trace_id</code> mirrored to <strong>both
+    destinations</strong> — the in-transaction <code>audit_events.trace_id</code> column and the
+    <code>traceId</code> attribute on the slog audit echo — so an audit row <em>or</em> an echo line
+    jumps to its trace. It is the 32-char hex id (not the full <code>traceparent</code>): audit is read,
+    never re-consumed, so it needs the id to <em>find</em> the trace, not the producer span id a
+    carrier needs to <em>link</em> it.
+</p>
+
+<h3 id="tracing-blind">What is and isn't covered</h3>
+<ul>
+    <li><strong>Synchronous request</strong> — traced end to end, automatically, one continuous trace.</li>
+    <li><strong>Asynchronous projection</strong> — reconnected via span <em>links</em> (not one giant
+        trace), with the Debezium hop as a visible time gap.</li>
+    <li><strong>Domain layer</strong> — no spans; it is pure CPU validation with no IO to measure.</li>
+</ul>

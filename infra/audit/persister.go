@@ -20,11 +20,11 @@ const insertAuditEventSQL = `
 INSERT INTO audit_events (
     aggregate_id, entity_type, verb, action_name, kind,
     actor, actor_issuer, tenant_id, thread_id,
-    occurred_at, payload
+    occurred_at, payload, trace_id
 ) VALUES (
     $1, $2, $3, $4, $5,
     $6, $7, $8, $9,
-    $10, $11
+    $10, $11, $12
 )`
 
 // InsertAuditEvent writes ev as one row in audit_events inside the provided
@@ -54,6 +54,10 @@ func InsertAuditEvent(ctx context.Context, tx pgx.Tx, ev AuditEvent) error {
 		ev.ThreadID,
 		ev.DateTime,
 		payload,
+		// Pivot to the request's trace; NULL when tracing is off. Sourced from
+		// the event (populateContext) so the in-TX row and the slog echo carry
+		// the identical value. The bridge keeps it == AppContext.CorrelationID().
+		nullableString(ev.TraceID),
 	)
 	if err != nil {
 		return fmt.Errorf("audit: insert into audit_events: %w", err)

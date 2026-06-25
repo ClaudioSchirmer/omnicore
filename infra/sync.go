@@ -13,6 +13,8 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/segmentio/kafka-go"
+
+	"github.com/ClaudioSchirmer/omnicore/infra/tracing"
 )
 
 // defaultWorkerQueueDepth bounds in-flight messages per worker. With async
@@ -53,6 +55,17 @@ type SyncEngine struct {
 	groupID string
 	topics  []string
 	workers int
+	// traceKafka gates the per-message consumer span (the tracing `kafka`
+	// instrument toggle). bootstrap sets it via WithKafkaTracing; false (the
+	// default) leaves the projection loop untraced and pays nothing.
+	traceKafka bool
+}
+
+// WithKafkaTracing enables the consumer span on each processed message. bootstrap
+// passes tracing.Instruments(SubKafka); off (the default) keeps the loop untraced.
+func (s *SyncEngine) WithKafkaTracing(on bool) *SyncEngine {
+	s.traceKafka = on
+	return s
 }
 
 // kafkaEvent is reconstructed from a Kafka message produced by Debezium's
@@ -64,6 +77,11 @@ type kafkaEvent struct {
 	AggregateType string
 	EventType     string
 	AggregateID   string
+	// Traceparent is the W3C trace context the producer stamped on the outbox
+	// row, mapped to a Kafka header by Debezium's Outbox Event Router. Empty
+	// when the producing write had tracing off. Used to LINK the projection
+	// span back to the producing trace.
+	Traceparent string
 }
 
 func extractEvent(msg kafka.Message) kafkaEvent {
@@ -74,6 +92,8 @@ func extractEvent(msg kafka.Message) kafkaEvent {
 			e.AggregateType = string(h.Value)
 		case "event_type":
 			e.EventType = string(h.Value)
+		case "traceparent":
+			e.Traceparent = string(h.Value)
 		}
 	}
 	return e
@@ -226,6 +246,11 @@ func (s *SyncEngine) run(ctx context.Context) {
 }
 
 func (s *SyncEngine) process(ctx context.Context, event kafkaEvent) error {
+	ctx, span := tracing.StartConsumerSpanIf(s.traceKafka, ctx,
+		"github.com/ClaudioSchirmer/omnicore/infra/sync",
+		"sync "+event.AggregateType, event.Traceparent)
+	defer span.End()
+
 	views, ok := s.index.byPGTable[event.AggregateType]
 	if !ok {
 		return nil
