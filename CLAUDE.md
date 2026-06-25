@@ -12,6 +12,8 @@
 > 8. **95% is the minimum test coverage.** No production changes to enable testability without maintainer approval. `_test.go` files may cross DDD layers only if production imports already allow it.
 >
 > **Every approved change ships in one round with:** the code edit + unit tests (green `go build ./... && go vet ./... && go test ./... -count=1` is a precondition, not proof of working — then ask via `AskUserQuestion` whether to run the `omnicore-example-users` E2E suites) + a `CHANGELOG.md` `[Unreleased]` entry (public-surface changes only) + a `docs/` site update (the consumer-facing manual at `docs/content/sections/<id>.html` + a `changelog.html` entry; the site and this file must tell the same story). Purely internal changes (private helper, refactor without API change, comment-only) may skip CHANGELOG/docs — record the rationale.
+>
+> **Changelog + release docs.** A `changelog.html` entry for a **breaking** change carries a standalone `<strong>breaking</strong>` marker (right after `<strong>Changed</strong> —`): `docs/assets/app.js` derives each release's severity — the ▲ icon and the release-tag colour — by scanning entries for a `<strong>` whose text is exactly `breaking`; prose like "(breaking)" does NOT trigger it (the root `CHANGELOG.md` is free prose, not parsed). The full version-bump file checklist (which files a release touches) lives in `docs/README.md` under "Releasing" — the single source of truth; don't restate it here.
 
 ---
 
@@ -414,9 +416,9 @@ The `HandleCommand*` family; suffixes communicate what the endpoint accepts. No 
 |---|---|---|---|
 | `fwweb.HandleCommandWithBody(pipe, sample, respProj, h, status)` | yes | no | POST (Insert) |
 | `fwweb.HandleCommandWithBodyID(pipe, sample, respProj, h, status)` | yes | yes | PUT / PATCH |
-| `fwweb.HandleCommandWithID(pipe, respProj, h, status)` | no | yes | Archive / Unarchive / Delete |
+| `fwweb.HandleCommandByID(pipe, respProj, h, status)` | no | yes | Archive / Unarchive / Delete |
 
-`HandleCommandWithBody{,ID}` flow: alloc `var req TReq` → strict-body check if handler embeds `pipeline.FullBody` → `c.Bind().Body(&req)` → `cmd := req.ToCommand()` → `cmd.SetPathID(c.Params("id"))` (WithID variant) → `Dispatch(pipe, AppContext(c), cmd, h)` → on Success `respProj(result.Value())` maps `TResult`→`TResp` (or `responses.None` envelope); on Failure `RespondFromResult` honors each notification's Semantic. `HandleCommandWithID` (no body): `new(T)` + `SetPathID` + `Dispatch` + projection.
+`HandleCommandWithBody{,ID}` flow: alloc `var req TReq` → strict-body check if handler embeds `pipeline.FullBody` → `c.Bind().Body(&req)` → `cmd := req.ToCommand()` → `cmd.SetPathID(c.Params("id"))` (WithID variant) → `Dispatch(pipe, AppContext(c), cmd, h)` → on Success `respProj(result.Value())` maps `TResult`→`TResp` (or `responses.None` envelope); on Failure `RespondFromResult` honors each notification's Semantic. `HandleCommandByID` (no body): `new(T)` + `SetPathID` + `Dispatch` + projection.
 
 Generic inference is anchored by the **sample `TReq`** (`requests.InsertUserRequest{}`) + the **`responseProjection` method value** (`requests.InsertUserResponse{}.FromResult`, signature `func(TResult) TResp`). No-projection routes pass `fwresponses.NoBody` (`func(fwresults.None) fwresponses.None`).
 
@@ -487,7 +489,7 @@ users.Post("/", fwweb.HandleCommandWithBody(d.Pipeline,
     fiber.StatusCreated))
 ```
 
-**Shape rulers**: Request ≡ Command (required → `string`, optional → `*string`; `ToCommand` is 1:1, no normalization). Result ≡ Response (each field 1:1; `FromResult` is pure assignment). Other verbs follow the same Request+Command+Result+Response quad — Result/Response optional (`fwresults.None`/`fwresponses.NoBody`); Update strict via `pipeline.FullBody`, PATCH lenient, bodyless verbs via `HandleCommandWithID`.
+**Shape rulers**: Request ≡ Command (required → `string`, optional → `*string`; `ToCommand` is 1:1, no normalization). Result ≡ Response (each field 1:1; `FromResult` is pure assignment). Other verbs follow the same Request+Command+Result+Response quad — Result/Response optional (`fwresults.None`/`fwresponses.NoBody`); Update strict via `pipeline.FullBody`, PATCH lenient, bodyless verbs via `HandleCommandByID`.
 
 ### UnarchiveCommandHandler asymmetry
 
@@ -520,13 +522,13 @@ Symmetric to the write side. Every GET declares **input** via Request DTO with `
 | Wrapper | Path ID? | Allowlist | Flow |
 |---|---|---|---|
 | `fwweb.HandleQueryWithParams[TReq,TQ,R]` | no | reflection on TReq `query:"X" filter:"ops"` tags (cached); unknown key/operator → 400 `SchemaViolationNotification` | parse query → `ReadCriteria` → `req.ToQuery(criteria)` (no ctx) → Dispatch → handler `q.ToCriteria(ctx)` (JWT overlays) → projects each `page.Items` + `Data:[]R` + `Pagination` |
-| `fwweb.HandleQueryWithID[TReq,TQ,R]` | yes | only `?includeArchived`; any other key → 400 | `req.ToQuery()` → `SetPathID` → Dispatch → `Reader.ReadByID` → projects `result.Value()` |
+| `fwweb.HandleQueryByID[TReq,TQ,R]` | yes | only `?includeArchived`; any other key → 400 | `req.ToQuery()` → `SetPathID` → Dispatch → `Reader.ReadByID` → projects `result.Value()` |
 
 ```go
 users.Get("/", fwweb.HandleQueryWithParams(d.Pipeline,
     requests.FindUsersByParamsRequest{}, fwresponses.AutoFromDoc[requests.FindUsersByParamsResponse],
     &handlers.FindByParamsQueryHandler[*queries.FindUserByParamsQuery]{Reader: d.ViewReader, View: view.Name()}))
-users.Get("/:id", fwweb.HandleQueryWithID(d.Pipeline,
+users.Get("/:id", fwweb.HandleQueryByID(d.Pipeline,
     requests.FindUserByIDRequest{}, fwresponses.AutoFromDoc[requests.FindUserByIDResponse],
     &handlers.FindByIDQueryHandler[*queries.FindUserByIDQuery]{Reader: d.ViewReader, View: view.Name()}))
 ```
@@ -612,9 +614,9 @@ Every Request DTO field tagged `path:"<name>"` is populated from `c.Params("<nam
 |---|---|---|---|
 | `HandleCommandWithBody` | No | Yes | Yes (map `SetPathID` in `ToCommand`) |
 | `HandleCommandWithBodyID` | Yes | Yes | **No** — boot panic |
-| `HandleCommandWithID` | Yes | n/a | n/a |
+| `HandleCommandByID` | Yes | n/a | n/a |
 | `HandleQueryWithParams` | No | Yes | Yes |
-| `HandleQueryWithID` | Yes | Yes | **No** — boot panic |
+| `HandleQueryByID` | Yes | Yes | **No** — boot panic |
 
 **Supported types**: `string`, signed/unsigned ints, `float32/64`, `bool`, `uuid.UUID`, `domain.ID`; pointer/slice/struct rejected at boot; conversion failure → 400 `SchemaViolationNotification`. **FullBody interaction**: strict-body check skips `path:`-tagged fields; declaring both `path:"X"` and `json:"X"` on one field is a boot panic. **Runtime guard**: each ID-requiring auto handler calls `handlers.RequirePathID(...)` first in `Handle` — empty ID → panic caught by `pipeline.Run` → 500. Handlers embed `pipeline.PathIDRequired` so wrappers detect the requirement; pairing a no-`:id`-bind wrapper with an ID-requiring handler and no `path:` tag logs `slog.Warn` at construction.
 
@@ -974,9 +976,9 @@ func (EmailAlreadyExistsNotification) Semantic() domain.NotificationSemantic {
 | Declare aggregate child | root `AggregateChildren() []AggregateValueObject`; table/cols/FK in child `TableSchema` via `root.Child(...)` |
 | Trivial CRUD without a handler | `handlers.{Insert,Update,PartialUpdate,Archive,Unarchive,Delete}CommandHandler[T,*Cmd,TResult]` |
 | Route wrapper — with body | `fwweb.HandleCommandWithBody{,ID}(...)` |
-| Route wrapper — no body | `fwweb.HandleCommandWithID(pipe, fwresponses.NoBody, h, status)` |
+| Route wrapper — no body | `fwweb.HandleCommandByID(pipe, fwresponses.NoBody, h, status)` |
 | Route wrapper — paged list | `fwweb.HandleQueryWithParams(pipe, req, fwresponses.AutoFromDoc[R], h)` |
-| Route wrapper — by-id GET | `fwweb.HandleQueryWithID(...)` |
+| Route wrapper — by-id GET | `fwweb.HandleQueryByID(...)` |
 | Manual query allowlist | `fwweb.NewQueryParser[Req,Resp]()` / `fwweb.ParseCriteria(c, req)` |
 | Repository | embed `fwinfra.BaseRepository[T]` + `NewEntity func() T` + optional `Constraints` |
 | Aggregate load | `fwinfra.NewAggregateLoader[T](pg, factory).WithSchema(schema)` + `FindOne`/`FindAll(ctx, criteria...)` |
@@ -985,7 +987,7 @@ func (EmailAlreadyExistsNotification) Semantic() domain.NotificationSemantic {
 | Mongo drift reconcile | `infra.DetectViewDrift` + `SyncEngine.ExecuteRebuild`; `mongo.rebuild` yaml |
 | Service capability | implement `bootstrap.Feature` / `ReadableFeature`; bundle in `Wiring.Features` |
 | OpenAPI + Swagger | `Wiring.OpenAPI = &openapi.Config{...}`; document via `*Spec` wrappers + `openapi.Mount`/`MountRaw` |
-| GraphQL endpoint | `Wiring.GraphQL = fwgraphql.New(d.Pipeline).Register(fwgraphql.Query/Mutation[...])`; own surface, not in Swagger; `graphql:` yaml knobs |
+| GraphQL endpoint | `Wiring.GraphQL = fwgraphql.New(d.Pipeline).Register(fwgraphql.QueryWithParams/MutationWithBody[...])`; own surface, not in Swagger; `graphql:` yaml knobs |
 | Emit integration event | declare `integration.publishes.events.<key>` + `fwintegration.Dispatch(ctx, key, payload, opts...)` |
 | React to integration event | declare `integration.subscribes...` + implement `bootstrap.IntegrationFeature` |
 | Retry pending failures | admin routes calling `Receiver.RetryPendingFailures` / `UpstreamSubscriber.RetryPendingFailures` |
@@ -1559,7 +1561,7 @@ Strict decoding on `authorization` + `tenant` — unknown keys abort boot. Cross
 | `openapi.Mount(reg, group, method, path, handler, spec, doc)` | canonical `*Spec` siblings AND manual handlers parsing a typed Request DTO | `RouteSpec{RequestType, ResponseType, SuccessStatus, Strict, HasPathID, Paged, FileResponse, OmittedQueryParams}` + `Doc{Summary, Description, OperationID, Tags, Deprecated, Hidden, Public}` |
 | `openapi.MountRaw(reg, group, method, path, handler, raw)` | routes without a typed Request DTO (auth demos, in-process upstreams, vendor-shaped showcase) | `RawSpec{Summary, Description, OperationID, Tags, Deprecated, Hidden, Public, Parameters, RequestBody, Responses}` |
 
-Canonical `*Spec` siblings return `(fiber.Handler, openapi.RouteSpec)`: `HandleCommandWithBodySpec`, `HandleCommandWithBodyIDSpec`, `HandleCommandWithIDSpec`, `HandleQueryWithParamsSpec`, `HandleQueryWithIDSpec`. Each is identical to its non-`Spec` wrapper plus the returned `RouteSpec`. `Strict` is detected via `pipeline.FullBodyEnforcer`; `HasPathID` is true wherever the wrapper auto-binds `:id`; `Paged` only on `HandleQueryWithParamsSpec`.
+Canonical `*Spec` siblings return `(fiber.Handler, openapi.RouteSpec)`: `HandleCommandWithBodySpec`, `HandleCommandWithBodyIDSpec`, `HandleCommandByIDSpec`, `HandleQueryWithParamsSpec`, `HandleQueryByIDSpec`. Each is identical to its non-`Spec` wrapper plus the returned `RouteSpec`. `Strict` is detected via `pipeline.FullBodyEnforcer`; `HasPathID` is true wherever the wrapper auto-binds `:id`; `Paged` only on `HandleQueryWithParamsSpec`.
 
 ### Paged success envelope (RouteSpec.Paged)
 
@@ -1622,9 +1624,9 @@ Custom error status via `Doc.ResponseExamples[N]` auto-creates the entry; `defau
 
 | Constructor | Maps | Field |
 |---|---|---|
-| `Query[TReq, TQ, R]` | read `pipeline.Handler[TQ, queries.Page]` | `users(where, first, after, last, before, orderBy, search, includeArchived): UserConnection!` |
-| `Mutation[TReq, TCmd, *TCmd, TResult, TResp]` | insert (body, no id) | `createUser(input: InsertUserInput!): InsertUserResponse!` |
-| `MutationWithID[…]` | update/patch (body + id) | `updateUser(id: ID!, input: …!): …!` |
+| `QueryWithParams[TReq, TQ, R]` | read `pipeline.Handler[TQ, queries.Page]` | `users(where, first, after, last, before, orderBy, search, includeArchived): UserConnection!` |
+| `MutationWithBody[TReq, TCmd, *TCmd, TResult, TResp]` | insert (body, no id) | `createUser(input: InsertUserInput!): InsertUserResponse!` |
+| `MutationWithBodyID[…]` | update/patch (body + id) | `updateUser(id: ID!, input: …!): …!` |
 | `MutationByID[TCmd, *TCmd, TResult]` | archive/unarchive/delete (id, no body) | `archiveUser(id: ID!): MutationResult!` |
 
 ### Reflected schema + execution
@@ -1643,7 +1645,7 @@ The filter operator vocabulary (`Op*`, `knownOps`) + emission, the Request filte
 
 ### Authorization
 
-Layers 2 (`BuildRules`) and 3 (tenant via `ToCriteria`) ride inside `Dispatch` — inherited unchanged. Layer 1 (coarse `RequirePermission`) is route-shaped in REST; on the single GraphQL endpoint it moves **per-field into the resolver** via `fwgraphql.RequirePermission("resource:action")` (a `FieldOption` on `Query`/`Mutation`/`MutationWithID`/`MutationByID`, the GraphQL twin of `fwopenapi.RequirePermission` with the same `resource:action` validation). Enforced behind the same master switch as REST — `Registry.EnableAuthorization(cfg.Auth.Authorization.Enabled)`, wired by bootstrap next to `EnableIntrospection` — so the annotation is inert until `auth.authorization.enabled`. A denied field returns HTTP 200 with `MissingPermissionNotification` (`semantic: "Forbidden"`, `field: "permission"`) in `errors[].extensions`, the same notification the REST gate emits as 403; the handler never runs. `AuthMiddleware` (matched by path) still authenticates `/graphql` when `auth.mode: jwt`. **Field-level read access** is also inherited: the read resolver maps the Relay node selection set (`edges { node { … } }`) to `ReadCriteria.Projection` before `ToQuery`, so a field a `Query.ToCriteria` restricts via `ReadCriteria.Restrict` produces the same `FieldAccessForbiddenNotification` (semantic Forbidden) the REST `?fields=` path returns when the field is explicitly selected — and Mongo projects only the requested fields (pushdown). A passively unselected restricted field is scrubbed (never leaked) on both surfaces.
+Layers 2 (`BuildRules`) and 3 (tenant via `ToCriteria`) ride inside `Dispatch` — inherited unchanged. Layer 1 (coarse `RequirePermission`) is route-shaped in REST; on the single GraphQL endpoint it moves **per-field into the resolver** via `fwgraphql.RequirePermission("resource:action")` (a `FieldOption` on `QueryWithParams`/`MutationWithBody`/`MutationWithBodyID`/`MutationByID`, the GraphQL twin of `fwopenapi.RequirePermission` with the same `resource:action` validation). Enforced behind the same master switch as REST — `Registry.EnableAuthorization(cfg.Auth.Authorization.Enabled)`, wired by bootstrap next to `EnableIntrospection` — so the annotation is inert until `auth.authorization.enabled`. A denied field returns HTTP 200 with `MissingPermissionNotification` (`semantic: "Forbidden"`, `field: "permission"`) in `errors[].extensions`, the same notification the REST gate emits as 403; the handler never runs. `AuthMiddleware` (matched by path) still authenticates `/graphql` when `auth.mode: jwt`. **Field-level read access** is also inherited: the read resolver maps the Relay node selection set (`edges { node { … } }`) to `ReadCriteria.Projection` before `ToQuery`, so a field a `Query.ToCriteria` restricts via `ReadCriteria.Restrict` produces the same `FieldAccessForbiddenNotification` (semantic Forbidden) the REST `?fields=` path returns when the field is explicitly selected — and Mongo projects only the requested fields (pushdown). A passively unselected restricted field is scrubbed (never leaked) on both surfaces.
 
 ### Bootstrap integration
 
@@ -1825,7 +1827,7 @@ func Wire(d bootstrap.Deps) bootstrap.Wiring {
 7. Commands embed `pipeline.CommandBase`/`CommandBaseWithID`, implement `ToEntity()`/`ApplyTo()`; no JSON tags (wire lives in `web/requests/`).
 8. Manual handlers only for cross-service / domain-service logic (Auto handlers cover trivial CRUD).
 9. Views in `infra/views.go` via `fwinfra.View(...).Root(...).EmbedMany(...)`.
-10. `web/` exposes `MountXxx(app, repo, view, deps)`; body endpoints via `fwweb.HandleCommandWithBody{,ID}`, bodyless via `fwweb.HandleCommandWithID`. `/health` comes from the framework.
+10. `web/` exposes `MountXxx(app, repo, view, deps)`; body endpoints via `fwweb.HandleCommandWithBody{,ID}`, bodyless via `fwweb.HandleCommandByID`. `/health` comes from the framework.
 11. Feature struct per aggregate implements `Feature`/`ReadableFeature`, `Mount` delegating to `web.MountXxx`.
 12. `Wire(d Deps) Wiring` aggregates Translations + Features; optional `Wiring.OpenAPI` publishes `/openapi.json`+`/docs`.
 13. `func main()` ≤10 lines calling `bootstrap.Run`.

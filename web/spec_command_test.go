@@ -113,11 +113,11 @@ func TestHandleCommandWithBodyIDSpec_StrictHandler_StrictTrue(t *testing.T) {
 	}
 }
 
-// ─── HandleCommandWithIDSpec ───────────────────────────────────────────────
+// ─── HandleCommandByIDSpec ───────────────────────────────────────────────
 
-func TestHandleCommandWithIDSpec_NoBodyNoneResponse(t *testing.T) {
+func TestHandleCommandByIDSpec_NoBodyNoneResponse(t *testing.T) {
 	pipe := pipeline.New(translation.New())
-	h, spec := HandleCommandWithIDSpec[
+	h, spec := HandleCommandByIDSpec[
 		specUpdateCmd, *specUpdateCmd, fwresults.None, fwresponses.None,
 	](pipe, fwresponses.NoBody, specBodylessIDHandler{}, fiber.StatusOK)
 
@@ -128,12 +128,12 @@ func TestHandleCommandWithIDSpec_NoBodyNoneResponse(t *testing.T) {
 		t.Fatalf("bodyless route must report RequestType=nil; got %+v", spec.RequestType)
 	}
 	if !spec.HasPathID {
-		t.Fatal("HandleCommandWithID auto-binds :id; HasPathID must be true")
+		t.Fatal("HandleCommandByID auto-binds :id; HasPathID must be true")
 	}
 	if spec.ResponseType == nil || spec.ResponseType.Name() != "None" {
 		t.Fatalf("ResponseType: got %+v, want responses.None", spec.ResponseType)
 	}
 	if spec.Strict {
-		t.Fatal("HandleCommandWithID does not consult FullBody; Strict must stay false")
+		t.Fatal("HandleCommandByID does not consult FullBody; Strict must stay false")
 	}
 }

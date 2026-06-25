@@ -14,7 +14,7 @@ import (
 	"github.com/google/uuid"
 )
 
-// ─── HandleQueryWithID — path-binding conversion failure → 400 ──────────────
+// ─── HandleQueryByID — path-binding conversion failure → 400 ──────────────
 
 type idPathBindReq struct {
 	Tenant uuid.UUID `path:"tenantId"`
@@ -22,13 +22,13 @@ type idPathBindReq struct {
 
 func (r idPathBindReq) ToQuery() *testFindIDQuery { return &testFindIDQuery{} }
 
-func TestHandleQueryWithID_PathBindFailureReturns400(t *testing.T) {
+func TestHandleQueryByID_PathBindFailureReturns400(t *testing.T) {
 	resetPathSchemaCache()
 	app := fiber.New()
 	pipe := pipeline.New(translation.Default())
 	h := &capturingIDHandler{}
 
-	app.Get("/t/:tenantId/users/:id", HandleQueryWithID(pipe, idPathBindReq{}, responses.RawDoc, h))
+	app.Get("/t/:tenantId/users/:id", HandleQueryByID(pipe, idPathBindReq{}, responses.RawDoc, h))
 
 	resp, _ := app.Test(httptest.NewRequest("GET", "/t/not-a-uuid/users/abc", nil))
 	if resp.StatusCode != fiber.StatusBadRequest {

@@ -18,13 +18,13 @@ type CommandRequest[TCmd any] interface {
 	ToCommand() TCmd
 }
 
-// Mutation registers an insert-style command handler (body, no path id) as a
-// root Mutation field `<name>(input: <Req>Input!): <Resp>`. TReq is the write
+// MutationWithBody registers an insert-style command handler (body, no path id)
+// as a root Mutation field `<name>(input: <Req>Input!): <Resp>`. TReq is the write
 // Request DTO, TCmdPtr its Command pointer, TResult the handler result, TResp
 // the Response DTO (the mutation output). The input object is reflected from
 // TReq (json tags; required when the handler embeds pipeline.FullBody, else
 // when the field is non-pointer without ,omitempty — mirroring the REST rule).
-func Mutation[
+func MutationWithBody[
 	TReq CommandRequest[TCmdPtr],
 	TCmd any,
 	TCmdPtr interface {
@@ -58,10 +58,10 @@ func Mutation[
 	}, opts)
 }
 
-// MutationWithID registers an update/patch-style command handler (body + path
+// MutationWithBodyID registers an update/patch-style command handler (body + path
 // id) as `<name>(id: ID!, input: <Req>Input!): <Resp>`. The id arg is injected
 // via SetPathID after ToCommand, mirroring HandleCommandWithBodyID.
-func MutationWithID[
+func MutationWithBodyID[
 	TReq CommandRequest[TCmdPtr],
 	TCmd any,
 	TCmdPtr interface {
@@ -100,7 +100,7 @@ func MutationWithID[
 // MutationByID registers a bodyless command handler (archive / unarchive /
 // delete) as `<name>(id: ID!): MutationResult!`. There is no input; the
 // command is allocated, given the path id, and dispatched — mirroring
-// HandleCommandWithID. On success the field returns { success: true, id }.
+// HandleCommandByID. On success the field returns { success: true, id }.
 func MutationByID[
 	TCmd any,
 	TCmdPtr interface {

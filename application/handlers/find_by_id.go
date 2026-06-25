@@ -26,7 +26,7 @@ import (
 // back to View. The Query is the natural owner of that identity — the same
 // way BaseRepository derives its ContextName from T on the write side.
 //
-//	users.Get("/:id", fwweb.HandleQueryWithID(d.Pipeline,
+//	users.Get("/:id", fwweb.HandleQueryByID(d.Pipeline,
 //	    requests.FindUserByIDRequest{},
 //	    requests.FindUserByIDResponse{}.FromDoc,
 //	    &handlers.FindByIDQueryHandler[*queries.FindUserByIDQuery]{

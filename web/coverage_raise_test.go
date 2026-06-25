@@ -32,7 +32,7 @@ func failureError() error {
 	return domain.NewDomainError([]*domain.NotificationContext{nc})
 }
 
-// ─── HandleCommandWithID — Failure branch (respondWithProjection) ───────────
+// ─── HandleCommandByID — Failure branch (respondWithProjection) ───────────
 
 type failingNoBodyHandler struct{}
 
@@ -40,9 +40,9 @@ func (failingNoBodyHandler) Handle(_ *configuration.AppContext, _ *testNoBodyCmd
 	return fwresults.None{}, failureError()
 }
 
-func TestHandleCommandWithID_FailureBranch(t *testing.T) {
+func TestHandleCommandByID_FailureBranch(t *testing.T) {
 	app := fiber.New()
-	app.Patch("/things/:id/archive", HandleCommandWithID(newTestPipeline(), responses.NoBody, failingNoBodyHandler{}, fiber.StatusOK))
+	app.Patch("/things/:id/archive", HandleCommandByID(newTestPipeline(), responses.NoBody, failingNoBodyHandler{}, fiber.StatusOK))
 
 	resp, _ := app.Test(httptest.NewRequest("PATCH", "/things/x/archive", nil))
 	if resp.StatusCode != fiber.StatusUnprocessableEntity {
@@ -259,7 +259,7 @@ func TestValidateCursorAgainstCriteria_AllBranches(t *testing.T) {
 	}
 }
 
-// ─── HandleQueryWithID — boot panic on path:"id" + Failure branch ───────────
+// ─── HandleQueryByID — boot panic on path:"id" + Failure branch ───────────
 
 type idTaggedIDReq struct {
 	ID string `path:"id"`
@@ -267,14 +267,14 @@ type idTaggedIDReq struct {
 
 func (r idTaggedIDReq) ToQuery() *testFindIDQuery { return &testFindIDQuery{} }
 
-func TestHandleQueryWithID_PanicsOnPathIDTag(t *testing.T) {
+func TestHandleQueryByID_PanicsOnPathIDTag(t *testing.T) {
 	resetPathSchemaCache()
 	defer func() {
 		if r := recover(); r == nil {
 			t.Fatal("expected boot panic when Request declares path:\"id\"")
 		}
 	}()
-	_ = HandleQueryWithID(newTestPipeline(), idTaggedIDReq{}, responses.RawDoc, &capturingIDHandler{})
+	_ = HandleQueryByID(newTestPipeline(), idTaggedIDReq{}, responses.RawDoc, &capturingIDHandler{})
 }
 
 type failingIDHandler struct{}
@@ -283,10 +283,10 @@ func (failingIDHandler) Handle(_ *configuration.AppContext, _ *testFindIDQuery) 
 	return nil, failureError()
 }
 
-func TestHandleQueryWithID_FailureBranch(t *testing.T) {
+func TestHandleQueryByID_FailureBranch(t *testing.T) {
 	resetPathSchemaCache()
 	app := fiber.New()
-	app.Get("/users/:id", HandleQueryWithID(newTestPipeline(), testFindIDRequest{}, responses.RawDoc, failingIDHandler{}))
+	app.Get("/users/:id", HandleQueryByID(newTestPipeline(), testFindIDRequest{}, responses.RawDoc, failingIDHandler{}))
 
 	resp, _ := app.Test(httptest.NewRequest("GET", "/users/abc", nil))
 	if resp.StatusCode != fiber.StatusUnprocessableEntity {

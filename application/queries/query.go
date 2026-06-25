@@ -8,7 +8,7 @@ import (
 
 // QueryWithID is the contract for Queries that receive the ID via the URL
 // path. Implemented through embedding QueryBaseWithID. Consumed by
-// fwweb.HandleQueryWithID, which injects q.SetPathID(c.Params("id")) before
+// fwweb.HandleQueryByID, which injects q.SetPathID(c.Params("id")) before
 // dispatch. Symmetric to pipeline.CommandWithID on the write side.
 type QueryWithID interface {
 	pipeline.Query

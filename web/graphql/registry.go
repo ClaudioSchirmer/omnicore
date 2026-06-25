@@ -30,7 +30,7 @@ type HasToParamsQuery[TQ queries.FindByParamsQuery] interface {
 type resolver func(ctx *configuration.AppContext, args map[string]any, sel ast.SelectionSet, frags ast.FragmentDefinitionList) (any, []GraphQLError)
 
 // Field is a registered GraphQL root field (query or mutation). The generic
-// constructors (Query, and the future Mutation) capture the typed handler into
+// constructors (QueryWithParams, and the Mutation* variants) capture the typed handler into
 // the SDL emitter + the resolver factory; the Registry binds the pipeline.
 type Field struct {
 	name               string
@@ -82,7 +82,7 @@ func applyOptions(f Field, opts []FieldOption) Field {
 }
 
 // Registry is the "list of queries/mutations" a consumer attaches handlers to.
-// New(pipe) → Register(Query(...)) → mount the Handler. The schema is built
+// New(pipe) → Register(QueryWithParams(...)) → mount the Handler. The schema is built
 // lazily (and cached) on the first execution.
 type Registry struct {
 	pipe          *pipeline.Pipeline
@@ -134,15 +134,15 @@ func (r *Registry) EnableAuthorization(on bool) *Registry {
 	return r
 }
 
-// Query registers a read handler as a root Query field returning a Relay
-// connection. TReq is the read Request DTO, R the Response DTO (the connection
+// QueryWithParams registers a read handler as a root Query field returning a
+// Relay connection. TReq is the read Request DTO, R the Response DTO (the connection
 // node), TQ its Query. The argument set (where / first / after / last / before /
 // orderBy / search / includeArchived) and the node/where/connection types are
 // reflected from TReq + R — both are reflection-only (they appear in no
 // parameter) and must be named; TQ is inferred from TReq's ToQuery + the
-// handler, so a call passes just `Query[TReq, R](...)`. TQ trails the type-param
+// handler, so a call passes just `QueryWithParams[TReq, R](...)`. TQ trails the type-param
 // list precisely so it can be elided as the inferable suffix.
-func Query[TReq HasToParamsQuery[TQ], R any, TQ queries.FindByParamsQuery](
+func QueryWithParams[TReq HasToParamsQuery[TQ], R any, TQ queries.FindByParamsQuery](
 	name, entity string,
 	h pipeline.Handler[TQ, queries.Page],
 	opts ...FieldOption,

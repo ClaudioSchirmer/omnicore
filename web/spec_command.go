@@ -8,8 +8,8 @@ import (
 	"github.com/gofiber/fiber/v3"
 )
 
-// HandleCommandWithIDSpec is the openapi-aware sibling of
-// HandleCommandWithID. The fiber.Handler returned is functionally
+// HandleCommandByIDSpec is the openapi-aware sibling of
+// HandleCommandByID. The fiber.Handler returned is functionally
 // identical — same closure, same dispatch path, same response semantics
 // — paired with a RouteSpec that documents the route's shape so
 // openapi.Mount can register it on the spec assembler.
@@ -19,7 +19,7 @@ import (
 // route. ResponseType is the wire shape of the response projection
 // (TResp); detection of responses.None for the "envelope without data"
 // case happens during spec assembly, not here.
-func HandleCommandWithIDSpec[
+func HandleCommandByIDSpec[
 	T any,
 	TCmd interface {
 		*T
@@ -33,7 +33,7 @@ func HandleCommandWithIDSpec[
 	h pipeline.Handler[TCmd, TResult],
 	successStatus int,
 ) (fiber.Handler, openapi.RouteSpec) {
-	handler := HandleCommandWithID[T, TCmd, TResult, TResp](pipe, responseProjection, h, successStatus)
+	handler := HandleCommandByID[T, TCmd, TResult, TResp](pipe, responseProjection, h, successStatus)
 	return handler, openapi.RouteSpec{
 		ResponseType:  reflect.TypeOf((*TResp)(nil)).Elem(),
 		SuccessStatus: successStatus,

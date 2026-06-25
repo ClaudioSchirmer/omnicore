@@ -143,7 +143,7 @@ func HandleQueryWithParams[TReq HasToParamsQuery[TQ], TQ queries.FindByParamsQue
 	}
 }
 
-// HandleQueryWithID creates a fiber.Handler for read-by-id endpoints. The
+// HandleQueryByID creates a fiber.Handler for read-by-id endpoints. The
 // only reserved query-string parameter is `?includeArchived=true`; anything
 // else produces 400. The path id is injected into the Query via SetPathID
 // after ToQuery, mirroring HandleCommandWithBodyID on the write side.
@@ -152,13 +152,13 @@ func HandleQueryWithParams[TReq HasToParamsQuery[TQ], TQ queries.FindByParamsQue
 // shape on the wire, or a consumer-defined R{}.FromDoc to declare a typed
 // wire contract:
 //
-//	users.Get("/:id", fwweb.HandleQueryWithID(d.Pipeline,
+//	users.Get("/:id", fwweb.HandleQueryByID(d.Pipeline,
 //	    requests.FindUserByIDRequest{},
 //	    requests.FindUserByIDResponse{}.FromDoc,
 //	    &handlers.FindByIDQueryHandler[*queries.FindUserByIDQuery]{
 //	        Reader: d.ViewReader, View: view.Name(),
 //	    }))
-func HandleQueryWithID[TReq HasToIDQuery[TQ], TQ queries.FindByIDQuery, R any](
+func HandleQueryByID[TReq HasToIDQuery[TQ], TQ queries.FindByIDQuery, R any](
 	pipe *pipeline.Pipeline,
 	sample TReq,
 	projector func(map[string]any) R,
@@ -171,7 +171,7 @@ func HandleQueryWithID[TReq HasToIDQuery[TQ], TQ queries.FindByIDQuery, R any](
 	}
 	pathSchema := inspectPathTags(reqType)
 	if hasPathSegment(reqType, "id") {
-		panic(formatPathIDConflict("HandleQueryWithID", reqType))
+		panic(formatPathIDConflict("HandleQueryByID", reqType))
 	}
 	return func(c fiber.Ctx) error {
 		if bad, ok := validateByIDQuery(c); !ok {

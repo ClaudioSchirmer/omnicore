@@ -14,7 +14,7 @@ import (
 // json wire name — the canonical tag-driven projector for
 // HandleQueryWith{Params,ID}:
 //
-//	users.Get("/:id", fwweb.HandleQueryWithID(d.Pipeline,
+//	users.Get("/:id", fwweb.HandleQueryByID(d.Pipeline,
 //	    requests.FindUserByIDRequest{},
 //	    fwresponses.AutoFromDoc[requests.FindUserByIDResponse],
 //	    handler))

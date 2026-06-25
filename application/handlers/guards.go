@@ -31,8 +31,8 @@ func formatPathIDMissingMessage(handlerName string) string {
 			"Pick ONE of:\n\n"+
 			"  (1) Use a canonical :id wrapper:\n"+
 			"        fwweb.HandleCommandWithBodyID(...)   // PUT / PATCH with body\n"+
-			"        fwweb.HandleCommandWithID(...)       // Archive / Unarchive / Delete (bodyless)\n"+
-			"        fwweb.HandleQueryWithID(...)         // GET by id\n"+
+			"        fwweb.HandleCommandByID(...)       // Archive / Unarchive / Delete (bodyless)\n"+
+			"        fwweb.HandleQueryByID(...)         // GET by id\n"+
 			"      They call cmd.SetPathID(c.Params(\"id\")) automatically from the :id URL segment.\n\n"+
 			"  (2) Set the ID explicitly in your Request.ToCommand() / ToQuery():\n"+
 			"        func (r MyRequest) ToCommand() *MyCommand {\n"+

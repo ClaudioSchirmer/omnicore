@@ -57,7 +57,12 @@ from the tag.
 2. **`index.html`** — bump the `#verBadge` span (`v…`).
 3. **`content/sections/changelog.html`** — add a new `.release` block at the top
    (`<span class="release-tag">vX.Y.Z</span><span class="release-date">Month D, YYYY</span>`),
-   mirroring the CHANGELOG.md entry.
+   mirroring the CHANGELOG.md entry. **Breaking entries** (here or in the standing
+   `[Unreleased]` block) MUST carry a standalone `<strong>breaking</strong>` right
+   after `<strong>Changed</strong> —`: `assets/app.js` auto-derives each release's
+   severity — the ▲ icon and the release-tag colour — by scanning entries for a
+   `<strong>` whose text is exactly `breaking`. Prose like "(breaking)" does NOT
+   trigger it (the root `CHANGELOG.md` is free prose, not parsed).
 4. **`content/sections/overview.html`** — refresh the "Battle-tested" stats box.
    Recompute with these exact commands (pinned so the figures never drift on method):
    - coverage: `go test ./... -coverpkg=./... -coverprofile=/tmp/c.out && go tool cover -func=/tmp/c.out | tail -1` (pure unit, all packages in the denominator)

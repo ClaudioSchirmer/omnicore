@@ -2,7 +2,7 @@ package pipeline
 
 // CommandWithID is the contract for Commands that receive the ID via the
 // URL path. Implemented by Update/Delete/Archive/Unarchive Commands; consumed
-// by fwweb.HandleCommandWithID, which injects cmd.SetPathID(c.Params("id"))
+// by fwweb.HandleCommandByID, which injects cmd.SetPathID(c.Params("id"))
 // before dispatch.
 type CommandWithID interface {
 	Command

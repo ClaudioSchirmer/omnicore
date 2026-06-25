@@ -39,12 +39,12 @@ func HandleQueryWithParamsSpec[
 	}
 }
 
-// HandleQueryWithIDSpec is the openapi-aware sibling of
-// HandleQueryWithID. HasPathID is true (the wrapper auto-binds the
+// HandleQueryByIDSpec is the openapi-aware sibling of
+// HandleQueryByID. HasPathID is true (the wrapper auto-binds the
 // Fiber :id segment via the queries.FindByIDQuery interface).
 // RequestType still captures TReq so the assembler emits the optional
 // ?includeArchived query parameter declared on the DTO.
-func HandleQueryWithIDSpec[
+func HandleQueryByIDSpec[
 	TReq HasToIDQuery[TQ], TQ queries.FindByIDQuery, R any,
 ](
 	pipe *pipeline.Pipeline,
@@ -52,7 +52,7 @@ func HandleQueryWithIDSpec[
 	projector func(map[string]any) R,
 	h pipeline.Handler[TQ, map[string]any],
 ) (fiber.Handler, openapi.RouteSpec) {
-	handler := HandleQueryWithID[TReq, TQ, R](pipe, sample, projector, h)
+	handler := HandleQueryByID[TReq, TQ, R](pipe, sample, projector, h)
 	return handler, openapi.RouteSpec{
 		RequestType:   reflect.TypeOf((*TReq)(nil)).Elem(),
 		ResponseType:  reflect.TypeOf((*R)(nil)).Elem(),

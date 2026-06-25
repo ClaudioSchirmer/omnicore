@@ -15,7 +15,7 @@ import (
 func guardedRegistry(authz bool) *Registry {
 	h := &fakeReadHandler{page: queries.Page{}}
 	return New(pipeline.New(translation.Default())).
-		Register(Query[execRequest, execResponse]("users", "User", h, RequirePermission("users:read"))).
+		Register(QueryWithParams[execRequest, execResponse]("users", "User", h, RequirePermission("users:read"))).
 		EnableAuthorization(authz)
 }
 

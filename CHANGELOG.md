@@ -37,6 +37,31 @@ with `1.0.0`.
   state — the same pattern already used for the post-`New` cache swap. See the
   httpclient section.
 
+### Changed
+
+- **Wire wrapper naming unified across REST and GraphQL — `With…` carries a
+  payload, `By…` is a bare id (breaking rename).** The id-carrying command/query
+  wrappers used `WithID` to mean opposite things on the two surfaces — REST
+  `HandleCommandWithID` was the *bodyless* verb, while GraphQL `MutationWithID`
+  was the *body+id* verb — so the same token was a false friend across surfaces.
+  Both now obey one compositional rule: `WithBody`/`WithBodyID` when a body is
+  sent, `ByID` for a bodyless id-only verb.
+  - **REST**: `HandleCommandWithID` → `HandleCommandByID` and `HandleQueryWithID`
+    → `HandleQueryByID` (with their `…Spec` siblings). `HandleCommandWithBody`,
+    `HandleCommandWithBodyID` and `HandleQueryWithParams` are unchanged (already
+    compositional).
+  - **GraphQL**: `Mutation` → `MutationWithBody`, `MutationWithID` →
+    `MutationWithBodyID`, `Query` → `QueryWithParams`. `MutationByID` is unchanged.
+    The GraphQL SDL / introspection type names (`Query`, `Mutation`) are untouched —
+    only the Go builder functions were renamed.
+
+  No name is reused with a flipped meaning (the ambiguous `WithID` is retired on
+  both surfaces), so stale call sites fail to compile instead of silently changing
+  behavior. Consumer migration is mechanical:
+  `s/HandleCommandWithID/HandleCommandByID/`, `s/HandleQueryWithID/HandleQueryByID/`,
+  `s/MutationWithID/MutationWithBodyID/`, plus `fwgraphql.Mutation` →
+  `MutationWithBody` and `fwgraphql.Query` → `QueryWithParams`.
+
 ## [0.14.2] - 2026-06-24
 
 ### Fixed
