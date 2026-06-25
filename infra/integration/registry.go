@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"reflect"
 
 	"github.com/ClaudioSchirmer/omnicore/application/configuration"
@@ -446,7 +447,14 @@ func recordIntegrationFailure(ctx context.Context, exec pgExec, r *Receiver, eve
 		// Best-effort: matches the upstream failure-isolation contract.
 		// Kafka offset still advances; subscriber loop carries on.
 		// Slog at Warn so production alerting can catch the side-channel
-		// degradation.
+		// degradation (the failure row could not be persisted).
+		slog.Warn("integration.failure.persist_error",
+			"consumerGroup", r.consumerGroup,
+			"sourceKey", r.sourceKey,
+			"eventKey", r.eventKey,
+			"eventId", eventID.String(),
+			"error", err.Error(),
+		)
 	}
 }
 

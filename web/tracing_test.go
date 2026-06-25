@@ -2,10 +2,12 @@ package web
 
 import (
 	"net/http/httptest"
+	"sync"
 	"testing"
 
 	"github.com/google/uuid"
 	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/propagation"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	"go.opentelemetry.io/otel/sdk/trace/tracetest"
@@ -14,25 +16,31 @@ import (
 	"github.com/gofiber/fiber/v3"
 )
 
-// installTestTracer swaps in a real SDK tracer provider (AlwaysSample) plus the
-// W3C TraceContext propagator and returns a span recorder + a restore func. The
-// globals are reset on cleanup so other web tests keep the no-op default.
+var (
+	sharedRecorder *tracetest.SpanRecorder
+	tracerOnce     sync.Once
+)
+
+// installTestTracer installs a package-shared SDK provider (AlwaysSample) + the
+// W3C TraceContext propagator the FIRST time it runs, and returns a recorder
+// reset for the calling test. A single install per test binary is REQUIRED, not
+// a nicety: the package-level serverTracer is a delegating tracer that locks onto
+// the first provider set in the process, so per-test providers would silently
+// route every later test's spans into the first test's recorder. Resetting the
+// shared recorder gives each (sequential) test a clean view.
 func installTestTracer(t *testing.T) *tracetest.SpanRecorder {
 	t.Helper()
-	sr := tracetest.NewSpanRecorder()
-	tp := sdktrace.NewTracerProvider(
-		sdktrace.WithSpanProcessor(sr),
-		sdktrace.WithSampler(sdktrace.AlwaysSample()),
-	)
-	prevTP := otel.GetTracerProvider()
-	prevProp := otel.GetTextMapPropagator()
-	otel.SetTracerProvider(tp)
-	otel.SetTextMapPropagator(propagation.TraceContext{})
-	t.Cleanup(func() {
-		otel.SetTracerProvider(prevTP)
-		otel.SetTextMapPropagator(prevProp)
+	tracerOnce.Do(func() {
+		sharedRecorder = tracetest.NewSpanRecorder()
+		tp := sdktrace.NewTracerProvider(
+			sdktrace.WithSpanProcessor(sharedRecorder),
+			sdktrace.WithSampler(sdktrace.AlwaysSample()),
+		)
+		otel.SetTracerProvider(tp)
+		otel.SetTextMapPropagator(propagation.TraceContext{})
 	})
-	return sr
+	sharedRecorder.Reset()
+	return sharedRecorder
 }
 
 func TestUUIDFromTraceIDRoundTrip(t *testing.T) {
@@ -121,6 +129,30 @@ func TestAppContextMiddleware_ServerSpanTracingOff(t *testing.T) {
 	}
 	if gotCorr != uuid.Nil {
 		t.Errorf("correlationID = %s, want zero (no bridge when http off)", gotCorr)
+	}
+}
+
+// A handler-returned error must mark the ROOT server span errored, so a 5xx is
+// visible at the trace root, not only on the child dispatch span.
+func TestAppContextMiddleware_ServerSpanRecordsError(t *testing.T) {
+	sr := installTestTracer(t)
+
+	app := fiber.New()
+	app.Use(AppContextMiddleware(WithServerSpanTracing(true)))
+	app.Get("/boom", func(c fiber.Ctx) error {
+		return fiber.NewError(fiber.StatusInternalServerError, "boom")
+	})
+
+	if _, err := app.Test(httptest.NewRequest("GET", "/boom", nil)); err != nil {
+		t.Fatal(err)
+	}
+
+	ended := sr.Ended()
+	if len(ended) != 1 {
+		t.Fatalf("want 1 recorded span, got %d", len(ended))
+	}
+	if got := ended[0].Status().Code; got != codes.Error {
+		t.Errorf("server span status = %v, want Error on a 5xx outcome", got)
 	}
 }
 

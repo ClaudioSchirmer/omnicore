@@ -89,6 +89,7 @@ type fakeTx struct {
 	queryFn       func(sql string, args []any) (pgx.Rows, error) // overrides Query when set
 	queryRowFn    func(sql string, args []any) pgx.Row           // overrides QueryRow when set
 	execCalls     []string                                       // captured Exec SQL (outbox, audit, child writes)
+	execArgs      [][]any                                        // captured Exec args, parallel to execCalls
 	committed     bool
 	rolledBack    bool
 }
@@ -109,6 +110,7 @@ func (t *fakeTx) Rollback(ctx context.Context) error {
 
 func (t *fakeTx) Exec(ctx context.Context, sql string, args ...any) (pgconn.CommandTag, error) {
 	t.execCalls = append(t.execCalls, sql)
+	t.execArgs = append(t.execArgs, args)
 	if t.execErr != nil {
 		return pgconn.CommandTag{}, t.execErr
 	}

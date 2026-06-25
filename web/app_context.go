@@ -7,6 +7,8 @@ import (
 	"github.com/ClaudioSchirmer/omnicore/application/configuration"
 	"github.com/gofiber/fiber/v3"
 	"github.com/google/uuid"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/trace"
 )
 
@@ -80,11 +82,29 @@ func AppContextMiddleware(opts ...AppContextOption) fiber.Handler {
 
 		err := c.Next()
 
-		// Rename to the low-cardinality route template now that routing has
-		// matched (avoids one span name per concrete id in the collector).
 		if span != nil {
+			method := c.Method()
+			// Rename to the low-cardinality route template now that routing has
+			// matched (avoids one span name per concrete id in the collector).
 			if route := c.Route(); route != nil && route.Path != "" {
-				span.SetName(c.Method() + " " + route.Path)
+				span.SetName(method + " " + route.Path)
+				span.SetAttributes(attribute.String("http.route", route.Path))
+			}
+			span.SetAttributes(
+				attribute.String("http.request.method", method),
+				attribute.Int("http.response.status_code", c.Response().StatusCode()),
+			)
+			// Record the outcome on the ROOT span so a 5xx is visible at the trace
+			// root, not only on the child dispatch span. A handler-returned error
+			// is the reliable signal (the ErrorHandler sets the numeric status only
+			// after this middleware unwinds); a handler that writes a 5xx itself and
+			// returns nil is caught by the status check.
+			switch {
+			case err != nil:
+				span.RecordError(err)
+				span.SetStatus(codes.Error, err.Error())
+			case c.Response().StatusCode() >= 500:
+				span.SetStatus(codes.Error, "")
 			}
 		}
 		return err

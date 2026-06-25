@@ -17,7 +17,7 @@
 <pre><code>observability:
   tracing:
     enabled: true
-    exporter: otlp          # otlp | none (none = propagate traceparent, export nothing)
+    exporter: otlp          # otlp | stdout (debug-only) | none (none = propagate traceparent, export nothing)
     endpoint: "${OTEL_EXPORTER_OTLP_ENDPOINT:localhost:4317}"
     sampler: parentbased_traceratio   # dev default always_on; else this
     ratio: 0.1              # keep fraction for the *traceratio samplers
