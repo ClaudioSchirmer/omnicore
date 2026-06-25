@@ -196,7 +196,11 @@ func (r *MongoViewReader) ReadPage(ctx context.Context, view string, c queries.R
 		return queries.Page{OnlyTotal: true, Total: total}, nil
 	}
 
-	backward := c.Before != ""
+	// Direction: an explicit Backward request (GraphQL Relay `last`) OR a
+	// non-empty Before cursor (REST `?before=`, which always means backward).
+	// REST never sets Backward, so its behavior is unchanged; the explicit flag
+	// is what lets `last:N` with no cursor walk back from the end of the set.
+	backward := c.Backward || c.Before != ""
 
 	// Stable sort: every Mongo Find consulting this view adds `_id` (asc) as
 	// the last tiebreaker so the result set is deterministic regardless of
@@ -321,10 +325,12 @@ func (r *MongoViewReader) ReadPage(ctx context.Context, view string, c queries.R
 
 	var hasNext, hasPrev bool
 	if backward {
-		// Came BACK from a forward cursor; the next page in canonical order
-		// is the one we left, so HasNext is unconditionally true. HasPrev
-		// reflects whether there are still more docs further behind.
-		hasNext = true
+		// Backward came from one of two places. With a Before cursor we walked
+		// BACK from a forward page, so the page we left still sits ahead →
+		// HasNext is true. With `last:N` and no cursor we are AT the end of the
+		// set, so there is nothing ahead → HasNext is false. Either way HasPrev
+		// reflects whether more docs remain further behind.
+		hasNext = c.Before != ""
 		hasPrev = localHasMore
 	} else {
 		hasNext = localHasMore

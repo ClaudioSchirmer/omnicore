@@ -147,6 +147,45 @@ func TestReader_BackwardWalk_ReachesPreviousPage(t *testing.T) {
 	}
 }
 
+// TestReader_BackwardFromEnd_LastN covers the GraphQL Relay `last: N` path:
+// Backward=true with NO cursor walks back from the END of the set and returns
+// the LAST N docs in canonical order. Distinct from the ?before= walk above —
+// here there is nothing ahead, so HasNext is false while HasPrev is true.
+func TestReader_BackwardFromEnd_LastN(t *testing.T) {
+	m, cleanup := newTestMongo(t)
+	defer cleanup()
+	view := "rdr_last"
+	ids := seedReaderDocs(t, m, view, 25)
+
+	r := NewMongoViewReader(m)
+
+	// last: 10 → Backward with no cursor.
+	page, err := r.ReadPage(context.Background(), view, queries.ReadCriteria{
+		Limit: 10, Backward: true,
+	})
+	if err != nil {
+		t.Fatalf("last-from-end: %v", err)
+	}
+	if len(page.Items) != 10 {
+		t.Fatalf("page size: got %d, want 10", len(page.Items))
+	}
+	// Canonical order: the last 10 of 25 are ids[15]..ids[24], ascending.
+	if page.Items[0]["_id"] != ids[15] {
+		t.Errorf("first id: got %v, want %s", page.Items[0]["_id"], ids[15])
+	}
+	if page.Items[9]["_id"] != ids[24] {
+		t.Errorf("last id: got %v, want %s", page.Items[9]["_id"], ids[24])
+	}
+	// We are AT the end → nothing ahead.
+	if page.HasNext {
+		t.Errorf("last-from-end page should NOT have next (we're at the end)")
+	}
+	// 15 docs precede the window → there is a previous page.
+	if !page.HasPrev {
+		t.Errorf("last-from-end page should have prev")
+	}
+}
+
 func TestReader_ForwardWithCustomSort_RespectsTiebreaker(t *testing.T) {
 	m, cleanup := newTestMongo(t)
 	defer cleanup()

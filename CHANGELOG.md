@@ -11,7 +11,22 @@ with `1.0.0`.
 
 ## [Unreleased]
 
+## [0.14.2] - 2026-06-24
+
 ### Fixed
+
+- **GraphQL `last` / `before` now paginate backward per the Relay spec.** The
+  connection arguments `first`/`after` (forward) and `last`/`before` (backward) were
+  all collapsed onto `ReadCriteria.Limit` with no direction, so `last: N` returned the
+  FIRST N instead of the LAST N, and a forward+backward argument mix (`first`+`last`,
+  `last`+`after`, …) passed silently. `last` now sets the new `ReadCriteria.Backward`
+  flag — the reader walks back from the end and returns the last N in canonical order
+  (with `pageInfo.hasNextPage: false`, `hasPreviousPage` reflecting the remainder).
+  Mixing forward and backward arguments, an `after`+`before` pair, or a non-positive
+  page size is rejected before dispatch with a `SchemaViolationNotification`
+  (`semantic: "Schema"`) — REST parity, and the `after`+`before` case is now a clean
+  400 instead of reaching the reader's defense-in-depth 500. **REST is unchanged**: it
+  never sets `Backward` and keeps inferring backward from a non-empty `before` cursor.
 
 - **GraphQL error `extensions` now carry the REST envelope's `context`.** The REST
   error envelope groups messages under a translated `context` (e.g. `"User"`); the

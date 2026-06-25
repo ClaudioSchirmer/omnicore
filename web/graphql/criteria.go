@@ -65,11 +65,17 @@ func (p *criteriaPlan) buildCriteria(args map[string]any) (queries.ReadCriteria,
 		}
 	}
 
+	// Relay direction: `first`/`after` page forward, `last`/`before` page
+	// backward. `last` is the only arg that carries direction on its own (it can
+	// stand without a cursor, walking back from the end), so it sets Backward;
+	// `before` reaches the reader as a cursor, which already implies backward
+	// there. A forward+backward mix is rejected upstream (paginationArgConflict).
 	if n, ok := toInt64(args["first"]); ok {
 		crit.Limit = n
 	}
 	if n, ok := toInt64(args["last"]); ok {
 		crit.Limit = n
+		crit.Backward = true
 	}
 	if s, ok := args["after"].(string); ok {
 		crit.After = s
@@ -171,6 +177,44 @@ func conflictingPaginationArg(args map[string]any) string {
 		if v, ok := args[k]; ok && v != nil {
 			return k
 		}
+	}
+	return ""
+}
+
+// hasArg reports whether a pagination argument was supplied (present and non-nil).
+func hasArg(args map[string]any, k string) bool {
+	v, ok := args[k]
+	return ok && v != nil
+}
+
+// paginationArgConflict validates the Relay pagination arguments and returns the
+// name of the offending argument (for a SchemaViolation), or "" when valid. Two
+// rules, both mirroring how big GraphQL APIs (GitHub/Shopify) and the Relay spec
+// treat the connection arguments:
+//
+//   - A page size must be positive. `first`/`last` map to ReadCriteria.Limit, so
+//     a non-positive value is rejected exactly as REST rejects `?limit=` <= 0.
+//   - Forward (`first`/`after`) and backward (`last`/`before`) are mutually
+//     exclusive — you page in one direction at a time. This single check covers
+//     first+last, first+before, last+after, and after+before (the last also
+//     keeps REST parity, where mixing the two cursors is a SchemaViolation).
+//
+// The offending name is reported on the backward side when a mix is found, since
+// forward is the conventional default direction.
+func paginationArgConflict(args map[string]any) string {
+	if n, ok := toInt64(args["first"]); ok && n <= 0 {
+		return "first"
+	}
+	if n, ok := toInt64(args["last"]); ok && n <= 0 {
+		return "last"
+	}
+	forward := hasArg(args, "first") || hasArg(args, "after")
+	backward := hasArg(args, "last") || hasArg(args, "before")
+	if forward && backward {
+		if hasArg(args, "last") {
+			return "last"
+		}
+		return "before"
 	}
 	return ""
 }

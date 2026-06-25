@@ -19,6 +19,51 @@
     JSON envelope + pagination block there. See <a href="#handler-invariance">Handler invariance</a>.
 </div>
 
+<h3>Why the GraphQL surface looks different from REST</h3>
+<p>
+    The two surfaces expose <strong>exactly the same capabilities</strong> — same filters, same sorting,
+    same keyset pagination, same notifications, same authorization. What differs is only the
+    <strong>shape of the request</strong>, and that difference is deliberate: REST and GraphQL come from
+    two different schools of API design, and OmniCore follows each one's <em>native</em> conventions
+    instead of bending one to look like the other.
+</p>
+<p>
+    <strong>REST is the open, URL-driven style.</strong> Everything is a query-string parameter:
+    <code>?name.startswith=Bo</code>, <code>?sort=-name</code>, <code>?limit=20&amp;after=…</code>. It is
+    flexible and discoverable from a browser address bar — and intentionally loose: the server validates,
+    but the wire has no schema of its own.
+</p>
+<p>
+    <strong>GraphQL follows the industry standard for graph APIs — the
+    <a href="https://relay.dev/graphql/connections.htm" target="_blank" rel="noopener">Relay Connection
+    Specification</a></strong>, the convention popularized by Meta and adopted at scale by
+    <strong>GitHub, Shopify, Atlassian, Stripe</strong> and most large public GraphQL APIs. A consumer who
+    already speaks one big-company GraphQL API will recognize OmniCore's surface immediately: a typed
+    <code>where</code> input, <code>first</code>/<code>after</code> connection arguments, an
+    <code>edges { node, cursor } / pageInfo</code> envelope, and structured <code>errors[]</code>. Aligning
+    to that convention is what makes the endpoint compatible with off-the-shelf GraphQL clients (Apollo,
+    Relay, urql), code generators, and tooling — the payoff for the divergence.
+</p>
+<table>
+    <thead><tr><th>Capability</th><th>REST (open, URL-driven)</th><th>GraphQL (Relay convention)</th></tr></thead>
+    <tbody>
+        <tr><td>Filtering (<code>where</code>)</td><td><code>?name.startswith=Bo&amp;age.gte=18</code></td><td><code>where: { name: { startswith: "Bo" }, age: { gte: 18 } }</code> — a typed input object, same operator allowlist</td></tr>
+        <tr><td>Sorting</td><td><code>?sort=-name</code></td><td><code>orderBy: ["-name"]</code> — same tokens, same fields</td></tr>
+        <tr><td>Pagination</td><td><code>?limit=20&amp;after=…</code> / <code>?before=…</code> (direction from the cursor)</td><td><code>first: 20, after: …</code> (forward) / <code>last: 20, before: …</code> (backward) — Relay's directional arguments</td></tr>
+        <tr><td>Count-only</td><td><code>?onlyTotal=true</code></td><td>select only <code>totalCount</code> (no <code>edges</code>/<code>pageInfo</code>)</td></tr>
+        <tr><td>Field selection</td><td><code>?fields=name,addresses.city</code></td><td>the selection set itself — <code>{ name addresses { city } }</code></td></tr>
+        <tr><td>Errors</td><td>HTTP status (400/404/409/422…) + a single error envelope</td><td>always HTTP 200; notifications in <code>errors[].extensions</code> carrying the same <code>semantic</code>/<code>notificationKey</code>/<code>field</code> the REST envelope reports</td></tr>
+    </tbody>
+</table>
+<div class="box">
+    <strong>Full parity, different syntax.</strong> Anything you can do on the REST read side you can do on
+    GraphQL and vice-versa — the same <code>filter:</code> operator allowlist, the same <code>?sort=</code>
+    fields, the same keyset cursors, the same per-field authorization, the same typed notifications. The two
+    surfaces share the <em>same application handlers and the same <code>ReadCriteria</code></em>; only the
+    wire dialect changes. A capability never lives on one surface alone — if it exists in REST it exists in
+    GraphQL, expressed the way each ecosystem expects. The sections below describe each axis in detail.
+</div>
+
 <h3>Engine — gqlparser + a framework executor</h3>
 <p>
     Parsing and validation ride <a href="https://github.com/vektah/gqlparser" target="_blank" rel="noopener"><code>vektah/gqlparser/v2</code></a>
@@ -160,14 +205,28 @@
 
 <h3>Pagination — Relay connections + per-item cursor</h3>
 <p>
-    The keyset pagination the REST side exposes (<code>?first/after/before</code> + an opaque cursor with a
-    context hash) maps to Relay: <code>first</code> → limit, <code>after</code>/<code>before</code> → the
-    cursor, <code>orderBy: ["-name"]</code> → the sort terms, <code>totalCount</code> → the count.
-    <strong>Strict Relay needs a cursor per edge</strong>, which cannot be reconstructed above the reader
-    (the reader strips the physical keyset values from the returned Go-field-keyed items) — so the reader
-    emits <code>queries.Page.ItemCursors</code>, the per-row keyset cursor, and the connection's
-    <code>edges[].cursor</code> reads it. The cursor round-trips through the reader's <code>after</code> /
-    <code>before</code> path unchanged. REST ignores <code>ItemCursors</code>.
+    The connection follows the <strong>Relay specification</strong>: <code>first</code>/<code>after</code>
+    page <strong>forward</strong> and <code>last</code>/<code>before</code> page <strong>backward</strong>;
+    <code>first</code>/<code>last</code> are the page size, <code>after</code>/<code>before</code> the opaque
+    keyset cursor, <code>orderBy: ["-name"]</code> the sort terms, and <code>totalCount</code> the count.
+    <code>last: N</code> returns the <strong>last N</strong> rows in canonical order (walking back from the
+    end of the set), with <code>pageInfo.hasNextPage: false</code> and <code>hasPreviousPage</code>
+    reflecting whether earlier rows remain. <strong>Strict Relay needs a cursor per edge</strong>, which
+    cannot be reconstructed above the reader (the reader strips the physical keyset values from the returned
+    Go-field-keyed items) — so the reader emits <code>queries.Page.ItemCursors</code>, the per-row keyset
+    cursor, and the connection's <code>edges[].cursor</code> reads it. REST ignores <code>ItemCursors</code>.
+</p>
+<p>
+    <strong>One direction at a time.</strong> Forward (<code>first</code>/<code>after</code>) and backward
+    (<code>last</code>/<code>before</code>) arguments are mutually exclusive — mixing them
+    (<code>first</code>+<code>last</code>, <code>last</code>+<code>after</code>, an <code>after</code>+<code>before</code>
+    pair), or passing a non-positive page size, is rejected <em>before dispatch</em> with a
+    <code>SchemaViolationNotification</code> (<code>semantic: "Schema"</code>, the offending argument as
+    <code>field</code>), the same way REST rejects a contradictory query. Under the hood the GraphQL surface
+    sets <code>ReadCriteria.Backward</code> for <code>last</code> (the only argument that carries direction
+    without a cursor); the <strong>REST surface is unchanged</strong> — it has no <code>last</code> and keeps
+    inferring backward purely from a non-empty <code>before</code> cursor. Both dialects converge on the same
+    <code>ReadCriteria</code> and the same reader.
 </p>
 <p>
     A <strong>stale or foreign cursor</strong> — one whose context hash no longer matches the current
