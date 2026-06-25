@@ -75,6 +75,7 @@ func TestFromNotifications_MirrorsRESTErrorMessage(t *testing.T) {
 		"fieldLabel":      "Nome",
 		"value":           "Al",
 		"funcName":        "BuildRules",
+		"context":         "User",
 	}
 	for key, want := range cases {
 		if got := ext[key]; got != want {
@@ -91,7 +92,7 @@ func TestFromNotifications_MirrorsRESTErrorMessage(t *testing.T) {
 // don't use them keep a byte-identical envelope.
 func TestFromNotifications_OmitsEmptyFields(t *testing.T) {
 	in := []notifications.ContextDTO{{
-		Context: "User",
+		Context: "",
 		Messages: []notifications.MessageDTO{{
 			NotificationKey: "RequiredFieldNotification",
 			FieldName:       "email",
@@ -101,7 +102,7 @@ func TestFromNotifications_OmitsEmptyFields(t *testing.T) {
 	}}
 
 	ext := fromNotifications(in)[0].Extensions
-	for _, key := range []string{"fieldLabel", "value", "funcName"} {
+	for _, key := range []string{"fieldLabel", "value", "funcName", "context"} {
 		if _, present := ext[key]; present {
 			t.Errorf("extensions[%q] present, want absent (omitempty parity)", key)
 		}

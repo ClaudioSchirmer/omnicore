@@ -43,6 +43,14 @@ type ReadCriteria struct {
 	Limit           int64
 	After           string
 	Before          string
+	// Backward requests the page that PRECEDES the window in canonical order —
+	// the keyset walk runs in inverted sort order and the slice is restored to
+	// canonical order before returning. It is the explicit direction signal: the
+	// GraphQL Relay surface sets it for `last` (so `last:N` with no cursor yields
+	// the LAST N), while the REST surface leaves it false and lets the reader
+	// infer backward from a non-empty Before cursor — so REST behavior is
+	// unchanged. Ignored when OnlyTotal=true (like Limit/After/Before).
+	Backward        bool
 	Search          string
 	IncludeArchived bool
 	OnlyTotal       bool

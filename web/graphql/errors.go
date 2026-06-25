@@ -37,6 +37,15 @@ func fromNotifications(ctxs []notifications.ContextDTO) []GraphQLError {
 	for _, ctx := range ctxs {
 		for _, m := range ctx.Messages {
 			ext := map[string]any{"semantic": m.Semantic.String()}
+			// The REST envelope groups messages under a `context` (the
+			// translated context name, e.g. "User"); the flat GraphQL
+			// errors[] has no grouping level, so the context travels per
+			// message in extensions. Emitted only when non-empty, matching
+			// the wire's omitempty so services that don't name a context
+			// stay byte-identical.
+			if ctx.Context != "" {
+				ext["context"] = ctx.Context
+			}
 			if m.NotificationKey != "" {
 				ext["notificationKey"] = m.NotificationKey
 			}

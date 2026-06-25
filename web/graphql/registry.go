@@ -159,6 +159,14 @@ func Query[TReq HasToParamsQuery[TQ], R any, TQ queries.FindByParamsQuery](
 				if gerr != nil {
 					return nil, []GraphQLError{*gerr}
 				}
+				// Relay pagination guard: reject a non-positive page size and a
+				// forward+backward argument mix (first+last, last+after, …) with a
+				// SchemaViolation before dispatch — REST parity, and it keeps the
+				// after+before mix a 400 here instead of a 500 from the reader's
+				// defense-in-depth check.
+				if bad := paginationArgConflict(args); bad != "" {
+					return nil, schemaViolation(pipe, ctx, bad)
+				}
 				// Count-only: a selection of just totalCount (no edges/pageInfo)
 				// maps to ReadCriteria.OnlyTotal, the GraphQL idiom for REST's
 				// ?onlyTotal=true — the reader short-circuits to CountDocuments.
