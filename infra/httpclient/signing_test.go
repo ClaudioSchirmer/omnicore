@@ -397,7 +397,7 @@ func TestSigning_AutoRedacts_SignatureAndKeyIdHeaders(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
-	svc := c.services["svc"]
+	svc := c.snap().services["svc"]
 	if _, ok := svc.redaction.headerSet[http.CanonicalHeaderKey("X-Signature")]; !ok {
 		t.Errorf("X-Signature not auto-redacted; redaction set: %v", svc.redaction.headerSet)
 	}

@@ -505,7 +505,7 @@ func TestCloneServiceWithClientCert_RealService(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
-	svc := c.services["svc"]
+	svc := c.snap().services["svc"]
 
 	_, _, cert := genCertPairFiles(t)
 	clone, err := cloneServiceWithClientCert(svc, cert)
@@ -542,7 +542,7 @@ func TestCloneServiceWithClientCert_PreservesExistingTLS(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
-	svc := c.services["svc"]
+	svc := c.snap().services["svc"]
 	_, _, cert := genCertPairFiles(t)
 	clone, err := cloneServiceWithClientCert(svc, cert)
 	if err != nil {

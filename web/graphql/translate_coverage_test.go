@@ -41,7 +41,7 @@ func TestExecute_TranslatesNestedStructsAndScalars(t *testing.T) {
 		Total:       1,
 	}}
 	pipe := pipeline.New(translation.Default())
-	reg := New(pipe).Register(Query[execRequest, richResponse]("rich", "Rich", h))
+	reg := New(pipe).Register(QueryWithParams[execRequest, richResponse]("rich", "Rich", h))
 	ctx := configuration.NewAppContextWithRandomID(configuration.LangENG)
 
 	resp := reg.Execute(ctx, `{ rich { edges { node { id createdAt addresses { city } } } } }`, nil, "")
@@ -74,7 +74,7 @@ func TestExecute_TranslatesAnySlice(t *testing.T) {
 		Total:       1,
 	}}
 	pipe := pipeline.New(translation.Default())
-	reg := New(pipe).Register(Query[execRequest, richResponse]("rich", "Rich", h))
+	reg := New(pipe).Register(QueryWithParams[execRequest, richResponse]("rich", "Rich", h))
 	ctx := configuration.NewAppContextWithRandomID(configuration.LangENG)
 
 	resp := reg.Execute(ctx, `{ rich { edges { node { addresses { city } } } } }`, nil, "")
@@ -121,7 +121,7 @@ func (h *panicReadHandler) Handle(_ *configuration.AppContext, _ *execQuery) (qu
 // REST 500 posture.
 func TestExecute_PanicMapsToInternalError(t *testing.T) {
 	pipe := pipeline.New(translation.Default())
-	reg := New(pipe).Register(Query[execRequest, execResponse]("users", "User", &panicReadHandler{}))
+	reg := New(pipe).Register(QueryWithParams[execRequest, execResponse]("users", "User", &panicReadHandler{}))
 	ctx := configuration.NewAppContextWithRandomID(configuration.LangENG)
 
 	resp := reg.Execute(ctx, `{ users { edges { node { id } } } }`, nil, "")

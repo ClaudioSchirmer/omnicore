@@ -3,8 +3,11 @@ package httpclient
 import (
 	"fmt"
 	"log/slog"
+	"sort"
 	"strings"
+	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/ClaudioSchirmer/omnicore/infra/cache"
 	"github.com/ClaudioSchirmer/omnicore/infra/httpclient/auth"
@@ -20,21 +23,25 @@ import (
 // generic on the package level is the only consumer-facing entry point;
 // internals (services map, logger, defaults) stay unexported.
 type HttpClient struct {
-	services map[string]*serviceClient
-	logger   *slog.Logger
+	// reg holds the service/provider registry as one immutable snapshot
+	// swapped atomically. The read path (service, breaker, resolveAuthProvider)
+	// loads the pointer once per call and indexes lock-free; runtime
+	// registration (RegisterIfAbsent / Unregister) builds a copy-on-write
+	// successor and Stores it. Same pattern as cacheStore below — safe to
+	// mutate concurrently with in-flight requests.
+	reg atomic.Pointer[registry]
+	// writeMu serializes registry writers (RegisterIfAbsent / Unregister) so
+	// concurrent copy-on-write swaps never lose an entry. Readers never take
+	// it — they go through reg.Load().
+	writeMu sync.Mutex
+	logger  *slog.Logger
 	// cacheStore is the byte-level cache the GET cache middleware reads /
 	// writes through. Stored as an atomic.Pointer so bootstrap can swap
 	// the implementation AFTER New (typically when Wiring.Cache supplies
 	// a custom backend resolved post-Wire) without rebuilding the chain.
 	// nil pointer means the cache layer is disabled at the runtime
 	// boundary — the middleware short-circuits as "bypass".
-	cacheStore   atomic.Pointer[cache.Cache]
-	breakerStore map[string]*breakerState
-	auth         *auth.Registry
-	// authRevocation tracks the revocationOnUnauthorized flag per provider
-	// name so the middleware can opt into the cache-invalidate-retry path
-	// without the provider needing to expose it.
-	authRevocation map[string]bool
+	cacheStore atomic.Pointer[cache.Cache]
 	// fake is non-nil only on clients produced by NewFake. When set, Call
 	// short-circuits the middleware chain and routes the request through
 	// the in-memory stub registry. Production clients leave it nil and pay
@@ -45,6 +52,85 @@ type HttpClient struct {
 	// (YAML baseURL used verbatim). See BaseURLResolver for the cascade
 	// with the YAML configuration.
 	resolver BaseURLResolver
+}
+
+// registry is the immutable snapshot of the service/provider maps a client
+// dispatches against. New builds the initial snapshot; RegisterIfAbsent /
+// Unregister publish copy-on-write successors. Existing *serviceClient,
+// *breakerState and provider pointers are shared across snapshots, so a swap
+// never disturbs warm token caches or live breaker state.
+type registry struct {
+	services       map[string]*serviceClient
+	breakerStore   map[string]*breakerState
+	auth           *auth.Registry
+	authRevocation map[string]bool
+	// runtime holds metadata for services added via RegisterIfAbsent. YAML
+	// services are absent here — Count / Registered / Unregister operate on
+	// this set only, so programmatic purge can never evict a boot upstream.
+	runtime map[string]*runtimeMeta
+	// runtimeProviders names the auth providers added via RegisterIfAbsent.
+	// Unregister removes one only when it is runtime-origin AND no surviving
+	// service references it, so a YAML-declared provider is never dropped.
+	runtimeProviders map[string]struct{}
+}
+
+// runtimeMeta carries the bookkeeping for one runtime-registered service.
+// lastUsed is an atomic so the read path can stamp it without the write lock.
+type runtimeMeta struct {
+	registeredAt time.Time
+	lastUsed     atomic.Int64 // unix nanos of the last Call dispatched here
+}
+
+// emptyRegistry returns a fully-initialized empty snapshot.
+func emptyRegistry() *registry {
+	return &registry{
+		services:         map[string]*serviceClient{},
+		breakerStore:     map[string]*breakerState{},
+		auth:             auth.NewRegistry(),
+		authRevocation:   map[string]bool{},
+		runtime:          map[string]*runtimeMeta{},
+		runtimeProviders: map[string]struct{}{},
+	}
+}
+
+// clone returns a shallow copy of the snapshot: fresh maps holding the same
+// element pointers. Mutating the clone's maps (insert / delete) leaves the
+// published snapshot untouched until the caller Stores the clone.
+func (r *registry) clone() *registry {
+	n := &registry{
+		services:         make(map[string]*serviceClient, len(r.services)+1),
+		breakerStore:     make(map[string]*breakerState, len(r.breakerStore)+1),
+		auth:             r.auth.Clone(),
+		authRevocation:   make(map[string]bool, len(r.authRevocation)+1),
+		runtime:          make(map[string]*runtimeMeta, len(r.runtime)+1),
+		runtimeProviders: make(map[string]struct{}, len(r.runtimeProviders)+1),
+	}
+	for k, v := range r.services {
+		n.services[k] = v
+	}
+	for k, v := range r.breakerStore {
+		n.breakerStore[k] = v
+	}
+	for k, v := range r.authRevocation {
+		n.authRevocation[k] = v
+	}
+	for k, v := range r.runtime {
+		n.runtime[k] = v
+	}
+	for k := range r.runtimeProviders {
+		n.runtimeProviders[k] = struct{}{}
+	}
+	return n
+}
+
+// snap loads the current registry snapshot. Returns nil only on a zero-value
+// client (e.g. the NewFake stub, whose Call path short-circuits before the
+// registry is consulted).
+func (c *HttpClient) snap() *registry {
+	if c == nil {
+		return nil
+	}
+	return c.reg.Load()
 }
 
 // Option customizes the constructor without changing the YAML schema.
@@ -137,24 +223,24 @@ func New(cfg *Config, opts ...Option) (*HttpClient, error) {
 		}
 	}
 	if cfg == nil {
+		c.reg.Store(emptyRegistry())
 		return c, nil
 	}
 	cfg.applyDefaults()
 	if err := cfg.Validate(); err != nil {
 		return nil, err
 	}
-	c.services = make(map[string]*serviceClient, len(cfg.Services))
+	snap := emptyRegistry()
 	breakerPolicy := resolveBreakerConfig(cfg.Defaults.CircuitBreaker)
-	c.breakerStore = make(map[string]*breakerState)
 	for name, sc := range cfg.Services {
 		svc, err := buildServiceClient(name, sc, cfg.Defaults)
 		if err != nil {
 			return nil, err
 		}
-		c.services[name] = svc
-		for epName := range c.services[name].endpoints {
+		snap.services[name] = svc
+		for epName := range svc.endpoints {
 			if breakerPolicy.enabled {
-				c.breakerStore[name+"|"+epName] = newBreakerState(breakerPolicy)
+				snap.breakerStore[name+"|"+epName] = newBreakerState(breakerPolicy)
 			}
 		}
 	}
@@ -163,9 +249,10 @@ func New(cfg *Config, opts ...Option) (*HttpClient, error) {
 		if err != nil {
 			return nil, err
 		}
-		c.auth = reg
-		c.authRevocation = revocation
+		snap.auth = reg
+		snap.authRevocation = revocation
 	}
+	c.reg.Store(snap)
 	return c, nil
 }
 
@@ -328,40 +415,221 @@ func (c *HttpClient) resolveAuthProvider(svc *serviceClient, override string) (a
 	if name == "" {
 		return nil, false, nil
 	}
-	if c == nil || c.auth == nil {
+	snap := c.snap()
+	if snap == nil || snap.auth == nil || snap.auth.Len() == 0 {
 		if override != "" {
 			return nil, false, fmt.Errorf("httpclient: CallConfig.AuthProvider %q used but no authProviders are configured", override)
 		}
 		return nil, false, fmt.Errorf("httpclient: service %q references provider %q but no authProviders are configured", svc.name, name)
 	}
-	provider, err := c.auth.Lookup(name)
+	provider, err := snap.auth.Lookup(name)
 	if err != nil {
 		return nil, false, err
 	}
-	return provider, c.authRevocation[name], nil
+	return provider, snap.authRevocation[name], nil
 }
 
 // breaker returns the breaker state for the given (service, endpoint)
 // pair. Returns nil when the breaker is disabled — the middleware
 // short-circuits in that case.
 func (c *HttpClient) breaker(service, endpoint string) *breakerState {
-	if c == nil || c.breakerStore == nil {
+	snap := c.snap()
+	if snap == nil {
 		return nil
 	}
-	return c.breakerStore[service+"|"+endpoint]
+	return snap.breakerStore[service+"|"+endpoint]
 }
 
 // service returns the per-service runtime for the named service or an error
-// if the service was not declared in the YAML. Used by the call surface;
-// kept unexported so consumers cannot reach into the registry behind the
-// typed Call[Req, Resp] generic.
+// if the service was neither declared in the YAML nor registered at runtime.
+// Used by the call surface; kept unexported so consumers cannot reach into the
+// registry behind the typed Call[Req, Resp] generic. Stamps the runtime
+// entry's lastUsed (lock-free) when the resolved service was registered at
+// runtime, so Registered() can drive least-recently-used purge.
 func (c *HttpClient) service(name string) (*serviceClient, error) {
-	if c == nil || c.services == nil {
+	snap := c.snap()
+	if snap == nil || len(snap.services) == 0 {
 		return nil, fmt.Errorf("httpclient: no services configured (httpClient: block absent or empty)")
 	}
-	s, ok := c.services[name]
+	s, ok := snap.services[name]
 	if !ok {
 		return nil, fmt.Errorf("httpclient: unknown service %q", name)
 	}
+	if m := snap.runtime[name]; m != nil {
+		m.lastUsed.Store(time.Now().UnixNano())
+	}
 	return s, nil
+}
+
+// RegisteredService is one runtime-registered service's metadata, returned by
+// Registered so the consumer can program purge (e.g. sort by LastUsedAt and
+// Unregister the oldest N). YAML-declared services are never reported.
+type RegisteredService struct {
+	Name         string
+	RegisteredAt time.Time // when RegisterIfAbsent first inserted it
+	LastUsedAt   time.Time // last Call dispatched against it (init = RegisteredAt)
+}
+
+// RegisterIfAbsent compiles the services and auth providers in cfg and merges
+// the ones not already present into the live client, idempotently. It is the
+// code-wiring twin of New: cfg uses the same Config / ServiceConfig /
+// AuthProviderConfig shapes the YAML decodes into, runs the same
+// applyDefaults + Validate, and the merged services share the same token
+// cache, connection pool, circuit breaker, retry and signing machinery as
+// YAML-declared ones. A service / provider whose name already exists (YAML or
+// a prior registration) is left untouched, so a repeated call preserves the
+// warm token cache and breaker state — register a dynamic upstream once and
+// reuse it by name on every Call.
+//
+// cfg is self-contained: a service may only reference an auth provider
+// declared in the same cfg (Validate enforces it). Validation runs at call
+// time, so a malformed cfg returns the error here instead of at boot; on any
+// error nothing is merged (all-or-nothing). The dynamic target's lifecycle is
+// the consumer's — pair this with Unregister; the framework ships no implicit
+// TTL or eviction.
+func (c *HttpClient) RegisterIfAbsent(cfg *Config) error {
+	if cfg == nil {
+		return nil
+	}
+	cfg.applyDefaults()
+	if err := cfg.Validate(); err != nil {
+		return err
+	}
+
+	c.writeMu.Lock()
+	defer c.writeMu.Unlock()
+
+	cur := c.snap()
+	if cur == nil {
+		cur = emptyRegistry()
+	}
+	next := cur.clone()
+	breakerPolicy := resolveBreakerConfig(cfg.Defaults.CircuitBreaker)
+	added := false
+
+	// Providers first — services reference them by name. Skip any name that
+	// already exists so a YAML / prior-registration provider (and its warm
+	// token cache) is preserved.
+	for pname, p := range cfg.AuthProviders {
+		if next.auth.Has(pname) {
+			continue
+		}
+		provider, err := buildAuthProvider(pname, p)
+		if err != nil {
+			return fmt.Errorf("httpclient: build provider %q: %w", pname, err)
+		}
+		next.auth.Register(pname, provider)
+		next.authRevocation[pname] = p.RevocationOnUnauthorized
+		next.runtimeProviders[pname] = struct{}{}
+		added = true
+	}
+
+	now := time.Now()
+	for name, sc := range cfg.Services {
+		if _, exists := next.services[name]; exists {
+			continue // idempotent; also the YAML-collision no-op
+		}
+		svc, err := buildServiceClient(name, sc, cfg.Defaults)
+		if err != nil {
+			return err
+		}
+		next.services[name] = svc
+		for epName := range svc.endpoints {
+			if breakerPolicy.enabled {
+				next.breakerStore[name+"|"+epName] = newBreakerState(breakerPolicy)
+			}
+		}
+		m := &runtimeMeta{registeredAt: now}
+		m.lastUsed.Store(now.UnixNano())
+		next.runtime[name] = m
+		added = true
+	}
+
+	if !added {
+		return nil // everything already present — avoid a needless swap
+	}
+	c.reg.Store(next)
+	return nil
+}
+
+// Unregister removes a runtime-registered service by name, dropping its
+// breaker entries and — when the auth provider it referenced was itself
+// runtime-registered and no surviving service still references it — that
+// provider (and its token cache). Returns true when a service was removed;
+// false when the name is unknown or YAML-declared (Unregister never touches a
+// boot upstream). In-flight Calls holding the pre-swap snapshot finish against
+// the old entry; no draining is required.
+func (c *HttpClient) Unregister(name string) bool {
+	c.writeMu.Lock()
+	defer c.writeMu.Unlock()
+
+	cur := c.snap()
+	if cur == nil {
+		return false
+	}
+	if _, ok := cur.runtime[name]; !ok {
+		return false // unknown or YAML-origin — refuse
+	}
+
+	next := cur.clone()
+	svc := next.services[name]
+	delete(next.services, name)
+	delete(next.runtime, name)
+	if svc != nil {
+		for epName := range svc.endpoints {
+			delete(next.breakerStore, name+"|"+epName)
+		}
+		if p := svc.authProvider; p != "" {
+			if _, isRuntime := next.runtimeProviders[p]; isRuntime && !providerReferenced(next.services, p) {
+				next.auth.Remove(p)
+				delete(next.authRevocation, p)
+				delete(next.runtimeProviders, p)
+			}
+		}
+	}
+	c.reg.Store(next)
+	return true
+}
+
+// Count reports how many services were registered at runtime via
+// RegisterIfAbsent. YAML-declared services are excluded.
+func (c *HttpClient) Count() int {
+	snap := c.snap()
+	if snap == nil {
+		return 0
+	}
+	return len(snap.runtime)
+}
+
+// Registered lists the runtime-registered services sorted by name, with their
+// RegisteredAt and LastUsedAt timestamps, so the consumer can implement any
+// purge policy. YAML-declared services are never listed. Returns nil when none
+// are registered.
+func (c *HttpClient) Registered() []RegisteredService {
+	snap := c.snap()
+	if snap == nil || len(snap.runtime) == 0 {
+		return nil
+	}
+	out := make([]RegisteredService, 0, len(snap.runtime))
+	for name, m := range snap.runtime {
+		out = append(out, RegisteredService{
+			Name:         name,
+			RegisteredAt: m.registeredAt,
+			LastUsedAt:   time.Unix(0, m.lastUsed.Load()),
+		})
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
+	return out
+}
+
+// providerReferenced reports whether any service in the set still references
+// the named auth provider — the guard that keeps Unregister from dropping a
+// provider shared by a surviving service.
+func providerReferenced(services map[string]*serviceClient, provider string) bool {
+	for _, s := range services {
+		if s.authProvider == provider {
+			return true
+		}
+	}
+	return false
 }

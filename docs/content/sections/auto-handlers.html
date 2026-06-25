@@ -143,7 +143,7 @@
     <ul>
         <li><code>fwweb.HandleCommandWithBody(pipe, sample, responseProjection, h, status)</code> — endpoint with body, without path ID (POST). Allocates <code>TReq</code> via <code>new</code>, validates schema, calls <code>req.ToCommand()</code> on the web→application boundary (no ctx — Request DTO is body-only), Dispatch (handler receives ctx and forwards to <code>cmd.ToEntity(ctx)</code>).</li>
         <li><code>fwweb.HandleCommandWithBodyID(pipe, sample, responseProjection, h, status)</code> — endpoint with body, with path ID (PUT/PATCH). Same + <code>cmd.SetPathID(c.Params("id"))</code> before Dispatch.</li>
-        <li><code>fwweb.HandleCommandWithID(pipe, responseProjection, h, status)</code> — endpoint <strong>without body</strong>, with path ID (Archive/Unarchive/Delete). Does not call <code>Bind().Body()</code>, does not inspect FullBody.</li>
+        <li><code>fwweb.HandleCommandByID(pipe, responseProjection, h, status)</code> — endpoint <strong>without body</strong>, with path ID (Archive/Unarchive/Delete). Does not call <code>Bind().Body()</code>, does not inspect FullBody.</li>
     </ul>
     <p>
         The <code>responseProjection</code> is a <code>func(TResult) TResp</code> — typically a method value like
@@ -329,7 +329,7 @@ users.Post("/", fwweb.HandleCommandWithBody(d.Pipeline,
     <pre><code>// UnarchiveUserCommand declares the bodyless verb shape:
 //   func (*UnarchiveUserCommand) ApplyTo(_ *AppContext, _ *User) error { return nil }
 //   func (*UnarchiveUserCommand) FromEntity(_ *AppContext, _ *User) (fwresults.None, error) { return fwresults.None{}, nil }
-users.Patch("/:id/unarchive", fwweb.HandleCommandWithID(d.Pipeline,
+users.Patch("/:id/unarchive", fwweb.HandleCommandByID(d.Pipeline,
     fwresponses.NoBody,
     &amp;handlers.UnarchiveCommandHandler[*User, *UnarchiveUserCommand, fwresults.None]{
         Repo: repo,

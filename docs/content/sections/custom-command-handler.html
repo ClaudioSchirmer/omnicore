@@ -169,7 +169,7 @@ app.Post("/customers", func(c fiber.Ctx) error {
         already showed. <code>TResult</code> is whatever application-layer value the handler returns; the
         route maps it to the wire <code>TResp</code> via the <code>responseProjection</code>. Wire it either
         fully by hand (as in step 4 above) or through the canonical
-        <code>HandleCommandWithBody</code> / <code>HandleCommandWithBodyID</code> / <code>HandleCommandWithID</code>
+        <code>HandleCommandWithBody</code> / <code>HandleCommandWithBodyID</code> / <code>HandleCommandByID</code>
         wrappers — both reach the same pipeline.
     </p>
     <p>

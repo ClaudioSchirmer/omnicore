@@ -19,7 +19,7 @@ type testNoBodyCmd struct {
 	pipeline.CommandBaseWithID
 }
 
-// capturingNoBodyHandler captures only the PathID — used by HandleCommandWithID
+// capturingNoBodyHandler captures only the PathID — used by HandleCommandByID
 // tests where no body parsing happens. Returns fwresults.None so the route
 // declaration can pair with responses.NoBody (the canonical no-data shape).
 type capturingNoBodyHandler struct {
@@ -35,17 +35,17 @@ func newTestPipeline() *pipeline.Pipeline {
 	return pipeline.New(translation.Default())
 }
 
-// HandleCommandWithID is the no-body, path-ID-only wrapper used by Archive,
+// HandleCommandByID is the no-body, path-ID-only wrapper used by Archive,
 // Unarchive and Delete endpoints. Body parsing belongs to
 // HandleCommandWithBody{,ID}; this one only injects the path ID and runs
 // the projection on success.
 
-func TestHandleCommandWithID_InjectsPathID(t *testing.T) {
+func TestHandleCommandByID_InjectsPathID(t *testing.T) {
 	app := fiber.New()
 	pipe := newTestPipeline()
 	cap := &capturingNoBodyHandler{}
 
-	app.Patch("/things/:id/archive", HandleCommandWithID(pipe, responses.NoBody, cap, fiber.StatusOK))
+	app.Patch("/things/:id/archive", HandleCommandByID(pipe, responses.NoBody, cap, fiber.StatusOK))
 
 	req := httptest.NewRequest("PATCH", "/things/xyz/archive", nil)
 	resp, err := app.Test(req)
@@ -61,12 +61,12 @@ func TestHandleCommandWithID_InjectsPathID(t *testing.T) {
 	}
 }
 
-func TestHandleCommandWithID_IgnoresBody(t *testing.T) {
+func TestHandleCommandByID_IgnoresBody(t *testing.T) {
 	app := fiber.New()
 	pipe := newTestPipeline()
 	cap := &capturingNoBodyHandler{}
 
-	app.Delete("/things/:id", HandleCommandWithID(pipe, responses.NoBody, cap, fiber.StatusNoContent))
+	app.Delete("/things/:id", HandleCommandByID(pipe, responses.NoBody, cap, fiber.StatusNoContent))
 
 	// Body is provided but the wrapper does not parse it — should still 204.
 	req := httptest.NewRequest("DELETE", "/things/abc", nil)
@@ -83,16 +83,16 @@ func TestHandleCommandWithID_IgnoresBody(t *testing.T) {
 	}
 }
 
-// TestHandleCommandWithID_NoBodyOmitsDataField proves the wrapper detects
+// TestHandleCommandByID_NoBodyOmitsDataField proves the wrapper detects
 // responses.None at runtime and emits the success envelope WITHOUT a "data"
 // key — matches the conventional "no body" shape for state-transition
 // endpoints (DELETE 204, PATCH archive/unarchive 200).
-func TestHandleCommandWithID_NoBodyOmitsDataField(t *testing.T) {
+func TestHandleCommandByID_NoBodyOmitsDataField(t *testing.T) {
 	app := fiber.New()
 	pipe := newTestPipeline()
 	cap := &capturingNoBodyHandler{}
 
-	app.Patch("/things/:id/archive", HandleCommandWithID(pipe, responses.NoBody, cap, fiber.StatusOK))
+	app.Patch("/things/:id/archive", HandleCommandByID(pipe, responses.NoBody, cap, fiber.StatusOK))
 
 	req := httptest.NewRequest("PATCH", "/things/xyz/archive", nil)
 	resp, _ := app.Test(req)
@@ -109,19 +109,19 @@ func TestHandleCommandWithID_NoBodyOmitsDataField(t *testing.T) {
 	}
 }
 
-// TestHandleCommandWithID_CustomProjection proves a service-defined response
+// TestHandleCommandByID_CustomProjection proves a service-defined response
 // projection lands on the wire envelope's "data" field — the customization
 // path the framework opens up beyond the NoBody default.
 type customResp struct {
 	ID string `json:"id"`
 }
 
-func TestHandleCommandWithID_CustomProjection(t *testing.T) {
+func TestHandleCommandByID_CustomProjection(t *testing.T) {
 	app := fiber.New()
 	pipe := newTestPipeline()
 	cap := &capturingNoBodyHandler{}
 
-	app.Patch("/things/:id/archive", HandleCommandWithID(pipe,
+	app.Patch("/things/:id/archive", HandleCommandByID(pipe,
 		func(_ fwresults.None) customResp { return customResp{ID: "demo"} },
 		cap, fiber.StatusOK))
 

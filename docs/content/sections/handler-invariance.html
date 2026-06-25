@@ -46,7 +46,7 @@ fwweb.HandleCommandWithBody(d.Pipeline,
 reg.From("partners").On("partnerOnboarded", requests.PartnerOnboardedRequest{}, h)
 
 // ...or as a GraphQL mutation (input object reflected from the Request DTO)
-gql.Register(fwgraphql.Mutation[requests.InsertUserRequest](
+gql.Register(fwgraphql.MutationWithBody[requests.InsertUserRequest](
     "createUser", requests.InsertUserResponse{}.FromResult, h))</code></pre>
 <p>
     The async path additionally gets the framework's canonical guarantees — transactional emission
@@ -85,7 +85,7 @@ fwweb.HandleQueryAsXLSX(d.Pipeline,
     export.WithSheetName("Users"))
 
 // ...or as a GraphQL query returning a Relay connection
-gql.Register(fwgraphql.Query[requests.FindUsersByParamsRequest,
+gql.Register(fwgraphql.QueryWithParams[requests.FindUsersByParamsRequest,
     requests.FindUsersByParamsResponse](
     "users", "User", h))</code></pre>
 <p>
@@ -115,7 +115,7 @@ gql.Register(fwgraphql.Query[requests.FindUsersByParamsRequest,
     </tr>
     <tr>
         <td>GraphQL mutation</td>
-        <td><code>fwgraphql.{Mutation,MutationWithID,MutationByID}</code></td>
+        <td><code>fwgraphql.{Mutation,MutationWithBodyID,MutationByID}</code></td>
         <td>input object (reflected from the Request DTO), <code>{data,errors}</code></td>
     </tr>
     <tr>
@@ -137,7 +137,7 @@ gql.Register(fwgraphql.Query[requests.FindUsersByParamsRequest,
     </tr>
     <tr>
         <td>GraphQL query</td>
-        <td><code>fwgraphql.Query</code></td>
+        <td><code>fwgraphql.QueryWithParams</code></td>
         <td>Relay connection (<code>edges</code>/<code>pageInfo</code>/<code>totalCount</code>), selection set</td>
     </tr>
     </tbody>

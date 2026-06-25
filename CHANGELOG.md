@@ -11,6 +11,59 @@ with `1.0.0`.
 
 ## [Unreleased]
 
+## [0.15.0] - 2026-06-25
+
+### Added
+
+- **httpclient: runtime service registration.** `*HttpClient` gains
+  `RegisterIfAbsent(*Config) error`, `Unregister(name) bool`, `Count() int`
+  and `Registered() []RegisteredService` so services (and their auth providers)
+  can be wired **in code, after boot**, into the existing client — the missing
+  piece for dynamic targets like customer-supplied webhooks whose URL + auth
+  arrive at runtime from the DB. The merged service uses the same `Config` /
+  `ServiceConfig` / `AuthProviderConfig` shapes the YAML decodes into and shares
+  the **same token cache, connection pool, circuit breaker, retry and signing**
+  as a YAML-declared one — so a `credentials-exchange` / `oauth2-client-credentials`
+  provider registered once fetches its token through the normal middleware and
+  reuses the warm cache on every subsequent `Call`, in a single developer call.
+  `RegisterIfAbsent` is idempotent (a name already present — YAML or a prior
+  registration — is left untouched, preserving its warm state) and validates the
+  config the same way `New` does, returning the error at call time with
+  all-or-nothing merge. `Count` / `Registered` / `Unregister` operate **only on
+  runtime-registered entries** (YAML services are never listed or removable), and
+  `RegisteredService` exposes `RegisteredAt` + `LastUsedAt` so the consumer can
+  program any purge policy (e.g. LRU over `LastUsedAt`); the framework ships no
+  implicit TTL/eviction — lifecycle stays the consumer's. The registry is held as
+  one atomically-swapped snapshot (copy-on-write), so the hot read path stays
+  lock-free and a registration never disturbs in-flight requests or warm provider
+  state — the same pattern already used for the post-`New` cache swap. See the
+  httpclient section.
+
+### Changed
+
+- **Wire wrapper naming unified across REST and GraphQL — `With…` carries a
+  payload, `By…` is a bare id (breaking rename).** The id-carrying command/query
+  wrappers used `WithID` to mean opposite things on the two surfaces — REST
+  `HandleCommandWithID` was the *bodyless* verb, while GraphQL `MutationWithID`
+  was the *body+id* verb — so the same token was a false friend across surfaces.
+  Both now obey one compositional rule: `WithBody`/`WithBodyID` when a body is
+  sent, `ByID` for a bodyless id-only verb.
+  - **REST**: `HandleCommandWithID` → `HandleCommandByID` and `HandleQueryWithID`
+    → `HandleQueryByID` (with their `…Spec` siblings). `HandleCommandWithBody`,
+    `HandleCommandWithBodyID` and `HandleQueryWithParams` are unchanged (already
+    compositional).
+  - **GraphQL**: `Mutation` → `MutationWithBody`, `MutationWithID` →
+    `MutationWithBodyID`, `Query` → `QueryWithParams`. `MutationByID` is unchanged.
+    The GraphQL SDL / introspection type names (`Query`, `Mutation`) are untouched —
+    only the Go builder functions were renamed.
+
+  No name is reused with a flipped meaning (the ambiguous `WithID` is retired on
+  both surfaces), so stale call sites fail to compile instead of silently changing
+  behavior. Consumer migration is mechanical:
+  `s/HandleCommandWithID/HandleCommandByID/`, `s/HandleQueryWithID/HandleQueryByID/`,
+  `s/MutationWithID/MutationWithBodyID/`, plus `fwgraphql.Mutation` →
+  `MutationWithBody` and `fwgraphql.Query` → `QueryWithParams`.
+
 ## [0.14.2] - 2026-06-24
 
 ### Fixed

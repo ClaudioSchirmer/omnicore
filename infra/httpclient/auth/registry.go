@@ -20,6 +20,40 @@ func (r *Registry) Register(name string, p AuthProvider) {
 	r.providers[name] = p
 }
 
+// Has reports whether a provider is registered under the given name.
+func (r *Registry) Has(name string) bool {
+	if r == nil {
+		return false
+	}
+	_, ok := r.providers[name]
+	return ok
+}
+
+// Remove deletes the provider registered under name, if any. Used by the
+// httpclient's Unregister to drop a runtime-registered provider once its
+// owning service is gone.
+func (r *Registry) Remove(name string) {
+	if r == nil {
+		return
+	}
+	delete(r.providers, name)
+}
+
+// Clone returns a new registry holding the same provider instances under the
+// same names. Used for the httpclient's copy-on-write registry swaps: the
+// clone can be mutated (Register / Remove) without disturbing the published
+// snapshot. Provider instances are shared, so warm token caches survive.
+func (r *Registry) Clone() *Registry {
+	if r == nil {
+		return &Registry{providers: map[string]AuthProvider{}}
+	}
+	nr := &Registry{providers: make(map[string]AuthProvider, len(r.providers)+1)}
+	for k, v := range r.providers {
+		nr.providers[k] = v
+	}
+	return nr
+}
+
 // Lookup returns the named provider or an error when absent. Used by the
 // middleware (per service) and by WithAuthOverride (per call).
 func (r *Registry) Lookup(name string) (AuthProvider, error) {

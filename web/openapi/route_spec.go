@@ -72,7 +72,7 @@ func RouteSpecOfPaged[TReq, TResp any](status int) RouteSpec {
 // every route they document. Two consumers populate it:
 //
 //   - The framework's *Spec sibling wrappers (HandleCommandWithBodySpec,
-//     HandleQueryWithIDSpec, etc.) — they observe TReq / TResp / the
+//     HandleQueryByIDSpec, etc.) — they observe TReq / TResp / the
 //     FullBody marker on the handler and produce the RouteSpec
 //     automatically.
 //   - Manual-with-pipeline consumers — they hand-roll a fiber.Handler
@@ -83,7 +83,7 @@ func RouteSpecOfPaged[TReq, TResp any](status int) RouteSpec {
 //     alone so the call site stays free of reflect.TypeOf(...) noise.
 type RouteSpec struct {
 	// RequestType is the body shape declared on the wire. nil for
-	// bodyless routes (the framework's HandleCommandWithID family — and
+	// bodyless routes (the framework's HandleCommandByID family — and
 	// any manual handler that does not parse a request body).
 	RequestType reflect.Type
 
@@ -134,7 +134,7 @@ type RouteSpec struct {
 	// matching the runtime behavior of fwweb.RespondPaged vs
 	// fwweb.RespondWithSuccess.
 	//
-	// HandleQueryWithParamsSpec sets it automatically; HandleQueryWithID
+	// HandleQueryWithParamsSpec sets it automatically; HandleQueryByID
 	// keeps it false. Manual mounts opt in via the RouteSpecOfPaged
 	// helper. Paged:true paired with a nil ResponseType or
 	// responses.None is a semantic contradiction — paging requires

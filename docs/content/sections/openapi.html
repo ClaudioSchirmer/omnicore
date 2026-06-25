@@ -242,9 +242,9 @@
     <ul>
         <li><code>fwweb.HandleCommandWithBodySpec</code></li>
         <li><code>fwweb.HandleCommandWithBodyIDSpec</code></li>
-        <li><code>fwweb.HandleCommandWithIDSpec</code></li>
+        <li><code>fwweb.HandleCommandByIDSpec</code></li>
         <li><code>fwweb.HandleQueryWithParamsSpec</code></li>
-        <li><code>fwweb.HandleQueryWithIDSpec</code></li>
+        <li><code>fwweb.HandleQueryByIDSpec</code></li>
         <li><code>fwweb.HandleQueryAsCSVSpec</code> / <code>fwweb.HandleQueryAsXLSXSpec</code> (and the generic <code>HandleQueryExportSpec</code>) — return <code>(handler, RouteSpec)</code> with <code>RequestType</code> + <code>FileResponse</code> + <code>OmittedQueryParams</code> prefilled, so a tabular export mounts via the canonical <code>Mount</code> just like any JSON route</li>
     </ul>
     <p>Same generics, same arguments, same handler behavior. The sibling extracts <code>Strict</code> via type-assertion to <code>pipeline.FullBodyEnforcer</code> and sets <code>HasPathID=true</code> for every wrapper that auto-binds the Fiber <code>:id</code> segment.</p>

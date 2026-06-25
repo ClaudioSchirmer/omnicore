@@ -19,7 +19,7 @@ import (
 // appears in more than one route.
 var expectedKeysCache sync.Map // map[reflect.Type][]string
 
-// HandleCommandWithID creates a fiber.Handler for endpoints WITHOUT a body
+// HandleCommandByID creates a fiber.Handler for endpoints WITHOUT a body
 // that receive the ID via the path (Archive, Unarchive, Delete). There is
 // no BodyParser and no FullBody inspection — it only injects
 // cmd.SetPathID(c.Params("id")) and dispatches.
@@ -34,14 +34,14 @@ var expectedKeysCache sync.Map // map[reflect.Type][]string
 // Endpoints with a body use HandleCommandWithBody{,ID} instead of this
 // wrapper.
 //
-//	app.Patch("/users/:id/archive", web.HandleCommandWithID(pipe,
+//	app.Patch("/users/:id/archive", web.HandleCommandByID(pipe,
 //	    responses.NoBody,
 //	    &handlers.ArchiveCommandHandler[*User, *ArchiveUserCommand, results.None]{
 //	        Repo: r, Auditor: a, Service: svc,
 //	        Project: results.NoProjection[*User],
 //	    },
 //	    fiber.StatusOK))
-func HandleCommandWithID[
+func HandleCommandByID[
 	T any,
 	TCmd interface {
 		*T

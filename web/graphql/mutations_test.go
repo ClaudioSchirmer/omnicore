@@ -47,11 +47,11 @@ func (h *fakeCmdHandler) Handle(_ *configuration.AppContext, c *mutCmd) (mutResu
 	return h.result, nil
 }
 
-func TestMutation_InsertStyleEndToEnd(t *testing.T) {
+func TestMutationWithBody_InsertStyleEndToEnd(t *testing.T) {
 	h := &fakeCmdHandler{result: mutResult{ID: "x1", Name: "Bob"}}
 	pipe := pipeline.New(translation.Default())
 	reg := New(pipe).Register(
-		Mutation[mutRequest, mutCmd, *mutCmd, mutResult, mutResponse](
+		MutationWithBody[mutRequest, mutCmd, *mutCmd, mutResult, mutResponse](
 			"createThing", mutResponse{}.FromResult, h),
 	)
 	ctx := configuration.NewAppContextWithRandomID(configuration.LangENG)
@@ -69,11 +69,11 @@ func TestMutation_InsertStyleEndToEnd(t *testing.T) {
 	}
 }
 
-func TestMutation_MissingRequiredInputFieldRejected(t *testing.T) {
+func TestMutationWithBody_MissingRequiredInputFieldRejected(t *testing.T) {
 	h := &fakeCmdHandler{}
 	pipe := pipeline.New(translation.Default())
 	reg := New(pipe).Register(
-		Mutation[mutRequest, mutCmd, *mutCmd, mutResult, mutResponse](
+		MutationWithBody[mutRequest, mutCmd, *mutCmd, mutResult, mutResponse](
 			"createThing", mutResponse{}.FromResult, h),
 	)
 	ctx := configuration.NewAppContextWithRandomID(configuration.LangENG)
@@ -158,11 +158,11 @@ func (h *fakeUpdHandler) Handle(_ *configuration.AppContext, c *mutUpdCmd) (mutU
 	return mutUpdResult{ID: c.PathID(), Name: c.Name}, nil
 }
 
-func TestMutationWithID_InjectsPathIDAndInput(t *testing.T) {
+func TestMutationWithBodyID_InjectsPathIDAndInput(t *testing.T) {
 	h := &fakeUpdHandler{}
 	pipe := pipeline.New(translation.Default())
 	reg := New(pipe).Register(
-		MutationWithID[mutUpdRequest, mutUpdCmd, *mutUpdCmd, mutUpdResult, mutUpdResponse](
+		MutationWithBodyID[mutUpdRequest, mutUpdCmd, *mutUpdCmd, mutUpdResult, mutUpdResponse](
 			"updateThing", mutUpdResponse{}.FromResult, h),
 	)
 	ctx := configuration.NewAppContextWithRandomID(configuration.LangENG)
@@ -183,10 +183,10 @@ func TestMutationWithID_InjectsPathIDAndInput(t *testing.T) {
 	}
 }
 
-func TestMutationWithID_SchemaCarriesIDArg(t *testing.T) {
+func TestMutationWithBodyID_SchemaCarriesIDArg(t *testing.T) {
 	pipe := pipeline.New(translation.Default())
 	reg := New(pipe).Register(
-		MutationWithID[mutUpdRequest, mutUpdCmd, *mutUpdCmd, mutUpdResult, mutUpdResponse](
+		MutationWithBodyID[mutUpdRequest, mutUpdCmd, *mutUpdCmd, mutUpdResult, mutUpdResponse](
 			"updateThing", mutUpdResponse{}.FromResult, &fakeUpdHandler{}),
 	)
 	sdl, err := reg.SDL()
@@ -194,7 +194,7 @@ func TestMutationWithID_SchemaCarriesIDArg(t *testing.T) {
 		t.Fatalf("SDL: %v", err)
 	}
 	if !strings.Contains(sdl, "updateThing(id: ID!, input:") {
-		t.Errorf("MutationWithID must expose an id: ID! arg + input, SDL:\n%s", sdl)
+		t.Errorf("MutationWithBodyID must expose an id: ID! arg + input, SDL:\n%s", sdl)
 	}
 }
 
@@ -227,9 +227,9 @@ func (h *fakeStrictHandler) Handle(_ *configuration.AppContext, _ *mutStrictCmd)
 	return mutStrictResult{ID: "x"}, nil
 }
 
-func TestMutation_FullBodyMakesInputStrict(t *testing.T) {
+func TestMutationWithBody_FullBodyMakesInputStrict(t *testing.T) {
 	reg := New(pipeline.New(translation.Default())).Register(
-		Mutation[mutStrictRequest, mutStrictCmd, *mutStrictCmd, mutStrictResult, mutStrictResponse](
+		MutationWithBody[mutStrictRequest, mutStrictCmd, *mutStrictCmd, mutStrictResult, mutStrictResponse](
 			"createStrict", mutStrictResponse{}.FromResult, &fakeStrictHandler{}),
 	)
 	sdl, err := reg.SDL()

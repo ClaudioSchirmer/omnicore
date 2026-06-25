@@ -169,8 +169,8 @@ func TestE2E_DefaultTLS_TrustedServer(t *testing.T) {
 	// the test does not need access to a real CA file.
 	pool := x509.NewCertPool()
 	pool.AddCert(srv.Certificate())
-	c.services["svc"].tlsConfig.RootCAs = pool
-	c.services["svc"].transport.TLSClientConfig = c.services["svc"].tlsConfig
+	c.snap().services["svc"].tlsConfig.RootCAs = pool
+	c.snap().services["svc"].transport.TLSClientConfig = c.snap().services["svc"].tlsConfig
 
 	type req struct{}
 	type resp struct {
@@ -246,7 +246,7 @@ func TestE2E_PoolOverride_ReachesTransport(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
-	tr := c.services["svc"].transport
+	tr := c.snap().services["svc"].transport
 	if tr.MaxConnsPerHost != 7 {
 		t.Errorf("MaxConnsPerHost = %d; want 7", tr.MaxConnsPerHost)
 	}

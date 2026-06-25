@@ -12,7 +12,7 @@
     <table>
         <tbody><tr><th>Operation</th><th>HTTP wrapper</th><th>Auto handler</th><th>ViewReader call</th></tr>
         <tr><td>Paged listing (<code>GET /users</code>)</td><td><code>fwweb.HandleQueryWithParams</code></td><td><code>FindByParamsQueryHandler[*Q]</code></td><td><code>ReadPage</code></td></tr>
-        <tr><td>By-id lookup (<code>GET /users/:id</code>)</td><td><code>fwweb.HandleQueryWithID</code></td><td><code>FindByIDQueryHandler[*Q]</code></td><td><code>ReadByID</code></td></tr>
+        <tr><td>By-id lookup (<code>GET /users/:id</code>)</td><td><code>fwweb.HandleQueryByID</code></td><td><code>FindByIDQueryHandler[*Q]</code></td><td><code>ReadByID</code></td></tr>
     </tbody></table>
     <p>
         The <a href="#query-side">QueryHandler · CQRS</a> page covers the concept and the end-to-end flow
@@ -37,7 +37,7 @@
             <code>projector</code> and returns the standard <code>Response</code> envelope with
             <code>data</code> as the projected items array and <code>pagination</code> as a top-level
             field.</li>
-        <li><code>fwweb.HandleQueryWithID(pipe, sample, projector, h)</code> — by-id lookup (<code>GET /users/:id</code>).
+        <li><code>fwweb.HandleQueryByID(pipe, sample, projector, h)</code> — by-id lookup (<code>GET /users/:id</code>).
             Only <code>?includeArchived=true</code> is reserved; any other query parameter produces 400.
             Calls <code>req.ToQuery()</code> (no ctx), injects the path id via <code>q.SetPathID(...)</code>,
             dispatches via <code>FindByIDQueryHandler[*Q]</code> which calls <code>q.ToCriteria(ctx)</code>
@@ -833,7 +833,7 @@ users.Get("/", fwweb.HandleQueryWithParams(d.Pipeline,
         Reader: d.ViewReader, View: views.CustomerView.Name(),
     }))
 
-users.Get("/:id", fwweb.HandleQueryWithID(d.Pipeline,
+users.Get("/:id", fwweb.HandleQueryByID(d.Pipeline,
     requests.FindUserByIDRequest{},
     fwresponses.AutoFromDoc[requests.FindUserByIDResponse],
     &amp;handlers.FindByIDQueryHandler[*queries.FindUserByIDQuery]{

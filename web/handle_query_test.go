@@ -302,12 +302,12 @@ func (h *capturingIDHandler) Handle(ctx *configuration.AppContext, q *testFindID
 	return map[string]any{"id": q.GetID().String()}, nil
 }
 
-func TestHandleQueryWithID_AcceptsIncludeArchivedParam(t *testing.T) {
+func TestHandleQueryByID_AcceptsIncludeArchivedParam(t *testing.T) {
 	app := fiber.New()
 	pipe := newTestPipeline()
 	h := &capturingIDHandler{}
 
-	app.Get("/users/:id", HandleQueryWithID(pipe, testFindIDRequest{}, responses.RawDoc, h))
+	app.Get("/users/:id", HandleQueryByID(pipe, testFindIDRequest{}, responses.RawDoc, h))
 
 	resp, _ := app.Test(httptest.NewRequest("GET", "/users/abc?includeArchived=true", nil))
 	if resp.StatusCode != fiber.StatusOK {
@@ -325,12 +325,12 @@ func TestHandleQueryWithID_AcceptsIncludeArchivedParam(t *testing.T) {
 	}
 }
 
-func TestHandleQueryWithID_RejectsExtraParamWith400(t *testing.T) {
+func TestHandleQueryByID_RejectsExtraParamWith400(t *testing.T) {
 	app := fiber.New()
 	pipe := newTestPipeline()
 	h := &capturingIDHandler{}
 
-	app.Get("/users/:id", HandleQueryWithID(pipe, testFindIDRequest{}, responses.RawDoc, h))
+	app.Get("/users/:id", HandleQueryByID(pipe, testFindIDRequest{}, responses.RawDoc, h))
 
 	resp, _ := app.Test(httptest.NewRequest("GET", "/users/abc?role=admin", nil))
 	if resp.StatusCode != fiber.StatusBadRequest {
@@ -341,12 +341,12 @@ func TestHandleQueryWithID_RejectsExtraParamWith400(t *testing.T) {
 	}
 }
 
-func TestHandleQueryWithID_NoQueryStringDefaults(t *testing.T) {
+func TestHandleQueryByID_NoQueryStringDefaults(t *testing.T) {
 	app := fiber.New()
 	pipe := newTestPipeline()
 	h := &capturingIDHandler{}
 
-	app.Get("/users/:id", HandleQueryWithID(pipe, testFindIDRequest{}, responses.RawDoc, h))
+	app.Get("/users/:id", HandleQueryByID(pipe, testFindIDRequest{}, responses.RawDoc, h))
 
 	resp, _ := app.Test(httptest.NewRequest("GET", "/users/abc", nil))
 	if resp.StatusCode != fiber.StatusOK {
@@ -357,13 +357,13 @@ func TestHandleQueryWithID_NoQueryStringDefaults(t *testing.T) {
 	}
 }
 
-func TestHandleQueryWithID_AppContextFlowsIntoToCriteria(t *testing.T) {
+func TestHandleQueryByID_AppContextFlowsIntoToCriteria(t *testing.T) {
 	app := fiber.New()
 	app.Use(AppContextMiddleware())
 	pipe := newTestPipeline()
 	h := &capturingIDHandler{}
 
-	app.Get("/users/:id", HandleQueryWithID(pipe, testFindIDRequest{}, responses.RawDoc, h))
+	app.Get("/users/:id", HandleQueryByID(pipe, testFindIDRequest{}, responses.RawDoc, h))
 
 	req := httptest.NewRequest("GET", "/users/abc", nil)
 	req.Header.Set("Accept-Language", "fr")
@@ -383,15 +383,15 @@ func (h *idDocHandler) Handle(_ *configuration.AppContext, q *testFindIDQuery) (
 	return map[string]any{"id": q.GetID().String(), "name": "Carol", "email": "c@x.com"}, nil
 }
 
-// TestHandleQueryWithID_CustomProjectorReshapesData proves the projector
+// TestHandleQueryByID_CustomProjectorReshapesData proves the projector
 // applies on the by-id success path — the wire data carries the typed shape,
 // not the raw doc.
-func TestHandleQueryWithID_CustomProjectorReshapesData(t *testing.T) {
+func TestHandleQueryByID_CustomProjectorReshapesData(t *testing.T) {
 	app := fiber.New()
 	pipe := newTestPipeline()
 	h := &idDocHandler{}
 
-	app.Get("/users/:id", HandleQueryWithID(pipe, testFindIDRequest{}, summaryFromDoc, h))
+	app.Get("/users/:id", HandleQueryByID(pipe, testFindIDRequest{}, summaryFromDoc, h))
 
 	resp, _ := app.Test(httptest.NewRequest("GET", "/users/abc", nil))
 	body, _ := io.ReadAll(resp.Body)

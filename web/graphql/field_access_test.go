@@ -48,7 +48,7 @@ func (h *restrictHandler) Handle(ctx *configuration.AppContext, q *restrictQuery
 func restrictRegistry() *Registry {
 	h := &restrictHandler{page: queries.Page{}}
 	return New(pipeline.New(translation.Default())).
-		Register(Query[restrictRequest, execResponse]("items", "Item", h))
+		Register(QueryWithParams[restrictRequest, execResponse]("items", "Item", h))
 }
 
 // TestFieldAccess_ExplicitSelectionOfRestrictedFieldIsForbidden — selecting a
