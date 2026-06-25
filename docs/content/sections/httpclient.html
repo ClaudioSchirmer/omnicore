@@ -1,6 +1,6 @@
 <h2>httpclient — outbound HTTP</h2>
-  <p><code>omnicore/infra/httpclient</code> is the framework's outbound HTTP subsystem. Services describe the external systems they talk to in <a href="#bootstrap~microservice-yaml"><code>microservice.&lt;profile&gt;.yaml</code></a> under the <code>httpClient:</code> block; the framework constructs a singleton <code>*httpclient.HttpClient</code> registry on <code>bootstrap.Deps.HttpClient</code>. Each declared service gets its own <code>http.Transport</code> and <code>http.Client</code> so a misbehaving upstream cannot starve the pool of the rest.</p>
-  <p class="note">The runtime is feature-complete: <code>Call[Req, Resp]</code> generic, request/response binding via <code>http:"..."</code> tags, three body codecs (json/xml/form-urlencoded), middleware chain (correlation, logging, auth, idempotency, cache, retry, breaker, signing, transport), error model, slog observability with cascaded redaction, six auth provider types, OAuth2 token cache + single-flight + revocation, per-service TLS and connection pool, <a href="#httpclient">HMAC request signing</a> (AWS SigV4-lite canonical), <a href="#httpclient">streaming surfaces</a> (download stream, upload stream, multipart upload, Server-Sent Events), the per-call <code>InvokeOption</code> family, the <a href="#httpclient"><code>NewFake</code> testing harness</a>, and dynamic <a href="#httpclient">service discovery via <code>BaseURLResolver</code></a>. All design-doc phases delivered.</p>
+  <p><code>omnicore/infra/httpclient</code> is the framework's outbound HTTP subsystem. Upstreams known at boot are described in <a href="#bootstrap~microservice-yaml"><code>microservice.&lt;profile&gt;.yaml</code></a> under the <code>httpClient:</code> block, from which the framework constructs a singleton <code>*httpclient.HttpClient</code> registry on <code>bootstrap.Deps.HttpClient</code>; upstreams known only at runtime (customer webhooks, per-tenant targets read from the DB) are registered <strong>in code</strong> on that same client — see <a href="#httpclient">Runtime registration</a>. Either way each service gets its own <code>http.Transport</code> and <code>http.Client</code> so a misbehaving upstream cannot starve the pool of the rest. YAML and code are two ways to fill the same <code>Config</code> — the <code>Call</code> path, middleware, and per-service isolation are identical regardless of which wired the service.</p>
+  <p class="note">The runtime is feature-complete: <code>Call[Req, Resp]</code> generic, request/response binding via <code>http:"..."</code> tags, three body codecs (json/xml/form-urlencoded), middleware chain (correlation, logging, auth, idempotency, cache, retry, breaker, signing, transport), error model, slog observability with cascaded redaction, six auth provider types, OAuth2 token cache + single-flight + revocation, per-service TLS and connection pool, <a href="#httpclient">HMAC request signing</a> (AWS SigV4-lite canonical), <a href="#httpclient">streaming surfaces</a> (download stream, upload stream, multipart upload, Server-Sent Events), the per-call <code>InvokeOption</code> family, the <a href="#httpclient"><code>NewFake</code> testing harness</a>, dynamic <a href="#httpclient">service discovery via <code>BaseURLResolver</code></a>, and <a href="#httpclient">runtime service registration</a> (wire an upstream in code after boot). All design-doc phases delivered.</p>
 
   <h3>At a glance — one typed call</h3>
   <p>Before the peculiarities below, the whole happy path: declare the endpoint in YAML, write a request struct and a response struct, make one typed call. The registry resolves <code>service</code> + <code>endpoint</code> from the YAML, builds the request from the <code>http:"..."</code> tags, dials, and hands back the decoded response — no client wiring, no manual URL building, no JSON plumbing at the call site.</p>
@@ -56,7 +56,7 @@ use(resp.Email)</code></pre>
             Accept: application/json</code></pre>
 
   <h3>Validation guarantees at boot</h3>
-  <p><code>httpclient.New(cfg)</code> runs <code>applyDefaults</code> then <code>Validate</code> before constructing any transport. Issues are accumulated and emitted in a single error so the operator sees the whole list on one boot attempt:</p>
+  <p><code>httpclient.New(cfg)</code> runs <code>applyDefaults</code> then <code>Validate</code> before constructing any transport. Issues are accumulated and emitted in a single error so the operator sees the whole list on one boot attempt. The <strong>same</strong> <code>applyDefaults</code> + <code>Validate</code> pass runs when a service is wired in code via <code>RegisterIfAbsent</code> (see <a href="#httpclient">Runtime registration</a>) — there the error is returned from the registration call at runtime rather than aborting boot:</p>
   <ul>
     <li><code>services.&lt;name&gt;.baseURL</code> required + must parse as an absolute URL</li>
     <li><code>services.&lt;name&gt;.endpoints</code> must declare at least one endpoint</li>
@@ -138,14 +138,14 @@ type GetUserResponse struct {
 ) (Resp, error)</code></pre>
   <p>The <code>InvokeOption</code> family is tight by design — three categories, each with a distinct rationale:</p>
 
-  <h4>1. <code>WithConfig(CallConfig)</code> — canonical per-call YAML overrides</h4>
-  <p>Every YAML-declared knob that makes sense to flip at call time is a field on <code>CallConfig</code>. One option, discoverable via IDE autocomplete, and adding a new YAML field automatically becomes runtime-overridable when the same field lands on the struct.</p>
+  <h4>1. <code>WithConfig(CallConfig)</code> — canonical per-call overrides</h4>
+  <p>Every configured knob that makes sense to flip at call time is a field on <code>CallConfig</code> — it overrides the service's value for that one call, whether the service was wired in YAML or in code. One option, discoverable via IDE autocomplete, and adding a new config field automatically becomes per-call-overridable when the same field lands on the struct.</p>
   <table>
     <thead><tr><th>Field</th><th>Overrides</th></tr></thead>
     <tbody>
       <tr><td><code>BaseURL string</code></td><td><code>services.&lt;name&gt;.baseURL</code> (wins over the resolver too)</td></tr>
       <tr><td><code>Timeout time.Duration</code></td><td>service / defaults timeout (0 = inherit)</td></tr>
-      <tr><td><code>AuthProvider string</code></td><td><code>services.&lt;name&gt;.auth.provider</code> (selects a YAML-declared provider)</td></tr>
+      <tr><td><code>AuthProvider string</code></td><td><code>services.&lt;name&gt;.auth.provider</code> (selects a registered provider — YAML or runtime)</td></tr>
       <tr><td><code>Method string</code></td><td><code>endpoint.method</code></td></tr>
       <tr><td><code>Path string</code></td><td><code>endpoint.path</code> (must start with <code>/</code>)</td></tr>
       <tr><td><code>RequestCodec string</code></td><td><code>endpoint.requestCodec</code></td></tr>
@@ -161,7 +161,7 @@ type GetUserResponse struct {
 
   <h4><code>InlineAuth</code> — credentials supplied per call</h4>
 
-  <p>YAML-declared auth providers (<code>oauth2-client-credentials</code>, <code>bearer-static</code>, <code>basic</code>, etc.) cover the case where the framework knows the credentials at boot time — one client of the upstream, one provider declared, picked by every call. <code>InlineAuth</code> is the inverse case: <strong>the credentials are runtime values</strong> the framework cannot know in advance.</p>
+  <p>Named auth providers (<code>oauth2-client-credentials</code>, <code>bearer-static</code>, <code>basic</code>, etc.) — declared in YAML or registered in code — cover the case where the framework <strong>owns the credential and its lifecycle</strong>: one provider, picked by every call, with the token cache / single-flight / revocation it manages. <code>InlineAuth</code> is the inverse case: <strong>the credential is a runtime value</strong> the caller hands to a single call, with no framework-owned lifecycle.</p>
 
   <p>Canonical motivation: a webhook delivery service that has thousands of customer rows in the DB, each carrying its own Bearer token / API key / Basic password. Registering one named YAML provider per customer is not viable; instead the handler reads the customer row and passes the credential inline on each call.</p>
 
@@ -196,13 +196,13 @@ type BasicAuth struct {
     </tbody>
   </table>
 
-  <p><strong>Precedence vs YAML providers.</strong> Setting <code>InlineAuth</code> alongside <code>AuthProvider</code> in the same <code>CallConfig</code> is allowed — <code>InlineAuth</code> wins, the named YAML provider is ignored for that call. This makes "override the service's default provider only for this customer" a single-field change.</p>
+  <p><strong>Precedence vs named providers.</strong> Setting <code>InlineAuth</code> alongside <code>AuthProvider</code> in the same <code>CallConfig</code> is allowed — <code>InlineAuth</code> wins, the named provider is ignored for that call. This makes "override the service's default provider only for this customer" a single-field change.</p>
 
   <p><strong>Observability.</strong> The slog observation field <code>authProvider</code> logs <code>inline:bearer</code>, <code>inline:apikey</code>, or <code>inline:basic</code> so dashboards can split inline calls from named-provider calls without parsing extra fields.</p>
 
   <p><strong>Middleware integration.</strong> The framework materializes <code>InlineAuth</code> into an ephemeral <code>auth.AuthProvider</code> internally and runs it through the same auth middleware (position 3 of the chain). Every other layer — logging, idempotency, cache, retry, breaker, transport — behaves identically to a YAML-provider call.</p>
 
-  <p><strong>What does NOT come with InlineAuth.</strong> Inline credentials are static for the duration of one call: there is no token cache (the credential was already supplied), no single-flight (no acquisition happens), no <code>revocationOnUnauthorized</code> retry (no provider to invalidate). Those features only make sense for OAuth-style flows where the framework owns the token lifecycle. If you need OAuth client-credentials per customer dynamically, declare a <code>credentials-exchange</code> provider in YAML with <code>requestFieldsFromCtx</code> instead — that path does have a per-identity token cache.</p>
+  <p><strong>What does NOT come with InlineAuth.</strong> Inline credentials are static for the duration of one call: there is no token cache (the credential was already supplied), no single-flight (no acquisition happens), no <code>revocationOnUnauthorized</code> retry (no provider to invalidate). Those features only make sense for OAuth-style flows where the framework owns the token lifecycle. If you need OAuth client-credentials per customer dynamically, two paths give you a real token cache: a single <code>credentials-exchange</code> provider in YAML with <code>requestFieldsFromCtx</code> (one provider, a per-identity cache keyed by the resolved values), or — when the token endpoint / credentials themselves arrive at runtime — register a per-customer service + provider in code via <code>RegisterIfAbsent</code> (see <a href="#httpclient">Runtime registration</a>), which reuses the warm token by service name on every call.</p>
 
   <p><strong>End-to-end webhook example:</strong></p>
 
@@ -273,10 +273,10 @@ func customerAuthToInline(cfg CustomerAuthConfig) *httpclient.InlineAuth {
   <h4>3. <code>WithClientCert(tls.Certificate)</code></h4>
   <p>Binary <code>tls.Certificate</code> value, not a YAML-declarable string. Builds an ephemeral cloned transport so the registry's pool stays clean. Use for vault-rotated certs delivered via the secrets manager.</p>
 
-  <p class="note"><strong>Why not include TLS minVersion / cipher suites / CA bundle / pool sizes in <code>CallConfig</code>?</strong> Those are bound to the <code>http.Transport</code> materialized once at <code>New</code>. Overriding them per-call would require rebuilding the transport for that single call, invalidating the connection pool and defeating keep-alive. Declare those in YAML and reboot to change.</p>
+  <p class="note"><strong>Why not include TLS minVersion / cipher suites / CA bundle / pool sizes in <code>CallConfig</code>?</strong> Those are bound to the <code>http.Transport</code> materialized once when the service is constructed. Overriding them per-call would require rebuilding the transport for that single call, invalidating the connection pool and defeating keep-alive. They are fixed for a service instance's lifetime — declare them in YAML, or in the <code>Config</code> you wire in code via <code>RegisterIfAbsent</code>; changing them on an existing service means re-registering it (or rebooting, for a YAML service), not a per-call override.</p>
 
   <h4>Static (YAML) ↔ Dynamic (runtime) — complete reference</h4>
-  <p>Every YAML field and its per-call equivalent (if any). <strong>Override semantic column:</strong> <em>replaces</em> = the YAML value is ignored when the override is set; <em>extends</em> = the YAML value and the override are unioned; <em>additive</em> = there is no YAML equivalent, the runtime value is layered on top; <em>—</em> = no runtime override exists, declare in YAML and reboot to change.</p>
+  <p>Every YAML field and its per-call equivalent (if any). <strong>Override semantic column:</strong> <em>replaces</em> = the YAML value is ignored when the override is set; <em>extends</em> = the YAML value and the override are unioned; <em>additive</em> = there is no YAML equivalent, the runtime value is layered on top; <em>—</em> = no <strong>per-call</strong> override exists. A <em>—</em> / <em>boot-only</em> field is fixed for a service instance's lifetime, but not YAML-only: you can wire a whole service carrying any of these fields in code via <code>RegisterIfAbsent</code> (see <a href="#httpclient">Runtime registration</a>) — what you cannot do is flip it per call on an existing service.</p>
 
   <p><strong>Defaults block (<code>httpClient.defaults.*</code>):</strong></p>
   <table>
@@ -307,7 +307,7 @@ func customerAuthToInline(cfg CustomerAuthConfig) *httpclient.InlineAuth {
     <tbody>
       <tr><td><code>services.&lt;name&gt;.baseURL</code></td><td><code>CallConfig.BaseURL</code></td><td>replaces (wins over BaseURLResolver too)</td></tr>
       <tr><td><code>services.&lt;name&gt;.timeout</code></td><td><code>CallConfig.Timeout</code></td><td>replaces (0 = inherit)</td></tr>
-      <tr><td><code>services.&lt;name&gt;.auth.provider</code></td><td><code>CallConfig.AuthProvider</code></td><td>replaces (selects another YAML provider by name)</td></tr>
+      <tr><td><code>services.&lt;name&gt;.auth.provider</code></td><td><code>CallConfig.AuthProvider</code></td><td>replaces (selects another registered provider by name — YAML or runtime)</td></tr>
       <tr><td><em>(runtime credentials — no YAML equivalent)</em></td><td><code>CallConfig.InlineAuth *InlineAuth</code></td><td>additive; wins over AuthProvider when both set</td></tr>
       <tr><td><code>services.&lt;name&gt;.headers</code></td><td><code>WithExtraHeader(k, v)</code></td><td>additive</td></tr>
       <tr><td><code>services.&lt;name&gt;.tls.clientCertFile</code> / <code>clientKeyFile</code></td><td><code>WithClientCert(tls.Certificate)</code></td><td>replaces (ephemeral transport clone)</td></tr>
@@ -343,7 +343,7 @@ func customerAuthToInline(cfg CustomerAuthConfig) *httpclient.InlineAuth {
   <table>
     <thead><tr><th>YAML field</th><th>Dynamic equivalent</th><th>Override semantic</th></tr></thead>
     <tbody>
-      <tr><td><code>authProviders.&lt;name&gt;.*</code> (definitions)</td><td>—</td><td>boot-only (provider materialized at New)</td></tr>
+      <tr><td><code>authProviders.&lt;name&gt;.*</code> (definitions)</td><td>—</td><td>call-immutable (provider materialized at <code>New</code> or <code>RegisterIfAbsent</code>; not redefinable per call)</td></tr>
       <tr><td><em>(select which provider per call)</em></td><td><code>CallConfig.AuthProvider</code></td><td>replaces the service's default by name</td></tr>
       <tr><td><em>(supply credentials per call without YAML provider)</em></td><td><code>CallConfig.InlineAuth</code></td><td>additive; ephemeral inline provider</td></tr>
     </tbody>
@@ -358,11 +358,11 @@ func customerAuthToInline(cfg CustomerAuthConfig) *httpclient.InlineAuth {
     </tbody>
   </table>
 
-  <p class="note"><strong>Reading the column "Override semantic".</strong> <em>replaces</em> means the override fully takes over when set — leave it at the zero value to keep the YAML. <em>extends</em> means the override is unioned with the YAML — there's no way to subtract. <em>additive</em> means there's no YAML field to override; the runtime value layers on the cascade. <em>boot-only</em> means there is no runtime knob; declare the YAML correctly or reboot to change. For <code>CallConfig.Retry</code> specifically, "replaces (total)" is important: a non-nil <code>RetryOverride</code> throws away the YAML's resolved policy AND substitutes framework defaults for any field the caller leaves zero — there is no field-level merge with the YAML.</p>
+  <p class="note"><strong>Reading the column "Override semantic".</strong> <em>replaces</em> means the override fully takes over when set — leave it at the zero value to keep the YAML. <em>extends</em> means the override is unioned with the YAML — there's no way to subtract. <em>additive</em> means there's no YAML field to override; the runtime value layers on the cascade. <em>boot-only</em> means there is no <strong>per-call</strong> knob — the value is fixed for the lifetime of that service instance. You can still wire an entire service carrying any of these fields in code via <code>RegisterIfAbsent</code> (see <a href="#httpclient">Runtime registration</a>); what is impossible is flipping one per call on an existing service. To change it, re-register the service (or reboot, for a YAML-declared one). For <code>CallConfig.Retry</code> specifically, "replaces (total)" is important: a non-nil <code>RetryOverride</code> throws away the YAML's resolved policy AND substitutes framework defaults for any field the caller leaves zero — there is no field-level merge with the YAML.</p>
 
   <p>Flow:</p>
   <ol>
-    <li>Resolve the service + endpoint from the YAML (unknown name → descriptive error before dialing).</li>
+    <li>Resolve the service + endpoint from the registry (YAML- or runtime-registered; unknown name → descriptive error before dialing).</li>
     <li>Apply <code>InvokeOption</code>s cumulatively.</li>
     <li><code>binding.BuildRequest</code> assembles the <code>*http.Request</code> (path placeholders, query, headers, body).</li>
     <li>Correlation headers are injected from <code>AppContext.ID()</code>: <code>ThreadIDHeader</code> and <code>RequestIDHeader</code> both carry the same value (the codebase has a single per-request identifier).</li>
@@ -716,7 +716,7 @@ ctx.Set("idp.password", runtimePass)
   <p><strong>Observation.</strong> <code>obs.AuthProvider</code> carries the provider name on every slog record when auth is active.</p>
 
   <h3>TLS + connection pool</h3>
-  <p>Each per-service <code>http.Transport</code> is built once at boot from the cascaded <code>tls:</code> and <code>pool:</code> blocks. Service entries override defaults field by field; framework defaults fill any remaining gap.</p>
+  <p>Each per-service <code>http.Transport</code> is built once when the service is constructed — at boot for YAML services, at registration time for ones added via <code>RegisterIfAbsent</code> — from the cascaded <code>tls:</code> and <code>pool:</code> blocks. Service entries override defaults field by field; framework defaults fill any remaining gap.</p>
 <pre><code>httpClient:
   defaults:
     tls:
@@ -756,7 +756,7 @@ ctx.Set("idp.password", runtimePass)
     </tbody>
   </table>
   <p>Operators may also list explicit cipher names (any value in the framework's <code>explicitCipherNames</code> map). Unknown names abort the boot.</p>
-  <p><strong>mTLS.</strong> Set <code>clientCertFile</code> and <code>clientKeyFile</code> (both required) to a PEM-encoded cert/key pair on disk. The loader runs once at boot; vault-rotated certs use the per-call <code>WithClientCert(tls.Certificate)</code> option, which builds an ephemeral cloned transport for the single call without polluting the service's pool.</p>
+  <p><strong>mTLS.</strong> Set <code>clientCertFile</code> and <code>clientKeyFile</code> (both required) to a PEM-encoded cert/key pair on disk. The loader runs once when the service is constructed (boot or runtime registration); a per-call certificate is a separate axis — vault-rotated certs use the <code>WithClientCert(tls.Certificate)</code> option, which builds an ephemeral cloned transport for the single call without polluting the service's pool. (Registering a new service config and handing one call its own certificate are different operations: the former wires an upstream, the latter overrides this one dial.)</p>
   <p><strong>Custom CA bundle.</strong> Set <code>caBundle</code> to a PEM file path; the bundle <strong>replaces</strong> (does not merge with) the system roots.</p>
   <p><strong>Pool tuning.</strong> Service overrides flow into <code>http.Transport</code> directly. Use <code>maxConnsPerHost</code> to match upstream-imposed limits; <code>disableKeepAlives: true</code> is the escape hatch for backends that misbehave under connection reuse.</p>
 
@@ -884,7 +884,7 @@ for ev := range resp.Events {
 
   <p><strong>Auto-redaction.</strong> The framework automatically adds <code>signatureHeader</code> and <code>keyIdHeader</code> (when set) to the per-service redaction policy — the values are redacted in slog observations but transmitted untouched on the wire. The redaction cascade is union-only; operators cannot un-redact.</p>
 
-  <p><strong>Per-call override:</strong> none. Signing is part of the API contract; change the YAML and reboot.</p>
+  <p><strong>Per-call override:</strong> none. A service's signing policy is part of its API contract and fixed for the service instance's lifetime — declare it in YAML, or in the <code>Config</code> you wire via <code>RegisterIfAbsent</code>; changing it means re-registering the service (or rebooting, for a YAML-declared one).</p>
 
   <h3>Composition pattern</h3>
   <p>Application handlers never depend on <code>*httpclient.HttpClient</code> directly. The DDD layering is:</p>
@@ -1020,9 +1020,47 @@ func (r VersionResolver) Resolve(ctx context.Context, service string) (string, e
     <li><strong>Migration scripts / CLI tools</strong> — a one-off binary that needs to target a specific endpoint without wiring a resolver.</li>
     <li><strong>Integration tests</strong> — pointing at an <code>httptest.Server</code> without constructing a resolver around it.</li>
   </ul>
-  <p>For these, the per-call <code>CallConfig.BaseURL</code> takes precedence over both the resolver and the YAML — the URL is used as-is for this call only; the next call goes back through the normal cascade. Webhook callbacks typically need to vary method and path too — set <code>CallConfig.Method</code> and <code>CallConfig.Path</code> alongside; per-customer credentials come through <code>CallConfig.InlineAuth</code>. For cross-cutting ambient routing (per-tenant, per-region, feature-flag-based) the resolver is still the right tool — it centralizes the decision and runs on every call without per-call wiring.</p>
+  <p>For these, the per-call <code>CallConfig.BaseURL</code> takes precedence over both the resolver and the YAML — the URL is used as-is for this call only; the next call goes back through the normal cascade. Webhook callbacks typically need to vary method and path too — set <code>CallConfig.Method</code> and <code>CallConfig.Path</code> alongside; per-customer credentials you <em>already hold</em> come through <code>CallConfig.InlineAuth</code> (a static Bearer / API key / Basic for that one call). When the customer's credentials must instead be <em>fetched</em> (an OAuth token endpoint per customer) and you want the token cached across calls, register the upstream once — see <strong>Runtime registration</strong> below. For cross-cutting ambient routing (per-tenant, per-region, feature-flag-based) the resolver is still the right tool — it centralizes the decision and runs on every call without per-call wiring.</p>
 
   <p><strong>Also out of scope.</strong> A refresh interface (the resolver owns its lifecycle) and framework-level memoization of resolver returns (the resolver decides what is cheap to recompute).</p>
+
+  <h3>Runtime registration — code-wired dynamic upstreams</h3>
+  <p>The <code>httpClient:</code> YAML block is the canonical way to declare upstreams known at boot. But some targets only become known <em>at runtime</em> — the classic case is a <strong>customer-supplied webhook</strong> whose callback URL <em>and</em> auth (a token endpoint + client credentials) arrive from your database when a customer signs up. For these, <code>*HttpClient</code> can be extended after construction with the very same config shapes the YAML decodes into:</p>
+  <ul>
+    <li><code>RegisterIfAbsent(cfg *httpclient.Config) error</code> — compile the services + auth providers in <code>cfg</code> and merge the ones not already present into the live client. <strong>Idempotent</strong>: a name already present (a YAML service or a prior registration) is left untouched, so a repeated call preserves the warm token cache and breaker state. Validates exactly as <code>New</code> does (the error surfaces here, at call time, not at boot) and merges all-or-nothing on failure.</li>
+    <li><code>Unregister(name string) bool</code> — remove a runtime-registered service, its breaker entries and — when the auth provider it used was itself runtime-registered and no surviving service references it — that provider (and its token cache). Returns <code>false</code> for an unknown or YAML-declared name (a boot upstream is never removable). In-flight calls finish against the old entry; no draining needed.</li>
+    <li><code>Count() int</code> and <code>Registered() []RegisteredService</code> — report <strong>only</strong> the runtime-registered services (YAML services are excluded), each with <code>RegisteredAt</code> + <code>LastUsedAt</code>, so you can program any purge policy.</li>
+  </ul>
+  <p>A merged service is indistinguishable from a YAML one on the <code>Call</code> path: it shares the same token cache, connection pool, circuit breaker, retry and signing. Register a customer once; every subsequent webhook reuses the warm token (the <code>credentials-exchange</code> / <code>oauth2-client-credentials</code> provider fetches it through the normal middleware the first time and caches it) — a single <code>Call</code> per webhook, no manual two-step.</p>
+<pre><code>// once per customer — idempotent; safe to call on every webhook
+_ = deps.HttpClient.RegisterIfAbsent(&amp;httpclient.Config{
+    Services: map[string]httpclient.ServiceConfig{
+        "webhook:" + c.ID: {
+            BaseURL:   c.WebhookURL,
+            Auth:      &amp;httpclient.ServiceAuthConfig{Provider: "auth:" + c.ID},
+            Endpoints: map[string]httpclient.EndpointConfig{"notify": {Method: "POST", Path: "/events"}},
+        },
+    },
+    AuthProviders: map[string]httpclient.AuthProviderConfig{
+        "auth:" + c.ID: {
+            Type:              "credentials-exchange",
+            TokenEndpoint:     c.AuthURL,
+            RequestFields:     map[string]string{"client_id": c.ClientID, "client_secret": c.Secret, "grant_type": "client_credentials"},
+            ResponseTokenPath: "$.access_token",
+        },
+    },
+})
+
+// every webhook — one Call; token fetch + cache handled inside, by name
+resp, err := httpclient.Call[NotifyReq, NotifyResp](ctx, deps.HttpClient, "webhook:"+c.ID, "notify", payload)
+
+// purge — entirely the consumer's policy; the framework ships no TTL/eviction
+if deps.HttpClient.Count() &gt; 50 {
+    list := deps.HttpClient.Registered()
+    sort.Slice(list, func(i, j int) bool { return list[i].LastUsedAt.Before(list[j].LastUsedAt) })
+    for _, e := range list[:10] { deps.HttpClient.Unregister(e.Name) } // least-recently-used
+}</code></pre>
+  <p><strong>One client, one source.</strong> A <code>cfg</code> passed to <code>RegisterIfAbsent</code> is self-contained — a service may only reference an auth provider declared in the same <code>cfg</code> (validation enforces it). The boot YAML singleton and code-registered upstreams coexist on the same client; they are different entries, not a double-load. <strong>A different axis from the per-call <code>With*</code> options.</strong> <code>RegisterIfAbsent</code> wires a whole <em>service config</em> (the boot-YAML equivalent, just later); the per-call options — <code>WithConfig(CallConfig{…})</code>, <code>WithClientCert</code>, <code>WithExtraHeader</code>, <code>WithExtraQuery</code> — are untouched and still layer on top of <em>any</em> service per call, however it was wired. Registering a customer's webhook upstream and handing one dial its own certificate / header / query are orthogonal: reach for registration when a new upstream appears, for a <code>With*</code> option when a single call needs to deviate. <strong>Lifecycle is yours.</strong> A runtime registry grows unbounded unless you prune it — that is the deliberate trade for boot-free dynamism, which is why <code>Count</code> / <code>Registered</code> / <code>Unregister</code> exist and no implicit TTL/LRU is imposed. Internally the registry is one atomically-swapped snapshot (copy-on-write), so the read path stays lock-free and a registration never disturbs an in-flight request or a warm provider.</p>
 
   <h3>Testing surface — <code>NewFake</code></h3>
   <p><code>httpclient.NewFake()</code> constructs an in-memory test harness wrapping a <code>*HttpClient</code>. The fake's <code>Client()</code> drops into any constructor parameter typed <code>*HttpClient</code> — production code does not change. The fake short-circuits the middleware chain (no retry, cache, breaker, auth, or transport runs), but the real <code>binding/</code> layer still validates the request struct's <code>http:"..."</code> tags and serializes / decodes bodies, so handler bugs around tag misuse surface in fake tests too.</p>

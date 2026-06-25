@@ -38,8 +38,8 @@ func TestNew_ValidConfig_BuildsServicePerEntry(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
-	if len(c.services) != 2 {
-		t.Fatalf("want 2 services, got %d", len(c.services))
+	if len(c.snap().services) != 2 {
+		t.Fatalf("want 2 services, got %d", len(c.snap().services))
 	}
 	if _, err := c.service("keycloak"); err != nil {
 		t.Errorf("service(keycloak): %v", err)
