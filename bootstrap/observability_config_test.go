@@ -59,6 +59,28 @@ func TestTracingProfileSamplerDefaults(t *testing.T) {
 	}
 }
 
+func TestTracingProfileInsecureDefaults(t *testing.T) {
+	dev := ObservabilityConfig{Tracing: TracingConfig{Enabled: true}}
+	dev.applyProfileDefaults(profileDev)
+	if dev.Tracing.Insecure == nil || !*dev.Tracing.Insecure {
+		t.Errorf("dev insecure = %v, want true (plaintext local collector)", dev.Tracing.Insecure)
+	}
+
+	prd := ObservabilityConfig{Tracing: TracingConfig{Enabled: true}}
+	prd.applyProfileDefaults("prd")
+	if prd.Tracing.Insecure == nil || *prd.Tracing.Insecure {
+		t.Errorf("prd insecure = %v, want false (TLS)", prd.Tracing.Insecure)
+	}
+
+	// Explicit insecure wins over the profile default.
+	no := false
+	exp := ObservabilityConfig{Tracing: TracingConfig{Enabled: true, Insecure: &no}}
+	exp.applyProfileDefaults(profileDev)
+	if exp.Tracing.Insecure == nil || *exp.Tracing.Insecure {
+		t.Errorf("explicit insecure=false overridden by dev default: %v", exp.Tracing.Insecure)
+	}
+}
+
 func TestTracingValidate(t *testing.T) {
 	ok := ObservabilityConfig{Tracing: TracingConfig{Enabled: true, Exporter: "otlp", Sampler: "always_on", Ratio: 0.5, Instrument: []string{"http", "pgx"}}}
 	if err := ok.validate(); err != nil {
@@ -104,5 +126,21 @@ func TestTracingResolve(t *testing.T) {
 	}
 	if !cfg2.Instrument[tracing.SubPgx] || cfg2.Instrument[tracing.SubMongo] {
 		t.Errorf("allowlist not honored: %+v", cfg2.Instrument)
+	}
+
+	// Insecure + headers thread through to the resolved Config.
+	yes := true
+	o3 := TracingConfig{Enabled: true, Insecure: &yes, Headers: map[string]string{"x-api-key": "k"}}
+	cfg3 := o3.Resolve("svc")
+	if !cfg3.Insecure {
+		t.Error("insecure not threaded into Config")
+	}
+	if cfg3.Headers["x-api-key"] != "k" {
+		t.Errorf("headers not threaded: %+v", cfg3.Headers)
+	}
+	// Nil insecure resolves to false (the profile default is applied earlier, in
+	// applyProfileDefaults, not here).
+	if (TracingConfig{Enabled: true}).Resolve("svc").Insecure {
+		t.Error("nil insecure should resolve to false")
 	}
 }

@@ -16,11 +16,16 @@ with `1.0.0`.
 - **Distributed tracing (OpenTelemetry).** New opt-in `observability.tracing`
   block wires OTel across the framework; default off installs the no-op tracer
   so a service that does not declare it pays essentially nothing. Knobs:
-  `enabled`, `exporter` (`otlp`|`stdout` debug-only|`none`), `endpoint`, `sampler`
+  `enabled`, `exporter` (`otlp`|`stdout` debug-only|`none`), `endpoint`,
+  `insecure` (plaintext OTLP/gRPC; profile default dev→`true`, else→`false` for
+  TLS so a managed collector is reachable), `headers` (added to every OTLP
+  export — the slot for a managed collector's auth token), `sampler`
   (`always_on`|`always_off`|`traceratio`|`parentbased_traceratio`; profile
   default dev→`always_on`, else→`parentbased_traceratio`), `ratio`,
   `serviceName` (defaults to `service`), and a per-subsystem `instrument`
-  allowlist (`http`, `pgx`, `mongo`, `kafka`, `httpclient`). The synchronous
+  allowlist (`http`, `pgx`, `mongo`, `kafka`, `httpclient`). The OTLP resource
+  merges `resource.Default()`, so `OTEL_RESOURCE_ATTRIBUTES` and host/SDK
+  attributes reach the collector. The synchronous
   path is traced end to end — inbound server span → the business
   `dispatch <Command/Query>` span (inherited identically by Auto, manual, REST
   and GraphQL since all funnel through `pipeline.Dispatch`) → pgx / mongo /

@@ -19,6 +19,8 @@
     enabled: true
     exporter: otlp          # otlp | stdout (debug-only) | none (none = propagate traceparent, export nothing)
     endpoint: "${OTEL_EXPORTER_OTLP_ENDPOINT:localhost:4317}"
+    insecure: true          # plaintext OTLP/gRPC; profile default dev=true / else=false (TLS)
+    headers: { x-api-key: "${OTEL_COLLECTOR_KEY:}" }   # added to every OTLP export (managed-collector auth); empty = none
     sampler: parentbased_traceratio   # dev default always_on; else this
     ratio: 0.1              # keep fraction for the *traceratio samplers
     serviceName: "${service}"         # defaults to the top-level service identity
@@ -30,6 +32,14 @@
         <code>stdout</code> prints them to the terminal (debug-only — see the note below);
         <code>none</code> records and propagates the <code>traceparent</code> to downstreams but
         exports nothing (a middle service with no collector of its own yet).</li>
+    <li><strong><code>insecure</code></strong> — disables TLS on the OTLP/gRPC connection (plaintext).
+        Profile-aware default: <code>true</code> in <code>dev</code> (a local sidecar collector such as
+        Jaeger speaks plaintext), <code>false</code> elsewhere (a managed collector — Honeycomb, Grafana
+        Cloud Tempo, … — requires TLS). An explicit value wins. Read only for <code>exporter: otlp</code>.</li>
+    <li><strong><code>headers</code></strong> — a map added to every OTLP export request, the slot for a
+        managed collector's auth token (e.g. <code>x-api-key</code> / <code>x-honeycomb-team</code>).
+        Values support <code>${VAR:default}</code> substitution; empty sends none. Read only for
+        <code>exporter: otlp</code>.</li>
     <li><strong><code>sampler</code></strong> — <code>always_on</code> / <code>always_off</code> /
         <code>traceratio</code> / <code>parentbased_traceratio</code>. The profile default is
         <code>always_on</code> in <code>dev</code> and <code>parentbased_traceratio</code> elsewhere.

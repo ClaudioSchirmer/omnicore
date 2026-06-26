@@ -118,6 +118,25 @@ func TestSetupOTLPExporterLazyConnect(t *testing.T) {
 	}
 }
 
+func TestSetupOTLPInsecureAndHeaders(t *testing.T) {
+	// Insecure (plaintext) + custom headers (a managed collector's auth token)
+	// must not break construction — the gRPC exporter still dials lazily. Covers
+	// the two conditional exporter options.
+	p, err := Setup(context.Background(), enabled(func(c *Config) {
+		c.Exporter = ExporterOTLP
+		c.Endpoint = "localhost:4317"
+		c.Sampler = SamplerAlwaysOn
+		c.Insecure = true
+		c.Headers = map[string]string{"x-api-key": "secret"}
+	}))
+	if err != nil {
+		t.Fatalf("otlp setup with insecure+headers: %v", err)
+	}
+	if err := p.Shutdown(context.Background()); err != nil {
+		t.Fatalf("shutdown: %v", err)
+	}
+}
+
 func TestSetupStdoutExporter(t *testing.T) {
 	p, err := Setup(context.Background(), enabled(func(c *Config) {
 		c.Exporter = ExporterStdout

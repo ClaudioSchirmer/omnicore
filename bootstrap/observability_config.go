@@ -29,6 +29,17 @@ type TracingConfig struct {
 	// substitution. Defaults to localhost:4317. Read only for exporter otlp.
 	Endpoint string `yaml:"endpoint"`
 
+	// Insecure disables TLS on the OTLP/gRPC export (plaintext gRPC).
+	// Profile-aware default: dev → true (a local sidecar collector speaks
+	// plaintext), any other profile → false (a managed collector needs TLS). An
+	// explicit yaml value wins. Read only for exporter otlp.
+	Insecure *bool `yaml:"insecure"`
+
+	// Headers are attached to every OTLP export request — the slot for a managed
+	// collector's auth token (e.g. x-honeycomb-team). Supports ${VAR:default}
+	// substitution on the values; empty sends none. Read only for exporter otlp.
+	Headers map[string]string `yaml:"headers"`
+
 	// Sampler is the head-based strategy. Profile-aware default: dev →
 	// always_on, any other profile → parentbased_traceratio.
 	Sampler string `yaml:"sampler"`
@@ -66,21 +77,31 @@ func (o *ObservabilityConfig) applyDefaults() {
 	}
 }
 
-// applyProfileDefaults resolves the sampler default, which depends on the
-// runtime profile: dev favors always_on (see everything while developing); any
-// other profile favors parentbased_traceratio (the keep/drop decision is taken
-// once at the edge so a distributed trace is never split). An explicit yaml
-// value wins. Runs after Validate, like Migrations/Mongo.Rebuild autoRun, so
-// validate tolerates an empty sampler.
+// applyProfileDefaults resolves the profile-dependent defaults, each with an
+// explicit-yaml-wins override:
+//   - Sampler: dev favors always_on (see everything while developing); any other
+//     profile favors parentbased_traceratio (the keep/drop decision is taken once
+//     at the edge so a distributed trace is never split).
+//   - Insecure: dev favors plaintext gRPC (a local sidecar collector); any other
+//     profile favors TLS (false), as a managed collector requires.
+//
+// Runs after Validate, like Migrations/Mongo.Rebuild autoRun, so validate
+// tolerates an empty sampler.
 func (o *ObservabilityConfig) applyProfileDefaults(profile string) {
 	t := &o.Tracing
-	if !t.Enabled || t.Sampler != "" {
+	if !t.Enabled {
 		return
 	}
-	if profile == profileDev {
-		t.Sampler = string(tracing.SamplerAlwaysOn)
-	} else {
-		t.Sampler = string(tracing.SamplerParentBasedTraceRatio)
+	dev := profile == profileDev
+	if t.Sampler == "" {
+		if dev {
+			t.Sampler = string(tracing.SamplerAlwaysOn)
+		} else {
+			t.Sampler = string(tracing.SamplerParentBasedTraceRatio)
+		}
+	}
+	if t.Insecure == nil {
+		t.Insecure = &dev
 	}
 }
 
@@ -141,10 +162,16 @@ func (t TracingConfig) Resolve(serviceName string) tracing.Config {
 			instr[tracing.Subsystem(tok)] = true
 		}
 	}
+	insecure := false
+	if t.Insecure != nil {
+		insecure = *t.Insecure
+	}
 	return tracing.Config{
 		Enabled:     t.Enabled,
 		Exporter:    tracing.Exporter(t.Exporter),
 		Endpoint:    t.Endpoint,
+		Insecure:    insecure,
+		Headers:     t.Headers,
 		Sampler:     tracing.Sampler(t.Sampler),
 		Ratio:       t.Ratio,
 		ServiceName: name,

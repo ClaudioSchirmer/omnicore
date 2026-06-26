@@ -1399,6 +1399,8 @@ observability:              # omitted block = tracing off (no-op tracer)
     enabled: false          # master switch; no SDK/exporter/propagation when off
     exporter: otlp          # otlp | stdout (debug-only) | none (propagate, don't export)
     endpoint: "${OTEL_EXPORTER_OTLP_ENDPOINT:localhost:4317}"
+    insecure: true          # plaintext OTLP/gRPC; profile default dev→true / else→false (TLS)
+    headers: { x-api-key: "${OTEL_COLLECTOR_KEY:}" }   # added to every OTLP export (managed-collector auth); empty → none
     sampler: parentbased_traceratio   # dev default always_on; else this
     ratio: 0.1              # keep fraction for the *traceratio samplers
     serviceName: "${service}"         # defaults to the top-level service identity

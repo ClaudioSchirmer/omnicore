@@ -93,6 +93,15 @@ type Config struct {
 	// Endpoint is the OTLP/gRPC collector address (host:port). Only read when
 	// Exporter == ExporterOTLP.
 	Endpoint string
+	// Insecure disables TLS on the OTLP/gRPC connection (plaintext gRPC). Only
+	// read when Exporter == ExporterOTLP. A local sidecar collector (Jaeger in
+	// dev) speaks plaintext; a remote managed collector (Honeycomb, Grafana
+	// Cloud Tempo, …) requires TLS, so this is false outside dev.
+	Insecure bool
+	// Headers are attached to every OTLP export request — the slot for a managed
+	// collector's auth token (e.g. "x-honeycomb-team"). Only read when
+	// Exporter == ExporterOTLP; nil/empty sends none.
+	Headers map[string]string
 
 	Sampler Sampler
 	// Ratio is the keep fraction (0..1) for the *traceratio samplers.

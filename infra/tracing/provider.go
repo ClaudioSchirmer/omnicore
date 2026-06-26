@@ -44,7 +44,18 @@ func Setup(ctx context.Context, cfg Config) (*Provider, error) {
 		return nil, err
 	}
 
-	res := resource.NewSchemaless(attribute.String("service.name", cfg.ServiceName))
+	// Merge with resource.Default() so the SDK/telemetry attributes AND any
+	// operator-supplied OTEL_RESOURCE_ATTRIBUTES / OTEL_SERVICE_NAME survive to
+	// the collector; the explicit service.name wins on the key (second arg to
+	// Merge). NewSchemaless alone would drop them, leaving a multi-env/multi-host
+	// deployment unable to filter traces by deployment.environment / host.
+	res, err := resource.Merge(
+		resource.Default(),
+		resource.NewSchemaless(attribute.String("service.name", cfg.ServiceName)),
+	)
+	if err != nil {
+		return nil, fmt.Errorf("tracing: resource: %w", err)
+	}
 
 	opts := []sdktrace.TracerProviderOption{
 		sdktrace.WithSampler(resolveSampler(cfg)),
@@ -53,10 +64,17 @@ func Setup(ctx context.Context, cfg Config) (*Provider, error) {
 
 	switch cfg.Exporter {
 	case ExporterOTLP:
-		exp, err := otlptracegrpc.New(ctx,
-			otlptracegrpc.WithEndpoint(cfg.Endpoint),
-			otlptracegrpc.WithInsecure(),
-		)
+		grpcOpts := []otlptracegrpc.Option{otlptracegrpc.WithEndpoint(cfg.Endpoint)}
+		if cfg.Insecure {
+			// Plaintext gRPC — a local sidecar collector (Jaeger in dev). TLS is
+			// used otherwise, as a managed collector requires.
+			grpcOpts = append(grpcOpts, otlptracegrpc.WithInsecure())
+		}
+		if len(cfg.Headers) > 0 {
+			// e.g. a managed collector's auth token header.
+			grpcOpts = append(grpcOpts, otlptracegrpc.WithHeaders(cfg.Headers))
+		}
+		exp, err := otlptracegrpc.New(ctx, grpcOpts...)
 		if err != nil {
 			return nil, fmt.Errorf("tracing: otlp exporter: %w", err)
 		}
