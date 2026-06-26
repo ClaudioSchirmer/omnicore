@@ -67,6 +67,7 @@ pwd: "${vault:secret/data/db#password}"                # delegated to a register
 
 http:
   addr: ":8080"                          # default ":8080"
+  requestTimeoutSeconds: 30              # inbound request deadline; unset → 30; 0 → disabled
 
 postgres:
   dsn: "${DATABASE_URL}"                 # MANDATORY — pgx v5 DSN for the write side

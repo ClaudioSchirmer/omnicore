@@ -15,6 +15,22 @@ func (ServiceUnavailableNotification) Semantic() domain.NotificationSemantic {
 	return domain.SemanticUnavailable
 }
 
+// RequestTimeoutNotification is emitted by pipeline.Run when a handler aborts
+// because the request's context deadline (http.requestTimeoutSeconds) elapsed:
+// pgx, mongo and outbound httpclient observe the cancellation and return
+// context.DeadlineExceeded, which Run maps to this notification so the request
+// surfaces as 504 Gateway Timeout instead of a generic 500. The server-side
+// budget protects framework resources — a pool connection or goroutine is
+// released the moment the deadline fires, rather than being held by a slow
+// request indefinitely.
+type RequestTimeoutNotification struct {
+	domain.ApplicationNotificationBase
+}
+
+func (RequestTimeoutNotification) Semantic() domain.NotificationSemantic {
+	return domain.SemanticGatewayTimeout
+}
+
 // MissingAuthorizationNotification is emitted by the auth middleware when the
 // Authorization header is absent or does not follow the `Bearer <token>`
 // shape — the client never presented a credential.

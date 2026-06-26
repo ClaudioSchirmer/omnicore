@@ -1,6 +1,7 @@
 package pipeline
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -116,6 +117,42 @@ func TestRun_HandlerReturnsRawError_IsException(t *testing.T) {
 	}
 	if !errors.Is(r.Err(), plain) {
 		t.Errorf("Err() = %v, want %v", r.Err(), plain)
+	}
+}
+
+func TestRun_DeadlineExceeded_IsTimeoutFailure(t *testing.T) {
+	p := silentPipeline(t)
+	ctx := configuration.NewAppContextWithRandomID(configuration.LangENG)
+
+	cases := map[string]error{
+		"direct":  context.DeadlineExceeded,
+		"wrapped": fmt.Errorf("query aborted: %w", context.DeadlineExceeded),
+	}
+	for name, retErr := range cases {
+		t.Run(name, func(t *testing.T) {
+			r := Run(p, ctx, func() (int, error) { return 0, retErr })
+
+			if !r.IsFailure() {
+				t.Fatalf("expected Failure on deadline, got state=%v", r.State())
+			}
+			if len(r.Notifications()) != 1 {
+				t.Fatalf("expected 1 context DTO, got %d", len(r.Notifications()))
+			}
+			dto := r.Notifications()[0]
+			if dto.Context != "Request" {
+				t.Errorf("context = %q, want %q", dto.Context, "Request")
+			}
+			if len(dto.Messages) != 1 {
+				t.Fatalf("expected 1 message, got %d", len(dto.Messages))
+			}
+			msg := dto.Messages[0]
+			if msg.NotificationKey != "RequestTimeoutNotification" {
+				t.Errorf("NotificationKey = %q, want RequestTimeoutNotification", msg.NotificationKey)
+			}
+			if msg.Semantic != domain.SemanticGatewayTimeout {
+				t.Errorf("Semantic = %v, want SemanticGatewayTimeout", msg.Semantic)
+			}
+		})
 	}
 }
 

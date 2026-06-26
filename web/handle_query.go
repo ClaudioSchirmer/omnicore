@@ -133,7 +133,7 @@ func HandleQueryWithParams[TReq HasToParamsQuery[TQ], TQ queries.FindByParamsQue
 			return respondSchemaViolation[queries.Page](c, pipe, bad)
 		}
 		appCtx := AppContext(c)
-		appCtx.SetParent(c)
+		appCtx.SetParentIfAbsent(c)
 		q := req.ToQuery(crit)
 		result := pipeline.Dispatch(pipe, appCtx, q, h)
 		if result.IsSuccess() {
@@ -185,7 +185,7 @@ func HandleQueryByID[TReq HasToIDQuery[TQ], TQ queries.FindByIDQuery, R any](
 			return respondSchemaViolation[map[string]any](c, pipe, bad)
 		}
 		appCtx := AppContext(c)
-		appCtx.SetParent(c)
+		appCtx.SetParentIfAbsent(c)
 		q := req.ToQuery()
 		q.SetPathID(c.Params("id"))
 		result := pipeline.Dispatch(pipe, appCtx, q, h)

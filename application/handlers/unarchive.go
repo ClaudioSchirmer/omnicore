@@ -9,11 +9,13 @@ import (
 
 // UnarchiveCommandHandler is asymmetric to the other Auto handlers in the
 // load path (not in the wire-up): instead of calling FindByID (which filters
-// WHERE deleted_at IS NULL), it looks for an ArchivedFinder implementation
-// on the Repository to hydrate the archived aggregate (needed so the cascade
-// SQL sees children typeNames via root.AllAggregateItems()). When the
-// Repository does not implement ArchivedFinder, the handler falls back to
-// Repo.New() + SetID for flat aggregates without children.
+// WHERE deleted_at IS NULL), it hydrates the archived aggregate via
+// persistence.LoadArchivedForWrite — the request-ctx-bound ScopedArchivedReader
+// when the repo provides it (so the load honors http.requestTimeoutSeconds),
+// else the ctx-less domain.ArchivedFinder. The archived hydration is needed so
+// the cascade SQL sees children typeNames via root.AllAggregateItems(). When
+// the Repository provides neither, the handler falls back to Repo.New() + SetID
+// for flat aggregates without children.
 //
 // cmd.ApplyTo runs AFTER the entity is hydrated and BEFORE GetUnarchivable
 // so the Command can translate the request *AppContext into business-named
@@ -44,8 +46,7 @@ func (h *UnarchiveCommandHandler[T, Cmd, TResult]) Handle(ctx *configuration.App
 	id := domain.NewID(cmd.PathID())
 
 	var sample T
-	if finder, ok := any(h.Repo).(domain.ArchivedFinder[T]); ok {
-		loaded, err := finder.FindArchivedByID(id)
+	if loaded, found, err := persistence.LoadArchivedForWrite(h.Repo, ctx, id); found {
 		if err != nil {
 			return zero, err
 		}

@@ -7,7 +7,10 @@ import (
 	"github.com/ClaudioSchirmer/omnicore/domain"
 )
 
-// UpdateCommandHandler runs Repo.FindByID + domain.GetUpdatable(current, ApplyTo, …)
+// UpdateCommandHandler runs persistence.LoadForWrite (the request-ctx-bound
+// load — the SELECT honors http.requestTimeoutSeconds when the repo provides
+// ScopedReader, else the ctx-less domain.Reader.FindByID) +
+// domain.GetUpdatable(current, ApplyTo, …)
 // + Repo.Update(ctx, updatable, opts...) + cmd.FromEntity(ctx, current). PUT-shaped
 // (full replace) — embeds pipeline.FullBody, which makes the Fiber wrapper require
 // ALL exported fields of Cmd present in the body JSON before dispatch.
@@ -38,7 +41,7 @@ type UpdateCommandHandler[T domain.Entity, Cmd pipeline.UpdateCommand[T, TResult
 func (h *UpdateCommandHandler[T, Cmd, TResult]) Handle(ctx *configuration.AppContext, cmd Cmd) (TResult, error) {
 	var zero TResult
 	RequirePathID(cmd.PathID(), "UpdateCommandHandler")
-	current, err := h.Repo.FindByID(domain.NewID(cmd.PathID()))
+	current, err := persistence.LoadForWrite(h.Repo, ctx, domain.NewID(cmd.PathID()))
 	if err != nil {
 		return zero, err
 	}

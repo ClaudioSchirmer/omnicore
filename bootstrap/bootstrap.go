@@ -431,7 +431,14 @@ func buildApp(deps Deps, wiring Wiring) (*fiber.App, error) {
 	// The inbound server span is gated by the tracing `http` instrument toggle;
 	// off (or tracing disabled) → the middleware builds only the AppContext.
 	traceHTTP := deps.Config.Observability.Tracing.Resolve(deps.Config.Service).Instruments(tracing.SubHTTP)
-	app.Use(fwweb.AppContextMiddleware(fwweb.WithServerSpanTracing(traceHTTP)))
+	reqTimeoutSecs := FrameworkDefaultRequestTimeoutSeconds
+	if deps.Config.HTTP.RequestTimeoutSeconds != nil {
+		reqTimeoutSecs = *deps.Config.HTTP.RequestTimeoutSeconds
+	}
+	app.Use(fwweb.AppContextMiddleware(
+		fwweb.WithServerSpanTracing(traceHTTP),
+		fwweb.WithRequestTimeout(time.Duration(reqTimeoutSecs)*time.Second),
+	))
 
 	uiPath := deps.Config.OpenAPI.UIPath
 	if uiPath == "" {

@@ -349,8 +349,11 @@ Domain declares pure ports (NO ctx, actor, or hooks); application adds the reque
 | `domain.Writer` | domain | `Insert(Insertable) (ID, error)` / `Update` / `Archive` / `Unarchive` / `Delete` (non-generic; ValidEntity carries the source) |
 | `domain.Repository[T]` | domain | `Reader[T] + Writer` |
 | `persistence.ScopedRepository[T]` | application | `Reader[T]` + `Scope(ctx *AppContext, opts ...WriteOption[T]) domain.Writer` |
+| `persistence.ScopedReaderProvider[T]` / `ScopedArchivedReaderProvider[T]` | application | optional `ScopedReader(ctx) domain.Reader[T]` / `ScopedArchivedReader(ctx) domain.ArchivedFinder[T]` — the read-side mirror of `Scope` |
 
 Reads stay direct on the handle; writes go through `Scope`, which binds ctx (cancellation → pgx, actor → audit) + in-TX hooks and returns a pure `domain.Writer`. `infra.BaseRepository[T]` implements `Scope`; the consumer's repo (embed + a `FindByID` loader) satisfies `ScopedRepository[T]` with no extra code. The request ctx is `persistence.RequestContext` (embeds `context.Context` + `ID()`/`ActorSubject()`/`ActorIssuer()`/`ActorClaims()`), satisfied by `*configuration.AppContext`. There is no `domain.Context`.
+
+The ctx-less `domain.Reader[T].FindByID` carries no context by design, so a direct call loads on `context.Background()`. The write-command pre-load (Update/Archive/Delete via `persistence.LoadForWrite`, Unarchive via `LoadArchivedForWrite`) instead probes the optional `ScopedReaderProvider[T]` / `ScopedArchivedReaderProvider[T]` (mirroring how `domain.ArchivedFinder` is probed) and, when present, loads through a request-ctx-bound reader — so `http.requestTimeoutSeconds` and cancellation reach the load `SELECT`. `infra.BaseAggregateRepository[T]` implements both (canonical path covered with no consumer code); a hand-rolled repo that implements neither degrades to the ctx-less load. The domain ports keep their pure ctx-less signatures — the ctx binds in application/infra, exactly as `Scope(ctx)` binds writes.
 
 Lifecycle-hook contract — one sealed marker, two hook types, two providers:
 
@@ -493,7 +496,7 @@ users.Post("/", fwweb.HandleCommandWithBody(d.Pipeline,
 
 ### UnarchiveCommandHandler asymmetry
 
-`UnarchiveCommandHandler` does NOT call `FindByID` (record is archived; `FindByID` filters `WHERE deleted_at IS NULL`). It gets an empty sample via `Repo.New()`, sets the path ID, passes to `GetUnarchivable`; archived-children cascade is direct SQL in `aggregate_persister.unarchiveAggregate`. The asymmetry is internal — `routes.go` wiring is identical. `Repo.New()` is part of `domain.Reader[T]`; `BaseRepository[T]` users inject `NewEntity func() T`.
+`UnarchiveCommandHandler` does NOT call `FindByID` (record is archived; `FindByID` filters `WHERE deleted_at IS NULL`). It hydrates the archived aggregate via `persistence.LoadArchivedForWrite` — the request-ctx-bound `ScopedArchivedReader` when the repo provides it, else the ctx-less `domain.ArchivedFinder[T]` — so the cascade SQL sees the children typeNames; only when the repo provides neither does it fall back to an empty `Repo.New()` sample + path ID (flat aggregate without children). It then passes to `GetUnarchivable`; archived-children cascade is direct SQL in `aggregate_persister.unarchiveAggregate`. The asymmetry is internal — `routes.go` wiring is identical. `Repo.New()` is part of `domain.Reader[T]`; `BaseRepository[T]` users inject `NewEntity func() T`.
 
 ### Manual path (cross-service, side effects)
 
@@ -925,6 +928,7 @@ Each `Notification` declares a **Semantic**; the framework maps it to an HTTP st
 | `SemanticUnauthorized` | 401 Unauthorized |
 | `SemanticPayloadTooLarge` | 413 Content Too Large |
 | `SemanticUnavailable` | 503 Service Unavailable |
+| `SemanticGatewayTimeout` | 504 Gateway Timeout (request exceeded `http.requestTimeoutSeconds`) |
 | `SemanticInternal` | 500 Internal Server Error |
 
 `statusFromNotifications` picks the first non-Validation Semantic; all-Validation falls back to 422. The enum is transport-agnostic. `MessageDTO.Semantic` + wire `ErrorMessage.Semantic` carry the typed identity so clients branch UI without parsing the HTTP code.
@@ -1342,6 +1346,7 @@ Substitution forms inside `${...}` (single pass, no recursion):
 service: my-service
 http:
   addr: ":8080"
+  requestTimeoutSeconds: 30   # inbound request deadline; unset → 30; 0 → disabled
 postgres:
   dsn: "${DATABASE_URL:postgres://localhost:5432/mydb}"
 mongo:
@@ -1866,7 +1871,7 @@ The framework reads exactly four process env vars; everything else in `${VAR:def
 
 ### `Run` behavior
 
-JSON slog on stdout; `signal.NotifyContext(SIGINT, SIGTERM)`; connect Postgres+Mongo; `validateWiring` (needs Features or BeforeServe); migrations `Up` if `Migrations.AutoRun` (before SyncEngine); `collectViews` rejecting name collisions; Fiber app with `ErrorHandler: fwweb.ErrorHandler` (404/405/413 specialized, else 500; stack stays on the log); middlewares `Recover` → request logger → `AppContextMiddleware` → `AuthMiddleware` (jwt only); auto `GET /health`; mount each feature in order; OpenAPI registered before auth/health when `Wiring.OpenAPI != nil`; SyncEngine starts only if views collected; 10s HTTP drain then `OnShutdown`.
+JSON slog on stdout; `signal.NotifyContext(SIGINT, SIGTERM)`; connect Postgres+Mongo; `validateWiring` (needs Features or BeforeServe); migrations `Up` if `Migrations.AutoRun` (before SyncEngine); `collectViews` rejecting name collisions; Fiber app with `ErrorHandler: fwweb.ErrorHandler` (404/405/413 specialized, else 500; stack stays on the log); middlewares `Recover` → request logger → `AppContextMiddleware` (owns the per-request cancellation parent; with `http.requestTimeoutSeconds` it wraps the request context in a deadline so pgx/mongo/httpclient abort and release resources when it elapses, surfaced as 504) → `AuthMiddleware` (jwt only); auto `GET /health`; mount each feature in order; OpenAPI registered before auth/health when `Wiring.OpenAPI != nil`; SyncEngine starts only if views collected; 10s HTTP drain then `OnShutdown`.
 
 ### Canonical main.go
 

@@ -67,6 +67,7 @@ func (corePTBR) Translations() map[string]string {
 		"InvalidLanguageDomainNotification": "Idioma não é válido.",
 		"ContextNotInitializedNotification": "Contexto não foi inicializado.",
 		"ServiceUnavailableNotification":    "Serviço indisponível.",
+		"RequestTimeoutNotification":        "A requisição excedeu o tempo limite.",
 
 		// Auth
 		"MissingAuthorizationNotification": "Cabeçalho de autorização ausente ou em formato inválido.",

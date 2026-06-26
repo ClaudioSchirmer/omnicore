@@ -59,7 +59,7 @@ func HandleCommandByID[
 		cmd := TCmd(new(T))
 		cmd.SetPathID(c.Params("id"))
 		appCtx := AppContext(c)
-		appCtx.SetParent(c)
+		appCtx.SetParentIfAbsent(c)
 		result := pipeline.Dispatch(pipe, appCtx, cmd, h)
 		return respondWithProjection(c, result, successStatus, responseProjection)
 	}

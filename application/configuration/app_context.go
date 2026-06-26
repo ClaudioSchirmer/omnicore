@@ -207,6 +207,20 @@ func (c *AppContext) SetParent(ctx context.Context) {
 	c.mu.Unlock()
 }
 
+// SetParentIfAbsent injects the cancellation context only when none is set yet,
+// leaving an already-wired parent untouched. The web AppContextMiddleware owns
+// the parent in production (wrapping it with the request deadline); the HTTP
+// wrappers call this so a bypassed-middleware path (tests, manual mounts) still
+// gets request cancellation without clobbering the middleware's deadline-bearing
+// parent.
+func (c *AppContext) SetParentIfAbsent(ctx context.Context) {
+	c.mu.Lock()
+	if c.parent == nil {
+		c.parent = ctx
+	}
+	c.mu.Unlock()
+}
+
 func (c *AppContext) parentCtx() context.Context {
 	c.mu.RLock()
 	defer c.mu.RUnlock()

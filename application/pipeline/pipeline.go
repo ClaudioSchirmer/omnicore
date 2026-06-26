@@ -56,6 +56,13 @@ func Run[T any](p *Pipeline, ctx *configuration.AppContext, fn func() (T, error)
 		return Success(v)
 	}
 
+	// A blown request deadline (http.requestTimeoutSeconds) reaches here as
+	// context.DeadlineExceeded from pgx/mongo/httpclient. Map it to a 504 before
+	// the carrier/exception branches so a timeout never masquerades as a 500.
+	if errors.Is(err, context.DeadlineExceeded) {
+		return requestTimedOut[T](p, ctx)
+	}
+
 	var carrier domain.NotificationCarrier
 	if errors.As(err, &carrier) {
 		p.logFailure(ctx, err, carrier)
@@ -102,6 +109,20 @@ func DispatchAll[TReq Request, TRes any](
 		out = append(out, Dispatch(p, ctx, req, h))
 	}
 	return out
+}
+
+func requestTimedOut[T any](p *Pipeline, ctx *configuration.AppContext) Result[T] {
+	p.logger.WarnContext(ctx, "pipeline request timeout",
+		slog.String("threadId", ctx.ID().String()),
+	)
+	nctx := domain.NewNotificationContext("Request")
+	nctx.AddNotificationMessage(domain.NotificationMessage{
+		FieldName:    "request",
+		Notification: notifications.RequestTimeoutNotification{},
+	})
+	dtos := notifications.ToContextDTOs(p.translator, ctx.Language(),
+		[]*domain.NotificationContext{nctx})
+	return Failure[T](dtos)
 }
 
 func contextNotInitialized[T any](p *Pipeline) Result[T] {

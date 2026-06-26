@@ -7,6 +7,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/ClaudioSchirmer/omnicore/application/configuration"
 	"github.com/ClaudioSchirmer/omnicore/domain"
 	"github.com/ClaudioSchirmer/omnicore/infra/criteria"
 )
@@ -146,4 +147,46 @@ func (r *BaseAggregateRepository[T]) FindByID(id domain.ID) (T, error) {
 // unarchive on the children.
 func (r *BaseAggregateRepository[T]) FindArchivedByID(id domain.ID) (T, error) {
 	return r.Loader.FindOne(context.Background(), criteria.ByID(id).OnlyArchived())
+}
+
+// ScopedReader binds the request ctx to this repository's loads, satisfying
+// persistence.ScopedReaderProvider[T]. The returned domain.Reader[T] keeps the
+// pure ctx-less signature; its FindByID runs the same engine FindByID does, but
+// on the request ctx so http.requestTimeoutSeconds + cancellation reach the
+// load SELECT (the ctx-less FindByID above uses context.Background()). The
+// write-command Auto handlers load through this when present.
+func (r *BaseAggregateRepository[T]) ScopedReader(ctx *configuration.AppContext) domain.Reader[T] {
+	return boundReader[T]{loader: r.Loader, newEntity: r.NewEntity, ctx: ctx}
+}
+
+// ScopedArchivedReader is the OnlyArchived twin of ScopedReader for the
+// unarchive path, satisfying persistence.ScopedArchivedReaderProvider[T].
+func (r *BaseAggregateRepository[T]) ScopedArchivedReader(ctx *configuration.AppContext) domain.ArchivedFinder[T] {
+	return boundReader[T]{loader: r.Loader, newEntity: r.NewEntity, ctx: ctx}
+}
+
+// boundReader is the request-scoped read handle ScopedReader /
+// ScopedArchivedReader return. It closes over the bound ctx and delegates to the
+// AggregateLoader — the pure domain read signatures (FindByID / FindArchivedByID
+// / New) are preserved, the ctx never appearing in them, mirroring how
+// boundWriter binds the ctx for writes.
+type boundReader[T domain.Entity] struct {
+	loader    *AggregateLoader[T]
+	newEntity func() T
+	ctx       *configuration.AppContext
+}
+
+func (b boundReader[T]) FindByID(id domain.ID) (T, error) {
+	return b.loader.FindOne(b.ctx, criteria.ByID(id))
+}
+
+func (b boundReader[T]) FindArchivedByID(id domain.ID) (T, error) {
+	return b.loader.FindOne(b.ctx, criteria.ByID(id).OnlyArchived())
+}
+
+func (b boundReader[T]) New() T {
+	if b.newEntity == nil {
+		panic("BaseAggregateRepository: NewEntity factory not configured — set the newEntity factory on NewBaseAggregateRepository")
+	}
+	return b.newEntity()
 }

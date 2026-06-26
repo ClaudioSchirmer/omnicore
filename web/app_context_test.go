@@ -3,11 +3,52 @@ package web
 import (
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"github.com/ClaudioSchirmer/omnicore/application/configuration"
 	"github.com/gofiber/fiber/v3"
 	"github.com/google/uuid"
 )
+
+func TestAppContextMiddleware_RequestTimeoutSetsDeadline(t *testing.T) {
+	app := fiber.New()
+	app.Use(AppContextMiddleware(WithRequestTimeout(5 * time.Second)))
+	app.Get("/test", func(c fiber.Ctx) error {
+		if _, ok := AppContext(c).Deadline(); !ok {
+			return c.SendStatus(500)
+		}
+		return c.SendStatus(200)
+	})
+
+	resp, err := app.Test(httptest.NewRequest("GET", "/test", nil))
+	if err != nil {
+		t.Fatalf("app.Test: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != 200 {
+		t.Fatalf("expected 200 (deadline present on AppContext), got %d", resp.StatusCode)
+	}
+}
+
+func TestAppContextMiddleware_NoTimeoutNoDeadline(t *testing.T) {
+	app := fiber.New()
+	app.Use(AppContextMiddleware()) // no WithRequestTimeout → deadline disabled
+	app.Get("/test", func(c fiber.Ctx) error {
+		if _, ok := AppContext(c).Deadline(); ok {
+			return c.SendStatus(500)
+		}
+		return c.SendStatus(200)
+	})
+
+	resp, err := app.Test(httptest.NewRequest("GET", "/test", nil))
+	if err != nil {
+		t.Fatalf("app.Test: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != 200 {
+		t.Fatalf("expected 200 (no deadline), got %d", resp.StatusCode)
+	}
+}
 
 func TestAppContextMiddleware_NoHeaders_GeneratesUUID(t *testing.T) {
 	app := fiber.New()

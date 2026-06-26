@@ -46,6 +46,7 @@ func TestKernelNotifications_Semantic(t *testing.T) {
 		{"RouteNotFound", RouteNotFoundNotification{}, domain.SemanticNotFound},
 		{"MethodNotAllowed", MethodNotAllowedNotification{}, domain.SemanticMethodNotAllowed},
 		{"PayloadTooLarge", PayloadTooLargeNotification{}, domain.SemanticPayloadTooLarge},
+		{"RequestTimeout", RequestTimeoutNotification{}, domain.SemanticGatewayTimeout},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
