@@ -47,6 +47,17 @@
         decision is honored, so a distributed trace is never split in half.</li>
     <li><strong><code>ratio</code></strong> — the keep fraction (0–1) for the <code>*traceratio</code>
         samplers. <code>0.1</code> = 10% of traces are recorded.</li>
+    <li><strong><code>serviceName</code></strong> — the <code>service.name</code> shown in the collector;
+        defaults to the top-level <code>service</code> identity. This is the one resource attribute the
+        framework owns. The <strong>other</strong> resource attributes are <em>not</em> in this YAML: the
+        OTLP resource merges <code>resource.Default()</code>, so the OTel SDK's standard
+        <code>OTEL_RESOURCE_ATTRIBUTES</code> env var (e.g.
+        <code>deployment.environment=prod,service.version=1.4.2</code>) plus host/SDK attributes flow
+        through to the collector. They live in an env var rather than the versioned YAML because they
+        vary per deploy/instance and the whole OTel toolchain (k8s operators, the Collector,
+        auto-instrumentation) already reads that variable — the framework defers to the SDK's standard
+        instead of re-wrapping it. The explicit <code>serviceName</code> still wins on the
+        <code>service.name</code> key.</li>
     <li><strong><code>instrument</code></strong> — the edge-subsystem allowlist (the full set today is in
         the table below). An empty list enables all; drop <code>pgx</code>/<code>mongo</code> on a
         high-QPS service to cut the per-query span volume.</li>
