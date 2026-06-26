@@ -157,9 +157,9 @@ func pruneExportNode(n *ExportNode, wirePrefix string, set map[string]bool, keep
 //
 //   - empty projection        → whole doc → every column survives
 //   - inclusion mode (any 1)  → a column survives iff its Go-path, or an ancestor
-//                               subtree path, is flagged 1
+//     subtree path, is flagged 1
 //   - exclusion mode (only 0) → every column survives except those flagged 0, or
-//                               under an ancestor flagged 0
+//     under an ancestor flagged 0
 func (p *ExportPlan) PruneToProjection(proj map[string]int) *ExportPlan {
 	if p == nil || p.Root == nil || !projectionNarrows(proj) {
 		return p

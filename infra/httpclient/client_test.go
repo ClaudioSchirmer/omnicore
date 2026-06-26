@@ -103,9 +103,9 @@ func TestNew_TransportCarriesPoolDefaults(t *testing.T) {
 
 func TestNew_AppliesTimeoutCascade(t *testing.T) {
 	cases := []struct {
-		name             string
-		defaultsTimeout  Duration
-		serviceTimeout   Duration
+		name              string
+		defaultsTimeout   Duration
+		serviceTimeout    Duration
 		wantClientTimeout time.Duration
 	}{
 		{"defaults win when service omits", Duration(5 * time.Second), 0, 5 * time.Second},

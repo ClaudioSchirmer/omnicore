@@ -73,4 +73,3 @@ func TestGraphQLConfig_ValidateRejectsFrameworkRouteCollision(t *testing.T) {
 		t.Fatalf("expected framework-route collision error, got: %v", err)
 	}
 }
-

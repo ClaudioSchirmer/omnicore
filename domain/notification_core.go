@@ -86,9 +86,9 @@ type RecordNotFoundNotification struct{ DomainNotificationBase }
 
 // Kernel notification Semantic overrides — encapsulate the natural HTTP/transport
 // semantics in the notification itself, so no global registry is needed.
-func (RecordNotFoundNotification) Semantic() NotificationSemantic     { return SemanticNotFound }
-func (EntityIsNotActiveNotification) Semantic() NotificationSemantic  { return SemanticConflict }
-func (EntityAlreadyAddedNotification) Semantic() NotificationSemantic { return SemanticConflict }
+func (RecordNotFoundNotification) Semantic() NotificationSemantic      { return SemanticNotFound }
+func (EntityIsNotActiveNotification) Semantic() NotificationSemantic   { return SemanticConflict }
+func (EntityAlreadyAddedNotification) Semantic() NotificationSemantic  { return SemanticConflict }
 func (InsertNotAllowedNotification) Semantic() NotificationSemantic    { return SemanticForbidden }
 func (UpdateNotAllowedNotification) Semantic() NotificationSemantic    { return SemanticForbidden }
 func (DeleteNotAllowedNotification) Semantic() NotificationSemantic    { return SemanticForbidden }

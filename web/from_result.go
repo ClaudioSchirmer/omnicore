@@ -41,15 +41,15 @@ func RespondFromResult[T any](c fiber.Ctx, result pipeline.Result[T], successSta
 // canonical HTTP status code. A different transport (gRPC, GraphQL) would
 // build its own table from the same enum.
 var semanticToStatus = map[domain.NotificationSemantic]int{
-	domain.SemanticValidation:       fiber.StatusUnprocessableEntity, // 422
-	domain.SemanticNotFound:         fiber.StatusNotFound,            // 404
-	domain.SemanticConflict:         fiber.StatusConflict,            // 409
-	domain.SemanticForbidden:        fiber.StatusForbidden,           // 403
-	domain.SemanticUnauthorized:     fiber.StatusUnauthorized,        // 401
-	domain.SemanticUnavailable:      fiber.StatusServiceUnavailable,  // 503
-	domain.SemanticSchema:           fiber.StatusBadRequest,          // 400
-	domain.SemanticInternal:         fiber.StatusInternalServerError, // 500
-	domain.SemanticMethodNotAllowed: fiber.StatusMethodNotAllowed,    // 405
+	domain.SemanticValidation:       fiber.StatusUnprocessableEntity,   // 422
+	domain.SemanticNotFound:         fiber.StatusNotFound,              // 404
+	domain.SemanticConflict:         fiber.StatusConflict,              // 409
+	domain.SemanticForbidden:        fiber.StatusForbidden,             // 403
+	domain.SemanticUnauthorized:     fiber.StatusUnauthorized,          // 401
+	domain.SemanticUnavailable:      fiber.StatusServiceUnavailable,    // 503
+	domain.SemanticSchema:           fiber.StatusBadRequest,            // 400
+	domain.SemanticInternal:         fiber.StatusInternalServerError,   // 500
+	domain.SemanticMethodNotAllowed: fiber.StatusMethodNotAllowed,      // 405
 	domain.SemanticPayloadTooLarge:  fiber.StatusRequestEntityTooLarge, // 413
 }
 

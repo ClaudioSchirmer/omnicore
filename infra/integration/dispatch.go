@@ -25,13 +25,13 @@ import (
 type DispatchOption func(*dispatchOpts)
 
 type dispatchOpts struct {
-	tx            persistence.TxHandle
-	aggregateID   domain.ID
-	hasAggregate  bool
-	correlation   uuid.UUID
+	tx             persistence.TxHandle
+	aggregateID    domain.ID
+	hasAggregate   bool
+	correlation    uuid.UUID
 	hasCorrelation bool
-	causation     uuid.UUID
-	hasCausation  bool
+	causation      uuid.UUID
+	hasCausation   bool
 }
 
 // WithTx threads the in-flight pgx.Tx into the Dispatch call so the
@@ -141,17 +141,17 @@ func Dispatch(
 	}
 
 	row := dispatchRow{
-		EventID:       uuid.New(),
-		EventType:     entry.EventType,
-		Aggregate:     entry.Aggregate,
-		AggregateID:   o.aggregateID,
-		HasAggregate:  o.hasAggregate,
-		Version:       resolveVersion(entry.Version),
-		Payload:       rawPayload,
-		ThreadID:      ctx.ID(),
-		Actor:         resolveActor(ctx),
-		Correlation:   resolveCorrelation(ctx, o),
-		Causation:     resolveCausation(ctx, o),
+		EventID:      uuid.New(),
+		EventType:    entry.EventType,
+		Aggregate:    entry.Aggregate,
+		AggregateID:  o.aggregateID,
+		HasAggregate: o.hasAggregate,
+		Version:      resolveVersion(entry.Version),
+		Payload:      rawPayload,
+		ThreadID:     ctx.ID(),
+		Actor:        resolveActor(ctx),
+		Correlation:  resolveCorrelation(ctx, o),
+		Causation:    resolveCausation(ctx, o),
 	}
 
 	if err := writeIntegrationEvent(ctx, c, o.tx, row); err != nil {
@@ -323,4 +323,3 @@ func emitDispatchEcho(logger *slog.Logger, eventKey string, entry PublishEvent, 
 	}
 	logger.Info("integration.event.emitted", attrs...)
 }
-

@@ -151,8 +151,8 @@ func TestBuildServiceClient_TLSAssetError(t *testing.T) {
 }
 
 func TestAddRedactedHeader_InitializesSetAndSkipsEmpty(t *testing.T) {
-	policy := &redactionPolicy{} // nil headerSet
-	addRedactedHeader(policy, "")  // no-op for empty name
+	policy := &redactionPolicy{}  // nil headerSet
+	addRedactedHeader(policy, "") // no-op for empty name
 	if policy.headerSet != nil {
 		t.Fatal("empty name must not initialize the header set")
 	}

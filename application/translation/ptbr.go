@@ -27,10 +27,10 @@ func (corePTBR) Translations() map[string]string {
 		"ServiceIsRequiredNotification":       "Serviço é obrigatório.",
 
 		// Aggregate root
-		"EntityAlreadyAddedNotification":      "Entidade já foi adicionada.",
-		"EntityDoesNotExistNotification":      "Entidade não existe.",
-		"EntityIsNotActiveNotification":       "Entidade não está ativa.",
-		"InvalidAggregateChildNotification":   "Este tipo de objeto não pertence a este agregado.",
+		"EntityAlreadyAddedNotification":    "Entidade já foi adicionada.",
+		"EntityDoesNotExistNotification":    "Entidade não existe.",
+		"EntityIsNotActiveNotification":     "Entidade não está ativa.",
+		"InvalidAggregateChildNotification": "Este tipo de objeto não pertence a este agregado.",
 
 		// Repository
 		"RepositoryFunctionNotImplementedNotification": "A função do repositório não foi implementada.",

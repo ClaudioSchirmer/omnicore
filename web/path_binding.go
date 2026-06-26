@@ -43,7 +43,7 @@ type pathFieldPlan struct {
 // of path-bound fields plus a fast lookup of segment names declared (used by
 // the boot checks of §4.1).
 type pathSchema struct {
-	fields   []pathFieldPlan
+	fields    []pathFieldPlan
 	bySegment map[string]int // segment name -> index in fields
 }
 

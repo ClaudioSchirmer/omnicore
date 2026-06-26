@@ -16,10 +16,10 @@ type specPartialRequest struct {
 // specNestedRequest exercises the nested embed group: every leaf inside
 // AddrFilter surfaces in the spec with the parent's query prefix.
 type specNestedRequest struct {
-	Name      *string          `query:"name"  filter:"eq,startswith"`
-	Addresses specAddrFilter   `query:"addresses"`
-	Meta      *specMetaFilter  `query:"meta"`
-	Limit     *int64           `query:"limit"`
+	Name      *string         `query:"name"  filter:"eq,startswith"`
+	Addresses specAddrFilter  `query:"addresses"`
+	Meta      *specMetaFilter `query:"meta"`
+	Limit     *int64          `query:"limit"`
 }
 
 type specAddrFilter struct {

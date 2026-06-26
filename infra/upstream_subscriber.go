@@ -45,16 +45,16 @@ type UpstreamSubscriberConfig struct {
 // Symbolic raw values consumed by UpstreamSubscriber.dispatch. Kept here
 // (rather than imported from bootstrap) so the runtime is self-contained.
 const (
-	upstreamStartFromLatest         = "latest"
-	upstreamStartFromEarliest       = "earliest"
-	upstreamDeletePolicyCascade     = "cascade"
-	upstreamDeletePolicyAnonymize   = "anonymize"
-	upstreamDeletePolicyKeep        = "keep"
-	upstreamStartFromOffsetPrefix   = "offset:"
-	upstreamSubscriberWorkerDepth   = 4
-	upstreamRecomposeStageDiscover  = "discover"
-	upstreamRecomposeStageCompose   = "compose"
-	upstreamRecomposeStageUpsert    = "upsert"
+	upstreamStartFromLatest        = "latest"
+	upstreamStartFromEarliest      = "earliest"
+	upstreamDeletePolicyCascade    = "cascade"
+	upstreamDeletePolicyAnonymize  = "anonymize"
+	upstreamDeletePolicyKeep       = "keep"
+	upstreamStartFromOffsetPrefix  = "offset:"
+	upstreamSubscriberWorkerDepth  = 4
+	upstreamRecomposeStageDiscover = "discover"
+	upstreamRecomposeStageCompose  = "compose"
+	upstreamRecomposeStageUpsert   = "upsert"
 )
 
 // upstreamMetrics counts failures by (subscription, view, stage). Exposed

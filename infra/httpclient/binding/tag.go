@@ -10,15 +10,15 @@ import (
 type bindKind int
 
 const (
-	bindPath        bindKind = iota + 1
-	bindQuerySingle          // single query value
-	bindQueryCSV             // ?name=a,b,c
-	bindQueryMulti           // ?name=a&name=b
-	bindHeader               // single header from field value
-	bindHeadersMap           // map[string]string field merged into request headers
-	bindBody                 // body, codec selected by codec field
-	bindBodyStream           // body is an io.Reader piped to the transport as-is
-	bindBodyMultipart        // body is httpclient.Multipart (form fields + file streams)
+	bindPath          bindKind = iota + 1
+	bindQuerySingle            // single query value
+	bindQueryCSV               // ?name=a,b,c
+	bindQueryMulti             // ?name=a&name=b
+	bindHeader                 // single header from field value
+	bindHeadersMap             // map[string]string field merged into request headers
+	bindBody                   // body, codec selected by codec field
+	bindBodyStream             // body is an io.Reader piped to the transport as-is
+	bindBodyMultipart          // body is httpclient.Multipart (form fields + file streams)
 )
 
 // parseHTTPTag interprets the `http:"..."` struct tag and returns the binding

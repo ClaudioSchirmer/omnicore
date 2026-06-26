@@ -31,10 +31,10 @@ func (k breakerStateKind) String() string {
 // breakerPolicy is the resolved runtime shape consumed by breakerState.
 // Built once from CircuitBreakerConfig + framework defaults at New.
 type breakerPolicy struct {
-	enabled           bool
+	enabled          bool
 	failureThreshold int
 	successThreshold int
-	openFor           time.Duration
+	openFor          time.Duration
 }
 
 // breakerState is the per-(service, endpoint) state machine. Concurrent

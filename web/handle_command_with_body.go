@@ -35,18 +35,21 @@ import (
 // of JSON.
 //
 // HTTP semantics:
+//
 //   - 400 → wire contract violated (Request schema does not match)
+//
 //   - 422 → domain rejects values (notifications via BuildRules)
+//
 //   - other 4xx → custom semantics via Notification.Semantic()
 //
-//	app.Post("/users", web.HandleCommandWithBody(pipe,
-//	    requests.InsertUserRequest{},
-//	    responses.InsertUserResponse{}.FromResult,
-//	    &handlers.InsertCommandHandler[*User, *InsertUserCommand, results.InsertUserResult]{
-//	        Repo: r, Auditor: a, Service: svc,
-//	        Project: results.InsertUserResult{}.FromEntity,
-//	    },
-//	    fiber.StatusCreated))
+//     app.Post("/users", web.HandleCommandWithBody(pipe,
+//     requests.InsertUserRequest{},
+//     responses.InsertUserResponse{}.FromResult,
+//     &handlers.InsertCommandHandler[*User, *InsertUserCommand, results.InsertUserResult]{
+//     Repo: r, Auditor: a, Service: svc,
+//     Project: results.InsertUserResult{}.FromEntity,
+//     },
+//     fiber.StatusCreated))
 func HandleCommandWithBody[
 	TReq RequestDTO[TCmdPtr],
 	TCmd any,

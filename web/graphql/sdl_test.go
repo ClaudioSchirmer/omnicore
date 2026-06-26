@@ -18,11 +18,11 @@ type sdlAddress struct {
 }
 
 type sdlUserResponse struct {
-	ID        *string       `json:"id,omitempty"`
-	Name      *string       `json:"name,omitempty"`
-	Age       *int64        `json:"age,omitempty"`
-	CreatedAt *time.Time    `json:"createdAt,omitempty"`
-	Addresses []sdlAddress  `json:"addresses,omitempty"`
+	ID        *string      `json:"id,omitempty"`
+	Name      *string      `json:"name,omitempty"`
+	Age       *int64       `json:"age,omitempty"`
+	CreatedAt *time.Time   `json:"createdAt,omitempty"`
+	Addresses []sdlAddress `json:"addresses,omitempty"`
 }
 
 type sdlUserRequest struct {

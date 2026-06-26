@@ -336,7 +336,7 @@ func TestSpec_ErrorExamples_EmptyDefaultRemovesEntry(t *testing.T) {
 		Doc{
 			ResponseExamples: map[int]map[string]Example{
 				fiber.StatusUnprocessableEntity: {
-					"default":  {}, // empty Value = remove the canonical default
+					"default": {}, // empty Value = remove the canonical default
 					"variant": {Value: errorEnvelopeValue(422, "X", "Y", "f", "", "Validation")},
 				},
 			},

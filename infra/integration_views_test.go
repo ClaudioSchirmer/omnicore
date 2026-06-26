@@ -320,4 +320,3 @@ func TestSource_EmbedAndEmbedManyAppend(t *testing.T) {
 		t.Errorf("Source embed many flags wrong: %+v", s.Embeds())
 	}
 }
-

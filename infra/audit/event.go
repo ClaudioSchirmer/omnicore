@@ -35,20 +35,20 @@ import "time"
 // envelopes. ActorClaims is filtered by the auth.auditClaims allowlist
 // before reaching this struct; events.Publisher never widens that surface.
 type AuditEvent struct {
-	ThreadID    string                  `json:"threadId"`
+	ThreadID string `json:"threadId"`
 	// TraceID is the active span's trace id (32-char hex) when tracing is on,
 	// else empty. The single source both audit destinations mirror — the
 	// in-TX audit_events.trace_id column and the slog echo's traceId attribute —
 	// so a forensic row or echo line pivots to its trace in the collector.
-	TraceID     string                  `json:"traceId,omitempty"`
-	EntityType  string                  `json:"entityType"`
-	EntityID    string                  `json:"entityId"`
-	Verb        string                  `json:"verb"`
-	ActionName  string                  `json:"actionName"`
-	Kind        string                  `json:"kind"`
-	Actor       string                  `json:"actor,omitempty"`
-	ActorIssuer string                  `json:"actorIssuer,omitempty"`
-	ActorClaims map[string]any          `json:"actorClaims,omitempty"`
+	TraceID     string         `json:"traceId,omitempty"`
+	EntityType  string         `json:"entityType"`
+	EntityID    string         `json:"entityId"`
+	Verb        string         `json:"verb"`
+	ActionName  string         `json:"actionName"`
+	Kind        string         `json:"kind"`
+	Actor       string         `json:"actor,omitempty"`
+	ActorIssuer string         `json:"actorIssuer,omitempty"`
+	ActorClaims map[string]any `json:"actorClaims,omitempty"`
 	// TenantID carries the multi-tenant scope of the request, extracted from
 	// the JWT's "tenant_id" claim (the default Auth0/Keycloak convention).
 	// Empty when the request is anonymous or when the claim is absent.
@@ -57,11 +57,11 @@ type AuditEvent struct {
 	// slog attribute. Customized claim names (auth.authorization.tenant.claim)
 	// are NOT honored by audit today — the column stays empty for services
 	// that diverge from the default convention.
-	TenantID    string                  `json:"tenantId,omitempty"`
-	DateTime    time.Time               `json:"dateTime"`
-	Snapshot    map[string]any          `json:"snapshot,omitempty"`
-	Changes     []FieldChange           `json:"changes,omitempty"`
-	Children    map[string][]ChildEvent `json:"children,omitempty"`
+	TenantID string                  `json:"tenantId,omitempty"`
+	DateTime time.Time               `json:"dateTime"`
+	Snapshot map[string]any          `json:"snapshot,omitempty"`
+	Changes  []FieldChange           `json:"changes,omitempty"`
+	Children map[string][]ChildEvent `json:"children,omitempty"`
 }
 
 // FieldChange describes a single field diff on a kind=delta event.

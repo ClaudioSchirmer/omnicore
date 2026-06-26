@@ -20,8 +20,8 @@ func newTestTranslator() *translation.Translator {
 	tr.Import(stubModule{
 		lang: configuration.LangENG,
 		entries: map[string]string{
-			"maxLengthNotif": "Name exceeds {maxLength} characters.",
-			"plainNotif":     "Static message.",
+			"maxLengthNotif":   "Name exceeds {maxLength} characters.",
+			"plainNotif":       "Static message.",
 			"UserOf{tenantId}": "User of {tenantId}",
 		},
 	})

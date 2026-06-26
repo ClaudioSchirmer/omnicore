@@ -13,9 +13,9 @@ type fixtureUser struct {
 	Email     string  `labelKey:"UserEmailField"`
 	Phone     *string `labelKey:"UserPhoneField"`
 	NoTag     string
-	SkippedV1 string  `labelKey:"-"`
-	SkippedV2 string  `labelKey:""`
-	private   string  `labelKey:"NeverReached"` // unexported; reflection plan does not see it
+	SkippedV1 string `labelKey:"-"`
+	SkippedV2 string `labelKey:""`
+	private   string `labelKey:"NeverReached"` // unexported; reflection plan does not see it
 }
 
 type fixtureAddress struct {

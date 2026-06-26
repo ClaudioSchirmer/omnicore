@@ -72,6 +72,7 @@ func (s *SyncEngine) WithKafkaTracing(on bool) *SyncEngine {
 // Outbox Event Router (or any CDC tool that follows the same conventions):
 //   - aggregate_id → message.Key
 //   - aggregate_type, event_type → message.Headers
+//
 // The message Value is ignored — composer re-reads current state from Postgres.
 type kafkaEvent struct {
 	AggregateType string

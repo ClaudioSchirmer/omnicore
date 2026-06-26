@@ -9,10 +9,10 @@ import (
 )
 
 type Response struct {
-	Success     bool    `json:"success"`
-	Status      int     `json:"status"`
-	Description string  `json:"description"`
-	Data        any     `json:"data,omitempty"`
+	Success     bool   `json:"success"`
+	Status      int    `json:"status"`
+	Description string `json:"description"`
+	Data        any    `json:"data,omitempty"`
 	// Pagination is `any` because the slot carries two legitimate shapes:
 	// PaginationInfo on regular paged listings (has_next/has_prev/cursors +
 	// total) and TotalOnlyPagination on count-only requests (only total).

@@ -72,8 +72,8 @@ type guardAggRoot struct {
 func (a *guardAggRoot) Modes() []domain.EntityMode {
 	return []domain.EntityMode{domain.ModeInsert, domain.ModeArchive, domain.ModeUnarchive}
 }
-func (a *guardAggRoot) BuildRules(string, domain.Service, *domain.Rules)  {}
-func (a *guardAggRoot) GetAggregateRoot() *domain.AggregateRoot           { return &a.AggregateRoot }
+func (a *guardAggRoot) BuildRules(string, domain.Service, *domain.Rules) {}
+func (a *guardAggRoot) GetAggregateRoot() *domain.AggregateRoot          { return &a.AggregateRoot }
 func (a *guardAggRoot) AggregateChildren() []domain.AggregateValueObject {
 	return []domain.AggregateValueObject{guardChildVO{}}
 }

@@ -215,11 +215,10 @@ func buildChain(svc *serviceClient, serviceName, endpointName string, ep endpoin
 	// Cache hits (short-circuit at position 5) skip both breaker and
 	// signing — correct, because no dial happens.
 	layers = append(layers,
-		retryMiddleware(effectiveRetry),                // 6 (outer of breaker)
-		breakerMiddleware(breaker),                     // 7 (inner of retry)
-		signingMiddleware(svc.signing, nil),            // 8 (inner of breaker; innermost before transport)
-		transportMiddleware(svc),                       // 9 — terminal
+		retryMiddleware(effectiveRetry),     // 6 (outer of breaker)
+		breakerMiddleware(breaker),          // 7 (inner of retry)
+		signingMiddleware(svc.signing, nil), // 8 (inner of breaker; innermost before transport)
+		transportMiddleware(svc),            // 9 — terminal
 	)
 	return newChain(layers...)
 }
-

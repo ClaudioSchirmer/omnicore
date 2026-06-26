@@ -27,13 +27,13 @@ type AuthProviderConfig struct {
 	Password string `yaml:"password,omitempty"`
 
 	// oauth2-client-credentials
-	TokenEndpoint            string             `yaml:"tokenEndpoint,omitempty"`
-	ClientID                 string             `yaml:"clientId,omitempty"`
-	ClientSecret             string             `yaml:"clientSecret,omitempty"`
-	Scope                    []string           `yaml:"scope,omitempty"`
-	Audience                 string             `yaml:"audience,omitempty"`
-	TokenCache               *TokenCacheConfig  `yaml:"tokenCache,omitempty"`
-	RevocationOnUnauthorized bool               `yaml:"revocationOnUnauthorized,omitempty"`
+	TokenEndpoint            string            `yaml:"tokenEndpoint,omitempty"`
+	ClientID                 string            `yaml:"clientId,omitempty"`
+	ClientSecret             string            `yaml:"clientSecret,omitempty"`
+	Scope                    []string          `yaml:"scope,omitempty"`
+	Audience                 string            `yaml:"audience,omitempty"`
+	TokenCache               *TokenCacheConfig `yaml:"tokenCache,omitempty"`
+	RevocationOnUnauthorized bool              `yaml:"revocationOnUnauthorized,omitempty"`
 
 	// credentials-exchange — generic "POST credentials, get token" path.
 	// Use when the IdP diverges from RFC 6749: custom field names, JSON

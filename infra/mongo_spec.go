@@ -33,7 +33,7 @@ const EnvForceRebuild = "OMNICORE_MONGO_FORCE_REBUILD"
 //
 // See https://github.com/mongodb/mongo/blob/master/src/mongo/base/error_codes.yml
 const (
-	mongoErrIndexOptionsConflict = 85
+	mongoErrIndexOptionsConflict  = 85
 	mongoErrIndexKeySpecsConflict = 86
 )
 

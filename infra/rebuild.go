@@ -54,7 +54,7 @@ type RebuildConfig struct {
 //     This is the LAST data write.
 //  10. slog.Info "view.rebuild.end".
 //  11. Lock release fires via defer (and unpinning the connection releases
-//      the advisory lock as the backstop).
+//     the advisory lock as the backstop).
 //
 // Returns a descriptive error on lock contention or any underlying
 // Mongo/Postgres failure. Idempotent on _id — a rerun after a transient

@@ -209,14 +209,14 @@ type JWTConfig struct {
 // purpose of this call is to detect revocation, and a positive cache trades
 // some revocation latency (up to TTL seconds) for fewer IdP round-trips.
 type ExternalValidatorConfig struct {
-	Method         string                  `yaml:"method"`
-	URL            string                  `yaml:"url"`
-	TokenPlacement TokenPlacement          `yaml:"tokenPlacement"`
-	TokenField     string                  `yaml:"tokenField,omitempty"`
-	ExtraHeaders   map[string]string       `yaml:"extraHeaders,omitempty"`
+	Method         string                   `yaml:"method"`
+	URL            string                   `yaml:"url"`
+	TokenPlacement TokenPlacement           `yaml:"tokenPlacement"`
+	TokenField     string                   `yaml:"tokenField,omitempty"`
+	ExtraHeaders   map[string]string        `yaml:"extraHeaders,omitempty"`
 	Success        ExternalValidatorSuccess `yaml:"success"`
-	TimeoutMS      int                     `yaml:"timeoutMs,omitempty"`
-	FailMode       FailMode                `yaml:"failMode,omitempty"`
+	TimeoutMS      int                      `yaml:"timeoutMs,omitempty"`
+	FailMode       FailMode                 `yaml:"failMode,omitempty"`
 
 	// CacheTTLSeconds, when > 0, enables an in-memory positive-only cache of
 	// successful validator answers, keyed by the SHA-256 hash of the bearer

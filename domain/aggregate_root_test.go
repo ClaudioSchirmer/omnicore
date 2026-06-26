@@ -24,9 +24,9 @@ type providerForTest struct {
 	AggregateRoot
 }
 
-func (p *providerForTest) Modes() []EntityMode                      { return []EntityMode{ModeInsert} }
-func (p *providerForTest) BuildRules(string, Service, *Rules)       {}
-func (p *providerForTest) GetAggregateRoot() *AggregateRoot         { return &p.AggregateRoot }
+func (p *providerForTest) Modes() []EntityMode                { return []EntityMode{ModeInsert} }
+func (p *providerForTest) BuildRules(string, Service, *Rules) {}
+func (p *providerForTest) GetAggregateRoot() *AggregateRoot   { return &p.AggregateRoot }
 func (p *providerForTest) AggregateChildren() []AggregateValueObject {
 	return []AggregateValueObject{testAVO{}}
 }
@@ -190,9 +190,9 @@ type emittingProvider struct {
 	AggregateRoot
 }
 
-func (e *emittingProvider) Modes() []EntityMode                       { return []EntityMode{ModeInsert} }
-func (e *emittingProvider) BuildRules(string, Service, *Rules)        {}
-func (e *emittingProvider) GetAggregateRoot() *AggregateRoot          { return &e.AggregateRoot }
+func (e *emittingProvider) Modes() []EntityMode                { return []EntityMode{ModeInsert} }
+func (e *emittingProvider) BuildRules(string, Service, *Rules) {}
+func (e *emittingProvider) GetAggregateRoot() *AggregateRoot   { return &e.AggregateRoot }
 func (e *emittingProvider) AggregateChildren() []AggregateValueObject {
 	return []AggregateValueObject{emittingAVO{}}
 }

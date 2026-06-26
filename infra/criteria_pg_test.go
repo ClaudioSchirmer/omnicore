@@ -3,8 +3,8 @@ package infra
 import (
 	"testing"
 
-	"github.com/ClaudioSchirmer/omnicore/infra/criteria"
 	"github.com/ClaudioSchirmer/omnicore/domain"
+	"github.com/ClaudioSchirmer/omnicore/infra/criteria"
 )
 
 func testResolver() fieldResolver {

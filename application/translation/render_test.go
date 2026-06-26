@@ -276,4 +276,3 @@ func TestRender_WarnOnce_DistinctPlaceholders_FireIndependently(t *testing.T) {
 		t.Errorf("expected warn for {a} after {b} answered, log = %q", got)
 	}
 }
-

@@ -9,8 +9,8 @@ import "net/http"
 //   - Summary       — short label shown in the dropdown picker
 //   - Description   — markdown rendered under the selected entry
 //   - Value         — the actual payload; any JSON-marshalable value, OR a
-//                     json.RawMessage for hand-authored JSON the consumer
-//                     wants passed through verbatim
+//     json.RawMessage for hand-authored JSON the consumer
+//     wants passed through verbatim
 //
 // Consumers declare Examples in three places:
 //

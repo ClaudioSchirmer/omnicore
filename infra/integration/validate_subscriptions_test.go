@@ -34,7 +34,7 @@ func TestValidateSubscriptionsCovered_OrphanDeclaration(t *testing.T) {
 			"partners": {
 				Topic: "partners.events",
 				Events: map[string]SubscribeEvent{
-					"onboarded": {EventType: "PartnerOnboarded"},
+					"onboarded":  {EventType: "PartnerOnboarded"},
 					"offboarded": {EventType: "PartnerOffboarded"},
 				},
 			},

@@ -198,9 +198,9 @@ func TestStream_Upload_RejectsWhenSigningEnabled(t *testing.T) {
 
 func TestStream_Multipart_FieldsAndFile(t *testing.T) {
 	type seen struct {
-		field      string
-		filename   string
-		fileMime   string
+		field       string
+		filename    string
+		fileMime    string
 		fileContent []byte
 	}
 	var got seen

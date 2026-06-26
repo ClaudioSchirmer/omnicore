@@ -7,8 +7,8 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/ClaudioSchirmer/omnicore/infra/criteria"
 	"github.com/ClaudioSchirmer/omnicore/domain"
+	"github.com/ClaudioSchirmer/omnicore/infra/criteria"
 	"github.com/jackc/pgx/v5"
 )
 
@@ -21,9 +21,9 @@ type loaderRoot struct {
 	Email string
 }
 
-func (e *loaderRoot) Modes() []domain.EntityMode { return []domain.EntityMode{domain.ModeInsert} }
+func (e *loaderRoot) Modes() []domain.EntityMode                     { return []domain.EntityMode{domain.ModeInsert} }
 func (*loaderRoot) BuildRules(string, domain.Service, *domain.Rules) {}
-func (e *loaderRoot) GetAggregateRoot() *domain.AggregateRoot         { return &e.AggregateRoot }
+func (e *loaderRoot) GetAggregateRoot() *domain.AggregateRoot        { return &e.AggregateRoot }
 func (*loaderRoot) AggregateChildren() []domain.AggregateValueObject {
 	return []domain.AggregateValueObject{loaderTagVO{}, loaderNoteVO{}}
 }
@@ -413,7 +413,7 @@ type emptyEntity struct {
 	domain.BaseEntity
 }
 
-func (e *emptyEntity) Modes() []domain.EntityMode                { return []domain.EntityMode{domain.ModeInsert} }
+func (e *emptyEntity) Modes() []domain.EntityMode                     { return []domain.EntityMode{domain.ModeInsert} }
 func (*emptyEntity) BuildRules(string, domain.Service, *domain.Rules) {}
 
 func TestAggregateLoader_Load_AutoScanWithNoFieldsErrors(t *testing.T) {

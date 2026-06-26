@@ -54,15 +54,15 @@ type CredentialsExchangeProvider struct {
 
 // CredentialsExchangeOptions bundles the constructor parameters.
 type CredentialsExchangeOptions struct {
-	Name                 string
-	TokenEndpoint        string
-	RequestCodec         string            // "json" | "form-urlencoded"; default form-urlencoded
-	RequestFields        map[string]string // static body fields
-	RequestFieldsFromCtx map[string]string // body field → AppContext key; multi-tenant
-	RequestHeaders       map[string]string // optional; extra request headers
-	ResponseTokenPath    string            // required; dot-notation JSONPath
-	Attach               AttachConfig
-	Cache                TokenCacheConfig
+	Name                     string
+	TokenEndpoint            string
+	RequestCodec             string            // "json" | "form-urlencoded"; default form-urlencoded
+	RequestFields            map[string]string // static body fields
+	RequestFieldsFromCtx     map[string]string // body field → AppContext key; multi-tenant
+	RequestHeaders           map[string]string // optional; extra request headers
+	ResponseTokenPath        string            // required; dot-notation JSONPath
+	Attach                   AttachConfig
+	Cache                    TokenCacheConfig
 	RevocationOnUnauthorized bool
 	HttpClient               *http.Client
 }
