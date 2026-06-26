@@ -97,7 +97,7 @@ func HandleCommandWithBody[
 			}
 		}
 		appCtx := AppContext(c)
-		appCtx.SetParent(c)
+		appCtx.SetParentIfAbsent(c)
 		cmd := req.ToCommand()
 		result := pipeline.Dispatch(pipe, appCtx, cmd, h)
 		return respondWithProjection(c, result, successStatus, responseProjection)
@@ -165,7 +165,7 @@ func HandleCommandWithBodyID[
 			}
 		}
 		appCtx := AppContext(c)
-		appCtx.SetParent(c)
+		appCtx.SetParentIfAbsent(c)
 		cmd := req.ToCommand()
 		cmd.SetPathID(c.Params("id"))
 		result := pipeline.Dispatch(pipe, appCtx, cmd, h)

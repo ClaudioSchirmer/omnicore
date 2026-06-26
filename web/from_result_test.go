@@ -50,6 +50,18 @@ func TestStatusFromSchema(t *testing.T) {
 	}
 }
 
+func TestStatusFromGatewayTimeout(t *testing.T) {
+	dtos := []notifications.ContextDTO{{
+		Context: "Request",
+		Messages: []notifications.MessageDTO{
+			{NotificationKey: "RequestTimeoutNotification", Semantic: domain.SemanticGatewayTimeout},
+		},
+	}}
+	if got := statusFromNotifications(dtos); got != fiber.StatusGatewayTimeout {
+		t.Fatalf("expected 504, got %d", got)
+	}
+}
+
 func TestStatusFromSchemaMixedFavorsNonValidation(t *testing.T) {
 	dtos := []notifications.ContextDTO{{
 		Context: "Schema",

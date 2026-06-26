@@ -67,6 +67,7 @@ func (coreNL) Translations() map[string]string {
 		"InvalidLanguageDomainNotification": "Ongeldige taal.",
 		"ContextNotInitializedNotification": "Context is niet geïnitialiseerd.",
 		"ServiceUnavailableNotification":    "Service niet beschikbaar.",
+		"RequestTimeoutNotification":        "De aanvraag heeft de tijdslimiet overschreden.",
 
 		// Auth
 		"MissingAuthorizationNotification": "Authorization-header ontbreekt of is misvormd.",

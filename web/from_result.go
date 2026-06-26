@@ -51,6 +51,7 @@ var semanticToStatus = map[domain.NotificationSemantic]int{
 	domain.SemanticInternal:         fiber.StatusInternalServerError,   // 500
 	domain.SemanticMethodNotAllowed: fiber.StatusMethodNotAllowed,      // 405
 	domain.SemanticPayloadTooLarge:  fiber.StatusRequestEntityTooLarge, // 413
+	domain.SemanticGatewayTimeout:   fiber.StatusGatewayTimeout,        // 504
 }
 
 // statusFromNotifications returns the HTTP status of the first message whose

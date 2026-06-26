@@ -27,6 +27,7 @@
         <tr><td><code>SemanticUnauthorized</code></td><td>401 Unauthorized</td><td>—</td></tr>
         <tr><td><code>SemanticPayloadTooLarge</code></td><td><strong>413 Content Too Large</strong></td><td><code>PayloadTooLargeNotification</code> (request body exceeds the configured <code>BodyLimit</code>) emitted by <code>fwweb.ErrorHandler</code></td></tr>
         <tr><td><code>SemanticUnavailable</code></td><td>503 Service Unavailable</td><td><code>ServiceUnavailableNotification</code></td></tr>
+        <tr><td><code>SemanticGatewayTimeout</code></td><td><strong>504 Gateway Timeout</strong></td><td><code>RequestTimeoutNotification</code> — the request exceeded <code>http.requestTimeoutSeconds</code>; <code>pipeline.Run</code> maps <code>context.DeadlineExceeded</code> (pgx/mongo/httpclient observing the cancelled request context) so a timeout surfaces as 504, not a generic 500</td></tr>
         <tr><td><code>SemanticInternal</code></td><td><strong>500 Internal Server Error</strong></td><td><code>InternalServerErrorNotification</code> (recovered panic, escaped non-NotificationCarrier error) emitted by <code>fwweb.ErrorHandler</code></td></tr>
     </tbody></table>
     <div class="note">

@@ -64,6 +64,48 @@ func TestAppContext_DeadlinePropagates(t *testing.T) {
 	}
 }
 
+func TestAppContext_SetParentIfAbsent_SetsWhenUnset(t *testing.T) {
+	ctx := NewAppContextWithRandomID(LangPTBR)
+	parent, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	ctx.SetParentIfAbsent(parent)
+
+	cancel()
+	select {
+	case <-ctx.Done():
+		// expected: the parent was wired
+	case <-time.After(100 * time.Millisecond):
+		t.Fatal("expected Done() to fire — SetParentIfAbsent should have wired the parent")
+	}
+}
+
+func TestAppContext_SetParentIfAbsent_KeepsExisting(t *testing.T) {
+	ctx := NewAppContextWithRandomID(LangPTBR)
+	first, cancelFirst := context.WithCancel(context.Background())
+	defer cancelFirst()
+	ctx.SetParent(first)
+
+	second, cancelSecond := context.WithCancel(context.Background())
+	defer cancelSecond()
+	ctx.SetParentIfAbsent(second) // must be a no-op: a parent is already set
+
+	cancelSecond() // canceling the rejected parent must NOT cancel ctx
+	select {
+	case <-ctx.Done():
+		t.Fatal("ctx canceled by the rejected parent — SetParentIfAbsent clobbered the existing parent")
+	case <-time.After(50 * time.Millisecond):
+		// expected: still alive, the original parent drives it
+	}
+
+	cancelFirst()
+	select {
+	case <-ctx.Done():
+		// expected: the original parent still drives cancellation
+	case <-time.After(100 * time.Millisecond):
+		t.Fatal("expected Done() from the original parent")
+	}
+}
+
 func TestAppContext_ValueDelegatesToParent(t *testing.T) {
 	type ctxKey struct{}
 	ctx := NewAppContextWithRandomID(LangPTBR)

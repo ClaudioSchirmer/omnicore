@@ -3,6 +3,7 @@ package web
 import (
 	"context"
 	"strings"
+	"time"
 
 	"github.com/ClaudioSchirmer/omnicore/application/configuration"
 	"github.com/gofiber/fiber/v3"
@@ -16,6 +17,7 @@ const appContextKey = "omnicore.appCtx"
 
 type appContextOptions struct {
 	traceServerSpan bool
+	requestTimeout  time.Duration
 }
 
 // AppContextOption configures AppContextMiddleware.
@@ -30,6 +32,16 @@ type AppContextOption func(*appContextOptions)
 // trace locally. No-op anyway when no tracer provider is installed.
 func WithServerSpanTracing(on bool) AppContextOption {
 	return func(o *appContextOptions) { o.traceServerSpan = on }
+}
+
+// WithRequestTimeout bounds each request's lifetime. The middleware derives the
+// AppContext's cancellation parent from context.WithTimeout(c, d), so pgx, mongo
+// and outbound httpclient calls abort when the deadline elapses — surfaced as
+// 504 Gateway Timeout, with the pool connection/goroutine released at that
+// moment. d <= 0 disables the deadline (the parent is the bare request context,
+// the pre-deadline behavior). bootstrap passes cfg.HTTP.RequestTimeoutSeconds.
+func WithRequestTimeout(d time.Duration) AppContextOption {
+	return func(o *appContextOptions) { o.requestTimeout = d }
 }
 
 // AppContextMiddleware populates a *configuration.AppContext per request
@@ -77,6 +89,19 @@ func AppContextMiddleware(opts ...AppContextOption) fiber.Handler {
 				ctx.SetCorrelationID(uuidFromTraceID(sc.TraceID()))
 			}
 		}
+		// Own the cancellation parent here (the single choke point every request
+		// passes through). With a timeout, wrap the request context so the
+		// deadline propagates to pgx/mongo/httpclient; without one, use the bare
+		// request context. The HTTP wrappers only SetParentIfAbsent, so they
+		// never clobber this.
+		if o.requestTimeout > 0 {
+			tctx, cancel := context.WithTimeout(c, o.requestTimeout)
+			defer cancel()
+			ctx.SetParent(tctx)
+		} else {
+			ctx.SetParent(c)
+		}
+
 		c.Locals(appContextKey, ctx)
 		c.Set("X-Request-ID", id.String())
 

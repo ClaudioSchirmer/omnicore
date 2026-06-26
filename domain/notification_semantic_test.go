@@ -69,12 +69,13 @@ func TestServiceSideOverride(t *testing.T) {
 
 func TestNotificationSemanticString(t *testing.T) {
 	cases := map[NotificationSemantic]string{
-		SemanticValidation:   "Validation",
-		SemanticNotFound:     "NotFound",
-		SemanticConflict:     "Conflict",
-		SemanticForbidden:    "Forbidden",
-		SemanticUnauthorized: "Unauthorized",
-		SemanticUnavailable:  "Unavailable",
+		SemanticValidation:     "Validation",
+		SemanticNotFound:       "NotFound",
+		SemanticConflict:       "Conflict",
+		SemanticForbidden:      "Forbidden",
+		SemanticUnauthorized:   "Unauthorized",
+		SemanticUnavailable:    "Unavailable",
+		SemanticGatewayTimeout: "GatewayTimeout",
 	}
 	for s, want := range cases {
 		if got := s.String(); got != want {

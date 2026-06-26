@@ -11,6 +11,32 @@ with `1.0.0`.
 
 ## [Unreleased]
 
+### Added
+
+- **Inbound request deadline.** New `http.requestTimeoutSeconds` config knob
+  bounds how long a single inbound request may run before the framework cancels
+  its context. The `AppContextMiddleware` derives the request's cancellation
+  parent from `context.WithTimeout`, so the deadline propagates through the
+  `AppContext` (which is the `context.Context` every handler receives) to `pgx`,
+  `mongo` and outbound `httpclient` — a slow request releases its pool
+  connection and goroutine the moment the deadline fires, instead of holding
+  them indefinitely (the inbound counterpart to the outbound circuit breaker;
+  what an edge/gateway timeout cannot do, since it cannot cancel work already
+  running in-process). The cancellation also caps every outbound `httpclient`
+  call at the request's remaining budget, for free (no httpclient change). The
+  default is **30s**; an explicit `0` disables the deadline (the pre-deadline
+  behavior, a request may run unbounded). A blown deadline surfaces as
+  **504 Gateway Timeout** via the new `SemanticGatewayTimeout` and
+  `RequestTimeoutNotification`, mapped in `pipeline.Run` from
+  `context.DeadlineExceeded` so a timeout never masquerades as a 500. New
+  public surface: `domain.SemanticGatewayTimeout`,
+  `notifications.RequestTimeoutNotification`,
+  `fwweb.WithRequestTimeout(time.Duration)`,
+  `(*configuration.AppContext).SetParentIfAbsent`, and
+  `bootstrap.FrameworkDefaultRequestTimeoutSeconds`. Pure request reads via the
+  ctx-less `domain.Reader[T].FindByID` are NOT covered (the port takes no
+  context); the write path, view/query reads and httpclient are.
+
 ## [0.16.0] - 2026-06-25
 
 ### Added

@@ -925,6 +925,7 @@ Each `Notification` declares a **Semantic**; the framework maps it to an HTTP st
 | `SemanticUnauthorized` | 401 Unauthorized |
 | `SemanticPayloadTooLarge` | 413 Content Too Large |
 | `SemanticUnavailable` | 503 Service Unavailable |
+| `SemanticGatewayTimeout` | 504 Gateway Timeout (request exceeded `http.requestTimeoutSeconds`) |
 | `SemanticInternal` | 500 Internal Server Error |
 
 `statusFromNotifications` picks the first non-Validation Semantic; all-Validation falls back to 422. The enum is transport-agnostic. `MessageDTO.Semantic` + wire `ErrorMessage.Semantic` carry the typed identity so clients branch UI without parsing the HTTP code.
@@ -1342,6 +1343,7 @@ Substitution forms inside `${...}` (single pass, no recursion):
 service: my-service
 http:
   addr: ":8080"
+  requestTimeoutSeconds: 30   # inbound request deadline; unset → 30; 0 → disabled
 postgres:
   dsn: "${DATABASE_URL:postgres://localhost:5432/mydb}"
 mongo:
@@ -1866,7 +1868,7 @@ The framework reads exactly four process env vars; everything else in `${VAR:def
 
 ### `Run` behavior
 
-JSON slog on stdout; `signal.NotifyContext(SIGINT, SIGTERM)`; connect Postgres+Mongo; `validateWiring` (needs Features or BeforeServe); migrations `Up` if `Migrations.AutoRun` (before SyncEngine); `collectViews` rejecting name collisions; Fiber app with `ErrorHandler: fwweb.ErrorHandler` (404/405/413 specialized, else 500; stack stays on the log); middlewares `Recover` → request logger → `AppContextMiddleware` → `AuthMiddleware` (jwt only); auto `GET /health`; mount each feature in order; OpenAPI registered before auth/health when `Wiring.OpenAPI != nil`; SyncEngine starts only if views collected; 10s HTTP drain then `OnShutdown`.
+JSON slog on stdout; `signal.NotifyContext(SIGINT, SIGTERM)`; connect Postgres+Mongo; `validateWiring` (needs Features or BeforeServe); migrations `Up` if `Migrations.AutoRun` (before SyncEngine); `collectViews` rejecting name collisions; Fiber app with `ErrorHandler: fwweb.ErrorHandler` (404/405/413 specialized, else 500; stack stays on the log); middlewares `Recover` → request logger → `AppContextMiddleware` (owns the per-request cancellation parent; with `http.requestTimeoutSeconds` it wraps the request context in a deadline so pgx/mongo/httpclient abort and release resources when it elapses, surfaced as 504) → `AuthMiddleware` (jwt only); auto `GET /health`; mount each feature in order; OpenAPI registered before auth/health when `Wiring.OpenAPI != nil`; SyncEngine starts only if views collected; 10s HTTP drain then `OnShutdown`.
 
 ### Canonical main.go
 

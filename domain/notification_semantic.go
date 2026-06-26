@@ -17,6 +17,7 @@ const (
 	SemanticInternal                                     // → 500 Internal Server Error (recovered panic, unexpected error)
 	SemanticMethodNotAllowed                             // → 405 Method Not Allowed (path matches, HTTP method does not)
 	SemanticPayloadTooLarge                              // → 413 Content Too Large (request body exceeds the configured limit)
+	SemanticGatewayTimeout                               // → 504 Gateway Timeout (request exceeded the server-side deadline)
 )
 
 // String returns the canonical name for logs, debug and wire format.
@@ -40,6 +41,8 @@ func (s NotificationSemantic) String() string {
 		return "MethodNotAllowed"
 	case SemanticPayloadTooLarge:
 		return "PayloadTooLarge"
+	case SemanticGatewayTimeout:
+		return "GatewayTimeout"
 	default:
 		return "Validation"
 	}

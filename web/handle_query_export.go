@@ -118,7 +118,7 @@ func HandleQueryExport[TReq HasToParamsQuery[TQ], TQ queries.FindByParamsQuery](
 			return respondSchemaViolation[queries.Page](c, pipe, bad)
 		}
 		appCtx := AppContext(c)
-		appCtx.SetParent(c)
+		appCtx.SetParentIfAbsent(c)
 		q := req.ToQuery(crit)
 		result := pipeline.Dispatch(pipe, appCtx, q, h)
 		if !result.IsSuccess() {

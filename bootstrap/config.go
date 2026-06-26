@@ -92,6 +92,16 @@ type Config struct {
 
 	HTTP struct {
 		Addr string `yaml:"addr"`
+		// RequestTimeoutSeconds bounds how long a single inbound request may run
+		// before the framework cancels its context. pgx, mongo and outbound
+		// httpclient observe the cancellation and abort, releasing the pool
+		// connection and goroutine instead of letting a slow request hold them;
+		// the request surfaces as 504 Gateway Timeout. nil (unset) → the
+		// framework default (FrameworkDefaultRequestTimeoutSeconds); an explicit
+		// 0 disables the deadline (a request may run unbounded — the pre-deadline
+		// behavior). The cancellation also caps every outbound httpclient call at
+		// the request's remaining budget.
+		RequestTimeoutSeconds *int `yaml:"requestTimeoutSeconds"`
 	} `yaml:"http"`
 
 	Postgres struct {
@@ -486,9 +496,17 @@ func (o *OpenAPIConfig) validate() error {
 	return nil
 }
 
+// FrameworkDefaultRequestTimeoutSeconds is the inbound request deadline applied
+// when http.requestTimeoutSeconds is unset. An explicit 0 disables the deadline.
+const FrameworkDefaultRequestTimeoutSeconds = 30
+
 func (c *Config) applyDefaults() {
 	if c.HTTP.Addr == "" {
 		c.HTTP.Addr = ":8080"
+	}
+	if c.HTTP.RequestTimeoutSeconds == nil {
+		d := FrameworkDefaultRequestTimeoutSeconds
+		c.HTTP.RequestTimeoutSeconds = &d
 	}
 	if c.Migrations.Dir == "" {
 		c.Migrations.Dir = "./migrations"
