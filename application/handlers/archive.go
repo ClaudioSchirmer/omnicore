@@ -7,13 +7,14 @@ import (
 	"github.com/ClaudioSchirmer/omnicore/domain"
 )
 
-// ArchiveCommandHandler runs Repo.FindByID + cmd.ApplyTo(ctx, current) +
+// ArchiveCommandHandler runs persistence.LoadForWrite + cmd.ApplyTo(ctx, current) +
 // GetArchivable + Repo.Archive(ctx, archivable, opts...) +
-// cmd.FromEntity(ctx, current). The internal FindByID loads the full
+// cmd.FromEntity(ctx, current). The request-ctx-bound load (under
+// http.requestTimeoutSeconds when the repo provides ScopedReader) loads the full
 // aggregate (root + children), ensuring GetArchivable cascades children
 // correctly per the root's AggregateMapping.
 //
-// cmd.ApplyTo lands AFTER FindByID and BEFORE GetArchivable so the Command
+// cmd.ApplyTo lands AFTER the load and BEFORE GetArchivable so the Command
 // can translate the request *AppContext into business-named transient fields
 // on the loaded entity (e.g., u.SetRequestingOwnerID(ctx.Identity().Subject)).
 // GetArchivable then runs BuildRules in ModeUpdate with actionName =
@@ -41,7 +42,7 @@ type ArchiveCommandHandler[T domain.Entity, Cmd pipeline.ArchiveCommand[T, TResu
 func (h *ArchiveCommandHandler[T, Cmd, TResult]) Handle(ctx *configuration.AppContext, cmd Cmd) (TResult, error) {
 	var zero TResult
 	RequirePathID(cmd.PathID(), "ArchiveCommandHandler")
-	current, err := h.Repo.FindByID(domain.NewID(cmd.PathID()))
+	current, err := persistence.LoadForWrite(h.Repo, ctx, domain.NewID(cmd.PathID()))
 	if err != nil {
 		return zero, err
 	}

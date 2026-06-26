@@ -7,15 +7,16 @@ import (
 	"github.com/ClaudioSchirmer/omnicore/domain"
 )
 
-// DeleteCommandHandler runs Repo.FindByID + cmd.ApplyTo(ctx, current) +
+// DeleteCommandHandler runs persistence.LoadForWrite + cmd.ApplyTo(ctx, current) +
 // GetDeletable + Repo.Delete(ctx, deletable, opts...) +
-// cmd.FromEntity(ctx, current). FindByID guarantees audit consistency
-// (snapshot of the entity before the hard delete) and gives FromEntity a
-// populated in-memory entity to read from even though the row is gone
-// post-commit. The SQL cascade of children is the schema's responsibility
+// cmd.FromEntity(ctx, current). The request-ctx-bound load (under
+// http.requestTimeoutSeconds when the repo provides ScopedReader) guarantees
+// audit consistency (snapshot of the entity before the hard delete) and gives
+// FromEntity a populated in-memory entity to read from even though the row is
+// gone post-commit. The SQL cascade of children is the schema's responsibility
 // (ON DELETE CASCADE on the FKs).
 //
-// cmd.ApplyTo runs AFTER FindByID and BEFORE GetDeletable so the Command can
+// cmd.ApplyTo runs AFTER the load and BEFORE GetDeletable so the Command can
 // translate the request *AppContext into business-named transient fields.
 // GetDeletable runs BuildRules in ModeDelete — service uses IfDelete for
 // delete-specific rules (e.g., "cannot delete primary address") and can read
@@ -38,7 +39,7 @@ type DeleteCommandHandler[T domain.Entity, Cmd pipeline.DeleteCommand[T, TResult
 func (h *DeleteCommandHandler[T, Cmd, TResult]) Handle(ctx *configuration.AppContext, cmd Cmd) (TResult, error) {
 	var zero TResult
 	RequirePathID(cmd.PathID(), "DeleteCommandHandler")
-	current, err := h.Repo.FindByID(domain.NewID(cmd.PathID()))
+	current, err := persistence.LoadForWrite(h.Repo, ctx, domain.NewID(cmd.PathID()))
 	if err != nil {
 		return zero, err
 	}

@@ -33,9 +33,25 @@ with `1.0.0`.
   `notifications.RequestTimeoutNotification`,
   `fwweb.WithRequestTimeout(time.Duration)`,
   `(*configuration.AppContext).SetParentIfAbsent`, and
-  `bootstrap.FrameworkDefaultRequestTimeoutSeconds`. Pure request reads via the
-  ctx-less `domain.Reader[T].FindByID` are NOT covered (the port takes no
-  context); the write path, view/query reads and httpclient are.
+  `bootstrap.FrameworkDefaultRequestTimeoutSeconds`. The deadline reaches the
+  write-command pre-load too: the Update / Archive / Delete / Unarchive Auto
+  handlers load the target aggregate under the request ctx via the optional
+  `persistence.ScopedReaderProvider[T]` / `ScopedArchivedReaderProvider[T]`
+  capabilities (helpers `persistence.LoadForWrite` / `LoadArchivedForWrite`),
+  instead of the ctx-less `domain.Reader[T].FindByID` /
+  `domain.ArchivedFinder[T].FindArchivedByID` that would run the load `SELECT` on
+  `context.Background()`. `infra.BaseAggregateRepository[T]` implements both, so
+  the canonical aggregate path is covered with no consumer code; a hand-rolled
+  repository that implements neither degrades to the ctx-less load. The domain
+  ports keep their pure ctx-less signatures — the ctx binds in application/infra,
+  mirroring how `Scope(ctx)` binds writes (added public surface:
+  `persistence.ScopedReaderProvider[T]`, `ScopedArchivedReaderProvider[T]`,
+  `LoadForWrite`, `LoadArchivedForWrite`,
+  `(*infra.BaseAggregateRepository[T]).ScopedReader` / `.ScopedArchivedReader`).
+  So view/query reads, outbound httpclient and the full write path (mutation +
+  pre-load) are covered; a direct call to the ctx-less
+  `domain.Reader[T].FindByID` outside the Auto write handlers stays uncovered by
+  design — the domain port takes no context.
 
 ## [0.16.0] - 2026-06-25
 
