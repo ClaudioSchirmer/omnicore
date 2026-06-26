@@ -8,6 +8,7 @@ import (
 	"github.com/ClaudioSchirmer/omnicore/application/persistence"
 	"github.com/ClaudioSchirmer/omnicore/domain"
 	"github.com/ClaudioSchirmer/omnicore/infra/audit"
+	"github.com/ClaudioSchirmer/omnicore/infra/tracing"
 )
 
 // labelKeyBySchemaCache memoizes the Go-field-name → catalog key map for each
@@ -194,6 +195,10 @@ func populateContext(ev *audit.AuditEvent, ctx persistence.RequestContext, audit
 		return
 	}
 	ev.ThreadID = ctx.ID().String()
+	// RequestContext embeds context.Context, so the active span (if any) rides
+	// it; capture the trace id once here as the single source both audit
+	// destinations mirror.
+	ev.TraceID = tracing.TraceIDFromContext(ctx)
 	ev.Actor = ctx.ActorSubject()
 	ev.ActorIssuer = ctx.ActorIssuer()
 	rawClaims := ctx.ActorClaims()

@@ -55,8 +55,8 @@ func TestInsertAuditEvent_BindsEveryColumn(t *testing.T) {
 	if tx.calls != 1 {
 		t.Fatalf("expected exactly one Exec, got %d", tx.calls)
 	}
-	if len(tx.lastArgs) != 11 {
-		t.Fatalf("expected 11 bound args, got %d", len(tx.lastArgs))
+	if len(tx.lastArgs) != 12 {
+		t.Fatalf("expected 12 bound args, got %d", len(tx.lastArgs))
 	}
 	// Identified actor/issuer/tenant pass through verbatim.
 	if tx.lastArgs[5] != "user-42" {
@@ -67,6 +67,22 @@ func TestInsertAuditEvent_BindsEveryColumn(t *testing.T) {
 	}
 	if tx.lastArgs[7] != "acme" {
 		t.Errorf("tenant arg = %v, want passthrough", tx.lastArgs[7])
+	}
+	// trace_id ($12) is NULL when no span is active in the context.
+	if tx.lastArgs[11] != nil {
+		t.Errorf("trace_id arg = %v, want nil (no active span)", tx.lastArgs[11])
+	}
+}
+
+func TestInsertAuditEvent_TraceIDBoundWhenSet(t *testing.T) {
+	tx := &fakeTx{}
+	ev := sampleEvent()
+	ev.TraceID = "4bf92f3577b34da6a3ce929d0e0e4736"
+	if err := InsertAuditEvent(context.Background(), tx, ev); err != nil {
+		t.Fatalf("InsertAuditEvent: %v", err)
+	}
+	if tx.lastArgs[11] != "4bf92f3577b34da6a3ce929d0e0e4736" {
+		t.Errorf("trace_id arg = %v, want the stamped hex (mirrors the echo)", tx.lastArgs[11])
 	}
 }
 

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"reflect"
 
 	"github.com/ClaudioSchirmer/omnicore/application/configuration"
@@ -358,6 +359,9 @@ func (r *Receiver) handleMessage(
 	// = inbound event's actor header, correlation = inbound correlation
 	// (fallback event_id), causation = inbound event_id.
 	appCtx := buildReceiverAppContext(rawHeaders, eventID)
+	// Thread the consumer span (carried on ctx) onto the fresh AppContext so
+	// the dispatch span of the handler links under it. No-op when tracing off.
+	appCtx.SetTraceContext(ctx)
 
 	reqPtr, reqAny := r.plan.newRequest()
 	if err := json.Unmarshal(rawPayload, reqAny); err != nil {
@@ -443,7 +447,14 @@ func recordIntegrationFailure(ctx context.Context, exec pgExec, r *Receiver, eve
 		// Best-effort: matches the upstream failure-isolation contract.
 		// Kafka offset still advances; subscriber loop carries on.
 		// Slog at Warn so production alerting can catch the side-channel
-		// degradation.
+		// degradation (the failure row could not be persisted).
+		slog.Warn("integration.failure.persist_error",
+			"consumerGroup", r.consumerGroup,
+			"sourceKey", r.sourceKey,
+			"eventKey", r.eventKey,
+			"eventId", eventID.String(),
+			"error", err.Error(),
+		)
 	}
 }
 

@@ -32,6 +32,9 @@ func EchoSlog(ctx persistence.RequestContext, logger *slog.Logger, ev AuditEvent
 		slog.String("actor", ev.Actor),
 		slog.Time("dateTime", ev.DateTime),
 	}
+	if ev.TraceID != "" {
+		attrs = append(attrs, slog.String("traceId", ev.TraceID))
+	}
 	if ev.ActorIssuer != "" {
 		attrs = append(attrs, slog.String("actorIssuer", ev.ActorIssuer))
 	}

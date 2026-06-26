@@ -1089,7 +1089,7 @@ Framework manages numbered SQL files in `cfg.Migrations.Dir` (default `./migrati
 
 Filename `{version}_{name}.{up|down}.sql`; `version` is a monotonic integer.
 
-**Versions 1 and 2 are reserved for the framework control plane** (injected via `embed.FS` from `infra/migration/embedded/`). Version 1 (`0001_outbox`) creates `outbox` (Debezium CDC source) + `omnicore_mongo_views` (Mongo view registry). Version 2 (`0002_integration_events`) creates the integration tables. The framework tracks these in `omnicore_framework_migrations`; service migrations start at `0002+` in `omnicore_migrations` (no collision). Never write the framework SQL manually.
+**Versions 1, 2 and 3 are reserved for the framework control plane** (injected via `embed.FS` from `infra/migration/embedded/`). Version 1 (`0001_outbox`) creates `outbox` (Debezium CDC source) + `omnicore_mongo_views` (Mongo view registry) + `audit_events`. Version 2 (`0002_integration_events`) creates the integration tables. Version 3 (`0003_outbox_traceparent`) adds the trace-context columns `outbox.traceparent`, `integration_events.traceparent` and `audit_events.trace_id` (all nullable). The framework tracks these in `omnicore_framework_migrations`; service migrations start at `0002+` in `omnicore_migrations` (no collision). Never write the framework SQL manually.
 
 `.down.sql` is mandatory (`Manager.ValidateDownExists`) — may be `-- intentionally empty`. The same check rejects any `*.{up,down}.sql` without a parseable `{version}_{name}` prefix with `MigrationFilenameInvalidNotification`.
 
@@ -1097,7 +1097,7 @@ Filename `{version}_{name}.{up|down}.sql`; `version` is a monotonic integer.
 
 | Table | Who writes | Contains |
 |---|---|---|
-| `omnicore_framework_migrations` | Framework (embedded) | versions 1–2 |
+| `omnicore_framework_migrations` | Framework (embedded) | versions 1–3 |
 | `omnicore_migrations` | Service | versions 2+ |
 
 Separate tables avoid version collisions. Each stores `(version BIGINT PRIMARY KEY, dirty BOOLEAN)`. A mid-way failure leaves `dirty=true`, blocking `Up` until `Force`. `.down.sql` is read from disk/embed at `Down(N)` time, never stored.
@@ -1394,11 +1394,80 @@ audit:                      # omitted block = both destinations
     - slog                  # post-commit echo (observability)
     - database              # in-TX audit_events row (source of truth)
   # destinations: []        # explicit empty disables audit
+observability:              # omitted block = tracing off (no-op tracer)
+  tracing:
+    enabled: false          # master switch; no SDK/exporter/propagation when off
+    exporter: otlp          # otlp | stdout (debug-only) | none (propagate, don't export)
+    endpoint: "${OTEL_EXPORTER_OTLP_ENDPOINT:localhost:4317}"
+    insecure: true          # plaintext OTLP/gRPC; profile default dev→true / else→false (TLS)
+    headers: { x-api-key: "${OTEL_COLLECTOR_KEY:}" }   # added to every OTLP export (managed-collector auth); empty → none
+    sampler: parentbased_traceratio   # dev default always_on; else this
+    ratio: 0.1              # keep fraction for the *traceratio samplers
+    serviceName: "${service}"         # defaults to the top-level service identity
+    instrument: [http, pgx, mongo, kafka, httpclient]   # empty → all
 ```
 
 Mandatory: `service`, `postgres.dsn`, `mongo.uri`, `mongo.database`, `kafka.brokers`, `kafka.syncGroupId` — `LoadConfig` errors listing the missing. `auth:` defaults to `{mode: disabled}` when absent (rejected unless `APP_PROFILE=dev`); `mode: jwt` requires `issuer` + `audience` + exactly one of `jwksUrl`/`publicKeyPem`.
 
 `audit.destinations` routes each successful write's `AuditEvent`: absent/default → both `slog`+`database`; `[database]` → only the in-TX PG row (compliance); `[slog]` → only the post-commit echo; `[]` → disabled. Unknown tokens or duplicates abort boot.
+
+## Distributed tracing
+
+OpenTelemetry tracing is opt-in via the `observability.tracing` block (above);
+default off installs the OTel no-op tracer, so an undeclared service pays
+essentially nothing. Tracing is an ADDITIONAL destination (OTLP → a collector
+such as Jaeger/Tempo), never stdout — the stdout logs stay as they are, except
+that records emitted with a span-carrying context gain an additive
+`traceId`/`spanId` (the `http.outbound` line and pipeline failures/exceptions do;
+application code opts in via the `*Context` slog methods). The **audit** event
+carries a `TraceID` stamped once in `populateContext` and mirrored to BOTH
+destinations — the in-TX `audit_events.trace_id` column AND the slog echo's
+`traceId` attribute — so a forensic row or an echo line both pivot to the trace.
+The echo still logs under `context.Background()` (no request-ctx span merge
+post-commit); the `trace_id` rides as an explicit attribute, not via context
+enrichment. `infra/tracing` owns the SDK + globals (`otel.SetTracerProvider` /
+`SetTextMapPropagator`, installed by `bootstrap.buildDeps`); `web` and
+`application` read the globals (`otel.Tracer` / `GetTextMapPropagator`) as a
+third-party import — no `web→infra` / `application→infra` edge. `domain` stays
+pure (no spans).
+
+- **Core invariant** — `AppContext.CorrelationID()` is kept equal to the active
+  span `trace_id` (a `uuid.UUID` is 128 bits = an OTel `TraceID`, mapped
+  byte-for-byte by `tracing.TraceIDFromUUID`/`UUIDFromTraceID`). So logs,
+  traces and `integration_events.correlation_id` join on one value.
+- **Synchronous span tree** — inbound server span (`web.AppContextMiddleware`,
+  extracts `traceparent`, renames to the route template) → `dispatch <Req>`
+  (`pipeline.Dispatch`; the business unit-of-work, inherited identically by
+  Auto/manual/REST/GraphQL since all funnel through `Dispatch`) → pgx
+  (`otelpgx`), mongo (a framework `CommandMonitor`, since the published
+  `otelmongo` targets the v1 driver), and outbound httpclient (an outermost
+  chain layer that starts the client span and injects `traceparent`). The
+  dispatch span is threaded via `AppContext.SetTraceContext` (kept separate
+  from the cancellation parent because fiber v3's `Ctx.Value` does not delegate
+  to the `SetContext`'d context).
+- **Asynchronous links** — producers stamp the W3C `traceparent` on the
+  `outbox` and `integration_events` rows (migration `0003`); Debezium's Outbox
+  Event Router carries it to a Kafka header
+  (`table.fields.additional.placement: "traceparent:header:traceparent"`). The
+  SyncEngine, integration Receiver and UpstreamSubscriber open consumer spans
+  LINKED (messaging convention, not parent/child) to the producing trace. The
+  Debezium hop itself is a blind spot — its latency shows as the gap between
+  the producer span's end and the consumer span's start.
+- **Per-subsystem cost control** — `instrument` toggles `http`/`pgx`/`mongo`/
+  `kafka`/`httpclient`; the toggle is honored at construction
+  (`tracing.Instruments(SubX)` → the layer/tracer is not installed when off, so
+  cost is zero, not merely no-op). `http` gates the server span via
+  `web.WithServerSpanTracing` passed to `AppContextMiddleware`; `kafka` gates the
+  consumer span via `WithKafkaTracing` on `SyncEngine`/`ConsumerPool`/
+  `UpstreamSubscriber` (`tracing.StartConsumerSpanIf`); `pgx`/`mongo`/`httpclient`
+  via the `With*Tracing` option on their constructors. Dropping `http` also skips
+  the inbound `traceparent` extraction + the `CorrelationID == trace_id` bridge,
+  so the `dispatch` span roots the trace locally. The `dispatch` span is always on
+  when enabled (one per request, not a member of the list).
+- **`audit_events.trace_id`** is a pivot column (the 32-char hex trace id), not
+  a carrier — audit is read, never re-consumed, so it needs only the id to jump
+  to the trace, not the full `traceparent` (which additionally carries the
+  producer span id needed to LINK).
 
 ## Authentication middleware
 

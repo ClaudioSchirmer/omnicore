@@ -10,6 +10,7 @@ import (
 	"github.com/ClaudioSchirmer/omnicore/infra/cache"
 	"github.com/ClaudioSchirmer/omnicore/infra/httpclient"
 	"github.com/ClaudioSchirmer/omnicore/infra/integration"
+	"github.com/ClaudioSchirmer/omnicore/infra/tracing"
 	"github.com/ClaudioSchirmer/omnicore/web"
 	"github.com/ClaudioSchirmer/omnicore/web/openapi"
 )
@@ -31,6 +32,12 @@ type Deps struct {
 	Translator *translation.Translator
 	Pipeline   *pipeline.Pipeline
 	ViewReader queries.ViewReader
+
+	// Tracing owns the OpenTelemetry tracer provider's lifetime. Always
+	// non-nil after bootstrap.Build/Run (inert when observability.tracing is
+	// off). serve() flushes it during the drain so buffered spans are exported
+	// before the process exits; framework-managed, services do not read it.
+	Tracing *tracing.Provider
 
 	// Export pre-packages the service-ambient inputs every tabular export
 	// (CSV/XLSX) shares — the Translator (labelKey header rendering) and the

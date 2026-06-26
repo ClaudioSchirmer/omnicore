@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 
+	"github.com/exaring/otelpgx"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
@@ -42,8 +43,36 @@ type Postgres struct {
 	publisher   events.Publisher
 }
 
-func NewPostgres(ctx context.Context, dsn string) (*Postgres, error) {
-	pool, err := pgxpool.New(ctx, dsn)
+// PostgresOption tunes NewPostgres. Variadic so existing callers
+// (NewPostgres(ctx, dsn)) keep compiling unchanged.
+type PostgresOption func(*postgresOptions)
+
+type postgresOptions struct {
+	tracePgx bool
+}
+
+// WithPgxTracing wires the otelpgx query tracer onto the pool so every
+// statement emits a span. bootstrap passes tracing.Instruments(SubPgx); false
+// (the default) leaves the pool untraced and pays nothing.
+func WithPgxTracing(enabled bool) PostgresOption {
+	return func(o *postgresOptions) { o.tracePgx = enabled }
+}
+
+func NewPostgres(ctx context.Context, dsn string, opts ...PostgresOption) (*Postgres, error) {
+	var o postgresOptions
+	for _, opt := range opts {
+		opt(&o)
+	}
+	// ParseConfig + NewWithConfig is exactly what pgxpool.New does internally;
+	// the explicit form is needed to attach the per-connection query tracer.
+	config, err := pgxpool.ParseConfig(dsn)
+	if err != nil {
+		return nil, err
+	}
+	if o.tracePgx {
+		config.ConnConfig.Tracer = otelpgx.NewTracer()
+	}
+	pool, err := pgxpool.NewWithConfig(ctx, config)
 	if err != nil {
 		return nil, err
 	}

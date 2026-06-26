@@ -209,7 +209,10 @@ func TestBaseAggregateRepository_FindByID(t *testing.T) {
 		`INSERT INTO loader_roots (name, email) VALUES ('Y', 'y@x') RETURNING id`).Scan(&id)
 
 	bar := NewBaseAggregateRepository[*loaderRoot](pg, func() *loaderRoot { return &loaderRoot{} })
-	bar.WithSchema(loaderRootSchemaTagsOnly())
+	// loaderRoot.AggregateChildren() declares both children, and a write-capable
+	// BaseAggregateRepository enforces aggregate-boundary agreement, so the full
+	// schema is required (the partial TagsOnly/Flat schemas are loader-only).
+	bar.WithSchema(loaderRootSchema())
 
 	root, err := bar.FindByID(domain.NewID(id))
 	if err != nil {
@@ -230,7 +233,7 @@ func TestBaseAggregateRepository_FindArchivedByID(t *testing.T) {
 		`INSERT INTO loader_roots (name, email, deleted_at) VALUES ('A', 'a@x', NOW()) RETURNING id`).Scan(&id)
 
 	bar := NewBaseAggregateRepository[*loaderRoot](pg, func() *loaderRoot { return &loaderRoot{} })
-	bar.WithSchema(loaderRootSchemaFlat())
+	bar.WithSchema(loaderRootSchema())
 	root, err := bar.FindArchivedByID(domain.NewID(id))
 	if err != nil {
 		t.Fatalf("FindArchivedByID: %v", err)

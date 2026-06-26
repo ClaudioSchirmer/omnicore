@@ -87,7 +87,7 @@ func TestPostgres_Insert_HookFires_AfterBegin(t *testing.T) {
 		called = true
 		return nil
 	})
-	if _, err := pg.Insert(testCtx(), ins, nil, hook); err != nil {
+	if _, err := pg.Insert(testCtx(), ins, flatPersonSchema(), hook); err != nil {
 		t.Fatalf("Insert: %v", err)
 	}
 	if !called {
@@ -109,7 +109,7 @@ func TestPostgres_Insert_HookFires_BeforeCommit(t *testing.T) {
 		gotID = id
 		return nil
 	})
-	if _, err := pg.Insert(testCtx(), ins, nil, hook); err != nil {
+	if _, err := pg.Insert(testCtx(), ins, flatPersonSchema(), hook); err != nil {
 		t.Fatalf("Insert: %v", err)
 	}
 	if gotID.IsEmpty() {
@@ -141,7 +141,7 @@ func TestPostgres_Insert_HookCanWriteCompanionRow(t *testing.T) {
 	hook := buildBeforeCommitHook(func(_ persistence.RequestContext, _ domain.Entity, id domain.ID, tx persistence.TxHandle) error {
 		return insertCompanion(tx, id, "added in hook")
 	})
-	if _, err := pg.Insert(testCtx(), ins, nil, hook); err != nil {
+	if _, err := pg.Insert(testCtx(), ins, flatPersonSchema(), hook); err != nil {
 		t.Fatalf("Insert: %v", err)
 	}
 	if rowCount(t, pg, "companion") != 1 {
@@ -159,7 +159,7 @@ func TestPostgres_Insert_AfterBeginError_RollsBack(t *testing.T) {
 	ins, _ := domain.GetInsertable(&flatPerson{Name: "alice", Email: "a@x"}, nil, "GetInsertable")
 	hook := buildAfterBeginHook(func(persistence.RequestContext, domain.Entity, persistence.TxHandle) error { return wantErr })
 
-	_, err := pg.Insert(testCtx(), ins, nil, hook)
+	_, err := pg.Insert(testCtx(), ins, flatPersonSchema(), hook)
 	if !errors.Is(err, wantErr) {
 		t.Fatalf("expected hook error verbatim, got %v", err)
 	}
@@ -184,7 +184,7 @@ func TestPostgres_Insert_BeforeCommitError_RollsBack(t *testing.T) {
 	ins, _ := domain.GetInsertable(&flatPerson{Name: "alice", Email: "a@x"}, nil, "GetInsertable")
 	hook := buildBeforeCommitHook(func(persistence.RequestContext, domain.Entity, domain.ID, persistence.TxHandle) error { return wantErr })
 
-	_, err := pg.Insert(testCtx(), ins, nil, hook)
+	_, err := pg.Insert(testCtx(), ins, flatPersonSchema(), hook)
 	if !errors.Is(err, wantErr) {
 		t.Fatalf("expected hook error verbatim, got %v", err)
 	}
@@ -209,7 +209,7 @@ func TestPostgres_Insert_HookError_EmitsSlogWarn(t *testing.T) {
 	hook := buildBeforeCommitHook(func(persistence.RequestContext, domain.Entity, domain.ID, persistence.TxHandle) error {
 		return errors.New("rejects")
 	})
-	_, _ = pg.Insert(testCtx(), ins, nil, hook)
+	_, _ = pg.Insert(testCtx(), ins, flatPersonSchema(), hook)
 
 	if !bytes.Contains(buf.Bytes(), []byte("persistence.hook.error")) {
 		t.Errorf("expected slog.Warn line, got %s", buf.String())
@@ -241,7 +241,7 @@ func TestPostgres_Insert_NoHook_BehaviorUnchanged(t *testing.T) {
 	createFlatPersonsTable(t, pg)
 
 	ins, _ := domain.GetInsertable(&flatPerson{Name: "alice", Email: "a@x"}, nil, "GetInsertable")
-	res, err := pg.Insert(testCtx(), ins, nil, writeHook{})
+	res, err := pg.Insert(testCtx(), ins, flatPersonSchema(), writeHook{})
 	if err != nil {
 		t.Fatalf("Insert: %v", err)
 	}
@@ -265,7 +265,7 @@ func TestPostgres_Update_HookFires_BothSlots(t *testing.T) {
 
 	e := &flatPerson{Name: "alice", Email: "a@x"}
 	ins, _ := domain.GetInsertable(e, nil, "GetInsertable")
-	res, _ := pg.Insert(testCtx(), ins, nil, writeHook{})
+	res, _ := pg.Insert(testCtx(), ins, flatPersonSchema(), writeHook{})
 	e.SetID(domain.NewID(res.ID))
 
 	e.Name = "alice2"
@@ -282,7 +282,7 @@ func TestPostgres_Update_HookFires_BothSlots(t *testing.T) {
 			return nil
 		},
 	}
-	if _, err := pg.Update(testCtx(), upd, nil, hook); err != nil {
+	if _, err := pg.Update(testCtx(), upd, flatPersonSchema(), hook); err != nil {
 		t.Fatalf("Update: %v", err)
 	}
 	if !abCalled || !bcCalled {
@@ -297,7 +297,7 @@ func TestPostgres_Update_BeforeCommitError_RollsBack(t *testing.T) {
 
 	e := &flatPerson{Name: "alice", Email: "a@x"}
 	ins, _ := domain.GetInsertable(e, nil, "GetInsertable")
-	res, _ := pg.Insert(testCtx(), ins, nil, writeHook{})
+	res, _ := pg.Insert(testCtx(), ins, flatPersonSchema(), writeHook{})
 	e.SetID(domain.NewID(res.ID))
 
 	original := outboxCount(t, pg)
@@ -306,7 +306,7 @@ func TestPostgres_Update_BeforeCommitError_RollsBack(t *testing.T) {
 	hook := buildBeforeCommitHook(func(persistence.RequestContext, domain.Entity, domain.ID, persistence.TxHandle) error {
 		return errors.New("rejects")
 	})
-	if _, err := pg.Update(testCtx(), upd, nil, hook); err == nil {
+	if _, err := pg.Update(testCtx(), upd, flatPersonSchema(), hook); err == nil {
 		t.Fatal("expected error")
 	}
 	// Outbox should not gain a new row from the rolled-back update.
@@ -327,7 +327,7 @@ func TestPostgres_Archive_HookFires(t *testing.T) {
 
 	e := &flatPerson{Name: "alice", Email: "a@x"}
 	ins, _ := domain.GetInsertable(e, nil, "GetInsertable")
-	res, _ := pg.Insert(testCtx(), ins, nil, writeHook{})
+	res, _ := pg.Insert(testCtx(), ins, flatPersonSchema(), writeHook{})
 	e.SetID(domain.NewID(res.ID))
 
 	arch, _ := domain.GetArchivable(e, nil, "GetArchivable")
@@ -336,7 +336,7 @@ func TestPostgres_Archive_HookFires(t *testing.T) {
 		bcCalled = true
 		return nil
 	})
-	if err := pg.Archive(testCtx(), arch, nil, hook); err != nil {
+	if err := pg.Archive(testCtx(), arch, flatPersonSchema(), hook); err != nil {
 		t.Fatalf("Archive: %v", err)
 	}
 	if !bcCalled {
@@ -351,10 +351,10 @@ func TestPostgres_Unarchive_HookFires(t *testing.T) {
 
 	e := &flatPerson{Name: "alice", Email: "a@x"}
 	ins, _ := domain.GetInsertable(e, nil, "GetInsertable")
-	res, _ := pg.Insert(testCtx(), ins, nil, writeHook{})
+	res, _ := pg.Insert(testCtx(), ins, flatPersonSchema(), writeHook{})
 	e.SetID(domain.NewID(res.ID))
 	arch, _ := domain.GetArchivable(e, nil, "GetArchivable")
-	_ = pg.Archive(testCtx(), arch, nil, writeHook{})
+	_ = pg.Archive(testCtx(), arch, flatPersonSchema(), writeHook{})
 
 	una, _ := domain.GetUnarchivable(e, nil, "GetUnarchivable")
 	bcCalled := false
@@ -362,7 +362,7 @@ func TestPostgres_Unarchive_HookFires(t *testing.T) {
 		bcCalled = true
 		return nil
 	})
-	if err := pg.Unarchive(testCtx(), una, nil, hook); err != nil {
+	if err := pg.Unarchive(testCtx(), una, flatPersonSchema(), hook); err != nil {
 		t.Fatalf("Unarchive: %v", err)
 	}
 	if !bcCalled {
@@ -377,14 +377,14 @@ func TestPostgres_Delete_HookFires_AndRollback(t *testing.T) {
 
 	e := &flatPerson{Name: "alice", Email: "a@x"}
 	ins, _ := domain.GetInsertable(e, nil, "GetInsertable")
-	res, _ := pg.Insert(testCtx(), ins, nil, writeHook{})
+	res, _ := pg.Insert(testCtx(), ins, flatPersonSchema(), writeHook{})
 	e.SetID(domain.NewID(res.ID))
 
 	del, _ := domain.GetDeletable(e, nil, "GetDeletable")
 	hook := buildBeforeCommitHook(func(persistence.RequestContext, domain.Entity, domain.ID, persistence.TxHandle) error {
 		return errors.New("rejects")
 	})
-	if err := pg.Delete(testCtx(), del, nil, hook); err == nil {
+	if err := pg.Delete(testCtx(), del, flatPersonSchema(), hook); err == nil {
 		t.Fatal("expected error")
 	}
 	if rowCount(t, pg, "flat_persons") != 1 {
@@ -414,7 +414,7 @@ func TestPostgres_InsertAggregate_HookFires_BeforeCommit(t *testing.T) {
 		}
 		return nil
 	})
-	if _, err := pg.Insert(testCtx(), ins, nil, hook); err != nil {
+	if _, err := pg.Insert(testCtx(), ins, aggCustomerSchema(), hook); err != nil {
 		t.Fatalf("Insert: %v", err)
 	}
 	if !bcCalled {
@@ -433,7 +433,7 @@ func TestPostgres_InsertAggregate_BeforeCommitError_RollsBackEverything(t *testi
 	hook := buildBeforeCommitHook(func(persistence.RequestContext, domain.Entity, domain.ID, persistence.TxHandle) error {
 		return errors.New("rejects")
 	})
-	if _, err := pg.Insert(testCtx(), ins, nil, hook); err == nil {
+	if _, err := pg.Insert(testCtx(), ins, aggCustomerSchema(), hook); err == nil {
 		t.Fatal("expected error")
 	}
 	if rowCount(t, pg, "agg_customers") != 0 {
@@ -461,7 +461,7 @@ func TestPostgres_HookSlogWarn_AggregatePath(t *testing.T) {
 	hook := buildAfterBeginHook(func(persistence.RequestContext, domain.Entity, persistence.TxHandle) error {
 		return errors.New("rejects")
 	})
-	_, _ = pg.Insert(testCtx(), ins, nil, hook)
+	_, _ = pg.Insert(testCtx(), ins, aggCustomerSchema(), hook)
 
 	if !bytes.Contains(buf.Bytes(), []byte("persistence.hook.error")) {
 		t.Errorf("expected slog.Warn line on aggregate path; got %s", buf.String())
@@ -486,7 +486,7 @@ func TestPostgres_HookPayload_ReceivesContextAndEntity(t *testing.T) {
 		gotSrc = src
 		return nil
 	})
-	if _, err := pg.Insert(wantCtx, ins, nil, hook); err != nil {
+	if _, err := pg.Insert(wantCtx, ins, flatPersonSchema(), hook); err != nil {
 		t.Fatalf("Insert: %v", err)
 	}
 	if gotCtx != wantCtx {
@@ -542,7 +542,7 @@ func TestPostgres_HookPayload_TxHandleUnwrapsToFrameworkTx(t *testing.T) {
 		}
 		return nil
 	})
-	if _, err := pg.Insert(testCtx(), ins, nil, hook); err != nil {
+	if _, err := pg.Insert(testCtx(), ins, flatPersonSchema(), hook); err != nil {
 		t.Fatalf("Insert: %v", err)
 	}
 	if rowCount(t, pg, "tx_smoke") != 3 {

@@ -34,7 +34,26 @@ type MongoDB struct {
 	collFn func(name string) mongoColl
 }
 
-func NewMongoDB(ctx context.Context, uri, dbName string) (*MongoDB, error) {
+// MongoOption tunes NewMongoDB. Variadic so existing callers
+// (NewMongoDB(ctx, uri, db)) keep compiling unchanged.
+type MongoOption func(*mongoOptions)
+
+type mongoOptions struct {
+	trace bool
+}
+
+// WithMongoTracing installs a CommandMonitor that spans every Mongo command.
+// bootstrap passes tracing.Instruments(SubMongo); false (the default) leaves
+// the client untraced and pays nothing.
+func WithMongoTracing(enabled bool) MongoOption {
+	return func(o *mongoOptions) { o.trace = enabled }
+}
+
+func NewMongoDB(ctx context.Context, uri, dbName string, opts ...MongoOption) (*MongoDB, error) {
+	var o mongoOptions
+	for _, opt := range opts {
+		opt(&o)
+	}
 	// DefaultDocumentM normalizes the decoder so nested documents inside
 	// arrays land as bson.M (= map[string]any), matching the top-level
 	// shape. Without it the driver decodes array-of-doc elements as bson.D
@@ -46,6 +65,9 @@ func NewMongoDB(ctx context.Context, uri, dbName string) (*MongoDB, error) {
 	clientOpts := options.Client().
 		ApplyURI(uri).
 		SetBSONOptions(&options.BSONOptions{DefaultDocumentM: true})
+	if o.trace {
+		clientOpts.SetMonitor(newMongoCommandMonitor())
+	}
 	client, err := mongo.Connect(clientOpts)
 	if err != nil {
 		return nil, err

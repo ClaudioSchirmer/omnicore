@@ -28,6 +28,7 @@ type AppContext struct {
 	correlationID uuid.UUID
 	causationID   uuid.UUID
 	parent        context.Context
+	traceCtx      context.Context
 }
 
 func NewAppContext(id uuid.UUID, lang Language) *AppContext {
@@ -213,6 +214,43 @@ func (c *AppContext) parentCtx() context.Context {
 		return context.Background()
 	}
 	return c.parent
+}
+
+// Parent returns the current cancellation/value parent (the fiber request ctx
+// in production, context.Background() when unset). The tracing layer reads it to
+// start a span FROM the parent — never from the AppContext itself, which would
+// form a Value/Deadline delegation cycle once the resulting span context is set
+// back as the new parent.
+func (c *AppContext) Parent() context.Context {
+	return c.parentCtx()
+}
+
+// SetTraceContext records the context carrying the inbound server span, set by
+// the web AppContextMiddleware. It is kept SEPARATE from the cancellation parent
+// because fiber v3's Ctx.Value does not delegate to the context installed via
+// SetContext — so the span cannot ride the parent chain. The pipeline starts the
+// business span FROM this context, making it a child of the server span. A plain
+// context.Context (no OpenTelemetry import in this layer); nil clears it.
+func (c *AppContext) SetTraceContext(ctx context.Context) {
+	c.mu.Lock()
+	c.traceCtx = ctx
+	c.mu.Unlock()
+}
+
+// TraceContext returns the inbound-span context set by SetTraceContext, falling
+// back to the cancellation parent and then context.Background() — so the
+// pipeline span code has a non-nil base whether or not an inbound span exists
+// (tests, jobs, tracing disabled).
+func (c *AppContext) TraceContext() context.Context {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	if c.traceCtx != nil {
+		return c.traceCtx
+	}
+	if c.parent != nil {
+		return c.parent
+	}
+	return context.Background()
 }
 
 func (c *AppContext) Deadline() (time.Time, bool) { return c.parentCtx().Deadline() }

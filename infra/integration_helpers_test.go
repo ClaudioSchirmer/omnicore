@@ -132,6 +132,7 @@ func createFrameworkTables(ctx context.Context, pool *pgxpool.Pool) error {
 			aggregate_id TEXT NOT NULL,
 			event_type TEXT NOT NULL,
 			payload JSONB NOT NULL,
+			traceparent VARCHAR(64),
 			created_at TIMESTAMP NOT NULL DEFAULT NOW()
 		)`,
 		`CREATE TABLE omnicore_mongo_views (
@@ -161,6 +162,7 @@ func createFrameworkTables(ctx context.Context, pool *pgxpool.Pool) error {
 			actor         VARCHAR(255),
 			actor_issuer  VARCHAR(255),
 			tenant_id     VARCHAR(255),
+			trace_id      VARCHAR(32),
 			thread_id     UUID         NOT NULL,
 			occurred_at   TIMESTAMP    NOT NULL,
 			created_at    TIMESTAMP    NOT NULL DEFAULT NOW(),

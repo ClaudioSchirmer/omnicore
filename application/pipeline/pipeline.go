@@ -1,6 +1,7 @@
 package pipeline
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -72,9 +73,22 @@ func Dispatch[TReq Request, TRes any](
 	req TReq,
 	h Handler[TReq, TRes],
 ) Result[TRes] {
-	return Run(p, ctx, func() (TRes, error) {
+	if ctx == nil {
+		// Run reports the missing-context failure; no span without a context to
+		// hang it on.
+		return Run(p, ctx, func() (TRes, error) {
+			return h.Handle(ctx, req)
+		})
+	}
+
+	span, end := beginDispatchSpan(ctx, req)
+	defer end()
+
+	result := Run(p, ctx, func() (TRes, error) {
 		return h.Handle(ctx, req)
 	})
+	recordDispatchOutcome(span, result.Err())
+	return result
 }
 
 func DispatchAll[TReq Request, TRes any](
@@ -103,7 +117,9 @@ func contextNotInitialized[T any](p *Pipeline) Result[T] {
 }
 
 func (p *Pipeline) logFailure(ctx *configuration.AppContext, err error, carrier domain.NotificationCarrier) {
-	p.logger.Info("pipeline failure",
+	// InfoContext so the tracing slog handler stamps traceId/spanId from the
+	// dispatch span the AppContext carries during Run.
+	p.logger.InfoContext(ctx, "pipeline failure",
 		slog.String("threadId", ctx.ID().String()),
 		slog.String("errorType", fmt.Sprintf("%T", err)),
 		slog.Int("contexts", len(carrier.NotificationContexts())),
@@ -112,10 +128,12 @@ func (p *Pipeline) logFailure(ctx *configuration.AppContext, err error, carrier 
 
 func (p *Pipeline) logException(ctx *configuration.AppContext, err error) {
 	threadID := "nil"
+	logCtx := context.Background()
 	if ctx != nil {
 		threadID = ctx.ID().String()
+		logCtx = ctx
 	}
-	p.logger.Error("pipeline exception",
+	p.logger.ErrorContext(logCtx, "pipeline exception",
 		slog.String("threadId", threadID),
 		slog.String("error", err.Error()),
 	)
