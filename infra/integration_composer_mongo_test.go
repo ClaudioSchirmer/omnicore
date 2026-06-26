@@ -220,11 +220,19 @@ func TestMongoViewReader_ReadByID_HitMissAndArchivedFilter(t *testing.T) {
 		t.Fatalf("InsertMany: %v", err)
 	}
 
-	reader := NewMongoViewReader(m)
+	// The reader needs the view schema to know deleted_at is the soft-delete
+	// marker (and to translate columns to Go field names on read); production
+	// always registers it via SetViews. Without it the by-id archived filter
+	// cannot engage.
+	reader := NewMongoViewReader(m).SetViews([]*ViewDefinition{
+		View("users").Root("users").
+			Schema(NewExternalSchema("users").PK("id").Field("Email", "email").SoftDelete("deleted_at")).
+			Version(1),
+	})
 
-	// Hit + active.
+	// Hit + active. With a schema, the doc is keyed by Go field name (Email).
 	doc, ok, err := reader.ReadByID(ctx, "users", "u1", queries.ReadCriteria{})
-	if err != nil || !ok || doc["email"] != "alice@x" {
+	if err != nil || !ok || doc["Email"] != "alice@x" {
 		t.Errorf("ReadByID active = (%+v, %v, %v)", doc, ok, err)
 	}
 
@@ -236,7 +244,7 @@ func TestMongoViewReader_ReadByID_HitMissAndArchivedFilter(t *testing.T) {
 
 	// Archived visible via IncludeArchived.
 	doc, ok, err = reader.ReadByID(ctx, "users", "u2", queries.ReadCriteria{IncludeArchived: true})
-	if err != nil || !ok || doc["email"] != "bob@x" {
+	if err != nil || !ok || doc["Email"] != "bob@x" {
 		t.Errorf("ReadByID with IncludeArchived = (%+v, %v, %v)", doc, ok, err)
 	}
 
