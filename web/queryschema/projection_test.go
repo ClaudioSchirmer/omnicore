@@ -61,11 +61,11 @@ type projEmbed struct {
 
 type projResp struct {
 	*projEmbed              // anonymous pointer-to-struct → promoted
-	Name      *string       `json:"name,omitempty"`
-	Hidden    *string       `json:"-"` // skipped
-	NoTag     *string       // empty json tag → falls back to field name
-	Self      *projChild    `json:"self,omitempty"`
-	Lines     []*projChild  `json:"lines,omitempty"`
+	Name       *string      `json:"name,omitempty"`
+	Hidden     *string      `json:"-"` // skipped
+	NoTag      *string      // empty json tag → falls back to field name
+	Self       *projChild   `json:"self,omitempty"`
+	Lines      []*projChild `json:"lines,omitempty"`
 }
 
 func TestExtractProjectionSchema_PointerAndNested(t *testing.T) {
@@ -261,11 +261,11 @@ type invalidGuardChild struct {
 }
 
 type invalidResp struct {
-	guardEmbedScalar                        // anonymous struct → recurse
-	Scalar           string                 `json:"scalar"`        // missing omitempty + non-pointer
-	Hidden           string                 `json:"-"`             // skipped
-	Bag              map[string]any         `json:"bag,omitempty"` // map → accepted
-	Children         []*invalidGuardChild   `json:"children,omitempty"`
+	guardEmbedScalar                      // anonymous struct → recurse
+	Scalar           string               `json:"scalar"`        // missing omitempty + non-pointer
+	Hidden           string               `json:"-"`             // skipped
+	Bag              map[string]any       `json:"bag,omitempty"` // map → accepted
+	Children         []*invalidGuardChild `json:"children,omitempty"`
 }
 
 func TestValidateFieldsResponse_ReportsViolationsAndFormats(t *testing.T) {

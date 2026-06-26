@@ -43,8 +43,8 @@ func NewComposerWithMongo(pg *Postgres, mongo *MongoDB) *Composer {
 // straight from its TableSchema. The schema is mandatory on every view (root and
 // embed), so there is no convention fallback — a view declared without a schema
 // is rejected at boot, not silently mapped to "id"/"deleted_at".
-func schemaPK(s *TableSchema) string                    { return s.PKColumn() }
-func schemaSoftDelete(s *TableSchema) (string, bool)    { return s.softDeleteColumn() }
+func schemaPK(s *TableSchema) string                 { return s.PKColumn() }
+func schemaSoftDelete(s *TableSchema) (string, bool) { return s.softDeleteColumn() }
 
 func (c *Composer) Compose(ctx context.Context, view *ViewDefinition, rootID string) (bson.M, error) {
 	includeArchived := !view.deleteOnArchive

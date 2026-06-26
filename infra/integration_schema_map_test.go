@@ -6,8 +6,8 @@ import (
 	"context"
 	"testing"
 
-	"github.com/ClaudioSchirmer/omnicore/infra/criteria"
 	"github.com/ClaudioSchirmer/omnicore/domain"
+	"github.com/ClaudioSchirmer/omnicore/infra/criteria"
 )
 
 // schemaPerson exercises the TableSchema end-to-end: a renamed PK
@@ -26,7 +26,7 @@ func (e *schemaPerson) Modes() []domain.EntityMode {
 	return []domain.EntityMode{domain.ModeInsert, domain.ModeUpdate, domain.ModeArchive, domain.ModeUnarchive}
 }
 func (*schemaPerson) BuildRules(string, domain.Service, *domain.Rules) {}
-func (e *schemaPerson) GetAggregateRoot() *domain.AggregateRoot { return &e.AggregateRoot }
+func (e *schemaPerson) GetAggregateRoot() *domain.AggregateRoot        { return &e.AggregateRoot }
 func (*schemaPerson) AggregateChildren() []domain.AggregateValueObject {
 	return []domain.AggregateValueObject{schemaTag{}}
 }

@@ -46,16 +46,17 @@ const shutdownTimeout = 10 * time.Second
 //  7. Translator.Import of the service modules
 //  8. Migrations (if cfg.Migrations.AutoRun)
 //  9. collectViews (aggregates Views from ReadableFeatures + rejects collision)
+//
 // 10. CheckServiceRegistry (DB-per-service guard — warn in dev, abort otherwise)
-//     + ApplyMongoSpecs (declared indexes / validators / collation / capped /
+//   - ApplyMongoSpecs (declared indexes / validators / collation / capped /
 //     time-series materialized on the Mongo cluster) — skipped when no views
-// 11. SyncEngine.Start if views are not empty
-// 12. Fiber + Recover/Logger/AppContextMiddleware + AuthMiddleware (when
+//     11. SyncEngine.Start if views are not empty
+//     12. Fiber + Recover/Logger/AppContextMiddleware + AuthMiddleware (when
 //     auth.mode=jwt) + automatic /health
-// 13. f.Mount(app, deps) for each Feature
-// 14. Wiring.BeforeServe(app, deps) if set
-// 15. app.Listen in a goroutine
-// 16. waits for ctx.Done() → ShutdownWithContext(10s) → Wiring.OnShutdown
+//     13. f.Mount(app, deps) for each Feature
+//     14. Wiring.BeforeServe(app, deps) if set
+//     15. app.Listen in a goroutine
+//     16. waits for ctx.Done() → ShutdownWithContext(10s) → Wiring.OnShutdown
 //
 // Returns boot error (invalid yaml, failed connection, validate, BeforeServe,
 // listen) or nil when the server starts and terminates by signal.

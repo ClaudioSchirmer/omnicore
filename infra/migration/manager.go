@@ -5,11 +5,11 @@
 //
 // The Manager operates 2 distinct migrate.Migrate instances in sequence:
 //
-//   1. Framework — iofs source (embedded), tracking table
-//      "omnicore_framework_migrations". Applies 0001_outbox before the
-//      service schema.
-//   2. Service — file:// source (m.dir), tracking table
-//      "omnicore_migrations". Applies 0002+ of the service.
+//  1. Framework — iofs source (embedded), tracking table
+//     "omnicore_framework_migrations". Applies 0001_outbox before the
+//     service schema.
+//  2. Service — file:// source (m.dir), tracking table
+//     "omnicore_migrations". Applies 0002+ of the service.
 //
 // Two tracking tables avoid version collision: framework and service can
 // both have "version 1" without conflict because each has its own history.

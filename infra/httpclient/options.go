@@ -25,9 +25,9 @@ type InvokeOption func(*invokeConfig)
 // runtime acceptable status, no timeout override.
 type invokeConfig struct {
 	// Additive runtime injection
-	extraHeaders     map[string]string
-	extraQuery       url.Values
-	clientCert       *tls.Certificate
+	extraHeaders map[string]string
+	extraQuery   url.Values
+	clientCert   *tls.Certificate
 
 	// CallConfig-sourced overrides
 	baseURLOverride       string

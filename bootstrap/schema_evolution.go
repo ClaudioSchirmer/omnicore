@@ -119,8 +119,8 @@ func formatMigrationDirtyDiagnostic(version uint) string {
 //   - DriftForgotToBump  — abort under check/true (no escape; bump the version).
 //   - autoRun=check      — any non-None decision aborts with §14 diagnostic.
 //   - autoRun=true       — dispatch per-plan over the 5 actionable decisions
-//                          (None / FreshInit / MongoWiped / ArtifactOnly /
-//                           RebuildRequired / Downgrade-with-allowDowngrade).
+//     (None / FreshInit / MongoWiped / ArtifactOnly /
+//     RebuildRequired / Downgrade-with-allowDowngrade).
 //
 // Returns nil only when the registry is fully reconciled to the declared
 // shape (every plan either No-op'd, was Init'd, was Refreshed, or

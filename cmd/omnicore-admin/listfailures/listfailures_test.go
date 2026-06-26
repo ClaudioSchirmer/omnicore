@@ -75,8 +75,8 @@ func TestRenderJSON_Envelope(t *testing.T) {
 		t.Fatalf("renderJSON: %v", err)
 	}
 	var envelope struct {
-		Count     int                          `json:"count"`
-		Truncated bool                         `json:"truncated"`
+		Count     int                           `json:"count"`
+		Truncated bool                          `json:"truncated"`
 		Items     []infra.UpstreamFailureRecord `json:"items"`
 	}
 	if err := json.Unmarshal(buf.Bytes(), &envelope); err != nil {

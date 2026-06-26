@@ -37,12 +37,12 @@ type SortField struct {
 // Search + IncludeArchived remain valid in count mode — the use case is
 // "how many docs match this filtered subset".
 type ReadCriteria struct {
-	Filter          map[string]any
-	Sort            []SortField
-	Projection      map[string]int
-	Limit           int64
-	After           string
-	Before          string
+	Filter     map[string]any
+	Sort       []SortField
+	Projection map[string]int
+	Limit      int64
+	After      string
+	Before     string
 	// Backward requests the page that PRECEDES the window in canonical order —
 	// the keyset walk runs in inverted sort order and the slice is restored to
 	// canonical order before returning. It is the explicit direction signal: the

@@ -82,17 +82,17 @@ type SigningConfig struct {
 // Built once at New from a validated SigningConfig so the request path
 // performs no map lookups or string parsing.
 type signingPolicy struct {
-	enabled              bool
-	algorithm            string
-	keyId                string
-	keyIdHeader          string
-	secret               []byte
-	signedHeaders        []string // lowercase, sorted
-	timestampHeader      string
-	timestampFormat      string
-	contentSHA256Header  string // empty means do not inject
-	signatureHeader      string
-	signaturePrefix      string
+	enabled             bool
+	algorithm           string
+	keyId               string
+	keyIdHeader         string
+	secret              []byte
+	signedHeaders       []string // lowercase, sorted
+	timestampHeader     string
+	timestampFormat     string
+	contentSHA256Header string // empty means do not inject
+	signatureHeader     string
+	signaturePrefix     string
 }
 
 // disabled reports whether the policy is a no-op. Used by buildChain to

@@ -10,7 +10,6 @@
 // are introduced as separate canonical surfaces in the dedicated phases.
 package httpclient
 
-
 // Config carries the httpClient: block of microservice.<profile>.yaml.
 //
 // Presence on bootstrap.Config.HttpClient is the meaningful signal for the

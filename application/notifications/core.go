@@ -2,8 +2,12 @@ package notifications
 
 import "github.com/ClaudioSchirmer/omnicore/domain"
 
-type ContextNotInitializedNotification struct{ domain.ApplicationNotificationBase }
-type ServiceUnavailableNotification struct{ domain.ApplicationNotificationBase }
+type ContextNotInitializedNotification struct {
+	domain.ApplicationNotificationBase
+}
+type ServiceUnavailableNotification struct {
+	domain.ApplicationNotificationBase
+}
 
 // ServiceUnavailable is the only kernel application notification whose
 // natural transport semantic differs from the default Validation (422).
@@ -14,20 +18,26 @@ func (ServiceUnavailableNotification) Semantic() domain.NotificationSemantic {
 // MissingAuthorizationNotification is emitted by the auth middleware when the
 // Authorization header is absent or does not follow the `Bearer <token>`
 // shape — the client never presented a credential.
-type MissingAuthorizationNotification struct{ domain.ApplicationNotificationBase }
+type MissingAuthorizationNotification struct {
+	domain.ApplicationNotificationBase
+}
 
 // InvalidTokenNotification is emitted by the auth middleware when the bearer
 // token fails local validation: signature mismatch, wrong issuer / audience /
 // algorithm, malformed JWT, or any other reason the token cannot be trusted
 // at all. Distinct from ExpiredTokenNotification so clients can branch on
 // re-login vs refresh.
-type InvalidTokenNotification struct{ domain.ApplicationNotificationBase }
+type InvalidTokenNotification struct {
+	domain.ApplicationNotificationBase
+}
 
 // ExpiredTokenNotification is emitted by the auth middleware when the bearer
 // token's `exp` claim is in the past (after the configured leeway). Split
 // from InvalidTokenNotification because clients typically respond by
 // refreshing the token rather than re-authenticating from scratch.
-type ExpiredTokenNotification struct{ domain.ApplicationNotificationBase }
+type ExpiredTokenNotification struct {
+	domain.ApplicationNotificationBase
+}
 
 func (MissingAuthorizationNotification) Semantic() domain.NotificationSemantic {
 	return domain.SemanticUnauthorized
@@ -44,7 +54,9 @@ func (ExpiredTokenNotification) Semantic() domain.NotificationSemantic {
 // or middleware. The wire envelope carries only the typed notification key
 // and the translated message — the underlying cause stays on the server log
 // and is never leaked over the wire.
-type InternalServerErrorNotification struct{ domain.ApplicationNotificationBase }
+type InternalServerErrorNotification struct {
+	domain.ApplicationNotificationBase
+}
 
 func (InternalServerErrorNotification) Semantic() domain.NotificationSemantic {
 	return domain.SemanticInternal
@@ -54,7 +66,9 @@ func (InternalServerErrorNotification) Semantic() domain.NotificationSemantic {
 // router cannot match the incoming METHOD + path. The FieldName carries the
 // METHOD /path so clients can branch UI on the missing route without parsing
 // the translated message.
-type RouteNotFoundNotification struct{ domain.ApplicationNotificationBase }
+type RouteNotFoundNotification struct {
+	domain.ApplicationNotificationBase
+}
 
 func (RouteNotFoundNotification) Semantic() domain.NotificationSemantic {
 	return domain.SemanticNotFound
@@ -64,7 +78,9 @@ func (RouteNotFoundNotification) Semantic() domain.NotificationSemantic {
 // router matches the path but rejects the HTTP method (the path is registered
 // for at least one other verb). FieldName carries the METHOD /path so clients
 // can surface the mismatch without parsing the translated message.
-type MethodNotAllowedNotification struct{ domain.ApplicationNotificationBase }
+type MethodNotAllowedNotification struct {
+	domain.ApplicationNotificationBase
+}
 
 func (MethodNotAllowedNotification) Semantic() domain.NotificationSemantic {
 	return domain.SemanticMethodNotAllowed
@@ -73,7 +89,9 @@ func (MethodNotAllowedNotification) Semantic() domain.NotificationSemantic {
 // PayloadTooLargeNotification is emitted by the web ErrorHandler when Fiber's
 // BodyLimit middleware rejects a request whose body exceeds the configured
 // maximum size. FieldName carries the METHOD /path of the rejected request.
-type PayloadTooLargeNotification struct{ domain.ApplicationNotificationBase }
+type PayloadTooLargeNotification struct {
+	domain.ApplicationNotificationBase
+}
 
 func (PayloadTooLargeNotification) Semantic() domain.NotificationSemantic {
 	return domain.SemanticPayloadTooLarge
@@ -84,7 +102,9 @@ func (PayloadTooLargeNotification) Semantic() domain.NotificationSemantic {
 // via fwopenapi.RequirePermission. The required permission string is carried
 // as the notification's FieldValue so the wire response surfaces it (the
 // FieldName is "permission" by convention).
-type MissingPermissionNotification struct{ domain.ApplicationNotificationBase }
+type MissingPermissionNotification struct {
+	domain.ApplicationNotificationBase
+}
 
 func (MissingPermissionNotification) Semantic() domain.NotificationSemantic {
 	return domain.SemanticForbidden
@@ -95,7 +115,9 @@ func (MissingPermissionNotification) Semantic() domain.NotificationSemantic {
 // carries no tenant claim. Short-circuits the request before reaching any
 // handler — the principal cannot be scoped to a tenant the framework does not
 // know.
-type TenantMissingNotification struct{ domain.ApplicationNotificationBase }
+type TenantMissingNotification struct {
+	domain.ApplicationNotificationBase
+}
 
 func (TenantMissingNotification) Semantic() domain.NotificationSemantic {
 	return domain.SemanticForbidden
@@ -107,7 +129,9 @@ func (TenantMissingNotification) Semantic() domain.NotificationSemantic {
 // it automatically (tenant scoping lives in application/domain, not in
 // infra) — it is offered here so services do not need to declare their own
 // tenant-mismatch type per aggregate.
-type TenantMismatchNotification struct{ domain.ApplicationNotificationBase }
+type TenantMismatchNotification struct {
+	domain.ApplicationNotificationBase
+}
 
 func (TenantMismatchNotification) Semantic() domain.NotificationSemantic {
 	return domain.SemanticForbidden
@@ -119,7 +143,9 @@ func (TenantMismatchNotification) Semantic() domain.NotificationSemantic {
 // ToCriteria. The field is removed from the read either way; the 403 marks the
 // active attempt (a passively-omitted field gets no notification, just absence).
 // The restricted Go field path is carried as the notification's FieldName.
-type FieldAccessForbiddenNotification struct{ domain.ApplicationNotificationBase }
+type FieldAccessForbiddenNotification struct {
+	domain.ApplicationNotificationBase
+}
 
 func (FieldAccessForbiddenNotification) Semantic() domain.NotificationSemantic {
 	return domain.SemanticForbidden

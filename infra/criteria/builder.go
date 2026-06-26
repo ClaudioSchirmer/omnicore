@@ -21,8 +21,12 @@ func In(field string, vs ...any) Expr  { return Comparison{Field: field, Op: OpI
 func Nin(field string, vs ...any) Expr { return Comparison{Field: field, Op: OpNin, Values: vs} }
 
 // Like / ILike take the raw pattern — the caller controls the % / _ wildcards.
-func Like(field, pattern string) Expr  { return Comparison{Field: field, Op: OpLike, Values: []any{pattern}} }
-func ILike(field, pattern string) Expr { return Comparison{Field: field, Op: OpILike, Values: []any{pattern}} }
+func Like(field, pattern string) Expr {
+	return Comparison{Field: field, Op: OpLike, Values: []any{pattern}}
+}
+func ILike(field, pattern string) Expr {
+	return Comparison{Field: field, Op: OpILike, Values: []any{pattern}}
+}
 
 func IsNull(field string) Expr  { return Comparison{Field: field, Op: OpIsNull} }
 func NotNull(field string) Expr { return Comparison{Field: field, Op: OpNotNull} }
@@ -59,8 +63,8 @@ type Scope uint8
 
 const (
 	ScopeActive          Scope = iota // deleted_at IS NULL (default)
-	ScopeIncludeArchived               // active + archived (no deleted_at gate)
-	ScopeOnlyArchived                  // deleted_at IS NOT NULL
+	ScopeIncludeArchived              // active + archived (no deleted_at gate)
+	ScopeOnlyArchived                 // deleted_at IS NOT NULL
 )
 
 // OrderField is one ORDER BY term. Field is the Go field name.

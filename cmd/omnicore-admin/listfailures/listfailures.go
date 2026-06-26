@@ -127,9 +127,9 @@ func execute(ctx context.Context, pg *infra.Postgres, opt executeOptions) error 
 // shape so downstream tooling never has to guess whether the array was capped.
 func renderJSON(out io.Writer, rows []infra.UpstreamFailureRecord, truncated bool) error {
 	envelope := struct {
-		Count     int                            `json:"count"`
-		Truncated bool                           `json:"truncated"`
-		Items     []infra.UpstreamFailureRecord  `json:"items"`
+		Count     int                           `json:"count"`
+		Truncated bool                          `json:"truncated"`
+		Items     []infra.UpstreamFailureRecord `json:"items"`
 	}{
 		Count:     len(rows),
 		Truncated: truncated,

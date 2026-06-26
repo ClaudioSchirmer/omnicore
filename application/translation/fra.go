@@ -27,10 +27,10 @@ func (coreFR) Translations() map[string]string {
 		"ServiceIsRequiredNotification":       "Le service est obligatoire.",
 
 		// Aggregate root
-		"EntityAlreadyAddedNotification":      "L'entité a déjà été ajoutée.",
-		"EntityDoesNotExistNotification":      "L'entité n'existe pas.",
-		"EntityIsNotActiveNotification":       "L'entité n'est pas active.",
-		"InvalidAggregateChildNotification":   "Ce type d'objet n'appartient pas à cet agrégat.",
+		"EntityAlreadyAddedNotification":    "L'entité a déjà été ajoutée.",
+		"EntityDoesNotExistNotification":    "L'entité n'existe pas.",
+		"EntityIsNotActiveNotification":     "L'entité n'est pas active.",
+		"InvalidAggregateChildNotification": "Ce type d'objet n'appartient pas à cet agrégat.",
 
 		// Repository
 		"RepositoryFunctionNotImplementedNotification": "Fonction du référentiel non implémentée.",

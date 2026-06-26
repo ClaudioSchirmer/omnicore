@@ -19,18 +19,18 @@ package criteria
 type Operator string
 
 const (
-	OpEq      Operator = "eq"     // field = value
-	OpNe      Operator = "ne"     // field <> value
-	OpIn      Operator = "in"     // field IN (values…)
-	OpNin     Operator = "nin"    // field NOT IN (values…)
-	OpGt      Operator = "gt"     // field > value
-	OpGte     Operator = "gte"    // field >= value
-	OpLt      Operator = "lt"     // field < value
-	OpLte     Operator = "lte"    // field <= value
-	OpLike    Operator = "like"   // field LIKE pattern (case-sensitive; caller supplies % / _)
-	OpILike   Operator = "ilike"  // field ILIKE pattern (case-insensitive)
-	OpIsNull  Operator = "isnull" // field IS NULL
-	OpNotNull Operator = "notnull"// field IS NOT NULL
+	OpEq      Operator = "eq"      // field = value
+	OpNe      Operator = "ne"      // field <> value
+	OpIn      Operator = "in"      // field IN (values…)
+	OpNin     Operator = "nin"     // field NOT IN (values…)
+	OpGt      Operator = "gt"      // field > value
+	OpGte     Operator = "gte"     // field >= value
+	OpLt      Operator = "lt"      // field < value
+	OpLte     Operator = "lte"     // field <= value
+	OpLike    Operator = "like"    // field LIKE pattern (case-sensitive; caller supplies % / _)
+	OpILike   Operator = "ilike"   // field ILIKE pattern (case-insensitive)
+	OpIsNull  Operator = "isnull"  // field IS NULL
+	OpNotNull Operator = "notnull" // field IS NOT NULL
 )
 
 // LogicalOp combines sub-expressions.

@@ -12,7 +12,7 @@ type expUser struct {
 	Email string // intentionally unlabeled
 }
 
-func (e *expUser) Modes() []domain.EntityMode { return []domain.EntityMode{domain.ModeInsert} }
+func (e *expUser) Modes() []domain.EntityMode                       { return []domain.EntityMode{domain.ModeInsert} }
 func (e *expUser) BuildRules(string, domain.Service, *domain.Rules) {}
 
 type expAddr struct {
@@ -20,7 +20,7 @@ type expAddr struct {
 	ZipCode string `labelKey:"AddressZipCodeField"`
 }
 
-func (a expAddr) GetID() string                            { return a.ID }
+func (a expAddr) GetID() string                                    { return a.ID }
 func (a expAddr) BuildRules(string, domain.Service, *domain.Rules) {}
 
 func buildExportTestView() *ViewDefinition {

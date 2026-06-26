@@ -124,9 +124,9 @@ func TestParseJSONPath(t *testing.T) {
 		{"$", nil, false},
 		{"$.active", []string{"active"}, false},
 		{"$.data.is_active", []string{"data", "is_active"}, false},
-		{"active", nil, true},     // missing $
-		{"$active", nil, true},    // missing . after $
-		{"$..active", nil, true},  // empty segment
+		{"active", nil, true},    // missing $
+		{"$active", nil, true},   // missing . after $
+		{"$..active", nil, true}, // empty segment
 	}
 	for _, tc := range cases {
 		got, err := parseJSONPath(tc.in)

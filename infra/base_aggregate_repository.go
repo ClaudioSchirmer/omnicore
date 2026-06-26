@@ -7,8 +7,8 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/ClaudioSchirmer/omnicore/infra/criteria"
 	"github.com/ClaudioSchirmer/omnicore/domain"
+	"github.com/ClaudioSchirmer/omnicore/infra/criteria"
 )
 
 // BaseAggregateRepository[T] composes the canonical building blocks of an

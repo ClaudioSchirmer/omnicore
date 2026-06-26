@@ -215,7 +215,6 @@ func wireName(f reflect.StructField) (string, bool) {
 	return name, false
 }
 
-
 // remapDoc produces a new doc where each entry's key is the wire name and
 // each value has been recursively remapped according to plan. Entries that
 // the plan does not declare are dropped (they would not land in R anyway).

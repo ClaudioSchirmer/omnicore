@@ -13,5 +13,5 @@ func NewNoneProvider(name string) *NoneProvider {
 	return &NoneProvider{name: name}
 }
 
-func (p *NoneProvider) Name() string                 { return p.name }
+func (p *NoneProvider) Name() string                  { return p.name }
 func (p *NoneProvider) Apply(req *http.Request) error { return nil }

@@ -25,7 +25,7 @@ import (
 type Gate func(handler fiber.Handler, permission string) fiber.Handler
 
 var (
-	gateMu       sync.RWMutex
+	gateMu         sync.RWMutex
 	registeredGate Gate
 )
 

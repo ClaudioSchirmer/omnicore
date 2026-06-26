@@ -27,10 +27,10 @@ func (coreENG) Translations() map[string]string {
 		"ServiceIsRequiredNotification":       "Service is required.",
 
 		// Aggregate root
-		"EntityAlreadyAddedNotification":      "Entity has already been added.",
-		"EntityDoesNotExistNotification":      "Entity does not exist.",
-		"EntityIsNotActiveNotification":       "Entity is not active.",
-		"InvalidAggregateChildNotification":   "This object type does not belong to this aggregate.",
+		"EntityAlreadyAddedNotification":    "Entity has already been added.",
+		"EntityDoesNotExistNotification":    "Entity does not exist.",
+		"EntityIsNotActiveNotification":     "Entity is not active.",
+		"InvalidAggregateChildNotification": "This object type does not belong to this aggregate.",
 
 		// Repository
 		"RepositoryFunctionNotImplementedNotification": "Repository function is not implemented.",

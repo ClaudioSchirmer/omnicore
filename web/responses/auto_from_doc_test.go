@@ -50,7 +50,7 @@ func TestAutoFromDoc_HappyPath_AllFieldsPopulated(t *testing.T) {
 				"Neighborhood": "Mariani",
 				"City":         "Cupertino",
 				"State":        "CA",
-				"ZipCode":     "95014", // ← matches the composer's real output
+				"ZipCode":      "95014", // ← matches the composer's real output
 				"Country":      "US",
 			},
 		},
@@ -346,7 +346,7 @@ func TestAutoFromDoc_EmbeddedStruct_FieldsPromoted(t *testing.T) {
 		ID             string `json:"id"`
 	}
 	doc := map[string]any{
-		"ID":         "u1",
+		"ID":        "u1",
 		"CreatedAt": "2026-06-01",
 		"UpdatedAt": "2026-06-02",
 	}

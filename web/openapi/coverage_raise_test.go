@@ -22,7 +22,7 @@ type covEmbedBody struct {
 type covCanonReq struct {
 	*covEmbedBody
 	ID     string  `path:"id" description:"the resource id"`
-	secret string  `path:"secret"` //nolint:unused // reflection-only: skipped (unexported)
+	secret string  `path:"secret"`  //nolint:unused // reflection-only: skipped (unexported)
 	hidden string  `query:"hidden"` //nolint:unused // reflection-only: skipped (unexported)
 	Status *string `query:"status" filter:"eq,,in"`
 	Limit  *int64  `query:"limit"`
@@ -201,7 +201,7 @@ func TestSpecBuild_RawOperationBranches(t *testing.T) {
 			},
 			Responses: map[int]ResponseSpec{
 				200: {Description: "ok", Type: reflect.TypeOf(covResp{})},
-				204: {Description: "no content"},     // Type nil → rawResponseEntry early return
+				204: {Description: "no content"},        // Type nil → rawResponseEntry early return
 				422: {Description: "custom validation"}, // declared standard error → rawResponses skip
 			},
 		})

@@ -169,11 +169,11 @@ func (v *ViewDefinition) MaxLimit(n int64) *ViewDefinition {
 	return v
 }
 
-func (v *ViewDefinition) Name() string             { return v.name }
-func (v *ViewDefinition) VersionNumber() int       { return v.version }
-func (v *ViewDefinition) RootTable() string        { return v.rootTable }
-func (v *ViewDefinition) Embeds() []embedDef       { return v.embeds }
-func (v *ViewDefinition) DeletesOnArchive() bool   { return v.deleteOnArchive }
+func (v *ViewDefinition) Name() string           { return v.name }
+func (v *ViewDefinition) VersionNumber() int     { return v.version }
+func (v *ViewDefinition) RootTable() string      { return v.rootTable }
+func (v *ViewDefinition) Embeds() []embedDef     { return v.embeds }
+func (v *ViewDefinition) DeletesOnArchive() bool { return v.deleteOnArchive }
 
 // MaxLimitValue returns the declared per-view cap or 0 when the consumer left
 // the value unset. The reader is the only canonical consumer; it falls back

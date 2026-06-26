@@ -11,6 +11,8 @@ with `1.0.0`.
 
 ## [Unreleased]
 
+## [0.16.0] - 2026-06-25
+
 ### Added
 
 - **Distributed tracing (OpenTelemetry).** New opt-in `observability.tracing`

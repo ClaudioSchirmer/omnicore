@@ -29,13 +29,13 @@ func Exception[T any](err error) Result[T] {
 	return Result[T]{err: err, state: StateException}
 }
 
-func (r Result[T]) State() ResultState                       { return r.state }
-func (r Result[T]) IsSuccess() bool                          { return r.state == StateSuccess }
-func (r Result[T]) IsFailure() bool                          { return r.state == StateFailure }
-func (r Result[T]) IsException() bool                        { return r.state == StateException }
-func (r Result[T]) Value() T                                 { return r.value }
+func (r Result[T]) State() ResultState                        { return r.state }
+func (r Result[T]) IsSuccess() bool                           { return r.state == StateSuccess }
+func (r Result[T]) IsFailure() bool                           { return r.state == StateFailure }
+func (r Result[T]) IsException() bool                         { return r.state == StateException }
+func (r Result[T]) Value() T                                  { return r.value }
 func (r Result[T]) Notifications() []notifications.ContextDTO { return r.notifications }
-func (r Result[T]) Err() error                               { return r.err }
+func (r Result[T]) Err() error                                { return r.err }
 
 func (r Result[T]) OnSuccess(fn func(T)) Result[T] {
 	if r.IsSuccess() {

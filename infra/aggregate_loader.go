@@ -6,8 +6,8 @@ import (
 	"reflect"
 	"strings"
 
-	"github.com/ClaudioSchirmer/omnicore/infra/criteria"
 	"github.com/ClaudioSchirmer/omnicore/domain"
+	"github.com/ClaudioSchirmer/omnicore/infra/criteria"
 	"github.com/jackc/pgx/v5"
 )
 

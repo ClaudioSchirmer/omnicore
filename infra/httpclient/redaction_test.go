@@ -171,4 +171,3 @@ func TestValidateRedactionConfig_EmptyEntries(t *testing.T) {
 // imports re-used
 var _ = strings.Contains
 var _ = textproto.CanonicalMIMEHeaderKey
-
