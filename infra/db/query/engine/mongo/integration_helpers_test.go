@@ -30,7 +30,7 @@ import (
 
 	"github.com/ClaudioSchirmer/omnicore/application/configuration"
 	"github.com/ClaudioSchirmer/omnicore/infra/db/core"
-	"github.com/ClaudioSchirmer/omnicore/infra/db/engine/pg"
+	"github.com/ClaudioSchirmer/omnicore/infra/db/engine/postgres"
 )
 
 const (
@@ -40,7 +40,7 @@ const (
 
 // testCtx returns the *AppContext used across the integration tests. It
 // carries a random request id and satisfies persistence.RequestContext, so
-// it feeds both the *pg.Postgres methods (which take RequestContext) and
+// it feeds both the *postgres.Postgres methods (which take RequestContext) and
 // write.BaseRepository.Scope (which takes the concrete *AppContext).
 func testCtx() *configuration.AppContext {
 	return configuration.NewAppContextWithRandomID(configuration.LangENG)
@@ -65,10 +65,10 @@ func mongoURI() string {
 	return defaultMongoURI
 }
 
-// newTestPG creates a throw-away pg.Postgres database with the framework outbox
+// newTestPG creates a throw-away postgres.Postgres database with the framework outbox
 // + omnicore_mongo_views tables already applied (so writeOutbox doesn't fail
-// on the first insert). Returns a *pg.Postgres and a cleanup func.
-func newTestPG(t *testing.T) (*pg.Postgres, func()) {
+// on the first insert). Returns a *postgres.Postgres and a cleanup func.
+func newTestPG(t *testing.T) (*postgres.Postgres, func()) {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
@@ -77,7 +77,7 @@ func newTestPG(t *testing.T) (*pg.Postgres, func()) {
 
 	adminPool, err := pgxpool.New(ctx, pgAdminDSN())
 	if err != nil {
-		t.Skipf("skipping: cannot reach pg.Postgres at %s (%v)", pgAdminDSN(), err)
+		t.Skipf("skipping: cannot reach postgres.Postgres at %s (%v)", pgAdminDSN(), err)
 	}
 	defer adminPool.Close()
 
@@ -86,7 +86,7 @@ func newTestPG(t *testing.T) (*pg.Postgres, func()) {
 	}
 
 	dsn := swapDB(pgAdminDSN(), dbName)
-	pg, err := pg.NewPostgres(ctx, dsn)
+	pg, err := postgres.NewPostgres(ctx, dsn)
 	if err != nil {
 		_, _ = adminPool.Exec(ctx, fmt.Sprintf(`DROP DATABASE IF EXISTS %q`, dbName))
 		t.Fatalf("NewPostgres: %v", err)
@@ -192,7 +192,7 @@ func firstLine(s string) string {
 
 // createTable executes a CREATE TABLE statement on the test PG. Convenience
 // for setting up a domain table per test.
-func createTable(t *testing.T, pg *pg.Postgres, ddl string) {
+func createTable(t *testing.T, pg *postgres.Postgres, ddl string) {
 	t.Helper()
 	if _, err := pg.Pool().Exec(context.Background(), ddl); err != nil {
 		t.Fatalf("createTable: %v\nDDL:\n%s", err, ddl)
@@ -200,7 +200,7 @@ func createTable(t *testing.T, pg *pg.Postgres, ddl string) {
 }
 
 // outboxCount returns the number of outbox rows in the test PG.
-func outboxCount(t *testing.T, pg *pg.Postgres) int {
+func outboxCount(t *testing.T, pg *postgres.Postgres) int {
 	t.Helper()
 	var n int
 	err := pg.Pool().QueryRow(context.Background(), `SELECT COUNT(*) FROM outbox`).Scan(&n)
@@ -216,7 +216,7 @@ type outboxRow struct {
 	Payload                               []byte
 }
 
-func outboxRows(t *testing.T, pg *pg.Postgres) []outboxRow {
+func outboxRows(t *testing.T, pg *postgres.Postgres) []outboxRow {
 	t.Helper()
 	rows, err := pg.Pool().Query(context.Background(),
 		`SELECT aggregate_type, event_type, aggregate_id, payload FROM outbox ORDER BY id`)
@@ -236,7 +236,7 @@ func outboxRows(t *testing.T, pg *pg.Postgres) []outboxRow {
 }
 
 // rowCount returns the row count of an arbitrary table.
-func rowCount(t *testing.T, pg *pg.Postgres, table string) int {
+func rowCount(t *testing.T, pg *postgres.Postgres, table string) int {
 	t.Helper()
 	var n int
 	q := fmt.Sprintf(`SELECT COUNT(*) FROM %s`, table)
@@ -247,7 +247,7 @@ func rowCount(t *testing.T, pg *pg.Postgres, table string) int {
 }
 
 // activeCount counts rows where deleted_at IS NULL.
-func activeCount(t *testing.T, pg *pg.Postgres, table string) int {
+func activeCount(t *testing.T, pg *postgres.Postgres, table string) int {
 	t.Helper()
 	var n int
 	q := fmt.Sprintf(`SELECT COUNT(*) FROM %s WHERE deleted_at IS NULL`, table)

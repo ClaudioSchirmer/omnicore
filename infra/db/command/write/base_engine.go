@@ -14,7 +14,7 @@ import (
 // audit-claims allowlist + domain-event publisher) and the backend-neutral
 // orchestration that surrounds every framework write: the in-TX audit row, the
 // post-commit slog echo + domain-event publish, and the lifecycle-hook dispatch
-// at TX positions A and D. Both relational engines (pg.Postgres, mysql.Engine)
+// at TX positions A and D. Both relational engines (postgres.Postgres, mysql.Engine)
 // embed it and supply only the dialect-bound parts (Begin, the data writes, the
 // Dialect, the Querier, the rebuild lock, Close).
 //

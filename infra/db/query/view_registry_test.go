@@ -40,7 +40,7 @@ func TestBeginRebuildSQL_TransitionsToProcessing(t *testing.T) {
 }
 
 func TestEndRebuildSQL_CapturesPreviousState(t *testing.T) {
-	// previous_* triple comes from the row's CURRENT state (pg.Postgres reads
+	// previous_* triple comes from the row's CURRENT state (postgres.Postgres reads
 	// before writes inside an UPDATE). Statement must populate all three.
 	for _, expr := range []string{
 		"previous_version = version",

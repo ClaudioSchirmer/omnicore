@@ -19,7 +19,7 @@ import (
 // upstream_failures_test.go and coverage_seams_test.go via a core.Querier fake.
 
 // This file drives infra/upstream_subscriber.go (previously ~0%) entirely
-// in-process: a real UpstreamSubscriber over a fake pg.Postgres (NewComposerWithMongo
+// in-process: a real UpstreamSubscriber over a fake postgres.Postgres (NewComposerWithMongo
 // root rows + omnicore_upstream_failures writes) and a fake MongoDB whose collFn
 // dispatches by collection name (the upstream "users" collection plus the
 // dependent view "orders" collection). The methods are invoked directly —

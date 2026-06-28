@@ -14,7 +14,7 @@ import (
 	// directly outside this tag-guarded test.
 	"github.com/ClaudioSchirmer/omnicore/infra/db/core"
 	_ "github.com/ClaudioSchirmer/omnicore/infra/db/engine/mysql"
-	"github.com/ClaudioSchirmer/omnicore/infra/db/engine/pg"
+	"github.com/ClaudioSchirmer/omnicore/infra/db/engine/postgres"
 
 	// The MySQL database/sql driver for the raw verification connection.
 	_ "github.com/go-sql-driver/mysql"
@@ -22,7 +22,7 @@ import (
 
 // Phase 4 item 1 (1a + 1b) integration test: a MySQL engine boots through the
 // framework composition root without panicking. The old code did
-// `pg := pg.AsPostgres(eng)` unconditionally in buildDeps — that panicked the
+// `pg := postgres.AsPostgres(eng)` unconditionally in buildDeps — that panicked the
 // instant the engine was MySQL. This proves the gating: buildDeps returns a live
 // MySQL engine, and applyMigrations selects the MySQL runner (not the pgx pool).
 //
@@ -79,7 +79,7 @@ func TestMySQLBoot_BuildDepsDoesNotPanic(t *testing.T) {
 	// This is the exact call buildDeps used to make unconditionally — gating it is
 	// the fix under test.
 	if !panicsOnAsPostgres(deps.DB) {
-		t.Fatal("expected a MySQL engine — pg.AsPostgres should panic, but it did not")
+		t.Fatal("expected a MySQL engine — postgres.AsPostgres should panic, but it did not")
 	}
 }
 
@@ -89,7 +89,7 @@ func panicsOnAsPostgres(eng core.RelationalEngine) (panicked bool) {
 			panicked = true
 		}
 	}()
-	_ = pg.AsPostgres(eng)
+	_ = postgres.AsPostgres(eng)
 	return false
 }
 
@@ -126,7 +126,7 @@ func TestMySQLBoot_ApplyMigrationsUsesMySQLRunner(t *testing.T) {
 
 	// The proof of 1a: applyMigrations on a MySQL engine must pick
 	// migration.NewMySQL and run to completion. Had it taken the Postgres branch
-	// (migration.New(pgEngine(deps).Pool(), …)), pgEngine → pg.AsPostgres would
+	// (migration.New(pgEngine(deps).Pool(), …)), pgEngine → postgres.AsPostgres would
 	// PANIC on the MySQL engine — so a clean, nil return IS the proof the runner
 	// was dialect-selected. (That the MySQL framework+service SQL actually applies
 	// is covered by the migration package's own -tags=integration,mysql suite.)

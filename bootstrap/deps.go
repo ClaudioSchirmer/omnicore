@@ -8,7 +8,7 @@ import (
 	"github.com/ClaudioSchirmer/omnicore/application/translation"
 	"github.com/ClaudioSchirmer/omnicore/infra/cache"
 	"github.com/ClaudioSchirmer/omnicore/infra/db/core"
-	"github.com/ClaudioSchirmer/omnicore/infra/db/engine/pg"
+	"github.com/ClaudioSchirmer/omnicore/infra/db/engine/postgres"
 	"github.com/ClaudioSchirmer/omnicore/infra/db/query"
 	"github.com/ClaudioSchirmer/omnicore/infra/db/query/engine/mongo"
 	"github.com/ClaudioSchirmer/omnicore/infra/httpclient"
@@ -31,9 +31,9 @@ import (
 // DB is the backend-neutral relational engine (Postgres today; the dialect is
 // chosen at boot via database.dialect). Consumers depend on the interface, not
 // a concrete driver. Code that genuinely needs Postgres-specific access (the
-// pgx pool for custom SELECTs) recovers it via pg.AsPostgres(d.DB) — a
+// pgx pool for custom SELECTs) recovers it via postgres.AsPostgres(d.DB) — a
 // documented PG-only escape hatch.
-// pgEngine recovers the concrete *pg.Postgres from Deps for the framework
+// pgEngine recovers the concrete *postgres.Postgres from Deps for the framework
 // wiring that still speaks pgx directly — audit partition maintenance (the MySQL
 // audit table is not partitioned) and the Postgres branch of the migration
 // runner. It panics on a non-Postgres engine, so every call site is
@@ -42,7 +42,7 @@ import (
 // Mongo-view rebuild/drift control plane (advisory lock + omnicore_mongo_views
 // registry), and the integration consumer control plane do NOT go through here —
 // they speak the neutral core.RelationalEngine seam and run on any backend.
-func pgEngine(deps Deps) *pg.Postgres { return pg.AsPostgres(deps.DB) }
+func pgEngine(deps Deps) *postgres.Postgres { return postgres.AsPostgres(deps.DB) }
 
 // dialectPostgres / dialectMySQL are the registered relational-engine dialect
 // names (mirror the infra engine-registry keys and the database.dialect default).

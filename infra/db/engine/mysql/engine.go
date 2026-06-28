@@ -137,7 +137,7 @@ func (e *Engine) Begin(ctx context.Context) (core.WriteTx, error) {
 // cfg.Destinations + post-commit slog echo), delegating to the embedded
 // BaseEngine. nil cfg disables audit; nil logger falls back to slog.Default() in
 // the echo path. Returns the engine as the neutral RelationalEngine so the
-// composition root wires it without a dialect branch — the mirror of pg.WithAudit.
+// composition root wires it without a dialect branch — the mirror of postgres.WithAudit.
 func (e *Engine) WithAudit(cfg *audit.Config, logger *slog.Logger, auditClaims []string) core.RelationalEngine {
 	e.ConfigureAudit(cfg, logger, auditClaims)
 	return e

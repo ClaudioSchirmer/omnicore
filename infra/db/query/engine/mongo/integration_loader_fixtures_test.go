@@ -7,7 +7,7 @@ import (
 
 	"github.com/ClaudioSchirmer/omnicore/domain"
 	"github.com/ClaudioSchirmer/omnicore/infra/db/core"
-	"github.com/ClaudioSchirmer/omnicore/infra/db/engine/pg"
+	"github.com/ClaudioSchirmer/omnicore/infra/db/engine/postgres"
 )
 
 // Loader/aggregate fixtures for the infra-root view integration tests. They
@@ -44,7 +44,7 @@ type loaderNoteVO struct {
 func (v loaderNoteVO) GetID() string                                    { return v.ID }
 func (v loaderNoteVO) BuildRules(string, domain.Service, *domain.Rules) {}
 
-func createLoaderTables(t *testing.T, p *pg.Postgres) {
+func createLoaderTables(t *testing.T, p *postgres.Postgres) {
 	t.Helper()
 	createTable(t, p, `CREATE TABLE loader_roots (
 		id UUID PRIMARY KEY DEFAULT gen_random_uuid(),

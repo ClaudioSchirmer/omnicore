@@ -8,7 +8,7 @@
 // (postgres://omnicore:omnicore@localhost:5433/postgres?sslmode=disable);
 // override via OMNICORE_TEST_PG_DSN. Each test creates a throw-away database so
 // parallel and repeat runs don't stomp on each other.
-package pg
+package postgres
 
 import (
 	"context"

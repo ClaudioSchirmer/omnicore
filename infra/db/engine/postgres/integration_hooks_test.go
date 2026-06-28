@@ -1,6 +1,6 @@
 //go:build integration
 
-package pg
+package postgres
 
 import (
 	"bytes"

@@ -1,4 +1,4 @@
-package pg
+package postgres
 
 import (
 	"github.com/ClaudioSchirmer/omnicore/application/configuration"

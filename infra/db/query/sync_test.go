@@ -22,7 +22,7 @@ func TestDecodeAggregateID_CanonicalString(t *testing.T) {
 }
 
 // TestDecodeAggregateID_BinaryUUID covers the path where Debezium emits the
-// aggregate_id as the raw 16-byte UUID. Without normalization, pg.Postgres
+// aggregate_id as the raw 16-byte UUID. Without normalization, postgres.Postgres
 // rejects the value with SQLSTATE 22P02 because it sees a 16-byte string
 // instead of a canonical UUID literal.
 func TestDecodeAggregateID_BinaryUUID(t *testing.T) {

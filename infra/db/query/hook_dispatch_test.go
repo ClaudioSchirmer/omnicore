@@ -14,7 +14,7 @@ import (
 // dispatch helpers in isolation:
 //
 //   - core.AdaptWriteOptions translates typed persistence.WriteOption[T] into
-//     the type-erased core.WriteHook the pg.Postgres methods consume.
+//     the type-erased core.WriteHook the postgres.Postgres methods consume.
 //   - The closure layer pays a single per-call type assertion against T
 //     and *configuration.AppContext.
 //
