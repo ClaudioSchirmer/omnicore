@@ -3,11 +3,11 @@ package bootstrap
 import (
 	"context"
 
-	"github.com/ClaudioSchirmer/omnicore/infra"
+	"github.com/ClaudioSchirmer/omnicore/infra/db/read/mongo"
 	"github.com/ClaudioSchirmer/omnicore/infra/tracing"
 )
 
-// startUpstreamSubscribers spins one infra.UpstreamSubscriber goroutine
+// startUpstreamSubscribers spins one mongo.UpstreamSubscriber goroutine
 // per declared subscription, wired with its recompose-ripple targets
 // (every view embedding the subscription's Collection via an external FromSchema).
 //
@@ -25,15 +25,15 @@ func startUpstreamSubscribers(
 	deps Deps,
 	cfg *Config,
 	subs []UpstreamSubscription,
-	views []*infra.ViewDefinition,
-) []*infra.UpstreamSubscriber {
+	views []*mongo.ViewDefinition,
+) []*mongo.UpstreamSubscriber {
 	if len(subs) == 0 {
 		return nil
 	}
-	started := make([]*infra.UpstreamSubscriber, 0, len(subs))
-	composer := infra.NewComposerWithMongo(deps.Postgres, deps.Mongo)
+	started := make([]*mongo.UpstreamSubscriber, 0, len(subs))
+	composer := mongo.NewComposerWithMongo(deps.DB, deps.Mongo)
 	for _, s := range subs {
-		runtimeCfg := infra.UpstreamSubscriberConfig{
+		runtimeCfg := mongo.UpstreamSubscriberConfig{
 			Topic:            s.Topic,
 			Collection:       s.Collection,
 			ConsumerGroup:    s.ConsumerGroup,
@@ -44,9 +44,9 @@ func startUpstreamSubscribers(
 			OnUpstreamDelete: string(s.OnUpstreamDelete),
 			AnonymizeFields:  s.AnonymizeFields,
 		}
-		dependents := infra.DependentMongoViews(views, s.Collection)
-		sub, err := infra.NewUpstreamSubscriber(
-			deps.Postgres,
+		dependents := mongo.DependentMongoViews(views, s.Collection)
+		sub, err := mongo.NewUpstreamSubscriber(
+			deps.DB,
 			deps.Mongo,
 			composer,
 			runtimeCfg,

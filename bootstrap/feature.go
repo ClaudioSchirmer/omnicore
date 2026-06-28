@@ -4,7 +4,7 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/ClaudioSchirmer/omnicore/infra"
+	"github.com/ClaudioSchirmer/omnicore/infra/db/read/mongo"
 	"github.com/ClaudioSchirmer/omnicore/infra/integration"
 	"github.com/gofiber/fiber/v3"
 )
@@ -27,7 +27,7 @@ type Feature interface {
 // for listing).
 type ReadableFeature interface {
 	Feature
-	Views() []*infra.ViewDefinition
+	Views() []*mongo.ViewDefinition
 }
 
 // IntegrationFeature is the opt-in for the consumer side of the
@@ -57,7 +57,7 @@ type IntegrationFeature interface {
 // closure captures a snapshot of the per-view overrides + the yaml-supplied
 // default; the framework constant fallback (100) lives in the reader itself
 // so a returned 0 here signals "delegate to the framework default".
-func buildViewMaxLimitResolver(views []*infra.ViewDefinition, yamlDefault int64) func(view string) int64 {
+func buildViewMaxLimitResolver(views []*mongo.ViewDefinition, yamlDefault int64) func(view string) int64 {
 	overrides := make(map[string]int64, len(views))
 	for _, v := range views {
 		if n := v.MaxLimitValue(); n > 0 {
@@ -72,8 +72,8 @@ func buildViewMaxLimitResolver(views []*infra.ViewDefinition, yamlDefault int64)
 	}
 }
 
-func collectViews(features []Feature) ([]*infra.ViewDefinition, error) {
-	var views []*infra.ViewDefinition
+func collectViews(features []Feature) ([]*mongo.ViewDefinition, error) {
+	var views []*mongo.ViewDefinition
 	seen := make(map[string]string) // viewName -> first owner ("%T")
 	for _, f := range features {
 		rf, ok := f.(ReadableFeature)

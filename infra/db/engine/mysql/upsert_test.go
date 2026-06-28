@@ -1,0 +1,62 @@
+//go:build mysql
+
+package mysql
+
+import (
+	"strings"
+	"testing"
+
+	"github.com/ClaudioSchirmer/omnicore/infra/db"
+)
+
+// TestMySQLDialect_BuildUpsert_DoUpdate locks the MySQL upsert shape: a row
+// alias (AS new) + ON DUPLICATE KEY UPDATE with new.col for the "set to new
+// value" mode and a verbatim expression (bare column refers to the existing row,
+// identical to Postgres) for the rest. The conflict columns are NOT named — MySQL
+// keys off the existing unique index.
+func TestMySQLDialect_BuildUpsert_DoUpdate(t *testing.T) {
+	got := mysqlDialect{}.BuildUpsert(
+		"omnicore_integration_failures",
+		[]string{"consumer_group", "event_id", "error"},
+		[]string{"consumer_group", "event_id"},
+		[]db.UpsertSet{
+			{Col: "error", Mode: db.UpsertSetNew},
+			{Col: "attempt", Mode: db.UpsertSetExpr, Expr: "attempt + 1"},
+		},
+	)
+	for _, want := range []string{
+		"INSERT INTO `omnicore_integration_failures` (`consumer_group`, `event_id`, `error`)",
+		"VALUES (?, ?, ?)",
+		"AS new ON DUPLICATE KEY UPDATE",
+		"`error` = new.`error`",
+		"`attempt` = attempt + 1",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("mysql upsert missing %q in:\n%s", want, got)
+		}
+	}
+	if strings.Contains(got, "ON CONFLICT") {
+		t.Errorf("mysql upsert must not render ON CONFLICT:\n%s", got)
+	}
+}
+
+// TestMySQLDialect_BuildUpsert_DoNothing: empty sets render a no-op assignment on
+// the first conflict column (the precise equivalent of PG's DO NOTHING — never
+// INSERT IGNORE, which would swallow unrelated errors).
+func TestMySQLDialect_BuildUpsert_DoNothing(t *testing.T) {
+	got := mysqlDialect{}.BuildUpsert(
+		"omnicore_integration_processed",
+		[]string{"event_id", "consumer_group"},
+		[]string{"event_id", "consumer_group"},
+		nil,
+	)
+	// No-op via new.<col> (a bare `col = col` is ambiguous under the AS new
+	// alias — MySQL 8.4 errno 1052); new.<col> is unambiguous AND a true no-op
+	// because the conflicting row matched on that key.
+	if !strings.Contains(got, "ON DUPLICATE KEY UPDATE `event_id` = new.`event_id`") {
+		t.Errorf("empty sets must render a no-op update, got:\n%s", got)
+	}
+	if strings.Contains(got, "INSERT IGNORE") {
+		t.Errorf("must not use INSERT IGNORE:\n%s", got)
+	}
+}

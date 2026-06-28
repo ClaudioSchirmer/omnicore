@@ -5,19 +5,19 @@ import (
 
 	"github.com/ClaudioSchirmer/omnicore/application/notifications"
 	"github.com/ClaudioSchirmer/omnicore/domain"
-	"github.com/ClaudioSchirmer/omnicore/infra"
+	"github.com/ClaudioSchirmer/omnicore/infra/db"
 )
 
 // TestExecute_InfrastructureFailureSurfacesLegibleNotification pins the legible
 // error path: when a read handler returns a typed NotificationCarrier error
-// (here infra.InvalidCursorError, the keyset-cursor rejection a non-pre-
+// (here db.InvalidCursorError, the keyset-cursor rejection a non-pre-
 // validating surface like GraphQL reaches), the resolver must surface it as a
 // structured GraphQL error carrying the notification's semantic / key / field —
 // NOT the opaque "internal server error" / Internal envelope reserved for plain
 // (untyped) Go errors. This is the direct regression guard for a stale/foreign
 // cursor showing up as a 500-equivalent.
 func TestExecute_InfrastructureFailureSurfacesLegibleNotification(t *testing.T) {
-	h := &fakeReadHandler{err: infra.InvalidCursorError(nil)}
+	h := &fakeReadHandler{err: db.InvalidCursorError(nil)}
 	reg, ctx := newExecRegistry(h)
 
 	resp := reg.Execute(ctx, `query { users(first: 1) { edges { node { id } } } }`, nil, "")

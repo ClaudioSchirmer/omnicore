@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/ClaudioSchirmer/omnicore/infra"
+	"github.com/ClaudioSchirmer/omnicore/infra/db/read/mongo"
 )
 
 func TestRenderText_Empty(t *testing.T) {
@@ -21,12 +21,12 @@ func TestRenderText_Empty(t *testing.T) {
 }
 
 func TestRenderText_Populated(t *testing.T) {
-	rows := []infra.UpstreamFailureRecord{
+	rows := []mongo.UpstreamFailureRecord{
 		{
 			SubscriptionTopic: "users.events",
 			ViewName:          "orders",
 			UpstreamID:        "u1",
-			Stage:             infra.UpstreamFailureStageCompose,
+			Stage:             mongo.UpstreamFailureStageCompose,
 			Error:             "boom",
 			Attempt:           3,
 			LastAttemptAt:     time.Date(2026, 6, 11, 14, 0, 0, 0, time.UTC),
@@ -53,8 +53,8 @@ func TestRenderText_Populated(t *testing.T) {
 }
 
 func TestRenderText_TruncatedHint(t *testing.T) {
-	rows := []infra.UpstreamFailureRecord{
-		{SubscriptionTopic: "t", ViewName: "v", UpstreamID: "u", Stage: infra.UpstreamFailureStageDiscover},
+	rows := []mongo.UpstreamFailureRecord{
+		{SubscriptionTopic: "t", ViewName: "v", UpstreamID: "u", Stage: mongo.UpstreamFailureStageDiscover},
 	}
 	var buf bytes.Buffer
 	if err := renderText(&buf, rows, true); err != nil {
@@ -66,9 +66,9 @@ func TestRenderText_TruncatedHint(t *testing.T) {
 }
 
 func TestRenderJSON_Envelope(t *testing.T) {
-	rows := []infra.UpstreamFailureRecord{
+	rows := []mongo.UpstreamFailureRecord{
 		{SubscriptionTopic: "users.events", ViewName: "orders", UpstreamID: "u1",
-			Stage: infra.UpstreamFailureStageCompose, Error: "boom", Attempt: 2},
+			Stage: mongo.UpstreamFailureStageCompose, Error: "boom", Attempt: 2},
 	}
 	var buf bytes.Buffer
 	if err := renderJSON(&buf, rows, true); err != nil {
@@ -77,7 +77,7 @@ func TestRenderJSON_Envelope(t *testing.T) {
 	var envelope struct {
 		Count     int                           `json:"count"`
 		Truncated bool                          `json:"truncated"`
-		Items     []infra.UpstreamFailureRecord `json:"items"`
+		Items     []mongo.UpstreamFailureRecord `json:"items"`
 	}
 	if err := json.Unmarshal(buf.Bytes(), &envelope); err != nil {
 		t.Fatalf("unmarshal: %v\n%s", err, buf.String())

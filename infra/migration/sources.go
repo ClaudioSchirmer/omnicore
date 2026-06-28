@@ -17,16 +17,24 @@ const (
 	embeddedSubdir       = "embedded"
 )
 
-// frameworkSource exposes the embedded framework migrations via embed.FS.
-// Subpath "embedded" — where the 0001_outbox.{up,down}.sql files live.
+// frameworkSource exposes the Postgres framework migrations — the default-dialect
+// entry point kept for callers that do not (yet) thread a dialect; the Postgres
+// runner is the one wired today.
 func frameworkSource() (source.Driver, error) {
-	sub, err := fs.Sub(frameworkMigrations, embeddedSubdir)
+	return frameworkSourceFor("postgres")
+}
+
+// frameworkSourceFor exposes the embedded framework migrations for one dialect
+// via embed.FS. Subpath "embedded/<dialect>" — where that dialect's flattened
+// 0001_framework.{up,down}.sql lives.
+func frameworkSourceFor(dialect string) (source.Driver, error) {
+	sub, err := fs.Sub(frameworkMigrations, embeddedSubdir+"/"+dialect)
 	if err != nil {
-		return nil, fmt.Errorf("migration: framework subfs: %w", err)
+		return nil, fmt.Errorf("migration: framework subfs (%s): %w", dialect, err)
 	}
 	drv, err := iofs.New(sub, ".")
 	if err != nil {
-		return nil, fmt.Errorf("migration: framework iofs: %w", err)
+		return nil, fmt.Errorf("migration: framework iofs (%s): %w", dialect, err)
 	}
 	return drv, nil
 }

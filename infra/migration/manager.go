@@ -24,25 +24,37 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/ClaudioSchirmer/omnicore/infra/db"
 	"github.com/golang-migrate/migrate/v4"
 	pgxdriver "github.com/golang-migrate/migrate/v4/database/pgx/v5"
 	"github.com/golang-migrate/migrate/v4/source"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/jackc/pgx/v5/stdlib"
-
-	fwinfra "github.com/ClaudioSchirmer/omnicore/infra"
 )
 
-// Manager orchestrates framework migrations (embedded outbox) + service.
+// Manager orchestrates framework migrations (embedded) + service migrations.
+// The dialect selects both the embedded source (embedded/<dialect>) and the
+// golang-migrate database driver: Postgres runs over the live pgx pool; MySQL
+// opens a dedicated *sql.DB from dsn (so the runner never owns the engine pool).
 type Manager struct {
-	pool *pgxpool.Pool
-	dir  string
+	pool    *pgxpool.Pool
+	dialect string
+	dsn     string
+	dir     string
 }
 
-// New builds a Manager. dir is the service migration directory
-// (relative or absolute). Conventionally "./migrations".
+// New builds a Postgres Manager over the live pgx pool. dir is the service
+// migration directory (relative or absolute). Conventionally "./migrations".
 func New(pool *pgxpool.Pool, dir string) *Manager {
-	return &Manager{pool: pool, dir: dir}
+	return &Manager{pool: pool, dialect: "postgres", dir: dir}
+}
+
+// NewMySQL builds a MySQL Manager. The runner opens its own *sql.DB from dsn
+// (closed when each migrate instance closes) rather than sharing the engine's
+// pool. Requires building with -tags mysql (else Up/Down fail with a clear
+// "build with -tags mysql" error). dir is the service migration directory.
+func NewMySQL(dsn, dir string) *Manager {
+	return &Manager{dialect: "mysql", dsn: dsn, dir: dir}
 }
 
 // Up applies all pending migrations — first the framework (embedded outbox),
@@ -50,7 +62,7 @@ func New(pool *pgxpool.Pool, dir string) *Manager {
 // is absorbed). Failure at any stage marks dirty=true in the corresponding
 // tracking table and blocks subsequent calls until Force.
 func (m *Manager) Up(ctx context.Context) error {
-	fwSrc, err := frameworkSource()
+	fwSrc, err := frameworkSourceFor(m.dialect)
 	if err != nil {
 		return err
 	}
@@ -189,7 +201,7 @@ func parseMigrationVersion(name string) (uint, bool) {
 // *.down.sql. Called at startup when autoRun=true. Framework embedded
 // migrations already come versioned with .down — no validation needed.
 //
-// Returns *fwinfra.InfrastructureError carrying
+// Returns *db.InfrastructureError carrying
 // MigrationDownMissingNotification when there are missing files, with the
 // file list in the message. A non-existent directory is treated as empty
 // (not an error — the service may have no migrations of its own).
@@ -231,7 +243,7 @@ func (m *Manager) ValidateDownExists() error {
 		sort.Strings(malformed)
 		cause := fmt.Errorf(`migration file(s) without a parseable "{version}_{name}" prefix: %s`,
 			strings.Join(malformed, ", "))
-		return fwinfra.FieldErrorWithCause("Migration", filepath.Clean(m.dir), cause,
+		return db.FieldErrorWithCause("Migration", filepath.Clean(m.dir), cause,
 			MigrationFilenameInvalidNotification{})
 	}
 
@@ -247,7 +259,7 @@ func (m *Manager) ValidateDownExists() error {
 	sort.Strings(missing)
 
 	cause := fmt.Errorf("missing .down.sql for: %s", strings.Join(missing, ", "))
-	return fwinfra.FieldErrorWithCause("Migration", filepath.Clean(m.dir), cause,
+	return db.FieldErrorWithCause("Migration", filepath.Clean(m.dir), cause,
 		MigrationDownMissingNotification{})
 }
 
@@ -276,6 +288,21 @@ func (m *Manager) openService() (*migrate.Migrate, error) {
 // instance opens its own *sql.DB over the pgxpool (via stdlib.OpenDBFromPool,
 // which does NOT close the pool on Close — behavior documented in pgx/v5/stdlib).
 func (m *Manager) open(name string, src source.Driver, trackingTable string) (*migrate.Migrate, error) {
+	if m.dialect == "mysql" {
+		drv, err := openMySQLMigrateDriver(m.dsn, trackingTable)
+		if err != nil {
+			return nil, err
+		}
+		mig, err := migrate.NewWithInstance(name, src, "mysql", drv)
+		if err != nil {
+			_ = drv.Close()
+			return nil, err
+		}
+		return mig, nil
+	}
+
+	// Postgres (default) — runs over the live pgx pool. stdlib.OpenDBFromPool
+	// does NOT close the pool on Close (documented in pgx/v5/stdlib).
 	db := stdlib.OpenDBFromPool(m.pool)
 	drv, err := pgxdriver.WithInstance(db, &pgxdriver.Config{
 		MigrationsTable: trackingTable,

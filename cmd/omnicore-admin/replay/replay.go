@@ -22,12 +22,9 @@ import (
 	"os"
 	"strconv"
 	"strings"
-	"time"
-
-	"github.com/jackc/pgx/v5"
 
 	"github.com/ClaudioSchirmer/omnicore/bootstrap"
-	"github.com/ClaudioSchirmer/omnicore/infra"
+	"github.com/ClaudioSchirmer/omnicore/infra/db"
 )
 
 // Run is the subcommand entry point invoked by cmd/omnicore-admin/main.go.
@@ -69,13 +66,17 @@ func Run(ctx context.Context, args []string) error {
 	if err != nil {
 		return fmt.Errorf("replay-all-as-events: load config: %w", err)
 	}
-	pg, err := infra.NewPostgres(ctx, cfg.Postgres.DSN)
+	// Build through the relational-engine registry — the same seam bootstrap uses —
+	// so the replay runs against whatever backend the service is configured for
+	// (database.dialect). A MySQL deployment needs the admin binary built with the
+	// engine's build tag (-tags mysql); NewEngine returns a clear error otherwise.
+	engine, err := db.NewEngine(cfg.Database.Dialect, ctx, cfg.Postgres.DSN, false)
 	if err != nil {
-		return fmt.Errorf("replay-all-as-events: postgres connect: %w", err)
+		return fmt.Errorf("replay-all-as-events: connect: %w", err)
 	}
-	defer pg.Close()
+	defer engine.Close()
 
-	return execute(ctx, pg, executeOptions{
+	return execute(ctx, engine.Querier(), engine.Dialect(), executeOptions{
 		Aggregate:       *aggregate,
 		Filter:          *filter,
 		IncludeArchived: *includeArchived,
@@ -94,16 +95,21 @@ type executeOptions struct {
 	Out             io.Writer
 }
 
-// execute performs the replay against the supplied Postgres handle.
-// Extracted from Run so tests can drive it without touching env / config.
-func execute(ctx context.Context, pg *infra.Postgres, opt executeOptions) error {
-	if !infra.SafeIdentifier(opt.Aggregate) {
+// execute performs the replay against the supplied backend-neutral read surface
+// (Querier + Dialect), so it runs identically on Postgres and MySQL. Extracted
+// from Run, and narrowed to the two seam interfaces it actually uses, so tests
+// can drive it with a fake without touching env / config.
+func execute(ctx context.Context, q db.Querier, dialect db.Dialect, opt executeOptions) error {
+	if !db.SafeIdentifier(opt.Aggregate) {
 		return fmt.Errorf("replay-all-as-events: aggregate %q is not a valid SQL identifier", opt.Aggregate)
 	}
+	table := dialect.QuoteIdent(opt.Aggregate)
+	pkCol := dialect.QuoteIdent("id")
 	where := buildWhere(opt.IncludeArchived, opt.Filter)
-	totalQuery := fmt.Sprintf("SELECT count(*) FROM %s%s", quoteIdent(opt.Aggregate), where)
+
+	totalQuery := fmt.Sprintf("SELECT count(*) FROM %s%s", table, where)
 	var total int64
-	if err := pg.Pool().QueryRow(ctx, totalQuery).Scan(&total); err != nil {
+	if err := q.QueryRow(ctx, totalQuery).Scan(&total); err != nil {
 		return fmt.Errorf("replay-all-as-events: count rows: %w", err)
 	}
 	if total == 0 {
@@ -117,17 +123,17 @@ func execute(ctx context.Context, pg *infra.Postgres, opt executeOptions) error 
 		return nil
 	}
 
-	selectQuery := fmt.Sprintf("SELECT * FROM %s%s ORDER BY id LIMIT $1 OFFSET $2",
-		quoteIdent(opt.Aggregate), where)
+	selectQuery := fmt.Sprintf("SELECT * FROM %s%s ORDER BY %s LIMIT %s OFFSET %s",
+		table, where, pkCol, dialect.Placeholder(1), dialect.Placeholder(2))
 	var written int64
 	for offset := int64(0); offset < total; offset += int64(opt.BatchSize) {
-		rows, err := pg.Pool().Query(ctx, selectQuery, opt.BatchSize, offset)
+		// QueryMaps is the dynamic-shape read the composer uses: it discovers the
+		// column set at read time and normalizes uuid columns to canonical strings
+		// on every backend (BINARY(16) on MySQL, [16]byte on Postgres), so the
+		// payload + id below are dialect-agnostic.
+		batch, err := q.QueryMaps(ctx, selectQuery, opt.BatchSize, offset)
 		if err != nil {
 			return fmt.Errorf("replay-all-as-events: query batch at offset %d: %w", offset, err)
-		}
-		batch, batchErr := scanRowsToMaps(rows)
-		if batchErr != nil {
-			return fmt.Errorf("replay-all-as-events: decode batch at offset %d: %w", offset, batchErr)
 		}
 		for _, row := range batch {
 			id, ok := stringField(row, "id")
@@ -138,7 +144,7 @@ func execute(ctx context.Context, pg *infra.Postgres, opt executeOptions) error 
 			if err != nil {
 				return fmt.Errorf("replay-all-as-events: marshal payload for id=%s: %w", id, err)
 			}
-			if err := insertOutboxRow(ctx, pg, opt.Aggregate, id, payload); err != nil {
+			if err := insertOutboxRow(ctx, q, dialect, opt.Aggregate, id, payload); err != nil {
 				return fmt.Errorf("replay-all-as-events: insert outbox for id=%s: %w", id, err)
 			}
 			written++
@@ -170,42 +176,18 @@ func buildWhere(includeArchived bool, filter string) string {
 	return " WHERE " + strings.Join(clauses, " AND ")
 }
 
-// insertOutboxRow writes one synthetic INSERTED event into the framework
-// outbox table. Mirrors the shape framework migration 0001 declares.
-func insertOutboxRow(ctx context.Context, pg *infra.Postgres, aggregate, id string, payload []byte) error {
-	const sqlStr = `
-		INSERT INTO outbox (id, aggregate_type, aggregate_id, event_type, payload, created_at)
-		VALUES (gen_random_uuid(), $1, $2, $3, $4::jsonb, $5)
-	`
-	_, err := pg.Pool().Exec(ctx, sqlStr, aggregate, id, "INSERTED", payload, time.Now().UTC())
-	return err
-}
-
-// quoteIdent wraps a SQL identifier in double quotes. infra.SafeIdentifier
-// has already validated the input via the framework's allowlist so the
-// quote is purely cosmetic (catches accidental keyword collisions in the
-// generated SQL).
-func quoteIdent(s string) string { return `"` + s + `"` }
-
-// scanRowsToMaps walks pgx.Rows and produces a slice of column→value maps
-// suitable for JSON marshaling. UUID columns are normalized to strings the
-// same way infra.normalizeSQLValue does.
-func scanRowsToMaps(rows pgx.Rows) ([]map[string]any, error) {
-	defer rows.Close()
-	descs := rows.FieldDescriptions()
-	var out []map[string]any
-	for rows.Next() {
-		vals, err := rows.Values()
-		if err != nil {
-			return nil, err
-		}
-		m := make(map[string]any, len(descs))
-		for i, d := range descs {
-			m[d.Name] = infra.NormalizeSQLValue(vals[i])
-		}
-		out = append(out, m)
-	}
-	return out, rows.Err()
+// insertOutboxRow writes one synthetic INSERTED event into the framework outbox
+// table through the neutral Querier. The surrogate id is omitted (every dialect
+// fills it by default — gen_random_uuid() on Postgres, AUTO_INCREMENT on MySQL)
+// and the payload binds as JSON with no PG-specific ::jsonb cast; aggregate_id is
+// the row's uuid in text form, accepted by both the PG UUID and MySQL CHAR(36)
+// columns. The column list mirrors each engine's own writeOutbox.
+func insertOutboxRow(ctx context.Context, q db.Querier, dialect db.Dialect, aggregate, id string, payload []byte) error {
+	sqlStr := fmt.Sprintf(
+		"INSERT INTO outbox (aggregate_type, event_type, aggregate_id, payload, created_at) VALUES (%s, %s, %s, %s, NOW())",
+		dialect.Placeholder(1), dialect.Placeholder(2), dialect.Placeholder(3), dialect.Placeholder(4),
+	)
+	return q.Exec(ctx, sqlStr, aggregate, "INSERTED", id, payload)
 }
 
 // stringField extracts a string-typed column from a row map. Handles the

@@ -11,16 +11,18 @@ import (
 	"syscall"
 	"time"
 
+	"reflect"
+
 	"github.com/ClaudioSchirmer/omnicore/application/configuration"
 	"github.com/ClaudioSchirmer/omnicore/application/pipeline"
 	"github.com/ClaudioSchirmer/omnicore/application/translation"
-	"github.com/ClaudioSchirmer/omnicore/infra"
+	"github.com/ClaudioSchirmer/omnicore/infra/db/read/mongo"
 	"github.com/ClaudioSchirmer/omnicore/infra/audit"
+	"github.com/ClaudioSchirmer/omnicore/infra/db"
 	"github.com/ClaudioSchirmer/omnicore/infra/events"
 	"github.com/ClaudioSchirmer/omnicore/infra/httpclient"
 	"github.com/ClaudioSchirmer/omnicore/infra/integration"
 	"github.com/ClaudioSchirmer/omnicore/infra/tracing"
-	"reflect"
 
 	fwweb "github.com/ClaudioSchirmer/omnicore/web"
 	"github.com/ClaudioSchirmer/omnicore/web/openapi"
@@ -95,7 +97,7 @@ func runWithConfig(cfg *Config, wire func(Deps) Wiring) error {
 	if err != nil {
 		return err
 	}
-	defer deps.Postgres.Close()
+	defer deps.DB.Close()
 	defer func() { _ = deps.Mongo.Close(context.Background()) }()
 
 	wiring := wire(deps)
@@ -147,9 +149,11 @@ func runWithConfig(cfg *Config, wire func(Deps) Wiring) error {
 	// across boots (CREATE TABLE IF NOT EXISTS), runs after migrations so the
 	// parent table is guaranteed to be in place, runs before serving HTTP so
 	// the first write of the day never lands in a missing partition. Skipped
-	// when audit is fully off (destinations: []) since no row will ever land.
-	if cfg.Audit.Includes(audit.DestinationDatabase) {
-		if err := audit.EnsureFuturePartitions(ctx, deps.Postgres.Pool(), 3); err != nil {
+	// when audit is fully off (destinations: []) since no row will ever land,
+	// and on non-Postgres dialects (the MySQL audit table is not partitioned —
+	// partition maintenance is a PG-only concern).
+	if cfg.Audit.Includes(audit.DestinationDatabase) && isPostgres(cfg) {
+		if err := audit.EnsureFuturePartitions(ctx, pgEngine(deps).Pool(), 3); err != nil {
 			return fmt.Errorf("bootstrap: ensure audit partitions: %w", err)
 		}
 	}
@@ -164,7 +168,7 @@ func runWithConfig(cfg *Config, wire func(Deps) Wiring) error {
 	// (per-view override) > cfg.Query.MaxLimit (yaml default) > the reader's
 	// framework constant 100. Custom ViewReader implementations bypass this
 	// hook by design — they own their own limit policy.
-	if mvr, ok := deps.ViewReader.(*infra.MongoViewReader); ok {
+	if mvr, ok := deps.ViewReader.(*mongo.MongoViewReader); ok {
 		mvr.SetMaxLimitResolver(buildViewMaxLimitResolver(views, cfg.Query.MaxLimit))
 		// Register the views so the reader can translate criteria/documents
 		// between Go field names and physical columns via each view's
@@ -197,7 +201,7 @@ func runWithConfig(cfg *Config, wire func(Deps) Wiring) error {
 	// schema would have no lossless mapping. Embed schemas are guaranteed by
 	// construction (FromSchema is the only source constructor); the root schema
 	// is the one a consumer could forget, so it is enforced here.
-	if err := infra.ValidateViewSchemas(views); err != nil {
+	if err := mongo.ValidateViewSchemas(views); err != nil {
 		return err
 	}
 
@@ -206,7 +210,7 @@ func runWithConfig(cfg *Config, wire func(Deps) Wiring) error {
 		// foreign collections, warns in dev / aborts otherwise. Runs
 		// before ApplyMongoSpecs so a guard failure short-circuits
 		// before any write touches the cluster.
-		if err := infra.CheckServiceRegistry(ctx, deps.Mongo, cfg.Service, cfg.Profile, views); err != nil {
+		if err := mongo.CheckServiceRegistry(ctx, deps.Mongo, cfg.Service, cfg.Profile, views); err != nil {
 			return fmt.Errorf("bootstrap: mongo registry guard: %w", err)
 		}
 
@@ -214,11 +218,11 @@ func runWithConfig(cfg *Config, wire func(Deps) Wiring) error {
 		// collation, capped, time-series). Idempotent on steady state;
 		// strict-on-divergence by default, FORCE_REBUILD env var as the
 		// operator escape for index conflicts.
-		if err := infra.ApplyMongoSpecs(ctx, deps.Mongo, views); err != nil {
+		if err := mongo.ApplyMongoSpecs(ctx, deps.Mongo, views); err != nil {
 			return fmt.Errorf("bootstrap: mongo apply specs: %w", err)
 		}
 
-		syncEngine := infra.NewSyncEngine(deps.Postgres, deps.Mongo,
+		syncEngine := mongo.NewSyncEngine(deps.DB, deps.Mongo,
 			cfg.Kafka.Brokers, cfg.Kafka.SyncGroupID, views, cfg.Kafka.SyncWorkers).
 			WithKafkaTracing(cfg.Observability.Tracing.Resolve(cfg.Service).Instruments(tracing.SubKafka))
 
@@ -281,33 +285,33 @@ func buildDeps(cfg *Config) (Deps, error) {
 			"endpoint", tracingCfg.Endpoint)
 	}
 
-	pg, err := infra.NewPostgres(ctx, cfg.Postgres.DSN,
-		infra.WithPgxTracing(tracingCfg.Instruments(tracing.SubPgx)))
+	eng, err := db.NewEngine(cfg.Database.Dialect, ctx, cfg.Postgres.DSN,
+		tracingCfg.Instruments(tracing.SubPgx))
 	if err != nil {
-		return Deps{}, fmt.Errorf("bootstrap: postgres connect: %w", err)
+		return Deps{}, fmt.Errorf("bootstrap: database connect: %w", err)
 	}
-	logger.Info("postgres connected", "dsn", redact(cfg.Postgres.DSN))
+	logger.Info("database connected", "dialect", cfg.Database.Dialect, "dsn", redact(cfg.Postgres.DSN))
 
-	mg, err := infra.NewMongoDB(ctx, cfg.Mongo.URI, cfg.Mongo.Database,
-		infra.WithMongoTracing(tracingCfg.Instruments(tracing.SubMongo)))
+	mg, err := mongo.NewMongoDB(ctx, cfg.Mongo.URI, cfg.Mongo.Database,
+		mongo.WithMongoTracing(tracingCfg.Instruments(tracing.SubMongo)))
 	if err != nil {
-		pg.Close()
+		eng.Close()
 		return Deps{}, fmt.Errorf("bootstrap: mongo connect: %w", err)
 	}
 	logger.Info("mongo connected", "uri", redact(cfg.Mongo.URI), "db", cfg.Mongo.Database)
 
 	tr := translation.Default()
 	pipe := pipeline.New(tr).WithLogger(logger)
-	// Audit travels through the Postgres adapter — configured at boot, then
-	// every Insert/Update/Archive/Unarchive/Delete emits the configured
-	// destinations automatically. nil cfg.Audit destinations slice would
-	// have been populated by applyDefaults already.
-	pg.WithAudit(&cfg.Audit, logger, cfg.Auth.AuditClaims)
-	// Domain events accumulated via entity.RegisterEvent are forwarded
-	// post-commit through the slog transport by default; a consumer can swap
-	// the transport with pg.WithEventPublisher(customPublisher) before serving.
-	pg.WithEventPublisher(events.NewSlogPublisher(logger))
-	viewReader := infra.NewMongoViewReader(mg)
+	// Audit + domain-event publishing are configured on the neutral engine: once
+	// set, every write emits the configured audit destinations (in-TX audit_events
+	// row + post-commit slog echo) and forwards accumulated domain events
+	// post-commit. Each backend writes the audit row through its own dialect
+	// (Postgres via pgx, MySQL via database/sql) — the config surface is neutral, so
+	// no dialect branch here. nil cfg.Audit destinations were populated by
+	// applyDefaults already.
+	eng.WithAudit(&cfg.Audit, logger, cfg.Auth.AuditClaims)
+	eng.WithEventPublisher(events.NewSlogPublisher(logger))
+	viewReader := mongo.NewMongoViewReader(mg)
 
 	// Resolve the SERVICE-PRIVATE cache from cfg only (no Wire
 	// injection at this stage). If cfg.Cache.Store == "custom", the
@@ -316,13 +320,13 @@ func buildDeps(cfg *Config) (Deps, error) {
 	// resolve directly.
 	privateCache, err := resolveCache(cfg.Cache, nil)
 	if err != nil {
-		pg.Close()
+		eng.Close()
 		_ = mg.Close(context.Background())
 		return Deps{}, fmt.Errorf("bootstrap: cache init: %w", err)
 	}
 	sharedCache, err := resolveSharedCache(cfg.Cache, nil)
 	if err != nil {
-		pg.Close()
+		eng.Close()
 		_ = mg.Close(context.Background())
 		return Deps{}, fmt.Errorf("bootstrap: shared cache init: %w", err)
 	}
@@ -340,7 +344,7 @@ func buildDeps(cfg *Config) (Deps, error) {
 			httpclient.WithCache(privateCache),
 			httpclient.WithClientTracing(tracingCfg.Instruments(tracing.SubHTTPClient)))
 		if err != nil {
-			pg.Close()
+			eng.Close()
 			_ = mg.Close(context.Background())
 			return Deps{}, fmt.Errorf("bootstrap: httpclient init: %w", err)
 		}
@@ -353,14 +357,18 @@ func buildDeps(cfg *Config) (Deps, error) {
 	// so a feature's BeforeCommit closure can reference fwintegration.Dispatch
 	// without nil-checking. Services that emit nothing AND consume
 	// nothing pay only the empty struct cost.
-	integration.Configure(cfg.Integration, pg, logger)
+	//
+	// Configured on the neutral engine: the producer's in-TX path uses the
+	// canonical db.UnwrapTx bridge and the standalone path the engine's
+	// Querier, so Dispatch works on any dialect (Postgres or MySQL).
+	integration.Configure(cfg.Integration, eng, logger)
 	integrationRegistry := integration.NewRegistry()
 
 	return Deps{
 		Config:              cfg,
 		Logger:              logger,
 		Tracing:             tracingProvider,
-		Postgres:            pg,
+		DB:                  eng,
 		Mongo:               mg,
 		Translator:          tr,
 		Pipeline:            pipe,
@@ -694,7 +702,7 @@ func serve(ctx context.Context, deps Deps, wiring Wiring) error {
 		consumerPool = integration.NewConsumerPool(
 			deps.IntegrationRegistry,
 			deps.Config.Integration,
-			deps.Postgres,
+			deps.DB,
 			deps.Config.Kafka.Brokers,
 			deps.Pipeline,
 			deps.Logger,

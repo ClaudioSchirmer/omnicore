@@ -1,0 +1,268 @@
+package mongo
+
+import (
+	"context"
+	"strings"
+	"testing"
+
+	"github.com/ClaudioSchirmer/omnicore/domain"
+	"github.com/ClaudioSchirmer/omnicore/infra/db"
+	"go.mongodb.org/mongo-driver/v2/bson"
+)
+
+// The Composer reads through the engine's neutral surface — c.eng.Querier().
+// QueryMaps — so these tests script a fakeEngine whose QueryMaps returns the
+// column-keyed maps each SELECT would yield. The dynamic-shape read replaces the
+// old pgx FieldDescriptions()+Values() machinery (that pgx-specific path is now
+// tested directly in infra/db/pg).
+
+func composerRootSchema() *db.TableSchema {
+	return db.NewTableSchema[*builderTestEntity]("orders").
+		PK("id").
+		Field("Name", "name").
+		SoftDelete("deleted_at")
+}
+
+func composerLineSchema() *db.TableSchema {
+	return db.NewTableSchema[fakeVO]("lines").
+		PK("id").
+		FK("order_id").
+		Field("Label", "label").
+		SoftDelete("deleted_at")
+}
+
+func composerBuyerSchema() *db.TableSchema {
+	return db.NewTableSchema[fakeVO]("buyers").
+		PK("id").
+		Field("Label", "label")
+}
+
+// composerEngine builds a fakeEngine whose QueryMaps is driven by mapsFn.
+func composerEngine(mapsFn func(sql string, args []any) ([]map[string]any, error)) *fakeEngine {
+	return newFakeEngine(&fakeQuerier{queryMapsFn: mapsFn})
+}
+
+// composerBoolEntity backs the bool-coercion tests: MySQL returns a TINYINT(1)
+// as int64 on the dynamic QueryMaps path, and the composer must restore it to a
+// real bool from the type-anchored schema.
+type composerBoolEntity struct {
+	domain.BaseEntity
+	Active   bool
+	Verified *bool
+	Name     string
+}
+
+func composerBoolSchema() *db.TableSchema {
+	return db.NewTableSchema[*composerBoolEntity]("flags").
+		PK("id").
+		Field("Active", "active").
+		Field("Verified", "verified").
+		Field("Name", "name")
+}
+
+func TestBoolColumns(t *testing.T) {
+	got := composerBoolSchema().BoolColumns()
+	if len(got) != 2 || !got["active"] || !got["verified"] {
+		t.Fatalf("BoolColumns = %v, want {active, verified}", got)
+	}
+	if got["name"] {
+		t.Error("name is a string column, must not be reported as bool")
+	}
+	// External (type-less) schema has no Go struct to reflect → empty.
+	if ext := db.NewExternalSchema("flags").PK("id").Field("Active", "active").BoolColumns(); len(ext) != 0 {
+		t.Errorf("external schema BoolColumns = %v, want empty", ext)
+	}
+}
+
+// A MySQL-shaped read (TINYINT(1) → int64) composes into a real BSON bool, not a
+// number; a SQL NULL bool stays nil; a string column is untouched.
+func TestCompose_CoercesBoolColumns(t *testing.T) {
+	eng := composerEngine(func(string, []any) ([]map[string]any, error) {
+		return mapsFromColsData(
+			[]string{"id", "active", "verified", "name"},
+			[][]any{{"o1", int64(1), nil, "first"}}), nil
+	})
+	c := NewComposer(eng)
+	view := View("flags").Version(1).Root("flags").Schema(composerBoolSchema())
+
+	doc, err := c.Compose(context.Background(), view, "o1")
+	if err != nil {
+		t.Fatalf("Compose: %v", err)
+	}
+	if v, ok := doc["active"].(bool); !ok || v != true {
+		t.Errorf("active = %#v, want bool(true)", doc["active"])
+	}
+	if doc["verified"] != nil {
+		t.Errorf("verified (SQL NULL) = %#v, want nil", doc["verified"])
+	}
+	if doc["name"] != "first" {
+		t.Errorf("name = %#v, want \"first\"", doc["name"])
+	}
+}
+
+func TestCompose_RootMissing(t *testing.T) {
+	eng := composerEngine(func(string, []any) ([]map[string]any, error) {
+		return nil, nil // zero rows
+	})
+	c := NewComposer(eng)
+	view := View("orders").Version(1).Root("orders").Schema(composerRootSchema())
+
+	doc, err := c.Compose(context.Background(), view, "o1")
+	if err != nil {
+		t.Fatalf("Compose: %v", err)
+	}
+	if doc != nil {
+		t.Errorf("missing root must yield nil doc, got %v", doc)
+	}
+}
+
+func TestCompose_QueryError(t *testing.T) {
+	eng := composerEngine(func(string, []any) ([]map[string]any, error) {
+		return nil, errFake
+	})
+	c := NewComposer(eng)
+	view := View("orders").Version(1).Root("orders").Schema(composerRootSchema())
+
+	if _, err := c.Compose(context.Background(), view, "o1"); err == nil {
+		t.Fatal("expected query error from Compose")
+	}
+}
+
+func TestCompose_RootOnly(t *testing.T) {
+	eng := composerEngine(func(string, []any) ([]map[string]any, error) {
+		return mapsFromColsData([]string{"id", "name"}, [][]any{{"o1", "first"}}), nil
+	})
+	c := NewComposer(eng)
+	view := View("orders").Version(1).Root("orders").Schema(composerRootSchema())
+
+	doc, err := c.Compose(context.Background(), view, "o1")
+	if err != nil {
+		t.Fatalf("Compose: %v", err)
+	}
+	if doc == nil || doc["id"] != "o1" || doc["name"] != "first" {
+		t.Errorf("root doc drifted: %v", doc)
+	}
+}
+
+func TestCompose_EmbedMany(t *testing.T) {
+	eng := composerEngine(func(sql string, args []any) ([]map[string]any, error) {
+		switch {
+		case strings.Contains(sql, "FROM orders"):
+			return mapsFromColsData([]string{"id", "name"}, [][]any{{"o1", "first"}}), nil
+		case strings.Contains(sql, "FROM lines"):
+			return mapsFromColsData([]string{"id", "order_id", "label"},
+				[][]any{{"l1", "o1", "a"}, {"l2", "o1", "b"}}), nil
+		}
+		return nil, nil
+	})
+	c := NewComposer(eng)
+	view := View("orders").Version(1).Root("orders").Schema(composerRootSchema()).
+		EmbedMany("lines", FromSchema(composerLineSchema()))
+
+	doc, err := c.Compose(context.Background(), view, "o1")
+	if err != nil {
+		t.Fatalf("Compose: %v", err)
+	}
+	lines, ok := doc["lines"].([]bson.M)
+	if !ok {
+		t.Fatalf("lines embed shape = %T", doc["lines"])
+	}
+	if len(lines) != 2 {
+		t.Errorf("embedded lines = %d, want 2 (doc=%v)", len(lines), doc)
+	}
+}
+
+func TestCompose_EmbedOneToOne(t *testing.T) {
+	eng := composerEngine(func(sql string, args []any) ([]map[string]any, error) {
+		switch {
+		case strings.Contains(sql, "FROM orders"):
+			return mapsFromColsData([]string{"id", "name", "buyer_id"}, [][]any{{"o1", "first", "b1"}}), nil
+		case strings.Contains(sql, "FROM buyers"):
+			return mapsFromColsData([]string{"id", "label"}, [][]any{{"b1", "acme"}}), nil
+		}
+		return nil, nil
+	})
+	c := NewComposer(eng)
+	view := View("orders").Version(1).Root("orders").Schema(composerRootSchema()).
+		Embed("buyer", FromSchema(composerBuyerSchema()).On("buyer_id").As("Buyer"))
+
+	doc, err := c.Compose(context.Background(), view, "o1")
+	if err != nil {
+		t.Fatalf("Compose: %v", err)
+	}
+	buyer, ok := doc["buyer"].(bson.M)
+	if !ok {
+		t.Fatalf("buyer embed shape = %T", doc["buyer"])
+	}
+	if buyer["label"] != "acme" {
+		t.Errorf("buyer embed drifted: %v", buyer)
+	}
+}
+
+func TestCompose_EmbedOneToOne_QueryError(t *testing.T) {
+	eng := composerEngine(func(sql string, args []any) ([]map[string]any, error) {
+		switch {
+		case strings.Contains(sql, "FROM orders"):
+			return mapsFromColsData([]string{"id", "name", "buyer_id"}, [][]any{{"o1", "first", "b1"}}), nil
+		case strings.Contains(sql, "FROM buyers"):
+			return nil, errFake
+		}
+		return nil, nil
+	})
+	c := NewComposer(eng)
+	view := View("orders").Version(1).Root("orders").Schema(composerRootSchema()).
+		Embed("buyer", FromSchema(composerBuyerSchema()).On("buyer_id").As("Buyer"))
+
+	if _, err := c.Compose(context.Background(), view, "o1"); err == nil {
+		t.Fatal("expected the one-to-one embed fetchRow error to surface")
+	}
+}
+
+func TestCompose_EmbedOneToOne_MissingFK(t *testing.T) {
+	eng := composerEngine(func(sql string, args []any) ([]map[string]any, error) {
+		if strings.Contains(sql, "FROM orders") {
+			// Root row has no buyer_id column → the one-to-one embed is skipped.
+			return mapsFromColsData([]string{"id", "name"}, [][]any{{"o1", "first"}}), nil
+		}
+		return nil, nil
+	})
+	c := NewComposer(eng)
+	view := View("orders").Version(1).Root("orders").Schema(composerRootSchema()).
+		Embed("buyer", FromSchema(composerBuyerSchema()).On("buyer_id").As("Buyer"))
+
+	doc, err := c.Compose(context.Background(), view, "o1")
+	if err != nil {
+		t.Fatalf("Compose: %v", err)
+	}
+	if _, present := doc["buyer"]; present {
+		t.Errorf("missing FK must skip the embed, got %v", doc["buyer"])
+	}
+}
+
+func TestComposeAll(t *testing.T) {
+	eng := composerEngine(func(sql string, args []any) ([]map[string]any, error) {
+		if strings.Contains(sql, "FROM orders") {
+			return mapsFromColsData([]string{"id", "name"}, [][]any{{"o1", "a"}, {"o2", "b"}}), nil
+		}
+		return nil, nil
+	})
+	c := NewComposer(eng)
+	view := View("orders").Version(1).Root("orders").Schema(composerRootSchema())
+
+	docs, err := c.ComposeAll(context.Background(), view)
+	if err != nil {
+		t.Fatalf("ComposeAll: %v", err)
+	}
+	if len(docs) != 2 {
+		t.Errorf("ComposeAll = %d docs, want 2", len(docs))
+	}
+}
+
+func TestComposeAll_QueryError(t *testing.T) {
+	eng := composerEngine(func(string, []any) ([]map[string]any, error) { return nil, errFake })
+	c := NewComposer(eng)
+	view := View("orders").Version(1).Root("orders").Schema(composerRootSchema())
+	if _, err := c.ComposeAll(context.Background(), view); err == nil {
+		t.Fatal("expected query error from ComposeAll")
+	}
+}

@@ -16,7 +16,7 @@ func TestInsertAuditEvent_PayloadMarshalError(t *testing.T) {
 	tx := &fakeTx{}
 	ev := sampleEvent()
 	ev.Snapshot = map[string]any{"bad": make(chan int)}
-	err := InsertAuditEvent(context.Background(), tx, ev)
+	err := InsertAuditEvent(context.Background(), tx, pgPlaceholder, ev)
 	if err == nil {
 		t.Fatal("expected marshal error")
 	}

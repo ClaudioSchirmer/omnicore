@@ -6,8 +6,10 @@ import (
 	"github.com/ClaudioSchirmer/omnicore/application/pipeline"
 	"github.com/ClaudioSchirmer/omnicore/application/queries"
 	"github.com/ClaudioSchirmer/omnicore/application/translation"
-	"github.com/ClaudioSchirmer/omnicore/infra"
+	"github.com/ClaudioSchirmer/omnicore/infra/db/read/mongo"
 	"github.com/ClaudioSchirmer/omnicore/infra/cache"
+	"github.com/ClaudioSchirmer/omnicore/infra/db"
+	"github.com/ClaudioSchirmer/omnicore/infra/db/engine/pg"
 	"github.com/ClaudioSchirmer/omnicore/infra/httpclient"
 	"github.com/ClaudioSchirmer/omnicore/infra/integration"
 	"github.com/ClaudioSchirmer/omnicore/infra/tracing"
@@ -18,17 +20,45 @@ import (
 // Deps are the singletons built by the framework and exposed to the service
 // through the Wire callback.
 //
-// Audit is no longer an explicit dependency: the persistence layer
-// (infra.Postgres) owns the audit emission, configured at boot via
-// Postgres.WithAudit(cfg.Audit, logger, cfg.Auth.AuditClaims). The Repository
-// methods route audit transparently — every successful write produces the
-// configured slog echo and / or in-TX audit_events row without each handler
-// having to thread an Auditor.
+// Audit is no longer an explicit dependency: the persistence layer (the
+// RelationalEngine) owns the audit emission, configured at boot via
+// WithAudit(cfg.Audit, logger, cfg.Auth.AuditClaims). The Repository methods
+// route audit transparently — every successful write produces the configured
+// slog echo and / or in-TX audit_events row without each handler having to
+// thread an Auditor.
+//
+// DB is the backend-neutral relational engine (Postgres today; the dialect is
+// chosen at boot via database.dialect). Consumers depend on the interface, not
+// a concrete driver. Code that genuinely needs Postgres-specific access (the
+// pgx pool for custom SELECTs) recovers it via pg.AsPostgres(d.DB) — a
+// documented PG-only escape hatch.
+// pgEngine recovers the concrete *pg.Postgres from Deps for the framework
+// wiring that still speaks pgx directly — audit partition maintenance, pgx-based
+// migrations, and the Mongo-view rebuild/drift control plane (advisory lock +
+// omnicore_mongo_views registry). These boot steps are gated by isPostgres, so
+// pgEngine is only reached on a Postgres engine; it panics otherwise
+// (composition-root invariant). The composer/sync projection and the integration
+// consumer control plane no longer go through here — they speak the neutral seam.
+func pgEngine(deps Deps) *pg.Postgres { return pg.AsPostgres(deps.DB) }
+
+// dialectPostgres / dialectMySQL are the registered relational-engine dialect
+// names (mirror the infra engine-registry keys and the database.dialect default).
+const (
+	dialectPostgres = "postgres"
+	dialectMySQL    = "mysql"
+)
+
+// isPostgres reports whether the selected relational backend is Postgres — the
+// gate for the boot steps still bound to pgx: audit partition maintenance and the
+// Mongo-view rebuild/drift control plane. A MySQL service boots with those gated
+// off (it serves CRUD + the Mongo projection; rebuild/drift stay Postgres-only).
+func isPostgres(cfg *Config) bool { return cfg.Database.Dialect == dialectPostgres }
+
 type Deps struct {
 	Config     *Config
 	Logger     *slog.Logger
-	Postgres   *infra.Postgres
-	Mongo      *infra.MongoDB
+	DB         db.RelationalEngine
+	Mongo      *mongo.MongoDB
 	Translator *translation.Translator
 	Pipeline   *pipeline.Pipeline
 	ViewReader queries.ViewReader
@@ -100,5 +130,5 @@ type Deps struct {
 	// UpstreamSubscriber.RetryPendingFailures(ctx) without re-resolving
 	// the slice through internal package state. nil when the service
 	// declared zero upstream subscriptions in YAML / Wiring.
-	UpstreamSubscribers []*infra.UpstreamSubscriber
+	UpstreamSubscribers []*mongo.UpstreamSubscriber
 }

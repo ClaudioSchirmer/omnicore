@@ -108,6 +108,14 @@ type Config struct {
 		DSN string `yaml:"dsn"`
 	} `yaml:"postgres"`
 
+	// Database selects the relational backend. dialect picks the registered
+	// engine (postgres today; mysql under its build tag in a later phase);
+	// unset defaults to "postgres", so every existing config stays valid. The
+	// connection string is still read from postgres.dsn.
+	Database struct {
+		Dialect string `yaml:"dialect"`
+	} `yaml:"database"`
+
 	Mongo struct {
 		URI      string             `yaml:"uri"`
 		Database string             `yaml:"database"`
@@ -186,7 +194,7 @@ type Config struct {
 	// surface — for each entry, bootstrap.Run spins a Kafka consumer
 	// + worker pool that materializes A's events into a local Mongo
 	// collection and triggers recompose on every B view embedding it
-	// via an external fwinfra.FromSchema. YAML is the canonical source; Wiring
+	// via an external fwmongo.FromSchema. YAML is the canonical source; Wiring
 	// exposes the same slice for manual lifecycle paths
 	// (bootstrap.Build + Serve) and integration tests, with the
 	// merge rule documented on Wiring.UpstreamSubscriptions.
@@ -451,7 +459,7 @@ type QueryConfig struct {
 	// MaxExportRows is the default ceiling on the number of rows a tabular
 	// export (CSV/XLSX) streams, applied to every export route that does not
 	// opt into a per-view override via ViewDefinition.MaxExportRows. Zero (or
-	// unset) defers to infra.DefaultMaxExportRows. Negative values are rejected
+	// unset) defers to mongo.DefaultMaxExportRows. Negative values are rejected
 	// at boot. The consumer forwards it to ViewDefinition.ResolveMaxExportRows.
 	MaxExportRows int64 `yaml:"maxExportRows"`
 }
@@ -510,6 +518,9 @@ func (c *Config) applyDefaults() {
 	}
 	if c.Migrations.Dir == "" {
 		c.Migrations.Dir = "./migrations"
+	}
+	if c.Database.Dialect == "" {
+		c.Database.Dialect = "postgres"
 	}
 	if c.Kafka.SyncWorkers < 1 {
 		c.Kafka.SyncWorkers = runtime.NumCPU()

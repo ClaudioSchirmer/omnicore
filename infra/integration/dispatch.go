@@ -5,11 +5,12 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"strings"
 
 	"github.com/ClaudioSchirmer/omnicore/application/configuration"
 	"github.com/ClaudioSchirmer/omnicore/application/persistence"
 	"github.com/ClaudioSchirmer/omnicore/domain"
-	"github.com/ClaudioSchirmer/omnicore/infra"
+	"github.com/ClaudioSchirmer/omnicore/infra/db"
 	"github.com/ClaudioSchirmer/omnicore/infra/tracing"
 
 	"github.com/google/uuid"
@@ -219,17 +220,33 @@ type dispatchRow struct {
 	Causation    uuid.UUID
 }
 
-const sqlInsertIntegrationEvent = `
-INSERT INTO integration_events
-  (event_id, aggregate_type, aggregate_id, event_type, event_version,
-   payload, correlation_id, causation_id, thread_id, actor, traceparent)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`
+// integrationEventCols is the column list for the integration_events INSERT,
+// fixed across dialects; only the placeholder grammar (rendered via the engine's
+// Dialect) and the in-TX vs standalone execution differ.
+var integrationEventCols = []string{
+	"event_id", "aggregate_type", "aggregate_id", "event_type", "event_version",
+	"payload", "correlation_id", "causation_id", "thread_id", "actor", "traceparent",
+}
 
-// writeIntegrationEvent dispatches between the in-TX path (WithTx
-// supplied) and the standalone path (Dispatch without WithTx). The
-// standalone path uses the package's PG pool — exposed via the client
-// snapshot — and the single-statement autocommit semantic Postgres
-// provides for one INSERT.
+// insertIntegrationEventSQL renders the INSERT with the dialect's positional
+// placeholders ($1.. on Postgres, ? on MySQL). The uuid-bearing columns are
+// CHAR(36) on MySQL and uuid on Postgres; binding the uuid TEXT form works on
+// both (pgx parses text into uuid, MySQL stores it as the CHAR), so the args stay
+// dialect-neutral and no per-arg encoding is needed.
+func insertIntegrationEventSQL(d db.Dialect) string {
+	ph := make([]string, len(integrationEventCols))
+	for i := range integrationEventCols {
+		ph[i] = d.Placeholder(i + 1)
+	}
+	return "INSERT INTO integration_events (" + strings.Join(integrationEventCols, ", ") +
+		") VALUES (" + strings.Join(ph, ", ") + ")"
+}
+
+// writeIntegrationEvent dispatches between the in-TX path (WithTx supplied → the
+// row lands in the framework's open transaction via the canonical UnwrapTx
+// bridge) and the standalone path (no WithTx → single-statement autocommit on the
+// engine's pool). Both render the dialect's placeholders and run through the
+// neutral seam, so the producer works on any backend.
 func writeIntegrationEvent(
 	ctx context.Context,
 	c *client,
@@ -237,7 +254,7 @@ func writeIntegrationEvent(
 	row dispatchRow,
 ) error {
 	args := []any{
-		row.EventID,
+		row.EventID.String(),
 		nullableString(row.Aggregate),
 		nullableUUID(maybeAggregateUUID(row)),
 		row.EventType,
@@ -245,7 +262,7 @@ func writeIntegrationEvent(
 		row.Payload,
 		nullableUUID(row.Correlation),
 		nullableUUID(row.Causation),
-		row.ThreadID,
+		row.ThreadID.String(),
 		row.Actor,
 		// W3C traceparent of the producing request so the Receiver can link the
 		// consumed event back to this trace; NULL when tracing is off.
@@ -253,16 +270,14 @@ func writeIntegrationEvent(
 	}
 
 	if tx != nil {
-		pgxTx := infra.UnwrapPgxTx(tx)
-		_, err := pgxTx.Exec(ctx, sqlInsertIntegrationEvent, args...)
-		return err
+		ntx := db.UnwrapTx(tx)
+		return ntx.Exec(ctx, insertIntegrationEventSQL(ntx.Dialect()), args...)
 	}
 
-	if c.pg == nil {
-		return fmt.Errorf("standalone Dispatch requires a Postgres pool; integration.Configure received nil pg")
+	if c.eng == nil {
+		return fmt.Errorf("standalone Dispatch requires a relational engine; integration.Configure received nil")
 	}
-	_, err := c.pg.Pool().Exec(ctx, sqlInsertIntegrationEvent, args...)
-	return err
+	return c.eng.Querier().Exec(ctx, insertIntegrationEventSQL(c.eng.Dialect()), args...)
 }
 
 // maybeAggregateUUID returns the aggregate id when HasAggregate, else
@@ -291,13 +306,14 @@ func nullableString(s string) any {
 	return s
 }
 
-// nullableUUID returns nil for uuid.Nil so pgx encodes NULL.
-// correlation_id, causation_id, aggregate_id all share this shape.
+// nullableUUID returns nil for uuid.Nil (→ NULL column) and the canonical TEXT
+// form otherwise. Bound as text so the same value lands in a Postgres uuid column
+// and a MySQL CHAR(36) column. correlation_id, causation_id, aggregate_id share it.
 func nullableUUID(u uuid.UUID) any {
 	if u == uuid.Nil {
 		return nil
 	}
-	return u
+	return u.String()
 }
 
 // emitDispatchEcho is the producer-side observability line. Best-effort

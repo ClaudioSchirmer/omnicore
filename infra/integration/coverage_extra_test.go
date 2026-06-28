@@ -156,7 +156,7 @@ func TestHandleMessage_PointerReceiverToCommand(t *testing.T) {
 
 	exec := &fakeExec{}
 	if err := r.handleMessage(context.Background(),
-		exec, map[string]string{"event_type": "PartnerOnboarded"},
+		engineFor(exec), map[string]string{"event_type": "PartnerOnboarded"},
 		uuid.New(), []byte(`{"email":"x@y"}`), nil, discardLogger()); err != nil {
 		t.Fatalf("pointer-receiver ToCommand path must succeed, got %v", err)
 	}
@@ -167,11 +167,11 @@ func TestHandleMessage_PointerReceiverToCommand(t *testing.T) {
 func TestHandleMessage_DedupCheckErrorFallsThrough(t *testing.T) {
 	h := &fakeHandler{}
 	r := newResolvedReceiver(t, h)
-	// QueryRow returns a real (non-ErrNoRows) error → IsAlreadyProcessed errs;
-	// handleMessage logs and still attempts the handler (at-least-once).
-	exec := &fakeExec{row: &fakeRow{scanErr: errors.New("conn reset")}}
+	// The dedup pre-check Query errors → IsAlreadyProcessed errs; handleMessage
+	// logs and still attempts the handler (at-least-once).
+	exec := &fakeExec{queryErr: errors.New("conn reset")}
 	if err := r.handleMessage(context.Background(),
-		exec, map[string]string{"event_type": "PartnerOnboarded"},
+		engineFor(exec), map[string]string{"event_type": "PartnerOnboarded"},
 		uuid.New(), []byte(`{"email":"x@y"}`), nil, discardLogger()); err != nil {
 		t.Fatalf("dedup-check error must fall through, got %v", err)
 	}
@@ -183,11 +183,11 @@ func TestHandleMessage_DedupCheckErrorFallsThrough(t *testing.T) {
 func TestHandleMessage_MarkProcessedErrorIsBestEffort(t *testing.T) {
 	h := &fakeHandler{}
 	r := newResolvedReceiver(t, h)
-	// QueryRow defaults to ErrNoRows (not processed) so the handler runs;
+	// The dedup pre-check finds no row (not processed) so the handler runs;
 	// Exec (MarkProcessed) fails → the mark_processed_failed warn branch.
 	exec := &fakeExec{execErr: errors.New("insert failed")}
 	if err := r.handleMessage(context.Background(),
-		exec, map[string]string{"event_type": "PartnerOnboarded"},
+		engineFor(exec), map[string]string{"event_type": "PartnerOnboarded"},
 		uuid.New(), []byte(`{"email":"x@y"}`), nil, discardLogger()); err != nil {
 		t.Fatalf("MarkProcessed failure must not surface, got %v", err)
 	}
@@ -207,7 +207,7 @@ func TestRetryPendingFailures_ContextCancelStopsLoop(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel() // cancelled before the loop runs
-	n, err := r.RetryPendingFailures(ctx, exec, nil, discardLogger())
+	n, err := r.RetryPendingFailures(ctx, engineFor(exec), nil, discardLogger())
 	if err == nil {
 		t.Fatal("cancelled context must surface ctx.Err() from the loop")
 	}
@@ -276,10 +276,10 @@ func TestIsSuccessResult_NonBoolAndVoid(t *testing.T) {
 // --- dispatch.go: writeIntegrationEvent WithTx branch (foreign handle) ------
 
 // foreignTxHandle satisfies persistence.TxHandle (via the exported embed
-// token) but is NOT the framework's own pgxTxHandle, so UnwrapPgxTx panics.
+// token) but carries no neutral Tx, so the canonical db.UnwrapTx panics.
 // This drives the `tx != nil` branch of writeIntegrationEvent; the real
-// in-TX Exec success path needs a live pgx.Tx and is covered by integration
-// tests, not here.
+// in-TX Exec success path needs a live engine tx and is covered by
+// integration tests, not here.
 type foreignTxHandle struct {
 	persistence.SealedTxHandle
 }
@@ -287,7 +287,7 @@ type foreignTxHandle struct {
 func TestWriteIntegrationEvent_WithForeignTxPanics(t *testing.T) {
 	defer func() {
 		if r := recover(); r == nil {
-			t.Fatal("a foreign TxHandle must panic at UnwrapPgxTx")
+			t.Fatal("a foreign TxHandle must panic at UnwrapTx")
 		}
 	}()
 	c := &client{}

@@ -1,14 +1,14 @@
 package replay
 
 import (
+	"context"
 	"errors"
 	"flag"
+	"fmt"
 	"strings"
 	"testing"
 
-	"github.com/google/uuid"
-	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgconn"
+	"github.com/ClaudioSchirmer/omnicore/infra/db"
 )
 
 // --- buildWhere -------------------------------------------------------------
@@ -33,17 +33,6 @@ func TestBuildWhere(t *testing.T) {
 				t.Errorf("buildWhere(%v, %q) = %q, want %q", tc.includeArchived, tc.filter, got, tc.want)
 			}
 		})
-	}
-}
-
-// --- quoteIdent -------------------------------------------------------------
-
-func TestQuoteIdent(t *testing.T) {
-	if got := quoteIdent("users"); got != `"users"` {
-		t.Errorf("quoteIdent(users) = %q, want %q", got, `"users"`)
-	}
-	if got := quoteIdent("order"); got != `"order"` {
-		t.Errorf("quoteIdent(order) = %q, want %q", got, `"order"`)
 	}
 }
 
@@ -94,113 +83,154 @@ func TestStringField(t *testing.T) {
 	})
 }
 
-// --- scanRowsToMaps ---------------------------------------------------------
+// --- execute (backend-neutral seam) -----------------------------------------
 
-// fakeRows is a minimal pgx.Rows over positional column values, exercising the
-// FieldDescriptions / Next / Values / Err / Close surface scanRowsToMaps uses.
-type fakeRows struct {
-	cols      []string
-	data      [][]any
-	idx       int
-	valuesErr error
-	errAfter  error
-	closed    bool
-}
+// fakeDB implements both db.Querier and db.Dialect so execute can be driven
+// without a real database. It records the SQL it is handed (to assert the
+// generated statements are dialect-quoted + placeholder-rendered) and captures
+// each outbox Exec. execute uses only Placeholder + QuoteIdent of the Dialect
+// and QueryRow/QueryMaps/Exec of the Querier; the rest are inert stubs.
+type fakeDB struct {
+	count    int64
+	rows     []map[string]any
+	queryErr error
+	execErr  error
 
-func (r *fakeRows) Close()                        { r.closed = true }
-func (r *fakeRows) Err() error                    { return r.errAfter }
-func (r *fakeRows) CommandTag() pgconn.CommandTag { return pgconn.CommandTag{} }
-func (r *fakeRows) FieldDescriptions() []pgconn.FieldDescription {
-	out := make([]pgconn.FieldDescription, len(r.cols))
-	for i, c := range r.cols {
-		out[i] = pgconn.FieldDescription{Name: c}
-	}
-	return out
-}
-func (r *fakeRows) RawValues() [][]byte { return nil }
-func (r *fakeRows) Conn() *pgx.Conn     { return nil }
-func (r *fakeRows) Scan(dest ...any) error {
-	return errors.New("scanRowsToMaps must use Values(), not Scan()")
-}
-func (r *fakeRows) Next() bool {
-	if r.idx >= len(r.data) {
-		return false
-	}
-	r.idx++
-	return true
-}
-func (r *fakeRows) Values() ([]any, error) {
-	if r.valuesErr != nil {
-		return nil, r.valuesErr
-	}
-	return r.data[r.idx-1], nil
+	seenSQL []string
+	inserts []outboxInsert
 }
 
-func TestScanRowsToMaps_Success(t *testing.T) {
-	id := uuid.New()
-	// pgx hands UUID columns back as a raw [16]byte; NormalizeSQLValue
-	// canonicalizes that shape (a uuid.UUID named value would pass through).
-	raw := [16]byte(id)
-	rows := &fakeRows{
-		cols: []string{"id", "name"},
-		data: [][]any{
-			{raw, "Alice"},
-			{"plain-id", "Bob"},
+type outboxInsert struct {
+	sql  string
+	args []any
+}
+
+// db.Querier
+func (f *fakeDB) QueryRow(_ context.Context, sql string, _ ...any) db.Row {
+	f.seenSQL = append(f.seenSQL, sql)
+	return fakeRow{count: f.count}
+}
+func (f *fakeDB) Query(_ context.Context, _ string, _ ...any) (db.Rows, error) {
+	return nil, errors.New("Query is not used by execute")
+}
+func (f *fakeDB) QueryMaps(_ context.Context, sql string, _ ...any) ([]map[string]any, error) {
+	f.seenSQL = append(f.seenSQL, sql)
+	if f.queryErr != nil {
+		return nil, f.queryErr
+	}
+	return f.rows, nil
+}
+func (f *fakeDB) Exec(_ context.Context, sql string, args ...any) error {
+	if f.execErr != nil {
+		return f.execErr
+	}
+	f.inserts = append(f.inserts, outboxInsert{sql: sql, args: args})
+	return nil
+}
+
+// db.Dialect — only Placeholder + QuoteIdent are exercised.
+func (f *fakeDB) Placeholder(n int) string                          { return fmt.Sprintf("$%d", n) }
+func (f *fakeDB) QuoteIdent(name string) string                     { return `"` + name + `"` }
+func (f *fakeDB) EncodeArg(v any) any                               { return v }
+func (f *fakeDB) DecodeID(raw string) (string, error)               { return raw, nil }
+func (f *fakeDB) ILikeClause(col, ph string) string                { return col + " ILIKE " + ph }
+func (f *fakeDB) IsUniqueViolation(error) (string, bool)            { return "", false }
+func (f *fakeDB) BuildUpsert(string, []string, []string, []db.UpsertSet) string {
+	return ""
+}
+
+type fakeRow struct{ count int64 }
+
+func (r fakeRow) Scan(dest ...any) error {
+	if len(dest) == 1 {
+		if p, ok := dest[0].(*int64); ok {
+			*p = r.count
+		}
+	}
+	return nil
+}
+
+func TestExecute_NeutralReplay(t *testing.T) {
+	f := &fakeDB{
+		count: 2,
+		rows: []map[string]any{
+			{"id": "id-a", "name": "Alice"},
+			{"id": "id-b", "name": "Bob"},
 		},
 	}
-	out, err := scanRowsToMaps(rows)
+	var buf strings.Builder
+	err := execute(context.Background(), f, f, executeOptions{
+		Aggregate: "users", BatchSize: 1000, Out: &buf,
+	})
 	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+		t.Fatalf("execute: %v", err)
 	}
-	if len(out) != 2 {
-		t.Fatalf("expected 2 maps, got %d", len(out))
+	// The generated SELECT must be dialect-quoted + placeholder-rendered — proof
+	// the replay no longer emits hardcoded PG SQL.
+	gotSelect := f.seenSQL[len(f.seenSQL)-1]
+	for _, want := range []string{`"users"`, `ORDER BY "id"`, "LIMIT $1 OFFSET $2"} {
+		if !strings.Contains(gotSelect, want) {
+			t.Errorf("select %q missing %q", gotSelect, want)
+		}
 	}
-	// UUID column is normalized to its canonical string form.
-	if out[0]["id"] != id.String() {
-		t.Errorf("uuid not normalized: got %v want %v", out[0]["id"], id.String())
+	if len(f.inserts) != 2 {
+		t.Fatalf("expected 2 outbox inserts, got %d", len(f.inserts))
 	}
-	if out[0]["name"] != "Alice" {
-		t.Errorf("name drifted: %v", out[0]["name"])
+	ins := f.inserts[0]
+	if !strings.Contains(ins.sql, "INSERT INTO outbox") || strings.Contains(ins.sql, "::jsonb") ||
+		strings.Contains(ins.sql, "gen_random_uuid") {
+		t.Errorf("outbox insert is not neutral: %q", ins.sql)
 	}
-	if out[1]["id"] != "plain-id" || out[1]["name"] != "Bob" {
-		t.Errorf("row 2 drifted: %+v", out[1])
-	}
-	if !rows.closed {
-		t.Error("scanRowsToMaps must Close() the rows")
-	}
-}
-
-func TestScanRowsToMaps_Empty(t *testing.T) {
-	rows := &fakeRows{cols: []string{"id"}, data: nil}
-	out, err := scanRowsToMaps(rows)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if out != nil {
-		t.Errorf("expected nil slice for no rows, got %v", out)
+	if len(ins.args) != 4 || ins.args[0] != "users" || ins.args[1] != "INSERTED" || ins.args[2] != "id-a" {
+		t.Errorf("outbox insert args drifted: %v", ins.args)
 	}
 }
 
-func TestScanRowsToMaps_ValuesError(t *testing.T) {
-	rows := &fakeRows{
-		cols:      []string{"id"},
-		data:      [][]any{{"x"}},
-		valuesErr: errors.New("values boom"),
-	}
-	if _, err := scanRowsToMaps(rows); err == nil {
-		t.Fatal("expected Values() error to surface")
-	}
+func TestExecute_EmptyAndDryRun(t *testing.T) {
+	t.Run("no-rows", func(t *testing.T) {
+		f := &fakeDB{count: 0}
+		var buf strings.Builder
+		if err := execute(context.Background(), f, f, executeOptions{Aggregate: "users", BatchSize: 10, Out: &buf}); err != nil {
+			t.Fatal(err)
+		}
+		if len(f.inserts) != 0 {
+			t.Errorf("no rows must write nothing, got %d", len(f.inserts))
+		}
+		if !strings.Contains(buf.String(), "nothing to do") {
+			t.Errorf("missing nothing-to-do message: %q", buf.String())
+		}
+	})
+	t.Run("dry-run", func(t *testing.T) {
+		f := &fakeDB{count: 5, rows: []map[string]any{{"id": "x"}}}
+		var buf strings.Builder
+		if err := execute(context.Background(), f, f, executeOptions{Aggregate: "users", BatchSize: 10, DryRun: true, Out: &buf}); err != nil {
+			t.Fatal(err)
+		}
+		if len(f.inserts) != 0 {
+			t.Errorf("dry-run must write nothing, got %d", len(f.inserts))
+		}
+	})
 }
 
-func TestScanRowsToMaps_RowsErr(t *testing.T) {
-	rows := &fakeRows{
-		cols:     []string{"id"},
-		data:     [][]any{{"x"}},
-		errAfter: errors.New("late rows err"),
-	}
-	if _, err := scanRowsToMaps(rows); err == nil {
-		t.Fatal("expected rows.Err() to surface")
-	}
+func TestExecute_Errors(t *testing.T) {
+	t.Run("bad-aggregate", func(t *testing.T) {
+		f := &fakeDB{}
+		if err := execute(context.Background(), f, f, executeOptions{Aggregate: "bad name", BatchSize: 10, Out: &strings.Builder{}}); err == nil {
+			t.Fatal("expected invalid-identifier error")
+		}
+	})
+	t.Run("missing-id", func(t *testing.T) {
+		f := &fakeDB{count: 1, rows: []map[string]any{{"name": "no-id"}}}
+		if err := execute(context.Background(), f, f, executeOptions{Aggregate: "users", BatchSize: 10, Out: &strings.Builder{}}); err == nil {
+			t.Fatal("expected missing-id error")
+		}
+	})
+	t.Run("query-error", func(t *testing.T) {
+		f := &fakeDB{count: 1, queryErr: errors.New("boom")}
+		if err := execute(context.Background(), f, f, executeOptions{Aggregate: "users", BatchSize: 10, Out: &strings.Builder{}}); err == nil {
+			t.Fatal("expected query error to surface")
+		}
+	})
 }
 
 // --- newUsage ---------------------------------------------------------------
