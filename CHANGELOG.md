@@ -53,6 +53,93 @@ with `1.0.0`.
   `domain.Reader[T].FindByID` outside the Auto write handlers stays uncovered by
   design — the domain port takes no context.
 
+- **Pluggable relational backend — MySQL alongside PostgreSQL.** The relational
+  layer is now backend-agnostic: a `db.RelationalEngine` port decouples the write
+  binding, read path, and composition root from the concrete driver, with the
+  backend selected once at boot via the new `database.dialect` knob (default
+  `postgres`, so every existing config stays valid). Engines self-register
+  database/sql-style (`db.RegisterEngine` / `db.NewEngine`); `Deps.DB` and
+  `BaseRepository.Engine` are the neutral handles, and `postgres.AsPostgres(engine)`
+  recovers the concrete adapter for the few PG-bound escapes (pool, partitions).
+  A complete MySQL engine ships behind the `mysql` build tag
+  (`infra/db/engine/mysql`): selecting `database.dialect: mysql` +
+  `go build -tags mysql` runs a service at feature parity with Postgres — flat and
+  aggregate writes (root + children + outbox in one TX, symmetric
+  archive/unarchive/delete cascade), `FindByID` / criteria reads, audit rows +
+  domain-event publishing, the integration producer and consumer (dedup + failure
+  registries), the composer + SyncEngine Mongo projection, operator-triggered
+  Mongo-view rebuild + drift reconciliation, the migration runner, per-statement
+  OpenTelemetry tracing, and the `omnicore-admin` tooling; a Postgres-only build
+  never compiles the package nor links the MySQL driver. Several internal surfaces
+  became backend-neutral to make this possible: a read seam
+  (`db.Querier`/`Rows`/`Row` + `db.Dialect`, with `QueryMaps` for the composer's
+  dynamic shape), the in-TX bridge (`db.UnwrapTx(TxHandle) db.Tx`, the neutral
+  counterpart to the PG-only `UnwrapPgxTx`), a generic audit reader
+  (`db.NewAuditReader`), and the rebuild mutex
+  (`RelationalEngine.AcquireRebuildLock` — `pg_advisory_lock` on Postgres,
+  `GET_LOCK` on MySQL); the `Dialect` renders placeholders (`$n`/`?`), identifier
+  quoting, the case-insensitive LIKE clause, the upsert statement, and the UUID
+  value codec per backend. MySQL specifics: primary keys are UUID v7 generated in
+  Go and stored `BINARY(16)` (time-ordered for InnoDB locality); secondary UUID
+  columns and raw-string id criteria round-trip through `BINARY(16)`, boolean
+  fields keep type fidelity into Mongo, and case-insensitive criteria are
+  collation-independent (`LOWER(col) LIKE LOWER(?)`); the DSN is normalized at
+  construction (`parseTime`, `clientFoundRows`; `multiStatements` scoped to the
+  migration connection only). Verified throughout by a `-tags=integration,mysql`
+  suite against a real MySQL container.
+
+### Changed
+
+- **breaking** — the relational layer's public surface is now backend-neutral,
+  replacing pgx-typed parameters with the `db.RelationalEngine` / `db.Querier` /
+  `db.Dialect` / `db.Row` / `db.Rows` seam. Migration points:
+  - The concrete engine package moved `infra/db/engine/pg` →
+    `infra/db/engine/postgres` (`package pg` → `package postgres`) — update the
+    import path and qualifier for the PG-only escapes (`postgres.AsPostgres`,
+    `postgres.UnwrapPgxTx`, `*postgres.Postgres`, `postgres.NewPostgres`); no
+    symbols changed.
+  - `Deps.Postgres *infra.Postgres` → `Deps.DB infra.RelationalEngine`, and
+    `BaseRepository[T].Postgres` → `.Engine RelationalEngine` (recover the pool via
+    `infra.AsPostgres(d.DB)`; rename the literal field).
+  - `WithAudit` / `WithEventPublisher` moved onto the `RelationalEngine` interface
+    and now return `RelationalEngine`.
+  - The audit read free functions (`audit.FindByID` / `FindByAggregate`) and the
+    `pgExec` interface are removed — build a reader with `db.NewAuditReader(deps.DB)`.
+  - `RootScanner[T]` / `ChildScanner` receive `db.Row` / `db.Rows` (was `pgx.Row` /
+    `pgx.Rows`); the body's `row.Scan(...)` is unchanged.
+  - The Mongo-view rebuild/drift surface neutralized: `DetectViewDrift` takes
+    `RelationalEngine`; the registry helpers (`ReadViewRegistry`, `InitViewRegistry`,
+    `BeginRebuild`, `EndRebuild`, `ListNonDone`) take `(db.Querier, db.Dialect)`;
+    the PG-only advisory-lock helpers (`ViewLockKey`, `TryAcquireViewLock`,
+    `ReleaseViewLock`, `ReadViewLockHolder`) are removed (use `AcquireRebuildLock`).
+  - The engine-taking constructors and consumer-plane helpers now take a
+    `RelationalEngine` (a `*Postgres` still satisfies it, so the canonical
+    `bootstrap.Run` path is unaffected): `NewAggregateLoader`,
+    `NewBaseAggregateRepository`, `NewComposer{,WithMongo}`, `NewSyncEngine`,
+    `integration.Configure`, `NewUpstreamSubscriber`, `integration.NewConsumerPool`,
+    `Receiver.RetryPendingFailures`. The failure/dedup helpers
+    (`RecordUpstreamFailure`, `ResolveUpstreamFailures`,
+    `ListPendingUpstreamFailures{,ByTopic}`, `RecordIntegrationFailure`,
+    `ResolveIntegrationFailures`, `ListPendingIntegrationFailures{,ByGroup}`,
+    `IsAlreadyProcessed`, `MarkProcessed`) take `(Querier[, Dialect])`.
+
+- **breaking** — the embedded framework migrations collapsed from three versioned
+  files (`0001_outbox` / `0002_integration_events` / `0003_outbox_traceparent`)
+  into one flattened `0001_framework` per dialect (`embedded/postgres/`,
+  `embedded/mysql/`), every table + column carrying a `COMMENT` (the MySQL flavor
+  uses dialect-appropriate types — `UUID`→`CHAR(36)`, `JSONB`→`JSON`). A database
+  that already applied the old framework versions must be reset
+  (`docker compose down -v`) — done pre-1.0 deliberately so Postgres and MySQL
+  share one clean initial schema. Service migrations (`0002+`) are unaffected.
+
+- **UPDATE of a missing row now reports 404, not 500, on every backend.** A write
+  verb (Update / PATCH, root or aggregate child) whose `WHERE id = …` matches no
+  row — e.g. the row was deleted between the write command's pre-load and the write
+  (a TOCTOU race) — now surfaces the canonical `RecordNotFoundNotification` (404)
+  instead of a raw driver error (previously Postgres leaked `pgx.ErrNoRows` → 500).
+  On MySQL the DSN forces `clientFoundRows=true`, so an idempotent no-op PUT of an
+  existing row is not mistaken for a missing one.
+
 ## [0.16.0] - 2026-06-25
 
 ### Added
