@@ -14,13 +14,13 @@ import (
 	"github.com/ClaudioSchirmer/omnicore/application/persistence"
 	"github.com/ClaudioSchirmer/omnicore/domain"
 	"github.com/ClaudioSchirmer/omnicore/infra/audit"
-	"github.com/ClaudioSchirmer/omnicore/infra/db"
+	"github.com/ClaudioSchirmer/omnicore/infra/db/core"
 	"github.com/ClaudioSchirmer/omnicore/infra/events"
 )
 
 // --- in-process fakes implementing the neutral infra read seam -------------
 
-// fakeExec implements db.Querier. It records the SQL + args each call
+// fakeExec implements core.Querier. It records the SQL + args each call
 // received and replays scripted results, so the failure/processed helpers are
 // exercised without a live database.
 type fakeExec struct {
@@ -42,7 +42,7 @@ func (f *fakeExec) Exec(_ context.Context, sql string, args ...any) error {
 	return f.execErr
 }
 
-func (f *fakeExec) Query(_ context.Context, sql string, args ...any) (db.Rows, error) {
+func (f *fakeExec) Query(_ context.Context, sql string, args ...any) (core.Rows, error) {
 	f.lastSQL = sql
 	f.lastArgs = args
 	if f.queryErr != nil {
@@ -54,7 +54,7 @@ func (f *fakeExec) Query(_ context.Context, sql string, args ...any) (db.Rows, e
 	return f.rows, nil
 }
 
-func (f *fakeExec) QueryRow(_ context.Context, sql string, args ...any) db.Row {
+func (f *fakeExec) QueryRow(_ context.Context, sql string, args ...any) core.Row {
 	f.lastSQL = sql
 	f.lastArgs = args
 	if f.row == nil {
@@ -69,7 +69,7 @@ func (f *fakeExec) QueryMaps(_ context.Context, sql string, args ...any) ([]map[
 	return nil, f.queryErr
 }
 
-// fakeDialect is a trivial db.Dialect — the fakeExec ignores the SQL text,
+// fakeDialect is a trivial core.Dialect — the fakeExec ignores the SQL text,
 // so the rendering only needs to not panic.
 type fakeDialect struct{}
 
@@ -79,60 +79,60 @@ func (fakeDialect) EncodeArg(v any) any                    { return v }
 func (fakeDialect) DecodeID(raw string) (string, error)    { return raw, nil }
 func (fakeDialect) ILikeClause(col, ph string) string      { return col + " LIKE " + ph }
 func (fakeDialect) IsUniqueViolation(error) (string, bool) { return "", false }
-func (fakeDialect) BuildUpsert(table string, _, _ []string, _ []db.UpsertSet) string {
+func (fakeDialect) BuildUpsert(table string, _, _ []string, _ []core.UpsertSet) string {
 	return "UPSERT " + table
 }
 
-// fakeEngine adapts a fake Querier + Dialect into an db.RelationalEngine so
+// fakeEngine adapts a fake Querier + Dialect into an core.RelationalEngine so
 // handleMessage / RetryPendingFailures (which take the engine and derive
 // Querier()/Dialect()) run without a live backend. The write verbs are never
 // reached on the consumer path.
 type fakeEngine struct {
-	q db.Querier
-	d db.Dialect
+	q core.Querier
+	d core.Dialect
 }
 
-func (e fakeEngine) Insert(persistence.RequestContext, domain.Insertable, *db.TableSchema, db.WriteHook) (domain.WriteResult, error) {
+func (e fakeEngine) Insert(persistence.RequestContext, domain.Insertable, *core.TableSchema, core.WriteHook) (domain.WriteResult, error) {
 	return domain.WriteResult{}, nil
 }
-func (e fakeEngine) Update(persistence.RequestContext, domain.Updatable, *db.TableSchema, db.WriteHook) (domain.WriteResult, error) {
+func (e fakeEngine) Update(persistence.RequestContext, domain.Updatable, *core.TableSchema, core.WriteHook) (domain.WriteResult, error) {
 	return domain.WriteResult{}, nil
 }
-func (e fakeEngine) Archive(persistence.RequestContext, domain.Archivable, *db.TableSchema, db.WriteHook) error {
+func (e fakeEngine) Archive(persistence.RequestContext, domain.Archivable, *core.TableSchema, core.WriteHook) error {
 	return nil
 }
-func (e fakeEngine) Unarchive(persistence.RequestContext, domain.Unarchivable, *db.TableSchema, db.WriteHook) error {
+func (e fakeEngine) Unarchive(persistence.RequestContext, domain.Unarchivable, *core.TableSchema, core.WriteHook) error {
 	return nil
 }
-func (e fakeEngine) Delete(persistence.RequestContext, domain.Deletable, *db.TableSchema, db.WriteHook) error {
+func (e fakeEngine) Delete(persistence.RequestContext, domain.Deletable, *core.TableSchema, core.WriteHook) error {
 	return nil
 }
-func (e fakeEngine) Querier() db.Querier { return e.q }
-func (e fakeEngine) Dialect() db.Dialect { return e.d }
-func (e fakeEngine) WithAudit(*audit.Config, *slog.Logger, []string) db.RelationalEngine {
+func (e fakeEngine) Querier() core.Querier { return e.q }
+func (e fakeEngine) Dialect() core.Dialect { return e.d }
+func (e fakeEngine) WithAudit(*audit.Config, *slog.Logger, []string) core.RelationalEngine {
 	return e
 }
-func (e fakeEngine) WithEventPublisher(events.Publisher) db.RelationalEngine { return e }
-func (e fakeEngine) AcquireRebuildLock(context.Context, string) (db.RebuildLock, error) {
+func (e fakeEngine) WithEventPublisher(events.Publisher) core.RelationalEngine { return e }
+func (e fakeEngine) AcquireRebuildLock(context.Context, string) (core.RebuildLock, error) {
 	return fakeRebuildLock{q: e.q}, nil
 }
 func (e fakeEngine) Close() {}
 
 // fakeRebuildLock is the no-op RebuildLock for the receiver-path tests (these
 // never exercise the rebuild control plane).
-type fakeRebuildLock struct{ q db.Querier }
+type fakeRebuildLock struct{ q core.Querier }
 
-func (fakeRebuildLock) Acquired() bool                  { return true }
-func (fakeRebuildLock) Holder() string                 { return "" }
-func (l fakeRebuildLock) Querier() db.Querier           { return l.q }
-func (fakeRebuildLock) Release(context.Context) error  { return nil }
+func (fakeRebuildLock) Acquired() bool                { return true }
+func (fakeRebuildLock) Holder() string                { return "" }
+func (l fakeRebuildLock) Querier() core.Querier       { return l.q }
+func (fakeRebuildLock) Release(context.Context) error { return nil }
 
 // engineFor wraps a fakeExec as a RelationalEngine for the receiver-path tests.
-func engineFor(exec *fakeExec) db.RelationalEngine {
+func engineFor(exec *fakeExec) core.RelationalEngine {
 	return fakeEngine{q: exec, d: fakeDialect{}}
 }
 
-// fakeRows is a minimal db.Rows over a slice of positional row values.
+// fakeRows is a minimal core.Rows over a slice of positional row values.
 type fakeRows struct {
 	data     [][]any
 	idx      int

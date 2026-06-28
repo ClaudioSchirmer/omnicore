@@ -9,7 +9,7 @@ import (
 	"testing"
 
 	"github.com/ClaudioSchirmer/omnicore/domain"
-	"github.com/ClaudioSchirmer/omnicore/infra/db"
+	"github.com/ClaudioSchirmer/omnicore/infra/db/core"
 	"github.com/google/uuid"
 )
 
@@ -45,10 +45,10 @@ func createFlatPersonsTable(t *testing.T, pg *Postgres) {
 
 // flatPersonSchema declares the flatPerson table mapping — the explicit map
 // the executor write path resolves from. flatPersonSchemaOn renames the table.
-func flatPersonSchema() *db.TableSchema { return flatPersonSchemaOn("flat_persons") }
+func flatPersonSchema() *core.TableSchema { return flatPersonSchemaOn("flat_persons") }
 
-func flatPersonSchemaOn(table string) *db.TableSchema {
-	return db.NewTableSchema[*flatPerson](table).
+func flatPersonSchemaOn(table string) *core.TableSchema {
+	return core.NewTableSchema[*flatPerson](table).
 		PK("id").
 		Field("Name", "name").
 		Field("Email", "email").
@@ -327,7 +327,7 @@ func TestPostgres_Batch_RunsMultipleOpsInOneTx(t *testing.T) {
 	ins1, _ := domain.GetInsertable(e1, nil, "GetInsertable")
 	ins2, _ := domain.GetInsertable(e2, nil, "GetInsertable")
 
-	results, err := pg.Batch(testCtx(), domain.NewBatch([]domain.ValidEntity{ins1, ins2}), []*db.TableSchema{flatPersonSchema(), flatPersonSchema()})
+	results, err := pg.Batch(testCtx(), domain.NewBatch([]domain.ValidEntity{ins1, ins2}), []*core.TableSchema{flatPersonSchema(), flatPersonSchema()})
 	if err != nil {
 		t.Fatalf("Batch: %v", err)
 	}
@@ -377,7 +377,7 @@ func TestPostgres_Batch_AllOpKindsInOneTx(t *testing.T) {
 	d.SetID(domain.NewID(r3.ID))
 	del, _ := domain.GetDeletable(d, nil, "GetDeletable")
 
-	results, err := pg.Batch(testCtx(), domain.NewBatch([]domain.ValidEntity{newIns, upd, arch, del}), []*db.TableSchema{flatPersonSchema(), flatPersonSchema(), flatPersonSchema(), flatPersonSchema()})
+	results, err := pg.Batch(testCtx(), domain.NewBatch([]domain.ValidEntity{newIns, upd, arch, del}), []*core.TableSchema{flatPersonSchema(), flatPersonSchema(), flatPersonSchema(), flatPersonSchema()})
 	if err != nil {
 		t.Fatalf("Batch: %v", err)
 	}
@@ -413,7 +413,7 @@ func TestPostgres_Batch_AllOpKindsAndUnarchive(t *testing.T) {
 	u.SetID(domain.NewID(r.ID))
 	una, _ := domain.GetUnarchivable(u, nil, "GetUnarchivable")
 
-	if _, err := pg.Batch(testCtx(), domain.NewBatch([]domain.ValidEntity{una}), []*db.TableSchema{flatPersonSchema()}); err != nil {
+	if _, err := pg.Batch(testCtx(), domain.NewBatch([]domain.ValidEntity{una}), []*core.TableSchema{flatPersonSchema()}); err != nil {
 		t.Fatalf("Batch Unarchive: %v", err)
 	}
 	if activeCount(t, pg, "flat_persons") != 1 {
@@ -434,7 +434,7 @@ func TestPostgres_Batch_ErrorRollsBackEverything(t *testing.T) {
 	bad.SetID(domain.NewID(uuid.NewString()))
 	badUpd, _ := domain.GetUpdatable(bad, func(*flatPerson) error { return nil }, nil, "GetUpdatable")
 
-	_, err := pg.Batch(testCtx(), domain.NewBatch([]domain.ValidEntity{goodIns, badUpd}), []*db.TableSchema{flatPersonSchema(), flatPersonSchema()})
+	_, err := pg.Batch(testCtx(), domain.NewBatch([]domain.ValidEntity{goodIns, badUpd}), []*core.TableSchema{flatPersonSchema(), flatPersonSchema()})
 	if err == nil {
 		t.Fatal("expected Batch to fail when an op errors")
 	}

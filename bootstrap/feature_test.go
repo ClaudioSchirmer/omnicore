@@ -11,7 +11,7 @@ import (
 
 	"github.com/ClaudioSchirmer/omnicore/application/pipeline"
 	"github.com/ClaudioSchirmer/omnicore/application/translation"
-	"github.com/ClaudioSchirmer/omnicore/infra/db/read/mongo"
+	"github.com/ClaudioSchirmer/omnicore/infra/db/query"
 	"github.com/ClaudioSchirmer/omnicore/web/openapi"
 
 	"github.com/gofiber/fiber/v3"
@@ -43,10 +43,10 @@ func (f *readableFeature) Mount(app *fiber.App, d Deps) {
 		openapi.RawSpec{Summary: "test fixture", Public: true})
 }
 
-func (f *readableFeature) Views() []*mongo.ViewDefinition {
-	out := make([]*mongo.ViewDefinition, 0, len(f.viewNames))
+func (f *readableFeature) Views() []*query.ViewDefinition {
+	out := make([]*query.ViewDefinition, 0, len(f.viewNames))
 	for _, n := range f.viewNames {
-		out = append(out, mongo.View(n).Root(n))
+		out = append(out, query.View(n).Root(n))
 	}
 	return out
 }

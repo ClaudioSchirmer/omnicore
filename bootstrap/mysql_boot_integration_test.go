@@ -12,9 +12,10 @@ import (
 	// Blank import registers the "mysql" dialect in the engine registry — the
 	// composition root resolves it by name, so bootstrap never imports it
 	// directly outside this tag-guarded test.
-	"github.com/ClaudioSchirmer/omnicore/infra/db"
+	"github.com/ClaudioSchirmer/omnicore/infra/db/core"
 	_ "github.com/ClaudioSchirmer/omnicore/infra/db/engine/mysql"
 	"github.com/ClaudioSchirmer/omnicore/infra/db/engine/pg"
+
 	// The MySQL database/sql driver for the raw verification connection.
 	_ "github.com/go-sql-driver/mysql"
 )
@@ -54,7 +55,7 @@ func mysqlBootConfig(t *testing.T, migrationsDir string) *Config {
 func TestMySQLBoot_BuildDepsDoesNotPanic(t *testing.T) {
 	// Pre-flight: skip cleanly when the MySQL container is not reachable, mirroring
 	// the engine integration suite's policy.
-	eng, err := db.NewEngine(dialectMySQL, context.Background(), mysqlBootDSN(), false)
+	eng, err := core.NewEngine(dialectMySQL, context.Background(), mysqlBootDSN(), false)
 	if err != nil {
 		t.Skipf("MySQL not reachable (%v) — start devops/docker-compose.yml mysql service", err)
 	}
@@ -82,7 +83,7 @@ func TestMySQLBoot_BuildDepsDoesNotPanic(t *testing.T) {
 	}
 }
 
-func panicsOnAsPostgres(eng db.RelationalEngine) (panicked bool) {
+func panicsOnAsPostgres(eng core.RelationalEngine) (panicked bool) {
 	defer func() {
 		if recover() != nil {
 			panicked = true
@@ -93,7 +94,7 @@ func panicsOnAsPostgres(eng db.RelationalEngine) (panicked bool) {
 }
 
 func TestMySQLBoot_ApplyMigrationsUsesMySQLRunner(t *testing.T) {
-	eng, err := db.NewEngine(dialectMySQL, context.Background(), mysqlBootDSN(), false)
+	eng, err := core.NewEngine(dialectMySQL, context.Background(), mysqlBootDSN(), false)
 	if err != nil {
 		t.Skipf("MySQL not reachable (%v)", err)
 	}

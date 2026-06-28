@@ -8,8 +8,9 @@ import (
 	"testing"
 
 	"github.com/ClaudioSchirmer/omnicore/domain"
-	"github.com/ClaudioSchirmer/omnicore/infra/criteria"
-	"github.com/ClaudioSchirmer/omnicore/infra/db"
+	"github.com/ClaudioSchirmer/omnicore/infra/db/criteria"
+	"github.com/ClaudioSchirmer/omnicore/infra/db/command/read"
+	"github.com/ClaudioSchirmer/omnicore/infra/db/core"
 	"github.com/jackc/pgx/v5"
 )
 
@@ -17,7 +18,7 @@ import (
 // querier() seam: l.pg.querier().Query(...) resolves to fakePool.queryHandler,
 // so findRoots and hydrateChildren run end-to-end against an in-process result
 // set. The scan funcs populate the destination pointers the loader assembles
-// from the db.TableSchema (id/fk leading key + mapped columns), mirroring the auto
+// from the core.TableSchema (id/fk leading key + mapped columns), mirroring the auto
 // scanPlan order.
 
 const liveRootID = "00000000-0000-0000-0000-0000000000a1"
@@ -44,7 +45,7 @@ func TestFindOne_NotFound(t *testing.T) {
 	pg := loaderPostgres(func(string, []any) (pgx.Rows, error) {
 		return &fakeRows{rows: 0}, nil
 	})
-	l := db.NewAggregateLoader[*builderTestEntity](pg, func() *builderTestEntity { return &builderTestEntity{} }).
+	l := read.NewAggregateLoader[*builderTestEntity](pg, func() *builderTestEntity { return &builderTestEntity{} }).
 		WithSchema(builderTestSchema)
 
 	_, err := l.FindOne(context.Background(), criteria.Where(nil))
@@ -64,7 +65,7 @@ func TestFindOne_SingleRoot(t *testing.T) {
 			return nil
 		}}, nil
 	})
-	l := db.NewAggregateLoader[*builderTestEntity](pg, func() *builderTestEntity { return &builderTestEntity{} }).
+	l := read.NewAggregateLoader[*builderTestEntity](pg, func() *builderTestEntity { return &builderTestEntity{} }).
 		WithSchema(builderTestSchema)
 
 	got, err := l.FindOne(context.Background(), criteria.Where(nil))
@@ -86,7 +87,7 @@ func TestFindOne_MultipleRoots_Error(t *testing.T) {
 			return nil
 		}}, nil
 	})
-	l := db.NewAggregateLoader[*builderTestEntity](pg, func() *builderTestEntity { return &builderTestEntity{} }).
+	l := read.NewAggregateLoader[*builderTestEntity](pg, func() *builderTestEntity { return &builderTestEntity{} }).
 		WithSchema(builderTestSchema)
 
 	_, err := l.FindOne(context.Background(), criteria.Where(nil))
@@ -99,7 +100,7 @@ func TestFindAll_Empty(t *testing.T) {
 	pg := loaderPostgres(func(string, []any) (pgx.Rows, error) {
 		return &fakeRows{rows: 0}, nil
 	})
-	l := db.NewAggregateLoader[*builderTestEntity](pg, func() *builderTestEntity { return &builderTestEntity{} }).
+	l := read.NewAggregateLoader[*builderTestEntity](pg, func() *builderTestEntity { return &builderTestEntity{} }).
 		WithSchema(builderTestSchema)
 
 	got, err := l.FindAll(context.Background(), criteria.Where(nil))
@@ -117,7 +118,7 @@ func TestFindRoots_QueryError(t *testing.T) {
 	pg := loaderPostgres(func(string, []any) (pgx.Rows, error) {
 		return nil, errFake
 	})
-	l := db.NewAggregateLoader[*builderTestEntity](pg, func() *builderTestEntity { return &builderTestEntity{} }).
+	l := read.NewAggregateLoader[*builderTestEntity](pg, func() *builderTestEntity { return &builderTestEntity{} }).
 		WithSchema(builderTestSchema)
 
 	if _, err := l.FindAll(context.Background(), criteria.Where(nil)); !errors.Is(err, errFake) {
@@ -129,7 +130,7 @@ func TestFindRoots_ScanError(t *testing.T) {
 	pg := loaderPostgres(func(string, []any) (pgx.Rows, error) {
 		return &fakeRows{rows: 1, scan: func(int, []any) error { return errFake }}, nil
 	})
-	l := db.NewAggregateLoader[*builderTestEntity](pg, func() *builderTestEntity { return &builderTestEntity{} }).
+	l := read.NewAggregateLoader[*builderTestEntity](pg, func() *builderTestEntity { return &builderTestEntity{} }).
 		WithSchema(builderTestSchema)
 
 	if _, err := l.FindAll(context.Background(), criteria.Where(nil)); !errors.Is(err, errFake) {
@@ -144,7 +145,7 @@ func TestFindRoots_RowsErr(t *testing.T) {
 			return nil
 		}}, nil
 	})
-	l := db.NewAggregateLoader[*builderTestEntity](pg, func() *builderTestEntity { return &builderTestEntity{} }).
+	l := read.NewAggregateLoader[*builderTestEntity](pg, func() *builderTestEntity { return &builderTestEntity{} }).
 		WithSchema(builderTestSchema)
 
 	if _, err := l.FindAll(context.Background(), criteria.Where(nil)); !errors.Is(err, errFake) {
@@ -155,11 +156,11 @@ func TestFindRoots_RowsErr(t *testing.T) {
 func TestFindRoots_NoColumnsSchema(t *testing.T) {
 	// A schema with only a PK declares no scan columns and no manual scanner:
 	// findRoots returns the "schema declares no columns" config error.
-	bare := db.NewTableSchema[*builderTestEntity]("bare").PK("id")
+	bare := core.NewTableSchema[*builderTestEntity]("bare").PK("id")
 	pg := loaderPostgres(func(string, []any) (pgx.Rows, error) {
 		return &fakeRows{}, nil
 	})
-	l := db.NewAggregateLoader[*builderTestEntity](pg, func() *builderTestEntity { return &builderTestEntity{} }).
+	l := read.NewAggregateLoader[*builderTestEntity](pg, func() *builderTestEntity { return &builderTestEntity{} }).
 		WithSchema(bare)
 
 	if _, err := l.FindAll(context.Background(), criteria.Where(nil)); err == nil ||
@@ -184,7 +185,7 @@ func TestFindOne_AggregateWithChildren(t *testing.T) {
 			return nil
 		}}, nil
 	})
-	l := db.NewAggregateLoader[*covAgg](pg, func() *covAgg { return &covAgg{} }).
+	l := read.NewAggregateLoader[*covAgg](pg, func() *covAgg { return &covAgg{} }).
 		WithSchema(covAggSchema)
 
 	got, err := l.FindOne(context.Background(), criteria.Where(nil))
@@ -220,7 +221,7 @@ func TestFindAll_MultipleRootsAndChildren(t *testing.T) {
 			return nil
 		}}, nil
 	})
-	l := db.NewAggregateLoader[*covAgg](pg, func() *covAgg { return &covAgg{} }).
+	l := read.NewAggregateLoader[*covAgg](pg, func() *covAgg { return &covAgg{} }).
 		WithSchema(covAggSchema)
 
 	got, err := l.FindAll(context.Background(), criteria.Where(nil))
@@ -249,7 +250,7 @@ func TestHydrateChildren_QueryError(t *testing.T) {
 			return nil
 		}}, nil
 	})
-	l := db.NewAggregateLoader[*covAgg](pg, func() *covAgg { return &covAgg{} }).
+	l := read.NewAggregateLoader[*covAgg](pg, func() *covAgg { return &covAgg{} }).
 		WithSchema(covAggSchema)
 
 	if _, err := l.FindOne(context.Background(), criteria.Where(nil)); !errors.Is(err, errFake) {
@@ -267,7 +268,7 @@ func TestHydrateChildren_ScanError(t *testing.T) {
 			return nil
 		}}, nil
 	})
-	l := db.NewAggregateLoader[*covAgg](pg, func() *covAgg { return &covAgg{} }).
+	l := read.NewAggregateLoader[*covAgg](pg, func() *covAgg { return &covAgg{} }).
 		WithSchema(covAggSchema)
 
 	if _, err := l.FindAll(context.Background(), criteria.Where(nil)); !errors.Is(err, errFake) {
@@ -285,9 +286,9 @@ func TestFindOne_ManualRootScanner(t *testing.T) {
 		}
 		return &fakeRows{rows: 1}, nil
 	})
-	l := db.NewAggregateLoader[*builderTestEntity](pg, func() *builderTestEntity { return &builderTestEntity{} }).
+	l := read.NewAggregateLoader[*builderTestEntity](pg, func() *builderTestEntity { return &builderTestEntity{} }).
 		WithSchema(builderTestSchema).
-		WithRootScanner(func(db.Row) (*builderTestEntity, error) {
+		WithRootScanner(func(core.Row) (*builderTestEntity, error) {
 			e := &builderTestEntity{Name: "manual"}
 			e.SetID(domain.NewID(liveRootID))
 			return e, nil
@@ -306,9 +307,9 @@ func TestFindOne_ManualRootScanner_EmptyID(t *testing.T) {
 	pg := loaderPostgres(func(string, []any) (pgx.Rows, error) {
 		return &fakeRows{rows: 1}, nil
 	})
-	l := db.NewAggregateLoader[*builderTestEntity](pg, func() *builderTestEntity { return &builderTestEntity{} }).
+	l := read.NewAggregateLoader[*builderTestEntity](pg, func() *builderTestEntity { return &builderTestEntity{} }).
 		WithSchema(builderTestSchema).
-		WithRootScanner(func(db.Row) (*builderTestEntity, error) {
+		WithRootScanner(func(core.Row) (*builderTestEntity, error) {
 			return &builderTestEntity{Name: "noid"}, nil // never calls SetID
 		})
 
@@ -322,9 +323,9 @@ func TestFindRoots_ManualScannerError(t *testing.T) {
 	pg := loaderPostgres(func(string, []any) (pgx.Rows, error) {
 		return &fakeRows{rows: 1}, nil
 	})
-	l := db.NewAggregateLoader[*builderTestEntity](pg, func() *builderTestEntity { return &builderTestEntity{} }).
+	l := read.NewAggregateLoader[*builderTestEntity](pg, func() *builderTestEntity { return &builderTestEntity{} }).
 		WithSchema(builderTestSchema).
-		WithRootScanner(func(db.Row) (*builderTestEntity, error) { return nil, errFake })
+		WithRootScanner(func(core.Row) (*builderTestEntity, error) { return nil, errFake })
 
 	if _, err := l.FindAll(context.Background(), criteria.Where(nil)); !errors.Is(err, errFake) {
 		t.Fatalf("expected manual scanner error, got %v", err)
@@ -347,9 +348,9 @@ func TestHydrateChildren_ManualChildScanner(t *testing.T) {
 			return nil
 		}}, nil
 	})
-	l := db.NewAggregateLoader[*covAgg](pg, func() *covAgg { return &covAgg{} }).
+	l := read.NewAggregateLoader[*covAgg](pg, func() *covAgg { return &covAgg{} }).
 		WithSchema(covAggSchema).
-		WithChildScanner("covChild", func(db.Rows) (domain.AggregateValueObject, error) {
+		WithChildScanner("covChild", func(core.Rows) (domain.AggregateValueObject, error) {
 			return covChild{ID: "m1", Label: "manual"}, nil
 		})
 
@@ -373,9 +374,9 @@ func TestHydrateChildren_ManualChildScannerError(t *testing.T) {
 			return nil
 		}}, nil
 	})
-	l := db.NewAggregateLoader[*covAgg](pg, func() *covAgg { return &covAgg{} }).
+	l := read.NewAggregateLoader[*covAgg](pg, func() *covAgg { return &covAgg{} }).
 		WithSchema(covAggSchema).
-		WithChildScanner("covChild", func(db.Rows) (domain.AggregateValueObject, error) {
+		WithChildScanner("covChild", func(core.Rows) (domain.AggregateValueObject, error) {
 			return nil, errFake
 		})
 

@@ -10,7 +10,7 @@ import (
 	"time"
 
 	"github.com/ClaudioSchirmer/omnicore/application/pipeline"
-	"github.com/ClaudioSchirmer/omnicore/infra/db"
+	"github.com/ClaudioSchirmer/omnicore/infra/db/core"
 	"github.com/ClaudioSchirmer/omnicore/infra/tracing"
 
 	"github.com/google/uuid"
@@ -34,7 +34,7 @@ type ConsumerPool struct {
 	cfg      *Config
 	// eng is the relational engine the dedup + failure registries are
 	// read/written through (neutral Querier + Dialect).
-	eng     db.RelationalEngine
+	eng     core.RelationalEngine
 	brokers []string
 	pipe    *pipeline.Pipeline
 	logger  *slog.Logger
@@ -66,7 +66,7 @@ func (p *ConsumerPool) WithKafkaTracing(on bool) *ConsumerPool {
 func NewConsumerPool(
 	registry *Registry,
 	cfg *Config,
-	eng db.RelationalEngine,
+	eng core.RelationalEngine,
 	brokers []string,
 	pipe *pipeline.Pipeline,
 	logger *slog.Logger,

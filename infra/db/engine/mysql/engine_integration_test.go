@@ -13,8 +13,10 @@ import (
 
 	"github.com/ClaudioSchirmer/omnicore/application/configuration"
 	"github.com/ClaudioSchirmer/omnicore/domain"
-	"github.com/ClaudioSchirmer/omnicore/infra/criteria"
-	"github.com/ClaudioSchirmer/omnicore/infra/db"
+	"github.com/ClaudioSchirmer/omnicore/infra/db/criteria"
+	"github.com/ClaudioSchirmer/omnicore/infra/db/command/read"
+	"github.com/ClaudioSchirmer/omnicore/infra/db/command/write"
+	"github.com/ClaudioSchirmer/omnicore/infra/db/core"
 )
 
 // Phase 2a integration test: the MySQL engine's synchronous write path against a
@@ -48,8 +50,8 @@ func (e *flatPerson) Modes() []domain.EntityMode {
 }
 func (*flatPerson) BuildRules(string, domain.Service, *domain.Rules) {}
 
-func flatSchema() *db.TableSchema {
-	return db.NewTableSchema[*flatPerson]("flat_persons").
+func flatSchema() *core.TableSchema {
+	return core.NewTableSchema[*flatPerson]("flat_persons").
 		PK("id").
 		Field("Name", "name").
 		Field("Email", "email").
@@ -73,8 +75,8 @@ func (e *refEntity) Modes() []domain.EntityMode {
 }
 func (*refEntity) BuildRules(string, domain.Service, *domain.Rules) {}
 
-func refSchema() *db.TableSchema {
-	return db.NewTableSchema[*refEntity]("refs").
+func refSchema() *core.TableSchema {
+	return core.NewTableSchema[*refEntity]("refs").
 		PK("id").
 		Field("Name", "name").
 		Field("TenantID", "tenant_id")
@@ -105,7 +107,7 @@ func TestMySQLEngine_SecondaryUUIDColumn(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetInsertable: %v", err)
 	}
-	res, err := eng.Insert(ctx, ins, refSchema(), db.WriteHook{})
+	res, err := eng.Insert(ctx, ins, refSchema(), core.WriteHook{})
 	if err != nil {
 		t.Fatalf("Insert: %v", err)
 	}
@@ -120,7 +122,7 @@ func TestMySQLEngine_SecondaryUUIDColumn(t *testing.T) {
 	}
 
 	// Auto-scan decodes it back to the canonical UUID string.
-	loader := db.NewAggregateLoader[*refEntity](eng, func() *refEntity { return &refEntity{} }).
+	loader := read.NewAggregateLoader[*refEntity](eng, func() *refEntity { return &refEntity{} }).
 		WithSchema(refSchema())
 	got, err := loader.FindOne(ctx, criteria.ByID(domain.NewID(res.ID)))
 	if err != nil {
@@ -203,7 +205,7 @@ func TestMySQLEngine_WritePath(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetInsertable: %v", err)
 	}
-	res, err := eng.Insert(ctx, ins, flatSchema(), db.WriteHook{})
+	res, err := eng.Insert(ctx, ins, flatSchema(), core.WriteHook{})
 	if err != nil {
 		t.Fatalf("Insert: %v", err)
 	}
@@ -236,7 +238,7 @@ func TestMySQLEngine_WritePath(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetUpdatable: %v", err)
 	}
-	if _, err := eng.Update(ctx, upd, flatSchema(), db.WriteHook{}); err != nil {
+	if _, err := eng.Update(ctx, upd, flatSchema(), core.WriteHook{}); err != nil {
 		t.Fatalf("Update: %v", err)
 	}
 	if err := raw.QueryRow(`SELECT name FROM flat_persons`).Scan(&name); err != nil {
@@ -256,7 +258,7 @@ func TestMySQLEngine_WritePath(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetArchivable: %v", err)
 	}
-	if err := eng.Archive(ctx, arch, flatSchema(), db.WriteHook{}); err != nil {
+	if err := eng.Archive(ctx, arch, flatSchema(), core.WriteHook{}); err != nil {
 		t.Fatalf("Archive: %v", err)
 	}
 	var deletedAt sql.NullTime
@@ -277,7 +279,7 @@ func TestMySQLEngine_WritePath(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetUnarchivable: %v", err)
 	}
-	if err := eng.Unarchive(ctx, un, flatSchema(), db.WriteHook{}); err != nil {
+	if err := eng.Unarchive(ctx, un, flatSchema(), core.WriteHook{}); err != nil {
 		t.Fatalf("Unarchive: %v", err)
 	}
 	if err := raw.QueryRow(`SELECT deleted_at FROM flat_persons`).Scan(&deletedAt); err != nil {
@@ -297,7 +299,7 @@ func TestMySQLEngine_WritePath(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetDeletable: %v", err)
 	}
-	if err := eng.Delete(ctx, del, flatSchema(), db.WriteHook{}); err != nil {
+	if err := eng.Delete(ctx, del, flatSchema(), core.WriteHook{}); err != nil {
 		t.Fatalf("Delete: %v", err)
 	}
 	var remaining int
@@ -330,7 +332,7 @@ func TestMySQLEngine_UpdateMatchSemantics(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetUpdatable: %v", err)
 	}
-	_, err = eng.Update(ctx, updMissing, flatSchema(), db.WriteHook{})
+	_, err = eng.Update(ctx, updMissing, flatSchema(), core.WriteHook{})
 	if err == nil {
 		t.Fatal("expected RecordNotFound updating a non-existent id, got nil (silent lost update)")
 	}
@@ -349,7 +351,7 @@ func TestMySQLEngine_UpdateMatchSemantics(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetInsertable: %v", err)
 	}
-	res, err := eng.Insert(ctx, ins, flatSchema(), db.WriteHook{})
+	res, err := eng.Insert(ctx, ins, flatSchema(), core.WriteHook{})
 	if err != nil {
 		t.Fatalf("Insert: %v", err)
 	}
@@ -359,7 +361,7 @@ func TestMySQLEngine_UpdateMatchSemantics(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetUpdatable: %v", err)
 	}
-	if _, err := eng.Update(ctx, updNoop, flatSchema(), db.WriteHook{}); err != nil {
+	if _, err := eng.Update(ctx, updNoop, flatSchema(), core.WriteHook{}); err != nil {
 		t.Fatalf("no-op UPDATE of an existing row should succeed (clientFoundRows), got: %v", err)
 	}
 }
@@ -378,12 +380,12 @@ func TestMySQLEngine_FindByID(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetInsertable: %v", err)
 	}
-	res, err := eng.Insert(ctx, ins, flatSchema(), db.WriteHook{})
+	res, err := eng.Insert(ctx, ins, flatSchema(), core.WriteHook{})
 	if err != nil {
 		t.Fatalf("Insert: %v", err)
 	}
 
-	loader := db.NewAggregateLoader[*flatPerson](eng, func() *flatPerson { return &flatPerson{} }).
+	loader := read.NewAggregateLoader[*flatPerson](eng, func() *flatPerson { return &flatPerson{} }).
 		WithSchema(flatSchema())
 
 	got, err := loader.FindOne(ctx, criteria.ByID(domain.NewID(res.ID)))
@@ -433,11 +435,11 @@ type tag struct {
 func (t tag) GetID() string                                  { return t.ID }
 func (tag) BuildRules(string, domain.Service, *domain.Rules) {}
 
-func acctSchema() *db.TableSchema {
-	return db.NewTableSchema[*acct]("accts").
+func acctSchema() *core.TableSchema {
+	return core.NewTableSchema[*acct]("accts").
 		PK("id").Field("Name", "name").
 		SoftDelete("deleted_at").CreatedAt("created_at").UpdatedAt("updated_at").
-		Child(db.NewTableSchema[tag]("acct_tags").
+		Child(core.NewTableSchema[tag]("acct_tags").
 			PK("id").FK("acct_id").Field("Label", "label").
 			SoftDelete("deleted_at").CreatedAt("created_at").UpdatedAt("updated_at"))
 }
@@ -498,7 +500,7 @@ func TestMySQLEngine_AggregateRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetInsertable: %v", err)
 	}
-	res, err := eng.Insert(ctx, ins, acctSchema(), db.WriteHook{})
+	res, err := eng.Insert(ctx, ins, acctSchema(), core.WriteHook{})
 	if err != nil {
 		t.Fatalf("Insert aggregate: %v", err)
 	}
@@ -513,7 +515,7 @@ func TestMySQLEngine_AggregateRoundTrip(t *testing.T) {
 	}
 
 	// Read back via the loader — root + batched children.
-	loader := db.NewAggregateLoader[*acct](eng, func() *acct { return &acct{} }).WithSchema(acctSchema())
+	loader := read.NewAggregateLoader[*acct](eng, func() *acct { return &acct{} }).WithSchema(acctSchema())
 	got, err := loader.FindOne(ctx, criteria.ByID(domain.NewID(res.ID)))
 	if err != nil {
 		t.Fatalf("FindOne aggregate: %v", err)
@@ -531,7 +533,7 @@ func TestMySQLEngine_AggregateRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetArchivable: %v", err)
 	}
-	if err := eng.Archive(ctx, arch, acctSchema(), db.WriteHook{}); err != nil {
+	if err := eng.Archive(ctx, arch, acctSchema(), core.WriteHook{}); err != nil {
 		t.Fatalf("Archive aggregate: %v", err)
 	}
 	var activeChildren int
@@ -547,7 +549,7 @@ func TestMySQLEngine_AggregateRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetDeletable: %v", err)
 	}
-	if err := eng.Delete(ctx, del, acctSchema(), db.WriteHook{}); err != nil {
+	if err := eng.Delete(ctx, del, acctSchema(), core.WriteHook{}); err != nil {
 		t.Fatalf("Delete aggregate: %v", err)
 	}
 	var roots, tags int
@@ -562,17 +564,17 @@ type dupEmailNotification struct{ domain.DomainNotificationBase }
 
 // TestMySQLEngine_UniqueViolation proves the dialect-aware mapErr: a MySQL 1062
 // on the uniq_email index is classified by mysqlDialect.IsUniqueViolation and
-// mapped to the bound typed notification (a *db.InfrastructureError), the
+// mapped to the bound typed notification (a *core.InfrastructureError), the
 // same 409-shaped outcome the Postgres path produces from SQLSTATE 23505 —
 // instead of leaking the raw driver error as a 500.
 func TestMySQLEngine_UniqueViolation(t *testing.T) {
 	eng, _ := setup(t)
 	ctx := ctxFor()
 
-	repo := &db.BaseRepository[*flatPerson]{
+	repo := &write.BaseRepository[*flatPerson]{
 		Engine:      eng,
 		ContextName: "Person",
-		Constraints: map[string]db.ConstraintBinding{
+		Constraints: map[string]write.ConstraintBinding{
 			"uniq_email": {Notification: dupEmailNotification{}, Field: "email"},
 		},
 		Schema: flatSchema(),
@@ -592,8 +594,8 @@ func TestMySQLEngine_UniqueViolation(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected a unique-violation error on the duplicate email")
 	}
-	var infraErr *db.InfrastructureError
+	var infraErr *core.InfrastructureError
 	if !errors.As(err, &infraErr) {
-		t.Fatalf("expected a typed *db.InfrastructureError, got %T (%v)", err, err)
+		t.Fatalf("expected a typed *core.InfrastructureError, got %T (%v)", err, err)
 	}
 }

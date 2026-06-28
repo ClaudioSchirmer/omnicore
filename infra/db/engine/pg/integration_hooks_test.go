@@ -15,7 +15,8 @@ import (
 	"github.com/ClaudioSchirmer/omnicore/application/persistence"
 	"github.com/ClaudioSchirmer/omnicore/domain"
 	"github.com/ClaudioSchirmer/omnicore/infra/audit"
-	"github.com/ClaudioSchirmer/omnicore/infra/db"
+	"github.com/ClaudioSchirmer/omnicore/infra/db/command/read"
+	"github.com/ClaudioSchirmer/omnicore/infra/db/core"
 	"github.com/google/uuid"
 )
 
@@ -50,16 +51,16 @@ func withRecordingLogger(t *testing.T, pg *Postgres) *bytes.Buffer {
 	return &buf
 }
 
-// buildAfterBeginHook constructs a db.WriteHook firing only the afterBegin
+// buildAfterBeginHook constructs a core.WriteHook firing only the afterBegin
 // slot with the supplied closure.
-func buildAfterBeginHook(fn func(ctx persistence.RequestContext, src domain.Entity, tx persistence.TxHandle) error) db.WriteHook {
-	return db.WriteHook{AfterBegin: fn}
+func buildAfterBeginHook(fn func(ctx persistence.RequestContext, src domain.Entity, tx persistence.TxHandle) error) core.WriteHook {
+	return core.WriteHook{AfterBegin: fn}
 }
 
-// buildBeforeCommitHook constructs a db.WriteHook firing only the beforeCommit
+// buildBeforeCommitHook constructs a core.WriteHook firing only the beforeCommit
 // slot.
-func buildBeforeCommitHook(fn func(ctx persistence.RequestContext, src domain.Entity, id domain.ID, tx persistence.TxHandle) error) db.WriteHook {
-	return db.WriteHook{BeforeCommit: fn}
+func buildBeforeCommitHook(fn func(ctx persistence.RequestContext, src domain.Entity, id domain.ID, tx persistence.TxHandle) error) core.WriteHook {
+	return core.WriteHook{BeforeCommit: fn}
 }
 
 // auditRowCount returns the number of rows in audit_events.
@@ -79,7 +80,7 @@ func withFullAudit(pg *Postgres) {
 }
 
 // TestPostgres_AuditReader_ReadBack proves the backend-neutral audit reader
-// (db.NewAuditReader over the Postgres engine's read seam) reads back, on a
+// (read.NewAuditReader over the Postgres engine's read seam) reads back, on a
 // real Postgres, a row the in-TX writer just landed — the dialect twin of the
 // MySQL coverage in infra/db/mysql. Confirms the placeholder renders ($n),
 // no-rows maps to the sentinel, and the scan round-trips the event.
@@ -90,7 +91,7 @@ func TestPostgres_AuditReader_ReadBack(t *testing.T) {
 	withFullAudit(pg)
 
 	ins, _ := domain.GetInsertable(&flatPerson{Name: "audrey", Email: "a@x"}, nil, "GetInsertable")
-	res, err := pg.Insert(testCtx(), ins, flatPersonSchema(), db.WriteHook{})
+	res, err := pg.Insert(testCtx(), ins, flatPersonSchema(), core.WriteHook{})
 	if err != nil {
 		t.Fatalf("Insert: %v", err)
 	}
@@ -105,7 +106,7 @@ func TestPostgres_AuditReader_ReadBack(t *testing.T) {
 		t.Fatalf("read audit row id: %v", err)
 	}
 
-	reader := db.NewAuditReader(pg)
+	reader := read.NewAuditReader(pg)
 
 	byAgg, err := reader.FindByAggregate(context.Background(), entityType, res.ID)
 	if err != nil {
@@ -298,7 +299,7 @@ func TestPostgres_Insert_NoHook_BehaviorUnchanged(t *testing.T) {
 	createFlatPersonsTable(t, pg)
 
 	ins, _ := domain.GetInsertable(&flatPerson{Name: "alice", Email: "a@x"}, nil, "GetInsertable")
-	res, err := pg.Insert(testCtx(), ins, flatPersonSchema(), db.WriteHook{})
+	res, err := pg.Insert(testCtx(), ins, flatPersonSchema(), core.WriteHook{})
 	if err != nil {
 		t.Fatalf("Insert: %v", err)
 	}
@@ -322,14 +323,14 @@ func TestPostgres_Update_HookFires_BothSlots(t *testing.T) {
 
 	e := &flatPerson{Name: "alice", Email: "a@x"}
 	ins, _ := domain.GetInsertable(e, nil, "GetInsertable")
-	res, _ := pg.Insert(testCtx(), ins, flatPersonSchema(), db.WriteHook{})
+	res, _ := pg.Insert(testCtx(), ins, flatPersonSchema(), core.WriteHook{})
 	e.SetID(domain.NewID(res.ID))
 
 	e.Name = "alice2"
 	upd, _ := domain.GetUpdatable(e, func(*flatPerson) error { return nil }, nil, "GetUpdatable")
 
 	abCalled, bcCalled := false, false
-	hook := db.WriteHook{
+	hook := core.WriteHook{
 		AfterBegin: func(persistence.RequestContext, domain.Entity, persistence.TxHandle) error {
 			abCalled = true
 			return nil
@@ -354,7 +355,7 @@ func TestPostgres_Update_BeforeCommitError_RollsBack(t *testing.T) {
 
 	e := &flatPerson{Name: "alice", Email: "a@x"}
 	ins, _ := domain.GetInsertable(e, nil, "GetInsertable")
-	res, _ := pg.Insert(testCtx(), ins, flatPersonSchema(), db.WriteHook{})
+	res, _ := pg.Insert(testCtx(), ins, flatPersonSchema(), core.WriteHook{})
 	e.SetID(domain.NewID(res.ID))
 
 	original := outboxCount(t, pg)
@@ -384,7 +385,7 @@ func TestPostgres_Archive_HookFires(t *testing.T) {
 
 	e := &flatPerson{Name: "alice", Email: "a@x"}
 	ins, _ := domain.GetInsertable(e, nil, "GetInsertable")
-	res, _ := pg.Insert(testCtx(), ins, flatPersonSchema(), db.WriteHook{})
+	res, _ := pg.Insert(testCtx(), ins, flatPersonSchema(), core.WriteHook{})
 	e.SetID(domain.NewID(res.ID))
 
 	arch, _ := domain.GetArchivable(e, nil, "GetArchivable")
@@ -408,10 +409,10 @@ func TestPostgres_Unarchive_HookFires(t *testing.T) {
 
 	e := &flatPerson{Name: "alice", Email: "a@x"}
 	ins, _ := domain.GetInsertable(e, nil, "GetInsertable")
-	res, _ := pg.Insert(testCtx(), ins, flatPersonSchema(), db.WriteHook{})
+	res, _ := pg.Insert(testCtx(), ins, flatPersonSchema(), core.WriteHook{})
 	e.SetID(domain.NewID(res.ID))
 	arch, _ := domain.GetArchivable(e, nil, "GetArchivable")
-	_ = pg.Archive(testCtx(), arch, flatPersonSchema(), db.WriteHook{})
+	_ = pg.Archive(testCtx(), arch, flatPersonSchema(), core.WriteHook{})
 
 	una, _ := domain.GetUnarchivable(e, nil, "GetUnarchivable")
 	bcCalled := false
@@ -434,7 +435,7 @@ func TestPostgres_Delete_HookFires_AndRollback(t *testing.T) {
 
 	e := &flatPerson{Name: "alice", Email: "a@x"}
 	ins, _ := domain.GetInsertable(e, nil, "GetInsertable")
-	res, _ := pg.Insert(testCtx(), ins, flatPersonSchema(), db.WriteHook{})
+	res, _ := pg.Insert(testCtx(), ins, flatPersonSchema(), core.WriteHook{})
 	e.SetID(domain.NewID(res.ID))
 
 	del, _ := domain.GetDeletable(e, nil, "GetDeletable")

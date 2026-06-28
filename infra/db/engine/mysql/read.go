@@ -13,11 +13,11 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/ClaudioSchirmer/omnicore/domain"
-	"github.com/ClaudioSchirmer/omnicore/infra/db"
+	"github.com/ClaudioSchirmer/omnicore/infra/db/core"
 )
 
 // MySQL implementation of the framework read seam (infra/read.go). *sql.Rows and
-// *sql.Row satisfy db.Rows / db.Row directly (Next/Scan/Err/Close error,
+// *sql.Row satisfy core.Rows / core.Row directly (Next/Scan/Err/Close error,
 // Scan), so the querier is a thin pass-through; the dialect renders MySQL's `?`
 // placeholders, backtick identifiers, and the BINARY(16) ⇄ uuid codec. The
 // sqlExecutor surface the querier runs through is the engine's driver-exec
@@ -25,7 +25,7 @@ import (
 
 type mysqlQuerier struct{ exec sqlExecutor }
 
-func (q mysqlQuerier) Query(ctx context.Context, sqlText string, args ...any) (db.Rows, error) {
+func (q mysqlQuerier) Query(ctx context.Context, sqlText string, args ...any) (core.Rows, error) {
 	rows, err := q.exec.QueryContext(ctx, sqlText, args...)
 	if err != nil {
 		return nil, err
@@ -90,7 +90,7 @@ func (r *binaryDecodingRows) Scan(dest ...any) error {
 	return nil
 }
 
-func (q mysqlQuerier) QueryRow(ctx context.Context, sqlText string, args ...any) db.Row {
+func (q mysqlQuerier) QueryRow(ctx context.Context, sqlText string, args ...any) core.Row {
 	return q.exec.QueryRowContext(ctx, sqlText, args...)
 }
 
@@ -168,10 +168,10 @@ func normalizeMySQLValue(v any, dbType string) (any, error) {
 }
 
 // Querier exposes the pool through the neutral read surface.
-func (e *Engine) Querier() db.Querier { return mysqlQuerier{exec: e.db} }
+func (e *Engine) Querier() core.Querier { return mysqlQuerier{exec: e.db} }
 
 // Dialect returns the MySQL statement flavor.
-func (e *Engine) Dialect() db.Dialect { return mysqlDialect{} }
+func (e *Engine) Dialect() core.Dialect { return mysqlDialect{} }
 
 type mysqlDialect struct{}
 
@@ -221,7 +221,7 @@ func (mysqlDialect) IsUniqueViolation(err error) (string, bool) {
 // do-nothing upsert. The proposed value for an UpsertSetNew assignment is
 // `new.col` (the row alias, MySQL 8.0.19+); a bare column in the update clause
 // refers to the existing row, identical to Postgres.
-func (d mysqlDialect) BuildUpsert(table string, cols, conflictCols []string, sets []db.UpsertSet) string {
+func (d mysqlDialect) BuildUpsert(table string, cols, conflictCols []string, sets []core.UpsertSet) string {
 	var b strings.Builder
 	b.WriteString("INSERT INTO ")
 	b.WriteString(d.QuoteIdent(table))
@@ -260,7 +260,7 @@ func (d mysqlDialect) BuildUpsert(table string, cols, conflictCols []string, set
 		}
 		b.WriteString(d.QuoteIdent(s.Col))
 		b.WriteString(" = ")
-		if s.Mode == db.UpsertSetNew {
+		if s.Mode == core.UpsertSetNew {
 			b.WriteString("new.")
 			b.WriteString(d.QuoteIdent(s.Col))
 		} else {

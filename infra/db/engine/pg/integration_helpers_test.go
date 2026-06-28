@@ -22,7 +22,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/ClaudioSchirmer/omnicore/application/configuration"
-	"github.com/ClaudioSchirmer/omnicore/infra/db"
+	"github.com/ClaudioSchirmer/omnicore/infra/db/core"
 )
 
 const defaultPGAdminDSN = "postgres://omnicore:omnicore@localhost:5433/postgres?sslmode=disable"
@@ -33,9 +33,9 @@ func testCtx() *configuration.AppContext {
 	return configuration.NewAppContextWithRandomID(configuration.LangENG)
 }
 
-// noHook is the zero-value db.WriteHook the integration tests pass when they
+// noHook is the zero-value core.WriteHook the integration tests pass when they
 // exercise the persister without lifecycle hook firing.
-var noHook = db.WriteHook{}
+var noHook = core.WriteHook{}
 
 func pgAdminDSN() string {
 	if v := os.Getenv("OMNICORE_TEST_PG_DSN"); v != "" {

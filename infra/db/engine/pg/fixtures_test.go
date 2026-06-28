@@ -4,13 +4,13 @@ import (
 	"github.com/ClaudioSchirmer/omnicore/application/configuration"
 	"github.com/ClaudioSchirmer/omnicore/application/persistence"
 	"github.com/ClaudioSchirmer/omnicore/domain"
-	"github.com/ClaudioSchirmer/omnicore/infra/db"
+	"github.com/ClaudioSchirmer/omnicore/infra/db/core"
 )
 
 // Shared test fixtures for the PG engine tests. They mirror the relational-model
 // (db) package's own fixtures; each package keeps its own copy since test
 // fixtures do not cross a package boundary. The schemas are built through the
-// public db.NewTableSchema surface — the engine consumes the neutral schema.
+// public core.NewTableSchema surface — the engine consumes the neutral schema.
 
 // aggLoaderTestEntity is a flat entity used by the AggregateLoader tests.
 type aggLoaderTestEntity struct {
@@ -37,7 +37,7 @@ func (e *covAgg) Modes() []domain.EntityMode {
 	}
 }
 func (e *covAgg) BuildRules(string, domain.Service, *domain.Rules) {}
-func (e *covAgg) GetAggregateRoot() *domain.AggregateRoot { return &e.AggregateRoot }
+func (e *covAgg) GetAggregateRoot() *domain.AggregateRoot          { return &e.AggregateRoot }
 func (e *covAgg) AggregateChildren() []domain.AggregateValueObject {
 	return []domain.AggregateValueObject{covChild{}}
 }
@@ -50,11 +50,11 @@ type covChild struct {
 func (c covChild) GetID() string                                    { return c.ID }
 func (c covChild) BuildRules(string, domain.Service, *domain.Rules) {}
 
-var covAggSchema = db.NewTableSchema[*covAgg]("cov_aggs").
+var covAggSchema = core.NewTableSchema[*covAgg]("cov_aggs").
 	PK("id").
 	Field("Name", "name").
 	SoftDelete("deleted_at").
-	Child(db.NewTableSchema[covChild]("cov_children").
+	Child(core.NewTableSchema[covChild]("cov_children").
 		PK("id").
 		FK("cov_agg_id").
 		Field("Label", "label").
@@ -75,7 +75,7 @@ func (e *builderTestEntity) Modes() []domain.EntityMode {
 }
 func (e *builderTestEntity) BuildRules(string, domain.Service, *domain.Rules) {}
 
-var builderTestSchema = db.NewTableSchema[*builderTestEntity]("builder_test_entities").
+var builderTestSchema = core.NewTableSchema[*builderTestEntity]("builder_test_entities").
 	PK("id").
 	Field("Name", "name").
 	Field("Email", "email").

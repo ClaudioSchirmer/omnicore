@@ -10,15 +10,15 @@ import (
 	"github.com/ClaudioSchirmer/omnicore/application/configuration"
 	"github.com/ClaudioSchirmer/omnicore/application/persistence"
 	"github.com/ClaudioSchirmer/omnicore/domain"
-	"github.com/ClaudioSchirmer/omnicore/infra/db"
+	"github.com/ClaudioSchirmer/omnicore/infra/db/core"
 	"github.com/ClaudioSchirmer/omnicore/infra/integration"
 )
 
 // Phase 4 item 5 integration test: the integration PRODUCER works on MySQL —
 // both Dispatch paths. The standalone path runs through the engine's neutral
-// Querier; the in-TX path runs through the canonical db.UnwrapTx bridge (the
+// Querier; the in-TX path runs through the canonical core.UnwrapTx bridge (the
 // engine fires a BeforeCommit hook carrying a mysqlTxHandle, which UnwrapTx
-// adapts to db.Tx). Proves integration_events lands on a real MySQL via both.
+// adapts to core.Tx). Proves integration_events lands on a real MySQL via both.
 //
 //	go test -tags=integration,mysql ./infra/db/mysql/ -run ProducerDispatch -count=1
 
@@ -73,7 +73,7 @@ func TestMySQLProducer_ProducerDispatch(t *testing.T) {
 	// In-TX path: a BeforeCommit hook on an engine Insert calls Dispatch(WithTx),
 	// so the integration_events row lands in the same TX as the entity write via
 	// the canonical UnwrapTx bridge.
-	hook := db.WriteHook{
+	hook := core.WriteHook{
 		BeforeCommit: func(_ persistence.RequestContext, _ domain.Entity, _ domain.ID, tx persistence.TxHandle) error {
 			return integration.Dispatch(appCtx, "evt", map[string]any{"path": "in-tx"}, integration.WithTx(tx))
 		},

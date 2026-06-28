@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/ClaudioSchirmer/omnicore/infra/db"
+	"github.com/ClaudioSchirmer/omnicore/infra/db/core"
 )
 
 // --- buildWhere -------------------------------------------------------------
@@ -85,7 +85,7 @@ func TestStringField(t *testing.T) {
 
 // --- execute (backend-neutral seam) -----------------------------------------
 
-// fakeDB implements both db.Querier and db.Dialect so execute can be driven
+// fakeDB implements both core.Querier and core.Dialect so execute can be driven
 // without a real database. It records the SQL it is handed (to assert the
 // generated statements are dialect-quoted + placeholder-rendered) and captures
 // each outbox Exec. execute uses only Placeholder + QuoteIdent of the Dialect
@@ -105,12 +105,12 @@ type outboxInsert struct {
 	args []any
 }
 
-// db.Querier
-func (f *fakeDB) QueryRow(_ context.Context, sql string, _ ...any) db.Row {
+// core.Querier
+func (f *fakeDB) QueryRow(_ context.Context, sql string, _ ...any) core.Row {
 	f.seenSQL = append(f.seenSQL, sql)
 	return fakeRow{count: f.count}
 }
-func (f *fakeDB) Query(_ context.Context, _ string, _ ...any) (db.Rows, error) {
+func (f *fakeDB) Query(_ context.Context, _ string, _ ...any) (core.Rows, error) {
 	return nil, errors.New("Query is not used by execute")
 }
 func (f *fakeDB) QueryMaps(_ context.Context, sql string, _ ...any) ([]map[string]any, error) {
@@ -128,14 +128,14 @@ func (f *fakeDB) Exec(_ context.Context, sql string, args ...any) error {
 	return nil
 }
 
-// db.Dialect — only Placeholder + QuoteIdent are exercised.
-func (f *fakeDB) Placeholder(n int) string                          { return fmt.Sprintf("$%d", n) }
-func (f *fakeDB) QuoteIdent(name string) string                     { return `"` + name + `"` }
-func (f *fakeDB) EncodeArg(v any) any                               { return v }
-func (f *fakeDB) DecodeID(raw string) (string, error)               { return raw, nil }
-func (f *fakeDB) ILikeClause(col, ph string) string                { return col + " ILIKE " + ph }
-func (f *fakeDB) IsUniqueViolation(error) (string, bool)            { return "", false }
-func (f *fakeDB) BuildUpsert(string, []string, []string, []db.UpsertSet) string {
+// core.Dialect — only Placeholder + QuoteIdent are exercised.
+func (f *fakeDB) Placeholder(n int) string               { return fmt.Sprintf("$%d", n) }
+func (f *fakeDB) QuoteIdent(name string) string          { return `"` + name + `"` }
+func (f *fakeDB) EncodeArg(v any) any                    { return v }
+func (f *fakeDB) DecodeID(raw string) (string, error)    { return raw, nil }
+func (f *fakeDB) ILikeClause(col, ph string) string      { return col + " ILIKE " + ph }
+func (f *fakeDB) IsUniqueViolation(error) (string, bool) { return "", false }
+func (f *fakeDB) BuildUpsert(string, []string, []string, []core.UpsertSet) string {
 	return ""
 }
 

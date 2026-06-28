@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/ClaudioSchirmer/omnicore/infra/db/read/mongo"
+	"github.com/ClaudioSchirmer/omnicore/infra/db/query"
 )
 
 // resolveUpstreamSubscriptions concatenates the YAML-declared slice
@@ -73,7 +73,7 @@ func applyUpstreamSubscriptionDefaults(subs []UpstreamSubscription, service stri
 // invalid entry would mislead the multi-entry guards.
 func validateUpstreamSubscriptions(
 	subs []UpstreamSubscription,
-	views []*mongo.ViewDefinition,
+	views []*query.ViewDefinition,
 	profile string,
 ) error {
 	var violations []string
@@ -114,7 +114,7 @@ func validateUpstreamSubscriptions(
 //
 // Suffix-only coverage in a compound index does not satisfy Mongo's
 // equality-prefix rule, so the guard accepts only first-position matches.
-func guardJoinFieldIndex(views []*mongo.ViewDefinition) []string {
+func guardJoinFieldIndex(views []*query.ViewDefinition) []string {
 	var out []string
 	for _, v := range views {
 		for _, e := range v.Embeds() {
@@ -146,7 +146,7 @@ func guardJoinFieldIndex(views []*mongo.ViewDefinition) []string {
 
 // viewIndexesCover scans v.IndexSpecs() for an index whose key set begins
 // with joinField. Used by §8.1.
-func viewIndexesCover(v *mongo.ViewDefinition, joinField string) bool {
+func viewIndexesCover(v *query.ViewDefinition, joinField string) bool {
 	for _, idx := range v.IndexSpecs() {
 		keys := idx.KeyNames()
 		if len(keys) == 0 {
@@ -172,7 +172,7 @@ func viewIndexesCover(v *mongo.ViewDefinition, joinField string) bool {
 //     writes from both the UpstreamSubscriber AND the SyncEngine.
 //     Reject; the operator either renames the subscription or removes the
 //     local view if the data is meant to be entirely upstream-projected.
-func guardCollectionCollision(subs []UpstreamSubscription, views []*mongo.ViewDefinition) []string {
+func guardCollectionCollision(subs []UpstreamSubscription, views []*query.ViewDefinition) []string {
 	var out []string
 	localViews := make(map[string]bool, len(views))
 	for _, v := range views {
@@ -215,7 +215,7 @@ func guardCollectionCollision(subs []UpstreamSubscription, views []*mongo.ViewDe
 // trigger view X that embeds Y. Drift would accumulate silently. The
 // guard rejects this shape at boot so consumers never reach the trap;
 // the diagnostic suggests the supported alternatives.
-func guardMaterializingSource(subs []UpstreamSubscription, views []*mongo.ViewDefinition) []string {
+func guardMaterializingSource(subs []UpstreamSubscription, views []*query.ViewDefinition) []string {
 	var out []string
 	subCollections := make(map[string]bool, len(subs))
 	for _, s := range subs {

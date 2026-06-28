@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/ClaudioSchirmer/omnicore/infra/db/read/mongo"
+	"github.com/ClaudioSchirmer/omnicore/infra/db/query"
 	"github.com/ClaudioSchirmer/omnicore/infra/migration"
 )
 
@@ -134,7 +134,7 @@ func formatMigrationDirtyDiagnostic(version uint) string {
 // Returns nil only when the registry is fully reconciled to the declared
 // shape (every plan either No-op'd, was Init'd, was Refreshed, or
 // completed a rebuild).
-func reconcileViewDrift(ctx context.Context, cfg *Config, deps Deps, sync *mongo.SyncEngine, views []*mongo.ViewDefinition) error {
+func reconcileViewDrift(ctx context.Context, cfg *Config, deps Deps, sync *query.SyncEngine, views []*query.ViewDefinition) error {
 	// The Mongo-view drift/rebuild control plane is backend-neutral: it reads the
 	// omnicore_mongo_views registry through the engine's Querier/Dialect and
 	// serializes rebuilds on the engine's AcquireRebuildLock (PG pg_advisory_lock,
@@ -148,17 +148,17 @@ func reconcileViewDrift(ctx context.Context, cfg *Config, deps Deps, sync *mongo
 		return nil
 	}
 
-	report, err := mongo.DetectViewDrift(ctx, deps.Mongo, deps.DB, views)
+	report, err := query.DetectViewDrift(ctx, deps.Mongo, deps.DB, views)
 	if err != nil {
 		return fmt.Errorf("bootstrap: mongo drift detect: %w", err)
 	}
 
 	// Unconditional aborts under autoRun ∈ {check, true} — no escape.
-	if report.HasAny(mongo.DriftAlienData) {
-		return errors.New(mongo.FormatAlienDataDiagnostic(report.PlansBy(mongo.DriftAlienData)))
+	if report.HasAny(query.DriftAlienData) {
+		return errors.New(query.FormatAlienDataDiagnostic(report.PlansBy(query.DriftAlienData)))
 	}
-	if report.HasAny(mongo.DriftForgotToBump) {
-		return errors.New(mongo.FormatForgotToBumpDiagnostic(report.PlansBy(mongo.DriftForgotToBump)))
+	if report.HasAny(query.DriftForgotToBump) {
+		return errors.New(query.FormatForgotToBumpDiagnostic(report.PlansBy(query.DriftForgotToBump)))
 	}
 
 	// autoRun=check — abort on any non-None decision.
@@ -172,53 +172,53 @@ func reconcileViewDrift(ctx context.Context, cfg *Config, deps Deps, sync *mongo
 		// recovery SQL; concatenating them preserves all operator
 		// instructions in a single boot-fatal payload.
 		var diags []string
-		if plans := report.PlansBy(mongo.DriftFreshInit); len(plans) > 0 {
-			diags = append(diags, mongo.FormatFreshInitDiagnostic(plans))
+		if plans := report.PlansBy(query.DriftFreshInit); len(plans) > 0 {
+			diags = append(diags, query.FormatFreshInitDiagnostic(plans))
 		}
-		if plans := report.PlansBy(mongo.DriftMongoWiped); len(plans) > 0 {
-			diags = append(diags, mongo.FormatMongoWipedDiagnostic(plans))
+		if plans := report.PlansBy(query.DriftMongoWiped); len(plans) > 0 {
+			diags = append(diags, query.FormatMongoWipedDiagnostic(plans))
 		}
-		if plans := report.PlansBy(mongo.DriftArtifactOnly); len(plans) > 0 {
-			diags = append(diags, mongo.FormatArtifactOnlyDiagnostic(plans))
+		if plans := report.PlansBy(query.DriftArtifactOnly); len(plans) > 0 {
+			diags = append(diags, query.FormatArtifactOnlyDiagnostic(plans))
 		}
-		if plans := report.PlansBy(mongo.DriftRebuildRequired); len(plans) > 0 {
-			diags = append(diags, mongo.FormatRebuildRequiredDiagnostic(plans))
+		if plans := report.PlansBy(query.DriftRebuildRequired); len(plans) > 0 {
+			diags = append(diags, query.FormatRebuildRequiredDiagnostic(plans))
 		}
-		if plans := report.PlansBy(mongo.DriftDowngrade); len(plans) > 0 {
-			diags = append(diags, mongo.FormatDowngradeDiagnostic(plans))
+		if plans := report.PlansBy(query.DriftDowngrade); len(plans) > 0 {
+			diags = append(diags, query.FormatDowngradeDiagnostic(plans))
 		}
 		return errors.New(strings.Join(diags, "\n"))
 	}
 
 	// autoRun=true — under allowDowngrade=false, downgrades still abort.
-	if !cfg.Mongo.Rebuild.AllowDowngrade && report.HasAny(mongo.DriftDowngrade) {
-		return errors.New(mongo.FormatDowngradeDiagnostic(report.PlansBy(mongo.DriftDowngrade)))
+	if !cfg.Mongo.Rebuild.AllowDowngrade && report.HasAny(query.DriftDowngrade) {
+		return errors.New(query.FormatDowngradeDiagnostic(report.PlansBy(query.DriftDowngrade)))
 	}
 
-	rebuildCfg := mongo.RebuildConfig{
+	rebuildCfg := query.RebuildConfig{
 		Orphan:      cfg.Mongo.Rebuild.Orphan,
 		ServiceName: cfg.Service,
 	}
 
 	for _, plan := range report.Plans {
 		switch plan.Decision {
-		case mongo.DriftNone:
+		case query.DriftNone:
 			continue
-		case mongo.DriftFreshInit:
+		case query.DriftFreshInit:
 			if err := sync.InitRegistryOnly(ctx, plan, cfg.Service); err != nil {
 				return fmt.Errorf("bootstrap: init registry on view %q: %w", plan.View.Name(), err)
 			}
 			deps.Logger.Info("view registry initialized",
 				"view", plan.View.Name(),
 				"version", plan.CurrentVersion)
-		case mongo.DriftArtifactOnly:
+		case query.DriftArtifactOnly:
 			if err := sync.RefreshRegistryArtifactOnly(ctx, plan, cfg.Service); err != nil {
 				return fmt.Errorf("bootstrap: refresh registry artifact on view %q: %w", plan.View.Name(), err)
 			}
 			deps.Logger.Info("view registry artifact refreshed",
 				"view", plan.View.Name(),
 				"version", plan.CurrentVersion)
-		case mongo.DriftMongoWiped, mongo.DriftRebuildRequired, mongo.DriftDowngrade:
+		case query.DriftMongoWiped, query.DriftRebuildRequired, query.DriftDowngrade:
 			// All three drive a rebuild under autoRun=true (Downgrade only
 			// when allowDowngrade gated above).
 			if err := sync.ExecuteRebuild(ctx, plan, rebuildCfg); err != nil {

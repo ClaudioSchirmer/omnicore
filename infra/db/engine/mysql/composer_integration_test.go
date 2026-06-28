@@ -10,8 +10,8 @@ import (
 	"go.mongodb.org/mongo-driver/v2/bson"
 
 	"github.com/ClaudioSchirmer/omnicore/domain"
-	"github.com/ClaudioSchirmer/omnicore/infra/db/read/mongo"
-	"github.com/ClaudioSchirmer/omnicore/infra/db"
+	"github.com/ClaudioSchirmer/omnicore/infra/db/core"
+	"github.com/ClaudioSchirmer/omnicore/infra/db/query/engine/mongo"
 )
 
 // Phase 4b integration test: the backend-neutral Composer reads the MySQL engine
@@ -34,8 +34,8 @@ type addrRow struct {
 	Street string
 }
 
-func addrSchema() *db.TableSchema {
-	return db.NewTableSchema[*addrRow]("addresses").
+func addrSchema() *core.TableSchema {
+	return core.NewTableSchema[*addrRow]("addresses").
 		PK("id").
 		FK("user_id").
 		Field("Street", "street").
@@ -66,7 +66,7 @@ func TestMySQLComposer_RootWithEmbed(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetInsertable: %v", err)
 	}
-	res, err := eng.Insert(ctx, ins, flatSchema(), db.WriteHook{})
+	res, err := eng.Insert(ctx, ins, flatSchema(), core.WriteHook{})
 	if err != nil {
 		t.Fatalf("Insert: %v", err)
 	}
@@ -134,8 +134,8 @@ type flagRow struct {
 	Name   string
 }
 
-func flagSchema() *db.TableSchema {
-	return db.NewTableSchema[*flagRow]("flags").
+func flagSchema() *core.TableSchema {
+	return core.NewTableSchema[*flagRow]("flags").
 		PK("id").
 		Field("Active", "active").
 		Field("Name", "name")

@@ -4,7 +4,7 @@ import (
 	"log/slog"
 	"sync"
 
-	"github.com/ClaudioSchirmer/omnicore/infra/db"
+	"github.com/ClaudioSchirmer/omnicore/infra/db/core"
 )
 
 // state is the package-level singleton populated by Configure at boot
@@ -32,7 +32,7 @@ var (
 // shared logger.
 type client struct {
 	cfg    *Config
-	eng    db.RelationalEngine
+	eng    core.RelationalEngine
 	logger *slog.Logger
 }
 
@@ -48,7 +48,7 @@ type client struct {
 // then fails loudly, which is the desired behavior. logger falls back to
 // slog.Default() when nil. The engine is the neutral RelationalEngine, so
 // the producer works on any backend (Postgres or MySQL).
-func Configure(cfg *Config, eng db.RelationalEngine, logger *slog.Logger) {
+func Configure(cfg *Config, eng core.RelationalEngine, logger *slog.Logger) {
 	if logger == nil {
 		logger = slog.Default()
 	}

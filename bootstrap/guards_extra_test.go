@@ -4,8 +4,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/ClaudioSchirmer/omnicore/infra/db/read/mongo"
-	"github.com/ClaudioSchirmer/omnicore/infra/db"
+	"github.com/ClaudioSchirmer/omnicore/infra/db/core"
+	"github.com/ClaudioSchirmer/omnicore/infra/db/query"
 	"github.com/ClaudioSchirmer/omnicore/web/openapi"
 )
 
@@ -48,10 +48,10 @@ func TestGuardJoinFieldIndex_RejectsMissingJoinField(t *testing.T) {
 	// External embed declared without a join field (no .On / no FK) — the
 	// guard reports the missing-join-field diagnostic rather than the
 	// missing-index one.
-	v := mongo.View("orders").Root("orders").
-		Embed("buyer", mongo.FromSchema(db.NewExternalSchema("users").PK("id")).As("Buyer")).
+	v := query.View("orders").Root("orders").
+		Embed("buyer", query.FromSchema(core.NewExternalSchema("users").PK("id")).As("Buyer")).
 		Version(1)
-	errs := guardJoinFieldIndex([]*mongo.ViewDefinition{v})
+	errs := guardJoinFieldIndex([]*query.ViewDefinition{v})
 	if len(errs) != 1 || !strings.Contains(errs[0], "§8.1") ||
 		!strings.Contains(errs[0], "no join field declared") {
 		t.Errorf("expected missing-join-field diagnostic, got %v", errs)
@@ -65,10 +65,10 @@ func TestValidateUpstreamSubscriptions_PassesWhenClean(t *testing.T) {
 		{Topic: "users.events", Collection: "users",
 			StartFrom: StartFromLatest, OnUpstreamDelete: UpstreamDeleteCascade},
 	}
-	views := []*mongo.ViewDefinition{
-		mongo.View("orders").Root("orders").
+	views := []*query.ViewDefinition{
+		query.View("orders").Root("orders").
 			Embed("buyer", extEmbed("users", "buyer_id", "Buyer")).
-			Indexes(mongo.Index("buyer_id")).
+			Indexes(query.Index("buyer_id")).
 			Version(1),
 	}
 	if err := validateUpstreamSubscriptions(subs, views, profileDev); err != nil {

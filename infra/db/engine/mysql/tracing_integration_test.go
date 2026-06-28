@@ -9,7 +9,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/ClaudioSchirmer/omnicore/domain"
-	"github.com/ClaudioSchirmer/omnicore/infra/db"
+	"github.com/ClaudioSchirmer/omnicore/infra/db/core"
 )
 
 // Phase 4 item 4 integration test: opening the engine with tracing ON (the
@@ -36,7 +36,7 @@ func TestMySQLEngine_TracingOpenWorks(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetInsertable: %v", err)
 	}
-	res, err := tracedEng.Insert(ctx, ins, flatSchema(), db.WriteHook{})
+	res, err := tracedEng.Insert(ctx, ins, flatSchema(), core.WriteHook{})
 	if err != nil {
 		t.Fatalf("Insert through the traced engine: %v", err)
 	}

@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/ClaudioSchirmer/omnicore/infra/db"
+	"github.com/ClaudioSchirmer/omnicore/infra/db/core"
 )
 
 // TestPgDialect_BuildUpsert_DoUpdate locks the Postgres upsert shape: an
@@ -15,9 +15,9 @@ func TestPgDialect_BuildUpsert_DoUpdate(t *testing.T) {
 		"omnicore_upstream_failures",
 		[]string{"topic", "view", "error"},
 		[]string{"topic", "view"},
-		[]db.UpsertSet{
-			{Col: "error", Mode: db.UpsertSetNew},
-			{Col: "attempt", Mode: db.UpsertSetExpr, Expr: "attempt + 1"},
+		[]core.UpsertSet{
+			{Col: "error", Mode: core.UpsertSetNew},
+			{Col: "attempt", Mode: core.UpsertSetExpr, Expr: "attempt + 1"},
 		},
 	)
 	for _, want := range []string{

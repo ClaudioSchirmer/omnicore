@@ -6,10 +6,11 @@ import (
 	"github.com/ClaudioSchirmer/omnicore/application/pipeline"
 	"github.com/ClaudioSchirmer/omnicore/application/queries"
 	"github.com/ClaudioSchirmer/omnicore/application/translation"
-	"github.com/ClaudioSchirmer/omnicore/infra/db/read/mongo"
 	"github.com/ClaudioSchirmer/omnicore/infra/cache"
-	"github.com/ClaudioSchirmer/omnicore/infra/db"
+	"github.com/ClaudioSchirmer/omnicore/infra/db/core"
 	"github.com/ClaudioSchirmer/omnicore/infra/db/engine/pg"
+	"github.com/ClaudioSchirmer/omnicore/infra/db/query"
+	"github.com/ClaudioSchirmer/omnicore/infra/db/query/engine/mongo"
 	"github.com/ClaudioSchirmer/omnicore/infra/httpclient"
 	"github.com/ClaudioSchirmer/omnicore/infra/integration"
 	"github.com/ClaudioSchirmer/omnicore/infra/tracing"
@@ -40,7 +41,7 @@ import (
 // NewMySQL vs pgEngine on cfg.Database.Dialect. The composer/sync projection, the
 // Mongo-view rebuild/drift control plane (advisory lock + omnicore_mongo_views
 // registry), and the integration consumer control plane do NOT go through here —
-// they speak the neutral db.RelationalEngine seam and run on any backend.
+// they speak the neutral core.RelationalEngine seam and run on any backend.
 func pgEngine(deps Deps) *pg.Postgres { return pg.AsPostgres(deps.DB) }
 
 // dialectPostgres / dialectMySQL are the registered relational-engine dialect
@@ -54,13 +55,13 @@ const (
 // gate for the one boot step that is genuinely PG-only: audit partition
 // maintenance (the MySQL audit table is not partitioned). Everything else,
 // including the Mongo-view rebuild/drift control plane, runs on the neutral
-// db.RelationalEngine seam and is NOT gated here.
+// core.RelationalEngine seam and is NOT gated here.
 func isPostgres(cfg *Config) bool { return cfg.Database.Dialect == dialectPostgres }
 
 type Deps struct {
 	Config     *Config
 	Logger     *slog.Logger
-	DB         db.RelationalEngine
+	DB         core.RelationalEngine
 	Mongo      *mongo.MongoDB
 	Translator *translation.Translator
 	Pipeline   *pipeline.Pipeline
@@ -133,5 +134,5 @@ type Deps struct {
 	// UpstreamSubscriber.RetryPendingFailures(ctx) without re-resolving
 	// the slice through internal package state. nil when the service
 	// declared zero upstream subscriptions in YAML / Wiring.
-	UpstreamSubscribers []*mongo.UpstreamSubscriber
+	UpstreamSubscribers []*query.UpstreamSubscriber
 }

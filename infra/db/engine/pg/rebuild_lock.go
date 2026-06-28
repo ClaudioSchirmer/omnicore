@@ -6,18 +6,18 @@ import (
 	"fmt"
 	"hash/fnv"
 
-	"github.com/ClaudioSchirmer/omnicore/infra/db"
+	"github.com/ClaudioSchirmer/omnicore/infra/db/core"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-// AcquireRebuildLock implements db.RelationalEngine: it pins a pool connection,
+// AcquireRebuildLock implements core.RelationalEngine: it pins a pool connection,
 // tries the Postgres advisory lock for the view, and wraps both in a
-// db.RebuildLock. The advisory lock is bound to THIS connection — holding the
+// core.RebuildLock. The advisory lock is bound to THIS connection — holding the
 // pinned conn for the lock's lifetime is what makes the unlock (and the
 // auto-release on disconnect) land on the right session. The returned handle's
 // Querier runs on that same pinned conn, so the rebuild's status writes share it.
-func (p *Postgres) AcquireRebuildLock(ctx context.Context, viewName string) (db.RebuildLock, error) {
+func (p *Postgres) AcquireRebuildLock(ctx context.Context, viewName string) (core.RebuildLock, error) {
 	conn, err := p.Acquire(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("acquire pg connection for rebuild lock on %q: %w", viewName, err)
@@ -38,7 +38,7 @@ func (p *Postgres) AcquireRebuildLock(ctx context.Context, viewName string) (db.
 	return lock, nil
 }
 
-// pgRebuildLock is the Postgres db.RebuildLock: a pinned *pgxpool.Conn carrying
+// pgRebuildLock is the Postgres core.RebuildLock: a pinned *pgxpool.Conn carrying
 // the advisory lock plus the pinned-session Querier.
 type pgRebuildLock struct {
 	conn     *pgxpool.Conn
@@ -53,7 +53,7 @@ func (l *pgRebuildLock) Holder() string { return l.holder }
 
 // Querier exposes the pinned connection through the neutral read/exec surface so
 // BeginRebuild/EndRebuild run on the very session that owns the advisory lock.
-func (l *pgRebuildLock) Querier() db.Querier { return pgQuerier{e: l.conn} }
+func (l *pgRebuildLock) Querier() core.Querier { return pgQuerier{e: l.conn} }
 
 // Release unlocks (when this caller held the lock) and returns the connection to
 // the pool. Releasing the conn auto-releases the advisory lock as the backstop;

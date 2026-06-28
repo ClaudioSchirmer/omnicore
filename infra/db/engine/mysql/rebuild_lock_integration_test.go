@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/ClaudioSchirmer/omnicore/infra/db/read/mongo"
+	"github.com/ClaudioSchirmer/omnicore/infra/db/query/engine/mongo"
 )
 
 // Item-8 integration test: the Mongo-view rebuild control plane is backend-

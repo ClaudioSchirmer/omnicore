@@ -9,7 +9,8 @@ import (
 	"testing"
 
 	"github.com/ClaudioSchirmer/omnicore/domain"
-	"github.com/ClaudioSchirmer/omnicore/infra/db"
+	"github.com/ClaudioSchirmer/omnicore/infra/db/command/write"
+	"github.com/ClaudioSchirmer/omnicore/infra/db/core"
 )
 
 // aggCustomer is an aggregate root used by aggregate_persister.go tests.
@@ -63,15 +64,15 @@ func createAggregateTables(t *testing.T, pg *Postgres) {
 }
 
 // aggCustomerSchema declares the aggCustomer aggregate (root + aggChannel child).
-func aggCustomerSchema() *db.TableSchema {
-	return db.NewTableSchema[*aggCustomer]("agg_customers").
+func aggCustomerSchema() *core.TableSchema {
+	return core.NewTableSchema[*aggCustomer]("agg_customers").
 		PK("id").
 		Field("Name", "name").
 		Field("Email", "email").
 		SoftDelete("deleted_at").
 		CreatedAt("created_at").
 		UpdatedAt("updated_at").
-		Child(db.NewTableSchema[aggChannel]("agg_channels").
+		Child(core.NewTableSchema[aggChannel]("agg_channels").
 			PK("id").
 			FK("agg_customer_id").
 			Field("Label", "label").
@@ -373,13 +374,13 @@ func TestPostgres_InsertAggregate_RespectsChildTableAndFKOverride(t *testing.T) 
 	domain.AddAggregateChild(root, lineItem{Amount: 100})
 	ins, _ := domain.GetInsertable(root, nil, "GetInsertable")
 
-	schema := db.NewTableSchema[*aggInvoice]("agg_invoices").
+	schema := core.NewTableSchema[*aggInvoice]("agg_invoices").
 		PK("id").
 		Field("Reference", "reference").
 		SoftDelete("deleted_at").
 		CreatedAt("created_at").
 		UpdatedAt("updated_at").
-		Child(db.NewTableSchema[lineItem]("tb_lines").
+		Child(core.NewTableSchema[lineItem]("tb_lines").
 			PK("id").
 			FK("invoice_id").
 			Field("Amount", "amount").
@@ -394,14 +395,14 @@ func TestPostgres_InsertAggregate_RespectsChildTableAndFKOverride(t *testing.T) 
 	}
 }
 
-// --- db.BaseRepository wrappers --------------------------------------------
+// --- write.BaseRepository wrappers --------------------------------------------
 
 func TestBaseRepository_InsertUpdateArchiveUnarchiveDelete(t *testing.T) {
 	pg, cleanup := newTestPG(t)
 	defer cleanup()
 	createFlatPersonsTable(t, pg)
 
-	repo := &db.BaseRepository[*flatPerson]{
+	repo := &write.BaseRepository[*flatPerson]{
 		Engine:    pg,
 		NewEntity: func() *flatPerson { return &flatPerson{} },
 		Schema:    flatPersonSchema(),
@@ -467,12 +468,12 @@ func TestBaseRepository_ConstraintBindingMapsTo23505Notification(t *testing.T) {
 		t.Fatalf("create unique index: %v", err)
 	}
 
-	repo := &db.BaseRepository[*flatPerson]{
+	repo := &write.BaseRepository[*flatPerson]{
 		Engine:      pg,
 		NewEntity:   func() *flatPerson { return &flatPerson{} },
 		ContextName: "Person",
 		Schema:      flatPersonSchema(),
-		Constraints: map[string]db.ConstraintBinding{
+		Constraints: map[string]write.ConstraintBinding{
 			"persons_email_uq": {
 				Notification: domain.EntityAlreadyAddedNotification{},
 				Field:        "email",
@@ -529,11 +530,11 @@ func TestBaseRepository_ConstraintCodeOtherThan23505ReturnsRaw(t *testing.T) {
 		updated_at TIMESTAMP NOT NULL DEFAULT NOW()
 	)`)
 
-	repo := &db.BaseRepository[*flatPerson]{
+	repo := &write.BaseRepository[*flatPerson]{
 		Engine:    pg,
 		NewEntity: func() *flatPerson { return &flatPerson{} },
 		Schema:    flatPersonSchemaOn("flat_persons_nn"),
-		Constraints: map[string]db.ConstraintBinding{
+		Constraints: map[string]write.ConstraintBinding{
 			"any_name": {Notification: domain.RequiredFieldNotification{}, Field: "x"},
 		},
 	}
@@ -560,12 +561,12 @@ func TestBaseRepository_NewPanicsWhenFactoryMissing(t *testing.T) {
 			t.Fatal("expected panic when NewEntity is nil")
 		}
 	}()
-	repo := &db.BaseRepository[*flatPerson]{Engine: nil} // NewEntity intentionally nil
+	repo := &write.BaseRepository[*flatPerson]{Engine: nil} // NewEntity intentionally nil
 	_ = repo.New()
 }
 
 func TestBaseRepository_NewReturnsFactoryResult(t *testing.T) {
-	repo := &db.BaseRepository[*flatPerson]{
+	repo := &write.BaseRepository[*flatPerson]{
 		NewEntity: func() *flatPerson { return &flatPerson{Name: "factory"} },
 	}
 	got := repo.New()

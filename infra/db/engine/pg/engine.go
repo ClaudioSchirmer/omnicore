@@ -12,20 +12,21 @@ import (
 
 	"github.com/ClaudioSchirmer/omnicore/domain"
 	"github.com/ClaudioSchirmer/omnicore/infra/audit"
-	"github.com/ClaudioSchirmer/omnicore/infra/db"
+	"github.com/ClaudioSchirmer/omnicore/infra/db/command/write"
+	"github.com/ClaudioSchirmer/omnicore/infra/db/core"
 	"github.com/ClaudioSchirmer/omnicore/infra/events"
 )
 
 // Compile-time proof that the Postgres adapter satisfies the relational port
 // and the neutral write-TX beginner. The backend-neutral write orchestration
-// (every write verb, audit, outbox, hooks) lives on the embedded db.BaseEngine;
+// (every write verb, audit, outbox, hooks) lives on the embedded write.BaseEngine;
 // this package supplies only the Postgres dialect + driver (pgx pool, pgDialect
 // and the neutral adapters in read.go, the tx seal in tx_handle.go, the advisory
 // rebuild lock in rebuild_lock.go).
-var _ db.RelationalEngine = (*Postgres)(nil)
-var _ db.WriteBeginner = (*Postgres)(nil)
+var _ core.RelationalEngine = (*Postgres)(nil)
+var _ core.WriteBeginner = (*Postgres)(nil)
 
-// AsPostgres recovers the concrete *Postgres from a db.RelationalEngine. It is the
+// AsPostgres recovers the concrete *Postgres from a core.RelationalEngine. It is the
 // PG-only escape hatch for the framework wiring that still speaks pgx directly
 // (pool access, partitions, migrations, the rebuild lock). Using it pins the
 // caller to Postgres — exactly like UnwrapPgxTx on the in-TX side. Panics when
@@ -34,7 +35,7 @@ var _ db.WriteBeginner = (*Postgres)(nil)
 //
 // NOTE: this returns the concrete *Postgres, which lives here; infra/db must not
 // depend back on the engine.
-func AsPostgres(e db.RelationalEngine) *Postgres {
+func AsPostgres(e core.RelationalEngine) *Postgres {
 	pg, ok := e.(*Postgres)
 	if !ok {
 		panic(fmt.Sprintf("infra.AsPostgres: engine is %T, not *Postgres — this code path is Postgres-specific", e))
@@ -44,9 +45,9 @@ func AsPostgres(e db.RelationalEngine) *Postgres {
 
 // init registers the Postgres engine under the "postgres" dialect,
 // database/sql-style. Postgres ships untagged (the default backend); the
-// composition root looks it up by name via db.NewEngine.
+// composition root looks it up by name via core.NewEngine.
 func init() {
-	db.RegisterEngine("postgres", func(ctx context.Context, dsn string, tracing bool) (db.RelationalEngine, error) {
+	core.RegisterEngine("postgres", func(ctx context.Context, dsn string, tracing bool) (core.RelationalEngine, error) {
 		return NewPostgres(ctx, dsn, WithPgxTracing(tracing))
 	})
 }
@@ -79,14 +80,14 @@ type pgxPool interface {
 
 // Postgres is the persistence adapter. The cross-engine write-path state +
 // orchestration (audit row, post-commit echo/publish, lifecycle-hook dispatch)
-// live on the embedded db.BaseEngine; this type supplies only the pgx pool and
+// live on the embedded write.BaseEngine; this type supplies only the pgx pool and
 // the dialect-bound parts. After construction the audit surface is configured
 // via WithAudit — without that call the persister runs in a fully audit-disabled
 // posture (no in-TX row, no slog echo) which is correct for tests + integration
 // fixtures that construct the pool directly. bootstrap.Run wires it in
 // production after Build.
 type Postgres struct {
-	db.BaseEngine
+	write.BaseEngine
 	pool pgxPool
 }
 
@@ -138,7 +139,7 @@ func NewPostgres(ctx context.Context, dsn string, opts ...PostgresOption) (*Post
 // Config with destinations: [] yields the same posture (empty list = off); nil
 // logger falls back to slog.Default(). The auditClaims allowlist controls which
 // JWT claims surface on the actorClaims block — see auth.auditClaims.
-func (p *Postgres) WithAudit(cfg *audit.Config, logger *slog.Logger, auditClaims []string) db.RelationalEngine {
+func (p *Postgres) WithAudit(cfg *audit.Config, logger *slog.Logger, auditClaims []string) core.RelationalEngine {
 	p.ConfigureAudit(cfg, logger, auditClaims)
 	return p
 }
@@ -149,7 +150,7 @@ func (p *Postgres) WithAudit(cfg *audit.Config, logger *slog.Logger, auditClaims
 // disables publishing — events stay on the ValidEntity, simply not forwarded.
 // bootstrap.Run wires events.NewSlogPublisher in production; a consumer can
 // inject any events.Publisher (Kafka, etc.) to override the transport.
-func (p *Postgres) WithEventPublisher(pub events.Publisher) db.RelationalEngine {
+func (p *Postgres) WithEventPublisher(pub events.Publisher) core.RelationalEngine {
 	p.SetPublisher(pub)
 	return p
 }
@@ -159,10 +160,10 @@ func (p *Postgres) Close() {
 }
 
 // Begin opens a framework-owned write TX and returns it as the backend-neutral
-// db.WriteTx — the Postgres side of db.WriteBeginner. The neutral write
+// core.WriteTx — the Postgres side of core.WriteBeginner. The neutral write
 // orchestration (outbox, audit, hooks) runs against this surface; the concrete
 // pgx.Tx stays private behind pgTx.
-func (p *Postgres) Begin(ctx context.Context) (db.WriteTx, error) {
+func (p *Postgres) Begin(ctx context.Context) (core.WriteTx, error) {
 	tx, err := p.pool.Begin(ctx)
 	if err != nil {
 		return nil, err
@@ -192,7 +193,7 @@ func (p *Postgres) querier() pgExec { return p.pool }
 
 // Acquire pins a connection from the underlying pool for the rebuild
 // advisory-lock path (the Mongo-view control plane in infra recovers it via
-// AsPostgres). It is pool-only (no db.Tx/Conn equivalent), so it stays off the
+// AsPostgres). It is pool-only (no core.Tx/Conn equivalent), so it stays off the
 // pgxPool interface and is reached through this concrete assertion. Production
 // always holds a real pool.
 func (p *Postgres) Acquire(ctx context.Context) (*pgxpool.Conn, error) {
@@ -207,7 +208,7 @@ func (p *Postgres) Acquire(ctx context.Context) (*pgxpool.Conn, error) {
 // (pgDialect.QuoteIdent renders bare, validated identifiers). Delegates to
 // SafeIdentifier for the allowlist.
 func validIdentifier(name string) string {
-	if !db.SafeIdentifier(name) {
+	if !core.SafeIdentifier(name) {
 		panic(fmt.Sprintf("infra: invalid SQL identifier %q", name))
 	}
 	return name

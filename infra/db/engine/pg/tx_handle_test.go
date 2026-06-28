@@ -9,7 +9,8 @@ import (
 	"github.com/ClaudioSchirmer/omnicore/application/configuration"
 	"github.com/ClaudioSchirmer/omnicore/application/persistence"
 	"github.com/ClaudioSchirmer/omnicore/domain"
-	"github.com/ClaudioSchirmer/omnicore/infra/db"
+	"github.com/ClaudioSchirmer/omnicore/infra/db/command/write"
+	"github.com/ClaudioSchirmer/omnicore/infra/db/core"
 )
 
 // TestFireAfterBegin_DeliversPgxTxHandle is the pg-specific slice of the
@@ -22,11 +23,11 @@ func TestFireAfterBegin_DeliversPgxTxHandle(t *testing.T) {
 	p := &Postgres{} // nil logger is fine: the success path logs nothing
 	ctx := configuration.NewAppContextWithRandomID(configuration.LangENG)
 	var got persistence.TxHandle
-	hook := db.WriteHook{AfterBegin: func(_ persistence.RequestContext, _ domain.Entity, tx persistence.TxHandle) error {
+	hook := core.WriteHook{AfterBegin: func(_ persistence.RequestContext, _ domain.Entity, tx persistence.TxHandle) error {
 		got = tx
 		return nil
 	}}
-	if err := p.FireAfterBegin(ctx, pgTx{}, &aggLoaderTestEntity{}, hook, db.HookContext{Verb: "Insert", EntityType: "X"}); err != nil {
+	if err := p.FireAfterBegin(ctx, pgTx{}, &aggLoaderTestEntity{}, hook, write.HookContext{Verb: "Insert", EntityType: "X"}); err != nil {
 		t.Fatalf("FireAfterBegin: %v", err)
 	}
 	if got == nil {

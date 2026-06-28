@@ -9,13 +9,14 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/ClaudioSchirmer/omnicore/domain"
-	"github.com/ClaudioSchirmer/omnicore/infra/criteria"
-	"github.com/ClaudioSchirmer/omnicore/infra/db"
+	"github.com/ClaudioSchirmer/omnicore/infra/db/criteria"
+	"github.com/ClaudioSchirmer/omnicore/infra/db/command/read"
+	"github.com/ClaudioSchirmer/omnicore/infra/db/core"
 )
 
 // Phase 4 item 3 integration test: a MANUAL root scanner runs on MySQL. Manual
 // scanners used to be Postgres-only (handed pgx rows); now they receive the
-// backend-neutral db.Row and the loader runs them through the engine's
+// backend-neutral core.Row and the loader runs them through the engine's
 // Querier, so they work on any engine — the consumer owns the dialect-specific
 // column decoding (here, BINARY(16) → uuid string).
 //
@@ -29,8 +30,8 @@ type scanProbe struct {
 func (*scanProbe) Modes() []domain.EntityMode                       { return []domain.EntityMode{domain.ModeDisplay} }
 func (*scanProbe) BuildRules(string, domain.Service, *domain.Rules) {}
 
-func scanProbeSchema() *db.TableSchema {
-	return db.NewTableSchema[*scanProbe]("scan_probe").
+func scanProbeSchema() *core.TableSchema {
+	return core.NewTableSchema[*scanProbe]("scan_probe").
 		PK("id").
 		Field("Label", "label")
 }
@@ -55,12 +56,12 @@ func TestMySQLLoader_ManualRootScanner(t *testing.T) {
 		t.Fatalf("insert probe: %v", err)
 	}
 
-	// Manual root scanner: receives db.Row, decodes the BINARY(16) id to a
+	// Manual root scanner: receives core.Row, decodes the BINARY(16) id to a
 	// uuid string itself, and sets it (FindOne requires the scanner to populate
 	// the id). This is the exact shape that used to be impossible on MySQL.
-	loader := db.NewAggregateLoader[*scanProbe](eng, func() *scanProbe { return &scanProbe{} }).
+	loader := read.NewAggregateLoader[*scanProbe](eng, func() *scanProbe { return &scanProbe{} }).
 		WithSchema(scanProbeSchema()).
-		WithRootScanner(func(row db.Row) (*scanProbe, error) {
+		WithRootScanner(func(row core.Row) (*scanProbe, error) {
 			var idBytes []byte
 			var label string
 			if err := row.Scan(&idBytes, &label); err != nil {

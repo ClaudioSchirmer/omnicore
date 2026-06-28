@@ -6,7 +6,7 @@ import (
 	"context"
 	"testing"
 
-	"github.com/ClaudioSchirmer/omnicore/infra/db"
+	"github.com/ClaudioSchirmer/omnicore/infra/db/core"
 )
 
 // Phase 4c integration test: the generated upsert SQL must actually EXECUTE on a
@@ -40,9 +40,9 @@ func TestMySQLEngine_BuildUpsertExecutes(t *testing.T) {
 	// attempt + overwrite payload via new.payload.
 	upd := d.BuildUpsert("upsert_probe",
 		[]string{"k", "payload"}, []string{"k"},
-		[]db.UpsertSet{
-			{Col: "payload", Mode: db.UpsertSetNew},
-			{Col: "attempt", Mode: db.UpsertSetExpr, Expr: "attempt + 1"},
+		[]core.UpsertSet{
+			{Col: "payload", Mode: core.UpsertSetNew},
+			{Col: "attempt", Mode: core.UpsertSetExpr, Expr: "attempt + 1"},
 		})
 	if err := q.Exec(ctx, upd, "key1", "first"); err != nil {
 		t.Fatalf("upsert insert: %v\nSQL: %s", err, upd)

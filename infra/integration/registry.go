@@ -9,7 +9,7 @@ import (
 
 	"github.com/ClaudioSchirmer/omnicore/application/configuration"
 	"github.com/ClaudioSchirmer/omnicore/application/pipeline"
-	"github.com/ClaudioSchirmer/omnicore/infra/db"
+	"github.com/ClaudioSchirmer/omnicore/infra/db/core"
 
 	"github.com/google/uuid"
 )
@@ -266,7 +266,7 @@ func (r *Receiver) ConsumerGroup() string { return r.consumerGroup }
 // in tasks/msintercomunication.md. The framework owns the primitive;
 // consumer services decide how to expose it (cron, admin endpoint,
 // internal RPC).
-func (r *Receiver) RetryPendingFailures(ctx context.Context, eng db.RelationalEngine, pipe *pipeline.Pipeline, logger interface {
+func (r *Receiver) RetryPendingFailures(ctx context.Context, eng core.RelationalEngine, pipe *pipeline.Pipeline, logger interface {
 	Debug(msg string, args ...any)
 	Info(msg string, args ...any)
 	Warn(msg string, args ...any)
@@ -326,7 +326,7 @@ func (r *Receiver) resolveAgainstYAML(cfg *Config) error {
 // hints — the consumer pool still acks Kafka and records failure rows.
 func (r *Receiver) handleMessage(
 	ctx context.Context,
-	eng db.RelationalEngine,
+	eng core.RelationalEngine,
 	rawHeaders map[string]string,
 	eventID uuid.UUID,
 	rawPayload []byte,
@@ -437,7 +437,7 @@ func isSuccessResult(v reflect.Value) bool {
 
 // recordIntegrationFailure wraps the failure write so the receiver
 // pipeline's error path is one-line.
-func recordIntegrationFailure(ctx context.Context, q db.Querier, d db.Dialect, r *Receiver, eventID uuid.UUID, rawPayload []byte, errMsg string) {
+func recordIntegrationFailure(ctx context.Context, q core.Querier, d core.Dialect, r *Receiver, eventID uuid.UUID, rawPayload []byte, errMsg string) {
 	rec := IntegrationFailureRecord{
 		ConsumerGroup: r.consumerGroup,
 		SourceKey:     r.sourceKey,

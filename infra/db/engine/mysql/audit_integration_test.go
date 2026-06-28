@@ -11,7 +11,8 @@ import (
 	"github.com/ClaudioSchirmer/omnicore/application/persistence"
 	"github.com/ClaudioSchirmer/omnicore/domain"
 	"github.com/ClaudioSchirmer/omnicore/infra/audit"
-	"github.com/ClaudioSchirmer/omnicore/infra/db"
+	"github.com/ClaudioSchirmer/omnicore/infra/db/command/read"
+	"github.com/ClaudioSchirmer/omnicore/infra/db/core"
 	"github.com/google/uuid"
 )
 
@@ -38,8 +39,8 @@ func (e *eventfulPerson) BuildRules(_ string, _ domain.Service, _ *domain.Rules)
 	e.RegisterEvent(domain.DomainEvent{Type: domain.EventLog, Msg: "person.created"})
 }
 
-func eventfulSchema() *db.TableSchema {
-	return db.NewTableSchema[*eventfulPerson]("flat_persons").
+func eventfulSchema() *core.TableSchema {
+	return core.NewTableSchema[*eventfulPerson]("flat_persons").
 		PK("id").
 		Field("Name", "name").
 		Field("Email", "email").
@@ -99,7 +100,7 @@ func TestMySQLEngine_AuditAndEvents(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetInsertable: %v", err)
 	}
-	res, err := eng.Insert(ctx, ins, eventfulSchema(), db.WriteHook{})
+	res, err := eng.Insert(ctx, ins, eventfulSchema(), core.WriteHook{})
 	if err != nil {
 		t.Fatalf("Insert: %v", err)
 	}
@@ -123,10 +124,10 @@ func TestMySQLEngine_AuditAndEvents(t *testing.T) {
 	}
 
 	// Read it back through the backend-neutral audit reader — the same
-	// db.NewAuditReader path a service mounts — proving FindByAggregate/FindByID
+	// read.NewAuditReader path a service mounts — proving FindByAggregate/FindByID
 	// run on a real MySQL (CHAR(36) id bound as text, "?" placeholder, no-rows
 	// → sentinel). The dialect twin of the Postgres read-back coverage.
-	reader := db.NewAuditReader(eng)
+	reader := read.NewAuditReader(eng)
 	byAgg, err := reader.FindByAggregate(ctx, entityType, res.ID)
 	if err != nil {
 		t.Fatalf("FindByAggregate: %v", err)
@@ -166,7 +167,7 @@ func TestMySQLEngine_AuditAndEvents(t *testing.T) {
 	eng.WithEventPublisher(pub2)
 	p2 := &eventfulPerson{Name: "NoAudit", Email: "noaudit@x"}
 	ins2, _ := domain.GetInsertable(p2, nil, "GetInsertable")
-	res2, err := eng.Insert(ctx, ins2, eventfulSchema(), db.WriteHook{})
+	res2, err := eng.Insert(ctx, ins2, eventfulSchema(), core.WriteHook{})
 	if err != nil {
 		t.Fatalf("Insert (audit off): %v", err)
 	}

@@ -24,7 +24,7 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/ClaudioSchirmer/omnicore/infra/db"
+	"github.com/ClaudioSchirmer/omnicore/infra/db/core"
 	"github.com/golang-migrate/migrate/v4"
 	pgxdriver "github.com/golang-migrate/migrate/v4/database/pgx/v5"
 	"github.com/golang-migrate/migrate/v4/source"
@@ -201,7 +201,7 @@ func parseMigrationVersion(name string) (uint, bool) {
 // *.down.sql. Called at startup when autoRun=true. Framework embedded
 // migrations already come versioned with .down — no validation needed.
 //
-// Returns *db.InfrastructureError carrying
+// Returns *core.InfrastructureError carrying
 // MigrationDownMissingNotification when there are missing files, with the
 // file list in the message. A non-existent directory is treated as empty
 // (not an error — the service may have no migrations of its own).
@@ -243,7 +243,7 @@ func (m *Manager) ValidateDownExists() error {
 		sort.Strings(malformed)
 		cause := fmt.Errorf(`migration file(s) without a parseable "{version}_{name}" prefix: %s`,
 			strings.Join(malformed, ", "))
-		return db.FieldErrorWithCause("Migration", filepath.Clean(m.dir), cause,
+		return core.FieldErrorWithCause("Migration", filepath.Clean(m.dir), cause,
 			MigrationFilenameInvalidNotification{})
 	}
 
@@ -259,7 +259,7 @@ func (m *Manager) ValidateDownExists() error {
 	sort.Strings(missing)
 
 	cause := fmt.Errorf("missing .down.sql for: %s", strings.Join(missing, ", "))
-	return db.FieldErrorWithCause("Migration", filepath.Clean(m.dir), cause,
+	return core.FieldErrorWithCause("Migration", filepath.Clean(m.dir), cause,
 		MigrationDownMissingNotification{})
 }
 

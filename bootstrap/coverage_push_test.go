@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/ClaudioSchirmer/omnicore/infra/db/read/mongo"
+	"github.com/ClaudioSchirmer/omnicore/infra/db/query"
 )
 
 // TestValidateUpstreamSubscriptions_SurfacesMaterializingSource drives the
@@ -13,10 +13,10 @@ import (
 // subscription declares that collection, so guardMaterializingSource returns
 // an error that validateUpstreamSubscriptions folds into the violation list.
 func TestValidateUpstreamSubscriptions_SurfacesMaterializingSource(t *testing.T) {
-	views := []*mongo.ViewDefinition{
-		mongo.View("orders").Root("orders").
+	views := []*query.ViewDefinition{
+		query.View("orders").Root("orders").
 			Embed("buyer", extEmbed("users", "buyer_id", "Buyer")).
-			Indexes(mongo.Index("buyer_id")). // §8.1 satisfied
+			Indexes(query.Index("buyer_id")). // §8.1 satisfied
 			Version(1),
 	}
 	// No subscriptions → "users" has no materializing source → §8.3.

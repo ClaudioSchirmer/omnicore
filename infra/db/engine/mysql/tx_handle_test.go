@@ -12,7 +12,8 @@ import (
 	"github.com/ClaudioSchirmer/omnicore/application/configuration"
 	"github.com/ClaudioSchirmer/omnicore/application/persistence"
 	"github.com/ClaudioSchirmer/omnicore/domain"
-	"github.com/ClaudioSchirmer/omnicore/infra/db"
+	"github.com/ClaudioSchirmer/omnicore/infra/db/command/write"
+	"github.com/ClaudioSchirmer/omnicore/infra/db/core"
 )
 
 // On an in-TX hook failure the MySQL engine must emit the best-effort
@@ -24,19 +25,19 @@ func TestFireHook_LogsAndPropagatesError(t *testing.T) {
 	cases := []struct {
 		name string
 		slot string
-		fire func(e *Engine, ctx persistence.RequestContext, hook db.WriteHook, hctx db.HookContext) error
+		fire func(e *Engine, ctx persistence.RequestContext, hook core.WriteHook, hctx write.HookContext) error
 	}{
 		{
 			name: "afterBegin",
 			slot: "afterBegin",
-			fire: func(e *Engine, ctx persistence.RequestContext, hook db.WriteHook, hctx db.HookContext) error {
+			fire: func(e *Engine, ctx persistence.RequestContext, hook core.WriteHook, hctx write.HookContext) error {
 				return e.FireAfterBegin(ctx, mysqlTx{}, nil, hook, hctx)
 			},
 		},
 		{
 			name: "beforeCommit",
 			slot: "beforeCommit",
-			fire: func(e *Engine, ctx persistence.RequestContext, hook db.WriteHook, hctx db.HookContext) error {
+			fire: func(e *Engine, ctx persistence.RequestContext, hook core.WriteHook, hctx write.HookContext) error {
 				return e.FireBeforeCommit(ctx, mysqlTx{}, nil, domain.NewID("00000000-0000-0000-0000-000000000001"), hook, hctx)
 			},
 		},
@@ -48,10 +49,10 @@ func TestFireHook_LogsAndPropagatesError(t *testing.T) {
 			e := &Engine{}
 			e.ConfigureAudit(nil, slog.New(slog.NewJSONHandler(&buf, nil)), nil)
 			ctx := configuration.NewAppContextWithRandomID(configuration.LangENG)
-			hctx := db.HookContext{Verb: "Update", EntityType: "User"}
+			hctx := write.HookContext{Verb: "Update", EntityType: "User"}
 			boom := errors.New("hook boom")
 
-			hook := db.WriteHook{
+			hook := core.WriteHook{
 				AfterBegin: func(persistence.RequestContext, domain.Entity, persistence.TxHandle) error {
 					return boom
 				},
@@ -91,12 +92,12 @@ func TestFireHook_NilHookIsSilent(t *testing.T) {
 	e := &Engine{}
 	e.ConfigureAudit(nil, slog.New(slog.NewJSONHandler(&buf, nil)), nil)
 	ctx := configuration.NewAppContextWithRandomID(configuration.LangENG)
-	hctx := db.HookContext{Verb: "Insert", EntityType: "User"}
+	hctx := write.HookContext{Verb: "Insert", EntityType: "User"}
 
-	if err := e.FireAfterBegin(ctx, mysqlTx{}, nil, db.WriteHook{}, hctx); err != nil {
+	if err := e.FireAfterBegin(ctx, mysqlTx{}, nil, core.WriteHook{}, hctx); err != nil {
 		t.Fatalf("nil AfterBegin should be a no-op, got %v", err)
 	}
-	if err := e.FireBeforeCommit(ctx, mysqlTx{}, nil, domain.NewID("x"), db.WriteHook{}, hctx); err != nil {
+	if err := e.FireBeforeCommit(ctx, mysqlTx{}, nil, domain.NewID("x"), core.WriteHook{}, hctx); err != nil {
 		t.Fatalf("nil BeforeCommit should be a no-op, got %v", err)
 	}
 	if buf.Len() != 0 {

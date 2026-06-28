@@ -10,7 +10,7 @@ import (
 	"github.com/ClaudioSchirmer/omnicore/application/configuration"
 	"github.com/ClaudioSchirmer/omnicore/application/persistence"
 	"github.com/ClaudioSchirmer/omnicore/domain"
-	"github.com/ClaudioSchirmer/omnicore/infra/db"
+	"github.com/ClaudioSchirmer/omnicore/infra/db/core"
 	"github.com/ClaudioSchirmer/omnicore/infra/tracing"
 
 	"github.com/google/uuid"
@@ -45,7 +45,7 @@ type dispatchOpts struct {
 //
 // TxHandle is a sealed marker (see application/persistence/tx.go); the
 // framework infra layer is the only code path that unwraps it back to a
-// live db.Tx (the canonical backend-neutral seam; pgx.Tx only via the PG-only
+// live core.Tx (the canonical backend-neutral seam; pgx.Tx only via the PG-only
 // escape hatch). Application code cannot pronounce SQL through the handle.
 func WithTx(tx persistence.TxHandle) DispatchOption {
 	return func(o *dispatchOpts) { o.tx = tx }
@@ -234,7 +234,7 @@ var integrationEventCols = []string{
 // CHAR(36) on MySQL and uuid on Postgres; binding the uuid TEXT form works on
 // both (Postgres parses the text into its uuid type, MySQL stores it as the CHAR), so the args stay
 // dialect-neutral and no per-arg encoding is needed.
-func insertIntegrationEventSQL(d db.Dialect) string {
+func insertIntegrationEventSQL(d core.Dialect) string {
 	ph := make([]string, len(integrationEventCols))
 	for i := range integrationEventCols {
 		ph[i] = d.Placeholder(i + 1)
@@ -271,7 +271,7 @@ func writeIntegrationEvent(
 	}
 
 	if tx != nil {
-		ntx := db.UnwrapTx(tx)
+		ntx := core.UnwrapTx(tx)
 		return ntx.Exec(ctx, insertIntegrationEventSQL(ntx.Dialect()), args...)
 	}
 

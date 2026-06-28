@@ -4,8 +4,9 @@ import (
 	"context"
 	"testing"
 
-	"github.com/ClaudioSchirmer/omnicore/infra/criteria"
-	"github.com/ClaudioSchirmer/omnicore/infra/db"
+	"github.com/ClaudioSchirmer/omnicore/infra/db/criteria"
+	"github.com/ClaudioSchirmer/omnicore/infra/db/command/read"
+	"github.com/ClaudioSchirmer/omnicore/infra/db/core"
 )
 
 // These tests cover the loader's criteria-compile error branches of findRoots,
@@ -13,8 +14,8 @@ import (
 // Postgres). The pure tailClause/quoteIdentifiers helpers are db-internal and
 // tested from the db package.
 
-func loaderSchema() *db.TableSchema {
-	return db.NewTableSchema[*aggLoaderTestEntity]("agg_loader").
+func loaderSchema() *core.TableSchema {
+	return core.NewTableSchema[*aggLoaderTestEntity]("agg_loader").
 		PK("id").
 		SoftDelete("deleted_at")
 }
@@ -23,7 +24,7 @@ func loaderSchema() *db.TableSchema {
 // the WHERE predicate makes compileWhere fail, so FindOne/FindAll surface the
 // error without dialing — covering the loader's compile-error branch.
 func TestFindOne_CriteriaCompileError(t *testing.T) {
-	l := db.NewAggregateLoader[*aggLoaderTestEntity](newFakePostgres(newFakePool()), newAggLoaderTestEntity).
+	l := read.NewAggregateLoader[*aggLoaderTestEntity](newFakePostgres(newFakePool()), newAggLoaderTestEntity).
 		WithSchema(loaderSchema())
 	q := criteria.Where(criteria.Eq("NoSuchField", "x"))
 	if _, err := l.FindOne(context.Background(), q); err == nil {
@@ -32,7 +33,7 @@ func TestFindOne_CriteriaCompileError(t *testing.T) {
 }
 
 func TestFindAll_CriteriaCompileError(t *testing.T) {
-	l := db.NewAggregateLoader[*aggLoaderTestEntity](newFakePostgres(newFakePool()), newAggLoaderTestEntity).
+	l := read.NewAggregateLoader[*aggLoaderTestEntity](newFakePostgres(newFakePool()), newAggLoaderTestEntity).
 		WithSchema(loaderSchema())
 	q := criteria.Where(criteria.Eq("NoSuchField", "x"))
 	if _, err := l.FindAll(context.Background(), q); err == nil {
@@ -41,7 +42,7 @@ func TestFindAll_CriteriaCompileError(t *testing.T) {
 }
 
 func TestFindAll_OrderCompileError(t *testing.T) {
-	l := db.NewAggregateLoader[*aggLoaderTestEntity](newFakePostgres(newFakePool()), newAggLoaderTestEntity).
+	l := read.NewAggregateLoader[*aggLoaderTestEntity](newFakePostgres(newFakePool()), newAggLoaderTestEntity).
 		WithSchema(loaderSchema())
 	q := criteria.Where(nil).OrderBy("NoSuchField")
 	if _, err := l.FindAll(context.Background(), q); err == nil {

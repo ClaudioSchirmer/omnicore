@@ -6,7 +6,7 @@ import (
 
 	"github.com/ClaudioSchirmer/omnicore/application/persistence"
 	"github.com/ClaudioSchirmer/omnicore/domain"
-	"github.com/ClaudioSchirmer/omnicore/infra/db"
+	"github.com/ClaudioSchirmer/omnicore/infra/db/core"
 )
 
 // capturingPublisher is a fake events.Publisher recording every PublishAll
@@ -44,7 +44,7 @@ func (e *eventEmittingEntity) BuildRules(_ string, _ domain.Service, _ *domain.R
 	e.RegisterEvent(domain.DomainEvent{Type: domain.EventLog, Class: "EventEmitting", Msg: "created"})
 }
 
-var eventEmittingSchema = db.NewTableSchema[*eventEmittingEntity]("event_entities").
+var eventEmittingSchema = core.NewTableSchema[*eventEmittingEntity]("event_entities").
 	PK("id").
 	Field("Name", "name").
 	SoftDelete("deleted_at").
@@ -100,7 +100,7 @@ func TestPostgres_Insert_PublishesDomainEvents(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetInsertable: %v", err)
 	}
-	if _, err := pg.Insert(newBuilderCtx(), ins, eventEmittingSchema, db.WriteHook{}); err != nil {
+	if _, err := pg.Insert(newBuilderCtx(), ins, eventEmittingSchema, core.WriteHook{}); err != nil {
 		t.Fatalf("Insert: %v", err)
 	}
 	if !pool.tx.committed {
@@ -121,7 +121,7 @@ func TestPostgres_Insert_NoPublisher_NoPanic(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetInsertable: %v", err)
 	}
-	if _, err := pg.Insert(newBuilderCtx(), ins, eventEmittingSchema, db.WriteHook{}); err != nil {
+	if _, err := pg.Insert(newBuilderCtx(), ins, eventEmittingSchema, core.WriteHook{}); err != nil {
 		t.Fatalf("Insert: %v", err)
 	}
 }

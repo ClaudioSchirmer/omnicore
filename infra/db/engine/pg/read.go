@@ -6,15 +6,15 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/ClaudioSchirmer/omnicore/infra/db"
+	"github.com/ClaudioSchirmer/omnicore/infra/db/core"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 )
 
-// Postgres implementation of the read seam (read.go): db.Querier wraps the pgx
-// pool; db.Dialect renders the pgx flavor ($n placeholders, bare identifiers, uuid
-// args as text). The criteria translator + db.AggregateLoader consume only the
+// Postgres implementation of the read seam (read.go): core.Querier wraps the pgx
+// pool; core.Dialect renders the pgx flavor ($n placeholders, bare identifiers, uuid
+// args as text). The criteria translator + read.AggregateLoader consume only the
 // neutral interfaces; this file is the single place pgx leaks into the read path.
 
 // pgRows adapts pgx.Rows to infra.Rows. The only mismatch is Close: pgx.Rows.Close
@@ -27,7 +27,7 @@ func (r pgRows) Close() error { r.Rows.Close(); return nil }
 // pgQuerier adapts a pgExec (the pool) to infra.Querier.
 type pgQuerier struct{ e pgExec }
 
-func (q pgQuerier) Query(ctx context.Context, sql string, args ...any) (db.Rows, error) {
+func (q pgQuerier) Query(ctx context.Context, sql string, args ...any) (core.Rows, error) {
 	rows, err := q.e.Query(ctx, sql, args...)
 	if err != nil {
 		return nil, err
@@ -35,7 +35,7 @@ func (q pgQuerier) Query(ctx context.Context, sql string, args ...any) (db.Rows,
 	return pgRows{rows}, nil
 }
 
-func (q pgQuerier) QueryRow(ctx context.Context, sql string, args ...any) db.Row {
+func (q pgQuerier) QueryRow(ctx context.Context, sql string, args ...any) core.Row {
 	return q.e.QueryRow(ctx, sql, args...) // pgx.Row satisfies infra.Row
 }
 
@@ -92,10 +92,10 @@ func normalizeSQLValue(v any) any {
 }
 
 // Querier exposes the pool through the neutral read surface.
-func (p *Postgres) Querier() db.Querier { return pgQuerier{e: p.querier()} }
+func (p *Postgres) Querier() core.Querier { return pgQuerier{e: p.querier()} }
 
 // Dialect returns the Postgres statement flavor.
-func (p *Postgres) Dialect() db.Dialect { return pgDialect{} }
+func (p *Postgres) Dialect() core.Dialect { return pgDialect{} }
 
 // pgDialect renders Postgres SQL: $n placeholders, bare (validated) identifiers,
 // uuid args as text, and a native ILIKE.
@@ -119,8 +119,8 @@ func (pgDialect) IsUniqueViolation(err error) (string, bool) {
 
 // BuildUpsert renders the Postgres upsert: `INSERT … VALUES … ON CONFLICT
 // (conflictCols) DO UPDATE SET …` (or `DO NOTHING` when sets is empty). The
-// proposed value for an db.UpsertSetNew assignment is `EXCLUDED.col`.
-func (d pgDialect) BuildUpsert(table string, cols, conflictCols []string, sets []db.UpsertSet) string {
+// proposed value for an core.UpsertSetNew assignment is `EXCLUDED.col`.
+func (d pgDialect) BuildUpsert(table string, cols, conflictCols []string, sets []core.UpsertSet) string {
 	var b strings.Builder
 	writeInsertHead(&b, d, table, cols)
 	b.WriteString(" ON CONFLICT (")
@@ -142,7 +142,7 @@ func (d pgDialect) BuildUpsert(table string, cols, conflictCols []string, sets [
 		}
 		b.WriteString(d.QuoteIdent(s.Col))
 		b.WriteString(" = ")
-		if s.Mode == db.UpsertSetNew {
+		if s.Mode == core.UpsertSetNew {
 			b.WriteString("EXCLUDED.")
 			b.WriteString(d.QuoteIdent(s.Col))
 		} else {
@@ -156,7 +156,7 @@ func (d pgDialect) BuildUpsert(table string, cols, conflictCols []string, sets [
 // prefix shared by every upsert (the placeholders come from the dialect, so it
 // reads `$n` on PG and `?` on MySQL). Exported-package-local — the MySQL engine
 // builds its own head in its own package (the mirror stays self-contained).
-func writeInsertHead(b *strings.Builder, d db.Dialect, table string, cols []string) {
+func writeInsertHead(b *strings.Builder, d core.Dialect, table string, cols []string) {
 	b.WriteString("INSERT INTO ")
 	b.WriteString(d.QuoteIdent(table))
 	b.WriteString(" (")

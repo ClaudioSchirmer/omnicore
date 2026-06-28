@@ -24,7 +24,7 @@ import (
 	"strings"
 
 	"github.com/ClaudioSchirmer/omnicore/bootstrap"
-	"github.com/ClaudioSchirmer/omnicore/infra/db"
+	"github.com/ClaudioSchirmer/omnicore/infra/db/core"
 )
 
 // Run is the subcommand entry point invoked by cmd/omnicore-admin/main.go.
@@ -70,7 +70,7 @@ func Run(ctx context.Context, args []string) error {
 	// so the replay runs against whatever backend the service is configured for
 	// (database.dialect). A MySQL deployment needs the admin binary built with the
 	// engine's build tag (-tags mysql); NewEngine returns a clear error otherwise.
-	engine, err := db.NewEngine(cfg.Database.Dialect, ctx, cfg.Postgres.DSN, false)
+	engine, err := core.NewEngine(cfg.Database.Dialect, ctx, cfg.Postgres.DSN, false)
 	if err != nil {
 		return fmt.Errorf("replay-all-as-events: connect: %w", err)
 	}
@@ -99,8 +99,8 @@ type executeOptions struct {
 // (Querier + Dialect), so it runs identically on Postgres and MySQL. Extracted
 // from Run, and narrowed to the two seam interfaces it actually uses, so tests
 // can drive it with a fake without touching env / config.
-func execute(ctx context.Context, q db.Querier, dialect db.Dialect, opt executeOptions) error {
-	if !db.SafeIdentifier(opt.Aggregate) {
+func execute(ctx context.Context, q core.Querier, dialect core.Dialect, opt executeOptions) error {
+	if !core.SafeIdentifier(opt.Aggregate) {
 		return fmt.Errorf("replay-all-as-events: aggregate %q is not a valid SQL identifier", opt.Aggregate)
 	}
 	table := dialect.QuoteIdent(opt.Aggregate)
@@ -182,7 +182,7 @@ func buildWhere(includeArchived bool, filter string) string {
 // and the payload binds as JSON with no PG-specific ::jsonb cast; aggregate_id is
 // the row's uuid in text form, accepted by both the PG UUID and MySQL CHAR(36)
 // columns. The column list mirrors each engine's own writeOutbox.
-func insertOutboxRow(ctx context.Context, q db.Querier, dialect db.Dialect, aggregate, id string, payload []byte) error {
+func insertOutboxRow(ctx context.Context, q core.Querier, dialect core.Dialect, aggregate, id string, payload []byte) error {
 	sqlStr := fmt.Sprintf(
 		"INSERT INTO outbox (aggregate_type, event_type, aggregate_id, payload, created_at) VALUES (%s, %s, %s, %s, NOW())",
 		dialect.Placeholder(1), dialect.Placeholder(2), dialect.Placeholder(3), dialect.Placeholder(4),

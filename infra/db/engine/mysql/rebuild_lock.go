@@ -9,12 +9,12 @@ import (
 	"hash/fnv"
 	"strconv"
 
-	"github.com/ClaudioSchirmer/omnicore/infra/db"
+	"github.com/ClaudioSchirmer/omnicore/infra/db/core"
 )
 
-// AcquireRebuildLock implements db.RelationalEngine for MySQL: it pins a pool
+// AcquireRebuildLock implements core.RelationalEngine for MySQL: it pins a pool
 // connection (*sql.Conn = one session), takes the named user-level lock via
-// GET_LOCK(name, 0), and wraps both in a db.RebuildLock. GET_LOCK is
+// GET_LOCK(name, 0), and wraps both in a core.RebuildLock. GET_LOCK is
 // session-scoped and auto-releases when the session ends — the database/sql twin
 // of Postgres' connection-bound pg_advisory_lock. Holding the pinned conn for the
 // lock's lifetime is what keeps RELEASE_LOCK (and the auto-release on disconnect)
@@ -24,7 +24,7 @@ import (
 // acquisition, 0 when another session holds it, NULL on an error during
 // acquisition. MySQL 8 (the supported floor) allows multiple named locks per
 // session, so one rebuilder taking several view locks across its run is fine.
-func (e *Engine) AcquireRebuildLock(ctx context.Context, viewName string) (db.RebuildLock, error) {
+func (e *Engine) AcquireRebuildLock(ctx context.Context, viewName string) (core.RebuildLock, error) {
 	conn, err := e.db.Conn(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("acquire mysql connection for rebuild lock on %q: %w", viewName, err)
@@ -46,7 +46,7 @@ func (e *Engine) AcquireRebuildLock(ctx context.Context, viewName string) (db.Re
 	return lock, nil
 }
 
-// mysqlRebuildLock is the MySQL db.RebuildLock: a pinned *sql.Conn holding the
+// mysqlRebuildLock is the MySQL core.RebuildLock: a pinned *sql.Conn holding the
 // named user-level lock plus the pinned-session Querier.
 type mysqlRebuildLock struct {
 	conn     *sql.Conn
@@ -62,7 +62,7 @@ func (l *mysqlRebuildLock) Holder() string { return l.holder }
 
 // Querier exposes the pinned connection through the neutral surface so
 // BeginRebuild/EndRebuild run on the very session that owns the lock.
-func (l *mysqlRebuildLock) Querier() db.Querier { return mysqlQuerier{exec: l.conn} }
+func (l *mysqlRebuildLock) Querier() core.Querier { return mysqlQuerier{exec: l.conn} }
 
 // Release runs RELEASE_LOCK (when this caller held it) and returns the connection
 // to the pool. Closing the *sql.Conn auto-releases the lock as the backstop; the

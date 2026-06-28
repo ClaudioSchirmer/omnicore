@@ -1,6 +1,6 @@
 //go:build mysql
 
-// Package mysql is the MySQL implementation of db.RelationalEngine. It ships
+// Package mysql is the MySQL implementation of core.RelationalEngine. It ships
 // behind the `mysql` build tag so a Postgres-only build never compiles it nor
 // links the go-sql-driver. The composition root selects it via
 // database.dialect: mysql; the engine self-registers in init() below.
@@ -9,8 +9,8 @@
 // backend-neutral persistence orchestration — the write path (flat + aggregate:
 // Insert/Update/Archive/Unarchive/Delete + Batch, the child state machine, the
 // cascade, the outbox/audit rows, and the A/D lifecycle hooks) and the audit/
-// event wiring — lives once in infra/db on the embedded db.BaseEngine and runs
-// against the neutral db.WriteTx this engine opens via Begin. What stays here is
+// event wiring — lives once in infra/db on the embedded write.BaseEngine and runs
+// against the neutral core.WriteTx this engine opens via Begin. What stays here is
 // genuinely dialect-bound: the *sql.DB pool + DSN flags + registration (this
 // file), the mysqlDialect (placeholders, backtick quoting, UUID⇄BINARY(16)
 // codec, errno 1062 classification, ILIKE, upsert) and the neutral cursor in
@@ -29,7 +29,7 @@
 //
 // Per-statement OpenTelemetry tracing is wired through otelsql when tracing is
 // enabled (see New). Manual loader scanners run on this engine too: they receive
-// the backend-neutral db.Row/db.Rows.
+// the backend-neutral core.Row/core.Rows.
 package mysql
 
 import (
@@ -44,36 +44,37 @@ import (
 	semconv "go.opentelemetry.io/otel/semconv/v1.26.0"
 
 	"github.com/ClaudioSchirmer/omnicore/infra/audit"
-	"github.com/ClaudioSchirmer/omnicore/infra/db"
+	"github.com/ClaudioSchirmer/omnicore/infra/db/command/write"
+	"github.com/ClaudioSchirmer/omnicore/infra/db/core"
 	"github.com/ClaudioSchirmer/omnicore/infra/events"
 )
 
 // init registers the MySQL engine under the "mysql" dialect, database/sql-style.
 // Because this file is behind the `mysql` build tag, a Postgres-only build never
-// runs it — the dialect is simply absent and db.NewEngine("mysql", …) returns
+// runs it — the dialect is simply absent and core.NewEngine("mysql", …) returns
 // the "no engine registered (build with the engine's build tag?)" error. A
 // consumer enabling MySQL blank-imports this package (or builds with -tags mysql)
 // so the init lands the factory before bootstrap looks it up.
 func init() {
-	db.RegisterEngine("mysql", New)
+	core.RegisterEngine("mysql", New)
 }
 
 // Engine is the MySQL RelationalEngine. It holds a *sql.DB pool; construction is
 // lazy on the connection (Ping verifies reachability at New, like the PG path).
 // The cross-engine write-path state + orchestration (audit row, post-commit
 // echo/publish, lifecycle-hook dispatch, every write verb) live on the embedded
-// db.BaseEngine — configured once at boot via WithAudit/WithEventPublisher;
+// write.BaseEngine — configured once at boot via WithAudit/WithEventPublisher;
 // zero values disable audit/publishing. This type supplies only the *sql.DB and
 // the dialect bits.
 type Engine struct {
-	db.BaseEngine
+	write.BaseEngine
 	db *sql.DB
 }
 
 // Compile-time proof the engine satisfies the framework port and the neutral
 // write-TX beginner.
-var _ db.RelationalEngine = (*Engine)(nil)
-var _ db.WriteBeginner = (*Engine)(nil)
+var _ core.RelationalEngine = (*Engine)(nil)
+var _ core.WriteBeginner = (*Engine)(nil)
 
 // sqlExecutor is the minimal database/sql execution surface the querier (read.go)
 // runs statements through — the MySQL twin of pg's pgExec. Both *sql.DB (the
@@ -91,7 +92,7 @@ type sqlExecutor interface {
 // path's otelpgx — so every statement emits a span under the global tracer
 // provider bootstrap installed (db.system=mysql on each span). When off, a plain
 // sql.Open keeps the pool untraced and pays nothing.
-func New(ctx context.Context, dsn string, tracing bool) (db.RelationalEngine, error) {
+func New(ctx context.Context, dsn string, tracing bool) (core.RelationalEngine, error) {
 	dsn, err := EnsureDSNParams(dsn)
 	if err != nil {
 		return nil, err
@@ -121,10 +122,10 @@ func (e *Engine) Close() {
 }
 
 // Begin opens a framework-owned write TX and returns it as the backend-neutral
-// db.WriteTx — the MySQL side of db.WriteBeginner. The neutral write
+// core.WriteTx — the MySQL side of core.WriteBeginner. The neutral write
 // orchestration (flat + aggregate verbs, outbox, audit, hooks) runs against this
 // surface; the concrete *sql.Tx stays private behind mysqlTx.
-func (e *Engine) Begin(ctx context.Context) (db.WriteTx, error) {
+func (e *Engine) Begin(ctx context.Context) (core.WriteTx, error) {
 	tx, err := e.db.BeginTx(ctx, nil)
 	if err != nil {
 		return nil, err
@@ -137,7 +138,7 @@ func (e *Engine) Begin(ctx context.Context) (db.WriteTx, error) {
 // BaseEngine. nil cfg disables audit; nil logger falls back to slog.Default() in
 // the echo path. Returns the engine as the neutral RelationalEngine so the
 // composition root wires it without a dialect branch — the mirror of pg.WithAudit.
-func (e *Engine) WithAudit(cfg *audit.Config, logger *slog.Logger, auditClaims []string) db.RelationalEngine {
+func (e *Engine) WithAudit(cfg *audit.Config, logger *slog.Logger, auditClaims []string) core.RelationalEngine {
 	e.ConfigureAudit(cfg, logger, auditClaims)
 	return e
 }
@@ -145,7 +146,7 @@ func (e *Engine) WithAudit(cfg *audit.Config, logger *slog.Logger, auditClaims [
 // WithEventPublisher wires the transport for domain events accumulated via
 // entity.RegisterEvent (delegating to the embedded BaseEngine). A nil publisher
 // (the default) disables publishing.
-func (e *Engine) WithEventPublisher(pub events.Publisher) db.RelationalEngine {
+func (e *Engine) WithEventPublisher(pub events.Publisher) core.RelationalEngine {
 	e.SetPublisher(pub)
 	return e
 }
@@ -156,7 +157,7 @@ func (e *Engine) WithEventPublisher(pub events.Publisher) db.RelationalEngine {
 // programming error in the schema, surfaced loudly. Consumed by mysqlDialect
 // (read.go) so the shared SQL builders render MySQL-flavored identifiers.
 func quoteIdent(name string) string {
-	if !db.SafeIdentifier(name) {
+	if !core.SafeIdentifier(name) {
 		panic(fmt.Sprintf("mysql: invalid SQL identifier %q", name))
 	}
 	return "`" + name + "`"

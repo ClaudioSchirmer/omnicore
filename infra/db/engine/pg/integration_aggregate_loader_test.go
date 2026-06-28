@@ -8,11 +8,12 @@ import (
 	"testing"
 
 	"github.com/ClaudioSchirmer/omnicore/domain"
-	"github.com/ClaudioSchirmer/omnicore/infra/criteria"
-	"github.com/ClaudioSchirmer/omnicore/infra/db"
+	"github.com/ClaudioSchirmer/omnicore/infra/db/criteria"
+	"github.com/ClaudioSchirmer/omnicore/infra/db/command/read"
+	"github.com/ClaudioSchirmer/omnicore/infra/db/core"
 )
 
-// loaderRoot is a root entity used by db.AggregateLoader integration tests.
+// loaderRoot is a root entity used by read.AggregateLoader integration tests.
 // It declares two child types (loaderTagVO + loaderNoteVO) so the multi-child
 // path is exercised.
 type loaderRoot struct {
@@ -74,8 +75,8 @@ func createLoaderTables(t *testing.T, pg *Postgres) {
 
 // loaderRootSchema declares the loaderRoot aggregate with both children
 // (loaderTagVO + loaderNoteVO) — the explicit map the loader resolves from.
-func loaderRootSchema() *db.TableSchema {
-	return db.NewTableSchema[*loaderRoot]("loader_roots").
+func loaderRootSchema() *core.TableSchema {
+	return core.NewTableSchema[*loaderRoot]("loader_roots").
 		PK("id").
 		Field("Name", "name").
 		Field("Email", "email").
@@ -83,7 +84,7 @@ func loaderRootSchema() *db.TableSchema {
 		CreatedAt("created_at").
 		UpdatedAt("updated_at").
 		Child(loaderTagSchema()).
-		Child(db.NewTableSchema[loaderNoteVO]("loader_note_vos").
+		Child(core.NewTableSchema[loaderNoteVO]("loader_note_vos").
 			PK("id").
 			FK("loader_root_id").
 			Field("Body", "body").
@@ -94,8 +95,8 @@ func loaderRootSchema() *db.TableSchema {
 
 // loaderRootSchemaTagsOnly declares the loaderRoot aggregate with only the
 // loaderTagVO child — for tests that exercise a single child type.
-func loaderRootSchemaTagsOnly() *db.TableSchema {
-	return db.NewTableSchema[*loaderRoot]("loader_roots").
+func loaderRootSchemaTagsOnly() *core.TableSchema {
+	return core.NewTableSchema[*loaderRoot]("loader_roots").
 		PK("id").
 		Field("Name", "name").
 		Field("Email", "email").
@@ -107,8 +108,8 @@ func loaderRootSchemaTagsOnly() *db.TableSchema {
 
 // loaderRootSchemaFlat declares the loaderRoot aggregate with no children —
 // the root-only path.
-func loaderRootSchemaFlat() *db.TableSchema {
-	return db.NewTableSchema[*loaderRoot]("loader_roots").
+func loaderRootSchemaFlat() *core.TableSchema {
+	return core.NewTableSchema[*loaderRoot]("loader_roots").
 		PK("id").
 		Field("Name", "name").
 		Field("Email", "email").
@@ -117,8 +118,8 @@ func loaderRootSchemaFlat() *db.TableSchema {
 		UpdatedAt("updated_at")
 }
 
-func loaderTagSchema() *db.TableSchema {
-	return db.NewTableSchema[loaderTagVO]("loader_tag_vos").
+func loaderTagSchema() *core.TableSchema {
+	return core.NewTableSchema[loaderTagVO]("loader_tag_vos").
 		PK("id").
 		FK("loader_root_id").
 		Field("Label", "label").
@@ -143,7 +144,7 @@ func TestAggregateLoader_Load_AutoScanRootAndChildren(t *testing.T) {
 	pg.Pool().Exec(context.Background(),
 		`INSERT INTO loader_note_vos (loader_root_id, body) VALUES ($1, 'note-a')`, rootID)
 
-	loader := db.NewAggregateLoader[*loaderRoot](pg, func() *loaderRoot { return &loaderRoot{} }).
+	loader := read.NewAggregateLoader[*loaderRoot](pg, func() *loaderRoot { return &loaderRoot{} }).
 		WithSchema(loaderRootSchema())
 
 	root, err := loader.FindOne(context.Background(), criteria.ByID(rootID))
@@ -168,7 +169,7 @@ func TestAggregateLoader_Load_NotFoundProducesNotFoundError(t *testing.T) {
 	defer cleanup()
 	createLoaderTables(t, pg)
 
-	loader := db.NewAggregateLoader[*loaderRoot](pg, func() *loaderRoot { return &loaderRoot{} }).
+	loader := read.NewAggregateLoader[*loaderRoot](pg, func() *loaderRoot { return &loaderRoot{} }).
 		WithSchema(loaderRootSchemaTagsOnly())
 	_, err := loader.FindOne(context.Background(), criteria.ByID("00000000-0000-0000-0000-000000000000"))
 	if err == nil {
@@ -194,7 +195,7 @@ func TestAggregateLoader_LoadIncludingArchived(t *testing.T) {
 	pg.Pool().Exec(context.Background(),
 		`INSERT INTO loader_tag_vos (loader_root_id, label) VALUES ($1, 't')`, id)
 
-	loader := db.NewAggregateLoader[*loaderRoot](pg, func() *loaderRoot { return &loaderRoot{} }).
+	loader := read.NewAggregateLoader[*loaderRoot](pg, func() *loaderRoot { return &loaderRoot{} }).
 		WithSchema(loaderRootSchemaTagsOnly())
 
 	// Load (active-only) fails.
@@ -220,7 +221,7 @@ func TestAggregateLoader_LoadIncludingArchived_ActiveRootSurfacesAsNotFound(t *t
 	pg.Pool().QueryRow(context.Background(),
 		`INSERT INTO loader_roots (name, email) VALUES ('Alive', 'l@x') RETURNING id`).Scan(&id)
 
-	loader := db.NewAggregateLoader[*loaderRoot](pg, func() *loaderRoot { return &loaderRoot{} }).
+	loader := read.NewAggregateLoader[*loaderRoot](pg, func() *loaderRoot { return &loaderRoot{} }).
 		WithSchema(loaderRootSchemaFlat())
 	if _, err := loader.FindOne(context.Background(), criteria.ByID(id).OnlyArchived()); err == nil {
 		t.Error("expected LoadIncludingArchived to fail on an ACTIVE root (literal 'find archived')")
@@ -238,9 +239,9 @@ func TestAggregateLoader_Load_WithManualRootScanner(t *testing.T) {
 	pg.Pool().QueryRow(context.Background(),
 		`INSERT INTO loader_roots (name, email) VALUES ('M', 'm@x') RETURNING id`).Scan(&id)
 
-	loader := db.NewAggregateLoader[*loaderRoot](pg, func() *loaderRoot { return &loaderRoot{} }).
+	loader := read.NewAggregateLoader[*loaderRoot](pg, func() *loaderRoot { return &loaderRoot{} }).
 		WithSchema(loaderRootSchemaFlat()).
-		WithRootScanner(func(row db.Row) (*loaderRoot, error) {
+		WithRootScanner(func(row core.Row) (*loaderRoot, error) {
 			r := &loaderRoot{}
 			// SELECT * returns: id, name, email, deleted_at, created_at, updated_at.
 			// On the criteria path a manual scanner MUST populate the id (the
@@ -270,9 +271,9 @@ func TestAggregateLoader_Load_ManualRootScannerNotFound(t *testing.T) {
 	defer cleanup()
 	createLoaderTables(t, pg)
 
-	loader := db.NewAggregateLoader[*loaderRoot](pg, func() *loaderRoot { return &loaderRoot{} }).
+	loader := read.NewAggregateLoader[*loaderRoot](pg, func() *loaderRoot { return &loaderRoot{} }).
 		WithSchema(loaderRootSchemaFlat()).
-		WithRootScanner(func(row db.Row) (*loaderRoot, error) {
+		WithRootScanner(func(row core.Row) (*loaderRoot, error) {
 			r := &loaderRoot{}
 			var sink any
 			var name, email string
@@ -302,9 +303,9 @@ func TestAggregateLoader_Load_WithManualChildScanner(t *testing.T) {
 	pg.Pool().Exec(context.Background(),
 		`INSERT INTO loader_tag_vos (loader_root_id, label) VALUES ($1, 'manual')`, id)
 
-	loader := db.NewAggregateLoader[*loaderRoot](pg, func() *loaderRoot { return &loaderRoot{} }).
+	loader := read.NewAggregateLoader[*loaderRoot](pg, func() *loaderRoot { return &loaderRoot{} }).
 		WithSchema(loaderRootSchemaTagsOnly()).
-		WithChildScanner("loaderTagVO", func(rows db.Rows) (domain.AggregateValueObject, error) {
+		WithChildScanner("loaderTagVO", func(rows core.Rows) (domain.AggregateValueObject, error) {
 			var sink any
 			var idval, label string
 			if err := rows.Scan(&idval, &sink, &label, &sink, &sink, &sink); err != nil {
@@ -352,16 +353,16 @@ func TestAggregateLoader_Schema_TableAndFKOverride(t *testing.T) {
 	pg.Pool().Exec(context.Background(),
 		`INSERT INTO tb_tags (owner_id, label) VALUES ($1, 'one')`, id)
 
-	loader := db.NewAggregateLoader[*loaderRoot](pg, func() *loaderRoot { return &loaderRoot{} }).
+	loader := read.NewAggregateLoader[*loaderRoot](pg, func() *loaderRoot { return &loaderRoot{} }).
 		WithContextName("LegacyLoader").
-		WithSchema(db.NewTableSchema[*loaderRoot]("tb_loader_legacy").
+		WithSchema(core.NewTableSchema[*loaderRoot]("tb_loader_legacy").
 			PK("id").
 			Field("Name", "name").
 			Field("Email", "email").
 			SoftDelete("deleted_at").
 			CreatedAt("created_at").
 			UpdatedAt("updated_at").
-			Child(db.NewTableSchema[loaderTagVO]("tb_tags").
+			Child(core.NewTableSchema[loaderTagVO]("tb_tags").
 				PK("id").
 				FK("owner_id").
 				Field("Label", "label").
@@ -394,7 +395,7 @@ func TestAggregateLoader_Load_NoChildRegistered(t *testing.T) {
 		`INSERT INTO loader_roots (name, email) VALUES ('N', 'n@x') RETURNING id`).Scan(&id)
 
 	// Schema declares NO children — root loads, children loop is skipped.
-	loader := db.NewAggregateLoader[*loaderRoot](pg, func() *loaderRoot { return &loaderRoot{} }).
+	loader := read.NewAggregateLoader[*loaderRoot](pg, func() *loaderRoot { return &loaderRoot{} }).
 		WithSchema(loaderRootSchemaFlat())
 	root, err := loader.FindOne(context.Background(), criteria.ByID(id))
 	if err != nil {
@@ -424,8 +425,8 @@ func TestAggregateLoader_Load_AutoScanWithNoFieldsErrors(t *testing.T) {
 		deleted_at TIMESTAMP,
 		created_at TIMESTAMP NOT NULL DEFAULT NOW()
 	)`)
-	loader := db.NewAggregateLoader[*emptyEntity](pg, func() *emptyEntity { return &emptyEntity{} }).
-		WithSchema(db.NewTableSchema[*emptyEntity]("empty_entities").PK("id").SoftDelete("deleted_at").CreatedAt("created_at"))
+	loader := read.NewAggregateLoader[*emptyEntity](pg, func() *emptyEntity { return &emptyEntity{} }).
+		WithSchema(core.NewTableSchema[*emptyEntity]("empty_entities").PK("id").SoftDelete("deleted_at").CreatedAt("created_at"))
 	_, err := loader.FindOne(context.Background(), criteria.ByID("00000000-0000-0000-0000-000000000000"))
 	if err == nil {
 		t.Fatal("expected error from auto-scan with zero columns")
@@ -445,7 +446,7 @@ func TestAggregateLoader_FindOne_ByNonIDField(t *testing.T) {
 	pg.Pool().Exec(context.Background(),
 		`INSERT INTO loader_tag_vos (loader_root_id, label) VALUES ($1, 'one'), ($1, 'two')`, id)
 
-	loader := db.NewAggregateLoader[*loaderRoot](pg, func() *loaderRoot { return &loaderRoot{} }).
+	loader := read.NewAggregateLoader[*loaderRoot](pg, func() *loaderRoot { return &loaderRoot{} }).
 		WithSchema(loaderRootSchemaTagsOnly())
 
 	root, err := loader.FindOne(context.Background(), criteria.Where(criteria.Eq("Email", "bob@x")))
@@ -471,7 +472,7 @@ func TestAggregateLoader_FindOne_MultipleMatchesErrors(t *testing.T) {
 	pg.Pool().Exec(context.Background(),
 		`INSERT INTO loader_roots (name, email) VALUES ('Dup', 'a@x'), ('Dup', 'b@x')`)
 
-	loader := db.NewAggregateLoader[*loaderRoot](pg, func() *loaderRoot { return &loaderRoot{} }).
+	loader := read.NewAggregateLoader[*loaderRoot](pg, func() *loaderRoot { return &loaderRoot{} }).
 		WithSchema(loaderRootSchemaFlat())
 
 	_, err := loader.FindOne(context.Background(), criteria.Where(criteria.Eq("Name", "Dup")))
@@ -494,7 +495,7 @@ func TestAggregateLoader_FindAll_OperatorsOrderLimitAndChildBatch(t *testing.T) 
 			`INSERT INTO loader_tag_vos (loader_root_id, label) VALUES ($1, $2)`, id, name+"-tag")
 	}
 
-	loader := db.NewAggregateLoader[*loaderRoot](pg, func() *loaderRoot { return &loaderRoot{} }).
+	loader := read.NewAggregateLoader[*loaderRoot](pg, func() *loaderRoot { return &loaderRoot{} }).
 		WithSchema(loaderRootSchemaTagsOnly())
 
 	// In + ORDER BY DESC + LIMIT; children must arrive grouped per root.
@@ -522,7 +523,7 @@ func TestAggregateLoader_FindAll_EmptyResultIsNotError(t *testing.T) {
 	defer cleanup()
 	createLoaderTables(t, pg)
 
-	loader := db.NewAggregateLoader[*loaderRoot](pg, func() *loaderRoot { return &loaderRoot{} }).
+	loader := read.NewAggregateLoader[*loaderRoot](pg, func() *loaderRoot { return &loaderRoot{} }).
 		WithSchema(loaderRootSchemaFlat())
 	roots, err := loader.FindAll(context.Background(), criteria.Where(criteria.Eq("Name", "none")))
 	if err != nil {

@@ -7,11 +7,12 @@ import (
 	"testing"
 
 	"github.com/ClaudioSchirmer/omnicore/domain"
-	"github.com/ClaudioSchirmer/omnicore/infra/criteria"
-	"github.com/ClaudioSchirmer/omnicore/infra/db"
+	"github.com/ClaudioSchirmer/omnicore/infra/db/criteria"
+	"github.com/ClaudioSchirmer/omnicore/infra/db/command/read"
+	"github.com/ClaudioSchirmer/omnicore/infra/db/core"
 )
 
-// schemaPerson exercises the db.TableSchema end-to-end: a renamed PK
+// schemaPerson exercises the core.TableSchema end-to-end: a renamed PK
 // (person_pk), renamed domain columns (full_name, mail), a renamed soft-delete
 // column (removed_at), and managed created_at/updated_at columns the framework
 // must stamp (the table declares them NOT NULL with NO default, so a missing
@@ -40,8 +41,8 @@ type schemaTag struct {
 func (v schemaTag) GetID() string                                    { return v.ID }
 func (v schemaTag) BuildRules(string, domain.Service, *domain.Rules) {}
 
-func schemaPersonSchema() *db.TableSchema {
-	return db.NewTableSchema[*schemaPerson]("tb_people").
+func schemaPersonSchema() *core.TableSchema {
+	return core.NewTableSchema[*schemaPerson]("tb_people").
 		PK("person_pk").
 		Field("FullName", "full_name").
 		Field("Email", "mail").
@@ -49,7 +50,7 @@ func schemaPersonSchema() *db.TableSchema {
 		CreatedAt("created_at").
 		UpdatedAt("updated_at").
 		Child(
-			db.NewTableSchema[schemaTag]("tb_tags").
+			core.NewTableSchema[schemaTag]("tb_tags").
 				PK("tag_pk").
 				FK("person_ref").
 				Field("Label", "caption").
@@ -80,8 +81,8 @@ func createSchemaMapTables(t *testing.T, pg *Postgres) {
 	)`)
 }
 
-func newSchemaPersonRepo(pg *Postgres) *db.BaseAggregateRepository[*schemaPerson] {
-	r := db.NewBaseAggregateRepository[*schemaPerson](pg, func() *schemaPerson { return &schemaPerson{} })
+func newSchemaPersonRepo(pg *Postgres) *read.BaseAggregateRepository[*schemaPerson] {
+	r := read.NewBaseAggregateRepository[*schemaPerson](pg, func() *schemaPerson { return &schemaPerson{} })
 	r.WithSchema(schemaPersonSchema())
 	return &r
 }

@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/ClaudioSchirmer/omnicore/infra/db"
+	"github.com/ClaudioSchirmer/omnicore/infra/db/core"
 )
 
 // TestMySQLDialect_BuildUpsert_DoUpdate locks the MySQL upsert shape: a row
@@ -19,9 +19,9 @@ func TestMySQLDialect_BuildUpsert_DoUpdate(t *testing.T) {
 		"omnicore_integration_failures",
 		[]string{"consumer_group", "event_id", "error"},
 		[]string{"consumer_group", "event_id"},
-		[]db.UpsertSet{
-			{Col: "error", Mode: db.UpsertSetNew},
-			{Col: "attempt", Mode: db.UpsertSetExpr, Expr: "attempt + 1"},
+		[]core.UpsertSet{
+			{Col: "error", Mode: core.UpsertSetNew},
+			{Col: "attempt", Mode: core.UpsertSetExpr, Expr: "attempt + 1"},
 		},
 	)
 	for _, want := range []string{

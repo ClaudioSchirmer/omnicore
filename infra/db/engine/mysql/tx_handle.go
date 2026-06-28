@@ -8,7 +8,7 @@ import (
 	"fmt"
 
 	"github.com/ClaudioSchirmer/omnicore/application/persistence"
-	"github.com/ClaudioSchirmer/omnicore/infra/db"
+	"github.com/ClaudioSchirmer/omnicore/infra/db/core"
 )
 
 // mysqlTxHandle is the MySQL implementation of persistence.TxHandle handed to
@@ -35,19 +35,19 @@ func UnwrapMySQLTx(tx persistence.TxHandle) *sql.Tx {
 	return h.tx
 }
 
-// NeutralTx exposes the live *sql.Tx through the backend-neutral db.Tx surface
-// — the MySQL side of the canonical db.UnwrapTx bridge. The exported method
+// NeutralTx exposes the live *sql.Tx through the backend-neutral core.Tx surface
+// — the MySQL side of the canonical core.UnwrapTx bridge. The exported method
 // satisfies infra's neutralTxCarrier across the package boundary.
-func (h *mysqlTxHandle) NeutralTx() db.Tx { return mysqlTx{tx: h.tx} }
+func (h *mysqlTxHandle) NeutralTx() core.Tx { return mysqlTx{tx: h.tx} }
 
-// mysqlTx adapts a live *sql.Tx to db.WriteTx. *sql.Rows / *sql.Row satisfy
-// db.Rows / db.Row directly; ExecCount reads sql.Result.RowsAffected;
+// mysqlTx adapts a live *sql.Tx to core.WriteTx. *sql.Rows / *sql.Row satisfy
+// core.Rows / core.Row directly; ExecCount reads sql.Result.RowsAffected;
 // Commit/Rollback drive the lifecycle (the *sql.Tx methods take no ctx);
 // Handle seals the tx for lifecycle hooks; Dialect is the MySQL flavor.
 type mysqlTx struct{ tx *sql.Tx }
 
 // Compile-time proof mysqlTx satisfies the neutral write surface.
-var _ db.WriteTx = mysqlTx{}
+var _ core.WriteTx = mysqlTx{}
 
 func (t mysqlTx) Exec(ctx context.Context, sqlText string, args ...any) error {
 	_, err := t.tx.ExecContext(ctx, sqlText, args...)
@@ -62,11 +62,11 @@ func (t mysqlTx) ExecCount(ctx context.Context, sqlText string, args ...any) (in
 	return res.RowsAffected()
 }
 
-func (t mysqlTx) Query(ctx context.Context, sqlText string, args ...any) (db.Rows, error) {
+func (t mysqlTx) Query(ctx context.Context, sqlText string, args ...any) (core.Rows, error) {
 	return t.tx.QueryContext(ctx, sqlText, args...)
 }
 
-func (t mysqlTx) QueryRow(ctx context.Context, sqlText string, args ...any) db.Row {
+func (t mysqlTx) QueryRow(ctx context.Context, sqlText string, args ...any) core.Row {
 	return t.tx.QueryRowContext(ctx, sqlText, args...)
 }
 
@@ -74,12 +74,12 @@ func (t mysqlTx) Commit(context.Context) error   { return t.tx.Commit() }
 func (t mysqlTx) Rollback(context.Context) error { return t.tx.Rollback() }
 
 // Handle seals the live tx as a persistence.TxHandle — the same handle the
-// lifecycle hooks receive (and recover via db.UnwrapTx / UnwrapMySQLTx).
+// lifecycle hooks receive (and recover via core.UnwrapTx / UnwrapMySQLTx).
 func (t mysqlTx) Handle() persistence.TxHandle { return newMySQLTxHandle(t.tx) }
 
-func (t mysqlTx) Dialect() db.Dialect { return mysqlDialect{} }
+func (t mysqlTx) Dialect() core.Dialect { return mysqlDialect{} }
 
 // The lifecycle-hook dispatch (positions A/D) + the observability hook-error
-// line live once on the embedded db.BaseEngine (FireAfterBegin/FireBeforeCommit),
-// reached through the neutral db.WriteTx (mysqlTx) — so the MySQL engine no
+// line live once on the embedded write.BaseEngine (FireAfterBegin/FireBeforeCommit),
+// reached through the neutral core.WriteTx (mysqlTx) — so the MySQL engine no
 // longer carries its own copy.

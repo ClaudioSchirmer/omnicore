@@ -16,9 +16,10 @@ import (
 	"github.com/ClaudioSchirmer/omnicore/application/configuration"
 	"github.com/ClaudioSchirmer/omnicore/application/pipeline"
 	"github.com/ClaudioSchirmer/omnicore/application/translation"
-	"github.com/ClaudioSchirmer/omnicore/infra/db/read/mongo"
 	"github.com/ClaudioSchirmer/omnicore/infra/audit"
-	"github.com/ClaudioSchirmer/omnicore/infra/db"
+	"github.com/ClaudioSchirmer/omnicore/infra/db/core"
+	"github.com/ClaudioSchirmer/omnicore/infra/db/query"
+	"github.com/ClaudioSchirmer/omnicore/infra/db/query/engine/mongo"
 	"github.com/ClaudioSchirmer/omnicore/infra/events"
 	"github.com/ClaudioSchirmer/omnicore/infra/httpclient"
 	"github.com/ClaudioSchirmer/omnicore/infra/integration"
@@ -201,7 +202,7 @@ func runWithConfig(cfg *Config, wire func(Deps) Wiring) error {
 	// schema would have no lossless mapping. Embed schemas are guaranteed by
 	// construction (FromSchema is the only source constructor); the root schema
 	// is the one a consumer could forget, so it is enforced here.
-	if err := mongo.ValidateViewSchemas(views); err != nil {
+	if err := query.ValidateViewSchemas(views); err != nil {
 		return err
 	}
 
@@ -222,7 +223,7 @@ func runWithConfig(cfg *Config, wire func(Deps) Wiring) error {
 			return fmt.Errorf("bootstrap: mongo apply specs: %w", err)
 		}
 
-		syncEngine := mongo.NewSyncEngine(deps.DB, deps.Mongo,
+		syncEngine := query.NewSyncEngine(deps.DB, deps.Mongo,
 			cfg.Kafka.Brokers, cfg.Kafka.SyncGroupID, views, cfg.Kafka.SyncWorkers).
 			WithKafkaTracing(cfg.Observability.Tracing.Resolve(cfg.Service).Instruments(tracing.SubKafka))
 
@@ -285,7 +286,7 @@ func buildDeps(cfg *Config) (Deps, error) {
 			"endpoint", tracingCfg.Endpoint)
 	}
 
-	eng, err := db.NewEngine(cfg.Database.Dialect, ctx, cfg.Postgres.DSN,
+	eng, err := core.NewEngine(cfg.Database.Dialect, ctx, cfg.Postgres.DSN,
 		tracingCfg.Instruments(tracing.SubPgx))
 	if err != nil {
 		return Deps{}, fmt.Errorf("bootstrap: database connect: %w", err)
@@ -359,7 +360,7 @@ func buildDeps(cfg *Config) (Deps, error) {
 	// nothing pay only the empty struct cost.
 	//
 	// Configured on the neutral engine: the producer's in-TX path uses the
-	// canonical db.UnwrapTx bridge and the standalone path the engine's
+	// canonical core.UnwrapTx bridge and the standalone path the engine's
 	// Querier, so Dispatch works on any dialect (Postgres or MySQL).
 	integration.Configure(cfg.Integration, eng, logger)
 	integrationRegistry := integration.NewRegistry()

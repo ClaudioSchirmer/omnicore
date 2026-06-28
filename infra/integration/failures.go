@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/ClaudioSchirmer/omnicore/infra/db"
+	"github.com/ClaudioSchirmer/omnicore/infra/db/core"
 	"github.com/google/uuid"
 )
 
@@ -41,7 +41,7 @@ type IntegrationProcessedRecord struct {
 }
 
 // The control-plane SQL is dialect-neutral except for two engine-specific bits,
-// both supplied by db.Dialect: the upsert clause (RecordIntegrationFailure /
+// both supplied by core.Dialect: the upsert clause (RecordIntegrationFailure /
 // MarkProcessed build it via Dialect.BuildUpsert — the structurally divergent
 // statements) and the positional placeholder on the filtered SELECT/UPDATE. The
 // identifiers are framework-controlled and safe bare on both engines, so the
@@ -72,7 +72,7 @@ var (
 // increment attempt + refresh last_attempt_at + overwrite error +
 // reopen resolved_at to NULL — same shape RecordUpstreamFailure draws,
 // for parity in operator tooling.
-func RecordIntegrationFailure(ctx context.Context, q db.Querier, d db.Dialect, rec IntegrationFailureRecord) error {
+func RecordIntegrationFailure(ctx context.Context, q core.Querier, d core.Dialect, rec IntegrationFailureRecord) error {
 	if rec.ConsumerGroup == "" || rec.SourceKey == "" || rec.EventKey == "" {
 		return fmt.Errorf("record integration failure: consumer_group, source_key, event_key are required")
 	}
@@ -83,12 +83,12 @@ func RecordIntegrationFailure(ctx context.Context, q db.Querier, d db.Dialect, r
 	if payload == nil {
 		payload = []byte("{}")
 	}
-	sql := d.BuildUpsert(integrationFailureTable, integrationFailureInsertCols, integrationFailureConflictCols, []db.UpsertSet{
-		{Col: "error", Mode: db.UpsertSetNew},
-		{Col: "payload", Mode: db.UpsertSetNew},
-		{Col: "attempt", Mode: db.UpsertSetExpr, Expr: "attempt + 1"},
-		{Col: "last_attempt_at", Mode: db.UpsertSetExpr, Expr: "NOW()"},
-		{Col: "resolved_at", Mode: db.UpsertSetExpr, Expr: "NULL"},
+	sql := d.BuildUpsert(integrationFailureTable, integrationFailureInsertCols, integrationFailureConflictCols, []core.UpsertSet{
+		{Col: "error", Mode: core.UpsertSetNew},
+		{Col: "payload", Mode: core.UpsertSetNew},
+		{Col: "attempt", Mode: core.UpsertSetExpr, Expr: "attempt + 1"},
+		{Col: "last_attempt_at", Mode: core.UpsertSetExpr, Expr: "NOW()"},
+		{Col: "resolved_at", Mode: core.UpsertSetExpr, Expr: "NULL"},
 	})
 	if err := q.Exec(ctx, sql,
 		rec.ConsumerGroup,
@@ -107,7 +107,7 @@ func RecordIntegrationFailure(ctx context.Context, q db.Querier, d db.Dialect, r
 // natural key as resolved. Called by Receiver.RetryPendingFailures
 // after a successful re-dispatch; idempotent (zero affected rows is
 // not an error).
-func ResolveIntegrationFailures(ctx context.Context, q db.Querier, d db.Dialect, consumerGroup, sourceKey, eventKey string, eventID uuid.UUID) error {
+func ResolveIntegrationFailures(ctx context.Context, q core.Querier, d core.Dialect, consumerGroup, sourceKey, eventKey string, eventID uuid.UUID) error {
 	if consumerGroup == "" || sourceKey == "" || eventKey == "" {
 		return fmt.Errorf("resolve integration failures: consumer_group, source_key, event_key are required")
 	}
@@ -129,7 +129,7 @@ func ResolveIntegrationFailures(ctx context.Context, q db.Querier, d db.Dialect,
 // ListPendingIntegrationFailures returns every row with resolved_at
 // IS NULL ordered by last_attempt_at ASC. Consumed by operator CLIs
 // and by Receiver.RetryPendingFailures.
-func ListPendingIntegrationFailures(ctx context.Context, q db.Querier) ([]IntegrationFailureRecord, error) {
+func ListPendingIntegrationFailures(ctx context.Context, q core.Querier) ([]IntegrationFailureRecord, error) {
 	return scanIntegrationFailures(ctx, q, selectIntegrationFailures+orderIntegrationFailures)
 }
 
@@ -137,7 +137,7 @@ func ListPendingIntegrationFailures(ctx context.Context, q db.Querier) ([]Integr
 // consumer group. Used by Receiver.RetryPendingFailures so each receiver
 // only acts on the events its own group must re-dispatch — multi-group
 // services do not interfere with each other.
-func ListPendingIntegrationFailuresByGroup(ctx context.Context, q db.Querier, d db.Dialect, consumerGroup string) ([]IntegrationFailureRecord, error) {
+func ListPendingIntegrationFailuresByGroup(ctx context.Context, q core.Querier, d core.Dialect, consumerGroup string) ([]IntegrationFailureRecord, error) {
 	if consumerGroup == "" {
 		return nil, fmt.Errorf("list pending integration failures by group: consumer_group required")
 	}
@@ -145,7 +145,7 @@ func ListPendingIntegrationFailuresByGroup(ctx context.Context, q db.Querier, d 
 	return scanIntegrationFailures(ctx, q, sql, consumerGroup)
 }
 
-func scanIntegrationFailures(ctx context.Context, q db.Querier, query string, args ...any) ([]IntegrationFailureRecord, error) {
+func scanIntegrationFailures(ctx context.Context, q core.Querier, query string, args ...any) ([]IntegrationFailureRecord, error) {
 	rows, err := q.Query(ctx, query, args...)
 	if err != nil {
 		return nil, fmt.Errorf("list pending integration failures: %w", err)
@@ -184,7 +184,7 @@ func scanIntegrationFailures(ctx context.Context, q db.Querier, query string, ar
 // NOTHING` clause (sqlInsertIntegrationProcessed). The handler may run
 // twice in that millisecond window — the documented at-least-once
 // contract.
-func IsAlreadyProcessed(ctx context.Context, q db.Querier, d db.Dialect, eventID uuid.UUID, consumerGroup string) (bool, error) {
+func IsAlreadyProcessed(ctx context.Context, q core.Querier, d core.Dialect, eventID uuid.UUID, consumerGroup string) (bool, error) {
 	if eventID == uuid.Nil || consumerGroup == "" {
 		return false, fmt.Errorf("is already processed: event_id and consumer_group are required")
 	}
@@ -211,7 +211,7 @@ func IsAlreadyProcessed(ctx context.Context, q db.Querier, d db.Dialect, eventID
 // CONFLICT DO NOTHING so concurrent processors that raced past the
 // pre-check do not double-fail — the row already exists, and the
 // handler-side at-least-once contract documents the race.
-func MarkProcessed(ctx context.Context, q db.Querier, d db.Dialect, rec IntegrationProcessedRecord) error {
+func MarkProcessed(ctx context.Context, q core.Querier, d core.Dialect, rec IntegrationProcessedRecord) error {
 	if rec.EventID == uuid.Nil || rec.ConsumerGroup == "" {
 		return fmt.Errorf("mark processed: event_id and consumer_group are required")
 	}
