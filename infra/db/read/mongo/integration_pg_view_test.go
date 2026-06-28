@@ -10,7 +10,7 @@ import (
 	"context"
 )
 
-// pg_view_registry: Init / Read / Begin / End / ListNonDone, end-to-end against a
+// view_registry: Init / Read / Begin / End / ListNonDone, end-to-end against a
 // real Postgres through the engine's neutral Querier/Dialect seam. The advisory
 // lock is exercised separately in infra/db/pg (AcquireRebuildLock integration).
 
@@ -142,4 +142,4 @@ func TestListNonDone_PicksUpProcessingViewsOnly(t *testing.T) {
 	}
 }
 
-// FormatRegistryAppliedBy already covered by pg_view_registry_test.go.
+// FormatRegistryAppliedBy already covered by view_registry_test.go.

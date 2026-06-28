@@ -68,7 +68,7 @@ func StartConsumerSpanIf(on bool, ctx context.Context, tracerName, spanName, tra
 // StartConsumerSpan opens a Kafka consumer span named under tracerName, linked
 // (not parented) to the producing trace carried by traceparent — the messaging
 // convention, since producer and consumer are temporally far apart. Returns a
-// child context carrying the span so downstream pg/mongo spans attach to it. A
+// child context carrying the span so downstream db/mongo spans attach to it. A
 // no-op span when tracing is disabled.
 func StartConsumerSpan(ctx context.Context, tracerName, spanName, traceparent string) (context.Context, trace.Span) {
 	opts := []trace.SpanStartOption{trace.WithSpanKind(trace.SpanKindConsumer)}

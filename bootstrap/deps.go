@@ -33,12 +33,14 @@ import (
 // pgx pool for custom SELECTs) recovers it via pg.AsPostgres(d.DB) — a
 // documented PG-only escape hatch.
 // pgEngine recovers the concrete *pg.Postgres from Deps for the framework
-// wiring that still speaks pgx directly — audit partition maintenance, pgx-based
-// migrations, and the Mongo-view rebuild/drift control plane (advisory lock +
-// omnicore_mongo_views registry). These boot steps are gated by isPostgres, so
-// pgEngine is only reached on a Postgres engine; it panics otherwise
-// (composition-root invariant). The composer/sync projection and the integration
-// consumer control plane no longer go through here — they speak the neutral seam.
+// wiring that still speaks pgx directly — audit partition maintenance (the MySQL
+// audit table is not partitioned) and the Postgres branch of the migration
+// runner. It panics on a non-Postgres engine, so every call site is
+// dialect-selected: audit partitions via isPostgres; the migration runner picks
+// NewMySQL vs pgEngine on cfg.Database.Dialect. The composer/sync projection, the
+// Mongo-view rebuild/drift control plane (advisory lock + omnicore_mongo_views
+// registry), and the integration consumer control plane do NOT go through here —
+// they speak the neutral db.RelationalEngine seam and run on any backend.
 func pgEngine(deps Deps) *pg.Postgres { return pg.AsPostgres(deps.DB) }
 
 // dialectPostgres / dialectMySQL are the registered relational-engine dialect
@@ -49,9 +51,10 @@ const (
 )
 
 // isPostgres reports whether the selected relational backend is Postgres — the
-// gate for the boot steps still bound to pgx: audit partition maintenance and the
-// Mongo-view rebuild/drift control plane. A MySQL service boots with those gated
-// off (it serves CRUD + the Mongo projection; rebuild/drift stay Postgres-only).
+// gate for the one boot step that is genuinely PG-only: audit partition
+// maintenance (the MySQL audit table is not partitioned). Everything else,
+// including the Mongo-view rebuild/drift control plane, runs on the neutral
+// db.RelationalEngine seam and is NOT gated here.
 func isPostgres(cfg *Config) bool { return cfg.Database.Dialect == dialectPostgres }
 
 type Deps struct {

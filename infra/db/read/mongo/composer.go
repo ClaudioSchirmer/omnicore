@@ -26,9 +26,9 @@ import (
 //   - Mongo source (FromSchema over a type-less db.NewExternalSchema):
 //     MongoDB.FindManyByField against the local DB.
 //
-// The relational reads go through infra.RelationalEngine (Postgres today) rather
-// than a concrete driver — the composer is backend-neutral. Statement bits ($n
-// vs ?, identifier quoting, the uuid argument encoding) come from the engine's
+// The relational reads go through infra.RelationalEngine (backend-neutral) rather
+// than a concrete driver — the composer works identically on Postgres and MySQL.
+// Statement bits ($n vs ?, identifier quoting, the uuid argument encoding) come from the engine's
 // Dialect; the dynamic row→map read from db.Querier.QueryMaps.
 type Composer struct {
 	eng   db.RelationalEngine

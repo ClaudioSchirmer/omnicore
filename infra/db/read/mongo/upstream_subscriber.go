@@ -233,9 +233,9 @@ func (s *UpstreamSubscriber) Metrics() *upstreamMetrics { return s.metrics }
 //     collapse into one ripple call — ripple already iterates every
 //     dependent view and every local doc.
 //   - Best-effort writes. RecordFailure / ResolveFailures inside ripple
-//     stay slog.Warn-and-discard on PG error, matching the failure
+//     stay slog.Warn-and-discard on a database error, matching the failure
 //     isolation contract.
-//   - Returns the read error from PG only — that is the single failure
+//   - Returns the read error from the relational database only — that is the single failure
 //     mode the caller cannot ignore (no list = nothing to retry).
 func (s *UpstreamSubscriber) RetryPendingFailures(ctx context.Context) (int, error) {
 	if s.eng == nil {

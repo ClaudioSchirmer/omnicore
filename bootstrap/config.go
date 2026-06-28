@@ -93,7 +93,7 @@ type Config struct {
 	HTTP struct {
 		Addr string `yaml:"addr"`
 		// RequestTimeoutSeconds bounds how long a single inbound request may run
-		// before the framework cancels its context. pgx, mongo and outbound
+		// before the framework cancels its context. The relational engine, mongo and outbound
 		// httpclient observe the cancellation and abort, releasing the pool
 		// connection and goroutine instead of letting a slow request hold them;
 		// the request surfaces as 504 Gateway Timeout. nil (unset) → the
@@ -149,7 +149,7 @@ type Config struct {
 	// every successful write. Defaults to both destinations (slog echo +
 	// audit_events row in the same TX as the data row); operators can flip
 	// to one or the other, or set destinations: [] to turn audit off. The
-	// concrete type lives in infra/audit so the Postgres persister can read
+	// concrete type lives in infra/audit so the relational persister can read
 	// it without crossing the dependency boundary back to bootstrap.
 	Audit audit.Config `yaml:"audit"`
 
@@ -339,9 +339,9 @@ func (g *GraphQLConfig) collidesFramework(path string) bool {
 // with the matching §14 diagnostic listing the manual SQL reconcile.
 //
 // Orphan controls what the rebuild does with documents whose source
-// disappeared from Postgres (or, on DeleteOnArchive views, whose source
+// disappeared from the relational source (or, on DeleteOnArchive views, whose source
 // is now archived). "delete" reconciles fully — Mongo becomes a pure
-// function of Postgres after the rebuild. "warn" emits slog.Warn listing
+// function of the relational source after the rebuild. "warn" emits slog.Warn listing
 // the orphan _id set and leaves the documents untouched, deferring the
 // destructive decision to the operator.
 //

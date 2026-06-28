@@ -201,7 +201,7 @@ func newUsage(fs *flag.FlagSet) func() {
 		fs.PrintDefaults()
 		fmt.Fprintln(out)
 		fmt.Fprintln(out, "Configuration is read from microservice.${APP_PROFILE}.yaml (override via OMNICORE_CONFIG_PATH).")
-		fmt.Fprintln(out, "Postgres DSN comes from there — no flag duplicates it.")
+		fmt.Fprintln(out, "Database DSN comes from there — no flag duplicates it.")
 		fmt.Fprintln(out)
 		fmt.Fprintln(out, "Read-only — this CLI does not re-run recompose. For actual retry use")
 		fmt.Fprintln(out, "UpstreamSubscriber.RetryPendingFailures from the service binary (cron or HTTP endpoint).")

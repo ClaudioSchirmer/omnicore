@@ -8,9 +8,10 @@ import (
 	"github.com/ClaudioSchirmer/omnicore/domain"
 )
 
-// ConstraintBinding maps the name of a Postgres constraint (typically a
-// unique index) to the typed notification that must be emitted when that
-// constraint is violated (PG SQLSTATE 23505).
+// ConstraintBinding maps the name of a unique constraint (typically a unique
+// index) to the typed notification that must be emitted when that constraint
+// is violated. The engine's Dialect classifies the backend-specific error
+// uniformly (PG SQLSTATE 23505 / MySQL errno 1062) — see IsUniqueViolation.
 //
 // Field is the domain field name (e.g. "email") — passed to
 // NotificationMessage.FieldName.
@@ -43,8 +44,9 @@ type ConstraintBinding struct {
 // when convention does not fit (custom magic pattern: e.g. "AdminUser" for
 // two Repositories over the same entity).
 //
-// Constraints is optional. Without it (nil/empty), any pgErr 23505 returns
-// the raw error and the caller decides what to do.
+// Constraints is optional. Without it (nil/empty), any unique-constraint
+// violation (classified by the engine's Dialect) returns the raw error and the
+// caller decides what to do.
 type BaseRepository[T any] struct {
 	Engine      RelationalEngine
 	ContextName string
@@ -58,8 +60,8 @@ type BaseRepository[T any] struct {
 	Schema *TableSchema
 }
 
-// Scope binds the request-scoped concerns — the ctx (cancellation → pgx,
-// actor → audit) and the optional in-TX lifecycle hooks carried by the
+// Scope binds the request-scoped concerns — the ctx (cancellation via
+// context.Context, actor → audit) and the optional in-TX lifecycle hooks carried by the
 // WriteOption[T] variadic — and returns a pure domain.Writer ready to
 // persist a ValidEntity. The returned boundWriter closes over the ctx and
 // the resolved hook; its Insert/Update/Archive/Unarchive/Delete take only

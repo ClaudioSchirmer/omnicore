@@ -140,8 +140,8 @@ func covAssign(dst any, src any) error {
 }
 
 // ============================================================================
-// pg_view_registry.go — ReadViewRegistry / InitViewRegistry / BeginRebuild /
-// EndRebuild / ListNonDone (now backend-neutral over db.Querier + db.Dialect)
+// view_registry.go — ReadViewRegistry / InitViewRegistry / BeginRebuild /
+// EndRebuild / ListNonDone (backend-neutral over db.Querier + db.Dialect)
 // ============================================================================
 
 // registryRowValues returns a positional value slice aligned to the 15-column

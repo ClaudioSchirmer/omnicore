@@ -69,7 +69,7 @@ func TestWithAggregateIDSetsFlag(t *testing.T) {
 func TestWithTxStoresHandle(t *testing.T) {
 	o := &dispatchOpts{}
 	// TxHandle is a sealed marker; nil is a valid value and exercises the
-	// option closure without needing a live pgx.Tx.
+	// option closure without needing a live transaction handle.
 	WithTx(nil)(o)
 	if o.tx != nil {
 		t.Fatal("WithTx(nil) should leave tx nil")

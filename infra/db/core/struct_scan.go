@@ -39,7 +39,8 @@ func scanRowIntoStruct(row keyedRow, dst any, columns []string, byCol map[string
 	return row.Scan(targets...)
 }
 
-// keyedRow is satisfied by both pgx.Row and pgx.Rows (Scan(dest ...any) error).
+// keyedRow is satisfied by both the Postgres (pgx.Row/pgx.Rows) and MySQL
+// (*sql.Row/*sql.Rows) driver row types (Scan(dest ...any) error).
 type keyedRow interface {
 	Scan(dest ...any) error
 }

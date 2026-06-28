@@ -23,7 +23,8 @@ type RootScanner[T domain.Entity] func(Row) (T, error)
 // infra.Rows — the scanner reads the current row via Scan).
 type ChildScanner func(Rows) (domain.AggregateValueObject, error)
 
-// AggregateLoader[T] loads an aggregate root + its children from Postgres. The
+// AggregateLoader[T] loads an aggregate root + its children from the configured
+// relational backend. The
 // root and children tables/columns come from the TableSchema attached via
 // WithSchema (the same schema the write side uses) — no convention inference.
 //

@@ -41,7 +41,7 @@ const shutdownTimeout = 10 * time.Second
 //  1. LoadConfig (reads APP_PROFILE env, loads microservice.<profile>.yaml or
 //     $OMNICORE_CONFIG_PATH; rejects auth.mode=disabled outside dev)
 //  2. signal.NotifyContext(SIGINT, SIGTERM)
-//  3. NewPostgres + NewMongoDB (defer Close)
+//  3. NewEngine (dialect-selected relational engine) + NewMongoDB (defer Close)
 //  4. translation.Default + pipeline.New + SlogAuditor + ViewReader
 //  5. wire(deps) → Wiring
 //  6. validateWiring (rejects nothing-to-serve)
@@ -263,8 +263,8 @@ func buildDeps(cfg *Config) (Deps, error) {
 	ctx := context.Background()
 
 	// Tracing is installed first so the logger can be wrapped to stamp
-	// traceId/spanId onto context-carrying records, and so PG/Mongo
-	// constructors (instrumentation wired in later stages) observe the
+	// traceId/spanId onto context-carrying records, and so the relational
+	// engine / Mongo constructors (instrumentation wired in later stages) observe the
 	// installed globals. Inert + free when observability.tracing is off.
 	tracingCfg := cfg.Observability.Tracing.Resolve(cfg.Service)
 	tracingProvider, err := tracing.Setup(ctx, tracingCfg)

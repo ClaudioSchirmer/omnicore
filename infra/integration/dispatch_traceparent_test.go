@@ -14,8 +14,8 @@ import (
 // writeIntegrationEventRow binds nullableString(tracing.TraceparentFromContext(ctx))
 // as the 11th INSERT arg ($11) of sqlInsertIntegrationEvent — the W3C traceparent
 // the Receiver links the consumed event back to. This asserts that producer-side
-// stamping directly (the row builder uses concrete pgx handles, not an injectable
-// seam): a non-NULL string when a span is active, NULL when tracing is off.
+// stamping directly (the row builder uses the neutral db.Tx seam via UnwrapTx, not
+// driver-specific handles): a non-NULL string when a span is active, NULL when tracing is off.
 func TestIntegrationEventTraceparentBinding(t *testing.T) {
 	tp := sdktrace.NewTracerProvider(sdktrace.WithSampler(sdktrace.AlwaysSample()))
 	prevTP := otel.GetTracerProvider()

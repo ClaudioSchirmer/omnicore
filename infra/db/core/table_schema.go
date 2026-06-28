@@ -12,7 +12,7 @@ import (
 // guess: there is no PascalToSnake/PluralizeSnake column inference and no
 // `transient` tag — every persisted field is declared here, Go field on one
 // side, physical column on the other. The same TableSchema is attached to the
-// PG repository (NewBaseAggregateRepository.WithSchema) AND to the read-side
+// repository (NewBaseAggregateRepository.WithSchema) AND to the read-side
 // View (View.Schema), so write, criteria, scan, compose and read all translate
 // from one declaration. Because the map is complete, both directions are
 // lossless by construction — column → Go is a trivial inversion, no acronym
@@ -374,7 +374,7 @@ func (s *TableSchema) columnForRead(goName string) (string, bool) {
 // isExternal reports whether the schema is type-less (built via
 // NewExternalSchema, no Go struct anchor). A view embed's source kind is derived
 // from this: an external schema describes an upstream Mongo collection
-// (FromSchema → isMongo), a type-anchored schema a local PG table.
+// (FromSchema → isMongo), a type-anchored schema a local relational table.
 func (s *TableSchema) isExternal() bool { return s.typ == nil }
 
 // typeName returns the schema's Go type name ("Address"), or "" for a type-less
@@ -442,7 +442,7 @@ func (s *TableSchema) writeFields(e any) domain.Fields {
 // (the MySQL engine under its build tag) builds INSERT/UPDATE statements from a
 // TableSchema; these thin wrappers expose the column → value map and the managed
 // NOW() columns + soft-delete column it needs, without widening the surface the
-// in-package Postgres path consumes (which keeps using the unexported forms).
+// in-package write path consumes (which keeps using the unexported forms).
 
 // WriteFields is the exported form of writeFields — the column → value map an
 // engine binds for INSERT/UPDATE (PK and managed NOW() columns excluded).

@@ -1,13 +1,13 @@
 // Package replay implements the omnicore-admin "replay-all-as-events"
 // subcommand. It reads every active row from a configured aggregate table
-// in A's Postgres and inserts a synthetic INSERTED event into A's outbox
+// in A's configured relational database and inserts a synthetic INSERTED event into A's outbox
 // for each one, which Debezium then forwards as a normal Kafka message.
 // Every consumer subscribed to A's topic — existing replicas of B already
 // running AND any new replica that subsequently joins — receives the
 // replay as if it were a real INSERT.
 //
 // The replay runs inside A's process so the framework reuses A's existing
-// config path (microservice.<profile>.yaml via APP_PROFILE) for Postgres
+// config path (microservice.<profile>.yaml via APP_PROFILE) for the relational
 // DSN, outbox table identity, and serialization conventions. The CLI
 // accepts NO flag for those — single source of truth with A's runtime.
 package replay
@@ -37,13 +37,13 @@ func Run(ctx context.Context, args []string) error {
 	fs.Usage = usage
 
 	aggregate := fs.String("aggregate", "",
-		"Aggregate name to replay (required). Matches both the PG table name and the outbox aggregate_type. Example: users")
+		"Aggregate name to replay (required). Matches both the table name and the outbox aggregate_type. Example: users")
 	filter := fs.String("filter", "",
 		"Optional SQL WHERE expression appended to the SELECT (without the WHERE keyword). Example: \"active = true AND tenant_id = 'acme'\"")
 	includeArchived := fs.Bool("include-archived", false,
 		"Include rows where deleted_at IS NOT NULL (default: skip archived rows)")
 	batchSize := fs.Int("batch-size", 1000,
-		"Maximum number of rows fetched per page from Postgres (insert is still one row per outbox INSERT)")
+		"Maximum number of rows fetched per page from the configured database (insert is still one row per outbox INSERT)")
 	dryRun := fs.Bool("dry-run", false,
 		"Count the matching rows and print the summary without writing any outbox row")
 

@@ -19,7 +19,7 @@ import (
 // Synchronization is a write-once-read-many shape: Configure takes the
 // mutex; Dispatch takes the read-lock. The path is hot enough that an
 // atomic.Value would be cheaper, but the singleton is read once per
-// Dispatch (which itself does PG IO) so the lock cost is irrelevant
+// Dispatch (which itself does relational IO) so the lock cost is irrelevant
 // against the network round-trip.
 var (
 	stateMu sync.RWMutex

@@ -13,7 +13,7 @@ import (
 
 const rebuildBatchSize = 1000
 
-// sampleSizeForCleanup is the number of real Postgres ids the rebuild
+// sampleSizeForCleanup is the number of relational ids the rebuild
 // composes during the cleanup step to derive the expected field set.
 // Small enough to cost milliseconds; large enough that a single row
 // with NULL columns does not skew the expected keys.
@@ -32,11 +32,11 @@ type RebuildConfig struct {
 }
 
 // ExecuteRebuild runs the §10.1 sequence on one view, under the hybrid
-// pg_advisory_lock + status column primitive:
+// advisory-lock + status column primitive (PG pg_advisory_lock, MySQL GET_LOCK):
 //
-//  1. Acquire a pinned PG connection from the pool (lock + status writes
-//     must share the same connection; advisory locks are bound to the
-//     connection that acquired them).
+//  1. Acquire a pinned database connection from the pool (lock + status writes
+//     must share the same connection; the advisory lock is bound to the
+//     connection/session that acquired it).
 //  2. Try the advisory lock; if held by another pod, abort with a
 //     descriptive error.
 //  3. Defer lock release. Auto-release on connection close is the safety
@@ -47,7 +47,7 @@ type RebuildConfig struct {
 //  5. Cleanup orphan fields (skip when collection empty).
 //  6. Snapshot existing _id set from Mongo (collection no longer carries
 //     reserved IDs).
-//  7. Compose+upsert loop from PG: SELECT id FROM root_table, batch 1000,
+//  7. Compose+upsert loop from the relational source: SELECT id FROM root_table, batch 1000,
 //     Compose per id, mongo.Upsert.
 //  8. Orphan reconciliation per cfg.Orphan setting.
 //  9. UPDATE registry row to status='done', new hashes, captured previous_*.

@@ -44,7 +44,9 @@ const (
 type SyncEngine struct {
 	// eng is the neutral relational engine the composer reads through; the
 	// rebuild control plane (advisory lock, omnicore_mongo_views registry) is
-	// Postgres-only and recovers the concrete adapter via AsPostgres(eng).
+	// backend-neutral too — it serializes on eng.AcquireRebuildLock (PG
+	// pg_advisory_lock, MySQL GET_LOCK) and reads/writes the registry via
+	// eng.Querier()/eng.Dialect(), so it runs on any relational backend.
 	eng      db.RelationalEngine
 	mongo    *MongoDB
 	composer *Composer
