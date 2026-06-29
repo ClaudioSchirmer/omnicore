@@ -75,6 +75,123 @@ func TestTableSchema_OneLevelChildOK(t *testing.T) {
 	NewTableSchema[schemaSample]("root").PK("id").Child(child).ValidateChildDepth()
 }
 
+// TestTableSchema_Sibling_HappyPath proves a declared sibling is recorded,
+// exposed via Siblings()/IsSecondary(), and passes ValidateSiblings when its
+// fields are disjoint from the owner's.
+func TestTableSchema_Sibling_HappyPath(t *testing.T) {
+	root := NewTableSchema[schemaSample]("root").
+		PK("id").
+		Field("Name", "name").
+		Sibling(NewSiblingSchema[schemaSample]("sib").Field("Removed", "removed"))
+
+	sibs := root.Siblings()
+	if len(sibs) != 1 || sibs[0].Table() != "sib" {
+		t.Fatalf("Siblings() = %v, want one sibling table \"sib\"", sibs)
+	}
+	if !sibs[0].IsSecondary() {
+		t.Errorf("a NewSiblingSchema must report IsSecondary() == true")
+	}
+	if root.IsSecondary() {
+		t.Errorf("an owner schema must report IsSecondary() == false")
+	}
+	root.ValidateSiblings() // must not panic — fields are disjoint
+}
+
+// TestTableSchema_Sibling_BootGuards locks every declaration-time trava: a
+// sibling owns no lifecycle (SoftDelete), no FK, no PK (it borrows the owner's),
+// no children, no nested sibling; it must be over the same type, built with
+// NewSiblingSchema, carry fields, and not collide table names. The kind-mismatch
+// guards on Sibling()/Child() are covered too.
+func TestTableSchema_Sibling_BootGuards(t *testing.T) {
+	owner := func() *TableSchema { return NewTableSchema[schemaSample]("root").PK("id").Field("Name", "name") }
+
+	assertPanics(t, "SoftDelete on a sibling", func() {
+		owner().Sibling(NewSiblingSchema[schemaSample]("s").Field("Removed", "removed").SoftDelete("del"))
+	})
+	assertPanics(t, "FK on a sibling", func() {
+		owner().Sibling(NewSiblingSchema[schemaSample]("s").FK("fk").Field("Removed", "removed"))
+	})
+	assertPanics(t, "PK on a sibling", func() {
+		owner().Sibling(NewSiblingSchema[schemaSample]("s").PK("id").Field("Removed", "removed"))
+	})
+	assertPanics(t, "sibling with no fields", func() {
+		owner().Sibling(NewSiblingSchema[schemaSample]("s"))
+	})
+	assertPanics(t, "sibling over a different type", func() {
+		owner().Sibling(NewSiblingSchema[embedFixture]("s").Field("ID", "other_id"))
+	})
+	assertPanics(t, "non-sibling passed to Sibling()", func() {
+		owner().Sibling(NewTableSchema[schemaSample]("s").Field("Removed", "removed"))
+	})
+	assertPanics(t, "sibling of a sibling", func() {
+		NewSiblingSchema[schemaSample]("s1").Field("Name", "name").
+			Sibling(NewSiblingSchema[schemaSample]("s2").Field("Removed", "removed"))
+	})
+	assertPanics(t, "sibling cannot own a child", func() {
+		NewSiblingSchema[schemaSample]("s").Field("Name", "name").
+			Child(NewTableSchema[embedFixture]("c").PK("id").FK("s_id"))
+	})
+	assertPanics(t, "secondary schema passed to Child()", func() {
+		owner().Child(NewSiblingSchema[schemaSample]("s").Field("Removed", "removed"))
+	})
+	assertPanics(t, "duplicate sibling table name", func() {
+		owner().
+			Sibling(NewSiblingSchema[schemaSample]("dup").Field("Removed", "removed")).
+			Sibling(NewSiblingSchema[schemaSample]("dup").Field("Created", "created"))
+	})
+}
+
+// TestTableSchema_ValidateSiblings_Overlap proves the order-independent
+// partition check at WithSchema: a column or Go field mapped by both the owner
+// and a sibling is a boot panic.
+func TestTableSchema_ValidateSiblings_Overlap(t *testing.T) {
+	assertPanics(t, "column mapped by owner and sibling", func() {
+		NewTableSchema[schemaSample]("root").PK("id").Field("Name", "shared").
+			Sibling(NewSiblingSchema[schemaSample]("sib").Field("Removed", "shared")).
+			ValidateSiblings()
+	})
+	assertPanics(t, "Go field mapped by owner and sibling", func() {
+		NewTableSchema[schemaSample]("root").PK("id").Field("Name", "name").
+			Sibling(NewSiblingSchema[schemaSample]("sib").Field("Name", "name2")).
+			ValidateSiblings()
+	})
+}
+
+// TestTableSchema_ChildWithSibling proves the one allowed recursive width: an
+// aggregate child may carry its own sibling, and ValidateSiblings on the root
+// validates the child's partition too.
+func TestTableSchema_ChildWithSibling(t *testing.T) {
+	defer func() {
+		if r := recover(); r != nil {
+			t.Fatalf("child-with-sibling panicked: %v", r)
+		}
+	}()
+	child := NewTableSchema[schemaSample]("child").PK("id").FK("root_id").Field("Name", "name").
+		Sibling(NewSiblingSchema[schemaSample]("child_sib").Field("Removed", "removed"))
+	NewTableSchema[schemaSample]("root").PK("id").Child(child).ValidateSiblings()
+}
+
+// TestTableSchema_ChildSchemas proves ChildSchemas() returns every declared
+// aggregate child ordered by table name (so the delete cascade emits
+// deterministic SQL on any engine) and nil for a childless schema. The aggregate
+// delete path relies on it to clear every declared child table by FK explicitly.
+func TestTableSchema_ChildSchemas(t *testing.T) {
+	if got := NewTableSchema[schemaSample]("root").PK("id").ChildSchemas(); got != nil {
+		t.Errorf("childless schema: ChildSchemas() = %v, want nil", got)
+	}
+	alpha := NewTableSchema[embedFixture]("alpha").PK("id").FK("root_id")
+	zebra := NewTableSchema[schemaSample]("zebra").PK("id").FK("root_id")
+	// Declared zebra-then-alpha; ChildSchemas() must return them sorted by table.
+	root := NewTableSchema[schemaSample]("root").PK("id").Child(zebra).Child(alpha)
+	got := root.ChildSchemas()
+	if len(got) != 2 {
+		t.Fatalf("ChildSchemas() len = %d, want 2", len(got))
+	}
+	if got[0].Table() != "alpha" || got[1].Table() != "zebra" {
+		t.Errorf("order = [%s %s], want [alpha zebra] (sorted by table name)", got[0].Table(), got[1].Table())
+	}
+}
+
 // TestTableSchema_PKMandatory proves PK rejects an empty column — a
 // single-column primary key is mandatory on every schema.
 func TestTableSchema_PKMandatory(t *testing.T) {

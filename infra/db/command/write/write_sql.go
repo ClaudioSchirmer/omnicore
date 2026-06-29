@@ -93,6 +93,16 @@ func deleteSQL(d Dialect, table, pk string) string {
 		d.QuoteIdent(table), d.QuoteIdent(pk), d.Placeholder(1))
 }
 
+// childDeleteSQL renders the hard-delete of every child row belonging to a root:
+// DELETE FROM child WHERE fk = $1. The aggregate delete path issues one per
+// declared child table (before the root DELETE, same TX), so the framework owns
+// the cascade in Go instead of depending on a database ON DELETE CASCADE. The
+// single arg is the root id.
+func childDeleteSQL(d Dialect, childTable, fkCol string) string {
+	return fmt.Sprintf("DELETE FROM %s WHERE %s = %s",
+		d.QuoteIdent(childTable), d.QuoteIdent(fkCol), d.Placeholder(1))
+}
+
 // childCascadeSQL renders the symmetric archive/unarchive cascade on a child
 // table: set the soft-delete column (setExpr = NOW() to archive, NULL to
 // unarchive) for children of the root whose state matches the gate (" IS NULL" =
@@ -101,6 +111,27 @@ func childCascadeSQL(d Dialect, childTable, childSd, fkCol, setExpr, gate string
 	return fmt.Sprintf("UPDATE %s SET %s = %s WHERE %s = %s AND %s%s",
 		d.QuoteIdent(childTable), d.QuoteIdent(childSd), setExpr,
 		d.QuoteIdent(fkCol), d.Placeholder(1), d.QuoteIdent(childSd), gate)
+}
+
+// buildSiblingUpsert renders the INSERT-or-update of one sibling row keyed on
+// the shared PK: INSERT (pk + fields) ON CONFLICT(pk) DO UPDATE each field to the
+// proposed value. Dialect-agnostic via Dialect.BuildUpsert (PG ON CONFLICT ⟷
+// MySQL ON DUPLICATE KEY). Args bind in cols order (pk first, then SortedKeys);
+// managed NOW() columns are not handled here (siblings carry plain fields).
+func buildSiblingUpsert(d Dialect, sib *TableSchema, pkCol, id string, fields domain.Fields) (string, []any) {
+	keys := SortedKeys(fields)
+	cols := make([]string, 0, len(keys)+1)
+	args := make([]any, 0, len(keys)+1)
+	sets := make([]UpsertSet, 0, len(keys))
+
+	cols = append(cols, pkCol)
+	args = append(args, d.EncodeArg(domain.NewID(id)))
+	for _, k := range keys {
+		cols = append(cols, k)
+		args = append(args, d.EncodeArg(fields[k]))
+		sets = append(sets, UpsertSet{Col: k, Mode: UpsertSetNew})
+	}
+	return d.BuildUpsert(sib.Table(), cols, []string{pkCol}, sets), args
 }
 
 // requireSoftDelete is the runtime backstop for the boot-time Modes() ⟺

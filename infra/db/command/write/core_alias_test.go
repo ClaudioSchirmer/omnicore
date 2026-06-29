@@ -9,7 +9,6 @@ type (
 	Row                 = core.Row
 	Rows                = core.Rows
 	Querier             = core.Querier
-	UpsertSet           = core.UpsertSet
 	RebuildLock         = core.RebuildLock
 	InfrastructureError = core.InfrastructureError
 )
@@ -20,3 +19,5 @@ var (
 )
 
 func NewTableSchema[T any](table string) *core.TableSchema { return core.NewTableSchema[T](table) }
+
+func NewSiblingSchema[T any](table string) *core.TableSchema { return core.NewSiblingSchema[T](table) }

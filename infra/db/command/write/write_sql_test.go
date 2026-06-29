@@ -65,6 +65,20 @@ func TestArchiveUnarchiveDelete_SQL(t *testing.T) {
 	if got := deleteSQL(d, "users", "id"); got != "DELETE FROM users WHERE id = $1" {
 		t.Errorf("deleteSQL = %q", got)
 	}
+	if got := childDeleteSQL(d, "addresses", "user_id"); got != "DELETE FROM addresses WHERE user_id = $1" {
+		t.Errorf("childDeleteSQL = %q", got)
+	}
+}
+
+// TestBuildSiblingUpsert_ArgsOrder_PG locks the positional bind order of the
+// sibling upsert: the shared PK first, then field values in SortedKeys order.
+func TestBuildSiblingUpsert_ArgsOrder_PG(t *testing.T) {
+	sib := NewSiblingSchema[*sibTestEntity]("usuario").Field("UserName", "user_name")
+	id := "33333333-3333-3333-3333-333333333333"
+	_, args := buildSiblingUpsert(testPGDialect{}, sib, "id", id, domain.Fields{"user_name": "alice"})
+	if len(args) != 2 || args[0] != id || args[1] != "alice" {
+		t.Fatalf("args = %v, want [%s alice] (pk first, then SortedKeys)", args, id)
+	}
 }
 
 func TestChildCascadeSQL_Shared(t *testing.T) {

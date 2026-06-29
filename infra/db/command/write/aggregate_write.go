@@ -17,7 +17,9 @@ import (
 //   - status iteration: Added→INSERT, Changed→UPDATE, Removed→Archive,
 //     Constructor→no-op (update) / INSERT (insert)
 //   - root archive cascades archive of active children; unarchive restores
-//     archived children; hard delete relies on FK ON DELETE CASCADE
+//     archived children; hard delete cascades an explicit DELETE per declared
+//     child table (by FK) before the root DELETE, in the same TX — the framework
+//     owns the cascade in Go rather than depending on a database ON DELETE CASCADE
 //   - A/D lifecycle hooks fire once per call.
 
 func (b *BaseEngine) insertAggregate(ctx persistence.RequestContext, entity domain.Insertable, schema *TableSchema, hook WriteHook) (domain.WriteResult, error) {
@@ -45,6 +47,9 @@ func (b *BaseEngine) insertAggregate(ctx persistence.RequestContext, entity doma
 		return domain.WriteResult{}, err
 	}
 	if err := insertChildren(ctx, tx, d, root, schema, id); err != nil {
+		return domain.WriteResult{}, err
+	}
+	if err := insertSiblings(ctx, tx, d, schema, src, id); err != nil {
 		return domain.WriteResult{}, err
 	}
 	if err := WriteOutbox(ctx, tx, schema.Table(), "INSERTED", id, BuildAggregatePayload(rootFields, root, schema)); err != nil {
@@ -89,6 +94,9 @@ func (b *BaseEngine) updateAggregate(ctx persistence.RequestContext, entity doma
 	if err := applyChildChanges(ctx, tx, d, root, schema, entity.ID()); err != nil {
 		return domain.WriteResult{}, err
 	}
+	if err := applySiblingUpdates(ctx, tx, d, schema, src, entity.ID(), entity.IsPartial()); err != nil {
+		return domain.WriteResult{}, err
+	}
 	if err := WriteOutbox(ctx, tx, schema.Table(), "UPDATED", entity.ID(), BuildAggregatePayload(rootFields, root, schema)); err != nil {
 		return domain.WriteResult{}, err
 	}
@@ -126,13 +134,72 @@ func (b *BaseEngine) unarchiveAggregate(ctx persistence.RequestContext, entity d
 		entity.Events())
 }
 
+// deleteAggregate hard-deletes an aggregate root via the shared hardDelete path
+// (children + siblings cleared explicitly in Go before the root, one TX).
 func (b *BaseEngine) deleteAggregate(ctx persistence.RequestContext, entity domain.Deletable, schema *TableSchema, hook WriteHook) error {
-	// Children removed via FK ON DELETE CASCADE in the schema — DELETE only the root.
-	return b.flatSoftWrite(ctx, entity.Source(), entity.ID(), schema, hook,
-		HookContext{Verb: "Delete", EntityType: entity.EntityName()}, "DELETED",
-		func(d Dialect) string { return deleteSQL(d, schema.Table(), schema.PKColumn()) },
+	return b.hardDelete(ctx, entity.Source(), entity.ID(), schema, hook,
+		HookContext{Verb: "Delete", EntityType: entity.EntityName()},
 		func() audit.AuditEvent { return BuildDeleteEvent(ctx, entity, schema, b.auditClaims) },
 		entity.Events())
+}
+
+// hardDelete is the shared hard-delete orchestration for both the flat and the
+// aggregate paths: in one framework-owned TX it deletes every declared child
+// table (by FK) and every owner sibling table (by the shared PK) EXPLICITLY in
+// Go, then the owner row, then outbox + in-TX audit + the A/D hooks. The
+// framework owns the cascade rather than depending on a database ON DELETE
+// CASCADE it cannot emit or validate. Children come from the schema's declared
+// ChildSchemas() (not the loaded aggregate), so every child row is removed
+// regardless of what the aggregate carried. A flat schema contributes neither
+// children nor (typically) siblings, so this collapses to the single root
+// DELETE — behavior-identical to the previous flat delete. A missing root is a
+// silent no-op (delete is not row-count-checked), unchanged from before.
+func (b *BaseEngine) hardDelete(
+	ctx persistence.RequestContext,
+	src domain.Entity,
+	id string,
+	schema *TableSchema,
+	hook WriteHook,
+	hctx HookContext,
+	buildEvent func() audit.AuditEvent,
+	evs []domain.DomainEvent,
+) error {
+	tx, err := b.beginner.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	d := tx.Dialect()
+
+	if err := b.FireAfterBegin(ctx, tx, src, hook, hctx); err != nil {
+		return err
+	}
+	for _, child := range schema.ChildSchemas() {
+		if err := tx.Exec(ctx, childDeleteSQL(d, child.Table(), child.FKColumn()), d.EncodeArg(domain.NewID(id))); err != nil {
+			return err
+		}
+	}
+	if err := deleteSiblings(ctx, tx, d, schema, id); err != nil {
+		return err
+	}
+	if err := tx.Exec(ctx, deleteSQL(d, schema.Table(), schema.PKColumn()), d.EncodeArg(domain.NewID(id))); err != nil {
+		return err
+	}
+	if err := WriteOutbox(ctx, tx, schema.Table(), "DELETED", id, nil); err != nil {
+		return err
+	}
+	ab := b.BuildAudit(buildEvent, evs)
+	if err := b.WriteAuditRow(ctx, tx, ab.Ev); err != nil {
+		return err
+	}
+	if err := b.FireBeforeCommit(ctx, tx, src, domain.NewID(id), hook, hctx); err != nil {
+		return err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return err
+	}
+	b.AfterCommit(ctx, ab)
+	return nil
 }
 
 // softWriteAggregate is the shared root-soft-write + child-cascade path for

@@ -105,6 +105,28 @@ func TestArchiveUnarchiveDelete_MySQL(t *testing.T) {
 	if got := deleteSQL(d, "users", "id"); got != "DELETE FROM `users` WHERE `id` = ?" {
 		t.Errorf("deleteSQL = %q", got)
 	}
+	if got := childDeleteSQL(d, "addresses", "user_id"); got != "DELETE FROM `addresses` WHERE `user_id` = ?" {
+		t.Errorf("childDeleteSQL = %q", got)
+	}
+}
+
+// TestBuildSiblingUpsert_ArgsOrder_MySQL locks the MySQL positional bind: the
+// `?` placeholders mean arg ORDER is the only thing binding a value to a column,
+// so the shared PK must be encoded BINARY(16) first, then field values.
+func TestBuildSiblingUpsert_ArgsOrder_MySQL(t *testing.T) {
+	sib := NewSiblingSchema[*sibTestEntity]("usuario").Field("UserName", "user_name")
+	id := "33333333-3333-3333-3333-333333333333"
+	_, args := buildSiblingUpsert(testMySQLDialect{}, sib, "id", id, domain.Fields{"user_name": "alice"})
+	if len(args) != 2 {
+		t.Fatalf("args = %v, want 2 (pk + user_name)", args)
+	}
+	b, ok := args[0].([]byte)
+	if !ok || len(b) != 16 {
+		t.Errorf("args[0] = %v (%T), want the shared PK as 16-byte BINARY(16)", args[0], args[0])
+	}
+	if args[1] != "alice" {
+		t.Errorf("args[1] = %v, want \"alice\"", args[1])
+	}
 }
 
 func TestChildCascadeSQL_MySQL(t *testing.T) {

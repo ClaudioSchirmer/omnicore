@@ -125,6 +125,9 @@ func (l *AggregateLoader[T]) FindOne(ctx context.Context, q *criteria.Query) (T,
 			l.effectiveContextName(),
 		)
 	}
+	if err := l.hydrateSiblings(ctx, entities, ids); err != nil {
+		return *new(T), err
+	}
 	if err := l.hydrateChildren(ctx, entities, ids, q.Scope()); err != nil {
 		return *new(T), err
 	}
@@ -143,6 +146,9 @@ func (l *AggregateLoader[T]) FindAll(ctx context.Context, q *criteria.Query) ([]
 	}
 	if len(entities) == 0 {
 		return []T{}, nil
+	}
+	if err := l.hydrateSiblings(ctx, entities, ids); err != nil {
+		return nil, err
 	}
 	if err := l.hydrateChildren(ctx, entities, ids, q.Scope()); err != nil {
 		return nil, err
@@ -420,6 +426,59 @@ func (l *AggregateLoader[T]) hydrateChildren(ctx context.Context, entities []T, 
 		}
 	}
 	return nil
+}
+
+// hydrateSiblings loads each owner sibling's columns into the root entity by the
+// shared primary key — the read-side mirror of the write-side partition. Each
+// sibling is a SEPARATE single-table SELECT (not a JOIN): column names are unique
+// by the schema's bijection, but the shared PK would be ambiguous under a join,
+// and a per-table SELECT keeps the driver's scan + NULL handling simple. The
+// sibling's own fields scan straight into the SAME struct at the indices its
+// TableSchema resolved against T (a sibling is over the same Go type as its
+// owner). An absent sibling row leaves those fields at their zero value. Loading
+// the sibling here is what lets an UPDATE see the row's real sibling values
+// rather than clobbering them with zeros.
+func (l *AggregateLoader[T]) hydrateSiblings(ctx context.Context, entities []T, ids []string) error {
+	sibs := l.schema.Siblings()
+	if len(sibs) == 0 {
+		return nil
+	}
+	dialect := l.eng.Dialect()
+	pkCol := l.schema.PKColumn()
+	for _, sib := range sibs {
+		sibCols, sibByCol := sib.ScanPlan()
+		if len(sibCols) == 0 {
+			continue
+		}
+		// SELECT pk (leading key, discarded) + sibling columns, keyed by the
+		// shared PK. The leading-key form reuses ScanLeadingKey, which scans the
+		// remaining columns into the target struct at the byCol indices.
+		sql := "SELECT " + dialect.QuoteIdent(pkCol) + ", " +
+			strings.Join(quoteIdentifiers(sibCols, dialect), ", ") +
+			" FROM " + dialect.QuoteIdent(sib.Table()) +
+			" WHERE " + dialect.QuoteIdent(pkCol) + " = " + dialect.Placeholder(1) + " LIMIT 1"
+		for i, ent := range entities {
+			if err := l.scanSiblingInto(ctx, sql, ids[i], ent, sibCols, sibByCol); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+func (l *AggregateLoader[T]) scanSiblingInto(ctx context.Context, sql, id string, ent T, sibCols []string, sibByCol map[string]int) error {
+	dialect := l.eng.Dialect()
+	rows, err := l.eng.Querier().Query(ctx, sql, dialect.EncodeArg(domain.NewID(id)))
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	if rows.Next() {
+		if _, err := core.ScanLeadingKey(rows, any(ent), sibCols, sibByCol); err != nil {
+			return err
+		}
+	}
+	return rows.Err()
 }
 
 // decodeChildPK normalizes an aggregate child's own PK struct field to the

@@ -238,6 +238,66 @@ func TestCompose_EmbedOneToOne_MissingFK(t *testing.T) {
 	}
 }
 
+// composerSiblingRootSchema splits builderTestEntity across an anchor table
+// "orders" (name) and a sibling table "orders_ext" (email), sharing the id.
+func composerSiblingRootSchema() *core.TableSchema {
+	return core.NewTableSchema[*builderTestEntity]("orders").
+		PK("id").
+		Field("Name", "name").
+		SoftDelete("deleted_at").
+		Sibling(core.NewSiblingSchema[*builderTestEntity]("orders_ext").Field("Email", "email"))
+}
+
+// A sibling's columns merge FLAT into the owner doc (D1): email lands at the
+// root level, not nested.
+func TestCompose_MergesSiblingFlat(t *testing.T) {
+	eng := composerEngine(func(sql string, args []any) ([]map[string]any, error) {
+		switch {
+		case strings.Contains(sql, "FROM orders_ext"):
+			return mapsFromColsData([]string{"id", "email"}, [][]any{{"o1", "a@x"}}), nil
+		case strings.Contains(sql, "FROM orders"):
+			return mapsFromColsData([]string{"id", "name"}, [][]any{{"o1", "first"}}), nil
+		}
+		return nil, nil
+	})
+	c := NewComposer(eng)
+	view := View("orders").Version(1).Root("orders").Schema(composerSiblingRootSchema())
+
+	doc, err := c.Compose(context.Background(), view, "o1")
+	if err != nil {
+		t.Fatalf("Compose: %v", err)
+	}
+	if doc["name"] != "first" || doc["email"] != "a@x" {
+		t.Errorf("expected flat doc {name:first, email:a@x}, got %v", doc)
+	}
+	if _, nested := doc["orders_ext"]; nested {
+		t.Errorf("sibling must merge FLAT, not nest under its table name: %v", doc)
+	}
+}
+
+// An absent sibling row leaves its fields omitted — never forced empty (C3).
+func TestCompose_AbsentSiblingOmitsFields(t *testing.T) {
+	eng := composerEngine(func(sql string, args []any) ([]map[string]any, error) {
+		switch {
+		case strings.Contains(sql, "FROM orders_ext"):
+			return nil, nil // sibling slice absent for this row
+		case strings.Contains(sql, "FROM orders"):
+			return mapsFromColsData([]string{"id", "name"}, [][]any{{"o1", "first"}}), nil
+		}
+		return nil, nil
+	})
+	c := NewComposer(eng)
+	view := View("orders").Version(1).Root("orders").Schema(composerSiblingRootSchema())
+
+	doc, err := c.Compose(context.Background(), view, "o1")
+	if err != nil {
+		t.Fatalf("Compose: %v", err)
+	}
+	if _, present := doc["email"]; present {
+		t.Errorf("an absent sibling must omit its fields, got email=%v", doc["email"])
+	}
+}
+
 func TestComposeAll(t *testing.T) {
 	eng := composerEngine(func(sql string, args []any) ([]map[string]any, error) {
 		if strings.Contains(sql, "FROM orders") {

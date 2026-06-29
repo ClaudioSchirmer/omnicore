@@ -18,7 +18,11 @@ type (
 	WriteBeginner    = core.WriteBeginner
 	WriteHook        = core.WriteHook
 	RelationalEngine = core.RelationalEngine
+	UpsertSet        = core.UpsertSet
+	UpsertSetMode    = core.UpsertSetMode
 )
+
+const UpsertSetNew = core.UpsertSetNew
 
 var (
 	FieldErrorWithCause = core.FieldErrorWithCause

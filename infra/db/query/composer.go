@@ -61,6 +61,9 @@ func (c *Composer) Compose(ctx context.Context, view *ViewDefinition, rootID str
 	if row == nil {
 		return nil, nil
 	}
+	if err := c.mergeOwnerSiblings(ctx, row, view.schema, rootID, includeArchived); err != nil {
+		return nil, err
+	}
 	if err := c.applyEmbeds(ctx, row, schemaPK(view.schema), view.embeds, includeArchived); err != nil {
 		return nil, err
 	}
@@ -74,12 +77,45 @@ func (c *Composer) ComposeAll(ctx context.Context, view *ViewDefinition) ([]Docu
 	if err != nil {
 		return nil, err
 	}
+	pk := schemaPK(view.schema)
 	for _, row := range rows {
-		if err := c.applyEmbeds(ctx, row, schemaPK(view.schema), view.embeds, includeArchived); err != nil {
+		if err := c.mergeOwnerSiblings(ctx, row, view.schema, fmt.Sprintf("%v", row[pk]), includeArchived); err != nil {
+			return nil, err
+		}
+		if err := c.applyEmbeds(ctx, row, pk, view.embeds, includeArchived); err != nil {
 			return nil, err
 		}
 	}
 	return rows, nil
+}
+
+// mergeOwnerSiblings merges each declared sibling's columns FLAT into the owner
+// doc, fetched by the shared primary key. The document stays a flat mirror of
+// the entity (siblings land at the owner's level, not nested) — the read-side
+// reflection of how the write side partitioned the row. An absent sibling row
+// leaves its fields omitted (never forced empty). Siblings carry no soft-delete
+// (the owner's gate governs the row's visibility), so the sibling fetch passes
+// an empty soft-delete column — no per-sibling filter. The shared PK column is
+// already on the owner doc, so it is not re-copied. coerceTypes (inside
+// fetchRow) restores bool fidelity on the sibling's own columns.
+func (c *Composer) mergeOwnerSiblings(ctx context.Context, doc Document, ownerSchema *core.TableSchema, pkVal string, includeArchived bool) error {
+	pkCol := schemaPK(ownerSchema)
+	for _, sib := range ownerSchema.Siblings() {
+		row, err := c.fetchRow(ctx, sib, sib.Table(), pkCol, pkVal, "", includeArchived)
+		if err != nil {
+			return err
+		}
+		if row == nil {
+			continue
+		}
+		for col, val := range row {
+			if col == pkCol {
+				continue
+			}
+			doc[col] = val
+		}
+	}
+	return nil
 }
 
 // applyEmbeds resolves each embed of the parent doc. parentPK is the parent

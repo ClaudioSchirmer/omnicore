@@ -45,6 +45,9 @@ func (b *BaseEngine) Insert(ctx persistence.RequestContext, entity domain.Insert
 	if err := tx.Exec(ctx, sql, args...); err != nil {
 		return domain.WriteResult{}, err
 	}
+	if err := insertSiblings(ctx, tx, d, schema, src, id); err != nil {
+		return domain.WriteResult{}, err
+	}
 	if err := WriteOutbox(ctx, tx, schema.Table(), "INSERTED", id, fields); err != nil {
 		return domain.WriteResult{}, err
 	}
@@ -84,6 +87,9 @@ func (b *BaseEngine) Update(ctx persistence.RequestContext, entity domain.Updata
 	}
 	sql, args := buildUpdate(d, schema.Table(), schema.PKColumn(), entity.ID(), fields, schema.UpdateNowColumns())
 	if err := execExpectingRow(ctx, tx, sql, args, entity.EntityName(), schema.PKColumn(), entity.ID()); err != nil {
+		return domain.WriteResult{}, err
+	}
+	if err := applySiblingUpdates(ctx, tx, d, schema, src, entity.ID(), entity.IsPartial()); err != nil {
 		return domain.WriteResult{}, err
 	}
 	if err := WriteOutbox(ctx, tx, schema.Table(), "UPDATED", entity.ID(), fields); err != nil {
@@ -139,9 +145,11 @@ func (b *BaseEngine) Delete(ctx persistence.RequestContext, entity domain.Deleta
 	if _, isAggregate := entity.AggregateInfo(); isAggregate {
 		return b.deleteAggregate(ctx, entity, schema, hook)
 	}
-	return b.flatSoftWrite(ctx, entity.Source(), entity.ID(), schema, hook,
-		HookContext{Verb: "Delete", EntityType: entity.EntityName()}, "DELETED",
-		func(d Dialect) string { return deleteSQL(d, schema.Table(), schema.PKColumn()) },
+	// Flat path: hardDelete clears any owner siblings (by the shared PK) before
+	// the root DELETE, in the same TX. A schema without siblings collapses to the
+	// single root DELETE — behavior-identical to before.
+	return b.hardDelete(ctx, entity.Source(), entity.ID(), schema, hook,
+		HookContext{Verb: "Delete", EntityType: entity.EntityName()},
 		func() audit.AuditEvent { return BuildDeleteEvent(ctx, entity, schema, b.auditClaims) },
 		entity.Events())
 }

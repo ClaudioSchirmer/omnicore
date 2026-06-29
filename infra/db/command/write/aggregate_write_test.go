@@ -153,9 +153,40 @@ func TestBaseEngine_DeleteAggregate(t *testing.T) {
 	if err := be.Delete(newBuilderCtx(), d, aggWriteSchema(), firingHook); err != nil {
 		t.Fatalf("deleteAggregate: %v", err)
 	}
-	// Children go via FK ON DELETE CASCADE — only root DELETE + outbox + audit.
-	if len(tx.execs) != 3 {
-		t.Errorf("expected 3 statements (delete+outbox+audit), got %d: %v", len(tx.execs), tx.execs)
+	// The framework owns the cascade in Go: an explicit child DELETE (by FK)
+	// precedes the root DELETE, then outbox + audit = 4 statements — no reliance
+	// on a database ON DELETE CASCADE.
+	if len(tx.execs) != 4 {
+		t.Fatalf("expected 4 statements (child delete + root delete + outbox + audit), got %d: %v", len(tx.execs), tx.execs)
+	}
+	if !strings.HasPrefix(tx.execs[0], "DELETE FROM agg_w_children WHERE agg_w_id") {
+		t.Errorf("stmt[0]: expected child DELETE by FK first, got %q", tx.execs[0])
+	}
+	if !strings.HasPrefix(tx.execs[1], "DELETE FROM agg_w WHERE id") {
+		t.Errorf("stmt[1]: expected root DELETE after children, got %q", tx.execs[1])
+	}
+}
+
+// A declared child with NO loaded items must still be deleted: deleteAggregate
+// enumerates the schema's declared ChildSchemas(), not the loaded aggregate
+// items, so every child table is cleared by FK — the reach of ON DELETE CASCADE
+// without depending on it.
+func TestBaseEngine_DeleteAggregate_DeclaredChildWithoutLoadedItems(t *testing.T) {
+	root := &aggWriteRoot{Name: "r"}
+	root.SetID(domain.NewID(uuid.NewString()))
+	// No AggregateConstructor → no loaded child items, but the schema declares one.
+	d, _ := domain.GetDeletable(root, nil, "GetDeletable")
+
+	tx := &recTx{}
+	be := newFlatBE(&recBeginner{tx: tx})
+	if err := be.Delete(newBuilderCtx(), d, aggWriteSchema(), firingHook); err != nil {
+		t.Fatalf("deleteAggregate: %v", err)
+	}
+	if len(tx.execs) != 4 {
+		t.Fatalf("expected 4 statements even with no loaded children, got %d: %v", len(tx.execs), tx.execs)
+	}
+	if !strings.HasPrefix(tx.execs[0], "DELETE FROM agg_w_children WHERE agg_w_id") {
+		t.Errorf("stmt[0]: declared child must be deleted by FK, got %q", tx.execs[0])
 	}
 }
 

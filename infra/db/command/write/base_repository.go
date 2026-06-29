@@ -125,6 +125,13 @@ func (w boundWriter[T]) Unarchive(u domain.Unarchivable) error {
 // the first write.
 func (r *BaseRepository[T]) WithSchema(schema *TableSchema) *BaseRepository[T] {
 	schema.ValidateAnchored()
+	if schema.IsSecondary() {
+		panic(fmt.Sprintf(
+			"infra.TableSchema(%s): a sibling (NewSiblingSchema) cannot be a repository root — "+
+				"it is a shared-PK secondary table; attach it to a root via root.Sibling(...)",
+			schema.Table(),
+		))
+	}
 	if !schema.HasPKDeclared() {
 		panic(fmt.Sprintf(
 			"infra.TableSchema(%s): no primary key declared — declare .PK(column); "+
@@ -133,6 +140,7 @@ func (r *BaseRepository[T]) WithSchema(schema *TableSchema) *BaseRepository[T] {
 		))
 	}
 	schema.ValidateChildDepth()
+	schema.ValidateSiblings()
 	if m, ok := any(r.New()).(interface{ Modes() []domain.EntityMode }); ok {
 		schema.ValidateModes(m.Modes())
 	}

@@ -3,6 +3,7 @@ package core
 import (
 	"fmt"
 	"reflect"
+	"sort"
 
 	"github.com/ClaudioSchirmer/omnicore/domain"
 )
@@ -44,6 +45,18 @@ type TableSchema struct {
 
 	children map[string]*TableSchema // aggregate child schemas, keyed by Go type name
 
+	// secondary marks a sibling schema (built with NewSiblingSchema): a private
+	// secondary table that shares its owner's primary key (1:1), carries a
+	// disjoint subset of the SAME Go type's fields, and has no lifecycle of its
+	// own (the owner controls archive/delete). Attached via .Sibling(...); never
+	// a repository root.
+	secondary bool
+
+	// siblings are this node's declared sibling tables (root or aggregate child),
+	// in declaration order. Each shares this node's PK; their fields partition the
+	// entity's columns across tables. Width is unlimited; siblings do not nest.
+	siblings []*TableSchema
+
 	// goSegment is, for a child schema embedded in a view, the parent-side Go
 	// field name of the collection (e.g. "Addresses"). Set via View embed
 	// wiring; empty for a root schema.
@@ -79,6 +92,19 @@ func NewTableSchema[T any](table string) *TableSchema {
 	}
 	s := newSchema(table)
 	s.typ = t
+	return s
+}
+
+// NewSiblingSchema starts a SIBLING schema for table over the SAME Go type T as
+// its owner: a private secondary table that shares the owner's primary key (1:1)
+// and carries a disjoint subset of T's fields. Like NewTableSchema[T] it
+// validates every Field against T, but it declares NO primary key (it borrows
+// the owner's), NO foreign key, and NO soft-delete — the owner controls identity
+// and lifecycle. Attach it with
+// owner.Sibling(NewSiblingSchema[T](table).Field(...)).
+func NewSiblingSchema[T any](table string) *TableSchema {
+	s := NewTableSchema[T](table)
+	s.secondary = true
 	return s
 }
 
@@ -272,8 +298,20 @@ func (s *TableSchema) UpdatedAt(col string) *TableSchema {
 // persister injects the root id into that column on every child write — so a
 // child without an FK is rejected here at construction.
 func (s *TableSchema) Child(child *TableSchema) *TableSchema {
+	if s.secondary {
+		panic(fmt.Sprintf(
+			"infra.TableSchema(%s): a sibling cannot own children — declare aggregate children on the "+
+				"owner node, not on a sibling slice.", s.table))
+	}
 	if child == nil || child.typ == nil {
 		panic(fmt.Sprintf("infra.TableSchema(%s): Child requires a type-anchored schema", s.table))
+	}
+	if child.secondary {
+		panic(fmt.Sprintf(
+			"infra.TableSchema(%s): Child(...) expects a NewTableSchema with FK; got a sibling "+
+				"(NewSiblingSchema). A sibling is a 1:1 shared-PK secondary table, not a 1:N aggregate child.",
+			s.table,
+		))
 	}
 	if !child.hasPKDeclared() {
 		panic(fmt.Sprintf(
@@ -290,6 +328,76 @@ func (s *TableSchema) Child(child *TableSchema) *TableSchema {
 		))
 	}
 	s.children[child.typ.Name()] = child
+	return s
+}
+
+// Sibling registers a sibling table on this node (root or aggregate child): a
+// private secondary table over the SAME Go type that shares this node's primary
+// key (1:1) and carries a disjoint subset of the entity's fields. Width is
+// unlimited (call it repeatedly); a sibling does not nest, declares no
+// FK/PK/SoftDelete, and owns no children — the owner controls identity and
+// lifecycle. The column/field partition (no overlap with the owner or another
+// sibling) is checked at WithSchema via ValidateSiblings (order-independent).
+func (s *TableSchema) Sibling(sib *TableSchema) *TableSchema {
+	if s.secondary {
+		panic(fmt.Sprintf(
+			"infra.TableSchema(%s): a sibling cannot have a sibling — siblings are flat slices of ONE "+
+				"row; declare every sibling table on the owner.", s.table))
+	}
+	if sib == nil || sib.typ == nil {
+		panic(fmt.Sprintf(
+			"infra.TableSchema(%s): Sibling requires a type-anchored schema built with NewSiblingSchema[T].",
+			s.table))
+	}
+	if !sib.secondary {
+		panic(fmt.Sprintf(
+			"infra.TableSchema(%s): Sibling(...) expects a NewSiblingSchema(...); got a non-sibling schema "+
+				"(use NewSiblingSchema[T] for a shared-PK secondary table).", s.table))
+	}
+	ownerName := s.table
+	if s.typ != nil {
+		ownerName = s.typ.Name()
+	}
+	if sib.typ != s.typ {
+		panic(fmt.Sprintf(
+			"infra.TableSchema(%s): sibling %q is over %s but its owner is over %s — a sibling carries a "+
+				"subset of the SAME entity's fields.", s.table, sib.table, sib.typ.Name(), ownerName))
+	}
+	if sib.fkColumn != "" {
+		panic(fmt.Sprintf(
+			"infra.TableSchema(%s): sibling %q must not declare FK — it shares the owner's primary key, "+
+				"not a foreign key.", s.table, sib.table))
+	}
+	if sib.hasPKDeclared() {
+		panic(fmt.Sprintf(
+			"infra.TableSchema(%s): sibling %q must not declare PK — it borrows the owner's primary key "+
+				"(the shared 1:1 key).", s.table, sib.table))
+	}
+	if sib.softDelete != "" {
+		panic(fmt.Sprintf(
+			"infra.TableSchema(%s): sibling %q must not declare SoftDelete — a sibling has no lifecycle of "+
+				"its own; the owner controls archive/delete.", s.table, sib.table))
+	}
+	if len(sib.children) > 0 {
+		panic(fmt.Sprintf(
+			"infra.TableSchema(%s): sibling %q must not declare Child(...) — declare aggregate children on "+
+				"the owner node, not on a sibling slice.", s.table, sib.table))
+	}
+	if len(sib.siblings) > 0 {
+		panic(fmt.Sprintf("infra.TableSchema(%s): sibling %q must not itself declare siblings.", s.table, sib.table))
+	}
+	if len(sib.fields) == 0 {
+		panic(fmt.Sprintf("infra.TableSchema(%s): sibling %q declares no fields.", s.table, sib.table))
+	}
+	if sib.table == s.table {
+		panic(fmt.Sprintf("infra.TableSchema(%s): sibling table name %q duplicates the owner table.", s.table, sib.table))
+	}
+	for _, existing := range s.siblings {
+		if existing.table == sib.table {
+			panic(fmt.Sprintf("infra.TableSchema(%s): sibling table %q declared twice.", s.table, sib.table))
+		}
+	}
+	s.siblings = append(s.siblings, sib)
 	return s
 }
 
@@ -463,6 +571,39 @@ func (s *TableSchema) SoftDeleteColumn() (string, bool) { return s.softDeleteCol
 // aggregate persister resolves child tables/columns/FK through it.
 func (s *TableSchema) ChildSchema(typeName string) *TableSchema { return s.childSchema(typeName) }
 
+// ChildSchemas returns every declared aggregate child schema, ordered by table
+// name so the emitted SQL is deterministic across runs and backends. The
+// aggregate delete path uses it to remove each child table's rows by FK
+// explicitly (in Go, owned by the framework) rather than relying on a database
+// ON DELETE CASCADE the framework neither emits nor can validate at boot.
+func (s *TableSchema) ChildSchemas() []*TableSchema {
+	if s == nil || len(s.children) == 0 {
+		return nil
+	}
+	out := make([]*TableSchema, 0, len(s.children))
+	for _, c := range s.children {
+		out = append(out, c)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].table < out[j].table })
+	return out
+}
+
+// IsSecondary reports whether this schema is a sibling (built with
+// NewSiblingSchema) — a shared-PK secondary table, never a repository root.
+func (s *TableSchema) IsSecondary() bool { return s != nil && s.secondary }
+
+// Siblings returns this node's declared sibling tables (shared-PK secondary
+// tables over the same entity), in declaration order. The write and compose
+// paths partition the entity's columns across the owner table and these.
+func (s *TableSchema) Siblings() []*TableSchema {
+	if s == nil || len(s.siblings) == 0 {
+		return nil
+	}
+	out := make([]*TableSchema, len(s.siblings))
+	copy(out, s.siblings)
+	return out
+}
+
 // BoolColumns returns the set of physical columns whose mapped Go field is a bool
 // (or *bool). The composer uses it to restore type fidelity on a backend that
 // cannot carry a native boolean: MySQL stores BOOL/BOOLEAN as TINYINT(1) and the
@@ -539,6 +680,50 @@ func (s *TableSchema) ValidateChildDepth() {
 					"Model the sub-collection as a SEPARATE aggregate with its own root table + FK.",
 				s.table, child.typ.Name(),
 			))
+		}
+	}
+}
+
+// ValidateSiblings panics when a sibling's partition overlaps the owner's (or
+// another sibling's) — every mapped Go field and every physical column must
+// belong to EXACTLY ONE table of the node. Runs at WithSchema (after the schema
+// is fully assembled, so it is order-independent, like ValidateChildDepth), for
+// the root and each aggregate child (a child may carry its own siblings). The
+// shared PK and managed columns are NOT partitioned — they are the owner's
+// identity/lifecycle, mapped only on the owner.
+func (s *TableSchema) ValidateSiblings() {
+	s.validateOwnSiblings()
+	for _, child := range s.children {
+		child.validateOwnSiblings()
+	}
+}
+
+func (s *TableSchema) validateOwnSiblings() {
+	if len(s.siblings) == 0 {
+		return
+	}
+	colOwner := map[string]string{} // physical column → owning table
+	goOwner := map[string]string{}  // Go field name → owning table
+	claim := func(table, col, goName string) {
+		if prev, dup := colOwner[col]; dup {
+			panic(fmt.Sprintf(
+				"infra.TableSchema(%s): column %q is mapped by both %q and %q — a column belongs to "+
+					"exactly one table of the node.", s.table, col, prev, table))
+		}
+		colOwner[col] = table
+		if prev, dup := goOwner[goName]; dup {
+			panic(fmt.Sprintf(
+				"infra.TableSchema(%s): Go field %q is mapped by both %q and %q — a field belongs to "+
+					"exactly one table of the node.", s.table, goName, prev, table))
+		}
+		goOwner[goName] = table
+	}
+	for _, f := range s.fields {
+		claim(s.table, f.column, f.goName)
+	}
+	for _, sib := range s.siblings {
+		for _, f := range sib.fields {
+			claim(sib.table, f.column, f.goName)
 		}
 	}
 }
