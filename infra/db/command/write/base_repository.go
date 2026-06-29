@@ -111,18 +111,20 @@ func (w boundWriter[T]) Unarchive(u domain.Unarchivable) error {
 }
 
 // WithSchema declares the mandatory TableSchema and runs the construction-time
-// boot checks before binding it: PK-declared, aggregate-depth (no
-// grandchildren), and — when T exposes Modes() — the Modes() ⟺ SoftDelete
-// invariant. The field-existence + bijection checks already ran while the
-// TableSchema was built. A violation panics at construction, not on the first
-// request, so a flat (non-aggregate) repository gets the same fail-fast the
-// aggregate path has via BaseAggregateRepository.WithSchema.
+// boot checks before binding it: type-anchored (not NewExternalSchema),
+// PK-declared, aggregate-depth (no grandchildren), and — when T exposes Modes()
+// — the Modes() ⟺ SoftDelete invariant. The field-existence + bijection checks
+// already ran while the TableSchema was built. A violation panics at
+// construction, not on the first request, so a flat (non-aggregate) repository
+// gets the same fail-fast the aggregate path has via
+// BaseAggregateRepository.WithSchema.
 //
 // Setting r.Schema directly stays supported (the escape hatch) but bypasses
 // these checks; WithSchema is the validated canonical path. Calling it also
 // surfaces a nil NewEntity factory at construction (via r.New()) instead of on
 // the first write.
 func (r *BaseRepository[T]) WithSchema(schema *TableSchema) *BaseRepository[T] {
+	schema.ValidateAnchored()
 	if !schema.HasPKDeclared() {
 		panic(fmt.Sprintf(
 			"infra.TableSchema(%s): no primary key declared — declare .PK(column); "+

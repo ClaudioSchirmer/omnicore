@@ -46,6 +46,29 @@ func TestBaseRepositoryWithSchema_Valid_SetsSchema(t *testing.T) {
 	}
 }
 
+// TestBaseRepositoryWithSchema_ExternalRoot_Panics asserts the write binding
+// rejects a type-less (NewExternalSchema) schema at construction: a write-backed
+// root must be anchored to a Go type. An external schema is a view-embed source
+// only — without a struct the persister cannot build INSERT/UPDATE and the
+// composer cannot restore boolean fidelity (BoolColumns) when materializing the
+// Mongo view, so a type-less root that named a real local table would compose
+// relationally and silently lose bools on MySQL. The guard turns that into a
+// loud boot failure.
+func TestBaseRepositoryWithSchema_ExternalRoot_Panics(t *testing.T) {
+	repo := &BaseRepository[*flatArchivable]{NewEntity: func() *flatArchivable { return &flatArchivable{} }}
+	external := NewExternalSchema("flats").PK("id").Field("Name", "name")
+	defer func() {
+		r := recover()
+		if r == nil {
+			t.Fatal("expected panic: external/type-less schema bound to a write repository")
+		}
+		if msg, _ := r.(string); !strings.Contains(msg, "type-anchored") {
+			t.Errorf("panic must mention type-anchored, got %q", msg)
+		}
+	}()
+	repo.WithSchema(external)
+}
+
 func TestBaseRepositoryWithSchema_NilFactory_Panics(t *testing.T) {
 	repo := &BaseRepository[*flatArchivable]{} // NewEntity nil
 	schema := NewTableSchema[*flatArchivable]("flats").PK("id").SoftDelete("deleted_at")

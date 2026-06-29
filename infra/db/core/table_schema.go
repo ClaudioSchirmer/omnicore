@@ -543,6 +543,33 @@ func (s *TableSchema) ValidateChildDepth() {
 	}
 }
 
+// ValidateAnchored panics when the schema is type-less (built via
+// NewExternalSchema rather than NewTableSchema[T]). A schema that backs the write
+// path MUST be anchored to a Go type: the persister reflects the entity to build
+// INSERT/UPDATE, and the read-side composer reflects it (BoolColumns) to restore
+// type fidelity when it materializes the Mongo view — neither is possible without
+// a struct. A type-less schema describes an UPSTREAM service's Mongo collection
+// and is only ever a view EMBED source (FromSchema), never a write-backed root.
+// The composer routes by the view root TABLE NAME (the .Root(table) string), not
+// by the schema's kind, so a type-less root that names a real local table would
+// be composed relationally with an empty BoolColumns and silently lose boolean
+// fidelity on a backend without a native bool (MySQL TINYINT(1) → number). This
+// turns that latent divergence into a loud boot failure. Aggregate children are
+// already guaranteed anchored: Child(...) rejects a type-less child at
+// declaration, so the write-backed invariant (root + every child type-anchored)
+// is complete with this root-side guard.
+func (s *TableSchema) ValidateAnchored() {
+	if s.typ != nil {
+		return
+	}
+	panic(fmt.Sprintf(
+		"infra.TableSchema(%s): a write-backed schema must be type-anchored — build it with "+
+			"NewTableSchema[T], not NewExternalSchema. A type-less schema describes an upstream "+
+			"Mongo collection and can only be a view embed source (FromSchema), never a repository root.",
+		s.table,
+	))
+}
+
 // ValidateModes panics when the entity declares an archive verb but soft-delete
 // is disabled — turning a runtime SQL error into a loud boot failure.
 func (s *TableSchema) ValidateModes(modes []domain.EntityMode) {
