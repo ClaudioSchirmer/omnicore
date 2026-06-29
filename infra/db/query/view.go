@@ -379,6 +379,10 @@ func appendEmbedSchemaProblems(acc []string, viewName string, embeds []embedDef)
 type viewIndex struct {
 	byPGTable   map[string][]*ViewDefinition
 	byMongoColl map[string][]*ViewDefinition
+	// bySharedBase maps a SharedBase table (e.g. "pessoa") to the role views that
+	// reference it. A change to the shared identity fans out: every role view's
+	// document referencing that identity is recomposed (SyncEngine.process).
+	bySharedBase map[string][]*ViewDefinition
 }
 
 // DependentMongoViews returns the subset of views that embed the named
@@ -415,14 +419,22 @@ func viewEmbedsMongoCollection(embeds []embedDef, collection string) bool {
 
 func buildViewIndex(views []*ViewDefinition) viewIndex {
 	idx := viewIndex{
-		byPGTable:   make(map[string][]*ViewDefinition),
-		byMongoColl: make(map[string][]*ViewDefinition),
+		byPGTable:    make(map[string][]*ViewDefinition),
+		byMongoColl:  make(map[string][]*ViewDefinition),
+		bySharedBase: make(map[string][]*ViewDefinition),
 	}
 	for _, v := range views {
 		// The root is always a Postgres table — UpstreamSubscription
 		// projects upstream entities into Mongo collections that are
 		// embedded, not chosen as a view root.
 		idx.byPGTable[v.rootTable] = append(idx.byPGTable[v.rootTable], v)
+		// A role view referencing a SharedBase is indexed by the base table, so a
+		// base change fans out to every role view (SyncEngine.process).
+		if v.schema != nil {
+			if base, _, ok := v.schema.SharedBaseRef(); ok {
+				idx.bySharedBase[base.Table()] = append(idx.bySharedBase[base.Table()], v)
+			}
+		}
 		indexEmbeds(v.embeds, v, idx)
 	}
 	return idx

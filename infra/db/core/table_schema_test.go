@@ -171,6 +171,21 @@ func TestTableSchema_ChildWithSibling(t *testing.T) {
 	NewTableSchema[schemaSample]("root").PK("id").Child(child).ValidateSiblings()
 }
 
+// TestTableSchema_ReadTranslationIncludesSiblings proves the read-path Go↔column
+// translators resolve sibling fields as root-level fields (the doc is flat), in
+// both directions — so the Mongo reader can filter/sort/project on a sibling
+// field and ToGoDoc keeps a merged sibling column.
+func TestTableSchema_ReadTranslationIncludesSiblings(t *testing.T) {
+	root := NewTableSchema[schemaSample]("root").PK("id").Field("Name", "name").
+		Sibling(NewSiblingSchema[schemaSample]("ext").Field("Removed", "removed"))
+	if c, ok := root.ColumnForRead("Removed"); !ok || c != "removed" {
+		t.Errorf("ColumnForRead(sibling field) = %q,%v — want \"removed\",true", c, ok)
+	}
+	if g, ok := root.GoNameForRead("removed"); !ok || g != "Removed" {
+		t.Errorf("GoNameForRead(sibling column) = %q,%v — want \"Removed\",true", g, ok)
+	}
+}
+
 // TestTableSchema_ChildSchemas proves ChildSchemas() returns every declared
 // aggregate child ordered by table name (so the delete cascade emits
 // deterministic SQL on any engine) and nil for a childless schema. The aggregate

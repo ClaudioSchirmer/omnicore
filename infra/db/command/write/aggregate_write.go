@@ -175,6 +175,13 @@ func (b *BaseEngine) hardDelete(
 		return err
 	}
 	for _, child := range schema.ChildSchemas() {
+		// A child's own siblings (shared child PK) go first, via subquery over the
+		// child rows about to be deleted.
+		for _, sib := range child.Siblings() {
+			if err := tx.Exec(ctx, childSiblingDeleteSQL(d, sib.Table(), child.PKColumn(), child.Table(), child.FKColumn()), d.EncodeArg(domain.NewID(id))); err != nil {
+				return err
+			}
+		}
 		if err := tx.Exec(ctx, childDeleteSQL(d, child.Table(), child.FKColumn()), d.EncodeArg(domain.NewID(id))); err != nil {
 			return err
 		}
@@ -183,6 +190,11 @@ func (b *BaseEngine) hardDelete(
 		return err
 	}
 	if err := tx.Exec(ctx, deleteSQL(d, schema.Table(), schema.PKColumn()), d.EncodeArg(domain.NewID(id))); err != nil {
+		return err
+	}
+	// SharedBase (M2): if this is a role whose shared identity is now orphaned,
+	// remove the base per its OrphanPolicy (refcount across the registry).
+	if err := b.refcountSharedBase(ctx, tx, d, schema, src); err != nil {
 		return err
 	}
 	if err := WriteOutbox(ctx, tx, schema.Table(), "DELETED", id, nil); err != nil {
@@ -335,7 +347,12 @@ func insertChild(ctx context.Context, tx WriteTx, d Dialect, child *TableSchema,
 		return err
 	}
 	sql, args := buildInsert(d, child.Table(), child.PKColumn(), childID, fields, child.InsertNowColumns())
-	return tx.Exec(ctx, sql, args...)
+	if err := tx.Exec(ctx, sql, args...); err != nil {
+		return err
+	}
+	// A child may carry its own siblings (the one allowed recursive width); they
+	// share the child's PK, read from the same AVO.
+	return insertSiblings(ctx, tx, d, child, item, childID)
 }
 
 func updateChild(ctx context.Context, tx WriteTx, d Dialect, child *TableSchema, item domain.AggregateValueObject) error {
@@ -345,7 +362,12 @@ func updateChild(ctx context.Context, tx WriteTx, d Dialect, child *TableSchema,
 	}
 	fields := child.WriteFields(item)
 	sql, args := buildUpdate(d, child.Table(), child.PKColumn(), id, fields, child.UpdateNowColumns())
-	return execExpectingRow(ctx, tx, sql, args, child.Table(), child.PKColumn(), id)
+	if err := execExpectingRow(ctx, tx, sql, args, child.Table(), child.PKColumn(), id); err != nil {
+		return err
+	}
+	// A Changed child carries its full new state → treat its siblings as a full
+	// replace (partial=false): a slice cleared to all-nil is removed.
+	return applySiblingUpdates(ctx, tx, d, child, item, id, false)
 }
 
 // archiveChild: Removed → Archive. A child with soft-delete disabled cannot be

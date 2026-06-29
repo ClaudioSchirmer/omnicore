@@ -50,8 +50,10 @@ func allNilFields(fields domain.Fields) bool {
 }
 
 // insertSiblings INSERTs each materialized sibling row, sharing the owner's PK
-// (owner.PKColumn() = id). A sibling whose fields are all nil is skipped.
-func insertSiblings(ctx context.Context, tx WriteTx, d Dialect, owner *TableSchema, src domain.Entity, id string) error {
+// (owner.PKColumn() = id). A sibling whose fields are all nil is skipped. src is
+// the owner value the sibling fields are read from — a root Entity OR an
+// aggregate child (AggregateValueObject), so it is typed `any`.
+func insertSiblings(ctx context.Context, tx WriteTx, d Dialect, owner *TableSchema, src any, id string) error {
 	for _, sib := range owner.Siblings() {
 		fields := sib.WriteFields(src)
 		if allNilFields(fields) {
@@ -69,7 +71,7 @@ func insertSiblings(ctx context.Context, tx WriteTx, d Dialect, owner *TableSche
 // verb-driven: PATCH (partial) leaves the row untouched; PUT (full replace)
 // removes it, because a full body that cleared every sibling field means the
 // slice is gone.
-func applySiblingUpdates(ctx context.Context, tx WriteTx, d Dialect, owner *TableSchema, src domain.Entity, id string, partial bool) error {
+func applySiblingUpdates(ctx context.Context, tx WriteTx, d Dialect, owner *TableSchema, src any, id string, partial bool) error {
 	for _, sib := range owner.Siblings() {
 		fields := sib.WriteFields(src)
 		if allNilFields(fields) {

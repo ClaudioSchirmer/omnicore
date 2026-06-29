@@ -64,6 +64,9 @@ func (c *Composer) Compose(ctx context.Context, view *ViewDefinition, rootID str
 	if err := c.mergeOwnerSiblings(ctx, row, view.schema, rootID, includeArchived); err != nil {
 		return nil, err
 	}
+	if err := c.mergeSharedBase(ctx, row, view.schema, includeArchived); err != nil {
+		return nil, err
+	}
 	if err := c.applyEmbeds(ctx, row, schemaPK(view.schema), view.embeds, includeArchived); err != nil {
 		return nil, err
 	}
@@ -80,6 +83,9 @@ func (c *Composer) ComposeAll(ctx context.Context, view *ViewDefinition) ([]Docu
 	pk := schemaPK(view.schema)
 	for _, row := range rows {
 		if err := c.mergeOwnerSiblings(ctx, row, view.schema, fmt.Sprintf("%v", row[pk]), includeArchived); err != nil {
+			return nil, err
+		}
+		if err := c.mergeSharedBase(ctx, row, view.schema, includeArchived); err != nil {
 			return nil, err
 		}
 		if err := c.applyEmbeds(ctx, row, pk, view.embeds, includeArchived); err != nil {
@@ -114,6 +120,35 @@ func (c *Composer) mergeOwnerSiblings(ctx context.Context, doc Document, ownerSc
 			}
 			doc[col] = val
 		}
+	}
+	return nil
+}
+
+// mergeSharedBase merges a role's shared identity (SharedBase) FLAT into the role
+// document, fetched by the role's FK to the base's deterministic id. Like a
+// sibling, the base fields land at the role's level (the doc stays flat). The
+// base PK column equals the FK value already on the doc, so it is not re-copied.
+func (c *Composer) mergeSharedBase(ctx context.Context, doc Document, schema *core.TableSchema, includeArchived bool) error {
+	base, fkCol, ok := schema.SharedBaseRef()
+	if !ok {
+		return nil
+	}
+	fk, present := doc[fkCol]
+	if !present || fk == nil {
+		return nil
+	}
+	row, err := c.fetchRow(ctx, base, base.Table(), base.PKColumn(), fmt.Sprintf("%v", fk), "", includeArchived)
+	if err != nil {
+		return err
+	}
+	if row == nil {
+		return nil
+	}
+	for col, val := range row {
+		if col == base.PKColumn() {
+			continue
+		}
+		doc[col] = val
 	}
 	return nil
 }
@@ -155,6 +190,11 @@ func (c *Composer) fetchPGEmbed(ctx context.Context, doc Document, parentPK stri
 		}
 		for _, row := range rows {
 			if err := c.applyEmbeds(ctx, row, srcPK, e.source.embeds, includeArchived); err != nil {
+				return err
+			}
+			// A child may carry siblings — merge them FLAT into the child row by the
+			// child's shared PK.
+			if err := c.mergeOwnerSiblings(ctx, row, e.source.schema, fmt.Sprintf("%v", row[srcPK]), includeArchived); err != nil {
 				return err
 			}
 		}

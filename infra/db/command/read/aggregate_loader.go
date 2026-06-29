@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"reflect"
+	"sort"
 	"strings"
 
 	"github.com/ClaudioSchirmer/omnicore/domain"
@@ -128,6 +129,9 @@ func (l *AggregateLoader[T]) FindOne(ctx context.Context, q *criteria.Query) (T,
 	if err := l.hydrateSiblings(ctx, entities, ids); err != nil {
 		return *new(T), err
 	}
+	if err := l.hydrateSharedBase(ctx, entities, ids); err != nil {
+		return *new(T), err
+	}
 	if err := l.hydrateChildren(ctx, entities, ids, q.Scope()); err != nil {
 		return *new(T), err
 	}
@@ -148,6 +152,9 @@ func (l *AggregateLoader[T]) FindAll(ctx context.Context, q *criteria.Query) ([]
 		return []T{}, nil
 	}
 	if err := l.hydrateSiblings(ctx, entities, ids); err != nil {
+		return nil, err
+	}
+	if err := l.hydrateSharedBase(ctx, entities, ids); err != nil {
 		return nil, err
 	}
 	if err := l.hydrateChildren(ctx, entities, ids, q.Scope()); err != nil {
@@ -172,7 +179,13 @@ func (l *AggregateLoader[T]) FindAll(ctx context.Context, q *criteria.Query) ([]
 func (l *AggregateLoader[T]) findRoots(ctx context.Context, q *criteria.Query, limitOverride int64) ([]T, []string, error) {
 	sample := l.newEntity()
 	table := l.schema.Table()
-	resolve := l.schema.FieldResolver()
+	// A sibling-aware resolver: anchor fields resolve as before; a field that
+	// lives in a sibling resolves to the sibling's column AND records the sibling
+	// so it is LEFT JOINed below. Sibling columns are unique across the node
+	// (the schema's bijection), so they stay unqualified and unambiguous; only
+	// the shared PK is qualified (in the JOIN ON + the SELECT leading key).
+	joins := &relSpecJoins{siblings: map[string]*TableSchema{}}
+	resolve := l.specResolver(joins)
 	dialect := l.eng.Dialect()
 
 	where, args, err := compileWhere(q.Condition(), resolve, dialect)
@@ -235,7 +248,18 @@ func (l *AggregateLoader[T]) findRoots(ctx context.Context, q *criteria.Query, l
 			l.effectiveContextName(), sample,
 		)
 	}
-	sql := "SELECT " + dialect.QuoteIdent(l.schema.PKColumn()) + ", " + strings.Join(quoteIdentifiers(cols, dialect), ", ") + " FROM " + dialect.QuoteIdent(table)
+	// When the criteria referenced a sibling field, LEFT JOIN those tables so the
+	// WHERE/ORDER can resolve against them. The SELECT list stays anchor-only (the
+	// sibling VALUES are loaded separately by hydrateSiblings); the join exists
+	// only to make the sibling columns reachable for filtering. The leading PK is
+	// qualified to the anchor table because the shared PK is the one ambiguous
+	// column under the join.
+	joinSQL := l.specJoinClause(joins, dialect)
+	leadingPK := dialect.QuoteIdent(l.schema.PKColumn())
+	if joinSQL != "" {
+		leadingPK = dialect.QuoteIdent(table) + "." + dialect.QuoteIdent(l.schema.PKColumn())
+	}
+	sql := "SELECT " + leadingPK + ", " + strings.Join(quoteIdentifiers(cols, dialect), ", ") + " FROM " + dialect.QuoteIdent(table) + joinSQL
 	sql += tailClause(clause, orderSQL, limit)
 	rows, err := l.eng.Querier().Query(ctx, sql, args...)
 	if err != nil {
@@ -376,22 +400,14 @@ func (l *AggregateLoader[T]) hydrateChildren(ctx context.Context, entities []T, 
 			placeholders[i] = dialect.Placeholder(i + 1)
 			qargs[i] = dialect.EncodeArg(domain.NewID(id))
 		}
-		sql := fmt.Sprintf(
-			"SELECT %s, %s FROM %s WHERE %s IN (%s) %s",
-			dialect.QuoteIdent(fkCol),
-			strings.Join(quoteIdentifiers(childCols, dialect), ", "),
-			dialect.QuoteIdent(childTable),
-			dialect.QuoteIdent(fkCol),
-			strings.Join(placeholders, ", "),
-			childFilter,
-		)
+		sql, scanCols, scanByCol := childScanSQL(child, fkCol, childCols, childByCol, placeholders, childFilter, dialect)
 		rows, err := l.eng.Querier().Query(ctx, sql, qargs...)
 		if err != nil {
 			return err
 		}
 		for rows.Next() {
 			vp := reflect.New(child.GoType())
-			fkRaw, err := core.ScanLeadingKey(rows, vp.Interface(), childCols, childByCol)
+			fkRaw, err := core.ScanLeadingKey(rows, vp.Interface(), scanCols, scanByCol)
 			if err != nil {
 				rows.Close()
 				return err
@@ -503,6 +519,144 @@ func decodeChildPK(vp reflect.Value, child *TableSchema, dialect Dialect) error 
 	}
 	f.SetString(decoded)
 	return nil
+}
+
+// relSpecJoins records which relational-specialization tables a criteria
+// referenced so findRoots can LEFT JOIN exactly those: sibling tables (joined on
+// the shared PK) and/or the shared base (joined on the role's FK → base PK).
+type relSpecJoins struct {
+	siblings map[string]*TableSchema
+	base     *TableSchema
+	baseFK   string
+}
+
+// specResolver resolves a criteria Go field to its column, checking the anchor,
+// then each sibling, then the shared base — recording any sibling/base referenced
+// so the matching LEFT JOIN is emitted. Sibling and base columns are unique vs
+// the anchor (the schema bijection), so they stay unqualified; only the shared PK
+// is qualified by findRoots. A criteria mixing the PK and a specialization field
+// is the one unsupported case (PK ambiguity) — filtering by PK makes any other
+// predicate redundant.
+func (l *AggregateLoader[T]) specResolver(j *relSpecJoins) core.FieldResolver {
+	return func(goField string) (string, bool) {
+		if col, ok := l.schema.ColumnOf(goField); ok {
+			return col, true
+		}
+		for _, sib := range l.schema.Siblings() {
+			if col, ok := sib.ColumnOf(goField); ok {
+				j.siblings[sib.Table()] = sib
+				return col, true
+			}
+		}
+		if base, fk, ok := l.schema.SharedBaseRef(); ok {
+			if col, ok2 := base.ColumnOf(goField); ok2 {
+				j.base, j.baseFK = base, fk
+				return col, true
+			}
+		}
+		return "", false
+	}
+}
+
+// specJoinClause renders a LEFT JOIN per referenced sibling (shared PK) and the
+// shared base (role FK → base PK), ordered deterministically. Empty when the
+// criteria referenced no specialization field.
+func (l *AggregateLoader[T]) specJoinClause(j *relSpecJoins, dialect Dialect) string {
+	if len(j.siblings) == 0 && j.base == nil {
+		return ""
+	}
+	anchor := dialect.QuoteIdent(l.schema.Table())
+	pk := dialect.QuoteIdent(l.schema.PKColumn())
+	var sb strings.Builder
+	tables := make([]string, 0, len(j.siblings))
+	for t := range j.siblings {
+		tables = append(tables, t)
+	}
+	sort.Strings(tables)
+	for _, t := range tables {
+		st := dialect.QuoteIdent(t)
+		sb.WriteString(" LEFT JOIN " + st + " ON " + anchor + "." + pk + " = " + st + "." + pk)
+	}
+	if j.base != nil {
+		bt := dialect.QuoteIdent(j.base.Table())
+		sb.WriteString(" LEFT JOIN " + bt + " ON " + bt + "." + dialect.QuoteIdent(j.base.PKColumn()) +
+			" = " + anchor + "." + dialect.QuoteIdent(j.baseFK))
+	}
+	return sb.String()
+}
+
+// hydrateSharedBase loads a role's shared-base columns into the role entity,
+// joining the base on the role's FK to the base PK and scanning the shared
+// columns into the SAME struct at the role-field indices the schema pre-resolved.
+// No-op when the role declares no shared base.
+func (l *AggregateLoader[T]) hydrateSharedBase(ctx context.Context, entities []T, ids []string) error {
+	base, fkCol, ok := l.schema.SharedBaseRef()
+	if !ok {
+		return nil
+	}
+	cols, byCol, _ := l.schema.SharedBaseScanPlan()
+	if len(cols) == 0 {
+		return nil
+	}
+	d := l.eng.Dialect()
+	roleTbl := d.QuoteIdent(l.schema.Table())
+	baseTbl := d.QuoteIdent(base.Table())
+	rolePK := d.QuoteIdent(l.schema.PKColumn())
+	sel := roleTbl + "." + rolePK
+	for _, c := range cols {
+		sel += ", " + baseTbl + "." + d.QuoteIdent(c)
+	}
+	sql := "SELECT " + sel + " FROM " + roleTbl +
+		" JOIN " + baseTbl + " ON " + baseTbl + "." + d.QuoteIdent(base.PKColumn()) + " = " + roleTbl + "." + d.QuoteIdent(fkCol) +
+		" WHERE " + roleTbl + "." + rolePK + " = " + d.Placeholder(1) + " LIMIT 1"
+	for i, ent := range entities {
+		if err := l.scanSiblingInto(ctx, sql, ids[i], ent, cols, byCol); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// childScanSQL builds the child SELECT + the scan plan. With no child siblings it
+// is the plain single-table SELECT (leading FK + child columns). With siblings it
+// LEFT JOINs each on the shared child PK and folds the sibling columns into the
+// scan plan — they map into the SAME child struct (a sibling is over the child's
+// Go type). Everything is qualified by table under the join; sibling/child
+// business columns are unique (the schema bijection), so the scan keys cleanly.
+func childScanSQL(child *TableSchema, fkCol string, childCols []string, childByCol map[string]int, placeholders []string, childFilter string, dialect Dialect) (string, []string, map[string]int) {
+	ct := dialect.QuoteIdent(child.Table())
+	sibs := child.Siblings()
+	if len(sibs) == 0 {
+		sql := "SELECT " + dialect.QuoteIdent(fkCol) + ", " + strings.Join(quoteIdentifiers(childCols, dialect), ", ") +
+			" FROM " + ct + " WHERE " + dialect.QuoteIdent(fkCol) + " IN (" + strings.Join(placeholders, ", ") + ") " + childFilter
+		return sql, childCols, childByCol
+	}
+	pk := dialect.QuoteIdent(child.PKColumn())
+	sel := ct + "." + dialect.QuoteIdent(fkCol)
+	for _, c := range childCols {
+		sel += ", " + ct + "." + dialect.QuoteIdent(c)
+	}
+	scanCols := append([]string{}, childCols...)
+	scanByCol := make(map[string]int, len(childByCol))
+	for k, v := range childByCol {
+		scanByCol[k] = v
+	}
+	var join strings.Builder
+	for _, sib := range sibs {
+		sc, sb := sib.ScanPlan()
+		st := dialect.QuoteIdent(sib.Table())
+		join.WriteString(" LEFT JOIN " + st + " ON " + ct + "." + pk + " = " + st + "." + pk)
+		for _, c := range sc {
+			sel += ", " + st + "." + dialect.QuoteIdent(c)
+			scanCols = append(scanCols, c)
+		}
+		for k, v := range sb {
+			scanByCol[k] = v
+		}
+	}
+	sql := "SELECT " + sel + " FROM " + ct + join.String() +
+		" WHERE " + ct + "." + dialect.QuoteIdent(fkCol) + " IN (" + strings.Join(placeholders, ", ") + ") " + childFilter
+	return sql, scanCols, scanByCol
 }
 
 // quoteIdentifiers quotes each name via the dialect (which validates against the

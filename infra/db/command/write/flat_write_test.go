@@ -31,7 +31,30 @@ type recTx struct {
 	execs      []string
 	committed  bool
 	rolledBack bool
+	queryFn    func(sql string, args []any) (Rows, error) // drives Query (shared-base existence probe)
 }
+
+// fakeRows is a minimal core.Rows for the write-side existence probe.
+type fakeRows struct {
+	remaining int
+	scan      func(dest []any) error
+}
+
+func (r *fakeRows) Next() bool {
+	if r.remaining <= 0 {
+		return false
+	}
+	r.remaining--
+	return true
+}
+func (r *fakeRows) Scan(dest ...any) error {
+	if r.scan != nil {
+		return r.scan(dest)
+	}
+	return nil
+}
+func (r *fakeRows) Err() error   { return nil }
+func (r *fakeRows) Close() error { return nil }
 
 type recTxHandle struct{ persistence.SealedTxHandle }
 
@@ -55,7 +78,12 @@ func (t *recTx) ExecCount(_ context.Context, sql string, _ ...any) (int64, error
 	}
 	return t.count, nil
 }
-func (t *recTx) Query(context.Context, string, ...any) (Rows, error) { return nil, nil }
+func (t *recTx) Query(_ context.Context, sql string, args ...any) (Rows, error) {
+	if t.queryFn != nil {
+		return t.queryFn(sql, args)
+	}
+	return nil, nil
+}
 func (t *recTx) QueryRow(context.Context, string, ...any) Row        { return nil }
 func (t *recTx) Commit(context.Context) error                        { t.committed = true; return t.commitErr }
 func (t *recTx) Rollback(context.Context) error                      { t.rolledBack = true; return nil }

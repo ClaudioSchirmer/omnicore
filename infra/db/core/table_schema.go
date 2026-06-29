@@ -57,6 +57,21 @@ type TableSchema struct {
 	// entity's columns across tables. Width is unlimited; siblings do not nest.
 	siblings []*TableSchema
 
+	// M2 SharedBase (NewSharedBase) — a type-less identity table shared by
+	// multiple role schemas, deduplicated by a natural key whose value derives the
+	// base's deterministic id. isSharedBase marks the base; naturalKeyCol is its
+	// dedup/identity column; orphanPolicy governs the base's lifecycle when no
+	// role references it. A role schema references its base via sharedBaseLink
+	// (set by .SharedBase(base, fk)) — at most one per role.
+	isSharedBase   bool
+	naturalKeyCol  string
+	orphanPolicy   OrphanPolicy
+	sharedBaseLink *sharedBaseLink
+	// referencingRoles is, on a SHARED BASE, the set of role tables that
+	// reference it (populated as each role calls .SharedBase — the instance IS
+	// the cross-schema registry). The refcount delete + CDC fan-out enumerate it.
+	referencingRoles []RoleRef
+
 	// goSegment is, for a child schema embedded in a view, the parent-side Go
 	// field name of the collection (e.g. "Addresses"). Set via View embed
 	// wiring; empty for a root schema.
@@ -449,6 +464,20 @@ func (s *TableSchema) goNameForRead(column string) (string, bool) {
 			return "DeletedAt", true
 		}
 	}
+	// A sibling's column is merged FLAT into the read document; translate it back
+	// to the sibling's Go field so ToGoDoc keeps it (otherwise the merged column
+	// would be dropped and never reach the response).
+	for _, sib := range s.siblings {
+		if g, ok := sib.GoOf(column); ok {
+			return g, true
+		}
+	}
+	// SharedBase columns are merged flat into the role document the same way.
+	if s.sharedBaseLink != nil {
+		if g, ok := s.sharedBaseLink.base.GoOf(column); ok {
+			return g, true
+		}
+	}
 	return "", false
 }
 
@@ -474,6 +503,20 @@ func (s *TableSchema) columnForRead(goName string) (string, bool) {
 	case "DeletedAt":
 		if s.softDelete != "" {
 			return s.softDelete, true
+		}
+	}
+	// Sibling fields sit FLAT at the owner's level in the read document (the
+	// composer merges them), so they resolve as root-level Go fields here — the
+	// reader filters/sorts/projects them like any owner field.
+	for _, sib := range s.siblings {
+		if c, ok := sib.ColumnOf(goName); ok {
+			return c, true
+		}
+	}
+	// SharedBase fields are likewise merged flat into the role's read document.
+	if s.sharedBaseLink != nil {
+		if c, ok := s.sharedBaseLink.base.ColumnOf(goName); ok {
+			return c, true
 		}
 	}
 	return "", false

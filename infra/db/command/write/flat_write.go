@@ -20,6 +20,12 @@ import (
 // AggregateInfo() routes aggregate roots to the aggregate path (aggregate_write.go).
 
 func (b *BaseEngine) Insert(ctx persistence.RequestContext, entity domain.Insertable, schema *TableSchema, hook WriteHook) (domain.WriteResult, error) {
+	// A role with a SharedBase routes here whether it is flat OR an aggregate:
+	// insertWithBase establishes the shared identity + role existence and then
+	// layers the aggregate's children/siblings on top.
+	if base, fkCol, ok := schema.SharedBaseRef(); ok {
+		return b.insertWithBase(ctx, entity, schema, hook, base, fkCol)
+	}
 	if _, isAggregate := entity.AggregateInfo(); isAggregate {
 		return b.insertAggregate(ctx, entity, schema, hook)
 	}
@@ -68,6 +74,9 @@ func (b *BaseEngine) Insert(ctx persistence.RequestContext, entity domain.Insert
 }
 
 func (b *BaseEngine) Update(ctx persistence.RequestContext, entity domain.Updatable, schema *TableSchema, hook WriteHook) (domain.WriteResult, error) {
+	if base, fkCol, ok := schema.SharedBaseRef(); ok {
+		return b.updateWithBase(ctx, entity, schema, hook, base, fkCol)
+	}
 	if _, isAggregate := entity.AggregateInfo(); isAggregate {
 		return b.updateAggregate(ctx, entity, schema, hook)
 	}

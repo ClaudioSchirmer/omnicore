@@ -113,6 +113,18 @@ func childCascadeSQL(d Dialect, childTable, childSd, fkCol, setExpr, gate string
 		d.QuoteIdent(fkCol), d.Placeholder(1), d.QuoteIdent(childSd), gate)
 }
 
+// childSiblingDeleteSQL hard-deletes a child's sibling rows when the root is
+// deleted. The children are removed in bulk by their FK to the root (no per-row
+// ids), so a child's siblings — keyed on the child's shared PK — are removed via
+// a subquery over the soon-to-be-deleted child rows. Must run BEFORE the child
+// rows are deleted (the subquery reads them). The single arg is the root id.
+func childSiblingDeleteSQL(d Dialect, sibTable, childPKCol, childTable, childFKCol string) string {
+	return fmt.Sprintf("DELETE FROM %s WHERE %s IN (SELECT %s FROM %s WHERE %s = %s)",
+		d.QuoteIdent(sibTable), d.QuoteIdent(childPKCol),
+		d.QuoteIdent(childPKCol), d.QuoteIdent(childTable),
+		d.QuoteIdent(childFKCol), d.Placeholder(1))
+}
+
 // buildSiblingUpsert renders the INSERT-or-update of one sibling row keyed on
 // the shared PK: INSERT (pk + fields) ON CONFLICT(pk) DO UPDATE each field to the
 // proposed value. Dialect-agnostic via Dialect.BuildUpsert (PG ON CONFLICT ⟷

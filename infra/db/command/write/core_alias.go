@@ -20,13 +20,20 @@ type (
 	RelationalEngine = core.RelationalEngine
 	UpsertSet        = core.UpsertSet
 	UpsertSetMode    = core.UpsertSetMode
+	OrphanPolicy     = core.OrphanPolicy
+	RoleRef          = core.RoleRef
 )
 
-const UpsertSetNew = core.UpsertSetNew
+const (
+	UpsertSetNew           = core.UpsertSetNew
+	DeleteWhenUnreferenced = core.DeleteWhenUnreferenced
+	KeepOrphan             = core.KeepOrphan
+)
 
 var (
-	FieldErrorWithCause = core.FieldErrorWithCause
-	SortedKeys          = core.SortedKeys
+	FieldErrorWithCause     = core.FieldErrorWithCause
+	SingleNotificationError = core.SingleNotificationError
+	SortedKeys              = core.SortedKeys
 )
 
 func AdaptWriteOptions[T any](opts []persistence.WriteOption[T]) core.WriteHook {

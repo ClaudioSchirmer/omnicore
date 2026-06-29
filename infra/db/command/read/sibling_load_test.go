@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/ClaudioSchirmer/omnicore/domain"
+	"github.com/ClaudioSchirmer/omnicore/infra/db/criteria"
 )
 
 // White-box coverage for AggregateLoader.hydrateSiblings (A3b): an owner
@@ -76,6 +77,51 @@ func TestHydrateSiblings_AbsentRowLeavesZero(t *testing.T) {
 	}
 	if e.UserName != "" {
 		t.Errorf("absent sibling must leave the field zero, got %q", e.UserName)
+	}
+}
+
+// A criteria that filters by a SIBLING field LEFT JOINs the sibling table so
+// the WHERE can resolve against it (the root SELECT captures the SQL via the
+// fake; 0 rows returned so FindAll short-circuits before hydrate).
+func TestFindRoots_SiblingFilterJoins(t *testing.T) {
+	var rootSQL string
+	query := func(sql string, args []any) (Rows, error) {
+		if strings.Contains(sql, "FROM "+`"pessoa"`) || strings.Contains(sql, "FROM pessoa") {
+			rootSQL = sql
+		}
+		return &fakeDBRows{rows: 0}, nil
+	}
+	l := NewAggregateLoader[*sibLoadEntity](fakeEngine(query), func() *sibLoadEntity { return &sibLoadEntity{} }).
+		WithSchema(sibLoadSchema())
+
+	if _, err := l.FindAll(context.Background(), criteria.Where(criteria.Eq("UserName", "alice"))); err != nil {
+		t.Fatalf("FindAll: %v", err)
+	}
+	if !strings.Contains(rootSQL, "LEFT JOIN") || !strings.Contains(rootSQL, "usuario") {
+		t.Errorf("sibling filter must LEFT JOIN the sibling table, got: %q", rootSQL)
+	}
+	if !strings.Contains(rootSQL, "user_name") {
+		t.Errorf("sibling filter must reference the sibling column, got: %q", rootSQL)
+	}
+}
+
+// A criteria on an ANCHOR field does NOT join (no sibling referenced).
+func TestFindRoots_AnchorFilterNoJoin(t *testing.T) {
+	var rootSQL string
+	query := func(sql string, args []any) (Rows, error) {
+		if strings.Contains(sql, "pessoa") {
+			rootSQL = sql
+		}
+		return &fakeDBRows{rows: 0}, nil
+	}
+	l := NewAggregateLoader[*sibLoadEntity](fakeEngine(query), func() *sibLoadEntity { return &sibLoadEntity{} }).
+		WithSchema(sibLoadSchema())
+
+	if _, err := l.FindAll(context.Background(), criteria.Where(criteria.Eq("Name", "x"))); err != nil {
+		t.Fatalf("FindAll: %v", err)
+	}
+	if strings.Contains(rootSQL, "LEFT JOIN") {
+		t.Errorf("an anchor-only filter must not join, got: %q", rootSQL)
 	}
 }
 

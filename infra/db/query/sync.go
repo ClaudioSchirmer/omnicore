@@ -138,11 +138,21 @@ func decodeAggregateID(key []byte) string {
 func NewSyncEngine(eng core.RelationalEngine, mongo ReadModelStore, brokers []string, groupID string, views []*ViewDefinition, workers int) *SyncEngine {
 	topics := make([]string, 0, len(views))
 	seen := map[string]bool{}
-	for _, v := range views {
-		t := topicFromTable(v.rootTable)
+	addTopic := func(table string) {
+		t := topicFromTable(table)
 		if !seen[t] {
 			topics = append(topics, t)
 			seen[t] = true
+		}
+	}
+	for _, v := range views {
+		addTopic(v.rootTable)
+		// Subscribe to a role view's SharedBase topic too, so a base change
+		// (emitted as an aggregate_type=base outbox row) reaches the fan-out.
+		if v.schema != nil {
+			if base, _, ok := v.schema.SharedBaseRef(); ok {
+				addTopic(base.Table())
+			}
 		}
 	}
 	if workers < 1 {
@@ -258,6 +268,14 @@ func (s *SyncEngine) process(ctx context.Context, event kafkaEvent) error {
 		"sync "+event.AggregateType, event.Traceparent)
 	defer span.End()
 
+	// A SharedBase change fans out: recompose every role view's document that
+	// references the changed identity. The base table is not a view root, so it
+	// only appears in bySharedBase.
+	if baseViews, ok := s.index.bySharedBase[event.AggregateType]; ok {
+		if err := s.fanOutSharedBase(ctx, event, baseViews); err != nil {
+			return err
+		}
+	}
 	views, ok := s.index.byPGTable[event.AggregateType]
 	if !ok {
 		return nil
@@ -286,6 +304,41 @@ func (s *SyncEngine) process(ctx context.Context, event kafkaEvent) error {
 		}
 		if err := s.mongo.Upsert(ctx, view.name, event.AggregateID, doc); err != nil {
 			return err
+		}
+	}
+	return nil
+}
+
+// fanOutSharedBase recomposes every role-view document that references a changed
+// shared identity. For each role view embedding the base, it finds the role docs
+// whose FK equals the base id (index-only via FindIDsByField on the role's link
+// column) and recomposes each by its own id — so a shared-field change made
+// through one role reaches the read models of the OTHER roles of that identity.
+// A role row that has since vanished is removed from its view.
+func (s *SyncEngine) fanOutSharedBase(ctx context.Context, event kafkaEvent, baseViews []*ViewDefinition) error {
+	for _, view := range baseViews {
+		_, fkCol, ok := view.schema.SharedBaseRef()
+		if !ok {
+			continue
+		}
+		roleIDs, err := s.mongo.FindIDsByField(ctx, view.name, fkCol, event.AggregateID)
+		if err != nil {
+			return err
+		}
+		for _, roleID := range roleIDs {
+			doc, err := s.composer.Compose(ctx, view, roleID)
+			if err != nil {
+				return err
+			}
+			if doc == nil {
+				if err := s.mongo.Delete(ctx, view.name, roleID); err != nil {
+					return err
+				}
+				continue
+			}
+			if err := s.mongo.Upsert(ctx, view.name, roleID, doc); err != nil {
+				return err
+			}
 		}
 	}
 	return nil
