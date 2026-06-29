@@ -10,8 +10,11 @@ import (
 )
 
 // TLSConfig is the YAML shape for tls: under defaults and services. The
-// cascade merges service over defaults field by field; framework defaults
-// (TLS 1.2 minimum, modern cipher suites) fill any remaining gap.
+// cascade merges service over defaults field by field. The only framework
+// default is minVersion = TLS 1.2; cipherSuites are left to Go's stdlib
+// selection unless a preset or explicit list is set — imposing the
+// TLS 1.3-only "modern" preset by default would leave TLS 1.2 handshakes
+// with no usable suites (Go ignores CipherSuites for TLS 1.3).
 type TLSConfig struct {
 	MinVersion         string   `yaml:"minVersion"`
 	CipherSuites       []string `yaml:"cipherSuites"`
@@ -33,7 +36,8 @@ type PoolConfig struct {
 
 // cipherSuitePresets are the canonical preset cipher lists. Names follow
 // Mozilla's recommended SSL configurations (modern/intermediate/legacy).
-// The framework's default is "modern" — TLS 1.3 only ciphers.
+// A preset applies only when explicitly selected (resolveTLSConfig leaves
+// cfg.CipherSuites nil otherwise); "modern" is the TLS 1.3 AEAD suites.
 var cipherSuitePresets = map[string][]uint16{
 	"modern": {
 		tls.TLS_AES_128_GCM_SHA256,

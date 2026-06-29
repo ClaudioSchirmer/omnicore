@@ -38,14 +38,14 @@ import (
 // audit table is not partitioned) and the Postgres branch of the migration
 // runner. It panics on a non-Postgres engine, so every call site is
 // dialect-selected: audit partitions via isPostgres; the migration runner picks
-// NewMySQL vs pgEngine on cfg.Database.Dialect. The composer/sync projection, the
+// NewMySQL vs pgEngine on cfg.Relational.Dialect. The composer/sync projection, the
 // Mongo-view rebuild/drift control plane (advisory lock + omnicore_mongo_views
 // registry), and the integration consumer control plane do NOT go through here —
 // they speak the neutral core.RelationalEngine seam and run on any backend.
 func pgEngine(deps Deps) *postgres.Postgres { return postgres.AsPostgres(deps.DB) }
 
 // dialectPostgres / dialectMySQL are the registered relational-engine dialect
-// names (mirror the infra engine-registry keys and the database.dialect default).
+// names (mirror the infra engine-registry keys and the relational.dialect values).
 const (
 	dialectPostgres = "postgres"
 	dialectMySQL    = "mysql"
@@ -56,7 +56,7 @@ const (
 // maintenance (the MySQL audit table is not partitioned). Everything else,
 // including the Mongo-view rebuild/drift control plane, runs on the neutral
 // core.RelationalEngine seam and is NOT gated here.
-func isPostgres(cfg *Config) bool { return cfg.Database.Dialect == dialectPostgres }
+func isPostgres(cfg *Config) bool { return cfg.Relational.Dialect == dialectPostgres }
 
 type Deps struct {
 	Config     *Config

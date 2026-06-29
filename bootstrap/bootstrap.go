@@ -286,12 +286,12 @@ func buildDeps(cfg *Config) (Deps, error) {
 			"endpoint", tracingCfg.Endpoint)
 	}
 
-	eng, err := core.NewEngine(cfg.Database.Dialect, ctx, cfg.Postgres.DSN,
+	eng, err := core.NewEngine(cfg.Relational.Dialect, ctx, cfg.Relational.DSN,
 		tracingCfg.Instruments(tracing.SubPgx))
 	if err != nil {
 		return Deps{}, fmt.Errorf("bootstrap: database connect: %w", err)
 	}
-	logger.Info("database connected", "dialect", cfg.Database.Dialect, "dsn", redact(cfg.Postgres.DSN))
+	logger.Info("database connected", "dialect", cfg.Relational.Dialect, "dsn", redact(cfg.Relational.DSN))
 
 	mg, err := mongo.NewMongoDB(ctx, cfg.Mongo.URI, cfg.Mongo.Database,
 		mongo.WithMongoTracing(tracingCfg.Instruments(tracing.SubMongo)))

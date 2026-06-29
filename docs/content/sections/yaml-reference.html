@@ -44,7 +44,7 @@ pwd: "${vault:secret/data/db#password}"                # delegated to a register
         <tbody><tr><th>Block</th><th>Required?</th><th>Purpose</th><th>Detail</th></tr>
         <tr><td><code>service</code></td><td><strong>yes</strong></td><td>service name (registry, consumer-group defaults)</td><td>below</td></tr>
         <tr><td><code>http</code></td><td>no</td><td>listen address</td><td>below</td></tr>
-        <tr><td><code>postgres</code></td><td><strong>yes</strong></td><td>write-side DSN</td><td>below</td></tr>
+        <tr><td><code>relational</code></td><td><strong>yes</strong></td><td>relational backend — dialect (Postgres / MySQL) + write-side DSN</td><td>below</td></tr>
         <tr><td><code>mongo</code></td><td><strong>yes</strong></td><td>read-side URI/db + rebuild policy</td><td>below · <a href="#mongo-schema-evolution">rebuild</a></td></tr>
         <tr><td><code>kafka</code></td><td><strong>yes</strong></td><td>brokers + SyncEngine group/workers</td><td>below</td></tr>
         <tr><td><code>migrations</code></td><td>no</td><td>SQL migration dir + autoRun mode</td><td>below · <a href="#migrations">Migrations</a></td></tr>
@@ -62,15 +62,19 @@ pwd: "${vault:secret/data/db#password}"                # delegated to a register
     </tbody></table>
     <p>*<code>auth</code> defaults to <code>{mode: disabled}</code> when absent — accepted only under <code>APP_PROFILE=dev</code>; any other profile aborts the boot without it.</p>
 
-    <h3>Core — service · http · postgres · mongo · kafka · migrations · query</h3>
+    <h3>Core — service · http · relational · mongo · kafka · migrations · query</h3>
 <pre><code>service: my-service                      # MANDATORY — registry marker + consumer-group default seed
 
 http:
   addr: ":8080"                          # default ":8080"
   requestTimeoutSeconds: 30              # inbound request deadline; unset → 30; 0 → disabled
 
-postgres:
-  dsn: "${DATABASE_URL}"                 # MANDATORY — pgx v5 DSN for the write side
+relational:                              # the relational backend — system of record + framework control plane
+  dialect: postgres                      # MANDATORY — postgres | mysql. NO default: the framework refuses to assume a
+                                         # backend, so an absent dialect aborts boot. `mysql` self-registers only in a
+                                         # binary built with the `mysql` build tag; an unregistered dialect aborts boot.
+  dsn: "${DATABASE_URL}"                 # MANDATORY — connection string for the selected dialect
+                                         # (pgx v5 DSN for postgres, Go MySQL DSN for mysql)
 
 mongo:
   uri: "${MONGO_URI}"                    # MANDATORY — read-side projection store
@@ -314,7 +318,8 @@ shutdown:
       disableKeepAlives: false           # default false
     tls:
       minVersion: "1.2"                  # default 1.2
-      cipherSuites: modern               # modern (default) | intermediate | legacy | [explicit names]
+      cipherSuites: modern               # modern | intermediate | legacy | [explicit names]; omitted → Go stdlib default
+                                         #   ciphers (no preset imposed). minVersion still defaults to 1.2 either way.
       insecureSkipVerify: false          # default false (test/dev only)
       clientCertFile: ""                 # mTLS — set with clientKeyFile
       clientKeyFile: ""

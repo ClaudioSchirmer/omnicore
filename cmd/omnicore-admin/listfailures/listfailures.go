@@ -67,10 +67,10 @@ func Run(ctx context.Context, args []string) error {
 		return fmt.Errorf("upstream-list-failures: load config: %w", err)
 	}
 	// Build through the relational-engine registry so inspection runs against the
-	// configured backend (database.dialect). The failure-registry reads already go
+	// configured backend (relational.dialect). The failure-registry reads already go
 	// through the neutral Querier/Dialect; only construction was PG-bound. A MySQL
 	// deployment needs the admin binary built with -tags mysql.
-	engine, err := core.NewEngine(cfg.Database.Dialect, ctx, cfg.Postgres.DSN, false)
+	engine, err := core.NewEngine(cfg.Relational.Dialect, ctx, cfg.Relational.DSN, false)
 	if err != nil {
 		return fmt.Errorf("upstream-list-failures: connect: %w", err)
 	}

@@ -6,7 +6,7 @@ import (
 )
 
 const validYAMLWithJWT = `service: test
-postgres: { dsn: "postgres://x" }
+relational: { dialect: postgres, dsn: "postgres://x" }
 mongo: { uri: "mongodb://x", database: "v" }
 kafka:
   brokers: ["k:1"]
@@ -81,7 +81,7 @@ func TestAuthConfig_ExternalValidatorDefaults(t *testing.T) {
 
 func TestAuthConfig_FullRoundTrip(t *testing.T) {
 	yml := `service: test
-postgres: { dsn: "postgres://x" }
+relational: { dialect: postgres, dsn: "postgres://x" }
 mongo: { uri: "mongodb://x", database: "v" }
 kafka:
   brokers: ["k:1"]
@@ -236,7 +236,7 @@ func TestAuthConfig_JWTRejectsUnsupportedAlgorithm(t *testing.T) {
 
 func TestAuthConfig_ExternalValidatorValidations(t *testing.T) {
 	base := `service: test
-postgres: { dsn: "postgres://x" }
+relational: { dialect: postgres, dsn: "postgres://x" }
 mongo: { uri: "mongodb://x", database: "v" }
 kafka: { brokers: ["k:1"], syncGroupId: "g" }
 auth:

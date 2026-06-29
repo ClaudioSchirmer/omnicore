@@ -43,8 +43,8 @@ func mongoBootURI() string {
 
 func mysqlBootConfig(t *testing.T, migrationsDir string) *Config {
 	cfg := &Config{Service: "mysql-boot-probe"}
-	cfg.Database.Dialect = dialectMySQL
-	cfg.Postgres.DSN = mysqlBootDSN() // the DSN lives under postgres.dsn for every dialect
+	cfg.Relational.Dialect = dialectMySQL
+	cfg.Relational.DSN = mysqlBootDSN() // dialect + dsn both live under relational:
 	cfg.Mongo.URI = mongoBootURI()
 	cfg.Mongo.Database = "mysql_boot_probe"
 	cfg.Migrations.Dir = migrationsDir

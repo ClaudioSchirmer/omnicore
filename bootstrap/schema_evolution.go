@@ -33,11 +33,11 @@ func applyMigrations(ctx context.Context, cfg *Config, deps Deps) error {
 
 	// The migration runner is dialect-selected: Postgres runs over the live pgx
 	// pool; MySQL opens its own *sql.DB from the DSN (the runner never owns the
-	// engine pool). The DSN lives under postgres.dsn regardless of dialect (see
-	// buildDeps — NewEngine is fed cfg.Postgres.DSN for every backend).
+	// engine pool). The DSN lives under relational.dsn for every dialect (see
+	// buildDeps — NewEngine is fed cfg.Relational.DSN for every backend).
 	var mgr *migration.Manager
-	if cfg.Database.Dialect == dialectMySQL {
-		mgr = migration.NewMySQL(cfg.Postgres.DSN, cfg.Migrations.Dir)
+	if cfg.Relational.Dialect == dialectMySQL {
+		mgr = migration.NewMySQL(cfg.Relational.DSN, cfg.Migrations.Dir)
 	} else {
 		mgr = migration.New(pgEngine(deps).Pool(), cfg.Migrations.Dir)
 	}

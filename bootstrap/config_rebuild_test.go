@@ -24,7 +24,7 @@ func writeTempRebuildYAML(t *testing.T, body string) string {
 // blocks so callers can append a `mongo:` block (with optional `rebuild:`
 // sub-block) and an `auth:` block without YAML key collisions.
 const validRebuildYAMLBase = `service: test
-postgres: { dsn: "postgres://x" }
+relational: { dialect: postgres, dsn: "postgres://x" }
 kafka:
   brokers: ["k:1"]
   syncGroupId: "g"

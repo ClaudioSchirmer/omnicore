@@ -104,17 +104,19 @@ type Config struct {
 		RequestTimeoutSeconds *int `yaml:"requestTimeoutSeconds"`
 	} `yaml:"http"`
 
-	Postgres struct {
-		DSN string `yaml:"dsn"`
-	} `yaml:"postgres"`
-
-	// Database selects the relational backend. dialect picks the registered
-	// engine (postgres today; mysql under its build tag in a later phase);
-	// unset defaults to "postgres", so every existing config stays valid. The
-	// connection string is still read from postgres.dsn.
-	Database struct {
+	// Relational selects AND connects the relational backend — the system of
+	// record plus the framework control plane (outbox, audit, integration,
+	// the Mongo-view registry). dialect picks the registered engine
+	// (postgres / mysql; mysql self-registers only under its build tag); dsn
+	// is the connection string for that dialect. Both are MANDATORY: the
+	// framework refuses to assume a backend, so an absent dialect or dsn
+	// aborts boot — there is no default. A dialect with no registered engine
+	// (e.g. mysql in a binary built without -tags mysql) aborts in
+	// core.NewEngine with an actionable message.
+	Relational struct {
 		Dialect string `yaml:"dialect"`
-	} `yaml:"database"`
+		DSN     string `yaml:"dsn"`
+	} `yaml:"relational"`
 
 	Mongo struct {
 		URI      string             `yaml:"uri"`
@@ -519,9 +521,6 @@ func (c *Config) applyDefaults() {
 	if c.Migrations.Dir == "" {
 		c.Migrations.Dir = "./migrations"
 	}
-	if c.Database.Dialect == "" {
-		c.Database.Dialect = "postgres"
-	}
 	if c.Kafka.SyncWorkers < 1 {
 		c.Kafka.SyncWorkers = runtime.NumCPU()
 	}
@@ -574,8 +573,11 @@ func (c *Config) Validate() error {
 	if c.Service == "" {
 		missing = append(missing, "service")
 	}
-	if c.Postgres.DSN == "" {
-		missing = append(missing, "postgres.dsn")
+	if c.Relational.Dialect == "" {
+		missing = append(missing, "relational.dialect")
+	}
+	if c.Relational.DSN == "" {
+		missing = append(missing, "relational.dsn")
 	}
 	if c.Mongo.URI == "" {
 		missing = append(missing, "mongo.uri")
