@@ -7,10 +7,9 @@ import (
 	"strings"
 
 	"github.com/ClaudioSchirmer/omnicore/infra/db/query"
-	"github.com/ClaudioSchirmer/omnicore/infra/migration"
 )
 
-// applyMigrations runs the PostgreSQL migration path. Behavior depends on
+// applyMigrations runs the relational migration path. Behavior depends on
 // cfg.Migrations.AutoRun (AutoRunMode):
 //
 //   - AutoRunTrue  → ValidateDownExists + Up (legacy behavior).
@@ -31,16 +30,11 @@ func applyMigrations(ctx context.Context, cfg *Config, deps Deps) error {
 		return nil
 	}
 
-	// The migration runner is dialect-selected: Postgres runs over the live pgx
-	// pool; MySQL opens its own *sql.DB from the DSN (the runner never owns the
-	// engine pool). The DSN lives under relational.dsn for every dialect (see
-	// buildDeps — NewEngine is fed cfg.Relational.DSN for every backend).
-	var mgr *migration.Manager
-	if cfg.Relational.Dialect == dialectMySQL {
-		mgr = migration.NewMySQL(cfg.Relational.DSN, cfg.Migrations.Dir)
-	} else {
-		mgr = migration.New(pgEngine(deps).Pool(), cfg.Migrations.Dir)
-	}
+	// The migration runner is dialect-bound and supplied by newMigrator, defined
+	// in the engine_<dialect>.go file the build tag selects: Postgres runs over
+	// the live pgx pool, MySQL opens its own *sql.DB from relational.dsn (the
+	// runner never owns the engine pool). A build links exactly one.
+	mgr := newMigrator(deps, cfg)
 
 	if cfg.Migrations.AutoRun.IsTrue() {
 		if err := mgr.ValidateDownExists(); err != nil {

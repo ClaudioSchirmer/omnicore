@@ -1,4 +1,4 @@
-//go:build integration
+//go:build integration && postgres
 
 // Shared helpers for the pg-engine integration tests. Run with:
 //

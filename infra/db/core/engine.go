@@ -17,7 +17,8 @@ import (
 // without the upper layers — domain, application, web — ever naming a concrete
 // driver. A dialect is selected once, at boot, through the engine registry
 // (RegisterEngine / NewEngine); the concrete engines live in sibling packages
-// (infra/db/pg, infra/db/mysql) and implement this port.
+// (infra/db/engine/postgres, infra/db/engine/mysql), each compiled behind its own
+// build tag, and implement this port.
 //
 // The write methods take the exported WriteHook (the type-erased lifecycle-hook
 // pair the persister fires at TX positions A and D) so an engine in its own
@@ -65,7 +66,8 @@ type RelationalEngine interface {
 }
 
 // EngineFactory builds a RelationalEngine for one dialect. Registered by each
-// engine package in init() (postgres ships untagged; mysql under its build tag).
+// engine package in init(), each behind its own build tag (postgres under
+// -tags postgres, mysql under -tags mysql; a build links exactly one engine).
 // The tracing flag is the only cross-engine knob today — the signature
 // generalizes to an options struct when a second engine needs more.
 type EngineFactory func(ctx context.Context, dsn string, tracing bool) (RelationalEngine, error)
@@ -88,8 +90,8 @@ func RegisterEngine(dialect string, f EngineFactory) {
 }
 
 // NewEngine builds the RelationalEngine for the requested dialect. An unknown
-// dialect is a clear, actionable error — typically the engine's build tag was
-// not enabled (e.g. `go build -tags mysql`).
+// dialect is a clear, actionable error — typically no engine build tag was set
+// (e.g. `go build -tags postgres` or `go build -tags mysql`).
 func NewEngine(dialect string, ctx context.Context, dsn string, tracing bool) (RelationalEngine, error) {
 	f, ok := engineFactories[dialect]
 	if !ok {

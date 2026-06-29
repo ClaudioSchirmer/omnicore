@@ -1,4 +1,4 @@
-//go:build integration
+//go:build integration && postgres
 
 package postgres
 
@@ -8,9 +8,9 @@ import (
 	"testing"
 
 	"github.com/ClaudioSchirmer/omnicore/domain"
-	"github.com/ClaudioSchirmer/omnicore/infra/db/criteria"
 	"github.com/ClaudioSchirmer/omnicore/infra/db/command/read"
 	"github.com/ClaudioSchirmer/omnicore/infra/db/core"
+	"github.com/ClaudioSchirmer/omnicore/infra/db/criteria"
 )
 
 // loaderRoot is a root entity used by read.AggregateLoader integration tests.

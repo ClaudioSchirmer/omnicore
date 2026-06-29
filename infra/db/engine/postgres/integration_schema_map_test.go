@@ -1,4 +1,4 @@
-//go:build integration
+//go:build integration && postgres
 
 package postgres
 
@@ -7,9 +7,9 @@ import (
 	"testing"
 
 	"github.com/ClaudioSchirmer/omnicore/domain"
-	"github.com/ClaudioSchirmer/omnicore/infra/db/criteria"
 	"github.com/ClaudioSchirmer/omnicore/infra/db/command/read"
 	"github.com/ClaudioSchirmer/omnicore/infra/db/core"
+	"github.com/ClaudioSchirmer/omnicore/infra/db/criteria"
 )
 
 // schemaPerson exercises the core.TableSchema end-to-end: a renamed PK

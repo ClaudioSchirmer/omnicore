@@ -1,12 +1,14 @@
+//go:build postgres
+
 package postgres
 
 import (
 	"context"
 	"testing"
 
-	"github.com/ClaudioSchirmer/omnicore/infra/db/criteria"
 	"github.com/ClaudioSchirmer/omnicore/infra/db/command/read"
 	"github.com/ClaudioSchirmer/omnicore/infra/db/core"
+	"github.com/ClaudioSchirmer/omnicore/infra/db/criteria"
 )
 
 // These tests cover the loader's criteria-compile error branches of findRoots,

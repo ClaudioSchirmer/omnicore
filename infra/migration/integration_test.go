@@ -1,4 +1,4 @@
-//go:build integration
+//go:build integration && postgres
 
 // Integration tests for the migration package. Run with:
 //

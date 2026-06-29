@@ -1,3 +1,5 @@
+//go:build postgres
+
 package postgres
 
 import (
@@ -8,9 +10,9 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/ClaudioSchirmer/omnicore/domain"
-	"github.com/ClaudioSchirmer/omnicore/infra/db/criteria"
 	"github.com/ClaudioSchirmer/omnicore/infra/db/command/read"
 	"github.com/ClaudioSchirmer/omnicore/infra/db/core"
+	"github.com/ClaudioSchirmer/omnicore/infra/db/criteria"
 )
 
 // The read.AggregateLoader runs its SELECTs through the engine's read seam, backed

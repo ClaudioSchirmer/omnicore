@@ -8,7 +8,6 @@ import (
 	"github.com/ClaudioSchirmer/omnicore/application/translation"
 	"github.com/ClaudioSchirmer/omnicore/infra/cache"
 	"github.com/ClaudioSchirmer/omnicore/infra/db/core"
-	"github.com/ClaudioSchirmer/omnicore/infra/db/engine/postgres"
 	"github.com/ClaudioSchirmer/omnicore/infra/db/query"
 	"github.com/ClaudioSchirmer/omnicore/infra/db/query/engine/mongo"
 	"github.com/ClaudioSchirmer/omnicore/infra/httpclient"
@@ -16,6 +15,13 @@ import (
 	"github.com/ClaudioSchirmer/omnicore/infra/tracing"
 	"github.com/ClaudioSchirmer/omnicore/web"
 	"github.com/ClaudioSchirmer/omnicore/web/openapi"
+)
+
+// dialectPostgres / dialectMySQL are the registered relational-engine dialect
+// names — they mirror the engine-registry keys and the relational.dialect values.
+const (
+	dialectPostgres = "postgres"
+	dialectMySQL    = "mysql"
 )
 
 // Deps are the singletons built by the framework and exposed to the service
@@ -28,36 +34,15 @@ import (
 // slog echo and / or in-TX audit_events row without each handler having to
 // thread an Auditor.
 //
-// DB is the backend-neutral relational engine (Postgres today; the dialect is
-// chosen at boot via database.dialect). Consumers depend on the interface, not
-// a concrete driver. Code that genuinely needs Postgres-specific access (the
-// pgx pool for custom SELECTs) recovers it via postgres.AsPostgres(d.DB) — a
-// documented PG-only escape hatch.
-// pgEngine recovers the concrete *postgres.Postgres from Deps for the framework
-// wiring that still speaks pgx directly — audit partition maintenance (the MySQL
-// audit table is not partitioned) and the Postgres branch of the migration
-// runner. It panics on a non-Postgres engine, so every call site is
-// dialect-selected: audit partitions via isPostgres; the migration runner picks
-// NewMySQL vs pgEngine on cfg.Relational.Dialect. The composer/sync projection, the
-// Mongo-view rebuild/drift control plane (advisory lock + omnicore_mongo_views
-// registry), and the integration consumer control plane do NOT go through here —
-// they speak the neutral core.RelationalEngine seam and run on any backend.
-func pgEngine(deps Deps) *postgres.Postgres { return postgres.AsPostgres(deps.DB) }
-
-// dialectPostgres / dialectMySQL are the registered relational-engine dialect
-// names (mirror the infra engine-registry keys and the relational.dialect values).
-const (
-	dialectPostgres = "postgres"
-	dialectMySQL    = "mysql"
-)
-
-// isPostgres reports whether the selected relational backend is Postgres — the
-// gate for the one boot step that is genuinely PG-only: audit partition
-// maintenance (the MySQL audit table is not partitioned). Everything else,
-// including the Mongo-view rebuild/drift control plane, runs on the neutral
-// core.RelationalEngine seam and is NOT gated here.
-func isPostgres(cfg *Config) bool { return cfg.Relational.Dialect == dialectPostgres }
-
+// DB is the backend-neutral relational engine; the dialect is chosen at boot via
+// relational.dialect and resolved through the engine registry (core.NewEngine).
+// Consumers depend on the interface, not a concrete driver. A build links exactly
+// one engine, selected by build tag (-tags postgres | -tags mysql); the matching
+// engine_<dialect>.go file registers it and carries any dialect-bound boot wiring
+// (pgEngine + audit partitions + migration runner for Postgres; the migration
+// runner for MySQL). Code that genuinely needs Postgres-specific access (the pgx
+// pool for custom SELECTs) recovers it via postgres.AsPostgres(d.DB) — a
+// documented PG-only escape hatch, available only in a postgres-tagged build.
 type Deps struct {
 	Config     *Config
 	Logger     *slog.Logger

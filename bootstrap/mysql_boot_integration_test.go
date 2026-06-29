@@ -14,17 +14,17 @@ import (
 	// directly outside this tag-guarded test.
 	"github.com/ClaudioSchirmer/omnicore/infra/db/core"
 	_ "github.com/ClaudioSchirmer/omnicore/infra/db/engine/mysql"
-	"github.com/ClaudioSchirmer/omnicore/infra/db/engine/postgres"
 
 	// The MySQL database/sql driver for the raw verification connection.
 	_ "github.com/go-sql-driver/mysql"
 )
 
-// Phase 4 item 1 (1a + 1b) integration test: a MySQL engine boots through the
-// framework composition root without panicking. The old code did
-// `pg := postgres.AsPostgres(eng)` unconditionally in buildDeps — that panicked the
-// instant the engine was MySQL. This proves the gating: buildDeps returns a live
-// MySQL engine, and applyMigrations selects the MySQL runner (not the pgx pool).
+// Integration test: a MySQL engine boots through the framework composition root.
+// buildDeps is backend-neutral — the only Postgres-specific boot wiring
+// (postgres.AsPostgres, audit partitions, the pgx migration runner) lives in
+// bootstrap/engine_postgres.go behind the `postgres` build tag, so a MySQL build
+// never compiles or links it. This proves buildDeps returns a live MySQL engine,
+// and applyMigrations selects the MySQL runner (not the pgx pool).
 //
 //	go test -tags=integration,mysql ./bootstrap/ -run MySQLBoot -count=1
 func mysqlBootDSN() string {
@@ -75,22 +75,10 @@ func TestMySQLBoot_BuildDepsDoesNotPanic(t *testing.T) {
 	if deps.DB == nil {
 		t.Fatal("Deps.DB is nil after a successful buildDeps")
 	}
-	// Positively prove the engine is MySQL (not Postgres): AsPostgres must panic.
-	// This is the exact call buildDeps used to make unconditionally — gating it is
-	// the fix under test.
-	if !panicsOnAsPostgres(deps.DB) {
-		t.Fatal("expected a MySQL engine — postgres.AsPostgres should panic, but it did not")
-	}
-}
-
-func panicsOnAsPostgres(eng core.RelationalEngine) (panicked bool) {
-	defer func() {
-		if recover() != nil {
-			panicked = true
-		}
-	}()
-	_ = postgres.AsPostgres(eng)
-	return false
+	// That the engine is MySQL (not Postgres) is now guaranteed by construction:
+	// postgres.AsPostgres lives in the postgres-tagged engine package, which a
+	// MySQL build neither compiles nor links — so buildDeps cannot reach for it.
+	// The MySQL runner selection is proven end to end by the migration test below.
 }
 
 func TestMySQLBoot_ApplyMigrationsUsesMySQLRunner(t *testing.T) {
@@ -124,12 +112,12 @@ func TestMySQLBoot_ApplyMigrationsUsesMySQLRunner(t *testing.T) {
 		_ = deps.Mongo.Close(context.Background())
 	})
 
-	// The proof of 1a: applyMigrations on a MySQL engine must pick
-	// migration.NewMySQL and run to completion. Had it taken the Postgres branch
-	// (migration.New(pgEngine(deps).Pool(), …)), pgEngine → postgres.AsPostgres would
-	// PANIC on the MySQL engine — so a clean, nil return IS the proof the runner
-	// was dialect-selected. (That the MySQL framework+service SQL actually applies
-	// is covered by the migration package's own -tags=integration,mysql suite.)
+	// The proof: applyMigrations on a MySQL engine picks the MySQL runner
+	// (newMigrator in engine_mysql.go → migration.NewMySQL) and runs to completion.
+	// The Postgres runner (migration.New over the pgx pool) is not even linked in a
+	// MySQL build, so a clean, nil return is the dialect-selected runner working.
+	// (That the MySQL framework+service SQL actually applies is covered by the
+	// migration package's own -tags=integration,mysql suite.)
 	if err := applyMigrations(context.Background(), cfg, deps); err != nil {
 		t.Fatalf("applyMigrations on MySQL failed: %v", err)
 	}

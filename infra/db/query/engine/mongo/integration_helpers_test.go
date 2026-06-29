@@ -1,4 +1,4 @@
-//go:build integration
+//go:build integration && postgres
 
 // Shared helpers for integration tests in the infra package. Run with:
 //

@@ -26,35 +26,27 @@ import (
 
 	"github.com/ClaudioSchirmer/omnicore/infra/db/core"
 	"github.com/golang-migrate/migrate/v4"
-	pgxdriver "github.com/golang-migrate/migrate/v4/database/pgx/v5"
+	"github.com/golang-migrate/migrate/v4/database"
 	"github.com/golang-migrate/migrate/v4/source"
-	"github.com/jackc/pgx/v5/pgxpool"
-	"github.com/jackc/pgx/v5/stdlib"
 )
 
 // Manager orchestrates framework migrations (embedded) + service migrations.
-// The dialect selects both the embedded source (embedded/<dialect>) and the
-// golang-migrate database driver: Postgres runs over the live pgx pool; MySQL
-// opens a dedicated *sql.DB from dsn (so the runner never owns the engine pool).
+// The dialect selects the embedded framework source (embedded/<dialect>); the
+// golang-migrate database driver is supplied by openDriver, set by the
+// dialect-specific constructor (New / NewMySQL). Each constructor lives behind
+// its engine build tag, so a single-engine build links exactly one database
+// driver and its transitive SQL stack (pgx for Postgres, go-sql-driver for
+// MySQL) — never both.
 type Manager struct {
-	pool    *pgxpool.Pool
 	dialect string
-	dsn     string
 	dir     string
-}
 
-// New builds a Postgres Manager over the live pgx pool. dir is the service
-// migration directory (relative or absolute). Conventionally "./migrations".
-func New(pool *pgxpool.Pool, dir string) *Manager {
-	return &Manager{pool: pool, dialect: "postgres", dir: dir}
-}
-
-// NewMySQL builds a MySQL Manager. The runner opens its own *sql.DB from dsn
-// (closed when each migrate instance closes) rather than sharing the engine's
-// pool. Requires building with -tags mysql (else Up/Down fail with a clear
-// "build with -tags mysql" error). dir is the service migration directory.
-func NewMySQL(dsn, dir string) *Manager {
-	return &Manager{dialect: "mysql", dsn: dsn, dir: dir}
+	// openDriver opens the golang-migrate database driver for trackingTable and
+	// returns it alongside the migrate database name ("pgx5" / "mysql"). Set by
+	// New (postgres build tag) or NewMySQL (mysql build tag); nil in a build with
+	// neither engine, where Up/Down/Status are never reached (NewEngine aborts
+	// boot first).
+	openDriver func(trackingTable string) (database.Driver, string, error)
 }
 
 // Up applies all pending migrations — first the framework (embedded outbox),
@@ -284,34 +276,16 @@ func (m *Manager) openService() (*migrate.Migrate, error) {
 	return m.open("service", src, serviceTrackingTbl)
 }
 
-// open creates a migrate.Migrate isolated per (source, trackingTable). Each
-// instance opens its own *sql.DB over the pgxpool (via stdlib.OpenDBFromPool,
-// which does NOT close the pool on Close — behavior documented in pgx/v5/stdlib).
+// open creates a migrate.Migrate isolated per (source, trackingTable). The
+// database driver comes from openDriver — the only dialect-bound piece, set by
+// the constructor behind its engine build tag (pgx5 for Postgres over the live
+// pool, mysql for a dedicated *sql.DB).
 func (m *Manager) open(name string, src source.Driver, trackingTable string) (*migrate.Migrate, error) {
-	if m.dialect == "mysql" {
-		drv, err := openMySQLMigrateDriver(m.dsn, trackingTable)
-		if err != nil {
-			return nil, err
-		}
-		mig, err := migrate.NewWithInstance(name, src, "mysql", drv)
-		if err != nil {
-			_ = drv.Close()
-			return nil, err
-		}
-		return mig, nil
-	}
-
-	// Postgres (default) — runs over the live pgx pool. stdlib.OpenDBFromPool
-	// does NOT close the pool on Close (documented in pgx/v5/stdlib).
-	db := stdlib.OpenDBFromPool(m.pool)
-	drv, err := pgxdriver.WithInstance(db, &pgxdriver.Config{
-		MigrationsTable: trackingTable,
-	})
+	drv, dbName, err := m.openDriver(trackingTable)
 	if err != nil {
-		_ = db.Close()
 		return nil, err
 	}
-	mig, err := migrate.NewWithInstance(name, src, "pgx5", drv)
+	mig, err := migrate.NewWithInstance(name, src, dbName, drv)
 	if err != nil {
 		_ = drv.Close()
 		return nil, err
