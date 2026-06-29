@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/ClaudioSchirmer/omnicore/infra/db/query/engine/mongo"
+	"github.com/ClaudioSchirmer/omnicore/infra/db/query"
 )
 
 // Item-8 integration test: the Mongo-view rebuild control plane is backend-
@@ -89,7 +89,7 @@ func TestMySQLRebuildLock_AcquireExcludeRegistryRelease(t *testing.T) {
 	// 3. The registry row is initialized on the pool, then driven done→processing
 	//    →done through the FIRST lock's pinned-session Querier (Fork B).
 	now := time.Now().UTC().Truncate(time.Second)
-	if err := mongo.InitViewRegistry(ctx, eng.Querier(), eng.Dialect(), mongo.InitViewRegistryInput{
+	if err := query.InitViewRegistry(ctx, eng.Querier(), eng.Dialect(), query.InitViewRegistryInput{
 		ViewName: view, Version: 1,
 		RebuildHash: "rh1", ArtifactHash: "ah1", CombinedHash: "ch1",
 		ServiceName: "mysql-test", Now: now,
@@ -97,29 +97,29 @@ func TestMySQLRebuildLock_AcquireExcludeRegistryRelease(t *testing.T) {
 		t.Fatalf("InitViewRegistry: %v", err)
 	}
 
-	if err := mongo.BeginRebuild(ctx, lock1.Querier(), eng.Dialect(), view, now); err != nil {
+	if err := query.BeginRebuild(ctx, lock1.Querier(), eng.Dialect(), view, now); err != nil {
 		t.Fatalf("BeginRebuild (pinned session): %v", err)
 	}
-	row, err := mongo.ReadViewRegistry(ctx, eng.Querier(), eng.Dialect(), view)
+	row, err := query.ReadViewRegistry(ctx, eng.Querier(), eng.Dialect(), view)
 	if err != nil || row == nil {
 		t.Fatalf("ReadViewRegistry after begin: row=%v err=%v", row, err)
 	}
-	if row.Status != mongo.ViewRegistryStatusProcessing {
+	if row.Status != query.ViewRegistryStatusProcessing {
 		t.Errorf("after BeginRebuild status = %q, want processing", row.Status)
 	}
 
-	if err := mongo.EndRebuild(ctx, lock1.Querier(), eng.Dialect(), mongo.EndRebuildInput{
+	if err := query.EndRebuild(ctx, lock1.Querier(), eng.Dialect(), query.EndRebuildInput{
 		ViewName: view, Version: 2,
 		RebuildHash: "rh2", ArtifactHash: "ah2", CombinedHash: "ch2",
 		ServiceName: "mysql-test", Now: now.Add(time.Second),
 	}); err != nil {
 		t.Fatalf("EndRebuild (pinned session): %v", err)
 	}
-	row, err = mongo.ReadViewRegistry(ctx, eng.Querier(), eng.Dialect(), view)
+	row, err = query.ReadViewRegistry(ctx, eng.Querier(), eng.Dialect(), view)
 	if err != nil || row == nil {
 		t.Fatalf("ReadViewRegistry after end: row=%v err=%v", row, err)
 	}
-	if row.Status != mongo.ViewRegistryStatusDone {
+	if row.Status != query.ViewRegistryStatusDone {
 		t.Errorf("after EndRebuild status = %q, want done", row.Status)
 	}
 	if row.CombinedHash != "ch2" || row.Version != 2 {
@@ -144,7 +144,7 @@ func TestMySQLRebuildLock_AcquireExcludeRegistryRelease(t *testing.T) {
 
 	// ReadViewRegistry on an unknown view returns (nil, nil) — the neutral
 	// no-rows path (database/sql sentinel differs from pgx; presence-by-Next).
-	missing, err := mongo.ReadViewRegistry(ctx, eng.Querier(), eng.Dialect(), "no-such-view")
+	missing, err := query.ReadViewRegistry(ctx, eng.Querier(), eng.Dialect(), "no-such-view")
 	if err != nil {
 		t.Fatalf("ReadViewRegistry(missing): %v", err)
 	}

@@ -11,7 +11,7 @@ import (
 
 	"github.com/ClaudioSchirmer/omnicore/domain"
 	"github.com/ClaudioSchirmer/omnicore/infra/db/core"
-	"github.com/ClaudioSchirmer/omnicore/infra/db/query/engine/mongo"
+	"github.com/ClaudioSchirmer/omnicore/infra/db/query"
 )
 
 // Phase 4b integration test: the backend-neutral Composer reads the MySQL engine
@@ -88,11 +88,11 @@ func TestMySQLComposer_RootWithEmbed(t *testing.T) {
 	}
 
 	// Compose the view through the MySQL engine (no Mongo embeds → NewComposer).
-	view := mongo.View("flat_persons").Version(1).Root("flat_persons").
+	view := query.View("flat_persons").Version(1).Root("flat_persons").
 		Schema(flatSchema()).
-		EmbedMany("addresses", mongo.FromSchema(addrSchema()))
+		EmbedMany("addresses", query.FromSchema(addrSchema()))
 
-	doc, err := mongo.NewComposer(eng).Compose(ctx, view, rootID)
+	doc, err := query.NewComposer(eng).Compose(ctx, view, rootID)
 	if err != nil {
 		t.Fatalf("Compose: %v", err)
 	}
@@ -167,8 +167,8 @@ func TestMySQLComposer_BoolColumn(t *testing.T) {
 		t.Fatalf("insert flag: %v", err)
 	}
 
-	view := mongo.View("flags").Version(1).Root("flags").Schema(flagSchema())
-	doc, err := mongo.NewComposer(eng).Compose(ctx, view, id.String())
+	view := query.View("flags").Version(1).Root("flags").Schema(flagSchema())
+	doc, err := query.NewComposer(eng).Compose(ctx, view, id.String())
 	if err != nil {
 		t.Fatalf("Compose: %v", err)
 	}
