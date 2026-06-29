@@ -37,7 +37,9 @@ type recTxHandle struct{ persistence.SealedTxHandle }
 
 var errRecExec = errors.New("rec exec error")
 
-func (t *recTx) failsOn(sql string) bool { return t.execErrSub != "" && strings.Contains(sql, t.execErrSub) }
+func (t *recTx) failsOn(sql string) bool {
+	return t.execErrSub != "" && strings.Contains(sql, t.execErrSub)
+}
 
 func (t *recTx) Exec(_ context.Context, sql string, _ ...any) error {
 	t.execs = append(t.execs, sql)

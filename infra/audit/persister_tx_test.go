@@ -9,6 +9,7 @@ import (
 
 	"github.com/google/uuid"
 
+	appaudit "github.com/ClaudioSchirmer/omnicore/application/audit"
 	"github.com/ClaudioSchirmer/omnicore/application/persistence"
 )
 
@@ -33,8 +34,8 @@ func (f *fakeTx) Exec(_ context.Context, sql string, args ...any) error {
 // binding tests; the dialect choice is irrelevant to what they assert.
 func pgPlaceholder(n int) string { return fmt.Sprintf("$%d", n) }
 
-func sampleEvent() AuditEvent {
-	return AuditEvent{
+func sampleEvent() appaudit.AuditEvent {
+	return appaudit.AuditEvent{
 		ThreadID:    uuid.NewString(),
 		EntityType:  "User",
 		EntityID:    uuid.NewString(),

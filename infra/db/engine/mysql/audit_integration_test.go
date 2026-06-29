@@ -8,6 +8,7 @@ import (
 	"errors"
 	"testing"
 
+	appaudit "github.com/ClaudioSchirmer/omnicore/application/audit"
 	"github.com/ClaudioSchirmer/omnicore/application/persistence"
 	"github.com/ClaudioSchirmer/omnicore/domain"
 	"github.com/ClaudioSchirmer/omnicore/infra/audit"
@@ -152,7 +153,7 @@ func TestMySQLEngine_AuditAndEvents(t *testing.T) {
 	if byID.EntityID != res.ID || byID.EntityType != entityType {
 		t.Errorf("FindByID drifted: %+v", byID)
 	}
-	if _, err := reader.FindByID(ctx, uuid.New()); !errors.Is(err, audit.ErrAuditNotFound) {
+	if _, err := reader.FindByID(ctx, uuid.New()); !errors.Is(err, appaudit.ErrAuditNotFound) {
 		t.Errorf("unknown id must map to ErrAuditNotFound, got %v", err)
 	}
 

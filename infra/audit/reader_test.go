@@ -8,6 +8,8 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+
+	appaudit "github.com/ClaudioSchirmer/omnicore/application/audit"
 )
 
 // SQL contract tests pin the wire shape so a refactor cannot silently
@@ -222,8 +224,8 @@ func TestErrAuditNotFound_HasStableMessage(t *testing.T) {
 	// errors.Is callers and external tools both branch on the sentinel; pin
 	// the user-visible message so a refactor cannot silently change the
 	// observable contract.
-	if ErrAuditNotFound == nil || ErrAuditNotFound.Error() != "audit: event not found" {
-		t.Errorf("ErrAuditNotFound = %v", ErrAuditNotFound)
+	if appaudit.ErrAuditNotFound == nil || appaudit.ErrAuditNotFound.Error() != "audit: event not found" {
+		t.Errorf("appaudit.ErrAuditNotFound = %v", appaudit.ErrAuditNotFound)
 	}
 }
 

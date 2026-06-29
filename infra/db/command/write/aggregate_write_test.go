@@ -35,7 +35,7 @@ func (e *aggWriteRoot) Modes() []domain.EntityMode {
 	}
 }
 func (e *aggWriteRoot) BuildRules(string, domain.Service, *domain.Rules) {}
-func (e *aggWriteRoot) GetAggregateRoot() *domain.AggregateRoot { return &e.AggregateRoot }
+func (e *aggWriteRoot) GetAggregateRoot() *domain.AggregateRoot          { return &e.AggregateRoot }
 func (e *aggWriteRoot) AggregateChildren() []domain.AggregateValueObject {
 	return []domain.AggregateValueObject{aggWriteChild{}}
 }

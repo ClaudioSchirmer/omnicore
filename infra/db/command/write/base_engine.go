@@ -4,6 +4,7 @@ import (
 	"context"
 	"log/slog"
 
+	appaudit "github.com/ClaudioSchirmer/omnicore/application/audit"
 	"github.com/ClaudioSchirmer/omnicore/application/persistence"
 	"github.com/ClaudioSchirmer/omnicore/domain"
 	"github.com/ClaudioSchirmer/omnicore/infra/audit"
@@ -50,7 +51,7 @@ type HookContext struct {
 // the event once (in-TX) and fires echo/publish after COMMIT from the same
 // value. A zero bundle (nil Ev, nil Evs) is inert.
 type AuditBundle struct {
-	Ev  *audit.AuditEvent
+	Ev  *appaudit.AuditEvent
 	Evs []domain.DomainEvent
 }
 
@@ -83,8 +84,8 @@ func (b *BaseEngine) AuditEnabled() bool {
 // BuildAudit returns a bundle for a write verb: the event is built (via the
 // supplied dialect-neutral builder) only when audit is enabled; the entity's
 // domain events ride along for post-commit publishing regardless.
-func (b *BaseEngine) BuildAudit(build func() audit.AuditEvent, evs []domain.DomainEvent) AuditBundle {
-	var ev *audit.AuditEvent
+func (b *BaseEngine) BuildAudit(build func() appaudit.AuditEvent, evs []domain.DomainEvent) AuditBundle {
+	var ev *appaudit.AuditEvent
 	if b.AuditEnabled() {
 		built := build()
 		ev = &built
@@ -96,7 +97,7 @@ func (b *BaseEngine) BuildAudit(build func() audit.AuditEvent, evs []domain.Doma
 // destination is active. The placeholders are rendered through the tx's Dialect
 // ($n on Postgres, ? on MySQL); the row id is Go-generated inside the audit
 // package. No-op when audit is off or the event was never built.
-func (b *BaseEngine) WriteAuditRow(ctx context.Context, tx Tx, ev *audit.AuditEvent) error {
+func (b *BaseEngine) WriteAuditRow(ctx context.Context, tx Tx, ev *appaudit.AuditEvent) error {
 	if ev == nil || b.auditCfg == nil || !b.auditCfg.Includes(audit.DestinationDatabase) {
 		return nil
 	}
@@ -105,7 +106,7 @@ func (b *BaseEngine) WriteAuditRow(ctx context.Context, tx Tx, ev *audit.AuditEv
 
 // EchoAuditSlog emits the post-commit slog audit line when the slog destination
 // is active. No-op when audit is off or the event was never built.
-func (b *BaseEngine) EchoAuditSlog(ctx persistence.RequestContext, ev *audit.AuditEvent) {
+func (b *BaseEngine) EchoAuditSlog(ctx persistence.RequestContext, ev *appaudit.AuditEvent) {
 	if ev == nil || b.auditCfg == nil || !b.auditCfg.Includes(audit.DestinationSlog) {
 		return
 	}

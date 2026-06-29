@@ -17,7 +17,7 @@ func (e *covAgg) Modes() []domain.EntityMode {
 	}
 }
 func (e *covAgg) BuildRules(string, domain.Service, *domain.Rules) {}
-func (e *covAgg) GetAggregateRoot() *domain.AggregateRoot { return &e.AggregateRoot }
+func (e *covAgg) GetAggregateRoot() *domain.AggregateRoot          { return &e.AggregateRoot }
 func (e *covAgg) AggregateChildren() []domain.AggregateValueObject {
 	return []domain.AggregateValueObject{covChild{}}
 }

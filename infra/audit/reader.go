@@ -7,14 +7,9 @@ import (
 	"fmt"
 
 	"github.com/google/uuid"
-)
 
-// ErrAuditNotFound is the sentinel FindByID returns when no audit_events
-// row matches the supplied id. Callers branch with `errors.Is(err,
-// ErrAuditNotFound)` to map the miss to whatever transport response shape
-// suits them (HTTP 404, empty CLI output, etc.). Transport / SQL failures
-// surface as the underlying error wrapped with a "audit: ..." prefix.
-var ErrAuditNotFound = errors.New("audit: event not found")
+	appaudit "github.com/ClaudioSchirmer/omnicore/application/audit"
+)
 
 // Rows is the minimal multi-row cursor the audit reader consumes — the read
 // twin of Execer's write surface. It mirrors db.Rows method-for-method but is
@@ -38,23 +33,6 @@ type Queryer interface {
 	Query(ctx context.Context, sql string, args ...any) (Rows, error)
 }
 
-// Reader is the backend-neutral audit read port. It is the generic interface
-// the transport layer depends on; the concrete reader runs over whatever
-// relational engine the service booted (Postgres or MySQL), built by
-// db.NewAuditReader from the engine's read seam. The audit trail stores ids as
-// UUID text (Postgres UUID / MySQL CHAR(36)) on every dialect, so the only
-// engine-specific bit the reader needs is the positional placeholder — supplied
-// by the dialect — never a value codec.
-type Reader interface {
-	// FindByID returns the audit_events row whose id matches the supplied UUID.
-	// (nil, ErrAuditNotFound) on miss; (nil, err) on transport failure;
-	// (*AuditEvent, nil) on hit.
-	FindByID(ctx context.Context, id uuid.UUID) (*AuditEvent, error)
-	// FindByAggregate returns every audit_events row for one aggregate, newest
-	// first. An aggregate with no rows yields an empty (non-nil) slice + nil.
-	FindByAggregate(ctx context.Context, entityType, aggregateID string) ([]*AuditEvent, error)
-}
-
 // reader is the single neutral Reader implementation. There is no per-dialect
 // reader: the SELECT text is identical on every engine and the only divergence
 // (the positional placeholder, "$n" on Postgres / "?" on MySQL) is rendered by
@@ -69,7 +47,7 @@ type reader struct {
 // placeholder renderer. db.NewAuditReader is the canonical constructor that wires
 // it from a RelationalEngine; this lower-level entry point exists so a test (or a
 // service pinning a bespoke connection) can supply its own Queryer.
-func NewReader(q Queryer, placeholder func(int) string) Reader {
+func NewReader(q Queryer, placeholder func(int) string) appaudit.Reader {
 	return &reader{q: q, placeholder: placeholder}
 }
 
@@ -97,7 +75,7 @@ FROM audit_events`
 // The id binds as canonical text on every dialect (Postgres' UUID column and
 // MySQL's CHAR(36) both accept it), mirroring how InsertAuditEvent writes it —
 // no BINARY(16) value codec is involved on the audit trail.
-func (r *reader) FindByID(ctx context.Context, id uuid.UUID) (*AuditEvent, error) {
+func (r *reader) FindByID(ctx context.Context, id uuid.UUID) (*appaudit.AuditEvent, error) {
 	if r.q == nil {
 		return nil, errors.New("audit: nil querier")
 	}
@@ -114,7 +92,7 @@ func (r *reader) FindByID(ctx context.Context, id uuid.UUID) (*AuditEvent, error
 		if err := rows.Err(); err != nil {
 			return nil, fmt.Errorf("audit: find by id: %w", err)
 		}
-		return nil, ErrAuditNotFound
+		return nil, appaudit.ErrAuditNotFound
 	}
 	ev, err := scanAuditRow(rows.Scan)
 	if err != nil {
@@ -134,7 +112,7 @@ func (r *reader) FindByID(ctx context.Context, id uuid.UUID) (*AuditEvent, error
 // helper returns every matching row; large aggregates should slice the
 // result downstream, or run a bespoke query with explicit LIMIT/OFFSET
 // against the engine's Querier when the cardinality is known to be high.
-func (r *reader) FindByAggregate(ctx context.Context, entityType, aggregateID string) ([]*AuditEvent, error) {
+func (r *reader) FindByAggregate(ctx context.Context, entityType, aggregateID string) ([]*appaudit.AuditEvent, error) {
 	if r.q == nil {
 		return nil, errors.New("audit: nil querier")
 	}
@@ -151,7 +129,7 @@ func (r *reader) FindByAggregate(ctx context.Context, entityType, aggregateID st
 	}
 	defer rows.Close()
 
-	out := []*AuditEvent{}
+	out := []*appaudit.AuditEvent{}
 	for rows.Next() {
 		ev, err := scanAuditRow(rows.Scan)
 		if err != nil {
@@ -169,10 +147,10 @@ func (r *reader) FindByAggregate(ctx context.Context, entityType, aggregateID st
 // Mirrors the shape buildAuditPayload (persister.go) writes so a row's
 // roundtrip through the table preserves the AuditEvent semantic.
 type auditPayload struct {
-	ActorClaims map[string]any          `json:"actorClaims,omitempty"`
-	Snapshot    map[string]any          `json:"snapshot,omitempty"`
-	Changes     []FieldChange           `json:"changes,omitempty"`
-	Children    map[string][]ChildEvent `json:"children,omitempty"`
+	ActorClaims map[string]any                   `json:"actorClaims,omitempty"`
+	Snapshot    map[string]any                   `json:"snapshot,omitempty"`
+	Changes     []appaudit.FieldChange           `json:"changes,omitempty"`
+	Children    map[string][]appaudit.ChildEvent `json:"children,omitempty"`
 }
 
 // scanAuditRow consumes one row (either the single FindByID row or one
@@ -188,7 +166,7 @@ type auditPayload struct {
 // returns float64 / string / bool / nil / map / slice, not the original
 // Go types the write side handed over. Compare snapshot values as JSON
 // (or stringified) rather than asserting on int / time.Time.
-func scanAuditRow(scan func(dest ...any) error) (*AuditEvent, error) {
+func scanAuditRow(scan func(dest ...any) error) (*appaudit.AuditEvent, error) {
 	var (
 		id           uuid.UUID
 		aggregateID  uuid.UUID
@@ -197,7 +175,7 @@ func scanAuditRow(scan func(dest ...any) error) (*AuditEvent, error) {
 		actorIssuer  *string
 		tenantID     *string
 		payloadBytes []byte
-		ev           AuditEvent
+		ev           appaudit.AuditEvent
 	)
 	err := scan(
 		&id,

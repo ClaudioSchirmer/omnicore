@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"testing"
 
+	appaudit "github.com/ClaudioSchirmer/omnicore/application/audit"
 	"github.com/ClaudioSchirmer/omnicore/application/persistence"
 )
 
@@ -13,7 +14,7 @@ import (
 // tests) — pgx round-trips are observable behaviorally there, not via mocks.
 
 func TestBuildAuditPayload_OmitsEmptyBlocks(t *testing.T) {
-	payload, err := buildAuditPayload(AuditEvent{
+	payload, err := buildAuditPayload(appaudit.AuditEvent{
 		// All variable blocks empty — payload should be `{}`, not `{"snapshot":null,...}`.
 	})
 	if err != nil {
@@ -29,11 +30,11 @@ func TestBuildAuditPayload_OmitsEmptyBlocks(t *testing.T) {
 }
 
 func TestBuildAuditPayload_CarriesPopulatedBlocks(t *testing.T) {
-	payload, err := buildAuditPayload(AuditEvent{
+	payload, err := buildAuditPayload(appaudit.AuditEvent{
 		ActorClaims: map[string]any{"roles": []string{"admin"}},
 		Snapshot:    map[string]any{"name": "alice"},
-		Changes:     []FieldChange{{Field: "name", From: "a", To: "b"}},
-		Children: map[string][]ChildEvent{
+		Changes:     []appaudit.FieldChange{{Field: "name", From: "a", To: "b"}},
+		Children: map[string][]appaudit.ChildEvent{
 			"Address": {{ID: "a1", Op: "inserted", Snapshot: map[string]any{"city": "X"}}},
 		},
 	})

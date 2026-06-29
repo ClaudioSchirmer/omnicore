@@ -88,7 +88,10 @@ type fakeWriteTx struct {
 	lastSQL string
 }
 
-func (t *fakeWriteTx) Exec(_ context.Context, sql string, _ ...any) error { t.lastSQL = sql; return t.execErr }
+func (t *fakeWriteTx) Exec(_ context.Context, sql string, _ ...any) error {
+	t.lastSQL = sql
+	return t.execErr
+}
 func (t *fakeWriteTx) ExecCount(_ context.Context, sql string, _ ...any) (int64, error) {
 	t.lastSQL = sql
 	if t.execErr != nil {

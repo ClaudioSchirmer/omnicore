@@ -8,6 +8,7 @@ import (
 
 	"github.com/google/uuid"
 
+	appaudit "github.com/ClaudioSchirmer/omnicore/application/audit"
 	"github.com/ClaudioSchirmer/omnicore/application/persistence"
 )
 
@@ -51,7 +52,7 @@ type Execer interface {
 //     audit_events_actor_idx (partial on Postgres: WHERE actor IS NOT NULL)
 //     excludes anonymous writes. Filters for "what alice did" stay on the index.
 //   - ActorIssuer / TenantID empty → NULL on the row, same rationale.
-func InsertAuditEvent(ctx context.Context, exec Execer, placeholder func(int) string, ev AuditEvent) error {
+func InsertAuditEvent(ctx context.Context, exec Execer, placeholder func(int) string, ev appaudit.AuditEvent) error {
 	payload, err := buildAuditPayload(ev)
 	if err != nil {
 		return fmt.Errorf("audit: marshal payload: %w", err)
@@ -88,7 +89,7 @@ func InsertAuditEvent(ctx context.Context, exec Execer, placeholder func(int) st
 // buildAuditPayload marshals the variable parts of ev into a single JSON blob.
 // Empty/nil sub-blocks are elided so payload size scales with what actually
 // exists on the event, not with the AuditEvent's struct shape.
-func buildAuditPayload(ev AuditEvent) ([]byte, error) {
+func buildAuditPayload(ev appaudit.AuditEvent) ([]byte, error) {
 	payload := map[string]any{}
 	if len(ev.ActorClaims) > 0 {
 		payload["actorClaims"] = ev.ActorClaims

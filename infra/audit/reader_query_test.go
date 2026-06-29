@@ -9,6 +9,8 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+
+	appaudit "github.com/ClaudioSchirmer/omnicore/application/audit"
 )
 
 // ─── neutral read fakes (mirror the engine's db.Rows seam, no driver dep) ─────
@@ -64,7 +66,7 @@ func (r *fakeRows) Scan(dest ...any) error {
 // testReader builds a reader over the fake with a Postgres-style placeholder
 // renderer — the placeholder shape is irrelevant to the fake (it records the
 // SQL verbatim), so any deterministic renderer works.
-func testReader(q Queryer) Reader {
+func testReader(q Queryer) appaudit.Reader {
 	return NewReader(q, func(n int) string { return fmt.Sprintf("$%d", n) })
 }
 
@@ -147,15 +149,15 @@ func TestFindByID_Hit(t *testing.T) {
 func TestFindByID_MissMapsToSentinel(t *testing.T) {
 	q := &fakeQueryer{rows: &fakeRows{}} // no rows
 	_, err := testReader(q).FindByID(context.Background(), uuid.New())
-	if !errors.Is(err, ErrAuditNotFound) {
-		t.Errorf("empty result must map to ErrAuditNotFound, got %v", err)
+	if !errors.Is(err, appaudit.ErrAuditNotFound) {
+		t.Errorf("empty result must map to appaudit.ErrAuditNotFound, got %v", err)
 	}
 }
 
 func TestFindByID_QueryErrorWrapped(t *testing.T) {
 	q := &fakeQueryer{queryErr: errors.New("conn reset")}
 	_, err := testReader(q).FindByID(context.Background(), uuid.New())
-	if err == nil || errors.Is(err, ErrAuditNotFound) {
+	if err == nil || errors.Is(err, appaudit.ErrAuditNotFound) {
 		t.Errorf("transport failure must surface as a wrapped error, got %v", err)
 	}
 }
@@ -166,7 +168,7 @@ func TestFindByID_ScanErrorWrapped(t *testing.T) {
 		scanErr: errors.New("bad scan"),
 	}}
 	_, err := testReader(q).FindByID(context.Background(), uuid.New())
-	if err == nil || errors.Is(err, ErrAuditNotFound) {
+	if err == nil || errors.Is(err, appaudit.ErrAuditNotFound) {
 		t.Errorf("scan failure must surface as a wrapped error, got %v", err)
 	}
 }
@@ -176,7 +178,7 @@ func TestFindByID_ScanErrorWrapped(t *testing.T) {
 func TestFindByID_EmptyWithRowsErrIsTransport(t *testing.T) {
 	q := &fakeQueryer{rows: &fakeRows{errAfter: errors.New("late rows err")}}
 	_, err := testReader(q).FindByID(context.Background(), uuid.New())
-	if err == nil || errors.Is(err, ErrAuditNotFound) {
+	if err == nil || errors.Is(err, appaudit.ErrAuditNotFound) {
 		t.Errorf("rows.Err() on an empty cursor must surface, not map to not-found, got %v", err)
 	}
 }

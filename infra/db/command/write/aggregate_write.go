@@ -4,9 +4,9 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/ClaudioSchirmer/omnicore/application/audit"
 	"github.com/ClaudioSchirmer/omnicore/application/persistence"
 	"github.com/ClaudioSchirmer/omnicore/domain"
-	"github.com/ClaudioSchirmer/omnicore/infra/audit"
 )
 
 // The aggregate-aware write path, written once on BaseEngine. Guarantees

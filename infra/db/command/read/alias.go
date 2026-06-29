@@ -7,8 +7,8 @@ package read
 // is the safe edge direction. Mirrors the db/core_bridge.go pattern.
 
 import (
-	"github.com/ClaudioSchirmer/omnicore/infra/db/core"
 	"github.com/ClaudioSchirmer/omnicore/infra/db/command/write"
+	"github.com/ClaudioSchirmer/omnicore/infra/db/core"
 )
 
 type (

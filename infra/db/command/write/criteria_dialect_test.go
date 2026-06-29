@@ -18,7 +18,7 @@ import (
 // surface the translator exercises.
 type testPGDialect struct{}
 
-func (testPGDialect) Placeholder(n int) string      { return fmt.Sprintf("$%d", n) }
+func (testPGDialect) Placeholder(n int) string { return fmt.Sprintf("$%d", n) }
 func (testPGDialect) QuoteIdent(name string) string {
 	if !SafeIdentifier(name) {
 		panic(fmt.Sprintf("test: invalid SQL identifier %q", name))

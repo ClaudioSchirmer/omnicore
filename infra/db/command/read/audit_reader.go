@@ -3,6 +3,7 @@ package read
 import (
 	"context"
 
+	appaudit "github.com/ClaudioSchirmer/omnicore/application/audit"
 	"github.com/ClaudioSchirmer/omnicore/infra/audit"
 )
 
@@ -28,6 +29,6 @@ func (a auditQuerier) Query(ctx context.Context, sql string, args ...any) (audit
 // This is the audit-side parallel of db.NewAggregateLoader: a free constructor
 // taking the neutral engine, so a service exposes audit reads with one line and
 // the same code path serves whichever backend booted.
-func NewAuditReader(eng RelationalEngine) audit.Reader {
+func NewAuditReader(eng RelationalEngine) appaudit.Reader {
 	return audit.NewReader(auditQuerier{q: eng.Querier()}, eng.Dialect().Placeholder)
 }

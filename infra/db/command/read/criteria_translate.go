@@ -4,8 +4,8 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/ClaudioSchirmer/omnicore/infra/db/criteria"
 	"github.com/ClaudioSchirmer/omnicore/infra/db/core"
+	"github.com/ClaudioSchirmer/omnicore/infra/db/criteria"
 )
 
 // sqlVisitor walks a criteria.Expr and accumulates a WHERE fragment + bound
@@ -87,12 +87,12 @@ func (v *sqlVisitor) VisitComparison(c criteria.Comparison) error {
 }
 
 var binaryOps = map[criteria.Operator]string{
-	criteria.OpEq:    "=",
-	criteria.OpNe:    "<>",
-	criteria.OpGt:    ">",
-	criteria.OpGte:   ">=",
-	criteria.OpLt:    "<",
-	criteria.OpLte:   "<=",
+	criteria.OpEq:   "=",
+	criteria.OpNe:   "<>",
+	criteria.OpGt:   ">",
+	criteria.OpGte:  ">=",
+	criteria.OpLt:   "<",
+	criteria.OpLte:  "<=",
 	criteria.OpLike: "LIKE",
 	// OpILike is not here — it renders as a whole clause via Dialect.ILikeClause
 	// (native ILIKE on Postgres, LOWER(col) LIKE LOWER(?) on MySQL).

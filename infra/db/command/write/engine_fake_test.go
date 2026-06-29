@@ -47,7 +47,7 @@ func (fakeRelEngine) Close() {}
 // acquired, its Querier the engine's scriptable read seam.
 type fakeRebuildLock struct{ q Querier }
 
-func (fakeRebuildLock) Acquired() bool             { return true }
-func (fakeRebuildLock) Holder() string             { return "" }
-func (l fakeRebuildLock) Querier() Querier          { return l.q }
+func (fakeRebuildLock) Acquired() bool                { return true }
+func (fakeRebuildLock) Holder() string                { return "" }
+func (l fakeRebuildLock) Querier() Querier            { return l.q }
 func (fakeRebuildLock) Release(context.Context) error { return nil }

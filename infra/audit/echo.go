@@ -4,6 +4,7 @@ import (
 	"context"
 	"log/slog"
 
+	appaudit "github.com/ClaudioSchirmer/omnicore/application/audit"
 	"github.com/ClaudioSchirmer/omnicore/application/persistence"
 )
 
@@ -18,7 +19,7 @@ import (
 // the audit_events row remains the source of truth.
 //
 // logger may be nil — falls back to slog.Default().
-func EchoSlog(ctx persistence.RequestContext, logger *slog.Logger, ev AuditEvent) {
+func EchoSlog(ctx persistence.RequestContext, logger *slog.Logger, ev appaudit.AuditEvent) {
 	if logger == nil {
 		logger = slog.Default()
 	}

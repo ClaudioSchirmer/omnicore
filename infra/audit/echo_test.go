@@ -9,6 +9,8 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+
+	appaudit "github.com/ClaudioSchirmer/omnicore/application/audit"
 )
 
 func newCaptureLogger() (*slog.Logger, *bytes.Buffer) {
@@ -37,7 +39,7 @@ func extractAuditLogLine(t *testing.T, buf *bytes.Buffer) map[string]any {
 
 func TestEchoSlog_FlatTopLevelFields(t *testing.T) {
 	logger, buf := newCaptureLogger()
-	ev := AuditEvent{
+	ev := appaudit.AuditEvent{
 		ThreadID:   uuid.NewString(),
 		EntityType: "User",
 		EntityID:   "user-1",
@@ -71,7 +73,7 @@ func TestEchoSlog_OmitemptyFieldsSkippedWhenAbsent(t *testing.T) {
 	logger, buf := newCaptureLogger()
 	// Minimal event — no ActorIssuer, no ActorClaims, no TenantID, no
 	// Snapshot/Changes/Children. Nothing should leak as empty values.
-	EchoSlog(nil, logger, AuditEvent{
+	EchoSlog(nil, logger, appaudit.AuditEvent{
 		ThreadID:   "t",
 		EntityType: "T",
 		EntityID:   "id",
@@ -91,7 +93,7 @@ func TestEchoSlog_OmitemptyFieldsSkippedWhenAbsent(t *testing.T) {
 
 func TestEchoSlog_TenantIDEmittedWhenPopulated(t *testing.T) {
 	logger, buf := newCaptureLogger()
-	EchoSlog(nil, logger, AuditEvent{
+	EchoSlog(nil, logger, appaudit.AuditEvent{
 		ThreadID:   "t",
 		EntityType: "T",
 		EntityID:   "id",
@@ -112,7 +114,7 @@ func TestEchoSlog_TraceIDMirroredToEcho(t *testing.T) {
 	// The slog echo must carry the same trace_id the in-TX audit_events row
 	// does, so both audit destinations pivot to the trace.
 	logger, buf := newCaptureLogger()
-	EchoSlog(nil, logger, AuditEvent{
+	EchoSlog(nil, logger, appaudit.AuditEvent{
 		ThreadID:   "t",
 		TraceID:    "4bf92f3577b34da6a3ce929d0e0e4736",
 		EntityType: "T",
@@ -130,7 +132,7 @@ func TestEchoSlog_TraceIDMirroredToEcho(t *testing.T) {
 
 func TestEchoSlog_TraceIDOmittedWhenEmpty(t *testing.T) {
 	logger, buf := newCaptureLogger()
-	EchoSlog(nil, logger, AuditEvent{
+	EchoSlog(nil, logger, appaudit.AuditEvent{
 		ThreadID: "t", EntityType: "T", EntityID: "id", Verb: "insert",
 		ActionName: "GetInsertable", Kind: "snapshot", DateTime: time.Now(),
 	})
@@ -142,7 +144,7 @@ func TestEchoSlog_TraceIDOmittedWhenEmpty(t *testing.T) {
 
 func TestEchoSlog_ChildrenBlockEmittedWhenPopulated(t *testing.T) {
 	logger, buf := newCaptureLogger()
-	EchoSlog(nil, logger, AuditEvent{
+	EchoSlog(nil, logger, appaudit.AuditEvent{
 		ThreadID:   "t",
 		EntityType: "User",
 		EntityID:   "u",
@@ -151,7 +153,7 @@ func TestEchoSlog_ChildrenBlockEmittedWhenPopulated(t *testing.T) {
 		Kind:       "delta",
 		Actor:      "alice",
 		DateTime:   time.Now(),
-		Children: map[string][]ChildEvent{
+		Children: map[string][]appaudit.ChildEvent{
 			"Address": {{ID: "a1", Op: "inserted", Snapshot: map[string]any{"city": "X"}}},
 		},
 	})
@@ -169,7 +171,7 @@ func TestEchoSlog_ChildrenBlockEmittedWhenPopulated(t *testing.T) {
 func TestEchoSlog_NilLoggerFallsBackToDefault(t *testing.T) {
 	// Should not panic when logger is nil — slog.Default() is the documented
 	// fallback.
-	EchoSlog(nil, nil, AuditEvent{
+	EchoSlog(nil, nil, appaudit.AuditEvent{
 		ThreadID: "t", EntityType: "T", EntityID: "id",
 		Verb: "insert", ActionName: "x", Kind: "snapshot",
 		Actor: "anonymous", DateTime: time.Now(),

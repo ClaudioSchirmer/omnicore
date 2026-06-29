@@ -11,6 +11,7 @@ import (
 	"strings"
 	"testing"
 
+	appaudit "github.com/ClaudioSchirmer/omnicore/application/audit"
 	"github.com/ClaudioSchirmer/omnicore/application/configuration"
 	"github.com/ClaudioSchirmer/omnicore/application/persistence"
 	"github.com/ClaudioSchirmer/omnicore/domain"
@@ -127,7 +128,7 @@ func TestPostgres_AuditReader_ReadBack(t *testing.T) {
 		t.Errorf("FindByID drifted: %+v", byID)
 	}
 
-	if _, err := reader.FindByID(context.Background(), uuid.New()); !errors.Is(err, audit.ErrAuditNotFound) {
+	if _, err := reader.FindByID(context.Background(), uuid.New()); !errors.Is(err, appaudit.ErrAuditNotFound) {
 		t.Errorf("unknown id must map to ErrAuditNotFound, got %v", err)
 	}
 }
