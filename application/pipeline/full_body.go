@@ -4,8 +4,9 @@ package pipeline
 // "I require ALL exported fields of Cmd present in the body JSON before
 // dispatch". The Fiber wrapper (web.HandleCommand/HandleCommandByID)
 // inspects this marker via type-assertion to FullBodyEnforcer and, when
-// present, runs the reflective JSON presence check. Missing field → 422 with
-// RequiredFieldNotification per missing field, via the normal pipeline.
+// present, runs the reflective JSON presence check. Missing field → 400 with
+// RequiredFieldNotification (carrying SemanticSchema) per missing field, via
+// the normal pipeline.
 //
 // The method is unexported on purpose: only handlers defined in the pipeline
 // package or that embed FullBody acquire the semantics. This prevents other

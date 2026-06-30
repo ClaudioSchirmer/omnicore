@@ -39,7 +39,7 @@ go test -tags postgres ./... -count=1               # unit suite; swap to -tags 
 go test -tags 'integration postgres' ./... -count=1 # integration (needs docker compose up in ../omnicore-example-users/devops)
 ```
 
-A build links **exactly one** relational engine, chosen by build tag: `-tags postgres` or `-tags mysql`. There is no default — building with neither tag aborts at boot (`db.NewEngine`: no engine registered for the configured dialect), and building with both fails to compile (the `infra/db/core` build guard). The tag governs which driver stack (pgx vs go-sql-driver) and dialect-bound boot wiring (audit partitions, migration runner) is linked.
+A build links a relational engine via build tag: `-tags postgres` or `-tags mysql` links exactly that one; `-tags 'postgres mysql'` links **both** and selects the active dialect at runtime from `relational.dialect`. There is no default — building with neither tag aborts at boot (`db.NewEngine`: no engine registered for the configured dialect). The tag(s) govern which driver stack (pgx vs go-sql-driver) and dialect-bound boot wiring (audit partitions, migration runner) is linked.
 
 Tests sit next to the file under test (`foo.go` ↔ `foo_test.go`). Integration tests opt in via `//go:build integration && <engine>` (real Postgres/MySQL + Mongo + Kafka), excluded from the default run; every test file in an engine package also carries its engine tag, so the unit suite runs under the chosen engine tag.
 
@@ -742,7 +742,7 @@ func (h *CreateUserHandler) Handle(ctx *configuration.AppContext, cmd CreateUser
 
 **`db.BaseRepository[T]`** implements `Scope(ctx, opts...) domain.Writer` (the `boundWriter` carries the 5 writes delegating to its `Engine` — an `db.RelationalEngine`, `*Postgres` today — with the bound ctx) and `New() T` via `NewEntity`. **`NewEntity` is mandatory** (`New()` panics if nil; typically shared with the loader). **`db.ConstraintBinding`** translates unique violations (PG `23505`) into `*InfrastructureError` carrying the typed notification via `db.FieldErrorWithCause`. Unregistered constraints / other codes / non-pgErr errors return raw.
 
-**Relational engine seam.** The write binding and the composition root depend on the `db.RelationalEngine` port (write methods + `Close`), not the concrete driver — the seam that lets a second backend (MySQL, later SQL Server) drop in. The dialect is chosen once at boot via `relational.dialect` (mandatory — `postgres` | `mysql`, no default; absent dialect aborts boot, and the DSN is `relational.dsn`); engines self-register through `db.RegisterEngine` (database/sql-style) and `bootstrap` builds via `db.NewEngine`. Each engine is compiled behind its own build tag (`-tags postgres` / `-tags mysql`), so a binary links exactly one — its driver stack (pgx / go-sql-driver) and dialect-bound boot wiring (the `bootstrap/engine_<dialect>.go` file: registration, audit partitions, migration runner) come only with the tag. Building with neither tag aborts at boot (`NewEngine`: no engine registered); building with both fails to compile (the `infra/db/core` build guard). `Deps.DB` and `BaseRepository.Engine` are the neutral handles. Code that still needs pgx-specific access (the pool for custom SELECTs, partitions, migrations — PG-bound) recovers the concrete adapter via `postgres.AsPostgres(engine)`, a documented PG-only escape hatch. The Mongo-view rebuild mutex is backend-neutral through `RelationalEngine.AcquireRebuildLock` (PG `pg_advisory_lock`, MySQL `GET_LOCK`), not the escape hatch. The in-TX twin is `db.UnwrapTx(TxHandle) db.Tx` (canonical, backend-neutral); `postgres.UnwrapPgxTx(TxHandle) pgx.Tx` is the PG-only escape hatch on that side.
+**Relational engine seam.** The write binding and the composition root depend on the `db.RelationalEngine` port (write methods + `Close`), not the concrete driver — the seam that lets a second backend (MySQL, later SQL Server) drop in. The dialect is chosen once at boot via `relational.dialect` (mandatory — `postgres` | `mysql`, no default; absent dialect aborts boot, and the DSN is `relational.dsn`); engines self-register through `db.RegisterEngine` (database/sql-style) and `bootstrap` builds via `db.NewEngine`. Each engine is compiled behind its own build tag (`-tags postgres` / `-tags mysql`), so a binary links the tagged engine(s) — the driver stack (pgx / go-sql-driver) and dialect-bound boot wiring (the `bootstrap/engine_<dialect>.go` file: registration, audit partitions, migration runner) come only with the tag. `-tags 'postgres mysql'` links both engines and dispatches on the runtime dialect (`bootstrap/engine_both.go`). Building with neither tag aborts at boot (`NewEngine`: no engine registered). `Deps.DB` and `BaseRepository.Engine` are the neutral handles. Code that still needs pgx-specific access (the pool for custom SELECTs, partitions, migrations — PG-bound) recovers the concrete adapter via `postgres.AsPostgres(engine)`, a documented PG-only escape hatch. The Mongo-view rebuild mutex is backend-neutral through `RelationalEngine.AcquireRebuildLock` (PG `pg_advisory_lock`, MySQL `GET_LOCK`), not the escape hatch. The in-TX twin is `db.UnwrapTx(TxHandle) db.Tx` (canonical, backend-neutral); `postgres.UnwrapPgxTx(TxHandle) pgx.Tx` is the PG-only escape hatch on that side.
 
 **`db.AggregateLoader[T]`** loads live aggregates (root + children) via the search engine — `FindOne(ctx, *criteria.Query)` / `FindAll(ctx, *criteria.Query)`. Two coexisting scan modes:
 
@@ -995,7 +995,7 @@ func (EmailAlreadyExistsNotification) Semantic() domain.NotificationSemantic {
 | Aggregate load | `fwinfra.NewAggregateLoader[T](pg, factory).WithSchema(schema)` + `FindOne`/`FindAll(ctx, criteria...)` |
 | Load config | `bootstrap.LoadConfig()` (`APP_PROFILE` env; `./microservice.${APP_PROFILE}.yaml`) |
 | Migrations | `migration.New(pg.Pool(), dir)` |
-| Mongo drift reconcile | `infra.DetectViewDrift` + `SyncEngine.ExecuteRebuild`; `mongo.rebuild` yaml |
+| Mongo drift reconcile | `query.DetectViewDrift` + `SyncEngine.ExecuteRebuild`; `mongo.rebuild` yaml |
 | Service capability | implement `bootstrap.Feature` / `ReadableFeature`; bundle in `Wiring.Features` |
 | OpenAPI + Swagger | `Wiring.OpenAPI = &openapi.Config{...}`; document via `*Spec` wrappers + `openapi.Mount`/`MountRaw` |
 | GraphQL endpoint | `Wiring.GraphQL = fwgraphql.New(d.Pipeline).Register(fwgraphql.QueryWithParams/MutationWithBody[...])`; own surface, not in Swagger; `graphql:` yaml knobs |
@@ -1187,7 +1187,7 @@ State machine: `done →(processing, started_at, pid, host)→ processing →(re
 
 ### Drift detection at boot
 
-`bootstrap.Run` runs `infra.DetectViewDrift` between `ApplyMongoSpecs` and `SyncEngine.Start`. Eight branches over (registry × Mongo × code version):
+`bootstrap.Run` runs `query.DetectViewDrift` between `ApplyMongoSpecs` and `SyncEngine.Start`. Eight branches over (registry × Mongo × code version):
 
 | Decision | Condition | autoRun=true | autoRun=check |
 |---|---|---|---|
@@ -1218,7 +1218,7 @@ mongo:
 
 - Strict decoding on `mongo.rebuild`: unknown keys abort boot.
 - `OMNICORE_MONGO_FORCE_REBUILD=true` governs only index divergence in `ApplyMongoSpecs`; it never triggers this rebuild path and never drops collections.
-- Registry helpers (any `db.Querier` + `db.Dialect`): `infra.{ReadViewRegistry, InitViewRegistry, BeginRebuild, EndRebuild}(ctx, q, d, …)` and `infra.ListNonDone(ctx, q)`. Lock: `RelationalEngine.AcquireRebuildLock(ctx, viewName) (db.RebuildLock, error)` (the per-dialect advisory-lock primitive; the PG `pg_advisory_lock` / MySQL `GET_LOCK` SQL is internal to each engine). Drift: `infra.DetectViewDrift(ctx, mongo, engine, views)` → `*DriftReport`. Orchestration: `(*SyncEngine).{ExecuteRebuild, InitRegistryOnly, RefreshRegistryArtifactOnly}`.
+- Registry helpers (any `db.Querier` + `db.Dialect`): `query.{ReadViewRegistry, InitViewRegistry, BeginRebuild, EndRebuild}(ctx, q, d, …)` and `query.ListNonDone(ctx, q)`. Lock: `RelationalEngine.AcquireRebuildLock(ctx, viewName) (db.RebuildLock, error)` (the per-dialect advisory-lock primitive; the PG `pg_advisory_lock` / MySQL `GET_LOCK` SQL is internal to each engine). Drift: `query.DetectViewDrift(ctx, mongo, engine, views)` → `*DriftReport`. Orchestration: `(*SyncEngine).{ExecuteRebuild, InitRegistryOnly, RefreshRegistryArtifactOnly}`.
 - **PG privileges**: `SELECT, INSERT, UPDATE` on `omnicore_mongo_views`; `pg_try_advisory_lock`/`pg_advisory_unlock`; read on `pg_locks`/`pg_stat_activity`.
 - **MySQL privileges**: `SELECT, INSERT, UPDATE` on `omnicore_mongo_views`; `GET_LOCK`/`RELEASE_LOCK`/`IS_USED_LOCK` (granted to every user) and, for the holder diagnostic, read on `performance_schema.threads` (degrades to "" without it).
 - **Mongo privileges**: `find, insert, update, remove, aggregate, collMod, createCollection, listCollections`.
@@ -1461,7 +1461,8 @@ pure (no spans).
   from the cancellation parent because fiber v3's `Ctx.Value` does not delegate
   to the `SetContext`'d context).
 - **Asynchronous links** — producers stamp the W3C `traceparent` on the
-  `outbox` and `integration_events` rows (migration `0003`); Debezium's Outbox
+  `outbox` and `integration_events` rows (inlined in the flattened framework
+  migration `0001`); Debezium's Outbox
   Event Router carries it to a Kafka header
   (`table.fields.additional.placement: "traceparent:header:traceparent"`). The
   SyncEngine, integration Receiver and UpstreamSubscriber open consumer spans

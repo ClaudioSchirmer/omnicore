@@ -27,8 +27,8 @@
         <div class="arch-layer">
             <div class="arch-row arch-head"><span class="arch-pkg">infra/</span><span class="arch-desc">Relational backend — PostgreSQL or MySQL (+ transactional outbox + audit), Mongo views, Kafka SyncEngine</span></div>
             <div class="arch-row arch-sub-indent"><span class="arch-desc">aggregate_persister (automatic dispatch) · composer · rebuild (Mongo schema evolution)</span></div>
-            <div class="arch-row arch-sub-indent"><span class="arch-desc">cache/ · httpclient/ · integration/ (events) · criteria/ (entity search engine)</span></div>
-            <div class="arch-row arch-sub-indent"><span class="arch-desc">migration/ · upstream_subscriber (cross-service) · audit / events / log</span></div>
+            <div class="arch-row arch-sub-indent"><span class="arch-desc">cache/ · httpclient/ · integration/ (events) · db/criteria/ (entity search engine)</span></div>
+            <div class="arch-row arch-sub-indent"><span class="arch-desc">migration/ · upstream_subscriber (cross-service) · audit / events</span></div>
         </div>
         <template class="arch-ascii">┌─────────────────────────────────────────────────────────────────────┐
 │   web/              HTTP transport (Fiber v3), JWT auth middleware  │
@@ -51,7 +51,7 @@
 │   infra/            Relational (+outbox +audit), Mongo, Kafka sync  │
 │                     aggregate_persister, composer, rebuild          │
 │                     cache/ httpclient/ integration/ criteria/       │
-│                     migration/, upstream_subscriber, events/log     │
+│                     migration/, upstream_subscriber, events/        │
 └─────────────────────────────────────────────────────────────────────┘</template>
     </div>
 

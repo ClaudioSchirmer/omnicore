@@ -114,9 +114,10 @@ type AuthorizationConfig struct {
 // opt into tenant scoping for reads/writes without forcing every request to
 // carry the claim.
 type TenantConfig struct {
-	// Enabled toggles Identity.TenantID() lookup against the configured
-	// Claim. When false the helper returns "" regardless of claim presence —
-	// services not using tenancy avoid the lookup entirely.
+	// Enabled is the master switch for the tenancy feature: it gates whether
+	// the AuthMiddleware honors Required (the empty-TenantID presence gate).
+	// It does NOT change Identity.TenantID(), which always reads the configured
+	// Claim from the token regardless of this flag.
 	Enabled bool `yaml:"enabled"`
 
 	// Claim names the JWT claim TenantID reads. Default "tenant_id". Empty

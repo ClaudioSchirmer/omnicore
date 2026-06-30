@@ -105,8 +105,9 @@
         (<code>application/handlers/shared_base_insert.go</code>). It is a POST handler that is
         <strong>upsert-aware on the base</strong>: when the base identity already exists (another role already created
         that <code>Person</code>), it does not fail with a unique violation — it loads the existing base and attaches a
-        new role to it. The plain <code>InsertCommandHandler</code> always issues a cold INSERT and is the wrong tool
-        for a shared-base root.
+        new role to it. The plain <code>InsertCommandHandler</code> is the wrong tool for a shared-base root — it
+        rejects a SharedBase-backed repository up front with a directive error (the symmetric guard to
+        <code>SharedBaseInsertCommandHandler</code> refusing a non-shared repo), rather than issuing a cold INSERT.
     </p>
     <p>
         <strong>The Cmd declares <code>ApplyTo</code>, not <code>ToEntity</code>.</strong> The contract is

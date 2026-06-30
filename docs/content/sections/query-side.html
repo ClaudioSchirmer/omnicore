@@ -144,7 +144,7 @@ HTTP 200 OK
         (<code>HandleQueryWithParams</code>) and the custom parser
         (<code>fwweb.NewQueryParser</code> / <code>fwweb.ParseCriteria</code>) read it identically.
     </p>
-    <pre><code>// Operator constants — used in the filter tag (web/handle_query.go; re-exported as fwweb.Op*).
+    <pre><code>// Operator constants — used in the filter tag (defined in web/queryschema/operators.go; re-exported as fwweb.Op* via web/operators_alias.go).
 const (
     OpEq          = "eq"           // exact equality (the default — no .op suffix on the wire)
     OpNe          = "ne"           // inequality

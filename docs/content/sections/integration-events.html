@@ -116,7 +116,7 @@ func MountUserReceivers(reg *fwintegration.Registry, repo userRepo, d bootstrap.
         UNIQUE (consumer_group, source_key, event_key, event_id)
 );</code></pre>
 
-    <p><strong>Retry surface.</strong> <code>Receiver.RetryPendingFailures(ctx, exec, pipe, logger)</code> re-dispatches every pending row for the receiver's natural key — same posture upstream subscribers adopt. Idempotent: a successful re-dispatch calls <code>ResolveIntegrationFailures</code> so the row is marked resolved. The framework does NOT auto-retry; operators drive retry explicitly.</p>
+    <p><strong>Retry surface.</strong> <code>Receiver.RetryPendingFailures(ctx, eng, pipe, logger)</code> (where <code>eng</code> is the <code>core.RelationalEngine</code>) re-dispatches every pending row for the receiver's natural key — same posture upstream subscribers adopt. Idempotent: a successful re-dispatch calls <code>ResolveIntegrationFailures</code> so the row is marked resolved. The framework does NOT auto-retry; operators drive retry explicitly.</p>
 
     <p>Canonical admin pattern in the consumer service: a mount-only <code>AdminFeature</code> registering two parallel routes behind <code>RequirePermission("admin:retry")</code>:</p>
 

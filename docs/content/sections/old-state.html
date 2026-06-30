@@ -25,8 +25,8 @@
 
     <h3>How the snapshot is captured</h3>
     <ul>
-        <li><strong>Update / Patch (closure form):</strong> <code>domain.GetUpdatable[T](loaded, apply, svc)</code>
-            and <code>domain.GetPartialUpdatable[T](loaded, apply, svc)</code> snapshot the entity <strong>before</strong>
+        <li><strong>Update / Patch (closure form):</strong> <code>domain.GetUpdatable[T](loaded, apply, svc, "GetUpdatable")</code>
+            and <code>domain.GetPartialUpdatable[T](loaded, apply, svc, "GetPartialUpdatable")</code> snapshot the entity <strong>before</strong>
             running the <code>apply</code> closure. The mutation happens <em>inside</em> the domain function — the
             caller passes <code>cmd.ApplyTo</code> or <code>cmd.ApplyPartiallyTo</code> directly (signature
             <code>func(T) error</code>, so a mapper can raise a notification before validation). Auto handlers do this automatically; manual handlers follow the same pattern.</li>
@@ -45,7 +45,7 @@
         <code>BaseEntity</code>/<code>AggregateRoot</code> state (<code>notifCtx</code>, <code>events</code>,
         <code>signature</code>) is intentionally NOT cloned, so the clone is a read-only “ghost”: calling
         mutator domain methods on it is a silent no-op because its <code>notifCtx</code> is nil. The aggregate path
-        also deep-copies the items map so <code>Old()</code> reflects the children as they were before mutation.
+        also copies the items map (aggregate value objects are value types, so the clone owns an independent view of the prior children) so <code>Old()</code> reflects the children as they were before mutation.
     </p>
 
     <h3>Audit event shape</h3>
@@ -109,11 +109,11 @@
             <tr><td>update — StatusConstructor</td><td colspan="3"><em>untouched — skipped (no SQL)</em></td></tr>
             <tr><td>archive</td><td>every loaded active child (cascade)</td><td><code>"archived"</code></td><td><code>snapshot</code></td></tr>
             <tr><td>unarchive</td><td>every loaded child (cascade restore)</td><td><code>"unarchived"</code></td><td><code>snapshot</code></td></tr>
-            <tr><td>delete</td><td>every loaded child (FK <code>ON DELETE CASCADE</code>)</td><td><code>"deleted"</code></td><td><code>snapshot</code></td></tr>
+            <tr><td>delete</td><td>every loaded child (explicit <code>DELETE</code> by FK, in-TX)</td><td><code>"deleted"</code></td><td><code>snapshot</code></td></tr>
         </tbody>
     </table>
     <p>
-        UPDATED children pair pre/post by <code>GetID()</code> against the deep-copied prior root's aggregates map
+        UPDATED children pair pre/post by <code>GetID()</code> against the copied prior root's aggregates map
         (the snapshot logic above clones the items map for aggregates). Flat entities (no
         <code>AggregateRootProvider</code>) do not emit the <code>children</code> block — their audit shape is unchanged.
     </p>

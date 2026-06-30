@@ -152,7 +152,7 @@
     <div class="release">
         <div class="release-head"><span class="release-tag">v0.5.0</span><span class="release-date">June 15, 2026</span></div>
         <ul>
-            <li><strong>Changed</strong> — upgraded Fiber v2 → v3. Breaking across the HTTP layer: handlers take <code>fiber.Ctx</code> (interface, no pointer), body/query binding moves to the unified <code>c.Bind()</code> API, and several config shapes change. Consumer services upgrade in lock-step after the framework tag is cut.</li>
+            <li><strong>Changed</strong> — <strong>breaking</strong>: upgraded Fiber v2 → v3. Breaking across the HTTP layer: handlers take <code>fiber.Ctx</code> (interface, no pointer), body/query binding moves to the unified <code>c.Bind()</code> API, and several config shapes change. Consumer services upgrade in lock-step after the framework tag is cut.</li>
             <li><strong>Changed</strong> — bumped <code>pgx</code> to v5.10.0 (security hardening, no breaking changes).</li>
             <li><strong>Removed</strong> — thin wrappers <code>web.CORS</code>, <code>web.Logger</code>, <code>web.RateLimit</code> (call the Fiber v3 middleware directly). <code>web.Recover()</code> is kept for its slog-integrated stack handler.</li>
         </ul>

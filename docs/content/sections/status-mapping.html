@@ -24,8 +24,8 @@
         <tr><td><code>SemanticMethodNotAllowed</code></td><td><strong>405 Method Not Allowed</strong></td><td><code>MethodNotAllowedNotification</code> (path matches, HTTP method does not) emitted by <code>fwweb.ErrorHandler</code></td></tr>
         <tr><td><code>SemanticConflict</code></td><td>409 Conflict</td><td><code>EntityIsNotActiveNotification</code>, <code>EntityAlreadyAddedNotification</code></td></tr>
         <tr><td><code>SemanticForbidden</code></td><td>403 Forbidden</td><td><code>Insert/Update/DeleteNotAllowedNotification</code></td></tr>
-        <tr><td><code>SemanticUnauthorized</code></td><td>401 Unauthorized</td><td>—</td></tr>
-        <tr><td><code>SemanticPayloadTooLarge</code></td><td><strong>413 Content Too Large</strong></td><td><code>PayloadTooLargeNotification</code> (request body exceeds the configured <code>BodyLimit</code>) emitted by <code>fwweb.ErrorHandler</code></td></tr>
+        <tr><td><code>SemanticUnauthorized</code></td><td>401 Unauthorized</td><td><code>MissingAuthorizationNotification</code>, <code>InvalidTokenNotification</code>, <code>ExpiredTokenNotification</code> (emitted by <code>fwweb.AuthMiddleware</code>)</td></tr>
+        <tr><td><code>SemanticPayloadTooLarge</code></td><td><strong>413 Request Entity Too Large</strong></td><td><code>PayloadTooLargeNotification</code> (request body exceeds the configured <code>BodyLimit</code>) emitted by <code>fwweb.ErrorHandler</code></td></tr>
         <tr><td><code>SemanticUnavailable</code></td><td>503 Service Unavailable</td><td><code>ServiceUnavailableNotification</code></td></tr>
         <tr><td><code>SemanticGatewayTimeout</code></td><td><strong>504 Gateway Timeout</strong></td><td><code>RequestTimeoutNotification</code> — the request exceeded <code>http.requestTimeoutSeconds</code>; <code>pipeline.Run</code> maps <code>context.DeadlineExceeded</code> (pgx/mongo/httpclient observing the cancelled request context) so a timeout surfaces as 504, not a generic 500</td></tr>
         <tr><td><code>SemanticInternal</code></td><td><strong>500 Internal Server Error</strong></td><td><code>InternalServerErrorNotification</code> (recovered panic, escaped non-NotificationCarrier error) emitted by <code>fwweb.ErrorHandler</code></td></tr>
@@ -265,12 +265,14 @@ type PathSegment struct {
 }
 
 type NotificationMessage struct {
-    Path         []PathSegment  // canonical structure
-    Override     string         // set by ChangeFieldName (higher precedence)
-    FieldName    string         // legacy/literal — used when Path empty and Override empty
+    Path         []PathSegment     // canonical structure
+    Override     string            // set by ChangeFieldName (higher precedence)
+    FieldName    string            // legacy/literal — used when Path empty and Override empty
     FieldValue   string
     FuncName     string
     Err          error
+    Vars         map[string]string // per-emit render vars (merged over tvar-tag fields; per-emit wins)
+    LabelKey     string            // catalog key for the translated field label (fieldLabel on the wire)
     Notification Notification
 }
 

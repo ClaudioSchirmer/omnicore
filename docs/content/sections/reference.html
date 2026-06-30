@@ -62,7 +62,7 @@
 
     <h3>Built-in notification types</h3>
     <p><strong>Domain (20):</strong> RequiredField, UnableToInsertWithID, UnableToUpdateWithoutID, UnableToDeleteWithoutID, InsertNotAllowed, UpdateNotAllowed, DeleteNotAllowed, ArchiveNotAllowed, UnarchiveNotAllowed, ServiceIsRequired, EntityAlreadyAdded, EntityDoesNotExist, EntityIsNotActive, RepositoryFunctionNotImplemented, InvalidIDUUID, InvalidEventType, RecordNotFound, InvalidAggregateChild, LimitExceeded, SchemaViolation.</p>
-    <p><strong>Application (14):</strong> ContextNotInitialized, ServiceUnavailable, InvalidLanguageDomain, MissingAuthorization, InvalidToken, ExpiredToken, MissingPermission, TenantMissing, TenantMismatch, FieldAccessForbidden, RouteNotFound, MethodNotAllowed, PayloadTooLarge, InternalServerError.</p>
+    <p><strong>Application (15):</strong> ContextNotInitialized, ServiceUnavailable, InvalidLanguageDomain, MissingAuthorization, InvalidToken, ExpiredToken, MissingPermission, TenantMissing, TenantMismatch, FieldAccessForbidden, RequestTimeout, RouteNotFound, MethodNotAllowed, PayloadTooLarge, InternalServerError.</p>
     <p><strong>Infrastructure (2):</strong> MigrationDownMissing, MigrationFilenameInvalid.</p>
 
     <h3>Invariants</h3>
@@ -78,5 +78,5 @@
     </ol>
 
     <h3>Commands</h3>
-    <pre><code>go build ./...          # compile everything
-go vet ./...            # static check</code></pre>
+    <pre><code>go build -tags postgres ./...   # compile everything (a relational engine tag is mandatory: postgres | mysql)
+go vet -tags postgres ./...     # static check</code></pre>

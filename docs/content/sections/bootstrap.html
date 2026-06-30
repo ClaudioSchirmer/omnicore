@@ -112,7 +112,7 @@ kafka:
   syncWorkers: 4       # optional; default runtime.NumCPU(); 1 = serial
 migrations:
   dir: ./migrations
-  autoRun: true
+  autoRun: check                       # check | true | false — profile-aware default: dev=true / else=check
 openapi:                                 # only honored when Wiring.OpenAPI != nil; see "OpenAPI / Swagger UI"
   uiPath: /docs                          # default; route where Swagger UI is served
   rootRedirect: false                    # default; when true, GET / → 302 uiPath

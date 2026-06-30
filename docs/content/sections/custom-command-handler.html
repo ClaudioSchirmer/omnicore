@@ -167,8 +167,10 @@ app.Post("/customers", func(c fiber.Ctx) error {
     <h3>Manual path (cross-service, side effects)</h3>
     <p>
         A handler with external IO, an injected domain service, or multi-step orchestration is just a
-        struct implementing <code>pipeline.Handler[*Cmd, TResult]</code> — the hand-written form this page
-        already showed. <code>TResult</code> is whatever application-layer value the handler returns; the
+        struct implementing <code>pipeline.Handler[TCmd, TResult]</code> — the hand-written form this page
+        already showed. <code>TCmd</code> may be a value <code>Cmd</code> (as in the worked example above) or a
+        pointer <code>*Cmd</code>; both satisfy the generic <code>Request</code> constraint. Pick the pointer form
+        when the handler needs <code>SetPathID</code> on the command (the Auto path always uses <code>*Cmd</code>). <code>TResult</code> is whatever application-layer value the handler returns; the
         route maps it to the wire <code>TResp</code> via the <code>responseProjection</code>. Wire it either
         fully by hand (as in step 4 above) or through the canonical
         <code>HandleCommandWithBody</code> / <code>HandleCommandWithBodyID</code> / <code>HandleCommandByID</code>
