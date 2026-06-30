@@ -163,6 +163,21 @@ func (b *BaseEngine) insertWithBase(ctx persistence.RequestContext, entity domai
 	if err := b.FireAfterBegin(ctx, tx, src, hook, hctx); err != nil {
 		return domain.WriteResult{}, err
 	}
+	// Forgot-guard (manual path): the identity already exists but this insert did
+	// NOT go through the SharedBase upsert (its actionName is not the upsert one) —
+	// a blind insert that would duplicate the shared identity's native data. The
+	// Auto handlers enforce the marriage by capability; this catches a hand-rolled
+	// manual handler that skipped repo.LoadForSharedBaseInsert.
+	basePreExisted, err := baseExists(ctx, tx, d, base, baseID)
+	if err != nil {
+		return domain.WriteResult{}, err
+	}
+	if basePreExisted && entity.ActionName() != "GetUpsertable" {
+		return domain.WriteResult{}, fmt.Errorf(
+			"db: %s has a SharedBase and the identity already exists — load it first "+
+				"(SharedBaseInsertCommandHandler, or repo.LoadForSharedBaseInsert in a manual handler) before "+
+				"Insert; a blind insert would duplicate the shared identity's native data", entity.EntityName())
+	}
 	if err := b.upsertSharedBase(ctx, tx, d, base, baseID, baseFields); err != nil {
 		return domain.WriteResult{}, err
 	}
@@ -192,9 +207,11 @@ func (b *BaseEngine) insertWithBase(ctx persistence.RequestContext, entity domai
 			return domain.WriteResult{}, err
 		}
 	}
-	// Aggregate role: role children under the role id + shared-base native
-	// children under the base's deterministic id (routed by ResolveAggregateChild).
-	if err := insertChildren(ctx, tx, d, root, schema, id, baseID); err != nil {
+	// One pass (writeChildren) handles role children (FK→role id) and shared-base
+	// native children (FK→base id) by the OperationOf categorization: a loaded
+	// base-child arrives as Constructor → no-op (not re-inserted); only the request's
+	// new ones insert (and re-added/changed update, removed delete) — the upsert.
+	if err := writeChildren(ctx, tx, d, root, schema, id, baseID); err != nil {
 		return domain.WriteResult{}, err
 	}
 	if err := insertSiblings(ctx, tx, d, schema, src, id); err != nil {
@@ -258,9 +275,10 @@ func (b *BaseEngine) updateWithBase(ctx persistence.RequestContext, entity domai
 	if err := execExpectingRow(ctx, tx, sql, args, entity.EntityName(), schema.PKColumn(), entity.ID()); err != nil {
 		return domain.WriteResult{}, err
 	}
-	// Aggregate role: role + shared-base child Added/Changed/Removed (routed by
-	// owner) + sibling updates.
-	if err := applyChildChanges(ctx, tx, d, root, schema, entity.ID(), baseID); err != nil {
+	// Aggregate role: role + shared-base children, persisted by OperationOf
+	// (writeChildren) + sibling updates. Update is load-first, so loaded children are
+	// Constructor (no-op) and only real changes touch the DB.
+	if err := writeChildren(ctx, tx, d, root, schema, entity.ID(), baseID); err != nil {
 		return domain.WriteResult{}, err
 	}
 	if err := applySiblingUpdates(ctx, tx, d, schema, src, entity.ID(), entity.IsPartial()); err != nil {
@@ -477,6 +495,21 @@ func anyActiveRole(ctx context.Context, tx WriteTx, d Dialect, base *TableSchema
 		}
 	}
 	return false, nil
+}
+
+// baseExists probes whether the shared base row already exists (the identity
+// pre-dates this write) — the signal the SharedBase insert forgot-guard pairs with
+// the actionName.
+func baseExists(ctx context.Context, tx WriteTx, d Dialect, base *TableSchema, baseID string) (bool, error) {
+	q := "SELECT 1 FROM " + d.QuoteIdent(base.Table()) +
+		" WHERE " + d.QuoteIdent(base.PKColumn()) + " = " + d.Placeholder(1) + " LIMIT 1"
+	rows, err := tx.Query(ctx, q, d.EncodeArg(domain.NewID(baseID)))
+	if err != nil {
+		return false, err
+	}
+	defer rows.Close()
+	exists := rows.Next()
+	return exists, rows.Err()
 }
 
 // upsertSharedBase INSERTs the identity or updates its shared fields on conflict

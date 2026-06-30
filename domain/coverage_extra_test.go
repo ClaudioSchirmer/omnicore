@@ -23,9 +23,14 @@ func TestAddAggregateItem_ReAddRemovedReactivates(t *testing.T) {
 
 	AddAggregateChild(p, item)
 
-	added := GetAddedItemsOf[Rec](&p.AggregateRoot)
-	if len(added) != 1 {
-		t.Fatalf("expected re-added item to be StatusAdded, got %d added", len(added))
+	// A re-added item that ORIGINALLY came from the DB (Constructor) is an UPDATE of
+	// the existing row, not a fresh INSERT — categorized by OperationOf(original,
+	// current), not currentStatus alone. (Mirrors the reference ddd-kernel.)
+	if changed := GetChangedItemsOf[Rec](&p.AggregateRoot); len(changed) != 1 {
+		t.Fatalf("re-adding a removed DB item must categorize as changed (UPDATE), got %d", len(changed))
+	}
+	if added := GetAddedItemsOf[Rec](&p.AggregateRoot); len(added) != 0 {
+		t.Fatalf("a re-added DB item must NOT be an insert, got %d added", len(added))
 	}
 	if removed := GetRemovedItemsOf[Rec](&p.AggregateRoot); len(removed) != 0 {
 		t.Fatalf("expected no removed items after re-add, got %d", len(removed))
@@ -45,10 +50,14 @@ func TestAddAggregateItem_ReAddChangedReactivates(t *testing.T) {
 		t.Fatalf("expected 1 changed item, got %d", len(got))
 	}
 
-	// Re-add the now-changed item value → StatusChanged branch flips to Added.
+	// Re-add the now-changed item: the setter flips currentStatus to Added, but since
+	// it ORIGINALLY came from the DB (Constructor) it stays an UPDATE, not an INSERT.
 	AddAggregateChild(p, changed)
-	if added := GetAddedItemsOf[Rec](&p.AggregateRoot); len(added) != 1 {
-		t.Fatalf("expected changed item to flip to StatusAdded, got %d", len(added))
+	if changedItems := GetChangedItemsOf[Rec](&p.AggregateRoot); len(changedItems) != 1 {
+		t.Fatalf("a re-added DB item must remain a changed (UPDATE) item, got %d", len(changedItems))
+	}
+	if added := GetAddedItemsOf[Rec](&p.AggregateRoot); len(added) != 0 {
+		t.Fatalf("a re-added DB item must NOT be an insert, got %d", len(added))
 	}
 }
 

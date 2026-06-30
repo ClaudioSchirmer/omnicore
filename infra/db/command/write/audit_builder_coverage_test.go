@@ -81,19 +81,32 @@ func TestChildEventOf_RemainingBranches(t *testing.T) {
 	mk := func(status domain.AggregateItemStatus) domain.AggregateItem[domain.AggregateValueObject] {
 		return domain.NewAggregateItem[domain.AggregateValueObject](covChild{ID: "c1", Label: "x"}, status)
 	}
+	mk2 := func(original, current domain.AggregateItemStatus) domain.AggregateItem[domain.AggregateValueObject] {
+		return domain.AggregateItem[domain.AggregateValueObject]{Item: covChild{ID: "c1", Label: "x"}, OriginalStatus: original, CurrentStatus: current}
+	}
 
-	// update + Changed → updated + changes.
+	// update + a DB item changed (Constructor→Changed) → updated + changes.
 	prev := map[string]map[string]map[string]any{
 		"covChild": {"c1": {"Label": "old"}},
 	}
-	ev, ok := childEventOf(mk(domain.StatusChanged), child, "covChild", "update", prev)
+	ev, ok := childEventOf(mk2(domain.StatusConstructor, domain.StatusChanged), child, "covChild", "update", prev)
 	if !ok || ev.Op != "updated" {
-		t.Errorf("update/Changed → %+v ok=%v, want updated", ev, ok)
+		t.Errorf("update/(Constructor,Changed) → %+v ok=%v, want updated", ev, ok)
 	}
 
-	// update + Constructor → skipped (default).
-	if _, ok := childEventOf(mk(domain.StatusConstructor), child, "covChild", "update", nil); ok {
-		t.Error("update/Constructor should be skipped")
+	// update + a DB item re-added (Constructor→Added) → updated (not inserted).
+	if ev, ok := childEventOf(mk2(domain.StatusConstructor, domain.StatusAdded), child, "covChild", "update", prev); !ok || ev.Op != "updated" {
+		t.Errorf("update/(Constructor,Added) → %+v ok=%v, want updated", ev, ok)
+	}
+
+	// update + a brand-new item (Added→Added) → inserted.
+	if ev, ok := childEventOf(mk2(domain.StatusAdded, domain.StatusAdded), child, "covChild", "update", nil); !ok || ev.Op != "inserted" {
+		t.Errorf("update/(Added,Added) → %+v ok=%v, want inserted", ev, ok)
+	}
+
+	// update + an untouched DB item (Constructor→Constructor) → skipped (no-op).
+	if _, ok := childEventOf(mk2(domain.StatusConstructor, domain.StatusConstructor), child, "covChild", "update", nil); ok {
+		t.Error("update/(Constructor,Constructor) should be skipped")
 	}
 
 	// archive + Removed → skipped.

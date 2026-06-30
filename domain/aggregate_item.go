@@ -34,14 +34,28 @@ func GetCurrentItems[T any](items []AggregateItem[T]) []T {
 	return out
 }
 
+// GetAddedItems / GetChangedItems / GetRemovedItems categorize by the persistence
+// operation (OperationOf — original + current status), NOT currentStatus alone, so
+// a re-added or changed DB item is "changed" (UPDATE) and a new item added then
+// removed is in none of them. Mirrors the reference ddd-kernel.
 func GetAddedItems[T any](items []AggregateItem[T]) []T {
-	return FilterByStatus(items, StatusAdded)
+	return filterByOp(items, OpInsert)
 }
 
 func GetChangedItems[T any](items []AggregateItem[T]) []T {
-	return FilterByStatus(items, StatusChanged)
+	return filterByOp(items, OpUpdate)
 }
 
 func GetRemovedItems[T any](items []AggregateItem[T]) []T {
-	return FilterByStatus(items, StatusRemoved)
+	return filterByOp(items, OpDelete)
+}
+
+func filterByOp[T any](items []AggregateItem[T], op AggregateItemOp) []T {
+	out := make([]T, 0, len(items))
+	for _, it := range items {
+		if OperationOf(it.OriginalStatus, it.CurrentStatus) == op {
+			out = append(out, it.Item)
+		}
+	}
+	return out
 }

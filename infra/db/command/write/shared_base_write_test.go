@@ -85,7 +85,7 @@ func TestInsertRoleWithBase_New(t *testing.T) {
 }
 
 func TestInsertRoleWithBase_ActiveConflict409(t *testing.T) {
-	ins, _ := domain.GetInsertable(&roleTestEntity{Name: "Ana", Document: "D1", Matricula: "M1"}, nil, "GetInsertable")
+	ins, _ := domain.GetInsertable(&roleTestEntity{Name: "Ana", Document: "D1", Matricula: "M1"}, nil, "GetUpsertable")
 	tx := &recTx{queryFn: rowsState(false)} // active role exists
 	be := newFlatBE(&recBeginner{tx: tx})
 	_, err := be.Insert(newBuilderCtx(), ins, roleTestSchema(), firingHook)
@@ -100,7 +100,7 @@ func TestInsertRoleWithBase_ActiveConflict409(t *testing.T) {
 }
 
 func TestInsertRoleWithBase_ArchivedRevives(t *testing.T) {
-	ins, _ := domain.GetInsertable(&roleTestEntity{Name: "Ana", Document: "D1", Matricula: "M1"}, nil, "GetInsertable")
+	ins, _ := domain.GetInsertable(&roleTestEntity{Name: "Ana", Document: "D1", Matricula: "M1"}, nil, "GetUpsertable")
 	tx := &recTx{queryFn: rowsState(true)} // archived role exists
 	be := newFlatBE(&recBeginner{tx: tx})
 	if _, err := be.Insert(newBuilderCtx(), ins, roleTestSchema(), firingHook); err != nil {

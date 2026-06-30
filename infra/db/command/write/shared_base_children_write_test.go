@@ -236,6 +236,63 @@ func TestConvergeBase_UnarchiveReactivatesBase(t *testing.T) {
 	}
 }
 
+// --- §4.5 upsert insert: forgot-guard + Constructor not re-inserted ----------
+
+// baseExistsQuery scripts: the base existence/archived probes (FROM pessoa) find a
+// row; the role probe (FROM aluno) finds none.
+func baseExistsQuery() func(string, []any) (Rows, error) {
+	return func(sql string, _ []any) (Rows, error) {
+		if strings.Contains(sql, "FROM pessoa") {
+			return &fakeRows{remaining: 1}, nil // base exists (and not archived: no scan → nil)
+		}
+		return &fakeRows{remaining: 0}, nil // no role yet
+	}
+}
+
+func TestSharedBaseInsert_ForgotGuardRefusesBlindInsert(t *testing.T) {
+	// Identity exists, but actionName is the plain insert (a blind manual insert).
+	ins, _ := domain.GetInsertable(&bcRole{Name: "Ana", Document: "D1", Matricula: "M1"}, nil, "GetInsertable")
+	tx := &recTx{queryFn: baseExistsQuery()}
+	be := newFlatBE(&recBeginner{tx: tx})
+	if _, err := be.Insert(newBuilderCtx(), ins, bcRoleSchema(true), firingHook); err == nil {
+		t.Fatal("a blind insert against an existing shared identity must be refused (forgot-guard)")
+	}
+}
+
+func TestSharedBaseInsert_UpsertActionPassesGuard(t *testing.T) {
+	// Same existing identity, but the upsert actionName → guard passes, role inserts.
+	ins, _ := domain.GetInsertable(&bcRole{Name: "Ana", Document: "D1", Matricula: "M1"}, nil, "GetUpsertable")
+	tx := &recTx{queryFn: baseExistsQuery()}
+	be := newFlatBE(&recBeginner{tx: tx})
+	if _, err := be.Insert(newBuilderCtx(), ins, bcRoleSchema(true), firingHook); err != nil {
+		t.Fatalf("the upsert insert (GetUpsertable) against an existing identity must pass: %v", err)
+	}
+	if !hasStmt(tx.execs, func(s string) bool { return strings.HasPrefix(s, "INSERT INTO aluno") }) {
+		t.Errorf("the role row must be inserted, got %v", tx.execs)
+	}
+}
+
+func TestSharedBaseInsert_ConstructorBaseChildNotReinserted(t *testing.T) {
+	e := &bcRole{Name: "Ana", Document: "D1", Matricula: "M1"}
+	e.AggregateConstructor([]domain.AggregateValueObject{bcAddr{ID: "addr-1", Street: "Existing"}}) // loaded
+	domain.AddAggregateChild(e, bcAddr{Street: "New"})                                              // request-added
+	ins, _ := domain.GetInsertable(e, nil, "GetUpsertable")
+	tx := &recTx{queryFn: baseExistsQuery()}
+	be := newFlatBE(&recBeginner{tx: tx})
+	if _, err := be.Insert(newBuilderCtx(), ins, bcRoleSchema(true), firingHook); err != nil {
+		t.Fatalf("Insert: %v", err)
+	}
+	n := 0
+	for _, s := range tx.execs {
+		if strings.HasPrefix(s, "INSERT INTO endereco") {
+			n++
+		}
+	}
+	if n != 1 {
+		t.Fatalf("only the new (Added) base-child must be inserted, not the loaded Constructor; got %d INSERTs into endereco: %v", n, tx.execs)
+	}
+}
+
 func hasStmt(execs []string, pred func(string) bool) bool {
 	for _, s := range execs {
 		if pred(s) {

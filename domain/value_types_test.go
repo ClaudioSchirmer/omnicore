@@ -196,10 +196,13 @@ func TestGetCurrentItems_SkipsRemoved(t *testing.T) {
 }
 
 func TestGetAddedChangedRemoved(t *testing.T) {
+	// Categorization is by OperationOf(original, current): a new item (original
+	// Added), a DB item changed (original Constructor → Changed), a DB item removed
+	// (original Constructor → Removed).
 	items := []AggregateItem[string]{
-		{Item: "added", CurrentStatus: StatusAdded},
-		{Item: "changed", CurrentStatus: StatusChanged},
-		{Item: "removed", CurrentStatus: StatusRemoved},
+		{Item: "added", OriginalStatus: StatusAdded, CurrentStatus: StatusAdded},
+		{Item: "changed", OriginalStatus: StatusConstructor, CurrentStatus: StatusChanged},
+		{Item: "removed", OriginalStatus: StatusConstructor, CurrentStatus: StatusRemoved},
 	}
 	if got := GetAddedItems(items); len(got) != 1 || got[0] != "added" {
 		t.Errorf("GetAddedItems = %v", got)

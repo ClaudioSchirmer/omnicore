@@ -393,14 +393,17 @@ func childEventOf(
 	case "insert":
 		return audit.ChildEvent{ID: id, Op: "inserted", Snapshot: currentFields()}, true
 	case "update":
-		switch it.CurrentStatus {
-		case domain.StatusAdded:
+		// Categorize by the persistence operation (OperationOf), not currentStatus
+		// alone — so a re-added DB child audits as "updated", not "inserted", etc.,
+		// matching what the persister actually does.
+		switch domain.OperationOf(it.OriginalStatus, it.CurrentStatus) {
+		case domain.OpInsert:
 			return audit.ChildEvent{ID: id, Op: "inserted", Snapshot: currentFields()}, true
-		case domain.StatusChanged:
+		case domain.OpUpdate:
 			return audit.ChildEvent{ID: id, Op: "updated", Changes: computeChanges(prevFields(), currentFields(), child.LabelKeysByGoField())}, true
-		case domain.StatusRemoved:
+		case domain.OpDelete:
 			return audit.ChildEvent{ID: id, Op: "archived", Snapshot: prevFields()}, true
-		default:
+		default: // OpNoop
 			return audit.ChildEvent{}, false
 		}
 	case "archive":

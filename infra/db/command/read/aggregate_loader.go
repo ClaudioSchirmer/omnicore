@@ -547,6 +547,139 @@ func (l *AggregateLoader[T]) hydrateBaseChildren(ctx context.Context, entities [
 	return nil
 }
 
+// LoadSharedBaseIdentity loads the existing shared identity (base fields + native
+// base-children as Constructor) by the natural key read from fresh — the load-first
+// half of the SharedBase UPSERT insert. Returns the hydrated NEW entity with
+// existed=true when the identity already exists; otherwise (fresh, false) for a
+// cold insert. The role row does not exist yet, so it looks the base up by its
+// natural-key COLUMN directly (not the role→base join the update-path hydrate uses).
+func (l *AggregateLoader[T]) LoadSharedBaseIdentity(ctx context.Context, fresh T) (T, bool, error) {
+	base, _, ok := l.schema.SharedBaseRef()
+	if !ok {
+		return fresh, false, nil
+	}
+	nkCol := base.NaturalKeyColumn()
+	nkGo, ok := base.GoOf(nkCol)
+	if !ok {
+		return fresh, false, fmt.Errorf(
+			"AggregateLoader[%s]: shared base natural key %q has no Go field", l.effectiveContextName(), nkCol)
+	}
+	nkVal := goStringFieldValue(fresh, nkGo)
+	if nkVal == "" {
+		return fresh, false, nil // no natural key → cold (the write guard rejects an empty key on persist)
+	}
+	cols, byCol, _ := l.schema.SharedBaseScanPlan()
+	d := l.eng.Dialect()
+	sel := d.QuoteIdent(base.PKColumn())
+	for _, c := range cols {
+		sel += ", " + d.QuoteIdent(c)
+	}
+	sql := "SELECT " + sel + " FROM " + d.QuoteIdent(base.Table()) +
+		" WHERE " + d.QuoteIdent(nkCol) + " = " + d.Placeholder(1) + " LIMIT 1"
+	rows, err := l.eng.Querier().Query(ctx, sql, nkVal)
+	if err != nil {
+		return fresh, false, err
+	}
+	if !rows.Next() {
+		errc := rows.Err()
+		rows.Close()
+		return fresh, false, errc // cold: no existing identity
+	}
+	newE := l.newEntity()
+	baseIDRaw, scanErr := core.ScanLeadingKey(rows, any(newE), cols, byCol)
+	rows.Close()
+	if scanErr != nil {
+		return fresh, false, scanErr
+	}
+	baseID, err := d.DecodeID(baseIDRaw)
+	if err != nil {
+		return fresh, false, err
+	}
+	if err := l.loadBaseChildrenConstructor(ctx, newE, base, baseID); err != nil {
+		return fresh, false, err
+	}
+	return newE, true, nil
+}
+
+// loadBaseChildrenConstructor loads the shared base's native children by the base
+// id and attaches them to newE as Constructor items, so the command's ApplyTo can
+// dedup the request against them. Keyed directly by the base id (the role does not
+// exist yet); the base-child FK is the leading key (discarded), reusing ScanLeadingKey.
+func (l *AggregateLoader[T]) loadBaseChildrenConstructor(ctx context.Context, newE T, base *TableSchema, baseID string) error {
+	baseChildren := base.ChildSchemas()
+	if len(baseChildren) == 0 {
+		return nil
+	}
+	prov, ok := any(newE).(domain.AggregateRootProvider)
+	if !ok {
+		return nil
+	}
+	d := l.eng.Dialect()
+	var avos []domain.AggregateValueObject
+	for _, bc := range baseChildren {
+		bcCols, bcByCol := bc.ScanPlan()
+		if len(bcCols) == 0 {
+			continue
+		}
+		bcFK := d.QuoteIdent(bc.FKColumn())
+		sel := bcFK
+		for _, c := range bcCols {
+			sel += ", " + d.QuoteIdent(c)
+		}
+		sql := "SELECT " + sel + " FROM " + d.QuoteIdent(bc.Table()) +
+			" WHERE " + bcFK + " = " + d.Placeholder(1)
+		rows, err := l.eng.Querier().Query(ctx, sql, d.EncodeArg(domain.NewID(baseID)))
+		if err != nil {
+			return err
+		}
+		for rows.Next() {
+			vp := reflect.New(bc.GoType())
+			if _, err := core.ScanLeadingKey(rows, vp.Interface(), bcCols, bcByCol); err != nil {
+				rows.Close()
+				return err
+			}
+			if err := decodeChildPK(vp, bc, d); err != nil {
+				rows.Close()
+				return err
+			}
+			avos = append(avos, vp.Elem().Interface().(domain.AggregateValueObject))
+		}
+		if err := rows.Err(); err != nil {
+			rows.Close()
+			return err
+		}
+		rows.Close()
+	}
+	if len(avos) > 0 {
+		prov.GetAggregateRoot().AggregateConstructor(avos)
+	}
+	return nil
+}
+
+// goStringFieldValue reads an exported (possibly pointer) string-ish field of e by
+// Go name as a string ("" when absent or a nil pointer) — used to read the natural
+// key value off the role entity for the SharedBase identity lookup.
+func goStringFieldValue(e any, goName string) string {
+	rv := reflect.ValueOf(e)
+	for rv.Kind() == reflect.Ptr {
+		rv = rv.Elem()
+	}
+	if rv.Kind() != reflect.Struct {
+		return ""
+	}
+	f := rv.FieldByName(goName)
+	if !f.IsValid() {
+		return ""
+	}
+	for f.Kind() == reflect.Ptr {
+		if f.IsNil() {
+			return ""
+		}
+		f = f.Elem()
+	}
+	return fmt.Sprintf("%v", f.Interface())
+}
+
 // hydrateSiblings loads each owner sibling's columns into the root entity by the
 // shared primary key — the read-side mirror of the write-side partition. Each
 // sibling is a SEPARATE single-table SELECT (not a JOIN): column names are unique
