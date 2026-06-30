@@ -98,7 +98,7 @@ func MountUserReceivers(reg *fwintegration.Registry, repo userRepo, d bootstrap.
 
     <h3>Failure registry — <code>omnicore_integration_failures</code></h3>
 
-    <p>Every handler failure is persisted to <code>omnicore_integration_failures</code>, mirroring <code>omnicore_upstream_failures</code> for parity in operator tooling. Schema:</p>
+    <p>Every handler failure is persisted to <code>omnicore_integration_failures</code>, mirroring <code>omnicore_upstream_failures</code> for parity in operator tooling. It is a framework-managed table created by the embedded <code>0001_framework</code> migration (you never write this DDL). Schema below is the <strong>Postgres</strong> flavor; the <strong>MySQL</strong> flavor in <code>embedded/mysql/0001_framework</code> uses dialect-appropriate types (<code>BIGSERIAL</code> → <code>BIGINT AUTO_INCREMENT</code>, <code>JSONB</code> → <code>JSON</code>, <code>UUID</code> → <code>CHAR(36)</code>):</p>
 
     <pre><code>CREATE TABLE omnicore_integration_failures (
     id              BIGSERIAL PRIMARY KEY,

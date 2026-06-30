@@ -52,8 +52,9 @@ func (c *InsertUserCommand) FromEntity(_ *configuration.AppContext, u *User) (In
 // cannot pronounce SQL through it. The canonical (and only) shape is a
 // port declared in application/ (or domain/) whose method receives a
 // persistence.TxHandle; the port's adapter in infra/ calls
-// postgres.UnwrapPgxTx(tx) to recover the pgx.Tx and owns the SQL +
-// table name. The hook is just the composition point.
+// core.UnwrapTx(tx) to recover the backend-neutral core.Tx
+// (Exec/Query/QueryRow + Dialect()) and owns the SQL + table name. The
+// hook is just the composition point.
 func (c *InsertUserCommand) BeforeCommit(
     ctx *configuration.AppContext, u *User, id domain.ID, tx persistence.TxHandle,
 ) error {
@@ -78,8 +79,10 @@ var _ persistence.BeforeCommitHookProvider[*User] = (*InsertUserCommand)(nil)</c
         sealed marker with no public methods, so the closure cannot pronounce SQL through it by construction. The
         canonical shape is a port declared in <code>application/</code> (or <code>domain/</code>) whose method receives
         a <code>persistence.TxHandle</code>; the port's adapter in <code>infra/</code> calls
-        <code>postgres.UnwrapPgxTx(tx)</code> to recover the live <code>pgx.Tx</code> and owns the SQL + table name. The
-        closure threads <code>tx</code> through the port so the side effect remains atomic with the framework's writes.
+        <code>core.UnwrapTx(tx)</code> to recover the backend-neutral <code>core.Tx</code> (render SQL via its
+        <code>Dialect()</code>, run via <code>Exec</code>/<code>Query</code>/<code>QueryRow</code>) and owns the SQL +
+        table name. The closure threads <code>tx</code> through the port so the side effect remains atomic with the
+        framework's writes, on Postgres or MySQL alike.
     </p>
     <pre><code>func (h *CreateUserAdminHandler) Handle(
     ctx *configuration.AppContext, cmd *AdminCreateUserCommand,
@@ -95,8 +98,9 @@ var _ persistence.BeforeCommitHookProvider[*User] = (*InsertUserCommand)(nil)</c
             // h.NotificationOutbox is a port injected on the handler; its
             // adapter in infra/ owns the SQL emitting the companion
             // integration event atomically with the framework's data +
-            // outbox + audit rows. The adapter calls postgres.UnwrapPgxTx(tx)
-            // to obtain the pgx.Tx; the handler never imports pgx.
+            // outbox + audit rows. The adapter calls core.UnwrapTx(tx)
+            // to obtain the backend-neutral core.Tx; the handler imports
+            // no driver.
             return h.NotificationOutbox.EnqueueAdminUserActivated(ctx, tx, id)
         }),
     ).Insert(insertable)
@@ -118,19 +122,27 @@ var _ persistence.BeforeCommitHookProvider[*User] = (*InsertUserCommand)(nil)</c
         <li>Declare a port in <code>application/</code> (or <code>domain/</code>) — a pure Go interface whose
             method receives a <code>persistence.TxHandle</code> parameter.</li>
         <li>Implement the port in <code>infra/</code> — the adapter calls
-            <code>postgres.UnwrapPgxTx(tx) pgx.Tx</code> to recover the underlying transaction and owns the SQL +
-            table name. <code>UnwrapPgxTx</code> lives in <code>infra/</code>, so only adapters in that layer can
-            call it.</li>
+            <code>core.UnwrapTx(tx) core.Tx</code> to recover the <strong>backend-neutral</strong> transaction and owns
+            the SQL + table name. <code>core.Tx</code> renders SQL per backend via its <code>Dialect()</code> and runs it
+            via <code>Exec</code>/<code>Query</code>/<code>QueryRow</code>, so the adapter is engine-agnostic
+            (Postgres or MySQL). <code>UnwrapTx</code> lives in <code>infra/db/core</code>, so only adapters in the
+            infra layer can call it.</li>
         <li>Inject the port on the Cmd (or manual handler) and call it from the hook closure. The framework's TX is
             honored end-to-end; the application layer never pronounces SQL.</li>
     </ol>
     <p>
-        <code>UnwrapPgxTx</code> panics with a descriptive diagnostic if passed a foreign <code>TxHandle</code>
-        implementation — defensive, never reached against framework-issued handles because the interface is
-        sealed. Advanced pgx features (<code>CopyFrom</code>, <code>SendBatch</code>, <code>Prepare</code>) are
-        reachable from the adapter via the unwrapped <code>pgx.Tx</code>, but constraint-binding translation
-        (<code>write.ConstraintBinding</code>) is not applied at this surface — it lives at the Repository level
-        for the parent entity's declared constraints.
+        <code>UnwrapTx</code> panics with a descriptive diagnostic if passed a foreign <code>TxHandle</code>
+        implementation — defensive, never reached against framework-issued handles because the interface is sealed.
+        Constraint-binding translation (<code>write.ConstraintBinding</code>) is not applied at this surface — it lives
+        at the Repository level for the parent entity's declared constraints.
+    </p>
+    <p>
+        <strong>Postgres-only escape hatch.</strong> A service that deliberately pins itself to Postgres — to reach an
+        advanced pgx feature such as <code>CopyFrom</code>, <code>SendBatch</code> or <code>Prepare</code> — may call
+        <code>postgres.UnwrapPgxTx(tx) pgx.Tx</code> instead, recovering the live <code>pgx.Tx</code>. This couples the
+        adapter to Postgres (a <code>mysql</code>-tagged build will not link <code>postgres</code>), so reach for it only
+        when the neutral <code>core.Tx</code> genuinely cannot express the operation; the default remains
+        <code>core.UnwrapTx</code>.
     </p>
 
     <h3>Aggregate-path symmetry</h3>

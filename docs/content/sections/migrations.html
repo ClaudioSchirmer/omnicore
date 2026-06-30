@@ -8,6 +8,7 @@
   0003_add_phone.up.sql
   0003_add_phone.down.sql</code></pre>
     <p>A service's own migrations start at <code>0002+</code>. Because each backend speaks a different SQL dialect, a service that targets more than one backend keeps a directory per dialect (the canonical example uses <code>migrations/postgres/</code> and <code>migrations/mysql/</code>) and points <code>migrations.dir</code> at the one matching <code>relational.dialect</code>.</p>
+    <p class="note">Tables behind the relational <a href="#table-schema">specialization mechanisms</a> have shape requirements your migration must satisfy — a <a href="#table-schema~sibling-tables">sibling</a> table shares the owner's PK and declares no FK and no <code>deleted_at</code> (the owner owns the lifecycle); a <a href="#table-schema~shared-base">shared base</a> stores a deterministic <code>UUIDv5</code> PK with its natural-key column <code>UNIQUE NOT NULL</code> and no soft-delete, and each role table carries a <code>UNIQUE</code> FK to it. The authoritative column-by-column shapes (Postgres and MySQL) live in <a href="#table-schema">TableSchema</a>.</p>
 
     <h3>The framework's embedded control plane — version 1</h3>
     <p>The framework owns version <strong>1</strong> as a single flattened migration, <code>0001_framework.{up,down}.sql</code>, injected via <code>embed.FS</code> and shipped <strong>per dialect</strong> (<code>infra/migration/embedded/postgres/</code> and <code>infra/migration/embedded/mysql/</code>). One migration creates the whole control plane — seven tables:</p>

@@ -341,7 +341,7 @@ func OrdersView() *query.ViewDefinition {
     already consume, so the normalization stays invisible to every layer above <code>infra/</code>.
 </p>
 
-<h3>Sibling tables — 1 : 1 specialization (shared primary key)</h3>
+<h3 id="sibling-tables">Sibling tables — 1 : 1 specialization (shared primary key)</h3>
 <p>
     A <strong>sibling</strong> stores a disjoint subset of the <em>same</em> Go type's fields in a separate table that
     shares the owner's primary key — a 1 : 1 specialization (a "vertical split"). Use it to peel rarely-read, bulky, or

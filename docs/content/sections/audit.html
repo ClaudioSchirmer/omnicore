@@ -17,7 +17,7 @@
         children cascade, the actor stamping, the translated field labels, and the two destinations —
         <code>slog</code> (observability echo, ELK/Loki/Datadog) and <code>database</code> (an
         atomic, in-transaction row in <code>audit_events</code> for compliance) — plus the pre-built
-        PostgreSQL read helpers.
+        backend-neutral read helpers (<code>read.NewAuditReader</code>, which works on Postgres or MySQL).
     </p>
 
     <h3 id="audit-how">How it works — granularity B, atomic with the write</h3>

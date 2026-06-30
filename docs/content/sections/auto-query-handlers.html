@@ -187,6 +187,21 @@ type AddressFilterParams struct {
         identically.
     </p>
 
+    <h3 id="qry-sibling">Sibling and shared-base fields are flat</h3>
+    <p>
+        A field that physically lives in a <a href="#table-schema">sibling table or a shared base</a> (the relational
+        specialization mechanisms — a 1 : 1 vertical split, or a party-role identity shared across roles) is <strong>not</strong>
+        an embed group. The framework partitions the row across those tables on write and <strong>merges them back flat
+        at the owner's level on read</strong> (the composer's <code>mergeOwnerSiblings</code> / the role carrying every
+        base field), so on the read side they behave exactly like the owner's own columns. Declare them as
+        <strong>top-level</strong> fields on the Request and Response DTOs — no prefix — and <code>filter:</code> /
+        <code>?sort=</code> / <code>?fields=</code> work identically to a native field. The
+        <code>TableSchema</code> field resolver is sibling-aware (<code>columnForRead</code> / <code>goNameForRead</code>
+        route a Go field to its sibling's column), and the relational aggregate loader <code>LEFT JOIN</code>s the
+        sibling table only when a criteria actually references one of its fields. The wire / DTO author never sees the
+        partition — it is an infra concern.
+    </p>
+
     <h3 id="qry-fields">Sparse responses via <code>?fields=</code></h3>
     <p>
         Opt-in field projection — the consumer asks for a subset of the Response shape and the
