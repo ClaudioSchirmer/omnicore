@@ -52,7 +52,7 @@ func (c *InsertUserCommand) FromEntity(_ *configuration.AppContext, u *User) (In
 // cannot pronounce SQL through it. The canonical (and only) shape is a
 // port declared in application/ (or domain/) whose method receives a
 // persistence.TxHandle; the port's adapter in infra/ calls
-// fwinfra.UnwrapPgxTx(tx) to recover the pgx.Tx and owns the SQL +
+// postgres.UnwrapPgxTx(tx) to recover the pgx.Tx and owns the SQL +
 // table name. The hook is just the composition point.
 func (c *InsertUserCommand) BeforeCommit(
     ctx *configuration.AppContext, u *User, id domain.ID, tx persistence.TxHandle,
@@ -78,7 +78,7 @@ var _ persistence.BeforeCommitHookProvider[*User] = (*InsertUserCommand)(nil)</c
         sealed marker with no public methods, so the closure cannot pronounce SQL through it by construction. The
         canonical shape is a port declared in <code>application/</code> (or <code>domain/</code>) whose method receives
         a <code>persistence.TxHandle</code>; the port's adapter in <code>infra/</code> calls
-        <code>fwinfra.UnwrapPgxTx(tx)</code> to recover the live <code>pgx.Tx</code> and owns the SQL + table name. The
+        <code>postgres.UnwrapPgxTx(tx)</code> to recover the live <code>pgx.Tx</code> and owns the SQL + table name. The
         closure threads <code>tx</code> through the port so the side effect remains atomic with the framework's writes.
     </p>
     <pre><code>func (h *CreateUserAdminHandler) Handle(
@@ -95,7 +95,7 @@ var _ persistence.BeforeCommitHookProvider[*User] = (*InsertUserCommand)(nil)</c
             // h.NotificationOutbox is a port injected on the handler; its
             // adapter in infra/ owns the SQL emitting the companion
             // integration event atomically with the framework's data +
-            // outbox + audit rows. The adapter calls fwinfra.UnwrapPgxTx(tx)
+            // outbox + audit rows. The adapter calls postgres.UnwrapPgxTx(tx)
             // to obtain the pgx.Tx; the handler never imports pgx.
             return h.NotificationOutbox.EnqueueAdminUserActivated(ctx, tx, id)
         }),
@@ -107,9 +107,9 @@ var _ persistence.BeforeCommitHookProvider[*User] = (*InsertUserCommand)(nil)</c
     <h3><code>TxHandle</code> — sealed marker</h3>
     <p>
         Hooks receive the framework's TX as <code>persistence.TxHandle</code> — a sealed interface with no public
-        methods. The single sealing method on it is unexported, so the only implementation is the framework's own
-        <code>pgxTxHandle</code> in <code>omnicore/infra/</code>, which carries the live <code>pgx.Tx</code> privately.
-        Application code cannot read or write SQL through the handle by construction.
+        methods. The single sealing method on it is unexported, so the only implementations are the framework's own
+        engine handles (Postgres's <code>pgxTxHandle</code>, MySQL's <code>mysqlTxHandle</code>), each carrying the live
+        driver transaction privately. Application code cannot read or write SQL through the handle by construction.
     </p>
     <p>
         The canonical (and only) shape for an in-TX side effect from a hook:
@@ -118,7 +118,7 @@ var _ persistence.BeforeCommitHookProvider[*User] = (*InsertUserCommand)(nil)</c
         <li>Declare a port in <code>application/</code> (or <code>domain/</code>) — a pure Go interface whose
             method receives a <code>persistence.TxHandle</code> parameter.</li>
         <li>Implement the port in <code>infra/</code> — the adapter calls
-            <code>fwinfra.UnwrapPgxTx(tx) pgx.Tx</code> to recover the underlying transaction and owns the SQL +
+            <code>postgres.UnwrapPgxTx(tx) pgx.Tx</code> to recover the underlying transaction and owns the SQL +
             table name. <code>UnwrapPgxTx</code> lives in <code>infra/</code>, so only adapters in that layer can
             call it.</li>
         <li>Inject the port on the Cmd (or manual handler) and call it from the hook closure. The framework's TX is

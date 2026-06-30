@@ -25,7 +25,7 @@
             <div class="arch-row arch-sub-indent"><span class="arch-desc">Typed Notification system (translation key = struct name)</span></div>
         </div>
         <div class="arch-layer">
-            <div class="arch-row arch-head"><span class="arch-pkg">infra/</span><span class="arch-desc">Postgres (+ transactional outbox + audit), Mongo views, Kafka SyncEngine</span></div>
+            <div class="arch-row arch-head"><span class="arch-pkg">infra/</span><span class="arch-desc">Relational backend — PostgreSQL or MySQL (+ transactional outbox + audit), Mongo views, Kafka SyncEngine</span></div>
             <div class="arch-row arch-sub-indent"><span class="arch-desc">aggregate_persister (automatic dispatch) · composer · rebuild (Mongo schema evolution)</span></div>
             <div class="arch-row arch-sub-indent"><span class="arch-desc">cache/ · httpclient/ · integration/ (events) · criteria/ (entity search engine)</span></div>
             <div class="arch-row arch-sub-indent"><span class="arch-desc">migration/ · upstream_subscriber (cross-service) · audit / events / log</span></div>
@@ -48,7 +48,7 @@
 │   domain/           Pure business rules, ZERO IO                    │
 │                     ValidEntity, AggregateRoot, Rules, Old()        │
 │                     Notification system (typed, translated)         │
-│   infra/            Postgres (+outbox +audit), Mongo, Kafka sync    │
+│   infra/            Relational (+outbox +audit), Mongo, Kafka sync  │
 │                     aggregate_persister, composer, rebuild          │
 │                     cache/ httpclient/ integration/ criteria/       │
 │                     migration/, upstream_subscriber, events/log     │

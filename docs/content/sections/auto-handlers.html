@@ -31,12 +31,12 @@
         <tr><td>Validate allowed modes</td><td><span class="tag auto">automatic</span></td><td>via <code>Modes()</code> annotation</td></tr>
         <tr><td>Validate ID per mode</td><td><span class="tag auto">automatic</span></td><td>Insert does not allow ID; Update/Delete require it</td></tr>
         <tr><td>Build <code>ValidEntity</code> with metadata</td><td><span class="tag auto">automatic</span></td><td>after validation OK</td></tr>
-        <tr><td>Implement <code>Repository.Insert</code></td><td><span class="tag manual">manual</span></td><td>delegates to <code>infra.Postgres</code></td></tr>
-        <tr><td>Dynamic SQL <code>INSERT</code></td><td><span class="tag auto">automatic</span></td><td><code>infra.Postgres.Insert</code></td></tr>
+        <tr><td>Implement <code>Repository.Insert</code></td><td><span class="tag manual">manual</span></td><td>delegates to the relational engine</td></tr>
+        <tr><td>Dynamic SQL <code>INSERT</code></td><td><span class="tag auto">automatic</span></td><td>the engine's <code>Insert</code></td></tr>
         <tr><td>Write outbox in the same transaction</td><td><span class="tag auto">automatic</span></td><td><code>infra/executor.go</code> + <code>outbox.go</code></td></tr>
-        <tr><td>Write the <code>audit_events</code> row (in-TX, atomic with the data + outbox)</td><td><span class="tag auto">automatic</span></td><td><code>infra.Postgres</code> when <code>audit.destinations</code> includes <code>database</code></td></tr>
-        <tr><td>Echo the audit slog line (post-commit, best-effort)</td><td><span class="tag auto">automatic</span></td><td><code>infra.Postgres</code> when <code>audit.destinations</code> includes <code>slog</code></td></tr>
-        <tr><td>Publish domain events registered via <code>RegisterEvent</code> (post-commit, best-effort)</td><td><span class="tag auto">automatic</span></td><td><code>infra.Postgres</code> forwards them through the wired <code>events.Publisher</code> (<code>SlogPublisher</code> default; no-op when the entity registered none)</td></tr>
+        <tr><td>Write the <code>audit_events</code> row (in-TX, atomic with the data + outbox)</td><td><span class="tag auto">automatic</span></td><td>the relational engine when <code>audit.destinations</code> includes <code>database</code></td></tr>
+        <tr><td>Echo the audit slog line (post-commit, best-effort)</td><td><span class="tag auto">automatic</span></td><td>the relational engine when <code>audit.destinations</code> includes <code>slog</code></td></tr>
+        <tr><td>Publish domain events registered via <code>RegisterEvent</code> (post-commit, best-effort)</td><td><span class="tag auto">automatic</span></td><td>the relational engine forwards them through the wired <code>events.Publisher</code> (<code>SlogPublisher</code> default; no-op when the entity registered none)</td></tr>
         <tr><td>Catch domain errors</td><td><span class="tag auto">automatic</span></td><td><code>pipeline.Run</code> via <code>NotificationCarrier</code></td></tr>
         <tr><td>Notification translation</td><td><span class="tag auto">automatic</span></td><td><code>Pipeline</code> uses <code>Translator</code> + <code>AppContext.Language()</code></td></tr>
         <tr><td>Panic recovery</td><td><span class="tag auto">automatic</span></td><td><code>defer/recover</code> in <code>pipeline.Run</code></td></tr>
@@ -108,7 +108,7 @@
     pipeline.PathIDRequired // marker — ID-requiring handler (wrapper detects; RequirePathID enforces)
     Repo    persistence.ScopedRepository[T]
     Service domain.Service     // optional — see "Domain Service via Auto handler"
-    // No Auditor field — audit is owned by infra.Postgres, configured at boot.
+    // No Auditor field — audit is owned by the relational engine, configured at boot.
     // No Project field — projection lives on the Cmd as cmd.FromEntity(ctx, T) (TResult, error).
     // In-TX side effects opt in via Cmd's optional AfterBegin / BeforeCommit
     // methods — the handler detects them via type assertion and threads them as
@@ -320,7 +320,7 @@ users.Post("/", fwweb.HandleCommandWithBody(d.Pipeline,
     </p>
     <p>
         The asymmetry is <strong>internal to the handler</strong>: the wire-up in <code>routes.go</code> is
-        identical to the other Auto handlers — only <code>Repo</code> (audit emission is handled automatically by <code>infra.Postgres</code>).
+        identical to the other Auto handlers — only <code>Repo</code> (audit emission is handled automatically by the relational engine).
         <code>Repo.New() T</code> is a mandatory method of the <code>domain.Reader[T]</code> read port (carried by
         <code>persistence.ScopedRepository[T]</code>); anyone using <code>BaseRepository[T]</code> injects a single
         <code>NewEntity func() T</code> into the constructor (typically the same factory shared with the

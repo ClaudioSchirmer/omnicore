@@ -13,12 +13,12 @@
 
     <h3>View versioning</h3>
     <p>Every <code>ViewDefinition</code> declares a mandatory <code>Version(N)</code> (positive integer). The version is the developer-intent signal — bump it whenever the rebuild-relevant declarative state changes (root table, embeds, DeleteOnArchive, $jsonSchema, collation, capped, time-series). Index-only changes do NOT require a bump.</p>
-    <pre><code>fwinfra.View("users").
+    <pre><code>query.View("users").
     Version(3).                                                    // ← mandatory
     Root("users").
     Schema(UserSchema()).                                          // ← mandatory on every view
-    EmbedMany("addresses", fwinfra.FromSchema(AddressSchema())).
-    Indexes(fwinfra.Index("email").Unique())</code></pre>
+    EmbedMany("addresses", query.FromSchema(AddressSchema())).
+    Indexes(query.Index("email").Unique())</code></pre>
     <p><code>Version(N)</code> participates in <code>RebuildHash</code>, so the framework detects:</p>
     <ul>
         <li><strong>Forgot-to-bump</strong> — same version in code AND registry but hashes differ → <code>DriftForgotToBump</code> → boot aborts unconditionally (the version is the only intent signal; no escape).</li>

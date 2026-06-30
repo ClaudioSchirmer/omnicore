@@ -113,12 +113,12 @@
             <th>Who does it</th>
             <th>Where</th>
         </tr>
-        <tr><td>Define the <code>ViewDefinition</code> (every case — single aggregate, legacy, cross-service)</td><td><span class="tag manual">manual</span></td><td><code>fwinfra.View(name).Version(1).Root(table).Schema(TSchema()).EmbedMany("field", fwinfra.FromSchema(ChildSchema()))</code> — explicit; the root <code>.Schema(...)</code> and the embed's <code>FromSchema(...)</code> both carry the Go↔column map. For a local embed the parent-side Go segment is derived from the schema's type (<code>.As(...)</code> optional override)</td></tr>
-        <tr><td>Define cross-service <code>Embed</code>s (an external <code>FromSchema</code> over an upstream-projected collection)</td><td><span class="tag manual">manual</span></td><td>in the <code>ViewDefinition</code> via <code>fwinfra.FromSchema(fwinfra.NewExternalSchema("coll")…).On("fk").As("GoSegment")</code> — not derivable from the aggregate; the type-less schema marks it external; <code>.As(...)</code> is required; the projection + recompose ripple is automatic (next row)</td></tr>
-        <tr><td>Drop archived rows from the projection (hot-tier read side)</td><td><span class="tag manual">manual</span></td><td><code>fwinfra.View(...).DeleteOnArchive().Root(...)</code> — opt-in per view; cascade governs root + embeds. Default keeps archived rows so Mongo mirrors PostgreSQL symmetrically.</td></tr>
-        <tr><td>Create MongoDB indexes (single-field, compound, partial, sparse, TTL, text, 2dsphere, hashed)</td><td><span class="tag auto">automatic</span></td><td><code>fwinfra.View(...).Indexes(fwinfra.Index("email").Unique(), fwinfra.Compound("email","created_at"), fwinfra.TextIndex("name","email").DefaultLanguage("portuguese"), ...)</code> — declared on the same builder; <code>bootstrap.Run</code> calls <code>fwinfra.ApplyMongoSpecs</code> right after <code>collectViews</code> and before <code>SyncEngine.Start</code>. Idempotent on steady state; strict-on-divergence by default; <code>OMNICORE_MONGO_FORCE_REBUILD=true</code> as operator escape (drops divergent indexes and recreates from the declared spec; never auto-enabled). Boot validation: every index key must name a column the composer emits — a typo (<code>Index("emial")</code>) or a Go field name instead of the physical column (<code>addresses.zipCode</code> vs <code>addresses.zip_code</code>) aborts the boot rather than creating a dead index.</td></tr>
-        <tr><td>Collection-level features ($jsonSchema validator, collation, capped, time-series)</td><td><span class="tag auto">automatic</span></td><td><code>fwinfra.View(...).JSONSchema(bson.M{...}).Collation(&amp;fwinfra.CollationSpec{Locale:"pt",Strength:1}).Capped(&amp;fwinfra.CappedSpec{SizeBytes: 1&lt;&lt;30}).TimeSeries(&amp;fwinfra.TimeSeriesSpec{TimeField:"ts"})</code> — same builder; framework forwards onto <code>createCollection</code> for fresh collections, <code>collMod</code> for validator updates on existing ones. <code>Capped</code> ⊕ <code>TimeSeries</code> (boot rejects both); collation is immutable on existing collections (divergence aborts boot, never auto-drops). Boot validation: every top-level <code>$jsonSchema.required</code> entry must name a column the composer emits — otherwise, with the default <code>validationAction: error</code>, Mongo would reject every SyncEngine upsert and silently freeze the projection.</td></tr>
-        <tr><td>DB-per-service guard (foreign-collection detection)</td><td><span class="tag auto">automatic</span></td><td><code>fwinfra.CheckServiceRegistry</code> runs at boot via <code>bootstrap.Run</code>. Service writes a marker doc under <code>omnicore_service_registry</code>, then lists collections and reports any outside the declared view set + the framework-owned allowlist. <code>APP_PROFILE=dev</code> → <code>slog.Warn</code> (lets hot-reload + ad-hoc mongosh work); any other profile → boot aborts with the foreign list.</td></tr>
+        <tr><td>Define the <code>ViewDefinition</code> (every case — single aggregate, legacy, cross-service)</td><td><span class="tag manual">manual</span></td><td><code>query.View(name).Version(1).Root(table).Schema(TSchema()).EmbedMany("field", query.FromSchema(ChildSchema()))</code> — explicit; the root <code>.Schema(...)</code> and the embed's <code>FromSchema(...)</code> both carry the Go↔column map. For a local embed the parent-side Go segment is derived from the schema's type (<code>.As(...)</code> optional override)</td></tr>
+        <tr><td>Define cross-service <code>Embed</code>s (an external <code>FromSchema</code> over an upstream-projected collection)</td><td><span class="tag manual">manual</span></td><td>in the <code>ViewDefinition</code> via <code>query.FromSchema(core.NewExternalSchema("coll")…).On("fk").As("GoSegment")</code> — not derivable from the aggregate; the type-less schema marks it external; <code>.As(...)</code> is required; the projection + recompose ripple is automatic (next row)</td></tr>
+        <tr><td>Drop archived rows from the projection (hot-tier read side)</td><td><span class="tag manual">manual</span></td><td><code>query.View(...).DeleteOnArchive().Root(...)</code> — opt-in per view; cascade governs root + embeds. Default keeps archived rows so Mongo mirrors the relational store symmetrically.</td></tr>
+        <tr><td>Create MongoDB indexes (single-field, compound, partial, sparse, TTL, text, 2dsphere, hashed)</td><td><span class="tag auto">automatic</span></td><td><code>query.View(...).Indexes(query.Index("email").Unique(), query.Compound("email","created_at"), query.TextIndex("name","email").DefaultLanguage("portuguese"), ...)</code> — declared on the same builder; <code>bootstrap.Run</code> calls <code>mongo.ApplyMongoSpecs</code> right after <code>collectViews</code> and before <code>SyncEngine.Start</code>. Idempotent on steady state; strict-on-divergence by default; <code>OMNICORE_MONGO_FORCE_REBUILD=true</code> as operator escape (drops divergent indexes and recreates from the declared spec; never auto-enabled). Boot validation: every index key must name a column the composer emits — a typo (<code>Index("emial")</code>) or a Go field name instead of the physical column (<code>addresses.zipCode</code> vs <code>addresses.zip_code</code>) aborts the boot rather than creating a dead index.</td></tr>
+        <tr><td>Collection-level features ($jsonSchema validator, collation, capped, time-series)</td><td><span class="tag auto">automatic</span></td><td><code>query.View(...).JSONSchema(bson.M{...}).Collation(&amp;query.CollationSpec{Locale:"pt",Strength:1}).Capped(&amp;query.CappedSpec{SizeBytes: 1&lt;&lt;30}).TimeSeries(&amp;query.TimeSeriesSpec{TimeField:"ts"})</code> — same builder; framework forwards onto <code>createCollection</code> for fresh collections, <code>collMod</code> for validator updates on existing ones. <code>Capped</code> ⊕ <code>TimeSeries</code> (boot rejects both); collation is immutable on existing collections (divergence aborts boot, never auto-drops). Boot validation: every top-level <code>$jsonSchema.required</code> entry must name a column the composer emits — otherwise, with the default <code>validationAction: error</code>, Mongo would reject every SyncEngine upsert and silently freeze the projection.</td></tr>
+        <tr><td>DB-per-service guard (foreign-collection detection)</td><td><span class="tag auto">automatic</span></td><td><code>mongo.CheckServiceRegistry</code> runs at boot via <code>bootstrap.Run</code>. Service writes a marker doc under <code>omnicore_service_registry</code>, then lists collections and reports any outside the declared view set + the framework-owned allowlist. <code>APP_PROFILE=dev</code> → <code>slog.Warn</code> (lets hot-reload + ad-hoc mongosh work); any other profile → boot aborts with the foreign list.</td></tr>
         <tr><td>Set up <code>SyncEngine</code> to populate the view</td><td><span class="tag manual">manual</span></td><td>service boot</td></tr>
         <tr><td>Declare the allowlist of fields + operators</td><td><span class="tag manual">manual</span></td><td>Request DTO struct tags (<code>query:"X" filter:"ops"</code>)</td></tr>
         <tr><td>Declare the wire output shape</td><td><span class="tag manual">manual</span></td><td>Response DTO struct with <code>json:"&lt;wire&gt;"</code> tags only (the doc is already Go-keyed by the reader — no source-key override), co-located with the Request in the same <code>web/requests/find_xxx_request.go</code> file. Pair with <code>fwresponses.AutoFromDoc[Response]</code> (tag-driven default), <code>fwresponses.RawDoc</code> (raw passthrough), or a consumer <code>Response{}.FromDoc</code> method (custom logic).</td></tr>
@@ -326,7 +326,7 @@ type FindUsersByParamsAddressOutput struct {
             emits a single <code>slog.Warn</code> at boot listing every sortable wire path so the
             operator can compare it against the view's <code>.Indexes(…)</code> declaration in
             the same boot pass and add covering indexes
-            (<code>fwinfra.Index</code> / <code>fwinfra.Compound</code>) where missing — sort
+            (<code>query.Index</code> / <code>query.Compound</code>) where missing — sort
             queries against non-indexed fields scale poorly on large collections.
         </li>
     </ol>
@@ -430,7 +430,7 @@ type FindUsersByParamsAddressOutput struct {
     </p>
     <ol>
         <li><code>ViewDefinition.MaxLimit(N)</code> — declarative per-view override
-            (<code>fwinfra.View("users").MaxLimit(500)</code>). Applies uniformly to every endpoint
+            (<code>query.View("users").MaxLimit(500)</code>). Applies uniformly to every endpoint
             consulting the view, regardless of how many handlers point at it — the cap describes the
             cost of reading this specific dataset, not of any single endpoint.</li>
         <li><code>cfg.Query.MaxLimit</code> — yaml-supplied service-wide default
@@ -452,11 +452,11 @@ type FindUsersByParamsAddressOutput struct {
         neither triggers a Mongo rebuild nor requires a <code>Version(N)</code> bump.
     </p>
     <pre><code>// Per-view override — applies to every endpoint reading "users":
-fwinfra.View("users").
+query.View("users").
     Version(1).
     Root("users").
     Schema(UserSchema()).
-    EmbedMany("addresses", fwinfra.FromSchema(AddressSchema())).
+    EmbedMany("addresses", query.FromSchema(AddressSchema())).
     MaxLimit(500)
 </code></pre>
     <pre><code># microservice.&lt;profile&gt;.yaml — service-wide default (consumed by every view
@@ -644,7 +644,7 @@ fwopenapi.Mount(d.OpenAPIRegistry, app, fiber.MethodGet, "/users.csv", csvH, csv
     <h4>1. Define the ViewDefinition</h4>
     <p>
         Every view is declared explicitly with the fluent <code>View(name)</code> builder. The root
-        <code>.Schema(...)</code> and each embed's <code>fwinfra.FromSchema(...)</code> carry the
+        <code>.Schema(...)</code> and each embed's <code>query.FromSchema(...)</code> carry the
         <code>TableSchema</code> (the Go↔column map the reader uses to translate documents back to Go field names);
         from the schema the framework also derives the embed's table/collection, store kind, and — for an
         <code>EmbedMany</code> — the join FK. For a local embed the parent-side Go segment (what the Response and

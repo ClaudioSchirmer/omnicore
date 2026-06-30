@@ -2,11 +2,11 @@
     <p>
         Every successful write emits exactly one <code>AuditEvent</code> — the forensic record of
         what changed, who changed it, and when. Audit <strong>travels with the persister</strong>:
-        each <code>Postgres.Insert</code> / <code>Update</code> / <code>Archive</code> /
-        <code>Unarchive</code> / <code>Delete</code> builds the event and routes it according to the
+        each write through the relational engine (<code>Insert</code> / <code>Update</code> / <code>Archive</code> /
+        <code>Unarchive</code> / <code>Delete</code>) builds the event and routes it according to the
         boot-time <code>audit.destinations</code> configuration. There is no <code>Auditor</code>
         singleton to thread through handlers — it is configured once at boot
-        (<code>pg.WithAudit(...)</code>) and every write, Auto or manual, is covered without a line
+        (<code>WithAudit(...)</code> on the relational engine) and every write, Auto or manual, is covered without a line
         of handler code.
     </p>
     <p>
@@ -29,7 +29,7 @@
         <code>dateTime</code> is captured at <code>ValidEntity</code> construction, so it reflects
         the moment the domain accepted the operation, not when the row was flushed.
     </p>
-    <div class="flow"><span class="auto">infra.Postgres.Insert/Update/Archive/Unarchive/Delete</span>
+    <div class="flow"><span class="auto">engine.Insert/Update/Archive/Unarchive/Delete</span>
    │
    ▼
 <span class="auto">BEGIN TX</span>
@@ -44,7 +44,7 @@
    IF destinations ∋ <span class="auto">slog</span>:
      <span class="auto">audit.EchoSlog(ctx, logger, ev)</span>  ← flat slog line for shippers</div>
     <p>
-        The <code>database</code> row is written <strong>inside the same <code>pgx.Tx</code></strong>
+        The <code>database</code> row is written <strong>inside the same transaction</strong>
         as the data row and the outbox row — so a crash between writes can never leave an audit gap.
         If <code>COMMIT</code> succeeded, the audit row exists. The <code>slog</code> echo fires
         <em>after</em> <code>COMMIT</code> and is best-effort: lossy if the log shipper drops the
@@ -65,7 +65,7 @@
         <tr>
             <td><code>database</code></td>
             <td><code>audit.InsertAuditEvent</code> → row in <code>audit_events</code></td>
-            <td>inside the write's <code>pgx.Tx</code></td>
+            <td>inside the write's transaction</td>
             <td><strong>atomic</strong> — the row IS the audit; if the write committed, the audit exists</td>
             <td>compliance, forensics, source-of-truth timelines joinable to other PG state</td>
         </tr>
@@ -318,7 +318,7 @@ audit.RenderLabelsInJSON(doc, deps.Translator, configuration.LangPTBR)
 <pre><code># ELK / Loki — query the slog wire fields:
 entityType:User AND entityId:&lt;uuid&gt;   sorted by dateTime ASC
 
--- PostgreSQL — query the authoritative row directly (joinable to other PG state):
+-- Relational store — query the authoritative row directly (joinable to other SQL state):
 SELECT verb, action_name, kind, actor, occurred_at, payload
 FROM audit_events
 WHERE entity_type = 'User' AND aggregate_id = '&lt;uuid&gt;'

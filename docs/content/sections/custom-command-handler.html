@@ -82,23 +82,23 @@ import (
 
 // Embed BaseRepository[*Customer] to inherit Scope(ctx, opts...) →
 // Insert/Update/Archive/Unarchive/Delete and New() — no hand-written writes.
-// The writes route through infra.Postgres with the atomic outbox preserved;
+// The writes route through the relational engine with the atomic outbox preserved;
 // the Go↔column map is declared once via WithSchema (no name inference).
 type CustomerRepo struct {
-    infra.BaseRepository[*Customer]
-    loader *infra.AggregateLoader[*Customer]   // for FindByID
+    write.BaseRepository[*Customer]
+    loader *read.AggregateLoader[*Customer]   // for FindByID
 }
 
-func NewCustomerRepo(pg *infra.Postgres) *CustomerRepo {
+func NewCustomerRepo(eng core.RelationalEngine) *CustomerRepo {
     newCustomer := func() *Customer { return &amp;Customer{} }   // single factory source
-    schema := CustomerSchema()   // NewTableSchema[*Customer]("customers").PK("id").Field("Name","name")...
+    schema := CustomerSchema()   // core.NewTableSchema[*Customer]("customers").PK("id").Field("Name","name")...
     r := &amp;CustomerRepo{
-        BaseRepository: infra.BaseRepository[*Customer]{
-            Postgres: pg, ContextName: "Customer", NewEntity: newCustomer,
+        BaseRepository: write.BaseRepository[*Customer]{
+            Engine: eng, ContextName: "Customer", NewEntity: newCustomer,
         },
         // The standalone loader needs the schema too: BaseRepository.WithSchema
         // threads only the write binding, not this separate loader field.
-        loader: infra.NewAggregateLoader[*Customer](pg, newCustomer).WithSchema(schema),
+        loader: read.NewAggregateLoader[*Customer](eng, newCustomer).WithSchema(schema),
     }
     r.WithSchema(schema)   // write binding (BaseRepository.Schema)
     return r
@@ -187,43 +187,43 @@ app.Post("/customers", func(c fiber.Ctx) error {
     </p>
 
     <h3>BaseRepository[T] — 5 ready-made writes + New() T</h3>
-    <p>The service embeds <code>fwinfra.BaseRepository[T]</code> and gains Insert/Update/Archive/Unarchive/Delete without writing a line — plus <code>New() T</code>, which materializes the constructor of T (consumed by <code>UnarchiveCommandHandler</code> and available for any scenario needing an empty entity). <code>FindByID</code> is the service's responsibility (see <a href="#custom-command-handler~aggregate-loader">AggregateLoader</a>).</p>
+    <p>The service embeds <code>write.BaseRepository[T]</code> and gains Insert/Update/Archive/Unarchive/Delete without writing a line — plus <code>New() T</code>, which materializes the constructor of T (consumed by <code>UnarchiveCommandHandler</code> and available for any scenario needing an empty entity). <code>FindByID</code> is the service's responsibility (see <a href="#custom-command-handler~aggregate-loader">AggregateLoader</a>).</p>
     <pre><code>type UserRepository struct {
-    fwinfra.BaseRepository[*User]
-    loader *fwinfra.AggregateLoader[*User]  // for FindByID
+    write.BaseRepository[*User]
+    loader *read.AggregateLoader[*User]  // for FindByID
 }
 
 newUser := func() *User { return &amp;User{} }  // single factory source
 
-base := fwinfra.BaseRepository[*User]{
-    Postgres:  pg,
+base := write.BaseRepository[*User]{
+    Engine:    eng,
     NewEntity: newUser,                       // mandatory: feeds Repo.New()
-    Constraints: map[string]fwinfra.ConstraintBinding{
+    Constraints: map[string]write.ConstraintBinding{
         "users_email_active_idx": {Notification: EmailAlreadyExistsNotification{}, Field: "email"},
     },
 }</code></pre>
     <p><strong><code>NewEntity</code> is mandatory.</strong> <code>New()</code> panics with a clear message if nil — it's a configuration bug detected at boot/first call, not in a hot request. The same factory is typically shared with the <code>AggregateLoader</code> to avoid duplication.</p>
     <p><strong><code>ContextName</code> is optional.</strong> When empty, derived from the Go type T via reflect (<code>T=*User → "User"</code>) — that's the framework's convention. Set explicitly only when you need to customize (e.g., two Repositories over the same entity with distinct names in the notification context).</p>
-    <p>Unique violations (PG code <code>23505</code>) are translated into <code>*InfrastructureError</code> carrying the typed notification — no manual <code>mapPGError</code>. Unregistered constraints, codes other than <code>23505</code>, and non-<code>pgconn.PgError</code> errors return raw.</p>
+    <p>Unique violations are classified by the engine's <code>Dialect</code> (Postgres SQLSTATE <code>23505</code>, MySQL errno <code>1062</code>) and translated into <code>*InfrastructureError</code> carrying the typed notification — no manual error parsing. Unregistered constraints, other error codes, and unclassified errors return raw.</p>
 
     <h3 id="base-aggregate-repository">BaseAggregateRepository[T] — canonical composition</h3>
     <p>
         Almost every aggregate-aware Repository has the same shape: <code>BaseRepository[T]</code> (writes) +
-        <code>*AggregateLoader[T]</code> (FindByID/FindArchivedByID). <code>fwinfra.BaseAggregateRepository[T]</code>
+        <code>*AggregateLoader[T]</code> (FindByID/FindArchivedByID). <code>read.BaseAggregateRepository[T]</code>
         bundles both and promotes the trivial wrappers — the service no longer declares
         <code>FindByID</code> and <code>FindArchivedByID</code> manually. The common case fits in 8–10 lines.
     </p>
     <pre><code>type UserRepository struct {
-    fwinfra.BaseAggregateRepository[*User]
+    read.BaseAggregateRepository[*User]
 }
 
-func NewUserRepository(pg *fwinfra.Postgres) *UserRepository {
+func NewUserRepository(eng core.RelationalEngine) *UserRepository {
     r := &amp;UserRepository{
-        BaseAggregateRepository: fwinfra.NewBaseAggregateRepository[*User](
-            pg, func() *User { return &amp;User{} },
+        BaseAggregateRepository: read.NewBaseAggregateRepository[*User](
+            eng, func() *User { return &amp;User{} },
         ),
     }
-    r.Constraints = map[string]fwinfra.ConstraintBinding{
+    r.Constraints = map[string]write.ConstraintBinding{
         "users_email_active_idx": {Notification: EmailAlreadyExistsNotification{}, Field: "email"},
     }
     r.WithSchema(UserSchema())   // children come from the schema's .Child(...) declarations
@@ -253,7 +253,7 @@ var (
     <h3 id="aggregate-loader">AggregateLoader[T] — loading aggregates with the criteria engine</h3>
     <p>
         The <code>AggregateLoader</code> loads <strong>live domain aggregates</strong> (root + children) from
-        PostgreSQL through the <a href="#custom-command-handler~criteria-engine">entity search engine</a>: you hand it a
+        the relational backend through the <a href="#custom-command-handler~criteria-engine">entity search engine</a>: you hand it a
         <code>criteria.Query</code> and it returns the entity ready for a command. Two entry points —
         <code>FindOne(ctx, *criteria.Query)</code> (one match, or <code>RecordNotFound</code>; more than one
         is an error) and <code>FindAll(ctx, *criteria.Query)</code> (a slice; children batched). It has its
@@ -319,13 +319,13 @@ type User struct {
 // Canonical Repository: BaseAggregateRepository bundles loader + writes.
 // FindByID / FindArchivedByID promoted via embed — zero manual wrappers.
 type UserRepository struct {
-    fwinfra.BaseAggregateRepository[*User]
+    read.BaseAggregateRepository[*User]
 }
 
-func NewUserRepository(pg *fwinfra.Postgres) *UserRepository {
+func NewUserRepository(eng core.RelationalEngine) *UserRepository {
     r := &amp;UserRepository{
-        BaseAggregateRepository: fwinfra.NewBaseAggregateRepository[*User](
-            pg, func() *User { return &amp;User{} },
+        BaseAggregateRepository: read.NewBaseAggregateRepository[*User](
+            eng, func() *User { return &amp;User{} },
         ),
     }
     // Children declared on the schema via .Child(...); WithSchema threads it
@@ -352,11 +352,11 @@ SELECT user_id, id, label, street, number, complement, neighborhood, city, state
         schema records, per declared field, a <code>column → struct-field-index</code> plan
         (<code>TableSchema.scanPlan</code>); the loader builds the <code>SELECT</code> from exactly
         those columns and scans each row straight into the matched field by index. There is no
-        <code>pgx</code> name normalization and no convention — see
-        <a href="#table-schema">TableSchema (PG + views)</a>.
+        driver-level name normalization and no convention — see
+        <a href="#table-schema">TableSchema</a>.
     </p>
-    <pre><code>func UserSchema() *fwinfra.TableSchema {
-    return fwinfra.NewTableSchema[*User]("users").
+    <pre><code>func UserSchema() *core.TableSchema {
+    return core.NewTableSchema[*User]("users").
         PK("id").
         Field("Name", "name").
         Field("DisplayName", "display_name").  // any Go field ↔ any column
@@ -376,7 +376,7 @@ SELECT user_id, id, label, street, number, complement, neighborhood, city, state
     <h4>Nullables</h4>
     <p>
         <code>NULL</code>-able columns map to <strong>pointer types</strong> in the domain
-        (<code>*string</code>, <code>*int64</code>, <code>*time.Time</code>). <code>pgx</code>
+        (<code>*string</code>, <code>*int64</code>, <code>*time.Time</code>). The engine
         writes <code>NULL</code> when the pointer is <code>nil</code>; reads <code>NULL</code> as
         <code>nil</code> on auto-scan. Recommended boundary convention: <em>empty JSON input
         becomes <code>nil</code> via a local helper</em> (e.g., <code>NilIfEmpty(s string) *string</code>
@@ -414,8 +414,8 @@ SELECT user_id, id, label, street, number, complement, neighborhood, city, state
     </p>
     <pre><code>// Manual mode runs SELECT * — scan id first (the framework no longer injects
 // it on the criteria path) and SetID, then decode the rest however you like.
-r.loader = fwinfra.NewAggregateLoader[*User](pg, factory).
-    WithRootScanner(func(row pgx.Row) (*User, error) {
+r.loader = read.NewAggregateLoader[*User](eng, factory).
+    WithRootScanner(func(row read.Row) (*User, error) {
         u := &amp;User{}
         var id, firstName, lastName string
         if err := row.Scan(&amp;id, &amp;firstName, &amp;lastName /* …, &amp;u.Email, etc */); err != nil {

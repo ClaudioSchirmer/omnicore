@@ -1,4 +1,4 @@
-<h2>TableSchema — Go ↔ column mapping (PG + Mongo views)</h2>
+<h2>TableSchema — Go ↔ column mapping &amp; normalization</h2>
 <p>
     Everything above infrastructure speaks the <strong>Go field name</strong> (PascalCase) — <code>domain</code>,
     <code>application</code>, and <code>web</code>. The criteria you write is <code>criteria.Eq("Email", v)</code>; the
@@ -38,7 +38,7 @@
         domain. What this buys is freedom over <strong>names</strong> (column and table), not over structural
         <em>shape</em>: the table must still fit the framework's assumptions — a single-column non-composite primary key,
         a timestamp-based soft-delete column when the entity is archivable, and one of the
-        <a href="#table-schema~supported-column-shapes-go-postgresql">supported column shapes</a>. Adopting a schema
+        <a href="#table-schema~supported-column-shapes">supported column shapes</a>. Adopting a schema
         that breaks those assumptions is explicitly <a href="#table-schema~out-of-scope">out of scope</a>.</li>
     <li><strong>No failed, tiring conventions.</strong> Name-inference (PascalToSnake + pluralize) is lossy and
         acronym-hostile: <code>UserID</code> and <code>UserId</code> both collapse to <code>user_id</code>;
@@ -61,14 +61,14 @@
     <tbody>
         <tr><td>Wire (JSON / query string)</td><td><code>myEmail</code></td><td><code>json:"…"</code> / <code>query:"…"</code> tags in <code>web/</code></td></tr>
         <tr><td>App / domain (Go field)</td><td><code>Email</code></td><td>the Go struct field — the single name every layer above infra uses</td></tr>
-        <tr><td>Physical (PG column / Mongo doc key)</td><td><code>mail</code></td><td><code>TableSchema.Field("Email", "mail")</code> in <code>infra/</code></td></tr>
+        <tr><td>Physical (relational column / Mongo doc key)</td><td><code>mail</code></td><td><code>TableSchema.Field("Email", "mail")</code> in <code>infra/</code></td></tr>
     </tbody>
 </table>
 <p>
     The wire name and the physical name are <strong>invisible to the developer</strong> manipulating data — handlers,
     commands, queries, and <code>BuildRules</code> only ever say <code>Email</code>. The web membrane
     (<code>json</code>/<code>query</code> tags) translates JSON ↔ Go; the infra membrane (<code>TableSchema</code>)
-    translates Go ↔ column. Mongo mirrors PostgreSQL physically (the composer writes columns verbatim), and the reader
+    translates Go ↔ column. Mongo mirrors the relational store physically (the composer writes columns verbatim), and the reader
     translates each column back to its Go field name before the typed Response projects to the wire — so the wire surface
     speaks Go names without any per-Response source-key override.
 </p>
@@ -81,8 +81,8 @@
     <code>FromSchema</code> embed source (there is no local struct to validate against).
 </p>
 <pre><code>// Type-anchored — validated against *User at call time.
-func UserSchema() *fwinfra.TableSchema {
-    return fwinfra.NewTableSchema[*User]("users").
+func UserSchema() *core.TableSchema {
+    return core.NewTableSchema[*User]("users").
         PK("id").                       // column "id" — Go side fixed to ID (single-column PK)
         Field("Name", "name").
         Field("Email", "mail").         // renamed column
@@ -93,8 +93,8 @@ func UserSchema() *fwinfra.TableSchema {
         Child(AddressSchema())          // aggregate child, keyed by Go type name
 }
 
-func AddressSchema() *fwinfra.TableSchema {
-    return fwinfra.NewTableSchema[Address]("addresses").
+func AddressSchema() *core.TableSchema {
+    return core.NewTableSchema[Address]("addresses").
         PK("id").
         FK("user_id").                  // FK to the root — injected by the persister
         Field("Street", "street").
@@ -105,7 +105,7 @@ func AddressSchema() *fwinfra.TableSchema {
 }
 
 // Type-less — for an upstream-projected external FromSchema source (no local struct).
-fwinfra.NewExternalSchema("users").PK("id").Field("Email", "mail")</code></pre>
+core.NewExternalSchema("users").PK("id").Field("Email", "mail")</code></pre>
 <p>
     The Go-side primary-key field is fixed to <code>ID</code> by the <code>BaseEntity</code>/AVO contract (an aggregate
     root carries it privately and exposes <code>GetID</code>/<code>SetID</code>; an AVO exposes the exported field
@@ -180,13 +180,15 @@ fwinfra.NewExternalSchema("users").PK("id").Field("Email", "mail")</code></pre>
     same columns. The <code>Modes() ⟺ SoftDelete</code> boot check runs here; the field-existence and bijection checks
     already ran while the schema was built. A misconfiguration panics at construction, not on the first request.
 </p>
-<pre><code>func NewUserRepository(pg *fwinfra.Postgres) *UserRepository {
+<pre><code>// eng is the backend-neutral relational engine (Deps.DB, a core.RelationalEngine);
+// the SQL backend is a relational.dialect change in YAML, not an edit here.
+func NewUserRepository(eng core.RelationalEngine) *UserRepository {
     r := &amp;UserRepository{
-        BaseAggregateRepository: fwinfra.NewBaseAggregateRepository[*User](
-            pg, func() *User { return &amp;User{} },
+        BaseAggregateRepository: read.NewBaseAggregateRepository[*User](
+            eng, func() *User { return &amp;User{} },
         ),
     }
-    r.Constraints = map[string]fwinfra.ConstraintBinding{ /* … */ }
+    r.Constraints = map[string]write.ConstraintBinding{ /* … */ }
     r.WithSchema(UserSchema())   // one schema → write + criteria + scan + children
     return r
 }</code></pre>
@@ -194,9 +196,9 @@ fwinfra.NewExternalSchema("users").PK("id").Field("Email", "mail")</code></pre>
 <h3>The same schema drives the Mongo view</h3>
 <p>
     The read-side <code>ViewDefinition</code> reuses the very same schemas. The root schema is attached via
-    <code>.Schema(...)</code>; each embed source is constructed from a schema via <code>fwinfra.FromSchema(...)</code> — the
+    <code>.Schema(...)</code>; each embed source is constructed from a schema via <code>query.FromSchema(...)</code> — the
     single embed source constructor. From the schema the framework derives the table/collection
-    (<code>ts.Table()</code>), the store kind (a type-anchored <code>NewTableSchema[T]</code> → a local Postgres source;
+    (<code>ts.Table()</code>), the store kind (a type-anchored <code>NewTableSchema[T]</code> → a local relational source;
     a type-less <code>NewExternalSchema</code> → an external/Mongo source), and — for an <code>EmbedMany</code> — the join
     FK (<code>ts.FKColumn()</code>). The composer writes physical columns to Mongo; the reader translates each leaf back to
     its Go field name using these schemas (so <code>mail</code> → <code>Email</code>, <code>zip_code</code> →
@@ -205,12 +207,12 @@ fwinfra.NewExternalSchema("users").PK("id").Field("Email", "mail")</code></pre>
     name for a one-to-one <code>Embed</code> — so <code>.As(...)</code> is only an optional override. The view also honors
     the schema's soft-delete column when <code>DeleteOnArchive</code> is set.
 </p>
-<pre><code>func UserView() *fwinfra.ViewDefinition {
-    return fwinfra.View("users").
+<pre><code>func UserView() *query.ViewDefinition {
+    return query.View("users").
         Version(1).
         Root("users").
         Schema(UserSchema()).
-        EmbedMany("addresses", fwinfra.FromSchema(AddressSchema())).  // segment derived → "Addresses"
+        EmbedMany("addresses", query.FromSchema(AddressSchema())).  // segment derived → "Addresses"
         Indexes( /* … */ )
 }</code></pre>
 <p>
@@ -224,7 +226,7 @@ fwinfra.NewExternalSchema("users").PK("id").Field("Email", "mail")</code></pre>
     <strong>External (cross-service) embeds — no local struct.</strong> When a view embeds data owned by another service
     (materialized locally via an <a href="#service-to-service">UpstreamSubscription</a>), there is no Go struct in this
     service to anchor the embed's schema. Build the source from a type-less <code>NewExternalSchema(collection)</code> and
-    pass it to <code>fwinfra.FromSchema(...)</code> — the schema being type-less is the very signal that makes it an
+    pass it to <code>query.FromSchema(...)</code> — the schema being type-less is the very signal that makes it an
     external/Mongo source (no separate <code>FromMongo</code> constructor). The left side of each <code>Field</code> is the
     <em>logical Go name</em> the local view's Response/criteria speak; the right side names the <em>upstream's physical
     column</em>. It is validated by bijection (no two fields share a column) but not against any type — there is none.
@@ -233,19 +235,19 @@ fwinfra.NewExternalSchema("users").PK("id").Field("Email", "mail")</code></pre>
     used only on a one-to-one <code>Embed</code>.
 </p>
 <pre><code>// Cross-service embed — buyer projected from the upstream users service.
-func OrdersView() *fwinfra.ViewDefinition {
-    return fwinfra.View("orders").
+func OrdersView() *query.ViewDefinition {
+    return query.View("orders").
         Version(1).
         Root("orders").
         Schema(OrderSchema()).
-        Embed("buyer", fwinfra.FromSchema(
-            fwinfra.NewExternalSchema("users").  // type-less: names the UPSTREAM's columns
+        Embed("buyer", query.FromSchema(
+            core.NewExternalSchema("users").  // type-less: names the UPSTREAM's columns
                 PK("id").
                 Field("Name", "name").
                 Field("Email", "mail")).         // logical Go name ↔ upstream column
             On("buyer_id").                      // parent doc FK pointing at the source PK
             As("Buyer")).                        // REQUIRED — external embeds have no Go type to derive from
-        Indexes(fwinfra.Index("buyer_id"))       // boot guard requires the join-field index
+        Indexes(query.Index("buyer_id"))       // boot guard requires the join-field index
 }</code></pre>
 <p>
     <strong>Schema is mandatory on every view.</strong> The root (<code>ViewDefinition.Schema(ts)</code>) and every embed
@@ -316,29 +318,165 @@ func OrdersView() *fwinfra.ViewDefinition {
     root scanner used with <code>FindOne</code>/<code>FindAll</code> must populate the id itself).
 </p>
 
-<h3>Supported column shapes — Go ↔ PostgreSQL</h3>
+<h3>Normalizing a flat entity — children, siblings, and shared bases</h3>
+<p>
+    The schema is also where a <strong>flat Go entity</strong> becomes a <strong>normalized relational layout</strong> and
+    back again. You model one linear struct in the domain; the schema declares how its fields partition across physical
+    tables; and the framework <strong>normalizes on write</strong> (splitting the entity across those tables in a single
+    transaction) and <strong>denormalizes on read</strong> (re-joining them into the one flat struct on
+    <code>FindOne</code>/<code>FindAll</code>). The domain never sees the seams — the entity you load is the entity you
+    modeled, with the shared/secondary columns merged straight into its Go fields. Three partitioning tools cover the three
+    cardinalities a third-normal-form decomposition needs:
+</p>
+<table>
+    <thead><tr><th>Tool</th><th>Cardinality</th><th>Shape</th></tr></thead>
+    <tbody>
+        <tr><td><code>.Child(NewTableSchema[C](...))</code></td><td>1 : N</td><td>aggregate children in their own table, linked by an <code>FK</code> to the root (see "Declaring a schema" above)</td></tr>
+        <tr><td><code>.Sibling(NewSiblingSchema[T](...))</code></td><td>1 : 1</td><td>a disjoint slice of the <em>same</em> entity's fields in a secondary table sharing the root's PK (no FK)</td></tr>
+        <tr><td><code>.SharedBase(NewSharedBase(...), fk)</code></td><td>N : 1</td><td>an identity table shared by several independent role tables, deduplicated by a natural key</td></tr>
+    </tbody>
+</table>
+<p>
+    All three are declared on the same <code>TableSchema</code> the write path, the criteria engine, and the Mongo view
+    already consume, so the normalization stays invisible to every layer above <code>infra/</code>.
+</p>
 
-<div class="box warn">
-    <strong>The framework is fixed to two engines — PostgreSQL and MongoDB.</strong>
-    There is no pluggable database layer today. <strong>PostgreSQL</strong> is the authoritative write store and the
-    only backend the SQL/criteria engine emits for: the executor (<code>INSERT</code>/<code>UPDATE</code>/archive),
-    the entity-search <code>criteria</code> engine, and the auto-scan read-back are all PostgreSQL-specific (driven by
-    <code>pgx</code> v5). <strong>MongoDB</strong> is the only read-side projection store — the composer, the
-    <code>ViewDefinition</code> surface, the Mongo schema-evolution control plane, and the <code>?fields</code> /
-    <code>?sort</code> / keyset-pagination reader all target MongoDB exclusively. The <code>criteria</code> package keeps
-    a backend-neutral <code>Visitor</code> seam (the IR a future translator could implement), but the <em>only</em>
-    translator that ships is the PostgreSQL one. Everything below describes the Go ↔ <strong>PostgreSQL</strong> column
-    shapes the write/criteria/scan engine handles.
+<h3>Sibling tables — 1 : 1 specialization (shared primary key)</h3>
+<p>
+    A <strong>sibling</strong> stores a disjoint subset of the <em>same</em> Go type's fields in a separate table that
+    shares the owner's primary key — a 1 : 1 specialization (a "vertical split"). Use it to peel rarely-read, bulky, or
+    optional facets off a hot table without inventing a child collection or a second aggregate. Build it with
+    <code>core.NewSiblingSchema[T](table)</code> — anchored to the <em>same</em> <code>T</code> as its owner — and attach it
+    with <code>.Sibling(...)</code>:
+</p>
+<pre><code>core.NewTableSchema[*Person]("person").
+    PK("id").
+    Field("Name", "name").
+    Field("Email", "email").
+    SoftDelete("deleted_at").
+    Sibling(core.NewSiblingSchema[*Person]("person_profile").
+        Field("Bio", "bio").              // disjoint fields — never declared on the owner
+        Field("AvatarURL", "avatar_url"))</code></pre>
+<p>
+    A sibling has <strong>no identity or lifecycle of its own</strong>: it declares no PK (it borrows the owner's), no FK
+    (the shared PK <em>is</em> the link), no soft-delete, no children, and no nested sibling — the owner owns all of that.
+    Width is unlimited (a node may declare many siblings) but the partition is strict: every Go field and every column
+    belongs to <strong>exactly one</strong> of {owner, siblings}. An overlap is a boot panic (<code>ValidateSiblings</code>,
+    run inside <code>WithSchema</code>). Both a root and an aggregate child may carry siblings.
+</p>
+<p>
+    On <strong>write</strong>, the persister splits the entity across the owner row and each sibling row in the same
+    transaction. A sibling whose mapped fields are all <code>nil</code> is materialized conditionally: skipped on INSERT,
+    left untouched on a PATCH, and <em>deleted</em> on a full PUT (the absent facet means "remove it"). A hard delete
+    removes the sibling rows by shared PK before the owner. On <strong>read</strong>, the loader <code>LEFT JOIN</code>s
+    each sibling on the shared PK and scans its columns straight into the flat struct (an absent sibling row leaves those
+    fields at their zero value); a criteria predicate on a sibling field triggers the same <code>LEFT JOIN</code>.
+</p>
+
+<h3>Shared base — identity shared across roles (party-role)</h3>
+<p>
+    A <strong>shared base</strong> models the party-role pattern: one identity table (e.g. <code>person</code>) whose data
+    is shared by several <em>independent</em> role tables (<code>student</code>, <code>teacher</code>, <code>user</code>),
+    each linking to it by a foreign key. Unlike a sibling (1 : 1, private), a base is referenced by N roles (N : 1) and is
+    <strong>deduplicated by a natural key</strong>. Declare the base type-less with <code>core.NewSharedBase(table)</code>,
+    its dedup column with <code>.NaturalKey(col)</code>, and its orphan lifecycle with <code>.OrphanPolicy(p)</code>; each
+    role references it with <code>.SharedBase(base, fkColumn)</code> (the same base instance, shared by every role, IS the
+    cross-role registry):
+</p>
+<pre><code>var person = core.NewSharedBase("person").
+    PK("id").                                      // the deterministic UUIDv5 lands here
+    Field("Name", "name").
+    Field("Document", "document").                 // the natural-key column
+    NaturalKey("document").
+    SoftDelete("deleted_at").
+    OrphanPolicy(core.DeleteWhenUnreferenced)      // default; or core.KeepOrphan
+
+// *Student's Go struct carries Name + Document (the shared fields, validated
+// against the base) AND Enrollment. The role SCHEMA declares only its OWN
+// columns — the shared fields live on the base above and are persisted to the
+// person table, never to student.
+func StudentSchema() *core.TableSchema {
+    return core.NewTableSchema[*Student]("student").
+        PK("id").
+        Field("Enrollment", "enrollment").         // role-private column (the only one student stores)
+        SoftDelete("deleted_at").
+        SharedBase(person, "person_id")            // role FK → base's deterministic id
+}</code></pre>
+
+<div class="box bad">
+    <strong>The natural-key column MUST be a UNIQUE, NOT NULL index — this is mandatory, not advisory.</strong>
+    The natural key is not just a lookup column: <strong>its value derives the shared base's primary key</strong>. The
+    framework computes <code>base.id = UUIDv5(fixed-namespace, naturalKeyValue)</code> — a deterministic hash — so the
+    application and the persister reach the <em>same</em> id with no read-back, and equal natural keys necessarily produce
+    the <em>same</em> primary key. That single mechanism is what makes the dedup work, and it is exactly why the column is
+    required to be a unique, non-null index:
+    <ul>
+        <li><strong>NOT NULL.</strong> An empty / null natural key hashes to a <em>constant</em> id, so every key-less
+            record would collapse into one shared-base row — silent identity corruption (interpolated data colliding on a
+            single id). The framework guards this at runtime (a write whose natural key resolves empty fails loudly), but
+            the database must still enforce <code>NOT NULL</code> so the invariant holds for every writer.</li>
+        <li><strong>UNIQUE.</strong> Because equal natural keys derive the equal deterministic PK, uniqueness of the
+            identity is <em>structurally self-enforced</em> by that PK: a second write carrying a natural-key value that
+            already exists resolves to the same id and <code>UPSERT</code>s the one identity row (last-write-wins on the
+            shared fields) instead of inserting a duplicate. Declaring the column <code>UNIQUE NOT NULL</code> makes that
+            invariant explicit at the schema level — guarding against any non-framework writer that might insert a
+            duplicate key under a different id — and gives the dedup and reference-count probes an index (performance).</li>
+    </ul>
 </div>
+<p>
+    <strong>Why this matters.</strong> The natural-key → deterministic-PK mapping is what lets the framework
+    <strong>automatically normalize a DDD business entity into third normal form</strong> and denormalize it back: you
+    model a flat role entity that carries the shared fields, declare the <code>TableSchema</code>, and the framework writes
+    the shared columns into the one identity row (deduplicated by the natural key) and the role-private columns into the
+    role row — then re-joins them into the flat entity on <code>FindOne</code>/<code>FindAll</code>. No read-back, no
+    surrogate-key juggling in the domain.
+</p>
+<p>
+    <strong>Lifecycle is driven by the roles.</strong> The base has none of its own: each role controls its own
+    soft-delete, and the base converges — a role becoming or staying active keeps the base active; archiving the last
+    active role archives the base (and its native children); hard-deleting the last referencing role row removes the base
+    per its <code>OrphanPolicy</code> (<code>DeleteWhenUnreferenced</code>, the default, or <code>KeepOrphan</code>). A role
+    <code>INSERT</code> upserts the identity and then applies a two-level existence matrix on the role row: an existing
+    <em>active</em> role for that identity is a conflict (409), an <em>archived</em> one is revived, otherwise a new role
+    row is inserted.
+</p>
+<p>
+    <strong>Wiring.</strong> Because the insert must load any pre-existing identity before writing, a shared-base role uses
+    <code>read.NewSharedBaseRoleRepository[T]</code> (which provides <code>LoadForSharedBaseInsert</code>) together with the
+    <code>SharedBaseInsertCommandHandler</code>; the upsert path is marked by the <code>"GetUpsertable"</code> action name,
+    and a guard rejects a blind insert that would duplicate an existing identity's shared data. On the read-model side, a
+    write through one role emits a base event that recomposes the Mongo projections of <em>every</em> role of that identity
+    (<code>fanOutSharedBase</code>), so a shared-field change is reflected across all roles' views.
+</p>
 
+<h3>Supported column shapes</h3>
+<div class="box">
+    <strong>The relational store is PostgreSQL <em>or</em> MySQL; the read projection is always MongoDB.</strong>
+    The write path, the entity-search <code>criteria</code> engine, and the auto-scan read-back run against the relational
+    backend selected by <code>relational.dialect</code> (<code>postgres</code> | <code>mysql</code>), emitting
+    dialect-specific SQL through the engine's <code>Dialect</code> seam (placeholders, identifier quoting, the UUID value
+    codec, upsert syntax). <strong>MongoDB</strong> is the only read-side projection store — the composer, the
+    <code>ViewDefinition</code> surface, the Mongo schema-evolution control plane, and the <code>?fields</code> /
+    <code>?sort</code> / keyset-pagination reader all target MongoDB. The set of column types each relational dialect
+    handles is its driver's default codec set plus the framework's UUID handling; because that set is <em>not</em>
+    identical across backends, the two tables below describe each dialect on its own — read the one for your
+    <code>relational.dialect</code>.
+</div>
 <p>
     The schema declares <em>which</em> Go field maps to <em>which</em> column; this section is about <em>what types</em>
-    those columns may be. The engine does <strong>no custom type registration</strong>: on write,
-    <code>TableSchema.writeFields</code> binds the <em>raw Go value</em> (<code>reflect</code> <code>Field(i).Interface()</code>)
-    straight to <code>pgx</code>; on read, the auto-scanner passes the <em>address of the Go field</em> straight to
-    <code>pgx.Scan</code>; in the criteria engine, only <code>domain.ID</code> is unwrapped (to its <code>string</code>
-    value) before binding. So the supported set is exactly <strong><code>pgx</code> v5's default codec set</strong> —
-    nothing the framework adds, nothing it takes away.
+    those columns may be. The engine does <strong>no custom type registration</strong>: on write it binds the raw Go value,
+    on read it scans into the address of the Go field, and in the criteria engine only <code>domain.ID</code> is unwrapped
+    (to its <code>string</code> value) before binding. So the supported set is exactly the driver's default codec set for
+    the selected dialect — nothing the framework adds, nothing it takes away — with one framework-owned convention: a
+    <code>domain.ID</code> (the PK and every FK / UUID reference) is the canonical Go <code>string</code>, mapped to the
+    dialect's UUID representation.
+</p>
+
+<h3>Supported column shapes — Go ↔ PostgreSQL</h3>
+<p>
+    On Postgres the engine is driven by <code>pgx</code> v5: <code>TableSchema</code> binds the raw Go value straight to
+    <code>pgx</code> and the auto-scanner passes the address of the Go field to <code>pgx.Scan</code>, so the supported set
+    is exactly <strong><code>pgx</code> v5's default codec set</strong>.
 </p>
 
 <table>
@@ -417,12 +555,92 @@ func OrdersView() *fwinfra.ViewDefinition {
     <code>Scan</code> and can decode any shape <code>pgx</code> supports through an explicit target.
 </p>
 
+<h3>Supported column shapes — Go ↔ MySQL</h3>
+<p>
+    On MySQL the engine is driven by <code>database/sql</code> + <code>go-sql-driver/mysql</code> (the DSN is forced to
+    <code>parseTime=true</code> so temporal columns scan into <code>time.Time</code>). Placeholders are <code>?</code> and
+    identifiers are backtick-quoted. The framework owns one value codec on top of the driver: a <code>domain.ID</code> /
+    UUID is stored as <code>BINARY(16)</code> and ids are generated in Go as <strong>UUID v7</strong> (time-ordered for
+    InnoDB locality — there is no <code>RETURNING</code> and no DB default); the read path decodes a <code>BINARY(16)</code>
+    column back to the canonical UUID string. Everything else passes through to the driver's default conversions.
+</p>
+<table>
+    <thead><tr><th>Go field type</th><th>MySQL column type</th><th>Notes</th></tr></thead>
+    <tbody>
+        <tr>
+            <td><code>string</code></td>
+            <td><code>VARCHAR(n)</code>, <code>CHAR(n)</code>, <code>TEXT</code></td>
+            <td>the text family — names, emails, addresses</td>
+        </tr>
+        <tr>
+            <td><code>string</code> &nbsp;<span class="muted">(<code>domain.ID</code> at the entity boundary)</span></td>
+            <td><code>BINARY(16)</code></td>
+            <td><strong>the framework's canonical UUID representation on MySQL.</strong> The PK and every FK / UUID
+                reference are Go <code>string</code>s; the engine encodes them to 16 raw bytes on write and decodes a
+                <code>BINARY(16)</code> column back to the canonical UUID string on read. Ids are generated in Go
+                (UUID v7) — no <code>gen_random_uuid()</code>, no DB default.</td>
+        </tr>
+        <tr>
+            <td><code>bool</code></td>
+            <td><code>TINYINT(1)</code></td>
+            <td>stored as 0 / 1; MySQL returns it as a number, so the read-model composer restores boolean fidelity from
+                the schema's <code>BoolColumns</code> when it materializes the Mongo view</td>
+        </tr>
+        <tr>
+            <td><code>int16</code> / <code>int32</code> / <code>int64</code> &nbsp;<span class="muted">(also <code>int</code>)</span></td>
+            <td><code>SMALLINT</code> / <code>INT</code> / <code>BIGINT</code></td>
+            <td>pick the Go width to match the column</td>
+        </tr>
+        <tr>
+            <td><code>float32</code> / <code>float64</code></td>
+            <td><code>FLOAT</code> / <code>DOUBLE</code></td>
+            <td>binary floats — not for money</td>
+        </tr>
+        <tr>
+            <td><code>string</code> &nbsp;<span class="muted">(or <code>float64</code>)</span></td>
+            <td><code>DECIMAL</code> / <code>NUMERIC</code></td>
+            <td>exact decimals (money): the driver returns <code>DECIMAL</code> as text, so prefer <code>string</code> to
+                keep full precision; <code>float64</code> rounds</td>
+        </tr>
+        <tr>
+            <td><code>time.Time</code></td>
+            <td><code>DATETIME</code>, <code>TIMESTAMP</code>, <code>DATE</code></td>
+            <td>requires <code>parseTime=true</code> (the engine sets it); the managed <code>created_at</code> /
+                <code>updated_at</code> / <code>deleted_at</code> columns are this type, server-stamped via <code>NOW()</code></td>
+        </tr>
+        <tr>
+            <td><code>[]byte</code></td>
+            <td><code>VARBINARY(n)</code>, <code>BLOB</code></td>
+            <td>raw binary — a non-16-byte length, or a non-<code>BINARY</code> column type, is never mistaken for a UUID</td>
+        </tr>
+        <tr>
+            <td><code>[]byte</code> / <code>json.RawMessage</code> / <code>string</code></td>
+            <td><code>JSON</code></td>
+            <td>the driver returns <code>JSON</code> as text — marshal / unmarshal in your own code (unlike Postgres, there
+                is no automatic struct ⇄ JSON codec)</td>
+        </tr>
+    </tbody>
+</table>
+<p>
+    <strong>No native array type.</strong> MySQL has no array column, so a Go slice has no native mapping the way a
+    PostgreSQL array does — model the collection as a <code>JSON</code> column, an aggregate <code>.Child(...)</code>
+    table, or decode it in a manual scanner.
+</p>
+<p>
+    <strong>Nullability is a pointer</strong> (same convention as Postgres): a nullable column maps to a Go pointer
+    (<code>*string</code>, <code>*int64</code>, <code>*time.Time</code>, …) — the driver writes <code>NULL</code> for a
+    <code>nil</code> pointer and reads <code>NULL</code> back as <code>nil</code>. A non-pointer field on a nullable column
+    fails to scan a <code>NULL</code> row. For anything the driver cannot handle natively, the same escape hatch applies:
+    map the column to a driver-native Go type, or drop to a manual scanner (<code>WithRootScanner</code> /
+    <code>WithChildScanner</code>), which receives the backend-neutral <code>db.Row</code> / <code>db.Rows</code>.
+</p>
+
 <h3>Out of scope</h3>
 <ul>
     <li><strong>Adapting to non-conforming structural conventions.</strong> The schema maps <em>names</em>, it does not
         reshape a schema. Mapping a renamed column on an otherwise-conforming legacy table <a href="#table-schema~why-it-exists-and-why-it-is-mandatory">is supported</a>;
         adapting to a <em>shape</em> the framework does not manage is not — predicate-shaped soft-delete (a boolean/enum
         flag instead of a timestamp column), a composite PK, and exotic column types outside the
-        <a href="#table-schema~supported-column-shapes-go-postgresql">supported shapes</a> are all rejected. The scope is
+        <a href="#table-schema~supported-column-shapes">supported shapes</a> are all rejected. The scope is
         "an explicit map over the schema the framework manages", not "adapt to any arbitrary schema".</li>
 </ul>

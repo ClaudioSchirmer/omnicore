@@ -95,9 +95,9 @@ migrations:
 
 query:
   maxLimit: 200                          # service-wide ceiling on ?limit=; 0/unset → framework default 100
-                                         # (per-view override via fwinfra.View(...).MaxLimit(N))
+                                         # (per-view override via query.View(...).MaxLimit(N))
   maxExportRows: 5000                    # ceiling on rows a tabular export (CSV/XLSX) streams; 0/unset → framework
-                                         # default 10000 (per-view override via fwinfra.View(...).MaxExportRows(N))</code></pre>
+                                         # default 10000 (per-view override via query.View(...).MaxExportRows(N))</code></pre>
 
     <h3>auth</h3>
     <p>
