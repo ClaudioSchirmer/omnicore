@@ -122,6 +122,37 @@ func TestBaseChildren_ValidateSharedBaseChildren(t *testing.T) {
 	role.ValidateSharedBaseChildren() // must not panic
 }
 
+// TestChild_CannotReferenceSharedBase asserts the boot guard that turns the
+// formerly-silent "a child that references a SharedBase" misconfiguration into a
+// loud panic. Write and load resolve the shared base from the ROOT schema alone,
+// so a SharedBase on a child was accepted and then ignored (never persisted or
+// loaded). The guard lives in Child(), so it fires for a root's own child and a
+// base-child alike.
+func TestChild_CannotReferenceSharedBase(t *testing.T) {
+	// A root's own child that itself references a SharedBase is rejected at boot.
+	assertPanics(t, "root child referencing a shared base", func() {
+		base := NewSharedBase("pessoa").PK("id").Field("Street", "b_street").NaturalKey("b_street")
+		childWithBase := NewTableSchema[addrFixture]("endereco").PK("id").FK("root_id").
+			SharedBase(base, "pessoa_id")
+		NewTableSchema[schemaSample]("root").PK("id").Field("Removed", "matricula").
+			Child(childWithBase)
+	})
+	// The same rule on the base side: a base-child may not reference a SharedBase.
+	assertPanics(t, "base child referencing a shared base", func() {
+		other := NewSharedBase("org").PK("id").Field("Street", "o_street").NaturalKey("o_street")
+		baseChildWithBase := NewTableSchema[addrFixture]("endereco").PK("id").FK("pessoa_id").
+			SharedBase(other, "org_id")
+		NewSharedBase("pessoa").PK("id").Field("Name", "name").NaturalKey("name").
+			Child(baseChildWithBase)
+	})
+	// Control: a normal root child (no SharedBase) plus a separate role that DOES
+	// reference the base is the supported shape — it must NOT panic.
+	base := NewSharedBase("pessoa").PK("id").Field("Name", "name").NaturalKey("name")
+	NewTableSchema[schemaSample]("aluno").PK("id").Field("Removed", "matricula").
+		Child(NewTableSchema[addrFixture]("nota").PK("id").FK("aluno_id").Field("Street", "street")).
+		SharedBase(base, "pessoa_id")
+}
+
 func contains(ss []string, want string) bool {
 	for _, s := range ss {
 		if s == want {

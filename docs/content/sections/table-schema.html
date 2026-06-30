@@ -290,6 +290,11 @@ func OrdersView() *query.ViewDefinition {
         <code>Child(...)</code> panics at <code>WithSchema</code> (write side); an embed source whose schema carries
         <code>Child(...)</code> is a fatal error in <code>ValidateViewSchemas</code> (read side). Width is unlimited;
         depth is one.</li>
+    <li><strong>Only a root/role schema may reference a SharedBase</strong> — passing a child schema that itself
+        declared <code>.SharedBase(...)</code> to <code>.Child(...)</code> panics at declaration. Write and load resolve the
+        shared base from the schema they are handed (the root's <code>SharedBaseRef</code>), never from a child, so a
+        SharedBase on a child would be silently ignored — never persisted, never loaded. Declare the shared identity on the
+        root, or model the child as its own role aggregate. Holds for a root's own child and a base-child alike.</li>
     <li><strong>Aggregate boundary agreement</strong> — the types the domain declares via
         <code>AggregateChildren()</code> and the types the schema declares via <code>.Child(...)</code> must name the same
         set. <code>BaseAggregateRepository.WithSchema</code> panics naming any type declared on only one side: a

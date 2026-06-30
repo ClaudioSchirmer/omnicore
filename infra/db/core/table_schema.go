@@ -346,6 +346,21 @@ func (s *TableSchema) Child(child *TableSchema) *TableSchema {
 			s.table, child.typ.Name(),
 		))
 	}
+	// An aggregate child may not itself reference a SharedBase. Only a root/role
+	// schema may: the write and load paths resolve the shared base from the schema
+	// they are given (the ROOT's SharedBaseRef), never from a child — so a
+	// SharedBase declared on a child is silently ignored (never persisted, never
+	// loaded). Reject the no-op at boot rather than accept it. (Applies to a root's
+	// own child and to a base-child alike, since both attach through here.)
+	if child.sharedBaseLink != nil {
+		panic(fmt.Sprintf(
+			"infra.TableSchema(%s): aggregate child %q references a SharedBase — only a root/role schema may "+
+				"reference a shared base, never an aggregate child. Write and load resolve the shared base from the "+
+				"ROOT schema only, so a child's SharedBase is silently ignored (never persisted or loaded). Declare "+
+				"the shared identity on the root, or model the child as its own role aggregate.",
+			s.table, child.typ.Name(),
+		))
+	}
 	// A shared base's native child (base-child) is a leaf of the base: it carries
 	// the base's deterministic id as its FK and may not itself nest. No
 	// grandchildren and (v1) no sibling on a base-child — the recursive width
