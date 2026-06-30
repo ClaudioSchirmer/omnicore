@@ -141,6 +141,7 @@ func (r *BaseRepository[T]) WithSchema(schema *TableSchema) *BaseRepository[T] {
 	}
 	schema.ValidateChildDepth()
 	schema.ValidateSiblings()
+	schema.ValidateSharedBaseChildren()
 	if m, ok := any(r.New()).(interface{ Modes() []domain.EntityMode }); ok {
 		schema.ValidateModes(m.Modes())
 	}

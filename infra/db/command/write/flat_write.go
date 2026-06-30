@@ -193,6 +193,11 @@ func (b *BaseEngine) flatSoftWrite(
 	if err := tx.Exec(ctx, buildStmt(d), d.EncodeArg(domain.NewID(id))); err != nil {
 		return err
 	}
+	// SharedBase role (flat): drive the shared identity's lifecycle from this verb
+	// (archive once no role stays active; reactivate on unarchive). No-op otherwise.
+	if err := b.convergeBaseAfterSoftWrite(ctx, tx, d, schema, src, eventType); err != nil {
+		return err
+	}
 	if err := WriteOutbox(ctx, tx, schema.Table(), eventType, id, nil); err != nil {
 		return err
 	}

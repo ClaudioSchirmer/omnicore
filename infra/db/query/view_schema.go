@@ -3,6 +3,7 @@ package query
 import (
 	"reflect"
 
+	"github.com/ClaudioSchirmer/omnicore/domain"
 	"github.com/ClaudioSchirmer/omnicore/infra/db/core"
 )
 
@@ -59,7 +60,28 @@ func newViewNode(schema *core.TableSchema, embeds []embedDef) *ViewNode {
 		n.embeds[seg] = ve
 		n.embedsByDoc[e.field] = ve
 	}
+	// A role's shared base may own NATIVE children (base-children) that are not
+	// declared as view embeds — they are derived from the base schema. Register
+	// them as embeds so ToGoDoc translates the nested collection and ColumnPath
+	// resolves a base-child sub-field. The doc field == the Go segment (the
+	// composer's mergeSharedBaseChildren nests under the same derived name).
+	if base, _, ok := schema.SharedBaseRef(); ok {
+		for _, bc := range base.ChildSchemas() {
+			seg := sharedBaseChildSegment(bc)
+			ve := &viewEmbed{goSegment: seg, docField: seg, node: newViewNode(bc, nil)}
+			n.embeds[seg] = ve
+			n.embedsByDoc[seg] = ve
+		}
+	}
 	return n
+}
+
+// sharedBaseChildSegment is the derived parent-side Go segment (and doc field) of
+// a shared base's native child collection — the pluralized child type name, the
+// same derivation an EmbedMany uses for a one-to-many local source. Composer and
+// ViewNode both key on it, so the nested collection round-trips.
+func sharedBaseChildSegment(bc *core.TableSchema) string {
+	return domain.PluralizeWord(bc.TypeName())
 }
 
 // hasSchema reports whether this node carries a core.TableSchema. A registered view

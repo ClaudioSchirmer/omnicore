@@ -46,7 +46,7 @@ func (b *BaseEngine) insertAggregate(ctx persistence.RequestContext, entity doma
 	if err := tx.Exec(ctx, sql, args...); err != nil {
 		return domain.WriteResult{}, err
 	}
-	if err := insertChildren(ctx, tx, d, root, schema, id); err != nil {
+	if err := insertChildren(ctx, tx, d, root, schema, id, ""); err != nil {
 		return domain.WriteResult{}, err
 	}
 	if err := insertSiblings(ctx, tx, d, schema, src, id); err != nil {
@@ -91,7 +91,7 @@ func (b *BaseEngine) updateAggregate(ctx persistence.RequestContext, entity doma
 	if err := execExpectingRow(ctx, tx, sql, args, entity.EntityName(), schema.PKColumn(), entity.ID()); err != nil {
 		return domain.WriteResult{}, err
 	}
-	if err := applyChildChanges(ctx, tx, d, root, schema, entity.ID()); err != nil {
+	if err := applyChildChanges(ctx, tx, d, root, schema, entity.ID(), ""); err != nil {
 		return domain.WriteResult{}, err
 	}
 	if err := applySiblingUpdates(ctx, tx, d, schema, src, entity.ID(), entity.IsPartial()); err != nil {
@@ -267,6 +267,13 @@ func (b *BaseEngine) softWriteAggregate(
 			}
 		}
 	}
+	// SharedBase role (aggregate): drive the shared identity's lifecycle from this
+	// verb — archive it once no role stays active, reactivate on unarchive. The
+	// base's NATIVE children cascade with the base, not with this role. No-op when
+	// the role declares no shared base.
+	if err := b.convergeBaseAfterSoftWrite(ctx, tx, d, schema, src, eventType); err != nil {
+		return err
+	}
 	if err := WriteOutbox(ctx, tx, schema.Table(), eventType, id, nil); err != nil {
 		return err
 	}
@@ -285,13 +292,17 @@ func (b *BaseEngine) softWriteAggregate(
 }
 
 // insertChildren INSERTs items with status Added or Constructor for each child
-// type, FK injected from the root id (dialect-encoded by buildInsert).
-func insertChildren(ctx context.Context, tx WriteTx, d Dialect, root *domain.AggregateRoot, schema *TableSchema, rootID string) error {
+// type. Each child is routed by ResolveAggregateChild to its owner: a role's own
+// child takes the role id as FK (rootID); a shared-base native child (base-child)
+// takes the base's deterministic id (baseID) — that is the ONE difference, the
+// child machinery is otherwise identical. baseID is "" on the plain aggregate path
+// (no shared base), where every child resolves to the role.
+func insertChildren(ctx context.Context, tx WriteTx, d Dialect, root *domain.AggregateRoot, schema *TableSchema, rootID, baseID string) error {
 	if root == nil {
 		return nil
 	}
 	for typeName, items := range root.AllAggregateItems() {
-		child, err := childSchemaOrErr(schema, typeName)
+		child, fkID, err := resolveChildFK(schema, typeName, rootID, baseID)
 		if err != nil {
 			return err
 		}
@@ -299,7 +310,7 @@ func insertChildren(ctx context.Context, tx WriteTx, d Dialect, root *domain.Agg
 			if it.CurrentStatus != domain.StatusAdded && it.CurrentStatus != domain.StatusConstructor {
 				continue
 			}
-			if err := insertChild(ctx, tx, d, child, it.Item, rootID); err != nil {
+			if err := insertChild(ctx, tx, d, child, it.Item, fkID); err != nil {
 				return err
 			}
 		}
@@ -307,22 +318,27 @@ func insertChildren(ctx context.Context, tx WriteTx, d Dialect, root *domain.Agg
 	return nil
 }
 
-// applyChildChanges processes Added/Changed/Removed during an aggregate update.
-// Constructor items are no-op. Removed always Archives (symmetric universal
-// cascade; no per-child hard delete).
-func applyChildChanges(ctx context.Context, tx WriteTx, d Dialect, root *domain.AggregateRoot, schema *TableSchema, rootID string) error {
+// applyChildChanges processes Added/Changed/Removed during an aggregate update,
+// routing each child to its owner (role id vs shared-base id) like insertChildren.
+// Constructor items are no-op. Removed archives (soft-delete) — for a base-child
+// without soft-delete it hard-deletes instead (its lifecycle follows the base).
+func applyChildChanges(ctx context.Context, tx WriteTx, d Dialect, root *domain.AggregateRoot, schema *TableSchema, rootID, baseID string) error {
 	if root == nil {
 		return nil
 	}
 	for typeName, items := range root.AllAggregateItems() {
-		child, err := childSchemaOrErr(schema, typeName)
-		if err != nil {
-			return err
+		child, fromBase, ok := schema.ResolveAggregateChild(typeName)
+		if !ok {
+			return undeclaredChildErr(schema, typeName)
+		}
+		fkID := rootID
+		if fromBase {
+			fkID = baseID
 		}
 		for _, it := range items {
 			switch it.CurrentStatus {
 			case domain.StatusAdded:
-				if err := insertChild(ctx, tx, d, child, it.Item, rootID); err != nil {
+				if err := insertChild(ctx, tx, d, child, it.Item, fkID); err != nil {
 					return err
 				}
 			case domain.StatusChanged:
@@ -330,13 +346,43 @@ func applyChildChanges(ctx context.Context, tx WriteTx, d Dialect, root *domain.
 					return err
 				}
 			case domain.StatusRemoved:
-				if err := archiveChild(ctx, tx, d, child, typeName, it.Item); err != nil {
+				if err := removeChild(ctx, tx, d, child, typeName, it.Item, fromBase); err != nil {
 					return err
 				}
 			}
 		}
 	}
 	return nil
+}
+
+// resolveChildFK resolves a child type to its schema and the FK id to inject —
+// rootID for a role's own child, baseID for a shared-base native child.
+func resolveChildFK(schema *TableSchema, typeName, rootID, baseID string) (*TableSchema, string, error) {
+	child, fromBase, ok := schema.ResolveAggregateChild(typeName)
+	if !ok {
+		return nil, "", undeclaredChildErr(schema, typeName)
+	}
+	if fromBase {
+		return child, baseID, nil
+	}
+	return child, rootID, nil
+}
+
+// removeChild applies a Removed child: archive (soft-delete) when the child has a
+// soft-delete column, else — only for a base-child, whose lifecycle follows the
+// shared base — hard-delete the row. A role child without soft-delete still errors
+// inside archiveChild (unchanged): a removable role child must be archivable.
+func removeChild(ctx context.Context, tx WriteTx, d Dialect, child *TableSchema, typeName string, item domain.AggregateValueObject, fromBase bool) error {
+	if fromBase {
+		if _, ok := child.SoftDeleteColumn(); !ok {
+			id := item.GetID()
+			if id == "" {
+				return fmt.Errorf("db: cannot delete base child %q without id", child.Table())
+			}
+			return tx.Exec(ctx, deleteSQL(d, child.Table(), child.PKColumn()), d.EncodeArg(domain.NewID(id)))
+		}
+	}
+	return archiveChild(ctx, tx, d, child, typeName, item)
 }
 
 func insertChild(ctx context.Context, tx WriteTx, d Dialect, child *TableSchema, item domain.AggregateValueObject, rootID string) error {
@@ -384,13 +430,9 @@ func archiveChild(ctx context.Context, tx WriteTx, d Dialect, child *TableSchema
 	return tx.Exec(ctx, archiveSQL(d, child.Table(), sdCol, child.PKColumn()), d.EncodeArg(domain.NewID(id)))
 }
 
-// childSchemaOrErr resolves the declared schema for an aggregate child type,
-// erroring loudly when the child is undeclared (every persisted aggregate child
-// must have its own TableSchema registered via root.Child(...)).
-func childSchemaOrErr(schema *TableSchema, typeName string) (*TableSchema, error) {
-	child := schema.ChildSchema(typeName)
-	if child == nil {
-		return nil, fmt.Errorf("db: aggregate child %q has no TableSchema declared on %q", typeName, schema.Table())
-	}
-	return child, nil
+// undeclaredChildErr is the loud error when an aggregate child type has no
+// TableSchema registered on the role OR its shared base (every persisted child
+// must be declared via root.Child(...) or base.Child(...)).
+func undeclaredChildErr(schema *TableSchema, typeName string) error {
+	return fmt.Errorf("db: aggregate child %q has no TableSchema declared on %q (role or shared base)", typeName, schema.Table())
 }

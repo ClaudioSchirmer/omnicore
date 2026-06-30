@@ -102,14 +102,14 @@ func (r *BaseAggregateRepository[T]) validateDeclaredChildren(schema *TableSchem
 		}
 	}
 
-	var missingSchema []string // declared in AggregateChildren() but no .Child(...)
+	var missingSchema []string // declared in AggregateChildren() but no .Child(...) (role or base)
 	for name := range declared {
-		if schema.ChildSchema(name) == nil {
+		if _, _, ok := schema.ResolveAggregateChild(name); !ok {
 			missingSchema = append(missingSchema, name)
 		}
 	}
-	var missingDomain []string // declared via .Child(...) but not in AggregateChildren()
-	for _, name := range schema.ChildSchemaNames() {
+	var missingDomain []string // declared via .Child(...) (role or base) but not in AggregateChildren()
+	for _, name := range schema.EffectiveChildNames() {
 		if _, ok := declared[name]; !ok {
 			missingDomain = append(missingDomain, name)
 		}

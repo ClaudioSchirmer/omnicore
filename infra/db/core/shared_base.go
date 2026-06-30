@@ -25,11 +25,23 @@ const (
 )
 
 // RoleRef names a role table that references a shared base + the FK column it
-// links through. A shared base accumulates one per referencing role (the
-// instance is the cross-schema registry).
+// links through + the role's own soft-delete column ("" when the role has none).
+// A shared base accumulates one per referencing role (the instance is the
+// cross-schema registry). The unified lifecycle uses SoftDeleteCol to tell an
+// ACTIVE role row apart from an archived one when it decides whether the base
+// (driven by its roles) should be active or archived.
 type RoleRef struct {
-	Table    string
-	FKColumn string
+	Table         string
+	FKColumn      string
+	SoftDeleteCol string
+}
+
+// roleLink is, on a shared base, one referencing role: a pointer to the role
+// schema (so its soft-delete column reads lazily, after the schema is fully
+// assembled) + the FK column the role links through to the base's PK.
+type roleLink struct {
+	schema   *TableSchema
+	fkColumn string
 }
 
 // sharedBaseLink is a role schema's reference to its shared base: the base
@@ -146,8 +158,10 @@ func (s *TableSchema) SharedBase(base *TableSchema, fkColumn string) *TableSchem
 	}
 	s.sharedBaseLink = &sharedBaseLink{base: base, fkColumn: fkColumn, scanCols: scanCols, scanByCol: scanByCol}
 	// Register this role on the base — the shared instance is the cross-schema
-	// registry the refcount delete + CDC fan-out enumerate.
-	base.referencingRoles = append(base.referencingRoles, RoleRef{Table: s.table, FKColumn: fkColumn})
+	// registry the refcount delete + CDC fan-out + lifecycle convergence enumerate.
+	// Store the schema pointer (not a snapshot) so the role's soft-delete column is
+	// read lazily, order-independent of .SoftDelete vs .SharedBase.
+	base.referencingRoleLinks = append(base.referencingRoleLinks, roleLink{schema: s, fkColumn: fkColumn})
 	return s
 }
 
@@ -173,12 +187,19 @@ func (s *TableSchema) SharedBaseRef() (base *TableSchema, fkColumn string, ok bo
 }
 
 // ReferencingRoles returns, for a shared base, the role tables that reference it
-// (empty for a non-base or an unreferenced base). The refcount delete walks it.
+// (empty for a non-base or an unreferenced base), each with its FK column and its
+// soft-delete column resolved LAZILY from the role schema — correct regardless of
+// .SoftDelete vs .SharedBase declaration order. The refcount delete + lifecycle
+// convergence walk it.
 func (s *TableSchema) ReferencingRoles() []RoleRef {
-	if s == nil {
+	if s == nil || len(s.referencingRoleLinks) == 0 {
 		return nil
 	}
-	return s.referencingRoles
+	out := make([]RoleRef, 0, len(s.referencingRoleLinks))
+	for _, l := range s.referencingRoleLinks {
+		out = append(out, RoleRef{Table: l.schema.table, FKColumn: l.fkColumn, SoftDeleteCol: l.schema.softDelete})
+	}
+	return out
 }
 
 // SharedBaseScanPlan returns the base's read scan plan resolved against the

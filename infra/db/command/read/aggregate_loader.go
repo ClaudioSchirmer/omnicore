@@ -135,6 +135,9 @@ func (l *AggregateLoader[T]) FindOne(ctx context.Context, q *criteria.Query) (T,
 	if err := l.hydrateChildren(ctx, entities, ids, q.Scope()); err != nil {
 		return *new(T), err
 	}
+	if err := l.hydrateBaseChildren(ctx, entities, ids, q.Scope()); err != nil {
+		return *new(T), err
+	}
 	return entities[0], nil
 }
 
@@ -158,6 +161,9 @@ func (l *AggregateLoader[T]) FindAll(ctx context.Context, q *criteria.Query) ([]
 		return nil, err
 	}
 	if err := l.hydrateChildren(ctx, entities, ids, q.Scope()); err != nil {
+		return nil, err
+	}
+	if err := l.hydrateBaseChildren(ctx, entities, ids, q.Scope()); err != nil {
 		return nil, err
 	}
 	return entities, nil
@@ -436,6 +442,103 @@ func (l *AggregateLoader[T]) hydrateChildren(ctx context.Context, entities []T, 
 		rows.Close()
 	}
 
+	for id, prov := range providersByID {
+		if avos := avosByRoot[id]; len(avos) > 0 {
+			prov.GetAggregateRoot().AggregateConstructor(avos)
+		}
+	}
+	return nil
+}
+
+// hydrateBaseChildren loads the shared base's NATIVE children (base-children) into
+// each role aggregate as Constructor items — the read-side mirror of the write
+// routing. They key on the base's deterministic id, reached by JOINing the
+// base-child to the role on the shared FK (baseChild.fk = role.fkToBase), so the
+// rows come back grouped by the ROLE id and attach to the right aggregate. Loading
+// them here is what lets an UPDATE diff the person-native collection instead of
+// re-inserting it (the same clobber the role's own children already avoid). No-op
+// without a shared base or when the base declares no children. AggregateConstructor
+// is additive per type, so this coexists with the role's own hydrated children.
+func (l *AggregateLoader[T]) hydrateBaseChildren(ctx context.Context, entities []T, ids []string, scope criteria.Scope) error {
+	base, fkCol, ok := l.schema.SharedBaseRef()
+	if !ok {
+		return nil
+	}
+	baseChildren := base.ChildSchemas()
+	if len(baseChildren) == 0 {
+		return nil
+	}
+	providersByID := make(map[string]domain.AggregateRootProvider, len(entities))
+	rootIDs := make([]string, 0, len(entities))
+	for i, e := range entities {
+		p, ok := any(e).(domain.AggregateRootProvider)
+		if !ok {
+			return nil // flat entity — nothing to hydrate
+		}
+		providersByID[ids[i]] = p
+		rootIDs = append(rootIDs, ids[i])
+	}
+	if len(rootIDs) == 0 {
+		return nil
+	}
+	d := l.eng.Dialect()
+	roleTbl := d.QuoteIdent(l.schema.Table())
+	rolePK := d.QuoteIdent(l.schema.PKColumn())
+	roleFK := d.QuoteIdent(fkCol)
+
+	placeholders := make([]string, len(rootIDs))
+	qargs := make([]any, len(rootIDs))
+	for i, id := range rootIDs {
+		placeholders[i] = d.Placeholder(i + 1)
+		qargs[i] = d.EncodeArg(domain.NewID(id))
+	}
+
+	avosByRoot := make(map[string][]domain.AggregateValueObject, len(rootIDs))
+	for _, bc := range baseChildren {
+		bcCols, bcByCol := bc.ScanPlan()
+		if len(bcCols) == 0 {
+			return fmt.Errorf(
+				"AggregateLoader[%s] base child %q: schema declares no columns",
+				l.effectiveContextName(), bc.GoType().Name())
+		}
+		bcTbl := d.QuoteIdent(bc.Table())
+		// SELECT role.pk (leading key → groups by aggregate) + base-child columns,
+		// joining the base-child to the role on the shared base id.
+		sel := roleTbl + "." + rolePK
+		for _, c := range bcCols {
+			sel += ", " + bcTbl + "." + d.QuoteIdent(c)
+		}
+		sql := "SELECT " + sel + " FROM " + bcTbl +
+			" JOIN " + roleTbl + " ON " + bcTbl + "." + d.QuoteIdent(bc.FKColumn()) + " = " + roleTbl + "." + roleFK +
+			" WHERE " + roleTbl + "." + rolePK + " IN (" + strings.Join(placeholders, ", ") + ") " + childScopeFilter(scope, bc, d)
+		rows, err := l.eng.Querier().Query(ctx, sql, qargs...)
+		if err != nil {
+			return err
+		}
+		for rows.Next() {
+			vp := reflect.New(bc.GoType())
+			rootRaw, err := core.ScanLeadingKey(rows, vp.Interface(), bcCols, bcByCol)
+			if err != nil {
+				rows.Close()
+				return err
+			}
+			rootID, err := d.DecodeID(rootRaw)
+			if err != nil {
+				rows.Close()
+				return err
+			}
+			if err := decodeChildPK(vp, bc, d); err != nil {
+				rows.Close()
+				return err
+			}
+			avosByRoot[rootID] = append(avosByRoot[rootID], vp.Elem().Interface().(domain.AggregateValueObject))
+		}
+		if err := rows.Err(); err != nil {
+			rows.Close()
+			return err
+		}
+		rows.Close()
+	}
 	for id, prov := range providersByID {
 		if avos := avosByRoot[id]; len(avos) > 0 {
 			prov.GetAggregateRoot().AggregateConstructor(avos)

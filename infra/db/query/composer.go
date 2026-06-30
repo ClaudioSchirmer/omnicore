@@ -67,6 +67,9 @@ func (c *Composer) Compose(ctx context.Context, view *ViewDefinition, rootID str
 	if err := c.mergeSharedBase(ctx, row, view.schema, includeArchived); err != nil {
 		return nil, err
 	}
+	if err := c.mergeSharedBaseChildren(ctx, row, view.schema, includeArchived); err != nil {
+		return nil, err
+	}
 	if err := c.applyEmbeds(ctx, row, schemaPK(view.schema), view.embeds, includeArchived); err != nil {
 		return nil, err
 	}
@@ -86,6 +89,9 @@ func (c *Composer) ComposeAll(ctx context.Context, view *ViewDefinition) ([]Docu
 			return nil, err
 		}
 		if err := c.mergeSharedBase(ctx, row, view.schema, includeArchived); err != nil {
+			return nil, err
+		}
+		if err := c.mergeSharedBaseChildren(ctx, row, view.schema, includeArchived); err != nil {
 			return nil, err
 		}
 		if err := c.applyEmbeds(ctx, row, pk, view.embeds, includeArchived); err != nil {
@@ -120,6 +126,38 @@ func (c *Composer) mergeOwnerSiblings(ctx context.Context, doc Document, ownerSc
 			}
 			doc[col] = val
 		}
+	}
+	return nil
+}
+
+// mergeSharedBaseChildren nests the shared base's NATIVE children (base-children)
+// into the role document — the person-native collections (e.g. a person's
+// addresses) shared across every role. They are fetched by the base-child's FK to
+// the base id, which is the role's FK to the base already on the doc (the role row
+// carries pessoa_id). Each collection lands under its derived Go segment (the same
+// name BuildViewNode registers, so ToGoDoc translates it). No-op without a shared
+// base or base children.
+func (c *Composer) mergeSharedBaseChildren(ctx context.Context, doc Document, schema *core.TableSchema, includeArchived bool) error {
+	base, fkCol, ok := schema.SharedBaseRef()
+	if !ok {
+		return nil
+	}
+	baseChildren := base.ChildSchemas()
+	if len(baseChildren) == 0 {
+		return nil
+	}
+	baseID, present := doc[fkCol]
+	if !present || baseID == nil {
+		return nil
+	}
+	idStr := fmt.Sprintf("%v", baseID)
+	for _, bc := range baseChildren {
+		sd, _ := schemaSoftDelete(bc)
+		rows, err := c.fetchWhere(ctx, bc, bc.Table(), bc.FKColumn(), idStr, sd, includeArchived)
+		if err != nil {
+			return err
+		}
+		doc[sharedBaseChildSegment(bc)] = rows
 	}
 	return nil
 }

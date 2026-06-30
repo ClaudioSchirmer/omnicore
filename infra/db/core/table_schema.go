@@ -67,10 +67,14 @@ type TableSchema struct {
 	naturalKeyCol  string
 	orphanPolicy   OrphanPolicy
 	sharedBaseLink *sharedBaseLink
-	// referencingRoles is, on a SHARED BASE, the set of role tables that
-	// reference it (populated as each role calls .SharedBase — the instance IS
-	// the cross-schema registry). The refcount delete + CDC fan-out enumerate it.
-	referencingRoles []RoleRef
+	// referencingRoleLinks is, on a SHARED BASE, the set of roles that reference
+	// it — each a pointer to the role schema + the FK column it links through
+	// (populated as each role calls .SharedBase — the instance IS the cross-schema
+	// registry). The role's soft-delete column is read LAZILY from the schema
+	// pointer (via ReferencingRoles), so it is correct regardless of whether
+	// .SoftDelete was declared before or after .SharedBase. The refcount delete +
+	// CDC fan-out + lifecycle convergence enumerate it.
+	referencingRoleLinks []roleLink
 
 	// goSegment is, for a child schema embedded in a view, the parent-side Go
 	// field name of the collection (e.g. "Addresses"). Set via View embed
@@ -342,6 +346,23 @@ func (s *TableSchema) Child(child *TableSchema) *TableSchema {
 			s.table, child.typ.Name(),
 		))
 	}
+	// A shared base's native child (base-child) is a leaf of the base: it carries
+	// the base's deterministic id as its FK and may not itself nest. No
+	// grandchildren and (v1) no sibling on a base-child — the recursive width
+	// allowed at the role level is deliberately not opened on the base side yet.
+	if s.isSharedBase {
+		if len(child.children) > 0 {
+			panic(fmt.Sprintf(
+				"infra.TableSchema(%s): shared-base child %q declares its own Child(...) — no grandchildren "+
+					"(the base is a root plus exactly one level of native children). Model it as a separate aggregate.",
+				s.table, child.typ.Name()))
+		}
+		if len(child.siblings) > 0 {
+			panic(fmt.Sprintf(
+				"infra.TableSchema(%s): shared-base child %q declares a Sibling — a sibling on a base-child is "+
+					"not supported (v1). Declare the fields directly on the child.", s.table, child.typ.Name()))
+		}
+	}
 	s.children[child.typ.Name()] = child
 	return s
 }
@@ -358,6 +379,12 @@ func (s *TableSchema) Sibling(sib *TableSchema) *TableSchema {
 		panic(fmt.Sprintf(
 			"infra.TableSchema(%s): a sibling cannot have a sibling — siblings are flat slices of ONE "+
 				"row; declare every sibling table on the owner.", s.table))
+	}
+	if s.isSharedBase {
+		panic(fmt.Sprintf(
+			"infra.TableSchema(%s): a shared base is a flat identity with native children — it declares "+
+				"Fields and Child(...), never a Sibling. A sibling is a 1:1 shared-PK slice of a SINGLE owner; "+
+				"a shared base has many roles. Put the shared 1:1 fields directly on the base.", s.table))
 	}
 	if sib == nil || sib.typ == nil {
 		panic(fmt.Sprintf(

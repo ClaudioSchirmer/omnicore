@@ -39,6 +39,21 @@ func deterministicBaseID(naturalKeyValue string) string {
 	return uuid.NewSHA1(sharedBaseNamespace, []byte(naturalKeyValue)).String()
 }
 
+// requireNaturalKey guards the one prerequisite the framework cannot enforce in
+// DDL: a non-empty natural key. An empty value hashes to a CONSTANT id, collapsing
+// every key-less identity into a single base row — a silent, corrupting footgun.
+// The UNIQUE(naturalKey) column constraint is otherwise self-enforced by the
+// deterministic id PK (equal keys → equal id → ON CONFLICT). Fails loudly instead.
+func requireNaturalKey(base *TableSchema, nk string) error {
+	if nk == "" {
+		return fmt.Errorf(
+			"db: shared base %q natural key (column %q) resolved empty — it must be NOT NULL / non-empty: "+
+				"its value derives the deterministic identity, and an empty key collapses every record into one",
+			base.Table(), base.NaturalKeyColumn())
+	}
+	return nil
+}
+
 // sharedBaseValues reads the base's column→value map AND the natural-key value
 // from the role entity. The base is type-less, so values are read by Go field
 // name (the role carries every shared field, validated at .SharedBase).
@@ -131,6 +146,9 @@ func (b *BaseEngine) insertWithBase(ctx persistence.RequestContext, entity domai
 	src := entity.Source()
 	roleFields := schema.WriteFields(src)
 	baseFields, nk := sharedBaseValues(base, src)
+	if err := requireNaturalKey(base, nk); err != nil {
+		return domain.WriteResult{}, err
+	}
 	baseID := deterministicBaseID(nk)
 	roleFields[fkCol] = domain.NewID(baseID)
 
@@ -174,11 +192,17 @@ func (b *BaseEngine) insertWithBase(ctx persistence.RequestContext, entity domai
 			return domain.WriteResult{}, err
 		}
 	}
-	// Aggregate role: children + siblings under the established role id.
-	if err := insertChildren(ctx, tx, d, root, schema, id); err != nil {
+	// Aggregate role: role children under the role id + shared-base native
+	// children under the base's deterministic id (routed by ResolveAggregateChild).
+	if err := insertChildren(ctx, tx, d, root, schema, id, baseID); err != nil {
 		return domain.WriteResult{}, err
 	}
 	if err := insertSiblings(ctx, tx, d, schema, src, id); err != nil {
+		return domain.WriteResult{}, err
+	}
+	// A new/revived active role means the shared identity must be active: if it was
+	// archived (every prior role archived), reactivate it + its native children.
+	if err := b.reactivateBaseIfArchived(ctx, tx, d, schema, src); err != nil {
 		return domain.WriteResult{}, err
 	}
 	if err := WriteOutbox(ctx, tx, schema.Table(), "INSERTED", id, roleFields); err != nil {
@@ -214,6 +238,9 @@ func (b *BaseEngine) updateWithBase(ctx persistence.RequestContext, entity domai
 	src := entity.Source()
 	roleFields := schema.WriteFields(src)
 	baseFields, nk := sharedBaseValues(base, src)
+	if err := requireNaturalKey(base, nk); err != nil {
+		return domain.WriteResult{}, err
+	}
 	baseID := deterministicBaseID(nk)
 
 	tx, err := b.beginner.Begin(ctx)
@@ -231,14 +258,20 @@ func (b *BaseEngine) updateWithBase(ctx persistence.RequestContext, entity domai
 	if err := execExpectingRow(ctx, tx, sql, args, entity.EntityName(), schema.PKColumn(), entity.ID()); err != nil {
 		return domain.WriteResult{}, err
 	}
-	// Aggregate role: child Added/Changed/Removed + sibling updates.
-	if err := applyChildChanges(ctx, tx, d, root, schema, entity.ID()); err != nil {
+	// Aggregate role: role + shared-base child Added/Changed/Removed (routed by
+	// owner) + sibling updates.
+	if err := applyChildChanges(ctx, tx, d, root, schema, entity.ID(), baseID); err != nil {
 		return domain.WriteResult{}, err
 	}
 	if err := applySiblingUpdates(ctx, tx, d, schema, src, entity.ID(), entity.IsPartial()); err != nil {
 		return domain.WriteResult{}, err
 	}
 	if err := b.upsertSharedBase(ctx, tx, d, base, baseID, baseFields); err != nil {
+		return domain.WriteResult{}, err
+	}
+	// An updated role is active → keep the shared identity active (reactivate if a
+	// prior all-archived state left it archived). Idempotent when already active.
+	if err := b.reactivateBaseIfArchived(ctx, tx, d, schema, src); err != nil {
 		return domain.WriteResult{}, err
 	}
 	if err := WriteOutbox(ctx, tx, schema.Table(), "UPDATED", entity.ID(), roleFields); err != nil {
@@ -294,7 +327,156 @@ func (b *BaseEngine) refcountSharedBase(ctx context.Context, tx WriteTx, d Diale
 			return nil // still referenced — keep the base
 		}
 	}
+	// No role references the base — remove its native children (FK = base id),
+	// then the base row itself, explicitly in Go (same TX, C7), so the base's
+	// children never outlive the base they belong to.
+	for _, bc := range base.ChildSchemas() {
+		if err := tx.Exec(ctx, childDeleteSQL(d, bc.Table(), bc.FKColumn()), d.EncodeArg(domain.NewID(baseID))); err != nil {
+			return err
+		}
+	}
 	return tx.Exec(ctx, deleteSQL(d, base.Table(), base.PKColumn()), d.EncodeArg(domain.NewID(baseID)))
+}
+
+// --- unified lifecycle convergence -------------------------------------------
+//
+// The shared base is a mini-root of its native children: it has soft-delete and
+// its lifecycle is DRIVEN by its roles. The single rule, per verb:
+//   - a role becomes/stays active (insert / update / unarchive) → the base must be
+//     active: reactivateBaseIfArchived.
+//   - a role is archived (archive) → if no role is left active, the base archives:
+//     archiveBaseIfNoActiveRole.
+//   - a role is hard-deleted (delete) → if no role ROW remains, the base is removed
+//     per OrphanPolicy: refcountSharedBase (the hard branch).
+// All three no-op without a shared base; the first two also no-op when the base
+// has no soft-delete (then only the orphan branch applies). They read the base /
+// role state and only write on a real transition (idempotent), so a steady-state
+// write costs at most one probing SELECT and no redundant UPDATE.
+
+// reactivateBaseIfArchived un-archives the base + its native children when a role
+// is/becomes active and the base was archived (the revive direction).
+func (b *BaseEngine) reactivateBaseIfArchived(ctx context.Context, tx WriteTx, d Dialect, schema *TableSchema, src domain.Entity) error {
+	base, sd, baseID, ok, err := baseLifecycleTarget(schema, src)
+	if !ok || err != nil {
+		return err
+	}
+	archived, err := baseIsArchived(ctx, tx, d, base, sd, baseID)
+	if err != nil || !archived {
+		return err
+	}
+	return cascadeBaseLifecycle(ctx, tx, d, base, sd, baseID, "NULL", " IS NOT NULL")
+}
+
+// archiveBaseIfNoActiveRole archives the base + its native children once the role
+// just archived leaves NO active role referencing the base.
+func (b *BaseEngine) archiveBaseIfNoActiveRole(ctx context.Context, tx WriteTx, d Dialect, schema *TableSchema, src domain.Entity) error {
+	base, sd, baseID, ok, err := baseLifecycleTarget(schema, src)
+	if !ok || err != nil {
+		return err
+	}
+	active, err := anyActiveRole(ctx, tx, d, base, baseID)
+	if err != nil || active {
+		return err
+	}
+	return cascadeBaseLifecycle(ctx, tx, d, base, sd, baseID, "NOW()", " IS NULL")
+}
+
+// convergeBaseAfterSoftWrite routes a role's archive/unarchive to the matching
+// base lifecycle step (shared by the flat + aggregate soft-write paths).
+func (b *BaseEngine) convergeBaseAfterSoftWrite(ctx context.Context, tx WriteTx, d Dialect, schema *TableSchema, src domain.Entity, eventType string) error {
+	switch eventType {
+	case "ARCHIVED":
+		return b.archiveBaseIfNoActiveRole(ctx, tx, d, schema, src)
+	case "UNARCHIVED":
+		return b.reactivateBaseIfArchived(ctx, tx, d, schema, src)
+	}
+	return nil
+}
+
+// baseLifecycleTarget resolves the shared base + its soft-delete column + the
+// deterministic id from the role schema and entity, reporting ok=false (skip)
+// when there is no shared base or the base has no soft-delete (lifecycle is then
+// hard-only, governed by the orphan refcount).
+func baseLifecycleTarget(schema *TableSchema, src domain.Entity) (base *TableSchema, sd, baseID string, ok bool, err error) {
+	base, _, has := schema.SharedBaseRef()
+	if !has {
+		return nil, "", "", false, nil
+	}
+	sd, hasSD := base.SoftDeleteColumn()
+	if !hasSD {
+		return nil, "", "", false, nil
+	}
+	_, nk := sharedBaseValues(base, src)
+	if err := requireNaturalKey(base, nk); err != nil {
+		return nil, "", "", false, err
+	}
+	return base, sd, deterministicBaseID(nk), true, nil
+}
+
+// cascadeBaseLifecycle archives (NOW()/" IS NULL") or unarchives (NULL/" IS NOT
+// NULL") the base row and each soft-deletable native child, gated so it is
+// idempotent (a no-op when already in the target state).
+func cascadeBaseLifecycle(ctx context.Context, tx WriteTx, d Dialect, base *TableSchema, sd, baseID, setExpr, gate string) error {
+	if err := tx.Exec(ctx, childCascadeSQL(d, base.Table(), sd, base.PKColumn(), setExpr, gate), d.EncodeArg(domain.NewID(baseID))); err != nil {
+		return err
+	}
+	for _, bc := range base.ChildSchemas() {
+		csd, ok := bc.SoftDeleteColumn()
+		if !ok {
+			continue
+		}
+		if err := tx.Exec(ctx, childCascadeSQL(d, bc.Table(), csd, bc.FKColumn(), setExpr, gate), d.EncodeArg(domain.NewID(baseID))); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// baseIsArchived reports whether the base row currently carries a non-null
+// soft-delete marker (read once, for idempotency).
+func baseIsArchived(ctx context.Context, tx WriteTx, d Dialect, base *TableSchema, sd, baseID string) (bool, error) {
+	q := "SELECT " + d.QuoteIdent(sd) + " FROM " + d.QuoteIdent(base.Table()) +
+		" WHERE " + d.QuoteIdent(base.PKColumn()) + " = " + d.Placeholder(1)
+	rows, err := tx.Query(ctx, q, d.EncodeArg(domain.NewID(baseID)))
+	if err != nil {
+		return false, err
+	}
+	defer rows.Close()
+	if !rows.Next() {
+		return false, rows.Err()
+	}
+	var v []byte
+	if err := rows.Scan(&v); err != nil {
+		return false, err
+	}
+	return v != nil, rows.Err()
+}
+
+// anyActiveRole reports whether any role row referencing the base is ACTIVE (not
+// soft-deleted). A role without a soft-delete column has no archived state, so
+// every existing row counts as active.
+func anyActiveRole(ctx context.Context, tx WriteTx, d Dialect, base *TableSchema, baseID string) (bool, error) {
+	for _, rr := range base.ReferencingRoles() {
+		q := "SELECT 1 FROM " + d.QuoteIdent(rr.Table) + " WHERE " + d.QuoteIdent(rr.FKColumn) + " = " + d.Placeholder(1)
+		if rr.SoftDeleteCol != "" {
+			q += " AND " + d.QuoteIdent(rr.SoftDeleteCol) + " IS NULL"
+		}
+		q += " LIMIT 1"
+		rows, err := tx.Query(ctx, q, d.EncodeArg(domain.NewID(baseID)))
+		if err != nil {
+			return false, err
+		}
+		active := rows.Next()
+		cerr := rows.Err()
+		rows.Close()
+		if cerr != nil {
+			return false, cerr
+		}
+		if active {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 // upsertSharedBase INSERTs the identity or updates its shared fields on conflict
