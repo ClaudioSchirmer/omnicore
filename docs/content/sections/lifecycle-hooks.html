@@ -129,7 +129,7 @@ var _ persistence.BeforeCommitHookProvider[*User] = (*InsertUserCommand)(nil)</c
         implementation — defensive, never reached against framework-issued handles because the interface is
         sealed. Advanced pgx features (<code>CopyFrom</code>, <code>SendBatch</code>, <code>Prepare</code>) are
         reachable from the adapter via the unwrapped <code>pgx.Tx</code>, but constraint-binding translation
-        (<code>infra.ConstraintBinding</code>) is not applied at this surface — it lives at the Repository level
+        (<code>write.ConstraintBinding</code>) is not applied at this surface — it lives at the Repository level
         for the parent entity's declared constraints.
     </p>
 

@@ -618,7 +618,7 @@ fwopenapi.Mount(d.OpenAPIRegistry, app, fiber.MethodGet, "/users.csv", csvH, csv
         is <em>ignored</em> — an export returns the full filtered set, capped at the resolved
         ceiling sent as the read limit. The ceiling resolves per-view
         (<code>ViewDefinition.MaxExportRows(n)</code>) &gt; yaml (<code>query.maxExportRows</code>) &gt;
-        framework default <code>infra.DefaultMaxExportRows</code> (10000), via
+        framework default <code>query.DefaultMaxExportRows</code> (10000), via
         <code>ResolveMaxExportRows</code>. Those four pagination keys are also <strong>omitted from
         the generated OpenAPI parameters</strong> (the export <code>*Spec</code> wrappers list them
         on <code>RouteSpec.OmittedQueryParams</code>), so Swagger never advertises a knob the export
@@ -663,11 +663,11 @@ import (
 // Explicit declaration. The root .Schema(...) and each embed's FromSchema(...)
 // carry the Go↔column map; the same schemas drive the PG write side. The local
 // embed's segment ("Addresses") is derived from AddressSchema()'s Go type.
-var CustomerView = infra.View("customers").
+var CustomerView = query.View("customers").
     Version(1).
     Root("customers").
     Schema(views.CustomerSchema()).
-    EmbedMany("addresses", infra.FromSchema(views.AddressSchema()))
+    EmbedMany("addresses", query.FromSchema(views.AddressSchema()))
 
 // Custom pattern — fluent when crossing bounded contexts via UpstreamSubscription
 // (cross-service Embed is NOT derivable from the aggregate). An external FromSchema
@@ -675,17 +675,17 @@ var CustomerView = infra.View("customers").
 // materialized by the framework's UpstreamSubscriber on each upstream event (see
 // "Cross-service composition" below). External embeds need .As(...) (no Go type to
 // derive the segment from); .On(...) names the parent doc FK on a one-to-one Embed.
-var SaleView = infra.View("sales_view").
+var SaleView = query.View("sales_view").
     Version(1).
     Root("sales").
     Schema(views.SaleSchema()).
-    Embed("customer", infra.FromSchema(views.CustomerProjection()).
+    Embed("customer", query.FromSchema(views.CustomerProjection()).
         On("customer_id").As("Customer")).
-    EmbedMany("items", infra.FromSchema(views.SaleItemSchema()).
-        Embed("product", infra.FromSchema(views.ProductProjection()).
+    EmbedMany("items", query.FromSchema(views.SaleItemSchema()).
+        Embed("product", query.FromSchema(views.ProductProjection()).
             On("product_id").As("Product")),
     ).
-    Indexes(infra.Index("customer_id"))   // boot guard §8.1 requires the join field index
+    Indexes(query.Index("customer_id"))   // boot guard §8.1 requires the join field index
 
 // Drop archived rows from the projection — opt in via .DeleteOnArchive().
 // Default behavior (flag absent): ARCHIVED outbox events compose+upsert the
@@ -706,11 +706,11 @@ var SaleView = infra.View("sales_view").
 //
 // Hard DELETE always removes the document from Mongo regardless of the
 // flag (it covers soft delete only).
-var HotTierUserView = infra.View("users").
+var HotTierUserView = query.View("users").
     Version(1).
     Root("users").
     Schema(views.UserSchema()).
-    EmbedMany("addresses", infra.FromSchema(views.AddressSchema())).
+    EmbedMany("addresses", query.FromSchema(views.AddressSchema())).
     DeleteOnArchive()</code></pre>
 
     <h4>2. Declare the Request DTO (allowlist) + Query (transport)</h4>
@@ -842,13 +842,13 @@ users.Get("/:id", fwweb.HandleQueryByID(d.Pipeline,
 
     <h4>4. Configure the SyncEngine at boot</h4>
     <pre><code>// cmd/service/main.go
-pg, _ := infra.NewPostgres(ctx, postgresDSN)
-mongo, _ := infra.NewMongoDB(ctx, mongoURI, "salesdb")
+pg, _ := postgres.NewPostgres(ctx, postgresDSN)   // *postgres.Postgres satisfies core.RelationalEngine
+mongoDB, _ := mongo.NewMongoDB(ctx, mongoURI, "salesdb")
 
-sync := infra.NewSyncEngine(pg, mongo,
+sync := query.NewSyncEngine(pg, mongoDB,
     []string{"kafka:9092"},  // brokers
     "svc-sales",             // groupID
-    []*infra.ViewDefinition{ // views of this service
+    []*query.ViewDefinition{ // views of this service
         views.SaleView,
     },
     runtime.NumCPU(),        // workers: pool bucketed by aggregate_id
@@ -868,7 +868,7 @@ sync.Start(ctx)
 
 // Cross-service composition via UpstreamSubscription (yaml-declared in
 // microservice.&lt;profile&gt;.yaml; manual Wiring form shown for illustration).
-// bootstrap.Run spins one infra.UpstreamSubscriber per entry and ripples
+// bootstrap.Run spins one query.UpstreamSubscriber per entry and ripples
 // recompose to every view embedding the materialized collection via an
 // external FromSchema embed.
 return bootstrap.Wiring{

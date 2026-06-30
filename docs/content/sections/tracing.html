@@ -126,7 +126,7 @@
 <p>
     The eventually-consistent projection (outbox → Debezium → Kafka → read model) is reconnected to its
     producing trace by a <strong><code>traceparent</code> carried on the <code>outbox</code> and
-    <code>integration_events</code> rows</strong> (framework migration <code>0003</code>). The
+    <code>integration_events</code> rows</strong> (inlined in the flattened framework migration <code>0001_framework</code>, per dialect). The
     SyncEngine, the integration Receiver and the UpstreamSubscriber open a <strong>consumer span linked
     to the producing trace</strong> (the messaging convention — a link, not a parent, because producer
     and consumer are temporally far apart).

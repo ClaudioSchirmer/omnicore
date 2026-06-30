@@ -183,16 +183,20 @@ audit:
         <code>AggregateRootProvider</code> and at least one child is observable for the verb. Keyed
         by Go type name (<code>Address</code>, <code>OrderLine</code>); each entry carries
         <code>{id, op, snapshot}</code> or <code>{id, op, changes}</code> following the same
-        <code>kind</code> discipline. <strong>Child ops are SQL-grounded</strong> — the same 5-verb
-        vocabulary as the root, every op echoing the SQL fingerprint of the row-level change:
+        <code>kind</code> discipline. <strong>Child ops are SQL-grounded</strong> — every op echoes the SQL
+        fingerprint of the row-level change. For an <code>update</code> root, the op is decided by
+        <code>domain.OperationOf(OriginalStatus, CurrentStatus)</code> (where the child <em>started</em> vs where it is
+        now), not by its current status alone — so a DB-loaded child re-added is <code>updated</code> (not
+        <code>inserted</code>), and a brand-new child added then removed before commit produces <strong>no entry</strong>
+        (<code>OpNoop</code>):
     </p>
     <table>
         <tbody><tr><th>Root verb</th><th>Children included</th><th>Per-child <code>op</code></th><th>SQL on the child row</th></tr>
         <tr><td><code>insert</code></td><td>all current</td><td><code>inserted</code></td><td><code>INSERT INTO addresses (...)</code></td></tr>
-        <tr><td><code>update</code> — Added</td><td>appended via <code>AddAggregateChild</code></td><td><code>inserted</code></td><td><code>INSERT INTO addresses (...)</code></td></tr>
-        <tr><td><code>update</code> — Changed</td><td>replaced via <code>ChangeAggregateChild</code></td><td><code>updated</code></td><td><code>UPDATE addresses SET col=val, updated_at=NOW()</code></td></tr>
-        <tr><td><code>update</code> — Removed</td><td>marked via <code>RemoveAggregateChild</code> / <code>ReplaceAggregateChildrenOf</code></td><td><code>archived</code></td><td><code>UPDATE addresses SET deleted_at=NOW()</code> (row stays, recoverable)</td></tr>
-        <tr><td><code>update</code> — Constructor</td><td>(untouched — <strong>skipped</strong>)</td><td>—</td><td>(no SQL)</td></tr>
+        <tr><td><code>update</code> — <code>OpInsert</code></td><td>brand-new child kept (added, never DB-loaded)</td><td><code>inserted</code></td><td><code>INSERT INTO addresses (...)</code></td></tr>
+        <tr><td><code>update</code> — <code>OpUpdate</code></td><td>DB-loaded child changed OR re-added (<code>Constructor→Changed/Added</code>)</td><td><code>updated</code></td><td><code>UPDATE addresses SET col=val, updated_at=NOW()</code></td></tr>
+        <tr><td><code>update</code> — <code>OpDelete</code></td><td>DB-loaded child removed (<code>Constructor→Removed</code>)</td><td><code>archived</code></td><td><code>UPDATE addresses SET deleted_at=NOW()</code> (row stays, recoverable)</td></tr>
+        <tr><td><code>update</code> — <code>OpNoop</code></td><td>untouched DB child (<code>Constructor→Constructor</code>) OR new-then-removed (<code>Added→Removed</code>) — <strong>both skipped</strong></td><td>—</td><td>(no SQL, no entry)</td></tr>
         <tr><td><code>archive</code></td><td>every loaded active child (cascade)</td><td><code>archived</code></td><td><code>UPDATE addresses SET deleted_at=NOW() WHERE user_id=$1 AND deleted_at IS NULL</code></td></tr>
         <tr><td><code>unarchive</code></td><td>every loaded archived child (cascade)</td><td><code>unarchived</code></td><td><code>UPDATE addresses SET deleted_at=NULL WHERE user_id=$1 AND deleted_at IS NOT NULL</code></td></tr>
         <tr><td><code>delete</code></td><td>every loaded child</td><td><code>deleted</code></td><td>explicit <code>DELETE FROM addresses WHERE user_id=$1</code> per child table (same TX, before the root DELETE)</td></tr>
@@ -253,14 +257,14 @@ audit:
     <p>
         When <code>destinations</code> includes <code>database</code>, the framework ships a generic
         <code>audit.Reader</code> port with two canonical lookups. Build it once over the booted
-        engine with <code>db.NewAuditReader(deps.DB)</code>: it runs through the engine's neutral read
+        engine with <code>read.NewAuditReader(deps.DB)</code>: it runs through the engine's neutral read
         seam (<code>Querier</code> + <code>Dialect</code>), so the <em>same code</em> reads
         <code>audit_events</code> on Postgres or MySQL — the audit trail stores ids as UUID text
         (Postgres <code>UUID</code> / MySQL <code>CHAR(36)</code>), so the reader binds them verbatim
         with no per-dialect value codec.
     </p>
 <pre><code>// Build the reader once over whichever relational engine booted (Postgres or MySQL).
-reader := db.NewAuditReader(deps.DB)
+reader := read.NewAuditReader(deps.DB)
 
 // Forensic single-row lookup — you saw an id in the slog echo and want the full row.
 ev, err := reader.FindByID(ctx, eventID)

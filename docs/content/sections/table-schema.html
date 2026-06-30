@@ -252,7 +252,7 @@ func OrdersView() *query.ViewDefinition {
 <p>
     <strong>Schema is mandatory on every view.</strong> The root (<code>ViewDefinition.Schema(ts)</code>) and every embed
     (<code>FromSchema</code> always carries one) must declare a schema. A missing root schema, or an external embed missing
-    <code>.As(...)</code>, is a <strong>fatal boot error</strong> via <code>infra.ValidateViewSchemas(views)</code> (called
+    <code>.As(...)</code>, is a <strong>fatal boot error</strong> via <code>query.ValidateViewSchemas(views)</code> (called
     by <code>bootstrap.Run</code>). There is no optional / pass-through / schema-less mode. Local (type-anchored) embeds
     derive their parent-side Go segment from the schema's Go type, so <code>.As(...)</code> is an optional override there;
     external (type-less) embeds inherit nothing from Go and must declare the segment via <code>.As(...)</code>.
@@ -373,7 +373,7 @@ func OrdersView() *query.ViewDefinition {
     fields at their zero value); a criteria predicate on a sibling field triggers the same <code>LEFT JOIN</code>.
 </p>
 
-<h3>Shared base — identity shared across roles (party-role)</h3>
+<h3 id="shared-base">Shared base — identity shared across roles (party-role)</h3>
 <p>
     A <strong>shared base</strong> models the party-role pattern: one identity table (e.g. <code>person</code>) whose data
     is shared by several <em>independent</em> role tables (<code>student</code>, <code>teacher</code>, <code>user</code>),
@@ -448,6 +448,48 @@ func StudentSchema() *core.TableSchema {
     write through one role emits a base event that recomposes the Mongo projections of <em>every</em> role of that identity
     (<code>fanOutSharedBase</code>), so a shared-field change is reflected across all roles' views.
 </p>
+
+<h3 id="shared-base-children">Shared-base children — 1 : N shared by every role</h3>
+<p>
+    A shared base can own <strong>native children of its own</strong> — a 1 : N collection that belongs to the
+    <em>identity</em>, not to any single role, so every role of that identity sees the same children (e.g. a
+    <code>Person</code>'s addresses, shared by its <code>Student</code> and <code>Teacher</code> roles). They are declared
+    with the ordinary <code>.Child(...)</code> builder — the <em>same</em> one a normal aggregate uses — but called on the
+    <code>NewSharedBase(...)</code> value instead of a root schema. There is no separate base-child constructor:
+</p>
+<pre><code>var person = core.NewSharedBase("person").
+    PK("id").
+    Field("Name", "name").
+    Field("Document", "document").
+    NaturalKey("document").
+    SoftDelete("deleted_at").
+    Child(core.NewTableSchema[Address]("person_address").  // child of the BASE, shared by all roles
+        PK("id").
+        FK("person_id").                                  // FK → the base's deterministic UUIDv5 id
+        Field("Street", "street").
+        SoftDelete("deleted_at"))</code></pre>
+<p>
+    The child's <code>FK</code> targets the base's deterministic id (not a role id), so the one child row is reachable
+    from every role of that identity. The role's Go struct carries the child collection (the same
+    <code>AggregateChildren()</code> declaration a normal aggregate root uses) — checked when <code>.SharedBase(...)</code>
+    is attached. On read, the children nest into <em>every</em> role's document; on the warm upsert insert they load as
+    <code>Constructor</code> status, so an unchanged base-child is a no-op (the dev merges/dedups in the Cmd's
+    <code>ApplyTo</code>).
+</p>
+<p>
+    Base-children obey the same partition discipline as the rest of the schema, enforced at boot by
+    <code>ValidateSharedBaseChildren</code>:
+</p>
+<ul>
+    <li><strong>A type is a base-child OR a role-child, never both.</strong> The framework dispatches each declared child
+        type to exactly one owner (the base or the role) when it injects the FK; a type claimed by both is a boot panic.</li>
+    <li><strong>Soft-delete is all-or-nothing per base.</strong> A base-child that declares <code>SoftDelete</code> requires
+        the base itself to declare <code>SoftDelete</code> — the shared lifecycle converges as a unit (archiving the last
+        active role archives the base <em>and</em> its native children), so a child cannot be archivable under a
+        non-archivable base.</li>
+    <li><strong>Depth stays at one.</strong> A base-child is a leaf — it carries no sibling and no grandchild
+        <code>.Child(...)</code>, exactly like an aggregate child (model a separate aggregate for deeper nesting).</li>
+</ul>
 
 <h3>Supported column shapes</h3>
 <div class="box">
@@ -632,7 +674,7 @@ func StudentSchema() *core.TableSchema {
     <code>nil</code> pointer and reads <code>NULL</code> back as <code>nil</code>. A non-pointer field on a nullable column
     fails to scan a <code>NULL</code> row. For anything the driver cannot handle natively, the same escape hatch applies:
     map the column to a driver-native Go type, or drop to a manual scanner (<code>WithRootScanner</code> /
-    <code>WithChildScanner</code>), which receives the backend-neutral <code>db.Row</code> / <code>db.Rows</code>.
+    <code>WithChildScanner</code>), which receives the backend-neutral <code>core.Row</code> / <code>core.Rows</code>.
 </p>
 
 <h3>Out of scope</h3>

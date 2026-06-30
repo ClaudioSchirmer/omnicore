@@ -68,7 +68,7 @@
    │     └─► <span class="auto">FindByParamsQueryHandler.Handle</span>: q.ToCriteria(ctx) → ViewReader.ReadPage
    │                                              ↑
    │            AppContext-derived overlays (tenant_id, owner_id) + field restriction layer here
-   │           └─► <span class="auto">infra.MongoViewReader</span>: adapts Criteria → bson
+   │           └─► <span class="auto">mongo.MongoViewReader</span>: adapts Criteria → bson
    │                 ├─► applies deleted_at=null if !IncludeArchived
    │                 ├─► $text search if Search!=""
    │                 ├─► decode cursor → $gt/$lt on _id

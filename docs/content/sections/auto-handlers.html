@@ -33,7 +33,7 @@
         <tr><td>Build <code>ValidEntity</code> with metadata</td><td><span class="tag auto">automatic</span></td><td>after validation OK</td></tr>
         <tr><td>Implement <code>Repository.Insert</code></td><td><span class="tag manual">manual</span></td><td>delegates to the relational engine</td></tr>
         <tr><td>Dynamic SQL <code>INSERT</code></td><td><span class="tag auto">automatic</span></td><td>the engine's <code>Insert</code></td></tr>
-        <tr><td>Write outbox in the same transaction</td><td><span class="tag auto">automatic</span></td><td><code>infra/executor.go</code> + <code>outbox.go</code></td></tr>
+        <tr><td>Write outbox in the same transaction</td><td><span class="tag auto">automatic</span></td><td><code>infra/db/command/write/aggregate_write.go</code> (or <code>flat_write.go</code>) + <code>outbox.go</code></td></tr>
         <tr><td>Write the <code>audit_events</code> row (in-TX, atomic with the data + outbox)</td><td><span class="tag auto">automatic</span></td><td>the relational engine when <code>audit.destinations</code> includes <code>database</code></td></tr>
         <tr><td>Echo the audit slog line (post-commit, best-effort)</td><td><span class="tag auto">automatic</span></td><td>the relational engine when <code>audit.destinations</code> includes <code>slog</code></td></tr>
         <tr><td>Publish domain events registered via <code>RegisterEvent</code> (post-commit, best-effort)</td><td><span class="tag auto">automatic</span></td><td>the relational engine forwards them through the wired <code>events.Publisher</code> (<code>SlogPublisher</code> default; no-op when the entity registered none)</td></tr>
@@ -95,6 +95,59 @@
         check in the Fiber wrapper — missing field → 400 with one <code>RequiredFieldNotification</code> per field
         before dispatch.
     </p>
+
+    <h3 id="shared-base-insert-handler">The 7th handler — shared-base insert (upsert)</h3>
+    <p>
+        An entity backed by a <a href="#table-schema~shared-base">shared base</a> (a party-role like
+        <code>Customer</code>/<code>Supplier</code> sharing one <code>Person</code> base, keyed by a deterministic
+        UUIDv5 over a natural key) gets a dedicated insert handler:
+        <code>handlers.SharedBaseInsertCommandHandler[T, *Cmd, TResult]</code>
+        (<code>application/handlers/shared_base_insert.go</code>). It is a POST handler that is
+        <strong>upsert-aware on the base</strong>: when the base identity already exists (another role already created
+        that <code>Person</code>), it does not fail with a unique violation — it loads the existing base and attaches a
+        new role to it. The plain <code>InsertCommandHandler</code> always issues a cold INSERT and is the wrong tool
+        for a shared-base root.
+    </p>
+    <p>
+        <strong>The Cmd declares <code>ApplyTo</code>, not <code>ToEntity</code>.</strong> The contract is
+        <code>pipeline.SharedBaseInsertCommand[T, TResult]</code> — <code>Command</code> + <code>ApplyTo(ctx, T) error</code>
+        + <code>FromEntity(ctx, T) (TResult, error)</code>. The handler allocates a fresh entity, runs <code>ApplyTo</code>
+        to populate it (so it can read the natural key), then probes the base:
+    </p>
+    <table>
+        <thead><tr><th>Base identity</th><th><code>actionName</code> passed to the domain</th><th>Effect</th></tr></thead>
+        <tbody>
+            <tr><td>does not exist (cold)</td><td><code>"GetInsertable"</code></td><td>INSERT base + this role in one TX</td></tr>
+            <tr><td>already exists (warm)</td><td><code>"GetUpsertable"</code></td><td>reuse base, INSERT this role; base columns + base-children converge</td></tr>
+        </tbody>
+    </table>
+    <p>
+        Both run in <code>ModeInsert</code> — only the <code>actionName</code> differs, so <code>BuildRules</code> can
+        branch on <code>actionName == "GetUpsertable"</code> to relax/adjust rules for the warm path (e.g. tolerate a
+        base field already set by a sibling role). The blind-insert guard is symmetric: if the base already exists but
+        the entity's <code>actionName</code> is not <code>"GetUpsertable"</code>, the write aborts — a forgotten upsert
+        intent never silently overwrites a shared base.
+    </p>
+    <p>
+        <strong>Two-way capability marriage.</strong> The handler requires its <code>Repo</code> to also implement
+        <code>persistence.SharedBaseInsertLoader[T]</code> (<code>LoadForSharedBaseInsert(ctx, fresh T) (entity T,
+        existed bool, err error)</code>); a repo that does not satisfy it is rejected at the top of <code>Handle</code>,
+        pointing the caller back at <code>InsertCommandHandler</code>. The canonical repo is
+        <code>read.NewSharedBaseRoleRepository[T](engine, newEntity)</code>, whose <code>WithSchema</code> asserts the
+        schema declares <code>.SharedBase(...)</code>. Base-children loaded during the warm probe arrive as
+        <code>Constructor</code> status, so the dev dedups/merges them inside <code>ApplyTo</code> (the diff machine
+        treats untouched ones as no-ops).
+    </p>
+    <p>
+        Wiring is identical to a plain insert — it is a body-with-no-id POST, so it mounts through
+        <code>fwweb.HandleCommandWithBody</code>:
+    </p>
+    <pre><code>people.Post("/customers", fwweb.HandleCommandWithBody(d.Pipeline,
+    requests.InsertCustomerRequest{}, requests.InsertCustomerResponse{}.FromResult,
+    &amp;handlers.SharedBaseInsertCommandHandler[*Customer, *commands.InsertCustomerCommand, commands.InsertCustomerResult]{
+        Repo: customerRepo,   // read.NewSharedBaseRoleRepository[*Customer](engine, newCustomer)
+    },
+    fiber.StatusCreated))</code></pre>
 
     <h3>Strict body via marker <code>pipeline.FullBody</code></h3>
     <p>

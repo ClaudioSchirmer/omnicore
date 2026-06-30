@@ -76,8 +76,10 @@ import (
     "context"
 
     "github.com/ClaudioSchirmer/omnicore/domain"
-    "github.com/ClaudioSchirmer/omnicore/infra"
-    "github.com/ClaudioSchirmer/omnicore/infra/criteria"
+    "github.com/ClaudioSchirmer/omnicore/infra/db/command/read"
+    "github.com/ClaudioSchirmer/omnicore/infra/db/command/write"
+    "github.com/ClaudioSchirmer/omnicore/infra/db/core"
+    "github.com/ClaudioSchirmer/omnicore/infra/db/criteria"
 )
 
 // Embed BaseRepository[*Customer] to inherit Scope(ctx, opts...) →
@@ -266,7 +268,7 @@ var (
 
     <h4 id="criteria-engine">Loading by criteria — <code>FindOne</code> / <code>FindAll</code></h4>
     <p>
-        <code>omnicore/infra/criteria</code> is a small, pure DSL (stdlib only) you compose in Go inside your
+        <code>omnicore/infra/db/criteria</code> is a small, pure DSL (stdlib only) you compose in Go inside your
         <code>infra</code> repository. It is the developer-facing, compile-time way to load the
         authoritative aggregate — distinct from the Mongo read side, which is the end-user-facing query
         facade over the eventually-consistent projection. Your <em>repository interface</em> stays in

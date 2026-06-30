@@ -397,7 +397,7 @@ type InsertUserResponse struct {
         ResponseExamples: map[int]map[string]fwopenapi.Example{
             fiber.StatusCreated: {
                 "happyPath": {
-                    Summary: "Created — domain.ID assigned by Postgres",
+                    Summary: "Created — domain.ID assigned by the database",
                     Value:   requests.InsertUserResponse{ID: "u_abc123", Name: "Alice"},
                 },
             },

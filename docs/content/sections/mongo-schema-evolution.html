@@ -68,7 +68,7 @@ processing  ──UPDATE status='done', version, hashes, applied_at,
     <p>Crash recovery: if a pod dies between the two transitions, the advisory lock auto-releases when the session drops. The next boot acquires the lock cleanly, reads the row, sees <code>status='processing'</code> AND it just acquired the lock → emits <code>slog.Warn "previous rebuild died at started_at=X, pid=Y, host=Z; taking over"</code> → re-runs <code>BeginRebuild</code> (overwrites <code>started_at</code>/<code>pid</code>/<code>host</code> with own values) → proceeds normally.</p>
 
     <h3>Drift detection at boot</h3>
-    <p><code>bootstrap.Run</code> runs <code>infra.DetectViewDrift</code> between <code>ApplyMongoSpecs</code> and <code>SyncEngine.Start</code>. Eight branches over (registry × Mongo × code version):</p>
+    <p><code>bootstrap.Run</code> runs <code>query.DetectViewDrift</code> between <code>ApplyMongoSpecs</code> and <code>SyncEngine.Start</code>. Eight branches over (registry × Mongo × code version):</p>
     <table>
         <tbody><tr><th>Decision</th><th>Condition</th><th>autoRun=true</th><th>autoRun=check</th></tr>
         <tr><td><code>DriftNone</code></td><td>Registry combined hash matches</td><td>No-op</td><td>No-op</td></tr>
@@ -112,21 +112,21 @@ processing  ──UPDATE status='done', version, hashes, applied_at,
     <p><code>OMNICORE_MONGO_FORCE_REBUILD=true</code> continues to govern only index divergence in <code>ApplyMongoSpecs</code> (drop+recreate divergent indexes). It does NOT trigger the rebuild path defined here and never drops collections.</p>
 
     <h3>API</h3>
-    <pre><code>// Registry helpers (backend-neutral; consume a db.Querier + db.Dialect —
+    <pre><code>// Registry helpers (backend-neutral; consume a core.Querier + core.Dialect —
 // the engine's, or a RebuildLock's pinned-session Querier for in-lock writes)
-infra.ReadViewRegistry(ctx, q, d, viewName) (*ViewRegistryRow, error)
-infra.InitViewRegistry(ctx, q, d, InitViewRegistryInput) error
-infra.BeginRebuild(ctx, q, d, viewName, now) error
-infra.EndRebuild(ctx, q, d, EndRebuildInput) error
-infra.ListNonDone(ctx, q) ([]ViewRegistryRow, error)
+query.ReadViewRegistry(ctx, q, d, viewName) (*ViewRegistryRow, error)
+query.InitViewRegistry(ctx, q, d, InitViewRegistryInput) error
+query.BeginRebuild(ctx, q, d, viewName, now) error
+query.EndRebuild(ctx, q, d, EndRebuildInput) error
+query.ListNonDone(ctx, q) ([]ViewRegistryRow, error)
 
 // Advisory lock — the per-dialect rebuild mutex on the engine seam
 // (PG pg_advisory_lock / MySQL GET_LOCK; the SQL is internal to each engine)
-engine.AcquireRebuildLock(ctx, viewName) (db.RebuildLock, error)
-//   RebuildLock: Acquired() bool · Holder() string · Querier() db.Querier · Release(ctx) error
+engine.AcquireRebuildLock(ctx, viewName) (core.RebuildLock, error)
+//   RebuildLock: Acquired() bool · Holder() string · Querier() core.Querier · Release(ctx) error
 
 // Drift detection
-infra.DetectViewDrift(ctx, mongo, engine, views) (*DriftReport, error)
+query.DetectViewDrift(ctx, mongo, engine, views) (*DriftReport, error)
 (*DriftReport).PlansBy(decision) []DriftPlan
 (*DriftReport).HasAny(decisions...) bool
 (*DriftReport).NeedsAction() bool
@@ -137,13 +137,13 @@ infra.DetectViewDrift(ctx, mongo, engine, views) (*DriftReport, error)
 (*SyncEngine).RefreshRegistryArtifactOnly(ctx, plan, serviceName) error
 
 // Diagnostic formatters (boot-fatal messages, §14.x)
-infra.FormatFreshInitDiagnostic(plans)         // §14.9
-infra.FormatAlienDataDiagnostic(plans)         // §14.4
-infra.FormatMongoWipedDiagnostic(plans)        // §14.7
-infra.FormatArtifactOnlyDiagnostic(plans)      // §14.8
-infra.FormatForgotToBumpDiagnostic(plans)      // §14.5
-infra.FormatRebuildRequiredDiagnostic(plans)   // §14.3
-infra.FormatDowngradeDiagnostic(plans)         // §14.6</code></pre>
+query.FormatFreshInitDiagnostic(plans)         // §14.9
+query.FormatAlienDataDiagnostic(plans)         // §14.4
+query.FormatMongoWipedDiagnostic(plans)        // §14.7
+query.FormatArtifactOnlyDiagnostic(plans)      // §14.8
+query.FormatForgotToBumpDiagnostic(plans)      // §14.5
+query.FormatRebuildRequiredDiagnostic(plans)   // §14.3
+query.FormatDowngradeDiagnostic(plans)         // §14.6</code></pre>
 
     <h3>Operator inspection queries</h3>
     <pre><code>-- Anything mid-rebuild right now?

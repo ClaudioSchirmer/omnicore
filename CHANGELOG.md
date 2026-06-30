@@ -95,6 +95,34 @@ with `1.0.0`.
   migration connection only). Verified throughout by a `-tags=integration,mysql`
   suite against a real MySQL container.
 
+- **Relational entity specialization — Sibling and SharedBase.** A `TableSchema`
+  node can now partition one flat Go entity across more than its own table,
+  normalizing a DDD entity into third normal form on write and denormalizing it
+  back on read. `core.NewSiblingSchema[T](table)` + `.Sibling(...)` declares a
+  **1:1 shared-primary-key** secondary table holding a disjoint subset of the same
+  entity's fields (a vertical split): written across owner + siblings in one TX
+  (conditional materialization — skipped on INSERT, untouched on PATCH, deleted on
+  a full PUT), merged back flat on read via `LEFT JOIN`, with sibling-aware
+  criteria. `core.NewSharedBase(table)` + `.NaturalKey(col)` / `.OrphanPolicy(p)`
+  and a role's `.SharedBase(base, fk)` declares the **party-role pattern** (N:1):
+  one identity table shared by N independent role tables, deduplicated by a natural
+  key whose value derives a deterministic UUIDv5 primary key (no read-back). A
+  shared base may own native **1:N children** (FK → the base id) shared by every
+  role. The upsert-on-insert path is served by
+  `read.NewSharedBaseRoleRepository[T]` + `handlers.SharedBaseInsertCommandHandler`
+  (cold insert uses action name `"GetInsertable"`, warm reuse `"GetUpsertable"`),
+  with a guard rejecting a blind insert that would duplicate an existing identity.
+  Lifecycle converges through the roles (archiving the last active role archives
+  the base and its children; orphan removal per `OrphanPolicy`), and a write
+  through one role recomposes the Mongo views of every role of that identity
+  (`fanOutSharedBase`). New public surface: `core.NewSiblingSchema`,
+  `(*core.TableSchema).Sibling` / `.Siblings` / `.IsSecondary`,
+  `core.NewSharedBase`, `.NaturalKey` / `.OrphanPolicy` / `.SharedBase` /
+  `.IsSharedBase`, `core.OrphanPolicy` (`DeleteWhenUnreferenced` / `KeepOrphan`),
+  `read.NewSharedBaseRoleRepository`, `handlers.SharedBaseInsertCommandHandler`,
+  `pipeline.SharedBaseInsertCommand`, `persistence.SharedBaseInsertLoader`.
+  Dialect-agnostic (Postgres + MySQL); boot guards reject illegal declarations.
+
 - **Write-backed schema must be type-anchored — boot guard.**
   `BaseRepository.WithSchema` (and the aggregate repository, which delegates to
   it) now rejects a type-less `NewExternalSchema` as a repository root, panicking
@@ -113,6 +141,18 @@ with `1.0.0`.
   invariant *root + every child type-anchored* is now complete.
 
 ### Changed
+
+- **Aggregate child operations are decided by original + current status.** On an
+  aggregate update, each child's persisted operation is now
+  `domain.OperationOf(OriginalStatus, CurrentStatus)` (a new `AggregateItemOp`:
+  `OpInsert` / `OpUpdate` / `OpDelete` / `OpNoop`), comparing where the item
+  started against where it is now — not its current status in isolation. Two cases
+  this corrects: a DB-loaded child re-added (`Constructor → Added`) is an **UPDATE**
+  (audit `updated`), not an INSERT; a brand-new child added then removed before
+  commit (`Added → Removed`) is **OpNoop** — no SQL and no audit children entry.
+  The `GetAdded/Changed/RemovedItemsOf` helpers filter by the same rule. New public
+  surface: `domain.AggregateItemOp` (`OpNoop` / `OpInsert` / `OpUpdate` /
+  `OpDelete`) and `domain.OperationOf`.
 
 - **Aggregate hard-delete cascades to children explicitly in Go.** Deleting an
   aggregate root now issues an explicit `DELETE` per declared child table (keyed
