@@ -42,7 +42,7 @@
     <ul>
         <li><strong>Archive(root)</strong> → Archive on all active children</li>
         <li><strong>Unarchive(root)</strong> → Unarchive on all archived children (requires <code>domain.ArchivedFinder</code> on the Repository to hydrate the aggregate)</li>
-        <li><strong>Delete(root)</strong> → Delete on all children via FK <code>ON DELETE CASCADE</code> in the schema</li>
+        <li><strong>Delete(root)</strong> → an explicit <code>DELETE</code> on every declared child table (by FK), in the same TX, before the root DELETE — the framework owns the cascade in Go, not a database <code>ON DELETE CASCADE</code></li>
         <li><strong>Update(root) with items <code>StatusRemoved</code></strong> → Archive of those specific items</li>
     </ul>
 
@@ -55,7 +55,7 @@
         <tr><td>Status iteration: Added→INSERT, Changed→UPDATE, Removed→Archive (UPDATE <code>deleted_at</code>; the row stays in the DB, recoverable via unarchive), Constructor→no-op (update) or INSERT (insert)</td><td><code>applyChildChanges</code></td></tr>
         <tr><td>Archive of the root cascades archive on all active children</td><td><code>archiveAggregate</code></td></tr>
         <tr><td>Unarchive of the root restores all archived children of that root</td><td><code>unarchiveAggregate</code></td></tr>
-        <tr><td>Hard Delete of the root depends on FK <code>ON DELETE CASCADE</code> in the schema</td><td><code>deleteAggregate</code></td></tr>
+        <tr><td>Hard Delete of the root issues an explicit <code>DELETE</code> per declared child table (by FK) before the root DELETE, same TX — no dependence on <code>ON DELETE CASCADE</code> (the FK clause is an optional safety-net)</td><td><code>deleteAggregate</code></td></tr>
     </tbody></table>
 
     <div class="box">

@@ -48,10 +48,15 @@
         as the data row and the outbox row — so a crash between writes can never leave an audit gap.
         If <code>COMMIT</code> succeeded, the audit row exists. The <code>slog</code> echo fires
         <em>after</em> <code>COMMIT</code> and is best-effort: lossy if the log shipper drops the
-        line, but the PG row stays authoritative. The shapes live in
-        <code>infra/audit/event.go</code> (the event), <code>infra/audit/persister.go</code> (the
-        in-TX writer), <code>infra/audit/echo.go</code> (the slog echo), and
-        <code>infra/audit_builder.go</code> (the per-verb builders).
+        line, but the PG row stays authoritative. The model + read port + label
+        renderer live in <code>application/audit</code> (<code>event.go</code> the event,
+        <code>reader.go</code> the <code>Reader</code> port, <code>render.go</code> the label
+        renderer), so an application/web consumer reading the timeline depends on
+        the abstraction, not on infra. The implementation lives in
+        <code>infra/audit/persister.go</code> (the in-TX writer),
+        <code>infra/audit/reader.go</code> (the concrete reader),
+        <code>infra/audit/echo.go</code> (the slog echo), and
+        <code>infra/db/command/write/audit_builder.go</code> (the per-verb builders).
     </p>
 
     <h3 id="audit-destinations">Two destinations — <code>slog</code> and <code>database</code></h3>
@@ -190,7 +195,7 @@ audit:
         <tr><td><code>update</code> — Constructor</td><td>(untouched — <strong>skipped</strong>)</td><td>—</td><td>(no SQL)</td></tr>
         <tr><td><code>archive</code></td><td>every loaded active child (cascade)</td><td><code>archived</code></td><td><code>UPDATE addresses SET deleted_at=NOW() WHERE user_id=$1 AND deleted_at IS NULL</code></td></tr>
         <tr><td><code>unarchive</code></td><td>every loaded archived child (cascade)</td><td><code>unarchived</code></td><td><code>UPDATE addresses SET deleted_at=NULL WHERE user_id=$1 AND deleted_at IS NOT NULL</code></td></tr>
-        <tr><td><code>delete</code></td><td>every loaded child</td><td><code>deleted</code></td><td>Postgres <code>FK ON DELETE CASCADE</code></td></tr>
+        <tr><td><code>delete</code></td><td>every loaded child</td><td><code>deleted</code></td><td>explicit <code>DELETE FROM addresses WHERE user_id=$1</code> per child table (same TX, before the root DELETE)</td></tr>
     </table>
     <p>
         For flat entities (no <code>AggregateRootProvider</code>) the <code>children</code> block is
@@ -244,23 +249,28 @@ audit:
         emit no <code>fieldLabelKey</code> (omitempty elides it).
     </p>
 
-    <h3 id="audit-read">Reading audit rows from PostgreSQL — pre-built helpers</h3>
+    <h3 id="audit-read">Reading audit rows — backend-neutral reader</h3>
     <p>
-        When <code>destinations</code> includes <code>database</code>, two canonical helpers retrieve
-        rows from <code>audit_events</code>. Both consume the minimal <code>pgExec</code> interface —
-        <code>*pgxpool.Pool</code>, <code>*pgxpool.Conn</code>, <code>*pgx.Conn</code>, and
-        <code>pgx.Tx</code> all satisfy it — so calls inside and outside an open transaction share
-        the same surface.
+        When <code>destinations</code> includes <code>database</code>, the framework ships a generic
+        <code>audit.Reader</code> port with two canonical lookups. Build it once over the booted
+        engine with <code>db.NewAuditReader(deps.DB)</code>: it runs through the engine's neutral read
+        seam (<code>Querier</code> + <code>Dialect</code>), so the <em>same code</em> reads
+        <code>audit_events</code> on Postgres or MySQL — the audit trail stores ids as UUID text
+        (Postgres <code>UUID</code> / MySQL <code>CHAR(36)</code>), so the reader binds them verbatim
+        with no per-dialect value codec.
     </p>
-<pre><code>// Forensic single-row lookup — you saw an id in the slog echo and want the full row.
-ev, err := audit.FindByID(ctx, deps.Postgres.Pool(), eventID)
+<pre><code>// Build the reader once over whichever relational engine booted (Postgres or MySQL).
+reader := db.NewAuditReader(deps.DB)
+
+// Forensic single-row lookup — you saw an id in the slog echo and want the full row.
+ev, err := reader.FindByID(ctx, eventID)
 if errors.Is(err, audit.ErrAuditNotFound) {
     // no row with that id — partition pruned? archived?
 }
 
 // Timeline by aggregate — index-served by audit_events_entity_timeline_idx
 // (entity_type, aggregate_id, occurred_at DESC). Newest first.
-events, err := audit.FindByAggregate(ctx, deps.Postgres.Pool(), "User", userID.String())
+events, err := reader.FindByAggregate(ctx, "User", userID.String())
 for _, ev := range events {
     // walk the row's lifetime
 }</code></pre>
@@ -292,9 +302,10 @@ audit.RenderLabelsInJSON(doc, deps.Translator, configuration.LangPTBR)
     <p>
         Caveats: <code>FindByID</code> issues a multi-partition index scan (composite PK
         <code>(id, created_at)</code>) — fast for recent rows, costlier into archived partitions
-        (pass <code>created_at</code> via raw SQL when the lookup goes deep). <code>FindByAggregate</code>
-        returns every matching row; long timelines should slice downstream or use raw SQL with
-        explicit <code>LIMIT</code>/<code>OFFSET</code>. The JSON round-trip yields
+        (narrow it with <code>created_at</code> via a bespoke query through the engine's
+        <code>Querier</code> when the lookup goes deep). <code>FindByAggregate</code> returns every
+        matching row; long timelines should slice downstream or run a bespoke query with explicit
+        <code>LIMIT</code>/<code>OFFSET</code>. The JSON round-trip yields
         <code>float64</code>/<code>string</code>/<code>bool</code>/<code>map</code>/<code>slice</code>
         — assert on stringified values, not Go-typed scalars.
     </p>

@@ -1,5 +1,5 @@
 <h2>Mongo schema evolution</h2>
-    <p>Symmetric to the Postgres migration policy, but operating on Mongo read-side projections rather than the PG schema. Covers drift detection between the code-declared <code>ViewDefinition</code> shape and the materialized Mongo collection state, the rebuild trigger, cleanup of orphan fields and documents, and concurrency protection across rolling-deployed pods. The control plane lives entirely in PostgreSQL — the <code>omnicore_mongo_views</code> table created by framework migration 0001. Mongo collections carry only domain data — no framework-reserved <code>_id</code>s.</p>
+    <p>Symmetric to the Postgres migration policy, but operating on Mongo read-side projections rather than the PG schema. Covers drift detection between the code-declared <code>ViewDefinition</code> shape and the materialized Mongo collection state, the rebuild trigger, cleanup of orphan fields and documents, and concurrency protection across rolling-deployed pods. The control plane lives entirely in the relational backend — the <code>omnicore_mongo_views</code> table created by framework migration 0001 (present in both the Postgres and MySQL dialects) — and is backend-neutral: drift reads go through the engine's <code>Querier</code>/<code>Dialect</code> and the rebuild mutex through <code>AcquireRebuildLock</code>. Mongo collections carry only domain data — no framework-reserved <code>_id</code>s.</p>
 
     <h3>Three-mode control model</h3>
     <p>Both <code>migrations.autoRun</code> and <code>mongo.rebuild.autoRun</code> carry the same closed-set enum: <strong><code>check | true | false</code></strong>.</p>
@@ -53,9 +53,9 @@ code_version           TEXT                         -- OMNICORE_CODE_VERSION env
     <p>Partial index <code>omnicore_mongo_views_status_idx ON status WHERE status &lt;&gt; 'done'</code> keeps "show every rebuild mid-flight" queries on a constant-cost path.</p>
 
     <h3>Hybrid concurrency primitive</h3>
-    <p>The rebuild path uses two PG-side primitives in tandem:</p>
+    <p>The rebuild path uses two primitives in tandem:</p>
     <ul>
-        <li><strong><code>pg_advisory_lock</code></strong> — mutual exclusion across the cluster; auto-release on connection disconnect; no TTL math. Acquired on a pinned <code>pgxpool.Conn</code> via <code>infra.TryAcquireViewLock(ctx, conn, viewName)</code>.</li>
+        <li><strong>A backend-neutral advisory lock</strong> — mutual exclusion across the cluster; auto-release on session disconnect; no TTL math. Acquired on a pinned session via <code>engine.AcquireRebuildLock(ctx, viewName)</code>, implemented per dialect: Postgres <code>pg_advisory_lock</code> on a pinned <code>pgxpool.Conn</code>, MySQL <code>GET_LOCK(name, 0)</code> on a pinned <code>*sql.Conn</code>. The returned <code>RebuildLock</code> exposes <code>Acquired()</code>/<code>Holder()</code> and a <code>Querier()</code> bound to the pinned session, so the status writes run on the connection that owns the lock.</li>
         <li><strong>Status column on the registry row</strong> — <code>'done' | 'processing'</code>, with <code>started_at</code>/<code>pid</code>/<code>host</code> populated during a rebuild. Survives crashes (forensic signal) and exposes "what's mid-rebuild?" via plain SQL.</li>
     </ul>
     <p>State machine (driven exclusively by <code>ExecuteRebuild</code>):</p>
@@ -65,7 +65,7 @@ code_version           TEXT                         -- OMNICORE_CODE_VERSION env
                                                                     │
 processing  ──UPDATE status='done', version, hashes, applied_at,
               started_at=NULL──&gt;  done</code></pre>
-    <p>Crash recovery: if a pod dies between the two transitions, the advisory lock auto-releases on TCP close. The next boot acquires the lock cleanly, reads the row, sees <code>status='processing'</code> AND it just acquired the lock → emits <code>slog.Warn "previous rebuild died at started_at=X, pid=Y, host=Z; taking over"</code> → re-runs <code>BeginRebuild</code> (overwrites <code>started_at</code>/<code>pid</code>/<code>host</code> with own values) → proceeds normally.</p>
+    <p>Crash recovery: if a pod dies between the two transitions, the advisory lock auto-releases when the session drops. The next boot acquires the lock cleanly, reads the row, sees <code>status='processing'</code> AND it just acquired the lock → emits <code>slog.Warn "previous rebuild died at started_at=X, pid=Y, host=Z; taking over"</code> → re-runs <code>BeginRebuild</code> (overwrites <code>started_at</code>/<code>pid</code>/<code>host</code> with own values) → proceeds normally.</p>
 
     <h3>Drift detection at boot</h3>
     <p><code>bootstrap.Run</code> runs <code>infra.DetectViewDrift</code> between <code>ApplyMongoSpecs</code> and <code>SyncEngine.Start</code>. Eight branches over (registry × Mongo × code version):</p>
@@ -83,17 +83,17 @@ processing  ──UPDATE status='done', version, hashes, applied_at,
     <p>Under <code>autoRun=false</code>, every branch (including <code>DriftAlienData</code> and <code>DriftForgotToBump</code>) is skipped — boot proceeds and runtime errors are the operator's concern.</p>
 
     <h3>Rebuild execution</h3>
-    <p><code>SyncEngine.ExecuteRebuild(ctx, plan, cfg)</code> runs the sequence on one view, on a pinned <code>pgxpool.Conn</code>:</p>
+    <p><code>SyncEngine.ExecuteRebuild(ctx, plan, cfg)</code> runs the sequence on one view, on a pinned session:</p>
     <ol>
-        <li><code>pool.Acquire(ctx)</code> — pin the connection for the lock's lifetime.</li>
-        <li><code>TryAcquireViewLock</code> — if false, read holder via <code>pg_locks</code>+<code>pg_stat_activity</code>, abort with descriptive error.</li>
-        <li>Defer lock release + connection release.</li>
+        <li><code>engine.AcquireRebuildLock(ctx, viewName)</code> — pin a session and take the lock.</li>
+        <li>If <code>!lock.Acquired()</code>, abort with a descriptive error carrying <code>lock.Holder()</code> (the current owner — pid/application/client on Postgres, connection/host on MySQL).</li>
+        <li>Defer <code>lock.Release(ctx)</code> (unlock + return the session).</li>
         <li>Detect takeover: if <code>plan.Registry.Status=='processing'</code>, emit <code>slog.Warn</code> before the next write.</li>
-        <li><code>BeginRebuild</code> — UPDATE registry to status='processing', <code>started_at=NOW()</code>, pid, host.</li>
+        <li><code>BeginRebuild</code> — UPDATE registry to status='processing', <code>started_at=NOW()</code>, pid, host (on the lock's pinned-session <code>Querier()</code>).</li>
         <li><code>slog.Info "view.rebuild.start"</code>.</li>
-        <li>Cleanup orphan fields (skip on empty collection): aggregation full-scan (<code>$objectToArray + $unwind + $group</code>) returns observed top-level field names; sample-Compose on ≤5 real Postgres ids returns expected; <code>$unset</code> the difference.</li>
+        <li>Cleanup orphan fields (skip on empty collection): aggregation full-scan (<code>$objectToArray + $unwind + $group</code>) returns observed top-level field names; sample-Compose on ≤5 real source ids returns expected; <code>$unset</code> the difference.</li>
         <li>Snapshot existing <code>_id</code> set.</li>
-        <li>Compose+upsert from Postgres in batches of 1000. Each upsert decrements the snapshot.</li>
+        <li>Compose+upsert from the relational source in batches of 1000 (root ids read via <code>engine.Querier()</code>, each decoded through <code>Dialect.DecodeID</code>). Each upsert decrements the snapshot.</li>
         <li>Orphan reconciliation: <code>delete</code> (<code>deleteMany</code> the leftover snapshot) or <code>warn</code> per <code>cfg.Orphan</code>.</li>
         <li><code>EndRebuild</code> — UPDATE registry to status='done' + new hashes + <code>applied_at=NOW()</code>, captures <code>previous_*</code> from row's current state via the SQL itself. <strong>Last data write.</strong></li>
         <li><code>slog.Info "view.rebuild.end"</code> with counts + duration.</li>
@@ -112,21 +112,21 @@ processing  ──UPDATE status='done', version, hashes, applied_at,
     <p><code>OMNICORE_MONGO_FORCE_REBUILD=true</code> continues to govern only index divergence in <code>ApplyMongoSpecs</code> (drop+recreate divergent indexes). It does NOT trigger the rebuild path defined here and never drops collections.</p>
 
     <h3>API</h3>
-    <pre><code>// Registry helpers (PG-backed; consume any pgExec — pgxpool.Pool / Conn / Tx)
-infra.ReadViewRegistry(ctx, exec, viewName) (*ViewRegistryRow, error)
-infra.InitViewRegistry(ctx, exec, InitViewRegistryInput) error
-infra.BeginRebuild(ctx, exec, viewName, now) error
-infra.EndRebuild(ctx, exec, EndRebuildInput) error
-infra.ListNonDone(ctx, exec) ([]ViewRegistryRow, error)
+    <pre><code>// Registry helpers (backend-neutral; consume a db.Querier + db.Dialect —
+// the engine's, or a RebuildLock's pinned-session Querier for in-lock writes)
+infra.ReadViewRegistry(ctx, q, d, viewName) (*ViewRegistryRow, error)
+infra.InitViewRegistry(ctx, q, d, InitViewRegistryInput) error
+infra.BeginRebuild(ctx, q, d, viewName, now) error
+infra.EndRebuild(ctx, q, d, EndRebuildInput) error
+infra.ListNonDone(ctx, q) ([]ViewRegistryRow, error)
 
-// Advisory lock helpers (require a pinned connection)
-infra.ViewLockKey(viewName) int64
-infra.TryAcquireViewLock(ctx, exec, viewName) (bool, error)
-infra.ReleaseViewLock(ctx, exec, viewName) error
-infra.ReadViewLockHolder(ctx, exec, viewName) (*ViewLockHolder, error)
+// Advisory lock — the per-dialect rebuild mutex on the engine seam
+// (PG pg_advisory_lock / MySQL GET_LOCK; the SQL is internal to each engine)
+engine.AcquireRebuildLock(ctx, viewName) (db.RebuildLock, error)
+//   RebuildLock: Acquired() bool · Holder() string · Querier() db.Querier · Release(ctx) error
 
 // Drift detection
-infra.DetectViewDrift(ctx, mongo, pg, views) (*DriftReport, error)
+infra.DetectViewDrift(ctx, mongo, engine, views) (*DriftReport, error)
 (*DriftReport).PlansBy(decision) []DriftPlan
 (*DriftReport).HasAny(decisions...) bool
 (*DriftReport).NeedsAction() bool

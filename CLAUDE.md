@@ -33,13 +33,15 @@ Go framework library providing **DDD + CQRS infrastructure** for microservices. 
 ## Build and test commands
 
 ```
-go build ./...
-go vet ./...
-go test ./... -count=1                       # unit suite (default)
-go test -tags=integration ./... -count=1     # integration (needs docker compose up in ../omnicore-example-users/devops)
+go build -tags postgres ./...                       # a relational engine tag is MANDATORY (postgres | mysql)
+go vet -tags postgres ./...
+go test -tags postgres ./... -count=1               # unit suite; swap to -tags mysql for the MySQL build
+go test -tags 'integration postgres' ./... -count=1 # integration (needs docker compose up in ../omnicore-example-users/devops)
 ```
 
-Tests sit next to the file under test (`foo.go` ↔ `foo_test.go`). Integration tests opt in via `//go:build integration` (real Postgres + Mongo + Kafka), excluded from the default run.
+A build links **exactly one** relational engine, chosen by build tag: `-tags postgres` or `-tags mysql`. There is no default — building with neither tag aborts at boot (`db.NewEngine`: no engine registered for the configured dialect), and building with both fails to compile (the `infra/db/core` build guard). The tag governs which driver stack (pgx vs go-sql-driver) and dialect-bound boot wiring (audit partitions, migration runner) is linked.
+
+Tests sit next to the file under test (`foo.go` ↔ `foo_test.go`). Integration tests opt in via `//go:build integration && <engine>` (real Postgres/MySQL + Mongo + Kafka), excluded from the default run; every test file in an engine package also carries its engine tag, so the unit suite runs under the chosen engine tag.
 
 ## Architecture — 4-layer DDD with strict boundaries
 
@@ -54,12 +56,13 @@ application/
   pipeline/           Request/Command/Query, Handler[TReq,TRes], Result[T], Pipeline
   persistence/        ScopedRepository[T], RequestContext, TxHandle, hooks, WriteOption[T]
   queries/            QueryHandler + ViewReader port + ReadCriteria/Page DTOs
+  audit/              AuditEvent model + Reader port (+ ErrAuditNotFound) + RenderLabels
 domain/               Pure business rules, ZERO IO
   aggregate_mapping.go  AggregateRootProvider (table/FK declared in infra via TableSchema)
   entity.go             ValidEntity sealed types (carry Entity directly)
   path_render.go        childCollectionSegment / PluralizeWord (camelCase child path segment)
 infra/
-  audit/              AuditEvent + Config + persister + echo + partitions
+  audit/              Config + reader impl + persister + echo + partitions (model/port/render in application/audit)
   events/             Publisher + SlogPublisher
   log/                Header/Data/Log/Export shapes
   (root)              postgres, executor, aggregate_persister, outbox, mongo,
@@ -72,7 +75,7 @@ infra/
 |---|---|---|
 | `domain` | stdlib + `google/uuid` only | everything else |
 | `application/*` | `domain`, other `application/*` | `infra`, `web` |
-| `infra` | `domain`, `application/persistence` | `web` |
+| `infra` | `domain`, `application/*` | `web` |
 | `web` | `domain`, `application/*` | `infra` directly |
 
 Cross-layer errors travel via `domain.NotificationCarrier` (any error carrying `[]*NotificationContext`), so layers never type-import each other's error structs.
@@ -215,7 +218,7 @@ One `AuditEvent` per ValidEntity write (granularity B — aggregate is the event
 - `database` → `audit.InsertAuditEvent` writes to `audit_events` inside the SAME `pgx.Tx` as data + outbox. Authoritative.
 - `slog` → `audit.EchoSlog` emits a flat slog line after COMMIT. Lossy observability echo.
 
-Code: shape `infra/audit/event.go`; in-TX writer `infra/audit/persister.go`; echo `infra/audit/echo.go`; per-verb builders `infra/audit_builder.go`.
+Code: shape `application/audit/event.go`; read port `application/audit/reader.go` (`Reader` + `ErrAuditNotFound`); label render `application/audit/render.go`; in-TX writer `infra/audit/persister.go`; reader impl `infra/audit/reader.go`; echo `infra/audit/echo.go`; per-verb builders `infra/db/command/write/audit_builder.go`.
 
 Top-level fields (every event): `threadId` (UUID, from `AppContext.ID()`), `entityType`, `entityId` (root ID), `verb` (`insert`|`update`|`archive`|`unarchive`|`delete` — SQL-grounded; PUT+PATCH share `update`), `actionName`, `kind` (`snapshot`|`delta`|`transition`), `actor` (JWT `sub` or `"anonymous"`), `actorIssuer` (omitempty), `actorClaims` (omitempty, filtered by `auth.auditClaims`), `dateTime` (RFC3339Nano).
 
@@ -238,7 +241,7 @@ Body block — one regime per event, selected by `kind`:
 | `update` — Constructor | untouched | — (skipped) | — |
 | `archive` | every loaded active child | `archived` | snapshot |
 | `unarchive` | every loaded archived child | `unarchived` | snapshot |
-| `delete` | every loaded child (FK ON DELETE CASCADE) | `deleted` | snapshot |
+| `delete` | every loaded child (explicit DELETE by FK) | `deleted` | snapshot |
 
 UPDATED children pair pre/post by `GetID()` against the deep-copied prior aggregates map. Flat entities (no `AggregateRootProvider`) carry no `children` block.
 
@@ -270,7 +273,7 @@ Controlling the wire field name — three paths, all feeding `ResolveFieldName()
 
 Both override paths populate `NotificationMessage.Override` (top of precedence); choice is entity-definition vs request-handling time.
 
-**Field labels — `labelKey:"<catalogKey>"` struct tag.** Adds a translated human label next to the technical `field`, for frontend-less channels (e-mail/SMS/push/audit). `Rules.AddNotification` reads the tag at emit and writes `NotificationMessage.LabelKey`; `application/notifications/convert.go::ToContextDTOs` renders via `Translator.Render(lang, key, nil)` onto `MessageDTO.FieldLabel`. Audit's `infra/audit_builder.go::computeChanges` writes the raw key to `FieldChange.FieldLabelKey`; `audit.RenderLabels` / `audit.RenderLabelsInJSON` render at read time.
+**Field labels — `labelKey:"<catalogKey>"` struct tag.** Adds a translated human label next to the technical `field`, for frontend-less channels (e-mail/SMS/push/audit). `Rules.AddNotification` reads the tag at emit and writes `NotificationMessage.LabelKey`; `application/notifications/convert.go::ToContextDTOs` renders via `Translator.Render(lang, key, nil)` onto `MessageDTO.FieldLabel`. Audit's `infra/db/command/write/audit_builder.go::computeChanges` writes the raw key to `FieldChange.FieldLabelKey`; `audit.RenderLabels` / `audit.RenderLabelsInJSON` (in `application/audit`) render at read time.
 
 ```go
 type Address struct {
@@ -294,7 +297,7 @@ Rules:
 
 Per-layer error wrappers avoid `NewNotificationContext + Add + NewXxxError` boilerplate:
 - `domain.SingleNotificationError(ctx, field, n)`, `domain.NotFoundError(ctx, field, value)` (uses `RecordNotFoundNotification`), `domain.FieldErrorWithCause(ctx, field, cause, n)` → `*DomainError`
-- `infra.SingleNotificationError` / `infra.FieldErrorWithCause` → `*InfrastructureError`
+- `db.SingleNotificationError` / `db.FieldErrorWithCause` → `*InfrastructureError`
 - `application/exception.SingleNotificationError` / `.FieldErrorWithCause` → `*ApplicationError`
 
 ### Parameterized notifications
@@ -351,9 +354,9 @@ Domain declares pure ports (NO ctx, actor, or hooks); application adds the reque
 | `persistence.ScopedRepository[T]` | application | `Reader[T]` + `Scope(ctx *AppContext, opts ...WriteOption[T]) domain.Writer` |
 | `persistence.ScopedReaderProvider[T]` / `ScopedArchivedReaderProvider[T]` | application | optional `ScopedReader(ctx) domain.Reader[T]` / `ScopedArchivedReader(ctx) domain.ArchivedFinder[T]` — the read-side mirror of `Scope` |
 
-Reads stay direct on the handle; writes go through `Scope`, which binds ctx (cancellation → pgx, actor → audit) + in-TX hooks and returns a pure `domain.Writer`. `infra.BaseRepository[T]` implements `Scope`; the consumer's repo (embed + a `FindByID` loader) satisfies `ScopedRepository[T]` with no extra code. The request ctx is `persistence.RequestContext` (embeds `context.Context` + `ID()`/`ActorSubject()`/`ActorIssuer()`/`ActorClaims()`), satisfied by `*configuration.AppContext`. There is no `domain.Context`.
+Reads stay direct on the handle; writes go through `Scope`, which binds ctx (cancellation → pgx, actor → audit) + in-TX hooks and returns a pure `domain.Writer`. `db.BaseRepository[T]` implements `Scope`; the consumer's repo (embed + a `FindByID` loader) satisfies `ScopedRepository[T]` with no extra code. The request ctx is `persistence.RequestContext` (embeds `context.Context` + `ID()`/`ActorSubject()`/`ActorIssuer()`/`ActorClaims()`), satisfied by `*configuration.AppContext`. There is no `domain.Context`.
 
-The ctx-less `domain.Reader[T].FindByID` carries no context by design, so a direct call loads on `context.Background()`. The write-command pre-load (Update/Archive/Delete via `persistence.LoadForWrite`, Unarchive via `LoadArchivedForWrite`) instead probes the optional `ScopedReaderProvider[T]` / `ScopedArchivedReaderProvider[T]` (mirroring how `domain.ArchivedFinder` is probed) and, when present, loads through a request-ctx-bound reader — so `http.requestTimeoutSeconds` and cancellation reach the load `SELECT`. `infra.BaseAggregateRepository[T]` implements both (canonical path covered with no consumer code); a hand-rolled repo that implements neither degrades to the ctx-less load. The domain ports keep their pure ctx-less signatures — the ctx binds in application/infra, exactly as `Scope(ctx)` binds writes.
+The ctx-less `domain.Reader[T].FindByID` carries no context by design, so a direct call loads on `context.Background()`. The write-command pre-load (Update/Archive/Delete via `persistence.LoadForWrite`, Unarchive via `LoadArchivedForWrite`) instead probes the optional `ScopedReaderProvider[T]` / `ScopedArchivedReaderProvider[T]` (mirroring how `domain.ArchivedFinder` is probed) and, when present, loads through a request-ctx-bound reader — so `http.requestTimeoutSeconds` and cancellation reach the load `SELECT`. `db.BaseAggregateRepository[T]` implements both (canonical path covered with no consumer code); a hand-rolled repo that implements neither degrades to the ctx-less load. The domain ports keep their pure ctx-less signatures — the ctx binds in application/infra, exactly as `Scope(ctx)` binds writes.
 
 Lifecycle-hook contract — one sealed marker, two hook types, two providers:
 
@@ -367,7 +370,7 @@ func WithAfterBegin[T any](fn AfterBeginHook[T])   WriteOption[T]
 func WithBeforeCommit[T any](fn BeforeCommitHook[T]) WriteOption[T]
 ```
 
-`TxHandle` is opaque to application code — the seal is unexported, so only the framework's `infra/pgxTxHandle` implements it. The canonical in-TX side effect: declare a port (in `application/` or `domain/`) taking a `persistence.TxHandle`, implement it in `infra/` where the adapter calls `fwinfra.UnwrapPgxTx(tx)` to get the live `pgx.Tx` and owns the SQL. The persister fires resolved closures at two fixed positions:
+`TxHandle` is opaque to application code — the seal is unexported, so only a framework engine's handle (`infra/pgxTxHandle`, the MySQL engine's `mysqlTxHandle`) implements it. The canonical in-TX side effect: declare a port (in `application/` or `domain/`) taking a `persistence.TxHandle`, implement it in `infra/` where the adapter calls `fwinfra.UnwrapTx(tx)` to get the backend-neutral `db.Tx` (render SQL via its `Dialect()`, run via `Exec`/`Query`/`QueryRow`) and owns the SQL. A service that deliberately pins itself to Postgres may instead call `fwinfra.UnwrapPgxTx(tx)` for the live `pgx.Tx` (a documented escape hatch). The persister fires resolved closures at two fixed positions:
 
 ```
 BEGIN
@@ -379,7 +382,7 @@ BEGIN
 COMMIT
 ```
 
-Flat path (`infra.Postgres`) and aggregate path (`infra.aggregate_persister`) fire at the same analogous positions; consumer code never knows which ran. The aggregate path fires one hook per `repo.Method()` call (granularity B), with all children reachable via `domain.GetCurrentItemsOf[VO]`.
+Flat path (`postgres.Postgres`) and aggregate path (`infra.aggregate_persister`) fire at the same analogous positions; consumer code never knows which ran. The aggregate path fires one hook per `repo.Method()` call (granularity B), with all children reachable via `domain.GetCurrentItemsOf[VO]`.
 
 ## Auto Command Handlers
 
@@ -465,7 +468,7 @@ func (c InsertUserCommand) FromEntity(_ *configuration.AppContext, u *User) (Ins
 }
 // Optional in-TX side effect via convention; detected by type assertion.
 // TxHandle is sealed — a port in application/ receives it; its infra/ adapter
-// calls fwinfra.UnwrapPgxTx(tx) and owns the SQL.
+// calls fwinfra.UnwrapTx(tx) (backend-neutral) and owns the SQL.
 func (c InsertUserCommand) BeforeCommit(ctx *configuration.AppContext, u *User, id domain.ID, tx persistence.TxHandle) error {
     return c.NotificationOutbox.EnqueueActivationRequested(ctx, tx, id)
 }
@@ -634,11 +637,11 @@ type AggregateRootProvider interface {
 }
 ```
 
-`AggregateChildren()` declares **which types** belong to the aggregate (domain concern). Child table/FK live in the child's `TableSchema` via `.Child(...)` on the root schema. Universal symmetric cascade: root archive → children archive; root delete → children delete (FK `ON DELETE CASCADE`); root unarchive → children unarchive.
+`AggregateChildren()` declares **which types** belong to the aggregate (domain concern). Child table/FK live in the child's `TableSchema` via `.Child(...)` on the root schema. Universal symmetric cascade: root archive → children archive; root delete → children delete (an explicit `DELETE` per declared child table, by FK, before the root DELETE in the same TX — the framework owns the cascade in Go, not a database `ON DELETE CASCADE`); root unarchive → children unarchive.
 
 The top-level primitives `AddAggregateChild`/`ChangeAggregateChild`/`RemoveAggregateChild`/`ReplaceAggregateChildrenOf` consult `AggregateChildren()` and reject VOs of undeclared types with `InvalidAggregateChildNotification` (422). `AggregateConstructor` (DB load) bypasses the type-guard — types come from the schema's `Child(...)`, already trusted.
 
-`GetInsertable/GetUpdatable/GetArchivable/GetDeletable/GetUnarchivable` detect the interface and attach `*aggregateMeta` (root pointer) to the ValidEntity. `infra.Postgres.Insert/Update/Archive/Delete/Unarchive` check `entity.AggregateInfo()` and dispatch to the aggregate path. They take `*TableSchema` (3rd arg) + the resolved `writeHook` (4th arg). Both flat and aggregate paths fire lifecycle hooks at the same TX positions.
+`GetInsertable/GetUpdatable/GetArchivable/GetDeletable/GetUnarchivable` detect the interface and attach `*aggregateMeta` (root pointer) to the ValidEntity. `postgres.Postgres.Insert/Update/Archive/Delete/Unarchive` check `entity.AggregateInfo()` and dispatch to the aggregate path. They take `*TableSchema` (3rd arg) + the resolved `writeHook` (4th arg). Both flat and aggregate paths fire lifecycle hooks at the same TX positions.
 
 **Child validation is transparent.** `runAggregateValidations` (inside `validateForInsert/Update/Delete`) iterates `root.AllAggregateItems()`: for each typeName, fires `BuildRules(actionName, svc, r)` on each non-`Removed` item, with `r` pre-scoped at `[NameSegment(collection), IndexSegment(i)]` (segment via `toLowerCamel(typeName)`). The root's `BuildRules` need not register children. `AddAggregateValueObject` remains for typeNames **outside** `AggregateChildren()` (VOs without their own table, e.g. tags in a JSONB column); typeNames already in the map are skipped to avoid double validation.
 
@@ -652,7 +655,7 @@ The top-level primitives `AddAggregateChild`/`ChangeAggregateChild`/`RemoveAggre
 | Status iteration: Added→INSERT, Changed→UPDATE, Removed→Archive, Constructor→no-op/INSERT | `applyChildChanges` / `insertChildren` |
 | Root archive cascades archive of all active children | `archiveAggregate` |
 | Root unarchive restores archived children (requires `ArchivedFinder` on Repository) | `unarchiveAggregate` |
-| Hard delete relies on FK `ON DELETE CASCADE` | `deleteAggregate` |
+| Hard delete issues an explicit `DELETE` per declared child table (by FK) before the root DELETE, in the same TX (no dependence on `ON DELETE CASCADE`) | `deleteAggregate` |
 | Lifecycle hooks fire ONCE per call at positions A and D | `fireAfterBegin` / `fireBeforeCommit` in `infra/hook_dispatch.go` |
 
 ### Example consumer
@@ -699,28 +702,28 @@ func NewUserRepository(pg *fwinfra.Postgres) *UserRepository {
 
 ```go
 // Setup (once)
-pg, _ := infra.NewPostgres(ctx, dsn)
+pg, _ := postgres.NewPostgres(ctx, dsn)
 mongo, _ := infra.NewMongoDB(ctx, mongoURI, dbName)
 pipe := pipeline.New(translation.Default())
 // pg.WithAudit(...) configured ONCE at boot — every write routes through it.
 
 type UserRepository struct {
-    infra.BaseRepository[*User]
-    loader *infra.AggregateLoader[*User]
+    db.BaseRepository[*User]
+    loader *db.AggregateLoader[*User]
 }
-func NewUserRepository(pg *infra.Postgres) *UserRepository {
+func NewUserRepository(pg *postgres.Postgres) *UserRepository {
     newUser := func() *User { return &User{} }   // single factory source of truth
     r := &UserRepository{
-        BaseRepository: infra.BaseRepository[*User]{
-            Postgres: pg, ContextName: "User", NewEntity: newUser,
-            Constraints: map[string]infra.ConstraintBinding{
+        BaseRepository: db.BaseRepository[*User]{
+            Engine: pg, ContextName: "User", NewEntity: newUser,
+            Constraints: map[string]db.ConstraintBinding{
                 "users_email_active_idx": {Notification: EmailAlreadyExistsNotification{}, Field: "email"},
             },
         },
     }
     schema := UserSchema()
     r.Schema = schema
-    r.loader = infra.NewAggregateLoader[*User](pg, newUser).WithContextName("User").WithSchema(schema)
+    r.loader = db.NewAggregateLoader[*User](pg, newUser).WithContextName("User").WithSchema(schema)
     return r
 }
 func (r *UserRepository) FindByID(id domain.ID) (*User, error) {
@@ -737,12 +740,14 @@ func (h *CreateUserHandler) Handle(ctx *configuration.AppContext, cmd CreateUser
 }
 ```
 
-**`infra.BaseRepository[T]`** implements `Scope(ctx, opts...) domain.Writer` (the `boundWriter` carries the 5 writes delegating to `infra.Postgres` with the bound ctx) and `New() T` via `NewEntity`. **`NewEntity` is mandatory** (`New()` panics if nil; typically shared with the loader). **`infra.ConstraintBinding`** translates unique violations (PG `23505`) into `*InfrastructureError` carrying the typed notification via `infra.FieldErrorWithCause`. Unregistered constraints / other codes / non-pgErr errors return raw.
+**`db.BaseRepository[T]`** implements `Scope(ctx, opts...) domain.Writer` (the `boundWriter` carries the 5 writes delegating to its `Engine` — an `db.RelationalEngine`, `*Postgres` today — with the bound ctx) and `New() T` via `NewEntity`. **`NewEntity` is mandatory** (`New()` panics if nil; typically shared with the loader). **`db.ConstraintBinding`** translates unique violations (PG `23505`) into `*InfrastructureError` carrying the typed notification via `db.FieldErrorWithCause`. Unregistered constraints / other codes / non-pgErr errors return raw.
 
-**`infra.AggregateLoader[T]`** loads live aggregates (root + children) via the search engine — `FindOne(ctx, *criteria.Query)` / `FindAll(ctx, *criteria.Query)`. Two coexisting scan modes:
+**Relational engine seam.** The write binding and the composition root depend on the `db.RelationalEngine` port (write methods + `Close`), not the concrete driver — the seam that lets a second backend (MySQL, later SQL Server) drop in. The dialect is chosen once at boot via `relational.dialect` (mandatory — `postgres` | `mysql`, no default; absent dialect aborts boot, and the DSN is `relational.dsn`); engines self-register through `db.RegisterEngine` (database/sql-style) and `bootstrap` builds via `db.NewEngine`. Each engine is compiled behind its own build tag (`-tags postgres` / `-tags mysql`), so a binary links exactly one — its driver stack (pgx / go-sql-driver) and dialect-bound boot wiring (the `bootstrap/engine_<dialect>.go` file: registration, audit partitions, migration runner) come only with the tag. Building with neither tag aborts at boot (`NewEngine`: no engine registered); building with both fails to compile (the `infra/db/core` build guard). `Deps.DB` and `BaseRepository.Engine` are the neutral handles. Code that still needs pgx-specific access (the pool for custom SELECTs, partitions, migrations — PG-bound) recovers the concrete adapter via `postgres.AsPostgres(engine)`, a documented PG-only escape hatch. The Mongo-view rebuild mutex is backend-neutral through `RelationalEngine.AcquireRebuildLock` (PG `pg_advisory_lock`, MySQL `GET_LOCK`), not the escape hatch. The in-TX twin is `db.UnwrapTx(TxHandle) db.Tx` (canonical, backend-neutral); `postgres.UnwrapPgxTx(TxHandle) pgx.Tx` is the PG-only escape hatch on that side.
+
+**`db.AggregateLoader[T]`** loads live aggregates (root + children) via the search engine — `FindOne(ctx, *criteria.Query)` / `FindAll(ctx, *criteria.Query)`. Two coexisting scan modes:
 
 - **Auto-scan (default)** — columns for root and children come from the `TableSchema` threaded via `WithSchema`. SELECT list and scanner share the one `column ↔ Go field` map, so a renamed column round-trips. Absence of `WithRootScanner` activates root auto-scan; the schema's `Child(...)` activate child auto-scan.
-- **Manual (`WithRootScanner`/`WithChildScanner`)** — service supplies the scan fn for non-trivial decoding (JOIN, CASE, COALESCE). Per-typeName, manual wins over auto. **A manual root scanner with `FindOne`/`FindAll` must populate the entity id** (scan + `SetID`).
+- **Manual (`WithRootScanner`/`WithChildScanner`)** — service supplies the scan fn for non-trivial decoding (JOIN, CASE, COALESCE). The scanner receives the backend-neutral `db.Row`/`db.Rows` (not a driver type), so it runs on any engine. A `BINARY(16)` uuid column scanned into a `*string` is decoded to the canonical UUID by the engine's read wrapper (scan into `*[]byte` for the raw bytes); other dialect-specific shapes are the consumer's to decode. Per-typeName, manual wins over auto. **A manual root scanner with `FindOne`/`FindAll` must populate the entity id** (scan + `SetID`).
 
 Both modes: archived scope governs the `deleted_at` gate (root + children). Nonexistent root → `*DomainError` + `RecordNotFoundNotification` (404). T must satisfy `domain.Entity`.
 
@@ -769,6 +774,8 @@ users, err := r.FindAll(ctx, criteria.Where(criteria.And(
 ```
 
 `FindOne` returns one match or `RecordNotFoundNotification`; **>1 matches is an error**. `FindAll` returns a possibly-empty slice and batches children (`WHERE fk IN (...)` per child type, no N+1). Nullable PG fields map to **pointer types** in the domain (`Phone *string`); pgx writes NULL when nil, reads NULL as nil.
+
+A non-PK/FK UUID reference column (e.g. `tenant_id`, `buyer_id`) is the canonical Go `string` (or `*string` when nullable), like every other id. It round-trips on every backend: Postgres reads the `uuid` column as text; on MySQL the auto-scan decodes a `BINARY(16)` column into the canonical UUID string (the criteria/loader read wraps `*sql.Rows` to detect a `BINARY` column by driver type + 16-byte length — the same heuristic the composer uses — so a 16-char text column, whose type is `VARCHAR`/`CHAR`, is never misread). A manual `RootScanner`/`ChildScanner` that scans such a column into a `*string` likewise receives the canonical UUID; scan into `*[]byte` to get the raw bytes.
 
 ### Schema mapping (`TableSchema`)
 
@@ -973,10 +980,10 @@ func (EmailAlreadyExistsNotification) Semantic() domain.NotificationSemantic {
 | New respond helper | `web/response.go` |
 | Custom HTTP status on a notification | service struct overrides `Semantic() domain.NotificationSemantic` |
 | Notification with runtime vars | `tvar:"<name>"` tags + `{<name>}` placeholders; per-emit `r.AddNotificationWithVars(...)`; escape hatch `TranslationVars()` |
-| New audit field | `infra/audit/event.go` |
+| New audit field | `application/audit/event.go` |
 | In-TX side effect (Auto path) | declare `BeforeCommit`/`AfterBegin` on the Cmd (detected via `persistence.BeforeCommitHookProvider[T]`) |
 | In-TX side effect (manual path) | `persistence.WithBeforeCommit[T](fn)` / `WithAfterBegin[T](fn)` on `repo.Scope(...)` |
-| Read/write state in a hook's TX | port whose method takes `persistence.TxHandle`; adapter calls `fwinfra.UnwrapPgxTx(tx)` |
+| Read/write state in a hook's TX | port whose method takes `persistence.TxHandle`; adapter calls `fwinfra.UnwrapTx(tx)` (neutral) — `fwinfra.UnwrapPgxTx(tx)` only to pin to Postgres |
 | Declare aggregate child | root `AggregateChildren() []AggregateValueObject`; table/cols/FK in child `TableSchema` via `root.Child(...)` |
 | Trivial CRUD without a handler | `handlers.{Insert,Update,PartialUpdate,Archive,Unarchive,Delete}CommandHandler[T,*Cmd,TResult]` |
 | Route wrapper — with body | `fwweb.HandleCommandWithBody{,ID}(...)` |
@@ -1057,7 +1064,7 @@ Per-consumer copy. Each service owns its Go payload types; the wire JSON is the 
 | `omnicore_integration_failures` | consumer | one row per handler failure; natural key `(consumer_group, source_key, event_key, event_id)` |
 | `omnicore_integration_processed` | consumer | per-`(event_id, consumer_group)` dedup; BRIN index on `processed_at` |
 
-All three ship via framework migration `0002_integration_events.{up,down}.sql`. `integration_events` has its own (long) retention for replay/audit; operator-driven pruning, no auto-prune.
+All three ship in the flattened framework migration `0001_framework` (per dialect). `integration_events` has its own (long) retention for replay/audit; operator-driven pruning, no auto-prune.
 
 ### Coordinated shutdown
 
@@ -1093,7 +1100,7 @@ Framework manages numbered SQL files in `cfg.Migrations.Dir` (default `./migrati
 
 Filename `{version}_{name}.{up|down}.sql`; `version` is a monotonic integer.
 
-**Versions 1, 2 and 3 are reserved for the framework control plane** (injected via `embed.FS` from `infra/migration/embedded/`). Version 1 (`0001_outbox`) creates `outbox` (Debezium CDC source) + `omnicore_mongo_views` (Mongo view registry) + `audit_events`. Version 2 (`0002_integration_events`) creates the integration tables. Version 3 (`0003_outbox_traceparent`) adds the trace-context columns `outbox.traceparent`, `integration_events.traceparent` and `audit_events.trace_id` (all nullable). The framework tracks these in `omnicore_framework_migrations`; service migrations start at `0002+` in `omnicore_migrations` (no collision). Never write the framework SQL manually.
+**Version 1 is reserved for the framework control plane** (injected via `embed.FS` from `infra/migration/embedded/<dialect>/`). A single flattened `0001_framework` per dialect (`postgres/`, `mysql/`) creates the whole control plane: `outbox` (Debezium CDC source), `omnicore_mongo_views` (Mongo view registry), `omnicore_upstream_failures`, `audit_events`, `integration_events`, `omnicore_integration_failures`, `omnicore_integration_processed` — with the trace columns (`outbox.traceparent`, `integration_events.traceparent`, `audit_events.trace_id`) inlined, and every table + column carrying a `COMMENT`. The framework tracks it in `omnicore_framework_migrations`; service migrations start at `0002+` in `omnicore_migrations` (no collision). The dialect's source is selected by `frameworkSourceFor(dialect)`; the runner itself is dialect-bound and behind the engine build tag (`migration.New` over the live pgx pool for Postgres, `migration.NewMySQL` over its own `*sql.DB` for MySQL — each in its `*_runner.go` file). Never write the framework SQL manually.
 
 `.down.sql` is mandatory (`Manager.ValidateDownExists`) — may be `-- intentionally empty`. The same check rejects any `*.{up,down}.sql` without a parseable `{version}_{name}` prefix with `MigrationFilenameInvalidNotification`.
 
@@ -1101,7 +1108,7 @@ Filename `{version}_{name}.{up|down}.sql`; `version` is a monotonic integer.
 
 | Table | Who writes | Contains |
 |---|---|---|
-| `omnicore_framework_migrations` | Framework (embedded) | versions 1–3 |
+| `omnicore_framework_migrations` | Framework (embedded) | version 1 (flattened `0001_framework`) |
 | `omnicore_migrations` | Service | versions 2+ |
 
 Separate tables avoid version collisions. Each stores `(version BIGINT PRIMARY KEY, dirty BOOLEAN)`. A mid-way failure leaves `dirty=true`, blocking `Up` until `Force`. `.down.sql` is read from disk/embed at `Down(N)` time, never stored.
@@ -1124,7 +1131,7 @@ Non-dev default. `bootstrap.Run` does NOT apply migrations: reads `Status` (abor
 
 ## Mongo schema evolution
 
-Symmetric to the Postgres migration policy, on the Mongo read-side projections: drift detection between the code-declared `ViewDefinition` and the materialized collection, the rebuild trigger, and orphan cleanup. The control plane lives entirely in PostgreSQL (`omnicore_mongo_views`, framework migration 0001). Mongo collections carry only domain data.
+Symmetric to the relational migration policy, on the Mongo read-side projections: drift detection between the code-declared `ViewDefinition` and the materialized collection, the rebuild trigger, and orphan cleanup. The control plane lives entirely in the relational backend (`omnicore_mongo_views`, framework migration 0001, present in both the Postgres and MySQL dialects) and is backend-neutral — drift reads go through the engine's `Querier`/`Dialect` and the rebuild mutex through `AcquireRebuildLock`. Mongo collections carry only domain data.
 
 ### Three-mode control model
 
@@ -1172,11 +1179,11 @@ Partial index `..._status_idx ON status WHERE status <> 'done'` keeps mid-flight
 
 ### Hybrid concurrency primitive
 
-Two PG-side primitives in tandem, driven exclusively by `ExecuteRebuild`:
-- `pg_advisory_lock` — cluster-wide mutual exclusion, auto-release on disconnect, no TTL math. Acquired on a pinned `pgxpool.Conn` via `infra.TryAcquireViewLock`.
+Two primitives in tandem, driven exclusively by `ExecuteRebuild`:
+- A backend-neutral advisory lock — cluster-wide mutual exclusion, auto-release on disconnect, no TTL math. Acquired on a pinned session via `RelationalEngine.AcquireRebuildLock(ctx, viewName) (db.RebuildLock, error)`, implemented per dialect (PG `pg_advisory_lock` on a pinned `pgxpool.Conn`; MySQL `GET_LOCK(name, 0)` on a pinned `*sql.Conn`). The returned `RebuildLock` carries `Acquired()`/`Holder()` plus a `Querier()` bound to the pinned session, so the status writes run on the very connection that owns the lock; `Release()` unlocks and returns the session.
 - Status column — `done | processing` with `started_at`/`pid`/`host`; survives crashes (forensic).
 
-State machine: `done →(processing, started_at, pid, host)→ processing →(rebuild)→ done (hashes, applied_at, started_at=NULL)`. Crash recovery: lock auto-releases on TCP close; next boot acquires cleanly, sees `status='processing'`, emits `slog.Warn "...taking over"`, re-runs `BeginRebuild`, proceeds.
+State machine: `done →(processing, started_at, pid, host)→ processing →(rebuild)→ done (hashes, applied_at, started_at=NULL)`. Crash recovery: lock auto-releases when the session drops; next boot acquires cleanly, sees `status='processing'`, emits `slog.Warn "...taking over"`, re-runs `BeginRebuild`, proceeds.
 
 ### Drift detection at boot
 
@@ -1197,7 +1204,7 @@ Under `autoRun=false` every branch is skipped — runtime errors are the operato
 
 ### Rebuild execution
 
-`SyncEngine.ExecuteRebuild(ctx, plan, cfg)` runs on one view on a pinned `pgxpool.Conn`: acquire+pin → `TryAcquireViewLock` (else read holder via `pg_locks`+`pg_stat_activity`, abort) → defer releases → detect takeover → `BeginRebuild` (status='processing') → cleanup orphan fields (`$unset` the difference) → snapshot `_id` set → compose+upsert from Postgres in batches of 1000 → orphan reconciliation (`delete`/`warn` per `cfg.Orphan`) → `EndRebuild` (status='done' + new hashes + `applied_at`, captures `previous_*`; last data write) → `slog.Info "view.rebuild.end"`. Fast paths: `InitRegistryOnly` and `RefreshRegistryArtifactOnly`.
+`SyncEngine.ExecuteRebuild(ctx, plan, cfg)` runs on one view on a pinned session: `AcquireRebuildLock` (else, when `!Acquired()`, abort with the `Holder()` diagnostic) → defer `Release` → detect takeover → `BeginRebuild` (status='processing', on the lock's pinned-session `Querier()`) → cleanup orphan fields (`$unset` the difference) → snapshot `_id` set → compose+upsert from the relational source in batches of 1000 (root ids read via `engine.Querier()`, each decoded through `Dialect.DecodeID`) → orphan reconciliation (`delete`/`warn` per `cfg.Orphan`) → `EndRebuild` (status='done' + new hashes + `applied_at`, captures `previous_*`; last data write) → `slog.Info "view.rebuild.end"`. Fast paths: `InitRegistryOnly` and `RefreshRegistryArtifactOnly`.
 
 ### YAML, API, privileges
 
@@ -1211,13 +1218,14 @@ mongo:
 
 - Strict decoding on `mongo.rebuild`: unknown keys abort boot.
 - `OMNICORE_MONGO_FORCE_REBUILD=true` governs only index divergence in `ApplyMongoSpecs`; it never triggers this rebuild path and never drops collections.
-- Registry helpers (any `pgExec`): `infra.{ReadViewRegistry, InitViewRegistry, BeginRebuild, EndRebuild, ListNonDone}`. Lock helpers (pinned conn): `infra.{ViewLockKey, TryAcquireViewLock, ReleaseViewLock, ReadViewLockHolder}`. Drift: `infra.DetectViewDrift` → `*DriftReport`. Orchestration: `(*SyncEngine).{ExecuteRebuild, InitRegistryOnly, RefreshRegistryArtifactOnly}`.
+- Registry helpers (any `db.Querier` + `db.Dialect`): `infra.{ReadViewRegistry, InitViewRegistry, BeginRebuild, EndRebuild}(ctx, q, d, …)` and `infra.ListNonDone(ctx, q)`. Lock: `RelationalEngine.AcquireRebuildLock(ctx, viewName) (db.RebuildLock, error)` (the per-dialect advisory-lock primitive; the PG `pg_advisory_lock` / MySQL `GET_LOCK` SQL is internal to each engine). Drift: `infra.DetectViewDrift(ctx, mongo, engine, views)` → `*DriftReport`. Orchestration: `(*SyncEngine).{ExecuteRebuild, InitRegistryOnly, RefreshRegistryArtifactOnly}`.
 - **PG privileges**: `SELECT, INSERT, UPDATE` on `omnicore_mongo_views`; `pg_try_advisory_lock`/`pg_advisory_unlock`; read on `pg_locks`/`pg_stat_activity`.
+- **MySQL privileges**: `SELECT, INSERT, UPDATE` on `omnicore_mongo_views`; `GET_LOCK`/`RELEASE_LOCK`/`IS_USED_LOCK` (granted to every user) and, for the holder diagnostic, read on `performance_schema.threads` (degrades to "" without it).
 - **Mongo privileges**: `find, insert, update, remove, aggregate, collMod, createCollection, listCollections`.
 
 ## Required PostgreSQL schema
 
-The `outbox` table is created by embedded migration 1 — never write its SQL manually (Debezium Outbox Event Router depends on the exact columns; canonical signature in `infra/migration/embedded/0001_outbox.up.sql`).
+The `outbox` table is created by embedded migration 1 — never write its SQL manually (Debezium Outbox Event Router depends on the exact columns; canonical signature in `infra/migration/embedded/postgres/0001_framework.up.sql`, MySQL flavor in `embedded/mysql/`).
 
 Service domain tables (migrations 2+) follow these conventions so executor-generated SQL and the composer's queries work:
 
@@ -1238,7 +1246,7 @@ The framework actively stamps `created_at`/`updated_at`; declare names/presence 
 ```sql
 CREATE TABLE addresses (
     id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    user_id     UUID NOT NULL REFERENCES users (id) ON DELETE CASCADE,
+    user_id     UUID NOT NULL REFERENCES users (id),  -- ON DELETE CASCADE optional (integrity safety-net only)
     deleted_at  TIMESTAMP,                -- MANDATORY: symmetric cascade archive/unarchive
     created_at  TIMESTAMP NOT NULL DEFAULT NOW(),
     updated_at  TIMESTAMP NOT NULL DEFAULT NOW()
@@ -1246,7 +1254,7 @@ CREATE TABLE addresses (
 CREATE INDEX addresses_user_id_idx ON addresses (user_id);
 ```
 
-Universal symmetric cascade: root archive → `UPDATE addresses SET deleted_at = NOW() WHERE user_id = $1` in the same TX; root unarchive restores archived children; root delete relies on FK `ON DELETE CASCADE`.
+Universal symmetric cascade: root archive → `UPDATE addresses SET deleted_at = NOW() WHERE user_id = $1` in the same TX; root unarchive restores archived children; root delete issues an explicit `DELETE FROM addresses WHERE user_id = $1` per child table before the root DELETE, in the same TX. The framework owns the cascade in Go, so `ON DELETE CASCADE` on the FK is optional (a defense-in-depth safety-net), not required.
 
 Cross-service data materializes into **B's own Mongo database** via `UpstreamSubscription` (no local PG cache table). The local collection is upsert-managed by `UpstreamSubscriber`; embeds reference it via `fwinfra.FromSchema(fwinfra.NewExternalSchema("users")…)`. See "Cross-service composition".
 
@@ -1259,7 +1267,7 @@ Cross-service data materializes into **B's own Mongo database** via `UpstreamSub
 | `pipeline.Pipeline` | Yes (stateless after construction) | Singleton per service |
 | `domain.BaseEntity` / user entities | **No** — mutable validation state | Per operation (don't share) |
 | `domain.NotificationContext` | **No** — slice appended | Owned by its BaseEntity |
-| `infra.Postgres` (pgx pool) | Yes | Singleton per database |
+| `postgres.Postgres` (pgx pool) | Yes | Singleton per database |
 | `infra.MongoDB` | Yes (driver pools) | Singleton per database |
 | `infra.SyncEngine` | Yes (single consumer goroutine) | Singleton per service (`Start(ctx)`) |
 
@@ -1347,8 +1355,9 @@ service: my-service
 http:
   addr: ":8080"
   requestTimeoutSeconds: 30   # inbound request deadline; unset → 30; 0 → disabled
-postgres:
-  dsn: "${DATABASE_URL:postgres://localhost:5432/mydb}"
+relational:
+  dialect: postgres           # MANDATORY — postgres | mysql; no default (absent dialect aborts boot)
+  dsn: "${DATABASE_URL:postgres://localhost:5432/mydb}"   # MANDATORY — DSN for the selected dialect
 mongo:
   uri: "${MONGO_URI:mongodb://localhost:27017}"
   database: "${MONGO_DB:my_views}"
@@ -1412,7 +1421,7 @@ observability:              # omitted block = tracing off (no-op tracer)
     instrument: [http, pgx, mongo, kafka, httpclient]   # empty → all
 ```
 
-Mandatory: `service`, `postgres.dsn`, `mongo.uri`, `mongo.database`, `kafka.brokers`, `kafka.syncGroupId` — `LoadConfig` errors listing the missing. `auth:` defaults to `{mode: disabled}` when absent (rejected unless `APP_PROFILE=dev`); `mode: jwt` requires `issuer` + `audience` + exactly one of `jwksUrl`/`publicKeyPem`.
+Mandatory: `service`, `relational.dialect`, `relational.dsn`, `mongo.uri`, `mongo.database`, `kafka.brokers`, `kafka.syncGroupId` — `LoadConfig` errors listing the missing. `auth:` defaults to `{mode: disabled}` when absent (rejected unless `APP_PROFILE=dev`); `mode: jwt` requires `issuer` + `audience` + exactly one of `jwksUrl`/`publicKeyPem`.
 
 `audit.destinations` routes each successful write's `AuditEvent`: absent/default → both `slog`+`database`; `[database]` → only the in-TX PG row (compliance); `[slog]` → only the post-commit echo; `[]` → disabled. Unknown tokens or duplicates abort boot.
 
@@ -1443,9 +1452,10 @@ pure (no spans).
 - **Synchronous span tree** — inbound server span (`web.AppContextMiddleware`,
   extracts `traceparent`, renames to the route template) → `dispatch <Req>`
   (`pipeline.Dispatch`; the business unit-of-work, inherited identically by
-  Auto/manual/REST/GraphQL since all funnel through `Dispatch`) → pgx
-  (`otelpgx`), mongo (a framework `CommandMonitor`, since the published
-  `otelmongo` targets the v1 driver), and outbound httpclient (an outermost
+  Auto/manual/REST/GraphQL since all funnel through `Dispatch`) → the
+  relational engine (Postgres via `otelpgx`, MySQL via `otelsql` — both gated by
+  the `pgx` instrument toggle), mongo (a framework `CommandMonitor`, since the
+  published `otelmongo` targets the v1 driver), and outbound httpclient (an outermost
   chain layer that starts the client span and injects `traceparent`). The
   dispatch span is threaded via `AppContext.SetTraceContext` (kept separate
   from the cancellation parent because fiber v3's `Ctx.Value` does not delegate
@@ -1865,7 +1875,7 @@ The framework reads exactly four process env vars; everything else in `${VAR:def
 | `bootstrap.Build() (Deps, *Config, error)` | build singletons without serving |
 | `bootstrap.Serve(ctx, deps, wiring) error` | serve with deps already built (manual path owns translations + SyncEngine) |
 
-- `Deps` — built singletons: `Config`, `Logger`, `Postgres` (audit pre-wired via `WithAudit`), `Mongo`, `Translator`, `Pipeline`, `ViewReader`, `Export` (tabular export ambient inputs), `Cache`, `SharedCache`, `HttpClient` (nil w/o `httpClient:`), `OpenAPIRegistry` (nil w/o `Wiring.OpenAPI`), `IntegrationRegistry`, `UpstreamSubscribers` (nil w/o declared upstream subscriptions).
+- `Deps` — built singletons: `Config`, `Logger`, `DB` (the `db.RelationalEngine` — the build-tag-selected engine, audit pre-wired via `WithAudit`), `Mongo`, `Translator`, `Pipeline`, `ViewReader`, `Export` (tabular export ambient inputs), `Cache`, `SharedCache`, `HttpClient` (nil w/o `httpClient:`), `OpenAPIRegistry` (nil w/o `Wiring.OpenAPI`), `IntegrationRegistry`, `UpstreamSubscribers` (nil w/o declared upstream subscriptions).
 - `Wiring` — `Translations`, `Features`, optional `BeforeServe`, `OnShutdown`, `OpenAPI *openapi.Config`, `GraphQL *graphql.Registry`, `Cache`/`SharedCache`, `UpstreamSubscriptions`.
 - `Feature` — `Mount(app *fiber.App, deps Deps)`. `ReadableFeature` — `Feature + Views() []*infra.ViewDefinition` (collected for the SyncEngine).
 
@@ -1892,7 +1902,7 @@ func Wire(d bootstrap.Deps) bootstrap.Wiring {
 
 ## Bootstrap checklist for a new microservice
 
-1. `go mod init …` + `go get github.com/ClaudioSchirmer/omnicore`.
+1. `go mod init …` + `go get github.com/ClaudioSchirmer/omnicore`. Build, test and run the service with a relational engine tag — `-tags postgres` or `-tags mysql` (no default; the tag must match `relational.dialect`).
 2. DDD layers `domain/`, `application/{commands,handlers,translations}/`, `infra/`, `web/`; composition + migration location are the service's choice.
 3. `microservice.dev.yaml` + `microservice.prd.yaml` at module root (selected by `APP_PROFILE`).
 4. SQL migrations start at `0002_*.{up,down}.sql` (outbox is v1, framework-injected — do not write); each `.up.sql` needs a `.down.sql`; path from `migrations.dir`.
@@ -1927,11 +1937,11 @@ Layouts (all supported): consolidated `bootstrap/` package main (canonical `omni
 - **Service** — `domain.Service` marker for domain services injectable into `BuildRules`.
 - **UpstreamSubscription** — declarative tie of an upstream Kafka topic to a local Mongo collection materialized by `UpstreamSubscriber`; the cross-service composition path.
 - **FromSchema** — `fwinfra.FromSchema(*TableSchema)`, the single embed-source constructor; store kind derived from schema type (local PG vs external Mongo).
-- **TxHandle / UnwrapPgxTx** — sealed marker handed to in-TX hooks; `fwinfra.UnwrapPgxTx(TxHandle) pgx.Tx` (in `infra/`) is the only bridge to the live tx.
+- **TxHandle / UnwrapTx** — sealed marker handed to in-TX hooks; `fwinfra.UnwrapTx(TxHandle) db.Tx` (in `infra/`) is the canonical backend-neutral bridge to the live tx (Exec/Query/QueryRow + Dialect); `fwinfra.UnwrapPgxTx(TxHandle) pgx.Tx` is the PG-only escape hatch.
 - **TableSchema** — mandatory explicit Go-field↔column map; one declaration drives write + criteria + scan + Mongo view.
 - **ValidEntity** — sealed `Insertable`/`Updatable`/`Archivable`/`Unarchivable`/`Deletable`/`Batch` produced only by domain.
 - **WriteOption[T]** — functional option on `Scope(ctx, opts...)` carrying the lifecycle hooks.
-- **Reader[T] / Writer / Repository[T]** — pure domain repository ports; **ScopedRepository[T]** — application write binding (`Reader[T]` + `Scope`), implemented by `infra.BaseRepository[T]`.
+- **Reader[T] / Writer / Repository[T]** — pure domain repository ports; **ScopedRepository[T]** — application write binding (`Reader[T]` + `Scope`), implemented by `db.BaseRepository[T]`.
 - **fwintegration.Dispatch** — canonical cross-service producer entry; resolves `eventKey` against YAML, `WithTx` lands atomically with the write.
 - **Registry / Receiver** — `*fwintegration.Registry` mounted by `IntegrationFeature.MountReceivers`; each `Receiver` is one `(sourceKey, eventKey)` with `RetryPendingFailures`.
 - **IntegrationFeature** — opt-in interface registering receivers via `MountReceivers`; mirror of `ReadableFeature`.

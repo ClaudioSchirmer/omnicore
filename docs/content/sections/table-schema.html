@@ -258,6 +258,16 @@ func OrdersView() *fwinfra.ViewDefinition {
 
 <h3>Boot checks</h3>
 <ul>
+    <li><strong>Write-backed schema is type-anchored</strong> — <code>WithSchema</code> rejects a type-less
+        <code>NewExternalSchema</code> as a repository root: a schema that backs the write path must be anchored to a Go
+        type, since the persister reflects the entity to build the <code>INSERT</code>/<code>UPDATE</code> and the read-side
+        composer reflects it (<code>BoolColumns</code>) to restore type fidelity when it materializes the Mongo view. A
+        type-less schema describes an <em>upstream</em> service's Mongo collection and is only ever a view <em>embed</em>
+        source (<code>FromSchema</code>), never a root. The composer routes by the view root <em>table name</em>, not by the
+        schema's kind, so a type-less root naming a real local table would otherwise compose relationally with an empty
+        <code>BoolColumns</code> and silently lose boolean fidelity on a backend without a native bool (MySQL
+        <code>TINYINT(1)</code> → number). Aggregate children are covered at declaration — <code>Child(...)</code> rejects a
+        type-less child — so the invariant <em>root + every child type-anchored</em> is complete.</li>
     <li><strong>Field exists on the type</strong> — <code>NewTableSchema[T]</code> + <code>Field</code> panic at
         construction when the named field is absent, unexported, or promoted from an embed. This is what replaces
         convention: a typo is a boot panic, not a silent miss.</li>
@@ -286,7 +296,7 @@ func OrdersView() *fwinfra.ViewDefinition {
 </ul>
 <p>These checks run inside <code>WithSchema</code> on <em>both</em> repository shapes:
     <code>BaseAggregateRepository.WithSchema</code> (aggregate) and <code>BaseRepository.WithSchema</code> (flat, non-aggregate)
-    each run the PK-declared, aggregate-depth, and <code>Modes()</code> ⟺ <code>SoftDelete</code> checks at construction (the
+    each run the type-anchored, PK-declared, aggregate-depth, and <code>Modes()</code> ⟺ <code>SoftDelete</code> checks at construction (the
     aggregate path additionally runs the boundary-agreement check and threads the schema into the read loader). Calling
     <code>WithSchema</code> also surfaces a nil <code>NewEntity</code> factory at construction. Assigning <code>r.Schema</code>
     directly still works as the unchecked escape hatch — <code>WithSchema</code> is the validated canonical entry.</p>

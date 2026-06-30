@@ -13,6 +13,11 @@ with `1.0.0`.
 
 ### Added
 
+- **`TableSchema.ChildSchemas()`** — returns every declared aggregate child
+  schema, ordered by table name (deterministic SQL on any engine). The aggregate
+  hard-delete path uses it to clear each child table by FK explicitly; an
+  out-of-package relational engine can enumerate the declared children through it.
+
 - **Inbound request deadline.** New `http.requestTimeoutSeconds` config knob
   bounds how long a single inbound request may run before the framework cancels
   its context. The `AppContextMiddleware` derives the request's cancellation
@@ -56,13 +61,15 @@ with `1.0.0`.
 - **Pluggable relational backend — MySQL alongside PostgreSQL.** The relational
   layer is now backend-agnostic: a `db.RelationalEngine` port decouples the write
   binding, read path, and composition root from the concrete driver, with the
-  backend selected once at boot via the new `database.dialect` knob (default
-  `postgres`, so every existing config stays valid). Engines self-register
+  backend selected once at boot via the new mandatory `relational` block —
+  `relational.dialect` (`postgres` | `mysql`, no default: the framework refuses
+  to assume a backend, so an absent dialect aborts boot) plus `relational.dsn`
+  (the connection string for the selected dialect). Engines self-register
   database/sql-style (`db.RegisterEngine` / `db.NewEngine`); `Deps.DB` and
   `BaseRepository.Engine` are the neutral handles, and `postgres.AsPostgres(engine)`
   recovers the concrete adapter for the few PG-bound escapes (pool, partitions).
   A complete MySQL engine ships behind the `mysql` build tag
-  (`infra/db/engine/mysql`): selecting `database.dialect: mysql` +
+  (`infra/db/engine/mysql`): selecting `relational.dialect: mysql` +
   `go build -tags mysql` runs a service at feature parity with Postgres — flat and
   aggregate writes (root + children + outbox in one TX, symmetric
   archive/unarchive/delete cascade), `FindByID` / criteria reads, audit rows +
@@ -88,7 +95,81 @@ with `1.0.0`.
   migration connection only). Verified throughout by a `-tags=integration,mysql`
   suite against a real MySQL container.
 
+- **Write-backed schema must be type-anchored — boot guard.**
+  `BaseRepository.WithSchema` (and the aggregate repository, which delegates to
+  it) now rejects a type-less `NewExternalSchema` as a repository root, panicking
+  at construction. A schema that backs the write path must be anchored to a Go
+  type: the persister reflects the entity to build the `INSERT`/`UPDATE`, and the
+  read-side composer reflects it (`BoolColumns`) to restore type fidelity when it
+  materializes the Mongo view — neither is possible without a struct. A type-less
+  schema describes an *upstream* service's Mongo collection and is only ever a
+  view *embed* source (`FromSchema`). Because the composer routes by the view
+  root *table name* (the `.Root(table)` string), not by the schema's kind, a
+  type-less root naming a real local table would otherwise be composed
+  relationally with an empty `BoolColumns` and silently lose boolean fidelity on
+  a backend without a native bool (MySQL `TINYINT(1)` → number) — this turns that
+  latent divergence into a loud boot failure. Aggregate children were already
+  covered (`Child(...)` rejects a type-less child at declaration), so the
+  invariant *root + every child type-anchored* is now complete.
+
 ### Changed
+
+- **Aggregate hard-delete cascades to children explicitly in Go.** Deleting an
+  aggregate root now issues an explicit `DELETE` per declared child table (keyed
+  on its FK to the root) before the root `DELETE`, all in one TX — mirroring the
+  Go-owned symmetric cascade the archive/unarchive path already performs.
+  Previously `deleteAggregate` issued only the root `DELETE` and relied on a
+  database `ON DELETE CASCADE` declared in the consumer's migration. The
+  framework now owns the cascade: it is correct and deterministic on every
+  relational engine even when the FK omits `ON DELETE CASCADE` (which becomes an
+  optional defense-in-depth safety-net, not a requirement), and children are
+  enumerated from the schema's declared `ChildSchemas()` so every child table is
+  cleared regardless of what the loaded aggregate carried. Behavior-preserving
+  for services that already declared `ON DELETE CASCADE`.
+
+- **breaking** — **a relational engine build tag is now mandatory.** Both engines
+  are compiled behind build tags — Postgres under `-tags postgres`, MySQL under
+  `-tags mysql` — so a binary links exactly one engine and its driver stack (pgx
+  vs go-sql-driver), never both. Previously Postgres was always compiled in
+  (untagged) and MySQL was the only tagged opt-in, so a `-tags mysql` build still
+  carried pgx. Now `go build` / `test` / `run` and consumer services MUST pass
+  `-tags postgres` or `-tags mysql`, matching `relational.dialect`. Building with
+  **neither** tag registers no engine and aborts at boot (`db.NewEngine`: no engine
+  registered for the dialect); building with **both** fails to compile (a guard in
+  `infra/db/core`). The PG engine package (`infra/db/engine/postgres`), audit
+  partition maintenance (`infra/audit/partitions.go`), the migration runner, and
+  the bootstrap PG wiring now carry the `postgres` tag; the migration runner was
+  restructured so each dialect's driver lives in its own `*_runner.go` behind its
+  tag, and the dialect-bound boot steps moved into `bootstrap/engine_<dialect>.go`.
+  No public signatures changed — `migration.New` / `NewMySQL`,
+  `postgres.AsPostgres`, and the `db.RelationalEngine` seam are unchanged; what
+  changed is that a build tag now selects which one is linked.
+
+- **breaking** — the audit **model, read port, and label renderer** moved from
+  `infra/audit` to a new `application/audit` package, closing a layering leak: an
+  application/web consumer that reads the audit timeline (a manual handler over
+  the `audit_events` table) previously had to import `infra/audit` to name the
+  `Reader` port, the `AuditEvent` model, and `RenderLabels` — an
+  `application → infra` (and `web → infra`) edge the dependency rules forbid.
+  These now live beside the abstraction they belong to. `infra/audit` keeps the
+  concrete reader, persister, echo, partitions, and `Config`, and depends on
+  `application/audit` for the model + port (the correct `infra → application`
+  direction). No behavior, signature, or wire change — pure package relocation.
+  Migration: update imports of `AuditEvent`, `FieldChange`, `ChildEvent`,
+  `Reader`, `ErrAuditNotFound`, `RenderLabels`, and `RenderLabelsInJSON` from
+  `github.com/ClaudioSchirmer/omnicore/infra/audit` to
+  `github.com/ClaudioSchirmer/omnicore/application/audit` (the package name stays
+  `audit`; a file needing both — e.g. composition wiring `audit.NewReader` next
+  to the moved `audit.Reader` — aliases one import).
+
+- **breaking** — the relational backend config moved into a single mandatory
+  `relational` block: `relational.dialect` (`postgres` | `mysql`) + `relational.dsn`.
+  The former top-level `postgres.dsn` key is **removed**, and the dialect now has
+  **no default** — an absent `relational.dialect` (or `relational.dsn`) aborts boot
+  with `missing required config`. The framework no longer assumes Postgres. Migration:
+  rename `postgres.dsn` → `relational.dsn` and add `relational.dialect: postgres`
+  (the DSN is dialect-neutral, so it keeps its value). `cfg.Postgres.DSN` /
+  `cfg.Database.Dialect` become `cfg.Relational.DSN` / `cfg.Relational.Dialect`.
 
 - **breaking** — the relational layer's public surface is now backend-neutral,
   replacing pgx-typed parameters with the `db.RelationalEngine` / `db.Querier` /
@@ -1288,14 +1369,3 @@ to content from a prior repo that no longer exists.
   carrying `verb` / `hookSlot` / `entityType` / `threadId` / `error`,
   emitted as best-effort `slog.Warn` whenever a hook returns non-nil
   error.
-
-[0.12.0]: https://github.com/ClaudioSchirmer/omnicore/releases/tag/v0.12.0
-[0.11.0]: https://github.com/ClaudioSchirmer/omnicore/releases/tag/v0.11.0
-[0.10.0]: https://github.com/ClaudioSchirmer/omnicore/releases/tag/v0.10.0
-[0.9.0]: https://github.com/ClaudioSchirmer/omnicore/releases/tag/v0.9.0
-[0.8.0]: https://github.com/ClaudioSchirmer/omnicore/releases/tag/v0.8.0
-[0.7.0]: https://github.com/ClaudioSchirmer/omnicore/releases/tag/v0.7.0
-[0.6.0]: https://github.com/ClaudioSchirmer/omnicore/releases/tag/v0.6.0
-[0.5.0]: https://github.com/ClaudioSchirmer/omnicore/releases/tag/v0.5.0
-[0.4.0]: https://github.com/ClaudioSchirmer/omnicore/releases/tag/v0.4.0
-[0.3.0]: https://github.com/ClaudioSchirmer/omnicore/releases/tag/v0.3.0

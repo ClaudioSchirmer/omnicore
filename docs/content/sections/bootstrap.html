@@ -46,8 +46,8 @@
 
     <p><strong>How operators set them.</strong> Three canonical patterns, picked by deployment shape:</p>
 
-<pre><code># Local shell — one run:
-APP_PROFILE=dev go run ./bootstrap
+<pre><code># Local shell — one run (the -tags engine selector is mandatory at build/run):
+APP_PROFILE=dev go run -tags postgres ./bootstrap
 OMNICORE_MONGO_FORCE_REBUILD=true APP_PROFILE=prd ./bootstrap
 
 # docker-compose.yml — service environment block:
@@ -66,6 +66,17 @@ env:
     value: "true"
 </code></pre>
 
+    <h3 id="engine-build-tag">Relational engine build tag</h3>
+    <p>The relational engine is selected at <strong>build time</strong> by a Go build tag, and the choice must match <code>relational.dialect</code>. A binary links <strong>exactly one</strong> engine — Postgres under <code>-tags postgres</code>, MySQL under <code>-tags mysql</code> — together with that engine's driver stack (pgx vs go-sql-driver) and its dialect-bound boot wiring (audit partitions, the migration runner). There is no default: building with <strong>neither</strong> tag registers no engine and the service aborts at boot (<code>db.NewEngine</code>: no engine registered for the configured dialect), and building with <strong>both</strong> tags fails to compile. Pass the tag to every <code>go build</code> / <code>go test</code> / <code>go run</code>:</p>
+<pre><code># Postgres service
+go build -tags postgres ./...
+APP_PROFILE=dev go run -tags postgres .
+
+# MySQL service
+go build -tags mysql ./...
+APP_PROFILE=dev go run -tags mysql .
+</code></pre>
+
     <h3 id="microservice-yaml">microservice.&lt;profile&gt;.yaml</h3>
     <p>Each service declares infra config in a profile-specific YAML file at the root. <code>bootstrap.LoadConfig</code> reads the <code>APP_PROFILE</code> environment variable (required, non-empty) and loads <code>./microservice.${APP_PROFILE}.yaml</code> — override the path via <code>OMNICORE_CONFIG_PATH</code> when needed (tests, custom layouts). <code>dev</code> and <code>prd</code> are the canonical pair; any other non-empty string (<code>prd-pem</code>, <code>prd-external</code>, <code>qa-canary</code>, ...) is also accepted so QA suites and ops setups can swap whole configurations via extra files without competing with the canonical pair. See <a href="#bootstrap~env-vars">Environment variables</a> for the complete list of framework-reserved env vars.</p>
 
@@ -75,7 +86,8 @@ env:
 service: my-service
 http:
   addr: ":8080"
-postgres:
+relational:
+  dialect: postgres                      # MANDATORY — postgres | mysql (no default)
   dsn: "${DATABASE_URL:postgres://localhost:5432/mydb}"
 mongo:
   uri: "${MONGO_URI:mongodb://localhost:27017}"
@@ -188,7 +200,7 @@ observability:                           # optional; omitted block = tracing off
     </ul>
     <p>The reserved names <code>file</code> and <code>vault</code> shadow same-named env vars inside <code>${...}</code> — env-var conventions are uppercase, so the collision is theoretical. <code>file:</code> and <code>vault:</code> failures are strict (boot aborts) on purpose: a missing file or unresolved secret in production is an operational bug, not a silent empty-string default.</p>
 
-    <p>Mandatory fields: <code>service</code>, <code>postgres.dsn</code>, <code>mongo.uri</code>, <code>mongo.database</code>, <code>kafka.brokers</code>, <code>kafka.syncGroupId</code>. <code>bootstrap.LoadConfig</code> fails with an error listing missing ones.</p>
+    <p>Mandatory fields: <code>service</code>, <code>relational.dialect</code>, <code>relational.dsn</code>, <code>mongo.uri</code>, <code>mongo.database</code>, <code>kafka.brokers</code>, <code>kafka.syncGroupId</code>. <code>bootstrap.LoadConfig</code> fails with an error listing missing ones.</p>
 
     <p>The <code>auth:</code> block is optional and defaults to <code>{mode: disabled}</code> when absent — convenient for local development under <code>APP_PROFILE=dev</code>, but rejected at boot under any other profile so prd cannot ship without authentication wired. When <code>mode: jwt</code>, the schema requires <code>issuer</code> + <code>audience</code> + exactly one of <code>jwksUrl</code> / <code>publicKeyPem</code>; the <code>externalValidator</code> sub-block is optional. The external-validator cache is opt-in via <code>cacheTtlSeconds</code> and default off — see the Authentication section for the revocation-vs-throughput trade-off.</p>
 
