@@ -408,6 +408,18 @@ func StudentSchema() *core.TableSchema {
         SharedBase(person, "person_id")            // role FK → base's deterministic id
 }</code></pre>
 
+<p>
+    <strong>The role→base link is the developer's choice: a separate FK column, or the role's own primary key.</strong>
+    Passing a distinct column — <code>.SharedBase(person, "person_id")</code> above — gives the role its own surrogate key
+    (a fresh UUIDv7 per row) alongside a <code>person_id</code> FK, with a <code>UNIQUE(person_id)</code> index enforcing
+    the 0 : 1 role-per-identity. Passing the role's <em>PK</em> column instead — <code>.SharedBase(person, "id")</code> —
+    selects the <strong>shared primary key</strong> model: the role's own id IS the base's deterministic id
+    (<code>role.id == base.id == UUIDv5(document)</code>), there is no separate FK column, and the primary key itself
+    enforces the 0 : 1 (a second role for the same identity collides on the PK). The framework detects the mode from the
+    schema — when the SharedBase column equals the PK column it writes the id once, as the PK, carrying the base id;
+    otherwise it writes a separate FK — so choosing between the two is a one-line schema change with no code impact.
+</p>
+
 <div class="box bad">
     <strong>The natural-key column MUST be a UNIQUE, NOT NULL index — this is mandatory, not advisory.</strong>
     The natural key is not just a lookup column: <strong>its value derives the shared base's primary key</strong>. The

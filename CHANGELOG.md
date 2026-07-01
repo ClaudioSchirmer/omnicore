@@ -121,8 +121,11 @@ with `1.0.0`.
   criteria. `core.NewSharedBase(table)` + `.NaturalKey(col)` / `.OrphanPolicy(p)`
   and a role's `.SharedBase(base, fk)` declares the **party-role pattern** (N:1):
   one identity table shared by N independent role tables, deduplicated by a natural
-  key whose value derives a deterministic UUIDv5 primary key (no read-back). A
-  shared base may own native **1:N children** (FK → the base id) shared by every
+  key whose value derives a deterministic UUIDv5 primary key (no read-back). A role
+  links to the base either by a separate FK column or by sharing the base's id as its
+  own primary key (`.SharedBase(base, "id")` → `role.id == base.id`, the PK enforcing
+  the 0:1 with no separate FK). A shared base may own native **1:N children**
+  (FK → the base id) shared by every
   role. The upsert-on-insert path is served by
   `read.NewSharedBaseRoleRepository[T]` + `handlers.SharedBaseInsertCommandHandler`
   (cold insert uses action name `"GetInsertable"`, warm reuse `"GetUpsertable"`),

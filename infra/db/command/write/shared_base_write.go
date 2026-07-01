@@ -153,7 +153,15 @@ func (b *BaseEngine) insertWithBase(ctx persistence.RequestContext, entity domai
 		return domain.WriteResult{}, err
 	}
 	baseID := deterministicBaseID(nk)
-	roleFields[fkCol] = domain.NewID(baseID)
+	// A role either carries a SEPARATE FK column to the base, or shares the base's id
+	// as its OWN primary key (fkCol == the role PK — a strict 1:1 where role.id ==
+	// base.id). In the shared-PK model the id is written once, as the PK (buildInsert
+	// prepends it), so injecting it as a field too would emit a duplicate column;
+	// inject the FK only when it is a distinct column.
+	sharedPK := fkCol == schema.PKColumn()
+	if !sharedPK {
+		roleFields[fkCol] = domain.NewID(baseID)
+	}
 
 	tx, err := b.beginner.Begin(ctx)
 	if err != nil {
@@ -200,11 +208,16 @@ func (b *BaseEngine) insertWithBase(ctx persistence.RequestContext, entity domai
 			return domain.WriteResult{}, err
 		}
 	default: // roleNone
-		nid, err := newWriteID()
-		if err != nil {
-			return domain.WriteResult{}, err
+		if sharedPK {
+			// The role's own PK IS the deterministic base id (role.id == base.id).
+			id = baseID
+		} else {
+			nid, err := newWriteID()
+			if err != nil {
+				return domain.WriteResult{}, err
+			}
+			id = nid
 		}
-		id = nid
 		sql, args := buildInsert(d, schema.Table(), schema.PKColumn(), id, roleFields, schema.InsertNowColumns())
 		if err := tx.Exec(ctx, sql, args...); err != nil {
 			return domain.WriteResult{}, err

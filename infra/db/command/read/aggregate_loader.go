@@ -563,7 +563,7 @@ func (l *AggregateLoader[T]) hydrateBaseChildren(ctx context.Context, entities [
 // cold insert. The role row does not exist yet, so it looks the base up by its
 // natural-key COLUMN directly (not the role→base join the update-path hydrate uses).
 func (l *AggregateLoader[T]) LoadSharedBaseIdentity(ctx context.Context, fresh T) (T, bool, error) {
-	base, _, ok := l.schema.SharedBaseRef()
+	base, fkCol, ok := l.schema.SharedBaseRef()
 	if !ok {
 		return fresh, false, nil
 	}
@@ -604,10 +604,49 @@ func (l *AggregateLoader[T]) LoadSharedBaseIdentity(ctx context.Context, fresh T
 	if err != nil {
 		return fresh, false, err
 	}
+	// Pre-flight conflict check. This load is exclusive to the SharedBase UPSERT
+	// insert, so it owns the "already exists" verdict: if an ACTIVE specialization
+	// role already references this identity, a POST is a conflict — surface the
+	// canonical 409 here, before the handler re-applies the request, so it is not
+	// masked by a child-level validation (e.g. a re-sent address). An archived role
+	// is excluded and falls through to the persister's revive path. The persister's
+	// findRoleByFK + UNIQUE(fk) remain the in-TX race backstop.
+	roleExists, err := l.activeRoleExists(ctx, fkCol, baseID)
+	if err != nil {
+		return fresh, false, err
+	}
+	if roleExists {
+		return fresh, false, core.SingleNotificationError(
+			l.effectiveContextName(), l.schema.PKColumn(), domain.EntityAlreadyAddedNotification{})
+	}
 	if err := l.loadBaseChildrenConstructor(ctx, newE, base, baseID); err != nil {
 		return fresh, false, err
 	}
 	return newE, true, nil
+}
+
+// activeRoleExists reports whether a live (non-soft-deleted) specialization role
+// already references the shared base id. It mirrors the write-side findRoleByFK
+// active/archived split as a read-side existence probe: the SharedBase UPSERT load
+// uses it to reject a re-POST of an existing active role with the canonical
+// conflict, before the request is re-applied onto the loaded identity.
+func (l *AggregateLoader[T]) activeRoleExists(ctx context.Context, fkCol, baseID string) (bool, error) {
+	d := l.eng.Dialect()
+	q := "SELECT 1 FROM " + d.QuoteIdent(l.schema.Table()) +
+		" WHERE " + d.QuoteIdent(fkCol) + " = " + d.Placeholder(1)
+	if sd, ok := l.schema.SoftDeleteColumn(); ok {
+		q += " AND " + d.QuoteIdent(sd) + " IS NULL"
+	}
+	q += " LIMIT 1"
+	rows, err := l.eng.Querier().Query(ctx, q, d.EncodeArg(domain.NewID(baseID)))
+	if err != nil {
+		return false, err
+	}
+	defer rows.Close()
+	if rows.Next() {
+		return true, nil
+	}
+	return false, rows.Err()
 }
 
 // loadBaseChildrenConstructor loads the shared base's native children by the base
