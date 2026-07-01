@@ -67,21 +67,38 @@ func newViewNode(schema *core.TableSchema, embeds []embedDef) *ViewNode {
 	// composer's mergeSharedBaseChildren nests under the same derived name).
 	if base, _, ok := schema.SharedBaseRef(); ok {
 		for _, bc := range base.ChildSchemas() {
-			seg := sharedBaseChildSegment(bc)
+			seg := childDocSegment(bc)
 			ve := &viewEmbed{goSegment: seg, docField: seg, node: newViewNode(bc, nil)}
 			n.embeds[seg] = ve
 			n.embedsByDoc[seg] = ve
 		}
 	}
+	// A schema's OWN aggregate children (root.Child(...)) are projected the same
+	// way — derived from the schema, not declared as view embeds. Register each so
+	// ToGoDoc translates the nested collection and ColumnPath resolves an own-child
+	// sub-field. Doc field == Go segment (the composer's mergeOwnChildren nests
+	// under the same derived name). Runs at every schema level (root and embed
+	// sources); children are leaves (depth 1, boot-enforced), and a child's own
+	// siblings resolve FLAT via the child node's ColumnForRead. A segment clash with
+	// an explicit embed or a base-child is rejected upstream by ValidateViewSchemas,
+	// so a plain overwrite here never fires for a valid view.
+	for _, child := range schema.ChildSchemas() {
+		seg := childDocSegment(child)
+		ve := &viewEmbed{goSegment: seg, docField: seg, node: newViewNode(child, nil)}
+		n.embeds[seg] = ve
+		n.embedsByDoc[seg] = ve
+	}
 	return n
 }
 
-// sharedBaseChildSegment is the derived parent-side Go segment (and doc field) of
-// a shared base's native child collection — the pluralized child type name, the
-// same derivation an EmbedMany uses for a one-to-many local source. Composer and
-// ViewNode both key on it, so the nested collection round-trips.
-func sharedBaseChildSegment(bc *core.TableSchema) string {
-	return domain.PluralizeWord(bc.TypeName())
+// childDocSegment is the derived parent-side Go segment (and doc field) of a
+// nested child collection — the pluralized child type name, the same derivation
+// an EmbedMany uses for a one-to-many local source. Shared by a shared base's
+// native children (base-children) AND a schema's own aggregate children, so both
+// project under a name the ViewNode and composer agree on and the collection
+// round-trips.
+func childDocSegment(child *core.TableSchema) string {
+	return domain.PluralizeWord(child.TypeName())
 }
 
 // hasSchema reports whether this node carries a core.TableSchema. A registered view

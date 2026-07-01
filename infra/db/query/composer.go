@@ -70,6 +70,9 @@ func (c *Composer) Compose(ctx context.Context, view *ViewDefinition, rootID str
 	if err := c.mergeSharedBaseChildren(ctx, row, view.schema, includeArchived); err != nil {
 		return nil, err
 	}
+	if err := c.mergeOwnChildren(ctx, row, view.schema, includeArchived); err != nil {
+		return nil, err
+	}
 	if err := c.applyEmbeds(ctx, row, schemaPK(view.schema), view.embeds, includeArchived); err != nil {
 		return nil, err
 	}
@@ -92,6 +95,9 @@ func (c *Composer) ComposeAll(ctx context.Context, view *ViewDefinition) ([]Docu
 			return nil, err
 		}
 		if err := c.mergeSharedBaseChildren(ctx, row, view.schema, includeArchived); err != nil {
+			return nil, err
+		}
+		if err := c.mergeOwnChildren(ctx, row, view.schema, includeArchived); err != nil {
 			return nil, err
 		}
 		if err := c.applyEmbeds(ctx, row, pk, view.embeds, includeArchived); err != nil {
@@ -157,7 +163,45 @@ func (c *Composer) mergeSharedBaseChildren(ctx context.Context, doc Document, sc
 		if err != nil {
 			return err
 		}
-		doc[sharedBaseChildSegment(bc)] = rows
+		doc[childDocSegment(bc)] = rows
+	}
+	return nil
+}
+
+// mergeOwnChildren nests the schema's OWN aggregate children (schema.Child(...))
+// into the document — the read-side mirror of hydrateChildren on the write side.
+// Unlike base-children (keyed on the base's deterministic id via
+// mergeSharedBaseChildren), an own child is joined on root.PK → child.FK: the
+// child's FK column matched against the PK value already on the doc. Each
+// collection lands under its derived Go segment (the same name newViewNode
+// registers, so ToGoDoc translates it). Every fetched child row also gets its
+// siblings merged FLAT (shape #4 — the child-sibling merge). No-op when the schema
+// declares no own children. Applied on the root path (Compose/ComposeAll) and
+// within relational embed rows (fetchPGEmbed), so a schema's children project
+// wherever the schema is used.
+func (c *Composer) mergeOwnChildren(ctx context.Context, doc Document, schema *core.TableSchema, includeArchived bool) error {
+	children := schema.ChildSchemas()
+	if len(children) == 0 {
+		return nil
+	}
+	pkVal, present := doc[schemaPK(schema)]
+	if !present || pkVal == nil {
+		return nil
+	}
+	idStr := fmt.Sprintf("%v", pkVal)
+	for _, child := range children {
+		sd, _ := schemaSoftDelete(child)
+		rows, err := c.fetchWhere(ctx, child, child.Table(), child.FKColumn(), idStr, sd, includeArchived)
+		if err != nil {
+			return err
+		}
+		childPK := schemaPK(child)
+		for _, row := range rows {
+			if err := c.mergeOwnerSiblings(ctx, row, child, fmt.Sprintf("%v", row[childPK]), includeArchived); err != nil {
+				return err
+			}
+		}
+		doc[childDocSegment(child)] = rows
 	}
 	return nil
 }
@@ -202,61 +246,16 @@ func (c *Composer) applyEmbeds(ctx context.Context, doc Document, parentPK strin
 	return nil
 }
 
+// fetchEmbed resolves one embed. Every embed source is EXTERNAL — another
+// service's read model (UpstreamSubscription / FromMongo) or a derived
+// projection — so composition is always against the local Mongo store. A
+// write-anchored embed source is rejected at boot (ValidateViewSchemas): the
+// aggregate's own data (root / siblings / SharedBase / own children) projects
+// automatically from the TableSchema, never through an embed. `includeArchived`
+// is unused here — the Mongo read model already reflects the upstream's archive
+// state — but stays on the signature threaded from the root compose call.
 func (c *Composer) fetchEmbed(ctx context.Context, doc Document, parentPK string, e embedDef, includeArchived bool) error {
-	if e.source.IsMongo() {
-		return c.fetchMongoEmbed(ctx, doc, parentPK, e)
-	}
-	return c.fetchPGEmbed(ctx, doc, parentPK, e, includeArchived)
-}
-
-func (c *Composer) fetchPGEmbed(ctx context.Context, doc Document, parentPK string, e embedDef, includeArchived bool) error {
-	srcPK := schemaPK(e.source.schema)
-	sd, _ := schemaSoftDelete(e.source.schema)
-
-	if e.many {
-		// One-to-many: the child holds the FK back to the parent; the value is
-		// the parent's PK column.
-		id, ok := doc[parentPK]
-		if !ok || id == nil {
-			return nil
-		}
-		idStr := fmt.Sprintf("%v", id)
-		// One-to-many join key is the child FK declared on the source schema.
-		rows, err := c.fetchWhere(ctx, e.source.schema, e.source.table, e.JoinColumn(), idStr, sd, includeArchived)
-		if err != nil {
-			return err
-		}
-		for _, row := range rows {
-			if err := c.applyEmbeds(ctx, row, srcPK, e.source.embeds, includeArchived); err != nil {
-				return err
-			}
-			// A child may carry siblings — merge them FLAT into the child row by the
-			// child's shared PK.
-			if err := c.mergeOwnerSiblings(ctx, row, e.source.schema, fmt.Sprintf("%v", row[srcPK]), includeArchived); err != nil {
-				return err
-			}
-		}
-		doc[e.field] = rows
-		return nil
-	}
-
-	// One-to-one: the parent holds the FK pointing to the source's PK (.On).
-	fk, ok := doc[e.JoinColumn()]
-	if !ok || fk == nil {
-		return nil
-	}
-	fkStr := fmt.Sprintf("%v", fk)
-	row, err := c.fetchRow(ctx, e.source.schema, e.source.table, srcPK, fkStr, sd, includeArchived)
-	if err != nil {
-		return err
-	}
-	if row != nil {
-		if err := c.applyEmbeds(ctx, row, srcPK, e.source.embeds, includeArchived); err != nil {
-			return err
-		}
-		doc[e.field] = row
-	}
-	return nil
+	return c.fetchMongoEmbed(ctx, doc, parentPK, e)
 }
 
 func (c *Composer) fetchMongoEmbed(ctx context.Context, doc Document, parentPK string, e embedDef) error {

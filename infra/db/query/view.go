@@ -291,6 +291,7 @@ func ValidateViewSchemas(views []*ViewDefinition) error {
 				"view %q: root schema (table %q) declares no primary key — declare .PK(column)",
 				v.Name(), v.schema.Table()))
 		}
+		problems = appendSegmentCollisions(problems, v.Name(), v.schema, v.embeds)
 		problems = appendEmbedSchemaProblems(problems, v.Name(), v.embeds)
 	}
 	if len(problems) == 0 {
@@ -311,6 +312,20 @@ func appendEmbedSchemaProblems(acc []string, viewName string, embeds []embedDef)
 		if e.source.schema == nil {
 			acc = append(acc, fmt.Sprintf("view %q: embed %q (source %q) has no schema", viewName, e.field, e.source.table))
 		} else {
+			// Embeds compose ONLY external data — another service's read model
+			// (UpstreamSubscription / FromMongo) or a derived projection. A
+			// write-anchored schema is the aggregate's own data, which projects
+			// automatically from the TableSchema (root / siblings / SharedBase /
+			// own children); declaring it as an embed is the redundant second path
+			// the canonical split removes. Reject an anchored embed source at boot.
+			if !e.source.schema.IsExternal() {
+				acc = append(acc, fmt.Sprintf(
+					"view %q: embed %q (source %q) is a write-anchored schema — Embed/EmbedMany compose only "+
+						"EXTERNAL data (another service's read model via UpstreamSubscription / FromMongo, or a "+
+						"derived projection). A local aggregate's own data projects automatically from its "+
+						"TableSchema; declare a 1:N child with .Child(...) on the root schema, not as an embed.",
+					viewName, e.field, e.source.table))
+			}
 			if resolveGoSegment(e) == "" {
 				acc = append(acc, fmt.Sprintf(
 					"view %q: external embed %q (source %q) has no Go segment — declare it via .As(\"...\") "+
@@ -320,21 +335,6 @@ func appendEmbedSchemaProblems(acc []string, viewName string, embeds []embedDef)
 			if !e.source.schema.HasPKDeclared() {
 				acc = append(acc, fmt.Sprintf(
 					"view %q: embed %q (source %q) declares no primary key — declare .PK(column)",
-					viewName, e.field, e.source.table))
-			}
-			// Grandchild-via-schema: an embed source whose core.TableSchema carries
-			// Child(...) is a misconfiguration — the composer recurses over the
-			// embed's own .Embed/.EmbedMany, never over schema.children, so those
-			// nested schemas are silently ignored. Views DO support depth — just
-			// not through the schema. (The view ROOT schema is the reused write
-			// schema and legitimately carries Child(...); only embed SOURCES are
-			// flagged here.)
-			if e.source.schema.HasChildren() {
-				acc = append(acc, fmt.Sprintf(
-					"view %q: embed %q (source %q) declares Child(...) on its core.TableSchema — "+
-						"grandchildren ARE supported by views, but NOT through the schema's Child(...). "+
-						"Nest the projection with EmbedMany(...) / Embed(...) directly on the embed "+
-						"source, as many levels as you need.",
 					viewName, e.field, e.source.table))
 			}
 			// Join key is mandatory: EmbedMany joins on the child's FK (declared on
@@ -355,7 +355,49 @@ func appendEmbedSchemaProblems(acc []string, viewName string, embeds []embedDef)
 					viewName, e.field, e.source.table))
 			}
 		}
+		acc = appendSegmentCollisions(acc, viewName, e.source.schema, e.source.embeds)
 		acc = appendEmbedSchemaProblems(acc, viewName, e.source.embeds)
+	}
+	return acc
+}
+
+// appendSegmentCollisions flags a boot error when two sources would project into
+// the SAME document segment at one schema level. Three producers can name a
+// segment: an explicit embed field, an auto-derived base-child segment, and an
+// auto-derived own-child segment (both the pluralized child type). Each segment
+// must have exactly one producer — a name clash, or a redundant explicit
+// EmbedMany of a child the schema already projects automatically, is a boot error
+// rather than a silent double projection / overwrite. A nil schema (already
+// flagged elsewhere) contributes nothing.
+func appendSegmentCollisions(acc []string, viewName string, schema *core.TableSchema, embeds []embedDef) []string {
+	if schema == nil {
+		return acc
+	}
+	owner := map[string]string{} // segment → producer description
+	claim := func(seg, producer string) {
+		if seg == "" {
+			return
+		}
+		if prev, dup := owner[seg]; dup {
+			acc = append(acc, fmt.Sprintf(
+				"view %q: document segment %q is produced by both %s and %s — each segment has exactly one "+
+					"source. A schema's own children (and a shared base's children) project automatically; drop the "+
+					"redundant embed, or rename it.",
+				viewName, seg, prev, producer))
+			return
+		}
+		owner[seg] = producer
+	}
+	for _, e := range embeds {
+		claim(resolveGoSegment(e), fmt.Sprintf("embed %q", e.field))
+	}
+	if base, _, ok := schema.SharedBaseRef(); ok {
+		for _, bc := range base.ChildSchemas() {
+			claim(childDocSegment(bc), fmt.Sprintf("base-child %q", bc.TypeName()))
+		}
+	}
+	for _, child := range schema.ChildSchemas() {
+		claim(childDocSegment(child), fmt.Sprintf("own child %q", child.TypeName()))
 	}
 	return acc
 }

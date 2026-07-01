@@ -4,6 +4,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/ClaudioSchirmer/omnicore/infra/db/core"
 	"go.mongodb.org/mongo-driver/v2/bson"
 )
 
@@ -360,5 +361,69 @@ func TestValidateMongoSpec_AcceptsPositiveVersion(t *testing.T) {
 	v := View("users").Version(1).Root("users")
 	if err := v.ValidateMongoSpec(); err != nil {
 		t.Fatalf("unexpected error for valid Version(1): %v", err)
+	}
+}
+
+// ─── projected schema shape participates in RebuildHash ──────────────────────
+//
+// Internal data (root columns / siblings / SharedBase / children) auto-projects
+// from the write TableSchema with no embed, so a change to that closure must move
+// the RebuildHash — otherwise the forgot-to-bump guard never fires and the Mongo
+// projection silently goes stale on a schema change with no version bump.
+
+type renameA struct{ Title string }
+type renameB struct{ Heading string }
+
+func TestRebuildHash_SchemaColumnAddition(t *testing.T) {
+	a := View("users").Root("users").Schema(
+		core.NewTableSchema[*expUser]("users").PK("id").Field("Name", "name"))
+	b := View("users").Root("users").Schema(
+		core.NewTableSchema[*expUser]("users").PK("id").Field("Name", "name").Field("Email", "email"))
+	if a.RebuildHash() == b.RebuildHash() {
+		t.Error("RebuildHash same despite an added schema column")
+	}
+}
+
+func TestRebuildHash_SchemaChildAddition(t *testing.T) {
+	a := View("users").Root("users").Schema(
+		core.NewTableSchema[*expUser]("users").PK("id").Field("Name", "name"))
+	b := View("users").Root("users").Schema(
+		core.NewTableSchema[*expUser]("users").PK("id").Field("Name", "name").
+			Child(core.NewTableSchema[expAddr]("addresses").PK("id").FK("user_id").Field("ZipCode", "zip")))
+	if a.RebuildHash() == b.RebuildHash() {
+		t.Error("RebuildHash same despite an added .Child (own children auto-project, no embed)")
+	}
+}
+
+func TestRebuildHash_SchemaSiblingAddition(t *testing.T) {
+	a := View("users").Root("users").Schema(
+		core.NewTableSchema[*expUser]("users").PK("id").Field("Name", "name"))
+	b := View("users").Root("users").Schema(
+		core.NewTableSchema[*expUser]("users").PK("id").Field("Name", "name").
+			Sibling(core.NewSiblingSchema[*expUser]("users_ext").Field("Phone", "phone")))
+	if a.RebuildHash() == b.RebuildHash() {
+		t.Error("RebuildHash same despite an added sibling")
+	}
+}
+
+func TestRebuildHash_SchemaFieldReorderStable(t *testing.T) {
+	a := View("users").Root("users").Schema(
+		core.NewTableSchema[*expUser]("users").PK("id").Field("Name", "name").Field("Email", "email"))
+	b := View("users").Root("users").Schema(
+		core.NewTableSchema[*expUser]("users").PK("id").Field("Email", "email").Field("Name", "name"))
+	if a.RebuildHash() != b.RebuildHash() {
+		t.Error("RebuildHash must be stable across field declaration order (columns are sorted)")
+	}
+}
+
+func TestRebuildHash_GoRenameSameColumnStable(t *testing.T) {
+	// Two entities whose different Go field names map to the SAME column: the
+	// projected document is identical, so the hash must not move (column-granular).
+	a := View("users").Root("users").Schema(
+		core.NewTableSchema[renameA]("users").PK("id").Field("Title", "label"))
+	b := View("users").Root("users").Schema(
+		core.NewTableSchema[renameB]("users").PK("id").Field("Heading", "label"))
+	if a.RebuildHash() != b.RebuildHash() {
+		t.Error("a Go-only rename that keeps the same column must not change RebuildHash")
 	}
 }

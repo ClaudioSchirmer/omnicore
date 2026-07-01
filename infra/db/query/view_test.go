@@ -30,39 +30,59 @@ func rootSchema(table string) *core.TableSchema {
 	return core.NewTableSchema[embedFixture](table).PK("id").SoftDelete("deleted_at")
 }
 
-// ─── grandchild-via-schema on an embed source (read side) ────────────────────
+// ─── own children on a schema project automatically (read side) ──────────────
 
-// TestValidateViewSchemas_RejectsEmbedSourceWithChildren proves an embed source
-// whose core.TableSchema carries Child(...) is a fatal view-validation error — views
-// support depth via nested EmbedMany/Embed, never via the schema's children.
-func TestValidateViewSchemas_RejectsEmbedSourceWithChildren(t *testing.T) {
-	grand := core.NewTableSchema[embedFixture]("tags").PK("id").FK("address_id")
-	src := FromSchema(core.NewTableSchema[embedFixture]("addresses").
-		PK("id").FK("user_id").Child(grand))
+// TestValidateViewSchemas_RejectsAnchoredEmbedSource proves the canonical split:
+// Embed/EmbedMany compose only EXTERNAL data, so a write-anchored embed source is
+// a boot error. A local aggregate's own data (root / siblings / SharedBase / own
+// children) projects automatically from the TableSchema, never through an embed.
+func TestValidateViewSchemas_RejectsAnchoredEmbedSource(t *testing.T) {
+	src := FromSchema(core.NewTableSchema[embedFixture]("addresses").PK("id").FK("user_id"))
 	v := View("users").Version(1).Root("users").
 		Schema(rootSchema("users")).
 		EmbedMany("addresses", src)
 
 	err := ValidateViewSchemas([]*ViewDefinition{v})
 	if err == nil {
-		t.Fatal("expected a validation error for an embed source carrying Child(...)")
+		t.Fatal("expected a validation error for a write-anchored embed source")
 	}
-	if !strings.Contains(err.Error(), "grandchildren ARE supported by views") {
-		t.Errorf("error should carry the read-side message, got: %v", err)
+	if !strings.Contains(err.Error(), "write-anchored") {
+		t.Errorf("error should name the external-only rule, got: %v", err)
 	}
 }
 
 // TestValidateViewSchemas_RootSchemaWithChildrenOK confirms the view ROOT schema
-// may carry Child(...) (the reused write schema) — only embed SOURCES are flagged.
+// may carry Child(...) — its own children auto-project, no embed needed.
 func TestValidateViewSchemas_RootSchemaWithChildrenOK(t *testing.T) {
 	rootWithChild := core.NewTableSchema[embedFixture]("users").PK("id").SoftDelete("deleted_at").
 		Child(core.NewTableSchema[schemaSample]("addresses").PK("id").FK("user_id"))
 	v := View("users").Version(1).Root("users").
-		Schema(rootWithChild).
-		EmbedMany("addresses", pgEmbed("addresses", "user_id"))
+		Schema(rootWithChild)
 
 	if err := ValidateViewSchemas([]*ViewDefinition{v}); err != nil {
 		t.Fatalf("root schema with one-level children must pass view validation, got: %v", err)
+	}
+}
+
+// TestValidateViewSchemas_RejectsSegmentCollision proves the collision guard: a
+// legal EXTERNAL embed whose .As segment collides with an auto-projected own-child
+// segment is a boot error — one segment, one source.
+func TestValidateViewSchemas_RejectsSegmentCollision(t *testing.T) {
+	child := core.NewTableSchema[schemaSample]("addresses").PK("id").FK("user_id")
+	seg := childDocSegment(child) // the auto own-child doc segment
+	rootWithChild := core.NewTableSchema[embedFixture]("users").PK("id").SoftDelete("deleted_at").
+		Child(child)
+	// A legal external embed whose .As segment collides with the own-child segment.
+	v := View("users").Version(1).Root("users").
+		Schema(rootWithChild).
+		EmbedMany("ext", FromSchema(core.NewExternalSchema("ext_coll").PK("id").FK("user_id")).As(seg))
+
+	err := ValidateViewSchemas([]*ViewDefinition{v})
+	if err == nil {
+		t.Fatal("expected a collision error for an external embed segment clashing with an auto own-child")
+	}
+	if !strings.Contains(err.Error(), "exactly one source") {
+		t.Errorf("error should name the one-source-per-segment rule, got: %v", err)
 	}
 }
 
@@ -194,6 +214,36 @@ type vsChild struct {
 }
 
 func (v vsChild) GetID() string { return v.ID }
+
+// TestViewNode_OwnChildPathResolves proves the translator registers a root's own
+// aggregate children (no embed declared), so a filter/sort on an own-child field
+// resolves via ColumnPath and the read-back nests the collection under its Go
+// segment — the translator half of Phase-1 own-child projection.
+func TestViewNode_OwnChildPathResolves(t *testing.T) {
+	childSchema := core.NewTableSchema[csComposeVO]("lines").PK("id").FK("order_id").Field("Label", "label")
+	rootWithChild := core.NewTableSchema[*builderTestEntity]("orders").
+		PK("id").Field("Name", "name").SoftDelete("deleted_at").
+		Child(childSchema)
+	node := View("orders").Root("orders").Schema(rootWithChild).BuildViewNode()
+
+	seg := childDocSegment(childSchema)
+	if col, ok := node.ColumnPath([]string{seg, "Label"}); !ok || len(col) != 2 || col[0] != seg || col[1] != "label" {
+		t.Errorf("%s.Label → %v,%v want [%s label]", seg, col, ok, seg)
+	}
+	doc := map[string]any{
+		"id":   "o1",
+		"name": "first",
+		seg:    []any{map[string]any{"id": "l1", "order_id": "o1", "label": "L1"}},
+	}
+	got := node.ToGoDoc(doc)
+	rows, ok := got[seg].([]any)
+	if !ok || len(rows) != 1 {
+		t.Fatalf("read-back %s = %v", seg, got[seg])
+	}
+	if row, _ := rows[0].(map[string]any); row["Label"] != "L1" {
+		t.Errorf("own-child read-back Label = %v want L1 (row=%v)", row["Label"], rows[0])
+	}
+}
 
 func TestViewNode_TranslatesGoPathToColumnAndBack(t *testing.T) {
 	rootSchema := core.NewTableSchema[vsRoot]("people").

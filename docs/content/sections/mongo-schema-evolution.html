@@ -16,8 +16,8 @@
     <pre><code>query.View("users").
     Version(3).                                                    // ← mandatory
     Root("users").
-    Schema(UserSchema()).                                          // ← mandatory on every view
-    EmbedMany("addresses", query.FromSchema(AddressSchema())).
+
+    Schema(UserSchema()).                                          // ← mandatory; addresses (.Child) auto-project
     Indexes(query.Index("email").Unique())</code></pre>
     <p><code>Version(N)</code> participates in <code>RebuildHash</code>, so the framework detects:</p>
     <ul>

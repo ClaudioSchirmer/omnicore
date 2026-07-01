@@ -11,6 +11,7 @@ type expUser struct {
 	domain.BaseEntity
 	Name  string `labelKey:"UserNameField"`
 	Email string // intentionally unlabeled
+	Phone string `labelKey:"UserPhoneField"` // lives on a sibling table
 }
 
 func (e *expUser) Modes() []domain.EntityMode                       { return []domain.EntityMode{domain.ModeInsert} }
@@ -24,15 +25,18 @@ type expAddr struct {
 func (a expAddr) GetID() string                                    { return a.ID }
 func (a expAddr) BuildRules(string, domain.Service, *domain.Rules) {}
 
+// buildExportTestView models the canonical shape: root + sibling (FLAT) + an own
+// 1:N child (auto), plus one EXTERNAL embed (the only kind allowed). The export
+// plan must walk the whole tree — sibling columns land FLAT on the root node, the
+// own child nests under its derived segment, the external embed under its field.
 func buildExportTestView() *ViewDefinition {
 	userSchema := core.NewTableSchema[*expUser]("users").
 		PK("id").
 		Field("Name", "name").
-		Field("Email", "email")
-	addrSchema := core.NewTableSchema[expAddr]("addresses").
-		PK("id").
-		FK("user_id").
-		Field("ZipCode", "zip_code")
+		Field("Email", "email").
+		Sibling(core.NewSiblingSchema[*expUser]("users_ext").Field("Phone", "phone")).
+		Child(core.NewTableSchema[expAddr]("addresses").
+			PK("id").FK("user_id").Field("ZipCode", "zip_code"))
 	// External (type-less) source carries its labelKey inline — the "mini-domain".
 	partnerSchema := core.NewExternalSchema("partners").
 		PK("id").
@@ -40,7 +44,6 @@ func buildExportTestView() *ViewDefinition {
 
 	return View("users").Version(1).Root("users").
 		Schema(userSchema).
-		EmbedMany("addresses", FromSchema(addrSchema)).
 		Embed("partner", FromSchema(partnerSchema).On("partner_id").As("Partner"))
 }
 
@@ -48,8 +51,10 @@ func TestExportPlan_BuildsColumnsLabelsAndSegments(t *testing.T) {
 	plan := buildExportTestView().ExportPlan()
 	root := plan.Root
 
-	if len(root.Columns) != 2 {
-		t.Fatalf("root columns=%d want 2 (PK + managed excluded)", len(root.Columns))
+	// Root columns are FLAT: the root's own fields, then the sibling's — PK and
+	// managed columns excluded.
+	if len(root.Columns) != 3 {
+		t.Fatalf("root columns=%d want 3 (Name, Email, sibling Phone)", len(root.Columns))
 	}
 	if root.Columns[0].GoField != "Name" || root.Columns[0].WireLeaf != "name" || root.Columns[0].LabelKey != "UserNameField" {
 		t.Fatalf("root col0 = %+v", root.Columns[0])
@@ -57,27 +62,30 @@ func TestExportPlan_BuildsColumnsLabelsAndSegments(t *testing.T) {
 	if root.Columns[1].GoField != "Email" || root.Columns[1].LabelKey != "" {
 		t.Fatalf("unlabeled Email should carry empty LabelKey, got %+v", root.Columns[1])
 	}
+	if root.Columns[2].GoField != "Phone" || root.Columns[2].WireLeaf != "phone" || root.Columns[2].LabelKey != "UserPhoneField" {
+		t.Fatalf("sibling column must fold FLAT into the root node, got %+v", root.Columns[2])
+	}
 
+	// Children: the external embed (declared first) then the auto own child.
 	if len(root.Children) != 2 {
-		t.Fatalf("expected addresses + partner children, got %d", len(root.Children))
+		t.Fatalf("expected partner + addresses children, got %d", len(root.Children))
 	}
-	addr := root.Children[0]
-	// GoSegment is derived from the source type name pluralized (expAddr →
-	// expAddrs); WireSegment is the explicit EmbedMany doc-field name.
-	if addr.GoSegment != "expAddrs" || addr.WireSegment != "addresses" {
-		t.Fatalf("addresses segments: go=%q wire=%q", addr.GoSegment, addr.WireSegment)
-	}
-	if len(addr.Columns) != 1 || addr.Columns[0].WireLeaf != "zipCode" || addr.Columns[0].LabelKey != "AddressZipCodeField" {
-		t.Fatalf("addresses col = %+v", addr.Columns)
-	}
-
-	// External embed: label comes from the schema-level labelKey, not a struct tag.
-	partner := root.Children[1]
+	partner := root.Children[0]
 	if partner.GoSegment != "Partner" || partner.WireSegment != "partner" {
 		t.Fatalf("partner segments: go=%q wire=%q", partner.GoSegment, partner.WireSegment)
 	}
 	if len(partner.Columns) != 1 || partner.Columns[0].WireLeaf != "partnerName" || partner.Columns[0].LabelKey != "PartnerNameField" {
 		t.Fatalf("external partner column should carry inline label, got %+v", partner.Columns)
+	}
+
+	addr := root.Children[1]
+	// Own-child segment is the pluralized child type (expAddr → expAddrs); the wire
+	// token is its lower-camel form.
+	if addr.GoSegment != "expAddrs" || addr.WireSegment != "expAddrs" {
+		t.Fatalf("addresses segments: go=%q wire=%q", addr.GoSegment, addr.WireSegment)
+	}
+	if len(addr.Columns) != 1 || addr.Columns[0].WireLeaf != "zipCode" || addr.Columns[0].LabelKey != "AddressZipCodeField" {
+		t.Fatalf("addresses col = %+v", addr.Columns)
 	}
 }
 

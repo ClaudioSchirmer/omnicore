@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/ClaudioSchirmer/omnicore/application/queries"
+	"github.com/ClaudioSchirmer/omnicore/domain"
 	"github.com/ClaudioSchirmer/omnicore/infra/db/core"
 	"github.com/ClaudioSchirmer/omnicore/infra/db/query"
 	"go.mongodb.org/mongo-driver/v2/bson"
@@ -61,48 +62,60 @@ func TestComposer_Compose_AbsentRowReturnsNil(t *testing.T) {
 	}
 }
 
-func TestComposer_ComposeWithEmbedMany(t *testing.T) {
+// The relational EmbedMany integration test was removed with the relational embed
+// path (embeds are external-only now). A root's own 1:N child projecting against a
+// real DB is covered by TestComposer_ComposeWithOwnChild below.
+
+// TestComposer_ComposeWithOwnChild proves the Phase-1 own-child auto path against
+// a real backend: the child is declared on the ROOT schema (no EmbedMany) and must
+// project automatically, joined root.PK → child.FK, mirroring hydrateChildren.
+func TestComposer_ComposeWithOwnChild(t *testing.T) {
 	pg, cleanup := newTestPG(t)
 	defer cleanup()
 
-	createTable(t, pg, `CREATE TABLE c_orders (
+	createTable(t, pg, `CREATE TABLE oc_orders (
 		id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
 		ref TEXT NOT NULL,
 		deleted_at TIMESTAMP,
 		created_at TIMESTAMP NOT NULL DEFAULT NOW(),
 		updated_at TIMESTAMP NOT NULL DEFAULT NOW()
 	)`)
-	createTable(t, pg, `CREATE TABLE c_lines (
+	createTable(t, pg, `CREATE TABLE oc_lines (
 		id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-		order_id UUID NOT NULL REFERENCES c_orders(id) ON DELETE CASCADE,
+		order_id UUID NOT NULL REFERENCES oc_orders(id) ON DELETE CASCADE,
 		qty INT NOT NULL,
-		deleted_at TIMESTAMP,
-		created_at TIMESTAMP NOT NULL DEFAULT NOW(),
-		updated_at TIMESTAMP NOT NULL DEFAULT NOW()
+		deleted_at TIMESTAMP
 	)`)
 
 	var orderID string
 	pg.Pool().QueryRow(context.Background(),
-		`INSERT INTO c_orders (ref) VALUES ('R-1') RETURNING id`).Scan(&orderID)
+		`INSERT INTO oc_orders (ref) VALUES ('R-1') RETURNING id`).Scan(&orderID)
 	pg.Pool().Exec(context.Background(),
-		`INSERT INTO c_lines (order_id, qty) VALUES ($1, 3), ($1, 5)`, orderID)
+		`INSERT INTO oc_lines (order_id, qty) VALUES ($1, 3), ($1, 5)`, orderID)
 
-	view := query.View("c_orders").Root("c_orders").Schema(rootSchema("c_orders")).
-		EmbedMany("lines", pgEmbed("c_lines", "order_id")).
-		Version(1)
+	// Child declared on the ROOT schema — NO EmbedMany. It must auto-project.
+	rootWithChild := core.NewTableSchema[embedFixture]("oc_orders").PK("id").SoftDelete("deleted_at").
+		Child(core.NewTableSchema[ocLineRow]("oc_lines").PK("id").FK("order_id").
+			Field("Qty", "qty").SoftDelete("deleted_at"))
+	view := query.View("oc_orders").Root("oc_orders").Schema(rootWithChild).Version(1)
 
-	c := query.NewComposer(pg)
-	doc, err := c.Compose(context.Background(), view, orderID)
+	doc, err := query.NewComposer(pg).Compose(context.Background(), view, orderID)
 	if err != nil {
 		t.Fatalf("Compose: %v", err)
 	}
-	lines, ok := doc["lines"].([]query.Document)
+	seg := domain.PluralizeWord("ocLineRow") // childDocSegment derivation, exported form
+	lines, ok := doc[seg].([]query.Document)
 	if !ok {
-		t.Fatalf("expected lines slice, got %T", doc["lines"])
+		t.Fatalf("own child %q shape = %T (doc=%v)", seg, doc[seg], doc)
 	}
 	if len(lines) != 2 {
-		t.Errorf("expected 2 lines, got %d", len(lines))
+		t.Errorf("auto-projected own children = %d, want 2", len(lines))
 	}
+}
+
+type ocLineRow struct {
+	ID  string
+	Qty int
 }
 
 func TestComposer_ComposeAll(t *testing.T) {

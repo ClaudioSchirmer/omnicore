@@ -254,59 +254,10 @@ func TestIndexCanonKey_NamedAndKeyed(t *testing.T) {
 	}
 }
 
-// ─── composer.go: fetchPGEmbed nil-key + applyEmbeds error ───────────────────
-
-func TestFetchPGEmbed_MissingParentKey_NoOp(t *testing.T) {
-	// EmbedMany whose root row lacks the parent PK column → child fetch skipped,
-	// the embed simply does not appear.
-	eng := composerEngine(func(string, []any) ([]map[string]any, error) {
-		// Root row omits "id" entirely.
-		return mapsFromColsData([]string{"name"}, [][]any{{"first"}}), nil
-	})
-	c := NewComposer(eng)
-	view := View("orders").Version(1).Root("orders").Schema(composerRootSchema()).
-		EmbedMany("lines", FromSchema(composerLineSchema()))
-	doc, err := c.Compose(context.Background(), view, "o1")
-	if err != nil {
-		t.Fatalf("Compose: %v", err)
-	}
-	if _, present := doc["lines"]; present {
-		t.Error("missing parent key must skip the embed (no lines key)")
-	}
-}
-
-func TestFetchPGEmbed_OneToOneMissingFK_NoOp(t *testing.T) {
-	eng := composerEngine(func(string, []any) ([]map[string]any, error) {
-		// Root row has no buyer_id FK.
-		return mapsFromColsData([]string{"id", "name"}, [][]any{{"o1", "first"}}), nil
-	})
-	c := NewComposer(eng)
-	view := View("orders").Version(1).Root("orders").Schema(composerRootSchema()).
-		Embed("buyer", FromSchema(composerBuyerSchema()).On("buyer_id").As("Buyer"))
-	doc, err := c.Compose(context.Background(), view, "o1")
-	if err != nil {
-		t.Fatalf("Compose: %v", err)
-	}
-	if _, present := doc["buyer"]; present {
-		t.Error("missing FK must skip the one-to-one embed")
-	}
-}
-
-func TestComposer_EmbedChildQueryError(t *testing.T) {
-	// The child SELECT errors → fetchWhere error → applyEmbeds error → Compose error.
-	eng := composerEngine(func(sql string, args []any) ([]map[string]any, error) {
-		if strings.Contains(sql, "FROM lines") {
-			return nil, errFake
-		}
-		return mapsFromColsData([]string{"id", "name"}, [][]any{{"o1", "first"}}), nil
-	})
-	c := NewComposer(eng)
-	view := View("orders").Version(1).Root("orders").Schema(composerRootSchema()).
-		EmbedMany("lines", FromSchema(composerLineSchema()))
-	if _, err := c.Compose(context.Background(), view, "o1"); err == nil {
-		t.Fatal("expected child query error to surface from Compose")
-	}
-}
+// The relational embed path (fetchPGEmbed) was removed when embeds were narrowed
+// to external sources only; its nil-key / missing-FK / child-error edge tests are
+// gone with it. The external (Mongo) embed error + skip paths are covered in
+// composer_mongo_test.go (TestFetchMongoEmbed_*).
 
 // ─── view_schema.go: ToGoDoc _id passthrough ─────────────────────────────────
 
@@ -395,14 +346,12 @@ func TestWriteJSONSchema_DefaultsAndNil(t *testing.T) {
 
 func TestComposeAll_EmbedChildError(t *testing.T) {
 	eng := composerEngine(func(sql string, args []any) ([]map[string]any, error) {
-		if strings.Contains(sql, "FROM lines") {
-			return nil, errFake
-		}
 		return mapsFromColsData([]string{"id", "name"}, [][]any{{"o1", "a"}}), nil
 	})
-	c := NewComposer(eng)
+	// External embed whose Mongo fetch fails → applyEmbeds error → ComposeAll error.
+	c := NewComposerWithMongo(eng, newFakeMongo(&fakeColl{findErr: context.Canceled}))
 	view := View("orders").Version(1).Root("orders").Schema(composerRootSchema()).
-		EmbedMany("lines", FromSchema(composerLineSchema()))
+		EmbedMany("buyers", FromSchema(core.NewExternalSchema("buyers").PK("id").FK("order_id")).As("Buyers"))
 	if _, err := c.ComposeAll(context.Background(), view); err == nil {
 		t.Fatal("expected child query error from ComposeAll")
 	}

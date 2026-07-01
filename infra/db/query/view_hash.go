@@ -10,6 +10,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/ClaudioSchirmer/omnicore/infra/db/core"
 	"go.mongodb.org/mongo-driver/v2/bson"
 )
 
@@ -67,6 +68,15 @@ func (v *ViewDefinition) writeRebuildShape(w *canonicalWriter) {
 
 	w.writeTag("embeds")
 	writeEmbedList(w, v.embeds)
+
+	// The aggregate's PROJECTED shape — the physical columns the composer
+	// materializes from the write TableSchema (root + siblings + SharedBase +
+	// children). Internal data auto-projects (no embed), so without this a schema
+	// change (new column / .Child / sibling field) would leave the RebuildHash
+	// unchanged and the forgot-to-bump guard would never fire — the projection
+	// would silently go stale.
+	w.writeTag("root_schema")
+	writeSchemaShape(w, v.schema)
 
 	w.writeTag("schema")
 	writeJSONSchema(w, v.mongoSpec.jsonSchema)
@@ -129,6 +139,82 @@ func writeEmbedList(w *canonicalWriter, embeds []embedDef) {
 		w.writeString(e.JoinColumn())
 		w.writeBool(e.source.isMongo)
 		writeEmbedList(w, e.source.embeds)
+	}
+}
+
+// writeSchemaShape hashes one schema node's PROJECTED shape and recurses into the
+// closure the composer materializes: the node's own physical columns (PK +
+// business + managed), then its siblings and SharedBase (merged FLAT) and its
+// children (nested). Column-granular, not Go-field: a rename that keeps the same
+// column does not force a rebuild; adding a column / .Child / sibling field does.
+// Order-independent within a node — columns, siblings and children are sorted, so
+// reordering declarations (which does not change the document) leaves the hash
+// stable. Recursion is bounded: a child is a leaf (no grandchildren, no SharedBase
+// role), and a shared base carries only its native children.
+func writeSchemaShape(w *canonicalWriter, s *core.TableSchema) {
+	if s == nil {
+		w.writeTag("nil_schema")
+		return
+	}
+	w.writeTag("schema_node")
+	w.writeString(s.Table())
+	w.writeString(s.PKColumn())
+	// Managed columns land in the projected document too.
+	sd, _ := s.SoftDeleteColumn()
+	w.writeString(sd)
+	writeSortedStrings(w, s.InsertNowColumns()) // created_at, updated_at (when enabled)
+	// Business columns — physical, sorted (order-independent).
+	writeSortedStrings(w, physicalColumns(s))
+
+	// Siblings (FLAT), sorted by table for determinism.
+	sibs := append([]*core.TableSchema(nil), s.Siblings()...)
+	sort.Slice(sibs, func(i, j int) bool { return sibs[i].Table() < sibs[j].Table() })
+	w.writeTag("siblings")
+	w.writeInt(int64(len(sibs)))
+	for _, sib := range sibs {
+		writeSchemaShape(w, sib)
+	}
+
+	// SharedBase (FLAT): the role FK + the base closure (incl. its base-children).
+	if base, fk, ok := s.SharedBaseRef(); ok {
+		w.writeTag("shared_base")
+		w.writeString(fk)
+		w.writeString(base.NaturalKeyColumn())
+		writeSchemaShape(w, base)
+	} else {
+		w.writeTag("no_shared_base")
+	}
+
+	// Own children (nested), already table-sorted by ChildSchemas().
+	children := s.ChildSchemas()
+	w.writeTag("children")
+	w.writeInt(int64(len(children)))
+	for _, child := range children {
+		w.writeString(child.FKColumn())
+		writeSchemaShape(w, child)
+	}
+}
+
+// physicalColumns returns a schema's Field-declared business columns (physical
+// names), used to hash the projected document shape.
+func physicalColumns(s *core.TableSchema) []string {
+	gfs := s.GoFields()
+	cols := make([]string, 0, len(gfs))
+	for _, gf := range gfs {
+		if c, ok := s.ColumnOf(gf); ok {
+			cols = append(cols, c)
+		}
+	}
+	return cols
+}
+
+// writeSortedStrings hashes a string slice order-independently.
+func writeSortedStrings(w *canonicalWriter, ss []string) {
+	out := append([]string(nil), ss...)
+	sort.Strings(out)
+	w.writeInt(int64(len(out)))
+	for _, s := range out {
+		w.writeString(s)
 	}
 }
 

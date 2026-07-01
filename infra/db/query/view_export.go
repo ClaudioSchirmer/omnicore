@@ -59,15 +59,18 @@ func (v *ViewDefinition) ExportPlan() *queries.ExportPlan {
 func buildExportNode(schema *core.TableSchema, embeds []embedDef, goSegment, wireSegment string) *queries.ExportNode {
 	node := &queries.ExportNode{GoSegment: goSegment, WireSegment: wireSegment}
 	if schema != nil {
-		labels := schema.LabelKeysByGoField()
-		for _, gf := range schema.GoFields() {
-			node.Columns = append(node.Columns, queries.ExportColumn{
-				GoField:  gf,
-				WireLeaf: domain.ToLowerCamel(gf),
-				LabelKey: labels[gf],
-			})
+		// This level's FLAT business columns — the read document merges them all at
+		// the owner's level, so they are columns of THIS node: the schema's own
+		// fields, then each sibling's, then the SharedBase's.
+		appendSchemaColumns(node, schema)
+		for _, sib := range schema.Siblings() {
+			appendSchemaColumns(node, sib)
+		}
+		if base, _, ok := schema.SharedBaseRef(); ok {
+			appendSchemaColumns(node, base)
 		}
 	}
+	// External embeds nest as children (recursive to view depth).
 	for _, e := range embeds {
 		if e.source == nil {
 			continue
@@ -78,5 +81,40 @@ func buildExportNode(schema *core.TableSchema, embeds []embedDef, goSegment, wir
 			e.field,             // embed doc field = ?fields wire segment
 		))
 	}
+	if schema != nil {
+		// Nested 1:N collections project under their derived segment (matching the
+		// composer + reader): a shared base's native children, then the schema's own
+		// children. Each recurses, so a child's own siblings fold in FLAT too.
+		if base, _, ok := schema.SharedBaseRef(); ok {
+			for _, bc := range base.ChildSchemas() {
+				node.Children = append(node.Children, childExportNode(bc))
+			}
+		}
+		for _, child := range schema.ChildSchemas() {
+			node.Children = append(node.Children, childExportNode(child))
+		}
+	}
 	return node
+}
+
+// appendSchemaColumns adds one ExportColumn per declared business field of s
+// (PK + managed columns excluded by GoFields), labeled via s's own label source
+// (external inline labelKey, else the type-anchored struct tag).
+func appendSchemaColumns(node *queries.ExportNode, s *core.TableSchema) {
+	labels := s.LabelKeysByGoField()
+	for _, gf := range s.GoFields() {
+		node.Columns = append(node.Columns, queries.ExportColumn{
+			GoField:  gf,
+			WireLeaf: domain.ToLowerCamel(gf),
+			LabelKey: labels[gf],
+		})
+	}
+}
+
+// childExportNode builds the export node for a nested 1:N child collection under
+// its derived segment — the Go segment the reader nests it under (PluralizeWord of
+// the child type) and the lower-camel `?fields` wire token.
+func childExportNode(child *core.TableSchema) *queries.ExportNode {
+	seg := childDocSegment(child)
+	return buildExportNode(child, nil, seg, domain.ToLowerCamel(seg))
 }

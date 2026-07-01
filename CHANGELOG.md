@@ -13,6 +13,21 @@ with `1.0.0`.
 
 ### Added
 
+- **A schema's own aggregate children auto-project into the Mongo view.** A view
+  root's own `Child(...)` collections (and each child's siblings, merged FLAT) now
+  nest into the composed document straight from the `TableSchema` — the read-side
+  mirror of the write loader's `hydrateChildren`, joined `root.PK → child.FK`.
+  Previously only a shared base's native children auto-projected; a root's own
+  children reached the document only through an explicit `EmbedMany`, so a view
+  declaring just its root silently dropped them. The child now projects wherever
+  its schema is used (view root or embed source), under its pluralized child-type
+  segment, filterable/sortable by dotted Go path. Two consequences: the former
+  guard rejecting an embed source whose schema carries `Child(...)` is **removed**
+  (those children now project instead of being ignored), and a redundant explicit
+  embed of a child the schema already projects (same derived segment) is a new boot
+  error. `EmbedMany`/`Embed` stay for composing sources the aggregate does not own
+  (cross-service read models / derived projections).
+
 - **`TableSchema.ChildSchemas()`** — returns every declared aggregate child
   schema, ordered by table name (deterministic SQL on any engine). The aggregate
   hard-delete path uses it to clear each child table by FK explicitly; an
@@ -141,6 +156,23 @@ with `1.0.0`.
   invariant *root + every child type-anchored* is now complete.
 
 ### Changed
+
+- **BREAKING: view embeds compose external data only; tabular export walks the
+  full schema tree.** `Embed`/`EmbedMany` now boot-reject a write-anchored
+  (`NewTableSchema[T]`) source — they compose ONLY external data (another
+  service's read model via `UpstreamSubscription` / `FromSchema` over a type-less
+  `NewExternalSchema`, or a derived projection). The relational cross-aggregate
+  embed path (`fetchPGEmbed`) is removed: an aggregate's own data — root, siblings,
+  SharedBase, and 1:N children — projects automatically from its `TableSchema`, so
+  declaring it as an embed is the redundant second path this closes. One canonical
+  path per case: internal data is automatic, embeds are external. Migration: a view
+  embedding a local aggregate child via `EmbedMany("x", FromSchema(ChildSchema()))`
+  drops the embed and declares the child with `.Child(ChildSchema())` on the root
+  schema (it then auto-projects); a genuine cross-service embed already uses an
+  external `NewExternalSchema` and is unaffected. Separately, tabular export
+  (CSV/XLSX) now builds its column plan over the full tree — sibling and SharedBase
+  columns fold in FLAT at the root level, and nested children contribute their own
+  column groups — instead of the root's own fields only.
 
 - **Aggregate child operations are decided by original + current status.** On an
   aggregate update, each child's persisted operation is now

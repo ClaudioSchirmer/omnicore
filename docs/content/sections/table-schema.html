@@ -134,10 +134,11 @@ core.NewExternalSchema("users").PK("id").Field("Email", "mail")</code></pre>
     unlimited. <strong>Depth is not:</strong> calling <code>Child(...)</code> on a schema that is itself a child (a
     grandchild) is a <strong>boot panic</strong>. Aggregate persistence is root + one level in a single transaction; a
     grandchild would silently never persist. Model the sub-collection as a <strong>separate aggregate</strong> (its own
-    root + FK). Need nesting on the <em>read side</em>? That <strong>is</strong> supported — but through nested
-    <code>EmbedMany(...)</code> / <code>Embed(...)</code> on the view's embed source, <strong>never</strong> through the
-    schema's <code>Child(...)</code>; an embed source whose schema carries <code>Child(...)</code> is a fatal view-validation
-    error at boot.
+    root + FK). On the <em>read side</em>, a schema's own children (like a shared base's children) <strong>project
+    automatically</strong> into the Mongo view — the composer nests each declared <code>Child(...)</code> wherever the
+    schema is used, so a child on a view root or on an embed source is materialized, not ignored. Deeper cross-source
+    nesting still composes through nested <code>EmbedMany(...)</code> / <code>Embed(...)</code>; a redundant explicit embed
+    of a child the schema already projects (same derived segment) is a boot error.
 </div>
 
 <h3>The three managed columns — by presence, not a flag</h3>
@@ -211,8 +212,7 @@ func NewUserRepository(eng core.RelationalEngine) *UserRepository {
     return query.View("users").
         Version(1).
         Root("users").
-        Schema(UserSchema()).
-        EmbedMany("addresses", query.FromSchema(AddressSchema())).  // segment derived → "Addresses"
+        Schema(UserSchema()).   // addresses (a .Child of UserSchema) auto-project as "Addresses"
         Indexes( /* … */ )
 }</code></pre>
 <p>

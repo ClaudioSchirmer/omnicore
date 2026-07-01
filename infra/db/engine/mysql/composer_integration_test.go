@@ -7,7 +7,6 @@ import (
 	"testing"
 
 	"github.com/google/uuid"
-	"go.mongodb.org/mongo-driver/v2/bson"
 
 	"github.com/ClaudioSchirmer/omnicore/domain"
 	"github.com/ClaudioSchirmer/omnicore/infra/db/core"
@@ -29,104 +28,9 @@ import (
 //   - the one-to-many embed round-trips the parent id extracted from the composed
 //     root doc (a string) back into bytes to match the child FK.
 
-type addrRow struct {
-	domain.BaseEntity
-	Street string
-}
-
-func addrSchema() *core.TableSchema {
-	return core.NewTableSchema[*addrRow]("addresses").
-		PK("id").
-		FK("user_id").
-		Field("Street", "street").
-		SoftDelete("deleted_at")
-}
-
-func TestMySQLComposer_RootWithEmbed(t *testing.T) {
-	eng, raw := setup(t)
-	ctx := ctxFor()
-
-	// addresses child table (FK BINARY(16) → flat_persons.id).
-	if _, err := raw.ExecContext(ctx, `DROP TABLE IF EXISTS addresses`); err != nil {
-		t.Fatalf("drop addresses: %v", err)
-	}
-	if _, err := raw.ExecContext(ctx, `CREATE TABLE addresses (
-		id BINARY(16) PRIMARY KEY,
-		user_id BINARY(16) NOT NULL,
-		street VARCHAR(255) NOT NULL,
-		deleted_at DATETIME NULL
-	)`); err != nil {
-		t.Fatalf("create addresses: %v", err)
-	}
-	t.Cleanup(func() { _, _ = raw.ExecContext(context.Background(), `DROP TABLE IF EXISTS addresses`) })
-
-	// Root insert through the engine → BINARY(16) id, uuid-string back.
-	person := &flatPerson{Name: "Alice", Email: "alice@compose"}
-	ins, err := domain.GetInsertable(person, nil, "GetInsertable")
-	if err != nil {
-		t.Fatalf("GetInsertable: %v", err)
-	}
-	res, err := eng.Insert(ctx, ins, flatSchema(), core.WriteHook{})
-	if err != nil {
-		t.Fatalf("Insert: %v", err)
-	}
-	rootID := res.ID
-	rootUUID, err := uuid.Parse(rootID)
-	if err != nil {
-		t.Fatalf("root id not a uuid: %v", err)
-	}
-	rootBytes := rootUUID[:]
-
-	// Two child rows referencing the root via BINARY(16) FK.
-	for _, street := range []string{"1 Main St", "2 Oak Ave"} {
-		childID := uuid.New()
-		if _, err := raw.ExecContext(ctx,
-			`INSERT INTO addresses (id, user_id, street) VALUES (?, ?, ?)`,
-			childID[:], rootBytes, street); err != nil {
-			t.Fatalf("insert address %q: %v", street, err)
-		}
-	}
-
-	// Compose the view through the MySQL engine (no Mongo embeds → NewComposer).
-	view := query.View("flat_persons").Version(1).Root("flat_persons").
-		Schema(flatSchema()).
-		EmbedMany("addresses", query.FromSchema(addrSchema()))
-
-	doc, err := query.NewComposer(eng).Compose(ctx, view, rootID)
-	if err != nil {
-		t.Fatalf("Compose: %v", err)
-	}
-	if doc == nil {
-		t.Fatal("Compose returned nil doc for an existing root")
-	}
-
-	// Root: BINARY(16) id decoded to the canonical uuid string; columns are
-	// strings, not the driver's raw []byte.
-	if got, ok := doc["id"].(string); !ok || got != rootID {
-		t.Fatalf("root id = %#v, want string %q", doc["id"], rootID)
-	}
-	if got, ok := doc["name"].(string); !ok || got != "Alice" {
-		t.Fatalf("root name = %#v, want string \"Alice\"", doc["name"])
-	}
-
-	// Embed: the parent id (a string in the composed doc) was re-encoded to
-	// bytes to match the child FK, yielding both rows.
-	lines, ok := doc["addresses"].([]bson.M)
-	if !ok {
-		t.Fatalf("addresses embed shape = %T", doc["addresses"])
-	}
-	if len(lines) != 2 {
-		t.Fatalf("embedded addresses = %d, want 2 (doc=%v)", len(lines), doc)
-	}
-	for _, l := range lines {
-		if uid, ok := l["user_id"].(string); !ok || uid != rootID {
-			t.Fatalf("child user_id = %#v, want string %q", l["user_id"], rootID)
-		}
-		if _, ok := l["street"].(string); !ok {
-			t.Fatalf("child street not a string: %#v", l["street"])
-		}
-	}
-}
+// The relational EmbedMany integration test (root + BINARY(16) FK embed) was
+// removed with the relational embed path. Own-child projection with the same
+// BINARY(16) FK re-encoding is covered by TestMySQLComposer_OwnChild below.
 
 type flagRow struct {
 	domain.BaseEntity
@@ -139,6 +43,81 @@ func flagSchema() *core.TableSchema {
 		PK("id").
 		Field("Active", "active").
 		Field("Name", "name")
+}
+
+type mcLineRow struct {
+	ID  string
+	Qty int
+}
+
+// TestMySQLComposer_OwnChild proves the Phase-1 own-child auto path on MySQL: the
+// child is declared on the ROOT schema (no EmbedMany) and projects automatically,
+// joined root.PK → child.FK with the BINARY(16) id re-encoded for the WHERE.
+func TestMySQLComposer_OwnChild(t *testing.T) {
+	eng, raw := setup(t)
+	ctx := ctxFor()
+
+	if _, err := raw.ExecContext(ctx, `DROP TABLE IF EXISTS mc_lines`); err != nil {
+		t.Fatalf("drop mc_lines: %v", err)
+	}
+	if _, err := raw.ExecContext(ctx, `CREATE TABLE mc_lines (
+		id BINARY(16) PRIMARY KEY,
+		user_id BINARY(16) NOT NULL,
+		qty INT NOT NULL,
+		deleted_at DATETIME NULL
+	)`); err != nil {
+		t.Fatalf("create mc_lines: %v", err)
+	}
+	t.Cleanup(func() { _, _ = raw.ExecContext(context.Background(), `DROP TABLE IF EXISTS mc_lines`) })
+
+	person := &flatPerson{Name: "Bob", Email: "bob@compose"}
+	ins, err := domain.GetInsertable(person, nil, "GetInsertable")
+	if err != nil {
+		t.Fatalf("GetInsertable: %v", err)
+	}
+	res, err := eng.Insert(ctx, ins, flatSchema(), core.WriteHook{})
+	if err != nil {
+		t.Fatalf("Insert: %v", err)
+	}
+	rootUUID, err := uuid.Parse(res.ID)
+	if err != nil {
+		t.Fatalf("root id not a uuid: %v", err)
+	}
+	rootBytes := rootUUID[:]
+	for _, qty := range []int{3, 5} {
+		childID := uuid.New()
+		if _, err := raw.ExecContext(ctx,
+			`INSERT INTO mc_lines (id, user_id, qty) VALUES (?, ?, ?)`,
+			childID[:], rootBytes, qty); err != nil {
+			t.Fatalf("insert line: %v", err)
+		}
+	}
+
+	// Child declared on the ROOT schema (replicating flatSchema's fields) — no embed.
+	rootWithChild := core.NewTableSchema[*flatPerson]("flat_persons").
+		PK("id").Field("Name", "name").Field("Email", "email").Field("Phone", "phone").
+		SoftDelete("deleted_at").CreatedAt("created_at").UpdatedAt("updated_at").
+		Child(core.NewTableSchema[mcLineRow]("mc_lines").PK("id").FK("user_id").
+			Field("Qty", "qty").SoftDelete("deleted_at"))
+	view := query.View("flat_persons").Version(1).Root("flat_persons").Schema(rootWithChild)
+
+	doc, err := query.NewComposer(eng).Compose(ctx, view, res.ID)
+	if err != nil {
+		t.Fatalf("Compose: %v", err)
+	}
+	seg := domain.PluralizeWord("mcLineRow")
+	lines, ok := doc[seg].([]query.Document)
+	if !ok {
+		t.Fatalf("own child %q shape = %T (doc=%v)", seg, doc[seg], doc)
+	}
+	if len(lines) != 2 {
+		t.Fatalf("auto-projected own children = %d, want 2", len(lines))
+	}
+	for _, l := range lines {
+		if uid, ok := l["user_id"].(string); !ok || uid != res.ID {
+			t.Fatalf("child user_id = %#v, want %q (BINARY(16) FK must decode to the root uuid)", l["user_id"], res.ID)
+		}
+	}
 }
 
 // MySQL stores BOOL/BOOLEAN as TINYINT(1) and the driver yields int64(0/1) on the

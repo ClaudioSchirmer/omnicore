@@ -22,20 +22,6 @@ func composerRootSchema() *core.TableSchema {
 		SoftDelete("deleted_at")
 }
 
-func composerLineSchema() *core.TableSchema {
-	return core.NewTableSchema[fakeVO]("lines").
-		PK("id").
-		FK("order_id").
-		Field("Label", "label").
-		SoftDelete("deleted_at")
-}
-
-func composerBuyerSchema() *core.TableSchema {
-	return core.NewTableSchema[fakeVO]("buyers").
-		PK("id").
-		Field("Label", "label")
-}
-
 // composerEngine builds a fakeEngine whose QueryMaps is driven by mapsFn.
 func composerEngine(mapsFn func(sql string, args []any) ([]map[string]any, error)) *fakeEngine {
 	return newFakeEngine(&fakeQuerier{queryMapsFn: mapsFn})
@@ -143,100 +129,12 @@ func TestCompose_RootOnly(t *testing.T) {
 	}
 }
 
-func TestCompose_EmbedMany(t *testing.T) {
-	eng := composerEngine(func(sql string, args []any) ([]map[string]any, error) {
-		switch {
-		case strings.Contains(sql, "FROM orders"):
-			return mapsFromColsData([]string{"id", "name"}, [][]any{{"o1", "first"}}), nil
-		case strings.Contains(sql, "FROM lines"):
-			return mapsFromColsData([]string{"id", "order_id", "label"},
-				[][]any{{"l1", "o1", "a"}, {"l2", "o1", "b"}}), nil
-		}
-		return nil, nil
-	})
-	c := NewComposer(eng)
-	view := View("orders").Version(1).Root("orders").Schema(composerRootSchema()).
-		EmbedMany("lines", FromSchema(composerLineSchema()))
-
-	doc, err := c.Compose(context.Background(), view, "o1")
-	if err != nil {
-		t.Fatalf("Compose: %v", err)
-	}
-	lines, ok := doc["lines"].([]Document)
-	if !ok {
-		t.Fatalf("lines embed shape = %T", doc["lines"])
-	}
-	if len(lines) != 2 {
-		t.Errorf("embedded lines = %d, want 2 (doc=%v)", len(lines), doc)
-	}
-}
-
-func TestCompose_EmbedOneToOne(t *testing.T) {
-	eng := composerEngine(func(sql string, args []any) ([]map[string]any, error) {
-		switch {
-		case strings.Contains(sql, "FROM orders"):
-			return mapsFromColsData([]string{"id", "name", "buyer_id"}, [][]any{{"o1", "first", "b1"}}), nil
-		case strings.Contains(sql, "FROM buyers"):
-			return mapsFromColsData([]string{"id", "label"}, [][]any{{"b1", "acme"}}), nil
-		}
-		return nil, nil
-	})
-	c := NewComposer(eng)
-	view := View("orders").Version(1).Root("orders").Schema(composerRootSchema()).
-		Embed("buyer", FromSchema(composerBuyerSchema()).On("buyer_id").As("Buyer"))
-
-	doc, err := c.Compose(context.Background(), view, "o1")
-	if err != nil {
-		t.Fatalf("Compose: %v", err)
-	}
-	buyer, ok := doc["buyer"].(Document)
-	if !ok {
-		t.Fatalf("buyer embed shape = %T", doc["buyer"])
-	}
-	if buyer["label"] != "acme" {
-		t.Errorf("buyer embed drifted: %v", buyer)
-	}
-}
-
-func TestCompose_EmbedOneToOne_QueryError(t *testing.T) {
-	eng := composerEngine(func(sql string, args []any) ([]map[string]any, error) {
-		switch {
-		case strings.Contains(sql, "FROM orders"):
-			return mapsFromColsData([]string{"id", "name", "buyer_id"}, [][]any{{"o1", "first", "b1"}}), nil
-		case strings.Contains(sql, "FROM buyers"):
-			return nil, errFake
-		}
-		return nil, nil
-	})
-	c := NewComposer(eng)
-	view := View("orders").Version(1).Root("orders").Schema(composerRootSchema()).
-		Embed("buyer", FromSchema(composerBuyerSchema()).On("buyer_id").As("Buyer"))
-
-	if _, err := c.Compose(context.Background(), view, "o1"); err == nil {
-		t.Fatal("expected the one-to-one embed fetchRow error to surface")
-	}
-}
-
-func TestCompose_EmbedOneToOne_MissingFK(t *testing.T) {
-	eng := composerEngine(func(sql string, args []any) ([]map[string]any, error) {
-		if strings.Contains(sql, "FROM orders") {
-			// Root row has no buyer_id column → the one-to-one embed is skipped.
-			return mapsFromColsData([]string{"id", "name"}, [][]any{{"o1", "first"}}), nil
-		}
-		return nil, nil
-	})
-	c := NewComposer(eng)
-	view := View("orders").Version(1).Root("orders").Schema(composerRootSchema()).
-		Embed("buyer", FromSchema(composerBuyerSchema()).On("buyer_id").As("Buyer"))
-
-	doc, err := c.Compose(context.Background(), view, "o1")
-	if err != nil {
-		t.Fatalf("Compose: %v", err)
-	}
-	if _, present := doc["buyer"]; present {
-		t.Errorf("missing FK must skip the embed, got %v", doc["buyer"])
-	}
-}
+// The relational embed path (fetchPGEmbed) was removed when embeds were narrowed
+// to external sources only (Embed/EmbedMany compose read models / derived
+// projections, never a write-anchored schema — a local aggregate's own data
+// projects automatically). The former relational EmbedMany / one-to-one Embed
+// compose tests are gone with it; the external (Mongo) embed path is covered in
+// composer_mongo_test.go, and own-children projection in TestCompose_OwnChildren*.
 
 // composerSiblingRootSchema splits builderTestEntity across an anchor table
 // "orders" (name) and a sibling table "orders_ext" (email), sharing the id.
@@ -363,18 +261,24 @@ type csComposeVO struct {
 func (v csComposeVO) GetID() string                                    { return v.ID }
 func (v csComposeVO) BuildRules(string, domain.Service, *domain.Rules) {}
 
-func TestCompose_ChildSiblingMergedFlat(t *testing.T) {
+// TestCompose_OwnChildrenAutoNested proves a view whose ROOT schema declares a
+// Child(...) projects that collection automatically — NO EmbedMany — under the
+// derived segment, mirroring hydrateChildren on the write side. Each child row
+// also gets its own sibling merged FLAT (shape #4) on this auto path.
+func TestCompose_OwnChildrenAutoNested(t *testing.T) {
 	childSchema := core.NewTableSchema[csComposeVO]("lines").PK("id").FK("order_id").Field("Label", "label").
 		Sibling(core.NewSiblingSchema[csComposeVO]("lines_ext").Field("Note", "note"))
-	view := View("orders").Version(1).Root("orders").Schema(composerRootSchema()).
-		EmbedMany("lines", FromSchema(childSchema))
+	rootWithChild := core.NewTableSchema[*builderTestEntity]("orders").
+		PK("id").Field("Name", "name").SoftDelete("deleted_at").
+		Child(childSchema)
+	view := View("orders").Version(1).Root("orders").Schema(rootWithChild) // no EmbedMany
 
 	eng := composerEngine(func(sql string, args []any) ([]map[string]any, error) {
 		switch {
 		case strings.Contains(sql, "FROM lines_ext"): // check before "FROM lines" (substring)
 			return mapsFromColsData([]string{"id", "note"}, [][]any{{"l1", "NOTE"}}), nil
 		case strings.Contains(sql, "FROM lines"):
-			return mapsFromColsData([]string{"id", "order_id", "label"}, [][]any{{"l1", "o1", "L"}}), nil
+			return mapsFromColsData([]string{"id", "order_id", "label"}, [][]any{{"l1", "o1", "L1"}}), nil
 		case strings.Contains(sql, "FROM orders"):
 			return mapsFromColsData([]string{"id", "name"}, [][]any{{"o1", "first"}}), nil
 		}
@@ -386,12 +290,16 @@ func TestCompose_ChildSiblingMergedFlat(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Compose: %v", err)
 	}
-	lines, ok := doc["lines"].([]Document)
-	if !ok || len(lines) != 1 {
-		t.Fatalf("lines embed = %T len?", doc["lines"])
+	seg := childDocSegment(childSchema)
+	lines, ok := doc[seg].([]Document)
+	if !ok {
+		t.Fatalf("own child collection %q shape = %T (doc=%v)", seg, doc[seg], doc)
 	}
-	if lines[0]["label"] != "L" || lines[0]["note"] != "NOTE" {
-		t.Errorf("child sibling must merge FLAT into the child row: %v", lines[0])
+	if len(lines) != 1 {
+		t.Fatalf("own children = %d, want 1", len(lines))
+	}
+	if lines[0]["label"] != "L1" || lines[0]["note"] != "NOTE" {
+		t.Errorf("own-child row must carry its columns + FLAT sibling (#4): %v", lines[0])
 	}
 }
 
