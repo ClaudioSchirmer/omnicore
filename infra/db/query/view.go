@@ -52,14 +52,12 @@ func (e embedDef) Field() string { return e.field }
 // the framework's own dispatch.
 func (e embedDef) Many() bool { return e.many }
 
-// Source describes one fetch leaf inside a ViewDefinition. The `table` field
-// carries either a Postgres table (for FromSchema over a type-anchored schema)
-// or a Mongo collection name (for FromSchema over a type-less
-// NewExternalSchema); isMongo discriminates.
-// The composer dispatches on IsMongo() to pick the underlying store:
-//
-//   - false (default): fetch via Postgres pool (fetchRow / fetchWhere)
-//   - true:            fetch via MongoDB.FindManyByField against the local DB
+// Source describes one embed leaf inside a ViewDefinition. A valid embed source is
+// EXTERNAL — FromSchema over a type-less NewExternalSchema, resolving to a local
+// Mongo collection (`table`), so isMongo is true. A write-anchored source (isMongo
+// false) is rejected at boot by ValidateViewSchemas: the aggregate's own data
+// projects automatically from the root schema, never through an embed. The
+// composer fetches every embed via MongoDB.FindManyByField against the local DB.
 //
 // Mongo-kind sources are the embedding surface for upstream-projected
 // collections (declared via bootstrap.UpstreamSubscription) as well as

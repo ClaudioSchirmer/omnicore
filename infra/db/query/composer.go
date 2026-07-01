@@ -17,12 +17,13 @@ import (
 // the source's PK column, and the soft-delete filter uses the source's
 // soft-delete column. A schema-less source falls back to id / deleted_at.
 //
-// Dispatch per embed on Source.IsMongo():
-//   - relational source (FromSchema over a type-anchored schema): fetchRow /
-//     fetchWhere against the engine's neutral read surface (core.Querier.QueryMaps +
-//     Dialect), so it composes the same way on any backend.
-//   - Mongo source (FromSchema over a type-less core.NewExternalSchema):
-//     MongoDB.FindManyByField against the local DB.
+// The root document and the aggregate's internal closure (siblings, SharedBase,
+// own + base children) compose RELATIONALLY — fetchRow / fetchWhere against the
+// engine's neutral read surface (core.Querier.QueryMaps + Dialect), so they
+// compose the same way on any backend. Embeds are always EXTERNAL sources
+// (FromSchema over a type-less core.NewExternalSchema): MongoDB.FindManyByField
+// against the local DB. A write-anchored embed source is rejected at boot
+// (ValidateViewSchemas) — internal data projects automatically, never via an embed.
 //
 // The relational reads go through infra.RelationalEngine (backend-neutral) rather
 // than a concrete driver — the composer works identically on Postgres and MySQL.
@@ -176,9 +177,8 @@ func (c *Composer) mergeSharedBaseChildren(ctx context.Context, doc Document, sc
 // collection lands under its derived Go segment (the same name newViewNode
 // registers, so ToGoDoc translates it). Every fetched child row also gets its
 // siblings merged FLAT (shape #4 — the child-sibling merge). No-op when the schema
-// declares no own children. Applied on the root path (Compose/ComposeAll) and
-// within relational embed rows (fetchPGEmbed), so a schema's children project
-// wherever the schema is used.
+// declares no own children. Applied on the root path (Compose/ComposeAll); embeds
+// are external (type-less) and carry no children, so this runs only at the root.
 func (c *Composer) mergeOwnChildren(ctx context.Context, doc Document, schema *core.TableSchema, includeArchived bool) error {
 	children := schema.ChildSchemas()
 	if len(children) == 0 {
