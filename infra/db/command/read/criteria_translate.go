@@ -147,18 +147,27 @@ func compileWhere(e criteria.Expr, resolve core.FieldResolver, dialect Dialect) 
 // scopeGate returns the soft-delete condition for the scope on the source's
 // resolved soft-delete column ("" = no gate). A source with soft-delete
 // disabled has no marker column, so every scope yields no gate.
-func scopeGate(s criteria.Scope, schema *TableSchema, dialect Dialect) string {
+// qualifier is the table-qualified prefix (already quoted) to prepend to the
+// soft-delete column, or "" to leave it bare. It MUST be non-empty when the
+// query JOINs another soft-deletable table (a role's SharedBase, whose own
+// deleted_at would otherwise make the bare column reference ambiguous), matching
+// how the leading PK is qualified under the same joins.
+func scopeGate(s criteria.Scope, schema *TableSchema, dialect Dialect, qualifier string) string {
 	col, ok := schema.SoftDeleteColumn()
 	if !ok {
 		return ""
 	}
+	qcol := dialect.QuoteIdent(col)
+	if qualifier != "" {
+		qcol = qualifier + "." + qcol
+	}
 	switch s {
 	case criteria.ScopeOnlyArchived:
-		return dialect.QuoteIdent(col) + " IS NOT NULL"
+		return qcol + " IS NOT NULL"
 	case criteria.ScopeIncludeArchived:
 		return ""
 	default:
-		return dialect.QuoteIdent(col) + " IS NULL"
+		return qcol + " IS NULL"
 	}
 }
 
@@ -167,13 +176,21 @@ func scopeGate(s criteria.Scope, schema *TableSchema, dialect Dialect) string {
 // <col> IS NULL; under any archived scope children load unfiltered so the
 // unarchive cascade sees every child via AllAggregateItems(). A child with
 // soft-delete disabled is never gated.
-func childScopeFilter(s criteria.Scope, schema *TableSchema, dialect Dialect) string {
+// qualifier follows the same rule as scopeGate's: pass the (quoted) owning table
+// when the child query JOINs another soft-deletable table — as the base-child
+// loader does (base child JOINed to the role, both carrying deleted_at) — and ""
+// for a single-table child SELECT where the bare column is unambiguous.
+func childScopeFilter(s criteria.Scope, schema *TableSchema, dialect Dialect, qualifier string) string {
 	col, ok := schema.SoftDeleteColumn()
 	if !ok {
 		return ""
 	}
 	if s == criteria.ScopeActive {
-		return "AND " + dialect.QuoteIdent(col) + " IS NULL"
+		qcol := dialect.QuoteIdent(col)
+		if qualifier != "" {
+			qcol = qualifier + "." + qcol
+		}
+		return "AND " + qcol + " IS NULL"
 	}
 	return ""
 }

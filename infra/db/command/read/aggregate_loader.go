@@ -202,7 +202,14 @@ func (l *AggregateLoader[T]) findRoots(ctx context.Context, q *criteria.Query, l
 	if err != nil {
 		return nil, nil, err
 	}
-	clause := buildWhereClause(where, scopeGate(q.Scope(), l.schema, dialect))
+	// When the criteria pulled in a sibling/base LEFT JOIN, the root's soft-delete
+	// column must be table-qualified (the base carries its own deleted_at) — the
+	// same disambiguation the leading PK gets below.
+	rootQualifier := ""
+	if len(joins.siblings) > 0 || joins.base != nil {
+		rootQualifier = dialect.QuoteIdent(table)
+	}
+	clause := buildWhereClause(where, scopeGate(q.Scope(), l.schema, dialect, rootQualifier))
 	limit := q.LimitValue()
 	if limitOverride > 0 {
 		limit = limitOverride
@@ -362,7 +369,7 @@ func (l *AggregateLoader[T]) hydrateChildren(ctx context.Context, entities []T, 
 		}
 		childTable := child.Table()
 		fkCol := child.FKColumn()
-		childFilter := childScopeFilter(scope, child, dialect)
+		childFilter := childScopeFilter(scope, child, dialect, "")
 
 		if manual, ok := l.childScanners[typeName]; ok {
 			// Manual child scanner: neutral Querier; the FK arg is dialect-encoded
@@ -510,7 +517,9 @@ func (l *AggregateLoader[T]) hydrateBaseChildren(ctx context.Context, entities [
 		}
 		sql := "SELECT " + sel + " FROM " + bcTbl +
 			" JOIN " + roleTbl + " ON " + bcTbl + "." + d.QuoteIdent(bc.FKColumn()) + " = " + roleTbl + "." + roleFK +
-			" WHERE " + roleTbl + "." + rolePK + " IN (" + strings.Join(placeholders, ", ") + ") " + childScopeFilter(scope, bc, d)
+			// bcTbl-qualified: the JOIN to the role table brings a second deleted_at
+			// into scope, so the base-child's active gate must name its own table.
+			" WHERE " + roleTbl + "." + rolePK + " IN (" + strings.Join(placeholders, ", ") + ") " + childScopeFilter(scope, bc, d, bcTbl)
 		rows, err := l.eng.Querier().Query(ctx, sql, qargs...)
 		if err != nil {
 			return err

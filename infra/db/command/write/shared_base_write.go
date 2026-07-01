@@ -105,7 +105,10 @@ func (b *BaseEngine) findRoleByFK(ctx context.Context, tx WriteTx, d Dialect, sc
 	sd, hasSD := schema.SoftDeleteColumn()
 	cols := d.QuoteIdent(schema.PKColumn())
 	if hasSD {
-		cols += ", " + d.QuoteIdent(sd)
+		// Project the archived state as a boolean — scanning a non-null timestamp
+		// into a []byte fails under Postgres' binary protocol, and this probe hits
+		// exactly that case for an archived role (the revive path).
+		cols += ", " + d.QuoteIdent(sd) + " IS NOT NULL"
 	}
 	q := "SELECT " + cols + " FROM " + d.QuoteIdent(schema.Table()) +
 		" WHERE " + d.QuoteIdent(fkCol) + " = " + d.Placeholder(1) + " LIMIT 1"
@@ -120,11 +123,11 @@ func (b *BaseEngine) findRoleByFK(ctx context.Context, tx WriteTx, d Dialect, sc
 	var keyRaw string
 	state := roleActive
 	if hasSD {
-		var sdRaw []byte
-		if err := rows.Scan(&keyRaw, &sdRaw); err != nil {
+		var archived bool
+		if err := rows.Scan(&keyRaw, &archived); err != nil {
 			return "", roleNone, err
 		}
-		if sdRaw != nil {
+		if archived {
 			state = roleArchived
 		}
 	} else if err := rows.Scan(&keyRaw); err != nil {
@@ -453,7 +456,12 @@ func cascadeBaseLifecycle(ctx context.Context, tx WriteTx, d Dialect, base *Tabl
 // baseIsArchived reports whether the base row currently carries a non-null
 // soft-delete marker (read once, for idempotency).
 func baseIsArchived(ctx context.Context, tx WriteTx, d Dialect, base *TableSchema, sd, baseID string) (bool, error) {
-	q := "SELECT " + d.QuoteIdent(sd) + " FROM " + d.QuoteIdent(base.Table()) +
+	// Project the archived state as a boolean rather than scanning the raw
+	// soft-delete timestamp: a non-null timestamp cannot be scanned into a
+	// []byte under Postgres' binary protocol (it works only while NULL), which is
+	// exactly the case reactivateBaseIfArchived probes for. IS NOT NULL scans
+	// cleanly into a bool on every dialect.
+	q := "SELECT " + d.QuoteIdent(sd) + " IS NOT NULL FROM " + d.QuoteIdent(base.Table()) +
 		" WHERE " + d.QuoteIdent(base.PKColumn()) + " = " + d.Placeholder(1)
 	rows, err := tx.Query(ctx, q, d.EncodeArg(domain.NewID(baseID)))
 	if err != nil {
@@ -463,11 +471,11 @@ func baseIsArchived(ctx context.Context, tx WriteTx, d Dialect, base *TableSchem
 	if !rows.Next() {
 		return false, rows.Err()
 	}
-	var v []byte
-	if err := rows.Scan(&v); err != nil {
+	var archived bool
+	if err := rows.Scan(&archived); err != nil {
 		return false, err
 	}
-	return v != nil, rows.Err()
+	return archived, rows.Err()
 }
 
 // anyActiveRole reports whether any role row referencing the base is ACTIVE (not

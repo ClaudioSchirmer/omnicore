@@ -38,7 +38,7 @@ func BuildInsertEvent(ctx persistence.RequestContext, i domain.Insertable, id do
 		ActionName: i.ActionName(),
 		Kind:       "snapshot",
 		DateTime:   i.DateTime(),
-		Snapshot:   schema.GoFieldValues(i.Source()),
+		Snapshot:   composedFieldValues(schema, i.Source()),
 		Children:   childrenOf(schema, i.Source(), "insert"),
 	}
 	populateContext(&ev, ctx, auditClaims)
@@ -52,8 +52,8 @@ func BuildInsertEvent(ctx persistence.RequestContext, i domain.Insertable, id do
 // (identical SQL fingerprint); the distinction lives in ActionName.
 func BuildUpdateEvent(ctx persistence.RequestContext, u domain.Updatable, schema *TableSchema, auditClaims []string) audit.AuditEvent {
 	prev := oldFieldsOf(schema, u.Source())
-	cur := schema.GoFieldValues(u.Source())
-	labels := schema.LabelKeysByGoField()
+	cur := composedFieldValues(schema, u.Source())
+	labels := composedLabelKeys(schema)
 	ev := audit.AuditEvent{
 		EntityType: u.EntityName(),
 		EntityID:   u.ID(),
@@ -108,7 +108,7 @@ func BuildUnarchiveEvent(ctx persistence.RequestContext, u domain.Unarchivable, 
 func BuildDeleteEvent(ctx persistence.RequestContext, d domain.Deletable, schema *TableSchema, auditClaims []string) audit.AuditEvent {
 	snap := oldFieldsOf(schema, d.Source())
 	if snap == nil {
-		snap = schema.GoFieldValues(d.Source())
+		snap = composedFieldValues(schema, d.Source())
 	}
 	ev := audit.AuditEvent{
 		EntityType: d.EntityName(),
@@ -193,9 +193,107 @@ func filterClaims(all map[string]any, allowlist []string) map[string]any {
 	return out
 }
 
+// composedFieldValues returns the persisted Go-field values of src across the
+// schema's OWN fields ∪ its shared-base fields ∪ its sibling fields — the
+// complete audited surface of a (possibly SharedBase/sibling-partitioned)
+// entity. For a flat schema it degenerates to schema.GoFieldValues(src). The
+// entity is a single flat Go struct, so the base and sibling sub-schemas read
+// their own fields off the very same value; the audit timeline stays faithful
+// to the whole domain object rather than to just the role's own table.
+func composedFieldValues(schema *TableSchema, src any) map[string]any {
+	out := schema.GoFieldValues(src)
+	if base, _, ok := schema.SharedBaseRef(); ok {
+		// The shared base is type-less (built with NewSharedBase, no [T]), so its
+		// field struct-indexes are unresolved; read the shared fields off the flat
+		// role entity by Go field name — exactly how sharedBaseValues feeds the
+		// base UPSERT.
+		for k, v := range baseFieldValuesByName(base, src) {
+			out[k] = v
+		}
+	}
+	for _, sib := range schema.Siblings() {
+		for k, v := range sib.GoFieldValues(src) {
+			out[k] = v
+		}
+	}
+	return out
+}
+
+// baseFieldValuesByName reads the shared-base fields off a flat role entity by
+// Go field name (PascalCase), the read strategy a type-less base schema forces.
+func baseFieldValuesByName(base *TableSchema, src any) map[string]any {
+	rv := reflect.ValueOf(src)
+	for rv.Kind() == reflect.Ptr {
+		rv = rv.Elem()
+	}
+	out := map[string]any{}
+	if rv.Kind() != reflect.Struct {
+		return out
+	}
+	for _, goName := range base.GoFields() {
+		if f := rv.FieldByName(goName); f.IsValid() {
+			out[goName] = f.Interface()
+		}
+	}
+	return out
+}
+
+// composedLabelKeys is the label-map analogue of composedFieldValues: the
+// Go-field → catalog-key map unioned across the role, its shared base, and its
+// siblings, so a delta over a base/sibling field still carries its label.
+func composedLabelKeys(schema *TableSchema) map[string]string {
+	out := map[string]string{}
+	for k, v := range schema.LabelKeysByGoField() {
+		out[k] = v
+	}
+	if base, _, ok := schema.SharedBaseRef(); ok {
+		// The type-less base cannot reflect the entity's struct tags, so its
+		// LabelKeysByGoField only carries labels declared explicitly on the base
+		// field. Recover the shared fields' `labelKey` tags off the role's Go type
+		// by field name — the same by-name strategy composedFieldValues uses for
+		// the values — then let any explicit base label win.
+		for k, v := range baseLabelKeysByName(base, schema.GoType()) {
+			out[k] = v
+		}
+		for k, v := range base.LabelKeysByGoField() {
+			out[k] = v
+		}
+	}
+	for _, sib := range schema.Siblings() {
+		for k, v := range sib.LabelKeysByGoField() {
+			out[k] = v
+		}
+	}
+	return out
+}
+
+// baseLabelKeysByName reads the `labelKey` struct tag of each shared-base field
+// off the flat role Go type by field name — the label counterpart of
+// baseFieldValuesByName, needed because the base schema is type-less.
+func baseLabelKeysByName(base *TableSchema, roleType reflect.Type) map[string]string {
+	out := map[string]string{}
+	if roleType == nil {
+		return out
+	}
+	for roleType.Kind() == reflect.Ptr {
+		roleType = roleType.Elem()
+	}
+	if roleType.Kind() != reflect.Struct {
+		return out
+	}
+	for _, goName := range base.GoFields() {
+		if sf, ok := roleType.FieldByName(goName); ok {
+			if tag, ok := sf.Tag.Lookup("labelKey"); ok && tag != "" && tag != "-" {
+				out[goName] = tag
+			}
+		}
+	}
+	return out
+}
+
 // oldFieldsOf returns the pre-mutation snapshot of e keyed by Go field name,
 // or nil when e has no Old (Insert path, or entity hydrated outside the
-// framework loader).
+// framework loader). Composed over role ∪ base ∪ siblings like the post-state.
 func oldFieldsOf(schema *TableSchema, e domain.Entity) map[string]any {
 	if e == nil {
 		return nil
@@ -204,7 +302,7 @@ func oldFieldsOf(schema *TableSchema, e domain.Entity) map[string]any {
 	if prev == nil {
 		return nil
 	}
-	return schema.GoFieldValues(prev)
+	return composedFieldValues(schema, prev)
 }
 
 // computeChanges returns a deterministic []audit.FieldChange (sorted by field name)
@@ -283,7 +381,11 @@ func childrenOf(schema *TableSchema, src domain.Entity, verb string) map[string]
 	out := map[string][]audit.ChildEvent{}
 	for _, typeName := range typeNames {
 		items := all[typeName]
-		child := schema.ChildSchema(typeName)
+		// ResolveAggregateChild finds the owning schema whether the collection
+		// is a role-native child or a SharedBase base-child (shared by every
+		// role); ChildSchema alone would miss base-children and emit op-only
+		// events with an empty snapshot.
+		child, _, _ := schema.ResolveAggregateChild(typeName)
 		var entries []audit.ChildEvent
 		for _, it := range items {
 			entry, include := childEventOf(it, child, typeName, verb, prevByTypeID)
@@ -324,7 +426,7 @@ func oldChildrenIndex(schema *TableSchema, src domain.Entity) map[string]map[str
 	}
 	out := map[string]map[string]map[string]any{}
 	for typeName, items := range prevRoot.AllAggregateItems() {
-		child := schema.ChildSchema(typeName)
+		child, _, _ := schema.ResolveAggregateChild(typeName)
 		inner := map[string]map[string]any{}
 		for _, it := range items {
 			id := it.Item.GetID()

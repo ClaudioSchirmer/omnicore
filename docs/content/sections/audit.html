@@ -207,6 +207,27 @@ audit:
         root's aggregates map (see <a href="#old-state">Old-state snapshot</a>).
     </p>
 
+    <h3 id="audit-shared-base">SharedBase roles — whole-object composition</h3>
+    <p>
+        When the audited entity is a <a href="#table-schema">SharedBase</a> role, its fields are
+        partitioned by infra across the shared-base table (identity, shared by every role), the
+        role's own table, and any siblings — yet the audit timeline speaks the <strong>whole domain
+        object</strong>, not one table. The <code>snapshot</code> (insert/delete) and the
+        <code>changes</code> delta (update) compose over the role's own fields <strong>∪</strong> its
+        shared base's fields <strong>∪</strong> its siblings' fields, so a mutation of a shared base
+        field (e.g. the natural key or a shared attribute) appears in the delta exactly like a
+        role-own field. Base fields are read by Go field name off the flat role entity — the same
+        access the base UPSERT uses — because the base schema is type-less. <code>fieldLabelKey</code>
+        resolves across all three schemas.
+    </p>
+    <p>
+        <strong>Base-children</strong> (1:N collections owned by the shared base, shared by every
+        role) appear in the <code>children</code> block under their Go type name with a populated
+        per-op <code>snapshot</code>/<code>changes</code>, identical in shape to a role-own child —
+        the child walk resolves both role-own and base-owned collections. A flat, non-SharedBase
+        entity is unaffected: the composition degenerates to the root's own fields.
+    </p>
+
     <h3 id="audit-actor">Actor &amp; claims</h3>
     <p>
         The persister reads the authenticated principal straight from the request scope

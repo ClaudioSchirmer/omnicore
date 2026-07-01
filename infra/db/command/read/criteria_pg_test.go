@@ -135,37 +135,55 @@ func TestPgVisitor_PlaceholderNumberingMonotonic(t *testing.T) {
 
 func TestScopeGate(t *testing.T) {
 	std := NewExternalSchema("t").SoftDelete("deleted_at")
-	if scopeGate(criteria.ScopeActive, std, testPGDialect{}) != "deleted_at IS NULL" {
+	if scopeGate(criteria.ScopeActive, std, testPGDialect{}, "") != "deleted_at IS NULL" {
 		t.Error("active")
 	}
-	if scopeGate(criteria.ScopeIncludeArchived, std, testPGDialect{}) != "" {
+	if scopeGate(criteria.ScopeIncludeArchived, std, testPGDialect{}, "") != "" {
 		t.Error("include")
 	}
-	if scopeGate(criteria.ScopeOnlyArchived, std, testPGDialect{}) != "deleted_at IS NOT NULL" {
+	if scopeGate(criteria.ScopeOnlyArchived, std, testPGDialect{}, "") != "deleted_at IS NOT NULL" {
 		t.Error("only")
 	}
 	// Renamed soft-delete column flows through the gate.
 	renamed := NewExternalSchema("t").SoftDelete("removed_at")
-	if scopeGate(criteria.ScopeActive, renamed, testPGDialect{}) != "removed_at IS NULL" {
+	if scopeGate(criteria.ScopeActive, renamed, testPGDialect{}, "") != "removed_at IS NULL" {
 		t.Error("renamed soft-delete column")
 	}
 	// No soft-delete declared → no gate under any scope.
 	off := NewExternalSchema("t")
-	if scopeGate(criteria.ScopeActive, off, testPGDialect{}) != "" || scopeGate(criteria.ScopeOnlyArchived, off, testPGDialect{}) != "" {
+	if scopeGate(criteria.ScopeActive, off, testPGDialect{}, "") != "" || scopeGate(criteria.ScopeOnlyArchived, off, testPGDialect{}, "") != "" {
 		t.Error("disabled soft-delete must yield no gate")
 	}
 }
 
 func TestChildScopeFilter(t *testing.T) {
 	std := NewExternalSchema("t").SoftDelete("deleted_at")
-	if childScopeFilter(criteria.ScopeActive, std, testPGDialect{}) != "AND deleted_at IS NULL" {
+	if childScopeFilter(criteria.ScopeActive, std, testPGDialect{}, "") != "AND deleted_at IS NULL" {
 		t.Error("active children gated")
 	}
-	if childScopeFilter(criteria.ScopeIncludeArchived, std, testPGDialect{}) != "" {
+	if childScopeFilter(criteria.ScopeIncludeArchived, std, testPGDialect{}, "") != "" {
 		t.Error("include: children unfiltered")
 	}
-	if childScopeFilter(criteria.ScopeOnlyArchived, std, testPGDialect{}) != "" {
+	if childScopeFilter(criteria.ScopeOnlyArchived, std, testPGDialect{}, "") != "" {
 		t.Error("only: children unfiltered (cascade visibility)")
+	}
+}
+
+// Under a JOIN that brings a second soft-deletable table into scope (a role's
+// SharedBase in scopeGate, or the role in the base-child loader), the
+// soft-delete column must be table-qualified so the bare reference is not
+// ambiguous (SQLSTATE 42702) — the same disambiguation the leading PK already
+// gets. With an empty qualifier the output stays bare (single-table path).
+func TestScopeGate_QualifiedUnderJoin(t *testing.T) {
+	std := NewExternalSchema("t").SoftDelete("deleted_at")
+	if got := scopeGate(criteria.ScopeActive, std, testPGDialect{}, "users"); got != "users.deleted_at IS NULL" {
+		t.Errorf("qualified active gate = %q, want users.deleted_at IS NULL", got)
+	}
+	if got := scopeGate(criteria.ScopeOnlyArchived, std, testPGDialect{}, "users"); got != "users.deleted_at IS NOT NULL" {
+		t.Errorf("qualified archived gate = %q", got)
+	}
+	if got := childScopeFilter(criteria.ScopeActive, std, testPGDialect{}, "addresses"); got != "AND addresses.deleted_at IS NULL" {
+		t.Errorf("qualified base-child filter = %q, want AND addresses.deleted_at IS NULL", got)
 	}
 }
 

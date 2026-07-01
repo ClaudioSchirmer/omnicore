@@ -53,8 +53,9 @@ func rowsState(archived bool) func(string, []any) (Rows, error) {
 				*p = "role-1"
 			}
 			if archived {
-				if p, ok := dest[1].(*[]byte); ok {
-					*p = []byte("2020-01-01T00:00:00Z")
+				// findRoleByFK now projects `deleted_at IS NOT NULL` → a bool.
+				if p, ok := dest[1].(*bool); ok {
+					*p = true
 				}
 			}
 			return nil
