@@ -120,3 +120,55 @@ func TestValidateMongoSpec_NoSchema_ShapeGuardSkipped(t *testing.T) {
 		t.Fatalf("shape guard must be skipped without a schema; got: %v", err)
 	}
 }
+
+// A SharedBase role's document carries the base's columns (mergeSharedBase) and
+// its siblings' columns (mergeOwnerSiblings) FLAT — the emitted-column set the
+// shape guard checks against must include them, matching what buildExportNode
+// walks. Regression for the gap where collectComposedColumns only knew the
+// role's own columns and rejected a legitimate index on a base/sibling field.
+type sbShapeRole struct {
+	ID         string
+	Document   string
+	Name       string
+	Email      string
+	UserName   string
+	EmailNotif *bool
+}
+
+func sbShapeView() *ViewDefinition {
+	base := core.NewSharedBase("persons").
+		PK("id").
+		Field("Document", "document").
+		Field("Name", "name").
+		Field("Email", "email").
+		NaturalKey("document")
+	role := core.NewTableSchema[sbShapeRole]("users").
+		PK("id").
+		SharedBase(base, "person_id").
+		Field("UserName", "user_name").
+		Sibling(core.NewSiblingSchema[sbShapeRole]("user_configurations").
+			Field("EmailNotif", "email_notification"))
+	return View("users").Version(1).Root("users").Schema(role)
+}
+
+func TestValidateMongoSpec_IndexKey_SharedBaseAndSiblingColumns_OK(t *testing.T) {
+	v := sbShapeView().Indexes(
+		Index("document"),           // SharedBase natural-key column
+		Index("email"),              // SharedBase column
+		Index("email_notification"), // Sibling column
+		Index("user_name"),          // role's own column
+		TextIndex("name", "email"),  // TextIndex over SharedBase columns
+	)
+	if err := v.ValidateMongoSpec(); err != nil {
+		t.Fatalf("index keys on SharedBase/Sibling columns are emitted; want nil, got: %v", err)
+	}
+}
+
+func TestValidateMongoSpec_IndexKey_SharedBase_DeadKeyStillRejected(t *testing.T) {
+	// The base/sibling awareness must not turn the guard off: a truly-absent
+	// column is still rejected.
+	v := sbShapeView().Indexes(Index("cpf"))
+	if err := v.ValidateMongoSpec(); err == nil {
+		t.Fatal("expected error: 'cpf' is not a column any level emits")
+	}
+}

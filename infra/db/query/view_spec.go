@@ -607,10 +607,15 @@ func (v *ViewDefinition) composedColumnSet() map[string]struct{} {
 }
 
 // collectComposedColumns walks a schema + its embeds, adding every physical
-// column path into set. The embed's whole subtree is addressable at its doc
-// field (e.g. "addresses"), and each nested column is prefixed by it (e.g.
-// "addresses.zip_code"). FK + the three managed columns are included so a
-// legitimately-indexed soft-delete / FK column is not flagged.
+// column path into set. It mirrors what the composer actually emits (and what
+// buildExportNode walks): the node's own columns, PLUS the FLAT columns of each
+// sibling and of the SharedBase (mergeOwnerSiblings / mergeSharedBase merge
+// them at this level), PLUS the base's native children nested under their
+// derived segment (mergeSharedBaseChildren), PLUS external embeds. The embed's
+// whole subtree is addressable at its doc field (e.g. "addresses"), and each
+// nested column is prefixed by it (e.g. "addresses.zip_code"). FK + the three
+// managed columns are included so a legitimately-indexed soft-delete / FK
+// column is not flagged.
 func collectComposedColumns(schema *core.TableSchema, embeds []embedDef, prefix string, set map[string]struct{}) {
 	add := func(col string) {
 		if col == "" {
@@ -622,15 +627,28 @@ func collectComposedColumns(schema *core.TableSchema, embeds []embedDef, prefix 
 			set[prefix+"."+col] = struct{}{}
 		}
 	}
-	if schema != nil {
-		add(schema.PKColumn())
-		add(schema.FKColumn())
-		sd, _ := schema.SoftDeleteColumn()
+	addSchemaFlat := func(s *core.TableSchema) {
+		add(s.PKColumn())
+		add(s.FKColumn())
+		sd, _ := s.SoftDeleteColumn()
 		add(sd)
-		add(schema.CreatedAtColumn())
-		add(schema.UpdatedAtColumn())
-		for _, col := range schema.MappedColumns() {
+		add(s.CreatedAtColumn())
+		add(s.UpdatedAtColumn())
+		for _, col := range s.MappedColumns() {
 			add(col)
+		}
+	}
+	if schema != nil {
+		addSchemaFlat(schema)
+		// Siblings merge FLAT into this node (mergeOwnerSiblings) — their columns
+		// are columns of this level.
+		for _, sib := range schema.Siblings() {
+			addSchemaFlat(sib)
+		}
+		// The SharedBase merges FLAT too (mergeSharedBase) — every base column
+		// (the base PK the merge skips is already covered by the role's PK).
+		if base, _, ok := schema.SharedBaseRef(); ok {
+			addSchemaFlat(base)
 		}
 	}
 	for _, e := range embeds {
@@ -643,6 +661,21 @@ func collectComposedColumns(schema *core.TableSchema, embeds []embedDef, prefix 
 			childPrefix = prefix + "." + e.field
 		}
 		collectComposedColumns(e.source.schema, e.source.embeds, childPrefix, set)
+	}
+	// The SharedBase's native children (base-children) nest under their derived
+	// segment (mergeSharedBaseChildren) — the same shape as an embed subtree.
+	if schema != nil {
+		if base, _, ok := schema.SharedBaseRef(); ok {
+			for _, bc := range base.ChildSchemas() {
+				seg := childDocSegment(bc)
+				add(seg)
+				childPrefix := seg
+				if prefix != "" {
+					childPrefix = prefix + "." + seg
+				}
+				collectComposedColumns(bc, nil, childPrefix, set)
+			}
+		}
 	}
 }
 

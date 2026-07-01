@@ -155,6 +155,19 @@ with `1.0.0`.
   covered (`Child(...)` rejects a type-less child at declaration), so the
   invariant *root + every child type-anchored* is now complete.
 
+### Fixed
+
+- **Mongo view index/`$jsonSchema.required` validation now recognizes SharedBase,
+  sibling and base-child columns.** `ValidateMongoSpec`'s shape guard rejects an
+  index key (or a `required` entry) that names no column the composer emits. Its
+  emitted-column set (`collectComposedColumns`) walked only the view root's own
+  columns + declared embeds, so a legitimate index on a column the composer merges
+  FLAT from a sibling or the SharedBase (e.g. the natural key), or on a base-child
+  nested column, was wrongly flagged as "never used" — blocking a SharedBase role
+  view at boot. The emitted-column walk now mirrors `buildExportNode`: role
+  columns, then each sibling's and the SharedBase's columns FLAT at the same
+  level, then the base's native children nested under their derived segment.
+
 ### Changed
 
 - **BREAKING: view embeds compose external data only; tabular export walks the
