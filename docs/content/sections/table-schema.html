@@ -521,13 +521,17 @@ func StudentSchema() *core.TableSchema {
 <p>
     <strong>Merging base children on the warm upsert — reject or merge is the consumer's call, and it changes the
     endpoint's behavior.</strong> On a warm insert the loaded aggregate carries the identity's existing base-children as
-    <code>Constructor</code> items, and the Cmd's <code>ApplyTo</code> decides what a re-sent duplicate means. A root
+    <code>Constructor</code> items, and the Cmd's <code>ApplyTo</code> is the hook where that re-sent duplicate is
+    resolved — but the resolution itself belongs in a <em>root method</em> that <code>ApplyTo</code> delegates to, not
+    inline in the mapper. The invariant spans the aggregate's children, so orthodox DDD puts it on the root;
+    <code>ApplyTo</code> stays a pure mapper that just calls it. A root
     method that <em>rejects</em> with a notification (e.g. a duplicate-address rule) turns the warm POST into a 422
     whenever a client re-sends a child the identity already has — correct for "this request is malformed" semantics, but
     it makes the cross-role POST non-idempotent. A root method that <em>silently skips</em> the duplicate (merge) keeps
     the POST idempotent for known children — the recommended shape for roles over a shared base. The reference consumer
     demonstrates both: <code>User.AddAddress</code> rejects (its surface cannot reach the warm path — the role 409s
-    first), <code>Employee.AddAddress</code> merges.
+    first), <code>Employee.AddAddress</code> merges — and each command's <code>ApplyTo</code> only calls its root's
+    <code>AddAddress</code>, so the reject-vs-merge logic lives in the entity, not in the command.
 </p>
 
 <div class="box">
