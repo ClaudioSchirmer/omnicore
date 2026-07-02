@@ -13,14 +13,14 @@ import (
 // ─── decideDrift — the 8 branches of §9.1 ────────────────────────────────────
 
 func TestDecideDrift_FreshInit_RegistryAbsentMongoEmpty(t *testing.T) {
-	got := decideDrift(nil, false, 1, "rh", "ch")
+	got := decideDrift(nil, false, false, 1, "rh", "ch")
 	if got != DriftFreshInit {
 		t.Errorf("decideDrift(registry=nil, populated=false) = %v, want DriftFreshInit", got)
 	}
 }
 
 func TestDecideDrift_AlienData_RegistryAbsentMongoPopulated(t *testing.T) {
-	got := decideDrift(nil, true, 1, "rh", "ch")
+	got := decideDrift(nil, true, false, 1, "rh", "ch")
 	if got != DriftAlienData {
 		t.Errorf("decideDrift(registry=nil, populated=true) = %v, want DriftAlienData", got)
 	}
@@ -28,23 +28,34 @@ func TestDecideDrift_AlienData_RegistryAbsentMongoPopulated(t *testing.T) {
 
 func TestDecideDrift_None_RegistryMatchesAndMongoPopulated(t *testing.T) {
 	reg := &ViewRegistryRow{Version: 1, RebuildHash: "rh", CombinedHash: "ch"}
-	got := decideDrift(reg, true, 1, "rh", "ch")
+	got := decideDrift(reg, true, true, 1, "rh", "ch")
 	if got != DriftNone {
 		t.Errorf("decideDrift(combined matches, populated) = %v, want DriftNone", got)
 	}
 }
 
-func TestDecideDrift_MongoWiped_RegistryMatchesButMongoEmpty(t *testing.T) {
+func TestDecideDrift_MongoWiped_RegistryMatchesMongoEmptySorPopulated(t *testing.T) {
 	reg := &ViewRegistryRow{Version: 1, RebuildHash: "rh", CombinedHash: "ch"}
-	got := decideDrift(reg, false, 1, "rh", "ch")
+	got := decideDrift(reg, false, true, 1, "rh", "ch")
 	if got != DriftMongoWiped {
-		t.Errorf("decideDrift(combined matches, populated=false) = %v, want DriftMongoWiped", got)
+		t.Errorf("decideDrift(combined matches, mongo empty, SoR populated) = %v, want DriftMongoWiped", got)
+	}
+}
+
+// A view whose aggregate holds no rows yet is EMPTY ON BOTH SIDES — that is
+// the correct mirror, not a wipe. Without the SoR probe this case rebuilt on
+// every boot (spurious rebuild with from_hash == to_hash).
+func TestDecideDrift_None_RegistryMatchesBothSidesEmpty(t *testing.T) {
+	reg := &ViewRegistryRow{Version: 1, RebuildHash: "rh", CombinedHash: "ch"}
+	got := decideDrift(reg, false, false, 1, "rh", "ch")
+	if got != DriftNone {
+		t.Errorf("decideDrift(combined matches, mongo empty, SoR empty) = %v, want DriftNone", got)
 	}
 }
 
 func TestDecideDrift_ArtifactOnly_SameVersionSameRebuildDifferentCombined(t *testing.T) {
 	reg := &ViewRegistryRow{Version: 1, RebuildHash: "rh", CombinedHash: "ch_old"}
-	got := decideDrift(reg, true, 1, "rh", "ch_new")
+	got := decideDrift(reg, true, true, 1, "rh", "ch_new")
 	if got != DriftArtifactOnly {
 		t.Errorf("decideDrift(same version, same rebuild, combined differs) = %v, want DriftArtifactOnly", got)
 	}
@@ -52,7 +63,7 @@ func TestDecideDrift_ArtifactOnly_SameVersionSameRebuildDifferentCombined(t *tes
 
 func TestDecideDrift_ForgotToBump_SameVersionDifferentRebuild(t *testing.T) {
 	reg := &ViewRegistryRow{Version: 1, RebuildHash: "rh_old", CombinedHash: "ch_old"}
-	got := decideDrift(reg, true, 1, "rh_new", "ch_new")
+	got := decideDrift(reg, true, true, 1, "rh_new", "ch_new")
 	if got != DriftForgotToBump {
 		t.Errorf("decideDrift(same version, rebuild differs) = %v, want DriftForgotToBump", got)
 	}
@@ -60,7 +71,7 @@ func TestDecideDrift_ForgotToBump_SameVersionDifferentRebuild(t *testing.T) {
 
 func TestDecideDrift_RebuildRequired_RegistryVersionLowerThanSpec(t *testing.T) {
 	reg := &ViewRegistryRow{Version: 1, RebuildHash: "rh_old", CombinedHash: "ch_old"}
-	got := decideDrift(reg, true, 2, "rh_new", "ch_new")
+	got := decideDrift(reg, true, true, 2, "rh_new", "ch_new")
 	if got != DriftRebuildRequired {
 		t.Errorf("decideDrift(registry v1, spec v2) = %v, want DriftRebuildRequired", got)
 	}
@@ -68,7 +79,7 @@ func TestDecideDrift_RebuildRequired_RegistryVersionLowerThanSpec(t *testing.T) 
 
 func TestDecideDrift_Downgrade_RegistryVersionHigherThanSpec(t *testing.T) {
 	reg := &ViewRegistryRow{Version: 5, RebuildHash: "rh_new", CombinedHash: "ch_new"}
-	got := decideDrift(reg, true, 3, "rh_old", "ch_old")
+	got := decideDrift(reg, true, true, 3, "rh_old", "ch_old")
 	if got != DriftDowngrade {
 		t.Errorf("decideDrift(registry v5, spec v3) = %v, want DriftDowngrade", got)
 	}

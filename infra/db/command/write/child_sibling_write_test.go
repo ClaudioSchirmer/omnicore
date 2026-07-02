@@ -32,7 +32,7 @@ func (e *csRoot) Modes() []domain.EntityMode {
 	return []domain.EntityMode{domain.ModeInsert, domain.ModeUpdate, domain.ModeDelete}
 }
 func (e *csRoot) BuildRules(string, domain.Service, *domain.Rules) {}
-func (e *csRoot) GetAggregateRoot() *domain.AggregateRoot { return &e.AggregateRoot }
+func (e *csRoot) GetAggregateRoot() *domain.AggregateRoot          { return &e.AggregateRoot }
 func (e *csRoot) AggregateChildren() []domain.AggregateValueObject {
 	return []domain.AggregateValueObject{csChild{}}
 }

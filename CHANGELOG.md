@@ -193,8 +193,62 @@ with `1.0.0`.
   covered (`Child(...)` rejects a type-less child at declaration), so the
   invariant *root + every child type-anchored* is now complete.
 
+### Fixed
+
+- **Archived aggregate children no longer leak into default reads.** The
+  composed Mongo document deliberately mirrors the relational store (archived
+  child rows included, each with its soft-delete timestamp — that is what makes
+  `?includeArchived=true` able to show them), but the reader applied the
+  `deleted_at: null` gate only to the ROOT document, so REST, GraphQL and the
+  CSV/XLSX exports returned archived children on every default read (e.g. 6
+  dependents where 2 are active after PUT full-replaces). The
+  `MongoViewReader` now strips archived entries from the nested
+  aggregate-child collections (base-children and own children; explicitly
+  declared embeds are untouched — a cross-service source's lifecycle belongs
+  upstream) on both `ReadPage` and `ReadByID` unless `IncludeArchived` is set.
+- **A shared base's managed columns no longer clobber the role's on the
+  composed document.** `mergeSharedBase` copied every base column over the role
+  doc, so the base's `deleted_at` (NULL while a sibling role keeps the identity
+  active) overwrote the role's archived timestamp — an archived role stayed
+  visible on default reads and `?includeArchived` was indistinguishable — and
+  every role doc carried the person's `created_at`/`updated_at` instead of its
+  own. The base's soft-delete and managed timestamp columns are now skipped
+  whenever the role schema declares its own column of the same kind; business
+  fields keep merging flat. Recompose (or bump the view `Version`) after
+  upgrading so already-stored docs pick up the corrected shape.
+- **A legitimately EMPTY view no longer rebuilds on every boot.** The drift
+  classifier read "registry matches + collection empty" as `DriftMongoWiped`
+  and rebuilt — but a view whose aggregate has no rows yet is empty on BOTH
+  sides, and it re-ran the wipe recovery (advisory lock + rebuild log, from and
+  to hashes identical) on every single boot. `DetectViewDrift` now also probes
+  the view's ROOT table (`SELECT 1 … LIMIT 1` through the neutral
+  Querier/Dialect): collection empty + SoR empty → `DriftNone`; the rebuild
+  fires only when the SoR actually has rows to mirror (a real wipe).
+- **The reader hands Go-typed values — BSON datetimes become `time.Time`.**
+  Consumers of the raw document (the tabular export, `RawDoc` handlers)
+  received driver-typed BSON datetimes and rendered epoch milliseconds
+  (`1425945600000`) where the JSON surface showed RFC3339. The
+  `MongoViewReader` now normalizes BSON scalars recursively (datetime →
+  `time.Time` UTC) before translation, the CSV encoder renders `time.Time` as
+  RFC3339 (matching the JSON surface), and the XLSX encoder's existing
+  typed-cell pass-through finally receives the `time.Time` it was written for.
+
 ### Changed
 
+- **SharedBase role INSERT no longer revives an archived role.** Soft-delete is
+  delete on the insert probe exactly like on every other read/write path: an
+  ARCHIVED role row is invisible to the upsert's existence matrix, so the
+  insert proceeds and the schema's own constraints arbitrate the collision with
+  the physical remnant — in the shared-PK model the primary key vetoes it
+  (mapped by the repository's `ConstraintBinding`, typically to the same 409 as
+  the active conflict); a separate-FK model decides through its own unique
+  index. Bringing an archived role back is the explicit `/unarchive` verb's
+  job, never a POST side effect. The BASE is unchanged and deliberately
+  different: its lifecycle is derived (convergence), so the identity row is
+  found — and reactivated by a new active role — regardless of its own archived
+  state, keeping the `KeepOrphan` dormancy contract (dormant identity revived
+  when the natural key returns) honest. (Amends the unreleased SharedBase
+  feature; `reviveRole` is gone from the write path.)
 - **BREAKING: view embeds compose external data only; tabular export walks the
   full schema tree.** `Embed`/`EmbedMany` now boot-reject a write-anchored
   (`NewTableSchema[T]`) source — they compose ONLY external data (another

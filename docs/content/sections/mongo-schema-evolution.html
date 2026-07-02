@@ -74,7 +74,7 @@ processing  ──UPDATE status='done', version, hashes, applied_at,
         <tr><td><code>DriftNone</code></td><td>Registry combined hash matches</td><td>No-op</td><td>No-op</td></tr>
         <tr><td><code>DriftFreshInit</code></td><td>No registry row + Mongo absent/empty</td><td>Write registry row (status='done')</td><td><strong>Abort</strong> §14.9</td></tr>
         <tr><td><code>DriftAlienData</code></td><td>No registry row + Mongo populated</td><td><strong>Always abort</strong> §14.4</td><td><strong>Abort</strong> §14.4</td></tr>
-        <tr><td><code>DriftMongoWiped</code></td><td>Registry matches + Mongo absent/empty</td><td>Rebuild</td><td><strong>Abort</strong> §14.7</td></tr>
+        <tr><td><code>DriftMongoWiped</code></td><td>Registry matches + Mongo empty + the view's ROOT TABLE has rows (an <code>O(1)</code> <code>SELECT 1 … LIMIT 1</code> probe through the neutral Querier). A collection that is empty because the aggregate simply has no rows yet is empty on BOTH sides — that is the correct mirror, classified <code>DriftNone</code>, never a rebuild.</td><td>Rebuild</td><td><strong>Abort</strong> §14.7</td></tr>
         <tr><td><code>DriftArtifactOnly</code></td><td>Same version + rebuild_hash matches + combined differs</td><td>UPDATE registry (no doc rewrite)</td><td><strong>Abort</strong> §14.8</td></tr>
         <tr><td><code>DriftForgotToBump</code></td><td>Same version + rebuild_hash differs</td><td><strong>Always abort</strong> §14.5</td><td><strong>Abort</strong> §14.5</td></tr>
         <tr><td><code>DriftRebuildRequired</code></td><td>Registry version &lt; code version</td><td>Rebuild</td><td><strong>Abort</strong> §14.3</td></tr>

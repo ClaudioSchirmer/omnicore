@@ -27,6 +27,11 @@ type viewEmbed struct {
 	goSegment string
 	docField  string
 	node      *ViewNode
+	// isChild marks a derived aggregate-child collection (a shared base's
+	// native child or a schema's own child) as opposed to an explicitly
+	// declared embed. Only child collections carry the aggregate's soft-delete
+	// lifecycle, so only they are subject to the reader's archived-entry strip.
+	isChild bool
 }
 
 // BuildViewNode assembles the translator tree for a view.
@@ -68,7 +73,7 @@ func newViewNode(schema *core.TableSchema, embeds []embedDef) *ViewNode {
 	if base, _, ok := schema.SharedBaseRef(); ok {
 		for _, bc := range base.ChildSchemas() {
 			seg := childDocSegment(bc)
-			ve := &viewEmbed{goSegment: seg, docField: seg, node: newViewNode(bc, nil)}
+			ve := &viewEmbed{goSegment: seg, docField: seg, node: newViewNode(bc, nil), isChild: true}
 			n.embeds[seg] = ve
 			n.embedsByDoc[seg] = ve
 		}
@@ -84,11 +89,73 @@ func newViewNode(schema *core.TableSchema, embeds []embedDef) *ViewNode {
 	// so a plain overwrite here never fires for a valid view.
 	for _, child := range schema.ChildSchemas() {
 		seg := childDocSegment(child)
-		ve := &viewEmbed{goSegment: seg, docField: seg, node: newViewNode(child, nil)}
+		ve := &viewEmbed{goSegment: seg, docField: seg, node: newViewNode(child, nil), isChild: true}
 		n.embeds[seg] = ve
 		n.embedsByDoc[seg] = ve
 	}
 	return n
+}
+
+// ChildSoftDeletePaths returns, for every DERIVED aggregate-child collection
+// (base-children + own children) that declares a soft-delete column, the doc
+// field → soft-delete column pair. The reader consults it to auto-include the
+// child's soft-delete column when a consumer projection narrows the child
+// subfields — StripArchivedChildren can only hide what the projected entries
+// still carry.
+func (n *ViewNode) ChildSoftDeletePaths() map[string]string {
+	if !n.hasSchema() {
+		return nil
+	}
+	out := map[string]string{}
+	for docField, emb := range n.embedsByDoc {
+		if !emb.isChild {
+			continue
+		}
+		if sdCol, ok := emb.node.SoftDeleteColumn(); ok {
+			out[docField] = sdCol
+		}
+	}
+	return out
+}
+
+// StripArchivedChildren removes ARCHIVED entries from the doc's nested
+// aggregate-child collections — the read-time counterpart, one level down, of
+// the root-level soft-delete gate. The stored document deliberately mirrors
+// the relational store (archived children INCLUDED, each carrying its
+// soft-delete timestamp, so an ?includeArchived read can surface them); a
+// default read must hide them exactly like the write-side loader hydrates only
+// active children. Operates on the PHYSICAL (column-keyed) doc, before
+// ToGoDoc: each entry's soft-delete column comes from the child's own schema.
+// Scope: derived child collections only (base-children + own children);
+// explicitly declared embeds are untouched — a cross-service source's
+// lifecycle belongs to its upstream. Mutates doc in place.
+func (n *ViewNode) StripArchivedChildren(doc map[string]any) {
+	if !n.hasSchema() || doc == nil {
+		return
+	}
+	for docField, emb := range n.embedsByDoc {
+		if !emb.isChild {
+			continue
+		}
+		sdCol, ok := emb.node.SoftDeleteColumn()
+		if !ok {
+			continue
+		}
+		items, ok := asAnySlice(doc[docField])
+		if !ok {
+			continue
+		}
+		kept := make([]any, 0, len(items))
+		for _, item := range items {
+			if m, isMap := asStringMap(item); isMap {
+				if v, present := m[sdCol]; present && v != nil {
+					continue
+				}
+			}
+			kept = append(kept, item)
+		}
+		doc[docField] = kept
+	}
 }
 
 // childDocSegment is the derived parent-side Go segment (and doc field) of a

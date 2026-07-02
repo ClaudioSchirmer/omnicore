@@ -43,25 +43,14 @@ func roleTestSchema() *TableSchema {
 		SharedBase(base, "pessoa_id")
 }
 
-// rowsNone scripts findRoleByFK to find no role; rowsActive/rowsArchived script
-// one row with a null / non-null soft-delete.
+// rowsNone scripts the active-role probe to find nothing (no role, or only an
+// archived remnant — invisible to the probe); rowsFound scripts one ACTIVE row.
 func rowsNone() func(string, []any) (Rows, error) {
 	return func(string, []any) (Rows, error) { return &fakeRows{remaining: 0}, nil }
 }
-func rowsState(archived bool) func(string, []any) (Rows, error) {
+func rowsFound() func(string, []any) (Rows, error) {
 	return func(string, []any) (Rows, error) {
-		return &fakeRows{remaining: 1, scan: func(dest []any) error {
-			if p, ok := dest[0].(*string); ok {
-				*p = "role-1"
-			}
-			if archived {
-				// findRoleByFK now projects `deleted_at IS NOT NULL` → a bool.
-				if p, ok := dest[1].(*bool); ok {
-					*p = true
-				}
-			}
-			return nil
-		}}, nil
+		return &fakeRows{remaining: 1, scan: func(dest []any) error { return nil }}, nil
 	}
 }
 
@@ -89,7 +78,7 @@ func TestInsertRoleWithBase_New(t *testing.T) {
 
 func TestInsertRoleWithBase_ActiveConflict409(t *testing.T) {
 	ins, _ := domain.GetInsertable(&roleTestEntity{Name: "Ana", Document: "D1", Matricula: "M1"}, nil, "GetUpsertable")
-	tx := &recTx{queryFn: rowsState(false)} // active role exists
+	tx := &recTx{queryFn: rowsFound()} // active role exists
 	be := newFlatBE(&recBeginner{tx: tx})
 	_, err := be.Insert(newBuilderCtx(), ins, roleTestSchema(), firingHook)
 	var carrier domain.NotificationCarrier
@@ -102,19 +91,47 @@ func TestInsertRoleWithBase_ActiveConflict409(t *testing.T) {
 	}
 }
 
-func TestInsertRoleWithBase_ArchivedRevives(t *testing.T) {
+// An ARCHIVED role is INVISIBLE to the insert probe (soft-delete is delete on
+// this path like on every other): the probe — which now filters deleted_at IS
+// NULL in SQL — finds nothing, so the write proceeds as a plain INSERT and the
+// schema's own constraints arbitrate the collision with the physical remnant
+// (asserted E2E against real backends; the fake here scripts the probe miss).
+// There is no revive UPDATE anywhere in the statement stream anymore —
+// reviving a role is the explicit /unarchive verb's job.
+func TestInsertRoleWithBase_ArchivedRemnantIsInvisible_InsertProceeds(t *testing.T) {
 	ins, _ := domain.GetInsertable(&roleTestEntity{Name: "Ana", Document: "D1", Matricula: "M1"}, nil, "GetUpsertable")
-	tx := &recTx{queryFn: rowsState(true)} // archived role exists
+	tx := &recTx{queryFn: rowsNone()} // active-only probe: archived remnant → no row
 	be := newFlatBE(&recBeginner{tx: tx})
 	if _, err := be.Insert(newBuilderCtx(), ins, roleTestSchema(), firingHook); err != nil {
-		t.Fatalf("Insert (revive): %v", err)
+		t.Fatalf("Insert: %v", err)
 	}
-	// upsert + revive + outbox(role) + outbox(base) + audit = 5.
-	if len(tx.execs) != 5 {
-		t.Fatalf("expected 5 statements, got %d: %v", len(tx.execs), tx.execs)
+	if !strings.HasPrefix(tx.execs[1], "INSERT INTO aluno") {
+		t.Errorf("stmt[1] must be a plain role INSERT (no revive), got %q", tx.execs[1])
 	}
-	if !strings.HasPrefix(tx.execs[1], "UPDATE aluno SET deleted_at = NULL") {
-		t.Errorf("stmt[1] must revive the archived role, got %q", tx.execs[1])
+	if hasStmt(tx.execs, func(s string) bool {
+		return strings.Contains(s, "deleted_at = NULL") && strings.HasPrefix(s, "UPDATE aluno")
+	}) {
+		t.Errorf("no revive UPDATE may run on the insert path, got %v", tx.execs)
+	}
+}
+
+// The active-only probe carries the soft-delete predicate in its SQL — the
+// invisibility of archived rows is enforced by the QUERY, not by scanning.
+func TestFindActiveRoleByFK_ProbeFiltersArchivedInSQL(t *testing.T) {
+	var probed string
+	tx := &recTx{queryFn: func(sql string, _ []any) (Rows, error) {
+		if strings.Contains(sql, "FROM aluno") {
+			probed = sql
+		}
+		return &fakeRows{remaining: 0}, nil
+	}}
+	be := newFlatBE(&recBeginner{tx: tx})
+	ins, _ := domain.GetInsertable(&roleTestEntity{Name: "Ana", Document: "D1", Matricula: "M1"}, nil, "GetUpsertable")
+	if _, err := be.Insert(newBuilderCtx(), ins, roleTestSchema(), firingHook); err != nil {
+		t.Fatalf("Insert: %v", err)
+	}
+	if !strings.Contains(probed, "deleted_at IS NULL") {
+		t.Errorf("role probe must filter archived rows in SQL, got %q", probed)
 	}
 }
 

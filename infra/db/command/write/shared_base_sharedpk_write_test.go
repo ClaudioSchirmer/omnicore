@@ -58,10 +58,10 @@ func TestInsertRoleWithBase_SharedPK_New(t *testing.T) {
 }
 
 // The existence matrix is unchanged under shared-PK: an active role still conflicts
-// (409), found by findRoleByFK keying WHERE id = baseID.
+// (409), found by the active-role probe keying WHERE id = baseID.
 func TestInsertRoleWithBase_SharedPK_ActiveConflict409(t *testing.T) {
 	ins, _ := domain.GetInsertable(&roleTestEntity{Name: "Ana", Document: "D1", Matricula: "M1"}, nil, "GetUpsertable")
-	tx := &recTx{queryFn: rowsState(false)} // active role exists
+	tx := &recTx{queryFn: rowsFound()} // active role exists
 	be := newFlatBE(&recBeginner{tx: tx})
 	_, err := be.Insert(newBuilderCtx(), ins, roleTestSchemaSharedPK(), firingHook)
 	var carrier domain.NotificationCarrier
@@ -70,17 +70,21 @@ func TestInsertRoleWithBase_SharedPK_ActiveConflict409(t *testing.T) {
 	}
 }
 
-// An archived role revives under shared-PK, keyed WHERE id = baseID.
-func TestInsertRoleWithBase_SharedPK_ArchivedRevives(t *testing.T) {
+// Under shared-PK an ARCHIVED remnant is likewise invisible to the probe: the
+// insert proceeds keyed on the deterministic base id and the PRIMARY KEY
+// arbitrates the collision on a real backend (mapped by the repository's
+// ConstraintBinding, e.g. to a 409). No revive UPDATE exists on this path.
+func TestInsertRoleWithBase_SharedPK_ArchivedRemnantIsInvisible_InsertProceeds(t *testing.T) {
 	ins, _ := domain.GetInsertable(&roleTestEntity{Name: "Ana", Document: "D1", Matricula: "M1"}, nil, "GetUpsertable")
-	tx := &recTx{queryFn: rowsState(true)} // archived role exists
+	tx := &recTx{queryFn: rowsNone()} // active-only probe: archived remnant → no row
 	be := newFlatBE(&recBeginner{tx: tx})
 	if _, err := be.Insert(newBuilderCtx(), ins, roleTestSchemaSharedPK(), firingHook); err != nil {
-		t.Fatalf("Insert (revive): %v", err)
+		t.Fatalf("Insert: %v", err)
 	}
-	// The revive branch is keyed WHERE fkCol = baseID, which collapses to
-	// WHERE id = baseID under shared-PK — the role revives instead of inserting anew.
-	if !hasStmt(tx.execs, func(s string) bool { return strings.HasPrefix(s, "UPDATE aluno SET deleted_at = NULL") }) {
-		t.Errorf("archived role must revive via UPDATE, got %v", tx.execs)
+	if !hasStmt(tx.execs, func(s string) bool { return strings.HasPrefix(s, "INSERT INTO aluno") }) {
+		t.Errorf("insert must proceed as a plain INSERT under shared-PK, got %v", tx.execs)
+	}
+	if hasStmt(tx.execs, func(s string) bool { return strings.HasPrefix(s, "UPDATE aluno SET deleted_at = NULL") }) {
+		t.Errorf("no revive UPDATE may run on the insert path, got %v", tx.execs)
 	}
 }

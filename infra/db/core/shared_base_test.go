@@ -67,7 +67,9 @@ func TestSharedBase_ReadTranslationAndScanPlan(t *testing.T) {
 }
 
 func TestSharedBase_BootGuards(t *testing.T) {
-	role := func() *TableSchema { return NewTableSchema[schemaSample]("aluno").PK("id").Field("Removed", "matricula") }
+	role := func() *TableSchema {
+		return NewTableSchema[schemaSample]("aluno").PK("id").Field("Removed", "matricula")
+	}
 
 	assertPanics(t, "NaturalKey on a non-shared-base", func() {
 		NewTableSchema[schemaSample]("t").PK("id").NaturalKey("email")

@@ -256,6 +256,22 @@ func (r *MongoViewReader) ReadPage(ctx context.Context, view string, c queries.R
 	// PrevCursor. Strip them from the returned doc after the cursor build so
 	// the wire shape stays exactly as the consumer asked.
 	autoIncluded := projectionAutoIncluded(colProj, colSort)
+	// A consumer projection that narrows a derived child collection's
+	// subfields (?fields=dependents.name / a GraphQL selection set) would
+	// strip the child's soft-delete column from the returned entries — and
+	// the default-read archived-entry strip below can only hide what the
+	// entries still carry. Auto-include each projected child's soft-delete
+	// column, and remember it for post-strip removal so the wire shape still
+	// matches the consumer's request exactly.
+	childSDCleanup := map[string]string{}
+	if len(colProj) > 0 && !c.IncludeArchived {
+		for docField, sdCol := range node.ChildSoftDeletePaths() {
+			if projectionTouchesField(colProj, docField) {
+				autoIncluded = append(autoIncluded, docField+"."+sdCol)
+				childSDCleanup[docField] = sdCol
+			}
+		}
+	}
 	if len(colProj) > 0 {
 		findOpts.SetProjection(buildProjection(colProj, autoIncluded))
 	}
@@ -320,7 +336,28 @@ func (r *MongoViewReader) ReadPage(ctx context.Context, view string, c queries.R
 
 	items := make([]map[string]any, 0, len(docs))
 	for _, d := range docs {
-		items = append(items, node.ToGoDoc(map[string]any(d)))
+		m := map[string]any(d)
+		normalizeBSONValues(m)
+		// The root-level soft-delete gate ran in the Mongo filter; the same
+		// default-read contract applies one level down — archived entries in
+		// the nested aggregate-child collections are stripped unless the
+		// caller asked for archived data.
+		if !c.IncludeArchived {
+			node.StripArchivedChildren(m)
+		}
+		// Remove the auto-included child soft-delete columns from the kept
+		// entries — the strip has already consumed them, and the consumer's
+		// projection did not ask for them.
+		for docField, sdCol := range childSDCleanup {
+			if entries, ok := m[docField].([]any); ok {
+				for _, e := range entries {
+					if em, ok := e.(map[string]any); ok {
+						delete(em, sdCol)
+					}
+				}
+			}
+		}
+		items = append(items, node.ToGoDoc(m))
 	}
 
 	isFirstForward := c.After == "" && c.Before == ""
@@ -373,7 +410,54 @@ func (r *MongoViewReader) ReadByID(ctx context.Context, view, id string, c queri
 	if err != nil {
 		return nil, false, err
 	}
-	return node.ToGoDoc(map[string]any(doc)), true, nil
+	m := map[string]any(doc)
+	normalizeBSONValues(m)
+	// Same default-read contract as ReadPage: archived entries in the nested
+	// aggregate-child collections are hidden unless archived data was asked for.
+	if !c.IncludeArchived {
+		node.StripArchivedChildren(m)
+	}
+	return node.ToGoDoc(m), true, nil
+}
+
+// normalizeBSONValues rewrites driver-specific BSON scalars into their plain
+// Go equivalents, recursively through nested maps and slices (the child
+// collections), so EVERY consumer downstream of the reader sees Go-typed
+// values: a BSON datetime becomes time.Time (UTC). The typed-Response JSON
+// path already tolerated the driver types via its unmarshal round-trip, but
+// consumers of the raw document — the tabular export, RawDoc handlers —
+// received bson.DateTime and rendered epoch milliseconds. The reader is the
+// membrane that promises Go vocabulary (it already translates column names);
+// values follow the same rule.
+func normalizeBSONValues(m map[string]any) {
+	for k, v := range m {
+		m[k] = normalizeBSONValue(v)
+	}
+}
+
+func normalizeBSONValue(v any) any {
+	switch t := v.(type) {
+	case bson.DateTime:
+		return t.Time().UTC()
+	case bson.M:
+		normalizeBSONValues(t)
+		return map[string]any(t)
+	case map[string]any:
+		normalizeBSONValues(t)
+		return t
+	case bson.A:
+		for i, item := range t {
+			t[i] = normalizeBSONValue(item)
+		}
+		return []any(t)
+	case []any:
+		for i, item := range t {
+			t[i] = normalizeBSONValue(item)
+		}
+		return t
+	default:
+		return v
+	}
 }
 
 // buildStableSortDoc produces the canonical sort document. `_id` is always
@@ -648,3 +732,15 @@ func translateFilterValue(v any) any {
 }
 
 var _ queries.ViewReader = (*MongoViewReader)(nil)
+
+// projectionTouchesField reports whether the (physical) projection references
+// the given top-level doc field — either whole ("Dependents") or any subfield
+// ("Dependents.name").
+func projectionTouchesField(colProj map[string]int, docField string) bool {
+	for key := range colProj {
+		if key == docField || strings.HasPrefix(key, docField+".") {
+			return true
+		}
+	}
+	return false
+}

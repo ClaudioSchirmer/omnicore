@@ -107,7 +107,11 @@ audit:
     <p>
         The <code>audit_events</code> table is provisioned unconditionally by the framework's
         embedded migration <code>0001</code> — even with <code>destinations: []</code> the table
-        exists; it just never receives a row. The companion knob
+        exists; it just never receives a row. For direct SQL consumers: the table's id columns
+        (<code>id</code>, <code>aggregate_id</code>, <code>thread_id</code>) are canonical UUID
+        TEXT on every backend (<code>CHAR(36)</code> on MySQL) — unlike the domain tables, which
+        store <code>BINARY(16)</code> on MySQL — so audit predicates compare against the plain
+        quoted UUID string on both dialects. The companion knob
         <code>auth.auditClaims</code> (a JWT-claim allowlist) lives under <code>auth:</code> because
         it is a security concern — it whitelists which claims leave the JWT envelope into
         <code>actorClaims</code>; it is not a routing knob.

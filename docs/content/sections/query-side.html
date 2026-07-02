@@ -69,7 +69,8 @@
    │                                              ↑
    │            AppContext-derived overlays (tenant_id, owner_id) + field restriction layer here
    │           └─► <span class="auto">mongo.MongoViewReader</span>: adapts Criteria → bson
-   │                 ├─► applies deleted_at=null if !IncludeArchived
+   │                 ├─► applies deleted_at=null if !IncludeArchived (root gate)
+   │                 ├─► strips archived entries from the nested aggregate-child arrays if !IncludeArchived
    │                 ├─► $text search if Search!=""
    │                 ├─► decode cursor → $gt/$lt on _id
    │                 └─► CountDocuments + Find(limit+1)

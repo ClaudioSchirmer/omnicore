@@ -609,8 +609,10 @@ func (l *AggregateLoader[T]) LoadSharedBaseIdentity(ctx context.Context, fresh T
 	// role already references this identity, a POST is a conflict — surface the
 	// canonical 409 here, before the handler re-applies the request, so it is not
 	// masked by a child-level validation (e.g. a re-sent address). An archived role
-	// is excluded and falls through to the persister's revive path. The persister's
-	// findRoleByFK + UNIQUE(fk) remain the in-TX race backstop.
+	// is excluded — soft-delete is delete, so the insert falls through and the
+	// schema's constraints arbitrate the collision with the remnant (there is no
+	// revival on POST; /unarchive is the explicit path back). The persister's
+	// active-role probe + UNIQUE(fk) remain the in-TX race backstop.
 	roleExists, err := l.activeRoleExists(ctx, fkCol, baseID)
 	if err != nil {
 		return fresh, false, err

@@ -463,8 +463,26 @@ func StudentSchema() *core.TableSchema {
     transaction — and it is <strong>never invisible</strong>: an actual purge writes its own audit event (the base table as
     <code>entityType</code>, kind <code>snapshot</code> with the shared fields) and its own <code>DELETED</code> outbox row,
     alongside the role's. A role <code>INSERT</code> upserts the identity and then applies a two-level existence matrix on
-    the role row: an existing <em>active</em> role for that identity is a conflict (409), an <em>archived</em> one is
-    revived, otherwise a new role row is inserted.
+    the role row: an existing <em>active</em> role for that identity is a conflict (409); an <em>archived</em> role is
+    <strong>invisible to the insert</strong> — soft-delete is delete here like on every other read/write path — so the
+    insert proceeds and the schema's own constraints arbitrate the collision with the physical remnant (in the shared-PK
+    model the primary key vetoes it, mapped by the repository's <code>ConstraintBinding</code> — typically to the same
+    409; a separate-FK model decides through its own unique index). Bringing an archived role back is the explicit
+    <code>/unarchive</code> verb's job, never a POST side effect. The BASE is different: its lifecycle is derived (it
+    converges from its roles), so the identity row is found — and reactivated by a new active role — regardless of its
+    own archived state; that automatic revival is what keeps the <code>KeepOrphan</code> dormancy contract honest.
+</p>
+
+<p>
+    <strong>Merging base children on the warm upsert — reject or merge is the consumer's call, and it changes the
+    endpoint's behavior.</strong> On a warm insert the loaded aggregate carries the identity's existing base-children as
+    <code>Constructor</code> items, and the Cmd's <code>ApplyTo</code> decides what a re-sent duplicate means. A root
+    method that <em>rejects</em> with a notification (e.g. a duplicate-address rule) turns the warm POST into a 422
+    whenever a client re-sends a child the identity already has — correct for "this request is malformed" semantics, but
+    it makes the cross-role POST non-idempotent. A root method that <em>silently skips</em> the duplicate (merge) keeps
+    the POST idempotent for known children — the recommended shape for roles over a shared base. The reference consumer
+    demonstrates both: <code>User.AddAddress</code> rejects (its surface cannot reach the warm path — the role 409s
+    first), <code>Employee.AddAddress</code> merges.
 </p>
 
 <div class="box">
@@ -480,6 +498,14 @@ func StudentSchema() *core.TableSchema {
     in another database. Note that a foreign table declaring <code>ON DELETE CASCADE</code> opts itself into the
     destruction — that is that schema's explicit choice, not a veto.
 </div>
+<p>
+    <strong>The composed read-model document is ROLE-scoped on its managed columns.</strong> The base's business fields
+    merge FLAT into each role's Mongo document, but its managed columns (soft-delete, <code>created_at</code>,
+    <code>updated_at</code>) never overwrite the role's own: the document represents the role, so its lifecycle timestamp
+    is the role's (an archived role stays visibly archived on its doc even while the identity remains active for a
+    sibling role) and its timestamps are the role row's, not the person's.
+</p>
+
 <p>
     <strong>Wiring.</strong> Because the insert must load any pre-existing identity before writing, a shared-base role uses
     <code>read.NewSharedBaseRoleRepository[T]</code> (which provides <code>LoadForSharedBaseInsert</code>) together with the

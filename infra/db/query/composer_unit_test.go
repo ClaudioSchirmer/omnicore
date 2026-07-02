@@ -330,3 +330,94 @@ func TestComposeAll_QueryError(t *testing.T) {
 		t.Fatal("expected query error from ComposeAll")
 	}
 }
+
+// composerRoleSchemaManaged mirrors composerRoleSchema with BOTH sides
+// declaring the managed columns (soft-delete + timestamps) — the collision the
+// A5 guard resolves in favor of the ROLE.
+func composerRoleSchemaManaged() *core.TableSchema {
+	base := core.NewSharedBase("pessoa").PK("id").Field("Name", "name").NaturalKey("name").
+		SoftDelete("deleted_at").CreatedAt("created_at").UpdatedAt("updated_at")
+	return core.NewTableSchema[*builderTestEntity]("aluno").
+		PK("id").
+		Field("Email", "email").
+		SoftDelete("deleted_at").
+		CreatedAt("created_at").
+		UpdatedAt("updated_at").
+		SharedBase(base, "pessoa_id")
+}
+
+// The base's managed columns must NOT clobber the role's on the composed doc:
+// the doc represents the ROLE — its lifecycle (an archived role stays visibly
+// archived even while the base is active for a sibling role) and its own
+// timestamps. Business fields keep merging flat.
+func TestCompose_SharedBase_ManagedColumnsStayRoleScoped(t *testing.T) {
+	eng := composerEngine(func(sql string, args []any) ([]map[string]any, error) {
+		switch {
+		case strings.Contains(sql, "FROM pessoa"):
+			return mapsFromColsData(
+				[]string{"id", "name", "deleted_at", "created_at", "updated_at"},
+				[][]any{{"p1", "Ana", nil, "2024-01-10", "2024-01-10"}}), nil
+		case strings.Contains(sql, "FROM aluno"):
+			return mapsFromColsData(
+				[]string{"id", "email", "pessoa_id", "deleted_at", "created_at", "updated_at"},
+				[][]any{{"a1", "a@x", "p1", "2026-07-01", "2026-06-30", "2026-07-01"}}), nil
+		}
+		return nil, nil
+	})
+	c := NewComposer(eng)
+	view := View("aluno").Version(1).Root("aluno").Schema(composerRoleSchemaManaged())
+
+	doc, err := c.Compose(context.Background(), view, "a1")
+	if err != nil {
+		t.Fatalf("Compose: %v", err)
+	}
+	if doc["name"] != "Ana" {
+		t.Errorf("base business field must merge flat, got name=%v", doc["name"])
+	}
+	if doc["deleted_at"] != "2026-07-01" {
+		t.Errorf("role's deleted_at must survive the base merge (role archived, base active), got %v", doc["deleted_at"])
+	}
+	if doc["created_at"] != "2026-06-30" || doc["updated_at"] != "2026-07-01" {
+		t.Errorf("role's timestamps must survive the base merge, got created=%v updated=%v",
+			doc["created_at"], doc["updated_at"])
+	}
+}
+
+// StripArchivedChildren removes archived entries from derived child
+// collections (default-read contract, one level down) and leaves everything
+// else — active entries, root fields — untouched.
+func TestViewNode_StripArchivedChildren(t *testing.T) {
+	child := core.NewTableSchema[csComposeVO]("aluno_notas").
+		PK("id").
+		FK("aluno_id").
+		Field("Label", "label").
+		SoftDelete("deleted_at")
+	root := core.NewTableSchema[*builderTestEntity]("aluno").
+		PK("id").
+		Field("Name", "name").
+		SoftDelete("deleted_at").
+		Child(child)
+	node := View("aluno").Version(1).Root("aluno").Schema(root).BuildViewNode()
+
+	seg := childDocSegment(child)
+	doc := map[string]any{
+		"id":   "a1",
+		"name": "Ana",
+		seg: []any{
+			map[string]any{"id": "n1", "label": "active", "deleted_at": nil},
+			map[string]any{"id": "n2", "label": "archived", "deleted_at": "2026-07-01"},
+		},
+	}
+	node.StripArchivedChildren(doc)
+	items, _ := doc[seg].([]any)
+	if len(items) != 1 {
+		t.Fatalf("expected 1 active child after strip, got %d: %v", len(items), doc[seg])
+	}
+	first, _ := items[0].(map[string]any)
+	if first["id"] != "n1" {
+		t.Errorf("the ACTIVE entry must survive, got %v", items[0])
+	}
+	if doc["name"] != "Ana" {
+		t.Errorf("root fields must stay untouched, got %v", doc["name"])
+	}
+}

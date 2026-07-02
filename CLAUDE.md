@@ -155,7 +155,7 @@ These constrain design decisions across the whole module. Each is detailed in th
 4. **Domain has zero IO** — pure types, validation, rules; cross-layer errors only via `domain.NotificationCarrier`.
 5. **Notifications are typed structs**; the human string comes from the translation layer at the boundary; `NotificationKey` (the struct name) and `Semantic` flow to the wire. Kernel notifications embed their layer's base (`Domain`/`Application`/`Infrastructure`NotificationBase) — never mix.
 6. **Every Archivable has a symmetric Unarchivable**; cascade root↔children is symmetric and universal.
-7. **Mongo mirrors the relational backend by default** — archived rows survive in the projection unless a view opts into `DeleteOnArchive()`.
+7. **Mongo mirrors the relational backend by default** — archived rows survive in the projection unless a view opts into `DeleteOnArchive()`; default reads hide them (the root `deleted_at` gate + the archived-entry strip on nested aggregate-child arrays), `?includeArchived` surfaces them.
 8. **`TableSchema` is the sole place physical names live** — mandatory, explicit, complete; an undeclared field is never persisted/scanned/audited; one declaration drives write + criteria + scan + Mongo view.
 9. **The relational layer is backend-agnostic** (Postgres AND MySQL via the engine seam). Say "the relational backend / SoR / control plane" — never "Postgres" for an agnostic concept. PG-only access is an explicit, documented escape hatch (`AsPostgres`, `UnwrapPgxTx`).
 10. **Integration events are at-least-once** — dedup is best-effort; consumer handlers must be idempotent. No outer TX on the receiver path (each `Repo.Method` opens its own short TX, identical to the HTTP path).

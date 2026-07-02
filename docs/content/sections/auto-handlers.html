@@ -216,7 +216,7 @@
     <p>Body behavior in <code>HandleCommandWithBody{,ID}</code>:</p>
     <ul>
         <li><strong>Strict handler (FullBody marker):</strong> missing body → 400 (all fields missing, semantic Schema); malformed JSON → 400 with <code>SchemaViolationNotification</code>; type mismatch → 400 with <code>SchemaViolationNotification</code> carrying the field's JSON path; missing field → 400 with one <code>RequiredFieldNotification</code> per field.</li>
-        <li><strong>Lenient handler (no marker):</strong> missing body OK (Request zero-value); malformed JSON → 400 with <code>SchemaViolationNotification</code>; partial body OK.</li>
+        <li><strong>Lenient handler (no marker):</strong> missing body OK (Request zero-value); malformed JSON → 400 with <code>SchemaViolationNotification</code>; partial body OK. An explicit JSON <code>null</code> is indistinguishable from an absent field (both decode to the nil pointer), so a PATCH can never assign NULL — it means "keep the current value". Assigning NULL to a nullable field is the strict PUT's job (field present as explicit null), or an intent-specific mini-PATCH command whose <code>ApplyPartiallyTo</code> assigns the nil.</li>
     </ul>
     <div class="note">
         <strong>HTTP error semantics</strong>: 400 = wire contract violated (Request schema doesn't match);

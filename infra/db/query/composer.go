@@ -210,6 +210,16 @@ func (c *Composer) mergeOwnChildren(ctx context.Context, doc Document, schema *c
 // document, fetched by the role's FK to the base's deterministic id. Like a
 // sibling, the base fields land at the role's level (the doc stays flat). The
 // base PK column equals the FK value already on the doc, so it is not re-copied.
+//
+// The base's MANAGED columns (soft-delete, created_at, updated_at) never
+// overwrite the role's own: the document represents the ROLE, whose lifecycle
+// and timestamps are authoritative (the base's are derived — it converges from
+// its roles). Without this guard, a two-role identity with ONE archived role
+// would compose the ACTIVE base's NULL deleted_at over the role's archived
+// timestamp, hiding the archival from the reader's soft-delete gate, and every
+// role doc would carry the person's creation timestamps instead of its own.
+// Each managed column of the base is skipped only when the role declares its
+// own column of the same kind.
 func (c *Composer) mergeSharedBase(ctx context.Context, doc Document, schema *core.TableSchema, includeArchived bool) error {
 	base, fkCol, ok := schema.SharedBaseRef()
 	if !ok {
@@ -226,8 +236,20 @@ func (c *Composer) mergeSharedBase(ctx context.Context, doc Document, schema *co
 	if row == nil {
 		return nil
 	}
+	skip := map[string]bool{base.PKColumn(): true}
+	if col, ok := base.SoftDeleteColumn(); ok {
+		if _, roleHas := schema.SoftDeleteColumn(); roleHas {
+			skip[col] = true
+		}
+	}
+	if col := base.CreatedAtColumn(); col != "" && schema.CreatedAtColumn() != "" {
+		skip[col] = true
+	}
+	if col := base.UpdatedAtColumn(); col != "" && schema.UpdatedAtColumn() != "" {
+		skip[col] = true
+	}
 	for col, val := range row {
-		if col == base.PKColumn() {
+		if skip[col] {
 			continue
 		}
 		doc[col] = val

@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"reflect"
-	"strings"
 
 	"github.com/google/uuid"
 
@@ -20,9 +19,19 @@ import (
 // existence (design §8.3/§8.4):
 //
 //   - base identity: id = UUIDv5(naturalKey) → UPSERT (insert-or-update shared
-//     fields, last-write-wins). No read-back: app and infra derive the same id.
+//     fields, last-write-wins). The base is found (and reactivated) regardless of
+//     its own soft-delete state — its lifecycle is DERIVED from the roles
+//     (convergence below), and the KeepOrphan dormancy contract depends on the
+//     natural key finding its way back. No read-back: app and infra derive the
+//     same id.
 //   - role: UNIQUE(fk) → 0..1 per identity. On INSERT, an existing ACTIVE role is
-//     a 409; an ARCHIVED role is revived; otherwise a new role row is inserted.
+//     a 409; an ARCHIVED role is INVISIBLE to the probe — soft-delete is delete,
+//     here like on every other read/write path — so the insert proceeds and the
+//     schema's own constraints arbitrate (in the shared-PK model the physical
+//     remnant collides on the primary key, which the repository's
+//     ConstraintBinding maps — e.g. to a 409; a separate-FK model decides through
+//     its own unique index). Reviving an archived role is the explicit
+//     /unarchive verb's job, never a POST side effect.
 //
 // The base's lifecycle is driven by its roles (unified lifecycle convergence
 // below); a role hard-delete routes through convergeBaseAfterHardDelete — the
@@ -91,55 +100,28 @@ func scalarString(v any) string {
 	return fmt.Sprintf("%v", rv.Interface())
 }
 
-// roleState is the result of the role existence probe.
-type roleState int
-
-const (
-	roleNone roleState = iota
-	roleActive
-	roleArchived
-)
-
-// findRoleByFK probes the role table for a row referencing the shared base id,
-// returning the role's own id (canonical) + its lifecycle state. UNIQUE(fk)
-// guarantees 0..1, so a single LIMIT 1 row decides it.
-func (b *BaseEngine) findRoleByFK(ctx context.Context, tx WriteTx, d Dialect, schema *TableSchema, fkCol, baseID string) (string, roleState, error) {
-	sd, hasSD := schema.SoftDeleteColumn()
-	cols := d.QuoteIdent(schema.PKColumn())
-	if hasSD {
-		// Project the archived state as a boolean — scanning a non-null timestamp
-		// into a []byte fails under Postgres' binary protocol, and this probe hits
-		// exactly that case for an archived role (the revive path).
-		cols += ", " + d.QuoteIdent(sd) + " IS NOT NULL"
+// findActiveRoleByFK probes the role table for an ACTIVE row referencing the
+// shared base id. Soft-delete IS delete on this probe, exactly like every other
+// read/write path: an archived role row is invisible here, so the caller's
+// insert proceeds and the schema's own constraints arbitrate the collision with
+// the physical remnant (shared-PK → primary key; separate FK → its unique
+// index). UNIQUE(fk) guarantees 0..1, so a single LIMIT 1 row decides it.
+func (b *BaseEngine) findActiveRoleByFK(ctx context.Context, tx WriteTx, d Dialect, schema *TableSchema, fkCol, baseID string) (bool, error) {
+	q := "SELECT 1 FROM " + d.QuoteIdent(schema.Table()) +
+		" WHERE " + d.QuoteIdent(fkCol) + " = " + d.Placeholder(1)
+	if sd, hasSD := schema.SoftDeleteColumn(); hasSD {
+		q += " AND " + d.QuoteIdent(sd) + " IS NULL"
 	}
-	q := "SELECT " + cols + " FROM " + d.QuoteIdent(schema.Table()) +
-		" WHERE " + d.QuoteIdent(fkCol) + " = " + d.Placeholder(1) + " LIMIT 1"
+	q += " LIMIT 1"
 	rows, err := tx.Query(ctx, q, d.EncodeArg(domain.NewID(baseID)))
 	if err != nil {
-		return "", roleNone, err
+		return false, err
 	}
 	defer rows.Close()
-	if !rows.Next() {
-		return "", roleNone, rows.Err()
+	if rows.Next() {
+		return true, nil
 	}
-	var keyRaw string
-	state := roleActive
-	if hasSD {
-		var archived bool
-		if err := rows.Scan(&keyRaw, &archived); err != nil {
-			return "", roleNone, err
-		}
-		if archived {
-			state = roleArchived
-		}
-	} else if err := rows.Scan(&keyRaw); err != nil {
-		return "", roleNone, err
-	}
-	id, err := d.DecodeID(keyRaw)
-	if err != nil {
-		return "", roleNone, err
-	}
-	return id, state, rows.Err()
+	return false, rows.Err()
 }
 
 // insertWithBase is the role INSERT (POST): UPSERT the shared identity, apply the
@@ -194,36 +176,33 @@ func (b *BaseEngine) insertWithBase(ctx persistence.RequestContext, entity domai
 	if err := b.upsertSharedBase(ctx, tx, d, base, baseID, baseFields); err != nil {
 		return domain.WriteResult{}, err
 	}
-	roleID, state, err := b.findRoleByFK(ctx, tx, d, schema, fkCol, baseID)
+	active, err := b.findActiveRoleByFK(ctx, tx, d, schema, fkCol, baseID)
 	if err != nil {
 		return domain.WriteResult{}, err
 	}
-
-	var id string
-	switch state {
-	case roleActive:
+	if active {
 		// Already a (live) role for this identity — POST is a conflict.
 		return domain.WriteResult{}, SingleNotificationError(entity.EntityName(), schema.PKColumn(), domain.EntityAlreadyAddedNotification{})
-	case roleArchived:
-		id = roleID
-		if err := b.reviveRole(ctx, tx, d, schema, fkCol, baseID, roleFields); err != nil {
+	}
+	// No ACTIVE role → insert. An ARCHIVED remnant is deliberately not looked
+	// for (soft-delete is delete): if one exists, the schema's own constraints
+	// veto or admit this insert — shared-PK collides on the primary key (the
+	// repository's ConstraintBinding maps it), a separate-FK model decides
+	// through its own unique index.
+	var id string
+	if sharedPK {
+		// The role's own PK IS the deterministic base id (role.id == base.id).
+		id = baseID
+	} else {
+		nid, err := newWriteID()
+		if err != nil {
 			return domain.WriteResult{}, err
 		}
-	default: // roleNone
-		if sharedPK {
-			// The role's own PK IS the deterministic base id (role.id == base.id).
-			id = baseID
-		} else {
-			nid, err := newWriteID()
-			if err != nil {
-				return domain.WriteResult{}, err
-			}
-			id = nid
-		}
-		sql, args := buildInsert(d, schema.Table(), schema.PKColumn(), id, roleFields, schema.InsertNowColumns())
-		if err := tx.Exec(ctx, sql, args...); err != nil {
-			return domain.WriteResult{}, err
-		}
+		id = nid
+	}
+	sql, args := buildInsert(d, schema.Table(), schema.PKColumn(), id, roleFields, schema.InsertNowColumns())
+	if err := tx.Exec(ctx, sql, args...); err != nil {
+		return domain.WriteResult{}, err
 	}
 	// One pass (writeChildren) handles role children (FK→role id) and shared-base
 	// native children (FK→base id) by the OperationOf categorization: a loaded
@@ -235,8 +214,10 @@ func (b *BaseEngine) insertWithBase(ctx persistence.RequestContext, entity domai
 	if err := insertSiblings(ctx, tx, d, schema, src, id); err != nil {
 		return domain.WriteResult{}, err
 	}
-	// A new/revived active role means the shared identity must be active: if it was
-	// archived (every prior role archived), reactivate it + its native children.
+	// A new active role means the shared identity must be active: if it was
+	// archived (every prior role archived), reactivate it + its native children —
+	// the base's AUTOMATIC revival (its lifecycle is derived; only ROLE revival
+	// is out of the insert's scope).
 	if err := b.reactivateBaseIfArchived(ctx, tx, d, schema, src); err != nil {
 		return domain.WriteResult{}, err
 	}
@@ -630,38 +611,5 @@ func baseExists(ctx context.Context, tx WriteTx, d Dialect, base *TableSchema, b
 // (last-write-wins), keyed on the base's deterministic id.
 func (b *BaseEngine) upsertSharedBase(ctx context.Context, tx WriteTx, d Dialect, base *TableSchema, baseID string, baseFields domain.Fields) error {
 	sql, args := buildSiblingUpsert(d, base, base.PKColumn(), baseID, baseFields)
-	return tx.Exec(ctx, sql, args...)
-}
-
-// reviveRole clears the role's soft-delete and rewrites its business fields,
-// keyed on the FK to the identity. The injected FK is excluded from the SET (it
-// is the key, unchanged).
-func (b *BaseEngine) reviveRole(ctx context.Context, tx WriteTx, d Dialect, schema *TableSchema, fkCol, baseID string, roleFields domain.Fields) error {
-	sd, ok := schema.SoftDeleteColumn()
-	if !ok {
-		return fmt.Errorf("db: role %q cannot revive without a SoftDelete column", schema.Table())
-	}
-	biz := make(domain.Fields, len(roleFields))
-	for k, v := range roleFields {
-		if k == fkCol {
-			continue
-		}
-		biz[k] = v
-	}
-	sets := []string{d.QuoteIdent(sd) + " = NULL"}
-	args := make([]any, 0, len(biz)+1)
-	n := 0
-	for _, k := range SortedKeys(biz) {
-		n++
-		sets = append(sets, d.QuoteIdent(k)+" = "+d.Placeholder(n))
-		args = append(args, d.EncodeArg(biz[k]))
-	}
-	for _, nc := range schema.UpdateNowColumns() {
-		sets = append(sets, d.QuoteIdent(nc)+" = NOW()")
-	}
-	n++
-	sql := "UPDATE " + d.QuoteIdent(schema.Table()) + " SET " + strings.Join(sets, ", ") +
-		" WHERE " + d.QuoteIdent(fkCol) + " = " + d.Placeholder(n)
-	args = append(args, d.EncodeArg(domain.NewID(baseID)))
 	return tx.Exec(ctx, sql, args...)
 }

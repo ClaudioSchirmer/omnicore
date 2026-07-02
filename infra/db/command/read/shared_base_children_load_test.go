@@ -33,7 +33,7 @@ func (e *roleAggLoad) Modes() []domain.EntityMode {
 	return []domain.EntityMode{domain.ModeInsert, domain.ModeUpdate}
 }
 func (e *roleAggLoad) BuildRules(string, domain.Service, *domain.Rules) {}
-func (e *roleAggLoad) GetAggregateRoot() *domain.AggregateRoot { return &e.AggregateRoot }
+func (e *roleAggLoad) GetAggregateRoot() *domain.AggregateRoot          { return &e.AggregateRoot }
 func (e *roleAggLoad) AggregateChildren() []domain.AggregateValueObject {
 	return []domain.AggregateValueObject{addrLoad{}}
 }

@@ -182,6 +182,10 @@ func DetectViewDrift(ctx context.Context, mongo ReadModelStore, eng core.Relatio
 		if err != nil {
 			return nil, err
 		}
+		sorPopulated, err := sorHasRows(ctx, q, d, v.RootTable())
+		if err != nil {
+			return nil, err
+		}
 		plan := DriftPlan{
 			View:                v,
 			Registry:            registry,
@@ -190,15 +194,33 @@ func DetectViewDrift(ctx context.Context, mongo ReadModelStore, eng core.Relatio
 			CurrentArtifactHash: v.ArtifactHash(),
 			CurrentCombinedHash: v.Hash(),
 		}
-		plan.Decision = decideDrift(registry, populated, plan.CurrentVersion, plan.CurrentRebuildHash, plan.CurrentCombinedHash)
+		plan.Decision = decideDrift(registry, populated, sorPopulated, plan.CurrentVersion, plan.CurrentRebuildHash, plan.CurrentCombinedHash)
 		report.Plans = append(report.Plans, plan)
 	}
 	return report, nil
 }
 
+// sorHasRows reports whether the view's ROOT table holds at least one row in
+// the relational store — the disambiguator between "the operator wiped Mongo"
+// (SoR has rows, collection empty → rebuild) and "the aggregate simply has no
+// data yet" (both sides empty → the empty collection IS the correct mirror, no
+// drift). O(1) on any backend: SELECT 1 … LIMIT 1 through the neutral
+// Querier/Dialect.
+func sorHasRows(ctx context.Context, q core.Querier, d core.Dialect, table string) (bool, error) {
+	rows, err := q.Query(ctx, "SELECT 1 FROM "+d.QuoteIdent(table)+" LIMIT 1")
+	if err != nil {
+		return false, fmt.Errorf("probe root table %q: %w", table, err)
+	}
+	defer rows.Close()
+	if rows.Next() {
+		return true, nil
+	}
+	return false, rows.Err()
+}
+
 // decideDrift is the pure decision function — extracted so the §9.1 case
 // table is testable in isolation, without an active PG or Mongo.
-func decideDrift(registry *ViewRegistryRow, populated bool, specVersion int, specRebuildHash, specCombinedHash string) DriftDecision {
+func decideDrift(registry *ViewRegistryRow, populated, sorPopulated bool, specVersion int, specRebuildHash, specCombinedHash string) DriftDecision {
 	if registry == nil {
 		if populated {
 			return DriftAlienData
@@ -206,9 +228,11 @@ func decideDrift(registry *ViewRegistryRow, populated bool, specVersion int, spe
 		return DriftFreshInit
 	}
 	if registry.CombinedHash == specCombinedHash {
-		// Combined hash matches → no shape drift. Mongo may still be
-		// missing if the operator wiped it.
-		if !populated {
+		// Combined hash matches → no shape drift. An empty collection is only
+		// "wiped" when the source of record actually HAS rows to mirror — a
+		// view whose aggregate holds no data yet is correctly empty on both
+		// sides and must not rebuild on every boot.
+		if !populated && sorPopulated {
 			return DriftMongoWiped
 		}
 		return DriftNone

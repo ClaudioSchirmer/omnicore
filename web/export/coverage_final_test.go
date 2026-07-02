@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"errors"
 	"testing"
+	"time"
 
 	"github.com/ClaudioSchirmer/omnicore/application/queries"
 )
@@ -21,6 +22,9 @@ func TestStringifyCell_RemainingBranches(t *testing.T) {
 		{int32(9), "9"},
 		{float32(2.5), "2.5"},
 		{stringerCell{}, "S"},
+		// time.Time renders RFC3339 — same shape as the JSON surface, so a
+		// date exports identically on every read path.
+		{time.Date(2015, 3, 10, 0, 0, 0, 0, time.UTC), "2015-03-10T00:00:00Z"},
 		{struct{ X int }{X: 1}, "{1}"}, // default fmt.Sprintf
 		{[]int{1, 2}, "[1 2]"},         // default
 	}
