@@ -20,26 +20,26 @@
 <h3>Why it exists — and why it is mandatory</h3>
 <p>
     The schema is declared <strong>by hand, and is required</strong>. That is a deliberate design stance, not an
-    oversight — it buys four things a convention-based scheme cannot:
+    oversight — it buys three things a convention-based scheme cannot, and unlocks a fourth capability convention could
+    never express: <strong>automatic third-normal-form modeling</strong>, called out on its own below.
 </p>
 <ul>
     <li><strong>A pure DDD domain.</strong> The domain (and the application and web layers above it) never pronounce a
         table or a column — they speak only business vocabulary (<code>Email</code>, <code>ZipCode</code>). The single
         place a physical name exists is the <code>TableSchema</code>, which lives in <code>infra/</code>. The entity stays
         an expression of the business, not a mirror of the database.</li>
-    <li><strong>Real, transparent mapping flexibility.</strong> The developer maps each Go field to <em>any</em> column
-        name explicitly, and that mapping is transparent to every line of implemented code: handlers, commands, queries
-        and <code>BuildRules</code> are written against the Go field and never change when a column is named differently.
-        A rename lives in exactly one place and round-trips across the write path, the criteria engine, the scan-back and
-        the Mongo view at once.</li>
-    <li><strong>Mapping columns whose names you do not control.</strong> Because the map is explicit, you can point the
-        framework at a table whose physical names you did not choose — a column renamed away from its Go field, or an
-        upstream service's collection via <code>NewExternalSchema</code> — declaring field by field how each maps to your
-        domain. What this buys is freedom over <strong>names</strong> (column and table), not over structural
-        <em>shape</em>: the table must still fit the framework's assumptions — a single-column non-composite primary key,
-        a timestamp-based soft-delete column when the entity is archivable, and one of the
-        <a href="#table-schema~supported-column-shapes">supported column shapes</a>. Adopting a schema
-        that breaks those assumptions is explicitly <a href="#table-schema~out-of-scope">out of scope</a>.</li>
+    <li><strong>Transparent mapping flexibility — including names you do not control.</strong> The developer maps each
+        Go field to <em>any</em> column name explicitly, and that mapping is transparent to every line of implemented
+        code: handlers, commands, queries and <code>BuildRules</code> speak the Go field and never change when a column
+        is named differently — a rename lives in exactly one place and round-trips across the write path, the criteria
+        engine, the scan-back and the Mongo view at once. Because the map is explicit rather than inferred, you can just
+        as well point the framework at a table whose physical names you <em>did not</em> choose — a legacy column renamed
+        away from its Go field, or an upstream service's collection via <code>NewExternalSchema</code> — declaring field
+        by field how each maps to your domain. What this buys is freedom over <strong>names</strong> (column and table),
+        not over structural <em>shape</em>: the table must still fit the framework's assumptions — a single-column
+        non-composite primary key, a timestamp-based soft-delete column when the entity is archivable, and one of the
+        <a href="#table-schema~supported-column-shapes">supported column shapes</a>. Adopting a schema that breaks those
+        assumptions is explicitly <a href="#table-schema~out-of-scope">out of scope</a>.</li>
     <li><strong>No failed, tiring conventions.</strong> Name-inference (PascalToSnake + pluralize) is lossy and
         acronym-hostile: <code>UserID</code> and <code>UserId</code> both collapse to <code>user_id</code>;
         <code>URLPath</code>, <code>IPv4</code>, <code>HTTPStatus</code> mangle; and the moment the real column diverges
@@ -47,10 +47,55 @@
         boot panic, not a column that silently never persists.</li>
 </ul>
 <p>
-    Those four together are why the declaration is <strong>obligatory and manual</strong>: the map is the single,
+    Those three together are why the declaration is <strong>obligatory and manual</strong>: the map is the single,
     lossless, unambiguous source of truth the whole persistence + read membrane depends on, so the framework refuses to
-    fabricate it from a fragile convention.
+    fabricate it from a fragile convention. And because that source of truth is explicit and complete, it can carry far
+    more than a flat name-for-name mapping — which is where the fourth, headline capability comes in.
 </p>
+
+<div class="box good">
+    <strong>The headline capability — one flat domain entity, automatically modeled in third normal form.</strong>
+    <p>
+        This is the thing no convention-based mapper can offer, and it is where the explicit schema stops being a
+        concession and becomes an advantage. You model your entity the way the <em>business</em> reads it — one linear,
+        natural Go struct, with none of the foreign keys, join tables, or surrogate-key bookkeeping a normalized store
+        implies. The <code>TableSchema</code> alone then declares how that single struct
+        <strong>decomposes into a fully normalized (3NF) physical layout</strong> across as many tables as the design
+        needs, and the framework runs the decomposition both ways: it <strong>normalizes on write</strong> — splitting
+        the entity across those tables inside one transaction — and <strong>denormalizes on read</strong> — re-joining
+        them into the exact flat struct you modeled on <code>FindOne</code>/<code>FindAll</code>. The domain never sees
+        a seam: no DAO to hand-write, no join to keep in step, no mapping code to drift out of sync with the struct.
+    </p>
+    <p>
+        Three declarative partitioning tools cover the three cardinalities a third-normal-form decomposition ever needs,
+        and you compose them freely on a single schema:
+    </p>
+    <ul>
+        <li><strong><code>.Child</code> — 1 : N.</strong> A repeating collection lifts out of the entity into its own
+            table, linked back by a foreign key the persister injects — the aggregate child, in its own row.</li>
+        <li><strong><code>.Sibling</code> — 1 : 1.</strong> A disjoint slice of the <em>same</em> entity's fields moves
+            to a secondary table sharing the primary key: peel bulky, optional, or rarely-read facets off a hot row with
+            zero change to the domain type.</li>
+        <li><strong><code>.SharedBase</code> — N : 1.</strong> Fields that describe a shared <em>identity</em> (the
+            party-role pattern) collapse into one deduplicated identity table referenced by every role — the
+            transitive-dependency removal at the heart of 3NF.</li>
+    </ul>
+    <p>
+        The <code>SharedBase</code> case is the sharpest demonstration of how deep this goes. The framework derives the
+        identity's primary key as a <strong>deterministic <code>UUIDv5</code> of its natural key</strong>, so two writes
+        carrying the same identity reach the same row with <strong>no read-back and no round-trip</strong> — the
+        persister and the application compute the same id independently, before either touches the database.
+        Deduplication stops being a query you remember to write and becomes a structural property of the key itself.
+    </p>
+    <p>
+        And none of it leaks upward. The decomposition is declared on the very same schema the write path, the criteria
+        engine, and the Mongo read-view already consume, so it stays <strong>invisible to every layer above
+        <code>infra/</code></strong> and round-trips identically on PostgreSQL, on MySQL, and into the composed read
+        model. You get textbook-normalized storage <em>and</em> a clean, aggregate-shaped domain at the same time — with
+        the schema, not a hand-written data-access layer, as the single source of truth.
+        <a href="#table-schema~normalize-3nf">See “Normalizing a flat entity” below for the full mechanics.</a>
+    </p>
+</div>
 
 <h3>The three-name model</h3>
 <p>
@@ -323,7 +368,7 @@ func OrdersView() *query.ViewDefinition {
     root scanner used with <code>FindOne</code>/<code>FindAll</code> must populate the id itself).
 </p>
 
-<h3>Normalizing a flat entity — children, siblings, and shared bases</h3>
+<h3 id="normalize-3nf">Normalizing a flat entity — children, siblings, and shared bases</h3>
 <p>
     The schema is also where a <strong>flat Go entity</strong> becomes a <strong>normalized relational layout</strong> and
     back again. You model one linear struct in the domain; the schema declares how its fields partition across physical
@@ -751,4 +796,17 @@ func StudentSchema() *core.TableSchema {
         flag instead of a timestamp column), a composite PK, and exotic column types outside the
         <a href="#table-schema~supported-column-shapes">supported shapes</a> are all rejected. The scope is
         "an explicit map over the schema the framework manages", not "adapt to any arbitrary schema".</li>
+    <li><strong>Many-to-many (N : N) inside a single entity.</strong> The schema decomposes <em>one</em> entity into a
+        normalized layout, and it covers exactly the three cardinalities that decomposition needs — <code>.Child</code>
+        (1 : N), <code>.Sibling</code> (1 : 1), and <code>.SharedBase</code> (N : 1). There is no N : N partitioning tool,
+        and by design: a many-to-many is not a decomposition of one entity, it is a <em>relationship between two
+        independent aggregates</em> (each with its own lifecycle and boundary). Modeling it inside a single
+        <code>TableSchema</code> would violate the aggregate boundary the framework rests on — root plus one level of
+        children, each row with a single owner (a child owned by its root, a sibling by its shared PK, a base identity by
+        the roles that reference it). The idiomatic expression is the DDD one: the two aggregates reference each other by
+        <code>domain.ID</code>, and the join itself — when it carries any data of its own (a role, a date, a quantity) —
+        becomes an <strong>associative entity of its own</strong> (its own aggregate, holding the two foreign keys). On
+        the read side a view can still traverse the relationship through nested <code>EmbedMany</code>/<code>Embed</code>
+        across those aggregates; there is no junction/through-table primitive that materializes both sides
+        automatically.</li>
 </ul>

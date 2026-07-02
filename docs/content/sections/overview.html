@@ -31,3 +31,9 @@
         — a <strong>1.47 : 1 test-to-code ratio</strong>: there is roughly half again as much test
         code as there is framework code exercising it.
     </div>
+    <p class="note">
+        Worth noting early: you model a <strong>flat, natural domain entity</strong> and the <code>TableSchema</code>
+        alone maps it to a <strong>fully normalized (3NF) physical layout</strong> — the framework splits it across
+        tables on write and rejoins it into the same flat struct on read, so the domain never sees a foreign key or a
+        join. <a href="#table-schema~normalize-3nf">See how it works →</a>
+    </p>
