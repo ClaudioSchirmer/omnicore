@@ -385,8 +385,11 @@ func OrdersView() *query.ViewDefinition {
     each linking to it by a foreign key. Unlike a sibling (1 : 1, private), a base is referenced by N roles (N : 1) and is
     <strong>deduplicated by a natural key</strong>. Declare the base type-less with <code>core.NewSharedBase(table)</code>,
     its dedup column with <code>.NaturalKey(col)</code>, and its orphan lifecycle with <code>.OrphanPolicy(p)</code>; each
-    role references it with <code>.SharedBase(base, fkColumn)</code> (the same base instance, shared by every role, IS the
-    cross-role registry):
+    role references it with <code>.SharedBase(base, fkColumn)</code>. Sharing one base instance across the role files is
+    idiomatic but <em>not required</em>: at repository construction (<code>WithSchema</code>) the engine registers every
+    role on a registry keyed by the base's <em>table</em>, so N identical <code>NewSharedBase</code> declarations behave
+    exactly like one — no consumer-side singleton. Two <em>divergent</em> declarations of the same table (different natural
+    key, policy, soft-delete, fields, or children) panic at boot:
 </p>
 <pre><code>var person = core.NewSharedBase("person").
     PK("id").                                      // the deterministic UUIDv5 lands here
@@ -394,7 +397,7 @@ func OrdersView() *query.ViewDefinition {
     Field("Document", "document").                 // the natural-key column
     NaturalKey("document").
     SoftDelete("deleted_at").
-    OrphanPolicy(core.DeleteWhenUnreferenced)      // default; or core.KeepOrphan
+    OrphanPolicy(core.KeepOrphan)                  // default; destruction is opt-in via core.DeleteWhenUnreferenced
 
 // *Student's Go struct carries Name + Document (the shared fields, validated
 // against the base) AND Enrollment. The role SCHEMA declares only its OWN
@@ -451,12 +454,32 @@ func StudentSchema() *core.TableSchema {
 <p>
     <strong>Lifecycle is driven by the roles.</strong> The base has none of its own: each role controls its own
     soft-delete, and the base converges — a role becoming or staying active keeps the base active; archiving the last
-    active role archives the base (and its native children); hard-deleting the last referencing role row removes the base
-    per its <code>OrphanPolicy</code> (<code>DeleteWhenUnreferenced</code>, the default, or <code>KeepOrphan</code>). A role
-    <code>INSERT</code> upserts the identity and then applies a two-level existence matrix on the role row: an existing
-    <em>active</em> role for that identity is a conflict (409), an <em>archived</em> one is revived, otherwise a new role
-    row is inserted.
+    active role archives the base (and its native children); hard-deleting the last referencing role row converges the base
+    per its <code>OrphanPolicy</code>. Under <code>KeepOrphan</code> (the <strong>default</strong>) the identity is never
+    destroyed: with <code>SoftDelete</code> declared on the base, the orphaned identity <em>archives</em> (with its native
+    children) — dormant and revived automatically if the same natural key returns; without <code>SoftDelete</code> it simply
+    stays. <code>DeleteWhenUnreferenced</code> is the explicit opt-in for physical erasure (e.g. right-to-be-forgotten): once
+    no role row of any type references the identity, the purge removes the native children and the base row in the same
+    transaction — and it is <strong>never invisible</strong>: an actual purge writes its own audit event (the base table as
+    <code>entityType</code>, kind <code>snapshot</code> with the shared fields) and its own <code>DELETED</code> outbox row,
+    alongside the role's. A role <code>INSERT</code> upserts the identity and then applies a two-level existence matrix on
+    the role row: an existing <em>active</em> role for that identity is a conflict (409), an <em>archived</em> one is
+    revived, otherwise a new role row is inserted.
 </p>
+
+<div class="box">
+    <strong>The purge is database-vetoable — declare real foreign keys and the database gets the last word.</strong>
+    The framework can only enumerate the roles registered in <em>this</em> service; it cannot know about a table another
+    system created in the same database. So the purge never trusts the refcount alone: it runs under a savepoint, and a
+    <strong>foreign-key violation from ANY referencing table — registered or not — cancels the purge</strong> (the base
+    stays; the role delete still commits). The same veto closes the probe-then-delete race: a role inserted concurrently
+    between the probe and the <code>DELETE</code> blocks it. For this protection to exist physically, declare the
+    role→base FKs in your migrations as plain / <code>ON DELETE RESTRICT</code> constraints — that is ordinary relational
+    hygiene, and it is what lets other systems share the database safely. Two things no framework can see, and the reason
+    <code>KeepOrphan</code> is the default: a reference held <em>without</em> a FK constraint, and a copy of the id stored
+    in another database. Note that a foreign table declaring <code>ON DELETE CASCADE</code> opts itself into the
+    destruction — that is that schema's explicit choice, not a veto.
+</div>
 <p>
     <strong>Wiring.</strong> Because the insert must load any pre-existing identity before writing, a shared-base role uses
     <code>read.NewSharedBaseRoleRepository[T]</code> (which provides <code>LoadForSharedBaseInsert</code>) together with the

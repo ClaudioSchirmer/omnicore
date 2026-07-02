@@ -215,6 +215,29 @@ func (mysqlDialect) IsUniqueViolation(err error) (string, bool) {
 	return key, true
 }
 
+// IsForeignKeyViolation reads MySQL errno 1451 ("Cannot delete or update a
+// parent row") / 1452 ("Cannot add or update a child row") and extracts the
+// violated constraint name from the message segment "CONSTRAINT `<name>`".
+// Every part of that message is a trusted schema identifier (no user-controlled
+// text rides in it), so a plain Index suffices. A violation without a parseable
+// name still classifies.
+func (mysqlDialect) IsForeignKeyViolation(err error) (string, bool) {
+	var me *driver.MySQLError
+	if !errors.As(err, &me) || (me.Number != 1451 && me.Number != 1452) {
+		return "", false
+	}
+	const marker = "CONSTRAINT `"
+	i := strings.Index(me.Message, marker)
+	if i < 0 {
+		return "", true
+	}
+	name := me.Message[i+len(marker):]
+	if j := strings.IndexByte(name, '`'); j >= 0 {
+		name = name[:j]
+	}
+	return name, true
+}
+
 // BuildUpsert renders the MySQL upsert: `INSERT … VALUES … AS new ON DUPLICATE
 // KEY UPDATE …`. The conflict columns are not named (MySQL keys off the existing
 // unique index); they are used only to render the no-op update that expresses a

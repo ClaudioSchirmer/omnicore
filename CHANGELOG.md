@@ -13,6 +13,40 @@ with `1.0.0`.
 
 ### Added
 
+- **SharedBase safe orphan handling — KeepOrphan default, database-vetoable
+  purge, audited destruction, engine-scoped role registry.** Refines the
+  unreleased SharedBase feature so destroying shared identity data is always a
+  conscious, visible, physically-guarded act. (1) The `OrphanPolicy` **default is
+  now `KeepOrphan`**: omission never destroys the identity; with `SoftDelete` on
+  the base, hard-deleting the last referencing role row *archives* the orphaned
+  base (+ its native children) — dormant, revived automatically if the same
+  natural key returns — and without `SoftDelete` it simply stays.
+  `DeleteWhenUnreferenced` is the explicit opt-in for physical erasure. (2) The
+  orphan purge is **database-vetoable**: it runs under a savepoint
+  (`SAVEPOINT omnicore_sb_purge`), and a foreign-key violation from ANY
+  referencing table — including one outside the schema registry, e.g. another
+  system sharing the database — cancels the purge (the base stays; the role
+  delete still commits). The FK check is classified by the new
+  `core.Dialect.IsForeignKeyViolation` (PG SQLSTATE 23503 / MySQL errno
+  1451/1452). The same veto closes the probe-then-delete race against a
+  concurrent role insert. Declare the role→base FKs as plain/`RESTRICT`
+  constraints so the veto has teeth; `ON DELETE CASCADE` on a foreign table is
+  that schema's explicit opt-in to the destruction. (3) An actual purge is
+  **never invisible**: it emits its own in-TX audit event
+  (`write.BuildSharedBasePurgeEvent` — the base table as `entityType`, the
+  deterministic base id as `entityId`, kind `snapshot` with the shared fields)
+  and its own `DELETED` outbox row for the base table, alongside the role's. (4)
+  The refcount/lifecycle probes no longer depend on the consumer funneling every
+  role through ONE `NewSharedBase` instance: `WithSchema` registers each
+  shared-base role on an **engine-scoped registry keyed by the base's table**
+  (`BaseEngine.RegisterSharedBaseRole`), and the probes read the union of the
+  instance and engine registries — N identical `NewSharedBase` declarations
+  behave exactly like one, no consumer singleton. Two *divergent* declarations
+  of the same table (natural key, policy, soft-delete, fields, or children)
+  panic at boot via `core.AssertSharedBaseEquivalent`. (5) A role hard-delete
+  whose natural key resolves empty now fails loudly instead of converging on
+  `UUIDv5("")` (the same guard the soft-write convergence already had).
+
 - **A schema's own aggregate children auto-project into the Mongo view.** A view
   root's own `Child(...)` collections (and each child's siblings, merged FLAT) now
   nest into the composed document straight from the `TableSchema` — the read-side
@@ -131,7 +165,8 @@ with `1.0.0`.
   (cold insert uses action name `"GetInsertable"`, warm reuse `"GetUpsertable"`),
   with a guard rejecting a blind insert that would duplicate an existing identity.
   Lifecycle converges through the roles (archiving the last active role archives
-  the base and its children; orphan removal per `OrphanPolicy`), and a write
+  the base and its children; orphan convergence per `OrphanPolicy` — see the
+  safe-orphan-handling entry), and a write
   through one role recomposes the Mongo views of every role of that identity
   (`fanOutSharedBase`). New public surface: `core.NewSiblingSchema`,
   `(*core.TableSchema).Sibling` / `.Siblings` / `.IsSecondary`,

@@ -129,12 +129,13 @@ func (f *fakeDB) Exec(_ context.Context, sql string, args ...any) error {
 }
 
 // core.Dialect — only Placeholder + QuoteIdent are exercised.
-func (f *fakeDB) Placeholder(n int) string               { return fmt.Sprintf("$%d", n) }
-func (f *fakeDB) QuoteIdent(name string) string          { return `"` + name + `"` }
-func (f *fakeDB) EncodeArg(v any) any                    { return v }
-func (f *fakeDB) DecodeID(raw string) (string, error)    { return raw, nil }
-func (f *fakeDB) ILikeClause(col, ph string) string      { return col + " ILIKE " + ph }
-func (f *fakeDB) IsUniqueViolation(error) (string, bool) { return "", false }
+func (f *fakeDB) Placeholder(n int) string                   { return fmt.Sprintf("$%d", n) }
+func (f *fakeDB) QuoteIdent(name string) string              { return `"` + name + `"` }
+func (f *fakeDB) EncodeArg(v any) any                        { return v }
+func (f *fakeDB) DecodeID(raw string) (string, error)        { return raw, nil }
+func (f *fakeDB) ILikeClause(col, ph string) string          { return col + " ILIKE " + ph }
+func (f *fakeDB) IsUniqueViolation(error) (string, bool)     { return "", false }
+func (f *fakeDB) IsForeignKeyViolation(error) (string, bool) { return "", false }
 func (f *fakeDB) BuildUpsert(string, []string, []string, []core.UpsertSet) string {
 	return ""
 }

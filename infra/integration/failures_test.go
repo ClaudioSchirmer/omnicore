@@ -73,12 +73,13 @@ func (f *fakeExec) QueryMaps(_ context.Context, sql string, args ...any) ([]map[
 // so the rendering only needs to not panic.
 type fakeDialect struct{}
 
-func (fakeDialect) Placeholder(int) string                 { return "?" }
-func (fakeDialect) QuoteIdent(s string) string             { return s }
-func (fakeDialect) EncodeArg(v any) any                    { return v }
-func (fakeDialect) DecodeID(raw string) (string, error)    { return raw, nil }
-func (fakeDialect) ILikeClause(col, ph string) string      { return col + " LIKE " + ph }
-func (fakeDialect) IsUniqueViolation(error) (string, bool) { return "", false }
+func (fakeDialect) Placeholder(int) string                     { return "?" }
+func (fakeDialect) QuoteIdent(s string) string                 { return s }
+func (fakeDialect) EncodeArg(v any) any                        { return v }
+func (fakeDialect) DecodeID(raw string) (string, error)        { return raw, nil }
+func (fakeDialect) ILikeClause(col, ph string) string          { return col + " LIKE " + ph }
+func (fakeDialect) IsUniqueViolation(error) (string, bool)     { return "", false }
+func (fakeDialect) IsForeignKeyViolation(error) (string, bool) { return "", false }
 func (fakeDialect) BuildUpsert(table string, _, _ []string, _ []core.UpsertSet) string {
 	return "UPSERT " + table
 }

@@ -3,11 +3,14 @@ package write
 import (
 	"context"
 	"log/slog"
+	"sort"
+	"sync"
 
 	appaudit "github.com/ClaudioSchirmer/omnicore/application/audit"
 	"github.com/ClaudioSchirmer/omnicore/application/persistence"
 	"github.com/ClaudioSchirmer/omnicore/domain"
 	"github.com/ClaudioSchirmer/omnicore/infra/audit"
+	"github.com/ClaudioSchirmer/omnicore/infra/db/core"
 	"github.com/ClaudioSchirmer/omnicore/infra/events"
 )
 
@@ -30,6 +33,83 @@ type BaseEngine struct {
 	logger      *slog.Logger
 	auditClaims []string
 	publisher   events.Publisher
+
+	// Engine-scoped shared-base registry (M2). A base's role registry naturally
+	// lives on the *TableSchema instance NewSharedBase returned — which would
+	// make correctness depend on the consumer funneling every role through ONE
+	// instance (a singleton the framework must not demand). WithSchema therefore
+	// registers every shared-base role here, keyed by the base's TABLE name, and
+	// the refcount/lifecycle probes read the union of instance + engine registry:
+	// N identical NewSharedBase declarations behave exactly like one. Divergent
+	// declarations of the same table panic at registration (AssertSharedBaseEquivalent).
+	sbMu    sync.RWMutex
+	sbDecl  map[string]*TableSchema      // base table → first-registered declaration
+	sbRoles map[string]map[string]sbRole // base table → role table → link
+}
+
+// sbRole is one engine-registered shared-base role: the role schema pointer
+// (its soft-delete column reads lazily, like the instance registry's roleLink)
+// + the FK column it references the base through.
+type sbRole struct {
+	schema *TableSchema
+	fk     string
+}
+
+// RegisterSharedBaseRole records a role schema on the engine-scoped shared-base
+// registry (no-op for a schema without a SharedBase). Called by WithSchema at
+// repository construction; idempotent per role table (re-registration replaces).
+// A second declaration instance of the same base table must be shape-identical —
+// a divergent one panics at boot via AssertSharedBaseEquivalent.
+func (b *BaseEngine) RegisterSharedBaseRole(role *TableSchema) {
+	base, fk, ok := role.SharedBaseRef()
+	if !ok {
+		return
+	}
+	b.sbMu.Lock()
+	defer b.sbMu.Unlock()
+	if b.sbDecl == nil {
+		b.sbDecl = map[string]*TableSchema{}
+		b.sbRoles = map[string]map[string]sbRole{}
+	}
+	if decl, seen := b.sbDecl[base.Table()]; seen {
+		if decl != base {
+			core.AssertSharedBaseEquivalent(decl, base)
+		}
+	} else {
+		b.sbDecl[base.Table()] = base
+	}
+	roles := b.sbRoles[base.Table()]
+	if roles == nil {
+		roles = map[string]sbRole{}
+		b.sbRoles[base.Table()] = roles
+	}
+	roles[role.Table()] = sbRole{schema: role, fk: fk}
+}
+
+// effectiveReferencingRoles returns every role known to reference base: the
+// base INSTANCE registry (roles attached to this very *TableSchema via
+// .SharedBase — the floor that keeps the r.Schema escape hatch working) unioned
+// with the ENGINE registry (roles registered through WithSchema, across every
+// NewSharedBase instance of the same table), deduped by role table. Engine
+// entries are appended in table order for deterministic probing.
+func (b *BaseEngine) effectiveReferencingRoles(base *TableSchema) []RoleRef {
+	out := base.ReferencingRoles()
+	seen := make(map[string]bool, len(out))
+	for _, rr := range out {
+		seen[rr.Table] = true
+	}
+	b.sbMu.RLock()
+	defer b.sbMu.RUnlock()
+	extra := make([]RoleRef, 0, len(b.sbRoles[base.Table()]))
+	for tbl, reg := range b.sbRoles[base.Table()] {
+		if seen[tbl] {
+			continue
+		}
+		sd, _ := reg.schema.SoftDeleteColumn()
+		extra = append(extra, RoleRef{Table: tbl, FKColumn: reg.fk, SoftDeleteCol: sd})
+	}
+	sort.Slice(extra, func(i, j int) bool { return extra[i].Table < extra[j].Table })
+	return append(out, extra...)
 }
 
 // SetBeginner wires the back-reference the embedded base uses to open a

@@ -160,6 +160,9 @@ func (b *BaseEngine) Delete(ctx persistence.RequestContext, entity domain.Deleta
 	return b.hardDelete(ctx, entity.Source(), entity.ID(), schema, hook,
 		HookContext{Verb: "Delete", EntityType: entity.EntityName()},
 		func() audit.AuditEvent { return BuildDeleteEvent(ctx, entity, schema, b.auditClaims) },
+		func(baseID string) audit.AuditEvent {
+			return BuildSharedBasePurgeEvent(ctx, entity, schema, baseID, b.auditClaims)
+		},
 		entity.Events())
 }
 

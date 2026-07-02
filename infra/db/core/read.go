@@ -108,6 +108,15 @@ type Dialect interface {
 	// reads SQLSTATE 23505 + ConstraintName; MySQL reads errno 1062 + the key
 	// name from the message. (constraint, true) on a hit, ("", false) otherwise.
 	IsUniqueViolation(err error) (string, bool)
+	// IsForeignKeyViolation classifies a driver error as a foreign-key
+	// violation (a referenced row cannot be deleted/updated, or a reference
+	// points at a missing row) and, when so, returns the constraint name. PG
+	// reads SQLSTATE 23503 + ConstraintName; MySQL reads errno 1451/1452 + the
+	// constraint from the message. (constraint, true) on a hit, ("", false)
+	// otherwise. The shared-base orphan purge uses it as the database veto: a
+	// referencing table the schema registry does not know about blocks the
+	// purge instead of failing the write.
+	IsForeignKeyViolation(err error) (string, bool)
 
 	// BuildUpsert renders an INSERT with an on-conflict update clause: cols are
 	// the inserted columns (the dialect generates the 1-based placeholders),

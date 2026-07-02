@@ -25,8 +25,10 @@ import (
 // recTx records the statements the write path emits and exposes injectable
 // failures + a programmable rows-affected count.
 type recTx struct {
-	count      int64  // ExecCount return value (matched rows)
-	execErrSub string // Exec/ExecCount fails when the SQL contains this substring
+	count      int64            // ExecCount return value (matched rows)
+	execErrSub string           // Exec/ExecCount fails when the SQL contains this substring
+	execErr    error            // the injected failure (errRecExec when unset) — e.g. a *pgconn.PgError for the FK-veto branch
+	execErrs   map[string]error // multi-injection: substring → error (first match wins), for chained failures
 	commitErr  error
 	execs      []string
 	committed  bool
@@ -64,17 +66,29 @@ func (t *recTx) failsOn(sql string) bool {
 	return t.execErrSub != "" && strings.Contains(sql, t.execErrSub)
 }
 
-func (t *recTx) Exec(_ context.Context, sql string, _ ...any) error {
-	t.execs = append(t.execs, sql)
+func (t *recTx) injectedErr(sql string) error {
+	for sub, err := range t.execErrs {
+		if strings.Contains(sql, sub) {
+			return err
+		}
+	}
 	if t.failsOn(sql) {
+		if t.execErr != nil {
+			return t.execErr
+		}
 		return errRecExec
 	}
 	return nil
 }
+
+func (t *recTx) Exec(_ context.Context, sql string, _ ...any) error {
+	t.execs = append(t.execs, sql)
+	return t.injectedErr(sql)
+}
 func (t *recTx) ExecCount(_ context.Context, sql string, _ ...any) (int64, error) {
 	t.execs = append(t.execs, sql)
-	if t.failsOn(sql) {
-		return 0, errRecExec
+	if err := t.injectedErr(sql); err != nil {
+		return 0, err
 	}
 	return t.count, nil
 }
@@ -84,11 +98,11 @@ func (t *recTx) Query(_ context.Context, sql string, args ...any) (Rows, error) 
 	}
 	return nil, nil
 }
-func (t *recTx) QueryRow(context.Context, string, ...any) Row        { return nil }
-func (t *recTx) Commit(context.Context) error                        { t.committed = true; return t.commitErr }
-func (t *recTx) Rollback(context.Context) error                      { t.rolledBack = true; return nil }
-func (t *recTx) Handle() persistence.TxHandle                        { return &recTxHandle{} }
-func (t *recTx) Dialect() Dialect                                    { return testPGDialect{} }
+func (t *recTx) QueryRow(context.Context, string, ...any) Row { return nil }
+func (t *recTx) Commit(context.Context) error                 { t.committed = true; return t.commitErr }
+func (t *recTx) Rollback(context.Context) error               { t.rolledBack = true; return nil }
+func (t *recTx) Handle() persistence.TxHandle                 { return &recTxHandle{} }
+func (t *recTx) Dialect() Dialect                             { return testPGDialect{} }
 
 type recBeginner struct {
 	tx       *recTx

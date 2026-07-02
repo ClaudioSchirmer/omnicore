@@ -1,7 +1,12 @@
 <h2>Audit</h2>
     <p>
         Every successful write emits exactly one <code>AuditEvent</code> — the forensic record of
-        what changed, who changed it, and when. Audit <strong>travels with the persister</strong>:
+        what changed, who changed it, and when. (One exception adds a <em>second</em> event: a role
+        hard-delete whose <a href="#table-schema">shared base</a> is orphan-purged under
+        <code>OrphanPolicy(DeleteWhenUnreferenced)</code> also emits a purge event for the identity —
+        the base <em>table</em> as <code>entityType</code>, the deterministic base id as
+        <code>entityId</code>, kind <code>snapshot</code> with the shared fields — so the destruction
+        of shared identity data is never invisible.) Audit <strong>travels with the persister</strong>:
         each write through the relational engine (<code>Insert</code> / <code>Update</code> / <code>Archive</code> /
         <code>Unarchive</code> / <code>Delete</code>) builds the event and routes it according to the
         boot-time <code>audit.destinations</code> configuration. There is no <code>Auditor</code>

@@ -119,6 +119,16 @@ func (pgDialect) IsUniqueViolation(err error) (string, bool) {
 	return "", false
 }
 
+// IsForeignKeyViolation reads PG SQLSTATE 23503 (foreign_key_violation) and
+// returns the violated constraint name.
+func (pgDialect) IsForeignKeyViolation(err error) (string, bool) {
+	var pgErr *pgconn.PgError
+	if errors.As(err, &pgErr) && pgErr.Code == "23503" {
+		return pgErr.ConstraintName, true
+	}
+	return "", false
+}
+
 // BuildUpsert renders the Postgres upsert: `INSERT … VALUES … ON CONFLICT
 // (conflictCols) DO UPDATE SET …` (or `DO NOTHING` when sets is empty). The
 // proposed value for an core.UpsertSetNew assignment is `EXCLUDED.col`.

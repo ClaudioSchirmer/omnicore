@@ -39,7 +39,7 @@ func (e *sbAuditRole) Modes() []domain.EntityMode {
 	return []domain.EntityMode{domain.ModeInsert, domain.ModeUpdate, domain.ModeDelete, domain.ModeArchive, domain.ModeUnarchive}
 }
 func (e *sbAuditRole) BuildRules(string, domain.Service, *domain.Rules) {}
-func (e *sbAuditRole) GetAggregateRoot() *domain.AggregateRoot { return &e.AggregateRoot }
+func (e *sbAuditRole) GetAggregateRoot() *domain.AggregateRoot          { return &e.AggregateRoot }
 func (e *sbAuditRole) AggregateChildren() []domain.AggregateValueObject {
 	return []domain.AggregateValueObject{sbAuditAddr{}}
 }
@@ -142,5 +142,33 @@ func TestBuildDeleteEvent_SharedBaseComposesForensicSnapshot(t *testing.T) {
 	addrs := ev.Children["sbAuditAddr"]
 	if len(addrs) != 1 || addrs[0].Op != "deleted" || addrs[0].Snapshot["Street"] != "1 Main St" {
 		t.Errorf("base-child delete snapshot not populated: %+v", ev.Children)
+	}
+}
+
+func TestBuildSharedBasePurgeEvent_SpeaksBaseIdentity(t *testing.T) {
+	e := &sbAuditRole{Name: "Jane", Email: "jane@x.com", Document: "D1", UserName: "jane"}
+	e.SetID(domain.NewID(uuid.NewString()))
+	d, err := domain.GetDeletable(e, nil, "GetDeletable")
+	if err != nil {
+		t.Fatalf("GetDeletable: %v", err)
+	}
+	baseID := uuid.NewString()
+	ev := BuildSharedBasePurgeEvent(newBuilderCtx(), d, sbAuditSchema(), baseID, nil)
+
+	// The purge event speaks the BASE identity — its table as EntityType, its
+	// deterministic id as EntityID — never the role's.
+	if ev.EntityType != "persons" || ev.EntityID != baseID {
+		t.Errorf("purge event must identify the base (persons/%s), got %s/%s", baseID, ev.EntityType, ev.EntityID)
+	}
+	if ev.Verb != "delete" || ev.Kind != "snapshot" {
+		t.Errorf("purge event must be a delete snapshot, got verb=%s kind=%s", ev.Verb, ev.Kind)
+	}
+	// The snapshot carries only the shared fields (read off the role entity by
+	// Go name), not the role's own columns.
+	if ev.Snapshot["Name"] != "Jane" || ev.Snapshot["Email"] != "jane@x.com" || ev.Snapshot["Document"] != "D1" {
+		t.Errorf("purge snapshot missing base identity: %+v", ev.Snapshot)
+	}
+	if _, hasRoleField := ev.Snapshot["UserName"]; hasRoleField {
+		t.Errorf("purge snapshot must not carry role-own fields: %+v", ev.Snapshot)
 	}
 }

@@ -24,8 +24,10 @@ import (
 //   - role: UNIQUE(fk) → 0..1 per identity. On INSERT, an existing ACTIVE role is
 //     a 409; an ARCHIVED role is revived; otherwise a new role row is inserted.
 //
-// The base has no soft-delete; the role controls its own. Hard delete + refcount
-// live in hardDelete (the role path) — see deleteRoleBaseRefcount.
+// The base's lifecycle is driven by its roles (unified lifecycle convergence
+// below); a role hard-delete routes through convergeBaseAfterHardDelete — the
+// orphan purge (OrphanPolicy DeleteWhenUnreferenced, database-vetoable) or the
+// orphan archive (KeepOrphan + a soft-deletable base).
 //
 // Covers the FLAT role path (a role is typically a simple entity). All SQL is
 // dialect-agnostic via the Dialect.
@@ -331,45 +333,136 @@ func (b *BaseEngine) updateWithBase(ctx persistence.RequestContext, entity domai
 	return domain.WriteResult{ID: entity.ID(), Fields: roleFields}, nil
 }
 
-// refcountSharedBase, after a role row is hard-deleted, removes the shared base
-// row if no role still references it (OrphanPolicy DeleteWhenUnreferenced). The
-// base id is derived from the (loaded) entity's natural-key value. Roles to
-// count come from the base's registry (every role that declared .SharedBase). A
-// no-op for KeepOrphan or a role without a shared base. The just-deleted role
-// row is already gone, so it never counts itself.
-func (b *BaseEngine) refcountSharedBase(ctx context.Context, tx WriteTx, d Dialect, schema *TableSchema, src domain.Entity) error {
+// sharedBasePurgeSavepoint names the savepoint the orphan purge runs under so a
+// foreign-key veto rolls back just the purge, never the role delete around it.
+const sharedBasePurgeSavepoint = "omnicore_sb_purge"
+
+// convergeBaseAfterHardDelete, after a role row is hard-deleted, drives the
+// shared identity to its post-delete state:
+//
+//   - OrphanPolicy DeleteWhenUnreferenced + no role row (of any type, active or
+//     archived) still references the base → purge it (native children first,
+//     then the base row, same TX). The purge is DATABASE-VETOABLE: it runs
+//     under a savepoint, and a foreign-key violation from ANY referencing
+//     table — including one outside the schema registry (another system
+//     sharing the database) — keeps the base and lets the role delete commit.
+//     An actual purge emits its own outbox row (base table, DELETED) and its
+//     own audit event (built by buildPurgeEvent), so the identity's
+//     destruction is never invisible; the returned bundle carries the event to
+//     the caller's post-commit echo.
+//   - otherwise (KeepOrphan, still referenced, or vetoed) → the standing
+//     lifecycle convergence: with no ACTIVE role left, a soft-deletable base
+//     archives (with its native children); without SoftDelete on the base,
+//     nothing happens.
+//
+// A no-op for a role without a shared base, and — before any identity work —
+// for a base with neither DeleteWhenUnreferenced nor SoftDelete (nothing could
+// change). Roles to count come from the base's registry (every role that
+// declared .SharedBase); the just-deleted role row is already gone, so it
+// never counts itself.
+func (b *BaseEngine) convergeBaseAfterHardDelete(
+	ctx persistence.RequestContext,
+	tx WriteTx,
+	d Dialect,
+	schema *TableSchema,
+	src domain.Entity,
+	buildPurgeEvent func(baseID string) audit.AuditEvent,
+) (AuditBundle, error) {
 	base, _, ok := schema.SharedBaseRef()
-	if !ok || base.OrphanPolicyValue() != DeleteWhenUnreferenced {
-		return nil
+	if !ok {
+		return AuditBundle{}, nil
+	}
+	_, baseHasSD := base.SoftDeleteColumn()
+	wantsPurge := base.OrphanPolicyValue() == DeleteWhenUnreferenced
+	if !wantsPurge && !baseHasSD {
+		return AuditBundle{}, nil // no lifecycle to drive
 	}
 	_, nk := sharedBaseValues(base, src)
+	if err := requireNaturalKey(base, nk); err != nil {
+		return AuditBundle{}, err
+	}
 	baseID := deterministicBaseID(nk)
-	for _, rr := range base.ReferencingRoles() {
+	if wantsPurge {
+		referenced, err := b.anyRoleRowReferences(ctx, tx, d, base, baseID)
+		if err != nil {
+			return AuditBundle{}, err
+		}
+		if !referenced {
+			purged, err := b.purgeOrphanBase(ctx, tx, d, base, baseID)
+			if err != nil {
+				return AuditBundle{}, err
+			}
+			if purged {
+				if err := WriteOutbox(ctx, tx, base.Table(), "DELETED", baseID, nil); err != nil {
+					return AuditBundle{}, err
+				}
+				ab := b.BuildAudit(func() audit.AuditEvent { return buildPurgeEvent(baseID) }, nil)
+				if err := b.WriteAuditRow(ctx, tx, ab.Ev); err != nil {
+					return AuditBundle{}, err
+				}
+				return ab, nil
+			}
+			// vetoed — the base survives; fall through to the archive convergence.
+		}
+	}
+	return AuditBundle{}, b.archiveBaseIfNoActiveRole(ctx, tx, d, schema, src)
+}
+
+// anyRoleRowReferences reports whether any role row — active OR archived, from
+// any role in the base's registry (instance ∪ engine) — still references the
+// base id.
+func (b *BaseEngine) anyRoleRowReferences(ctx context.Context, tx WriteTx, d Dialect, base *TableSchema, baseID string) (bool, error) {
+	for _, rr := range b.effectiveReferencingRoles(base) {
 		q := "SELECT 1 FROM " + d.QuoteIdent(rr.Table) +
 			" WHERE " + d.QuoteIdent(rr.FKColumn) + " = " + d.Placeholder(1) + " LIMIT 1"
 		rows, err := tx.Query(ctx, q, d.EncodeArg(domain.NewID(baseID)))
 		if err != nil {
-			return err
+			return false, err
 		}
 		referenced := rows.Next()
 		errClose := rows.Err()
 		rows.Close()
 		if errClose != nil {
-			return errClose
+			return false, errClose
 		}
 		if referenced {
-			return nil // still referenced — keep the base
+			return true, nil
 		}
 	}
-	// No role references the base — remove its native children (FK = base id),
-	// then the base row itself, explicitly in Go (same TX, C7), so the base's
-	// children never outlive the base they belong to.
-	for _, bc := range base.ChildSchemas() {
-		if err := tx.Exec(ctx, childDeleteSQL(d, bc.Table(), bc.FKColumn()), d.EncodeArg(domain.NewID(baseID))); err != nil {
-			return err
-		}
+	return false, nil
+}
+
+// purgeOrphanBase hard-deletes the base's native children (FK = base id) then
+// the base row itself, explicitly in Go (same TX, C7), under a savepoint. A
+// foreign-key violation on any statement — a referencing table the registry
+// does not know about — rolls back to the savepoint and reports (false, nil):
+// the database vetoed the purge, the base stays, the surrounding role delete
+// proceeds. Any other error propagates. (true, nil) means the base is gone.
+func (b *BaseEngine) purgeOrphanBase(ctx context.Context, tx WriteTx, d Dialect, base *TableSchema, baseID string) (bool, error) {
+	if err := tx.Exec(ctx, "SAVEPOINT "+sharedBasePurgeSavepoint); err != nil {
+		return false, err
 	}
-	return tx.Exec(ctx, deleteSQL(d, base.Table(), base.PKColumn()), d.EncodeArg(domain.NewID(baseID)))
+	err := func() error {
+		for _, bc := range base.ChildSchemas() {
+			if err := tx.Exec(ctx, childDeleteSQL(d, bc.Table(), bc.FKColumn()), d.EncodeArg(domain.NewID(baseID))); err != nil {
+				return err
+			}
+		}
+		return tx.Exec(ctx, deleteSQL(d, base.Table(), base.PKColumn()), d.EncodeArg(domain.NewID(baseID)))
+	}()
+	if err != nil {
+		if _, vetoed := d.IsForeignKeyViolation(err); vetoed {
+			if rbErr := tx.Exec(ctx, "ROLLBACK TO SAVEPOINT "+sharedBasePurgeSavepoint); rbErr != nil {
+				return false, rbErr
+			}
+			return false, nil
+		}
+		return false, err
+	}
+	if err := tx.Exec(ctx, "RELEASE SAVEPOINT "+sharedBasePurgeSavepoint); err != nil {
+		return false, err
+	}
+	return true, nil
 }
 
 // --- unified lifecycle convergence -------------------------------------------
@@ -380,8 +473,8 @@ func (b *BaseEngine) refcountSharedBase(ctx context.Context, tx WriteTx, d Diale
 //     active: reactivateBaseIfArchived.
 //   - a role is archived (archive) → if no role is left active, the base archives:
 //     archiveBaseIfNoActiveRole.
-//   - a role is hard-deleted (delete) → if no role ROW remains, the base is removed
-//     per OrphanPolicy: refcountSharedBase (the hard branch).
+//   - a role is hard-deleted (delete) → the base converges per OrphanPolicy:
+//     convergeBaseAfterHardDelete (the vetoable purge, or the orphan archive).
 // All three no-op without a shared base; the first two also no-op when the base
 // has no soft-delete (then only the orphan branch applies). They read the base /
 // role state and only write on a real transition (idempotent), so a steady-state
@@ -408,7 +501,7 @@ func (b *BaseEngine) archiveBaseIfNoActiveRole(ctx context.Context, tx WriteTx, 
 	if !ok || err != nil {
 		return err
 	}
-	active, err := anyActiveRole(ctx, tx, d, base, baseID)
+	active, err := b.anyActiveRole(ctx, tx, d, base, baseID)
 	if err != nil || active {
 		return err
 	}
@@ -491,11 +584,11 @@ func baseIsArchived(ctx context.Context, tx WriteTx, d Dialect, base *TableSchem
 	return archived, rows.Err()
 }
 
-// anyActiveRole reports whether any role row referencing the base is ACTIVE (not
-// soft-deleted). A role without a soft-delete column has no archived state, so
-// every existing row counts as active.
-func anyActiveRole(ctx context.Context, tx WriteTx, d Dialect, base *TableSchema, baseID string) (bool, error) {
-	for _, rr := range base.ReferencingRoles() {
+// anyActiveRole reports whether any role row referencing the base (instance ∪
+// engine registry) is ACTIVE (not soft-deleted). A role without a soft-delete
+// column has no archived state, so every existing row counts as active.
+func (b *BaseEngine) anyActiveRole(ctx context.Context, tx WriteTx, d Dialect, base *TableSchema, baseID string) (bool, error) {
+	for _, rr := range b.effectiveReferencingRoles(base) {
 		q := "SELECT 1 FROM " + d.QuoteIdent(rr.Table) + " WHERE " + d.QuoteIdent(rr.FKColumn) + " = " + d.Placeholder(1)
 		if rr.SoftDeleteCol != "" {
 			q += " AND " + d.QuoteIdent(rr.SoftDeleteCol) + " IS NULL"

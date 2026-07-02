@@ -42,6 +42,13 @@ func (testPGDialect) IsUniqueViolation(err error) (string, bool) {
 	}
 	return "", false
 }
+func (testPGDialect) IsForeignKeyViolation(err error) (string, bool) {
+	var pgErr *pgconn.PgError
+	if errors.As(err, &pgErr) && pgErr.Code == "23503" {
+		return pgErr.ConstraintName, true
+	}
+	return "", false
+}
 func (testPGDialect) BuildUpsert(table string, _, _ []string, _ []UpsertSet) string {
 	return "INSERT " + table
 }

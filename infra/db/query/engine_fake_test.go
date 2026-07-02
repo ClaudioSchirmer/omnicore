@@ -161,9 +161,10 @@ func (fakeDialect) EncodeArg(val any) any {
 	}
 	return val
 }
-func (fakeDialect) DecodeID(raw string) (string, error)    { return raw, nil }
-func (fakeDialect) ILikeClause(col, ph string) string      { return col + " ILIKE " + ph }
-func (fakeDialect) IsUniqueViolation(error) (string, bool) { return "", false }
+func (fakeDialect) DecodeID(raw string) (string, error)        { return raw, nil }
+func (fakeDialect) ILikeClause(col, ph string) string          { return col + " ILIKE " + ph }
+func (fakeDialect) IsUniqueViolation(error) (string, bool)     { return "", false }
+func (fakeDialect) IsForeignKeyViolation(error) (string, bool) { return "", false }
 
 // BuildUpsert mirrors the Postgres flavor (INSERT INTO … VALUES (…) ON CONFLICT
 // (…) DO UPDATE/NOTHING) so the control-plane upsert SQL the failure-registry

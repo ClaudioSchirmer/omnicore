@@ -140,6 +140,9 @@ func (b *BaseEngine) deleteAggregate(ctx persistence.RequestContext, entity doma
 	return b.hardDelete(ctx, entity.Source(), entity.ID(), schema, hook,
 		HookContext{Verb: "Delete", EntityType: entity.EntityName()},
 		func() audit.AuditEvent { return BuildDeleteEvent(ctx, entity, schema, b.auditClaims) },
+		func(baseID string) audit.AuditEvent {
+			return BuildSharedBasePurgeEvent(ctx, entity, schema, baseID, b.auditClaims)
+		},
 		entity.Events())
 }
 
@@ -162,6 +165,7 @@ func (b *BaseEngine) hardDelete(
 	hook WriteHook,
 	hctx HookContext,
 	buildEvent func() audit.AuditEvent,
+	buildPurgeEvent func(baseID string) audit.AuditEvent,
 	evs []domain.DomainEvent,
 ) error {
 	tx, err := b.beginner.Begin(ctx)
@@ -193,8 +197,11 @@ func (b *BaseEngine) hardDelete(
 		return err
 	}
 	// SharedBase (M2): if this is a role whose shared identity is now orphaned,
-	// remove the base per its OrphanPolicy (refcount across the registry).
-	if err := b.refcountSharedBase(ctx, tx, d, schema, src); err != nil {
+	// converge the base — the database-vetoable purge (DeleteWhenUnreferenced) or
+	// the orphan archive (soft-deletable base). An actual purge carries its own
+	// outbox row + audit event; the bundle echoes post-commit below.
+	purge, err := b.convergeBaseAfterHardDelete(ctx, tx, d, schema, src, buildPurgeEvent)
+	if err != nil {
 		return err
 	}
 	if err := WriteOutbox(ctx, tx, schema.Table(), "DELETED", id, nil); err != nil {
@@ -211,6 +218,7 @@ func (b *BaseEngine) hardDelete(
 		return err
 	}
 	b.AfterCommit(ctx, ab)
+	b.AfterCommit(ctx, purge) // zero bundle (no purge) is inert
 	return nil
 }
 

@@ -56,6 +56,46 @@ func TestIsUniqueViolation(t *testing.T) {
 	})
 }
 
+func TestIsForeignKeyViolation(t *testing.T) {
+	d := mysqlDialect{}
+
+	t.Run("1451 parent-row with constraint name", func(t *testing.T) {
+		err := &driver.MySQLError{Number: 1451, Message: "Cannot delete or update a parent row: a foreign key constraint fails (`app`.`alunos`, CONSTRAINT `fk_aluno_pessoa` FOREIGN KEY (`pessoa_id`) REFERENCES `pessoas` (`id`))"}
+		name, ok := d.IsForeignKeyViolation(err)
+		if !ok || name != "fk_aluno_pessoa" {
+			t.Fatalf("got (%q,%v), want (fk_aluno_pessoa,true)", name, ok)
+		}
+	})
+
+	t.Run("1452 child-row also classifies", func(t *testing.T) {
+		err := &driver.MySQLError{Number: 1452, Message: "Cannot add or update a child row: a foreign key constraint fails (`app`.`alunos`, CONSTRAINT `fk_aluno_pessoa` FOREIGN KEY (`pessoa_id`) REFERENCES `pessoas` (`id`))"}
+		name, ok := d.IsForeignKeyViolation(err)
+		if !ok || name != "fk_aluno_pessoa" {
+			t.Fatalf("got (%q,%v), want (fk_aluno_pessoa,true)", name, ok)
+		}
+	})
+
+	t.Run("1451 without a parseable constraint", func(t *testing.T) {
+		err := &driver.MySQLError{Number: 1451, Message: "Cannot delete or update a parent row"}
+		name, ok := d.IsForeignKeyViolation(err)
+		if !ok || name != "" {
+			t.Fatalf("got (%q,%v), want ('',true)", name, ok)
+		}
+	})
+
+	t.Run("non-FK mysql error", func(t *testing.T) {
+		if name, ok := d.IsForeignKeyViolation(&driver.MySQLError{Number: 1062, Message: "Duplicate entry"}); ok || name != "" {
+			t.Fatalf("got (%q,%v), want ('',false)", name, ok)
+		}
+	})
+
+	t.Run("non-mysql error", func(t *testing.T) {
+		if name, ok := d.IsForeignKeyViolation(errors.New("plain")); ok || name != "" {
+			t.Fatalf("got (%q,%v), want ('',false)", name, ok)
+		}
+	})
+}
+
 // TestILikeClause proves the case-insensitive LIKE renders LOWER on both sides so
 // criteria.ILike/Contains/StartsWith/EndsWith are case-insensitive on ANY column
 // collation (Postgres ILIKE parity), not only under a CI collation.

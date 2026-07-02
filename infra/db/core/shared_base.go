@@ -17,11 +17,19 @@ import "fmt"
 type OrphanPolicy int
 
 const (
-	// DeleteWhenUnreferenced hard-deletes the base row once the last referencing
-	// role row is gone (the default — the base exists only to serve its roles).
-	DeleteWhenUnreferenced OrphanPolicy = iota
-	// KeepOrphan leaves the base row in place even with no role referencing it.
-	KeepOrphan
+	// KeepOrphan (the default) leaves the base row in place even with no role
+	// referencing it. When the base declares SoftDelete, the orphaned identity is
+	// archived (with its native children) instead of staying active — dormant and
+	// revivable, never destroyed. Destruction is opt-in via DeleteWhenUnreferenced.
+	KeepOrphan OrphanPolicy = iota
+	// DeleteWhenUnreferenced hard-deletes the base row (and its native children)
+	// once the last referencing role row is gone. The delete is DATABASE-VETOABLE:
+	// it runs under a savepoint, and a foreign-key violation from ANY referencing
+	// table — including one the schema registry does not know about (another
+	// system sharing the database) — keeps the base instead of failing the role
+	// delete. Declare the role→base FKs as plain/RESTRICT so the veto can fire; an
+	// ON DELETE CASCADE FK opts that table into the destruction instead.
+	DeleteWhenUnreferenced
 )
 
 // RoleRef names a role table that references a shared base + the FK column it
@@ -211,4 +219,60 @@ func (s *TableSchema) SharedBaseScanPlan() (cols []string, byCol map[string]int,
 		return nil, nil, false
 	}
 	return s.sharedBaseLink.scanCols, s.sharedBaseLink.scanByCol, true
+}
+
+// AssertSharedBaseEquivalent asserts that two NewSharedBase declarations of the
+// SAME table describe the SAME shape — PK, natural key, orphan policy,
+// soft-delete, field set, and native children. The engine registry accepts a
+// base declared once and referenced everywhere OR re-declared identically per
+// role file (no singleton required of the consumer); what it must refuse is two
+// DIVERGENT declarations of one physical table, where the refcount/lifecycle
+// semantics would depend on which instance a write happened to run through.
+// Panics at registration (service boot), never on a request.
+func AssertSharedBaseEquivalent(a, b *TableSchema) {
+	if a.table != b.table {
+		panic(fmt.Sprintf(
+			"infra.SharedBase: equivalence check across different tables (%q vs %q) — a bug in the caller.",
+			a.table, b.table))
+	}
+	diverges := func(what, va, vb string) {
+		panic(fmt.Sprintf(
+			"infra.SharedBase(%s): two NewSharedBase declarations of this table diverge on %s (%q vs %q). "+
+				"Every declaration of a shared base must be identical — declare it once and reference it from "+
+				"each role, or repeat the exact same declaration.", a.table, what, va, vb))
+	}
+	if a.pkColumn != b.pkColumn {
+		diverges("the PK column", a.pkColumn, b.pkColumn)
+	}
+	if a.naturalKeyCol != b.naturalKeyCol {
+		diverges("the NaturalKey column", a.naturalKeyCol, b.naturalKeyCol)
+	}
+	if a.orphanPolicy != b.orphanPolicy {
+		diverges("the OrphanPolicy", fmt.Sprintf("%d", a.orphanPolicy), fmt.Sprintf("%d", b.orphanPolicy))
+	}
+	if a.softDelete != b.softDelete {
+		diverges("the SoftDelete column", a.softDelete, b.softDelete)
+	}
+	if len(a.fields) != len(b.fields) {
+		diverges("the field count", fmt.Sprintf("%d", len(a.fields)), fmt.Sprintf("%d", len(b.fields)))
+	}
+	for _, f := range a.fields {
+		other, ok := b.byGo[f.goName]
+		if !ok || other.column != f.column {
+			diverges("field "+f.goName, f.column, other.column)
+		}
+	}
+	if len(a.children) != len(b.children) {
+		diverges("the native-children count", fmt.Sprintf("%d", len(a.children)), fmt.Sprintf("%d", len(b.children)))
+	}
+	for name, ac := range a.children {
+		bc, ok := b.children[name]
+		if !ok {
+			diverges("native child "+name, ac.table, "<absent>")
+		}
+		if ac.table != bc.table || ac.fkColumn != bc.fkColumn || ac.softDelete != bc.softDelete {
+			diverges("native child "+name,
+				ac.table+"/"+ac.fkColumn+"/"+ac.softDelete, bc.table+"/"+bc.fkColumn+"/"+bc.softDelete)
+		}
+	}
 }

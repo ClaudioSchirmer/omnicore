@@ -10,6 +10,30 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 )
 
+// TestDialectViolationClassifiers proves the SQLSTATE classification both
+// write-path guards depend on: 23505 → unique (409 conflict binding), 23503 →
+// foreign key (the shared-base orphan-purge veto). Anything else — other
+// SQLSTATEs or non-pg errors — classifies as neither.
+func TestDialectViolationClassifiers(t *testing.T) {
+	d := pgDialect{}
+
+	if name, ok := d.IsUniqueViolation(&pgconn.PgError{Code: "23505", ConstraintName: "uniq_email"}); !ok || name != "uniq_email" {
+		t.Fatalf("IsUniqueViolation = (%q,%v), want (uniq_email,true)", name, ok)
+	}
+	if name, ok := d.IsForeignKeyViolation(&pgconn.PgError{Code: "23503", ConstraintName: "fk_aluno_pessoa"}); !ok || name != "fk_aluno_pessoa" {
+		t.Fatalf("IsForeignKeyViolation = (%q,%v), want (fk_aluno_pessoa,true)", name, ok)
+	}
+	if _, ok := d.IsForeignKeyViolation(&pgconn.PgError{Code: "23505"}); ok {
+		t.Fatal("a unique violation must not classify as a foreign-key violation")
+	}
+	if _, ok := d.IsUniqueViolation(&pgconn.PgError{Code: "23503"}); ok {
+		t.Fatal("a foreign-key violation must not classify as a unique violation")
+	}
+	if _, ok := d.IsForeignKeyViolation(errFake); ok {
+		t.Fatal("a non-pg error must not classify")
+	}
+}
+
 // composerRows is a programmable pgx.Rows for pgxRowsToMaps — the dynamic-shape
 // read the composer drives through pgQuerier.QueryMaps. It models the two methods
 // pgxRowsToMaps consumes that the Scan-shaped fakes do not: FieldDescriptions()

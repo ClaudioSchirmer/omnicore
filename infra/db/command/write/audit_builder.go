@@ -124,6 +124,27 @@ func BuildDeleteEvent(ctx persistence.RequestContext, d domain.Deletable, schema
 	return ev
 }
 
+// BuildSharedBasePurgeEvent assembles a kind=snapshot audit.AuditEvent
+// describing the orphan purge of a shared-base identity row (+ its native
+// children), fired by the role hard-delete that orphaned it — the purge is
+// never invisible in the audit timeline. The base is type-less, so EntityType
+// carries the base TABLE name, and the snapshot reads the shared fields off
+// the deleting role's entity by Go field name.
+func BuildSharedBasePurgeEvent(ctx persistence.RequestContext, d domain.Deletable, schema *TableSchema, baseID string, auditClaims []string) audit.AuditEvent {
+	base, _, _ := schema.SharedBaseRef()
+	ev := audit.AuditEvent{
+		EntityType: base.Table(),
+		EntityID:   baseID,
+		Verb:       "delete",
+		ActionName: d.ActionName(),
+		Kind:       "snapshot",
+		DateTime:   d.DateTime(),
+		Snapshot:   baseFieldValuesByName(base, d.Source()),
+	}
+	populateContext(&ev, ctx, auditClaims)
+	return ev
+}
+
 // populateContext fills the request-scoped fields of ev (ThreadID, Actor,
 // ActorIssuer, ActorClaims, TenantID) from ctx. ActorClaims is filtered
 // through auditClaims; TenantID is read from the raw claim map at the

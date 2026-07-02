@@ -34,15 +34,18 @@ func (e *bcRole) Modes() []domain.EntityMode {
 	return []domain.EntityMode{domain.ModeInsert, domain.ModeUpdate, domain.ModeDelete, domain.ModeArchive, domain.ModeUnarchive}
 }
 func (e *bcRole) BuildRules(string, domain.Service, *domain.Rules) {}
-func (e *bcRole) GetAggregateRoot() *domain.AggregateRoot { return &e.AggregateRoot }
+func (e *bcRole) GetAggregateRoot() *domain.AggregateRoot          { return &e.AggregateRoot }
 func (e *bcRole) AggregateChildren() []domain.AggregateValueObject {
 	return []domain.AggregateValueObject{bcAddr{}}
 }
 
 // bcRoleSchema declares endereco as a NATIVE CHILD OF THE BASE (pessoa), shared by
 // every role. softDelete toggles the all-or-nothing lifecycle on base + base-child.
+// The purge policy is declared explicitly (the default is KeepOrphan) so the
+// orphan-delete test below exercises the purge branch.
 func bcRoleSchema(softDelete bool) *TableSchema {
-	base := NewSharedBase("pessoa").PK("id").Field("Name", "name").Field("Document", "document").NaturalKey("document")
+	base := NewSharedBase("pessoa").PK("id").Field("Name", "name").Field("Document", "document").
+		NaturalKey("document").OrphanPolicy(DeleteWhenUnreferenced)
 	addr := NewTableSchema[bcAddr]("endereco").PK("id").FK("pessoa_id").Field("Street", "street")
 	if softDelete {
 		base = base.SoftDelete("deleted_at")
@@ -142,7 +145,8 @@ func TestBaseChild_OrphanDeletesBaseChildrenThenBase(t *testing.T) {
 	if err := be.Delete(newBuilderCtx(), del, bcRoleSchema(true), firingHook); err != nil {
 		t.Fatalf("Delete: %v", err)
 	}
-	// DELETE aluno + DELETE endereco + DELETE pessoa + outbox + audit = 5.
+	// DELETE aluno + savepointed purge (SAVEPOINT, DELETE endereco, DELETE
+	// pessoa, RELEASE) + outbox/audit for the base AND the role = 9.
 	idxAddr, idxBase := indexOfPrefix(tx.execs, "DELETE FROM endereco"), indexOfPrefix(tx.execs, "DELETE FROM pessoa")
 	if idxAddr < 0 || idxBase < 0 {
 		t.Fatalf("orphan delete must remove base-children AND the base, got %v", tx.execs)

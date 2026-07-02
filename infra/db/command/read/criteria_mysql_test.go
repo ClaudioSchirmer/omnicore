@@ -46,9 +46,12 @@ func (testMySQLDialect) EncodeArg(val any) any {
 		return val
 	}
 }
-func (testMySQLDialect) DecodeID(raw string) (string, error)        { return raw, nil }
-func (testMySQLDialect) ILikeClause(col, ph string) string          { return "LOWER(" + col + ") LIKE LOWER(" + ph + ")" }
+func (testMySQLDialect) DecodeID(raw string) (string, error) { return raw, nil }
+func (testMySQLDialect) ILikeClause(col, ph string) string {
+	return "LOWER(" + col + ") LIKE LOWER(" + ph + ")"
+}
 func (testMySQLDialect) IsUniqueViolation(error) (string, bool)     { return "", false }
+func (testMySQLDialect) IsForeignKeyViolation(error) (string, bool) { return "", false }
 func (testMySQLDialect) BuildUpsert(table string, _, _ []string, _ []UpsertSet) string {
 	return "INSERT " + table
 }
