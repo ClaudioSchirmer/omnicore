@@ -186,16 +186,20 @@ func GetAggregateItemsOf[T AggregateValueObject](ar *AggregateRoot) []AggregateI
 	return out
 }
 
+// GetAddedItemsOf / GetChangedItemsOf / GetRemovedItemsOf categorize children by
+// the persistence operation (OperationOf), which crosses original + current status
+// — NOT currentStatus alone. A DB item re-added or changed is "changed" (UPDATE),
+// not "added"; a brand-new item added then removed is in none of them (no-op).
 func GetAddedItemsOf[T AggregateValueObject](ar *AggregateRoot) []T {
-	return filterAggregateOf[T](ar, StatusAdded)
+	return filterAggregateByOp[T](ar, OpInsert)
 }
 
 func GetChangedItemsOf[T AggregateValueObject](ar *AggregateRoot) []T {
-	return filterAggregateOf[T](ar, StatusChanged)
+	return filterAggregateByOp[T](ar, OpUpdate)
 }
 
 func GetRemovedItemsOf[T AggregateValueObject](ar *AggregateRoot) []T {
-	return filterAggregateOf[T](ar, StatusRemoved)
+	return filterAggregateByOp[T](ar, OpDelete)
 }
 
 func GetCurrentItemsOf[T AggregateValueObject](ar *AggregateRoot) []T {
@@ -209,11 +213,11 @@ func GetCurrentItemsOf[T AggregateValueObject](ar *AggregateRoot) []T {
 	return out
 }
 
-func filterAggregateOf[T AggregateValueObject](ar *AggregateRoot, status AggregateItemStatus) []T {
+func filterAggregateByOp[T AggregateValueObject](ar *AggregateRoot, op AggregateItemOp) []T {
 	items := GetAggregateItemsOf[T](ar)
 	out := make([]T, 0, len(items))
 	for _, it := range items {
-		if it.CurrentStatus == status {
+		if OperationOf(it.OriginalStatus, it.CurrentStatus) == op {
 			out = append(out, it.Item)
 		}
 	}

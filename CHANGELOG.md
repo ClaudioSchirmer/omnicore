@@ -11,7 +11,65 @@ with `1.0.0`.
 
 ## [Unreleased]
 
+## [0.17.0] - 2026-07-02
+
 ### Added
+
+- **SharedBase safe orphan handling — KeepOrphan default, database-vetoable
+  purge, audited destruction, engine-scoped role registry.** Destroying shared
+  identity data is always a conscious, visible, physically-guarded act. (1) The `OrphanPolicy` **default is
+  now `KeepOrphan`**: omission never destroys the identity; with `SoftDelete` on
+  the base, hard-deleting the last referencing role row *archives* the orphaned
+  base (+ its native children) — dormant, revived automatically if the same
+  natural key returns — and without `SoftDelete` it simply stays.
+  `DeleteWhenUnreferenced` is the explicit opt-in for physical erasure. (2) The
+  orphan purge is **database-vetoable**: it runs under a savepoint
+  (`SAVEPOINT omnicore_sb_purge`), and a foreign-key violation from ANY
+  referencing table — including one outside the schema registry, e.g. another
+  system sharing the database — cancels the purge (the base stays; the role
+  delete still commits). The FK check is classified by the new
+  `core.Dialect.IsForeignKeyViolation` (PG SQLSTATE 23503 / MySQL errno
+  1451/1452). The same veto closes the probe-then-delete race against a
+  concurrent role insert. Declare the role→base FKs as plain/`RESTRICT`
+  constraints so the veto has teeth; `ON DELETE CASCADE` on a foreign table is
+  that schema's explicit opt-in to the destruction. (3) An actual purge is
+  **never invisible**: it emits its own in-TX audit event
+  (`write.BuildSharedBasePurgeEvent` — the base table as `entityType`, the
+  deterministic base id as `entityId`, kind `snapshot` with the shared fields)
+  and its own `DELETED` outbox row for the base table, alongside the role's. (4)
+  The refcount/lifecycle probes no longer depend on the consumer funneling every
+  role through ONE `NewSharedBase` instance: `WithSchema` registers each
+  shared-base role on an **engine-scoped registry keyed by the base's table**
+  (`BaseEngine.RegisterSharedBaseRole`), and the probes read the union of the
+  instance and engine registries — N identical `NewSharedBase` declarations
+  behave exactly like one, no consumer singleton. Two *divergent* declarations
+  of the same table (natural key, policy, soft-delete, fields, or children)
+  panic at boot via `core.AssertSharedBaseEquivalent`. (5) A role hard-delete
+  whose natural key resolves empty now fails loudly instead of converging on
+  `UUIDv5("")` (the same guard the soft-write convergence already had).
+
+- **A schema's own aggregate children auto-project into the Mongo view.** A view
+  root's own `Child(...)` collections (and each child's siblings, merged FLAT) now
+  nest into the composed document straight from the `TableSchema` — the read-side
+  mirror of the write loader's `hydrateChildren`, joined `root.PK → child.FK`.
+  Previously only a shared base's native children auto-projected; a root's own
+  children reached the document only through an explicit `EmbedMany`, so a view
+  declaring just its root silently dropped them. The child now projects wherever
+  its schema is used (view root or embed source), under its pluralized child-type
+  segment, filterable/sortable by dotted Go path. Two consequences: the former
+  guard rejecting an embed source whose schema carries `Child(...)` is **removed**
+  (those children now project instead of being ignored), and a redundant explicit
+  embed of a child the schema already projects (same derived segment) is a new boot
+  error. `EmbedMany`/`Embed` stay for composing sources the aggregate does not own
+  (cross-service read models / derived projections). Auto-projected children (own
+  and base-native) follow the root's soft-delete gate: archived child rows are
+  hidden on default reads and surfaced only under `?includeArchived` — explicitly
+  declared embeds are untouched, their lifecycle belonging upstream.
+
+- **`TableSchema.ChildSchemas()`** — returns every declared aggregate child
+  schema, ordered by table name (deterministic SQL on any engine). The aggregate
+  hard-delete path uses it to clear each child table by FK explicitly; an
+  out-of-package relational engine can enumerate the declared children through it.
 
 - **Inbound request deadline.** New `http.requestTimeoutSeconds` config knob
   bounds how long a single inbound request may run before the framework cancels
@@ -52,6 +110,251 @@ with `1.0.0`.
   pre-load) are covered; a direct call to the ctx-less
   `domain.Reader[T].FindByID` outside the Auto write handlers stays uncovered by
   design — the domain port takes no context.
+
+- **Pluggable relational backend — MySQL alongside PostgreSQL.** The relational
+  layer is now backend-agnostic: a `db.RelationalEngine` port decouples the write
+  binding, read path, and composition root from the concrete driver, with the
+  backend selected once at boot via the new mandatory `relational` block —
+  `relational.dialect` (`postgres` | `mysql`, no default: the framework refuses
+  to assume a backend, so an absent dialect aborts boot) plus `relational.dsn`
+  (the connection string for the selected dialect). Engines self-register
+  database/sql-style (`db.RegisterEngine` / `db.NewEngine`); `Deps.DB` and
+  `BaseRepository.Engine` are the neutral handles, and `postgres.AsPostgres(engine)`
+  recovers the concrete adapter for the few PG-bound escapes (pool, partitions).
+  A complete MySQL engine ships behind the `mysql` build tag
+  (`infra/db/engine/mysql`): selecting `relational.dialect: mysql` +
+  `go build -tags mysql` runs a service at feature parity with Postgres — flat and
+  aggregate writes (root + children + outbox in one TX, symmetric
+  archive/unarchive/delete cascade), `FindByID` / criteria reads, audit rows +
+  domain-event publishing, the integration producer and consumer (dedup + failure
+  registries), the composer + SyncEngine Mongo projection, operator-triggered
+  Mongo-view rebuild + drift reconciliation, the migration runner, per-statement
+  OpenTelemetry tracing, and the `omnicore-admin` tooling; a Postgres-only build
+  never compiles the package nor links the MySQL driver. Several internal surfaces
+  became backend-neutral to make this possible: a read seam
+  (`db.Querier`/`Rows`/`Row` + `db.Dialect`, with `QueryMaps` for the composer's
+  dynamic shape), the in-TX bridge (`db.UnwrapTx(TxHandle) db.Tx`, the neutral
+  counterpart to the PG-only `UnwrapPgxTx`), a generic audit reader
+  (`db.NewAuditReader`), and the rebuild mutex
+  (`RelationalEngine.AcquireRebuildLock` — `pg_advisory_lock` on Postgres,
+  `GET_LOCK` on MySQL); the `Dialect` renders placeholders (`$n`/`?`), identifier
+  quoting, the case-insensitive LIKE clause, the upsert statement, and the UUID
+  value codec per backend. MySQL specifics: primary keys are UUID v7 generated in
+  Go and stored `BINARY(16)` (time-ordered for InnoDB locality); secondary UUID
+  columns and raw-string id criteria round-trip through `BINARY(16)`, boolean
+  fields keep type fidelity into Mongo, and case-insensitive criteria are
+  collation-independent (`LOWER(col) LIKE LOWER(?)`); the DSN is normalized at
+  construction (`parseTime`, `clientFoundRows`; `multiStatements` scoped to the
+  migration connection only). Verified throughout by a `-tags=integration,mysql`
+  suite against a real MySQL container.
+
+- **Relational entity specialization — Sibling and SharedBase.** A `TableSchema`
+  node can now partition one flat Go entity across more than its own table,
+  normalizing a DDD entity into third normal form on write and denormalizing it
+  back on read. `core.NewSiblingSchema[T](table)` + `.Sibling(...)` declares a
+  **1:1 shared-primary-key** secondary table holding a disjoint subset of the same
+  entity's fields (a vertical split): written across owner + siblings in one TX
+  (conditional materialization — skipped on INSERT, untouched on PATCH, deleted on
+  a full PUT), merged back flat on read via `LEFT JOIN`, with sibling-aware
+  criteria. `core.NewSharedBase(table)` + `.NaturalKey(col)` / `.OrphanPolicy(p)`
+  and a role's `.SharedBase(base, fk)` declares the **party-role pattern** (N:1):
+  one identity table shared by N independent role tables, deduplicated by a natural
+  key whose value derives a deterministic UUIDv5 primary key (no read-back). A role
+  links to the base either by a separate FK column or by sharing the base's id as its
+  own primary key (`.SharedBase(base, "id")` → `role.id == base.id`, the PK enforcing
+  the 0:1 with no separate FK). A shared base may own native **1:N children**
+  (FK → the base id) shared by every
+  role. The upsert-on-insert path is served by
+  `read.NewSharedBaseRoleRepository[T]` + `handlers.SharedBaseInsertCommandHandler`
+  (cold insert uses action name `"GetInsertable"`, warm reuse `"GetUpsertable"`),
+  with a guard rejecting a blind insert that would duplicate an existing identity.
+  An archived role is invisible to the insert probe (soft-delete is delete), so a
+  POST never revives it — reactivation is the `/unarchive` verb's job.
+  Lifecycle converges through the roles (archiving the last active role archives
+  the base and its children; orphan convergence per `OrphanPolicy` — see the
+  safe-orphan-handling entry), and a write
+  through one role recomposes the Mongo views of every role of that identity
+  (`fanOutSharedBase`). New public surface: `core.NewSiblingSchema`,
+  `(*core.TableSchema).Sibling` / `.Siblings` / `.IsSecondary`,
+  `core.NewSharedBase`, `.NaturalKey` / `.OrphanPolicy` / `.SharedBase` /
+  `.IsSharedBase`, `core.OrphanPolicy` (`DeleteWhenUnreferenced` / `KeepOrphan`),
+  `read.NewSharedBaseRoleRepository`, `handlers.SharedBaseInsertCommandHandler`,
+  `pipeline.SharedBaseInsertCommand`, `persistence.SharedBaseInsertLoader`.
+  Dialect-agnostic (Postgres + MySQL); boot guards reject illegal declarations.
+
+- **Write-backed schema must be type-anchored — boot guard.**
+  `BaseRepository.WithSchema` (and the aggregate repository, which delegates to
+  it) now rejects a type-less `NewExternalSchema` as a repository root, panicking
+  at construction. A schema that backs the write path must be anchored to a Go
+  type: the persister reflects the entity to build the `INSERT`/`UPDATE`, and the
+  read-side composer reflects it (`BoolColumns`) to restore type fidelity when it
+  materializes the Mongo view — neither is possible without a struct. A type-less
+  schema describes an *upstream* service's Mongo collection and is only ever a
+  view *embed* source (`FromSchema`). Because the composer routes by the view
+  root *table name* (the `.Root(table)` string), not by the schema's kind, a
+  type-less root naming a real local table would otherwise be composed
+  relationally with an empty `BoolColumns` and silently lose boolean fidelity on
+  a backend without a native bool (MySQL `TINYINT(1)` → number) — this turns that
+  latent divergence into a loud boot failure. Aggregate children were already
+  covered (`Child(...)` rejects a type-less child at declaration), so the
+  invariant *root + every child type-anchored* is now complete.
+
+### Fixed
+
+- **A legitimately EMPTY view no longer rebuilds on every boot.** The drift
+  classifier read "registry matches + collection empty" as `DriftMongoWiped`
+  and rebuilt — but a view whose aggregate has no rows yet is empty on BOTH
+  sides, and it re-ran the wipe recovery (advisory lock + rebuild log, from and
+  to hashes identical) on every single boot. `DetectViewDrift` now also probes
+  the view's ROOT table (`SELECT 1 … LIMIT 1` through the neutral
+  Querier/Dialect): collection empty + SoR empty → `DriftNone`; the rebuild
+  fires only when the SoR actually has rows to mirror (a real wipe).
+- **The reader hands Go-typed values — BSON datetimes become `time.Time`.**
+  Consumers of the raw document (the tabular export, `RawDoc` handlers)
+  received driver-typed BSON datetimes and rendered epoch milliseconds
+  (`1425945600000`) where the JSON surface showed RFC3339. The
+  `MongoViewReader` now normalizes BSON scalars recursively (datetime →
+  `time.Time` UTC) before translation, the CSV encoder renders `time.Time` as
+  RFC3339 (matching the JSON surface), and the XLSX encoder's existing
+  typed-cell pass-through finally receives the `time.Time` it was written for.
+
+### Changed
+
+- **BREAKING: view embeds compose external data only; tabular export walks the
+  full schema tree.** `Embed`/`EmbedMany` now boot-reject a write-anchored
+  (`NewTableSchema[T]`) source — they compose ONLY external data (another
+  service's read model via `UpstreamSubscription` / `FromSchema` over a type-less
+  `NewExternalSchema`, or a derived projection). The relational cross-aggregate
+  embed path (`fetchPGEmbed`) is removed: an aggregate's own data — root, siblings,
+  SharedBase, and 1:N children — projects automatically from its `TableSchema`, so
+  declaring it as an embed is the redundant second path this closes. One canonical
+  path per case: internal data is automatic, embeds are external. Migration: a view
+  embedding a local aggregate child via `EmbedMany("x", FromSchema(ChildSchema()))`
+  drops the embed and declares the child with `.Child(ChildSchema())` on the root
+  schema (it then auto-projects); a genuine cross-service embed already uses an
+  external `NewExternalSchema` and is unaffected. Separately, tabular export
+  (CSV/XLSX) now builds its column plan over the full tree — sibling and SharedBase
+  columns fold in FLAT at the root level, and nested children contribute their own
+  column groups — instead of the root's own fields only.
+
+- **Aggregate child operations are decided by original + current status.** On an
+  aggregate update, each child's persisted operation is now
+  `domain.OperationOf(OriginalStatus, CurrentStatus)` (a new `AggregateItemOp`:
+  `OpInsert` / `OpUpdate` / `OpDelete` / `OpNoop`), comparing where the item
+  started against where it is now — not its current status in isolation. Two cases
+  this corrects: a DB-loaded child re-added (`Constructor → Added`) is an **UPDATE**
+  (audit `updated`), not an INSERT; a brand-new child added then removed before
+  commit (`Added → Removed`) is **OpNoop** — no SQL and no audit children entry.
+  The `GetAdded/Changed/RemovedItemsOf` helpers filter by the same rule. New public
+  surface: `domain.AggregateItemOp` (`OpNoop` / `OpInsert` / `OpUpdate` /
+  `OpDelete`) and `domain.OperationOf`.
+
+- **Aggregate hard-delete cascades to children explicitly in Go.** Deleting an
+  aggregate root now issues an explicit `DELETE` per declared child table (keyed
+  on its FK to the root) before the root `DELETE`, all in one TX — mirroring the
+  Go-owned symmetric cascade the archive/unarchive path already performs.
+  Previously `deleteAggregate` issued only the root `DELETE` and relied on a
+  database `ON DELETE CASCADE` declared in the consumer's migration. The
+  framework now owns the cascade: it is correct and deterministic on every
+  relational engine even when the FK omits `ON DELETE CASCADE` (which becomes an
+  optional defense-in-depth safety-net, not a requirement), and children are
+  enumerated from the schema's declared `ChildSchemas()` so every child table is
+  cleared regardless of what the loaded aggregate carried. Behavior-preserving
+  for services that already declared `ON DELETE CASCADE`.
+
+- **breaking** — **a relational engine build tag is now mandatory.** Both engines
+  are compiled behind build tags — Postgres under `-tags postgres`, MySQL under
+  `-tags mysql` — so a binary links exactly one engine and its driver stack (pgx
+  vs go-sql-driver), never both. Previously Postgres was always compiled in
+  (untagged) and MySQL was the only tagged opt-in, so a `-tags mysql` build still
+  carried pgx. Now `go build` / `test` / `run` and consumer services MUST pass
+  `-tags postgres` or `-tags mysql`, matching `relational.dialect`. Building with
+  **neither** tag registers no engine and aborts at boot (`db.NewEngine`: no engine
+  registered for the dialect); building with **both** fails to compile (a guard in
+  `infra/db/core`). The PG engine package (`infra/db/engine/postgres`), audit
+  partition maintenance (`infra/audit/partitions.go`), the migration runner, and
+  the bootstrap PG wiring now carry the `postgres` tag; the migration runner was
+  restructured so each dialect's driver lives in its own `*_runner.go` behind its
+  tag, and the dialect-bound boot steps moved into `bootstrap/engine_<dialect>.go`.
+  No public signatures changed — `migration.New` / `NewMySQL`,
+  `postgres.AsPostgres`, and the `db.RelationalEngine` seam are unchanged; what
+  changed is that a build tag now selects which one is linked.
+
+- **breaking** — the audit **model, read port, and label renderer** moved from
+  `infra/audit` to a new `application/audit` package, closing a layering leak: an
+  application/web consumer that reads the audit timeline (a manual handler over
+  the `audit_events` table) previously had to import `infra/audit` to name the
+  `Reader` port, the `AuditEvent` model, and `RenderLabels` — an
+  `application → infra` (and `web → infra`) edge the dependency rules forbid.
+  These now live beside the abstraction they belong to. `infra/audit` keeps the
+  concrete reader, persister, echo, partitions, and `Config`, and depends on
+  `application/audit` for the model + port (the correct `infra → application`
+  direction). No behavior, signature, or wire change — pure package relocation.
+  Migration: update imports of `AuditEvent`, `FieldChange`, `ChildEvent`,
+  `Reader`, `ErrAuditNotFound`, `RenderLabels`, and `RenderLabelsInJSON` from
+  `github.com/ClaudioSchirmer/omnicore/infra/audit` to
+  `github.com/ClaudioSchirmer/omnicore/application/audit` (the package name stays
+  `audit`; a file needing both — e.g. composition wiring `audit.NewReader` next
+  to the moved `audit.Reader` — aliases one import).
+
+- **breaking** — the relational backend config moved into a single mandatory
+  `relational` block: `relational.dialect` (`postgres` | `mysql`) + `relational.dsn`.
+  The former top-level `postgres.dsn` key is **removed**, and the dialect now has
+  **no default** — an absent `relational.dialect` (or `relational.dsn`) aborts boot
+  with `missing required config`. The framework no longer assumes Postgres. Migration:
+  rename `postgres.dsn` → `relational.dsn` and add `relational.dialect: postgres`
+  (the DSN is dialect-neutral, so it keeps its value). `cfg.Postgres.DSN` /
+  `cfg.Database.Dialect` become `cfg.Relational.DSN` / `cfg.Relational.Dialect`.
+
+- **breaking** — the relational layer's public surface is now backend-neutral,
+  replacing pgx-typed parameters with the `db.RelationalEngine` / `db.Querier` /
+  `db.Dialect` / `db.Row` / `db.Rows` seam. Migration points:
+  - The concrete engine package moved `infra/db/engine/pg` →
+    `infra/db/engine/postgres` (`package pg` → `package postgres`) — update the
+    import path and qualifier for the PG-only escapes (`postgres.AsPostgres`,
+    `postgres.UnwrapPgxTx`, `*postgres.Postgres`, `postgres.NewPostgres`); no
+    symbols changed.
+  - `Deps.Postgres *infra.Postgres` → `Deps.DB infra.RelationalEngine`, and
+    `BaseRepository[T].Postgres` → `.Engine RelationalEngine` (recover the pool via
+    `infra.AsPostgres(d.DB)`; rename the literal field).
+  - `WithAudit` / `WithEventPublisher` moved onto the `RelationalEngine` interface
+    and now return `RelationalEngine`.
+  - The audit read free functions (`audit.FindByID` / `FindByAggregate`) and the
+    `pgExec` interface are removed — build a reader with `db.NewAuditReader(deps.DB)`.
+  - `RootScanner[T]` / `ChildScanner` receive `db.Row` / `db.Rows` (was `pgx.Row` /
+    `pgx.Rows`); the body's `row.Scan(...)` is unchanged.
+  - The Mongo-view rebuild/drift surface neutralized: `DetectViewDrift` takes
+    `RelationalEngine`; the registry helpers (`ReadViewRegistry`, `InitViewRegistry`,
+    `BeginRebuild`, `EndRebuild`, `ListNonDone`) take `(db.Querier, db.Dialect)`;
+    the PG-only advisory-lock helpers (`ViewLockKey`, `TryAcquireViewLock`,
+    `ReleaseViewLock`, `ReadViewLockHolder`) are removed (use `AcquireRebuildLock`).
+  - The engine-taking constructors and consumer-plane helpers now take a
+    `RelationalEngine` (a `*Postgres` still satisfies it, so the canonical
+    `bootstrap.Run` path is unaffected): `NewAggregateLoader`,
+    `NewBaseAggregateRepository`, `NewComposer{,WithMongo}`, `NewSyncEngine`,
+    `integration.Configure`, `NewUpstreamSubscriber`, `integration.NewConsumerPool`,
+    `Receiver.RetryPendingFailures`. The failure/dedup helpers
+    (`RecordUpstreamFailure`, `ResolveUpstreamFailures`,
+    `ListPendingUpstreamFailures{,ByTopic}`, `RecordIntegrationFailure`,
+    `ResolveIntegrationFailures`, `ListPendingIntegrationFailures{,ByGroup}`,
+    `IsAlreadyProcessed`, `MarkProcessed`) take `(Querier[, Dialect])`.
+
+- **breaking** — the embedded framework migrations collapsed from three versioned
+  files (`0001_outbox` / `0002_integration_events` / `0003_outbox_traceparent`)
+  into one flattened `0001_framework` per dialect (`embedded/postgres/`,
+  `embedded/mysql/`), every table + column carrying a `COMMENT` (the MySQL flavor
+  uses dialect-appropriate types — `UUID`→`CHAR(36)`, `JSONB`→`JSON`). A database
+  that already applied the old framework versions must be reset
+  (`docker compose down -v`) — done pre-1.0 deliberately so Postgres and MySQL
+  share one clean initial schema. Service migrations (`0002+`) are unaffected.
+
+- **UPDATE of a missing row now reports 404, not 500, on every backend.** A write
+  verb (Update / PATCH, root or aggregate child) whose `WHERE id = …` matches no
+  row — e.g. the row was deleted between the write command's pre-load and the write
+  (a TOCTOU race) — now surfaces the canonical `RecordNotFoundNotification` (404)
+  instead of a raw driver error (previously Postgres leaked `pgx.ErrNoRows` → 500).
+  On MySQL the DSN forces `clientFoundRows=true`, so an idempotent no-op PUT of an
+  existing row is not mistaken for a missing one.
 
 ## [0.16.0] - 2026-06-25
 
@@ -1201,14 +1504,3 @@ to content from a prior repo that no longer exists.
   carrying `verb` / `hookSlot` / `entityType` / `threadId` / `error`,
   emitted as best-effort `slog.Warn` whenever a hook returns non-nil
   error.
-
-[0.12.0]: https://github.com/ClaudioSchirmer/omnicore/releases/tag/v0.12.0
-[0.11.0]: https://github.com/ClaudioSchirmer/omnicore/releases/tag/v0.11.0
-[0.10.0]: https://github.com/ClaudioSchirmer/omnicore/releases/tag/v0.10.0
-[0.9.0]: https://github.com/ClaudioSchirmer/omnicore/releases/tag/v0.9.0
-[0.8.0]: https://github.com/ClaudioSchirmer/omnicore/releases/tag/v0.8.0
-[0.7.0]: https://github.com/ClaudioSchirmer/omnicore/releases/tag/v0.7.0
-[0.6.0]: https://github.com/ClaudioSchirmer/omnicore/releases/tag/v0.6.0
-[0.5.0]: https://github.com/ClaudioSchirmer/omnicore/releases/tag/v0.5.0
-[0.4.0]: https://github.com/ClaudioSchirmer/omnicore/releases/tag/v0.4.0
-[0.3.0]: https://github.com/ClaudioSchirmer/omnicore/releases/tag/v0.3.0

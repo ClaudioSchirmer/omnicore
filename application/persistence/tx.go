@@ -9,9 +9,10 @@
 //     methods, only a private sealing method that pins the implementation
 //     to the framework's infra adapter. Application code receives the
 //     handle and threads it to a port; the port's adapter in infra/
-//     unwraps the underlying pgx.Tx via infra.UnwrapPgxTx and owns the
-//     SQL + table name. Sealing the interface prevents any code path
-//     where the application layer writes SQL.
+//     unwraps the backend-neutral infra.Tx via infra.UnwrapTx and owns the
+//     SQL + table name (infra.UnwrapPgxTx is the PG-only escape hatch).
+//     Sealing the interface prevents any code path where the application
+//     layer writes SQL.
 //   - AfterBeginHook[T] / BeforeCommitHook[T] — function types declaring the
 //     hook shape. Slot semantics: afterBegin fires INSIDE the TX before any
 //     framework write; beforeCommit fires INSIDE the TX after all framework
@@ -43,9 +44,10 @@ package persistence
 //
 //  1. Declare a port in application/ (or domain/) — a pure Go interface
 //     whose method receives a persistence.TxHandle parameter.
-//  2. Implement the port in infra/ — the adapter calls
-//     infra.UnwrapPgxTx(tx) to recover the underlying pgx.Tx and owns
-//     the SQL + table name.
+//  2. Implement the port in infra/ — the adapter calls infra.UnwrapTx(tx)
+//     to recover the backend-neutral infra.Tx (Exec/Query/QueryRow +
+//     Dialect) and owns the SQL + table name. infra.UnwrapPgxTx(tx) is the
+//     PG-only escape hatch for an adapter that deliberately targets pgx.
 //  3. Inject the port on the Cmd (constructor / wire) and call it from
 //     the hook closure. The framework's TX is honored end to end; the
 //     application layer never pronounces SQL.

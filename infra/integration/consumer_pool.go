@@ -10,7 +10,7 @@ import (
 	"time"
 
 	"github.com/ClaudioSchirmer/omnicore/application/pipeline"
-	"github.com/ClaudioSchirmer/omnicore/infra"
+	"github.com/ClaudioSchirmer/omnicore/infra/db/core"
 	"github.com/ClaudioSchirmer/omnicore/infra/tracing"
 
 	"github.com/google/uuid"
@@ -32,10 +32,12 @@ const defaultIntegrationCommitInterval = time.Second
 type ConsumerPool struct {
 	registry *Registry
 	cfg      *Config
-	pg       *infra.Postgres
-	brokers  []string
-	pipe     *pipeline.Pipeline
-	logger   *slog.Logger
+	// eng is the relational engine the dedup + failure registries are
+	// read/written through (neutral Querier + Dialect).
+	eng     core.RelationalEngine
+	brokers []string
+	pipe    *pipeline.Pipeline
+	logger  *slog.Logger
 
 	// drains coordinates per-receiver supervisor shutdown. inflight
 	// counts per-message processing so Shutdown can wait for every
@@ -58,13 +60,13 @@ func (p *ConsumerPool) WithKafkaTracing(on bool) *ConsumerPool {
 }
 
 // NewConsumerPool wires the pool. brokers + pipe are framework
-// singletons already present on bootstrap.Deps; pg is the same handle
-// the producer side uses, repurposed here to read/write the dedup +
-// failure tables.
+// singletons already present on bootstrap.Deps; eng is the relational
+// engine, used here to read/write the dedup + failure tables through the
+// neutral Querier + Dialect.
 func NewConsumerPool(
 	registry *Registry,
 	cfg *Config,
-	pg *infra.Postgres,
+	eng core.RelationalEngine,
 	brokers []string,
 	pipe *pipeline.Pipeline,
 	logger *slog.Logger,
@@ -75,7 +77,7 @@ func NewConsumerPool(
 	return &ConsumerPool{
 		registry: registry,
 		cfg:      cfg,
-		pg:       pg,
+		eng:      eng,
 		brokers:  brokers,
 		pipe:     pipe,
 		logger:   logger,
@@ -293,7 +295,7 @@ func (p *ConsumerPool) processGroupMessage(ctx context.Context, g *receiverGroup
 		"receive "+headers["event_type"], headers["traceparent"])
 	defer span.End()
 	eventID := parseEventID(headers["event_id"], msg.Key)
-	_ = r.handleMessage(ctx, p.pg.Pool(), headers, eventID, msg.Value, p.pipe, p.logger)
+	_ = r.handleMessage(ctx, p.eng, headers, eventID, msg.Value, p.pipe, p.logger)
 }
 
 // route selects the receiver an event_type maps to within this group, or

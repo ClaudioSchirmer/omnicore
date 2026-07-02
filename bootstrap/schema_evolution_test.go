@@ -99,6 +99,6 @@ func TestReconcileViewDrift_AutoRunFalse_SkipsDetection(t *testing.T) {
 	}
 
 	if err := reconcileViewDrift(context.Background(), cfg, deps, nil, nil); err != nil {
-		t.Fatalf("autoRun=false must return nil without touching PG/Mongo; got: %v", err)
+		t.Fatalf("autoRun=false must return nil without touching the relational engine/Mongo; got: %v", err)
 	}
 }

@@ -76,9 +76,9 @@ func cache.SetJSON[T any](ctx, c cache.Cache, key string, value T, ttl time.Dura
   <p>The same matrix applies independently to <code>cache.store</code> and <code>cache.shared.store</code>. Mismatched wiring fails the boot with a structural-coherence error:</p>
   <ul>
     <li><code>store: memory</code> (or unset) + no <code>Wiring.Cache</code> → in-process LRU runs.</li>
-    <li><code>store: memory</code> or <code>store: redis</code> + <code>Wiring.Cache</code> injected → boot panic ("declare <code>store: custom</code> to use <code>Wiring.Cache</code>").</li>
+    <li><code>store: memory</code> or <code>store: redis</code> + <code>Wiring.Cache</code> injected → boot aborts with a returned error ("declare <code>cache.store: custom</code> to enable Wire injection").</li>
     <li><code>store: redis</code> + no <code>Wiring.Cache</code> → go-redis backed adapter built from <code>redis:</code> sub-block.</li>
-    <li><code>store: custom</code> + no <code>Wiring.Cache</code> → boot panic ("<code>Wiring.Cache</code> required").</li>
+    <li><code>store: custom</code> + no <code>Wiring.Cache</code> → boot aborts with a returned error ("<code>cache.store: custom</code> requires <code>Wiring.Cache</code> to be set").</li>
     <li><code>store: custom</code> + <code>Wiring.Cache</code> injected → injected instance runs.</li>
   </ul>
   <p><code>cache.shared.store: memory</code> is additionally rejected at boot — only <code>redis</code> and <code>custom</code> are accepted for the shared cache.</p>

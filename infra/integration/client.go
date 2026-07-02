@@ -4,7 +4,7 @@ import (
 	"log/slog"
 	"sync"
 
-	"github.com/ClaudioSchirmer/omnicore/infra"
+	"github.com/ClaudioSchirmer/omnicore/infra/db/core"
 )
 
 // state is the package-level singleton populated by Configure at boot
@@ -19,7 +19,7 @@ import (
 // Synchronization is a write-once-read-many shape: Configure takes the
 // mutex; Dispatch takes the read-lock. The path is hot enough that an
 // atomic.Value would be cheaper, but the singleton is read once per
-// Dispatch (which itself does PG IO) so the lock cost is irrelevant
+// Dispatch (which itself does relational IO) so the lock cost is irrelevant
 // against the network round-trip.
 var (
 	stateMu sync.RWMutex
@@ -27,12 +27,12 @@ var (
 )
 
 // client holds the runtime state Dispatch needs: the resolved Config
-// (lookups against the publishes block), a Postgres handle for the
+// (lookups against the publishes block), the relational engine for the
 // standalone-INSERT path (when WithTx is omitted), and the framework's
 // shared logger.
 type client struct {
 	cfg    *Config
-	pg     *infra.Postgres
+	eng    core.RelationalEngine
 	logger *slog.Logger
 }
 
@@ -43,18 +43,18 @@ type client struct {
 // config between subtests; production never does this.
 //
 // cfg may be a freshly-parsed Config (canonical) or a synthesized one
-// (tests). pg may be nil when the service emits no integration events
-// AND does not need the standalone-INSERT path — Dispatch will fail
-// loudly with ErrIntegrationConfigNotInitialized in that shape, which
-// is the desired behavior. logger falls back to slog.Default() when
-// nil.
-func Configure(cfg *Config, pg *infra.Postgres, logger *slog.Logger) {
+// (tests). eng may be nil when the service emits no integration events
+// AND does not need the standalone-INSERT path — a standalone Dispatch
+// then fails loudly, which is the desired behavior. logger falls back to
+// slog.Default() when nil. The engine is the neutral RelationalEngine, so
+// the producer works on any backend (Postgres or MySQL).
+func Configure(cfg *Config, eng core.RelationalEngine, logger *slog.Logger) {
 	if logger == nil {
 		logger = slog.Default()
 	}
 	stateMu.Lock()
 	defer stateMu.Unlock()
-	state = &client{cfg: cfg, pg: pg, logger: logger}
+	state = &client{cfg: cfg, eng: eng, logger: logger}
 }
 
 // Reset clears the singleton — only used in tests. Production has no

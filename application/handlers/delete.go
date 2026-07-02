@@ -13,8 +13,10 @@ import (
 // http.requestTimeoutSeconds when the repo provides ScopedReader) guarantees
 // audit consistency (snapshot of the entity before the hard delete) and gives
 // FromEntity a populated in-memory entity to read from even though the row is
-// gone post-commit. The SQL cascade of children is the schema's responsibility
-// (ON DELETE CASCADE on the FKs).
+// gone post-commit. The cascade of children is owned by the framework in Go:
+// the persister issues an explicit DELETE per declared child table (by FK)
+// before the root DELETE, in the same TX — a database ON DELETE CASCADE on the
+// FKs is an optional integrity safety-net, not the mechanism.
 //
 // cmd.ApplyTo runs AFTER the load and BEFORE GetDeletable so the Command can
 // translate the request *AppContext into business-named transient fields.

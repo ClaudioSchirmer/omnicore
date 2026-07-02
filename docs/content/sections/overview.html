@@ -4,8 +4,8 @@
   <p class="hero-tag">A Go framework for DDD + CQRS microservices</p>
   <div class="hero-badges">
     <span class="badge">github.com/ClaudioSchirmer/omnicore</span>
-    <span class="badge">Go ≥ 1.21</span>
-    <span class="badge">Fiber v3 · pgx v5 · mongo-driver v2 · kafka-go · gqlparser v2</span>
+    <span class="badge">Go ≥ 1.26</span>
+    <span class="badge">Fiber v3 · Postgres (pgx v5) / MySQL (go-sql-driver) · mongo-driver v2 · kafka-go · gqlparser v2</span>
   </div>
 </div>
     <h2>Overview</h2>
@@ -26,8 +26,14 @@
     </div>
     <div class="box good">
         <strong>Battle-tested:</strong> the framework ships with
-        <strong>91.4% unit-test coverage</strong> of its statements. That confidence is backed by
-        <strong>66,356 lines of tests</strong> against <strong>44,513 lines of production code</strong>
-        — a <strong>1.49 : 1 test-to-code ratio</strong>: there is roughly half again as much test
+        <strong>89.6% unit-test coverage</strong> of its statements. That confidence is backed by
+        <strong>73,471 lines of tests</strong> against <strong>50,119 lines of production code</strong>
+        — a <strong>1.47 : 1 test-to-code ratio</strong>: there is roughly half again as much test
         code as there is framework code exercising it.
     </div>
+    <p class="note">
+        Worth noting early: you model a <strong>flat, natural domain entity</strong> and the <code>TableSchema</code>
+        alone maps it to a <strong>fully normalized (3NF) physical layout</strong> — the framework splits it across
+        tables on write and rejoins it into the same flat struct on read, so the domain never sees a foreign key or a
+        join. <a href="#table-schema~normalize-3nf">See how it works →</a>
+    </p>

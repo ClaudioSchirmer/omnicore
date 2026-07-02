@@ -8,7 +8,8 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/jackc/pgx/v5"
+
+	appaudit "github.com/ClaudioSchirmer/omnicore/application/audit"
 )
 
 // SQL contract tests pin the wire shape so a refactor cannot silently
@@ -181,19 +182,23 @@ func TestScanAuditRow_PropagatesScannerError(t *testing.T) {
 	}
 }
 
-// ─── FindByID / FindByAggregate boundary checks (nil exec, no DB) ──────────
+// ─── FindByID / FindByAggregate boundary checks (nil querier, no DB) ────────
 
-func TestFindByID_RejectsNilExec(t *testing.T) {
-	_, err := FindByID(context.Background(), nil, uuid.New())
-	if err == nil || !strings.Contains(err.Error(), "nil exec") {
-		t.Errorf("expected nil-exec error, got: %v", err)
+// A reader built with no query surface fails fast on either read rather than
+// dereferencing nil — the guard the engine-built reader can never hit but a
+// hand-rolled NewReader(nil, …) can.
+
+func TestFindByID_RejectsNilQuerier(t *testing.T) {
+	_, err := testReader(nil).FindByID(context.Background(), uuid.New())
+	if err == nil || !strings.Contains(err.Error(), "nil querier") {
+		t.Errorf("expected nil-querier error, got: %v", err)
 	}
 }
 
-func TestFindByAggregate_RejectsNilExec(t *testing.T) {
-	_, err := FindByAggregate(context.Background(), nil, "User", uuid.NewString())
-	if err == nil || !strings.Contains(err.Error(), "nil exec") {
-		t.Errorf("expected nil-exec error, got: %v", err)
+func TestFindByAggregate_RejectsNilQuerier(t *testing.T) {
+	_, err := testReader(nil).FindByAggregate(context.Background(), "User", uuid.NewString())
+	if err == nil || !strings.Contains(err.Error(), "nil querier") {
+		t.Errorf("expected nil-querier error, got: %v", err)
 	}
 }
 
@@ -206,7 +211,9 @@ func TestFindByAggregate_RejectsEmptyArguments(t *testing.T) {
 		{"both empty", "", ""},
 	}
 	for _, c := range cases {
-		_, err := FindByAggregate(context.Background(), stubExec{}, c.et, c.aid)
+		// A non-nil querier so the empty-arg guard (not the nil guard) is what
+		// rejects; the SQL must never reach Query.
+		_, err := testReader(&fakeQueryer{}).FindByAggregate(context.Background(), c.et, c.aid)
 		if err == nil || !strings.Contains(err.Error(), "non-empty") {
 			t.Errorf("[%s] expected validation error, got: %v", c.name, err)
 		}
@@ -217,8 +224,8 @@ func TestErrAuditNotFound_HasStableMessage(t *testing.T) {
 	// errors.Is callers and external tools both branch on the sentinel; pin
 	// the user-visible message so a refactor cannot silently change the
 	// observable contract.
-	if ErrAuditNotFound == nil || ErrAuditNotFound.Error() != "audit: event not found" {
-		t.Errorf("ErrAuditNotFound = %v", ErrAuditNotFound)
+	if appaudit.ErrAuditNotFound == nil || appaudit.ErrAuditNotFound.Error() != "audit: event not found" {
+		t.Errorf("appaudit.ErrAuditNotFound = %v", appaudit.ErrAuditNotFound)
 	}
 }
 
@@ -246,16 +253,4 @@ func assign(t *testing.T, dest any, src any) {
 	default:
 		t.Fatalf("assign: unsupported dest type %T", dest)
 	}
-}
-
-// stubExec is the placeholder *pgExec the validation tests use. None of
-// the SQL helpers reach a Query / QueryRow in the rejection paths, so
-// returning nil from both methods is safe.
-type stubExec struct{}
-
-func (stubExec) Query(_ context.Context, _ string, _ ...any) (pgx.Rows, error) {
-	return nil, errors.New("stub: should not be called")
-}
-func (stubExec) QueryRow(_ context.Context, _ string, _ ...any) pgx.Row {
-	return nil
 }

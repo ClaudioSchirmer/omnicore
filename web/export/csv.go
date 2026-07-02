@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"strconv"
+	"time"
 )
 
 // CSVOption configures the CSV encoder at mount time.
@@ -62,8 +63,10 @@ func (s *csvSink) Close() error {
 }
 
 // stringifyCell renders a cell value as text. Pointers are dereferenced (nil →
-// empty); fmt.Stringer is honored; numbers/bools format without scientific
-// notation surprises; everything else falls back to fmt.Sprintf("%v").
+// empty); time.Time renders RFC3339 (matching the JSON surface, so a date
+// exports the same on every read path); fmt.Stringer is honored; numbers/bools
+// format without scientific notation surprises; everything else falls back to
+// fmt.Sprintf("%v").
 func stringifyCell(v any) string {
 	switch t := v.(type) {
 	case nil:
@@ -75,6 +78,8 @@ func stringifyCell(v any) string {
 			return ""
 		}
 		return *t
+	case time.Time:
+		return t.UTC().Format(time.RFC3339)
 	case bool:
 		return strconv.FormatBool(t)
 	case int:

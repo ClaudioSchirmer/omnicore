@@ -4,20 +4,25 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"reflect"
 	"testing"
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgconn"
+
+	"github.com/ClaudioSchirmer/omnicore/application/persistence"
+	"github.com/ClaudioSchirmer/omnicore/domain"
+	"github.com/ClaudioSchirmer/omnicore/infra/audit"
+	"github.com/ClaudioSchirmer/omnicore/infra/db/core"
+	"github.com/ClaudioSchirmer/omnicore/infra/events"
 )
 
-// --- in-process fakes implementing the existing pgExec / pgx seams ---------
+// --- in-process fakes implementing the neutral infra read seam -------------
 
-// fakeExec implements pgExec (the minimal interface failures.go declares).
-// It records the SQL + args each call received and replays scripted results,
-// so the failure/processed helpers are exercised without a live Postgres.
+// fakeExec implements core.Querier. It records the SQL + args each call
+// received and replays scripted results, so the failure/processed helpers are
+// exercised without a live database.
 type fakeExec struct {
 	execErr  error
 	queryErr error
@@ -30,14 +35,14 @@ type fakeExec struct {
 	calls    int
 }
 
-func (f *fakeExec) Exec(_ context.Context, sql string, args ...any) (pgconn.CommandTag, error) {
+func (f *fakeExec) Exec(_ context.Context, sql string, args ...any) error {
 	f.calls++
 	f.lastSQL = sql
 	f.lastArgs = args
-	return pgconn.CommandTag{}, f.execErr
+	return f.execErr
 }
 
-func (f *fakeExec) Query(_ context.Context, sql string, args ...any) (pgx.Rows, error) {
+func (f *fakeExec) Query(_ context.Context, sql string, args ...any) (core.Rows, error) {
 	f.lastSQL = sql
 	f.lastArgs = args
 	if f.queryErr != nil {
@@ -49,16 +54,86 @@ func (f *fakeExec) Query(_ context.Context, sql string, args ...any) (pgx.Rows, 
 	return f.rows, nil
 }
 
-func (f *fakeExec) QueryRow(_ context.Context, sql string, args ...any) pgx.Row {
+func (f *fakeExec) QueryRow(_ context.Context, sql string, args ...any) core.Row {
 	f.lastSQL = sql
 	f.lastArgs = args
 	if f.row == nil {
-		f.row = &fakeRow{scanErr: pgx.ErrNoRows}
+		f.row = &fakeRow{}
 	}
 	return f.row
 }
 
-// fakeRows is a minimal pgx.Rows over a slice of positional row values.
+func (f *fakeExec) QueryMaps(_ context.Context, sql string, args ...any) ([]map[string]any, error) {
+	f.lastSQL = sql
+	f.lastArgs = args
+	return nil, f.queryErr
+}
+
+// fakeDialect is a trivial core.Dialect — the fakeExec ignores the SQL text,
+// so the rendering only needs to not panic.
+type fakeDialect struct{}
+
+func (fakeDialect) Placeholder(int) string                     { return "?" }
+func (fakeDialect) QuoteIdent(s string) string                 { return s }
+func (fakeDialect) EncodeArg(v any) any                        { return v }
+func (fakeDialect) DecodeID(raw string) (string, error)        { return raw, nil }
+func (fakeDialect) ILikeClause(col, ph string) string          { return col + " LIKE " + ph }
+func (fakeDialect) IsUniqueViolation(error) (string, bool)     { return "", false }
+func (fakeDialect) IsForeignKeyViolation(error) (string, bool) { return "", false }
+func (fakeDialect) BuildUpsert(table string, _, _ []string, _ []core.UpsertSet) string {
+	return "UPSERT " + table
+}
+
+// fakeEngine adapts a fake Querier + Dialect into an core.RelationalEngine so
+// handleMessage / RetryPendingFailures (which take the engine and derive
+// Querier()/Dialect()) run without a live backend. The write verbs are never
+// reached on the consumer path.
+type fakeEngine struct {
+	q core.Querier
+	d core.Dialect
+}
+
+func (e fakeEngine) Insert(persistence.RequestContext, domain.Insertable, *core.TableSchema, core.WriteHook) (domain.WriteResult, error) {
+	return domain.WriteResult{}, nil
+}
+func (e fakeEngine) Update(persistence.RequestContext, domain.Updatable, *core.TableSchema, core.WriteHook) (domain.WriteResult, error) {
+	return domain.WriteResult{}, nil
+}
+func (e fakeEngine) Archive(persistence.RequestContext, domain.Archivable, *core.TableSchema, core.WriteHook) error {
+	return nil
+}
+func (e fakeEngine) Unarchive(persistence.RequestContext, domain.Unarchivable, *core.TableSchema, core.WriteHook) error {
+	return nil
+}
+func (e fakeEngine) Delete(persistence.RequestContext, domain.Deletable, *core.TableSchema, core.WriteHook) error {
+	return nil
+}
+func (e fakeEngine) Querier() core.Querier { return e.q }
+func (e fakeEngine) Dialect() core.Dialect { return e.d }
+func (e fakeEngine) WithAudit(*audit.Config, *slog.Logger, []string) core.RelationalEngine {
+	return e
+}
+func (e fakeEngine) WithEventPublisher(events.Publisher) core.RelationalEngine { return e }
+func (e fakeEngine) AcquireRebuildLock(context.Context, string) (core.RebuildLock, error) {
+	return fakeRebuildLock{q: e.q}, nil
+}
+func (e fakeEngine) Close() {}
+
+// fakeRebuildLock is the no-op RebuildLock for the receiver-path tests (these
+// never exercise the rebuild control plane).
+type fakeRebuildLock struct{ q core.Querier }
+
+func (fakeRebuildLock) Acquired() bool                { return true }
+func (fakeRebuildLock) Holder() string                { return "" }
+func (l fakeRebuildLock) Querier() core.Querier       { return l.q }
+func (fakeRebuildLock) Release(context.Context) error { return nil }
+
+// engineFor wraps a fakeExec as a RelationalEngine for the receiver-path tests.
+func engineFor(exec *fakeExec) core.RelationalEngine {
+	return fakeEngine{q: exec, d: fakeDialect{}}
+}
+
+// fakeRows is a minimal core.Rows over a slice of positional row values.
 type fakeRows struct {
 	data     [][]any
 	idx      int
@@ -66,13 +141,8 @@ type fakeRows struct {
 	errAfter error // returned by Err() after iteration
 }
 
-func (r *fakeRows) Close()                                       {}
-func (r *fakeRows) Err() error                                   { return r.errAfter }
-func (r *fakeRows) CommandTag() pgconn.CommandTag                { return pgconn.CommandTag{} }
-func (r *fakeRows) FieldDescriptions() []pgconn.FieldDescription { return nil }
-func (r *fakeRows) Values() ([]any, error)                       { return nil, nil }
-func (r *fakeRows) RawValues() [][]byte                          { return nil }
-func (r *fakeRows) Conn() *pgx.Conn                              { return nil }
+func (r *fakeRows) Close() error { return nil }
+func (r *fakeRows) Err() error   { return r.errAfter }
 
 func (r *fakeRows) Next() bool {
 	if r.idx >= len(r.data) {
@@ -171,7 +241,7 @@ func TestRecordIntegrationFailure_Validation(t *testing.T) {
 		{ConsumerGroup: "g", SourceKey: "s", EventKey: "e"},       // nil event id
 	}
 	for i, rec := range bad {
-		if err := RecordIntegrationFailure(context.Background(), exec, rec); err == nil {
+		if err := RecordIntegrationFailure(context.Background(), exec, fakeDialect{}, rec); err == nil {
 			t.Errorf("case %d: expected validation error", i)
 		}
 	}
@@ -187,7 +257,7 @@ func TestRecordIntegrationFailure_DefaultsPayloadAndSucceeds(t *testing.T) {
 		ConsumerGroup: "g", SourceKey: "s", EventKey: "e", EventID: uuid.New(),
 		// RawPayload nil → helper must substitute "{}".
 	}
-	if err := RecordIntegrationFailure(context.Background(), exec, rec); err != nil {
+	if err := RecordIntegrationFailure(context.Background(), exec, fakeDialect{}, rec); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if exec.calls != 1 {
@@ -205,7 +275,7 @@ func TestRecordIntegrationFailure_ExecError(t *testing.T) {
 		ConsumerGroup: "g", SourceKey: "s", EventKey: "e", EventID: uuid.New(),
 		RawPayload: []byte(`{"x":1}`),
 	}
-	err := RecordIntegrationFailure(context.Background(), exec, rec)
+	err := RecordIntegrationFailure(context.Background(), exec, fakeDialect{}, rec)
 	if err == nil || !errors.Is(err, exec.execErr) {
 		t.Fatalf("expected wrapped exec error, got %v", err)
 	}
@@ -216,10 +286,10 @@ func TestRecordIntegrationFailure_ExecError(t *testing.T) {
 func TestResolveIntegrationFailures(t *testing.T) {
 	t.Run("validation", func(t *testing.T) {
 		exec := &fakeExec{}
-		if err := ResolveIntegrationFailures(context.Background(), exec, "", "s", "e", uuid.New()); err == nil {
+		if err := ResolveIntegrationFailures(context.Background(), exec, fakeDialect{}, "", "s", "e", uuid.New()); err == nil {
 			t.Error("expected error for empty consumer group")
 		}
-		if err := ResolveIntegrationFailures(context.Background(), exec, "g", "s", "e", uuid.Nil); err == nil {
+		if err := ResolveIntegrationFailures(context.Background(), exec, fakeDialect{}, "g", "s", "e", uuid.Nil); err == nil {
 			t.Error("expected error for nil event id")
 		}
 		if exec.calls != 0 {
@@ -228,13 +298,13 @@ func TestResolveIntegrationFailures(t *testing.T) {
 	})
 	t.Run("success", func(t *testing.T) {
 		exec := &fakeExec{}
-		if err := ResolveIntegrationFailures(context.Background(), exec, "g", "s", "e", uuid.New()); err != nil {
+		if err := ResolveIntegrationFailures(context.Background(), exec, fakeDialect{}, "g", "s", "e", uuid.New()); err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
 	})
 	t.Run("exec-error", func(t *testing.T) {
 		exec := &fakeExec{execErr: errors.New("nope")}
-		if err := ResolveIntegrationFailures(context.Background(), exec, "g", "s", "e", uuid.New()); err == nil {
+		if err := ResolveIntegrationFailures(context.Background(), exec, fakeDialect{}, "g", "s", "e", uuid.New()); err == nil {
 			t.Fatal("expected exec error")
 		}
 	})
@@ -289,13 +359,13 @@ func TestScanIntegrationFailures_RowsErr(t *testing.T) {
 func TestListPendingIntegrationFailuresByGroup(t *testing.T) {
 	t.Run("requires-group", func(t *testing.T) {
 		exec := &fakeExec{}
-		if _, err := ListPendingIntegrationFailuresByGroup(context.Background(), exec, ""); err == nil {
+		if _, err := ListPendingIntegrationFailuresByGroup(context.Background(), exec, fakeDialect{}, ""); err == nil {
 			t.Fatal("expected error for empty consumer group")
 		}
 	})
 	t.Run("passes-group-arg-and-scans", func(t *testing.T) {
 		exec := &fakeExec{rows: &fakeRows{data: [][]any{sampleFailureRow(7)}}}
-		out, err := ListPendingIntegrationFailuresByGroup(context.Background(), exec, "orders-int")
+		out, err := ListPendingIntegrationFailuresByGroup(context.Background(), exec, fakeDialect{}, "orders-int")
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -313,16 +383,18 @@ func TestListPendingIntegrationFailuresByGroup(t *testing.T) {
 func TestIsAlreadyProcessed(t *testing.T) {
 	t.Run("validation", func(t *testing.T) {
 		exec := &fakeExec{}
-		if _, err := IsAlreadyProcessed(context.Background(), exec, uuid.Nil, "g"); err == nil {
+		if _, err := IsAlreadyProcessed(context.Background(), exec, fakeDialect{}, uuid.Nil, "g"); err == nil {
 			t.Error("expected error for nil event id")
 		}
-		if _, err := IsAlreadyProcessed(context.Background(), exec, uuid.New(), ""); err == nil {
+		if _, err := IsAlreadyProcessed(context.Background(), exec, fakeDialect{}, uuid.New(), ""); err == nil {
 			t.Error("expected error for empty consumer group")
 		}
 	})
 	t.Run("found", func(t *testing.T) {
-		exec := &fakeExec{row: &fakeRow{values: []any{1}}}
-		got, err := IsAlreadyProcessed(context.Background(), exec, uuid.New(), "g")
+		// A row present → Next() true → already processed (engine-neutral, no
+		// no-rows sentinel).
+		exec := &fakeExec{rows: &fakeRows{data: [][]any{{1}}}}
+		got, err := IsAlreadyProcessed(context.Background(), exec, fakeDialect{}, uuid.New(), "g")
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -331,19 +403,20 @@ func TestIsAlreadyProcessed(t *testing.T) {
 		}
 	})
 	t.Run("not-found", func(t *testing.T) {
-		exec := &fakeExec{row: &fakeRow{scanErr: pgx.ErrNoRows}}
-		got, err := IsAlreadyProcessed(context.Background(), exec, uuid.New(), "g")
+		// No rows → Next() false → (false, nil).
+		exec := &fakeExec{rows: &fakeRows{}}
+		got, err := IsAlreadyProcessed(context.Background(), exec, fakeDialect{}, uuid.New(), "g")
 		if err != nil {
-			t.Fatalf("ErrNoRows must map to (false, nil), got err %v", err)
+			t.Fatalf("no rows must map to (false, nil), got err %v", err)
 		}
 		if got {
 			t.Fatal("expected false when no dedup row exists")
 		}
 	})
-	t.Run("scan-error", func(t *testing.T) {
-		exec := &fakeExec{row: &fakeRow{scanErr: errors.New("conn reset")}}
-		if _, err := IsAlreadyProcessed(context.Background(), exec, uuid.New(), "g"); err == nil {
-			t.Fatal("expected real scan error to surface")
+	t.Run("query-error", func(t *testing.T) {
+		exec := &fakeExec{queryErr: errors.New("conn reset")}
+		if _, err := IsAlreadyProcessed(context.Background(), exec, fakeDialect{}, uuid.New(), "g"); err == nil {
+			t.Fatal("expected real query error to surface")
 		}
 	})
 }
@@ -353,10 +426,10 @@ func TestIsAlreadyProcessed(t *testing.T) {
 func TestMarkProcessed(t *testing.T) {
 	t.Run("validation", func(t *testing.T) {
 		exec := &fakeExec{}
-		if err := MarkProcessed(context.Background(), exec, IntegrationProcessedRecord{ConsumerGroup: "g"}); err == nil {
+		if err := MarkProcessed(context.Background(), exec, fakeDialect{}, IntegrationProcessedRecord{ConsumerGroup: "g"}); err == nil {
 			t.Error("expected error for nil event id")
 		}
-		if err := MarkProcessed(context.Background(), exec, IntegrationProcessedRecord{EventID: uuid.New()}); err == nil {
+		if err := MarkProcessed(context.Background(), exec, fakeDialect{}, IntegrationProcessedRecord{EventID: uuid.New()}); err == nil {
 			t.Error("expected error for empty consumer group")
 		}
 		if exec.calls != 0 {
@@ -369,7 +442,7 @@ func TestMarkProcessed(t *testing.T) {
 			EventID: uuid.New(), ConsumerGroup: "g", SourceKey: "s",
 			EventKey: "e", Topic: "t", EventType: "T",
 		}
-		if err := MarkProcessed(context.Background(), exec, rec); err != nil {
+		if err := MarkProcessed(context.Background(), exec, fakeDialect{}, rec); err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
 		if exec.calls != 1 || len(exec.lastArgs) != 6 {
@@ -379,7 +452,7 @@ func TestMarkProcessed(t *testing.T) {
 	t.Run("exec-error", func(t *testing.T) {
 		exec := &fakeExec{execErr: errors.New("insert failed")}
 		rec := IntegrationProcessedRecord{EventID: uuid.New(), ConsumerGroup: "g"}
-		if err := MarkProcessed(context.Background(), exec, rec); err == nil {
+		if err := MarkProcessed(context.Background(), exec, fakeDialect{}, rec); err == nil {
 			t.Fatal("expected exec error")
 		}
 	})

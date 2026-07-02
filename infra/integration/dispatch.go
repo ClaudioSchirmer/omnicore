@@ -5,11 +5,12 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"strings"
 
 	"github.com/ClaudioSchirmer/omnicore/application/configuration"
 	"github.com/ClaudioSchirmer/omnicore/application/persistence"
 	"github.com/ClaudioSchirmer/omnicore/domain"
-	"github.com/ClaudioSchirmer/omnicore/infra"
+	"github.com/ClaudioSchirmer/omnicore/infra/db/core"
 	"github.com/ClaudioSchirmer/omnicore/infra/tracing"
 
 	"github.com/google/uuid"
@@ -34,17 +35,18 @@ type dispatchOpts struct {
 	hasCausation   bool
 }
 
-// WithTx threads the in-flight pgx.Tx into the Dispatch call so the
+// WithTx threads the in-flight transaction handle into the Dispatch call so the
 // integration_events row lands in the same TX as the data write +
 // outbox + audit. Canonical usage: from inside a BeforeCommit hook
 // closure where the framework already opened the TX for the entity
 // write. Omitting WithTx makes Dispatch run standalone — the row
-// commits via Postgres single-statement autocommit on the package's PG
-// pool, independent of any other write.
+// commits via the relational engine's single-statement autocommit on the
+// package's engine pool, independent of any other write.
 //
 // TxHandle is a sealed marker (see application/persistence/tx.go); the
 // framework infra layer is the only code path that unwraps it back to a
-// live pgx.Tx. Application code cannot pronounce SQL through the handle.
+// live core.Tx (the canonical backend-neutral seam; pgx.Tx only via the PG-only
+// escape hatch). Application code cannot pronounce SQL through the handle.
 func WithTx(tx persistence.TxHandle) DispatchOption {
 	return func(o *dispatchOpts) { o.tx = tx }
 }
@@ -53,7 +55,7 @@ func WithTx(tx persistence.TxHandle) DispatchOption {
 // when the YAML entry declares an `aggregate:` field; rejected when the
 // YAML entry omits aggregate (standalone events are aggregate-agnostic
 // by definition). Mismatch surfaces as ErrIntegrationAggregateIDRequired
-// before any PG write runs.
+// before any database write runs.
 func WithAggregateID(id domain.ID) DispatchOption {
 	return func(o *dispatchOpts) {
 		o.aggregateID = id
@@ -95,7 +97,7 @@ func WithCausation(id uuid.UUID) DispatchOption {
 //  3. Marshals payload as JSON. Any encoding error surfaces verbatim.
 //  4. Inserts one row into `integration_events`. With WithTx(tx) →
 //     atomic with the framework's TX; without → standalone autocommit
-//     on the package's PG pool.
+//     on the package's relational-engine pool.
 //  5. Emits a single slog.Info("integration.event.emitted", ...) line
 //     post-INSERT for observability (operator log-tail consumers).
 //
@@ -219,17 +221,33 @@ type dispatchRow struct {
 	Causation    uuid.UUID
 }
 
-const sqlInsertIntegrationEvent = `
-INSERT INTO integration_events
-  (event_id, aggregate_type, aggregate_id, event_type, event_version,
-   payload, correlation_id, causation_id, thread_id, actor, traceparent)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`
+// integrationEventCols is the column list for the integration_events INSERT,
+// fixed across dialects; only the placeholder grammar (rendered via the engine's
+// Dialect) and the in-TX vs standalone execution differ.
+var integrationEventCols = []string{
+	"event_id", "aggregate_type", "aggregate_id", "event_type", "event_version",
+	"payload", "correlation_id", "causation_id", "thread_id", "actor", "traceparent",
+}
 
-// writeIntegrationEvent dispatches between the in-TX path (WithTx
-// supplied) and the standalone path (Dispatch without WithTx). The
-// standalone path uses the package's PG pool — exposed via the client
-// snapshot — and the single-statement autocommit semantic Postgres
-// provides for one INSERT.
+// insertIntegrationEventSQL renders the INSERT with the dialect's positional
+// placeholders ($1.. on Postgres, ? on MySQL). The uuid-bearing columns are
+// CHAR(36) on MySQL and uuid on Postgres; binding the uuid TEXT form works on
+// both (Postgres parses the text into its uuid type, MySQL stores it as the CHAR), so the args stay
+// dialect-neutral and no per-arg encoding is needed.
+func insertIntegrationEventSQL(d core.Dialect) string {
+	ph := make([]string, len(integrationEventCols))
+	for i := range integrationEventCols {
+		ph[i] = d.Placeholder(i + 1)
+	}
+	return "INSERT INTO integration_events (" + strings.Join(integrationEventCols, ", ") +
+		") VALUES (" + strings.Join(ph, ", ") + ")"
+}
+
+// writeIntegrationEvent dispatches between the in-TX path (WithTx supplied → the
+// row lands in the framework's open transaction via the canonical UnwrapTx
+// bridge) and the standalone path (no WithTx → single-statement autocommit on the
+// engine's pool). Both render the dialect's placeholders and run through the
+// neutral seam, so the producer works on any backend.
 func writeIntegrationEvent(
 	ctx context.Context,
 	c *client,
@@ -237,7 +255,7 @@ func writeIntegrationEvent(
 	row dispatchRow,
 ) error {
 	args := []any{
-		row.EventID,
+		row.EventID.String(),
 		nullableString(row.Aggregate),
 		nullableUUID(maybeAggregateUUID(row)),
 		row.EventType,
@@ -245,7 +263,7 @@ func writeIntegrationEvent(
 		row.Payload,
 		nullableUUID(row.Correlation),
 		nullableUUID(row.Causation),
-		row.ThreadID,
+		row.ThreadID.String(),
 		row.Actor,
 		// W3C traceparent of the producing request so the Receiver can link the
 		// consumed event back to this trace; NULL when tracing is off.
@@ -253,16 +271,14 @@ func writeIntegrationEvent(
 	}
 
 	if tx != nil {
-		pgxTx := infra.UnwrapPgxTx(tx)
-		_, err := pgxTx.Exec(ctx, sqlInsertIntegrationEvent, args...)
-		return err
+		ntx := core.UnwrapTx(tx)
+		return ntx.Exec(ctx, insertIntegrationEventSQL(ntx.Dialect()), args...)
 	}
 
-	if c.pg == nil {
-		return fmt.Errorf("standalone Dispatch requires a Postgres pool; integration.Configure received nil pg")
+	if c.eng == nil {
+		return fmt.Errorf("standalone Dispatch requires a relational engine; integration.Configure received nil")
 	}
-	_, err := c.pg.Pool().Exec(ctx, sqlInsertIntegrationEvent, args...)
-	return err
+	return c.eng.Querier().Exec(ctx, insertIntegrationEventSQL(c.eng.Dialect()), args...)
 }
 
 // maybeAggregateUUID returns the aggregate id when HasAggregate, else
@@ -281,7 +297,7 @@ func maybeAggregateUUID(row dispatchRow) uuid.UUID {
 	return parsed
 }
 
-// nullableString returns *string so the pgx driver emits NULL on empty
+// nullableString returns *string so the database driver emits NULL on empty
 // — needed because aggregate_type is the slot that distinguishes
 // aggregate-bound events from standalone ones.
 func nullableString(s string) any {
@@ -291,20 +307,21 @@ func nullableString(s string) any {
 	return s
 }
 
-// nullableUUID returns nil for uuid.Nil so pgx encodes NULL.
-// correlation_id, causation_id, aggregate_id all share this shape.
+// nullableUUID returns nil for uuid.Nil (→ NULL column) and the canonical TEXT
+// form otherwise. Bound as text so the same value lands in a Postgres uuid column
+// and a MySQL CHAR(36) column. correlation_id, causation_id, aggregate_id share it.
 func nullableUUID(u uuid.UUID) any {
 	if u == uuid.Nil {
 		return nil
 	}
-	return u
+	return u.String()
 }
 
 // emitDispatchEcho is the producer-side observability line. Best-effort
 // (slog never fails). Emitted post-INSERT so the line accurately
-// reflects "this event landed in PG" — when the call is in-TX, this
+// reflects "this event landed in the database" — when the call is in-TX, this
 // runs before COMMIT, but the row is still subject to rollback if the
-// outer hook closure errors afterward; the slog echo is a hint, the PG
+// outer hook closure errors afterward; the slog echo is a hint, the database
 // row is authoritative.
 func emitDispatchEcho(logger *slog.Logger, eventKey string, entry PublishEvent, row dispatchRow) {
 	if logger == nil {

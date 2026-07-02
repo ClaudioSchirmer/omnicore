@@ -4,40 +4,41 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/ClaudioSchirmer/omnicore/infra"
+	"github.com/ClaudioSchirmer/omnicore/infra/db/core"
+	"github.com/ClaudioSchirmer/omnicore/infra/db/query"
 )
 
 // extEmbed builds an external (Mongo) embed source from a type-less schema for
 // the guard tests — table + FK from the schema, .As supplies the Go segment.
-func extEmbed(collection, fk, as string) *infra.Source {
-	return infra.FromSchema(infra.NewExternalSchema(collection).PK("id").FK(fk)).On(fk).As(as)
+func extEmbed(collection, fk, as string) *query.Source {
+	return query.FromSchema(core.NewExternalSchema(collection).PK("id").FK(fk)).On(fk).As(as)
 }
 
 func TestValidateViewSchemas_RejectsMissingRootSchema(t *testing.T) {
-	v := infra.View("orders").Root("orders").Version(1) // no .Schema(...)
-	err := infra.ValidateViewSchemas([]*infra.ViewDefinition{v})
+	v := query.View("orders").Root("orders").Version(1) // no .Schema(...)
+	err := query.ValidateViewSchemas([]*query.ViewDefinition{v})
 	if err == nil || !strings.Contains(err.Error(), "no root") {
 		t.Errorf("expected missing-root-schema error, got %v", err)
 	}
 }
 
 func TestValidateViewSchemas_RejectsExternalEmbedWithoutAs(t *testing.T) {
-	v := infra.View("orders").Root("orders").
-		Schema(infra.NewExternalSchema("orders").PK("id")).
-		Embed("buyer", infra.FromSchema(infra.NewExternalSchema("users").PK("id")).On("buyer_id")). // no .As
+	v := query.View("orders").Root("orders").
+		Schema(core.NewExternalSchema("orders").PK("id")).
+		Embed("buyer", query.FromSchema(core.NewExternalSchema("users").PK("id")).On("buyer_id")). // no .As
 		Version(1)
-	err := infra.ValidateViewSchemas([]*infra.ViewDefinition{v})
+	err := query.ValidateViewSchemas([]*query.ViewDefinition{v})
 	if err == nil || !strings.Contains(err.Error(), ".As(") {
 		t.Errorf("expected external-embed-missing-.As error, got %v", err)
 	}
 }
 
 func TestValidateViewSchemas_PassesWhenComplete(t *testing.T) {
-	v := infra.View("orders").Root("orders").
-		Schema(infra.NewExternalSchema("orders").PK("id")).
+	v := query.View("orders").Root("orders").
+		Schema(core.NewExternalSchema("orders").PK("id")).
 		Embed("buyer", extEmbed("users", "buyer_id", "Buyer")).
 		Version(1)
-	if err := infra.ValidateViewSchemas([]*infra.ViewDefinition{v}); err != nil {
+	if err := query.ValidateViewSchemas([]*query.ViewDefinition{v}); err != nil {
 		t.Errorf("expected no error for a complete view, got %v", err)
 	}
 }
@@ -88,7 +89,7 @@ func TestGuardCollectionCollision_SubLocalView(t *testing.T) {
 	subs := []UpstreamSubscription{
 		{Topic: "users.events", Collection: "users"},
 	}
-	views := []*infra.ViewDefinition{infra.View("users").Root("users").Version(1)}
+	views := []*query.ViewDefinition{query.View("users").Root("users").Version(1)}
 	errs := guardCollectionCollision(subs, views)
 	if len(errs) != 1 || !strings.Contains(errs[0], "local view") {
 		t.Errorf("expected local-view collision diagnostic, got %v", errs)
@@ -96,10 +97,10 @@ func TestGuardCollectionCollision_SubLocalView(t *testing.T) {
 }
 
 func TestGuardMaterializingSource_RejectsUnknownCollection(t *testing.T) {
-	v := infra.View("orders").Root("orders").
+	v := query.View("orders").Root("orders").
 		Embed("buyer", extEmbed("users", "buyer_id", "Buyer")).
 		Version(1)
-	errs := guardMaterializingSource(nil, []*infra.ViewDefinition{v})
+	errs := guardMaterializingSource(nil, []*query.ViewDefinition{v})
 	if len(errs) != 1 || !strings.Contains(errs[0], "§8.3") ||
 		!strings.Contains(errs[0], `"users"`) {
 		t.Errorf("expected §8.3 diagnostic for unknown collection, got %v", errs)
@@ -108,10 +109,10 @@ func TestGuardMaterializingSource_RejectsUnknownCollection(t *testing.T) {
 
 func TestGuardMaterializingSource_AcceptsSubscriptionCollection(t *testing.T) {
 	subs := []UpstreamSubscription{{Topic: "users.events", Collection: "users"}}
-	v := infra.View("orders").Root("orders").
+	v := query.View("orders").Root("orders").
 		Embed("buyer", extEmbed("users", "buyer_id", "Buyer")).
 		Version(1)
-	errs := guardMaterializingSource(subs, []*infra.ViewDefinition{v})
+	errs := guardMaterializingSource(subs, []*query.ViewDefinition{v})
 	if len(errs) != 0 {
 		t.Errorf("expected no diagnostic with materializing subscription, got %v", errs)
 	}
@@ -123,11 +124,11 @@ func TestGuardMaterializingSource_RejectsLocalView(t *testing.T) {
 	// one-hop, so a change upstream of derivative_view would recompose
 	// derivative_view but never re-ripple to orders. Drift would silently
 	// accumulate. The guard catches the trap before any subscriber starts.
-	views := []*infra.ViewDefinition{
-		infra.View("orders").Root("orders").
+	views := []*query.ViewDefinition{
+		query.View("orders").Root("orders").
 			Embed("derivative", extEmbed("derivative_view", "orders_id", "Derivative")).
 			Version(1),
-		infra.View("derivative_view").Root("derivative_table").Version(1),
+		query.View("derivative_view").Root("derivative_table").Version(1),
 	}
 	errs := guardMaterializingSource(nil, views)
 	if len(errs) != 1 || !strings.Contains(errs[0], "§8.3") ||
@@ -138,10 +139,10 @@ func TestGuardMaterializingSource_RejectsLocalView(t *testing.T) {
 }
 
 func TestGuardJoinFieldIndex_RejectsMissingIndex(t *testing.T) {
-	v := infra.View("orders").Root("orders").
+	v := query.View("orders").Root("orders").
 		Embed("buyer", extEmbed("users", "buyer_id", "Buyer")).
 		Version(1)
-	errs := guardJoinFieldIndex([]*infra.ViewDefinition{v})
+	errs := guardJoinFieldIndex([]*query.ViewDefinition{v})
 	if len(errs) != 1 || !strings.Contains(errs[0], "§8.1") ||
 		!strings.Contains(errs[0], "buyer_id") {
 		t.Errorf("expected §8.1 diagnostic, got %v", errs)
@@ -149,33 +150,33 @@ func TestGuardJoinFieldIndex_RejectsMissingIndex(t *testing.T) {
 }
 
 func TestGuardJoinFieldIndex_AcceptsSingleFieldIndex(t *testing.T) {
-	v := infra.View("orders").Root("orders").
+	v := query.View("orders").Root("orders").
 		Embed("buyer", extEmbed("users", "buyer_id", "Buyer")).
-		Indexes(infra.Index("buyer_id")).
+		Indexes(query.Index("buyer_id")).
 		Version(1)
-	errs := guardJoinFieldIndex([]*infra.ViewDefinition{v})
+	errs := guardJoinFieldIndex([]*query.ViewDefinition{v})
 	if len(errs) != 0 {
 		t.Errorf("expected no diagnostic with covering single-field index, got %v", errs)
 	}
 }
 
 func TestGuardJoinFieldIndex_AcceptsCompoundIndexJoinFieldFirst(t *testing.T) {
-	v := infra.View("orders").Root("orders").
+	v := query.View("orders").Root("orders").
 		Embed("buyer", extEmbed("users", "buyer_id", "Buyer")).
-		Indexes(infra.Compound("buyer_id", "created_at")).
+		Indexes(query.Compound("buyer_id", "created_at")).
 		Version(1)
-	errs := guardJoinFieldIndex([]*infra.ViewDefinition{v})
+	errs := guardJoinFieldIndex([]*query.ViewDefinition{v})
 	if len(errs) != 0 {
 		t.Errorf("expected no diagnostic with covering compound index, got %v", errs)
 	}
 }
 
 func TestGuardJoinFieldIndex_RejectsCompoundIndexJoinFieldNotFirst(t *testing.T) {
-	v := infra.View("orders").Root("orders").
+	v := query.View("orders").Root("orders").
 		Embed("buyer", extEmbed("users", "buyer_id", "Buyer")).
-		Indexes(infra.Compound("created_at", "buyer_id")).
+		Indexes(query.Compound("created_at", "buyer_id")).
 		Version(1)
-	errs := guardJoinFieldIndex([]*infra.ViewDefinition{v})
+	errs := guardJoinFieldIndex([]*query.ViewDefinition{v})
 	if len(errs) != 1 || !strings.Contains(errs[0], "§8.1") {
 		t.Errorf("expected §8.1 diagnostic (suffix-only coverage), got %v", errs)
 	}
@@ -223,9 +224,9 @@ func TestValidateUpstreamSubscriptions_AccumulatesAllViolations(t *testing.T) {
 			OnUpstreamDelete: UpstreamDeleteCascade,
 			StartFrom:        StartFromLatest},
 	}
-	views := []*infra.ViewDefinition{
+	views := []*query.ViewDefinition{
 		// §8.1 — external FromSchema without covering index
-		infra.View("orders").Root("orders").
+		query.View("orders").Root("orders").
 			Embed("buyer", extEmbed("users", "buyer_id", "Buyer")).
 			Version(1),
 	}

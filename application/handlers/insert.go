@@ -1,6 +1,8 @@
 package handlers
 
 import (
+	"fmt"
+
 	"github.com/ClaudioSchirmer/omnicore/application/configuration"
 	"github.com/ClaudioSchirmer/omnicore/application/persistence"
 	"github.com/ClaudioSchirmer/omnicore/application/pipeline"
@@ -43,6 +45,12 @@ type InsertCommandHandler[T domain.Entity, Cmd pipeline.InsertCommand[T, TResult
 
 func (h *InsertCommandHandler[T, Cmd, TResult]) Handle(ctx *configuration.AppContext, cmd Cmd) (TResult, error) {
 	var zero TResult
+	// Direction 1 of the SharedBase marriage: a SharedBase-backed entity is an
+	// upsert (load-first) and must not go through the blind insert path.
+	if _, ok := any(h.Repo).(persistence.SharedBaseInsertLoader[T]); ok {
+		return zero, fmt.Errorf(
+			"InsertCommandHandler: %T has a SharedBase — use SharedBaseInsertCommandHandler", h.Repo)
+	}
 	entity, err := cmd.ToEntity(ctx)
 	if err != nil {
 		return zero, err

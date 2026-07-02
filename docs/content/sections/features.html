@@ -30,10 +30,10 @@
         <div class="card">
             <h4>Infrastructure — persistence &amp; sync</h4>
             <ul>
-                <li><a href="#table-schema">TableSchema</a> — one explicit Go-field↔column map driving PG write + criteria + scan + the Mongo view</li>
+                <li><a href="#table-schema">TableSchema</a> — one explicit Go-field↔column map driving the relational write + criteria + scan + the Mongo view</li>
                 <li><a href="#lifecycle-map">Atomic outbox + transparent aggregate persistence</a> — one transaction covers root + children + a single outbox row</li>
                 <li><a href="#audit">Audit pipeline</a> — every write emits an <code>AuditEvent</code> routed by <code>audit.destinations</code> (in-TX <code>audit_events</code> row and/or post-commit slog echo)</li>
-                <li><a href="#read-lifecycle-map">SyncEngine + Composer</a> — Kafka consumer materializes Mongo views from the outbox; Mongo mirrors PostgreSQL (archived rows survive unless <code>DeleteOnArchive()</code>)</li>
+                <li><a href="#read-lifecycle-map">SyncEngine + Composer</a> — Kafka consumer materializes Mongo views from the outbox; Mongo mirrors the relational store (archived rows survive unless <code>DeleteOnArchive()</code>)</li>
                 <li><a href="#service-to-service">UpstreamSubscriber</a> — materializes upstream events into a local Mongo collection and ripples recompose to every embedding view</li>
                 <li><a href="#cache-subsystem">Cache</a> · <a href="#httpclient">httpclient</a> · <a href="#integration-events">integration events</a> — the cross-service plumbing</li>
             </ul>

@@ -69,7 +69,7 @@ func TestWithAggregateIDSetsFlag(t *testing.T) {
 func TestWithTxStoresHandle(t *testing.T) {
 	o := &dispatchOpts{}
 	// TxHandle is a sealed marker; nil is a valid value and exercises the
-	// option closure without needing a live pgx.Tx.
+	// option closure without needing a live transaction handle.
 	WithTx(nil)(o)
 	if o.tx != nil {
 		t.Fatal("WithTx(nil) should leave tx nil")
@@ -90,8 +90,10 @@ func TestNullableUUID(t *testing.T) {
 		t.Errorf("nullableUUID(Nil) = %v, want nil", got)
 	}
 	u := uuid.New()
-	if got := nullableUUID(u); got != u {
-		t.Errorf("nullableUUID(%v) = %v, want same", u, got)
+	// Bound as the canonical TEXT form (works on a PG uuid column and a MySQL
+	// CHAR(36) column alike).
+	if got := nullableUUID(u); got != u.String() {
+		t.Errorf("nullableUUID(%v) = %v, want %q", u, got, u.String())
 	}
 }
 
@@ -142,8 +144,8 @@ func TestEmitDispatchEcho(t *testing.T) {
 	}
 }
 
-func TestWriteIntegrationEventRejectsNilPool(t *testing.T) {
-	// Standalone path (tx == nil) with a client carrying no Postgres pool
+func TestWriteIntegrationEventRejectsNilEngine(t *testing.T) {
+	// Standalone path (tx == nil) with a client carrying no relational engine
 	// must surface a loud error. Building the args first also exercises the
 	// nullableString / nullableUUID / maybeAggregateUUID helpers in situ.
 	c := &client{}
@@ -156,8 +158,8 @@ func TestWriteIntegrationEventRejectsNilPool(t *testing.T) {
 		Actor:     "anonymous",
 	}
 	err := writeIntegrationEvent(context.Background(), c, nil, row)
-	if err == nil || !strings.Contains(err.Error(), "Postgres pool") {
-		t.Fatalf("expected nil-pool error, got %v", err)
+	if err == nil || !strings.Contains(err.Error(), "relational engine") {
+		t.Fatalf("expected nil-engine error, got %v", err)
 	}
 }
 

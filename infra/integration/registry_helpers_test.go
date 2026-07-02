@@ -133,7 +133,7 @@ func newResolvedReceiver(t *testing.T, handler any) *Receiver {
 func TestHandleMessage_NilEventID(t *testing.T) {
 	r := newResolvedReceiver(t, &fakeHandler{})
 	exec := &fakeExec{}
-	err := r.handleMessage(context.Background(), exec, nil, uuid.Nil, []byte(`{}`), nil, discardLogger())
+	err := r.handleMessage(context.Background(), engineFor(exec), nil, uuid.Nil, []byte(`{}`), nil, discardLogger())
 	if err == nil {
 		t.Fatal("nil event id must error")
 	}
@@ -142,9 +142,9 @@ func TestHandleMessage_NilEventID(t *testing.T) {
 func TestHandleMessage_DedupHitSkips(t *testing.T) {
 	h := &fakeHandler{}
 	r := newResolvedReceiver(t, h)
-	// QueryRow returns a value → IsAlreadyProcessed=true → handler skipped.
-	exec := &fakeExec{row: &fakeRow{values: []any{1}}}
-	if err := r.handleMessage(context.Background(), exec, map[string]string{"event_type": "PartnerOnboarded"},
+	// A dedup row present → IsAlreadyProcessed=true → handler skipped.
+	exec := &fakeExec{rows: &fakeRows{data: [][]any{{1}}}}
+	if err := r.handleMessage(context.Background(), engineFor(exec), map[string]string{"event_type": "PartnerOnboarded"},
 		uuid.New(), []byte(`{"email":"x@y"}`), nil, discardLogger()); err != nil {
 		t.Fatalf("dedup hit must return nil, got %v", err)
 	}
@@ -156,9 +156,9 @@ func TestHandleMessage_DedupHitSkips(t *testing.T) {
 func TestHandleMessage_SuccessRunsHandlerAndMarksProcessed(t *testing.T) {
 	h := &fakeHandler{}
 	r := newResolvedReceiver(t, h)
-	// Default QueryRow → ErrNoRows → not processed → proceeds.
+	// No dedup row → not processed → proceeds.
 	exec := &fakeExec{}
-	if err := r.handleMessage(context.Background(), exec, map[string]string{"event_type": "PartnerOnboarded", "actor": "user-7"},
+	if err := r.handleMessage(context.Background(), engineFor(exec), map[string]string{"event_type": "PartnerOnboarded", "actor": "user-7"},
 		uuid.New(), []byte(`{"email":"x@y"}`), nil, discardLogger()); err != nil {
 		t.Fatalf("success path must return nil, got %v", err)
 	}
@@ -170,7 +170,7 @@ func TestHandleMessage_SuccessRunsHandlerAndMarksProcessed(t *testing.T) {
 func TestHandleMessage_UnmarshalFailureRecordsFailure(t *testing.T) {
 	r := newResolvedReceiver(t, &fakeHandler{})
 	exec := &fakeExec{}
-	err := r.handleMessage(context.Background(), exec, map[string]string{"event_type": "PartnerOnboarded"},
+	err := r.handleMessage(context.Background(), engineFor(exec), map[string]string{"event_type": "PartnerOnboarded"},
 		uuid.New(), []byte(`{not json`), nil, discardLogger())
 	if err == nil {
 		t.Fatal("malformed payload must error")
@@ -186,7 +186,7 @@ func (fakeErrHandler) Handle(_ *configuration.AppContext, _ *fakeCommand) (fakeR
 func TestHandleMessage_HandlerErrorRecordsFailure(t *testing.T) {
 	r := newResolvedReceiver(t, fakeErrHandler{})
 	exec := &fakeExec{}
-	err := r.handleMessage(context.Background(), exec, map[string]string{"event_type": "PartnerOnboarded"},
+	err := r.handleMessage(context.Background(), engineFor(exec), map[string]string{"event_type": "PartnerOnboarded"},
 		uuid.New(), []byte(`{"email":"x@y"}`), nil, discardLogger())
 	if err == nil {
 		t.Fatal("handler error must surface")
@@ -204,7 +204,7 @@ func TestHandleMessage_NonSuccessResultStillProcessed(t *testing.T) {
 	exec := &fakeExec{}
 	// Non-success Result with no error → consumer treats the message as
 	// handled (acks), records the failure, returns nil.
-	if err := r.handleMessage(context.Background(), exec, map[string]string{"event_type": "PartnerOnboarded"},
+	if err := r.handleMessage(context.Background(), engineFor(exec), map[string]string{"event_type": "PartnerOnboarded"},
 		uuid.New(), []byte(`{"email":"x@y"}`), nil, discardLogger()); err != nil {
 		t.Fatalf("non-success Result must still return nil, got %v", err)
 	}
@@ -222,7 +222,7 @@ func TestRetryPendingFailures_NilExec(t *testing.T) {
 func TestRetryPendingFailures_ListError(t *testing.T) {
 	r := newResolvedReceiver(t, &fakeHandler{})
 	exec := &fakeExec{queryErr: errors.New("list boom")}
-	if _, err := r.RetryPendingFailures(context.Background(), exec, nil, discardLogger()); err == nil {
+	if _, err := r.RetryPendingFailures(context.Background(), engineFor(exec), nil, discardLogger()); err == nil {
 		t.Fatal("list error must surface")
 	}
 }
@@ -239,7 +239,7 @@ func TestRetryPendingFailures_RetriesMatchingRows(t *testing.T) {
 	other[3] = "different-event"
 
 	exec := &fakeExec{rows: &fakeRows{data: [][]any{matching, other}}}
-	n, err := r.RetryPendingFailures(context.Background(), exec, nil, discardLogger())
+	n, err := r.RetryPendingFailures(context.Background(), engineFor(exec), nil, discardLogger())
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}

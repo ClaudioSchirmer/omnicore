@@ -70,7 +70,7 @@
     </thead>
     <tbody>
         <tr><td><code>http</code></td><td>the inbound server span (one per request)</td><td>web</td></tr>
-        <tr><td><code>pgx</code></td><td>one span per PostgreSQL statement</td><td>infra</td></tr>
+        <tr><td><code>pgx</code></td><td>one span per relational statement (Postgres via <code>otelpgx</code>, MySQL via <code>otelsql</code>) — the toggle name is a legacy artifact from the PG-only era and gates both engines</td><td>infra</td></tr>
         <tr><td><code>mongo</code></td><td>one span per Mongo command</td><td>infra</td></tr>
         <tr><td><code>kafka</code></td><td>consumer spans on the async paths (SyncEngine, integration Receiver, UpstreamSubscriber)</td><td>infra</td></tr>
         <tr><td><code>httpclient</code></td><td>the outbound client span + W3C <code>traceparent</code> injection</td><td>infra</td></tr>
@@ -126,7 +126,7 @@
 <p>
     The eventually-consistent projection (outbox → Debezium → Kafka → read model) is reconnected to its
     producing trace by a <strong><code>traceparent</code> carried on the <code>outbox</code> and
-    <code>integration_events</code> rows</strong> (framework migration <code>0003</code>). The
+    <code>integration_events</code> rows</strong> (inlined in the flattened framework migration <code>0001_framework</code>, per dialect). The
     SyncEngine, the integration Receiver and the UpstreamSubscriber open a <strong>consumer span linked
     to the producing trace</strong> (the messaging convention — a link, not a parent, because producer
     and consumer are temporally far apart).

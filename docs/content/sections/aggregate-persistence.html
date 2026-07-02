@@ -2,8 +2,9 @@
     <p>
         Entities that need to persist a root together with collections of child value objects
         opt-in by implementing <code>domain.AggregateRootProvider</code>. The framework then
-        guarantees atomicity <em>without changing the public API</em>: <code>pg.Insert/Update/Archive/Delete/Unarchive</code>
-        detect the metadata and dispatch to the aggregate-aware path automatically.
+        guarantees atomicity <em>without changing the public API</em>: the relational engine's
+        <code>Insert/Update/Archive/Delete/Unarchive</code> (the <code>core.RelationalEngine</code> seam, backed by
+        Postgres or MySQL) detect the metadata and dispatch to the aggregate-aware path automatically.
     </p>
 
     <h3>Opt-in interface</h3>
@@ -16,7 +17,7 @@
 }</code></pre>
 
     <p>
-        The interface keeps table/FK declaration out of the domain — children types are discovered via reflection on <code>root.AllAggregateItems()</code>; the child table and FK are declared explicitly in the root's <code>TableSchema</code> via <code>.Child(fwinfra.NewTableSchema[Address]("addresses").FK("user_id")...)</code>. There is no name inference — the <code>TableSchema</code> is the single mandatory map between each Go field and its physical column — see <a href="#table-schema">TableSchema (PG + views)</a>.
+        The interface keeps table/FK declaration out of the domain — children types are discovered via reflection on <code>root.AllAggregateItems()</code>; the child table and FK are declared explicitly in the root's <code>TableSchema</code> via <code>.Child(core.NewTableSchema[Address]("addresses").FK("user_id")...)</code>. There is no name inference — the <code>TableSchema</code> is the single mandatory map between each Go field and its physical column — see <a href="#table-schema">TableSchema</a>.
     </p>
 
     <p>
@@ -42,21 +43,31 @@
     <ul>
         <li><strong>Archive(root)</strong> → Archive on all active children</li>
         <li><strong>Unarchive(root)</strong> → Unarchive on all archived children (requires <code>domain.ArchivedFinder</code> on the Repository to hydrate the aggregate)</li>
-        <li><strong>Delete(root)</strong> → Delete on all children via FK <code>ON DELETE CASCADE</code> in the schema</li>
+        <li><strong>Delete(root)</strong> → an explicit <code>DELETE</code> on every declared child table (by FK), in the same TX, before the root DELETE — the framework owns the cascade in Go, not a database <code>ON DELETE CASCADE</code></li>
         <li><strong>Update(root) with items <code>StatusRemoved</code></strong> → Archive of those specific items</li>
     </ul>
 
     <h3>Guarantees of the aggregate path</h3>
     <table>
         <tbody><tr><th>Guarantee</th><th>Where</th></tr>
-        <tr><td>A single <code>pgx.Tx</code> for the root + all children</td><td><code>infra/aggregate_persister.go</code></td></tr>
+        <tr><td>A single transaction for the root + all children</td><td><code>infra/db/command/write/aggregate_write.go</code></td></tr>
         <tr><td>Exactly <strong>one outbox row</strong> per operation (granularity B — the aggregate is the event unit)</td><td><code>insertAggregate / updateAggregate</code></td></tr>
         <tr><td>FK injected before the child INSERT</td><td><code>insertChild</code></td></tr>
-        <tr><td>Status iteration: Added→INSERT, Changed→UPDATE, Removed→Archive (UPDATE <code>deleted_at</code>; the row stays in the DB, recoverable via unarchive), Constructor→no-op (update) or INSERT (insert)</td><td><code>applyChildChanges</code></td></tr>
+        <tr><td>Each child is bucketed by <code>domain.OperationOf(OriginalStatus, CurrentStatus)</code> — comparing where the item <em>started</em> (zero value or DB-loaded) against where it is now — into one <code>AggregateItemOp</code>: <code>OpInsert</code>→INSERT, <code>OpUpdate</code>→UPDATE, <code>OpDelete</code>→Archive (UPDATE <code>deleted_at</code>; the row stays recoverable), <code>OpNoop</code>→skipped. Two cross-status cases follow from the pair: a DB-loaded child re-added (<code>Constructor→Added</code>) is an <strong>UPDATE</strong>, not an INSERT; a brand-new child added then removed before commit (<code>Added→Removed</code>) is <strong>OpNoop</strong> — no SQL, never persisted</td><td><code>writeChildren</code></td></tr>
         <tr><td>Archive of the root cascades archive on all active children</td><td><code>archiveAggregate</code></td></tr>
         <tr><td>Unarchive of the root restores all archived children of that root</td><td><code>unarchiveAggregate</code></td></tr>
-        <tr><td>Hard Delete of the root depends on FK <code>ON DELETE CASCADE</code> in the schema</td><td><code>deleteAggregate</code></td></tr>
+        <tr><td>Hard Delete of the root issues an explicit <code>DELETE</code> per declared child table (by FK) before the root DELETE, same TX — no dependence on <code>ON DELETE CASCADE</code> (the FK clause is an optional safety-net)</td><td><code>deleteAggregate</code></td></tr>
     </tbody></table>
+
+    <div class="box">
+        <strong>Shared-base children are a variant of this path.</strong> When the aggregate root is backed by a
+        <a href="#table-schema~shared-base">shared base</a>, some children belong to the <em>base identity</em> rather than
+        the role root: their FK targets the base's deterministic id and they are shared by every role of that identity.
+        They travel the same <code>writeChildren</code> bucketing above; on the warm upsert insert they hydrate as
+        <code>Constructor</code> status, so an untouched base-child resolves to <code>OpNoop</code> and the diff machine
+        leaves it alone. See <a href="#table-schema~shared-base-children">Shared-base children</a> and the
+        <a href="#auto-handlers~shared-base-insert-handler">shared-base insert handler</a>.
+    </div>
 
     <div class="box">
         <strong>Archive and Unarchive run BuildRules and consult Modes().</strong> Archive and Unarchive are
@@ -114,8 +125,8 @@ func (u *User) ReplaceAddresses(addrs []Address) {
 
 // Explicit schema map — every Go field names its physical column, the
 // child table + FK are declared via .Child(...). No name inference anywhere.
-func UserSchema() *fwinfra.TableSchema {
-    return fwinfra.NewTableSchema[*User]("users").
+func UserSchema() *core.TableSchema {
+    return core.NewTableSchema[*User]("users").
         PK("id").
         Field("Name", "name").
         Field("Email", "email").
@@ -124,7 +135,7 @@ func UserSchema() *fwinfra.TableSchema {
         SoftDelete("deleted_at").
         CreatedAt("created_at").
         UpdatedAt("updated_at").
-        Child(fwinfra.NewTableSchema[Address]("addresses").
+        Child(core.NewTableSchema[Address]("addresses").
             FK("user_id").                 // injected by the persister, not a struct field
             PK("id").
             Field("Street", "street").
@@ -136,7 +147,7 @@ func UserSchema() *fwinfra.TableSchema {
 // read loader (write SQL + criteria + auto-scan); children come from the
 // schema's .Child(...) declarations.
 r.WithSchema(UserSchema())
-// Repository Insert/Update/etc are one-liners delegating to pg.
+// Repository Insert/Update/etc are one-liners delegating to the relational engine.
 // The aggregate path activates automatically because GetInsertable populated the metadata.</code></pre>
 
     <h3>Domain methods on the root</h3>
@@ -228,7 +239,7 @@ func (u *User) BuildRules(_ string, _ domain.Service, r *domain.Rules) {
 
     <div class="box">
         <strong>No separate aggregate write method.</strong>
-        The consumer-facing write port is unchanged — <code>repo.Scope(ctx).Insert(Insertable)</code> / <code>Update(Updatable)</code> / etc. (the underlying <code>Postgres.Insert/Update/…</code> also receive the <code>*TableSchema</code> + resolved hook, but the consumer never spells those out).
+        The consumer-facing write port is unchanged — <code>repo.Scope(ctx).Insert(Insertable)</code> / <code>Update(Updatable)</code> / etc. (the underlying engine <code>Insert/Update/…</code> also receive the <code>*TableSchema</code> + resolved hook, but the consumer never spells those out).
         Aggregate behavior is transparent — whoever implements <code>AggregateRootProvider</code> gains it
         (automatic persistence <em>and</em> validation of children); whoever doesn't follows the traditional single-table path.
     </div>

@@ -7,23 +7,48 @@ import (
 	"fmt"
 
 	"github.com/google/uuid"
-	"github.com/jackc/pgx/v5"
+
+	appaudit "github.com/ClaudioSchirmer/omnicore/application/audit"
 )
 
-// ErrAuditNotFound is the sentinel FindByID returns when no audit_events
-// row matches the supplied id. Callers branch with `errors.Is(err,
-// ErrAuditNotFound)` to map the miss to whatever transport response shape
-// suits them (HTTP 404, empty CLI output, etc.). Transport / SQL failures
-// surface as the underlying error wrapped with a "audit: ..." prefix.
-var ErrAuditNotFound = errors.New("audit: event not found")
+// Rows is the minimal multi-row cursor the audit reader consumes — the read
+// twin of Execer's write surface. It mirrors db.Rows method-for-method but is
+// declared HERE rather than imported from infra/db so the audit package stays
+// free of a dependency on infra/db, which already depends on audit (the
+// Build*Event helpers) and would otherwise form an import cycle. The engine's
+// neutral db.Rows satisfies it; infra/db bridges the two (NewAuditReader).
+type Rows interface {
+	Next() bool
+	Scan(dest ...any) error
+	Err() error
+	Close() error
+}
 
-// pgExec is the minimal interface the audit reader helpers consume. Both
-// *pgxpool.Pool, *pgxpool.Conn, *pgx.Conn, and pgx.Tx satisfy it. Same
-// shape pg_view_registry already uses in the infra package — kept local
-// to the audit package so the read helpers stay self-contained.
-type pgExec interface {
-	Query(ctx context.Context, sql string, args ...any) (pgx.Rows, error)
-	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
+// Queryer is the minimal neutral read surface the reader runs its SELECTs
+// through — the read counterpart of Execer. One method, Query, returning the
+// neutral Rows; the reader detects the no-rows case off the cursor (Next) so it
+// never has to name a driver-specific sentinel (pgx and database/sql disagree
+// on ErrNoRows). Declared local to audit for the same cycle reason as Rows.
+type Queryer interface {
+	Query(ctx context.Context, sql string, args ...any) (Rows, error)
+}
+
+// reader is the single neutral Reader implementation. There is no per-dialect
+// reader: the SELECT text is identical on every engine and the only divergence
+// (the positional placeholder, "$n" on Postgres / "?" on MySQL) is rendered by
+// the placeholder func the engine's dialect supplies — exactly how the criteria
+// translator and the view registry are written once against the seam.
+type reader struct {
+	q           Queryer
+	placeholder func(int) string
+}
+
+// NewReader builds the neutral audit reader over a query surface + the dialect's
+// placeholder renderer. db.NewAuditReader is the canonical constructor that wires
+// it from a RelationalEngine; this lower-level entry point exists so a test (or a
+// service pinning a bespoke connection) can supply its own Queryer.
+func NewReader(q Queryer, placeholder func(int) string) appaudit.Reader {
+	return &reader{q: q, placeholder: placeholder}
 }
 
 // selectAuditEventCols is the canonical column list every read helper
@@ -36,36 +61,48 @@ SELECT id, entity_type, aggregate_id, verb, action_name, kind,
        actor, actor_issuer, tenant_id, thread_id, occurred_at, payload
 FROM audit_events`
 
-// FindByID returns the audit_events row whose id matches the supplied
-// UUID. Returns (nil, ErrAuditNotFound) on miss; (nil, err) on transport
-// failure; (*AuditEvent, nil) on hit.
+// FindByID returns the audit_events row whose id matches the supplied UUID.
 //
 // Caveat: the table's primary key is composite — (id, created_at) — to
 // satisfy the partition-by-range strategy. A bare `WHERE id = $1` lookup
 // triggers a multi-partition index scan; B-tree per partition keeps the
 // constant-factor cost low and BRIN on created_at narrows hot ranges,
-// but a forensic lookup deep in archived partitions can be slow. Callers
-// holding an approximate created_at should add it to the WHERE manually
-// via the raw `exec` if performance matters at that scale — this helper
-// stays minimal because the common case (recent rows from a slog line)
-// is fast enough as-is.
-func FindByID(ctx context.Context, exec pgExec, id uuid.UUID) (*AuditEvent, error) {
-	if exec == nil {
-		return nil, errors.New("audit: nil exec")
+// but a forensic lookup deep in archived partitions can be slow. A caller
+// holding an approximate created_at can narrow the scan with a bespoke query
+// against the engine's Querier; this helper stays minimal because the common
+// case (a recent row from a slog line) is fast enough as-is.
+//
+// The id binds as canonical text on every dialect (Postgres' UUID column and
+// MySQL's CHAR(36) both accept it), mirroring how InsertAuditEvent writes it —
+// no BINARY(16) value codec is involved on the audit trail.
+func (r *reader) FindByID(ctx context.Context, id uuid.UUID) (*appaudit.AuditEvent, error) {
+	if r.q == nil {
+		return nil, errors.New("audit: nil querier")
 	}
-	row := exec.QueryRow(ctx, selectAuditEventCols+` WHERE id = $1`, id)
-	ev, err := scanAuditRow(row.Scan)
-	if errors.Is(err, pgx.ErrNoRows) {
-		return nil, ErrAuditNotFound
+	sql := selectAuditEventCols + ` WHERE id = ` + r.placeholder(1)
+	rows, err := r.q.Query(ctx, sql, id.String())
+	if err != nil {
+		return nil, fmt.Errorf("audit: find by id: %w", err)
 	}
+	defer rows.Close()
+	// No-rows is read off the cursor, not a driver sentinel: pgx and
+	// database/sql disagree on ErrNoRows, so Next()==false (with a clean Err)
+	// is the one neutral signal.
+	if !rows.Next() {
+		if err := rows.Err(); err != nil {
+			return nil, fmt.Errorf("audit: find by id: %w", err)
+		}
+		return nil, appaudit.ErrAuditNotFound
+	}
+	ev, err := scanAuditRow(rows.Scan)
 	if err != nil {
 		return nil, fmt.Errorf("audit: find by id: %w", err)
 	}
 	return ev, nil
 }
 
-// FindByAggregate returns every audit_events row for one aggregate,
-// newest first. Index-served by audit_events_entity_timeline_idx
+// FindByAggregate returns every audit_events row for one aggregate, newest
+// first. Index-served by audit_events_entity_timeline_idx
 // (entity_type, aggregate_id, occurred_at DESC) — the canonical "give me
 // this user's audit timeline" query the table was designed for.
 //
@@ -73,24 +110,26 @@ func FindByID(ctx context.Context, exec pgExec, id uuid.UUID) (*AuditEvent, erro
 // rows (e.g. it was created before audit was enabled, or the destinations
 // list excluded `database`). Pagination is the caller's job today — the
 // helper returns every matching row; large aggregates should slice the
-// result downstream, or call raw `exec` with explicit LIMIT/OFFSET when
-// the cardinality is known to be high.
-func FindByAggregate(ctx context.Context, exec pgExec, entityType, aggregateID string) ([]*AuditEvent, error) {
-	if exec == nil {
-		return nil, errors.New("audit: nil exec")
+// result downstream, or run a bespoke query with explicit LIMIT/OFFSET
+// against the engine's Querier when the cardinality is known to be high.
+func (r *reader) FindByAggregate(ctx context.Context, entityType, aggregateID string) ([]*appaudit.AuditEvent, error) {
+	if r.q == nil {
+		return nil, errors.New("audit: nil querier")
 	}
 	if entityType == "" || aggregateID == "" {
 		return nil, errors.New("audit: find by aggregate requires non-empty entityType and aggregateID")
 	}
-	rows, err := exec.Query(ctx,
-		selectAuditEventCols+` WHERE entity_type = $1 AND aggregate_id = $2 ORDER BY occurred_at DESC`,
-		entityType, aggregateID)
+	sql := selectAuditEventCols +
+		` WHERE entity_type = ` + r.placeholder(1) +
+		` AND aggregate_id = ` + r.placeholder(2) +
+		` ORDER BY occurred_at DESC`
+	rows, err := r.q.Query(ctx, sql, entityType, aggregateID)
 	if err != nil {
 		return nil, fmt.Errorf("audit: find by aggregate: %w", err)
 	}
 	defer rows.Close()
 
-	out := []*AuditEvent{}
+	out := []*appaudit.AuditEvent{}
 	for rows.Next() {
 		ev, err := scanAuditRow(rows.Scan)
 		if err != nil {
@@ -108,16 +147,16 @@ func FindByAggregate(ctx context.Context, exec pgExec, entityType, aggregateID s
 // Mirrors the shape buildAuditPayload (persister.go) writes so a row's
 // roundtrip through the table preserves the AuditEvent semantic.
 type auditPayload struct {
-	ActorClaims map[string]any          `json:"actorClaims,omitempty"`
-	Snapshot    map[string]any          `json:"snapshot,omitempty"`
-	Changes     []FieldChange           `json:"changes,omitempty"`
-	Children    map[string][]ChildEvent `json:"children,omitempty"`
+	ActorClaims map[string]any                   `json:"actorClaims,omitempty"`
+	Snapshot    map[string]any                   `json:"snapshot,omitempty"`
+	Changes     []appaudit.FieldChange           `json:"changes,omitempty"`
+	Children    map[string][]appaudit.ChildEvent `json:"children,omitempty"`
 }
 
-// scanAuditRow consumes one pgx row (either pgx.Row from QueryRow or one
-// rows.Next() iteration of pgx.Rows) and assembles the *AuditEvent. Both
-// pgx.Row.Scan and pgx.Rows.Scan are `func(...any) error` so they share
-// the same signature — scan is passed in to keep the helper agnostic.
+// scanAuditRow consumes one row (either the single FindByID row or one
+// rows.Next() iteration of FindByAggregate) and assembles the *AuditEvent.
+// The neutral Rows.Scan is `func(...any) error` regardless of engine, so the
+// helper takes scan as a func to stay agnostic.
 //
 // NULL handling for columns that the persister writes as nullable
 // (actor / actor_issuer / tenant_id): scanned into `*string` and turned
@@ -127,7 +166,7 @@ type auditPayload struct {
 // returns float64 / string / bool / nil / map / slice, not the original
 // Go types the write side handed over. Compare snapshot values as JSON
 // (or stringified) rather than asserting on int / time.Time.
-func scanAuditRow(scan func(dest ...any) error) (*AuditEvent, error) {
+func scanAuditRow(scan func(dest ...any) error) (*appaudit.AuditEvent, error) {
 	var (
 		id           uuid.UUID
 		aggregateID  uuid.UUID
@@ -136,7 +175,7 @@ func scanAuditRow(scan func(dest ...any) error) (*AuditEvent, error) {
 		actorIssuer  *string
 		tenantID     *string
 		payloadBytes []byte
-		ev           AuditEvent
+		ev           appaudit.AuditEvent
 	)
 	err := scan(
 		&id,
@@ -174,8 +213,8 @@ func scanAuditRow(scan func(dest ...any) error) (*AuditEvent, error) {
 	return &ev, nil
 }
 
-// stringOrEmpty dereferences a *string returned by pgx when scanning a
-// nullable column. nil → "" so the AuditEvent struct stays flat.
+// stringOrEmpty dereferences a *string returned when scanning a nullable
+// column. nil → "" so the AuditEvent struct stays flat.
 func stringOrEmpty(s *string) string {
 	if s == nil {
 		return ""

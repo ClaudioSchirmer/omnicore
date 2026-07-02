@@ -45,7 +45,7 @@
    │
    ▼
 <span class="auto">repo.Scope(ctx, opts...).Insert(insertable)</span>
-   │   └─► <span class="auto">infra.Postgres.Insert(ctx, insertable, schema, hook)</span>:
+   │   └─► <span class="auto">engine.Insert(ctx, insertable, schema, hook)</span>:
    │       <span class="auto">BEGIN TX</span>
    │         ▸ <span class="auto">afterBegin(ctx, customer, txHandle)</span>  ← position A (rolls back on error)
    │         <span class="auto">INSERT INTO customers (...)</span>

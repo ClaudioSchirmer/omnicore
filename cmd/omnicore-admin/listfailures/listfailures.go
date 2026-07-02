@@ -21,7 +21,8 @@ import (
 	"strings"
 
 	"github.com/ClaudioSchirmer/omnicore/bootstrap"
-	"github.com/ClaudioSchirmer/omnicore/infra"
+	"github.com/ClaudioSchirmer/omnicore/infra/db/core"
+	"github.com/ClaudioSchirmer/omnicore/infra/db/query"
 )
 
 const (
@@ -65,13 +66,17 @@ func Run(ctx context.Context, args []string) error {
 	if err != nil {
 		return fmt.Errorf("upstream-list-failures: load config: %w", err)
 	}
-	pg, err := infra.NewPostgres(ctx, cfg.Postgres.DSN)
+	// Build through the relational-engine registry so inspection runs against the
+	// configured backend (relational.dialect). The failure-registry reads already go
+	// through the neutral Querier/Dialect; only construction was PG-bound. A MySQL
+	// deployment needs the admin binary built with -tags mysql.
+	engine, err := core.NewEngine(cfg.Relational.Dialect, ctx, cfg.Relational.DSN, false)
 	if err != nil {
-		return fmt.Errorf("upstream-list-failures: postgres connect: %w", err)
+		return fmt.Errorf("upstream-list-failures: connect: %w", err)
 	}
-	defer pg.Close()
+	defer engine.Close()
 
-	return execute(ctx, pg, executeOptions{
+	return execute(ctx, engine, executeOptions{
 		Topic:  *topic,
 		View:   *view,
 		Format: *format,
@@ -88,15 +93,15 @@ type executeOptions struct {
 	Out    io.Writer
 }
 
-// execute does the read + render. Extracted from Run so tests can drive
-// it without touching env / config.
-func execute(ctx context.Context, pg *infra.Postgres, opt executeOptions) error {
-	var rows []infra.UpstreamFailureRecord
+// execute does the read + render through the backend-neutral seam. Extracted
+// from Run so tests can drive it without touching env / config.
+func execute(ctx context.Context, engine core.RelationalEngine, opt executeOptions) error {
+	var rows []query.UpstreamFailureRecord
 	var err error
 	if opt.Topic != "" {
-		rows, err = infra.ListPendingUpstreamFailuresByTopic(ctx, pg.Pool(), opt.Topic)
+		rows, err = query.ListPendingUpstreamFailuresByTopic(ctx, engine.Querier(), engine.Dialect(), opt.Topic)
 	} else {
-		rows, err = infra.ListPendingUpstreamFailures(ctx, pg.Pool())
+		rows, err = query.ListPendingUpstreamFailures(ctx, engine.Querier())
 	}
 	if err != nil {
 		return fmt.Errorf("upstream-list-failures: list: %w", err)
@@ -125,11 +130,11 @@ func execute(ctx context.Context, pg *infra.Postgres, opt executeOptions) error 
 
 // renderJSON writes the rows as a JSON object — `{count, truncated, items}`
 // shape so downstream tooling never has to guess whether the array was capped.
-func renderJSON(out io.Writer, rows []infra.UpstreamFailureRecord, truncated bool) error {
+func renderJSON(out io.Writer, rows []query.UpstreamFailureRecord, truncated bool) error {
 	envelope := struct {
 		Count     int                           `json:"count"`
 		Truncated bool                          `json:"truncated"`
-		Items     []infra.UpstreamFailureRecord `json:"items"`
+		Items     []query.UpstreamFailureRecord `json:"items"`
 	}{
 		Count:     len(rows),
 		Truncated: truncated,
@@ -143,7 +148,7 @@ func renderJSON(out io.Writer, rows []infra.UpstreamFailureRecord, truncated boo
 // renderText writes a fixed-column listing. Columns chosen for triage
 // signal — last_attempt_at + attempt + error help identify a stuck
 // failure vs a transient one at a glance.
-func renderText(out io.Writer, rows []infra.UpstreamFailureRecord, truncated bool) error {
+func renderText(out io.Writer, rows []query.UpstreamFailureRecord, truncated bool) error {
 	if len(rows) == 0 {
 		fmt.Fprintln(out, "no pending upstream failures")
 		return nil
@@ -196,7 +201,7 @@ func newUsage(fs *flag.FlagSet) func() {
 		fs.PrintDefaults()
 		fmt.Fprintln(out)
 		fmt.Fprintln(out, "Configuration is read from microservice.${APP_PROFILE}.yaml (override via OMNICORE_CONFIG_PATH).")
-		fmt.Fprintln(out, "Postgres DSN comes from there — no flag duplicates it.")
+		fmt.Fprintln(out, "Database DSN comes from there — no flag duplicates it.")
 		fmt.Fprintln(out)
 		fmt.Fprintln(out, "Read-only — this CLI does not re-run recompose. For actual retry use")
 		fmt.Fprintln(out, "UpstreamSubscriber.RetryPendingFailures from the service binary (cron or HTTP endpoint).")

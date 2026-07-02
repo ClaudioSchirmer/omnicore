@@ -9,14 +9,14 @@ import "fmt"
 //   - DestinationSlog     — emit a structured slog line after COMMIT
 //     (read-side / observability; lossy if the shipper drops events).
 //   - DestinationDatabase — INSERT a row into `audit_events` inside the
-//     same pgx.Tx that wrote the data row + outbox row (atomic; source of
+//     same transaction that wrote the data row + outbox row (atomic; source of
 //     truth for compliance and forensics).
 //
 // The two destinations are independent: a service can opt into both, either
 // one, or none (the empty-list-as-off shape replaces a separate "disabled"
 // enum). Default is both.
 //
-// The type lives in infra/audit (not bootstrap) so the Postgres persister
+// The type lives in infra/audit (not bootstrap) so the relational persister
 // can consume it without crossing the dependency boundary back to bootstrap.
 // The YAML binding stays on Config (this package) and bootstrap.Config
 // embeds it via `audit.Config`.
@@ -83,7 +83,7 @@ func (c *Config) Validate() error {
 }
 
 // Includes reports whether d is among the active destinations. Used by the
-// Postgres persister to decide which write path runs for a given AuditEvent
+// relational persister to decide which write path runs for a given AuditEvent
 // — the database branch lives inside the TX and the slog branch lives after
 // COMMIT, both gated by this helper.
 func (c *Config) Includes(d Destination) bool {

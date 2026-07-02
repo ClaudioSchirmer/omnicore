@@ -178,7 +178,21 @@
         <code>NonNull</code> when the handler embeds <code>pipeline.FullBody</code> (strict, every field
         required) or, leniently, when it is non-pointer and lacks <code>,omitempty</code> — the same
         required rule the REST/OpenAPI side applies. Missing-required-field is enforced by gqlparser
-        validation, not a separate runtime check.</li>
+        validation, not a separate runtime check.
+        <br/><br/>
+        <strong>Assigning null through GraphQL — a structural limitation and the idiomatic way out.</strong>
+        GraphQL has no "present but null" for a required field: <code>NonNull</code> is its only way to demand
+        presence. So the strict (PUT-shaped) input cannot express the explicit null the REST PUT uses to clear a
+        nullable field or remove a sibling facet — sending <code>null</code> is rejected at parse time. The
+        lenient (PATCH-shaped) input does not help either: an explicit <code>null</code> and an omitted field
+        both decode into the same nil pointer on the Request, which the partial-update contract reads as
+        "not sent, keep the current value" — on GraphQL AND on REST alike. The recommended pattern is the
+        idiomatic GraphQL one: register an intent-specific mutation whose OPERATION carries the meaning instead
+        of a field value — a "mini-PATCH" on the ordinary Auto path. Declare a dedicated Cmd whose
+        <code>ApplyPartiallyTo</code> assigns the nil (e.g. <code>clearEmployeePhone</code>), pair it with a
+        minimal (or empty) Request DTO, and register it with the same
+        <code>PartialUpdateCommandHandler</code> via <code>MutationByID</code>/<code>MutationWithBodyID</code> —
+        no custom <code>pipeline.Handler</code> required, and the intent is explicit in the schema.</li>
     <li><strong><code>scalar DateTime</code></strong> is declared when any <code>time.Time</code> field is
         reached; <code>uuid.UUID</code> / <code>domain.ID</code> map to <code>ID</code>.</li>
 </ul>

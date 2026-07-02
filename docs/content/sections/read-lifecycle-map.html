@@ -109,7 +109,7 @@
             <tr>
                 <td><code>?includeArchived=true</code></td>
                 <td><code>IncludeArchived</code></td>
-                <td>omits the <code>{deleted_at: null}</code> gate (default applies it)</td>
+                <td>omits the <code>{deleted_at: null}</code> root gate AND keeps archived entries inside the nested aggregate-child arrays (the default applies the root gate and strips archived child entries — the stored doc mirrors the store, the read hides what soft-delete deleted)</td>
             </tr>
         </tbody>
     </table>

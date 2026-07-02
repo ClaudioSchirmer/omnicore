@@ -1,12 +1,17 @@
 <h2>Audit</h2>
     <p>
         Every successful write emits exactly one <code>AuditEvent</code> — the forensic record of
-        what changed, who changed it, and when. Audit <strong>travels with the persister</strong>:
-        each <code>Postgres.Insert</code> / <code>Update</code> / <code>Archive</code> /
-        <code>Unarchive</code> / <code>Delete</code> builds the event and routes it according to the
+        what changed, who changed it, and when. (One exception adds a <em>second</em> event: a role
+        hard-delete whose <a href="#table-schema">shared base</a> is orphan-purged under
+        <code>OrphanPolicy(DeleteWhenUnreferenced)</code> also emits a purge event for the identity —
+        the base <em>table</em> as <code>entityType</code>, the deterministic base id as
+        <code>entityId</code>, kind <code>snapshot</code> with the shared fields — so the destruction
+        of shared identity data is never invisible.) Audit <strong>travels with the persister</strong>:
+        each write through the relational engine (<code>Insert</code> / <code>Update</code> / <code>Archive</code> /
+        <code>Unarchive</code> / <code>Delete</code>) builds the event and routes it according to the
         boot-time <code>audit.destinations</code> configuration. There is no <code>Auditor</code>
         singleton to thread through handlers — it is configured once at boot
-        (<code>pg.WithAudit(...)</code>) and every write, Auto or manual, is covered without a line
+        (<code>WithAudit(...)</code> on the relational engine) and every write, Auto or manual, is covered without a line
         of handler code.
     </p>
     <p>
@@ -17,7 +22,7 @@
         children cascade, the actor stamping, the translated field labels, and the two destinations —
         <code>slog</code> (observability echo, ELK/Loki/Datadog) and <code>database</code> (an
         atomic, in-transaction row in <code>audit_events</code> for compliance) — plus the pre-built
-        PostgreSQL read helpers.
+        backend-neutral read helpers (<code>read.NewAuditReader</code>, which works on Postgres or MySQL).
     </p>
 
     <h3 id="audit-how">How it works — granularity B, atomic with the write</h3>
@@ -29,7 +34,7 @@
         <code>dateTime</code> is captured at <code>ValidEntity</code> construction, so it reflects
         the moment the domain accepted the operation, not when the row was flushed.
     </p>
-    <div class="flow"><span class="auto">infra.Postgres.Insert/Update/Archive/Unarchive/Delete</span>
+    <div class="flow"><span class="auto">engine.Insert/Update/Archive/Unarchive/Delete</span>
    │
    ▼
 <span class="auto">BEGIN TX</span>
@@ -44,14 +49,19 @@
    IF destinations ∋ <span class="auto">slog</span>:
      <span class="auto">audit.EchoSlog(ctx, logger, ev)</span>  ← flat slog line for shippers</div>
     <p>
-        The <code>database</code> row is written <strong>inside the same <code>pgx.Tx</code></strong>
+        The <code>database</code> row is written <strong>inside the same transaction</strong>
         as the data row and the outbox row — so a crash between writes can never leave an audit gap.
         If <code>COMMIT</code> succeeded, the audit row exists. The <code>slog</code> echo fires
         <em>after</em> <code>COMMIT</code> and is best-effort: lossy if the log shipper drops the
-        line, but the PG row stays authoritative. The shapes live in
-        <code>infra/audit/event.go</code> (the event), <code>infra/audit/persister.go</code> (the
-        in-TX writer), <code>infra/audit/echo.go</code> (the slog echo), and
-        <code>infra/audit_builder.go</code> (the per-verb builders).
+        line, but the PG row stays authoritative. The model + read port + label
+        renderer live in <code>application/audit</code> (<code>event.go</code> the event,
+        <code>reader.go</code> the <code>Reader</code> port, <code>render.go</code> the label
+        renderer), so an application/web consumer reading the timeline depends on
+        the abstraction, not on infra. The implementation lives in
+        <code>infra/audit/persister.go</code> (the in-TX writer),
+        <code>infra/audit/reader.go</code> (the concrete reader),
+        <code>infra/audit/echo.go</code> (the slog echo), and
+        <code>infra/db/command/write/audit_builder.go</code> (the per-verb builders).
     </p>
 
     <h3 id="audit-destinations">Two destinations — <code>slog</code> and <code>database</code></h3>
@@ -60,7 +70,7 @@
         <tr>
             <td><code>database</code></td>
             <td><code>audit.InsertAuditEvent</code> → row in <code>audit_events</code></td>
-            <td>inside the write's <code>pgx.Tx</code></td>
+            <td>inside the write's transaction</td>
             <td><strong>atomic</strong> — the row IS the audit; if the write committed, the audit exists</td>
             <td>compliance, forensics, source-of-truth timelines joinable to other PG state</td>
         </tr>
@@ -97,7 +107,11 @@ audit:
     <p>
         The <code>audit_events</code> table is provisioned unconditionally by the framework's
         embedded migration <code>0001</code> — even with <code>destinations: []</code> the table
-        exists; it just never receives a row. The companion knob
+        exists; it just never receives a row. For direct SQL consumers: the table's id columns
+        (<code>id</code>, <code>aggregate_id</code>, <code>thread_id</code>) are canonical UUID
+        TEXT on every backend (<code>CHAR(36)</code> on MySQL) — unlike the domain tables, which
+        store <code>BINARY(16)</code> on MySQL — so audit predicates compare against the plain
+        quoted UUID string on both dialects. The companion knob
         <code>auth.auditClaims</code> (a JWT-claim allowlist) lives under <code>auth:</code> because
         it is a security concern — it whitelists which claims leave the JWT envelope into
         <code>actorClaims</code>; it is not a routing knob.
@@ -178,24 +192,49 @@ audit:
         <code>AggregateRootProvider</code> and at least one child is observable for the verb. Keyed
         by Go type name (<code>Address</code>, <code>OrderLine</code>); each entry carries
         <code>{id, op, snapshot}</code> or <code>{id, op, changes}</code> following the same
-        <code>kind</code> discipline. <strong>Child ops are SQL-grounded</strong> — the same 5-verb
-        vocabulary as the root, every op echoing the SQL fingerprint of the row-level change:
+        <code>kind</code> discipline. <strong>Child ops are SQL-grounded</strong> — every op echoes the SQL
+        fingerprint of the row-level change. For an <code>update</code> root, the op is decided by
+        <code>domain.OperationOf(OriginalStatus, CurrentStatus)</code> (where the child <em>started</em> vs where it is
+        now), not by its current status alone — so a DB-loaded child re-added is <code>updated</code> (not
+        <code>inserted</code>), and a brand-new child added then removed before commit produces <strong>no entry</strong>
+        (<code>OpNoop</code>):
     </p>
     <table>
         <tbody><tr><th>Root verb</th><th>Children included</th><th>Per-child <code>op</code></th><th>SQL on the child row</th></tr>
         <tr><td><code>insert</code></td><td>all current</td><td><code>inserted</code></td><td><code>INSERT INTO addresses (...)</code></td></tr>
-        <tr><td><code>update</code> — Added</td><td>appended via <code>AddAggregateChild</code></td><td><code>inserted</code></td><td><code>INSERT INTO addresses (...)</code></td></tr>
-        <tr><td><code>update</code> — Changed</td><td>replaced via <code>ChangeAggregateChild</code></td><td><code>updated</code></td><td><code>UPDATE addresses SET col=val, updated_at=NOW()</code></td></tr>
-        <tr><td><code>update</code> — Removed</td><td>marked via <code>RemoveAggregateChild</code> / <code>ReplaceAggregateChildrenOf</code></td><td><code>archived</code></td><td><code>UPDATE addresses SET deleted_at=NOW()</code> (row stays, recoverable)</td></tr>
-        <tr><td><code>update</code> — Constructor</td><td>(untouched — <strong>skipped</strong>)</td><td>—</td><td>(no SQL)</td></tr>
+        <tr><td><code>update</code> — <code>OpInsert</code></td><td>brand-new child kept (added, never DB-loaded)</td><td><code>inserted</code></td><td><code>INSERT INTO addresses (...)</code></td></tr>
+        <tr><td><code>update</code> — <code>OpUpdate</code></td><td>DB-loaded child changed OR re-added (<code>Constructor→Changed/Added</code>)</td><td><code>updated</code></td><td><code>UPDATE addresses SET col=val, updated_at=NOW()</code></td></tr>
+        <tr><td><code>update</code> — <code>OpDelete</code></td><td>DB-loaded child removed (<code>Constructor→Removed</code>)</td><td><code>archived</code></td><td><code>UPDATE addresses SET deleted_at=NOW()</code> (row stays, recoverable)</td></tr>
+        <tr><td><code>update</code> — <code>OpNoop</code></td><td>untouched DB child (<code>Constructor→Constructor</code>) OR new-then-removed (<code>Added→Removed</code>) — <strong>both skipped</strong></td><td>—</td><td>(no SQL, no entry)</td></tr>
         <tr><td><code>archive</code></td><td>every loaded active child (cascade)</td><td><code>archived</code></td><td><code>UPDATE addresses SET deleted_at=NOW() WHERE user_id=$1 AND deleted_at IS NULL</code></td></tr>
         <tr><td><code>unarchive</code></td><td>every loaded archived child (cascade)</td><td><code>unarchived</code></td><td><code>UPDATE addresses SET deleted_at=NULL WHERE user_id=$1 AND deleted_at IS NOT NULL</code></td></tr>
-        <tr><td><code>delete</code></td><td>every loaded child</td><td><code>deleted</code></td><td>Postgres <code>FK ON DELETE CASCADE</code></td></tr>
+        <tr><td><code>delete</code></td><td>every loaded child</td><td><code>deleted</code></td><td>explicit <code>DELETE FROM addresses WHERE user_id=$1</code> per child table (same TX, before the root DELETE)</td></tr>
     </table>
     <p>
         For flat entities (no <code>AggregateRootProvider</code>) the <code>children</code> block is
         absent. UPDATED children pair pre/post by <code>GetID()</code> against the deep-copied prior
         root's aggregates map (see <a href="#old-state">Old-state snapshot</a>).
+    </p>
+
+    <h3 id="audit-shared-base">SharedBase roles — whole-object composition</h3>
+    <p>
+        When the audited entity is a <a href="#table-schema">SharedBase</a> role, its fields are
+        partitioned by infra across the shared-base table (identity, shared by every role), the
+        role's own table, and any siblings — yet the audit timeline speaks the <strong>whole domain
+        object</strong>, not one table. The <code>snapshot</code> (insert/delete) and the
+        <code>changes</code> delta (update) compose over the role's own fields <strong>∪</strong> its
+        shared base's fields <strong>∪</strong> its siblings' fields, so a mutation of a shared base
+        field (e.g. the natural key or a shared attribute) appears in the delta exactly like a
+        role-own field. Base fields are read by Go field name off the flat role entity — the same
+        access the base UPSERT uses — because the base schema is type-less. <code>fieldLabelKey</code>
+        resolves across all three schemas.
+    </p>
+    <p>
+        <strong>Base-children</strong> (1:N collections owned by the shared base, shared by every
+        role) appear in the <code>children</code> block under their Go type name with a populated
+        per-op <code>snapshot</code>/<code>changes</code>, identical in shape to a role-own child —
+        the child walk resolves both role-own and base-owned collections. A flat, non-SharedBase
+        entity is unaffected: the composition degenerates to the root's own fields.
     </p>
 
     <h3 id="audit-actor">Actor &amp; claims</h3>
@@ -244,23 +283,28 @@ audit:
         emit no <code>fieldLabelKey</code> (omitempty elides it).
     </p>
 
-    <h3 id="audit-read">Reading audit rows from PostgreSQL — pre-built helpers</h3>
+    <h3 id="audit-read">Reading audit rows — backend-neutral reader</h3>
     <p>
-        When <code>destinations</code> includes <code>database</code>, two canonical helpers retrieve
-        rows from <code>audit_events</code>. Both consume the minimal <code>pgExec</code> interface —
-        <code>*pgxpool.Pool</code>, <code>*pgxpool.Conn</code>, <code>*pgx.Conn</code>, and
-        <code>pgx.Tx</code> all satisfy it — so calls inside and outside an open transaction share
-        the same surface.
+        When <code>destinations</code> includes <code>database</code>, the framework ships a generic
+        <code>audit.Reader</code> port with two canonical lookups. Build it once over the booted
+        engine with <code>read.NewAuditReader(deps.DB)</code>: it runs through the engine's neutral read
+        seam (<code>Querier</code> + <code>Dialect</code>), so the <em>same code</em> reads
+        <code>audit_events</code> on Postgres or MySQL — the audit trail stores ids as UUID text
+        (Postgres <code>UUID</code> / MySQL <code>CHAR(36)</code>), so the reader binds them verbatim
+        with no per-dialect value codec.
     </p>
-<pre><code>// Forensic single-row lookup — you saw an id in the slog echo and want the full row.
-ev, err := audit.FindByID(ctx, deps.Postgres.Pool(), eventID)
+<pre><code>// Build the reader once over whichever relational engine booted (Postgres or MySQL).
+reader := read.NewAuditReader(deps.DB)
+
+// Forensic single-row lookup — you saw an id in the slog echo and want the full row.
+ev, err := reader.FindByID(ctx, eventID)
 if errors.Is(err, audit.ErrAuditNotFound) {
     // no row with that id — partition pruned? archived?
 }
 
 // Timeline by aggregate — index-served by audit_events_entity_timeline_idx
 // (entity_type, aggregate_id, occurred_at DESC). Newest first.
-events, err := audit.FindByAggregate(ctx, deps.Postgres.Pool(), "User", userID.String())
+events, err := reader.FindByAggregate(ctx, "User", userID.String())
 for _, ev := range events {
     // walk the row's lifetime
 }</code></pre>
@@ -292,9 +336,10 @@ audit.RenderLabelsInJSON(doc, deps.Translator, configuration.LangPTBR)
     <p>
         Caveats: <code>FindByID</code> issues a multi-partition index scan (composite PK
         <code>(id, created_at)</code>) — fast for recent rows, costlier into archived partitions
-        (pass <code>created_at</code> via raw SQL when the lookup goes deep). <code>FindByAggregate</code>
-        returns every matching row; long timelines should slice downstream or use raw SQL with
-        explicit <code>LIMIT</code>/<code>OFFSET</code>. The JSON round-trip yields
+        (narrow it with <code>created_at</code> via a bespoke query through the engine's
+        <code>Querier</code> when the lookup goes deep). <code>FindByAggregate</code> returns every
+        matching row; long timelines should slice downstream or run a bespoke query with explicit
+        <code>LIMIT</code>/<code>OFFSET</code>. The JSON round-trip yields
         <code>float64</code>/<code>string</code>/<code>bool</code>/<code>map</code>/<code>slice</code>
         — assert on stringified values, not Go-typed scalars.
     </p>
@@ -307,7 +352,7 @@ audit.RenderLabelsInJSON(doc, deps.Translator, configuration.LangPTBR)
 <pre><code># ELK / Loki — query the slog wire fields:
 entityType:User AND entityId:&lt;uuid&gt;   sorted by dateTime ASC
 
--- PostgreSQL — query the authoritative row directly (joinable to other PG state):
+-- Relational store — query the authoritative row directly (joinable to other SQL state):
 SELECT verb, action_name, kind, actor, occurred_at, payload
 FROM audit_events
 WHERE entity_type = 'User' AND aggregate_id = '&lt;uuid&gt;'

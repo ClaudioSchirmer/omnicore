@@ -24,8 +24,8 @@
         <tr><td><code>SemanticMethodNotAllowed</code></td><td><strong>405 Method Not Allowed</strong></td><td><code>MethodNotAllowedNotification</code> (path matches, HTTP method does not) emitted by <code>fwweb.ErrorHandler</code></td></tr>
         <tr><td><code>SemanticConflict</code></td><td>409 Conflict</td><td><code>EntityIsNotActiveNotification</code>, <code>EntityAlreadyAddedNotification</code></td></tr>
         <tr><td><code>SemanticForbidden</code></td><td>403 Forbidden</td><td><code>Insert/Update/DeleteNotAllowedNotification</code></td></tr>
-        <tr><td><code>SemanticUnauthorized</code></td><td>401 Unauthorized</td><td>—</td></tr>
-        <tr><td><code>SemanticPayloadTooLarge</code></td><td><strong>413 Content Too Large</strong></td><td><code>PayloadTooLargeNotification</code> (request body exceeds the configured <code>BodyLimit</code>) emitted by <code>fwweb.ErrorHandler</code></td></tr>
+        <tr><td><code>SemanticUnauthorized</code></td><td>401 Unauthorized</td><td><code>MissingAuthorizationNotification</code>, <code>InvalidTokenNotification</code>, <code>ExpiredTokenNotification</code> (emitted by <code>fwweb.AuthMiddleware</code>)</td></tr>
+        <tr><td><code>SemanticPayloadTooLarge</code></td><td><strong>413 Request Entity Too Large</strong></td><td><code>PayloadTooLargeNotification</code> (request body exceeds the configured <code>BodyLimit</code>) emitted by <code>fwweb.ErrorHandler</code></td></tr>
         <tr><td><code>SemanticUnavailable</code></td><td>503 Service Unavailable</td><td><code>ServiceUnavailableNotification</code></td></tr>
         <tr><td><code>SemanticGatewayTimeout</code></td><td><strong>504 Gateway Timeout</strong></td><td><code>RequestTimeoutNotification</code> — the request exceeded <code>http.requestTimeoutSeconds</code>; <code>pipeline.Run</code> maps <code>context.DeadlineExceeded</code> (pgx/mongo/httpclient observing the cancelled request context) so a timeout surfaces as 504, not a generic 500</td></tr>
         <tr><td><code>SemanticInternal</code></td><td><strong>500 Internal Server Error</strong></td><td><code>InternalServerErrorNotification</code> (recovered panic, escaped non-NotificationCarrier error) emitted by <code>fwweb.ErrorHandler</code></td></tr>
@@ -265,12 +265,14 @@ type PathSegment struct {
 }
 
 type NotificationMessage struct {
-    Path         []PathSegment  // canonical structure
-    Override     string         // set by ChangeFieldName (higher precedence)
-    FieldName    string         // legacy/literal — used when Path empty and Override empty
+    Path         []PathSegment     // canonical structure
+    Override     string            // set by ChangeFieldName (higher precedence)
+    FieldName    string            // legacy/literal — used when Path empty and Override empty
     FieldValue   string
     FuncName     string
     Err          error
+    Vars         map[string]string // per-emit render vars (merged over tvar-tag fields; per-emit wins)
+    LabelKey     string            // catalog key for the translated field label (fieldLabel on the wire)
     Notification Notification
 }
 
@@ -412,26 +414,33 @@ type Address struct {
         Audit stores the <strong>catalog key</strong>, not the rendered string — the row is immutable, but the catalog can evolve and the compliance team may read in any locale. Same shape on child cascade: <code>children["Address"][0].changes[0].fieldLabelKey</code> carries the key for the AVO field.
     </p>
 
-    <h4>Reading audit rows — <code>audit.FindByID</code> and <code>audit.FindByAggregate</code></h4>
+    <h4>Reading audit rows — the <code>audit.Reader</code> port</h4>
     <p>
         See the consolidated <a href="#audit">Audit</a> section for the full event shape, the two
-        destinations, and the children cascade. Two canonical helpers retrieve audit rows from the
-        <code>audit_events</code> table when the destinations list includes <code>database</code>:
+        destinations, and the children cascade. Build a reader once over the relational engine with
+        <code>read.NewAuditReader(deps.DB)</code> — it implements the <code>application/audit</code> <code>Reader</code>
+        port (<code>FindByID</code> + <code>FindByAggregate</code>) and reads the <code>audit_events</code> table when the
+        destinations list includes <code>database</code>:
     </p>
-<pre><code>// Forensic single-row lookup — you saw an id in the slog echo and want the full row.
-ev, err := audit.FindByID(ctx, deps.Postgres.Pool(), eventID)
+<pre><code>reader := read.NewAuditReader(deps.DB)   // backend-neutral; runs through the engine's Querier/Dialect
+
+// Forensic single-row lookup — you saw an id in the slog echo and want the full row.
+ev, err := reader.FindByID(ctx, eventID)   // eventID is a uuid.UUID
 if errors.Is(err, audit.ErrAuditNotFound) {
     // no row with that id — partition pruned? archived?
 }
 
-// Timeline by aggregate — index-served by audit_events_entity_timeline_idx
-// (entity_type, aggregate_id, occurred_at DESC). Newest first.
-events, err := audit.FindByAggregate(ctx, deps.Postgres.Pool(), "User", userID.String())
+// Timeline by aggregate — index-served (entity_type, aggregate_id, …), newest first.
+events, err := reader.FindByAggregate(ctx, "User", userID.String())
 for _, ev := range events {
     // walk the row's lifetime
 }</code></pre>
     <p>
-        Both helpers consume the minimal <code>pgExec</code> interface — <code>*pgxpool.Pool</code>, <code>*pgxpool.Conn</code>, <code>*pgx.Conn</code>, and <code>pgx.Tx</code> all satisfy it — so calls inside and outside an open transaction share the same surface. The returned <code>*AuditEvent</code> mirrors what the persister wrote: top-level columns map directly; the <code>payload jsonb</code> blob is unmarshaled back into <code>Snapshot</code> / <code>Changes</code> / <code>Children</code>.
+        The reader is <strong>backend-neutral</strong>: it issues its <code>SELECT</code> through the engine's
+        <code>Querier</code> / <code>Dialect</code>, so the same code reads audit rows on Postgres and MySQL alike. The
+        returned <code>*AuditEvent</code> mirrors what the persister wrote: top-level columns map directly; the
+        <code>payload</code> JSON blob is unmarshaled back into <code>Snapshot</code> / <code>Changes</code> /
+        <code>Children</code>.
     </p>
     <p>
         Caveats: <code>FindByID</code> issues a multi-partition index scan because the PK is composite <code>(id, created_at)</code>; the common case (recent rows from a slog id) is fast, but archived partitions add cost — pass <code>created_at</code> explicitly via raw SQL when the lookup goes deep. <code>FindByAggregate</code> returns every matching row; aggregates with very long timelines should slice the result downstream or call raw SQL with explicit <code>LIMIT</code> / <code>OFFSET</code>. JSON round-trip on the payload returns <code>float64</code> / <code>string</code> / <code>bool</code> / <code>map</code> / <code>slice</code> — assert on stringified values, not on Go-typed scalars.

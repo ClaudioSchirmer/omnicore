@@ -1,5 +1,5 @@
 <h2>Migrations</h2>
-    <p>Framework manages numbered SQL migration files, with up/down, versioning via its own table, and dirty state recovery. Wrapper over <a href="https://github.com/golang-migrate/migrate"><code>golang-migrate/migrate v4</code></a> — we don't reimplement lock/recovery/parsing.</p>
+    <p>Framework manages numbered SQL migration files, with up/down, versioning via its own table, and dirty state recovery. Wrapper over <a href="https://github.com/golang-migrate/migrate"><code>golang-migrate/migrate v4</code></a> — we don't reimplement lock/recovery/parsing. The migration <em>policy</em> (filenames, tracking tables, strict mode) is dialect-neutral; only the runner that opens the connection and the embedded framework SQL are per-dialect.</p>
 
     <h3>Filename convention</h3>
     <pre><code>migrations/
@@ -7,7 +7,20 @@
   0002_init.down.sql        # reverse (mandatory)
   0003_add_phone.up.sql
   0003_add_phone.down.sql</code></pre>
-    <p>The framework owns its own embedded migrations via <code>embed.FS</code> — version <strong>1</strong> creates the outbox (<code>omnicore/infra/migration/embedded/0001_outbox.{up,down}.sql</code>), version <strong>2</strong> creates the integration-events tables (<code>0002_integration_events.{up,down}.sql</code>), and version <strong>3</strong> adds the distributed-tracing carrier columns (<code>0003_outbox_traceparent.{up,down}.sql</code> — <code>outbox.traceparent</code>, <code>integration_events.traceparent</code>, <code>audit_events.trace_id</code>, all nullable). They are tracked in their own table (<code>omnicore_framework_migrations</code>), so a service's own migrations start at <code>0002+</code> in the separate <code>omnicore_migrations</code> table with no collision. Do not write the framework SQL manually; the framework guarantees an identical signature across all services (Debezium depends on the outbox shape).</p>
+    <p>A service's own migrations start at <code>0002+</code>. Because each backend speaks a different SQL dialect, a service that targets more than one backend keeps a directory per dialect (the canonical example uses <code>migrations/postgres/</code> and <code>migrations/mysql/</code>) and points <code>migrations.dir</code> at the one matching <code>relational.dialect</code>.</p>
+    <p class="note">Tables behind the relational <a href="#table-schema">specialization mechanisms</a> have shape requirements your migration must satisfy — a <a href="#table-schema~sibling-tables">sibling</a> table shares the owner's PK and declares no FK and no <code>deleted_at</code> (the owner owns the lifecycle); a <a href="#table-schema~shared-base">shared base</a> stores a deterministic <code>UUIDv5</code> PK with its natural-key column <code>UNIQUE NOT NULL</code> and no soft-delete, and each role table carries a <code>UNIQUE</code> FK to it. The authoritative column-by-column shapes (Postgres and MySQL) live in <a href="#table-schema">TableSchema</a>.</p>
+
+    <h3>The framework's embedded control plane — version 1</h3>
+    <p>The framework owns version <strong>1</strong> as a single flattened migration, <code>0001_framework.{up,down}.sql</code>, injected via <code>embed.FS</code> and shipped <strong>per dialect</strong> (<code>infra/migration/embedded/postgres/</code> and <code>infra/migration/embedded/mysql/</code>). One migration creates the whole control plane — seven tables:</p>
+    <ul>
+        <li><code>outbox</code> — the Debezium CDC source.</li>
+        <li><code>omnicore_mongo_views</code> — the Mongo view registry.</li>
+        <li><code>omnicore_upstream_failures</code> — cross-service composition failure registry.</li>
+        <li><code>audit_events</code> — the audit trail (RANGE-partitioned by <code>created_at</code> on Postgres; a plain table on MySQL, which has no equivalent partition shape).</li>
+        <li><code>integration_events</code> — producer-side integration-event store.</li>
+        <li><code>omnicore_integration_failures</code> / <code>omnicore_integration_processed</code> — the consumer failure registry + dedup table.</li>
+    </ul>
+    <p>The distributed-tracing carrier columns (<code>outbox.traceparent</code>, <code>integration_events.traceparent</code>, <code>audit_events.trace_id</code>) are inlined into this single migration, and every table + column carries a <code>COMMENT</code>. It is tracked in its own table (<code>omnicore_framework_migrations</code>), so a service's own migrations start at <code>0002+</code> in the separate <code>omnicore_migrations</code> table with no collision. The per-dialect embedded source is selected at boot by <code>frameworkSourceFor(dialect)</code> (the <code>embedded/&lt;dialect&gt;</code> subdirectory). <strong>Do not write the framework SQL manually</strong>; the framework guarantees an identical signature across all services on each backend (Debezium depends on the outbox shape).</p>
 
     <h3>Default behavior at boot</h3>
     <ul>
@@ -23,21 +36,28 @@
     <p>Two separate tables, created automatically by <code>golang-migrate</code> on first execution (no embed SQL for them):</p>
     <table>
         <tbody><tr><th>Table</th><th>Who writes</th><th>Contains</th></tr>
-        <tr><td><code>omnicore_framework_migrations</code></td><td>Framework (embedded)</td><td>version 1 (outbox), version 2 (integration events), version 3 (tracing carrier columns)</td></tr>
+        <tr><td><code>omnicore_framework_migrations</code></td><td>Framework (embedded)</td><td>version 1 (the flattened <code>0001_framework</code> control plane)</td></tr>
         <tr><td><code>omnicore_migrations</code></td><td>Service (files in <code>cfg.Migrations.Dir</code>)</td><td>version 2+</td></tr>
     </tbody></table>
-    <p>Separate tables avoid version collision — the framework table and the service table may both carry a "version 2" row without conflict.</p>
+    <p>Separate tables avoid version collision — the framework table and the service table may both carry a "version 1" / "version 2" row without conflict.</p>
     <p>Each table stores only <code>(version BIGINT PRIMARY KEY, dirty BOOLEAN)</code>. The <code>.down.sql</code> <strong>is not stored</strong> — it is read from disk/embed at <code>Down(N)</code> time.</p>
 
-    <h3>API</h3>
-    <pre><code>// dir is any path relative to CWD — "./migrations" is just the YAML default
-mgr := migration.New(pg.Pool(), "./migrations")
-mgr.Up(ctx)              // applies pending (framework + service)
+    <h3>API — one Manager, a per-dialect constructor</h3>
+    <p>The <code>migration.Manager</code> is dialect-neutral; only its constructor (and the connection it opens) is dialect-bound, and each constructor lives behind its engine build tag. Pick the one matching <code>relational.dialect</code>:</p>
+    <pre><code>// Postgres — borrows the live pgx pool (build tag: postgres)
+mgr := migration.New(pg.Pool(), "./migrations/postgres")
+
+// MySQL — opens its own *sql.DB from the DSN (build tag: mysql)
+mgr := migration.NewMySQL(dsn, "./migrations/mysql")
+
+// Same surface on either Manager:
+mgr.Up(ctx)              // applies pending (framework then service)
 mgr.Down(ctx, 1)         // reverts N service migrations
 mgr.Status(ctx)          // (version uint, dirty bool, err error) — service only
 mgr.Pending(ctx)         // ([]uint, error) — versions on disk but not yet applied
 mgr.Force(ctx, 5)        // recovery: marks version=5, dirty=false
 mgr.ValidateDownExists() // checks .down.sql counterpart for each .up.sql</code></pre>
+    <p><code>bootstrap.Run</code> builds the right Manager automatically from the selected engine — services normally never call these directly.</p>
 
     <h3>Profile-aware default and strict mode</h3>
     <p><code>cfg.Migrations.AutoRun</code> is a closed-set <code>AutoRunMode</code> enum — <strong><code>check | true | false</code></strong> — sharing the same three-mode semantic as <code>mongo.rebuild.autoRun</code> (<code>true</code> = validate + apply pending; <code>check</code> = validate only, abort boot on pending/dirty; <code>false</code> = skip both validation and application). A bare YAML bool (<code>true</code>/<code>false</code>) normalizes to the matching string. When the YAML leaves it unset it resolves to <code>true</code> under <code>APP_PROFILE=dev</code> and to <code>check</code> (the strict validation mode) under any other profile. An explicit YAML value wins regardless of profile.</p>
@@ -51,5 +71,8 @@ mgr.ValidateDownExists() // checks .down.sql counterpart for each .up.sql</code>
     <h3>Recovery (dirty state)</h3>
     <p>A migration that fails mid-way leaves <code>dirty=true</code> persisted. Subsequent <code>Up</code> calls fail until <code>Force(version)</code> is called. <code>Force</code> does not create/undo schema — it only resets the tracking pointer. The operator must manually fix the DB state first.</p>
 
-    <h3>Pool adapter</h3>
-    <p>Adapter <code>pgxpool.Pool</code> → <code>*sql.DB</code> via <code>pgx/v5/stdlib.OpenDBFromPool</code>. The package's official comment guarantees that <code>Close()</code> on the sql.DB <strong>does not close the pool</strong> — every <code>open/close</code> of <code>migrate.Migrate</code> is isolated, the pool stays alive for the rest of the service.</p>
+    <h3>How each runner opens its connection</h3>
+    <ul>
+        <li><strong>Postgres</strong> — adapts the live <code>pgxpool.Pool</code> to a <code>*sql.DB</code> via <code>pgx/v5/stdlib.OpenDBFromPool</code>. The package guarantees that <code>Close()</code> on that <code>sql.DB</code> <strong>does not close the pool</strong>, so every open/close of <code>migrate.Migrate</code> is isolated and the engine's pool stays alive for the rest of the service.</li>
+        <li><strong>MySQL</strong> — opens its <em>own</em> <code>*sql.DB</code> from the DSN (closed when each migrate instance closes), rather than sharing the engine's live pool. It also ensures the DSN carries <code>multiStatements=true</code> so the flattened multi-statement framework migration runs regardless of the operator's DSN config.</li>
+    </ul>

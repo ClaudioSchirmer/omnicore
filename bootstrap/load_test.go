@@ -65,7 +65,8 @@ func TestInterpolate_DefaultWithColons(t *testing.T) {
 }
 
 const validYAMLAllRequired = `service: test
-postgres:
+relational:
+  dialect: postgres
   dsn: "${DB:postgres://localhost}"
 mongo:
   uri: "${MURI:mongodb://localhost}"
@@ -90,8 +91,8 @@ func TestLoadConfigFrom_HappyPath_AppliesDefaults(t *testing.T) {
 	if cfg.HTTP.Addr != ":8080" {
 		t.Errorf("HTTP.Addr default = %q, want %q", cfg.HTTP.Addr, ":8080")
 	}
-	if cfg.Postgres.DSN != "postgres://localhost" {
-		t.Errorf("Postgres.DSN = %q", cfg.Postgres.DSN)
+	if cfg.Relational.DSN != "postgres://localhost" {
+		t.Errorf("Relational.DSN = %q", cfg.Relational.DSN)
 	}
 	if cfg.Mongo.URI != "mongodb://localhost" {
 		t.Errorf("Mongo.URI = %q", cfg.Mongo.URI)
@@ -121,7 +122,7 @@ func TestLoadConfigFrom_HappyPath_AppliesDefaults(t *testing.T) {
 
 func TestLoadConfigFrom_KafkaSyncWorkers_ExplicitOverride(t *testing.T) {
 	yaml := `service: test
-postgres: { dsn: "postgres://x" }
+relational: { dialect: postgres, dsn: "postgres://x" }
 mongo: { uri: "mongodb://x", database: "v" }
 kafka:
   brokers: ["k:1"]
@@ -147,8 +148,8 @@ func TestLoadConfigFrom_EnvOverridesDefault(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadConfigFrom: %v", err)
 	}
-	if cfg.Postgres.DSN != "postgres://prod" {
-		t.Errorf("Postgres.DSN = %q, want %q", cfg.Postgres.DSN, "postgres://prod")
+	if cfg.Relational.DSN != "postgres://prod" {
+		t.Errorf("Relational.DSN = %q, want %q", cfg.Relational.DSN, "postgres://prod")
 	}
 }
 
@@ -170,7 +171,7 @@ func TestLoadConfigFrom_MissingRequired(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error for missing required fields")
 	}
-	for _, field := range []string{"postgres.dsn", "mongo.uri", "mongo.database", "kafka.brokers", "kafka.syncGroupId"} {
+	for _, field := range []string{"relational.dialect", "relational.dsn", "mongo.uri", "mongo.database", "kafka.brokers", "kafka.syncGroupId"} {
 		if !strings.Contains(err.Error(), field) {
 			t.Errorf("error %q does not list missing field %q", err, field)
 		}
@@ -513,7 +514,8 @@ func TestLoadConfigFrom_FilePrefix_AppliesToValue(t *testing.T) {
 	dsn := "postgres://user:pwd@host:5432/db?sslmode=disable"
 	path := writeFile(t, "dsn", dsn+"\n") // trailing LF will be trimmed
 	yml := `service: test
-postgres:
+relational:
+  dialect: postgres
   dsn: "${file:` + path + `}"
 mongo:
   uri: "mongodb://localhost"
@@ -527,14 +529,15 @@ kafka:
 	if err != nil {
 		t.Fatalf("LoadConfigFrom: %v", err)
 	}
-	if cfg.Postgres.DSN != dsn {
-		t.Errorf("Postgres.DSN = %q, want %q", cfg.Postgres.DSN, dsn)
+	if cfg.Relational.DSN != dsn {
+		t.Errorf("Relational.DSN = %q, want %q", cfg.Relational.DSN, dsn)
 	}
 }
 
 func TestLoadConfigFrom_FilePrefix_NotFound_FailsBoot(t *testing.T) {
 	yml := `service: test
-postgres:
+relational:
+  dialect: postgres
   dsn: "${file:/no/such/file}"
 mongo:
   uri: "mongodb://localhost"
@@ -607,7 +610,8 @@ func TestLoadConfigFrom_VaultPrefix_FailsBoot_WithoutResolver(t *testing.T) {
 	RegisterSecretResolver(nil)
 	defer RegisterSecretResolver(nil)
 	yml := `service: test
-postgres:
+relational:
+  dialect: postgres
   dsn: "${vault:secret/db#dsn}"
 mongo:
   uri: "mongodb://localhost"

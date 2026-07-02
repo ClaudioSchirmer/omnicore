@@ -118,7 +118,7 @@
     "items": [
       {
         "id": "table-schema",
-        "label": "TableSchema (PG + views)"
+        "label": "TableSchema"
       },
       {
         "id": "service-to-service",

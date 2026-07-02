@@ -70,7 +70,7 @@
   "children": { "Address": [{ "id": "...", "op": "inserted", "snapshot": {...} }] }
 }</code></pre>
 
-  <p>The fan-out is automatic for both Auto Command Handlers and manual handlers — every write goes through <code>repo.Scope(ctx, opts...).Method(valid)</code> on the <code>persistence.ScopedRepository[T]</code> binding, and <code>ctx</code> IS the request <code>*AppContext</code>. <code>infra.Postgres</code> reads the actor from the same context, builds the <code>AuditEvent</code>, writes the row in-TX, and emits the slog line post-commit. A manual handler does not need to touch any new API to benefit from the actor information.</p>
+  <p>The fan-out is automatic for both Auto Command Handlers and manual handlers — every write goes through <code>repo.Scope(ctx, opts...).Method(valid)</code> on the <code>persistence.ScopedRepository[T]</code> binding, and <code>ctx</code> IS the request <code>*AppContext</code>. The relational engine reads the actor from the same context, builds the <code>AuditEvent</code>, writes the row in-TX, and emits the slog line post-commit. A manual handler does not need to touch any new API to benefit from the actor information.</p>
 
   <p>Domain events emitted via <code>infra/events.SlogPublisher</code> mirror the same pattern (<code>actor</code> + <code>actorIssuer</code>) but never carry <code>actorClaims</code> — the audit allowlist is the only place that can broaden the claim surface logged, by design.</p>
 

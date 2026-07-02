@@ -9,6 +9,7 @@ import (
 
 	"github.com/ClaudioSchirmer/omnicore/application/configuration"
 	"github.com/ClaudioSchirmer/omnicore/application/pipeline"
+	"github.com/ClaudioSchirmer/omnicore/infra/db/core"
 
 	"github.com/google/uuid"
 )
@@ -265,15 +266,16 @@ func (r *Receiver) ConsumerGroup() string { return r.consumerGroup }
 // in tasks/msintercomunication.md. The framework owns the primitive;
 // consumer services decide how to expose it (cron, admin endpoint,
 // internal RPC).
-func (r *Receiver) RetryPendingFailures(ctx context.Context, exec pgExec, pipe *pipeline.Pipeline, logger interface {
+func (r *Receiver) RetryPendingFailures(ctx context.Context, eng core.RelationalEngine, pipe *pipeline.Pipeline, logger interface {
 	Debug(msg string, args ...any)
 	Info(msg string, args ...any)
 	Warn(msg string, args ...any)
 }) (int, error) {
-	if exec == nil {
-		return 0, fmt.Errorf("receiver.RetryPendingFailures: pg exec is nil")
+	if eng == nil {
+		return 0, fmt.Errorf("receiver.RetryPendingFailures: relational engine is nil")
 	}
-	pending, err := ListPendingIntegrationFailuresByGroup(ctx, exec, r.consumerGroup)
+	q, d := eng.Querier(), eng.Dialect()
+	pending, err := ListPendingIntegrationFailuresByGroup(ctx, q, d, r.consumerGroup)
 	if err != nil {
 		return 0, err
 	}
@@ -289,8 +291,8 @@ func (r *Receiver) RetryPendingFailures(ctx context.Context, exec pgExec, pipe *
 		// retry path is deterministic without storing the full
 		// wire envelope.
 		headers := map[string]string{"event_type": r.wireEventType}
-		if err := r.handleMessage(ctx, exec, headers, p.EventID, p.RawPayload, pipe, logger); err == nil {
-			_ = ResolveIntegrationFailures(ctx, exec, r.consumerGroup, r.sourceKey, r.eventKey, p.EventID)
+		if err := r.handleMessage(ctx, eng, headers, p.EventID, p.RawPayload, pipe, logger); err == nil {
+			_ = ResolveIntegrationFailures(ctx, q, d, r.consumerGroup, r.sourceKey, r.eventKey, p.EventID)
 		}
 		if ctx.Err() != nil {
 			return retried, ctx.Err()
@@ -324,7 +326,7 @@ func (r *Receiver) resolveAgainstYAML(cfg *Config) error {
 // hints — the consumer pool still acks Kafka and records failure rows.
 func (r *Receiver) handleMessage(
 	ctx context.Context,
-	exec pgExec,
+	eng core.RelationalEngine,
 	rawHeaders map[string]string,
 	eventID uuid.UUID,
 	rawPayload []byte,
@@ -343,7 +345,8 @@ func (r *Receiver) handleMessage(
 	logger.Debug("integration.consumer.received",
 		"source_key", r.sourceKey, "event_key", r.eventKey, "event_id", eventID.String(), "topic", r.topic)
 
-	already, err := IsAlreadyProcessed(ctx, exec, eventID, r.consumerGroup)
+	q, d := eng.Querier(), eng.Dialect()
+	already, err := IsAlreadyProcessed(ctx, q, d, eventID, r.consumerGroup)
 	if err != nil {
 		logger.Warn("integration.consumer.dedup_check_failed",
 			"source_key", r.sourceKey, "event_key", r.eventKey, "event_id", eventID.String(), "err", err.Error())
@@ -367,7 +370,7 @@ func (r *Receiver) handleMessage(
 	if err := json.Unmarshal(rawPayload, reqAny); err != nil {
 		logger.Warn("integration.consumer.unmarshal_failed",
 			"source_key", r.sourceKey, "event_key", r.eventKey, "event_id", eventID.String(), "err", err.Error())
-		recordIntegrationFailure(ctx, exec, r, eventID, rawPayload, err.Error())
+		recordIntegrationFailure(ctx, q, d, r, eventID, rawPayload, err.Error())
 		return err
 	}
 
@@ -377,7 +380,7 @@ func (r *Receiver) handleMessage(
 	if err != nil {
 		logger.Warn("integration.consumer.failed",
 			"source_key", r.sourceKey, "event_key", r.eventKey, "event_id", eventID.String(), "err", err.Error())
-		recordIntegrationFailure(ctx, exec, r, eventID, rawPayload, err.Error())
+		recordIntegrationFailure(ctx, q, d, r, eventID, rawPayload, err.Error())
 		return err
 	}
 
@@ -387,10 +390,10 @@ func (r *Receiver) handleMessage(
 		// inbound message was handled), record the failure for forensics.
 		logger.Warn("integration.consumer.failed",
 			"source_key", r.sourceKey, "event_key", r.eventKey, "event_id", eventID.String(), "reason", "Result.IsSuccess=false")
-		recordIntegrationFailure(ctx, exec, r, eventID, rawPayload, "handler reported non-success Result")
+		recordIntegrationFailure(ctx, q, d, r, eventID, rawPayload, "handler reported non-success Result")
 	}
 
-	if err := MarkProcessed(ctx, exec, IntegrationProcessedRecord{
+	if err := MarkProcessed(ctx, q, d, IntegrationProcessedRecord{
 		EventID:       eventID,
 		ConsumerGroup: r.consumerGroup,
 		SourceKey:     r.sourceKey,
@@ -434,7 +437,7 @@ func isSuccessResult(v reflect.Value) bool {
 
 // recordIntegrationFailure wraps the failure write so the receiver
 // pipeline's error path is one-line.
-func recordIntegrationFailure(ctx context.Context, exec pgExec, r *Receiver, eventID uuid.UUID, rawPayload []byte, errMsg string) {
+func recordIntegrationFailure(ctx context.Context, q core.Querier, d core.Dialect, r *Receiver, eventID uuid.UUID, rawPayload []byte, errMsg string) {
 	rec := IntegrationFailureRecord{
 		ConsumerGroup: r.consumerGroup,
 		SourceKey:     r.sourceKey,
@@ -443,7 +446,7 @@ func recordIntegrationFailure(ctx context.Context, exec pgExec, r *Receiver, eve
 		RawPayload:    rawPayload,
 		Error:         errMsg,
 	}
-	if err := RecordIntegrationFailure(ctx, exec, rec); err != nil {
+	if err := RecordIntegrationFailure(ctx, q, d, rec); err != nil {
 		// Best-effort: matches the upstream failure-isolation contract.
 		// Kafka offset still advances; subscriber loop carries on.
 		// Slog at Warn so production alerting can catch the side-channel

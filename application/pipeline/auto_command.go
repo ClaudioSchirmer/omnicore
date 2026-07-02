@@ -24,6 +24,23 @@ type InsertCommand[T domain.Entity, TResult any] interface {
 	FromEntity(ctx *configuration.AppContext, entity T) (TResult, error)
 }
 
+// SharedBaseInsertCommand is the contract consumed by
+// handlers.SharedBaseInsertCommandHandler[T, Cmd, TResult] — the POST of an
+// entity backed by a SharedBase (Party-Role), which is an UPSERT: the framework
+// loads the existing shared identity first, the command applies the request on
+// top (like an update), and persists. So — unlike a plain Insert — the command
+// declares ApplyTo (mutate the loaded-or-fresh entity), NOT ToEntity. The dev
+// owns dedup of the shared identity's native children inside ApplyTo (the
+// existing ones arrive as Constructor items); the infra only loads and persists.
+// The framework calls ApplyTo on a throwaway entity to read the natural key, so
+// ApplyTo MUST be a pure mapper (no side effects). Same ctx input/output symmetry
+// as the other auto commands.
+type SharedBaseInsertCommand[T domain.Entity, TResult any] interface {
+	Command
+	ApplyTo(ctx *configuration.AppContext, entity T) error
+	FromEntity(ctx *configuration.AppContext, entity T) (TResult, error)
+}
+
 // UpdateCommand is the contract consumed by handlers.UpdateCommandHandler[T, Cmd, TResult].
 // PUT-shaped: full replace. ApplyTo overwrites ALL editable fields of the
 // loaded entity. Cmd typically declares fields as direct types (not

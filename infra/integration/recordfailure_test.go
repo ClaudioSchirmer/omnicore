@@ -24,7 +24,7 @@ func TestRecordIntegrationFailure_LogsWarnOnPersistError(t *testing.T) {
 	r := &Receiver{sourceKey: "partners", eventKey: "onboarded", consumerGroup: "g1"}
 	exec := &fakeExec{execErr: errors.New("pg down")}
 
-	recordIntegrationFailure(context.Background(), exec, r, uuid.New(), []byte(`{}`), "boom")
+	recordIntegrationFailure(context.Background(), exec, fakeDialect{}, r, uuid.New(), []byte(`{}`), "boom")
 
 	if exec.calls != 1 {
 		t.Fatalf("want 1 persist attempt, got %d", exec.calls)
