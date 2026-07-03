@@ -433,6 +433,17 @@ func (s *UpstreamSubscriber) processMessage(ctx context.Context, msg kafka.Messa
 			"eventType", event.EventType)
 		return
 	}
+	// DELETED is dispatched on the aggregate id ALONE, before any payload
+	// decode. A hard-delete's outbox row carries a NULL payload, which the CDC
+	// pipeline surfaces as a JSON scalar (not an object) — decoding it into a
+	// map fails. Since dispatchDelete needs only the id (cascade/anonymize/keep
+	// all key off it), gating the decode behind the payload-bearing verbs keeps
+	// the delete cascade from being skipped by a decode error on an event that
+	// never had a payload to begin with.
+	if event.EventType == "DELETED" {
+		s.dispatchDelete(ctx, event.AggregateID)
+		return
+	}
 	payload, err := s.decodePayload(msg.Value)
 	if err != nil {
 		s.logger.Error("upstream subscriber: payload decode failed",
@@ -455,9 +466,6 @@ func (s *UpstreamSubscriber) processMessage(ctx context.Context, msg kafka.Messa
 			// emitted ARCHIVED through the outbox.
 			s.upsertAndRipple(ctx, event.AggregateID, payload)
 		}
-
-	case "DELETED":
-		s.dispatchDelete(ctx, event.AggregateID)
 
 	default:
 		// Unknown event types are not an error — the upstream may emit

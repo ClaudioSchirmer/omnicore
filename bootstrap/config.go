@@ -116,6 +116,25 @@ type Config struct {
 	Relational struct {
 		Dialect string `yaml:"dialect"`
 		DSN     string `yaml:"dsn"`
+
+		// Pool bounds the relational connection pool, applied uniformly to
+		// whichever engine is selected. Each field is a pointer so "unset"
+		// (nil → framework default) is distinct from an explicit 0. Omit the
+		// whole block for the defaults.
+		//   maxOpenConns           — cap on total open connections. nil →
+		//     max(4, NumCPU) (mirrors pgxpool's own default, so Postgres is
+		//     unchanged; MySQL, unbounded by default, is bounded). An explicit 0
+		//     opts into unlimited (Postgres keeps its driver default instead).
+		//   maxIdleConns           — cap on retained idle connections. nil →
+		//     maxOpenConns (keep the pool warm; avoids MySQL's idle=2 churn).
+		//     database/sql-only; a no-op on Postgres.
+		//   connMaxLifetimeSeconds — recycle a connection after this age.
+		//     nil/0 → the engine's own default.
+		Pool struct {
+			MaxOpenConns           *int `yaml:"maxOpenConns"`
+			MaxIdleConns           *int `yaml:"maxIdleConns"`
+			ConnMaxLifetimeSeconds *int `yaml:"connMaxLifetimeSeconds"`
+		} `yaml:"pool"`
 	} `yaml:"relational"`
 
 	Mongo struct {
@@ -510,6 +529,17 @@ func (o *OpenAPIConfig) validate() error {
 // when http.requestTimeoutSeconds is unset. An explicit 0 disables the deadline.
 const FrameworkDefaultRequestTimeoutSeconds = 30
 
+// FrameworkDefaultMaxOpenConns is the relational pool ceiling applied when
+// relational.pool.maxOpenConns is unset. It mirrors pgxpool's own default
+// (max(4, NumCPU)) so Postgres is unchanged, and bounds MySQL — whose
+// database/sql default is an unlimited pool.
+func FrameworkDefaultMaxOpenConns() int {
+	if n := runtime.NumCPU(); n > 4 {
+		return n
+	}
+	return 4
+}
+
 func (c *Config) applyDefaults() {
 	if c.HTTP.Addr == "" {
 		c.HTTP.Addr = ":8080"
@@ -523,6 +553,25 @@ func (c *Config) applyDefaults() {
 	}
 	if c.Kafka.SyncWorkers < 1 {
 		c.Kafka.SyncWorkers = runtime.NumCPU()
+	}
+	// Relational pool: bound both engines by default so a write burst applies
+	// backpressure instead of flooding the backend. nil (unset) → default; an
+	// explicit 0 for maxOpenConns is honored as "unlimited" (Postgres keeps its
+	// driver default). maxIdleConns defaults to maxOpenConns to keep the pool warm.
+	if c.Relational.Pool.MaxOpenConns == nil {
+		d := FrameworkDefaultMaxOpenConns()
+		c.Relational.Pool.MaxOpenConns = &d
+	}
+	if c.Relational.Pool.MaxIdleConns == nil {
+		d := *c.Relational.Pool.MaxOpenConns
+		if d <= 0 {
+			d = FrameworkDefaultMaxOpenConns()
+		}
+		c.Relational.Pool.MaxIdleConns = &d
+	}
+	if c.Relational.Pool.ConnMaxLifetimeSeconds == nil {
+		d := 0
+		c.Relational.Pool.ConnMaxLifetimeSeconds = &d
 	}
 	c.Mongo.Rebuild.applyDefaults()
 	c.Query.applyDefaults()

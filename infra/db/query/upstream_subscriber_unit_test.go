@@ -177,6 +177,26 @@ func TestProcessMessage_Deleted_Cascade(t *testing.T) {
 	}
 }
 
+// TestProcessMessage_Deleted_NonObjectPayload guards the regression where a
+// hard-delete's NULL outbox payload — surfaced by the CDC pipeline as a JSON
+// scalar rather than an object — made the payload decode fail and skipped the
+// cascade entirely. A DELETED event dispatches on the aggregate id alone, so it
+// must delete regardless of what (if anything) the payload carries.
+func TestProcessMessage_Deleted_NonObjectPayload(t *testing.T) {
+	colls := happyColls()
+	s := newTestUpstream(t, UpstreamSubscriberConfig{OnUpstreamDelete: upstreamDeletePolicyCascade},
+		upstreamFakeMongo(colls), ordersRootEngine())
+
+	// A bare JSON scalar (what a NULL payload column becomes) would fail to
+	// decode into map[string]any — before the fix this short-circuited the
+	// cascade; now DELETED is dispatched before any decode.
+	s.processMessage(context.Background(), upstreamMsg("u1", "DELETED", `"null"`), 0)
+
+	if len(colls["users"].deletes) == 0 {
+		t.Error("DELETED + cascade must delete the upstream doc even when the payload is not an object")
+	}
+}
+
 func TestProcessMessage_Deleted_Anonymize(t *testing.T) {
 	colls := happyColls()
 	cfg := UpstreamSubscriberConfig{OnUpstreamDelete: upstreamDeletePolicyAnonymize, AnonymizeFields: []string{"name", "email"}}

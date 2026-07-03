@@ -286,8 +286,15 @@ func buildDeps(cfg *Config) (Deps, error) {
 			"endpoint", tracingCfg.Endpoint)
 	}
 
-	eng, err := core.NewEngine(cfg.Relational.Dialect, ctx, cfg.Relational.DSN,
-		tracingCfg.Instruments(tracing.SubPgx))
+	eng, err := core.NewEngine(cfg.Relational.Dialect, ctx, core.EngineConfig{
+		DSN:     cfg.Relational.DSN,
+		Tracing: tracingCfg.Instruments(tracing.SubPgx),
+		Pool: core.PoolConfig{
+			MaxOpenConns:    *cfg.Relational.Pool.MaxOpenConns,
+			MaxIdleConns:    *cfg.Relational.Pool.MaxIdleConns,
+			ConnMaxLifetime: time.Duration(*cfg.Relational.Pool.ConnMaxLifetimeSeconds) * time.Second,
+		},
+	})
 	if err != nil {
 		return Deps{}, fmt.Errorf("bootstrap: database connect: %w", err)
 	}

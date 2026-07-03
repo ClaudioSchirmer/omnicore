@@ -133,10 +133,24 @@ func TestMySQLEngine_SecondaryUUIDColumn(t *testing.T) {
 	}
 }
 
+// TestNew_AppliesPoolConfig proves EngineConfig.Pool reaches the live *sql.DB:
+// an explicit MaxOpenConns caps the pool (database/sql defaults to unlimited).
+func TestNew_AppliesPoolConfig(t *testing.T) {
+	ctx := context.Background()
+	eng, err := New(ctx, core.EngineConfig{DSN: dsn(), Pool: core.PoolConfig{MaxOpenConns: 7, MaxIdleConns: 3}})
+	if err != nil {
+		t.Skipf("MySQL not reachable (%v) — start devops/docker-compose.yml mysql service", err)
+	}
+	defer eng.Close()
+	if got := eng.(*Engine).db.Stats().MaxOpenConnections; got != 7 {
+		t.Fatalf("MaxOpenConnections = %d, want 7 (pool config not applied to *sql.DB)", got)
+	}
+}
+
 func setup(t *testing.T) (*Engine, *sql.DB) {
 	t.Helper()
 	ctx := context.Background()
-	eng, err := New(ctx, dsn(), false)
+	eng, err := New(ctx, core.EngineConfig{DSN: dsn()})
 	if err != nil {
 		t.Skipf("MySQL not reachable (%v) — start devops/docker-compose.yml mysql service", err)
 	}
@@ -447,7 +461,7 @@ func acctSchema() *core.TableSchema {
 func setupAgg(t *testing.T) (*Engine, *sql.DB) {
 	t.Helper()
 	ctx := context.Background()
-	eng, err := New(ctx, dsn(), false)
+	eng, err := New(ctx, core.EngineConfig{DSN: dsn()})
 	if err != nil {
 		t.Skipf("MySQL not reachable (%v)", err)
 	}

@@ -11,6 +11,56 @@ with `1.0.0`.
 
 ## [Unreleased]
 
+### Added
+
+- **Relational connection-pool sizing — `relational.pool`.** A new optional
+  `relational.pool` config block bounds the backend connection pool, applied
+  uniformly to whichever engine is selected: `maxOpenConns` (cap on total open
+  connections), `maxIdleConns` (retained idle connections), and
+  `connMaxLifetimeSeconds` (recycle age). Each is tri-state — omit for the
+  framework default, set explicitly to override. **`maxOpenConns` now defaults to
+  `max(4, NumCPU)` for BOTH engines** (mirroring pgxpool's own default, so
+  Postgres is behaviorally unchanged), which **bounds MySQL — whose `database/sql`
+  pool was previously unlimited** — so a write burst applies backpressure
+  (requests queue for a connection) instead of opening connections without limit
+  until MySQL's `max_connections` rejects them, cascading to 500s. `maxIdleConns`
+  defaults to `maxOpenConns` (keep the pool warm; avoids `database/sql`'s idle=2
+  connection churn); an explicit `maxOpenConns: 0` opts back into an unlimited pool
+  (Postgres cannot express unlimited and keeps its driver default). `maxIdleConns`
+  is a `database/sql` knob — a no-op on Postgres, whose pgxpool governs idleness
+  through `MinConns`/`MaxConnIdleTime`; `connMaxLifetimeSeconds` maps to pgxpool's
+  `MaxConnLifetime` and `database/sql`'s `SetConnMaxLifetime`. New public surface:
+  `core.PoolConfig`, `core.EngineConfig` (with its `Pool` field),
+  `postgres.WithPool`, `bootstrap.FrameworkDefaultMaxOpenConns`.
+
+### Changed
+
+- **breaking** — the relational **engine constructor surface takes a
+  `core.EngineConfig`** options struct instead of positional `(dsn, tracing)`
+  arguments — the generalization the `EngineFactory` doc comment always
+  anticipated, now that a second cross-engine knob (pool sizing) exists.
+  `core.EngineFactory`, `core.NewEngine`, and `mysql.New` now take
+  `(ctx, core.EngineConfig{DSN, Tracing, Pool})`; `postgres.NewPostgres` keeps its
+  `(ctx, dsn, ...PostgresOption)` signature and gains a `WithPool` option. The
+  canonical `bootstrap.Run` path is unaffected — this is transparent unless a
+  consumer hand-wires the engine registry. Migration: a call to
+  `core.NewEngine(dialect, ctx, dsn, tracing)` becomes
+  `core.NewEngine(dialect, ctx, core.EngineConfig{DSN: dsn, Tracing: tracing})`.
+
+### Fixed
+
+- **Upstream composition — a `DELETED` upstream event now cascades even with an
+  empty payload.** `UpstreamSubscriber.processMessage` decoded the message
+  payload BEFORE dispatching by event type, so a hard delete — whose outbox row
+  carries a `NULL` payload, surfaced by the CDC pipeline as a JSON scalar rather
+  than an object — failed to decode into a map and returned early, silently
+  skipping the cascade / anonymize / keep handling. Since those branches key off
+  the aggregate id alone, `DELETED` is now dispatched before any payload decode;
+  the payload decode is gated behind the payload-bearing verbs
+  (`INSERTED` / `UPDATED` / `UNARCHIVED` / `ARCHIVED`). A real upstream delete now
+  propagates to the local projection as documented. See
+  [Service-to-service](#service-to-service).
+
 ## [0.17.0] - 2026-07-02
 
 ### Added

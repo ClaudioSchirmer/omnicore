@@ -70,7 +70,7 @@ func Run(ctx context.Context, args []string) error {
 	// configured backend (relational.dialect). The failure-registry reads already go
 	// through the neutral Querier/Dialect; only construction was PG-bound. A MySQL
 	// deployment needs the admin binary built with -tags mysql.
-	engine, err := core.NewEngine(cfg.Relational.Dialect, ctx, cfg.Relational.DSN, false)
+	engine, err := core.NewEngine(cfg.Relational.Dialect, ctx, core.EngineConfig{DSN: cfg.Relational.DSN})
 	if err != nil {
 		return fmt.Errorf("upstream-list-failures: connect: %w", err)
 	}
