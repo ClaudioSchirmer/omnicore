@@ -24,7 +24,7 @@ func TestMySQLEngine_TracingOpenWorks(t *testing.T) {
 	// it owns; here we open a SECOND engine with tracing ON over the same DB.
 	_, _ = setup(t)
 
-	tracedEng, err := New(context.Background(), dsn(), true)
+	tracedEng, err := New(context.Background(), core.EngineConfig{DSN: dsn(), Tracing: true})
 	if err != nil {
 		t.Fatalf("New with tracing=true (otelsql) failed: %v", err)
 	}

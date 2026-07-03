@@ -55,7 +55,7 @@ func mysqlBootConfig(t *testing.T, migrationsDir string) *Config {
 func TestMySQLBoot_BuildDepsDoesNotPanic(t *testing.T) {
 	// Pre-flight: skip cleanly when the MySQL container is not reachable, mirroring
 	// the engine integration suite's policy.
-	eng, err := core.NewEngine(dialectMySQL, context.Background(), mysqlBootDSN(), false)
+	eng, err := core.NewEngine(dialectMySQL, context.Background(), core.EngineConfig{DSN: mysqlBootDSN()})
 	if err != nil {
 		t.Skipf("MySQL not reachable (%v) — start devops/docker-compose.yml mysql service", err)
 	}
@@ -82,7 +82,7 @@ func TestMySQLBoot_BuildDepsDoesNotPanic(t *testing.T) {
 }
 
 func TestMySQLBoot_ApplyMigrationsUsesMySQLRunner(t *testing.T) {
-	eng, err := core.NewEngine(dialectMySQL, context.Background(), mysqlBootDSN(), false)
+	eng, err := core.NewEngine(dialectMySQL, context.Background(), core.EngineConfig{DSN: mysqlBootDSN()})
 	if err != nil {
 		t.Skipf("MySQL not reachable (%v)", err)
 	}

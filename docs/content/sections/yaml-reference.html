@@ -75,6 +75,13 @@ relational:                              # the relational backend — system of 
                                          # binary built with the `mysql` build tag; an unregistered dialect aborts boot.
   dsn: "${DATABASE_URL}"                 # MANDATORY — connection string for the selected dialect
                                          # (pgx v5 DSN for postgres, Go MySQL DSN for mysql)
+  pool:                                  # OPTIONAL — connection-pool bounds, applied to either engine. Omit for defaults.
+    maxOpenConns: 0                      # cap on total open connections. unset -> max(4, NumCPU) (mirrors pgxpool's own
+                                         # default, so postgres is unchanged; bounds mysql, whose database/sql pool is
+                                         # otherwise UNLIMITED). explicit 0 = unlimited (postgres keeps its driver default).
+    maxIdleConns: 0                      # cap on retained idle connections. unset -> maxOpenConns (keep the pool warm).
+                                         # database/sql-only — a no-op on postgres (pgxpool governs idle via MinConns).
+    connMaxLifetimeSeconds: 0            # recycle a connection after this age. unset/0 -> the engine's own default.
 
 mongo:
   uri: "${MONGO_URI}"                    # MANDATORY — read-side projection store

@@ -49,8 +49,8 @@ func AsPostgres(e core.RelationalEngine) *Postgres {
 // database/sql-style. Postgres ships untagged (the default backend); the
 // composition root looks it up by name via core.NewEngine.
 func init() {
-	core.RegisterEngine("postgres", func(ctx context.Context, dsn string, tracing bool) (core.RelationalEngine, error) {
-		return NewPostgres(ctx, dsn, WithPgxTracing(tracing))
+	core.RegisterEngine("postgres", func(ctx context.Context, cfg core.EngineConfig) (core.RelationalEngine, error) {
+		return NewPostgres(ctx, cfg.DSN, WithPgxTracing(cfg.Tracing), WithPool(cfg.Pool))
 	})
 }
 
@@ -99,6 +99,7 @@ type PostgresOption func(*postgresOptions)
 
 type postgresOptions struct {
 	tracePgx bool
+	pool     core.PoolConfig
 }
 
 // WithPgxTracing wires the otelpgx query tracer onto the pool so every
@@ -106,6 +107,15 @@ type postgresOptions struct {
 // (the default) leaves the pool untraced and pays nothing.
 func WithPgxTracing(enabled bool) PostgresOption {
 	return func(o *postgresOptions) { o.tracePgx = enabled }
+}
+
+// WithPool bounds the pgx pool. MaxOpenConns maps to pgxpool's MaxConns and
+// ConnMaxLifetime to MaxConnLifetime; both are left at pgx's own default when
+// zero (pgx cannot express an unlimited pool). MaxIdleConns is a database/sql
+// knob with no pgxpool equivalent (pgxpool manages idleness through MinConns and
+// MaxConnIdleTime) and is intentionally not mapped here.
+func WithPool(p core.PoolConfig) PostgresOption {
+	return func(o *postgresOptions) { o.pool = p }
 }
 
 func NewPostgres(ctx context.Context, dsn string, opts ...PostgresOption) (*Postgres, error) {
@@ -121,6 +131,14 @@ func NewPostgres(ctx context.Context, dsn string, opts ...PostgresOption) (*Post
 	}
 	if o.tracePgx {
 		config.ConnConfig.Tracer = otelpgx.NewTracer()
+	}
+	// Apply the pool ceiling. A zero (unlimited) MaxOpenConns leaves pgx's own
+	// default MaxConns — pgx requires a positive bound and cannot run unlimited.
+	if o.pool.MaxOpenConns > 0 {
+		config.MaxConns = int32(o.pool.MaxOpenConns)
+	}
+	if o.pool.ConnMaxLifetime > 0 {
+		config.MaxConnLifetime = o.pool.ConnMaxLifetime
 	}
 	pool, err := pgxpool.NewWithConfig(ctx, config)
 	if err != nil {

@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"time"
 
 	"github.com/ClaudioSchirmer/omnicore/application/persistence"
 	"github.com/ClaudioSchirmer/omnicore/domain"
@@ -65,12 +66,43 @@ type RelationalEngine interface {
 	Close()
 }
 
+// PoolConfig bounds the relational connection pool. It is applied uniformly to
+// whichever engine is selected, so a write burst applies backpressure (requests
+// queue for a connection) instead of flooding the backend with unbounded
+// concurrent transactions.
+//
+//   - MaxOpenConns caps total open connections. Zero means unlimited — the
+//     database/sql default; Postgres cannot express unlimited and keeps its pgx
+//     driver default (a positive ceiling) instead.
+//   - MaxIdleConns caps retained idle connections. This is a database/sql knob;
+//     it is a no-op on Postgres, whose pgxpool governs idleness through MinConns
+//     (a floor) and MaxConnIdleTime, not an idle ceiling.
+//   - ConnMaxLifetime recycles a connection after this age. Zero leaves the
+//     engine's own default.
+//
+// bootstrap resolves the values from the relational.pool config block (defaulting
+// MaxOpenConns to max(4, NumCPU), which mirrors pgxpool's own default so Postgres
+// is unchanged and MySQL — unbounded by default — is bounded).
+type PoolConfig struct {
+	MaxOpenConns    int
+	MaxIdleConns    int
+	ConnMaxLifetime time.Duration
+}
+
+// EngineConfig carries everything an EngineFactory needs to open a backend. It is
+// the options-struct generalization the previous positional (dsn, tracing)
+// signature anticipated — a new cross-engine knob (Pool) is added as a field, not
+// another positional argument.
+type EngineConfig struct {
+	DSN     string
+	Tracing bool
+	Pool    PoolConfig
+}
+
 // EngineFactory builds a RelationalEngine for one dialect. Registered by each
 // engine package in init(), each behind its own build tag (postgres under
 // -tags postgres, mysql under -tags mysql; a build links exactly one engine).
-// The tracing flag is the only cross-engine knob today — the signature
-// generalizes to an options struct when a second engine needs more.
-type EngineFactory func(ctx context.Context, dsn string, tracing bool) (RelationalEngine, error)
+type EngineFactory func(ctx context.Context, cfg EngineConfig) (RelationalEngine, error)
 
 // engineFactories is the dialect → factory registry. Mirrors the database/sql
 // driver-registration pattern: an engine self-registers in init(), the
@@ -92,10 +124,10 @@ func RegisterEngine(dialect string, f EngineFactory) {
 // NewEngine builds the RelationalEngine for the requested dialect. An unknown
 // dialect is a clear, actionable error — typically no engine build tag was set
 // (e.g. `go build -tags postgres` or `go build -tags mysql`).
-func NewEngine(dialect string, ctx context.Context, dsn string, tracing bool) (RelationalEngine, error) {
+func NewEngine(dialect string, ctx context.Context, cfg EngineConfig) (RelationalEngine, error) {
 	f, ok := engineFactories[dialect]
 	if !ok {
 		return nil, fmt.Errorf("db: no relational engine registered for dialect %q (build with the engine's build tag?)", dialect)
 	}
-	return f(ctx, dsn, tracing)
+	return f(ctx, cfg)
 }

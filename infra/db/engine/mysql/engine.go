@@ -92,19 +92,33 @@ type sqlExecutor interface {
 // path's otelpgx — so every statement emits a span under the global tracer
 // provider bootstrap installed (db.system=mysql on each span). When off, a plain
 // sql.Open keeps the pool untraced and pays nothing.
-func New(ctx context.Context, dsn string, tracing bool) (core.RelationalEngine, error) {
-	dsn, err := EnsureDSNParams(dsn)
+func New(ctx context.Context, cfg core.EngineConfig) (core.RelationalEngine, error) {
+	dsn, err := EnsureDSNParams(cfg.DSN)
 	if err != nil {
 		return nil, err
 	}
 	var sqlDB *sql.DB
-	if tracing {
+	if cfg.Tracing {
 		sqlDB, err = otelsql.Open("mysql", dsn, otelsql.WithAttributes(semconv.DBSystemMySQL))
 	} else {
 		sqlDB, err = sql.Open("mysql", dsn)
 	}
 	if err != nil {
 		return nil, fmt.Errorf("mysql: open: %w", err)
+	}
+	// Bound the pool. Unlike Postgres, database/sql defaults to an UNLIMITED open
+	// pool (and only 2 idle), so under a write burst it opens connections without
+	// backpressure until MySQL's max_connections rejects them. A zero MaxOpenConns
+	// keeps that unlimited default (explicit opt-in); bootstrap defaults it to
+	// max(4, NumCPU).
+	if cfg.Pool.MaxOpenConns > 0 {
+		sqlDB.SetMaxOpenConns(cfg.Pool.MaxOpenConns)
+	}
+	if cfg.Pool.MaxIdleConns > 0 {
+		sqlDB.SetMaxIdleConns(cfg.Pool.MaxIdleConns)
+	}
+	if cfg.Pool.ConnMaxLifetime > 0 {
+		sqlDB.SetConnMaxLifetime(cfg.Pool.ConnMaxLifetime)
 	}
 	if err := sqlDB.PingContext(ctx); err != nil {
 		_ = sqlDB.Close()

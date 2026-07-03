@@ -70,7 +70,7 @@ func Run(ctx context.Context, args []string) error {
 	// so the replay runs against whatever backend the service is configured for
 	// (relational.dialect). A MySQL deployment needs the admin binary built with the
 	// engine's build tag (-tags mysql); NewEngine returns a clear error otherwise.
-	engine, err := core.NewEngine(cfg.Relational.Dialect, ctx, cfg.Relational.DSN, false)
+	engine, err := core.NewEngine(cfg.Relational.Dialect, ctx, core.EngineConfig{DSN: cfg.Relational.DSN})
 	if err != nil {
 		return fmt.Errorf("replay-all-as-events: connect: %w", err)
 	}
