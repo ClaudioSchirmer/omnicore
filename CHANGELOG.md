@@ -47,6 +47,20 @@ with `1.0.0`.
   `core.NewEngine(dialect, ctx, dsn, tracing)` becomes
   `core.NewEngine(dialect, ctx, core.EngineConfig{DSN: dsn, Tracing: tracing})`.
 
+### Fixed
+
+- **Upstream composition — a `DELETED` upstream event now cascades even with an
+  empty payload.** `UpstreamSubscriber.processMessage` decoded the message
+  payload BEFORE dispatching by event type, so a hard delete — whose outbox row
+  carries a `NULL` payload, surfaced by the CDC pipeline as a JSON scalar rather
+  than an object — failed to decode into a map and returned early, silently
+  skipping the cascade / anonymize / keep handling. Since those branches key off
+  the aggregate id alone, `DELETED` is now dispatched before any payload decode;
+  the payload decode is gated behind the payload-bearing verbs
+  (`INSERTED` / `UPDATED` / `UNARCHIVED` / `ARCHIVED`). A real upstream delete now
+  propagates to the local projection as documented. See
+  [Service-to-service](#service-to-service).
+
 ## [0.17.0] - 2026-07-02
 
 ### Added
