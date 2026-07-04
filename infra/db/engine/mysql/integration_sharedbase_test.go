@@ -54,11 +54,9 @@ func sbMySchema() *core.TableSchema {
 
 func sbMySetup(t *testing.T) (*Engine, *sql.DB) {
 	t.Helper()
-	eng, raw := setup(t) // flat_persons + outbox provisioning reused; adds the SharedBase pair below
+	eng, raw := setup(t) // throw-away DB + outbox provisioning reused; adds the SharedBase pair below
 	ctx := context.Background()
 	for _, stmt := range []string{
-		`DROP TABLE IF EXISTS sb_students`,
-		`DROP TABLE IF EXISTS sb_persons`,
 		`CREATE TABLE sb_persons (
 			id BINARY(16) PRIMARY KEY,
 			document VARCHAR(64) NOT NULL UNIQUE,
@@ -83,10 +81,6 @@ func sbMySetup(t *testing.T) (*Engine, *sql.DB) {
 			t.Fatalf("ddl: %v\n%s", err, stmt)
 		}
 	}
-	t.Cleanup(func() {
-		_, _ = raw.ExecContext(context.Background(), `DROP TABLE IF EXISTS sb_students`)
-		_, _ = raw.ExecContext(context.Background(), `DROP TABLE IF EXISTS sb_persons`)
-	})
 	return eng, raw
 }
 

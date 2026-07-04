@@ -7,7 +7,9 @@ import (
 	"database/sql"
 	"errors"
 	"os"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 
@@ -19,20 +21,79 @@ import (
 	"github.com/ClaudioSchirmer/omnicore/infra/db/criteria"
 )
 
-// Phase 2a integration test: the MySQL engine's synchronous write path against a
+// Integration tests for the MySQL engine's synchronous write path against a
 // real MySQL container (devops/docker-compose.yml `mysql` service, host :3307).
 //
-//	go test -tags=integration,mysql ./infra/db/mysql/ -count=1
+//	go test -tags=integration,mysql ./infra/db/engine/mysql/ -count=1
 //
-// Override the DSN with MYSQL_DSN. Verifies each write verb persists the row
+// Each test creates a THROW-AWAY database (like the pg harness) so repeat runs
+// never stomp on the example service's `users_db` — that requires an
+// admin-capable connection (the bench's root); override it via
+// OMNICORE_TEST_MYSQL_ADMIN_DSN. Verifies each write verb persists the row
 // (UUID v7 round-tripping through BINARY(16)) and lands the matching outbox row
 // in the same TX.
 
-func dsn() string {
-	if v := os.Getenv("MYSQL_DSN"); v != "" {
+const defaultMySQLAdminDSN = "root:root@tcp(127.0.0.1:3307)/?parseTime=true&multiStatements=true"
+
+func mysqlAdminDSN() string {
+	if v := os.Getenv("OMNICORE_TEST_MYSQL_ADMIN_DSN"); v != "" {
 		return v
 	}
-	return "omnicore:omnicore@tcp(127.0.0.1:3307)/users_db?parseTime=true&multiStatements=true"
+	return defaultMySQLAdminDSN
+}
+
+// testDSN is the DSN of the current test's throw-away database, set by
+// newTestMySQLDB. The tests in this package do not use t.Parallel, so the
+// package variable is race-free; dsn() hands it to tests that open a SECOND
+// connection to the same database (e.g. the tracing engine).
+var testDSN string
+
+func dsn() string { return testDSN }
+
+// newTestMySQLDB creates a throw-away database on the bench MySQL, points
+// testDSN at it and registers its DROP as cleanup (LIFO: callers' own cleanups
+// — closing engines/connections — run first). Skips the test when MySQL is
+// unreachable.
+func newTestMySQLDB(t *testing.T) string {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	admin, err := sql.Open("mysql", mysqlAdminDSN())
+	if err != nil {
+		t.Skipf("MySQL not reachable (%v) — start devops/docker-compose.yml mysql service", err)
+	}
+	if err := admin.PingContext(ctx); err != nil {
+		_ = admin.Close()
+		t.Skipf("MySQL not reachable (%v) — start devops/docker-compose.yml mysql service", err)
+	}
+
+	dbName := "omnicore_mysql_test_" + strings.ReplaceAll(uuid.NewString(), "-", "")
+	if _, err := admin.ExecContext(ctx, "CREATE DATABASE "+dbName); err != nil {
+		_ = admin.Close()
+		t.Fatalf("CREATE DATABASE %s: %v", dbName, err)
+	}
+	testDSN = swapMySQLDB(mysqlAdminDSN(), dbName)
+
+	t.Cleanup(func() {
+		c, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_, _ = admin.ExecContext(c, "DROP DATABASE IF EXISTS "+dbName)
+		_ = admin.Close()
+		testDSN = ""
+	})
+	return testDSN
+}
+
+// swapMySQLDB inserts the database name into a `user:pass@tcp(host:port)/?p=v`
+// DSN (between the last '/' and the '?').
+func swapMySQLDB(adminDSN, name string) string {
+	idx := strings.LastIndex(adminDSN, "/")
+	q := strings.Index(adminDSN, "?")
+	if idx == -1 || q == -1 || q < idx {
+		return adminDSN
+	}
+	return adminDSN[:idx+1] + name + adminDSN[q:]
 }
 
 type flatPerson struct {
@@ -137,9 +198,9 @@ func TestMySQLEngine_SecondaryUUIDColumn(t *testing.T) {
 // an explicit MaxOpenConns caps the pool (database/sql defaults to unlimited).
 func TestNew_AppliesPoolConfig(t *testing.T) {
 	ctx := context.Background()
-	eng, err := New(ctx, core.EngineConfig{DSN: dsn(), Pool: core.PoolConfig{MaxOpenConns: 7, MaxIdleConns: 3}})
+	eng, err := New(ctx, core.EngineConfig{DSN: newTestMySQLDB(t), Pool: core.PoolConfig{MaxOpenConns: 7, MaxIdleConns: 3}})
 	if err != nil {
-		t.Skipf("MySQL not reachable (%v) — start devops/docker-compose.yml mysql service", err)
+		t.Fatalf("New on the test database: %v", err)
 	}
 	defer eng.Close()
 	if got := eng.(*Engine).db.Stats().MaxOpenConnections; got != 7 {
@@ -150,17 +211,16 @@ func TestNew_AppliesPoolConfig(t *testing.T) {
 func setup(t *testing.T) (*Engine, *sql.DB) {
 	t.Helper()
 	ctx := context.Background()
-	eng, err := New(ctx, core.EngineConfig{DSN: dsn()})
+	testDB := newTestMySQLDB(t)
+	eng, err := New(ctx, core.EngineConfig{DSN: testDB})
 	if err != nil {
-		t.Skipf("MySQL not reachable (%v) — start devops/docker-compose.yml mysql service", err)
+		t.Fatalf("New on the test database: %v", err)
 	}
-	raw, err := sql.Open("mysql", dsn())
+	raw, err := sql.Open("mysql", testDB)
 	if err != nil {
 		t.Fatalf("open assert conn: %v", err)
 	}
 	for _, stmt := range []string{
-		`DROP TABLE IF EXISTS flat_persons`,
-		`DROP TABLE IF EXISTS outbox`,
 		`CREATE TABLE flat_persons (
 			id BINARY(16) PRIMARY KEY,
 			name VARCHAR(255) NOT NULL,
@@ -186,8 +246,8 @@ func setup(t *testing.T) (*Engine, *sql.DB) {
 		}
 	}
 	t.Cleanup(func() {
-		_, _ = raw.ExecContext(context.Background(), `DROP TABLE IF EXISTS flat_persons`)
-		_, _ = raw.ExecContext(context.Background(), `DROP TABLE IF EXISTS outbox`)
+		// The throw-away database is dropped by newTestMySQLDB's cleanup (LIFO:
+		// these closes run first); no per-table teardown needed.
 		_ = raw.Close()
 		eng.Close()
 	})
@@ -461,15 +521,13 @@ func acctSchema() *core.TableSchema {
 func setupAgg(t *testing.T) (*Engine, *sql.DB) {
 	t.Helper()
 	ctx := context.Background()
-	eng, err := New(ctx, core.EngineConfig{DSN: dsn()})
+	testDB := newTestMySQLDB(t)
+	eng, err := New(ctx, core.EngineConfig{DSN: testDB})
 	if err != nil {
-		t.Skipf("MySQL not reachable (%v)", err)
+		t.Fatalf("New on the test database: %v", err)
 	}
-	raw, _ := sql.Open("mysql", dsn())
+	raw, _ := sql.Open("mysql", testDB)
 	for _, stmt := range []string{
-		`DROP TABLE IF EXISTS acct_tags`,
-		`DROP TABLE IF EXISTS accts`,
-		`DROP TABLE IF EXISTS outbox`,
 		`CREATE TABLE accts (
 			id BINARY(16) PRIMARY KEY, name VARCHAR(255) NOT NULL,
 			deleted_at DATETIME NULL, created_at DATETIME NOT NULL, updated_at DATETIME NOT NULL )`,
@@ -489,9 +547,8 @@ func setupAgg(t *testing.T) (*Engine, *sql.DB) {
 		}
 	}
 	t.Cleanup(func() {
-		_, _ = raw.ExecContext(context.Background(), `DROP TABLE IF EXISTS acct_tags`)
-		_, _ = raw.ExecContext(context.Background(), `DROP TABLE IF EXISTS accts`)
-		_, _ = raw.ExecContext(context.Background(), `DROP TABLE IF EXISTS outbox`)
+		// The throw-away database is dropped by newTestMySQLDB's cleanup (LIFO:
+		// these closes run first); no per-table teardown needed.
 		_ = raw.Close()
 		eng.Close()
 	})
