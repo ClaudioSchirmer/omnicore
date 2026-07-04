@@ -550,18 +550,17 @@ func (b *BaseEngine) archiveBaseIfNoActiveRole(ctx context.Context, tx WriteTx, 
 }
 
 // convergeBaseAfterSoftWrite routes a role's archive/unarchive to the matching
-// base lifecycle step (shared by the flat + aggregate soft-write paths). On
-// UNARCHIVE it first enforces the same invariant the INSERT probe guards — at
-// most one ACTIVE role row per identity per role table — so reviving a remnant
-// next to a newer active row is the same conflict a POST would be.
-func (b *BaseEngine) convergeBaseAfterSoftWrite(ctx context.Context, tx WriteTx, d Dialect, schema *TableSchema, src domain.Entity, id, entityName, eventType string) error {
+// base lifecycle step (shared by the flat + aggregate soft-write paths). The
+// unarchive active-sibling veto does NOT live here: it must probe BEFORE the
+// role row flips to active (vetoUnarchiveWithActiveSibling, called by the
+// soft-write paths ahead of the root UPDATE) — otherwise the dev's active-only
+// unique index vetoes the UPDATE itself first, surfacing a raw constraint
+// error instead of the friendly conflict.
+func (b *BaseEngine) convergeBaseAfterSoftWrite(ctx context.Context, tx WriteTx, d Dialect, schema *TableSchema, src domain.Entity, eventType string) error {
 	switch eventType {
 	case "ARCHIVED":
 		return b.archiveBaseIfNoActiveRole(ctx, tx, d, schema, src)
 	case "UNARCHIVED":
-		if err := b.vetoUnarchiveWithActiveSibling(ctx, tx, d, schema, src, id, entityName); err != nil {
-			return err
-		}
 		return b.reactivateBaseIfArchived(ctx, tx, d, schema, src)
 	}
 	return nil
@@ -574,9 +573,10 @@ func (b *BaseEngine) convergeBaseAfterSoftWrite(ctx context.Context, tx WriteTx,
 // contract); reviving a remnant would then put two active roles on the same
 // identity, so it is the same 409 a POST raises. A no-op for a role without a
 // shared base and for the shared-PK model (the PK itself caps the table at one
-// row per identity). The probe excludes the row being unarchived — this verb's
-// own UPDATE already ran in the surrounding TX, and the conflict is about the
-// OTHER rows.
+// row per identity). It runs BEFORE the role's own unarchive UPDATE — probing
+// after would never fire under an active-only unique index (the index vetoes
+// the UPDATE first, as a raw constraint error). The probe excludes the row
+// being unarchived, keeping an already-active row's unarchive idempotent.
 func (b *BaseEngine) vetoUnarchiveWithActiveSibling(ctx context.Context, tx WriteTx, d Dialect, schema *TableSchema, src domain.Entity, id, entityName string) error {
 	base, fkCol, ok := schema.SharedBaseRef()
 	if !ok || fkCol == schema.PKColumn() {

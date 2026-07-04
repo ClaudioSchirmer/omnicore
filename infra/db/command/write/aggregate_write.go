@@ -256,6 +256,14 @@ func (b *BaseEngine) softWriteAggregate(
 	if err := b.FireAfterBegin(ctx, tx, src, hook, hctx); err != nil {
 		return err
 	}
+	// SharedBase role: the one-active-role invariant must be probed BEFORE the
+	// row flips to active — an active-only unique index would veto the UPDATE
+	// itself with a raw constraint error otherwise.
+	if eventType == "UNARCHIVED" {
+		if err := b.vetoUnarchiveWithActiveSibling(ctx, tx, d, schema, src, id, hctx.EntityType); err != nil {
+			return err
+		}
+	}
 	if err := tx.Exec(ctx, rootStmt(d, schema.Table(), sdCol, schema.PKColumn()), d.EncodeArg(domain.NewID(id))); err != nil {
 		return err
 	}
@@ -280,7 +288,7 @@ func (b *BaseEngine) softWriteAggregate(
 	// verb — archive it once no role stays active, reactivate on unarchive. The
 	// base's NATIVE children cascade with the base, not with this role. No-op when
 	// the role declares no shared base.
-	if err := b.convergeBaseAfterSoftWrite(ctx, tx, d, schema, src, id, hctx.EntityType, eventType); err != nil {
+	if err := b.convergeBaseAfterSoftWrite(ctx, tx, d, schema, src, eventType); err != nil {
 		return err
 	}
 	if err := WriteOutbox(ctx, tx, schema.Table(), eventType, id,

@@ -722,7 +722,7 @@ func TestVetoUnarchive_DefensiveNoOps(t *testing.T) {
 	if err := be.vetoUnarchiveWithActiveSibling(newBuilderCtx(), tx, testPGDialect{}, noSD, src, "some-id", "Aluno"); err != nil {
 		t.Fatalf("no-SoftDelete veto must no-op, got %v", err)
 	}
-	if err := be.convergeBaseAfterSoftWrite(newBuilderCtx(), tx, testPGDialect{}, roleTestSchema(), src, "some-id", "Aluno", "OTHER"); err != nil {
+	if err := be.convergeBaseAfterSoftWrite(newBuilderCtx(), tx, testPGDialect{}, roleTestSchema(), src, "OTHER"); err != nil {
 		t.Fatalf("a neutral event type must no-op, got %v", err)
 	}
 }
