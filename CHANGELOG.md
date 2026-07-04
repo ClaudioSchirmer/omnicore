@@ -13,6 +13,25 @@ with `1.0.0`.
 
 ### Added
 
+- **SharedBase — natural-key immutability is now enforced at the write layer.**
+  The natural key derives the deterministic base id, so every SharedBase
+  derivation (identity upsert, refcount, lifecycle convergence, CDC fan-out,
+  lifecycle-payload FKs) assumes it never changes after insert — an assumption
+  that was previously only a consumer convention (keep the field off update
+  DTOs). A role `UPDATE` whose natural-key value diverges from the persisted
+  identity is now rejected with the new `NaturalKeyImmutableNotification`
+  (Semantic Validation → 422; translated in all seven catalogs): under the
+  shared-PK model by pure arithmetic (the role id IS `UUIDv5(naturalKey)`, so
+  the id derived from the request must equal the row id — zero queries), under
+  the separate-FK model by one PK-indexed in-TX probe comparing the stored FK
+  with the request-derived id (`SELECT fk = $derived FROM role WHERE pk = $id`)
+  — which also covers a hand-rolled manual handler that skipped load-first,
+  where an Old-snapshot comparison would be vacuous. Without the guard, a
+  mutated key silently upserted a DIFFERENT identity (last-write-wins over a
+  third party's shared fields) while the role row kept pointing at the old
+  base. A missing role row skips the guard (the role UPDATE right after reports
+  not-found exactly as before). See [TableSchema](#table-schema).
+
 - **Relational connection-pool sizing — `relational.pool`.** A new optional
   `relational.pool` config block bounds the backend connection pool, applied
   uniformly to whichever engine is selected: `maxOpenConns` (cap on total open

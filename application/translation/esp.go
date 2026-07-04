@@ -28,6 +28,7 @@ func (coreES) Translations() map[string]string {
 
 		// Aggregate root
 		"EntityAlreadyAddedNotification":    "La entidad ya fue agregada.",
+		"NaturalKeyImmutableNotification":   "La clave natural es inmutable y no puede modificarse.",
 		"EntityDoesNotExistNotification":    "La entidad no existe.",
 		"EntityIsNotActiveNotification":     "La entidad no está activa.",
 		"InvalidAggregateChildNotification": "Este tipo de objeto no pertenece a este agregado.",

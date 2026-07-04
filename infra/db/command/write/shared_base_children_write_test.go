@@ -123,7 +123,7 @@ func TestBaseChild_RemovedHardDeletesWhenNoSoftDelete(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetUpdatable: %v", err)
 	}
-	tx := &recTx{count: 1}
+	tx := &recTx{count: 1, queryFn: rowsFKMatch()} // natural-key guard: stored FK matches
 	be := newFlatBE(&recBeginner{tx: tx})
 	if _, err := be.Update(newBuilderCtx(), upd, bcRoleSchema(false), firingHook); err != nil {
 		t.Fatalf("Update: %v", err)

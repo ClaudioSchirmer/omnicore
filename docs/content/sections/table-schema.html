@@ -512,6 +512,17 @@ func StudentSchema() *core.TableSchema {
             shared fields) instead of inserting a duplicate. Declaring the column <code>UNIQUE NOT NULL</code> makes that
             invariant explicit at the schema level — guarding against any non-framework writer that might insert a
             duplicate key under a different id — and gives the dedup and reference-count probes an index (performance).</li>
+        <li><strong>IMMUTABLE — enforced by the write layer.</strong> The natural key never changes after insert: every
+            SharedBase derivation (the identity upsert, the refcount, the lifecycle convergence, the CDC fan-out, the
+            lifecycle-payload FKs) re-derives the base id from the value on the entity, so a mutated key would silently
+            aim all of them at a <em>different</em> identity — up to last-write-wins overwriting a third party's shared
+            fields while the role row keeps pointing at the old base. A role <code>UPDATE</code> whose natural-key value
+            diverges from the persisted identity is rejected with
+            <code>NaturalKeyImmutableNotification</code> (422): under shared-PK by pure arithmetic (the role id IS
+            <code>UUIDv5(naturalKey)</code>, so the id derived from the request must equal the row id), under separate-FK
+            by one PK-indexed in-TX probe comparing the stored FK with the request-derived id — which also covers a
+            hand-rolled manual handler that skipped load-first. Keeping the field off your update DTOs (as the reference
+            consumer does) remains good hygiene; the guard makes it an invariant rather than a convention.</li>
     </ul>
 </div>
 <p>

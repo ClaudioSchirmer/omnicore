@@ -281,6 +281,9 @@ func (b *BaseEngine) updateWithBase(ctx persistence.RequestContext, entity domai
 	if err := b.FireAfterBegin(ctx, tx, src, hook, hctx); err != nil {
 		return domain.WriteResult{}, err
 	}
+	if err := guardNaturalKeyImmutable(ctx, tx, d, schema, base, entity.EntityName(), entity.ID(), fkCol, baseID); err != nil {
+		return domain.WriteResult{}, err
+	}
 	sql, args := buildUpdate(d, schema.Table(), schema.PKColumn(), entity.ID(), roleFields, schema.UpdateNowColumns())
 	if err := execExpectingRow(ctx, tx, sql, args, entity.EntityName(), schema.PKColumn(), entity.ID()); err != nil {
 		return domain.WriteResult{}, err
@@ -323,6 +326,51 @@ func (b *BaseEngine) updateWithBase(ctx persistence.RequestContext, entity domai
 	}
 	b.AfterCommit(ctx, ab)
 	return domain.WriteResult{ID: entity.ID(), Fields: roleFields}, nil
+}
+
+// guardNaturalKeyImmutable rejects a role UPDATE whose natural-key value
+// diverges from the persisted identity. The natural key derives the
+// deterministic base id, so every SharedBase derivation — the identity upsert,
+// the refcount, the lifecycle convergence, the CDC fan-out, the payload FKs —
+// assumes it never changes after insert; without this guard a request that
+// mutated the key would upsert a DIFFERENT identity (last-write-wins over a
+// third party's shared fields) while the role row keeps pointing at the old
+// base. Shared-PK model: pure arithmetic — the role id IS UUIDv5(naturalKey),
+// so the id derived from the request must equal the row's own id. Separate-FK
+// model: one PK-indexed SELECT (inside the open TX) projecting the comparison
+// as a boolean — `SELECT (fk = derivedID) FROM role WHERE pk = id` — the same
+// dialect-safe trick baseIsArchived uses; a missing row skips the guard (the
+// role UPDATE right after reports not-found exactly as before). The Old
+// snapshot cannot arbitrate here: a manual handler that skipped load-first
+// captures the request itself as Old, so an Old-vs-request comparison would be
+// vacuous precisely in the case that needs guarding.
+func guardNaturalKeyImmutable(ctx context.Context, tx WriteTx, d Dialect, schema, base *TableSchema, entityName, id, fkCol, baseID string) error {
+	nkGo, _ := base.GoOf(base.NaturalKeyColumn())
+	if fkCol == schema.PKColumn() {
+		if id != baseID {
+			return SingleNotificationError(entityName, nkGo, domain.NaturalKeyImmutableNotification{})
+		}
+		return nil
+	}
+	q := "SELECT " + d.QuoteIdent(fkCol) + " = " + d.Placeholder(1) +
+		" FROM " + d.QuoteIdent(schema.Table()) +
+		" WHERE " + d.QuoteIdent(schema.PKColumn()) + " = " + d.Placeholder(2)
+	rows, err := tx.Query(ctx, q, d.EncodeArg(domain.NewID(baseID)), d.EncodeArg(domain.NewID(id)))
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	if !rows.Next() {
+		return rows.Err() // row missing → the role UPDATE right after reports not-found
+	}
+	var matches bool
+	if err := rows.Scan(&matches); err != nil {
+		return err
+	}
+	if !matches {
+		return SingleNotificationError(entityName, nkGo, domain.NaturalKeyImmutableNotification{})
+	}
+	return rows.Err()
 }
 
 // sharedBasePurgeSavepoint names the savepoint the orphan purge runs under so a
