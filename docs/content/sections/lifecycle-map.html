@@ -104,6 +104,22 @@
         </tbody>
     </table>
 
+    <div class="note">
+        <strong>Outbox <code>payload</code> per <code>event_type</code>.</strong> Every outbox row carries a JSON
+        payload alongside the <code>aggregate_id</code>: <code>INSERTED</code>/<code>UPDATED</code> carry the bound
+        column→value map (aggregates: a <code>{root, children}</code> snapshot);
+        <code>ARCHIVED</code>/<code>UNARCHIVED</code> carry the same field map <em>plus</em> the soft-delete column
+        reflecting the verb's outcome — a Go-side UTC timestamp on archive (informational; the row's authoritative
+        value is the database-stamped <code>NOW()</code>) or an explicit JSON <code>null</code> on unarchive — plus
+        the shared-base FK when the role links its base through a separate column; <code>DELETED</code> carries the
+        structural keys only (the row is gone): the PK under its physical column name plus the shared-base FK, and
+        the orphan purge's own <code>DELETED</code> row carries the base PK. The payload is informational for the
+        local SyncEngine — it re-reads the authoritative state by <code>aggregate_id</code> — and exists for CDC
+        consumers (Debezium → external subscribers, including <code>UpstreamSubscription</code>s in other services).
+        The base-table <code>UPDATED</code> fan-out row of a SharedBase write is the one exception and carries
+        <code>NULL</code>: it is a local recompose trigger, not a consumer-facing snapshot.
+    </div>
+
     <h3>Child cascade (aggregate)</h3>
     <p>
         Children of an <code>AggregateRoot</code> don't have their own outbox event or Mongo op — granularity B
