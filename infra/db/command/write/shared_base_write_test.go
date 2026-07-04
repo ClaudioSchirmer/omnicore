@@ -26,7 +26,7 @@ type roleTestEntity struct {
 }
 
 func (e *roleTestEntity) Modes() []domain.EntityMode {
-	return []domain.EntityMode{domain.ModeInsert, domain.ModeUpdate, domain.ModeDelete}
+	return []domain.EntityMode{domain.ModeInsert, domain.ModeUpdate, domain.ModeDelete, domain.ModeArchive, domain.ModeUnarchive}
 }
 func (e *roleTestEntity) BuildRules(string, domain.Service, *domain.Rules) {}
 
@@ -51,6 +51,19 @@ func rowsNone() func(string, []any) (Rows, error) {
 func rowsFound() func(string, []any) (Rows, error) {
 	return func(string, []any) (Rows, error) {
 		return &fakeRows{remaining: 1, scan: func(dest []any) error { return nil }}, nil
+	}
+}
+
+// rowsFKMatch scripts the natural-key guard probe (`SELECT fk = $1 FROM role
+// WHERE pk = $2`) to report the stored FK matching the request-derived base id.
+func rowsFKMatch() func(string, []any) (Rows, error) {
+	return func(string, []any) (Rows, error) {
+		return &fakeRows{remaining: 1, scan: func(dest []any) error {
+			if p, ok := dest[0].(*bool); ok {
+				*p = true
+			}
+			return nil
+		}}, nil
 	}
 }
 
@@ -568,7 +581,7 @@ func TestUpdateRoleWithBase(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetUpdatable: %v", err)
 	}
-	tx := &recTx{count: 1} // role UPDATE matches one row
+	tx := &recTx{count: 1, queryFn: rowsFKMatch()} // role UPDATE matches one row; guard probe: FK matches
 	be := newFlatBE(&recBeginner{tx: tx})
 	if _, err := be.Update(newBuilderCtx(), upd, roleTestSchema(), firingHook); err != nil {
 		t.Fatalf("Update: %v", err)
@@ -582,5 +595,240 @@ func TestUpdateRoleWithBase(t *testing.T) {
 	}
 	if !strings.Contains(tx.execs[1], "pessoa") {
 		t.Errorf("stmt[1] must upsert the shared base, got %q", tx.execs[1])
+	}
+}
+
+// --- unarchive active-sibling veto ------------------------------------------
+//
+// The /unarchive verb carries the same invariant the INSERT probe enforces: at
+// most one ACTIVE role row per identity per role table. Under the separate-FK
+// model an identity may hold archived remnants NEXT TO a newer active row (the
+// dev's active-only uniqueness contract), so reviving a remnant must be the
+// same 409 a POST would raise — probed with the row being unarchived excluded.
+
+func TestUnarchiveRoleWithBase_ActiveSiblingConflict409(t *testing.T) {
+	e := &roleTestEntity{Name: "Ana", Document: "D1", Matricula: "M1"}
+	e.SetID(domain.NewID(uuid.NewString()))
+	un, err := domain.GetUnarchivable(e, nil, "GetUnarchivable")
+	if err != nil {
+		t.Fatalf("GetUnarchivable: %v", err)
+	}
+	var probeSQL string
+	tx := &recTx{count: 1, queryFn: func(sql string, args []any) (Rows, error) {
+		probeSQL = sql
+		return &fakeRows{remaining: 1, scan: func(dest []any) error { return nil }}, nil
+	}}
+	be := newFlatBE(&recBeginner{tx: tx})
+	err = be.Unarchive(newBuilderCtx(), un, roleTestSchema(), firingHook)
+	var carrier domain.NotificationCarrier
+	if !errors.As(err, &carrier) {
+		t.Fatalf("unarchiving next to an active sibling must be a conflict NotificationCarrier, got %T (%v)", err, err)
+	}
+	// The probe targets the SAME role table, excludes the row being unarchived,
+	// and filters active rows only.
+	for _, want := range []string{"FROM aluno", "pessoa_id", "<>", "deleted_at IS NULL"} {
+		if !strings.Contains(probeSQL, want) {
+			t.Errorf("veto probe SQL must contain %q, got %q", want, probeSQL)
+		}
+	}
+	if tx.committed {
+		t.Errorf("the vetoed unarchive must not commit")
+	}
+	if !tx.rolledBack {
+		t.Errorf("the vetoed unarchive must roll back")
+	}
+}
+
+func TestUnarchiveRoleWithBase_NoActiveSiblingProceeds(t *testing.T) {
+	e := &roleTestEntity{Name: "Ana", Document: "D1", Matricula: "M1"}
+	e.SetID(domain.NewID(uuid.NewString()))
+	un, err := domain.GetUnarchivable(e, nil, "GetUnarchivable")
+	if err != nil {
+		t.Fatalf("GetUnarchivable: %v", err)
+	}
+	tx := &recTx{count: 1, queryFn: rowsNone()} // veto probe: no active sibling
+	be := newFlatBE(&recBeginner{tx: tx})
+	if err := be.Unarchive(newBuilderCtx(), un, roleTestSchema(), firingHook); err != nil {
+		t.Fatalf("Unarchive: %v", err)
+	}
+	if !strings.HasPrefix(tx.execs[0], "UPDATE aluno") {
+		t.Errorf("stmt[0] must be the role unarchive UPDATE, got %q", tx.execs[0])
+	}
+	if !tx.committed {
+		t.Errorf("the clean unarchive must commit")
+	}
+}
+
+// Under shared-PK the primary key itself caps the table at one row per identity —
+// no sibling can exist, so the veto probe is skipped entirely.
+func TestUnarchiveRoleWithBase_SharedPKSkipsVeto(t *testing.T) {
+	e := &roleTestEntity{Name: "Ana", Document: "D1", Matricula: "M1"}
+	e.SetID(domain.NewID(deterministicBaseID("D1")))
+	un, err := domain.GetUnarchivable(e, nil, "GetUnarchivable")
+	if err != nil {
+		t.Fatalf("GetUnarchivable: %v", err)
+	}
+	queried := 0
+	tx := &recTx{count: 1, queryFn: func(sql string, args []any) (Rows, error) {
+		queried++
+		return &fakeRows{remaining: 0}, nil
+	}}
+	be := newFlatBE(&recBeginner{tx: tx})
+	if err := be.Unarchive(newBuilderCtx(), un, roleTestSchemaSharedPK(), firingHook); err != nil {
+		t.Fatalf("Unarchive: %v", err)
+	}
+	if queried != 0 {
+		t.Errorf("shared-PK unarchive must not probe for siblings (PK caps at one row), got %d queries", queried)
+	}
+}
+
+func TestUnarchiveRoleWithBase_VetoProbeErrorPropagates(t *testing.T) {
+	e := &roleTestEntity{Name: "Ana", Document: "D1", Matricula: "M1"}
+	e.SetID(domain.NewID(uuid.NewString()))
+	un, _ := domain.GetUnarchivable(e, nil, "GetUnarchivable")
+	probeErr := fmt.Errorf("probe boom")
+	tx := &recTx{count: 1, queryFn: func(string, []any) (Rows, error) { return nil, probeErr }}
+	be := newFlatBE(&recBeginner{tx: tx})
+	err := be.Unarchive(newBuilderCtx(), un, roleTestSchema(), firingHook)
+	if err == nil || !strings.Contains(err.Error(), "probe boom") {
+		t.Fatalf("the veto probe error must propagate, got %v", err)
+	}
+}
+
+func TestUnarchiveRoleWithBase_EmptyNaturalKeyErrors(t *testing.T) {
+	e := &roleTestEntity{Name: "Ana", Document: "", Matricula: "M1"} // natural key empty
+	e.SetID(domain.NewID(uuid.NewString()))
+	un, _ := domain.GetUnarchivable(e, nil, "GetUnarchivable")
+	tx := &recTx{count: 1, queryFn: rowsNone()}
+	be := newFlatBE(&recBeginner{tx: tx})
+	err := be.Unarchive(newBuilderCtx(), un, roleTestSchema(), firingHook)
+	if err == nil || !strings.Contains(err.Error(), "natural key") {
+		t.Fatalf("an empty natural key must fail the veto loudly, got %v", err)
+	}
+}
+
+// White-box: the defensive no-ops of the veto — a role schema without
+// SoftDelete (unreachable through the unarchive verb, which requires it) and a
+// convergence call with a neutral event type.
+func TestVetoUnarchive_DefensiveNoOps(t *testing.T) {
+	base := NewSharedBase("pessoa").PK("id").Field("Name", "name").Field("Document", "document").NaturalKey("document")
+	noSD := NewTableSchema[*roleTestEntity]("aluno").PK("id").Field("Matricula", "matricula").SharedBase(base, "pessoa_id")
+	tx := &recTx{queryFn: func(string, []any) (Rows, error) {
+		t.Fatal("no probe may run for a role without SoftDelete")
+		return nil, nil
+	}}
+	be := newFlatBE(&recBeginner{tx: tx})
+	src := &roleTestEntity{Name: "Ana", Document: "D1"}
+	if err := be.vetoUnarchiveWithActiveSibling(newBuilderCtx(), tx, testPGDialect{}, noSD, src, "some-id", "Aluno"); err != nil {
+		t.Fatalf("no-SoftDelete veto must no-op, got %v", err)
+	}
+	if err := be.convergeBaseAfterSoftWrite(newBuilderCtx(), tx, testPGDialect{}, roleTestSchema(), src, "OTHER"); err != nil {
+		t.Fatalf("a neutral event type must no-op, got %v", err)
+	}
+}
+
+// --- natural-key immutability guard ------------------------------------------
+//
+// The natural key derives the deterministic base id; every SharedBase
+// derivation assumes it never changes after insert. The UPDATE path enforces
+// it: shared-PK by arithmetic (the role id IS UUIDv5(naturalKey)), separate-FK
+// by one PK-indexed probe comparing the stored FK with the request-derived id.
+
+func roleTestUpdatable(t *testing.T, doc, id string) domain.Updatable {
+	t.Helper()
+	e := &roleTestEntity{Name: "Ana", Document: doc, Matricula: "M2"}
+	e.SetID(domain.NewID(id))
+	upd, err := domain.GetUpdatable(e, func(*roleTestEntity) error { return nil }, nil, "GetUpdatable")
+	if err != nil {
+		t.Fatalf("GetUpdatable: %v", err)
+	}
+	return upd
+}
+
+func TestUpdateRoleWithBase_NaturalKeyMutationRejected(t *testing.T) {
+	var probeSQL string
+	tx := &recTx{count: 1, queryFn: func(sql string, args []any) (Rows, error) {
+		probeSQL = sql
+		return &fakeRows{remaining: 1, scan: func(dest []any) error {
+			if p, ok := dest[0].(*bool); ok {
+				*p = false // stored FK does NOT match the request-derived base id
+			}
+			return nil
+		}}, nil
+	}}
+	be := newFlatBE(&recBeginner{tx: tx})
+	_, err := be.Update(newBuilderCtx(), roleTestUpdatable(t, "D-CHANGED", uuid.NewString()), roleTestSchema(), firingHook)
+	var carrier domain.NotificationCarrier
+	if !errors.As(err, &carrier) {
+		t.Fatalf("a mutated natural key must be a NotificationCarrier, got %T (%v)", err, err)
+	}
+	for _, want := range []string{"pessoa_id", "FROM aluno"} {
+		if !strings.Contains(probeSQL, want) {
+			t.Errorf("guard probe SQL must contain %q, got %q", want, probeSQL)
+		}
+	}
+	if hasStmt(tx.execs, func(s string) bool { return strings.HasPrefix(s, "UPDATE aluno") }) {
+		t.Errorf("no role UPDATE may run after the guard rejects, got %v", tx.execs)
+	}
+	if tx.committed {
+		t.Errorf("the rejected update must not commit")
+	}
+}
+
+func TestUpdateRoleWithBase_SharedPK_NaturalKeyMutationRejected(t *testing.T) {
+	// The row id is NOT UUIDv5(D-CHANGED) — the request smuggled another key.
+	tx := &recTx{count: 1, queryFn: func(string, []any) (Rows, error) {
+		t.Fatal("the shared-PK guard is arithmetic — no probe may run")
+		return nil, nil
+	}}
+	be := newFlatBE(&recBeginner{tx: tx})
+	_, err := be.Update(newBuilderCtx(), roleTestUpdatable(t, "D-CHANGED", uuid.NewString()), roleTestSchemaSharedPK(), firingHook)
+	var carrier domain.NotificationCarrier
+	if !errors.As(err, &carrier) {
+		t.Fatalf("a mutated natural key must be a NotificationCarrier, got %T (%v)", err, err)
+	}
+}
+
+func TestUpdateRoleWithBase_SharedPK_MatchingNaturalKeyProceeds(t *testing.T) {
+	tx := &recTx{count: 1}
+	be := newFlatBE(&recBeginner{tx: tx})
+	// id == UUIDv5(D1): the canonical shared-PK state.
+	if _, err := be.Update(newBuilderCtx(), roleTestUpdatable(t, "D1", deterministicBaseID("D1")), roleTestSchemaSharedPK(), firingHook); err != nil {
+		t.Fatalf("Update: %v", err)
+	}
+	if !strings.HasPrefix(tx.execs[0], "UPDATE aluno") {
+		t.Errorf("stmt[0] must update the role, got %q", tx.execs[0])
+	}
+}
+
+func TestUpdateRoleWithBase_GuardRowMissingSkips(t *testing.T) {
+	// No role row → the guard steps aside; the role UPDATE right after owns
+	// the not-found semantics (count=1 here keeps the write green).
+	tx := &recTx{count: 1, queryFn: rowsNone()}
+	be := newFlatBE(&recBeginner{tx: tx})
+	if _, err := be.Update(newBuilderCtx(), roleTestUpdatable(t, "D1", uuid.NewString()), roleTestSchema(), firingHook); err != nil {
+		t.Fatalf("Update: %v", err)
+	}
+}
+
+func TestUpdateRoleWithBase_GuardProbeErrorPropagates(t *testing.T) {
+	probeErr := fmt.Errorf("guard boom")
+	tx := &recTx{count: 1, queryFn: func(string, []any) (Rows, error) { return nil, probeErr }}
+	be := newFlatBE(&recBeginner{tx: tx})
+	_, err := be.Update(newBuilderCtx(), roleTestUpdatable(t, "D1", uuid.NewString()), roleTestSchema(), firingHook)
+	if err == nil || !strings.Contains(err.Error(), "guard boom") {
+		t.Fatalf("the guard probe error must propagate, got %v", err)
+	}
+}
+
+func TestUpdateRoleWithBase_GuardScanErrorPropagates(t *testing.T) {
+	scanErr := fmt.Errorf("scan boom")
+	tx := &recTx{count: 1, queryFn: func(string, []any) (Rows, error) {
+		return &fakeRows{remaining: 1, scan: func([]any) error { return scanErr }}, nil
+	}}
+	be := newFlatBE(&recBeginner{tx: tx})
+	_, err := be.Update(newBuilderCtx(), roleTestUpdatable(t, "D1", uuid.NewString()), roleTestSchema(), firingHook)
+	if err == nil || !strings.Contains(err.Error(), "scan boom") {
+		t.Fatalf("the guard scan error must propagate, got %v", err)
 	}
 }

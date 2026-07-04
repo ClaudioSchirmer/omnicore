@@ -197,6 +197,14 @@ func (b *BaseEngine) flatSoftWrite(
 	if err := b.FireAfterBegin(ctx, tx, src, hook, hctx); err != nil {
 		return err
 	}
+	// SharedBase role: the one-active-role invariant must be probed BEFORE the
+	// row flips to active — an active-only unique index would veto the UPDATE
+	// itself with a raw constraint error otherwise.
+	if eventType == "UNARCHIVED" {
+		if err := b.vetoUnarchiveWithActiveSibling(ctx, tx, d, schema, src, id, hctx.EntityType); err != nil {
+			return err
+		}
+	}
 	if err := tx.Exec(ctx, buildStmt(d), d.EncodeArg(domain.NewID(id))); err != nil {
 		return err
 	}
