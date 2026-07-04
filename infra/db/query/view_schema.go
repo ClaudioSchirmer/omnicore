@@ -32,11 +32,43 @@ type viewEmbed struct {
 	// declared embed. Only child collections carry the aggregate's soft-delete
 	// lifecycle, so only they are subject to the reader's archived-entry strip.
 	isChild bool
+	// isRole marks a SharedBaseView role segment: a SINGLE optional
+	// sub-document (not a collection) carrying the role's own lifecycle — an
+	// archived role's segment is hidden on default reads, and the role's own
+	// child collections strip recursively.
+	isRole bool
 }
 
-// BuildViewNode assembles the translator tree for a view.
+// BuildViewNode assembles the translator tree for a view. On a SharedBaseView
+// it additionally registers one embed per declared role — a single-map segment
+// whose node translates the role's own fields (plus its siblings, merged flat
+// by the composer) and its own children. The role node deliberately suppresses
+// base-children registration: the base's native collections (e.g. Addresses)
+// project at the ROOT of the person document, never inside a role segment.
+// (The role schema's ColumnForRead also resolves the base's shared fields —
+// harmless here: a `role.sharedField` path translates but matches nothing,
+// because the composer lands shared fields at the root only.)
 func (v *ViewDefinition) BuildViewNode() *ViewNode {
-	return newViewNode(v.schema, v.embeds)
+	n := newViewNode(v.schema, v.embeds)
+	for _, r := range v.roles {
+		ve := &viewEmbed{goSegment: r.segment, docField: r.segment, node: newRoleViewNode(r.schema), isRole: true}
+		n.embeds[r.segment] = ve
+		n.embedsByDoc[r.segment] = ve
+	}
+	return n
+}
+
+// newRoleViewNode builds the translator node for one role segment: the role's
+// own children register (they nest inside the segment), base-children do NOT
+// (they live at the person document's root).
+func newRoleViewNode(schema *core.TableSchema) *ViewNode {
+	n := &ViewNode{
+		schema:      schema,
+		embeds:      map[string]*viewEmbed{},
+		embedsByDoc: map[string]*viewEmbed{},
+	}
+	registerOwnChildren(n, schema)
+	return n
 }
 
 func newViewNode(schema *core.TableSchema, embeds []embedDef) *ViewNode {
@@ -79,40 +111,55 @@ func newViewNode(schema *core.TableSchema, embeds []embedDef) *ViewNode {
 		}
 	}
 	// A schema's OWN aggregate children (root.Child(...)) are projected the same
-	// way — derived from the schema, not declared as view embeds. Register each so
-	// ToGoDoc translates the nested collection and ColumnPath resolves an own-child
-	// sub-field. Doc field == Go segment (the composer's mergeOwnChildren nests
-	// under the same derived name). Runs at every schema level (root and embed
-	// sources); children are leaves (depth 1, boot-enforced), and a child's own
-	// siblings resolve FLAT via the child node's ColumnForRead. A segment clash with
-	// an explicit embed or a base-child is rejected upstream by ValidateViewSchemas,
-	// so a plain overwrite here never fires for a valid view.
+	// way — derived from the schema, not declared as view embeds. See
+	// registerOwnChildren.
+	registerOwnChildren(n, schema)
+	return n
+}
+
+// registerOwnChildren registers the schema's OWN aggregate children
+// (root.Child(...)) on the node so ToGoDoc translates the nested collection and
+// ColumnPath resolves an own-child sub-field. Doc field == Go segment (the
+// composer's mergeOwnChildren nests under the same derived name). Runs at every
+// schema level (root, embed sources and role nodes); children are leaves
+// (depth 1, boot-enforced), and a child's own siblings resolve FLAT via the
+// child node's ColumnForRead. A segment clash with an explicit embed or a
+// base-child is rejected upstream by ValidateViewSchemas, so a plain overwrite
+// here never fires for a valid view.
+func registerOwnChildren(n *ViewNode, schema *core.TableSchema) {
 	for _, child := range schema.ChildSchemas() {
 		seg := childDocSegment(child)
 		ve := &viewEmbed{goSegment: seg, docField: seg, node: newViewNode(child, nil), isChild: true}
 		n.embeds[seg] = ve
 		n.embedsByDoc[seg] = ve
 	}
-	return n
 }
 
-// ChildSoftDeletePaths returns, for every DERIVED aggregate-child collection
-// (base-children + own children) that declares a soft-delete column, the doc
-// field → soft-delete column pair. The reader consults it to auto-include the
-// child's soft-delete column when a consumer projection narrows the child
-// subfields — StripArchivedChildren can only hide what the projected entries
-// still carry.
+// ChildSoftDeletePaths returns, for every DERIVED lifecycle-carrying segment
+// that declares a soft-delete column, the doc-field path → soft-delete column
+// pair. The reader consults it to auto-include the segment's soft-delete
+// column when a consumer projection narrows the subfields —
+// StripArchivedChildren can only hide what the projected entries still carry.
+// Covered segments: aggregate-child collections (base-children + own children)
+// at this level, plus — on a SharedBaseView root — each role segment (a
+// single-map path, e.g. "User") and, DOTTED, each role's own child collection
+// (e.g. "User.Dependents"). Regular views never produce dotted paths.
 func (n *ViewNode) ChildSoftDeletePaths() map[string]string {
 	if !n.hasSchema() {
 		return nil
 	}
 	out := map[string]string{}
 	for docField, emb := range n.embedsByDoc {
-		if !emb.isChild {
+		if !emb.isChild && !emb.isRole {
 			continue
 		}
 		if sdCol, ok := emb.node.SoftDeleteColumn(); ok {
 			out[docField] = sdCol
+		}
+		if emb.isRole {
+			for sub, sd := range emb.node.ChildSoftDeletePaths() {
+				out[docField+"."+sub] = sd
+			}
 		}
 	}
 	return out
@@ -134,6 +181,27 @@ func (n *ViewNode) StripArchivedChildren(doc map[string]any) {
 		return
 	}
 	for docField, emb := range n.embedsByDoc {
+		// A SharedBaseView role segment is a SINGLE optional sub-document with
+		// the role's own lifecycle: an archived role (its soft-delete column
+		// populated — the composer's remnant pick) is hidden on a default read
+		// by nulling the whole segment; an active role recurses so the role's
+		// own child collections strip like any aggregate children.
+		if emb.isRole {
+			m, isMap := asStringMap(doc[docField])
+			if !isMap {
+				continue // absent or explicit null segment
+			}
+			if sdCol, ok := emb.node.SoftDeleteColumn(); ok {
+				if v, present := m[sdCol]; present && v != nil {
+					doc[docField] = nil
+					continue
+				}
+			}
+			emb.node.StripArchivedChildren(m)
+			// asStringMap may have copied (bson.M via reflection) — write back.
+			doc[docField] = m
+			continue
+		}
 		if !emb.isChild {
 			continue
 		}

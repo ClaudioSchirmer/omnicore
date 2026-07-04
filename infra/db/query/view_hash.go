@@ -78,6 +78,27 @@ func (v *ViewDefinition) writeRebuildShape(w *canonicalWriter) {
 	w.writeTag("root_schema")
 	writeSchemaShape(w, v.schema)
 
+	// SharedBaseView roles — the role set IS projection shape: adding/removing
+	// a role, renaming its segment, changing its FK column or any part of its
+	// schema closure (fields, siblings, children — writeSchemaShape recurses,
+	// its shared_base branch included) must move the RebuildHash so the
+	// forgot-to-bump guard fires. Sorted by segment (order-independent).
+	// Emitted ONLY for a SharedBaseView: a regular view's canonical byte
+	// stream stays byte-identical to rebuild_v2, so upgrading the framework
+	// moves no existing view's hash.
+	if v.isSharedBaseView {
+		w.writeTag("roles")
+		roles := append([]roleDef(nil), v.roles...)
+		sort.Slice(roles, func(i, j int) bool { return roles[i].segment < roles[j].segment })
+		w.writeInt(int64(len(roles)))
+		for _, r := range roles {
+			w.writeString(r.segment)
+			_, fk, _ := r.schema.SharedBaseRef()
+			w.writeString(fk)
+			writeSchemaShape(w, r.schema)
+		}
+	}
+
 	w.writeTag("schema")
 	writeJSONSchema(w, v.mongoSpec.jsonSchema)
 

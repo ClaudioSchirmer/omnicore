@@ -347,15 +347,12 @@ func (r *MongoViewReader) ReadPage(ctx context.Context, view string, c queries.R
 		}
 		// Remove the auto-included child soft-delete columns from the kept
 		// entries — the strip has already consumed them, and the consumer's
-		// projection did not ask for them.
+		// projection did not ask for them. Paths cover three shapes: a child
+		// collection at the root ("Dependents"), a SharedBaseView role segment
+		// (a single map, "User"), and a role's own child collection (dotted,
+		// "User.Dependents").
 		for docField, sdCol := range childSDCleanup {
-			if entries, ok := m[docField].([]any); ok {
-				for _, e := range entries {
-					if em, ok := e.(map[string]any); ok {
-						delete(em, sdCol)
-					}
-				}
-			}
+			removeChildSDColumn(m, strings.Split(docField, "."), sdCol)
 		}
 		items = append(items, node.ToGoDoc(m))
 	}
@@ -733,9 +730,35 @@ func translateFilterValue(v any) any {
 
 var _ queries.ViewReader = (*MongoViewReader)(nil)
 
+// removeChildSDColumn removes the auto-included soft-delete column at the
+// given doc-field path — a child collection ([]any of maps), a SharedBaseView
+// role segment (a single map) or, dotted, a role's own child collection.
+// Intermediate segments are always maps (dotted paths only descend through
+// role segments); anything absent or differently shaped is a no-op.
+func removeChildSDColumn(container any, segs []string, sdCol string) {
+	m, ok := container.(map[string]any)
+	if !ok || len(segs) == 0 {
+		return
+	}
+	if len(segs) > 1 {
+		removeChildSDColumn(m[segs[0]], segs[1:], sdCol)
+		return
+	}
+	switch t := m[segs[0]].(type) {
+	case []any:
+		for _, e := range t {
+			if em, ok := e.(map[string]any); ok {
+				delete(em, sdCol)
+			}
+		}
+	case map[string]any:
+		delete(t, sdCol)
+	}
+}
+
 // projectionTouchesField reports whether the (physical) projection references
-// the given top-level doc field — either whole ("Dependents") or any subfield
-// ("Dependents.name").
+// the given doc field path — either whole ("Dependents", "User",
+// "User.Dependents") or any subfield ("Dependents.name").
 func projectionTouchesField(colProj map[string]int, docField string) bool {
 	for key := range colProj {
 		if key == docField || strings.HasPrefix(key, docField+".") {

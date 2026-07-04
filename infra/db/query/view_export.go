@@ -53,7 +53,32 @@ func (v *ViewDefinition) ResolveMaxExportRows(yamlDefault int64) int64 {
 // intentionally excluded — the export carries the labeled business columns; the
 // surrogate id and framework timestamps are not part of the human-facing sheet.
 func (v *ViewDefinition) ExportPlan() *queries.ExportPlan {
-	return &queries.ExportPlan{Root: buildExportNode(v.schema, v.embeds, "", "")}
+	root := buildExportNode(v.schema, v.embeds, "", "")
+	// SharedBaseView roles nest as single-object branches (the renderer's
+	// child extraction already handles a single map exactly like a one-item
+	// collection). Ordered as declared.
+	for _, r := range v.roles {
+		root.Children = append(root.Children, roleExportNode(r))
+	}
+	return &queries.ExportPlan{Root: root}
+}
+
+// roleExportNode builds the export branch for one SharedBaseView role segment:
+// the role's own business columns plus its siblings FLAT (mirroring the
+// composed sub-document), its own children nested. Deliberately NOT reusing
+// buildExportNode: that would fold in the base's shared columns (they live at
+// the person root, exported there) and the base-children (they nest at the
+// root too).
+func roleExportNode(r roleDef) *queries.ExportNode {
+	node := &queries.ExportNode{GoSegment: r.segment, WireSegment: domain.ToLowerCamel(r.segment)}
+	appendSchemaColumns(node, r.schema)
+	for _, sib := range r.schema.Siblings() {
+		appendSchemaColumns(node, sib)
+	}
+	for _, child := range r.schema.ChildSchemas() {
+		node.Children = append(node.Children, childExportNode(child))
+	}
+	return node
 }
 
 func buildExportNode(schema *core.TableSchema, embeds []embedDef, goSegment, wireSegment string) *queries.ExportNode {

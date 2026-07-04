@@ -13,6 +13,45 @@ with `1.0.0`.
 
 ### Added
 
+- **`query.SharedBaseView` — the all-in-one identity projection.** A second
+  read-side view kind, rooted at a SharedBase: one Mongo document per shared
+  identity — the base's shared fields flat at the root, the base's native
+  children nested at the root, and ONE SUB-DOCUMENT PER DECLARED ROLE
+  (`SharedBaseView(personBase(), "persons").Role(UserSchema()).Role(EmployeeSchema())`,
+  role count open-ended). `_id` = the base's deterministic PK (stable under
+  shared-PK and separate-FK); document gate = the base's soft-delete (converged
+  by the write side); an absent role is an explicit `null` segment ($set-safe);
+  an archived role stores its `deleted_at` and hides on default reads
+  (`?includeArchived` surfaces it); under separate-FK multiplicity the segment
+  is picked active-first (else the most recently archived remnant). The
+  SyncEngine subscribes to every role table's topic and recomposes the person
+  document on role events — the base id resolved by identity (shared-PK), by
+  source lookup (separate-FK, row alive) or from the DELETED payload's
+  structural keys (the row is gone; the payload is a routing hint, never
+  state) — and removes the document when the identity purges. Everything a
+  regular view has applies unchanged: Version/rebuild hash (the role set
+  participates — adding a role without bumping is forgot-to-bump; regular
+  views' hashes are untouched), Indexes/validators, MaxLimit/MaxExportRows,
+  DeleteOnArchive, filters/sort/projection through the role segments
+  (`?user.userName=`, `?employee.dependents.relationship=`), GraphQL and
+  CSV/XLSX (role branches). Declaration-time panics guard the shape (non-base
+  root, role without `.SharedBase`, base-table mismatch, divergent
+  declaration, duplicate segment); a role-less view is a boot error. Documented in
+  [TableSchema → Shared-base view](#table-schema~shared-base-view).
+
+- **Rebuild id-scan is now schema-driven.** The per-view rebuild used a
+  hardcoded `SELECT id FROM <root> ORDER BY created_at`; it now reads the PK
+  column from the view's root schema and falls back to the PK for the scan
+  order when the root declares no CreatedAt (e.g. a SharedBase root). Behavior
+  is unchanged for every existing view.
+
+- **View index validation now recognizes own-child paths.** The
+  composed-column allowlist (the `Index(...)`/`$jsonSchema` boot guard) did not
+  walk a schema's own aggregate children, falsely rejecting a legitimate index
+  on an own-child path (e.g. `dependents.name`). The walk now mirrors the
+  composer exactly — own children included, and role segments on a
+  SharedBaseView. Validation only loosens; no existing view changes behavior.
+
 - **SharedBase — natural-key immutability is now enforced at the write layer.**
   The natural key derives the deterministic base id, so every SharedBase
   derivation (identity upsert, refcount, lifecycle convergence, CDC fan-out,
