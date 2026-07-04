@@ -204,7 +204,7 @@ func (b *BaseEngine) hardDelete(
 	if err != nil {
 		return err
 	}
-	if err := WriteOutbox(ctx, tx, schema.Table(), "DELETED", id, nil); err != nil {
+	if err := WriteOutbox(ctx, tx, schema.Table(), "DELETED", id, deleteKeysPayload(schema, src, id)); err != nil {
 		return err
 	}
 	ab := b.BuildAudit(buildEvent, evs)
@@ -224,8 +224,9 @@ func (b *BaseEngine) hardDelete(
 
 // softWriteAggregate is the shared root-soft-write + child-cascade path for
 // archive/unarchive: soft-write the root, then cascade onto each declared child
-// (setExpr = NOW()/NULL, gate = " IS NULL"/" IS NOT NULL"), then outbox + audit
-// + hooks + post-commit.
+// (setExpr = NOW()/NULL, gate = " IS NULL"/" IS NOT NULL"), then outbox (the
+// aggregate snapshot with the root's soft-delete column reflecting the verb)
+// + audit + hooks + post-commit.
 func (b *BaseEngine) softWriteAggregate(
 	ctx persistence.RequestContext,
 	root *domain.AggregateRoot,
@@ -282,7 +283,8 @@ func (b *BaseEngine) softWriteAggregate(
 	if err := b.convergeBaseAfterSoftWrite(ctx, tx, d, schema, src, eventType); err != nil {
 		return err
 	}
-	if err := WriteOutbox(ctx, tx, schema.Table(), eventType, id, nil); err != nil {
+	if err := WriteOutbox(ctx, tx, schema.Table(), eventType, id,
+		BuildAggregatePayload(softWritePayload(schema, src, sdCol, eventType), root, schema)); err != nil {
 		return err
 	}
 	ab := b.BuildAudit(buildEvent, evs)

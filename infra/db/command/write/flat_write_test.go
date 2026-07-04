@@ -31,6 +31,7 @@ type recTx struct {
 	execErrs   map[string]error // multi-injection: substring → error (first match wins), for chained failures
 	commitErr  error
 	execs      []string
+	execArgs   [][]any // args of each recorded statement, aligned with execs
 	committed  bool
 	rolledBack bool
 	queryFn    func(sql string, args []any) (Rows, error) // drives Query (shared-base existence probe)
@@ -81,12 +82,14 @@ func (t *recTx) injectedErr(sql string) error {
 	return nil
 }
 
-func (t *recTx) Exec(_ context.Context, sql string, _ ...any) error {
+func (t *recTx) Exec(_ context.Context, sql string, args ...any) error {
 	t.execs = append(t.execs, sql)
+	t.execArgs = append(t.execArgs, args)
 	return t.injectedErr(sql)
 }
-func (t *recTx) ExecCount(_ context.Context, sql string, _ ...any) (int64, error) {
+func (t *recTx) ExecCount(_ context.Context, sql string, args ...any) (int64, error) {
 	t.execs = append(t.execs, sql)
+	t.execArgs = append(t.execArgs, args)
 	if err := t.injectedErr(sql); err != nil {
 		return 0, err
 	}

@@ -907,6 +907,19 @@ return bootstrap.Wiring{
     },
 }</code></pre>
 
+    <p><strong>What each upstream event does to the local collection.</strong> The subscriber dispatches on the
+        outbox <code>event_type</code>: <code>INSERTED</code>/<code>UPDATED</code>/<code>UNARCHIVED</code> upsert the
+        (filtered) payload into the collection and ripple recompose; <code>ARCHIVED</code> with
+        <code>deleteOnArchive: false</code> (the default) upserts too — the upstream payload carries the soft-delete
+        column populated, so the local document survives with <code>deleted_at</code> set, symmetric with the
+        producer's own read side — while <code>deleteOnArchive: true</code> removes the document;
+        <code>DELETED</code> is dispatched on the aggregate id alone, before any payload decode (its keys-only
+        payload — PK + shared-base FK — is available to bespoke consumers, but the framework's cascade / anonymize /
+        keep handling needs only the id, which also keeps replays of historical <code>NULL</code>-payload rows
+        working). When declaring a <code>filter</code> allowlist, include the soft-delete column if the collection
+        keeps archived documents — a filter that drops it would strip the archive marker from the
+        <code>ARCHIVED</code> upsert.</p>
+
     <p><strong>Persistent failure registry.</strong> Every ripple failure (discover / compose / upsert stage) is upserted into the framework PG table <code>omnicore_upstream_failures</code> alongside the slog line and the in-memory counter. The natural key <code>(subscription_topic, view_name, upstream_id, local_id, stage)</code> turns retries into <code>attempt</code> increments — the table mirrors live state, never grows monotonically. A recompose round that finishes without errors for <code>(view, upstream_id)</code> automatically marks any pending rows under that coordinate as resolved (<code>resolved_at = NOW()</code>). Writes are best-effort: any PG error on Record/Resolve is logged at <code>slog.Warn</code> and discarded — the consumer's Kafka offset still advances, preserving the failure-isolation contract.</p>
 
     <p>Operational queries (SQL on B's framework PG):</p>

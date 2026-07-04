@@ -434,12 +434,13 @@ func (s *UpstreamSubscriber) processMessage(ctx context.Context, msg kafka.Messa
 		return
 	}
 	// DELETED is dispatched on the aggregate id ALONE, before any payload
-	// decode. A hard-delete's outbox row carries a NULL payload, which the CDC
-	// pipeline surfaces as a JSON scalar (not an object) — decoding it into a
-	// map fails. Since dispatchDelete needs only the id (cascade/anonymize/keep
-	// all key off it), gating the decode behind the payload-bearing verbs keeps
-	// the delete cascade from being skipped by a decode error on an event that
-	// never had a payload to begin with.
+	// decode. A current hard-delete's outbox row carries a keys-only payload
+	// (PK + shared-base FK), but rows produced before that change — and any
+	// replay of them — carry NULL, which the CDC pipeline surfaces as a JSON
+	// scalar (not an object) whose decode into a map fails. Since
+	// dispatchDelete needs only the id (cascade/anonymize/keep all key off
+	// it), gating the decode behind the payload-bearing verbs keeps the delete
+	// cascade from being skipped by a decode error on a payload-less event.
 	if event.EventType == "DELETED" {
 		s.dispatchDelete(ctx, event.AggregateID)
 		return
@@ -461,9 +462,10 @@ func (s *UpstreamSubscriber) processMessage(ctx context.Context, msg kafka.Messa
 		if s.cfg.DeleteOnArchive {
 			s.deleteAndRipple(ctx, event.AggregateID)
 		} else {
-			// Mirror the doc-survives-with-deleted_at semantic: the
-			// payload already carries deleted_at when the upstream
-			// emitted ARCHIVED through the outbox.
+			// Mirror the doc-survives-with-deleted_at semantic: an ARCHIVED
+			// outbox row carries the full field payload with the soft-delete
+			// column populated (write-side softWritePayload), so the upsert
+			// lands the archived state on the local document.
 			s.upsertAndRipple(ctx, event.AggregateID, payload)
 		}
 

@@ -374,7 +374,8 @@ func (b *BaseEngine) convergeBaseAfterHardDelete(
 				return AuditBundle{}, err
 			}
 			if purged {
-				if err := WriteOutbox(ctx, tx, base.Table(), "DELETED", baseID, nil); err != nil {
+				if err := WriteOutbox(ctx, tx, base.Table(), "DELETED", baseID,
+					domain.Fields{base.PKColumn(): domain.NewID(baseID)}); err != nil {
 					return AuditBundle{}, err
 				}
 				ab := b.BuildAudit(func() audit.AuditEvent { return buildPurgeEvent(baseID) }, nil)

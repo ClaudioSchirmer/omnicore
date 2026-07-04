@@ -47,6 +47,32 @@ with `1.0.0`.
   `core.NewEngine(dialect, ctx, dsn, tracing)` becomes
   `core.NewEngine(dialect, ctx, core.EngineConfig{DSN: dsn, Tracing: tracing})`.
 
+- **Lifecycle outbox rows now carry payloads — full state on
+  `ARCHIVED`/`UNARCHIVED`, structural keys on `DELETED`.** The bodyless verbs
+  wrote their outbox row with a `NULL` payload, leaving CDC consumers
+  (Debezium → external subscribers, including the framework's own
+  `UpstreamSubscriber`) with nothing but the `aggregate_id` — in particular, an
+  upstream `ARCHIVED` in keep mode (`deleteOnArchive: false`) could never land
+  the archived state on the local document, despite the subscriber being
+  written to expect `deleted_at` in the payload. Now:
+  `ARCHIVED`/`UNARCHIVED` follow the `INSERTED`/`UPDATED` pattern — the full
+  bound-field map (aggregates keep the `{root, children}` snapshot shape) plus
+  the soft-delete column reflecting the verb's outcome (a Go-side UTC timestamp
+  on archive — informational; the row's authoritative value is the
+  database-stamped `NOW()` — and an explicit JSON `null` on unarchive) plus the
+  shared-base FK when the role links its base through a separate column;
+  `DELETED` carries the structural keys only (the row is gone) — the PK under
+  its physical column name plus the shared-base FK — and the shared-base orphan
+  purge's own `DELETED` row carries the base PK. Payload assembly never vetoes
+  a write: an unresolvable natural key just omits the FK field. The local
+  `SyncEngine` is unaffected (it re-reads the source by `aggregate_id`); the
+  `outbox` table shape and the Debezium contract are unchanged — only the
+  payload column's content grew. The base-table `UPDATED` fan-out rows (a
+  SharedBase write through one role recomposing the other roles' views) still
+  carry `NULL` — they are a local recompose trigger, not a consumer-facing
+  snapshot. See [Lifecycle map](#lifecycle-map) and
+  [Auto query handlers](#auto-query-handlers).
+
 ### Fixed
 
 - **Upstream composition — a `DELETED` upstream event now cascades even with an
