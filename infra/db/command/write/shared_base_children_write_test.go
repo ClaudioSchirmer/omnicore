@@ -228,7 +228,16 @@ func TestConvergeBase_UnarchiveReactivatesBase(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetUnarchivable: %v", err)
 	}
-	tx := &recTx{queryFn: rowsBaseArchived()} // base currently archived
+	// The unarchive path probes twice: the active-sibling veto (FROM aluno — no
+	// other active row, the revive proceeds) then the base state (FROM pessoa —
+	// currently archived, so it reactivates).
+	baseArchived := rowsBaseArchived()
+	tx := &recTx{queryFn: func(sql string, args []any) (Rows, error) {
+		if strings.Contains(sql, "FROM aluno") {
+			return &fakeRows{remaining: 0}, nil
+		}
+		return baseArchived(sql, args)
+	}}
 	be := newFlatBE(&recBeginner{tx: tx})
 	if err := be.Unarchive(newBuilderCtx(), un, bcRoleSchema(true), firingHook); err != nil {
 		t.Fatalf("Unarchive: %v", err)

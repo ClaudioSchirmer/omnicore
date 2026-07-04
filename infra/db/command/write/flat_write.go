@@ -202,7 +202,7 @@ func (b *BaseEngine) flatSoftWrite(
 	}
 	// SharedBase role (flat): drive the shared identity's lifecycle from this verb
 	// (archive once no role stays active; reactivate on unarchive). No-op otherwise.
-	if err := b.convergeBaseAfterSoftWrite(ctx, tx, d, schema, src, eventType); err != nil {
+	if err := b.convergeBaseAfterSoftWrite(ctx, tx, d, schema, src, id, hctx.EntityType, eventType); err != nil {
 		return err
 	}
 	if err := WriteOutbox(ctx, tx, schema.Table(), eventType, id, payload); err != nil {

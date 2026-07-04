@@ -280,7 +280,7 @@ func (b *BaseEngine) softWriteAggregate(
 	// verb — archive it once no role stays active, reactivate on unarchive. The
 	// base's NATIVE children cascade with the base, not with this role. No-op when
 	// the role declares no shared base.
-	if err := b.convergeBaseAfterSoftWrite(ctx, tx, d, schema, src, eventType); err != nil {
+	if err := b.convergeBaseAfterSoftWrite(ctx, tx, d, schema, src, id, hctx.EntityType, eventType); err != nil {
 		return err
 	}
 	if err := WriteOutbox(ctx, tx, schema.Table(), eventType, id,

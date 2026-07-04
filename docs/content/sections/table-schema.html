@@ -459,13 +459,39 @@ func StudentSchema() *core.TableSchema {
 <p>
     <strong>The role→base link is the developer's choice: a separate FK column, or the role's own primary key.</strong>
     Passing a distinct column — <code>.SharedBase(person, "person_id")</code> above — gives the role its own surrogate key
-    (a fresh UUIDv7 per row) alongside a <code>person_id</code> FK, with a <code>UNIQUE(person_id)</code> index enforcing
-    the 0 : 1 role-per-identity. Passing the role's <em>PK</em> column instead — <code>.SharedBase(person, "id")</code> —
-    selects the <strong>shared primary key</strong> model: the role's own id IS the base's deterministic id
-    (<code>role.id == base.id == UUIDv5(document)</code>), there is no separate FK column, and the primary key itself
-    enforces the 0 : 1 (a second role for the same identity collides on the PK). The framework detects the mode from the
-    schema — when the SharedBase column equals the PK column it writes the id once, as the PK, carrying the base id;
-    otherwise it writes a separate FK — so choosing between the two is a one-line schema change with no code impact.
+    (a fresh UUIDv7 per row) alongside a <code>person_id</code> FK. Passing the role's <em>PK</em> column instead —
+    <code>.SharedBase(person, "id")</code> — selects the <strong>shared primary key</strong> model: the role's own id IS
+    the base's deterministic id (<code>role.id == base.id == UUIDv5(document)</code>), there is no separate FK column, and
+    the primary key itself caps the table at <strong>one row per identity</strong> (a second role for the same identity
+    collides on the PK — an archived remnant included). The framework detects the mode from the schema — when the
+    SharedBase column equals the PK column it writes the id once, as the PK, carrying the base id; otherwise it writes a
+    separate FK — so choosing between the two is a one-line schema change with no code impact.
+</p>
+
+<p>
+    <strong>Under the separate-FK model, row multiplicity is a second choice — expressed in your DDL.</strong> The
+    framework invariant is about <em>active</em> rows only: at most ONE ACTIVE role row per identity per role table,
+    enforced on <code>POST</code> (an existing active role is a 409) and on <code>/unarchive</code> (reviving a row while
+    another row of the same role table is active is the same 409). How many TOTAL rows an identity may accumulate is your
+    uniqueness contract on the FK column:
+</p>
+<ul>
+    <li><strong>Full <code>UNIQUE(person_id)</code></strong> — 0 : 1 rows per identity, period. An archived remnant
+        physically blocks a new <code>POST</code> for the same identity (the index vetoes it; the repository's
+        <code>ConstraintBinding</code> maps the violation, typically to the same 409). Reviving the remnant via
+        <code>/unarchive</code> is the only way back. Pick this when a role's history should never fork.</li>
+    <li><strong>Active-only uniqueness</strong> — archived remnants may accumulate NEXT TO one active row: keep the old
+        archived role and open a fresh active one for the same identity. On Postgres this is a partial unique index —
+        <code>CREATE UNIQUE INDEX ... ON student(person_id) WHERE deleted_at IS NULL</code>. MySQL has no partial
+        indexes; use a generated column instead — <code>active_person_id CHAR(36) GENERATED ALWAYS AS
+        (IF(deleted_at IS NULL, person_id, NULL)) STORED, UNIQUE(active_person_id)</code> — multiple NULLs are admitted
+        by a MySQL unique index, so every archived remnant passes and the one active row is enforced.</li>
+</ul>
+<p>
+    <strong>Declare one of the two — the index, not the framework's probe, is the arbiter under concurrency.</strong> The
+    write path probes for an active role before inserting (a fast, friendly 409), but two concurrent <code>POST</code>s
+    can both pass the probe; the uniqueness index is what guarantees the invariant when they race. The shared-PK model
+    gets this for free (the primary key is the index).
 </p>
 
 <div class="box bad">
@@ -510,10 +536,13 @@ func StudentSchema() *core.TableSchema {
     alongside the role's. A role <code>INSERT</code> upserts the identity and then applies a two-level existence matrix on
     the role row: an existing <em>active</em> role for that identity is a conflict (409); an <em>archived</em> role is
     <strong>invisible to the insert</strong> — soft-delete is delete here like on every other read/write path — so the
-    insert proceeds and the schema's own constraints arbitrate the collision with the physical remnant (in the shared-PK
-    model the primary key vetoes it, mapped by the repository's <code>ConstraintBinding</code> — typically to the same
-    409; a separate-FK model decides through its own unique index). Bringing an archived role back is the explicit
-    <code>/unarchive</code> verb's job, never a POST side effect. The BASE is different: its lifecycle is derived (it
+    insert proceeds and your uniqueness contract on the FK column arbitrates the collision with the physical remnant (in
+    the shared-PK model the primary key vetoes it, mapped by the repository's <code>ConstraintBinding</code> — typically
+    to the same 409; under a full <code>UNIQUE(fk)</code> the index vetoes it the same way; under active-only uniqueness
+    the insert lands next to the remnant — see the two contracts above). Bringing an archived role back is the explicit
+    <code>/unarchive</code> verb's job, never a POST side effect — and that verb carries the same active-conflict veto:
+    unarchiving a remnant while another row of the same role table is active for the identity is a 409, so the
+    one-active-role invariant holds on every path that can produce an active row. The BASE is different: its lifecycle is derived (it
     converges from its roles), so the identity row is found — and reactivated by a new active role — regardless of its
     own archived state; that automatic revival is what keeps the <code>KeepOrphan</code> dormancy contract honest.
 </p>

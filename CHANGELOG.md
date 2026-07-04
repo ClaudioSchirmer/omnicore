@@ -75,6 +75,23 @@ with `1.0.0`.
 
 ### Fixed
 
+- **SharedBase — `/unarchive` now carries the same one-active-role veto as
+  `POST`.** The framework invariant is at most ONE ACTIVE role row per identity
+  per role table. It was enforced on INSERT only (an existing active role is a
+  409), so under the separate-FK model — where an identity may keep archived
+  remnants NEXT TO a newer active row (the active-only uniqueness contract) —
+  unarchiving a remnant could produce two active roles for the same identity.
+  The unarchive path now probes the role table for another ACTIVE row
+  referencing the base (excluding the row being revived) and rejects with the
+  same conflict notification (`EntityAlreadyAddedNotification`, 409) a POST
+  raises; the whole unarchive rolls back. A no-op for the shared-PK model (the
+  primary key caps the table at one row per identity) and for roles without a
+  shared base. The docs now also spell out the two DDL uniqueness contracts on
+  the separate-FK column — full `UNIQUE(fk)` (0:1 rows total; a remnant blocks
+  re-POST) vs active-only uniqueness (Postgres partial unique index; MySQL
+  unique generated column) — and that the index, not the framework's probe, is
+  the arbiter when concurrent POSTs race. See [TableSchema](#table-schema).
+
 - **Upstream composition — a `DELETED` upstream event now cascades even with an
   empty payload.** `UpstreamSubscriber.processMessage` decoded the message
   payload BEFORE dispatching by event type, so a hard delete — whose outbox row

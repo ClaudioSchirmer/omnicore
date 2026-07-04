@@ -24,13 +24,21 @@ import (
 //     (convergence below), and the KeepOrphan dormancy contract depends on the
 //     natural key finding its way back. No read-back: app and infra derive the
 //     same id.
-//   - role: UNIQUE(fk) → 0..1 per identity. On INSERT, an existing ACTIVE role is
-//     a 409; an ARCHIVED role is INVISIBLE to the probe — soft-delete is delete,
-//     here like on every other read/write path — so the insert proceeds and the
-//     schema's own constraints arbitrate (in the shared-PK model the physical
-//     remnant collides on the primary key, which the repository's
-//     ConstraintBinding maps — e.g. to a 409; a separate-FK model decides through
-//     its own unique index). Reviving an archived role is the explicit
+//   - role: at most ONE ACTIVE row per identity per role table — the framework
+//     invariant, enforced on INSERT (an existing ACTIVE role is a 409; an
+//     ARCHIVED role is INVISIBLE to the probe — soft-delete is delete, here like
+//     on every other read/write path — so the insert proceeds) and on UNARCHIVE
+//     (reviving a remnant while another row of the same role table is active is
+//     the same 409 — vetoUnarchiveWithActiveSibling). TOTAL row multiplicity is
+//     the dev's DDL contract on the separate-FK model: a full UNIQUE(fk) index
+//     caps the table at 0..1 rows per identity (an archived remnant physically
+//     blocks a new insert — the repository's ConstraintBinding maps the
+//     violation), while an active-only unique index (partial index on Postgres,
+//     unique generated column on MySQL) admits archived remnants NEXT TO one
+//     active row — the "keep the old archived role, open a fresh active one"
+//     modeling. The shared-PK model has no choice: the PK itself caps the table
+//     at one row per identity. Under concurrency the uniqueness index — not the
+//     probe — is the arbiter; reviving an archived role is the explicit
 //     /unarchive verb's job, never a POST side effect.
 //
 // The base's lifecycle is driven by its roles (unified lifecycle convergence
@@ -103,9 +111,12 @@ func scalarString(v any) string {
 // findActiveRoleByFK probes the role table for an ACTIVE row referencing the
 // shared base id. Soft-delete IS delete on this probe, exactly like every other
 // read/write path: an archived role row is invisible here, so the caller's
-// insert proceeds and the schema's own constraints arbitrate the collision with
-// the physical remnant (shared-PK → primary key; separate FK → its unique
-// index). UNIQUE(fk) guarantees 0..1, so a single LIMIT 1 row decides it.
+// insert proceeds and the dev's DDL arbitrates the collision with any physical
+// remnant (shared-PK → the primary key; separate FK → a full UNIQUE(fk) blocks
+// it, an active-only unique index admits it next to the remnants). The probe
+// asks "is any row active?", so LIMIT 1 decides it regardless of how many
+// archived remnants the identity carries; when two inserts race, the
+// uniqueness index — not this probe — is the arbiter.
 func (b *BaseEngine) findActiveRoleByFK(ctx context.Context, tx WriteTx, d Dialect, schema *TableSchema, fkCol, baseID string) (bool, error) {
 	q := "SELECT 1 FROM " + d.QuoteIdent(schema.Table()) +
 		" WHERE " + d.QuoteIdent(fkCol) + " = " + d.Placeholder(1)
@@ -491,15 +502,60 @@ func (b *BaseEngine) archiveBaseIfNoActiveRole(ctx context.Context, tx WriteTx, 
 }
 
 // convergeBaseAfterSoftWrite routes a role's archive/unarchive to the matching
-// base lifecycle step (shared by the flat + aggregate soft-write paths).
-func (b *BaseEngine) convergeBaseAfterSoftWrite(ctx context.Context, tx WriteTx, d Dialect, schema *TableSchema, src domain.Entity, eventType string) error {
+// base lifecycle step (shared by the flat + aggregate soft-write paths). On
+// UNARCHIVE it first enforces the same invariant the INSERT probe guards — at
+// most one ACTIVE role row per identity per role table — so reviving a remnant
+// next to a newer active row is the same conflict a POST would be.
+func (b *BaseEngine) convergeBaseAfterSoftWrite(ctx context.Context, tx WriteTx, d Dialect, schema *TableSchema, src domain.Entity, id, entityName, eventType string) error {
 	switch eventType {
 	case "ARCHIVED":
 		return b.archiveBaseIfNoActiveRole(ctx, tx, d, schema, src)
 	case "UNARCHIVED":
+		if err := b.vetoUnarchiveWithActiveSibling(ctx, tx, d, schema, src, id, entityName); err != nil {
+			return err
+		}
 		return b.reactivateBaseIfArchived(ctx, tx, d, schema, src)
 	}
 	return nil
+}
+
+// vetoUnarchiveWithActiveSibling enforces, on the /unarchive verb, the invariant
+// the INSERT probe enforces on POST: at most one ACTIVE role row per identity
+// per role table. Under the separate-FK model the identity may carry archived
+// remnants NEXT TO a newer active row (the dev's active-only uniqueness
+// contract); reviving a remnant would then put two active roles on the same
+// identity, so it is the same 409 a POST raises. A no-op for a role without a
+// shared base and for the shared-PK model (the PK itself caps the table at one
+// row per identity). The probe excludes the row being unarchived — this verb's
+// own UPDATE already ran in the surrounding TX, and the conflict is about the
+// OTHER rows.
+func (b *BaseEngine) vetoUnarchiveWithActiveSibling(ctx context.Context, tx WriteTx, d Dialect, schema *TableSchema, src domain.Entity, id, entityName string) error {
+	base, fkCol, ok := schema.SharedBaseRef()
+	if !ok || fkCol == schema.PKColumn() {
+		return nil
+	}
+	sd, hasSD := schema.SoftDeleteColumn()
+	if !hasSD {
+		return nil // unreachable on the unarchive verb (requireSoftDelete gates it); defensive
+	}
+	_, nk := sharedBaseValues(base, src)
+	if err := requireNaturalKey(base, nk); err != nil {
+		return err
+	}
+	baseID := deterministicBaseID(nk)
+	q := "SELECT 1 FROM " + d.QuoteIdent(schema.Table()) +
+		" WHERE " + d.QuoteIdent(fkCol) + " = " + d.Placeholder(1) +
+		" AND " + d.QuoteIdent(schema.PKColumn()) + " <> " + d.Placeholder(2) +
+		" AND " + d.QuoteIdent(sd) + " IS NULL LIMIT 1"
+	rows, err := tx.Query(ctx, q, d.EncodeArg(domain.NewID(baseID)), d.EncodeArg(domain.NewID(id)))
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	if rows.Next() {
+		return SingleNotificationError(entityName, schema.PKColumn(), domain.EntityAlreadyAddedNotification{})
+	}
+	return rows.Err()
 }
 
 // baseLifecycleTarget resolves the shared base + its soft-delete column + the
