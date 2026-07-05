@@ -182,6 +182,37 @@ func TestGuardJoinFieldIndex_RejectsCompoundIndexJoinFieldNotFirst(t *testing.T)
 	}
 }
 
+func TestGuardJoinFieldIndex_EmbedManyNeedsNoIndex(t *testing.T) {
+	// A one-to-many EmbedMany resolves its recompose-ripple by the CHANGED
+	// child's FK value → the parent _id (always indexed), never a reverse scan
+	// of the embedding view on the child FK column (which the parent doc does
+	// not carry at top level). So — unlike a one-to-one Embed — it requires NO
+	// covering index on the view, even without any Indexes(...) declared.
+	src := query.FromSchema(core.NewExternalSchema("items").PK("id").FK("order_id")).As("Members")
+	v := query.View("orders").Root("orders").
+		EmbedMany("members", src).
+		Version(1)
+	if errs := guardJoinFieldIndex([]*query.ViewDefinition{v}); len(errs) != 0 {
+		t.Errorf("an external EmbedMany must not require a covering index, got %v", errs)
+	}
+}
+
+func TestGuardJoinFieldIndex_OneToOneStillNeedsIndexAlongsideEmbedMany(t *testing.T) {
+	// A view mixing both embeds of the same collection: the 1:1 still needs its
+	// covering index; the 1:N does not. With only the 1:1 index declared, the
+	// guard is satisfied (no 1:N complaint).
+	one := extEmbed("items", "featured_id", "Featured")
+	many := query.FromSchema(core.NewExternalSchema("items").PK("id").FK("order_id")).As("Members")
+	v := query.View("orders").Root("orders").
+		Embed("featured", one).
+		EmbedMany("members", many).
+		Indexes(query.Index("featured_id")).
+		Version(1)
+	if errs := guardJoinFieldIndex([]*query.ViewDefinition{v}); len(errs) != 0 {
+		t.Errorf("1:1 index present + 1:N index-free must pass, got %v", errs)
+	}
+}
+
 func TestGuardAnonymizePolicy_RejectsEmptyFields(t *testing.T) {
 	subs := []UpstreamSubscription{
 		{Topic: "users.events", Collection: "users", OnUpstreamDelete: UpstreamDeleteAnonymize},

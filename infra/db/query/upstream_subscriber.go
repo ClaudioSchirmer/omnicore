@@ -124,6 +124,13 @@ type UpstreamSubscriber struct {
 	composer         *Composer
 	cfg              UpstreamSubscriberConfig
 	dependentViews   []*ViewDefinition
+	// hasManyEmbed is true when at least one dependent view embeds this
+	// subscription's collection via a one-to-many EmbedMany. It gates the extra
+	// "read the doc before the change" step the 1:N recompose-ripple needs (to
+	// learn which parent the changed child belonged to); a subscription feeding
+	// only one-to-one Embeds skips that read entirely, so its behavior is
+	// byte-identical to before this path existed.
+	hasManyEmbed     bool
 	brokers          []string
 	logger           *slog.Logger
 	metrics          *upstreamMetrics
@@ -209,6 +216,12 @@ func NewUpstreamSubscriber(
 		stop:           make(chan struct{}),
 		done:           make(chan struct{}),
 	}
+	for _, v := range dependentViews {
+		if anyManyEmbedOf(v.Embeds(), cfg.Collection) {
+			s.hasManyEmbed = true
+			break
+		}
+	}
 	if err := s.parseOffsetSeek(); err != nil {
 		return nil, err
 	}
@@ -260,7 +273,11 @@ func (s *UpstreamSubscriber) RetryPendingFailures(ctx context.Context) (int, err
 			continue
 		}
 		seen[p.UpstreamID] = true
-		s.ripple(ctx, p.UpstreamID)
+		// On retry there is no before/after event pair; read the current local doc
+		// so a 1:N EmbedMany can still resolve its parent. A one-to-one embed
+		// ignores it (it rediscovers by FindIDsByField on the upstream id).
+		current := s.readLocalDoc(ctx, p.UpstreamID)
+		s.ripple(ctx, p.UpstreamID, nil, current)
 		if ctx.Err() != nil {
 			return len(seen), ctx.Err()
 		}
@@ -521,24 +538,32 @@ func (s *UpstreamSubscriber) processMessage(ctx context.Context, msg kafka.Messa
 // every dependent view. Used by INSERTED / UPDATED / UNARCHIVED / soft
 // ARCHIVED.
 func (s *UpstreamSubscriber) upsertAndRipple(ctx context.Context, id string, payload bson.M) {
+	// Read the pre-change doc first: a 1:N EmbedMany needs the OLD parent id (the
+	// child's prior FK value) to recompose a parent the child just moved away
+	// from. No-op read for one-to-one-only subscriptions.
+	before := s.readLocalDoc(ctx, id)
 	if err := s.mongo.Upsert(ctx, s.cfg.Collection, id, payload); err != nil {
 		s.logger.Error("upstream subscriber: local upsert failed",
 			"topic", s.cfg.Topic, "collection", s.cfg.Collection, "id", id, "err", err)
 		return
 	}
-	s.ripple(ctx, id)
+	s.ripple(ctx, id, before, payload)
 }
 
 // deleteAndRipple removes the local doc and triggers recompose-ripple.
 // Used by hard ARCHIVED (DeleteOnArchive=true) and by DELETED under the
 // cascade policy.
 func (s *UpstreamSubscriber) deleteAndRipple(ctx context.Context, id string) {
+	// Capture the doc before deleting it: a 1:N EmbedMany learns which parent to
+	// recompose (drop the child from its array) from the child's FK value, which
+	// is gone once the doc is deleted. No-op read for one-to-one-only subscriptions.
+	before := s.readLocalDoc(ctx, id)
 	if err := s.mongo.Delete(ctx, s.cfg.Collection, id); err != nil {
 		s.logger.Error("upstream subscriber: local delete failed",
 			"topic", s.cfg.Topic, "collection", s.cfg.Collection, "id", id, "err", err)
 		return
 	}
-	s.ripple(ctx, id)
+	s.ripple(ctx, id, before, nil)
 }
 
 // dispatchDelete routes a DELETED event by the configured
@@ -549,6 +574,7 @@ func (s *UpstreamSubscriber) dispatchDelete(ctx context.Context, id string) {
 		s.deleteAndRipple(ctx, id)
 
 	case upstreamDeletePolicyAnonymize:
+		before := s.readLocalDoc(ctx, id)
 		blanked := make(bson.M, len(s.cfg.AnonymizeFields))
 		for _, f := range s.cfg.AnonymizeFields {
 			blanked[f] = nil
@@ -558,7 +584,7 @@ func (s *UpstreamSubscriber) dispatchDelete(ctx context.Context, id string) {
 				"topic", s.cfg.Topic, "id", id, "err", err)
 			return
 		}
-		s.ripple(ctx, id)
+		s.ripple(ctx, id, before, nil)
 
 	case upstreamDeletePolicyKeep:
 		// No-op on the local collection AND no downstream recompose
@@ -592,32 +618,28 @@ func (s *UpstreamSubscriber) dispatchDelete(ctx context.Context, id string) {
 // ResolveUpstreamFailures so prior pending rows for the same coordinate
 // are marked as resolved — the failure table mirrors the live state, not
 // a monotonically-growing log.
-func (s *UpstreamSubscriber) ripple(ctx context.Context, upstreamID string) {
+func (s *UpstreamSubscriber) ripple(ctx context.Context, upstreamID string, before, after Document) {
 	for _, v := range s.dependentViews {
-		joinField := s.joinFieldFor(v)
-		if joinField == "" {
-			// Defensive — bootstrap.validateUpstreamSubscriptions
-			// rejected views with external FromSchema embeds without a
-			// join field. If we land here, the view's shape
-			// changed at runtime (impossible today) — log and skip.
-			s.logger.Error("upstream subscriber: view embeds collection but no join field declared",
+		embeds := collectMongoEmbeds(v.Embeds(), s.cfg.Collection)
+		if len(embeds) == 0 {
+			// Defensive — bootstrap.validateUpstreamSubscriptions rejected views
+			// with external FromSchema embeds without a join field, and this view
+			// is a dependent only because it embeds this collection. If we land
+			// here, the view's shape changed at runtime (impossible today) — log
+			// and skip.
+			s.logger.Error("upstream subscriber: dependent view has no embed of the collection",
 				"topic", s.cfg.Topic, "view", v.Name(), "collection", s.cfg.Collection)
 			continue
 		}
-		failed := false
-		ids, err := s.mongo.FindIDsByField(ctx, v.Name(), joinField, upstreamID)
-		if err != nil {
-			s.metrics.inc(s.cfg.Topic, v.Name(), upstreamRecomposeStageDiscover)
-			s.logger.Error("upstream.recompose.discover",
-				"subscription", s.cfg.Topic,
-				"collection", s.cfg.Collection,
-				"view", v.Name(),
-				"upstreamID", upstreamID,
-				"err", err)
-			s.recordFailure(ctx, v.Name(), upstreamID, "", UpstreamFailureStageDiscover, err)
+		// Discover the local parent docs to recompose — the UNION across every
+		// embed of this collection on the view (a view may embed the same
+		// collection both 1:1 and 1:N). See discoverRippleTargets.
+		localIDs, discoverErr := s.discoverRippleTargets(ctx, v, embeds, upstreamID, before, after)
+		if discoverErr {
 			continue
 		}
-		for _, localID := range ids {
+		failed := false
+		for _, localID := range localIDs {
 			doc, err := s.composer.Compose(ctx, v, localID)
 			if err != nil {
 				s.metrics.inc(s.cfg.Topic, v.Name(), upstreamRecomposeStageCompose)
@@ -653,6 +675,125 @@ func (s *UpstreamSubscriber) ripple(ctx context.Context, upstreamID string) {
 			s.resolveFailures(ctx, v.Name(), upstreamID)
 		}
 	}
+}
+
+// discoverRippleTargets computes the distinct local parent _ids to recompose for
+// one dependent view, unioning every embed of the changed collection:
+//
+//   - one-to-one Embed: the PARENT holds the FK column, so scan the parent view
+//     for docs whose join field == the changed upstream _id
+//     (FindIDsByField(view, parentFK, upstreamID)).
+//   - one-to-many EmbedMany: the CHILD holds the FK, and its value IS the parent
+//     _id, so read it from the doc state BEFORE and AFTER the change — a moved or
+//     deleted child must recompose both the old and the new parent, and neither
+//     is reachable by scanning the parent view (the FK lives on the child, under
+//     the embed segment). No reverse scan, no covering index: the target is the
+//     parent primary key, always indexed.
+//
+// Returns (ids, discoverErr): discoverErr is true when a 1:1 reverse scan errored
+// (already recorded), signalling the caller to skip this view for this pass.
+func (s *UpstreamSubscriber) discoverRippleTargets(
+	ctx context.Context,
+	v *ViewDefinition,
+	embeds []embedDef,
+	upstreamID string,
+	before, after Document,
+) ([]string, bool) {
+	seen := map[string]struct{}{}
+	var ordered []string
+	add := func(id string) {
+		if id == "" {
+			return
+		}
+		if _, dup := seen[id]; dup {
+			return
+		}
+		seen[id] = struct{}{}
+		ordered = append(ordered, id)
+	}
+	for _, e := range embeds {
+		if e.Many() {
+			fkCol := e.Source().SchemaDef().FKColumn()
+			add(docFieldString(before, fkCol))
+			add(docFieldString(after, fkCol))
+			continue
+		}
+		ids, err := s.mongo.FindIDsByField(ctx, v.Name(), e.JoinColumn(), upstreamID)
+		if err != nil {
+			s.metrics.inc(s.cfg.Topic, v.Name(), upstreamRecomposeStageDiscover)
+			s.logger.Error("upstream.recompose.discover",
+				"subscription", s.cfg.Topic,
+				"collection", s.cfg.Collection,
+				"view", v.Name(),
+				"upstreamID", upstreamID,
+				"err", err)
+			s.recordFailure(ctx, v.Name(), upstreamID, "", UpstreamFailureStageDiscover, err)
+			return nil, true
+		}
+		for _, id := range ids {
+			add(id)
+		}
+	}
+	return ordered, false
+}
+
+// readLocalDoc returns the current local upstream document by id — the source of
+// a 1:N EmbedMany's parent id (read BEFORE an upsert/delete to learn the old
+// parent, or on a retry to learn the current one). Nil (and no Mongo read) when
+// no dependent view embeds this collection 1:N, so a purely one-to-one
+// subscription pays nothing.
+func (s *UpstreamSubscriber) readLocalDoc(ctx context.Context, id string) Document {
+	if !s.hasManyEmbed {
+		return nil
+	}
+	docs, err := s.mongo.FindManyByField(ctx, s.cfg.Collection, "_id", id)
+	if err != nil || len(docs) == 0 {
+		return nil
+	}
+	return docs[0]
+}
+
+// collectMongoEmbeds returns every embed (recursively, including nested) whose
+// source is the given upstream Mongo collection.
+func collectMongoEmbeds(embeds []embedDef, collection string) []embedDef {
+	var out []embedDef
+	for _, e := range embeds {
+		if e.source == nil {
+			continue
+		}
+		if e.source.IsMongo() && e.source.Collection() == collection {
+			out = append(out, e)
+		}
+		out = append(out, collectMongoEmbeds(e.source.embeds, collection)...)
+	}
+	return out
+}
+
+// anyManyEmbedOf reports whether any embed of the collection is a one-to-many
+// EmbedMany — the signal that the subscriber must read the pre-change document.
+func anyManyEmbedOf(embeds []embedDef, collection string) bool {
+	for _, e := range collectMongoEmbeds(embeds, collection) {
+		if e.many {
+			return true
+		}
+	}
+	return false
+}
+
+// docFieldString extracts doc[field] as a string ("" when the doc is nil, the
+// field is absent, or the value is nil).
+func docFieldString(doc Document, field string) string {
+	if doc == nil {
+		return ""
+	}
+	v, ok := doc[field]
+	if !ok || v == nil {
+		return ""
+	}
+	if str, ok := v.(string); ok {
+		return str
+	}
+	return fmt.Sprintf("%v", v)
 }
 
 // recordFailure persists one ripple failure row in PG. Best-effort: any
