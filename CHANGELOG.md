@@ -11,6 +11,28 @@ with `1.0.0`.
 
 ## [Unreleased]
 
+## [0.19.0] - 2026-07-05
+
+### Fixed
+
+- **`EmbedMany` over an external/upstream source now composes AND recomposes
+  end to end.** It was declared-but-broken on two independent levels: (1) boot
+  aborted because the §8.1 join-field-index guard demanded a covering index on
+  the embedding view's bare child FK column, which the Mongo spec validator
+  rejected — the composer emits that field only under the embed segment (e.g.
+  `items.account_id`), never bare; (2) the upstream recompose-ripple discovered
+  parents only via `FindIDsByField(view, joinField, upstreamID)` — the one-to-one
+  shape — so a 1:N child change never found its parent to recompose. The ripple
+  now branches by cardinality: a one-to-one `Embed` keeps the reverse scan,
+  while a one-to-many `EmbedMany` resolves the parent by the CHANGED child's FK
+  value → the parent `_id` (read from the doc state BEFORE and AFTER the change,
+  so a moved or deleted child recomposes BOTH the old and the new parent). The
+  §8.1 guard no longer requires a covering index for an `EmbedMany` (its reverse
+  lookup is the parent primary key, always indexed). A view may now embed the
+  same upstream collection both 1:1 and 1:N. This makes real the
+  `Embed`/`EmbedMany` external-source support documented for both `query.View`
+  and `query.SharedBaseView`.
+
 ## [0.18.0] - 2026-07-04
 
 ### Added

@@ -131,6 +131,17 @@ func guardJoinFieldIndex(views []*query.ViewDefinition) []string {
 				))
 				continue
 			}
+			// A one-to-many EmbedMany needs NO covering index on the embedding
+			// view: its recompose-ripple resolves parents by the CHANGED upstream
+			// doc's FK value → the parent _id (always indexed), never by a reverse
+			// scan of the parent view on the child FK column — which the parent
+			// document does not even carry at top level (it lives under the embed
+			// segment, e.g. "items.account_id"). The covering-index requirement is
+			// a one-to-one Embed concern ONLY: there the PARENT holds the FK column
+			// the ripple scans by (FindIDsByField(view, parentFK, upstreamID)).
+			if e.Many() {
+				continue
+			}
 			if !viewIndexesCover(v, joinField) {
 				out = append(out, fmt.Sprintf(
 					"§8.1 view %q embeds upstream Mongo collection %q on join field %q "+

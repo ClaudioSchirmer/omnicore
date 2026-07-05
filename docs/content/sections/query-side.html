@@ -310,6 +310,62 @@ const (
         </tr>
     </tbody></table>
 
+    <h3 id="qry-view-constructors">The three view constructors — and the join each speaks</h3>
+    <p>
+        Every read model is declared through one of three constructors. Two <strong>materialize</strong> (a CDC-fed Mongo
+        collection kept in sync by the SyncEngine); the third joins at <strong>read time</strong> and stores nothing:
+    </p>
+    <table>
+        <tbody><tr><th>Constructor</th><th>Root</th><th>What it projects</th><th>Materialized?</th></tr>
+        <tr>
+            <td><code>query.View(name)</code></td>
+            <td>A regular table — an aggregate root or a role table.</td>
+            <td>The aggregate's own data, decomposed automatically from its <a href="#table-schema">TableSchema</a> — root
+                fields flat, <code>.Sibling</code> tables merged flat, 1:N <code>.Child</code> children nested — plus any
+                <code>Embed</code>/<code>EmbedMany</code> of EXTERNAL sources.</td>
+            <td>Yes — write time</td>
+        </tr>
+        <tr>
+            <td><code>query.SharedBaseView(base, name)</code></td>
+            <td>A shared base (<code>core.NewSharedBase</code>).</td>
+            <td>The all-in-one identity: base fields flat, base children nested, one sub-document per <code>.Role(...)</code>
+                (each role's siblings flat, children nested) — plus any <code>Embed</code>/<code>EmbedMany</code> of EXTERNAL
+                sources.</td>
+            <td>Yes — write time</td>
+        </tr>
+        <tr>
+            <td><code>query.ComposedView(name)</code></td>
+            <td>A <code>Primary(...)</code> view — regular OR shared-base.</td>
+            <td>The primary read exactly as a direct read would, enriched at read time with <code>Link</code>/<code>LinkMany</code>
+                legs — internal views AND external collections, mixed freely. No new collection.</td>
+            <td><strong>No</strong> — read time</td>
+        </tr>
+    </tbody></table>
+    <p>
+        <strong>Why embeds are external-only.</strong> An aggregate's own children, siblings and shared base already
+        decompose out of the declarative schema, so the two materialized constructors reach OTHER data only through an
+        external <code>Embed</code>/<code>EmbedMany</code> — a write-anchored (internal) embed source is a fatal boot error.
+        Joining an internal view that already exists is precisely what the read-time <code>ComposedView</code> adds. That is
+        why the join vocabulary splits by constructor, and why one family has a single source constructor while the other has
+        two:
+    </p>
+    <table>
+        <tbody><tr><th>Constructor(s)</th><th>Method</th><th>2nd arg</th><th>Built from — and reach</th></tr>
+        <tr><td><code>View</code> / <code>SharedBaseView</code></td><td><code>Embed(seg, src)</code> — 1:1</td><td><code>*Source</code></td><td><code>query.FromSchema(core.NewExternalSchema(…))</code> — EXTERNAL only; FK on the parent.</td></tr>
+        <tr><td><code>View</code> / <code>SharedBaseView</code></td><td><code>EmbedMany(seg, src)</code> — 1:N</td><td><code>*Source</code></td><td><code>query.FromSchema(core.NewExternalSchema(…))</code> — EXTERNAL only; FK on the child schema.</td></tr>
+        <tr><td><code>ComposedView</code></td><td><code>Link(seg, leg)</code> — 1:1</td><td><code>*Leg</code></td><td><code>query.JoinView(view)</code> (INTERNAL registered view) <em>or</em> <code>query.JoinUpstream(core.NewExternalSchema(…))</code> (EXTERNAL); FK on the primary.</td></tr>
+        <tr><td><code>ComposedView</code></td><td><code>LinkMany(seg, leg)</code> — 1:N</td><td><code>*Leg</code></td><td>Same two constructors; FK on the leg (<code>leg.fk → primary._id</code>); <code>OrderBy</code> + <code>MaxLinkManyLimit</code> apply.</td></tr>
+    </tbody></table>
+    <p>
+        Both families share <code>.FK(column)</code> — the FK always points at the other side's PK/<code>_id</code>; the 1:1
+        side that holds it is the parent/primary, the 1:N side is the child/leg — and <code>.As(goSegment)</code>, mandatory
+        on every external source (a type-less schema has no Go type to derive the segment from). Note the symmetry:
+        <code>FromSchema</code> and <code>JoinUpstream</code> take the SAME thing (a <code>core.NewExternalSchema</code>);
+        only <code>JoinView</code> has no embed counterpart, because embedding an internal view would duplicate data the
+        schema already projects. The embed surface is detailed under <a href="#table-schema">TableSchema</a>; the
+        <code>Link</code> surface is below.
+    </p>
+
     <h3 id="qry-composed-view">ComposedView — query-time composition</h3>
     <p>
         <strong>A ComposedView is not a view like the others.</strong> It is never materialized, never

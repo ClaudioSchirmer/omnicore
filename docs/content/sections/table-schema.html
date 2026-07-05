@@ -242,16 +242,24 @@ func NewUserRepository(eng core.RelationalEngine) *UserRepository {
 <h3>The same schema drives the Mongo view</h3>
 <p>
     The read-side <code>ViewDefinition</code> reuses the very same schemas. The root schema is attached via
-    <code>.Schema(...)</code>; each embed source is constructed from a schema via <code>query.FromSchema(...)</code> — the
-    single embed source constructor. From the schema the framework derives the table/collection
-    (<code>ts.Table()</code>), the store kind (a type-anchored <code>NewTableSchema[T]</code> → a local relational source;
-    a type-less <code>NewExternalSchema</code> → an external/Mongo source), and — for an <code>EmbedMany</code> — the join
-    FK (<code>ts.FKColumn()</code>). The composer writes physical columns to Mongo; the reader translates each leaf back to
-    its Go field name using these schemas (so <code>mail</code> → <code>Email</code>, <code>zip_code</code> →
-    <code>ZipCode</code>). For a local (type-anchored) embed the parent-side Go segment is <em>derived</em> from the
-    schema's Go type — pluralized for an <code>EmbedMany</code> (<code>Address</code> → <code>Addresses</code>), the type
-    name for a one-to-one <code>Embed</code> — so <code>.As(...)</code> is only an optional override. The view also honors
-    the schema's soft-delete column when <code>DeleteOnArchive</code> is set.
+    <code>.Schema(...)</code>; the aggregate's own data — root fields flat, <code>.Sibling</code> tables merged flat, 1:N
+    <code>.Child</code> children nested — projects <em>automatically</em> from it, nothing declared on the view beyond the
+    schema. <strong>Internal data is never embedded</strong>: it already decomposes through the declarative schema
+    (<code>.Child(...)</code> for 1:N children, <code>.Sibling(...)</code> for 1:1 secondary tables, a
+    <a href="#table-schema~shared-base-view">SharedBaseView</a> for the shared base + roles).
+</p>
+<p>
+    <code>Embed</code> / <code>EmbedMany</code> exist for one thing only — <strong>EXTERNAL data</strong> — so each embed
+    source is constructed via <code>query.FromSchema(...)</code> (the single embed source constructor) over a type-less
+    <code>core.NewExternalSchema</code>; a write-anchored <code>NewTableSchema[T]</code> as an embed source is a
+    <strong>fatal boot error</strong> (<code>ValidateViewSchemas</code>) — local data has no business being embedded when it
+    already auto-projects. From the schema the framework derives the collection (<code>ts.Table()</code>) and — for an
+    <code>EmbedMany</code> — the join FK (<code>ts.FKColumn()</code>). The composer writes physical columns to Mongo; the
+    reader translates each leaf back to its Go field name (so <code>mail</code> → <code>Email</code>, <code>zip_code</code>
+    → <code>ZipCode</code>). Because an external source has no Go type to derive a segment from, <code>.As(...)</code> is
+    <strong>mandatory</strong> on every embed. The view also honors the schema's soft-delete column when
+    <code>DeleteOnArchive</code> is set. This holds identically for a regular <code>query.View</code> and a
+    <code>SharedBaseView</code> — both may embed external sources; neither may embed internal data.
 </p>
 <pre><code>func UserView() *query.ViewDefinition {
     return query.View("users").
@@ -302,9 +310,9 @@ func OrdersView() *query.ViewDefinition {
     <strong>Schema is mandatory on every view.</strong> The root (<code>ViewDefinition.Schema(ts)</code>) and every embed
     (<code>FromSchema</code> always carries one) must declare a schema. A missing root schema, or an external embed missing
     <code>.As(...)</code>, is a <strong>fatal boot error</strong> via <code>query.ValidateViewSchemas(views)</code> (called
-    by <code>bootstrap.Run</code>). There is no optional / pass-through / schema-less mode. Local (type-anchored) embeds
-    derive their parent-side Go segment from the schema's Go type, so <code>.As(...)</code> is an optional override there;
-    external (type-less) embeds inherit nothing from Go and must declare the segment via <code>.As(...)</code>.
+    by <code>bootstrap.Run</code>). There is no optional / pass-through / schema-less mode. Every embed source is
+    external/type-less (an embed composes EXTERNAL data only — see above), so it inherits no Go type to derive its segment
+    from: <code>.As(...)</code> is always required, never an optional override.
 </p>
 
 <h3>Boot checks</h3>
