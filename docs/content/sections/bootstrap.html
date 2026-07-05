@@ -307,8 +307,62 @@ func (f *UsersFeature) Mount(app *fiber.App, d bootstrap.Deps) {
         <li><code>Wiring.BeforeServe(app, deps)</code> if set (escape hatch for routes/middlewares outside the Feature model)</li>
         <li>once every route is registered, each <code>auth.publicRoutes</code> entry is validated against the registered route set — a typo / wrong method / trailing slash (no matching route) or a path parameter / wildcard (which the exact-match auth middleware can never honor — mark the route <code>Doc.Public=true</code> instead) aborts the boot</li>
         <li><code>app.Listen(cfg.HTTP.Addr)</code> in a goroutine; awaits <code>ctx.Done()</code></li>
-        <li>HTTP drain (<code>app.ShutdownWithContext</code>) capped at <code>shutdown.drainTimeoutSeconds</code> (default 30s); then <code>Wiring.OnShutdown</code> if set</li>
+        <li>Graceful shutdown — the coordinated drain described below</li>
     </ol>
+
+    <h3 id="boot-shutdown">Graceful shutdown — the dependency-ordered drain</h3>
+    <p>
+        Shutdown is coordinated by <strong>explicit dependency, never by timing</strong>: every stage
+        unblocks only when what it waits for has actually FINISHED, and the storage handles close only
+        after every producer of work over them has fully stopped. The only time-shaped element is the
+        overall budget (<code>shutdown.drainTimeoutSeconds</code>, default 30s): a stage that cannot
+        finish inside it is surfaced as a <code>drain timeout</code> warning naming the stage — never
+        silently abandoned.
+    </p>
+    <div class="flow">SIGINT / SIGTERM
+   │
+   ▼
+signal ctx cancels                       ← every consumer loop stops taking NEW work at once
+   │
+   ▼
+coordinated drain — PARALLEL, each stage waits its OWN completion chain:
+   ├─► http          app.ShutdownWithContext — in-flight requests finish
+   │                 (they may still write to the stores: handles are open until the end)
+   ├─► integration   ConsumerPool.Shutdown — supervisors exit → worker queues drain
+   │                 (every in-flight receiver handler FINISHES) → readers Close()
+   │                 (the Kafka LeaveGroup goes out)
+   ├─► upstream[i]   UpstreamSubscriber.Shutdown — same chain per subscriber:
+   │                 worker drain (every in-flight ripple completes or lands in the
+   │                 failure registry) → reader Close() (LeaveGroup)
+   └─► sync          SyncEngine.Shutdown — worker drain (every in-flight
+                     compose+upsert FINISHES) → reader Close() (LeaveGroup)
+   │
+   ▼
+drainWG.Wait()                           ← barrier: ALL of the above completed (or timed out loudly)
+   │
+   ▼
+Tracing.Shutdown                         ← spans of the final in-flight work flushed AFTER it exists
+   │
+   ▼
+Wiring.OnShutdown                        ← consumer hook; stores still open on purpose
+   │
+   ▼
+Mongo.Close() → relational engine Close()  ← storage handles close LAST — nothing can be
+                                             writing anymore, by dependency, not by luck</div>
+    <p>
+        Why the consumer stages insist on waiting the <em>reader Close</em>: closing a kafka-go reader
+        is what sends the group's <strong>LeaveGroup</strong>. A process that exits while that call is
+        still in flight leaves a <em>ghost member</em> holding its consumer-group slot — and the NEXT
+        boot's JoinGroup then blocks until the session times the ghost out (tens of seconds), which
+        surfaces as "the first CDC event after a restart takes forever". Waiting the full chain also
+        guarantees no projection/ripple/receiver is still writing when the stores close.
+    </p>
+    <p>
+        The parallelism of the drain stage is itself dependency-correct: the four members are mutually
+        independent (none feeds another at shutdown time) and all of them depend only on the stores —
+        which close strictly after the barrier. The Redis cache client and idle outbound HTTP
+        connections hold no pending work at this point and are released by process exit.
+    </p>
 
     <p class="note">Custom health (DB ping, external dependencies) must be exposed on another route (<code>/healthz</code>, <code>/ready</code>) via feature or <code>BeforeServe</code> — the framework's <code>/health</code> is pure liveness.</p>
 

@@ -120,4 +120,12 @@ type Deps struct {
 	// the slice through internal package state. nil when the service
 	// declared zero upstream subscriptions in YAML / Wiring.
 	UpstreamSubscribers []*query.UpstreamSubscriber
+
+	// SyncEngine exposes the live read-side projection engine spun by
+	// bootstrap.Run. Surfaced so serve's coordinated drain can wait for the
+	// projection loop's FULL exit — every in-flight compose+upsert finished,
+	// then the Kafka reader closed (LeaveGroup sent) — before the relational
+	// and Mongo handles close. nil when the service declares no views;
+	// SyncEngine.Shutdown is nil-safe either way.
+	SyncEngine *query.SyncEngine
 }

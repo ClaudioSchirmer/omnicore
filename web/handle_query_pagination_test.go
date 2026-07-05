@@ -232,10 +232,15 @@ func TestPagination_Cursor_TupleLenMatchesSort_Passes(t *testing.T) {
 	}
 }
 
-func TestPagination_Cursor_FilterHashMismatch_Rejected(t *testing.T) {
+func TestPagination_Cursor_FilterHashMismatch_DeferredToReader(t *testing.T) {
 	app, h := mountPaginationWrapper()
 	// Cursor issued for filter {name="Alice"}; current request carries
-	// {name="Bob"}. Hash mismatch → 400 SchemaViolation.
+	// {name="Bob"}. The wrapper does NOT compare context hashes — its wire
+	// snapshot predates ToCriteria overlays, so the comparison would reject
+	// every legitimate cursor of an overlay-bearing paged query. The request
+	// flows through; the reader (which stamps AND validates the
+	// post-ToCriteria context) rejects the mismatch with the same canonical
+	// 400 — proven at the reader's own tests.
 	cursorHash := queries.HashContext(map[string]any{"Name": "Alice"}, nil, "", false)
 	encoded, err := queries.EncodeCursor([]any{"abc-123"}, cursorHash)
 	if err != nil {
@@ -243,12 +248,12 @@ func TestPagination_Cursor_FilterHashMismatch_Rejected(t *testing.T) {
 	}
 	url := "/users?name=Bob&after=" + encoded
 	resp, _ := app.Test(httptest.NewRequest("GET", url, nil))
-	if resp.StatusCode != fiber.StatusBadRequest {
+	if resp.StatusCode != fiber.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
-		t.Fatalf("want 400 on filter mismatch, got %d (body=%s)", resp.StatusCode, body)
+		t.Fatalf("want the wrapper to defer to the reader, got %d (body=%s)", resp.StatusCode, body)
 	}
-	if h.got != nil {
-		t.Errorf("handler must NOT be called")
+	if h.got == nil {
+		t.Fatal("handler should be called — the reader owns the hash check")
 	}
 }
 
@@ -273,30 +278,32 @@ func TestPagination_Cursor_FilterHashMatch_Passes(t *testing.T) {
 	}
 }
 
-func TestPagination_Cursor_FilterAddedMidNavigation_Rejected(t *testing.T) {
+func TestPagination_Cursor_FilterAddedMidNavigation_DeferredToReader(t *testing.T) {
 	app, h := mountPaginationWrapper()
 	// Cursor issued without filter (H=""); current request adds ?name=Bob.
-	// Same rejection — consumer must request page 1 of the filtered query.
+	// The wrapper forwards (structural checks only); the reader's
+	// post-ToCriteria hash check is the one that rejects the changed context.
 	encoded, err := queries.EncodeCursor([]any{"abc-123"}, "")
 	if err != nil {
 		t.Fatalf("EncodeCursor: %v", err)
 	}
 	url := "/users?name=Bob&after=" + encoded
 	resp, _ := app.Test(httptest.NewRequest("GET", url, nil))
-	if resp.StatusCode != fiber.StatusBadRequest {
+	if resp.StatusCode != fiber.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
-		t.Fatalf("want 400, got %d (body=%s)", resp.StatusCode, body)
+		t.Fatalf("want the wrapper to defer to the reader, got %d (body=%s)", resp.StatusCode, body)
 	}
-	if h.got != nil {
-		t.Errorf("handler must NOT be called")
+	if h.got == nil {
+		t.Fatal("handler should be called — the reader owns the hash check")
 	}
 }
 
-func TestPagination_Cursor_SortChangeMidNavigation_Rejected(t *testing.T) {
+func TestPagination_Cursor_SortChangeMidNavigation_DeferredToReader(t *testing.T) {
 	app, h := mountPaginationWrapper()
 	// Cursor issued for sort=name; current request switches to sort=email.
-	// Both have same tuple length so the structural check passes; the hash
-	// check catches the silent direction/field change.
+	// Same tuple length → the wrapper's structural check passes and the
+	// request flows through; the reader's post-ToCriteria hash check catches
+	// the field change (sort participates in the stamped context).
 	cursor := validCursorWithContext(t,
 		[]any{"Alice", "abc-123"},
 		nil,
@@ -304,18 +311,19 @@ func TestPagination_Cursor_SortChangeMidNavigation_Rejected(t *testing.T) {
 		"", false)
 	url := "/users?sort=email&after=" + cursor
 	resp, _ := app.Test(httptest.NewRequest("GET", url, nil))
-	if resp.StatusCode != fiber.StatusBadRequest {
+	if resp.StatusCode != fiber.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
-		t.Fatalf("want 400 on sort field change, got %d (body=%s)", resp.StatusCode, body)
+		t.Fatalf("want the wrapper to defer to the reader, got %d (body=%s)", resp.StatusCode, body)
 	}
-	if h.got != nil {
-		t.Errorf("handler must NOT be called when sort field changed")
+	if h.got == nil {
+		t.Fatal("handler should be called — the reader owns the hash check")
 	}
 }
 
-func TestPagination_Cursor_SortDirectionFlipMidNavigation_Rejected(t *testing.T) {
+func TestPagination_Cursor_SortDirectionFlipMidNavigation_DeferredToReader(t *testing.T) {
 	app, h := mountPaginationWrapper()
 	// Cursor issued for sort=name (asc); current request flips to sort=-name.
+	// Structural checks pass; the reader's hash check owns the rejection.
 	cursor := validCursorWithContext(t,
 		[]any{"Alice", "abc-123"},
 		nil,
@@ -323,12 +331,12 @@ func TestPagination_Cursor_SortDirectionFlipMidNavigation_Rejected(t *testing.T)
 		"", false)
 	url := "/users?sort=-name&after=" + cursor
 	resp, _ := app.Test(httptest.NewRequest("GET", url, nil))
-	if resp.StatusCode != fiber.StatusBadRequest {
+	if resp.StatusCode != fiber.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
-		t.Fatalf("want 400 on sort direction flip, got %d (body=%s)", resp.StatusCode, body)
+		t.Fatalf("want the wrapper to defer to the reader, got %d (body=%s)", resp.StatusCode, body)
 	}
-	if h.got != nil {
-		t.Errorf("handler must NOT be called when sort direction flipped")
+	if h.got == nil {
+		t.Fatal("handler should be called — the reader owns the hash check")
 	}
 }
 

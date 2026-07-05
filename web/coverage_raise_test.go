@@ -247,10 +247,14 @@ func TestValidateCursorAgainstCriteria_AllBranches(t *testing.T) {
 		t.Errorf("expected tuple-length rejection, got bad=%q ok=%v", bad, ok)
 	}
 
-	// Hash mismatch: well-formed cursor whose context hash differs.
+	// Context-hash mismatch is NOT the wrapper's job: at this layer the
+	// criteria is the pre-ToCriteria wire snapshot, while cursors are stamped
+	// from the post-ToCriteria context — comparing them would reject every
+	// legitimate cursor of an overlay-bearing paged query. The reader performs
+	// the authoritative hash check post-ToCriteria; here the cursor passes.
 	hashCursor, _ := queries.EncodeCursor([]any{"x"}, "deadbeef")
-	if bad, ok := validateCursorAgainstCriteria(hashCursor, crit, "after"); ok || bad != "after" {
-		t.Errorf("expected hash-mismatch rejection, got bad=%q ok=%v", bad, ok)
+	if bad, ok := validateCursorAgainstCriteria(hashCursor, crit, "after"); !ok || bad != "" {
+		t.Errorf("expected the hash check to be deferred to the reader, got bad=%q ok=%v", bad, ok)
 	}
 
 	// Decode error: not a valid cursor token.

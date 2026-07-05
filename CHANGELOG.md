@@ -11,6 +11,8 @@ with `1.0.0`.
 
 ## [Unreleased]
 
+## [0.18.0] - 2026-07-04
+
 ### Added
 
 - **`query.ComposedView` — read-time composition (query-time JOIN of existing
@@ -35,8 +37,10 @@ with `1.0.0`.
   leg fetch; `?fields=` projects into segments; cursors bind to the composed
   listing context (segment filters included). Boot-fatal validation
   (`query.ValidateComposedViews`): unknown FK/OrderBy columns, unregistered
-  primary/leg views, an external leg without its subscription, segment
-  collisions, LinkMany-only knobs on a 1:1 link, name shadowing. Registration
+  primary/leg views, an external leg without its subscription, a LinkMany FK
+  without a covering index on the leg view (each page parent runs one
+  find-by-FK subquery — un-indexed, that is a collection scan per parent),
+  segment collisions, LinkMany-only knobs on a 1:1 link, name shadowing. Registration
   via the new `bootstrap.ComposingFeature` opt-in (`ComposedViews()`);
   `bootstrap.Run` installs the composition ON the framework reader by
   mutation (`mongo.MongoViewReader.SetComposedViews`, like `SetViews` — never a
@@ -184,6 +188,41 @@ with `1.0.0`.
   [Auto query handlers](#auto-query-handlers).
 
 ### Fixed
+
+- **Graceful shutdown is now dependency-ordered end to end — every Kafka
+  consumer's LeaveGroup goes out before the process exits.** The SyncEngine
+  ran as a fire-and-forget goroutine outside the coordinated drain: on
+  SIGTERM its deferred reader Close (which sends the consumer group's
+  LeaveGroup) raced process exit, and losing that race left a ghost member
+  holding the group slot — the NEXT boot's JoinGroup then blocked until the
+  session timed the ghost out (tens of seconds), surfacing as "the first CDC
+  event after a restart is late" (the QA-matrix flake signature). The
+  UpstreamSubscriber had the partial form of the same gap (its Shutdown
+  waited in-flight processing but not the supervisor's exit / reader Close).
+  Now: `SyncEngine.Start` is idempotent and tracks a `done` channel that
+  closes only after the loop's full deferred chain (worker queues drained →
+  every in-flight compose+upsert finished → reader closed); the new
+  `SyncEngine.Shutdown(drainCtx)` joins bootstrap's coordinated drain
+  alongside http/integration/upstream (surfaced as `Deps.SyncEngine`,
+  nil-safe); `UpstreamSubscriber.Shutdown` waits the supervisor's exit when
+  started. This also closes a latent race where the relational/Mongo handles
+  could close while sync workers were still composing. Coordination is by
+  explicit dependency (channels/WaitGroups), never timing — the order is
+  locked by unit tests and documented in the new "Graceful shutdown" part of
+  the Bootstrap section.
+
+- **Cursor pagination now composes with `ToCriteria` filter overlays.** The
+  REST wrapper pre-compared the cursor's context hash against the
+  PRE-`ToCriteria` wire criteria, while readers stamp cursors from the
+  POST-`ToCriteria` context (identity overlays included) — so any paged query
+  whose `ToCriteria` layered a security filter (tenant, owner, business gate)
+  had every `?after=`/`?before=` rejected with 400 (page 1 always worked;
+  GraphQL was unaffected — it never pre-validated). The wrapper now performs
+  structural cursor checks only (decodability, tuple length vs sort); the
+  context-hash validation is authoritative at the reader, post-`ToCriteria`,
+  on every surface — a mid-navigation context change still gets the same
+  canonical 400 (`SchemaViolationNotification`), never a silently wrong page.
+  A developer adding a security overlay can no longer break pagination.
 
 - **SharedBase — `/unarchive` now carries the same one-active-role veto as
   `POST`.** The framework invariant is at most ONE ACTIVE role row per identity

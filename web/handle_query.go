@@ -569,29 +569,32 @@ func buildCriteria(c fiber.Ctx, s *queryschema.RequestSchema, projSchema *querys
 	return crit, "", true
 }
 
-// validateCursorAgainstCriteria decodes the cursor and asserts two
-// alignments with the current criteria:
+// validateCursorAgainstCriteria decodes the cursor and asserts its STRUCTURE
+// against the current wire criteria:
 //
+//   - decodability: the cursor must parse under the cursor schema.
 //   - tuple length: len(K)-1 == len(Sort) (the trailing K element is always
-//     _id). A structural pre-check — protects against malformed cursors
-//     before the reader's keyset builder indexes the tuple.
-//   - context hash: cursor.H == HashContext(filter, sort, search, archived).
-//     Covers every listing axis. A mismatch means the consumer changed any
-//     of filter / sort / search / includeArchived mid-navigation.
+//     _id). Protects against malformed cursors before the reader's keyset
+//     builder indexes the tuple.
 //
 // Either case rejects with 400 SchemaViolationNotification on the cursor's
-// wire key so the consumer requests page 1 of the new context before
-// navigating instead of silently honoring the keyset boundary against a
-// different result set.
+// wire key. The CONTEXT-HASH check (cursor.H vs the full listing context —
+// filter + sort + search + includeArchived) deliberately does NOT run here:
+// at this layer the criteria is the WIRE snapshot, BEFORE the Query's
+// ToCriteria(ctx) layers identity overlays (tenant, owner, business gates)
+// onto it — while the reader stamps outgoing cursors from the POST-ToCriteria
+// criteria it received. Comparing the two snapshots rejects every legitimate
+// cursor the moment a paged query carries an overlay. The authoritative hash
+// check lives in the reader (mongo.MongoViewReader / the composed reader),
+// which validates against the same post-ToCriteria context it stamps — a
+// mid-navigation context change is still rejected with the same canonical
+// 400, on every surface (REST and GraphQL alike), never silently honored.
 func validateCursorAgainstCriteria(cursorStr string, crit queries.ReadCriteria, wireKey string) (string, bool) {
 	cursor, err := queries.DecodeCursor(cursorStr)
 	if err != nil {
 		return wireKey, false
 	}
 	if len(cursor.K)-1 != len(crit.Sort) {
-		return wireKey, false
-	}
-	if cursor.H != queries.HashContext(crit.Filter, crit.Sort, crit.Search, crit.IncludeArchived) {
 		return wireKey, false
 	}
 	return "", true

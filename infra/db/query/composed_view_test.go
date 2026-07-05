@@ -36,7 +36,8 @@ func cvNotesSchema() *core.TableSchema {
 }
 
 func cvNotesView() *ViewDefinition {
-	return View("gadget_notes").Version(1).Root("gadget_notes").Schema(cvNotesSchema())
+	return View("gadget_notes").Version(1).Root("gadget_notes").Schema(cvNotesSchema()).
+		Indexes(Index("gadget_id")) // the LinkMany FK must be index-covered (boot-enforced)
 }
 
 func cvUpstreamSchema() *core.TableSchema {
@@ -252,6 +253,16 @@ func TestValidateComposedViews_Rejections(t *testing.T) {
 				LinkMany("notes", JoinView(cvNotesView()).FK("gadget_id").MaxLinkManyLimit(-1)),
 			views: cvRegistered(), ups: cvUpstreams(),
 			fragment: "negative MaxLinkManyLimit",
+		},
+		{
+			name: "LinkMany FK without a covering index",
+			composed: ComposedView("gadgets_full").Primary(cvPrimaryView()).
+				LinkMany("notes", JoinView(
+					View("gadget_notes").Version(1).Root("gadget_notes").Schema(cvNotesSchema()),
+				).FK("gadget_id")),
+			views: []*ViewDefinition{cvPrimaryView(), View("gadget_notes").Version(1).Root("gadget_notes").Schema(cvNotesSchema())},
+			ups:      cvUpstreams(),
+			fragment: "NO covering index",
 		},
 	}
 	for _, tc := range cases {
