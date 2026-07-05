@@ -2,7 +2,9 @@
 
 Static documentation site. No build step, no dependencies. Deploys to GitHub Pages as-is.
 
-Published at **<https://claudioschirmer.github.io/omnicore/>** (GitHub Pages → deploy from branch, folder `/docs`). Section deep-links use the hash route, e.g. `…/omnicore/#integration-events`.
+Published at **<https://claudioschirmer.github.io/omnicore/>** via the GitHub Actions workflow `.github/workflows/pages.yml`, which uploads this `docs/` folder as the single Pages artifact. Publishing is **manual** — Actions tab → *Deploy docs to GitHub Pages* → *Run workflow* — so a push/merge to `main` never republishes the live site on its own; you choose when it goes live. Section deep-links use the hash route, e.g. `…/omnicore/#integration-events`.
+
+> **Pages source setting (one-time):** Settings → Pages → Source must be **"GitHub Actions"** (not "Deploy from a branch"). Leaving the branch source on alongside this workflow produces two `github-pages` artifacts in one deployment and fails with *"Multiple artifacts named github-pages … Artifact count is 2"* — the workflow is the single source of truth.
 
 ## Run locally
 

@@ -1,0 +1,67 @@
+name: Deploy docs to GitHub Pages
+
+# The manual under docs/ is a STATIC site (plain HTML/CSS/JS, no build step).
+# This workflow publishes it via the GitHub Actions Pages flow — uploading the
+# docs/ folder AS-IS and deploying it. It replaces the legacy "Deploy from a
+# branch" source, which (running alongside any Actions-based build) produced
+# TWO `github-pages` artifacts in one run and failed deploy-pages with
+# "Multiple artifacts named github-pages ... Artifact count is 2".
+#
+# REQUIRED ONE-TIME SETTING (maintainer, in the repo UI): Settings → Pages →
+# Build and deployment → Source = "GitHub Actions". That turns OFF the
+# automatic branch build, so this workflow is the SINGLE source of the
+# `github-pages` artifact — which is what makes the duplicate impossible.
+#
+# Note on the Node 20 deprecation warning: actions/checkout, configure-pages,
+# upload-pages-artifact and deploy-pages are, at their current stable majors,
+# Node-20-based; GitHub forces them onto Node 24 and logs a deprecation
+# warning. It is cosmetic (the actions run fine) and clears when GitHub ships
+# Node-24-native majors — nothing to fix on our side.
+
+# MANUAL publish only. The site is NOT republished automatically on push —
+# so a push to main (a merge, a doc edit not yet ready to go live) never
+# publishes on its own. You decide when the public site updates: Actions tab →
+# "Deploy docs to GitHub Pages" → "Run workflow" (on the main branch).
+#
+# (If you ever want it automatic instead, add a `push:` trigger here scoped to
+# `paths: ['docs/**']` — but manual keeps publishing under your control.)
+on:
+  workflow_dispatch: {}
+
+# Least privilege for the Pages deployment.
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# One Pages deployment at a time. A single workflow with a single upload step
+# already guarantees exactly one artifact; this guard additionally prevents two
+# overlapping runs (e.g. rapid pushes) from racing — the older run is left to
+# finish and a superseding one queues, per GitHub's Pages guidance.
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Configure Pages
+        uses: actions/configure-pages@v5
+
+      - name: Upload the static docs/ folder (the ONLY github-pages artifact)
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: docs
+
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
