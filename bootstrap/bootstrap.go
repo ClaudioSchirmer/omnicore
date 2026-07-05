@@ -208,12 +208,12 @@ func runWithConfig(cfg *Config, wire func(Deps) Wiring) error {
 
 	// Read-time composition: collect the ComposedViews from every
 	// ComposingFeature, validate the whole set (fatal boot on any invalid
-	// declaration — R11: never a silent degradation) and wrap the framework
-	// ViewReader with the composed decorator so the composed names resolve
-	// through the same queries.ViewReader port everything already consumes.
-	// Runs AFTER the upstream subscriptions are resolved (an external leg must
-	// name a locally materialized collection) and BEFORE any feature Mount
-	// captures deps.ViewReader.
+	// declaration — R11: never a silent degradation) and install the composed
+	// orchestration ON the framework reader (mutation, like SetViews — never a
+	// reassignment, so handlers that captured deps.ViewReader before this
+	// point, e.g. GraphQL fields registered inside the consumer's Wire(),
+	// resolve composed names too). Runs AFTER the upstream subscriptions are
+	// resolved (an external leg must name a locally materialized collection).
 	composedViews, err := collectComposedViews(wiring.Features)
 	if err != nil {
 		return err
@@ -229,7 +229,7 @@ func runWithConfig(cfg *Config, wire func(Deps) Wiring) error {
 					"the framework MongoViewReader (a custom ViewReader owns its own read policy and gets no decorator)",
 				deps.ViewReader)
 		}
-		deps.ViewReader = mongo.NewComposedViewReader(mvr, composedViews, cfg.Query.MaxLinkManyLimit)
+		mvr.SetComposedViews(composedViews, cfg.Query.MaxLinkManyLimit)
 		deps.Logger.Info("composed views registered", "count", len(composedViews))
 	}
 

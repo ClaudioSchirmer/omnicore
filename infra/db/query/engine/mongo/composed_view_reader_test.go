@@ -424,16 +424,24 @@ func TestComposedReader_InclusionProjectionSelectsLegs(t *testing.T) {
 	if _, present := item["_id"]; present {
 		t.Fatal("the _id helper inclusion must be stripped from the wire shape")
 	}
-	// The leg find carried the translated sparse projection with the leg _id
-	// excluded (partial inclusion).
+	// The leg find carried the translated sparse projection; _id stays as an
+	// INCLUSION (queryable — the attach step may group by it) and is stripped
+	// from the wire shape after translation.
 	folded := env.notes.opts[0]
 	proj, _ := folded.Projection.(bson.D)
 	got := map[string]int{}
 	for _, e := range proj {
 		got[e.Key], _ = e.Value.(int)
 	}
-	if got["text"] != 1 || got["_id"] != 0 {
+	if got["text"] != 1 || got["_id"] != 1 {
 		t.Fatalf("unexpected leg projection: %#v", folded.Projection)
+	}
+	notesArr, _ := item["Notes"].([]any)
+	if len(notesArr) > 0 {
+		first, _ := notesArr[0].(map[string]any)
+		if _, present := first["_id"]; present {
+			t.Fatal("the grouping _id must be stripped from partial-projection segment entries")
+		}
 	}
 	// Projection echo carries the COMPOSED projection for export pruning.
 	if page.Projection["Notes.Text"] != 1 {
@@ -716,5 +724,98 @@ func TestComposedReader_CursorEdgeCases(t *testing.T) {
 	}
 	if cur.H != "" {
 		t.Fatalf("the default context hash must stay canonical-empty, got %q", cur.H)
+	}
+}
+
+// ─── regressions from the E2E round ──────────────────────────────────────────
+
+// A partial inclusion into a 1:1 segment must not break the join: the attach
+// step groups by the leg _id, so the column stays in the Mongo projection and
+// is stripped from the wire shape afterwards.
+func TestComposedReader_PartialMirrorProjectionStillJoins(t *testing.T) {
+	env := newCVREnv()
+	page, err := env.reader.ReadPage(context.Background(), "gadgets_full",
+		queries.ReadCriteria{Projection: map[string]int{
+			"Code":                1,
+			"UpstreamMirror.Code": 1,
+			"_id":                 0,
+		}})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	mirror, ok := page.Items[0]["UpstreamMirror"].(map[string]any)
+	if !ok || mirror["Code"] != "UP-A" {
+		t.Fatalf("partial mirror projection lost the join: %#v", page.Items[0]["UpstreamMirror"])
+	}
+	if _, present := mirror["_id"]; present {
+		t.Fatal("the grouping _id must be stripped from the wire shape")
+	}
+	// The Mongo projection carried _id as an INCLUSION (queryable for the join).
+	folded := env.mirror.opts[0]
+	proj, _ := folded.Projection.(bson.D)
+	got := map[string]int{}
+	for _, e := range proj {
+		got[e.Key], _ = e.Value.(int)
+	}
+	if got["_id"] != 1 || got["code"] != 1 {
+		t.Fatalf("unexpected mirror leg projection: %#v", folded.Projection)
+	}
+}
+
+// SetComposedViews installs the composition by MUTATION on the shared reader
+// instance — a handler that captured the reader BEFORE bootstrap wiring
+// finished (e.g. a GraphQL field registered inside the consumer's Wire())
+// must still resolve composed names.
+func TestMongoViewReader_SetComposedViewsMutatesInPlace(t *testing.T) {
+	env := &cvrEnv{
+		gadgets: &filterColl{count: 1, docs: []bson.M{{"_id": "g1", "code": "A", "mirror_id": "m1"}}},
+		mirror:  &filterColl{docs: []bson.M{{"_id": "g1", "code": "UP-A"}}},
+		notes:   &filterColl{},
+	}
+	db := newFakeMongoFunc(func(name string) mongoColl {
+		switch name {
+		case "gadgets":
+			return env.gadgets
+		case "upstream_gadgets":
+			return env.mirror
+		case "gadget_notes":
+			return env.notes
+		}
+		return &filterColl{}
+	})
+	primary, notes := cvrPrimaryView(), cvrNotesView()
+	mvr := NewMongoViewReader(db).SetViews([]*query.ViewDefinition{primary, notes})
+
+	// The early capture — the port value a handler stored before wiring.
+	var captured queries.ViewReader = mvr
+
+	// Composed reads BEFORE installation hit the regular path (empty unknown
+	// collection → no items), proving the delegation is what changes behavior.
+	pre, err := captured.ReadPage(context.Background(), "gadgets_full", queries.ReadCriteria{})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(pre.Items) != 0 {
+		t.Fatalf("expected no items before installation, got %d", len(pre.Items))
+	}
+
+	mvr.SetComposedViews([]*query.ComposedViewDefinition{cvrComposed(primary, notes)}, 0)
+
+	page, err := captured.ReadPage(context.Background(), "gadgets_full", queries.ReadCriteria{})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(page.Items) != 1 {
+		t.Fatalf("expected the composed read through the early capture, got %d items", len(page.Items))
+	}
+	mirror, _ := page.Items[0]["UpstreamMirror"].(map[string]any)
+	if mirror["Code"] != "UP-A" {
+		t.Fatalf("composed enrichment missing through the early capture: %#v", page.Items[0])
+	}
+	// Reset clears the delegation.
+	mvr.SetComposedViews(nil, 0)
+	post, err := captured.ReadPage(context.Background(), "gadgets_full", queries.ReadCriteria{})
+	if err != nil || len(post.Items) != 0 {
+		t.Fatalf("expected the reset to restore the regular path, got %d items err=%v", len(post.Items), err)
 	}
 }

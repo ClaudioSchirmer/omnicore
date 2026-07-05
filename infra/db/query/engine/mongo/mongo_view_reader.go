@@ -35,6 +35,13 @@ type MongoViewReader struct {
 	mongo      *MongoDB
 	maxLimitFn func(view string) int64
 	viewNodes  map[string]*query.ViewNode
+	// composed handles the read-time composed views (SetComposedViews). A read
+	// against a composed name is delegated to it; every other name follows the
+	// regular path. Installed by MUTATION (like SetViews) so every handler that
+	// captured this reader before bootstrap wiring finished — GraphQL fields
+	// registered inside the consumer's Wire(), for instance — still resolves
+	// composed names.
+	composed *ComposedViewReader
 }
 
 func NewMongoViewReader(m *MongoDB) *MongoViewReader {
@@ -120,6 +127,22 @@ func translateDotted(node *query.ViewNode, dotted string) string {
 	return strings.Join(col, ".")
 }
 
+// SetComposedViews registers the boot-validated composed-view definitions so
+// reads against a composed name orchestrate the read-time composition
+// (primary read + keyed leg fetches). yamlMaxLinkManyLimit is the yaml default
+// of the per-parent LinkMany ceiling cascade. Call with an empty slice (or
+// nil) to reset. Mirrors SetViews: bootstrap mutates the ONE reader instance,
+// so the composition is visible to every consumer regardless of when it
+// captured the reader.
+func (r *MongoViewReader) SetComposedViews(defs []*query.ComposedViewDefinition, yamlMaxLinkManyLimit int64) *MongoViewReader {
+	if len(defs) == 0 {
+		r.composed = nil
+		return r
+	}
+	r.composed = NewComposedViewReader(r, defs, yamlMaxLinkManyLimit)
+	return r
+}
+
 // SetMaxLimitResolver installs the per-view max-limit lookup the reader
 // consults at read time. The closure must return:
 //   - the per-view override (query.ViewDefinition.MaxLimit) when declared (> 0);
@@ -145,6 +168,12 @@ func (r *MongoViewReader) resolveMaxLimit(view string) int64 {
 }
 
 func (r *MongoViewReader) ReadPage(ctx context.Context, view string, c queries.ReadCriteria) (queries.Page, error) {
+	// Composed names delegate to the read-time composition; its primary read
+	// re-enters here under the primary view's (non-composed) name.
+	if r.composed != nil && r.composed.IsComposed(view) {
+		return r.composed.ReadPage(ctx, view, c)
+	}
+
 	maxLimit := r.resolveMaxLimit(view)
 
 	// Limit cascade — the resolved max is always > 0 (framework fallback).
@@ -391,6 +420,9 @@ func (r *MongoViewReader) ReadPage(ctx context.Context, view string, c queries.R
 }
 
 func (r *MongoViewReader) ReadByID(ctx context.Context, view, id string, c queries.ReadCriteria) (map[string]any, bool, error) {
+	if r.composed != nil && r.composed.IsComposed(view) {
+		return r.composed.ReadByID(ctx, view, id, c)
+	}
 	node := r.resolveViewSchema(view)
 	sdCol, sdOn := node.SoftDeleteColumn()
 	col := r.mongo.collFn(view)
