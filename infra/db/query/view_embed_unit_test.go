@@ -3,7 +3,7 @@ package query
 import "testing"
 
 func TestView_EmbedAddsOneToOneSource(t *testing.T) {
-	v := View("v").Root("v").Schema(rootSchema("v")).Embed("child", pgEmbed("child", "").On("v_id")).Version(1)
+	v := View("v").Root("v").Schema(rootSchema("v")).Embed("child", pgEmbed("child", "").FK("v_id")).Version(1)
 	if len(v.Embeds()) != 1 || v.Embeds()[0].many {
 		t.Errorf("Embed should mark many=false, got %+v", v.Embeds())
 	}

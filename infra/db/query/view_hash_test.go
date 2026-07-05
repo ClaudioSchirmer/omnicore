@@ -298,7 +298,7 @@ func TestRebuildHash_StableUnderIndexChanges(t *testing.T) {
 func TestRebuildHash_NestedEmbedChange(t *testing.T) {
 	a := View("orders").Root("orders").
 		EmbedMany("lines", pgEmbed("order_lines", "order_id").
-			Embed("product", pgEmbed("products", "").On("product_id")))
+			Embed("product", pgEmbed("products", "").FK("product_id")))
 	b := View("orders").Root("orders").
 		EmbedMany("lines", pgEmbed("order_lines", "order_id"))
 	if a.RebuildHash() == b.RebuildHash() {

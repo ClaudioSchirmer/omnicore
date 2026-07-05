@@ -206,6 +206,33 @@ func runWithConfig(cfg *Config, wire func(Deps) Wiring) error {
 		return err
 	}
 
+	// Read-time composition: collect the ComposedViews from every
+	// ComposingFeature, validate the whole set (fatal boot on any invalid
+	// declaration — R11: never a silent degradation) and wrap the framework
+	// ViewReader with the composed decorator so the composed names resolve
+	// through the same queries.ViewReader port everything already consumes.
+	// Runs AFTER the upstream subscriptions are resolved (an external leg must
+	// name a locally materialized collection) and BEFORE any feature Mount
+	// captures deps.ViewReader.
+	composedViews, err := collectComposedViews(wiring.Features)
+	if err != nil {
+		return err
+	}
+	if len(composedViews) > 0 {
+		if err := query.ValidateComposedViews(composedViews, views, upstreamCollectionSet(upstreamSubs)); err != nil {
+			return fmt.Errorf("bootstrap: %w", err)
+		}
+		mvr, ok := deps.ViewReader.(*mongo.MongoViewReader)
+		if !ok {
+			return fmt.Errorf(
+				"bootstrap: composed view(s) declared but deps.ViewReader is %T — read-time composition requires "+
+					"the framework MongoViewReader (a custom ViewReader owns its own read policy and gets no decorator)",
+				deps.ViewReader)
+		}
+		deps.ViewReader = mongo.NewComposedViewReader(mvr, composedViews, cfg.Query.MaxLinkManyLimit)
+		deps.Logger.Info("composed views registered", "count", len(composedViews))
+	}
+
 	if len(views) > 0 {
 		// DB-per-service guard: writes the per-boot marker, scans for
 		// foreign collections, warns in dev / aborts otherwise. Runs

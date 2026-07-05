@@ -87,3 +87,48 @@ HTTP 201 Created
             at each step. Same envelope, pipeline, atomic outbox, audit, and notification semantics — the
             escape hatch is for wiring control, not a poorer tier.</li>
     </ul>
+
+    <h3 id="cmd-compositions">Composition types — what the write side declares</h3>
+    <p>
+        The read side serves composed documents; the write side is where each composition's raw
+        material is declared and emitted. One summary per kind, focused on <strong>what the write side
+        must do</strong> for that composition to exist — the full contract lives in each canonical
+        section:
+    </p>
+    <table>
+        <tbody><tr><th>Kind</th><th>What the write side declares / emits</th><th>Canonical reference</th></tr>
+        <tr>
+            <td>Aggregate projection</td>
+            <td>Only the <code>TableSchema</code> the repository already declares (root + siblings +
+                <code>.Child(...)</code>). Every write emits one outbox event per aggregate; the
+                SyncEngine recomposes the projection. Nothing view-specific to write.</td>
+            <td><a href="#table-schema">TableSchema</a></td>
+        </tr>
+        <tr>
+            <td><code>Embed</code> / <code>EmbedMany</code></td>
+            <td>Nothing new on the write path — the embed reads an EXTERNAL collection at compose time.
+                The source's own writes (or upstream events) trigger the recompose ripple; the view
+                declares the join via <code>FromSchema(...).FK(...)</code>.</td>
+            <td><a href="#table-schema">TableSchema</a></td>
+        </tr>
+        <tr>
+            <td><code>SharedBase</code> → <code>SharedBaseView</code></td>
+            <td>The shared base + role schemas (<code>NewSharedBase</code>, <code>.SharedBase(...)</code>
+                on each role). Role writes converge the base lifecycle; role/base events recompose the
+                identity document.</td>
+            <td><a href="#table-schema">TableSchema</a></td>
+        </tr>
+        <tr>
+            <td><code>UpstreamSubscription</code></td>
+            <td>On the PRODUCER: the standard outbox events every write already emits. On the CONSUMER:
+                the subscription (topic → local collection + field filter) — no request-path coupling,
+                ever.</td>
+            <td><a href="#service-to-service">Service-to-service</a></td>
+        </tr>
+        <tr>
+            <td><code>ComposedView</code></td>
+            <td><strong>Nothing.</strong> Read-time only — it joins views that already exist; the write
+                side declares no schema, emits no extra event, materializes no collection.</td>
+            <td><a href="#query-side">Query side</a></td>
+        </tr>
+    </tbody></table>

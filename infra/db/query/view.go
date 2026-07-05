@@ -204,11 +204,13 @@ func FromSchema(ts *core.TableSchema) *Source {
 	return &Source{table: ts.Table(), isMongo: ts.IsExternal(), schema: ts}
 }
 
-// On declares the join key for a one-to-one Embed: the column on the PARENT
-// document holding the foreign key that points at this source's primary key.
-// It is NOT used for EmbedMany — there the join is the child FK declared on the
-// source's own schema via .FK(...). Has no effect on an EmbedMany source.
-func (s *Source) On(key string) *Source {
+// FK declares the join key for a one-to-one Embed: the column on the PARENT
+// document holding the foreign key that points at this source's primary key —
+// the same one-rule join vocabulary the whole system speaks (the FK always
+// points at the other side's PK; the 1:1 parent holds it). It is NOT used for
+// EmbedMany — there the join is the child FK declared on the source's own
+// schema via TableSchema.FK(...). Has no effect on an EmbedMany source.
+func (s *Source) FK(key string) *Source {
 	s.joinKey = key
 	return s
 }
@@ -245,7 +247,7 @@ func (s *Source) SchemaDef() *core.TableSchema { return s.schema }
 
 // JoinColumn returns the physical column the composer joins this embed on:
 // the source's FK column (from the schema) for a one-to-many embed, or the
-// parent-side FK declared via .On for a one-to-one embed.
+// parent-side FK declared via Source.FK for a one-to-one embed.
 func (e embedDef) JoinColumn() string {
 	if e.many {
 		return e.source.schema.FKColumn()
@@ -353,8 +355,8 @@ func appendEmbedSchemaProblems(acc []string, viewName string, embeds []embedDef)
 			}
 			// Join key is mandatory: EmbedMany joins on the child's FK (declared on
 			// its schema via .FK), a one-to-one Embed joins on the parent's FK
-			// (declared via .On). Either missing makes the composer emit broken SQL,
-			// so reject it at boot instead.
+			// (declared via Source.FK). Either missing makes the composer emit
+			// broken SQL, so reject it at boot instead.
 			if e.many {
 				if e.source.schema.FKColumn() == "" {
 					acc = append(acc, fmt.Sprintf(
@@ -365,7 +367,7 @@ func appendEmbedSchemaProblems(acc []string, viewName string, embeds []embedDef)
 			} else if e.source.joinKey == "" {
 				acc = append(acc, fmt.Sprintf(
 					"view %q: one-to-one Embed %q (source %q) declares no parent join key — declare "+
-						".On(col) naming the parent column that holds the FK to this source's PK",
+						".FK(col) naming the parent column that holds the FK to this source's PK",
 					viewName, e.field, e.source.table))
 			}
 		}

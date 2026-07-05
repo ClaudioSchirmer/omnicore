@@ -126,7 +126,7 @@ func guardJoinFieldIndex(views []*query.ViewDefinition) []string {
 				out = append(out, fmt.Sprintf(
 					"§8.1 view %q embeds upstream Mongo collection %q with no join field declared "+
 						"(declare the FK on the source schema via .FK(\"<field>\") for an EmbedMany, "+
-						"or .On(\"<field>\") for a one-to-one Embed)",
+						"or .FK(\"<field>\") for a one-to-one Embed)",
 					v.Name(), e.Source().Collection(),
 				))
 				continue
@@ -240,7 +240,7 @@ func guardMaterializingSource(subs []UpstreamSubscription, views []*query.ViewDe
 						"ViewDefinition — view-on-view composition via an external FromSchema is NOT supported. The "+
 						"recompose ripple is one-hop: an upstream change recomposes %q but never re-ripples "+
 						"to %q, so %q would drift silently. Either embed the upstream collection directly "+
-						"with FromSchema(NewExternalSchema(\"<upstream_collection>\")).On(...), or model the JOIN at the "+
+						"with FromSchema(NewExternalSchema(\"<upstream_collection>\")).FK(...), or model the JOIN at the "+
 						"Postgres root via a local FromSchema over %q if %q is a regular table.",
 					v.Name(), coll, coll, coll, v.Name(), v.Name(), coll, coll,
 				))

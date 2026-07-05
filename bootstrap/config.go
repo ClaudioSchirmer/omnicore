@@ -483,6 +483,13 @@ type QueryConfig struct {
 	// unset) defers to mongo.DefaultMaxExportRows. Negative values are rejected
 	// at boot. The consumer forwards it to ViewDefinition.ResolveMaxExportRows.
 	MaxExportRows int64 `yaml:"maxExportRows"`
+
+	// MaxLinkManyLimit is the default per-parent item ceiling of a composed
+	// view's LinkMany segment, applied to every link that does not declare a
+	// per-link override via Leg.MaxLinkManyLimit. Zero (or unset) defers to
+	// the framework default (query.FrameworkDefaultMaxLinkManyLimit, 100).
+	// Negative values are rejected at boot.
+	MaxLinkManyLimit int64 `yaml:"maxLinkManyLimit"`
 }
 
 // FrameworkDefaultMaxLimit is the read-side `?limit=` ceiling honored when
@@ -502,6 +509,9 @@ func (q *QueryConfig) validate() error {
 	}
 	if q.MaxExportRows < 0 {
 		return fmt.Errorf("query.maxExportRows must be >= 0 (got %d)", q.MaxExportRows)
+	}
+	if q.MaxLinkManyLimit < 0 {
+		return fmt.Errorf("query.maxLinkManyLimit must be >= 0 (got %d)", q.MaxLinkManyLimit)
 	}
 	return nil
 }
