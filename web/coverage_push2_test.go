@@ -54,13 +54,15 @@ func TestBuildCriteria_AfterCursorTupleLengthMismatch(t *testing.T) {
 	}
 }
 
-func TestBuildCriteria_AfterCursorHashMismatch(t *testing.T) {
-	// K aligns (len 1, no sort) but H is non-empty while criteria context
-	// hashes to "" → hash mismatch → reject on after.
+func TestBuildCriteria_AfterCursorHashDeferredToReader(t *testing.T) {
+	// K aligns (len 1, no sort); H is non-empty while the WIRE context hashes
+	// to "". The wrapper deliberately does NOT compare hashes — at this layer
+	// the criteria predates the Query's ToCriteria overlays, while cursors are
+	// stamped post-overlay; the reader performs the authoritative check.
 	cur := mustCursor(t, []any{"id"}, "deadbeefcafe")
 	bad, ok := runBuildCriteria(t, reflect.TypeOf(testFindParamsRequest{}), "/x?after="+cur)
-	if ok || bad != "after" {
-		t.Fatalf("expected after hash mismatch rejection, got bad=%q ok=%v", bad, ok)
+	if !ok || bad != "" {
+		t.Fatalf("expected the hash check deferred to the reader, got bad=%q ok=%v", bad, ok)
 	}
 }
 

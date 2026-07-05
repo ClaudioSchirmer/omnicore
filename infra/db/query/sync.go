@@ -10,6 +10,7 @@ import (
 	"net"
 	"strconv"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/google/uuid"
@@ -66,6 +67,15 @@ type SyncEngine struct {
 	// instrument toggle). bootstrap sets it via WithKafkaTracing; false (the
 	// default) leaves the projection loop untraced and pays nothing.
 	traceKafka bool
+
+	// done closes when the projection loop has FULLY exited — worker drain
+	// (every in-flight compose+upsert finished) and reader Close() (the Kafka
+	// LeaveGroup) included, in that dependency order. Shutdown waits on it so
+	// the process never exits with an in-flight projection racing the store
+	// closes, nor with a ghost member still holding the consumer-group slot.
+	done      chan struct{}
+	startOnce sync.Once
+	started   atomic.Bool
 }
 
 // WithKafkaTracing enables the consumer span on each processed message. bootstrap
@@ -189,11 +199,45 @@ func NewSyncEngine(eng core.RelationalEngine, mongo ReadModelStore, brokers []st
 		groupID:  groupID,
 		topics:   topics,
 		workers:  workers,
+		done:     make(chan struct{}),
 	}
 }
 
+// Start launches the projection loop. Idempotent — a second call is a no-op
+// (guarding the done channel against a double close).
 func (s *SyncEngine) Start(ctx context.Context) {
-	go s.run(ctx)
+	s.startOnce.Do(func() {
+		s.started.Store(true)
+		go func() {
+			// done closes only after run() returned — i.e. after run's own
+			// deferred chain completed: worker queues closed → wg.Wait()
+			// (every in-flight compose+upsert FINISHED) → r.Close() (the
+			// Kafka LeaveGroup went out). Coordination is by dependency,
+			// never by timing.
+			defer close(s.done)
+			s.run(ctx)
+		}()
+	})
+}
+
+// Shutdown blocks until the projection loop has fully exited (see the done
+// field for the exact dependency chain) or drainCtx expires — returning
+// drainCtx.Err() on timeout so bootstrap's coordinated drain surfaces partial
+// drains in its shutdown summary. Without this wait the process could exit
+// while the LeaveGroup was still in flight, leaving a ghost member holding
+// the consumer-group slot: the NEXT boot's JoinGroup then blocks until the
+// session times the ghost out — the "first CDC event after boot is late"
+// symptom. Nil-safe; an engine that never Started returns immediately.
+func (s *SyncEngine) Shutdown(drainCtx context.Context) error {
+	if s == nil || !s.started.Load() {
+		return nil
+	}
+	select {
+	case <-s.done:
+		return nil
+	case <-drainCtx.Done():
+		return drainCtx.Err()
+	}
 }
 
 func (s *SyncEngine) run(ctx context.Context) {

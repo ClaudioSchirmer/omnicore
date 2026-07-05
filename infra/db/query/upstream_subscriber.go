@@ -138,6 +138,14 @@ type UpstreamSubscriber struct {
 	// shared shutdown context to time out at the Kafka socket level.
 	stop     chan struct{}
 	stopOnce sync.Once
+	// done closes when the supervisor loop (run) has FULLY exited — worker
+	// drain (wg.Wait, which subsumes every in-flight processMessage) and
+	// reader Close() (the Kafka LeaveGroup) included, in that dependency
+	// order. Shutdown waits on it when the subscriber was Started, so the
+	// process never exits with the LeaveGroup still in flight.
+	done      chan struct{}
+	startOnce sync.Once
+	started   atomic.Bool
 	// traceKafka gates the per-message consumer span (the tracing `kafka`
 	// instrument toggle). bootstrap sets it via WithKafkaTracing; false (the
 	// default) leaves the ripple loop untraced and pays nothing.
@@ -199,6 +207,7 @@ func NewUpstreamSubscriber(
 		logger:         logger,
 		metrics:        newUpstreamMetrics(),
 		stop:           make(chan struct{}),
+		done:           make(chan struct{}),
 	}
 	if err := s.parseOffsetSeek(); err != nil {
 		return nil, err
@@ -281,10 +290,21 @@ func (s *UpstreamSubscriber) parseOffsetSeek() error {
 
 // Start runs the supervisor in a goroutine and returns immediately. Use
 // to integrate with bootstrap.Run's lifecycle (which spawns one Start
-// per subscription and relies on ctx for drain). Returns nothing because
-// the goroutine logs its own progress + failures.
+// per subscription and drains via Shutdown). Returns nothing because
+// the goroutine logs its own progress + failures. Idempotent — a second
+// call is a no-op (guarding the done channel against a double close).
 func (s *UpstreamSubscriber) Start(ctx context.Context) {
-	go s.run(ctx)
+	s.startOnce.Do(func() {
+		s.started.Store(true)
+		go func() {
+			// done closes only after run() returned — after its deferred
+			// chain: worker queues drained (wg.Wait, every in-flight
+			// processMessage finished) → r.Close() (LeaveGroup sent).
+			// Coordination is by dependency, never by timing.
+			defer close(s.done)
+			s.run(ctx)
+		}()
+	})
 }
 
 func (s *UpstreamSubscriber) run(ctx context.Context) {
@@ -387,13 +407,21 @@ func (s *UpstreamSubscriber) run(ctx context.Context) {
 // shutdown summary. Safe to call from any goroutine; idempotent against
 // multiple invocations (Shutdown via close-once on the stop channel).
 //
-// Fills the gap previously documented in CLAUDE.md: a SIGTERM mid-ripple
-// would drop the in-flight recompose on the floor, leaving stale Mongo
-// docs without an `omnicore_upstream_failures` row to surface them. With
-// Shutdown wired into bootstrap's coordinated drain, every in-flight
-// ripple either completes (offset advances naturally; failure registry is
-// updated; Mongo state matches PG state) or surfaces as a slog.Warn drain
-// timeout so the operator knows which subscribers did not finish.
+// Two gaps this closes, both coordinated by DEPENDENCY (never timing):
+//   - a SIGTERM mid-ripple would drop the in-flight recompose on the floor,
+//     leaving stale Mongo docs without an `omnicore_upstream_failures` row to
+//     surface them — waiting the worker drain guarantees every in-flight
+//     ripple either completes (offset advances; failure registry updated;
+//     Mongo matches PG) or surfaces as a slog.Warn drain timeout;
+//   - the process could exit while the reader's LeaveGroup was still in
+//     flight, leaving a ghost member holding the consumer-group slot — the
+//     next boot's JoinGroup then blocks until the session times the ghost
+//     out. Waiting the supervisor's exit (whose deferred chain drains the
+//     workers, THEN closes the reader) guarantees the LeaveGroup went out
+//     before Shutdown unblocks.
+//
+// A subscriber that was never Started (unit-test construction) falls back to
+// draining the inflight counter only — there is no supervisor to wait for.
 func (s *UpstreamSubscriber) Shutdown(drainCtx context.Context) error {
 	if s == nil {
 		return nil
@@ -401,6 +429,16 @@ func (s *UpstreamSubscriber) Shutdown(drainCtx context.Context) error {
 	// Signal the supervisor to exit at the next loop iteration. sync.Once
 	// guards against repeated Shutdown calls panicking on a closed channel.
 	s.stopOnce.Do(func() { close(s.stop) })
+	if s.started.Load() {
+		// The supervisor's exit subsumes the worker drain (inflight included)
+		// AND the reader close — one wait covers the whole dependency chain.
+		select {
+		case <-s.done:
+			return nil
+		case <-drainCtx.Done():
+			return drainCtx.Err()
+		}
+	}
 	done := make(chan struct{})
 	go func() {
 		s.inflight.Wait()

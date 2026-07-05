@@ -370,6 +370,20 @@ func legCollection(l *Leg) string {
 	return l.schema.Table()
 }
 
+// composedLegIndexCovers reports whether the leg view declares an index whose
+// FIRST key is the given column — the same covering rule the §8.1 embed guard
+// applies to join fields. The per-parent LinkMany subqueries filter on it, so
+// a prefix match is what makes them index-driven.
+func composedLegIndexCovers(v *ViewDefinition, col string) bool {
+	for _, idx := range v.IndexSpecs() {
+		keys := idx.KeyNames()
+		if len(keys) > 0 && keys[0] == col {
+			return true
+		}
+	}
+	return false
+}
+
 // ValidateComposedViews enforces the composed-view boot contract (R11: any
 // declaration exceeding the framework's limits is a fatal boot with an
 // explanatory message, never a silent degradation). views are the registered
@@ -486,6 +500,21 @@ func validateComposedLinks(problems []string, c *ComposedViewDefinition, viewNam
 					addf("composed view %q: LinkMany %q FK column %q does not exist on the leg schema (collection %q)",
 						c.name, ln.docField, ln.leg.fk, schema.Table())
 				}
+			}
+			// A LinkMany runs ONE find({fk: parent}) subquery PER PAGE PARENT;
+			// without an index whose first key is the FK, each subquery is a
+			// full collection scan — O(parents × leg docs) per request, the
+			// classic silent monster. An internal leg declares its indexes on
+			// the ViewDefinition, so this is verifiable at boot; reject it.
+			// (An external leg has no index declaration to inspect — the
+			// operator owns the upstream collection's indexes; the manual
+			// carries the same rule as guidance.)
+			if ln.leg.view != nil && !composedLegIndexCovers(ln.leg.view, ln.leg.fk) {
+				addf("composed view %q: LinkMany %q joins view %q on FK column %q with NO covering index — "+
+					"every page parent runs one find({%s: parent}) subquery, and without an index each one "+
+					"is a full collection scan. Declare query.Index(%q) (or a compound index starting with it) "+
+					"on the leg view",
+					c.name, ln.docField, ln.leg.view.Name(), ln.leg.fk, ln.leg.fk, ln.leg.fk)
 			}
 		} else if c.primary.schema != nil {
 			if ln.leg.fk != c.primary.schema.PKColumn() {

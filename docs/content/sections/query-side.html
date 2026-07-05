@@ -255,6 +255,9 @@ const (
     <div class="note">
         The same <code>ToCriteria(ctx)</code> is consumed by the Auto <code>FindByParamsQueryHandler</code> and
         by any hand-written handler — so tenant scoping and field restriction never require going manual.
+        Overlays also compose with cursor pagination: cursors are stamped from — and validated against —
+        the post-<code>ToCriteria</code> context at the reader, so a security filter added here never
+        invalidates <code>?after=</code>/<code>?before=</code> navigation.
         Going manual buys an arbitrary identifier (e.g. <code>:email</code>) or a bespoke envelope, not the
         authz seam. See <a href="#authz-seams">Authorization</a> for the three-layer model.
     </div>
@@ -377,7 +380,8 @@ func (f *GadgetFeature) ComposedViews() []*query.ComposedViewDefinition {
     <div class="note">
         <strong>Fatal boot, never silent.</strong> Every declaration exceeding the contract aborts the
         boot with an explanatory message: unknown FK/OrderBy columns, an unregistered primary or leg
-        view, an external leg without a matching <code>UpstreamSubscription</code>, a segment colliding
+        view, an external leg without a matching <code>UpstreamSubscription</code>, a LinkMany FK
+        without a covering index on the leg view, a segment colliding
         with a primary field or another segment, <code>OrderBy</code>/<code>MaxLinkManyLimit</code> on a
         1:1 link, <code>.Desc()</code> without <code>OrderBy</code>, a composed name shadowing a view.
         Depth is 1 by design: a leg is a plain view (as deep as its own materialization goes), never
@@ -446,6 +450,86 @@ same envelope, same projector, same pagination block as any view read</div>
         children, column→Go translation.
     </p>
 
+    <h4 id="qry-composed-cost">Read cost model — use it consciously</h4>
+    <p>
+        A composed read trades storage for request-path work, so its cost must be understood BEFORE
+        declaring one — the framework bounds every axis, but the developer chooses the shape. With
+        <code>p</code> = the page size (≤ the resolved <code>maxLimit</code>, the same universal
+        ceiling every read obeys — plain, shared-base or composed) and <code>c</code> = a link's
+        resolved <code>MaxLinkManyLimit</code>:
+    </p>
+    <table>
+        <tbody><tr><th>Step</th><th>Mongo queries</th><th>Documents moved</th><th>Why it is bounded</th></tr>
+        <tr>
+            <td>Primary page</td>
+            <td><strong>O(1)</strong> — one find (+ one count)</td>
+            <td>≤ p</td>
+            <td><code>maxLimit</code> cascade; identical to a plain view read.</td>
+        </tr>
+        <tr>
+            <td>Each 1:1 leg</td>
+            <td><strong>O(1)</strong> — ONE <code>$in</code> batch</td>
+            <td>≤ p (one per distinct key)</td>
+            <td>The page's FK values, <em>deduplicated</em>, nulls skipped; each key is a point
+                lookup on the leg's <code>_id</code> — uniqueness caps the result at one doc per key.
+                A batch of point lookups in one round-trip, never a scan.</td>
+        </tr>
+        <tr>
+            <td>Each 1:N leg</td>
+            <td><strong>O(p)</strong> — one indexed subquery per page parent, 8 in flight</td>
+            <td>≤ p × c</td>
+            <td>Each subquery is <code>find({fk: parent})</code> + declared order +
+                <code>LIMIT c</code>. The per-parent ceiling is what forbids a single global-limit
+                <code>$in</code> here — Mongo limits are per QUERY, not per group, so one fat parent
+                would starve the others' segments.</td>
+        </tr>
+        <tr>
+            <td>By-id read</td>
+            <td><strong>O(1)</strong> — 1 + one fetch per leg</td>
+            <td>≤ 1 + legs × c</td>
+            <td>The page has one parent.</td>
+        </tr>
+    </tbody></table>
+    <p>
+        <strong>Total per request: <code>1 + (#1:1 legs) + (#1:N legs × p)</code> queries, every one
+        index-driven, moving at most <code>p + p·(#1:1) + p·c·(#1:N)</code> documents.</strong>
+        There is no unbounded axis: no query without a <code>LIMIT</code>, no N+1 that grows with the
+        dataset (the query count grows with the PAGE, which you cap), no fan-out beyond the declared
+        ceilings. What keeps each promise honest:
+    </p>
+    <ul>
+        <li><strong>The 1:N FK must be index-covered — enforced at boot.</strong> Without an index
+            whose first key is the FK column, each per-parent subquery is a full collection scan —
+            <code>O(p × leg collection size)</code> per request, the classic silent monster. An
+            internal leg whose view declares no covering index is a <strong>fatal boot</strong>; for
+            an external leg (an upstream collection, whose indexes the operator owns) the same rule
+            applies as a hard operational requirement. A compound index starting with the FK (e.g.
+            <code>(gadget_id, text)</code>) additionally serves the declared order for free.</li>
+        <li><strong>Deep pages multiply legs.</strong> Raising <code>maxLimit</code> raises the 1:N
+            query count linearly (<code>p</code> subqueries per 1:N leg). A composed view meant for
+            wide listings should keep its page ceiling modest — or the composition belongs on the
+            materialization path.</li>
+        <li><strong>Export is the deliberate heavy case.</strong> CSV/XLSX ignores pagination and
+            walks the filtered set up to <code>maxExportRows</code> (default 10,000): the 1:1
+            <code>$in</code> batches thousands of keys and each 1:N leg runs thousands of subqueries.
+            That is the read-time analogue of what the materialized path pays continuously in
+            recompose — concentrated in the export request. The knobs are the existing ones:
+            <code>maxExportRows</code> / per-view <code>MaxExportRows</code> (a composed export
+            delegates to its primary's).</li>
+        <li><strong>More legs = more round-trips, linearly.</strong> Every declared leg costs its row
+            of the table above on EVERY read of the composed name. Declare the legs a surface
+            actually renders — a "kitchen-sink" composition taxes every consumer for segments most
+            never use; split it into two composed views instead.</li>
+    </ul>
+    <div class="note">
+        Rule of thumb: a composed read costs <code>O(1)</code> extra round-trips per 1:1 leg and
+        <code>O(page)</code> tiny indexed lookups per 1:N leg. If the read is hot enough that
+        <code>O(page)</code> subqueries hurt, or consumers need to FILTER/SORT rows by the joined
+        data, that is the signal the composition has outgrown read time — materialize it
+        (<code>Embed</code>/<code>SharedBaseView</code>) and pay at write time instead. The two-paths
+        table below is the decision matrix.
+    </div>
+
     <h4 id="qry-composed-authz">Per-leg authorization — the <code>ToCriteria</code> seam, unchanged</h4>
     <p>
         A composed view can reach, via join, a view the identity could not query directly — so gates
@@ -466,10 +550,12 @@ same envelope, same projector, same pagination block as any view read</div>
     }, nil
 }</code></pre>
     <div class="note">
-        Overlay filters participate in the cursor's listing context. Pair overlay-bearing composed
-        queries with by-id reads and first-page listings; a paged navigation surface should carry its
-        filters on the wire (where the cursor pre-validation sees them) rather than as invisible
-        <code>ToCriteria</code> additions — the same posture every overlay-bearing paged view has today.
+        Overlay filters participate in the cursor's listing context and <strong>compose freely with
+        pagination</strong>: the authoritative context-hash validation runs at the reader,
+        post-<code>ToCriteria</code> — the same context outgoing cursors are stamped with — so adding
+        a security overlay (tenant, owner, business gate) to a paged query, plain or composed, never
+        breaks <code>?after=</code>/<code>?before=</code> navigation. The wire layer performs
+        structural cursor checks only.
     </div>
 
     <h4 id="qry-composed-archived">Archived gates and consistency</h4>

@@ -59,7 +59,10 @@ const shutdownTimeout = 10 * time.Second
 //     13. f.Mount(app, deps) for each Feature
 //     14. Wiring.BeforeServe(app, deps) if set
 //     15. app.Listen in a goroutine
-//     16. waits for ctx.Done() → ShutdownWithContext(10s) → Wiring.OnShutdown
+//     16. waits for ctx.Done() → coordinated, dependency-ordered drain (http +
+//     integration pool + upstream subscribers + sync engine in parallel, each
+//     waiting its own full exit — worker drain, then reader Close/LeaveGroup)
+//     → tracing flush → Wiring.OnShutdown → stores close LAST
 //
 // Returns boot error (invalid yaml, failed connection, validate, BeforeServe,
 // listen) or nil when the server starts and terminates by signal.
@@ -253,6 +256,10 @@ func runWithConfig(cfg *Config, wire func(Deps) Wiring) error {
 		syncEngine := query.NewSyncEngine(deps.DB, deps.Mongo,
 			cfg.Kafka.Brokers, cfg.Kafka.SyncGroupID, views, cfg.Kafka.SyncWorkers).
 			WithKafkaTracing(cfg.Observability.Tracing.Resolve(cfg.Service).Instruments(tracing.SubKafka))
+		// Surfaced on Deps so serve's coordinated drain can wait for the
+		// projection loop's FULL exit (worker drain + reader LeaveGroup)
+		// before the stores close — same reason UpstreamSubscribers is there.
+		deps.SyncEngine = syncEngine
 
 		// Drift detection + rebuild reconciliation. Runs AFTER
 		// ApplyMongoSpecs (collection shape reconciled) and BEFORE
@@ -794,6 +801,12 @@ func serve(ctx context.Context, deps Deps, wiring Wiring) error {
 		i, sub := i, sub
 		drain(fmt.Sprintf("upstream[%d]", i), func() error { return sub.Shutdown(shutdownCtx) })
 	}
+	// The SyncEngine drains like the other consumers: Shutdown unblocks only
+	// after the projection loop fully exited — worker drain (every in-flight
+	// compose+upsert FINISHED) then reader Close() (the Kafka LeaveGroup) —
+	// so the stores never close under it and the next boot never joins the
+	// group against a ghost member. Nil-safe when the service has no views.
+	drain("sync", func() error { return deps.SyncEngine.Shutdown(shutdownCtx) })
 	drainWG.Wait()
 
 	// Flush buffered spans AFTER the servers stopped accepting work, so the

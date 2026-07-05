@@ -819,3 +819,56 @@ func TestMongoViewReader_SetComposedViewsMutatesInPlace(t *testing.T) {
 		t.Fatalf("expected the reset to restore the regular path, got %d items err=%v", len(post.Items), err)
 	}
 }
+
+// The maintainer's guarantee (2026-07-05): a security overlay layered in
+// ToCriteria onto a PAGED query never breaks cursor navigation. The reader
+// stamps cursors from — and validates them against — the post-ToCriteria
+// context it receives, so as long as the overlay is deterministic per
+// identity, the round trip holds; a genuinely changed context still rejects.
+func TestMongoViewReader_OverlayFilterCursorRoundTrip(t *testing.T) {
+	coll := &filterColl{
+		count: 2,
+		docs: []bson.M{
+			{"_id": "g1", "code": "A", "mirror_id": "t1"},
+			{"_id": "g2", "code": "A", "mirror_id": "t1"},
+		},
+	}
+	primary := query.View("gadgets").Version(1).Root("gadgets").Schema(
+		core.NewTableSchema[cvrGadget]("gadgets").
+			PK("id").
+			Field("Code", "code").
+			Field("MirrorID", "mirror_id").
+			SoftDelete("deleted_at"))
+	r := NewMongoViewReader(newFakeMongo(coll)).SetViews([]*query.ViewDefinition{primary})
+
+	// The criteria AS THE READER SEES IT: the wire filter (Code) plus a
+	// ToCriteria security overlay (MirrorID standing in for a tenant column).
+	overlaid := queries.ReadCriteria{
+		Filter: map[string]any{"Code": "A", "MirrorID": "t1"},
+		Limit:  1,
+	}
+	page, err := r.ReadPage(context.Background(), "gadgets", overlaid)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if page.NextCursor == "" {
+		t.Fatal("expected a next cursor on the truncated page")
+	}
+
+	// Same overlaid context + the issued cursor → accepted.
+	next := overlaid
+	next.After = page.NextCursor
+	if _, err := r.ReadPage(context.Background(), "gadgets", next); err != nil {
+		t.Fatalf("overlay-stamped cursor must round-trip: %v", err)
+	}
+
+	// A genuinely changed context (different wire filter) → still rejected.
+	changed := queries.ReadCriteria{
+		Filter: map[string]any{"Code": "B", "MirrorID": "t1"},
+		Limit:  1,
+		After:  page.NextCursor,
+	}
+	if _, err := r.ReadPage(context.Background(), "gadgets", changed); err == nil {
+		t.Fatal("a changed listing context must still reject the cursor")
+	}
+}
