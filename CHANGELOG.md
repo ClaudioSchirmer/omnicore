@@ -38,8 +38,11 @@ with `1.0.0`.
   primary/leg views, an external leg without its subscription, segment
   collisions, LinkMany-only knobs on a 1:1 link, name shadowing. Registration
   via the new `bootstrap.ComposingFeature` opt-in (`ComposedViews()`);
-  `bootstrap.Run` wraps the framework reader with
-  `mongo.NewComposedViewReader`, so consumption is unchanged by design — the
+  `bootstrap.Run` installs the composition ON the framework reader by
+  mutation (`mongo.MongoViewReader.SetComposedViews`, like `SetViews` — never a
+  reassignment, so handlers that captured the reader earlier, e.g. GraphQL
+  fields registered inside the consumer's `Wire()`, resolve composed names
+  too), so consumption is unchanged by design — the
   composed name goes wherever a view name goes (Auto and manual handlers,
   GraphQL connections, CSV/XLSX export with one branch per leg;
   `ComposedViewDefinition` satisfies the export surface, delegating the export
@@ -47,7 +50,8 @@ with `1.0.0`.
   `query.ComposedViewDefinition`, `query.Leg` (`JoinView`, `JoinUpstream`,
   `FK`, `As`, `OrderBy`, `Desc`, `MaxLinkManyLimit`), `query.ComposedLink`,
   `query.ValidateComposedViews`, `query.FrameworkDefaultMaxLinkManyLimit`,
-  `mongo.NewComposedViewReader`, `bootstrap.ComposingFeature`, yaml
+  `mongo.MongoViewReader.SetComposedViews` (+ `mongo.NewComposedViewReader`),
+  `bootstrap.ComposingFeature`, yaml
   `query.maxLinkManyLimit`.
 
 - **`query.SharedBaseView` — the all-in-one identity projection.** A second

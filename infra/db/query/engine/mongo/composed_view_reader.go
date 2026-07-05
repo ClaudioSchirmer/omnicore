@@ -91,6 +91,16 @@ func NewComposedViewReader(inner *MongoViewReader, defs []*query.ComposedViewDef
 	return r
 }
 
+// IsComposed reports whether the given read-side name is a registered
+// composed view. The wrapped MongoViewReader consults it to delegate composed
+// names while keeping every regular read on its own path (the delegation is
+// loop-free: a composed read's primary fetch re-enters under the primary
+// view's non-composed name).
+func (r *ComposedViewReader) IsComposed(view string) bool {
+	_, ok := r.composed[view]
+	return ok
+}
+
 func (r *ComposedViewReader) ReadPage(ctx context.Context, view string, c queries.ReadCriteria) (queries.Page, error) {
 	rt, ok := r.composed[view]
 	if !ok {
@@ -375,13 +385,15 @@ func (r *ComposedViewReader) legBaseFilter(leg *legRuntime, s *composedSplit, in
 }
 
 // legProjection translates the segment's sparse projection. A partial
-// inclusion excludes the leg doc's `_id` (the consumer asked for specific
-// leaves); whole-segment attaches keep the full doc, `_id` included, exactly
-// like a direct read of the leg view.
-func (r *ComposedViewReader) legProjection(leg *legRuntime, s *composedSplit) bson.D {
+// inclusion hides the leg doc's `_id` from the wire (the consumer asked for
+// specific leaves) — but the 1:1 attach step GROUPS by `_id`, so the column
+// stays in the Mongo projection and is stripped from the translated doc after
+// grouping (stripID reports that). Whole-segment attaches keep the full doc,
+// `_id` included, exactly like a direct read of the leg view.
+func (r *ComposedViewReader) legProjection(leg *legRuntime, s *composedSplit) (proj bson.D, stripID bool) {
 	lp := s.legProj[leg.link.GoSegment]
 	if len(lp) == 0 {
-		return nil
+		return nil, false
 	}
 	colProj := translateProjectionKeys(leg.node, lp)
 	inclusion := false
@@ -392,9 +404,11 @@ func (r *ComposedViewReader) legProjection(leg *legRuntime, s *composedSplit) bs
 		}
 	}
 	if inclusion {
-		colProj["_id"] = 0
+		// Keep _id queryable for the join; hide it from the wire post-attach.
+		colProj["_id"] = 1
+		stripID = true
 	}
-	return buildProjection(colProj, nil)
+	return buildProjection(colProj, nil), stripID
 }
 
 // attachOne resolves a 1:1 leg: one find({_id: {$in: keys}}) carrying the
@@ -422,7 +436,8 @@ func (r *ComposedViewReader) attachOne(ctx context.Context, leg *legRuntime, s *
 		filter := r.legBaseFilter(leg, s, includeArchived)
 		filter["_id"] = bson.M{"$in": keys}
 		findOpts := options.Find().SetLimit(int64(len(keys)))
-		if proj := r.legProjection(leg, s); proj != nil {
+		proj, stripLegID := r.legProjection(leg, s)
+		if proj != nil {
 			findOpts.SetProjection(proj)
 		}
 		col := r.inner.mongo.collFn(leg.link.Collection)
@@ -438,7 +453,12 @@ func (r *ComposedViewReader) attachOne(ctx context.Context, leg *legRuntime, s *
 		cur.Close(ctx)
 		for _, d := range docs {
 			m := map[string]any(d)
-			byKey[fmt.Sprintf("%v", m["_id"])] = r.toGoLegDoc(leg, m, includeArchived)
+			key := fmt.Sprintf("%v", m["_id"])
+			goDoc := r.toGoLegDoc(leg, m, includeArchived)
+			if stripLegID {
+				delete(goDoc, "_id")
+			}
+			byKey[key] = goDoc
 		}
 	}
 
@@ -461,7 +481,7 @@ func (r *ComposedViewReader) attachOne(ctx context.Context, leg *legRuntime, s *
 // with the fetches concurrency-bounded. Empty array when nothing matches.
 func (r *ComposedViewReader) attachMany(ctx context.Context, leg *legRuntime, s *composedSplit, items []map[string]any, includeArchived bool) error {
 	base := r.legBaseFilter(leg, s, includeArchived)
-	proj := r.legProjection(leg, s)
+	proj, stripLegID := r.legProjection(leg, s)
 
 	var legSort []queries.SortField
 	if leg.link.OrderByColumn != "" {
@@ -504,7 +524,11 @@ func (r *ComposedViewReader) attachMany(ctx context.Context, leg *legRuntime, s 
 				if err == nil {
 					out := make([]any, 0, len(docs))
 					for _, d := range docs {
-						out = append(out, r.toGoLegDoc(leg, map[string]any(d), includeArchived))
+						goDoc := r.toGoLegDoc(leg, map[string]any(d), includeArchived)
+						if stripLegID {
+							delete(goDoc, "_id")
+						}
+						out = append(out, goDoc)
 					}
 					mu.Lock()
 					item[leg.link.GoSegment] = out
