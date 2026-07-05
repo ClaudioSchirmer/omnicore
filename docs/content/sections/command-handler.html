@@ -91,9 +91,13 @@ HTTP 201 Created
     <h3 id="cmd-compositions">Composition types — what the write side declares</h3>
     <p>
         The read side serves composed documents; the write side is where each composition's raw
-        material is declared and emitted. One summary per kind, focused on <strong>what the write side
-        must do</strong> for that composition to exist — the full contract lives in each canonical
-        section:
+        material is declared. This catalog carries only the primitives with a genuine write-side
+        declaration — the schema-shaped ones a command handler's <code>TableSchema</code> gives rise
+        to. The read-side-only kinds are deliberately absent: <code>ComposedView</code> joins existing
+        views at read time and declares nothing here, and <code>UpstreamSubscription</code> is a
+        cross-service async materialization — both live in the
+        <a href="#query-side~qry-compositions">read-side composition catalog</a>, not this one. One
+        summary per kind; the full contract lives in each canonical section:
     </p>
     <table>
         <tbody><tr><th>Kind</th><th>What the write side declares / emits</th><th>Canonical reference</th></tr>
@@ -112,23 +116,10 @@ HTTP 201 Created
             <td><a href="#table-schema">TableSchema</a></td>
         </tr>
         <tr>
-            <td><code>SharedBase</code> → <code>SharedBaseView</code></td>
+            <td><code>SharedBase</code></td>
             <td>The shared base + role schemas (<code>NewSharedBase</code>, <code>.SharedBase(...)</code>
                 on each role). Role writes converge the base lifecycle; role/base events recompose the
-                identity document.</td>
+                identity document (projected read-side by a <code>SharedBaseView</code>).</td>
             <td><a href="#table-schema">TableSchema</a></td>
-        </tr>
-        <tr>
-            <td><code>UpstreamSubscription</code></td>
-            <td>On the PRODUCER: the standard outbox events every write already emits. On the CONSUMER:
-                the subscription (topic → local collection + field filter) — no request-path coupling,
-                ever.</td>
-            <td><a href="#service-to-service">Service-to-service</a></td>
-        </tr>
-        <tr>
-            <td><code>ComposedView</code></td>
-            <td><strong>Nothing.</strong> Read-time only — it joins views that already exist; the write
-                side declares no schema, emits no extra event, materializes no collection.</td>
-            <td><a href="#query-side">Query side</a></td>
         </tr>
     </tbody></table>
