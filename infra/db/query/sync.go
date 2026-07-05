@@ -2,6 +2,7 @@ package query
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"hash/fnv"
@@ -78,8 +79,15 @@ func (s *SyncEngine) WithKafkaTracing(on bool) *SyncEngine {
 // Outbox Event Router (or any CDC tool that follows the same conventions):
 //   - aggregate_id → message.Key
 //   - aggregate_type, event_type → message.Headers
+//   - the outbox payload JSON → message.Value
 //
-// The message Value is ignored — composer re-reads current state from Postgres.
+// The message Value is never a STATE source — the composer re-reads current
+// state from the relational backend. It is carried as a ROUTING HINT for
+// exactly one case: a role DELETED under the separate-FK SharedBase model,
+// where the row is gone and nothing is left to consult — the write side
+// records the structural keys (the role PK + the shared-base FK) in the
+// DELETED payload precisely so the base-rooted recompose can find its
+// document (resolveBaseID).
 type kafkaEvent struct {
 	AggregateType string
 	EventType     string
@@ -89,10 +97,14 @@ type kafkaEvent struct {
 	// when the producing write had tracing off. Used to LINK the projection
 	// span back to the producing trace.
 	Traceparent string
+	// Payload is the raw outbox payload (message.Value) — a routing hint only
+	// (see the type comment), parsed lazily and exclusively on the role-DELETED
+	// branch of the base-rooted recompose.
+	Payload []byte
 }
 
 func extractEvent(msg kafka.Message) kafkaEvent {
-	e := kafkaEvent{AggregateID: decodeAggregateID(msg.Key)}
+	e := kafkaEvent{AggregateID: decodeAggregateID(msg.Key), Payload: msg.Value}
 	for _, h := range msg.Headers {
 		switch h.Key {
 		case "aggregate_type":
@@ -153,6 +165,14 @@ func NewSyncEngine(eng core.RelationalEngine, mongo ReadModelStore, brokers []st
 			if base, _, ok := v.schema.SharedBaseRef(); ok {
 				addTopic(base.Table())
 			}
+		}
+		// A SharedBaseView subscribes to every ROLE table's topic too: role
+		// ARCHIVE/UNARCHIVE emits only the role event (the base convergence is
+		// SQL without its own outbox row), so without these topics a person
+		// document would never learn a role's lifecycle change — mandatory even
+		// when the service declares no per-role view.
+		for _, r := range v.roles {
+			addTopic(r.schema.Table())
 		}
 	}
 	if workers < 1 {
@@ -276,6 +296,17 @@ func (s *SyncEngine) process(ctx context.Context, event kafkaEvent) error {
 			return err
 		}
 	}
+	// The INVERSE direction: an event on a ROLE table recomposes the person
+	// document of every base-rooted SharedBaseView declaring that role. All
+	// event types route here — including ARCHIVED/UNARCHIVED (the base
+	// convergence is SQL without its own outbox row, so the role event is the
+	// only signal) and DELETED (the segment must flip to null, or the whole
+	// document must go when the identity was purged).
+	if routes, ok := s.index.byRoleTable[event.AggregateType]; ok {
+		if err := s.recomposeBaseRooted(ctx, event, routes); err != nil {
+			return err
+		}
+	}
 	views, ok := s.index.byPGTable[event.AggregateType]
 	if !ok {
 		return nil
@@ -342,6 +373,96 @@ func (s *SyncEngine) fanOutSharedBase(ctx context.Context, event kafkaEvent, bas
 		}
 	}
 	return nil
+}
+
+// recomposeBaseRooted recomposes the person document of each base-rooted view
+// routed from a role event. The full recompose re-reads everything from the
+// relational source (active-first role selection included), so INSERTED /
+// UPDATED / ARCHIVED / UNARCHIVED / DELETED all converge through the same
+// upsert; a nil composition (the identity row is gone — orphan purge — or
+// archived under DeleteOnArchive) removes the document instead. An
+// unresolvable base id (a malformed DELETED payload — not an expected state)
+// logs and skips rather than failing the whole event.
+func (s *SyncEngine) recomposeBaseRooted(ctx context.Context, event kafkaEvent, routes []roleRoute) error {
+	for _, rt := range routes {
+		baseID, err := s.resolveBaseID(ctx, event, rt.role)
+		if err != nil {
+			return err
+		}
+		if baseID == "" {
+			log.Printf("sync engine: role event %s on %s: shared-base id unresolvable — skipping view %s",
+				event.EventType, event.AggregateType, rt.view.name)
+			continue
+		}
+		doc, err := s.composer.Compose(ctx, rt.view, baseID)
+		if err != nil {
+			return err
+		}
+		if doc == nil {
+			if err := s.mongo.Delete(ctx, rt.view.name, baseID); err != nil {
+				return err
+			}
+			continue
+		}
+		if err := s.mongo.Upsert(ctx, rt.view.name, baseID, doc); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// resolveBaseID resolves the shared-base id a role event refers to, per the
+// role's link model:
+//
+//   - shared-PK (fk == role PK): the event's aggregate_id IS the base id — no
+//     access at all.
+//   - separate-FK, event ≠ DELETED: the row exists — consult the source (the
+//     same consult-always rule every other read follows). A row that vanished
+//     between the event and its processing yields "" (skip); the DELETED event
+//     that removed it follows on the same partition (same key → same worker,
+//     ordered) carrying the payload keys, so the document still converges.
+//   - separate-FK DELETED: nothing is left to consult — read the FK from the
+//     event payload, which the write side records (structural keys, flat map)
+//     for exactly this moment. No fallback: the payload dispatch is guaranteed
+//     by the current write side; a missing key is a malformed event, surfaced
+//     by the caller's log.
+func (s *SyncEngine) resolveBaseID(ctx context.Context, event kafkaEvent, r roleDef) (string, error) {
+	_, fkCol, ok := r.schema.SharedBaseRef()
+	if !ok {
+		return "", nil
+	}
+	if fkCol == r.schema.PKColumn() {
+		return event.AggregateID, nil
+	}
+	if event.EventType == "DELETED" {
+		return baseIDFromDeletePayload(event.Payload, fkCol), nil
+	}
+	row, err := s.composer.fetchRow(ctx, r.schema, r.schema.Table(), r.schema.PKColumn(), event.AggregateID, "", true)
+	if err != nil || row == nil {
+		return "", err
+	}
+	fk := row[fkCol]
+	if fk == nil {
+		return "", nil
+	}
+	return fmt.Sprintf("%v", fk), nil
+}
+
+// baseIDFromDeletePayload reads the shared-base FK from a role DELETED outbox
+// payload — the flat structural-keys map the write side records
+// ({pkCol: roleID, fkCol: baseID}). Returns "" on a missing/malformed payload.
+func baseIDFromDeletePayload(payload []byte, fkCol string) string {
+	if len(payload) == 0 {
+		return ""
+	}
+	var keys map[string]any
+	if err := json.Unmarshal(payload, &keys); err != nil {
+		return ""
+	}
+	if v, ok := keys[fkCol].(string); ok {
+		return v
+	}
+	return ""
 }
 
 // shouldDeleteFromView is the routing decision for read-side events. DELETED

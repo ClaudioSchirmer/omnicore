@@ -113,6 +113,7 @@ For any contract, behavior, field list, or example, open the mapped file under `
 | Auto query handlers (`HandleQuery*`), filter operators, control keys (`fields`/`sort`/`after`/`before`/`limit`/`onlyTotal`), tabular export (CSV/XLSX) | `auto-query-handlers.html` | Allowlist by tag; projector `func(map[string]any) R`; keyset pagination. |
 | Manual query handler (`NewQueryParser`, `ParseCriteria`, `RespondPaged`) | `custom-query-handler.html` | Escape hatch for bespoke parsing/envelopes. |
 | Concrete read lifecycle, composer, SyncEngine, keep-by-default archive | `read-lifecycle-map.html` | Mongo mirrors PG; `DeleteOnArchive()` opt-in for hot-tier. |
+| `SharedBaseView` — the all-in-one identity projection (base root + one sub-document per role) | `table-schema.html` (Shared-base view) | `SharedBaseView(base, name).Role(...)`; `_id` = base PK; role events recompose; active-first segment pick. |
 
 ### Pipeline
 | Topic | Section | Essence |

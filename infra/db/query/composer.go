@@ -62,6 +62,12 @@ func (c *Composer) Compose(ctx context.Context, view *ViewDefinition, rootID str
 	if row == nil {
 		return nil, nil
 	}
+	if view.isSharedBaseView {
+		if err := c.composeBaseRootedRow(ctx, view, row, rootID, includeArchived); err != nil {
+			return nil, err
+		}
+		return row, nil
+	}
 	if err := c.mergeOwnerSiblings(ctx, row, view.schema, rootID, includeArchived); err != nil {
 		return nil, err
 	}
@@ -88,6 +94,14 @@ func (c *Composer) ComposeAll(ctx context.Context, view *ViewDefinition) ([]Docu
 		return nil, err
 	}
 	pk := schemaPK(view.schema)
+	if view.isSharedBaseView {
+		for _, row := range rows {
+			if err := c.composeBaseRootedRow(ctx, view, row, fmt.Sprintf("%v", row[pk]), includeArchived); err != nil {
+				return nil, err
+			}
+		}
+		return rows, nil
+	}
 	for _, row := range rows {
 		if err := c.mergeOwnerSiblings(ctx, row, view.schema, fmt.Sprintf("%v", row[pk]), includeArchived); err != nil {
 			return nil, err
@@ -106,6 +120,86 @@ func (c *Composer) ComposeAll(ctx context.Context, view *ViewDefinition) ([]Docu
 		}
 	}
 	return rows, nil
+}
+
+// composeBaseRootedRow fills a SharedBaseView document from its already-fetched
+// base row: the base's native children nest at the root (mergeOwnChildren — the
+// base IS the schema that owns them), then ONE SUB-DOCUMENT PER DECLARED ROLE,
+// then the external embeds. A role's sub-document carries the role row (chosen
+// active-first, see fetchRoleRow) with its siblings merged flat and its own
+// children nested — keyed on the CHOSEN ROLE ROW's PK, never the base id (under
+// the separate-FK model they differ). An absent role writes an explicit nil
+// segment: the store's Upsert is $set, so a vanished role must overwrite its
+// stale segment rather than silently survive it.
+func (c *Composer) composeBaseRootedRow(ctx context.Context, view *ViewDefinition, row Document, baseID string, includeArchived bool) error {
+	base := view.schema
+	if err := c.mergeOwnChildren(ctx, row, base, includeArchived); err != nil {
+		return err
+	}
+	for _, r := range view.roles {
+		roleRow, err := c.fetchRoleRow(ctx, r, baseID, includeArchived)
+		if err != nil {
+			return err
+		}
+		if roleRow == nil {
+			row[r.segment] = nil
+			continue
+		}
+		rolePK := schemaPK(r.schema)
+		if err := c.mergeOwnerSiblings(ctx, roleRow, r.schema, fmt.Sprintf("%v", roleRow[rolePK]), includeArchived); err != nil {
+			return err
+		}
+		if err := c.mergeOwnChildren(ctx, roleRow, r.schema, includeArchived); err != nil {
+			return err
+		}
+		row[r.segment] = roleRow
+	}
+	return c.applyEmbeds(ctx, row, schemaPK(base), view.embeds, includeArchived)
+}
+
+// fetchRoleRow selects THE role row that represents a specialization of the
+// identity — deterministic under the separate-FK multiplicity the write side
+// admits (archived remnants NEXT TO at most one active row):
+//
+//  1. the ACTIVE row (fk = baseID AND deleted_at IS NULL) when one exists —
+//     the write-side one-active-role invariant caps it at one;
+//  2. otherwise, when archived rows compose at all (keep mode), the MOST
+//     RECENTLY archived remnant (ORDER BY deleted_at DESC) — the document
+//     represents the CURRENT state of each specialization; remnant history is
+//     not enumerated here (the role views with ?includeArchived cover it);
+//  3. otherwise nil (the caller writes the explicit null segment).
+//
+// A role without SoftDelete has no archived state (hard delete is delete), so
+// a single fetch by FK decides it.
+func (c *Composer) fetchRoleRow(ctx context.Context, r roleDef, baseID string, includeArchived bool) (Document, error) {
+	_, fkCol, _ := r.schema.SharedBaseRef()
+	sd, hasSD := schemaSoftDelete(r.schema)
+	if !hasSD {
+		return c.fetchRow(ctx, r.schema, r.schema.Table(), fkCol, baseID, "", true)
+	}
+	active, err := c.fetchRow(ctx, r.schema, r.schema.Table(), fkCol, baseID, sd, false)
+	if err != nil || active != nil {
+		return active, err
+	}
+	if !includeArchived {
+		return nil, nil
+	}
+	return c.fetchLatestArchived(ctx, r.schema, fkCol, baseID, sd)
+}
+
+// fetchLatestArchived returns the most recently archived row referencing the
+// base — the deterministic remnant pick when no active row exists.
+func (c *Composer) fetchLatestArchived(ctx context.Context, schema *core.TableSchema, keyCol, keyVal, sdCol string) (Document, error) {
+	d := c.eng.Dialect()
+	sql := fmt.Sprintf("SELECT * FROM %s WHERE %s = %s AND %s IS NOT NULL ORDER BY %s DESC LIMIT 1",
+		d.QuoteIdent(schema.Table()), d.QuoteIdent(keyCol), d.Placeholder(1), d.QuoteIdent(sdCol), d.QuoteIdent(sdCol))
+	results, err := c.eng.Querier().QueryMaps(ctx, sql, c.encodeKey(keyVal))
+	if err != nil || len(results) == 0 {
+		return nil, err
+	}
+	row := Document(results[0])
+	coerceTypes(row, schema)
+	return row, nil
 }
 
 // mergeOwnerSiblings merges each declared sibling's columns FLAT into the owner

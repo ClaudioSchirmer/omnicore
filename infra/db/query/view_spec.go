@@ -603,6 +603,14 @@ func (v *ViewDefinition) ValidateMongoSpec() error {
 func (v *ViewDefinition) composedColumnSet() map[string]struct{} {
 	set := map[string]struct{}{"_id": {}}
 	collectComposedColumns(v.schema, v.embeds, "", set)
+	// SharedBaseView roles: each segment is addressable itself, and its
+	// sub-document carries the role's flat columns + its own children —
+	// mirroring composeBaseRootedRow (the base's flat columns and the
+	// base-children live at the ROOT, never inside a segment).
+	for _, r := range v.roles {
+		set[r.segment] = struct{}{}
+		collectRoleColumns(r.schema, r.segment, set)
+	}
 	return set
 }
 
@@ -617,66 +625,91 @@ func (v *ViewDefinition) composedColumnSet() map[string]struct{} {
 // managed columns are included so a legitimately-indexed soft-delete / FK
 // column is not flagged.
 func collectComposedColumns(schema *core.TableSchema, embeds []embedDef, prefix string, set map[string]struct{}) {
-	add := func(col string) {
-		if col == "" {
-			return
-		}
-		if prefix == "" {
-			set[col] = struct{}{}
-		} else {
-			set[prefix+"."+col] = struct{}{}
-		}
-	}
-	addSchemaFlat := func(s *core.TableSchema) {
-		add(s.PKColumn())
-		add(s.FKColumn())
-		sd, _ := s.SoftDeleteColumn()
-		add(sd)
-		add(s.CreatedAtColumn())
-		add(s.UpdatedAtColumn())
-		for _, col := range s.MappedColumns() {
-			add(col)
-		}
-	}
 	if schema != nil {
-		addSchemaFlat(schema)
+		addSchemaFlatColumns(set, prefix, schema)
 		// Siblings merge FLAT into this node (mergeOwnerSiblings) — their columns
 		// are columns of this level.
 		for _, sib := range schema.Siblings() {
-			addSchemaFlat(sib)
+			addSchemaFlatColumns(set, prefix, sib)
 		}
 		// The SharedBase merges FLAT too (mergeSharedBase) — every base column
 		// (the base PK the merge skips is already covered by the role's PK).
 		if base, _, ok := schema.SharedBaseRef(); ok {
-			addSchemaFlat(base)
+			addSchemaFlatColumns(set, prefix, base)
 		}
 	}
 	for _, e := range embeds {
 		if e.source == nil {
 			continue
 		}
-		add(e.field)
-		childPrefix := e.field
-		if prefix != "" {
-			childPrefix = prefix + "." + e.field
-		}
-		collectComposedColumns(e.source.schema, e.source.embeds, childPrefix, set)
+		addComposedColumn(set, prefix, e.field)
+		collectComposedColumns(e.source.schema, e.source.embeds, joinColumnPrefix(prefix, e.field), set)
 	}
-	// The SharedBase's native children (base-children) nest under their derived
-	// segment (mergeSharedBaseChildren) — the same shape as an embed subtree.
 	if schema != nil {
+		// The SharedBase's native children (base-children) nest under their derived
+		// segment (mergeSharedBaseChildren) — the same shape as an embed subtree.
 		if base, _, ok := schema.SharedBaseRef(); ok {
 			for _, bc := range base.ChildSchemas() {
 				seg := childDocSegment(bc)
-				add(seg)
-				childPrefix := seg
-				if prefix != "" {
-					childPrefix = prefix + "." + seg
-				}
-				collectComposedColumns(bc, nil, childPrefix, set)
+				addComposedColumn(set, prefix, seg)
+				collectComposedColumns(bc, nil, joinColumnPrefix(prefix, seg), set)
 			}
 		}
+		// The schema's OWN aggregate children nest under their derived segment too
+		// (mergeOwnChildren) — without this walk a legitimate index on an
+		// own-child path (e.g. "dependents.name") was falsely rejected.
+		for _, child := range schema.ChildSchemas() {
+			seg := childDocSegment(child)
+			addComposedColumn(set, prefix, seg)
+			collectComposedColumns(child, nil, joinColumnPrefix(prefix, seg), set)
+		}
 	}
+}
+
+// collectRoleColumns mirrors composeBaseRootedRow's role sub-document: the
+// role's own flat columns plus its siblings' (merged flat), plus its own
+// children nested under their derived segment. The base's flat columns and the
+// base-children are deliberately NOT collected under the segment — the
+// composer lands them at the person document's root only.
+func collectRoleColumns(role *core.TableSchema, prefix string, set map[string]struct{}) {
+	addSchemaFlatColumns(set, prefix, role)
+	for _, sib := range role.Siblings() {
+		addSchemaFlatColumns(set, prefix, sib)
+	}
+	for _, child := range role.ChildSchemas() {
+		seg := childDocSegment(child)
+		addComposedColumn(set, prefix, seg)
+		collectComposedColumns(child, nil, joinColumnPrefix(prefix, seg), set)
+	}
+}
+
+// addComposedColumn adds one (possibly prefixed) physical column path.
+func addComposedColumn(set map[string]struct{}, prefix, col string) {
+	if col == "" {
+		return
+	}
+	set[joinColumnPrefix(prefix, col)] = struct{}{}
+}
+
+// addSchemaFlatColumns adds a schema's flat physical columns (PK, FK, managed,
+// business) at the given prefix.
+func addSchemaFlatColumns(set map[string]struct{}, prefix string, s *core.TableSchema) {
+	addComposedColumn(set, prefix, s.PKColumn())
+	addComposedColumn(set, prefix, s.FKColumn())
+	sd, _ := s.SoftDeleteColumn()
+	addComposedColumn(set, prefix, sd)
+	addComposedColumn(set, prefix, s.CreatedAtColumn())
+	addComposedColumn(set, prefix, s.UpdatedAtColumn())
+	for _, col := range s.MappedColumns() {
+		addComposedColumn(set, prefix, col)
+	}
+}
+
+func joinColumnPrefix(prefix, seg string) string {
+	if prefix == "" {
+		return seg
+	}
+	return prefix + "." + seg
 }
 
 // stringList normalizes a $jsonSchema "required" value (typically []string

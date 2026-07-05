@@ -28,6 +28,12 @@ type ViewDefinition struct {
 	// then to DefaultMaxExportRows. Like maxLimit it is operational state — NOT
 	// part of RebuildHash / ArtifactHash.
 	maxExportRows int64
+	// isSharedBaseView marks a view rooted at a shared base (SharedBaseView):
+	// schema is the base's core.NewSharedBase declaration, rootTable the base
+	// table, and roles carries one segment per declared specialization. False
+	// for a regular query.View.
+	isSharedBaseView bool
+	roles            []roleDef
 }
 
 type embedDef struct {
@@ -289,7 +295,17 @@ func ValidateViewSchemas(views []*ViewDefinition) error {
 				"view %q: root schema (table %q) declares no primary key — declare .PK(column)",
 				v.Name(), v.schema.Table()))
 		}
-		problems = appendSegmentCollisions(problems, v.Name(), v.schema, v.embeds)
+		// A SharedBaseView with no roles is a person view with nothing to
+		// compose beyond the base — declare at least one specialization.
+		// (Everything else about a role — type anchor, SharedBaseRef to this
+		// base, declaration equivalence, duplicate segment — panics at
+		// declaration time in Role().)
+		if v.isSharedBaseView && len(v.roles) == 0 {
+			problems = append(problems, fmt.Sprintf(
+				"view %q: SharedBaseView declares no .Role(...) — add every role that specializes this identity",
+				v.Name()))
+		}
+		problems = appendSegmentCollisions(problems, v.Name(), v.schema, v.embeds, v.roles)
 		problems = appendEmbedSchemaProblems(problems, v.Name(), v.embeds)
 	}
 	if len(problems) == 0 {
@@ -353,21 +369,23 @@ func appendEmbedSchemaProblems(acc []string, viewName string, embeds []embedDef)
 					viewName, e.field, e.source.table))
 			}
 		}
-		acc = appendSegmentCollisions(acc, viewName, e.source.schema, e.source.embeds)
+		acc = appendSegmentCollisions(acc, viewName, e.source.schema, e.source.embeds, nil)
 		acc = appendEmbedSchemaProblems(acc, viewName, e.source.embeds)
 	}
 	return acc
 }
 
 // appendSegmentCollisions flags a boot error when two sources would project into
-// the SAME document segment at one schema level. Three producers can name a
-// segment: an explicit embed field, an auto-derived base-child segment, and an
-// auto-derived own-child segment (both the pluralized child type). Each segment
+// the SAME document segment at one schema level. Four producers can name a
+// segment: an explicit embed field, an auto-derived base-child segment, an
+// auto-derived own-child segment (both the pluralized child type), and — on a
+// SharedBaseView root — a role segment (the role's type name). Each segment
 // must have exactly one producer — a name clash, or a redundant explicit
 // EmbedMany of a child the schema already projects automatically, is a boot error
 // rather than a silent double projection / overwrite. A nil schema (already
-// flagged elsewhere) contributes nothing.
-func appendSegmentCollisions(acc []string, viewName string, schema *core.TableSchema, embeds []embedDef) []string {
+// flagged elsewhere) contributes nothing. roles is non-empty only at a
+// SharedBaseView root; the embed recursion passes nil.
+func appendSegmentCollisions(acc []string, viewName string, schema *core.TableSchema, embeds []embedDef, roles []roleDef) []string {
 	if schema == nil {
 		return acc
 	}
@@ -397,6 +415,9 @@ func appendSegmentCollisions(acc []string, viewName string, schema *core.TableSc
 	for _, child := range schema.ChildSchemas() {
 		claim(childDocSegment(child), fmt.Sprintf("own child %q", child.TypeName()))
 	}
+	for _, r := range roles {
+		claim(r.segment, fmt.Sprintf("role %q", r.segment))
+	}
 	return acc
 }
 
@@ -423,6 +444,20 @@ type viewIndex struct {
 	// reference it. A change to the shared identity fans out: every role view's
 	// document referencing that identity is recomposed (SyncEngine.process).
 	bySharedBase map[string][]*ViewDefinition
+	// byRoleTable maps a ROLE table to the base-rooted SharedBaseViews that
+	// declare it as a role — the INVERSE direction of bySharedBase: a role
+	// event (its table is not the view's root) must recompose the person
+	// document of the identity the role references. The route carries the
+	// roleDef so the SyncEngine can resolve the base id per the role's link
+	// model (shared-PK vs separate-FK).
+	byRoleTable map[string][]roleRoute
+}
+
+// roleRoute pairs a SharedBaseView with one of its declared roles — the
+// recompose target for an event on that role's table.
+type roleRoute struct {
+	view *ViewDefinition
+	role roleDef
 }
 
 // DependentMongoViews returns the subset of views that embed the named
@@ -462,6 +497,7 @@ func buildViewIndex(views []*ViewDefinition) viewIndex {
 		byPGTable:    make(map[string][]*ViewDefinition),
 		byMongoColl:  make(map[string][]*ViewDefinition),
 		bySharedBase: make(map[string][]*ViewDefinition),
+		byRoleTable:  make(map[string][]roleRoute),
 	}
 	for _, v := range views {
 		// The root is always a Postgres table — UpstreamSubscription
@@ -469,11 +505,18 @@ func buildViewIndex(views []*ViewDefinition) viewIndex {
 		// embedded, not chosen as a view root.
 		idx.byPGTable[v.rootTable] = append(idx.byPGTable[v.rootTable], v)
 		// A role view referencing a SharedBase is indexed by the base table, so a
-		// base change fans out to every role view (SyncEngine.process).
+		// base change fans out to every role view (SyncEngine.process). A
+		// base-rooted SharedBaseView never lands here — its root schema IS the
+		// base (no SharedBaseRef); base events reach it through byPGTable.
 		if v.schema != nil {
 			if base, _, ok := v.schema.SharedBaseRef(); ok {
 				idx.bySharedBase[base.Table()] = append(idx.bySharedBase[base.Table()], v)
 			}
+		}
+		// A SharedBaseView is indexed by each ROLE table too: a role event must
+		// recompose the person document (the inverse of bySharedBase).
+		for _, r := range v.roles {
+			idx.byRoleTable[r.schema.Table()] = append(idx.byRoleTable[r.schema.Table()], roleRoute{view: v, role: r})
 		}
 		indexEmbeds(v.embeds, v, idx)
 	}

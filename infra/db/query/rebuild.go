@@ -176,9 +176,13 @@ func (s *SyncEngine) ExecuteRebuild(ctx context.Context, plan DriftPlan, cfg Reb
 	// The root ids are read through the engine's neutral Querier (the pool, not
 	// the lock's pinned session — a plain read needs no lock affinity). Each
 	// scanned key is decoded via the dialect (identity on PG; BINARY(16) → uuid
-	// string on MySQL), matching the canonical id form Compose expects.
+	// string on MySQL), matching the canonical id form Compose expects. The
+	// columns come from the view's root schema — the PK is whatever the schema
+	// declares, and the scan order falls back to the PK when the root declares
+	// no CreatedAt (e.g. a SharedBase root, whose timestamps are typically
+	// DDL-defaulted rather than schema-declared).
 	idDialect := s.eng.Dialect()
-	q := "SELECT id FROM " + validIdentifier(view.rootTable) + " ORDER BY created_at"
+	q := rebuildScanSQL(view)
 	rows, err := s.eng.Querier().Query(ctx, q)
 	if err != nil {
 		return err
@@ -532,4 +536,19 @@ func (s *SyncEngine) rebuildFromTable(ctx context.Context, view *ViewDefinition,
 		return rows.Err()
 	}
 	return flush()
+}
+
+// rebuildScanSQL builds the id-scan SELECT a rebuild walks: the view's root PK
+// (whatever the schema declares) ordered by the root's CreatedAt, falling back
+// to the PK when the root declares none — e.g. a SharedBase root, whose
+// timestamps are typically DDL-defaulted rather than schema-declared. The scan
+// order only needs to be deterministic; creation order is a courtesy.
+func rebuildScanSQL(view *ViewDefinition) string {
+	pkCol := view.schema.PKColumn()
+	orderCol := view.schema.CreatedAtColumn()
+	if orderCol == "" {
+		orderCol = pkCol
+	}
+	return "SELECT " + validIdentifier(pkCol) + " FROM " + validIdentifier(view.rootTable) +
+		" ORDER BY " + validIdentifier(orderCol)
 }
