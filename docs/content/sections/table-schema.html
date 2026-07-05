@@ -280,7 +280,7 @@ func NewUserRepository(eng core.RelationalEngine) *UserRepository {
     <em>logical Go name</em> the local view's Response/criteria speak; the right side names the <em>upstream's physical
     column</em>. It is validated by bijection (no two fields share a column) but not against any type — there is none.
     Because an external source has no Go type to derive a segment from, <code>.As(...)</code> is <strong>required</strong>
-    (a fatal boot error otherwise). <code>.On(...)</code> is the parent document's FK column pointing at the source's PK —
+    (a fatal boot error otherwise). <code>.FK(...)</code> is the parent document’s FK column pointing at the source’s PK —
     used only on a one-to-one <code>Embed</code>.
 </p>
 <pre><code>// Cross-service embed — buyer projected from the upstream users service.
@@ -294,7 +294,7 @@ func OrdersView() *query.ViewDefinition {
                 PK("id").
                 Field("Name", "name").
                 Field("Email", "mail")).         // logical Go name ↔ upstream column
-            On("buyer_id").                      // parent doc FK pointing at the source PK
+            FK("buyer_id").                      // parent doc FK pointing at the source PK
             As("Buyer")).                        // REQUIRED — external embeds have no Go type to derive from
         Indexes(query.Index("buyer_id"))       // boot guard requires the join-field index
 }</code></pre>
@@ -333,7 +333,7 @@ func OrdersView() *query.ViewDefinition {
         failure. Single-column only.</li>
     <li><strong>FK on children + embed join keys</strong> — an aggregate <code>Child(...)</code> without <code>.FK(col)</code>
         panics (the persister injects the root id into it). On the read side, an <code>EmbedMany</code> source without
-        <code>.FK(col)</code>, and a one-to-one <code>Embed</code> without <code>.On(col)</code>, are fatal
+        <code>.FK(col)</code>, and a one-to-one <code>Embed</code> without <code>.FK(col)</code>, are fatal
         <code>ValidateViewSchemas</code> errors.</li>
     <li><strong>Aggregate depth = 1 (no grandchildren)</strong> — a child schema that declares its own
         <code>Child(...)</code> panics at <code>WithSchema</code> (write side); an embed source whose schema carries

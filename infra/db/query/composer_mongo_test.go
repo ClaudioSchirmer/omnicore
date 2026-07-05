@@ -48,7 +48,7 @@ func TestFetchMongoEmbed_OneToOne(t *testing.T) {
 	mongoColl := &fakeColl{docs: []any{map[string]any{"_id": "u1", "name": "alice"}}}
 	c := NewComposerWithMongo(eng, newFakeMongo(mongoColl))
 
-	external := FromSchema(core.NewExternalSchema("buyers").PK("id")).On("buyer_id").As("Buyer")
+	external := FromSchema(core.NewExternalSchema("buyers").PK("id")).FK("buyer_id").As("Buyer")
 	view := View("orders").Version(1).Root("orders").Schema(composerRootSchema()).
 		Embed("buyer", external)
 
@@ -67,7 +67,7 @@ func TestFetchMongoEmbed_OneToOne_NoMatch(t *testing.T) {
 	mongoColl := &fakeColl{docs: nil} // FindManyByField returns empty
 	c := NewComposerWithMongo(eng, newFakeMongo(mongoColl))
 
-	external := FromSchema(core.NewExternalSchema("buyers").PK("id")).On("buyer_id").As("Buyer")
+	external := FromSchema(core.NewExternalSchema("buyers").PK("id")).FK("buyer_id").As("Buyer")
 	view := View("orders").Version(1).Root("orders").Schema(composerRootSchema()).
 		Embed("buyer", external)
 
@@ -84,7 +84,7 @@ func TestFetchMongoEmbed_OneToOne_MissingFK(t *testing.T) {
 	// Root row lacks the buyer_id FK column → the one-to-one embed is skipped.
 	eng := rootMapsEngine([]string{"id", "name"}, [][]any{{"o1", "first"}})
 	c := NewComposerWithMongo(eng, newFakeMongo(&fakeColl{}))
-	external := FromSchema(core.NewExternalSchema("buyers").PK("id")).On("buyer_id").As("Buyer")
+	external := FromSchema(core.NewExternalSchema("buyers").PK("id")).FK("buyer_id").As("Buyer")
 	view := View("orders").Version(1).Root("orders").Schema(composerRootSchema()).
 		Embed("buyer", external)
 
@@ -100,7 +100,7 @@ func TestFetchMongoEmbed_OneToOne_MissingFK(t *testing.T) {
 func TestFetchMongoEmbed_OneToOne_FindError(t *testing.T) {
 	eng := rootMapsEngine([]string{"id", "buyer_id", "name"}, [][]any{{"o1", "u1", "first"}})
 	c := NewComposerWithMongo(eng, newFakeMongo(&fakeColl{findErr: context.Canceled}))
-	external := FromSchema(core.NewExternalSchema("buyers").PK("id")).On("buyer_id").As("Buyer")
+	external := FromSchema(core.NewExternalSchema("buyers").PK("id")).FK("buyer_id").As("Buyer")
 	view := View("orders").Version(1).Root("orders").Schema(composerRootSchema()).
 		Embed("buyer", external)
 

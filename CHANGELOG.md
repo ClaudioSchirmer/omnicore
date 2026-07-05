@@ -13,6 +13,43 @@ with `1.0.0`.
 
 ### Added
 
+- **`query.ComposedView` — read-time composition (query-time JOIN of existing
+  views).** The fourth composition primitive and the only one composing at READ
+  time: never materialized, never synced, never rebuilt — no collection, no
+  `Version(n)`, no schema-evolution entry, no recompose ripple. A read against
+  the composed name reads the PRIMARY view exactly as a direct read would (the
+  primary drives rows, filters, sort, search, pagination, total and cursors)
+  and enriches each item by key, in batch, from the linked legs: `Link` (1:1 →
+  sub-document, explicit `null` when absent; the PRIMARY holds the FK) and
+  `LinkMany` (1:N → array in the declared `OrderBy` order, capped per parent by
+  the `MaxLinkManyLimit` cascade per-link → yaml `query.maxLinkManyLimit` →
+  100, with silent deterministic truncation; the LEG holds the FK). Legs are
+  internal registered views (`JoinView`) or locally materialized upstream
+  collections (`JoinUpstream` — a leg never reads another service's live
+  storage; materialize first via `UpstreamSubscription`). Segment filters —
+  wire nested groups and `ToCriteria` per-leg authorization overlays
+  (segment-prefixed paths, e.g. `Filter["Notes.Kind"]="public"`) — shape
+  segment content only and can never select or leak primary rows; a `?sort=`
+  into a segment is rejected (400); `?includeArchived` propagates to every leg
+  (no-op on a leg without soft-delete); `?onlyTotal` short-circuits before any
+  leg fetch; `?fields=` projects into segments; cursors bind to the composed
+  listing context (segment filters included). Boot-fatal validation
+  (`query.ValidateComposedViews`): unknown FK/OrderBy columns, unregistered
+  primary/leg views, an external leg without its subscription, segment
+  collisions, LinkMany-only knobs on a 1:1 link, name shadowing. Registration
+  via the new `bootstrap.ComposingFeature` opt-in (`ComposedViews()`);
+  `bootstrap.Run` wraps the framework reader with
+  `mongo.NewComposedViewReader`, so consumption is unchanged by design — the
+  composed name goes wherever a view name goes (Auto and manual handlers,
+  GraphQL connections, CSV/XLSX export with one branch per leg;
+  `ComposedViewDefinition` satisfies the export surface, delegating the export
+  ceiling to its primary). New public surface: `query.ComposedView`,
+  `query.ComposedViewDefinition`, `query.Leg` (`JoinView`, `JoinUpstream`,
+  `FK`, `As`, `OrderBy`, `Desc`, `MaxLinkManyLimit`), `query.ComposedLink`,
+  `query.ValidateComposedViews`, `query.FrameworkDefaultMaxLinkManyLimit`,
+  `mongo.NewComposedViewReader`, `bootstrap.ComposingFeature`, yaml
+  `query.maxLinkManyLimit`.
+
 - **`query.SharedBaseView` — the all-in-one identity projection.** A second
   read-side view kind, rooted at a SharedBase: one Mongo document per shared
   identity — the base's shared fields flat at the root, the base's native
@@ -92,6 +129,17 @@ with `1.0.0`.
   `postgres.WithPool`, `bootstrap.FrameworkDefaultMaxOpenConns`.
 
 ### Changed
+
+- **breaking** — **the embed join key is `Source.FK` — `Source.On` is
+  removed.** The system speaks ONE join vocabulary, PK/FK: every relationship
+  declares one FK pointing at the other side's PK, and the FK holder follows
+  the multiplicity (1:1 `Embed` → the parent; child/`EmbedMany` → its own
+  schema via `TableSchema.FK`; composed links per `Link`/`LinkMany`).
+  Migration is a mechanical rename: `FromSchema(...).On("col")` →
+  `FromSchema(...).FK("col")` — semantics, boot validation and the composer
+  are unchanged. Out of scope: the integration-events receiver registration
+  `reg.From(...).On(event, ...)` keeps its name (an event trigger — "when
+  event X arrives" — not a join).
 
 - **breaking** — the relational **engine constructor surface takes a
   `core.EngineConfig`** options struct instead of positional `(dsn, tracing)`

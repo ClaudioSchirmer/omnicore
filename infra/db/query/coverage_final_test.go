@@ -87,7 +87,7 @@ func TestViewNode_ToGoDoc_OneToOneEmbedAndDrop(t *testing.T) {
 	rootSchema := core.NewTableSchema[vsRoot]("people").PK("person_pk").Field("Email", "mail")
 	buyerSchema := core.NewExternalSchema("buyers").PK("b_pk").Field("Email", "b_mail")
 	v := View("people").Root("people").Schema(rootSchema).
-		Embed("buyer", FromSchema(buyerSchema).On("buyer_ref").As("Buyer"))
+		Embed("buyer", FromSchema(buyerSchema).FK("buyer_ref").As("Buyer"))
 	node := v.BuildViewNode()
 
 	doc := map[string]any{
@@ -205,7 +205,7 @@ func TestValidateViewSchemas_ExternalEmbedMissingAs(t *testing.T) {
 func TestDependentMongoViews_NestedMatch(t *testing.T) {
 	// A view embedding an external (Mongo) collection at a nested level must be
 	// reported by DependentMongoViews / viewEmbedsMongoCollection.
-	nestedMongo := FromSchema(core.NewExternalSchema("users").PK("id").FK("order_id")).As("Buyer").On("buyer_id")
+	nestedMongo := FromSchema(core.NewExternalSchema("users").PK("id").FK("order_id")).As("Buyer").FK("buyer_id")
 	pgLines := FromSchema(core.NewTableSchema[embedFixture]("lines").PK("id").FK("order_id")).
 		Embed("buyer", nestedMongo)
 	v := View("orders").Version(1).Root("orders").Schema(rootSchema("orders")).

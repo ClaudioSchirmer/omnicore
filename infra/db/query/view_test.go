@@ -12,7 +12,7 @@ import (
 // pgEmbed / mongoEmbed build a FromSchema source with a minimal schema (PK + FK)
 // for tests. pgEmbed is type-anchored (local PG); mongoEmbed is type-less
 // (external/Mongo). For a one-to-one Embed, pass fk="" and set the parent join
-// via .On(...).
+// via Source.FK(...).
 type embedFixture struct{ ID string }
 
 func pgEmbed(table, fk string) *Source {

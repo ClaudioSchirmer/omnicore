@@ -5,7 +5,7 @@ import (
 )
 
 func TestFromSchema_ExternalIsMongo(t *testing.T) {
-	s := mongoEmbed("users", "").On("buyer_id")
+	s := mongoEmbed("users", "").FK("buyer_id")
 	if !s.IsMongo() {
 		t.Error("FromSchema(db.NewExternalSchema) should mark IsMongo=true")
 	}
@@ -41,10 +41,10 @@ func TestSource_CollectionAliasesTable(t *testing.T) {
 func TestBuildViewIndex_SplitsByKind(t *testing.T) {
 	v1 := View("orders").Root("orders").
 		EmbedMany("lines", pgEmbed("order_lines", "order_id")).
-		Embed("buyer", mongoEmbed("users", "").On("buyer_id")).
+		Embed("buyer", mongoEmbed("users", "").FK("buyer_id")).
 		Version(1)
 	v2 := View("invoices").Root("invoices").
-		Embed("order", mongoEmbed("orders_view", "").On("order_id")).
+		Embed("order", mongoEmbed("orders_view", "").FK("order_id")).
 		Version(1)
 	idx := buildViewIndex([]*ViewDefinition{v1, v2})
 	// PG side: roots + PG embeds
@@ -72,11 +72,11 @@ func TestBuildViewIndex_SplitsByKind(t *testing.T) {
 
 func TestDependentMongoViews_FindsEmbedders(t *testing.T) {
 	v1 := View("orders").Root("orders").
-		Embed("buyer", mongoEmbed("users", "").On("buyer_id")).
+		Embed("buyer", mongoEmbed("users", "").FK("buyer_id")).
 		Version(1)
 	v2 := View("invoices").Root("invoices").Version(1) // no Mongo embed
 	v3 := View("audit").Root("audit").
-		EmbedMany("perpetrator", mongoEmbed("users", "").On("audit_id")).
+		EmbedMany("perpetrator", mongoEmbed("users", "").FK("audit_id")).
 		Version(1)
 	got := DependentMongoViews([]*ViewDefinition{v1, v2, v3}, "users")
 	if len(got) != 2 {
@@ -86,7 +86,7 @@ func TestDependentMongoViews_FindsEmbedders(t *testing.T) {
 
 func TestDependentMongoViews_EmptyWhenNoMatches(t *testing.T) {
 	v := View("orders").Root("orders").
-		Embed("buyer", mongoEmbed("users", "").On("buyer_id")).
+		Embed("buyer", mongoEmbed("users", "").FK("buyer_id")).
 		Version(1)
 	got := DependentMongoViews([]*ViewDefinition{v}, "products")
 	if len(got) != 0 {
@@ -96,7 +96,7 @@ func TestDependentMongoViews_EmptyWhenNoMatches(t *testing.T) {
 
 func TestEmbedDef_AccessorsExposeSourceAndField(t *testing.T) {
 	v := View("orders").Root("orders").
-		Embed("buyer", mongoEmbed("users", "").On("buyer_id")).
+		Embed("buyer", mongoEmbed("users", "").FK("buyer_id")).
 		Version(1)
 	embeds := v.Embeds()
 	if len(embeds) != 1 {

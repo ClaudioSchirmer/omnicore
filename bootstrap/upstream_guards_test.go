@@ -11,7 +11,7 @@ import (
 // extEmbed builds an external (Mongo) embed source from a type-less schema for
 // the guard tests — table + FK from the schema, .As supplies the Go segment.
 func extEmbed(collection, fk, as string) *query.Source {
-	return query.FromSchema(core.NewExternalSchema(collection).PK("id").FK(fk)).On(fk).As(as)
+	return query.FromSchema(core.NewExternalSchema(collection).PK("id").FK(fk)).FK(fk).As(as)
 }
 
 func TestValidateViewSchemas_RejectsMissingRootSchema(t *testing.T) {
@@ -25,7 +25,7 @@ func TestValidateViewSchemas_RejectsMissingRootSchema(t *testing.T) {
 func TestValidateViewSchemas_RejectsExternalEmbedWithoutAs(t *testing.T) {
 	v := query.View("orders").Root("orders").
 		Schema(core.NewExternalSchema("orders").PK("id")).
-		Embed("buyer", query.FromSchema(core.NewExternalSchema("users").PK("id")).On("buyer_id")). // no .As
+		Embed("buyer", query.FromSchema(core.NewExternalSchema("users").PK("id")).FK("buyer_id")). // no .As
 		Version(1)
 	err := query.ValidateViewSchemas([]*query.ViewDefinition{v})
 	if err == nil || !strings.Contains(err.Error(), ".As(") {
