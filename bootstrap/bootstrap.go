@@ -787,9 +787,13 @@ func serve(ctx context.Context, deps Deps, wiring Wiring) error {
 		drainWG.Add(1)
 		go func() {
 			defer drainWG.Done()
+			deps.Logger.Info("draining", "stage", label)
+			start := time.Now()
 			if err := fn(); err != nil {
-				deps.Logger.Warn("drain timeout", "stage", label, "err", err)
+				deps.Logger.Warn("drain failed", "stage", label, "err", err, "elapsed", time.Since(start))
+				return
 			}
+			deps.Logger.Info("drained", "stage", label, "elapsed", time.Since(start))
 		}()
 	}
 
@@ -812,13 +816,21 @@ func serve(ctx context.Context, deps Deps, wiring Wiring) error {
 	// Flush buffered spans AFTER the servers stopped accepting work, so the
 	// final in-flight requests' spans reach the collector. Nil-safe + no-op on
 	// the disabled path.
+	deps.Logger.Info("draining", "stage", "tracing")
+	tracingStart := time.Now()
 	if err := deps.Tracing.Shutdown(shutdownCtx); err != nil {
-		deps.Logger.Warn("drain timeout", "stage", "tracing", "err", err)
+		deps.Logger.Warn("drain failed", "stage", "tracing", "err", err, "elapsed", time.Since(tracingStart))
+	} else {
+		deps.Logger.Info("drained", "stage", "tracing", "elapsed", time.Since(tracingStart))
 	}
 
 	if wiring.OnShutdown != nil {
+		deps.Logger.Info("draining", "stage", "onShutdown")
+		hookStart := time.Now()
 		if err := wiring.OnShutdown(shutdownCtx); err != nil {
-			deps.Logger.Warn("OnShutdown hook", "err", err)
+			deps.Logger.Warn("drain failed", "stage", "onShutdown", "err", err, "elapsed", time.Since(hookStart))
+		} else {
+			deps.Logger.Info("drained", "stage", "onShutdown", "elapsed", time.Since(hookStart))
 		}
 	}
 	deps.Logger.Info("shutdown complete")

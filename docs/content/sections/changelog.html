@@ -8,7 +8,9 @@
 <div class="changelog">
     <div class="release">
         <div class="release-head"><span class="release-tag">Unreleased</span><span class="release-date">pending</span></div>
-        <ul></ul>
+        <ul>
+            <li><strong>Changed</strong> — <strong>graceful shutdown now narrates each drain stage.</strong> The coordinated drain logged only its two bookends (<code>shutdown signal received, draining...</code> and <code>shutdown complete</code>) plus a timeout warning, so an operator watching a slow shutdown could not tell which component was being stopped or how long it took. Every stage that runs through the drain (<code>http</code>, <code>integration</code>, <code>upstream[i]</code>, <code>sync</code>) and the sequential <code>tracing</code> / <code>onShutdown</code> steps now emit <code>INFO draining stage=&lt;name&gt;</code> on entry and <code>INFO drained stage=&lt;name&gt; elapsed=&lt;duration&gt;</code> on success; the failure path logs <code>WARN drain failed stage=&lt;name&gt; err=&lt;…&gt; elapsed=&lt;duration&gt;</code> (renamed from <code>drain timeout</code>, since not every drain error is a timeout). No API change. See <a href="#bootstrap">Bootstrap → Graceful shutdown</a>.</li>
+        </ul>
     </div>
 
     <div class="release">

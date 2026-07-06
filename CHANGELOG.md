@@ -11,6 +11,19 @@ with `1.0.0`.
 
 ## [Unreleased]
 
+### Changed
+
+- **Graceful shutdown now narrates each drain stage.** The coordinated drain
+  previously logged only its two bookends (`shutdown signal received, draining...`
+  and `shutdown complete`) plus a warning on timeout, so an operator watching a
+  slow shutdown had no idea which component was being stopped or how long it
+  took. Every stage that runs through the drain (`http`, `integration`,
+  `upstream[i]`, `sync`) and the sequential `tracing` / `onShutdown` steps now
+  emit an `INFO draining stage=<name>` line on entry and an `INFO drained
+  stage=<name> elapsed=<duration>` line on success; the failure path logs
+  `WARN drain failed stage=<name> err=<…> elapsed=<duration>` (renamed from the
+  previous `drain timeout`, since not every drain error is a timeout).
+
 ## [0.19.0] - 2026-07-05
 
 ### Fixed
