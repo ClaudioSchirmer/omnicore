@@ -1,6 +1,7 @@
 package bootstrap
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"io"
@@ -258,5 +259,56 @@ func TestServe_DrainsOnContextCancel(t *testing.T) {
 	err := serve(ctx, deps, Wiring{Features: []Feature{&writeOnlyFeature{}}})
 	if err != nil {
 		t.Fatalf("serve should return nil after ctx cancel; got: %v", err)
+	}
+}
+
+// The drain must NARRATE itself: operators watching a slow shutdown need to
+// see which component is being stopped and when it finished, not just the two
+// bookend lines. Each stage that runs through the coordinated drain (and the
+// sequential tracing / OnShutdown steps) emits a "draining" line on entry and
+// a "drained" line with its elapsed time on success. All drain goroutines are
+// joined before serve returns, so reading the buffer afterwards is race-free.
+func TestServe_LogsDrainStages(t *testing.T) {
+	var buf bytes.Buffer
+	cfg := &Config{Service: "test"}
+	cfg.HTTP.Addr = "127.0.0.1:0"
+	deps := silentDeps()
+	deps.Config = cfg
+	deps.Logger = slog.New(slog.NewJSONHandler(&buf, nil))
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	onShutdownCalled := false
+	wiring := Wiring{
+		Features:   []Feature{&writeOnlyFeature{}},
+		OnShutdown: func(context.Context) error { onShutdownCalled = true; return nil },
+	}
+	if err := serve(ctx, deps, wiring); err != nil {
+		t.Fatalf("serve should return nil after ctx cancel; got: %v", err)
+	}
+	if !onShutdownCalled {
+		t.Fatal("OnShutdown hook was not invoked")
+	}
+
+	out := buf.String()
+	// The http + sync stages always run; tracing + onShutdown run sequentially
+	// after the parallel drain. Each must show both a "draining" and a
+	// "drained" line, bookended by the shutdown-received / -complete summaries.
+	want := []string{
+		`"msg":"shutdown signal received, draining..."`,
+		`"msg":"draining","stage":"http"`,
+		`"msg":"drained","stage":"http"`,
+		`"msg":"draining","stage":"sync"`,
+		`"msg":"drained","stage":"sync"`,
+		`"msg":"draining","stage":"tracing"`,
+		`"msg":"drained","stage":"tracing"`,
+		`"msg":"draining","stage":"onShutdown"`,
+		`"msg":"drained","stage":"onShutdown"`,
+		`"msg":"shutdown complete"`,
+	}
+	for _, w := range want {
+		if !strings.Contains(out, w) {
+			t.Errorf("drain log missing %s\n--- full output ---\n%s", w, out)
+		}
 	}
 }

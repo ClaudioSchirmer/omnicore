@@ -316,8 +316,19 @@ func (f *UsersFeature) Mount(app *fiber.App, d bootstrap.Deps) {
         unblocks only when what it waits for has actually FINISHED, and the storage handles close only
         after every producer of work over them has fully stopped. The only time-shaped element is the
         overall budget (<code>shutdown.drainTimeoutSeconds</code>, default 30s): a stage that cannot
-        finish inside it is surfaced as a <code>drain timeout</code> warning naming the stage — never
-        silently abandoned.
+        finish inside it is surfaced as a <code>drain failed</code> warning naming the stage and its
+        elapsed time — never silently abandoned.
+    </p>
+    <p>
+        The drain <strong>narrates itself</strong> so a slow shutdown stays legible. On entry each
+        stage logs <code>INFO draining stage=&lt;name&gt;</code>; on success
+        <code>INFO drained stage=&lt;name&gt; elapsed=&lt;duration&gt;</code> — for the four parallel
+        members (<code>http</code>, <code>integration</code>, <code>upstream[i]</code>,
+        <code>sync</code>) and for the sequential <code>tracing</code> and <code>onShutdown</code> steps
+        alike. The whole sequence is bookended by <code>shutdown signal received, draining...</code> and
+        <code>shutdown complete</code>. Because the members run in parallel their <code>draining</code>
+        lines appear together and each <code>drained</code> line lands as its stage finishes, so the one
+        holding up the shutdown is the one still missing its <code>drained</code> line.
     </p>
     <div class="flow">SIGINT / SIGTERM
    │
@@ -367,6 +378,8 @@ Mongo.Close() → relational engine Close()  ← storage handles close LAST — 
     <p class="note">Custom health (DB ping, external dependencies) must be exposed on another route (<code>/healthz</code>, <code>/ready</code>) via feature or <code>BeforeServe</code> — the framework's <code>/health</code> is pure liveness.</p>
 
     <p class="note">JSON logger on <code>stdout</code> at <code>Info</code> level is the only default. Anyone needing a custom logger (file, datadog) uses <code>Build()</code> + <code>Serve()</code> with their own <code>slog.Logger</code> in <code>Deps</code>, or registers in <code>BeforeServe</code>.</p>
+
+    <p class="note">Because those logs go to <code>stdout</code>, piping the process through another program in a shell (<code>… | tee log</code>) can <em>swallow the entire shutdown</em>: a terminal <kbd>Ctrl+C</kbd> signals the whole foreground process group at once, so a plain <code>tee</code> dies immediately, the process's <code>stdout</code> becomes a broken pipe, and every drain line is lost (Go even raises <code>SIGPIPE</code> on the first write). Redirect straight to a file (<code>&gt; log 2&gt;&amp;1</code>), or make the reader ignore the signal (<code>| { trap '' INT TERM; tee log; }</code>) so it survives to capture the drain.</p>
 
     <h3>Service-specific translations</h3>
 <pre><code>// application/translations/customer_eng.go
