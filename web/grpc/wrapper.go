@@ -50,7 +50,7 @@ func handleCommandWithBody[
 	pipe *pipeline.Pipeline,
 	toCommand func(*PB) (TCmdPtr, error),
 	h pipeline.Handler[TCmdPtr, TResult],
-	fromResult func(TResult) *RPB,
+	fromResult func(TResult) (*RPB, error),
 	strictFields []string,
 ) func(context.Context, *connect.Request[PB]) (*connect.Response[RPB], error) {
 	return func(ctx context.Context, req *connect.Request[PB]) (*connect.Response[RPB], error) {
@@ -77,16 +77,12 @@ func handleCommandWithBody[
 // contract).
 func handleQueryWithParams[
 	PB, RPB any,
-	TQ any,
-	TQPtr interface {
-		*TQ
-		queries.QueryWithParams
-	},
+	TQ queries.QueryWithParams,
 ](
 	pipe *pipeline.Pipeline,
-	toQuery func(*PB) (TQPtr, error),
-	h pipeline.Handler[TQPtr, queries.Page],
-	fromResult func(queries.Page) *RPB,
+	toQuery func(*PB) (TQ, error),
+	h pipeline.Handler[TQ, queries.Page],
+	fromResult func(queries.Page) (*RPB, error),
 ) func(context.Context, *connect.Request[PB]) (*connect.Response[RPB], error) {
 	return func(ctx context.Context, req *connect.Request[PB]) (*connect.Response[RPB], error) {
 		appCtx := AppContextFrom(ctx)
@@ -101,11 +97,17 @@ func handleQueryWithParams[
 
 // responseFromResult is the connect sibling of web.RespondFromResult:
 // success projects, failure carries the translated envelope, exception is
-// an opaque INTERNAL.
-func responseFromResult[T, RPB any](result pipeline.Result[T], fromResult func(T) *RPB) (*connect.Response[RPB], error) {
+// an opaque INTERNAL. A projection error is a response-side bridge failure
+// — a server-side contract bug, never the caller's fault — and surfaces as
+// the same opaque INTERNAL.
+func responseFromResult[T, RPB any](result pipeline.Result[T], fromResult func(T) (*RPB, error)) (*connect.Response[RPB], error) {
 	switch {
 	case result.IsSuccess():
-		return connect.NewResponse(fromResult(result.Value())), nil
+		out, err := fromResult(result.Value())
+		if err != nil {
+			return nil, errInternal()
+		}
+		return connect.NewResponse(out), nil
 	case result.IsFailure():
 		return nil, ErrorFromNotifications(result.Notifications())
 	default:
@@ -195,7 +197,7 @@ func handleCommandWithBodyID[
 	idFrom func(*PB) string,
 	toCommand func(*PB) (TCmdPtr, error),
 	h pipeline.Handler[TCmdPtr, TResult],
-	fromResult func(TResult) *RPB,
+	fromResult func(TResult) (*RPB, error),
 	strictFields []string,
 ) func(context.Context, *connect.Request[PB]) (*connect.Response[RPB], error) {
 	return func(ctx context.Context, req *connect.Request[PB]) (*connect.Response[RPB], error) {
@@ -233,7 +235,7 @@ func handleCommandByID[
 	pipe *pipeline.Pipeline,
 	idFrom func(*PB) string,
 	h pipeline.Handler[TCmdPtr, TResult],
-	fromResult func(TResult) *RPB,
+	fromResult func(TResult) (*RPB, error),
 ) func(context.Context, *connect.Request[PB]) (*connect.Response[RPB], error) {
 	return func(ctx context.Context, req *connect.Request[PB]) (*connect.Response[RPB], error) {
 		cmd := TCmdPtr(new(TCmd))
@@ -250,17 +252,13 @@ func handleCommandByID[
 // toQuery carries the rest of the message (e.g. include_archived).
 func handleQueryByID[
 	PB, RPB any,
-	TQ any,
-	TQPtr interface {
-		*TQ
-		queries.QueryByID
-	},
+	TQ queries.QueryByID,
 ](
 	pipe *pipeline.Pipeline,
 	idFrom func(*PB) string,
-	toQuery func(*PB) (TQPtr, error),
-	h pipeline.Handler[TQPtr, map[string]any],
-	fromDoc func(map[string]any) *RPB,
+	toQuery func(*PB) (TQ, error),
+	h pipeline.Handler[TQ, map[string]any],
+	fromDoc func(map[string]any) (*RPB, error),
 ) func(context.Context, *connect.Request[PB]) (*connect.Response[RPB], error) {
 	return func(ctx context.Context, req *connect.Request[PB]) (*connect.Response[RPB], error) {
 		appCtx := AppContextFrom(ctx)

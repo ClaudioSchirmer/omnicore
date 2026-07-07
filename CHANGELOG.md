@@ -52,32 +52,40 @@ with `1.0.0`.
   `grpc.AuthPosture`/`Registry.SetAuthPosture`/`WithClientCertIdentity`,
   `authcore.ValidateAttribution`/`AttributionResult`.
 
-- **Shared read-side proto components + criteria builder —
-  `omnicore/v1/query.proto` and `grpc.NewCriteria`.** List RPCs compose the
-  framework contract (`web/grpc/proto`, generated Go in `web/grpc/pb`):
-  `PageRequest` (after/before/limit/only_total/include_archived),
-  `SortField`, `google.protobuf.FieldMask read_mask` (the `?fields=`
-  sibling) and the typed operator wrappers `StringFilter` (full 12-operator
-  REST vocabulary), `Int64Filter`/`DoubleFilter`/`TimestampFilter`
-  (eq/ne/in/nin/gt/gte/lt/lte), `BoolFilter` (eq/ne); repeated conditions
-  per field AND-combine (MultiClause). The `grpc.NewCriteria()` builder
-  converts them to `queries.ReadCriteria` with Go-field-path keys — the
-  query type's `ToCriteria(ctx)` overlays are untouched — and an
-  invalid/UNSPECIFIED operator fails as SchemaViolation. `read_mask` and
-  `sort` speak WIRE names (the response message's proto fields — FieldMask's
-  canonical snake_case JSON form), resolved against the per-view
-  `Fields(wire→Go)` vocabulary: the allowlist sibling of the REST struct
-  tags. An undeclared path fails Build — it never reaches the reader, where
-  an unresolved spelling would pass through as a physical column and bypass
-  `ToCriteria` overlays such as `Restrict` (hardening found and locked by
-  the gRPC security suite). Emission delegates
-  to the NEW `queryschema.ApplyFilterValues` (the list-level core of the
-  shared REST/OpenAPI/GraphQL emitter; `ApplyFilterParam` now delegates,
-  behavior-preserving), so operator semantics are unit-locked
-  byte-identical across wires — and proto's `repeated values` remove the
-  query-string comma-in-value limitation on the gRPC plane. Timestamps
-  convert to the RFC3339 string form the REST string-leaf coercion
-  produces. New surface: `web/grpc/pb` (generated), `grpc.NewCriteria` /
+- **Shared read-side proto components — `omnicore/v1/query.proto`, converted
+  for you.** List RPCs compose the framework contract (`web/grpc/proto`,
+  generated Go in `web/grpc/pb`): `PageRequest`
+  (after/before/limit/only_total/include_archived), `SortField`,
+  `google.protobuf.FieldMask read_mask` (the `?fields=` sibling), the typed
+  operator wrappers `StringFilter` (full 12-operator REST vocabulary),
+  `Int64Filter`/`DoubleFilter`/`TimestampFilter` (eq/ne/in/nin/gt/gte/lt/lte),
+  `BoolFilter` (eq/ne) — repeated conditions per field AND-combine
+  (MultiClause) — and, on the response, the mirror envelope: exactly one
+  repeated items message + the NEW `PageInfo`
+  (total/next_cursor/prev_cursor), located BY TYPE. `QueryWithParams`
+  discovers the components on the descriptors at boot and assembles the
+  INPUT `queries.ReadCriteria` (Go-field-path keys) itself: filters bind to
+  the SAME Request DTO the REST list consumes and **inherit its `filter:`
+  tag operator allowlist on the wire** (an operator outside the tag rejects
+  as SchemaViolation, the REST 400's twin; a proto filter with no tagged
+  DTO leaf aborts boot); `read_mask`/`sort` speak WIRE names (the item
+  message's proto fields — FieldMask's canonical snake_case JSON form),
+  resolved against the projector's Response DTO — an undeclared path fails
+  before the reader, where an unresolved spelling would pass through as a
+  physical column and bypass `ToCriteria` overlays such as `Restrict`
+  (hardening found and locked by the gRPC security suite). The criteria
+  then reaches the DTO's `ToQuery(criteria)` — the same one-liner REST
+  calls — and the query type's `ToCriteria(ctx)` overlays are untouched.
+  Emission delegates to the NEW `queryschema.ApplyFilterValues` (the
+  list-level core of the shared REST/OpenAPI/GraphQL emitter;
+  `ApplyFilterParam` now delegates, behavior-preserving), so operator
+  semantics are unit-locked byte-identical across wires — and proto's
+  `repeated values` remove the query-string comma-in-value limitation on
+  the gRPC plane. Timestamps convert to the RFC3339 string form the REST
+  string-leaf coercion produces. `grpc.NewCriteria` / `CriteriaBuilder`
+  stay public as the MountRaw path's companion (a hand-rolled list reuses
+  the same emitter, never re-implements operators). New surface:
+  `web/grpc/pb` (generated, incl. `PageInfo`), `grpc.NewCriteria` /
   `CriteriaBuilder`, `queryschema.ApplyFilterValues`.
 
 - **`infra/grpcclient` — the outbound gRPC/Connect toolbox.** The sibling of
@@ -105,32 +113,43 @@ with `1.0.0`.
   historical seams as thin delegations) and shared with `infra/grpcclient`
   — one implementation, two transports, semantics that cannot drift.
 
-- **gRPC attachment — `reg.Register` + the constructor family, one
-  vocabulary across the three surfaces.** `web/grpc` mirrors the GraphQL
-  idiom (constructor → `Procedure` value → `Registry.Register`) with the
-  REST/GraphQL operation names: `CommandWithBody` (create),
-  `CommandWithBodyID` (body + id; `SetPathID` injected after the binding —
-  the `pipeline.CommandWithID` seam), `CommandByID` (id only, NO mapper —
-  the wrapper constructs the command), `QueryWithParams` (list) and
-  `QueryByID` (view document + `FromDoc` projection). ONE attachment API:
-  every constructor accepts any `pipeline.Handler`; wire bindings are small
-  types co-located in the consumer's `web/requests`; the id extractor is
-  the generated getter as a method expression. Includes
-  `grpc.RequirePermission` — the Layer-1 permission gate, twin of the
-  REST/GraphQL options: enforced via `Identity.HasPermission` under
-  `auth.authorization.enabled` (`Registry.EnableAuthorization`, wired by
-  bootstrap), inert otherwise; rejection = PERMISSION_DENIED with the
-  canonical `MissingPermissionNotification` envelope. `Strict` remains the
-  FullBody option on the same variadic seat.
+- **gRPC attachment — `reg.Register` + the constructor family over the
+  REST DTO seats.** `web/grpc` attaches one declarative `Procedure` per RPC
+  with the REST/GraphQL operation names — `CommandWithBody` (create),
+  `CommandWithBodyID` (body + id; `SetPathID` injected after `ToCommand`),
+  `CommandByID` (id only; request = the `id` field, response = an EMPTY
+  message, both enforced at boot — the 204 sibling), `QueryWithParams`
+  (list) and `QueryByID` (view document) — and each constructor consumes
+  EXACTLY the REST Spec ingredients: the same Request DTO
+  (`ToCommand`/`ToQuery` seat), the same `Response{}.FromResult` /
+  `fwresponses.AutoFromDoc[Response]`; the pb message types ride as
+  explicit type parameters and the id extractor is the generated getter as
+  a method expression. The framework crosses pb ↔ DTO mechanically: a
+  bridge plan compiles at `Register` (case/underscore-insensitive name
+  matching with `json:`/`query:` tags honored, nested/repeated recursion,
+  proto3 `optional` presence ↔ DTO pointers, `google.protobuf.Timestamp` ↔
+  `time.Time`); an unmatched field ABORTS BOOT (`grpc.Alias("wire_field",
+  "GoField")` declares the exceptional pairing) — semantic transformation
+  stays in `ToCommand`/`ToQuery`/`FromResult`, and a shape that cannot
+  mirror DTOs is a `MountRaw` procedure. Request-side bridge failures
+  reject as SchemaViolation (the REST body-parse 400's twin); response-side
+  ones are an opaque INTERNAL. ONE attachment API: every constructor
+  accepts any `pipeline.Handler`. Includes `grpc.RequirePermission` — the
+  Layer-1 permission gate, twin of the REST/GraphQL options: enforced via
+  `Identity.HasPermission` under `auth.authorization.enabled`
+  (`Registry.EnableAuthorization`, wired by bootstrap), inert otherwise;
+  rejection = PERMISSION_DENIED with the canonical
+  `MissingPermissionNotification` envelope. `Strict` remains the FullBody
+  option on the same variadic seat.
 
 - **gRPC transport surface — `web/grpc`, served with Connect.** The fourth
   consumer of the application-layer handlers: the wrapper family —
   `CommandWithBody` / `CommandWithBodyID` / `CommandByID`
   / `QueryWithParams` / `QueryByID`, the SAME vocabulary as the
   REST and GraphQL surfaces — adapts any `pipeline.Handler` to a generated
-  Connect service method (hand-written mapper pair = the `ToCommand` /
-  `responseProjection` seats), so REST, GraphQL, export and gRPC dispatch to
-  the same handler instances. One `net/http` endpoint on a dedicated
+  Connect service method over the REST DTO seats (`ToCommand` /
+  `ToQuery` / `FromResult`, bridged mechanically by the framework), so
+  REST, GraphQL, export and gRPC dispatch to the same handler instances. One `net/http` endpoint on a dedicated
   listener (yaml `grpc:` block — `addr` default `:9090`,
   `certFile`/`keyFile`, `reflection`, `requestTimeoutSeconds`,
   `publicProcedures`) speaks the gRPC, gRPC-Web and Connect protocols; h2c

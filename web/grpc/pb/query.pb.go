@@ -300,6 +300,71 @@ func (x *PageRequest) GetIncludeArchived() bool {
 	return false
 }
 
+// PageInfo is the response-side envelope — PageRequest's mirror. A list
+// response composes it next to ONE repeated message field (the items); the
+// framework locates both BY TYPE, so item/field naming stays the service's
+// choice. Cursors are opaque keyset cursors (echo them into
+// PageRequest.after/before), empty when there is no further page.
+type PageInfo struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Total         int64                  `protobuf:"varint,1,opt,name=total,proto3" json:"total,omitempty"`
+	NextCursor    string                 `protobuf:"bytes,2,opt,name=next_cursor,json=nextCursor,proto3" json:"next_cursor,omitempty"`
+	PrevCursor    string                 `protobuf:"bytes,3,opt,name=prev_cursor,json=prevCursor,proto3" json:"prev_cursor,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *PageInfo) Reset() {
+	*x = PageInfo{}
+	mi := &file_omnicore_v1_query_proto_msgTypes[1]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *PageInfo) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*PageInfo) ProtoMessage() {}
+
+func (x *PageInfo) ProtoReflect() protoreflect.Message {
+	mi := &file_omnicore_v1_query_proto_msgTypes[1]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use PageInfo.ProtoReflect.Descriptor instead.
+func (*PageInfo) Descriptor() ([]byte, []int) {
+	return file_omnicore_v1_query_proto_rawDescGZIP(), []int{1}
+}
+
+func (x *PageInfo) GetTotal() int64 {
+	if x != nil {
+		return x.Total
+	}
+	return 0
+}
+
+func (x *PageInfo) GetNextCursor() string {
+	if x != nil {
+		return x.NextCursor
+	}
+	return ""
+}
+
+func (x *PageInfo) GetPrevCursor() string {
+	if x != nil {
+		return x.PrevCursor
+	}
+	return ""
+}
+
 // SortField is one ?sort= entry: the WIRE field name (the response
 // message's proto field, snake_case) + direction. The converter resolves it
 // against the view's declared Fields vocabulary — an undeclared name is a
@@ -314,7 +379,7 @@ type SortField struct {
 
 func (x *SortField) Reset() {
 	*x = SortField{}
-	mi := &file_omnicore_v1_query_proto_msgTypes[1]
+	mi := &file_omnicore_v1_query_proto_msgTypes[2]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -326,7 +391,7 @@ func (x *SortField) String() string {
 func (*SortField) ProtoMessage() {}
 
 func (x *SortField) ProtoReflect() protoreflect.Message {
-	mi := &file_omnicore_v1_query_proto_msgTypes[1]
+	mi := &file_omnicore_v1_query_proto_msgTypes[2]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -339,7 +404,7 @@ func (x *SortField) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SortField.ProtoReflect.Descriptor instead.
 func (*SortField) Descriptor() ([]byte, []int) {
-	return file_omnicore_v1_query_proto_rawDescGZIP(), []int{1}
+	return file_omnicore_v1_query_proto_rawDescGZIP(), []int{2}
 }
 
 func (x *SortField) GetField() string {
@@ -370,7 +435,7 @@ type StringCondition struct {
 
 func (x *StringCondition) Reset() {
 	*x = StringCondition{}
-	mi := &file_omnicore_v1_query_proto_msgTypes[2]
+	mi := &file_omnicore_v1_query_proto_msgTypes[3]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -382,7 +447,7 @@ func (x *StringCondition) String() string {
 func (*StringCondition) ProtoMessage() {}
 
 func (x *StringCondition) ProtoReflect() protoreflect.Message {
-	mi := &file_omnicore_v1_query_proto_msgTypes[2]
+	mi := &file_omnicore_v1_query_proto_msgTypes[3]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -395,7 +460,7 @@ func (x *StringCondition) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use StringCondition.ProtoReflect.Descriptor instead.
 func (*StringCondition) Descriptor() ([]byte, []int) {
-	return file_omnicore_v1_query_proto_rawDescGZIP(), []int{2}
+	return file_omnicore_v1_query_proto_rawDescGZIP(), []int{3}
 }
 
 func (x *StringCondition) GetOp() StringOp {
@@ -421,7 +486,7 @@ type StringFilter struct {
 
 func (x *StringFilter) Reset() {
 	*x = StringFilter{}
-	mi := &file_omnicore_v1_query_proto_msgTypes[3]
+	mi := &file_omnicore_v1_query_proto_msgTypes[4]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -433,7 +498,7 @@ func (x *StringFilter) String() string {
 func (*StringFilter) ProtoMessage() {}
 
 func (x *StringFilter) ProtoReflect() protoreflect.Message {
-	mi := &file_omnicore_v1_query_proto_msgTypes[3]
+	mi := &file_omnicore_v1_query_proto_msgTypes[4]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -446,7 +511,7 @@ func (x *StringFilter) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use StringFilter.ProtoReflect.Descriptor instead.
 func (*StringFilter) Descriptor() ([]byte, []int) {
-	return file_omnicore_v1_query_proto_rawDescGZIP(), []int{3}
+	return file_omnicore_v1_query_proto_rawDescGZIP(), []int{4}
 }
 
 func (x *StringFilter) GetConditions() []*StringCondition {
@@ -466,7 +531,7 @@ type Int64Condition struct {
 
 func (x *Int64Condition) Reset() {
 	*x = Int64Condition{}
-	mi := &file_omnicore_v1_query_proto_msgTypes[4]
+	mi := &file_omnicore_v1_query_proto_msgTypes[5]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -478,7 +543,7 @@ func (x *Int64Condition) String() string {
 func (*Int64Condition) ProtoMessage() {}
 
 func (x *Int64Condition) ProtoReflect() protoreflect.Message {
-	mi := &file_omnicore_v1_query_proto_msgTypes[4]
+	mi := &file_omnicore_v1_query_proto_msgTypes[5]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -491,7 +556,7 @@ func (x *Int64Condition) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Int64Condition.ProtoReflect.Descriptor instead.
 func (*Int64Condition) Descriptor() ([]byte, []int) {
-	return file_omnicore_v1_query_proto_rawDescGZIP(), []int{4}
+	return file_omnicore_v1_query_proto_rawDescGZIP(), []int{5}
 }
 
 func (x *Int64Condition) GetOp() NumberOp {
@@ -517,7 +582,7 @@ type Int64Filter struct {
 
 func (x *Int64Filter) Reset() {
 	*x = Int64Filter{}
-	mi := &file_omnicore_v1_query_proto_msgTypes[5]
+	mi := &file_omnicore_v1_query_proto_msgTypes[6]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -529,7 +594,7 @@ func (x *Int64Filter) String() string {
 func (*Int64Filter) ProtoMessage() {}
 
 func (x *Int64Filter) ProtoReflect() protoreflect.Message {
-	mi := &file_omnicore_v1_query_proto_msgTypes[5]
+	mi := &file_omnicore_v1_query_proto_msgTypes[6]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -542,7 +607,7 @@ func (x *Int64Filter) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Int64Filter.ProtoReflect.Descriptor instead.
 func (*Int64Filter) Descriptor() ([]byte, []int) {
-	return file_omnicore_v1_query_proto_rawDescGZIP(), []int{5}
+	return file_omnicore_v1_query_proto_rawDescGZIP(), []int{6}
 }
 
 func (x *Int64Filter) GetConditions() []*Int64Condition {
@@ -562,7 +627,7 @@ type DoubleCondition struct {
 
 func (x *DoubleCondition) Reset() {
 	*x = DoubleCondition{}
-	mi := &file_omnicore_v1_query_proto_msgTypes[6]
+	mi := &file_omnicore_v1_query_proto_msgTypes[7]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -574,7 +639,7 @@ func (x *DoubleCondition) String() string {
 func (*DoubleCondition) ProtoMessage() {}
 
 func (x *DoubleCondition) ProtoReflect() protoreflect.Message {
-	mi := &file_omnicore_v1_query_proto_msgTypes[6]
+	mi := &file_omnicore_v1_query_proto_msgTypes[7]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -587,7 +652,7 @@ func (x *DoubleCondition) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DoubleCondition.ProtoReflect.Descriptor instead.
 func (*DoubleCondition) Descriptor() ([]byte, []int) {
-	return file_omnicore_v1_query_proto_rawDescGZIP(), []int{6}
+	return file_omnicore_v1_query_proto_rawDescGZIP(), []int{7}
 }
 
 func (x *DoubleCondition) GetOp() NumberOp {
@@ -613,7 +678,7 @@ type DoubleFilter struct {
 
 func (x *DoubleFilter) Reset() {
 	*x = DoubleFilter{}
-	mi := &file_omnicore_v1_query_proto_msgTypes[7]
+	mi := &file_omnicore_v1_query_proto_msgTypes[8]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -625,7 +690,7 @@ func (x *DoubleFilter) String() string {
 func (*DoubleFilter) ProtoMessage() {}
 
 func (x *DoubleFilter) ProtoReflect() protoreflect.Message {
-	mi := &file_omnicore_v1_query_proto_msgTypes[7]
+	mi := &file_omnicore_v1_query_proto_msgTypes[8]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -638,7 +703,7 @@ func (x *DoubleFilter) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DoubleFilter.ProtoReflect.Descriptor instead.
 func (*DoubleFilter) Descriptor() ([]byte, []int) {
-	return file_omnicore_v1_query_proto_rawDescGZIP(), []int{7}
+	return file_omnicore_v1_query_proto_rawDescGZIP(), []int{8}
 }
 
 func (x *DoubleFilter) GetConditions() []*DoubleCondition {
@@ -658,7 +723,7 @@ type BoolCondition struct {
 
 func (x *BoolCondition) Reset() {
 	*x = BoolCondition{}
-	mi := &file_omnicore_v1_query_proto_msgTypes[8]
+	mi := &file_omnicore_v1_query_proto_msgTypes[9]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -670,7 +735,7 @@ func (x *BoolCondition) String() string {
 func (*BoolCondition) ProtoMessage() {}
 
 func (x *BoolCondition) ProtoReflect() protoreflect.Message {
-	mi := &file_omnicore_v1_query_proto_msgTypes[8]
+	mi := &file_omnicore_v1_query_proto_msgTypes[9]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -683,7 +748,7 @@ func (x *BoolCondition) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use BoolCondition.ProtoReflect.Descriptor instead.
 func (*BoolCondition) Descriptor() ([]byte, []int) {
-	return file_omnicore_v1_query_proto_rawDescGZIP(), []int{8}
+	return file_omnicore_v1_query_proto_rawDescGZIP(), []int{9}
 }
 
 func (x *BoolCondition) GetOp() BoolOp {
@@ -709,7 +774,7 @@ type BoolFilter struct {
 
 func (x *BoolFilter) Reset() {
 	*x = BoolFilter{}
-	mi := &file_omnicore_v1_query_proto_msgTypes[9]
+	mi := &file_omnicore_v1_query_proto_msgTypes[10]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -721,7 +786,7 @@ func (x *BoolFilter) String() string {
 func (*BoolFilter) ProtoMessage() {}
 
 func (x *BoolFilter) ProtoReflect() protoreflect.Message {
-	mi := &file_omnicore_v1_query_proto_msgTypes[9]
+	mi := &file_omnicore_v1_query_proto_msgTypes[10]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -734,7 +799,7 @@ func (x *BoolFilter) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use BoolFilter.ProtoReflect.Descriptor instead.
 func (*BoolFilter) Descriptor() ([]byte, []int) {
-	return file_omnicore_v1_query_proto_rawDescGZIP(), []int{9}
+	return file_omnicore_v1_query_proto_rawDescGZIP(), []int{10}
 }
 
 func (x *BoolFilter) GetConditions() []*BoolCondition {
@@ -757,7 +822,7 @@ type TimestampCondition struct {
 
 func (x *TimestampCondition) Reset() {
 	*x = TimestampCondition{}
-	mi := &file_omnicore_v1_query_proto_msgTypes[10]
+	mi := &file_omnicore_v1_query_proto_msgTypes[11]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -769,7 +834,7 @@ func (x *TimestampCondition) String() string {
 func (*TimestampCondition) ProtoMessage() {}
 
 func (x *TimestampCondition) ProtoReflect() protoreflect.Message {
-	mi := &file_omnicore_v1_query_proto_msgTypes[10]
+	mi := &file_omnicore_v1_query_proto_msgTypes[11]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -782,7 +847,7 @@ func (x *TimestampCondition) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use TimestampCondition.ProtoReflect.Descriptor instead.
 func (*TimestampCondition) Descriptor() ([]byte, []int) {
-	return file_omnicore_v1_query_proto_rawDescGZIP(), []int{10}
+	return file_omnicore_v1_query_proto_rawDescGZIP(), []int{11}
 }
 
 func (x *TimestampCondition) GetOp() NumberOp {
@@ -808,7 +873,7 @@ type TimestampFilter struct {
 
 func (x *TimestampFilter) Reset() {
 	*x = TimestampFilter{}
-	mi := &file_omnicore_v1_query_proto_msgTypes[11]
+	mi := &file_omnicore_v1_query_proto_msgTypes[12]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -820,7 +885,7 @@ func (x *TimestampFilter) String() string {
 func (*TimestampFilter) ProtoMessage() {}
 
 func (x *TimestampFilter) ProtoReflect() protoreflect.Message {
-	mi := &file_omnicore_v1_query_proto_msgTypes[11]
+	mi := &file_omnicore_v1_query_proto_msgTypes[12]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -833,7 +898,7 @@ func (x *TimestampFilter) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use TimestampFilter.ProtoReflect.Descriptor instead.
 func (*TimestampFilter) Descriptor() ([]byte, []int) {
-	return file_omnicore_v1_query_proto_rawDescGZIP(), []int{11}
+	return file_omnicore_v1_query_proto_rawDescGZIP(), []int{12}
 }
 
 func (x *TimestampFilter) GetConditions() []*TimestampCondition {
@@ -857,7 +922,13 @@ const file_omnicore_v1_query_proto_rawDesc = "" +
 	"\x10include_archived\x18\x05 \x01(\bR\x0fincludeArchivedB\b\n" +
 	"\x06_afterB\t\n" +
 	"\a_beforeB\b\n" +
-	"\x06_limit\"5\n" +
+	"\x06_limit\"b\n" +
+	"\bPageInfo\x12\x14\n" +
+	"\x05total\x18\x01 \x01(\x03R\x05total\x12\x1f\n" +
+	"\vnext_cursor\x18\x02 \x01(\tR\n" +
+	"nextCursor\x12\x1f\n" +
+	"\vprev_cursor\x18\x03 \x01(\tR\n" +
+	"prevCursor\"5\n" +
 	"\tSortField\x12\x14\n" +
 	"\x05field\x18\x01 \x01(\tR\x05field\x12\x12\n" +
 	"\x04desc\x18\x02 \x01(\bR\x04desc\"P\n" +
@@ -942,37 +1013,38 @@ func file_omnicore_v1_query_proto_rawDescGZIP() []byte {
 }
 
 var file_omnicore_v1_query_proto_enumTypes = make([]protoimpl.EnumInfo, 3)
-var file_omnicore_v1_query_proto_msgTypes = make([]protoimpl.MessageInfo, 12)
+var file_omnicore_v1_query_proto_msgTypes = make([]protoimpl.MessageInfo, 13)
 var file_omnicore_v1_query_proto_goTypes = []any{
 	(StringOp)(0),                 // 0: omnicore.v1.StringOp
 	(NumberOp)(0),                 // 1: omnicore.v1.NumberOp
 	(BoolOp)(0),                   // 2: omnicore.v1.BoolOp
 	(*PageRequest)(nil),           // 3: omnicore.v1.PageRequest
-	(*SortField)(nil),             // 4: omnicore.v1.SortField
-	(*StringCondition)(nil),       // 5: omnicore.v1.StringCondition
-	(*StringFilter)(nil),          // 6: omnicore.v1.StringFilter
-	(*Int64Condition)(nil),        // 7: omnicore.v1.Int64Condition
-	(*Int64Filter)(nil),           // 8: omnicore.v1.Int64Filter
-	(*DoubleCondition)(nil),       // 9: omnicore.v1.DoubleCondition
-	(*DoubleFilter)(nil),          // 10: omnicore.v1.DoubleFilter
-	(*BoolCondition)(nil),         // 11: omnicore.v1.BoolCondition
-	(*BoolFilter)(nil),            // 12: omnicore.v1.BoolFilter
-	(*TimestampCondition)(nil),    // 13: omnicore.v1.TimestampCondition
-	(*TimestampFilter)(nil),       // 14: omnicore.v1.TimestampFilter
-	(*timestamppb.Timestamp)(nil), // 15: google.protobuf.Timestamp
+	(*PageInfo)(nil),              // 4: omnicore.v1.PageInfo
+	(*SortField)(nil),             // 5: omnicore.v1.SortField
+	(*StringCondition)(nil),       // 6: omnicore.v1.StringCondition
+	(*StringFilter)(nil),          // 7: omnicore.v1.StringFilter
+	(*Int64Condition)(nil),        // 8: omnicore.v1.Int64Condition
+	(*Int64Filter)(nil),           // 9: omnicore.v1.Int64Filter
+	(*DoubleCondition)(nil),       // 10: omnicore.v1.DoubleCondition
+	(*DoubleFilter)(nil),          // 11: omnicore.v1.DoubleFilter
+	(*BoolCondition)(nil),         // 12: omnicore.v1.BoolCondition
+	(*BoolFilter)(nil),            // 13: omnicore.v1.BoolFilter
+	(*TimestampCondition)(nil),    // 14: omnicore.v1.TimestampCondition
+	(*TimestampFilter)(nil),       // 15: omnicore.v1.TimestampFilter
+	(*timestamppb.Timestamp)(nil), // 16: google.protobuf.Timestamp
 }
 var file_omnicore_v1_query_proto_depIdxs = []int32{
 	0,  // 0: omnicore.v1.StringCondition.op:type_name -> omnicore.v1.StringOp
-	5,  // 1: omnicore.v1.StringFilter.conditions:type_name -> omnicore.v1.StringCondition
+	6,  // 1: omnicore.v1.StringFilter.conditions:type_name -> omnicore.v1.StringCondition
 	1,  // 2: omnicore.v1.Int64Condition.op:type_name -> omnicore.v1.NumberOp
-	7,  // 3: omnicore.v1.Int64Filter.conditions:type_name -> omnicore.v1.Int64Condition
+	8,  // 3: omnicore.v1.Int64Filter.conditions:type_name -> omnicore.v1.Int64Condition
 	1,  // 4: omnicore.v1.DoubleCondition.op:type_name -> omnicore.v1.NumberOp
-	9,  // 5: omnicore.v1.DoubleFilter.conditions:type_name -> omnicore.v1.DoubleCondition
+	10, // 5: omnicore.v1.DoubleFilter.conditions:type_name -> omnicore.v1.DoubleCondition
 	2,  // 6: omnicore.v1.BoolCondition.op:type_name -> omnicore.v1.BoolOp
-	11, // 7: omnicore.v1.BoolFilter.conditions:type_name -> omnicore.v1.BoolCondition
+	12, // 7: omnicore.v1.BoolFilter.conditions:type_name -> omnicore.v1.BoolCondition
 	1,  // 8: omnicore.v1.TimestampCondition.op:type_name -> omnicore.v1.NumberOp
-	15, // 9: omnicore.v1.TimestampCondition.values:type_name -> google.protobuf.Timestamp
-	13, // 10: omnicore.v1.TimestampFilter.conditions:type_name -> omnicore.v1.TimestampCondition
+	16, // 9: omnicore.v1.TimestampCondition.values:type_name -> google.protobuf.Timestamp
+	14, // 10: omnicore.v1.TimestampFilter.conditions:type_name -> omnicore.v1.TimestampCondition
 	11, // [11:11] is the sub-list for method output_type
 	11, // [11:11] is the sub-list for method input_type
 	11, // [11:11] is the sub-list for extension type_name
@@ -992,7 +1064,7 @@ func file_omnicore_v1_query_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_omnicore_v1_query_proto_rawDesc), len(file_omnicore_v1_query_proto_rawDesc)),
 			NumEnums:      3,
-			NumMessages:   12,
+			NumMessages:   13,
 			NumExtensions: 0,
 			NumServices:   0,
 		},

@@ -43,25 +43,40 @@
 
 <h3>Attaching handlers — <code>reg.Register</code> + the constructor family</h3>
 <p>
-    Attachment mirrors the GraphQL idiom exactly — a constructor family producing a
-    <code>Procedure</code>, registered on the surface's single registry, one declarative call per RPC.
-    The family speaks the SAME vocabulary as REST and GraphQL: <code>CommandWithBody</code> (create),
-    <code>CommandWithBodyID</code> (update: body + id, <code>SetPathID</code> injected after the
-    mapper), <code>CommandByID</code> (archive/delete: id only, NO mapper — the wrapper constructs the
-    command), <code>QueryWithParams</code> (list: the query satisfies
-    <code>queries.QueryWithParams</code> and the handler returns <code>queries.Page</code> — the same
-    contract the REST and GraphQL constructors demand) and <code>QueryByID</code> (get one: the handler
-    returns the view document, <code>FromDoc</code> projects). Wire bindings live co-located in the
-    consumer's <code>web/requests</code> (one small binding type per RPC — the
-    <code>ToCommand</code>/<code>FromResult</code> seats the REST DTOs already own), so the mount file
-    reads exactly like <code>user_routes.go</code>. The id extractor is the generated getter passed as
-    a method expression, e.g. <code>(*usersv1.ArchiveUserRequest).GetId</code>.
+    Attachment is a constructor family producing a <code>Procedure</code>, registered on the surface's
+    single registry, one declarative call per RPC. The family speaks the SAME vocabulary as REST and
+    GraphQL — <code>CommandWithBody</code> (create), <code>CommandWithBodyID</code> (update: body + id,
+    <code>SetPathID</code> injected after <code>ToCommand</code>), <code>CommandByID</code>
+    (archive/delete: id only), <code>QueryWithParams</code> (list) and <code>QueryByID</code> (get one)
+    — and consumes <strong>exactly the REST Spec ingredients</strong>: the same Request DTO (its
+    <code>ToCommand</code>/<code>ToQuery</code> seat) and the same
+    <code>Response{}.FromResult</code> / <code>fwresponses.AutoFromDoc[Response]</code>. The pb message
+    types ride as explicit type parameters (message VALUE types — Go cannot infer them from a procedure
+    string); the id extractor is the generated getter passed as a method expression, e.g.
+    <code>(*usersv1.ArchiveUserRequest).GetId</code>.
 </p>
-<pre><code>reg.Register(fwgrpc.CommandWithBody(usersv1connect.UsersServiceCreateUserProcedure,
-    requests.CreateUserPB{}.ToCommand,             // *pb.CreateUserRequest → *InsertUserCommand
-    requests.CreateUserPB{}.FromResult,            // InsertUserResult → *pb.CreateUserResponse
+<pre><code>reg.Register(fwgrpc.CommandWithBody[usersv1.CreateUserRequest, usersv1.CreateUserResponse](
+    usersv1connect.UsersServiceCreateUserProcedure,
+    requests.InsertUserRequest{},                  // the SAME DTO the REST POST binds → ToCommand
+    requests.InsertUserResponse{}.FromResult,      // the SAME projection the REST POST renders
     &amp;handlers.SharedBaseInsertCommandHandler[…]{Repo: repo},  // the SAME handler REST uses
     fwgrpc.RequirePermission("users:write")))</code></pre>
+<p>
+    <strong>The framework crosses the pb ↔ DTO boundary mechanically.</strong> At
+    <code>Register</code> time (boot) it compiles a bridge plan: proto fields match DTO fields by
+    case- and underscore-insensitive name (<code>user_name</code> ≈ <code>userName</code> ≈
+    <code>UserName</code>, <code>id</code> ≈ <code>ID</code>; <code>json:</code>/<code>query:</code>
+    tags honored), recursing into nested messages and repeated fields, presence-aware (an absent proto3
+    <code>optional</code> lands as a nil pointer — the JSON absent-vs-set distinction),
+    <code>google.protobuf.Timestamp</code> ↔ <code>time.Time</code>. A request field the DTO cannot
+    receive, or a response field the DTO never fills, <strong>ABORTS BOOT</strong> — the wire contract
+    never carries a silently dead field. <code>fwgrpc.Alias("wire_field", "GoField")</code> declares
+    the exceptional pairing. Semantic transformation (computed fields, enum ↔ domain vocabulary,
+    combining/splitting) stays where it always lived: <code>ToCommand</code>, <code>ToQuery</code> and
+    <code>FromResult</code>. A contract whose shape genuinely cannot mirror DTOs is a
+    <code>MountRaw</code> procedure (a hand-written Connect handler — the same seam the transport
+    fixtures use).
+</p>
 <ul>
     <li><strong><code>fwgrpc.RequirePermission("users:write")</code></strong> is the Layer-1 permission
         gate — the twin of <code>fwopenapi.RequirePermission</code> and
@@ -73,9 +88,14 @@
         every named field must be PRESENT on the wire (protoreflect over proto3 <code>optional</code>
         presence); missing ones reject with the same <code>RequiredFieldNotification</code> /
         <code>SemanticSchema</code> envelope the REST strict-body check emits.</li>
-    <li>A binding error that carries domain notifications keeps its own semantics; any other binding
-        error is a wire-contract violation → <code>SchemaViolationNotification</code>
-        (INVALID_ARGUMENT), mirroring the REST body-parse rejection.</li>
+    <li><strong><code>CommandByID</code> shapes are enforced at boot</strong>: the request carries only
+        the <code>id</code> field and the response is an EMPTY message (the 204 sibling) — a byID
+        contract that answers with data is a CommandWithBody-family shape.</li>
+    <li>A request-side bridge failure (wire data the DTO cannot carry) is a wire-contract violation →
+        <code>SchemaViolationNotification</code> (INVALID_ARGUMENT), mirroring the REST body-parse
+        rejection; a <code>ToCommand</code>/<code>ToQuery</code> error carrying domain notifications
+        keeps its own semantics; a response-side bridge failure is a server bug and stays an opaque
+        INTERNAL.</li>
     <li>Every constructor accepts any <code>pipeline.Handler</code> — auto and hand-written application
         handlers ride identically; there is ONE attachment API. Registering per procedure is exactly
         what the generated <code>New&lt;Service&gt;Handler</code> does internally, so generated clients,
@@ -231,35 +251,45 @@ message ListUsersRequest {
   UserFilters filters = 4;
 }</code></pre>
 <p>
-    The mapper converts them with the framework builder. Filter keys are <strong>Go field paths</strong>;
-    <code>read_mask</code> and <code>sort</code> speak <strong>wire names</strong> (the response
-    message's proto fields, snake_case — FieldMask's canonical form; protojson converts the JSON
-    camelCase spelling for you), resolved against the per-view <code>Fields</code> vocabulary. That
-    vocabulary is the <strong>allowlist</strong>, exactly like the REST struct tags: an undeclared path
-    fails as SchemaViolation and never reaches the reader — where an unresolved spelling would pass
-    through as a physical column and bypass <code>ToCriteria</code> overlays such as
-    <code>Restrict</code>. The query type's <code>ToCriteria(ctx)</code> keeps applying identity
-    overlays on top, exactly like every other surface:
+    The list response composes the mirror envelope: <strong>exactly one repeated items message</strong>
+    plus <strong><code>omnicore.v1.PageInfo</code></strong> (total, next_cursor, prev_cursor) — the
+    framework locates both BY TYPE, so field naming stays the service's choice:
 </p>
-<pre><code>var userWireFields = map[string]string{   // wire → Go field path: THE mask/sort allowlist
-    "id": "ID", "name": "Name", "email": "Email",
-    "document": "Document", "user_name": "UserName", "phone": "Phone",
-}
-
-crit, err := fwgrpc.NewCriteria().
-    Fields(userWireFields).
-    Page(pb.GetPage()).
-    Sort(pb.GetSort()...).                       // {"field":"user_name","desc":true}
-    ReadMask(pb.GetReadMask()).                  // "id,userName" over JSON → paths id, user_name
-    String("UserName", pb.GetFilters().GetUserName()).
-    Build()   // invalid op / undeclared mask/sort path → SchemaViolation (INVALID_ARGUMENT)</code></pre>
+<pre><code>message ListUsersResponse {
+  repeated User items = 1;
+  omnicore.v1.PageInfo page_info = 2;
+}</code></pre>
+<p>
+    <strong><code>QueryWithParams</code> converts all of it for you.</strong> At boot the constructor
+    discovers the components on the request descriptor and binds each filter field to the SAME Request
+    DTO the REST list consumes — <strong>the DTO's <code>filter:</code> tags are the operator
+    allowlist on both wires</strong>: an operator outside the leaf's tag rejects as SchemaViolation
+    (INVALID_ARGUMENT), exactly the REST 400, and a proto filter with no tagged DTO leaf aborts boot.
+    <code>read_mask</code> and <code>sort</code> speak <strong>wire names</strong> (the item message's
+    proto fields, snake_case — FieldMask's canonical form; protojson converts the JSON camelCase
+    spelling for you), resolved against the projector's Response DTO — an undeclared path fails as
+    SchemaViolation and never reaches the reader, where an unresolved spelling would pass through as a
+    physical column and bypass <code>ToCriteria</code> overlays such as <code>Restrict</code>. The
+    assembled INPUT criteria (filter keys = <strong>Go field paths</strong>) then reaches the Request
+    DTO's <code>ToQuery(criteria)</code> — the same one-liner the REST wrapper calls — and the query
+    type's <code>ToCriteria(ctx)</code> keeps applying identity overlays on top, exactly like every
+    other surface.
+</p>
+<pre><code>reg.Register(fwgrpc.QueryWithParams[usersv1.ListUsersRequest, usersv1.ListUsersResponse](
+    usersv1connect.UsersServiceListUsersProcedure,
+    requests.FindUsersByParamsRequest{},                    // filter: tags = the operator allowlist
+    fwresponses.AutoFromDoc[requests.FindUsersByParamsResponse],  // mask/sort vocabulary + projection
+    &amp;handlers.FindByParamsQueryHandler[*appqueries.FindUserByParamsQuery]{Reader: d.ViewReader, View: view.Name()},
+    fwgrpc.RequirePermission("users:read")))</code></pre>
 <div class="box">
-    <strong>One emitter, two wires.</strong> The builder delegates to
+    <strong>One emitter, two wires.</strong> Conversion delegates to
     <code>queryschema.ApplyFilterValues</code> — the same clause emitter the REST/OpenAPI/GraphQL path
     uses (unit-locked byte-identical), so operator semantics cannot drift. Proto's
     <code>repeated values</code> ride verbatim into list operators, so the gRPC plane has no
     comma-in-value limitation; <code>Timestamp</code> values convert to the RFC3339 string form the REST
-    string-leaf coercion produces.
+    string-leaf coercion produces. A hand-rolled <code>MountRaw</code> list reuses the same core via
+    <code>fwgrpc.NewCriteria()</code> (<code>Fields</code> allowlist + <code>Page</code>/<code>Sort</code>/<code>ReadMask</code>/typed
+    filters + <code>Build</code>) — the raw path never re-implements operator emission.
 </div>
 
 <h3>The outbound side — <code>infra/grpcclient</code></h3>
