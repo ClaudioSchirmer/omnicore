@@ -11,6 +11,8 @@ with `1.0.0`.
 
 ## [Unreleased]
 
+## [0.20.0] - 2026-07-07
+
 ### Added
 
 - **Internal-plane security posture — `grpc.auth.mode` + producer-side
