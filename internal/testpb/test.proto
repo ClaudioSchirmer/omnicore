@@ -1,0 +1,49 @@
+syntax = "proto3";
+
+package omnicore.grpctest.v1;
+
+option go_package = "github.com/ClaudioSchirmer/omnicore/internal/testpb";
+
+// Test-only messages for the web/grpc and infra/grpcclient unit suites. Every command field is
+// `optional` so the strict-presence (FullBody parity) check is exercisable.
+
+message CreateGadgetRequest {
+  optional string name = 1;
+  optional string kind = 2;
+  optional int32 rating = 3;
+}
+
+message CreateGadgetResponse {
+  string id = 1;
+  string name = 2;
+}
+
+message ListGadgetsRequest {
+  optional string name_contains = 1;
+  bool only_total = 2;
+}
+
+message ListGadgetsResponse {
+  int64 total = 1;
+  repeated string names = 2;
+}
+
+message UpdateGadgetRequest {
+  optional string id = 1;
+  optional string name = 2;
+  optional string kind = 3;
+}
+
+message ArchiveGadgetRequest {
+  optional string id = 1;
+}
+
+message GetGadgetRequest {
+  optional string id = 1;
+  bool include_archived = 2;
+}
+
+message GetGadgetResponse {
+  string id = 1;
+  string name = 2;
+}

@@ -6,6 +6,7 @@ import (
 	"github.com/ClaudioSchirmer/omnicore/application/translation"
 	"github.com/ClaudioSchirmer/omnicore/infra/cache"
 	"github.com/ClaudioSchirmer/omnicore/web/graphql"
+	fwgrpc "github.com/ClaudioSchirmer/omnicore/web/grpc"
 	"github.com/ClaudioSchirmer/omnicore/web/openapi"
 	"github.com/gofiber/fiber/v3"
 )
@@ -45,6 +46,19 @@ type Wiring struct {
 	// scans; the only shared surface is the application-layer handlers it
 	// dispatches to. nil disables GraphQL entirely.
 	GraphQL *graphql.Registry
+
+	// GRPC is the opt-in gRPC surface: a grpc.Registry the service builds
+	// with grpc.New(deps.Pipeline) and mounts generated Connect service
+	// handlers on. When non-nil, bootstrap injects the runtime policy from
+	// the yaml `grpc:` block (auth via the shared web/authcore JWT core —
+	// the same validation the HTTP middleware enforces — plus tracing and
+	// the request timeout), serves the registry on its own dedicated
+	// listener (grpc.addr — never the Fiber listener, which cannot host
+	// HTTP/2 services) and wires it into the coordinated graceful-shutdown
+	// drain. Like GraphQL, the only surface shared with REST is the
+	// application-layer handlers the wrappers dispatch to. nil disables
+	// the surface entirely.
+	GRPC *fwgrpc.Registry
 
 	// UpstreamSubscriptions is the manual-lifecycle counterpart of
 	// Config.UpstreamSubscriptions — populated when callers want to

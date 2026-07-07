@@ -1,0 +1,311 @@
+<h2>gRPC</h2>
+<p>
+    The framework exposes the same application handlers REST and GraphQL consume through a
+    <strong>gRPC surface served with Connect</strong> (<code>connectrpc.com</code>): one
+    <code>net/http</code> endpoint on a <strong>dedicated listener</strong> that speaks three protocols —
+    <strong>gRPC</strong>, <strong>gRPC-Web</strong> and <strong>Connect's JSON/HTTP mapping</strong>
+    (plain <code>curl</code>-able POSTs). A consumer <strong>mounts generated Connect service handlers on
+    a registry</strong> (<code>Wiring.GRPC</code>); the framework provides the wrapper that adapts any
+    <code>pipeline.Handler</code> to the generated interface, the server interceptor chain, and the
+    notification-envelope mapping to <code>google.rpc</code> details.
+</p>
+<p class="note"><strong>Which channel?</strong> This plane is the <strong>default for synchronous
+    communication between omnicore services</strong> — sync external goes through
+    <a href="#httpclient">httpclient</a>, async facts through
+    <a href="#integration-events">integration events</a>, async view composition through
+    <code>UpstreamSubscription</code>. The full decision matrix lives in
+    <a href="#service-to-service">Service-to-service</a>.</p>
+<div class="box">
+    <strong>gRPC is its own web surface.</strong> Like GraphQL, it never goes through
+    <code>openapi.Mount</code>/<code>MountRaw</code>, never appears in the Swagger document, and is not
+    policed by the REST route scans. It also never shares the Fiber listener — Fiber is fasthttp-based
+    and cannot host HTTP/2 services, so the surface runs on its own address (yaml <code>grpc.addr</code>,
+    default <code>:9090</code>; h2c without TLS so the gRPC protocol works in dev). The only thing shared
+    with the other surfaces is the <strong>application-layer handlers</strong> the wrappers dispatch to.
+    See <a href="#handler-invariance">Handler invariance</a>.
+</div>
+
+<h3>Contracts are hand-written</h3>
+<p>
+    The <code>.proto</code> file is the designed, versioned contract — the primary reason this surface
+    exists. There is <strong>no DTO→proto generator</strong>: deriving the contract from internal DTOs
+    would re-invert the discipline to code-first, and field-number stability (the one protobuf rule that
+    must be deliberate) cannot be owned by reflection. The quality gate is <code>buf lint</code> +
+    <code>buf breaking</code> in CI. Codegen uses <strong><code>protoc-gen-go</code> +
+    <code>protoc-gen-connect-go</code> only</strong> — the classic <code>protoc-gen-go-grpc</code> stubs
+    are 100% dead code under Connect and must not be generated.
+</p>
+<p>
+    Declare command fields <code>optional</code> (proto3 explicit presence): absent and zero-value stay
+    distinct on the wire, mirroring the JSON body semantics — this is what the strict-presence check and
+    presence-aware PATCH mappers build on.
+</p>
+
+<h3>Attaching handlers — <code>reg.Register</code> + the constructor family</h3>
+<p>
+    Attachment mirrors the GraphQL idiom exactly — a constructor family producing a
+    <code>Procedure</code>, registered on the surface's single registry, one declarative call per RPC.
+    The family speaks the SAME vocabulary as REST and GraphQL: <code>CommandWithBody</code> (create),
+    <code>CommandWithBodyID</code> (update: body + id, <code>SetPathID</code> injected after the
+    mapper), <code>CommandByID</code> (archive/delete: id only, NO mapper — the wrapper constructs the
+    command), <code>QueryWithParams</code> (list) and <code>QueryByID</code> (get one: the handler
+    returns the view document, <code>FromDoc</code> projects). Wire bindings live co-located in the
+    consumer's <code>web/requests</code> (one small binding type per RPC — the
+    <code>ToCommand</code>/<code>FromResult</code> seats the REST DTOs already own), so the mount file
+    reads exactly like <code>user_routes.go</code>. The id extractor is the generated getter passed as
+    a method expression, e.g. <code>(*usersv1.ArchiveUserRequest).GetId</code>.
+</p>
+<pre><code>reg.Register(fwgrpc.CommandWithBody(usersv1connect.UsersServiceCreateUserProcedure,
+    requests.CreateUserPB{}.ToCommand,             // *pb.CreateUserRequest → *InsertUserCommand
+    requests.CreateUserPB{}.FromResult,            // InsertUserResult → *pb.CreateUserResponse
+    &amp;handlers.SharedBaseInsertCommandHandler[…]{Repo: repo},  // the SAME handler REST uses
+    fwgrpc.RequirePermission("users:write")))</code></pre>
+<ul>
+    <li><strong><code>fwgrpc.RequirePermission("users:write")</code></strong> is the Layer-1 permission
+        gate — the twin of <code>fwopenapi.RequirePermission</code> and
+        <code>fwgraphql.RequirePermission</code>: enforced against <code>Identity.HasPermission</code>
+        under <code>auth.authorization.enabled</code>, inert otherwise (annotate ahead of the operator
+        flip). Rejection is PERMISSION_DENIED carrying the canonical
+        <code>MissingPermissionNotification</code> envelope (field <code>permission</code>).</li>
+    <li><strong><code>fwgrpc.Strict("name", "kind")</code></strong> is the <code>FullBody</code> sibling:
+        every named field must be PRESENT on the wire (protoreflect over proto3 <code>optional</code>
+        presence); missing ones reject with the same <code>RequiredFieldNotification</code> /
+        <code>SemanticSchema</code> envelope the REST strict-body check emits.</li>
+    <li>A binding error that carries domain notifications keeps its own semantics; any other binding
+        error is a wire-contract violation → <code>SchemaViolationNotification</code>
+        (INVALID_ARGUMENT), mirroring the REST body-parse rejection.</li>
+    <li>Every constructor accepts any <code>pipeline.Handler</code> — auto and hand-written application
+        handlers ride identically; there is ONE attachment API. Registering per procedure is exactly
+        what the generated <code>New&lt;Service&gt;Handler</code> does internally, so generated clients,
+        the gRPC protocol and the reflection service work unchanged.</li>
+</ul>
+
+<h3>Registration and serving</h3>
+<p>
+    The consumer builds the registry in its Wire function and mounts services on it — the GraphQL
+    pattern applied to gRPC:
+</p>
+<pre><code>grpcReg := fwgrpc.New(d.Pipeline)
+users.MountGRPC(grpcReg, d)
+return bootstrap.Wiring{ …, GRPC: grpcReg }</code></pre>
+<p>
+    bootstrap then injects the runtime policy from the yaml <code>grpc:</code> block and serves the
+    registry: <code>addr</code> (default <code>:9090</code>), <code>certFile</code>/<code>keyFile</code>
+    (both-or-neither; without TLS the listener is h2c), <code>reflection</code> (serves gRPC server
+    reflection for the mounted services), <code>requestTimeoutSeconds</code> (the DEADLINE_EXCEEDED
+    sibling of <code>http.requestTimeoutSeconds</code>; composes with the client's protocol deadline —
+    earlier wins), and <code>publicProcedures</code> (the auth bypass list, e.g.
+    <code>"/users.v1.UsersService/Health"</code>). The listener joins the coordinated graceful-shutdown
+    drain as its own stage (<code>grpc</code>), by explicit dependency like every other stage.
+</p>
+
+<h3>Interceptor chain</h3>
+<p>Outermost → innermost, mirroring the inbound Fiber middleware:</p>
+<ol>
+    <li><strong>Recovery</strong> — a panic becomes an opaque INTERNAL (never leaks the panic value).</li>
+    <li><strong>AppContext</strong> — per-RPC <code>configuration.AppContext</code> from metadata:
+        <code>X-Request-ID</code> → <code>ctx.ID</code> (falls back to the httpclient's
+        <code>threadID</code> key, then a fresh UUID; always echoed on the response),
+        <code>Accept-Language</code> → <code>ctx.Language</code>. The RPC context (protocol deadline
+        included) is the cancellation parent. With the <code>http</code> tracing instrument enabled, an
+        inbound server span continues the W3C traceparent and the correlation-id bridges to the trace id,
+        exactly like the HTTP surface.</li>
+    <li><strong>Auth</strong> — the gRPC shell over <strong><code>web/authcore</code></strong>, the
+        transport-neutral JWT core EXTRACTED from the Fiber middleware: one validation (JWKS/PEM key
+        source, alg/iss/aud pinning, leeway, the optional external revocation check), two transport
+        shells. Bearer from the <code>authorization</code> metadata → <code>Identity</code> on the
+        AppContext; failures reject with the same
+        <code>MissingAuthorization/InvalidToken/ExpiredToken</code> notifications (UNAUTHENTICATED) and
+        the same tenant gate (<code>TenantMissingNotification</code> → PERMISSION_DENIED). Enabled by
+        <code>auth.mode: jwt</code> — the same yaml switch as REST.</li>
+</ol>
+
+<h3>Semantic → gRPC code mapping</h3>
+<p>
+    The connect sibling of the <a href="#status-mapping">HTTP status table</a>, built from the same
+    <code>NotificationSemantic</code> enum. Failures travel as a <code>connect.Error</code> whose
+    <code>google.rpc.Status.details</code> carry the full envelope: one <code>ErrorInfo</code> per
+    notification (<code>reason</code> = the NotificationKey, <code>metadata</code> = context, field and
+    semantic name) plus one <code>BadRequest</code> aggregating the field-scoped messages — the message
+    text already translated per <code>Accept-Language</code>, like every surface.
+</p>
+<table>
+    <tbody><tr><th>Semantic</th><th>gRPC code</th></tr>
+    <tr><td><code>SemanticValidation</code> / <code>SemanticSchema</code></td><td>INVALID_ARGUMENT (the <code>ErrorInfo.reason</code> disambiguates)</td></tr>
+    <tr><td><code>SemanticNotFound</code></td><td>NOT_FOUND</td></tr>
+    <tr><td><code>SemanticConflict</code></td><td>ALREADY_EXISTS — the duplicate flavor</td></tr>
+    <tr><td><code>SemanticStateConflict</code></td><td>FAILED_PRECONDITION — the wrong-state flavor</td></tr>
+    <tr><td><code>SemanticForbidden</code></td><td>PERMISSION_DENIED</td></tr>
+    <tr><td><code>SemanticUnauthorized</code></td><td>UNAUTHENTICATED</td></tr>
+    <tr><td><code>SemanticUnavailable</code></td><td>UNAVAILABLE</td></tr>
+    <tr><td><code>SemanticInternal</code></td><td>INTERNAL</td></tr>
+    <tr><td><code>SemanticMethodNotAllowed</code></td><td>UNIMPLEMENTED</td></tr>
+    <tr><td><code>SemanticPayloadTooLarge</code></td><td>RESOURCE_EXHAUSTED</td></tr>
+    <tr><td><code>SemanticGatewayTimeout</code></td><td>DEADLINE_EXCEEDED</td></tr>
+</tbody></table>
+
+<h3>Driving the surface with curl</h3>
+<p>
+    The Connect protocol's JSON mapping makes every RPC a plain HTTP POST — which is also how the
+    <code>qa/grpc.sh</code> suite drives it:
+</p>
+<pre><code>curl -X POST http://localhost:9090/users.v1.UsersService/CreateUser \
+  -H "Content-Type: application/json" \
+  -d '{"name":"Alice","email":"alice@example.com","document":"123","userName":"alice"}'
+# error shape: {"code":"already_exists","message":"…","details":[{"type":"google.rpc.ErrorInfo", …}]}</code></pre>
+
+<h3>Internal-plane posture — <code>grpc.auth.mode</code></h3>
+<p>
+    The gRPC plane exists for <strong>trusted internal communication</strong> — the synchronous sibling
+    of the integration-events posture (Kafka: broker on a private network, no per-message auth). The
+    listener therefore has its own security posture, independent of the edge:
+</p>
+<ul>
+    <li><strong><code>inherit</code></strong> (default) — the global <code>auth:</code> block governs,
+        exactly like the HTTP surface. Zero migration.</li>
+    <li><strong><code>internal</code></strong> — the trusted plane: a call WITHOUT a bearer passes as an
+        <strong>anonymous</strong> call (the framework's existing vocabulary — audit
+        <code>actor: "anonymous"</code>, like public routes and background jobs). Trust = the private
+        network (NetworkPolicy / cluster isolation — a deliberate, documented choice, the same premise
+        the Kafka plane makes).</li>
+    <li><strong><code>mtls</code></strong> — <code>internal</code> plus cryptographic caller proof: the
+        listener requires a client certificate from the internal CA
+        (<code>grpc.clientCAFile</code> + the TLS pair); an anonymous call carries a synthetic Identity
+        from the certificate (Subject = SAN), so the audit trail names the calling
+        <strong>service</strong>.</li>
+</ul>
+<div class="box">
+    <strong>A forwarded bearer is ATTRIBUTION, not an entry credential.</strong> On the internal plane
+    the caller decides per upstream (grpcClient <code>auth: {mode: forward}</code> or omit): with a
+    bearer, signature/issuer/audience are verified <em>locally</em> (cached-JWKS crypto, microseconds)
+    and the Identity populates — <strong>an expired-but-authentic token still passes</strong>, carrying
+    the user who entered the main door plus a synthetic <code>attribution: "stale-token"</code> claim on
+    the audited identity; a forged token rejects (lying attribution is worse than none). Two structural
+    guarantees: the tolerance NEVER reaches the main door (the edge keeps its own strict validator), and
+    attribution never calls the external validator (Keycloak introspection belongs to the edge).
+    <code>RequirePermission</code> gates PASS on anonymous internal calls — the posture is the trust
+    declaration, and what an internal chain may do is the flow designer's responsibility; a forwarded
+    user is evaluated normally.
+</div>
+
+<h3>Kubernetes topology and connection recycling</h3>
+<p>
+    Real-world exposure: one k8s Service carries both ports; the Ingress/LoadBalancer routes
+    <strong>only :8080</strong>; :9090 stays cluster-internal (DNS
+    <code>users.&lt;ns&gt;.svc:9090</code> as the grpcClient <code>baseURL</code>) with a NetworkPolicy
+    as the <code>internal</code> mode's wall. kube-proxy balances per NEW connection, and keep-alive
+    clients hold pipes — so the producer recycles them:
+    <strong><code>grpc.idleTimeoutSeconds</code></strong> (default 120: above the Go client's 90s idle
+    so the client closes first — no reuse race; below NAT/conntrack floors ~350s — no zombie pipes)
+    closes idle keep-alives, callers re-dial transparently, traffic redistributes and scale-up pods
+    join. One producer knob protects against every untuned consumer. High-concurrency callers can
+    additionally tune their own side with the optional
+    <code>grpcClient.services.&lt;name&gt;.pool</code> block (<code>maxIdleConnsPerHost</code>,
+    <code>connMaxLifetimeSeconds</code> — a background sweep recycling the caller's idle pipes).
+</p>
+
+<h3>Read-side criteria — the shared <code>omnicore/v1/query.proto</code></h3>
+<p>
+    List RPCs are <strong>per-view typed request messages composed from shared framework
+    components</strong> (<code>web/grpc/proto/omnicore/v1/query.proto</code>, generated Go in
+    <code>web/grpc/pb</code>): <code>PageRequest</code>
+    (after/before/limit/only_total/include_archived), <code>repeated SortField</code>, a
+    <code>google.protobuf.FieldMask read_mask</code> (the <code>?fields=</code> sibling), and the typed
+    operator wrappers — <code>StringFilter</code> (the full 12-operator REST vocabulary,
+    case-insensitive variants included), <code>Int64Filter</code>/<code>DoubleFilter</code>/<code>TimestampFilter</code>
+    (eq/ne/in/nin/gt/gte/lt/lte) and <code>BoolFilter</code> (eq/ne). A filter field carries
+    <code>repeated</code> conditions that AND-combine (the proto sibling of
+    <code>?age.gte=18&amp;age.lte=65</code>). <strong>The per-view filters message IS the allowlist</strong> —
+    a field not declared there is not filterable, and <code>buf breaking</code> polices view changes.
+</p>
+<pre><code>message UserFilters {
+  omnicore.v1.StringFilter user_name = 1;
+  omnicore.v1.StringFilter name = 2;
+}
+message ListUsersRequest {
+  omnicore.v1.PageRequest page = 1;
+  repeated omnicore.v1.SortField sort = 2;
+  google.protobuf.FieldMask read_mask = 3;
+  UserFilters filters = 4;
+}</code></pre>
+<p>
+    The mapper converts them with the framework builder. Filter keys are <strong>Go field paths</strong>;
+    <code>read_mask</code> and <code>sort</code> speak <strong>wire names</strong> (the response
+    message's proto fields, snake_case — FieldMask's canonical form; protojson converts the JSON
+    camelCase spelling for you), resolved against the per-view <code>Fields</code> vocabulary. That
+    vocabulary is the <strong>allowlist</strong>, exactly like the REST struct tags: an undeclared path
+    fails as SchemaViolation and never reaches the reader — where an unresolved spelling would pass
+    through as a physical column and bypass <code>ToCriteria</code> overlays such as
+    <code>Restrict</code>. The query type's <code>ToCriteria(ctx)</code> keeps applying identity
+    overlays on top, exactly like every other surface:
+</p>
+<pre><code>var userWireFields = map[string]string{   // wire → Go field path: THE mask/sort allowlist
+    "id": "ID", "name": "Name", "email": "Email",
+    "document": "Document", "user_name": "UserName", "phone": "Phone",
+}
+
+crit, err := fwgrpc.NewCriteria().
+    Fields(userWireFields).
+    Page(pb.GetPage()).
+    Sort(pb.GetSort()...).                       // {"field":"user_name","desc":true}
+    ReadMask(pb.GetReadMask()).                  // "id,userName" over JSON → paths id, user_name
+    String("UserName", pb.GetFilters().GetUserName()).
+    Build()   // invalid op / undeclared mask/sort path → SchemaViolation (INVALID_ARGUMENT)</code></pre>
+<div class="box">
+    <strong>One emitter, two wires.</strong> The builder delegates to
+    <code>queryschema.ApplyFilterValues</code> — the same clause emitter the REST/OpenAPI/GraphQL path
+    uses (unit-locked byte-identical), so operator semantics cannot drift. Proto's
+    <code>repeated values</code> ride verbatim into list operators, so the gRPC plane has no
+    comma-in-value limitation; <code>Timestamp</code> values convert to the RFC3339 string form the REST
+    string-leaf coercion produces.
+</div>
+
+<h3>The outbound side — <code>infra/grpcclient</code></h3>
+<p>
+    The write half of this section's story is the server; the read-from-elsewhere half is
+    <strong><code>infra/grpcclient</code></strong> — the outbound toolbox, sibling of
+    <a href="#httpclient">httpclient</a> for the gRPC plane. One <code>Client</code> is built at boot
+    from the yaml <code>grpcClient:</code> block and exposed on <code>Deps.GRPCClient</code>; per
+    service it carries a pooled HTTP client and a connect interceptor chain, outermost → innermost:
+    <strong>correlation</strong> (threadID/X-Request-ID from the AppContext — the framework convention:
+    the AppContext IS the call ctx) → <strong>tracing</strong> (client span + W3C inject, gated by the
+    <code>httpclient</code> instrument) → <strong>auth</strong> (<code>forward</code> re-sends the
+    inbound caller's bearer, failing loudly when absent; <code>static</code> attaches a fixed token) →
+    <strong>idempotency</strong> (UUIDv7 on a configurable header, generated once per logical call and
+    STABLE across retry attempts) → <strong>deadline</strong> (per-service default when the caller set
+    none; becomes the protocol timeout the server observes) → <strong>logging</strong> (one slog line
+    per call: service, procedure, code, elapsed) → <strong>retry</strong> (Connect-code triggers —
+    default <code>["unavailable"]</code> — plus transport dial errors; backoff curves shared with
+    httpclient via <code>infra/resilience</code>) → <strong>circuit breaker</strong> (per
+    service+procedure state machine, also from <code>infra/resilience</code> — one implementation, two
+    transports, semantics that cannot drift).
+</p>
+<pre><code>grpcClient:
+  defaults: { timeoutSeconds: 10 }
+  services:
+    users:
+      baseURL: "http://users:9090"
+      retry: { maxAttempts: 3, backoff: exponential-jitter, retryOn: ["unavailable"] }
+      circuitBreaker: { enabled: true, failureThreshold: 5, successThreshold: 2, openForMS: 3000 }
+      auth: { mode: forward }
+      idempotency: { enabled: true }</code></pre>
+<pre><code>users, err := grpcclient.For(deps.GRPCClient, "users", usersv1connect.NewUsersServiceClient)
+res, err := users.GetUser(appCtx, connect.NewRequest(&amp;usersv1.GetUserRequest{Id: proto.String(id)}))</code></pre>
+<p>
+    Application handlers never import the package — the adapter lives in the service's
+    <code>infra/</code>, exactly like httpclient consumers. Auth providers shipping now:
+    <code>forward</code> and <code>static</code>; the oauth2 family follows once its acquisition core is
+    extracted transport-neutrally.
+</p>
+
+<h3>What deliberately does not cross over</h3>
+<ul>
+    <li><strong>CSV/XLSX export</strong> — file-download semantics, REST-only.</li>
+    <li><strong>Streaming RPCs</strong> — the surface is unary; async flows stay on Kafka
+        (<a href="#service-to-service">service-to-service</a> / integration events).</li>
+    <li><strong>httpclient's cache and HMAC signing</strong> (outbound side) — the gRPC protocol has no
+        GET/no-store vocabulary, and there is no official request-signing scheme in the gRPC/Connect
+        world; service-to-service authenticity on this plane is <strong>mTLS</strong>
+        (<code>grpc.certFile</code>/<code>keyFile</code> + client certs). Third parties that mandate a
+        signing scheme are HTTP parties — call them via <a href="#httpclient">httpclient</a>.</li>
+</ul>

@@ -30,7 +30,7 @@ Go framework library providing **DDD + CQRS infrastructure** for microservices. 
 ## Stack
 
 - Go ≥ 1.21 (`log/slog` + generics); toolchain pinned to `go 1.26.3`.
-- Fiber v3 (HTTP), pgx v5 (Postgres), go-sql-driver (MySQL), mongo-driver v2, segmentio/kafka-go, google/uuid (canonical — don't add another uuid lib).
+- Fiber v3 (HTTP), connectrpc.com/connect (gRPC surface), pgx v5 (Postgres), go-sql-driver (MySQL), mongo-driver v2, segmentio/kafka-go, google/uuid (canonical — don't add another uuid lib).
 
 ## Build and test
 
@@ -49,11 +49,13 @@ A build links a relational engine via build tag: `-tags postgres` / `-tags mysql
 
 ```
 web/          HTTP transport only; openapi/ (OpenAPI 3.1 + Swagger), graphql/ (own surface),
+              grpc/ (own surface, Connect — dedicated listener), authcore/ (shared JWT core),
               queryschema/ (shared read-side DTO reflection: REST + OpenAPI + GraphQL)
 application/  configuration/ (AppContext), translation/, notifications/, pipeline/,
               persistence/, queries/, audit/ — Go-pure, no transport/infra tags
 domain/       pure business rules, ZERO IO (stdlib + google/uuid only)
-infra/        engines, persisters, outbox, mongo, composer, sync, external, audit impl, events
+infra/        engines, persisters, outbox, mongo, composer, sync, external, audit impl, events,
+              httpclient + grpcclient (outbound toolboxes) over shared resilience/ cores
 ```
 
 ### Dependency rules — NEVER violate
@@ -86,7 +88,7 @@ For any contract, behavior, field list, or example, open the mapped file under `
 | Topic | Section | Essence |
 |---|---|---|
 | AppContext (UUID + language + Identity), request lifecycle, cancellation/`http.requestTimeoutSeconds` (→504) | `app-context.html` | Single per-request vehicle; `implements context.Context`; owns the cancellation parent. |
-| JWT auth middleware (JWKS/PEM/external validator, revocation cache) | `auth-middleware.html` | `auth.mode: jwt`; populates `Identity`; expired vs invalid split. |
+| JWT auth middleware (JWKS/PEM/external validator, revocation cache; validation core in `web/authcore`, shared with the gRPC shell) | `auth-middleware.html` | `auth.mode: jwt`; populates `Identity`; expired vs invalid split. |
 | Authorization — 3 concentric layers (permission gate / `BuildRules` / tenant) | `authz-seams.html` | `resource:action`; `SemanticForbidden → 403`; no enforcement at infra. |
 
 ### Domain & persistence
@@ -124,9 +126,10 @@ For any contract, behavior, field list, or example, open the mapped file under `
 | Topic | Section | Essence |
 |---|---|---|
 | `TableSchema` — mandatory explicit Go-field↔column map; managed columns; boot checks; drives write+criteria+scan+view | `table-schema.html` | `NewTableSchema[T]`; no inference; one declaration, every consumer. |
-| Cross-service composition (`UpstreamSubscription`/`FromSchema`, ripple recompose, failure registry) | `service-to-service.html` | Event-driven local Mongo projection; B never reads A on the request path. |
+| Cross-service communication — the channel decision matrix (sync internal → gRPC, sync external → httpclient, async facts → integration events, async view composition → `UpstreamSubscription`/`FromSchema` with ripple recompose + failure registry) | `service-to-service.html` | One canonical path per question; composition stays event-driven (B never reads A on the request path for VIEW data). |
 | Cache subsystem (`cache.Cache` port, Private vs Shared, memory/redis/custom) | `cache-subsystem.html` | DI-enforced split; typed `GetJSON`/`SetJSON` tolerate nil. |
 | httpclient — outbound HTTP (`Call[Req,Resp]`, tag binding, middleware chain, retry/cache/breaker/idempotency/TLS/streaming/HMAC, auth providers) | `httpclient.html` | Per-service transport; handlers never import it (adapter in `infra/external/`). |
+| gRPC (own surface via Connect: `reg.Register` + constructor family over `pipeline.Handler`, `Wiring.GRPC`, dedicated listener, yaml `grpc:` block, Semantic→code table, `google.rpc` details, strict presence, `RequirePermission`, hand-written protos, shared `omnicore/v1/query.proto` + `grpc.NewCriteria`, internal-plane posture `grpc.auth.mode` inherit/internal/mtls with attribution semantics + `idleTimeoutSeconds` recycling) + the outbound `infra/grpcclient` toolbox (yaml `grpcClient:`, `Deps.GRPCClient`, `grpcclient.For`, optional `pool`, resilience cores shared with httpclient via `infra/resilience`) | `grpc.html` | Fourth consumer of the same handlers; auth rides `web/authcore` — one JWT core, two shells; one breaker/backoff implementation, two transports. |
 | Integration events — async cross-service (`Dispatch`, `Receiver`, dedup, at-least-once) | `integration-events.html` | `integration_events` in-TX with the write; consumer handlers must be idempotent. |
 
 ### Operations

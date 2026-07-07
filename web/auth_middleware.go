@@ -1,20 +1,16 @@
 package web
 
 import (
-	"context"
-	"crypto/x509"
-	"encoding/pem"
 	"errors"
 	"fmt"
 	"strings"
-	"time"
 
 	"github.com/ClaudioSchirmer/omnicore/application/configuration"
 	"github.com/ClaudioSchirmer/omnicore/application/exception"
 	"github.com/ClaudioSchirmer/omnicore/application/notifications"
 	"github.com/ClaudioSchirmer/omnicore/application/pipeline"
 	"github.com/ClaudioSchirmer/omnicore/domain"
-	"github.com/MicahParks/keyfunc/v3"
+	"github.com/ClaudioSchirmer/omnicore/web/authcore"
 	"github.com/gofiber/fiber/v3"
 	"github.com/golang-jwt/jwt/v5"
 )
@@ -26,6 +22,10 @@ import (
 //
 // The middleware itself is constructed only when authentication is enabled —
 // bootstrap.Run skips registration entirely when auth.mode=disabled.
+//
+// Validation itself lives in web/authcore — the transport-neutral JWT core
+// shared with the gRPC surface's auth interceptor; this middleware is the
+// Fiber shell: public-route bypass, tenant enforcement and failure rendering.
 type AuthOptions struct {
 	// Algorithms is the allowlist of accepted `alg` header values. Asymmetric
 	// algorithms only — RS256, ES256, EdDSA. Empty falls back to all three.
@@ -80,6 +80,42 @@ type publicRoute struct {
 	path   string
 }
 
+// coreOptions projects the transport-neutral subset of AuthOptions into the
+// authcore vocabulary; the external checker is injected separately because
+// its construction can fail.
+func coreOptions(opts AuthOptions, external authcore.TokenChecker) authcore.Options {
+	return authcore.Options{
+		Algorithms:    opts.Algorithms,
+		Issuer:        opts.Issuer,
+		Audience:      opts.Audience,
+		LeewaySeconds: opts.LeewaySeconds,
+		JWKSURL:       opts.JWKSURL,
+		PublicKeyPEM:  opts.PublicKeyPEM,
+		External:      external,
+	}
+}
+
+// NewAuthCoreValidator builds the shared JWT validation core
+// (web/authcore) from the same AuthOptions the Fiber middleware consumes —
+// external validator included. bootstrap uses it to arm the gRPC surface's
+// auth interceptor with EXACTLY the validation the HTTP surface enforces:
+// one core, two transport shells.
+func NewAuthCoreValidator(opts AuthOptions) (*authcore.Validator, error) {
+	var external authcore.TokenChecker
+	if opts.ExternalValidator != nil {
+		externalV, err := newExternalValidator(*opts.ExternalValidator)
+		if err != nil {
+			return nil, fmt.Errorf("web: NewAuthCoreValidator externalValidator: %w", err)
+		}
+		external = externalV
+	}
+	core, err := authcore.New(coreOptions(opts, external))
+	if err != nil {
+		return nil, fmt.Errorf("web: NewAuthCoreValidator key source: %w", err)
+	}
+	return core, nil
+}
+
 // AuthMiddleware returns a Fiber middleware that validates the bearer JWT on
 // every request whose method+path is not in opts.PublicRoutes. On success it
 // populates AppContext.Identity with the standard claims (sub/iss/exp) plus
@@ -101,60 +137,25 @@ func AuthMiddleware(opts AuthOptions, pipe *pipeline.Pipeline) (fiber.Handler, e
 	if pipe == nil {
 		return nil, errors.New("web: AuthMiddleware requires a non-nil Pipeline (for translation of unauthorized responses)")
 	}
-	keyfn, err := buildKeyfunc(opts)
-	if err != nil {
-		return nil, fmt.Errorf("web: AuthMiddleware key source: %w", err)
-	}
 	routes, err := parsePublicRoutes(opts.PublicRoutes)
 	if err != nil {
 		return nil, fmt.Errorf("web: AuthMiddleware publicRoutes: %w", err)
 	}
-	var externalV *externalValidator
-	if opts.ExternalValidator != nil {
-		externalV, err = newExternalValidator(*opts.ExternalValidator)
-		if err != nil {
-			return nil, fmt.Errorf("web: AuthMiddleware externalValidator: %w", err)
-		}
-	}
-	algos := opts.Algorithms
-	if len(algos) == 0 {
-		algos = []string{"RS256", "ES256", "EdDSA"}
-	}
-	parserOpts := []jwt.ParserOption{
-		jwt.WithValidMethods(algos),
-		jwt.WithIssuer(opts.Issuer),
-		jwt.WithAudience(opts.Audience),
-		jwt.WithExpirationRequired(),
-		jwt.WithLeeway(time.Duration(opts.LeewaySeconds) * time.Second),
+	core, err := NewAuthCoreValidator(opts)
+	if err != nil {
+		return nil, fmt.Errorf("web: AuthMiddleware: %w", err)
 	}
 
 	return func(c fiber.Ctx) error {
 		if matchPublic(c.Method(), c.Path(), routes) {
 			return c.Next()
 		}
-		token, ok := extractBearerToken(c.Get("Authorization"))
-		if !ok {
-			return respondAuthFailure(c, pipe, notifications.MissingAuthorizationNotification{})
-		}
-		claims := jwt.MapClaims{}
-		parsed, err := jwt.ParseWithClaims(token, claims, keyfn, parserOpts...)
-		if err != nil {
-			if errors.Is(err, jwt.ErrTokenExpired) {
-				return respondAuthFailure(c, pipe, notifications.ExpiredTokenNotification{})
-			}
-			return respondAuthFailure(c, pipe, notifications.InvalidTokenNotification{})
-		}
-		if !parsed.Valid {
-			return respondAuthFailure(c, pipe, notifications.InvalidTokenNotification{})
-		}
-		if externalV != nil {
-			if err := externalV.Validate(c.Context(), token); err != nil {
-				return respondAuthFailure(c, pipe, notifications.InvalidTokenNotification{})
-			}
+		identity, token, verr := core.ValidateAuthorization(c.Context(), c.Get("Authorization"))
+		if verr != nil {
+			return respondAuthFailure(c, pipe, notificationForFailure(verr.Failure))
 		}
 		appCtx := AppContext(c)
 		appCtx.SetBearerToken(token)
-		identity := buildIdentity(claims)
 		appCtx.SetIdentity(identity)
 		if opts.TenantRequired && identity.TenantID() == "" {
 			// Reject before the request reaches any handler — the tenant claim
@@ -167,36 +168,37 @@ func AuthMiddleware(opts AuthOptions, pipe *pipeline.Pipeline) (fiber.Handler, e
 	}, nil
 }
 
+// notificationForFailure maps the core's failure classification to the
+// canonical auth notifications (the shell's vocabulary, not the core's).
+func notificationForFailure(f authcore.Failure) domain.Notification {
+	switch f {
+	case authcore.FailureMissingToken:
+		return notifications.MissingAuthorizationNotification{}
+	case authcore.FailureExpiredToken:
+		return notifications.ExpiredTokenNotification{}
+	default:
+		return notifications.InvalidTokenNotification{}
+	}
+}
+
+// The helpers below moved to web/authcore (the transport-neutral JWT core);
+// these thin delegations keep this package's historical seams — and the
+// tests exercising them — stable.
+
 func buildKeyfunc(opts AuthOptions) (jwt.Keyfunc, error) {
-	hasJWKS := opts.JWKSURL != ""
-	hasPEM := opts.PublicKeyPEM != ""
-	if hasJWKS == hasPEM {
-		return nil, fmt.Errorf("exactly one of JWKSURL or PublicKeyPEM is required (got jwks=%t, pem=%t)", hasJWKS, hasPEM)
-	}
-	if hasPEM {
-		key, err := parsePublicKeyPEM([]byte(opts.PublicKeyPEM))
-		if err != nil {
-			return nil, err
-		}
-		return func(*jwt.Token) (any, error) { return key, nil }, nil
-	}
-	k, err := keyfunc.NewDefaultCtx(context.Background(), []string{opts.JWKSURL})
-	if err != nil {
-		return nil, err
-	}
-	return k.Keyfunc, nil
+	return authcore.BuildKeyfunc(coreOptions(opts, nil))
 }
 
 func parsePublicKeyPEM(b []byte) (any, error) {
-	block, _ := pem.Decode(b)
-	if block == nil {
-		return nil, errors.New("no PEM block found")
-	}
-	key, err := x509.ParsePKIXPublicKey(block.Bytes)
-	if err != nil {
-		return nil, fmt.Errorf("parse public key: %w", err)
-	}
-	return key, nil
+	return authcore.ParsePublicKeyPEM(b)
+}
+
+func extractBearerToken(header string) (string, bool) {
+	return authcore.ExtractBearerToken(header)
+}
+
+func buildIdentity(claims jwt.MapClaims) *configuration.Identity {
+	return authcore.BuildIdentity(claims)
 }
 
 func parsePublicRoutes(items []string) ([]publicRoute, error) {
@@ -218,43 +220,6 @@ func matchPublic(method, path string, routes []publicRoute) bool {
 		}
 	}
 	return false
-}
-
-// extractBearerToken parses an "Authorization: Bearer <token>" header.
-// Returns (token, true) when the header is well-formed and the token is
-// non-empty; (_, false) otherwise.
-func extractBearerToken(header string) (string, bool) {
-	if header == "" {
-		return "", false
-	}
-	const prefix = "Bearer "
-	if len(header) <= len(prefix) || !strings.EqualFold(header[:len(prefix)], prefix) {
-		return "", false
-	}
-	token := strings.TrimSpace(header[len(prefix):])
-	if token == "" {
-		return "", false
-	}
-	return token, true
-}
-
-func buildIdentity(claims jwt.MapClaims) *configuration.Identity {
-	sub, _ := claims.GetSubject()
-	iss, _ := claims.GetIssuer()
-	var exp time.Time
-	if e, err := claims.GetExpirationTime(); err == nil && e != nil {
-		exp = e.Time
-	}
-	raw := make(map[string]any, len(claims))
-	for k, v := range claims {
-		raw[k] = v
-	}
-	return &configuration.Identity{
-		Subject:   sub,
-		Issuer:    iss,
-		ExpiresAt: exp,
-		Claims:    raw,
-	}
 }
 
 // respondAuthFailure renders an unauthorized response with the same shape as
