@@ -205,9 +205,9 @@ func newChainServerWithGate(t *testing.T, reg *Registry, p *probe, permission st
 	if permission != "" {
 		opts = append(opts, RequirePermission(permission))
 	}
-	reg.Register(CommandWithBody(testProcedure,
-		toCreateCommand,
-		fromGadgetResult,
+	reg.Register(CommandWithBody[testpb.CreateGadgetRequest, testpb.CreateGadgetResponse](testProcedure,
+		createGadgetDTO{},
+		gadgetResponseDTO{}.FromResult,
 		&probeCmdHandler{p: p, inner: &createGadgetHandler{}},
 		opts...,
 	))
@@ -255,9 +255,9 @@ func TestMTLSCertIdentityPassesPermissionGate(t *testing.T) {
 	reg.EnableAuthorization(true)
 	p := &probe{}
 
-	reg.Register(CommandWithBody(testProcedure,
-		toCreateCommand,
-		fromGadgetResult,
+	reg.Register(CommandWithBody[testpb.CreateGadgetRequest, testpb.CreateGadgetResponse](testProcedure,
+		createGadgetDTO{},
+		gadgetResponseDTO{}.FromResult,
 		&probeCmdHandler{p: p, inner: &createGadgetHandler{}},
 		RequirePermission("gadgets:write"),
 	))

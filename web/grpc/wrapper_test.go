@@ -71,20 +71,20 @@ func (listGadgetsHandler) Handle(_ *configuration.AppContext, q *listGadgetsQuer
 	return queries.Page{Items: []map[string]any{{"Name": q.NameContains}}, Total: 1}, nil
 }
 
-func fromGadgetsPage(page queries.Page) *testpb.ListGadgetsResponse {
+func fromGadgetsPage(page queries.Page) (*testpb.ListGadgetsResponse, error) {
 	names := make([]string, 0, len(page.Items))
 	for _, item := range page.Items {
 		names = append(names, item["Name"].(string))
 	}
-	return &testpb.ListGadgetsResponse{Total: page.Total, Names: names}
+	return &testpb.ListGadgetsResponse{Total: page.Total, Names: names}, nil
 }
 
 func toCreateCommand(pb *testpb.CreateGadgetRequest) (*createGadgetCommand, error) {
 	return &createGadgetCommand{Name: pb.GetName(), Kind: pb.GetKind(), Rating: pb.GetRating()}, nil
 }
 
-func fromGadgetResult(r *gadgetResult) *testpb.CreateGadgetResponse {
-	return &testpb.CreateGadgetResponse{Id: r.ID, Name: r.Name}
+func fromGadgetResult(r *gadgetResult) (*testpb.CreateGadgetResponse, error) {
+	return &testpb.CreateGadgetResponse{Id: r.ID, Name: r.Name}, nil
 }
 
 func newCommandFn(h *createGadgetHandler, strict ...string) func(context.Context, *connect.Request[testpb.CreateGadgetRequest]) (*connect.Response[testpb.CreateGadgetResponse], error) {
@@ -252,7 +252,7 @@ func TestHandleQuerySuccessAndConversion(t *testing.T) {
 	failing := handleQueryWithParams(pipe,
 		func(*testpb.ListGadgetsRequest) (*listGadgetsQuery, error) { return nil, errors.New("bad") },
 		listGadgetsHandler{},
-		func(queries.Page) *testpb.ListGadgetsResponse { return &testpb.ListGadgetsResponse{} })
+		func(queries.Page) (*testpb.ListGadgetsResponse, error) { return &testpb.ListGadgetsResponse{}, nil })
 	_, err = failing(context.Background(), connect.NewRequest(&testpb.ListGadgetsRequest{}))
 	var cerr *connect.Error
 	if !errors.As(err, &cerr) || cerr.Code() != connect.CodeInvalidArgument {
@@ -403,11 +403,11 @@ func TestHandleQueryByID(t *testing.T) {
 			return &getGadgetQuery{IncludeArchived: pb.GetIncludeArchived()}, nil
 		},
 		getGadgetHandler{},
-		func(doc map[string]any) *testpb.GetGadgetResponse {
+		func(doc map[string]any) (*testpb.GetGadgetResponse, error) {
 			return &testpb.GetGadgetResponse{
 				Id:   doc["ID"].(string),
 				Name: doc["Name"].(string),
-			}
+			}, nil
 		},
 	)
 
@@ -430,7 +430,7 @@ func TestHandleQueryByID(t *testing.T) {
 		(*testpb.GetGadgetRequest).GetId,
 		func(*testpb.GetGadgetRequest) (*getGadgetQuery, error) { return nil, errors.New("bad") },
 		getGadgetHandler{},
-		func(map[string]any) *testpb.GetGadgetResponse { return &testpb.GetGadgetResponse{} },
+		func(map[string]any) (*testpb.GetGadgetResponse, error) { return &testpb.GetGadgetResponse{}, nil },
 	)
 	_, err = failing(context.Background(), connect.NewRequest(&testpb.GetGadgetRequest{Id: proto.String("x")}))
 	if !errors.As(err, &cerr) || cerr.Code() != connect.CodeInvalidArgument {

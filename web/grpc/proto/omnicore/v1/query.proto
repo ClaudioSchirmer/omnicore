@@ -28,6 +28,17 @@ message PageRequest {
   bool include_archived = 5;
 }
 
+// PageInfo is the response-side envelope — PageRequest's mirror. A list
+// response composes it next to ONE repeated message field (the items); the
+// framework locates both BY TYPE, so item/field naming stays the service's
+// choice. Cursors are opaque keyset cursors (echo them into
+// PageRequest.after/before), empty when there is no further page.
+message PageInfo {
+  int64 total = 1;
+  string next_cursor = 2;
+  string prev_cursor = 3;
+}
+
 // SortField is one ?sort= entry: the WIRE field name (the response
 // message's proto field, snake_case) + direction. The converter resolves it
 // against the view's declared Fields vocabulary — an undeclared name is a

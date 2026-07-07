@@ -4,8 +4,15 @@ package omnicore.grpctest.v1;
 
 option go_package = "github.com/ClaudioSchirmer/omnicore/internal/testpb";
 
+import "google/protobuf/field_mask.proto";
+import "google/protobuf/timestamp.proto";
+import "omnicore/v1/query.proto";
+
 // Test-only messages for the web/grpc and infra/grpcclient unit suites. Every command field is
 // `optional` so the strict-presence (FullBody parity) check is exercisable.
+// The Search* family composes the shared omnicore.v1 read components — the
+// shapes the PUBLIC Auto constructors demand; the older flat messages keep
+// exercising the private wrapper layer directly.
 
 message CreateGadgetRequest {
   optional string name = 1;
@@ -36,6 +43,78 @@ message UpdateGadgetRequest {
 
 message ArchiveGadgetRequest {
   optional string id = 1;
+}
+
+message ArchiveGadgetResponse {}
+
+message SearchGadgetsRequest {
+  omnicore.v1.PageRequest page = 1;
+  repeated omnicore.v1.SortField sort = 2;
+  google.protobuf.FieldMask read_mask = 3;
+  SearchGadgetsFilters filters = 4;
+}
+
+message SearchGadgetsFilters {
+  omnicore.v1.StringFilter name = 1;
+  omnicore.v1.Int64Filter rating = 2;
+  omnicore.v1.DoubleFilter price = 3;
+  omnicore.v1.BoolFilter active = 4;
+  omnicore.v1.TimestampFilter created_at = 5;
+}
+
+message GadgetItem {
+  string id = 1;
+  string name = 2;
+  optional string kind = 3;
+}
+
+message SearchGadgetsResponse {
+  repeated GadgetItem items = 1;
+  omnicore.v1.PageInfo page_info = 2;
+}
+
+// ── bridge-plan edge shapes (bind_test.go) ──────────────────────────────
+
+message MapCarrier {
+  map<string, string> labels = 1;
+}
+
+message TimeCarrier {
+  google.protobuf.Timestamp when = 1;
+}
+
+message MaskCarrier {
+  google.protobuf.FieldMask mask = 1;
+}
+
+message ChildThing {
+  string full_name = 1;
+}
+
+message ParentThing {
+  repeated ChildThing kids = 1;
+  ChildThing favorite = 2;
+}
+
+message TwoGroupsRequest {
+  SearchGadgetsFilters a = 1;
+  SearchGadgetsFilters b = 2;
+}
+
+message TwoRepeatsResponse {
+  repeated GadgetItem a = 1;
+  repeated GadgetItem b = 2;
+  omnicore.v1.PageInfo page_info = 3;
+}
+
+message OnlyPageInfoResponse {
+  omnicore.v1.PageInfo page_info = 1;
+}
+
+message TwoPageInfosResponse {
+  repeated GadgetItem items = 1;
+  omnicore.v1.PageInfo a = 2;
+  omnicore.v1.PageInfo b = 3;
 }
 
 message GetGadgetRequest {

@@ -7,8 +7,11 @@
 package testpb
 
 import (
+	pb "github.com/ClaudioSchirmer/omnicore/web/grpc/pb"
 	protoreflect "google.golang.org/protobuf/reflect/protoreflect"
 	protoimpl "google.golang.org/protobuf/runtime/protoimpl"
+	fieldmaskpb "google.golang.org/protobuf/types/known/fieldmaskpb"
+	timestamppb "google.golang.org/protobuf/types/known/timestamppb"
 	reflect "reflect"
 	sync "sync"
 	unsafe "unsafe"
@@ -341,6 +344,742 @@ func (x *ArchiveGadgetRequest) GetId() string {
 	return ""
 }
 
+type ArchiveGadgetResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ArchiveGadgetResponse) Reset() {
+	*x = ArchiveGadgetResponse{}
+	mi := &file_test_proto_msgTypes[6]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ArchiveGadgetResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ArchiveGadgetResponse) ProtoMessage() {}
+
+func (x *ArchiveGadgetResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_test_proto_msgTypes[6]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ArchiveGadgetResponse.ProtoReflect.Descriptor instead.
+func (*ArchiveGadgetResponse) Descriptor() ([]byte, []int) {
+	return file_test_proto_rawDescGZIP(), []int{6}
+}
+
+type SearchGadgetsRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Page          *pb.PageRequest        `protobuf:"bytes,1,opt,name=page,proto3" json:"page,omitempty"`
+	Sort          []*pb.SortField        `protobuf:"bytes,2,rep,name=sort,proto3" json:"sort,omitempty"`
+	ReadMask      *fieldmaskpb.FieldMask `protobuf:"bytes,3,opt,name=read_mask,json=readMask,proto3" json:"read_mask,omitempty"`
+	Filters       *SearchGadgetsFilters  `protobuf:"bytes,4,opt,name=filters,proto3" json:"filters,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *SearchGadgetsRequest) Reset() {
+	*x = SearchGadgetsRequest{}
+	mi := &file_test_proto_msgTypes[7]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *SearchGadgetsRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*SearchGadgetsRequest) ProtoMessage() {}
+
+func (x *SearchGadgetsRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_test_proto_msgTypes[7]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use SearchGadgetsRequest.ProtoReflect.Descriptor instead.
+func (*SearchGadgetsRequest) Descriptor() ([]byte, []int) {
+	return file_test_proto_rawDescGZIP(), []int{7}
+}
+
+func (x *SearchGadgetsRequest) GetPage() *pb.PageRequest {
+	if x != nil {
+		return x.Page
+	}
+	return nil
+}
+
+func (x *SearchGadgetsRequest) GetSort() []*pb.SortField {
+	if x != nil {
+		return x.Sort
+	}
+	return nil
+}
+
+func (x *SearchGadgetsRequest) GetReadMask() *fieldmaskpb.FieldMask {
+	if x != nil {
+		return x.ReadMask
+	}
+	return nil
+}
+
+func (x *SearchGadgetsRequest) GetFilters() *SearchGadgetsFilters {
+	if x != nil {
+		return x.Filters
+	}
+	return nil
+}
+
+type SearchGadgetsFilters struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Name          *pb.StringFilter       `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`
+	Rating        *pb.Int64Filter        `protobuf:"bytes,2,opt,name=rating,proto3" json:"rating,omitempty"`
+	Price         *pb.DoubleFilter       `protobuf:"bytes,3,opt,name=price,proto3" json:"price,omitempty"`
+	Active        *pb.BoolFilter         `protobuf:"bytes,4,opt,name=active,proto3" json:"active,omitempty"`
+	CreatedAt     *pb.TimestampFilter    `protobuf:"bytes,5,opt,name=created_at,json=createdAt,proto3" json:"created_at,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *SearchGadgetsFilters) Reset() {
+	*x = SearchGadgetsFilters{}
+	mi := &file_test_proto_msgTypes[8]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *SearchGadgetsFilters) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*SearchGadgetsFilters) ProtoMessage() {}
+
+func (x *SearchGadgetsFilters) ProtoReflect() protoreflect.Message {
+	mi := &file_test_proto_msgTypes[8]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use SearchGadgetsFilters.ProtoReflect.Descriptor instead.
+func (*SearchGadgetsFilters) Descriptor() ([]byte, []int) {
+	return file_test_proto_rawDescGZIP(), []int{8}
+}
+
+func (x *SearchGadgetsFilters) GetName() *pb.StringFilter {
+	if x != nil {
+		return x.Name
+	}
+	return nil
+}
+
+func (x *SearchGadgetsFilters) GetRating() *pb.Int64Filter {
+	if x != nil {
+		return x.Rating
+	}
+	return nil
+}
+
+func (x *SearchGadgetsFilters) GetPrice() *pb.DoubleFilter {
+	if x != nil {
+		return x.Price
+	}
+	return nil
+}
+
+func (x *SearchGadgetsFilters) GetActive() *pb.BoolFilter {
+	if x != nil {
+		return x.Active
+	}
+	return nil
+}
+
+func (x *SearchGadgetsFilters) GetCreatedAt() *pb.TimestampFilter {
+	if x != nil {
+		return x.CreatedAt
+	}
+	return nil
+}
+
+type GadgetItem struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Id            string                 `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"`
+	Name          string                 `protobuf:"bytes,2,opt,name=name,proto3" json:"name,omitempty"`
+	Kind          *string                `protobuf:"bytes,3,opt,name=kind,proto3,oneof" json:"kind,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *GadgetItem) Reset() {
+	*x = GadgetItem{}
+	mi := &file_test_proto_msgTypes[9]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *GadgetItem) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*GadgetItem) ProtoMessage() {}
+
+func (x *GadgetItem) ProtoReflect() protoreflect.Message {
+	mi := &file_test_proto_msgTypes[9]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use GadgetItem.ProtoReflect.Descriptor instead.
+func (*GadgetItem) Descriptor() ([]byte, []int) {
+	return file_test_proto_rawDescGZIP(), []int{9}
+}
+
+func (x *GadgetItem) GetId() string {
+	if x != nil {
+		return x.Id
+	}
+	return ""
+}
+
+func (x *GadgetItem) GetName() string {
+	if x != nil {
+		return x.Name
+	}
+	return ""
+}
+
+func (x *GadgetItem) GetKind() string {
+	if x != nil && x.Kind != nil {
+		return *x.Kind
+	}
+	return ""
+}
+
+type SearchGadgetsResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Items         []*GadgetItem          `protobuf:"bytes,1,rep,name=items,proto3" json:"items,omitempty"`
+	PageInfo      *pb.PageInfo           `protobuf:"bytes,2,opt,name=page_info,json=pageInfo,proto3" json:"page_info,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *SearchGadgetsResponse) Reset() {
+	*x = SearchGadgetsResponse{}
+	mi := &file_test_proto_msgTypes[10]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *SearchGadgetsResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*SearchGadgetsResponse) ProtoMessage() {}
+
+func (x *SearchGadgetsResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_test_proto_msgTypes[10]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use SearchGadgetsResponse.ProtoReflect.Descriptor instead.
+func (*SearchGadgetsResponse) Descriptor() ([]byte, []int) {
+	return file_test_proto_rawDescGZIP(), []int{10}
+}
+
+func (x *SearchGadgetsResponse) GetItems() []*GadgetItem {
+	if x != nil {
+		return x.Items
+	}
+	return nil
+}
+
+func (x *SearchGadgetsResponse) GetPageInfo() *pb.PageInfo {
+	if x != nil {
+		return x.PageInfo
+	}
+	return nil
+}
+
+type MapCarrier struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Labels        map[string]string      `protobuf:"bytes,1,rep,name=labels,proto3" json:"labels,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *MapCarrier) Reset() {
+	*x = MapCarrier{}
+	mi := &file_test_proto_msgTypes[11]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *MapCarrier) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*MapCarrier) ProtoMessage() {}
+
+func (x *MapCarrier) ProtoReflect() protoreflect.Message {
+	mi := &file_test_proto_msgTypes[11]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use MapCarrier.ProtoReflect.Descriptor instead.
+func (*MapCarrier) Descriptor() ([]byte, []int) {
+	return file_test_proto_rawDescGZIP(), []int{11}
+}
+
+func (x *MapCarrier) GetLabels() map[string]string {
+	if x != nil {
+		return x.Labels
+	}
+	return nil
+}
+
+type TimeCarrier struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	When          *timestamppb.Timestamp `protobuf:"bytes,1,opt,name=when,proto3" json:"when,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *TimeCarrier) Reset() {
+	*x = TimeCarrier{}
+	mi := &file_test_proto_msgTypes[12]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *TimeCarrier) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*TimeCarrier) ProtoMessage() {}
+
+func (x *TimeCarrier) ProtoReflect() protoreflect.Message {
+	mi := &file_test_proto_msgTypes[12]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use TimeCarrier.ProtoReflect.Descriptor instead.
+func (*TimeCarrier) Descriptor() ([]byte, []int) {
+	return file_test_proto_rawDescGZIP(), []int{12}
+}
+
+func (x *TimeCarrier) GetWhen() *timestamppb.Timestamp {
+	if x != nil {
+		return x.When
+	}
+	return nil
+}
+
+type MaskCarrier struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Mask          *fieldmaskpb.FieldMask `protobuf:"bytes,1,opt,name=mask,proto3" json:"mask,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *MaskCarrier) Reset() {
+	*x = MaskCarrier{}
+	mi := &file_test_proto_msgTypes[13]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *MaskCarrier) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*MaskCarrier) ProtoMessage() {}
+
+func (x *MaskCarrier) ProtoReflect() protoreflect.Message {
+	mi := &file_test_proto_msgTypes[13]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use MaskCarrier.ProtoReflect.Descriptor instead.
+func (*MaskCarrier) Descriptor() ([]byte, []int) {
+	return file_test_proto_rawDescGZIP(), []int{13}
+}
+
+func (x *MaskCarrier) GetMask() *fieldmaskpb.FieldMask {
+	if x != nil {
+		return x.Mask
+	}
+	return nil
+}
+
+type ChildThing struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	FullName      string                 `protobuf:"bytes,1,opt,name=full_name,json=fullName,proto3" json:"full_name,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ChildThing) Reset() {
+	*x = ChildThing{}
+	mi := &file_test_proto_msgTypes[14]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ChildThing) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ChildThing) ProtoMessage() {}
+
+func (x *ChildThing) ProtoReflect() protoreflect.Message {
+	mi := &file_test_proto_msgTypes[14]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ChildThing.ProtoReflect.Descriptor instead.
+func (*ChildThing) Descriptor() ([]byte, []int) {
+	return file_test_proto_rawDescGZIP(), []int{14}
+}
+
+func (x *ChildThing) GetFullName() string {
+	if x != nil {
+		return x.FullName
+	}
+	return ""
+}
+
+type ParentThing struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Kids          []*ChildThing          `protobuf:"bytes,1,rep,name=kids,proto3" json:"kids,omitempty"`
+	Favorite      *ChildThing            `protobuf:"bytes,2,opt,name=favorite,proto3" json:"favorite,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ParentThing) Reset() {
+	*x = ParentThing{}
+	mi := &file_test_proto_msgTypes[15]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ParentThing) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ParentThing) ProtoMessage() {}
+
+func (x *ParentThing) ProtoReflect() protoreflect.Message {
+	mi := &file_test_proto_msgTypes[15]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ParentThing.ProtoReflect.Descriptor instead.
+func (*ParentThing) Descriptor() ([]byte, []int) {
+	return file_test_proto_rawDescGZIP(), []int{15}
+}
+
+func (x *ParentThing) GetKids() []*ChildThing {
+	if x != nil {
+		return x.Kids
+	}
+	return nil
+}
+
+func (x *ParentThing) GetFavorite() *ChildThing {
+	if x != nil {
+		return x.Favorite
+	}
+	return nil
+}
+
+type TwoGroupsRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	A             *SearchGadgetsFilters  `protobuf:"bytes,1,opt,name=a,proto3" json:"a,omitempty"`
+	B             *SearchGadgetsFilters  `protobuf:"bytes,2,opt,name=b,proto3" json:"b,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *TwoGroupsRequest) Reset() {
+	*x = TwoGroupsRequest{}
+	mi := &file_test_proto_msgTypes[16]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *TwoGroupsRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*TwoGroupsRequest) ProtoMessage() {}
+
+func (x *TwoGroupsRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_test_proto_msgTypes[16]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use TwoGroupsRequest.ProtoReflect.Descriptor instead.
+func (*TwoGroupsRequest) Descriptor() ([]byte, []int) {
+	return file_test_proto_rawDescGZIP(), []int{16}
+}
+
+func (x *TwoGroupsRequest) GetA() *SearchGadgetsFilters {
+	if x != nil {
+		return x.A
+	}
+	return nil
+}
+
+func (x *TwoGroupsRequest) GetB() *SearchGadgetsFilters {
+	if x != nil {
+		return x.B
+	}
+	return nil
+}
+
+type TwoRepeatsResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	A             []*GadgetItem          `protobuf:"bytes,1,rep,name=a,proto3" json:"a,omitempty"`
+	B             []*GadgetItem          `protobuf:"bytes,2,rep,name=b,proto3" json:"b,omitempty"`
+	PageInfo      *pb.PageInfo           `protobuf:"bytes,3,opt,name=page_info,json=pageInfo,proto3" json:"page_info,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *TwoRepeatsResponse) Reset() {
+	*x = TwoRepeatsResponse{}
+	mi := &file_test_proto_msgTypes[17]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *TwoRepeatsResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*TwoRepeatsResponse) ProtoMessage() {}
+
+func (x *TwoRepeatsResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_test_proto_msgTypes[17]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use TwoRepeatsResponse.ProtoReflect.Descriptor instead.
+func (*TwoRepeatsResponse) Descriptor() ([]byte, []int) {
+	return file_test_proto_rawDescGZIP(), []int{17}
+}
+
+func (x *TwoRepeatsResponse) GetA() []*GadgetItem {
+	if x != nil {
+		return x.A
+	}
+	return nil
+}
+
+func (x *TwoRepeatsResponse) GetB() []*GadgetItem {
+	if x != nil {
+		return x.B
+	}
+	return nil
+}
+
+func (x *TwoRepeatsResponse) GetPageInfo() *pb.PageInfo {
+	if x != nil {
+		return x.PageInfo
+	}
+	return nil
+}
+
+type OnlyPageInfoResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	PageInfo      *pb.PageInfo           `protobuf:"bytes,1,opt,name=page_info,json=pageInfo,proto3" json:"page_info,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *OnlyPageInfoResponse) Reset() {
+	*x = OnlyPageInfoResponse{}
+	mi := &file_test_proto_msgTypes[18]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *OnlyPageInfoResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*OnlyPageInfoResponse) ProtoMessage() {}
+
+func (x *OnlyPageInfoResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_test_proto_msgTypes[18]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use OnlyPageInfoResponse.ProtoReflect.Descriptor instead.
+func (*OnlyPageInfoResponse) Descriptor() ([]byte, []int) {
+	return file_test_proto_rawDescGZIP(), []int{18}
+}
+
+func (x *OnlyPageInfoResponse) GetPageInfo() *pb.PageInfo {
+	if x != nil {
+		return x.PageInfo
+	}
+	return nil
+}
+
+type TwoPageInfosResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Items         []*GadgetItem          `protobuf:"bytes,1,rep,name=items,proto3" json:"items,omitempty"`
+	A             *pb.PageInfo           `protobuf:"bytes,2,opt,name=a,proto3" json:"a,omitempty"`
+	B             *pb.PageInfo           `protobuf:"bytes,3,opt,name=b,proto3" json:"b,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *TwoPageInfosResponse) Reset() {
+	*x = TwoPageInfosResponse{}
+	mi := &file_test_proto_msgTypes[19]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *TwoPageInfosResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*TwoPageInfosResponse) ProtoMessage() {}
+
+func (x *TwoPageInfosResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_test_proto_msgTypes[19]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use TwoPageInfosResponse.ProtoReflect.Descriptor instead.
+func (*TwoPageInfosResponse) Descriptor() ([]byte, []int) {
+	return file_test_proto_rawDescGZIP(), []int{19}
+}
+
+func (x *TwoPageInfosResponse) GetItems() []*GadgetItem {
+	if x != nil {
+		return x.Items
+	}
+	return nil
+}
+
+func (x *TwoPageInfosResponse) GetA() *pb.PageInfo {
+	if x != nil {
+		return x.A
+	}
+	return nil
+}
+
+func (x *TwoPageInfosResponse) GetB() *pb.PageInfo {
+	if x != nil {
+		return x.B
+	}
+	return nil
+}
+
 type GetGadgetRequest struct {
 	state           protoimpl.MessageState `protogen:"open.v1"`
 	Id              *string                `protobuf:"bytes,1,opt,name=id,proto3,oneof" json:"id,omitempty"`
@@ -351,7 +1090,7 @@ type GetGadgetRequest struct {
 
 func (x *GetGadgetRequest) Reset() {
 	*x = GetGadgetRequest{}
-	mi := &file_test_proto_msgTypes[6]
+	mi := &file_test_proto_msgTypes[20]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -363,7 +1102,7 @@ func (x *GetGadgetRequest) String() string {
 func (*GetGadgetRequest) ProtoMessage() {}
 
 func (x *GetGadgetRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_test_proto_msgTypes[6]
+	mi := &file_test_proto_msgTypes[20]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -376,7 +1115,7 @@ func (x *GetGadgetRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetGadgetRequest.ProtoReflect.Descriptor instead.
 func (*GetGadgetRequest) Descriptor() ([]byte, []int) {
-	return file_test_proto_rawDescGZIP(), []int{6}
+	return file_test_proto_rawDescGZIP(), []int{20}
 }
 
 func (x *GetGadgetRequest) GetId() string {
@@ -403,7 +1142,7 @@ type GetGadgetResponse struct {
 
 func (x *GetGadgetResponse) Reset() {
 	*x = GetGadgetResponse{}
-	mi := &file_test_proto_msgTypes[7]
+	mi := &file_test_proto_msgTypes[21]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -415,7 +1154,7 @@ func (x *GetGadgetResponse) String() string {
 func (*GetGadgetResponse) ProtoMessage() {}
 
 func (x *GetGadgetResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_test_proto_msgTypes[7]
+	mi := &file_test_proto_msgTypes[21]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -428,7 +1167,7 @@ func (x *GetGadgetResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetGadgetResponse.ProtoReflect.Descriptor instead.
 func (*GetGadgetResponse) Descriptor() ([]byte, []int) {
-	return file_test_proto_rawDescGZIP(), []int{7}
+	return file_test_proto_rawDescGZIP(), []int{21}
 }
 
 func (x *GetGadgetResponse) GetId() string {
@@ -450,7 +1189,7 @@ var File_test_proto protoreflect.FileDescriptor
 const file_test_proto_rawDesc = "" +
 	"\n" +
 	"\n" +
-	"test.proto\x12\x14omnicore.grpctest.v1\"\x81\x01\n" +
+	"test.proto\x12\x14omnicore.grpctest.v1\x1a google/protobuf/field_mask.proto\x1a\x1fgoogle/protobuf/timestamp.proto\x1a\x17omnicore/v1/query.proto\"\x81\x01\n" +
 	"\x13CreateGadgetRequest\x12\x17\n" +
 	"\x04name\x18\x01 \x01(\tH\x00R\x04name\x88\x01\x01\x12\x17\n" +
 	"\x04kind\x18\x02 \x01(\tH\x01R\x04kind\x88\x01\x01\x12\x1b\n" +
@@ -478,7 +1217,58 @@ const file_test_proto_rawDesc = "" +
 	"\x05_kind\"2\n" +
 	"\x14ArchiveGadgetRequest\x12\x13\n" +
 	"\x02id\x18\x01 \x01(\tH\x00R\x02id\x88\x01\x01B\x05\n" +
-	"\x03_id\"Y\n" +
+	"\x03_id\"\x17\n" +
+	"\x15ArchiveGadgetResponse\"\xef\x01\n" +
+	"\x14SearchGadgetsRequest\x12,\n" +
+	"\x04page\x18\x01 \x01(\v2\x18.omnicore.v1.PageRequestR\x04page\x12*\n" +
+	"\x04sort\x18\x02 \x03(\v2\x16.omnicore.v1.SortFieldR\x04sort\x127\n" +
+	"\tread_mask\x18\x03 \x01(\v2\x1a.google.protobuf.FieldMaskR\breadMask\x12D\n" +
+	"\afilters\x18\x04 \x01(\v2*.omnicore.grpctest.v1.SearchGadgetsFiltersR\afilters\"\x96\x02\n" +
+	"\x14SearchGadgetsFilters\x12-\n" +
+	"\x04name\x18\x01 \x01(\v2\x19.omnicore.v1.StringFilterR\x04name\x120\n" +
+	"\x06rating\x18\x02 \x01(\v2\x18.omnicore.v1.Int64FilterR\x06rating\x12/\n" +
+	"\x05price\x18\x03 \x01(\v2\x19.omnicore.v1.DoubleFilterR\x05price\x12/\n" +
+	"\x06active\x18\x04 \x01(\v2\x17.omnicore.v1.BoolFilterR\x06active\x12;\n" +
+	"\n" +
+	"created_at\x18\x05 \x01(\v2\x1c.omnicore.v1.TimestampFilterR\tcreatedAt\"R\n" +
+	"\n" +
+	"GadgetItem\x12\x0e\n" +
+	"\x02id\x18\x01 \x01(\tR\x02id\x12\x12\n" +
+	"\x04name\x18\x02 \x01(\tR\x04name\x12\x17\n" +
+	"\x04kind\x18\x03 \x01(\tH\x00R\x04kind\x88\x01\x01B\a\n" +
+	"\x05_kind\"\x83\x01\n" +
+	"\x15SearchGadgetsResponse\x126\n" +
+	"\x05items\x18\x01 \x03(\v2 .omnicore.grpctest.v1.GadgetItemR\x05items\x122\n" +
+	"\tpage_info\x18\x02 \x01(\v2\x15.omnicore.v1.PageInfoR\bpageInfo\"\x8d\x01\n" +
+	"\n" +
+	"MapCarrier\x12D\n" +
+	"\x06labels\x18\x01 \x03(\v2,.omnicore.grpctest.v1.MapCarrier.LabelsEntryR\x06labels\x1a9\n" +
+	"\vLabelsEntry\x12\x10\n" +
+	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
+	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"=\n" +
+	"\vTimeCarrier\x12.\n" +
+	"\x04when\x18\x01 \x01(\v2\x1a.google.protobuf.TimestampR\x04when\"=\n" +
+	"\vMaskCarrier\x12.\n" +
+	"\x04mask\x18\x01 \x01(\v2\x1a.google.protobuf.FieldMaskR\x04mask\")\n" +
+	"\n" +
+	"ChildThing\x12\x1b\n" +
+	"\tfull_name\x18\x01 \x01(\tR\bfullName\"\x81\x01\n" +
+	"\vParentThing\x124\n" +
+	"\x04kids\x18\x01 \x03(\v2 .omnicore.grpctest.v1.ChildThingR\x04kids\x12<\n" +
+	"\bfavorite\x18\x02 \x01(\v2 .omnicore.grpctest.v1.ChildThingR\bfavorite\"\x86\x01\n" +
+	"\x10TwoGroupsRequest\x128\n" +
+	"\x01a\x18\x01 \x01(\v2*.omnicore.grpctest.v1.SearchGadgetsFiltersR\x01a\x128\n" +
+	"\x01b\x18\x02 \x01(\v2*.omnicore.grpctest.v1.SearchGadgetsFiltersR\x01b\"\xa8\x01\n" +
+	"\x12TwoRepeatsResponse\x12.\n" +
+	"\x01a\x18\x01 \x03(\v2 .omnicore.grpctest.v1.GadgetItemR\x01a\x12.\n" +
+	"\x01b\x18\x02 \x03(\v2 .omnicore.grpctest.v1.GadgetItemR\x01b\x122\n" +
+	"\tpage_info\x18\x03 \x01(\v2\x15.omnicore.v1.PageInfoR\bpageInfo\"J\n" +
+	"\x14OnlyPageInfoResponse\x122\n" +
+	"\tpage_info\x18\x01 \x01(\v2\x15.omnicore.v1.PageInfoR\bpageInfo\"\x98\x01\n" +
+	"\x14TwoPageInfosResponse\x126\n" +
+	"\x05items\x18\x01 \x03(\v2 .omnicore.grpctest.v1.GadgetItemR\x05items\x12#\n" +
+	"\x01a\x18\x02 \x01(\v2\x15.omnicore.v1.PageInfoR\x01a\x12#\n" +
+	"\x01b\x18\x03 \x01(\v2\x15.omnicore.v1.PageInfoR\x01b\"Y\n" +
 	"\x10GetGadgetRequest\x12\x13\n" +
 	"\x02id\x18\x01 \x01(\tH\x00R\x02id\x88\x01\x01\x12)\n" +
 	"\x10include_archived\x18\x02 \x01(\bR\x0fincludeArchivedB\x05\n" +
@@ -499,23 +1289,73 @@ func file_test_proto_rawDescGZIP() []byte {
 	return file_test_proto_rawDescData
 }
 
-var file_test_proto_msgTypes = make([]protoimpl.MessageInfo, 8)
+var file_test_proto_msgTypes = make([]protoimpl.MessageInfo, 23)
 var file_test_proto_goTypes = []any{
-	(*CreateGadgetRequest)(nil),  // 0: omnicore.grpctest.v1.CreateGadgetRequest
-	(*CreateGadgetResponse)(nil), // 1: omnicore.grpctest.v1.CreateGadgetResponse
-	(*ListGadgetsRequest)(nil),   // 2: omnicore.grpctest.v1.ListGadgetsRequest
-	(*ListGadgetsResponse)(nil),  // 3: omnicore.grpctest.v1.ListGadgetsResponse
-	(*UpdateGadgetRequest)(nil),  // 4: omnicore.grpctest.v1.UpdateGadgetRequest
-	(*ArchiveGadgetRequest)(nil), // 5: omnicore.grpctest.v1.ArchiveGadgetRequest
-	(*GetGadgetRequest)(nil),     // 6: omnicore.grpctest.v1.GetGadgetRequest
-	(*GetGadgetResponse)(nil),    // 7: omnicore.grpctest.v1.GetGadgetResponse
+	(*CreateGadgetRequest)(nil),   // 0: omnicore.grpctest.v1.CreateGadgetRequest
+	(*CreateGadgetResponse)(nil),  // 1: omnicore.grpctest.v1.CreateGadgetResponse
+	(*ListGadgetsRequest)(nil),    // 2: omnicore.grpctest.v1.ListGadgetsRequest
+	(*ListGadgetsResponse)(nil),   // 3: omnicore.grpctest.v1.ListGadgetsResponse
+	(*UpdateGadgetRequest)(nil),   // 4: omnicore.grpctest.v1.UpdateGadgetRequest
+	(*ArchiveGadgetRequest)(nil),  // 5: omnicore.grpctest.v1.ArchiveGadgetRequest
+	(*ArchiveGadgetResponse)(nil), // 6: omnicore.grpctest.v1.ArchiveGadgetResponse
+	(*SearchGadgetsRequest)(nil),  // 7: omnicore.grpctest.v1.SearchGadgetsRequest
+	(*SearchGadgetsFilters)(nil),  // 8: omnicore.grpctest.v1.SearchGadgetsFilters
+	(*GadgetItem)(nil),            // 9: omnicore.grpctest.v1.GadgetItem
+	(*SearchGadgetsResponse)(nil), // 10: omnicore.grpctest.v1.SearchGadgetsResponse
+	(*MapCarrier)(nil),            // 11: omnicore.grpctest.v1.MapCarrier
+	(*TimeCarrier)(nil),           // 12: omnicore.grpctest.v1.TimeCarrier
+	(*MaskCarrier)(nil),           // 13: omnicore.grpctest.v1.MaskCarrier
+	(*ChildThing)(nil),            // 14: omnicore.grpctest.v1.ChildThing
+	(*ParentThing)(nil),           // 15: omnicore.grpctest.v1.ParentThing
+	(*TwoGroupsRequest)(nil),      // 16: omnicore.grpctest.v1.TwoGroupsRequest
+	(*TwoRepeatsResponse)(nil),    // 17: omnicore.grpctest.v1.TwoRepeatsResponse
+	(*OnlyPageInfoResponse)(nil),  // 18: omnicore.grpctest.v1.OnlyPageInfoResponse
+	(*TwoPageInfosResponse)(nil),  // 19: omnicore.grpctest.v1.TwoPageInfosResponse
+	(*GetGadgetRequest)(nil),      // 20: omnicore.grpctest.v1.GetGadgetRequest
+	(*GetGadgetResponse)(nil),     // 21: omnicore.grpctest.v1.GetGadgetResponse
+	nil,                           // 22: omnicore.grpctest.v1.MapCarrier.LabelsEntry
+	(*pb.PageRequest)(nil),        // 23: omnicore.v1.PageRequest
+	(*pb.SortField)(nil),          // 24: omnicore.v1.SortField
+	(*fieldmaskpb.FieldMask)(nil), // 25: google.protobuf.FieldMask
+	(*pb.StringFilter)(nil),       // 26: omnicore.v1.StringFilter
+	(*pb.Int64Filter)(nil),        // 27: omnicore.v1.Int64Filter
+	(*pb.DoubleFilter)(nil),       // 28: omnicore.v1.DoubleFilter
+	(*pb.BoolFilter)(nil),         // 29: omnicore.v1.BoolFilter
+	(*pb.TimestampFilter)(nil),    // 30: omnicore.v1.TimestampFilter
+	(*pb.PageInfo)(nil),           // 31: omnicore.v1.PageInfo
+	(*timestamppb.Timestamp)(nil), // 32: google.protobuf.Timestamp
 }
 var file_test_proto_depIdxs = []int32{
-	0, // [0:0] is the sub-list for method output_type
-	0, // [0:0] is the sub-list for method input_type
-	0, // [0:0] is the sub-list for extension type_name
-	0, // [0:0] is the sub-list for extension extendee
-	0, // [0:0] is the sub-list for field type_name
+	23, // 0: omnicore.grpctest.v1.SearchGadgetsRequest.page:type_name -> omnicore.v1.PageRequest
+	24, // 1: omnicore.grpctest.v1.SearchGadgetsRequest.sort:type_name -> omnicore.v1.SortField
+	25, // 2: omnicore.grpctest.v1.SearchGadgetsRequest.read_mask:type_name -> google.protobuf.FieldMask
+	8,  // 3: omnicore.grpctest.v1.SearchGadgetsRequest.filters:type_name -> omnicore.grpctest.v1.SearchGadgetsFilters
+	26, // 4: omnicore.grpctest.v1.SearchGadgetsFilters.name:type_name -> omnicore.v1.StringFilter
+	27, // 5: omnicore.grpctest.v1.SearchGadgetsFilters.rating:type_name -> omnicore.v1.Int64Filter
+	28, // 6: omnicore.grpctest.v1.SearchGadgetsFilters.price:type_name -> omnicore.v1.DoubleFilter
+	29, // 7: omnicore.grpctest.v1.SearchGadgetsFilters.active:type_name -> omnicore.v1.BoolFilter
+	30, // 8: omnicore.grpctest.v1.SearchGadgetsFilters.created_at:type_name -> omnicore.v1.TimestampFilter
+	9,  // 9: omnicore.grpctest.v1.SearchGadgetsResponse.items:type_name -> omnicore.grpctest.v1.GadgetItem
+	31, // 10: omnicore.grpctest.v1.SearchGadgetsResponse.page_info:type_name -> omnicore.v1.PageInfo
+	22, // 11: omnicore.grpctest.v1.MapCarrier.labels:type_name -> omnicore.grpctest.v1.MapCarrier.LabelsEntry
+	32, // 12: omnicore.grpctest.v1.TimeCarrier.when:type_name -> google.protobuf.Timestamp
+	25, // 13: omnicore.grpctest.v1.MaskCarrier.mask:type_name -> google.protobuf.FieldMask
+	14, // 14: omnicore.grpctest.v1.ParentThing.kids:type_name -> omnicore.grpctest.v1.ChildThing
+	14, // 15: omnicore.grpctest.v1.ParentThing.favorite:type_name -> omnicore.grpctest.v1.ChildThing
+	8,  // 16: omnicore.grpctest.v1.TwoGroupsRequest.a:type_name -> omnicore.grpctest.v1.SearchGadgetsFilters
+	8,  // 17: omnicore.grpctest.v1.TwoGroupsRequest.b:type_name -> omnicore.grpctest.v1.SearchGadgetsFilters
+	9,  // 18: omnicore.grpctest.v1.TwoRepeatsResponse.a:type_name -> omnicore.grpctest.v1.GadgetItem
+	9,  // 19: omnicore.grpctest.v1.TwoRepeatsResponse.b:type_name -> omnicore.grpctest.v1.GadgetItem
+	31, // 20: omnicore.grpctest.v1.TwoRepeatsResponse.page_info:type_name -> omnicore.v1.PageInfo
+	31, // 21: omnicore.grpctest.v1.OnlyPageInfoResponse.page_info:type_name -> omnicore.v1.PageInfo
+	9,  // 22: omnicore.grpctest.v1.TwoPageInfosResponse.items:type_name -> omnicore.grpctest.v1.GadgetItem
+	31, // 23: omnicore.grpctest.v1.TwoPageInfosResponse.a:type_name -> omnicore.v1.PageInfo
+	31, // 24: omnicore.grpctest.v1.TwoPageInfosResponse.b:type_name -> omnicore.v1.PageInfo
+	25, // [25:25] is the sub-list for method output_type
+	25, // [25:25] is the sub-list for method input_type
+	25, // [25:25] is the sub-list for extension type_name
+	25, // [25:25] is the sub-list for extension extendee
+	0,  // [0:25] is the sub-list for field type_name
 }
 
 func init() { file_test_proto_init() }
@@ -527,14 +1367,15 @@ func file_test_proto_init() {
 	file_test_proto_msgTypes[2].OneofWrappers = []any{}
 	file_test_proto_msgTypes[4].OneofWrappers = []any{}
 	file_test_proto_msgTypes[5].OneofWrappers = []any{}
-	file_test_proto_msgTypes[6].OneofWrappers = []any{}
+	file_test_proto_msgTypes[9].OneofWrappers = []any{}
+	file_test_proto_msgTypes[20].OneofWrappers = []any{}
 	type x struct{}
 	out := protoimpl.TypeBuilder{
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_test_proto_rawDesc), len(file_test_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   8,
+			NumMessages:   23,
 			NumExtensions: 0,
 			NumServices:   0,
 		},
