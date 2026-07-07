@@ -401,7 +401,7 @@ func TestKernelNotifications_Semantic(t *testing.T) {
 		want NotificationSemantic
 	}{
 		{RecordNotFoundNotification{}, SemanticNotFound},
-		{EntityIsNotActiveNotification{}, SemanticConflict},
+		{EntityIsNotActiveNotification{}, SemanticStateConflict},
 		{EntityAlreadyAddedNotification{}, SemanticConflict},
 		{InsertNotAllowedNotification{}, SemanticForbidden},
 		{UpdateNotAllowedNotification{}, SemanticForbidden},

@@ -5,13 +5,13 @@ import (
 	"context"
 	"errors"
 	"io"
-	"math/rand"
 	"net"
 	"net/http"
 	"net/url"
 	"strconv"
-	"sync"
 	"time"
+
+	"github.com/ClaudioSchirmer/omnicore/infra/resilience"
 )
 
 // backoffStrategy is the enum of supported delay curves between retry
@@ -47,29 +47,11 @@ func (p retryPolicy) disabled() bool {
 	return p.maxAttempts <= 1
 }
 
-// retryRand is the shared random source for jitter. Seeded once with the
-// process start time and protected by a mutex because math/rand.Source is
-// not safe for concurrent use.
-var (
-	retryRandOnce sync.Once
-	retryRandMu   sync.Mutex
-	retryRand     *rand.Rand
-)
-
-func initRetryRand() {
-	retryRandOnce.Do(func() {
-		retryRand = rand.New(rand.NewSource(time.Now().UnixNano()))
-	})
-}
-
+// The jitter source and the backoff curves moved to infra/resilience (the
+// transport-neutral core shared with infra/grpcclient); these delegations
+// keep the package's historical seams stable.
 func randJitter(maxNS int64) int64 {
-	initRetryRand()
-	if maxNS <= 0 {
-		return 0
-	}
-	retryRandMu.Lock()
-	defer retryRandMu.Unlock()
-	return retryRand.Int63n(maxNS)
+	return resilience.Jitter(maxNS)
 }
 
 // retryMiddleware loops next.RoundTrip up to policy.maxAttempts, replaying
@@ -185,38 +167,14 @@ func computeWait(policy retryPolicy, attempt int, resp *http.Response) time.Dura
 
 // computeBackoff applies the curve corresponding to policy.backoff for the
 // given attempt (1-indexed; sleep happens AFTER the attempt that just
-// failed). All curves are capped at policy.maxDelay.
+// failed). All curves are capped at policy.maxDelay. The math lives in
+// infra/resilience; strategy values cast 1:1 by design.
 func computeBackoff(policy retryPolicy, attempt int) time.Duration {
-	if policy.initialDelay <= 0 {
-		return 0
-	}
-	if attempt < 1 {
-		attempt = 1
-	}
-	var d time.Duration
-	switch policy.backoff {
-	case backoffConstant:
-		d = policy.initialDelay
-	case backoffLinear:
-		d = policy.initialDelay * time.Duration(attempt)
-	case backoffExponential:
-		d = policy.initialDelay << uint(attempt-1)
-	case backoffExponentialJitter:
-		ceiling := policy.initialDelay << uint(attempt-1)
-		if ceiling > policy.maxDelay {
-			ceiling = policy.maxDelay
-		}
-		d = time.Duration(randJitter(int64(ceiling)))
-	default:
-		d = policy.initialDelay
-	}
-	if d > policy.maxDelay {
-		d = policy.maxDelay
-	}
-	if d < 0 {
-		d = policy.maxDelay
-	}
-	return d
+	return resilience.Backoff(resilience.BackoffPolicy{
+		Strategy:     resilience.BackoffStrategy(policy.backoff),
+		InitialDelay: policy.initialDelay,
+		MaxDelay:     policy.maxDelay,
+	}, attempt)
 }
 
 // parseRetryAfter accepts the RFC 7231 forms: a positive integer in seconds
@@ -245,22 +203,7 @@ func parseRetryAfter(v string) (time.Duration, bool) {
 // sleepCtx waits for d unless ctx is canceled. Returns true when the sleep
 // completed, false when the context fired (the caller should abort).
 func sleepCtx(ctx context.Context, d time.Duration) bool {
-	if d <= 0 {
-		select {
-		case <-ctx.Done():
-			return false
-		default:
-			return true
-		}
-	}
-	t := time.NewTimer(d)
-	defer t.Stop()
-	select {
-	case <-ctx.Done():
-		return false
-	case <-t.C:
-		return true
-	}
+	return resilience.SleepCtx(ctx, d)
 }
 
 // isTimeout matches transport-level timeouts, regardless of how they were

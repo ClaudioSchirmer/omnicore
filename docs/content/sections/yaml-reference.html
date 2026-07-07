@@ -55,6 +55,8 @@ pwd: "${vault:secret/data/db#password}"                # delegated to a register
         <tr><td><code>cache</code></td><td>no</td><td>private + shared key-value cache</td><td>below · <a href="#cache-subsystem">Cache subsystem</a></td></tr>
         <tr><td><code>openapi</code></td><td>no</td><td>how the Swagger UI is served</td><td>below · <a href="#openapi">OpenAPI</a></td></tr>
         <tr><td><code>graphql</code></td><td>no</td><td>how the GraphQL endpoint is served</td><td>below · <a href="#graphql">GraphQL</a></td></tr>
+        <tr><td><code>grpc</code></td><td>no</td><td>how the gRPC surface is served</td><td>below · <a href="#grpc">gRPC</a></td></tr>
+        <tr><td><code>grpcClient</code></td><td>no</td><td>outbound gRPC/Connect toolbox (Deps.GRPCClient)</td><td>below · <a href="#grpc">gRPC</a></td></tr>
         <tr><td><code>shutdown</code></td><td>no</td><td>coordinated drain timeout</td><td>below</td></tr>
         <tr><td><code>upstreamSubscriptions</code></td><td>no</td><td>cross-service Mongo projection</td><td>below · <a href="#query-side">QueryHandler</a></td></tr>
         <tr><td><code>integration</code></td><td>no</td><td>cross-service async events</td><td>below · <a href="#integration-events">Integration events</a></td></tr>
@@ -218,7 +220,7 @@ query:
       addr: "${SHARED_REDIS_ADDR}"
       keyPrefix: "${TEAM}-shared"</code></pre>
 
-    <h3>openapi · graphql · shutdown</h3>
+    <h3>openapi · graphql · grpc · grpcClient · shutdown</h3>
     <p>
         <code>openapi:</code> tunes <em>how</em> the Swagger UI is served (the spec identity —
         Title/Version — stays in code on <code>Wiring.OpenAPI</code>). <code>graphql:</code> tunes how the
@@ -236,6 +238,52 @@ graphql:                                 # ignored unless Wiring.GraphQL is set
   playground: false                      # default off — serve GraphiQL at uiPath
   introspection: false                   # default off — answer __schema / __type
   rootRedirect: false                    # default off — GET / → 302 path; both this + openapi.rootRedirect → boot panic
+
+grpc:                                    # ignored unless Wiring.GRPC is set
+  addr: ":9090"                          # default. Dedicated listener — never the Fiber one
+  certFile: ""                           # TLS pair — both or neither; without TLS the listener serves h2c
+  keyFile: ""
+  clientCAFile: ""                       # REQUIRED with auth.mode=mtls: the internal CA verifying client certs
+  reflection: false                      # default off — serve gRPC server reflection for the mounted services
+  requestTimeoutSeconds: 0               # 0 = no server-side ceiling (the client's protocol deadline still applies)
+  idleTimeoutSeconds: 120                # default 120 — recycle idle keep-alives (re-balance; below NAT floors)
+  publicProcedures: []                   # auth bypass under inherit, e.g. "/users.v1.UsersService/Health"
+  auth:
+    mode: inherit                        # inherit (global auth: governs) | internal (trusted plane —
+                                         # anonymous passes; a forwarded bearer is ATTRIBUTION: local-only
+                                         # validation, expiry tolerated with a stale audit mark, forged
+                                         # rejects) | mtls (internal + required client certificates;
+                                         # anonymous calls carry the service identity from the cert)
+
+grpcClient:                              # absent → Deps.GRPCClient stays nil
+  defaults:
+    timeoutSeconds: 30                   # default per-call ceiling when the caller's ctx has no deadline
+    retry: {}                            # defaults-level retry, overridden per service
+    circuitBreaker: {}                   # defaults-level breaker, overridden per service
+  services:
+    users:                               # the name grpcclient.For / the accessors take
+      baseURL: "http://users:9090"       # MANDATORY — the upstream's gRPC listener
+      timeoutSeconds: 10
+      retry:
+        maxAttempts: 3                   # 1 = no retry
+        backoff: exponential-jitter      # constant | linear | exponential | exponential-jitter (default)
+        initialDelayMS: 100
+        maxDelayMS: 2000
+        retryOn: ["unavailable"]         # connect codes; default ["unavailable"]; dial errors always retry
+      circuitBreaker:
+        enabled: true                    # per (service, procedure) state; config shared
+        failureThreshold: 5
+        successThreshold: 2
+        openForMS: 3000
+      auth:
+        mode: forward                    # forward (re-send the caller's bearer) | static (token below)
+        # token: "..."                   # static only
+      idempotency:
+        enabled: true                    # UUIDv7, stable across retry attempts
+        header: X-Idempotency-Key        # default
+      pool:                              # OPTIONAL fine-tuning for high-concurrency callers
+        maxIdleConnsPerHost: 16          # widen the kept-warm pool (Go default 2)
+        connMaxLifetimeSeconds: 60       # background sweep recycles idle pipes (re-dial → re-balance)
 
 shutdown:
   drainTimeoutSeconds: 30                # default 30 (0/absent → 30); aligns with k8s terminationGracePeriodSeconds</code></pre>

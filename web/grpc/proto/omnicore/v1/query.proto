@@ -1,0 +1,129 @@
+syntax = "proto3";
+
+package omnicore.v1;
+
+option go_package = "github.com/ClaudioSchirmer/omnicore/web/grpc/pb;omnicorepb";
+
+import "google/protobuf/timestamp.proto";
+
+// The shared read-side components every omnicore service's list RPCs
+// compose (tasks/grpc.md, Phase 3): per-view request messages declare their
+// own typed filters using these wrappers, so the filterable surface is
+// explicit in the contract and `buf breaking` polices view changes. The
+// framework converts them to queries.ReadCriteria via fwgrpc.NewCriteria,
+// reusing the exact operator semantics of the REST surface (one emitter:
+// queryschema.ApplyFilterValues). Filter KEYS are Go field paths — the
+// query type's ToCriteria(ctx) keeps applying identity overlays on top,
+// exactly as on every other surface. read_mask and sort speak WIRE names
+// (proto snake_case), resolved against the per-view Fields vocabulary —
+// the allowlist that keeps unresolved spellings away from the reader.
+
+// PageRequest carries the read-side control keys — the proto siblings of
+// ?after ?before ?limit ?onlyTotal ?includeArchived.
+message PageRequest {
+  optional string after = 1;
+  optional string before = 2;
+  optional int64 limit = 3;
+  bool only_total = 4;
+  bool include_archived = 5;
+}
+
+// SortField is one ?sort= entry: the WIRE field name (the response
+// message's proto field, snake_case) + direction. The converter resolves it
+// against the view's declared Fields vocabulary — an undeclared name is a
+// wire-contract violation.
+message SortField {
+  string field = 1;
+  bool desc = 2;
+}
+
+// StringOp mirrors the REST string operator vocabulary, case-sensitive and
+// case-insensitive (I*) variants included.
+enum StringOp {
+  STRING_OP_UNSPECIFIED = 0;
+  STRING_OP_EQ = 1;
+  STRING_OP_NE = 2;
+  STRING_OP_IN = 3;
+  STRING_OP_NIN = 4;
+  STRING_OP_STARTSWITH = 5;
+  STRING_OP_CONTAINS = 6;
+  STRING_OP_IEQ = 7;
+  STRING_OP_INE = 8;
+  STRING_OP_IIN = 9;
+  STRING_OP_ININ = 10;
+  STRING_OP_ISTARTSWITH = 11;
+  STRING_OP_ICONTAINS = 12;
+}
+
+// NumberOp mirrors the REST numeric/date vocabulary — no case-insensitive
+// variants by design (case-folding has no meaning on ordinal comparisons).
+enum NumberOp {
+  NUMBER_OP_UNSPECIFIED = 0;
+  NUMBER_OP_EQ = 1;
+  NUMBER_OP_NE = 2;
+  NUMBER_OP_IN = 3;
+  NUMBER_OP_NIN = 4;
+  NUMBER_OP_GT = 5;
+  NUMBER_OP_GTE = 6;
+  NUMBER_OP_LT = 7;
+  NUMBER_OP_LTE = 8;
+}
+
+// BoolOp: equality only — anything else is meaningless on a boolean.
+enum BoolOp {
+  BOOL_OP_UNSPECIFIED = 0;
+  BOOL_OP_EQ = 1;
+  BOOL_OP_NE = 2;
+}
+
+// One condition = one operator application. A filter carries repeated
+// conditions on the same field: they AND-combine (the proto sibling of
+// ?age.gte=18&age.lte=65 — queries.MultiClause downstream). List operators
+// (IN/NIN/IIN/ININ) consume every value; scalar operators consume values[0].
+message StringCondition {
+  StringOp op = 1;
+  repeated string values = 2;
+}
+
+message StringFilter {
+  repeated StringCondition conditions = 1;
+}
+
+message Int64Condition {
+  NumberOp op = 1;
+  repeated int64 values = 2;
+}
+
+message Int64Filter {
+  repeated Int64Condition conditions = 1;
+}
+
+message DoubleCondition {
+  NumberOp op = 1;
+  repeated double values = 2;
+}
+
+message DoubleFilter {
+  repeated DoubleCondition conditions = 1;
+}
+
+message BoolCondition {
+  BoolOp op = 1;
+  bool value = 2;
+}
+
+message BoolFilter {
+  repeated BoolCondition conditions = 1;
+}
+
+// TimestampCondition values convert to the RFC3339 string form the REST
+// string-leaf coercion produces, so both wires filter date-carrying string
+// columns identically.
+message TimestampCondition {
+  NumberOp op = 1;
+  repeated google.protobuf.Timestamp values = 2;
+}
+
+message TimestampFilter {
+  repeated TimestampCondition conditions = 1;
+}

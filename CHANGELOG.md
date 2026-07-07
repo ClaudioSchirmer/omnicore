@@ -11,7 +11,171 @@ with `1.0.0`.
 
 ## [Unreleased]
 
+### Added
+
+- **Internal-plane security posture — `grpc.auth.mode` + producer-side
+  connection recycling.** The gRPC listener gains its own posture,
+  independent of the edge: `inherit` (default — the global `auth:` block
+  governs, unchanged), `internal` (the trusted plane, the synchronous
+  sibling of the integration-events posture: an anonymous call passes and
+  rides the framework's existing anonymous-actor vocabulary; trust is the
+  private network), and `mtls` (internal + required client certificates
+  from `grpc.clientCAFile`; an anonymous call carries a synthetic Identity
+  from the certificate SAN, so the audit trail names the calling service).
+  On the internal plane a forwarded bearer is ATTRIBUTION, not an entry
+  credential: signature/iss/aud verified locally (cached-JWKS, µs, NEVER
+  the external validator — introspection belongs to the edge), and an
+  expired-but-authentic token still passes carrying the user who entered
+  the main door plus a synthetic `attribution: "stale-token"` claim on the
+  audited identity; forged tokens reject. The tolerance never reaches the
+  edge — separate validator constructions, proven side by side in tests
+  and in `qa/grpc.sh`. `RequirePermission` gates pass on anonymous
+  internal calls (the chain design is the flow designer's responsibility)
+  and evaluate a forwarded user normally — including the mTLS certificate
+  identity, which is ATTRIBUTION (it names the calling service for the
+  audit trail), never an authorization subject: cert-attributed anonymous
+  calls pass the gates like nil-identity ones, while still flowing into
+  `ToCriteria` overlays (a `Restrict` keyed on permissions fires for a
+  service identity exactly as the security suite proves). Also:
+  `grpc.idleTimeoutSeconds`
+  (default 120) — the producer-side load-balancing lever: kube-proxy
+  balances per NEW connection, so recycling idle keep-alives forces
+  callers to re-dial and redistributes traffic (scale-up pods join);
+  120 sits above the Go client's 90s idle (no reuse race) and below
+  NAT/conntrack floors (~350s, no zombie pipes). Consumers may fine-tune
+  their side with the optional `grpcClient.services.<name>.pool`
+  (`maxIdleConnsPerHost`, `connMaxLifetimeSeconds` background sweep).
+  New surface: yaml `grpc.auth.mode`/`grpc.clientCAFile`/
+  `grpc.idleTimeoutSeconds`, `grpcClient` `pool` block,
+  `grpc.AuthPosture`/`Registry.SetAuthPosture`/`WithClientCertIdentity`,
+  `authcore.ValidateAttribution`/`AttributionResult`.
+
+- **Shared read-side proto components + criteria builder —
+  `omnicore/v1/query.proto` and `grpc.NewCriteria`.** List RPCs compose the
+  framework contract (`web/grpc/proto`, generated Go in `web/grpc/pb`):
+  `PageRequest` (after/before/limit/only_total/include_archived),
+  `SortField`, `google.protobuf.FieldMask read_mask` (the `?fields=`
+  sibling) and the typed operator wrappers `StringFilter` (full 12-operator
+  REST vocabulary), `Int64Filter`/`DoubleFilter`/`TimestampFilter`
+  (eq/ne/in/nin/gt/gte/lt/lte), `BoolFilter` (eq/ne); repeated conditions
+  per field AND-combine (MultiClause). The `grpc.NewCriteria()` builder
+  converts them to `queries.ReadCriteria` with Go-field-path keys — the
+  query type's `ToCriteria(ctx)` overlays are untouched — and an
+  invalid/UNSPECIFIED operator fails as SchemaViolation. `read_mask` and
+  `sort` speak WIRE names (the response message's proto fields — FieldMask's
+  canonical snake_case JSON form), resolved against the per-view
+  `Fields(wire→Go)` vocabulary: the allowlist sibling of the REST struct
+  tags. An undeclared path fails Build — it never reaches the reader, where
+  an unresolved spelling would pass through as a physical column and bypass
+  `ToCriteria` overlays such as `Restrict` (hardening found and locked by
+  the gRPC security suite). Emission delegates
+  to the NEW `queryschema.ApplyFilterValues` (the list-level core of the
+  shared REST/OpenAPI/GraphQL emitter; `ApplyFilterParam` now delegates,
+  behavior-preserving), so operator semantics are unit-locked
+  byte-identical across wires — and proto's `repeated values` remove the
+  query-string comma-in-value limitation on the gRPC plane. Timestamps
+  convert to the RFC3339 string form the REST string-leaf coercion
+  produces. New surface: `web/grpc/pb` (generated), `grpc.NewCriteria` /
+  `CriteriaBuilder`, `queryschema.ApplyFilterValues`.
+
+- **`infra/grpcclient` — the outbound gRPC/Connect toolbox.** The sibling of
+  `infra/httpclient` for the gRPC plane: one `Client` built at boot from the
+  yaml `grpcClient:` block (exposed on `Deps.GRPCClient`), per-service
+  connect interceptor chain — correlation (threadID/X-Request-ID from the
+  AppContext) → tracing (client span + W3C inject, `httpclient` instrument)
+  → auth (`forward` re-sends the caller's bearer, failing loudly when
+  absent; `static`) → idempotency (UUIDv7, configurable header, stable
+  across retry attempts) → per-service default deadline → logging → retry
+  (Connect-code triggers, default `["unavailable"]`, plus transport dial
+  errors) → circuit breaker (per service+procedure). Typed entrypoint
+  `grpcclient.For(client, "users", usersv1connect.NewUsersServiceClient)`.
+  Deliberate gaps vs the HTTP chain (documented): cache and HMAC signing;
+  oauth2 providers follow once their acquisition core is extracted. New
+  surface: `infra/grpcclient` (`New`, `Client`, `For`, `Config` family,
+  `WithClientTracing`, `WithTransport`), `bootstrap.Deps.GRPCClient`, yaml
+  `grpcClient:` block.
+
+- **`infra/resilience` — the transport-neutral resilience cores.** The
+  circuit-breaker state machine, the retry backoff curves (constant /
+  linear / exponential / exponential-jitter + jitter source + context-aware
+  sleep) and the UUIDv7 idempotency-key generator extracted from
+  `infra/httpclient` (behavior-preserving; the httpclient keeps its
+  historical seams as thin delegations) and shared with `infra/grpcclient`
+  — one implementation, two transports, semantics that cannot drift.
+
+- **gRPC attachment — `reg.Register` + the constructor family, one
+  vocabulary across the three surfaces.** `web/grpc` mirrors the GraphQL
+  idiom (constructor → `Procedure` value → `Registry.Register`) with the
+  REST/GraphQL operation names: `CommandWithBody` (create),
+  `CommandWithBodyID` (body + id; `SetPathID` injected after the binding —
+  the `pipeline.CommandWithID` seam), `CommandByID` (id only, NO mapper —
+  the wrapper constructs the command), `QueryWithParams` (list) and
+  `QueryByID` (view document + `FromDoc` projection). ONE attachment API:
+  every constructor accepts any `pipeline.Handler`; wire bindings are small
+  types co-located in the consumer's `web/requests`; the id extractor is
+  the generated getter as a method expression. Includes
+  `grpc.RequirePermission` — the Layer-1 permission gate, twin of the
+  REST/GraphQL options: enforced via `Identity.HasPermission` under
+  `auth.authorization.enabled` (`Registry.EnableAuthorization`, wired by
+  bootstrap), inert otherwise; rejection = PERMISSION_DENIED with the
+  canonical `MissingPermissionNotification` envelope. `Strict` remains the
+  FullBody option on the same variadic seat.
+
+- **gRPC transport surface — `web/grpc`, served with Connect.** The fourth
+  consumer of the application-layer handlers: the wrapper family —
+  `HandleCommandWithBody` / `HandleCommandWithBodyID` / `HandleCommandByID`
+  / `HandleQueryWithParams` / `HandleQueryByID`, the SAME vocabulary as the
+  REST and GraphQL surfaces — adapts any `pipeline.Handler` to a generated
+  Connect service method (hand-written mapper pair = the `ToCommand` /
+  `responseProjection` seats), so REST, GraphQL, export and gRPC dispatch to
+  the same handler instances. One `net/http` endpoint on a dedicated
+  listener (yaml `grpc:` block — `addr` default `:9090`,
+  `certFile`/`keyFile`, `reflection`, `requestTimeoutSeconds`,
+  `publicProcedures`) speaks the gRPC, gRPC-Web and Connect protocols; h2c
+  without TLS. Registration follows the GraphQL precedent: `Wiring.GRPC`
+  carries a `grpc.Registry` built with `grpc.New(deps.Pipeline)`; bootstrap
+  injects policy and wires the listener into the coordinated shutdown drain
+  (stage `grpc`). Server interceptors: recovery, AppContext
+  (X-Request-ID/threadID, Accept-Language, protocol deadline as the
+  cancellation parent, optional W3C server span under the `http` tracing
+  instrument), and auth. Failures carry the notification envelope in
+  `google.rpc.Status.details` (`ErrorInfo.reason` = NotificationKey +
+  `BadRequest` field violations, translated) with the Semantic→code table
+  documented in the new manual section. `grpc.Strict(fields...)` is the
+  FullBody sibling over proto3 `optional` presence (protoreflect). New
+  surface: `web/grpc` (`New`, `Registry.Register`, the five procedure constructors,
+  `Strict`, `RequirePermission`, `AuthPolicy`, `ErrorFromNotifications`,
+  `AppContextFrom`),
+  `bootstrap.Wiring.GRPC`, yaml `grpc:` block. Dependencies:
+  `connectrpc.com/connect`, `connectrpc.com/grpcreflect`.
+
+- **`web/authcore` — the transport-neutral JWT validation core.** Extracted
+  from `web.AuthMiddleware` (behavior-preserving): key sourcing (JWKS/PEM),
+  token parsing and claim pinning, the external revocation seam
+  (`TokenChecker`) and Identity construction now live in one package
+  consumed by two thin shells — the Fiber middleware and the gRPC auth
+  interceptor. New surface: `web/authcore` (`Options`, `Validator`, `New`,
+  `ValidateAuthorization`, `ValidateToken`, `Failure`/`Error`,
+  `ExtractBearerToken`, `BuildIdentity`, `BuildKeyfunc`,
+  `ParsePublicKeyPEM`, `TokenChecker`) and `web.NewAuthCoreValidator`.
+
 ### Changed
+
+- **Breaking: the conflict vocabulary is split — new `SemanticStateConflict`,
+  and `EntityIsNotActiveNotification` is reclassified to it.**
+  `domain.SemanticStateConflict` joins the semantic enum for "the entity or
+  system is not in the state the operation requires" — a precondition
+  failure, distinct from `SemanticConflict`, which now carries the duplicate
+  meaning only (`EntityAlreadyAddedNotification` stays). Both map to HTTP
+  409, so REST status behavior is unchanged; the split exists because
+  transports with a richer status vocabulary map the two flavors to
+  different codes (the upcoming gRPC surface: `ALREADY_EXISTS` vs
+  `FAILED_PRECONDITION`). **Wire-visible change**: the response envelope's
+  `semantic` string for `EntityIsNotActiveNotification` (and any consumer
+  notification reclassified the same way) changes from `"Conflict"` to
+  `"StateConflict"`. Migration: consumers that switch on the envelope's
+  `semantic` value must add the `"StateConflict"` case; consumers keying on
+  HTTP status or `NotificationKey` are unaffected.
 
 - **Graceful shutdown now narrates each drain stage.** The coordinated drain
   previously logged only its two bookends (`shutdown signal received, draining...`

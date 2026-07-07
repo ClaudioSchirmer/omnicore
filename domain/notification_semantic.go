@@ -18,6 +18,7 @@ const (
 	SemanticMethodNotAllowed                             // → 405 Method Not Allowed (path matches, HTTP method does not)
 	SemanticPayloadTooLarge                              // → 413 Content Too Large (request body exceeds the configured limit)
 	SemanticGatewayTimeout                               // → 504 Gateway Timeout (request exceeded the server-side deadline)
+	SemanticStateConflict                                // → 409 Conflict (entity/system in the wrong state — precondition failure, not a duplicate)
 )
 
 // String returns the canonical name for logs, debug and wire format.
@@ -43,6 +44,8 @@ func (s NotificationSemantic) String() string {
 		return "PayloadTooLarge"
 	case SemanticGatewayTimeout:
 		return "GatewayTimeout"
+	case SemanticStateConflict:
+		return "StateConflict"
 	default:
 		return "Validation"
 	}

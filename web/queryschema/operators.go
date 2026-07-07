@@ -113,41 +113,41 @@ func ParseKeyAgainstSchema(key string, s *RequestSchema) (string, string) {
 	return wirePath, op
 }
 
-// ApplyFilterParam writes a single filter into the criteria map under the
-// operator declared on the wire. Empty op maps to equality; the others use
-// Mongo-style operator keys ($in, $gte, …) because that is what the canonical
-// MongoViewReader consumes verbatim.
-//
-// Value coercion is driven by spec.GoKind (the leaf's declared Go base
-// type). A `*string` leaf keeps "95014" as the literal string "95014"; a
-// `*int64` leaf coerces "25" into int64(25). This matches the column type
-// the read-side adapter stored so `eq` / `in` / `gte` queries hit the
-// canonical index without silent type mismatches.
-//
-// Partial-match operators (`startswith`, `contains`) and case-insensitive
-// variants (`ieq`, `ine`, `istartswith`, `icontains`) emit Mongo `$regex`
-// sub-documents at field level — every metacharacter in the user-supplied
-// value is escaped via regexp.QuoteMeta so the wire input is treated as a
-// literal. The list variants (`iin`, `inin`) emit a queries.RegexMatchList
-// sentinel because Mongo `$in` requires the native bson.Regex type, which
-// MongoViewReader assembles via translateFilter.
-//
-// When the same field receives more than one operator on the same call
-// (e.g. `?name.startswith=Bob&name.icontains=ob`), the clauses are folded
-// into a queries.MultiClause sentinel via mergeClause — the canonical
-// MongoViewReader expands MultiClause into a top-level `$and` array so
-// every declared operator is honored simultaneously instead of having only
-// the last one survive on the map.
+// ApplyFilterParam is the query-string entry point of the shared filter
+// emitter: one wire key carrying one value (list operators pack multiple
+// values comma-separated, the query-string convention). It splits list
+// values and delegates to ApplyFilterValues — the level every wire shares.
 func ApplyFilterParam(filter map[string]any, spec FilterSpec, op, value string) {
+	switch op {
+	case OpIn, OpNin, OpIIn, OpINin:
+		ApplyFilterValues(filter, spec, op, splitTrim(value))
+	default:
+		ApplyFilterValues(filter, spec, op, []string{value})
+	}
+}
+
+// ApplyFilterValues is the wire-neutral filter emitter — the single place
+// the canonical ReadCriteria.Filter clauses are built, shared by the
+// query-string path (ApplyFilterParam, commas split upstream) and the gRPC
+// converter (proto `repeated` values passed verbatim, so that plane has no
+// comma-in-value limitation). List operators consume every element; scalar
+// operators consume values[0]. Unknown operators are ignored, matching the
+// historical ApplyFilterParam contract (the caller validates the allowlist
+// before emission).
+func ApplyFilterValues(filter map[string]any, spec FilterSpec, op string, values []string) {
+	if len(values) == 0 {
+		return
+	}
 	field := spec.DocPath
+	value := values[0]
 	var clause any
 	switch op {
 	case "", OpEq:
 		clause = coerceValue(value, spec.GoKind)
 	case OpIn:
-		clause = map[string]any{"$in": coerceList(value, spec.GoKind)}
+		clause = map[string]any{"$in": coerceValues(values, spec.GoKind)}
 	case OpNin:
-		clause = map[string]any{"$nin": coerceList(value, spec.GoKind)}
+		clause = map[string]any{"$nin": coerceValues(values, spec.GoKind)}
 	case OpNe:
 		clause = map[string]any{"$ne": coerceValue(value, spec.GoKind)}
 	case OpGte:
@@ -171,13 +171,24 @@ func ApplyFilterParam(filter map[string]any, spec FilterSpec, op, value string) 
 	case OpIContains:
 		clause = map[string]any{"$regex": regexp.QuoteMeta(value), "$options": "i"}
 	case OpIIn:
-		clause = queries.RegexMatchList{Patterns: quoteList(value, true), CaseInsensitive: true}
+		clause = queries.RegexMatchList{Patterns: quoteValues(values, true), CaseInsensitive: true}
 	case OpINin:
-		clause = queries.RegexMatchList{Patterns: quoteList(value, true), CaseInsensitive: true, Negate: true}
+		clause = queries.RegexMatchList{Patterns: quoteValues(values, true), CaseInsensitive: true, Negate: true}
 	default:
 		return
 	}
 	mergeClause(filter, field, clause)
+}
+
+// splitTrim splits a comma-separated wire value into trimmed elements —
+// the query-string list convention.
+func splitTrim(value string) []string {
+	parts := strings.Split(value, ",")
+	out := make([]string, 0, len(parts))
+	for _, p := range parts {
+		out = append(out, strings.TrimSpace(p))
+	}
+	return out
 }
 
 // mergeClause folds a new clause into the criteria map under field. The
@@ -207,10 +218,15 @@ func mergeClause(filter map[string]any, field string, clause any) {
 // semantic of the `iin` / `inin` operators (each pattern matches the whole
 // value, not a substring).
 func quoteList(value string, anchored bool) []string {
-	parts := strings.Split(value, ",")
-	out := make([]string, 0, len(parts))
-	for _, p := range parts {
-		p = strings.TrimSpace(p)
+	return quoteValues(splitTrim(value), anchored)
+}
+
+// quoteValues applies regexp.QuoteMeta to each element, optionally wrapping
+// with ^...$ to preserve the equality semantic of `iin` / `inin` (each
+// pattern matches the whole value, not a substring).
+func quoteValues(values []string, anchored bool) []string {
+	out := make([]string, 0, len(values))
+	for _, p := range values {
 		q := regexp.QuoteMeta(p)
 		if anchored {
 			q = "^" + q + "$"
@@ -224,10 +240,15 @@ func quoteList(value string, anchored bool) []string {
 // to kind. Used by the in/nin operators where the wire is one key carrying
 // multiple values.
 func coerceList(value string, kind reflect.Kind) []any {
-	vals := strings.Split(value, ",")
-	items := make([]any, len(vals))
-	for i, v := range vals {
-		items[i] = coerceValue(strings.TrimSpace(v), kind)
+	return coerceValues(splitTrim(value), kind)
+}
+
+// coerceValues coerces each element to kind — the list-level core shared by
+// both wires.
+func coerceValues(values []string, kind reflect.Kind) []any {
+	items := make([]any, len(values))
+	for i, v := range values {
+		items[i] = coerceValue(v, kind)
 	}
 	return items
 }

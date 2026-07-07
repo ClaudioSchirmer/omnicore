@@ -10,6 +10,7 @@ import (
 	"github.com/ClaudioSchirmer/omnicore/infra/db/core"
 	"github.com/ClaudioSchirmer/omnicore/infra/db/query"
 	"github.com/ClaudioSchirmer/omnicore/infra/db/query/engine/mongo"
+	"github.com/ClaudioSchirmer/omnicore/infra/grpcclient"
 	"github.com/ClaudioSchirmer/omnicore/infra/httpclient"
 	"github.com/ClaudioSchirmer/omnicore/infra/integration"
 	"github.com/ClaudioSchirmer/omnicore/infra/tracing"
@@ -97,6 +98,12 @@ type Deps struct {
 	// it to their infra/external service structs. nil when the block is
 	// absent — features that rely on it must guard at composition time.
 	HttpClient *httpclient.HttpClient
+
+	// GRPCClient is the outbound gRPC/Connect toolbox; non-nil when the
+	// YAML carries a grpcClient: block. Features construct generated
+	// Connect clients through grpcclient.For / the accessors; the adapter
+	// lives in the service's infra/, exactly like httpclient consumers.
+	GRPCClient *grpcclient.Client
 
 	// OpenAPIRegistry is the spec collector consumed by openapi.Mount /
 	// openapi.MountRaw to document the service's routes. Non-nil when

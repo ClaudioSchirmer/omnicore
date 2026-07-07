@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"net/http"
 
-	"github.com/google/uuid"
+	"github.com/ClaudioSchirmer/omnicore/infra/resilience"
 )
 
 // AppContextIdempotencyKey is the key used to store the per-call
@@ -61,11 +61,11 @@ func idempotencyMiddleware(policy idempotencyPolicy) roundTripper {
 // header. v7 is preferred because it is sortable by creation time, which
 // makes upstream dedup logs ordered and helps with debugging.
 func newIdempotencyKey() (string, error) {
-	v, err := uuid.NewV7()
+	v, err := resilience.NewIdempotencyKey()
 	if err != nil {
 		return "", fmt.Errorf("httpclient: generate idempotency key: %w", err)
 	}
-	return v.String(), nil
+	return v, nil
 }
 
 // appContextSetter is the minimal interface the idempotency middleware

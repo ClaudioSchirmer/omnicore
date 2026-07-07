@@ -2,8 +2,12 @@ package bootstrap
 
 import (
 	"context"
+	"crypto/tls"
+	"crypto/x509"
+	"errors"
 	"fmt"
 	"log/slog"
+	"net/http"
 	"os"
 	"os/signal"
 	"strings"
@@ -21,15 +25,21 @@ import (
 	"github.com/ClaudioSchirmer/omnicore/infra/db/query"
 	"github.com/ClaudioSchirmer/omnicore/infra/db/query/engine/mongo"
 	"github.com/ClaudioSchirmer/omnicore/infra/events"
+	"github.com/ClaudioSchirmer/omnicore/infra/grpcclient"
 	"github.com/ClaudioSchirmer/omnicore/infra/httpclient"
 	"github.com/ClaudioSchirmer/omnicore/infra/integration"
 	"github.com/ClaudioSchirmer/omnicore/infra/tracing"
 
 	fwweb "github.com/ClaudioSchirmer/omnicore/web"
+	"github.com/ClaudioSchirmer/omnicore/web/authcore"
+	fwgrpc "github.com/ClaudioSchirmer/omnicore/web/grpc"
 	"github.com/ClaudioSchirmer/omnicore/web/openapi"
 
+	"connectrpc.com/grpcreflect"
 	"github.com/gofiber/fiber/v3"
 	"github.com/gofiber/fiber/v3/middleware/logger"
+	"golang.org/x/net/http2"
+	"golang.org/x/net/http2/h2c"
 )
 
 // shutdownTimeout is the Fiber drain duration. Constant for simplicity.
@@ -393,6 +403,18 @@ func buildDeps(cfg *Config) (Deps, error) {
 		logger.Info("httpclient configured")
 	}
 
+	var gc *grpcclient.Client
+	if cfg.GRPCClient != nil {
+		gc, err = grpcclient.New(cfg.GRPCClient,
+			grpcclient.WithClientTracing(tracingCfg.Instruments(tracing.SubHTTPClient)))
+		if err != nil {
+			eng.Close()
+			_ = mg.Close(context.Background())
+			return Deps{}, fmt.Errorf("bootstrap: grpcclient init: %w", err)
+		}
+		logger.Info("grpcclient configured", "services", len(cfg.GRPCClient.Services))
+	}
+
 	// Integration registry is constructed unconditionally so consumer
 	// features can stash the pointer from their constructor; Configure
 	// makes the producer-side singleton available BEFORE feature mounts
@@ -419,6 +441,7 @@ func buildDeps(cfg *Config) (Deps, error) {
 		Cache:               privateCache,
 		SharedCache:         sharedCache,
 		HttpClient:          hc,
+		GRPCClient:          gc,
 		IntegrationRegistry: integrationRegistry,
 	}, nil
 }
@@ -639,6 +662,72 @@ func buildApp(deps Deps, wiring Wiring) (*fiber.App, error) {
 		}
 	}
 
+	// The gRPC surface (Wiring.GRPC) configures here — policy injection
+	// from the yaml `grpc:` block — and is SERVED in serve() on its own
+	// dedicated listener (Fiber/fasthttp cannot host HTTP/2 services).
+	// Auth rides the SAME JWT core the HTTP middleware uses (web/authcore
+	// via fwweb.NewAuthCoreValidator): one validation, two transport shells.
+	if wiring.GRPC != nil {
+		grpcCfg := deps.Config.GRPC
+		switch grpcCfg.Auth.Mode {
+		case "internal", "mtls":
+			// The trusted internal plane. The attribution validator is a
+			// SEPARATE authcore construction WITHOUT the external checker —
+			// the two structural guarantees: expiry tolerance never reaches
+			// the main door (the edge keeps its own strict validator), and
+			// attribution is local cached-JWKS crypto that never calls the
+			// IdP. Absent JWT material (auth disabled — dev), forwarded
+			// bearers cannot be verified and every call proceeds anonymous.
+			var attribution *authcore.Validator
+			if deps.Config.Auth.JWT != nil {
+				attrOpts := authOptionsFromConfig(deps.Config.Auth)
+				attrOpts.ExternalValidator = nil
+				var err error
+				attribution, err = fwweb.NewAuthCoreValidator(attrOpts)
+				if err != nil {
+					return nil, fmt.Errorf("bootstrap: grpc attribution validator: %w", err)
+				}
+			}
+			posture := fwgrpc.PostureInternal
+			if grpcCfg.Auth.Mode == "mtls" {
+				posture = fwgrpc.PostureMTLS
+			}
+			wiring.GRPC.SetAuthPosture(posture, attribution)
+			deps.Logger.Info("grpc auth posture", "mode", grpcCfg.Auth.Mode, "attribution", attribution != nil)
+		default: // inherit — the global auth: block governs, like HTTP
+			if deps.Config.Auth.Mode == AuthModeJWT {
+				authOpts := authOptionsFromConfig(deps.Config.Auth)
+				validator, err := fwweb.NewAuthCoreValidator(authOpts)
+				if err != nil {
+					return nil, fmt.Errorf("bootstrap: grpc auth: %w", err)
+				}
+				wiring.GRPC.EnableAuth(validator, fwgrpc.AuthPolicy{
+					PublicProcedures: grpcCfg.PublicProcedures,
+					TenantRequired:   authOpts.TenantRequired,
+				})
+				deps.Logger.Info("grpc auth enabled", "issuer", deps.Config.Auth.JWT.Issuer, "publicProcedures", len(grpcCfg.PublicProcedures))
+			}
+		}
+		// Layer-1 permission gate — same master switch as the REST gate
+		// (fwweb.SetAuthorizationEnabled) and the GraphQL registry, so
+		// RequirePermission on a procedure enforces under
+		// auth.authorization.enabled and stays inert otherwise.
+		wiring.GRPC.EnableAuthorization(deps.Config.Auth.Authorization != nil && deps.Config.Auth.Authorization.Enabled)
+		// The `http` tracing instrument gates inbound server spans on BOTH
+		// listeners — the gRPC surface is inbound traffic of the same kind.
+		wiring.GRPC.EnableServerSpanTracing(
+			deps.Config.Observability.Tracing.Resolve(deps.Config.Service).Instruments(tracing.SubHTTP))
+		if grpcCfg.RequestTimeoutSeconds > 0 {
+			wiring.GRPC.SetRequestTimeout(time.Duration(grpcCfg.RequestTimeoutSeconds) * time.Second)
+		}
+		if grpcCfg.Reflection {
+			reflector := grpcreflect.NewStaticReflector(wiring.GRPC.ServiceNames()...)
+			wiring.GRPC.MountRaw(grpcreflect.NewHandlerV1(reflector))
+			wiring.GRPC.MountRaw(grpcreflect.NewHandlerV1Alpha(reflector))
+			deps.Logger.Info("grpc reflection enabled", "services", wiring.GRPC.ServiceNames())
+		}
+	}
+
 	// Validate the operator-declared auth.publicRoutes against the fully
 	// registered route set (features + /health + the OpenAPI spec/UI + the
 	// optional root redirect). Runs last so every route the service exposes
@@ -754,21 +843,73 @@ func serve(ctx context.Context, deps Deps, wiring Wiring) error {
 		}
 	}
 
-	errCh := make(chan error, 1)
+	errCh := make(chan error, 2)
 	go func() {
 		if err := app.Listen(deps.Config.HTTP.Addr, fiber.ListenConfig{
 			DisableStartupMessage: true,
 		}); err != nil {
-			errCh <- err
+			errCh <- fmt.Errorf("http listen: %w", err)
 		}
 	}()
 	deps.Logger.Info("http listening", "addr", deps.Config.HTTP.Addr)
+
+	// The gRPC surface gets its own net/http listener: with TLS the server
+	// negotiates HTTP/2 natively; without it the handler is wrapped in h2c
+	// so the gRPC protocol works in dev. Serving errors join the same errCh
+	// as the Fiber listener — either listener failing aborts the boot.
+	var grpcSrv *http.Server
+	if wiring.GRPC != nil {
+		grpcCfg := deps.Config.GRPC
+		grpcTLS := grpcCfg.CertFile != ""
+		handler := wiring.GRPC.Handler()
+		var grpcTLSConfig *tls.Config
+		if grpcCfg.Auth.Mode == "mtls" {
+			// Require + verify a client certificate from the internal CA on
+			// every connection, and lift the verified certificate's identity
+			// into the request context so the anonymous internal call is
+			// attributed to the calling SERVICE.
+			caPEM, err := os.ReadFile(grpcCfg.ClientCAFile)
+			if err != nil {
+				return fmt.Errorf("bootstrap: grpc clientCAFile: %w", err)
+			}
+			caPool := x509.NewCertPool()
+			if !caPool.AppendCertsFromPEM(caPEM) {
+				return fmt.Errorf("bootstrap: grpc clientCAFile %q carries no usable CA certificate", grpcCfg.ClientCAFile)
+			}
+			grpcTLSConfig = &tls.Config{
+				ClientCAs:  caPool,
+				ClientAuth: tls.RequireAndVerifyClientCert,
+			}
+			handler = fwgrpc.WithClientCertIdentity(handler)
+		}
+		if !grpcTLS {
+			handler = h2c.NewHandler(handler, &http2.Server{})
+		}
+		grpcSrv = &http.Server{Addr: grpcCfg.Addr, Handler: handler, TLSConfig: grpcTLSConfig}
+		if grpcCfg.IdleTimeoutSeconds > 0 {
+			// The producer-side LB lever: recycle idle keep-alives so
+			// callers re-dial through kube-proxy and traffic redistributes.
+			grpcSrv.IdleTimeout = time.Duration(grpcCfg.IdleTimeoutSeconds) * time.Second
+		}
+		go func() {
+			var err error
+			if grpcTLS {
+				err = grpcSrv.ListenAndServeTLS(grpcCfg.CertFile, grpcCfg.KeyFile)
+			} else {
+				err = grpcSrv.ListenAndServe()
+			}
+			if err != nil && !errors.Is(err, http.ErrServerClosed) {
+				errCh <- fmt.Errorf("grpc listen: %w", err)
+			}
+		}()
+		deps.Logger.Info("grpc listening", "addr", grpcCfg.Addr, "tls", grpcTLS)
+	}
 
 	select {
 	case <-ctx.Done():
 		deps.Logger.Info("shutdown signal received, draining...")
 	case err := <-errCh:
-		return fmt.Errorf("bootstrap: http listen: %w", err)
+		return fmt.Errorf("bootstrap: %w", err)
 	}
 
 	drainSeconds := deps.Config.Shutdown.DrainTimeoutSeconds
@@ -798,6 +939,9 @@ func serve(ctx context.Context, deps Deps, wiring Wiring) error {
 	}
 
 	drain("http", func() error { return app.ShutdownWithContext(shutdownCtx) })
+	if grpcSrv != nil {
+		drain("grpc", func() error { return grpcSrv.Shutdown(shutdownCtx) })
+	}
 	if consumerPool != nil {
 		drain("integration", func() error { return consumerPool.Shutdown(shutdownCtx) })
 	}

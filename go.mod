@@ -25,6 +25,8 @@ require (
 )
 
 require (
+	connectrpc.com/connect v1.20.0 // indirect
+	connectrpc.com/grpcreflect v1.3.0 // indirect
 	filippo.io/edwards25519 v1.2.0 // indirect
 	github.com/MicahParks/jwkset v0.11.0 // indirect
 	github.com/XSAM/otelsql v0.38.0 // indirect

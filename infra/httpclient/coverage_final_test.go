@@ -9,18 +9,13 @@ import (
 	"time"
 )
 
-// breakerStateKind.String covers every label (open/half-open/closed default).
-func TestBreakerStateKind_String(t *testing.T) {
-	cases := map[breakerStateKind]string{
-		breakerClosed:        "closed",
-		breakerOpen:          "open",
-		breakerHalfOpen:      "half-open",
-		breakerStateKind(99): "closed", // default
-	}
-	for k, want := range cases {
-		if got := k.String(); got != want {
-			t.Errorf("String(%d) = %q, want %q", k, got, want)
-		}
+// The state-kind labels moved to infra/resilience (BreakerState.String);
+// their label coverage lives in that package's tests. Here we keep the
+// shim-level contract: a fresh breaker snapshots "closed".
+func TestBreakerState_FreshIsClosed(t *testing.T) {
+	b := newBreakerState(breakerPolicy{enabled: true, failureThreshold: 1, successThreshold: 1, openFor: time.Minute})
+	if got := b.snapshotState(); got != "closed" {
+		t.Errorf("fresh breaker snapshot = %q, want closed", got)
 	}
 }
 
@@ -34,7 +29,10 @@ func TestBreakerState_SnapshotState_NilAndDisabled(t *testing.T) {
 	if got := disabled.snapshotState(); got != "closed" {
 		t.Errorf("disabled breaker snapshot = %q, want closed", got)
 	}
-	enabled := &breakerState{policy: breakerPolicy{enabled: true}, state: breakerOpen}
+	// drive an enabled breaker to open through the public seam (the state
+	// field moved into resilience.Breaker)
+	enabled := newBreakerState(breakerPolicy{enabled: true, failureThreshold: 1, successThreshold: 1, openFor: time.Minute})
+	enabled.recordFailure()
 	if got := enabled.snapshotState(); got != "open" {
 		t.Errorf("enabled open breaker snapshot = %q, want open", got)
 	}

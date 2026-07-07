@@ -133,6 +133,10 @@
         "label": "httpclient · outbound HTTP"
       },
       {
+        "id": "grpc",
+        "label": "gRPC"
+      },
+      {
         "id": "integration-events",
         "label": "Integration events"
       }

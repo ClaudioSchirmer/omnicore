@@ -25,8 +25,8 @@ func TestRecordNotFoundSemantic(t *testing.T) {
 }
 
 func TestEntityIsNotActiveSemantic(t *testing.T) {
-	if got := (EntityIsNotActiveNotification{}).Semantic(); got != SemanticConflict {
-		t.Fatalf("expected SemanticConflict, got %v", got)
+	if got := (EntityIsNotActiveNotification{}).Semantic(); got != SemanticStateConflict {
+		t.Fatalf("expected SemanticStateConflict, got %v", got)
 	}
 }
 
@@ -76,6 +76,7 @@ func TestNotificationSemanticString(t *testing.T) {
 		SemanticUnauthorized:   "Unauthorized",
 		SemanticUnavailable:    "Unavailable",
 		SemanticGatewayTimeout: "GatewayTimeout",
+		SemanticStateConflict:  "StateConflict",
 	}
 	for s, want := range cases {
 		if got := s.String(); got != want {

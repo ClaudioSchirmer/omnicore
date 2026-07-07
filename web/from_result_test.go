@@ -62,6 +62,18 @@ func TestStatusFromGatewayTimeout(t *testing.T) {
 	}
 }
 
+func TestStatusFromStateConflict(t *testing.T) {
+	dtos := []notifications.ContextDTO{{
+		Context: "Gadget",
+		Messages: []notifications.MessageDTO{
+			{NotificationKey: "EntityIsNotActiveNotification", Semantic: domain.SemanticStateConflict},
+		},
+	}}
+	if got := statusFromNotifications(dtos); got != fiber.StatusConflict {
+		t.Fatalf("expected 409, got %d", got)
+	}
+}
+
 func TestStatusFromSchemaMixedFavorsNonValidation(t *testing.T) {
 	dtos := []notifications.ContextDTO{{
 		Context: "Schema",

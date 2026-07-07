@@ -8,6 +8,7 @@ import (
 	"gopkg.in/yaml.v3"
 
 	"github.com/ClaudioSchirmer/omnicore/infra/audit"
+	"github.com/ClaudioSchirmer/omnicore/infra/grpcclient"
 	"github.com/ClaudioSchirmer/omnicore/infra/httpclient"
 	"github.com/ClaudioSchirmer/omnicore/infra/integration"
 )
@@ -194,6 +195,13 @@ type Config struct {
 	// guard at composition time.
 	HttpClient *httpclient.Config `yaml:"httpClient"`
 
+	// GRPCClient is non-nil when the yaml carries a `grpcClient:` block —
+	// the outbound gRPC/Connect toolbox, sibling of httpClient. bootstrap
+	// forwards it to grpcclient.New and exposes the result on
+	// Deps.GRPCClient; when nil, Deps.GRPCClient stays nil and features
+	// that need it must guard at composition time.
+	GRPCClient *grpcclient.Config `yaml:"grpcClient"`
+
 	// OpenAPI carries the operator-tunable bits of the /docs surface — the
 	// path where the Swagger UI is served, and whether GET / redirects to
 	// it. The spec identity (Title, Version, Description, Servers, …) stays
@@ -210,6 +218,15 @@ type Config struct {
 	// is its own web surface, never part of the OpenAPI/Swagger document. When
 	// Wiring.GraphQL is nil this block is ignored.
 	GraphQL GraphQLConfig `yaml:"graphql"`
+
+	// GRPC carries the operator-tunable bits of the gRPC surface — the
+	// dedicated listener address, TLS material, the reflection toggle and
+	// the transport auth policy. The mounted services (the WHAT) live on
+	// Wiring.GRPC in code, exactly like GraphQL. When Wiring.GRPC is nil
+	// this block is ignored. The surface is served with Connect: one
+	// endpoint speaking the gRPC, gRPC-Web and Connect protocols; without
+	// TLS the listener runs h2c so the gRPC protocol still works.
+	GRPC GRPCConfig `yaml:"grpc"`
 
 	// UpstreamSubscriptions declares the cross-service composition
 	// surface — for each entry, bootstrap.Run spins a Kafka consumer
@@ -334,6 +351,97 @@ func (g *GraphQLConfig) validate() error {
 		if g.UIPath == g.Path {
 			return fmt.Errorf("graphql.uiPath %q must differ from graphql.path", g.UIPath)
 		}
+	}
+	return nil
+}
+
+// GRPCConfig is the yaml `grpc:` block — transport knobs for the gRPC
+// surface (Wiring.GRPC). Ignored when the wiring does not mount the
+// surface.
+type GRPCConfig struct {
+	// Addr is the dedicated listener address, e.g. ":9090". The gRPC
+	// surface never shares the Fiber listener (fasthttp cannot host
+	// HTTP/2 services). Default ":9090".
+	Addr string `yaml:"addr"`
+
+	// CertFile/KeyFile enable TLS on the listener. Both or neither; with
+	// neither the listener serves h2c (HTTP/2 cleartext) so the gRPC
+	// protocol works in dev without certificates.
+	CertFile string `yaml:"certFile"`
+	KeyFile  string `yaml:"keyFile"`
+
+	// Reflection serves the gRPC server-reflection service for the mounted
+	// services (grpcurl, buf curl discovery). Off by default.
+	Reflection bool `yaml:"reflection"`
+
+	// Auth selects the listener's security posture. Default "inherit".
+	Auth GRPCAuthConfig `yaml:"auth"`
+
+	// ClientCAFile is the PEM bundle of the internal CA that signs client
+	// certificates — REQUIRED (with the TLS pair) when auth.mode=mtls: the
+	// listener then demands and verifies a client certificate per
+	// connection, and the certificate names the calling service.
+	ClientCAFile string `yaml:"clientCAFile"`
+
+	// IdleTimeoutSeconds closes keep-alive connections idle for this long —
+	// the producer-side load-balancing lever: kube-proxy balances per NEW
+	// connection, so recycling idle pipes forces callers to re-dial and
+	// redistributes traffic (scale-up pods join). Default 120: above the Go
+	// client's 90s idle (the client closes first — no reuse race), below
+	// NAT/conntrack floors (~350s — no zombie pipes). 0 keeps the default;
+	// negative disables.
+	IdleTimeoutSeconds int `yaml:"idleTimeoutSeconds"`
+
+	// RequestTimeoutSeconds bounds each RPC server-side — the DEADLINE_EXCEEDED
+	// sibling of http.requestTimeoutSeconds. 0 disables the server-side
+	// ceiling (the protocol deadline the client sends still applies).
+	RequestTimeoutSeconds int `yaml:"requestTimeoutSeconds"`
+
+	// PublicProcedures lists fully-qualified procedures that bypass
+	// authentication, e.g. "/users.v1.UsersService/Health" — the gRPC
+	// sibling of auth.publicRoutes.
+	PublicProcedures []string `yaml:"publicProcedures"`
+}
+
+// GRPCAuthConfig is the yaml grpc.auth block.
+type GRPCAuthConfig struct {
+	// Mode: "inherit" (default — the global auth: block governs, exactly
+	// like the HTTP surface), "internal" (the trusted plane: anonymous
+	// calls pass; a forwarded bearer is ATTRIBUTION — validated locally,
+	// expiry tolerated with a stale audit mark, never checked against the
+	// external validator), or "mtls" (internal + required client
+	// certificates; an anonymous call carries the calling service's
+	// identity from its certificate).
+	Mode string `yaml:"mode"`
+}
+
+func (g *GRPCConfig) applyDefaults() {
+	if g.Addr == "" {
+		g.Addr = ":9090"
+	}
+	if g.Auth.Mode == "" {
+		g.Auth.Mode = "inherit"
+	}
+	if g.IdleTimeoutSeconds == 0 {
+		g.IdleTimeoutSeconds = 120
+	}
+}
+
+func (g *GRPCConfig) validate() error {
+	if (g.CertFile == "") != (g.KeyFile == "") {
+		return fmt.Errorf("grpc.certFile and grpc.keyFile must be set together (got certFile=%q, keyFile=%q)", g.CertFile, g.KeyFile)
+	}
+	if g.RequestTimeoutSeconds < 0 {
+		return fmt.Errorf("grpc.requestTimeoutSeconds must be >= 0 (got %d)", g.RequestTimeoutSeconds)
+	}
+	switch g.Auth.Mode {
+	case "", "inherit", "internal":
+	case "mtls":
+		if g.CertFile == "" || g.ClientCAFile == "" {
+			return fmt.Errorf("grpc.auth.mode=mtls requires grpc.certFile/keyFile AND grpc.clientCAFile (the internal CA verifying client certificates)")
+		}
+	default:
+		return fmt.Errorf("grpc.auth.mode %q (want inherit|internal|mtls)", g.Auth.Mode)
 	}
 	return nil
 }
@@ -589,6 +697,7 @@ func (c *Config) applyDefaults() {
 	c.Audit.ApplyDefaults()
 	c.OpenAPI.applyDefaults()
 	c.GraphQL.applyDefaults()
+	c.GRPC.applyDefaults()
 	c.Observability.applyDefaults()
 	c.Shutdown.applyDefaults()
 	if c.Integration != nil {
@@ -664,6 +773,9 @@ func (c *Config) Validate() error {
 	}
 	if err := c.GraphQL.validate(); err != nil {
 		return fmt.Errorf("bootstrap: %w", err)
+	}
+	if err := c.GRPC.validate(); err != nil {
+		return err
 	}
 	if err := c.Mongo.Rebuild.validate(); err != nil {
 		return fmt.Errorf("bootstrap: %w", err)
