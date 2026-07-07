@@ -15,7 +15,7 @@ import (
 	"github.com/gofiber/fiber/v3"
 )
 
-// HandleQueryExport creates a fiber.Handler that streams a view's filtered read
+// QueryExport creates a fiber.Handler that streams a view's filtered read
 // as a flat tabular file (CSV/XLSX), reusing the SAME Request DTO + query
 // handler the JSON list endpoint uses. The format is the pluggable enc
 // (export.Encoder); everything else — plan walk, hierarchy column offset,
@@ -84,7 +84,7 @@ func isExportIgnoredParam(key string) bool {
 	return false
 }
 
-func HandleQueryExport[TReq HasToParamsQuery[TQ], TQ queries.FindByParamsQuery](
+func QueryExport[TReq HasToParamsQuery[TQ], TQ queries.QueryWithParams](
 	pipe *pipeline.Pipeline,
 	sample TReq,
 	view ExportView,
@@ -162,10 +162,10 @@ func HandleQueryExport[TReq HasToParamsQuery[TQ], TQ queries.FindByParamsQuery](
 	}
 }
 
-// HandleQueryAsCSV is the CSV-format convenience over HandleQueryExport. The
+// QueryAsCSV is the CSV-format convenience over QueryExport. The
 // optional csvOpts (e.g. export.WithDelimiter(';')) are the per-route CSV
 // serialization choices, fixed at mount time.
-func HandleQueryAsCSV[TReq HasToParamsQuery[TQ], TQ queries.FindByParamsQuery](
+func QueryAsCSV[TReq HasToParamsQuery[TQ], TQ queries.QueryWithParams](
 	pipe *pipeline.Pipeline,
 	sample TReq,
 	view ExportView,
@@ -173,14 +173,14 @@ func HandleQueryAsCSV[TReq HasToParamsQuery[TQ], TQ queries.FindByParamsQuery](
 	h pipeline.Handler[TQ, queries.Page],
 	csvOpts ...export.CSVOption,
 ) fiber.Handler {
-	return HandleQueryExport(pipe, sample, view, deps, export.CSV(csvOpts...), h)
+	return QueryExport(pipe, sample, view, deps, export.CSV(csvOpts...), h)
 }
 
-// HandleQueryAsXLSX is the Excel-format convenience over HandleQueryExport —
-// a drop-in sibling of HandleQueryAsCSV sharing the same plan, generator, and
+// QueryAsXLSX is the Excel-format convenience over QueryExport —
+// a drop-in sibling of QueryAsCSV sharing the same plan, generator, and
 // criteria handling; only the encoder differs. Optional xlsxOpts (e.g.
 // export.WithSheetName("Users")) are the per-route serialization choices.
-func HandleQueryAsXLSX[TReq HasToParamsQuery[TQ], TQ queries.FindByParamsQuery](
+func QueryAsXLSX[TReq HasToParamsQuery[TQ], TQ queries.QueryWithParams](
 	pipe *pipeline.Pipeline,
 	sample TReq,
 	view ExportView,
@@ -188,18 +188,18 @@ func HandleQueryAsXLSX[TReq HasToParamsQuery[TQ], TQ queries.FindByParamsQuery](
 	h pipeline.Handler[TQ, queries.Page],
 	xlsxOpts ...export.XLSXOption,
 ) fiber.Handler {
-	return HandleQueryExport(pipe, sample, view, deps, export.XLSX(xlsxOpts...), h)
+	return QueryExport(pipe, sample, view, deps, export.XLSX(xlsxOpts...), h)
 }
 
-// HandleQueryExportSpec is the OpenAPI-aware sibling of HandleQueryExport — it
+// QueryExportSpec is the OpenAPI-aware sibling of QueryExport — it
 // returns the handler AND the openapi.RouteSpec describing it, so the export
 // mounts on the canonical fwopenapi.Mount path (exactly like
-// HandleQueryWithParamsSpec). RequestType captures TReq, so the assembler
+// QueryWithParamsSpec). RequestType captures TReq, so the assembler
 // reflects the same `query:"X" filter:"ops"` parameter set the JSON list
 // renders; FileResponse marks the success response as a file/download of the
 // encoder's content type instead of the JSON envelope. The consumer mounts with
 // fwopenapi.Mount(reg, group, GET, path, handler, spec, Doc{…}, RequirePermission(…)).
-func HandleQueryExportSpec[TReq HasToParamsQuery[TQ], TQ queries.FindByParamsQuery](
+func QueryExportSpec[TReq HasToParamsQuery[TQ], TQ queries.QueryWithParams](
 	pipe *pipeline.Pipeline,
 	sample TReq,
 	view ExportView,
@@ -207,7 +207,7 @@ func HandleQueryExportSpec[TReq HasToParamsQuery[TQ], TQ queries.FindByParamsQue
 	enc export.Encoder,
 	h pipeline.Handler[TQ, queries.Page],
 ) (fiber.Handler, openapi.RouteSpec) {
-	handler := HandleQueryExport(pipe, sample, view, deps, enc, h)
+	handler := QueryExport(pipe, sample, view, deps, enc, h)
 	return handler, openapi.RouteSpec{
 		RequestType:        reflect.TypeOf((*TReq)(nil)).Elem(),
 		SuccessStatus:      fiber.StatusOK,
@@ -216,10 +216,10 @@ func HandleQueryExportSpec[TReq HasToParamsQuery[TQ], TQ queries.FindByParamsQue
 	}
 }
 
-// HandleQueryAsCSVSpec is the OpenAPI-aware, self-sufficient CSV sibling: it
+// QueryAsCSVSpec is the OpenAPI-aware, self-sufficient CSV sibling: it
 // returns (handler, RouteSpec) for fwopenapi.Mount. csvOpts (e.g.
 // export.WithDelimiter(';')) are the per-route CSV options chosen at mount.
-func HandleQueryAsCSVSpec[TReq HasToParamsQuery[TQ], TQ queries.FindByParamsQuery](
+func QueryAsCSVSpec[TReq HasToParamsQuery[TQ], TQ queries.QueryWithParams](
 	pipe *pipeline.Pipeline,
 	sample TReq,
 	view ExportView,
@@ -227,13 +227,13 @@ func HandleQueryAsCSVSpec[TReq HasToParamsQuery[TQ], TQ queries.FindByParamsQuer
 	h pipeline.Handler[TQ, queries.Page],
 	csvOpts ...export.CSVOption,
 ) (fiber.Handler, openapi.RouteSpec) {
-	return HandleQueryExportSpec(pipe, sample, view, deps, export.CSV(csvOpts...), h)
+	return QueryExportSpec(pipe, sample, view, deps, export.CSV(csvOpts...), h)
 }
 
-// HandleQueryAsXLSXSpec is the OpenAPI-aware, self-sufficient Excel sibling: it
+// QueryAsXLSXSpec is the OpenAPI-aware, self-sufficient Excel sibling: it
 // returns (handler, RouteSpec) for fwopenapi.Mount. xlsxOpts (e.g.
 // export.WithSheetName("Users")) are the per-route XLSX options chosen at mount.
-func HandleQueryAsXLSXSpec[TReq HasToParamsQuery[TQ], TQ queries.FindByParamsQuery](
+func QueryAsXLSXSpec[TReq HasToParamsQuery[TQ], TQ queries.QueryWithParams](
 	pipe *pipeline.Pipeline,
 	sample TReq,
 	view ExportView,
@@ -241,7 +241,7 @@ func HandleQueryAsXLSXSpec[TReq HasToParamsQuery[TQ], TQ queries.FindByParamsQue
 	h pipeline.Handler[TQ, queries.Page],
 	xlsxOpts ...export.XLSXOption,
 ) (fiber.Handler, openapi.RouteSpec) {
-	return HandleQueryExportSpec(pipe, sample, view, deps, export.XLSX(xlsxOpts...), h)
+	return QueryExportSpec(pipe, sample, view, deps, export.XLSX(xlsxOpts...), h)
 }
 
 // buildExportCriteria parses the export route's query string. Filters come from

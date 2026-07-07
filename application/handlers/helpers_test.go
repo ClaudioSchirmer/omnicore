@@ -48,7 +48,7 @@ type testService struct{ domain.ServiceBase }
 // FromEntity, proving the wiring without depending on any specific business
 // invariant.
 type testCmdWithID struct {
-	pipeline.CommandBaseWithID
+	pipeline.CommandByIDBase
 }
 
 func (c *testCmdWithID) ApplyTo(_ *configuration.AppContext, _ *testEntity) error { return nil }
@@ -185,7 +185,7 @@ func (s *spyReader) ReadByID(_ context.Context, view, id string, c queries.ReadC
 	return s.docToReturn, s.docFound, s.docErr
 }
 
-// testFindParamsQuery is a minimal FindByParamsQuery for handler tests:
+// testFindParamsQuery is a minimal QueryWithParams for handler tests:
 // echoes a Criteria captured at construction time. The recorder lets the
 // test assert that the handler passes the request ctx into ToCriteria.
 type testFindParamsQuery struct {
@@ -199,12 +199,12 @@ func (q *testFindParamsQuery) ToCriteria(ctx *configuration.AppContext) (queries
 	return q.ReadCriteria, nil
 }
 
-// testFindIDQuery is a minimal FindByIDQuery for handler tests. Honors
+// testFindIDQuery is a minimal QueryByID for handler tests. Honors
 // the Query-side ToCriteria(ctx) contract and records ctx so tests can
 // assert ctx propagation. Mirrors the behavior of FindUserByIDQuery in
 // the canonical example.
 type testFindIDQuery struct {
-	queries.QueryBaseWithID
+	queries.QueryByIDBase
 	includeArchived bool
 	contextName     string
 	overlay         map[string]any

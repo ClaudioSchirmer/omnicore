@@ -4,7 +4,7 @@ import "reflect"
 
 // RouteSpecOf is the cosmetic helper manual-with-pipeline consumers use
 // to produce a RouteSpec from the Request / Response DTOs alone,
-// mirroring what the framework's *Spec siblings (HandleCommandWithBodySpec,
+// mirroring what the framework's *Spec siblings (CommandWithBodySpec,
 // etc.) produce automatically on the canonical path. It exists so the
 // call site does not have to spell out `reflect.TypeOf((*T)(nil)).Elem()`
 // or `reflect.TypeOf(T{})` per route — the two type parameters carry
@@ -46,7 +46,7 @@ func RouteSpecOf[TReq, TResp any](status int) RouteSpec {
 // dedicated function so the call site reads as "this is the paged
 // route" without spelling the flag out.
 //
-// HandleQueryWithParamsSpec on the canonical wrapper path already sets
+// QueryWithParamsSpec on the canonical wrapper path already sets
 // Paged:true automatically, so the canonical surface needs no change.
 // Use this only on hand-rolled paged routes that delegate the success
 // branch to fwweb.RespondPaged.
@@ -71,8 +71,8 @@ func RouteSpecOfPaged[TReq, TResp any](status int) RouteSpec {
 // RouteSpec is the declarative side-car the canonical wrappers attach to
 // every route they document. Two consumers populate it:
 //
-//   - The framework's *Spec sibling wrappers (HandleCommandWithBodySpec,
-//     HandleQueryByIDSpec, etc.) — they observe TReq / TResp / the
+//   - The framework's *Spec sibling wrappers (CommandWithBodySpec,
+//     QueryByIDSpec, etc.) — they observe TReq / TResp / the
 //     FullBody marker on the handler and produce the RouteSpec
 //     automatically.
 //   - Manual-with-pipeline consumers — they hand-roll a fiber.Handler
@@ -83,7 +83,7 @@ func RouteSpecOfPaged[TReq, TResp any](status int) RouteSpec {
 //     alone so the call site stays free of reflect.TypeOf(...) noise.
 type RouteSpec struct {
 	// RequestType is the body shape declared on the wire. nil for
-	// bodyless routes (the framework's HandleCommandByID family — and
+	// bodyless routes (the framework's CommandByID family — and
 	// any manual handler that does not parse a request body).
 	RequestType reflect.Type
 
@@ -104,7 +104,7 @@ type RouteSpec struct {
 	Strict bool
 
 	// HasPathID is true when the wrapper auto-binds the Fiber `:id`
-	// segment via the pipeline.CommandWithID / queries.FindByIDQuery
+	// segment via the pipeline.CommandByID / queries.QueryByID
 	// interface. Combined with the route's Fiber path during spec
 	// assembly to emit the corresponding `parameters[].in=path` entry —
 	// path: tags on the Request DTO produce additional path parameters,
@@ -134,7 +134,7 @@ type RouteSpec struct {
 	// matching the runtime behavior of fwweb.RespondPaged vs
 	// fwweb.RespondWithSuccess.
 	//
-	// HandleQueryWithParamsSpec sets it automatically; HandleQueryByID
+	// QueryWithParamsSpec sets it automatically; QueryByID
 	// keeps it false. Manual mounts opt in via the RouteSpecOfPaged
 	// helper. Paged:true paired with a nil ResponseType or
 	// responses.None is a semantic contradiction — paging requires
@@ -152,7 +152,7 @@ type RouteSpec struct {
 	// without leaving the canonical Mount path. Mutually exclusive with
 	// Paged and with a non-nil ResponseType (the success body is the file,
 	// not a typed/paged envelope) — enforced at Mount. Set by the
-	// tabular-export *Spec wrappers (HandleQueryAsCSVSpec / …XLSXSpec).
+	// tabular-export *Spec wrappers (QueryAsCSVSpec / …XLSXSpec).
 	FileResponse *FileResponseSpec
 
 	// OmittedQueryParams lists query parameter names (the `query:"X"` wire

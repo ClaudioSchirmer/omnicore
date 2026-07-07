@@ -32,7 +32,7 @@ func failureError() error {
 	return domain.NewDomainError([]*domain.NotificationContext{nc})
 }
 
-// ─── HandleCommandByID — Failure branch (respondWithProjection) ───────────
+// ─── CommandByID — Failure branch (respondWithProjection) ───────────
 
 type failingNoBodyHandler struct{}
 
@@ -42,7 +42,7 @@ func (failingNoBodyHandler) Handle(_ *configuration.AppContext, _ *testNoBodyCmd
 
 func TestHandleCommandByID_FailureBranch(t *testing.T) {
 	app := fiber.New()
-	app.Patch("/things/:id/archive", HandleCommandByID(newTestPipeline(), responses.NoBody, failingNoBodyHandler{}, fiber.StatusOK))
+	app.Patch("/things/:id/archive", CommandByID(newTestPipeline(), responses.NoBody, failingNoBodyHandler{}, fiber.StatusOK))
 
 	resp, _ := app.Test(httptest.NewRequest("PATCH", "/things/x/archive", nil))
 	if resp.StatusCode != fiber.StatusUnprocessableEntity {
@@ -51,7 +51,7 @@ func TestHandleCommandByID_FailureBranch(t *testing.T) {
 	}
 }
 
-// ─── HandleCommandWithBody — path-binding failure ───────────────────────────
+// ─── CommandWithBody — path-binding failure ───────────────────────────
 
 type pathNumInsertReq struct {
 	Num int `path:"num"`
@@ -63,7 +63,7 @@ func TestHandleCommandWithBody_PathBindingFailure_400(t *testing.T) {
 	resetPathSchemaCache()
 	app := fiber.New()
 	h := &capturingInsertHandler{}
-	app.Post("/things/:num", HandleCommandWithBody(newTestPipeline(), pathNumInsertReq{}, responses.NoBody, h, fiber.StatusCreated))
+	app.Post("/things/:num", CommandWithBody(newTestPipeline(), pathNumInsertReq{}, responses.NoBody, h, fiber.StatusCreated))
 
 	// "abc" cannot convert to int → path-binding rejection → 400.
 	resp, _ := app.Test(httptest.NewRequest("POST", "/things/abc", nil))
@@ -77,7 +77,7 @@ func TestHandleCommandWithBody_PathBindingFailure_400(t *testing.T) {
 	}
 }
 
-// ─── HandleCommandWithBodyID — path-binding failure + body-bind failure ──────
+// ─── CommandWithBodyID — path-binding failure + body-bind failure ──────
 
 type lenientUpdateHandler struct{}
 
@@ -94,7 +94,7 @@ func (r pathNumUpdateReq) ToCommand() *testUpdateCmd { return &testUpdateCmd{} }
 func TestHandleCommandWithBodyID_PathBindingFailure_400(t *testing.T) {
 	resetPathSchemaCache()
 	app := fiber.New()
-	app.Put("/things/:id/extra/:num", HandleCommandWithBodyID(newTestPipeline(), pathNumUpdateReq{}, responses.NoBody, lenientUpdateHandler{}, fiber.StatusOK))
+	app.Put("/things/:id/extra/:num", CommandWithBodyID(newTestPipeline(), pathNumUpdateReq{}, responses.NoBody, lenientUpdateHandler{}, fiber.StatusOK))
 
 	resp, _ := app.Test(httptest.NewRequest("PUT", "/things/x/extra/abc", nil))
 	if resp.StatusCode != fiber.StatusBadRequest {
@@ -112,7 +112,7 @@ func (r typedUpdateReq) ToCommand() *testUpdateCmd { return &testUpdateCmd{} }
 func TestHandleCommandWithBodyID_BodyBindFailure_400(t *testing.T) {
 	resetPathSchemaCache()
 	app := fiber.New()
-	app.Put("/things/:id", HandleCommandWithBodyID(newTestPipeline(), typedUpdateReq{}, responses.NoBody, lenientUpdateHandler{}, fiber.StatusOK))
+	app.Put("/things/:id", CommandWithBodyID(newTestPipeline(), typedUpdateReq{}, responses.NoBody, lenientUpdateHandler{}, fiber.StatusOK))
 
 	// age declared int; pass a string → c.Bind().Body fails → 400.
 	body, _ := json.Marshal(map[string]string{"age": "not-an-int"})
@@ -144,10 +144,10 @@ func TestWarnGroupAMissingPathTag_SilentWhenPathTagPresent(t *testing.T) {
 	resetPathSchemaCache()
 	// Construction alone runs warnGroupAMissingPathTag; with a PathIDRequired
 	// handler AND a path:-tagged Request, the helper returns early (no warning).
-	_ = HandleCommandWithBody(newTestPipeline(), pathTaggedInsertReq{}, responses.NoBody, &pathIDRequiredInsertHandler{}, fiber.StatusCreated)
+	_ = CommandWithBody(newTestPipeline(), pathTaggedInsertReq{}, responses.NoBody, &pathIDRequiredInsertHandler{}, fiber.StatusCreated)
 }
 
-// ─── HandleQueryWithParams — path-binding failure + Failure branch ──────────
+// ─── QueryWithParams — path-binding failure + Failure branch ──────────
 
 type pathParamsReq struct {
 	Tenant int     `path:"tenantId"`
@@ -162,7 +162,7 @@ func TestHandleQueryWithParams_PathBindingFailure_400(t *testing.T) {
 	resetPathSchemaCache()
 	app := fiber.New()
 	h := &capturingParamsHandler{}
-	app.Get("/t/:tenantId/users", HandleQueryWithParams(newTestPipeline(), pathParamsReq{}, responses.RawDoc, h))
+	app.Get("/t/:tenantId/users", QueryWithParams(newTestPipeline(), pathParamsReq{}, responses.RawDoc, h))
 
 	resp, _ := app.Test(httptest.NewRequest("GET", "/t/abc/users", nil))
 	if resp.StatusCode != fiber.StatusBadRequest {
@@ -182,7 +182,7 @@ func (failingParamsHandler) Handle(_ *configuration.AppContext, _ *testFindParam
 
 func TestHandleQueryWithParams_FailureBranch(t *testing.T) {
 	app := fiber.New()
-	app.Get("/users", HandleQueryWithParams(newTestPipeline(), testFindParamsRequest{}, responses.RawDoc, failingParamsHandler{}))
+	app.Get("/users", QueryWithParams(newTestPipeline(), testFindParamsRequest{}, responses.RawDoc, failingParamsHandler{}))
 
 	resp, _ := app.Test(httptest.NewRequest("GET", "/users", nil))
 	if resp.StatusCode != fiber.StatusUnprocessableEntity {
@@ -191,12 +191,12 @@ func TestHandleQueryWithParams_FailureBranch(t *testing.T) {
 	}
 }
 
-// ─── HandleQueryWithParams — VisitAll short-circuits after first bad key ────
+// ─── QueryWithParams — VisitAll short-circuits after first bad key ────
 
 func TestHandleQueryWithParams_TwoUnknownKeysShortCircuit_400(t *testing.T) {
 	app := fiber.New()
 	h := &capturingParamsHandler{}
-	app.Get("/users", HandleQueryWithParams(newTestPipeline(), testFindParamsRequest{}, responses.RawDoc, h))
+	app.Get("/users", QueryWithParams(newTestPipeline(), testFindParamsRequest{}, responses.RawDoc, h))
 
 	// Two unknown keys: the first flips ok=false; the second hits the
 	// VisitAll short-circuit guard.
@@ -214,7 +214,7 @@ func TestHandleQueryWithParams_TwoUnknownKeysShortCircuit_400(t *testing.T) {
 func TestHandleQueryWithParams_MalformedCursor_400(t *testing.T) {
 	app := fiber.New()
 	h := &capturingParamsHandler{}
-	app.Get("/users", HandleQueryWithParams(newTestPipeline(), testFindParamsRequest{}, responses.RawDoc, h))
+	app.Get("/users", QueryWithParams(newTestPipeline(), testFindParamsRequest{}, responses.RawDoc, h))
 
 	resp, _ := app.Test(httptest.NewRequest("GET", "/users?after=@@not-a-cursor@@", nil))
 	if resp.StatusCode != fiber.StatusBadRequest {
@@ -263,7 +263,7 @@ func TestValidateCursorAgainstCriteria_AllBranches(t *testing.T) {
 	}
 }
 
-// ─── HandleQueryByID — boot panic on path:"id" + Failure branch ───────────
+// ─── QueryByID — boot panic on path:"id" + Failure branch ───────────
 
 type idTaggedIDReq struct {
 	ID string `path:"id"`
@@ -278,7 +278,7 @@ func TestHandleQueryByID_PanicsOnPathIDTag(t *testing.T) {
 			t.Fatal("expected boot panic when Request declares path:\"id\"")
 		}
 	}()
-	_ = HandleQueryByID(newTestPipeline(), idTaggedIDReq{}, responses.RawDoc, &capturingIDHandler{})
+	_ = QueryByID(newTestPipeline(), idTaggedIDReq{}, responses.RawDoc, &capturingIDHandler{})
 }
 
 type failingIDHandler struct{}
@@ -290,7 +290,7 @@ func (failingIDHandler) Handle(_ *configuration.AppContext, _ *testFindIDQuery) 
 func TestHandleQueryByID_FailureBranch(t *testing.T) {
 	resetPathSchemaCache()
 	app := fiber.New()
-	app.Get("/users/:id", HandleQueryByID(newTestPipeline(), testFindIDRequest{}, responses.RawDoc, failingIDHandler{}))
+	app.Get("/users/:id", QueryByID(newTestPipeline(), testFindIDRequest{}, responses.RawDoc, failingIDHandler{}))
 
 	resp, _ := app.Test(httptest.NewRequest("GET", "/users/abc", nil))
 	if resp.StatusCode != fiber.StatusUnprocessableEntity {
@@ -315,7 +315,7 @@ func TestNewQueryParser_PointerReqAndPointerResp(t *testing.T) {
 	}
 }
 
-// ─── HandleQueryAsCSV — path-binding failure ────────────────────────────────
+// ─── QueryAsCSV — path-binding failure ────────────────────────────────
 
 type pathExportReq struct {
 	Tenant int     `path:"tenantId"`
@@ -332,7 +332,7 @@ func TestHandleQueryAsCSV_PathBindingFailure_400(t *testing.T) {
 	h := newExportHandler()
 	view := fakeExportView{plan: expCSVPlan(), name: "users"}
 	deps := ExportDeps{Translator: translation.Default(), MaxExportRows: 100}
-	app.Get("/t/:tenantId/users.csv", HandleQueryAsCSV(newTestPipeline(), pathExportReq{}, view, deps, h))
+	app.Get("/t/:tenantId/users.csv", QueryAsCSV(newTestPipeline(), pathExportReq{}, view, deps, h))
 
 	resp, _ := app.Test(httptest.NewRequest("GET", "/t/abc/users.csv", nil))
 	if resp.StatusCode != fiber.StatusBadRequest {

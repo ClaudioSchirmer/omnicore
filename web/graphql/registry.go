@@ -18,7 +18,7 @@ import (
 // REST wrapper consumes. Declared here (not imported from web) so web/graphql
 // stays independent of web. A zero Request maps the parsed criteria into the
 // Query; AppContext-derived overlays still layer on inside Query.ToCriteria.
-type HasToParamsQuery[TQ queries.FindByParamsQuery] interface {
+type HasToParamsQuery[TQ queries.QueryWithParams] interface {
 	ToQuery(criteria queries.ReadCriteria) TQ
 }
 
@@ -142,7 +142,7 @@ func (r *Registry) EnableAuthorization(on bool) *Registry {
 // parameter) and must be named; TQ is inferred from TReq's ToQuery + the
 // handler, so a call passes just `QueryWithParams[TReq, R](...)`. TQ trails the type-param
 // list precisely so it can be elided as the inferable suffix.
-func QueryWithParams[TReq HasToParamsQuery[TQ], R any, TQ queries.FindByParamsQuery](
+func QueryWithParams[TReq HasToParamsQuery[TQ], R any, TQ queries.QueryWithParams](
 	name, entity string,
 	h pipeline.Handler[TQ, queries.Page],
 	opts ...FieldOption,

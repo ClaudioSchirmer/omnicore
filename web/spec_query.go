@@ -9,8 +9,8 @@ import (
 	"github.com/gofiber/fiber/v3"
 )
 
-// HandleQueryWithParamsSpec is the openapi-aware sibling of
-// HandleQueryWithParams. RequestType captures TReq (carries the
+// QueryWithParamsSpec is the openapi-aware sibling of
+// QueryWithParams. RequestType captures TReq (carries the
 // `query:"X" filter:"ops"` allowlist tags the spec assembler reads to
 // emit one OpenAPI parameter per declared filter + operator and per
 // reserved pagination key). ResponseType captures R — the wire shape of
@@ -22,15 +22,15 @@ import (
 // applies). HasPathID is false: this wrapper has no :id binding. Paged
 // is true: the runtime emits via fwweb.RespondPaged and the spec
 // mirrors the shape.
-func HandleQueryWithParamsSpec[
-	TReq HasToParamsQuery[TQ], TQ queries.FindByParamsQuery, R any,
+func QueryWithParamsSpec[
+	TReq HasToParamsQuery[TQ], TQ queries.QueryWithParams, R any,
 ](
 	pipe *pipeline.Pipeline,
 	sample TReq,
 	projector func(map[string]any) R,
 	h pipeline.Handler[TQ, queries.Page],
 ) (fiber.Handler, openapi.RouteSpec) {
-	handler := HandleQueryWithParams[TReq, TQ, R](pipe, sample, projector, h)
+	handler := QueryWithParams[TReq, TQ, R](pipe, sample, projector, h)
 	return handler, openapi.RouteSpec{
 		RequestType:   reflect.TypeOf((*TReq)(nil)).Elem(),
 		ResponseType:  reflect.TypeOf((*R)(nil)).Elem(),
@@ -39,20 +39,20 @@ func HandleQueryWithParamsSpec[
 	}
 }
 
-// HandleQueryByIDSpec is the openapi-aware sibling of
-// HandleQueryByID. HasPathID is true (the wrapper auto-binds the
-// Fiber :id segment via the queries.FindByIDQuery interface).
+// QueryByIDSpec is the openapi-aware sibling of
+// QueryByID. HasPathID is true (the wrapper auto-binds the
+// Fiber :id segment via the queries.QueryByID interface).
 // RequestType still captures TReq so the assembler emits the optional
 // ?includeArchived query parameter declared on the DTO.
-func HandleQueryByIDSpec[
-	TReq HasToIDQuery[TQ], TQ queries.FindByIDQuery, R any,
+func QueryByIDSpec[
+	TReq HasToIDQuery[TQ], TQ queries.QueryByID, R any,
 ](
 	pipe *pipeline.Pipeline,
 	sample TReq,
 	projector func(map[string]any) R,
 	h pipeline.Handler[TQ, map[string]any],
 ) (fiber.Handler, openapi.RouteSpec) {
-	handler := HandleQueryByID[TReq, TQ, R](pipe, sample, projector, h)
+	handler := QueryByID[TReq, TQ, R](pipe, sample, projector, h)
 	return handler, openapi.RouteSpec{
 		RequestType:   reflect.TypeOf((*TReq)(nil)).Elem(),
 		ResponseType:  reflect.TypeOf((*R)(nil)).Elem(),

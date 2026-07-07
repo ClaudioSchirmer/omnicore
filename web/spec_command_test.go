@@ -19,7 +19,7 @@ type specInsertCmd struct {
 }
 
 type specUpdateCmd struct {
-	pipeline.CommandBaseWithID
+	pipeline.CommandByIDBase
 	Name string
 }
 
@@ -63,11 +63,11 @@ func (specBodylessIDHandler) Handle(_ *configuration.AppContext, _ *specUpdateCm
 	return fwresults.None{}, nil
 }
 
-// ─── HandleCommandWithBodySpec ─────────────────────────────────────────────
+// ─── CommandWithBodySpec ─────────────────────────────────────────────
 
 func TestHandleCommandWithBodySpec_LenientHandler_StrictFalse(t *testing.T) {
 	pipe := pipeline.New(translation.New())
-	h, spec := HandleCommandWithBodySpec[
+	h, spec := CommandWithBodySpec[
 		specInsertReq, specInsertCmd, *specInsertCmd, specInsertResult, specInsertResp,
 	](pipe, specInsertReq{}, specInsertResp{}.FromResult, specLenientInsertHandler{}, fiber.StatusCreated)
 
@@ -78,7 +78,7 @@ func TestHandleCommandWithBodySpec_LenientHandler_StrictFalse(t *testing.T) {
 		t.Fatal("lenient handler should yield Strict=false")
 	}
 	if spec.HasPathID {
-		t.Fatal("HandleCommandWithBody is bodyless on the path side; HasPathID must be false")
+		t.Fatal("CommandWithBody is bodyless on the path side; HasPathID must be false")
 	}
 	if spec.SuccessStatus != fiber.StatusCreated {
 		t.Fatalf("SuccessStatus: got %d, want 201", spec.SuccessStatus)
@@ -91,11 +91,11 @@ func TestHandleCommandWithBodySpec_LenientHandler_StrictFalse(t *testing.T) {
 	}
 }
 
-// ─── HandleCommandWithBodyIDSpec ───────────────────────────────────────────
+// ─── CommandWithBodyIDSpec ───────────────────────────────────────────
 
 func TestHandleCommandWithBodyIDSpec_StrictHandler_StrictTrue(t *testing.T) {
 	pipe := pipeline.New(translation.New())
-	h, spec := HandleCommandWithBodyIDSpec[
+	h, spec := CommandWithBodyIDSpec[
 		specUpdateReq, specUpdateCmd, *specUpdateCmd, specInsertResult, specInsertResp,
 	](pipe, specUpdateReq{}, specInsertResp{}.FromResult, specStrictUpdateHandler{}, fiber.StatusOK)
 
@@ -106,18 +106,18 @@ func TestHandleCommandWithBodyIDSpec_StrictHandler_StrictTrue(t *testing.T) {
 		t.Fatal("handler embedding pipeline.FullBody should yield Strict=true")
 	}
 	if !spec.HasPathID {
-		t.Fatal("HandleCommandWithBodyID auto-binds :id; HasPathID must be true")
+		t.Fatal("CommandWithBodyID auto-binds :id; HasPathID must be true")
 	}
 	if spec.SuccessStatus != fiber.StatusOK {
 		t.Fatalf("SuccessStatus: got %d, want 200", spec.SuccessStatus)
 	}
 }
 
-// ─── HandleCommandByIDSpec ───────────────────────────────────────────────
+// ─── CommandByIDSpec ───────────────────────────────────────────────
 
 func TestHandleCommandByIDSpec_NoBodyNoneResponse(t *testing.T) {
 	pipe := pipeline.New(translation.New())
-	h, spec := HandleCommandByIDSpec[
+	h, spec := CommandByIDSpec[
 		specUpdateCmd, *specUpdateCmd, fwresults.None, fwresponses.None,
 	](pipe, fwresponses.NoBody, specBodylessIDHandler{}, fiber.StatusOK)
 
@@ -128,12 +128,12 @@ func TestHandleCommandByIDSpec_NoBodyNoneResponse(t *testing.T) {
 		t.Fatalf("bodyless route must report RequestType=nil; got %+v", spec.RequestType)
 	}
 	if !spec.HasPathID {
-		t.Fatal("HandleCommandByID auto-binds :id; HasPathID must be true")
+		t.Fatal("CommandByID auto-binds :id; HasPathID must be true")
 	}
 	if spec.ResponseType == nil || spec.ResponseType.Name() != "None" {
 		t.Fatalf("ResponseType: got %+v, want responses.None", spec.ResponseType)
 	}
 	if spec.Strict {
-		t.Fatal("HandleCommandByID does not consult FullBody; Strict must stay false")
+		t.Fatal("CommandByID does not consult FullBody; Strict must stay false")
 	}
 }

@@ -44,7 +44,7 @@
 <span class="manual">Fiber middleware</span>: builds <span class="manual">AppContext</span>(UUID + Language)
    │
    ▼
-<span class="manual">Fiber Route</span>: fwweb.HandleQueryWithParams(pipe, Request{}, fwresponses.AutoFromDoc[Response], h)
+<span class="manual">Fiber Route</span>: fwweb.QueryWithParams(pipe, Request{}, fwresponses.AutoFromDoc[Response], h)
    │
    ▼
 <span class="auto">extractAllowedKeys(reflect.Type)</span>  ← cached schema
@@ -142,7 +142,7 @@ HTTP 200 OK
         the Request DTO; the wire form is <code>?field.op=value</code> (no suffix for <code>eq</code>). An
         operator outside the declared set is rejected with 400 <code>SchemaViolationNotification</code>. The
         <strong>same tag and the same vocabulary drive both paths</strong> — the auto wrapper
-        (<code>HandleQueryWithParams</code>) and the custom parser
+        (<code>QueryWithParams</code>) and the custom parser
         (<code>fwweb.NewQueryParser</code> / <code>fwweb.ParseCriteria</code>) read it identically.
     </p>
     <pre><code>// Operator constants — used in the filter tag (defined in web/queryschema/operators.go; re-exported as fwweb.Op* via web/operators_alias.go).

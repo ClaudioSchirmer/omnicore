@@ -9,7 +9,7 @@ import (
 )
 
 type testUpdateCmd struct {
-	pipeline.CommandBaseWithID
+	pipeline.CommandByIDBase
 	Name string
 }
 
@@ -48,7 +48,7 @@ func TestUpdateCommandHandler_HappyPath(t *testing.T) {
 // FromEntity has the post-update entity AND access to cmd (via receiver),
 // so the projection can observe whatever it needs.
 type testUpdateCmdString struct {
-	pipeline.CommandBaseWithID
+	pipeline.CommandByIDBase
 	Name string
 
 	seen string // captured at FromEntity time so the test asserts ctx symmetry

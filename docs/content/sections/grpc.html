@@ -48,7 +48,9 @@
     The family speaks the SAME vocabulary as REST and GraphQL: <code>CommandWithBody</code> (create),
     <code>CommandWithBodyID</code> (update: body + id, <code>SetPathID</code> injected after the
     mapper), <code>CommandByID</code> (archive/delete: id only, NO mapper — the wrapper constructs the
-    command), <code>QueryWithParams</code> (list) and <code>QueryByID</code> (get one: the handler
+    command), <code>QueryWithParams</code> (list: the query satisfies
+    <code>queries.QueryWithParams</code> and the handler returns <code>queries.Page</code> — the same
+    contract the REST and GraphQL constructors demand) and <code>QueryByID</code> (get one: the handler
     returns the view document, <code>FromDoc</code> projects). Wire bindings live co-located in the
     consumer's <code>web/requests</code> (one small binding type per RPC — the
     <code>ToCommand</code>/<code>FromResult</code> seats the REST DTOs already own), so the mount file

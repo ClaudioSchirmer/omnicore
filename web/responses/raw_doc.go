@@ -1,11 +1,11 @@
 package responses
 
 // RawDoc is the canonical identity projector for query wrappers. Pair with
-// HandleQueryWithParams / HandleQueryByID when the consumer is happy to
+// QueryWithParams / QueryByID when the consumer is happy to
 // emit the view document verbatim — same wire shape the framework produced
 // before the projector parameter became mandatory:
 //
-//	app.Get("/users/:id", web.HandleQueryByID(pipe,
+//	app.Get("/users/:id", web.QueryByID(pipe,
 //	    requests.FindUserByIDRequest{},
 //	    responses.RawDoc,
 //	    handler))

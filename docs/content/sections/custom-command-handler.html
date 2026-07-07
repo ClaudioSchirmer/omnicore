@@ -173,7 +173,7 @@ app.Post("/customers", func(c fiber.Ctx) error {
         when the handler needs <code>SetPathID</code> on the command (the Auto path always uses <code>*Cmd</code>). <code>TResult</code> is whatever application-layer value the handler returns; the
         route maps it to the wire <code>TResp</code> via the <code>responseProjection</code>. Wire it either
         fully by hand (as in step 4 above) or through the canonical
-        <code>HandleCommandWithBody</code> / <code>HandleCommandWithBodyID</code> / <code>HandleCommandByID</code>
+        <code>CommandWithBody</code> / <code>CommandWithBodyID</code> / <code>CommandByID</code>
         wrappers — both reach the same pipeline.
     </p>
     <p>

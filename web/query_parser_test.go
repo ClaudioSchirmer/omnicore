@@ -13,7 +13,7 @@ import (
 	"github.com/gofiber/fiber/v3"
 )
 
-// QueryParser closes the asymmetry between HandleQueryWithParams and
+// QueryParser closes the asymmetry between QueryWithParams and
 // ParseCriteria on manual query routes. The tests below cover the four
 // observable behaviors the canonical wrapper already enforces — boot panic
 // on sparse-render violation, slog.Warn for sort opt-in, wire→doc

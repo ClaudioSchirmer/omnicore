@@ -139,9 +139,7 @@ func TestRegisterFullFamily(t *testing.T) {
 		func(pb *testpb.ListGadgetsRequest) (*listGadgetsQuery, error) {
 			return &listGadgetsQuery{NameContains: pb.GetNameContains()}, nil
 		},
-		func(r *gadgetResult) *testpb.ListGadgetsResponse {
-			return &testpb.ListGadgetsResponse{Total: 1, Names: []string{r.Name}}
-		},
+		fromGadgetsPage,
 		listGadgetsHandler{},
 	))
 	reg.Register(QueryByID("/omnicore.grpctest.v1.GadgetService/GetGadget",

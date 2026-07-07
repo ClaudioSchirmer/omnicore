@@ -92,7 +92,7 @@ func CommandWithBody[
 	TCmd any,
 	TCmdPtr interface {
 		*TCmd
-		pipeline.Command
+		pipeline.CommandWithBody
 	},
 	TResult any,
 ](
@@ -112,13 +112,13 @@ func CommandWithBody[
 // CommandWithBodyID attaches an update-style command (body + id); idFrom is
 // the generated getter, e.g. (*usersv1.UpdateUserRequest).GetId — the
 // wrapper injects cmd.SetPathID(idFrom(msg)) after toCommand, the
-// pipeline.CommandWithID seam every surface shares.
+// pipeline.CommandWithBodyID seam every surface shares.
 func CommandWithBodyID[
 	PB, RPB any,
 	TCmd any,
 	TCmdPtr interface {
 		*TCmd
-		pipeline.CommandWithID
+		pipeline.CommandWithBodyID
 	},
 	TResult any,
 ](
@@ -138,13 +138,13 @@ func CommandWithBodyID[
 
 // CommandByID attaches an archive/delete-style command: id only, NO mapper
 // — the wrapper constructs the command and injects the id, mirroring
-// web.HandleCommandByID and graphql.MutationByID.
+// web.CommandByID and graphql.MutationByID.
 func CommandByID[
 	PB, RPB any,
 	TCmd any,
 	TCmdPtr interface {
 		*TCmd
-		pipeline.CommandWithID
+		pipeline.CommandByID
 	},
 	TResult any,
 ](
@@ -162,20 +162,22 @@ func CommandByID[
 }
 
 // QueryWithParams attaches a list query (criteria via the shared
-// omnicore.v1 components, converted in the binding's ToQuery).
+// omnicore.v1 components, converted in the binding's ToQuery). The query
+// satisfies queries.QueryWithParams and the handler returns queries.Page —
+// the same contract the web and graphql QueryWithParams constructors
+// demand, so one application query serves every transport.
 func QueryWithParams[
 	PB, RPB any,
 	TQ any,
 	TQPtr interface {
 		*TQ
-		pipeline.Query
+		queries.QueryWithParams
 	},
-	TResult any,
 ](
 	procedure string,
 	toQuery func(*PB) (TQPtr, error),
-	fromResult func(TResult) *RPB,
-	h pipeline.Handler[TQPtr, TResult],
+	fromResult func(queries.Page) *RPB,
+	h pipeline.Handler[TQPtr, queries.Page],
 	opts ...ProcedureOption,
 ) Procedure {
 	cfg := resolveProcedureOptions(opts)
@@ -192,7 +194,7 @@ func QueryByID[
 	TQ any,
 	TQPtr interface {
 		*TQ
-		queries.FindByIDQuery
+		queries.QueryByID
 	},
 ](
 	procedure string,

@@ -146,11 +146,11 @@ func TestInsertCommandHandler_HookDispatch_Neither(t *testing.T) {
 // --- Update / PartialUpdate / Archive / Unarchive / Delete dispatch -------
 
 // withAfterBeginIDCmd / withBeforeCommitIDCmd / withBothHooksIDCmd
-// satisfy the CommandWithID + ApplyTo + FromEntity shape that the
+// satisfy the CommandByID + ApplyTo + FromEntity shape that the
 // Update/PartialUpdate/Archive/Unarchive/Delete handlers expect.
 
 type withAfterBeginIDCmd struct {
-	pipeline.CommandBaseWithID
+	pipeline.CommandByIDBase
 }
 
 func (c *withAfterBeginIDCmd) ApplyTo(_ *configuration.AppContext, _ *testEntity) error { return nil }
@@ -165,7 +165,7 @@ func (c *withAfterBeginIDCmd) AfterBegin(_ *configuration.AppContext, _ *testEnt
 }
 
 type withBeforeCommitIDCmd struct {
-	pipeline.CommandBaseWithID
+	pipeline.CommandByIDBase
 }
 
 func (c *withBeforeCommitIDCmd) ApplyTo(_ *configuration.AppContext, _ *testEntity) error { return nil }
@@ -180,7 +180,7 @@ func (c *withBeforeCommitIDCmd) BeforeCommit(_ *configuration.AppContext, _ *tes
 }
 
 type withBothHooksIDCmd struct {
-	pipeline.CommandBaseWithID
+	pipeline.CommandByIDBase
 }
 
 func (c *withBothHooksIDCmd) ApplyTo(_ *configuration.AppContext, _ *testEntity) error { return nil }
@@ -199,7 +199,7 @@ func (c *withBothHooksIDCmd) BeforeCommit(_ *configuration.AppContext, _ *testEn
 
 // noHooksIDCmd implements neither provider.
 type noHooksIDCmd struct {
-	pipeline.CommandBaseWithID
+	pipeline.CommandByIDBase
 }
 
 func (c *noHooksIDCmd) ApplyTo(_ *configuration.AppContext, _ *testEntity) error          { return nil }

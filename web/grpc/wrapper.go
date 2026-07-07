@@ -16,7 +16,7 @@ import (
 )
 
 // handleCommandWithBody adapts a pipeline command handler to a Connect RPC
-// — the protobuf sibling of web.HandleCommandWithBody (create-style: the
+// — the protobuf sibling of web.CommandWithBody (create-style: the
 // full input rides the request message). Connect decodes the wire;
 // the wrapper then runs the strict presence check (when configured), maps
 // the message to the command via toCommand (the RequestDTO.ToCommand seat),
@@ -43,7 +43,7 @@ func handleCommandWithBody[
 	TCmd any,
 	TCmdPtr interface {
 		*TCmd
-		pipeline.Command
+		pipeline.CommandWithBody
 	},
 	TResult any,
 ](
@@ -72,27 +72,27 @@ func handleCommandWithBody[
 }
 
 // handleQueryWithParams is the read-side sibling of
-// web.HandleQueryWithParams: same flow, pipeline.Query constraint, no
-// strict presence (queries have no FullBody contract).
+// web.QueryWithParams: same flow, queries.QueryWithParams constraint and
+// queries.Page result, no strict presence (queries have no FullBody
+// contract).
 func handleQueryWithParams[
 	PB, RPB any,
 	TQ any,
 	TQPtr interface {
 		*TQ
-		pipeline.Query
+		queries.QueryWithParams
 	},
-	TResult any,
 ](
 	pipe *pipeline.Pipeline,
 	toQuery func(*PB) (TQPtr, error),
-	h pipeline.Handler[TQPtr, TResult],
-	fromResult func(TResult) *RPB,
+	h pipeline.Handler[TQPtr, queries.Page],
+	fromResult func(queries.Page) *RPB,
 ) func(context.Context, *connect.Request[PB]) (*connect.Response[RPB], error) {
 	return func(ctx context.Context, req *connect.Request[PB]) (*connect.Response[RPB], error) {
 		appCtx := AppContextFrom(ctx)
 		q, err := toQuery(req.Msg)
 		if err != nil {
-			return nil, conversionError[TResult](pipe, appCtx, err)
+			return nil, conversionError[queries.Page](pipe, appCtx, err)
 		}
 		result := pipeline.Dispatch(pipe, appCtx, q, h)
 		return responseFromResult(result, fromResult)
@@ -177,9 +177,9 @@ func failureError[T any](pipe *pipeline.Pipeline, appCtx *configuration.AppConte
 }
 
 // handleCommandWithBodyID is the update-style sibling (PUT/PATCH): body +
-// id, mirroring web.HandleCommandWithBodyID and graphql.MutationWithBodyID.
+// id, mirroring web.CommandWithBodyID and graphql.MutationWithBodyID.
 // The wrapper injects cmd.SetPathID(idFrom(msg)) AFTER toCommand — the
-// pipeline.CommandWithID seam every surface shares. idFrom is a typed
+// pipeline.CommandWithBodyID seam every surface shares. idFrom is a typed
 // extractor; pass the generated getter directly, e.g.
 // (*usersv1.UpdateUserRequest).GetId.
 func handleCommandWithBodyID[
@@ -187,7 +187,7 @@ func handleCommandWithBodyID[
 	TCmd any,
 	TCmdPtr interface {
 		*TCmd
-		pipeline.CommandWithID
+		pipeline.CommandWithBodyID
 	},
 	TResult any,
 ](
@@ -219,14 +219,14 @@ func handleCommandWithBodyID[
 
 // handleCommandByID is the archive/delete-style sibling: id only, NO mapper
 // — the wrapper constructs the command and injects the id, mirroring
-// web.HandleCommandByID (`cmd := TCmd(new(T)); cmd.SetPathID(...)`) and
+// web.CommandByID (`cmd := TCmd(new(T)); cmd.SetPathID(...)`) and
 // graphql.MutationByID.
 func handleCommandByID[
 	PB, RPB any,
 	TCmd any,
 	TCmdPtr interface {
 		*TCmd
-		pipeline.CommandWithID
+		pipeline.CommandByID
 	},
 	TResult any,
 ](
@@ -243,7 +243,7 @@ func handleCommandByID[
 	}
 }
 
-// handleQueryByID is the get-one sibling of web.HandleQueryByID: the
+// handleQueryByID is the get-one sibling of web.QueryByID: the
 // handler returns the view document (map[string]any, Go-field-keyed) and
 // fromDoc projects it to the response message. The wrapper injects
 // q.SetPathID(idFrom(msg)) after toQuery, symmetric with the command side;
@@ -253,7 +253,7 @@ func handleQueryByID[
 	TQ any,
 	TQPtr interface {
 		*TQ
-		queries.FindByIDQuery
+		queries.QueryByID
 	},
 ](
 	pipe *pipeline.Pipeline,

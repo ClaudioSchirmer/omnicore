@@ -221,7 +221,7 @@ func (c *ComposedViewDefinition) PrimaryView() *ViewDefinition { return c.primar
 // segments nest. An internal leg contributes its view's full export tree
 // (children, embeds, roles included) re-rooted under the link's segment; an
 // external leg contributes its flat external columns. Satisfies the same
-// ExportView surface a ViewDefinition exposes, so HandleQueryExport works on
+// ExportView surface a ViewDefinition exposes, so QueryExport works on
 // a composed name unchanged.
 func (c *ComposedViewDefinition) ExportPlan() *queries.ExportPlan {
 	plan := c.primary.ExportPlan()

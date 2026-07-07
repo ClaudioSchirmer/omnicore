@@ -30,7 +30,7 @@
         </thead>
         <tbody>
             <tr>
-                <td><code>HandleCommandWithBody</code><br><span class="muted">POST /users</span></td>
+                <td><code>CommandWithBody</code><br><span class="muted">POST /users</span></td>
                 <td><code>InsertCommandHandler</code></td>
                 <td>
                     <code>GetInsertable(e, svc, "GetInsertable")</code><br>
@@ -42,7 +42,7 @@
                 <td><code>insert</code></td>
             </tr>
             <tr>
-                <td><code>HandleCommandWithBodyID</code> (strict)<br><span class="muted">PUT /users/:id</span></td>
+                <td><code>CommandWithBodyID</code> (strict)<br><span class="muted">PUT /users/:id</span></td>
                 <td><code>UpdateCommandHandler</code></td>
                 <td>
                     <code>GetUpdatable(loaded, apply, svc, "GetUpdatable")</code><br>
@@ -54,7 +54,7 @@
                 <td><code>update</code></td>
             </tr>
             <tr>
-                <td><code>HandleCommandWithBodyID</code> (lenient)<br><span class="muted">PATCH /users/:id</span></td>
+                <td><code>CommandWithBodyID</code> (lenient)<br><span class="muted">PATCH /users/:id</span></td>
                 <td><code>PartialUpdateCommandHandler</code></td>
                 <td>
                     <code>GetPartialUpdatable(loaded, applyPartial, svc, "GetPartialUpdatable")</code><br>
@@ -66,7 +66,7 @@
                 <td><code>update</code> <span class="muted">(same as PUT — SQL fingerprint identical; PUT vs PATCH lives in <code>actionName</code>)</span></td>
             </tr>
             <tr>
-                <td><code>HandleCommandByID</code><br><span class="muted">PATCH /users/:id/archive</span></td>
+                <td><code>CommandByID</code><br><span class="muted">PATCH /users/:id/archive</span></td>
                 <td><code>ArchiveCommandHandler</code></td>
                 <td>
                     <code>GetArchivable(loaded, svc, "GetArchivable")</code><br>
@@ -78,7 +78,7 @@
                 <td><code>archive</code></td>
             </tr>
             <tr>
-                <td><code>HandleCommandByID</code><br><span class="muted">PATCH /users/:id/unarchive</span></td>
+                <td><code>CommandByID</code><br><span class="muted">PATCH /users/:id/unarchive</span></td>
                 <td><code>UnarchiveCommandHandler</code></td>
                 <td>
                     <code>GetUnarchivable(loaded, svc, "GetUnarchivable")</code><br>
@@ -90,7 +90,7 @@
                 <td><code>unarchive</code></td>
             </tr>
             <tr>
-                <td><code>HandleCommandByID</code><br><span class="muted">DELETE /users/:id</span></td>
+                <td><code>CommandByID</code><br><span class="muted">DELETE /users/:id</span></td>
                 <td><code>DeleteCommandHandler</code></td>
                 <td>
                     <code>GetDeletable(loaded, svc, "GetDeletable")</code><br>

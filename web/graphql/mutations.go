@@ -29,7 +29,7 @@ func MutationWithBody[
 	TCmd any,
 	TCmdPtr interface {
 		*TCmd
-		pipeline.Command
+		pipeline.CommandWithBody
 	},
 	TResult any,
 	TResp any,
@@ -60,13 +60,13 @@ func MutationWithBody[
 
 // MutationWithBodyID registers an update/patch-style command handler (body + path
 // id) as `<name>(id: ID!, input: <Req>Input!): <Resp>`. The id arg is injected
-// via SetPathID after ToCommand, mirroring HandleCommandWithBodyID.
+// via SetPathID after ToCommand, mirroring CommandWithBodyID.
 func MutationWithBodyID[
 	TReq CommandRequest[TCmdPtr],
 	TCmd any,
 	TCmdPtr interface {
 		*TCmd
-		pipeline.CommandWithID
+		pipeline.CommandWithBodyID
 	},
 	TResult any,
 	TResp any,
@@ -100,12 +100,12 @@ func MutationWithBodyID[
 // MutationByID registers a bodyless command handler (archive / unarchive /
 // delete) as `<name>(id: ID!): MutationResult!`. There is no input; the
 // command is allocated, given the path id, and dispatched — mirroring
-// HandleCommandByID. On success the field returns { success: true, id }.
+// CommandByID. On success the field returns { success: true, id }.
 func MutationByID[
 	TCmd any,
 	TCmdPtr interface {
 		*TCmd
-		pipeline.CommandWithID
+		pipeline.CommandByID
 	},
 	TResult any,
 ](name string, h pipeline.Handler[TCmdPtr, TResult], opts ...FieldOption) Field {

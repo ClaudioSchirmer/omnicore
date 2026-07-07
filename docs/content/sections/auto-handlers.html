@@ -144,9 +144,9 @@
     </p>
     <p>
         Wiring is identical to a plain insert — it is a body-with-no-id POST, so it mounts through
-        <code>fwweb.HandleCommandWithBody</code>:
+        <code>fwweb.CommandWithBody</code>:
     </p>
-    <pre><code>people.Post("/customers", fwweb.HandleCommandWithBody(d.Pipeline,
+    <pre><code>people.Post("/customers", fwweb.CommandWithBody(d.Pipeline,
     requests.InsertCustomerRequest{}, requests.InsertCustomerResponse{}.FromResult,
     &amp;handlers.SharedBaseInsertCommandHandler[*Customer, *commands.InsertCustomerCommand, commands.InsertCustomerResult]{
         Repo: customerRepo,   // read.NewSharedBaseRoleRepository[*Customer](engine, newCustomer)
@@ -172,7 +172,7 @@
     // WriteOption[T] to the Repo.Update call.
 }</code></pre>
     <p>
-        The wrappers <code>HandleCommandWithBody{,ID}</code> type-assert to
+        The wrappers <code>CommandWithBody{,ID}</code> type-assert to
         <code>FullBodyEnforcer</code> at construction and, when present, reflect on
         <code>*TReq</code> (Request DTO) once (cached by <code>reflect.Type</code>) to list
         exported fields (skipping anonymous embedded and <code>json:"-"</code> tags). Per
@@ -198,9 +198,9 @@
         wrappers:
     </p>
     <ul>
-        <li><code>fwweb.HandleCommandWithBody(pipe, sample, responseProjection, h, status)</code> — endpoint with body, without path ID (POST). Allocates <code>TReq</code> via <code>new</code>, validates schema, calls <code>req.ToCommand()</code> on the web→application boundary (no ctx — Request DTO is body-only), Dispatch (handler receives ctx and forwards to <code>cmd.ToEntity(ctx)</code>).</li>
-        <li><code>fwweb.HandleCommandWithBodyID(pipe, sample, responseProjection, h, status)</code> — endpoint with body, with path ID (PUT/PATCH). Same + <code>cmd.SetPathID(c.Params("id"))</code> before Dispatch.</li>
-        <li><code>fwweb.HandleCommandByID(pipe, responseProjection, h, status)</code> — endpoint <strong>without body</strong>, with path ID (Archive/Unarchive/Delete). Does not call <code>Bind().Body()</code>, does not inspect FullBody.</li>
+        <li><code>fwweb.CommandWithBody(pipe, sample, responseProjection, h, status)</code> — endpoint with body, without path ID (POST). Allocates <code>TReq</code> via <code>new</code>, validates schema, calls <code>req.ToCommand()</code> on the web→application boundary (no ctx — Request DTO is body-only), Dispatch (handler receives ctx and forwards to <code>cmd.ToEntity(ctx)</code>).</li>
+        <li><code>fwweb.CommandWithBodyID(pipe, sample, responseProjection, h, status)</code> — endpoint with body, with path ID (PUT/PATCH). Same + <code>cmd.SetPathID(c.Params("id"))</code> before Dispatch.</li>
+        <li><code>fwweb.CommandByID(pipe, responseProjection, h, status)</code> — endpoint <strong>without body</strong>, with path ID (Archive/Unarchive/Delete). Does not call <code>Bind().Body()</code>, does not inspect FullBody.</li>
     </ul>
     <p>
         The <code>responseProjection</code> is a <code>func(TResult) TResp</code> — typically a method value like
@@ -209,11 +209,21 @@
         <code>fwresults.None</code> as the handler's <code>TResult</code>.
     </p>
     <div class="note">
-        The whole family starts with <code>HandleCommand</code> — suffixes communicate what the endpoint accepts (body,
+        The whole family starts with <code>Command</code> — suffixes communicate what the endpoint accepts (body,
         ID, both). The wrapper always dispatches a Command; Request is only the wire DTO that becomes a Command via
         <code>ToCommand()</code> at the boundary.
+        <strong>Deterministic rule</strong>: the base to embed on the Command is the constructor name plus the
+        <code>Base</code> suffix — <code>CommandWithBody</code> → <code>pipeline.CommandWithBodyBase</code>,
+        <code>CommandWithBodyID</code> → <code>pipeline.CommandWithBodyIDBase</code>,
+        <code>CommandByID</code> → <code>pipeline.CommandByIDBase</code>. The two id-carrying bases are the same
+        underlying struct under two names ("WithBody" describes the wire input, the DTO's job; "ByID" describes how
+        the command is addressed), so a command that serves both shapes compiles against either. The same names are
+        also the generic constraints the constructors demand — embed the right base and the compiler settles the rest.
+        The rule holds verbatim on GraphQL (<code>MutationWithBody</code>, <code>MutationWithBodyID</code>,
+        <code>MutationByID</code>) and gRPC (<code>grpc.CommandWithBody</code>, <code>grpc.CommandWithBodyID</code>,
+        <code>grpc.CommandByID</code>).
     </div>
-    <p>Body behavior in <code>HandleCommandWithBody{,ID}</code>:</p>
+    <p>Body behavior in <code>CommandWithBody{,ID}</code>:</p>
     <ul>
         <li><strong>Strict handler (FullBody marker):</strong> missing body → 400 (all fields missing, semantic Schema); malformed JSON → 400 with <code>SchemaViolationNotification</code>; type mismatch → 400 with <code>SchemaViolationNotification</code> carrying the field's JSON path; missing field → 400 with one <code>RequiredFieldNotification</code> per field.</li>
         <li><strong>Lenient handler (no marker):</strong> missing body OK (Request zero-value); malformed JSON → 400 with <code>SchemaViolationNotification</code>; partial body OK. An explicit JSON <code>null</code> is indistinguishable from an absent field (both decode to the nil pointer), so a PATCH can never assign NULL — it means "keep the current value". Assigning NULL to a nullable field is the strict PUT's job (field present as explicit null), or an intent-specific mini-PATCH command whose <code>ApplyPartiallyTo</code> assigns the nil.</li>
@@ -233,7 +243,7 @@ package commands
 
 // Input
 type InsertUserCommand struct {
-    pipeline.CommandBase
+    pipeline.CommandWithBodyBase
     Name  string
     Email string
     Phone *string
@@ -288,7 +298,7 @@ func (InsertUserResponse) FromResult(r commands.InsertUserResult) InsertUserResp
 // The handler has NO Project field — projection lives on the Cmd as
 // `func (c InsertUserCommand) FromEntity(ctx *AppContext, u *User) (InsertUserResult, error)`,
 // declared in the same file as the Cmd (symmetric with ToEntity on the input side).
-users.Post("/", fwweb.HandleCommandWithBody(d.Pipeline,
+users.Post("/", fwweb.CommandWithBody(d.Pipeline,
     requests.InsertUserRequest{},
     requests.InsertUserResponse{}.FromResult,
     &amp;handlers.InsertCommandHandler[*User, *InsertUserCommand, commands.InsertUserResult]{
@@ -337,7 +347,7 @@ func (u *User) BuildRules(actionName string, svc domain.Service, r *domain.Rules
 }
 
 // Wire-up — handler gets the service injected.
-users.Post("/", fwweb.HandleCommandWithBody(d.Pipeline,
+users.Post("/", fwweb.CommandWithBody(d.Pipeline,
     requests.InsertUserRequest{},
     requests.InsertUserResponse{}.FromResult,
     &amp;handlers.InsertCommandHandler[*User, *InsertUserCommand, commands.InsertUserResult]{
@@ -386,7 +396,7 @@ users.Post("/", fwweb.HandleCommandWithBody(d.Pipeline,
     <pre><code>// UnarchiveUserCommand declares the bodyless verb shape:
 //   func (*UnarchiveUserCommand) ApplyTo(_ *AppContext, _ *User) error { return nil }
 //   func (*UnarchiveUserCommand) FromEntity(_ *AppContext, _ *User) (fwresults.None, error) { return fwresults.None{}, nil }
-users.Patch("/:id/unarchive", fwweb.HandleCommandByID(d.Pipeline,
+users.Patch("/:id/unarchive", fwweb.CommandByID(d.Pipeline,
     fwresponses.NoBody,
     &amp;handlers.UnarchiveCommandHandler[*User, *UnarchiveUserCommand, fwresults.None]{
         Repo: repo,

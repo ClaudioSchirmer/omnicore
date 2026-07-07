@@ -22,7 +22,7 @@ func mountXLSX(app *fiber.App, h *expCSVHandler) {
 	pipe := pipeline.New(tr)
 	view := fakeExportView{plan: expCSVPlan(), name: "users"}
 	deps := ExportDeps{Translator: tr, MaxExportRows: 100}
-	app.Get("/users.xlsx", HandleQueryAsXLSX(pipe, expCSVReq{}, view, deps, h, export.WithSheetName("Users")))
+	app.Get("/users.xlsx", QueryAsXLSX(pipe, expCSVReq{}, view, deps, h, export.WithSheetName("Users")))
 }
 
 func TestHandleQueryAsXLSX_FullHierarchy(t *testing.T) {
@@ -86,7 +86,7 @@ func TestHandleQueryAsXLSXSpec_OmitsPaginationAndMarksFileResponse(t *testing.T)
 	view := fakeExportView{plan: expCSVPlan(), name: "users"}
 	deps := ExportDeps{Translator: tr, MaxExportRows: 100}
 
-	_, spec := HandleQueryAsXLSXSpec(pipe, expCSVReq{}, view, deps,
+	_, spec := QueryAsXLSXSpec(pipe, expCSVReq{}, view, deps,
 		&expCSVHandler{}, export.WithSheetName("Users"))
 
 	if spec.FileResponse == nil {

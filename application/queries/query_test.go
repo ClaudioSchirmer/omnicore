@@ -1,24 +1,32 @@
 package queries
 
-import "testing"
+import (
+	"testing"
 
-// Compile-time proof that QueryBaseWithID satisfies QueryWithID through
-// its pointer-receiver SetPathID. If embedding ever drifts (e.g. someone
-// removes pipeline.QueryBase) this fails to compile, surfacing the regression
-// before any test runs.
-var _ QueryWithID = (*QueryBaseWithID)(nil)
+	"github.com/ClaudioSchirmer/omnicore/domain"
+)
 
-func TestQueryBaseWithID_SetGetIDRoundtrip(t *testing.T) {
-	q := &QueryBaseWithID{}
+// Compile-time proof that QueryByIDBase satisfies the id-carrying half of
+// QueryByID through its pointer-receiver SetPathID (ToCriteria and
+// ContextName stay with the concrete query). If embedding ever drifts
+// (e.g. someone removes pipeline.QueryBase) this fails to compile,
+// surfacing the regression before any test runs.
+var _ interface {
+	SetPathID(id string)
+	PathID() domain.ID
+} = (*QueryByIDBase)(nil)
+
+func TestQueryByIDBase_SetPathIDRoundtrip(t *testing.T) {
+	q := &QueryByIDBase{}
 	q.SetPathID("a1b2c3")
-	if got := q.GetID().Value(); got != "a1b2c3" {
+	if got := q.PathID().Value(); got != "a1b2c3" {
 		t.Errorf("expected ID value 'a1b2c3', got %q", got)
 	}
 }
 
-func TestQueryBaseWithID_ZeroValueIsEmpty(t *testing.T) {
-	var q QueryBaseWithID
-	if !q.GetID().IsEmpty() {
-		t.Errorf("expected zero-value ID to be empty, got %q", q.GetID().Value())
+func TestQueryByIDBase_ZeroValueIsEmpty(t *testing.T) {
+	var q QueryByIDBase
+	if !q.PathID().IsEmpty() {
+		t.Errorf("expected zero-value ID to be empty, got %q", q.PathID().Value())
 	}
 }

@@ -146,7 +146,7 @@ type FindUserByEmailCustomResponse struct {
     <h4>5. Wire the route by hand</h4>
     <p>
         This is the step the wrapper hides — and the point of going manual. The Fiber closure performs, in
-        order, every move <code>HandleQueryByID</code> would: build the <code>AppContext</code> and propagate
+        order, every move <code>QueryByID</code> would: build the <code>AppContext</code> and propagate
         cancellation, bind the path segment, validate the query string against the allowlist, map to the Query,
         dispatch, and project on success. <strong>Facilitators</strong> (each replaces one hidden wrapper step):
     </p>
@@ -301,9 +301,9 @@ type UpdateOnTenantRequest struct {
     </p>
     <p>
         <strong>Per-wrapper behavior.</strong> The <code>:id</code>-binding wrappers
-        (<code>HandleQueryByID</code>, <code>HandleCommandWithBodyID</code>) panic at boot if the Request
+        (<code>QueryByID</code>, <code>CommandWithBodyID</code>) panic at boot if the Request
         declares <code>path:"id"</code> (it would set the same value twice); the no-<code>:id</code> wrappers
-        (<code>HandleQueryWithParams</code>, <code>HandleCommandWithBody</code>) accept <code>path:"id"</code> for
+        (<code>QueryWithParams</code>, <code>CommandWithBody</code>) accept <code>path:"id"</code> for
         compound routes. <strong>FullBody interaction:</strong> the strict-body check skips fields carrying a
         <code>path:</code> tag — their value comes from the URL, not the body; declaring both <code>path:"X"</code>
         and <code>json:"X"</code> on one field is a boot panic.

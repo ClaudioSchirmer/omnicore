@@ -4,7 +4,7 @@ package domain
 //
 // Two paths emit it:
 //   - Domain validation (BuildRules) — default Semantic = Validation → 422.
-//   - Wire wrapper (HandleCommandWithBody{,ID} with FullBody marker) — overrides
+//   - Wire wrapper (CommandWithBody{,ID} with FullBody marker) — overrides
 //     Semantic to Schema → 400. Use WithSemantic(SemanticSchema) to opt in.
 //
 // The same NotificationKey ("RequiredFieldNotification") preserves translation

@@ -25,7 +25,7 @@ type Response struct {
 // PaginationInfo lives top-level on a Response (not nested under Data) so that
 // a GET list endpoint exposes the items as `data` and the cursor envelope as
 // `pagination`, instead of forcing clients into `data.items` / `data.has_next`.
-// Populated by HandleQueryWithParams on success.
+// Populated by QueryWithParams on success.
 type PaginationInfo struct {
 	HasNext    bool   `json:"has_next"`
 	HasPrev    bool   `json:"has_prev"`

@@ -103,7 +103,7 @@ For any contract, behavior, field list, or example, open the mapped file under `
 | Topic | Section | Essence |
 |---|---|---|
 | CommandHandler, `Result[T]`, `Pipeline.Dispatch`, persistence ports (`ScopedRepository`/`Scope`), write-side composition catalog | `command-handler.html` | Reads direct, writes through `Scope(ctx)`; pure `domain.Writer`. |
-| Auto command handlers + route wrappers (`HandleCommand*`), strict body (`pipeline.FullBody`), `path:` binding | `auto-handlers.html` | Cmd owns input (`ToEntity`/`ApplyTo`) + output (`FromEntity`); PUT≠PATCH by type. |
+| Auto command handlers + route constructors (`CommandWith*`/`CommandByID`), strict body (`pipeline.FullBody`), `path:` binding | `auto-handlers.html` | Cmd owns input (`ToEntity`/`ApplyTo`) + output (`FromEntity`); PUT≠PATCH by type. |
 | Manual command handler (cross-service, side effects, custom envelope) | `custom-command-handler.html` | Implement `pipeline.Handler`; same wrappers; `WithBeforeCommit`/`WithAfterBegin`. |
 | Concrete write lifecycle (BEGIN→hooks→write→outbox→audit→COMMIT→async) | `lifecycle-map.html` | One `pgx.Tx`: data + outbox + audit atomic; Debezium → Kafka → SyncEngine. |
 | Audit event shape, `kind` (snapshot/delta/transition), routing (`audit.destinations`) | `audit.html` | One event per write; `database` in-TX (authoritative) + `slog` post-commit. |
@@ -112,7 +112,7 @@ For any contract, behavior, field list, or example, open the mapped file under `
 | Topic | Section | Essence |
 |---|---|---|
 | QueryHandler, `ViewReader`, `ReadCriteria`/`Page`, CQRS split, read-side composition catalog, `ComposedView` (read-time join: primary + FK legs, never materialized) | `query-side.html` | Eventually-consistent Mongo projections; documents, not aggregates; composed names read like view names. |
-| Auto query handlers (`HandleQuery*`), filter operators, control keys (`fields`/`sort`/`after`/`before`/`limit`/`onlyTotal`), tabular export (CSV/XLSX) | `auto-query-handlers.html` | Allowlist by tag; projector `func(map[string]any) R`; keyset pagination. |
+| Auto query handlers (`QueryWithParams`/`QueryByID`), filter operators, control keys (`fields`/`sort`/`after`/`before`/`limit`/`onlyTotal`), tabular export (CSV/XLSX) | `auto-query-handlers.html` | Allowlist by tag; projector `func(map[string]any) R`; keyset pagination. |
 | Manual query handler (`NewQueryParser`, `ParseCriteria`, `RespondPaged`) | `custom-query-handler.html` | Escape hatch for bespoke parsing/envelopes. |
 | Concrete read lifecycle, composer, SyncEngine, keep-by-default archive | `read-lifecycle-map.html` | Mongo mirrors PG; `DeleteOnArchive()` opt-in for hot-tier. |
 | `SharedBaseView` — the all-in-one identity projection (base root + one sub-document per role) | `table-schema.html` (Shared-base view) | `SharedBaseView(base, name).Role(...)`; `_id` = base PK; role events recompose; active-first segment pick. |

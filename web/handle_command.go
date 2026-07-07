@@ -19,7 +19,7 @@ import (
 // appears in more than one route.
 var expectedKeysCache sync.Map // map[reflect.Type][]string
 
-// HandleCommandByID creates a fiber.Handler for endpoints WITHOUT a body
+// CommandByID creates a fiber.Handler for endpoints WITHOUT a body
 // that receive the ID via the path (Archive, Unarchive, Delete). There is
 // no BodyParser and no FullBody inspection — it only injects
 // cmd.SetPathID(c.Params("id")) and dispatches.
@@ -31,32 +31,32 @@ var expectedKeysCache sync.Map // map[reflect.Type][]string
 // the responses.None type at runtime and emits the success envelope WITHOUT
 // a "data" field.
 //
-// Endpoints with a body use HandleCommandWithBody{,ID} instead of this
+// Endpoints with a body use CommandWithBody{,ID} instead of this
 // wrapper.
 //
-//	app.Patch("/users/:id/archive", web.HandleCommandByID(pipe,
+//	app.Patch("/users/:id/archive", web.CommandByID(pipe,
 //	    responses.NoBody,
 //	    &handlers.ArchiveCommandHandler[*User, *ArchiveUserCommand, results.None]{
 //	        Repo: r, Auditor: a, Service: svc,
 //	        Project: results.NoProjection[*User],
 //	    },
 //	    fiber.StatusOK))
-func HandleCommandByID[
-	T any,
-	TCmd interface {
-		*T
-		pipeline.CommandWithID
+func CommandByID[
+	TCmd any,
+	TCmdPtr interface {
+		*TCmd
+		pipeline.CommandByID
 	},
 	TResult any,
 	TResp any,
 ](
 	pipe *pipeline.Pipeline,
 	responseProjection func(TResult) TResp,
-	h pipeline.Handler[TCmd, TResult],
+	h pipeline.Handler[TCmdPtr, TResult],
 	successStatus int,
 ) fiber.Handler {
 	return func(c fiber.Ctx) error {
-		cmd := TCmd(new(T))
+		cmd := TCmdPtr(new(TCmd))
 		cmd.SetPathID(c.Params("id"))
 		appCtx := AppContext(c)
 		appCtx.SetParentIfAbsent(c)
@@ -66,7 +66,7 @@ func HandleCommandByID[
 }
 
 // respondWithProjection is the shared success/failure router used by every
-// HandleCommandWith* wrapper. On Success, applies the consumer's response
+// CommandWith* wrapper. On Success, applies the consumer's response
 // projection to the handler's TResult and emits the wire envelope; if the
 // resulting wire shape is responses.None (the framework's empty default),
 // the envelope is emitted without a "data" field. On Failure/Exception,
@@ -89,7 +89,7 @@ func respondWithProjection[TResult any, TResp any](
 
 // inspectHandler returns (strict, expectedKeys) by consulting the
 // FullBodyEnforcer marker on the handler. When absent → strict=false and
-// expectedKeys nil (lenient path). Used by HandleCommandWithBody{,ID} — the
+// expectedKeys nil (lenient path). Used by CommandWithBody{,ID} — the
 // reflection runs on the Request type (TReq), not on the Command.
 func inspectHandler[T any](h any) (bool, []string) {
 	if _, ok := h.(pipeline.FullBodyEnforcer); !ok {
@@ -158,7 +158,7 @@ func missingKeys(expected []string, raw map[string]json.RawMessage) []string {
 // respondMissingFields is the legacy helper that emits
 // RequiredFieldNotification with default semantic (Validation → 422). Kept
 // for compat with existing tests that were not migrated;
-// HandleCommandWithBody{,ID} uses respondMissingFieldsAsSchema (in
+// CommandWithBody{,ID} uses respondMissingFieldsAsSchema (in
 // handle_command_with_body.go) which triggers 400.
 //
 // Deprecated: for new uses, prefer respondMissingFieldsAsSchema.

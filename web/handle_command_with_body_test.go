@@ -35,7 +35,7 @@ func (r testInsertRequest) ToCommand() *testInsertCmd {
 }
 
 type testUpdateCmd struct {
-	pipeline.CommandBaseWithID
+	pipeline.CommandByIDBase
 	Name  string
 	Email string
 }
@@ -150,7 +150,7 @@ func (h *capturingCtxHandler) Handle(ctx *configuration.AppContext, cmd *testCtx
 	return fwresults.None{}, nil
 }
 
-// ---- HandleCommandWithBody --------------------------------------------------------
+// ---- CommandWithBody --------------------------------------------------------
 
 func TestHandleCommandWithBody_AppContextFlowsIntoHandler(t *testing.T) {
 	app := fiber.New()
@@ -158,7 +158,7 @@ func TestHandleCommandWithBody_AppContextFlowsIntoHandler(t *testing.T) {
 	pipe := newTestPipeline()
 	h := &capturingCtxHandler{}
 
-	app.Post("/things", HandleCommandWithBody(pipe, testCtxCapturingRequest{}, responses.NoBody, h, fiber.StatusCreated))
+	app.Post("/things", CommandWithBody(pipe, testCtxCapturingRequest{}, responses.NoBody, h, fiber.StatusCreated))
 
 	body, _ := json.Marshal(map[string]string{"name": "alice"})
 	req := httptest.NewRequest("POST", "/things", bytes.NewReader(body))
@@ -185,7 +185,7 @@ func TestHandleCommandWithBody_HappyPath(t *testing.T) {
 	pipe := newTestPipeline()
 	h := &capturingInsertHandler{}
 
-	app.Post("/things", HandleCommandWithBody(pipe, testInsertRequest{}, responses.NoBody, h, fiber.StatusCreated))
+	app.Post("/things", CommandWithBody(pipe, testInsertRequest{}, responses.NoBody, h, fiber.StatusCreated))
 
 	body, _ := json.Marshal(map[string]string{"name": "alice", "email": "a@x.com"})
 	req := httptest.NewRequest("POST", "/things", bytes.NewReader(body))
@@ -209,7 +209,7 @@ func TestHandleCommandWithBody_MalformedJSON_400(t *testing.T) {
 	pipe := newTestPipeline()
 	h := &capturingInsertHandler{}
 
-	app.Post("/things", HandleCommandWithBody(pipe, testInsertRequest{}, responses.NoBody, h, fiber.StatusCreated))
+	app.Post("/things", CommandWithBody(pipe, testInsertRequest{}, responses.NoBody, h, fiber.StatusCreated))
 
 	req := httptest.NewRequest("POST", "/things", bytes.NewReader([]byte("{not json")))
 	req.Header.Set("Content-Type", "application/json")
@@ -232,7 +232,7 @@ func TestHandleCommandWithBody_TypeMismatch_400(t *testing.T) {
 	pipe := newTestPipeline()
 	h := &capturingTypedHandler{}
 
-	app.Post("/things", HandleCommandWithBody(pipe, testTypedFieldRequest{}, responses.NoBody, h, fiber.StatusOK))
+	app.Post("/things", CommandWithBody(pipe, testTypedFieldRequest{}, responses.NoBody, h, fiber.StatusOK))
 
 	// "age" should be int — pass string instead.
 	body, _ := json.Marshal(map[string]string{"age": "twenty"})
@@ -254,7 +254,7 @@ func TestHandleCommandWithBody_EmptyBody_Lenient_HitsHandler(t *testing.T) {
 	pipe := newTestPipeline()
 	h := &capturingInsertHandler{}
 
-	app.Post("/things", HandleCommandWithBody(pipe, testInsertRequest{}, responses.NoBody, h, fiber.StatusCreated))
+	app.Post("/things", CommandWithBody(pipe, testInsertRequest{}, responses.NoBody, h, fiber.StatusCreated))
 
 	req := httptest.NewRequest("POST", "/things", nil)
 	resp, _ := app.Test(req)
@@ -273,7 +273,7 @@ func TestHandleCommandWithBody_FieldExtraIgnored(t *testing.T) {
 	pipe := newTestPipeline()
 	h := &capturingInsertHandler{}
 
-	app.Post("/things", HandleCommandWithBody(pipe, testInsertRequest{}, responses.NoBody, h, fiber.StatusCreated))
+	app.Post("/things", CommandWithBody(pipe, testInsertRequest{}, responses.NoBody, h, fiber.StatusCreated))
 
 	body := []byte(`{"name":"alice","email":"a@x.com","unknownField":"ignored"}`)
 	req := httptest.NewRequest("POST", "/things", bytes.NewReader(body))
@@ -292,7 +292,7 @@ func TestHandleCommandWithBody_NestedHappyPath(t *testing.T) {
 	pipe := newTestPipeline()
 	h := &capturingInsertWithNestedHandler{}
 
-	app.Post("/things", HandleCommandWithBody(pipe, testInsertWithNestedRequest{}, responses.NoBody, h, fiber.StatusCreated))
+	app.Post("/things", CommandWithBody(pipe, testInsertWithNestedRequest{}, responses.NoBody, h, fiber.StatusCreated))
 
 	body := []byte(`{"name":"x","items":[{"label":"a"},{"label":"b"}]}`)
 	req := httptest.NewRequest("POST", "/things", bytes.NewReader(body))
@@ -312,7 +312,7 @@ func TestHandleCommandWithBody_EmptyArrayIsValid(t *testing.T) {
 	pipe := newTestPipeline()
 	h := &capturingInsertWithNestedHandler{}
 
-	app.Post("/things", HandleCommandWithBody(pipe, testInsertWithNestedRequest{}, responses.NoBody, h, fiber.StatusCreated))
+	app.Post("/things", CommandWithBody(pipe, testInsertWithNestedRequest{}, responses.NoBody, h, fiber.StatusCreated))
 
 	body := []byte(`{"name":"x","items":[]}`)
 	req := httptest.NewRequest("POST", "/things", bytes.NewReader(body))
@@ -327,14 +327,14 @@ func TestHandleCommandWithBody_EmptyArrayIsValid(t *testing.T) {
 	}
 }
 
-// ---- HandleCommandWithBodyID (strict via FullBody) ---------------------------
+// ---- CommandWithBodyID (strict via FullBody) ---------------------------
 
 func TestHandleCommandWithBodyID_HappyPath(t *testing.T) {
 	app := fiber.New()
 	pipe := newTestPipeline()
 	h := &capturingUpdateHandler{}
 
-	app.Put("/things/:id", HandleCommandWithBodyID(pipe, testUpdateRequest{}, responses.NoBody, h, fiber.StatusOK))
+	app.Put("/things/:id", CommandWithBodyID(pipe, testUpdateRequest{}, responses.NoBody, h, fiber.StatusOK))
 
 	body, _ := json.Marshal(map[string]string{"name": "bob", "email": "b@x.com"})
 	req := httptest.NewRequest("PUT", "/things/abc", bytes.NewReader(body))
@@ -357,7 +357,7 @@ func TestHandleCommandWithBodyID_MissingField_400_SchemaContext(t *testing.T) {
 	pipe := newTestPipeline()
 	h := &capturingUpdateHandler{}
 
-	app.Put("/things/:id", HandleCommandWithBodyID(pipe, testUpdateRequest{}, responses.NoBody, h, fiber.StatusOK))
+	app.Put("/things/:id", CommandWithBodyID(pipe, testUpdateRequest{}, responses.NoBody, h, fiber.StatusOK))
 
 	body, _ := json.Marshal(map[string]string{"name": "bob"}) // missing email
 	req := httptest.NewRequest("PUT", "/things/abc", bytes.NewReader(body))
@@ -384,7 +384,7 @@ func TestHandleCommandWithBodyID_MissingMultipleFields_400(t *testing.T) {
 	pipe := newTestPipeline()
 	h := &capturingUpdateHandler{}
 
-	app.Put("/things/:id", HandleCommandWithBodyID(pipe, testUpdateRequest{}, responses.NoBody, h, fiber.StatusOK))
+	app.Put("/things/:id", CommandWithBodyID(pipe, testUpdateRequest{}, responses.NoBody, h, fiber.StatusOK))
 
 	req := httptest.NewRequest("PUT", "/things/abc", bytes.NewReader([]byte("{}")))
 	req.Header.Set("Content-Type", "application/json")
@@ -405,7 +405,7 @@ func TestHandleCommandWithBodyID_EmptyBody_400(t *testing.T) {
 	pipe := newTestPipeline()
 	h := &capturingUpdateHandler{}
 
-	app.Put("/things/:id", HandleCommandWithBodyID(pipe, testUpdateRequest{}, responses.NoBody, h, fiber.StatusOK))
+	app.Put("/things/:id", CommandWithBodyID(pipe, testUpdateRequest{}, responses.NoBody, h, fiber.StatusOK))
 
 	req := httptest.NewRequest("PUT", "/things/abc", nil)
 	resp, _ := app.Test(req)
@@ -419,7 +419,7 @@ func TestHandleCommandWithBodyID_MalformedJSON_400(t *testing.T) {
 	pipe := newTestPipeline()
 	h := &capturingUpdateHandler{}
 
-	app.Put("/things/:id", HandleCommandWithBodyID(pipe, testUpdateRequest{}, responses.NoBody, h, fiber.StatusOK))
+	app.Put("/things/:id", CommandWithBodyID(pipe, testUpdateRequest{}, responses.NoBody, h, fiber.StatusOK))
 
 	req := httptest.NewRequest("PUT", "/things/abc", bytes.NewReader([]byte("{nope")))
 	req.Header.Set("Content-Type", "application/json")
@@ -439,7 +439,7 @@ func TestHandleCommandWithBodyID_PathIDEmpty(t *testing.T) {
 	h := &capturingUpdateHandler{}
 
 	// Route without :id segment — Fiber returns "" for c.Params("id")
-	app.Put("/things", HandleCommandWithBodyID(pipe, testUpdateRequest{}, responses.NoBody, h, fiber.StatusOK))
+	app.Put("/things", CommandWithBodyID(pipe, testUpdateRequest{}, responses.NoBody, h, fiber.StatusOK))
 
 	body, _ := json.Marshal(map[string]string{"name": "x", "email": "y@z.w"})
 	req := httptest.NewRequest("PUT", "/things", bytes.NewReader(body))

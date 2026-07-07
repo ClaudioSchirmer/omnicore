@@ -123,8 +123,8 @@ with `1.0.0`.
 
 - **gRPC transport surface — `web/grpc`, served with Connect.** The fourth
   consumer of the application-layer handlers: the wrapper family —
-  `HandleCommandWithBody` / `HandleCommandWithBodyID` / `HandleCommandByID`
-  / `HandleQueryWithParams` / `HandleQueryByID`, the SAME vocabulary as the
+  `CommandWithBody` / `CommandWithBodyID` / `CommandByID`
+  / `QueryWithParams` / `QueryByID`, the SAME vocabulary as the
   REST and GraphQL surfaces — adapts any `pipeline.Handler` to a generated
   Connect service method (hand-written mapper pair = the `ToCommand` /
   `responseProjection` seats), so REST, GraphQL, export and gRPC dispatch to
@@ -160,6 +160,61 @@ with `1.0.0`.
   `ParsePublicKeyPEM`, `TokenChecker`) and `web.NewAuthCoreValidator`.
 
 ### Changed
+
+- **Breaking: wrapper symmetry — one deterministic vocabulary across REST,
+  GraphQL, gRPC and the pipeline/queries contracts.** The rule is now
+  uniform on every transport: the constructor name states the route shape
+  (`CommandWithBody`, `CommandWithBodyID`, `CommandByID`,
+  `QueryWithParams`, `QueryByID`), the base to embed is the constructor
+  name plus the `Base` suffix, and the generic constraint carries the same
+  name as the constructor. Dry rename — no behavior, envelope, pipeline or
+  wire change anywhere.
+  - **REST loses the `Handle` prefix**: `HandleCommandWithBody` →
+    `web.CommandWithBody`, `HandleCommandWithBodyID` →
+    `web.CommandWithBodyID`, `HandleCommandByID` → `web.CommandByID`,
+    `HandleQueryWithParams` → `web.QueryWithParams`, `HandleQueryByID` →
+    `web.QueryByID`, with all `…Spec` siblings renamed the same way; the
+    tabular exports follow the same pattern: `HandleQueryExport` →
+    `web.QueryExport`, `HandleQueryAsCSV` → `web.QueryAsCSV`,
+    `HandleQueryAsXLSX` → `web.QueryAsXLSX` (+ their `…Spec` siblings).
+    REST now spells the family exactly like `web/grpc` — same names,
+    different package.
+  - **Write-side contracts (`application/pipeline`)**:
+    `pipeline.CommandWithID` → `pipeline.CommandByID` and
+    `pipeline.CommandBaseWithID` → `pipeline.CommandByIDBase`. New
+    same-shape aliases complete the deterministic rule:
+    `pipeline.CommandWithBody` (= `Command`), `pipeline.CommandWithBodyID`
+    (= `CommandByID`), `pipeline.CommandWithBodyBase` (= `CommandBase`) and
+    `pipeline.CommandWithBodyIDBase` (= `CommandByIDBase`) — "WithBody"
+    describes the wire input (the Request DTO's job), "ByID" describes how
+    the command is addressed, which is why the two id-carrying shapes share
+    one method set. The auto contracts follow: `UpdateCommand` /
+    `PartialUpdateCommand` embed `CommandWithBodyID`; `ArchiveCommand` /
+    `UnarchiveCommand` / `DeleteCommand` embed `CommandByID`.
+  - **Read-side contracts (`application/queries`)**:
+    `queries.FindByParamsQuery` → `queries.QueryWithParams`,
+    `queries.FindByIDQuery` → `queries.QueryByID` (the intermediate
+    `queries.QueryWithID` is absorbed into it and removed),
+    `queries.QueryBaseWithID` → `queries.QueryByIDBase`, and the getter
+    `GetID() domain.ID` → `PathID() domain.ID` — the exact
+    `SetPathID`/`PathID` pair `pipeline.CommandByID` carries on the write
+    side. New alias `queries.QueryWithParamsBase` (= `pipeline.QueryBase`)
+    completes the rule for list queries.
+  - **`grpc.QueryWithParams` tightens to the shared contract**: the query
+    must satisfy `queries.QueryWithParams` and the handler returns
+    `queries.Page` (previously any `pipeline.Query` and a free `TResult`) —
+    the same constraint REST and GraphQL always demanded, so one
+    application query serves every transport.
+  - **Migration** (mechanical, word-boundary): `s/\bHandleCommand/Command/`,
+    `s/\bHandleQuery/Query/`, `s/\bCommandBaseWithID\b/CommandByIDBase/`,
+    `s/\bCommandWithID\b/CommandByID/`,
+    `s/\bQueryBaseWithID\b/QueryByIDBase/`,
+    `s/\bFindByParamsQuery\b/QueryWithParams/`,
+    `s/\bFindByIDQuery\b/QueryByID/`, and `GetID()` → `PathID()` on query
+    types only (entity `GetID` is untouched). Handlers listing queries on
+    gRPC swap the projector input to `queries.Page`. GraphQL constructor
+    names are unchanged; by design there is still no `graphql.QueryByID` —
+    by-id reads on GraphQL are a `where` filter on the connection.
 
 - **Breaking: the conflict vocabulary is split — new `SemanticStateConflict`,
   and `EntityIsNotActiveNotification` is reclassified to it.**

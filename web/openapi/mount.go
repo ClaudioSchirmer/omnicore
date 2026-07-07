@@ -17,7 +17,7 @@ import (
 //
 // Canonical pairing — the wrapper sibling returns (handler, spec):
 //
-//	h, spec := fwweb.HandleCommandWithBodySpec(d.Pipeline,
+//	h, spec := fwweb.CommandWithBodySpec(d.Pipeline,
 //	    requests.InsertUserRequest{},
 //	    requests.InsertUserResponse{}.FromResult,
 //	    &handlers.InsertCommandHandler[...]{...},

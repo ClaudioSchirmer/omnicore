@@ -14,25 +14,25 @@ import (
 )
 
 // HasToParamsQuery is the contract for Request DTOs that produce a
-// FindByParamsQuery. The wrapper parses the HTTP query string into a
+// QueryWithParams. The wrapper parses the HTTP query string into a
 // ReadCriteria (filters + pagination) and forwards it verbatim to ToQuery.
 // The web→application boundary is dumb mapping; *AppContext is consumed by
 // the Query's ToCriteria(ctx) downstream, where identity-derived overlays
 // (tenant id, owner id) layer onto the wire criteria.
-type HasToParamsQuery[TQ queries.FindByParamsQuery] interface {
+type HasToParamsQuery[TQ queries.QueryWithParams] interface {
 	ToQuery(criteria queries.ReadCriteria) TQ
 }
 
-// HasToIDQuery is the contract for Request DTOs that produce a FindByIDQuery.
+// HasToIDQuery is the contract for Request DTOs that produce a QueryByID.
 // Only the `includeArchived` reserved query parameter is parsed into the Request
 // via Fiber's QueryParser; the rest of the wire state is the path id (injected
 // by the wrapper post-ToQuery). The web→application boundary is dumb mapping;
 // *AppContext is consumed by the Query's ToCriteria(ctx) downstream.
-type HasToIDQuery[TQ queries.FindByIDQuery] interface {
+type HasToIDQuery[TQ queries.QueryByID] interface {
 	ToQuery() TQ
 }
 
-// HandleQueryWithParams creates a fiber.Handler for paged list endpoints. It
+// QueryWithParams creates a fiber.Handler for paged list endpoints. It
 // owns the wire format (query-string parsing, allowlist enforcement, JSON
 // envelope with top-level pagination); the application layer stays Fiber-agnostic.
 //
@@ -59,13 +59,13 @@ type HasToIDQuery[TQ queries.FindByIDQuery] interface {
 // shape on the wire, or a consumer-defined R{}.FromDoc to declare a typed
 // wire contract:
 //
-//	users.Get("/", fwweb.HandleQueryWithParams(d.Pipeline,
+//	users.Get("/", fwweb.QueryWithParams(d.Pipeline,
 //	    requests.FindUsersByParamsRequest{},
 //	    requests.FindUsersByParamsResponse{}.FromDoc,
 //	    &handlers.FindByParamsQueryHandler[*queries.FindUserByParamsQuery]{
 //	        Reader: d.ViewReader, View: view.Name(),
 //	    }))
-func HandleQueryWithParams[TReq HasToParamsQuery[TQ], TQ queries.FindByParamsQuery, R any](
+func QueryWithParams[TReq HasToParamsQuery[TQ], TQ queries.QueryWithParams, R any](
 	pipe *pipeline.Pipeline,
 	sample TReq,
 	projector func(map[string]any) R,
@@ -143,22 +143,22 @@ func HandleQueryWithParams[TReq HasToParamsQuery[TQ], TQ queries.FindByParamsQue
 	}
 }
 
-// HandleQueryByID creates a fiber.Handler for read-by-id endpoints. The
+// QueryByID creates a fiber.Handler for read-by-id endpoints. The
 // only reserved query-string parameter is `?includeArchived=true`; anything
 // else produces 400. The path id is injected into the Query via SetPathID
-// after ToQuery, mirroring HandleCommandWithBodyID on the write side.
+// after ToQuery, mirroring CommandWithBodyID on the write side.
 //
 // projector is mandatory — pass responses.RawDoc to keep the raw view doc
 // shape on the wire, or a consumer-defined R{}.FromDoc to declare a typed
 // wire contract:
 //
-//	users.Get("/:id", fwweb.HandleQueryByID(d.Pipeline,
+//	users.Get("/:id", fwweb.QueryByID(d.Pipeline,
 //	    requests.FindUserByIDRequest{},
 //	    requests.FindUserByIDResponse{}.FromDoc,
 //	    &handlers.FindByIDQueryHandler[*queries.FindUserByIDQuery]{
 //	        Reader: d.ViewReader, View: view.Name(),
 //	    }))
-func HandleQueryByID[TReq HasToIDQuery[TQ], TQ queries.FindByIDQuery, R any](
+func QueryByID[TReq HasToIDQuery[TQ], TQ queries.QueryByID, R any](
 	pipe *pipeline.Pipeline,
 	sample TReq,
 	projector func(map[string]any) R,
@@ -171,7 +171,7 @@ func HandleQueryByID[TReq HasToIDQuery[TQ], TQ queries.FindByIDQuery, R any](
 	}
 	pathSchema := inspectPathTags(reqType)
 	if hasPathSegment(reqType, "id") {
-		panic(formatPathIDConflict("HandleQueryByID", reqType))
+		panic(formatPathIDConflict("QueryByID", reqType))
 	}
 	return func(c fiber.Ctx) error {
 		if bad, ok := validateByIDQuery(c); !ok {
@@ -198,7 +198,7 @@ func HandleQueryByID[TReq HasToIDQuery[TQ], TQ queries.FindByIDQuery, R any](
 
 // ParseCriteria walks c's query string and validates it against the allowlist
 // declared by requestDTO's `query:"..." filter:"..."` tags — the same
-// reflection-based schema HandleQueryWithParams uses internally. Returns the
+// reflection-based schema QueryWithParams uses internally. Returns the
 // assembled ReadCriteria on success.
 //
 // On the first violation (unknown key OR operator outside the declared list)
@@ -217,7 +217,7 @@ func HandleQueryByID[TReq HasToIDQuery[TQ], TQ queries.FindByIDQuery, R any](
 // opt into either reserved key should construct a [QueryParser] at Mount
 // time instead — that path runs the same boot-time guards (sparse-render
 // contract on the Response + sortable-paths advisory) the canonical
-// HandleQueryWithParams wrapper enforces, plus wire→doc translation at
+// QueryWithParams wrapper enforces, plus wire→doc translation at
 // runtime. ParseCriteria stays as the un-typed escape hatch; it does not
 // build a projection schema, so a stray `?fields=` token lands in
 // pass-through mode (no allowlist, no `_id:0` auto-exclusion) and a stray
@@ -232,7 +232,7 @@ func ParseCriteria(c fiber.Ctx, requestDTO any) (queries.ReadCriteria, string, b
 	// the projection schema is nil — `?fields=` works in pass-through mode
 	// (each comma-separated token becomes an inclusion entry verbatim; no
 	// allowlist, no wire→doc translation, no `_id:0` auto-exclusion). The
-	// canonical surface goes through HandleQueryWithParams (or QueryParser
+	// canonical surface goes through QueryWithParams (or QueryParser
 	// in manual mounts), which gates the param behind a typed Response +
 	// boot guard.
 	return buildCriteria(c, schema, nil)
@@ -241,7 +241,7 @@ func ParseCriteria(c fiber.Ctx, requestDTO any) (queries.ReadCriteria, string, b
 // QueryParser is the typed Mount-time-constructed parser for manual query
 // handlers whose Request DTO opts into `?fields=` / `?sort=` AND that
 // declare a typed Response. It closes the asymmetry [ParseCriteria] carries
-// against the canonical [HandleQueryWithParams] wrapper:
+// against the canonical [QueryWithParams] wrapper:
 //
 //   - The construction (in [NewQueryParser]) runs the exact same boot scan
 //     the canonical wrapper runs at lines parallel to its sample-driven
@@ -287,7 +287,7 @@ type QueryParser[Req any, Resp any] struct {
 // NewQueryParser builds a [QueryParser] at Mount time. Runs the boot scan
 // detailed on the type doc: schema extraction, fields-side structural
 // guard (panic on violation), projection-schema build, sortable-paths
-// advisory. Panics on the same condition [HandleQueryWithParams] panics:
+// advisory. Panics on the same condition [QueryWithParams] panics:
 // the Request DTO declares `query:"fields"` AND the Response shape
 // violates the sparse-render contract.
 func NewQueryParser[Req any, Resp any]() *QueryParser[Req, Resp] {
@@ -344,7 +344,7 @@ func (p *QueryParser[Req, Resp]) Parse(c fiber.Ctx) (queries.ReadCriteria, strin
 // RespondSchemaViolation emits the canonical 400 envelope carrying
 // SchemaViolationNotification (semantic Schema, context "Schema") for the
 // given bad field. Manual query handlers that opt out of
-// HandleQueryWithParams should use it to reject unknown query keys uniformly
+// QueryWithParams should use it to reject unknown query keys uniformly
 // with the wrapper:
 //
 //	crit, badField, ok := fwweb.ParseCriteria(c, requestDTO)

@@ -12,7 +12,7 @@ import (
 	"github.com/gofiber/fiber/v3"
 )
 
-// HandleCommandWithBody creates a fiber.Handler for endpoints with a JSON
+// CommandWithBody creates a fiber.Handler for endpoints with a JSON
 // body without a path ID (POST). It separates wire format (Request DTO in
 // web/) from use-case vocabulary (Command in application/) — orthodox DDD.
 //
@@ -42,7 +42,7 @@ import (
 //
 //   - other 4xx → custom semantics via Notification.Semantic()
 //
-//     app.Post("/users", web.HandleCommandWithBody(pipe,
+//     app.Post("/users", web.CommandWithBody(pipe,
 //     requests.InsertUserRequest{},
 //     responses.InsertUserResponse{}.FromResult,
 //     &handlers.InsertCommandHandler[*User, *InsertUserCommand, results.InsertUserResult]{
@@ -50,12 +50,12 @@ import (
 //     Project: results.InsertUserResult{}.FromEntity,
 //     },
 //     fiber.StatusCreated))
-func HandleCommandWithBody[
+func CommandWithBody[
 	TReq RequestDTO[TCmdPtr],
 	TCmd any,
 	TCmdPtr interface {
 		*TCmd
-		pipeline.Command
+		pipeline.CommandWithBody
 	},
 	TResult any,
 	TResp any,
@@ -70,7 +70,7 @@ func HandleCommandWithBody[
 	reqType := reflect.TypeOf((*TReq)(nil)).Elem()
 	pathSchema := inspectPathTags(reqType)
 	strict, expectedKeys := inspectHandler[TReq](h)
-	warnGroupAMissingPathTag(h, "HandleCommandWithBody", reqType, pathSchema)
+	warnGroupAMissingPathTag(h, "CommandWithBody", reqType, pathSchema)
 	return func(c fiber.Ctx) error {
 		body := c.Body()
 
@@ -104,11 +104,11 @@ func HandleCommandWithBody[
 	}
 }
 
-// HandleCommandWithBodyID is a variant of HandleCommandWithBody for Commands
+// CommandWithBodyID is a variant of CommandWithBody for Commands
 // with an ID via the path (PUT/PATCH). Injects cmd.SetPathID(c.Params("id"))
 // after ToCommand.
 //
-//	app.Put("/users/:id", web.HandleCommandWithBodyID(pipe,
+//	app.Put("/users/:id", web.CommandWithBodyID(pipe,
 //	    requests.UpdateUserRequest{},
 //	    responses.UpdateUserResponse{}.FromResult,
 //	    &handlers.UpdateCommandHandler[*User, *UpdateUserCommand, results.UpdateUserResult]{
@@ -116,12 +116,12 @@ func HandleCommandWithBody[
 //	        Project: results.UpdateUserResult{}.FromEntity,
 //	    },
 //	    fiber.StatusOK))
-func HandleCommandWithBodyID[
+func CommandWithBodyID[
 	TReq RequestDTO[TCmdPtr],
 	TCmd any,
 	TCmdPtr interface {
 		*TCmd
-		pipeline.CommandWithID
+		pipeline.CommandWithBodyID
 	},
 	TResult any,
 	TResp any,
@@ -136,7 +136,7 @@ func HandleCommandWithBodyID[
 	reqType := reflect.TypeOf((*TReq)(nil)).Elem()
 	pathSchema := inspectPathTags(reqType)
 	if hasPathSegment(reqType, "id") {
-		panic(formatPathIDConflict("HandleCommandWithBodyID", reqType))
+		panic(formatPathIDConflict("CommandWithBodyID", reqType))
 	}
 	strict, expectedKeys := inspectHandler[TReq](h)
 	return func(c fiber.Ctx) error {
@@ -180,12 +180,12 @@ func formatPathIDConflict(wrapperName string, reqType reflect.Type) string {
 		"\n[omnicore] FATAL: %s does not accept a `path:\"id\"` tag on the Request.\n\n"+
 			"  wrapper:  %s\n  request:  %s\n\n"+
 			"  This wrapper already binds the :id URL segment automatically through the\n"+
-			"  pipeline.CommandWithID / queries.FindByIDQuery interface — declaring `path:\"id\"`\n"+
+			"  pipeline.CommandByID / queries.QueryByID interface — declaring `path:\"id\"`\n"+
 			"  on the Request would set the same value twice.\n\n"+
 			"  Fix one of:\n"+
 			"    (1) Remove the `path:\"id\"` tag from the Request. Keep :id implicit; the\n"+
 			"        wrapper handles it via SetPathID.\n"+
-			"    (2) For a compound route, use HandleCommandWithBody / HandleQueryWithParams\n"+
+			"    (2) For a compound route, use CommandWithBody / QueryWithParams\n"+
 			"        instead, declare every segment with `path:\"...\"`, and call\n"+
 			"        cmd.SetPathID(req.SomeField) from ToCommand / ToQuery.\n",
 		wrapperName, wrapperName, reqType.String(),

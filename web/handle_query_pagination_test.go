@@ -52,7 +52,7 @@ func mountPaginationWrapper() (*fiber.App, *pagHandler) {
 	app := fiber.New()
 	pipe := pipeline.New(translation.Default())
 	h := &pagHandler{}
-	app.Get("/users", HandleQueryWithParams(pipe, pagFindRequest{}, responses.RawDoc, h))
+	app.Get("/users", QueryWithParams(pipe, pagFindRequest{}, responses.RawDoc, h))
 	return app, h
 }
 
