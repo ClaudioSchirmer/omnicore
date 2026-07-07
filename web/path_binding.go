@@ -251,7 +251,7 @@ func formatPathBootError(t reflect.Type, f reflect.StructField, reason string) s
 
 // BindPath populates fields of req tagged `path:"<name>"` from the matching
 // Fiber URL segment (c.Params("<name>")). Used by manual fiber.Handler
-// closures that opt out of HandleCommandWith*/HandleQueryWith* but still
+// closures that opt out of CommandWith*/QueryWith* but still
 // want the declarative binding the wrappers do automatically.
 //
 // On the first type-conversion failure returns (badField, false). Callers

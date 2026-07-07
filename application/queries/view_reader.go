@@ -132,7 +132,7 @@ func (c *ReadCriteria) scrubField(goFieldPath string) {
 }
 
 // Page is the transport-agnostic result of a paged read. The wire wrapper
-// (web.HandleQueryWithParams) decomposes Page into Response.Data (items) and
+// (web.QueryWithParams) decomposes Page into Response.Data (items) and
 // Response.Pagination (cursor envelope), so Page itself is not marshalled
 // directly and carries no json tags.
 //

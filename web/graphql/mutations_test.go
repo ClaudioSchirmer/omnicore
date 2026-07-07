@@ -89,7 +89,7 @@ func TestMutationWithBody_MissingRequiredInputFieldRejected(t *testing.T) {
 // ── bodyless command quad (id only → MutationResult) ────────────────────────
 
 type delCmd struct {
-	pipeline.CommandBaseWithID
+	pipeline.CommandByIDBase
 }
 
 type fakeDelHandler struct {
@@ -125,7 +125,7 @@ func TestMutationByID_BodylessReturnsMutationResult(t *testing.T) {
 // ── update-style command quad (body + path id) ──────────────────────────────
 
 type mutUpdCmd struct {
-	pipeline.CommandBaseWithID
+	pipeline.CommandByIDBase
 	Name string
 }
 

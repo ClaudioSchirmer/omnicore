@@ -6,7 +6,7 @@ package web
 // XxxRequest carries the `json:"..."` tags of the HTTP payload and produces
 // the corresponding Command via ToCommand().
 //
-// The HandleCommandWithBody{,ID} wrapper (in handle_command_with_body.go)
+// The CommandWithBody{,ID} wrapper (in handle_command_with_body.go)
 // calls ToCommand() at the web→application boundary after validating the
 // Request schema. Request lives in web/, Command in application/ — no JSON
 // leak into application/ nor domain leak into web/.
@@ -33,7 +33,7 @@ package web
 //
 // The Command (TCmd) is typically a pointer type (*InsertUserCommand),
 // because the pipeline operates over Commands as pointers (SetPathID on
-// CommandWithID requires a pointer receiver).
+// CommandByID requires a pointer receiver).
 type RequestDTO[TCmd any] interface {
 	ToCommand() TCmd
 }

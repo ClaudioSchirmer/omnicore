@@ -12,9 +12,9 @@ import (
 // name (it translated the physical columns via the view's TableSchema), so this
 // projector simply reads doc[<GoFieldName>] and writes it under the field's
 // json wire name — the canonical tag-driven projector for
-// HandleQueryWith{Params,ID}:
+// QueryWith{Params,ID}:
 //
-//	users.Get("/:id", fwweb.HandleQueryByID(d.Pipeline,
+//	users.Get("/:id", fwweb.QueryByID(d.Pipeline,
 //	    requests.FindUserByIDRequest{},
 //	    fwresponses.AutoFromDoc[requests.FindUserByIDResponse],
 //	    handler))

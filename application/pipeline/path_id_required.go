@@ -11,7 +11,7 @@ package pipeline
 //	    ...
 //	}
 //
-// Used by fwweb.HandleCommandWithBody / HandleQueryWithParams (Group A
+// Used by fwweb.CommandWithBody / QueryWithParams (Group A
 // wrappers — they do NOT auto-bind :id via interface) to emit a boot
 // WARNING when paired with a Request DTO that declares no `path:` tag at
 // all. The warning catches the common misconfiguration of "I expected

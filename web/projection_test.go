@@ -34,7 +34,7 @@ type guardNonPointerScalar struct {
 	Name string `json:"name,omitempty"`
 }
 
-// ─── HandleQueryWithParams boot guard integration ──────────────────────────
+// ─── QueryWithParams boot guard integration ──────────────────────────
 
 func TestHandleQueryWithParams_BootPanicsOnBadResponse(t *testing.T) {
 	pipe := newTestPipeline()
@@ -50,7 +50,7 @@ func TestHandleQueryWithParams_BootPanicsOnBadResponse(t *testing.T) {
 		}
 	}()
 	app := fiber.New()
-	app.Get("/x", HandleQueryWithParams(pipe, testFindParamsRequest{}, func(_ map[string]any) guardNonPointerScalar {
+	app.Get("/x", QueryWithParams(pipe, testFindParamsRequest{}, func(_ map[string]any) guardNonPointerScalar {
 		return guardNonPointerScalar{}
 	}, h))
 }
@@ -61,7 +61,7 @@ func TestFieldsParam_UnknownTokenReturns400WithBracketedField(t *testing.T) {
 	app := fiber.New()
 	pipe := newTestPipeline()
 	h := &capturingParamsHandler{}
-	app.Get("/users", HandleQueryWithParams(pipe, testFindParamsRequest{}, func(_ map[string]any) sparseUser {
+	app.Get("/users", QueryWithParams(pipe, testFindParamsRequest{}, func(_ map[string]any) sparseUser {
 		return sparseUser{}
 	}, h))
 
@@ -86,7 +86,7 @@ func TestFieldsParam_ProjectionIncludesAutoIDExclusionWhenIDNotRequested(t *test
 	app := fiber.New()
 	pipe := newTestPipeline()
 	h := &capturingParamsHandler{}
-	app.Get("/users", HandleQueryWithParams(pipe, testFindParamsRequest{}, func(_ map[string]any) sparseUser {
+	app.Get("/users", QueryWithParams(pipe, testFindParamsRequest{}, func(_ map[string]any) sparseUser {
 		return sparseUser{}
 	}, h))
 
@@ -107,7 +107,7 @@ func TestFieldsParam_ProjectionOmitsIDExclusionWhenIDRequested(t *testing.T) {
 	app := fiber.New()
 	pipe := newTestPipeline()
 	h := &capturingParamsHandler{}
-	app.Get("/users", HandleQueryWithParams(pipe, testFindParamsRequest{}, func(_ map[string]any) sparseUser {
+	app.Get("/users", QueryWithParams(pipe, testFindParamsRequest{}, func(_ map[string]any) sparseUser {
 		return sparseUser{}
 	}, h))
 
@@ -128,7 +128,7 @@ func TestFieldsParam_NestedPathTranslatesViaAutoSnake(t *testing.T) {
 	app := fiber.New()
 	pipe := newTestPipeline()
 	h := &capturingParamsHandler{}
-	app.Get("/users", HandleQueryWithParams(pipe, testFindParamsRequest{}, func(_ map[string]any) sparseUser {
+	app.Get("/users", QueryWithParams(pipe, testFindParamsRequest{}, func(_ map[string]any) sparseUser {
 		return sparseUser{}
 	}, h))
 
@@ -146,7 +146,7 @@ func TestFieldsParam_NestedPathHonorsViewOverride(t *testing.T) {
 	app := fiber.New()
 	pipe := newTestPipeline()
 	h := &capturingParamsHandler{}
-	app.Get("/users", HandleQueryWithParams(pipe, testFindParamsRequest{}, func(_ map[string]any) sparseUser {
+	app.Get("/users", QueryWithParams(pipe, testFindParamsRequest{}, func(_ map[string]any) sparseUser {
 		return sparseUser{}
 	}, h))
 
@@ -161,7 +161,7 @@ func TestFieldsParam_WholeAggregateProjectsSubtree(t *testing.T) {
 	app := fiber.New()
 	pipe := newTestPipeline()
 	h := &capturingParamsHandler{}
-	app.Get("/users", HandleQueryWithParams(pipe, testFindParamsRequest{}, func(_ map[string]any) sparseUser {
+	app.Get("/users", QueryWithParams(pipe, testFindParamsRequest{}, func(_ map[string]any) sparseUser {
 		return sparseUser{}
 	}, h))
 

@@ -26,7 +26,7 @@ import (
 // back to View. The Query is the natural owner of that identity — the same
 // way BaseRepository derives its ContextName from T on the write side.
 //
-//	users.Get("/:id", fwweb.HandleQueryByID(d.Pipeline,
+//	users.Get("/:id", fwweb.QueryByID(d.Pipeline,
 //	    requests.FindUserByIDRequest{},
 //	    requests.FindUserByIDResponse{}.FromDoc,
 //	    &handlers.FindByIDQueryHandler[*queries.FindUserByIDQuery]{
@@ -36,15 +36,15 @@ import (
 // The projector (third arg) is mandatory — pass fwresponses.RawDoc to keep
 // the raw view doc shape on the wire, or a consumer-defined R{}.FromDoc to
 // declare a typed wire contract.
-type FindByIDQueryHandler[Q queries.FindByIDQuery] struct {
+type FindByIDQueryHandler[Q queries.QueryByID] struct {
 	pipeline.PathIDRequired
 	Reader queries.ViewReader
 	View   string
 }
 
 func (h *FindByIDQueryHandler[Q]) Handle(ctx *configuration.AppContext, q Q) (map[string]any, error) {
-	RequirePathID(q.GetID().Value(), "FindByIDQueryHandler")
-	id := q.GetID().String()
+	RequirePathID(q.PathID().Value(), "FindByIDQueryHandler")
+	id := q.PathID().String()
 	crit, err := q.ToCriteria(ctx)
 	if err != nil {
 		return nil, err

@@ -16,7 +16,7 @@ import (
 	"github.com/gofiber/fiber/v3"
 )
 
-// strictInsertHandler embeds pipeline.FullBody so HandleCommandWithBody runs
+// strictInsertHandler embeds pipeline.FullBody so CommandWithBody runs
 // the strict missing-field check on *testInsertCmd (POST is normally lenient;
 // the marker forces all Request fields mandatory).
 type strictInsertHandler struct {
@@ -31,7 +31,7 @@ func (h *strictInsertHandler) Handle(ctx *configuration.AppContext, cmd *testIns
 
 func mountStrictInsert(app *fiber.App, h *strictInsertHandler) {
 	pipe := newTestPipeline()
-	app.Post("/things", HandleCommandWithBody(pipe, testInsertRequest{}, responses.NoBody, h, fiber.StatusCreated))
+	app.Post("/things", CommandWithBody(pipe, testInsertRequest{}, responses.NoBody, h, fiber.StatusCreated))
 }
 
 func TestHandleCommandWithBody_Strict_EmptyBody_400(t *testing.T) {
@@ -91,7 +91,7 @@ func TestHandleCommandWithBody_Strict_MalformedJSON_400(t *testing.T) {
 }
 
 // pathIDRequiredInsertHandler embeds pipeline.PathIDRequired so a Group A
-// wrapper (HandleCommandWithBody, no :id auto-bind) paired with it AND a
+// wrapper (CommandWithBody, no :id auto-bind) paired with it AND a
 // Request with no path: tag triggers warnGroupAMissingPathTag at construction.
 type pathIDRequiredInsertHandler struct {
 	pipeline.PathIDRequired
@@ -105,7 +105,7 @@ func TestHandleCommandWithBody_WarnsWhenPathIDHandlerHasNoPathTag(t *testing.T) 
 	// Construction is enough — warnGroupAMissingPathTag fires the slog.Warn.
 	// The test asserts construction does not panic and returns a usable handler.
 	pipe := newTestPipeline()
-	got := HandleCommandWithBody(pipe, testInsertRequest{}, responses.NoBody,
+	got := CommandWithBody(pipe, testInsertRequest{}, responses.NoBody,
 		&pathIDRequiredInsertHandler{}, fiber.StatusCreated)
 	if got == nil {
 		t.Fatal("expected a handler even when the path-ID-source warning fires")
@@ -115,7 +115,7 @@ func TestHandleCommandWithBody_WarnsWhenPathIDHandlerHasNoPathTag(t *testing.T) 
 // ─── formatPathIDConflict panic path ─────────────────────────────────────────
 
 type pathIDConflictCmd struct {
-	pipeline.CommandBaseWithID
+	pipeline.CommandByIDBase
 }
 
 type pathIDConflictRequest struct {
@@ -135,7 +135,7 @@ func TestHandleCommandWithBodyID_PanicsOnPathIDTag(t *testing.T) {
 		}
 	}()
 	pipe := newTestPipeline()
-	_ = HandleCommandWithBodyID(pipe, pathIDConflictRequest{}, responses.NoBody,
+	_ = CommandWithBodyID(pipe, pathIDConflictRequest{}, responses.NoBody,
 		&capturingPathIDConflictHandler{}, fiber.StatusOK)
 }
 

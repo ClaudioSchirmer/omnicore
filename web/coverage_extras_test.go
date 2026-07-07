@@ -47,8 +47,8 @@ func TestBuildKeyfunc_InvalidPEMReturnsError(t *testing.T) {
 // ─── formatPathIDConflict: the rendered diagnostic ───────────────────────────
 
 func TestFormatPathIDConflict_MentionsWrapperAndRequest(t *testing.T) {
-	msg := formatPathIDConflict("HandleCommandWithBodyID", reflect.TypeOf(struct{ X int }{}))
-	if !strings.Contains(msg, "HandleCommandWithBodyID") {
+	msg := formatPathIDConflict("CommandWithBodyID", reflect.TypeOf(struct{ X int }{}))
+	if !strings.Contains(msg, "CommandWithBodyID") {
 		t.Errorf("diagnostic must name the wrapper: %s", msg)
 	}
 	if !strings.Contains(msg, `path:"id"`) {

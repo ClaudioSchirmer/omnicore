@@ -4,8 +4,8 @@ import "fmt"
 
 // RequirePathID panics with a developer-focused message when pathID is the
 // empty string. Called by every auto handler whose pipeline reads the path
-// ID — Command side via cmd.PathID() (pipeline.CommandWithID), Query side
-// via q.GetID().Value() (queries.FindByIDQuery). Both contracts already
+// ID — Command side via cmd.PathID() (pipeline.CommandByID), Query side
+// via q.PathID().Value() (queries.QueryByID). Both contracts already
 // return a string-shaped identifier; passing the raw value avoids defining
 // a shared sub-interface just to hand off one field.
 //
@@ -30,9 +30,9 @@ func formatPathIDMissingMessage(handlerName string) string {
 			"ToCommand / ToQuery.\n\n"+
 			"Pick ONE of:\n\n"+
 			"  (1) Use a canonical :id wrapper:\n"+
-			"        fwweb.HandleCommandWithBodyID(...)   // PUT / PATCH with body\n"+
-			"        fwweb.HandleCommandByID(...)       // Archive / Unarchive / Delete (bodyless)\n"+
-			"        fwweb.HandleQueryByID(...)         // GET by id\n"+
+			"        fwweb.CommandWithBodyID(...)   // PUT / PATCH with body\n"+
+			"        fwweb.CommandByID(...)       // Archive / Unarchive / Delete (bodyless)\n"+
+			"        fwweb.QueryByID(...)         // GET by id\n"+
 			"      They call cmd.SetPathID(c.Params(\"id\")) automatically from the :id URL segment.\n\n"+
 			"  (2) Set the ID explicitly in your Request.ToCommand() / ToQuery():\n"+
 			"        func (r MyRequest) ToCommand() *MyCommand {\n"+

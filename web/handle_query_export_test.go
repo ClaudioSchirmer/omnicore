@@ -111,7 +111,7 @@ func mountCSV(app *fiber.App, h *expCSVHandler) {
 	// filename base comes from the view's Name() ("users").
 	view := fakeExportView{plan: expCSVPlan(), name: "users"}
 	deps := ExportDeps{Translator: tr, MaxExportRows: 100}
-	app.Get("/users.csv", HandleQueryAsCSV(pipe, expCSVReq{}, view, deps, h, export.WithDelimiter(';')))
+	app.Get("/users.csv", QueryAsCSV(pipe, expCSVReq{}, view, deps, h, export.WithDelimiter(';')))
 }
 
 func parseSemicolonCSV(t *testing.T, body io.Reader) [][]string {
@@ -247,7 +247,7 @@ func TestHandleQueryAsCSV_ToCriteriaExclusionDropsColumnAndHeader(t *testing.T) 
 		{"Name": "John", "Email": "j@x"},
 		{"Name": "Jane", "Email": "j@y"},
 	}}}
-	app.Get("/users.csv", HandleQueryAsCSV(pipe, expHideReq{}, view, deps, h, export.WithDelimiter(';')))
+	app.Get("/users.csv", QueryAsCSV(pipe, expHideReq{}, view, deps, h, export.WithDelimiter(';')))
 
 	resp, _ := app.Test(httptest.NewRequest("GET", "/users.csv", nil))
 	if resp.StatusCode != fiber.StatusOK {
@@ -277,7 +277,7 @@ func TestHandleQueryAsCSVSpec_OmitsPaginationFromSpec(t *testing.T) {
 	view := fakeExportView{plan: expCSVPlan(), name: "users"}
 	deps := ExportDeps{Translator: tr, MaxExportRows: 100}
 
-	_, spec := HandleQueryAsCSVSpec(pipe, expCSVReq{}, view, deps,
+	_, spec := QueryAsCSVSpec(pipe, expCSVReq{}, view, deps,
 		&expCSVHandler{}, export.WithDelimiter(';'))
 
 	got := map[string]bool{}

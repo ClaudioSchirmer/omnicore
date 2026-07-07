@@ -58,7 +58,7 @@ type SharedBaseInsertCommand[T domain.Entity, TResult any] interface {
 // the child the cmd targeted), claim-filtered projections, identity-aware
 // shaping. Domain sees only business fields, never ctx.
 type UpdateCommand[T domain.Entity, TResult any] interface {
-	CommandWithID
+	CommandWithBodyID
 	ApplyTo(ctx *configuration.AppContext, entity T) error
 	FromEntity(ctx *configuration.AppContext, entity T) (TResult, error)
 }
@@ -72,14 +72,14 @@ type UpdateCommand[T domain.Entity, TResult any] interface {
 // ctx into business-named transients; FromEntity projects the post-patch
 // entity back into the Result with full ctx access.
 type PartialUpdateCommand[T domain.Entity, TResult any] interface {
-	CommandWithID
+	CommandWithBodyID
 	ApplyPartiallyTo(ctx *configuration.AppContext, entity T) error
 	FromEntity(ctx *configuration.AppContext, entity T) (TResult, error)
 }
 
 // ArchiveCommand is the contract consumed by handlers.ArchiveCommandHandler[T, Cmd, TResult].
 // Bodyless verb — no field mutation; Archive carries only the ID via the
-// CommandWithID embed. ApplyTo is invoked AFTER FindByID loads the aggregate
+// CommandByID embed. ApplyTo is invoked AFTER FindByID loads the aggregate
 // and BEFORE GetArchivable runs the (now-extended) BuildRules → state
 // transition pipeline. The Command's job inside ApplyTo is to populate
 // business-named transient fields the domain's IfUpdate may consult for
@@ -95,7 +95,7 @@ type PartialUpdateCommand[T domain.Entity, TResult any] interface {
 // a place for ctx → business translation symmetric with the other verbs. An
 // ArchiveCommand that doesn't need ctx just ignores both parameters.
 type ArchiveCommand[T domain.Entity, TResult any] interface {
-	CommandWithID
+	CommandByID
 	ApplyTo(ctx *configuration.AppContext, entity T) error
 	FromEntity(ctx *configuration.AppContext, entity T) (TResult, error)
 }
@@ -106,7 +106,7 @@ type ArchiveCommand[T domain.Entity, TResult any] interface {
 // children typeNames) and BEFORE GetUnarchivable runs BuildRules + state
 // transition. FromEntity projects the post-unarchive entity into TResult.
 type UnarchiveCommand[T domain.Entity, TResult any] interface {
-	CommandWithID
+	CommandByID
 	ApplyTo(ctx *configuration.AppContext, entity T) error
 	FromEntity(ctx *configuration.AppContext, entity T) (TResult, error)
 }
@@ -118,7 +118,7 @@ type UnarchiveCommand[T domain.Entity, TResult any] interface {
 // IfDelete may need. FromEntity projects the entity-before-delete state into
 // TResult — useful when the wire response wants to echo the deleted shape.
 type DeleteCommand[T domain.Entity, TResult any] interface {
-	CommandWithID
+	CommandByID
 	ApplyTo(ctx *configuration.AppContext, entity T) error
 	FromEntity(ctx *configuration.AppContext, entity T) (TResult, error)
 }

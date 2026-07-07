@@ -59,7 +59,7 @@ func TestOnlyTotal_EnvelopeOmitsDataAndListingFields(t *testing.T) {
 	pipe := newTestPipeline()
 	h := &countOnlyHandler{}
 
-	app.Get("/users", HandleQueryWithParams(pipe, testOnlyTotalRequest{}, responses.RawDoc, h))
+	app.Get("/users", QueryWithParams(pipe, testOnlyTotalRequest{}, responses.RawDoc, h))
 
 	resp, err := app.Test(httptest.NewRequest("GET", "/users?onlyTotal=true", nil))
 	if err != nil {
@@ -102,7 +102,7 @@ func TestOnlyTotal_PropagatesIntoCriteria(t *testing.T) {
 	pipe := newTestPipeline()
 	h := &countOnlyHandler{}
 
-	app.Get("/users", HandleQueryWithParams(pipe, testOnlyTotalRequest{}, responses.RawDoc, h))
+	app.Get("/users", QueryWithParams(pipe, testOnlyTotalRequest{}, responses.RawDoc, h))
 
 	_, _ = app.Test(httptest.NewRequest("GET", "/users?onlyTotal=true", nil))
 	if h.got == nil {
@@ -119,7 +119,7 @@ func TestOnlyTotal_FalseExplicitKeepsListingShape(t *testing.T) {
 	pipe := newTestPipeline()
 	h := &countOnlyHandler{}
 
-	app.Get("/users", HandleQueryWithParams(pipe, testOnlyTotalRequest{}, responses.RawDoc, h))
+	app.Get("/users", QueryWithParams(pipe, testOnlyTotalRequest{}, responses.RawDoc, h))
 
 	resp, _ := app.Test(httptest.NewRequest("GET", "/users?onlyTotal=false", nil))
 	if resp.StatusCode != fiber.StatusOK {
@@ -156,7 +156,7 @@ func TestOnlyTotal_ConflictMatrixRejectsListingControls(t *testing.T) {
 			app := fiber.New()
 			pipe := newTestPipeline()
 			h := &countOnlyHandler{}
-			app.Get("/users", HandleQueryWithParams(pipe, testOnlyTotalRequest{}, responses.RawDoc, h))
+			app.Get("/users", QueryWithParams(pipe, testOnlyTotalRequest{}, responses.RawDoc, h))
 
 			url := "/users?onlyTotal=true&" + tc.extra
 			resp, _ := app.Test(httptest.NewRequest("GET", url, nil))
@@ -186,7 +186,7 @@ func TestOnlyTotal_PreservesFilterLeaves(t *testing.T) {
 	app := fiber.New()
 	pipe := newTestPipeline()
 	h := &countOnlyHandler{}
-	app.Get("/users", HandleQueryWithParams(pipe, testOnlyTotalRequest{}, responses.RawDoc, h))
+	app.Get("/users", QueryWithParams(pipe, testOnlyTotalRequest{}, responses.RawDoc, h))
 
 	resp, _ := app.Test(httptest.NewRequest("GET", "/users?onlyTotal=true&name.startswith=Bo", nil))
 	if resp.StatusCode != fiber.StatusOK {
@@ -208,7 +208,7 @@ func TestOnlyTotal_PreservesSearch(t *testing.T) {
 	app := fiber.New()
 	pipe := newTestPipeline()
 	h := &countOnlyHandler{}
-	app.Get("/users", HandleQueryWithParams(pipe, testOnlyTotalRequest{}, responses.RawDoc, h))
+	app.Get("/users", QueryWithParams(pipe, testOnlyTotalRequest{}, responses.RawDoc, h))
 
 	resp, _ := app.Test(httptest.NewRequest("GET", "/users?onlyTotal=true&search=foo", nil))
 	if resp.StatusCode != fiber.StatusOK {
@@ -223,7 +223,7 @@ func TestOnlyTotal_PreservesIncludeArchived(t *testing.T) {
 	app := fiber.New()
 	pipe := newTestPipeline()
 	h := &countOnlyHandler{}
-	app.Get("/users", HandleQueryWithParams(pipe, testOnlyTotalRequest{}, responses.RawDoc, h))
+	app.Get("/users", QueryWithParams(pipe, testOnlyTotalRequest{}, responses.RawDoc, h))
 
 	resp, _ := app.Test(httptest.NewRequest("GET", "/users?onlyTotal=true&includeArchived=true", nil))
 	if resp.StatusCode != fiber.StatusOK {
@@ -244,7 +244,7 @@ func TestOnlyTotal_RejectsWhenDTODoesNotDeclareIt(t *testing.T) {
 	pipe := newTestPipeline()
 	h := &capturingParamsHandler{}
 	// testFindParamsRequest (from handle_query_test.go) does NOT declare OnlyTotal.
-	app.Get("/users", HandleQueryWithParams(pipe, testFindParamsRequest{}, responses.RawDoc, h))
+	app.Get("/users", QueryWithParams(pipe, testFindParamsRequest{}, responses.RawDoc, h))
 
 	resp, _ := app.Test(httptest.NewRequest("GET", "/users?onlyTotal=true", nil))
 	if resp.StatusCode != fiber.StatusBadRequest {

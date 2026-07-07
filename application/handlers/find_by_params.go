@@ -16,7 +16,7 @@ import (
 // MongoViewReader). Provided at construction so a single Query type can
 // serve multiple views by wiring different handlers.
 //
-//	users.Get("/", fwweb.HandleQueryWithParams(d.Pipeline,
+//	users.Get("/", fwweb.QueryWithParams(d.Pipeline,
 //	    requests.FindUsersByParamsRequest{},
 //	    requests.FindUsersByParamsResponse{}.FromDoc,
 //	    &handlers.FindByParamsQueryHandler[*queries.FindUserByParamsQuery]{
@@ -26,7 +26,7 @@ import (
 // The projector (third arg) is mandatory — pass fwresponses.RawDoc to keep
 // the raw view doc shape on the wire, or a consumer-defined R{}.FromDoc to
 // declare a typed wire contract.
-type FindByParamsQueryHandler[Q queries.FindByParamsQuery] struct {
+type FindByParamsQueryHandler[Q queries.QueryWithParams] struct {
 	Reader queries.ViewReader
 	View   string
 }

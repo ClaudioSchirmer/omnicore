@@ -117,9 +117,9 @@
             <tr><td><code>ResponseType</code></td><td><code>reflect.Type</code></td><td>Drives the success-status <code>responses.&lt;code&gt;.content.application/json.schema</code> wrapped in the canonical Response envelope. <code>responses.None</code> sentinel → envelope without <code>data</code>.</td></tr>
             <tr><td><code>SuccessStatus</code></td><td>int</td><td>HTTP status code emitted on success. <code>0</code> → defaults to 200.</td></tr>
             <tr><td><code>Strict</code></td><td>bool</td><td>Marks the body as <code>required: true</code> + every kept field as <code>required[]</code>. Auto-detected by the <code>*Spec</code> sibling via <code>pipeline.FullBodyEnforcer</code> type-assertion.</td></tr>
-            <tr><td><code>HasPathID</code></td><td>bool</td><td>Adds a string-typed <code>:id</code> path parameter when the route's Fiber path contains <code>:id</code> and the Request DTO didn't tag it. Auto-set on every wrapper that consumes <code>pipeline.CommandWithID</code> / <code>queries.FindByIDQuery</code>.</td></tr>
-            <tr><td><code>Paged</code></td><td>bool</td><td>Selects the paged success envelope: <code>data</code> becomes an array of <code>ResponseType</code> items and a top-level <code>pagination</code> property is added (<code>$ref</code> into <code>#/components/schemas/PaginationInfo</code>). Mirrors the runtime <code>fwweb.RespondPaged</code> shape. Auto-set on <code>HandleQueryWithParamsSpec</code>; manual mounts opt in via <code>RouteSpecOfPaged[TReq, TResp]</code>. Paired with <code>fwresponses.None</code> or <code>nil ResponseType</code> → panic at <code>Mount</code>.</td></tr>
-            <tr><td><code>FileResponse</code></td><td><code>*FileResponseSpec</code></td><td>When non-nil, the success status is a raw <strong>file/stream download</strong> of <code>FileResponse.ContentType</code> (rendered as <code>content.&lt;type&gt;.schema = {type: string, format: binary}</code>) instead of the JSON envelope — completing the response taxonomy <code>{ResponseType envelope | Paged envelope | FileResponse}</code>. <code>RequestType</code> still drives the query/filter parameters and the error envelopes (401/403/422/500) are unchanged, so a typed query route can return a CSV/XLSX/PDF without leaving the canonical path or dropping to <code>MountRaw</code>. Set automatically by <code>HandleQueryAsCSVSpec</code> / <code>HandleQueryAsXLSXSpec</code>. Mutually exclusive with <code>Paged</code> and a non-nil <code>ResponseType</code> → panic at <code>Mount</code>; an empty <code>ContentType</code> also panics at <code>Mount</code>.</td></tr>
+            <tr><td><code>HasPathID</code></td><td>bool</td><td>Adds a string-typed <code>:id</code> path parameter when the route's Fiber path contains <code>:id</code> and the Request DTO didn't tag it. Auto-set on every wrapper that consumes <code>pipeline.CommandByID</code> / <code>queries.QueryByID</code>.</td></tr>
+            <tr><td><code>Paged</code></td><td>bool</td><td>Selects the paged success envelope: <code>data</code> becomes an array of <code>ResponseType</code> items and a top-level <code>pagination</code> property is added (<code>$ref</code> into <code>#/components/schemas/PaginationInfo</code>). Mirrors the runtime <code>fwweb.RespondPaged</code> shape. Auto-set on <code>QueryWithParamsSpec</code>; manual mounts opt in via <code>RouteSpecOfPaged[TReq, TResp]</code>. Paired with <code>fwresponses.None</code> or <code>nil ResponseType</code> → panic at <code>Mount</code>.</td></tr>
+            <tr><td><code>FileResponse</code></td><td><code>*FileResponseSpec</code></td><td>When non-nil, the success status is a raw <strong>file/stream download</strong> of <code>FileResponse.ContentType</code> (rendered as <code>content.&lt;type&gt;.schema = {type: string, format: binary}</code>) instead of the JSON envelope — completing the response taxonomy <code>{ResponseType envelope | Paged envelope | FileResponse}</code>. <code>RequestType</code> still drives the query/filter parameters and the error envelopes (401/403/422/500) are unchanged, so a typed query route can return a CSV/XLSX/PDF without leaving the canonical path or dropping to <code>MountRaw</code>. Set automatically by <code>QueryAsCSVSpec</code> / <code>QueryAsXLSXSpec</code>. Mutually exclusive with <code>Paged</code> and a non-nil <code>ResponseType</code> → panic at <code>Mount</code>; an empty <code>ContentType</code> also panics at <code>Mount</code>.</td></tr>
             <tr><td><code>RequiredPermission</code></td><td>string</td><td>The <code>resource:action</code> permission gated by <code>fwopenapi.RequirePermission(...)</code>. Appends <code>**Required permission:** `&lt;p&gt;`</code> to the operation description (suppressed when <code>auth.authorization.enabled=false</code> so the spec never advertises an unenforced constraint). Set by the <code>RequirePermission</code> <code>MountOption</code>, not by hand.</td></tr>
             <tr><td><code>OmittedQueryParams</code></td><td><code>[]string</code></td><td>Query parameter names (the <code>query:"X"</code> wire keys reflected from <code>RequestType</code>) to drop from the rendered parameters even though the Request DTO declares them. For a route that reuses a richer DTO but honors only a subset of its query knobs: the export <code>*Spec</code> wrappers reuse the JSON list's Request DTO yet ignore pagination, so they list <code>limit</code>/<code>after</code>/<code>before</code>/<code>onlyTotal</code> here and Swagger stops advertising a control the export does not honor. Matched by exact name against the query parameters; path parameters and honored filters are untouched. Empty for every other route.</td></tr>
         </tbody>
@@ -240,24 +240,24 @@
     <h3>Spec-aware wrapper siblings</h3>
     <p>Every canonical wrapper has a <code>*Spec</code> sibling that returns <code>(fiber.Handler, openapi.RouteSpec)</code>:</p>
     <ul>
-        <li><code>fwweb.HandleCommandWithBodySpec</code></li>
-        <li><code>fwweb.HandleCommandWithBodyIDSpec</code></li>
-        <li><code>fwweb.HandleCommandByIDSpec</code></li>
-        <li><code>fwweb.HandleQueryWithParamsSpec</code></li>
-        <li><code>fwweb.HandleQueryByIDSpec</code></li>
-        <li><code>fwweb.HandleQueryAsCSVSpec</code> / <code>fwweb.HandleQueryAsXLSXSpec</code> (and the generic <code>HandleQueryExportSpec</code>) — return <code>(handler, RouteSpec)</code> with <code>RequestType</code> + <code>FileResponse</code> + <code>OmittedQueryParams</code> prefilled, so a tabular export mounts via the canonical <code>Mount</code> just like any JSON route</li>
+        <li><code>fwweb.CommandWithBodySpec</code></li>
+        <li><code>fwweb.CommandWithBodyIDSpec</code></li>
+        <li><code>fwweb.CommandByIDSpec</code></li>
+        <li><code>fwweb.QueryWithParamsSpec</code></li>
+        <li><code>fwweb.QueryByIDSpec</code></li>
+        <li><code>fwweb.QueryAsCSVSpec</code> / <code>fwweb.QueryAsXLSXSpec</code> (and the generic <code>QueryExportSpec</code>) — return <code>(handler, RouteSpec)</code> with <code>RequestType</code> + <code>FileResponse</code> + <code>OmittedQueryParams</code> prefilled, so a tabular export mounts via the canonical <code>Mount</code> just like any JSON route</li>
     </ul>
     <p>Same generics, same arguments, same handler behavior. The sibling extracts <code>Strict</code> via type-assertion to <code>pipeline.FullBodyEnforcer</code> and sets <code>HasPathID=true</code> for every wrapper that auto-binds the Fiber <code>:id</code> segment.</p>
 
     <pre><code>// Before — works, but does not appear in /openapi.json:
-users.Post("/", fwweb.HandleCommandWithBody(d.Pipeline,
+users.Post("/", fwweb.CommandWithBody(d.Pipeline,
     requests.InsertUserRequest{},
     requests.InsertUserResponse{}.FromResult,
     &amp;handlers.InsertCommandHandler[...]{...},
     fiber.StatusCreated))
 
 // After — sibling + Mount; appears in the spec as well:
-insertH, insertSpec := fwweb.HandleCommandWithBodySpec(d.Pipeline,
+insertH, insertSpec := fwweb.CommandWithBodySpec(d.Pipeline,
     requests.InsertUserRequest{},
     requests.InsertUserResponse{}.FromResult,
     &amp;handlers.InsertCommandHandler[...]{...},
@@ -281,7 +281,7 @@ fwopenapi.Mount(d.OpenAPIRegistry, users, fiber.MethodPost, "/",
     fwopenapi.Doc{Summary: "Hard-delete (manual showcase)", Tags: []string{"Users — manual"}})</code></pre>
     <p>Consumers that need <code>RouteSpec.Strict</code> or <code>RouteSpec.HasPathID</code> (rare on the manual path — neither marker is auto-derivable from the hand-rolled handler) build a hand-written <code>RouteSpec</code> literal instead. <code>RouteSpecOf</code> is the common-case shortcut, not the only path.</p>
 
-    <p>For a manual paged GET that emits via <code>fwweb.RespondPaged</code>, pair the same <code>openapi.Mount</code> with the paged sibling <code>fwopenapi.RouteSpecOfPaged[TReq, TResp]</code>. The flag flips the success envelope to <code>data: array&lt;TResp&gt;</code> + <code>pagination: $ref(PaginationInfo)</code> so the rendered spec matches the wire shape — same flag the canonical <code>HandleQueryWithParamsSpec</code> sets automatically:</p>
+    <p>For a manual paged GET that emits via <code>fwweb.RespondPaged</code>, pair the same <code>openapi.Mount</code> with the paged sibling <code>fwopenapi.RouteSpecOfPaged[TReq, TResp]</code>. The flag flips the success envelope to <code>data: array&lt;TResp&gt;</code> + <code>pagination: $ref(PaginationInfo)</code> so the rendered spec matches the wire shape — same flag the canonical <code>QueryWithParamsSpec</code> sets automatically:</p>
     <pre><code>fwopenapi.Mount(d.OpenAPIRegistry, group, fiber.MethodGet, "/",
     customListUsers(d.Pipeline, h, parser),
     fwopenapi.RouteSpecOfPaged[requests.FindUsersCustomRequest, requests.FindUsersCustomResponse](
@@ -318,7 +318,7 @@ spec.Examples = map[string]fwopenapi.Example{"alice": {Value: WhoamiResponse{Sub
         <li><strong><code>RawSpec.Parameters</code>.</strong> Raw routes declare each parameter inline via <code>PathParam</code> / <code>QueryParam</code> or a <code>Parameter</code> literal. The framework normalizes <code>Required=true</code> for every <code>InPath</code> entry at registration time.</li>
     </ol>
 
-    <p><strong>Operator coverage</strong> — the operators a <code>filter:</code> tag may declare match the operators <code>HandleQueryWithParams</code> recognizes at runtime: <code>eq</code> (default, no suffix), <code>ne</code>, <code>in</code>, <code>nin</code>, <code>gte</code>, <code>lte</code>, <code>gt</code>, <code>lt</code>, <code>startswith</code>, <code>contains</code>, <code>ieq</code>, <code>ine</code>, <code>iin</code>, <code>inin</code>, <code>istartswith</code>, <code>icontains</code>. Each surfaces as its own query parameter in the rendered spec.</p>
+    <p><strong>Operator coverage</strong> — the operators a <code>filter:</code> tag may declare match the operators <code>QueryWithParams</code> recognizes at runtime: <code>eq</code> (default, no suffix), <code>ne</code>, <code>in</code>, <code>nin</code>, <code>gte</code>, <code>lte</code>, <code>gt</code>, <code>lt</code>, <code>startswith</code>, <code>contains</code>, <code>ieq</code>, <code>ine</code>, <code>iin</code>, <code>inin</code>, <code>istartswith</code>, <code>icontains</code>. Each surfaces as its own query parameter in the rendered spec.</p>
 
     <h3>Spec lifecycle — Registry, Components, lazy build</h3>
     <p>The framework builds the spec lazily and caches it for the lifetime of the service. The relevant types:</p>

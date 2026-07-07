@@ -51,7 +51,7 @@ func dispatchCoerce(t *testing.T, query string) (queries.ReadCriteria, int) {
 	app := fiber.New()
 	pipe := newTestPipeline()
 	h := &capturingCoerceHandler{}
-	app.Get("/x", HandleQueryWithParams(pipe, testCoerceRequest{}, responses.RawDoc, h))
+	app.Get("/x", QueryWithParams(pipe, testCoerceRequest{}, responses.RawDoc, h))
 
 	resp, err := app.Test(httptest.NewRequest("GET", "/x"+query, nil))
 	if err != nil {

@@ -66,7 +66,7 @@ func (c badInsertCmd) FromEntity(_ *configuration.AppContext, _ *noModeEntity) (
 }
 
 type badIDCmd struct {
-	pipeline.CommandBaseWithID
+	pipeline.CommandByIDBase
 }
 
 func (c *badIDCmd) ApplyTo(_ *configuration.AppContext, _ *noModeEntity) error { return nil }
@@ -75,7 +75,7 @@ func (c *badIDCmd) FromEntity(_ *configuration.AppContext, _ *noModeEntity) (fwr
 }
 
 type badPatchCmd struct {
-	pipeline.CommandBaseWithID
+	pipeline.CommandByIDBase
 }
 
 func (c *badPatchCmd) ApplyPartiallyTo(_ *configuration.AppContext, _ *noModeEntity) error {

@@ -52,7 +52,7 @@ func dispatchPartial(t *testing.T, query string) (queries.ReadCriteria, int) {
 	app := fiber.New()
 	pipe := newTestPipeline()
 	h := &capturingPartialHandler{}
-	app.Get("/users", HandleQueryWithParams(pipe, testFindPartialRequest{}, responses.RawDoc, h))
+	app.Get("/users", QueryWithParams(pipe, testFindPartialRequest{}, responses.RawDoc, h))
 
 	resp, err := app.Test(httptest.NewRequest("GET", "/users"+query, nil))
 	if err != nil {

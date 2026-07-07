@@ -12,7 +12,7 @@ import (
 
 // ProjectionSchema is the cached reflection result for a Response DTO:
 // every accepted dotted wire path → its corresponding Go field path. Used by
-// HandleQueryWithParams to validate `?fields=` / `?sort=` tokens against the
+// QueryWithParams to validate `?fields=` / `?sort=` tokens against the
 // declared Response shape and translate them into the Go field vocabulary
 // (the struct field-name path; nested struct + slice-of-struct paths walked
 // segment-by-segment). The MongoViewReader then maps the Go path → physical

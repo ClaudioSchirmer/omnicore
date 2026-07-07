@@ -29,7 +29,7 @@
         </thead>
         <tbody>
             <tr>
-                <td><code>HandleQueryWithParams</code><br><span class="muted">GET /users</span></td>
+                <td><code>QueryWithParams</code><br><span class="muted">GET /users</span></td>
                 <td><code>FindByParamsQueryHandler</code></td>
                 <td>
                     <code>req.ToQuery(criteria)</code> (web boundary — no ctx) →
@@ -40,7 +40,7 @@
                 <td><code>{ data: []R, pagination: *PaginationInfo }</code> — items projected per doc</td>
             </tr>
             <tr>
-                <td><code>HandleQueryByID</code><br><span class="muted">GET /users/:id</span></td>
+                <td><code>QueryByID</code><br><span class="muted">GET /users/:id</span></td>
                 <td><code>FindByIDQueryHandler</code></td>
                 <td>
                     <code>req.ToQuery()</code> + <code>q.SetPathID(c.Params("id"))</code> →
@@ -51,7 +51,7 @@
                 <td><code>{ data: R }</code>; miss (or filtered out by an overlay) → 404 <code>RecordNotFoundNotification</code></td>
             </tr>
             <tr>
-                <td><code>HandleQueryWithParams</code> + <code>?onlyTotal=true</code><br><span class="muted">GET /users?onlyTotal=true</span></td>
+                <td><code>QueryWithParams</code> + <code>?onlyTotal=true</code><br><span class="muted">GET /users?onlyTotal=true</span></td>
                 <td><code>FindByParamsQueryHandler</code></td>
                 <td>same as the listing row; <code>OnlyTotal</code> flows into <code>ReadCriteria.OnlyTotal</code></td>
                 <td><code>ReadPage</code> short-circuits</td>
@@ -59,7 +59,7 @@
                 <td><code>{ pagination: *TotalOnlyPagination{total} }</code> — no <code>data</code>, no cursors</td>
             </tr>
             <tr>
-                <td><code>HandleQueryAsCSV</code> / <code>HandleQueryAsXLSX</code><br><span class="muted">GET /users.csv · .xlsx</span></td>
+                <td><code>QueryAsCSV</code> / <code>QueryAsXLSX</code><br><span class="muted">GET /users.csv · .xlsx</span></td>
                 <td><code>FindByParamsQueryHandler</code> (the SAME handler as the listing row)</td>
                 <td>same as the listing row; the wrapper sets <code>ReadCriteria.BypassMaxLimit</code> and drops user pagination (<code>limit</code>/<code>after</code>/<code>before</code>/<code>onlyTotal</code>)</td>
                 <td><code>ReadPage(view, criteria)</code></td>

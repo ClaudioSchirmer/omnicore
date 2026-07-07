@@ -2,7 +2,7 @@ package pipeline
 
 // FullBody is an embeddable struct-marker that handlers use to signal
 // "I require ALL exported fields of Cmd present in the body JSON before
-// dispatch". The Fiber wrapper (web.HandleCommand/HandleCommandByID)
+// dispatch". The Fiber wrapper (web.Command/CommandByID)
 // inspects this marker via type-assertion to FullBodyEnforcer and, when
 // present, runs the reflective JSON presence check. Missing field → 400 with
 // RequiredFieldNotification (carrying SemanticSchema) per missing field, via

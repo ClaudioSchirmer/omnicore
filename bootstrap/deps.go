@@ -62,7 +62,7 @@ type Deps struct {
 	// Export pre-packages the service-ambient inputs every tabular export
 	// (CSV/XLSX) shares — the Translator (labelKey header rendering) and the
 	// yaml default row ceiling (cfg.Query.MaxExportRows). The consumer threads
-	// it straight into fwweb.HandleQueryAsCSVSpec / …XLSXSpec alongside the
+	// it straight into fwweb.QueryAsCSVSpec / …XLSXSpec alongside the
 	// view, so export routes stop spelling out d.Translator +
 	// d.Config.Query.MaxExportRows by hand. Always populated by bootstrap.Run.
 	Export web.ExportDeps

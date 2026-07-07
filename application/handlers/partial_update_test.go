@@ -10,7 +10,7 @@ import (
 )
 
 type testPatchCmd struct {
-	pipeline.CommandBaseWithID
+	pipeline.CommandByIDBase
 	NewName *string
 }
 

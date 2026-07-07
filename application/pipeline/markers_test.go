@@ -65,7 +65,7 @@ func TestPathIDRequired_AbsentDoesNotSatisfy(t *testing.T) {
 }
 
 func TestCommandBaseWithID_SetPathID_PathID(t *testing.T) {
-	c := &CommandBaseWithID{}
+	c := &CommandByIDBase{}
 	if got := c.PathID(); got != "" {
 		t.Errorf("default PathID = %q, want empty", got)
 	}
@@ -82,10 +82,10 @@ func TestCommandBaseWithID_SetPathID_PathID(t *testing.T) {
 
 func TestCommandBaseWithID_SatisfiesCommandWithID(t *testing.T) {
 	type cmd struct {
-		CommandBaseWithID
+		CommandByIDBase
 	}
 	var v any = &cmd{}
-	if _, ok := v.(CommandWithID); !ok {
-		t.Fatal("struct embedding CommandBaseWithID should satisfy CommandWithID")
+	if _, ok := v.(CommandByID); !ok {
+		t.Fatal("struct embedding CommandByIDBase should satisfy CommandByID")
 	}
 }

@@ -33,7 +33,7 @@
     </p>
     <pre><code>// application/commands/insert_user.go
 type InsertUserCommand struct {
-    pipeline.CommandBase
+    pipeline.CommandWithBodyBase
     Name  string
     Email string
 }

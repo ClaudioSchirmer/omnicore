@@ -68,7 +68,7 @@ func TestHandleQueryWithParams_UnknownFieldReturns400(t *testing.T) {
 	pipe := newTestPipeline()
 	h := &capturingParamsHandler{}
 
-	app.Get("/users", HandleQueryWithParams(pipe, testFindParamsRequest{}, responses.RawDoc, h))
+	app.Get("/users", QueryWithParams(pipe, testFindParamsRequest{}, responses.RawDoc, h))
 
 	resp, err := app.Test(httptest.NewRequest("GET", "/users?role=admin", nil))
 	if err != nil {
@@ -88,7 +88,7 @@ func TestHandleQueryWithParams_OperatorOutsideDeclaredListReturns400(t *testing.
 	pipe := newTestPipeline()
 	h := &capturingParamsHandler{}
 
-	app.Get("/users", HandleQueryWithParams(pipe, testFindParamsRequest{}, responses.RawDoc, h))
+	app.Get("/users", QueryWithParams(pipe, testFindParamsRequest{}, responses.RawDoc, h))
 
 	// name has `filter:"eq"` only — using .in must 400.
 	resp, _ := app.Test(httptest.NewRequest("GET", "/users?name.in=Jane,Mary", nil))
@@ -105,7 +105,7 @@ func TestHandleQueryWithParams_AllowedOperatorAssemblesCriteria(t *testing.T) {
 	pipe := newTestPipeline()
 	h := &capturingParamsHandler{}
 
-	app.Get("/users", HandleQueryWithParams(pipe, testFindParamsRequest{}, responses.RawDoc, h))
+	app.Get("/users", QueryWithParams(pipe, testFindParamsRequest{}, responses.RawDoc, h))
 
 	resp, _ := app.Test(httptest.NewRequest("GET", "/users?email.in=a@x.com,b@y.com&limit=20&sort=-name", nil))
 	if resp.StatusCode != fiber.StatusOK {
@@ -136,7 +136,7 @@ func TestHandleQueryWithParams_EmptyQueryStringStillCallsHandler(t *testing.T) {
 	pipe := newTestPipeline()
 	h := &capturingParamsHandler{}
 
-	app.Get("/users", HandleQueryWithParams(pipe, testFindParamsRequest{}, responses.RawDoc, h))
+	app.Get("/users", QueryWithParams(pipe, testFindParamsRequest{}, responses.RawDoc, h))
 
 	resp, _ := app.Test(httptest.NewRequest("GET", "/users", nil))
 	if resp.StatusCode != fiber.StatusOK {
@@ -156,7 +156,7 @@ func TestHandleQueryWithParams_AppContextFlowsIntoToCriteria(t *testing.T) {
 	pipe := newTestPipeline()
 	h := &capturingParamsHandler{}
 
-	app.Get("/users", HandleQueryWithParams(pipe, testFindParamsRequest{}, responses.RawDoc, h))
+	app.Get("/users", QueryWithParams(pipe, testFindParamsRequest{}, responses.RawDoc, h))
 
 	req := httptest.NewRequest("GET", "/users", nil)
 	req.Header.Set("Accept-Language", "en")
@@ -174,7 +174,7 @@ func TestHandleQueryWithParams_ResponseEnvelopeShape(t *testing.T) {
 	pipe := newTestPipeline()
 	h := &capturingParamsHandler{}
 
-	app.Get("/users", HandleQueryWithParams(pipe, testFindParamsRequest{}, responses.RawDoc, h))
+	app.Get("/users", QueryWithParams(pipe, testFindParamsRequest{}, responses.RawDoc, h))
 
 	resp, _ := app.Test(httptest.NewRequest("GET", "/users", nil))
 	body, _ := io.ReadAll(resp.Body)
@@ -207,7 +207,7 @@ func TestHandleQueryWithParams_ResponseEnvelopeShape(t *testing.T) {
 //
 // testUserSummary follows the sparse-render contract enforced by the boot
 // guard whenever a Request DTO declares `query:"fields"` and is consumed
-// by HandleQueryWithParams with a struct Response: every field is *T +
+// by QueryWithParams with a struct Response: every field is *T +
 // ,omitempty so encoding/json elides absent values cleanly.
 type testUserSummary struct {
 	ID   *string `json:"id,omitempty"`
@@ -245,7 +245,7 @@ func TestHandleQueryWithParams_CustomProjectorReshapesData(t *testing.T) {
 		Total: 2,
 	}}
 
-	app.Get("/users", HandleQueryWithParams(pipe, testFindParamsRequest{}, summaryFromDoc, h))
+	app.Get("/users", QueryWithParams(pipe, testFindParamsRequest{}, summaryFromDoc, h))
 
 	resp, _ := app.Test(httptest.NewRequest("GET", "/users", nil))
 	body, _ := io.ReadAll(resp.Body)
@@ -273,7 +273,7 @@ type testFindIDRequest struct {
 }
 
 type testFindIDQuery struct {
-	queries.QueryBaseWithID
+	queries.QueryByIDBase
 	IncludeArchived bool
 	SeenLang        configuration.Language
 }
@@ -299,7 +299,7 @@ type capturingIDHandler struct {
 func (h *capturingIDHandler) Handle(ctx *configuration.AppContext, q *testFindIDQuery) (map[string]any, error) {
 	h.got = q
 	_, _ = q.ToCriteria(ctx)
-	return map[string]any{"id": q.GetID().String()}, nil
+	return map[string]any{"id": q.PathID().String()}, nil
 }
 
 func TestHandleQueryByID_AcceptsIncludeArchivedParam(t *testing.T) {
@@ -307,7 +307,7 @@ func TestHandleQueryByID_AcceptsIncludeArchivedParam(t *testing.T) {
 	pipe := newTestPipeline()
 	h := &capturingIDHandler{}
 
-	app.Get("/users/:id", HandleQueryByID(pipe, testFindIDRequest{}, responses.RawDoc, h))
+	app.Get("/users/:id", QueryByID(pipe, testFindIDRequest{}, responses.RawDoc, h))
 
 	resp, _ := app.Test(httptest.NewRequest("GET", "/users/abc?includeArchived=true", nil))
 	if resp.StatusCode != fiber.StatusOK {
@@ -320,8 +320,8 @@ func TestHandleQueryByID_AcceptsIncludeArchivedParam(t *testing.T) {
 	if !h.got.IncludeArchived {
 		t.Error("expected IncludeArchived=true to flow from ?includeArchived=true")
 	}
-	if h.got.GetID().Value() != "abc" {
-		t.Errorf("expected GetID()='abc', got %q", h.got.GetID().Value())
+	if h.got.PathID().Value() != "abc" {
+		t.Errorf("expected PathID()='abc', got %q", h.got.PathID().Value())
 	}
 }
 
@@ -330,7 +330,7 @@ func TestHandleQueryByID_RejectsExtraParamWith400(t *testing.T) {
 	pipe := newTestPipeline()
 	h := &capturingIDHandler{}
 
-	app.Get("/users/:id", HandleQueryByID(pipe, testFindIDRequest{}, responses.RawDoc, h))
+	app.Get("/users/:id", QueryByID(pipe, testFindIDRequest{}, responses.RawDoc, h))
 
 	resp, _ := app.Test(httptest.NewRequest("GET", "/users/abc?role=admin", nil))
 	if resp.StatusCode != fiber.StatusBadRequest {
@@ -346,7 +346,7 @@ func TestHandleQueryByID_NoQueryStringDefaults(t *testing.T) {
 	pipe := newTestPipeline()
 	h := &capturingIDHandler{}
 
-	app.Get("/users/:id", HandleQueryByID(pipe, testFindIDRequest{}, responses.RawDoc, h))
+	app.Get("/users/:id", QueryByID(pipe, testFindIDRequest{}, responses.RawDoc, h))
 
 	resp, _ := app.Test(httptest.NewRequest("GET", "/users/abc", nil))
 	if resp.StatusCode != fiber.StatusOK {
@@ -363,7 +363,7 @@ func TestHandleQueryByID_AppContextFlowsIntoToCriteria(t *testing.T) {
 	pipe := newTestPipeline()
 	h := &capturingIDHandler{}
 
-	app.Get("/users/:id", HandleQueryByID(pipe, testFindIDRequest{}, responses.RawDoc, h))
+	app.Get("/users/:id", QueryByID(pipe, testFindIDRequest{}, responses.RawDoc, h))
 
 	req := httptest.NewRequest("GET", "/users/abc", nil)
 	req.Header.Set("Accept-Language", "fr")
@@ -380,7 +380,7 @@ func TestHandleQueryByID_AppContextFlowsIntoToCriteria(t *testing.T) {
 type idDocHandler struct{}
 
 func (h *idDocHandler) Handle(_ *configuration.AppContext, q *testFindIDQuery) (map[string]any, error) {
-	return map[string]any{"id": q.GetID().String(), "name": "Carol", "email": "c@x.com"}, nil
+	return map[string]any{"id": q.PathID().String(), "name": "Carol", "email": "c@x.com"}, nil
 }
 
 // TestHandleQueryByID_CustomProjectorReshapesData proves the projector
@@ -391,7 +391,7 @@ func TestHandleQueryByID_CustomProjectorReshapesData(t *testing.T) {
 	pipe := newTestPipeline()
 	h := &idDocHandler{}
 
-	app.Get("/users/:id", HandleQueryByID(pipe, testFindIDRequest{}, summaryFromDoc, h))
+	app.Get("/users/:id", QueryByID(pipe, testFindIDRequest{}, summaryFromDoc, h))
 
 	resp, _ := app.Test(httptest.NewRequest("GET", "/users/abc", nil))
 	body, _ := io.ReadAll(resp.Body)
@@ -621,7 +621,7 @@ func TestSortParam_UnknownTokenReturns400WithBracketedField(t *testing.T) {
 	app := fiber.New()
 	pipe := newTestPipeline()
 	h := &capturingParamsHandler{}
-	app.Get("/users", HandleQueryWithParams(pipe, testFindParamsRequest{}, func(_ map[string]any) sparseUser {
+	app.Get("/users", QueryWithParams(pipe, testFindParamsRequest{}, func(_ map[string]any) sparseUser {
 		return sparseUser{}
 	}, h))
 
@@ -649,7 +649,7 @@ func TestSortParam_UnknownTokenWithMinusPrefixPreservesPrefixInError(t *testing.
 	app := fiber.New()
 	pipe := newTestPipeline()
 	h := &capturingParamsHandler{}
-	app.Get("/users", HandleQueryWithParams(pipe, testFindParamsRequest{}, func(_ map[string]any) sparseUser {
+	app.Get("/users", QueryWithParams(pipe, testFindParamsRequest{}, func(_ map[string]any) sparseUser {
 		return sparseUser{}
 	}, h))
 
@@ -674,7 +674,7 @@ func TestSortParam_KnownTokenTranslatesToDocPath(t *testing.T) {
 	app := fiber.New()
 	pipe := newTestPipeline()
 	h := &capturingParamsHandler{}
-	app.Get("/users", HandleQueryWithParams(pipe, testFindParamsRequest{}, func(_ map[string]any) sparseUser {
+	app.Get("/users", QueryWithParams(pipe, testFindParamsRequest{}, func(_ map[string]any) sparseUser {
 		return sparseUser{}
 	}, h))
 
@@ -697,7 +697,7 @@ func TestSortParam_NestedViewTagOverride(t *testing.T) {
 	app := fiber.New()
 	pipe := newTestPipeline()
 	h := &capturingParamsHandler{}
-	app.Get("/users", HandleQueryWithParams(pipe, testFindParamsRequest{}, func(_ map[string]any) sparseUser {
+	app.Get("/users", QueryWithParams(pipe, testFindParamsRequest{}, func(_ map[string]any) sparseUser {
 		return sparseUser{}
 	}, h))
 
@@ -717,7 +717,7 @@ func TestSortParam_MinusPrefixSetsDesc(t *testing.T) {
 	app := fiber.New()
 	pipe := newTestPipeline()
 	h := &capturingParamsHandler{}
-	app.Get("/users", HandleQueryWithParams(pipe, testFindParamsRequest{}, func(_ map[string]any) sparseUser {
+	app.Get("/users", QueryWithParams(pipe, testFindParamsRequest{}, func(_ map[string]any) sparseUser {
 		return sparseUser{}
 	}, h))
 
@@ -737,7 +737,7 @@ func TestSortParam_MultipleTokensIndependentDirections(t *testing.T) {
 	app := fiber.New()
 	pipe := newTestPipeline()
 	h := &capturingParamsHandler{}
-	app.Get("/users", HandleQueryWithParams(pipe, testFindParamsRequest{}, func(_ map[string]any) sparseUser {
+	app.Get("/users", QueryWithParams(pipe, testFindParamsRequest{}, func(_ map[string]any) sparseUser {
 		return sparseUser{}
 	}, h))
 
@@ -794,7 +794,7 @@ func TestSortParam_OptInWithoutFieldsBuildsProjSchema(t *testing.T) {
 	app := fiber.New()
 	pipe := newTestPipeline()
 	h := &capturingParamsHandler{}
-	app.Get("/users", HandleQueryWithParams(pipe, testFindSortOnlyRequest{}, func(_ map[string]any) sparseUser {
+	app.Get("/users", QueryWithParams(pipe, testFindSortOnlyRequest{}, func(_ map[string]any) sparseUser {
 		return sparseUser{}
 	}, h))
 
@@ -807,7 +807,7 @@ func TestSortParam_OptInWithoutFieldsBuildsProjSchema(t *testing.T) {
 	// Valid token must translate via PascalToSnake.
 	h2 := &capturingParamsHandler{}
 	app2 := fiber.New()
-	app2.Get("/users", HandleQueryWithParams(pipe, testFindSortOnlyRequest{}, func(_ map[string]any) sparseUser {
+	app2.Get("/users", QueryWithParams(pipe, testFindSortOnlyRequest{}, func(_ map[string]any) sparseUser {
 		return sparseUser{}
 	}, h2))
 	_, _ = app2.Test(httptest.NewRequest("GET", "/users?sort=-addresses.zipCode", nil))
@@ -827,7 +827,7 @@ func TestSortParam_RawDocResponseFallsBackToPassThrough(t *testing.T) {
 	app := fiber.New()
 	pipe := newTestPipeline()
 	h := &capturingParamsHandler{}
-	app.Get("/users", HandleQueryWithParams(pipe, testFindParamsRequest{}, responses.RawDoc, h))
+	app.Get("/users", QueryWithParams(pipe, testFindParamsRequest{}, responses.RawDoc, h))
 
 	_, _ = app.Test(httptest.NewRequest("GET", "/users?sort=anything,-not_in_any_schema", nil))
 	if h.got == nil {

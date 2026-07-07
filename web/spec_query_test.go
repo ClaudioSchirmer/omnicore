@@ -50,7 +50,7 @@ func (specParamsHandler) Handle(_ *configuration.AppContext, _ *specParamsQuery)
 
 type specByIDQuery struct {
 	pipeline.RequestBase
-	queries.QueryBaseWithID
+	queries.QueryByIDBase
 }
 
 func (specByIDQuery) ToCriteria(_ *configuration.AppContext) (queries.ReadCriteria, error) {
@@ -74,15 +74,15 @@ func (specByIDHandler) Handle(_ *configuration.AppContext, _ *specByIDQuery) (ma
 func projectRaw(doc map[string]any) specPageItem { return specPageItem{}.FromDoc(doc) }
 
 // Ensure the fixture wiring is sound so the package still compiles when the
-// underlying queries.QueryBaseWithID API drifts — touches both helpers we
+// underlying queries.QueryByIDBase API drifts — touches both helpers we
 // rely on.
 var _ = domain.NewRandomID
 
-// ─── HandleQueryWithParamsSpec ─────────────────────────────────────────────
+// ─── QueryWithParamsSpec ─────────────────────────────────────────────
 
 func TestHandleQueryWithParamsSpec_BasicShape(t *testing.T) {
 	pipe := pipeline.New(translation.New())
-	h, spec := HandleQueryWithParamsSpec[
+	h, spec := QueryWithParamsSpec[
 		specParamsReq, *specParamsQuery, specPageItem,
 	](pipe, specParamsReq{}, projectRaw, specParamsHandler{})
 
@@ -99,21 +99,21 @@ func TestHandleQueryWithParamsSpec_BasicShape(t *testing.T) {
 		t.Fatalf("SuccessStatus: got %d, want 200", spec.SuccessStatus)
 	}
 	if spec.HasPathID {
-		t.Fatal("HandleQueryWithParams has no :id binding; HasPathID must be false")
+		t.Fatal("QueryWithParams has no :id binding; HasPathID must be false")
 	}
 	if spec.Strict {
 		t.Fatal("read-side wrappers do not consult FullBody; Strict must be false")
 	}
 	if !spec.Paged {
-		t.Fatal("HandleQueryWithParams emits via RespondPaged; Paged must be true so the spec mirrors data:[]R + pagination")
+		t.Fatal("QueryWithParams emits via RespondPaged; Paged must be true so the spec mirrors data:[]R + pagination")
 	}
 }
 
-// ─── HandleQueryByIDSpec ─────────────────────────────────────────────────
+// ─── QueryByIDSpec ─────────────────────────────────────────────────
 
 func TestHandleQueryByIDSpec_HasPathID(t *testing.T) {
 	pipe := pipeline.New(translation.New())
-	h, spec := HandleQueryByIDSpec[
+	h, spec := QueryByIDSpec[
 		specByIDReq, *specByIDQuery, specPageItem,
 	](pipe, specByIDReq{}, projectRaw, specByIDHandler{})
 
@@ -121,7 +121,7 @@ func TestHandleQueryByIDSpec_HasPathID(t *testing.T) {
 		t.Fatal("handler should not be nil")
 	}
 	if !spec.HasPathID {
-		t.Fatal("HandleQueryByID auto-binds :id; HasPathID must be true")
+		t.Fatal("QueryByID auto-binds :id; HasPathID must be true")
 	}
 	if spec.RequestType == nil || spec.RequestType.Name() != "specByIDReq" {
 		t.Fatalf("RequestType: got %+v, want specByIDReq", spec.RequestType)
@@ -133,6 +133,6 @@ func TestHandleQueryByIDSpec_HasPathID(t *testing.T) {
 		t.Fatalf("SuccessStatus: got %d, want 200", spec.SuccessStatus)
 	}
 	if spec.Paged {
-		t.Fatal("HandleQueryByID is single-item — Paged must stay false")
+		t.Fatal("QueryByID is single-item — Paged must stay false")
 	}
 }

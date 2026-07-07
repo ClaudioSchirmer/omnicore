@@ -11,8 +11,8 @@
     </p>
     <table>
         <tbody><tr><th>Operation</th><th>HTTP wrapper</th><th>Auto handler</th><th>ViewReader call</th></tr>
-        <tr><td>Paged listing (<code>GET /users</code>)</td><td><code>fwweb.HandleQueryWithParams</code></td><td><code>FindByParamsQueryHandler[*Q]</code></td><td><code>ReadPage</code></td></tr>
-        <tr><td>By-id lookup (<code>GET /users/:id</code>)</td><td><code>fwweb.HandleQueryByID</code></td><td><code>FindByIDQueryHandler[*Q]</code></td><td><code>ReadByID</code></td></tr>
+        <tr><td>Paged listing (<code>GET /users</code>)</td><td><code>fwweb.QueryWithParams</code></td><td><code>FindByParamsQueryHandler[*Q]</code></td><td><code>ReadPage</code></td></tr>
+        <tr><td>By-id lookup (<code>GET /users/:id</code>)</td><td><code>fwweb.QueryByID</code></td><td><code>FindByIDQueryHandler[*Q]</code></td><td><code>ReadByID</code></td></tr>
     </tbody></table>
     <p>
         The <a href="#query-side">QueryHandler · CQRS</a> page covers the concept and the end-to-end flow
@@ -26,7 +26,7 @@
         The wire boundary lives in two HTTP wrappers in <code>web/</code>:
     </p>
     <ul>
-        <li><code>fwweb.HandleQueryWithParams(pipe, sample, projector, h)</code> — paged listing (<code>GET /users</code>).
+        <li><code>fwweb.QueryWithParams(pipe, sample, projector, h)</code> — paged listing (<code>GET /users</code>).
             Validates the query string against the Request DTO's <code>query:"X" filter:"ops"</code> tags,
             assembles a <code>queries.ReadCriteria</code>, calls
             <code>req.ToQuery(criteria)</code> — pure body mapping at the boundary, no ctx.
@@ -37,7 +37,7 @@
             <code>projector</code> and returns the standard <code>Response</code> envelope with
             <code>data</code> as the projected items array and <code>pagination</code> as a top-level
             field.</li>
-        <li><code>fwweb.HandleQueryByID(pipe, sample, projector, h)</code> — by-id lookup (<code>GET /users/:id</code>).
+        <li><code>fwweb.QueryByID(pipe, sample, projector, h)</code> — by-id lookup (<code>GET /users/:id</code>).
             Only <code>?includeArchived=true</code> is reserved; any other query parameter produces 400.
             Calls <code>req.ToQuery()</code> (no ctx), injects the path id via <code>q.SetPathID(...)</code>,
             dispatches via <code>FindByIDQueryHandler[*Q]</code> which calls <code>q.ToCriteria(ctx)</code>
@@ -47,6 +47,17 @@
             <code>RecordNotFoundNotification</code>. An overlay filter that filters the doc out
             is indistinguishable from absence at this layer: both surface as 404.</li>
     </ul>
+    <div class="note">
+        <strong>Deterministic rule</strong>, same as the write side: the base to embed on the Query is the
+        constructor name plus the <code>Base</code> suffix — <code>QueryWithParams</code> →
+        <code>queries.QueryWithParamsBase</code>, <code>QueryByID</code> → <code>queries.QueryByIDBase</code>.
+        The same names are the role interfaces the constructors demand (<code>queries.QueryWithParams</code>
+        requires <code>ToCriteria(ctx)</code>; <code>queries.QueryByID</code> adds
+        <code>SetPathID</code>/<code>PathID()</code> — the exact pair <code>pipeline.CommandByID</code> carries on
+        the write side — plus <code>ContextName()</code>). The rule holds on GraphQL
+        (<code>graphql.QueryWithParams</code>; by-id reads are a <code>where</code> filter on the connection, by
+        design) and gRPC (<code>grpc.QueryWithParams</code>, <code>grpc.QueryByID</code>).
+    </div>
     <p>
         The projector (third argument) is mandatory and has signature
         <code>func(map[string]any) R</code>. Three canonical projectors ship with the framework:
@@ -122,9 +133,9 @@
         <tr><td>Set up <code>SyncEngine</code> to populate the view</td><td><span class="tag manual">manual</span></td><td>service boot</td></tr>
         <tr><td>Declare the allowlist of fields + operators</td><td><span class="tag manual">manual</span></td><td>Request DTO struct tags (<code>query:"X" filter:"ops"</code>)</td></tr>
         <tr><td>Declare the wire output shape</td><td><span class="tag manual">manual</span></td><td>Response DTO struct with <code>json:"&lt;wire&gt;"</code> tags only (the doc is already Go-keyed by the reader — no source-key override), co-located with the Request in the same <code>web/requests/find_xxx_request.go</code> file. Pair with <code>fwresponses.AutoFromDoc[Response]</code> (tag-driven default), <code>fwresponses.RawDoc</code> (raw passthrough), or a consumer <code>Response{}.FromDoc</code> method (custom logic).</td></tr>
-        <tr><td>Query string parsing (filters, sort, fields, pagination)</td><td><span class="tag auto">automatic</span></td><td><code>HandleQueryWithParams</code> wrapper</td></tr>
-        <tr><td>Reject unknown field / disallowed operator with 400</td><td><span class="tag auto">automatic</span></td><td><code>HandleQueryWithParams</code> + <code>SchemaViolationNotification</code></td></tr>
-        <tr><td>Project each <code>page.Items</code> doc to the wire shape</td><td><span class="tag auto">automatic</span></td><td><code>HandleQueryWithParams</code> applies the consumer's projector per doc; <code>fwweb.ProjectPage</code> / <code>fwweb.RespondPaged</code> available for manual handlers</td></tr>
+        <tr><td>Query string parsing (filters, sort, fields, pagination)</td><td><span class="tag auto">automatic</span></td><td><code>QueryWithParams</code> wrapper</td></tr>
+        <tr><td>Reject unknown field / disallowed operator with 400</td><td><span class="tag auto">automatic</span></td><td><code>QueryWithParams</code> + <code>SchemaViolationNotification</code></td></tr>
+        <tr><td>Project each <code>page.Items</code> doc to the wire shape</td><td><span class="tag auto">automatic</span></td><td><code>QueryWithParams</code> applies the consumer's projector per doc; <code>fwweb.ProjectPage</code> / <code>fwweb.RespondPaged</code> available for manual handlers</td></tr>
         <tr><td>Validate the query string in a manual handler (typed Response, may opt into <code>?fields=</code> / <code>?sort=</code>)</td><td><span class="tag auto">automatic</span></td><td><code>fwweb.NewQueryParser[Req, Resp]()</code> at Mount — runs the canonical boot scan (sparse-render guard + sort opt-in <code>slog.Warn</code> + projection schema). Per request: <code>parser.Parse(c)</code>; pair with <code>fwweb.RespondSchemaViolation</code>.</td></tr>
         <tr><td>Validate the query string in a manual handler (RawDoc Response OR no reserved-key opt-in)</td><td><span class="tag auto">automatic</span></td><td><code>fwweb.ParseCriteria(c, requestDTO)</code> — same reflection-based allowlist, projection schema nil (pass-through); pair with <code>fwweb.RespondSchemaViolation</code></td></tr>
         <tr><td>Filter operators (<code>.gte/.lte/.gt/.lt/.ne/.in/.nin</code>)</td><td><span class="tag auto">automatic</span></td><td><code>queryschema.ApplyFilterParam</code></td></tr>
@@ -213,8 +224,8 @@ type AddressFilterParams struct {
     <ol>
         <li>
             <strong>Boot guard.</strong> At wrapper construction
-            (<code>HandleQueryWithParams</code> /
-            <code>HandleQueryWithParamsSpec</code>), the framework walks <code>R</code> recursively
+            (<code>QueryWithParams</code> /
+            <code>QueryWithParamsSpec</code>), the framework walks <code>R</code> recursively
             and panics if any exported field is not <code>*T</code> (or a slice/map) <em>and</em>
             does not carry <code>,omitempty</code> in its <code>json</code> tag. The panic
             diagnostic names every offending field path
@@ -260,13 +271,13 @@ type AddressFilterParams struct {
     <p>
         The boot guard is opt-in by declaration: a Request DTO that does not carry
         <code>query:"fields"</code> imposes no constraint on its Response type; the
-        <code>HandleQueryWithParams</code> wrapper paired with a custom projector returning
+        <code>QueryWithParams</code> wrapper paired with a custom projector returning
         <code>map[string]any</code> (e.g. <code>fwresponses.RawDoc</code>) also bypasses the
         guard — there is no typed Response shape to enforce. Manual handlers via
         <code>fwweb.ParseCriteria</code> operate in pass-through mode: each <code>?fields=</code>
         token becomes an inclusion entry verbatim, no allowlist, no translation, no
         <code>_id: 0</code> auto-exclusion. The canonical surface is the
-        <code>HandleQueryWithParams</code> wrapper.
+        <code>QueryWithParams</code> wrapper.
     </p>
     <pre><code>// Request DTO opts in to the parameter.
 type FindUsersByParamsRequest struct {
@@ -354,12 +365,12 @@ type FindUsersByParamsAddressOutput struct {
     <p>
         The allowlist is opt-in by declaration: a Request DTO without <code>query:"sort"</code>
         does not get the allowlist (and does not consume the <code>?sort=</code> wire key);
-        <code>HandleQueryWithParams</code> paired with a custom projector returning
+        <code>QueryWithParams</code> paired with a custom projector returning
         <code>map[string]any</code> (e.g. <code>fwresponses.RawDoc</code>) also bypasses the
         allowlist — there is no typed Response shape to enforce. Manual handlers via
         <code>fwweb.ParseCriteria</code> operate in pass-through mode: each <code>?sort=</code>
         token becomes a <code>SortField</code> verbatim (no allowlist, no translation, no boot
-        warning). The canonical surface is the <code>HandleQueryWithParams</code> wrapper.
+        warning). The canonical surface is the <code>QueryWithParams</code> wrapper.
     </p>
     <table>
         <tbody><tr><th>Wire form</th><th>SortField emitted</th><th>Notes</th></tr>
@@ -553,16 +564,16 @@ query:
     <h3 id="qry-export">Tabular export — CSV / Excel (format-pluggable)</h3>
     <p>
         Alongside the JSON list, a view can be exposed as a downloadable flat file. The
-        OpenAPI-aware wrapper <code>fwweb.HandleQueryAsCSVSpec[TReq, TQ]</code> (and
-        <code>HandleQueryAsXLSXSpec</code>) reuses the <strong>same Request DTO and the same query
-        handler</strong> as <code>HandleQueryWithParams</code> — no second handler, no second query,
+        OpenAPI-aware wrapper <code>fwweb.QueryAsCSVSpec[TReq, TQ]</code> (and
+        <code>QueryAsXLSXSpec</code>) reuses the <strong>same Request DTO and the same query
+        handler</strong> as <code>QueryWithParams</code> — no second handler, no second query,
         no hand-written CSV — and returns <code>(handler, openapi.RouteSpec)</code>, so it mounts on
         the <strong>canonical <code>fwopenapi.Mount</code></strong> exactly like the JSON list. The
         returned <code>RouteSpec</code> carries <code>RequestType</code> (so the filters render in
         Swagger) and <code>FileResponse</code> (so the 200 is documented as a download), keeping
         <code>MountRaw</code> out of the picture:
     </p>
-    <pre><code>csvH, csvSpec := fwweb.HandleQueryAsCSVSpec(d.Pipeline,
+    <pre><code>csvH, csvSpec := fwweb.QueryAsCSVSpec(d.Pipeline,
     requests.FindUsersByParamsRequest{},   // same Request DTO as the JSON list → filters in Swagger
     view,                                  // web.ExportView → plan, row ceiling, filename (view.Name())
     d.Export,                              // web.ExportDeps{Translator, MaxExportRows} pre-packaged on Deps
@@ -573,12 +584,12 @@ query:
 fwopenapi.Mount(d.OpenAPIRegistry, app, fiber.MethodGet, "/users.csv", csvH, csvSpec,
     fwopenapi.Doc{Summary: "Export users as CSV", Tags: []string{"Users"}},
     fwopenapi.RequirePermission("users:read"))
-// Excel is the same shape: HandleQueryAsXLSXSpec(..., export.WithSheetName("Users")) → fwopenapi.Mount</code></pre>
+// Excel is the same shape: QueryAsXLSXSpec(..., export.WithSheetName("Users")) → fwopenapi.Mount</code></pre>
     <p>
         The success response is declared via <code>RouteSpec.FileResponse</code> (a typed
         download descriptor on the canonical path) — see
         <a href="#openapi">OpenAPI / Swagger UI</a>. The plain
-        <code>HandleQueryAsCSV</code> / <code>HandleQueryAsXLSX</code> (handler-only) remain for
+        <code>QueryAsCSV</code> / <code>QueryAsXLSX</code> (handler-only) remain for
         services without OpenAPI.
     </p>
     <p>
@@ -647,8 +658,8 @@ fwopenapi.Mount(d.OpenAPIRegistry, app, fiber.MethodGet, "/users.csv", csvH, csv
         <code>export.CSV(export.WithDelimiter(r))</code> (delimiter chosen at mount) and
         <code>export.XLSX(export.WithSheetName(s))</code> (Excel — bold header rows, numeric/typed
         cells kept typed, built on <code>excelize</code>'s streaming writer). The matching
-        convenience wrappers are <code>fwweb.HandleQueryAsCSV</code> and
-        <code>fwweb.HandleQueryAsXLSX</code>; a further format is a new <code>Encoder</code>, with
+        convenience wrappers are <code>fwweb.QueryAsCSV</code> and
+        <code>fwweb.QueryAsXLSX</code>; a further format is a new <code>Encoder</code>, with
         no change to the plan, the generator, or the HTTP wrapper. Attaching the same query handler
         to JSON, CSV, and Excel is one half of a broader pattern — see
         <a href="#handler-invariance">Handler invariance</a> (queries → JSON/CSV/Excel, commands →
@@ -778,7 +789,7 @@ func (r FindUsersByParamsRequest) ToQuery(
 package queries
 
 type FindUserByParamsQuery struct {
-    pipeline.QueryBase
+    fwqueries.QueryWithParamsBase
     Criteria fwqueries.ReadCriteria
 }
 
@@ -819,11 +830,11 @@ func (r FindUserByIDRequest) ToQuery() *FindUserByIDQuery {
 }
 
 type FindUserByIDQuery struct {
-    fwqueries.QueryBaseWithID
+    fwqueries.QueryByIDBase
     IncludeArchived bool
 }
 
-// ToCriteria(ctx) returns the same DTO used by FindByParamsQuery — the
+// ToCriteria(ctx) returns the same DTO used by QueryWithParams — the
 // ViewReader port has a single ReadCriteria contract. ReadByID honors
 // Filter (overlays) + IncludeArchived; Limit/Sort/After/Before/Search/
 // Projection are ignored by ReadByID by design.
@@ -851,14 +862,14 @@ func (q FindUserByIDQuery) ContextName() string { return "User" }</code></pre>
 // for tag-driven projection (the default), fwresponses.RawDoc to pass the
 // view document through verbatim, or a consumer-declared Response{}.FromDoc
 // method for custom projection logic.
-users.Get("/", fwweb.HandleQueryWithParams(d.Pipeline,
+users.Get("/", fwweb.QueryWithParams(d.Pipeline,
     requests.FindUsersByParamsRequest{},
     fwresponses.AutoFromDoc[requests.FindUsersByParamsResponse],
     &amp;handlers.FindByParamsQueryHandler[*queries.FindUserByParamsQuery]{
         Reader: d.ViewReader, View: views.CustomerView.Name(),
     }))
 
-users.Get("/:id", fwweb.HandleQueryByID(d.Pipeline,
+users.Get("/:id", fwweb.QueryByID(d.Pipeline,
     requests.FindUserByIDRequest{},
     fwresponses.AutoFromDoc[requests.FindUserByIDResponse],
     &amp;handlers.FindByIDQueryHandler[*queries.FindUserByIDQuery]{
