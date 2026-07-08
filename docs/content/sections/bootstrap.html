@@ -91,9 +91,9 @@ APP_PROFILE=dev go run -tags 'postgres mysql kafka' .
     <p>The async message transport is selected by a build tag too, on a <strong>second, independent axis</strong> — and it is <strong>equally mandatory</strong>, with no default. Each transport adapter self-registers in the subscriber registry (<code>transport.RegisterSubscriber</code>, the same database/sql-style pattern as the engine registry) behind its own tag:</p>
     <ul>
         <li><code>-tags kafka</code> — links the Kafka adapter, which (being Kafka-wire-compatible) also backs <strong>Redpanda</strong> unchanged — the choice is the broker address, not the tag.</li>
-        <li><code>-tags nats</code> — reserved for the planned NATS adapter.</li>
+        <li><code>-tags nats</code> — links the NATS JetStream adapter (durable, file-backed).</li>
     </ul>
-    <p>Building with <strong>no</strong> transport tag compiles but aborts at boot (<em>&ldquo;no transport linked&rdquo;</em>), mirroring the no-engine case. So a runnable binary always carries both axes, e.g. <code>-tags 'postgres kafka'</code>. The transport seam this selects — the <code>transport.Subscriber</code> port every async consumer reads through — is described under <a href="#transport-seam">Architecture → The message-transport seam</a>.</p>
+    <p>Building with <strong>no</strong> transport tag compiles but aborts at boot (<em>&ldquo;no transport linked&rdquo;</em>), mirroring the no-engine case. So a runnable binary always carries both axes, e.g. <code>-tags 'postgres kafka'</code>. The transport seam this selects — the <code>transport.Subscriber</code> port every async consumer reads through — plus the connection config (<code>transport:</code> block) and per-adapter details are described under <a href="#transport">Message transport</a>.</p>
 
     <h3 id="microservice-yaml">microservice.&lt;profile&gt;.yaml</h3>
     <p>Each service declares infra config in a profile-specific YAML file at the root. <code>bootstrap.LoadConfig</code> reads the <code>APP_PROFILE</code> environment variable (required, non-empty) and loads <code>./microservice.${APP_PROFILE}.yaml</code> — override the path via <code>OMNICORE_CONFIG_PATH</code> when needed (tests, custom layouts). <code>dev</code> and <code>prd</code> are the canonical pair; any other non-empty string (<code>prd-pem</code>, <code>prd-external</code>, <code>qa-canary</code>, ...) is also accepted so QA suites and ops setups can swap whole configurations via extra files without competing with the canonical pair. See <a href="#bootstrap~env-vars">Environment variables</a> for the complete list of framework-reserved env vars.</p>
@@ -114,9 +114,9 @@ mongo:
     autoRun: check                       # check | true | false — profile-aware default: dev=true / else=check
     orphan: delete                       # delete | warn — default delete (reconcile orphan Mongo docs)
     allowDowngrade: false                # default; opt-in for canary / blue-green rollback
-kafka:
-  brokers: ["${KAFKA_BROKERS:localhost:9092}"]
-  syncGroupId: "${SYNC_GROUP_ID:my-service-sync}"
+transport:             # neutral; the -tags kafka|nats build tag picks the adapter
+  endpoints: ["${TRANSPORT_ENDPOINTS:localhost:9092}"]  # Kafka/Redpanda brokers OR NATS URL(s)
+  syncGroup: "${SYNC_GROUP_ID:my-service-sync}"
   syncWorkers: 4       # optional; default runtime.NumCPU(); 1 = serial
 migrations:
   dir: ./migrations
@@ -218,7 +218,7 @@ observability:                           # optional; omitted block = tracing off
     </ul>
     <p>The reserved names <code>file</code> and <code>vault</code> shadow same-named env vars inside <code>${...}</code> — env-var conventions are uppercase, so the collision is theoretical. <code>file:</code> and <code>vault:</code> failures are strict (boot aborts) on purpose: a missing file or unresolved secret in production is an operational bug, not a silent empty-string default.</p>
 
-    <p>Mandatory fields: <code>service</code>, <code>relational.dialect</code>, <code>relational.dsn</code>, <code>mongo.uri</code>, <code>mongo.database</code>, <code>kafka.brokers</code>, <code>kafka.syncGroupId</code>. <code>bootstrap.LoadConfig</code> fails with an error listing missing ones.</p>
+    <p>Mandatory fields: <code>service</code>, <code>relational.dialect</code>, <code>relational.dsn</code>, <code>mongo.uri</code>, <code>mongo.database</code>, <code>transport.endpoints</code>, <code>transport.syncGroup</code>. <code>bootstrap.LoadConfig</code> fails with an error listing missing ones.</p>
 
     <p>The <code>auth:</code> block is optional and defaults to <code>{mode: disabled}</code> when absent — convenient for local development under <code>APP_PROFILE=dev</code>, but rejected at boot under any other profile so prd cannot ship without authentication wired. When <code>mode: jwt</code>, the schema requires <code>issuer</code> + <code>audience</code> + exactly one of <code>jwksUrl</code> / <code>publicKeyPem</code>; the <code>externalValidator</code> sub-block is optional. The external-validator cache is opt-in via <code>cacheTtlSeconds</code> and default off — see the Authentication section for the revocation-vs-throughput trade-off.</p>
 
@@ -308,7 +308,7 @@ func (f *UsersFeature) Mount(app *fiber.App, d bootstrap.Deps) {
         <li>Migrations — when <code>cfg.Migrations.AutoRun</code> resolves to <code>true</code>, <code>ValidateDownExists</code> then <code>Up</code>; when it resolves to <code>check</code>, a strict drift check (reads <code>Status</code> + <code>Pending</code>, aborts on a dirty or pending migration); when <code>false</code>, skipped (the <code>check | true | false</code> enum is profile-aware: <code>dev</code> defaults to <code>true</code>, any other profile to <code>check</code>). See "Migrations".</li>
         <li><code>collectViews(wiring.Features)</code> — aggregates Views from <code>ReadableFeature</code>s; rejects boot if 2 features declare the same view name (captures Mongo collection collision)</li>
         <li>Log <code>"feature registered"</code> per feature with flag <code>readable: true|false</code></li>
-        <li><code>SyncEngine.Start</code> only if there are collected views (services without CDC don't connect Kafka)</li>
+        <li><code>SyncEngine.Start</code> only if there are collected views (services without CDC don't connect the transport)</li>
         <li>Fiber app + default middlewares <code>fwweb.Recover()</code>, <code>logger.New()</code> (Fiber's request logger), <code>fwweb.AppContextMiddleware()</code>, and <code>fwweb.AuthMiddleware</code> when <code>auth.mode: jwt</code></li>
         <li><strong><code>GET /health</code> registered automatically</strong> (response <code>{"status":"ok"}</code>) — k8s/docker liveness probe without the service programming anything</li>
         <li><code>f.Mount(app, deps)</code> for each feature in declaration order</li>
@@ -349,7 +349,7 @@ coordinated drain — PARALLEL, each stage waits its OWN completion chain:
    │                 (they may still write to the stores: handles are open until the end)
    ├─► integration   ConsumerPool.Shutdown — supervisors exit → worker queues drain
    │                 (every in-flight receiver handler FINISHES) → readers Close()
-   │                 (the Kafka LeaveGroup goes out)
+   │                 (the consumer leaves the group)
    ├─► upstream[i]   UpstreamSubscriber.Shutdown — same chain per subscriber:
    │                 worker drain (every in-flight ripple completes or lands in the
    │                 failure registry) → reader Close() (LeaveGroup)
@@ -369,7 +369,7 @@ Wiring.OnShutdown                        ← consumer hook; stores still open on
 Mongo.Close() → relational engine Close()  ← storage handles close LAST — nothing can be
                                              writing anymore, by dependency, not by luck</div>
     <p>
-        Why the consumer stages insist on waiting the <em>reader Close</em>: closing a kafka-go reader
+        Why the consumer stages insist on waiting the <em>reader Close</em>: closing the transport subscription
         is what sends the group's <strong>LeaveGroup</strong>. A process that exits while that call is
         still in flight leaves a <em>ghost member</em> holding its consumer-group slot — and the NEXT
         boot's JoinGroup then blocks until the session times the ghost out (tens of seconds), which

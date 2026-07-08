@@ -31,13 +31,13 @@ func init() {
 // dialTimeout bounds the controller dial used by EnsureTopics.
 const dialTimeout = 5 * time.Second
 
-// New builds the Kafka subscriber from the neutral transport config. Brokers is
+// New builds the Kafka subscriber from the neutral transport config. Endpoints is
 // the bootstrap-servers list (Kafka or Redpanda); a nil/empty list is accepted
 // here and surfaces as a dial error at Subscribe/EnsureTopics time, matching the
 // prior behavior where the reader was constructed with whatever brokers config
 // provided.
 func New(cfg transport.Config) (transport.Subscriber, error) {
-	return &subscriber{brokers: cfg.Brokers}, nil
+	return &subscriber{brokers: cfg.Endpoints}, nil
 }
 
 type subscriber struct {

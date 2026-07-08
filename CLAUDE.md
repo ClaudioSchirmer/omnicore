@@ -30,7 +30,7 @@ Go framework library providing **DDD + CQRS infrastructure** for microservices. 
 ## Stack
 
 - Go ≥ 1.21 (`log/slog` + generics); toolchain pinned to `go 1.26.3`.
-- Fiber v3 (HTTP), connectrpc.com/connect (gRPC surface), pgx v5 (Postgres), go-sql-driver (MySQL), mongo-driver v2, segmentio/kafka-go, google/uuid (canonical — don't add another uuid lib).
+- Fiber v3 (HTTP), connectrpc.com/connect (gRPC surface), pgx v5 (Postgres), go-sql-driver (MySQL), mongo-driver v2, segmentio/kafka-go + nats.go (message-transport adapters, each tag-gated), google/uuid (canonical — don't add another uuid lib).
 
 ## Build and test
 
@@ -43,7 +43,7 @@ go test -tags 'integration postgres kafka' ./... -count=1    # integration (need
 
 A build links a relational engine via build tag: `-tags postgres` / `-tags mysql` links exactly that one; `-tags 'postgres mysql'` links **both** and selects the active dialect at runtime from `relational.dialect`. It also links a **message transport** the same way: `-tags kafka` links the Kafka/Redpanda adapter (`nats` is the planned second). No default on either axis — building without an engine tag OR without a transport tag aborts at boot. Tests sit beside the file under test (`foo.go` ↔ `foo_test.go`); integration tests opt in via `//go:build integration && <engine>` and carry the engine tag, so the unit suite also runs under the chosen tag. **Never `go mod tidy`** (prunes tag-gated deps).
 
-→ Engine seam + transport seam, build tags, dialect/transport selection: `docs/content/sections/architecture.html`, `docs/content/sections/bootstrap.html`.
+→ Engine seam + transport seam, build tags, dialect/transport selection: `docs/content/sections/architecture.html`, `docs/content/sections/bootstrap.html`. Transport subsystem in depth (adapters, `transport:` config, durability, CDC relay): `docs/content/sections/transport.html`.
 
 ## Architecture — 4-layer DDD with strict boundaries
 
@@ -105,7 +105,7 @@ For any contract, behavior, field list, or example, open the mapped file under `
 | CommandHandler, `Result[T]`, `Pipeline.Dispatch`, persistence ports (`ScopedRepository`/`Scope`), write-side composition catalog | `command-handler.html` | Reads direct, writes through `Scope(ctx)`; pure `domain.Writer`. |
 | Auto command handlers + route constructors (`CommandWith*`/`CommandByID`), strict body (`pipeline.FullBody`), `path:` binding | `auto-handlers.html` | Cmd owns input (`ToEntity`/`ApplyTo`) + output (`FromEntity`); PUT≠PATCH by type. |
 | Manual command handler (cross-service, side effects, custom envelope) | `custom-command-handler.html` | Implement `pipeline.Handler`; same wrappers; `WithBeforeCommit`/`WithAfterBegin`. |
-| Concrete write lifecycle (BEGIN→hooks→write→outbox→audit→COMMIT→async) | `lifecycle-map.html` | One `pgx.Tx`: data + outbox + audit atomic; Debezium → Kafka → SyncEngine. |
+| Concrete write lifecycle (BEGIN→hooks→write→outbox→audit→COMMIT→async) | `lifecycle-map.html` | One `pgx.Tx`: data + outbox + audit atomic; outbox → CDC relay → transport → SyncEngine. |
 | Audit event shape, `kind` (snapshot/delta/transition), routing (`audit.destinations`) | `audit.html` | One event per write; `database` in-TX (authoritative) + `slog` post-commit. |
 
 ### Read side (CQRS)
@@ -131,6 +131,7 @@ For any contract, behavior, field list, or example, open the mapped file under `
 | httpclient — outbound HTTP (`Call[Req,Resp]`, tag binding, middleware chain, retry/cache/breaker/idempotency/TLS/streaming/HMAC, auth providers) | `httpclient.html` | Per-service transport; handlers never import it (adapter in `infra/external/`). |
 | gRPC (own surface via Connect: `reg.Register` + constructor family over the REST DTO seats — pb↔DTO bridge compiled at Register, boot-fails on mismatch, `Alias` for odd pairs, `MountRaw` for shapes that cannot mirror DTOs; `Wiring.GRPC`, dedicated listener, yaml `grpc:` block, Semantic→code table, `google.rpc` details, strict presence, `RequirePermission`, hand-written protos, shared `omnicore/v1/query.proto` components auto-converted — `filter:` tags = the wire operator allowlist, `PageInfo` list envelope, `grpc.NewCriteria` as the raw-path companion; internal-plane posture `grpc.auth.mode` inherit/internal/mtls with attribution semantics + `idleTimeoutSeconds` recycling) + the outbound `infra/grpcclient` toolbox (yaml `grpcClient:`, `Deps.GRPCClient`, `grpcclient.For`, optional `pool`, resilience cores shared with httpclient via `infra/resilience`) | `grpc.html` | Fourth consumer of the same handlers over the same DTOs; auth rides `web/authcore` — one JWT core, two shells; one breaker/backoff implementation, two transports. |
 | Integration events — async cross-service (`Dispatch`, `Receiver`, dedup, at-least-once) | `integration-events.html` | `integration_events` in-TX with the write; consumer handlers must be idempotent. |
+| Message transport — the pluggable broker seam (`transport.Subscriber` port, kafka/redpanda + nats adapters, `-tags kafka\|nats` build selection, `transport:` config, JetStream durability, the CDC-relay producer side) | `transport.html` | Consumer-side seam; a build links exactly one adapter; producer path (outbox → CDC relay) unchanged. |
 
 ### Operations
 | Topic | Section | Essence |

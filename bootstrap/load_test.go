@@ -71,9 +71,9 @@ relational:
 mongo:
   uri: "${MURI:mongodb://localhost}"
   database: "views"
-kafka:
-  brokers: ["${KB:localhost:9092}"]
-  syncGroupId: "g1"
+transport:
+  endpoints: ["${KB:localhost:9092}"]
+  syncGroup: "g1"
 `
 
 func TestLoadConfigFrom_HappyPath_AppliesDefaults(t *testing.T) {
@@ -100,11 +100,11 @@ func TestLoadConfigFrom_HappyPath_AppliesDefaults(t *testing.T) {
 	if cfg.Mongo.Database != "views" {
 		t.Errorf("Mongo.Database = %q", cfg.Mongo.Database)
 	}
-	if len(cfg.Kafka.Brokers) != 1 || cfg.Kafka.Brokers[0] != "localhost:9092" {
-		t.Errorf("Kafka.Brokers = %#v", cfg.Kafka.Brokers)
+	if len(cfg.Transport.Endpoints) != 1 || cfg.Transport.Endpoints[0] != "localhost:9092" {
+		t.Errorf("Transport.Endpoints = %#v", cfg.Transport.Endpoints)
 	}
-	if cfg.Kafka.SyncGroupID != "g1" {
-		t.Errorf("Kafka.SyncGroupID = %q", cfg.Kafka.SyncGroupID)
+	if cfg.Transport.SyncGroup != "g1" {
+		t.Errorf("Transport.SyncGroup = %q", cfg.Transport.SyncGroup)
 	}
 	if cfg.Migrations.Dir != "./migrations" {
 		t.Errorf("Migrations.Dir default = %q", cfg.Migrations.Dir)
@@ -115,8 +115,8 @@ func TestLoadConfigFrom_HappyPath_AppliesDefaults(t *testing.T) {
 	if cfg.Migrations.AutoRun != "" {
 		t.Errorf("Migrations.AutoRun after LoadConfigFrom = %q, want empty (profile-agnostic)", cfg.Migrations.AutoRun)
 	}
-	if cfg.Kafka.SyncWorkers != runtime.NumCPU() {
-		t.Errorf("Kafka.SyncWorkers default = %d, want runtime.NumCPU()=%d", cfg.Kafka.SyncWorkers, runtime.NumCPU())
+	if cfg.Transport.SyncWorkers != runtime.NumCPU() {
+		t.Errorf("Transport.SyncWorkers default = %d, want runtime.NumCPU()=%d", cfg.Transport.SyncWorkers, runtime.NumCPU())
 	}
 }
 
@@ -124,9 +124,9 @@ func TestLoadConfigFrom_KafkaSyncWorkers_ExplicitOverride(t *testing.T) {
 	yaml := `service: test
 relational: { dialect: postgres, dsn: "postgres://x" }
 mongo: { uri: "mongodb://x", database: "v" }
-kafka:
-  brokers: ["k:1"]
-  syncGroupId: "g"
+transport:
+  endpoints: ["k:1"]
+  syncGroup: "g"
   syncWorkers: 2
 `
 	path := writeTemp(t, yaml)
@@ -134,8 +134,8 @@ kafka:
 	if err != nil {
 		t.Fatalf("LoadConfigFrom: %v", err)
 	}
-	if cfg.Kafka.SyncWorkers != 2 {
-		t.Errorf("Kafka.SyncWorkers = %d, want 2 (explicit override)", cfg.Kafka.SyncWorkers)
+	if cfg.Transport.SyncWorkers != 2 {
+		t.Errorf("Transport.SyncWorkers = %d, want 2 (explicit override)", cfg.Transport.SyncWorkers)
 	}
 }
 
@@ -171,7 +171,7 @@ func TestLoadConfigFrom_MissingRequired(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error for missing required fields")
 	}
-	for _, field := range []string{"relational.dialect", "relational.dsn", "mongo.uri", "mongo.database", "kafka.brokers", "kafka.syncGroupId"} {
+	for _, field := range []string{"relational.dialect", "relational.dsn", "mongo.uri", "mongo.database", "transport.endpoints", "transport.syncGroup"} {
 		if !strings.Contains(err.Error(), field) {
 			t.Errorf("error %q does not list missing field %q", err, field)
 		}
@@ -520,9 +520,9 @@ relational:
 mongo:
   uri: "mongodb://localhost"
   database: "views"
-kafka:
-  brokers: ["localhost:9092"]
-  syncGroupId: "g"
+transport:
+  endpoints: ["localhost:9092"]
+  syncGroup: "g"
 `
 	cfgPath := writeTemp(t, yml)
 	cfg, err := LoadConfigFrom(cfgPath)
@@ -542,9 +542,9 @@ relational:
 mongo:
   uri: "mongodb://localhost"
   database: "views"
-kafka:
-  brokers: ["localhost:9092"]
-  syncGroupId: "g"
+transport:
+  endpoints: ["localhost:9092"]
+  syncGroup: "g"
 `
 	cfgPath := writeTemp(t, yml)
 	_, err := LoadConfigFrom(cfgPath)
@@ -616,9 +616,9 @@ relational:
 mongo:
   uri: "mongodb://localhost"
   database: "views"
-kafka:
-  brokers: ["localhost:9092"]
-  syncGroupId: "g"
+transport:
+  endpoints: ["localhost:9092"]
+  syncGroup: "g"
 `
 	cfgPath := writeTemp(t, yml)
 	_, err := LoadConfigFrom(cfgPath)

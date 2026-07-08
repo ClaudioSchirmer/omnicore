@@ -144,15 +144,21 @@ type Config struct {
 		Rebuild  MongoRebuildConfig `yaml:"rebuild"`
 	} `yaml:"mongo"`
 
-	Kafka struct {
-		Brokers     []string `yaml:"brokers"`
-		SyncGroupID string   `yaml:"syncGroupId"`
+	// Transport is the async message-transport connection, neutral across the
+	// linked broker adapter (Kafka/Redpanda or NATS, selected by build tag).
+	Transport struct {
+		// Endpoints is the connection target list: Kafka/Redpanda bootstrap
+		// servers for a kafka build, NATS URL(s) for a nats build.
+		Endpoints []string `yaml:"endpoints"`
+		// SyncGroup is the SyncEngine consumer group (Kafka group / NATS durable
+		// consumer name).
+		SyncGroup string `yaml:"syncGroup"`
 		// SyncWorkers controls the size of the SyncEngine worker pool that
-		// processes Kafka messages in parallel (bucketed by aggregate_id so
+		// processes messages in parallel (bucketed by aggregate_id so
 		// per-aggregate ordering is preserved). 0 or unset → runtime.NumCPU().
 		// Set to 1 to opt back into pure serial processing.
 		SyncWorkers int `yaml:"syncWorkers"`
-	} `yaml:"kafka"`
+	} `yaml:"transport"`
 
 	Migrations struct {
 		Dir     string      `yaml:"dir"`
@@ -669,8 +675,8 @@ func (c *Config) applyDefaults() {
 	if c.Migrations.Dir == "" {
 		c.Migrations.Dir = "./migrations"
 	}
-	if c.Kafka.SyncWorkers < 1 {
-		c.Kafka.SyncWorkers = runtime.NumCPU()
+	if c.Transport.SyncWorkers < 1 {
+		c.Transport.SyncWorkers = runtime.NumCPU()
 	}
 	// Relational pool: bound both engines by default so a write burst applies
 	// backpressure instead of flooding the backend. nil (unset) → default; an
@@ -753,11 +759,11 @@ func (c *Config) Validate() error {
 	if c.Mongo.Database == "" {
 		missing = append(missing, "mongo.database")
 	}
-	if len(c.Kafka.Brokers) == 0 {
-		missing = append(missing, "kafka.brokers")
+	if len(c.Transport.Endpoints) == 0 {
+		missing = append(missing, "transport.endpoints")
 	}
-	if c.Kafka.SyncGroupID == "" {
-		missing = append(missing, "kafka.syncGroupId")
+	if c.Transport.SyncGroup == "" {
+		missing = append(missing, "transport.syncGroup")
 	}
 	if len(missing) > 0 {
 		return fmt.Errorf("bootstrap: missing required config: %s", strings.Join(missing, ", "))

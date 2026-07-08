@@ -10,7 +10,7 @@
     </p>
 
     <div class="stat-strip">
-        <div class="stat"><span class="num">5</span><span class="lbl">surfaces from <strong>one</strong> handler — REST · gRPC · GraphQL · Kafka · file export</span></div>
+        <div class="stat"><span class="num">5</span><span class="lbl">surfaces from <strong>one</strong> handler — REST · gRPC · GraphQL · integration events · file export</span></div>
         <div class="stat"><span class="num">6</span><span class="lbl">write verbs with zero handler code</span></div>
         <div class="stat"><span class="num">2</span><span class="lbl">relational engines — PostgreSQL &amp; MySQL, one seam</span></div>
         <div class="stat"><span class="num">16</span><span class="lbl">filter operators, allowlisted per field</span></div>
@@ -55,7 +55,7 @@
                 <text x="310" y="30">REST · OpenAPI</text>
                 <text x="310" y="76">gRPC (Connect)</text>
                 <text x="310" y="122">GraphQL</text>
-                <text x="310" y="168">Kafka events</text>
+                <text x="310" y="168">Async events</text>
                 <text x="310" y="214">CSV · XLSX</text>
             </g>
         </svg>
@@ -107,7 +107,7 @@
             <ul class="cap-list">
                 <li><a href="#auto-query-handlers">Auto query handlers</a> — allowlisted filters, keyset pagination, sparse <code>?fields=</code>, <code>?sort=</code>, count-only</li>
                 <li><a href="#query-side">16 filter operators</a> — eq/ne/in/gte/startsWith/contains… plus case-insensitive variants, allowlisted per field by tag</li>
-                <li><a href="#read-lifecycle-map"><code>SyncEngine</code> + composer</a> — Debezium → Kafka materializes views; archived rows survive unless <code>DeleteOnArchive()</code></li>
+                <li><a href="#read-lifecycle-map"><code>SyncEngine</code> + composer</a> — outbox → CDC relay → the transport (Kafka/NATS) materializes views; archived rows survive unless <code>DeleteOnArchive()</code></li>
                 <li><a href="#query-side"><code>ComposedView</code> / <code>SharedBaseView</code></a> — read-time joins and all-in-one identity, never materialized on the request path</li>
                 <li><a href="#auto-query-handlers">CSV / XLSX export</a> — the same query handler streamed to a file, hierarchical, translated headers</li>
                 <li><a href="#custom-query-handler">Manual query handler</a> — bespoke parsing and envelopes over the same reader</li>
@@ -126,7 +126,7 @@
                 <li><a href="#openapi">OpenAPI 3.1 + Swagger UI</a> — reflected from your Go DTOs, no codegen, no annotations</li>
                 <li><a href="#graphql">GraphQL</a> — own surface, Relay connections, per-field authz, schema reflected from the same DTOs</li>
                 <li><a href="#grpc">gRPC (Connect)</a> — dedicated listener; pb↔DTO bridge boot-checked; <code>google.rpc</code> error details; internal-plane posture</li>
-                <li><a href="#integration-events">Integration events (Kafka)</a> — async facts; at-least-once, idempotent consumers, retry surface</li>
+                <li><a href="#integration-events">Integration events</a> — async facts; at-least-once, idempotent consumers, retry surface</li>
                 <li><a href="#handler-invariance">Handler invariance</a> — the same instance drives all of the above</li>
             </ul>
             <div class="cap-more"><a href="#handler-invariance">Handler invariance →</a></div>

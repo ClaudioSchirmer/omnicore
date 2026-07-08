@@ -14,27 +14,27 @@ import (
 func TestInitRegistersKafka(t *testing.T) {
 	// init() registered "kafka" in the shared registry, so the neutral
 	// constructor resolves it without this package being imported by name.
-	if _, err := transport.NewSubscriber("kafka", transport.Config{Brokers: []string{"b1:9092"}}); err != nil {
+	if _, err := transport.NewSubscriber("kafka", transport.Config{Endpoints: []string{"b1:9092"}}); err != nil {
 		t.Fatalf("transport.NewSubscriber(\"kafka\"): %v", err)
 	}
 }
 
 func TestNew(t *testing.T) {
-	s, err := New(transport.Config{Brokers: []string{"b1:9092"}})
+	s, err := New(transport.Config{Endpoints: []string{"b1:9092"}})
 	if err != nil || s == nil {
 		t.Fatalf("New = (%v, %v), want non-nil, nil", s, err)
 	}
 }
 
 func TestEnsureTopics_EmptyIsNoop(t *testing.T) {
-	s, _ := New(transport.Config{Brokers: nil})
+	s, _ := New(transport.Config{Endpoints: nil})
 	if err := s.EnsureTopics(context.Background(), nil); err != nil {
 		t.Fatalf("empty topic list must be a no-op, got %v", err)
 	}
 }
 
 func TestEnsureTopics_NoBrokersErrors(t *testing.T) {
-	s, _ := New(transport.Config{Brokers: nil})
+	s, _ := New(transport.Config{Endpoints: nil})
 	err := s.EnsureTopics(context.Background(), []transport.TopicSpec{{Name: "t", NumPartitions: 1, ReplicationFactor: 1}})
 	if err == nil {
 		t.Fatal("EnsureTopics with no brokers must error")
@@ -42,7 +42,7 @@ func TestEnsureTopics_NoBrokersErrors(t *testing.T) {
 }
 
 func TestEnsureTopics_DialFailure(t *testing.T) {
-	s, _ := New(transport.Config{Brokers: []string{"127.0.0.1:1"}})
+	s, _ := New(transport.Config{Endpoints: []string{"127.0.0.1:1"}})
 	// A cancelled context makes the controller dial fail immediately and
 	// deterministically, exercising the dial-error path without a broker.
 	ctx, cancel := context.WithCancel(context.Background())
@@ -53,7 +53,7 @@ func TestEnsureTopics_DialFailure(t *testing.T) {
 }
 
 func TestSubscribe_BuildsSubscription(t *testing.T) {
-	s, _ := New(transport.Config{Brokers: []string{"127.0.0.1:9092"}})
+	s, _ := New(transport.Config{Endpoints: []string{"127.0.0.1:9092"}})
 	t.Run("single-topic-latest", func(t *testing.T) {
 		sub, err := s.Subscribe(context.Background(), transport.SubscribeConfig{
 			Topics:  []string{"users.events"},

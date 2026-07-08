@@ -14,8 +14,8 @@ func validBaseConfig() *Config {
 	c.Relational.DSN = "postgres://localhost/db"
 	c.Mongo.URI = "mongodb://localhost:27017"
 	c.Mongo.Database = "views"
-	c.Kafka.Brokers = []string{"localhost:9092"}
-	c.Kafka.SyncGroupID = "svc-sync"
+	c.Transport.Endpoints = []string{"localhost:9092"}
+	c.Transport.SyncGroup = "svc-sync"
 	c.applyDefaults()
 	return c
 }
@@ -43,7 +43,7 @@ func TestConfig_Validate_ReportsAllMissingRequired(t *testing.T) {
 	if err == nil {
 		t.Fatal("empty config must fail validation")
 	}
-	for _, field := range []string{"service", "relational.dialect", "relational.dsn", "mongo.uri", "mongo.database", "kafka.brokers", "kafka.syncGroupId"} {
+	for _, field := range []string{"service", "relational.dialect", "relational.dsn", "mongo.uri", "mongo.database", "transport.endpoints", "transport.syncGroup"} {
 		if !strings.Contains(err.Error(), field) {
 			t.Errorf("missing-field error must name %q, got %v", field, err)
 		}

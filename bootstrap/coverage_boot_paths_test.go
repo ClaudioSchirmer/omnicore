@@ -407,7 +407,7 @@ func TestStartUpstreamSubscribers(t *testing.T) {
 	d := silentDeps()
 	d.DB = bootFakeEngine{}
 	cfg := &Config{Service: "t"}
-	cfg.Kafka.Brokers = []string{"127.0.0.1:1"} // unroutable; the reader loop exits on the cancelled ctx
+	cfg.Transport.Endpoints = []string{"127.0.0.1:1"} // unroutable; the reader loop exits on the cancelled ctx
 	d.Transport, _ = newTransportSubscriber(cfg)  // real kafka adapter over the unroutable broker
 
 	t.Run("emptyList", func(t *testing.T) {

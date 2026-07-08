@@ -18,5 +18,5 @@ import (
 // list. Redpanda is reached by pointing kafka.brokers at it — same adapter, same
 // wire protocol; the choice is deployment config, not a code path.
 func newTransportSubscriber(cfg *Config) (transport.Subscriber, error) {
-	return transport.NewSubscriber("kafka", transport.Config{Brokers: cfg.Kafka.Brokers})
+	return transport.NewSubscriber("kafka", transport.Config{Endpoints: cfg.Transport.Endpoints})
 }

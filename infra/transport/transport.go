@@ -82,10 +82,11 @@ type Subscriber interface {
 
 // Config carries everything a SubscriberFactory needs to reach the broker. It is
 // the options-struct generalization of the connection settings; a new adapter's
-// knob is added as a field, not another positional argument. Brokers feeds the
-// Kafka/Redpanda adapter; the NATS adapter reads its own fields.
+// knob is added as a field, not another positional argument. Endpoints is the
+// neutral connection target list — Kafka/Redpanda bootstrap servers for the
+// kafka adapter, NATS URL(s) for the nats adapter.
 type Config struct {
-	Brokers []string
+	Endpoints []string
 }
 
 // SubscriberFactory builds a Subscriber for one transport. Registered by each

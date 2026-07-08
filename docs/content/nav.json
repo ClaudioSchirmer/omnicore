@@ -139,6 +139,10 @@
       {
         "id": "integration-events",
         "label": "Integration events"
+      },
+      {
+        "id": "transport",
+        "label": "Message transport"
       }
     ]
   },

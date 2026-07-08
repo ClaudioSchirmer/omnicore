@@ -264,7 +264,7 @@ func runWithConfig(cfg *Config, wire func(Deps) Wiring) error {
 		}
 
 		syncEngine := query.NewSyncEngine(deps.DB, deps.Mongo,
-			deps.Transport, cfg.Kafka.SyncGroupID, views, cfg.Kafka.SyncWorkers).
+			deps.Transport, cfg.Transport.SyncGroup, views, cfg.Transport.SyncWorkers).
 			WithKafkaTracing(cfg.Observability.Tracing.Resolve(cfg.Service).Instruments(tracing.SubKafka))
 		// Surfaced on Deps so serve's coordinated drain can wait for the
 		// projection loop's FULL exit (worker drain + reader LeaveGroup)
@@ -288,10 +288,10 @@ func runWithConfig(cfg *Config, wire func(Deps) Wiring) error {
 
 		syncEngine.Start(ctx)
 		deps.Logger.Info("sync engine started",
-			"brokers", cfg.Kafka.Brokers,
-			"groupId", cfg.Kafka.SyncGroupID,
+			"endpoints", cfg.Transport.Endpoints,
+			"syncGroup", cfg.Transport.SyncGroup,
 			"views", len(views),
-			"workers", cfg.Kafka.SyncWorkers)
+			"workers", cfg.Transport.SyncWorkers)
 	} else if len(upstreamSubs) > 0 {
 		// Degenerate case: B declared upstream subscriptions but no
 		// local views. The subscribers still materialize the local

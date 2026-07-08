@@ -3,17 +3,15 @@
 package bootstrap
 
 import (
-	"fmt"
-
 	"github.com/ClaudioSchirmer/omnicore/infra/transport"
+	_ "github.com/ClaudioSchirmer/omnicore/infra/transport/nats"
 )
 
-// This file compiles under the `nats` build tag. The NATS adapter is not part of
-// this build yet (it lands with the JetStream work); until then a `nats`-tagged
-// binary compiles but aborts at boot with a clear message, mirroring how
-// engine_none.go keeps the neutral bootstrap compiling while turning a
-// missing-transport build into a boot-time configuration error rather than a
-// compile error.
-func newTransportSubscriber(_ *Config) (transport.Subscriber, error) {
-	return nil, fmt.Errorf("transport: the nats adapter is not available in this build — rebuild with -tags kafka")
+// This file is the NATS transport binding, compiled only under the `nats` build
+// tag. The blank import runs the adapter package's init(), which registers the
+// "nats" transport in the subscriber registry so transport.NewSubscriber
+// resolves it — behind the build tag so a default build links neither the
+// adapter nor nats.go. Mirrors transport_kafka.go.
+func newTransportSubscriber(cfg *Config) (transport.Subscriber, error) {
+	return transport.NewSubscriber("nats", transport.Config{Endpoints: cfg.Transport.Endpoints})
 }

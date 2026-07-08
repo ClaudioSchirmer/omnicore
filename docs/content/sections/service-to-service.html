@@ -36,4 +36,4 @@
 
     <p><a href="#cache-subsystem">Cache</a> is orthogonal to all four — a cross-cutting accelerator for the edge sync path (<code>httpclient</code> response cache) and read amplification, never a transport in its own right. (The gRPC plane deliberately has no response cache — no GET/no-store vocabulary; heavy reads belong to the local projections above.)</p>
 
-    <p class="note"><strong>The rule of thumb, in one line:</strong> sync internal → <a href="#grpc">gRPC</a>; sync external → <a href="#httpclient">httpclient</a>; async facts/reactions → <a href="#integration-events">integration events</a> (Kafka); async view composition → <code>UpstreamSubscription</code> below. Everything else on this page is the detail of the fourth path.</p>
+    <p class="note"><strong>The rule of thumb, in one line:</strong> sync internal → <a href="#grpc">gRPC</a>; sync external → <a href="#httpclient">httpclient</a>; async facts/reactions → <a href="#integration-events">integration events</a>; async view composition → <code>UpstreamSubscription</code> below. Everything else on this page is the detail of the fourth path.</p>

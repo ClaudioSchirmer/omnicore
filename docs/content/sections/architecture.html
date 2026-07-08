@@ -28,7 +28,7 @@
             <div class="arch-row arch-sub-indent"><span class="arch-desc">Typed Notification system (translation key = struct name)</span></div>
         </div>
         <div class="arch-layer">
-            <div class="arch-row arch-head"><span class="arch-pkg">infra/</span><span class="arch-desc">Relational backend — PostgreSQL or MySQL (+ transactional outbox + audit), Mongo views, Kafka SyncEngine</span></div>
+            <div class="arch-row arch-head"><span class="arch-pkg">infra/</span><span class="arch-desc">Relational backend — PostgreSQL or MySQL (+ transactional outbox + audit), Mongo views, transport SyncEngine</span></div>
             <div class="arch-row arch-sub-indent"><span class="arch-desc">aggregate_persister (automatic dispatch) · composer · sync (SyncEngine) · rebuild (Mongo schema evolution)</span></div>
             <div class="arch-row arch-sub-indent"><span class="arch-desc">httpclient/ + grpcclient/ (outbound toolboxes) over shared resilience/ (retry · breaker · backoff) · external/ (adapters)</span></div>
             <div class="arch-row arch-sub-indent"><span class="arch-desc">cache/ · integration/ (events) · db/criteria/ (entity search engine)</span></div>
@@ -55,7 +55,7 @@
 │   domain/           Pure business rules, ZERO IO                    │
 │                     ValidEntity, AggregateRoot, Rules, Old()        │
 │                     Notification system (typed, translated)         │
-│   infra/            Relational (+outbox +audit), Mongo, Kafka sync  │
+│   infra/            Relational (+outbox +audit), Mongo, event sync  │
 │                     aggregate_persister, composer, rebuild          │
 │                     httpclient + grpcclient over shared resilience  │
 │                     cache/ integration/ criteria/ external/         │
@@ -89,28 +89,20 @@
         The three consumers that read a broker &mdash; the read-side <code>SyncEngine</code>, the
         integration <code>ConsumerPool</code>, and the <code>UpstreamSubscriber</code> &mdash; depend on a
         backend-neutral <code>transport.Subscriber</code> port (<code>infra/transport</code>), never on a
-        concrete client. A build tag links exactly one transport: <code>-tags kafka</code> links the
-        Kafka adapter (<code>infra/transport/kafka</code>), which &mdash; because it speaks the Kafka wire
-        protocol &mdash; also backs <strong>Redpanda</strong> unchanged; the choice between them is the
-        broker address, deployment configuration, not code. A second transport (<code>nats</code>) is the
-        planned addition and drops in as another tag-gated adapter.
+        concrete client. Selection works exactly like the engine registry: each adapter self-registers
+        in <code>init()</code> behind its build tag, and the composition root resolves it by name &mdash;
+        so a build links only the one adapter its tag selects (<code>-tags kafka</code> for
+        Kafka/Redpanda, <code>-tags nats</code> for NATS JetStream), with <strong>no default</strong>.
+        And, like the engine, the seam is on the consumer side only: a write still lands its outbox row
+        in the domain transaction and a CDC relay ships it, so the at-least-once, dedup and
+        per-aggregate ordering semantics are identical whichever broker backs it.
     </p>
     <p>
-        Selection works exactly like the engine registry: each adapter self-registers in
-        <code>init()</code> behind its build tag (<code>RegisterSubscriber</code>), and the composition
-        root resolves it by name (<code>NewSubscriber</code>) &mdash; so <code>bootstrap</code> never
-        imports a broker client, and a build links only the one adapter its tag selects. There is
-        <strong>no default</strong>: a build with no transport tag compiles but aborts at boot with
-        <em>&ldquo;no transport linked&rdquo;</em>, mirroring the no-engine case. So a runnable build
-        carries two axes, e.g. <code>-tags 'postgres kafka'</code>.
+        Adding a transport is an isolated adapter, not a rewrite &mdash; the full subsystem (the port,
+        the Kafka/Redpanda and NATS adapters, build-tag selection, the <code>transport:</code>
+        connection config, durability, and the CDC-relay relationship) is documented under
+        <a href="#transport">Message transport</a>.
     </p>
-    <div class="box">
-        <strong>The seam is on the consumer side; the producer path is unchanged.</strong>
-        A write still lands its outbox row inside the domain transaction, and a CDC relay (Debezium
-        today) ships it to the broker &mdash; the framework does not produce to the broker itself. The
-        transport seam abstracts only how the framework <em>reads</em>, so the at-least-once delivery,
-        dedup, and per-aggregate ordering semantics are identical whichever broker backs it.
-    </div>
 
     <h3 id="dependencies">Dependency rules</h3>
     <table>

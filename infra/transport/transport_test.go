@@ -18,7 +18,7 @@ func TestRegisterAndNewSubscriber(t *testing.T) {
 	const name = "stub-under-test"
 	RegisterSubscriber(name, func(Config) (Subscriber, error) { return stubSubscriber{}, nil })
 
-	got, err := NewSubscriber(name, Config{Brokers: []string{"b1"}})
+	got, err := NewSubscriber(name, Config{Endpoints: []string{"b1"}})
 	if err != nil {
 		t.Fatalf("NewSubscriber: %v", err)
 	}
