@@ -65,12 +65,9 @@ from the tag.
    severity — the ▲ icon and the release-tag colour — by scanning entries for a
    `<strong>` whose text is exactly `breaking`. Prose like "(breaking)" does NOT
    trigger it (the root `CHANGELOG.md` is free prose, not parsed).
-4. **`content/sections/overview.html`** — refresh the "Battle-tested" stats box.
-   Recompute with these exact commands (pinned so the figures never drift on method):
+4. **`content/sections/features.html`** — refresh the coverage figure in the stat strip
+   (the `94.7%` `.stat`). Recompute with this pinned command (so it never drifts on method):
    - coverage: `go test ./... -coverpkg=./... -coverprofile=/tmp/c.out && go tool cover -func=/tmp/c.out | tail -1` (pure unit, all packages in the denominator)
-   - test LOC: `find . -name '*_test.go' | xargs wc -l | tail -1`
-   - prod LOC: `find . -name '*.go' ! -name '*_test.go' | xargs wc -l | tail -1`
-   - ratio = test LOC ÷ prod LOC.
 5. **Tag (maintainer only):** `git commit` → `git tag vX.Y.Z` → push. The Go module
    version IS the tag — there is no version constant in code.
 6. **`../../omnicore-example-users/go.mod`** — bump `require …/omnicore vX.Y.Z` once the

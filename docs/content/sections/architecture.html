@@ -6,7 +6,9 @@
             <div class="arch-row arch-head"><span class="arch-pkg">web/</span><span class="arch-desc">HTTP transport (Fiber v3), JWT auth middleware · Semantic → HTTP status · canonical response envelope · CSV/XLSX export</span></div>
             <div class="arch-row arch-sub-indent"><span class="arch-pkg sub">openapi/</span><span class="arch-desc">OpenAPI 3.1 + Swagger UI, generated from your Go types</span></div>
             <div class="arch-row arch-sub-indent"><span class="arch-pkg sub">graphql/</span><span class="arch-desc">GraphQL endpoint — own surface, reflected from the same DTOs, never in Swagger</span></div>
-            <div class="arch-row arch-sub-indent"><span class="arch-pkg sub">queryschema/</span><span class="arch-desc">shared read-side DTO reflection (REST + OpenAPI + GraphQL) — one traversal, three projections</span></div>
+            <div class="arch-row arch-sub-indent"><span class="arch-pkg sub">grpc/</span><span class="arch-desc">gRPC surface (Connect) — dedicated listener; pb↔DTO bridge boot-checked; own surface, not in Swagger</span></div>
+            <div class="arch-row arch-sub-indent"><span class="arch-pkg sub">authcore/</span><span class="arch-desc">transport-neutral JWT validation core — one core, two shells (REST middleware + gRPC interceptor)</span></div>
+            <div class="arch-row arch-sub-indent"><span class="arch-pkg sub">queryschema/</span><span class="arch-desc">shared read-side DTO reflection (REST + OpenAPI + GraphQL + gRPC) — one traversal, four projections</span></div>
         </div>
         <div class="arch-layer">
             <div class="arch-row arch-head"><span class="arch-pkg">application/</span></div>
@@ -17,6 +19,7 @@
             <div class="arch-row arch-sub-indent"><span class="arch-pkg sub">persistence/</span><span class="arch-desc">ScopedRepository[T] = Reader[T] + Scope · TxHandle + AfterBegin / BeforeCommit hooks</span></div>
             <div class="arch-row arch-sub-indent"><span class="arch-pkg sub">queries/</span><span class="arch-desc">QueryHandler + ViewReader · keyset pagination, sparse ?fields=, sort, filters</span></div>
             <div class="arch-row arch-sub-indent"><span class="arch-pkg sub">handlers/</span><span class="arch-desc">Auto Command + Query Handlers — generic CRUD with zero handler code</span></div>
+            <div class="arch-row arch-sub-indent"><span class="arch-pkg sub">audit/</span><span class="arch-desc">AuditEvent shape + destinations config (Semantic-neutral; emission owned by infra)</span></div>
         </div>
         <div class="arch-layer">
             <div class="arch-row arch-head"><span class="arch-pkg">domain/</span><span class="arch-desc">Pure business rules — ZERO IO (stdlib + google/uuid only)</span></div>
@@ -26,8 +29,9 @@
         </div>
         <div class="arch-layer">
             <div class="arch-row arch-head"><span class="arch-pkg">infra/</span><span class="arch-desc">Relational backend — PostgreSQL or MySQL (+ transactional outbox + audit), Mongo views, Kafka SyncEngine</span></div>
-            <div class="arch-row arch-sub-indent"><span class="arch-desc">aggregate_persister (automatic dispatch) · composer · rebuild (Mongo schema evolution)</span></div>
-            <div class="arch-row arch-sub-indent"><span class="arch-desc">cache/ · httpclient/ · integration/ (events) · db/criteria/ (entity search engine)</span></div>
+            <div class="arch-row arch-sub-indent"><span class="arch-desc">aggregate_persister (automatic dispatch) · composer · sync (SyncEngine) · rebuild (Mongo schema evolution)</span></div>
+            <div class="arch-row arch-sub-indent"><span class="arch-desc">httpclient/ + grpcclient/ (outbound toolboxes) over shared resilience/ (retry · breaker · backoff) · external/ (adapters)</span></div>
+            <div class="arch-row arch-sub-indent"><span class="arch-desc">cache/ · integration/ (events) · db/criteria/ (entity search engine)</span></div>
             <div class="arch-row arch-sub-indent"><span class="arch-desc">migration/ · upstream_subscriber (cross-service) · audit / events</span></div>
         </div>
         <template class="arch-ascii">┌─────────────────────────────────────────────────────────────────────┐
@@ -35,7 +39,9 @@
 │                     Semantic → HTTP status, canonical envelope      │
 │     openapi/        OpenAPI 3.1 + Swagger UI from your Go types     │
 │     graphql/        GraphQL endpoint, own surface, not in Swagger   │
-│     queryschema/    shared read-side reflection (REST/OAS/GraphQL)  │
+│     grpc/           gRPC surface (Connect) on a dedicated listener  │
+│     authcore/       shared JWT core — one core, REST + gRPC shells  │
+│     queryschema/    read-side reflection (REST/OpenAPI/GraphQL/gRPC)│
 │   application/                                                      │
 │     configuration/  AppContext (UUID + Language + Identity)         │
 │     translation/    Translator + 7 langs (PT/EN/ES/FR/DE/IT/NL)     │
@@ -45,12 +51,14 @@
 │                     TxHandle + AfterBegin/BeforeCommit hooks        │
 │     queries/        QueryHandler + ViewReader; keyset, ?fields=     │
 │     handlers/       Auto Command + Query Handlers (zero code)       │
+│     audit/          AuditEvent shape + destinations config          │
 │   domain/           Pure business rules, ZERO IO                    │
 │                     ValidEntity, AggregateRoot, Rules, Old()        │
 │                     Notification system (typed, translated)         │
 │   infra/            Relational (+outbox +audit), Mongo, Kafka sync  │
 │                     aggregate_persister, composer, rebuild          │
-│                     cache/ httpclient/ integration/ criteria/       │
+│                     httpclient + grpcclient over shared resilience  │
+│                     cache/ integration/ criteria/ external/         │
 │                     migration/, upstream_subscriber, events/        │
 └─────────────────────────────────────────────────────────────────────┘</template>
     </div>

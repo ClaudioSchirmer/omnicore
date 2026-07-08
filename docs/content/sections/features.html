@@ -1,52 +1,193 @@
 <h2>What the framework does</h2>
-    <p>
-        Importing the module gives a service the full DDD + CQRS spine — typed validation,
-        atomic persistence with outbox, guaranteed audit, multi-language, structured logging,
-        the CQRS pipeline, and standardized REST <em>and</em> GraphQL surfaces. This page is a
-        map: each capability links to the section that documents it in depth. The dedicated
-        sections are the source of truth — start here, then dive in.
+
+    <p class="feat-lead">
+        Import the module and a service inherits the whole DDD + CQRS spine. You write the
+        <span class="em">domain</span> — the framework wires the transactional write side, the
+        Mongo-projected read side, and every transport surface from one
+        <code>microservice.&lt;profile&gt;.yaml</code> and a single <code>Wire</code> function.
+        This page is the <strong>capability map</strong>, grouped by what you are building; each
+        item links to the section that documents it in full.
     </p>
 
-    <div class="grid-2">
-        <div class="card">
-            <h4>Domain — pure business rules</h4>
-            <ul>
-                <li><a href="#rules-dsl">Rules DSL</a> — <code>IfInsert</code>/<code>IfUpdate</code>/<code>IfDelete</code>/<code>IfInsertOrUpdate</code> mode-scoped validation on the entity</li>
-                <li><a href="#aggregate-persistence">Aggregate persistence</a> — <code>AggregateRoot</code> with status tracking + type-guarded child primitives; <code>AggregateRootProvider</code> opts into atomic aggregate-aware persistence and child auto-validation</li>
-                <li><a href="#old-state">Old-state snapshot</a> — pre-mutation entity available to <code>BuildRules</code> and the auditor</li>
-                <li><a href="#status-mapping">Typed notification system</a> — translation key = struct name; <code>NotificationKey</code> + <code>Semantic</code> carried to the wire</li>
-            </ul>
+    <div class="stat-strip">
+        <div class="stat"><span class="num">5</span><span class="lbl">surfaces from <strong>one</strong> handler — REST · gRPC · GraphQL · Kafka · file export</span></div>
+        <div class="stat"><span class="num">6</span><span class="lbl">write verbs with zero handler code</span></div>
+        <div class="stat"><span class="num">2</span><span class="lbl">relational engines — PostgreSQL &amp; MySQL, one seam</span></div>
+        <div class="stat"><span class="num">16</span><span class="lbl">filter operators, allowlisted per field</span></div>
+        <div class="stat"><span class="num">7</span><span class="lbl">built-in language catalogs</span></div>
+        <div class="stat"><span class="num">94.7%</span><span class="lbl">unit-test coverage</span></div>
+    </div>
+
+    <div class="spotlight">
+        <div>
+            <div class="spot-title">Write it once — attach it anywhere</div>
+            <p>
+                A handler — <strong>command</strong> (write) or <strong>query</strong> (read) — is a
+                pure <code>pipeline.Handler[TReq, TRes]</code> that never learns which surface invoked
+                it. The surface decides only the I/O shape.
+            </p>
+            <p>
+                Everything below the boundary is identical: on writes, <code>BuildRules</code>
+                validation, the sealed <code>ValidEntity</code>, the transactional outbox and the
+                audit row; on reads, the <code>ToCriteria</code> overlays, the filter allowlist and
+                keyset pagination. Serve a new channel by <strong>attaching the same instance</strong>
+                to another wrapper — never by rewriting logic.
+                <a href="#handler-invariance">See handler invariance →</a>
+            </p>
         </div>
-        <div class="card">
-            <h4>Application — pipeline &amp; ports</h4>
-            <ul>
-                <li><a href="#command-handler">CommandHandler</a> / <a href="#query-side">QueryHandler</a> — the <code>Pipeline</code> dispatcher with exception/panic capture and generic <code>Result[T]</code> (Success/Failure/Exception)</li>
-                <li><a href="#auto-handlers">Auto command</a> + <a href="#auto-query-handlers">auto query handlers</a> — generic CRUD with zero handler code</li>
-                <li><a href="#app-context">AppContext</a> — UUID + Language + Identity per request</li>
-                <li><a href="#status-mapping">Translator</a> — 7 built-in catalogs (PT-BR / ENG / ES / FR / DE / IT / NL)</li>
-                <li><a href="#lifecycle-hooks">ScopedRepository[T] + lifecycle hooks</a> — reads stay direct on the handle; writes bind ctx + actor + the in-TX <code>afterBegin</code> / <code>beforeCommit</code> hooks via <code>Scope</code></li>
+        <svg class="diagram" viewBox="0 0 380 236" fill="none" stroke="currentColor" stroke-width="2" role="img" aria-label="One handler fans out to five surfaces">
+            <rect x="6" y="90" width="128" height="56" rx="10" fill="var(--surface)"/>
+            <text class="ink" x="70" y="114" text-anchor="middle" font-size="12" font-weight="600" stroke="none" fill="currentColor">pipeline</text>
+            <text class="ink" x="70" y="130" text-anchor="middle" font-size="12" font-weight="600" stroke="none" fill="currentColor">.Handler</text>
+            <path d="M134 118C190 118 200 26 250 26" stroke-width="1.5" opacity=".55"/>
+            <path d="M134 118C190 118 200 72 250 72" stroke-width="1.5" opacity=".55"/>
+            <path d="M134 118H250" stroke-width="1.5" opacity=".55"/>
+            <path d="M134 118C190 118 200 164 250 164" stroke-width="1.5" opacity=".55"/>
+            <path d="M134 118C190 118 200 210 250 210" stroke-width="1.5" opacity=".55"/>
+            <g stroke-width="1.5">
+                <rect x="250" y="12"  width="120" height="28" rx="7" fill="var(--surface)"/>
+                <rect x="250" y="58"  width="120" height="28" rx="7" fill="var(--surface)"/>
+                <rect x="250" y="104" width="120" height="28" rx="7" fill="var(--surface)"/>
+                <rect x="250" y="150" width="120" height="28" rx="7" fill="var(--surface)"/>
+                <rect x="250" y="196" width="120" height="28" rx="7" fill="var(--surface)"/>
+            </g>
+            <g class="ink" stroke="none" fill="currentColor" font-size="12" text-anchor="middle">
+                <text x="310" y="30">REST · OpenAPI</text>
+                <text x="310" y="76">gRPC (Connect)</text>
+                <text x="310" y="122">GraphQL</text>
+                <text x="310" y="168">Kafka events</text>
+                <text x="310" y="214">CSV · XLSX</text>
+            </g>
+        </svg>
+    </div>
+
+    <p>Everything the framework does, grouped by what you are building:</p>
+
+    <div class="cap-grid">
+
+        <div class="cap-card">
+            <div class="cap-head">
+                <span class="cap-ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"><path d="M12 3 21 8 12 13 3 8Z"/><path d="M3 12l9 5 9-5"/><path d="M3 16l9 5 9-5"/></svg></span>
+                <span class="cap-title">Model your domain</span>
+            </div>
+            <div class="cap-lead">Pure business rules — zero IO, enforced by the compiler.</div>
+            <ul class="cap-list">
+                <li><a href="#rules-dsl">Rules DSL</a> — <code>IfInsert</code>/<code>IfUpdate</code>/<code>IfDelete</code>/<code>IfInsertOrUpdate</code> mode-scoped validation, propagated through aggregate children</li>
+                <li><a href="#aggregate-persistence">Aggregate root + value objects</a> — root and its 1:N children are one boundary; <code>Archive</code>/<code>Unarchive</code>/<code>Delete</code> cascade symmetrically</li>
+                <li><a href="#old-state">Old-state snapshot</a> — <code>domain.Old[T]()</code> exposes the pre-write entity to <code>BuildRules</code> and the auditor</li>
+                <li><a href="#status-mapping">Typed notifications</a> — struct name is the translation key; <code>NotificationKey</code> + <code>Semantic</code> ride to the wire</li>
+                <li><a href="#reference">Sealed <code>ValidEntity</code></a> — Insertable/Updatable/Archivable/… produced only by <code>domain</code></li>
             </ul>
+            <div class="cap-more"><a href="#rules-dsl">Rules DSL →</a></div>
         </div>
-        <div class="card">
-            <h4>Infrastructure — persistence &amp; sync</h4>
-            <ul>
-                <li><a href="#table-schema">TableSchema</a> — one explicit Go-field↔column map driving the relational write + criteria + scan + the Mongo view</li>
-                <li><a href="#lifecycle-map">Atomic outbox + transparent aggregate persistence</a> — one transaction covers root + children + a single outbox row</li>
-                <li><a href="#audit">Audit pipeline</a> — every write emits an <code>AuditEvent</code> routed by <code>audit.destinations</code> (in-TX <code>audit_events</code> row and/or post-commit slog echo)</li>
-                <li><a href="#read-lifecycle-map">SyncEngine + Composer</a> — Kafka consumer materializes Mongo views from the outbox; Mongo mirrors the relational store (archived rows survive unless <code>DeleteOnArchive()</code>)</li>
-                <li><a href="#service-to-service">UpstreamSubscriber</a> — materializes upstream events into a local Mongo collection and ripples recompose to every embedding view</li>
-                <li><a href="#cache-subsystem">Cache</a> · <a href="#httpclient">httpclient</a> · <a href="#integration-events">integration events</a> — the cross-service plumbing</li>
+
+        <div class="cap-card">
+            <div class="cap-head">
+                <span class="cap-ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><ellipse cx="12" cy="5" rx="7" ry="3"/><path d="M5 5v14c0 1.7 3.1 3 7 3s7-1.3 7-3V5"/><path d="M5 12c0 1.7 3.1 3 7 3s7-1.3 7-3"/></svg></span>
+                <span class="cap-title">Persist atomically</span>
+            </div>
+            <div class="cap-lead">One transaction covers data, outbox and audit — always.</div>
+            <ul class="cap-list">
+                <li><a href="#auto-handlers">Six write verbs, zero handler code</a> — insert, update, partial-update, archive, unarchive, delete</li>
+                <li><a href="#table-schema"><code>TableSchema</code></a> — one explicit Go-field↔column map turns a flat domain entity into a normalized (3NF) physical layout</li>
+                <li><a href="#lifecycle-map">One transaction</a> — data rows + a single outbox row + the audit row commit together</li>
+                <li><a href="#lifecycle-hooks">Lifecycle hooks</a> — in-TX <code>AfterBegin</code> / <code>BeforeCommit</code> side effects, once per operation</li>
+                <li><a href="#audit">Guaranteed audit</a> — one event per write; snapshot / delta / transition bodies; <code>database</code> + <code>slog</code> routing</li>
+                <li><a href="#custom-command-handler">Manual command handler</a> — same envelope, notifications and audit; full wiring control</li>
             </ul>
+            <div class="cap-more"><a href="#command-handler">CommandHandler →</a></div>
         </div>
-        <div class="card">
-            <h4>Web — REST, GraphQL &amp; export</h4>
-            <ul>
-                <li><a href="#status-mapping">Canonical envelope + HTTP status mapping</a> — <code>RespondFromResult[T]</code> derives the status from each notification's transport-agnostic <code>Semantic()</code></li>
-                <li><a href="#auto-query-handlers">Query wrappers</a> — allowlist via <code>query:</code>/<code>filter:</code> tags, keyset pagination, sparse <code>?fields=</code>, sort; <code>path:</code> tag for universal URL-segment binding</li>
-                <li><a href="#auto-query-handlers">Tabular export</a> — <code>QueryAsCSV</code> / <code>QueryAsXLSX</code> attach the SAME query handler to a downloadable CSV or Excel file (hierarchical, labelKey headers, <code>?fields=</code>-narrowed, capped at <code>query.maxExportRows</code>)</li>
-                <li><a href="#openapi">OpenAPI 3.1 + Swagger UI</a> — generated by reflection over your Go DTOs, no codegen</li>
-                <li><a href="#graphql">GraphQL</a> — the same application handlers behind a single <code>POST /graphql</code>; SDL, Relay connections, and <code>where</code> filters reflected from the same DTOs. Its own web surface, never in the Swagger document</li>
-                <li><a href="#auth-middleware">JWT auth</a> + <a href="#authz-seams">3-layer authorization</a> — middleware validation + permission gate + tenant scoping, shared across REST and GraphQL</li>
+
+        <div class="cap-card">
+            <div class="cap-head">
+                <span class="cap-ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 6h10M4 11h10M4 16h6"/><circle cx="17" cy="16" r="3"/><path d="m21.5 20.5-2-2"/></svg></span>
+                <span class="cap-title">Read at scale — CQRS</span>
+            </div>
+            <div class="cap-lead">Eventually-consistent Mongo projections, mirrored from the write side.</div>
+            <ul class="cap-list">
+                <li><a href="#auto-query-handlers">Auto query handlers</a> — allowlisted filters, keyset pagination, sparse <code>?fields=</code>, <code>?sort=</code>, count-only</li>
+                <li><a href="#query-side">16 filter operators</a> — eq/ne/in/gte/startsWith/contains… plus case-insensitive variants, allowlisted per field by tag</li>
+                <li><a href="#read-lifecycle-map"><code>SyncEngine</code> + composer</a> — Debezium → Kafka materializes views; archived rows survive unless <code>DeleteOnArchive()</code></li>
+                <li><a href="#query-side"><code>ComposedView</code> / <code>SharedBaseView</code></a> — read-time joins and all-in-one identity, never materialized on the request path</li>
+                <li><a href="#auto-query-handlers">CSV / XLSX export</a> — the same query handler streamed to a file, hierarchical, translated headers</li>
+                <li><a href="#custom-query-handler">Manual query handler</a> — bespoke parsing and envelopes over the same reader</li>
             </ul>
+            <div class="cap-more"><a href="#query-side">QueryHandler · CQRS →</a></div>
         </div>
+
+        <div class="cap-card">
+            <div class="cap-head">
+                <span class="cap-ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="3"/><circle cx="12" cy="4" r="1.6"/><circle cx="12" cy="20" r="1.6"/><circle cx="4" cy="12" r="1.6"/><circle cx="20" cy="12" r="1.6"/><path d="M12 9V5.6M12 15v3.4M9 12H5.6M15 12h3.4"/></svg></span>
+                <span class="cap-title">One handler, every surface</span>
+            </div>
+            <div class="cap-lead">Attach a handler to a surface — never rewrite it.</div>
+            <ul class="cap-list">
+                <li><a href="#status-mapping">REST + canonical envelope</a> — each notification's <code>Semantic()</code> derives the HTTP status; no status codes in handlers</li>
+                <li><a href="#openapi">OpenAPI 3.1 + Swagger UI</a> — reflected from your Go DTOs, no codegen, no annotations</li>
+                <li><a href="#graphql">GraphQL</a> — own surface, Relay connections, per-field authz, schema reflected from the same DTOs</li>
+                <li><a href="#grpc">gRPC (Connect)</a> — dedicated listener; pb↔DTO bridge boot-checked; <code>google.rpc</code> error details; internal-plane posture</li>
+                <li><a href="#integration-events">Integration events (Kafka)</a> — async facts; at-least-once, idempotent consumers, retry surface</li>
+                <li><a href="#handler-invariance">Handler invariance</a> — the same instance drives all of the above</li>
+            </ul>
+            <div class="cap-more"><a href="#handler-invariance">Handler invariance →</a></div>
+        </div>
+
+        <div class="cap-card">
+            <div class="cap-head">
+                <span class="cap-ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"><path d="M12 3l7 3v5c0 4.4-3 8-7 10-4-2-7-5.6-7-10V6z"/><circle cx="12" cy="11" r="1.6"/><path d="M12 12.6V15"/></svg></span>
+                <span class="cap-title">Secure every request</span>
+            </div>
+            <div class="cap-lead">Identity in, authorization enforced — one JWT core, every transport.</div>
+            <ul class="cap-list">
+                <li><a href="#app-context"><code>AppContext</code></a> — UUID + language + <code>Identity</code> per request; implements <code>context.Context</code>; owns cancellation</li>
+                <li><a href="#auth-middleware">JWT authentication</a> — JWKS / PEM / external validator, revocation cache, expired-vs-invalid split</li>
+                <li><a href="#authz-seams">3-layer authorization</a> — permission gate (<code>resource:action</code>) · <code>BuildRules</code> · tenant scoping</li>
+                <li><a href="#authz-seams">Field-level read control</a> — <code>Restrict</code> gates columns; 403 on an active reference, silent omission otherwise</li>
+                <li><a href="#grpc">Shared <code>authcore</code></a> — one validation core behind the REST and gRPC shells</li>
+            </ul>
+            <div class="cap-more"><a href="#authz-seams">Authorization →</a></div>
+        </div>
+
+        <div class="cap-card">
+            <div class="cap-head">
+                <span class="cap-ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="5" cy="6" r="2"/><circle cx="19" cy="6" r="2"/><circle cx="12" cy="18" r="2"/><path d="M6.7 6h10.6M6.3 7.7 10.8 16.3M17.7 7.7 13.2 16.3"/></svg></span>
+                <span class="cap-title">Talk to other services</span>
+            </div>
+            <div class="cap-lead">One canonical channel per question — no accidental coupling.</div>
+            <ul class="cap-list">
+                <li><a href="#service-to-service">The channel decision matrix</a> — sync internal → gRPC, sync external → HTTP, async facts → events, async views → composition</li>
+                <li><a href="#httpclient"><code>httpclient</code></a> — outbound HTTP from YAML: retry, cache, breaker, idempotency, TLS, HMAC, OAuth2, streaming</li>
+                <li><a href="#grpc"><code>grpcclient</code></a> — outbound gRPC toolbox; retry/breaker/backoff cores shared with <code>httpclient</code></li>
+                <li><a href="#service-to-service">Upstream composition</a> — <code>UpstreamSubscription</code> / <code>FromSchema</code>, ripple recompose, failure registry</li>
+                <li><a href="#integration-events">Integration events</a> — typed <code>Dispatch</code> / <code>Receiver</code>, best-effort dedup, operator retry surface</li>
+            </ul>
+            <div class="cap-more"><a href="#service-to-service">Service-to-service →</a></div>
+        </div>
+
+        <div class="cap-card">
+            <div class="cap-head">
+                <span class="cap-ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12h4l3 7 4-14 3 7h4"/></svg></span>
+                <span class="cap-title">Configure, run &amp; observe</span>
+            </div>
+            <div class="cap-lead">Boot from one YAML profile and a single <code>Wire</code> function.</div>
+            <ul class="cap-list">
+                <li><a href="#bootstrap">Bootstrap</a> — <code>Run</code> / <code>Build</code> / <code>Serve</code>, <code>Deps</code> / <code>Wiring</code> / <code>Feature</code>, 4 env vars, dependency-ordered graceful drain</li>
+                <li><a href="#yaml-reference"><code>microservice.&lt;profile&gt;.yaml</code></a> — <code>${...}</code> substitution (env / file / vault), one file per profile</li>
+                <li><a href="#architecture">Two relational engines</a> — PostgreSQL &amp; MySQL behind one engine seam; dialect chosen at build/runtime</li>
+                <li><a href="#migrations">Migrations</a> — numbered SQL, framework <code>0001</code> per dialect, <code>autoRun</code> check/true/false</li>
+                <li><a href="#mongo-schema-evolution">Mongo schema evolution</a> — drift detection, <code>Version(N)</code>, advisory-lock rebuild with crash recovery</li>
+                <li><a href="#tracing">Distributed tracing</a> — OTel opt-in, <code>correlationID == trace_id</code>, async links across the outbox</li>
+                <li><a href="#cache-subsystem">Cache &amp; i18n</a> — <code>cache.Cache</code> (private vs shared) · 7 translation catalogs</li>
+            </ul>
+            <div class="cap-more"><a href="#bootstrap">Bootstrap →</a></div>
+        </div>
+
+    </div>
+
+    <div class="box">
+        <strong>Where to go next.</strong> The dedicated sections are the source of truth — this
+        page only points at them. New here? Start with the <a href="#overview">Overview</a>, then
+        the <a href="#architecture">Architecture</a> for the layer model and dependency rules, and
+        <a href="#handler-invariance">Handler invariance</a> for the guarantee that ties every
+        surface above to one handler.
     </div>

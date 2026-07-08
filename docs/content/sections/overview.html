@@ -5,7 +5,7 @@
   <div class="hero-badges">
     <span class="badge">github.com/ClaudioSchirmer/omnicore</span>
     <span class="badge">Go ≥ 1.26</span>
-    <span class="badge">Fiber v3 · Postgres (pgx v5) / MySQL (go-sql-driver) · mongo-driver v2 · kafka-go · gqlparser v2</span>
+    <span class="badge">Fiber v3 · Postgres (pgx v5) / MySQL (go-sql-driver) · Connect (gRPC) · mongo-driver v2 · kafka-go · gqlparser v2</span>
   </div>
 </div>
     <h2>Overview</h2>
@@ -15,8 +15,8 @@
         <strong>CQRS</strong> following the idiomatic Go pattern. Services import the module
         and automatically gain: typed validation, atomic persistence with outbox,
         guaranteed auditing, multi-language, structured logging, the CQRS pipeline, and
-        standardized <strong>REST</strong> and <strong>GraphQL</strong> surfaces via Fiber —
-        with OpenAPI 3.1 docs and CSV/XLSX tabular export reflected from the same Go types.
+        standardized <strong>REST</strong>, <strong>gRPC</strong>, and <strong>GraphQL</strong>
+        surfaces — with OpenAPI 3.1 docs and CSV/XLSX tabular export reflected from the same Go types.
     </p>
     <div class="box">
         <strong>Philosophy:</strong> the framework <em>orchestrates</em> the critical flows
@@ -24,17 +24,9 @@
         developer focus exclusively on the <em>business rules</em>.
         Essential functionality cannot be forgotten — the framework guarantees it.
     </div>
-    <div class="box good">
-        <strong>Battle-tested:</strong> the framework ships with
-        <strong>94.7% unit-test coverage</strong> of its statements (excluding generated protobuf
-        stubs). That confidence is backed by
-        <strong>87,821 lines of tests</strong> against <strong>56,512 lines of production code</strong>
-        — a <strong>1.55 : 1 test-to-code ratio</strong>: there is over half again as much test
-        code as there is framework code exercising it.
-    </div>
     <p class="note">
-        Worth noting early: you model a <strong>flat, natural domain entity</strong> and the <code>TableSchema</code>
-        alone maps it to a <strong>fully normalized (3NF) physical layout</strong> — the framework splits it across
-        tables on write and rejoins it into the same flat struct on read, so the domain never sees a foreign key or a
-        join. <a href="#table-schema~normalize-3nf">See how it works →</a>
+        New here? The <a href="#features">capability map</a> lays out everything the framework does,
+        grouped by what you are building; <a href="#architecture">Architecture</a> covers the 4-layer
+        model and dependency rules; and <a href="#handler-invariance">Handler invariance</a> explains
+        the guarantee that one handler serves every surface.
     </p>
