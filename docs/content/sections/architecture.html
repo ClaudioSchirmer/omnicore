@@ -55,6 +55,26 @@
 └─────────────────────────────────────────────────────────────────────┘</template>
     </div>
 
+    <h3 id="engine-seam">The relational engine seam</h3>
+    <p>
+        The relational layer is <strong>backend-agnostic by design</strong>.
+        <strong>PostgreSQL</strong> and <strong>MySQL</strong> are both first-class today:
+        a build tag links exactly one engine (<code>-tags postgres</code> / <code>-tags mysql</code>,
+        or <code>-tags 'postgres mysql'</code> to link both and pick the active dialect at runtime via
+        <code>relational.dialect</code>). Both engines are consumers of a single <em>engine seam</em> —
+        the <code>domain</code> and <code>application</code> layers never name a vendor, write raw SQL,
+        or pronounce a physical identifier (those live only in <code>infra/</code>, behind
+        <a href="#table-schema"><code>TableSchema</code></a>). A service's business code is therefore
+        identical whichever engine backs it.
+    </p>
+    <div class="box">
+        <strong>Adding an engine is an isolated seam implementation, not a rewrite.</strong>
+        Because every backend plugs into the same seam — dialect-specific SQL generation, type
+        mapping, and error translation behind one interface — introducing a new relational backend
+        does not ripple into consumer services or the layers above <code>infra/</code>.
+        SQL Server is a natural candidate for a future engine.
+    </div>
+
     <h3 id="dependencies">Dependency rules</h3>
     <table>
         <tbody><tr>

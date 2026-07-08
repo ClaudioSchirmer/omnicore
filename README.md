@@ -18,6 +18,7 @@ Mongo-projected read side, and every transport surface — from a single
 ## Why omnicore
 
 - ⚡ **The 6 CRUD verbs land with zero handler code** — insert, update, partial-update, archive, unarchive, delete.
+- 🗄️ **Backend-agnostic relational core** — PostgreSQL *and* MySQL today, behind one engine seam; your domain never names a vendor.
 - 🧱 **DDD that the compiler enforces** — 4 layers, one direction, sealed domain types.
 - 🔁 **One handler, five surfaces** — REST, gRPC, GraphQL, Kafka, and file exports share the *same* handler instance.
 - 📬 **Correct-by-construction writes** — data + outbox + audit commit in one transaction, always.
@@ -64,6 +65,22 @@ Each row links to its manual page.
 | Cache | One `cache.Cache` port; private vs shared enforced by DI; memory/redis/custom | [cache-subsystem](https://claudioschirmer.github.io/omnicore/#cache-subsystem) |
 | Bootstrap & YAML | `Run` / `Build` / `Serve`; one profile file drives everything | [bootstrap](https://claudioschirmer.github.io/omnicore/#bootstrap) · [yaml](https://claudioschirmer.github.io/omnicore/#yaml-reference) |
 | Migrations · Tracing · i18n | Numbered SQL migrations · OTel opt-in · 7 translation catalogs | [migrations](https://claudioschirmer.github.io/omnicore/#migrations) · [tracing](https://claudioschirmer.github.io/omnicore/#tracing) |
+
+---
+
+## Relational backends — one seam, many engines
+
+The relational layer is **backend-agnostic by design**. **PostgreSQL** and **MySQL** are both
+first-class today: you link one at build time with a build tag and select the active dialect at
+runtime via `relational.dialect`. Both are consumers of a single *engine seam* — the domain and
+application layers never name a vendor, write raw SQL, or pronounce a physical identifier, so a
+service's business code is identical whichever engine backs it.
+
+Because every engine plugs into that same seam, **adding a new relational backend is an isolated
+seam implementation, not a change that ripples through your services**. SQL Server is a natural
+candidate for a future engine.
+
+→ [Architecture · the engine seam](https://claudioschirmer.github.io/omnicore/#architecture) · [Bootstrap · build tags & dialect](https://claudioschirmer.github.io/omnicore/#bootstrap)
 
 ---
 
