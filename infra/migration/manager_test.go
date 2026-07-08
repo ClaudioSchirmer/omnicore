@@ -73,6 +73,16 @@ func TestValidateDownExists_MissingDown(t *testing.T) {
 	}
 }
 
+func TestValidateDownExists_IgnoresSubdirectories(t *testing.T) {
+	m := managerWithFiles(t, "0002_init.up.sql", "0002_init.down.sql")
+	if err := os.Mkdir(filepath.Join(m.dir, "archive"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.ValidateDownExists(); err != nil {
+		t.Fatalf("subdirectories must be skipped, got: %v", err)
+	}
+}
+
 func TestValidateDownExists_MalformedFilename_NoVersionPrefix(t *testing.T) {
 	m := managerWithFiles(t, "init.up.sql", "init.down.sql")
 	err := m.ValidateDownExists()

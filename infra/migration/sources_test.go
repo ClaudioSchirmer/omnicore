@@ -3,6 +3,7 @@ package migration
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -48,6 +49,18 @@ func TestServiceSource_MissingDirectoryReturnsError(t *testing.T) {
 	missing := filepath.Join(t.TempDir(), "does-not-exist")
 	if _, err := serviceSource(missing); err == nil {
 		t.Fatal("expected error opening a non-existent migration directory")
+	}
+}
+
+// A dialect that does not form a valid embed.FS subpath must fail at fs.Sub
+// with the "framework subfs" wrapping (".." is rejected by fs.ValidPath).
+func TestFrameworkSourceFor_InvalidSubpathReturnsError(t *testing.T) {
+	_, err := frameworkSourceFor("..")
+	if err == nil {
+		t.Fatal("expected error for an invalid embedded subpath")
+	}
+	if !strings.Contains(err.Error(), "framework subfs") {
+		t.Fatalf("expected the fs.Sub error wrapping, got: %v", err)
 	}
 }
 
