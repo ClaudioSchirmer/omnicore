@@ -51,7 +51,7 @@ func startUpstreamSubscribers(
 			composer,
 			runtimeCfg,
 			dependents,
-			cfg.Kafka.Brokers,
+			deps.Transport,
 			deps.Logger,
 		)
 		if err != nil {

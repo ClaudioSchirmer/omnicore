@@ -8,7 +8,10 @@
 <div class="changelog">
     <div class="release">
         <div class="release-head"><span class="release-tag">Unreleased</span><span class="release-date">pending</span></div>
-        <ul></ul>
+        <ul>
+            <li><strong>Changed</strong> — <strong>breaking</strong>: <strong>a message-transport build tag is now mandatory.</strong> Like the relational-engine tag, a build must link one transport — <code>-tags kafka</code> today (<code>nats</code> planned) — so a runnable build carries two axes, e.g. <code>-tags 'postgres kafka'</code>. Building without a transport tag compiles but aborts at boot with <em>&ldquo;no transport linked&rdquo;</em> (the neutral bootstrap still compiles tagless, mirroring the no-engine case). <em>Migration</em>: add the transport tag to every build/run/test invocation and any tooling. See <a href="#transport-seam">The message-transport seam</a>.</li>
+            <li><strong>Added</strong> — <strong>message-transport seam — a pluggable broker behind a build tag.</strong> The three async consumers (read-side <code>SyncEngine</code>, integration <code>ConsumerPool</code>, <code>UpstreamSubscriber</code>) now read through a backend-neutral <code>transport.Subscriber</code> port (<code>infra/transport</code>) instead of importing the Kafka client directly, mirroring the relational-engine seam: an adapter self-registers in <code>init()</code> behind its build tag, resolved by name via the subscriber registry. The Kafka adapter (<code>-tags kafka</code>) is the first implementation and, being Kafka-wire-compatible, backs <strong>Redpanda</strong> with no code change — the choice is the broker address. The producer path is unchanged (the write still lands an outbox row in-TX; a CDC relay ships it), so the at-least-once, dedup and per-aggregate ordering semantics are identical whichever broker backs it. See <a href="#transport-seam">The message-transport seam</a>.</li>
+        </ul>
     </div>
 
     <div class="release">

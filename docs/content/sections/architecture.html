@@ -83,6 +83,35 @@
         SQL Server is a natural candidate for a future engine.
     </div>
 
+    <h3 id="transport-seam">The message-transport seam</h3>
+    <p>
+        The async message transport is a <strong>seam of the same shape</strong> as the engine one.
+        The three consumers that read a broker &mdash; the read-side <code>SyncEngine</code>, the
+        integration <code>ConsumerPool</code>, and the <code>UpstreamSubscriber</code> &mdash; depend on a
+        backend-neutral <code>transport.Subscriber</code> port (<code>infra/transport</code>), never on a
+        concrete client. A build tag links exactly one transport: <code>-tags kafka</code> links the
+        Kafka adapter (<code>infra/transport/kafka</code>), which &mdash; because it speaks the Kafka wire
+        protocol &mdash; also backs <strong>Redpanda</strong> unchanged; the choice between them is the
+        broker address, deployment configuration, not code. A second transport (<code>nats</code>) is the
+        planned addition and drops in as another tag-gated adapter.
+    </p>
+    <p>
+        Selection works exactly like the engine registry: each adapter self-registers in
+        <code>init()</code> behind its build tag (<code>RegisterSubscriber</code>), and the composition
+        root resolves it by name (<code>NewSubscriber</code>) &mdash; so <code>bootstrap</code> never
+        imports a broker client, and a build links only the one adapter its tag selects. There is
+        <strong>no default</strong>: a build with no transport tag compiles but aborts at boot with
+        <em>&ldquo;no transport linked&rdquo;</em>, mirroring the no-engine case. So a runnable build
+        carries two axes, e.g. <code>-tags 'postgres kafka'</code>.
+    </p>
+    <div class="box">
+        <strong>The seam is on the consumer side; the producer path is unchanged.</strong>
+        A write still lands its outbox row inside the domain transaction, and a CDC relay (Debezium
+        today) ships it to the broker &mdash; the framework does not produce to the broker itself. The
+        transport seam abstracts only how the framework <em>reads</em>, so the at-least-once delivery,
+        dedup, and per-aggregate ordering semantics are identical whichever broker backs it.
+    </div>
+
     <h3 id="dependencies">Dependency rules</h3>
     <table>
         <tbody><tr>

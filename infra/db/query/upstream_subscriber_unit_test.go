@@ -5,7 +5,7 @@ import (
 	"testing"
 
 	"github.com/ClaudioSchirmer/omnicore/infra/db/core"
-	"github.com/segmentio/kafka-go"
+	"github.com/ClaudioSchirmer/omnicore/infra/transport"
 	"go.mongodb.org/mongo-driver/v2/bson"
 )
 
@@ -88,12 +88,12 @@ func newTestUpstream(t *testing.T, cfg UpstreamSubscriberConfig, mongo ReadModel
 	return s
 }
 
-func upstreamMsg(id, eventType string, value string) kafka.Message {
-	return kafka.Message{
+func upstreamMsg(id, eventType string, value string) transport.Message {
+	return transport.Message{
 		Key: []byte(id),
-		Headers: []kafka.Header{
-			{Key: "aggregate_type", Value: []byte("User")},
-			{Key: "event_type", Value: []byte(eventType)},
+		Headers: map[string]string{
+			"aggregate_type": "User",
+			"event_type":     eventType,
 		},
 		Value: []byte(value),
 	}
@@ -246,7 +246,7 @@ func TestProcessMessage_IncompleteMetadata(t *testing.T) {
 	// Empty aggregate id (empty Key) → early return.
 	s.processMessage(context.Background(), upstreamMsg("", "INSERTED", `{}`), 0)
 	// Empty event type (no event_type header) → early return.
-	noType := kafka.Message{Key: []byte("u1"), Headers: []kafka.Header{{Key: "aggregate_type", Value: []byte("User")}}, Value: []byte(`{}`)}
+	noType := transport.Message{Key: []byte("u1"), Headers: map[string]string{"aggregate_type": "User"}, Value: []byte(`{}`)}
 	s.processMessage(context.Background(), noType, 0)
 
 	if len(colls["users"].updates) != 0 {

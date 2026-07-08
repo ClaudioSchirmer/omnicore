@@ -7,17 +7,15 @@ import (
 	"fmt"
 	"hash/fnv"
 	"log"
-	"net"
-	"strconv"
 	"sync"
 	"sync/atomic"
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/segmentio/kafka-go"
 
 	"github.com/ClaudioSchirmer/omnicore/infra/db/core"
 	"github.com/ClaudioSchirmer/omnicore/infra/tracing"
+	"github.com/ClaudioSchirmer/omnicore/infra/transport"
 )
 
 // defaultWorkerQueueDepth bounds in-flight messages per worker. With async
@@ -58,8 +56,11 @@ type SyncEngine struct {
 	// embedding the upstream Mongo collection). The maps stay populated
 	// during the lifetime of SyncEngine and are also handed to the
 	// UpstreamSubscriber wiring at boot.
-	index   viewIndex
-	brokers []string
+	index viewIndex
+	// sub is the transport port the projection loop opens its consumer
+	// subscription through, and ensures topics exist through — the seam that
+	// keeps this loop broker-neutral.
+	sub     transport.Subscriber
 	groupID string
 	topics  []string
 	workers int
@@ -113,19 +114,14 @@ type kafkaEvent struct {
 	Payload []byte
 }
 
-func extractEvent(msg kafka.Message) kafkaEvent {
-	e := kafkaEvent{AggregateID: decodeAggregateID(msg.Key), Payload: msg.Value}
-	for _, h := range msg.Headers {
-		switch h.Key {
-		case "aggregate_type":
-			e.AggregateType = string(h.Value)
-		case "event_type":
-			e.EventType = string(h.Value)
-		case "traceparent":
-			e.Traceparent = string(h.Value)
-		}
+func extractEvent(msg transport.Message) kafkaEvent {
+	return kafkaEvent{
+		AggregateID:   decodeAggregateID(msg.Key),
+		Payload:       msg.Value,
+		AggregateType: msg.Headers["aggregate_type"],
+		EventType:     msg.Headers["event_type"],
+		Traceparent:   msg.Headers["traceparent"],
 	}
-	return e
 }
 
 // decodeAggregateID normalizes the Kafka message Key to the canonical UUID
@@ -157,7 +153,7 @@ func decodeAggregateID(key []byte) string {
 // updates for the same aggregate always land on the same worker — preserving
 // per-aggregate ordering. Across aggregates ordering is not promised, which
 // matches Kafka's contract anyway. workers < 1 is clamped to 1.
-func NewSyncEngine(eng core.RelationalEngine, mongo ReadModelStore, brokers []string, groupID string, views []*ViewDefinition, workers int) *SyncEngine {
+func NewSyncEngine(eng core.RelationalEngine, mongo ReadModelStore, sub transport.Subscriber, groupID string, views []*ViewDefinition, workers int) *SyncEngine {
 	topics := make([]string, 0, len(views))
 	seen := map[string]bool{}
 	addTopic := func(table string) {
@@ -195,7 +191,7 @@ func NewSyncEngine(eng core.RelationalEngine, mongo ReadModelStore, brokers []st
 		// resolve correctly through the composer during recompose.
 		composer: NewComposerWithMongo(eng, mongo),
 		index:    buildViewIndex(views),
-		brokers:  brokers,
+		sub:      sub,
 		groupID:  groupID,
 		topics:   topics,
 		workers:  workers,
@@ -257,21 +253,28 @@ func (s *SyncEngine) run(ctx context.Context) {
 		return
 	}
 
-	r := kafka.NewReader(kafka.ReaderConfig{
-		Brokers:     s.brokers,
-		GroupID:     s.groupID,
-		GroupTopics: s.topics,
-		// CommitInterval > 0 switches kafka-go from commitLoopImmediate
-		// (sync OffsetCommit RPC per message — caps throughput at ~9 msg/s
-		// in local Docker because each commit roundtrip costs ~100 ms) to
-		// commitLoopInterval (offsets batched and committed asynchronously
-		// on a ticker). Safe under at-least-once: composer re-reads current
-		// state from Postgres on each message and mongo.Upsert keyed by _id
-		// is idempotent, so reprocessing the last <=1s window of messages
-		// after a consumer crash converges to the same Mongo state.
+	// StartFrom earliest preserves the prior kafka-go default (an unset
+	// StartOffset defaulted to FirstOffset): a fresh consumer group replays the
+	// outbox topics from the beginning to build the projection.
+	//
+	// CommitInterval > 0 batches offset commits asynchronously on a ticker
+	// instead of a sync OffsetCommit RPC per message (which caps throughput at
+	// ~9 msg/s in local Docker because each commit roundtrip costs ~100 ms).
+	// Safe under at-least-once: the composer re-reads current state from the
+	// relational backend on each message and mongo.Upsert keyed by _id is
+	// idempotent, so reprocessing the last <=1s window after a consumer crash
+	// converges to the same Mongo state.
+	sub, err := s.sub.Subscribe(ctx, transport.SubscribeConfig{
+		Topics:         s.topics,
+		GroupID:        s.groupID,
+		StartFrom:      transport.StartFromEarliest,
 		CommitInterval: time.Second,
 	})
-	defer r.Close()
+	if err != nil {
+		log.Printf("sync engine: subscribe failed: %v", err)
+		return
+	}
+	defer sub.Close()
 
 	// Worker pool: each worker owns a channel; reader dispatches by FNV-1a
 	// hash of aggregate_id. Same aggregate → same worker → ordering preserved.
@@ -299,7 +302,7 @@ func (s *SyncEngine) run(ctx context.Context) {
 	}()
 
 	for {
-		msg, err := r.ReadMessage(ctx)
+		msg, err := sub.Read(ctx)
 		if err != nil {
 			if ctx.Err() != nil {
 				return
@@ -544,14 +547,14 @@ func topicFromTable(table string) string {
 	return table + ".events"
 }
 
-// topicConfigsFor returns the CreateTopics config slice for the SyncEngine's
+// topicSpecsFor returns the EnsureTopics spec slice for the SyncEngine's
 // declared topics. Extracted so tests can verify the shape without going
-// through a Kafka connection.
-func topicConfigsFor(topics []string) []kafka.TopicConfig {
-	out := make([]kafka.TopicConfig, len(topics))
+// through a broker connection.
+func topicSpecsFor(topics []string) []transport.TopicSpec {
+	out := make([]transport.TopicSpec, len(topics))
 	for i, t := range topics {
-		out[i] = kafka.TopicConfig{
-			Topic:             t,
+		out[i] = transport.TopicSpec{
+			Name:              t,
 			NumPartitions:     defaultTopicNumPartitions,
 			ReplicationFactor: defaultTopicReplicationFactor,
 		}
@@ -559,19 +562,18 @@ func topicConfigsFor(topics []string) []kafka.TopicConfig {
 	return out
 }
 
-// ensureTopics dials any broker, finds the controller, and issues CreateTopics
-// for every topic the SyncEngine intends to consume. Retries with linear
-// backoff until ensureTopicsTimeout, after which the boot of the consumer
-// goroutine is aborted with a logged error rather than left silently stuck.
+// ensureTopics asks the transport to provision every topic the SyncEngine
+// intends to consume. Retries with linear backoff until ensureTopicsTimeout,
+// after which the boot of the consumer goroutine is aborted with a logged error
+// rather than left silently stuck.
 //
-// Idempotent at the kafka-go layer: pre-existing topics yield TopicAlreadyExists
-// which is silently absorbed by Conn.CreateTopics (see kafka-go createtopics.go
-// L415-L418), so calling this on every restart is safe.
+// Idempotent at the transport layer: a pre-existing topic is absorbed as a
+// no-op by the adapter's EnsureTopics, so calling this on every restart is safe.
 func (s *SyncEngine) ensureTopics(ctx context.Context) error {
 	if len(s.topics) == 0 {
 		return nil
 	}
-	configs := topicConfigsFor(s.topics)
+	specs := topicSpecsFor(s.topics)
 	deadline := time.Now().Add(ensureTopicsTimeout)
 	var lastErr error
 	for attempt := 0; ; attempt++ {
@@ -588,41 +590,10 @@ func (s *SyncEngine) ensureTopics(ctx context.Context) error {
 			}
 			return fmt.Errorf("sync engine: ensure topics %v: %w", s.topics, lastErr)
 		}
-		if err := createTopicsOnController(ctx, s.brokers, configs); err != nil {
+		if err := s.sub.EnsureTopics(ctx, specs); err != nil {
 			lastErr = err
 			continue
 		}
 		return nil
 	}
-}
-
-// createTopicsOnController is the single-attempt body of ensureTopics: dial
-// any broker, look up the controller, dial the controller, send CreateTopics.
-// Closes both connections deterministically.
-func createTopicsOnController(ctx context.Context, brokers []string, configs []kafka.TopicConfig) error {
-	if len(brokers) == 0 {
-		return errors.New("no brokers configured")
-	}
-	dialer := &kafka.Dialer{Timeout: 5 * time.Second, DualStack: true}
-	conn, err := dialer.DialContext(ctx, "tcp", brokers[0])
-	if err != nil {
-		return fmt.Errorf("dial %s: %w", brokers[0], err)
-	}
-	defer conn.Close()
-
-	controller, err := conn.Controller()
-	if err != nil {
-		return fmt.Errorf("lookup controller: %w", err)
-	}
-	controllerAddr := net.JoinHostPort(controller.Host, strconv.Itoa(controller.Port))
-	cConn, err := dialer.DialContext(ctx, "tcp", controllerAddr)
-	if err != nil {
-		return fmt.Errorf("dial controller %s: %w", controllerAddr, err)
-	}
-	defer cConn.Close()
-
-	if err := cConn.CreateTopics(configs...); err != nil {
-		return fmt.Errorf("create topics: %w", err)
-	}
-	return nil
 }

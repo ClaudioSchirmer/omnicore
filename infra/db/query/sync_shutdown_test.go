@@ -14,11 +14,11 @@ import (
 // before `done` closes; see Start).
 
 func syncEngineForShutdownTest() *SyncEngine {
-	// Unreachable broker + a real view (non-empty topics) keeps run() alive
-	// inside the ensureTopics retry loop until its ctx is cancelled — a
-	// deterministic stand-in for "the loop is still working".
+	// The fake transport's EnsureTopics always errors, so run() stays alive in
+	// the ensureTopics retry loop until its ctx is cancelled — a deterministic
+	// stand-in for "the loop is still working" (formerly an unroutable broker).
 	view := View("gadgets").Version(1).Root("gadgets").Schema(rootSchema("gadgets"))
-	return NewSyncEngine(nil, nil, []string{"127.0.0.1:1"}, "shutdown-test-group",
+	return NewSyncEngine(nil, nil, fakeSubscriber{}, "shutdown-test-group",
 		[]*ViewDefinition{view}, 1)
 }
 
@@ -100,7 +100,7 @@ func TestUpstreamSubscriber_ShutdownWaitsForRunExit(t *testing.T) {
 			ConsumerGroup: "shutdown-test-upstream",
 			Workers:       1,
 		},
-		nil, []string{"127.0.0.1:1"}, slog.Default())
+		nil, fakeSubscriber{}, slog.Default())
 	if err != nil {
 		t.Fatalf("constructor: %v", err)
 	}

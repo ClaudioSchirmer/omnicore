@@ -264,7 +264,7 @@ func runWithConfig(cfg *Config, wire func(Deps) Wiring) error {
 		}
 
 		syncEngine := query.NewSyncEngine(deps.DB, deps.Mongo,
-			cfg.Kafka.Brokers, cfg.Kafka.SyncGroupID, views, cfg.Kafka.SyncWorkers).
+			deps.Transport, cfg.Kafka.SyncGroupID, views, cfg.Kafka.SyncWorkers).
 			WithKafkaTracing(cfg.Observability.Tracing.Resolve(cfg.Service).Instruments(tracing.SubKafka))
 		// Surfaced on Deps so serve's coordinated drain can wait for the
 		// projection loop's FULL exit (worker drain + reader LeaveGroup)
@@ -428,6 +428,19 @@ func buildDeps(cfg *Config) (Deps, error) {
 	integration.Configure(cfg.Integration, eng, logger)
 	integrationRegistry := integration.NewRegistry()
 
+	// Build the message-transport subscriber from the linked adapter (selected
+	// by the transport build tag — see the transport_<tag>.go bindings). Every
+	// async consumer (SyncEngine, integration ConsumerPool, each
+	// UpstreamSubscriber) shares this one port. The adapter carries connection
+	// settings only and dials lazily at Subscribe / EnsureTopics, so a service
+	// that ends up doing no messaging pays nothing here.
+	sub, err := newTransportSubscriber(cfg)
+	if err != nil {
+		eng.Close()
+		_ = mg.Close(context.Background())
+		return Deps{}, fmt.Errorf("bootstrap: transport init: %w", err)
+	}
+
 	return Deps{
 		Config:              cfg,
 		Logger:              logger,
@@ -437,6 +450,7 @@ func buildDeps(cfg *Config) (Deps, error) {
 		Translator:          tr,
 		Pipeline:            pipe,
 		ViewReader:          viewReader,
+		Transport:           sub,
 		Export:              fwweb.ExportDeps{Translator: tr, MaxExportRows: cfg.Query.MaxExportRows},
 		Cache:               privateCache,
 		SharedCache:         sharedCache,
@@ -834,7 +848,7 @@ func serve(ctx context.Context, deps Deps, wiring Wiring) error {
 			deps.IntegrationRegistry,
 			deps.Config.Integration,
 			deps.DB,
-			deps.Config.Kafka.Brokers,
+			deps.Transport,
 			deps.Pipeline,
 			deps.Logger,
 		).WithKafkaTracing(deps.Config.Observability.Tracing.Resolve(deps.Config.Service).Instruments(tracing.SubKafka))

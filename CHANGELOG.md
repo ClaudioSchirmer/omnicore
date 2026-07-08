@@ -11,6 +11,32 @@ with `1.0.0`.
 
 ## [Unreleased]
 
+### Added
+
+- **Message-transport seam — pluggable broker behind a build tag.** The three
+  async consumers (read-side `SyncEngine`, integration `ConsumerPool`,
+  `UpstreamSubscriber`) now read through a backend-neutral `transport.Subscriber`
+  port (`infra/transport`) instead of importing `segmentio/kafka-go` directly,
+  mirroring the relational-engine seam: an adapter self-registers in `init()`
+  behind its own build tag, and the composition root resolves it by name via the
+  subscriber registry (`RegisterSubscriber` / `NewSubscriber`). The Kafka adapter
+  (`infra/transport/kafka`, `-tags kafka`) is the first implementation and, being
+  Kafka-wire-compatible, backs **Redpanda** with no code change — the choice is
+  the broker address, deployment configuration. `Deps.Transport` exposes the
+  built subscriber. The producer path is unchanged (the write still lands an
+  outbox row in-TX; Debezium continues to relay), so nothing in the CDC pipeline
+  or the at-least-once/dedup semantics changes.
+
+### Changed
+
+- **breaking** — **a message-transport build tag is now mandatory**, exactly like
+  the relational-engine tag. A build must link one transport (`-tags kafka`
+  today; `nats` is planned), so a runnable build is e.g. `-tags 'postgres kafka'`.
+  Building without a transport tag compiles but aborts at boot with
+  "no transport linked" (the neutral bootstrap still compiles tagless, mirroring
+  the no-engine case). Update build/run/test invocations and any tooling to add
+  the transport tag.
+
 ## [0.20.0] - 2026-07-07
 
 ### Added

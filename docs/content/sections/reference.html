@@ -78,5 +78,5 @@
     </ol>
 
     <h3>Commands</h3>
-    <pre><code>go build -tags postgres ./...   # compile everything (a relational engine tag is mandatory: postgres | mysql)
-go vet -tags postgres ./...     # static check</code></pre>
+    <pre><code>go build -tags 'postgres kafka' ./...   # compile everything (an engine tag postgres|mysql AND a transport tag kafka are both mandatory)
+go vet -tags 'postgres kafka' ./...     # static check</code></pre>

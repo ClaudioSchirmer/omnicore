@@ -8,9 +8,9 @@ import (
 
 	"github.com/ClaudioSchirmer/omnicore/application/configuration"
 	"github.com/ClaudioSchirmer/omnicore/application/persistence"
+	"github.com/ClaudioSchirmer/omnicore/infra/transport"
 
 	"github.com/google/uuid"
-	"github.com/segmentio/kafka-go"
 )
 
 // --- config.go nil-receiver + remaining Validate branches -------------------
@@ -64,7 +64,7 @@ func TestBucketOfMessage_NegativeSumStaysInRange(t *testing.T) {
 		key[i] = 0xff
 	}
 	const workers = 4
-	got := bucketOfMessage(kafka.Message{Key: key}, workers)
+	got := bucketOfMessage(transport.Message{Key: key}, workers)
 	if got < 0 || got >= workers {
 		t.Fatalf("bucket %d out of range [0,%d) after overflow", got, workers)
 	}

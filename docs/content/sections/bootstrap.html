@@ -46,8 +46,8 @@
 
     <p><strong>How operators set them.</strong> Three canonical patterns, picked by deployment shape:</p>
 
-<pre><code># Local shell — one run (the -tags engine selector is mandatory at build/run):
-APP_PROFILE=dev go run -tags postgres ./bootstrap
+<pre><code># Local shell — one run (a -tags engine AND transport selector are both mandatory at build/run):
+APP_PROFILE=dev go run -tags 'postgres kafka' ./bootstrap
 OMNICORE_MONGO_FORCE_REBUILD=true APP_PROFILE=prd ./bootstrap
 
 # docker-compose.yml — service environment block:
@@ -73,19 +73,27 @@ env:
         <li><code>-tags mysql</code> — links only the MySQL engine.</li>
         <li><code>-tags 'postgres mysql'</code> — links <strong>both</strong> engines into one binary; the active dialect is chosen at boot from <code>relational.dialect</code>, so the same binary serves a Postgres profile and a MySQL profile without a rebuild.</li>
     </ul>
-    <p>Building with <strong>neither</strong> tag registers no engine, so boot aborts (<code>core.NewEngine</code>: no engine registered for the configured dialect). Whichever tag set you pick, pass it to every <code>go build</code> / <code>go test</code> / <code>go run</code>, and make sure the linked engine(s) cover the <code>relational.dialect</code> the YAML selects:</p>
+    <p>Building with <strong>neither</strong> tag registers no engine, so boot aborts (<code>core.NewEngine</code>: no engine registered for the configured dialect). Whichever engine tag set you pick, pass it to every <code>go build</code> / <code>go test</code> / <code>go run</code> — alongside a <strong>transport</strong> tag (below) — and make sure the linked engine(s) cover the <code>relational.dialect</code> the YAML selects. The examples below pair each engine shape with <code>kafka</code>:</p>
 <pre><code># Postgres-only binary
-go build -tags postgres ./...
-APP_PROFILE=dev go run -tags postgres .
+go build -tags 'postgres kafka' ./...
+APP_PROFILE=dev go run -tags 'postgres kafka' .
 
 # MySQL-only binary
-go build -tags mysql ./...
-APP_PROFILE=dev go run -tags mysql .
+go build -tags 'mysql kafka' ./...
+APP_PROFILE=dev go run -tags 'mysql kafka' .
 
 # Dual-engine binary — dialect chosen at runtime from relational.dialect
-go build -tags 'postgres mysql' ./...
-APP_PROFILE=dev go run -tags 'postgres mysql' .
+go build -tags 'postgres mysql kafka' ./...
+APP_PROFILE=dev go run -tags 'postgres mysql kafka' .
 </code></pre>
+
+    <h3 id="transport-build-tag">Message transport build tag</h3>
+    <p>The async message transport is selected by a build tag too, on a <strong>second, independent axis</strong> — and it is <strong>equally mandatory</strong>, with no default. Each transport adapter self-registers in the subscriber registry (<code>transport.RegisterSubscriber</code>, the same database/sql-style pattern as the engine registry) behind its own tag:</p>
+    <ul>
+        <li><code>-tags kafka</code> — links the Kafka adapter, which (being Kafka-wire-compatible) also backs <strong>Redpanda</strong> unchanged — the choice is the broker address, not the tag.</li>
+        <li><code>-tags nats</code> — reserved for the planned NATS adapter.</li>
+    </ul>
+    <p>Building with <strong>no</strong> transport tag compiles but aborts at boot (<em>&ldquo;no transport linked&rdquo;</em>), mirroring the no-engine case. So a runnable binary always carries both axes, e.g. <code>-tags 'postgres kafka'</code>. The transport seam this selects — the <code>transport.Subscriber</code> port every async consumer reads through — is described under <a href="#transport-seam">Architecture → The message-transport seam</a>.</p>
 
     <h3 id="microservice-yaml">microservice.&lt;profile&gt;.yaml</h3>
     <p>Each service declares infra config in a profile-specific YAML file at the root. <code>bootstrap.LoadConfig</code> reads the <code>APP_PROFILE</code> environment variable (required, non-empty) and loads <code>./microservice.${APP_PROFILE}.yaml</code> — override the path via <code>OMNICORE_CONFIG_PATH</code> when needed (tests, custom layouts). <code>dev</code> and <code>prd</code> are the canonical pair; any other non-empty string (<code>prd-pem</code>, <code>prd-external</code>, <code>qa-canary</code>, ...) is also accepted so QA suites and ops setups can swap whole configurations via extra files without competing with the canonical pair. See <a href="#bootstrap~env-vars">Environment variables</a> for the complete list of framework-reserved env vars.</p>

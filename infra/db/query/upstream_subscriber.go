@@ -11,11 +11,11 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/segmentio/kafka-go"
 	"go.mongodb.org/mongo-driver/v2/bson"
 
 	"github.com/ClaudioSchirmer/omnicore/infra/db/core"
 	"github.com/ClaudioSchirmer/omnicore/infra/tracing"
+	"github.com/ClaudioSchirmer/omnicore/infra/transport"
 )
 
 // defaultUpstreamCommitInterval mirrors SyncEngine's CommitInterval —
@@ -130,8 +130,10 @@ type UpstreamSubscriber struct {
 	// learn which parent the changed child belonged to); a subscription feeding
 	// only one-to-one Embeds skips that read entirely, so its behavior is
 	// byte-identical to before this path existed.
-	hasManyEmbed     bool
-	brokers          []string
+	hasManyEmbed bool
+	// sub is the transport port this subscriber opens its consumer subscription
+	// through — the seam that keeps the ripple loop broker-neutral.
+	sub              transport.Subscriber
 	logger           *slog.Logger
 	metrics          *upstreamMetrics
 	offsetSeekTarget *int64 // populated when cfg.StartFrom is "offset:<N>"
@@ -176,14 +178,14 @@ func (s *UpstreamSubscriber) WithKafkaTracing(on bool) *UpstreamSubscriber {
 // instance (e.g. SyncEngine's). Both paths work; sharing avoids an extra
 // allocation but is not required.
 //
-// logger and brokers come from the framework's already-built singletons.
+// logger and sub come from the framework's already-built singletons.
 func NewUpstreamSubscriber(
 	eng core.RelationalEngine,
 	mongo ReadModelStore,
 	composer *Composer,
 	cfg UpstreamSubscriberConfig,
 	dependentViews []*ViewDefinition,
-	brokers []string,
+	sub transport.Subscriber,
 	logger *slog.Logger,
 ) (*UpstreamSubscriber, error) {
 	if cfg.Topic == "" {
@@ -210,7 +212,7 @@ func NewUpstreamSubscriber(
 		composer:       composer,
 		cfg:            cfg,
 		dependentViews: dependentViews,
-		brokers:        brokers,
+		sub:            sub,
 		logger:         logger,
 		metrics:        newUpstreamMetrics(),
 		stop:           make(chan struct{}),
@@ -325,28 +327,24 @@ func (s *UpstreamSubscriber) Start(ctx context.Context) {
 }
 
 func (s *UpstreamSubscriber) run(ctx context.Context) {
-	readerCfg := kafka.ReaderConfig{
-		Brokers: s.brokers,
-		Topic:   s.cfg.Topic,
-		GroupID: s.cfg.ConsumerGroup,
-		// CommitInterval matches SyncEngine — async commits batched
-		// each second. Safe under at-least-once because Upsert is
-		// idempotent and recompose is deterministic from current PG +
-		// Mongo state.
-		CommitInterval: defaultUpstreamCommitInterval,
-	}
+	// CommitInterval matches SyncEngine — async commits batched each second.
+	// Safe under at-least-once because Upsert is idempotent and recompose is
+	// deterministic from current relational + Mongo state.
+	startFrom := transport.StartFromLatest
 	switch s.cfg.StartFrom {
-	case upstreamStartFromEarliest:
-		readerCfg.StartOffset = kafka.FirstOffset
 	case upstreamStartFromLatest, "":
-		readerCfg.StartOffset = kafka.LastOffset
+		startFrom = transport.StartFromLatest
+	default:
+		// earliest — and the "offset:<N>" fallback, which under kafka-go's
+		// unset StartOffset defaulted to the earliest offset — both begin at
+		// the earliest offset (the committed group offset wins once present).
+		startFrom = transport.StartFromEarliest
 	}
-	// "offset:<N>" is a coordinated-PITR shape: kafka-go has no
-	// per-message Seek API on a consumer-group reader, and the
-	// consumer group's committed offset wins anyway. Spec §7.4
-	// documents the operator-side `kafka-consumer-groups.sh
-	// --reset-offsets --to-offset N` flow; here we log a warning so
-	// any boot under that posture surfaces the manual step.
+	// "offset:<N>" is a coordinated-PITR shape: there is no per-message Seek
+	// API on a consumer-group reader, and the consumer group's committed offset
+	// wins anyway. Spec §7.4 documents the operator-side `kafka-consumer-groups.sh
+	// --reset-offsets --to-offset N` flow; here we log a warning so any boot
+	// under that posture surfaces the manual step.
 	if s.offsetSeekTarget != nil {
 		s.logger.Warn("upstream subscriber: StartFrom=offset:N "+
 			"requires external offset reset via kafka-consumer-groups.sh — "+
@@ -356,15 +354,25 @@ func (s *UpstreamSubscriber) run(ctx context.Context) {
 			"offset", *s.offsetSeekTarget)
 	}
 
-	r := kafka.NewReader(readerCfg)
-	defer r.Close()
+	sub, err := s.sub.Subscribe(ctx, transport.SubscribeConfig{
+		Topics:         []string{s.cfg.Topic},
+		GroupID:        s.cfg.ConsumerGroup,
+		StartFrom:      startFrom,
+		CommitInterval: defaultUpstreamCommitInterval,
+	})
+	if err != nil {
+		s.logger.Error("upstream subscriber: subscribe failed",
+			"topic", s.cfg.Topic, "consumerGroup", s.cfg.ConsumerGroup, "err", err)
+		return
+	}
+	defer sub.Close()
 
-	queues := make([]chan kafka.Message, s.cfg.Workers)
+	queues := make([]chan transport.Message, s.cfg.Workers)
 	var wg sync.WaitGroup
 	for i := 0; i < s.cfg.Workers; i++ {
-		queues[i] = make(chan kafka.Message, upstreamSubscriberWorkerDepth)
+		queues[i] = make(chan transport.Message, upstreamSubscriberWorkerDepth)
 		wg.Add(1)
-		go func(q <-chan kafka.Message, idx int) {
+		go func(q <-chan transport.Message, idx int) {
 			defer wg.Done()
 			for msg := range q {
 				s.inflight.Add(1)
@@ -393,7 +401,7 @@ func (s *UpstreamSubscriber) run(ctx context.Context) {
 			return
 		default:
 		}
-		msg, err := r.ReadMessage(ctx)
+		msg, err := sub.Read(ctx)
 		if err != nil {
 			if ctx.Err() != nil {
 				return
@@ -473,7 +481,7 @@ func (s *UpstreamSubscriber) Shutdown(drainCtx context.Context) error {
 // by event type, perform the Mongo write, trigger recompose ripple. All
 // failures are logged + counted on the metric and skipped — the function
 // always returns control to the worker loop so the offset can advance.
-func (s *UpstreamSubscriber) processMessage(ctx context.Context, msg kafka.Message, workerIdx int) {
+func (s *UpstreamSubscriber) processMessage(ctx context.Context, msg transport.Message, workerIdx int) {
 	_ = workerIdx // reserved for per-worker tagging if instrumentation grows
 	bumpUpstreamSubscriberCounter()
 	event := extractEvent(msg)

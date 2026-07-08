@@ -4,7 +4,8 @@ import (
 	"testing"
 
 	"github.com/google/uuid"
-	"github.com/segmentio/kafka-go"
+
+	"github.com/ClaudioSchirmer/omnicore/infra/transport"
 )
 
 func TestParseEventID(t *testing.T) {
@@ -50,35 +51,12 @@ func TestParseEventID(t *testing.T) {
 	})
 }
 
-func TestFlattenHeaders(t *testing.T) {
-	t.Run("empty", func(t *testing.T) {
-		out := flattenHeaders(nil)
-		if len(out) != 0 {
-			t.Fatalf("expected empty map, got %v", out)
-		}
-	})
-
-	t.Run("maps-and-last-wins", func(t *testing.T) {
-		out := flattenHeaders([]kafka.Header{
-			{Key: "event_type", Value: []byte("UserCreated")},
-			{Key: "event_id", Value: []byte("123")},
-			{Key: "event_type", Value: []byte("UserUpdated")}, // duplicate → last wins
-		})
-		if out["event_type"] != "UserUpdated" {
-			t.Errorf("duplicate key must keep last occurrence, got %q", out["event_type"])
-		}
-		if out["event_id"] != "123" {
-			t.Errorf("event_id = %q, want 123", out["event_id"])
-		}
-	})
-}
-
 func TestBucketOfMessage(t *testing.T) {
 	t.Run("single-worker-always-zero", func(t *testing.T) {
-		if got := bucketOfMessage(kafka.Message{Key: []byte("anything")}, 1); got != 0 {
+		if got := bucketOfMessage(transport.Message{Key: []byte("anything")}, 1); got != 0 {
 			t.Fatalf("workers<=1 must bucket to 0, got %d", got)
 		}
-		if got := bucketOfMessage(kafka.Message{Key: []byte("x")}, 0); got != 0 {
+		if got := bucketOfMessage(transport.Message{Key: []byte("x")}, 0); got != 0 {
 			t.Fatalf("workers 0 must bucket to 0, got %d", got)
 		}
 	})
@@ -86,7 +64,7 @@ func TestBucketOfMessage(t *testing.T) {
 	t.Run("in-range", func(t *testing.T) {
 		const workers = 4
 		for _, key := range [][]byte{[]byte("a"), []byte("bbbb"), []byte("zzzzzz"), {0xff, 0xff, 0xff}, nil} {
-			got := bucketOfMessage(kafka.Message{Key: key}, workers)
+			got := bucketOfMessage(transport.Message{Key: key}, workers)
 			if got < 0 || got >= workers {
 				t.Fatalf("bucket %d out of range [0,%d) for key %v", got, workers, key)
 			}
@@ -94,7 +72,7 @@ func TestBucketOfMessage(t *testing.T) {
 	})
 
 	t.Run("deterministic", func(t *testing.T) {
-		msg := kafka.Message{Key: []byte("aggregate-123")}
+		msg := transport.Message{Key: []byte("aggregate-123")}
 		a := bucketOfMessage(msg, 8)
 		b := bucketOfMessage(msg, 8)
 		if a != b {
@@ -103,7 +81,7 @@ func TestBucketOfMessage(t *testing.T) {
 	})
 
 	t.Run("empty-key-bucket-zero", func(t *testing.T) {
-		if got := bucketOfMessage(kafka.Message{Key: nil}, 8); got != 0 {
+		if got := bucketOfMessage(transport.Message{Key: nil}, 8); got != 0 {
 			t.Fatalf("empty key must bucket to 0, got %d", got)
 		}
 	})

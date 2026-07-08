@@ -5,16 +5,15 @@ import (
 	"fmt"
 	"log/slog"
 	"runtime"
-	"strings"
 	"sync"
 	"time"
 
 	"github.com/ClaudioSchirmer/omnicore/application/pipeline"
 	"github.com/ClaudioSchirmer/omnicore/infra/db/core"
 	"github.com/ClaudioSchirmer/omnicore/infra/tracing"
+	"github.com/ClaudioSchirmer/omnicore/infra/transport"
 
 	"github.com/google/uuid"
-	"github.com/segmentio/kafka-go"
 )
 
 // defaultIntegrationCommitInterval mirrors SyncEngine and the upstream
@@ -34,10 +33,12 @@ type ConsumerPool struct {
 	cfg      *Config
 	// eng is the relational engine the dedup + failure registries are
 	// read/written through (neutral Querier + Dialect).
-	eng     core.RelationalEngine
-	brokers []string
-	pipe    *pipeline.Pipeline
-	logger  *slog.Logger
+	eng core.RelationalEngine
+	// sub is the transport port every receiver group opens its consumer
+	// subscription through — the seam that keeps this loop broker-neutral.
+	sub    transport.Subscriber
+	pipe   *pipeline.Pipeline
+	logger *slog.Logger
 
 	// drains coordinates per-receiver supervisor shutdown. inflight
 	// counts per-message processing so Shutdown can wait for every
@@ -59,15 +60,14 @@ func (p *ConsumerPool) WithKafkaTracing(on bool) *ConsumerPool {
 	return p
 }
 
-// NewConsumerPool wires the pool. brokers + pipe are framework
-// singletons already present on bootstrap.Deps; eng is the relational
-// engine, used here to read/write the dedup + failure tables through the
-// neutral Querier + Dialect.
+// NewConsumerPool wires the pool. sub + pipe are framework singletons already
+// present on bootstrap.Deps; eng is the relational engine, used here to
+// read/write the dedup + failure tables through the neutral Querier + Dialect.
 func NewConsumerPool(
 	registry *Registry,
 	cfg *Config,
 	eng core.RelationalEngine,
-	brokers []string,
+	sub transport.Subscriber,
 	pipe *pipeline.Pipeline,
 	logger *slog.Logger,
 ) *ConsumerPool {
@@ -78,7 +78,7 @@ func NewConsumerPool(
 		registry: registry,
 		cfg:      cfg,
 		eng:      eng,
-		brokers:  brokers,
+		sub:      sub,
 		pipe:     pipe,
 		logger:   logger,
 		stop:     make(chan struct{}),
@@ -127,8 +127,7 @@ func (p *ConsumerPool) Start(ctx context.Context) error {
 	}
 	p.logger.Info("integration consumer pool started",
 		"receivers", len(receivers),
-		"groups", len(groups),
-		"brokers", strings.Join(p.brokers, ","))
+		"groups", len(groups))
 	return nil
 }
 
@@ -191,32 +190,33 @@ func groupReceivers(receivers []*Receiver) (map[string]*receiverGroup, error) {
 func (p *ConsumerPool) runConsumerGroup(ctx context.Context, g *receiverGroup) {
 	defer p.workers.Done()
 
-	readerCfg := kafka.ReaderConfig{
-		Brokers:        p.brokers,
-		Topic:          g.topic,
+	startFrom := transport.StartFromLatest
+	if g.startFrom == "earliest" {
+		startFrom = transport.StartFromEarliest
+	}
+	sub, err := p.sub.Subscribe(ctx, transport.SubscribeConfig{
+		Topics:         []string{g.topic},
 		GroupID:        g.consumerGroup,
+		StartFrom:      startFrom,
 		CommitInterval: defaultIntegrationCommitInterval,
+	})
+	if err != nil {
+		p.logger.Error("integration consumer subscribe failed",
+			"topic", g.topic, "consumer_group", g.consumerGroup, "err", err)
+		return
 	}
-	switch g.startFrom {
-	case "earliest":
-		readerCfg.StartOffset = kafka.FirstOffset
-	default:
-		readerCfg.StartOffset = kafka.LastOffset
-	}
-
-	reader := kafka.NewReader(readerCfg)
-	defer func() { _ = reader.Close() }()
+	defer func() { _ = sub.Close() }()
 
 	workers := g.workers
 	if workers < 1 {
 		workers = 1
 	}
-	queues := make([]chan kafka.Message, workers)
+	queues := make([]chan transport.Message, workers)
 	var workerWG sync.WaitGroup
 	for i := 0; i < workers; i++ {
-		queues[i] = make(chan kafka.Message, 4)
+		queues[i] = make(chan transport.Message, 4)
 		workerWG.Add(1)
-		go func(q <-chan kafka.Message) {
+		go func(q <-chan transport.Message) {
 			defer workerWG.Done()
 			for msg := range q {
 				p.inflight.Add(1)
@@ -246,7 +246,7 @@ func (p *ConsumerPool) runConsumerGroup(ctx context.Context, g *receiverGroup) {
 			return
 		default:
 		}
-		msg, err := reader.ReadMessage(ctx)
+		msg, err := sub.Read(ctx)
 		if err != nil {
 			if ctx.Err() != nil {
 				return
@@ -284,8 +284,8 @@ func (p *ConsumerPool) runConsumerGroup(ctx context.Context, g *receiverGroup) {
 // whose message carries an ABSENT event_type header delivers to its only
 // receiver (mirrors the prior lenient filter that processed when the header
 // was missing); a present-but-unmatched header is always a skip.
-func (p *ConsumerPool) processGroupMessage(ctx context.Context, g *receiverGroup, msg kafka.Message) {
-	headers := flattenHeaders(msg.Headers)
+func (p *ConsumerPool) processGroupMessage(ctx context.Context, g *receiverGroup, msg transport.Message) {
+	headers := msg.Headers
 	r := g.route(headers["event_type"])
 	if r == nil {
 		return
@@ -337,22 +337,11 @@ func parseEventID(header string, key []byte) uuid.UUID {
 	return uuid.Nil
 }
 
-// flattenHeaders converts kafka-go's slice shape into a map for
-// simpler downstream lookup. Duplicate keys keep the LAST occurrence —
-// kafka-go preserves Producer order so this matches the wire intent.
-func flattenHeaders(headers []kafka.Header) map[string]string {
-	out := make(map[string]string, len(headers))
-	for _, h := range headers {
-		out[h.Key] = string(h.Value)
-	}
-	return out
-}
-
 // bucketOfMessage groups messages by aggregate_id (when present) so
 // the framework preserves per-aggregate ordering across workers.
 // Mirrors how SyncEngine + UpstreamSubscriber drive their own worker
 // fan-out.
-func bucketOfMessage(msg kafka.Message, workers int) int {
+func bucketOfMessage(msg transport.Message, workers int) int {
 	if workers <= 1 {
 		return 0
 	}

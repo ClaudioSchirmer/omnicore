@@ -10,7 +10,7 @@ import (
 func TestNewConsumerPool_DefaultsLogger(t *testing.T) {
 	// nil logger must fall back to slog.Default(); nil pg/pipe are allowed
 	// (the struct is just wired here, no IO).
-	p := NewConsumerPool(NewRegistry(), &Config{}, nil, []string{"localhost:9092"}, nil, nil)
+	p := NewConsumerPool(NewRegistry(), &Config{}, nil, nil, nil, nil)
 	if p == nil {
 		t.Fatal("NewConsumerPool returned nil")
 	}
