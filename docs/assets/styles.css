@@ -515,6 +515,64 @@ mark.search-hit { background: #ffe39c; color: #3a2f12; border-radius: 3px; paddi
 .changelog-legend { display: flex; flex-wrap: wrap; gap: 18px; margin: 12px 0 20px; font-size: 13px; color: var(--muted); }
 .changelog-legend .legend-item { display: inline-flex; align-items: center; gap: 6px; }
 
+/* ---------- Features catalog (what-the-framework-does page) ---------- */
+.feat-lead { font-size: 16.5px; }
+.feat-lead .em { color: var(--accent-ink); font-weight: 600; }
+
+/* stat strip — factual at-a-glance figures */
+.stat-strip { display: flex; flex-wrap: wrap; gap: 12px; margin: 22px 0 30px; }
+.stat {
+    flex: 1 1 130px; min-width: 130px;
+    border: 1px solid var(--border); border-radius: 12px;
+    background: var(--surface); box-shadow: var(--shadow-soft);
+    padding: 14px 16px;
+}
+.stat .num { font-family: "Newsreader", Georgia, serif; font-size: 27px; font-weight: 600; line-height: 1; color: var(--accent-ink); letter-spacing: -.01em; }
+.stat .lbl { display: block; margin-top: 6px; font-size: 12.5px; color: var(--muted); }
+
+/* spotlight — the headline "one handler, every surface" band */
+.spotlight {
+    display: grid; grid-template-columns: 1.1fr 1fr; gap: 26px; align-items: center;
+    margin: 26px 0 34px; padding: 24px 26px;
+    border: 1px solid var(--accent-line); border-left: 3px solid var(--accent);
+    border-radius: 14px; background: var(--accent-soft);
+}
+.spot-title { font-family: "Newsreader", Georgia, serif; font-weight: 600; font-size: 24px; line-height: 1.1; letter-spacing: -.01em; color: var(--accent-ink); margin: 0 0 12px; }
+.spotlight p { margin: 0 0 10px; font-size: 14.5px; color: var(--ink-soft); }
+.spotlight p:last-child { margin-bottom: 0; }
+.spotlight .diagram { width: 100%; height: auto; color: var(--accent); }
+.spotlight .diagram .ink { color: var(--ink-soft); }
+
+/* capability cards — organized by outcome, not by layer */
+.cap-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 18px; margin: 20px 0; }
+.cap-card {
+    display: flex; flex-direction: column;
+    padding: 20px 22px; border: 1px solid var(--border);
+    border-radius: 14px; background: var(--surface); box-shadow: var(--shadow-soft);
+    transition: box-shadow .16s, border-color .16s, transform .16s;
+}
+.cap-card:hover { box-shadow: var(--shadow); border-color: var(--accent-line); transform: translateY(-2px); }
+.cap-head { display: flex; align-items: center; gap: 13px; margin-bottom: 4px; }
+.cap-ico {
+    flex: none; width: 42px; height: 42px; display: grid; place-items: center;
+    border-radius: 11px; background: var(--accent-soft);
+    border: 1px solid var(--accent-line); color: var(--accent);
+}
+.cap-ico svg { width: 23px; height: 23px; }
+.cap-title { font-size: 17px; font-weight: 700; color: var(--ink); }
+.cap-lead { font-family: "Newsreader", Georgia, serif; font-style: italic; font-size: 15.5px; color: var(--muted); margin: 2px 0 12px; }
+.cap-list { margin: 0; padding-left: 18px; }
+.cap-list li { margin: 5px 0; font-size: 14px; line-height: 1.5; }
+.cap-list li::marker { color: var(--accent-line); }
+.cap-more { margin-top: auto; padding-top: 12px; font-size: 13.5px; }
+.cap-more a { font-weight: 600; }
+
+@media (max-width: 820px) {
+    .cap-grid { grid-template-columns: 1fr; }
+    .spotlight { grid-template-columns: 1fr; }
+    .spotlight .diagram { max-width: 360px; }
+}
+
 @media print {
     .sidebar, .topbar, .rail, .pager, .copy-btn, .h3-anchor, .scrim, .toast { display: none !important; }
     .app { display: block; }
@@ -525,6 +583,7 @@ mark.search-hit { background: #ffe39c; color: #3a2f12; border-radius: 3px; paddi
     .collapse-body { display: block !important; }
     h3.collapsible { cursor: auto; }
     h3.collapsible .chev { display: none; }
-    .code-wrap pre, .flow, .arch-layer, .table-wrap, .card, .box { break-inside: avoid; }
+    .code-wrap pre, .flow, .arch-layer, .table-wrap, .card, .box, .cap-card, .spotlight, .stat { break-inside: avoid; }
+    .cap-card:hover, .spotlight { box-shadow: none; }
     body { background: #fff; }
 }
