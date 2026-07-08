@@ -41,6 +41,48 @@
     presence-aware PATCH mappers build on.
 </p>
 
+<h3>Regenerating the stubs</h3>
+<p>
+    Codegen is a plain <code>protoc</code> invocation with the two blessed plugins — there is no
+    <code>buf.gen.yaml</code> and no <code>//go:generate</code>. <code>buf</code> is present only as the
+    CI quality gate (<code>buf lint</code> + <code>buf breaking</code>), never as the generator. Install
+    the plugins once (they land in <code>~/go/bin</code>); pin them to the module versions in
+    <code>go.mod</code> so the committed output never drifts on a re-run:
+</p>
+<pre><code>go install google.golang.org/protobuf/cmd/protoc-gen-go@v1.36.11        # tracks google.golang.org/protobuf
+go install connectrpc.com/connect/cmd/protoc-gen-connect-go@v1.20.0     # tracks connectrpc.com/connect</code></pre>
+<p>
+    A <strong>consumer regenerates its own service stubs</strong> from its <code>.proto</code>
+    contracts. The reference service ships the canonical script at <code>proto/generate.sh</code> — one
+    <code>protoc</code> call emitting both file kinds (<code>*.pb.go</code> from
+    <code>protoc-gen-go</code>, <code>*.connect.go</code> from <code>protoc-gen-connect-go</code>) into a
+    committed <code>proto/gen/</code> tree. The second <code>-I</code>, into the framework checkout, is
+    what resolves the shared read-side contract (<code>omnicore/v1/query.proto</code>):
+</p>
+<pre><code>protoc \
+  -I . \
+  -I ../../omnicore/web/grpc/proto \
+  --go_out=.. --go_opt=module=github.com/acme/my-service \
+  --connect-go_out=.. --connect-go_opt=module=github.com/acme/my-service \
+  users/v1/users.proto</code></pre>
+<p>
+    The <strong>shared components live in the framework</strong>
+    (<code>web/grpc/proto/omnicore/v1/query.proto</code>) and their Go is generated <em>there</em>, into
+    <code>web/grpc/pb</code>, never in the consumer. That file is message-only (no service), so it needs
+    <code>protoc-gen-go</code> alone — no Connect stubs:
+</p>
+<pre><code># from the framework module root
+protoc -I web/grpc/proto \
+  --go_out=. --go_opt=module=github.com/ClaudioSchirmer/omnicore \
+  omnicore/v1/query.proto</code></pre>
+<p>
+    Generated Go is <strong>committed</strong> — dependency-free and importable without a build step (in
+    the reference service it sits outside <code>internal/</code> precisely so both the web and infra
+    layers, and other teams copying the contract, can import it). Regenerate only when a
+    <code>.proto</code> changes; a diff in the generated tree that no <code>.proto</code> edit explains
+    is a plugin-version drift, not a contract change.
+</p>
+
 <h3>Attaching handlers — <code>reg.Register</code> + the constructor family</h3>
 <p>
     Attachment is a constructor family producing a <code>Procedure</code>, registered on the surface's
