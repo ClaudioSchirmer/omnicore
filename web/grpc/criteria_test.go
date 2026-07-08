@@ -165,7 +165,6 @@ func TestCriteriaNilFiltersAreNoOps(t *testing.T) {
 	}
 }
 
-
 func TestCriteriaUndeclaredMaskAndSortFailBuild(t *testing.T) {
 	// The Fields vocabulary IS the allowlist: an undeclared read_mask or
 	// sort path fails Build (→ SchemaViolation at the wrapper), so a raw

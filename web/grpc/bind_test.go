@@ -434,7 +434,9 @@ func TestBridgeRuntimeErrors(t *testing.T) {
 		t.Fatalf("compile envelope: %v", err)
 	}
 	_, err = buildListResponse[testpb.SearchGadgetsResponse](env,
-		func(map[string]any) mismatchedItemDTO { return mismatchedItemDTO{ID: "g", Name: "n", Kind: struct{ X bool }{true}} },
+		func(map[string]any) mismatchedItemDTO {
+			return mismatchedItemDTO{ID: "g", Name: "n", Kind: struct{ X bool }{true}}
+		},
 		queries.Page{Items: []map[string]any{{"ID": "g"}}, Total: 1})
 	if err == nil {
 		t.Fatalf("item bridge failure must propagate")
