@@ -142,7 +142,7 @@ func Wire(d bootstrap.Deps) bootstrap.Wiring {
 ```
 
 `bootstrap.Run` reads `microservice.${APP_PROFILE}.yaml`, wires Postgres/MySQL + Mongo + Kafka +
-Fiber, applies migrations, registers `GET /health`, mounts your Features, starts the `SyncEngine`
+Fiber, applies migrations, registers the `GET /livez` + `GET /readyz` probes, mounts your Features, starts the `SyncEngine`
 when views exist, and serves until `SIGINT`/`SIGTERM`.
 → [Bootstrap](https://claudioschirmer.github.io/omnicore/#bootstrap)
 
