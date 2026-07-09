@@ -87,7 +87,7 @@ func TestBuildApp_RequestTimeoutOverride(t *testing.T) {
 	d := silentDeps()
 	secs := 7
 	d.Config.HTTP.RequestTimeoutSeconds = &secs
-	if _, err := buildApp(d, Wiring{}); err != nil {
+	if _, err := buildApp(context.Background(), d, Wiring{}); err != nil {
 		t.Fatalf("buildApp: %v", err)
 	}
 }
@@ -96,23 +96,26 @@ func TestBuildApp_AuthJWT(t *testing.T) {
 	t.Run("enabled", func(t *testing.T) {
 		d := silentDeps()
 		d.Config.Auth = jwtAuthConfig(testPublicKeyPEM(t))
-		app, err := buildApp(d, Wiring{})
+		app, err := buildApp(context.Background(), d, Wiring{})
 		if err != nil {
 			t.Fatalf("buildApp: %v", err)
 		}
 		// A protected route without a token is rejected by the middleware.
-		resp, err := app.Test(httptest.NewRequest("GET", "/health", nil))
+		// The /livez probe is framework-owned but NOT auto-public: unless the
+		// operator lists it in auth.publicRoutes it sits behind auth like any
+		// other route, so a tokenless call is 401 (the option-A contract).
+		resp, err := app.Test(httptest.NewRequest("GET", "/livez", nil))
 		if err != nil {
-			t.Fatalf("GET /health: %v", err)
+			t.Fatalf("GET /livez: %v", err)
 		}
 		if resp.StatusCode != 401 {
-			t.Errorf("GET /health without token = %d, want 401", resp.StatusCode)
+			t.Errorf("GET /livez without token = %d, want 401", resp.StatusCode)
 		}
 	})
 	t.Run("invalidKeyAbortsBoot", func(t *testing.T) {
 		d := silentDeps()
 		d.Config.Auth = jwtAuthConfig("not a pem")
-		if _, err := buildApp(d, Wiring{}); err == nil ||
+		if _, err := buildApp(context.Background(), d, Wiring{}); err == nil ||
 			!strings.Contains(err.Error(), "auth middleware") {
 			t.Fatalf("expected the auth middleware boot error, got %v", err)
 		}
@@ -132,7 +135,7 @@ func TestBuildApp_IntegrationReceiversPhase(t *testing.T) {
 	d := silentDeps()
 	d.IntegrationRegistry = integration.NewRegistry()
 	mounted := false
-	if _, err := buildApp(d, Wiring{Features: []Feature{&receiverFeature{mounted: &mounted}}}); err != nil {
+	if _, err := buildApp(context.Background(), d, Wiring{Features: []Feature{&receiverFeature{mounted: &mounted}}}); err != nil {
 		t.Fatalf("buildApp: %v", err)
 	}
 	if !mounted {
@@ -145,7 +148,7 @@ func TestBuildApp_AuthorizationScanAndOpenAPIAuthContext(t *testing.T) {
 	d.Config.Auth = jwtAuthConfig(testPublicKeyPEM(t))
 	d.Config.Auth.Authorization = &AuthorizationConfig{Enabled: true}
 	d.Config.OpenAPI.RootRedirect = true
-	if _, err := buildApp(d, Wiring{
+	if _, err := buildApp(context.Background(), d, Wiring{
 		OpenAPI:      &openapi.Config{Title: "T", Version: "1.0.0", LanguageSelector: true},
 		Translations: []translation.Module{translation.CoreENG(), translation.CorePTBR()},
 	}); err != nil {
@@ -158,7 +161,7 @@ func TestBuildApp_GraphQLRootRedirect(t *testing.T) {
 	d.Config.GraphQL.Path = "/graphql"
 	d.Config.GraphQL.RootRedirect = true
 	reg := graphqlRegistryForTest(d)
-	app, err := buildApp(d, Wiring{GraphQL: reg})
+	app, err := buildApp(context.Background(), d, Wiring{GraphQL: reg})
 	if err != nil {
 		t.Fatalf("buildApp: %v", err)
 	}
@@ -179,7 +182,7 @@ func TestBuildApp_GRPCPostures(t *testing.T) {
 		d.Config.Auth = jwtAuthConfig(pemKey)
 		d.Config.GRPC.RequestTimeoutSeconds = 3
 		d.Config.GRPC.Reflection = true
-		if _, err := buildApp(d, Wiring{GRPC: fwgrpc.New(d.Pipeline)}); err != nil {
+		if _, err := buildApp(context.Background(), d, Wiring{GRPC: fwgrpc.New(d.Pipeline)}); err != nil {
 			t.Fatalf("buildApp: %v", err)
 		}
 	})
@@ -190,7 +193,7 @@ func TestBuildApp_GRPCPostures(t *testing.T) {
 		d.Config.Auth.Mode = AuthModeJWT
 		// The HTTP AuthMiddleware fails first with the same key; assert the boot
 		// aborts either way (both errors wrap the same authcore construction).
-		if _, err := buildApp(d, Wiring{GRPC: fwgrpc.New(d.Pipeline)}); err == nil {
+		if _, err := buildApp(context.Background(), d, Wiring{GRPC: fwgrpc.New(d.Pipeline)}); err == nil {
 			t.Fatal("expected a boot error with an invalid key")
 		}
 	})
@@ -200,7 +203,7 @@ func TestBuildApp_GRPCPostures(t *testing.T) {
 		d.Config.Auth.Mode = "" // internal plane: global auth off, attribution still built from JWT material
 		d.Config.Auth.JWT.PublicKeyPEM = pemKey
 		d.Config.GRPC.Auth.Mode = "internal"
-		if _, err := buildApp(d, Wiring{GRPC: fwgrpc.New(d.Pipeline)}); err != nil {
+		if _, err := buildApp(context.Background(), d, Wiring{GRPC: fwgrpc.New(d.Pipeline)}); err != nil {
 			t.Fatalf("buildApp: %v", err)
 		}
 	})
@@ -209,7 +212,7 @@ func TestBuildApp_GRPCPostures(t *testing.T) {
 		d.Config.Auth = jwtAuthConfig("garbage")
 		d.Config.Auth.Mode = "" // keep the HTTP middleware out of the way
 		d.Config.GRPC.Auth.Mode = "internal"
-		if _, err := buildApp(d, Wiring{GRPC: fwgrpc.New(d.Pipeline)}); err == nil ||
+		if _, err := buildApp(context.Background(), d, Wiring{GRPC: fwgrpc.New(d.Pipeline)}); err == nil ||
 			!strings.Contains(err.Error(), "grpc attribution validator") {
 			t.Fatalf("expected the attribution boot error, got %v", err)
 		}
@@ -217,14 +220,14 @@ func TestBuildApp_GRPCPostures(t *testing.T) {
 	t.Run("internalWithoutJWTMaterial", func(t *testing.T) {
 		d := silentDeps()
 		d.Config.GRPC.Auth.Mode = "internal"
-		if _, err := buildApp(d, Wiring{GRPC: fwgrpc.New(d.Pipeline)}); err != nil {
+		if _, err := buildApp(context.Background(), d, Wiring{GRPC: fwgrpc.New(d.Pipeline)}); err != nil {
 			t.Fatalf("buildApp: %v", err)
 		}
 	})
 	t.Run("mtlsPosture", func(t *testing.T) {
 		d := silentDeps()
 		d.Config.GRPC.Auth.Mode = "mtls"
-		if _, err := buildApp(d, Wiring{GRPC: fwgrpc.New(d.Pipeline)}); err != nil {
+		if _, err := buildApp(context.Background(), d, Wiring{GRPC: fwgrpc.New(d.Pipeline)}); err != nil {
 			t.Fatalf("buildApp: %v", err)
 		}
 	})

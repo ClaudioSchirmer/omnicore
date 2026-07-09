@@ -86,6 +86,14 @@ func (m *MongoDB) Close(ctx context.Context) error {
 	return m.client.Disconnect(ctx)
 }
 
+// Ping verifies the connection to the Mongo deployment is alive — the read-store
+// leg of the readiness probe. It runs the driver's ping under the caller's
+// context (the probe passes a short deadline), so a wedged server fails the
+// probe fast instead of hanging it.
+func (m *MongoDB) Ping(ctx context.Context) error {
+	return m.client.Ping(ctx, nil)
+}
+
 func (m *MongoDB) Collection(name string) *mongo.Collection {
 	return m.db.Collection(name)
 }

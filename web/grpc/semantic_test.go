@@ -35,6 +35,7 @@ func TestCodeFromNotificationsTable(t *testing.T) {
 		domain.SemanticMethodNotAllowed: connect.CodeUnimplemented,
 		domain.SemanticPayloadTooLarge:  connect.CodeResourceExhausted,
 		domain.SemanticGatewayTimeout:   connect.CodeDeadlineExceeded,
+		domain.SemanticRequestTimeout:   connect.CodeDeadlineExceeded,
 	}
 	for sem, want := range cases {
 		if got := codeFromNotifications(dtosWith(sem, "K", "", "m")); got != want {

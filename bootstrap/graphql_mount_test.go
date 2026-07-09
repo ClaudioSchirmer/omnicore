@@ -1,6 +1,7 @@
 package bootstrap
 
 import (
+	"context"
 	"io"
 	"net/http/httptest"
 	"strings"
@@ -15,7 +16,7 @@ func TestBuildApp_GraphQLMounted_NotInSwagger(t *testing.T) {
 	d.Config.GraphQL.Path = "/graphql"
 	reg := graphql.New(d.Pipeline) // empty registry — stub Query, valid schema
 
-	app, err := buildApp(d, Wiring{
+	app, err := buildApp(context.Background(), d, Wiring{
 		Features: []Feature{&writeOnlyFeature{}},
 		OpenAPI:  &openapi.Config{Title: "T", Version: "1.0.0"},
 		GraphQL:  reg,
@@ -55,7 +56,7 @@ func TestBuildApp_GraphQLPlaygroundAndIntrospection(t *testing.T) {
 	d.Config.GraphQL.Introspection = true
 	reg := graphql.New(d.Pipeline)
 
-	app, err := buildApp(d, Wiring{
+	app, err := buildApp(context.Background(), d, Wiring{
 		Features: []Feature{&writeOnlyFeature{}},
 		OpenAPI:  &openapi.Config{Title: "T", Version: "1.0.0"},
 		GraphQL:  reg,
@@ -104,7 +105,7 @@ func TestBuildApp_BothRootRedirectsPanic(t *testing.T) {
 		}
 	}()
 
-	_, _ = buildApp(d, Wiring{
+	_, _ = buildApp(context.Background(), d, Wiring{
 		Features: []Feature{&writeOnlyFeature{}},
 		OpenAPI:  &openapi.Config{Title: "T", Version: "1.0.0"},
 		GraphQL:  reg,
@@ -112,7 +113,7 @@ func TestBuildApp_BothRootRedirectsPanic(t *testing.T) {
 }
 
 func TestBuildApp_GraphQLDisabled_NoEndpoint(t *testing.T) {
-	app, err := buildApp(silentDeps(), Wiring{Features: []Feature{&writeOnlyFeature{}}})
+	app, err := buildApp(context.Background(), silentDeps(), Wiring{Features: []Feature{&writeOnlyFeature{}}})
 	if err != nil {
 		t.Fatalf("buildApp: %v", err)
 	}

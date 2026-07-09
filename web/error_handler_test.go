@@ -309,6 +309,49 @@ func TestErrorHandler_PayloadTooLarge(t *testing.T) {
 	}
 }
 
+// TestErrorHandler_ReadTimeout proves a *fiber.Error with code 408 (the shape
+// Fiber's serverErrorHandler emits when the fasthttp read timeout fires — the
+// client was too slow sending the request) reaches the ErrorHandler and is
+// emitted as ReadTimeoutNotification, status 408, context "Request", field
+// carrying "METHOD /path" — NOT a misleading 500.
+func TestErrorHandler_ReadTimeout(t *testing.T) {
+	const sentinel = "FIBER-408-SENTINEL-XYZ"
+	app := newAppWithErrorHandler()
+	app.Get("/slow", func(c fiber.Ctx) error {
+		return fiber.NewError(fiber.StatusRequestTimeout, sentinel)
+	})
+
+	resp, err := app.Test(httptest.NewRequest("GET", "/slow", nil))
+	if err != nil {
+		t.Fatalf("app.Test: %v", err)
+	}
+	if resp.StatusCode != fiber.StatusRequestTimeout {
+		t.Fatalf("expected 408, got %d", resp.StatusCode)
+	}
+
+	body := decodeResponse(t, resp.Body)
+	resp.Body.Close()
+	if body.Status != fiber.StatusRequestTimeout {
+		t.Fatalf("expected envelope status 408, got %d", body.Status)
+	}
+	if len(body.Errors) != 1 || body.Errors[0].Context != "Request" {
+		t.Fatalf("expected 1 error in context \"Request\", got %+v", body.Errors)
+	}
+	msg := body.Errors[0].Messages[0]
+	if msg.NotificationKey != "ReadTimeoutNotification" {
+		t.Fatalf("expected NotificationKey=ReadTimeoutNotification, got %q", msg.NotificationKey)
+	}
+	if msg.Semantic != "RequestTimeout" {
+		t.Fatalf("expected Semantic=RequestTimeout, got %q", msg.Semantic)
+	}
+	if msg.Field != "GET /slow" {
+		t.Fatalf("expected field=\"GET /slow\", got %q", msg.Field)
+	}
+	if rawBytes, _ := json.Marshal(body); strings.Contains(string(rawBytes), sentinel) {
+		t.Fatalf("fiber.Error message leaked: %s", rawBytes)
+	}
+}
+
 // TestErrorHandler_FiberErrorOtherCode proves a *fiber.Error with a code
 // the framework does NOT specialize (e.g. 418 raised by a custom middleware
 // via fiber.NewError) is treated as an unknown escape and falls through to

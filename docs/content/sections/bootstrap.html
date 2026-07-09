@@ -150,8 +150,8 @@ auth:
     failMode: closed                     # closed | open; default closed (reject on validator error)
     cacheTtlSeconds: 0                   # 0 (default) disables; &gt; 0 caches positive answers for N seconds (revocation window of up to TTL)
   publicRoutes:                          # routes that bypass the auth middleware
-    - GET /health                        # validated at boot against the registered routes
-    - GET /ready
+    - GET /livez                         # liveness probe — validated at boot against the registered routes
+    - GET /readyz                        # readiness probe (both framework-owned but NOT auto-public)
   auditClaims:                           # JWT claims surfaced on the AuditEvent's actorClaims block (forensics)
     - tenant_id
     - roles
@@ -310,7 +310,7 @@ func (f *UsersFeature) Mount(app *fiber.App, d bootstrap.Deps) {
         <li>Log <code>"feature registered"</code> per feature with flag <code>readable: true|false</code></li>
         <li><code>SyncEngine.Start</code> only if there are collected views (services without CDC don't connect the transport)</li>
         <li>Fiber app + default middlewares <code>fwweb.Recover()</code>, <code>logger.New()</code> (Fiber's request logger), <code>fwweb.AppContextMiddleware()</code>, and <code>fwweb.AuthMiddleware</code> when <code>auth.mode: jwt</code></li>
-        <li><strong><code>GET /health</code> registered automatically</strong> (response <code>{"status":"ok"}</code>) — k8s/docker liveness probe without the service programming anything</li>
+        <li><strong><code>GET /livez</code> and <code>GET /readyz</code> registered automatically</strong> — the k8s liveness + readiness probes without the service programming anything. <code>/livez</code> is static (<code>{"status":"ok"}</code>, no dependency checks); <code>/readyz</code> pings the request-path stores and flips to <code>503</code> while draining (see the shutdown section). Both are framework-owned but <strong>not auto-public</strong> — list them in <code>auth.publicRoutes</code> so a tokenless kubelet can reach them.</li>
         <li><code>f.Mount(app, deps)</code> for each feature in declaration order</li>
         <li><code>Wiring.BeforeServe(app, deps)</code> if set (escape hatch for routes/middlewares outside the Feature model)</li>
         <li>once every route is registered, each <code>auth.publicRoutes</code> entry is validated against the registered route set — a typo / wrong method / trailing slash (no matching route) or a path parameter / wildcard (which the exact-match auth middleware can never honor — mark the route <code>Doc.Public=true</code> instead) aborts the boot</li>
@@ -383,7 +383,7 @@ Mongo.Close() → relational engine Close()  ← storage handles close LAST — 
         connections hold no pending work at this point and are released by process exit.
     </p>
 
-    <p class="note">Custom health (DB ping, external dependencies) must be exposed on another route (<code>/healthz</code>, <code>/ready</code>) via feature or <code>BeforeServe</code> — the framework's <code>/health</code> is pure liveness.</p>
+    <p class="note"><strong>Liveness vs readiness — two probes, on purpose.</strong> <code>/livez</code> answers "is the process wedged?" (failing it makes k8s <em>restart</em> the pod), so it stays deliberately dumb: static, no dependency checks — pinging a store here would turn a transient DB blip into a restart storm across every replica. <code>/readyz</code> answers "can this pod take traffic now?" (failing it makes k8s <em>remove</em> the pod from the load balancer, not restart it): it pings the request-path stores (a dialect-neutral <code>SELECT 1</code> + a Mongo ping) and returns <code>503</code> while draining. The message transport is <strong>excluded</strong> from readiness on purpose — the outbox decouples writes from the broker, so a broker outage still lets the pod commit writes and serve reads; async-consumer health belongs to alerting, not readiness. The <code>/readyz</code> drain flip is the missing half of the graceful shutdown: on <code>SIGTERM</code> it flips to <code>503</code> immediately, so the balancer stops sending new traffic while the in-flight requests drain. A service needing extra dependency checks still adds its own route via a feature or <code>BeforeServe</code>.</p>
 
     <p class="note">JSON logger on <code>stdout</code> at <code>Info</code> level is the only default. Anyone needing a custom logger (file, datadog) uses <code>Build()</code> + <code>Serve()</code> with their own <code>slog.Logger</code> in <code>Deps</code>, or registers in <code>BeforeServe</code>.</p>
 

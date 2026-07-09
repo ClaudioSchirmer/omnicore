@@ -65,7 +65,7 @@ func TestGraphQLConfig_ValidateRejectsRelativePath(t *testing.T) {
 
 func TestGraphQLConfig_ValidateRejectsFrameworkRouteCollision(t *testing.T) {
 	yml := validYAMLAllRequired + `graphql:
-  path: /health
+  path: /livez
 `
 	path := writeTemp(t, yml)
 	_, err := LoadConfigFrom(path)

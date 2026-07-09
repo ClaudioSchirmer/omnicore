@@ -69,7 +69,10 @@ pwd: "${vault:secret/data/db#password}"                # delegated to a register
 
 http:
   addr: ":8080"                          # default ":8080"
-  requestTimeoutSeconds: 30              # inbound request deadline; unset → 30; 0 → disabled
+  requestTimeoutSeconds: 30              # inbound request deadline (handler processing) → 504; unset → 30; 0 → disabled
+  bodyLimitBytes: 4194304               # max request body; larger → 413; unset → Fiber's 4 MiB default
+  readTimeoutSeconds: 15                # transport-level: max time to read the full request off the socket (slowloris defense); unset/0 → none. Breach → 408 Request Timeout (client too slow), written best-effort before the connection closes
+  idleTimeoutSeconds: 60               # transport-level: max keep-alive idle before the connection is closed; unset/0 → none. Silent close, no response (normal keep-alive reaping)
 
 relational:                              # the relational backend — system of record + framework control plane
   dialect: postgres                      # MANDATORY — postgres | mysql. NO default: the framework refuses to assume a
@@ -143,8 +146,8 @@ query:
     cacheTtlSeconds: 0                   # default 0 = OFF; >0 caches POSITIVE answers only (key = SHA-256(token))
 
   publicRoutes:                          # bypass auth entirely — exact "METHOD /path", no globs
-    - GET /health
-    - GET /ready
+    - GET /livez
+    - GET /readyz
 
   auditClaims: [tenant_id, roles]        # allowlist of JWT claims surfaced in audit actorClaims; empty → omitted
 
@@ -229,7 +232,7 @@ query:
         coordinated drain on SIGINT/SIGTERM. See <a href="#openapi">OpenAPI</a> · <a href="#graphql">GraphQL</a>.
     </p>
 <pre><code>openapi:
-  uiPath: /docs                          # default /docs; must start with "/"; cannot be /openapi.json or /health
+  uiPath: /docs                          # default /docs; must start with "/"; cannot be /openapi.json, /livez or /readyz
   rootRedirect: false                    # default false — when true registers GET / → 302 uiPath
 
 graphql:                                 # ignored unless Wiring.GraphQL is set

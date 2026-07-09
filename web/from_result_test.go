@@ -62,6 +62,18 @@ func TestStatusFromGatewayTimeout(t *testing.T) {
 	}
 }
 
+func TestStatusFromReadTimeout(t *testing.T) {
+	dtos := []notifications.ContextDTO{{
+		Context: "Request",
+		Messages: []notifications.MessageDTO{
+			{NotificationKey: "ReadTimeoutNotification", Semantic: domain.SemanticRequestTimeout},
+		},
+	}}
+	if got := statusFromNotifications(dtos); got != fiber.StatusRequestTimeout {
+		t.Fatalf("expected 408, got %d", got)
+	}
+}
+
 func TestStatusFromStateConflict(t *testing.T) {
 	dtos := []notifications.ContextDTO{{
 		Context: "Gadget",

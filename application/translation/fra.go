@@ -69,6 +69,7 @@ func (coreFR) Translations() map[string]string {
 		"ContextNotInitializedNotification": "Le contexte n'a pas été initialisé.",
 		"ServiceUnavailableNotification":    "Service indisponible.",
 		"RequestTimeoutNotification":        "La requête a dépassé le délai imparti.",
+		"ReadTimeoutNotification":           "La requête n'a pas été reçue dans le délai imparti.",
 
 		// Auth
 		"MissingAuthorizationNotification": "En-tête d'autorisation absent ou mal formé.",

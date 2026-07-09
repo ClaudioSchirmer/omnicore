@@ -167,34 +167,34 @@ func TestValidateWiring_BeforeServePresent(t *testing.T) {
 
 // --- buildApp ---
 
-func TestBuildApp_HealthAlwaysRegistered(t *testing.T) {
-	app, err := buildApp(silentDeps(), Wiring{Features: []Feature{&writeOnlyFeature{}}})
+func TestBuildApp_LivezAlwaysRegistered(t *testing.T) {
+	app, err := buildApp(context.Background(), silentDeps(), Wiring{Features: []Feature{&writeOnlyFeature{}}})
 	if err != nil {
 		t.Fatalf("buildApp: %v", err)
 	}
-	resp, err := app.Test(httptest.NewRequest("GET", "/health", nil))
+	resp, err := app.Test(httptest.NewRequest("GET", "/livez", nil))
 	if err != nil {
-		t.Fatalf("Test /health: %v", err)
+		t.Fatalf("Test /livez: %v", err)
 	}
 	if resp.StatusCode != 200 {
-		t.Fatalf("/health = %d, want 200", resp.StatusCode)
+		t.Fatalf("/livez = %d, want 200", resp.StatusCode)
 	}
 }
 
-func TestBuildApp_HealthEvenWithoutFeatures(t *testing.T) {
+func TestBuildApp_LivezEvenWithoutFeatures(t *testing.T) {
 	// buildApp itself does not require Features (validateWiring is the upstream guard);
-	// /health should respond anyway, so the k8s probe works before
+	// /livez should respond anyway, so the k8s liveness probe works before
 	// the wire completes.
-	app, err := buildApp(silentDeps(), Wiring{})
+	app, err := buildApp(context.Background(), silentDeps(), Wiring{})
 	if err != nil {
 		t.Fatalf("buildApp: %v", err)
 	}
-	resp, err := app.Test(httptest.NewRequest("GET", "/health", nil))
+	resp, err := app.Test(httptest.NewRequest("GET", "/livez", nil))
 	if err != nil {
-		t.Fatalf("Test /health: %v", err)
+		t.Fatalf("Test /livez: %v", err)
 	}
 	if resp.StatusCode != 200 {
-		t.Fatalf("/health without features = %d, want 200", resp.StatusCode)
+		t.Fatalf("/livez without features = %d, want 200", resp.StatusCode)
 	}
 }
 
@@ -205,7 +205,7 @@ func TestBuildApp_MountsFeaturesInDeclarationOrder(t *testing.T) {
 		&orderRecorder{id: "second", order: &order},
 		&orderRecorder{id: "third", order: &order},
 	}}
-	if _, err := buildApp(silentDeps(), wiring); err != nil {
+	if _, err := buildApp(context.Background(), silentDeps(), wiring); err != nil {
 		t.Fatalf("buildApp: %v", err)
 	}
 	if len(order) != 3 || order[0] != "first" || order[1] != "second" || order[2] != "third" {
@@ -215,7 +215,7 @@ func TestBuildApp_MountsFeaturesInDeclarationOrder(t *testing.T) {
 
 func TestBuildApp_FeatureRoutesReachable(t *testing.T) {
 	wiring := Wiring{Features: []Feature{&writeOnlyFeature{}, &readableFeature{viewNames: []string{"u"}}}}
-	app, err := buildApp(silentDeps(), wiring)
+	app, err := buildApp(context.Background(), silentDeps(), wiring)
 	if err != nil {
 		t.Fatalf("buildApp: %v", err)
 	}
@@ -240,7 +240,7 @@ func TestBuildApp_BeforeServeError(t *testing.T) {
 		Features:    []Feature{&writeOnlyFeature{}},
 		BeforeServe: func(*fiber.App, Deps) error { return wantErr },
 	}
-	if _, err := buildApp(silentDeps(), wiring); err == nil || !errors.Is(err, wantErr) {
+	if _, err := buildApp(context.Background(), silentDeps(), wiring); err == nil || !errors.Is(err, wantErr) {
 		t.Fatalf("buildApp should wrap BeforeServe error; got: %v", err)
 	}
 }

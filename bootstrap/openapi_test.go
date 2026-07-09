@@ -1,6 +1,7 @@
 package bootstrap
 
 import (
+	"context"
 	"encoding/json"
 	"io"
 	"net/http/httptest"
@@ -24,7 +25,7 @@ func silentDepsWithRegistry() Deps {
 }
 
 func TestBuildApp_OpenAPIDisabled_NoSpecRoutes(t *testing.T) {
-	app, err := buildApp(silentDeps(), Wiring{
+	app, err := buildApp(context.Background(), silentDeps(), Wiring{
 		Features: []Feature{&writeOnlyFeature{}},
 	})
 	if err != nil {
@@ -46,7 +47,7 @@ func TestBuildApp_OpenAPIEnabled_SpecRouteReturnsJSON(t *testing.T) {
 		Features: []Feature{&writeOnlyFeature{}},
 		OpenAPI:  &openapi.Config{Title: "T", Version: "1.0.0"},
 	}
-	app, err := buildApp(silentDepsWithRegistry(), wiring)
+	app, err := buildApp(context.Background(), silentDepsWithRegistry(), wiring)
 	if err != nil {
 		t.Fatalf("buildApp: %v", err)
 	}
@@ -76,7 +77,7 @@ func TestBuildApp_OpenAPIEnabled_DocsRouteReturnsHTML(t *testing.T) {
 		Features: []Feature{&writeOnlyFeature{}},
 		OpenAPI:  &openapi.Config{Title: "TestAPI", Version: "1"},
 	}
-	app, err := buildApp(silentDepsWithRegistry(), wiring)
+	app, err := buildApp(context.Background(), silentDepsWithRegistry(), wiring)
 	if err != nil {
 		t.Fatalf("buildApp: %v", err)
 	}
@@ -102,7 +103,7 @@ func TestBuildApp_OpenAPIEnabled_HealthAppearsInSpec(t *testing.T) {
 		Features: []Feature{&writeOnlyFeature{}},
 		OpenAPI:  &openapi.Config{Title: "T", Version: "1"},
 	}
-	app, err := buildApp(silentDepsWithRegistry(), wiring)
+	app, err := buildApp(context.Background(), silentDepsWithRegistry(), wiring)
 	if err != nil {
 		t.Fatalf("buildApp: %v", err)
 	}
@@ -116,12 +117,14 @@ func TestBuildApp_OpenAPIEnabled_HealthAppearsInSpec(t *testing.T) {
 		t.Fatalf("not JSON: %v", err)
 	}
 	paths := spec["paths"].(map[string]any)
-	if _, ok := paths["/health"]; !ok {
-		keys := make([]string, 0, len(paths))
-		for k := range paths {
-			keys = append(keys, k)
+	for _, probe := range []string{"/livez", "/readyz"} {
+		if _, ok := paths[probe]; !ok {
+			keys := make([]string, 0, len(paths))
+			for k := range paths {
+				keys = append(keys, k)
+			}
+			t.Fatalf("%s must appear in the rendered spec; paths=%v", probe, keys)
 		}
-		t.Fatalf("/health must appear in the rendered spec; paths=%v", keys)
 	}
 }
 
@@ -139,7 +142,7 @@ func (f *recordingFeature) Mount(_ *fiber.App, d Deps) {
 func TestBuildApp_OpenAPIEnabled_RegistryReachesFeatures(t *testing.T) {
 	rec := &recordingFeature{}
 	deps := silentDepsWithRegistry()
-	_, err := buildApp(deps, Wiring{
+	_, err := buildApp(context.Background(), deps, Wiring{
 		Features: []Feature{rec},
 		OpenAPI:  &openapi.Config{Title: "T", Version: "1"},
 	})
@@ -156,7 +159,7 @@ func TestBuildApp_OpenAPIEnabled_RegistryReachesFeatures(t *testing.T) {
 
 func TestBuildApp_OpenAPIDisabled_FeatureSeesNilRegistry(t *testing.T) {
 	rec := &recordingFeature{}
-	_, err := buildApp(silentDeps(), Wiring{Features: []Feature{rec}})
+	_, err := buildApp(context.Background(), silentDeps(), Wiring{Features: []Feature{rec}})
 	if err != nil {
 		t.Fatalf("buildApp: %v", err)
 	}
@@ -172,7 +175,7 @@ func TestBuildApp_OpenAPI_CustomUIPathServesDocs(t *testing.T) {
 		Features: []Feature{&writeOnlyFeature{}},
 		OpenAPI:  &openapi.Config{Title: "T", Version: "1"},
 	}
-	app, err := buildApp(deps, wiring)
+	app, err := buildApp(context.Background(), deps, wiring)
 	if err != nil {
 		t.Fatalf("buildApp: %v", err)
 	}
@@ -198,7 +201,7 @@ func TestBuildApp_OpenAPI_RootRedirectDisabledByDefault(t *testing.T) {
 		Features: []Feature{&writeOnlyFeature{}},
 		OpenAPI:  &openapi.Config{Title: "T", Version: "1"},
 	}
-	app, err := buildApp(deps, wiring)
+	app, err := buildApp(context.Background(), deps, wiring)
 	if err != nil {
 		t.Fatalf("buildApp: %v", err)
 	}
@@ -219,7 +222,7 @@ func TestBuildApp_OpenAPI_RootRedirectEnabled(t *testing.T) {
 		Features: []Feature{&writeOnlyFeature{}},
 		OpenAPI:  &openapi.Config{Title: "T", Version: "1"},
 	}
-	app, err := buildApp(deps, wiring)
+	app, err := buildApp(context.Background(), deps, wiring)
 	if err != nil {
 		t.Fatalf("buildApp: %v", err)
 	}
@@ -243,7 +246,7 @@ func TestBuildApp_OpenAPI_RootRedirectCustomUIPath(t *testing.T) {
 		Features: []Feature{&writeOnlyFeature{}},
 		OpenAPI:  &openapi.Config{Title: "T", Version: "1"},
 	}
-	app, err := buildApp(deps, wiring)
+	app, err := buildApp(context.Background(), deps, wiring)
 	if err != nil {
 		t.Fatalf("buildApp: %v", err)
 	}
@@ -278,7 +281,7 @@ func TestBuildApp_OpenAPI_RootRedirectSkipsWhenFeatureOwnsRoot(t *testing.T) {
 		Features: []Feature{rootMountingFeature{}},
 		OpenAPI:  &openapi.Config{Title: "T", Version: "1"},
 	}
-	app, err := buildApp(deps, wiring)
+	app, err := buildApp(context.Background(), deps, wiring)
 	if err != nil {
 		t.Fatalf("buildApp: %v", err)
 	}
@@ -301,7 +304,7 @@ func TestBuildApp_OpenAPI_RootRedirectIgnoredWhenOpenAPIDisabled(t *testing.T) {
 	deps.Config.OpenAPI.UIPath = "/docs"
 	// No OpenAPI on wiring — redirect target would not exist, so the
 	// framework skips registering it.
-	app, err := buildApp(deps, Wiring{Features: []Feature{&writeOnlyFeature{}}})
+	app, err := buildApp(context.Background(), deps, Wiring{Features: []Feature{&writeOnlyFeature{}}})
 	if err != nil {
 		t.Fatalf("buildApp: %v", err)
 	}
@@ -320,7 +323,7 @@ func TestBuildApp_OpenAPI_LanguageSelectorDefaultOff(t *testing.T) {
 		Translations: []translation.Module{stubModule{lang: configuration.LangENG}},
 		OpenAPI:      &openapi.Config{Title: "T", Version: "1"},
 	}
-	app, err := buildApp(silentDepsWithRegistry(), wiring)
+	app, err := buildApp(context.Background(), silentDepsWithRegistry(), wiring)
 	if err != nil {
 		t.Fatalf("buildApp: %v", err)
 	}
@@ -346,7 +349,7 @@ func TestBuildApp_OpenAPI_LanguageSelectorAutoPopulatesFromTranslations(t *testi
 		},
 		OpenAPI: &openapi.Config{Title: "T", Version: "1", LanguageSelector: true},
 	}
-	app, err := buildApp(silentDepsWithRegistry(), wiring)
+	app, err := buildApp(context.Background(), silentDepsWithRegistry(), wiring)
 	if err != nil {
 		t.Fatalf("buildApp: %v", err)
 	}
@@ -404,7 +407,7 @@ func TestBuildApp_OpenAPI_LanguageSelectorExplicitOverrideWins(t *testing.T) {
 			},
 		},
 	}
-	app, err := buildApp(silentDepsWithRegistry(), wiring)
+	app, err := buildApp(context.Background(), silentDepsWithRegistry(), wiring)
 	if err != nil {
 		t.Fatalf("buildApp: %v", err)
 	}

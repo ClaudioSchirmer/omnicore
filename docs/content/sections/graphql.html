@@ -121,7 +121,7 @@
   rootRedirect: false     # default off. GET / → 302 path. Both this and openapi.rootRedirect → boot panic.</code></pre>
 <ul>
     <li><strong>Block optional.</strong> Absent → defaults. Present but <code>Wiring.GraphQL</code> nil → ignored.</li>
-    <li><strong><code>path</code></strong> validated at boot: must start with <code>/</code>, must not collide with <code>/openapi.json</code>, <code>/health</code>, or <code>/docs</code>.</li>
+    <li><strong><code>path</code></strong> validated at boot: must start with <code>/</code>, must not collide with <code>/openapi.json</code>, <code>/livez</code>, <code>/readyz</code>, or <code>/docs</code>.</li>
     <li><strong><code>playground</code></strong> serves GraphiQL at <code>uiPath</code> (loaded from a CDN, like the Swagger UI). Pair it with <code>introspection: true</code> so the playground can populate its schema docs / autocomplete. <code>uiPath</code> is validated (leading slash, no framework-route collision, must differ from <code>path</code>) only when <code>playground</code> is on.</li>
     <li><strong><code>introspection</code></strong> gates <code>__schema</code> / <code>__type</code>. Independent of the playground; off by default so a closed endpoint does not advertise its shape. Typically on in dev.</li>
     <li><strong><code>rootRedirect</code></strong> registers <code>GET /</code> → 302 <code>path</code>. The boot <strong>panics</strong> when both <code>openapi.rootRedirect</code> and <code>graphql.rootRedirect</code> are enabled (and both surfaces wired) — only one surface can own <code>/</code>.</li>
