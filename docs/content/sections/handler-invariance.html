@@ -2,7 +2,7 @@
 <p>
     A handler in OmniCore is written <strong>once</strong> and stays <strong>invariant</strong>
     across the surface it is attached to. The handler carries the business logic; the
-    <em>surface</em> — an HTTP route, a Kafka receiver, a CSV download, an Excel download, a GraphQL
+    <em>surface</em> — an HTTP route, a broker receiver, a CSV download, an Excel download, a GraphQL
     field, a gRPC procedure — decides only the shape of what goes in and what comes out. You do not rewrite a handler to
     serve a new channel; you attach the same handler to another wrapper.
 </p>
@@ -10,7 +10,7 @@
     <strong>The principle:</strong> a handler is a pure <code>pipeline.Handler[TReq, TRes]</code>.
     It never learns which surface invoked it. The request context (<code>*AppContext</code>) is the
     single, uniform vehicle on every surface, so identity, language, cancellation, and
-    authorization overlays apply the same way whether the request arrived over HTTP, off a Kafka
+    authorization overlays apply the same way whether the request arrived over HTTP, off a broker
     topic, or as a gRPC call. <em>Convenience</em> is the payoff: a new demand is a new attachment, not new logic.
 </div>
 
@@ -19,7 +19,7 @@
     than one surface — the same handler instance, no rewrite:
     <ul>
         <li><strong>Command handlers</strong> (the write side) attach to <strong>HTTP/JSON</strong>,
-            to <strong>Kafka</strong>, as a <strong>GraphQL mutation</strong>, or as a
+            to the <strong>broker</strong> (integration events), as a <strong>GraphQL mutation</strong>, or as a
             <strong>gRPC unary RPC</strong>.</li>
         <li><strong>Query handlers</strong> (the read side) attach to <strong>HTTP/JSON</strong>, to
             a <strong>CSV</strong> download, to an <strong>Excel</strong> download, as a
@@ -30,7 +30,7 @@
 <h3 id="hi-command">Command handlers</h3>
 <p>
     One <code>pipeline.Handler[TCmd, TResult]</code> (an Auto Command Handler or a hand-rolled one)
-    serves a synchronous HTTP endpoint and an asynchronous cross-service Kafka receiver from the
+    serves a synchronous HTTP endpoint and an asynchronous cross-service broker receiver from the
     same instance. The wire payload is adapted to the same Cmd by each side's DTO
     <code>ToCommand()</code>; everything below the boundary — <code>BuildRules</code> validation,
     the sealed <code>ValidEntity</code>, the transactional outbox, the audit row — is identical.
@@ -43,7 +43,7 @@ fwweb.CommandWithBody(d.Pipeline,
     requests.InsertUserRequest{}, requests.InsertUserResponse{}.FromResult,
     h, fiber.StatusCreated)
 
-// attach the SAME h to Kafka (async, cross-service event)
+// attach the SAME h to the broker (async, cross-service event)
 reg.From("partners").On("partnerOnboarded", requests.PartnerOnboardedRequest{}, h)
 
 // ...or as a GraphQL mutation (input object reflected from the Request DTO)
@@ -133,7 +133,7 @@ grpcReg.Register(fwgrpc.QueryWithParams[usersv1.ListUsersRequest, usersv1.ListUs
         <td rowspan="4">the Cmd, <code>BuildRules</code>, the sealed <code>ValidEntity</code>, transactional outbox, audit, pipeline semantics</td>
     </tr>
     <tr>
-        <td>Kafka (async)</td>
+        <td>Broker (async)</td>
         <td><code>reg.From(src).On(event, sample, handler)</code></td>
         <td>event payload (sample <code>ToCommand</code>), at-least-once + dedup + retry</td>
     </tr>
@@ -182,7 +182,7 @@ grpcReg.Register(fwgrpc.QueryWithParams[usersv1.ListUsersRequest, usersv1.ListUs
     The value is not the individual wrappers — it is that they all converge on the same handler
     contract. A product asks for "the users list, but as a spreadsheet"; you add one
     <code>QueryAsXLSX</code> line pointing at the query handler you already have. A partner
-    integration needs your "create user" use case driven off their Kafka topic instead of an HTTP
+    integration needs your "create user" use case driven off their broker topic instead of an HTTP
     call; you register the existing command handler on a receiver. A sibling service needs to call
     that same use case synchronously over the internal plane; you register it on the gRPC surface —
     one declarative line, the same handler. No business logic is copied, no

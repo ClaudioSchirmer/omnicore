@@ -197,7 +197,7 @@ observability:                           # optional; omitted block = tracing off
                 <td><code>destinations: [slog, database]</code> (default; block absent)</td>
                 <td>Both active — recommended posture. Atomic durability + cross-service ELK consolidation.</td>
             </tr>
-            <tr><td><code>destinations: [database]</code></td><td>Only the PG row. Lowest log volume; pair with SQL dashboards.</td></tr>
+            <tr><td><code>destinations: [database]</code></td><td>Only the database row. Lowest log volume; pair with SQL dashboards.</td></tr>
             <tr><td><code>destinations: [slog]</code></td><td>Only the slog line. Matches the framework's pre-redesign best-effort posture.</td></tr>
             <tr><td><code>destinations: []</code></td><td>Explicitly disables audit. Table stays provisioned by migration 0001 but no row is written; no slog line is emitted.</td></tr>
         </tbody>

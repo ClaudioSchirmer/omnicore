@@ -663,7 +663,7 @@ fwopenapi.Mount(d.OpenAPIRegistry, app, fiber.MethodGet, "/users.csv", csvH, csv
         no change to the plan, the generator, or the HTTP wrapper. Attaching the same query handler
         to JSON, CSV, and Excel is one half of a broader pattern — see
         <a href="#handler-invariance">Handler invariance</a> (queries → JSON/CSV/Excel, commands →
-        HTTP/Kafka).
+        HTTP/broker).
     </p>
     <h3 id="qry-example">Full example</h3>
     <h4>1. Define the ViewDefinition</h4>
@@ -726,8 +726,8 @@ var SaleView = query.View("sales_view").
 
 // Drop archived rows from the projection — opt in via .DeleteOnArchive().
 // Default behavior (flag absent): ARCHIVED outbox events compose+upsert the
-// document (survives with deleted_at populated, mirroring PostgreSQL
-// symmetrically) and the composer omits the WHERE deleted_at IS NULL filter
+// document (survives with deleted_at populated, mirroring the relational
+// backend symmetrically) and the composer omits the WHERE deleted_at IS NULL filter
 // on every fetch. With .DeleteOnArchive(): ARCHIVED removes the document
 // from Mongo and the composer applies the deleted_at filter on the root
 // AND on every embed source — the flag governs the whole aggregate
@@ -932,9 +932,9 @@ return bootstrap.Wiring{
         keeps archived documents — a filter that drops it would strip the archive marker from the
         <code>ARCHIVED</code> upsert.</p>
 
-    <p><strong>Persistent failure registry.</strong> Every ripple failure (discover / compose / upsert stage) is upserted into the framework PG table <code>omnicore_upstream_failures</code> alongside the slog line and the in-memory counter. The natural key <code>(subscription_topic, view_name, upstream_id, local_id, stage)</code> turns retries into <code>attempt</code> increments — the table mirrors live state, never grows monotonically. A recompose round that finishes without errors for <code>(view, upstream_id)</code> automatically marks any pending rows under that coordinate as resolved (<code>resolved_at = NOW()</code>). Writes are best-effort: any PG error on Record/Resolve is logged at <code>slog.Warn</code> and discarded — the consumer's transport offset/ack still advances, preserving the failure-isolation contract.</p>
+    <p><strong>Persistent failure registry.</strong> Every ripple failure (discover / compose / upsert stage) is upserted into the framework relational table <code>omnicore_upstream_failures</code> alongside the slog line and the in-memory counter. The natural key <code>(subscription_topic, view_name, upstream_id, local_id, stage)</code> turns retries into <code>attempt</code> increments — the table mirrors live state, never grows monotonically. A recompose round that finishes without errors for <code>(view, upstream_id)</code> automatically marks any pending rows under that coordinate as resolved (<code>resolved_at = NOW()</code>). Writes are best-effort: any relational error on Record/Resolve is logged at <code>slog.Warn</code> and discarded — the consumer's transport offset/ack still advances, preserving the failure-isolation contract.</p>
 
-    <p>Operational queries (SQL on B's framework PG):</p>
+    <p>Operational queries (SQL on B's framework relational store):</p>
     <pre><code>-- Currently stale entities:
 SELECT subscription_topic, view_name, upstream_id, local_id, stage, attempt,
        last_attempt_at, error

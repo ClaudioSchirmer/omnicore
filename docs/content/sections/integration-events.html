@@ -1,6 +1,6 @@
 <h2>Integration events</h2>
 
-    <p>The cross-service async-messaging surface — the canonical write-side counterpart to the sync <code>httpclient</code> + the read-side <code>UpstreamSubscription</code> paths. Producers emit typed events into the local <code>integration_events</code> table (atomic with the data write when invoked from a <code>BeforeCommit</code> hook closure with <code>WithTx(tx)</code>); subscribers consume Kafka messages via the framework's <code>Receiver</code> registry, route each payload through the <strong>same</strong> <code>pipeline.Handler[TCmd, TResult]</code> HTTP routes consume, and dedup per consumer group via <code>omnicore_integration_processed</code>.</p>
+    <p>The cross-service async-messaging surface — the canonical write-side counterpart to the sync <code>httpclient</code> + the read-side <code>UpstreamSubscription</code> paths. Producers emit typed events into the local <code>integration_events</code> table (atomic with the data write when invoked from a <code>BeforeCommit</code> hook closure with <code>WithTx(tx)</code>); subscribers consume broker messages via the framework's <code>Receiver</code> registry, route each payload through the <strong>same</strong> <code>pipeline.Handler[TCmd, TResult]</code> HTTP routes consume, and dedup per consumer group via <code>omnicore_integration_processed</code>.</p>
 
     <p>The package <code>omnicore/infra/integration</code> (imported as <code>fwintegration</code>) carries the full producer + subscriber surface. Vocabulary follows the canonical pub/sub literature: <code>publishes</code> (events this service emits) + <code>subscribes</code> (events this service consumes) layered on the same <code>integration:</code> YAML block.</p>
 
@@ -58,16 +58,16 @@ func MountUserReceivers(reg *fwintegration.Registry, repo userRepo, d bootstrap.
     startFrom: latest                          # latest | earliest
   subscribes:
     partners:                                  # source key (Go reference)
-      topic: partners.integration.events       # Kafka topic name
+      topic: partners.integration.events       # broker topic/subject name
       events:
         partnerOnboarded:                      # event key (Go reference)
           eventType: PartnerOnboarded          # wire header value</code></pre>
 
     <p><strong>Eager validation (both directions).</strong> <code>reg.From("X").On("Y", ...)</code> during MountReceivers fails boot if <code>integration.subscribes.X.events.Y</code> does not exist in the loaded YAML — boot diagnostic names the missing key. The inverse is also enforced: a declared <code>integration.subscribes.X.events.Y</code> with no matching registered receiver aborts the boot (otherwise no goroutine would consume that topic and every message would be silently dropped). Mismatched sample / handler types panic at Mount time too (sample carries no <code>ToCommand</code>, ToCommand returns the wrong Cmd type for the handler, etc.). <code>startFrom</code> (per-source and <code>defaults</code>) is enum-validated at boot (<code>earliest</code> | <code>latest</code>) — a typo previously resolved silently to <code>latest</code>.</p>
 
-    <p><strong>Consumer topology — one reader per <code>(topic, consumerGroup)</code>, demultiplexed by <code>event_type</code>.</strong> A source declaring several events (<code>From("X").On("A", …).On("B", …)</code>) shares one topic and one consumer group across both events. The framework runs a <em>single</em> Kafka reader for that coordinate and routes each message to the receiver whose event type matches the message's <code>event_type</code> header — the canonical "one topic, many event types, many handlers" shape, which reads every message exactly once. (One reader per receiver would be wrong: Kafka assigns each partition to a single group member, so two readers sharing the coordinate would split the partitions and — under auto-commit — each would silently drop the events meant for the other.) A message whose <code>event_type</code> matches no receiver is a foreign event on the topic and is skipped. Two receivers resolving to the same <code>(topic, consumerGroup, event_type)</code> abort the boot.</p>
+    <p><strong>Consumer topology — one reader per <code>(topic, consumerGroup)</code>, demultiplexed by <code>event_type</code>.</strong> A source declaring several events (<code>From("X").On("A", …).On("B", …)</code>) shares one topic and one consumer group across both events. The framework runs a <em>single</em> broker reader for that coordinate and routes each message to the receiver whose event type matches the message's <code>event_type</code> header — the canonical "one topic, many event types, many handlers" shape, which reads every message exactly once. (One reader per receiver would be wrong: the broker hands each partition/subject to a single consumer-group member, so two readers sharing the coordinate would split the work and — under auto-commit — each would silently drop the events meant for the other.) A message whose <code>event_type</code> matches no receiver is a foreign event on the topic and is skipped. Two receivers resolving to the same <code>(topic, consumerGroup, event_type)</code> abort the boot.</p>
 
-    <h3>Handler invariance — HTTP and Kafka are interchangeable transports</h3>
+    <h3>Handler invariance — HTTP and the broker are interchangeable transports</h3>
 
     <p>The handler registered on the receiver is the <strong>same</strong> <code>pipeline.Handler[TCmd, TResult]</code> instance an HTTP route consumes. The sample DTO carries <code>ToCommand()</code> (same convention web <code>Request.ToCommand</code> follows). Migrate an endpoint from HTTP to async event-driven without rewriting the handler. Expose the same use case via both transports during a transition window. React to events with handlers proven via HTTP integration tests.</p>
 
@@ -75,11 +75,11 @@ func MountUserReceivers(reg *fwintegration.Registry, repo userRepo, d bootstrap.
 
     <ol>
         <li>Read <code>event_id</code> from header (or <code>msg.Key</code>).</li>
-        <li>Pre-check <code>omnicore_integration_processed</code> — hit → ack Kafka, skip handler (already processed by this consumer group).</li>
+        <li>Pre-check <code>omnicore_integration_processed</code> — hit → ack the broker, skip handler (already processed by this consumer group).</li>
         <li>Build a fresh <code>*AppContext</code> for the invocation: <code>ID()</code> = new UUID; <code>ActorSubject()</code> = inbound <code>actor</code> header (falls back to <code>"anonymous"</code>); <code>CorrelationID()</code> = inbound <code>correlation_id</code> header or <code>event_id</code> fallback; <code>CausationID()</code> = <code>event_id</code>.</li>
         <li>Unmarshal payload into a freshly-allocated sample DTO, call <code>ToCommand()</code>, dispatch the resulting Cmd via the registered handler.</li>
-        <li>Handler success → <code>INSERT INTO omnicore_integration_processed ... ON CONFLICT DO NOTHING</code> → ack Kafka.</li>
-        <li>Handler error → <code>RecordIntegrationFailure(...)</code> row written; Kafka offset still advances (failure isolation contract).</li>
+        <li>Handler success → <code>INSERT INTO omnicore_integration_processed ... ON CONFLICT DO NOTHING</code> → ack the broker.</li>
+        <li>Handler error → <code>RecordIntegrationFailure(...)</code> row written; the transport offset/ack still advances (failure isolation contract).</li>
     </ol>
 
     <p>Each <code>Repo.Method</code> opens its own short TX as in the HTTP path — no framework-managed outer TX, no persister branch, no <code>AppContext</code> mutation for transaction injection. HTTP↔Receiver symmetry at the persistence layer.</p>
@@ -89,9 +89,9 @@ func MountUserReceivers(reg *fwintegration.Registry, repo userRepo, d bootstrap.
     <p>Framework provides best-effort dedup via <code>omnicore_integration_processed</code> keyed by <code>(event_id, consumer_group)</code>. The race window of milliseconds between handler COMMIT and the dedup INSERT may produce a double-invoke after a crash. Handlers consumed by a Receiver <strong>MUST</strong> be idempotent by design — <strong>recommended patterns</strong>:</p>
 
     <ul>
-        <li><strong>UPSERT</strong> via <code>INSERT ... ON CONFLICT DO UPDATE</code> on PG writes (matches the framework's existing <code>BaseRepository.ConstraintBindings</code> posture).</li>
-        <li><strong>Natural-key constraints</strong> on PG writes — the second invoke trips the unique violation and the framework translates it via the registered <code>ConstraintBinding</code>.</li>
-        <li><strong>Idempotency keys at the external side</strong> for side effects to non-PG systems (email provider, payment provider, downstream HTTP API). Same pattern Stripe / Twilio / GitHub webhooks adopt — pass the <code>event_id</code> as the upstream idempotency key.</li>
+        <li><strong>UPSERT</strong> on relational writes (dialect-appropriate — PG <code>INSERT ... ON CONFLICT DO UPDATE</code>, MySQL <code>INSERT ... ON DUPLICATE KEY UPDATE</code>; matches the framework's existing <code>BaseRepository.ConstraintBindings</code> posture).</li>
+        <li><strong>Natural-key constraints</strong> on relational writes — the second invoke trips the unique violation and the framework translates it via the registered <code>ConstraintBinding</code>.</li>
+        <li><strong>Idempotency keys at the external side</strong> for side effects to external systems (email provider, payment provider, downstream HTTP API). Same pattern Stripe / Twilio / GitHub webhooks adopt — pass the <code>event_id</code> as the upstream idempotency key.</li>
     </ul>
 
     <p>The architectural trade-off accepted: an outer TX wrapping handler execution + dedup INSERT would close the race window at the cost of long-lived TX, connection pool pressure, replication lag risk. Pinning idempotency to the handler design keeps the framework's per-Repo-Method short-TX discipline intact.</p>
@@ -164,7 +164,7 @@ POST /admin/retries/integration   → loops d.IntegrationRegistry.Receivers()</c
         </thead>
         <tbody>
             <tr><td><code>integration.event.emitted</code></td><td>Info</td><td>producer side, post-INSERT</td></tr>
-            <tr><td><code>integration.consumer.received</code></td><td>Debug</td><td>per inbound Kafka message</td></tr>
+            <tr><td><code>integration.consumer.received</code></td><td>Debug</td><td>per inbound broker message</td></tr>
             <tr><td><code>integration.consumer.deduplicated</code></td><td>Debug</td><td>dedup pre-check hit</td></tr>
             <tr><td><code>integration.consumer.handled</code></td><td>Info</td><td>handler success</td></tr>
             <tr><td><code>integration.consumer.failed</code></td><td>Warn</td><td>handler error — pairs with <code>omnicore_integration_failures</code> row</td></tr>
@@ -190,4 +190,4 @@ POST /admin/retries/integration   → loops d.IntegrationRegistry.Receivers()</c
 
     <h3>Professional shutdown</h3>
 
-    <p><code>shutdown.drainTimeoutSeconds</code> in YAML caps the parallel drain on SIGINT/SIGTERM (default 30s; aligns with kubernetes <code>terminationGracePeriodSeconds</code>). The framework drains HTTP server, integration consumer pool, upstream subscribers in parallel under the shared <code>shutdownCtx</code>. Per-stage drain timeouts surface as <code>slog.Warn</code> lines naming the stage so the operator knows what did not finish. Infra deps (Kafka, PG, Mongo) close after every drain finishes, in dependency order.</p>
+    <p><code>shutdown.drainTimeoutSeconds</code> in YAML caps the parallel drain on SIGINT/SIGTERM (default 30s; aligns with kubernetes <code>terminationGracePeriodSeconds</code>). The framework drains HTTP server, integration consumer pool, upstream subscribers in parallel under the shared <code>shutdownCtx</code>. Per-stage drain timeouts surface as <code>slog.Warn</code> lines naming the stage so the operator knows what did not finish. Infra deps (the broker, the relational store, Mongo) close after every drain finishes, in dependency order.</p>

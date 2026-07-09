@@ -132,7 +132,7 @@
     and consumer are temporally far apart).
 </p>
 <p>
-    One operator step is required for the link to cross Debezium: map the column to a Kafka header in
+    One operator step is required for the link to cross Debezium: map the column to a message header in
     the Outbox Event Router config of your connector —
 </p>
 <pre><code>"transforms.outbox.table.fields.additional.placement": "traceparent:header:traceparent"</code></pre>

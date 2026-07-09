@@ -295,7 +295,7 @@ shutdown:
         <a href="#query-side">QueryHandler · CQRS</a>.
     </p>
 <pre><code>upstreamSubscriptions:
-  - topic: users.events                  # MANDATORY — Kafka topic produced by the upstream service
+  - topic: users.events                  # MANDATORY — broker topic/subject produced by the upstream service
     collection: users                    # MANDATORY — local Mongo collection (no collision with views/other subs)
     consumerGroup: ""                    # default "&lt;service&gt;-upstream-&lt;topic&gt;"
     workers: 2                            # default 1 (aggregate-id hashed → ordered per aggregate)
@@ -329,7 +329,7 @@ shutdown:
 
   subscribes:
     partners:                            # sourceKey (Go reference)
-      topic: partners.integration.events # MANDATORY — Kafka topic
+      topic: partners.integration.events # MANDATORY — broker topic/subject
       workers: 8                         # optional per-source override (defaults.workers otherwise)
       consumerGroup: ""                  # optional per-source override (defaults.consumerGroup otherwise)
       startFrom: ""                      # optional per-source override (defaults.startFrom otherwise)
