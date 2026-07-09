@@ -46,7 +46,7 @@ pwd: "${vault:secret/data/db#password}"                # delegated to a register
         <tr><td><code>http</code></td><td>no</td><td>listen address</td><td>below</td></tr>
         <tr><td><code>relational</code></td><td><strong>yes</strong></td><td>relational backend — dialect (Postgres / MySQL) + write-side DSN</td><td>below</td></tr>
         <tr><td><code>mongo</code></td><td><strong>yes</strong></td><td>read-side URI/db + rebuild policy</td><td>below · <a href="#mongo-schema-evolution">rebuild</a></td></tr>
-        <tr><td><code>kafka</code></td><td><strong>yes</strong></td><td>brokers + SyncEngine group/workers</td><td>below</td></tr>
+        <tr><td><code>transport</code></td><td><strong>yes</strong></td><td>broker endpoints + SyncEngine group/workers (neutral across kafka/nats)</td><td>below</td></tr>
         <tr><td><code>migrations</code></td><td>no</td><td>SQL migration dir + autoRun mode</td><td>below · <a href="#migrations">Migrations</a></td></tr>
         <tr><td><code>query</code></td><td>no</td><td>read-side <code>?limit=</code> ceiling + tabular-export row ceiling</td><td>below · <a href="#auto-query-handlers">Auto query handlers</a></td></tr>
         <tr><td><code>auth</code></td><td>no*</td><td>JWT auth + external validator + authz</td><td>below · <a href="#auth-middleware">Authentication</a> · <a href="#authz-seams">Authorization</a></td></tr>
@@ -64,7 +64,7 @@ pwd: "${vault:secret/data/db#password}"                # delegated to a register
     </tbody></table>
     <p>*<code>auth</code> defaults to <code>{mode: disabled}</code> when absent — accepted only under <code>APP_PROFILE=dev</code>; any other profile aborts the boot without it.</p>
 
-    <h3>Core — service · http · relational · mongo · kafka · migrations · query</h3>
+    <h3>Core — service · http · relational · mongo · transport · migrations · query</h3>
 <pre><code>service: my-service                      # MANDATORY — registry marker + consumer-group default seed
 
 http:
@@ -93,9 +93,9 @@ mongo:
     orphan: delete                       # delete | warn — default delete (reconcile docs whose source vanished)
     allowDowngrade: false                # default false — opt-in for canary/blue-green rollback
 
-kafka:
-  brokers: ["${KAFKA_BROKERS:localhost:9092}"]  # MANDATORY — broker list
-  syncGroupId: "${SYNC_GROUP_ID}"        # MANDATORY — SyncEngine consumer group
+transport:                               # neutral; the -tags kafka|nats build tag picks the adapter
+  endpoints: ["${TRANSPORT_ENDPOINTS:localhost:9092}"]  # MANDATORY — Kafka/Redpanda brokers OR NATS URL(s)
+  syncGroup: "${SYNC_GROUP_ID}"          # MANDATORY — SyncEngine consumer group / NATS durable name
   syncWorkers: 4                         # 0/unset → runtime.NumCPU(); 1 = serial (per-aggregate ordering always kept)
 
 migrations:
@@ -295,7 +295,7 @@ shutdown:
         <a href="#query-side">QueryHandler · CQRS</a>.
     </p>
 <pre><code>upstreamSubscriptions:
-  - topic: users.events                  # MANDATORY — Kafka topic produced by the upstream service
+  - topic: users.events                  # MANDATORY — broker topic/subject produced by the upstream service
     collection: users                    # MANDATORY — local Mongo collection (no collision with views/other subs)
     consumerGroup: ""                    # default "&lt;service&gt;-upstream-&lt;topic&gt;"
     workers: 2                            # default 1 (aggregate-id hashed → ordered per aggregate)
@@ -329,7 +329,7 @@ shutdown:
 
   subscribes:
     partners:                            # sourceKey (Go reference)
-      topic: partners.integration.events # MANDATORY — Kafka topic
+      topic: partners.integration.events # MANDATORY — broker topic/subject
       workers: 8                         # optional per-source override (defaults.workers otherwise)
       consumerGroup: ""                  # optional per-source override (defaults.consumerGroup otherwise)
       startFrom: ""                      # optional per-source override (defaults.startFrom otherwise)

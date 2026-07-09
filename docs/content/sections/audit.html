@@ -53,7 +53,7 @@
         as the data row and the outbox row — so a crash between writes can never leave an audit gap.
         If <code>COMMIT</code> succeeded, the audit row exists. The <code>slog</code> echo fires
         <em>after</em> <code>COMMIT</code> and is best-effort: lossy if the log shipper drops the
-        line, but the PG row stays authoritative. The model + read port + label
+        line, but the database row stays authoritative. The model + read port + label
         renderer live in <code>application/audit</code> (<code>event.go</code> the event,
         <code>reader.go</code> the <code>Reader</code> port, <code>render.go</code> the label
         renderer), so an application/web consumer reading the timeline depends on
@@ -72,7 +72,7 @@
             <td><code>audit.InsertAuditEvent</code> → row in <code>audit_events</code></td>
             <td>inside the write's transaction</td>
             <td><strong>atomic</strong> — the row IS the audit; if the write committed, the audit exists</td>
-            <td>compliance, forensics, source-of-truth timelines joinable to other PG state</td>
+            <td>compliance, forensics, source-of-truth timelines joinable to other relational state</td>
         </tr>
         <tr>
             <td><code>slog</code></td>
@@ -85,7 +85,7 @@
     <p>
         Routing is declared in <code>microservice.&lt;profile&gt;.yaml</code>. The block is optional;
         an absent block (or absent <code>destinations:</code> key) defaults to <strong>both</strong>
-        destinations active — the recommended posture (PG row guarantees compliance; the slog echo
+        destinations active — the recommended posture (the database row guarantees compliance; the slog echo
         feeds whatever observability stack the operator already runs).
     </p>
 <pre><code># Default posture (both) when the block is omitted entirely.
@@ -93,13 +93,13 @@ audit:
   destinations:
     - slog        # post-commit echo for ELK / Loki / stdout collectors
     - database    # in-TX row in audit_events (atomic with the write — source of truth)
-  # destinations: [database]   # only the PG row — highest signal/noise, lowest log volume
+  # destinations: [database]   # only the database row — highest signal/noise, lowest log volume
   # destinations: [slog]       # only the slog line — observability-only posture
   # destinations: []           # explicitly disables audit (no row, no slog line)</code></pre>
     <table>
         <tbody><tr><th>Value</th><th>Effect</th></tr>
         <tr><td>block absent / <code>destinations:</code> absent</td><td>both <code>slog</code> + <code>database</code> active</td></tr>
-        <tr><td><code>[database]</code></td><td>only the PG row</td></tr>
+        <tr><td><code>[database]</code></td><td>only the database row</td></tr>
         <tr><td><code>[slog]</code></td><td>only the slog line (pre-redesign observability-only posture)</td></tr>
         <tr><td><code>[]</code></td><td>audit disabled — no row, no line</td></tr>
         <tr><td><code>[kafka]</code> (unknown) / <code>[slog, slog]</code> (duplicate)</td><td><strong>boot aborts</strong> with a diagnostic naming the offender</td></tr>

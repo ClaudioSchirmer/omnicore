@@ -29,5 +29,8 @@
   "json-path-fields": "status-mapping",
   "field-labels": "status-mapping",
   "env-vars": "bootstrap",
-  "microservice-yaml": "bootstrap"
+  "microservice-yaml": "bootstrap",
+  "transport": "transport",
+  "transport-seam": "architecture",
+  "transport-build-tag": "bootstrap"
 }

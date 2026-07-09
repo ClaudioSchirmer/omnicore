@@ -14,6 +14,7 @@ import (
 	"github.com/ClaudioSchirmer/omnicore/infra/httpclient"
 	"github.com/ClaudioSchirmer/omnicore/infra/integration"
 	"github.com/ClaudioSchirmer/omnicore/infra/tracing"
+	"github.com/ClaudioSchirmer/omnicore/infra/transport"
 	"github.com/ClaudioSchirmer/omnicore/web"
 	"github.com/ClaudioSchirmer/omnicore/web/openapi"
 )
@@ -52,6 +53,15 @@ type Deps struct {
 	Translator *translation.Translator
 	Pipeline   *pipeline.Pipeline
 	ViewReader queries.ViewReader
+
+	// Transport is the message-transport port — the linked broker adapter
+	// (Kafka/Redpanda now, NATS later) selected once at boot by the transport
+	// build tag (-tags kafka | -tags nats), through the subscriber registry.
+	// Every async consumer opens its subscription through this one instance:
+	// the SyncEngine, the integration ConsumerPool, and each UpstreamSubscriber.
+	// Consumers depend on the transport.Subscriber interface, not a concrete
+	// client — the seam that lets a broker drop in without those loops changing.
+	Transport transport.Subscriber
 
 	// Tracing owns the OpenTelemetry tracer provider's lifetime. Always
 	// non-nil after bootstrap.Build/Run (inert when observability.tracing is

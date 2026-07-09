@@ -23,7 +23,7 @@ func TestConsumerPool_StartSpawnsGroupsAndDrains(t *testing.T) {
 			Events:        map[string]SubscribeEvent{"onboarded": {EventType: "PartnerOnboarded"}},
 		},
 	}}
-	p := NewConsumerPool(reg, cfg, nil, []string{"127.0.0.1:1"}, nil, discardLogger())
+	p := NewConsumerPool(reg, cfg, nil, fakeSubscriber{}, nil, discardLogger())
 
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
@@ -50,7 +50,7 @@ func TestConsumerPool_StartDefaultsWorkers(t *testing.T) {
 			Events:        map[string]SubscribeEvent{"onboarded": {EventType: "PartnerOnboarded"}},
 		},
 	}}
-	p := NewConsumerPool(reg, cfg, nil, []string{"127.0.0.1:1"}, nil, discardLogger())
+	p := NewConsumerPool(reg, cfg, nil, fakeSubscriber{}, nil, discardLogger())
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 	if err := p.Start(ctx); err != nil {

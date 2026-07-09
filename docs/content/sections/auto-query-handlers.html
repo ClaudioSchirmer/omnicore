@@ -147,7 +147,7 @@
         <tr><td>Text search (<code>$text</code>)</td><td><span class="tag auto">automatic</span></td><td>when <code>ReadCriteria.Search != ""</code></td></tr>
         <tr><td>404 when document does not exist</td><td><span class="tag auto">automatic</span></td><td><code>FindByIDQueryHandler</code> emits <code>RecordNotFoundNotification</code></td></tr>
         <tr><td>Inject security claims from AppContext (tenant_id, etc.)</td><td><span class="tag manual">manual</span></td><td><code>Query.ToCriteria(ctx)</code> in <code>application/queries/</code> — the only layer below the web boundary that consumes <code>*AppContext</code> on the read side; overlays land on the <code>ReadCriteria.Filter</code> the handler forwards to <code>ViewReader.ReadPage</code> / <code>ReadByID</code></td></tr>
-        <tr><td>View recomposition after table change</td><td><span class="tag auto">automatic</span></td><td><code>SyncEngine</code> consumes Kafka and re-upserts</td></tr>
+        <tr><td>View recomposition after table change</td><td><span class="tag auto">automatic</span></td><td><code>SyncEngine</code> consumes the transport and re-upserts</td></tr>
         <tr><td>Cross-service composition (upstream Mongo projection + recompose ripple)</td><td><span class="tag auto">automatic</span></td><td><code>UpstreamSubscription</code> (declarative) + <code>UpstreamSubscriber</code> (runtime) + an external <code>FromSchema</code> (embed)</td></tr>
         <tr><td>Offline view rebuild</td><td><span class="tag auto">automatic</span></td><td><code>RebuildView</code> / <code>RebuildAllViews</code></td></tr>
     </tbody></table>
@@ -663,7 +663,7 @@ fwopenapi.Mount(d.OpenAPIRegistry, app, fiber.MethodGet, "/users.csv", csvH, csv
         no change to the plan, the generator, or the HTTP wrapper. Attaching the same query handler
         to JSON, CSV, and Excel is one half of a broader pattern — see
         <a href="#handler-invariance">Handler invariance</a> (queries → JSON/CSV/Excel, commands →
-        HTTP/Kafka).
+        HTTP/broker).
     </p>
     <h3 id="qry-example">Full example</h3>
     <h4>1. Define the ViewDefinition</h4>
@@ -726,8 +726,8 @@ var SaleView = query.View("sales_view").
 
 // Drop archived rows from the projection — opt in via .DeleteOnArchive().
 // Default behavior (flag absent): ARCHIVED outbox events compose+upsert the
-// document (survives with deleted_at populated, mirroring PostgreSQL
-// symmetrically) and the composer omits the WHERE deleted_at IS NULL filter
+// document (survives with deleted_at populated, mirroring the relational
+// backend symmetrically) and the composer omits the WHERE deleted_at IS NULL filter
 // on every fetch. With .DeleteOnArchive(): ARCHIVED removes the document
 // from Mongo and the composer applies the deleted_at filter on the root
 // AND on every embed source — the flag governs the whole aggregate
@@ -881,26 +881,27 @@ users.Get("/:id", fwweb.QueryByID(d.Pipeline,
 pg, _ := postgres.NewPostgres(ctx, postgresDSN)   // *postgres.Postgres satisfies core.RelationalEngine
 mongoDB, _ := mongo.NewMongoDB(ctx, mongoURI, "salesdb")
 
+// The linked transport adapter (blank-import infra/transport/kafka or …/nats)
+// self-registers; resolve it by name. bootstrap.Run does this from cfg.Transport.
+sub, _ := transport.NewSubscriber("kafka", transport.Config{Endpoints: []string{"kafka:9092"}})
+
 sync := query.NewSyncEngine(pg, mongoDB,
-    []string{"kafka:9092"},  // brokers
-    "svc-sales",             // groupID
+    sub,                     // transport.Subscriber — the seam, not a concrete client
+    "svc-sales",             // syncGroup
     []*query.ViewDefinition{ // views of this service
         views.SaleView,
     },
     runtime.NumCPU(),        // workers: pool bucketed by aggregate_id
                              // (per-aggregate ordering preserved).
-                             // In bootstrap.Run, comes from yaml kafka.syncWorkers.
+                             // In bootstrap.Run, comes from yaml transport.syncWorkers.
                              // Use 1 to opt out (serial mode).
 )
 sync.Start(ctx)
-// SyncEngine.Start is fire-and-forget. Internally the engine pre-creates the
-// Kafka topics (idempotent CreateTopics, ignores TopicAlreadyExists) before
-// instantiating the reader — necessary because kafka-go with GroupTopics gets
-// stuck on JoinGroup when the topic does not exist in the broker metadata at
-// subscribe time. Internal 30s retry covers the typical docker-compose boot
-// race (Kafka coming up while the service has already started). Topics
-// pre-created in production via external tooling return TopicAlreadyExists and
-// are respected — defaults (1 partition / RF=1) only matter for dev.
+// SyncEngine.Start is fire-and-forget. Internally the engine ensures its topics
+// exist (via the adapter's idempotent EnsureTopics) before subscribing —
+// necessary because a consumer-group reader can block on subscribe when a topic
+// does not yet exist. Internal 30s retry covers the typical docker-compose boot
+// race (the broker coming up while the service has already started).
 
 // Cross-service composition via UpstreamSubscription (yaml-declared in
 // microservice.&lt;profile&gt;.yaml; manual Wiring form shown for illustration).
@@ -931,9 +932,9 @@ return bootstrap.Wiring{
         keeps archived documents — a filter that drops it would strip the archive marker from the
         <code>ARCHIVED</code> upsert.</p>
 
-    <p><strong>Persistent failure registry.</strong> Every ripple failure (discover / compose / upsert stage) is upserted into the framework PG table <code>omnicore_upstream_failures</code> alongside the slog line and the in-memory counter. The natural key <code>(subscription_topic, view_name, upstream_id, local_id, stage)</code> turns retries into <code>attempt</code> increments — the table mirrors live state, never grows monotonically. A recompose round that finishes without errors for <code>(view, upstream_id)</code> automatically marks any pending rows under that coordinate as resolved (<code>resolved_at = NOW()</code>). Writes are best-effort: any PG error on Record/Resolve is logged at <code>slog.Warn</code> and discarded — the consumer's Kafka offset still advances, preserving the failure-isolation contract.</p>
+    <p><strong>Persistent failure registry.</strong> Every ripple failure (discover / compose / upsert stage) is upserted into the framework relational table <code>omnicore_upstream_failures</code> alongside the slog line and the in-memory counter. The natural key <code>(subscription_topic, view_name, upstream_id, local_id, stage)</code> turns retries into <code>attempt</code> increments — the table mirrors live state, never grows monotonically. A recompose round that finishes without errors for <code>(view, upstream_id)</code> automatically marks any pending rows under that coordinate as resolved (<code>resolved_at = NOW()</code>). Writes are best-effort: any relational error on Record/Resolve is logged at <code>slog.Warn</code> and discarded — the consumer's transport offset/ack still advances, preserving the failure-isolation contract.</p>
 
-    <p>Operational queries (SQL on B's framework PG):</p>
+    <p>Operational queries (SQL on B's framework relational store):</p>
     <pre><code>-- Currently stale entities:
 SELECT subscription_topic, view_name, upstream_id, local_id, stage, attempt,
        last_attempt_at, error

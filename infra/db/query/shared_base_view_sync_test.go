@@ -5,9 +5,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/segmentio/kafka-go"
-
 	"github.com/ClaudioSchirmer/omnicore/infra/db/core"
+	"github.com/ClaudioSchirmer/omnicore/infra/transport"
 )
 
 // Coverage for the SharedBaseView SyncEngine routing: the byRoleTable index,
@@ -341,15 +340,15 @@ func TestExtractEvent_CarriesPayloadAndHeaders(t *testing.T) {
 	}
 }
 
-func kafkaMessageFor(t *testing.T, aggType, eventType, id, payload string) kafka.Message {
+func kafkaMessageFor(t *testing.T, aggType, eventType, id, payload string) transport.Message {
 	t.Helper()
-	return kafka.Message{
+	return transport.Message{
 		Key:   []byte(id),
 		Value: []byte(payload),
-		Headers: []kafka.Header{
-			{Key: "aggregate_type", Value: []byte(aggType)},
-			{Key: "event_type", Value: []byte(eventType)},
-			{Key: "traceparent", Value: []byte("00-abc-def-01")},
+		Headers: map[string]string{
+			"aggregate_type": aggType,
+			"event_type":     eventType,
+			"traceparent":    "00-abc-def-01",
 		},
 	}
 }

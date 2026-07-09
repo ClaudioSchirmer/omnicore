@@ -122,9 +122,9 @@
     service continues the very same trace.
 </p>
 
-<h3 id="tracing-async">The asynchronous trace (Debezium / Kafka)</h3>
+<h3 id="tracing-async">The asynchronous trace (CDC relay → transport)</h3>
 <p>
-    The eventually-consistent projection (outbox → Debezium → Kafka → read model) is reconnected to its
+    The eventually-consistent projection (outbox → CDC relay → transport → read model) is reconnected to its
     producing trace by a <strong><code>traceparent</code> carried on the <code>outbox</code> and
     <code>integration_events</code> rows</strong> (inlined in the flattened framework migration <code>0001_framework</code>, per dialect). The
     SyncEngine, the integration Receiver and the UpstreamSubscriber open a <strong>consumer span linked
@@ -132,7 +132,7 @@
     and consumer are temporally far apart).
 </p>
 <p>
-    One operator step is required for the link to cross Debezium: map the column to a Kafka header in
+    One operator step is required for the link to cross Debezium: map the column to a message header in
     the Outbox Event Router config of your connector —
 </p>
 <pre><code>"transforms.outbox.table.fields.additional.placement": "traceparent:header:traceparent"</code></pre>

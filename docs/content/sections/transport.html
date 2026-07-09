@@ -1,0 +1,54 @@
+<h2>Message transport</h2>
+  <p>The async message transport is the broker the framework's read-side consumes from. It is a <strong>build-time-pluggable seam</strong> of the same shape as the <a href="#layers">relational engine</a>: the three consumers that read a broker &mdash; the read-side <code>SyncEngine</code>, the integration <code>ConsumerPool</code>, and the <code>UpstreamSubscriber</code> &mdash; depend on a backend-neutral <code>transport.Subscriber</code> port in <code>infra/transport</code>, never on a concrete client. A build tag links exactly one adapter; the upper layers and the consumer loops are identical whichever broker backs them. Two adapters ship today: <strong>Kafka/Redpanda</strong> and <strong>NATS JetStream</strong>.</p>
+
+  <div class="box"><strong>The seam is on the consumer side; the producer path is unchanged.</strong> A write still lands its outbox row inside the domain transaction, and an external CDC relay tails the outbox and publishes to the broker &mdash; the framework never produces to the broker itself. The transport seam abstracts only how the framework <em>reads</em>, so the at-least-once delivery, dedup (<code>omnicore_integration_processed</code>), and per-aggregate ordering semantics are identical whichever broker backs it.</p></div>
+
+  <h3>The port</h3>
+<pre><code>type Message struct {
+    Topic   string            // source topic/subject (diagnostics)
+    Key     []byte            // partition/ordering key = aggregate_id
+    Value   []byte            // raw payload (the outbox JSON)
+    Headers map[string]string // aggregate_type, event_type, traceparent, …
+}
+
+type Subscription interface {
+    Read(ctx context.Context) (Message, error) // FIFO within a partition/subject
+    Close() error                              // leave the group; sent after the workers drain
+}
+
+type Subscriber interface {
+    Subscribe(ctx, SubscribeConfig) (Subscription, error) // group, topics, startFrom, commitInterval
+    EnsureTopics(ctx, []TopicSpec) error                  // best-effort, idempotent provisioning
+}</code></pre>
+  <p>Per-aggregate ordering is enforced <em>inside</em> the consumer (an FNV-1a hash of <code>aggregate_id</code> routes to a fixed worker), so the transport only has to guarantee FIFO within a partition/subject &mdash; a requirement both Kafka and JetStream satisfy trivially.</p>
+
+  <h3>Selection &mdash; the build tag</h3>
+  <p>Selection mirrors the engine registry (the <code>database/sql</code> driver pattern): each adapter self-registers under a name in <code>init()</code> (<code>transport.RegisterSubscriber</code>) behind its own build tag, and the composition root resolves it by name (<code>transport.NewSubscriber</code>). So <code>bootstrap</code> never imports a broker client, and a build links only the one adapter its tag selects:</p>
+  <ul>
+    <li><code>-tags kafka</code> &mdash; the Kafka/Redpanda adapter.</li>
+    <li><code>-tags nats</code> &mdash; the NATS JetStream adapter.</li>
+  </ul>
+  <p>There is <strong>no default</strong>: a build with no transport tag compiles (the neutral bootstrap binding is tagless) but aborts at boot with <em>&ldquo;no transport linked&rdquo;</em>, mirroring the no-engine case. So a runnable build always carries two axes, e.g. <code>-tags 'postgres kafka'</code> or <code>-tags 'mysql nats'</code>. See <a href="#transport-build-tag">Bootstrap &rarr; Message transport build tag</a>.</p>
+
+  <h3>Connection config</h3>
+  <p>The <code>transport:</code> YAML block is neutral &mdash; the build tag, not the YAML, chooses the adapter:</p>
+<pre><code>transport:
+  endpoints:                       # Kafka/Redpanda bootstrap servers, OR NATS URL(s)
+    - "localhost:9092"
+  syncGroup: "my-service-sync"     # SyncEngine consumer group / NATS durable name
+  syncWorkers: 0                   # 0 → runtime.NumCPU(); 1 → serial per-aggregate</code></pre>
+
+  <h3>Adapters</h3>
+  <p><strong>Kafka / Redpanda</strong> (<code>infra/transport/kafka</code>) wraps <code>segmentio/kafka-go</code> &mdash; the only place the framework imports it. Because Redpanda speaks the Kafka wire protocol, this single adapter backs both brokers: the choice is the <code>endpoints</code> value, not a code path or a different tag. It normalizes header values so it is decoupled from the relay's header format &mdash; bare (Kafka Connect's <code>SimpleHeaderConverter</code>) or JSON-quoted (Debezium Server's Kafka sink) both arrive as the bare value consumers expect.</p>
+  <p><strong>NATS JetStream</strong> (<code>infra/transport/nats</code>) reads through a durable pull consumer over a single file-backed stream (subjects <code>omnicore.&gt;</code>). Durability matches Kafka: the stream survives a broker restart, the durable consumer's ack state survives a consumer restart (resuming from the last ack), unacked messages redeliver, and limits retention keeps the log for replay. Because a JetStream message has no Kafka-style key, the adapter maps the relay's <code>aggregate_id</code> header into <code>Message.Key</code> and JSON-unwraps the header values &mdash; so the consumers are byte-for-byte identical to the Kafka path. Acks are batched on the <code>commitInterval</code>, mirroring the Kafka async-commit window.</p>
+
+  <h3>Start position (fresh consumers)</h3>
+  <p>The start position applies only the <em>first</em> time a consumer group / durable is created; on every later restart it resumes from its committed position regardless. Both adapters honour the same contract: <code>earliest</code> replays the retained log from the beginning (Kafka <code>FirstOffset</code> / JetStream <code>DeliverAll</code>), while <code>latest</code> &mdash; and an <strong>omitted</strong> start position &mdash; begins at new messages only (Kafka <code>LastOffset</code> / JetStream <code>DeliverNew</code>). The empty default is <code>latest</code> on <em>both</em> transports, so a consumer that leaves it unset behaves identically whichever broker is linked. The read-side <code>SyncEngine</code> pins <code>earliest</code> (it must replay the outbox to build the projection); integration consumers and upstream subscriptions default to <code>latest</code> and expose <code>startFrom</code> to override.</p>
+
+  <h3>The CDC relay (producer side)</h3>
+  <p>The framework does not publish to the broker; a CDC relay tails the outbox tables and publishes each event to the broker under the topic/subject the consumers expect (<code>&lt;aggregate_type&gt;.events</code>; the NATS adapter maps this to an <code>omnicore.</code>-prefixed subject). The reference relay is <strong>Debezium</strong> with the Outbox Event Router:</p>
+  <ul>
+    <li>To a Kafka/Redpanda broker: Debezium via <strong>Kafka Connect</strong>, or standalone <strong>Debezium Server</strong>.</li>
+    <li>To NATS: <strong>Debezium Server</strong> (&ge; 3.2 for header forwarding) with the JetStream sink. One instance tails every outbox table via predicate-gated EventRouter transforms.</li>
+  </ul>
+  <p>The relay carries the routing metadata as message headers (<code>aggregate_type</code>, <code>event_type</code>, <code>traceparent</code>, <code>aggregate_id</code>); the payload is a routing hint only &mdash; the composer re-reads current state from the relational source on each event, which is why the read side is self-healing and tolerant of at-least-once redelivery. The reference consumer wires this end to end; see its bench for a concrete NATS + Debezium Server setup.</p>

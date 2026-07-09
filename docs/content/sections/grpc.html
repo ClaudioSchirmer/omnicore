@@ -221,7 +221,7 @@ return bootstrap.Wiring{ …, GRPC: grpcReg }</code></pre>
 <h3>Internal-plane posture — <code>grpc.auth.mode</code></h3>
 <p>
     The gRPC plane exists for <strong>trusted internal communication</strong> — the synchronous sibling
-    of the integration-events posture (Kafka: broker on a private network, no per-message auth). The
+    of the integration-events posture (the broker sits on a private network, no per-message auth). The
     listener therefore has its own security posture, independent of the edge:
 </p>
 <ul>
@@ -231,7 +231,7 @@ return bootstrap.Wiring{ …, GRPC: grpcReg }</code></pre>
         <strong>anonymous</strong> call (the framework's existing vocabulary — audit
         <code>actor: "anonymous"</code>, like public routes and background jobs). Trust = the private
         network (NetworkPolicy / cluster isolation — a deliberate, documented choice, the same premise
-        the Kafka plane makes).</li>
+        the broker plane makes).</li>
     <li><strong><code>mtls</code></strong> — <code>internal</code> plus cryptographic caller proof: the
         listener requires a client certificate from the internal CA
         (<code>grpc.clientCAFile</code> + the TLS pair); an anonymous call carries a synthetic Identity
@@ -375,7 +375,7 @@ res, err := users.GetUser(appCtx, connect.NewRequest(&amp;usersv1.GetUserRequest
 <h3>What deliberately does not cross over</h3>
 <ul>
     <li><strong>CSV/XLSX export</strong> — file-download semantics, REST-only.</li>
-    <li><strong>Streaming RPCs</strong> — the surface is unary; async flows stay on Kafka
+    <li><strong>Streaming RPCs</strong> — the surface is unary; async flows stay on the broker
         (<a href="#service-to-service">service-to-service</a> / integration events).</li>
     <li><strong>httpclient's cache and HMAC signing</strong> (outbound side) — the gRPC protocol has no
         GET/no-store vocabulary, and there is no official request-signing scheme in the gRPC/Connect

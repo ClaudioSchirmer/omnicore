@@ -25,9 +25,9 @@ func writeTempRebuildYAML(t *testing.T, body string) string {
 // sub-block) and an `auth:` block without YAML key collisions.
 const validRebuildYAMLBase = `service: test
 relational: { dialect: postgres, dsn: "postgres://x" }
-kafka:
-  brokers: ["k:1"]
-  syncGroupId: "g"
+transport:
+  endpoints: ["k:1"]
+  syncGroup: "g"
 `
 
 // mandatoryMongoMinimal is the URI/database pair every test needs in its

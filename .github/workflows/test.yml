@@ -9,6 +9,21 @@ on:
 jobs:
   test:
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # A build MUST link exactly one relational engine AND one message
+        # transport — both tags are mandatory. A tagless build links the `none`
+        # stubs (engine_none / transport_none), aborts at boot, and cannot run
+        # the transport-integrated tests (they get a nil Subscriber). Cover both
+        # engines × both transports so the tag-gated adapters (infra/db/engine/*,
+        # infra/transport/{kafka,nats}) actually compile and their tests run.
+        tags:
+          - 'postgres kafka'
+          - 'postgres nats'
+          - 'mysql kafka'
+          - 'mysql nats'
+    name: "test (${{ matrix.tags }})"
     steps:
       - uses: actions/checkout@v4
 
@@ -18,10 +33,10 @@ jobs:
           check-latest: true
 
       - name: Build
-        run: go build ./...
+        run: go build -tags '${{ matrix.tags }}' ./...
 
       - name: Vet
-        run: go vet ./...
+        run: go vet -tags '${{ matrix.tags }}' ./...
 
       - name: Test
-        run: go test ./... -count=1
+        run: go test -tags '${{ matrix.tags }}' ./... -count=1

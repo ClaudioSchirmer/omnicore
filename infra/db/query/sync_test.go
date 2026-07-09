@@ -7,7 +7,8 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/segmentio/kafka-go"
+
+	"github.com/ClaudioSchirmer/omnicore/infra/transport"
 )
 
 // TestDecodeAggregateID_CanonicalString covers the happy path used by the
@@ -124,12 +125,12 @@ func TestBucketOf_DistributesAcrossWorkers(t *testing.T) {
 // channel-less consumer.
 func TestNewSyncEngine_WorkersFloor(t *testing.T) {
 	for _, in := range []int{-1, 0} {
-		s := NewSyncEngine(nil, nil, []string{"localhost:9092"}, "g", nil, in)
+		s := NewSyncEngine(nil, nil, nil, "g", nil, in)
 		if s.workers != 1 {
 			t.Fatalf("NewSyncEngine workers=%d clamped to %d, want 1", in, s.workers)
 		}
 	}
-	if s := NewSyncEngine(nil, nil, []string{"localhost:9092"}, "g", nil, 5); s.workers != 5 {
+	if s := NewSyncEngine(nil, nil, nil, "g", nil, 5); s.workers != 5 {
 		t.Fatalf("NewSyncEngine workers=5 stored as %d", s.workers)
 	}
 }
@@ -139,11 +140,11 @@ func TestNewSyncEngine_WorkersFloor(t *testing.T) {
 // kafkaEvent with the canonical aggregate_id.
 func TestExtractEvent_BinaryKeyHeaders(t *testing.T) {
 	u := uuid.MustParse("0a6e8189-5c92-4d22-900c-738674dbb081")
-	msg := kafka.Message{
+	msg := transport.Message{
 		Key: u[:],
-		Headers: []kafka.Header{
-			{Key: "aggregate_type", Value: []byte("users")},
-			{Key: "event_type", Value: []byte("INSERTED")},
+		Headers: map[string]string{
+			"aggregate_type": "users",
+			"event_type":     "INSERTED",
 		},
 	}
 	event := extractEvent(msg)
@@ -164,34 +165,34 @@ func TestExtractEvent_BinaryKeyHeaders(t *testing.T) {
 // via ops tooling, so CreateTopics returns TopicAlreadyExists and the values
 // here are ignored. Changing either default needs explicit broker-aware
 // rationale.
-func TestTopicConfigsFor_Shape(t *testing.T) {
+func TestTopicSpecsFor_Shape(t *testing.T) {
 	topics := []string{"users.events", "orders.events"}
-	configs := topicConfigsFor(topics)
-	if len(configs) != len(topics) {
-		t.Fatalf("expected %d configs, got %d", len(topics), len(configs))
+	specs := topicSpecsFor(topics)
+	if len(specs) != len(topics) {
+		t.Fatalf("expected %d specs, got %d", len(topics), len(specs))
 	}
-	for i, c := range configs {
-		if c.Topic != topics[i] {
-			t.Errorf("config[%d].Topic = %q, want %q", i, c.Topic, topics[i])
+	for i, c := range specs {
+		if c.Name != topics[i] {
+			t.Errorf("spec[%d].Name = %q, want %q", i, c.Name, topics[i])
 		}
 		if c.NumPartitions != defaultTopicNumPartitions {
-			t.Errorf("config[%d].NumPartitions = %d, want %d", i, c.NumPartitions, defaultTopicNumPartitions)
+			t.Errorf("spec[%d].NumPartitions = %d, want %d", i, c.NumPartitions, defaultTopicNumPartitions)
 		}
 		if c.ReplicationFactor != defaultTopicReplicationFactor {
-			t.Errorf("config[%d].ReplicationFactor = %d, want %d", i, c.ReplicationFactor, defaultTopicReplicationFactor)
+			t.Errorf("spec[%d].ReplicationFactor = %d, want %d", i, c.ReplicationFactor, defaultTopicReplicationFactor)
 		}
 	}
 }
 
-// TestTopicConfigsFor_EmptyInput is the degenerate case — a service without
-// any read-side views passes an empty topic slice and gets an empty config
-// slice back, which ensureTopics then short-circuits on.
-func TestTopicConfigsFor_EmptyInput(t *testing.T) {
-	if got := topicConfigsFor(nil); len(got) != 0 {
-		t.Fatalf("expected empty configs for nil input, got %d", len(got))
+// TestTopicSpecsFor_EmptyInput is the degenerate case — a service without any
+// read-side views passes an empty topic slice and gets an empty spec slice
+// back, which ensureTopics then short-circuits on.
+func TestTopicSpecsFor_EmptyInput(t *testing.T) {
+	if got := topicSpecsFor(nil); len(got) != 0 {
+		t.Fatalf("expected empty specs for nil input, got %d", len(got))
 	}
-	if got := topicConfigsFor([]string{}); len(got) != 0 {
-		t.Fatalf("expected empty configs for empty input, got %d", len(got))
+	if got := topicSpecsFor([]string{}); len(got) != 0 {
+		t.Fatalf("expected empty specs for empty input, got %d", len(got))
 	}
 }
 
@@ -199,7 +200,7 @@ func TestTopicConfigsFor_EmptyInput(t *testing.T) {
 // declared topics returns nil without dialing — write-only services (no
 // ReadableFeature) must not require a reachable Kafka broker to boot.
 func TestEnsureTopics_NoTopicsShortCircuits(t *testing.T) {
-	s := &SyncEngine{topics: nil, brokers: []string{"127.0.0.1:1"}} // intentionally unreachable
+	s := &SyncEngine{topics: nil} // no topics → short-circuits before touching the transport
 	if err := s.ensureTopics(context.Background()); err != nil {
 		t.Fatalf("expected nil error for empty topics, got %v", err)
 	}
@@ -209,20 +210,21 @@ func TestEnsureTopics_NoTopicsShortCircuits(t *testing.T) {
 	}
 }
 
-// TestEnsureTopics_NoBrokersFailsFast documents the operator-facing error
-// when ensureTopics is called with no brokers configured — a config bug that
-// should surface immediately, not via a 30s retry loop.
-func TestEnsureTopics_NoBrokersFailsFast(t *testing.T) {
+// TestEnsureTopics_TransportErrorPropagates documents that a transport
+// EnsureTopics error surfaces from the retry loop within the timeout budget
+// rather than hanging — the fakeSubscriber always errors, standing in for an
+// unreachable broker (the "no brokers configured" fast-fail now lives in the
+// adapter's EnsureTopics, covered in the kafka adapter test).
+func TestEnsureTopics_TransportErrorPropagates(t *testing.T) {
 	// Shrink the timeout so the test fails fast even though the retry loop
 	// would otherwise burn the full 30s budget.
 	prev := ensureTopicsTimeout
 	ensureTopicsTimeout = 50 * time.Millisecond
 	defer func() { ensureTopicsTimeout = prev }()
 
-	s := &SyncEngine{topics: []string{"users.events"}, brokers: nil}
-	err := s.ensureTopics(context.Background())
-	if err == nil {
-		t.Fatal("expected error when no brokers are configured")
+	s := &SyncEngine{topics: []string{"users.events"}, sub: fakeSubscriber{}}
+	if err := s.ensureTopics(context.Background()); err == nil {
+		t.Fatal("expected error when the transport cannot ensure topics")
 	}
 }
 
@@ -287,10 +289,9 @@ func TestEnsureTopics_HonorsContextCancellation(t *testing.T) {
 	ensureTopicsTimeout = 5 * time.Minute
 	defer func() { ensureTopicsTimeout = prev }()
 
-	// Unreachable address — every dial attempt fails, exercising the retry
-	// loop. Use TEST-NET-1 (RFC 5737) which is reserved for documentation
-	// and routed nowhere, so dial fails predictably without resolving DNS.
-	s := &SyncEngine{topics: []string{"users.events"}, brokers: []string{"192.0.2.1:9092"}}
+	// The fake transport's EnsureTopics always errors, so every attempt fails
+	// and the retry loop keeps spinning — cancellation is the only way out.
+	s := &SyncEngine{topics: []string{"users.events"}, sub: fakeSubscriber{}}
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
 	go func() { done <- s.ensureTopics(ctx) }()

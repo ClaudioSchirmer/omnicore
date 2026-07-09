@@ -8,9 +8,9 @@ import (
 const validYAMLWithJWT = `service: test
 relational: { dialect: postgres, dsn: "postgres://x" }
 mongo: { uri: "mongodb://x", database: "v" }
-kafka:
-  brokers: ["k:1"]
-  syncGroupId: "g"
+transport:
+  endpoints: ["k:1"]
+  syncGroup: "g"
 auth:
   mode: jwt
   jwt:
@@ -83,9 +83,9 @@ func TestAuthConfig_FullRoundTrip(t *testing.T) {
 	yml := `service: test
 relational: { dialect: postgres, dsn: "postgres://x" }
 mongo: { uri: "mongodb://x", database: "v" }
-kafka:
-  brokers: ["k:1"]
-  syncGroupId: "g"
+transport:
+  endpoints: ["k:1"]
+  syncGroup: "g"
 auth:
   mode: jwt
   jwt:
@@ -238,7 +238,7 @@ func TestAuthConfig_ExternalValidatorValidations(t *testing.T) {
 	base := `service: test
 relational: { dialect: postgres, dsn: "postgres://x" }
 mongo: { uri: "mongodb://x", database: "v" }
-kafka: { brokers: ["k:1"], syncGroupId: "g" }
+transport: { endpoints: ["k:1"], syncGroup: "g" }
 auth:
   mode: jwt
   jwt:

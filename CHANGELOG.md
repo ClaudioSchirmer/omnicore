@@ -11,6 +11,47 @@ with `1.0.0`.
 
 ## [Unreleased]
 
+### Added
+
+- **Message-transport seam — pluggable broker behind a build tag.** The three
+  async consumers (read-side `SyncEngine`, integration `ConsumerPool`,
+  `UpstreamSubscriber`) now read through a backend-neutral `transport.Subscriber`
+  port (`infra/transport`) instead of importing a broker client directly,
+  mirroring the relational-engine seam: an adapter self-registers in `init()`
+  behind its own build tag, and the composition root resolves it by name via the
+  subscriber registry (`RegisterSubscriber` / `NewSubscriber`). `Deps.Transport`
+  exposes the built subscriber. The producer path is unchanged (the write still
+  lands an outbox row in-TX; a CDC relay ships it), so the at-least-once, dedup
+  and per-aggregate ordering semantics are identical whichever broker backs it.
+  Two adapters ship:
+  - **Kafka/Redpanda** (`infra/transport/kafka`, `-tags kafka`) — wraps
+    `segmentio/kafka-go`; being Kafka-wire-compatible it backs both brokers with
+    no code change (the choice is the broker address).
+  - **NATS JetStream** (`infra/transport/nats`, `-tags nats`) — a durable pull
+    consumer over a file-backed stream (Kafka-parity durability: survives broker
+    and consumer restarts, redelivers unacked messages, retains the log for
+    replay). Maps the relay's subject/headers into the neutral envelope
+    (aggregate_id from a header → the message key), so consumers are unchanged.
+    The fresh-consumer start position honours the same contract as Kafka:
+    `earliest` replays the retained log (`DeliverAll`), while `latest` and an
+    omitted `StartFrom` both begin at new messages (`DeliverNew`) — so a caller
+    that leaves the start position unset behaves identically on either transport.
+
+### Changed
+
+- **breaking** — **a message-transport build tag is now mandatory**, exactly like
+  the relational-engine tag. A build must link one transport (`-tags kafka` or
+  `-tags nats`), so a runnable build is e.g. `-tags 'postgres kafka'`. Building
+  without a transport tag compiles but aborts at boot with "no transport linked"
+  (the neutral bootstrap still compiles tagless, mirroring the no-engine case).
+  Update build/run/test invocations and any tooling to add the transport tag.
+- **breaking** — **the `kafka:` YAML block is renamed to a neutral `transport:`
+  block.** `kafka.brokers` → `transport.endpoints` (Kafka/Redpanda bootstrap
+  servers or NATS URL(s)), `kafka.syncGroupId` → `transport.syncGroup`,
+  `kafka.syncWorkers` → `transport.syncWorkers`. The block is transport-neutral
+  because the build tag — not the YAML — selects the adapter. Rename the block in
+  every `microservice.<profile>.yaml`.
+
 ## [0.20.0] - 2026-07-07
 
 ### Added
