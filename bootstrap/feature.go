@@ -12,7 +12,7 @@ import (
 // Feature is a declared capability of the service. Each feature knows how to
 // mount its own Fiber routes. Bootstrap calls Mount in the declaration order
 // of Wiring.Features, after registering the default middlewares and the
-// /health route (provided by the framework).
+// /livez + /readyz probe routes (provided by the framework).
 //
 // Features with a read side (that contribute ViewDefinitions to SyncEngine)
 // also implement ReadableFeature.
@@ -98,9 +98,9 @@ func collectViews(features []Feature) ([]*query.ViewDefinition, error) {
 //
 // Two guards:
 //
-//  1. At least one Feature OR a BeforeServe hook — /health coming from
-//     the framework does not count; the service must do something
-//     useful.
+//  1. At least one Feature OR a BeforeServe hook — the /livez + /readyz
+//     probes coming from the framework do not count; the service must do
+//     something useful.
 //
 //  2. At least one translation.Module on Wiring.Translations. The whole
 //     stack consumes the Translator: domain notification messages,

@@ -21,6 +21,10 @@ import (
 
 // dialectPostgres / dialectMySQL are the registered relational-engine dialect
 // names — they mirror the engine-registry keys and the relational.dialect values.
+// Referenced from the tag-gated integration tests (e.g. mysql_boot_integration),
+// which the default lint view does not compile — hence the nolint.
+//
+//nolint:unused // used under the `integration`+engine build tags.
 const (
 	dialectPostgres = "postgres"
 	dialectMySQL    = "mysql"

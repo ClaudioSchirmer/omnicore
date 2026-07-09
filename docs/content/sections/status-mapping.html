@@ -28,6 +28,7 @@
         <tr><td><code>SemanticUnauthorized</code></td><td>401 Unauthorized</td><td><code>MissingAuthorizationNotification</code>, <code>InvalidTokenNotification</code>, <code>ExpiredTokenNotification</code> (emitted by <code>fwweb.AuthMiddleware</code>)</td></tr>
         <tr><td><code>SemanticPayloadTooLarge</code></td><td><strong>413 Request Entity Too Large</strong></td><td><code>PayloadTooLargeNotification</code> (request body exceeds the configured <code>BodyLimit</code>) emitted by <code>fwweb.ErrorHandler</code></td></tr>
         <tr><td><code>SemanticUnavailable</code></td><td>503 Service Unavailable</td><td><code>ServiceUnavailableNotification</code></td></tr>
+        <tr><td><code>SemanticRequestTimeout</code></td><td><strong>408 Request Timeout</strong></td><td><code>ReadTimeoutNotification</code> — the fasthttp read timeout (<code>http.readTimeoutSeconds</code>) fired while reading the request; the CLIENT was too slow. fasthttp routes the read-deadline breach through Fiber's server error handler, which <code>fwweb.ErrorHandler</code> maps to a typed 408 (not a misleading 500), written best-effort before the connection closes. Distinct from the 504 below (the server-side handler deadline)</td></tr>
         <tr><td><code>SemanticGatewayTimeout</code></td><td><strong>504 Gateway Timeout</strong></td><td><code>RequestTimeoutNotification</code> — the request exceeded <code>http.requestTimeoutSeconds</code>; <code>pipeline.Run</code> maps <code>context.DeadlineExceeded</code> (pgx/mongo/httpclient observing the cancelled request context) so a timeout surfaces as 504, not a generic 500</td></tr>
         <tr><td><code>SemanticInternal</code></td><td><strong>500 Internal Server Error</strong></td><td><code>InternalServerErrorNotification</code> (recovered panic, escaped non-NotificationCarrier error) emitted by <code>fwweb.ErrorHandler</code></td></tr>
     </tbody></table>
@@ -64,6 +65,12 @@
             <code>PayloadTooLargeNotification</code> in context <code>"Request"</code> with
             <code>METHOD /path</code> echoed on <code>field</code>; mapped via
             <code>SemanticPayloadTooLarge → 413</code>.</li>
+        <li><strong>Fiber 408</strong> (the fasthttp read timeout <code>http.readTimeoutSeconds</code>
+            fired while reading the request — the client was too slow) →
+            <code>ReadTimeoutNotification</code> in context <code>"Request"</code> with
+            <code>METHOD /path</code> echoed on <code>field</code>; mapped via
+            <code>SemanticRequestTimeout → 408</code>. Written best-effort before the
+            connection closes.</li>
         <li><strong>Any other error</strong> (recovered panic, unexpected error, any other
             <code>*fiber.Error</code> code) → <code>InternalServerErrorNotification</code>
             in context <code>"Server"</code>; mapped via <code>SemanticInternal → 500</code>.

@@ -49,7 +49,7 @@ const (
 //   - Update: a DB item changed or re-added  (original == CONSTRUCTOR, current ADDED|CHANGED)
 //   - Delete: a DB item removed              (original == CONSTRUCTOR, current == REMOVED)
 //   - Noop:   the rest — an untouched DB item (CONSTRUCTOR/CONSTRUCTOR), or a new item
-//             added then removed (never persisted, so nothing to do).
+//     added then removed (never persisted, so nothing to do).
 func OperationOf(original, current AggregateItemStatus) AggregateItemOp {
 	if original != StatusConstructor {
 		if current != StatusRemoved {

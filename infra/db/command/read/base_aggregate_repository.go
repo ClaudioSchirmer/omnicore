@@ -93,7 +93,7 @@ func (r *BaseAggregateRepository[T]) validateDeclaredChildren(schema *TableSchem
 	if p, ok := any(r.New()).(domain.AggregateRootProvider); ok {
 		for _, child := range p.AggregateChildren() {
 			t := reflect.TypeOf(child)
-			for t != nil && t.Kind() == reflect.Ptr {
+			for t != nil && t.Kind() == reflect.Pointer {
 				t = t.Elem()
 			}
 			if t != nil {

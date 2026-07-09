@@ -420,7 +420,7 @@ func modeFromActionName(actionName string) EntityMode {
 // instantiating. Works for VO as a value type or pointer type.
 func classNameOfVO[VO AggregateValueObject]() string {
 	t := reflect.TypeOf((*VO)(nil)).Elem()
-	if t.Kind() == reflect.Ptr {
+	if t.Kind() == reflect.Pointer {
 		t = t.Elem()
 	}
 	return t.Name()

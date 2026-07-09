@@ -78,7 +78,7 @@ func requireNaturalKey(base *TableSchema, nk string) error {
 // name (the role carries every shared field, validated at .SharedBase).
 func sharedBaseValues(base *TableSchema, src domain.Entity) (domain.Fields, string) {
 	rv := reflect.ValueOf(src)
-	for rv.Kind() == reflect.Ptr {
+	for rv.Kind() == reflect.Pointer {
 		rv = rv.Elem()
 	}
 	fields := make(domain.Fields, len(base.GoFields()))
@@ -99,7 +99,7 @@ func sharedBaseValues(base *TableSchema, src domain.Entity) (domain.Fields, stri
 // deterministic-id hash. A nil pointer yields "".
 func scalarString(v any) string {
 	rv := reflect.ValueOf(v)
-	if rv.Kind() == reflect.Ptr {
+	if rv.Kind() == reflect.Pointer {
 		if rv.IsNil() {
 			return ""
 		}

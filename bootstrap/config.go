@@ -103,6 +103,33 @@ type Config struct {
 		// behavior). The cancellation also caps every outbound httpclient call at
 		// the request's remaining budget.
 		RequestTimeoutSeconds *int `yaml:"requestTimeoutSeconds"`
+
+		// BodyLimitBytes caps the inbound request body size; a larger body is
+		// rejected with 413 Payload Too Large (the ErrorHandler renders the
+		// standard envelope). nil (unset) → Fiber's 4 MiB default. Raise it for
+		// large uploads, lower it to tighten the edge. This is the ONE knob here
+		// with a client-visible enveloped response — the two timeouts below are
+		// transport-level (see their notes).
+		BodyLimitBytes *int `yaml:"bodyLimitBytes"`
+
+		// ReadTimeoutSeconds bounds how long the server waits to read the FULL
+		// request (headers + body) off the socket — the transport-level slowloris
+		// defense, distinct from requestTimeoutSeconds (which bounds handler
+		// processing → 504). Enforced by the fasthttp server loop below the Fiber
+		// handler chain; on breach fasthttp routes the timeout through Fiber's
+		// serverErrorHandler, which the framework maps to 408 Request Timeout
+		// (ReadTimeoutNotification) — the client was too slow, so it is a 408, not
+		// a 500. The 408 envelope is written best-effort before the connection
+		// closes (a client that already stalled may never read it). nil (unset) /
+		// 0 → no read timeout (the default).
+		ReadTimeoutSeconds *int `yaml:"readTimeoutSeconds"`
+
+		// IdleTimeoutSeconds bounds how long an idle keep-alive connection is held
+		// open awaiting the next request. Also transport-level, but unlike the read
+		// timeout it produces NO response: fasthttp silently closes the idle
+		// keep-alive (normal — the client reconnects), so there is no client-visible
+		// error at all. nil (unset) / 0 → no idle timeout (the default).
+		IdleTimeoutSeconds *int `yaml:"idleTimeoutSeconds"`
 	} `yaml:"http"`
 
 	// Relational selects AND connects the relational backend — the system of
@@ -289,7 +316,7 @@ func (s *ShutdownConfig) applyDefaults() {
 type OpenAPIConfig struct {
 	// UIPath is the Fiber route where the Swagger UI HTML is served.
 	// Default "/docs". Must start with "/" and must not collide with
-	// "/openapi.json" or "/health" (both reserved by the framework).
+	// "/openapi.json", "/livez" or "/readyz" (all reserved by the framework).
 	UIPath string `yaml:"uiPath"`
 
 	// RootRedirect, when true, makes the framework register
@@ -454,7 +481,7 @@ func (g *GRPCConfig) validate() error {
 
 func (g *GraphQLConfig) collidesFramework(path string) bool {
 	switch path {
-	case "/openapi.json", "/health", "/docs":
+	case "/openapi.json", "/livez", "/readyz", "/docs":
 		return true
 	}
 	return false
@@ -643,8 +670,8 @@ func (o *OpenAPIConfig) validate() error {
 	switch o.UIPath {
 	case "/openapi.json":
 		return fmt.Errorf("openapi.uiPath %q collides with the framework spec route", o.UIPath)
-	case "/health":
-		return fmt.Errorf("openapi.uiPath %q collides with the framework health route", o.UIPath)
+	case "/livez", "/readyz":
+		return fmt.Errorf("openapi.uiPath %q collides with a framework health-probe route", o.UIPath)
 	}
 	return nil
 }
@@ -796,6 +823,15 @@ func (c *Config) Validate() error {
 	}
 	if c.Shutdown.DrainTimeoutSeconds < 0 {
 		return fmt.Errorf("bootstrap: shutdown.drainTimeoutSeconds must be >= 0 (got %d)", c.Shutdown.DrainTimeoutSeconds)
+	}
+	if v := c.HTTP.BodyLimitBytes; v != nil && *v < 0 {
+		return fmt.Errorf("bootstrap: http.bodyLimitBytes must be >= 0 (got %d)", *v)
+	}
+	if v := c.HTTP.ReadTimeoutSeconds; v != nil && *v < 0 {
+		return fmt.Errorf("bootstrap: http.readTimeoutSeconds must be >= 0 (got %d)", *v)
+	}
+	if v := c.HTTP.IdleTimeoutSeconds; v != nil && *v < 0 {
+		return fmt.Errorf("bootstrap: http.idleTimeoutSeconds must be >= 0 (got %d)", *v)
 	}
 	if err := c.Observability.validate(); err != nil {
 		return fmt.Errorf("bootstrap: %w", err)

@@ -31,6 +31,20 @@ func (RequestTimeoutNotification) Semantic() domain.NotificationSemantic {
 	return domain.SemanticGatewayTimeout
 }
 
+// ReadTimeoutNotification is emitted by the web ErrorHandler when the fasthttp
+// server's read timeout (http.readTimeoutSeconds) fires while reading the
+// inbound request off the socket — the client was too slow sending it (the
+// slowloris defense). Distinct from RequestTimeoutNotification (504), which is
+// the server-side HANDLER deadline: this one is a transport-level read timeout
+// and the client, not the server, ran out of time — hence 408 Request Timeout.
+type ReadTimeoutNotification struct {
+	domain.ApplicationNotificationBase
+}
+
+func (ReadTimeoutNotification) Semantic() domain.NotificationSemantic {
+	return domain.SemanticRequestTimeout
+}
+
 // MissingAuthorizationNotification is emitted by the auth middleware when the
 // Authorization header is absent or does not follow the `Bearer <token>`
 // shape — the client never presented a credential.

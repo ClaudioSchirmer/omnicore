@@ -1,6 +1,7 @@
 package listfailures
 
 import (
+	"context"
 	"flag"
 	"strings"
 	"testing"
@@ -29,24 +30,24 @@ func TestNewUsage(t *testing.T) {
 // Run's argument-validation branches return before any config load / DB dial.
 func TestRun_ArgValidation(t *testing.T) {
 	t.Run("bad-format", func(t *testing.T) {
-		err := Run(nil, []string{"--format", "xml"})
+		err := Run(context.Background(), []string{"--format", "xml"})
 		if err == nil || !strings.Contains(err.Error(), "--format must be text or json") {
 			t.Fatalf("expected format error, got %v", err)
 		}
 	})
 	t.Run("negative-limit", func(t *testing.T) {
-		err := Run(nil, []string{"--limit", "-1"})
+		err := Run(context.Background(), []string{"--limit", "-1"})
 		if err == nil || !strings.Contains(err.Error(), "--limit must be >= 0") {
 			t.Fatalf("expected limit error, got %v", err)
 		}
 	})
 	t.Run("help-returns-nil", func(t *testing.T) {
-		if err := Run(nil, []string{"-h"}); err != nil {
+		if err := Run(context.Background(), []string{"-h"}); err != nil {
 			t.Fatalf("help must return nil, got %v", err)
 		}
 	})
 	t.Run("unknown-flag", func(t *testing.T) {
-		if err := Run(nil, []string{"--nope"}); err == nil {
+		if err := Run(context.Background(), []string{"--nope"}); err == nil {
 			t.Fatal("expected parse error for unknown flag")
 		}
 	})

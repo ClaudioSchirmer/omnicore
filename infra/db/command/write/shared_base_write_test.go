@@ -460,7 +460,7 @@ func aggRoleSchema() *TableSchema {
 		PK("id").
 		Field("Matricula", "matricula").
 		SoftDelete("deleted_at").
-		Child(NewTableSchema[aggRoleChild]("aluno_disciplinas").PK("id").FK("aluno_id").Field("Label", "label")).
+		Child(NewTableSchema[aggRoleChild]("aluno_disciplines").PK("id").FK("aluno_id").Field("Label", "label")).
 		SharedBase(base, "pessoa_id")
 }
 
@@ -486,7 +486,7 @@ func TestInsertWithBase_AggregateRole(t *testing.T) {
 	if !strings.HasPrefix(tx.execs[1], "INSERT INTO aluno ") && !strings.HasPrefix(tx.execs[1], "INSERT INTO aluno(") {
 		t.Errorf("stmt[1] must insert the role, got %q", tx.execs[1])
 	}
-	if !strings.HasPrefix(tx.execs[2], "INSERT INTO aluno_disciplinas") {
+	if !strings.HasPrefix(tx.execs[2], "INSERT INTO aluno_disciplines") {
 		t.Errorf("stmt[2] must insert the aggregate child, got %q", tx.execs[2])
 	}
 }

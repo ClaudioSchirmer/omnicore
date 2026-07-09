@@ -67,14 +67,14 @@ func TestOpenAPIConfig_ValidateRejectsSpecPathCollision(t *testing.T) {
 
 func TestOpenAPIConfig_ValidateRejectsHealthCollision(t *testing.T) {
 	yml := validYAMLAllRequired + `openapi:
-  uiPath: /health
+  uiPath: /readyz
 `
 	path := writeTemp(t, yml)
 	_, err := LoadConfigFrom(path)
 	if err == nil {
-		t.Fatal("expected error for uiPath colliding with health route")
+		t.Fatal("expected error for uiPath colliding with a health-probe route")
 	}
-	if !strings.Contains(err.Error(), "health route") {
-		t.Errorf("error should mention the health-route collision; got: %v", err)
+	if !strings.Contains(err.Error(), "health-probe route") {
+		t.Errorf("error should mention the health-probe-route collision; got: %v", err)
 	}
 }

@@ -47,6 +47,7 @@ func TestKernelNotifications_Semantic(t *testing.T) {
 		{"MethodNotAllowed", MethodNotAllowedNotification{}, domain.SemanticMethodNotAllowed},
 		{"PayloadTooLarge", PayloadTooLargeNotification{}, domain.SemanticPayloadTooLarge},
 		{"RequestTimeout", RequestTimeoutNotification{}, domain.SemanticGatewayTimeout},
+		{"ReadTimeout", ReadTimeoutNotification{}, domain.SemanticRequestTimeout},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -85,6 +86,7 @@ func TestKernelNotifications_NotificationKey(t *testing.T) {
 		{RouteNotFoundNotification{}, "RouteNotFoundNotification"},
 		{MethodNotAllowedNotification{}, "MethodNotAllowedNotification"},
 		{PayloadTooLargeNotification{}, "PayloadTooLargeNotification"},
+		{ReadTimeoutNotification{}, "ReadTimeoutNotification"},
 		{MissingPermissionNotification{}, "MissingPermissionNotification"},
 		{TenantMissingNotification{}, "TenantMissingNotification"},
 		{TenantMismatchNotification{}, "TenantMismatchNotification"},

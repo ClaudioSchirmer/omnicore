@@ -39,11 +39,8 @@ import (
 	"github.com/gofiber/fiber/v3"
 	"github.com/gofiber/fiber/v3/middleware/logger"
 	"golang.org/x/net/http2"
-	"golang.org/x/net/http2/h2c"
+	"golang.org/x/net/http2/h2c" //nolint:staticcheck // SA1019: h2c is deprecated, but the cleartext-h2c → http.Server.Protocols migration is a separate, QA-gated change (touches the gRPC transport), not a lint-sweep edit.
 )
-
-// shutdownTimeout is the Fiber drain duration. Constant for simplicity.
-const shutdownTimeout = 10 * time.Second
 
 // Run loads microservice.<profile>.yaml + builds singletons + calls wire(deps)
 // + registers default middlewares + runs until receiving SIGINT/SIGTERM.
@@ -65,7 +62,7 @@ const shutdownTimeout = 10 * time.Second
 //     time-series materialized on the Mongo cluster) — skipped when no views
 //     11. SyncEngine.Start if views are not empty
 //     12. Fiber + Recover/Logger/AppContextMiddleware + AuthMiddleware (when
-//     auth.mode=jwt) + automatic /health
+//     auth.mode=jwt) + the /livez + /readyz probes
 //     13. f.Mount(app, deps) for each Feature
 //     14. Wiring.BeforeServe(app, deps) if set
 //     15. app.Listen in a goroutine
@@ -480,12 +477,14 @@ func cfgSharedStore(cfg *CacheConfig) string {
 	return cfg.Shared.Store
 }
 
-// buildApp assembles the *fiber.App with default middlewares, /health route
-// provided by the framework, and the service features. Does not call Listen —
-// extracted from serve for testability via app.Test without networking.
-func buildApp(deps Deps, wiring Wiring) (*fiber.App, error) {
+// buildApp assembles the *fiber.App with default middlewares, the /livez +
+// /readyz probes provided by the framework, and the service features. The ctx is
+// the shutdown context (signal.NotifyContext) the readiness probe watches to flip
+// to draining. Does not call Listen — extracted from serve for testability via
+// app.Test without networking.
+func buildApp(ctx context.Context, deps Deps, wiring Wiring) (*fiber.App, error) {
 	// Register the framework's translator-backed gate + standalone
-	// translator BEFORE any Mount/MountRaw call (including /health below
+	// translator BEFORE any Mount/MountRaw call (including the probes below
 	// and every feature). The gate is consumed by Mount/MountRaw when a
 	// route declares fwopenapi.RequirePermission(...); the standalone
 	// translator is consumed by RespondWithInternalServerError when the
@@ -508,10 +507,24 @@ func buildApp(deps Deps, wiring Wiring) (*fiber.App, error) {
 	fwweb.SetAuthorizationEnabled(deps.Config.Auth.Authorization != nil &&
 		deps.Config.Auth.Authorization.Enabled)
 
-	app := fiber.New(fiber.Config{
+	fiberCfg := fiber.Config{
 		AppName:      deps.Config.Service,
 		ErrorHandler: fwweb.ErrorHandler(deps.Pipeline),
-	})
+	}
+	// Optional HTTP hardening knobs — each left at Fiber's default when unset.
+	// BodyLimit rejects an oversized body with 413; ReadTimeout surfaces as 408
+	// (both rendered by the ErrorHandler); IdleTimeout silently closes the idle
+	// keep-alive with no response. All three enforced at the fasthttp layer.
+	if v := deps.Config.HTTP.BodyLimitBytes; v != nil {
+		fiberCfg.BodyLimit = *v
+	}
+	if v := deps.Config.HTTP.ReadTimeoutSeconds; v != nil {
+		fiberCfg.ReadTimeout = time.Duration(*v) * time.Second
+	}
+	if v := deps.Config.HTTP.IdleTimeoutSeconds; v != nil {
+		fiberCfg.IdleTimeout = time.Duration(*v) * time.Second
+	}
+	app := fiber.New(fiberCfg)
 
 	app.Use(fwweb.Recover())
 	app.Use(logger.New())
@@ -555,9 +568,13 @@ func buildApp(deps Deps, wiring Wiring) (*fiber.App, error) {
 		deps.Logger.Info("auth middleware enabled", "issuer", deps.Config.Auth.JWT.Issuer, "audience", deps.Config.Auth.JWT.Audience)
 	}
 
-	openapi.MountRaw(deps.OpenAPIRegistry, app, fiber.MethodGet, "/health",
+	// Liveness (GET /livez) — deliberately dumb: static, no dependency checks.
+	// It answers "is the process wedged?"; failing it makes Kubernetes RESTART
+	// the pod, and a restart never cures a dependency outage. Checking a store
+	// here would turn a DB blip into a restart storm across every replica.
+	openapi.MountRaw(deps.OpenAPIRegistry, app, fiber.MethodGet, "/livez",
 		func(c fiber.Ctx) error {
-			return c.JSON(fiber.Map{"status": "ok"})
+			return c.JSON(healthResponse{Status: "ok"})
 		},
 		openapi.RawSpec{
 			Summary: "Liveness probe",
@@ -565,7 +582,39 @@ func buildApp(deps Deps, wiring Wiring) (*fiber.App, error) {
 			Public:  true,
 			Responses: map[int]openapi.ResponseSpec{
 				200: {
-					Description: "Service is up",
+					Description: "Process is up",
+					Type:        reflect.TypeOf(healthResponse{}),
+				},
+			},
+		})
+
+	// Readiness (GET /readyz) — answers "can this pod take traffic now?". Failing
+	// it makes Kubernetes REMOVE the pod from the load balancer (not restart it):
+	// 503 while draining (SIGTERM received) or while a request-path store is
+	// unreachable, 200 otherwise. The broker is excluded on purpose (see the
+	// readiness type doc). Like /livez it is framework-owned but NOT auto-public;
+	// the operator lists "GET /readyz" in auth.publicRoutes so a tokenless kubelet
+	// can reach it.
+	ready := &readiness{shutdown: ctx, db: deps.DB, mongo: deps.Mongo}
+	openapi.MountRaw(deps.OpenAPIRegistry, app, fiber.MethodGet, "/readyz",
+		func(c fiber.Ctx) error {
+			if err := ready.check(c.Context()); err != nil {
+				return c.Status(fiber.StatusServiceUnavailable).
+					JSON(healthResponse{Status: "unavailable", Reason: err.Error()})
+			}
+			return c.JSON(healthResponse{Status: "ready"})
+		},
+		openapi.RawSpec{
+			Summary: "Readiness probe",
+			Tags:    []string{"Health"},
+			Public:  true,
+			Responses: map[int]openapi.ResponseSpec{
+				200: {
+					Description: "Ready to take traffic",
+					Type:        reflect.TypeOf(healthResponse{}),
+				},
+				503: {
+					Description: "Draining or a request-path store is unreachable",
 					Type:        reflect.TypeOf(healthResponse{}),
 				},
 			},
@@ -743,7 +792,7 @@ func buildApp(deps Deps, wiring Wiring) (*fiber.App, error) {
 	}
 
 	// Validate the operator-declared auth.publicRoutes against the fully
-	// registered route set (features + /health + the OpenAPI spec/UI + the
+	// registered route set (features + /livez + /readyz + the OpenAPI spec/UI + the
 	// optional root redirect). Runs last so every route the service exposes
 	// is observable, and before serving HTTP so a typo / unmatchable param
 	// path aborts the boot rather than silently leaving a route behind auth.
@@ -776,12 +825,62 @@ func registerRootRedirect(app *fiber.App, uiPath string, logger *slog.Logger) {
 	logger.Info("openapi root redirect enabled", "from", "/", "to", uiPath)
 }
 
-// healthResponse is the JSON shape returned by GET /health. Lives here
-// rather than in web/responses so the OpenAPI spec can document the
-// route via reflection without consumer services having to declare
-// anything.
+// healthResponse is the JSON shape returned by the GET /livez and GET /readyz
+// probes. Lives here rather than in web/responses so the OpenAPI spec can
+// document the routes via reflection without consumer services having to declare
+// anything. Reason is populated only on a not-ready readiness response, so an
+// operator who curls /readyz sees why the pod is out of rotation.
 type healthResponse struct {
 	Status string `json:"status"`
+	Reason string `json:"reason,omitempty"`
+}
+
+// readinessProbeTimeout bounds the per-store ping the readiness probe runs, so a
+// wedged relational backend or Mongo fails the probe fast instead of hanging the
+// kubelet's request. Probes fire every few seconds; this ceiling is generous.
+const readinessProbeTimeout = 2 * time.Second
+
+// readiness backs GET /readyz. It reports whether the service can take traffic:
+// ready only when the request-path stores answer AND the process is not draining.
+//
+//   - draining — derived from the shutdown context (the same signal.NotifyContext
+//     that governs the coordinated drain). The moment SIGTERM lands the context is
+//     cancelled, /readyz flips to 503, and Kubernetes removes the pod from the load
+//     balancer while the in-flight requests finish draining. This is the missing
+//     half of the graceful shutdown: the drain already existed, but nothing told
+//     the balancer to stop sending new traffic.
+//   - stores — a cheap relational SELECT 1 (dialect-neutral) plus a Mongo ping,
+//     the two request-path dependencies. The message transport is deliberately
+//     EXCLUDED: the outbox decouples writes from the broker (a write still commits
+//     and reads still serve when the broker is down), so a broker outage must not
+//     pull the pod from the balancer. Async-consumer health is an alerting concern,
+//     not readiness.
+type readiness struct {
+	shutdown context.Context
+	db       core.RelationalEngine
+	mongo    *mongo.MongoDB
+}
+
+// check returns nil when the service can serve, or an error naming the reason it
+// cannot (draining, or a store that failed to answer under the probe deadline).
+func (r *readiness) check(ctx context.Context) error {
+	if r.shutdown != nil && r.shutdown.Err() != nil {
+		return errors.New("draining")
+	}
+	ctx, cancel := context.WithTimeout(ctx, readinessProbeTimeout)
+	defer cancel()
+	if r.db != nil {
+		var one int
+		if err := r.db.Querier().QueryRow(ctx, "SELECT 1").Scan(&one); err != nil {
+			return fmt.Errorf("relational: %w", err)
+		}
+	}
+	if r.mongo != nil {
+		if err := r.mongo.Ping(ctx); err != nil {
+			return fmt.Errorf("mongo: %w", err)
+		}
+	}
+	return nil
 }
 
 // authOptionsFromConfig flattens the parsed AuthConfig into the primitives
@@ -822,7 +921,7 @@ func authOptionsFromConfig(a AuthConfig) fwweb.AuthOptions {
 }
 
 func serve(ctx context.Context, deps Deps, wiring Wiring) error {
-	app, err := buildApp(deps, wiring)
+	app, err := buildApp(ctx, deps, wiring)
 	if err != nil {
 		return err
 	}
@@ -897,7 +996,7 @@ func serve(ctx context.Context, deps Deps, wiring Wiring) error {
 			handler = fwgrpc.WithClientCertIdentity(handler)
 		}
 		if !grpcTLS {
-			handler = h2c.NewHandler(handler, &http2.Server{})
+			handler = h2c.NewHandler(handler, &http2.Server{}) //nolint:staticcheck // SA1019: see the h2c import note.
 		}
 		grpcSrv = &http.Server{Addr: grpcCfg.Addr, Handler: handler, TLSConfig: grpcTLSConfig}
 		if grpcCfg.IdleTimeoutSeconds > 0 {

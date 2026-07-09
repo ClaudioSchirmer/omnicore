@@ -128,7 +128,7 @@ func (s *TableSchema) GoFieldValues(e any) map[string]any {
 		return map[string]any{}
 	}
 	v := reflect.ValueOf(e)
-	for v.Kind() == reflect.Ptr {
+	for v.Kind() == reflect.Pointer {
 		v = v.Elem()
 	}
 	if v.Kind() != reflect.Struct {

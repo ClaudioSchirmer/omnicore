@@ -213,14 +213,6 @@ func mergeClause(filter map[string]any, field string, clause any) {
 	filter[field] = queries.MultiClause{Clauses: []any{existing, clause}}
 }
 
-// quoteList splits a comma-separated value and applies regexp.QuoteMeta to
-// each entry, optionally wrapping with ^...$ to preserve the equality
-// semantic of the `iin` / `inin` operators (each pattern matches the whole
-// value, not a substring).
-func quoteList(value string, anchored bool) []string {
-	return quoteValues(splitTrim(value), anchored)
-}
-
 // quoteValues applies regexp.QuoteMeta to each element, optionally wrapping
 // with ^...$ to preserve the equality semantic of `iin` / `inin` (each
 // pattern matches the whole value, not a substring).
@@ -234,13 +226,6 @@ func quoteValues(values []string, anchored bool) []string {
 		out = append(out, q)
 	}
 	return out
-}
-
-// coerceList splits a comma-separated wire value and coerces each element
-// to kind. Used by the in/nin operators where the wire is one key carrying
-// multiple values.
-func coerceList(value string, kind reflect.Kind) []any {
-	return coerceValues(splitTrim(value), kind)
 }
 
 // coerceValues coerces each element to kind — the list-level core shared by

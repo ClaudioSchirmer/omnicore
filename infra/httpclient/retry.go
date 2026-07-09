@@ -242,8 +242,5 @@ func isNetworkError(err error) bool {
 		return true
 	}
 	var ne net.Error
-	if errors.As(err, &ne) {
-		return true
-	}
-	return false
+	return errors.As(err, &ne)
 }

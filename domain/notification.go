@@ -25,7 +25,7 @@ type InfrastructureNotificationBase struct{ NotificationBase }
 
 func NotificationKey(n Notification) string {
 	t := reflect.TypeOf(n)
-	if t.Kind() == reflect.Ptr {
+	if t.Kind() == reflect.Pointer {
 		t = t.Elem()
 	}
 	return t.Name()

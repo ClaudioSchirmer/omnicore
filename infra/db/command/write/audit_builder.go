@@ -244,7 +244,7 @@ func composedFieldValues(schema *TableSchema, src any) map[string]any {
 // Go field name (PascalCase), the read strategy a type-less base schema forces.
 func baseFieldValuesByName(base *TableSchema, src any) map[string]any {
 	rv := reflect.ValueOf(src)
-	for rv.Kind() == reflect.Ptr {
+	for rv.Kind() == reflect.Pointer {
 		rv = rv.Elem()
 	}
 	out := map[string]any{}
@@ -296,7 +296,7 @@ func baseLabelKeysByName(base *TableSchema, roleType reflect.Type) map[string]st
 	if roleType == nil {
 		return out
 	}
-	for roleType.Kind() == reflect.Ptr {
+	for roleType.Kind() == reflect.Pointer {
 		roleType = roleType.Elem()
 	}
 	if roleType.Kind() != reflect.Struct {

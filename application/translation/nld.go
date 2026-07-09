@@ -69,6 +69,7 @@ func (coreNL) Translations() map[string]string {
 		"ContextNotInitializedNotification": "Context is niet geïnitialiseerd.",
 		"ServiceUnavailableNotification":    "Service niet beschikbaar.",
 		"RequestTimeoutNotification":        "De aanvraag heeft de tijdslimiet overschreden.",
+		"ReadTimeoutNotification":           "De aanvraag is niet binnen de tijdslimiet ontvangen.",
 
 		// Auth
 		"MissingAuthorizationNotification": "Authorization-header ontbreekt of is misvormd.",

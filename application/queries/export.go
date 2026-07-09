@@ -204,7 +204,7 @@ func pruneNodeByProjection(n *ExportNode, goPrefix string, proj map[string]int, 
 			// Exclusion mode: keep unless this path is EXPLICITLY flagged 0. An
 			// absent key is a zero value, not an exclusion — check presence.
 			v, present := proj[gp]
-			keep = keepAll && !(present && v == 0)
+			keep = keepAll && (!present || v != 0)
 		}
 		if keep {
 			cols = append(cols, col)

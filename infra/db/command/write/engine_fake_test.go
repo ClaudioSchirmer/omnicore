@@ -39,7 +39,7 @@ func (e fakeRelEngine) WithAudit(*audit.Config, *slog.Logger, []string) Relation
 }
 func (e fakeRelEngine) WithEventPublisher(events.Publisher) RelationalEngine { return e }
 func (e fakeRelEngine) AcquireRebuildLock(context.Context, string) (RebuildLock, error) {
-	return fakeRebuildLock{q: e.q}, nil
+	return fakeRebuildLock(e), nil
 }
 func (fakeRelEngine) Close() {}
 

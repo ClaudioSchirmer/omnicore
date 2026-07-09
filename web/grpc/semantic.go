@@ -38,6 +38,7 @@ var semanticToCode = map[domain.NotificationSemantic]connect.Code{
 	domain.SemanticMethodNotAllowed: connect.CodeUnimplemented,      // 405
 	domain.SemanticPayloadTooLarge:  connect.CodeResourceExhausted,  // 413
 	domain.SemanticGatewayTimeout:   connect.CodeDeadlineExceeded,   // 504
+	domain.SemanticRequestTimeout:   connect.CodeDeadlineExceeded,   // 408 (HTTP-only in practice; mapped for enum completeness)
 }
 
 // codeFromNotifications mirrors web.statusFromNotifications: the first

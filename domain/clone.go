@@ -20,7 +20,7 @@ func cloneEntity(e Entity) Entity {
 		return nil
 	}
 	t := reflect.TypeOf(e)
-	if t.Kind() == reflect.Ptr {
+	if t.Kind() == reflect.Pointer {
 		t = t.Elem()
 	}
 	cloneVal := reflect.New(t)

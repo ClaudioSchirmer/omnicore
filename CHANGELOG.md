@@ -11,6 +11,59 @@ with `1.0.0`.
 
 ## [Unreleased]
 
+### Added
+
+- **HTTP server hardening knobs — `http.bodyLimitBytes`, `http.readTimeoutSeconds`,
+  `http.idleTimeoutSeconds`.** Three optional `http:` fields, each left at Fiber's
+  default when unset (no behaviour change on upgrade). They sit at different layers,
+  so their client-visible outcome differs:
+  - `bodyLimitBytes` caps the request body; a larger body is rejected with **413**
+    (rendered by the existing `ErrorHandler` envelope). Unset → Fiber's 4 MiB default.
+  - `readTimeoutSeconds` / `idleTimeoutSeconds` are **transport-level** (fasthttp),
+    the slowloris/keep-alive hardening. A **read** timeout surfaces as **408 Request
+    Timeout** (the new `ReadTimeoutNotification` / `SemanticRequestTimeout`): fasthttp
+    routes the read-deadline breach through Fiber's server error handler, which the
+    framework maps to a typed 408 envelope (the client was too slow — a 408, not a
+    misleading 500), written best-effort before the connection closes. An **idle**
+    timeout silently closes the keep-alive with no response (normal reaping). Unset/0
+    → no timeout. Both are distinct from `http.requestTimeoutSeconds`, which bounds
+    *handler processing* and maps to **504**. Negative values are rejected at boot.
+- **`SemanticRequestTimeout` + `ReadTimeoutNotification`.** A new notification
+  semantic mapping to **408** (HTTP) / `CodeDeadlineExceeded` (gRPC), emitted by the
+  web `ErrorHandler` when the fasthttp read timeout fires. Translated in all seven
+  catalogs. Distinct from `RequestTimeoutNotification` (the 504 handler deadline).
+- **Readiness probe — `GET /readyz`.** The framework now registers a Kubernetes
+  readiness probe alongside liveness. It answers "can this pod take traffic now?":
+  `200` when the request-path stores respond and the process is not draining, `503`
+  otherwise. Failing it makes Kubernetes remove the pod from the load balancer
+  (not restart it). Two behaviours:
+  - **Drain flip.** On `SIGTERM` the probe flips to `503` immediately — the missing
+    half of the existing coordinated drain. Kubernetes stops routing new traffic
+    while the in-flight requests finish, so the graceful shutdown no longer competes
+    with fresh arrivals. Derived from the same `signal.NotifyContext` that governs
+    the drain, so no new state to reason about.
+  - **Store checks.** A dialect-neutral relational `SELECT 1` plus a Mongo ping,
+    under a short deadline so a wedged store fails the probe fast. The message
+    transport is **deliberately excluded**: the outbox decouples writes from the
+    broker (a write still commits and reads still serve when the broker is down), so
+    a broker outage must not pull the pod from the balancer — async-consumer health
+    is an alerting concern, not readiness.
+
+  Like `/livez`, `/readyz` is framework-owned but **not** auto-public — list it in
+  `auth.publicRoutes` so a tokenless kubelet can reach it. `*mongo.MongoDB` gains a
+  `Ping` method backing the read-store leg.
+
+### Changed
+
+- **breaking** — **the liveness probe moved from `GET /health` to `GET /livez`.**
+  The route is renamed to the Kubernetes-idiomatic `-z` family (the pair `/livez` +
+  `/readyz`; k8s core itself retired the single `/healthz`). Behaviour is otherwise
+  identical: static `{"status":"ok"}`, no dependency checks (a liveness probe must
+  fail only when a restart is the cure, never on a store blip). Update every
+  `auth.publicRoutes` entry (`GET /health` → `GET /livez`, and add `GET /readyz`),
+  any k8s/Docker probe path, and the `openapi.uiPath` / `graphql.path` collision set
+  (`/health` is no longer reserved; `/livez` and `/readyz` are).
+
 ## [0.21.0] - 2026-07-08
 
 ### Added

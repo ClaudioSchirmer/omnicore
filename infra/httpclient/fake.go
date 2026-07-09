@@ -444,6 +444,7 @@ func fakeCall[Req any, Resp any](
 			Attempt:  1,
 		}
 	}
+	defer func() { _ = resp.Body.Close() }()
 
 	acceptable := isAcceptable(resp.StatusCode, meta.AcceptableStatus, cfg.acceptableStatus)
 	if resp.StatusCode >= 200 && resp.StatusCode < 300 {

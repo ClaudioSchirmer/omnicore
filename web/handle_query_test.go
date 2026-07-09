@@ -587,10 +587,8 @@ func TestRespondPaged_EmitsEnvelope(t *testing.T) {
 func TestRawDoc_IsIdentity(t *testing.T) {
 	in := map[string]any{"id": "x", "n": 1}
 	out := responses.RawDoc(in)
-	if &out == &in {
-		// We don't assert pointer equality (Go maps are reference types — same
-		// header passed back), but ensure no key was stripped or added.
-	}
+	// We don't assert pointer equality (Go maps are reference types — the same
+	// header is passed back); instead ensure no key was stripped or added.
 	if len(out) != 2 || out["id"] != "x" || out["n"] != 1 {
 		t.Errorf("expected identity output, got %v", out)
 	}

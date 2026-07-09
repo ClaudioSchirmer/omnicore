@@ -32,9 +32,11 @@ func TestRedactHeaders_DefaultBlockList(t *testing.T) {
 
 func TestRedactHeaders_CaseInsensitiveLookup(t *testing.T) {
 	h := http.Header{}
-	h["authorization"] = []string{"Bearer abc"}
+	// The non-canonical lowercase key is the point: this asserts redactHeaders
+	// matches case-insensitively, not via http.Header canonicalization.
+	h["authorization"] = []string{"Bearer abc"} //nolint:staticcheck // SA1008
 	out := redactHeaders(h, nil)
-	if got := out["authorization"]; len(got) != 1 || got[0] != redactedPlaceholder {
+	if got := out["authorization"]; len(got) != 1 || got[0] != redactedPlaceholder { //nolint:staticcheck // SA1008
 		t.Errorf("lower-case authorization should be redacted; got %v", got)
 	}
 }

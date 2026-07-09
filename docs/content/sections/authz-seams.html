@@ -134,7 +134,7 @@ func (u *User) BuildRules(actionName string, svc domain.Service, r *domain.Rules
   <pre><code>auth:
   mode: jwt
   jwt: { issuer: ..., audience: ..., jwksUrl: ... }
-  publicRoutes: [GET /health]
+  publicRoutes: [GET /livez, GET /readyz]
   authorization:                  # default nil (off; identity helpers still work)
     enabled: true                 # master switch — when false, runtime gate no-ops
     permissionsClaim: permissions # default "permissions"

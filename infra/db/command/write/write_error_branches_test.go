@@ -759,7 +759,7 @@ func (t *nthFailTx) Exec(ctx context.Context, sql string, args ...any) error {
 	if strings.Contains(sql, t.failSub) {
 		t.seen++
 		if t.seen == t.failOn {
-			t.recTx.execs = append(t.recTx.execs, sql)
+			t.execs = append(t.execs, sql)
 			return errBoom
 		}
 	}

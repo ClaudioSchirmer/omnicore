@@ -9,6 +9,7 @@ func TestNotificationSemanticString_RemainingLabels(t *testing.T) {
 		SemanticInternal:          "Internal",
 		SemanticMethodNotAllowed:  "MethodNotAllowed",
 		SemanticPayloadTooLarge:   "PayloadTooLarge",
+		SemanticRequestTimeout:    "RequestTimeout",
 		NotificationSemantic(999): "Validation", // default fallback
 	}
 	for s, want := range cases {

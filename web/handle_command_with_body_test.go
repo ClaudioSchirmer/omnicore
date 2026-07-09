@@ -322,7 +322,7 @@ func TestHandleCommandWithBody_EmptyArrayIsValid(t *testing.T) {
 		b, _ := io.ReadAll(resp.Body)
 		t.Fatalf("expected 201, got %d (body=%s)", resp.StatusCode, b)
 	}
-	if h.gotCmd.Items != nil && len(h.gotCmd.Items) != 0 {
+	if len(h.gotCmd.Items) != 0 {
 		t.Errorf("expected empty items, got %+v", h.gotCmd.Items)
 	}
 }

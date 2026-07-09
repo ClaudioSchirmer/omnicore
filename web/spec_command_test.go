@@ -41,7 +41,7 @@ type specInsertResp struct {
 	ID string `json:"id"`
 }
 
-func (specInsertResp) FromResult(r specInsertResult) specInsertResp { return specInsertResp{ID: r.ID} }
+func (specInsertResp) FromResult(r specInsertResult) specInsertResp { return specInsertResp(r) }
 
 type specLenientInsertHandler struct{}
 

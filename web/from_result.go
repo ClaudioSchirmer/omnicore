@@ -53,6 +53,7 @@ var semanticToStatus = map[domain.NotificationSemantic]int{
 	domain.SemanticPayloadTooLarge:  fiber.StatusRequestEntityTooLarge, // 413
 	domain.SemanticGatewayTimeout:   fiber.StatusGatewayTimeout,        // 504
 	domain.SemanticStateConflict:    fiber.StatusConflict,              // 409 (state/precondition flavor)
+	domain.SemanticRequestTimeout:   fiber.StatusRequestTimeout,        // 408 (transport read timeout — client too slow)
 }
 
 // statusFromNotifications returns the HTTP status of the first message whose

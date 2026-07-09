@@ -471,7 +471,7 @@ func buildCriteria(c fiber.Ctx, s *queryschema.RequestSchema, projSchema *querys
 	}
 	var badField string
 	ok := true
-	c.Request().URI().QueryArgs().VisitAll(func(k, v []byte) {
+	c.Request().URI().QueryArgs().VisitAll(func(k, v []byte) { //nolint:staticcheck // SA1019: fasthttp VisitAll is deprecated; migrating this hot query-parse path to the All() range-over-func iterator is a mechanical follow-up, out of scope for a lint sweep.
 		if !ok {
 			return
 		}
@@ -605,7 +605,7 @@ func validateCursorAgainstCriteria(cursorStr string, crit queries.ReadCriteria, 
 func validateByIDQuery(c fiber.Ctx) (string, bool) {
 	var bad string
 	ok := true
-	c.Request().URI().QueryArgs().VisitAll(func(k, _ []byte) {
+	c.Request().URI().QueryArgs().VisitAll(func(k, _ []byte) { //nolint:staticcheck // SA1019: fasthttp VisitAll deprecated; All() migration deferred.
 		if !ok {
 			return
 		}

@@ -88,10 +88,8 @@ func NewRedis(cfg *RedisConfig) (Cache, error) {
 	if cfg.TimeoutMs > 0 {
 		timeout = time.Duration(cfg.TimeoutMs) * time.Millisecond
 	}
-	failOpen := true
-	if strings.EqualFold(strings.TrimSpace(cfg.FailMode), "closed") {
-		failOpen = false
-	}
+	failOpen := !strings.EqualFold(strings.TrimSpace(cfg.FailMode), "closed")
+
 	client := redis.NewClient(&redis.Options{
 		Addr:         strings.TrimSpace(cfg.Addr),
 		Password:     cfg.Password,

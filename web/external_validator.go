@@ -348,7 +348,7 @@ func parseJSONPath(path string) ([]string, error) {
 		return nil, nil
 	}
 	if !strings.HasPrefix(rest, ".") {
-		return nil, fmt.Errorf("jsonPath %q segment must start with .", path)
+		return nil, fmt.Errorf("jsonPath %q segment must start with a dot", path)
 	}
 	segs := strings.Split(strings.TrimPrefix(rest, "."), ".")
 	for _, s := range segs {

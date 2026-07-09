@@ -263,7 +263,7 @@ func TestExtractBearerTokenShortHeader(t *testing.T) {
 func TestBuildKeyfuncJWKS(t *testing.T) {
 	key, _ := newKeypair(t)
 	jwks := fmt.Sprintf(`{"keys":[{"kty":"RSA","kid":"k1","alg":"RS256","use":"sig","n":%q,"e":%q}]}`,
-		base64.RawURLEncoding.EncodeToString(key.PublicKey.N.Bytes()),
+		base64.RawURLEncoding.EncodeToString(key.N.Bytes()),
 		base64.RawURLEncoding.EncodeToString(big.NewInt(int64(key.PublicKey.E)).Bytes()))
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")

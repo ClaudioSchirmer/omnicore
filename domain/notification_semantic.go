@@ -19,6 +19,7 @@ const (
 	SemanticPayloadTooLarge                              // → 413 Content Too Large (request body exceeds the configured limit)
 	SemanticGatewayTimeout                               // → 504 Gateway Timeout (request exceeded the server-side deadline)
 	SemanticStateConflict                                // → 409 Conflict (entity/system in the wrong state — precondition failure, not a duplicate)
+	SemanticRequestTimeout                               // → 408 Request Timeout (the client did not send the full request within the transport read timeout)
 )
 
 // String returns the canonical name for logs, debug and wire format.
@@ -46,6 +47,8 @@ func (s NotificationSemantic) String() string {
 		return "GatewayTimeout"
 	case SemanticStateConflict:
 		return "StateConflict"
+	case SemanticRequestTimeout:
+		return "RequestTimeout"
 	default:
 		return "Validation"
 	}

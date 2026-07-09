@@ -42,7 +42,7 @@
     <ul>
         <li><code>Deps.OpenAPIRegistry</code> becomes a non-nil <code>*openapi.Registry</code> threaded into every <code>Feature.Mount(app, deps)</code> call.</li>
         <li>The framework auto-registers <code>GET /openapi.json</code> + the Swagger UI route (default <code>GET /docs</code>; configurable via <code>openapi.uiPath</code> in the YAML — see "Operator-tunable serving" below) after every feature has mounted.</li>
-        <li><code>GET /health</code> goes through <code>openapi.MountRaw</code> automatically so it appears in the spec.</li>
+        <li><code>GET /livez</code> and <code>GET /readyz</code> go through <code>openapi.MountRaw</code> automatically so they appear in the spec.</li>
         <li>When <code>auth.mode: jwt</code> is active, the <code>AuthMiddleware.publicRoutes</code> list is auto-extended with <code>GET /openapi.json</code> + the resolved UI path, so the documentation surface never sits behind the bearer wall.</li>
     </ul>
     <p>Leaving <code>Wiring.OpenAPI</code> nil keeps everything off: <code>Deps.OpenAPIRegistry</code> stays nil, no spec routes are registered, and <code>openapi.Mount</code> / <code>MountRaw</code> become Fiber-only passthroughs (zero documentation cost).</p>
@@ -54,7 +54,7 @@
   rootRedirect: false     # default: false. When true, GET / → 302 uiPath.</code></pre>
     <ul>
         <li><strong>Block is optional.</strong> Absent → defaults (canonical <code>/docs</code>, no redirect). Present but <code>Wiring.OpenAPI</code> is nil → ignored (no spec means no UI to redirect to).</li>
-        <li><strong><code>uiPath</code></strong> moves the Swagger UI route. <code>/openapi.json</code> stays canonical because it is internal plumbing the UI fetches — tooling that scrapes the spec relies on a predictable path. Validated at boot: must start with <code>/</code>; must not collide with <code>/openapi.json</code> or <code>/health</code>.</li>
+        <li><strong><code>uiPath</code></strong> moves the Swagger UI route. <code>/openapi.json</code> stays canonical because it is internal plumbing the UI fetches — tooling that scrapes the spec relies on a predictable path. Validated at boot: must start with <code>/</code>; must not collide with <code>/openapi.json</code>, <code>/livez</code> or <code>/readyz</code>.</li>
         <li><strong><code>rootRedirect</code></strong>, when <code>true</code>, registers <code>GET /</code> → 302 <code>uiPath</code>. Registration happens AFTER feature mounts and <code>BeforeServe</code>, so a service that owns <code>/</code> wins by registration order; the framework logs <code>slog.Warn</code> and skips on collision. Under <code>auth.mode: jwt</code> the redirect route is added to <code>publicRoutes</code> automatically so opening the host root in a browser does not trigger a 401.</li>
     </ul>
 
@@ -332,7 +332,7 @@ spec.Examples = map[string]fwopenapi.Example{"alice": {Value: WhoamiResponse{Sub
     <h3>Boot-time guarantees</h3>
     <p>Everything that can be checked at boot, is — so the operator finds out about a broken declaration at start time, not when a consumer opens <code>/docs</code>:</p>
     <ul>
-        <li><strong>OpenAPI <code>uiPath</code> validation.</strong> Must start with <code>/</code>; must not collide with <code>/openapi.json</code> or <code>/health</code>. Violations abort boot with a descriptive error.</li>
+        <li><strong>OpenAPI <code>uiPath</code> validation.</strong> Must start with <code>/</code>; must not collide with <code>/openapi.json</code>, <code>/livez</code> or <code>/readyz</code>. Violations abort boot with a descriptive error.</li>
         <li><strong>Examples validated against types.</strong> Every <code>Doc.RequestExamples</code> + every success-status <code>Doc.ResponseExamples</code> + every <code>RequestBody.Examples</code> + every typed <code>ResponseSpec.Examples</code> is run through <code>json.Marshal</code> + <code>json.Unmarshal</code> with <code>DisallowUnknownFields</code> at <code>Mount</code> / <code>MountRaw</code> time. A typo aborts the boot with <code>"openapi: example &lt;name&gt; on &lt;METHOD path&gt; &lt;slot&gt;: &lt;reason&gt;"</code>.</li>
         <li><strong>Error-status examples loosely validated.</strong> Examples on non-success statuses are only checked for JSON validity (the <code>ErrorEnvelope</code> shape is shared and accepts arbitrary <code>errors[]</code> content). The boot still rejects payloads that aren't JSON-marshalable.</li>
         <li><strong>Per-property <code>example:</code> tag parsing.</strong> Failure to parse the tag value against the field's reflected type → boot panic naming the struct + field.</li>

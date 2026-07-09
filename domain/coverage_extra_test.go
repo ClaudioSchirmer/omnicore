@@ -244,10 +244,9 @@ func TestNotificationSeals_AndSemantics(t *testing.T) {
 
 func TestServiceBase_IsServiceSeal(t *testing.T) {
 	ServiceBase{}.isService()
-	var s Service = ServiceBase{}
-	if s == nil {
-		t.Fatal("expected ServiceBase to satisfy Service")
-	}
+	// Compile-time assertion that ServiceBase satisfies Service (the seal method
+	// is promoted); a runtime nil check would be meaningless on a concrete value.
+	var _ Service = ServiceBase{}
 }
 
 // ─── path_render.go: PluralizeWord / ToLowerCamel / toLowerRune ──────────────

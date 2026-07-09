@@ -22,11 +22,12 @@ import (
 //
 //  2. *fiber.Error with a code the framework specializes — 404 (router
 //     could not match METHOD + path), 405 (path matches but the method
-//     is not registered) and 413 (body exceeds the configured BodyLimit).
-//     Each is emitted as its typed notification (RouteNotFoundNotification,
-//     MethodNotAllowedNotification, PayloadTooLargeNotification) carrying
-//     "METHOD /path" on FieldName so clients can branch UI without parsing
-//     the translated message.
+//     is not registered), 413 (body exceeds the configured BodyLimit) and
+//     408 (Fiber's ErrRequestTimeout — the fasthttp read timeout fired while
+//     reading the request; the client was too slow). Each is emitted as its
+//     typed notification (RouteNotFoundNotification, MethodNotAllowedNotification,
+//     PayloadTooLargeNotification, ReadTimeoutNotification) carrying "METHOD /path"
+//     on FieldName so clients can branch UI without parsing the translated message.
 //
 //  3. *fiber.Error with any other code — by design, treated as an unknown
 //     escape and emitted as InternalServerErrorNotification with status 500.
@@ -67,6 +68,8 @@ func ErrorHandler(pipe *pipeline.Pipeline) fiber.ErrorHandler {
 				return respondMethodNotAllowed(c, pipe)
 			case fiber.StatusRequestEntityTooLarge:
 				return respondPayloadTooLarge(c, pipe)
+			case fiber.StatusRequestTimeout:
+				return respondReadTimeout(c, pipe)
 			}
 		}
 
@@ -112,6 +115,20 @@ func respondPayloadTooLarge(c fiber.Ctx, pipe *pipeline.Pipeline) error {
 	ctx.AddNotificationMessage(domain.NotificationMessage{
 		FieldName:    c.Method() + " " + c.Path(),
 		Notification: notifications.PayloadTooLargeNotification{},
+	})
+	return respondViaPipeline(c, pipe, ctx)
+}
+
+// respondReadTimeout emits a single ReadTimeoutNotification carrying
+// "METHOD /path" as FieldName. SemanticRequestTimeout maps to 408 — the
+// transport read timeout (client too slow), distinct from the 504 handler
+// deadline. Reached via Fiber's serverErrorHandler, which maps a fasthttp
+// read-deadline net timeout to ErrRequestTimeout before this handler runs.
+func respondReadTimeout(c fiber.Ctx, pipe *pipeline.Pipeline) error {
+	ctx := domain.NewNotificationContext("Request")
+	ctx.AddNotificationMessage(domain.NotificationMessage{
+		FieldName:    c.Method() + " " + c.Path(),
+		Notification: notifications.ReadTimeoutNotification{},
 	})
 	return respondViaPipeline(c, pipe, ctx)
 }

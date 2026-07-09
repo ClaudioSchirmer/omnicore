@@ -21,7 +21,7 @@ import (
 // indicates a construction bug.
 func scanRowIntoStruct(row keyedRow, dst any, columns []string, byCol map[string]int) error {
 	v := reflect.ValueOf(dst)
-	if v.Kind() != reflect.Ptr || v.IsNil() {
+	if v.Kind() != reflect.Pointer || v.IsNil() {
 		return fmt.Errorf("scanRowIntoStruct: dst must be a non-nil pointer, got %T", dst)
 	}
 	v = v.Elem()
@@ -54,7 +54,7 @@ type keyedRow interface {
 // `RETURNING <pk>` path uses.
 func ScanLeadingKey(row keyedRow, dst any, columns []string, byCol map[string]int) (string, error) {
 	v := reflect.ValueOf(dst)
-	if v.Kind() != reflect.Ptr || v.IsNil() {
+	if v.Kind() != reflect.Pointer || v.IsNil() {
 		return "", fmt.Errorf("ScanLeadingKey: dst must be a non-nil pointer, got %T", dst)
 	}
 	v = v.Elem()
