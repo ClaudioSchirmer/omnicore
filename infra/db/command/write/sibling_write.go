@@ -31,7 +31,7 @@ func isNilValue(v any) bool {
 		return true
 	}
 	switch rv := reflect.ValueOf(v); rv.Kind() {
-	case reflect.Ptr, reflect.Interface, reflect.Map, reflect.Slice:
+	case reflect.Pointer, reflect.Interface, reflect.Map, reflect.Slice:
 		return rv.IsNil()
 	default:
 		return false

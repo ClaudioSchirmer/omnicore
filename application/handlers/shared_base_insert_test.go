@@ -12,7 +12,7 @@ import (
 // (once cold, twice warm — once to read the natural key, once to merge).
 type testSBInsertCmd struct {
 	pipeline.CommandBase
-	Name      string
+	Name       string
 	applyCalls int
 }
 

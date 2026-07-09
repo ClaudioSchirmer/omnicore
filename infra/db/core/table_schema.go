@@ -75,11 +75,6 @@ type TableSchema struct {
 	// .SoftDelete was declared before or after .SharedBase. The refcount delete +
 	// CDC fan-out + lifecycle convergence enumerate it.
 	referencingRoleLinks []roleLink
-
-	// goSegment is, for a child schema embedded in a view, the parent-side Go
-	// field name of the collection (e.g. "Addresses"). Set via View embed
-	// wiring; empty for a root schema.
-	goSegment string
 }
 
 type schemaField struct {
@@ -103,7 +98,7 @@ type schemaField struct {
 // PK(col) (the Go side is fixed to the Entity contract's "ID").
 func NewTableSchema[T any](table string) *TableSchema {
 	t := reflect.TypeOf((*T)(nil)).Elem()
-	for t.Kind() == reflect.Ptr {
+	for t.Kind() == reflect.Pointer {
 		t = t.Elem()
 	}
 	if t.Kind() != reflect.Struct {
@@ -618,7 +613,7 @@ func (s *TableSchema) updateNowColumns() []string {
 // statement builders, not here.
 func (s *TableSchema) writeFields(e any) domain.Fields {
 	v := reflect.ValueOf(e)
-	for v.Kind() == reflect.Ptr {
+	for v.Kind() == reflect.Pointer {
 		v = v.Elem()
 	}
 	out := make(domain.Fields, len(s.fields))
@@ -704,7 +699,7 @@ func (s *TableSchema) BoolColumns() map[string]bool {
 			continue
 		}
 		ft := s.typ.Field(f.index).Type
-		for ft.Kind() == reflect.Ptr {
+		for ft.Kind() == reflect.Pointer {
 			ft = ft.Elem()
 		}
 		if ft.Kind() == reflect.Bool {

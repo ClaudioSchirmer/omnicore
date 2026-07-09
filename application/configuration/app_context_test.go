@@ -265,7 +265,7 @@ func TestAppContext_SetParentNilRestoresBackground(t *testing.T) {
 		t.Fatal("expected Err after cancel")
 	}
 
-	ctx.SetParent(nil)
+	ctx.SetParent(nil) //nolint:staticcheck // SA1012: resetting the parent to nil is the behavior under test.
 	if ctx.Err() != nil {
 		t.Errorf("expected nil Err after parent reset, got %v", ctx.Err())
 	}

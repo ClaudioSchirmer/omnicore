@@ -83,7 +83,7 @@ func TestSwaggerUIHTML_LanguageOrderPreserved(t *testing.T) {
 	if idxFR < 0 || idxPT < 0 || idxEN < 0 {
 		t.Fatalf("not all options rendered; fr=%d pt=%d en=%d", idxFR, idxPT, idxEN)
 	}
-	if !(idxFR < idxPT && idxPT < idxEN) {
+	if idxFR >= idxPT || idxPT >= idxEN {
 		t.Fatalf("declaration order not preserved: fr=%d pt=%d en=%d", idxFR, idxPT, idxEN)
 	}
 }

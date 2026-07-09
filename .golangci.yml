@@ -32,11 +32,16 @@ linters:
       - std-error-handling
     rules:
       # Tests get latitude: an unchecked best-effort error or an unclosed response
-      # body in a test that exits anyway is noise, not a defect.
+      # body in a test that exits anyway is noise, not a defect. `unused` is also
+      # unreliable on tests here — this codebase's tests exercise types and
+      # (unexported) fields via reflection (schema generation, field-label
+      # extraction, struct scanning), which static use-analysis cannot see, so it
+      # false-positives on deliberate reflection fixtures.
       - path: _test\.go
         linters:
           - errcheck
           - bodyclose
+          - unused
       # The seven translation catalogs are the one sanctioned home of non-English
       # text (CLAUDE.md rule #4); misspell's English dictionary only false-positives
       # there (e.g. German "Spanisch", Italian "Impossibile").

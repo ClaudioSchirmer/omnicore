@@ -17,7 +17,7 @@ func (r *Registry) Execute(ctx *configuration.AppContext, query string, vars map
 	if err := r.build(); err != nil {
 		return Response{Errors: []GraphQLError{{Message: "schema build failed: " + err.Error()}}}
 	}
-	doc, errs := gqlparser.LoadQuery(r.schema, query)
+	doc, errs := gqlparser.LoadQueryWithRules(r.schema, query, nil)
 	if errs != nil {
 		return Response{Errors: fromGqlErrors(errs)}
 	}

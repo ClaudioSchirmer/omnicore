@@ -69,7 +69,7 @@ func TestAppContext_SetTraceContext_NilClears(t *testing.T) {
 	type spanKey struct{}
 	ctx := NewAppContextWithRandomID(LangPTBR)
 	ctx.SetTraceContext(context.WithValue(context.Background(), spanKey{}, "span"))
-	ctx.SetTraceContext(nil)
+	ctx.SetTraceContext(nil) //nolint:staticcheck // SA1012: the nil fallback to Background() is the behavior under test.
 
 	if got := ctx.TraceContext(); got != context.Background() {
 		t.Errorf("expected nil SetTraceContext to restore the background fallback, got %v", got)

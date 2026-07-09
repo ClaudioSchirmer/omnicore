@@ -385,7 +385,7 @@ func TestBuildApp_OpenAPI_LanguageSelectorAutoPopulatesFromTranslations(t *testi
 	if idxEN < 0 || idxPT < 0 || idxFR < 0 {
 		t.Fatalf("not all options rendered; en=%d pt=%d fr=%d", idxEN, idxPT, idxFR)
 	}
-	if !(idxEN < idxPT && idxEN < idxFR) {
+	if idxEN >= idxPT || idxEN >= idxFR {
 		t.Fatalf("ENG must come first: en=%d pt=%d fr=%d; html=%s", idxEN, idxPT, idxFR, html)
 	}
 }

@@ -43,7 +43,7 @@ func TestHash_LengthAndFormat(t *testing.T) {
 		t.Errorf("Hash len = %d, want 64 hex chars", len(h))
 	}
 	for _, c := range r {
-		if !((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f')) {
+		if (c < '0' || c > '9') && (c < 'a' || c > 'f') {
 			t.Errorf("RebuildHash contains non-hex char %q", c)
 		}
 	}

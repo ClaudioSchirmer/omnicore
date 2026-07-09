@@ -610,7 +610,10 @@ func buildExamplesMap(declared map[string]rawExample, wrap func(json.RawMessage)
 func buildErrorExamplesMap(declared map[string]rawExample, status int) map[string]any {
 	out := map[string]any{}
 	if def, ok := DefaultErrorExample(status); ok {
-		consumerEntry, consumerDeclaredDefault := declared["default"]
+		_, consumerDeclaredDefault := declared["default"]
+		// When the consumer declared "default" themselves we emit nothing here: a
+		// present entry is merged in the loop below, and an empty one (Raw == nil)
+		// is their explicit remove-the-default signal.
 		if !consumerDeclaredDefault {
 			// Inject the canonical default — Marshal here is on the
 			// framework's own deterministic envelope shape, so the
@@ -626,8 +629,6 @@ func buildErrorExamplesMap(declared map[string]rawExample, status int) map[strin
 				entry["value"] = jsonValue(rawBytes)
 				out["default"] = entry
 			}
-		} else if consumerEntry.Raw == nil {
-			// Consumer-removal — do not emit a default entry at all.
 		}
 	}
 	for name, ex := range declared {

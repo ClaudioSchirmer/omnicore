@@ -15,7 +15,7 @@ import "reflect"
 // preserving the pre-existing semantics of "no configured context name").
 func TypeName[T any]() string {
 	t := reflect.TypeOf((*T)(nil)).Elem()
-	if t.Kind() == reflect.Ptr {
+	if t.Kind() == reflect.Pointer {
 		t = t.Elem()
 	}
 	return t.Name()

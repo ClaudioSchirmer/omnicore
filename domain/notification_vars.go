@@ -54,7 +54,7 @@ func ExtractVarsFromTags(n Notification) map[string]string {
 		return p.TranslationVars()
 	}
 	t := reflect.TypeOf(n)
-	if t.Kind() == reflect.Ptr {
+	if t.Kind() == reflect.Pointer {
 		t = t.Elem()
 	}
 	if t.Kind() != reflect.Struct {
@@ -65,7 +65,7 @@ func ExtractVarsFromTags(n Notification) map[string]string {
 		return nil
 	}
 	v := reflect.ValueOf(n)
-	if v.Kind() == reflect.Ptr {
+	if v.Kind() == reflect.Pointer {
 		if v.IsNil() {
 			return nil
 		}
@@ -74,7 +74,7 @@ func ExtractVarsFromTags(n Notification) map[string]string {
 	out := make(map[string]string, len(plan))
 	for _, f := range plan {
 		fv := v.FieldByIndex(f.index)
-		if fv.Kind() == reflect.Ptr {
+		if fv.Kind() == reflect.Pointer {
 			if fv.IsNil() {
 				out[f.name] = ""
 				continue

@@ -649,7 +649,7 @@ func EnsureInitialized(e Entity) { ensureInit(e) }
 
 func classNameOf(e any) string {
 	t := reflect.TypeOf(e)
-	if t.Kind() == reflect.Ptr {
+	if t.Kind() == reflect.Pointer {
 		t = t.Elem()
 	}
 	return t.Name()

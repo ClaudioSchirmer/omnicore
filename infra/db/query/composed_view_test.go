@@ -260,7 +260,7 @@ func TestValidateComposedViews_Rejections(t *testing.T) {
 				LinkMany("notes", JoinView(
 					View("gadget_notes").Version(1).Root("gadget_notes").Schema(cvNotesSchema()),
 				).FK("gadget_id")),
-			views: []*ViewDefinition{cvPrimaryView(), View("gadget_notes").Version(1).Root("gadget_notes").Schema(cvNotesSchema())},
+			views:    []*ViewDefinition{cvPrimaryView(), View("gadget_notes").Version(1).Root("gadget_notes").Schema(cvNotesSchema())},
 			ups:      cvUpstreams(),
 			fragment: "NO covering index",
 		},

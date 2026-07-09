@@ -17,7 +17,7 @@ type EnumValueObject[T comparable] interface {
 
 func EnumDescriptionKey(v any) string {
 	t := reflect.TypeOf(v)
-	if t.Kind() == reflect.Ptr {
+	if t.Kind() == reflect.Pointer {
 		t = t.Elem()
 	}
 	return fmt.Sprintf("%s.%v", t.Name(), v)

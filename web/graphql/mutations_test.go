@@ -34,7 +34,7 @@ type mutResponse struct {
 }
 
 func (mutResponse) FromResult(r mutResult) mutResponse {
-	return mutResponse{ID: r.ID, Name: r.Name}
+	return mutResponse(r)
 }
 
 type fakeCmdHandler struct {
@@ -146,7 +146,7 @@ type mutUpdResponse struct {
 }
 
 func (mutUpdResponse) FromResult(r mutUpdResult) mutUpdResponse {
-	return mutUpdResponse{ID: r.ID, Name: r.Name}
+	return mutUpdResponse(r)
 }
 
 type fakeUpdHandler struct {
@@ -218,7 +218,7 @@ type mutStrictResponse struct {
 }
 
 func (mutStrictResponse) FromResult(r mutStrictResult) mutStrictResponse {
-	return mutStrictResponse{ID: r.ID}
+	return mutStrictResponse(r)
 }
 
 type fakeStrictHandler struct{ pipeline.FullBody }

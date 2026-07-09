@@ -40,7 +40,7 @@ func TestBreakerState_SnapshotState_NilAndDisabled(t *testing.T) {
 
 // correlationID degenerate inputs: nil ctx and a plain context (no RequestContext).
 func TestCorrelationID_Degenerate(t *testing.T) {
-	if got := correlationID(nil); got != "" {
+	if got := correlationID(nil); got != "" { //nolint:staticcheck // SA1012: nil ctx is the degenerate input under test.
 		t.Errorf("correlationID(nil) = %q, want empty", got)
 	}
 	if got := correlationID(context.Background()); got != "" {

@@ -56,7 +56,7 @@ func startSSEPump(ctx context.Context, body io.ReadCloser) SSEResponse {
 
 	go func() {
 		defer close(events)
-		defer closeFn()
+		defer func() { _ = closeFn() }()
 
 		// Context-driven shutdown: a separate goroutine waits on
 		// ctx.Done and triggers Close, which unblocks the bufio Read.
@@ -139,10 +139,7 @@ func handleSSELine(line string, st *sseParserState) {
 	var field, value string
 	if idx := strings.IndexByte(line, ':'); idx >= 0 {
 		field = line[:idx]
-		value = line[idx+1:]
-		if strings.HasPrefix(value, " ") {
-			value = value[1:]
-		}
+		value = strings.TrimPrefix(line[idx+1:], " ")
 	} else {
 		field = line
 	}

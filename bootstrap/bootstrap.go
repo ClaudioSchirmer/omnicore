@@ -39,11 +39,8 @@ import (
 	"github.com/gofiber/fiber/v3"
 	"github.com/gofiber/fiber/v3/middleware/logger"
 	"golang.org/x/net/http2"
-	"golang.org/x/net/http2/h2c"
+	"golang.org/x/net/http2/h2c" //nolint:staticcheck // SA1019: h2c is deprecated, but the cleartext-h2c → http.Server.Protocols migration is a separate, QA-gated change (touches the gRPC transport), not a lint-sweep edit.
 )
-
-// shutdownTimeout is the Fiber drain duration. Constant for simplicity.
-const shutdownTimeout = 10 * time.Second
 
 // Run loads microservice.<profile>.yaml + builds singletons + calls wire(deps)
 // + registers default middlewares + runs until receiving SIGINT/SIGTERM.
@@ -999,7 +996,7 @@ func serve(ctx context.Context, deps Deps, wiring Wiring) error {
 			handler = fwgrpc.WithClientCertIdentity(handler)
 		}
 		if !grpcTLS {
-			handler = h2c.NewHandler(handler, &http2.Server{})
+			handler = h2c.NewHandler(handler, &http2.Server{}) //nolint:staticcheck // SA1019: see the h2c import note.
 		}
 		grpcSrv = &http.Server{Addr: grpcCfg.Addr, Handler: handler, TLSConfig: grpcTLSConfig}
 		if grpcCfg.IdleTimeoutSeconds > 0 {

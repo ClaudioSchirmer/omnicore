@@ -129,7 +129,7 @@ func TestSDL_QueryParsesAndValidatesAgainstSchema(t *testing.T) {
 	    totalCount
 	  }
 	}`
-	if _, errs := gqlparser.LoadQuery(schema, query); errs != nil {
+	if _, errs := gqlparser.LoadQueryWithRules(schema, query, nil); errs != nil {
 		t.Fatalf("a well-formed query failed validation: %v", errs)
 	}
 }
@@ -138,7 +138,7 @@ func TestSDL_UnknownOperatorRejectedByValidation(t *testing.T) {
 	schema := buildReadSchema(t)
 	// `contains` was not declared on name (only eq,in,startswith) → validation error.
 	query := `query { users(where: { name: { contains: "x" } }) { totalCount } }`
-	_, errs := gqlparser.LoadQuery(schema, query)
+	_, errs := gqlparser.LoadQueryWithRules(schema, query, nil)
 	if errs == nil {
 		t.Fatal("expected validation to reject an undeclared operator")
 	}

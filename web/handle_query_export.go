@@ -259,7 +259,7 @@ func buildExportCriteria(c fiber.Ctx, schema *queryschema.RequestSchema, plan *q
 	wireToGo := plan.WireToGoPaths()
 	var bad string
 	ok := true
-	c.Request().URI().QueryArgs().VisitAll(func(k, v []byte) {
+	c.Request().URI().QueryArgs().VisitAll(func(k, v []byte) { //nolint:staticcheck // SA1019: fasthttp VisitAll deprecated; All() migration deferred.
 		if !ok {
 			return
 		}

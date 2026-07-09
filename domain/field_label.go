@@ -39,7 +39,7 @@ func resolveLabelKey(t reflect.Type, fieldName string) string {
 	if t == nil || fieldName == "" {
 		return ""
 	}
-	if t.Kind() == reflect.Ptr {
+	if t.Kind() == reflect.Pointer {
 		t = t.Elem()
 	}
 	if t.Kind() != reflect.Struct {

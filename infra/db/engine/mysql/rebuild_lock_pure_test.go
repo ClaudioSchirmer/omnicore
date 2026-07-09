@@ -16,7 +16,7 @@ import (
 // pure and is the load-bearing identity, so it is locked here.
 func TestRebuildLockName(t *testing.T) {
 	t.Run("deterministic", func(t *testing.T) {
-		if rebuildLockName("users") != rebuildLockName("users") {
+		if rebuildLockName("users") != rebuildLockName("users") { //nolint:staticcheck // SA4000: deliberate self-comparison — asserts rebuildLockName is deterministic across calls.
 			t.Error("rebuildLockName is not deterministic")
 		}
 	})

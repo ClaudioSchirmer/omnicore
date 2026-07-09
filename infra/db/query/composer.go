@@ -197,7 +197,7 @@ func (c *Composer) fetchLatestArchived(ctx context.Context, schema *core.TableSc
 	if err != nil || len(results) == 0 {
 		return nil, err
 	}
-	row := Document(results[0])
+	row := results[0]
 	coerceTypes(row, schema)
 	return row, nil
 }
@@ -455,7 +455,7 @@ func (c *Composer) fetchRow(ctx context.Context, schema *core.TableSchema, table
 	if err != nil || len(results) == 0 {
 		return nil, err
 	}
-	row := Document(results[0])
+	row := results[0]
 	coerceTypes(row, schema)
 	return row, nil
 }
@@ -488,7 +488,7 @@ func (c *Composer) fetchAll(ctx context.Context, schema *core.TableSchema, table
 func toBsonMaps(ms []map[string]any, schema *core.TableSchema) []Document {
 	out := make([]Document, len(ms))
 	for i, m := range ms {
-		out[i] = Document(m)
+		out[i] = m
 		coerceTypes(out[i], schema)
 	}
 	return out

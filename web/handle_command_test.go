@@ -148,12 +148,12 @@ func TestHandleCommandByID_CustomProjection(t *testing.T) {
 
 type sampleReqForReflect struct {
 	pipeline.CommandByIDBase         // anonymous embed: must be skipped
-	Name                       string  `json:"name"`
-	Email                      string  `json:"email,omitempty"`
-	Secret                     string  `json:"-"`     // skipped
-	Phone                      *string `json:"phone"` // pointer field still included
-	hidden                     string  // unexported — skipped
-	NoTag                      string  // no json tag → uses field name
+	Name                     string  `json:"name"`
+	Email                    string  `json:"email,omitempty"`
+	Secret                   string  `json:"-"`     // skipped
+	Phone                    *string `json:"phone"` // pointer field still included
+	hidden                   string  // unexported — skipped
+	NoTag                    string  // no json tag → uses field name
 }
 
 func TestReflectExpectedJSONKeys(t *testing.T) {

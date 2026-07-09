@@ -84,10 +84,10 @@ func TestFlattenHeaders(t *testing.T) {
 		t.Fatalf("nil headers must flatten to empty map, got %v", out)
 	}
 	out := flattenHeaders([]kafka.Header{
-		{Key: "event_type", Value: []byte("UserCreated")},     // bare (Connect SimpleHeaderConverter)
-		{Key: "aggregate_type", Value: []byte(`"users"`)},     // JSON-quoted (Debezium Server Kafka sink)
-		{Key: "event_id", Value: []byte("123")},               // bare non-string
-		{Key: "event_type", Value: []byte("UserUpdated")},     // duplicate → last wins
+		{Key: "event_type", Value: []byte("UserCreated")}, // bare (Connect SimpleHeaderConverter)
+		{Key: "aggregate_type", Value: []byte(`"users"`)}, // JSON-quoted (Debezium Server Kafka sink)
+		{Key: "event_id", Value: []byte("123")},           // bare non-string
+		{Key: "event_type", Value: []byte("UserUpdated")}, // duplicate → last wins
 	})
 	if out["event_type"] != "UserUpdated" {
 		t.Errorf("duplicate key must keep last occurrence, got %q", out["event_type"])

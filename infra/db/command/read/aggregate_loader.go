@@ -711,7 +711,7 @@ func (l *AggregateLoader[T]) loadBaseChildrenConstructor(ctx context.Context, ne
 // key value off the role entity for the SharedBase identity lookup.
 func goStringFieldValue(e any, goName string) string {
 	rv := reflect.ValueOf(e)
-	for rv.Kind() == reflect.Ptr {
+	for rv.Kind() == reflect.Pointer {
 		rv = rv.Elem()
 	}
 	if rv.Kind() != reflect.Struct {
@@ -721,7 +721,7 @@ func goStringFieldValue(e any, goName string) string {
 	if !f.IsValid() {
 		return ""
 	}
-	for f.Kind() == reflect.Ptr {
+	for f.Kind() == reflect.Pointer {
 		if f.IsNil() {
 			return ""
 		}

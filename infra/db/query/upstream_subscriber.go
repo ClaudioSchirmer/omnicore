@@ -330,7 +330,7 @@ func (s *UpstreamSubscriber) run(ctx context.Context) {
 	// CommitInterval matches SyncEngine — async commits batched each second.
 	// Safe under at-least-once because Upsert is idempotent and recompose is
 	// deterministic from current relational + Mongo state.
-	startFrom := transport.StartFromLatest
+	var startFrom string
 	switch s.cfg.StartFrom {
 	case upstreamStartFromLatest, "":
 		startFrom = transport.StartFromLatest

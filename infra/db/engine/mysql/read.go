@@ -52,7 +52,7 @@ type binaryDecodingRows struct {
 
 func (r *binaryDecodingRows) Scan(dest ...any) error {
 	if !r.resolved {
-		r.colTypes, _ = r.Rows.ColumnTypes()
+		r.colTypes, _ = r.ColumnTypes()
 		r.resolved = true
 	}
 	scanDest := make([]any, len(dest))

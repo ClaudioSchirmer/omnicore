@@ -259,24 +259,24 @@ func TestNewUsage(t *testing.T) {
 
 func TestRun_ArgValidation(t *testing.T) {
 	t.Run("missing-aggregate", func(t *testing.T) {
-		err := Run(nil, []string{})
+		err := Run(context.Background(), []string{})
 		if err == nil || !strings.Contains(err.Error(), "--aggregate is required") {
 			t.Fatalf("expected aggregate-required error, got %v", err)
 		}
 	})
 	t.Run("bad-batch-size", func(t *testing.T) {
-		err := Run(nil, []string{"--aggregate", "users", "--batch-size", "0"})
+		err := Run(context.Background(), []string{"--aggregate", "users", "--batch-size", "0"})
 		if err == nil || !strings.Contains(err.Error(), "--batch-size must be >= 1") {
 			t.Fatalf("expected batch-size error, got %v", err)
 		}
 	})
 	t.Run("help-returns-nil", func(t *testing.T) {
-		if err := Run(nil, []string{"-h"}); err != nil {
+		if err := Run(context.Background(), []string{"-h"}); err != nil {
 			t.Fatalf("help must return nil, got %v", err)
 		}
 	})
 	t.Run("unknown-flag", func(t *testing.T) {
-		if err := Run(nil, []string{"--nope"}); err == nil {
+		if err := Run(context.Background(), []string{"--nope"}); err == nil {
 			t.Fatal("expected parse error for unknown flag")
 		}
 	})
