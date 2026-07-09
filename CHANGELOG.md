@@ -32,6 +32,10 @@ with `1.0.0`.
     and consumer restarts, redelivers unacked messages, retains the log for
     replay). Maps the relay's subject/headers into the neutral envelope
     (aggregate_id from a header → the message key), so consumers are unchanged.
+    The fresh-consumer start position honours the same contract as Kafka:
+    `earliest` replays the retained log (`DeliverAll`), while `latest` and an
+    omitted `StartFrom` both begin at new messages (`DeliverNew`) — so a caller
+    that leaves the start position unset behaves identically on either transport.
 
 ### Changed
 

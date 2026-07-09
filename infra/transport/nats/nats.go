@@ -110,6 +110,21 @@ func (s *subscriber) EnsureTopics(ctx context.Context, _ []transport.TopicSpec) 
 	return nil
 }
 
+// deliverPolicyFor maps the neutral StartFrom to a JetStream DeliverPolicy for a
+// FRESH durable (no stored ack state); on restart the durable resumes from its
+// last ack regardless of this. It mirrors the transport contract and the kafka
+// adapter: StartFromEarliest replays the retained log (DeliverAll), while
+// everything else — StartFromLatest AND the empty default — begins at new
+// messages (DeliverNew). Aligning the empty case to "latest" is what keeps a
+// caller that omits StartFrom behaving identically on both transports (kafka-go's
+// unset StartOffset defaults to LastOffset); see SubscribeConfig.StartFrom.
+func deliverPolicyFor(startFrom string) jetstream.DeliverPolicy {
+	if startFrom == transport.StartFromEarliest {
+		return jetstream.DeliverAllPolicy
+	}
+	return jetstream.DeliverNewPolicy
+}
+
 // Subscribe opens a durable pull consumer filtered to the configured topics
 // (mapped to their prefixed subjects) and starts consuming into an internal
 // channel so Read can honor the caller's context. GroupID is the durable name —
@@ -119,15 +134,11 @@ func (s *subscriber) Subscribe(ctx context.Context, cfg transport.SubscribeConfi
 	for i, t := range cfg.Topics {
 		subjects[i] = subjectPrefix + "." + t
 	}
-	deliver := jetstream.DeliverAllPolicy
-	if cfg.StartFrom == transport.StartFromLatest {
-		deliver = jetstream.DeliverNewPolicy
-	}
 	cons, err := s.js.CreateOrUpdateConsumer(ctx, streamName, jetstream.ConsumerConfig{
 		Durable:        cfg.GroupID,
 		FilterSubjects: subjects,
 		AckPolicy:      jetstream.AckExplicitPolicy,
-		DeliverPolicy:  deliver,
+		DeliverPolicy:  deliverPolicyFor(cfg.StartFrom),
 		AckWait:        defaultAckWait,
 		MaxDeliver:     -1,
 		MaxAckPending:  maxAckPending,

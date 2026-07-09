@@ -119,11 +119,11 @@ type UpstreamSubscriber struct {
 	// eng is the relational engine the side-channel failure registry
 	// (omnicore_upstream_failures) is read/written through, via the neutral
 	// Querier + core.Dialect; the recompose ripple itself is Mongo + the composer.
-	eng              core.RelationalEngine
-	mongo            ReadModelStore
-	composer         *Composer
-	cfg              UpstreamSubscriberConfig
-	dependentViews   []*ViewDefinition
+	eng            core.RelationalEngine
+	mongo          ReadModelStore
+	composer       *Composer
+	cfg            UpstreamSubscriberConfig
+	dependentViews []*ViewDefinition
 	// hasManyEmbed is true when at least one dependent view embeds this
 	// subscription's collection via a one-to-many EmbedMany. It gates the extra
 	// "read the doc before the change" step the 1:N recompose-ripple needs (to
@@ -340,15 +340,19 @@ func (s *UpstreamSubscriber) run(ctx context.Context) {
 		// the earliest offset (the committed group offset wins once present).
 		startFrom = transport.StartFromEarliest
 	}
-	// "offset:<N>" is a coordinated-PITR shape: there is no per-message Seek
-	// API on a consumer-group reader, and the consumer group's committed offset
-	// wins anyway. Spec §7.4 documents the operator-side `kafka-consumer-groups.sh
-	// --reset-offsets --to-offset N` flow; here we log a warning so any boot
-	// under that posture surfaces the manual step.
+	// "offset:<N>" is a coordinated-PITR shape and a Kafka-specific concept:
+	// there is no per-message Seek API on a consumer-group reader, and the
+	// consumer group's committed offset wins anyway. Spec §7.4 documents the
+	// operator-side reset flow (Kafka: `kafka-consumer-groups.sh --reset-offsets
+	// --to-offset N`). Transports without numeric offsets (e.g. NATS JetStream)
+	// have no analogue and resume from the durable's committed position instead.
+	// Here we log a warning so any boot under that posture surfaces the manual
+	// step rather than silently ignoring the requested offset.
 	if s.offsetSeekTarget != nil {
-		s.logger.Warn("upstream subscriber: StartFrom=offset:N "+
-			"requires external offset reset via kafka-consumer-groups.sh — "+
-			"the framework does NOT auto-seek",
+		s.logger.Warn("upstream subscriber: StartFrom=offset:N requires an "+
+			"external offset reset via the broker's admin tooling (Kafka: "+
+			"kafka-consumer-groups.sh); the framework does NOT auto-seek, and "+
+			"transports without numeric offsets ignore N",
 			"topic", s.cfg.Topic,
 			"consumerGroup", s.cfg.ConsumerGroup,
 			"offset", *s.offsetSeekTarget)
