@@ -11,6 +11,8 @@ with `1.0.0`.
 
 ## [Unreleased]
 
+## [0.21.0] - 2026-07-08
+
 ### Added
 
 - **Message-transport seam — pluggable broker behind a build tag.** The three
