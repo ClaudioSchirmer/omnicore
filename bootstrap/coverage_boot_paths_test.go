@@ -408,7 +408,11 @@ func TestStartUpstreamSubscribers(t *testing.T) {
 	d.DB = bootFakeEngine{}
 	cfg := &Config{Service: "t"}
 	cfg.Transport.Endpoints = []string{"127.0.0.1:1"} // unroutable; the reader loop exits on the cancelled ctx
-	d.Transport, _ = newTransportSubscriber(cfg)  // real kafka adapter over the unroutable broker
+	// The linked transport adapter over the unroutable broker. Under a tagless
+	// build newTransportSubscriber is the transport_none stub — it returns a nil
+	// Subscriber, so the startsAndDrains subtest (which opens a real subscription)
+	// is skipped rather than dereferencing nil in the reader goroutine.
+	d.Transport, _ = newTransportSubscriber(cfg)
 
 	t.Run("emptyList", func(t *testing.T) {
 		if got := startUpstreamSubscribers(cancelledCtx(), d, cfg, nil, nil); got != nil {
@@ -422,6 +426,9 @@ func TestStartUpstreamSubscribers(t *testing.T) {
 		}
 	})
 	t.Run("startsAndDrains", func(t *testing.T) {
+		if d.Transport == nil {
+			t.Skip("no transport adapter linked (build without a transport tag) — startsAndDrains needs a real Subscriber")
+		}
 		subs := []UpstreamSubscription{{Topic: "t1", Collection: "c1", ConsumerGroup: "g1", Workers: 1}}
 		started := startUpstreamSubscribers(cancelledCtx(), d, cfg, subs, nil)
 		if len(started) != 1 {
