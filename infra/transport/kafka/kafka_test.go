@@ -84,14 +84,33 @@ func TestFlattenHeaders(t *testing.T) {
 		t.Fatalf("nil headers must flatten to empty map, got %v", out)
 	}
 	out := flattenHeaders([]kafka.Header{
-		{Key: "event_type", Value: []byte("UserCreated")},
-		{Key: "event_id", Value: []byte("123")},
-		{Key: "event_type", Value: []byte("UserUpdated")}, // duplicate → last wins
+		{Key: "event_type", Value: []byte("UserCreated")},     // bare (Connect SimpleHeaderConverter)
+		{Key: "aggregate_type", Value: []byte(`"users"`)},     // JSON-quoted (Debezium Server Kafka sink)
+		{Key: "event_id", Value: []byte("123")},               // bare non-string
+		{Key: "event_type", Value: []byte("UserUpdated")},     // duplicate → last wins
 	})
 	if out["event_type"] != "UserUpdated" {
 		t.Errorf("duplicate key must keep last occurrence, got %q", out["event_type"])
 	}
+	if out["aggregate_type"] != "users" {
+		t.Errorf("JSON-quoted header must unwrap, got %q", out["aggregate_type"])
+	}
 	if out["event_id"] != "123" {
 		t.Errorf("event_id = %q, want 123", out["event_id"])
+	}
+}
+
+func TestUnwrap(t *testing.T) {
+	cases := []struct{ in, want string }{
+		{`"users"`, "users"}, // JSON-quoted → bare
+		{"users", "users"},   // bare (invalid JSON) → passthrough
+		{`""`, ""},           // empty JSON string
+		{"", ""},             // empty
+		{"123", "123"},       // bare number-like
+	}
+	for _, c := range cases {
+		if got := unwrap(c.in); got != c.want {
+			t.Errorf("unwrap(%q) = %q, want %q", c.in, got, c.want)
+		}
 	}
 }

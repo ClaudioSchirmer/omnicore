@@ -13,10 +13,12 @@ package kafka
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/segmentio/kafka-go"
@@ -135,13 +137,32 @@ func (s *subscription) Read(ctx context.Context) (transport.Message, error) {
 
 // flattenHeaders converts kafka-go's ordered header slice into the neutral map,
 // LAST occurrence winning on a duplicate key — kafka-go preserves producer
-// order, so this matches the on-the-wire intent.
+// order, so this matches the on-the-wire intent. Each value is JSON-unwrapped so
+// the adapter is decoupled from the relay's header format: Debezium Server's
+// Kafka sink serializes a string as a quoted JSON scalar (`"users"`), while the
+// classic SimpleHeaderConverter (Kafka Connect) writes it bare — unwrap
+// normalizes both to the bare value the consumers expect. Idempotent for bare
+// strings, so it never regresses the Connect/Redpanda path.
 func flattenHeaders(headers []kafka.Header) map[string]string {
 	out := make(map[string]string, len(headers))
 	for _, h := range headers {
-		out[h.Key] = string(h.Value)
+		out[h.Key] = unwrap(string(h.Value))
 	}
 	return out
+}
+
+// unwrap decodes a JSON-encoded scalar string to its bare value, falling back to
+// trimming surrounding quotes; a value that is not JSON (a bare string) passes
+// through unchanged.
+func unwrap(raw string) string {
+	if raw == "" {
+		return ""
+	}
+	var s string
+	if err := json.Unmarshal([]byte(raw), &s); err == nil {
+		return s
+	}
+	return strings.Trim(raw, `"`)
 }
 
 func (s *subscription) Close() error { return s.reader.Close() }
