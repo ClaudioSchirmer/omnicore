@@ -328,6 +328,21 @@ func (f *UsersFeature) Mount(app *fiber.App, d bootstrap.Deps) {
         elapsed time — never silently abandoned.
     </p>
     <p>
+        A context is <strong>cooperative</strong> — it cannot interrupt code that ignores it — so the
+        budget alone is not a guarantee. Three defences make the drain <em>bounded no matter what</em>:
+        (1) the final <code>tracing</code> flush runs on its OWN short budget
+        (<code>shutdown.tracingDrainSeconds</code>, default 5s) so a dead or slow OTLP collector can
+        never consume the whole window — telemetry is best-effort, and losing a few unflushed spans
+        beats hanging a deploy; (2) the <code>onShutdown</code> hook is <em>raced</em> against the drain
+        deadline, so a consumer hook that blocks ignoring its context can no longer stall the process;
+        (3) a <strong>hard-deadline watchdog</strong> force-exits at
+        <code>drainTimeoutSeconds + shutdown.hardGraceSeconds</code> (grace default 5s) — turning a
+        pathological hang-to-SIGKILL into a bounded, logged <code>os.Exit</code> — and a
+        <strong>second</strong> SIGINT/SIGTERM during the drain forces an immediate exit (the operator's
+        "stop waiting"). Set <code>hardGraceSeconds</code> negative to opt the watchdog out (an embedder
+        that owns the process lifecycle itself).
+    </p>
+    <p>
         The drain <strong>narrates itself</strong> so a slow shutdown stays legible. On entry each
         stage logs <code>INFO draining stage=&lt;name&gt;</code>; on success
         <code>INFO drained stage=&lt;name&gt; elapsed=&lt;duration&gt;</code> — for the four parallel
@@ -361,13 +376,20 @@ drainWG.Wait()                           ← barrier: ALL of the above completed
    │
    ▼
 Tracing.Shutdown                         ← spans of the final in-flight work flushed AFTER it exists
+                                           (OWN short budget: tracingDrainSeconds, default 5s —
+                                            a dead collector cannot eat the drain window)
    │
    ▼
 Wiring.OnShutdown                        ← consumer hook; stores still open on purpose
+                                           (RACED against the drain deadline — a blocking hook
+                                            cannot stall the process)
    │
    ▼
 Mongo.Close() → relational engine Close()  ← storage handles close LAST — nothing can be
-                                             writing anymore, by dependency, not by luck</div>
+                                             writing anymore, by dependency, not by luck
+
+  ⟂ hard backstop (all of the above): a watchdog force-exits at
+    drainTimeoutSeconds + hardGraceSeconds, and a 2nd SIGINT/SIGTERM exits now.</div>
     <p>
         Why the consumer stages insist on waiting the <em>reader Close</em>: closing the transport subscription
         is what sends the group's <strong>LeaveGroup</strong>. A process that exits while that call is

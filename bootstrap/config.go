@@ -295,7 +295,20 @@ type Config struct {
 // knobs (per-drain timeout overrides, drain-stage trace level, etc.)
 // land here without breaking YAML grammar.
 type ShutdownConfig struct {
+	// DrainTimeoutSeconds is the overall budget for the coordinated drain
+	// (HTTP + gRPC + integration + upstream + sync). 0/omitted → default.
 	DrainTimeoutSeconds int `yaml:"drainTimeoutSeconds"`
+	// TracingDrainSeconds bounds the FINAL telemetry-flush stage on its OWN
+	// short budget so a dead/slow OTLP collector cannot consume the whole
+	// drain window (spans are best-effort — losing a few on a dead collector
+	// beats hanging shutdown). 0/omitted → default.
+	TracingDrainSeconds int `yaml:"tracingDrainSeconds"`
+	// HardGraceSeconds is the extra margin, ON TOP OF DrainTimeoutSeconds,
+	// after which a watchdog force-exits the process even if a non-cooperative
+	// stage (a hook ignoring ctx, a stuck close) never returns. 0/omitted →
+	// default; a NEGATIVE value disables the watchdog (embedders that own the
+	// process lifecycle themselves).
+	HardGraceSeconds int `yaml:"hardGraceSeconds"`
 }
 
 // FrameworkDefaultShutdownTimeoutSeconds is the drain ceiling honored
@@ -304,9 +317,25 @@ type ShutdownConfig struct {
 // drain completes inside the orchestrator's window.
 const FrameworkDefaultShutdownTimeoutSeconds = 30
 
+// FrameworkDefaultTracingDrainSeconds bounds the telemetry-flush stage. Kept
+// small on purpose: telemetry is best-effort and must never dominate the drain.
+const FrameworkDefaultTracingDrainSeconds = 5
+
+// FrameworkDefaultHardGraceSeconds is the watchdog margin over the drain budget.
+// At DrainTimeoutSeconds + HardGraceSeconds the process force-exits so a
+// non-cooperative stage can never hang it to SIGKILL.
+const FrameworkDefaultHardGraceSeconds = 5
+
 func (s *ShutdownConfig) applyDefaults() {
 	if s.DrainTimeoutSeconds <= 0 {
 		s.DrainTimeoutSeconds = FrameworkDefaultShutdownTimeoutSeconds
+	}
+	if s.TracingDrainSeconds <= 0 {
+		s.TracingDrainSeconds = FrameworkDefaultTracingDrainSeconds
+	}
+	// HardGraceSeconds: 0 → default; negative → disabled (kept as-is).
+	if s.HardGraceSeconds == 0 {
+		s.HardGraceSeconds = FrameworkDefaultHardGraceSeconds
 	}
 }
 

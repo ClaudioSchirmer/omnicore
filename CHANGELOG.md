@@ -52,9 +52,31 @@ with `1.0.0`.
   Like `/livez`, `/readyz` is framework-owned but **not** auto-public — list it in
   `auth.publicRoutes` so a tokenless kubelet can reach it. `*mongo.MongoDB` gains a
   `Ping` method backing the read-store leg.
+- **Graceful-shutdown drain knobs — `shutdown.tracingDrainSeconds`,
+  `shutdown.hardGraceSeconds`.** Two optional `shutdown:` fields alongside
+  `drainTimeoutSeconds`. `tracingDrainSeconds` (default 5) gives the final telemetry
+  flush its OWN short budget so a dead/slow OTLP collector cannot consume the whole
+  drain window. `hardGraceSeconds` (default 5) is the watchdog margin over the drain
+  budget: at `drainTimeoutSeconds + hardGraceSeconds` the process force-exits even if
+  a non-cooperative stage never returns; a **negative** value disables the watchdog
+  (an embedder that owns the process lifecycle). Both default when 0/absent, so an
+  upgrade with no yaml change gains the bounded behaviour automatically.
 
 ### Changed
 
+- **Graceful shutdown is now bounded no matter what.** A context is cooperative — it
+  cannot interrupt a stage that ignores it — so the drain budget alone never
+  guaranteed termination. Three defences close the gap: the `tracing` flush runs on
+  its own short budget (see `tracingDrainSeconds`); the `onShutdown` hook is raced
+  against the drain deadline instead of awaited inline, so a hook that blocks ignoring
+  its context can no longer stall the process; and a watchdog force-exits at
+  `drain + hardGraceSeconds` while a second SIGINT/SIGTERM exits immediately. Also:
+  the gRPC listener is force-closed when its graceful `Shutdown` overruns the deadline,
+  and the final Mongo disconnect is bounded by a 5s timeout. This fixes a real
+  operational hazard — with a dead OTLP collector during a rolling deploy the drain
+  could otherwise burn the full window and get SIGKILLed mid-flush. Not breaking:
+  defaults preserve behaviour; only a shutdown that was already overrunning is now
+  cut short (deliberately).
 - **breaking** — **the liveness probe moved from `GET /health` to `GET /livez`.**
   The route is renamed to the Kubernetes-idiomatic `-z` family (the pair `/livez` +
   `/readyz`; k8s core itself retired the single `/healthz`). Behaviour is otherwise
