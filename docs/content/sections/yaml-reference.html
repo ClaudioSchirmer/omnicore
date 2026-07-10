@@ -289,7 +289,11 @@ grpcClient:                              # absent → Deps.GRPCClient stays nil
         connMaxLifetimeSeconds: 60       # background sweep recycles idle pipes (re-dial → re-balance)
 
 shutdown:
-  drainTimeoutSeconds: 30                # default 30 (0/absent → 30); aligns with k8s terminationGracePeriodSeconds</code></pre>
+  drainTimeoutSeconds: 30                # default 30 (0/absent → 30); aligns with k8s terminationGracePeriodSeconds
+  tracingDrainSeconds: 5                 # default 5 (0/absent → 5); OWN budget for the final telemetry flush,
+                                         #   so a dead/slow OTLP collector can't consume the whole drain window
+  hardGraceSeconds: 5                    # default 5 (0/absent → 5); watchdog force-exits at drain+grace even if a
+                                         #   non-cooperative stage never returns. NEGATIVE → watchdog disabled</code></pre>
 
     <h3>upstreamSubscriptions</h3>
     <p>

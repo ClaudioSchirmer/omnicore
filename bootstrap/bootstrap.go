@@ -109,7 +109,13 @@ func runWithConfig(cfg *Config, wire func(Deps) Wiring) error {
 		return err
 	}
 	defer deps.DB.Close()
-	defer func() { _ = deps.Mongo.Close(context.Background()) }()
+	defer func() {
+		// Bound the Mongo disconnect so a stuck client cannot hang the final
+		// close after the coordinated drain already finished.
+		closeCtx, closeCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer closeCancel()
+		_ = deps.Mongo.Close(closeCtx)
+	}()
 
 	wiring := wire(deps)
 
@@ -1032,6 +1038,35 @@ func serve(ctx context.Context, deps Deps, wiring Wiring) error {
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), time.Duration(drainSeconds)*time.Second)
 	defer cancel()
 
+	// Hard backstop. A context is COOPERATIVE — it cannot interrupt a stage that
+	// ignores it (a hook blocking on I/O without ctx, a stuck close). The watchdog
+	// guarantees the process exits at drain + grace no matter what, turning a
+	// hang-to-SIGKILL into a bounded, logged force-exit. A SECOND signal is the
+	// operator's "stop waiting, exit NOW". A negative HardGraceSeconds opts out
+	// (the embedder owns the process lifecycle).
+	graceSeconds := deps.Config.Shutdown.HardGraceSeconds
+	if graceSeconds == 0 { // re-default inline (serve may run without applyDefaults)
+		graceSeconds = FrameworkDefaultHardGraceSeconds
+	}
+	if graceSeconds >= 0 {
+		watchdog := time.AfterFunc(time.Duration(drainSeconds+graceSeconds)*time.Second, func() {
+			deps.Logger.Error("shutdown exceeded the hard deadline — forcing exit",
+				"drainSeconds", drainSeconds, "hardGraceSeconds", graceSeconds)
+			os.Exit(1)
+		})
+		defer watchdog.Stop()
+
+		forceCh := make(chan os.Signal, 1)
+		signal.Notify(forceCh, syscall.SIGINT, syscall.SIGTERM)
+		defer signal.Stop(forceCh)
+		go func() {
+			if _, ok := <-forceCh; ok {
+				deps.Logger.Warn("second shutdown signal — forcing immediate exit")
+				os.Exit(1)
+			}
+		}()
+	}
+
 	// Coordinated drain: HTTP server + integration consumer pool +
 	// upstream subscribers run their drains in parallel under the
 	// shared shutdownCtx so one slow drain does not eat the whole
@@ -1053,7 +1088,16 @@ func serve(ctx context.Context, deps Deps, wiring Wiring) error {
 
 	drain("http", func() error { return app.ShutdownWithContext(shutdownCtx) })
 	if grpcSrv != nil {
-		drain("grpc", func() error { return grpcSrv.Shutdown(shutdownCtx) })
+		drain("grpc", func() error {
+			err := grpcSrv.Shutdown(shutdownCtx)
+			if errors.Is(err, context.DeadlineExceeded) {
+				// Graceful window elapsed — force listener + lingering conns closed
+				// so a stuck client cannot outlive the drain. (Fiber v3 exposes no
+				// equivalent hard close; the watchdog is its backstop.)
+				_ = grpcSrv.Close()
+			}
+			return err
+		})
 	}
 	if consumerPool != nil {
 		drain("integration", func() error { return consumerPool.Shutdown(shutdownCtx) })
@@ -1073,21 +1117,42 @@ func serve(ctx context.Context, deps Deps, wiring Wiring) error {
 	// Flush buffered spans AFTER the servers stopped accepting work, so the
 	// final in-flight requests' spans reach the collector. Nil-safe + no-op on
 	// the disabled path.
+	// Telemetry flush on its OWN short budget: a dead/slow OTLP collector must
+	// never consume the whole drain window — running last, it would otherwise
+	// inherit whatever the fast parallel drains left (up to the full budget).
+	// Spans are best-effort; losing a few on a dead collector beats hanging.
 	deps.Logger.Info("draining", "stage", "tracing")
 	tracingStart := time.Now()
-	if err := deps.Tracing.Shutdown(shutdownCtx); err != nil {
+	tracingSeconds := deps.Config.Shutdown.TracingDrainSeconds
+	if tracingSeconds <= 0 { // re-default inline (serve may run without applyDefaults)
+		tracingSeconds = FrameworkDefaultTracingDrainSeconds
+	}
+	traceCtx, traceCancel := context.WithTimeout(shutdownCtx, time.Duration(tracingSeconds)*time.Second)
+	if err := deps.Tracing.Shutdown(traceCtx); err != nil {
 		deps.Logger.Warn("drain failed", "stage", "tracing", "err", err, "elapsed", time.Since(tracingStart))
 	} else {
 		deps.Logger.Info("drained", "stage", "tracing", "elapsed", time.Since(tracingStart))
 	}
+	traceCancel()
 
+	// The user hook runs UNDER the drain budget but is RACED against it: a hook
+	// that ignores ctx and blocks can no longer hang the drain (the watchdog is
+	// the final backstop). Returning promptly lets the deferred store closes run.
 	if wiring.OnShutdown != nil {
 		deps.Logger.Info("draining", "stage", "onShutdown")
 		hookStart := time.Now()
-		if err := wiring.OnShutdown(shutdownCtx); err != nil {
-			deps.Logger.Warn("drain failed", "stage", "onShutdown", "err", err, "elapsed", time.Since(hookStart))
-		} else {
-			deps.Logger.Info("drained", "stage", "onShutdown", "elapsed", time.Since(hookStart))
+		hookDone := make(chan error, 1)
+		go func() { hookDone <- wiring.OnShutdown(shutdownCtx) }()
+		select {
+		case err := <-hookDone:
+			if err != nil {
+				deps.Logger.Warn("drain failed", "stage", "onShutdown", "err", err, "elapsed", time.Since(hookStart))
+			} else {
+				deps.Logger.Info("drained", "stage", "onShutdown", "elapsed", time.Since(hookStart))
+			}
+		case <-shutdownCtx.Done():
+			deps.Logger.Warn("onShutdown did not return before the drain deadline",
+				"err", shutdownCtx.Err(), "elapsed", time.Since(hookStart))
 		}
 	}
 	deps.Logger.Info("shutdown complete")
