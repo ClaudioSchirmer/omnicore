@@ -140,7 +140,7 @@ For any contract, behavior, field list, or example, open the mapped file under `
 | `microservice.<profile>.yaml` full reference (`${...}` substitution, all blocks) | `yaml-reference.html` | One file per profile; `APP_PROFILE` selects it; only `dev` unlocks `auth.mode=disabled`. |
 | OpenAPI 3.1 + Swagger UI (`*Spec` wrappers, `Mount`/`MountRaw`, generator coverage) | `openapi.html` | Reflection over the same DTOs; opt-in via `Wiring.OpenAPI`. |
 | GraphQL (own surface, Relay connections, reflected schema, per-field authz) | `graphql.html` | Reuses application handlers only; not in Swagger; not policed by REST scans. |
-| Relational migrations (numbered SQL, framework `0001` per dialect, autoRun modes) | `migrations.html` | v1 reserved for the control plane; service starts at `0002+`. |
+| Relational migrations (numbered SQL, framework `0001` per dialect, autoRun modes) | `migrations.html` | Framework `0001` in its own tracking table; the service's own files are an INDEPENDENT sequence starting at `0001` (separate table, no collision). |
 | Mongo schema evolution (drift detection, `Version(N)`, rebuild, `omnicore_mongo_views`) | `mongo-schema-evolution.html` | Backend-neutral control plane; advisory-lock rebuild; bump on rebuild-relevant change. |
 | Distributed tracing (OTel opt-in, `correlationID == trace_id`, async links) | `tracing.html` | `observability.tracing` default off = no-op; per-subsystem cost toggles. |
 

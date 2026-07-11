@@ -1,7 +1,9 @@
 // Package migration provides management of SQL migration files via a wrapper
 // over github.com/golang-migrate/migrate/v4. The outbox table is injected as
-// migration 1 of the framework via embed.FS; the service provides migrations
-// 2+ in the cfg.Migrations.Dir directory.
+// migration 1 of the framework via embed.FS; the service provides its OWN
+// migrations — an independent sequence starting at 0001 — in the
+// cfg.Migrations.Dir directory (tracked in a separate table, so it does not
+// continue the framework's numbering).
 //
 // The Manager operates 2 distinct migrate.Migrate instances in sequence:
 //
@@ -9,7 +11,7 @@
 //     "omnicore_framework_migrations". Applies 0001_outbox before the
 //     service schema.
 //  2. Service — file:// source (m.dir), tracking table
-//     "omnicore_migrations". Applies 0002+ of the service.
+//     "omnicore_migrations". Applies the service's own files (0001+).
 //
 // Two tracking tables avoid version collision: framework and service can
 // both have "version 1" without conflict because each has its own history.
