@@ -3,11 +3,11 @@
 
     <h3>Filename convention</h3>
     <pre><code>migrations/
-  0002_init.up.sql          # service schema
-  0002_init.down.sql        # reverse (mandatory)
-  0003_add_phone.up.sql
-  0003_add_phone.down.sql</code></pre>
-    <p>A service's own migrations start at <code>0002+</code>. Because each backend speaks a different SQL dialect, a service that targets more than one backend keeps a directory per dialect (the canonical example uses <code>migrations/postgres/</code> and <code>migrations/mysql/</code>) and points <code>migrations.dir</code> at the one matching <code>relational.dialect</code>.</p>
+  0001_init.up.sql          # service schema — the service's OWN sequence starts here
+  0001_init.down.sql        # reverse (mandatory)
+  0002_add_phone.up.sql
+  0002_add_phone.down.sql</code></pre>
+    <p>A service's own migrations are an <strong>independent sequence starting at <code>0001</code></strong>. They do <em>not</em> continue the framework's numbering: the framework's embedded <code>0001_framework</code> is tracked in a <em>separate</em> table (<code>omnicore_framework_migrations</code>), so the service's <code>0001</code> in <code>omnicore_migrations</code> never collides with it (see <a href="#migrations~tracking">Tracking</a>). Because each backend speaks a different SQL dialect, a service that targets more than one backend keeps a directory per dialect (the canonical example uses <code>migrations/postgres/</code> and <code>migrations/mysql/</code>) and points <code>migrations.dir</code> at the one matching <code>relational.dialect</code>.</p>
     <p class="note">Tables behind the relational <a href="#table-schema">specialization mechanisms</a> have shape requirements your migration must satisfy — a <a href="#table-schema~sibling-tables">sibling</a> table shares the owner's PK and declares no FK and no <code>deleted_at</code> (the owner owns the lifecycle); a <a href="#table-schema~shared-base">shared base</a> stores a deterministic <code>UUIDv5</code> PK with its natural-key column <code>UNIQUE NOT NULL</code> and no soft-delete, and each role table carries a <code>UNIQUE</code> FK to it. The authoritative column-by-column shapes (Postgres and MySQL) live in <a href="#table-schema">TableSchema</a>.</p>
 
     <h3>The framework's embedded control plane — version 1</h3>
@@ -20,7 +20,7 @@
         <li><code>integration_events</code> — producer-side integration-event store.</li>
         <li><code>omnicore_integration_failures</code> / <code>omnicore_integration_processed</code> — the consumer failure registry + dedup table.</li>
     </ul>
-    <p>The distributed-tracing carrier columns (<code>outbox.traceparent</code>, <code>integration_events.traceparent</code>, <code>audit_events.trace_id</code>) are inlined into this single migration, and every table + column carries a <code>COMMENT</code>. It is tracked in its own table (<code>omnicore_framework_migrations</code>), so a service's own migrations start at <code>0002+</code> in the separate <code>omnicore_migrations</code> table with no collision. The per-dialect embedded source is selected at boot by <code>frameworkSourceFor(dialect)</code> (the <code>embedded/&lt;dialect&gt;</code> subdirectory). <strong>Do not write the framework SQL manually</strong>; the framework guarantees an identical signature across all services on each backend (Debezium depends on the outbox shape).</p>
+    <p>The distributed-tracing carrier columns (<code>outbox.traceparent</code>, <code>integration_events.traceparent</code>, <code>audit_events.trace_id</code>) are inlined into this single migration, and every table + column carries a <code>COMMENT</code>. It is tracked in its own table (<code>omnicore_framework_migrations</code>), fully separate from the service's own table (<code>omnicore_migrations</code>) — so the service's files are numbered independently and start at <code>0001</code> with no collision. The per-dialect embedded source is selected at boot by <code>frameworkSourceFor(dialect)</code> (the <code>embedded/&lt;dialect&gt;</code> subdirectory). <strong>Do not write the framework SQL manually</strong>; the framework guarantees an identical signature across all services on each backend (Debezium depends on the outbox shape).</p>
 
     <h3>Default behavior at boot</h3>
     <ul>
@@ -29,7 +29,7 @@
         <li>Migration failure prevents the service from starting (boot returns error)</li>
         <li>Each migration runs in an isolated transaction — failure = rollback + <code>dirty=true</code> persisted in the tracking table</li>
         <li><code>.down.sql</code> mandatory (validated at startup); may be a no-op when reverse is technically infeasible</li>
-        <li>filenames must carry a parseable <code>{version}_{name}</code> prefix (<code>0002_init</code>) — a file like <code>init.up.sql</code> or <code>v2_init.up.sql</code> is silently ignored by the migration loader, so the same startup validation rejects it rather than letting the SQL never run while boot reports success</li>
+        <li>filenames must carry a parseable <code>{version}_{name}</code> prefix (<code>0001_init</code>) — a file like <code>init.up.sql</code> or <code>v2_init.up.sql</code> is silently ignored by the migration loader, so the same startup validation rejects it rather than letting the SQL never run while boot reports success</li>
     </ul>
 
     <h3>Tracking</h3>
@@ -37,9 +37,9 @@
     <table>
         <tbody><tr><th>Table</th><th>Who writes</th><th>Contains</th></tr>
         <tr><td><code>omnicore_framework_migrations</code></td><td>Framework (embedded)</td><td>version 1 (the flattened <code>0001_framework</code> control plane)</td></tr>
-        <tr><td><code>omnicore_migrations</code></td><td>Service (files in <code>cfg.Migrations.Dir</code>)</td><td>version 2+</td></tr>
+        <tr><td><code>omnicore_migrations</code></td><td>Service (files in <code>cfg.Migrations.Dir</code>)</td><td>version 1+ (the service's own sequence)</td></tr>
     </tbody></table>
-    <p>Separate tables avoid version collision — the framework table and the service table may both carry a "version 1" / "version 2" row without conflict.</p>
+    <p>Separate tables avoid version collision — the framework table and the service table BOTH carry their own "version 1" row (the framework's <code>0001_framework</code> and the service's <code>0001_init</code>) without conflict. This is exactly why a service numbers its files from <code>0001</code>, not <code>0002</code>: the framework's version 1 lives in a different table and does not consume a slot in the service's sequence.</p>
     <p>Each table stores only <code>(version BIGINT PRIMARY KEY, dirty BOOLEAN)</code>. The <code>.down.sql</code> <strong>is not stored</strong> — it is read from disk/embed at <code>Down(N)</code> time.</p>
 
     <h3>API — one Manager, a per-dialect constructor</h3>

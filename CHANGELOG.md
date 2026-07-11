@@ -11,6 +11,8 @@ with `1.0.0`.
 
 ## [Unreleased]
 
+## [0.22.0] - 2026-07-11
+
 ### Added
 
 - **HTTP server hardening knobs — `http.bodyLimitBytes`, `http.readTimeoutSeconds`,
@@ -85,6 +87,16 @@ with `1.0.0`.
   `auth.publicRoutes` entry (`GET /health` → `GET /livez`, and add `GET /readyz`),
   any k8s/Docker probe path, and the `openapi.uiPath` / `graphql.path` collision set
   (`/health` is no longer reserved; `/livez` and `/readyz` are).
+
+### Fixed
+
+- **Docs: a service's own migrations start at `0001`, not `0002`.** The migration
+  numbering guidance (`migrations.html`, the `migration` package comments, CLAUDE.md)
+  incorrectly stated services begin at `0002+`. Because the framework's `0001_framework`
+  is tracked in a *separate* table (`omnicore_framework_migrations`) from the service's
+  own (`omnicore_migrations`), the two sequences never collide — a service numbers its
+  own files independently from `0001`. No behaviour change (the runner always supported
+  this); the guidance was wrong.
 
 ## [0.21.0] - 2026-07-08
 

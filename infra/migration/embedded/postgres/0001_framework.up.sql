@@ -2,7 +2,7 @@
 -- ║ OmniCore framework control plane — PostgreSQL                              ║
 -- ╠══════════════════════════════════════════════════════════════════════════╣
 -- ║ Every table the framework owns, created in one migration. Service domain   ║
--- ║ tables start at version 0002 in the service's own directory. Each table +  ║
+-- ║ tables start at version 0001 in the service's own directory. Each table +  ║
 -- ║ column carries a COMMENT describing what it is for — the schema documents  ║
 -- ║ itself (\d+ <table> in psql shows them).                                   ║
 -- ╚══════════════════════════════════════════════════════════════════════════╝
