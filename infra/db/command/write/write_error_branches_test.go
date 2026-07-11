@@ -694,7 +694,7 @@ func TestInsertWithBase_StepFailures(t *testing.T) {
 	}
 
 	cases := verbSteps(
-		execStep("INSERT pessoa"),      // shared-base upsert (BuildUpsert stub)
+		execStep("INSERT INTO pessoa"), // shared-base cold INSERT (identity is new)
 		execStep("INSERT INTO aluno"),  // role INSERT
 		execStep("INSERT INTO outbox"), // role outbox (first outbox row)
 		execStep("INSERT INTO audit_events"),
@@ -785,7 +785,7 @@ func TestUpdateWithBase_StepFailures(t *testing.T) {
 			t.Fatalf("expected begin error, got %v", err)
 		}
 	})
-	for _, sub := range []string{"UPDATE aluno SET", "INSERT pessoa", "INSERT INTO outbox", "INSERT INTO audit_events"} {
+	for _, sub := range []string{"UPDATE aluno SET", "UPDATE pessoa SET", "INSERT INTO outbox", "INSERT INTO audit_events"} {
 		t.Run("exec:"+sub, func(t *testing.T) {
 			tx := newTx(sub)
 			if err := run(tx, nil, firingHook); !errors.Is(err, errRecExec) {

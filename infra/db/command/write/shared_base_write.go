@@ -184,7 +184,7 @@ func (b *BaseEngine) insertWithBase(ctx persistence.RequestContext, entity domai
 				"(SharedBaseInsertCommandHandler, or repo.LoadForSharedBaseInsert in a manual handler) before "+
 				"Insert; a blind insert would duplicate the shared identity's native data", entity.EntityName())
 	}
-	if err := b.upsertSharedBase(ctx, tx, d, base, baseID, baseFields); err != nil {
+	if err := b.upsertSharedBase(ctx, tx, d, base, baseID, baseFields, basePreExisted); err != nil {
 		return domain.WriteResult{}, err
 	}
 	active, err := b.findActiveRoleByFK(ctx, tx, d, schema, fkCol, baseID)
@@ -297,7 +297,9 @@ func (b *BaseEngine) updateWithBase(ctx persistence.RequestContext, entity domai
 	if err := applySiblingUpdates(ctx, tx, d, schema, src, entity.ID(), entity.IsPartial()); err != nil {
 		return domain.WriteResult{}, err
 	}
-	if err := b.upsertSharedBase(ctx, tx, d, base, baseID, baseFields); err != nil {
+	// The base always exists here (we are updating an existing role, whose FK
+	// references it), so this is always the UPDATE branch.
+	if err := b.upsertSharedBase(ctx, tx, d, base, baseID, baseFields, true); err != nil {
 		return domain.WriteResult{}, err
 	}
 	// An updated role is active → keep the shared identity active (reactivate if a
@@ -712,9 +714,27 @@ func baseExists(ctx context.Context, tx WriteTx, d Dialect, base *TableSchema, b
 	return exists, rows.Err()
 }
 
-// upsertSharedBase INSERTs the identity or updates its shared fields on conflict
-// (last-write-wins), keyed on the base's deterministic id.
-func (b *BaseEngine) upsertSharedBase(ctx context.Context, tx WriteTx, d Dialect, base *TableSchema, baseID string, baseFields domain.Fields) error {
-	sql, args := buildSiblingUpsert(d, base, base.PKColumn(), baseID, baseFields)
+// upsertSharedBase persists the shared identity row: a plain INSERT when the
+// identity is NEW, or an UPDATE of its shared fields (last-write-wins) by the
+// deterministic base id when it ALREADY exists. `baseExists` is the caller's
+// already-probed existence signal (baseExists()).
+//
+// It deliberately does NOT use a DB-native upsert (ON CONFLICT / ON DUPLICATE
+// KEY). Postgres' `ON CONFLICT (pk)` is scoped to the primary key, but MySQL's
+// `ON DUPLICATE KEY UPDATE` fires on ANY unique key — so if the shared base
+// carries a SECOND unique column (e.g. a unique email beside the natural-key
+// PK), a new-identity write whose email already exists would hijack the upsert
+// onto the wrong persons row on MySQL (new base never inserted → role FK fails →
+// 500). An explicit INSERT/UPDATE branch keyed on the PK behaves identically on
+// both dialects: the second unique column raises a clean unique violation that
+// the repo's ConstraintBinding maps to 409. (Trade-off: two concurrent COLD
+// inserts of the same brand-new identity now yield one PK-conflict 409 instead
+// of a silent last-write-wins merge — the more correct outcome.)
+func (b *BaseEngine) upsertSharedBase(ctx context.Context, tx WriteTx, d Dialect, base *TableSchema, baseID string, baseFields domain.Fields, baseExists bool) error {
+	if baseExists {
+		sql, args := buildUpdate(d, base.Table(), base.PKColumn(), baseID, baseFields, nil)
+		return tx.Exec(ctx, sql, args...)
+	}
+	sql, args := buildInsert(d, base.Table(), base.PKColumn(), baseID, baseFields, nil)
 	return tx.Exec(ctx, sql, args...)
 }
