@@ -11,6 +11,25 @@ with `1.0.0`.
 
 ## [Unreleased]
 
+## [0.23.0] - 2026-07-11
+
+### Fixed
+
+- **A SharedBase base carrying a second unique column no longer 500s on MySQL.**
+  The shared-identity write was a DB-native upsert (`ON CONFLICT (pk)` on Postgres,
+  `ON DUPLICATE KEY UPDATE` on MySQL). Postgres scopes the conflict to the primary
+  key, but MySQL's `ON DUPLICATE KEY UPDATE` fires on **any** unique key — so a base
+  with a second unique column (e.g. a unique `email` beside the natural-key PK) let
+  a new-identity write whose email already existed hijack the upsert onto the wrong
+  `persons` row: the new base was never inserted and the role FK failed → **500**
+  instead of a clean **409**. The shared-base write is now an explicit **INSERT**
+  (new identity) / **UPDATE by PK** (existing identity) branch — identical on both
+  dialects — so a second unique column raises a normal unique violation the
+  repository's `ConstraintBinding` maps to 409. Restores the backend-agnostic
+  parity invariant. Minor semantic sharpening: two concurrent COLD inserts of the
+  same brand-new identity now yield one PK-conflict 409 instead of a silent
+  last-write-wins merge (the more correct outcome). No API change.
+
 ## [0.22.0] - 2026-07-11
 
 ### Added

@@ -12,6 +12,12 @@
         </ul>
     </div>
     <div class="release">
+        <div class="release-head"><span class="release-tag">v0.23.0</span><span class="release-date">July 11, 2026</span></div>
+        <ul>
+            <li><strong>Fixed</strong> — <strong>a SharedBase base with a second unique column no longer 500s on MySQL.</strong> The shared-identity write was a DB-native upsert; Postgres' <code>ON CONFLICT (pk)</code> is scoped to the primary key, but MySQL's <code>ON DUPLICATE KEY UPDATE</code> fires on <em>any</em> unique key — so a base with a second unique column (e.g. a unique <code>email</code> beside the natural-key PK) let a new-identity write whose email already existed hijack the upsert onto the wrong <code>persons</code> row (new base never inserted → role FK fails → <strong>500</strong> instead of a clean <strong>409</strong>). The shared-base write is now an explicit <strong>INSERT</strong> (new identity) / <strong>UPDATE by PK</strong> (existing identity) branch — identical on both dialects — so a second unique column raises a normal unique violation the repository's <code>ConstraintBinding</code> maps to 409, restoring backend parity. Two concurrent COLD inserts of the same brand-new identity now yield one PK-conflict 409 instead of a silent last-write-wins merge. No API change. See <a href="#table-schema">TableSchema → Shared base</a>.</li>
+        </ul>
+    </div>
+    <div class="release">
         <div class="release-head"><span class="release-tag">v0.22.0</span><span class="release-date">July 11, 2026</span></div>
         <ul>
             <li><strong>Changed</strong> — <strong>breaking</strong>: <strong>the liveness probe moved from <code>GET /health</code> to <code>GET /livez</code>.</strong> Renamed to the Kubernetes-idiomatic <code>-z</code> family — the pair <code>/livez</code> + <code>/readyz</code> (k8s core itself retired the single <code>/healthz</code>). Behaviour is otherwise identical: static <code>{"status":"ok"}</code>, no dependency checks (a liveness probe must fail only when a restart is the cure, never on a store blip). <code>/health</code> is no longer a reserved route; <code>/livez</code> and <code>/readyz</code> are (the <code>openapi.uiPath</code> / <code>graphql.path</code> collision set). <em>Migration</em>: update every <code>auth.publicRoutes</code> entry (<code>GET /health</code> → <code>GET /livez</code>, add <code>GET /readyz</code>), any k8s/Docker probe path, and any hard-coded <code>/health</code> caller. See <a href="#bootstrap">Bootstrap</a>.</li>
