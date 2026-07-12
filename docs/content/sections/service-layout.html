@@ -1,0 +1,127 @@
+<h2>Service layout &amp; naming — the recommended standard</h2>
+
+    <p>
+        This page standardizes <strong>how a consumer service is laid out and named</strong>: directories, file
+        granularity, naming patterns, and the placement rules for every framework concept. It deliberately contains
+        <strong>no code</strong> — signatures, behavior and edge cases live in the mapped sections linked throughout,
+        and each linked section remains the sole authority for its mechanics. This page owns only <em>names, shapes
+        and placement</em>.
+    </p>
+
+    <div class="box">
+        <strong>Who this page binds.</strong> For a <strong>developer</strong>, everything here is a
+        <em>baseline</em>: the shape the framework's reference consumer uses and the shape every example assumes.
+        You know your service — deviate deliberately whenever you have a reason; nothing here is enforced by the
+        framework at boot. For a <strong>code generator</strong> (an AI scaffolder, a template tool), this page is
+        <em>normative</em>: produce exactly this shape unless the developer explicitly instructs otherwise, and
+        record any instructed deviation where the developer can see it. A generator has no taste of its own to
+        exercise — the developer's freedom is not the generator's freedom.
+    </div>
+
+    <h3>The service skeleton</h3>
+    <table>
+        <tbody><tr><th>Path</th><th>What lives there</th><th>Mechanics</th></tr>
+        <tr><td><code>bootstrap/</code></td><td><code>package main</code> — composition only: <code>main.go</code> (a few lines), <code>wire.go</code> (the single assembly), one <code>&lt;entity&gt;_feature.go</code> per feature. No routes, no schemas, no business code.</td><td><a href="#bootstrap">Bootstrap</a></td></tr>
+        <tr><td><code>internal/domain/</code></td><td>Aggregates, value objects, custom notifications, domain service ports. Pure — zero IO.</td><td><a href="#rules-dsl">Rules DSL</a> · <a href="#aggregate-persistence">Aggregate persistence</a></td></tr>
+        <tr><td><code>internal/application/commands/</code></td><td>One Command per verb, its Result co-located in the same file.</td><td><a href="#auto-handlers">Auto handlers</a></td></tr>
+        <tr><td><code>internal/application/queries/</code></td><td>Query types (criteria mapping), one per read shape.</td><td><a href="#auto-query-handlers">Auto query handlers</a></td></tr>
+        <tr><td><code>internal/application/dtos/</code></td><td>Child-collection input DTOs only — an entity without 1:N children has no <code>dtos/</code> entries.</td><td><a href="#aggregate-persistence">Aggregate persistence</a></td></tr>
+        <tr><td><code>internal/application/translations/</code></td><td>The seven language catalogs — always all seven, appended to (never regenerated) as entities are added.</td><td><a href="#status-mapping">Status mapping</a></td></tr>
+        <tr><td><code>internal/infra/</code></td><td>Repositories at the package root; <code>schemas/</code> and <code>views/</code> sub-packages; <code>external/</code> for outbound HTTP/gRPC adapters; domain-service implementations.</td><td><a href="#table-schema">TableSchema</a> · <a href="#service-to-service">Cross-service</a></td></tr>
+        <tr><td><code>internal/web/</code></td><td>Route files at the package root; <code>requests/</code> for wire DTOs. The only layer with wire tags.</td><td><a href="#auto-handlers">Auto handlers</a> · <a href="#openapi">OpenAPI</a></td></tr>
+        <tr><td><code>migrations/&lt;dialect&gt;/</code></td><td>One directory per target relational dialect; numbered SQL pairs.</td><td><a href="#migrations">Migrations</a></td></tr>
+        <tr><td><code>proto/</code></td><td>Only when the service exposes gRPC: the publishable contract + committed generated code, outside <code>internal/</code> on purpose.</td><td><a href="#grpc">gRPC</a></td></tr>
+        <tr><td><code>microservice.&lt;profile&gt;.yaml</code></td><td>One file per profile; selected by <code>APP_PROFILE</code>.</td><td><a href="#yaml-reference">YAML reference</a></td></tr>
+        <tr><td><code>devops/</code></td><td>The local bench (compose, CDC relay config) — replaced by real infrastructure in production.</td><td><a href="#transport">Message transport</a></td></tr>
+    </tbody></table>
+    <p>Layer import rules (who may import whom) are defined in <a href="#architecture">Architecture</a> and are not
+    repeated here. English everywhere — code, comments, identifiers, tests; the only non-English text is inside the
+    seven translation catalogs.</p>
+
+    <h3>Domain layer</h3>
+    <ul>
+        <li><strong>One domain type per file</strong>, lowercase singular: the root in <code>&lt;entity&gt;.go</code>, each value object in its own file. A root file that also holds its children's types is a smell, not a style.</li>
+        <li><strong><code>notifications.go</code> is the single shared home of every custom notification</strong>, grouped per aggregate with a comment divider. Adding an entity appends to it — never a per-entity notifications file, never notification types inside the entity's file.</li>
+        <li>Notification type names follow <code>&lt;What&gt;Notification</code>; the type name <em>is</em> the translation key (<a href="#status-mapping">Status mapping</a>).</li>
+        <li>Every persisted field carries a <code>labelKey</code> tag; physical column names never appear in the domain (they live only in the <a href="#table-schema">schema</a>).</li>
+        <li>Money is <code>int64</code> minor units — never a float. Nullable means pointer.</li>
+        <li>A domain-service <em>port</em> (interface) lives beside the entity that needs it; its <em>implementation</em> lives in <code>internal/infra/</code>.</li>
+    </ul>
+
+    <h3>Application layer</h3>
+    <p><strong>Commands — one per verb, file named <code>&lt;verb&gt;_&lt;entity&gt;_command.go</code>, Result co-located:</strong></p>
+    <table>
+        <tbody><tr><th>HTTP operation</th><th>File</th></tr>
+        <tr><td>POST (create)</td><td><code>insert_&lt;entity&gt;_command.go</code></td></tr>
+        <tr><td>PUT (full update)</td><td><code>update_&lt;entity&gt;_command.go</code></td></tr>
+        <tr><td>PATCH (partial update)</td><td><code>patch_&lt;entity&gt;_command.go</code></td></tr>
+        <tr><td>DELETE (hard)</td><td><code>delete_&lt;entity&gt;_command.go</code></td></tr>
+        <tr><td>Archive / Unarchive</td><td><code>archive_&lt;entity&gt;_command.go</code> / <code>unarchive_&lt;entity&gt;_command.go</code></td></tr>
+        <tr><td>Per-child operations</td><td><code>add_&lt;child&gt;_command.go</code> · <code>update_&lt;child&gt;_command.go</code> (or <code>change_</code>) · <code>archive_&lt;child&gt;_command.go</code></td></tr>
+    </tbody></table>
+    <ul>
+        <li><strong>Queries:</strong> by-id is singular, by-params is plural — <code>find_&lt;entity&gt;_by_id_query.go</code> and <code>find_&lt;entities&gt;_by_params_query.go</code>, one query type per file.</li>
+        <li><strong>Write results mirror the post-write entity</strong> — the full aggregate, children and their persisted ids included, never an echo of the input. The contract is defined in <a href="#auto-handlers">Auto handlers</a> (projection contract).</li>
+        <li><strong>Translations:</strong> all seven catalogs, every custom notification key, every <code>labelKey</code>, and the entity name itself (its <code>ContextName</code>) — real translations in each language, not English copied seven times.</li>
+    </ul>
+
+    <h3>Web layer</h3>
+    <ul>
+        <li><strong>Wire DTOs: one file per operation, request and response co-located</strong> — <code>insert_&lt;entity&gt;.go</code>, <code>update_&lt;entity&gt;.go</code>, <code>find_&lt;entity&gt;_by_id.go</code>, <code>find_&lt;entities&gt;_by_params.go</code> under <code>internal/web/requests/</code>. Not one file per entity, not one file per type: the unit is the operation, so its full wire surface reads in one place.</li>
+        <li><strong>Routes: all of an entity's surfaces in one <code>&lt;entity&gt;_routes.go</code></strong> — the REST mount plus the GraphQL and gRPC mounts when those surfaces exist. Never split one entity's surfaces across files; never put route registrations in <code>bootstrap/</code>.</li>
+        <li><strong>The shared-identity read surface is its own bounded context:</strong> a <a href="#table-schema">SharedBaseView</a> gets its own <code>person_routes.go</code> (or the identity's name), its own read-only route group, and its own permission — it is never folded into a role's routes, feature or permission.</li>
+        <li>Every request/response field carries an <code>example:</code> tag (it feeds the <a href="#openapi">OpenAPI</a> "try it out" body). JSON tags are camelCase of the field name.</li>
+        <li>List responses stay scalar (root fields only); the by-id response is where child collections nest.</li>
+    </ul>
+
+    <h3>HTTP surface conventions</h3>
+    <ul>
+        <li><strong>The verb tells the truth.</strong> <code>DELETE</code> is exclusively a hard purge. A soft removal is <code>PATCH …/archive</code>, with its <code>…/unarchive</code> inverse. This applies to the root and to per-child operations alike.</li>
+        <li><strong>Per-child editing is the add / update / archive trio</strong> — <code>POST …/:id/&lt;children&gt;</code>, <code>PUT …/:id/&lt;children&gt;/:childId</code> (404 when the child is not current), <code>PATCH …/:id/&lt;children&gt;/:childId/archive</code> — chosen per child over a destructive whole-collection replace.</li>
+        <li><strong>A sibling facet never gets its own endpoint</strong> — it is part of the root's contract, written through the root's verbs; clearing it rides the root's PUT (<a href="#table-schema">Sibling tables</a>).</li>
+        <li>Strict-vs-lenient body handling is decided per operation by its fields — a body with any optional field takes the lenient handler on <em>add and update alike</em> (<a href="#auto-handlers">Auto handlers</a>).</li>
+    </ul>
+
+    <h3>Infra layer</h3>
+    <ul>
+        <li><strong><code>schemas/</code>: one schema function per file</strong> — the base, each role, each child, each sibling in its own <code>&lt;name&gt;_schema.go</code>. No bundling.</li>
+        <li><strong><code>views/</code>: one view definition per file</strong> — <code>&lt;entity&gt;_view.go</code>, and the identity view in its own <code>person_view.go</code>.</li>
+        <li><strong>Repositories at the infra root:</strong> <code>&lt;entity&gt;_repository.go</code>, one per aggregate.</li>
+        <li>Outbound adapters (HTTP, gRPC clients) live under <code>internal/infra/external/</code>; handlers never import the toolboxes directly (<a href="#service-to-service">Cross-service</a>).</li>
+    </ul>
+
+    <h3>Migrations</h3>
+    <ul>
+        <li>The service's own sequence starts at <code>0001</code>, independent of the framework's (<a href="#migrations">Migrations</a>).</li>
+        <li><strong>One migration pair per scaffolded entity</strong> — all of the entity's tables (base, role, every child, every sibling) in a single <code>000N_&lt;entity&gt;.up.sql</code> in FK-dependency order, with its <code>.down.sql</code> dropping in reverse. Not one pair per table: five files for one entity wastes version numbers and scatters one atomic schema.</li>
+        <li><strong>Child and sibling tables are owner-prefixed</strong> — <code>person_addresses</code>, <code>student_grades</code>, <code>student_scholarships</code> — never bare generic names.</li>
+        <li><strong>Unique constraints are named <code>&lt;table&gt;_&lt;col&gt;_key</code></strong>, identically in every dialect, so the repository binds a single name.</li>
+        <li>Tables and columns are snake_case; the Go↔column type mapping per dialect is the <a href="#table-schema">TableSchema</a> section's authority.</li>
+    </ul>
+
+    <h3>Bootstrap layer</h3>
+    <ul>
+        <li><strong>One feature per aggregate</strong> — <code>&lt;entity&gt;_feature.go</code> holds that aggregate's repo + view and delegates mounting to <code>internal/web/</code> in one line.</li>
+        <li><strong>The identity view is its own feature</strong> — <code>persons_feature.go</code> (or the identity's name), never cargo inside a role's feature.</li>
+        <li><code>wire.go</code> is the single registration site: instantiate features, contribute GraphQL/gRPC cumulatively, list features (their order is the OpenAPI sidebar order).</li>
+    </ul>
+
+    <h3>Cross-cutting names</h3>
+    <table>
+        <tbody><tr><th>Thing</th><th>Convention</th></tr>
+        <tr><td>Permissions</td><td><code>resource:action</code>, lowercase, resource = the entity (e.g. <code>student:create</code>, <code>student:read</code>); the identity read surface carries its own resource (e.g. <code>person:read</code>). Generic vs per-operation granularity is a modeling choice — pick one and apply it uniformly across REST, GraphQL and gRPC (<a href="#authz-seams">Authorization</a>).</td></tr>
+        <tr><td>Notification types</td><td><code>&lt;What&gt;Notification</code>; unique-field conflicts are <code>&lt;Field&gt;AlreadyExists…</code> with a conflict semantic (409).</td></tr>
+        <tr><td>Translation keys</td><td>Identical to the notification type name; field labels are <code>&lt;Entity&gt;&lt;Field&gt;Field</code>; the entity name itself is a key too.</td></tr>
+        <tr><td>Route groups</td><td>Plural kebab-case of the entity (<code>/students</code>, <code>/students/:id/grades</code>); exports (when enabled) mount at the app root (<code>/students.csv</code>).</td></tr>
+        <tr><td>GraphQL fields</td><td>List = plural entity; mutations = <code>create&lt;Entity&gt;</code> / <code>update&lt;Entity&gt;</code> / <code>patch&lt;Entity&gt;</code> / <code>archive&lt;Entity&gt;</code>… mirroring the REST verbs (<a href="#graphql">GraphQL</a>).</td></tr>
+        <tr><td>Tests</td><td>Beside the source, <code>&lt;file&gt;_test.go</code>. Unit tests own what the entity adds (rules, mappers, criteria); handlers/wiring belong to end-to-end suites, not unit tests.</td></tr>
+    </tbody></table>
+
+    <div class="box">
+        <strong>The generator contract.</strong> A scaffolder building on this framework: reads <em>this page from the
+        version the target service pins</em> (the docs ship inside the module); produces exactly the layout above;
+        takes every API signature from the mapped sections, never from memory or from this page; treats a developer's
+        explicit instruction as the only license to deviate, and records the deviation. When this page and a
+        mechanics section appear to disagree, the mechanics section is right and this page has a bug — report it,
+        don't improvise.
+    </div>

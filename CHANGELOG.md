@@ -11,6 +11,23 @@ with `1.0.0`.
 
 ## [Unreleased]
 
+## [0.25.0] - 2026-07-12
+
+### Added
+
+- **Docs: "Service layout & naming — the recommended standard" (new section, Reference
+  group).** One page standardizing how a consumer service is laid out and named:
+  directory skeleton, per-layer file granularity (one domain type per file, one wire
+  file per operation, one schema per file), command/query file naming per verb,
+  migration granularity (one pair per entity, owner-prefixed child/sibling tables,
+  `<table>_<col>_key` constraints), bootstrap feature rules, HTTP verb honesty, and
+  cross-cutting names (permissions, notifications, translation keys, GraphQL fields).
+  Dual-audience by design: a **baseline** for developers (deviate deliberately; nothing
+  is boot-enforced) and **normative** for code generators (produce exactly this shape
+  unless the developer explicitly instructs otherwise). Deliberately code-free: API
+  mechanics stay in their mapped sections, which remain the sole authority on any
+  perceived conflict.
+
 ## [0.24.0] - 2026-07-12
 
 ### Fixed
