@@ -335,9 +335,14 @@ func writeChildren(ctx context.Context, tx WriteTx, d Dialect, root *domain.Aggr
 		for _, it := range items {
 			switch domain.OperationOf(it.OriginalStatus, it.CurrentStatus) {
 			case domain.OpInsert:
-				if err := insertChild(ctx, tx, d, child, it.Item, fkID); err != nil {
+				childID, err := insertChild(ctx, tx, d, child, it.Item, fkID)
+				if err != nil {
 					return err
 				}
+				// Write the minted PK back into the aggregate map so post-write
+				// readers (FromEntity projections, the outbox/audit snapshots
+				// built after this loop) see the child as persisted, id included.
+				root.AssignAggregateItemID(it.Item, childID)
 			case domain.OpUpdate:
 				if err := updateChild(ctx, tx, d, child, it.Item); err != nil {
 					return err
@@ -369,20 +374,25 @@ func removeChild(ctx context.Context, tx WriteTx, d Dialect, child *TableSchema,
 	return archiveChild(ctx, tx, d, child, typeName, item)
 }
 
-func insertChild(ctx context.Context, tx WriteTx, d Dialect, child *TableSchema, item domain.AggregateValueObject, rootID string) error {
+// insertChild persists one Added child and returns the PK it minted — the
+// caller writes that id back into the aggregate map (AssignAggregateItemID).
+func insertChild(ctx context.Context, tx WriteTx, d Dialect, child *TableSchema, item domain.AggregateValueObject, rootID string) (string, error) {
 	fields := child.WriteFields(item)
 	fields[child.FKColumn()] = domain.NewID(rootID) // FK to the root, dialect-encoded by buildInsert
 	childID, err := newWriteID()
 	if err != nil {
-		return err
+		return "", err
 	}
 	sql, args := buildInsert(d, child.Table(), child.PKColumn(), childID, fields, child.InsertNowColumns())
 	if err := tx.Exec(ctx, sql, args...); err != nil {
-		return err
+		return "", err
 	}
 	// A child may carry its own siblings (the one allowed recursive width); they
 	// share the child's PK, read from the same AVO.
-	return insertSiblings(ctx, tx, d, child, item, childID)
+	if err := insertSiblings(ctx, tx, d, child, item, childID); err != nil {
+		return "", err
+	}
+	return childID, nil
 }
 
 func updateChild(ctx context.Context, tx WriteTx, d Dialect, child *TableSchema, item domain.AggregateValueObject) error {

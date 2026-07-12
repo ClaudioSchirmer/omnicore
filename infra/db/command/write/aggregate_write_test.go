@@ -79,6 +79,38 @@ func TestBaseEngine_InsertAggregate_WithChild(t *testing.T) {
 	}
 }
 
+func TestBaseEngine_InsertAggregate_WritesMintedChildIDBack(t *testing.T) {
+	root := &aggWriteRoot{Name: "r"}
+	domain.AddAggregateChild(root, aggWriteChild{Label: "a"})
+	ins, err := domain.GetInsertable(root, nil, "GetInsertable")
+	if err != nil {
+		t.Fatalf("GetInsertable: %v", err)
+	}
+
+	tx := &recTx{}
+	be := newFlatBE(&recBeginner{tx: tx})
+	if _, err := be.Insert(newBuilderCtx(), ins, aggWriteSchema(), firingHook); err != nil {
+		t.Fatalf("insertAggregate: %v", err)
+	}
+
+	// The persister mints the child PK inside the INSERT; the write-back must
+	// surface it in the aggregate map so post-write readers (FromEntity
+	// projections, outbox/audit snapshots) see the child as persisted.
+	items := domain.GetCurrentItemsOf[aggWriteChild](&root.AggregateRoot)
+	if len(items) != 1 {
+		t.Fatalf("expected exactly one current child, got %+v", items)
+	}
+	if items[0].ID == "" {
+		t.Fatal("minted child id must be written back into the aggregate map")
+	}
+	if _, err := uuid.Parse(items[0].ID); err != nil {
+		t.Errorf("written-back id must be the minted UUID, got %q: %v", items[0].ID, err)
+	}
+	if items[0].Label != "a" {
+		t.Errorf("write-back must not disturb the child's data, got %+v", items[0])
+	}
+}
+
 func TestBaseEngine_UpdateAggregate_AllChildOps(t *testing.T) {
 	id1 := uuid.NewString() // will be Changed
 	id2 := uuid.NewString() // will be Removed (archived)

@@ -66,8 +66,12 @@ from the tag.
    `<strong>` whose text is exactly `breaking`. Prose like "(breaking)" does NOT
    trigger it (the root `CHANGELOG.md` is free prose, not parsed).
 4. **`content/sections/features.html`** — refresh the coverage figure in the stat strip
-   (the `94.7%` `.stat`). Recompute with this pinned command (so it never drifts on method):
-   - coverage: `go test ./... -coverpkg=./... -coverprofile=/tmp/c.out && go tool cover -func=/tmp/c.out | tail -1` (pure unit, all packages in the denominator)
+   (the `94.x%` `.stat`). Recompute with this pinned method (so it never drifts on method) —
+   build tags are mandatory (untagged builds exclude the engine/transport adapters from the
+   denominator) and the published figure excludes the generated `.pb.go` files:
+   - `go test -tags 'postgres kafka' ./... -coverpkg=./... -coverprofile=/tmp/c.out`
+   - `head -1 /tmp/c.out > /tmp/cx.out && grep -v "\.pb\.go:" /tmp/c.out | tail -n +2 >> /tmp/cx.out`
+   - `go tool cover -func=/tmp/cx.out | tail -1` (pure unit, all non-generated packages in the denominator)
 5. **Tag (maintainer only):** `git commit` → `git tag vX.Y.Z` → push. The Go module
    version IS the tag — there is no version constant in code.
 6. **`../../omnicore-example-users/go.mod`** — bump `require …/omnicore vX.Y.Z` once the

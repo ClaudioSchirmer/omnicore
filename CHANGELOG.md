@@ -11,6 +11,36 @@ with `1.0.0`.
 
 ## [Unreleased]
 
+## [0.24.0] - 2026-07-12
+
+### Fixed
+
+- **Docs: the CDC relay must pass the outbox payload through as opaque text —
+  JSON expansion off.** The transport section now states the relay config
+  contract explicitly: `table.expand.json.payload=false` + the pass-through
+  value format (Debezium Server `simplestring` / Kafka Connect
+  `StringConverter`). With expansion on, Debezium infers a typed schema from
+  each event's JSON text, and JSON number shapes are not stable types (Go
+  marshals the float `3.0` as `3`), so a numeric array like `[3.7, 3]` fails
+  the expansion and crashes the relay — a poison message halting all
+  read-model refresh. No OmniCore consumer reads the typed structure (the
+  payload is a routing hint; the composer re-reads the database), so the
+  expansion bought nothing. Behaviour change is config-side only; the
+  reference consumer's relay configs were aligned in the same round.
+
+### Added
+
+- **Aggregate child ids are written back into the aggregate map after INSERT.**
+  The relational persister mints each child's PK inside the child INSERT; that id
+  is now stamped back onto the tracked item (`domain.AssignAggregateItemID` — sets
+  the item's exported string `ID` field, statuses untouched), so post-write readers
+  see the child exactly as persisted. Concretely: a command's `FromEntity` can now
+  project the write response as a **full aggregate mirror including child ids**
+  (`GetCurrentItemsOf` returns them populated), and the outbox/audit snapshots —
+  built after the child INSERTs — carry real ids instead of empty ones. An item
+  without a settable string `ID` field is skipped silently. No API change to the
+  write path; `AssignAggregateItemID` is new public domain surface.
+
 ## [0.23.0] - 2026-07-11
 
 ### Fixed
