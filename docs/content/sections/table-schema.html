@@ -448,6 +448,15 @@ func OrdersView() *query.ViewDefinition {
     exactly like one — no consumer-side singleton. Two <em>divergent</em> declarations of the same table (different natural
     key, policy, soft-delete, fields, or children) panic at boot:
 </p>
+<p>
+    <strong>Managed columns on the base are optional and honored when declared.</strong> A base that declares
+    <code>.CreatedAt(col)</code>/<code>.UpdatedAt(col)</code> gets them stamped by the framework exactly like any other
+    table: on the identity's <em>creation</em> (the cold insert) and — <code>UpdatedAt</code> — on every
+    <em>role-driven change of the shared fields</em> (the warm upsert and a role's update both write the base row). A
+    base that declares neither is never touched: keep a database <code>DEFAULT</code> on the DDL columns if you only
+    want a creation timestamp. Lifecycle convergence (archive/unarchive of the identity) touches only the soft-delete
+    column, on the base as on every other table.
+</p>
 <pre><code>var person = core.NewSharedBase("person").
     PK("id").                                      // the deterministic UUIDv5 lands here
     Field("Name", "name").
