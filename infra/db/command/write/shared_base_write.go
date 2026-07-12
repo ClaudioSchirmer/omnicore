@@ -730,11 +730,17 @@ func baseExists(ctx context.Context, tx WriteTx, d Dialect, base *TableSchema, b
 // the repo's ConstraintBinding maps to 409. (Trade-off: two concurrent COLD
 // inserts of the same brand-new identity now yield one PK-conflict 409 instead
 // of a silent last-write-wins merge — the more correct outcome.)
+// Managed columns are honored when the base DECLARES them: CreatedAt(+UpdatedAt)
+// stamped on the identity's creation, UpdatedAt on every role-driven change of the
+// shared fields (the warm upsert and the role update both land here). A base that
+// declares none — the common shape — yields empty lists and byte-identical SQL to
+// before. Lifecycle-converge writes (archive/unarchive) touch only deleted_at,
+// same as every other table.
 func (b *BaseEngine) upsertSharedBase(ctx context.Context, tx WriteTx, d Dialect, base *TableSchema, baseID string, baseFields domain.Fields, baseExists bool) error {
 	if baseExists {
-		sql, args := buildUpdate(d, base.Table(), base.PKColumn(), baseID, baseFields, nil)
+		sql, args := buildUpdate(d, base.Table(), base.PKColumn(), baseID, baseFields, base.UpdateNowColumns())
 		return tx.Exec(ctx, sql, args...)
 	}
-	sql, args := buildInsert(d, base.Table(), base.PKColumn(), baseID, baseFields, nil)
+	sql, args := buildInsert(d, base.Table(), base.PKColumn(), baseID, baseFields, base.InsertNowColumns())
 	return tx.Exec(ctx, sql, args...)
 }

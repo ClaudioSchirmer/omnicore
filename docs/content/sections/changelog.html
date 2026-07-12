@@ -12,6 +12,13 @@
         </ul>
     </div>
     <div class="release">
+        <div class="release-head"><span class="release-tag">v0.26.0</span><span class="release-date">July 12, 2026</span></div>
+        <ul>
+            <li><strong>Added</strong> — <strong>a shared base's managed columns are honored when declared.</strong> <code>NewSharedBase(...)</code> accepting <code>.CreatedAt()</code>/<code>.UpdatedAt()</code> used to be silently ignored by the write path (the base row was never stamped; a <code>NOT NULL</code> column without a DB default failed at the first insert). The base write now stamps them exactly like any other table: on the identity's creation, and <code>UpdatedAt</code> on every role-driven change of the shared fields (warm upsert + role update). A base that declares neither keeps byte-identical SQL; lifecycle convergence still touches only the soft-delete column. See <a href="#table-schema">TableSchema → Shared base</a>.</li>
+            <li><strong>Fixed</strong> — <strong>docs: domain-service port file placement made explicit.</strong> The service-layout standard said the port "lives beside the entity", which read as "same file" to a generator. Now explicit: the interface is one more domain type — one-type-per-file applies — its own <code>&lt;entity&gt;_service.go</code> in the domain package, never embedded in the entity's file; the implementation keeps its own file in <code>internal/infra/</code>. See <a href="#service-layout">Service layout &amp; naming</a>.</li>
+        </ul>
+    </div>
+    <div class="release">
         <div class="release-head"><span class="release-tag">v0.25.0</span><span class="release-date">July 12, 2026</span></div>
         <ul>
             <li><strong>Added</strong> — <strong>docs: "Service layout &amp; naming — the recommended standard" (new section, Reference group).</strong> One page standardizing how a consumer service is laid out and named: directory skeleton, per-layer file granularity (one domain type per file, one wire file per operation, one schema per file), command/query file naming per verb, migration granularity (one pair per entity, owner-prefixed child/sibling tables, <code>&lt;table&gt;_&lt;col&gt;_key</code> constraints), bootstrap feature rules, HTTP verb honesty, and cross-cutting names. Dual-audience by design: a <em>baseline</em> for developers (deviate deliberately; nothing is boot-enforced) and <em>normative</em> for code generators (produce exactly this shape unless the developer explicitly instructs otherwise). Deliberately code-free — API mechanics stay in their mapped sections, which win on any perceived conflict. See <a href="#service-layout">Service layout &amp; naming</a>.</li>

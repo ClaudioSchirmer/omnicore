@@ -11,6 +11,30 @@ with `1.0.0`.
 
 ## [Unreleased]
 
+## [0.26.0] - 2026-07-12
+
+### Added
+
+- **A shared base's managed columns are honored when declared.** `NewSharedBase(...)`
+  accepting `.CreatedAt()`/`.UpdatedAt()` used to be silently ignored by the write
+  path (the base row was never stamped — declaring the columns with `NOT NULL` and no
+  DB default failed at the first insert). The base write now stamps them exactly like
+  any other table: on the identity's creation, and `UpdatedAt` on every role-driven
+  change of the shared fields (warm upsert + role update). A base that declares
+  neither — the common shape — keeps byte-identical SQL. Lifecycle convergence
+  (archive/unarchive) still touches only the soft-delete column, on the base as on
+  every table. See TableSchema → Shared base.
+
+### Fixed
+
+- **Docs: domain-service port file placement made explicit.** The service-layout
+  standard said the port "lives beside the entity", which read as "same file" to a
+  generator. Now explicit: the interface is one more domain type — one-type-per-file
+  applies — so it gets its own `<entity>_service.go` in the domain package (never
+  embedded in the entity's file); the implementation keeps its own file in
+  `internal/infra/`. The interface stays with its consumer, never with its
+  implementation.
+
 ## [0.25.0] - 2026-07-12
 
 ### Added

@@ -45,7 +45,7 @@
         <li>Notification type names follow <code>&lt;What&gt;Notification</code>; the type name <em>is</em> the translation key (<a href="#status-mapping">Status mapping</a>).</li>
         <li>Every persisted field carries a <code>labelKey</code> tag; physical column names never appear in the domain (they live only in the <a href="#table-schema">schema</a>).</li>
         <li>Money is <code>int64</code> minor units — never a float. Nullable means pointer.</li>
-        <li>A domain-service <em>port</em> (interface) lives beside the entity that needs it; its <em>implementation</em> lives in <code>internal/infra/</code>.</li>
+        <li>A domain-service <em>port</em> (interface) is one more domain type, so it follows one-type-per-file: <strong>its own <code>&lt;entity&gt;_service.go</code> in the domain package</strong> — never embedded in the entity's file. The <em>implementation</em> lives in <code>internal/infra/</code> (its own <code>&lt;entity&gt;_service.go</code> there). The interface stays with its consumer (the domain), never with its implementation.</li>
     </ul>
 
     <h3>Application layer</h3>
