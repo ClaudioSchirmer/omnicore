@@ -12,6 +12,12 @@
         </ul>
     </div>
     <div class="release">
+        <div class="release-head"><span class="release-tag">v0.25.0</span><span class="release-date">July 12, 2026</span></div>
+        <ul>
+            <li><strong>Added</strong> — <strong>docs: "Service layout &amp; naming — the recommended standard" (new section, Reference group).</strong> One page standardizing how a consumer service is laid out and named: directory skeleton, per-layer file granularity (one domain type per file, one wire file per operation, one schema per file), command/query file naming per verb, migration granularity (one pair per entity, owner-prefixed child/sibling tables, <code>&lt;table&gt;_&lt;col&gt;_key</code> constraints), bootstrap feature rules, HTTP verb honesty, and cross-cutting names. Dual-audience by design: a <em>baseline</em> for developers (deviate deliberately; nothing is boot-enforced) and <em>normative</em> for code generators (produce exactly this shape unless the developer explicitly instructs otherwise). Deliberately code-free — API mechanics stay in their mapped sections, which win on any perceived conflict. See <a href="#service-layout">Service layout &amp; naming</a>.</li>
+        </ul>
+    </div>
+    <div class="release">
         <div class="release-head"><span class="release-tag">v0.24.0</span><span class="release-date">July 12, 2026</span></div>
         <ul>
             <li><strong>Fixed</strong> — <strong>docs: the CDC relay must pass the outbox payload through as opaque text — JSON expansion off.</strong> The transport section now states the relay config contract explicitly: <code>table.expand.json.payload=false</code> + the pass-through value format (Debezium Server <code>simplestring</code> / Kafka Connect <code>StringConverter</code>). With expansion on, Debezium infers a typed schema from each event's JSON text, and JSON number shapes are not stable types (Go marshals the float <code>3.0</code> as <code>3</code>) — a numeric array like <code>[3.7, 3]</code> fails the expansion and <em>crashes the relay</em>, halting all read-model refresh on a poison message. No OmniCore consumer reads the typed structure (the payload is a routing hint; the composer re-reads the database). Config-side only; the reference consumer's relay configs were aligned in the same round. See <a href="#transport">Message transport</a>.</li>

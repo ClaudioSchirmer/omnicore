@@ -185,6 +185,10 @@
       {
         "id": "reference",
         "label": "Quick reference"
+      },
+      {
+        "id": "service-layout",
+        "label": "Service layout & naming"
       }
     ]
   },

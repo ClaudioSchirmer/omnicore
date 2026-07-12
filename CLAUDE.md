@@ -148,6 +148,7 @@ For any contract, behavior, field list, or example, open the mapped file under `
 | Topic | Section | Essence |
 |---|---|---|
 | Quick reference (where to add things, naming, surfaces) | `reference.html` | Consumer-facing index. |
+| Service layout & naming — the recommended standard (directory skeleton, file granularity, per-layer naming, migration granularity, cross-cutting names) | `service-layout.html` | Baseline for developers, NORMATIVE for code generators; names/placement only — mechanics stay in the mapped sections. |
 | Changelog | `changelog.html` | Per-release entries; `<strong>breaking</strong>` marker drives severity. |
 
 ## Cross-cutting invariants (must survive every change)
