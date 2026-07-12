@@ -140,6 +140,56 @@ func (ar *AggregateRoot) ClearAggregateItemsOfType(typeName string) {
 	ar.aggregates[typeName] = list
 }
 
+// AssignAggregateItemID stamps a persistence-minted id onto a tracked item —
+// the write-back half of child insertion. The relational persister mints each
+// child's PK inside the INSERT (the domain never generates child ids); this
+// method lets it reflect that id back into the aggregate map, so post-write
+// readers (FromEntity result projections, the audit/outbox snapshots) see the
+// child exactly as persisted instead of with an empty id. It matches the
+// tracked entry by deep equality against the PRE-assignment value and sets the
+// item's exported string "ID" field via reflection (the documented value-object
+// shape); statuses are left untouched. Returns false when the item isn't
+// tracked or carries no settable string ID field — callers treat that as
+// "no write-back possible", never an error.
+func (ar *AggregateRoot) AssignAggregateItemID(item AggregateValueObject, id string) bool {
+	if item == nil || ar.aggregates == nil {
+		return false
+	}
+	stamped, ok := withItemID(item, id)
+	if !ok {
+		return false
+	}
+	key := classNameOf(item)
+	list := ar.aggregates[key]
+	for i, entry := range list {
+		if reflect.DeepEqual(entry.item, item) {
+			list[i].item = stamped
+			ar.aggregates[key] = list
+			return true
+		}
+	}
+	return false
+}
+
+// withItemID returns a copy of item with its exported string "ID" field set.
+// Value-object items are plain structs (change tracking depends on it), so a
+// non-struct or an item without a settable string "ID" reports false.
+func withItemID(item AggregateValueObject, id string) (AggregateValueObject, bool) {
+	t := reflect.TypeOf(item)
+	if t == nil || t.Kind() != reflect.Struct {
+		return nil, false
+	}
+	v := reflect.New(t).Elem()
+	v.Set(reflect.ValueOf(item))
+	f := v.FieldByName("ID")
+	if !f.IsValid() || f.Kind() != reflect.String || !f.CanSet() {
+		return nil, false
+	}
+	f.SetString(id)
+	out, ok := v.Interface().(AggregateValueObject)
+	return out, ok
+}
+
 func (ar *AggregateRoot) AllAggregateItems() map[string][]AggregateItem[AggregateValueObject] {
 	out := map[string][]AggregateItem[AggregateValueObject]{}
 	for k, list := range ar.aggregates {

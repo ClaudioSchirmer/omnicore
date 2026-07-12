@@ -52,3 +52,18 @@ type Subscriber interface {
     <li>To NATS: <strong>Debezium Server</strong> (&ge; 3.2 for header forwarding) with the JetStream sink. One instance tails every outbox table via predicate-gated EventRouter transforms.</li>
   </ul>
   <p>The relay carries the routing metadata as message headers (<code>aggregate_type</code>, <code>event_type</code>, <code>traceparent</code>, <code>aggregate_id</code>); the payload is a routing hint only &mdash; the composer re-reads current state from the relational source on each event, which is why the read side is self-healing and tolerant of at-least-once redelivery. The reference consumer wires this end to end; see its bench for a concrete NATS + Debezium Server setup.</p>
+
+  <div class="box">
+    <strong>Relay config contract — pass the payload through as opaque text; never let the relay type it.</strong>
+    Because the payload is a routing hint (above), the Event Router's JSON expansion must stay <strong>off</strong>:
+    <code>table.expand.json.payload=false</code>, with the value format set to the pass-through converter
+    (Debezium Server: <code>debezium.format.value=simplestring</code>; Kafka Connect:
+    <code>value.converter=org.apache.kafka.connect.storage.StringConverter</code>). The wire bytes are then exactly
+    the JSON text the write recorded in the outbox row. With expansion <em>on</em>, Debezium infers a typed schema
+    from each event's JSON text &mdash; and JSON number shapes are not stable types: Go marshals the float
+    <code>3.0</code> as <code>3</code>, so a numeric array like <code>[3.7, 3]</code> infers FLOAT64 from the first
+    element and then rejects the second as Integer, failing the expansion and <strong>crashing the relay</strong>
+    (a poison message that halts ALL read-model refresh until the relay restarts &mdash; and re-crashes on the same
+    event). The expansion buys nothing here &mdash; no OmniCore consumer reads the typed structure &mdash; and it is
+    the only stage of the pipeline that assigns types to the payload at all.
+  </div>

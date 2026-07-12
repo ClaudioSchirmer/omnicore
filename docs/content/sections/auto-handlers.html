@@ -87,6 +87,18 @@
     </p>
 
     <p>
+        <strong>Projection contract — read the ENTITY, mirror the post-write state.</strong> <code>FromEntity</code>
+        runs on the same instance that <code>BuildRules</code> validated (and possibly normalized) and the persister
+        stored — the domain has the final word, and the response is how the caller learns it. Build the Result
+        <em>only</em> from the entity parameter, never by echoing the Cmd's own fields: an input-echo silently hides
+        every domain transformation. For an aggregate root, the natural Result is the <em>full post-write
+        mirror</em>: every root field (a sibling facet's pointer fields included) plus the child collections read via
+        <code>domain.GetCurrentItemsOf[Child]</code> — populated with the ids the persister minted and
+        <a href="#aggregate-persistence">wrote back into the aggregate map</a>, so the caller can address each child
+        immediately, without waiting for the read model.
+    </p>
+
+    <p>
         <strong>PUT vs PATCH is HTTP rule, not convention.</strong> PUT replaces the entire resource → all fields
         mandatory; PATCH updates partially → each field optional. The framework enforces it via type:
         <code>UpdateCommand[T, TResult]</code> (PUT, <code>ApplyTo</code>) and <code>PartialUpdateCommand[T, TResult]</code> (PATCH,
