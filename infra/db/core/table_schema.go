@@ -207,6 +207,16 @@ const pkGoField = "ID"
 // person_pk, an upstream schema's own name). Single-column. Empty column is
 // rejected.
 func (s *TableSchema) PK(column string) *TableSchema {
+	if s.secondary {
+		panic(fmt.Sprintf(
+			"infra.TableSchema(%s): a sibling declares NO primary key — it BORROWS the owner's: "+
+				"the framework writes and joins the sibling table through the owner's PK column name, "+
+				"so the sibling's physical PK column must carry that SAME name (usually \"id\"), "+
+				"never a custom one like \"<owner>_id\". Drop this PK(%q) call and name the column "+
+				"after the owner's PK in the migration.",
+			s.table, column,
+		))
+	}
 	if column == "" {
 		panic(fmt.Sprintf(
 			"infra.TableSchema(%s): PK requires a non-empty column — "+
@@ -225,6 +235,15 @@ func (s *TableSchema) PK(column string) *TableSchema {
 
 // FK declares the child's foreign-key column referencing the root. Child only.
 func (s *TableSchema) FK(column string) *TableSchema {
+	if s.secondary {
+		panic(fmt.Sprintf(
+			"infra.TableSchema(%s): a sibling declares NO foreign key — the shared PK IS the link: "+
+				"the framework writes and joins the sibling table through the owner's PK column name, "+
+				"so the sibling's physical PK column must carry that SAME name (usually \"id\"). "+
+				"Drop this FK(%q) call.",
+			s.table, column,
+		))
+	}
 	s.fkColumn = column
 	return s
 }
@@ -286,6 +305,13 @@ func (s *TableSchema) Field(goName, column string, labelKey ...string) *TableSch
 // archive/unarchive SQL). Omitting it disables soft-delete: Archive/Unarchive
 // are unavailable and the read gate is never applied.
 func (s *TableSchema) SoftDelete(col string) *TableSchema {
+	if s.secondary {
+		panic(fmt.Sprintf(
+			"infra.TableSchema(%s): a sibling declares NO soft-delete — it has no lifecycle of its own; "+
+				"the owner controls archive/delete for the whole 1:1 row. Drop this SoftDelete(%q) call.",
+			s.table, col,
+		))
+	}
 	s.ensureColumnFree(col, "SoftDelete")
 	s.softDelete = col
 	return s
@@ -294,6 +320,14 @@ func (s *TableSchema) SoftDelete(col string) *TableSchema {
 // CreatedAt enables a framework-stamped created_at column: the framework writes
 // col = NOW() on INSERT (it never relies on a DB DEFAULT it does not own).
 func (s *TableSchema) CreatedAt(col string) *TableSchema {
+	if s.secondary {
+		panic(fmt.Sprintf(
+			"infra.TableSchema(%s): a sibling declares NO managed timestamps — the sibling row is a "+
+				"1:1 slice of the OWNER's row, and the owner's CreatedAt/UpdatedAt already date that row. "+
+				"Drop this CreatedAt(%q) call (declare it on the owner).",
+			s.table, col,
+		))
+	}
 	s.ensureColumnFree(col, "CreatedAt")
 	s.createdAt = col
 	return s
@@ -302,6 +336,14 @@ func (s *TableSchema) CreatedAt(col string) *TableSchema {
 // UpdatedAt enables a framework-stamped updated_at column: col = NOW() on
 // INSERT and UPDATE.
 func (s *TableSchema) UpdatedAt(col string) *TableSchema {
+	if s.secondary {
+		panic(fmt.Sprintf(
+			"infra.TableSchema(%s): a sibling declares NO managed timestamps — the sibling row is a "+
+				"1:1 slice of the OWNER's row, and the owner's CreatedAt/UpdatedAt already date that row. "+
+				"Drop this UpdatedAt(%q) call (declare it on the owner).",
+			s.table, col,
+		))
+	}
 	s.ensureColumnFree(col, "UpdatedAt")
 	s.updatedAt = col
 	return s
@@ -429,6 +471,11 @@ func (s *TableSchema) Sibling(sib *TableSchema) *TableSchema {
 		panic(fmt.Sprintf(
 			"infra.TableSchema(%s): sibling %q must not declare SoftDelete — a sibling has no lifecycle of "+
 				"its own; the owner controls archive/delete.", s.table, sib.table))
+	}
+	if sib.createdAt != "" || sib.updatedAt != "" {
+		panic(fmt.Sprintf(
+			"infra.TableSchema(%s): sibling %q must not declare CreatedAt/UpdatedAt — the owner's managed "+
+				"timestamps already date the 1:1 row.", s.table, sib.table))
 	}
 	if len(sib.children) > 0 {
 		panic(fmt.Sprintf(

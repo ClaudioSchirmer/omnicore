@@ -13,6 +13,23 @@ with `1.0.0`.
 
 ## [0.28.0] - 2026-07-12
 
+### Changed
+
+- **Sibling schemas now reject every identity/lifecycle declaration AT THE
+  DECLARATION CALL — including the previously half-honored managed timestamps
+  (breaking for that misuse).** A sibling is a 1:1 slice of the OWNER's row: it
+  borrows the owner's PK (the physical PK column of the sibling table must
+  carry the SAME NAME as the owner's PK column — the framework writes and joins
+  by that name; an FK-style `<owner>_id` column used to surface only as an
+  *Unknown column* 500 at the first write), the shared PK is the link (no FK),
+  and the owner controls lifecycle and dating. `PK`/`FK`/`SoftDelete` already
+  panicked at `Sibling(...)` attach; they now fail earlier, at the call itself,
+  with messages that teach the DDL contract. `CreatedAt`/`UpdatedAt` on a
+  sibling — previously accepted and stamped on INSERT but never re-stamped on
+  UPDATE (a silently stale timestamp) — are now rejected the same way: declare
+  them on the owner, whose timestamps already date the whole 1:1 row. See
+  Table schema → Sibling tables.
+
 ### Added
 
 - **`AggregateBy` + `read.By` — the grouped half of the aggregate DSL: the same
