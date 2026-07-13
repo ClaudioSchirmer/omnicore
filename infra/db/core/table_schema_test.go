@@ -1,6 +1,10 @@
 package core
 
-import "testing"
+import (
+	"fmt"
+	"strings"
+	"testing"
+)
 
 // schemaSample is a type-anchored target for TableSchema construction tests —
 // the exported fields exist so Field/PK declarations validate against it.
@@ -102,6 +106,49 @@ func TestTableSchema_Sibling_HappyPath(t *testing.T) {
 // no children, no nested sibling; it must be over the same type, built with
 // NewSiblingSchema, carry fields, and not collide table names. The kind-mismatch
 // guards on Sibling()/Child() are covered too.
+// The identity/lifecycle declarations fail AT THE CALL on a sibling schema —
+// before the attach — and the PK/FK messages teach the DDL contract: the
+// sibling table's physical PK column carries the OWNER's PK column NAME
+// (naming it "<owner>_id" is the classic first-write 500).
+func TestTableSchema_Sibling_DeclarationGuardsTeachTheDDLContract(t *testing.T) {
+	wantPanicContaining := func(name, needle string, fn func()) {
+		t.Helper()
+		defer func() {
+			r := recover()
+			if r == nil {
+				t.Errorf("%s: expected panic, got none", name)
+				return
+			}
+			if msg := fmt.Sprint(r); !strings.Contains(msg, needle) {
+				t.Errorf("%s: panic message must carry %q, got %q", name, needle, msg)
+			}
+		}()
+		fn()
+	}
+	wantPanicContaining("PK on a sibling", "SAME name", func() {
+		NewSiblingSchema[schemaSample]("s").PK("rental_listing_id")
+	})
+	wantPanicContaining("FK on a sibling", "the shared PK IS the link", func() {
+		NewSiblingSchema[schemaSample]("s").FK("owner_id")
+	})
+	wantPanicContaining("SoftDelete on a sibling", "no lifecycle of its own", func() {
+		NewSiblingSchema[schemaSample]("s").SoftDelete("deleted_at")
+	})
+	wantPanicContaining("CreatedAt on a sibling", "owner's CreatedAt/UpdatedAt already date that row", func() {
+		NewSiblingSchema[schemaSample]("s").CreatedAt("created_at")
+	})
+	wantPanicContaining("UpdatedAt on a sibling", "owner's CreatedAt/UpdatedAt already date that row", func() {
+		NewSiblingSchema[schemaSample]("s").UpdatedAt("updated_at")
+	})
+	// Planted state (not reachable through the builder any more) still trips the
+	// attach-time guard — defense in depth.
+	assertPanics(t, "planted managed timestamp on attach", func() {
+		sib := NewSiblingSchema[schemaSample]("s").Field("Name", "name")
+		sib.createdAt = "created_at"
+		NewTableSchema[schemaSample]("root").PK("id").Sibling(sib)
+	})
+}
+
 func TestTableSchema_Sibling_BootGuards(t *testing.T) {
 	owner := func() *TableSchema { return NewTableSchema[schemaSample]("root").PK("id").Field("Name", "name") }
 

@@ -427,10 +427,22 @@ func OrdersView() *query.ViewDefinition {
         Field("AvatarURL", "avatar_url"))</code></pre>
 <p>
     A sibling has <strong>no identity or lifecycle of its own</strong>: it declares no PK (it borrows the owner's), no FK
-    (the shared PK <em>is</em> the link), no soft-delete, no children, and no nested sibling — the owner owns all of that.
+    (the shared PK <em>is</em> the link), no soft-delete, no managed timestamps (the owner's
+    <code>CreatedAt</code>/<code>UpdatedAt</code> already date the 1 : 1 row), no children, and no nested sibling — the
+    owner owns all of that. Calling <code>PK</code>/<code>FK</code>/<code>SoftDelete</code>/<code>CreatedAt</code>/<code>UpdatedAt</code>/<code>Child</code>/<code>Sibling</code>
+    on a sibling schema <strong>fails at boot, at the declaration call</strong>, with a message naming the contract — none
+    of them is supported on a sibling.
     Width is unlimited (a node may declare many siblings) but the partition is strict: every Go field and every column
     belongs to <strong>exactly one</strong> of {owner, siblings}. An overlap is a boot panic (<code>ValidateSiblings</code>,
     run inside <code>WithSchema</code>). Both a root and an aggregate child may carry siblings.
+</p>
+<p>
+    <strong>The DDL contract that follows: the sibling table's physical PK column carries the SAME NAME as the owner's PK
+    column</strong> (usually <code>id</code>). The framework writes the sibling row and compiles every join/lookup using
+    the <em>owner's</em> PK column name against the sibling table — there is no seam to declare a different one. Naming
+    the column FK-style (<code>person_profile.person_id</code>) compiles and boots, but fails at the <em>first write</em>
+    with the backend's <em>Unknown column</em> error: a sibling is not a foreign entity linked by FK — it is the same row,
+    partitioned.
 </p>
 <p>
     On <strong>write</strong>, the persister splits the entity across the owner row and each sibling row in the same
