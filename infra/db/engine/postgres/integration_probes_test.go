@@ -153,3 +153,61 @@ func TestProbes_Postgres_AggregateDSL(t *testing.T) {
 		t.Fatal("SumInt over DOUBLE PRECISION must error loudly (use Sum)")
 	}
 }
+
+func TestProbes_Postgres_AggregateBy(t *testing.T) {
+	pg, _, cleanup := probeSetup(t)
+	defer cleanup()
+	l := probeLoader(pg)
+	ctx := context.Background()
+
+	// Per-group facts in ONE SELECT, groups ordered by key. The archived 'A'
+	// twin (999999 cents) must not leak into the A group — the scope gate rides
+	// the grouped SELECT too.
+	total := read.Count()
+	cents := read.SumInt("Cents")
+	avgArea := read.Avg("Area")
+	groups, err := l.AggregateBy(ctx, nil, read.By("Code"), total, cents, avgArea)
+	if err != nil {
+		t.Fatalf("AggregateBy: %v", err)
+	}
+	if len(groups) != 3 {
+		t.Fatalf("len(groups) = %d, want 3 (A, B, C — archived twin folded out)", len(groups))
+	}
+	wantSums := []struct {
+		code  string
+		cents int64
+		area  float64
+	}{{"A", 1050, 10.5}, {"B", 120, 20.25}, {"C", 500, 30.0}}
+	for i, w := range wantSums {
+		if got := groups[i].KeyString("Code"); got != w.code {
+			t.Fatalf("groups[%d] key = %q, want %q (ordered by key)", i, got, w.code)
+		}
+		if n := read.GroupResult(groups[i], total); n.Value != 1 {
+			t.Errorf("%s COUNT = %d, want 1", w.code, n.Value)
+		}
+		if s := read.GroupResult(groups[i], cents); s.Value != w.cents || !s.Found {
+			t.Errorf("%s SUM(Cents) = (%d, %v), want (%d, true) — pg NUMERIC normalized exactly", w.code, s.Value, s.Found, w.cents)
+		}
+		if a := read.GroupResult(groups[i], avgArea); a.Value != w.area || !a.Found {
+			t.Errorf("%s AVG(Area) = (%v, %v), want (%v, true)", w.code, a.Value, a.Found, w.area)
+		}
+	}
+
+	// A predicate narrows the grouped set the same way it narrows Aggregate.
+	filtered, err := l.AggregateBy(ctx, criteria.Where(criteria.Gt("Cents", 130)), read.By("Code"), read.Count())
+	if err != nil {
+		t.Fatalf("AggregateBy(filtered): %v", err)
+	}
+	if len(filtered) != 2 || filtered[0].KeyString("Code") != "A" || filtered[1].KeyString("Code") != "C" {
+		t.Fatalf("filtered groups = %d, want exactly A and C", len(filtered))
+	}
+
+	// Empty set: zero groups, never a NULL-keyed placeholder row.
+	empty, err := l.AggregateBy(ctx, criteria.Where(criteria.Eq("Code", "ZZ")), read.By("Code"), read.Count())
+	if err != nil {
+		t.Fatalf("AggregateBy(empty): %v", err)
+	}
+	if len(empty) != 0 {
+		t.Fatalf("empty set produced %d groups, want 0", len(empty))
+	}
+}

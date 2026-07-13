@@ -38,6 +38,9 @@ type AggregateSpec interface {
 	// absorb receives the scalar as the driver delivered it (nil = SQL NULL,
 	// i.e. no row matched) and writes the spec's typed result.
 	absorb(v any) error
+	// fresh returns a zero-result copy of the same fact — AggregateBy absorbs
+	// one copy per group so every group carries its own typed result.
+	fresh() AggregateSpec
 }
 
 // CountAgg is the result carrier of a Count() spec. Value is the number of
@@ -53,6 +56,8 @@ type CountAgg struct {
 func Count() *CountAgg { return &CountAgg{} }
 
 func (c *CountAgg) expr(core.FieldResolver, Dialect) (string, error) { return "COUNT(*)", nil }
+
+func (c *CountAgg) fresh() AggregateSpec { return &CountAgg{} }
 
 func (c *CountAgg) absorb(v any) error {
 	c.Value = 0
@@ -94,6 +99,8 @@ func MaxInt(goField string) *IntAgg { return &IntAgg{fn: "MAX", field: goField} 
 func (a *IntAgg) expr(resolve core.FieldResolver, dialect Dialect) (string, error) {
 	return aggExpr(a.fn, a.field, resolve, dialect)
 }
+
+func (a *IntAgg) fresh() AggregateSpec { return &IntAgg{fn: a.fn, field: a.field} }
 
 func (a *IntAgg) absorb(v any) error {
 	a.Value, a.Found = 0, false
@@ -137,6 +144,8 @@ func Max(goField string) *FloatAgg { return &FloatAgg{fn: "MAX", field: goField}
 func (a *FloatAgg) expr(resolve core.FieldResolver, dialect Dialect) (string, error) {
 	return aggExpr(a.fn, a.field, resolve, dialect)
 }
+
+func (a *FloatAgg) fresh() AggregateSpec { return &FloatAgg{fn: a.fn, field: a.field} }
 
 func (a *FloatAgg) absorb(v any) error {
 	a.Value, a.Found = 0, false
