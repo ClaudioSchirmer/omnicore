@@ -11,6 +11,34 @@ with `1.0.0`.
 
 ## [Unreleased]
 
+## [0.27.0] - 2026-07-12
+
+### Added
+
+- **`Exists` and the aggregate DSL (`Aggregate` + typed specs) on the aggregate
+  loader — hydration-free scalar facts for write-path business rules.**
+  `FindAll` was the only criteria read, so a uniqueness pre-check inside a
+  `domain.Service` paid a full aggregate load (root + sibling + shared-base +
+  children hydration) to answer a yes/no question. `Exists(ctx, q)` compiles to
+  a bare `SELECT 1 … LIMIT 1`; `Aggregate(ctx, q, specs...)` computes any
+  combination of scalar facts over the same criteria in ONE SELECT — each fact
+  is a typed spec carrying its own result: `read.Count()` (int64), the
+  exact-integer trio `read.SumInt`/`read.MinInt`/`read.MaxInt` (int64 — the
+  money shape, minor units; a fractional scalar errors loudly) and the float64
+  quartet `read.Sum`/`read.Avg`/`read.Min`/`read.Max`. Field specs carry a
+  `Found` flag (whether any row matched) so a rule can distinguish "the average
+  is 0" from "there is nothing to average" (and 0 can be a real Min/Max); Count
+  is 0 on an empty set, a sum with `Found=false` is the empty sum. Same field
+  resolution as `FindOne`/`FindAll` (sibling/shared-base fields pull the same
+  LEFT JOINs whether they appear in the predicate or in a spec), same
+  active-by-default scope gate, nothing hydrated. The PK is addressable in
+  criteria as the fixed Go field `"ID"` (already supported, now documented and
+  pinned by tests), so the exclude-self uniqueness shape is one expression:
+  `Where(And(Eq("Email", v), Ne("ID", excludeID)))`. Both drivers are proven by
+  integration tests (Postgres NUMERIC arrives as `pgtype.Numeric`, MySQL
+  DECIMAL as text — both normalized exactly). See Custom command handler →
+  Loading by criteria.
+
 ## [0.26.0] - 2026-07-12
 
 ### Added

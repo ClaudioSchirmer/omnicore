@@ -1,0 +1,161 @@
+//go:build integration && mysql
+
+package mysql
+
+import (
+	"context"
+	"testing"
+
+	"github.com/google/uuid"
+
+	"github.com/ClaudioSchirmer/omnicore/domain"
+	"github.com/ClaudioSchirmer/omnicore/infra/db/command/read"
+	"github.com/ClaudioSchirmer/omnicore/infra/db/core"
+	"github.com/ClaudioSchirmer/omnicore/infra/db/criteria"
+)
+
+// Integration proof for the loader's Exists probe and aggregate DSL against a
+// REAL MySQL: what the unit fakes cannot certify — the concrete types
+// go-sql-driver delivers for SUM/AVG/MIN/MAX (DECIMAL as text, native BIGINT),
+// NULL-on-empty-set scanning, the scope gate over live rows, and Ne("ID")
+// encoding a uuid string against a BINARY(16) primary key end to end.
+
+type probeItem struct {
+	domain.BaseEntity
+	Code  string
+	Cents int64
+	Area  float64
+}
+
+func (e *probeItem) Modes() []domain.EntityMode {
+	return []domain.EntityMode{domain.ModeInsert, domain.ModeUpdate, domain.ModeDelete, domain.ModeArchive, domain.ModeUnarchive}
+}
+func (*probeItem) BuildRules(string, domain.Service, *domain.Rules) {}
+
+func probeSchema() *core.TableSchema {
+	return core.NewTableSchema[*probeItem]("probe_items").
+		PK("id").
+		Field("Code", "code").
+		Field("Cents", "cents").
+		Field("Area", "area").
+		SoftDelete("deleted_at")
+}
+
+func probeSetup(t *testing.T) (*Engine, string) {
+	t.Helper()
+	eng, raw := setup(t)
+	ctx := context.Background()
+	if _, err := raw.ExecContext(ctx, `CREATE TABLE probe_items (
+		id BINARY(16) PRIMARY KEY,
+		code VARCHAR(32) NOT NULL,
+		cents BIGINT NOT NULL,
+		area DOUBLE NOT NULL,
+		deleted_at DATETIME NULL
+	)`); err != nil {
+		t.Fatalf("create probe_items: %v", err)
+	}
+	idA := uuid.New()
+	seed := func(id uuid.UUID, code string, cents int64, area float64, archived bool) {
+		t.Helper()
+		var del any
+		if archived {
+			del = "2026-01-01 00:00:00"
+		}
+		if _, err := raw.ExecContext(ctx,
+			`INSERT INTO probe_items (id, code, cents, area, deleted_at) VALUES (?, ?, ?, ?, ?)`,
+			id[:], code, cents, area, del); err != nil {
+			t.Fatalf("seed %s: %v", code, err)
+		}
+	}
+	// 10.50 + 1.20 + 5.00 in minor units — integer arithmetic end to end.
+	seed(idA, "A", 1050, 10.5, false)
+	seed(uuid.New(), "B", 120, 20.25, false)
+	seed(uuid.New(), "C", 500, 30.0, false)
+	seed(uuid.New(), "A", 999999, 99.9, true) // archived twin of A
+	return eng, idA.String()
+}
+
+func probeLoader(eng *Engine) *read.AggregateLoader[*probeItem] {
+	return read.NewAggregateLoader[*probeItem](eng, func() *probeItem { return &probeItem{} }).
+		WithSchema(probeSchema())
+}
+
+func TestProbes_MySQL_ExistsScopeAndExcludeSelf(t *testing.T) {
+	eng, idA := probeSetup(t)
+	l := probeLoader(eng)
+	ctx := context.Background()
+
+	if ok, err := l.Exists(ctx, criteria.Where(criteria.Eq("Code", "A"))); err != nil || !ok {
+		t.Fatalf("Exists(A) = (%v, %v), want true (active row)", ok, err)
+	}
+	if ok, err := l.Exists(ctx, criteria.Where(criteria.Eq("Code", "ZZ"))); err != nil || ok {
+		t.Fatalf("Exists(ZZ) = (%v, %v), want false", ok, err)
+	}
+	// Ne("ID", <uuid string>) against a BINARY(16) PK — the encode path that a
+	// text/binary mismatch would silently break: excluding the active A leaves
+	// only the archived twin → false proves BOTH the encoding and the gate.
+	if ok, err := l.Exists(ctx, criteria.Where(criteria.And(
+		criteria.Eq("Code", "A"), criteria.Ne("ID", idA)))); err != nil || ok {
+		t.Fatalf("Exists(A, excluding the active row) = (%v, %v), want false — encoding or scope gate broke", ok, err)
+	}
+	if ok, err := l.Exists(ctx, criteria.Where(criteria.And(
+		criteria.Eq("Code", "A"), criteria.Ne("ID", "00000000-0000-0000-0000-000000000000")))); err != nil || !ok {
+		t.Fatalf("Exists(A, excluding an unrelated id) = (%v, %v), want true", ok, err)
+	}
+}
+
+func TestProbes_MySQL_AggregateDSL(t *testing.T) {
+	eng, _ := probeSetup(t)
+	l := probeLoader(eng)
+	ctx := context.Background()
+
+	// Every fact in ONE SELECT. SUM/AVG over BIGINT arrive as MySQL DECIMAL
+	// (text through go-sql-driver); MIN/MAX over BIGINT stay native — the
+	// minor-unit arithmetic must come back exact either way.
+	total := read.Count()
+	cents := read.SumInt("Cents")
+	area := read.Sum("Area")
+	avgArea := read.Avg("Area")
+	loCents, hiCents := read.MinInt("Cents"), read.MaxInt("Cents")
+	loArea, hiArea := read.Min("Area"), read.Max("Area")
+	if err := l.Aggregate(ctx, nil, total, cents, area, avgArea, loCents, hiCents, loArea, hiArea); err != nil {
+		t.Fatalf("Aggregate: %v", err)
+	}
+	if total.Value != 3 {
+		t.Fatalf("Count = %d, want 3 actives (archived excluded)", total.Value)
+	}
+	if cents.Value != 1670 || !cents.Found {
+		t.Fatalf("SumInt(Cents) = (%d, %v), want (1670, true) — 10.50+1.20+5.00 in cents", cents.Value, cents.Found)
+	}
+	if area.Value != 60.75 {
+		t.Fatalf("Sum(Area) = %v, want 60.75", area.Value)
+	}
+	if avgArea.Value != 20.25 || !avgArea.Found {
+		t.Fatalf("Avg(Area) = (%v, %v), want (20.25, true)", avgArea.Value, avgArea.Found)
+	}
+	// The archived twin carries 999999 cents — the extremes prove the scope
+	// gate rides the single aggregate SELECT too.
+	if loCents.Value != 120 || hiCents.Value != 1050 {
+		t.Fatalf("MinInt/MaxInt(Cents) = %d/%d, want 120/1050 (archived 999999 excluded)", loCents.Value, hiCents.Value)
+	}
+	if loArea.Value != 10.5 || hiArea.Value != 30.0 {
+		t.Fatalf("Min/Max(Area) = %v/%v, want 10.5/30", loArea.Value, hiArea.Value)
+	}
+
+	// Empty set: Count 0; every field spec reports Found=false — SQL NULL
+	// handled per spec.
+	none := criteria.Where(criteria.Eq("Code", "ZZ"))
+	if err := l.Aggregate(ctx, none, total, cents, avgArea, hiCents); err != nil {
+		t.Fatalf("Aggregate(empty): %v", err)
+	}
+	if total.Value != 0 || cents.Value != 0 || cents.Found || avgArea.Found || hiCents.Found {
+		t.Fatalf("empty set: Count=%d SumInt=(%d,%v) Avg.Found=%v MaxInt.Found=%v, want 0/(0,false)/false/false",
+			total.Value, cents.Value, cents.Found, avgArea.Found, hiCents.Found)
+	}
+
+	// An exact-integer spec over a fractional column must error loudly, never
+	// truncate.
+	if err := l.Aggregate(ctx, nil, read.SumInt("Area")); err == nil {
+		t.Fatal("SumInt over DOUBLE must error loudly (use Sum)")
+	}
+}
