@@ -169,6 +169,63 @@ func (l *AggregateLoader[T]) FindAll(ctx context.Context, q *criteria.Query) ([]
 	return entities, nil
 }
 
+// Exists reports whether at least one root matches the criteria, under the same
+// scope gate as FindOne/FindAll (active rows by default; the Query's scope can
+// include archived). It compiles to an indexed existence probe — SELECT 1 …
+// LIMIT 1 — and hydrates NOTHING: this is the primitive for uniqueness
+// pre-checks and cardinality guards on the write path, where loading whole
+// aggregates to answer a yes/no question would waste the request's latency.
+// The PK is addressable as the fixed Go-side field "ID" (exclude-self checks:
+// And(Eq("Field", v), Not(Eq("ID", id)))); criteria may reference sibling and
+// shared-base fields — the same LEFT JOINs FindAll uses apply.
+func (l *AggregateLoader[T]) Exists(ctx context.Context, q *criteria.Query) (bool, error) {
+	fromJoin, clause, args, err := l.compileFilter(q)
+	if err != nil {
+		return false, err
+	}
+	return l.probeExists(ctx, fromJoin+clause, args...)
+}
+
+// compileFilter renders the shared front-half of a root query — FROM (+ the
+// sibling/shared-base LEFT JOINs the criteria pulled in) and the WHERE clause
+// (predicate + scope gate) with its ordered args. The probe/aggregate methods
+// reuse exactly the resolution and gating semantics of findRoots without its
+// SELECT/scan machinery.
+func (l *AggregateLoader[T]) compileFilter(q *criteria.Query) (fromJoin, clause string, args []any, err error) {
+	joins := &relSpecJoins{siblings: map[string]*TableSchema{}}
+	return l.compileFilterJoins(q, joins)
+}
+
+// compileFilterJoins is compileFilter with a caller-owned joins accumulator, so
+// an aggregate method can resolve its aggregated field through the SAME joins
+// (a sibling field pulls its LEFT JOIN whether it appears in the predicate or
+// in the SELECT aggregate).
+func (l *AggregateLoader[T]) compileFilterJoins(q *criteria.Query, joins *relSpecJoins) (fromJoin, clause string, args []any, err error) {
+	if q == nil {
+		q = criteria.Where(nil)
+	}
+	resolve := l.specResolver(joins)
+	dialect := l.eng.Dialect()
+
+	where, args, err := compileWhere(q.Condition(), resolve, dialect)
+	if err != nil {
+		return "", "", nil, err
+	}
+	rootQualifier := ""
+	if len(joins.siblings) > 0 || joins.base != nil {
+		rootQualifier = dialect.QuoteIdent(l.schema.Table())
+	}
+	clause = buildWhereClause(where, scopeGate(q.Scope(), l.schema, dialect, rootQualifier))
+	if clause != "" {
+		// Leading separator so callers can append fromJoin+clause directly — a
+		// dialect may render the table unquoted, and "tableWHERE" lexes as one
+		// identifier.
+		clause = " " + clause
+	}
+	fromJoin = dialect.QuoteIdent(l.schema.Table()) + l.specJoinClause(joins, dialect)
+	return fromJoin, clause, args, nil
+}
+
 // findRoots compiles the criteria into a root SELECT and scans the matched
 // roots, recovering each row's id (FindOne/FindAll do not know the id a priori).
 // limitOverride > 0 replaces the Query's limit (FindOne uses 2).
@@ -633,14 +690,23 @@ func (l *AggregateLoader[T]) LoadSharedBaseIdentity(ctx context.Context, fresh T
 // uses it to reject a re-POST of an existing active role with the canonical
 // conflict, before the request is re-applied onto the loaded identity.
 func (l *AggregateLoader[T]) activeRoleExists(ctx context.Context, fkCol, baseID string) (bool, error) {
+	// COLUMN-level probe (the FK is injected by infra, not a Go field), so it
+	// cannot ride the criteria-based Exists — but it shares probeExists, the
+	// single home of the SELECT 1 … LIMIT 1 execution.
 	d := l.eng.Dialect()
-	q := "SELECT 1 FROM " + d.QuoteIdent(l.schema.Table()) +
-		" WHERE " + d.QuoteIdent(fkCol) + " = " + d.Placeholder(1)
+	where := " WHERE " + d.QuoteIdent(fkCol) + " = " + d.Placeholder(1)
 	if sd, ok := l.schema.SoftDeleteColumn(); ok {
-		q += " AND " + d.QuoteIdent(sd) + " IS NULL"
+		where += " AND " + d.QuoteIdent(sd) + " IS NULL"
 	}
-	q += " LIMIT 1"
-	rows, err := l.eng.Querier().Query(ctx, q, d.EncodeArg(domain.NewID(baseID)))
+	return l.probeExists(ctx, d.QuoteIdent(l.schema.Table())+where, d.EncodeArg(domain.NewID(baseID)))
+}
+
+// probeExists executes the shared existence probe — SELECT 1 over the given
+// FROM/WHERE tail, LIMIT 1, true when any row comes back. The single execution
+// home for the public criteria-level Exists and the internal column-level
+// probes.
+func (l *AggregateLoader[T]) probeExists(ctx context.Context, fromWhere string, args ...any) (bool, error) {
+	rows, err := l.eng.Querier().Query(ctx, "SELECT 1 FROM "+fromWhere+" LIMIT 1", args...)
 	if err != nil {
 		return false, err
 	}

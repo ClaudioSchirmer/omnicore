@@ -65,6 +65,12 @@
         the entity across those tables inside one transaction — and <strong>denormalizes on read</strong> — re-joining
         them into the exact flat struct you modeled on <code>FindOne</code>/<code>FindAll</code>. The domain never sees
         a seam: no DAO to hand-write, no join to keep in step, no mapping code to drift out of sync with the struct.
+        When the question is a scalar rather than an entity — does one exist, how many, what do they total or average —
+        the same criteria surface carries the <strong>hydration-free primitives</strong>: <code>Exists</code> and the
+        aggregate DSL <code>Aggregate(ctx, q, specs…)</code> (any combination of
+        <code>Count</code>/<code>SumInt</code>/<code>Sum</code>/<code>Avg</code>/<code>MinInt</code>/<code>MaxInt</code>/<code>Min</code>/<code>Max</code>
+        specs in one SELECT): same schema resolution and scope gate, no re-join, no loading — see
+        <a href="#custom-command-handler">Custom command handler → Loading by criteria</a>.
     </p>
     <p>
         Three declarative partitioning tools cover the three cardinalities a third-normal-form decomposition ever needs,
