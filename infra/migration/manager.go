@@ -55,6 +55,13 @@ type Manager struct {
 // then the service. Re-calls with no pending changes return nil (ErrNoChange
 // is absorbed). Failure at any stage marks dirty=true in the corresponding
 // tracking table and blocks subsequent calls until Force.
+//
+// A service directory that is missing or carries no versioned *.up.sql file
+// (e.g. a freshly scaffolded service holding only .gitkeep) is an EMPTY
+// sequence, not an error: the framework stage still applies and the service
+// stage is skipped — mirroring the tolerance Pending and ValidateDownExists
+// already have. golang-migrate's file source errors on an empty source
+// instead of no-oping, so the skip happens before it is opened.
 func (m *Manager) Up(ctx context.Context) error {
 	fwSrc, err := frameworkSourceFor(m.dialect)
 	if err != nil {
@@ -64,11 +71,43 @@ func (m *Manager) Up(ctx context.Context) error {
 		return err
 	}
 
+	empty, err := m.serviceSequenceEmpty()
+	if err != nil {
+		return err
+	}
+	if empty {
+		return nil
+	}
+
 	svcSrc, err := serviceSource(m.dir)
 	if err != nil {
 		return err
 	}
 	return m.runUp("service", svcSrc, serviceTrackingTbl)
+}
+
+// serviceSequenceEmpty reports whether the service directory contributes no
+// migrations at all — the directory is missing, or no file in it is a
+// versioned *.up.sql. Malformed names are ignored here on purpose: naming
+// problems are ValidateDownExists's diagnostic to raise, not a reason to
+// treat the sequence as non-empty and crash the file source.
+func (m *Manager) serviceSequenceEmpty() (bool, error) {
+	entries, err := os.ReadDir(m.dir)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return true, nil
+		}
+		return false, fmt.Errorf("migration[service]: read dir %q: %w", m.dir, err)
+	}
+	for _, e := range entries {
+		if e.IsDir() || !strings.HasSuffix(e.Name(), ".up.sql") {
+			continue
+		}
+		if _, ok := parseMigrationVersion(e.Name()); ok {
+			return false, nil
+		}
+	}
+	return true, nil
 }
 
 // Down reverts N service migrations. Does not touch the embedded outbox —

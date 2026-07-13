@@ -11,6 +11,32 @@ with `1.0.0`.
 
 ## [Unreleased]
 
+## [0.29.0] - 2026-07-13
+
+### Changed
+
+- **Dev-only empty-shell boot.** Under `APP_PROFILE=dev`, `validateWiring` now
+  accepts a fully empty `Wiring{}` (no `Features`, no `BeforeServe`, no
+  `Translations`) with a loud `slog.Warn` instead of aborting with "nothing to
+  serve". The boot serves only the framework surfaces (`/livez` + `/readyz`;
+  OpenAPI/GraphQL when wired) — the legitimate state of a freshly scaffolded
+  service, letting the environment (config, connections, migrations, CDC
+  relay) be proven live before the first entity exists. The waiver covers only
+  the fully empty wiring: a dev wiring WITH features still requires at least
+  one `translation.Module`, and any profile other than `dev` rejects the empty
+  wiring exactly as before.
+
+### Fixed
+
+- **`migration.Manager.Up` no longer errors on an empty (or missing) service
+  migrations directory.** It went straight into golang-migrate's file source,
+  which errors on an empty source instead of no-oping — so a fresh service
+  whose `migrations.dir` held only a `.gitkeep` could not boot under
+  `autoRun: true`, even though `Pending` and `ValidateDownExists` already
+  treated the same state as "nothing to do". `Up` now applies the framework's
+  embedded control plane and skips the service stage when the directory
+  carries no versioned `*.up.sql`.
+
 ## [0.28.0] - 2026-07-12
 
 ### Changed

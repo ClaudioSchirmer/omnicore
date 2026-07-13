@@ -431,18 +431,45 @@ func TestUp_FrameworkRunError(t *testing.T) {
 	}
 }
 
-func TestUp_ServiceSourceError(t *testing.T) {
+func TestUp_MissingServiceDirSkipsServiceStage(t *testing.T) {
+	// A service with no migrations directory is an empty sequence, not an
+	// error — the framework stage still applies, the service stage is
+	// skipped. The drivers map deliberately has no service entry: opening
+	// the service plane would fail the test with "unexpected tracking table".
 	fw := newFakeDriver()
 	m := fakeManager(filepath.Join(t.TempDir(), "nope"), map[string]*fakeDriver{
 		frameworkTrackingTbl: fw,
 	})
 
-	err := m.Up(context.Background())
-	if err == nil || !strings.Contains(err.Error(), "service file source") {
-		t.Fatalf("expected service source error, got: %v", err)
+	if err := m.Up(context.Background()); err != nil {
+		t.Fatalf("missing service dir must be treated as an empty sequence, got: %v", err)
 	}
 	if v, _ := fw.state(); v != 1 {
-		t.Errorf("framework plane must already be applied before the service source opens, got version %d", v)
+		t.Errorf("framework plane must still be applied, got version %d", v)
+	}
+}
+
+func TestUp_EmptyServiceDirSkipsServiceStage(t *testing.T) {
+	// The freshly scaffolded state: the directory exists but carries no
+	// versioned *.up.sql (only placeholders like .gitkeep). golang-migrate's
+	// file source errors on an empty source, so Up must skip the service
+	// stage before opening it.
+	dir := writeFiles(t, map[string]string{
+		".gitkeep": "",
+	})
+	fw := newFakeDriver()
+	m := fakeManager(dir, map[string]*fakeDriver{
+		frameworkTrackingTbl: fw,
+	})
+
+	if err := m.Up(context.Background()); err != nil {
+		t.Fatalf("empty service dir must be treated as an empty sequence, got: %v", err)
+	}
+	if v, _ := fw.state(); v != 1 {
+		t.Errorf("framework plane must still be applied, got version %d", v)
+	}
+	if runs := fw.runBodies(); len(runs) != 1 {
+		t.Errorf("framework must run exactly its embedded migration, got %d run(s)", len(runs))
 	}
 }
 
