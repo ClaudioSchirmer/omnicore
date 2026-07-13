@@ -260,12 +260,14 @@ var (
         the relational backend through the <a href="#custom-command-handler~criteria-engine">entity search engine</a>: you hand it a
         <code>criteria.Query</code> and it returns the entity ready for a command. Two load entry points —
         <code>FindOne(ctx, *criteria.Query)</code> (one match, or <code>RecordNotFound</code>; more than one
-        is an error) and <code>FindAll(ctx, *criteria.Query)</code> (a slice; children batched) — plus two
+        is an error) and <code>FindAll(ctx, *criteria.Query)</code> (a slice; children batched) — plus the
         <strong>hydration-free primitives</strong> for scalar facts: <code>Exists(ctx, q)</code> (a bare
         <code>SELECT 1 … LIMIT 1</code> — true when anything matches) and the <strong>aggregate DSL</strong>,
         <code>Aggregate(ctx, q, specs…)</code>, which computes any combination of scalar facts over the same
-        criteria in <strong>ONE SELECT</strong>. Each requested fact is a typed spec constructed in the
-        <code>read</code> package and carrying its own result after the call:
+        criteria in <strong>ONE SELECT</strong> (its <a href="#custom-command-handler~aggregate-loader-groupby">grouped
+        form <code>AggregateBy</code></a> computes the same facts per <code>GROUP BY</code> group). Each
+        requested fact is a typed spec constructed in the <code>read</code> package and carrying its own
+        result after the call:
     </p>
     <pre><code>// The canonical consumer: a domain.Service implementation (infra) answering
 // write-path scalar questions for BuildRules.
@@ -315,6 +317,57 @@ _ = top.Found // false ⇔ no active order matched (0 can be a real MAX — chec
         straight into the matched struct field — you write neither the SQL nor the scanner.
         For exotic decoding the auto-scan doesn't cover (JOIN, CASE, COALESCE) there is a manual-scanner
         escape hatch; both scan modes coexist.
+    </p>
+
+    <h4 id="aggregate-loader-groupby">Grouped aggregates — <code>AggregateBy</code> + <code>read.By</code></h4>
+    <p>
+        <code>AggregateBy(ctx, q, read.By(keys…), specs…)</code> is the grouped half of the same DSL: the
+        SAME typed specs, computed <strong>per group</strong> — one <code>SELECT … GROUP BY</code> over the
+        same criteria, field resolution and scope gate as <code>Aggregate</code>. The specs you pass act as
+        <strong>templates</strong> naming each requested fact (they carry no result after the call); every
+        returned <code>read.Group</code> holds its own copy of each, read back type-safely with
+        <code>read.GroupResult(group, template)</code> — the call site keeps the template's concrete type,
+        no assertion:
+    </p>
+    <pre><code>// A per-category rule in ONE SELECT — how many active products each category
+// holds, their exact value (money: int64 minor units) and average weight:
+perCat := read.By("Category")             // one or more Go fields, in key order
+count  := read.Count()
+value  := read.SumInt("PriceCents")
+weight := read.Avg("Weight")
+groups, err := repo.Loader.AggregateBy(ctx,
+    criteria.Where(criteria.Eq("Status", "active")),
+    perCat, count, value, weight)
+if err != nil {
+    return err
+}
+// → SELECT category, COUNT(*), SUM(price_cents), AVG(weight)
+//   FROM products WHERE status = $1 AND deleted_at IS NULL
+//   GROUP BY category ORDER BY category
+for _, g := range groups {
+    g.KeyString("Category")                    // this group's key ("" for a NULL key)
+    read.GroupResult(g, count).Value           // this group's COUNT(*)
+    read.GroupResult(g, value).Value           // this group's exact SUM
+    if w := read.GroupResult(g, weight); w.Found { /* this group's AVG */ }
+}
+distinctCategories := len(groups)              // itself a business fact</code></pre>
+    <p>
+        The semantics follow from "a group exists because at least one row matched": an empty set yields
+        <strong>zero groups</strong> (never a NULL-keyed placeholder), <code>len(groups)</code> is the number
+        of distinct key combinations among the matching rows (the distinct-cardinality primitive), and a
+        group's field spec reports <code>Found=false</code> only when every matched row holds NULL in that
+        column. Rows whose key column IS NULL form their own group with <code>Key(…) == nil</code>. Groups
+        come back <strong>ordered by the key column(s) ascending</strong> — deterministic for tests and
+        stable rule behavior — and, exactly like <code>Aggregate</code>, order/limit on the Query are
+        ignored. Key access is by the Go field name passed to <code>read.By</code>:
+        <code>Key(field)</code> returns the driver-neutral raw value (text keys land as
+        <code>string</code> on both backends), <code>KeyString(field)</code> renders any key as a string —
+        the convenient form for the dominant case of grouping by a text-ish business field. Per-group
+        threshold checks ("no category may exceed N") are an <code>if</code> inside the loop — the grouped
+        SELECT already reduced the data to one row per group, so there is no HAVING escape hatch to learn.
+        Typical rules this unlocks: per-key caps ("at most N active X per category"), distinct-key limits
+        ("no more than K categories"), and balance/skew checks across groups — each previously a
+        fetch-and-bucket anti-pattern.
     </p>
 
     <h4 id="criteria-engine">Loading by criteria — <code>FindOne</code> / <code>FindAll</code></h4>

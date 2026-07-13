@@ -11,6 +11,31 @@ with `1.0.0`.
 
 ## [Unreleased]
 
+## [0.28.0] - 2026-07-12
+
+### Added
+
+- **`AggregateBy` + `read.By` — the grouped half of the aggregate DSL: the same
+  typed scalar facts, computed per `GROUP BY` group in ONE SELECT.** The v0.27.0
+  DSL answers "how many / how much over THIS criteria"; a rule over per-group
+  facts (per-category caps, distinct-key cardinality, balance checks) still had
+  to fetch rows and bucket them in Go. `AggregateBy(ctx, q, read.By("Category"),
+  specs...)` compiles `SELECT <keys>, <specs> … GROUP BY <keys> ORDER BY <keys>`
+  under the same criteria, field resolution (sibling/shared-base fields pull
+  their LEFT JOINs) and active-by-default scope gate as `Aggregate`. The passed
+  specs act as templates (they carry no result); each returned `read.Group`
+  holds its own copy of every fact, read back type-safely via
+  `read.GroupResult(group, template)` — the template's concrete type, no
+  assertion — plus `Key`/`KeyString` access to the group key(s) by Go field
+  name (driver-neutral: MySQL's `[]byte` text keys land as `string`). An empty
+  set yields zero groups; `len(groups)` is the distinct-key cardinality; a
+  group's spec reports `Found=false` only when every matched row holds NULL in
+  that column; groups come back ordered by key ascending (deterministic).
+  Order/limit on the Query are ignored, exactly like `Aggregate`. Both drivers
+  proven by integration tests (grouped NUMERIC/DECIMAL normalization, `[]byte`
+  key normalization, the scope gate riding the grouped SELECT). See Custom
+  command handler → Grouped aggregates.
+
 ## [0.27.0] - 2026-07-12
 
 ### Added
