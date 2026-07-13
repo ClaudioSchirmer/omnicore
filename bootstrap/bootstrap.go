@@ -52,7 +52,7 @@ import (
 //  3. NewEngine (dialect-selected relational engine) + NewMongoDB (defer Close)
 //  4. translation.Default + pipeline.New + SlogAuditor + ViewReader
 //  5. wire(deps) → Wiring
-//  6. validateWiring (rejects nothing-to-serve)
+//  6. validateWiring (rejects nothing-to-serve; dev accepts the empty shell)
 //  7. Translator.Import of the service modules
 //  8. Migrations (if cfg.Migrations.AutoRun)
 //  9. collectViews (aggregates Views from ReadableFeatures + rejects collision)
@@ -119,7 +119,7 @@ func runWithConfig(cfg *Config, wire func(Deps) Wiring) error {
 
 	wiring := wire(deps)
 
-	if err := validateWiring(wiring); err != nil {
+	if err := validateWiring(wiring, cfg.Profile == profileDev); err != nil {
 		return err
 	}
 

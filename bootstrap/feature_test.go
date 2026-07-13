@@ -122,7 +122,7 @@ func TestCollectViews_CollisionRejected(t *testing.T) {
 // --- validateWiring ---
 
 func TestValidateWiring_NothingToServeRejected(t *testing.T) {
-	err := validateWiring(Wiring{})
+	err := validateWiring(Wiring{}, false)
 	if err == nil {
 		t.Fatalf("expected error for empty wiring")
 	}
@@ -131,12 +131,34 @@ func TestValidateWiring_NothingToServeRejected(t *testing.T) {
 	}
 }
 
+func TestValidateWiring_DevAcceptsEmptyShell(t *testing.T) {
+	// The dev-only empty shell: no Features, no BeforeServe, not even
+	// Translations — the state of a freshly scaffolded service. Dev boots
+	// it (framework surfaces only); every other profile rejects it.
+	if err := validateWiring(Wiring{}, true); err != nil {
+		t.Fatalf("dev must accept the empty shell; got: %v", err)
+	}
+}
+
+func TestValidateWiring_DevStillRequiresTranslationsWithFeatures(t *testing.T) {
+	// The empty-shell waiver covers ONLY the fully empty wiring — a dev
+	// wiring WITH a feature and no translations keeps the guard-2 rejection.
+	w := Wiring{Features: []Feature{&writeOnlyFeature{}}}
+	err := validateWiring(w, true)
+	if err == nil {
+		t.Fatalf("expected error for dev wiring with a feature and no Translations")
+	}
+	if !strings.Contains(err.Error(), "no Translations") {
+		t.Fatalf("error should mention 'no Translations'; got: %v", err)
+	}
+}
+
 func TestValidateWiring_NoTranslationsRejected(t *testing.T) {
 	// Has a Feature (clears the "nothing to serve" guard) but no
 	// translation module — the second guard rejects it because the
 	// whole stack consumes the Translator.
 	w := Wiring{Features: []Feature{&writeOnlyFeature{}}}
-	err := validateWiring(w)
+	err := validateWiring(w, false)
 	if err == nil {
 		t.Fatalf("expected error for wiring with no Translations")
 	}
@@ -150,7 +172,7 @@ func TestValidateWiring_FeaturePresent(t *testing.T) {
 		Features:     []Feature{&writeOnlyFeature{}},
 		Translations: []translation.Module{translation.CoreENG()},
 	}
-	if err := validateWiring(w); err != nil {
+	if err := validateWiring(w, false); err != nil {
 		t.Fatalf("wiring with feature + translation should pass; got: %v", err)
 	}
 }
@@ -160,7 +182,7 @@ func TestValidateWiring_BeforeServePresent(t *testing.T) {
 		BeforeServe:  func(*fiber.App, Deps) error { return nil },
 		Translations: []translation.Module{translation.CoreENG()},
 	}
-	if err := validateWiring(w); err != nil {
+	if err := validateWiring(w, false); err != nil {
 		t.Fatalf("wiring with BeforeServe + translation should pass; got: %v", err)
 	}
 }

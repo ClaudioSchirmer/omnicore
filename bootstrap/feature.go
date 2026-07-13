@@ -3,6 +3,7 @@ package bootstrap
 import (
 	"errors"
 	"fmt"
+	"log/slog"
 
 	"github.com/ClaudioSchirmer/omnicore/infra/db/query"
 	"github.com/ClaudioSchirmer/omnicore/infra/integration"
@@ -109,9 +110,23 @@ func collectViews(features []Feature) ([]*query.ViewDefinition, error) {
 //     with an empty Translator leaves every translated message blank
 //     in production — a silent class of bug that the framework
 //     prefers to reject loud at boot.
-func validateWiring(w Wiring) error {
+//
+// Dev-only exception — the EMPTY SHELL: under APP_PROFILE=dev a wiring with
+// no Features and no BeforeServe is accepted and boots serving only the
+// framework surfaces (probes; OpenAPI/GraphQL when wired). This is the
+// legitimate state of a freshly scaffolded service — it lets the environment
+// (config, connections, migrations, CDC relay) be proven live before the
+// first entity exists. The translations guard is waived only inside that
+// shell (no feature exists to produce a translatable message); a wiring WITH
+// features still requires at least one translation.Module, dev included.
+// Every other profile rejects the empty wiring exactly as before.
+func validateWiring(w Wiring, dev bool) error {
 	if len(w.Features) == 0 && w.BeforeServe == nil {
-		return errors.New("bootstrap: wiring declared no Features and no BeforeServe; nothing to serve")
+		if dev {
+			slog.Warn("bootstrap: wiring declared no Features and no BeforeServe — dev-only empty-shell boot; serving framework surfaces only (any other profile aborts on this wiring)")
+			return nil
+		}
+		return errors.New("bootstrap: wiring declared no Features and no BeforeServe; nothing to serve (only a dev-profile boot accepts an empty shell)")
 	}
 	if len(w.Translations) == 0 {
 		return errors.New("bootstrap: wiring declared no Translations; at least one translation.Module is required (notifications, error envelopes, audit fields all flow through the Translator)")
