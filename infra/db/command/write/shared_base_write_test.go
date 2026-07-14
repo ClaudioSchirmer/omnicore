@@ -435,7 +435,7 @@ type aggRoleChild struct {
 	Label string
 }
 
-func (c aggRoleChild) GetID() string                                    { return c.ID }
+func (c aggRoleChild) GetID() domain.ID                                 { return domain.NewID(c.ID) }
 func (c aggRoleChild) BuildRules(string, domain.Service, *domain.Rules) {}
 
 type aggRoleEntity struct {

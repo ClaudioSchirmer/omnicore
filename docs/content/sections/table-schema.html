@@ -336,6 +336,12 @@ func OrdersView() *query.ViewDefinition {
     <li><strong>Field exists on the type</strong> — <code>NewTableSchema[T]</code> + <code>Field</code> panic at
         construction when the named field is absent, unexported, or promoted from an embed. This is what replaces
         convention: a typo is a boot panic, not a silent miss.</li>
+    <li><strong>Field type belongs to the closed persistable set</strong> — <code>Field</code> panics at construction
+        when the Go type is outside the exact set the framework composes on every supported relational engine (the "Supported column
+        shapes" tables below). A <code>google/uuid.UUID</code> field gets the dedicated hint — declare
+        <code>domain.ID</code> — and every other unknown type gets the fix and a pointer back to this page. Identity
+        matching is literal (a named type over a supported underlying is rejected), so the both-engine guarantee never
+        depends on driver-specific reflection behavior.</li>
     <li><strong>Bijection over the whole column set</strong> — across each source's mapped fields + the PK column + every
         declared managed column, no two map to the same physical column. The collision panic names both offenders.</li>
     <li><strong>Modes() ⟺ SoftDelete</strong> — an entity declaring <code>ModeArchive</code>/<code>ModeUnarchive</code>
@@ -834,11 +840,17 @@ func StudentSchema() *core.TableSchema {
 <p>
     The schema declares <em>which</em> Go field maps to <em>which</em> column; this section is about <em>what types</em>
     those columns may be. The engine does <strong>no custom type registration</strong>: on write it binds the raw Go value,
-    on read it scans into the address of the Go field, and in the criteria engine only <code>domain.ID</code> is unwrapped
-    (to its <code>string</code> value) before binding. So the supported set is exactly the driver's default codec set for
-    the selected dialect — nothing the framework adds, nothing it takes away — with one framework-owned convention: a
-    <code>domain.ID</code> (the PK and every FK / UUID reference) is the canonical Go <code>string</code>, mapped to the
-    dialect's UUID representation.
+    on read it scans into the address of the Go field. So the supported set is exactly the driver's default codec set for
+    the selected dialect — nothing the framework adds, nothing it takes away — with one framework-owned convention:
+    <strong>identity is a TYPE</strong>. A field holding an id — a cross-aggregate reference like a
+    <code>BuyerID</code>/<code>TenantID</code> — is declared <code>domain.ID</code> (nullable ⇒ <code>*domain.ID</code>),
+    and the field's Go type alone drives every leg: the write bind, the criteria probe lift, and the scan decode all
+    render it in the dialect's native id form (<code>UUID</code> on Postgres, <code>BINARY(16)</code> on MySQL), with
+    <code>nil</code> ⇄ SQL <code>NULL</code> on the pointer. A <code>string</code> field is text, ALWAYS — even when the
+    value happens to look like a uuid — pairing with <code>CHAR(36)</code>/<code>VARCHAR(36)</code> columns; nothing is
+    ever guessed from a value's shape. The PK and the child FK are framework-managed slots, always stored in the native
+    id form. (<code>domain.ID</code> validates nothing on its own — <code>IsValid</code> stays the explicit seam; a
+    non-uuid id value degrades to its text form and the column, not the codec, rejects it.)
 </p>
 
 <h3>Supported column shapes — Go ↔ PostgreSQL</h3>
@@ -857,11 +869,14 @@ func StudentSchema() *core.TableSchema {
             <td>the text family — the workhorse for names, emails, addresses</td>
         </tr>
         <tr>
-            <td><code>string</code> &nbsp;<span class="muted">(<code>domain.ID</code> at the entity boundary)</span></td>
+            <td><code>domain.ID</code> / <code>*domain.ID</code></td>
             <td><code>UUID</code></td>
-            <td><strong>the framework's canonical UUID representation.</strong> The PK and every FK are bound and scanned
-                as Go <code>string</code>s — <code>pgx</code> parses the textual form into / out of the <code>uuid</code>
-                column. There is <em>no</em> <code>google/uuid.UUID</code> field mapping (see the note below).</td>
+            <td><strong>the identity type — the field's Go type IS the declaration.</strong> Bound as uuid text (the
+                server casts into the native <code>UUID</code> column) and restored by the framework's id scan proxy;
+                a nil <code>*domain.ID</code> ⇄ SQL <code>NULL</code>. The PK and every FK are framework-managed slots
+                on <code>UUID</code> columns. A <code>string</code> field is NEVER coerced — it pairs with the text
+                family above, whatever the value's shape. There is <em>no</em> <code>google/uuid.UUID</code> field
+                mapping (see the note below).</td>
         </tr>
         <tr>
             <td><code>bool</code></td>
@@ -895,17 +910,25 @@ func StudentSchema() *core.TableSchema {
             <td>raw binary</td>
         </tr>
         <tr>
-            <td><code>[]byte</code> / <code>json.RawMessage</code> / <code>string</code> / a struct or map</td>
+            <td><code>[]byte</code> / <code>json.RawMessage</code> / <code>string</code></td>
             <td><code>JSON</code> / <code>JSONB</code></td>
-            <td><code>pgx</code> applies <code>encoding/json</code> on the way in and out</td>
-        </tr>
-        <tr>
-            <td>Go slice (<code>[]string</code>, <code>[]int64</code>, …)</td>
-            <td>PostgreSQL array (<code>TEXT[]</code>, <code>BIGINT[]</code>, …)</td>
-            <td><code>pgx</code> encodes / decodes native arrays</td>
+            <td>a JSON payload column — (un)marshal in your own code. A struct/map field is NOT declarable (outside
+                the closed set below); marshal it into one of these.</td>
         </tr>
     </tbody>
 </table>
+
+<div class="box warn">
+    <strong>The set is CLOSED — an unknown field type is a boot fail at the declaration call.</strong>
+    <code>Field(...)</code> validates the Go type against exactly the set in these tables — the types the framework
+    composes on EVERY supported relational engine (write bind, criteria bind, auto-scan). Anything else panics at construction with the fix:
+    a <code>google/uuid.UUID</code> field points at <code>domain.ID</code> (google/uuid is the framework's internal
+    engine, never a field type); a named type (a <code>type Status string</code> enum) maps to its underlying
+    <code>string</code>/<code>int</code>; a struct/map marshals into <code>[]byte</code>/<code>json.RawMessage</code>;
+    a Go slice (the PG-only array mapping) models as a JSON payload column or an aggregate <code>Child(...)</code>.
+    Matching is by IDENTICAL type, never by kind — the drivers diverge on named types, so the guarantee stays literal.
+    This page is the canonical home of the supported set; the guard's messages point here.
+</div>
 
 <p>
     <strong>Nullability is a pointer.</strong> A column declared <code>NULL</code>-able maps to a Go <strong>pointer</strong>
@@ -928,10 +951,14 @@ func StudentSchema() *core.TableSchema {
 <p>
     On MySQL the engine is driven by <code>database/sql</code> + <code>go-sql-driver/mysql</code> (the DSN is forced to
     <code>parseTime=true</code> so temporal columns scan into <code>time.Time</code>). Placeholders are <code>?</code> and
-    identifiers are backtick-quoted. The framework owns one value codec on top of the driver: a <code>domain.ID</code> /
-    UUID is stored as <code>BINARY(16)</code> and ids are generated in Go as <strong>UUID v7</strong> (time-ordered for
-    InnoDB locality — there is no <code>RETURNING</code> and no DB default); the read path decodes a <code>BINARY(16)</code>
-    column back to the canonical UUID string. Everything else passes through to the driver's default conversions.
+    identifiers are backtick-quoted. The framework owns one value codec on top of the driver, driven by the field's Go
+    TYPE: a <code>domain.ID</code> / <code>*domain.ID</code> field (and the managed PK/FK slots) is stored as
+    <code>BINARY(16)</code> — bound as 16 raw bytes on write and in lifted criteria probes, restored to the canonical
+    value by the id scan proxy on read, <code>nil</code> ⇄ SQL <code>NULL</code> on the pointer — and ids are generated
+    in Go as <strong>UUID v7</strong> (time-ordered for InnoDB locality — there is no <code>RETURNING</code> and no DB
+    default). A <code>string</code> field binds and scans as plain text, whatever the value's shape — the
+    <code>CHAR(36)</code>/<code>VARCHAR(36)</code> choice. Everything else passes through to the driver's default
+    conversions.
 </p>
 <table>
     <thead><tr><th>Go field type</th><th>MySQL column type</th><th>Notes</th></tr></thead>
@@ -942,12 +969,14 @@ func StudentSchema() *core.TableSchema {
             <td>the text family — names, emails, addresses</td>
         </tr>
         <tr>
-            <td><code>string</code> &nbsp;<span class="muted">(<code>domain.ID</code> at the entity boundary)</span></td>
+            <td><code>domain.ID</code> / <code>*domain.ID</code></td>
             <td><code>BINARY(16)</code></td>
-            <td><strong>the framework's canonical UUID representation on MySQL.</strong> The PK and every FK / UUID
-                reference are Go <code>string</code>s; the engine encodes them to 16 raw bytes on write and decodes a
-                <code>BINARY(16)</code> column back to the canonical UUID string on read. Ids are generated in Go
-                (UUID v7) — no <code>gen_random_uuid()</code>, no DB default.</td>
+            <td><strong>the identity type — the field's Go type IS the declaration.</strong> Encoded to 16 raw bytes on
+                write and in lifted criteria probes; the id scan proxy restores the canonical value on read; a nil
+                <code>*domain.ID</code> ⇄ SQL <code>NULL</code>. The PK and every FK are framework-managed slots on
+                <code>BINARY(16)</code>. A <code>string</code> field is NEVER coerced — it pairs with the text family
+                above (<code>CHAR(36)</code>/<code>VARCHAR(36)</code> for uuid-valued text), whatever the value's
+                shape. Ids are generated in Go (UUID v7) — no <code>gen_random_uuid()</code>, no DB default.</td>
         </tr>
         <tr>
             <td><code>bool</code></td>

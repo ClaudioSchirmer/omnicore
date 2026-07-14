@@ -56,7 +56,7 @@ func BuildUpdateEvent(ctx persistence.RequestContext, u domain.Updatable, schema
 	labels := composedLabelKeys(schema)
 	ev := audit.AuditEvent{
 		EntityType: u.EntityName(),
-		EntityID:   u.ID(),
+		EntityID:   u.ID().Value(),
 		Verb:       "update",
 		ActionName: u.ActionName(),
 		Kind:       "delta",
@@ -74,7 +74,7 @@ func BuildUpdateEvent(ctx persistence.RequestContext, u domain.Updatable, schema
 func BuildArchiveEvent(ctx persistence.RequestContext, a domain.Archivable, schema *TableSchema, auditClaims []string) audit.AuditEvent {
 	ev := audit.AuditEvent{
 		EntityType: a.EntityName(),
-		EntityID:   a.ID(),
+		EntityID:   a.ID().Value(),
 		Verb:       "archive",
 		ActionName: a.ActionName(),
 		Kind:       "transition",
@@ -89,7 +89,7 @@ func BuildArchiveEvent(ctx persistence.RequestContext, a domain.Archivable, sche
 func BuildUnarchiveEvent(ctx persistence.RequestContext, u domain.Unarchivable, schema *TableSchema, auditClaims []string) audit.AuditEvent {
 	ev := audit.AuditEvent{
 		EntityType: u.EntityName(),
-		EntityID:   u.ID(),
+		EntityID:   u.ID().Value(),
 		Verb:       "unarchive",
 		ActionName: u.ActionName(),
 		Kind:       "transition",
@@ -112,7 +112,7 @@ func BuildDeleteEvent(ctx persistence.RequestContext, d domain.Deletable, schema
 	}
 	ev := audit.AuditEvent{
 		EntityType: d.EntityName(),
-		EntityID:   d.ID(),
+		EntityID:   d.ID().Value(),
 		Verb:       "delete",
 		ActionName: d.ActionName(),
 		Kind:       "snapshot",
@@ -450,7 +450,7 @@ func oldChildrenIndex(schema *TableSchema, src domain.Entity) map[string]map[str
 		child, _, _ := schema.ResolveAggregateChild(typeName)
 		inner := map[string]map[string]any{}
 		for _, it := range items {
-			id := it.Item.GetID()
+			id := it.Item.GetID().Value()
 			if id == "" {
 				continue
 			}
@@ -499,7 +499,7 @@ func childEventOf(
 	typeName, verb string,
 	prevByTypeID map[string]map[string]map[string]any,
 ) (audit.ChildEvent, bool) {
-	id := it.Item.GetID()
+	id := it.Item.GetID().Value()
 	prevFields := func() map[string]any {
 		if prevByTypeID == nil {
 			return nil

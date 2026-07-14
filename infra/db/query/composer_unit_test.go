@@ -258,7 +258,7 @@ type csComposeVO struct {
 	Note  string
 }
 
-func (v csComposeVO) GetID() string                                    { return v.ID }
+func (v csComposeVO) GetID() domain.ID                                 { return domain.NewID(v.ID) }
 func (v csComposeVO) BuildRules(string, domain.Service, *domain.Rules) {}
 
 // TestCompose_OwnChildrenAutoNested proves a view whose ROOT schema declares a

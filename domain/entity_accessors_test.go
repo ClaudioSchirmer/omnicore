@@ -102,11 +102,11 @@ func TestUpdatable_Accessors(t *testing.T) {
 	if u.Source() != source {
 		t.Error("Source() mismatch")
 	}
-	if u.ID() != id.Value() {
+	if u.ID().Value() != id.Value() {
 		t.Errorf("ID() = %q, want %q", u.ID(), id.Value())
 	}
-	if u.IDValue() != id {
-		t.Errorf("IDValue() = %v, want %v", u.IDValue(), id)
+	if u.ID() != id {
+		t.Errorf("ID() = %v, want %v", u.ID(), id)
 	}
 	if u.IsPartial() {
 		t.Error("IsPartial() should be false for non-partial Updatable")
@@ -129,11 +129,11 @@ func TestArchivable_Accessors(t *testing.T) {
 	if a.Source() != source {
 		t.Error("Archivable.Source() mismatch")
 	}
-	if a.ID() != id.Value() {
+	if a.ID() != id {
 		t.Errorf("Archivable.ID() = %q, want %q", a.ID(), id.Value())
 	}
-	if a.IDValue() != id {
-		t.Errorf("Archivable.IDValue() = %v, want %v", a.IDValue(), id)
+	if a.ID() != id {
+		t.Errorf("Archivable.ID() = %v, want %v", a.ID(), id)
 	}
 }
 
@@ -145,8 +145,8 @@ func TestDeletable_Accessors(t *testing.T) {
 	if d.Source() != source {
 		t.Error("Deletable.Source() mismatch")
 	}
-	if d.ID() != id.Value() || d.IDValue() != id {
-		t.Errorf("Deletable.ID/IDValue mismatch: %q/%v", d.ID(), d.IDValue())
+	if d.ID() != id {
+		t.Errorf("Deletable.ID() = %v, want %v", d.ID(), id)
 	}
 }
 
@@ -158,8 +158,8 @@ func TestUnarchivable_Accessors(t *testing.T) {
 	if un.Source() != source {
 		t.Error("Unarchivable.Source() mismatch")
 	}
-	if un.ID() != id.Value() || un.IDValue() != id {
-		t.Errorf("Unarchivable.ID/IDValue mismatch: %q/%v", un.ID(), un.IDValue())
+	if un.ID() != id {
+		t.Errorf("Unarchivable.ID() = %v, want %v", un.ID(), id)
 	}
 }
 

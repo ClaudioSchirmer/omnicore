@@ -96,12 +96,12 @@ func aggUpdatableAllOps(t *testing.T) domain.Updatable {
 	root := &aggWriteRoot{Name: "r"}
 	root.SetID(domain.NewID(uuid.NewString()))
 	root.AggregateConstructor([]domain.AggregateValueObject{
-		aggWriteChild{ID: id1, Label: "keep"},
-		aggWriteChild{ID: id2, Label: "drop"},
+		aggWriteChild{ID: domain.NewID(id1), Label: "keep"},
+		aggWriteChild{ID: domain.NewID(id2), Label: "drop"},
 	})
 	upd, err := domain.GetUpdatable(root, func(r *aggWriteRoot) error {
-		domain.ChangeAggregateChild(r, aggWriteChild{ID: id1, Label: "keep"}, aggWriteChild{ID: id1, Label: "changed"})
-		domain.RemoveAggregateChild(r, aggWriteChild{ID: id2, Label: "drop"})
+		domain.ChangeAggregateChild(r, aggWriteChild{ID: domain.NewID(id1), Label: "keep"}, aggWriteChild{ID: domain.NewID(id1), Label: "changed"})
+		domain.RemoveAggregateChild(r, aggWriteChild{ID: domain.NewID(id2), Label: "drop"})
 		domain.AddAggregateChild(r, aggWriteChild{Label: "new"})
 		return nil
 	}, nil, "GetUpdatable")
@@ -145,7 +145,7 @@ func TestSoftWriteAggregate_StepFailures(t *testing.T) {
 		t.Helper()
 		root := &aggWriteRoot{Name: "r"}
 		root.SetID(domain.NewID(uuid.NewString()))
-		root.AggregateConstructor([]domain.AggregateValueObject{aggWriteChild{ID: uuid.NewString(), Label: "c"}})
+		root.AggregateConstructor([]domain.AggregateValueObject{aggWriteChild{ID: domain.NewIDFromUUID(uuid.New()), Label: "c"}})
 		a, err := domain.GetArchivable(root, nil, "GetArchivable")
 		if err != nil {
 			t.Fatalf("GetArchivable: %v", err)
@@ -191,7 +191,7 @@ func TestSoftWriteAggregate_CascadeSkips(t *testing.T) {
 			PK("id").Field("Name", "name").SoftDelete("deleted_at")
 		root := &aggWriteRoot{Name: "r"}
 		root.SetID(domain.NewID(uuid.NewString()))
-		root.AggregateConstructor([]domain.AggregateValueObject{aggWriteChild{ID: uuid.NewString(), Label: "c"}})
+		root.AggregateConstructor([]domain.AggregateValueObject{aggWriteChild{ID: domain.NewIDFromUUID(uuid.New()), Label: "c"}})
 		a, _ := domain.GetArchivable(root, nil, "GetArchivable")
 		tx := &recTx{}
 		be := newFlatBE(&recBeginner{tx: tx})
@@ -210,7 +210,7 @@ func TestSoftWriteAggregate_CascadeSkips(t *testing.T) {
 				PK("id").FK("agg_w_id").Field("Label", "label"))
 		root := &aggWriteRoot{Name: "r"}
 		root.SetID(domain.NewID(uuid.NewString()))
-		root.AggregateConstructor([]domain.AggregateValueObject{aggWriteChild{ID: uuid.NewString(), Label: "c"}})
+		root.AggregateConstructor([]domain.AggregateValueObject{aggWriteChild{ID: domain.NewIDFromUUID(uuid.New()), Label: "c"}})
 		u, _ := domain.GetUnarchivable(root, nil, "GetUnarchivable")
 		tx := &recTx{}
 		be := newFlatBE(&recBeginner{tx: tx})
@@ -833,7 +833,7 @@ type cascadeBaseChild struct {
 	Note string
 }
 
-func (c cascadeBaseChild) GetID() string                                    { return c.ID }
+func (c cascadeBaseChild) GetID() domain.ID                                 { return domain.NewID(c.ID) }
 func (c cascadeBaseChild) BuildRules(string, domain.Service, *domain.Rules) {}
 
 func cascadeRoleSchema() *TableSchema {

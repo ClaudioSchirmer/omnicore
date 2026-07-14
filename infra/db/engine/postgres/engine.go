@@ -235,11 +235,21 @@ func validIdentifier(name string) string {
 }
 
 // normalizeArg unwraps framework value types pgx cannot bind directly. domain.ID
-// exposes Value() string (not driver.Valuer), so it is converted here. Consumed
-// by pgDialect.EncodeArg (the Postgres value codec) — a PG-side concern.
+// exposes Value() string (not driver.Valuer), so it is converted here — the
+// text form serves the native UUID column (the server casts). A *domain.ID is
+// the NULLABLE identity field: nil stays nil (SQL NULL), non-nil unwraps
+// through one dereference. Consumed by pgDialect.EncodeArg (the Postgres value
+// codec) — a PG-side concern.
 func normalizeArg(val any) any {
-	if id, ok := val.(domain.ID); ok {
-		return id.Value()
+	switch v := val.(type) {
+	case domain.ID:
+		return v.Value()
+	case *domain.ID:
+		if v == nil {
+			return nil
+		}
+		return v.Value()
+	default:
+		return val
 	}
-	return val
 }

@@ -3,10 +3,11 @@ package domain
 import "testing"
 
 type testAVO struct {
-	ID, Name string
+	ID   ID
+	Name string
 }
 
-func (t testAVO) GetID() string                            { return t.ID }
+func (t testAVO) GetID() ID                                { return t.ID }
 func (t testAVO) BuildRules(_ string, _ Service, _ *Rules) {}
 
 // otherAVO is an AVO not declared in providerForTest's AggregateChildren list.
@@ -15,7 +16,7 @@ type otherAVO struct {
 	ID string
 }
 
-func (o otherAVO) GetID() string                            { return o.ID }
+func (o otherAVO) GetID() ID                                { return NewID(o.ID) }
 func (o otherAVO) BuildRules(_ string, _ Service, _ *Rules) {}
 
 // providerForTest is the minimal AggregateRootProvider used by the typed
@@ -39,7 +40,7 @@ func newProviderForTest() *providerForTest {
 
 func TestReplaceAggregateChildrenOf_FullReplace(t *testing.T) {
 	p := newProviderForTest()
-	p.AggregateConstructor([]AggregateValueObject{testAVO{ID: "1", Name: "a"}})
+	p.AggregateConstructor([]AggregateValueObject{testAVO{ID: NewID("1"), Name: "a"}})
 
 	newItems := []testAVO{{Name: "b"}, {Name: "c"}}
 	ReplaceAggregateChildrenOf(p, newItems)
@@ -56,7 +57,7 @@ func TestReplaceAggregateChildrenOf_FullReplace(t *testing.T) {
 
 func TestReplaceAggregateChildrenOf_EmptyClears(t *testing.T) {
 	p := newProviderForTest()
-	p.AggregateConstructor([]AggregateValueObject{testAVO{ID: "1"}})
+	p.AggregateConstructor([]AggregateValueObject{testAVO{ID: NewID("1")}})
 
 	ReplaceAggregateChildrenOf(p, []testAVO{})
 
@@ -72,7 +73,7 @@ func TestReplaceAggregateChildrenOf_EmptyClears(t *testing.T) {
 
 func TestReplaceAggregateChildrenOf_NilSliceSameAsEmpty(t *testing.T) {
 	p := newProviderForTest()
-	p.AggregateConstructor([]AggregateValueObject{testAVO{ID: "1"}})
+	p.AggregateConstructor([]AggregateValueObject{testAVO{ID: NewID("1")}})
 
 	var nilSlice []testAVO
 	ReplaceAggregateChildrenOf(p, nilSlice)
@@ -179,7 +180,7 @@ type emittingAVO struct {
 	emit string
 }
 
-func (e emittingAVO) GetID() string { return "" }
+func (e emittingAVO) GetID() ID { return NewID("") }
 func (e emittingAVO) BuildRules(_ string, _ Service, r *Rules) {
 	if e.emit != "" {
 		r.AddNotification(e.emit, RequiredFieldNotification{})

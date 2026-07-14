@@ -1,6 +1,8 @@
 package core
 
 import (
+	"github.com/ClaudioSchirmer/omnicore/domain"
+
 	"strings"
 	"testing"
 )
@@ -25,7 +27,7 @@ type equivAddr struct {
 	Street string
 }
 
-func (c equivAddr) GetID() string { return c.ID }
+func (c equivAddr) GetID() domain.ID { return domain.NewID(c.ID) }
 
 func mustPanicWith(t *testing.T, wantSub string, fn func()) {
 	t.Helper()

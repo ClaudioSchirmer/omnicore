@@ -81,7 +81,7 @@ func TestFindOne_FoundHydratesRootAndChildren(t *testing.T) {
 		t.Errorf("FindOne must probe with LIMIT 2, got %q", rootSQL)
 	}
 	items := domain.GetCurrentItemsOf[covChild](&e.AggregateRoot)
-	if len(items) != 1 || items[0].GetID() != "c1" || items[0].Label != "L1" {
+	if len(items) != 1 || items[0].GetID().Value() != "c1" || items[0].Label != "L1" {
 		t.Errorf("children not hydrated: %+v", items)
 	}
 }
@@ -167,7 +167,7 @@ func TestFindAll_HydratesBatchedChildrenAcrossRoots(t *testing.T) {
 	}
 	for i, want := range []struct{ id, label string }{{"c1", "L1"}, {"c2", "L2"}} {
 		items := domain.GetCurrentItemsOf[covChild](&all[i].AggregateRoot)
-		if len(items) != 1 || items[0].GetID() != want.id || items[0].Label != want.label {
+		if len(items) != 1 || items[0].GetID().Value() != want.id || items[0].Label != want.label {
 			t.Errorf("root %d children grouped wrong: %+v", i, items)
 		}
 	}

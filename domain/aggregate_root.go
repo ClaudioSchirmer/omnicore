@@ -147,10 +147,10 @@ func (ar *AggregateRoot) ClearAggregateItemsOfType(typeName string) {
 // readers (FromEntity result projections, the audit/outbox snapshots) see the
 // child exactly as persisted instead of with an empty id. It matches the
 // tracked entry by deep equality against the PRE-assignment value and sets the
-// item's exported string "ID" field via reflection (the documented value-object
-// shape); statuses are left untouched. Returns false when the item isn't
-// tracked or carries no settable string ID field — callers treat that as
-// "no write-back possible", never an error.
+// item's exported "ID" field (typed domain.ID — the documented value-object
+// shape) via reflection; statuses are left untouched. Returns false when the
+// item isn't tracked or carries no settable domain.ID "ID" field — callers
+// treat that as "no write-back possible", never an error.
 func (ar *AggregateRoot) AssignAggregateItemID(item AggregateValueObject, id string) bool {
 	if item == nil || ar.aggregates == nil {
 		return false
@@ -182,10 +182,10 @@ func withItemID(item AggregateValueObject, id string) (AggregateValueObject, boo
 	v := reflect.New(t).Elem()
 	v.Set(reflect.ValueOf(item))
 	f := v.FieldByName("ID")
-	if !f.IsValid() || f.Kind() != reflect.String || !f.CanSet() {
+	if !f.IsValid() || f.Type() != reflect.TypeOf(ID{}) || !f.CanSet() {
 		return nil, false
 	}
-	f.SetString(id)
+	f.Set(reflect.ValueOf(NewID(id)))
 	out, ok := v.Interface().(AggregateValueObject)
 	return out, ok
 }

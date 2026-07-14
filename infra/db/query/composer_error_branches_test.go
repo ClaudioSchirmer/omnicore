@@ -19,7 +19,7 @@ type composerRoleChild struct {
 	Label string
 }
 
-func (c composerRoleChild) GetID() string                                    { return c.ID }
+func (c composerRoleChild) GetID() domain.ID                                 { return domain.NewID(c.ID) }
 func (c composerRoleChild) BuildRules(string, domain.Service, *domain.Rules) {}
 
 type composerRole struct {

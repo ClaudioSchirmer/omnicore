@@ -118,7 +118,7 @@ func TestDeleteRoleWithBase_OutboxPayloadCarriesPKAndBaseFK(t *testing.T) {
 		t.Fatalf("Delete: %v", err)
 	}
 	p := outboxPayloadFor(t, tx, "aluno", "DELETED")
-	if p["id"] != del.ID() {
+	if p["id"] != del.ID().Value() {
 		t.Errorf("role DELETED payload must carry the role PK, got %v", p)
 	}
 	if p["pessoa_id"] != deterministicBaseID("D1") {
@@ -199,7 +199,7 @@ func TestArchiveRoleWithBase_OutboxPayloadCarriesBaseFK(t *testing.T) {
 func TestArchiveAggregate_OutboxPayloadRootCarriesDeletedAt(t *testing.T) {
 	root := &aggWriteRoot{Name: "r"}
 	root.SetID(domain.NewID(uuid.NewString()))
-	root.AggregateConstructor([]domain.AggregateValueObject{aggWriteChild{ID: uuid.NewString(), Label: "c"}})
+	root.AggregateConstructor([]domain.AggregateValueObject{aggWriteChild{ID: domain.NewIDFromUUID(uuid.New()), Label: "c"}})
 	a, err := domain.GetArchivable(root, nil, "GetArchivable")
 	if err != nil {
 		t.Fatalf("GetArchivable: %v", err)
@@ -229,7 +229,7 @@ func TestDeleteAggregate_OutboxPayloadIsPKOnly(t *testing.T) {
 	root := &aggWriteRoot{Name: "r"}
 	id := uuid.NewString()
 	root.SetID(domain.NewID(id))
-	root.AggregateConstructor([]domain.AggregateValueObject{aggWriteChild{ID: uuid.NewString(), Label: "c"}})
+	root.AggregateConstructor([]domain.AggregateValueObject{aggWriteChild{ID: domain.NewIDFromUUID(uuid.New()), Label: "c"}})
 	d, err := domain.GetDeletable(root, nil, "GetDeletable")
 	if err != nil {
 		t.Fatalf("GetDeletable: %v", err)

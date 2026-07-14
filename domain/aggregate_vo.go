@@ -28,8 +28,10 @@ type AggregateValueObject interface {
 
 	// GetID returns the existing row id when the item was loaded from the
 	// database (StatusConstructor) or set by the persister after INSERT.
-	// Returns an empty string for new items that have not been persisted yet.
-	GetID() string
+	// Returns an empty ID (IsEmpty()) for new items not persisted yet. The
+	// AVO carries it as an exported `ID domain.ID` field — identity is a
+	// type, on children exactly as on references.
+	GetID() ID
 }
 
 type ValueObjectValidator interface {

@@ -479,20 +479,29 @@ func TestUp_FailureMarksDirty(t *testing.T) {
 	}
 }
 
-func TestUp_ServiceSourceErrorPropagates(t *testing.T) {
+func TestUp_MissingServiceDirBootsFrameworkOnly(t *testing.T) {
 	pool, cleanup := newTestDB(t)
 	defer cleanup()
 
-	// Non-existent dir → service source open should fail with a fs-not-found
-	// error wrapped by migration.runUp.
+	// The v0.29.0 contract: a missing (or empty) service migrations dir is
+	// the legitimate state of a freshly scaffolded service — Up applies the
+	// framework's embedded control plane and SKIPS the service stage, instead
+	// of crashing golang-migrate's file source on the missing dir. The
+	// service's real 0001 arrives with its first entity.
 	mgr := New(pool, filepath.Join(t.TempDir(), "no-such-dir"))
-	err := mgr.Up(context.Background())
-	if err == nil {
-		t.Fatal("expected Up to fail when service dir does not exist")
+	if err := mgr.Up(context.Background()); err != nil {
+		t.Fatalf("Up on a missing service dir = %v, want nil (framework-only boot)", err)
 	}
-	// Framework migration runs first, so the error is on the service stage.
-	if !strings.Contains(err.Error(), "service") && !errors.Is(err, os.ErrNotExist) {
-		t.Errorf("error should mention service stage or be NotExist, got %v", err)
+	if !tableExists(t, pool, "outbox") {
+		t.Error("expected 'outbox' table — the framework stage must still run")
+	}
+	// The service stage was skipped outright: its tracking table never appears.
+	if tableExists(t, pool, serviceTrackingTbl) {
+		t.Error("service tracking table created for a missing dir — the service stage should have been skipped")
+	}
+	// Idempotent: a second boot over the same state is still a clean no-op.
+	if err := mgr.Up(context.Background()); err != nil {
+		t.Fatalf("second Up on the missing dir = %v, want nil", err)
 	}
 }
 

@@ -40,7 +40,7 @@ func TestInsertRoleWithBase_SharedPK_New(t *testing.T) {
 		t.Fatalf("Insert: %v", err)
 	}
 	// The role's own PK IS the deterministic base id.
-	if want := deterministicBaseID("D1"); res.ID != want {
+	if want := deterministicBaseID("D1"); res.ID.Value() != want {
 		t.Errorf("shared-PK role id must equal the base id %q, got %q", want, res.ID)
 	}
 	// The role INSERT writes the id column once (as the PK) and no separate FK column.

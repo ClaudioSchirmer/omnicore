@@ -293,15 +293,18 @@ func (d mysqlDialect) BuildUpsert(table string, cols, conflictCols []string, set
 	return b.String()
 }
 
-// EncodeArg binds UUID-shaped values as their 16-byte form so they match a
-// BINARY(16) column. A domain.ID and a uuid.UUID encode by type; a raw string is
-// encoded only when it is the canonical 36-char hyphenated UUID form (a criteria
-// value may arrive as a plain string — e.g. criteria.Eq("BuyerID", idStr) — and
-// on Postgres such a string matches a uuid column directly, so MySQL must too).
-// The canonical-form restriction is deliberate: uuid.Parse also accepts the
-// braces / urn / 32-hex shapes, but those round trip through far fewer real
-// columns, so leaving them as text avoids mis-encoding a non-uuid value that
-// happens to parse. Everything else passes through.
+// EncodeArg binds TYPED id values as their 16-byte form so they match a
+// BINARY(16) column: a domain.ID / *domain.ID and a uuid.UUID encode by type —
+// carrying the identity type IS the declaration, the same way the scan side
+// detects id fields by their Go type. A nil *domain.ID stays nil (SQL NULL). A
+// plain string ALWAYS passes through as text, even in canonical uuid shape:
+// whether a value is an identity is stated by its TYPE (`domain.ID` field ⇒
+// BINARY(16) column, `string` field ⇒ CHAR/VARCHAR column), never guessed from
+// the value's shape — the criteria translator lifts probes on id-typed fields
+// into domain.ID (by the schema's reflected field type) before they reach this
+// codec. (A domain.ID wrapping a non-parseable string degrades to its text
+// value — the column, not the codec, rejects it.) Everything else passes
+// through.
 func (mysqlDialect) EncodeArg(val any) any {
 	switch v := val.(type) {
 	case domain.ID:
@@ -309,15 +312,16 @@ func (mysqlDialect) EncodeArg(val any) any {
 			return b
 		}
 		return v.Value()
+	case *domain.ID:
+		if v == nil {
+			return nil
+		}
+		if b, err := uuidBytes(v.Value()); err == nil {
+			return b
+		}
+		return v.Value()
 	case uuid.UUID:
 		return v[:]
-	case string:
-		if len(v) == 36 {
-			if u, err := uuid.Parse(v); err == nil {
-				return u[:]
-			}
-		}
-		return v
 	default:
 		return val
 	}

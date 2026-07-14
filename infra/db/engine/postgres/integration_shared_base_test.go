@@ -83,7 +83,7 @@ func sbInsert(t *testing.T, pg *Postgres, doc, enrollment, actionName string) st
 	if err != nil {
 		t.Fatalf("Insert(%s): %v", enrollment, err)
 	}
-	return res.ID
+	return res.ID.Value()
 }
 
 func sbArchive(t *testing.T, pg *Postgres, id, doc string) {

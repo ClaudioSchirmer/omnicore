@@ -71,7 +71,7 @@ type ptrChildVO struct {
 	Label string
 }
 
-func (c *ptrChildVO) GetID() string                                    { return c.ID }
+func (c *ptrChildVO) GetID() domain.ID                                 { return domain.NewID(c.ID) }
 func (c *ptrChildVO) BuildRules(string, domain.Service, *domain.Rules) {}
 
 type ptrAggEntity struct {

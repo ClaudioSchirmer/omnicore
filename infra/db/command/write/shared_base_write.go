@@ -253,7 +253,7 @@ func (b *BaseEngine) insertWithBase(ctx persistence.RequestContext, entity domai
 		return domain.WriteResult{}, err
 	}
 	b.AfterCommit(ctx, ab)
-	return domain.WriteResult{ID: id, Fields: roleFields}, nil
+	return domain.WriteResult{ID: domain.NewID(id), Fields: roleFields}, nil
 }
 
 // updateWithBase is the role UPDATE (PUT/PATCH): UPDATE the role row by PK, apply
@@ -281,20 +281,20 @@ func (b *BaseEngine) updateWithBase(ctx persistence.RequestContext, entity domai
 	if err := b.FireAfterBegin(ctx, tx, src, hook, hctx); err != nil {
 		return domain.WriteResult{}, err
 	}
-	if err := guardNaturalKeyImmutable(ctx, tx, d, schema, base, entity.EntityName(), entity.ID(), fkCol, baseID); err != nil {
+	if err := guardNaturalKeyImmutable(ctx, tx, d, schema, base, entity.EntityName(), entity.ID().Value(), fkCol, baseID); err != nil {
 		return domain.WriteResult{}, err
 	}
-	sql, args := buildUpdate(d, schema.Table(), schema.PKColumn(), entity.ID(), roleFields, schema.UpdateNowColumns())
-	if err := execExpectingRow(ctx, tx, sql, args, entity.EntityName(), schema.PKColumn(), entity.ID()); err != nil {
+	sql, args := buildUpdate(d, schema.Table(), schema.PKColumn(), entity.ID().Value(), roleFields, schema.UpdateNowColumns())
+	if err := execExpectingRow(ctx, tx, sql, args, entity.EntityName(), schema.PKColumn(), entity.ID().Value()); err != nil {
 		return domain.WriteResult{}, err
 	}
 	// Aggregate role: role + shared-base children, persisted by OperationOf
 	// (writeChildren) + sibling updates. Update is load-first, so loaded children are
 	// Constructor (no-op) and only real changes touch the DB.
-	if err := writeChildren(ctx, tx, d, root, schema, entity.ID(), baseID); err != nil {
+	if err := writeChildren(ctx, tx, d, root, schema, entity.ID().Value(), baseID); err != nil {
 		return domain.WriteResult{}, err
 	}
-	if err := applySiblingUpdates(ctx, tx, d, schema, src, entity.ID(), entity.IsPartial()); err != nil {
+	if err := applySiblingUpdates(ctx, tx, d, schema, src, entity.ID().Value(), entity.IsPartial()); err != nil {
 		return domain.WriteResult{}, err
 	}
 	// The base always exists here (we are updating an existing role, whose FK
@@ -307,7 +307,7 @@ func (b *BaseEngine) updateWithBase(ctx persistence.RequestContext, entity domai
 	if err := b.reactivateBaseIfArchived(ctx, tx, d, schema, src); err != nil {
 		return domain.WriteResult{}, err
 	}
-	if err := WriteOutbox(ctx, tx, schema.Table(), "UPDATED", entity.ID(), roleFields); err != nil {
+	if err := WriteOutbox(ctx, tx, schema.Table(), "UPDATED", entity.ID().Value(), roleFields); err != nil {
 		return domain.WriteResult{}, err
 	}
 	// Fan-out trigger: a base outbox row recomposes the OTHER roles' read models.
@@ -320,7 +320,7 @@ func (b *BaseEngine) updateWithBase(ctx persistence.RequestContext, entity domai
 	if err := b.WriteAuditRow(ctx, tx, ab.Ev); err != nil {
 		return domain.WriteResult{}, err
 	}
-	if err := b.FireBeforeCommit(ctx, tx, src, domain.NewID(entity.ID()), hook, hctx); err != nil {
+	if err := b.FireBeforeCommit(ctx, tx, src, domain.NewID(entity.ID().Value()), hook, hctx); err != nil {
 		return domain.WriteResult{}, err
 	}
 	if err := tx.Commit(ctx); err != nil {

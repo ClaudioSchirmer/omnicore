@@ -34,7 +34,7 @@ type loaderTagVO struct {
 	Label string
 }
 
-func (v loaderTagVO) GetID() string                                    { return v.ID }
+func (v loaderTagVO) GetID() domain.ID                                 { return domain.NewID(v.ID) }
 func (v loaderTagVO) BuildRules(string, domain.Service, *domain.Rules) {}
 
 type loaderNoteVO struct {
@@ -42,7 +42,7 @@ type loaderNoteVO struct {
 	Body string
 }
 
-func (v loaderNoteVO) GetID() string                                    { return v.ID }
+func (v loaderNoteVO) GetID() domain.ID                                 { return domain.NewID(v.ID) }
 func (v loaderNoteVO) BuildRules(string, domain.Service, *domain.Rules) {}
 
 func createLoaderTables(t *testing.T, pg *Postgres) {
@@ -147,7 +147,7 @@ func TestAggregateLoader_Load_AutoScanRootAndChildren(t *testing.T) {
 	loader := read.NewAggregateLoader[*loaderRoot](pg, func() *loaderRoot { return &loaderRoot{} }).
 		WithSchema(loaderRootSchema())
 
-	root, err := loader.FindOne(context.Background(), criteria.ByID(rootID))
+	root, err := loader.FindOne(context.Background(), criteria.ByID(domain.NewID(rootID)))
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
@@ -171,7 +171,7 @@ func TestAggregateLoader_Load_NotFoundProducesNotFoundError(t *testing.T) {
 
 	loader := read.NewAggregateLoader[*loaderRoot](pg, func() *loaderRoot { return &loaderRoot{} }).
 		WithSchema(loaderRootSchemaTagsOnly())
-	_, err := loader.FindOne(context.Background(), criteria.ByID("00000000-0000-0000-0000-000000000000"))
+	_, err := loader.FindOne(context.Background(), criteria.ByID(domain.NewID("00000000-0000-0000-0000-000000000000")))
 	if err == nil {
 		t.Fatal("expected NotFound error")
 	}
@@ -199,11 +199,11 @@ func TestAggregateLoader_LoadIncludingArchived(t *testing.T) {
 		WithSchema(loaderRootSchemaTagsOnly())
 
 	// Load (active-only) fails.
-	if _, err := loader.FindOne(context.Background(), criteria.ByID(id)); err == nil {
+	if _, err := loader.FindOne(context.Background(), criteria.ByID(domain.NewID(id))); err == nil {
 		t.Error("expected Load to NOT find archived root")
 	}
 	// LoadIncludingArchived succeeds.
-	root, err := loader.FindOne(context.Background(), criteria.ByID(id).OnlyArchived())
+	root, err := loader.FindOne(context.Background(), criteria.ByID(domain.NewID(id)).OnlyArchived())
 	if err != nil {
 		t.Fatalf("LoadIncludingArchived: %v", err)
 	}
@@ -223,7 +223,7 @@ func TestAggregateLoader_LoadIncludingArchived_ActiveRootSurfacesAsNotFound(t *t
 
 	loader := read.NewAggregateLoader[*loaderRoot](pg, func() *loaderRoot { return &loaderRoot{} }).
 		WithSchema(loaderRootSchemaFlat())
-	if _, err := loader.FindOne(context.Background(), criteria.ByID(id).OnlyArchived()); err == nil {
+	if _, err := loader.FindOne(context.Background(), criteria.ByID(domain.NewID(id)).OnlyArchived()); err == nil {
 		t.Error("expected LoadIncludingArchived to fail on an ACTIVE root (literal 'find archived')")
 	}
 }
@@ -257,7 +257,7 @@ func TestAggregateLoader_Load_WithManualRootScanner(t *testing.T) {
 			return r, nil
 		})
 
-	root, err := loader.FindOne(context.Background(), criteria.ByID(id))
+	root, err := loader.FindOne(context.Background(), criteria.ByID(domain.NewID(id)))
 	if err != nil {
 		t.Fatalf("Load with manual scanner: %v", err)
 	}
@@ -280,7 +280,7 @@ func TestAggregateLoader_Load_ManualRootScannerNotFound(t *testing.T) {
 			return r, row.Scan(&sink, &name, &email, &sink, &sink, &sink)
 		})
 
-	_, err := loader.FindOne(context.Background(), criteria.ByID("00000000-0000-0000-0000-000000000000"))
+	_, err := loader.FindOne(context.Background(), criteria.ByID(domain.NewID("00000000-0000-0000-0000-000000000000")))
 	if err == nil {
 		t.Fatal("expected NotFound")
 	}
@@ -314,7 +314,7 @@ func TestAggregateLoader_Load_WithManualChildScanner(t *testing.T) {
 			return loaderTagVO{ID: idval, Label: label + "_manual"}, nil
 		})
 
-	root, err := loader.FindOne(context.Background(), criteria.ByID(id))
+	root, err := loader.FindOne(context.Background(), criteria.ByID(domain.NewID(id)))
 	if err != nil {
 		t.Fatalf("Load with manual child: %v", err)
 	}
@@ -370,7 +370,7 @@ func TestAggregateLoader_Schema_TableAndFKOverride(t *testing.T) {
 				CreatedAt("created_at").
 				UpdatedAt("updated_at")))
 
-	root, err := loader.FindOne(context.Background(), criteria.ByID(id))
+	root, err := loader.FindOne(context.Background(), criteria.ByID(domain.NewID(id)))
 	if err != nil {
 		t.Fatalf("Load with overrides: %v", err)
 	}
@@ -397,7 +397,7 @@ func TestAggregateLoader_Load_NoChildRegistered(t *testing.T) {
 	// Schema declares NO children — root loads, children loop is skipped.
 	loader := read.NewAggregateLoader[*loaderRoot](pg, func() *loaderRoot { return &loaderRoot{} }).
 		WithSchema(loaderRootSchemaFlat())
-	root, err := loader.FindOne(context.Background(), criteria.ByID(id))
+	root, err := loader.FindOne(context.Background(), criteria.ByID(domain.NewID(id)))
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
@@ -427,7 +427,7 @@ func TestAggregateLoader_Load_AutoScanWithNoFieldsErrors(t *testing.T) {
 	)`)
 	loader := read.NewAggregateLoader[*emptyEntity](pg, func() *emptyEntity { return &emptyEntity{} }).
 		WithSchema(core.NewTableSchema[*emptyEntity]("empty_entities").PK("id").SoftDelete("deleted_at").CreatedAt("created_at"))
-	_, err := loader.FindOne(context.Background(), criteria.ByID("00000000-0000-0000-0000-000000000000"))
+	_, err := loader.FindOne(context.Background(), criteria.ByID(domain.NewID("00000000-0000-0000-0000-000000000000")))
 	if err == nil {
 		t.Fatal("expected error from auto-scan with zero columns")
 	}

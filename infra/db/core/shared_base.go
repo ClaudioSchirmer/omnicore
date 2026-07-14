@@ -148,8 +148,10 @@ func (s *TableSchema) SharedBase(base *TableSchema, fkColumn string) *TableSchem
 				"FK to the base.", s.table, fkColumn))
 	}
 	// The base is type-less; validate its shared field Go-names exist on THIS
-	// role's Go type (the role anchors the type the shared columns map into) and
-	// capture the resolved field indices for the read-side scan.
+	// role's Go type (the role anchors the type the shared columns map into) —
+	// including the closed persistable-type check, since the base's own
+	// declaration had no type to validate against — and capture the resolved
+	// field indices for the read-side scan.
 	scanCols := make([]string, 0, len(base.fields))
 	scanByCol := make(map[string]int, len(base.fields))
 	if s.typ != nil {
@@ -160,6 +162,7 @@ func (s *TableSchema) SharedBase(base *TableSchema, fkColumn string) *TableSchem
 					"infra.TableSchema(%s): shared base %q field %q is not an exported field of %s — a role must "+
 						"carry every shared-base field.", s.table, base.table, f.goName, s.typ.Name()))
 			}
+			mustSupportedFieldType(base.table, f.goName, s.typ.Field(idx).Type)
 			scanCols = append(scanCols, f.column)
 			scanByCol[f.column] = idx
 		}

@@ -110,7 +110,7 @@ func TestMySQLEngine_AuditAndEvents(t *testing.T) {
 	var n int
 	var verb, entityType, kind string
 	if err := raw.QueryRow(
-		`SELECT COUNT(*), MAX(verb), MAX(entity_type), MAX(kind) FROM audit_events WHERE aggregate_id = ?`, res.ID,
+		`SELECT COUNT(*), MAX(verb), MAX(entity_type), MAX(kind) FROM audit_events WHERE aggregate_id = ?`, res.ID.Value(),
 	).Scan(&n, &verb, &entityType, &kind); err != nil {
 		t.Fatalf("read audit row: %v", err)
 	}
@@ -129,28 +129,28 @@ func TestMySQLEngine_AuditAndEvents(t *testing.T) {
 	// run on a real MySQL (CHAR(36) id bound as text, "?" placeholder, no-rows
 	// → sentinel). The dialect twin of the Postgres read-back coverage.
 	reader := read.NewAuditReader(eng)
-	byAgg, err := reader.FindByAggregate(ctx, entityType, res.ID)
+	byAgg, err := reader.FindByAggregate(ctx, entityType, res.ID.Value())
 	if err != nil {
 		t.Fatalf("FindByAggregate: %v", err)
 	}
 	if len(byAgg) != 1 {
 		t.Fatalf("FindByAggregate want 1 event, got %d", len(byAgg))
 	}
-	if byAgg[0].Verb != "insert" || byAgg[0].Kind != "snapshot" || byAgg[0].EntityID != res.ID {
+	if byAgg[0].Verb != "insert" || byAgg[0].Kind != "snapshot" || byAgg[0].EntityID != res.ID.Value() {
 		t.Errorf("read-back event drifted: %+v", byAgg[0])
 	}
 
 	// The audit row id is Go-generated and not surfaced by Insert; read it from
 	// the table to drive FindByID.
 	var rowID string
-	if err := raw.QueryRow(`SELECT id FROM audit_events WHERE aggregate_id = ?`, res.ID).Scan(&rowID); err != nil {
+	if err := raw.QueryRow(`SELECT id FROM audit_events WHERE aggregate_id = ?`, res.ID.Value()).Scan(&rowID); err != nil {
 		t.Fatalf("read audit row id: %v", err)
 	}
 	byID, err := reader.FindByID(ctx, uuid.MustParse(rowID))
 	if err != nil {
 		t.Fatalf("FindByID: %v", err)
 	}
-	if byID.EntityID != res.ID || byID.EntityType != entityType {
+	if byID.EntityID != res.ID.Value() || byID.EntityType != entityType {
 		t.Errorf("FindByID drifted: %+v", byID)
 	}
 	if _, err := reader.FindByID(ctx, uuid.New()); !errors.Is(err, appaudit.ErrAuditNotFound) {
@@ -172,7 +172,7 @@ func TestMySQLEngine_AuditAndEvents(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Insert (audit off): %v", err)
 	}
-	if err := raw.QueryRow(`SELECT COUNT(*) FROM audit_events WHERE aggregate_id = ?`, res2.ID).Scan(&n); err != nil {
+	if err := raw.QueryRow(`SELECT COUNT(*) FROM audit_events WHERE aggregate_id = ?`, res2.ID.Value()).Scan(&n); err != nil {
 		t.Fatalf("read audit row (off): %v", err)
 	}
 	if n != 0 {

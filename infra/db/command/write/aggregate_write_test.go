@@ -16,11 +16,11 @@ import (
 // the cascade + the guard branches without a live backend.
 
 type aggWriteChild struct {
-	ID    string
+	ID    domain.ID
 	Label string
 }
 
-func (c aggWriteChild) GetID() string                                    { return c.ID }
+func (c aggWriteChild) GetID() domain.ID                                 { return c.ID }
 func (c aggWriteChild) BuildRules(string, domain.Service, *domain.Rules) {}
 
 type aggWriteRoot struct {
@@ -70,7 +70,7 @@ func TestBaseEngine_InsertAggregate_WithChild(t *testing.T) {
 	if err != nil {
 		t.Fatalf("insertAggregate: %v", err)
 	}
-	if res.ID == "" || !tx.committed {
+	if res.ID.Value() == "" || !tx.committed {
 		t.Fatalf("expected committed insert with id, got id=%q committed=%v", res.ID, tx.committed)
 	}
 	// root INSERT + child INSERT + outbox + audit.
@@ -100,10 +100,10 @@ func TestBaseEngine_InsertAggregate_WritesMintedChildIDBack(t *testing.T) {
 	if len(items) != 1 {
 		t.Fatalf("expected exactly one current child, got %+v", items)
 	}
-	if items[0].ID == "" {
+	if items[0].ID.IsEmpty() {
 		t.Fatal("minted child id must be written back into the aggregate map")
 	}
-	if _, err := uuid.Parse(items[0].ID); err != nil {
+	if _, err := uuid.Parse(items[0].ID.Value()); err != nil {
 		t.Errorf("written-back id must be the minted UUID, got %q: %v", items[0].ID, err)
 	}
 	if items[0].Label != "a" {
@@ -117,12 +117,12 @@ func TestBaseEngine_UpdateAggregate_AllChildOps(t *testing.T) {
 	root := &aggWriteRoot{Name: "r"}
 	root.SetID(domain.NewID(uuid.NewString()))
 	root.AggregateConstructor([]domain.AggregateValueObject{
-		aggWriteChild{ID: id1, Label: "keep"},
-		aggWriteChild{ID: id2, Label: "drop"},
+		aggWriteChild{ID: domain.NewID(id1), Label: "keep"},
+		aggWriteChild{ID: domain.NewID(id2), Label: "drop"},
 	})
 	upd, err := domain.GetUpdatable(root, func(r *aggWriteRoot) error {
-		domain.ChangeAggregateChild(r, aggWriteChild{ID: id1, Label: "keep"}, aggWriteChild{ID: id1, Label: "changed"})
-		domain.RemoveAggregateChild(r, aggWriteChild{ID: id2, Label: "drop"})
+		domain.ChangeAggregateChild(r, aggWriteChild{ID: domain.NewID(id1), Label: "keep"}, aggWriteChild{ID: domain.NewID(id1), Label: "changed"})
+		domain.RemoveAggregateChild(r, aggWriteChild{ID: domain.NewID(id2), Label: "drop"})
 		domain.AddAggregateChild(r, aggWriteChild{Label: "new"})
 		return nil
 	}, nil, "GetUpdatable")
@@ -149,7 +149,7 @@ func TestBaseEngine_ArchiveUnarchiveAggregate_Cascade(t *testing.T) {
 	for _, verb := range []string{"archive", "unarchive"} {
 		root := &aggWriteRoot{Name: "r"}
 		root.SetID(domain.NewID(uuid.NewString()))
-		root.AggregateConstructor([]domain.AggregateValueObject{aggWriteChild{ID: uuid.NewString(), Label: "c"}})
+		root.AggregateConstructor([]domain.AggregateValueObject{aggWriteChild{ID: domain.NewIDFromUUID(uuid.New()), Label: "c"}})
 
 		tx := &recTx{}
 		be := newFlatBE(&recBeginner{tx: tx})
@@ -177,7 +177,7 @@ func TestBaseEngine_ArchiveUnarchiveAggregate_Cascade(t *testing.T) {
 func TestBaseEngine_DeleteAggregate(t *testing.T) {
 	root := &aggWriteRoot{Name: "r"}
 	root.SetID(domain.NewID(uuid.NewString()))
-	root.AggregateConstructor([]domain.AggregateValueObject{aggWriteChild{ID: uuid.NewString(), Label: "c"}})
+	root.AggregateConstructor([]domain.AggregateValueObject{aggWriteChild{ID: domain.NewIDFromUUID(uuid.New()), Label: "c"}})
 	d, _ := domain.GetDeletable(root, nil, "GetDeletable")
 
 	tx := &recTx{}
@@ -226,9 +226,9 @@ func TestBaseEngine_UpdateAggregate_ChangedChildWithoutIDIsError(t *testing.T) {
 	root := &aggWriteRoot{Name: "r"}
 	root.SetID(domain.NewID(uuid.NewString()))
 	// A Constructor child with no id, then Changed → updateChild requires an id.
-	root.AggregateConstructor([]domain.AggregateValueObject{aggWriteChild{ID: "", Label: "x"}})
+	root.AggregateConstructor([]domain.AggregateValueObject{aggWriteChild{ID: domain.NewID(""), Label: "x"}})
 	upd, _ := domain.GetUpdatable(root, func(r *aggWriteRoot) error {
-		domain.ChangeAggregateChild(r, aggWriteChild{ID: "", Label: "x"}, aggWriteChild{ID: "", Label: "y"})
+		domain.ChangeAggregateChild(r, aggWriteChild{ID: domain.ID{}, Label: "x"}, aggWriteChild{ID: domain.ID{}, Label: "y"})
 		return nil
 	}, nil, "GetUpdatable")
 

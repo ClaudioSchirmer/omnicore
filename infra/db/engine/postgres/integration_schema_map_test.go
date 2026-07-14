@@ -38,7 +38,7 @@ type schemaTag struct {
 	Label string
 }
 
-func (v schemaTag) GetID() string                                    { return v.ID }
+func (v schemaTag) GetID() domain.ID                                 { return domain.NewID(v.ID) }
 func (v schemaTag) BuildRules(string, domain.Service, *domain.Rules) {}
 
 func schemaPersonSchema() *core.TableSchema {

@@ -40,7 +40,7 @@ func TestMySQLEngine_TracingOpenWorks(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Insert through the traced engine: %v", err)
 	}
-	if _, err := uuid.Parse(res.ID); err != nil {
+	if _, err := uuid.Parse(res.ID.Value()); err != nil {
 		t.Fatalf("traced Insert returned non-uuid id %q: %v", res.ID, err)
 	}
 }

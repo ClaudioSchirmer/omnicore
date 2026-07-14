@@ -1,14 +1,18 @@
 package criteria
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/ClaudioSchirmer/omnicore/domain"
+)
 
 func TestByID(t *testing.T) {
-	q := ByID("abc")
+	q := ByID(domain.NewID("abc"))
 	c, ok := q.Condition().(Comparison)
 	if !ok {
 		t.Fatalf("ByID condition is %T, want Comparison", q.Condition())
 	}
-	if c.Field != "ID" || c.Op != OpEq || len(c.Values) != 1 || c.Values[0] != "abc" {
+	if c.Field != "ID" || c.Op != OpEq || len(c.Values) != 1 || c.Values[0] != domain.NewID("abc") {
 		t.Errorf("ByID = %+v", c)
 	}
 }

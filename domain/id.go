@@ -18,6 +18,20 @@ func (id ID) MarshalJSON() ([]byte, error) {
 	return json.Marshal(id.value)
 }
 
+// UnmarshalJSON restores ID from its JSON string form — the symmetric half of
+// MarshalJSON, so an ID round-trips through every JSON boundary the framework
+// crosses (entity snapshots in the outbox payload, audit maps, DTO mapping).
+// Like NewID, it performs no uuid validation: the ID is an opaque identity
+// wrapper and IsValid is the explicit validation seam.
+func (id *ID) UnmarshalJSON(data []byte) error {
+	var s string
+	if err := json.Unmarshal(data, &s); err != nil {
+		return err
+	}
+	id.value = s
+	return nil
+}
+
 func NewID(s string) ID {
 	return ID{value: s}
 }

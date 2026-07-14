@@ -27,7 +27,7 @@ type covChild struct {
 	Label string
 }
 
-func (c covChild) GetID() string                                    { return c.ID }
+func (c covChild) GetID() domain.ID                                 { return domain.NewID(c.ID) }
 func (c covChild) BuildRules(string, domain.Service, *domain.Rules) {}
 
 var covAggSchema = NewTableSchema[*covAgg]("cov_aggs").

@@ -20,7 +20,7 @@ type addrLoad struct {
 	Street string
 }
 
-func (a addrLoad) GetID() string                                    { return a.ID }
+func (a addrLoad) GetID() domain.ID                                 { return domain.NewID(a.ID) }
 func (a addrLoad) BuildRules(string, domain.Service, *domain.Rules) {}
 
 type roleAggLoad struct {
@@ -87,7 +87,7 @@ func TestHydrateBaseChildren_LoadsAsConstructor(t *testing.T) {
 		t.Fatalf("expected 2 base-children hydrated as Constructor, got %d", len(items))
 	}
 	for _, it := range items {
-		if it.GetID() == "" {
+		if it.GetID().Value() == "" {
 			t.Error("a hydrated base-child must carry its own PK (for the UPDATE diff)")
 		}
 	}

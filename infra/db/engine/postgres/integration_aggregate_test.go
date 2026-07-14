@@ -36,11 +36,11 @@ func (*aggCustomer) AggregateChildren() []domain.AggregateValueObject {
 // aggChannel is the AggregateValueObject child. Has its own ID + Label.
 // Inferred child table: agg_channels; FK column: agg_customer_id.
 type aggChannel struct {
-	ID    string
+	ID    domain.ID
 	Label string
 }
 
-func (c aggChannel) GetID() string                                    { return c.ID }
+func (c aggChannel) GetID() domain.ID                                 { return c.ID }
 func (c aggChannel) BuildRules(string, domain.Service, *domain.Rules) {}
 
 func createAggregateTables(t *testing.T, pg *Postgres) {
@@ -113,7 +113,7 @@ func TestPostgres_InsertAggregate_PersistsRootAndChildren(t *testing.T) {
 	if len(rows) != 1 {
 		t.Fatalf("expected 1 outbox row (granularity B), got %d", len(rows))
 	}
-	if rows[0].AggregateID != res.ID {
+	if rows[0].AggregateID != res.ID.Value() {
 		t.Errorf("outbox aggregate_id = %q, want %q", rows[0].AggregateID, res.ID)
 	}
 	var payload map[string]any
@@ -142,7 +142,7 @@ func TestPostgres_UpdateAggregate_AppliesChildChanges(t *testing.T) {
 
 	// Reload children with the assigned IDs to drive Change/Remove.
 	loaded := &aggCustomer{Name: "Beta", Email: "b@x"}
-	loaded.SetID(domain.NewID(res.ID))
+	loaded.SetID(res.ID)
 	type childRow struct {
 		ID, Label string
 	}
@@ -165,8 +165,8 @@ func TestPostgres_UpdateAggregate_AppliesChildChanges(t *testing.T) {
 	}
 
 	asChildren := []domain.AggregateValueObject{
-		aggChannel{ID: existing[0].ID, Label: existing[0].Label},
-		aggChannel{ID: existing[1].ID, Label: existing[1].Label},
+		aggChannel{ID: domain.NewID(existing[0].ID), Label: existing[0].Label},
+		aggChannel{ID: domain.NewID(existing[1].ID), Label: existing[1].Label},
 	}
 	loaded.AggregateConstructor(asChildren)
 
@@ -212,7 +212,7 @@ func TestPostgres_ArchiveAggregate_CascadesActiveChildren(t *testing.T) {
 	res, _ := pg.Insert(testCtx(), ins, aggCustomerSchema(), noHook)
 
 	loaded := &aggCustomer{Name: "G", Email: "g@x"}
-	loaded.SetID(domain.NewID(res.ID))
+	loaded.SetID(res.ID)
 	// Cascade derives the typeName from AllAggregateItems() — we need to load
 	// children into the aggregate root so the SQL knows the child table to
 	// archive. Construct an empty AVO of the right type via AggregateConstructor.
@@ -242,7 +242,7 @@ func TestPostgres_UnarchiveAggregate_RestoresArchivedChildren(t *testing.T) {
 	ins, _ := domain.GetInsertable(root, nil, "GetInsertable")
 	res, _ := pg.Insert(testCtx(), ins, aggCustomerSchema(), noHook)
 
-	id := domain.NewID(res.ID)
+	id := res.ID
 
 	// Archive first.
 	loaded := &aggCustomer{Name: "U", Email: "u@x"}
@@ -284,7 +284,7 @@ func TestPostgres_DeleteAggregate_FKDeleteCascade(t *testing.T) {
 	res, _ := pg.Insert(testCtx(), ins, aggCustomerSchema(), noHook)
 
 	loaded := &aggCustomer{Name: "D", Email: "d@x"}
-	loaded.SetID(domain.NewID(res.ID))
+	loaded.SetID(res.ID)
 	del, _ := domain.GetDeletable(loaded, nil, "GetDeletable")
 	if err := pg.Delete(testCtx(), del, aggCustomerSchema(), noHook); err != nil {
 		t.Fatalf("Delete aggregate: %v", err)
@@ -311,9 +311,9 @@ func TestUpdateChild_WithoutIDIsError(t *testing.T) {
 	res, _ := pg.Insert(testCtx(), ins, aggCustomerSchema(), noHook)
 
 	loaded := &aggCustomer{Name: "U", Email: "u@x"}
-	loaded.SetID(domain.NewID(res.ID))
+	loaded.SetID(res.ID)
 	// Load one child but give it NO id — Change request → updateChild requires id.
-	loaded.AggregateConstructor([]domain.AggregateValueObject{aggChannel{ID: "", Label: "first"}})
+	loaded.AggregateConstructor([]domain.AggregateValueObject{aggChannel{ID: domain.ID{}, Label: "first"}})
 	upd, _ := domain.GetUpdatable(loaded, func(c *aggCustomer) error {
 		current := domain.GetCurrentItemsOf[aggChannel](&c.AggregateRoot)
 		domain.ChangeAggregateChild(c, current[0], aggChannel{Label: "renamed"}) // empty ID still
@@ -347,7 +347,7 @@ type lineItem struct {
 	Amount int
 }
 
-func (l lineItem) GetID() string                                    { return l.ID }
+func (l lineItem) GetID() domain.ID                                 { return domain.NewID(l.ID) }
 func (l lineItem) BuildRules(string, domain.Service, *domain.Rules) {}
 
 func TestPostgres_InsertAggregate_RespectsChildTableAndFKOverride(t *testing.T) {

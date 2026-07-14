@@ -20,7 +20,7 @@ type bcAddr struct {
 	Street string
 }
 
-func (c bcAddr) GetID() string                                    { return c.ID }
+func (c bcAddr) GetID() domain.ID                                 { return domain.NewID(c.ID) }
 func (c bcAddr) BuildRules(string, domain.Service, *domain.Rules) {}
 
 type bcRole struct {

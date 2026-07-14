@@ -122,13 +122,14 @@ func flatSchema() *core.TableSchema {
 		UpdatedAt("updated_at")
 }
 
-// refEntity carries a secondary UUID reference (TenantID) typed as the canonical
-// Go string — the framework's standard id representation — backed by a BINARY(16)
-// column that is neither the PK nor an aggregate FK.
+// refEntity carries a secondary identity reference (TenantID) typed
+// domain.ID — the field TYPE is the declaration: it pairs with a BINARY(16)
+// column that is neither the PK nor an aggregate FK, binding as 16 bytes on
+// write and restoring canonical through the id scan proxy on read.
 type refEntity struct {
 	domain.BaseEntity
 	Name     string
-	TenantID string
+	TenantID domain.ID
 }
 
 func (e *refEntity) Modes() []domain.EntityMode {
@@ -143,10 +144,10 @@ func refSchema() *core.TableSchema {
 		Field("TenantID", "tenant_id")
 }
 
-// A secondary BINARY(16) UUID column (not the PK, not an aggregate FK) typed as
-// the canonical Go string must round-trip: written as 16 bytes (EncodeArg) and
-// auto-scanned back to the canonical UUID string (the binaryDecodingRows wrapper),
-// not 16 raw garbage bytes — Postgres parity for a cross-aggregate reference.
+// A secondary BINARY(16) identity column (not the PK, not an aggregate FK)
+// typed domain.ID must round-trip: written as 16 bytes (the typed EncodeArg
+// case) and auto-scanned back to the canonical value (the id scan proxy) —
+// Postgres parity for a cross-aggregate reference.
 func TestMySQLEngine_SecondaryUUIDColumn(t *testing.T) {
 	eng, raw := setup(t)
 	ctx := ctxFor()
@@ -164,7 +165,7 @@ func TestMySQLEngine_SecondaryUUIDColumn(t *testing.T) {
 	t.Cleanup(func() { _, _ = raw.ExecContext(context.Background(), `DROP TABLE IF EXISTS refs`) })
 
 	tenant := uuid.NewString()
-	ins, err := domain.GetInsertable(&refEntity{Name: "Acme", TenantID: tenant}, nil, "GetInsertable")
+	ins, err := domain.GetInsertable(&refEntity{Name: "Acme", TenantID: domain.NewID(tenant)}, nil, "GetInsertable")
 	if err != nil {
 		t.Fatalf("GetInsertable: %v", err)
 	}
@@ -185,12 +186,22 @@ func TestMySQLEngine_SecondaryUUIDColumn(t *testing.T) {
 	// Auto-scan decodes it back to the canonical UUID string.
 	loader := read.NewAggregateLoader[*refEntity](eng, func() *refEntity { return &refEntity{} }).
 		WithSchema(refSchema())
-	got, err := loader.FindOne(ctx, criteria.ByID(domain.NewID(res.ID)))
+	got, err := loader.FindOne(ctx, criteria.ByID(res.ID))
 	if err != nil {
 		t.Fatalf("FindOne: %v", err)
 	}
-	if got.TenantID != tenant {
-		t.Fatalf("secondary uuid column = %q, want canonical %q (BINARY(16) not decoded on scan)", got.TenantID, tenant)
+	if got.TenantID.Value() != tenant {
+		t.Fatalf("secondary id column = %q, want canonical %q (BINARY(16) not decoded on scan)", got.TenantID.Value(), tenant)
+	}
+
+	// A bare-string criteria probe on the domain.ID-typed field is lifted by
+	// the translator and matches the BINARY(16) column.
+	byRef, err := loader.FindOne(ctx, criteria.Where(criteria.Eq("TenantID", tenant)))
+	if err != nil {
+		t.Fatalf("FindOne by lifted criteria: %v", err)
+	}
+	if byRef.GetID().Value() != res.ID.Value() {
+		t.Fatalf("criteria matched id %q, want %q", byRef.GetID().Value(), res.ID)
 	}
 }
 
@@ -283,7 +294,7 @@ func TestMySQLEngine_WritePath(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Insert: %v", err)
 	}
-	if _, err := uuid.Parse(res.ID); err != nil {
+	if _, err := uuid.Parse(res.ID.Value()); err != nil {
 		t.Fatalf("Insert returned non-UUID id %q: %v", res.ID, err)
 	}
 	id := res.ID
@@ -295,19 +306,19 @@ func TestMySQLEngine_WritePath(t *testing.T) {
 		t.Fatalf("select after insert: %v", err)
 	}
 	gotID, err := uuid.FromBytes(rawID)
-	if err != nil || gotID.String() != id {
+	if err != nil || gotID.String() != id.Value() {
 		t.Fatalf("BINARY(16) PK did not round-trip: bytes=%x got=%v want=%s err=%v", rawID, gotID, id, err)
 	}
 	if name != "Alice" || email != "alice@x" {
 		t.Fatalf("row mismatch: name=%q email=%q", name, email)
 	}
-	if c := outboxCount(t, raw, "INSERTED", id); c != 1 {
+	if c := outboxCount(t, raw, "INSERTED", id.Value()); c != 1 {
 		t.Fatalf("expected 1 INSERTED outbox row, got %d", c)
 	}
 
 	// --- Update ---
 	e2 := &flatPerson{Name: "Alice B", Email: "alice@x"}
-	e2.SetID(domain.NewID(id))
+	e2.SetID(domain.NewID(id.Value()))
 	upd, err := domain.GetUpdatable(e2, func(*flatPerson) error { return nil }, nil, "GetUpdatable")
 	if err != nil {
 		t.Fatalf("GetUpdatable: %v", err)
@@ -321,13 +332,13 @@ func TestMySQLEngine_WritePath(t *testing.T) {
 	if name != "Alice B" {
 		t.Fatalf("update did not persist: name=%q", name)
 	}
-	if c := outboxCount(t, raw, "UPDATED", id); c != 1 {
+	if c := outboxCount(t, raw, "UPDATED", id.Value()); c != 1 {
 		t.Fatalf("expected 1 UPDATED outbox row, got %d", c)
 	}
 
 	// --- Archive (soft delete set) ---
 	ea := &flatPerson{Name: "Alice B", Email: "alice@x"}
-	ea.SetID(domain.NewID(id))
+	ea.SetID(domain.NewID(id.Value()))
 	arch, err := domain.GetArchivable(ea, nil, "GetArchivable")
 	if err != nil {
 		t.Fatalf("GetArchivable: %v", err)
@@ -342,13 +353,13 @@ func TestMySQLEngine_WritePath(t *testing.T) {
 	if !deletedAt.Valid {
 		t.Fatal("archive did not set deleted_at")
 	}
-	if c := outboxCount(t, raw, "ARCHIVED", id); c != 1 {
+	if c := outboxCount(t, raw, "ARCHIVED", id.Value()); c != 1 {
 		t.Fatalf("expected 1 ARCHIVED outbox row, got %d", c)
 	}
 
 	// --- Unarchive (soft delete cleared) ---
 	eu := &flatPerson{Name: "Alice B", Email: "alice@x"}
-	eu.SetID(domain.NewID(id))
+	eu.SetID(domain.NewID(id.Value()))
 	un, err := domain.GetUnarchivable(eu, nil, "GetUnarchivable")
 	if err != nil {
 		t.Fatalf("GetUnarchivable: %v", err)
@@ -362,13 +373,13 @@ func TestMySQLEngine_WritePath(t *testing.T) {
 	if deletedAt.Valid {
 		t.Fatal("unarchive did not clear deleted_at")
 	}
-	if c := outboxCount(t, raw, "UNARCHIVED", id); c != 1 {
+	if c := outboxCount(t, raw, "UNARCHIVED", id.Value()); c != 1 {
 		t.Fatalf("expected 1 UNARCHIVED outbox row, got %d", c)
 	}
 
 	// --- Delete (hard) ---
 	ed := &flatPerson{Name: "Alice B", Email: "alice@x"}
-	ed.SetID(domain.NewID(id))
+	ed.SetID(domain.NewID(id.Value()))
 	del, err := domain.GetDeletable(ed, nil, "GetDeletable")
 	if err != nil {
 		t.Fatalf("GetDeletable: %v", err)
@@ -383,7 +394,7 @@ func TestMySQLEngine_WritePath(t *testing.T) {
 	if remaining != 0 {
 		t.Fatalf("delete did not remove the row, %d remain", remaining)
 	}
-	if c := outboxCount(t, raw, "DELETED", id); c != 1 {
+	if c := outboxCount(t, raw, "DELETED", id.Value()); c != 1 {
 		t.Fatalf("expected 1 DELETED outbox row, got %d", c)
 	}
 }
@@ -430,7 +441,7 @@ func TestMySQLEngine_UpdateMatchSemantics(t *testing.T) {
 		t.Fatalf("Insert: %v", err)
 	}
 	noop := &flatPerson{Name: "Stable", Email: "stable@x"}
-	noop.SetID(domain.NewID(res.ID))
+	noop.SetID(res.ID)
 	updNoop, err := domain.GetUpdatable(noop, func(*flatPerson) error { return nil }, nil, "GetUpdatable")
 	if err != nil {
 		t.Fatalf("GetUpdatable: %v", err)
@@ -462,11 +473,11 @@ func TestMySQLEngine_FindByID(t *testing.T) {
 	loader := read.NewAggregateLoader[*flatPerson](eng, func() *flatPerson { return &flatPerson{} }).
 		WithSchema(flatSchema())
 
-	got, err := loader.FindOne(ctx, criteria.ByID(domain.NewID(res.ID)))
+	got, err := loader.FindOne(ctx, criteria.ByID(res.ID))
 	if err != nil {
 		t.Fatalf("FindOne: %v", err)
 	}
-	if got.GetID() == nil || got.GetID().Value() != res.ID {
+	if got.GetID() == nil || got.GetID().Value() != res.ID.Value() {
 		t.Fatalf("FindByID id = %v, want %s", got.GetID(), res.ID)
 	}
 	if got.Name != "Bruno" || got.Email != "bruno@x" {
@@ -506,7 +517,7 @@ type tag struct {
 	Label string
 }
 
-func (t tag) GetID() string                                  { return t.ID }
+func (t tag) GetID() domain.ID                               { return domain.NewID(t.ID) }
 func (tag) BuildRules(string, domain.Service, *domain.Rules) {}
 
 func acctSchema() *core.TableSchema {
@@ -587,7 +598,7 @@ func TestMySQLEngine_AggregateRoundTrip(t *testing.T) {
 
 	// Read back via the loader — root + batched children.
 	loader := read.NewAggregateLoader[*acct](eng, func() *acct { return &acct{} }).WithSchema(acctSchema())
-	got, err := loader.FindOne(ctx, criteria.ByID(domain.NewID(res.ID)))
+	got, err := loader.FindOne(ctx, criteria.ByID(res.ID))
 	if err != nil {
 		t.Fatalf("FindOne aggregate: %v", err)
 	}

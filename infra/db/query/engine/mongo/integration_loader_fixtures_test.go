@@ -33,7 +33,7 @@ type loaderTagVO struct {
 	Label string
 }
 
-func (v loaderTagVO) GetID() string                                    { return v.ID }
+func (v loaderTagVO) GetID() domain.ID                                 { return domain.NewID(v.ID) }
 func (v loaderTagVO) BuildRules(string, domain.Service, *domain.Rules) {}
 
 type loaderNoteVO struct {
@@ -41,7 +41,7 @@ type loaderNoteVO struct {
 	Body string
 }
 
-func (v loaderNoteVO) GetID() string                                    { return v.ID }
+func (v loaderNoteVO) GetID() domain.ID                                 { return domain.NewID(v.ID) }
 func (v loaderNoteVO) BuildRules(string, domain.Service, *domain.Rules) {}
 
 func createLoaderTables(t *testing.T, p *postgres.Postgres) {

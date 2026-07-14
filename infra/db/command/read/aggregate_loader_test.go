@@ -75,7 +75,7 @@ type fakeVO struct {
 	Label string
 }
 
-func (v fakeVO) GetID() string                                    { return v.ID }
+func (v fakeVO) GetID() domain.ID                                 { return domain.NewID(v.ID) }
 func (v fakeVO) BuildRules(string, domain.Service, *domain.Rules) {}
 
 // A child's read column plan comes from its TableSchema (the same the write

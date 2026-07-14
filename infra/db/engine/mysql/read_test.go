@@ -106,10 +106,13 @@ func TestILikeClause(t *testing.T) {
 	}
 }
 
-// TestEncodeArg covers the value codec the criteria translator binds through:
-// every UUID-shaped value must reach a BINARY(16) column as its 16-byte form
-// (including a raw canonical-form string, the regression the review caught),
-// while non-uuid values pass through untouched.
+// TestEncodeArg covers the value codec the write path and the criteria
+// translator bind through: TYPED identity values (domain.ID / *domain.ID /
+// uuid.UUID) reach a BINARY(16) column as their 16-byte form — the type IS the
+// declaration — while a PLAIN string, canonical uuid shape included, ALWAYS
+// passes through as text (a string field means a CHAR/VARCHAR column; probes
+// on id-typed fields are lifted into domain.ID by the criteria translator
+// before they reach this codec).
 func TestEncodeArg(t *testing.T) {
 	d := mysqlDialect{}
 	u := uuid.MustParse("018f8b2c-1d3e-7a9b-bc4d-5e6f7a8b9c0d")
@@ -122,6 +125,26 @@ func TestEncodeArg(t *testing.T) {
 		}
 	})
 
+	t.Run("non-nil *domain.ID encodes to 16 bytes", func(t *testing.T) {
+		id := domain.NewID(u.String())
+		got, ok := d.EncodeArg(&id).([]byte)
+		if !ok || !bytes.Equal(got, want) {
+			t.Fatalf("EncodeArg(*domain.ID) = %v (ok=%v), want %x", got, ok, want)
+		}
+	})
+
+	t.Run("nil *domain.ID binds SQL NULL", func(t *testing.T) {
+		if got := d.EncodeArg((*domain.ID)(nil)); got != nil {
+			t.Fatalf("EncodeArg(nil *domain.ID) = %v, want nil", got)
+		}
+	})
+
+	t.Run("non-uuid domain.ID degrades to its text value", func(t *testing.T) {
+		if got := d.EncodeArg(domain.NewID("synthetic-id")); got != "synthetic-id" {
+			t.Fatalf("EncodeArg(non-uuid domain.ID) = %v, want text passthrough", got)
+		}
+	})
+
 	t.Run("uuid.UUID encodes to 16 bytes", func(t *testing.T) {
 		got, ok := d.EncodeArg(u).([]byte)
 		if !ok || !bytes.Equal(got, want) {
@@ -129,26 +152,17 @@ func TestEncodeArg(t *testing.T) {
 		}
 	})
 
-	t.Run("canonical UUID string encodes to 16 bytes", func(t *testing.T) {
-		got, ok := d.EncodeArg(u.String()).([]byte)
-		if !ok || !bytes.Equal(got, want) {
-			t.Fatalf("EncodeArg(string) = %v (ok=%v), want %x", got, ok, want)
+	t.Run("canonical UUID string passes through as text", func(t *testing.T) {
+		// A plain string is text, ALWAYS: a string-typed field pairs with a
+		// CHAR(36)/VARCHAR(36) column, so its value must arrive as-is.
+		if got := d.EncodeArg(u.String()); got != u.String() {
+			t.Fatalf("EncodeArg(canonical string) = %v, want it untouched", got)
 		}
 	})
 
 	t.Run("non-uuid string passes through", func(t *testing.T) {
 		if got := d.EncodeArg("bob@example.com"); got != "bob@example.com" {
 			t.Fatalf("EncodeArg(plain string) = %v, want it untouched", got)
-		}
-	})
-
-	t.Run("36-char non-uuid string passes through", func(t *testing.T) {
-		s := "not-a-uuid-but-exactly-36-chars-long" // len 36, fails uuid.Parse
-		if len(s) != 36 {
-			t.Fatalf("test fixture is %d chars, must be 36", len(s))
-		}
-		if got := d.EncodeArg(s); got != s {
-			t.Fatalf("EncodeArg(36-char non-uuid) = %v, want it untouched", got)
 		}
 	})
 

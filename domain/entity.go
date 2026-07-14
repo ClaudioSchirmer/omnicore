@@ -96,8 +96,7 @@ func (i Insertable) Source() Entity { return i.source }
 func (i Insertable) ID() *ID        { return i.id }
 
 func (u Updatable) Source() Entity { return u.source }
-func (u Updatable) ID() string     { return u.id.Value() }
-func (u Updatable) IDValue() ID    { return u.id }
+func (u Updatable) ID() ID         { return u.id }
 
 // IsPartial reports whether the Updatable was produced by GetPartialUpdatable
 // (PATCH semantic) vs GetUpdatable (PUT semantic). The auditor reads it to
@@ -106,16 +105,13 @@ func (u Updatable) IDValue() ID    { return u.id }
 func (u Updatable) IsPartial() bool { return u.partial }
 
 func (a Archivable) Source() Entity { return a.source }
-func (a Archivable) ID() string     { return a.id.Value() }
-func (a Archivable) IDValue() ID    { return a.id }
+func (a Archivable) ID() ID         { return a.id }
 
 func (d Deletable) Source() Entity { return d.source }
-func (d Deletable) ID() string     { return d.id.Value() }
-func (d Deletable) IDValue() ID    { return d.id }
+func (d Deletable) ID() ID         { return d.id }
 
 func (un Unarchivable) Source() Entity { return un.source }
-func (un Unarchivable) ID() string     { return un.id.Value() }
-func (un Unarchivable) IDValue() ID    { return un.id }
+func (un Unarchivable) ID() ID         { return un.id }
 
 // AggregateInfo returns the aggregate root and ok=true when this ValidEntity
 // was produced from an entity implementing AggregateRootProvider.

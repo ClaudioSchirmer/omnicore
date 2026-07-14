@@ -41,7 +41,7 @@ func TestDecodeChildPK_MySQLBinaryNormalized(t *testing.T) {
 	if err := decodeChildPK(vp, child, mysqlLikeDialect{}); err != nil {
 		t.Fatalf("decodeChildPK: %v", err)
 	}
-	if got := vp.Elem().Interface().(covChild).GetID(); got != id.String() {
+	if got := vp.Elem().Interface().(covChild).GetID(); got.Value() != id.String() {
 		t.Errorf("child PK not decoded: got %q want %q", got, id.String())
 	}
 }
@@ -57,7 +57,7 @@ func TestDecodeChildPK_PostgresPassthrough(t *testing.T) {
 	if err := decodeChildPK(vp, child, testPGDialect{}); err != nil {
 		t.Fatalf("decodeChildPK: %v", err)
 	}
-	if got := vp.Elem().Interface().(covChild).GetID(); got != canonical {
+	if got := vp.Elem().Interface().(covChild).GetID(); got.Value() != canonical {
 		t.Errorf("passthrough drifted: got %q want %q", got, canonical)
 	}
 }

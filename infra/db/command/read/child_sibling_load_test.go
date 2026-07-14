@@ -16,7 +16,7 @@ type csLoadChild struct {
 	Note  string // sibling field
 }
 
-func (c csLoadChild) GetID() string                                    { return c.ID }
+func (c csLoadChild) GetID() domain.ID                                 { return domain.NewID(c.ID) }
 func (c csLoadChild) BuildRules(string, domain.Service, *domain.Rules) {}
 
 func TestChildScanSQL_WithSibling(t *testing.T) {

@@ -1,6 +1,8 @@
 package query
 
 import (
+	"github.com/ClaudioSchirmer/omnicore/domain"
+
 	"strings"
 	"testing"
 
@@ -213,7 +215,7 @@ type vsChild struct {
 	ZipCode string
 }
 
-func (v vsChild) GetID() string { return v.ID }
+func (v vsChild) GetID() domain.ID { return domain.NewID(v.ID) }
 
 // TestViewNode_OwnChildPathResolves proves the translator registers a root's own
 // aggregate children (no embed declared), so a filter/sort on an own-child field

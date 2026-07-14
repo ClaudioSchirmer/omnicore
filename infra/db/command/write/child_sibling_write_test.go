@@ -20,7 +20,7 @@ type csChild struct {
 	Note  string // mapped to the child's sibling table
 }
 
-func (c csChild) GetID() string                                    { return c.ID }
+func (c csChild) GetID() domain.ID                                 { return domain.NewID(c.ID) }
 func (c csChild) BuildRules(string, domain.Service, *domain.Rules) {}
 
 type csRoot struct {

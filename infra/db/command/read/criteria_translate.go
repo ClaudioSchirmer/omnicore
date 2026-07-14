@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/ClaudioSchirmer/omnicore/domain"
 	"github.com/ClaudioSchirmer/omnicore/infra/db/core"
 	"github.com/ClaudioSchirmer/omnicore/infra/db/criteria"
 )
@@ -13,17 +14,52 @@ import (
 // pass through validIdentifier (columns are framework/TableSchema-derived, never
 // user input); values are parameterized; domain.ID args are unwrapped to their
 // string value. The Go-field → column lookup is core.FieldResolver (built from
-// the TableSchema in the core foundation).
+// the TableSchema in the core foundation); idKind is the field's identity
+// typing (core.TableSchema.IDKindOf, derived from the Go struct), so a probe
+// against a domain.ID-typed field binds in the dialect's native id form even
+// when the caller hands a bare string.
 type sqlVisitor struct {
 	resolve core.FieldResolver
 	dialect Dialect
+	idKind  func(goField string) core.IDKind // nil = no id lifting
 	sb      strings.Builder
 	args    []any
 }
 
-func (v *sqlVisitor) place(val any) string {
+// place binds one probe value for the (Go-named) field and returns its
+// placeholder. A probe on an identity-typed field (domain.ID / *domain.ID —
+// the field's Go TYPE is the declaration) is lifted into domain.ID first, so
+// the dialect's typed codec renders it (BINARY(16) on MySQL, uuid text on PG);
+// non-string probes (LIKE %patterns% never reach here as ids in practice —
+// they stay strings on string-typed fields) and already-typed values pass to
+// EncodeArg untouched.
+func (v *sqlVisitor) place(goField string, val any) string {
+	if v.idKind != nil {
+		switch v.idKind(goField) {
+		case core.IDValue, core.IDPointer:
+			val = liftIDProbe(val)
+		}
+	}
 	v.args = append(v.args, v.dialect.EncodeArg(val))
 	return v.dialect.Placeholder(len(v.args))
+}
+
+// liftIDProbe lifts a bare probe value into the identity type: string →
+// domain.ID, *string → *domain.ID (nil stays a typed nil → SQL NULL);
+// already-typed values (domain.ID, *domain.ID, uuid.UUID) and anything else
+// pass through for EncodeArg's own handling.
+func liftIDProbe(val any) any {
+	switch v := val.(type) {
+	case string:
+		return domain.NewID(v)
+	case *string:
+		if v == nil {
+			return (*domain.ID)(nil)
+		}
+		return domain.NewID(*v)
+	default:
+		return val
+	}
 }
 
 func (v *sqlVisitor) VisitComparison(c criteria.Comparison) error {
@@ -52,7 +88,7 @@ func (v *sqlVisitor) VisitComparison(c criteria.Comparison) error {
 		}
 		ph := make([]string, len(c.Values))
 		for i, val := range c.Values {
-			ph[i] = v.place(val)
+			ph[i] = v.place(c.Field, val)
 		}
 		v.sb.WriteString(col)
 		if c.Op == criteria.OpNin {
@@ -70,7 +106,7 @@ func (v *sqlVisitor) VisitComparison(c criteria.Comparison) error {
 			// Case-insensitive LIKE is dialect-specific and rendered as a whole
 			// clause: native ILIKE on Postgres, LOWER(col) LIKE LOWER(?) on MySQL
 			// (case-insensitive on any collation).
-			v.sb.WriteString(v.dialect.ILikeClause(col, v.place(c.Values[0])))
+			v.sb.WriteString(v.dialect.ILikeClause(col, v.place(c.Field, c.Values[0])))
 			break
 		}
 		op, ok := binaryOps[c.Op]
@@ -81,7 +117,7 @@ func (v *sqlVisitor) VisitComparison(c criteria.Comparison) error {
 		v.sb.WriteByte(' ')
 		v.sb.WriteString(op)
 		v.sb.WriteByte(' ')
-		v.sb.WriteString(v.place(c.Values[0]))
+		v.sb.WriteString(v.place(c.Field, c.Values[0]))
 	}
 	return nil
 }
@@ -133,11 +169,11 @@ func (v *sqlVisitor) VisitNot(n criteria.Negation) error {
 
 // compileWhere renders the predicate into a SQL fragment + ordered args. A nil
 // predicate yields an empty fragment (no WHERE).
-func compileWhere(e criteria.Expr, resolve core.FieldResolver, dialect Dialect) (string, []any, error) {
+func compileWhere(e criteria.Expr, resolve core.FieldResolver, dialect Dialect, idKind func(string) core.IDKind) (string, []any, error) {
 	if e == nil {
 		return "", nil, nil
 	}
-	v := &sqlVisitor{resolve: resolve, dialect: dialect}
+	v := &sqlVisitor{resolve: resolve, dialect: dialect, idKind: idKind}
 	if err := e.Accept(v); err != nil {
 		return "", nil, err
 	}

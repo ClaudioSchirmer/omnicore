@@ -1,6 +1,6 @@
 package domain
 
 type WriteResult struct {
-	ID     string `json:"id"`
+	ID     ID     `json:"id"`
 	Fields Fields `json:"fields,omitempty"`
 }

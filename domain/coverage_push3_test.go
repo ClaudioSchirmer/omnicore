@@ -127,11 +127,11 @@ func (nilARProvider) AggregateChildren() []AggregateValueObject { return nil }
 
 func TestRejectChild_NilAggregateRootNoOp(t *testing.T) {
 	// Must not panic — the nil-AR guard returns early.
-	rejectChild(nilARProvider{}, testAVO{ID: "1"})
+	rejectChild(nilARProvider{}, testAVO{ID: NewID("1")})
 }
 
 func TestValidateAggregateChild_NilAggregateRootReturnsFalse(t *testing.T) {
-	if ValidateAggregateChild(nilARProvider{}, testAVO{ID: "1"}, "GetInsertable", nil) {
+	if ValidateAggregateChild(nilARProvider{}, testAVO{ID: NewID("1")}, "GetInsertable", nil) {
 		t.Fatal("expected false when the root's AggregateRoot is nil")
 	}
 }
@@ -154,7 +154,7 @@ func TestValidateAggregateChild_NilContextReturnsFalse(t *testing.T) {
 	if p.NotificationContext() != nil {
 		t.Fatal("precondition: context should be nil")
 	}
-	if ValidateAggregateChild(p, testAVO{ID: "1"}, "GetInsertable", nil) {
+	if ValidateAggregateChild(p, testAVO{ID: NewID("1")}, "GetInsertable", nil) {
 		t.Fatal("expected false when the root's NotificationContext is nil")
 	}
 }
