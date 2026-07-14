@@ -183,9 +183,12 @@ func TestEncodeArg(t *testing.T) {
 		}
 	})
 
-	t.Run("nil *domain.ID binds SQL NULL", func(t *testing.T) {
-		if got := d.EncodeArg((*domain.ID)(nil)); got != nil {
-			t.Fatalf("EncodeArg(nil *domain.ID) = %v, want nil", got)
+	t.Run("nil *domain.ID binds a TYPED binary SQL NULL", func(t *testing.T) {
+		// []byte(nil) — not untyped nil: go-mssqldb sends untyped nil as an
+		// nvarchar NULL, which SQL Server refuses to convert into BINARY(16).
+		got, ok := d.EncodeArg((*domain.ID)(nil)).([]byte)
+		if !ok || got != nil {
+			t.Fatalf("EncodeArg(nil *domain.ID) = %v (%T), want []byte(nil)", got, got)
 		}
 	})
 

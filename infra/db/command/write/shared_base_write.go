@@ -340,8 +340,9 @@ func (b *BaseEngine) updateWithBase(ctx persistence.RequestContext, entity domai
 // base. Shared-PK model: pure arithmetic — the role id IS UUIDv5(naturalKey),
 // so the id derived from the request must equal the row's own id. Separate-FK
 // model: one PK-indexed SELECT (inside the open TX) projecting the comparison
-// as a boolean — `SELECT (fk = derivedID) FROM role WHERE pk = id` — the same
-// dialect-safe trick baseIsArchived uses; a missing row skips the guard (the
+// as ANSI CASE 1/0 — the same dialect-safe form baseIsArchived uses (a bare
+// boolean-valued `fk = ?` in a SELECT list is a PG/MySQL-ism; T-SQL would
+// parse it as an alias assignment); a missing row skips the guard (the
 // role UPDATE right after reports not-found exactly as before). The Old
 // snapshot cannot arbitrate here: a manual handler that skipped load-first
 // captures the request itself as Old, so an Old-vs-request comparison would be
@@ -354,7 +355,7 @@ func guardNaturalKeyImmutable(ctx context.Context, tx WriteTx, d Dialect, schema
 		}
 		return nil
 	}
-	q := "SELECT " + d.QuoteIdent(fkCol) + " = " + d.Placeholder(1) +
+	q := "SELECT CASE WHEN " + d.QuoteIdent(fkCol) + " = " + d.Placeholder(1) + " THEN 1 ELSE 0 END" +
 		" FROM " + d.QuoteIdent(schema.Table()) +
 		" WHERE " + d.QuoteIdent(schema.PKColumn()) + " = " + d.Placeholder(2)
 	rows, err := tx.Query(ctx, q, d.EncodeArg(domain.NewID(baseID)), d.EncodeArg(domain.NewID(id)))
@@ -365,11 +366,11 @@ func guardNaturalKeyImmutable(ctx context.Context, tx WriteTx, d Dialect, schema
 	if !rows.Next() {
 		return rows.Err() // row missing → the role UPDATE right after reports not-found
 	}
-	var matches bool
+	var matches int64
 	if err := rows.Scan(&matches); err != nil {
 		return err
 	}
-	if !matches {
+	if matches != 1 {
 		return SingleNotificationError(entityName, nkGo, domain.NaturalKeyImmutableNotification{})
 	}
 	return rows.Err()
@@ -650,12 +651,14 @@ func cascadeBaseLifecycle(ctx context.Context, tx WriteTx, d Dialect, base *Tabl
 // baseIsArchived reports whether the base row currently carries a non-null
 // soft-delete marker (read once, for idempotency).
 func baseIsArchived(ctx context.Context, tx WriteTx, d Dialect, base *TableSchema, sd, baseID string) (bool, error) {
-	// Project the archived state as a boolean rather than scanning the raw
-	// soft-delete timestamp: a non-null timestamp cannot be scanned into a
-	// []byte under Postgres' binary protocol (it works only while NULL), which is
-	// exactly the case reactivateBaseIfArchived probes for. IS NOT NULL scans
-	// cleanly into a bool on every dialect.
-	q := "SELECT " + d.QuoteIdent(sd) + " IS NOT NULL FROM " + d.QuoteIdent(base.Table()) +
+	// Project the archived state as ANSI CASE 1/0 rather than scanning the raw
+	// soft-delete timestamp (a non-null timestamp cannot be scanned into a
+	// []byte under Postgres' binary protocol — it works only while NULL, which
+	// is exactly the case reactivateBaseIfArchived probes for) or a bare
+	// boolean-valued expression (`col IS NOT NULL` in a SELECT list is a
+	// PG/MySQL-ism — T-SQL has no boolean expressions outside predicates).
+	// CASE WHEN … THEN 1 ELSE 0 END scans into an int on every dialect.
+	q := "SELECT CASE WHEN " + d.QuoteIdent(sd) + " IS NOT NULL THEN 1 ELSE 0 END FROM " + d.QuoteIdent(base.Table()) +
 		" WHERE " + d.QuoteIdent(base.PKColumn()) + " = " + d.Placeholder(1)
 	rows, err := tx.Query(ctx, q, d.EncodeArg(domain.NewID(baseID)))
 	if err != nil {
@@ -665,11 +668,11 @@ func baseIsArchived(ctx context.Context, tx WriteTx, d Dialect, base *TableSchem
 	if !rows.Next() {
 		return false, rows.Err()
 	}
-	var archived bool
+	var archived int64
 	if err := rows.Scan(&archived); err != nil {
 		return false, err
 	}
-	return archived, rows.Err()
+	return archived == 1, rows.Err()
 }
 
 // anyActiveRole reports whether any role row referencing the base (instance ∪

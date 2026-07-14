@@ -348,7 +348,11 @@ func (sqlserverDialect) EncodeArg(val any) any {
 		return v.Value()
 	case *domain.ID:
 		if v == nil {
-			return nil
+			// A TYPED binary NULL: go-mssqldb sends an untyped nil as an
+			// nvarchar NULL, which SQL Server refuses to implicitly convert
+			// into a BINARY(16) column; a nil []byte binds as varbinary NULL,
+			// which converts.
+			return []byte(nil)
 		}
 		if b, err := uuidBytes(v.Value()); err == nil {
 			return b
