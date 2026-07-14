@@ -826,16 +826,16 @@ func StudentSchema() *core.TableSchema {
 
 <h3>Supported column shapes</h3>
 <div class="box">
-    <strong>The relational store is PostgreSQL <em>or</em> MySQL; the read projection is always MongoDB.</strong>
+    <strong>The relational store is PostgreSQL, MySQL, <em>or</em> SQL Server; the read projection is always MongoDB.</strong>
     The write path, the entity-search <code>criteria</code> engine, and the auto-scan read-back run against the relational
-    backend selected by <code>relational.dialect</code> (<code>postgres</code> | <code>mysql</code>), emitting
-    dialect-specific SQL through the engine's <code>Dialect</code> seam (placeholders, identifier quoting, the UUID value
-    codec, upsert syntax). <strong>MongoDB</strong> is the only read-side projection store — the composer, the
-    <code>ViewDefinition</code> surface, the Mongo schema-evolution control plane, and the <code>?fields</code> /
-    <code>?sort</code> / keyset-pagination reader all target MongoDB. The set of column types each relational dialect
-    handles is its driver's default codec set plus the framework's UUID handling; because that set is <em>not</em>
-    identical across backends, the two tables below describe each dialect on its own — read the one for your
-    <code>relational.dialect</code>.
+    backend selected by <code>relational.dialect</code> (<code>postgres</code> | <code>mysql</code> | <code>sqlserver</code>),
+    emitting dialect-specific SQL through the engine's <code>Dialect</code> seam (placeholders, identifier quoting, the UUID
+    value codec, upsert syntax, the current-timestamp expression, the row cap). <strong>MongoDB</strong> is the only
+    read-side projection store — the composer, the <code>ViewDefinition</code> surface, the Mongo schema-evolution control
+    plane, and the <code>?fields</code> / <code>?sort</code> / keyset-pagination reader all target MongoDB. The set of
+    column types each relational dialect handles is its driver's default codec set plus the framework's UUID handling;
+    because that set is <em>not</em> identical across backends, the tables below describe each dialect on its own — read
+    the one for your <code>relational.dialect</code>.
 </div>
 <p>
     The schema declares <em>which</em> Go field maps to <em>which</em> column; this section is about <em>what types</em>
@@ -845,7 +845,8 @@ func StudentSchema() *core.TableSchema {
     <strong>identity is a TYPE</strong>. A field holding an id — a cross-aggregate reference like a
     <code>BuyerID</code>/<code>TenantID</code> — is declared <code>domain.ID</code> (nullable ⇒ <code>*domain.ID</code>),
     and the field's Go type alone drives every leg: the write bind, the criteria probe lift, and the scan decode all
-    render it in the dialect's native id form (<code>UUID</code> on Postgres, <code>BINARY(16)</code> on MySQL), with
+    render it in the dialect's native id form (<code>UUID</code> on Postgres, <code>BINARY(16)</code> on MySQL and
+    SQL Server), with
     <code>nil</code> ⇄ SQL <code>NULL</code> on the pointer. A <code>string</code> field is text, ALWAYS — even when the
     value happens to look like a uuid — pairing with <code>CHAR(36)</code>/<code>VARCHAR(36)</code> columns; nothing is
     ever guessed from a value's shape. The PK and the child FK are framework-managed slots, always stored in the native
@@ -1031,6 +1032,91 @@ func StudentSchema() *core.TableSchema {
     fails to scan a <code>NULL</code> row. For anything the driver cannot handle natively, the same escape hatch applies:
     map the column to a driver-native Go type, or drop to a manual scanner (<code>WithRootScanner</code> /
     <code>WithChildScanner</code>), which receives the backend-neutral <code>core.Row</code> / <code>core.Rows</code>.
+</p>
+
+<h3>Supported column shapes — Go ↔ SQL Server</h3>
+<p>
+    On SQL Server the engine is driven by <code>database/sql</code> + <code>microsoft/go-mssqldb</code>. Placeholders are
+    <code>@pN</code> and identifiers are bracket-quoted. The framework owns one value codec on top of the driver, driven
+    by the field's Go TYPE: a <code>domain.ID</code> / <code>*domain.ID</code> field (and the managed PK/FK slots) is
+    stored as <code>BINARY(16)</code> — bound as 16 raw bytes on write and in lifted criteria probes, restored to the
+    canonical value by the id scan proxy on read, <code>nil</code> ⇄ SQL <code>NULL</code> on the pointer — and ids are
+    generated in Go as <strong>UUID v7</strong>. <code>BINARY(16)</code> compares bytewise, so the v7 time order keeps
+    the clustered PK append-friendly; <strong><code>UNIQUEIDENTIFIER</code> is deliberately NOT the id column type</strong>
+    — SQL Server orders GUIDs last-byte-group-first, which would scatter time-ordered ids across the clustered index and
+    fragment it. A <code>string</code> field binds and scans as plain text, whatever the value's shape. Everything else
+    passes through to the driver's default conversions.
+</p>
+<table>
+    <thead><tr><th>Go field type</th><th>SQL Server column type</th><th>Notes</th></tr></thead>
+    <tbody>
+        <tr>
+            <td><code>string</code></td>
+            <td><code>NVARCHAR(n)</code>, <code>VARCHAR(n)</code>, <code>CHAR(n)</code>, <code>NVARCHAR(MAX)</code></td>
+            <td>the text family — names, emails, addresses (<code>NVARCHAR</code> for anything user-visible)</td>
+        </tr>
+        <tr>
+            <td><code>domain.ID</code> / <code>*domain.ID</code></td>
+            <td><code>BINARY(16)</code></td>
+            <td><strong>the identity type — the field's Go type IS the declaration.</strong> Encoded to 16 raw bytes on
+                write and in lifted criteria probes; the id scan proxy restores the canonical value on read; a nil
+                <code>*domain.ID</code> ⇄ SQL <code>NULL</code>. The PK and every FK are framework-managed slots on
+                <code>BINARY(16)</code> — never <code>UNIQUEIDENTIFIER</code> (its GUID sort order destroys the v7 time
+                locality). A <code>string</code> field is NEVER coerced — it pairs with the text family above
+                (<code>CHAR(36)</code> for uuid-valued text), whatever the value's shape. Ids are generated in Go
+                (UUID v7) — no <code>NEWSEQUENTIALID()</code>, no DB default.</td>
+        </tr>
+        <tr>
+            <td><code>bool</code></td>
+            <td><code>BIT</code></td>
+            <td>the driver returns <code>BIT</code> as a native Go <code>bool</code> — full fidelity without coercion</td>
+        </tr>
+        <tr>
+            <td><code>int16</code> / <code>int32</code> / <code>int64</code> &nbsp;<span class="muted">(also <code>int</code>)</span></td>
+            <td><code>SMALLINT</code> / <code>INT</code> / <code>BIGINT</code></td>
+            <td>pick the Go width to match the column</td>
+        </tr>
+        <tr>
+            <td><code>float32</code> / <code>float64</code></td>
+            <td><code>REAL</code> / <code>FLOAT</code></td>
+            <td>binary floats — not for money</td>
+        </tr>
+        <tr>
+            <td><code>string</code> &nbsp;<span class="muted">(or <code>float64</code>)</span></td>
+            <td><code>DECIMAL</code> / <code>NUMERIC</code></td>
+            <td>exact decimals (money): the driver returns <code>DECIMAL</code> as text, so prefer <code>string</code> to
+                keep full precision; <code>float64</code> rounds</td>
+        </tr>
+        <tr>
+            <td><code>time.Time</code></td>
+            <td><code>DATETIME2(6)</code>, <code>DATETIME2</code>, <code>DATE</code></td>
+            <td>the managed <code>created_at</code> / <code>updated_at</code> / <code>deleted_at</code> columns are this
+                type, server-stamped via <code>CURRENT_TIMESTAMP</code></td>
+        </tr>
+        <tr>
+            <td><code>[]byte</code></td>
+            <td><code>VARBINARY(n)</code>, <code>VARBINARY(MAX)</code></td>
+            <td>raw binary — a non-16-byte length, or a non-<code>BINARY</code> column type, is never mistaken for a UUID</td>
+        </tr>
+        <tr>
+            <td><code>[]byte</code> / <code>json.RawMessage</code> / <code>string</code></td>
+            <td><code>NVARCHAR(MAX)</code> <span class="muted">(JSON text)</span></td>
+            <td>SQL Server has no dedicated JSON column type — JSON rides as <code>NVARCHAR(MAX)</code> text (queryable via
+                <code>JSON_VALUE</code>/<code>OPENJSON</code>); marshal / unmarshal in your own code. A
+                <code>json.RawMessage</code> value binds as text (SQL Server does not implicitly convert a binary
+                parameter into <code>NVARCHAR</code>)</td>
+        </tr>
+    </tbody>
+</table>
+<p>
+    <strong>No native array type.</strong> Like MySQL, SQL Server has no array column — model the collection as a JSON
+    (<code>NVARCHAR(MAX)</code>) column, an aggregate <code>.Child(...)</code> table, or decode it in a manual scanner.
+</p>
+<p>
+    <strong>Nullability is a pointer</strong> (same convention as the other engines): a nullable column maps to a Go
+    pointer (<code>*string</code>, <code>*int64</code>, <code>*time.Time</code>, …) — the driver writes <code>NULL</code>
+    for a <code>nil</code> pointer and reads <code>NULL</code> back as <code>nil</code>. A non-pointer field on a nullable
+    column fails to scan a <code>NULL</code> row. The same manual-scanner escape hatch applies.
 </p>
 
 <h3>Out of scope</h3>

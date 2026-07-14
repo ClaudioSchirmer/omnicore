@@ -267,9 +267,10 @@ func TestRecordIntegrationFailure_DefaultsPayloadAndSucceeds(t *testing.T) {
 	if exec.calls != 1 {
 		t.Fatalf("expected 1 exec call, got %d", exec.calls)
 	}
-	payload, ok := exec.lastArgs[4].([]byte)
-	if !ok || string(payload) != "{}" {
-		t.Fatalf("nil payload must default to {}, got %v", exec.lastArgs[4])
+	// Text bind: the payload arg is a string (JSON text) on every dialect.
+	payload, ok := exec.lastArgs[4].(string)
+	if !ok || payload != "{}" {
+		t.Fatalf("nil payload must default to {} bound as string, got %v (%T)", exec.lastArgs[4], exec.lastArgs[4])
 	}
 }
 

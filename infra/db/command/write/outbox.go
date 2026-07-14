@@ -36,5 +36,9 @@ func WriteOutbox(ctx context.Context, tx Tx, table, eventType, id string, payloa
 		"INSERT INTO outbox (aggregate_type, event_type, aggregate_id, payload, traceparent, created_at) VALUES (%s, %s, %s, %s, %s, %s)",
 		d.Placeholder(1), d.Placeholder(2), d.Placeholder(3), d.Placeholder(4), d.Placeholder(5), d.NowExpr(),
 	)
-	return tx.Exec(ctx, sql, table, eventType, id, data, traceparent)
+	// The payload binds as TEXT: the outbox payload column is text-shaped JSON
+	// on every dialect (jsonb / JSON / NVARCHAR(MAX)), and binding the raw
+	// []byte would reach SQL Server as a varbinary parameter, which it refuses
+	// to implicitly convert to NVARCHAR. Text binds identically on PG and MySQL.
+	return tx.Exec(ctx, sql, table, eventType, id, string(data), traceparent)
 }

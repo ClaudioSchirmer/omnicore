@@ -178,7 +178,8 @@ func buildWhere(includeArchived bool, filter string) string {
 
 // insertOutboxRow writes one synthetic INSERTED event into the framework outbox
 // table through the neutral Querier. The surrogate id is omitted (every dialect
-// fills it by default — gen_random_uuid() on Postgres, AUTO_INCREMENT on MySQL)
+// fills it by default — gen_random_uuid() on Postgres, AUTO_INCREMENT on MySQL,
+// IDENTITY on SQL Server)
 // and the payload binds as JSON with no PG-specific ::jsonb cast; aggregate_id is
 // the row's uuid in text form, accepted by both the PG UUID and MySQL CHAR(36)
 // columns. The column list mirrors each engine's own writeOutbox.
@@ -187,7 +188,10 @@ func insertOutboxRow(ctx context.Context, q core.Querier, dialect core.Dialect, 
 		"INSERT INTO outbox (aggregate_type, event_type, aggregate_id, payload, created_at) VALUES (%s, %s, %s, %s, %s)",
 		dialect.Placeholder(1), dialect.Placeholder(2), dialect.Placeholder(3), dialect.Placeholder(4), dialect.NowExpr(),
 	)
-	return q.Exec(ctx, sqlStr, aggregate, "INSERTED", id, payload)
+	// Text bind — the payload column is text-shaped JSON on every dialect;
+	// SQL Server refuses the implicit varbinary→NVARCHAR conversion a raw
+	// []byte would require.
+	return q.Exec(ctx, sqlStr, aggregate, "INSERTED", id, string(payload))
 }
 
 // stringField extracts a string-typed column from a row map. Handles the

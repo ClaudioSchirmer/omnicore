@@ -95,7 +95,10 @@ func RecordIntegrationFailure(ctx context.Context, q core.Querier, d core.Dialec
 		rec.SourceKey,
 		rec.EventKey,
 		rec.EventID,
-		payload,
+		// Text bind — the payload column is text-shaped JSON on every dialect;
+		// SQL Server refuses the implicit varbinary→NVARCHAR conversion a raw
+		// []byte would require.
+		string(payload),
 		rec.Error,
 	); err != nil {
 		return fmt.Errorf("record integration failure: %w", err)

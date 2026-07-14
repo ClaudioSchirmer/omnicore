@@ -11,6 +11,34 @@ with `1.0.0`.
 
 ## [Unreleased]
 
+### Added
+
+- **SQL Server joins PostgreSQL and MySQL as a first-class relational engine.**
+  A complete engine ships behind the `sqlserver` build tag
+  (`infra/db/engine/sqlserver`, driver `microsoft/go-mssqldb`): selecting
+  `relational.dialect: sqlserver` + `go build -tags 'sqlserver <transport>'`
+  runs a service on SQL Server through the same engine seam as the other
+  backends. Dialect specifics: `@pN` placeholders, bracket-quoted identifiers,
+  a single-statement `MERGE … WITH (HOLDLOCK)` upsert, `CURRENT_TIMESTAMP` as
+  the now expression, a SELECT-head `TOP n` row cap, unique/FK violation
+  classification from errors 2627/2601/547, and a session-owned
+  `sp_getapplock` rebuild lock. **Identity is stored `BINARY(16)`, never
+  `UNIQUEIDENTIFIER`**: SQL Server orders GUIDs last-byte-group-first, which
+  would destroy the UUIDv7 time order and fragment the clustered PK;
+  `BINARY(16)` compares bytewise, so the Go-minted v7 ids keep the clustered
+  index append-friendly (the InnoDB rationale, verified against SQL Server
+  2022). JSON rides as `NVARCHAR(MAX)` text. The framework control plane ships
+  as `embedded/sqlserver/0001_framework.{up,down}.sql` (filtered indexes where
+  PG uses partial ones; constraint names identical across dialects so
+  `ConstraintBinding` maps the same violations) with its own migration runner
+  (`migration.NewSQLServer`). The "Supported column shapes — Go ↔ SQL Server"
+  table in the manual is the canonical type map. Internal enablers, no
+  consumer surface: the bootstrap engine twins collapsed into a per-dialect
+  boot registry (build-tag negation pairs do not compose at three engines —
+  any tag combination now links), and the control-plane JSON payloads
+  (outbox/audit/integration) bind as text instead of raw bytes (byte-identical
+  on PG/MySQL; SQL Server refuses the implicit varbinary→NVARCHAR conversion).
+
 ### Changed
 
 - **The last dialect-specific SQL literals left shared code — `core.Dialect`

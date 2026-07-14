@@ -260,7 +260,10 @@ func writeIntegrationEvent(
 		nullableUUID(maybeAggregateUUID(row)),
 		row.EventType,
 		row.Version,
-		row.Payload,
+		// Text bind — the payload column is text-shaped JSON on every dialect;
+		// SQL Server refuses the implicit varbinary→NVARCHAR conversion a raw
+		// []byte would require.
+		string(row.Payload),
 		nullableUUID(row.Correlation),
 		nullableUUID(row.Causation),
 		row.ThreadID.String(),

@@ -75,7 +75,10 @@ func InsertAuditEvent(ctx context.Context, exec Execer, placeholder func(int) st
 		nullableString(ev.TenantID),
 		ev.ThreadID,
 		ev.DateTime,
-		payload,
+		// Bound as TEXT: the payload column is text-shaped JSON on every
+		// dialect (jsonb / JSON / NVARCHAR(MAX)); a raw []byte would reach SQL
+		// Server as varbinary, which it refuses to convert to NVARCHAR.
+		string(payload),
 		// Pivot to the request's trace; NULL when tracing is off. Sourced from
 		// the event (populateContext) so the in-TX row and the slog echo carry
 		// the identical value. The bridge keeps it == AppContext.CorrelationID().

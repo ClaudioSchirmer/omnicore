@@ -82,7 +82,7 @@ var _ persistence.BeforeCommitHookProvider[*User] = (*InsertUserCommand)(nil)</c
         <code>core.UnwrapTx(tx)</code> to recover the backend-neutral <code>core.Tx</code> (render SQL via its
         <code>Dialect()</code>, run via <code>Exec</code>/<code>Query</code>/<code>QueryRow</code>) and owns the SQL +
         table name. The closure threads <code>tx</code> through the port so the side effect remains atomic with the
-        framework's writes, on Postgres or MySQL alike.
+        framework's writes, on every supported engine alike.
     </p>
     <pre><code>func (h *CreateUserAdminHandler) Handle(
     ctx *configuration.AppContext, cmd *AdminCreateUserCommand,
@@ -112,8 +112,8 @@ var _ persistence.BeforeCommitHookProvider[*User] = (*InsertUserCommand)(nil)</c
     <p>
         Hooks receive the framework's TX as <code>persistence.TxHandle</code> — a sealed interface with no public
         methods. The single sealing method on it is unexported, so the only implementations are the framework's own
-        engine handles (Postgres's <code>pgxTxHandle</code>, MySQL's <code>mysqlTxHandle</code>), each carrying the live
-        driver transaction privately. Application code cannot read or write SQL through the handle by construction.
+        engine handles (Postgres's <code>pgxTxHandle</code>, MySQL's <code>mysqlTxHandle</code>, SQL Server's
+        <code>sqlserverTxHandle</code>), each carrying the live driver transaction privately. Application code cannot read or write SQL through the handle by construction.
     </p>
     <p>
         The canonical (and only) shape for an in-TX side effect from a hook:
@@ -125,7 +125,7 @@ var _ persistence.BeforeCommitHookProvider[*User] = (*InsertUserCommand)(nil)</c
             <code>core.UnwrapTx(tx) core.Tx</code> to recover the <strong>backend-neutral</strong> transaction and owns
             the SQL + table name. <code>core.Tx</code> renders SQL per backend via its <code>Dialect()</code> and runs it
             via <code>Exec</code>/<code>Query</code>/<code>QueryRow</code>, so the adapter is engine-agnostic
-            (Postgres or MySQL). <code>UnwrapTx</code> lives in <code>infra/db/core</code>, so only adapters in the
+            (any supported engine). <code>UnwrapTx</code> lives in <code>infra/db/core</code>, so only adapters in the
             infra layer can call it.</li>
         <li>Inject the port on the Cmd (or manual handler) and call it from the hook closure. The framework's TX is
             honored end-to-end; the application layer never pronounces SQL.</li>

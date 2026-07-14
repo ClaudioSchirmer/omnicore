@@ -7,17 +7,17 @@
   0001_init.down.sql        # reverse (mandatory)
   0002_add_phone.up.sql
   0002_add_phone.down.sql</code></pre>
-    <p>A service's own migrations are an <strong>independent sequence starting at <code>0001</code></strong>. They do <em>not</em> continue the framework's numbering: the framework's embedded <code>0001_framework</code> is tracked in a <em>separate</em> table (<code>omnicore_framework_migrations</code>), so the service's <code>0001</code> in <code>omnicore_migrations</code> never collides with it (see <a href="#migrations~tracking">Tracking</a>). Because each backend speaks a different SQL dialect, a service that targets more than one backend keeps a directory per dialect (the canonical example uses <code>migrations/postgres/</code> and <code>migrations/mysql/</code>) and points <code>migrations.dir</code> at the one matching <code>relational.dialect</code>.</p>
+    <p>A service's own migrations are an <strong>independent sequence starting at <code>0001</code></strong>. They do <em>not</em> continue the framework's numbering: the framework's embedded <code>0001_framework</code> is tracked in a <em>separate</em> table (<code>omnicore_framework_migrations</code>), so the service's <code>0001</code> in <code>omnicore_migrations</code> never collides with it (see <a href="#migrations~tracking">Tracking</a>). Because each backend speaks a different SQL dialect, a service that targets more than one backend keeps a directory per dialect (<code>migrations/postgres/</code>, <code>migrations/mysql/</code>, <code>migrations/sqlserver/</code>) and points <code>migrations.dir</code> at the one matching <code>relational.dialect</code>.</p>
     <p><strong>An empty sequence is a legitimate state, not an error.</strong> A freshly scaffolded service has no migrations of its own yet — <code>migrations.dir</code> is missing or holds no versioned <code>*.up.sql</code> (e.g. only a <code>.gitkeep</code>). <code>Up</code> (the <code>autoRun: true</code> path) then applies the framework's embedded control plane and <strong>skips the service stage</strong>; <code>Pending</code> and <code>ValidateDownExists</code> already treat the same state as "nothing to do". The service's real <code>0001</code> arrives with its first entity.</p>
-    <p class="note">Tables behind the relational <a href="#table-schema">specialization mechanisms</a> have shape requirements your migration must satisfy — a <a href="#table-schema~sibling-tables">sibling</a> table shares the owner's PK and declares no FK and no <code>deleted_at</code> (the owner owns the lifecycle); a <a href="#table-schema~shared-base">shared base</a> stores a deterministic <code>UUIDv5</code> PK with its natural-key column <code>UNIQUE NOT NULL</code> and no soft-delete, and each role table carries a <code>UNIQUE</code> FK to it. The authoritative column-by-column shapes (Postgres and MySQL) live in <a href="#table-schema">TableSchema</a>.</p>
+    <p class="note">Tables behind the relational <a href="#table-schema">specialization mechanisms</a> have shape requirements your migration must satisfy — a <a href="#table-schema~sibling-tables">sibling</a> table shares the owner's PK and declares no FK and no <code>deleted_at</code> (the owner owns the lifecycle); a <a href="#table-schema~shared-base">shared base</a> stores a deterministic <code>UUIDv5</code> PK with its natural-key column <code>UNIQUE NOT NULL</code> and no soft-delete, and each role table carries a <code>UNIQUE</code> FK to it. The authoritative column-by-column shapes (per engine) live in <a href="#table-schema">TableSchema</a>.</p>
 
     <h3>The framework's embedded control plane — version 1</h3>
-    <p>The framework owns version <strong>1</strong> as a single flattened migration, <code>0001_framework.{up,down}.sql</code>, injected via <code>embed.FS</code> and shipped <strong>per dialect</strong> (<code>infra/migration/embedded/postgres/</code> and <code>infra/migration/embedded/mysql/</code>). One migration creates the whole control plane — seven tables:</p>
+    <p>The framework owns version <strong>1</strong> as a single flattened migration, <code>0001_framework.{up,down}.sql</code>, injected via <code>embed.FS</code> and shipped <strong>per dialect</strong> (<code>infra/migration/embedded/{postgres,mysql,sqlserver}/</code>). One migration creates the whole control plane — seven tables:</p>
     <ul>
         <li><code>outbox</code> — the Debezium CDC source.</li>
         <li><code>omnicore_mongo_views</code> — the Mongo view registry.</li>
         <li><code>omnicore_upstream_failures</code> — cross-service composition failure registry.</li>
-        <li><code>audit_events</code> — the audit trail (RANGE-partitioned by <code>created_at</code> on Postgres; a plain table on MySQL, which has no equivalent partition shape).</li>
+        <li><code>audit_events</code> — the audit trail (RANGE-partitioned by <code>created_at</code> on Postgres; a plain table on MySQL and SQL Server).</li>
         <li><code>integration_events</code> — producer-side integration-event store.</li>
         <li><code>omnicore_integration_failures</code> / <code>omnicore_integration_processed</code> — the consumer failure registry + dedup table.</li>
     </ul>
@@ -51,6 +51,9 @@ mgr := migration.New(pg.Pool(), "./migrations/postgres")
 // MySQL — opens its own *sql.DB from the DSN (build tag: mysql)
 mgr := migration.NewMySQL(dsn, "./migrations/mysql")
 
+// SQL Server — opens its own *sql.DB from the DSN (build tag: sqlserver)
+mgr := migration.NewSQLServer(dsn, "./migrations/sqlserver")
+
 // Same surface on either Manager:
 mgr.Up(ctx)              // applies pending (framework then service)
 mgr.Down(ctx, 1)         // reverts N service migrations
@@ -76,4 +79,5 @@ mgr.ValidateDownExists() // checks .down.sql counterpart for each .up.sql</code>
     <ul>
         <li><strong>Postgres</strong> — adapts the live <code>pgxpool.Pool</code> to a <code>*sql.DB</code> via <code>pgx/v5/stdlib.OpenDBFromPool</code>. The package guarantees that <code>Close()</code> on that <code>sql.DB</code> <strong>does not close the pool</strong>, so every open/close of <code>migrate.Migrate</code> is isolated and the engine's pool stays alive for the rest of the service.</li>
         <li><strong>MySQL</strong> — opens its <em>own</em> <code>*sql.DB</code> from the DSN (closed when each migrate instance closes), rather than sharing the engine's live pool. It also ensures the DSN carries <code>multiStatements=true</code> so the flattened multi-statement framework migration runs regardless of the operator's DSN config.</li>
+        <li><strong>SQL Server</strong> — opens its <em>own</em> <code>*sql.DB</code> from the DSN (closed when each migrate instance closes), like MySQL. No DSN massaging is needed: <code>go-mssqldb</code> executes multi-statement batches natively.</li>
     </ul>
