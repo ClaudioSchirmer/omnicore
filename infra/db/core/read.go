@@ -61,10 +61,11 @@ const (
 	// `EXCLUDED.col` on Postgres, `new.col` on MySQL.
 	UpsertSetNew UpsertSetMode = iota
 	// UpsertSetExpr assigns the column to a verbatim SQL expression identical on
-	// every engine — e.g. "NOW()", "NULL", or "attempt + 1" (a bare column name
-	// in an upsert's update clause refers to the existing row on both PG and
-	// MySQL). The expression is emitted as-is; framework-controlled, never user
-	// input.
+	// every engine — e.g. "NULL" or "attempt + 1" (a bare column name in an
+	// upsert's update clause refers to the existing row on both PG and MySQL).
+	// A current-timestamp assignment is NOT engine-identical: pass the dialect's
+	// NowExpr() as the expression. Emitted as-is; framework-controlled, never
+	// user input.
 	UpsertSetExpr
 )
 
@@ -103,6 +104,20 @@ type Dialect interface {
 	// `LOWER(col) LIKE LOWER(?)` so the match is case-insensitive on ANY column
 	// collation (a bare LIKE would be case-insensitive only under a CI collation).
 	ILikeClause(col, placeholder string) string
+	// NowExpr renders the engine's SQL expression for the current timestamp —
+	// the single source of the "now" literal in every generated statement (the
+	// managed created_at/updated_at stamps, the soft-delete archive stamp, the
+	// outbox created_at, the failure registries' attempt/resolved timestamps).
+	// "NOW()" on both Postgres and MySQL; each engine supplies its native form,
+	// so shared code never bakes in a dialect-specific function name.
+	NowExpr() string
+	// ApplyLimit caps a complete SELECT statement at n rows, rendered in the
+	// dialect's native position: Postgres and MySQL append ` LIMIT n`; an
+	// engine whose cap is not a tail clause (e.g. a SELECT-head TOP) rewrites
+	// the statement instead — which is why the method takes the whole SELECT,
+	// not a fragment. sql is always framework-generated (never user input);
+	// n must be positive.
+	ApplyLimit(sql string, n int) string
 	// IsUniqueViolation classifies a driver error as a unique-constraint
 	// violation and, when so, returns the violated constraint/index name. PG
 	// reads SQLSTATE 23505 + ConstraintName; MySQL reads errno 1062 + the key

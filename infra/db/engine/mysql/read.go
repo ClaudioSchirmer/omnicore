@@ -184,6 +184,14 @@ func (mysqlDialect) ILikeClause(col, ph string) string {
 	return "LOWER(" + col + ") LIKE LOWER(" + ph + ")"
 }
 
+func (mysqlDialect) NowExpr() string { return "NOW()" }
+
+// ApplyLimit caps a complete SELECT at n rows — the native tail clause on
+// MySQL.
+func (mysqlDialect) ApplyLimit(sql string, n int) string {
+	return fmt.Sprintf("%s LIMIT %d", sql, n)
+}
+
 // IsUniqueViolation reads MySQL errno 1062 and extracts the violated index name
 // from the message ("Duplicate entry '…' for key '<key>'"). MySQL 8 prefixes the
 // key with the table ("flat_persons.uniq_email"); the bare index name (after the

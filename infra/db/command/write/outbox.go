@@ -33,8 +33,8 @@ func WriteOutbox(ctx context.Context, tx Tx, table, eventType, id string, payloa
 	}
 	d := tx.Dialect()
 	sql := fmt.Sprintf(
-		"INSERT INTO outbox (aggregate_type, event_type, aggregate_id, payload, traceparent, created_at) VALUES (%s, %s, %s, %s, %s, NOW())",
-		d.Placeholder(1), d.Placeholder(2), d.Placeholder(3), d.Placeholder(4), d.Placeholder(5),
+		"INSERT INTO outbox (aggregate_type, event_type, aggregate_id, payload, traceparent, created_at) VALUES (%s, %s, %s, %s, %s, %s)",
+		d.Placeholder(1), d.Placeholder(2), d.Placeholder(3), d.Placeholder(4), d.Placeholder(5), d.NowExpr(),
 	)
 	return tx.Exec(ctx, sql, table, eventType, id, data, traceparent)
 }

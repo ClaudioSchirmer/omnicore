@@ -191,8 +191,8 @@ func (c *Composer) fetchRoleRow(ctx context.Context, r roleDef, baseID string, i
 // base — the deterministic remnant pick when no active row exists.
 func (c *Composer) fetchLatestArchived(ctx context.Context, schema *core.TableSchema, keyCol, keyVal, sdCol string) (Document, error) {
 	d := c.eng.Dialect()
-	sql := fmt.Sprintf("SELECT * FROM %s WHERE %s = %s AND %s IS NOT NULL ORDER BY %s DESC LIMIT 1",
-		d.QuoteIdent(schema.Table()), d.QuoteIdent(keyCol), d.Placeholder(1), d.QuoteIdent(sdCol), d.QuoteIdent(sdCol))
+	sql := d.ApplyLimit(fmt.Sprintf("SELECT * FROM %s WHERE %s = %s AND %s IS NOT NULL ORDER BY %s DESC",
+		d.QuoteIdent(schema.Table()), d.QuoteIdent(keyCol), d.Placeholder(1), d.QuoteIdent(sdCol), d.QuoteIdent(sdCol)), 1)
 	results, err := c.eng.Querier().QueryMaps(ctx, sql, c.encodeKey(keyVal))
 	if err != nil || len(results) == 0 {
 		return nil, err
@@ -432,12 +432,12 @@ func buildFetchSQL(d core.Dialect, verb, table, keyCol, sdCol string, includeArc
 		}
 		return fmt.Sprintf("SELECT * FROM %s WHERE %s IS NULL", d.QuoteIdent(table), d.QuoteIdent(sdCol))
 	}
-	suffix := ""
+	sqlStr := fmt.Sprintf("SELECT * FROM %s WHERE %s = %s%s",
+		d.QuoteIdent(table), d.QuoteIdent(keyCol), d.Placeholder(1), cond)
 	if verb == "row" {
-		suffix = " LIMIT 1"
+		sqlStr = d.ApplyLimit(sqlStr, 1)
 	}
-	return fmt.Sprintf("SELECT * FROM %s WHERE %s = %s%s%s",
-		d.QuoteIdent(table), d.QuoteIdent(keyCol), d.Placeholder(1), cond, suffix)
+	return sqlStr
 }
 
 // encodeKey wraps the (always uuid-shaped) composer key as a domain.ID and runs

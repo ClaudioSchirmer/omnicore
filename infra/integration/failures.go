@@ -87,7 +87,7 @@ func RecordIntegrationFailure(ctx context.Context, q core.Querier, d core.Dialec
 		{Col: "error", Mode: core.UpsertSetNew},
 		{Col: "payload", Mode: core.UpsertSetNew},
 		{Col: "attempt", Mode: core.UpsertSetExpr, Expr: "attempt + 1"},
-		{Col: "last_attempt_at", Mode: core.UpsertSetExpr, Expr: "NOW()"},
+		{Col: "last_attempt_at", Mode: core.UpsertSetExpr, Expr: d.NowExpr()},
 		{Col: "resolved_at", Mode: core.UpsertSetExpr, Expr: "NULL"},
 	})
 	if err := q.Exec(ctx, sql,
@@ -114,7 +114,7 @@ func ResolveIntegrationFailures(ctx context.Context, q core.Querier, d core.Dial
 	if eventID == uuid.Nil {
 		return fmt.Errorf("resolve integration failures: event_id is required")
 	}
-	sql := "UPDATE " + integrationFailureTable + " SET resolved_at = NOW() WHERE" +
+	sql := "UPDATE " + integrationFailureTable + " SET resolved_at = " + d.NowExpr() + " WHERE" +
 		" consumer_group = " + d.Placeholder(1) +
 		" AND source_key = " + d.Placeholder(2) +
 		" AND event_key = " + d.Placeholder(3) +

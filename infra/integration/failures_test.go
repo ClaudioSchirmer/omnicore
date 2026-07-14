@@ -78,6 +78,10 @@ func (fakeDialect) QuoteIdent(s string) string                 { return s }
 func (fakeDialect) EncodeArg(v any) any                        { return v }
 func (fakeDialect) DecodeID(raw string) (string, error)        { return raw, nil }
 func (fakeDialect) ILikeClause(col, ph string) string          { return col + " LIKE " + ph }
+func (fakeDialect) NowExpr() string { return "NOW()" }
+func (fakeDialect) ApplyLimit(sql string, n int) string {
+	return fmt.Sprintf("%s LIMIT %d", sql, n)
+}
 func (fakeDialect) IsUniqueViolation(error) (string, bool)     { return "", false }
 func (fakeDialect) IsForeignKeyViolation(error) (string, bool) { return "", false }
 func (fakeDialect) BuildUpsert(table string, _, _ []string, _ []core.UpsertSet) string {

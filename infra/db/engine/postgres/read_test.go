@@ -73,6 +73,22 @@ func (r *composerRows) FieldDescriptions() []pgconn.FieldDescription {
 func (r *composerRows) Close()     {}
 func (r *composerRows) Err() error { return nil }
 
+// TestNowExpr_ApplyLimit proves the two portability seams every generated
+// statement rides: the current-timestamp literal comes from the dialect (never
+// baked into shared code) and the row cap lands as Postgres' native tail clause.
+func TestNowExpr_ApplyLimit(t *testing.T) {
+	d := pgDialect{}
+	if got := d.NowExpr(); got != "NOW()" {
+		t.Fatalf("NowExpr = %q, want NOW()", got)
+	}
+	if got := d.ApplyLimit("SELECT 1 FROM t WHERE x = $1", 1); got != "SELECT 1 FROM t WHERE x = $1 LIMIT 1" {
+		t.Fatalf("ApplyLimit = %q", got)
+	}
+	if got := d.ApplyLimit("SELECT id FROM t ORDER BY id", 25); got != "SELECT id FROM t ORDER BY id LIMIT 25" {
+		t.Fatalf("ApplyLimit = %q", got)
+	}
+}
+
 func TestPgxRowsToMaps_RowsAndValuesError(t *testing.T) {
 	// Happy path: columns become map keys.
 	maps, err := pgxRowsToMaps(&composerRows{cols: []string{"id", "name"}, data: [][]any{{"o1", "first"}}})

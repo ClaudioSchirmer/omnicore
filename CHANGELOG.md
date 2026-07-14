@@ -11,6 +11,26 @@ with `1.0.0`.
 
 ## [Unreleased]
 
+### Changed
+
+- **The last dialect-specific SQL literals left shared code — `core.Dialect`
+  gains `NowExpr()` and `ApplyLimit(sql, n)`.** Shared statement builders used
+  to bake in `NOW()` (managed `created_at`/`updated_at` stamps, the soft-delete
+  archive stamp, the outbox `created_at`, the failure registries' timestamps)
+  and a tail `LIMIT n` (existence probes, `FindOne`'s bounded load, the
+  composer's row fetches) — both happen to parse on Postgres AND MySQL, so the
+  coupling was invisible, but they would not survive a third engine. Every
+  generated statement now obtains the current-timestamp expression from
+  `Dialect.NowExpr()` and its row cap from `Dialect.ApplyLimit(sql, n)`, which
+  receives the COMPLETE SELECT so an engine whose cap is not a tail clause
+  (e.g. a SELECT-head `TOP n`) can rewrite the statement. Both engines render
+  exactly the SQL they rendered before (`NOW()` / trailing ` LIMIT n`), so no
+  emitted statement changes; the operator-facing drift-reconcile scripts, which
+  have no dialect at hand, switch from `NOW()` to the ANSI
+  `CURRENT_TIMESTAMP`. Groundwork for the planned SQL Server engine; a custom
+  `core.Dialect` implementation (none is expected outside the framework's
+  engines) must add the two methods.
+
 ## [0.30.0] - 2026-07-13
 
 ### Changed

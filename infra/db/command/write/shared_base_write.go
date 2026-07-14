@@ -123,7 +123,7 @@ func (b *BaseEngine) findActiveRoleByFK(ctx context.Context, tx WriteTx, d Diale
 	if sd, hasSD := schema.SoftDeleteColumn(); hasSD {
 		q += " AND " + d.QuoteIdent(sd) + " IS NULL"
 	}
-	q += " LIMIT 1"
+	q = d.ApplyLimit(q, 1)
 	rows, err := tx.Query(ctx, q, d.EncodeArg(domain.NewID(baseID)))
 	if err != nil {
 		return false, err
@@ -456,8 +456,8 @@ func (b *BaseEngine) convergeBaseAfterHardDelete(
 // base id.
 func (b *BaseEngine) anyRoleRowReferences(ctx context.Context, tx WriteTx, d Dialect, base *TableSchema, baseID string) (bool, error) {
 	for _, rr := range b.effectiveReferencingRoles(base) {
-		q := "SELECT 1 FROM " + d.QuoteIdent(rr.Table) +
-			" WHERE " + d.QuoteIdent(rr.FKColumn) + " = " + d.Placeholder(1) + " LIMIT 1"
+		q := d.ApplyLimit("SELECT 1 FROM "+d.QuoteIdent(rr.Table)+
+			" WHERE "+d.QuoteIdent(rr.FKColumn)+" = "+d.Placeholder(1), 1)
 		rows, err := tx.Query(ctx, q, d.EncodeArg(domain.NewID(baseID)))
 		if err != nil {
 			return false, err
@@ -548,7 +548,7 @@ func (b *BaseEngine) archiveBaseIfNoActiveRole(ctx context.Context, tx WriteTx, 
 	if err != nil || active {
 		return err
 	}
-	return cascadeBaseLifecycle(ctx, tx, d, base, sd, baseID, "NOW()", " IS NULL")
+	return cascadeBaseLifecycle(ctx, tx, d, base, sd, baseID, d.NowExpr(), " IS NULL")
 }
 
 // convergeBaseAfterSoftWrite routes a role's archive/unarchive to the matching
@@ -593,10 +593,10 @@ func (b *BaseEngine) vetoUnarchiveWithActiveSibling(ctx context.Context, tx Writ
 		return err
 	}
 	baseID := deterministicBaseID(nk)
-	q := "SELECT 1 FROM " + d.QuoteIdent(schema.Table()) +
-		" WHERE " + d.QuoteIdent(fkCol) + " = " + d.Placeholder(1) +
-		" AND " + d.QuoteIdent(schema.PKColumn()) + " <> " + d.Placeholder(2) +
-		" AND " + d.QuoteIdent(sd) + " IS NULL LIMIT 1"
+	q := d.ApplyLimit("SELECT 1 FROM "+d.QuoteIdent(schema.Table())+
+		" WHERE "+d.QuoteIdent(fkCol)+" = "+d.Placeholder(1)+
+		" AND "+d.QuoteIdent(schema.PKColumn())+" <> "+d.Placeholder(2)+
+		" AND "+d.QuoteIdent(sd)+" IS NULL", 1)
 	rows, err := tx.Query(ctx, q, d.EncodeArg(domain.NewID(baseID)), d.EncodeArg(domain.NewID(id)))
 	if err != nil {
 		return err
@@ -628,7 +628,7 @@ func baseLifecycleTarget(schema *TableSchema, src domain.Entity) (base *TableSch
 	return base, sd, deterministicBaseID(nk), true, nil
 }
 
-// cascadeBaseLifecycle archives (NOW()/" IS NULL") or unarchives (NULL/" IS NOT
+// cascadeBaseLifecycle archives (NowExpr()/" IS NULL") or unarchives (NULL/" IS NOT
 // NULL") the base row and each soft-deletable native child, gated so it is
 // idempotent (a no-op when already in the target state).
 func cascadeBaseLifecycle(ctx context.Context, tx WriteTx, d Dialect, base *TableSchema, sd, baseID, setExpr, gate string) error {
@@ -681,7 +681,7 @@ func (b *BaseEngine) anyActiveRole(ctx context.Context, tx WriteTx, d Dialect, b
 		if rr.SoftDeleteCol != "" {
 			q += " AND " + d.QuoteIdent(rr.SoftDeleteCol) + " IS NULL"
 		}
-		q += " LIMIT 1"
+		q = d.ApplyLimit(q, 1)
 		rows, err := tx.Query(ctx, q, d.EncodeArg(domain.NewID(baseID)))
 		if err != nil {
 			return false, err
@@ -703,8 +703,8 @@ func (b *BaseEngine) anyActiveRole(ctx context.Context, tx WriteTx, d Dialect, b
 // pre-dates this write) — the signal the SharedBase insert forgot-guard pairs with
 // the actionName.
 func baseExists(ctx context.Context, tx WriteTx, d Dialect, base *TableSchema, baseID string) (bool, error) {
-	q := "SELECT 1 FROM " + d.QuoteIdent(base.Table()) +
-		" WHERE " + d.QuoteIdent(base.PKColumn()) + " = " + d.Placeholder(1) + " LIMIT 1"
+	q := d.ApplyLimit("SELECT 1 FROM "+d.QuoteIdent(base.Table())+
+		" WHERE "+d.QuoteIdent(base.PKColumn())+" = "+d.Placeholder(1), 1)
 	rows, err := tx.Query(ctx, q, d.EncodeArg(domain.NewID(baseID)))
 	if err != nil {
 		return false, err

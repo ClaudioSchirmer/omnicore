@@ -305,8 +305,10 @@ func (l *AggregateLoader[T]) findRoots(ctx context.Context, q *criteria.Query, l
 	// Runs through the neutral Querier — the scanner receives infra.Row, so this
 	// works on any engine (the consumer owns any dialect-specific decoding).
 	if l.rootScanner != nil {
-		sql := "SELECT * FROM " + dialect.QuoteIdent(table)
-		sql += tailClause(clause, orderSQL, limit)
+		sql := "SELECT * FROM " + dialect.QuoteIdent(table) + tailClause(clause, orderSQL)
+		if limit > 0 {
+			sql = dialect.ApplyLimit(sql, int(limit))
+		}
 		rows, err := l.eng.Querier().Query(ctx, sql, args...)
 		if err != nil {
 			return nil, nil, err
@@ -359,7 +361,10 @@ func (l *AggregateLoader[T]) findRoots(ctx context.Context, q *criteria.Query, l
 		leadingPK = dialect.QuoteIdent(table) + "." + dialect.QuoteIdent(l.schema.PKColumn())
 	}
 	sql := "SELECT " + leadingPK + ", " + strings.Join(quoteIdentifiers(cols, dialect), ", ") + " FROM " + dialect.QuoteIdent(table) + joinSQL
-	sql += tailClause(clause, orderSQL, limit)
+	sql += tailClause(clause, orderSQL)
+	if limit > 0 {
+		sql = dialect.ApplyLimit(sql, int(limit))
+	}
 	rows, err := l.eng.Querier().Query(ctx, sql, args...)
 	if err != nil {
 		return nil, nil, err
@@ -390,9 +395,11 @@ func (l *AggregateLoader[T]) findRoots(ctx context.Context, q *criteria.Query, l
 	return entities, ids, nil
 }
 
-// tailClause renders the " WHERE … [ORDER BY …] [LIMIT n]" suffix shared by the
-// auto-scan and manual-scanner root SELECTs (each part already validated).
-func tailClause(clause, orderSQL string, limit int64) string {
+// tailClause renders the " WHERE … [ORDER BY …]" suffix shared by the
+// auto-scan and manual-scanner root SELECTs (each part already validated). The
+// row cap is NOT part of the tail: the caller applies it over the complete
+// statement via Dialect.ApplyLimit, so each engine caps in its native position.
+func tailClause(clause, orderSQL string) string {
 	var sb strings.Builder
 	if clause != "" {
 		sb.WriteByte(' ')
@@ -401,9 +408,6 @@ func tailClause(clause, orderSQL string, limit int64) string {
 	if orderSQL != "" {
 		sb.WriteByte(' ')
 		sb.WriteString(orderSQL)
-	}
-	if limit > 0 {
-		fmt.Fprintf(&sb, " LIMIT %d", limit)
 	}
 	return sb.String()
 }
@@ -669,8 +673,8 @@ func (l *AggregateLoader[T]) LoadSharedBaseIdentity(ctx context.Context, fresh T
 	for _, c := range cols {
 		sel += ", " + d.QuoteIdent(c)
 	}
-	sql := "SELECT " + sel + " FROM " + d.QuoteIdent(base.Table()) +
-		" WHERE " + d.QuoteIdent(nkCol) + " = " + d.Placeholder(1) + " LIMIT 1"
+	sql := d.ApplyLimit("SELECT "+sel+" FROM "+d.QuoteIdent(base.Table())+
+		" WHERE "+d.QuoteIdent(nkCol)+" = "+d.Placeholder(1), 1)
 	rows, err := l.eng.Querier().Query(ctx, sql, nkVal)
 	if err != nil {
 		return fresh, false, err
@@ -731,11 +735,11 @@ func (l *AggregateLoader[T]) activeRoleExists(ctx context.Context, fkCol, baseID
 }
 
 // probeExists executes the shared existence probe — SELECT 1 over the given
-// FROM/WHERE tail, LIMIT 1, true when any row comes back. The single execution
-// home for the public criteria-level Exists and the internal column-level
-// probes.
+// FROM/WHERE tail, capped at one row via the dialect, true when any row comes
+// back. The single execution home for the public criteria-level Exists and the
+// internal column-level probes.
 func (l *AggregateLoader[T]) probeExists(ctx context.Context, fromWhere string, args ...any) (bool, error) {
-	rows, err := l.eng.Querier().Query(ctx, "SELECT 1 FROM "+fromWhere+" LIMIT 1", args...)
+	rows, err := l.eng.Querier().Query(ctx, l.eng.Dialect().ApplyLimit("SELECT 1 FROM "+fromWhere, 1), args...)
 	if err != nil {
 		return false, err
 	}
@@ -850,10 +854,10 @@ func (l *AggregateLoader[T]) hydrateSiblings(ctx context.Context, entities []T, 
 		// SELECT pk (leading key, discarded) + sibling columns, keyed by the
 		// shared PK. The leading-key form reuses ScanLeadingKey, which scans the
 		// remaining columns into the target struct at the byCol indices.
-		sql := "SELECT " + dialect.QuoteIdent(pkCol) + ", " +
-			strings.Join(quoteIdentifiers(sibCols, dialect), ", ") +
-			" FROM " + dialect.QuoteIdent(sib.Table()) +
-			" WHERE " + dialect.QuoteIdent(pkCol) + " = " + dialect.Placeholder(1) + " LIMIT 1"
+		sql := dialect.ApplyLimit("SELECT "+dialect.QuoteIdent(pkCol)+", "+
+			strings.Join(quoteIdentifiers(sibCols, dialect), ", ")+
+			" FROM "+dialect.QuoteIdent(sib.Table())+
+			" WHERE "+dialect.QuoteIdent(pkCol)+" = "+dialect.Placeholder(1), 1)
 		for i, ent := range entities {
 			if err := l.scanSiblingInto(ctx, sql, ids[i], ent, sibCols, sibByCol); err != nil {
 				return err
@@ -987,9 +991,9 @@ func (l *AggregateLoader[T]) hydrateSharedBase(ctx context.Context, entities []T
 	for _, c := range cols {
 		sel += ", " + baseTbl + "." + d.QuoteIdent(c)
 	}
-	sql := "SELECT " + sel + " FROM " + roleTbl +
-		" JOIN " + baseTbl + " ON " + baseTbl + "." + d.QuoteIdent(base.PKColumn()) + " = " + roleTbl + "." + d.QuoteIdent(fkCol) +
-		" WHERE " + roleTbl + "." + rolePK + " = " + d.Placeholder(1) + " LIMIT 1"
+	sql := d.ApplyLimit("SELECT "+sel+" FROM "+roleTbl+
+		" JOIN "+baseTbl+" ON "+baseTbl+"."+d.QuoteIdent(base.PKColumn())+" = "+roleTbl+"."+d.QuoteIdent(fkCol)+
+		" WHERE "+roleTbl+"."+rolePK+" = "+d.Placeholder(1), 1)
 	for i, ent := range entities {
 		if err := l.scanSiblingInto(ctx, sql, ids[i], ent, cols, byCol); err != nil {
 			return err

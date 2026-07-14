@@ -364,7 +364,8 @@ func (s *TableSchema) SoftDelete(col string) *TableSchema {
 }
 
 // CreatedAt enables a framework-stamped created_at column: the framework writes
-// col = NOW() on INSERT (it never relies on a DB DEFAULT it does not own).
+// col = the dialect's now expression on INSERT (it never relies on a DB DEFAULT
+// it does not own).
 func (s *TableSchema) CreatedAt(col string) *TableSchema {
 	if s.secondary {
 		panic(fmt.Sprintf(
@@ -379,8 +380,8 @@ func (s *TableSchema) CreatedAt(col string) *TableSchema {
 	return s
 }
 
-// UpdatedAt enables a framework-stamped updated_at column: col = NOW() on
-// INSERT and UPDATE.
+// UpdatedAt enables a framework-stamped updated_at column: col = the dialect's
+// now expression on INSERT and UPDATE.
 func (s *TableSchema) UpdatedAt(col string) *TableSchema {
 	if s.secondary {
 		panic(fmt.Sprintf(
@@ -679,8 +680,8 @@ func (s *TableSchema) childSchema(typeName string) *TableSchema {
 	return s.children[typeName]
 }
 
-// insertNowColumns returns the managed columns stamped NOW() on INSERT —
-// created_at then updated_at, each when enabled.
+// insertNowColumns returns the managed columns stamped with the dialect's now
+// expression on INSERT — created_at then updated_at, each when enabled.
 func (s *TableSchema) insertNowColumns() []string {
 	var out []string
 	if c, ok := s.createdAtColumn(); ok {
@@ -692,7 +693,8 @@ func (s *TableSchema) insertNowColumns() []string {
 	return out
 }
 
-// updateNowColumns returns the managed columns stamped NOW() on UPDATE.
+// updateNowColumns returns the managed columns stamped with the dialect's now
+// expression on UPDATE.
 func (s *TableSchema) updateNowColumns() []string {
 	if c, ok := s.updatedAtColumn(); ok {
 		return []string{c}

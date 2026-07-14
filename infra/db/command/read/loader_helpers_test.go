@@ -12,21 +12,29 @@ func TestTailClause_AllParts(t *testing.T) {
 		name   string
 		clause string
 		order  string
-		limit  int64
 		want   string
 	}{
-		{"empty", "", "", 0, ""},
-		{"whereOnly", "WHERE x = $1", "", 0, " WHERE x = $1"},
-		{"orderOnly", "", "ORDER BY x", 0, " ORDER BY x"},
-		{"limitOnly", "", "", 5, " LIMIT 5"},
-		{"all", "WHERE x = $1", "ORDER BY x DESC", 10, " WHERE x = $1 ORDER BY x DESC LIMIT 10"},
+		{"empty", "", "", ""},
+		{"whereOnly", "WHERE x = $1", "", " WHERE x = $1"},
+		{"orderOnly", "", "ORDER BY x", " ORDER BY x"},
+		{"all", "WHERE x = $1", "ORDER BY x DESC", " WHERE x = $1 ORDER BY x DESC"},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			if got := tailClause(c.clause, c.order, c.limit); got != c.want {
+			if got := tailClause(c.clause, c.order); got != c.want {
 				t.Errorf("tailClause = %q, want %q", got, c.want)
 			}
 		})
+	}
+}
+
+// The row cap left tailClause on purpose: the caller applies it over the
+// COMPLETE statement via Dialect.ApplyLimit, so an engine whose cap is not a
+// tail clause can rewrite the statement.
+func TestTailClause_CapViaDialectApplyLimit(t *testing.T) {
+	sql := "SELECT * FROM t" + tailClause("WHERE x = $1", "ORDER BY x DESC")
+	if got := (testPGDialect{}).ApplyLimit(sql, 10); got != "SELECT * FROM t WHERE x = $1 ORDER BY x DESC LIMIT 10" {
+		t.Errorf("ApplyLimit = %q", got)
 	}
 }
 

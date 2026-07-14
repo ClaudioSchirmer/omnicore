@@ -35,6 +35,10 @@ func (testPGDialect) DecodeID(raw string) (string, error) {
 	return raw, nil
 }
 func (testPGDialect) ILikeClause(col, ph string) string { return col + " ILIKE " + ph }
+func (testPGDialect) NowExpr() string { return "NOW()" }
+func (testPGDialect) ApplyLimit(sql string, n int) string {
+	return fmt.Sprintf("%s LIMIT %d", sql, n)
+}
 func (testPGDialect) IsUniqueViolation(err error) (string, bool) {
 	var pgErr *pgconn.PgError
 	if errors.As(err, &pgErr) && pgErr.Code == "23505" {

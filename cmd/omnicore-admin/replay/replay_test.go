@@ -134,6 +134,10 @@ func (f *fakeDB) QuoteIdent(name string) string              { return `"` + name
 func (f *fakeDB) EncodeArg(v any) any                        { return v }
 func (f *fakeDB) DecodeID(raw string) (string, error)        { return raw, nil }
 func (f *fakeDB) ILikeClause(col, ph string) string          { return col + " ILIKE " + ph }
+func (f *fakeDB) NowExpr() string { return "NOW()" }
+func (f *fakeDB) ApplyLimit(sql string, n int) string {
+	return fmt.Sprintf("%s LIMIT %d", sql, n)
+}
 func (f *fakeDB) IsUniqueViolation(error) (string, bool)     { return "", false }
 func (f *fakeDB) IsForeignKeyViolation(error) (string, bool) { return "", false }
 func (f *fakeDB) BuildUpsert(string, []string, []string, []core.UpsertSet) string {

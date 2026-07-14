@@ -106,6 +106,22 @@ func TestILikeClause(t *testing.T) {
 	}
 }
 
+// TestNowExpr_ApplyLimit proves the two portability seams every generated
+// statement rides: the current-timestamp literal comes from the dialect (never
+// baked into shared code) and the row cap lands as MySQL's native tail clause.
+func TestNowExpr_ApplyLimit(t *testing.T) {
+	d := mysqlDialect{}
+	if got := d.NowExpr(); got != "NOW()" {
+		t.Fatalf("NowExpr = %q, want NOW()", got)
+	}
+	if got := d.ApplyLimit("SELECT 1 FROM t WHERE x = ?", 1); got != "SELECT 1 FROM t WHERE x = ? LIMIT 1" {
+		t.Fatalf("ApplyLimit = %q", got)
+	}
+	if got := d.ApplyLimit("SELECT `id` FROM t ORDER BY `id`", 25); got != "SELECT `id` FROM t ORDER BY `id` LIMIT 25" {
+		t.Fatalf("ApplyLimit = %q", got)
+	}
+}
+
 // TestEncodeArg covers the value codec the write path and the criteria
 // translator bind through: TYPED identity values (domain.ID / *domain.ID /
 // uuid.UUID) reach a BINARY(16) column as their 16-byte form — the type IS the

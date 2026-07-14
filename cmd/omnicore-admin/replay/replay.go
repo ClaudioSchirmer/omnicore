@@ -184,8 +184,8 @@ func buildWhere(includeArchived bool, filter string) string {
 // columns. The column list mirrors each engine's own writeOutbox.
 func insertOutboxRow(ctx context.Context, q core.Querier, dialect core.Dialect, aggregate, id string, payload []byte) error {
 	sqlStr := fmt.Sprintf(
-		"INSERT INTO outbox (aggregate_type, event_type, aggregate_id, payload, created_at) VALUES (%s, %s, %s, %s, NOW())",
-		dialect.Placeholder(1), dialect.Placeholder(2), dialect.Placeholder(3), dialect.Placeholder(4),
+		"INSERT INTO outbox (aggregate_type, event_type, aggregate_id, payload, created_at) VALUES (%s, %s, %s, %s, %s)",
+		dialect.Placeholder(1), dialect.Placeholder(2), dialect.Placeholder(3), dialect.Placeholder(4), dialect.NowExpr(),
 	)
 	return q.Exec(ctx, sqlStr, aggregate, "INSERTED", id, payload)
 }
