@@ -16,7 +16,7 @@ CREATE TABLE outbox (
     id              UUID         PRIMARY KEY,
     aggregate_type  VARCHAR(100) NOT NULL,
     event_type      VARCHAR(50)  NOT NULL,
-    aggregate_id    CHAR(36)     NOT NULL,
+    aggregate_id    CHAR(36)     COLLATE "C" NOT NULL,
     payload         JSONB        NOT NULL,
     traceparent     VARCHAR(64),
     created_at      TIMESTAMP    NOT NULL DEFAULT NOW()
@@ -31,7 +31,9 @@ COMMENT ON COLUMN outbox.payload        IS 'JSON snapshot of the write (root fie
 COMMENT ON COLUMN outbox.traceparent    IS 'W3C traceparent of the producing request; mapped to a Kafka header so the async projection links back to the trace. NULL when tracing is off.';
 COMMENT ON COLUMN outbox.created_at      IS 'Insert timestamp (NOW()). Drives the created_at index used for pruning/replay.';
 
-CREATE INDEX outbox_aggregate_idx  ON outbox (aggregate_type, aggregate_id);
+-- No (aggregate_type, aggregate_id) index: no framework code SELECTs the
+-- outbox by aggregate — Debezium reads the replication log, not the table —
+-- and every write would pay its maintenance. created_at stays for pruning.
 CREATE INDEX outbox_created_at_idx ON outbox (created_at);
 
 -- ── omnicore_mongo_views ──────────────────────────────────────────────────────
@@ -143,7 +145,7 @@ CREATE INDEX omnicore_upstream_failures_last_attempt_idx
 -- (RANGE) so old partitions can be detached/dropped cheaply.
 CREATE TABLE audit_events (
     id            UUID         NOT NULL,
-    aggregate_id  CHAR(36)     NOT NULL,
+    aggregate_id  CHAR(36)     COLLATE "C" NOT NULL,
     entity_type   VARCHAR(255) NOT NULL,
     verb          VARCHAR(32)  NOT NULL,
     action_name   VARCHAR(64)  NOT NULL,
@@ -151,7 +153,7 @@ CREATE TABLE audit_events (
     actor         VARCHAR(255),
     actor_issuer  VARCHAR(255),
     tenant_id     VARCHAR(255),
-    thread_id     CHAR(36)     NOT NULL,
+    thread_id     CHAR(36)     COLLATE "C" NOT NULL,
     trace_id      VARCHAR(32),
     occurred_at   TIMESTAMP    NOT NULL,
     created_at    TIMESTAMP    NOT NULL DEFAULT NOW(),
@@ -196,15 +198,15 @@ CREATE INDEX audit_events_created_at_brin
 -- "anonymous" sentinel when no JWT is attached).
 CREATE TABLE integration_events (
     id              UUID         PRIMARY KEY,
-    event_id        CHAR(36)     NOT NULL UNIQUE,
+    event_id        CHAR(36)     COLLATE "C" NOT NULL UNIQUE,
     aggregate_type  VARCHAR(100),
-    aggregate_id    CHAR(36),
+    aggregate_id    CHAR(36)     COLLATE "C",
     event_type      VARCHAR(100) NOT NULL,
     event_version   INTEGER      NOT NULL DEFAULT 1,
     payload         JSONB        NOT NULL,
-    correlation_id  CHAR(36),
-    causation_id    CHAR(36),
-    thread_id       CHAR(36)     NOT NULL,
+    correlation_id  CHAR(36)     COLLATE "C",
+    causation_id    CHAR(36)     COLLATE "C",
+    thread_id       CHAR(36)     COLLATE "C" NOT NULL,
     traceparent     VARCHAR(64),
     actor           VARCHAR(255) NOT NULL,
     created_at      TIMESTAMP    NOT NULL DEFAULT NOW()
@@ -240,7 +242,7 @@ CREATE TABLE omnicore_integration_failures (
     consumer_group  TEXT      NOT NULL,
     source_key      TEXT      NOT NULL,
     event_key       TEXT      NOT NULL,
-    event_id        CHAR(36)  NOT NULL,
+    event_id        CHAR(36)  COLLATE "C" NOT NULL,
     payload         JSONB     NOT NULL,
     error           TEXT      NOT NULL,
     attempt         INTEGER   NOT NULL DEFAULT 1,
@@ -281,7 +283,7 @@ CREATE INDEX omnicore_integration_failures_last_attempt_idx
 -- (event_id, consumer_group) natural key lets N groups dedup independently.
 CREATE TABLE omnicore_integration_processed (
     id              UUID      PRIMARY KEY,
-    event_id        CHAR(36)  NOT NULL,
+    event_id        CHAR(36)  COLLATE "C" NOT NULL,
     consumer_group  TEXT      NOT NULL,
     source_key      TEXT      NOT NULL,
     event_key       TEXT      NOT NULL,

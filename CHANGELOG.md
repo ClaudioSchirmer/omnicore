@@ -40,7 +40,16 @@ with `1.0.0`.
   rewritten IN PLACE (pre-1.0; golang-migrate tracks no checksums) — recreate
   the framework control plane on existing databases (bench: `docker compose
   down -v`; a deployed database needs the equivalent ALTERs or a
-  drop-and-recreate of the seven framework tables).
+  drop-and-recreate of the seven framework tables). Performance notes shipped
+  with the same rewrite: the uuid-text reference columns carry binary/ASCII
+  collations (`COLLATE "C"` on PG, `CHARACTER SET ascii` on MySQL,
+  `Latin1_General_100_BIN2` on SQL Server — comparisons are memcmp; values are
+  always the lowercase canonical form the framework writes), the dedup
+  pre-check is an index-only probe on the natural-key UNIQUE (the surrogate PK
+  costs reads nothing), and the outbox drops its `(aggregate_type,
+  aggregate_id)` index — no framework code SELECTs the outbox by aggregate
+  (Debezium reads the replication log/CDC, not the table), so every write was
+  paying maintenance for nothing; `created_at` stays for pruning.
 
 ### Added
 

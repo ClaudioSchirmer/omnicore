@@ -215,6 +215,11 @@ func IsAlreadyProcessed(ctx context.Context, q core.Querier, d core.Dialect, eve
 	// Query + Next instead of QueryRow + a no-rows sentinel: pgx and database/sql
 	// surface "no rows" with different sentinels (pgx.ErrNoRows vs sql.ErrNoRows),
 	// so presence-by-iteration keeps the dedup check engine-neutral.
+	//
+	// Performance: SELECT 1 filtered on exactly the UNIQUE natural key's columns
+	// is an INDEX-ONLY probe on every engine (covering seek on the
+	// omnicore_integration_processed_natural_key index) — the surrogate uuid PK
+	// costs this read path nothing; only the insert maintains the extra index.
 	sql := "SELECT 1 FROM " + integrationProcessedTable +
 		" WHERE event_id = " + d.Placeholder(1) + " AND consumer_group = " + d.Placeholder(2)
 	rows, err := q.Query(ctx, sql, eventID, consumerGroup)

@@ -22,13 +22,15 @@ CREATE TABLE outbox (
     id              BINARY(16)    NOT NULL,
     aggregate_type  VARCHAR(100)  NOT NULL,
     event_type      VARCHAR(50)   NOT NULL,
-    aggregate_id    CHAR(36)      NOT NULL,
+    aggregate_id    CHAR(36)      COLLATE Latin1_General_100_BIN2 NOT NULL,
     payload         NVARCHAR(MAX) NOT NULL,
     traceparent     VARCHAR(64)   NULL,
     created_at      DATETIME2(6)  NOT NULL CONSTRAINT outbox_created_at_default DEFAULT CURRENT_TIMESTAMP,
     CONSTRAINT outbox_pkey PRIMARY KEY CLUSTERED (id)
 );
-CREATE INDEX outbox_aggregate_idx  ON outbox (aggregate_type, aggregate_id);
+-- No (aggregate_type, aggregate_id) index: no framework code SELECTs the
+-- outbox by aggregate (Debezium reads CDC, not the table); created_at stays
+-- for pruning.
 CREATE INDEX outbox_created_at_idx ON outbox (created_at);
 
 -- ── omnicore_mongo_views ──────────────────────────────────────────────────────
@@ -92,7 +94,7 @@ CREATE INDEX omnicore_upstream_failures_last_attempt_idx
 -- the PG BRIN.
 CREATE TABLE audit_events (
     id            BINARY(16)    NOT NULL,
-    aggregate_id  CHAR(36)      NOT NULL,
+    aggregate_id  CHAR(36)      COLLATE Latin1_General_100_BIN2 NOT NULL,
     entity_type   NVARCHAR(255) NOT NULL,
     verb          VARCHAR(32)   NOT NULL,
     action_name   VARCHAR(64)   NOT NULL,
@@ -100,7 +102,7 @@ CREATE TABLE audit_events (
     actor         NVARCHAR(255) NULL,
     actor_issuer  NVARCHAR(255) NULL,
     tenant_id     NVARCHAR(255) NULL,
-    thread_id     CHAR(36)      NOT NULL,
+    thread_id     CHAR(36)      COLLATE Latin1_General_100_BIN2 NOT NULL,
     trace_id      VARCHAR(32)   NULL,
     occurred_at   DATETIME2(6)  NOT NULL,
     created_at    DATETIME2(6)  NOT NULL CONSTRAINT audit_events_created_at_default DEFAULT CURRENT_TIMESTAMP,
@@ -118,15 +120,15 @@ CREATE INDEX audit_events_created_at_idx      ON audit_events (created_at);
 -- under WithTx). Forensic timeline + replay source.
 CREATE TABLE integration_events (
     id              BINARY(16)    NOT NULL,
-    event_id        CHAR(36)      NOT NULL,
+    event_id        CHAR(36)      COLLATE Latin1_General_100_BIN2 NOT NULL,
     aggregate_type  VARCHAR(100)  NULL,
-    aggregate_id    CHAR(36)      NULL,
+    aggregate_id    CHAR(36)      COLLATE Latin1_General_100_BIN2 NULL,
     event_type      VARCHAR(100)  NOT NULL,
     event_version   INTEGER       NOT NULL CONSTRAINT integration_events_event_version_default DEFAULT 1,
     payload         NVARCHAR(MAX) NOT NULL,
-    correlation_id  CHAR(36)      NULL,
-    causation_id    CHAR(36)      NULL,
-    thread_id       CHAR(36)      NOT NULL,
+    correlation_id  CHAR(36)      COLLATE Latin1_General_100_BIN2 NULL,
+    causation_id    CHAR(36)      COLLATE Latin1_General_100_BIN2 NULL,
+    thread_id       CHAR(36)      COLLATE Latin1_General_100_BIN2 NOT NULL,
     traceparent     VARCHAR(64)   NULL,
     actor           NVARCHAR(255) NOT NULL,
     created_at      DATETIME2(6)  NOT NULL CONSTRAINT integration_events_created_at_default DEFAULT CURRENT_TIMESTAMP,
@@ -144,7 +146,7 @@ CREATE TABLE omnicore_integration_failures (
     consumer_group  VARCHAR(255)  NOT NULL,
     source_key      VARCHAR(255)  NOT NULL,
     event_key       VARCHAR(255)  NOT NULL,
-    event_id        CHAR(36)      NOT NULL,
+    event_id        CHAR(36)      COLLATE Latin1_General_100_BIN2 NOT NULL,
     payload         NVARCHAR(MAX) NOT NULL,
     error           NVARCHAR(MAX) NOT NULL,
     attempt         INTEGER       NOT NULL CONSTRAINT omnicore_integration_failures_attempt_default DEFAULT 1,
@@ -166,7 +168,7 @@ CREATE INDEX omnicore_integration_failures_last_attempt_idx
 -- At-least-once delivery — handlers must still be idempotent.
 CREATE TABLE omnicore_integration_processed (
     id              BINARY(16)    NOT NULL,
-    event_id        CHAR(36)      NOT NULL,
+    event_id        CHAR(36)      COLLATE Latin1_General_100_BIN2 NOT NULL,
     consumer_group  VARCHAR(255)  NOT NULL,
     source_key      VARCHAR(255)  NOT NULL,
     event_key       VARCHAR(255)  NOT NULL,
