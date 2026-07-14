@@ -85,7 +85,7 @@ var defaultErrorExamples = map[int]Example{
 // entry alongside their own variants on a status that they otherwise
 // override entirely.
 //
-// ok=true when the status has a framework default (400/401/404/422/500
+// ok=true when the status has a framework default (400/401/403/404/422/500
 // today); ok=false for any other status — the consumer is on their own
 // for those.
 func DefaultErrorExample(status int) (Example, bool) {

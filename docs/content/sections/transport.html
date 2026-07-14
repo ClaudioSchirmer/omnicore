@@ -20,7 +20,7 @@ type Subscriber interface {
     Subscribe(ctx, SubscribeConfig) (Subscription, error) // group, topics, startFrom, commitInterval
     EnsureTopics(ctx, []TopicSpec) error                  // best-effort, idempotent provisioning
 }</code></pre>
-  <p>Per-aggregate ordering is enforced <em>inside</em> the consumer (an FNV-1a hash of <code>aggregate_id</code> routes to a fixed worker), so the transport only has to guarantee FIFO within a partition/subject &mdash; a requirement both Kafka and JetStream satisfy trivially.</p>
+  <p>Per-aggregate ordering is enforced <em>inside</em> the consumer (a stable hash of <code>aggregate_id</code> routes to a fixed worker), so the transport only has to guarantee FIFO within a partition/subject &mdash; a requirement both Kafka and JetStream satisfy trivially.</p>
 
   <h3>Selection &mdash; the build tag</h3>
   <p>Selection mirrors the engine registry (the <code>database/sql</code> driver pattern): each adapter self-registers under a name in <code>init()</code> (<code>transport.RegisterSubscriber</code>) behind its own build tag, and the composition root resolves it by name (<code>transport.NewSubscriber</code>). So <code>bootstrap</code> never imports a broker client, and a build links only the one adapter its tag selects:</p>

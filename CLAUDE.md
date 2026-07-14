@@ -54,7 +54,7 @@ web/          HTTP transport only; openapi/ (OpenAPI 3.1 + Swagger), graphql/ (o
 application/  configuration/ (AppContext), translation/, notifications/, pipeline/,
               persistence/, queries/, audit/ — Go-pure, no transport/infra tags
 domain/       pure business rules, ZERO IO (stdlib + google/uuid only)
-infra/        engines, persisters, outbox, mongo, composer, sync, external, audit impl, events,
+infra/        engines, persisters, outbox, mongo, composer, sync, audit impl, events,
               httpclient + grpcclient (outbound toolboxes) over shared resilience/ cores
 ```
 
