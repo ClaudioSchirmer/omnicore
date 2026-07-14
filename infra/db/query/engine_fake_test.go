@@ -161,9 +161,9 @@ func (fakeDialect) EncodeArg(val any) any {
 	}
 	return val
 }
-func (fakeDialect) DecodeID(raw string) (string, error)        { return raw, nil }
-func (fakeDialect) ILikeClause(col, ph string) string          { return col + " ILIKE " + ph }
-func (fakeDialect) NowExpr() string { return "NOW()" }
+func (fakeDialect) DecodeID(raw string) (string, error) { return raw, nil }
+func (fakeDialect) ILikeClause(col, ph string) string   { return col + " ILIKE " + ph }
+func (fakeDialect) NowExpr() string                     { return "NOW()" }
 func (fakeDialect) ApplyLimit(sql string, n int) string {
 	return fmt.Sprintf("%s LIMIT %d", sql, n)
 }
