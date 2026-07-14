@@ -91,6 +91,9 @@ func (lfDialect) NowExpr() string                     { return "NOW()" }
 func (lfDialect) ApplyLimit(sql string, n int) string {
 	return fmt.Sprintf("%s LIMIT %d", sql, n)
 }
+func (lfDialect) Savepoint(name string) string               { return "SAVEPOINT " + name }
+func (lfDialect) RollbackToSavepoint(name string) string     { return "ROLLBACK TO SAVEPOINT " + name }
+func (lfDialect) ReleaseSavepoint(name string) string        { return "RELEASE SAVEPOINT " + name }
 func (lfDialect) IsUniqueViolation(error) (string, bool)     { return "", false }
 func (lfDialect) IsForeignKeyViolation(error) (string, bool) { return "", false }
 func (lfDialect) BuildUpsert(string, []string, []string, []core.UpsertSet) string {

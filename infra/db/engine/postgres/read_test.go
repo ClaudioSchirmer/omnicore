@@ -136,3 +136,18 @@ func TestNormalizeSQLValue_PassThrough(t *testing.T) {
 		t.Errorf("expected []byte to pass through unchanged, got %T", normalizeSQLValue(raw))
 	}
 }
+
+// TestSavepointStmts locks the savepoint trio the shared-base orphan purge
+// renders through the dialect (standard forms).
+func TestSavepointStmts(t *testing.T) {
+	d := pgDialect{}
+	if got := d.Savepoint("sp"); got != "SAVEPOINT sp" {
+		t.Errorf("Savepoint = %q", got)
+	}
+	if got := d.RollbackToSavepoint("sp"); got != "ROLLBACK TO SAVEPOINT sp" {
+		t.Errorf("RollbackToSavepoint = %q", got)
+	}
+	if got := d.ReleaseSavepoint("sp"); got != "RELEASE SAVEPOINT sp" {
+		t.Errorf("ReleaseSavepoint = %q", got)
+	}
+}

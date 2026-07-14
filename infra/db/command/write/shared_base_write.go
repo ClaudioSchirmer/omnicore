@@ -483,7 +483,7 @@ func (b *BaseEngine) anyRoleRowReferences(ctx context.Context, tx WriteTx, d Dia
 // the database vetoed the purge, the base stays, the surrounding role delete
 // proceeds. Any other error propagates. (true, nil) means the base is gone.
 func (b *BaseEngine) purgeOrphanBase(ctx context.Context, tx WriteTx, d Dialect, base *TableSchema, baseID string) (bool, error) {
-	if err := tx.Exec(ctx, "SAVEPOINT "+sharedBasePurgeSavepoint); err != nil {
+	if err := tx.Exec(ctx, d.Savepoint(sharedBasePurgeSavepoint)); err != nil {
 		return false, err
 	}
 	err := func() error {
@@ -496,15 +496,19 @@ func (b *BaseEngine) purgeOrphanBase(ctx context.Context, tx WriteTx, d Dialect,
 	}()
 	if err != nil {
 		if _, vetoed := d.IsForeignKeyViolation(err); vetoed {
-			if rbErr := tx.Exec(ctx, "ROLLBACK TO SAVEPOINT "+sharedBasePurgeSavepoint); rbErr != nil {
+			if rbErr := tx.Exec(ctx, d.RollbackToSavepoint(sharedBasePurgeSavepoint)); rbErr != nil {
 				return false, rbErr
 			}
 			return false, nil
 		}
 		return false, err
 	}
-	if err := tx.Exec(ctx, "RELEASE SAVEPOINT "+sharedBasePurgeSavepoint); err != nil {
-		return false, err
+	// T-SQL has no release statement (ReleaseSavepoint returns "" there — the
+	// savepoint is discarded at COMMIT); every other dialect frees it now.
+	if rel := d.ReleaseSavepoint(sharedBasePurgeSavepoint); rel != "" {
+		if err := tx.Exec(ctx, rel); err != nil {
+			return false, err
+		}
 	}
 	return true, nil
 }

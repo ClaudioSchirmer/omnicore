@@ -139,6 +139,9 @@ func (f *fakeDB) NowExpr() string                     { return "NOW()" }
 func (f *fakeDB) ApplyLimit(sql string, n int) string {
 	return fmt.Sprintf("%s LIMIT %d", sql, n)
 }
+func (f *fakeDB) Savepoint(name string) string               { return "SAVEPOINT " + name }
+func (f *fakeDB) RollbackToSavepoint(name string) string     { return "ROLLBACK TO SAVEPOINT " + name }
+func (f *fakeDB) ReleaseSavepoint(name string) string        { return "RELEASE SAVEPOINT " + name }
 func (f *fakeDB) IsUniqueViolation(error) (string, bool)     { return "", false }
 func (f *fakeDB) IsForeignKeyViolation(error) (string, bool) { return "", false }
 func (f *fakeDB) BuildUpsert(string, []string, []string, []core.UpsertSet) string {

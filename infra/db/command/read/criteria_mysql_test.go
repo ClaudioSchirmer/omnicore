@@ -55,6 +55,11 @@ func (testMySQLDialect) NowExpr() string { return "NOW()" }
 func (testMySQLDialect) ApplyLimit(sql string, n int) string {
 	return fmt.Sprintf("%s LIMIT %d", sql, n)
 }
+func (testMySQLDialect) Savepoint(name string) string { return "SAVEPOINT " + name }
+func (testMySQLDialect) RollbackToSavepoint(name string) string {
+	return "ROLLBACK TO SAVEPOINT " + name
+}
+func (testMySQLDialect) ReleaseSavepoint(name string) string        { return "RELEASE SAVEPOINT " + name }
 func (testMySQLDialect) IsUniqueViolation(error) (string, bool)     { return "", false }
 func (testMySQLDialect) IsForeignKeyViolation(error) (string, bool) { return "", false }
 func (testMySQLDialect) BuildUpsert(table string, _, _ []string, _ []UpsertSet) string {

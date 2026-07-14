@@ -236,3 +236,119 @@ func TestSQLServer_SharedBaseSeparateFK_NaturalKeyGuard(t *testing.T) {
 		t.Errorf("the legit update must persist, enrollment = %q", enr)
 	}
 }
+
+// sbpStudent drives the DeleteWhenUnreferenced purge scenarios on its own
+// table pair (the engine-scoped role registry forbids re-declaring sb_persons
+// with a different OrphanPolicy).
+type sbpStudent struct {
+	domain.BaseEntity
+	Name       string
+	Document   string
+	Enrollment string
+}
+
+func (e *sbpStudent) Modes() []domain.EntityMode {
+	return []domain.EntityMode{domain.ModeInsert, domain.ModeUpdate, domain.ModeDelete}
+}
+func (*sbpStudent) BuildRules(string, domain.Service, *domain.Rules) {}
+
+func sbpSchema() *core.TableSchema {
+	base := core.NewSharedBase("sbp_persons").
+		PK("id").
+		Field("Document", "document").
+		Field("Name", "name").
+		NaturalKey("document").
+		OrphanPolicy(core.DeleteWhenUnreferenced)
+	return core.NewTableSchema[*sbpStudent]("sbp_students").
+		PK("id").
+		Field("Enrollment", "enrollment").
+		SharedBase(base, "person_id")
+}
+
+// TestSQLServer_SharedBase_PurgeAndVeto proves BOTH savepoint legs of the
+// database-vetoable orphan purge on a real SQL Server — the T-SQL flavor
+// (SAVE TRANSACTION / ROLLBACK TRANSACTION / no release) the audit e2e suite
+// caught missing: (1) deleting the last role purges the base (the savepoint is
+// simply discarded at COMMIT — the empty-release path); (2) with a foreign
+// table still referencing the person, the FK violation (error 547) vetoes the
+// purge — role delete commits, base stays.
+func TestSQLServer_SharedBase_PurgeAndVeto(t *testing.T) {
+	eng, raw := setup(t)
+	ctx := ctxFor()
+	for _, stmt := range []string{
+		`CREATE TABLE sbp_persons (
+			id BINARY(16) NOT NULL PRIMARY KEY,
+			document VARCHAR(64) NOT NULL UNIQUE,
+			name NVARCHAR(255) NOT NULL
+		)`,
+		`CREATE TABLE sbp_students (
+			id BINARY(16) NOT NULL PRIMARY KEY,
+			person_id BINARY(16) NOT NULL,
+			enrollment VARCHAR(64) NOT NULL,
+			CONSTRAINT fk_sbp_student_person FOREIGN KEY (person_id) REFERENCES sbp_persons (id) ON DELETE NO ACTION
+		)`,
+	} {
+		if _, err := raw.ExecContext(ctx, stmt); err != nil {
+			t.Fatalf("ddl: %v", err)
+		}
+	}
+	count := func(q string) int {
+		var n int
+		if err := raw.QueryRow(q).Scan(&n); err != nil {
+			t.Fatalf("count %q: %v", q, err)
+		}
+		return n
+	}
+	insert := func(doc string) string {
+		ins, err := domain.GetInsertable(&sbpStudent{Name: "Ana", Document: doc, Enrollment: "M1"}, nil, "GetInsertable")
+		if err != nil {
+			t.Fatalf("GetInsertable: %v", err)
+		}
+		res, err := eng.Insert(ctx, ins, sbpSchema(), core.WriteHook{})
+		if err != nil {
+			t.Fatalf("Insert: %v", err)
+		}
+		return res.ID.Value()
+	}
+	del := func(id, doc string) {
+		e := &sbpStudent{Name: "Ana", Document: doc, Enrollment: "x"}
+		e.SetID(domain.NewID(id))
+		d, err := domain.GetDeletable(e, nil, "GetDeletable")
+		if err != nil {
+			t.Fatalf("GetDeletable: %v", err)
+		}
+		if err := eng.Delete(ctx, d, sbpSchema(), core.WriteHook{}); err != nil {
+			t.Fatalf("Delete: %v", err)
+		}
+	}
+
+	// Leg 1: purge succeeds — savepoint opened, work kept, discarded at COMMIT.
+	s1 := insert("DP1")
+	del(s1, "DP1")
+	if got := count(`SELECT COUNT(*) FROM sbp_persons`); got != 0 {
+		t.Fatalf("purge leg: base must be gone, persons = %d", got)
+	}
+	if got := count(`SELECT COUNT(*) FROM sbp_students`); got != 0 {
+		t.Fatalf("purge leg: role must be gone, students = %d", got)
+	}
+
+	// Leg 2: an UNREGISTERED table references the person → FK 547 vetoes the
+	// purge (ROLLBACK TRANSACTION to the savepoint), the role delete commits.
+	s2 := insert("DP2")
+	if _, err := raw.ExecContext(ctx, `CREATE TABLE sbp_external_refs (
+		person_id BINARY(16) NOT NULL,
+		CONSTRAINT fk_sbp_external_person FOREIGN KEY (person_id) REFERENCES sbp_persons (id) ON DELETE NO ACTION
+	)`); err != nil {
+		t.Fatalf("ddl ext: %v", err)
+	}
+	if _, err := raw.ExecContext(ctx, `INSERT INTO sbp_external_refs (person_id) SELECT id FROM sbp_persons`); err != nil {
+		t.Fatalf("seed ext: %v", err)
+	}
+	del(s2, "DP2")
+	if got := count(`SELECT COUNT(*) FROM sbp_students`); got != 0 {
+		t.Fatalf("veto leg: role delete must commit, students = %d", got)
+	}
+	if got := count(`SELECT COUNT(*) FROM sbp_persons`); got != 1 {
+		t.Fatalf("veto leg: base must survive the vetoed purge, persons = %d", got)
+	}
+}

@@ -81,6 +81,16 @@ with `1.0.0`.
 
 ### Changed
 
+- **`core.Dialect` also gains the savepoint trio — `Savepoint(name)`,
+  `RollbackToSavepoint(name)`, `ReleaseSavepoint(name)`.** The shared-base
+  orphan purge (the database-vetoable delete) used to emit the standard
+  `SAVEPOINT`/`ROLLBACK TO SAVEPOINT`/`RELEASE SAVEPOINT` literals, which
+  T-SQL spells `SAVE TRANSACTION`/`ROLLBACK TRANSACTION` — with NO release
+  statement (a savepoint is discarded at COMMIT), so `ReleaseSavepoint`
+  returns "" on SQL Server and the caller skips the empty statement. The
+  `Dialect` implementations moved to their own `dialect.go` files (core and
+  each engine) — the seam long outgrew the read path `read.go` named.
+
 - **The last dialect-specific SQL literals left shared code — `core.Dialect`
   gains `NowExpr()` and `ApplyLimit(sql, n)`.** Shared statement builders used
   to bake in `NOW()` (managed `created_at`/`updated_at` stamps, the soft-delete

@@ -241,3 +241,18 @@ func TestQuoteIdentViaDialect(t *testing.T) {
 		t.Fatalf("QuoteIdent(user_id) = %q, want [user_id]", got)
 	}
 }
+
+// TestSavepointStmts locks the savepoint trio the shared-base orphan purge
+// renders through the dialect (T-SQL forms; empty release = discarded at COMMIT, caller skips).
+func TestSavepointStmts(t *testing.T) {
+	d := sqlserverDialect{}
+	if got := d.Savepoint("sp"); got != "SAVE TRANSACTION sp" {
+		t.Errorf("Savepoint = %q", got)
+	}
+	if got := d.RollbackToSavepoint("sp"); got != "ROLLBACK TRANSACTION sp" {
+		t.Errorf("RollbackToSavepoint = %q", got)
+	}
+	if got := d.ReleaseSavepoint("sp"); got != "" {
+		t.Errorf("ReleaseSavepoint = %q", got)
+	}
+}

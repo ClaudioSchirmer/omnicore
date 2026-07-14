@@ -54,6 +54,11 @@ func (testSQLServerDialect) NowExpr() string { return "CURRENT_TIMESTAMP" }
 func (testSQLServerDialect) ApplyLimit(sql string, n int) string {
 	return fmt.Sprintf("SELECT TOP %d %s", n, sql[len("SELECT "):])
 }
+func (testSQLServerDialect) Savepoint(name string) string { return "SAVE TRANSACTION " + name }
+func (testSQLServerDialect) RollbackToSavepoint(name string) string {
+	return "ROLLBACK TRANSACTION " + name
+}
+func (testSQLServerDialect) ReleaseSavepoint(string) string             { return "" }
 func (testSQLServerDialect) IsUniqueViolation(error) (string, bool)     { return "", false }
 func (testSQLServerDialect) IsForeignKeyViolation(error) (string, bool) { return "", false }
 func (testSQLServerDialect) BuildUpsert(table string, _, _ []string, _ []UpsertSet) string {
