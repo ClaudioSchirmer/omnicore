@@ -1,7 +1,9 @@
 -- ╔══════════════════════════════════════════════════════════════════════════╗
 -- ║ OmniCore framework control plane — MySQL                                   ║
 -- ╠══════════════════════════════════════════════════════════════════════════╣
--- ║ The MySQL flavor of the same logical schema as embedded/postgres. Dialect  ║
+-- ║ The MySQL flavor of the same logical schema as embedded/postgres. Every    ║
+-- ║ PK is a UUID v7 minted in Go, stored BINARY(16) (the framework id          ║
+-- ║ standard); wire-crossing id references stay CHAR(36) text. Dialect         ║
 -- ║ differences: UUID→CHAR(36), JSONB→JSON, BIGSERIAL→BIGINT AUTO_INCREMENT,   ║
 -- ║ TIMESTAMP+NOW()→DATETIME+CURRENT_TIMESTAMP. MySQL has no table partitioning ║
 -- ║ by a DEFAULT range, no BRIN, and no partial indexes, so audit_events is a   ║
@@ -11,7 +13,7 @@
 
 -- ── outbox ──────────────────────────────────────────────────────────────────
 CREATE TABLE outbox (
-    id              BIGINT       NOT NULL AUTO_INCREMENT COMMENT 'Surrogate row id (auto-increment). Not the business key — see aggregate_id.',
+    id              BINARY(16)   NOT NULL COMMENT 'Surrogate row id — UUID v7 minted in Go (the framework id standard). Not the business key — see aggregate_id.',
     aggregate_type  VARCHAR(100) NOT NULL COMMENT 'Logical aggregate/table name (e.g. users); Debezium routes it to topic <aggregate_type>.events.',
     event_type      VARCHAR(50)  NOT NULL COMMENT 'Lifecycle verb: INSERTED | UPDATED | ARCHIVED | UNARCHIVED | DELETED. Carried as a Kafka header.',
     aggregate_id    CHAR(36)     NOT NULL COMMENT 'Id of the written aggregate root (UUID text); becomes the Kafka message key.',
@@ -25,7 +27,8 @@ CREATE TABLE outbox (
 
 -- ── omnicore_mongo_views ──────────────────────────────────────────────────────
 CREATE TABLE omnicore_mongo_views (
-    view_name              VARCHAR(255) NOT NULL COMMENT 'Mongo collection / view name (primary key).',
+    id                     BINARY(16)   NOT NULL COMMENT 'Surrogate row id — UUID v7 minted in Go (the framework id standard).',
+    view_name              VARCHAR(255) NOT NULL COMMENT 'Mongo collection / view name — the natural key (UNIQUE); every lookup keys on it.',
     version                INTEGER      NOT NULL COMMENT 'Developer-declared ViewDefinition.Version(N); bumped on any rebuild-relevant shape change.',
     rebuild_hash           VARCHAR(64)  NOT NULL COMMENT 'SHA-256 over rebuild-relevant state (root, embeds, DeleteOnArchive, schema, collation, capped, time-series).',
     artifact_hash          VARCHAR(64)  NOT NULL COMMENT 'SHA-256 over indexes only — applied without a doc rewrite.',
@@ -40,7 +43,8 @@ CREATE TABLE omnicore_mongo_views (
     applied_at             DATETIME     NOT NULL COMMENT 'When the current shape was last applied.',
     applied_by             VARCHAR(255) NOT NULL COMMENT 'Who applied it: <svc>@pid:<n> or manual-reconcile-*.',
     code_version           VARCHAR(255) NULL     COMMENT 'OMNICORE_CODE_VERSION env at apply time (build provenance).',
-    PRIMARY KEY (view_name),
+    PRIMARY KEY (id),
+    CONSTRAINT omnicore_mongo_views_view_name_key UNIQUE (view_name),
     KEY omnicore_mongo_views_applied_at_idx (applied_at),
     KEY omnicore_mongo_views_status_idx (status),
     CONSTRAINT omnicore_mongo_views_version_positive CHECK (version > 0),
@@ -49,7 +53,7 @@ CREATE TABLE omnicore_mongo_views (
 
 -- ── omnicore_upstream_failures ────────────────────────────────────────────────
 CREATE TABLE omnicore_upstream_failures (
-    id                  BIGINT       NOT NULL AUTO_INCREMENT COMMENT 'Surrogate row id.',
+    id                  BINARY(16)   NOT NULL COMMENT 'Surrogate row id — UUID v7 minted in Go (the framework id standard).',
     subscription_topic  VARCHAR(255) CHARACTER SET ascii NOT NULL COMMENT 'Upstream Kafka topic the subscription consumes. (ascii VARCHAR(255): technical identifier; covers Kafka''s 249-char topic limit. With the other natural-key columns the composite UNIQUE stays well under MySQL''s 3072-byte index limit.)',
     view_name           VARCHAR(255) CHARACTER SET ascii NOT NULL COMMENT 'Local view whose recompose failed.',
     upstream_id         VARCHAR(255) CHARACTER SET ascii NOT NULL COMMENT 'Id of the changed upstream document that triggered the recompose (UUID / external id).',
@@ -73,7 +77,7 @@ CREATE TABLE omnicore_upstream_failures (
 -- Plain table on MySQL (no RANGE-by-DEFAULT partitioning); a btree on created_at
 -- replaces the PG BRIN. Otherwise identical to the Postgres design.
 CREATE TABLE audit_events (
-    id            CHAR(36)     NOT NULL COMMENT 'Audit row id (UUID text).',
+    id            BINARY(16)   NOT NULL COMMENT 'Audit row id — UUID v7 minted in Go (the framework id standard).',
     aggregate_id  CHAR(36)     NOT NULL COMMENT 'Id of the audited aggregate root.',
     entity_type   VARCHAR(255) NOT NULL COMMENT 'Entity/aggregate Go type name (e.g. User).',
     verb          VARCHAR(32)  NOT NULL COMMENT 'SQL-grounded verb: insert | update | archive | unarchive | delete.',
@@ -97,7 +101,7 @@ CREATE TABLE audit_events (
 
 -- ── integration_events ────────────────────────────────────────────────────────
 CREATE TABLE integration_events (
-    id              BIGINT       NOT NULL AUTO_INCREMENT COMMENT 'Surrogate row id.',
+    id              BINARY(16)   NOT NULL COMMENT 'Surrogate row id — UUID v7 minted in Go (the framework id standard).',
     event_id        CHAR(36)     NOT NULL COMMENT 'Globally-unique event id (UUID text); the consumer-side dedup key.',
     aggregate_type  VARCHAR(100) NULL     COMMENT 'Aggregate type the event is about; NULL for a standalone event.',
     aggregate_id    CHAR(36)     NULL     COMMENT 'Aggregate id the event is about; NULL for a standalone event.',
@@ -118,7 +122,7 @@ CREATE TABLE integration_events (
 
 -- ── omnicore_integration_failures ─────────────────────────────────────────────
 CREATE TABLE omnicore_integration_failures (
-    id              BIGINT       NOT NULL AUTO_INCREMENT COMMENT 'Surrogate row id.',
+    id              BINARY(16)   NOT NULL COMMENT 'Surrogate row id — UUID v7 minted in Go (the framework id standard).',
     consumer_group  VARCHAR(255) CHARACTER SET ascii NOT NULL COMMENT 'Kafka consumer group that failed to process the event. (ascii VARCHAR(255): technical identifier; the composite UNIQUE with source_key/event_key/event_id stays well under MySQL''s 3072-byte index limit.)',
     source_key      VARCHAR(255) CHARACTER SET ascii NOT NULL COMMENT 'Go-side source identifier (the From key), stable across wire-topic renames.',
     event_key       VARCHAR(255) CHARACTER SET ascii NOT NULL COMMENT 'Go-side event identifier (the On key).',
@@ -139,13 +143,15 @@ CREATE TABLE omnicore_integration_failures (
 
 -- ── omnicore_integration_processed ────────────────────────────────────────────
 CREATE TABLE omnicore_integration_processed (
-    event_id        CHAR(36)     NOT NULL COMMENT 'Processed event id (part of PK).',
-    consumer_group  VARCHAR(255) NOT NULL COMMENT 'Consumer group that processed it (part of PK; groups dedup independently).',
+    id              BINARY(16)   NOT NULL COMMENT 'Surrogate row id — UUID v7 minted in Go (the framework id standard).',
+    event_id        CHAR(36)     NOT NULL COMMENT 'Processed event id, canonical uuid TEXT (part of the UNIQUE natural key).',
+    consumer_group  VARCHAR(255) NOT NULL COMMENT 'Consumer group that processed it (part of the UNIQUE natural key; groups dedup independently).',
     source_key      VARCHAR(255) NOT NULL COMMENT 'Go-side source identifier (diagnostics).',
     event_key       VARCHAR(255) NOT NULL COMMENT 'Go-side event identifier (diagnostics).',
     topic           VARCHAR(255) NOT NULL COMMENT 'Kafka topic the event came from (diagnostics).',
     event_type      VARCHAR(255) NOT NULL COMMENT 'Wire event type (diagnostics).',
     processed_at    DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT 'When processed; indexed for cheap pruning.',
-    PRIMARY KEY (event_id, consumer_group),
+    PRIMARY KEY (id),
+    CONSTRAINT omnicore_integration_processed_natural_key UNIQUE (event_id, consumer_group),
     KEY omnicore_integration_processed_processed_at_idx (processed_at)
 ) COMMENT='Consumer-side dedup: one row per (event_id, consumer_group) processed. At-least-once delivery — handlers must still be idempotent.';

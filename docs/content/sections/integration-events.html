@@ -25,7 +25,7 @@
 
     <p><strong>Lazy validation.</strong> An unknown <code>eventKey</code> at the first Dispatch call site surfaces as <code>ErrIntegrationEventNotConfigured</code> — same posture <code>httpclient</code> adopts for unknown service/endpoint references. The empty <code>publishes</code> block stays a valid steady state for services that only consume integration events; a typo on the producer side fails at the call site with a clear diagnostic rather than break the boot of an otherwise-functional service.</p>
 
-    <p><strong><code>WithTx</code> is the atomicity hook.</strong> Threaded from inside a <code>BeforeCommit</code> hook closure where the framework already opened the TX for the entity write. The <code>integration_events</code> row lands in the same relational-engine TX as the data row + outbox + audit; any error from Dispatch aborts the entire TX (the persister's <code>defer tx.Rollback(ctx)</code> runs). Without <code>WithTx</code>, the row commits via single-statement autocommit on the package's relational pool — independent of any other write. Multiple Dispatch calls inside the same TX produce N rows in <code>integration_events</code>, all atomic with the data write; the auto-increment surrogate id (<code>BIGSERIAL</code> on Postgres, <code>BIGINT AUTO_INCREMENT</code> on MySQL, <code>BIGINT IDENTITY</code> on SQL Server) reflects call order.</p>
+    <p><strong><code>WithTx</code> is the atomicity hook.</strong> Threaded from inside a <code>BeforeCommit</code> hook closure where the framework already opened the TX for the entity write. The <code>integration_events</code> row lands in the same relational-engine TX as the data row + outbox + audit; any error from Dispatch aborts the entire TX (the persister's <code>defer tx.Rollback(ctx)</code> runs). Without <code>WithTx</code>, the row commits via single-statement autocommit on the package's relational pool — independent of any other write. Multiple Dispatch calls inside the same TX produce N rows in <code>integration_events</code>, all atomic with the data write; the Go-minted UUID v7 surrogate id is time-ordered, so it still reflects call order (the framework id standard — no DB-side id generation).</p>
 
     <p>Framework auto-fills <code>event_id</code> (<code>uuid.New()</code> per row), <code>thread_id</code> (<code>ctx.ID()</code>), <code>actor</code> (<code>ctx.ActorSubject()</code> — non-empty by contract, falls back to <code>"anonymous"</code>), <code>created_at</code> (<code>NOW()</code>). <code>correlation_id</code> and <code>causation_id</code> default to <code>ctx.CorrelationID()</code> / <code>ctx.CausationID()</code> when the receiver pipeline populated them — events emitted inside a receiver handler automatically carry the inbound trace chain.</p>
 
@@ -98,14 +98,14 @@ func MountUserReceivers(reg *fwintegration.Registry, repo userRepo, d bootstrap.
 
     <h3>Failure registry — <code>omnicore_integration_failures</code></h3>
 
-    <p>Every handler failure is persisted to <code>omnicore_integration_failures</code>, mirroring <code>omnicore_upstream_failures</code> for parity in operator tooling. It is a framework-managed table created by the embedded <code>0001_framework</code> migration (you never write this DDL). Schema below is the <strong>Postgres</strong> flavor; the <strong>MySQL</strong> and <strong>SQL Server</strong> flavors in <code>embedded/{mysql,sqlserver}/0001_framework</code> use dialect-appropriate types (<code>BIGSERIAL</code> → <code>BIGINT AUTO_INCREMENT</code> / <code>BIGINT IDENTITY</code>, <code>JSONB</code> → <code>JSON</code> / <code>NVARCHAR(MAX)</code>, <code>UUID</code> → <code>CHAR(36)</code>):</p>
+    <p>Every handler failure is persisted to <code>omnicore_integration_failures</code>, mirroring <code>omnicore_upstream_failures</code> for parity in operator tooling. It is a framework-managed table created by the embedded <code>0001_framework</code> migration (you never write this DDL). Schema below is the <strong>Postgres</strong> flavor; the <strong>MySQL</strong> and <strong>SQL Server</strong> flavors in <code>embedded/{mysql,sqlserver}/0001_framework</code> use dialect-appropriate types (the uuid PK is <code>UUID</code> on Postgres and <code>BINARY(16)</code> elsewhere; <code>JSONB</code> → <code>JSON</code> / <code>NVARCHAR(MAX)</code>; the wire-crossing uuid references are <code>CHAR(36)</code> everywhere):</p>
 
     <pre><code>CREATE TABLE omnicore_integration_failures (
-    id              BIGSERIAL PRIMARY KEY,
+    id              UUID      PRIMARY KEY,  -- UUID v7 minted in Go (the framework id standard)
     consumer_group  TEXT      NOT NULL,
     source_key      TEXT      NOT NULL,
     event_key       TEXT      NOT NULL,
-    event_id        UUID      NOT NULL,
+    event_id        CHAR(36)  NOT NULL,
     payload         JSONB     NOT NULL,     -- preserved verbatim for replay
     error           TEXT      NOT NULL,
     attempt         INTEGER   NOT NULL DEFAULT 1,

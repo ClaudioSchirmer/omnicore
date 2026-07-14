@@ -216,9 +216,9 @@ func assign(dst any, src any) error {
 	return fmt.Errorf("cannot assign %T to %s", src, target.Type())
 }
 
-func sampleFailureRow(id int64) []any {
+func sampleFailureRow(id string) []any {
 	return []any{
-		id,                // ID int64
+		id,                // ID — canonical uuid string (the surrogate PK)
 		"orders-int",      // ConsumerGroup string
 		"partners",        // SourceKey string
 		"onboarded",       // EventKey string
@@ -267,10 +267,11 @@ func TestRecordIntegrationFailure_DefaultsPayloadAndSucceeds(t *testing.T) {
 	if exec.calls != 1 {
 		t.Fatalf("expected 1 exec call, got %d", exec.calls)
 	}
-	// Text bind: the payload arg is a string (JSON text) on every dialect.
-	payload, ok := exec.lastArgs[4].(string)
+	// Text bind: the payload arg is a string (JSON text) on every dialect
+	// (index 5 — the Go-minted surrogate id leads the args now).
+	payload, ok := exec.lastArgs[5].(string)
 	if !ok || payload != "{}" {
-		t.Fatalf("nil payload must default to {} bound as string, got %v (%T)", exec.lastArgs[4], exec.lastArgs[4])
+		t.Fatalf("nil payload must default to {} bound as string, got %v (%T)", exec.lastArgs[5], exec.lastArgs[5])
 	}
 }
 
@@ -318,7 +319,7 @@ func TestResolveIntegrationFailures(t *testing.T) {
 // --- List / scan -----------------------------------------------------------
 
 func TestListPendingIntegrationFailures_ScansRows(t *testing.T) {
-	exec := &fakeExec{rows: &fakeRows{data: [][]any{sampleFailureRow(1), sampleFailureRow(2)}}}
+	exec := &fakeExec{rows: &fakeRows{data: [][]any{sampleFailureRow("00000000-0000-7000-8000-000000000001"), sampleFailureRow("00000000-0000-7000-8000-000000000002")}}}
 	out, err := ListPendingIntegrationFailures(context.Background(), exec)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -326,7 +327,7 @@ func TestListPendingIntegrationFailures_ScansRows(t *testing.T) {
 	if len(out) != 2 {
 		t.Fatalf("expected 2 rows, got %d", len(out))
 	}
-	if out[0].ID != 1 || out[1].ID != 2 {
+	if out[0].ID != "00000000-0000-7000-8000-000000000001" || out[1].ID != "00000000-0000-7000-8000-000000000002" {
 		t.Fatalf("row ids drifted: %+v", out)
 	}
 	if out[0].ConsumerGroup != "orders-int" || out[0].Error != "boom" || out[0].Attempt != 3 {
@@ -343,7 +344,7 @@ func TestListPendingIntegrationFailures_QueryError(t *testing.T) {
 
 func TestScanIntegrationFailures_ScanError(t *testing.T) {
 	exec := &fakeExec{rows: &fakeRows{
-		data:    [][]any{sampleFailureRow(1)},
+		data:    [][]any{sampleFailureRow("00000000-0000-7000-8000-000000000001")},
 		scanErr: errors.New("bad scan"),
 	}}
 	if _, err := ListPendingIntegrationFailures(context.Background(), exec); err == nil {
@@ -353,7 +354,7 @@ func TestScanIntegrationFailures_ScanError(t *testing.T) {
 
 func TestScanIntegrationFailures_RowsErr(t *testing.T) {
 	exec := &fakeExec{rows: &fakeRows{
-		data:     [][]any{sampleFailureRow(1)},
+		data:     [][]any{sampleFailureRow("00000000-0000-7000-8000-000000000001")},
 		errAfter: errors.New("late rows err"),
 	}}
 	if _, err := ListPendingIntegrationFailures(context.Background(), exec); err == nil {
@@ -369,12 +370,12 @@ func TestListPendingIntegrationFailuresByGroup(t *testing.T) {
 		}
 	})
 	t.Run("passes-group-arg-and-scans", func(t *testing.T) {
-		exec := &fakeExec{rows: &fakeRows{data: [][]any{sampleFailureRow(7)}}}
+		exec := &fakeExec{rows: &fakeRows{data: [][]any{sampleFailureRow("00000000-0000-7000-8000-000000000007")}}}
 		out, err := ListPendingIntegrationFailuresByGroup(context.Background(), exec, fakeDialect{}, "orders-int")
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
-		if len(out) != 1 || out[0].ID != 7 {
+		if len(out) != 1 || out[0].ID != "00000000-0000-7000-8000-000000000007" {
 			t.Fatalf("unexpected rows: %+v", out)
 		}
 		if len(exec.lastArgs) != 1 || exec.lastArgs[0] != "orders-int" {
@@ -450,8 +451,8 @@ func TestMarkProcessed(t *testing.T) {
 		if err := MarkProcessed(context.Background(), exec, fakeDialect{}, rec); err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
-		if exec.calls != 1 || len(exec.lastArgs) != 6 {
-			t.Fatalf("expected 1 exec with 6 args, got calls=%d args=%d", exec.calls, len(exec.lastArgs))
+		if exec.calls != 1 || len(exec.lastArgs) != 7 {
+			t.Fatalf("expected 1 exec with 7 args (Go-minted id + 6 columns), got calls=%d args=%d", exec.calls, len(exec.lastArgs))
 		}
 	})
 	t.Run("exec-error", func(t *testing.T) {

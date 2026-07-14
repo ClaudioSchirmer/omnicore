@@ -11,6 +11,37 @@ with `1.0.0`.
 
 ## [Unreleased]
 
+### Changed
+
+- **BREAKING: every framework control-plane table now follows the framework's
+  own id standard — a UUID v7 minted in Go as the PRIMARY KEY, stored in the
+  dialect's native id form (`UUID` on Postgres, `BINARY(16)` on MySQL/SQL
+  Server), with no `AUTO_INCREMENT`/`BIGSERIAL`/`IDENTITY`/DB default
+  anywhere.** The control plane previously mixed four key regimes (DB-generated
+  uuid on the PG outbox, BIGINT auto-increment elsewhere, text uuid on
+  audit_events, natural-key PKs on the registry/dedup tables). Now: `outbox`,
+  `audit_events` (v7 replaces the previous v4), `integration_events`,
+  `omnicore_upstream_failures` and `omnicore_integration_failures` carry the
+  Go-minted uuid PK; `omnicore_mongo_views` and `omnicore_integration_processed`
+  gain the same surrogate PK with their former natural keys preserved as UNIQUE
+  constraints (`omnicore_mongo_views_view_name_key`,
+  `omnicore_integration_processed_natural_key`) — every lookup still keys on
+  the natural columns. Wire-crossing id references (`outbox.aggregate_id`,
+  `integration_events.event_id`/`aggregate_id`/`correlation_id`/`causation_id`/
+  `thread_id`, audit references) are canonical uuid TEXT (`CHAR(36)`) on EVERY
+  dialect — Postgres included, which previously used native `UUID` columns for
+  them — because they cross the Debezium/Kafka boundary as strings.
+  `UpstreamFailureRecord.ID`/`IntegrationFailureRecord.ID` are now the
+  canonical uuid `string` (were `int64`); `audit.InsertAuditEvent`/
+  `audit.NewReader` take the dialect's value codec. The admin replay pages by
+  keyset over the PK (no `LIMIT/OFFSET` literal — a PG/MySQL-ism T-SQL
+  rejects), and the non-done registry listing orders via ANSI `CASE` instead of
+  a bare `IS NULL` sort key. *Migration*: the `0001_framework` files were
+  rewritten IN PLACE (pre-1.0; golang-migrate tracks no checksums) — recreate
+  the framework control plane on existing databases (bench: `docker compose
+  down -v`; a deployed database needs the equivalent ALTERs or a
+  drop-and-recreate of the seven framework tables).
+
 ### Added
 
 - **SQL Server joins PostgreSQL and MySQL as a first-class relational engine.**

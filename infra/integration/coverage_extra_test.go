@@ -200,7 +200,7 @@ func TestHandleMessage_MarkProcessedErrorIsBestEffort(t *testing.T) {
 
 func TestRetryPendingFailures_ContextCancelStopsLoop(t *testing.T) {
 	r := newResolvedReceiver(t, &fakeHandler{})
-	row := sampleFailureRow(1)
+	row := sampleFailureRow("00000000-0000-7000-8000-000000000001")
 	row[2] = "partners"  // SourceKey
 	row[3] = "onboarded" // EventKey
 	exec := &fakeExec{rows: &fakeRows{data: [][]any{row}}}

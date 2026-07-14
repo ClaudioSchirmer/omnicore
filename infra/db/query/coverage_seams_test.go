@@ -215,12 +215,17 @@ func TestInitViewRegistry_PassesArgs(t *testing.T) {
 	if exec.execCalls != 1 {
 		t.Fatalf("expected 1 exec call, got %d", exec.execCalls)
 	}
-	if exec.lastExecArgs[0] != "users" || exec.lastExecArgs[1] != 1 {
+	// arg[0] is the Go-minted UUID v7 surrogate id, bound through the fake's
+	// PG-flavored codec (domain.ID → canonical text).
+	if idStr, ok := exec.lastExecArgs[0].(string); !ok || len(idStr) != 36 {
+		t.Fatalf("id arg = %v (%T), want a canonical uuid string", exec.lastExecArgs[0], exec.lastExecArgs[0])
+	}
+	if exec.lastExecArgs[1] != "users" || exec.lastExecArgs[2] != 1 {
 		t.Fatalf("args drifted: %v", exec.lastExecArgs)
 	}
 	// applied_by is the FormatRegistryAppliedBy render.
-	if got, _ := exec.lastExecArgs[6].(string); !strings.HasPrefix(got, "users-svc@pid:") {
-		t.Fatalf("applied_by arg drifted: %v", exec.lastExecArgs[6])
+	if got, _ := exec.lastExecArgs[7].(string); !strings.HasPrefix(got, "users-svc@pid:") {
+		t.Fatalf("applied_by arg drifted: %v", exec.lastExecArgs[7])
 	}
 }
 
@@ -313,7 +318,7 @@ func TestListNonDone_RowsErr(t *testing.T) {
 // upstream_failures.go — list / scan path
 // ============================================================================
 
-func upstreamFailureRow(id int64) []any {
+func upstreamFailureRow(id string) []any {
 	return []any{
 		id,             // id
 		"users.events", // subscription_topic
@@ -329,7 +334,7 @@ func upstreamFailureRow(id int64) []any {
 }
 
 func TestListPendingUpstreamFailures_ScansRows(t *testing.T) {
-	exec := &covExec{rows: &covRows{data: [][]any{upstreamFailureRow(1), upstreamFailureRow(2)}}}
+	exec := &covExec{rows: &covRows{data: [][]any{upstreamFailureRow("00000000-0000-7000-8000-000000000001"), upstreamFailureRow("00000000-0000-7000-8000-000000000002")}}}
 	out, err := ListPendingUpstreamFailures(context.Background(), exec)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -337,7 +342,7 @@ func TestListPendingUpstreamFailures_ScansRows(t *testing.T) {
 	if len(out) != 2 {
 		t.Fatalf("expected 2 rows, got %d", len(out))
 	}
-	if out[0].ID != 1 || out[0].Stage != UpstreamFailureStageCompose || out[0].Attempt != 2 {
+	if out[0].ID != "00000000-0000-7000-8000-000000000001" || out[0].Stage != UpstreamFailureStageCompose || out[0].Attempt != 2 {
 		t.Fatalf("scanned fields drifted: %+v", out[0])
 	}
 }
@@ -350,7 +355,7 @@ func TestListPendingUpstreamFailures_QueryError(t *testing.T) {
 }
 
 func TestListPendingUpstreamFailures_ScanError(t *testing.T) {
-	exec := &covExec{rows: &covRows{data: [][]any{upstreamFailureRow(1)}, scanErr: errors.New("bad scan")}}
+	exec := &covExec{rows: &covRows{data: [][]any{upstreamFailureRow("00000000-0000-7000-8000-000000000001")}, scanErr: errors.New("bad scan")}}
 	if _, err := ListPendingUpstreamFailures(context.Background(), exec); err == nil ||
 		!strings.Contains(err.Error(), "scan") {
 		t.Fatalf("expected wrapped scan error, got %v", err)
@@ -358,7 +363,7 @@ func TestListPendingUpstreamFailures_ScanError(t *testing.T) {
 }
 
 func TestListPendingUpstreamFailures_RowsErr(t *testing.T) {
-	exec := &covExec{rows: &covRows{data: [][]any{upstreamFailureRow(1)}, errAfter: errors.New("late err")}}
+	exec := &covExec{rows: &covRows{data: [][]any{upstreamFailureRow("00000000-0000-7000-8000-000000000001")}, errAfter: errors.New("late err")}}
 	if _, err := ListPendingUpstreamFailures(context.Background(), exec); err == nil ||
 		!strings.Contains(err.Error(), "rows") {
 		t.Fatalf("expected wrapped rows.Err, got %v", err)
@@ -366,12 +371,12 @@ func TestListPendingUpstreamFailures_RowsErr(t *testing.T) {
 }
 
 func TestListPendingUpstreamFailuresByTopic_BindsTopicAndScans(t *testing.T) {
-	exec := &covExec{rows: &covRows{data: [][]any{upstreamFailureRow(7)}}}
+	exec := &covExec{rows: &covRows{data: [][]any{upstreamFailureRow("00000000-0000-7000-8000-000000000007")}}}
 	out, err := ListPendingUpstreamFailuresByTopic(context.Background(), exec, fakeDialect{}, "users.events")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if len(out) != 1 || out[0].ID != 7 {
+	if len(out) != 1 || out[0].ID != "00000000-0000-7000-8000-000000000007" {
 		t.Fatalf("unexpected rows: %+v", out)
 	}
 	if len(exec.lastQueryArgs) != 1 || exec.lastQueryArgs[0] != "users.events" {

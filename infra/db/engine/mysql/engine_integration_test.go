@@ -243,7 +243,7 @@ func setup(t *testing.T) (*Engine, *sql.DB) {
 			UNIQUE KEY uniq_email (email)
 		)`,
 		`CREATE TABLE outbox (
-			id BIGINT AUTO_INCREMENT PRIMARY KEY,
+			id BINARY(16) PRIMARY KEY,
 			aggregate_type VARCHAR(100) NOT NULL,
 			event_type VARCHAR(50) NOT NULL,
 			aggregate_id VARCHAR(36) NOT NULL,
@@ -549,7 +549,7 @@ func setupAgg(t *testing.T) (*Engine, *sql.DB) {
 			deleted_at DATETIME NULL, created_at DATETIME NOT NULL, updated_at DATETIME NOT NULL,
 			CONSTRAINT fk_acct FOREIGN KEY (acct_id) REFERENCES accts(id) ON DELETE CASCADE )`,
 		`CREATE TABLE outbox (
-			id BIGINT AUTO_INCREMENT PRIMARY KEY, aggregate_type VARCHAR(100) NOT NULL,
+			id BINARY(16) PRIMARY KEY, aggregate_type VARCHAR(100) NOT NULL,
 			event_type VARCHAR(50) NOT NULL, aggregate_id VARCHAR(36) NOT NULL,
 			payload JSON NOT NULL, traceparent VARCHAR(64) NULL, created_at DATETIME NOT NULL )`,
 	} {

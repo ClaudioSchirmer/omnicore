@@ -23,7 +23,10 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/google/uuid"
+
 	"github.com/ClaudioSchirmer/omnicore/bootstrap"
+	"github.com/ClaudioSchirmer/omnicore/domain"
 	"github.com/ClaudioSchirmer/omnicore/infra/db/core"
 )
 
@@ -123,22 +126,42 @@ func execute(ctx context.Context, q core.Querier, dialect core.Dialect, opt exec
 		return nil
 	}
 
-	selectQuery := fmt.Sprintf("SELECT * FROM %s%s ORDER BY %s LIMIT %s OFFSET %s",
-		table, where, pkCol, dialect.Placeholder(1), dialect.Placeholder(2))
+	// Keyset pagination over the PK — portable through the existing seam
+	// (Dialect.ApplyLimit renders the row cap in each engine's native
+	// position), where a LIMIT/OFFSET tail would be a PG/MySQL-ism (T-SQL
+	// pages via OFFSET…FETCH with a different arg order). Keyset also never
+	// re-scans skipped rows, so large replays stay O(rows).
 	var written int64
-	for offset := int64(0); offset < total; offset += int64(opt.BatchSize) {
+	lastID := ""
+	for {
+		pageWhere := where
+		var args []any
+		if lastID != "" {
+			cond := fmt.Sprintf("%s > %s", pkCol, dialect.Placeholder(1))
+			if pageWhere == "" {
+				pageWhere = " WHERE " + cond
+			} else {
+				pageWhere += " AND " + cond
+			}
+			args = append(args, dialect.EncodeArg(domain.NewID(lastID)))
+		}
+		selectQuery := dialect.ApplyLimit(
+			fmt.Sprintf("SELECT * FROM %s%s ORDER BY %s", table, pageWhere, pkCol), opt.BatchSize)
 		// QueryMaps is the dynamic-shape read the composer uses: it discovers the
 		// column set at read time and normalizes uuid columns to canonical strings
-		// on every backend (BINARY(16) on MySQL, [16]byte on Postgres), so the
+		// on every backend (BINARY(16) → text, [16]byte → text), so the
 		// payload + id below are dialect-agnostic.
-		batch, err := q.QueryMaps(ctx, selectQuery, opt.BatchSize, offset)
+		batch, err := q.QueryMaps(ctx, selectQuery, args...)
 		if err != nil {
-			return fmt.Errorf("replay-all-as-events: query batch at offset %d: %w", offset, err)
+			return fmt.Errorf("replay-all-as-events: query batch after id=%q: %w", lastID, err)
+		}
+		if len(batch) == 0 {
+			break
 		}
 		for _, row := range batch {
 			id, ok := stringField(row, "id")
 			if !ok || id == "" {
-				return fmt.Errorf("replay-all-as-events: row at offset %d missing id column", offset)
+				return fmt.Errorf("replay-all-as-events: row after id=%q missing id column", lastID)
 			}
 			payload, err := json.Marshal(row)
 			if err != nil {
@@ -147,11 +170,15 @@ func execute(ctx context.Context, q core.Querier, dialect core.Dialect, opt exec
 			if err := insertOutboxRow(ctx, q, dialect, opt.Aggregate, id, payload); err != nil {
 				return fmt.Errorf("replay-all-as-events: insert outbox for id=%s: %w", id, err)
 			}
+			lastID = id
 			written++
 		}
 		fmt.Fprintf(opt.Out, "replay-all-as-events: wrote %d / %d outbox rows\n", written, total)
 		if ctx.Err() != nil {
 			return ctx.Err()
+		}
+		if len(batch) < opt.BatchSize {
+			break
 		}
 	}
 	fmt.Fprintf(opt.Out, "replay-all-as-events: done — %d outbox row(s) written for aggregate=%s\n",
@@ -177,21 +204,25 @@ func buildWhere(includeArchived bool, filter string) string {
 }
 
 // insertOutboxRow writes one synthetic INSERTED event into the framework outbox
-// table through the neutral Querier. The surrogate id is omitted (every dialect
-// fills it by default — gen_random_uuid() on Postgres, AUTO_INCREMENT on MySQL,
-// IDENTITY on SQL Server)
+// table through the neutral Querier. The surrogate id follows the framework id
+// standard — a UUID v7 minted in Go, bound via Dialect.EncodeArg into the
+// dialect's native id form (uuid text on PG, BINARY(16) elsewhere)
 // and the payload binds as JSON with no PG-specific ::jsonb cast; aggregate_id is
 // the row's uuid in text form, accepted by both the PG UUID and MySQL CHAR(36)
 // columns. The column list mirrors each engine's own writeOutbox.
 func insertOutboxRow(ctx context.Context, q core.Querier, dialect core.Dialect, aggregate, id string, payload []byte) error {
+	rowID, err := uuid.NewV7()
+	if err != nil {
+		return fmt.Errorf("replay: uuid v7: %w", err)
+	}
 	sqlStr := fmt.Sprintf(
-		"INSERT INTO outbox (aggregate_type, event_type, aggregate_id, payload, created_at) VALUES (%s, %s, %s, %s, %s)",
-		dialect.Placeholder(1), dialect.Placeholder(2), dialect.Placeholder(3), dialect.Placeholder(4), dialect.NowExpr(),
+		"INSERT INTO outbox (id, aggregate_type, event_type, aggregate_id, payload, created_at) VALUES (%s, %s, %s, %s, %s, %s)",
+		dialect.Placeholder(1), dialect.Placeholder(2), dialect.Placeholder(3), dialect.Placeholder(4), dialect.Placeholder(5), dialect.NowExpr(),
 	)
 	// Text bind — the payload column is text-shaped JSON on every dialect;
 	// SQL Server refuses the implicit varbinary→NVARCHAR conversion a raw
 	// []byte would require.
-	return q.Exec(ctx, sqlStr, aggregate, "INSERTED", id, string(payload))
+	return q.Exec(ctx, sqlStr, dialect.EncodeArg(domain.NewID(rowID.String())), aggregate, "INSERTED", id, string(payload))
 }
 
 // stringField extracts a string-typed column from a row map. Handles the

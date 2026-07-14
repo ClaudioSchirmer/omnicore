@@ -29,7 +29,7 @@ func createIntegrationEventsTable(t *testing.T, raw *sql.DB) {
 		t.Fatalf("drop integration_events: %v", err)
 	}
 	if _, err := raw.ExecContext(ctx, `CREATE TABLE integration_events (
-		id             BIGINT       NOT NULL AUTO_INCREMENT,
+		id             BINARY(16)   NOT NULL,
 		event_id       CHAR(36)     NOT NULL,
 		aggregate_type VARCHAR(100) NULL,
 		aggregate_id   CHAR(36)     NULL,

@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/ClaudioSchirmer/omnicore/domain"
 	"github.com/ClaudioSchirmer/omnicore/infra/db/core"
 )
 
@@ -170,13 +171,17 @@ func TestExecute_NeutralReplay(t *testing.T) {
 	if err != nil {
 		t.Fatalf("execute: %v", err)
 	}
-	// The generated SELECT must be dialect-quoted + placeholder-rendered — proof
-	// the replay no longer emits hardcoded PG SQL.
+	// The generated SELECT must be dialect-quoted + capped via the dialect's
+	// ApplyLimit (keyset pagination over the PK — no LIMIT/OFFSET literal,
+	// which is a PG/MySQL-ism T-SQL rejects).
 	gotSelect := f.seenSQL[len(f.seenSQL)-1]
-	for _, want := range []string{`"users"`, `ORDER BY "id"`, "LIMIT $1 OFFSET $2"} {
+	for _, want := range []string{`"users"`, `ORDER BY "id"`, "LIMIT 1000"} {
 		if !strings.Contains(gotSelect, want) {
 			t.Errorf("select %q missing %q", gotSelect, want)
 		}
+	}
+	if strings.Contains(gotSelect, "OFFSET") {
+		t.Errorf("select %q must page by keyset, not OFFSET", gotSelect)
 	}
 	if len(f.inserts) != 2 {
 		t.Fatalf("expected 2 outbox inserts, got %d", len(f.inserts))
@@ -186,8 +191,13 @@ func TestExecute_NeutralReplay(t *testing.T) {
 		strings.Contains(ins.sql, "gen_random_uuid") {
 		t.Errorf("outbox insert is not neutral: %q", ins.sql)
 	}
-	if len(ins.args) != 4 || ins.args[0] != "users" || ins.args[1] != "INSERTED" || ins.args[2] != "id-a" {
+	// args[0] is the Go-minted UUID v7 outbox row id (encoded by the fake's
+	// PG-flavored codec to canonical text); the columns follow.
+	if len(ins.args) != 5 || ins.args[1] != "users" || ins.args[2] != "INSERTED" || ins.args[3] != "id-a" {
 		t.Errorf("outbox insert args drifted: %v", ins.args)
+	}
+	if id, ok := ins.args[0].(domain.ID); !ok || len(id.Value()) != 36 {
+		t.Errorf("outbox insert id arg = %v (%T), want a domain.ID bound through the codec", ins.args[0], ins.args[0])
 	}
 }
 

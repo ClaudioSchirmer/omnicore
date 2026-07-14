@@ -169,7 +169,7 @@ func TestFormatAlienDataDiagnostic_NamesEveryViewAndSQL(t *testing.T) {
 			CurrentCombinedHash: "ch2",
 		},
 	}
-	out := FormatAlienDataDiagnostic(plans)
+	out := FormatAlienDataDiagnostic("postgres", plans)
 	for _, expected := range []string{"users", "orders", "INSERT INTO omnicore_mongo_views", "manual-reconcile-tofu", "db.users.drop()", "mongo.rebuild.autoRun"} {
 		if !strings.Contains(out, expected) {
 			t.Errorf("FormatAlienDataDiagnostic missing %q", expected)
@@ -178,7 +178,7 @@ func TestFormatAlienDataDiagnostic_NamesEveryViewAndSQL(t *testing.T) {
 }
 
 func TestFormatAlienDataDiagnostic_EmptyOnNoPlans(t *testing.T) {
-	if got := FormatAlienDataDiagnostic(nil); got != "" {
+	if got := FormatAlienDataDiagnostic("postgres", nil); got != "" {
 		t.Errorf("formatter for empty input = %q, want empty", got)
 	}
 }
@@ -275,7 +275,7 @@ func TestFormatFreshInitDiagnostic_OffersInitSQL(t *testing.T) {
 			CurrentCombinedHash: "ch",
 		},
 	}
-	out := FormatFreshInitDiagnostic(plans)
+	out := FormatFreshInitDiagnostic("postgres", plans)
 	for _, expected := range []string{"users", "fresh init", "INSERT INTO omnicore_mongo_views", "'done'", "manual-reconcile-init"} {
 		if !strings.Contains(out, expected) {
 			t.Errorf("FormatFreshInitDiagnostic missing %q", expected)

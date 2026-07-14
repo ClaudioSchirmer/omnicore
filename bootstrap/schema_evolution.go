@@ -153,7 +153,7 @@ func reconcileViewDrift(ctx context.Context, cfg *Config, deps Deps, sync *query
 
 	// Unconditional aborts under autoRun ∈ {check, true} — no escape.
 	if report.HasAny(query.DriftAlienData) {
-		return errors.New(query.FormatAlienDataDiagnostic(report.PlansBy(query.DriftAlienData)))
+		return errors.New(query.FormatAlienDataDiagnostic(cfg.Relational.Dialect, report.PlansBy(query.DriftAlienData)))
 	}
 	if report.HasAny(query.DriftForgotToBump) {
 		return errors.New(query.FormatForgotToBumpDiagnostic(report.PlansBy(query.DriftForgotToBump)))
@@ -171,7 +171,7 @@ func reconcileViewDrift(ctx context.Context, cfg *Config, deps Deps, sync *query
 		// instructions in a single boot-fatal payload.
 		var diags []string
 		if plans := report.PlansBy(query.DriftFreshInit); len(plans) > 0 {
-			diags = append(diags, query.FormatFreshInitDiagnostic(plans))
+			diags = append(diags, query.FormatFreshInitDiagnostic(cfg.Relational.Dialect, plans))
 		}
 		if plans := report.PlansBy(query.DriftMongoWiped); len(plans) > 0 {
 			diags = append(diags, query.FormatMongoWipedDiagnostic(plans))

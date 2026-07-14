@@ -107,7 +107,7 @@ func createFrameworkTables(ctx context.Context, pool *pgxpool.Pool) error {
 	stmts := []string{
 		`CREATE EXTENSION IF NOT EXISTS pgcrypto`,
 		`CREATE TABLE outbox (
-			id BIGSERIAL PRIMARY KEY,
+			id UUID PRIMARY KEY,
 			aggregate_type TEXT NOT NULL,
 			aggregate_id TEXT NOT NULL,
 			event_type TEXT NOT NULL,
@@ -116,7 +116,8 @@ func createFrameworkTables(ctx context.Context, pool *pgxpool.Pool) error {
 			created_at TIMESTAMP NOT NULL DEFAULT NOW()
 		)`,
 		`CREATE TABLE omnicore_mongo_views (
-			view_name TEXT PRIMARY KEY,
+			id UUID PRIMARY KEY,
+			view_name TEXT NOT NULL UNIQUE,
 			version INTEGER NOT NULL CHECK (version > 0),
 			rebuild_hash VARCHAR(64),
 			artifact_hash VARCHAR(64),
@@ -133,8 +134,8 @@ func createFrameworkTables(ctx context.Context, pool *pgxpool.Pool) error {
 			code_version TEXT
 		)`,
 		`CREATE TABLE audit_events (
-			id            UUID         NOT NULL DEFAULT gen_random_uuid(),
-			aggregate_id  UUID         NOT NULL,
+			id            UUID         NOT NULL,
+			aggregate_id  CHAR(36)     NOT NULL,
 			entity_type   VARCHAR(255) NOT NULL,
 			verb          VARCHAR(32)  NOT NULL,
 			action_name   VARCHAR(64)  NOT NULL,
@@ -143,7 +144,7 @@ func createFrameworkTables(ctx context.Context, pool *pgxpool.Pool) error {
 			actor_issuer  VARCHAR(255),
 			tenant_id     VARCHAR(255),
 			trace_id      VARCHAR(32),
-			thread_id     UUID         NOT NULL,
+			thread_id     CHAR(36)     NOT NULL,
 			occurred_at   TIMESTAMP    NOT NULL,
 			created_at    TIMESTAMP    NOT NULL DEFAULT NOW(),
 			payload       JSONB        NOT NULL,

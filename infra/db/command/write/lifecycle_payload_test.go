@@ -25,13 +25,14 @@ func outboxPayloadFor(t *testing.T, tx *recTx, table, eventType string) map[stri
 			continue
 		}
 		args := tx.execArgs[i]
-		if len(args) < 4 || args[0] != table || args[1] != eventType {
+		// args[0] is the Go-minted outbox row id; table/eventType/payload follow.
+		if len(args) < 5 || args[1] != table || args[2] != eventType {
 			continue
 		}
 		// The payload binds as TEXT (a string arg): the JSON column is
 		// text-shaped on every dialect, and SQL Server refuses the implicit
 		// varbinary→NVARCHAR conversion a []byte bind would need.
-		data, ok := args[3].(string)
+		data, ok := args[4].(string)
 		if !ok {
 			t.Fatalf("outbox payload arg must bind as string (JSON text), got %T", args[3])
 		}

@@ -35,7 +35,9 @@ const (
 // first_seen_at, last_attempt_at, resolved_at — are managed by the SQL)
 // and as the shape returned by ListPendingUpstreamFailures.
 type UpstreamFailureRecord struct {
-	ID                int64
+	// ID is the surrogate row id — the canonical uuid string (a UUID v7 on
+	// every dialect; the scan restores BINARY(16) to canonical text).
+	ID                string
 	SubscriptionTopic string
 	ViewName          string
 	UpstreamID        string
@@ -65,7 +67,7 @@ WHERE resolved_at IS NULL`
 ORDER BY last_attempt_at ASC`
 )
 
-var upstreamFailureInsertCols = []string{"subscription_topic", "view_name", "upstream_id", "local_id", "stage", "error"}
+var upstreamFailureInsertCols = []string{"id", "subscription_topic", "view_name", "upstream_id", "local_id", "stage", "error"}
 
 var upstreamFailureConflictCols = []string{"subscription_topic", "view_name", "upstream_id", "local_id", "stage"}
 
@@ -94,8 +96,13 @@ func RecordUpstreamFailure(ctx context.Context, q core.Querier, d core.Dialect, 
 		rec.Stage != UpstreamFailureStageUpsert {
 		return fmt.Errorf("record upstream failure: stage %q invalid (want discover|compose|upsert)", rec.Stage)
 	}
-	// Upsert: insert on first sighting of the natural key, else increment
-	// attempt + refresh error/last_attempt + reopen resolved_at.
+	// Upsert: insert on first sighting of the natural key (with a Go-minted
+	// UUID v7 surrogate id — discarded when the natural key already exists),
+	// else increment attempt + refresh error/last_attempt + reopen resolved_at.
+	rowID, err := newControlPlaneID()
+	if err != nil {
+		return fmt.Errorf("record upstream failure: %w", err)
+	}
 	sql := d.BuildUpsert(upstreamFailureTable, upstreamFailureInsertCols, upstreamFailureConflictCols, []core.UpsertSet{
 		{Col: "error", Mode: core.UpsertSetNew},
 		{Col: "attempt", Mode: core.UpsertSetExpr, Expr: "attempt + 1"},
@@ -103,6 +110,7 @@ func RecordUpstreamFailure(ctx context.Context, q core.Querier, d core.Dialect, 
 		{Col: "resolved_at", Mode: core.UpsertSetExpr, Expr: "NULL"},
 	})
 	if err := q.Exec(ctx, sql,
+		d.EncodeArg(rowID),
 		rec.SubscriptionTopic,
 		rec.ViewName,
 		rec.UpstreamID,

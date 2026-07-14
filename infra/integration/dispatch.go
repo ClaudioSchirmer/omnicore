@@ -225,15 +225,15 @@ type dispatchRow struct {
 // fixed across dialects; only the placeholder grammar (rendered via the engine's
 // Dialect) and the in-TX vs standalone execution differ.
 var integrationEventCols = []string{
-	"event_id", "aggregate_type", "aggregate_id", "event_type", "event_version",
+	"id", "event_id", "aggregate_type", "aggregate_id", "event_type", "event_version",
 	"payload", "correlation_id", "causation_id", "thread_id", "actor", "traceparent",
 }
 
 // insertIntegrationEventSQL renders the INSERT with the dialect's positional
-// placeholders ($1.. on Postgres, ? on MySQL). The uuid-bearing columns are
-// CHAR(36) on MySQL and uuid on Postgres; binding the uuid TEXT form works on
-// both (Postgres parses the text into its uuid type, MySQL stores it as the CHAR), so the args stay
-// dialect-neutral and no per-arg encoding is needed.
+// placeholders. The PK follows the framework id standard (UUID v7 minted in
+// Go, bound via Dialect.EncodeArg into the native id form); the wire-crossing
+// uuid references (event_id, aggregate_id, correlation/causation/thread) are
+// CHAR(36) on every dialect and bind as canonical uuid TEXT.
 func insertIntegrationEventSQL(d core.Dialect) string {
 	ph := make([]string, len(integrationEventCols))
 	for i := range integrationEventCols {
@@ -254,7 +254,31 @@ func writeIntegrationEvent(
 	tx persistence.TxHandle,
 	row dispatchRow,
 ) error {
+	rowID, err := newControlPlaneID()
+	if err != nil {
+		return fmt.Errorf("integration.Dispatch: %w", err)
+	}
+
+	// Resolve the dialect first: the Go-minted PK binds through EncodeArg into
+	// the dialect's native id form, so the args depend on it.
+	var (
+		d    core.Dialect
+		exec func(context.Context, string, ...any) error
+	)
+	if tx != nil {
+		ntx := core.UnwrapTx(tx)
+		d = ntx.Dialect()
+		exec = ntx.Exec
+	} else {
+		if c.eng == nil {
+			return fmt.Errorf("standalone Dispatch requires a relational engine; integration.Configure received nil")
+		}
+		d = c.eng.Dialect()
+		exec = c.eng.Querier().Exec
+	}
+
 	args := []any{
+		d.EncodeArg(rowID),
 		row.EventID.String(),
 		nullableString(row.Aggregate),
 		nullableUUID(maybeAggregateUUID(row)),
@@ -272,16 +296,7 @@ func writeIntegrationEvent(
 		// consumed event back to this trace; NULL when tracing is off.
 		nullableString(tracing.TraceparentFromContext(ctx)),
 	}
-
-	if tx != nil {
-		ntx := core.UnwrapTx(tx)
-		return ntx.Exec(ctx, insertIntegrationEventSQL(ntx.Dialect()), args...)
-	}
-
-	if c.eng == nil {
-		return fmt.Errorf("standalone Dispatch requires a relational engine; integration.Configure received nil")
-	}
-	return c.eng.Querier().Exec(ctx, insertIntegrationEventSQL(c.eng.Dialect()), args...)
+	return exec(ctx, insertIntegrationEventSQL(d), args...)
 }
 
 // maybeAggregateUUID returns the aggregate id when HasAggregate, else

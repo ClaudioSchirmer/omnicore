@@ -13,20 +13,20 @@
 -- Debezium tails this table via logical replication and its Outbox Event Router
 -- turns each row into a Kafka message (key=aggregate_id, headers carry the type).
 CREATE TABLE outbox (
-    id              UUID         PRIMARY KEY DEFAULT gen_random_uuid(),
+    id              UUID         PRIMARY KEY,
     aggregate_type  VARCHAR(100) NOT NULL,
     event_type      VARCHAR(50)  NOT NULL,
-    aggregate_id    UUID         NOT NULL,
+    aggregate_id    CHAR(36)     NOT NULL,
     payload         JSONB        NOT NULL,
     traceparent     VARCHAR(64),
     created_at      TIMESTAMP    NOT NULL DEFAULT NOW()
 );
 
 COMMENT ON TABLE  outbox                IS 'Transactional outbox: one row per aggregate write, in-TX with the data row; tailed by Debezium and routed to Kafka.';
-COMMENT ON COLUMN outbox.id             IS 'Surrogate row id (DB-generated). Not the business key — see aggregate_id.';
+COMMENT ON COLUMN outbox.id             IS 'Surrogate row id — UUID v7 minted in Go (the framework id standard; no DB default). Not the business key — see aggregate_id.';
 COMMENT ON COLUMN outbox.aggregate_type IS 'Logical aggregate/table name (e.g. "users"); Debezium routes it to topic "<aggregate_type>.events".';
 COMMENT ON COLUMN outbox.event_type     IS 'Lifecycle verb: INSERTED | UPDATED | ARCHIVED | UNARCHIVED | DELETED. Carried as a Kafka header.';
-COMMENT ON COLUMN outbox.aggregate_id   IS 'Id of the written aggregate root; becomes the Kafka message key (per-aggregate ordering).';
+COMMENT ON COLUMN outbox.aggregate_id   IS 'Id of the written aggregate root, as canonical uuid TEXT (it crosses the Debezium/Kafka boundary as a string on every dialect); becomes the Kafka message key (per-aggregate ordering).';
 COMMENT ON COLUMN outbox.payload        IS 'JSON snapshot of the write (root fields + active children). Informational — the SyncEngine re-reads from Postgres.';
 COMMENT ON COLUMN outbox.traceparent    IS 'W3C traceparent of the producing request; mapped to a Kafka header so the async projection links back to the trace. NULL when tracing is off.';
 COMMENT ON COLUMN outbox.created_at      IS 'Insert timestamp (NOW()). Drives the created_at index used for pruning/replay.';
@@ -40,7 +40,8 @@ CREATE INDEX outbox_created_at_idx ON outbox (created_at);
 -- crash mid-rebuild can be recovered. The advisory lock (pg_advisory_lock)
 -- guards the rebuild; this table is the durable, forensic side of that.
 CREATE TABLE omnicore_mongo_views (
-    view_name              TEXT PRIMARY KEY,
+    id                     UUID        PRIMARY KEY,
+    view_name              TEXT        NOT NULL,
     version                INTEGER     NOT NULL,
     rebuild_hash           VARCHAR(64) NOT NULL,
     artifact_hash          VARCHAR(64) NOT NULL,
@@ -60,11 +61,13 @@ CREATE TABLE omnicore_mongo_views (
     code_version           TEXT,
 
     CONSTRAINT omnicore_mongo_views_version_positive CHECK (version > 0),
-    CONSTRAINT omnicore_mongo_views_status_valid     CHECK (status IN ('done', 'processing'))
+    CONSTRAINT omnicore_mongo_views_status_valid     CHECK (status IN ('done', 'processing')),
+    CONSTRAINT omnicore_mongo_views_view_name_key    UNIQUE (view_name)
 );
 
 COMMENT ON TABLE  omnicore_mongo_views                        IS 'Mongo read-side registry: declared shape + rebuild state per view (drift detection + crash recovery).';
-COMMENT ON COLUMN omnicore_mongo_views.view_name             IS 'Mongo collection / view name (primary key).';
+COMMENT ON COLUMN omnicore_mongo_views.id                    IS 'Surrogate row id — UUID v7 minted in Go (the framework id standard).';
+COMMENT ON COLUMN omnicore_mongo_views.view_name             IS 'Mongo collection / view name — the natural key (UNIQUE); every lookup keys on it.';
 COMMENT ON COLUMN omnicore_mongo_views.version               IS 'Developer-declared ViewDefinition.Version(N); bumped on any rebuild-relevant shape change.';
 COMMENT ON COLUMN omnicore_mongo_views.rebuild_hash          IS 'SHA-256 over rebuild-relevant state (root, embeds, DeleteOnArchive, $jsonSchema, collation, capped, time-series). A change here means the docs must be recomposed.';
 COMMENT ON COLUMN omnicore_mongo_views.artifact_hash         IS 'SHA-256 over indexes only — applied via ApplyMongoSpecs, no doc rewrite.';
@@ -93,7 +96,7 @@ CREATE INDEX omnicore_mongo_views_status_idx
 -- live state, not a growing log) so an operator can see "what is stuck" and the
 -- framework can retry. The Kafka offset still advances (no poison pill).
 CREATE TABLE omnicore_upstream_failures (
-    id                  BIGSERIAL PRIMARY KEY,
+    id                  UUID      PRIMARY KEY,
     subscription_topic  TEXT      NOT NULL,
     view_name           TEXT      NOT NULL,
     upstream_id         TEXT      NOT NULL,
@@ -114,7 +117,7 @@ CREATE TABLE omnicore_upstream_failures (
 );
 
 COMMENT ON TABLE  omnicore_upstream_failures                    IS 'Cross-service recompose failure registry (mirrors live state). One row per (topic, view, upstream_id, local_id, stage); retried by UpstreamSubscriber.RetryPendingFailures.';
-COMMENT ON COLUMN omnicore_upstream_failures.id                IS 'Surrogate row id.';
+COMMENT ON COLUMN omnicore_upstream_failures.id                IS 'Surrogate row id — UUID v7 minted in Go (the framework id standard).';
 COMMENT ON COLUMN omnicore_upstream_failures.subscription_topic IS 'Upstream Kafka topic the subscription consumes.';
 COMMENT ON COLUMN omnicore_upstream_failures.view_name         IS 'Local B view whose recompose failed.';
 COMMENT ON COLUMN omnicore_upstream_failures.upstream_id       IS 'Id of the changed upstream (A) document that triggered the recompose.';
@@ -139,8 +142,8 @@ CREATE INDEX omnicore_upstream_failures_last_attempt_idx
 -- the data row when the "database" destination is on. Partitioned by created_at
 -- (RANGE) so old partitions can be detached/dropped cheaply.
 CREATE TABLE audit_events (
-    id            UUID         NOT NULL DEFAULT gen_random_uuid(),
-    aggregate_id  UUID         NOT NULL,
+    id            UUID         NOT NULL,
+    aggregate_id  CHAR(36)     NOT NULL,
     entity_type   VARCHAR(255) NOT NULL,
     verb          VARCHAR(32)  NOT NULL,
     action_name   VARCHAR(64)  NOT NULL,
@@ -148,7 +151,7 @@ CREATE TABLE audit_events (
     actor         VARCHAR(255),
     actor_issuer  VARCHAR(255),
     tenant_id     VARCHAR(255),
-    thread_id     UUID         NOT NULL,
+    thread_id     CHAR(36)     NOT NULL,
     trace_id      VARCHAR(32),
     occurred_at   TIMESTAMP    NOT NULL,
     created_at    TIMESTAMP    NOT NULL DEFAULT NOW(),
@@ -159,7 +162,7 @@ CREATE TABLE audit_events (
 CREATE TABLE audit_events_default PARTITION OF audit_events DEFAULT;
 
 COMMENT ON TABLE  audit_events              IS 'Authoritative audit trail: one row per write, in-TX with the data row. Partitioned by created_at (RANGE) for cheap retention management.';
-COMMENT ON COLUMN audit_events.id           IS 'Audit row id (DB-generated). PK is (id, created_at) — created_at is required in the key because the table is partitioned by it.';
+COMMENT ON COLUMN audit_events.id           IS 'Audit row id — UUID v7 minted in Go (the framework id standard; no DB default). PK is (id, created_at) — created_at is required in the key because the table is partitioned by it.';
 COMMENT ON COLUMN audit_events.aggregate_id IS 'Id of the audited aggregate root.';
 COMMENT ON COLUMN audit_events.entity_type  IS 'Entity/aggregate Go type name (e.g. "User").';
 COMMENT ON COLUMN audit_events.verb         IS 'SQL-grounded verb: insert | update | archive | unarchive | delete (PUT and PATCH both map to update).';
@@ -192,24 +195,24 @@ CREATE INDEX audit_events_created_at_brin
 -- binding) can dispatch; actor is NOT NULL (ctx.ActorSubject() returns the
 -- "anonymous" sentinel when no JWT is attached).
 CREATE TABLE integration_events (
-    id              BIGSERIAL    PRIMARY KEY,
-    event_id        UUID         NOT NULL UNIQUE,
+    id              UUID         PRIMARY KEY,
+    event_id        CHAR(36)     NOT NULL UNIQUE,
     aggregate_type  VARCHAR(100),
-    aggregate_id    UUID,
+    aggregate_id    CHAR(36),
     event_type      VARCHAR(100) NOT NULL,
     event_version   INTEGER      NOT NULL DEFAULT 1,
     payload         JSONB        NOT NULL,
-    correlation_id  UUID,
-    causation_id    UUID,
-    thread_id       UUID         NOT NULL,
+    correlation_id  CHAR(36),
+    causation_id    CHAR(36),
+    thread_id       CHAR(36)     NOT NULL,
     traceparent     VARCHAR(64),
     actor           VARCHAR(255) NOT NULL,
     created_at      TIMESTAMP    NOT NULL DEFAULT NOW()
 );
 
 COMMENT ON TABLE  integration_events                IS 'Producer-side authoritative store of cross-service integration events (in-TX with the data row under WithTx). Forensic timeline + replay source.';
-COMMENT ON COLUMN integration_events.id             IS 'Surrogate row id.';
-COMMENT ON COLUMN integration_events.event_id       IS 'Globally-unique event id (UUID); the consumer-side dedup key. UNIQUE.';
+COMMENT ON COLUMN integration_events.id             IS 'Surrogate row id — UUID v7 minted in Go (the framework id standard).';
+COMMENT ON COLUMN integration_events.event_id       IS 'Globally-unique event id as canonical uuid TEXT (it crosses the wire as a string); the consumer-side dedup key. UNIQUE.';
 COMMENT ON COLUMN integration_events.aggregate_type IS 'Aggregate type the event is about; NULL for a standalone event.';
 COMMENT ON COLUMN integration_events.aggregate_id   IS 'Aggregate id the event is about; NULL for a standalone event.';
 COMMENT ON COLUMN integration_events.event_type     IS 'Wire event type header value (e.g. "UserActivated").';
@@ -233,11 +236,11 @@ CREATE INDEX integration_events_event_type_idx
 -- One row per (consumer_group, source_key, event_key, event_id), upserted on each
 -- retry, so an operator can query "which events are stuck right now?".
 CREATE TABLE omnicore_integration_failures (
-    id              BIGSERIAL PRIMARY KEY,
+    id              UUID      PRIMARY KEY,
     consumer_group  TEXT      NOT NULL,
     source_key      TEXT      NOT NULL,
     event_key       TEXT      NOT NULL,
-    event_id        UUID      NOT NULL,
+    event_id        CHAR(36)  NOT NULL,
     payload         JSONB     NOT NULL,
     error           TEXT      NOT NULL,
     attempt         INTEGER   NOT NULL DEFAULT 1,
@@ -252,7 +255,7 @@ CREATE TABLE omnicore_integration_failures (
 );
 
 COMMENT ON TABLE  omnicore_integration_failures                IS 'Consumer-side integration handler failure registry; retried by Receiver.RetryPendingFailures.';
-COMMENT ON COLUMN omnicore_integration_failures.id            IS 'Surrogate row id.';
+COMMENT ON COLUMN omnicore_integration_failures.id            IS 'Surrogate row id — UUID v7 minted in Go (the framework id standard).';
 COMMENT ON COLUMN omnicore_integration_failures.consumer_group IS 'Kafka consumer group that failed to process the event.';
 COMMENT ON COLUMN omnicore_integration_failures.source_key    IS 'Go-side source identifier (the "From(...)" key), stable across renames of the wire topic.';
 COMMENT ON COLUMN omnicore_integration_failures.event_key     IS 'Go-side event identifier (the "On(...)" key).';
@@ -274,22 +277,24 @@ CREATE INDEX omnicore_integration_failures_last_attempt_idx
 
 -- ── omnicore_integration_processed ────────────────────────────────────────────
 -- Consumer-side dedup table. Pre-checked on every Kafka message: a hit means
--- "already processed by this consumer group" → skip the handler. Composite PK
--- (event_id, consumer_group) lets N groups dedup the same event independently.
+-- "already processed by this consumer group" → skip the handler. The UNIQUE
+-- (event_id, consumer_group) natural key lets N groups dedup independently.
 CREATE TABLE omnicore_integration_processed (
-    event_id        UUID      NOT NULL,
+    id              UUID      PRIMARY KEY,
+    event_id        CHAR(36)  NOT NULL,
     consumer_group  TEXT      NOT NULL,
     source_key      TEXT      NOT NULL,
     event_key       TEXT      NOT NULL,
     topic           TEXT      NOT NULL,
     event_type      TEXT      NOT NULL,
     processed_at    TIMESTAMP NOT NULL DEFAULT NOW(),
-    PRIMARY KEY (event_id, consumer_group)
+    CONSTRAINT omnicore_integration_processed_natural_key UNIQUE (event_id, consumer_group)
 );
 
 COMMENT ON TABLE  omnicore_integration_processed                IS 'Consumer-side dedup: one row per (event_id, consumer_group) successfully processed. Pre-checked before each handler run; at-least-once delivery means handlers must still be idempotent.';
-COMMENT ON COLUMN omnicore_integration_processed.event_id      IS 'Processed event id (part of PK).';
-COMMENT ON COLUMN omnicore_integration_processed.consumer_group IS 'Consumer group that processed it (part of PK; lets groups dedup independently).';
+COMMENT ON COLUMN omnicore_integration_processed.id            IS 'Surrogate row id — UUID v7 minted in Go (the framework id standard).';
+COMMENT ON COLUMN omnicore_integration_processed.event_id      IS 'Processed event id, canonical uuid TEXT (part of the UNIQUE natural key).';
+COMMENT ON COLUMN omnicore_integration_processed.consumer_group IS 'Consumer group that processed it (part of the UNIQUE natural key; lets groups dedup independently).';
 COMMENT ON COLUMN omnicore_integration_processed.source_key    IS 'Go-side source identifier (diagnostics).';
 COMMENT ON COLUMN omnicore_integration_processed.event_key     IS 'Go-side event identifier (diagnostics).';
 COMMENT ON COLUMN omnicore_integration_processed.topic         IS 'Kafka topic the event came from (diagnostics).';

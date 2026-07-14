@@ -27,7 +27,7 @@ func createIntegrationEventsTable(t *testing.T, raw *sql.DB) {
 	t.Helper()
 	ctx := context.Background()
 	if _, err := raw.ExecContext(ctx, `CREATE TABLE integration_events (
-		id             BIGINT        IDENTITY(1,1) NOT NULL,
+		id             BINARY(16)    NOT NULL,
 		event_id       CHAR(36)      NOT NULL,
 		aggregate_type VARCHAR(100)  NULL,
 		aggregate_id   CHAR(36)      NULL,

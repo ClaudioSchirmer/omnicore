@@ -63,7 +63,7 @@ func createAuditTable(t *testing.T, raw *sql.DB) {
 	// Mirrors the sqlserver framework migration's audit_events (the columns
 	// InsertAuditEvent writes). id has NO default — the Go path supplies it.
 	if _, err := raw.ExecContext(ctx, `CREATE TABLE audit_events (
-		id           CHAR(36)      NOT NULL,
+		id           BINARY(16)    NOT NULL,
 		aggregate_id CHAR(36)      NOT NULL,
 		entity_type  NVARCHAR(255) NOT NULL,
 		verb         VARCHAR(32)   NOT NULL,
@@ -138,11 +138,17 @@ func TestSQLServerEngine_AuditAndEvents(t *testing.T) {
 
 	// The audit row id is Go-generated and not surfaced by Insert; read it from
 	// the table to drive FindByID.
-	var rowID string
-	if err := raw.QueryRow(`SELECT id FROM audit_events WHERE aggregate_id = @p1`, res.ID.Value()).Scan(&rowID); err != nil {
+	var rowIDRaw []byte
+	if err := raw.QueryRow(`SELECT id FROM audit_events WHERE aggregate_id = @p1`, res.ID.Value()).Scan(&rowIDRaw); err != nil {
 		t.Fatalf("read audit row id: %v", err)
 	}
-	byID, err := reader.FindByID(ctx, uuid.MustParse(rowID))
+	// The PK is BINARY(16) now (the framework id standard) — decode the 16
+	// raw bytes back to the uuid the reader's codec-bound FindByID expects.
+	rowUUID, err := uuid.FromBytes(rowIDRaw)
+	if err != nil {
+		t.Fatalf("audit row id is not a 16-byte uuid: %v", err)
+	}
+	byID, err := reader.FindByID(ctx, rowUUID)
 	if err != nil {
 		t.Fatalf("FindByID: %v", err)
 	}
