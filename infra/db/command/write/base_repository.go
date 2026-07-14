@@ -90,7 +90,7 @@ func (w boundWriter[T]) Insert(i domain.Insertable) (domain.ID, error) {
 	if err != nil {
 		return domain.ID{}, w.repo.mapErr(err)
 	}
-	return domain.NewID(res.ID), nil
+	return res.ID, nil
 }
 
 func (w boundWriter[T]) Update(u domain.Updatable) error {

@@ -94,7 +94,7 @@ func sbMyInsert(t *testing.T, eng *Engine, doc, enrollment, actionName string) s
 	if err != nil {
 		t.Fatalf("Insert(%s): %v", enrollment, err)
 	}
-	return res.ID
+	return res.ID.Value()
 }
 
 func sbMyArchive(t *testing.T, eng *Engine, id, doc string) {

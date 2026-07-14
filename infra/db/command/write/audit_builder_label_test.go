@@ -32,7 +32,7 @@ type labelTestAddress struct {
 	Bare    string
 }
 
-func (a labelTestAddress) GetID() string                                    { return a.ID }
+func (a labelTestAddress) GetID() domain.ID                                 { return domain.NewID(a.ID) }
 func (a labelTestAddress) BuildRules(string, domain.Service, *domain.Rules) {}
 
 // labelTestAggregate roots the aggregate so the auditor's children path fires.

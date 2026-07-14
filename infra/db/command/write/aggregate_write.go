@@ -68,7 +68,7 @@ func (b *BaseEngine) insertAggregate(ctx persistence.RequestContext, entity doma
 		return domain.WriteResult{}, err
 	}
 	b.AfterCommit(ctx, ab)
-	return domain.WriteResult{ID: id, Fields: rootFields}, nil
+	return domain.WriteResult{ID: domain.NewID(id), Fields: rootFields}, nil
 }
 
 func (b *BaseEngine) updateAggregate(ctx persistence.RequestContext, entity domain.Updatable, schema *TableSchema, hook WriteHook) (domain.WriteResult, error) {
@@ -87,17 +87,17 @@ func (b *BaseEngine) updateAggregate(ctx persistence.RequestContext, entity doma
 	if err := b.FireAfterBegin(ctx, tx, src, hook, hctx); err != nil {
 		return domain.WriteResult{}, err
 	}
-	sql, args := buildUpdate(d, schema.Table(), schema.PKColumn(), entity.ID(), rootFields, schema.UpdateNowColumns())
-	if err := execExpectingRow(ctx, tx, sql, args, entity.EntityName(), schema.PKColumn(), entity.ID()); err != nil {
+	sql, args := buildUpdate(d, schema.Table(), schema.PKColumn(), entity.ID().Value(), rootFields, schema.UpdateNowColumns())
+	if err := execExpectingRow(ctx, tx, sql, args, entity.EntityName(), schema.PKColumn(), entity.ID().Value()); err != nil {
 		return domain.WriteResult{}, err
 	}
-	if err := writeChildren(ctx, tx, d, root, schema, entity.ID(), ""); err != nil {
+	if err := writeChildren(ctx, tx, d, root, schema, entity.ID().Value(), ""); err != nil {
 		return domain.WriteResult{}, err
 	}
-	if err := applySiblingUpdates(ctx, tx, d, schema, src, entity.ID(), entity.IsPartial()); err != nil {
+	if err := applySiblingUpdates(ctx, tx, d, schema, src, entity.ID().Value(), entity.IsPartial()); err != nil {
 		return domain.WriteResult{}, err
 	}
-	if err := WriteOutbox(ctx, tx, schema.Table(), "UPDATED", entity.ID(), BuildAggregatePayload(rootFields, root, schema)); err != nil {
+	if err := WriteOutbox(ctx, tx, schema.Table(), "UPDATED", entity.ID().Value(), BuildAggregatePayload(rootFields, root, schema)); err != nil {
 		return domain.WriteResult{}, err
 	}
 	ab := b.BuildAudit(func() audit.AuditEvent {
@@ -106,7 +106,7 @@ func (b *BaseEngine) updateAggregate(ctx persistence.RequestContext, entity doma
 	if err := b.WriteAuditRow(ctx, tx, ab.Ev); err != nil {
 		return domain.WriteResult{}, err
 	}
-	if err := b.FireBeforeCommit(ctx, tx, src, domain.NewID(entity.ID()), hook, hctx); err != nil {
+	if err := b.FireBeforeCommit(ctx, tx, src, domain.NewID(entity.ID().Value()), hook, hctx); err != nil {
 		return domain.WriteResult{}, err
 	}
 	if err := tx.Commit(ctx); err != nil {
@@ -118,7 +118,7 @@ func (b *BaseEngine) updateAggregate(ctx persistence.RequestContext, entity doma
 
 func (b *BaseEngine) archiveAggregate(ctx persistence.RequestContext, entity domain.Archivable, schema *TableSchema, hook WriteHook) error {
 	root, _ := entity.AggregateInfo()
-	return b.softWriteAggregate(ctx, root, entity.Source(), entity.ID(), schema, hook,
+	return b.softWriteAggregate(ctx, root, entity.Source(), entity.ID().Value(), schema, hook,
 		HookContext{Verb: "Archive", EntityType: entity.EntityName()}, "ARCHIVED",
 		archiveSQL, "NOW()", " IS NULL",
 		func() audit.AuditEvent { return BuildArchiveEvent(ctx, entity, schema, b.auditClaims) },
@@ -127,7 +127,7 @@ func (b *BaseEngine) archiveAggregate(ctx persistence.RequestContext, entity dom
 
 func (b *BaseEngine) unarchiveAggregate(ctx persistence.RequestContext, entity domain.Unarchivable, schema *TableSchema, hook WriteHook) error {
 	root, _ := entity.AggregateInfo()
-	return b.softWriteAggregate(ctx, root, entity.Source(), entity.ID(), schema, hook,
+	return b.softWriteAggregate(ctx, root, entity.Source(), entity.ID().Value(), schema, hook,
 		HookContext{Verb: "Unarchive", EntityType: entity.EntityName()}, "UNARCHIVED",
 		unarchiveSQL, "NULL", " IS NOT NULL",
 		func() audit.AuditEvent { return BuildUnarchiveEvent(ctx, entity, schema, b.auditClaims) },
@@ -137,7 +137,7 @@ func (b *BaseEngine) unarchiveAggregate(ctx persistence.RequestContext, entity d
 // deleteAggregate hard-deletes an aggregate root via the shared hardDelete path
 // (children + siblings cleared explicitly in Go before the root, one TX).
 func (b *BaseEngine) deleteAggregate(ctx persistence.RequestContext, entity domain.Deletable, schema *TableSchema, hook WriteHook) error {
-	return b.hardDelete(ctx, entity.Source(), entity.ID(), schema, hook,
+	return b.hardDelete(ctx, entity.Source(), entity.ID().Value(), schema, hook,
 		HookContext{Verb: "Delete", EntityType: entity.EntityName()},
 		func() audit.AuditEvent { return BuildDeleteEvent(ctx, entity, schema, b.auditClaims) },
 		func(baseID string) audit.AuditEvent {
@@ -364,7 +364,7 @@ func writeChildren(ctx context.Context, tx WriteTx, d Dialect, root *domain.Aggr
 func removeChild(ctx context.Context, tx WriteTx, d Dialect, child *TableSchema, typeName string, item domain.AggregateValueObject, fromBase bool) error {
 	if fromBase {
 		if _, ok := child.SoftDeleteColumn(); !ok {
-			id := item.GetID()
+			id := item.GetID().Value()
 			if id == "" {
 				return fmt.Errorf("db: cannot delete base child %q without id", child.Table())
 			}
@@ -396,7 +396,7 @@ func insertChild(ctx context.Context, tx WriteTx, d Dialect, child *TableSchema,
 }
 
 func updateChild(ctx context.Context, tx WriteTx, d Dialect, child *TableSchema, item domain.AggregateValueObject) error {
-	id := item.GetID()
+	id := item.GetID().Value()
 	if id == "" {
 		return fmt.Errorf("db: cannot update child %q without id", child.Table())
 	}
@@ -413,7 +413,7 @@ func updateChild(ctx context.Context, tx WriteTx, d Dialect, child *TableSchema,
 // archiveChild: Removed → Archive. A child with soft-delete disabled cannot be
 // archived — surfaced as an error.
 func archiveChild(ctx context.Context, tx WriteTx, d Dialect, child *TableSchema, typeName string, item domain.AggregateValueObject) error {
-	id := item.GetID()
+	id := item.GetID().Value()
 	if id == "" {
 		return fmt.Errorf("db: cannot archive child %q without id", child.Table())
 	}

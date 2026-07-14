@@ -23,7 +23,7 @@ type sbAuditAddr struct {
 	City   string
 }
 
-func (c sbAuditAddr) GetID() string                                    { return c.ID }
+func (c sbAuditAddr) GetID() domain.ID                                 { return domain.NewID(c.ID) }
 func (c sbAuditAddr) BuildRules(string, domain.Service, *domain.Rules) {}
 
 type sbAuditRole struct {

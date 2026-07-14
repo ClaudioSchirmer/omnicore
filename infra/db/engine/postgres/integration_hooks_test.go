@@ -102,21 +102,21 @@ func TestPostgres_AuditReader_ReadBack(t *testing.T) {
 	// reader entry points.
 	var rowID, entityType string
 	if err := pg.Pool().QueryRow(context.Background(),
-		`SELECT id::text, entity_type FROM audit_events WHERE aggregate_id = $1`, res.ID,
+		`SELECT id::text, entity_type FROM audit_events WHERE aggregate_id = $1`, res.ID.Value(),
 	).Scan(&rowID, &entityType); err != nil {
 		t.Fatalf("read audit row id: %v", err)
 	}
 
 	reader := read.NewAuditReader(pg)
 
-	byAgg, err := reader.FindByAggregate(context.Background(), entityType, res.ID)
+	byAgg, err := reader.FindByAggregate(context.Background(), entityType, res.ID.Value())
 	if err != nil {
 		t.Fatalf("FindByAggregate: %v", err)
 	}
 	if len(byAgg) != 1 {
 		t.Fatalf("FindByAggregate want 1 event, got %d", len(byAgg))
 	}
-	if byAgg[0].Verb != "insert" || byAgg[0].Kind != "snapshot" || byAgg[0].EntityID != res.ID {
+	if byAgg[0].Verb != "insert" || byAgg[0].Kind != "snapshot" || byAgg[0].EntityID != res.ID.Value() {
 		t.Errorf("read-back event drifted: %+v", byAgg[0])
 	}
 
@@ -124,7 +124,7 @@ func TestPostgres_AuditReader_ReadBack(t *testing.T) {
 	if err != nil {
 		t.Fatalf("FindByID: %v", err)
 	}
-	if byID.EntityID != res.ID || byID.EntityType != entityType {
+	if byID.EntityID != res.ID.Value() || byID.EntityType != entityType {
 		t.Errorf("FindByID drifted: %+v", byID)
 	}
 
@@ -304,7 +304,7 @@ func TestPostgres_Insert_NoHook_BehaviorUnchanged(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Insert: %v", err)
 	}
-	if res.ID == "" {
+	if res.ID.Value() == "" {
 		t.Error("expected populated id")
 	}
 	if rowCount(t, pg, "flat_persons") != 1 {
@@ -325,7 +325,7 @@ func TestPostgres_Update_HookFires_BothSlots(t *testing.T) {
 	e := &flatPerson{Name: "alice", Email: "a@x"}
 	ins, _ := domain.GetInsertable(e, nil, "GetInsertable")
 	res, _ := pg.Insert(testCtx(), ins, flatPersonSchema(), core.WriteHook{})
-	e.SetID(domain.NewID(res.ID))
+	e.SetID(res.ID)
 
 	e.Name = "alice2"
 	upd, _ := domain.GetUpdatable(e, func(*flatPerson) error { return nil }, nil, "GetUpdatable")
@@ -357,7 +357,7 @@ func TestPostgres_Update_BeforeCommitError_RollsBack(t *testing.T) {
 	e := &flatPerson{Name: "alice", Email: "a@x"}
 	ins, _ := domain.GetInsertable(e, nil, "GetInsertable")
 	res, _ := pg.Insert(testCtx(), ins, flatPersonSchema(), core.WriteHook{})
-	e.SetID(domain.NewID(res.ID))
+	e.SetID(res.ID)
 
 	original := outboxCount(t, pg)
 	e.Name = "alice2"
@@ -373,7 +373,7 @@ func TestPostgres_Update_BeforeCommitError_RollsBack(t *testing.T) {
 		t.Errorf("outbox grew from %d to %d on rollback", original, got)
 	}
 	var name string
-	_ = pg.Pool().QueryRow(context.Background(), `SELECT name FROM flat_persons WHERE id = $1`, res.ID).Scan(&name)
+	_ = pg.Pool().QueryRow(context.Background(), `SELECT name FROM flat_persons WHERE id = $1`, res.ID.Value()).Scan(&name)
 	if name != "alice" {
 		t.Errorf("expected name unchanged after rollback, got %q", name)
 	}
@@ -387,7 +387,7 @@ func TestPostgres_Archive_HookFires(t *testing.T) {
 	e := &flatPerson{Name: "alice", Email: "a@x"}
 	ins, _ := domain.GetInsertable(e, nil, "GetInsertable")
 	res, _ := pg.Insert(testCtx(), ins, flatPersonSchema(), core.WriteHook{})
-	e.SetID(domain.NewID(res.ID))
+	e.SetID(res.ID)
 
 	arch, _ := domain.GetArchivable(e, nil, "GetArchivable")
 	bcCalled := false
@@ -411,7 +411,7 @@ func TestPostgres_Unarchive_HookFires(t *testing.T) {
 	e := &flatPerson{Name: "alice", Email: "a@x"}
 	ins, _ := domain.GetInsertable(e, nil, "GetInsertable")
 	res, _ := pg.Insert(testCtx(), ins, flatPersonSchema(), core.WriteHook{})
-	e.SetID(domain.NewID(res.ID))
+	e.SetID(res.ID)
 	arch, _ := domain.GetArchivable(e, nil, "GetArchivable")
 	_ = pg.Archive(testCtx(), arch, flatPersonSchema(), core.WriteHook{})
 
@@ -437,7 +437,7 @@ func TestPostgres_Delete_HookFires_AndRollback(t *testing.T) {
 	e := &flatPerson{Name: "alice", Email: "a@x"}
 	ins, _ := domain.GetInsertable(e, nil, "GetInsertable")
 	res, _ := pg.Insert(testCtx(), ins, flatPersonSchema(), core.WriteHook{})
-	e.SetID(domain.NewID(res.ID))
+	e.SetID(res.ID)
 
 	del, _ := domain.GetDeletable(e, nil, "GetDeletable")
 	hook := buildBeforeCommitHook(func(persistence.RequestContext, domain.Entity, domain.ID, persistence.TxHandle) error {

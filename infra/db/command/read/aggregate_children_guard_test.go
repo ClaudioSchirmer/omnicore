@@ -12,7 +12,7 @@ import (
 type guardChildVO struct{ ID string }
 
 func (c guardChildVO) BuildRules(string, domain.Service, *domain.Rules) {}
-func (c guardChildVO) GetID() string                                    { return c.ID }
+func (c guardChildVO) GetID() domain.ID                                 { return domain.NewID(c.ID) }
 
 type guardAggRoot struct {
 	domain.AggregateRoot

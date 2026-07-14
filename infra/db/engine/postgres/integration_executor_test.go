@@ -75,7 +75,7 @@ func TestPostgres_Insert_PersistsRowAndOutbox(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Insert: %v", err)
 	}
-	if res.ID == "" {
+	if res.ID.Value() == "" {
 		t.Error("expected populated WriteResult.ID")
 	}
 	if rowCount(t, pg, "flat_persons") != 1 {
@@ -86,7 +86,7 @@ func TestPostgres_Insert_PersistsRowAndOutbox(t *testing.T) {
 	if len(rows) != 1 {
 		t.Fatalf("expected 1 outbox row, got %d", len(rows))
 	}
-	if rows[0].AggregateType != "flat_persons" || rows[0].EventType != "INSERTED" || rows[0].AggregateID != res.ID {
+	if rows[0].AggregateType != "flat_persons" || rows[0].EventType != "INSERTED" || rows[0].AggregateID != res.ID.Value() {
 		t.Errorf("outbox row = %+v, want aggregate_type=flat_persons event_type=INSERTED id=%s", rows[0], res.ID)
 	}
 	var payload map[string]any
@@ -145,7 +145,7 @@ func TestPostgres_Insert_HonorsSchemaTableOverride(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Insert with override: %v", err)
 	}
-	if res.ID == "" {
+	if res.ID.Value() == "" {
 		t.Error("expected ID")
 	}
 	if rowCount(t, pg, "tb_legacy_persons") != 1 {
@@ -170,7 +170,7 @@ func TestPostgres_Update_PersistsAndEmitsOutbox(t *testing.T) {
 
 	// Build an Updatable.
 	loaded := &flatPerson{Name: "Old", Email: "old@x"}
-	loaded.SetID(domain.NewID(res.ID))
+	loaded.SetID(res.ID)
 	upd, err := domain.GetUpdatable(loaded, func(p *flatPerson) error { p.Name = "New"; return nil }, nil, "GetUpdatable")
 	if err != nil {
 		t.Fatalf("GetUpdatable: %v", err)
@@ -181,7 +181,7 @@ func TestPostgres_Update_PersistsAndEmitsOutbox(t *testing.T) {
 	}
 
 	var name string
-	if err := pg.Pool().QueryRow(context.Background(), `SELECT name FROM flat_persons WHERE id = $1`, res.ID).Scan(&name); err != nil {
+	if err := pg.Pool().QueryRow(context.Background(), `SELECT name FROM flat_persons WHERE id = $1`, res.ID.Value()).Scan(&name); err != nil {
 		t.Fatalf("readback: %v", err)
 	}
 	if name != "New" {
@@ -224,7 +224,7 @@ func TestPostgres_Archive_FlipsDeletedAtAndEmitsOutbox(t *testing.T) {
 	}
 
 	loaded := &flatPerson{Name: "Archive", Email: "a@x"}
-	loaded.SetID(domain.NewID(res.ID))
+	loaded.SetID(res.ID)
 	arch, err := domain.GetArchivable(loaded, nil, "GetArchivable")
 	if err != nil {
 		t.Fatalf("GetArchivable: %v", err)
@@ -255,7 +255,7 @@ func TestPostgres_Unarchive_RestoresAndEmitsOutbox(t *testing.T) {
 	ins, _ := domain.GetInsertable(seed, nil, "GetInsertable")
 	res, _ := pg.Insert(testCtx(), ins, flatPersonSchema(), noHook)
 
-	id := domain.NewID(res.ID)
+	id := res.ID
 	loaded := &flatPerson{Name: "U", Email: "u@x"}
 	loaded.SetID(id)
 
@@ -298,7 +298,7 @@ func TestPostgres_Delete_RemovesRowAndEmitsOutbox(t *testing.T) {
 	res, _ := pg.Insert(testCtx(), ins, flatPersonSchema(), noHook)
 
 	loaded := &flatPerson{Name: "D", Email: "d@x"}
-	loaded.SetID(domain.NewID(res.ID))
+	loaded.SetID(res.ID)
 	del, err := domain.GetDeletable(loaded, nil, "GetDeletable")
 	if err != nil {
 		t.Fatalf("GetDeletable: %v", err)
@@ -364,17 +364,17 @@ func TestPostgres_Batch_AllOpKindsInOneTx(t *testing.T) {
 
 	// Update.
 	u := &flatPerson{Name: "S1", Email: "s1@x"}
-	u.SetID(domain.NewID(r1.ID))
+	u.SetID(domain.NewID(r1.ID.Value()))
 	upd, _ := domain.GetUpdatable(u, func(p *flatPerson) error { p.Name = "S1upd"; return nil }, nil, "GetUpdatable")
 
 	// Archive.
 	a := &flatPerson{Name: "S2", Email: "s2@x"}
-	a.SetID(domain.NewID(r2.ID))
+	a.SetID(domain.NewID(r2.ID.Value()))
 	arch, _ := domain.GetArchivable(a, nil, "GetArchivable")
 
 	// Delete.
 	d := &flatPerson{Name: "S3", Email: "s3@x"}
-	d.SetID(domain.NewID(r3.ID))
+	d.SetID(domain.NewID(r3.ID.Value()))
 	del, _ := domain.GetDeletable(d, nil, "GetDeletable")
 
 	results, err := pg.Batch(testCtx(), domain.NewBatch([]domain.ValidEntity{newIns, upd, arch, del}), []*core.TableSchema{flatPersonSchema(), flatPersonSchema(), flatPersonSchema(), flatPersonSchema()})
@@ -405,12 +405,12 @@ func TestPostgres_Batch_AllOpKindsAndUnarchive(t *testing.T) {
 	r, _ := pg.Insert(testCtx(), ins, flatPersonSchema(), noHook)
 
 	a := &flatPerson{Name: "U", Email: "u@x"}
-	a.SetID(domain.NewID(r.ID))
+	a.SetID(domain.NewID(r.ID.Value()))
 	arch, _ := domain.GetArchivable(a, nil, "GetArchivable")
 	_ = pg.Archive(testCtx(), arch, flatPersonSchema(), noHook)
 
 	u := &flatPerson{Name: "U", Email: "u@x"}
-	u.SetID(domain.NewID(r.ID))
+	u.SetID(domain.NewID(r.ID.Value()))
 	una, _ := domain.GetUnarchivable(u, nil, "GetUnarchivable")
 
 	if _, err := pg.Batch(testCtx(), domain.NewBatch([]domain.ValidEntity{una}), []*core.TableSchema{flatPersonSchema()}); err != nil {

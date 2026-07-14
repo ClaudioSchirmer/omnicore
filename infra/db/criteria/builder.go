@@ -1,6 +1,10 @@
 package criteria
 
-import "strings"
+import (
+	"strings"
+
+	"github.com/ClaudioSchirmer/omnicore/domain"
+)
 
 // ─── Leaf builders ──────────────────────────────────────────────────────────
 //
@@ -91,7 +95,7 @@ func Where(e Expr) *Query { return &Query{where: e} }
 // framework's fixed PK convention (Go field "ID" ↔ column "id") — the same
 // convention the by-id load path has always used. The id value is bound as a
 // parameter; domain.ID values are unwrapped by the translator.
-func ByID(id any) *Query { return Where(Eq("ID", id)) }
+func ByID(id domain.ID) *Query { return Where(Eq("ID", id)) }
 
 func (q *Query) OrderBy(field string) *Query {
 	q.order = append(q.order, OrderField{Field: field})

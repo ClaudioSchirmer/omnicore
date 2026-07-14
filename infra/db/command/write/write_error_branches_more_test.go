@@ -28,9 +28,9 @@ func TestRemovedChild_Guards(t *testing.T) {
 	t.Run("missingID", func(t *testing.T) {
 		root := &aggWriteRoot{Name: "r"}
 		root.SetID(domain.NewID(uuid.NewString()))
-		root.AggregateConstructor([]domain.AggregateValueObject{aggWriteChild{ID: "", Label: "x"}})
+		root.AggregateConstructor([]domain.AggregateValueObject{aggWriteChild{ID: domain.ID{}, Label: "x"}})
 		upd, _ := domain.GetUpdatable(root, func(r *aggWriteRoot) error {
-			domain.RemoveAggregateChild(r, aggWriteChild{ID: "", Label: "x"})
+			domain.RemoveAggregateChild(r, aggWriteChild{ID: domain.ID{}, Label: "x"})
 			return nil
 		}, nil, "GetUpdatable")
 		be := newFlatBE(&recBeginner{tx: &recTx{count: 1}})
@@ -47,9 +47,9 @@ func TestRemovedChild_Guards(t *testing.T) {
 				PK("id").FK("agg_w_id").Field("Label", "label")) // no SoftDelete
 		root := &aggWriteRoot{Name: "r"}
 		root.SetID(domain.NewID(uuid.NewString()))
-		root.AggregateConstructor([]domain.AggregateValueObject{aggWriteChild{ID: id, Label: "x"}})
+		root.AggregateConstructor([]domain.AggregateValueObject{aggWriteChild{ID: domain.NewID(id), Label: "x"}})
 		upd, _ := domain.GetUpdatable(root, func(r *aggWriteRoot) error {
-			domain.RemoveAggregateChild(r, aggWriteChild{ID: id, Label: "x"})
+			domain.RemoveAggregateChild(r, aggWriteChild{ID: domain.NewID(id), Label: "x"})
 			return nil
 		}, nil, "GetUpdatable")
 		be := newFlatBE(&recBeginner{tx: &recTx{count: 1}})

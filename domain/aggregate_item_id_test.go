@@ -8,7 +8,7 @@ type noIDFieldAVO struct {
 	Num int
 }
 
-func (n noIDFieldAVO) GetID() string                            { return "" }
+func (n noIDFieldAVO) GetID() ID                                { return ID{} }
 func (n noIDFieldAVO) BuildRules(_ string, _ Service, _ *Rules) {}
 
 type assignIDRoot struct {
@@ -29,7 +29,7 @@ func TestAssignAggregateItemID_StampsTrackedItem(t *testing.T) {
 	}
 
 	items := GetCurrentItemsOf[testAVO](&root.AggregateRoot)
-	if len(items) != 1 || items[0].ID != "id-1" || items[0].Name != "a" {
+	if len(items) != 1 || items[0].ID.Value() != "id-1" || items[0].Name != "a" {
 		t.Fatalf("expected the tracked item to carry the assigned id, got %+v", items)
 	}
 	// Statuses must be untouched — the item is still an OpInsert candidate.
@@ -49,11 +49,11 @@ func TestAssignAggregateItemID_MatchesPreAssignmentValueOnly(t *testing.T) {
 		t.Fatal("the pre-stamp value must no longer match after the id was assigned")
 	}
 	// …but the current (stamped) value does.
-	if ok := root.AssignAggregateItemID(testAVO{ID: "id-1", Name: "a"}, "id-3"); !ok {
+	if ok := root.AssignAggregateItemID(testAVO{ID: NewID("id-1"), Name: "a"}, "id-3"); !ok {
 		t.Fatal("the stamped value must match for a re-assignment")
 	}
 	items := GetCurrentItemsOf[testAVO](&root.AggregateRoot)
-	if len(items) != 1 || items[0].ID != "id-3" {
+	if len(items) != 1 || items[0].ID.Value() != "id-3" {
 		t.Fatalf("expected the re-assigned id, got %+v", items)
 	}
 }
@@ -79,7 +79,7 @@ func TestAssignAggregateItemID_ReportsFalseWithoutMutating(t *testing.T) {
 		})
 	}
 
-	if items := GetCurrentItemsOf[testAVO](&root.AggregateRoot); len(items) != 1 || items[0].ID != "" {
+	if items := GetCurrentItemsOf[testAVO](&root.AggregateRoot); len(items) != 1 || items[0].ID.Value() != "" {
 		t.Fatalf("failed assignments must not mutate tracked items, got %+v", items)
 	}
 }

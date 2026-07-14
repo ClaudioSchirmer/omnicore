@@ -43,7 +43,7 @@ func decodeErrFakeEngine(queryFn func(sql string, args []any) (Rows, error), fai
 // guards fire on.
 type noColsChild struct{}
 
-func (noColsChild) GetID() string                                    { return "" }
+func (noColsChild) GetID() domain.ID                                 { return domain.NewID("") }
 func (noColsChild) BuildRules(string, domain.Service, *domain.Rules) {}
 
 func noColsChildSchema(fkCol string) *TableSchema {

@@ -32,15 +32,16 @@ func (testMySQLDialect) EncodeArg(val any) any {
 			return u[:]
 		}
 		return v.Value()
+	case *domain.ID:
+		if v == nil {
+			return nil
+		}
+		if u, err := uuid.Parse(v.Value()); err == nil {
+			return u[:]
+		}
+		return v.Value()
 	case uuid.UUID:
 		return v[:]
-	case string:
-		if len(v) == 36 {
-			if u, err := uuid.Parse(v); err == nil {
-				return u[:]
-			}
-		}
-		return v
 	default:
 		return val
 	}
@@ -141,5 +142,42 @@ func TestChildCascadeSQL_MySQL(t *testing.T) {
 	unarchive := childCascadeSQL(d, "addresses", "deleted_at", "user_id", "NULL", " IS NOT NULL")
 	if unarchive != "UPDATE `addresses` SET `deleted_at` = NULL WHERE `user_id` = ? AND `deleted_at` IS NOT NULL" {
 		t.Errorf("unarchive cascade = %q", unarchive)
+	}
+}
+
+// TestBuildInsert_MySQL_TypedIDFields proves the write half of the type-driven
+// identity contract: a domain.ID field value binds as its 16-byte form, a nil
+// *domain.ID binds SQL NULL, a non-nil *domain.ID binds 16 bytes — and a plain
+// string, canonical uuid shape included, binds as text (a string field pairs
+// with a CHAR/VARCHAR column). The field TYPE is the declaration; buildInsert
+// itself needs no schema knowledge because the VALUE carries the type.
+func TestBuildInsert_MySQL_TypedIDFields(t *testing.T) {
+	buyer := domain.NewID("018f8b2c-1d3e-7a9b-bc4d-5e6f7a8b9c0d")
+	partner := domain.NewID("018f8b2c-1d3e-7a9b-bc4d-5e6f7a8b9c0e")
+	var absent *domain.ID
+	fields := domain.Fields{
+		"buyer_id":   buyer,                                  // domain.ID → 16 bytes
+		"partner_id": &partner,                               // *domain.ID → 16 bytes
+		"absent_id":  absent,                                 // nil *domain.ID → SQL NULL
+		"legacy_ref": "018f8b2c-1d3e-7a9b-bc4d-5e6f7a8b9c0d", // string → text, always
+	}
+	id := "11111111-1111-1111-1111-111111111111"
+	_, args := buildInsert(testMySQLDialect{}, "orders", "id", id, fields, nil)
+
+	// Bind order: PK, then SortedKeys (absent_id, buyer_id, legacy_ref, partner_id).
+	if len(args) != 5 {
+		t.Fatalf("args = %v, want 5", args)
+	}
+	if args[1] != nil {
+		t.Errorf("absent_id arg = %v (%T), want nil (SQL NULL)", args[1], args[1])
+	}
+	if b, ok := args[2].([]byte); !ok || len(b) != 16 {
+		t.Errorf("buyer_id arg = %v (%T), want 16 bytes (domain.ID)", args[2], args[2])
+	}
+	if got, ok := args[3].(string); !ok || got != "018f8b2c-1d3e-7a9b-bc4d-5e6f7a8b9c0d" {
+		t.Errorf("legacy_ref arg = %v (%T), want the untouched text (string field)", args[3], args[3])
+	}
+	if b, ok := args[4].([]byte); !ok || len(b) != 16 {
+		t.Errorf("partner_id arg = %v (%T), want 16 bytes (*domain.ID)", args[4], args[4])
 	}
 }

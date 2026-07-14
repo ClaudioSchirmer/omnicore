@@ -119,7 +119,7 @@ type aggChild struct {
 	Label string
 }
 
-func (a aggChild) GetID() string                      { return a.ID }
+func (a aggChild) GetID() ID                          { return NewID(a.ID) }
 func (a aggChild) BuildRules(string, Service, *Rules) {}
 
 type aggEntity struct {

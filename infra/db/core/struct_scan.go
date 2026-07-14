@@ -3,12 +3,105 @@ package core
 import (
 	"fmt"
 	"reflect"
+
+	"github.com/google/uuid"
+
+	"github.com/ClaudioSchirmer/omnicore/domain"
 )
 
 // Auto-scan: the AggregateLoader generates an explicit SELECT from the
 // TableSchema (mapped columns) and scans the row directly into the struct
 // fields by the schema's resolved field indices. The column → field mapping is
 // the schema's bidirectional plan (ScanPlan); there is no convention inference.
+
+// idType / idPtrType anchor the reflect-based detection of identity fields:
+// the field TYPE is the declaration (mirroring how BoolColumns infers bool
+// columns), so the scan plan knows which targets need the id proxies below and
+// the criteria translator knows which probes to lift into domain.ID.
+var (
+	idType    = reflect.TypeOf(domain.ID{})
+	idPtrType = reflect.TypeOf((*domain.ID)(nil))
+)
+
+// scanTargetFor returns the scan destination for one struct field: the plain
+// field address for every ordinary field, or an id proxy for a domain.ID /
+// *domain.ID field. Both drivers hand a proxy the raw column value (they honor
+// sql.Scanner — database/sql natively, pgx via its Scanner fallback), so the
+// proxy owns the decode — BINARY(16) bytes and uuid/text forms all restore to
+// the canonical string — and SQL NULL is resolved explicitly: nil for the
+// pointer field, a loud error for the value field (the nullable contract
+// database/sql cannot express for Scanner types on its own).
+func scanTargetFor(f reflect.Value) any {
+	switch f.Type() {
+	case idType:
+		return &idScanTarget{dst: f.Addr().Interface().(*domain.ID)}
+	case idPtrType:
+		return &nullableIDScanTarget{dst: f.Addr().Interface().(**domain.ID)}
+	}
+	return f.Addr().Interface()
+}
+
+// decodeIDValue normalizes the raw forms the drivers hand a Scanner for an id
+// column: 16 raw bytes (MySQL BINARY(16)) or a 16-byte array decode to the
+// canonical uuid string; text — []byte or string, how pgx delivers a UUID
+// column and either driver delivers a CHAR(36) — passes through as-is (like
+// domain.NewID, no validation: the column's value is the identity).
+func decodeIDValue(src any) (string, error) {
+	switch v := src.(type) {
+	case []byte:
+		if len(v) == 16 {
+			u, err := uuid.FromBytes(v)
+			if err != nil {
+				return "", fmt.Errorf("decoding BINARY(16) id: %w", err)
+			}
+			return u.String(), nil
+		}
+		return string(v), nil
+	case [16]byte:
+		u, err := uuid.FromBytes(v[:])
+		if err != nil {
+			return "", fmt.Errorf("decoding 16-byte id: %w", err)
+		}
+		return u.String(), nil
+	case string:
+		return v, nil
+	default:
+		return "", fmt.Errorf("unsupported driver value %T for a domain.ID field", src)
+	}
+}
+
+// idScanTarget scans one column into a REQUIRED identity field (domain.ID).
+type idScanTarget struct{ dst *domain.ID }
+
+func (t *idScanTarget) Scan(src any) error {
+	if src == nil {
+		return fmt.Errorf("NULL scanned into a non-nullable domain.ID field — declare the field *domain.ID (and the column NULL-able)")
+	}
+	s, err := decodeIDValue(src)
+	if err != nil {
+		return err
+	}
+	*t.dst = domain.NewID(s)
+	return nil
+}
+
+// nullableIDScanTarget scans one column into a NULLABLE identity field
+// (*domain.ID): SQL NULL restores as nil, any value as &domain.ID.
+type nullableIDScanTarget struct{ dst **domain.ID }
+
+func (t *nullableIDScanTarget) Scan(src any) error {
+	if src == nil {
+		*t.dst = nil
+		return nil
+	}
+	s, err := decodeIDValue(src)
+	if err != nil {
+		return err
+	}
+	id := domain.NewID(s)
+	*t.dst = &id
+	return nil
+}
 
 // scanRowIntoStruct fills dst (must be pointer to struct) with the values of
 // the indicated columns, in the order they appear in the SELECT. row.Scan
@@ -34,7 +127,7 @@ func scanRowIntoStruct(row keyedRow, dst any, columns []string, byCol map[string
 		if !ok {
 			return fmt.Errorf("scanRowIntoStruct: column %q has no corresponding field in %s", col, v.Type().Name())
 		}
-		targets[i] = v.Field(fieldIndex).Addr().Interface()
+		targets[i] = scanTargetFor(v.Field(fieldIndex))
 	}
 	return row.Scan(targets...)
 }
@@ -69,7 +162,7 @@ func ScanLeadingKey(row keyedRow, dst any, columns []string, byCol map[string]in
 		if !ok {
 			return "", fmt.Errorf("ScanLeadingKey: column %q has no corresponding field in %s", col, v.Type().Name())
 		}
-		targets = append(targets, v.Field(fieldIndex).Addr().Interface())
+		targets = append(targets, scanTargetFor(v.Field(fieldIndex)))
 	}
 	return key, row.Scan(targets...)
 }

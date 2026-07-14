@@ -11,6 +11,74 @@ with `1.0.0`.
 
 ## [Unreleased]
 
+## [0.30.0] - 2026-07-13
+
+### Changed
+
+- **BREAKING: identity is a TYPE — `domain.ID` becomes the persistable
+  identity field type, and the MySQL value-shape codec heuristic is removed.**
+  A field holding an id (a cross-aggregate reference like a
+  `BuyerID`/`TenantID`) is now declared `domain.ID` — nullable ⇒ `*domain.ID`
+  — and the field's Go type alone drives every leg on every supported
+  engine: the write
+  bind and the criteria probe lift render it in the dialect's native id form
+  (`UUID` on Postgres, `BINARY(16)` on MySQL) and the new id scan proxies
+  restore it on read, with `nil` ⇄ SQL `NULL` on the pointer (the nullable
+  BINARY(16) reference was previously impossible). A plain `string` field is
+  text, ALWAYS — the old MySQL `EncodeArg` heuristic that bound any
+  canonical-shaped (36-char) uuid string as 16 raw bytes is gone, so
+  `CHAR(36)`/`VARCHAR(36)` uuid-valued text columns are first-class. The
+  managed PK/FK slots are unaffected (always native — including bare-string
+  `ID` criteria probes such as the exclude-self `Ne("ID", id)`, lifted by the
+  translator by construction). *Migration (MySQL consumers only)*: retype
+  every uuid reference field stored as `BINARY(16)` from `string` to
+  `domain.ID` (`*string` → `*domain.ID`) — the DDL and the data stay exactly
+  as they are; fields stored as text keep `string` and need nothing. Postgres
+  consumers: same retyping recommended for native `UUID` reference columns
+  (text binds work either way on PG, so nothing breaks unretyped).
+
+- **BREAKING: the identity contracts speak `domain.ID` end to end.** The
+  type-driven sweep reaches every contract that used to carry a bare id
+  string: `Updatable`/`Archivable`/`Deletable`/`Unarchivable.ID()` now return
+  `domain.ID` (the redundant `IDValue()` twin is absorbed — one method, one
+  type; `Insertable.ID()` already returned `*domain.ID`),
+  `AggregateValueObject.GetID()` returns `domain.ID` and the documented AVO
+  shape carries an exported `ID domain.ID` field (the persister's minted-id
+  write-back sets it via reflection and rejects any other type),
+  `domain.WriteResult.ID` is `domain.ID` (JSON shape unchanged — it marshals
+  to the canonical string), and `criteria.ByID` takes `domain.ID`.
+  *Migration*: mechanical — AVO structs retype `ID string` → `ID domain.ID`
+  (`GetID` returns it directly), call sites needing text call `.Value()`,
+  `IDValue()` call sites become `ID()`, and bare-string `ByID(s)` becomes
+  `ByID(domain.NewID(s))`.
+
+### Added
+
+- **`domain.ID.UnmarshalJSON`** — the symmetric half of `MarshalJSON`, so an
+  ID round-trips through every JSON boundary (outbox payload, audit maps, DTO
+  mapping) with NewID parity (no uuid validation; `IsValid` stays the explicit
+  seam).
+- **Closed persistable-type set — boot fail on an unknown field type.**
+  `Field(...)` now validates the declared Go type against the exact set the
+  framework composes on every supported relational engine
+  (string/bool/int·16/32/64/float32/64/
+  time.Time — each plus its pointer form — `domain.ID`/`*domain.ID`, `[]byte`,
+  `json.RawMessage`). Anything else panics at construction with the fix: a
+  `google/uuid.UUID` field points at `domain.ID`; every other unknown type
+  (named enums, structs/maps, Go slices — the PG-only array mapping) points at
+  `table-schema.html`, the canonical home of the supported set. Matching is by
+  identical type, never by kind, so the both-engine guarantee stays literal.
+- **Identity scan proxies + criteria probe lift.** The auto-scan detects
+  `domain.ID`/`*domain.ID` fields by their reflected type and substitutes
+  `sql.Scanner` proxies that own the decode (16-byte BINARY(16), uuid text and
+  CHAR(36) forms all restore canonical; SQL `NULL` resolves to `nil` on the
+  pointer field and to a loud error on the value field); the criteria
+  translator lifts bare `string`/`*string` probes on identity-typed fields
+  into `domain.ID` (`TableSchema.IDKindOf`, derived from the Go struct —
+  mirroring how BoolColumns infers bool columns). Proven by unit +
+  integration tests across the full matrix (PG/MySQL × native/text ×
+  required/nullable × write/scan/criteria/NULL).
+
 ## [0.29.0] - 2026-07-13
 
 ### Changed

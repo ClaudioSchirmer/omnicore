@@ -70,7 +70,7 @@ func (b *BaseEngine) Insert(ctx persistence.RequestContext, entity domain.Insert
 		return domain.WriteResult{}, err
 	}
 	b.AfterCommit(ctx, ab)
-	return domain.WriteResult{ID: id, Fields: fields}, nil
+	return domain.WriteResult{ID: domain.NewID(id), Fields: fields}, nil
 }
 
 func (b *BaseEngine) Update(ctx persistence.RequestContext, entity domain.Updatable, schema *TableSchema, hook WriteHook) (domain.WriteResult, error) {
@@ -94,14 +94,14 @@ func (b *BaseEngine) Update(ctx persistence.RequestContext, entity domain.Updata
 	if err := b.FireAfterBegin(ctx, tx, src, hook, hctx); err != nil {
 		return domain.WriteResult{}, err
 	}
-	sql, args := buildUpdate(d, schema.Table(), schema.PKColumn(), entity.ID(), fields, schema.UpdateNowColumns())
-	if err := execExpectingRow(ctx, tx, sql, args, entity.EntityName(), schema.PKColumn(), entity.ID()); err != nil {
+	sql, args := buildUpdate(d, schema.Table(), schema.PKColumn(), entity.ID().Value(), fields, schema.UpdateNowColumns())
+	if err := execExpectingRow(ctx, tx, sql, args, entity.EntityName(), schema.PKColumn(), entity.ID().Value()); err != nil {
 		return domain.WriteResult{}, err
 	}
-	if err := applySiblingUpdates(ctx, tx, d, schema, src, entity.ID(), entity.IsPartial()); err != nil {
+	if err := applySiblingUpdates(ctx, tx, d, schema, src, entity.ID().Value(), entity.IsPartial()); err != nil {
 		return domain.WriteResult{}, err
 	}
-	if err := WriteOutbox(ctx, tx, schema.Table(), "UPDATED", entity.ID(), fields); err != nil {
+	if err := WriteOutbox(ctx, tx, schema.Table(), "UPDATED", entity.ID().Value(), fields); err != nil {
 		return domain.WriteResult{}, err
 	}
 	ab := b.BuildAudit(func() audit.AuditEvent {
@@ -110,7 +110,7 @@ func (b *BaseEngine) Update(ctx persistence.RequestContext, entity domain.Updata
 	if err := b.WriteAuditRow(ctx, tx, ab.Ev); err != nil {
 		return domain.WriteResult{}, err
 	}
-	if err := b.FireBeforeCommit(ctx, tx, src, domain.NewID(entity.ID()), hook, hctx); err != nil {
+	if err := b.FireBeforeCommit(ctx, tx, src, domain.NewID(entity.ID().Value()), hook, hctx); err != nil {
 		return domain.WriteResult{}, err
 	}
 	if err := tx.Commit(ctx); err != nil {
@@ -128,7 +128,7 @@ func (b *BaseEngine) Archive(ctx persistence.RequestContext, entity domain.Archi
 	if err != nil {
 		return err
 	}
-	return b.flatSoftWrite(ctx, entity.Source(), entity.ID(), schema, hook,
+	return b.flatSoftWrite(ctx, entity.Source(), entity.ID().Value(), schema, hook,
 		HookContext{Verb: "Archive", EntityType: entity.EntityName()}, "ARCHIVED",
 		softWritePayload(schema, entity.Source(), sdCol, "ARCHIVED"),
 		func(d Dialect) string { return archiveSQL(d, schema.Table(), sdCol, schema.PKColumn()) },
@@ -144,7 +144,7 @@ func (b *BaseEngine) Unarchive(ctx persistence.RequestContext, entity domain.Una
 	if err != nil {
 		return err
 	}
-	return b.flatSoftWrite(ctx, entity.Source(), entity.ID(), schema, hook,
+	return b.flatSoftWrite(ctx, entity.Source(), entity.ID().Value(), schema, hook,
 		HookContext{Verb: "Unarchive", EntityType: entity.EntityName()}, "UNARCHIVED",
 		softWritePayload(schema, entity.Source(), sdCol, "UNARCHIVED"),
 		func(d Dialect) string { return unarchiveSQL(d, schema.Table(), sdCol, schema.PKColumn()) },
@@ -159,7 +159,7 @@ func (b *BaseEngine) Delete(ctx persistence.RequestContext, entity domain.Deleta
 	// Flat path: hardDelete clears any owner siblings (by the shared PK) before
 	// the root DELETE, in the same TX. A schema without siblings collapses to the
 	// single root DELETE — behavior-identical to before.
-	return b.hardDelete(ctx, entity.Source(), entity.ID(), schema, hook,
+	return b.hardDelete(ctx, entity.Source(), entity.ID().Value(), schema, hook,
 		HookContext{Verb: "Delete", EntityType: entity.EntityName()},
 		func() audit.AuditEvent { return BuildDeleteEvent(ctx, entity, schema, b.auditClaims) },
 		func(baseID string) audit.AuditEvent {
@@ -278,15 +278,15 @@ func execOneWithTx(ctx context.Context, tx WriteTx, d Dialect, entity domain.Val
 		if err := WriteOutbox(ctx, tx, schema.Table(), "INSERTED", id, fields); err != nil {
 			return domain.WriteResult{}, err
 		}
-		return domain.WriteResult{ID: id, Fields: fields}, nil
+		return domain.WriteResult{ID: domain.NewID(id), Fields: fields}, nil
 
 	case domain.Updatable:
 		fields := schema.WriteFields(e.Source())
-		sql, args := buildUpdate(d, schema.Table(), schema.PKColumn(), e.ID(), fields, schema.UpdateNowColumns())
-		if err := execExpectingRow(ctx, tx, sql, args, e.EntityName(), schema.PKColumn(), e.ID()); err != nil {
+		sql, args := buildUpdate(d, schema.Table(), schema.PKColumn(), e.ID().Value(), fields, schema.UpdateNowColumns())
+		if err := execExpectingRow(ctx, tx, sql, args, e.EntityName(), schema.PKColumn(), e.ID().Value()); err != nil {
 			return domain.WriteResult{}, err
 		}
-		if err := WriteOutbox(ctx, tx, schema.Table(), "UPDATED", e.ID(), fields); err != nil {
+		if err := WriteOutbox(ctx, tx, schema.Table(), "UPDATED", e.ID().Value(), fields); err != nil {
 			return domain.WriteResult{}, err
 		}
 		return domain.WriteResult{ID: e.ID(), Fields: fields}, nil
@@ -296,10 +296,10 @@ func execOneWithTx(ctx context.Context, tx WriteTx, d Dialect, entity domain.Val
 		if err != nil {
 			return domain.WriteResult{}, err
 		}
-		if err := tx.Exec(ctx, archiveSQL(d, schema.Table(), sdCol, schema.PKColumn()), d.EncodeArg(domain.NewID(e.ID()))); err != nil {
+		if err := tx.Exec(ctx, archiveSQL(d, schema.Table(), sdCol, schema.PKColumn()), d.EncodeArg(domain.NewID(e.ID().Value()))); err != nil {
 			return domain.WriteResult{}, err
 		}
-		if err := WriteOutbox(ctx, tx, schema.Table(), "ARCHIVED", e.ID(), softWritePayload(schema, e.Source(), sdCol, "ARCHIVED")); err != nil {
+		if err := WriteOutbox(ctx, tx, schema.Table(), "ARCHIVED", e.ID().Value(), softWritePayload(schema, e.Source(), sdCol, "ARCHIVED")); err != nil {
 			return domain.WriteResult{}, err
 		}
 		return domain.WriteResult{ID: e.ID()}, nil
@@ -309,19 +309,19 @@ func execOneWithTx(ctx context.Context, tx WriteTx, d Dialect, entity domain.Val
 		if err != nil {
 			return domain.WriteResult{}, err
 		}
-		if err := tx.Exec(ctx, unarchiveSQL(d, schema.Table(), sdCol, schema.PKColumn()), d.EncodeArg(domain.NewID(e.ID()))); err != nil {
+		if err := tx.Exec(ctx, unarchiveSQL(d, schema.Table(), sdCol, schema.PKColumn()), d.EncodeArg(domain.NewID(e.ID().Value()))); err != nil {
 			return domain.WriteResult{}, err
 		}
-		if err := WriteOutbox(ctx, tx, schema.Table(), "UNARCHIVED", e.ID(), softWritePayload(schema, e.Source(), sdCol, "UNARCHIVED")); err != nil {
+		if err := WriteOutbox(ctx, tx, schema.Table(), "UNARCHIVED", e.ID().Value(), softWritePayload(schema, e.Source(), sdCol, "UNARCHIVED")); err != nil {
 			return domain.WriteResult{}, err
 		}
 		return domain.WriteResult{ID: e.ID()}, nil
 
 	case domain.Deletable:
-		if err := tx.Exec(ctx, deleteSQL(d, schema.Table(), schema.PKColumn()), d.EncodeArg(domain.NewID(e.ID()))); err != nil {
+		if err := tx.Exec(ctx, deleteSQL(d, schema.Table(), schema.PKColumn()), d.EncodeArg(domain.NewID(e.ID().Value()))); err != nil {
 			return domain.WriteResult{}, err
 		}
-		if err := WriteOutbox(ctx, tx, schema.Table(), "DELETED", e.ID(), deleteKeysPayload(schema, e.Source(), e.ID())); err != nil {
+		if err := WriteOutbox(ctx, tx, schema.Table(), "DELETED", e.ID().Value(), deleteKeysPayload(schema, e.Source(), e.ID().Value())); err != nil {
 			return domain.WriteResult{}, err
 		}
 		return domain.WriteResult{ID: e.ID()}, nil

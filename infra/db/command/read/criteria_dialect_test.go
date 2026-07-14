@@ -26,10 +26,17 @@ func (testPGDialect) QuoteIdent(name string) string {
 	return name
 }
 func (testPGDialect) EncodeArg(val any) any {
-	if id, ok := val.(domain.ID); ok {
-		return id.Value()
+	switch v := val.(type) {
+	case domain.ID:
+		return v.Value()
+	case *domain.ID:
+		if v == nil {
+			return nil
+		}
+		return v.Value()
+	default:
+		return val
 	}
-	return val
 }
 func (testPGDialect) DecodeID(raw string) (string, error) {
 	return raw, nil

@@ -18,7 +18,7 @@ type Rec struct {
 	emit      string
 }
 
-func (r Rec) GetID() string { return r.ID }
+func (r Rec) GetID() ID { return NewID(r.ID) }
 func (r Rec) BuildRules(_ string, _ Service, rules *Rules) {
 	if r.callCount != nil {
 		*r.callCount++
@@ -40,7 +40,7 @@ type Tag struct {
 	callCount *int
 }
 
-func (u Tag) GetID() string { return u.ID }
+func (u Tag) GetID() ID { return NewID(u.ID) }
 func (u Tag) BuildRules(_ string, _ Service, _ *Rules) {
 	if u.callCount != nil {
 		*u.callCount++
@@ -359,7 +359,7 @@ type actionAwareChild struct {
 	rec *actionRecorder
 }
 
-func (a actionAwareChild) GetID() string { return a.ID }
+func (a actionAwareChild) GetID() ID { return NewID(a.ID) }
 func (a actionAwareChild) BuildRules(actionName string, _ Service, _ *Rules) {
 	if a.rec != nil {
 		a.rec.children = append(a.rec.children, actionName)

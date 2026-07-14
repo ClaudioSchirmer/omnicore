@@ -168,7 +168,7 @@ func TestBaseEngine_Insert_HappyPath(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Insert: %v", err)
 	}
-	if res.ID == "" {
+	if res.ID.Value() == "" {
 		t.Error("expected a generated id")
 	}
 	if !tx.committed {

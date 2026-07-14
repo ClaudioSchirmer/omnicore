@@ -89,6 +89,41 @@ type schemaField struct {
 	// a schema-level label there is a boot panic — never two ways to express
 	// one domain concept). "" when none.
 	labelKey string
+
+	// idKind is the field's identity typing, derived from the Go struct at
+	// Field() time (never declared): a domain.ID field is IDValue, a *domain.ID
+	// field is IDPointer, everything else IDNone. The TYPE is the declaration —
+	// it tells the criteria translator which probes to lift into domain.ID so
+	// they bind in the dialect's native id form (the scan side detects the same
+	// types per target, see scanTargetFor).
+	idKind IDKind
+}
+
+// IDKind classifies a persisted field's identity typing, derived from its Go
+// type by reflection (mirroring how BoolColumns infers bool columns — the type
+// system carries the intent, nothing is declared).
+type IDKind uint8
+
+const (
+	// IDNone — an ordinary field; its values bind exactly as the driver sees
+	// them (a string is text, always).
+	IDNone IDKind = iota
+	// IDValue — a required identity field (domain.ID).
+	IDValue
+	// IDPointer — a nullable identity field (*domain.ID); nil ⇄ SQL NULL.
+	IDPointer
+)
+
+// IDKindOf reports the identity typing of a Go field on this schema. The
+// managed PK slot ("ID") is ALWAYS IDValue — the framework stores it in the
+// dialect's native id form on every schema, so a bare-string PK probe (e.g.
+// the exclude-self Ne("ID", id)) must bind like the typed ByID does. Unknown
+// fields answer IDNone (the translator already rejects them separately).
+func (s *TableSchema) IDKindOf(goField string) IDKind {
+	if goField == pkGoField {
+		return IDValue
+	}
+	return s.byGo[goField].idKind
 }
 
 // NewTableSchema starts a type-anchored schema for table over Go type T. Field
@@ -294,7 +329,18 @@ func (s *TableSchema) Field(goName, column string, labelKey ...string) *TableSch
 			s.table, goName,
 		))
 	}
-	fd := schemaField{goName: goName, column: column, index: idx, labelKey: lk}
+	kind := IDNone
+	if s.typ != nil && idx >= 0 {
+		ft := s.typ.Field(idx).Type
+		mustSupportedFieldType(s.table, goName, ft)
+		switch ft {
+		case idType:
+			kind = IDValue
+		case idPtrType:
+			kind = IDPointer
+		}
+	}
+	fd := schemaField{goName: goName, column: column, index: idx, labelKey: lk, idKind: kind}
 	s.fields = append(s.fields, fd)
 	s.byGo[goName] = fd
 	s.byCol[column] = fd

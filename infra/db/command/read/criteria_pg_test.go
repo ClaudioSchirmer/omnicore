@@ -36,7 +36,7 @@ func TestPgVisitor_Operators(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			sql, args, err := compileWhere(c.e, r, testPGDialect{})
+			sql, args, err := compileWhere(c.e, r, testPGDialect{}, nil)
 			if err != nil {
 				t.Fatalf("compileWhere: %v", err)
 			}
@@ -56,7 +56,7 @@ func TestPgVisitor_NestingAndPrecedence(t *testing.T) {
 		criteria.Or(criteria.Eq("Email", "a@x"), criteria.Eq("Email", "b@x")),
 		criteria.Not(criteria.IsNull("Phone")),
 	)
-	sql, args, err := compileWhere(e, testResolver(), testPGDialect{})
+	sql, args, err := compileWhere(e, testResolver(), testPGDialect{}, nil)
 	if err != nil {
 		t.Fatalf("compileWhere: %v", err)
 	}
@@ -70,42 +70,42 @@ func TestPgVisitor_NestingAndPrecedence(t *testing.T) {
 }
 
 func TestPgVisitor_NilWhereIsEmpty(t *testing.T) {
-	sql, args, err := compileWhere(nil, testResolver(), testPGDialect{})
+	sql, args, err := compileWhere(nil, testResolver(), testPGDialect{}, nil)
 	if err != nil || sql != "" || args != nil {
 		t.Errorf("nil where: sql=%q args=%v err=%v", sql, args, err)
 	}
 }
 
 func TestPgVisitor_UnknownFieldErrors(t *testing.T) {
-	if _, _, err := compileWhere(criteria.Eq("Nope", "x"), testResolver(), testPGDialect{}); err == nil {
+	if _, _, err := compileWhere(criteria.Eq("Nope", "x"), testResolver(), testPGDialect{}, nil); err == nil {
 		t.Fatal("expected unknown-field error")
 	}
 }
 
 func TestPgVisitor_ZeroValueInErrors(t *testing.T) {
-	if _, _, err := compileWhere(criteria.In("Name"), testResolver(), testPGDialect{}); err == nil {
+	if _, _, err := compileWhere(criteria.In("Name"), testResolver(), testPGDialect{}, nil); err == nil {
 		t.Fatal("expected error on empty In (no IN ())")
 	}
 }
 
 func TestPgVisitor_CardinalityErrors(t *testing.T) {
 	// Hand-built Comparisons violating per-operator cardinality.
-	if _, _, err := compileWhere(criteria.Comparison{Field: "Name", Op: criteria.OpEq}, testResolver(), testPGDialect{}); err == nil {
+	if _, _, err := compileWhere(criteria.Comparison{Field: "Name", Op: criteria.OpEq}, testResolver(), testPGDialect{}, nil); err == nil {
 		t.Error("expected error: eq with zero values")
 	}
-	if _, _, err := compileWhere(criteria.Comparison{Field: "Phone", Op: criteria.OpIsNull, Values: []any{"x"}}, testResolver(), testPGDialect{}); err == nil {
+	if _, _, err := compileWhere(criteria.Comparison{Field: "Phone", Op: criteria.OpIsNull, Values: []any{"x"}}, testResolver(), testPGDialect{}, nil); err == nil {
 		t.Error("expected error: isnull with values")
 	}
 }
 
 func TestPgVisitor_EmptyLogicalErrors(t *testing.T) {
-	if _, _, err := compileWhere(criteria.And(), testResolver(), testPGDialect{}); err == nil {
+	if _, _, err := compileWhere(criteria.And(), testResolver(), testPGDialect{}, nil); err == nil {
 		t.Error("expected error: And with no operands")
 	}
 }
 
 func TestPgVisitor_DomainIDArgUnwrapped(t *testing.T) {
-	_, args, err := compileWhere(criteria.Eq("ID", domain.NewID("the-id")), testResolver(), testPGDialect{})
+	_, args, err := compileWhere(criteria.Eq("ID", domain.NewID("the-id")), testResolver(), testPGDialect{}, nil)
 	if err != nil {
 		t.Fatalf("compileWhere: %v", err)
 	}
@@ -120,7 +120,7 @@ func TestPgVisitor_PlaceholderNumberingMonotonic(t *testing.T) {
 		criteria.In("Email", "x", "y"),
 		criteria.Gt("Age", 1),
 	)
-	sql, args, err := compileWhere(e, testResolver(), testPGDialect{})
+	sql, args, err := compileWhere(e, testResolver(), testPGDialect{}, nil)
 	if err != nil {
 		t.Fatalf("compileWhere: %v", err)
 	}

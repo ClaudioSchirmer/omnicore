@@ -33,7 +33,7 @@
     </p>
 
     <p>
-        <code>AggregateValueObject</code> requires <code>BuildRules(actionName string, svc Service, r *Rules)</code> — signature identical to <code>Entity.BuildRules</code> — plus <code>GetID()</code>. Infra maps columns via the child's <code>TableSchema</code>; an undeclared exported field is runtime-only by construction (the schema simply does not list it, so it is never persisted/scanned/audited); <code>ID</code> is the PK (skipped on INSERT/UPDATE write list, used in the WHERE clause); the FK to the root is injected by infra (it is not a struct field).
+        <code>AggregateValueObject</code> requires <code>BuildRules(actionName string, svc Service, r *Rules)</code> — signature identical to <code>Entity.BuildRules</code> — plus <code>GetID() domain.ID</code>, backed by an exported <code>ID domain.ID</code> field (identity is a TYPE on children exactly as on references; the persister's minted-id write-back sets that field via reflection). Infra maps columns via the child's <code>TableSchema</code>; an undeclared exported field is runtime-only by construction (the schema simply does not list it, so it is never persisted/scanned/audited); <code>ID</code> is the PK (skipped on INSERT/UPDATE write list, used in the WHERE clause); the FK to the root is injected by infra (it is not a struct field).
     </p>
 
     <h3>Universal symmetric cascade</h3>

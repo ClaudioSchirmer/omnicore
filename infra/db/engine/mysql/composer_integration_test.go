@@ -79,7 +79,7 @@ func TestMySQLComposer_OwnChild(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Insert: %v", err)
 	}
-	rootUUID, err := uuid.Parse(res.ID)
+	rootUUID, err := uuid.Parse(res.ID.Value())
 	if err != nil {
 		t.Fatalf("root id not a uuid: %v", err)
 	}
@@ -101,7 +101,7 @@ func TestMySQLComposer_OwnChild(t *testing.T) {
 			Field("Qty", "qty").SoftDelete("deleted_at"))
 	view := query.View("flat_persons").Version(1).Root("flat_persons").Schema(rootWithChild)
 
-	doc, err := query.NewComposer(eng).Compose(ctx, view, res.ID)
+	doc, err := query.NewComposer(eng).Compose(ctx, view, res.ID.Value())
 	if err != nil {
 		t.Fatalf("Compose: %v", err)
 	}
@@ -114,7 +114,7 @@ func TestMySQLComposer_OwnChild(t *testing.T) {
 		t.Fatalf("auto-projected own children = %d, want 2", len(lines))
 	}
 	for _, l := range lines {
-		if uid, ok := l["user_id"].(string); !ok || uid != res.ID {
+		if uid, ok := l["user_id"].(string); !ok || uid != res.ID.Value() {
 			t.Fatalf("child user_id = %#v, want %q (BINARY(16) FK must decode to the root uuid)", l["user_id"], res.ID)
 		}
 	}

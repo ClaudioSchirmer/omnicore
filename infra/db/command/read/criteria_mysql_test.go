@@ -33,15 +33,16 @@ func (testMySQLDialect) EncodeArg(val any) any {
 			return u[:]
 		}
 		return v.Value()
+	case *domain.ID:
+		if v == nil {
+			return nil
+		}
+		if u, err := uuid.Parse(v.Value()); err == nil {
+			return u[:]
+		}
+		return v.Value()
 	case uuid.UUID:
 		return v[:]
-	case string:
-		if len(v) == 36 {
-			if u, err := uuid.Parse(v); err == nil {
-				return u[:]
-			}
-		}
-		return v
 	default:
 		return val
 	}
@@ -76,7 +77,7 @@ func TestMySQLVisitor_Operators(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			sql, args, err := compileWhere(c.e, r, testMySQLDialect{})
+			sql, args, err := compileWhere(c.e, r, testMySQLDialect{}, nil)
 			if err != nil {
 				t.Fatalf("compileWhere: %v", err)
 			}
@@ -101,7 +102,7 @@ func TestMySQLVisitor_PositionalArgOrder(t *testing.T) {
 		criteria.In("Email", "x", "y"),
 		criteria.Gt("Age", 1),
 	)
-	sql, args, err := compileWhere(e, testResolver(), testMySQLDialect{})
+	sql, args, err := compileWhere(e, testResolver(), testMySQLDialect{}, nil)
 	if err != nil {
 		t.Fatalf("compileWhere: %v", err)
 	}
@@ -124,7 +125,7 @@ func TestMySQLVisitor_PositionalArgOrder(t *testing.T) {
 // keeps it a string) — the read-side mirror of the write-path id encoding.
 func TestMySQLVisitor_DomainIDArgEncodedToBinary(t *testing.T) {
 	u := uuid.MustParse("018f8b2c-1d3e-7a9b-bc4d-5e6f7a8b9c0d")
-	_, args, err := compileWhere(criteria.Eq("ID", domain.NewID(u.String())), testResolver(), testMySQLDialect{})
+	_, args, err := compileWhere(criteria.Eq("ID", domain.NewID(u.String())), testResolver(), testMySQLDialect{}, nil)
 	if err != nil {
 		t.Fatalf("compileWhere: %v", err)
 	}

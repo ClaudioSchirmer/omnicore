@@ -166,6 +166,7 @@ These constrain design decisions across the whole module. Each is detailed in th
 9. **The relational layer is backend-agnostic** (Postgres AND MySQL via the engine seam). Say "the relational backend / SoR / control plane" — never "Postgres" for an agnostic concept. PG-only access is an explicit, documented escape hatch (`AsPostgres`, `UnwrapPgxTx`).
 10. **Integration events are at-least-once** — dedup is best-effort; consumer handlers must be idempotent. No outer TX on the receiver path (each `Repo.Method` opens its own short TX, identical to the HTTP path).
 11. **The `docs/` site is the source of truth for the public surface** — every approved surface change updates the mapped section + a `changelog.html` entry in the same round.
+12. **Identity is a TYPE** — `domain.ID` (nullable ⇒ `*domain.ID`) is the id everywhere: entity contracts, AVO `ID` fields, `WriteResult`, `criteria.ByID`, and persisted fields, where the Go type alone drives each dialect's native id form (never a value-shape guess; a `string` field is text, always). The persistable field-type set is CLOSED — an unknown field type is a boot fail at the `Field(...)` declaration (`table-schema.html` is the canonical home of the set).
 
 ## Naming conventions
 

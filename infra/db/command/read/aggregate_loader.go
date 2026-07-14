@@ -196,6 +196,35 @@ func (l *AggregateLoader[T]) compileFilter(q *criteria.Query) (fromJoin, clause 
 	return l.compileFilterJoins(q, joins)
 }
 
+// idKindResolver reports the identity typing of a criteria field across the
+// SAME resolution surface specResolver walks — the anchor schema, then its
+// siblings, then the shared base. The kind is derived from the Go struct
+// (TableSchema.IDKindOf — the field TYPE is the declaration), so a bare-string
+// probe on a domain.ID-typed field binds in the dialect's native id form; the
+// managed PK slot ("ID") is always IDValue via the anchor. A type-less shared
+// base derives nothing and answers IDNone for its own fields.
+func (l *AggregateLoader[T]) idKindResolver() func(string) core.IDKind {
+	anchor := l.schema
+	sibs := anchor.Siblings()
+	base, _, hasBase := anchor.SharedBaseRef()
+	return func(goField string) core.IDKind {
+		if k := anchor.IDKindOf(goField); k != core.IDNone {
+			return k
+		}
+		for _, sib := range sibs {
+			if k := sib.IDKindOf(goField); k != core.IDNone {
+				return k
+			}
+		}
+		if hasBase {
+			if k := base.IDKindOf(goField); k != core.IDNone {
+				return k
+			}
+		}
+		return core.IDNone
+	}
+}
+
 // compileFilterJoins is compileFilter with a caller-owned joins accumulator, so
 // an aggregate method can resolve its aggregated field through the SAME joins
 // (a sibling field pulls its LEFT JOIN whether it appears in the predicate or
@@ -207,7 +236,7 @@ func (l *AggregateLoader[T]) compileFilterJoins(q *criteria.Query, joins *relSpe
 	resolve := l.specResolver(joins)
 	dialect := l.eng.Dialect()
 
-	where, args, err := compileWhere(q.Condition(), resolve, dialect)
+	where, args, err := compileWhere(q.Condition(), resolve, dialect, l.idKindResolver())
 	if err != nil {
 		return "", "", nil, err
 	}
@@ -251,7 +280,7 @@ func (l *AggregateLoader[T]) findRoots(ctx context.Context, q *criteria.Query, l
 	resolve := l.specResolver(joins)
 	dialect := l.eng.Dialect()
 
-	where, args, err := compileWhere(q.Condition(), resolve, dialect)
+	where, args, err := compileWhere(q.Condition(), resolve, dialect, l.idKindResolver())
 	if err != nil {
 		return nil, nil, err
 	}
