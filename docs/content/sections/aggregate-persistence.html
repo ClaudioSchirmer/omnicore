@@ -4,7 +4,7 @@
         opt-in by implementing <code>domain.AggregateRootProvider</code>. The framework then
         guarantees atomicity <em>without changing the public API</em>: the relational engine's
         <code>Insert/Update/Archive/Delete/Unarchive</code> (the <code>core.RelationalEngine</code> seam, backed by
-        Postgres or MySQL) detect the metadata and dispatch to the aggregate-aware path automatically.
+        Postgres, MySQL or SQL Server) detect the metadata and dispatch to the aggregate-aware path automatically.
     </p>
 
     <h3>Opt-in interface</h3>

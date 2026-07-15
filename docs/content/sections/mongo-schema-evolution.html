@@ -86,7 +86,7 @@ processing  ──UPDATE status='done', version, hashes, applied_at,
     <p><code>SyncEngine.ExecuteRebuild(ctx, plan, cfg)</code> runs the sequence on one view, on a pinned session:</p>
     <ol>
         <li><code>engine.AcquireRebuildLock(ctx, viewName)</code> — pin a session and take the lock.</li>
-        <li>If <code>!lock.Acquired()</code>, abort with a descriptive error carrying <code>lock.Holder()</code> (the current owner — pid/application/client on Postgres, connection/host on MySQL).</li>
+        <li>If <code>!lock.Acquired()</code>, abort with a descriptive error carrying <code>lock.Holder()</code> (the current owner — pid/application/client on Postgres, connection/host on MySQL, session/host on SQL Server).</li>
         <li>Defer <code>lock.Release(ctx)</code> (unlock + return the session).</li>
         <li>Detect takeover: if <code>plan.Registry.Status=='processing'</code>, emit <code>slog.Warn</code> before the next write.</li>
         <li><code>BeginRebuild</code> — UPDATE registry to status='processing', <code>started_at=NOW()</code>, pid, host (on the lock's pinned-session <code>Querier()</code>).</li>
