@@ -11,6 +11,8 @@ with `1.0.0`.
 
 ## [Unreleased]
 
+## [0.31.0] - 2026-07-14
+
 ### Changed
 
 - **BREAKING: every framework control-plane table now follows the framework's
