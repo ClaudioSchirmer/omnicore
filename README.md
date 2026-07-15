@@ -18,7 +18,7 @@ Mongo-projected read side, and every transport surface — from a single
 ## Why omnicore
 
 - ⚡ **The 6 CRUD verbs land with zero handler code** — insert, update, partial-update, archive, unarchive, delete.
-- 🗄️ **Backend-agnostic relational core** — PostgreSQL *and* MySQL today, behind one engine seam; your domain never names a vendor.
+- 🗄️ **Backend-agnostic relational core** — PostgreSQL, MySQL *and* SQL Server, behind one engine seam; your domain never names a vendor.
 - 🧱 **DDD that the compiler enforces** — 4 layers, one direction, sealed domain types.
 - 🔁 **One handler, five surfaces** — REST, gRPC, GraphQL, Kafka, and file exports share the *same* handler instance.
 - 📬 **Correct-by-construction writes** — data + outbox + audit commit in one transaction, always.
@@ -70,15 +70,15 @@ Each row links to its manual page.
 
 ## Relational backends — one seam, many engines
 
-The relational layer is **backend-agnostic by design**. **PostgreSQL** and **MySQL** are both
-first-class today: you link one at build time with a build tag and select the active dialect at
-runtime via `relational.dialect`. Both are consumers of a single *engine seam* — the domain and
+The relational layer is **backend-agnostic by design**. **PostgreSQL**, **MySQL** and **SQL Server**
+are all first-class today: you link one at build time with a build tag and select the active dialect at
+runtime via `relational.dialect`. All are consumers of a single *engine seam* — the domain and
 application layers never name a vendor, write raw SQL, or pronounce a physical identifier, so a
 service's business code is identical whichever engine backs it.
 
 Because every engine plugs into that same seam, **adding a new relational backend is an isolated
-seam implementation, not a change that ripples through your services**. SQL Server is a natural
-candidate for a future engine.
+seam implementation, not a change that ripples through your services** — SQL Server joined
+PostgreSQL and MySQL through exactly that seam, one more engine package behind its build tag.
 
 → [Architecture · the engine seam](https://claudioschirmer.github.io/omnicore/#architecture) · [Bootstrap · build tags & dialect](https://claudioschirmer.github.io/omnicore/#bootstrap)
 
@@ -141,7 +141,7 @@ func Wire(d bootstrap.Deps) bootstrap.Wiring {
 }
 ```
 
-`bootstrap.Run` reads `microservice.${APP_PROFILE}.yaml`, wires Postgres/MySQL + Mongo + Kafka +
+`bootstrap.Run` reads `microservice.${APP_PROFILE}.yaml`, wires Postgres/MySQL/SQL Server + Mongo + Kafka +
 Fiber, applies migrations, registers the `GET /livez` + `GET /readyz` probes, mounts your Features, starts the `SyncEngine`
 when views exist, and serves until `SIGINT`/`SIGTERM`.
 → [Bootstrap](https://claudioschirmer.github.io/omnicore/#bootstrap)
@@ -211,7 +211,7 @@ semantics, same audit guarantees. → [CommandHandler](https://claudioschirmer.g
 
 ## Stack
 
-Fiber v3 (HTTP) · connectrpc.com/connect (gRPC) · pgx v5 (PostgreSQL) · go-sql-driver (MySQL) ·
+Fiber v3 (HTTP) · connectrpc.com/connect (gRPC) · pgx v5 (PostgreSQL) · go-sql-driver (MySQL) · go-mssqldb (SQL Server) ·
 mongo-driver v2 (MongoDB) · segmentio/kafka-go (Kafka) · golang-migrate v4 (SQL migrations) ·
 golang-jwt v5 + MicahParks/keyfunc (JWT).
 
