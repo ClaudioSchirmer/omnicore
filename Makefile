@@ -1,7 +1,7 @@
 # omnicore — developer task runner.
 #
 # Every build links TWO mandatory build tags: a relational engine
-# (postgres|mysql) AND a message transport (kafka|nats). There is no default on
+# (postgres|mysql|sqlserver) AND a message transport (kafka|nats). There is no default on
 # either axis — a tagless build aborts at boot. These targets encapsulate the
 # tag matrix so `make test` matches CI and nobody has to memorize the flags.
 #
@@ -15,7 +15,7 @@ GO   ?= go
 PKGS ?= ./...
 
 # The full engine×transport matrix CI exercises.
-MATRIX := 'postgres kafka' 'mysql kafka' 'postgres nats' 'mysql nats'
+MATRIX := 'postgres kafka' 'mysql kafka' 'sqlserver kafka' 'postgres nats' 'mysql nats' 'sqlserver nats'
 
 .PHONY: help
 help: ## List available targets

@@ -28,7 +28,7 @@ cases that pin down existing behavior.
   via a local `go.work` (gitignored — each developer keeps their own). The example is
   the sandbox and the home of the end-to-end QA suites.
 - **Build tags are mandatory.** Every build links **two** tags — a relational engine
-  (`postgres` or `mysql`) **and** a message transport (`kafka` or `nats`). A tagless
+  (`postgres`, `mysql` or `sqlserver`) **and** a message transport (`kafka` or `nats`). A tagless
   build aborts at boot. The [`Makefile`](Makefile) encapsulates the matrix so you
   don't have to memorize the flags:
 
