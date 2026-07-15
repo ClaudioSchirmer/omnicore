@@ -361,7 +361,7 @@ distinctCategories := len(groups)              // itself a business fact</code><
         stable rule behavior — and, exactly like <code>Aggregate</code>, order/limit on the Query are
         ignored. Key access is by the Go field name passed to <code>read.By</code>:
         <code>Key(field)</code> returns the driver-neutral raw value (text keys land as
-        <code>string</code> on both backends), <code>KeyString(field)</code> renders any key as a string —
+        <code>string</code> on every backend), <code>KeyString(field)</code> renders any key as a string —
         the convenient form for the dominant case of grouping by a text-ish business field. Per-group
         threshold checks ("no category may exceed N") are an <code>if</code> inside the loop — the grouped
         SELECT already reduced the data to one row per group, so there is no HAVING escape hatch to learn.

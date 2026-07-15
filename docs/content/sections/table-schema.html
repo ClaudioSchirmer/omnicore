@@ -340,7 +340,7 @@ func OrdersView() *query.ViewDefinition {
         when the Go type is outside the exact set the framework composes on every supported relational engine (the "Supported column
         shapes" tables below). A <code>google/uuid.UUID</code> field gets the dedicated hint — declare
         <code>domain.ID</code> — and every other unknown type gets the fix and a pointer back to this page. Identity
-        matching is literal (a named type over a supported underlying is rejected), so the both-engine guarantee never
+        matching is literal (a named type over a supported underlying is rejected), so the cross-engine guarantee never
         depends on driver-specific reflection behavior.</li>
     <li><strong>Bijection over the whole column set</strong> — across each source's mapped fields + the PK column + every
         declared managed column, no two map to the same physical column. The collision panic names both offenders.</li>
