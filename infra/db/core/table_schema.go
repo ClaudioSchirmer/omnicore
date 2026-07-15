@@ -1,6 +1,7 @@
 package core
 
 import (
+	"encoding/json"
 	"fmt"
 	"reflect"
 	"sort"
@@ -956,4 +957,71 @@ func modeName(m domain.EntityMode) string {
 		return "ModeArchive"
 	}
 	return "ModeUnarchive"
+}
+
+// jsonMarshalerType / jsonUnmarshalerType anchor the interface probes of
+// ValidateOldCloneSafety (reflect.Type.Implements needs the interface's type).
+var (
+	jsonMarshalerType   = reflect.TypeOf((*json.Marshaler)(nil)).Elem()
+	jsonUnmarshalerType = reflect.TypeOf((*json.Unmarshaler)(nil)).Elem()
+)
+
+// ValidateOldCloneSafety panics when the anchored entity type would corrupt the
+// domain.Old pre-write snapshot. The framework builds that snapshot (the
+// read-only "ghost" consumed by BuildRules transition checks and the transition
+// auditor) via an encoding/json round-trip of the ROOT entity, so two consumer
+// choices poison it silently at runtime: a persisted field tagged `json:"-"`
+// vanishes from the ghost (the prior state reads as the zero value), and a
+// custom json.Marshaler/json.Unmarshaler on the entity type replaces the whole
+// round-trip with a serialization the clone contract does not control. Both
+// become loud boot failures here.
+//
+// Scope: every field persisted THROUGH the root struct — the root's own
+// declared fields, each sibling's partition (same Go type), and a shared base's
+// fields (the type-less base resolves its fields on this role's type).
+// Aggregate children are exempt: the clone copies them by value, never through
+// JSON. Ordinary renaming tags (`json:"name"`) stay allowed — the round-trip
+// marshals and unmarshals the same type, so renames are symmetric.
+func (s *TableSchema) ValidateOldCloneSafety() {
+	if s.typ == nil {
+		return
+	}
+	if pt := reflect.PointerTo(s.typ); pt.Implements(jsonMarshalerType) || pt.Implements(jsonUnmarshalerType) {
+		panic(fmt.Sprintf(
+			"infra.TableSchema(%s): %s implements json.Marshaler/json.Unmarshaler — the framework builds the "+
+				"domain.Old() snapshot by cloning the entity through a JSON round-trip, and a custom (un)marshaler "+
+				"takes that contract over. Keep the entity free of custom JSON methods; shape wire payloads on the "+
+				"web-layer DTOs instead.",
+			s.table, s.typ.Name(),
+		))
+	}
+	reject := func(owner string, goName string) {
+		panic(fmt.Sprintf(
+			"infra.TableSchema(%s): persisted field %s.%s is tagged `json:\"-\"` — the framework builds the "+
+				"domain.Old() snapshot by cloning the entity through a JSON round-trip, so this field would "+
+				"silently vanish from the ghost (transition rules and the transition auditor would read the zero "+
+				"value as the prior state). Drop the tag; wire names belong to the web-layer DTOs (a renaming "+
+				"`json:\"name\"` tag is harmless).",
+			owner, s.typ.Name(), goName,
+		))
+	}
+	for _, f := range s.fields {
+		if f.index >= 0 && s.typ.Field(f.index).Tag.Get("json") == "-" {
+			reject(s.table, f.goName)
+		}
+	}
+	for _, sib := range s.siblings {
+		for _, f := range sib.fields {
+			if f.index >= 0 && sib.typ.Field(f.index).Tag.Get("json") == "-" {
+				reject(sib.table, f.goName)
+			}
+		}
+	}
+	if link := s.sharedBaseLink; link != nil {
+		for _, f := range link.base.fields {
+			if idx, ok := link.scanByCol[f.column]; ok && s.typ.Field(idx).Tag.Get("json") == "-" {
+				reject(link.base.table, f.goName)
+			}
+		}
+	}
 }
