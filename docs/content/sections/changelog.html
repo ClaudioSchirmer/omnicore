@@ -7,6 +7,12 @@
 </div>
 <div class="changelog">
     <div class="release">
+        <div class="release-head"><span class="release-tag">v0.32.1</span><span class="release-date">July 15, 2026</span></div>
+        <ul>
+            <li><strong>Fixed</strong> — <strong>docs-only: the "Domain Service via Auto handler" example dereferenced <code>*u.GetID()</code> inside <code>IfInsertOrUpdate</code>.</strong> On Insert the id is minted after validation, so <code>GetID()</code> is nil inside <code>BuildRules</code> and the example, copied verbatim, panics with a nil-pointer dereference on the first insert. The example now nil-guards and passes a zero <code>excludeID</code> — which excludes nothing, exactly right for a brand-new entity. No Go code changed. See <a href="#auto-handlers">Auto command handlers → Domain Service via Auto handler</a>.</li>
+        </ul>
+    </div>
+    <div class="release">
         <div class="release-head"><span class="release-tag">v0.32.0</span><span class="release-date">July 14, 2026</span></div>
         <ul>
             <li><strong>Changed</strong> — <strong>breaking</strong>: <strong>old-clone safety is now a boot check — a persisted field tagged <code>json:"-"</code>, or a custom <code>json.Marshaler</code>/<code>json.Unmarshaler</code> on the entity type, panics at <code>WithSchema</code>.</strong> The framework builds the <code>domain.Old()</code> pre-write snapshot (consumed by <code>BuildRules</code> transition checks and the transition auditor) by cloning the root entity through an <code>encoding/json</code> round-trip, so a <code>json:"-"</code> persisted field silently vanished from the ghost — the prior state read back as the zero value — and a custom (un)marshaler took the round-trip over entirely; both corrupted rules/audit with no visible failure. The check covers every field persisted through the root struct (the root's declared fields, sibling partitions, and shared-base fields resolved on the role's type); aggregate children are exempt (the clone copies them by value, never through JSON), and <em>renaming</em> tags (<code>json:"name"</code>) remain allowed — the round-trip marshals and unmarshals the same type, so renames are symmetric. <em>Migration</em>: drop the <code>json:"-"</code> tag (wire names belong on the web-layer DTOs) or move the custom JSON codec off the entity type. See <a href="#table-schema">Table schema → Boot checks</a> and <a href="#old-state">Old-state snapshot</a>.</li>
