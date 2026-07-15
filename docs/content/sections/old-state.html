@@ -47,6 +47,15 @@
         mutator domain methods on it is a silent no-op because its <code>notifCtx</code> is nil. The aggregate path
         also copies the items map (aggregate value objects are value types, so the clone owns an independent view of the prior children) so <code>Old()</code> reflects the children as they were before mutation.
     </p>
+    <p>
+        Because the round-trip rides <code>encoding/json</code>, the entity must not interfere with it: a persisted
+        field tagged <code>json:"-"</code> would silently vanish from the ghost, and a custom
+        <code>json.Marshaler</code>/<code>json.Unmarshaler</code> on the entity type would take the clone over. Both
+        are boot panics at <code>WithSchema</code> — the
+        <a href="#table-schema~boot-checks">old-clone safety boot check</a>. Renaming tags
+        (<code>json:"name"</code>) are harmless (the round-trip is symmetric); entities simply should not carry wire
+        tags at all — wire names live on the web-layer DTOs.
+    </p>
 
     <h3>Audit event shape</h3>
     <p>

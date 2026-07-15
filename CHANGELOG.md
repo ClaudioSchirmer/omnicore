@@ -11,6 +11,26 @@ with `1.0.0`.
 
 ## [Unreleased]
 
+## [0.32.0] - 2026-07-14
+
+### Changed
+
+- **BREAKING: old-clone safety is now a boot check — a persisted field tagged
+  `json:"-"`, or a custom `json.Marshaler`/`json.Unmarshaler` on the entity
+  type, panics at `WithSchema`.** The framework builds the `domain.Old()`
+  pre-write snapshot (consumed by `BuildRules` transition checks and the
+  transition auditor) by cloning the root entity through an `encoding/json`
+  round-trip, so a `json:"-"` persisted field silently vanished from the ghost
+  (the prior state read back as the zero value) and a custom (un)marshaler took
+  the round-trip over entirely — both corrupted rules/audit with no visible
+  failure. The check covers every field persisted through the root struct
+  (the root's declared fields, sibling partitions, and shared-base fields
+  resolved on the role's type); aggregate children are exempt (the clone copies
+  them by value, never through JSON), and renaming tags (`json:"name"`) remain
+  allowed — the round-trip marshals and unmarshals the same type, so renames
+  are symmetric. *Migration*: drop the `json:"-"` tag (wire names belong on the
+  web-layer DTOs) or move the custom JSON codec off the entity type.
+
 ## [0.31.0] - 2026-07-14
 
 ### Changed

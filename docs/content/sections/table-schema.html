@@ -321,7 +321,7 @@ func OrdersView() *query.ViewDefinition {
     from: <code>.As(...)</code> is always required, never an optional override.
 </p>
 
-<h3>Boot checks</h3>
+<h3 id="boot-checks">Boot checks</h3>
 <ul>
     <li><strong>Write-backed schema is type-anchored</strong> — <code>WithSchema</code> rejects a type-less
         <code>NewExternalSchema</code> as a repository root: a schema that backs the write path must be anchored to a Go
@@ -346,6 +346,17 @@ func OrdersView() *query.ViewDefinition {
         declared managed column, no two map to the same physical column. The collision panic names both offenders.</li>
     <li><strong>Modes() ⟺ SoftDelete</strong> — an entity declaring <code>ModeArchive</code>/<code>ModeUnarchive</code>
         without <code>SoftDelete</code> panics; a runtime guard backs it up.</li>
+    <li><strong>Old-clone safety — no <code>json:"-"</code> on a persisted field, no custom
+        <code>json.Marshaler</code>/<code>json.Unmarshaler</code> on the entity</strong> — the framework builds the
+        <code>domain.Old()</code> snapshot by cloning the root entity through a JSON round-trip (see
+        <a href="#old-state">Old-state snapshot</a>), so a persisted field tagged <code>json:"-"</code> would silently
+        vanish from the ghost (transition rules and the transition auditor would read the zero value as the prior
+        state), and a custom (un)marshaler takes the round-trip over entirely. Both panic at <code>WithSchema</code>,
+        naming the offender. The scope is every field persisted <em>through the root struct</em> — the root's declared
+        fields, each sibling's partition, and shared-base fields (resolved on the role's type); aggregate children are
+        exempt (cloned by value, never through JSON). Ordinary <em>renaming</em> tags (<code>json:"name"</code>) stay
+        allowed — the round-trip marshals and unmarshals the same type, so renames are symmetric. Wire names belong on
+        the web-layer DTOs regardless.</li>
     <li><strong>PK is mandatory (no default) + single-column</strong> — every schema (root, child, embed source) must
         declare its PK column via <code>PK(column)</code>, which rejects an empty column. The Go side is fixed to the
         Entity contract's <code>ID</code> (never guessed from the column name). A schema reaching
@@ -372,7 +383,7 @@ func OrdersView() *query.ViewDefinition {
 </ul>
 <p>These checks run inside <code>WithSchema</code> on <em>both</em> repository shapes:
     <code>BaseAggregateRepository.WithSchema</code> (aggregate) and <code>BaseRepository.WithSchema</code> (flat, non-aggregate)
-    each run the type-anchored, PK-declared, aggregate-depth, and <code>Modes()</code> ⟺ <code>SoftDelete</code> checks at construction (the
+    each run the type-anchored, PK-declared, aggregate-depth, old-clone safety, and <code>Modes()</code> ⟺ <code>SoftDelete</code> checks at construction (the
     aggregate path additionally runs the boundary-agreement check and threads the schema into the read loader). Calling
     <code>WithSchema</code> also surfaces a nil <code>NewEntity</code> factory at construction. Assigning <code>r.Schema</code>
     directly still works as the unchecked escape hatch — <code>WithSchema</code> is the validated canonical entry.</p>

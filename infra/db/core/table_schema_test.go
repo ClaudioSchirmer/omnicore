@@ -1,6 +1,7 @@
 package core
 
 import (
+	"encoding/json"
 	"fmt"
 	"strings"
 	"testing"
@@ -300,4 +301,98 @@ func TestTableSchema_ValidDeclarationDoesNotPanic(t *testing.T) {
 	if got, _ := s.ColumnOf("Name"); got != "name" {
 		t.Errorf("ColumnOf(Name) = %q, want name", got)
 	}
+}
+
+// --- ValidateOldCloneSafety fixtures ------------------------------------------
+
+// oldCloneSkipTag persists a field excluded from JSON — the shape the guard
+// rejects (the field would vanish from the domain.Old ghost).
+type oldCloneSkipTag struct {
+	ID   string
+	Name string `json:"-"`
+}
+
+// oldCloneRenameTag persists a field with a RENAMING json tag — harmless (the
+// clone round-trip marshals and unmarshals the same type, so renames are
+// symmetric) and must pass.
+type oldCloneRenameTag struct {
+	ID   string
+	Name string `json:"nome"`
+}
+
+// oldCloneSiblingTag partitions its fields across owner + sibling; the
+// sibling-mapped field carries the poisonous tag.
+type oldCloneSiblingTag struct {
+	ID    string
+	Name  string
+	Notes string `json:"-"`
+}
+
+// oldCloneRoleTag is a shared-base ROLE whose base-mapped field carries the
+// poisonous tag (the type-less base resolves its fields on the role's type).
+type oldCloneRoleTag struct {
+	ID         string
+	RoleField  string
+	PersonName string `json:"-"`
+}
+
+// oldCloneMarshaler / oldCloneUnmarshaler implement one half of a custom JSON
+// codec each — either alone takes over the clone round-trip and must be
+// rejected.
+type oldCloneMarshaler struct {
+	ID   string
+	Name string
+}
+
+func (m oldCloneMarshaler) MarshalJSON() ([]byte, error) { return json.Marshal(m.Name) }
+
+type oldCloneUnmarshaler struct {
+	ID   string
+	Name string
+}
+
+func (m *oldCloneUnmarshaler) UnmarshalJSON([]byte) error { return nil }
+
+// TestTableSchema_ValidateOldCloneSafety proves the boot guard over the
+// domain.Old JSON round-trip: a persisted field tagged `json:"-"` (declared on
+// the root, on a sibling partition, or mapped through a shared base) and a
+// custom json.Marshaler/json.Unmarshaler on the entity type are boot panics;
+// renaming tags, type-less schemas and aggregate children (cloned by value,
+// never through JSON) pass.
+func TestTableSchema_ValidateOldCloneSafety(t *testing.T) {
+	assertPanics(t, "root field tagged json:\"-\"", func() {
+		NewTableSchema[oldCloneSkipTag]("t").PK("id").Field("Name", "name").
+			ValidateOldCloneSafety()
+	})
+	assertPanics(t, "sibling field tagged json:\"-\"", func() {
+		NewTableSchema[oldCloneSiblingTag]("t").PK("id").Field("Name", "name").
+			Sibling(NewSiblingSchema[oldCloneSiblingTag]("t_notes").Field("Notes", "notes")).
+			ValidateOldCloneSafety()
+	})
+	assertPanics(t, "shared-base field tagged json:\"-\"", func() {
+		base := NewSharedBase("people").PK("id").
+			Field("PersonName", "person_name").NaturalKey("person_name")
+		NewTableSchema[oldCloneRoleTag]("alunos").PK("id").Field("RoleField", "role_field").
+			SharedBase(base, "person_id").
+			ValidateOldCloneSafety()
+	})
+	assertPanics(t, "entity implements json.Marshaler", func() {
+		NewTableSchema[oldCloneMarshaler]("t").PK("id").Field("Name", "name").
+			ValidateOldCloneSafety()
+	})
+	assertPanics(t, "entity implements json.Unmarshaler", func() {
+		NewTableSchema[oldCloneUnmarshaler]("t").PK("id").Field("Name", "name").
+			ValidateOldCloneSafety()
+	})
+
+	// Tolerated shapes — any panic here fails the test.
+	NewTableSchema[oldCloneRenameTag]("t").PK("id").Field("Name", "name").
+		ValidateOldCloneSafety()
+	NewExternalSchema("upstream").Field("Name", "name").
+		ValidateOldCloneSafety()
+	// An aggregate CHILD with the tag is exempt: children reach the Old ghost by
+	// value copy of the aggregate map, never through the JSON round-trip.
+	NewTableSchema[schemaSample]("root").PK("id").Field("Name", "name").
+		Child(NewTableSchema[oldCloneSkipTag]("child").PK("id").FK("root_id").Field("Name", "name")).
+		ValidateOldCloneSafety()
 }

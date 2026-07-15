@@ -112,7 +112,9 @@ func (w boundWriter[T]) Unarchive(u domain.Unarchivable) error {
 
 // WithSchema declares the mandatory TableSchema and runs the construction-time
 // boot checks before binding it: type-anchored (not NewExternalSchema),
-// PK-declared, aggregate-depth (no grandchildren), and — when T exposes Modes()
+// PK-declared, aggregate-depth (no grandchildren), old-clone safety (no
+// `json:"-"` on a persisted field, no custom json.(Un)Marshaler on the entity —
+// either would corrupt the domain.Old() snapshot), and — when T exposes Modes()
 // — the Modes() ⟺ SoftDelete invariant. The field-existence + bijection checks
 // already ran while the TableSchema was built. A violation panics at
 // construction, not on the first request, so a flat (non-aggregate) repository
@@ -142,6 +144,7 @@ func (r *BaseRepository[T]) WithSchema(schema *TableSchema) *BaseRepository[T] {
 	schema.ValidateChildDepth()
 	schema.ValidateSiblings()
 	schema.ValidateSharedBaseChildren()
+	schema.ValidateOldCloneSafety()
 	if m, ok := any(r.New()).(interface{ Modes() []domain.EntityMode }); ok {
 		schema.ValidateModes(m.Modes())
 	}
