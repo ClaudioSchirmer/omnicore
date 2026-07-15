@@ -351,7 +351,13 @@ func (u *User) RequiresService() bool { return true }
 func (u *User) BuildRules(actionName string, svc domain.Service, r *domain.Rules) {
     r.IfInsertOrUpdate(func() {
         if u.Email != "" {
-            if us, ok := svc.(UserService); ok &amp;&amp; us.EmailExists(u.Email, *u.GetID()) {
+            // GetID() is nil on Insert (the id is minted after validation) —
+            // a zero excludeID excludes nothing, which is right for a new entity.
+            var excludeID domain.ID
+            if id := u.GetID(); id != nil {
+                excludeID = *id
+            }
+            if us, ok := svc.(UserService); ok &amp;&amp; us.EmailExists(u.Email, excludeID) {
                 r.AddNotification("Email", EmailAlreadyExistsNotification{}, u.Email)
             }
         }

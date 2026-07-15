@@ -11,6 +11,18 @@ with `1.0.0`.
 
 ## [Unreleased]
 
+## [0.32.1] - 2026-07-15
+
+### Fixed
+
+- **Docs: the "Domain Service via Auto handler" example in `auto-handlers.html`
+  dereferenced `*u.GetID()` inside `IfInsertOrUpdate`.** On Insert the id is
+  minted after validation, so `GetID()` is nil inside `BuildRules` and the
+  example, copied verbatim, panics with a nil-pointer dereference on the first
+  insert. The example now nil-guards and passes a zero `excludeID` — which
+  excludes nothing, exactly right for a brand-new entity. Docs-only release:
+  no Go code changed.
+
 ## [0.32.0] - 2026-07-14
 
 ### Changed
