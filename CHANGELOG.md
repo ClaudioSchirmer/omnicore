@@ -11,6 +11,8 @@ with `1.0.0`.
 
 ## [Unreleased]
 
+## [0.32.0] - 2026-07-14
+
 ### Changed
 
 - **BREAKING: old-clone safety is now a boot check — a persisted field tagged
