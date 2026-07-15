@@ -284,7 +284,7 @@ func TestBoundWriter_MapErrRawPassThrough(t *testing.T) {
 func TestSharedBaseReactivationProbeError(t *testing.T) {
 	t.Run("insert", func(t *testing.T) {
 		ins, _ := domain.GetInsertable(&roleTestEntity{Name: "Ana", Document: "D1", Matricula: "M1"}, nil, "GetUpsertable")
-		tx := &recTx{queryFn: scriptedQuery([]string{"IS NOT NULL FROM pessoa"}, nil)}
+		tx := &recTx{queryFn: scriptedQuery([]string{"ELSE 0 END FROM pessoa"}, nil)}
 		be := newFlatBE(&recBeginner{tx: tx})
 		if _, err := be.Insert(newBuilderCtx(), ins, cascadeRoleSchema(), firingHook); !errors.Is(err, errBoom) {
 			t.Fatalf("expected the reactivation probe error, got %v", err)
@@ -297,7 +297,7 @@ func TestSharedBaseReactivationProbeError(t *testing.T) {
 		e := &roleTestEntity{Name: "Ana", Document: "D1", Matricula: "M1"}
 		e.SetID(domain.NewID(uuid.NewString()))
 		upd, _ := domain.GetUpdatable(e, func(*roleTestEntity) error { return nil }, nil, "GetUpdatable")
-		tx := &recTx{count: 1, queryFn: scriptedQuery([]string{"IS NOT NULL FROM pessoa"}, []string{"FROM aluno"})}
+		tx := &recTx{count: 1, queryFn: scriptedQuery([]string{"ELSE 0 END FROM pessoa"}, []string{"FROM aluno"})}
 		be := newFlatBE(&recBeginner{tx: tx})
 		if _, err := be.Update(newBuilderCtx(), upd, cascadeRoleSchema(), firingHook); !errors.Is(err, errBoom) {
 			t.Fatalf("expected the reactivation probe error, got %v", err)

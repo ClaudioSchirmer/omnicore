@@ -22,7 +22,7 @@ import (
 // generated procedure constant and the pb types as explicit type
 // parameters (Go cannot infer them from a procedure string):
 //
-//	reg.Register(fwgrpc.CommandWithBody[*usersv1.CreateUserRequest, *usersv1.CreateUserResponse](
+//	reg.Register(fwgrpc.CommandWithBody[usersv1.CreateUserRequest, usersv1.CreateUserResponse](
 //	    usersv1connect.UsersServiceCreateUserProcedure,
 //	    requests.InsertUserRequest{},
 //	    requests.InsertUserResponse{}.FromResult,

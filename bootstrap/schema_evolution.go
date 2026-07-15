@@ -30,11 +30,15 @@ func applyMigrations(ctx context.Context, cfg *Config, deps Deps) error {
 		return nil
 	}
 
-	// The migration runner is dialect-bound and supplied by newMigrator, defined
-	// in the engine_<dialect>.go file the build tag selects: Postgres runs over
-	// the live pgx pool, MySQL opens its own *sql.DB from relational.dsn (the
-	// runner never owns the engine pool). A build links exactly one.
+	// The migration runner is dialect-bound and resolved through the
+	// engineBoots registry each engine_<dialect>.go binding populates: Postgres
+	// runs over the live pgx pool; MySQL and SQL Server open their own *sql.DB
+	// from relational.dsn (the runner never owns the engine pool). A build
+	// links exactly the bindings its tags select.
 	mgr := newMigrator(deps, cfg)
+	if mgr == nil {
+		return fmt.Errorf("bootstrap: no migration runner registered for dialect %q (build with the engine's build tag)", cfg.Relational.Dialect)
+	}
 
 	if cfg.Migrations.AutoRun.IsTrue() {
 		if err := mgr.ValidateDownExists(); err != nil {
@@ -149,7 +153,7 @@ func reconcileViewDrift(ctx context.Context, cfg *Config, deps Deps, sync *query
 
 	// Unconditional aborts under autoRun ∈ {check, true} — no escape.
 	if report.HasAny(query.DriftAlienData) {
-		return errors.New(query.FormatAlienDataDiagnostic(report.PlansBy(query.DriftAlienData)))
+		return errors.New(query.FormatAlienDataDiagnostic(cfg.Relational.Dialect, report.PlansBy(query.DriftAlienData)))
 	}
 	if report.HasAny(query.DriftForgotToBump) {
 		return errors.New(query.FormatForgotToBumpDiagnostic(report.PlansBy(query.DriftForgotToBump)))
@@ -167,7 +171,7 @@ func reconcileViewDrift(ctx context.Context, cfg *Config, deps Deps, sync *query
 		// instructions in a single boot-fatal payload.
 		var diags []string
 		if plans := report.PlansBy(query.DriftFreshInit); len(plans) > 0 {
-			diags = append(diags, query.FormatFreshInitDiagnostic(plans))
+			diags = append(diags, query.FormatFreshInitDiagnostic(cfg.Relational.Dialect, plans))
 		}
 		if plans := report.PlansBy(query.DriftMongoWiped); len(plans) > 0 {
 			diags = append(diags, query.FormatMongoWipedDiagnostic(plans))

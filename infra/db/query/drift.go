@@ -2,8 +2,11 @@ package query
 
 import (
 	"context"
+	"encoding/hex"
 	"fmt"
 	"strings"
+
+	"github.com/google/uuid"
 
 	"github.com/ClaudioSchirmer/omnicore/infra/db/core"
 )
@@ -207,7 +210,7 @@ func DetectViewDrift(ctx context.Context, mongo ReadModelStore, eng core.Relatio
 // drift). O(1) on any backend: SELECT 1 … LIMIT 1 through the neutral
 // Querier/Dialect.
 func sorHasRows(ctx context.Context, q core.Querier, d core.Dialect, table string) (bool, error) {
-	rows, err := q.Query(ctx, "SELECT 1 FROM "+d.QuoteIdent(table)+" LIMIT 1")
+	rows, err := q.Query(ctx, d.ApplyLimit("SELECT 1 FROM "+d.QuoteIdent(table), 1))
 	if err != nil {
 		return false, fmt.Errorf("probe root table %q: %w", table, err)
 	}
@@ -289,16 +292,37 @@ func FormatRebuildRequiredDiagnostic(plans []DriftPlan) string {
 	sb.WriteString("              version = <spec.version>, rebuild_hash = '<spec.rebuild>',\n")
 	sb.WriteString("              artifact_hash = '<spec.artifact>', combined_hash = '<spec.combined>',\n")
 	sb.WriteString("              status = 'done', started_at = NULL,\n")
-	sb.WriteString("              applied_at = NOW(), applied_by = 'manual-reconcile-rebuild'\n")
+	sb.WriteString("              applied_at = CURRENT_TIMESTAMP, applied_by = 'manual-reconcile-rebuild'\n")
 	sb.WriteString("        WHERE view_name = '<view>';\n")
 	sb.WriteString("  C. Skip the framework's check entirely:\n")
 	sb.WriteString("       set mongo.rebuild.autoRun: false in microservice.<profile>.yaml\n")
 	return sb.String()
 }
 
+// registryIDLiteral mints a fresh UUID v7 and renders it as the given
+// dialect's SQL literal for the registry's native id column, so the generated
+// operator scripts carry a ready-to-run id: 'uuid' on postgres (uuid column),
+// X'hex' on mysql and 0xHEX on sqlserver (BINARY(16) columns). Diagnostics
+// text only — never executed by the framework itself.
+func registryIDLiteral(dialect string) string {
+	u, err := uuid.NewV7()
+	if err != nil {
+		u = uuid.New() // best-effort: the literal only needs uniqueness
+	}
+	h := hex.EncodeToString(u[:])
+	switch dialect {
+	case "mysql":
+		return "X'" + h + "'"
+	case "sqlserver":
+		return "0x" + h
+	default:
+		return "'" + u.String() + "'"
+	}
+}
+
 // FormatAlienDataDiagnostic builds the §14.4 abort message: populated
 // Mongo collection without a registry row. ABORTS regardless of autoRun.
-func FormatAlienDataDiagnostic(plans []DriftPlan) string {
+func FormatAlienDataDiagnostic(dialect string, plans []DriftPlan) string {
 	if len(plans) == 0 {
 		return ""
 	}
@@ -312,10 +336,10 @@ func FormatAlienDataDiagnostic(plans []DriftPlan) string {
 	sb.WriteString("  A. Acknowledge the state and let the framework take ownership WITHOUT rebuilding:\n")
 	for _, p := range plans {
 		fmt.Fprintf(&sb,
-			"       INSERT INTO omnicore_mongo_views (view_name, version, rebuild_hash, artifact_hash,\n"+
+			"       INSERT INTO omnicore_mongo_views (id, view_name, version, rebuild_hash, artifact_hash,\n"+
 				"                                          combined_hash, status, applied_at, applied_by)\n"+
-				"       VALUES ('%s', %d, '%s', '%s', '%s', 'done', NOW(), 'manual-reconcile-tofu');\n",
-			p.View.Name(), p.CurrentVersion, p.CurrentRebuildHash, p.CurrentArtifactHash, p.CurrentCombinedHash)
+				"       VALUES (%s, '%s', %d, '%s', '%s', '%s', 'done', CURRENT_TIMESTAMP, 'manual-reconcile-tofu');\n",
+			registryIDLiteral(dialect), p.View.Name(), p.CurrentVersion, p.CurrentRebuildHash, p.CurrentArtifactHash, p.CurrentCombinedHash)
 	}
 	sb.WriteString("  B. Drop the Mongo collection and let the framework rebuild from PG:\n")
 	for _, p := range plans {
@@ -375,7 +399,7 @@ func FormatDowngradeDiagnostic(plans []DriftPlan) string {
 				"          SET previous_version = version, previous_combined_hash = combined_hash,\n"+
 				"              previous_applied_at = applied_at,\n"+
 				"              version = %d, rebuild_hash = '%s', artifact_hash = '%s', combined_hash = '%s',\n"+
-				"              applied_at = NOW(), applied_by = 'manual-reconcile-downgrade'\n"+
+				"              applied_at = CURRENT_TIMESTAMP, applied_by = 'manual-reconcile-downgrade'\n"+
 				"        WHERE view_name = '%s';\n",
 			p.CurrentVersion, p.CurrentRebuildHash, p.CurrentArtifactHash, p.CurrentCombinedHash, p.View.Name())
 	}
@@ -407,7 +431,7 @@ func FormatMongoWipedDiagnostic(plans []DriftPlan) string {
 	for _, p := range plans {
 		fmt.Fprintf(&sb,
 			"       UPDATE omnicore_mongo_views SET status = 'done', started_at = NULL,\n"+
-				"              applied_at = NOW(), applied_by = 'manual-reconcile-rebuild'\n"+
+				"              applied_at = CURRENT_TIMESTAMP, applied_by = 'manual-reconcile-rebuild'\n"+
 				"        WHERE view_name = '%s';\n",
 			p.View.Name())
 	}
@@ -443,7 +467,7 @@ func FormatArtifactOnlyDiagnostic(plans []DriftPlan) string {
 			"       UPDATE omnicore_mongo_views\n"+
 				"          SET previous_combined_hash = combined_hash, previous_applied_at = applied_at,\n"+
 				"              artifact_hash = '%s', combined_hash = '%s',\n"+
-				"              applied_at = NOW(), applied_by = 'manual-reconcile-artifact'\n"+
+				"              applied_at = CURRENT_TIMESTAMP, applied_by = 'manual-reconcile-artifact'\n"+
 				"        WHERE view_name = '%s';\n",
 			p.CurrentArtifactHash, p.CurrentCombinedHash, p.View.Name())
 	}
@@ -454,7 +478,7 @@ func FormatArtifactOnlyDiagnostic(plans []DriftPlan) string {
 
 // FormatFreshInitDiagnostic builds the §14.9 abort message under
 // autoRun=check: no registry row AND empty Mongo collection.
-func FormatFreshInitDiagnostic(plans []DriftPlan) string {
+func FormatFreshInitDiagnostic(dialect string, plans []DriftPlan) string {
 	if len(plans) == 0 {
 		return ""
 	}
@@ -470,10 +494,10 @@ func FormatFreshInitDiagnostic(plans []DriftPlan) string {
 	for _, p := range plans {
 		fmt.Fprintf(&sb,
 			"       INSERT INTO omnicore_mongo_views\n"+
-				"         (view_name, version, rebuild_hash, artifact_hash, combined_hash,\n"+
+				"         (id, view_name, version, rebuild_hash, artifact_hash, combined_hash,\n"+
 				"          status, applied_at, applied_by)\n"+
-				"       VALUES ('%s', %d, '%s', '%s', '%s', 'done', NOW(), 'manual-reconcile-init');\n",
-			p.View.Name(), p.CurrentVersion, p.CurrentRebuildHash, p.CurrentArtifactHash, p.CurrentCombinedHash)
+				"       VALUES (%s, '%s', %d, '%s', '%s', '%s', 'done', CURRENT_TIMESTAMP, 'manual-reconcile-init');\n",
+			registryIDLiteral(dialect), p.View.Name(), p.CurrentVersion, p.CurrentRebuildHash, p.CurrentArtifactHash, p.CurrentCombinedHash)
 	}
 	sb.WriteString("  B. Let the framework initialize on next boot:\n")
 	sb.WriteString("       set mongo.rebuild.autoRun: true in microservice.<profile>.yaml\n")

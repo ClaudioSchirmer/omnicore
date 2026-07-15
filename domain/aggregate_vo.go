@@ -20,8 +20,9 @@ type AggregateValueObject interface {
 	// stricter rules under an "AdminCreate" insert than a regular one.
 	//
 	// The framework hands in a *Rules whose NotificationContext is already
-	// scoped with the inferred collection name (snake_case plural of the AVO
-	// type — Address → addresses) and the iteration index — so
+	// scoped with the inferred collection name (lower-camelCase plural of the
+	// AVO type — Address → addresses, OrderLine → orderLines) and the
+	// iteration index — so
 	// r.AddNotification("ZipCode", n) renders to the wire as
 	// "addresses[0].zipCode" without the AVO knowing it is a child.
 	BuildRules(actionName string, service Service, r *Rules)

@@ -416,7 +416,7 @@ func TestFormatDiagnostics_EmptyPlansReturnEmpty(t *testing.T) {
 		"downgrade":    FormatDowngradeDiagnostic,
 		"mongoWiped":   FormatMongoWipedDiagnostic,
 		"artifactOnly": FormatArtifactOnlyDiagnostic,
-		"freshInit":    FormatFreshInitDiagnostic,
+		"freshInit":    func(pl []DriftPlan) string { return FormatFreshInitDiagnostic("postgres", pl) },
 	}
 	for name, f := range formatters {
 		if got := f(empty); got != "" {

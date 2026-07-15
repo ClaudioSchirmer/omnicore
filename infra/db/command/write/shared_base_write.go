@@ -123,7 +123,7 @@ func (b *BaseEngine) findActiveRoleByFK(ctx context.Context, tx WriteTx, d Diale
 	if sd, hasSD := schema.SoftDeleteColumn(); hasSD {
 		q += " AND " + d.QuoteIdent(sd) + " IS NULL"
 	}
-	q += " LIMIT 1"
+	q = d.ApplyLimit(q, 1)
 	rows, err := tx.Query(ctx, q, d.EncodeArg(domain.NewID(baseID)))
 	if err != nil {
 		return false, err
@@ -340,8 +340,9 @@ func (b *BaseEngine) updateWithBase(ctx persistence.RequestContext, entity domai
 // base. Shared-PK model: pure arithmetic — the role id IS UUIDv5(naturalKey),
 // so the id derived from the request must equal the row's own id. Separate-FK
 // model: one PK-indexed SELECT (inside the open TX) projecting the comparison
-// as a boolean — `SELECT (fk = derivedID) FROM role WHERE pk = id` — the same
-// dialect-safe trick baseIsArchived uses; a missing row skips the guard (the
+// as ANSI CASE 1/0 — the same dialect-safe form baseIsArchived uses (a bare
+// boolean-valued `fk = ?` in a SELECT list is a PG/MySQL-ism; T-SQL would
+// parse it as an alias assignment); a missing row skips the guard (the
 // role UPDATE right after reports not-found exactly as before). The Old
 // snapshot cannot arbitrate here: a manual handler that skipped load-first
 // captures the request itself as Old, so an Old-vs-request comparison would be
@@ -354,7 +355,7 @@ func guardNaturalKeyImmutable(ctx context.Context, tx WriteTx, d Dialect, schema
 		}
 		return nil
 	}
-	q := "SELECT " + d.QuoteIdent(fkCol) + " = " + d.Placeholder(1) +
+	q := "SELECT CASE WHEN " + d.QuoteIdent(fkCol) + " = " + d.Placeholder(1) + " THEN 1 ELSE 0 END" +
 		" FROM " + d.QuoteIdent(schema.Table()) +
 		" WHERE " + d.QuoteIdent(schema.PKColumn()) + " = " + d.Placeholder(2)
 	rows, err := tx.Query(ctx, q, d.EncodeArg(domain.NewID(baseID)), d.EncodeArg(domain.NewID(id)))
@@ -365,11 +366,11 @@ func guardNaturalKeyImmutable(ctx context.Context, tx WriteTx, d Dialect, schema
 	if !rows.Next() {
 		return rows.Err() // row missing → the role UPDATE right after reports not-found
 	}
-	var matches bool
+	var matches int64
 	if err := rows.Scan(&matches); err != nil {
 		return err
 	}
-	if !matches {
+	if matches != 1 {
 		return SingleNotificationError(entityName, nkGo, domain.NaturalKeyImmutableNotification{})
 	}
 	return rows.Err()
@@ -456,8 +457,8 @@ func (b *BaseEngine) convergeBaseAfterHardDelete(
 // base id.
 func (b *BaseEngine) anyRoleRowReferences(ctx context.Context, tx WriteTx, d Dialect, base *TableSchema, baseID string) (bool, error) {
 	for _, rr := range b.effectiveReferencingRoles(base) {
-		q := "SELECT 1 FROM " + d.QuoteIdent(rr.Table) +
-			" WHERE " + d.QuoteIdent(rr.FKColumn) + " = " + d.Placeholder(1) + " LIMIT 1"
+		q := d.ApplyLimit("SELECT 1 FROM "+d.QuoteIdent(rr.Table)+
+			" WHERE "+d.QuoteIdent(rr.FKColumn)+" = "+d.Placeholder(1), 1)
 		rows, err := tx.Query(ctx, q, d.EncodeArg(domain.NewID(baseID)))
 		if err != nil {
 			return false, err
@@ -482,7 +483,7 @@ func (b *BaseEngine) anyRoleRowReferences(ctx context.Context, tx WriteTx, d Dia
 // the database vetoed the purge, the base stays, the surrounding role delete
 // proceeds. Any other error propagates. (true, nil) means the base is gone.
 func (b *BaseEngine) purgeOrphanBase(ctx context.Context, tx WriteTx, d Dialect, base *TableSchema, baseID string) (bool, error) {
-	if err := tx.Exec(ctx, "SAVEPOINT "+sharedBasePurgeSavepoint); err != nil {
+	if err := tx.Exec(ctx, d.Savepoint(sharedBasePurgeSavepoint)); err != nil {
 		return false, err
 	}
 	err := func() error {
@@ -495,15 +496,19 @@ func (b *BaseEngine) purgeOrphanBase(ctx context.Context, tx WriteTx, d Dialect,
 	}()
 	if err != nil {
 		if _, vetoed := d.IsForeignKeyViolation(err); vetoed {
-			if rbErr := tx.Exec(ctx, "ROLLBACK TO SAVEPOINT "+sharedBasePurgeSavepoint); rbErr != nil {
+			if rbErr := tx.Exec(ctx, d.RollbackToSavepoint(sharedBasePurgeSavepoint)); rbErr != nil {
 				return false, rbErr
 			}
 			return false, nil
 		}
 		return false, err
 	}
-	if err := tx.Exec(ctx, "RELEASE SAVEPOINT "+sharedBasePurgeSavepoint); err != nil {
-		return false, err
+	// T-SQL has no release statement (ReleaseSavepoint returns "" there — the
+	// savepoint is discarded at COMMIT); every other dialect frees it now.
+	if rel := d.ReleaseSavepoint(sharedBasePurgeSavepoint); rel != "" {
+		if err := tx.Exec(ctx, rel); err != nil {
+			return false, err
+		}
 	}
 	return true, nil
 }
@@ -548,7 +553,7 @@ func (b *BaseEngine) archiveBaseIfNoActiveRole(ctx context.Context, tx WriteTx, 
 	if err != nil || active {
 		return err
 	}
-	return cascadeBaseLifecycle(ctx, tx, d, base, sd, baseID, "NOW()", " IS NULL")
+	return cascadeBaseLifecycle(ctx, tx, d, base, sd, baseID, d.NowExpr(), " IS NULL")
 }
 
 // convergeBaseAfterSoftWrite routes a role's archive/unarchive to the matching
@@ -593,10 +598,10 @@ func (b *BaseEngine) vetoUnarchiveWithActiveSibling(ctx context.Context, tx Writ
 		return err
 	}
 	baseID := deterministicBaseID(nk)
-	q := "SELECT 1 FROM " + d.QuoteIdent(schema.Table()) +
-		" WHERE " + d.QuoteIdent(fkCol) + " = " + d.Placeholder(1) +
-		" AND " + d.QuoteIdent(schema.PKColumn()) + " <> " + d.Placeholder(2) +
-		" AND " + d.QuoteIdent(sd) + " IS NULL LIMIT 1"
+	q := d.ApplyLimit("SELECT 1 FROM "+d.QuoteIdent(schema.Table())+
+		" WHERE "+d.QuoteIdent(fkCol)+" = "+d.Placeholder(1)+
+		" AND "+d.QuoteIdent(schema.PKColumn())+" <> "+d.Placeholder(2)+
+		" AND "+d.QuoteIdent(sd)+" IS NULL", 1)
 	rows, err := tx.Query(ctx, q, d.EncodeArg(domain.NewID(baseID)), d.EncodeArg(domain.NewID(id)))
 	if err != nil {
 		return err
@@ -628,7 +633,7 @@ func baseLifecycleTarget(schema *TableSchema, src domain.Entity) (base *TableSch
 	return base, sd, deterministicBaseID(nk), true, nil
 }
 
-// cascadeBaseLifecycle archives (NOW()/" IS NULL") or unarchives (NULL/" IS NOT
+// cascadeBaseLifecycle archives (NowExpr()/" IS NULL") or unarchives (NULL/" IS NOT
 // NULL") the base row and each soft-deletable native child, gated so it is
 // idempotent (a no-op when already in the target state).
 func cascadeBaseLifecycle(ctx context.Context, tx WriteTx, d Dialect, base *TableSchema, sd, baseID, setExpr, gate string) error {
@@ -650,12 +655,14 @@ func cascadeBaseLifecycle(ctx context.Context, tx WriteTx, d Dialect, base *Tabl
 // baseIsArchived reports whether the base row currently carries a non-null
 // soft-delete marker (read once, for idempotency).
 func baseIsArchived(ctx context.Context, tx WriteTx, d Dialect, base *TableSchema, sd, baseID string) (bool, error) {
-	// Project the archived state as a boolean rather than scanning the raw
-	// soft-delete timestamp: a non-null timestamp cannot be scanned into a
-	// []byte under Postgres' binary protocol (it works only while NULL), which is
-	// exactly the case reactivateBaseIfArchived probes for. IS NOT NULL scans
-	// cleanly into a bool on every dialect.
-	q := "SELECT " + d.QuoteIdent(sd) + " IS NOT NULL FROM " + d.QuoteIdent(base.Table()) +
+	// Project the archived state as ANSI CASE 1/0 rather than scanning the raw
+	// soft-delete timestamp (a non-null timestamp cannot be scanned into a
+	// []byte under Postgres' binary protocol — it works only while NULL, which
+	// is exactly the case reactivateBaseIfArchived probes for) or a bare
+	// boolean-valued expression (`col IS NOT NULL` in a SELECT list is a
+	// PG/MySQL-ism — T-SQL has no boolean expressions outside predicates).
+	// CASE WHEN … THEN 1 ELSE 0 END scans into an int on every dialect.
+	q := "SELECT CASE WHEN " + d.QuoteIdent(sd) + " IS NOT NULL THEN 1 ELSE 0 END FROM " + d.QuoteIdent(base.Table()) +
 		" WHERE " + d.QuoteIdent(base.PKColumn()) + " = " + d.Placeholder(1)
 	rows, err := tx.Query(ctx, q, d.EncodeArg(domain.NewID(baseID)))
 	if err != nil {
@@ -665,11 +672,11 @@ func baseIsArchived(ctx context.Context, tx WriteTx, d Dialect, base *TableSchem
 	if !rows.Next() {
 		return false, rows.Err()
 	}
-	var archived bool
+	var archived int64
 	if err := rows.Scan(&archived); err != nil {
 		return false, err
 	}
-	return archived, rows.Err()
+	return archived == 1, rows.Err()
 }
 
 // anyActiveRole reports whether any role row referencing the base (instance ∪
@@ -681,7 +688,7 @@ func (b *BaseEngine) anyActiveRole(ctx context.Context, tx WriteTx, d Dialect, b
 		if rr.SoftDeleteCol != "" {
 			q += " AND " + d.QuoteIdent(rr.SoftDeleteCol) + " IS NULL"
 		}
-		q += " LIMIT 1"
+		q = d.ApplyLimit(q, 1)
 		rows, err := tx.Query(ctx, q, d.EncodeArg(domain.NewID(baseID)))
 		if err != nil {
 			return false, err
@@ -703,8 +710,8 @@ func (b *BaseEngine) anyActiveRole(ctx context.Context, tx WriteTx, d Dialect, b
 // pre-dates this write) — the signal the SharedBase insert forgot-guard pairs with
 // the actionName.
 func baseExists(ctx context.Context, tx WriteTx, d Dialect, base *TableSchema, baseID string) (bool, error) {
-	q := "SELECT 1 FROM " + d.QuoteIdent(base.Table()) +
-		" WHERE " + d.QuoteIdent(base.PKColumn()) + " = " + d.Placeholder(1) + " LIMIT 1"
+	q := d.ApplyLimit("SELECT 1 FROM "+d.QuoteIdent(base.Table())+
+		" WHERE "+d.QuoteIdent(base.PKColumn())+" = "+d.Placeholder(1), 1)
 	rows, err := tx.Query(ctx, q, d.EncodeArg(domain.NewID(baseID)))
 	if err != nil {
 		return false, err

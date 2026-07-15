@@ -327,9 +327,9 @@ func computeOrphanFields(ctx context.Context, m ReadModelStore, c *Composer, vie
 	return orphan, nil
 }
 
-// sampleExpectedFieldNames composes a handful of real Postgres ids to
+// sampleExpectedFieldNames composes a handful of real relational ids to
 // derive the field set the current code emits. Returns an empty map when
-// Postgres has no rows to sample — caller treats this as "skip cleanup"
+// the root table has no rows to sample — caller treats this as "skip cleanup"
 // because the orphan reconciliation will deleteMany every Mongo doc.
 func sampleExpectedFieldNames(ctx context.Context, c *Composer, view *ViewDefinition) (map[string]struct{}, error) {
 	idDialect := c.eng.Dialect()
@@ -337,8 +337,9 @@ func sampleExpectedFieldNames(ctx context.Context, c *Composer, view *ViewDefini
 	if schema == nil {
 		return nil, fmt.Errorf("sample ids: view %q declares no root .Schema(...)", view.Name())
 	}
-	q := "SELECT " + idDialect.QuoteIdent(schema.PKColumn()) + " FROM " + idDialect.QuoteIdent(view.rootTable) +
-		" LIMIT " + fmt.Sprintf("%d", sampleSizeForCleanup)
+	q := idDialect.ApplyLimit(
+		"SELECT "+idDialect.QuoteIdent(schema.PKColumn())+" FROM "+idDialect.QuoteIdent(view.rootTable),
+		sampleSizeForCleanup)
 	rows, err := c.eng.Querier().Query(ctx, q)
 	if err != nil {
 		return nil, fmt.Errorf("sample ids from %q: %w", view.rootTable, err)

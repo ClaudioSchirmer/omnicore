@@ -181,7 +181,7 @@ func (b *BaseEngine) WriteAuditRow(ctx context.Context, tx Tx, ev *appaudit.Audi
 	if ev == nil || b.auditCfg == nil || !b.auditCfg.Includes(audit.DestinationDatabase) {
 		return nil
 	}
-	return audit.InsertAuditEvent(ctx, tx, tx.Dialect().Placeholder, *ev)
+	return audit.InsertAuditEvent(ctx, tx, tx.Dialect().Placeholder, tx.Dialect().EncodeArg, *ev)
 }
 
 // EchoAuditSlog emits the post-commit slog audit line when the slog destination

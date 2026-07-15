@@ -82,11 +82,18 @@ func (q *lfQuerier) QueryMaps(context.Context, string, ...any) ([]map[string]any
 
 type lfDialect struct{}
 
-func (lfDialect) Placeholder(n int) string                   { return fmt.Sprintf("$%d", n) }
-func (lfDialect) QuoteIdent(name string) string              { return name }
-func (lfDialect) EncodeArg(v any) any                        { return v }
-func (lfDialect) DecodeID(raw string) (string, error)        { return raw, nil }
-func (lfDialect) ILikeClause(col, ph string) string          { return col + " ILIKE " + ph }
+func (lfDialect) Placeholder(n int) string            { return fmt.Sprintf("$%d", n) }
+func (lfDialect) QuoteIdent(name string) string       { return name }
+func (lfDialect) EncodeArg(v any) any                 { return v }
+func (lfDialect) DecodeID(raw string) (string, error) { return raw, nil }
+func (lfDialect) ILikeClause(col, ph string) string   { return col + " ILIKE " + ph }
+func (lfDialect) NowExpr() string                     { return "NOW()" }
+func (lfDialect) ApplyLimit(sql string, n int) string {
+	return fmt.Sprintf("%s LIMIT %d", sql, n)
+}
+func (lfDialect) Savepoint(name string) string               { return "SAVEPOINT " + name }
+func (lfDialect) RollbackToSavepoint(name string) string     { return "ROLLBACK TO SAVEPOINT " + name }
+func (lfDialect) ReleaseSavepoint(name string) string        { return "RELEASE SAVEPOINT " + name }
 func (lfDialect) IsUniqueViolation(error) (string, bool)     { return "", false }
 func (lfDialect) IsForeignKeyViolation(error) (string, bool) { return "", false }
 func (lfDialect) BuildUpsert(string, []string, []string, []core.UpsertSet) string {

@@ -231,10 +231,10 @@ func TestRetryPendingFailures_RetriesMatchingRows(t *testing.T) {
 	r := newResolvedReceiver(t, &fakeHandler{})
 	// Two pending rows: one matches this receiver's (sourceKey,eventKey),
 	// one is for a different event and must be skipped.
-	matching := sampleFailureRow(1)
+	matching := sampleFailureRow("00000000-0000-7000-8000-000000000001")
 	matching[2] = "partners"  // SourceKey
 	matching[3] = "onboarded" // EventKey
-	other := sampleFailureRow(2)
+	other := sampleFailureRow("00000000-0000-7000-8000-000000000002")
 	other[2] = "partners"
 	other[3] = "different-event"
 

@@ -98,10 +98,9 @@ type FieldChange struct {
 // Op carries the per-child operation; Snapshot or Changes is populated per
 // the same kind discipline that governs the root AuditEvent — never both.
 //
-//	added       → Snapshot only (the new child as inserted)
-//	changed     → Changes only  (per-column diff between Old() and current)
-//	removed     → Snapshot only (the value of what was removed, taken from Old())
-//	archived    → Snapshot only (the cascaded child at archive moment)
+//	inserted    → Snapshot only (the new child as inserted)
+//	updated     → Changes only  (per-column diff between Old() and current)
+//	archived    → Snapshot only (soft-deleted during an update — taken from Old() — or the cascaded child at root archive)
 //	unarchived  → Snapshot only (the restored child)
 //	deleted     → Snapshot only (the cascaded child at delete moment)
 type ChildEvent struct {

@@ -11,6 +11,7 @@ import (
 	"github.com/google/uuid"
 
 	appaudit "github.com/ClaudioSchirmer/omnicore/application/audit"
+	"github.com/ClaudioSchirmer/omnicore/domain"
 )
 
 // ─── neutral read fakes (mirror the engine's db.Rows seam, no driver dep) ─────
@@ -67,7 +68,7 @@ func (r *fakeRows) Scan(dest ...any) error {
 // renderer — the placeholder shape is irrelevant to the fake (it records the
 // SQL verbatim), so any deterministic renderer works.
 func testReader(q Queryer) appaudit.Reader {
-	return NewReader(q, func(n int) string { return fmt.Sprintf("$%d", n) })
+	return NewReader(q, func(n int) string { return fmt.Sprintf("$%d", n) }, func(v any) any { return v })
 }
 
 // scanReflect lands each scripted column value into the matching scan target
@@ -140,9 +141,10 @@ func TestFindByID_Hit(t *testing.T) {
 	if len(q.lastArgs) != 1 {
 		t.Errorf("FindByID must bind exactly the id arg, got %v", q.lastArgs)
 	}
-	// The id binds as canonical text (UUID / CHAR(36) accept it on both dialects).
-	if _, ok := q.lastArgs[0].(string); !ok {
-		t.Errorf("FindByID must bind the id as text, got %T", q.lastArgs[0])
+	// The id binds through the dialect's value codec as a domain.ID (identity
+	// encode in this test) — native uuid form on every engine.
+	if _, ok := q.lastArgs[0].(domain.ID); !ok {
+		t.Errorf("FindByID must bind the id through the value codec (domain.ID), got %T", q.lastArgs[0])
 	}
 }
 

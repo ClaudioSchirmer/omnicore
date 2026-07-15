@@ -11,6 +11,7 @@ import (
 
 	appaudit "github.com/ClaudioSchirmer/omnicore/application/audit"
 	"github.com/ClaudioSchirmer/omnicore/application/persistence"
+	"github.com/ClaudioSchirmer/omnicore/domain"
 )
 
 // fakeTx satisfies the neutral audit.Execer surface — the single method
@@ -50,9 +51,13 @@ func sampleEvent() appaudit.AuditEvent {
 	}
 }
 
+// passthroughEncode is the PG-flavored identity value codec for the tests —
+// the dialect encode seam matters only on BINARY(16) engines.
+func passthroughEncode(v any) any { return v }
+
 func TestInsertAuditEvent_BindsEveryColumn(t *testing.T) {
 	tx := &fakeTx{}
-	if err := InsertAuditEvent(context.Background(), tx, pgPlaceholder, sampleEvent()); err != nil {
+	if err := InsertAuditEvent(context.Background(), tx, pgPlaceholder, passthroughEncode, sampleEvent()); err != nil {
 		t.Fatalf("InsertAuditEvent: %v", err)
 	}
 	if tx.calls != 1 {
@@ -61,13 +66,14 @@ func TestInsertAuditEvent_BindsEveryColumn(t *testing.T) {
 	if len(tx.lastArgs) != 13 {
 		t.Fatalf("expected 13 bound args, got %d", len(tx.lastArgs))
 	}
-	// arg[0] is the Go-generated audit row id (a valid UUID).
-	idStr, ok := tx.lastArgs[0].(string)
+	// arg[0] is the Go-minted audit row id, handed to the dialect codec as a
+	// domain.ID (the identity encode here passes it through) — a valid UUID v7.
+	idArg, ok := tx.lastArgs[0].(domain.ID)
 	if !ok {
-		t.Fatalf("id arg = %T, want string", tx.lastArgs[0])
+		t.Fatalf("id arg = %T, want domain.ID (bound through the value codec)", tx.lastArgs[0])
 	}
-	if _, err := uuid.Parse(idStr); err != nil {
-		t.Errorf("id arg = %q, want a UUID: %v", idStr, err)
+	if u, err := uuid.Parse(idArg.Value()); err != nil || u.Version() != 7 {
+		t.Errorf("id arg = %q, want a UUID v7: %v", idArg.Value(), err)
 	}
 	// Identified actor/issuer/tenant pass through verbatim (shifted by the id).
 	if tx.lastArgs[6] != "user-42" {
@@ -89,7 +95,7 @@ func TestInsertAuditEvent_TraceIDBoundWhenSet(t *testing.T) {
 	tx := &fakeTx{}
 	ev := sampleEvent()
 	ev.TraceID = "4bf92f3577b34da6a3ce929d0e0e4736"
-	if err := InsertAuditEvent(context.Background(), tx, pgPlaceholder, ev); err != nil {
+	if err := InsertAuditEvent(context.Background(), tx, pgPlaceholder, passthroughEncode, ev); err != nil {
 		t.Fatalf("InsertAuditEvent: %v", err)
 	}
 	if tx.lastArgs[12] != "4bf92f3577b34da6a3ce929d0e0e4736" {
@@ -103,7 +109,7 @@ func TestInsertAuditEvent_AnonymousActorBecomesNull(t *testing.T) {
 	ev.Actor = persistence.AnonymousActor
 	ev.ActorIssuer = ""
 	ev.TenantID = ""
-	if err := InsertAuditEvent(context.Background(), tx, pgPlaceholder, ev); err != nil {
+	if err := InsertAuditEvent(context.Background(), tx, pgPlaceholder, passthroughEncode, ev); err != nil {
 		t.Fatalf("InsertAuditEvent: %v", err)
 	}
 	if tx.lastArgs[6] != nil {
@@ -116,7 +122,7 @@ func TestInsertAuditEvent_AnonymousActorBecomesNull(t *testing.T) {
 
 func TestInsertAuditEvent_ExecErrorWrapped(t *testing.T) {
 	tx := &fakeTx{execErr: errors.New("db down")}
-	err := InsertAuditEvent(context.Background(), tx, pgPlaceholder, sampleEvent())
+	err := InsertAuditEvent(context.Background(), tx, pgPlaceholder, passthroughEncode, sampleEvent())
 	if err == nil || !errors.Is(err, tx.execErr) {
 		t.Fatalf("expected wrapped exec error, got %v", err)
 	}

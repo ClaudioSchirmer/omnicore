@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/ClaudioSchirmer/omnicore/domain"
 	"github.com/ClaudioSchirmer/omnicore/infra/db/core"
 	"github.com/google/uuid"
 )
@@ -15,7 +16,9 @@ import (
 // failure registries. RawPayload is the JSON bytes verbatim — preserved
 // so an operator-driven retry replays the exact payload the receiver saw.
 type IntegrationFailureRecord struct {
-	ID            int64
+	// ID is the surrogate row id — the canonical uuid string (a UUID v7 on
+	// every dialect; the scan restores BINARY(16) to canonical text).
+	ID            string
 	ConsumerGroup string
 	SourceKey     string
 	EventKey      string
@@ -60,12 +63,25 @@ const (
 )
 
 var (
-	integrationFailureInsertCols   = []string{"consumer_group", "source_key", "event_key", "event_id", "payload", "error"}
+	integrationFailureInsertCols   = []string{"id", "consumer_group", "source_key", "event_key", "event_id", "payload", "error"}
 	integrationFailureConflictCols = []string{"consumer_group", "source_key", "event_key", "event_id"}
 
-	integrationProcessedInsertCols   = []string{"event_id", "consumer_group", "source_key", "event_key", "topic", "event_type"}
+	integrationProcessedInsertCols   = []string{"id", "event_id", "consumer_group", "source_key", "event_key", "topic", "event_type"}
 	integrationProcessedConflictCols = []string{"event_id", "consumer_group"}
 )
+
+// newControlPlaneID mints the framework-standard surrogate id for a
+// control-plane row: a UUID v7 generated in Go, returned as a domain.ID so the
+// caller binds it through Dialect.EncodeArg into the dialect's native id form
+// (uuid text on PG, BINARY(16) elsewhere) — the same id discipline as every
+// domain table; no AUTO_INCREMENT/IDENTITY/DB default anywhere.
+func newControlPlaneID() (domain.ID, error) {
+	u, err := uuid.NewV7()
+	if err != nil {
+		return domain.ID{}, fmt.Errorf("integration: uuid v7: %w", err)
+	}
+	return domain.NewID(u.String()), nil
+}
 
 // RecordIntegrationFailure upserts one failure row under the natural
 // key (consumer_group, source_key, event_key, event_id). Repeats
@@ -83,19 +99,27 @@ func RecordIntegrationFailure(ctx context.Context, q core.Querier, d core.Dialec
 	if payload == nil {
 		payload = []byte("{}")
 	}
+	rowID, err := newControlPlaneID()
+	if err != nil {
+		return fmt.Errorf("record integration failure: %w", err)
+	}
 	sql := d.BuildUpsert(integrationFailureTable, integrationFailureInsertCols, integrationFailureConflictCols, []core.UpsertSet{
 		{Col: "error", Mode: core.UpsertSetNew},
 		{Col: "payload", Mode: core.UpsertSetNew},
 		{Col: "attempt", Mode: core.UpsertSetExpr, Expr: "attempt + 1"},
-		{Col: "last_attempt_at", Mode: core.UpsertSetExpr, Expr: "NOW()"},
+		{Col: "last_attempt_at", Mode: core.UpsertSetExpr, Expr: d.NowExpr()},
 		{Col: "resolved_at", Mode: core.UpsertSetExpr, Expr: "NULL"},
 	})
 	if err := q.Exec(ctx, sql,
+		d.EncodeArg(rowID),
 		rec.ConsumerGroup,
 		rec.SourceKey,
 		rec.EventKey,
 		rec.EventID,
-		payload,
+		// Text bind — the payload column is text-shaped JSON on every dialect;
+		// SQL Server refuses the implicit varbinary→NVARCHAR conversion a raw
+		// []byte would require.
+		string(payload),
 		rec.Error,
 	); err != nil {
 		return fmt.Errorf("record integration failure: %w", err)
@@ -114,7 +138,7 @@ func ResolveIntegrationFailures(ctx context.Context, q core.Querier, d core.Dial
 	if eventID == uuid.Nil {
 		return fmt.Errorf("resolve integration failures: event_id is required")
 	}
-	sql := "UPDATE " + integrationFailureTable + " SET resolved_at = NOW() WHERE" +
+	sql := "UPDATE " + integrationFailureTable + " SET resolved_at = " + d.NowExpr() + " WHERE" +
 		" consumer_group = " + d.Placeholder(1) +
 		" AND source_key = " + d.Placeholder(2) +
 		" AND event_key = " + d.Placeholder(3) +
@@ -191,6 +215,11 @@ func IsAlreadyProcessed(ctx context.Context, q core.Querier, d core.Dialect, eve
 	// Query + Next instead of QueryRow + a no-rows sentinel: pgx and database/sql
 	// surface "no rows" with different sentinels (pgx.ErrNoRows vs sql.ErrNoRows),
 	// so presence-by-iteration keeps the dedup check engine-neutral.
+	//
+	// Performance: SELECT 1 filtered on exactly the UNIQUE natural key's columns
+	// is an INDEX-ONLY probe on every engine (covering seek on the
+	// omnicore_integration_processed_natural_key index) — the surrogate uuid PK
+	// costs this read path nothing; only the insert maintains the extra index.
 	sql := "SELECT 1 FROM " + integrationProcessedTable +
 		" WHERE event_id = " + d.Placeholder(1) + " AND consumer_group = " + d.Placeholder(2)
 	rows, err := q.Query(ctx, sql, eventID, consumerGroup)
@@ -216,9 +245,15 @@ func MarkProcessed(ctx context.Context, q core.Querier, d core.Dialect, rec Inte
 		return fmt.Errorf("mark processed: event_id and consumer_group are required")
 	}
 	// Upsert with no update assignments → do-nothing on conflict (the dedup
-	// row already exists; the at-least-once race is documented).
+	// row already exists — its Go-minted surrogate id is simply discarded; the
+	// at-least-once race is documented).
+	rowID, err := newControlPlaneID()
+	if err != nil {
+		return fmt.Errorf("mark processed: %w", err)
+	}
 	sql := d.BuildUpsert(integrationProcessedTable, integrationProcessedInsertCols, integrationProcessedConflictCols, nil)
 	if err := q.Exec(ctx, sql,
+		d.EncodeArg(rowID),
 		rec.EventID,
 		rec.ConsumerGroup,
 		rec.SourceKey,

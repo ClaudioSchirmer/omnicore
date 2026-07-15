@@ -99,9 +99,10 @@ func (u Updatable) Source() Entity { return u.source }
 func (u Updatable) ID() ID         { return u.id }
 
 // IsPartial reports whether the Updatable was produced by GetPartialUpdatable
-// (PATCH semantic) vs GetUpdatable (PUT semantic). The auditor reads it to
-// emit verb=partialUpdate vs verb=update on the v2 audit event shape; SQL
-// persistence ignores the flag (UPDATE is identical between full and partial).
+// (PATCH semantic) vs GetUpdatable (PUT semantic). The write path reads it to
+// scope sibling updates — a PATCH leaves unmentioned siblings untouched. The
+// audit event records the PUT vs PATCH distinction through actionName, not the
+// verb: both emit verb=update (the root UPDATE is identical between the two).
 func (u Updatable) IsPartial() bool { return u.partial }
 
 func (a Archivable) Source() Entity { return a.source }

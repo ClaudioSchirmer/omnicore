@@ -120,7 +120,7 @@ func (b *BaseEngine) archiveAggregate(ctx persistence.RequestContext, entity dom
 	root, _ := entity.AggregateInfo()
 	return b.softWriteAggregate(ctx, root, entity.Source(), entity.ID().Value(), schema, hook,
 		HookContext{Verb: "Archive", EntityType: entity.EntityName()}, "ARCHIVED",
-		archiveSQL, "NOW()", " IS NULL",
+		archiveSQL, nowSetExpr, " IS NULL",
 		func() audit.AuditEvent { return BuildArchiveEvent(ctx, entity, schema, b.auditClaims) },
 		entity.Events())
 }
@@ -129,7 +129,7 @@ func (b *BaseEngine) unarchiveAggregate(ctx persistence.RequestContext, entity d
 	root, _ := entity.AggregateInfo()
 	return b.softWriteAggregate(ctx, root, entity.Source(), entity.ID().Value(), schema, hook,
 		HookContext{Verb: "Unarchive", EntityType: entity.EntityName()}, "UNARCHIVED",
-		unarchiveSQL, "NULL", " IS NOT NULL",
+		unarchiveSQL, nullSetExpr, " IS NOT NULL",
 		func() audit.AuditEvent { return BuildUnarchiveEvent(ctx, entity, schema, b.auditClaims) },
 		entity.Events())
 }
@@ -224,9 +224,9 @@ func (b *BaseEngine) hardDelete(
 
 // softWriteAggregate is the shared root-soft-write + child-cascade path for
 // archive/unarchive: soft-write the root, then cascade onto each declared child
-// (setExpr = NOW()/NULL, gate = " IS NULL"/" IS NOT NULL"), then outbox (the
-// aggregate snapshot with the root's soft-delete column reflecting the verb)
-// + audit + hooks + post-commit.
+// (childSet = nowSetExpr/nullSetExpr resolved against the dialect, gate =
+// " IS NULL"/" IS NOT NULL"), then outbox (the aggregate snapshot with the
+// root's soft-delete column reflecting the verb) + audit + hooks + post-commit.
 func (b *BaseEngine) softWriteAggregate(
 	ctx persistence.RequestContext,
 	root *domain.AggregateRoot,
@@ -237,7 +237,8 @@ func (b *BaseEngine) softWriteAggregate(
 	hctx HookContext,
 	eventType string,
 	rootStmt func(d Dialect, table, sdCol, pk string) string,
-	childSet, childGate string,
+	childSet func(Dialect) string,
+	childGate string,
 	buildEvent func() audit.AuditEvent,
 	evs []domain.DomainEvent,
 ) error {
@@ -278,7 +279,7 @@ func (b *BaseEngine) softWriteAggregate(
 			if !ok {
 				continue
 			}
-			cq := childCascadeSQL(d, child.Table(), childSd, child.FKColumn(), childSet, childGate)
+			cq := childCascadeSQL(d, child.Table(), childSd, child.FKColumn(), childSet(d), childGate)
 			if err := tx.Exec(ctx, cq, d.EncodeArg(domain.NewID(id))); err != nil {
 				return err
 			}

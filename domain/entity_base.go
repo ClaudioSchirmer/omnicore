@@ -203,7 +203,9 @@ func GetUpdatable[T Entity](e T, apply func(T) error, service Service, actionNam
 // The Auto handler PartialUpdateCommandHandler calls this with
 // cmd.ApplyPartiallyTo. Pass a custom actionName to differentiate strictness
 // per endpoint. The resulting Updatable carries IsPartial() == true so the
-// auditor emits verb=partialUpdate (PUT vs PATCH distinction at the wire).
+// write path scopes sibling updates to the provided set; the PUT vs PATCH
+// distinction reaches the audit event through actionName, not the verb (both
+// emit verb=update).
 func GetPartialUpdatable[T Entity](e T, apply func(T) error, service Service, actionName string) (Updatable, error) {
 	return getUpdatable(e, apply, service, actionName, true)
 }

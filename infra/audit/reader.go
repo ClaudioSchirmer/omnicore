@@ -9,6 +9,7 @@ import (
 	"github.com/google/uuid"
 
 	appaudit "github.com/ClaudioSchirmer/omnicore/application/audit"
+	"github.com/ClaudioSchirmer/omnicore/domain"
 )
 
 // Rows is the minimal multi-row cursor the audit reader consumes — the read
@@ -41,14 +42,15 @@ type Queryer interface {
 type reader struct {
 	q           Queryer
 	placeholder func(int) string
+	encode      func(any) any
 }
 
 // NewReader builds the neutral audit reader over a query surface + the dialect's
 // placeholder renderer. db.NewAuditReader is the canonical constructor that wires
 // it from a RelationalEngine; this lower-level entry point exists so a test (or a
 // service pinning a bespoke connection) can supply its own Queryer.
-func NewReader(q Queryer, placeholder func(int) string) appaudit.Reader {
-	return &reader{q: q, placeholder: placeholder}
+func NewReader(q Queryer, placeholder func(int) string, encode func(any) any) appaudit.Reader {
+	return &reader{q: q, placeholder: placeholder, encode: encode}
 }
 
 // selectAuditEventCols is the canonical column list every read helper
@@ -72,15 +74,15 @@ FROM audit_events`
 // against the engine's Querier; this helper stays minimal because the common
 // case (a recent row from a slog line) is fast enough as-is.
 //
-// The id binds as canonical text on every dialect (Postgres' UUID column and
-// MySQL's CHAR(36) both accept it), mirroring how InsertAuditEvent writes it —
-// no BINARY(16) value codec is involved on the audit trail.
+// The id binds through the dialect's value codec (uuid text on PG, BINARY(16)
+// elsewhere) — the framework id standard, mirroring how InsertAuditEvent
+// writes it. The aggregate_id reference stays canonical text on every dialect.
 func (r *reader) FindByID(ctx context.Context, id uuid.UUID) (*appaudit.AuditEvent, error) {
 	if r.q == nil {
 		return nil, errors.New("audit: nil querier")
 	}
 	sql := selectAuditEventCols + ` WHERE id = ` + r.placeholder(1)
-	rows, err := r.q.Query(ctx, sql, id.String())
+	rows, err := r.q.Query(ctx, sql, r.encode(domain.NewID(id.String())))
 	if err != nil {
 		return nil, fmt.Errorf("audit: find by id: %w", err)
 	}

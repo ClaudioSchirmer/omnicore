@@ -54,13 +54,14 @@ func rowsFound() func(string, []any) (Rows, error) {
 	}
 }
 
-// rowsFKMatch scripts the natural-key guard probe (`SELECT fk = $1 FROM role
-// WHERE pk = $2`) to report the stored FK matching the request-derived base id.
+// rowsFKMatch scripts the natural-key guard probe (the ANSI
+// `SELECT CASE WHEN fk = $1 THEN 1 ELSE 0 END FROM role WHERE pk = $2`
+// projection) to report the stored FK matching the request-derived base id.
 func rowsFKMatch() func(string, []any) (Rows, error) {
 	return func(string, []any) (Rows, error) {
 		return &fakeRows{remaining: 1, scan: func(dest []any) error {
-			if p, ok := dest[0].(*bool); ok {
-				*p = true
+			if p, ok := dest[0].(*int64); ok {
+				*p = 1
 			}
 			return nil
 		}}, nil

@@ -14,12 +14,12 @@ import (
 
 // RelationalEngine is the backend-neutral persistence port the write binding
 // (BaseRepository.boundWriter) and the composition root depend on. It is the
-// seam that lets a relational backend (Postgres, MySQL, later SQL Server) drop in
+// seam that lets a relational backend (Postgres, MySQL, SQL Server) drop in
 // without the upper layers — domain, application, web — ever naming a concrete
 // driver. A dialect is selected once, at boot, through the engine registry
 // (RegisterEngine / NewEngine); the concrete engines live in sibling packages
-// (infra/db/engine/postgres, infra/db/engine/mysql), each compiled behind its own
-// build tag, and implement this port.
+// (infra/db/engine/postgres, infra/db/engine/mysql, infra/db/engine/sqlserver),
+// each compiled behind its own build tag, and implement this port.
 //
 // The write methods take the exported WriteHook (the type-erased lifecycle-hook
 // pair the persister fires at TX positions A and D) so an engine in its own

@@ -48,7 +48,7 @@ func buildInsert(d Dialect, table, pk, id string, fields domain.Fields, nowCols 
 	}
 	for _, nc := range nowCols {
 		cols = append(cols, d.QuoteIdent(nc))
-		phs = append(phs, "NOW()")
+		phs = append(phs, d.NowExpr())
 	}
 	sql := fmt.Sprintf("INSERT INTO %s (%s) VALUES (%s)",
 		d.QuoteIdent(table), strings.Join(cols, ", "), strings.Join(phs, ", "))
@@ -69,7 +69,7 @@ func buildUpdate(d Dialect, table, pk, id string, fields domain.Fields, nowCols 
 		args = append(args, d.EncodeArg(fields[k]))
 	}
 	for _, nc := range nowCols {
-		sets = append(sets, d.QuoteIdent(nc)+" = NOW()")
+		sets = append(sets, d.QuoteIdent(nc)+" = "+d.NowExpr())
 	}
 	n++
 	sql := fmt.Sprintf("UPDATE %s SET %s WHERE %s = %s",
@@ -79,14 +79,21 @@ func buildUpdate(d Dialect, table, pk, id string, fields domain.Fields, nowCols 
 }
 
 func archiveSQL(d Dialect, table, sdCol, pk string) string {
-	return fmt.Sprintf("UPDATE %s SET %s = NOW() WHERE %s = %s",
-		d.QuoteIdent(table), d.QuoteIdent(sdCol), d.QuoteIdent(pk), d.Placeholder(1))
+	return fmt.Sprintf("UPDATE %s SET %s = %s WHERE %s = %s",
+		d.QuoteIdent(table), d.QuoteIdent(sdCol), d.NowExpr(), d.QuoteIdent(pk), d.Placeholder(1))
 }
 
 func unarchiveSQL(d Dialect, table, sdCol, pk string) string {
 	return fmt.Sprintf("UPDATE %s SET %s = NULL WHERE %s = %s",
 		d.QuoteIdent(table), d.QuoteIdent(sdCol), d.QuoteIdent(pk), d.Placeholder(1))
 }
+
+// nowSetExpr / nullSetExpr are the two soft-delete assignments of the symmetric
+// archive/unarchive cascade, resolved against the dialect at execution time (the
+// archive stamp is the dialect's now expression, never a baked-in literal).
+func nowSetExpr(d Dialect) string { return d.NowExpr() }
+
+func nullSetExpr(Dialect) string { return "NULL" }
 
 func deleteSQL(d Dialect, table, pk string) string {
 	return fmt.Sprintf("DELETE FROM %s WHERE %s = %s",
@@ -104,9 +111,10 @@ func childDeleteSQL(d Dialect, childTable, fkCol string) string {
 }
 
 // childCascadeSQL renders the symmetric archive/unarchive cascade on a child
-// table: set the soft-delete column (setExpr = NOW() to archive, NULL to
-// unarchive) for children of the root whose state matches the gate (" IS NULL" =
-// active, " IS NOT NULL" = archived). The single arg is the root id.
+// table: set the soft-delete column (setExpr = the dialect's NowExpr() to
+// archive, NULL to unarchive) for children of the root whose state matches the
+// gate (" IS NULL" = active, " IS NOT NULL" = archived). The single arg is the
+// root id.
 func childCascadeSQL(d Dialect, childTable, childSd, fkCol, setExpr, gate string) string {
 	return fmt.Sprintf("UPDATE %s SET %s = %s WHERE %s = %s AND %s%s",
 		d.QuoteIdent(childTable), d.QuoteIdent(childSd), setExpr,

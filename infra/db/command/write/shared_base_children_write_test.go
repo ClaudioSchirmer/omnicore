@@ -171,14 +171,14 @@ func TestInsertWithBase_EmptyNaturalKeyErrors(t *testing.T) {
 
 // --- unified lifecycle convergence (convergeBase) ----------------------------
 
-// rowsBaseArchived scripts baseIsArchived to find an archived base: the probe now
-// projects `deleted_at IS NOT NULL` and scans a bool, so the archived case is a
-// single row with true.
+// rowsBaseArchived scripts baseIsArchived to find an archived base: the probe
+// projects the archived state as ANSI CASE 1/0 and scans an int, so the
+// archived case is a single row with 1.
 func rowsBaseArchived() func(string, []any) (Rows, error) {
 	return func(string, []any) (Rows, error) {
 		return &fakeRows{remaining: 1, scan: func(dest []any) error {
-			if p, ok := dest[0].(*bool); ok {
-				*p = true
+			if p, ok := dest[0].(*int64); ok {
+				*p = 1
 			}
 			return nil
 		}}, nil

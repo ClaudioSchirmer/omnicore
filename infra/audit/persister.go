@@ -10,6 +10,7 @@ import (
 
 	appaudit "github.com/ClaudioSchirmer/omnicore/application/audit"
 	"github.com/ClaudioSchirmer/omnicore/application/persistence"
+	"github.com/ClaudioSchirmer/omnicore/domain"
 )
 
 // auditEventColumns is the column list for the in-TX audit write, identical
@@ -52,7 +53,7 @@ type Execer interface {
 //     audit_events_actor_idx (partial on Postgres: WHERE actor IS NOT NULL)
 //     excludes anonymous writes. Filters for "what alice did" stay on the index.
 //   - ActorIssuer / TenantID empty → NULL on the row, same rationale.
-func InsertAuditEvent(ctx context.Context, exec Execer, placeholder func(int) string, ev appaudit.AuditEvent) error {
+func InsertAuditEvent(ctx context.Context, exec Execer, placeholder func(int) string, encode func(any) any, ev appaudit.AuditEvent) error {
 	payload, err := buildAuditPayload(ev)
 	if err != nil {
 		return fmt.Errorf("audit: marshal payload: %w", err)
@@ -63,8 +64,15 @@ func InsertAuditEvent(ctx context.Context, exec Execer, placeholder func(int) st
 	}
 	sql := fmt.Sprintf("INSERT INTO audit_events (%s) VALUES (%s)",
 		strings.Join(auditEventColumns, ", "), strings.Join(ph, ", "))
+	rowID, err := uuid.NewV7()
+	if err != nil {
+		return fmt.Errorf("audit: uuid v7: %w", err)
+	}
 	if err := exec.Exec(ctx, sql,
-		uuid.NewString(), // audit row id — Go-generated on every dialect
+		// Audit row id — the framework id standard: a Go-minted UUID v7 bound
+		// via the dialect's value codec into the native id form (uuid text on
+		// PG, BINARY(16) elsewhere).
+		encode(domain.NewID(rowID.String())),
 		ev.EntityID,
 		ev.EntityType,
 		ev.Verb,
@@ -75,7 +83,10 @@ func InsertAuditEvent(ctx context.Context, exec Execer, placeholder func(int) st
 		nullableString(ev.TenantID),
 		ev.ThreadID,
 		ev.DateTime,
-		payload,
+		// Bound as TEXT: the payload column is text-shaped JSON on every
+		// dialect (jsonb / JSON / NVARCHAR(MAX)); a raw []byte would reach SQL
+		// Server as varbinary, which it refuses to convert to NVARCHAR.
+		string(payload),
 		// Pivot to the request's trace; NULL when tracing is off. Sourced from
 		// the event (populateContext) so the in-TX row and the slog echo carry
 		// the identical value. The bridge keeps it == AppContext.CorrelationID().

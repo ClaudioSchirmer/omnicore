@@ -167,10 +167,11 @@ func runWithConfig(cfg *Config, wire func(Deps) Wiring) error {
 	// parent table is guaranteed to be in place, runs before serving HTTP so
 	// the first write of the day never lands in a missing partition. Skipped
 	// when audit is fully off (destinations: []) since no row will ever land.
-	// ensureFuturePartitions is dialect-bound: real on a postgres-tagged build,
-	// a no-op on mysql (the MySQL audit table is not partitioned).
+	// ensureFuturePartitions is dialect-bound and resolved through the
+	// engineBoots registry: real when the configured dialect is postgres, a
+	// no-op on the dialects whose audit table is not partitioned.
 	if cfg.Audit.Includes(audit.DestinationDatabase) {
-		if err := ensureFuturePartitions(ctx, deps, 3); err != nil {
+		if err := ensureFuturePartitions(ctx, deps, cfg, 3); err != nil {
 			return fmt.Errorf("bootstrap: ensure audit partitions: %w", err)
 		}
 	}

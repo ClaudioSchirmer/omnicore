@@ -24,11 +24,12 @@ func (a auditQuerier) Query(ctx context.Context, sql string, args ...any) (audit
 // positional placeholders, exactly as the AggregateLoader and the Mongo-view
 // registry are wired. The audit trail stores ids as UUID text on every dialect
 // (Postgres UUID / MySQL CHAR(36)), so the reader binds them verbatim — the only
-// engine-specific input it needs is Dialect().Placeholder, never a value codec.
+// engine-specific inputs it needs are Dialect().Placeholder and the value
+// codec for the uuid PK (Dialect().EncodeArg).
 //
 // This is the audit-side parallel of db.NewAggregateLoader: a free constructor
 // taking the neutral engine, so a service exposes audit reads with one line and
 // the same code path serves whichever backend booted.
 func NewAuditReader(eng RelationalEngine) appaudit.Reader {
-	return audit.NewReader(auditQuerier{q: eng.Querier()}, eng.Dialect().Placeholder)
+	return audit.NewReader(auditQuerier{q: eng.Querier()}, eng.Dialect().Placeholder, eng.Dialect().EncodeArg)
 }

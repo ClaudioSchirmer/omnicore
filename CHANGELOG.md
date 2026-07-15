@@ -11,6 +11,106 @@ with `1.0.0`.
 
 ## [Unreleased]
 
+## [0.31.0] - 2026-07-14
+
+### Changed
+
+- **BREAKING: every framework control-plane table now follows the framework's
+  own id standard — a UUID v7 minted in Go as the PRIMARY KEY, stored in the
+  dialect's native id form (`UUID` on Postgres, `BINARY(16)` on MySQL/SQL
+  Server), with no `AUTO_INCREMENT`/`BIGSERIAL`/`IDENTITY`/DB default
+  anywhere.** The control plane previously mixed four key regimes (DB-generated
+  uuid on the PG outbox, BIGINT auto-increment elsewhere, text uuid on
+  audit_events, natural-key PKs on the registry/dedup tables). Now: `outbox`,
+  `audit_events` (v7 replaces the previous v4), `integration_events`,
+  `omnicore_upstream_failures` and `omnicore_integration_failures` carry the
+  Go-minted uuid PK; `omnicore_mongo_views` and `omnicore_integration_processed`
+  gain the same surrogate PK with their former natural keys preserved as UNIQUE
+  constraints (`omnicore_mongo_views_view_name_key`,
+  `omnicore_integration_processed_natural_key`) — every lookup still keys on
+  the natural columns. Wire-crossing id references (`outbox.aggregate_id`,
+  `integration_events.event_id`/`aggregate_id`/`correlation_id`/`causation_id`/
+  `thread_id`, audit references) are canonical uuid TEXT (`CHAR(36)`) on EVERY
+  dialect — Postgres included, which previously used native `UUID` columns for
+  them — because they cross the Debezium/Kafka boundary as strings.
+  `UpstreamFailureRecord.ID`/`IntegrationFailureRecord.ID` are now the
+  canonical uuid `string` (were `int64`); `audit.InsertAuditEvent`/
+  `audit.NewReader` take the dialect's value codec. The admin replay pages by
+  keyset over the PK (no `LIMIT/OFFSET` literal — a PG/MySQL-ism T-SQL
+  rejects), and the non-done registry listing orders via ANSI `CASE` instead of
+  a bare `IS NULL` sort key. *Migration*: the `0001_framework` files were
+  rewritten IN PLACE (pre-1.0; golang-migrate tracks no checksums) — recreate
+  the framework control plane on existing databases (bench: `docker compose
+  down -v`; a deployed database needs the equivalent ALTERs or a
+  drop-and-recreate of the seven framework tables). Performance notes shipped
+  with the same rewrite: the uuid-text reference columns carry binary/ASCII
+  collations (`COLLATE "C"` on PG, `CHARACTER SET ascii` on MySQL,
+  `Latin1_General_100_BIN2` on SQL Server — comparisons are memcmp; values are
+  always the lowercase canonical form the framework writes), the dedup
+  pre-check is an index-only probe on the natural-key UNIQUE (the surrogate PK
+  costs reads nothing), and the outbox drops its `(aggregate_type,
+  aggregate_id)` index — no framework code SELECTs the outbox by aggregate
+  (Debezium reads the replication log/CDC, not the table), so every write was
+  paying maintenance for nothing; `created_at` stays for pruning.
+
+### Added
+
+- **SQL Server joins PostgreSQL and MySQL as a first-class relational engine.**
+  A complete engine ships behind the `sqlserver` build tag
+  (`infra/db/engine/sqlserver`, driver `microsoft/go-mssqldb`): selecting
+  `relational.dialect: sqlserver` + `go build -tags 'sqlserver <transport>'`
+  runs a service on SQL Server through the same engine seam as the other
+  backends. Dialect specifics: `@pN` placeholders, bracket-quoted identifiers,
+  a single-statement `MERGE … WITH (HOLDLOCK)` upsert, `CURRENT_TIMESTAMP` as
+  the now expression, a SELECT-head `TOP n` row cap, unique/FK violation
+  classification from errors 2627/2601/547, and a session-owned
+  `sp_getapplock` rebuild lock. **Identity is stored `BINARY(16)`, never
+  `UNIQUEIDENTIFIER`**: SQL Server orders GUIDs last-byte-group-first, which
+  would destroy the UUIDv7 time order and fragment the clustered PK;
+  `BINARY(16)` compares bytewise, so the Go-minted v7 ids keep the clustered
+  index append-friendly (the InnoDB rationale, verified against SQL Server
+  2022). JSON rides as `NVARCHAR(MAX)` text. The framework control plane ships
+  as `embedded/sqlserver/0001_framework.{up,down}.sql` (filtered indexes where
+  PG uses partial ones; constraint names identical across dialects so
+  `ConstraintBinding` maps the same violations) with its own migration runner
+  (`migration.NewSQLServer`). The "Supported column shapes — Go ↔ SQL Server"
+  table in the manual is the canonical type map. Internal enablers, no
+  consumer surface: the bootstrap engine twins collapsed into a per-dialect
+  boot registry (build-tag negation pairs do not compose at three engines —
+  any tag combination now links), and the control-plane JSON payloads
+  (outbox/audit/integration) bind as text instead of raw bytes (byte-identical
+  on PG/MySQL; SQL Server refuses the implicit varbinary→NVARCHAR conversion).
+
+### Changed
+
+- **`core.Dialect` also gains the savepoint trio — `Savepoint(name)`,
+  `RollbackToSavepoint(name)`, `ReleaseSavepoint(name)`.** The shared-base
+  orphan purge (the database-vetoable delete) used to emit the standard
+  `SAVEPOINT`/`ROLLBACK TO SAVEPOINT`/`RELEASE SAVEPOINT` literals, which
+  T-SQL spells `SAVE TRANSACTION`/`ROLLBACK TRANSACTION` — with NO release
+  statement (a savepoint is discarded at COMMIT), so `ReleaseSavepoint`
+  returns "" on SQL Server and the caller skips the empty statement. The
+  `Dialect` implementations moved to their own `dialect.go` files (core and
+  each engine) — the seam long outgrew the read path `read.go` named.
+
+- **The last dialect-specific SQL literals left shared code — `core.Dialect`
+  gains `NowExpr()` and `ApplyLimit(sql, n)`.** Shared statement builders used
+  to bake in `NOW()` (managed `created_at`/`updated_at` stamps, the soft-delete
+  archive stamp, the outbox `created_at`, the failure registries' timestamps)
+  and a tail `LIMIT n` (existence probes, `FindOne`'s bounded load, the
+  composer's row fetches) — both happen to parse on Postgres AND MySQL, so the
+  coupling was invisible, but they would not survive a third engine. Every
+  generated statement now obtains the current-timestamp expression from
+  `Dialect.NowExpr()` and its row cap from `Dialect.ApplyLimit(sql, n)`, which
+  receives the COMPLETE SELECT so an engine whose cap is not a tail clause
+  (e.g. a SELECT-head `TOP n`) can rewrite the statement. Both engines render
+  exactly the SQL they rendered before (`NOW()` / trailing ` LIMIT n`), so no
+  emitted statement changes; the operator-facing drift-reconcile scripts, which
+  have no dialect at hand, switch from `NOW()` to the ANSI
+  `CURRENT_TIMESTAMP`. Groundwork for the planned SQL Server engine; a custom
+  `core.Dialect` implementation (none is expected outside the framework's
+  engines) must add the two methods.
+
 ## [0.30.0] - 2026-07-13
 
 ### Changed

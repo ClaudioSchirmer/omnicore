@@ -8,6 +8,9 @@ import (
 	"time"
 
 	"github.com/ClaudioSchirmer/omnicore/infra/db/core"
+
+	"github.com/ClaudioSchirmer/omnicore/domain"
+	"github.com/google/uuid"
 )
 
 // ViewRegistryStatus is the closed set of values the status column on
@@ -65,6 +68,19 @@ const registrySelectColumns = `view_name, version, rebuild_hash, artifact_hash, 
        status, started_at, pid, host,
        applied_at, applied_by, code_version`
 
+// newControlPlaneID mints the framework-standard surrogate id for a
+// control-plane row: a UUID v7 generated in Go, returned as a domain.ID so the
+// caller binds it through Dialect.EncodeArg into the dialect's native id form
+// (uuid text on PG, BINARY(16) elsewhere) — the same id discipline as every
+// domain table; no AUTO_INCREMENT/IDENTITY/DB default anywhere.
+func newControlPlaneID() (domain.ID, error) {
+	u, err := uuid.NewV7()
+	if err != nil {
+		return domain.ID{}, fmt.Errorf("db: uuid v7: %w", err)
+	}
+	return domain.NewID(u.String()), nil
+}
+
 func sqlReadViewRegistry(d core.Dialect) string {
 	return `SELECT ` + registrySelectColumns + `
 FROM omnicore_mongo_views
@@ -73,10 +89,10 @@ WHERE view_name = ` + d.Placeholder(1)
 
 func sqlInitViewRegistry(d core.Dialect) string {
 	return `INSERT INTO omnicore_mongo_views
-  (view_name, version, rebuild_hash, artifact_hash, combined_hash,
+  (id, view_name, version, rebuild_hash, artifact_hash, combined_hash,
    status, applied_at, applied_by, code_version)
 VALUES
-  (` + d.Placeholder(1) + `, ` + d.Placeholder(2) + `, ` + d.Placeholder(3) + `, ` + d.Placeholder(4) + `, ` + d.Placeholder(5) + `, 'done', ` + d.Placeholder(6) + `, ` + d.Placeholder(7) + `, NULLIF(` + d.Placeholder(8) + `, ''))`
+  (` + d.Placeholder(1) + `, ` + d.Placeholder(2) + `, ` + d.Placeholder(3) + `, ` + d.Placeholder(4) + `, ` + d.Placeholder(5) + `, ` + d.Placeholder(6) + `, 'done', ` + d.Placeholder(7) + `, ` + d.Placeholder(8) + `, NULLIF(` + d.Placeholder(9) + `, ''))`
 }
 
 // Placeholders are numbered in APPEARANCE order (SET columns first, the WHERE
@@ -112,13 +128,14 @@ func sqlEndRebuild(d core.Dialect) string {
 WHERE view_name = ` + d.Placeholder(8)
 }
 
-// sqlListNonDone orders unfinished rows oldest-first. "started_at IS NULL" as a
-// leading sort key is the portable NULLS-LAST idiom (a boolean on PG, 0/1 on
-// MySQL — both put non-null rows first), since MySQL has no NULLS LAST clause.
+// sqlListNonDone orders unfinished rows oldest-first. The leading CASE key is
+// the portable NULLS-LAST idiom: MySQL has no NULLS LAST clause, and a bare
+// "started_at IS NULL" sort key is a PG/MySQL-ism (T-SQL has no boolean
+// expressions outside predicates) — ANSI CASE 1/0 sorts identically on all.
 const sqlListNonDone = `SELECT ` + registrySelectColumns + `
 FROM omnicore_mongo_views
 WHERE status <> 'done'
-ORDER BY started_at IS NULL, started_at ASC`
+ORDER BY CASE WHEN started_at IS NULL THEN 1 ELSE 0 END, started_at ASC`
 
 // scanRegistryRow scans one neutral row into a ViewRegistryRow in the column
 // order of registrySelectColumns.
@@ -183,7 +200,12 @@ type InitViewRegistryInput struct {
 // Fails on conflict — the caller must check whether a row already exists
 // (via ReadViewRegistry) before deciding to init.
 func InitViewRegistry(ctx context.Context, q core.Querier, d core.Dialect, in InitViewRegistryInput) error {
-	err := q.Exec(ctx, sqlInitViewRegistry(d),
+	rowID, err := newControlPlaneID()
+	if err != nil {
+		return fmt.Errorf("init view registry %q: %w", in.ViewName, err)
+	}
+	err = q.Exec(ctx, sqlInitViewRegistry(d),
+		d.EncodeArg(rowID),
 		in.ViewName,
 		in.Version,
 		in.RebuildHash,

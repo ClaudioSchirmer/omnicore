@@ -445,7 +445,7 @@ for _, ev := range events {
 }</code></pre>
     <p>
         The reader is <strong>backend-neutral</strong>: it issues its <code>SELECT</code> through the engine's
-        <code>Querier</code> / <code>Dialect</code>, so the same code reads audit rows on Postgres and MySQL alike. The
+        <code>Querier</code> / <code>Dialect</code>, so the same code reads audit rows on every relational backend alike. The
         returned <code>*AuditEvent</code> mirrors what the persister wrote: top-level columns map directly; the
         <code>payload</code> JSON blob is unmarshaled back into <code>Snapshot</code> / <code>Changes</code> /
         <code>Children</code>.

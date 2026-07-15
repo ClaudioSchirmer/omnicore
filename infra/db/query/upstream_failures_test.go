@@ -105,13 +105,19 @@ func TestRecordUpstreamFailure_PassesArgsInOrder(t *testing.T) {
 		!strings.Contains(fake.lastSQL, "ON CONFLICT") {
 		t.Errorf("SQL shape wrong: %s", fake.lastSQL)
 	}
+	// arg[0] is the Go-minted UUID v7 surrogate id, bound through the fake's
+	// PG-flavored codec (domain.ID → canonical text); the natural-key +
+	// payload args follow in appearance order.
+	if idStr, ok := fake.lastArgs[0].(string); !ok || len(idStr) != 36 {
+		t.Fatalf("id arg = %v (%T), want a canonical uuid string", fake.lastArgs[0], fake.lastArgs[0])
+	}
 	want := []any{"users.events", "orders", "u1", "ord-7", "compose", "boom"}
-	if len(fake.lastArgs) != len(want) {
-		t.Fatalf("args len = %d, want %d (%v)", len(fake.lastArgs), len(want), fake.lastArgs)
+	if len(fake.lastArgs) != len(want)+1 {
+		t.Fatalf("args len = %d, want %d (%v)", len(fake.lastArgs), len(want)+1, fake.lastArgs)
 	}
 	for i, v := range want {
-		if fake.lastArgs[i] != v {
-			t.Errorf("arg[%d] = %v, want %v", i, fake.lastArgs[i], v)
+		if fake.lastArgs[i+1] != v {
+			t.Errorf("arg[%d] = %v, want %v", i+1, fake.lastArgs[i+1], v)
 		}
 	}
 }
@@ -132,8 +138,8 @@ func TestRecordUpstreamFailure_AcceptsEmptyLocalID(t *testing.T) {
 	if err != nil {
 		t.Fatalf("empty LocalID on discover stage must be accepted: %v", err)
 	}
-	if fake.lastArgs[3] != "" {
-		t.Errorf("local_id arg should be empty string, got %v", fake.lastArgs[3])
+	if fake.lastArgs[4] != "" {
+		t.Errorf("local_id arg should be empty string, got %v", fake.lastArgs[4])
 	}
 }
 

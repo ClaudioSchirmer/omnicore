@@ -66,8 +66,8 @@ func TestListNonDoneSQL_FiltersAndOrders(t *testing.T) {
 	if !strings.Contains(sqlListNonDone, "WHERE status <> 'done'") {
 		t.Error("sqlListNonDone filter missing")
 	}
-	if !strings.Contains(sqlListNonDone, "ORDER BY started_at") {
-		t.Error("sqlListNonDone order missing — oldest in-flight should surface first")
+	if !strings.Contains(sqlListNonDone, "ORDER BY CASE WHEN started_at IS NULL THEN 1 ELSE 0 END, started_at ASC") {
+		t.Error("sqlListNonDone order missing — oldest in-flight should surface first (ANSI CASE NULLS-LAST idiom)")
 	}
 }
 

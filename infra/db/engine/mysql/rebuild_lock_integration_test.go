@@ -34,6 +34,7 @@ func createMongoViewsTable(t *testing.T, raw *sql.DB) {
 		t.Fatalf("drop omnicore_mongo_views: %v", err)
 	}
 	if _, err := raw.ExecContext(ctx, `CREATE TABLE omnicore_mongo_views (
+		id                     BINARY(16)   NOT NULL,
 		view_name              VARCHAR(255) NOT NULL,
 		version                INTEGER      NOT NULL,
 		rebuild_hash           VARCHAR(64)  NOT NULL,
@@ -49,7 +50,8 @@ func createMongoViewsTable(t *testing.T, raw *sql.DB) {
 		applied_at             DATETIME     NOT NULL,
 		applied_by             VARCHAR(255) NOT NULL,
 		code_version           VARCHAR(255) NULL,
-		PRIMARY KEY (view_name)
+		PRIMARY KEY (id),
+		CONSTRAINT omnicore_mongo_views_view_name_key UNIQUE (view_name)
 	)`); err != nil {
 		t.Fatalf("create omnicore_mongo_views: %v", err)
 	}

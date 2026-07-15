@@ -2,6 +2,7 @@ package query
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -149,8 +150,13 @@ func TestInitRegistryOnly_ExecError(t *testing.T) {
 
 func TestSampleExpectedFieldNames(t *testing.T) {
 	eng := newFakeEngine(&fakeQuerier{
-		// Sample-id query: one root id "o1".
+		// Sample-id query: one root id "o1". The row cap must ride the
+		// dialect's ApplyLimit (a TOP-style engine rewrites the SELECT head) —
+		// never a concatenated LIMIT tail.
 		queryFn: func(sql string, args []any) (core.Rows, error) {
+			if want := (fakeDialect{}).ApplyLimit("SELECT id FROM orders", sampleSizeForCleanup); sql != want {
+				return nil, fmt.Errorf("sample-id SQL = %q, want %q (row cap must come from Dialect.ApplyLimit)", sql, want)
+			}
 			return &fakeRows{rows: 1, scan: func(_ int, dest []any) error {
 				if p, ok := dest[0].(*string); ok {
 					*p = "o1"
