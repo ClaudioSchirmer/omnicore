@@ -19,17 +19,18 @@ import (
 	"github.com/ClaudioSchirmer/omnicore/web/openapi"
 )
 
-// dialectPostgres / dialectMySQL / dialectSQLServer are the registered
-// relational-engine dialect names — they mirror the engine-registry keys and
-// the relational.dialect values. Referenced from the tag-gated engine bindings
-// and integration tests (e.g. mysql_boot_integration), which the default lint
-// view does not compile — hence the nolint.
+// dialectPostgres / dialectMySQL / dialectSQLServer / dialectOracle are the
+// registered relational-engine dialect names — they mirror the engine-registry
+// keys and the relational.dialect values. Referenced from the tag-gated engine
+// bindings and integration tests (e.g. mysql_boot_integration), which the
+// default lint view does not compile — hence the nolint.
 //
 //nolint:unused // used under the engine build tags.
 const (
 	dialectPostgres  = "postgres"
 	dialectMySQL     = "mysql"
 	dialectSQLServer = "sqlserver"
+	dialectOracle    = "oracle"
 )
 
 // Deps are the singletons built by the framework and exposed to the service

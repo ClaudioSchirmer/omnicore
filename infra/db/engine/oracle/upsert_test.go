@@ -29,7 +29,10 @@ func TestOracleDialect_BuildUpsert_DoUpdate(t *testing.T) {
 	for _, want := range []string{
 		"MERGE INTO omnicore_integration_failures target",
 		"USING (SELECT :1 AS consumer_group, :2 AS event_id, :3 AS error FROM dual) source",
-		"ON (target.consumer_group = source.consumer_group AND target.event_id = source.event_id)",
+		// NULL-safe ON: '' binds as NULL on Oracle, so a plain `=` would never
+		// match an empty-string conflict column and every retry would die on
+		// ORA-00001 instead of incrementing the attempt.
+		"ON ((target.consumer_group = source.consumer_group OR (target.consumer_group IS NULL AND source.consumer_group IS NULL)) AND (target.event_id = source.event_id OR (target.event_id IS NULL AND source.event_id IS NULL)))",
 		"WHEN MATCHED THEN UPDATE SET error = source.error, attempt = attempt + 1",
 		"WHEN NOT MATCHED THEN INSERT (consumer_group, event_id, error) VALUES (source.consumer_group, source.event_id, source.error)",
 	} {

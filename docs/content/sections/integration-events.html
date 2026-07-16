@@ -89,7 +89,7 @@ func MountUserReceivers(reg *fwintegration.Registry, repo userRepo, d bootstrap.
     <p>Framework provides best-effort dedup via <code>omnicore_integration_processed</code> keyed by <code>(event_id, consumer_group)</code>. The race window of milliseconds between handler COMMIT and the dedup INSERT may produce a double-invoke after a crash. Handlers consumed by a Receiver <strong>MUST</strong> be idempotent by design — <strong>recommended patterns</strong>:</p>
 
     <ul>
-        <li><strong>UPSERT</strong> on relational writes (dialect-appropriate — PG <code>INSERT ... ON CONFLICT DO UPDATE</code>, MySQL <code>INSERT ... ON DUPLICATE KEY UPDATE</code>, SQL Server <code>MERGE ... WITH (HOLDLOCK)</code>; matches the framework's existing <code>BaseRepository.ConstraintBindings</code> posture).</li>
+        <li><strong>UPSERT</strong> on relational writes (dialect-appropriate — PG <code>INSERT ... ON CONFLICT DO UPDATE</code>, MySQL <code>INSERT ... ON DUPLICATE KEY UPDATE</code>, SQL Server <code>MERGE ... WITH (HOLDLOCK)</code>, Oracle a single-statement <code>MERGE</code>; matches the framework's existing <code>BaseRepository.ConstraintBindings</code> posture).</li>
         <li><strong>Natural-key constraints</strong> on relational writes — the second invoke trips the unique violation and the framework translates it via the registered <code>ConstraintBinding</code>.</li>
         <li><strong>Idempotency keys at the external side</strong> for side effects to external systems (email provider, payment provider, downstream HTTP API). Same pattern Stripe / Twilio / GitHub webhooks adopt — pass the <code>event_id</code> as the upstream idempotency key.</li>
     </ul>
@@ -98,7 +98,7 @@ func MountUserReceivers(reg *fwintegration.Registry, repo userRepo, d bootstrap.
 
     <h3>Failure registry — <code>omnicore_integration_failures</code></h3>
 
-    <p>Every handler failure is persisted to <code>omnicore_integration_failures</code>, mirroring <code>omnicore_upstream_failures</code> for parity in operator tooling. It is a framework-managed table created by the embedded <code>0001_framework</code> migration (you never write this DDL). Schema below is the <strong>Postgres</strong> flavor; the <strong>MySQL</strong> and <strong>SQL Server</strong> flavors in <code>embedded/{mysql,sqlserver}/0001_framework</code> use dialect-appropriate types (the uuid PK is <code>UUID</code> on Postgres and <code>BINARY(16)</code> elsewhere; <code>JSONB</code> → <code>JSON</code> / <code>NVARCHAR(MAX)</code>; the wire-crossing uuid references are <code>CHAR(36)</code> everywhere):</p>
+    <p>Every handler failure is persisted to <code>omnicore_integration_failures</code>, mirroring <code>omnicore_upstream_failures</code> for parity in operator tooling. It is a framework-managed table created by the embedded <code>0001_framework</code> migration (you never write this DDL). Schema below is the <strong>Postgres</strong> flavor; the <strong>MySQL</strong>, <strong>SQL Server</strong> and <strong>Oracle</strong> flavors in <code>embedded/{mysql,sqlserver,oracle}/0001_framework</code> use dialect-appropriate types (the uuid PK is <code>UUID</code> on Postgres, <code>BINARY(16)</code> on MySQL/SQL Server, <code>RAW(16)</code> on Oracle; <code>JSONB</code> → <code>JSON</code> / <code>NVARCHAR(MAX)</code> / native <code>JSON</code>; the wire-crossing uuid references are uuid text everywhere — <code>CHAR(36)</code>, <code>VARCHAR2(36)</code> on Oracle):</p>
 
     <pre><code>CREATE TABLE omnicore_integration_failures (
     id              UUID      PRIMARY KEY,  -- UUID v7 minted in Go (the framework id standard)
@@ -186,7 +186,7 @@ POST /admin/retries/integration   → loops d.IntegrationRegistry.Receivers()</c
         </tbody>
     </table>
 
-    <p>All three tables ship in the flattened framework migration <code>0001_framework.{up,down}.sql</code> (per dialect, under <code>infra/migration/embedded/{postgres,mysql,sqlserver}/</code>). The <code>outbox</code> table stays UNTOUCHED — <code>integration_events</code> is a separate concept with its own retention semantics. Operator-driven pruning via <code>DELETE WHERE created_at &lt; NOW() - INTERVAL '30 days'</code> on <code>integration_events</code> is recommended; framework does not auto-prune.</p>
+    <p>All three tables ship in the flattened framework migration <code>0001_framework.{up,down}.sql</code> (per dialect, under <code>infra/migration/embedded/{postgres,mysql,sqlserver,oracle}/</code>). The <code>outbox</code> table stays UNTOUCHED — <code>integration_events</code> is a separate concept with its own retention semantics. Operator-driven pruning via <code>DELETE WHERE created_at &lt; NOW() - INTERVAL '30 days'</code> on <code>integration_events</code> is recommended; framework does not auto-prune.</p>
 
     <h3>Professional shutdown</h3>
 

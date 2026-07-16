@@ -109,8 +109,8 @@ audit:
         embedded migration <code>0001</code> — even with <code>destinations: []</code> the table
         exists; it just never receives a row. For direct SQL consumers: the table's id columns
         (<code>id</code>, <code>aggregate_id</code>, <code>thread_id</code>) are canonical UUID
-        TEXT on every backend (<code>CHAR(36)</code> on MySQL and SQL Server) — unlike the domain tables, which
-        store <code>BINARY(16)</code> on MySQL and SQL Server — so audit predicates compare against the plain
+        TEXT on every backend (<code>CHAR(36)</code> on MySQL and SQL Server, <code>VARCHAR2(36)</code> on Oracle) — unlike the domain tables, which
+        store <code>BINARY(16)</code> on MySQL and SQL Server and <code>RAW(16)</code> on Oracle — so audit predicates compare against the plain
         quoted UUID string on every dialect. The companion knob
         <code>auth.auditClaims</code> (a JWT-claim allowlist) lives under <code>auth:</code> because
         it is a security concern — it whitelists which claims leave the JWT envelope into
@@ -291,11 +291,11 @@ audit:
         <code>audit.Reader</code> port with two canonical lookups. Build it once over the booted
         engine with <code>read.NewAuditReader(deps.DB)</code>: it runs through the engine's neutral read
         seam (<code>Querier</code> + <code>Dialect</code>), so the <em>same code</em> reads
-        <code>audit_events</code> on Postgres, MySQL or SQL Server — the audit trail stores ids as UUID text
-        (Postgres <code>UUID</code> / MySQL and SQL Server <code>CHAR(36)</code>), so the reader binds them verbatim
+        <code>audit_events</code> on Postgres, MySQL, SQL Server or Oracle — the audit trail stores ids as UUID text
+        (Postgres <code>UUID</code> / MySQL and SQL Server <code>CHAR(36)</code> / Oracle <code>VARCHAR2(36)</code>), so the reader binds them verbatim
         with no per-dialect value codec.
     </p>
-<pre><code>// Build the reader once over whichever relational engine booted (Postgres, MySQL or SQL Server).
+<pre><code>// Build the reader once over whichever relational engine booted (any supported engine).
 reader := read.NewAuditReader(deps.DB)
 
 // Forensic single-row lookup — you saw an id in the slog echo and want the full row.

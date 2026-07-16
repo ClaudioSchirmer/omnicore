@@ -30,18 +30,18 @@ Go framework library providing **DDD + CQRS infrastructure** for microservices. 
 ## Stack
 
 - Go ≥ 1.21 (`log/slog` + generics); toolchain pinned to `go 1.26.3`.
-- Fiber v3 (HTTP), connectrpc.com/connect (gRPC surface), pgx v5 (Postgres), go-sql-driver (MySQL), microsoft/go-mssqldb (SQL Server), mongo-driver v2, segmentio/kafka-go + nats.go (message-transport adapters, each tag-gated), google/uuid (canonical — don't add another uuid lib).
+- Fiber v3 (HTTP), connectrpc.com/connect (gRPC surface), pgx v5 (Postgres), go-sql-driver (MySQL), microsoft/go-mssqldb (SQL Server), sijms/go-ora (Oracle, 23ai+), mongo-driver v2, segmentio/kafka-go + nats.go (message-transport adapters, each tag-gated), google/uuid (canonical — don't add another uuid lib).
 
 ## Build and test
 
 ```
-go build -tags 'postgres kafka' ./...                        # an engine tag (postgres|mysql|sqlserver) AND a transport tag (kafka|nats) are BOTH mandatory
+go build -tags 'postgres kafka' ./...                        # an engine tag (postgres|mysql|sqlserver|oracle) AND a transport tag (kafka|nats) are BOTH mandatory
 go vet -tags 'postgres kafka' ./...
 go test -tags 'postgres kafka' ./... -count=1                # unit suite; swap engine to -tags 'mysql kafka' for the MySQL build
 go test -tags 'integration postgres kafka' ./... -count=1    # integration (needs docker compose up in ../omnicore-example-users/devops)
 ```
 
-A build links a relational engine via build tag: `-tags postgres` / `-tags mysql` / `-tags sqlserver` links exactly that one; any combination links those engines and selects the active dialect at runtime from `relational.dialect`. It also links a **message transport** the same way: `-tags kafka` links the Kafka/Redpanda adapter, `-tags nats` links the NATS JetStream adapter. No default on either axis — building without an engine tag OR without a transport tag aborts at boot. Tests sit beside the file under test (`foo.go` ↔ `foo_test.go`); integration tests opt in via `//go:build integration && <engine>` and carry the engine tag, so the unit suite also runs under the chosen tag. **Never `go mod tidy`** (prunes tag-gated deps).
+A build links a relational engine via build tag: `-tags postgres` / `-tags mysql` / `-tags sqlserver` / `-tags oracle` links exactly that one; any combination links those engines and selects the active dialect at runtime from `relational.dialect`. It also links a **message transport** the same way: `-tags kafka` links the Kafka/Redpanda adapter, `-tags nats` links the NATS JetStream adapter. No default on either axis — building without an engine tag OR without a transport tag aborts at boot. Tests sit beside the file under test (`foo.go` ↔ `foo_test.go`); integration tests opt in via `//go:build integration && <engine>` and carry the engine tag, so the unit suite also runs under the chosen tag. **Never `go mod tidy`** (prunes tag-gated deps).
 
 → Engine seam + transport seam, build tags, dialect/transport selection: `docs/content/sections/architecture.html`, `docs/content/sections/bootstrap.html`. Transport subsystem in depth (adapters, `transport:` config, durability, CDC relay): `docs/content/sections/transport.html`.
 
@@ -163,7 +163,7 @@ These constrain design decisions across the whole module. Each is detailed in th
 6. **Every Archivable has a symmetric Unarchivable**; cascade root↔children is symmetric and universal.
 7. **Mongo mirrors the relational backend by default** — archived rows survive in the projection unless a view opts into `DeleteOnArchive()`; default reads hide them (the root `deleted_at` gate + the archived-entry strip on nested aggregate-child arrays), `?includeArchived` surfaces them.
 8. **`TableSchema` is the sole place physical names live** — mandatory, explicit, complete; an undeclared field is never persisted/scanned/audited; one declaration drives write + criteria + scan + Mongo view.
-9. **The relational layer is backend-agnostic** (Postgres, MySQL AND SQL Server via the engine seam). Say "the relational backend / SoR / control plane" — never "Postgres" for an agnostic concept. PG-only access is an explicit, documented escape hatch (`AsPostgres`, `UnwrapPgxTx`).
+9. **The relational layer is backend-agnostic** (Postgres, MySQL, SQL Server AND Oracle via the engine seam; Oracle floor: Database 23ai). Say "the relational backend / SoR / control plane" — never "Postgres" for an agnostic concept. PG-only access is an explicit, documented escape hatch (`AsPostgres`, `UnwrapPgxTx`).
 10. **Integration events are at-least-once** — dedup is best-effort; consumer handlers must be idempotent. No outer TX on the receiver path (each `Repo.Method` opens its own short TX, identical to the HTTP path).
 11. **The `docs/` site is the source of truth for the public surface** — every approved surface change updates the mapped section + a `changelog.html` entry in the same round.
 12. **Identity is a TYPE** — `domain.ID` (nullable ⇒ `*domain.ID`) is the id everywhere: entity contracts, AVO `ID` fields, `WriteResult`, `criteria.ByID`, and persisted fields, where the Go type alone drives each dialect's native id form (never a value-shape guess; a `string` field is text, always). The persistable field-type set is CLOSED — an unknown field type is a boot fail at the `Field(...)` declaration (`table-schema.html` is the canonical home of the set).

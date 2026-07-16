@@ -123,6 +123,14 @@ func extractConstraintName(msg string) string {
 // Callers never assign a conflict column in sets (Oracle forbids updating ON
 // columns, ORA-38104). No statement terminator: the driver rejects a trailing
 // semicolon on plain SQL (it belongs to PL/SQL blocks only).
+//
+// The ON comparison is NULL-SAFE (`=` OR both-NULL) — an Oracle-only need: an
+// empty string binds as NULL here, so a conflict column that is "" on the
+// other engines (omnicore_upstream_failures.local_id on the discover stage)
+// arrives NULL, and a plain `=` would never match it — every retry would take
+// the INSERT arm and die on ORA-00001 instead of incrementing the attempt.
+// The natural-key UNIQUE still dedups those rows (an Oracle B-tree treats
+// identical composite entries with a NULL in the same slot as duplicates).
 func (d oracleDialect) BuildUpsert(table string, cols, conflictCols []string, sets []core.UpsertSet) string {
 	var b strings.Builder
 	b.WriteString("MERGE INTO ")
@@ -141,10 +149,16 @@ func (d oracleDialect) BuildUpsert(table string, cols, conflictCols []string, se
 		if i > 0 {
 			b.WriteString(" AND ")
 		}
-		b.WriteString("target.")
-		b.WriteString(d.QuoteIdent(k))
+		q := d.QuoteIdent(k)
+		b.WriteString("(target.")
+		b.WriteString(q)
 		b.WriteString(" = source.")
-		b.WriteString(d.QuoteIdent(k))
+		b.WriteString(q)
+		b.WriteString(" OR (target.")
+		b.WriteString(q)
+		b.WriteString(" IS NULL AND source.")
+		b.WriteString(q)
+		b.WriteString(" IS NULL))")
 	}
 	b.WriteString(")")
 	if len(sets) > 0 {

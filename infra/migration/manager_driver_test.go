@@ -396,9 +396,9 @@ func TestUp_NoChangeOnRerun(t *testing.T) {
 }
 
 func TestUp_UnknownDialect(t *testing.T) {
-	m := &Manager{dialect: "oracle", dir: t.TempDir()}
+	m := &Manager{dialect: "sqlite", dir: t.TempDir()}
 	err := m.Up(context.Background())
-	if err == nil || !strings.Contains(err.Error(), "framework iofs (oracle)") {
+	if err == nil || !strings.Contains(err.Error(), "framework iofs (sqlite)") {
 		t.Fatalf("expected framework source error for unknown dialect, got: %v", err)
 	}
 }

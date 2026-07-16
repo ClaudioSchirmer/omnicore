@@ -67,12 +67,13 @@ env:
 </code></pre>
 
     <h3 id="engine-build-tag">Relational engine build tag</h3>
-    <p>The relational engine is selected by a Go build tag, and at least <strong>one</strong> tag is mandatory — there is no default. Each engine self-registers in the engine registry (<code>core.RegisterEngine</code>, database/sql-style) and brings its own driver stack (<code>pgx</code> for Postgres, <code>go-sql-driver</code> for MySQL, <code>go-mssqldb</code> for SQL Server) plus its dialect-bound boot wiring — the migration runner and, on Postgres, the audit-partition maintenance — registered per dialect in a boot registry, so any tag combination composes. The valid shapes:</p>
+    <p>The relational engine is selected by a Go build tag, and at least <strong>one</strong> tag is mandatory — there is no default. Each engine self-registers in the engine registry (<code>core.RegisterEngine</code>, database/sql-style) and brings its own driver stack (<code>pgx</code> for Postgres, <code>go-sql-driver</code> for MySQL, <code>go-mssqldb</code> for SQL Server, <code>go-ora</code> for Oracle) plus its dialect-bound boot wiring — the migration runner and, on Postgres, the audit-partition maintenance — registered per dialect in a boot registry, so any tag combination composes. The valid shapes:</p>
     <ul>
         <li><code>-tags postgres</code> — links only the Postgres engine.</li>
         <li><code>-tags mysql</code> — links only the MySQL engine.</li>
         <li><code>-tags sqlserver</code> — links only the SQL Server engine.</li>
-        <li>Any combination (e.g. <code>-tags 'postgres mysql'</code>, <code>-tags 'postgres mysql sqlserver'</code>) — links those engines into one binary; the active dialect is chosen at boot from <code>relational.dialect</code>, so the same binary serves different profiles without a rebuild.</li>
+        <li><code>-tags oracle</code> — links only the Oracle engine (Oracle Database 23ai or higher).</li>
+        <li>Any combination (e.g. <code>-tags 'postgres mysql'</code>, <code>-tags 'postgres mysql sqlserver oracle'</code>) — links those engines into one binary; the active dialect is chosen at boot from <code>relational.dialect</code>, so the same binary serves different profiles without a rebuild.</li>
     </ul>
     <p>Building with <strong>no</strong> engine tag registers no engine, so boot aborts (<code>core.NewEngine</code>: no engine registered for the configured dialect). Whichever engine tag set you pick, pass it to every <code>go build</code> / <code>go test</code> / <code>go run</code> — alongside a <strong>transport</strong> tag (below) — and make sure the linked engine(s) cover the <code>relational.dialect</code> the YAML selects. The examples below pair each engine shape with <code>kafka</code>:</p>
 <pre><code># Postgres-only binary
@@ -87,9 +88,13 @@ APP_PROFILE=dev go run -tags 'mysql kafka' .
 go build -tags 'sqlserver kafka' ./...
 APP_PROFILE=dev go run -tags 'sqlserver kafka' .
 
+# Oracle-only binary (Oracle Database 23ai+)
+go build -tags 'oracle kafka' ./...
+APP_PROFILE=dev go run -tags 'oracle kafka' .
+
 # Multi-engine binary — dialect chosen at runtime from relational.dialect
-go build -tags 'postgres mysql sqlserver kafka' ./...
-APP_PROFILE=dev go run -tags 'postgres mysql sqlserver kafka' .
+go build -tags 'postgres mysql sqlserver oracle kafka' ./...
+APP_PROFILE=dev go run -tags 'postgres mysql sqlserver oracle kafka' .
 </code></pre>
 
     <h3 id="transport-build-tag">Message transport build tag</h3>
@@ -110,7 +115,7 @@ service: my-service
 http:
   addr: ":8080"
 relational:
-  dialect: postgres                      # MANDATORY — postgres | mysql | sqlserver (no default)
+  dialect: postgres                      # MANDATORY — postgres | mysql | sqlserver | oracle (no default)
   dsn: "${DATABASE_URL:postgres://localhost:5432/mydb}"
 mongo:
   uri: "${MONGO_URI:mongodb://localhost:27017}"
