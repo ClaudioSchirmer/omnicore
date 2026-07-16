@@ -18,9 +18,9 @@ Mongo-projected read side, and every transport surface — from a single
 ## Why omnicore
 
 - ⚡ **The 6 CRUD verbs land with zero handler code** — insert, update, partial-update, archive, unarchive, delete.
-- 🗄️ **Backend-agnostic relational core** — PostgreSQL, MySQL *and* SQL Server, behind one engine seam; your domain never names a vendor.
+- 🗄️ **Backend-agnostic relational core** — PostgreSQL, MySQL, SQL Server *and* Oracle, behind one engine seam; your domain never names a vendor.
 - 🧱 **DDD that the compiler enforces** — 4 layers, one direction, sealed domain types.
-- 🔁 **One handler, five surfaces** — REST, gRPC, GraphQL, Kafka, and file exports share the *same* handler instance.
+- 🔁 **One handler, five surfaces** — REST, gRPC, GraphQL, the message broker (Kafka or NATS), and file exports share the *same* handler instance.
 - 📬 **Correct-by-construction writes** — data + outbox + audit commit in one transaction, always.
 - 🛠️ **Batteries included** — auth, authz, cache, outbound HTTP, migrations, schema evolution, tracing, i18n.
 
@@ -70,15 +70,16 @@ Each row links to its manual page.
 
 ## Relational backends — one seam, many engines
 
-The relational layer is **backend-agnostic by design**. **PostgreSQL**, **MySQL** and **SQL Server**
-are all first-class today: you link one at build time with a build tag and select the active dialect at
-runtime via `relational.dialect`. All are consumers of a single *engine seam* — the domain and
+The relational layer is **backend-agnostic by design**. **PostgreSQL**, **MySQL**, **SQL Server** and
+**Oracle** (Oracle Database 23ai or higher) are all first-class today: you link one at build time with a
+build tag and select the active dialect at runtime via `relational.dialect`. All are consumers of a single *engine seam* — the domain and
 application layers never name a vendor, write raw SQL, or pronounce a physical identifier, so a
 service's business code is identical whichever engine backs it.
 
 Because every engine plugs into that same seam, **adding a new relational backend is an isolated
 seam implementation, not a change that ripples through your services** — SQL Server joined
-PostgreSQL and MySQL through exactly that seam, one more engine package behind its build tag.
+PostgreSQL and MySQL through exactly that seam, and Oracle followed the same way: one more
+engine package behind its build tag, each time.
 
 → [Architecture · the engine seam](https://claudioschirmer.github.io/omnicore/#architecture) · [Bootstrap · build tags & dialect](https://claudioschirmer.github.io/omnicore/#bootstrap)
 
@@ -93,7 +94,7 @@ channel by attaching the same instance to another wrapper.
 
 | Handler family | Attaches to | Same instance across |
 |---|---|---|
-| **Command** (write) | HTTP · Kafka · GraphQL mutation · gRPC unary | one `pipeline.Handler[TCmd, TResult]` |
+| **Command** (write) | HTTP · broker (Kafka/NATS) · GraphQL mutation · gRPC unary | one `pipeline.Handler[TCmd, TResult]` |
 | **Query** (read) | HTTP · CSV · Excel · GraphQL query · gRPC unary | one `pipeline.Handler[TQ, queries.Page]` |
 
 ```go
@@ -102,7 +103,7 @@ h := &handlers.InsertCommandHandler[*User, *commands.InsertUserCommand, commands
 
 fwweb.CommandWithBody(d.Pipeline, requests.InsertUserRequest{},                 // ...over HTTP
     requests.InsertUserResponse{}.FromResult, h, fiber.StatusCreated)
-reg.From("partners").On("partnerOnboarded", requests.PartnerOnboardedRequest{}, h) // ...off Kafka
+reg.From("partners").On("partnerOnboarded", requests.PartnerOnboardedRequest{}, h) // ...off the broker
 gql.Register(fwgraphql.MutationWithBody[requests.InsertUserRequest](            // ...as GraphQL
     "createUser", requests.InsertUserResponse{}.FromResult, h))
 grpcReg.Register(fwgrpc.CommandWithBody[usersv1.CreateUserRequest, usersv1.CreateUserResponse]( // ...as gRPC
@@ -110,7 +111,7 @@ grpcReg.Register(fwgrpc.CommandWithBody[usersv1.CreateUserRequest, usersv1.Creat
     requests.InsertUserRequest{}, requests.InsertUserResponse{}.FromResult, h))
 ```
 
-The async (Kafka) path additionally gets transactional emission, at-least-once delivery, and an
+The async (broker) path additionally gets transactional emission, at-least-once delivery, and an
 operator retry surface — without the handler being aware of any of it.
 → [Handler invariance](https://claudioschirmer.github.io/omnicore/#handler-invariance)
 
@@ -141,8 +142,8 @@ func Wire(d bootstrap.Deps) bootstrap.Wiring {
 }
 ```
 
-`bootstrap.Run` reads `microservice.${APP_PROFILE}.yaml`, wires Postgres/MySQL/SQL Server + Mongo + Kafka +
-Fiber, applies migrations, registers the `GET /livez` + `GET /readyz` probes, mounts your Features, starts the `SyncEngine`
+`bootstrap.Run` reads `microservice.${APP_PROFILE}.yaml`, wires the relational backend
+(Postgres/MySQL/SQL Server/Oracle) + Mongo + the message transport (Kafka or NATS) + Fiber, applies migrations, registers the `GET /livez` + `GET /readyz` probes, mounts your Features, starts the `SyncEngine`
 when views exist, and serves until `SIGINT`/`SIGTERM`.
 → [Bootstrap](https://claudioschirmer.github.io/omnicore/#bootstrap)
 
@@ -193,7 +194,7 @@ That single call gives you, for free:
 - ✅ **Unique-constraint mapping** (PG `23505`) → `409`
 - ✅ **Aggregate persistence** — root + every child row in one `pgx.Tx`
 - ✅ **Transactional outbox + audit** row in the same transaction
-- ✅ **Async projection** — Debezium → Kafka → `SyncEngine` upserts the Mongo view
+- ✅ **Async projection** — Debezium → the broker (Kafka/NATS) → `SyncEngine` upserts the Mongo view
 - ✅ **Typed Result** projected to the wire (no JSON tags below `web/`)
 
 Swap in `UpdateCommandHandler`, `PartialUpdateCommandHandler`, `ArchiveCommandHandler`,
@@ -207,13 +208,13 @@ semantics, same audit guarantees. → [CommandHandler](https://claudioschirmer.g
 
 - 📖 **[Documentation site](https://claudioschirmer.github.io/omnicore/)** — the public manual (published from [`docs/`](docs/) via GitHub Pages); the consumer's source of truth for every exported API.
 - 📝 **[`CHANGELOG.md`](CHANGELOG.md)** — release notes (Keep a Changelog, SemVer; the API may evolve through `0.x.y`).
-- 🧪 **[`omnicore-example-users`](https://github.com/ClaudioSchirmer/omnicore-example-users)** — reference service exercising every feature, plus end-to-end QA suites against real Postgres + Mongo + Kafka + Debezium + Keycloak + Redis.
+- 🧪 **[`omnicore-example-users`](https://github.com/ClaudioSchirmer/omnicore-example-users)** — reference service exercising every feature, plus end-to-end QA suites against real Postgres/MySQL/SQL Server + Mongo + Kafka/NATS + Debezium + Keycloak + Redis.
 
 ## Stack
 
 Fiber v3 (HTTP) · connectrpc.com/connect (gRPC) · pgx v5 (PostgreSQL) · go-sql-driver (MySQL) · go-mssqldb (SQL Server) ·
-mongo-driver v2 (MongoDB) · segmentio/kafka-go (Kafka) · golang-migrate v4 (SQL migrations) ·
-golang-jwt v5 + MicahParks/keyfunc (JWT).
+go-ora (Oracle) · mongo-driver v2 (MongoDB) · segmentio/kafka-go (Kafka) · nats.go (NATS) ·
+golang-migrate v4 (SQL migrations) · golang-jwt v5 + MicahParks/keyfunc (JWT).
 
 ## License
 
