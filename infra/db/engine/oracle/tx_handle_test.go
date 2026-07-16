@@ -1,0 +1,106 @@
+//go:build oracle
+
+package oracle
+
+import (
+	"bytes"
+	"encoding/json"
+	"errors"
+	"log/slog"
+	"testing"
+
+	"github.com/ClaudioSchirmer/omnicore/application/configuration"
+	"github.com/ClaudioSchirmer/omnicore/application/persistence"
+	"github.com/ClaudioSchirmer/omnicore/domain"
+	"github.com/ClaudioSchirmer/omnicore/infra/db/command/write"
+	"github.com/ClaudioSchirmer/omnicore/infra/db/core"
+)
+
+// On an in-TX hook failure the Oracle engine must emit the best-effort
+// persistence.hook.error observability line (verb / hookSlot / entityType /
+// threadId / error) and return the error verbatim — the mirror of the other
+// engines. The hook fires before any *sql.Tx use, so a nil tx is harmless here
+// (the test hook ignores it).
+func TestFireHook_LogsAndPropagatesError(t *testing.T) {
+	cases := []struct {
+		name string
+		slot string
+		fire func(e *Engine, ctx persistence.RequestContext, hook core.WriteHook, hctx write.HookContext) error
+	}{
+		{
+			name: "afterBegin",
+			slot: "afterBegin",
+			fire: func(e *Engine, ctx persistence.RequestContext, hook core.WriteHook, hctx write.HookContext) error {
+				return e.FireAfterBegin(ctx, oracleTx{}, nil, hook, hctx)
+			},
+		},
+		{
+			name: "beforeCommit",
+			slot: "beforeCommit",
+			fire: func(e *Engine, ctx persistence.RequestContext, hook core.WriteHook, hctx write.HookContext) error {
+				return e.FireBeforeCommit(ctx, oracleTx{}, nil, domain.NewID("00000000-0000-0000-0000-000000000001"), hook, hctx)
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var buf bytes.Buffer
+			e := &Engine{}
+			e.ConfigureAudit(nil, slog.New(slog.NewJSONHandler(&buf, nil)), nil)
+			ctx := configuration.NewAppContextWithRandomID(configuration.LangENG)
+			hctx := write.HookContext{Verb: "Update", EntityType: "User"}
+			boom := errors.New("hook boom")
+
+			hook := core.WriteHook{
+				AfterBegin: func(persistence.RequestContext, domain.Entity, persistence.TxHandle) error {
+					return boom
+				},
+				BeforeCommit: func(persistence.RequestContext, domain.Entity, domain.ID, persistence.TxHandle) error {
+					return boom
+				},
+			}
+
+			err := tc.fire(e, ctx, hook, hctx)
+			if !errors.Is(err, boom) {
+				t.Fatalf("fire returned %v, want the hook error verbatim", err)
+			}
+
+			var rec map[string]any
+			if e := json.Unmarshal(bytes.TrimSpace(buf.Bytes()), &rec); e != nil {
+				t.Fatalf("hook error line is not JSON: %v (%q)", e, buf.String())
+			}
+			if rec["hookSlot"] != tc.slot {
+				t.Errorf("hookSlot = %v, want %v", rec["hookSlot"], tc.slot)
+			}
+			if rec["entityType"] != "User" {
+				t.Errorf("entityType = %v, want User", rec["entityType"])
+			}
+			if rec["threadId"] != ctx.ID().String() {
+				t.Errorf("threadId = %v, want %v", rec["threadId"], ctx.ID().String())
+			}
+			if rec["error"] != "hook boom" {
+				t.Errorf("error = %v, want \"hook boom\"", rec["error"])
+			}
+		})
+	}
+}
+
+// A nil hook fires nothing and emits no log line (the common, no-hook path).
+func TestFireHook_NilHookIsSilent(t *testing.T) {
+	var buf bytes.Buffer
+	e := &Engine{}
+	e.ConfigureAudit(nil, slog.New(slog.NewJSONHandler(&buf, nil)), nil)
+	ctx := configuration.NewAppContextWithRandomID(configuration.LangENG)
+	hctx := write.HookContext{Verb: "Insert", EntityType: "User"}
+
+	if err := e.FireAfterBegin(ctx, oracleTx{}, nil, core.WriteHook{}, hctx); err != nil {
+		t.Fatalf("nil AfterBegin should be a no-op, got %v", err)
+	}
+	if err := e.FireBeforeCommit(ctx, oracleTx{}, nil, domain.NewID("x"), core.WriteHook{}, hctx); err != nil {
+		t.Fatalf("nil BeforeCommit should be a no-op, got %v", err)
+	}
+	if buf.Len() != 0 {
+		t.Errorf("no hook configured must emit no log, got %q", buf.String())
+	}
+}
