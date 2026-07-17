@@ -52,6 +52,15 @@ func (sqlserverDialect) ApplyLimit(sqlText string, n int) string {
 	return "SELECT TOP " + strconv.Itoa(n) + " " + sqlText[len(head):]
 }
 
+// ApplyLimitOffset renders a windowed page onto a complete SELECT — the T-SQL
+// `OFFSET m ROWS FETCH NEXT n ROWS ONLY` tail. Unlike ApplyLimit's SELECT-head
+// TOP (which needs no order, so it cannot skip), OFFSET…FETCH mandates an
+// ORDER BY — which the caller guarantees is present (a non-zero offset is
+// rejected without one), so the tail simply appends; no head rewrite.
+func (sqlserverDialect) ApplyLimitOffset(sqlText string, limit, offset int) string {
+	return sqlText + " OFFSET " + strconv.Itoa(offset) + " ROWS FETCH NEXT " + strconv.Itoa(limit) + " ROWS ONLY"
+}
+
 // Savepoint statements, T-SQL flavor: SAVE TRANSACTION opens the savepoint,
 // ROLLBACK TRANSACTION <name> rolls back to it — and there is NO release
 // statement (a savepoint is simply discarded at COMMIT), so ReleaseSavepoint

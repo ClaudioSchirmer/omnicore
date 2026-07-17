@@ -46,6 +46,14 @@ func (oracleDialect) ApplyLimit(sqlText string, n int) string {
 	return sqlText + " FETCH FIRST " + strconv.Itoa(n) + " ROWS ONLY"
 }
 
+// ApplyLimitOffset renders a windowed page onto a complete SELECT — the standard
+// `OFFSET m ROWS FETCH NEXT n ROWS ONLY` row-limiting tail (Oracle 12c+). Offset
+// windowing is only defined over a deterministic ORDER BY; the caller guarantees
+// it (see Dialect.ApplyLimitOffset).
+func (oracleDialect) ApplyLimitOffset(sqlText string, limit, offset int) string {
+	return sqlText + " OFFSET " + strconv.Itoa(offset) + " ROWS FETCH NEXT " + strconv.Itoa(limit) + " ROWS ONLY"
+}
+
 // Savepoint statements, Oracle flavor: the standard SAVEPOINT / ROLLBACK TO
 // SAVEPOINT forms — and, like T-SQL, NO release statement (a savepoint is
 // simply discarded at COMMIT), so ReleaseSavepoint returns "" and the caller

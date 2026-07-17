@@ -82,6 +82,9 @@ func (fakeDialect) NowExpr() string                     { return "NOW()" }
 func (fakeDialect) ApplyLimit(sql string, n int) string {
 	return fmt.Sprintf("%s LIMIT %d", sql, n)
 }
+func (fakeDialect) ApplyLimitOffset(sql string, limit, offset int) string {
+	return fmt.Sprintf("%s LIMIT %d OFFSET %d", sql, limit, offset)
+}
 func (fakeDialect) Savepoint(name string) string               { return "SAVEPOINT " + name }
 func (fakeDialect) RollbackToSavepoint(name string) string     { return "ROLLBACK TO SAVEPOINT " + name }
 func (fakeDialect) ReleaseSavepoint(name string) string        { return "RELEASE SAVEPOINT " + name }

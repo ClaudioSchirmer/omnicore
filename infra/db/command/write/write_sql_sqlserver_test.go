@@ -54,6 +54,9 @@ func (testSQLServerDialect) NowExpr() string { return "CURRENT_TIMESTAMP" }
 func (testSQLServerDialect) ApplyLimit(sql string, n int) string {
 	return fmt.Sprintf("SELECT TOP %d %s", n, sql[len("SELECT "):])
 }
+func (testSQLServerDialect) ApplyLimitOffset(sql string, limit, offset int) string {
+	return fmt.Sprintf("%s OFFSET %d ROWS FETCH NEXT %d ROWS ONLY", sql, offset, limit)
+}
 func (testSQLServerDialect) Savepoint(name string) string { return "SAVE TRANSACTION " + name }
 func (testSQLServerDialect) RollbackToSavepoint(name string) string {
 	return "ROLLBACK TRANSACTION " + name

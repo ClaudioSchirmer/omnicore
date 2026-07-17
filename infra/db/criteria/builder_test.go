@@ -18,9 +18,12 @@ func TestByID(t *testing.T) {
 }
 
 func TestQuerySetters(t *testing.T) {
-	q := Where(Eq("Name", "x")).OrderBy("A").OrderByDesc("B").Limit(5).IncludeArchived()
+	q := Where(Eq("Name", "x")).OrderBy("A").OrderByDesc("B").Limit(5).Offset(10).IncludeArchived()
 	if q.LimitValue() != 5 {
 		t.Errorf("limit = %d, want 5", q.LimitValue())
+	}
+	if q.OffsetValue() != 10 {
+		t.Errorf("offset = %d, want 10", q.OffsetValue())
 	}
 	if q.Scope() != ScopeIncludeArchived {
 		t.Errorf("scope = %d, want IncludeArchived", q.Scope())
@@ -28,6 +31,12 @@ func TestQuerySetters(t *testing.T) {
 	of := q.OrderFields()
 	if len(of) != 2 || of[0].Field != "A" || of[0].Desc || of[1].Field != "B" || !of[1].Desc {
 		t.Errorf("order fields = %+v", of)
+	}
+}
+
+func TestOffsetDefaultsToZero(t *testing.T) {
+	if got := Where(Eq("Name", "x")).Limit(5).OffsetValue(); got != 0 {
+		t.Errorf("default offset = %d, want 0", got)
 	}
 }
 

@@ -148,6 +148,16 @@ func TestNowExpr_ApplyLimit(t *testing.T) {
 	}
 }
 
+// TestApplyLimitOffset proves the windowed-page seam: Oracle appends the
+// standard `OFFSET m ROWS FETCH NEXT n ROWS ONLY` tail after the
+// (caller-guaranteed) ORDER BY.
+func TestApplyLimitOffset(t *testing.T) {
+	d := oracleDialect{}
+	if got := d.ApplyLimitOffset("SELECT id FROM t ORDER BY id", 25, 50); got != "SELECT id FROM t ORDER BY id OFFSET 50 ROWS FETCH NEXT 25 ROWS ONLY" {
+		t.Fatalf("ApplyLimitOffset = %q", got)
+	}
+}
+
 // TestEncodeArg covers the value codec the write path and the criteria
 // translator bind through: TYPED identity values (domain.ID / *domain.ID /
 // uuid.UUID) reach a RAW(16) column as their 16-byte form — the type IS the

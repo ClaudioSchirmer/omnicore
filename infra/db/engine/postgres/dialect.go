@@ -36,6 +36,13 @@ func (pgDialect) ApplyLimit(sql string, n int) string {
 	return fmt.Sprintf("%s LIMIT %d", sql, n)
 }
 
+// ApplyLimitOffset renders a windowed page onto a complete SELECT — the native
+// `LIMIT n OFFSET m` tail on Postgres. Offset windowing is only defined over a
+// deterministic ORDER BY; the caller guarantees it (see Dialect.ApplyLimitOffset).
+func (pgDialect) ApplyLimitOffset(sql string, limit, offset int) string {
+	return fmt.Sprintf("%s LIMIT %d OFFSET %d", sql, limit, offset)
+}
+
 func (pgDialect) Savepoint(name string) string           { return "SAVEPOINT " + name }
 func (pgDialect) RollbackToSavepoint(name string) string { return "ROLLBACK TO SAVEPOINT " + name }
 func (pgDialect) ReleaseSavepoint(name string) string    { return "RELEASE SAVEPOINT " + name }

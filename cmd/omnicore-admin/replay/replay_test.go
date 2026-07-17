@@ -139,6 +139,9 @@ func (f *fakeDB) NowExpr() string                     { return "NOW()" }
 func (f *fakeDB) ApplyLimit(sql string, n int) string {
 	return fmt.Sprintf("%s LIMIT %d", sql, n)
 }
+func (f *fakeDB) ApplyLimitOffset(sql string, limit, offset int) string {
+	return fmt.Sprintf("%s LIMIT %d OFFSET %d", sql, limit, offset)
+}
 func (f *fakeDB) Savepoint(name string) string               { return "SAVEPOINT " + name }
 func (f *fakeDB) RollbackToSavepoint(name string) string     { return "ROLLBACK TO SAVEPOINT " + name }
 func (f *fakeDB) ReleaseSavepoint(name string) string        { return "RELEASE SAVEPOINT " + name }

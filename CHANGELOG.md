@@ -11,6 +11,23 @@ with `1.0.0`.
 
 ## [Unreleased]
 
+### Added
+
+- **Offset pagination on the write-side criteria engine — `criteria.Query.Offset(n)`.**
+  The query envelope that already carried `Limit` now also carries `Offset`, so
+  `FindAll` can page over the authoritative aggregate:
+  `OrderByDesc("CreatedAt").Limit(50).Offset(100)`. It renders in each engine's
+  native form — `LIMIT n OFFSET m` on Postgres/MySQL, `OFFSET m ROWS FETCH NEXT n
+  ROWS ONLY` on Oracle and SQL Server — via a new `Dialect.ApplyLimitOffset`
+  seam; the existing `ApplyLimit` cap path (SQL Server's `TOP`) is untouched, so
+  unordered existence probes still need no `ORDER BY`. Because a row skip over an
+  arbitrary physical order is meaningless — and SQL Server's `OFFSET…FETCH`
+  mandates it — a non-zero `Offset` requires **both a positive `Limit` and at
+  least one `OrderBy`**; violating either is a loud error on `FindAll`, never a
+  silently wrong page. `FindOne` is single-row and ignores `Offset`. For
+  end-user-facing listings the Mongo read side's keyset pagination remains the
+  recommended path. See `custom-command-handler.html` (Loading by criteria).
+
 ## [0.33.2] - 2026-07-17
 
 ### Fixed

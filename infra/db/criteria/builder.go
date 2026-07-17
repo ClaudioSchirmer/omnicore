@@ -78,13 +78,15 @@ type OrderField struct {
 }
 
 // Query is the generic query the engine compiles: a boolean predicate plus the
-// envelope concerns (order, limit, archived scope) that are not part of the
-// predicate algebra. Build it via Where / ByID and the fluent setters.
+// envelope concerns (order, limit/offset window, archived scope) that are not
+// part of the predicate algebra. Build it via Where / ByID and the fluent
+// setters.
 type Query struct {
-	where Expr
-	order []OrderField
-	limit int64
-	scope Scope
+	where  Expr
+	order  []OrderField
+	limit  int64
+	offset int64
+	scope  Scope
 }
 
 // Where starts a query from a predicate. e may be nil — meaning "no predicate"
@@ -110,6 +112,15 @@ func (q *Query) OrderByDesc(field string) *Query {
 // Limit caps the number of rows (0 = no limit).
 func (q *Query) Limit(n int64) *Query { q.limit = n; return q }
 
+// Offset skips the first n rows before the limited window begins — the page
+// cursor for offset pagination (0 = no skip). A non-zero offset is only
+// meaningful over a bounded, ordered window, so it REQUIRES both a positive
+// Limit (an offset paginates a page, it is not a bare skip) and at least one
+// OrderBy (a skip is undefined without a deterministic order — and SQL Server's
+// OFFSET…FETCH mandates the ORDER BY outright). Violating either is a load-time
+// error on FindAll, never a silently wrong page.
+func (q *Query) Offset(n int64) *Query { q.offset = n; return q }
+
 func (q *Query) IncludeArchived() *Query { q.scope = ScopeIncludeArchived; return q }
 func (q *Query) OnlyArchived() *Query    { q.scope = ScopeOnlyArchived; return q }
 
@@ -123,6 +134,9 @@ func (q *Query) OrderFields() []OrderField { return q.order }
 
 // LimitValue returns the row cap (0 = no limit).
 func (q *Query) LimitValue() int64 { return q.limit }
+
+// OffsetValue returns the row skip (0 = no offset).
+func (q *Query) OffsetValue() int64 { return q.offset }
 
 // Scope returns the soft-delete scope.
 func (q *Query) Scope() Scope { return q.scope }
