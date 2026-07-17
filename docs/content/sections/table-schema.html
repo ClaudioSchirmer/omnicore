@@ -837,9 +837,9 @@ func StudentSchema() *core.TableSchema {
 
 <h3>Supported column shapes</h3>
 <div class="box">
-    <strong>The relational store is PostgreSQL, MySQL, <em>or</em> SQL Server; the read projection is always MongoDB.</strong>
+    <strong>The relational store is PostgreSQL, MySQL, SQL Server, <em>or</em> Oracle; the read projection is always MongoDB.</strong>
     The write path, the entity-search <code>criteria</code> engine, and the auto-scan read-back run against the relational
-    backend selected by <code>relational.dialect</code> (<code>postgres</code> | <code>mysql</code> | <code>sqlserver</code>),
+    backend selected by <code>relational.dialect</code> (<code>postgres</code> | <code>mysql</code> | <code>sqlserver</code> | <code>oracle</code>),
     emitting dialect-specific SQL through the engine's <code>Dialect</code> seam (placeholders, identifier quoting, the UUID
     value codec, upsert syntax, the current-timestamp expression, the row cap). <strong>MongoDB</strong> is the only
     read-side projection store — the composer, the <code>ViewDefinition</code> surface, the Mongo schema-evolution control
@@ -857,7 +857,7 @@ func StudentSchema() *core.TableSchema {
     <code>BuyerID</code>/<code>TenantID</code> — is declared <code>domain.ID</code> (nullable ⇒ <code>*domain.ID</code>),
     and the field's Go type alone drives every leg: the write bind, the criteria probe lift, and the scan decode all
     render it in the dialect's native id form (<code>UUID</code> on Postgres, <code>BINARY(16)</code> on MySQL and
-    SQL Server), with
+    SQL Server, <code>RAW(16)</code> on Oracle), with
     <code>nil</code> ⇄ SQL <code>NULL</code> on the pointer. A <code>string</code> field is text, ALWAYS — even when the
     value happens to look like a uuid — pairing with <code>CHAR(36)</code>/<code>VARCHAR(36)</code> columns; nothing is
     ever guessed from a value's shape. The PK and the child FK are framework-managed slots, always stored in the native
@@ -1127,6 +1127,123 @@ func StudentSchema() *core.TableSchema {
     <strong>Nullability is a pointer</strong> (same convention as the other engines): a nullable column maps to a Go
     pointer (<code>*string</code>, <code>*int64</code>, <code>*time.Time</code>, …) — the driver writes <code>NULL</code>
     for a <code>nil</code> pointer and reads <code>NULL</code> back as <code>nil</code>. A non-pointer field on a nullable
+    column fails to scan a <code>NULL</code> row. The same manual-scanner escape hatch applies.
+</p>
+
+<h3>Supported column shapes — Go ↔ Oracle</h3>
+<p>
+    <strong>Requires Oracle Database 23ai or higher.</strong> The engine adopts the native <code>BOOLEAN</code> and
+    <code>JSON</code> column types, which earlier releases (19c/21c) do not have — the floor is deliberate, not
+    incidental. On Oracle the engine is driven by <code>database/sql</code> + the pure-Go <code>sijms/go-ora</code>
+    driver (no Oracle Client libraries at build or run time). Placeholders are <code>:N</code> and identifiers are
+    emitted <strong>quoted-UPPERCASE</strong> (<code>"USERS"</code>, <code>"CREATED_AT"</code>) — equivalent by
+    construction to the platform's unquoted resolution (an unquoted identifier folds to UPPERCASE in the catalog, which
+    is exactly the name the quoted form addresses), so manual queries still work naturally without quotes, while
+    identifiers that collide with an Oracle reserved word (a <code>number</code> column, say) work with no
+    reserved-word list. The engine folds names back to the declared lowercase form at its read and error seams.
+    Declare schema names in lowercase, as everywhere else; write your migration DDL unquoted — and when Oracle rejects
+    a name as reserved (<code>ORA-03050</code>), quote that identifier in UPPERCASE (<code>"NUMBER"</code>) in the DDL. The framework owns one value codec on top of the driver, driven by the field's Go
+    TYPE: a <code>domain.ID</code> / <code>*domain.ID</code> field (and the managed PK/FK slots) is stored as
+    <code>RAW(16)</code> — bound as 16 raw bytes on write and in lifted criteria probes, restored to the canonical
+    value by the id scan proxy on read, <code>nil</code> ⇄ SQL <code>NULL</code> on the pointer — and ids are generated
+    in Go as <strong>UUID v7</strong>; <code>RAW</code> compares bytewise, so the v7 time order keeps the PK index
+    append-friendly (no <code>SYS_GUID()</code>, no DB default). A <code>string</code> field binds and scans as plain
+    text, whatever the value's shape. The engine forces go-ora's <code>lob fetch=post</code> connection option into the
+    DSN when absent — without it the driver truncates native-<code>JSON</code> reads at 32&nbsp;KiB.
+</p>
+<table>
+    <thead><tr><th>Go field type</th><th>Oracle column type</th><th>Notes</th></tr></thead>
+    <tbody>
+        <tr>
+            <td><code>string</code></td>
+            <td><code>VARCHAR2(n CHAR)</code>, <code>VARCHAR2(n)</code>, <code>CLOB</code></td>
+            <td>the text family — names, emails, addresses (<code>n CHAR</code> sizes in characters, not bytes;
+                <code>CLOB</code> for unbounded text). See the empty-string note below the table.</td>
+        </tr>
+        <tr>
+            <td><code>domain.ID</code> / <code>*domain.ID</code></td>
+            <td><code>RAW(16)</code></td>
+            <td><strong>the identity type — the field's Go type IS the declaration.</strong> Encoded to 16 raw bytes on
+                write and in lifted criteria probes; the id scan proxy restores the canonical value on read; a nil
+                <code>*domain.ID</code> ⇄ SQL <code>NULL</code>. The PK and every FK are framework-managed slots on
+                <code>RAW(16)</code> — bytewise comparison preserves the UUID v7 time locality. A <code>string</code>
+                field is NEVER coerced — it pairs with the text family above (<code>VARCHAR2(36)</code> for uuid-valued
+                text), whatever the value's shape. Ids are generated in Go (UUID v7).</td>
+        </tr>
+        <tr>
+            <td><code>bool</code></td>
+            <td><code>BOOLEAN</code></td>
+            <td>the native 23ai boolean — the reason for the version floor, together with <code>JSON</code></td>
+        </tr>
+        <tr>
+            <td><code>int16</code> / <code>int32</code> / <code>int64</code> &nbsp;<span class="muted">(also <code>int</code>)</span></td>
+            <td><code>NUMBER(5)</code> / <code>NUMBER(10)</code> / <code>NUMBER(19)</code></td>
+            <td>pick the Go width to match the column's precision</td>
+        </tr>
+        <tr>
+            <td><code>float32</code> / <code>float64</code></td>
+            <td><code>BINARY_FLOAT</code> / <code>BINARY_DOUBLE</code></td>
+            <td>IEEE&nbsp;754 binary floats — not for money</td>
+        </tr>
+        <tr>
+            <td><code>string</code> &nbsp;<span class="muted">(or <code>float64</code>)</span></td>
+            <td><code>NUMBER(p,s)</code></td>
+            <td>exact decimals (money): the driver returns <code>NUMBER</code> as text, so prefer <code>string</code> to
+                keep full precision; <code>float64</code> rounds</td>
+        </tr>
+        <tr>
+            <td><code>time.Time</code></td>
+            <td><code>TIMESTAMP(6)</code>, <code>DATE</code></td>
+            <td>the managed <code>created_at</code> / <code>updated_at</code> / <code>deleted_at</code> columns are this
+                type, server-stamped via <code>SYSTIMESTAMP</code> (server timezone — parity with <code>NOW()</code> on
+                the other engines; Oracle's own <code>CURRENT_TIMESTAMP</code> is session-timezone and is not used)</td>
+        </tr>
+        <tr>
+            <td><code>[]byte</code></td>
+            <td><code>BLOB</code></td>
+            <td>raw binary — a non-16-byte length, or a non-<code>RAW</code> column type, is never mistaken for a UUID</td>
+        </tr>
+        <tr>
+            <td><code>[]byte</code> / <code>json.RawMessage</code> / <code>string</code></td>
+            <td><code>JSON</code> <span class="muted">(native, 23ai)</span> — <strong>but <code>CLOB</code> on any
+                CDC-tailed table</strong></td>
+            <td>the native JSON type (binary OSON storage, queryable via <code>JSON_VALUE</code>/dot notation); a
+                <code>json.RawMessage</code> value binds as text. Reads ride the <code>lob fetch=post</code> option the
+                engine guarantees (see above). <strong>CDC boundary:</strong> LogMiner cannot decode a native-JSON
+                column's binary (OSON) redo — Debezium drops the column and skips the row, on ANY Debezium version —
+                so a column on a table the CDC relay tails must be <code>CLOB</code> instead. The framework already
+                applies this to its own <code>outbox.payload</code> and <code>integration_events.payload</code>
+                (<code>audit_events.payload</code> and the failure registries never cross CDC and stay native
+                <code>JSON</code>); if YOU create an additional outbox-style table for Debezium to tail, follow the
+                same rule</td>
+        </tr>
+    </tbody>
+</table>
+<p>
+    <strong>Deadlines against a FROZEN database.</strong> go-ora's cancellation rides the same (frozen) connection, so
+    the driver alone cannot honor a context deadline while the network black-holes (paused container, partition, hung
+    server). The engine restores the framework's deadline promises on the READ path and the control-plane
+    side-channels: those calls return <code>context.DeadlineExceeded</code> on time and the abandoned driver call
+    releases its pooled connection when the network thaws. The WRITE path is deliberately not wrapped — abandoning a
+    statement mid-transaction without knowing whether it applied would change delivery semantics — so a write against
+    a frozen database blocks until the thaw; go-ora's <code>TIMEOUT=&lt;seconds&gt;</code> DSN option (a socket read
+    deadline: fail when the server sends nothing for that long) is the operator-level bound there, at the cost of also
+    killing legitimately silent long-running statements.
+</p>
+<p>
+    <strong>Empty string IS NULL.</strong> Oracle stores <code>''</code> as SQL <code>NULL</code> in
+    <code>VARCHAR2</code>/<code>CLOB</code> — a database semantic, not a framework choice, and the framework applies no
+    sentinel encoding. Consequences to design for: a <code>NOT NULL</code> text column REJECTS an empty string (the
+    write fails as a constraint violation — give the column a nullable pointer field, or never write <code>""</code>);
+    and a <code>*string</code> holding <code>""</code> comes back as <code>nil</code> (the empty-vs-absent distinction
+    does not survive the round-trip on this engine).
+</p>
+<p>
+    <strong>No native array type.</strong> Like MySQL and SQL Server, model the collection as a <code>JSON</code>
+    column, an aggregate <code>.Child(...)</code> table, or decode it in a manual scanner.
+</p>
+<p>
+    <strong>Nullability is a pointer</strong> (same convention as the other engines); a non-pointer field on a nullable
     column fails to scan a <code>NULL</code> row. The same manual-scanner escape hatch applies.
 </p>
 

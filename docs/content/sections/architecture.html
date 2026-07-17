@@ -28,7 +28,7 @@
             <div class="arch-row arch-sub-indent"><span class="arch-desc">Typed Notification system (translation key = struct name)</span></div>
         </div>
         <div class="arch-layer">
-            <div class="arch-row arch-head"><span class="arch-pkg">infra/</span><span class="arch-desc">Relational backend — PostgreSQL, MySQL, or SQL Server (+ transactional outbox + audit), Mongo views, transport SyncEngine</span></div>
+            <div class="arch-row arch-head"><span class="arch-pkg">infra/</span><span class="arch-desc">Relational backend — PostgreSQL, MySQL, SQL Server, or Oracle (+ transactional outbox + audit), Mongo views, transport SyncEngine</span></div>
             <div class="arch-row arch-sub-indent"><span class="arch-desc">aggregate_persister (automatic dispatch) · composer · sync (SyncEngine) · rebuild (Mongo schema evolution)</span></div>
             <div class="arch-row arch-sub-indent"><span class="arch-desc">httpclient/ + grpcclient/ (outbound toolboxes) over shared resilience/ (retry · breaker · backoff)</span></div>
             <div class="arch-row arch-sub-indent"><span class="arch-desc">cache/ · integration/ (events) · db/criteria/ (entity search engine)</span></div>
@@ -66,10 +66,11 @@
     <h3 id="engine-seam">The relational engine seam</h3>
     <p>
         The relational layer is <strong>backend-agnostic by design</strong>.
-        <strong>PostgreSQL</strong>, <strong>MySQL</strong>, and <strong>SQL Server</strong> are all first-class:
-        a build tag links each engine (<code>-tags postgres</code> / <code>-tags mysql</code> /
-        <code>-tags sqlserver</code>; any combination links those engines into one binary, and the active dialect is
-        picked at runtime via <code>relational.dialect</code>). Every engine is a consumer of a single <em>engine seam</em> —
+        <strong>PostgreSQL</strong>, <strong>MySQL</strong>, <strong>SQL Server</strong>, and <strong>Oracle</strong>
+        (Oracle Database <strong>23ai or higher</strong> — the engine adopts the native <code>BOOLEAN</code>/<code>JSON</code>
+        column types) are all first-class: a build tag links each engine (<code>-tags postgres</code> /
+        <code>-tags mysql</code> / <code>-tags sqlserver</code> / <code>-tags oracle</code>; any combination links those
+        engines into one binary, and the active dialect is picked at runtime via <code>relational.dialect</code>). Every engine is a consumer of a single <em>engine seam</em> —
         the <code>domain</code> and <code>application</code> layers never name a vendor, write raw SQL,
         or pronounce a physical identifier (those live only in <code>infra/</code>, behind
         <a href="#table-schema"><code>TableSchema</code></a>). A service's business code is therefore
@@ -80,8 +81,8 @@
         Because every backend plugs into the same seam — dialect-specific SQL generation, type
         mapping, and error translation behind one interface — introducing a new relational backend
         does not ripple into consumer services or the layers above <code>infra/</code>.
-        SQL Server joined PostgreSQL and MySQL through exactly this seam: one more engine package,
-        zero change to the layers above.
+        SQL Server joined PostgreSQL and MySQL through exactly this seam, and Oracle followed the
+        same way: one more engine package each, zero change to the layers above.
     </div>
 
     <h3 id="transport-seam">The message-transport seam</h3>
