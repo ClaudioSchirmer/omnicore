@@ -16,11 +16,11 @@ jobs:
         # transport — both tags are mandatory. A tagless build links the `none`
         # stubs (engine_none / transport_none), aborts at boot, and cannot run
         # the transport-integrated tests (they get a nil Subscriber). Cover all
-        # three engines (postgres|mysql|sqlserver) × both transports so the
+        # four engines (postgres|mysql|sqlserver|oracle) × both transports so the
         # tag-gated adapters (infra/db/engine/*, infra/transport/{kafka,nats})
         # actually compile and their tests run. These are the unit suites (no
-        # `integration` tag), so the sqlserver engine's pure tests run without a
-        # live DB, exactly like the postgres/mysql rows.
+        # `integration` tag), so the sqlserver/oracle engines' pure tests run
+        # without a live DB, exactly like the postgres/mysql rows.
         tags:
           - 'postgres kafka'
           - 'postgres nats'
@@ -28,6 +28,8 @@ jobs:
           - 'mysql nats'
           - 'sqlserver kafka'
           - 'sqlserver nats'
+          - 'oracle kafka'
+          - 'oracle nats'
     name: "test (${{ matrix.tags }})"
     steps:
       - uses: actions/checkout@v4
