@@ -302,8 +302,9 @@ func FormatRebuildRequiredDiagnostic(plans []DriftPlan) string {
 // registryIDLiteral mints a fresh UUID v7 and renders it as the given
 // dialect's SQL literal for the registry's native id column, so the generated
 // operator scripts carry a ready-to-run id: 'uuid' on postgres (uuid column),
-// X'hex' on mysql and 0xHEX on sqlserver (BINARY(16) columns). Diagnostics
-// text only — never executed by the framework itself.
+// X'hex' on mysql and 0xHEX on sqlserver (BINARY(16) columns), HEXTORAW('hex')
+// on oracle (RAW(16) column). Diagnostics text only — never executed by the
+// framework itself.
 func registryIDLiteral(dialect string) string {
 	u, err := uuid.NewV7()
 	if err != nil {
@@ -315,6 +316,8 @@ func registryIDLiteral(dialect string) string {
 		return "X'" + h + "'"
 	case "sqlserver":
 		return "0x" + h
+	case "oracle":
+		return "HEXTORAW('" + h + "')"
 	default:
 		return "'" + u.String() + "'"
 	}

@@ -32,8 +32,8 @@ func applyMigrations(ctx context.Context, cfg *Config, deps Deps) error {
 
 	// The migration runner is dialect-bound and resolved through the
 	// engineBoots registry each engine_<dialect>.go binding populates: Postgres
-	// runs over the live pgx pool; MySQL and SQL Server open their own *sql.DB
-	// from relational.dsn (the runner never owns the engine pool). A build
+	// runs over the live pgx pool; MySQL, SQL Server and Oracle open their own
+	// *sql.DB from relational.dsn (the runner never owns the engine pool). A build
 	// links exactly the bindings its tags select.
 	mgr := newMigrator(deps, cfg)
 	if mgr == nil {

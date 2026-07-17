@@ -70,7 +70,7 @@
     </thead>
     <tbody>
         <tr><td><code>http</code></td><td>the inbound server span (one per request)</td><td>web</td></tr>
-        <tr><td><code>pgx</code></td><td>one span per relational statement (Postgres via <code>otelpgx</code>, MySQL and SQL Server via <code>otelsql</code>) — the toggle name is a legacy artifact from the PG-only era and gates every engine</td><td>infra</td></tr>
+        <tr><td><code>pgx</code></td><td>one span per relational statement (Postgres via <code>otelpgx</code>, MySQL, SQL Server and Oracle via <code>otelsql</code>) — the toggle name is a legacy artifact from the PG-only era and gates every engine</td><td>infra</td></tr>
         <tr><td><code>mongo</code></td><td>one span per Mongo command</td><td>infra</td></tr>
         <tr><td><code>kafka</code></td><td>consumer spans on the async paths (SyncEngine, integration Receiver, UpstreamSubscriber)</td><td>infra</td></tr>
         <tr><td><code>httpclient</code></td><td>the outbound client span + W3C <code>traceparent</code> injection</td><td>infra</td></tr>
@@ -146,7 +146,7 @@
 <p>
     The framework keeps <code>AppContext.CorrelationID()</code> equal to the active span's
     <code>trace_id</code> (a UUID is 128 bits — exactly an OTel trace id). So the same value appears as
-    the <code>traceId</code> on your logs, the trace id in the collector, and the
+    the <code>traceId</code> on your <a href="#logs">logs</a>, the trace id in the collector, and the
     <code>correlation_id</code> column on <code>integration_events</code>. Read an error in stdout, copy
     its <code>traceId</code>, open the whole request in Jaeger.
 </p>

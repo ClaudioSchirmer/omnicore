@@ -208,7 +208,7 @@ base := write.BaseRepository[*User]{
 }</code></pre>
     <p><strong><code>NewEntity</code> is mandatory.</strong> <code>New()</code> panics with a clear message if nil — it's a configuration bug detected at boot/first call, not in a hot request. The same factory is typically shared with the <code>AggregateLoader</code> to avoid duplication.</p>
     <p><strong><code>ContextName</code> is optional.</strong> When empty, derived from the Go type T via reflect (<code>T=*User → "User"</code>) — that's the framework's convention. Set explicitly only when you need to customize (e.g., two Repositories over the same entity with distinct names in the notification context).</p>
-    <p>Unique violations are classified by the engine's <code>Dialect</code> (Postgres SQLSTATE <code>23505</code>, MySQL errno <code>1062</code>) and translated into <code>*InfrastructureError</code> carrying the typed notification — no manual error parsing. Unregistered constraints, other error codes, and unclassified errors return raw.</p>
+    <p>Unique violations are classified by the engine's <code>Dialect</code> (Postgres SQLSTATE <code>23505</code>, MySQL errno <code>1062</code>, SQL Server errors <code>2601</code>/<code>2627</code>, Oracle <code>ORA-00001</code>) and translated into <code>*InfrastructureError</code> carrying the typed notification — no manual error parsing. Unregistered constraints, other error codes, and unclassified errors return raw.</p>
 
     <h3 id="base-aggregate-repository">BaseAggregateRepository[T] — canonical composition</h3>
     <p>
