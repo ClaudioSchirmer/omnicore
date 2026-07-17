@@ -11,6 +11,26 @@ with `1.0.0`.
 
 ## [Unreleased]
 
+## [0.33.2] - 2026-07-17
+
+### Fixed
+
+- **docs-only: `architecture.html` now presents the write→read data flow as a
+  first-class subsection — and states explicitly that it is not event
+  sourcing.** The architecture page covered the 4 layers, the two seams and the
+  dependency rules, but the framework's spine — CQRS with event-driven
+  projections via the transactional outbox + CDC relay — only appeared as a
+  detail inside the transport-seam paragraph; the full narrative lived
+  scattered across `transport.html`, `aggregate-persistence.html` and the
+  lifecycle maps. A new "The write→read data flow" subsection names the
+  pattern, diagrams the pipeline (relational TX → CDC relay → broker →
+  SyncEngine → composer → Mongo view), and carries a callout making the
+  boundary explicit: the relational database remains the single source of
+  truth, the outbox payload is a routing hint, and the composer re-reads
+  current state on each event — state is never derived by folding an event
+  log, which is what makes the read side self-healing and views rebuildable.
+  No Go code changed.
+
 ## [0.33.1] - 2026-07-17
 
 ### Fixed

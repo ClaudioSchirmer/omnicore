@@ -81,7 +81,7 @@ For any contract, behavior, field list, or example, open the mapped file under `
 | Topic | Section | Essence |
 |---|---|---|
 | What the framework does, mental model | `overview.html` / `features.html` | Capability tour. |
-| 4-layer DDD, dependency rules, engine seam | `architecture.html` | The boundaries above, in depth. |
+| 4-layer DDD, dependency rules, write→read data flow, engine + transport seams | `architecture.html` | The boundaries above, in depth; the outbox → CDC → broker → Mongo spine, explicitly not event sourcing. |
 | Auto path == manual path guarantee | `handler-invariance.html` | Convention and hand-wired routes are feature-equivalent (critical rule #3). |
 
 ### Requests & security

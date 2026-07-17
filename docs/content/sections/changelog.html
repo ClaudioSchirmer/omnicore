@@ -7,6 +7,12 @@
 </div>
 <div class="changelog">
     <div class="release">
+        <div class="release-head"><span class="release-tag">v0.33.2</span><span class="release-date">July 17, 2026</span></div>
+        <ul>
+            <li><strong>Fixed</strong> — <strong>docs-only: the Architecture page now presents the write→read data flow as a first-class subsection — and states explicitly that it is not event sourcing.</strong> The page covered the 4 layers, the two seams and the dependency rules, but the framework's spine — CQRS with event-driven projections via the transactional outbox + CDC relay — only appeared as a detail inside the transport-seam paragraph. A new <em>"The write→read data flow"</em> subsection names the pattern, diagrams the pipeline (relational TX → CDC relay → broker → SyncEngine → composer → Mongo view), and carries a callout making the boundary explicit: the relational database remains the single source of truth, the outbox payload is a routing hint, and the composer re-reads current state on each event — state is never derived by folding an event log, which is exactly what makes the read side self-healing and every view rebuildable. No Go code changed. See <a href="#architecture">Architecture</a>.</li>
+        </ul>
+    </div>
+    <div class="release">
         <div class="release-head"><span class="release-tag">v0.33.1</span><span class="release-date">July 17, 2026</span></div>
         <ul>
             <li><strong>Fixed</strong> — <strong>docs-only: the SharedBase "Active-only uniqueness" passage now covers all four dialects and drops a stale id type.</strong> The passage only showed the Postgres (partial unique index) and MySQL (generated column) shapes — a reader targeting SQL Server or Oracle had no documented shape for the separate-FK role model — and the MySQL example still typed the generated column <code>CHAR(36)</code>, predating the <code>BINARY(16)</code> id standard. It now adds the SQL Server shape (a filtered unique index — same statement, same <code>WHERE deleted_at IS NULL</code> clause; load-bearing there because a plain <code>UNIQUE</code> admits a single NULL) and the Oracle shape (a function-based unique index over <code>CASE WHEN deleted_at IS NULL THEN person_id END</code> — a fully-NULL index expression gets no index entry, so archived remnants drop out of the index), and retypes the MySQL example to <code>BINARY(16)</code>. No Go code changed. See <a href="#table-schema">Table schema</a>.</li>

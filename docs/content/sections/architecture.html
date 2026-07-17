@@ -63,6 +63,45 @@
 └─────────────────────────────────────────────────────────────────────┘</template>
     </div>
 
+    <h3 id="data-flow">The write→read data flow</h3>
+    <p>
+        Cutting across the four layers runs the framework's spine: <strong>CQRS with
+        event-driven projections</strong>, wired through a <strong>transactional outbox</strong>
+        and an external <strong>CDC relay</strong>. A write commits <em>one</em> relational
+        transaction holding the data write(s), exactly one outbox row per aggregate operation,
+        and the audit row &mdash; atomically. From there the change travels to the read side
+        without the framework ever producing to the broker itself:
+    </p>
+    <pre><code>relational TX (one COMMIT)      data write(s) + outbox row + audit row — atomic
+        │
+        │   CDC relay tails the outbox (reference: Debezium)
+        ▼
+     broker                     Kafka/Redpanda or NATS JetStream
+        │
+        ▼
+   SyncEngine                   read-side consumer — at-least-once, per-aggregate ordering
+        │
+        ▼
+    composer                    re-reads CURRENT state from the relational source
+        │
+        ▼
+   Mongo view                   the pre-composed projection the query side reads</code></pre>
+    <div class="box">
+        <strong>This is not event sourcing.</strong> The relational database remains the single
+        source of truth. The outbox event's payload is a <em>routing hint</em>, not a state
+        carrier: on each event the composer re-reads the aggregate's current state from the
+        relational source and upserts the projection. State is never derived by folding an event
+        log &mdash; which is exactly what makes the read side self-healing and every view
+        rebuildable from the system of record at any time (see
+        <a href="#mongo-schema-evolution">Mongo schema evolution</a>).
+    </div>
+    <p>
+        The step-by-step traces live in the <a href="#lifecycle-map">write lifecycle map</a> and
+        the <a href="#read-lifecycle-map">read lifecycle map</a>; the broker leg (adapters, the
+        CDC relay, delivery semantics) is documented under
+        <a href="#transport">Message transport</a>.
+    </p>
+
     <h3 id="engine-seam">The relational engine seam</h3>
     <p>
         The relational layer is <strong>backend-agnostic by design</strong>.
