@@ -1,0 +1,164 @@
+<h2>Logs</h2>
+<p>
+    The framework writes <strong>one structured JSON object per line to stdout</strong> — a
+    <code>log/slog</code> JSON handler installed at boot. That is the <em>entire</em> contract on the
+    framework's side: it is always on, there is no YAML to enable it, and it never ships logs anywhere
+    itself. Everything downstream — collecting the stream, indexing it, querying it in a UI — is
+    <strong>external architecture you assemble with off-the-shelf tools</strong>, configured entirely
+    outside the service. This page shows what the emitted line looks like and sketches the observability
+    stack you can grow from it (Elasticsearch + Kibana as the worked example), so a reader who has never
+    stood one up knows what each piece is and where a working reference config lives.
+</p>
+<p class="note">
+    This is a <em>devops</em> guide, not a framework surface. The framework's only involvement is the
+    JSON line on stdout — none of the tools below are configured in <code>microservice.&lt;profile&gt;.yaml</code>,
+    imported, or known to the service. Logs are the <strong>always-on</strong> observability channel;
+    <a href="#tracing">distributed tracing</a> is the opt-in spans channel, and
+    <a href="#audit">audit</a> is the compliance channel that <em>also</em> echoes to this one.
+</p>
+
+<h3 id="logs-shape">What a log line looks like</h3>
+<p>
+    Every line is a JSON object with the slog basics — <code>time</code>, <code>level</code>,
+    <code>msg</code> — plus the structured attributes of that event. When
+    <a href="#tracing"><code>observability.tracing</code></a> is enabled, context-carrying lines also
+    gain a <code>traceId</code>/<code>spanId</code>, so a log pivots straight to its trace. Three
+    representative lines:
+</p>
+<p><strong>An audit echo</strong> (emitted when <a href="#audit"><code>audit.destinations</code></a> includes <code>slog</code>):</p>
+<pre><code>{
+  "time":       "2026-06-09T12:00:00.123Z",
+  "level":      "INFO",
+  "msg":        "audit",
+  "threadId":   "5f25e8b0-…",
+  "traceId":    "4bf92f3577b34da6a3ce929d0e0e4736",
+  "entityType": "User",
+  "entityId":   "abc-123-…",
+  "verb":       "insert",
+  "actor":      "user-42",
+  "actorClaims":{ "tenant_id": "acme", "roles": ["admin"] }
+}</code></pre>
+<p><strong>An outbound HTTP call</strong> (<a href="#httpclient">httpclient</a>, <code>msg: "http.outbound"</code>):</p>
+<pre><code>{
+  "level":        "INFO",
+  "msg":          "http.outbound",
+  "threadId":     "5f25e8b0-…",
+  "service":      "keycloak-public",     // the UPSTREAM called — see the collector note below
+  "method":       "GET",
+  "url":          "https://idp.example/realms/…/users/42",
+  "status":       200,
+  "durationMs":   37,
+  "attempt":      1,
+  "cacheStatus":  "miss",
+  "breakerState": "closed"
+}</code></pre>
+<p><strong>An internal event</strong> (each subsystem names its own <code>msg</code>):</p>
+<pre><code>{ "level": "INFO", "msg": "integration.event.emitted", "threadId": "5f25e8b0-…", "eventType": "user.created", "eventId": "…" }</code></pre>
+<p>
+    The stable anchors you will filter on are <code>msg</code> (the event name), <code>threadId</code>
+    (the per-request id, <code>= AppContext.ID()</code>), <code>traceId</code>, and — on writes —
+    <code>entityType</code>/<code>verb</code>/<code>actor</code>. The full audit field list is in
+    <a href="#audit">Audit → The event shape</a>.
+</p>
+
+<h3 id="logs-why-es">Why this drops straight into Elasticsearch (or Loki, or …)</h3>
+<p>
+    Because each line is <strong>structured JSON</strong>, a collector decodes every key to a top-level
+    field — <code>status</code>, <code>verb</code>, <code>traceId</code> become <em>queryable columns</em>
+    with no fragile regex/grok parsing. Unstructured text logs force you to pattern-match at ingest;
+    structured logs skip that entirely. That is the whole reason the emitted line is JSON rather than a
+    formatted string.
+</p>
+<p>The external pipeline you build around it has four stages:</p>
+<pre><code>  your service            a collector              a store + index          a query UI
+ (stdout: JSON)   ─────▶  (tails the stream) ─────▶ (indexes each field) ────▶ (filter / dashboard)
+
+  the framework           Filebeat, Fluent Bit,     Elasticsearch,            Kibana,
+  (always on,             Vector, Promtail, …       OpenSearch, Loki, …       Grafana, …
+   zero config)</code></pre>
+<ul>
+    <li><strong>Collector</strong> — an agent that reads the process's stdout (or a file it is redirected
+        to) and forwards each line. It is the only piece that touches your service, and it does so from
+        the <em>outside</em>.</li>
+    <li><strong>Store + index</strong> — <strong>Elasticsearch</strong> (or OpenSearch, its fork) is a
+        document store that indexes every field so millions of lines are searchable in milliseconds; Loki
+        is a lighter, label-oriented alternative.</li>
+    <li><strong>Query UI</strong> — <strong>Kibana</strong> is the web UI over Elasticsearch where you
+        filter, chart, and dashboard those fields; Grafana plays the same role over Loki.</li>
+</ul>
+
+<h3 id="logs-collector">The collector reads the stream directly</h3>
+<p>
+    Nothing in the service knows the store exists. The service writes JSON to stdout; the collector, a
+    separate process, tails that stream and forwards it. The reference bench ships a working
+    <strong>Filebeat</strong> config in <code>omnicore-example-users/devops/elk/</code>
+    (<code>filebeat.yml</code> + <code>es-template.json</code> + a Kibana setup) — copy it as a starting
+    point. The essential part is the JSON decode:
+</p>
+<pre><code>parsers:
+  - ndjson:                      # each stdout line is one JSON object → decoded to the document root
+      target: ""
+      overwrite_keys: true
+      add_error_key: false       # non-JSON lines (the Fiber request logger) stay as a plain `message`
+      ignore_decoding_error: true</code></pre>
+<p>
+    Two things the reference config does, worth copying: it stamps the <strong>emitting</strong> service
+    name onto every line and <strong>renames</strong> the <code>http.outbound</code> line's
+    <code>service</code> field (which names the <em>upstream</em>) to <code>upstream</code>, so
+    <code>service</code> means one thing across all logs; and its <code>es-template.json</code> maps the
+    polymorphic audit payloads (<code>snapshot</code>/<code>changes</code>/<code>children</code>) as
+    <code>flattened</code> so they never trigger a mapping conflict.
+</p>
+
+<h3 id="logs-kibana">Querying in Kibana</h3>
+<p>
+    Once the lines are indexed, you filter by field (Kibana's KQL). A few examples:
+</p>
+<table>
+    <thead><tr><th>Goal</th><th>Query</th></tr></thead>
+    <tbody>
+        <tr><td>All errors from this service</td><td><code>service: "omnicore-example-users" and level: "ERROR"</code></td></tr>
+        <tr><td>Every line of one request</td><td><code>traceId: "4bf92f3577b34da6a3ce929d0e0e4736"</code></td></tr>
+        <tr><td>Failing outbound calls</td><td><code>msg: "http.outbound" and status &gt;= 500</code></td></tr>
+        <tr><td>One request across services</td><td><code>threadId: "5f25e8b0-*"</code></td></tr>
+    </tbody>
+</table>
+<p>
+    With tracing on, the <code>traceId</code> on any line is the same id you paste into
+    <a href="#tracing">Jaeger</a> to open the whole request as a span tree — the log finds the trace, the
+    trace shows the timing.
+</p>
+
+<h3 id="logs-audit">Auditing in Kibana</h3>
+<p>
+    Audit needs <strong>no extra plumbing</strong> to reach this pipe. When
+    <a href="#audit"><code>audit.destinations</code></a> includes <code>slog</code>, each write emits an
+    <code>msg: "audit"</code> line that flows through the very same collector → store → Kibana path. So
+    the same stack that browses application logs also filters the audit trail:
+</p>
+<table>
+    <thead><tr><th>Goal</th><th>Query</th></tr></thead>
+    <tbody>
+        <tr><td>Every audited write on Users</td><td><code>msg: "audit" and entityType: "User"</code></td></tr>
+        <tr><td>Deletes by one actor</td><td><code>msg: "audit" and verb: "delete" and actor: "user-42"</code></td></tr>
+        <tr><td>Everything a tenant touched</td><td><code>msg: "audit" and actorClaims.tenant_id: "acme"</code></td></tr>
+    </tbody>
+</table>
+<p class="note">
+    Kibana is for <em>observability</em>, not the system of record. The slog echo fires
+    <strong>post-commit and is best-effort</strong> — lossy if the shipper drops a line. The authoritative,
+    in-transaction audit trail is the <code>database</code> destination
+    (<a href="#audit">Audit → Two destinations</a>); point compliance queries there and use Kibana to
+    explore. As on any line, the audit <code>traceId</code> jumps to its <a href="#tracing">trace</a>.
+</p>
+
+<h3 id="logs-cost">It is optional — the store is the heavy part</h3>
+<p>
+    Emitting logs costs essentially nothing; it is already happening. The <em>consumption</em> stack is
+    the weight — Elasticsearch in particular is memory-hungry. The reference bench keeps the whole ELK
+    stack (Elasticsearch + Kibana + Filebeat) behind a Docker Compose <code>elk</code> profile,
+    <strong>off by default</strong>, precisely to free ~1.6&nbsp;GiB for the other lanes; you opt in with
+    <code>--profile elk up -d</code> when you want to browse. A real deployment does the same at scale: it
+    points a managed or shared logging platform at the same unchanged stdout — the service, and the JSON
+    line it emits, stay exactly as they are.
+</p>
