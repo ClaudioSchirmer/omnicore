@@ -11,6 +11,8 @@ with `1.0.0`.
 
 ## [Unreleased]
 
+## [0.34.0] - 2026-07-17
+
 ### Added
 
 - **Offset pagination on the write-side criteria engine — `criteria.Query.Offset(n)`.**
