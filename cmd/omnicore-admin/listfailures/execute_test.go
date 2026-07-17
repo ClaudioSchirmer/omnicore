@@ -91,6 +91,9 @@ func (lfDialect) NowExpr() string                     { return "NOW()" }
 func (lfDialect) ApplyLimit(sql string, n int) string {
 	return fmt.Sprintf("%s LIMIT %d", sql, n)
 }
+func (lfDialect) ApplyLimitOffset(sql string, limit, offset int) string {
+	return fmt.Sprintf("%s LIMIT %d OFFSET %d", sql, limit, offset)
+}
 func (lfDialect) Savepoint(name string) string               { return "SAVEPOINT " + name }
 func (lfDialect) RollbackToSavepoint(name string) string     { return "ROLLBACK TO SAVEPOINT " + name }
 func (lfDialect) ReleaseSavepoint(name string) string        { return "RELEASE SAVEPOINT " + name }

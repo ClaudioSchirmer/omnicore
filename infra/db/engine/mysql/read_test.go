@@ -122,6 +122,15 @@ func TestNowExpr_ApplyLimit(t *testing.T) {
 	}
 }
 
+// TestApplyLimitOffset proves the windowed-page seam: MySQL appends the native
+// `LIMIT n OFFSET m` tail after the (caller-guaranteed) ORDER BY.
+func TestApplyLimitOffset(t *testing.T) {
+	d := mysqlDialect{}
+	if got := d.ApplyLimitOffset("SELECT `id` FROM t ORDER BY `id`", 25, 50); got != "SELECT `id` FROM t ORDER BY `id` LIMIT 25 OFFSET 50" {
+		t.Fatalf("ApplyLimitOffset = %q", got)
+	}
+}
+
 // TestEncodeArg covers the value codec the write path and the criteria
 // translator bind through: TYPED identity values (domain.ID / *domain.ID /
 // uuid.UUID) reach a BINARY(16) column as their 16-byte form — the type IS the

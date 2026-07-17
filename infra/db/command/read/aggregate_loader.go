@@ -297,8 +297,13 @@ func (l *AggregateLoader[T]) findRoots(ctx context.Context, q *criteria.Query, l
 	}
 	clause := buildWhereClause(where, scopeGate(q.Scope(), l.schema, dialect, rootQualifier))
 	limit := q.LimitValue()
+	offset := q.OffsetValue()
 	if limitOverride > 0 {
+		// An internal cap (FindOne's uniqueness probe) replaces the Query's window
+		// wholesale — a "first match" lookup is single-row by definition, so a
+		// caller's offset never shifts it.
 		limit = limitOverride
+		offset = 0
 	}
 
 	// Manual root scanner: SELECT * + dev-controlled scan; id via GetID().
@@ -306,8 +311,9 @@ func (l *AggregateLoader[T]) findRoots(ctx context.Context, q *criteria.Query, l
 	// works on any engine (the consumer owns any dialect-specific decoding).
 	if l.rootScanner != nil {
 		sql := "SELECT * FROM " + dialect.QuoteIdent(table) + tailClause(clause, orderSQL)
-		if limit > 0 {
-			sql = dialect.ApplyLimit(sql, int(limit))
+		sql, err = applyWindow(dialect, sql, limit, offset, orderSQL)
+		if err != nil {
+			return nil, nil, err
 		}
 		rows, err := l.eng.Querier().Query(ctx, sql, args...)
 		if err != nil {
@@ -362,8 +368,9 @@ func (l *AggregateLoader[T]) findRoots(ctx context.Context, q *criteria.Query, l
 	}
 	sql := "SELECT " + leadingPK + ", " + strings.Join(quoteIdentifiers(cols, dialect), ", ") + " FROM " + dialect.QuoteIdent(table) + joinSQL
 	sql += tailClause(clause, orderSQL)
-	if limit > 0 {
-		sql = dialect.ApplyLimit(sql, int(limit))
+	sql, err = applyWindow(dialect, sql, limit, offset, orderSQL)
+	if err != nil {
+		return nil, nil, err
 	}
 	rows, err := l.eng.Querier().Query(ctx, sql, args...)
 	if err != nil {
@@ -410,6 +417,31 @@ func tailClause(clause, orderSQL string) string {
 		sb.WriteString(orderSQL)
 	}
 	return sb.String()
+}
+
+// applyWindow caps/windows a complete SELECT in the dialect's native position.
+// With no offset it is the plain row cap (Dialect.ApplyLimit — needs no ORDER BY,
+// so it also serves the unordered default listing). A non-zero offset is only
+// defined over a bounded, ordered result, so it REQUIRES a positive limit (an
+// offset paginates a page, not an open-ended skip) and a non-empty ORDER BY (a
+// skip over arbitrary physical order is meaningless — and SQL Server's
+// OFFSET…FETCH mandates the ORDER BY outright). Either violation is a loud
+// error, never a silently wrong page. offset/limit <= 0 mean "unset", matching
+// LimitValue/OffsetValue.
+func applyWindow(d Dialect, sql string, limit, offset int64, orderSQL string) (string, error) {
+	if offset > 0 {
+		if limit <= 0 {
+			return "", fmt.Errorf("criteria: Offset(%d) requires a positive Limit — an offset paginates a bounded page, not an open-ended skip", offset)
+		}
+		if orderSQL == "" {
+			return "", fmt.Errorf("criteria: Offset(%d) requires an OrderBy — a row skip is undefined without a deterministic order", offset)
+		}
+		return d.ApplyLimitOffset(sql, int(limit), int(offset)), nil
+	}
+	if limit > 0 {
+		return d.ApplyLimit(sql, int(limit)), nil
+	}
+	return sql, nil
 }
 
 // hydrateChildren loads + attaches children for the given roots. Auto-scan

@@ -89,6 +89,15 @@ func TestNowExpr_ApplyLimit(t *testing.T) {
 	}
 }
 
+// TestApplyLimitOffset proves the windowed-page seam: Postgres appends the
+// native `LIMIT n OFFSET m` tail after the (caller-guaranteed) ORDER BY.
+func TestApplyLimitOffset(t *testing.T) {
+	d := pgDialect{}
+	if got := d.ApplyLimitOffset("SELECT id FROM t ORDER BY id", 25, 50); got != "SELECT id FROM t ORDER BY id LIMIT 25 OFFSET 50" {
+		t.Fatalf("ApplyLimitOffset = %q", got)
+	}
+}
+
 func TestPgxRowsToMaps_RowsAndValuesError(t *testing.T) {
 	// Happy path: columns become map keys.
 	maps, err := pgxRowsToMaps(&composerRows{cols: []string{"id", "name"}, data: [][]any{{"o1", "first"}}})

@@ -54,6 +54,9 @@ func (testMySQLDialect) NowExpr() string { return "NOW()" }
 func (testMySQLDialect) ApplyLimit(sql string, n int) string {
 	return fmt.Sprintf("%s LIMIT %d", sql, n)
 }
+func (testMySQLDialect) ApplyLimitOffset(sql string, limit, offset int) string {
+	return fmt.Sprintf("%s LIMIT %d OFFSET %d", sql, limit, offset)
+}
 func (testMySQLDialect) Savepoint(name string) string { return "SAVEPOINT " + name }
 func (testMySQLDialect) RollbackToSavepoint(name string) string {
 	return "ROLLBACK TO SAVEPOINT " + name

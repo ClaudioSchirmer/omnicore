@@ -484,6 +484,57 @@ func TestSQLServerEngine_FindByID(t *testing.T) {
 	}
 }
 
+// TestSQLServerEngine_FindAll_OffsetWindow proves offset pagination executes on
+// a live SQL Server: an ordered FindAll with Limit + Offset returns the correct
+// page via the T-SQL `OFFSET m ROWS FETCH NEXT n ROWS ONLY` tail — the form that
+// mandates the ORDER BY (unlike ApplyLimit's SELECT-head TOP). The window is
+// identical across engines; only the rendered clause differs.
+func TestSQLServerEngine_FindAll_OffsetWindow(t *testing.T) {
+	eng, _ := setup(t)
+	ctx := ctxFor()
+
+	for _, name := range []string{"Ann", "Bea", "Cyd", "Dan", "Eve"} {
+		e := &flatPerson{Name: name, Email: name + "@x"}
+		ins, err := domain.GetInsertable(e, nil, "GetInsertable")
+		if err != nil {
+			t.Fatalf("GetInsertable(%s): %v", name, err)
+		}
+		if _, err := eng.Insert(ctx, ins, flatSchema(), core.WriteHook{}); err != nil {
+			t.Fatalf("Insert(%s): %v", name, err)
+		}
+	}
+
+	loader := read.NewAggregateLoader[*flatPerson](eng, func() *flatPerson { return &flatPerson{} }).
+		WithSchema(flatSchema())
+
+	// Page 2 of an ascending window, 2 per page — skip Ann, Bea; expect Cyd, Dan.
+	page, err := loader.FindAll(ctx, criteria.Where(nil).OrderBy("Name").Limit(2).Offset(2))
+	if err != nil {
+		t.Fatalf("FindAll offset window: %v", err)
+	}
+	if len(page) != 2 {
+		t.Fatalf("offset window: expected 2 rows, got %d", len(page))
+	}
+	if page[0].Name != "Cyd" || page[1].Name != "Dan" {
+		t.Fatalf("offset window order wrong: %q, %q (want Cyd, Dan)", page[0].Name, page[1].Name)
+	}
+
+	// The last page is shorter than the limit — skip 4, expect just Eve.
+	tail, err := loader.FindAll(ctx, criteria.Where(nil).OrderBy("Name").Limit(2).Offset(4))
+	if err != nil {
+		t.Fatalf("FindAll tail window: %v", err)
+	}
+	if len(tail) != 1 || tail[0].Name != "Eve" {
+		t.Fatalf("tail window wrong: got %d rows (want 1 row Eve)", len(tail))
+	}
+
+	// Contract: an offset with no ORDER BY is rejected before it can return a
+	// non-deterministic page.
+	if _, err := loader.FindAll(ctx, criteria.Where(nil).Limit(2).Offset(2)); err == nil {
+		t.Fatal("expected an error: Offset without an OrderBy")
+	}
+}
+
 // --- aggregate fixtures (root + child) ----------------------------------
 
 type acct struct {

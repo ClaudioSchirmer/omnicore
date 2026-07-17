@@ -56,6 +56,9 @@ func (testOracleDialect) NowExpr() string { return "SYSTIMESTAMP" }
 func (testOracleDialect) ApplyLimit(sql string, n int) string {
 	return fmt.Sprintf("%s FETCH FIRST %d ROWS ONLY", sql, n)
 }
+func (testOracleDialect) ApplyLimitOffset(sql string, limit, offset int) string {
+	return fmt.Sprintf("%s OFFSET %d ROWS FETCH NEXT %d ROWS ONLY", sql, offset, limit)
+}
 func (testOracleDialect) Savepoint(name string) string { return "SAVEPOINT " + name }
 func (testOracleDialect) RollbackToSavepoint(name string) string {
 	return "ROLLBACK TO SAVEPOINT " + name

@@ -76,6 +76,17 @@ type Dialect interface {
 	// not a fragment. sql is always framework-generated (never user input);
 	// n must be positive.
 	ApplyLimit(sql string, n int) string
+	// ApplyLimitOffset renders a windowed page — limit rows after skipping
+	// offset — onto a complete SELECT. Unlike ApplyLimit (a bare cap usable
+	// without an ORDER BY, which is why existence probes rely on it), a non-zero
+	// offset is only defined over deterministic order, and SQL Server's only
+	// offset form (OFFSET…FETCH) mandates an ORDER BY — so the caller guarantees
+	// the statement carries one and that limit and offset are both positive. sql
+	// is always framework-generated (never user input). Postgres and MySQL append
+	// `LIMIT n OFFSET m`; Oracle and SQL Server append the standard
+	// `OFFSET m ROWS FETCH NEXT n ROWS ONLY` tail (not the SELECT-head TOP — TOP
+	// cannot express a skip).
+	ApplyLimitOffset(sql string, limit, offset int) string
 	// Savepoint / RollbackToSavepoint / ReleaseSavepoint render the in-TX
 	// savepoint statements for a (validated, framework-owned) name. Postgres
 	// and MySQL speak the standard forms; T-SQL spells them SAVE TRANSACTION /

@@ -39,6 +39,9 @@ func (testPGDialect) NowExpr() string                   { return "NOW()" }
 func (testPGDialect) ApplyLimit(sql string, n int) string {
 	return fmt.Sprintf("%s LIMIT %d", sql, n)
 }
+func (testPGDialect) ApplyLimitOffset(sql string, limit, offset int) string {
+	return fmt.Sprintf("%s LIMIT %d OFFSET %d", sql, limit, offset)
+}
 func (testPGDialect) Savepoint(name string) string           { return "SAVEPOINT " + name }
 func (testPGDialect) RollbackToSavepoint(name string) string { return "ROLLBACK TO SAVEPOINT " + name }
 func (testPGDialect) ReleaseSavepoint(name string) string    { return "RELEASE SAVEPOINT " + name }
