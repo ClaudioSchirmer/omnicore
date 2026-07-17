@@ -22,8 +22,8 @@ type engineBoot struct {
 	// registered bundle.
 	newMigrator func(deps Deps, cfg *Config) *migration.Manager
 	// ensureFuturePartitions provisions upcoming audit_events partitions. nil
-	// when the backend's audit table is not partitioned (MySQL, SQL Server) —
-	// partition maintenance is a Postgres-only concern.
+	// when the backend's audit table is not partitioned (MySQL, SQL Server,
+	// Oracle) — partition maintenance is a Postgres-only concern.
 	ensureFuturePartitions func(ctx context.Context, deps Deps, n int) error
 }
 

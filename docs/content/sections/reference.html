@@ -23,7 +23,7 @@
         <tr><td><code>Result[T]</code></td><td><code>application/pipeline</code></td><td>Success/Failure/Exception</td></tr>
         <tr><td><code>AppContext</code></td><td><code>application/configuration</code></td><td>Per-request: UUID + Language + metadata</td></tr>
         <tr><td><code>Translator</code></td><td><code>application/translation</code></td><td>i18n with pluggable modules</td></tr>
-        <tr><td><code>RelationalEngine</code> (<code>Postgres</code> / <code>MySQL</code> / <code>SQL Server</code>)</td><td><code>infra/db/core</code> (port) · <code>infra/db/engine/{postgres,mysql,sqlserver}</code> (impls)</td><td>backend-neutral write seam: Insert/Update/Archive/Unarchive/Delete with atomic outbox. Selected at boot by <code>relational.dialect</code>; the neutral handle is <code>Deps.DB</code> / <code>BaseRepository.Engine</code>. <code>postgres.AsPostgres(engine)</code> recovers the concrete PG adapter for pool / partition access</td></tr>
+        <tr><td><code>RelationalEngine</code> (<code>Postgres</code> / <code>MySQL</code> / <code>SQL Server</code> / <code>Oracle</code>)</td><td><code>infra/db/core</code> (port) · <code>infra/db/engine/{postgres,mysql,sqlserver,oracle}</code> (impls)</td><td>backend-neutral write seam: Insert/Update/Archive/Unarchive/Delete with atomic outbox. Selected at boot by <code>relational.dialect</code>; the neutral handle is <code>Deps.DB</code> / <code>BaseRepository.Engine</code>. <code>postgres.AsPostgres(engine)</code> recovers the concrete PG adapter for pool / partition access</td></tr>
         <tr><td><code>MongoDB</code></td><td><code>infra/db/query/engine/mongo</code></td><td>Mongo client + Upsert/Delete</td></tr>
         <tr><td><code>SyncEngine</code></td><td><code>infra/db/query</code></td><td>transport → MongoDB sync (SyncEngine)</td></tr>
         <tr><td><code>UpstreamSubscriber</code></td><td><code>infra/db/query</code></td><td>transport → local Mongo projection + downstream recompose-ripple on dependent views</td></tr>
@@ -78,5 +78,5 @@
     </ol>
 
     <h3>Commands</h3>
-    <pre><code>go build -tags 'postgres kafka' ./...   # compile everything (an engine tag postgres|mysql|sqlserver AND a transport tag kafka are both mandatory)
+    <pre><code>go build -tags 'postgres kafka' ./...   # compile everything (an engine tag postgres|mysql|sqlserver|oracle AND a transport tag kafka are both mandatory)
 go vet -tags 'postgres kafka' ./...     # static check</code></pre>

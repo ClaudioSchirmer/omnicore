@@ -208,7 +208,7 @@ semantics, same audit guarantees. → [CommandHandler](https://claudioschirmer.g
 
 - 📖 **[Documentation site](https://claudioschirmer.github.io/omnicore/)** — the public manual (published from [`docs/`](docs/) via GitHub Pages); the consumer's source of truth for every exported API.
 - 📝 **[`CHANGELOG.md`](CHANGELOG.md)** — release notes (Keep a Changelog, SemVer; the API may evolve through `0.x.y`).
-- 🧪 **[`omnicore-example-users`](https://github.com/ClaudioSchirmer/omnicore-example-users)** — reference service exercising every feature, plus end-to-end QA suites against real Postgres/MySQL/SQL Server + Mongo + Kafka/NATS + Debezium + Keycloak + Redis.
+- 🧪 **[`omnicore-example-users`](https://github.com/ClaudioSchirmer/omnicore-example-users)** — reference service exercising every feature, plus end-to-end QA suites against real Postgres/MySQL/SQL Server/Oracle + Mongo + Kafka/NATS + Debezium + Keycloak + Redis.
 
 ## Stack
 

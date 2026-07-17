@@ -113,7 +113,7 @@ var _ persistence.BeforeCommitHookProvider[*User] = (*InsertUserCommand)(nil)</c
         Hooks receive the framework's TX as <code>persistence.TxHandle</code> — a sealed interface with no public
         methods. The single sealing method on it is unexported, so the only implementations are the framework's own
         engine handles (Postgres's <code>pgxTxHandle</code>, MySQL's <code>mysqlTxHandle</code>, SQL Server's
-        <code>sqlserverTxHandle</code>), each carrying the live driver transaction privately. Application code cannot read or write SQL through the handle by construction.
+        <code>sqlserverTxHandle</code>, Oracle's <code>oracleTxHandle</code>), each carrying the live driver transaction privately. Application code cannot read or write SQL through the handle by construction.
     </p>
     <p>
         The canonical (and only) shape for an in-TX side effect from a hook:
