@@ -22,7 +22,7 @@
             <div class="arch-row arch-sub-indent"><span class="arch-pkg sub">audit/</span><span class="arch-desc">AuditEvent shape + destinations config (Semantic-neutral; emission owned by infra)</span></div>
         </div>
         <div class="arch-layer">
-            <div class="arch-row arch-head"><span class="arch-pkg">domain/</span><span class="arch-desc">Pure business rules — ZERO IO (stdlib + google/uuid only)</span></div>
+            <div class="arch-row arch-head"><span class="arch-pkg">domain/</span><span class="arch-desc">Pure business rules — ZERO IO (stdlib only). Identity is <code>domain.ID</code> — never a <code>uuid.UUID</code> field (that boot-fails).</span></div>
             <div class="arch-row arch-sub-indent"><span class="arch-desc">ValidEntity (Insertable / Updatable / Archivable / Deletable / Unarchivable / Batch)</span></div>
             <div class="arch-row arch-sub-indent"><span class="arch-desc">AggregateRoot + AggregateRootProvider · Rules DSL · Old-state snapshot</span></div>
             <div class="arch-row arch-sub-indent"><span class="arch-desc">Typed Notification system (translation key = struct name)</span></div>
@@ -154,7 +154,7 @@
         </tr>
         <tr>
             <td><code>domain</code></td>
-            <td>stdlib + <code>google/uuid</code> only</td>
+            <td>stdlib only — identity is <code>domain.ID</code> (never a <code>uuid.UUID</code> field)</td>
             <td>everything else</td>
         </tr>
         <tr>

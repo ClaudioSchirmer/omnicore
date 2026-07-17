@@ -53,7 +53,7 @@ web/          HTTP transport only; openapi/ (OpenAPI 3.1 + Swagger), graphql/ (o
               queryschema/ (shared read-side DTO reflection: REST + OpenAPI + GraphQL)
 application/  configuration/ (AppContext), translation/, notifications/, pipeline/,
               persistence/, queries/, audit/ — Go-pure, no transport/infra tags
-domain/       pure business rules, ZERO IO (stdlib + google/uuid only)
+domain/       pure business rules, ZERO IO (stdlib only; identity is domain.ID, never a uuid.UUID field)
 infra/        engines, persisters, outbox, mongo, composer, sync, audit impl, events,
               httpclient + grpcclient (outbound toolboxes) over shared resilience/ cores
 ```
@@ -62,7 +62,7 @@ infra/        engines, persisters, outbox, mongo, composer, sync, audit impl, ev
 
 | Layer | May import | Must NOT import |
 |---|---|---|
-| `domain` | stdlib + `google/uuid` only | everything else |
+| `domain` | stdlib only (identity is `domain.ID`, never a `uuid.UUID` field) | everything else |
 | `application/*` | `domain`, other `application/*` | `infra`, `web` |
 | `infra` | `domain`, `application/*` | `web` |
 | `web` | `domain`, `application/*` | `infra` directly |

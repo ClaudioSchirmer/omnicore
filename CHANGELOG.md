@@ -11,6 +11,19 @@ with `1.0.0`.
 
 ## [Unreleased]
 
+## [0.34.1] - 2026-07-17
+
+### Fixed
+
+- **docs-only: the `domain` layer's dependency boundary no longer cites
+  `google/uuid`.** `architecture.html` (the layer diagram and the dependency
+  table) described the domain layer as "stdlib + google/uuid", which read as if
+  a consumer could type a domain field or PK as `uuid.UUID`. Identity is
+  `domain.ID` — a `uuid.UUID` field boot-fails against the closed persistable
+  field-type set (see `table-schema.html`). The boundary now reads "stdlib
+  only; identity is domain.ID"; the framework's own internal use of google/uuid
+  stays recorded in the stack list. No Go code changed.
+
 ## [0.34.0] - 2026-07-17
 
 ### Added
