@@ -537,11 +537,15 @@ func StudentSchema() *core.TableSchema {
         <code>ConstraintBinding</code> maps the violation, typically to the same 409). Reviving the remnant via
         <code>/unarchive</code> is the only way back. Pick this when a role's history should never fork.</li>
     <li><strong>Active-only uniqueness</strong> — archived remnants may accumulate NEXT TO one active row: keep the old
-        archived role and open a fresh active one for the same identity. On Postgres this is a partial unique index —
-        <code>CREATE UNIQUE INDEX ... ON student(person_id) WHERE deleted_at IS NULL</code>. MySQL has no partial
-        indexes; use a generated column instead — <code>active_person_id CHAR(36) GENERATED ALWAYS AS
+        archived role and open a fresh active one for the same identity. The shape is per dialect. On Postgres it is a
+        partial unique index — <code>CREATE UNIQUE INDEX ... ON student(person_id) WHERE deleted_at IS NULL</code>;
+        SQL Server's equivalent is a filtered unique index — the same statement, same <code>WHERE</code> clause. MySQL
+        has no partial indexes; use a generated column instead — <code>active_person_id BINARY(16) GENERATED ALWAYS AS
         (IF(deleted_at IS NULL, person_id, NULL)) STORED, UNIQUE(active_person_id)</code> — multiple NULLs are admitted
-        by a MySQL unique index, so every archived remnant passes and the one active row is enforced.</li>
+        by a MySQL unique index, so every archived remnant passes and the one active row is enforced. Oracle has
+        neither; use a function-based unique index — <code>CREATE UNIQUE INDEX ... ON student (CASE WHEN deleted_at
+        IS NULL THEN person_id END)</code> — a row whose index expression is entirely NULL gets no index entry, so
+        every archived remnant drops out of the index and the one active row is enforced.</li>
 </ul>
 <p>
     <strong>Declare one of the two — the index, not the framework's probe, is the arbiter under concurrency.</strong> The

@@ -11,6 +11,24 @@ with `1.0.0`.
 
 ## [Unreleased]
 
+## [0.33.1] - 2026-07-17
+
+### Fixed
+
+- **docs-only: the SharedBase "Active-only uniqueness" passage in
+  `table-schema.html` now covers all four dialects and drops a stale id type.**
+  The passage only showed the Postgres (partial unique index) and MySQL
+  (generated column) shapes — a reader targeting SQL Server or Oracle had no
+  documented shape for the separate-FK role model — and the MySQL example
+  still typed the generated column `CHAR(36)`, predating the `BINARY(16)` id
+  standard. It now adds the SQL Server shape (a filtered unique index — same
+  statement, same `WHERE deleted_at IS NULL` clause; load-bearing there
+  because a plain `UNIQUE` admits a single NULL) and the Oracle shape (a
+  function-based unique index over `CASE WHEN deleted_at IS NULL THEN
+  person_id END` — a fully-NULL index expression gets no index entry, so
+  archived remnants drop out of the index), and retypes the MySQL example to
+  `BINARY(16)`. No Go code changed.
+
 ## [0.33.0] - 2026-07-16
 
 ### Added
