@@ -2,6 +2,7 @@ package write
 
 import (
 	"fmt"
+	"strings"
 	"testing"
 
 	"github.com/google/uuid"
@@ -9,14 +10,14 @@ import (
 	"github.com/ClaudioSchirmer/omnicore/domain"
 )
 
-// testOracleDialect is the :n-placeholder, bare-identifier, RAW(16) sibling of
-// testPGDialect/testMySQLDialect/testSQLServerDialect for the shared write
+// testOracleDialect is the :n-placeholder, quoted-uppercase, RAW(16) sibling
+// of testPGDialect/testMySQLDialect/testSQLServerDialect for the shared write
 // builders. These tests lock the fourth rendering the one set of builders must
-// produce: bare identifiers (the platform's native convention — the catalog
-// folds them to uppercase), numbered :n placeholders, SYSTIMESTAMP as the
-// dialect's now expression (the archive stamp and the managed timestamp
-// columns must ride Dialect.NowExpr — a baked-in NOW() would not parse on
-// Oracle), and the RAW(16) id encoding.
+// produce: QUOTED-UPPERCASE identifiers (equivalent to the catalog's unquoted
+// uppercase folding, and reserved-word safe), numbered :n placeholders,
+// SYSTIMESTAMP as the dialect's now expression (the archive stamp and the
+// managed timestamp columns must ride Dialect.NowExpr — a baked-in NOW()
+// would not parse on Oracle), and the RAW(16) id encoding.
 type testOracleDialect struct{}
 
 func (testOracleDialect) Placeholder(n int) string { return fmt.Sprintf(":%d", n) }
@@ -24,7 +25,7 @@ func (testOracleDialect) QuoteIdent(name string) string {
 	if !SafeIdentifier(name) {
 		panic(fmt.Sprintf("test: invalid SQL identifier %q", name))
 	}
-	return name
+	return `"` + strings.ToUpper(name) + `"`
 }
 func (testOracleDialect) EncodeArg(val any) any {
 	switch v := val.(type) {
@@ -74,7 +75,7 @@ func TestBuildInsert_Oracle(t *testing.T) {
 	id := "11111111-1111-1111-1111-111111111111"
 	sql, args := buildInsert(testOracleDialect{}, "users", "id", id, fields, []string{"created_at", "updated_at"})
 
-	want := "INSERT INTO users (id, email, name, created_at, updated_at) VALUES (:1, :2, :3, SYSTIMESTAMP, SYSTIMESTAMP)"
+	want := `INSERT INTO "USERS" ("ID", "EMAIL", "NAME", "CREATED_AT", "UPDATED_AT") VALUES (:1, :2, :3, SYSTIMESTAMP, SYSTIMESTAMP)`
 	if sql != want {
 		t.Fatalf("sql =\n  %q\nwant\n  %q", sql, want)
 	}
@@ -95,7 +96,7 @@ func TestBuildUpdate_Oracle(t *testing.T) {
 	id := "22222222-2222-2222-2222-222222222222"
 	sql, args := buildUpdate(testOracleDialect{}, "users", "id", id, fields, []string{"updated_at"})
 
-	want := "UPDATE users SET email = :1, name = :2, updated_at = SYSTIMESTAMP WHERE id = :3"
+	want := `UPDATE "USERS" SET "EMAIL" = :1, "NAME" = :2, "UPDATED_AT" = SYSTIMESTAMP WHERE "ID" = :3`
 	if sql != want {
 		t.Fatalf("sql =\n  %q\nwant\n  %q", sql, want)
 	}
@@ -112,16 +113,16 @@ func TestBuildUpdate_Oracle(t *testing.T) {
 // expression (SYSTIMESTAMP), never a baked-in NOW().
 func TestArchiveUnarchiveDelete_Oracle(t *testing.T) {
 	d := testOracleDialect{}
-	if got := archiveSQL(d, "users", "deleted_at", "id"); got != "UPDATE users SET deleted_at = SYSTIMESTAMP WHERE id = :1" {
+	if got := archiveSQL(d, "users", "deleted_at", "id"); got != `UPDATE "USERS" SET "DELETED_AT" = SYSTIMESTAMP WHERE "ID" = :1` {
 		t.Errorf("archiveSQL = %q", got)
 	}
-	if got := unarchiveSQL(d, "users", "deleted_at", "id"); got != "UPDATE users SET deleted_at = NULL WHERE id = :1" {
+	if got := unarchiveSQL(d, "users", "deleted_at", "id"); got != `UPDATE "USERS" SET "DELETED_AT" = NULL WHERE "ID" = :1` {
 		t.Errorf("unarchiveSQL = %q", got)
 	}
-	if got := deleteSQL(d, "users", "id"); got != "DELETE FROM users WHERE id = :1" {
+	if got := deleteSQL(d, "users", "id"); got != `DELETE FROM "USERS" WHERE "ID" = :1` {
 		t.Errorf("deleteSQL = %q", got)
 	}
-	if got := childDeleteSQL(d, "addresses", "user_id"); got != "DELETE FROM addresses WHERE user_id = :1" {
+	if got := childDeleteSQL(d, "addresses", "user_id"); got != `DELETE FROM "ADDRESSES" WHERE "USER_ID" = :1` {
 		t.Errorf("childDeleteSQL = %q", got)
 	}
 }
@@ -131,11 +132,11 @@ func TestArchiveUnarchiveDelete_Oracle(t *testing.T) {
 func TestChildCascadeSQL_Oracle(t *testing.T) {
 	d := testOracleDialect{}
 	archive := childCascadeSQL(d, "addresses", "deleted_at", "user_id", nowSetExpr(d), " IS NULL")
-	if archive != "UPDATE addresses SET deleted_at = SYSTIMESTAMP WHERE user_id = :1 AND deleted_at IS NULL" {
+	if archive != `UPDATE "ADDRESSES" SET "DELETED_AT" = SYSTIMESTAMP WHERE "USER_ID" = :1 AND "DELETED_AT" IS NULL` {
 		t.Errorf("archive cascade = %q", archive)
 	}
 	unarchive := childCascadeSQL(d, "addresses", "deleted_at", "user_id", nullSetExpr(d), " IS NOT NULL")
-	if unarchive != "UPDATE addresses SET deleted_at = NULL WHERE user_id = :1 AND deleted_at IS NOT NULL" {
+	if unarchive != `UPDATE "ADDRESSES" SET "DELETED_AT" = NULL WHERE "USER_ID" = :1 AND "DELETED_AT" IS NOT NULL` {
 		t.Errorf("unarchive cascade = %q", unarchive)
 	}
 }

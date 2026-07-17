@@ -27,14 +27,14 @@ func TestOracleDialect_BuildUpsert_DoUpdate(t *testing.T) {
 		},
 	)
 	for _, want := range []string{
-		"MERGE INTO omnicore_integration_failures target",
-		"USING (SELECT :1 AS consumer_group, :2 AS event_id, :3 AS error FROM dual) source",
+		`MERGE INTO "OMNICORE_INTEGRATION_FAILURES" target`,
+		`USING (SELECT :1 AS "CONSUMER_GROUP", :2 AS "EVENT_ID", :3 AS "ERROR" FROM dual) source`,
 		// NULL-safe ON: '' binds as NULL on Oracle, so a plain `=` would never
 		// match an empty-string conflict column and every retry would die on
 		// ORA-00001 instead of incrementing the attempt.
-		"ON ((target.consumer_group = source.consumer_group OR (target.consumer_group IS NULL AND source.consumer_group IS NULL)) AND (target.event_id = source.event_id OR (target.event_id IS NULL AND source.event_id IS NULL)))",
-		"WHEN MATCHED THEN UPDATE SET error = source.error, attempt = attempt + 1",
-		"WHEN NOT MATCHED THEN INSERT (consumer_group, event_id, error) VALUES (source.consumer_group, source.event_id, source.error)",
+		`ON ((target."CONSUMER_GROUP" = source."CONSUMER_GROUP" OR (target."CONSUMER_GROUP" IS NULL AND source."CONSUMER_GROUP" IS NULL)) AND (target."EVENT_ID" = source."EVENT_ID" OR (target."EVENT_ID" IS NULL AND source."EVENT_ID" IS NULL)))`,
+		`WHEN MATCHED THEN UPDATE SET "ERROR" = source."ERROR", "ATTEMPT" = attempt + 1`,
+		`WHEN NOT MATCHED THEN INSERT ("CONSUMER_GROUP", "EVENT_ID", "ERROR") VALUES (source."CONSUMER_GROUP", source."EVENT_ID", source."ERROR")`,
 	} {
 		if !strings.Contains(got, want) {
 			t.Errorf("oracle upsert missing %q in:\n%s", want, got)
@@ -63,7 +63,7 @@ func TestOracleDialect_BuildUpsert_DoNothing(t *testing.T) {
 	if strings.Contains(got, "WHEN MATCHED") {
 		t.Errorf("empty sets must omit WHEN MATCHED, got:\n%s", got)
 	}
-	if !strings.Contains(got, "WHEN NOT MATCHED THEN INSERT (event_id, consumer_group) VALUES (source.event_id, source.consumer_group)") {
+	if !strings.Contains(got, `WHEN NOT MATCHED THEN INSERT ("EVENT_ID", "CONSUMER_GROUP") VALUES (source."EVENT_ID", source."CONSUMER_GROUP")`) {
 		t.Errorf("do-nothing upsert must still insert on miss, got:\n%s", got)
 	}
 	if !strings.Contains(got, "FROM dual) source ON (") {

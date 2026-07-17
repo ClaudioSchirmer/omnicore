@@ -39,15 +39,21 @@ func TestUUIDBytes(t *testing.T) {
 	})
 }
 
-// TestQuoteIdent locks Oracle identifier rendering: a safe identifier passes
-// BARE — the platform's native convention (the catalog folds it to uppercase;
-// quoting would pin the lowercase spelling and force quotes on every manual
-// query), the Postgres pattern with inverted folding — and an unsafe
-// identifier panics loudly, the same SQL-injection defense as the other
-// engines, since identifiers come from schema declarations, never user input.
+// TestQuoteIdent locks Oracle identifier rendering: QUOTED-UPPERCASE — the
+// form equivalent by construction to the platform's unquoted resolution (an
+// unquoted identifier folds to uppercase in the catalog, which is exactly the
+// name the quoted form addresses), so manual unquoted queries keep matching
+// while reserved-word collisions (a `number` column) work with NO
+// reserved-word list — one total rule, the MySQL-backtick/T-SQL-bracket
+// philosophy. An unsafe identifier panics loudly, the same SQL-injection
+// defense as the other engines, since identifiers come from schema
+// declarations, never user input.
 func TestQuoteIdent(t *testing.T) {
-	if got := quoteIdent("user_id"); got != "user_id" {
-		t.Errorf("quoteIdent(user_id) = %q, want the bare identifier", got)
+	if got := quoteIdent("user_id"); got != `"USER_ID"` {
+		t.Errorf("quoteIdent(user_id) = %q, want the quoted-uppercase form", got)
+	}
+	if got := quoteIdent("number"); got != `"NUMBER"` {
+		t.Errorf("quoteIdent(number) = %q, want the reserved word usable as %q", got, `"NUMBER"`)
 	}
 
 	t.Run("invalid identifier panics", func(t *testing.T) {

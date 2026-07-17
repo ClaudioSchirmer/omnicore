@@ -2,6 +2,7 @@ package read
 
 import (
 	"fmt"
+	"strings"
 	"testing"
 
 	"github.com/google/uuid"
@@ -11,13 +12,13 @@ import (
 )
 
 // testOracleDialect is an Oracle-flavored db.Dialect for the criteria
-// translator tests — the :n-placeholder, bare-identifier, RAW(16) sibling of
+// translator tests — the :n-placeholder, quoted-uppercase, RAW(16) sibling of
 // testPGDialect/testMySQLDialect/testSQLServerDialect. The translator is
 // backend-neutral; these tests lock the fourth rendering: numbered :n
-// placeholders (like PG's $n, the number ties a value to its slot), BARE
-// identifiers (the platform's native convention — the catalog folds them to
-// uppercase), the LOWER-LIKE case-insensitive form, and the RAW(16) id
-// encoding on the probe side.
+// placeholders (like PG's $n, the number ties a value to its slot),
+// QUOTED-UPPERCASE identifiers (equivalent to the catalog's unquoted
+// uppercase folding, and reserved-word safe), the LOWER-LIKE case-insensitive
+// form, and the RAW(16) id encoding on the probe side.
 type testOracleDialect struct{}
 
 func (testOracleDialect) Placeholder(n int) string { return fmt.Sprintf(":%d", n) }
@@ -25,7 +26,7 @@ func (testOracleDialect) QuoteIdent(name string) string {
 	if !SafeIdentifier(name) {
 		panic(fmt.Sprintf("test: invalid SQL identifier %q", name))
 	}
-	return name
+	return `"` + strings.ToUpper(name) + `"`
 }
 func (testOracleDialect) EncodeArg(val any) any {
 	switch v := val.(type) {
@@ -75,15 +76,15 @@ func TestOracleVisitor_Operators(t *testing.T) {
 		sql  string
 		args int
 	}{
-		{"eq", criteria.Eq("Email", "a@x"), "email = :1", 1},
-		{"ne", criteria.Ne("Email", "a@x"), "email <> :1", 1},
-		{"gt", criteria.Gt("Age", 18), "age > :1", 1},
-		{"lte", criteria.Lte("Age", 18), "age <= :1", 1},
-		{"like", criteria.Like("Name", "Bob%"), "name LIKE :1", 1},
-		{"ilike", criteria.ILike("Name", "bob%"), "LOWER(name) LIKE LOWER(:1)", 1},
-		{"in", criteria.In("Name", "a", "b", "c"), "name IN (:1, :2, :3)", 3},
-		{"nin", criteria.Nin("Name", "a", "b"), "name NOT IN (:1, :2)", 2},
-		{"isnull", criteria.IsNull("Phone"), "phone IS NULL", 0},
+		{"eq", criteria.Eq("Email", "a@x"), `"EMAIL" = :1`, 1},
+		{"ne", criteria.Ne("Email", "a@x"), `"EMAIL" <> :1`, 1},
+		{"gt", criteria.Gt("Age", 18), `"AGE" > :1`, 1},
+		{"lte", criteria.Lte("Age", 18), `"AGE" <= :1`, 1},
+		{"like", criteria.Like("Name", "Bob%"), `"NAME" LIKE :1`, 1},
+		{"ilike", criteria.ILike("Name", "bob%"), `LOWER("NAME") LIKE LOWER(:1)`, 1},
+		{"in", criteria.In("Name", "a", "b", "c"), `"NAME" IN (:1, :2, :3)`, 3},
+		{"nin", criteria.Nin("Name", "a", "b"), `"NAME" NOT IN (:1, :2)`, 2},
+		{"isnull", criteria.IsNull("Phone"), `"PHONE" IS NULL`, 0},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -115,7 +116,7 @@ func TestOracleVisitor_PlaceholderNumbering(t *testing.T) {
 	if err != nil {
 		t.Fatalf("compileWhere: %v", err)
 	}
-	if want := "(name = :1 AND email IN (:2, :3) AND age > :4)"; sql != want {
+	if want := `("NAME" = :1 AND "EMAIL" IN (:2, :3) AND "AGE" > :4)`; sql != want {
 		t.Errorf("sql  = %q\nwant = %q", sql, want)
 	}
 	want := []any{"a", "x", "y", 1}

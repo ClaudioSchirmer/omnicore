@@ -6,11 +6,14 @@
 -- ║ BOOLEAN/JSON, IF [NOT] EXISTS). Every PK is a UUID v7 minted in Go, stored ║
 -- ║ RAW(16) (the framework id standard); wire-crossing id references stay      ║
 -- ║ VARCHAR2(36) text (CHAR(36) rejected — blank padding). JSONB/JSON→JSON     ║
--- ║ (native), TIMESTAMP/DATETIME→TIMESTAMP(6) + DEFAULT SYSTIMESTAMP, TEXT→    ║
--- ║ CLOB, VARCHAR(n)→VARCHAR2(n CHAR). PG's partial indexes and BRIN become    ║
+-- ║ (native) EXCEPT the two CDC-tailed payloads (outbox, integration_events),  ║
+-- ║ which are CLOB: LogMiner cannot decode native-JSON (OSON) redo, so what    ║
+-- ║ Debezium reads must be text. TIMESTAMP/DATETIME→TIMESTAMP(6) + DEFAULT     ║
+-- ║ SYSTIMESTAMP, TEXT→CLOB, VARCHAR(n)→VARCHAR2(n CHAR). PG's partial indexes and BRIN become    ║
 -- ║ plain B-trees; no partitioning (plain audit table, like MySQL/SQL Server). ║
--- ║ Identifiers are UNQUOTED on purpose (the platform's native convention —    ║
--- ║ the catalog folds them to UPPERCASE); the engine lowercases them back at   ║
+-- ║ Identifiers are UNQUOTED (folding to the same UPPERCASE catalog names the ║
+-- ║ engine's quoted-uppercase identifiers address; a reserved-word collision   ║
+-- ║ would be quoted UPPERCASE — none here); the engine lowercases them back at ║
 -- ║ its read/error seams. PK/UNIQUE/CHECK constraint names are IDENTICAL       ║
 -- ║ across all four dialects so a ConstraintBinding maps the same violation to ║
 -- ║ the same HTTP status on every backend. Column semantics are documented in  ║
@@ -33,7 +36,10 @@ CREATE TABLE outbox (
     aggregate_type  VARCHAR2(100 CHAR) NOT NULL,
     event_type      VARCHAR2(50 CHAR)  NOT NULL,
     aggregate_id    VARCHAR2(36)       NOT NULL,
-    payload         JSON               NOT NULL,
+    -- CLOB, not native JSON, on purpose: LogMiner cannot decode the OSON
+    -- binary redo of a JSON column (any Debezium), so a CDC-tailed payload
+    -- must be text — the same wire-crossing rule that keeps ids uuid TEXT.
+    payload         CLOB               NOT NULL,
     traceparent     VARCHAR2(64)       NULL,
     created_at      TIMESTAMP(6)       DEFAULT SYSTIMESTAMP NOT NULL,
     CONSTRAINT outbox_pkey PRIMARY KEY (id)
@@ -131,7 +137,8 @@ CREATE TABLE integration_events (
     aggregate_id    VARCHAR2(36)       NULL,
     event_type      VARCHAR2(100 CHAR) NOT NULL,
     event_version   NUMBER(10)         DEFAULT 1 NOT NULL,
-    payload         JSON               NOT NULL,
+    -- CLOB, not native JSON: this table is CDC-tailed (see outbox.payload).
+    payload         CLOB               NOT NULL,
     correlation_id  VARCHAR2(36)       NULL,
     causation_id    VARCHAR2(36)       NULL,
     thread_id       VARCHAR2(36)       NOT NULL,

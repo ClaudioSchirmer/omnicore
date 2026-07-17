@@ -11,6 +11,8 @@ with `1.0.0`.
 
 ## [Unreleased]
 
+## [0.33.0] - 2026-07-16
+
 ### Added
 
 - **Oracle joins PostgreSQL, MySQL and SQL Server as a first-class relational
@@ -20,10 +22,11 @@ with `1.0.0`.
   `go build -tags 'oracle <transport>'` runs a service on Oracle through the
   same engine seam as the other backends — same write path (one TX for data +
   outbox + audit), criteria reads, composer projection, rebuild lock, migration
-  runner, admin tooling. Dialect specifics: `:N` placeholders, UNQUOTED
-  identifiers (the platform's native convention — the catalog folds them to
-  uppercase; the engine lowercases result-set column keys and extracted
-  constraint names back to the declared form), a single-statement `MERGE`
+  runner, admin tooling. Dialect specifics: `:N` placeholders, QUOTED-UPPERCASE
+  identifiers (equivalent to the catalog's unquoted uppercase folding — manual
+  queries stay natural — while reserved-word column names work with no
+  reserved-word list; the engine lowercases result-set column keys and
+  extracted constraint names back to the declared form), a single-statement `MERGE`
   upsert with NULL-safe conflict comparison (Oracle has no HOLDLOCK equivalent;
   the concurrent-MERGE `ORA-00001` classifies as a unique violation),
   `SYSTIMESTAMP` as the now expression (server-timezone parity; Oracle's
@@ -34,7 +37,12 @@ with `1.0.0`.
   comparison preserves the UUID v7 time order. **The 23ai floor is deliberate**:
   booleans are native `BOOLEAN` columns and JSON payloads native `JSON` columns
   (the engine forces go-ora's `lob fetch=post` option into the DSN — without it
-  the driver truncates native-JSON reads at 32 KiB). **Empty string is NULL**
+  the driver truncates native-JSON reads at 32 KiB) — with ONE deliberate
+  exception: the two CDC-tailed payloads (`outbox.payload`,
+  `integration_events.payload`) are `CLOB`, because LogMiner cannot decode a
+  native-JSON column's binary (OSON) redo on any Debezium version — the same
+  wire-crossing rule that keeps ids uuid text; a consumer-created table the
+  relay tails must follow it too. **Empty string is NULL**
   (the Oracle semantic, no sentinel encoding): a NOT NULL text column rejects
   `""`, and a `*string` holding `""` reads back `nil`. The control plane ships
   as `embedded/oracle/0001_framework.{up,down}.sql` (constraint names identical
@@ -42,7 +50,14 @@ with `1.0.0`.
   — the `''`-is-NULL consequence) with its own runner (`migration.NewOracle`)
   over a framework-owned golang-migrate driver (golang-migrate ships no Oracle
   driver): statements split on top-level semicolons — migration files carry
-  plain SQL, PL/SQL blocks are not supported.
+  plain SQL, PL/SQL blocks are not supported. **Deadline fidelity on a frozen
+  database**: go-ora's cancellation rides the same (frozen) connection, so the
+  engine bounds every Querier call itself — reads and control-plane
+  side-channels return `context.DeadlineExceeded` on time (the 2s readiness
+  probe and the request-timeout 504 hold on Oracle); the write path is
+  deliberately unwrapped (mid-transaction abandonment would change delivery
+  semantics — go-ora's `TIMEOUT=<seconds>` DSN option is the operator bound
+  there).
 
 ## [0.32.1] - 2026-07-15
 

@@ -14,27 +14,66 @@ import (
 	"github.com/ClaudioSchirmer/omnicore/infra/db/core"
 )
 
-// Oracle implementation of the framework read seam. *sql.Rows and *sql.Row
-// satisfy core.Rows / core.Row directly, so the querier is a thin pass-through;
-// the dialect renders Oracle's :n placeholders, bare identifiers, and the
-// RAW(16) ⇄ uuid codec. The sqlExecutor surface the querier runs through is
-// the engine's driver-exec interface (engine.go), the Oracle twin of the
-// SQL Server one.
+// Oracle implementation of the framework read seam. *sql.Rows satisfies
+// core.Rows directly; the dialect renders Oracle's :n placeholders,
+// quoted-uppercase identifiers, and the RAW(16) ⇄ uuid codec. The sqlExecutor
+// surface the querier runs through is the engine's driver-exec interface
+// (engine.go), the Oracle twin of the SQL Server one.
 //
-// One Oracle-wide read concern lives here: the D11 case normalization.
-// Identifiers are stored UPPERCASE in the catalog (unquoted DDL), so go-ora
-// hands result-set column names back uppercase; QueryMaps lowercases the map
-// keys so the composer joins on the declared lowercase names. The typed Scan
-// path is positional and needs no name normalization.
+// Two Oracle-wide read concerns live here:
+//
+//  1. The D11 case normalization. Identifiers are stored UPPERCASE in the
+//     catalog, so go-ora hands result-set column names back uppercase;
+//     QueryMaps lowercases the map keys so the composer joins on the declared
+//     lowercase names. The typed Scan path is positional and needs no name
+//     normalization.
+//
+//  2. CONTEXT-BOUNDED WAITS. go-ora's cancellation sends the Oracle break
+//     marker over the SAME connection and then keeps blocking on the socket
+//     read (the driver's ctx→read-deadline plumbing is commented out
+//     upstream), so against a FROZEN database — paused container, network
+//     partition, hung server — a context deadline is never honored: the call
+//     returns only when the network thaws. The other engines' drivers close
+//     the socket on expiry and fail fast. To keep the framework's deadline
+//     promises on Oracle (the 2s readiness probe, the request-timeout 504),
+//     every Querier method runs the driver call in a goroutine and returns
+//     ctx.Err() the moment the context expires; the abandoned call finishes
+//     on its own when the network recovers and releases its pooled
+//     connection then (self-healing, bounded by the pool cap — each probe or
+//     request abandoned during a freeze parks one connection until the thaw).
+//     The WRITE path (core.WriteTx) is deliberately NOT wrapped: abandoning a
+//     statement mid-transaction without knowing whether it applied would
+//     change delivery semantics (a caller retry could double-apply); go-ora's
+//     `TIMEOUT=<seconds>` DSN option (a socket read deadline) is the
+//     operator-level mitigation there, documented in the manual.
 
 type oracleQuerier struct{ exec sqlExecutor }
 
 func (q oracleQuerier) Query(ctx context.Context, sqlText string, args ...any) (core.Rows, error) {
-	rows, err := q.exec.QueryContext(ctx, sqlText, args...)
-	if err != nil {
-		return nil, err
+	type result struct {
+		rows *sql.Rows
+		err  error
 	}
-	return &rawDecodingRows{Rows: rows}, nil
+	ch := make(chan result) // unbuffered: the try-send below detects abandonment
+	go func() {
+		rows, err := q.exec.QueryContext(ctx, sqlText, args...)
+		select {
+		case ch <- result{rows, err}:
+		default: // abandoned — nobody will consume; release the connection
+			if rows != nil {
+				_ = rows.Close()
+			}
+		}
+	}()
+	select {
+	case r := <-ch:
+		if r.err != nil {
+			return nil, r.err
+		}
+		return &rawDecodingRows{Rows: r.rows}, nil
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
 }
 
 // rawDecodingRows wraps *sql.Rows so the typed scan restores RAW(16) uuid
@@ -94,13 +133,57 @@ func (r *rawDecodingRows) Scan(dest ...any) error {
 	return nil
 }
 
+// QueryRow returns a Row whose Scan is the context-bounded leg: *sql.Row
+// defers the actual execution to Scan, so wrapping QueryRowContext alone
+// would bound nothing. The bounded Query above runs the statement; the
+// adapter reproduces database/sql's Row semantics (first row or
+// sql.ErrNoRows — the sentinel the no-rows consumers already match). The
+// abandoned-goroutine path scans into PRIVATE buffers only (the caller's
+// dest pointers are never written after an early return).
 func (q oracleQuerier) QueryRow(ctx context.Context, sqlText string, args ...any) core.Row {
-	return q.exec.QueryRowContext(ctx, sqlText, args...)
+	rows, err := q.Query(ctx, sqlText, args...)
+	return oracleRow{rows: rows, err: err}
+}
+
+// oracleRow adapts the bounded Query result to the single-row core.Row
+// surface. Scan consumes the first row and closes the cursor; an empty result
+// is sql.ErrNoRows, mirroring *sql.Row.
+type oracleRow struct {
+	rows core.Rows
+	err  error
+}
+
+func (r oracleRow) Scan(dest ...any) error {
+	if r.err != nil {
+		return r.err
+	}
+	defer func() { _ = r.rows.Close() }()
+	if !r.rows.Next() {
+		if err := r.rows.Err(); err != nil {
+			return err
+		}
+		return sql.ErrNoRows
+	}
+	return r.rows.Scan(dest...)
 }
 
 func (q oracleQuerier) Exec(ctx context.Context, sqlText string, args ...any) error {
-	_, err := q.exec.ExecContext(ctx, sqlText, args...)
-	return err
+	ch := make(chan error) // unbuffered: the try-send below detects abandonment
+	go func() {
+		_, err := q.exec.ExecContext(ctx, sqlText, args...)
+		select {
+		case ch <- err:
+		default: // abandoned — the statement may still apply when the network
+			// thaws; the Querier's Exec consumers are the control-plane
+			// side-channels, whose statements are idempotent upserts by design.
+		}
+	}()
+	select {
+	case err := <-ch:
+		return err
+	case <-ctx.Done():
+		return ctx.Err()
+	}
 }
 
 // QueryMaps runs a SELECT and returns each row column-keyed, the dynamic read
@@ -123,6 +206,31 @@ func (q oracleQuerier) Exec(ctx context.Context, sqlText string, args ...any) er
 //   - strings/floats/time.Time/nil pass through (go-ora decodes VARCHAR2/CLOB
 //     to string, BINARY_DOUBLE to float64, TIMESTAMP to time.Time natively).
 func (q oracleQuerier) QueryMaps(ctx context.Context, sqlText string, args ...any) ([]map[string]any, error) {
+	type result struct {
+		out []map[string]any
+		err error
+	}
+	ch := make(chan result) // unbuffered: the try-send below detects abandonment
+	go func() {
+		out, err := q.queryMapsBlocking(ctx, sqlText, args...)
+		select {
+		case ch <- result{out, err}:
+		default: // abandoned — the private buffers below are simply discarded
+		}
+	}()
+	select {
+	case r := <-ch:
+		return r.out, r.err
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+}
+
+// queryMapsBlocking is the driver-facing body of QueryMaps — everything it
+// touches (rows, cells, the result slice) is private to the call, so an
+// abandoned run races with nothing and its deferred Close releases the
+// connection when the network thaws.
+func (q oracleQuerier) queryMapsBlocking(ctx context.Context, sqlText string, args ...any) ([]map[string]any, error) {
 	rows, err := q.exec.QueryContext(ctx, sqlText, args...)
 	if err != nil {
 		return nil, err

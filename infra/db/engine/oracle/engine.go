@@ -25,11 +25,14 @@
 //   - Identity is stored RAW(16): RAW compares bytewise, so the UUIDv7 ids
 //     minted in Go keep the PK index append-friendly (the BINARY(16)/InnoDB
 //     rationale, verified against a live Oracle Free 23ai).
-//   - Identifiers are emitted UNQUOTED (the platform's native convention — the
-//     catalog folds them to uppercase, mirroring Postgres's bare-lowercase with
-//     inverted folding). The case normalization back to the declared lowercase
-//     names is engine-internal: QueryMaps lowercases result-set column keys and
-//     the error classifiers lowercase extracted constraint names.
+//   - Identifiers are emitted QUOTED-UPPERCASE — equivalent by construction to
+//     the platform's unquoted resolution (the catalog folds unquoted names to
+//     uppercase), so manual queries stay natural, while identifiers colliding
+//     with Oracle reserved words (e.g. a `number` column) work with no
+//     reserved-word list. The case normalization back to the declared
+//     lowercase names is engine-internal: QueryMaps lowercases result-set
+//     column keys and the error classifiers lowercase extracted constraint
+//     names.
 //   - The upsert is a single MERGE statement. Oracle has no HOLDLOCK
 //     equivalent, so a concurrent MERGE can surface ORA-00001 between the match
 //     probe and the insert — classified as a unique violation, the callers'
@@ -49,6 +52,7 @@ import (
 	"database/sql"
 	"fmt"
 	"log/slog"
+	"strings"
 
 	"github.com/XSAM/otelsql"
 	"github.com/google/uuid"
@@ -178,20 +182,25 @@ func (e *Engine) WithEventPublisher(pub events.Publisher) core.RelationalEngine 
 	return e
 }
 
-// quoteIdent renders a SQL identifier BARE after validating it against the
-// framework's allowlist (the same trust model as the other engines: identifiers
-// come from schema declarations, never user input). Bare is the deliberate
-// Oracle flavor: quoting would make the identifier case-sensitive and pin it to
-// the lowercase spelling, while the platform's native convention folds unquoted
-// names to uppercase in the catalog — the Postgres "bare" pattern with inverted
-// folding. Panics on a bad identifier — a programming error in the schema,
-// surfaced loudly. Consumed by oracleDialect (dialect.go) so the shared SQL
-// builders render Oracle-flavored identifiers.
+// quoteIdent renders a SQL identifier QUOTED-UPPERCASE ("USERS",
+// "CREATED_AT") after validating it against the framework's allowlist (the
+// same trust model as the other engines: identifiers come from schema
+// declarations, never user input). Quoted-uppercase is deliberately
+// EQUIVALENT to the platform's unquoted resolution — an unquoted identifier
+// folds to uppercase in the catalog, which is exactly what the quoted form
+// names — so manual queries stay natural (`SELECT * FROM users` matches) and
+// every D11 property holds; what the quotes add is coverage for identifiers
+// that collide with Oracle reserved words (a `number` column is a syntax
+// error unquoted, valid as "NUMBER") with NO reserved-word list: one total
+// rule for every identifier, the same always-quote philosophy as MySQL's
+// backticks and SQL Server's brackets. Panics on a bad identifier — a
+// programming error in the schema, surfaced loudly. Consumed by oracleDialect
+// (dialect.go) so the shared SQL builders render Oracle-flavored identifiers.
 func quoteIdent(name string) string {
 	if !core.SafeIdentifier(name) {
 		panic(fmt.Sprintf("oracle: invalid SQL identifier %q", name))
 	}
-	return name
+	return `"` + strings.ToUpper(name) + `"`
 }
 
 // uuidBytes parses a UUID string into its 16-byte RAW(16) form. The framework's

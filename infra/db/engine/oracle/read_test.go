@@ -232,11 +232,12 @@ func TestEncodeArg(t *testing.T) {
 	})
 }
 
-// TestQuoteIdentViaDialect locks the bare flavor end to end through the
-// Dialect surface (quoteIdent itself is covered in engine_pure_test.go).
+// TestQuoteIdentViaDialect locks the quoted-uppercase flavor end to end
+// through the Dialect surface (quoteIdent itself is covered in
+// engine_pure_test.go).
 func TestQuoteIdentViaDialect(t *testing.T) {
-	if got := (oracleDialect{}).QuoteIdent("user_id"); got != "user_id" {
-		t.Fatalf("QuoteIdent(user_id) = %q, want the bare identifier", got)
+	if got := (oracleDialect{}).QuoteIdent("user_id"); got != `"USER_ID"` {
+		t.Fatalf("QuoteIdent(user_id) = %q, want the quoted-uppercase form", got)
 	}
 }
 

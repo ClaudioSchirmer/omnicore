@@ -1136,10 +1136,13 @@ func StudentSchema() *core.TableSchema {
     <code>JSON</code> column types, which earlier releases (19c/21c) do not have — the floor is deliberate, not
     incidental. On Oracle the engine is driven by <code>database/sql</code> + the pure-Go <code>sijms/go-ora</code>
     driver (no Oracle Client libraries at build or run time). Placeholders are <code>:N</code> and identifiers are
-    emitted <strong>unquoted</strong> — the platform's native convention: the catalog folds them to UPPERCASE
-    (<code>users</code> is stored as <code>USERS</code>), so manual queries work naturally without quotes, and the
-    engine folds names back to the declared lowercase form at its read and error seams. Declare schema names in
-    lowercase, as everywhere else. The framework owns one value codec on top of the driver, driven by the field's Go
+    emitted <strong>quoted-UPPERCASE</strong> (<code>"USERS"</code>, <code>"CREATED_AT"</code>) — equivalent by
+    construction to the platform's unquoted resolution (an unquoted identifier folds to UPPERCASE in the catalog, which
+    is exactly the name the quoted form addresses), so manual queries still work naturally without quotes, while
+    identifiers that collide with an Oracle reserved word (a <code>number</code> column, say) work with no
+    reserved-word list. The engine folds names back to the declared lowercase form at its read and error seams.
+    Declare schema names in lowercase, as everywhere else; write your migration DDL unquoted — and when Oracle rejects
+    a name as reserved (<code>ORA-03050</code>), quote that identifier in UPPERCASE (<code>"NUMBER"</code>) in the DDL. The framework owns one value codec on top of the driver, driven by the field's Go
     TYPE: a <code>domain.ID</code> / <code>*domain.ID</code> field (and the managed PK/FK slots) is stored as
     <code>RAW(16)</code> — bound as 16 raw bytes on write and in lifted criteria probes, restored to the canonical
     value by the id scan proxy on read, <code>nil</code> ⇄ SQL <code>NULL</code> on the pointer — and ids are generated
@@ -1202,13 +1205,31 @@ func StudentSchema() *core.TableSchema {
         </tr>
         <tr>
             <td><code>[]byte</code> / <code>json.RawMessage</code> / <code>string</code></td>
-            <td><code>JSON</code> <span class="muted">(native, 23ai)</span></td>
+            <td><code>JSON</code> <span class="muted">(native, 23ai)</span> — <strong>but <code>CLOB</code> on any
+                CDC-tailed table</strong></td>
             <td>the native JSON type (binary OSON storage, queryable via <code>JSON_VALUE</code>/dot notation); a
                 <code>json.RawMessage</code> value binds as text. Reads ride the <code>lob fetch=post</code> option the
-                engine guarantees (see above)</td>
+                engine guarantees (see above). <strong>CDC boundary:</strong> LogMiner cannot decode a native-JSON
+                column's binary (OSON) redo — Debezium drops the column and skips the row, on ANY Debezium version —
+                so a column on a table the CDC relay tails must be <code>CLOB</code> instead. The framework already
+                applies this to its own <code>outbox.payload</code> and <code>integration_events.payload</code>
+                (<code>audit_events.payload</code> and the failure registries never cross CDC and stay native
+                <code>JSON</code>); if YOU create an additional outbox-style table for Debezium to tail, follow the
+                same rule</td>
         </tr>
     </tbody>
 </table>
+<p>
+    <strong>Deadlines against a FROZEN database.</strong> go-ora's cancellation rides the same (frozen) connection, so
+    the driver alone cannot honor a context deadline while the network black-holes (paused container, partition, hung
+    server). The engine restores the framework's deadline promises on the READ path and the control-plane
+    side-channels: those calls return <code>context.DeadlineExceeded</code> on time and the abandoned driver call
+    releases its pooled connection when the network thaws. The WRITE path is deliberately not wrapped — abandoning a
+    statement mid-transaction without knowing whether it applied would change delivery semantics — so a write against
+    a frozen database blocks until the thaw; go-ora's <code>TIMEOUT=&lt;seconds&gt;</code> DSN option (a socket read
+    deadline: fail when the server sends nothing for that long) is the operator-level bound there, at the cost of also
+    killing legitimately silent long-running statements.
+</p>
 <p>
     <strong>Empty string IS NULL.</strong> Oracle stores <code>''</code> as SQL <code>NULL</code> in
     <code>VARCHAR2</code>/<code>CLOB</code> — a database semantic, not a framework choice, and the framework applies no
