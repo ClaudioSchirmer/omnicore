@@ -34,7 +34,7 @@ func TestBuildViewIndex_RegistersRoleTables(t *testing.T) {
 }
 
 func TestNewSyncEngine_TopicsIncludeRoleTables(t *testing.T) {
-	s := NewSyncEngine(composerEngine(nil), newFakeMongo(&fakeColl{}), nil, "", []*ViewDefinition{sbvView()}, 1)
+	s := NewSyncEngine(composerEngine(nil), newFakeMongo(&fakeColl{}), identityResolver, nil, "", []*ViewDefinition{sbvView()}, 1)
 	want := map[string]bool{
 		"sbv_persons.events":   false, // the root
 		"sbv_users.events":     false, // role — ARCHIVE/UNARCHIVE emit only the role event
@@ -58,7 +58,7 @@ func sbvSyncEngine(t *testing.T, rows map[string][]map[string]any, calls *[]stri
 	t.Helper()
 	coll := &fakeColl{}
 	eng := sbvComposerEngine(t, rows, calls, args)
-	s := NewSyncEngine(eng, newFakeMongo(coll), nil, "", []*ViewDefinition{sbvView()}, 1)
+	s := NewSyncEngine(eng, newFakeMongo(coll), identityResolver, nil, "", []*ViewDefinition{sbvView()}, 1)
 	return s, coll
 }
 
@@ -215,7 +215,7 @@ func TestProcess_BaseArchived_DeleteOnArchiveRemovesDoc(t *testing.T) {
 	coll := &fakeColl{}
 	eng := composerEngine(nil)
 	view := SharedBaseView(sbvBase(), "persons_hot").Role(sbvUserSchema()).Version(1).DeleteOnArchive()
-	s := NewSyncEngine(eng, newFakeMongo(coll), nil, "", []*ViewDefinition{view}, 1)
+	s := NewSyncEngine(eng, newFakeMongo(coll), identityResolver, nil, "", []*ViewDefinition{view}, 1)
 
 	if err := s.process(context.Background(), kafkaEvent{
 		AggregateType: "sbv_persons", EventType: "ARCHIVED", AggregateID: "p1",
@@ -254,7 +254,7 @@ func TestProcess_RoleEvent_ErrorPropagation(t *testing.T) {
 		}
 		return nil, nil
 	})
-	s := NewSyncEngine(engErr, newFakeMongo(&fakeColl{}), nil, "", []*ViewDefinition{sbvView()}, 1)
+	s := NewSyncEngine(engErr, newFakeMongo(&fakeColl{}), identityResolver, nil, "", []*ViewDefinition{sbvView()}, 1)
 	if err := s.process(context.Background(), kafkaEvent{
 		AggregateType: "sbv_employees", EventType: "UPDATED", AggregateID: "e9",
 	}); err == nil {
@@ -271,7 +271,7 @@ func TestProcess_RoleEvent_ErrorPropagation(t *testing.T) {
 		}
 		return nil, nil
 	})
-	s = NewSyncEngine(engCompose, newFakeMongo(&fakeColl{}), nil, "", []*ViewDefinition{sbvView()}, 1)
+	s = NewSyncEngine(engCompose, newFakeMongo(&fakeColl{}), identityResolver, nil, "", []*ViewDefinition{sbvView()}, 1)
 	if err := s.process(context.Background(), kafkaEvent{
 		AggregateType: "sbv_employees", EventType: "UPDATED", AggregateID: "e9",
 	}); err == nil {
@@ -282,7 +282,7 @@ func TestProcess_RoleEvent_ErrorPropagation(t *testing.T) {
 	var calls []string
 	var args [][]any
 	engOK := sbvComposerEngine(t, sbvBaseRows(), &calls, &args)
-	s = NewSyncEngine(engOK, newFakeMongo(&fakeColl{updateErr: errFake}), nil, "", []*ViewDefinition{sbvView()}, 1)
+	s = NewSyncEngine(engOK, newFakeMongo(&fakeColl{updateErr: errFake}), identityResolver, nil, "", []*ViewDefinition{sbvView()}, 1)
 	if err := s.process(context.Background(), kafkaEvent{
 		AggregateType: "sbv_users", EventType: "UPDATED", AggregateID: "p1",
 	}); err == nil {
@@ -292,7 +292,7 @@ func TestProcess_RoleEvent_ErrorPropagation(t *testing.T) {
 	// Delete failure on a nil composition (purged identity).
 	calls, args = nil, nil
 	engEmpty := sbvComposerEngine(t, map[string][]map[string]any{}, &calls, &args)
-	s = NewSyncEngine(engEmpty, newFakeMongo(&fakeColl{deleteErr: errFake}), nil, "", []*ViewDefinition{sbvView()}, 1)
+	s = NewSyncEngine(engEmpty, newFakeMongo(&fakeColl{deleteErr: errFake}), identityResolver, nil, "", []*ViewDefinition{sbvView()}, 1)
 	if err := s.process(context.Background(), kafkaEvent{
 		AggregateType: "sbv_employees", EventType: "DELETED", AggregateID: "e9",
 		Payload: []byte(`{"id":"e9","person_id":"p1"}`),

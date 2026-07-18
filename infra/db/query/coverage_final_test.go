@@ -349,7 +349,7 @@ func TestComposeAll_EmbedChildError(t *testing.T) {
 		return mapsFromColsData([]string{"id", "name"}, [][]any{{"o1", "a"}}), nil
 	})
 	// External embed whose Mongo fetch fails → applyEmbeds error → ComposeAll error.
-	c := NewComposerWithMongo(eng, newFakeMongo(&fakeColl{findErr: context.Canceled}))
+	c := NewComposerWithMongo(eng, newFakeMongo(&fakeColl{findErr: context.Canceled}), identityResolver)
 	view := View("orders").Version(1).Root("orders").Schema(composerRootSchema()).
 		EmbedMany("buyers", FromSchema(core.NewExternalSchema("buyers").PK("id").FK("order_id")).As("Buyers"))
 	if _, err := c.ComposeAll(context.Background(), view); err == nil {

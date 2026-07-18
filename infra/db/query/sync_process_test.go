@@ -27,7 +27,7 @@ func processEngineWithRow() *fakeEngine {
 
 func TestProcess_Inserted_UpsertsDoc(t *testing.T) {
 	coll := &fakeColl{}
-	s := NewSyncEngine(processEngineWithRow(), newFakeMongo(coll), nil, "", []*ViewDefinition{processView("t", false)}, 1)
+	s := NewSyncEngine(processEngineWithRow(), newFakeMongo(coll), identityResolver, nil, "", []*ViewDefinition{processView("t", false)}, 1)
 	if err := s.process(context.Background(), kafkaEvent{AggregateType: "t", EventType: "INSERTED", AggregateID: "r1"}); err != nil {
 		t.Fatalf("process INSERTED: %v", err)
 	}
@@ -38,7 +38,7 @@ func TestProcess_Inserted_UpsertsDoc(t *testing.T) {
 
 func TestProcess_Deleted_RemovesDoc(t *testing.T) {
 	coll := &fakeColl{}
-	s := NewSyncEngine(processEngineWithRow(), newFakeMongo(coll), nil, "", []*ViewDefinition{processView("t", false)}, 1)
+	s := NewSyncEngine(processEngineWithRow(), newFakeMongo(coll), identityResolver, nil, "", []*ViewDefinition{processView("t", false)}, 1)
 	if err := s.process(context.Background(), kafkaEvent{AggregateType: "t", EventType: "DELETED", AggregateID: "r1"}); err != nil {
 		t.Fatalf("process DELETED: %v", err)
 	}
@@ -49,7 +49,7 @@ func TestProcess_Deleted_RemovesDoc(t *testing.T) {
 
 func TestProcess_ArchivedDefault_KeepsDocViaUpsert(t *testing.T) {
 	coll := &fakeColl{}
-	s := NewSyncEngine(processEngineWithRow(), newFakeMongo(coll), nil, "", []*ViewDefinition{processView("t", false)}, 1)
+	s := NewSyncEngine(processEngineWithRow(), newFakeMongo(coll), identityResolver, nil, "", []*ViewDefinition{processView("t", false)}, 1)
 	if err := s.process(context.Background(), kafkaEvent{AggregateType: "t", EventType: "ARCHIVED", AggregateID: "r1"}); err != nil {
 		t.Fatalf("process ARCHIVED: %v", err)
 	}
@@ -60,7 +60,7 @@ func TestProcess_ArchivedDefault_KeepsDocViaUpsert(t *testing.T) {
 
 func TestProcess_ArchivedDeleteOnArchive_RemovesDoc(t *testing.T) {
 	coll := &fakeColl{}
-	s := NewSyncEngine(processEngineWithRow(), newFakeMongo(coll), nil, "", []*ViewDefinition{processView("t", true)}, 1)
+	s := NewSyncEngine(processEngineWithRow(), newFakeMongo(coll), identityResolver, nil, "", []*ViewDefinition{processView("t", true)}, 1)
 	if err := s.process(context.Background(), kafkaEvent{AggregateType: "t", EventType: "ARCHIVED", AggregateID: "r1"}); err != nil {
 		t.Fatalf("process ARCHIVED: %v", err)
 	}
@@ -71,7 +71,7 @@ func TestProcess_ArchivedDeleteOnArchive_RemovesDoc(t *testing.T) {
 
 func TestProcess_UnknownAggregateType_Noop(t *testing.T) {
 	coll := &fakeColl{}
-	s := NewSyncEngine(processEngineWithRow(), newFakeMongo(coll), nil, "", []*ViewDefinition{processView("t", false)}, 1)
+	s := NewSyncEngine(processEngineWithRow(), newFakeMongo(coll), identityResolver, nil, "", []*ViewDefinition{processView("t", false)}, 1)
 	if err := s.process(context.Background(), kafkaEvent{AggregateType: "ghost", EventType: "INSERTED", AggregateID: "r1"}); err != nil {
 		t.Errorf("unknown aggregate_type must not fail, got %v", err)
 	}
@@ -83,7 +83,7 @@ func TestProcess_UnknownAggregateType_Noop(t *testing.T) {
 func TestProcess_AbsentRoot_NoUpsert(t *testing.T) {
 	coll := &fakeColl{}
 	emptyEng := composerEngine(func(string, []any) ([]map[string]any, error) { return nil, nil })
-	s := NewSyncEngine(emptyEng, newFakeMongo(coll), nil, "", []*ViewDefinition{processView("t", false)}, 1)
+	s := NewSyncEngine(emptyEng, newFakeMongo(coll), identityResolver, nil, "", []*ViewDefinition{processView("t", false)}, 1)
 	if err := s.process(context.Background(), kafkaEvent{AggregateType: "t", EventType: "INSERTED", AggregateID: "missing"}); err != nil {
 		t.Errorf("absent root must not fail process(), got %v", err)
 	}

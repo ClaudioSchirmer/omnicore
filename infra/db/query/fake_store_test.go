@@ -36,8 +36,16 @@ func newFakeMongoFunc(fn func(name string) *fakeColl) *fakeStore {
 
 var _ ReadModelStore = (*fakeStore)(nil)
 
-func (s *fakeStore) Upsert(_ context.Context, collection, _ string, doc Document) error {
-	c := s.fn(collection)
+// pc builds a PhysicalCollection from a raw name for tests in this package (the
+// resolver is the production path; tests short-circuit it). identityResolver is a
+// ViewResolver with no registry backing whose Active/Shadow resolve to the bare
+// name — handed to the constructors that now require one.
+func pc(name string) PhysicalCollection { return PhysicalCollection{name: name} }
+
+var identityResolver = NewViewResolver(nil)
+
+func (s *fakeStore) Upsert(_ context.Context, collection PhysicalCollection, _ string, doc Document) error {
+	c := s.fn(collection.String())
 	if c.updateErr != nil {
 		return c.updateErr
 	}
@@ -45,8 +53,8 @@ func (s *fakeStore) Upsert(_ context.Context, collection, _ string, doc Document
 	return nil
 }
 
-func (s *fakeStore) BulkUpsert(_ context.Context, collection string, docs []IdentifiedDocument) error {
-	c := s.fn(collection)
+func (s *fakeStore) BulkUpsert(_ context.Context, collection PhysicalCollection, docs []IdentifiedDocument) error {
+	c := s.fn(collection.String())
 	if c.updateErr != nil {
 		return c.updateErr
 	}
@@ -56,8 +64,8 @@ func (s *fakeStore) BulkUpsert(_ context.Context, collection string, docs []Iden
 	return nil
 }
 
-func (s *fakeStore) UpdateFields(_ context.Context, collection, _ string, fields Document) error {
-	c := s.fn(collection)
+func (s *fakeStore) UpdateFields(_ context.Context, collection PhysicalCollection, _ string, fields Document) error {
+	c := s.fn(collection.String())
 	if c.updateErr != nil {
 		return c.updateErr
 	}
@@ -65,8 +73,8 @@ func (s *fakeStore) UpdateFields(_ context.Context, collection, _ string, fields
 	return nil
 }
 
-func (s *fakeStore) Delete(_ context.Context, collection, id string) error {
-	c := s.fn(collection)
+func (s *fakeStore) Delete(_ context.Context, collection PhysicalCollection, id string) error {
+	c := s.fn(collection.String())
 	if c.deleteErr != nil {
 		return c.deleteErr
 	}
@@ -74,8 +82,8 @@ func (s *fakeStore) Delete(_ context.Context, collection, id string) error {
 	return nil
 }
 
-func (s *fakeStore) FindManyByField(_ context.Context, collection, _ string, _ any) ([]Document, error) {
-	c := s.fn(collection)
+func (s *fakeStore) FindManyByField(_ context.Context, collection PhysicalCollection, _ string, _ any) ([]Document, error) {
+	c := s.fn(collection.String())
 	if c.findErr != nil {
 		return nil, c.findErr
 	}
@@ -88,8 +96,8 @@ func (s *fakeStore) FindManyByField(_ context.Context, collection, _ string, _ a
 	return out, nil
 }
 
-func (s *fakeStore) FindIDsByField(_ context.Context, collection, _ string, _ any) ([]string, error) {
-	c := s.fn(collection)
+func (s *fakeStore) FindIDsByField(_ context.Context, collection PhysicalCollection, _ string, _ any) ([]string, error) {
+	c := s.fn(collection.String())
 	if c.findErr != nil {
 		return nil, c.findErr
 	}
@@ -104,26 +112,28 @@ func (s *fakeStore) FindIDsByField(_ context.Context, collection, _ string, _ an
 	return ids, nil
 }
 
-func (s *fakeStore) HasDocuments(_ context.Context, collection string) (bool, error) {
-	c := s.fn(collection)
+func (s *fakeStore) HasDocuments(_ context.Context, collection PhysicalCollection) (bool, error) {
+	c := s.fn(collection.String())
 	if c.countErr != nil {
 		return false, c.countErr
 	}
 	return c.count > 0, nil
 }
 
-func (s *fakeStore) ObservedFieldNames(_ context.Context, collection string) (map[string]struct{}, error) {
-	c := s.fn(collection)
+func (s *fakeStore) ObservedFieldNames(_ context.Context, collection PhysicalCollection) (map[string]struct{}, error) {
+	c := s.fn(collection.String())
 	if c.findErr != nil {
 		return nil, c.findErr
 	}
 	return map[string]struct{}{}, nil
 }
 
-func (s *fakeStore) UnsetFields(_ context.Context, _ string, _ []string) error { return nil }
+func (s *fakeStore) UnsetFields(_ context.Context, _ PhysicalCollection, _ []string) error {
+	return nil
+}
 
-func (s *fakeStore) SnapshotDocumentIDs(_ context.Context, collection string) (map[string]struct{}, error) {
-	c := s.fn(collection)
+func (s *fakeStore) SnapshotDocumentIDs(_ context.Context, collection PhysicalCollection) (map[string]struct{}, error) {
+	c := s.fn(collection.String())
 	if c.findErr != nil {
 		return nil, c.findErr
 	}
@@ -138,8 +148,8 @@ func (s *fakeStore) SnapshotDocumentIDs(_ context.Context, collection string) (m
 	return set, nil
 }
 
-func (s *fakeStore) DeleteByIDs(_ context.Context, collection string, ids []string) (int, error) {
-	c := s.fn(collection)
+func (s *fakeStore) DeleteByIDs(_ context.Context, collection PhysicalCollection, ids []string) (int, error) {
+	c := s.fn(collection.String())
 	if c.deleteErr != nil {
 		return 0, c.deleteErr
 	}

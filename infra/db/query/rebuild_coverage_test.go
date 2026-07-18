@@ -26,7 +26,7 @@ type scriptStore struct {
 	snapshotErr error
 }
 
-func (s *scriptStore) ObservedFieldNames(ctx context.Context, collection string) (map[string]struct{}, error) {
+func (s *scriptStore) ObservedFieldNames(ctx context.Context, collection PhysicalCollection) (map[string]struct{}, error) {
 	if s.observedErr != nil {
 		return nil, s.observedErr
 	}
@@ -36,7 +36,7 @@ func (s *scriptStore) ObservedFieldNames(ctx context.Context, collection string)
 	return map[string]struct{}{}, nil
 }
 
-func (s *scriptStore) UnsetFields(_ context.Context, _ string, fields []string) error {
+func (s *scriptStore) UnsetFields(_ context.Context, _ PhysicalCollection, fields []string) error {
 	if s.unsetErr != nil {
 		return s.unsetErr
 	}
@@ -44,7 +44,7 @@ func (s *scriptStore) UnsetFields(_ context.Context, _ string, fields []string) 
 	return nil
 }
 
-func (s *scriptStore) SnapshotDocumentIDs(ctx context.Context, collection string) (map[string]struct{}, error) {
+func (s *scriptStore) SnapshotDocumentIDs(ctx context.Context, collection PhysicalCollection) (map[string]struct{}, error) {
 	if s.snapshotErr != nil {
 		return nil, s.snapshotErr
 	}
@@ -89,7 +89,7 @@ func newScriptEngine(ids []string, rootDoc func(string) map[string]any) *fakeEng
 }
 
 func scriptSyncEngine(eng core.RelationalEngine, store ReadModelStore, views []*ViewDefinition) *SyncEngine {
-	return NewSyncEngine(eng, store, nil, "grp", views, 1)
+	return NewSyncEngine(eng, store, identityResolver, nil, "grp", views, 1)
 }
 
 func TestExecuteRebuild_FullSequence(t *testing.T) {
@@ -265,7 +265,7 @@ func TestComputeOrphanFields(t *testing.T) {
 			fakeStore: newFakeMongo(&fakeColl{}),
 			observed:  map[string]struct{}{"_id": {}, "name": {}, "stray": {}},
 		}
-		orphan, err := computeOrphanFields(context.Background(), store, mkComposer([]string{"s1"}, aliveRoot), view)
+		orphan, err := computeOrphanFields(context.Background(), store, mkComposer([]string{"s1"}, aliveRoot), view, pc(view.Name()))
 		if err != nil {
 			t.Fatalf("computeOrphanFields: %v", err)
 		}
@@ -275,7 +275,7 @@ func TestComputeOrphanFields(t *testing.T) {
 	})
 	t.Run("nothingObserved", func(t *testing.T) {
 		store := &scriptStore{fakeStore: newFakeMongo(&fakeColl{})}
-		orphan, err := computeOrphanFields(context.Background(), store, mkComposer(nil, aliveRoot), view)
+		orphan, err := computeOrphanFields(context.Background(), store, mkComposer(nil, aliveRoot), view, pc(view.Name()))
 		if err != nil || orphan != nil {
 			t.Fatalf("empty collection: got %v, %v", orphan, err)
 		}
@@ -285,7 +285,7 @@ func TestComputeOrphanFields(t *testing.T) {
 			fakeStore: newFakeMongo(&fakeColl{}),
 			observed:  map[string]struct{}{"anything": {}},
 		}
-		orphan, err := computeOrphanFields(context.Background(), store, mkComposer(nil, aliveRoot), view)
+		orphan, err := computeOrphanFields(context.Background(), store, mkComposer(nil, aliveRoot), view, pc(view.Name()))
 		if err != nil || orphan != nil {
 			t.Fatalf("empty SoR: got %v, %v", orphan, err)
 		}
@@ -296,7 +296,7 @@ func TestComputeOrphanFields(t *testing.T) {
 			observed:  map[string]struct{}{"x": {}},
 		}
 		q := &fakeQuerier{queryFn: func(string, []any) (core.Rows, error) { return nil, errFake }}
-		if _, err := computeOrphanFields(context.Background(), store, NewComposer(newFakeEngine(q)), view); err == nil {
+		if _, err := computeOrphanFields(context.Background(), store, NewComposer(newFakeEngine(q)), view, pc(view.Name())); err == nil {
 			t.Fatal("expected the sample query error")
 		}
 	})
@@ -307,7 +307,7 @@ func TestComputeOrphanFields(t *testing.T) {
 		}
 		q := rebuildQuerier([]string{"s1"}, aliveRoot)
 		q.queryMapsFn = func(string, []any) ([]map[string]any, error) { return nil, errFake }
-		if _, err := computeOrphanFields(context.Background(), store, NewComposer(newFakeEngine(q)), view); err == nil {
+		if _, err := computeOrphanFields(context.Background(), store, NewComposer(newFakeEngine(q)), view, pc(view.Name())); err == nil {
 			t.Fatal("expected the compose error")
 		}
 	})
@@ -317,7 +317,7 @@ func TestComputeOrphanFields(t *testing.T) {
 			observed:  map[string]struct{}{"x": {}},
 		}
 		bare := View("bare").Version(1).Root("bare")
-		if _, err := computeOrphanFields(context.Background(), store, mkComposer([]string{"s1"}, aliveRoot), bare); err == nil ||
+		if _, err := computeOrphanFields(context.Background(), store, mkComposer([]string{"s1"}, aliveRoot), bare, pc(bare.Name())); err == nil ||
 			!strings.Contains(err.Error(), "no root .Schema") {
 			t.Fatalf("expected the missing-schema error, got %v", err)
 		}
@@ -328,21 +328,21 @@ func TestReconcileOrphans_Direct(t *testing.T) {
 	snapshot := map[string]struct{}{"a": {}, "b": {}}
 
 	t.Run("emptySnapshotNoop", func(t *testing.T) {
-		n, err := reconcileOrphans(context.Background(), newFakeMongo(&fakeColl{}), "v", nil, "delete")
+		n, err := reconcileOrphans(context.Background(), newFakeMongo(&fakeColl{}), pc("v"), nil, "delete")
 		if err != nil || n != 0 {
 			t.Fatalf("empty snapshot: %d, %v", n, err)
 		}
 	})
 	t.Run("deleteMode", func(t *testing.T) {
 		coll := &fakeColl{}
-		n, err := reconcileOrphans(context.Background(), newFakeMongo(coll), "v", snapshot, "delete")
+		n, err := reconcileOrphans(context.Background(), newFakeMongo(coll), pc("v"), snapshot, "delete")
 		if err != nil || n != 2 {
 			t.Fatalf("delete mode: %d, %v", n, err)
 		}
 	})
 	t.Run("warnMode", func(t *testing.T) {
 		coll := &fakeColl{}
-		n, err := reconcileOrphans(context.Background(), newFakeMongo(coll), "v", snapshot, "warn")
+		n, err := reconcileOrphans(context.Background(), newFakeMongo(coll), pc("v"), snapshot, "warn")
 		if err != nil || n != 0 {
 			t.Fatalf("warn mode: %d, %v", n, err)
 		}
@@ -351,13 +351,13 @@ func TestReconcileOrphans_Direct(t *testing.T) {
 		}
 	})
 	t.Run("invalidMode", func(t *testing.T) {
-		if _, err := reconcileOrphans(context.Background(), newFakeMongo(&fakeColl{}), "v", snapshot, "bogus"); err == nil {
+		if _, err := reconcileOrphans(context.Background(), newFakeMongo(&fakeColl{}), pc("v"), snapshot, "bogus"); err == nil {
 			t.Fatal("expected the invalid-mode error")
 		}
 	})
 	t.Run("deleteError", func(t *testing.T) {
 		coll := &fakeColl{deleteErr: errFake}
-		if _, err := reconcileOrphans(context.Background(), newFakeMongo(coll), "v", snapshot, "delete"); err == nil {
+		if _, err := reconcileOrphans(context.Background(), newFakeMongo(coll), pc("v"), snapshot, "delete"); err == nil {
 			t.Fatal("expected the delete error")
 		}
 	})

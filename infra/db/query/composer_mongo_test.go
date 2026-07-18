@@ -27,7 +27,7 @@ func TestFetchMongoEmbed_EmbedMany(t *testing.T) {
 		map[string]any{"_id": "u1", "name": "alice"},
 		map[string]any{"_id": "u2", "name": "bob"},
 	}}
-	c := NewComposerWithMongo(eng, newFakeMongo(mongoColl))
+	c := NewComposerWithMongo(eng, newFakeMongo(mongoColl), identityResolver)
 
 	external := FromSchema(core.NewExternalSchema("buyers").PK("id").FK("order_id")).As("Buyers")
 	view := View("orders").Version(1).Root("orders").Schema(composerRootSchema()).
@@ -46,7 +46,7 @@ func TestFetchMongoEmbed_EmbedMany(t *testing.T) {
 func TestFetchMongoEmbed_OneToOne(t *testing.T) {
 	eng := rootMapsEngine([]string{"id", "buyer_id", "name"}, [][]any{{"o1", "u1", "first"}})
 	mongoColl := &fakeColl{docs: []any{map[string]any{"_id": "u1", "name": "alice"}}}
-	c := NewComposerWithMongo(eng, newFakeMongo(mongoColl))
+	c := NewComposerWithMongo(eng, newFakeMongo(mongoColl), identityResolver)
 
 	external := FromSchema(core.NewExternalSchema("buyers").PK("id")).FK("buyer_id").As("Buyer")
 	view := View("orders").Version(1).Root("orders").Schema(composerRootSchema()).
@@ -65,7 +65,7 @@ func TestFetchMongoEmbed_OneToOne(t *testing.T) {
 func TestFetchMongoEmbed_OneToOne_NoMatch(t *testing.T) {
 	eng := rootMapsEngine([]string{"id", "buyer_id", "name"}, [][]any{{"o1", "u9", "first"}})
 	mongoColl := &fakeColl{docs: nil} // FindManyByField returns empty
-	c := NewComposerWithMongo(eng, newFakeMongo(mongoColl))
+	c := NewComposerWithMongo(eng, newFakeMongo(mongoColl), identityResolver)
 
 	external := FromSchema(core.NewExternalSchema("buyers").PK("id")).FK("buyer_id").As("Buyer")
 	view := View("orders").Version(1).Root("orders").Schema(composerRootSchema()).
@@ -83,7 +83,7 @@ func TestFetchMongoEmbed_OneToOne_NoMatch(t *testing.T) {
 func TestFetchMongoEmbed_OneToOne_MissingFK(t *testing.T) {
 	// Root row lacks the buyer_id FK column → the one-to-one embed is skipped.
 	eng := rootMapsEngine([]string{"id", "name"}, [][]any{{"o1", "first"}})
-	c := NewComposerWithMongo(eng, newFakeMongo(&fakeColl{}))
+	c := NewComposerWithMongo(eng, newFakeMongo(&fakeColl{}), identityResolver)
 	external := FromSchema(core.NewExternalSchema("buyers").PK("id")).FK("buyer_id").As("Buyer")
 	view := View("orders").Version(1).Root("orders").Schema(composerRootSchema()).
 		Embed("buyer", external)
@@ -99,7 +99,7 @@ func TestFetchMongoEmbed_OneToOne_MissingFK(t *testing.T) {
 
 func TestFetchMongoEmbed_OneToOne_FindError(t *testing.T) {
 	eng := rootMapsEngine([]string{"id", "buyer_id", "name"}, [][]any{{"o1", "u1", "first"}})
-	c := NewComposerWithMongo(eng, newFakeMongo(&fakeColl{findErr: context.Canceled}))
+	c := NewComposerWithMongo(eng, newFakeMongo(&fakeColl{findErr: context.Canceled}), identityResolver)
 	external := FromSchema(core.NewExternalSchema("buyers").PK("id")).FK("buyer_id").As("Buyer")
 	view := View("orders").Version(1).Root("orders").Schema(composerRootSchema()).
 		Embed("buyer", external)
@@ -125,7 +125,7 @@ func TestFetchMongoEmbed_NilHandle(t *testing.T) {
 
 func TestFetchMongoEmbed_FindError(t *testing.T) {
 	eng := rootMapsEngine([]string{"id", "name"}, [][]any{{"o1", "first"}})
-	c := NewComposerWithMongo(eng, newFakeMongo(&fakeColl{findErr: context.Canceled}))
+	c := NewComposerWithMongo(eng, newFakeMongo(&fakeColl{findErr: context.Canceled}), identityResolver)
 	external := FromSchema(core.NewExternalSchema("buyers").PK("id").FK("order_id")).As("Buyers")
 	view := View("orders").Version(1).Root("orders").Schema(composerRootSchema()).
 		EmbedMany("buyers", external)
@@ -138,7 +138,7 @@ func TestFetchMongoEmbed_FindError(t *testing.T) {
 func TestFetchMongoEmbed_EmbedMany_MissingParentKey(t *testing.T) {
 	// Root row lacks the PK column "id" → EmbedMany skipped.
 	eng := rootMapsEngine([]string{"name"}, [][]any{{"first"}})
-	c := NewComposerWithMongo(eng, newFakeMongo(&fakeColl{}))
+	c := NewComposerWithMongo(eng, newFakeMongo(&fakeColl{}), identityResolver)
 	external := FromSchema(core.NewExternalSchema("buyers").PK("id").FK("order_id")).As("Buyers")
 	view := View("orders").Version(1).Root("orders").Schema(composerRootSchema()).
 		EmbedMany("buyers", external)

@@ -19,7 +19,7 @@ func TestMongoDB_FindManyByField_Happy(t *testing.T) {
 		map[string]any{"_id": "b", "fk": "x"},
 	}}
 	m := newFakeMongo(coll)
-	out, err := m.FindManyByField(context.Background(), "c", "fk", "x")
+	out, err := m.FindManyByField(context.Background(), pc("c"), "fk", "x")
 	if err != nil {
 		t.Fatalf("FindManyByField: %v", err)
 	}
@@ -30,14 +30,14 @@ func TestMongoDB_FindManyByField_Happy(t *testing.T) {
 
 func TestMongoDB_FindManyByField_FindError(t *testing.T) {
 	m := newFakeMongo(&fakeColl{findErr: context.Canceled})
-	if _, err := m.FindManyByField(context.Background(), "c", "fk", "x"); err == nil {
+	if _, err := m.FindManyByField(context.Background(), pc("c"), "fk", "x"); err == nil {
 		t.Fatal("expected Find error to surface")
 	}
 }
 
 func TestMongoDB_Upsert_Error(t *testing.T) {
 	m := newFakeMongo(&fakeColl{updateErr: context.Canceled})
-	if err := m.Upsert(context.Background(), "c", "id1", bson.M{"name": "x"}); err == nil {
+	if err := m.Upsert(context.Background(), pc("c"), "id1", bson.M{"name": "x"}); err == nil {
 		t.Fatal("expected Upsert UpdateOne error")
 	}
 }
@@ -49,7 +49,7 @@ func TestMongoDB_BulkUpsert_Batches(t *testing.T) {
 		{ID: "a", Doc: bson.M{"name": "x"}},
 		{ID: "b", Doc: bson.M{"name": "y"}},
 	}
-	if err := m.BulkUpsert(context.Background(), "c", docs); err != nil {
+	if err := m.BulkUpsert(context.Background(), pc("c"), docs); err != nil {
 		t.Fatalf("BulkUpsert: %v", err)
 	}
 	if coll.bulkCalls != 1 {
@@ -63,7 +63,7 @@ func TestMongoDB_BulkUpsert_Batches(t *testing.T) {
 func TestMongoDB_BulkUpsert_EmptyIsNoop(t *testing.T) {
 	coll := &fakeColl{bulkErr: context.Canceled} // would surface if BulkWrite ran
 	m := newFakeMongo(coll)
-	if err := m.BulkUpsert(context.Background(), "c", nil); err != nil {
+	if err := m.BulkUpsert(context.Background(), pc("c"), nil); err != nil {
 		t.Fatalf("empty BulkUpsert must be a no-op, got %v", err)
 	}
 	if coll.bulkCalls != 0 {
@@ -74,21 +74,21 @@ func TestMongoDB_BulkUpsert_EmptyIsNoop(t *testing.T) {
 func TestMongoDB_BulkUpsert_Error(t *testing.T) {
 	m := newFakeMongo(&fakeColl{bulkErr: context.Canceled})
 	docs := []query.IdentifiedDocument{{ID: "a", Doc: bson.M{"name": "x"}}}
-	if err := m.BulkUpsert(context.Background(), "c", docs); err == nil {
+	if err := m.BulkUpsert(context.Background(), pc("c"), docs); err == nil {
 		t.Fatal("expected BulkWrite error to surface")
 	}
 }
 
 func TestMongoDB_Delete_Error(t *testing.T) {
 	m := newFakeMongo(&fakeColl{deleteErr: context.Canceled})
-	if err := m.Delete(context.Background(), "c", "id1"); err == nil {
+	if err := m.Delete(context.Background(), pc("c"), "id1"); err == nil {
 		t.Fatal("expected Delete DeleteOne error")
 	}
 }
 
 func TestMongoDB_UpdateFields_Error(t *testing.T) {
 	m := newFakeMongo(&fakeColl{updateErr: context.Canceled})
-	if err := m.UpdateFields(context.Background(), "c", "id1", bson.M{"name": nil}); err == nil {
+	if err := m.UpdateFields(context.Background(), pc("c"), "id1", bson.M{"name": nil}); err == nil {
 		t.Fatal("expected UpdateFields UpdateOne error")
 	}
 }
@@ -103,7 +103,7 @@ func TestMongoDB_FindIDsByField_NonStringAndEmpty(t *testing.T) {
 		map[string]any{"_id": nil},
 	}}
 	m := newFakeMongo(coll)
-	ids, err := m.FindIDsByField(context.Background(), "c", "fk", "x")
+	ids, err := m.FindIDsByField(context.Background(), pc("c"), "fk", "x")
 	if err != nil {
 		t.Fatalf("FindIDsByField: %v", err)
 	}
@@ -117,7 +117,7 @@ func TestMongoDB_FindIDsByField_NonStringAndEmpty(t *testing.T) {
 
 func TestMongoDB_FindIDsByField_FindError(t *testing.T) {
 	m := newFakeMongo(&fakeColl{findErr: context.Canceled})
-	if _, err := m.FindIDsByField(context.Background(), "c", "fk", "x"); err == nil {
+	if _, err := m.FindIDsByField(context.Background(), pc("c"), "fk", "x"); err == nil {
 		t.Fatal("expected Find error to surface")
 	}
 }

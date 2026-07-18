@@ -18,7 +18,7 @@ import (
 // Start/run remain integration-only.
 
 func rebuildSyncEngine(eng core.RelationalEngine, coll *fakeColl, views []*ViewDefinition) *SyncEngine {
-	return NewSyncEngine(eng, newFakeMongo(coll), nil, "grp", views, 1)
+	return NewSyncEngine(eng, newFakeMongo(coll), identityResolver, nil, "grp", views, 1)
 }
 
 func rebuildView() *ViewDefinition {

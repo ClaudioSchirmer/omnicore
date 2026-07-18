@@ -31,7 +31,7 @@ func startUpstreamSubscribers(
 		return nil
 	}
 	started := make([]*query.UpstreamSubscriber, 0, len(subs))
-	composer := query.NewComposerWithMongo(deps.DB, deps.Mongo)
+	composer := query.NewComposerWithMongo(deps.DB, deps.Mongo, deps.Resolver)
 	for _, s := range subs {
 		runtimeCfg := query.UpstreamSubscriberConfig{
 			Topic:            s.Topic,
@@ -49,6 +49,7 @@ func startUpstreamSubscribers(
 			deps.DB,
 			deps.Mongo,
 			composer,
+			deps.Resolver,
 			runtimeCfg,
 			dependents,
 			deps.Transport,

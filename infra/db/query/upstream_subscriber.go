@@ -119,9 +119,13 @@ type UpstreamSubscriber struct {
 	// eng is the relational engine the side-channel failure registry
 	// (omnicore_upstream_failures) is read/written through, via the neutral
 	// Querier + core.Dialect; the recompose ripple itself is Mongo + the composer.
-	eng            core.RelationalEngine
-	mongo          ReadModelStore
-	composer       *Composer
+	eng      core.RelationalEngine
+	mongo    ReadModelStore
+	composer *Composer
+	// resolver maps this subscription's own collection and each dependent
+	// view name to the physical collection it currently resolves to; shared
+	// process-wide so every read-model component observes one pointer view.
+	resolver       *ViewResolver
 	cfg            UpstreamSubscriberConfig
 	dependentViews []*ViewDefinition
 	// hasManyEmbed is true when at least one dependent view embeds this
@@ -183,6 +187,7 @@ func NewUpstreamSubscriber(
 	eng core.RelationalEngine,
 	mongo ReadModelStore,
 	composer *Composer,
+	resolver *ViewResolver,
 	cfg UpstreamSubscriberConfig,
 	dependentViews []*ViewDefinition,
 	sub transport.Subscriber,
@@ -210,6 +215,7 @@ func NewUpstreamSubscriber(
 		eng:            eng,
 		mongo:          mongo,
 		composer:       composer,
+		resolver:       resolver,
 		cfg:            cfg,
 		dependentViews: dependentViews,
 		sub:            sub,
@@ -554,7 +560,7 @@ func (s *UpstreamSubscriber) upsertAndRipple(ctx context.Context, id string, pay
 	// child's prior FK value) to recompose a parent the child just moved away
 	// from. No-op read for one-to-one-only subscriptions.
 	before := s.readLocalDoc(ctx, id)
-	if err := s.mongo.Upsert(ctx, s.cfg.Collection, id, payload); err != nil {
+	if err := s.mongo.Upsert(ctx, s.resolver.Active(s.cfg.Collection), id, payload); err != nil {
 		s.logger.Error("upstream subscriber: local upsert failed",
 			"topic", s.cfg.Topic, "collection", s.cfg.Collection, "id", id, "err", err)
 		return
@@ -570,7 +576,7 @@ func (s *UpstreamSubscriber) deleteAndRipple(ctx context.Context, id string) {
 	// recompose (drop the child from its array) from the child's FK value, which
 	// is gone once the doc is deleted. No-op read for one-to-one-only subscriptions.
 	before := s.readLocalDoc(ctx, id)
-	if err := s.mongo.Delete(ctx, s.cfg.Collection, id); err != nil {
+	if err := s.mongo.Delete(ctx, s.resolver.Active(s.cfg.Collection), id); err != nil {
 		s.logger.Error("upstream subscriber: local delete failed",
 			"topic", s.cfg.Topic, "collection", s.cfg.Collection, "id", id, "err", err)
 		return
@@ -591,7 +597,7 @@ func (s *UpstreamSubscriber) dispatchDelete(ctx context.Context, id string) {
 		for _, f := range s.cfg.AnonymizeFields {
 			blanked[f] = nil
 		}
-		if err := s.mongo.UpdateFields(ctx, s.cfg.Collection, id, blanked); err != nil {
+		if err := s.mongo.UpdateFields(ctx, s.resolver.Active(s.cfg.Collection), id, blanked); err != nil {
 			s.logger.Error("upstream subscriber: anonymize failed",
 				"topic", s.cfg.Topic, "id", id, "err", err)
 			return
@@ -669,7 +675,7 @@ func (s *UpstreamSubscriber) ripple(ctx context.Context, upstreamID string, befo
 			if doc == nil {
 				continue
 			}
-			if err := s.mongo.Upsert(ctx, v.Name(), localID, doc); err != nil {
+			if err := s.mongo.Upsert(ctx, s.resolver.Active(v.Name()), localID, doc); err != nil {
 				s.metrics.inc(s.cfg.Topic, v.Name(), upstreamRecomposeStageUpsert)
 				s.logger.Error("upstream.recompose.upsert",
 					"subscription", s.cfg.Topic,
@@ -730,7 +736,7 @@ func (s *UpstreamSubscriber) discoverRippleTargets(
 			add(docFieldString(after, fkCol))
 			continue
 		}
-		ids, err := s.mongo.FindIDsByField(ctx, v.Name(), e.JoinColumn(), upstreamID)
+		ids, err := s.mongo.FindIDsByField(ctx, s.resolver.Active(v.Name()), e.JoinColumn(), upstreamID)
 		if err != nil {
 			s.metrics.inc(s.cfg.Topic, v.Name(), upstreamRecomposeStageDiscover)
 			s.logger.Error("upstream.recompose.discover",
@@ -758,7 +764,7 @@ func (s *UpstreamSubscriber) readLocalDoc(ctx context.Context, id string) Docume
 	if !s.hasManyEmbed {
 		return nil
 	}
-	docs, err := s.mongo.FindManyByField(ctx, s.cfg.Collection, "_id", id)
+	docs, err := s.mongo.FindManyByField(ctx, s.resolver.Active(s.cfg.Collection), "_id", id)
 	if err != nil || len(docs) == 0 {
 		return nil
 	}

@@ -267,7 +267,7 @@ func runWithConfig(cfg *Config, wire func(Deps) Wiring) error {
 			return fmt.Errorf("bootstrap: mongo apply specs: %w", err)
 		}
 
-		syncEngine := query.NewSyncEngine(deps.DB, deps.Mongo,
+		syncEngine := query.NewSyncEngine(deps.DB, deps.Mongo, deps.Resolver,
 			deps.Transport, cfg.Transport.SyncGroup, views, cfg.Transport.SyncWorkers).
 			WithKafkaTracing(cfg.Observability.Tracing.Resolve(cfg.Service).Instruments(tracing.SubKafka))
 		// Surfaced on Deps so serve's coordinated drain can wait for the
@@ -368,6 +368,12 @@ func buildDeps(cfg *Config) (Deps, error) {
 	eng.WithAudit(&cfg.Audit, logger, cfg.Auth.AuditClaims)
 	eng.WithEventPublisher(events.NewSlogPublisher(logger))
 	viewReader := mongo.NewMongoViewReader(mg)
+	// resolver maps every view to the physical collection it currently serves
+	// (its active slot). Constructed once here and shared by every read-model
+	// component (SyncEngine, composer, upstream subscribers, drift detection) so
+	// they observe one consistent pointer. eng backs the registry-consulting
+	// phase; Phase 1 resolves to the bare view name.
+	resolver := query.NewViewResolver(eng)
 
 	// Resolve the SERVICE-PRIVATE cache from cfg only (no Wire
 	// injection at this stage). If cfg.Cache.Store == "custom", the
@@ -454,6 +460,7 @@ func buildDeps(cfg *Config) (Deps, error) {
 		Translator:          tr,
 		Pipeline:            pipe,
 		ViewReader:          viewReader,
+		Resolver:            resolver,
 		Transport:           sub,
 		Export:              fwweb.ExportDeps{Translator: tr, MaxExportRows: cfg.Query.MaxExportRows},
 		Cache:               privateCache,

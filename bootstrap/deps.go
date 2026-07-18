@@ -61,6 +61,11 @@ type Deps struct {
 	Pipeline   *pipeline.Pipeline
 	ViewReader queries.ViewReader
 
+	// Resolver maps a logical view name to the physical Mongo collection it
+	// currently resolves to (its active slot). One instance is shared by every
+	// read-model component so they observe a single, consistent pointer view.
+	Resolver *query.ViewResolver
+
 	// Transport is the message-transport port — the linked broker adapter
 	// (Kafka/Redpanda now, NATS later) selected once at boot by the transport
 	// build tag (-tags kafka | -tags nats), through the subscriber registry.

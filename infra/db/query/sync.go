@@ -47,8 +47,12 @@ type SyncEngine struct {
 	// backend-neutral too — it serializes on eng.AcquireRebuildLock (PG
 	// pg_advisory_lock, MySQL GET_LOCK) and reads/writes the registry via
 	// eng.Querier()/eng.Dialect(), so it runs on any relational backend.
-	eng      core.RelationalEngine
-	mongo    ReadModelStore
+	eng   core.RelationalEngine
+	mongo ReadModelStore
+	// resolver maps a view name to the physical collection it currently
+	// resolves to (its active slot). Shared process-wide so every read-model
+	// component observes one consistent pointer view.
+	resolver *ViewResolver
 	composer *Composer
 	// index splits view lookup by source kind. SyncEngine reads byPGTable
 	// (event.AggregateType → views whose root or PG embed match);
@@ -153,7 +157,7 @@ func decodeAggregateID(key []byte) string {
 // updates for the same aggregate always land on the same worker — preserving
 // per-aggregate ordering. Across aggregates ordering is not promised, which
 // matches Kafka's contract anyway. workers < 1 is clamped to 1.
-func NewSyncEngine(eng core.RelationalEngine, mongo ReadModelStore, sub transport.Subscriber, groupID string, views []*ViewDefinition, workers int) *SyncEngine {
+func NewSyncEngine(eng core.RelationalEngine, mongo ReadModelStore, resolver *ViewResolver, sub transport.Subscriber, groupID string, views []*ViewDefinition, workers int) *SyncEngine {
 	topics := make([]string, 0, len(views))
 	seen := map[string]bool{}
 	addTopic := func(table string) {
@@ -185,11 +189,12 @@ func NewSyncEngine(eng core.RelationalEngine, mongo ReadModelStore, sub transpor
 		workers = 1
 	}
 	return &SyncEngine{
-		eng:   eng,
-		mongo: mongo,
+		eng:      eng,
+		mongo:    mongo,
+		resolver: resolver,
 		// NewComposerWithMongo so views embedding external FromSchema collections
 		// resolve correctly through the composer during recompose.
-		composer: NewComposerWithMongo(eng, mongo),
+		composer: NewComposerWithMongo(eng, mongo, resolver),
 		index:    buildViewIndex(views),
 		sub:      sub,
 		groupID:  groupID,
@@ -368,7 +373,7 @@ func (s *SyncEngine) process(ctx context.Context, event kafkaEvent) error {
 		// document on ARCHIVED. An UNARCHIVED event always hits the upsert
 		// branch regardless of the flag.
 		if shouldDeleteFromView(event.EventType, view.deleteOnArchive) {
-			if err := s.mongo.Delete(ctx, view.name, event.AggregateID); err != nil {
+			if err := s.mongo.Delete(ctx, s.resolver.Active(view.name), event.AggregateID); err != nil {
 				return err
 			}
 			continue
@@ -380,7 +385,7 @@ func (s *SyncEngine) process(ctx context.Context, event kafkaEvent) error {
 		if doc == nil {
 			continue
 		}
-		if err := s.mongo.Upsert(ctx, view.name, event.AggregateID, doc); err != nil {
+		if err := s.mongo.Upsert(ctx, s.resolver.Active(view.name), event.AggregateID, doc); err != nil {
 			return err
 		}
 	}
@@ -399,7 +404,7 @@ func (s *SyncEngine) fanOutSharedBase(ctx context.Context, event kafkaEvent, bas
 		if !ok {
 			continue
 		}
-		roleIDs, err := s.mongo.FindIDsByField(ctx, view.name, fkCol, event.AggregateID)
+		roleIDs, err := s.mongo.FindIDsByField(ctx, s.resolver.Active(view.name), fkCol, event.AggregateID)
 		if err != nil {
 			return err
 		}
@@ -409,12 +414,12 @@ func (s *SyncEngine) fanOutSharedBase(ctx context.Context, event kafkaEvent, bas
 				return err
 			}
 			if doc == nil {
-				if err := s.mongo.Delete(ctx, view.name, roleID); err != nil {
+				if err := s.mongo.Delete(ctx, s.resolver.Active(view.name), roleID); err != nil {
 					return err
 				}
 				continue
 			}
-			if err := s.mongo.Upsert(ctx, view.name, roleID, doc); err != nil {
+			if err := s.mongo.Upsert(ctx, s.resolver.Active(view.name), roleID, doc); err != nil {
 				return err
 			}
 		}
@@ -446,12 +451,12 @@ func (s *SyncEngine) recomposeBaseRooted(ctx context.Context, event kafkaEvent, 
 			return err
 		}
 		if doc == nil {
-			if err := s.mongo.Delete(ctx, rt.view.name, baseID); err != nil {
+			if err := s.mongo.Delete(ctx, s.resolver.Active(rt.view.name), baseID); err != nil {
 				return err
 			}
 			continue
 		}
-		if err := s.mongo.Upsert(ctx, rt.view.name, baseID, doc); err != nil {
+		if err := s.mongo.Upsert(ctx, s.resolver.Active(rt.view.name), baseID, doc); err != nil {
 			return err
 		}
 	}

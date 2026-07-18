@@ -60,6 +60,9 @@ type RebuildConfig struct {
 func (s *SyncEngine) ExecuteRebuild(ctx context.Context, plan DriftPlan, cfg RebuildConfig) error {
 	view := plan.View
 	collection := view.Name()
+	// active is the physical collection the view currently serves; every store
+	// call below targets it. collection stays the logical name for logging.
+	active := s.resolver.Active(collection)
 	now := time.Now()
 
 	switch cfg.Orphan {
@@ -130,25 +133,25 @@ func (s *SyncEngine) ExecuteRebuild(ctx context.Context, plan DriftPlan, cfg Reb
 		slog.String("to_hash", plan.CurrentCombinedHash))
 
 	// Step 5 — cleanup (skip when collection empty).
-	populated, err := s.mongo.HasDocuments(ctx, collection)
+	populated, err := s.mongo.HasDocuments(ctx, active)
 	if err != nil {
 		return err
 	}
 	var orphanFields []string
 	if populated {
-		orphanFields, err = computeOrphanFields(ctx, s.mongo, s.composer, view)
+		orphanFields, err = computeOrphanFields(ctx, s.mongo, s.composer, view, active)
 		if err != nil {
 			return err
 		}
 		if len(orphanFields) > 0 {
-			if err := s.mongo.UnsetFields(ctx, collection, orphanFields); err != nil {
+			if err := s.mongo.UnsetFields(ctx, active, orphanFields); err != nil {
 				return err
 			}
 		}
 	}
 
 	// Step 6 — snapshot _id set for orphan reconciliation.
-	snapshot, err := s.mongo.SnapshotDocumentIDs(ctx, collection)
+	snapshot, err := s.mongo.SnapshotDocumentIDs(ctx, active)
 	if err != nil {
 		return err
 	}
@@ -181,7 +184,7 @@ func (s *SyncEngine) ExecuteRebuild(ctx context.Context, plan DriftPlan, cfg Reb
 			docs = append(docs, IdentifiedDocument{ID: id, Doc: doc})
 			delete(snapshot, id)
 		}
-		if err := s.mongo.BulkUpsert(ctx, collection, docs); err != nil {
+		if err := s.mongo.BulkUpsert(ctx, active, docs); err != nil {
 			return err
 		}
 		upserted += len(docs)
@@ -233,7 +236,7 @@ func (s *SyncEngine) ExecuteRebuild(ctx context.Context, plan DriftPlan, cfg Reb
 	}
 
 	// Step 8 — orphan reconciliation.
-	orphanCount, err := reconcileOrphans(ctx, s.mongo, collection, snapshot, cfg.Orphan)
+	orphanCount, err := reconcileOrphans(ctx, s.mongo, active, snapshot, cfg.Orphan)
 	if err != nil {
 		return err
 	}
@@ -313,8 +316,8 @@ func (s *SyncEngine) RefreshRegistryArtifactOnly(ctx context.Context, plan Drift
 // every sample), returns an empty slice rather than the full observed
 // set — the orphan reconciliation step will deleteMany every doc; there
 // is no point in $unset-ing fields on docs that are about to disappear.
-func computeOrphanFields(ctx context.Context, m ReadModelStore, c *Composer, view *ViewDefinition) ([]string, error) {
-	observed, err := m.ObservedFieldNames(ctx, view.Name())
+func computeOrphanFields(ctx context.Context, m ReadModelStore, c *Composer, view *ViewDefinition, active PhysicalCollection) ([]string, error) {
+	observed, err := m.ObservedFieldNames(ctx, active)
 	if err != nil {
 		return nil, err
 	}
@@ -398,7 +401,7 @@ func sampleExpectedFieldNames(ctx context.Context, c *Composer, view *ViewDefini
 // archived in a DeleteOnArchive view). cfg.Orphan governs the action:
 // "delete" issues a single deleteMany; "warn" emits a slog.Warn listing
 // the ids and leaves them untouched.
-func reconcileOrphans(ctx context.Context, m ReadModelStore, collection string, snapshot map[string]struct{}, mode string) (int, error) {
+func reconcileOrphans(ctx context.Context, m ReadModelStore, collection PhysicalCollection, snapshot map[string]struct{}, mode string) (int, error) {
 	if len(snapshot) == 0 {
 		return 0, nil
 	}
@@ -416,7 +419,7 @@ func reconcileOrphans(ctx context.Context, m ReadModelStore, collection string, 
 		return n, nil
 	case "warn":
 		slog.WarnContext(ctx, "view.rebuild.orphans_warning",
-			slog.String("view", collection),
+			slog.String("view", collection.String()),
 			slog.Int("orphan_count", len(ids)),
 			slog.Any("orphan_ids", ids))
 		return 0, nil
@@ -532,7 +535,7 @@ func (s *SyncEngine) rebuildFromTable(ctx context.Context, view *ViewDefinition,
 		for _, doc := range composed {
 			docs = append(docs, IdentifiedDocument{ID: fmt.Sprintf("%v", doc[pkColName]), Doc: doc})
 		}
-		return s.mongo.BulkUpsert(ctx, view.name, docs)
+		return s.mongo.BulkUpsert(ctx, s.resolver.Active(view.name), docs)
 	}
 
 	for rows.Next() {

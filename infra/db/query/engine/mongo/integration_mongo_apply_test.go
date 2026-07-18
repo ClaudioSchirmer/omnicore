@@ -203,7 +203,7 @@ func TestDetectViewDrift_FreshInit(t *testing.T) {
 
 	v := query.View("drift_users").Root("drift_users").Version(1)
 	// No registry row, no Mongo docs → FreshInit.
-	report, err := query.DetectViewDrift(context.Background(), m, pg, []*query.ViewDefinition{v})
+	report, err := query.DetectViewDrift(context.Background(), m, pg, []*query.ViewDefinition{v}, testResolver)
 	if err != nil {
 		t.Fatalf("DetectViewDrift: %v", err)
 	}
@@ -223,7 +223,7 @@ func TestDetectViewDrift_NoneAndArtifactOnlyAndAlienData(t *testing.T) {
 
 	// First: AlienData — populate Mongo without writing the registry row.
 	m.Collection("drift_x").InsertOne(context.Background(), bson.M{"_id": "1"})
-	report, err := query.DetectViewDrift(context.Background(), m, pg, []*query.ViewDefinition{v})
+	report, err := query.DetectViewDrift(context.Background(), m, pg, []*query.ViewDefinition{v}, testResolver)
 	if err != nil {
 		t.Fatalf("DetectViewDrift: %v", err)
 	}
@@ -244,7 +244,7 @@ func TestDetectViewDrift_NoneAndArtifactOnlyAndAlienData(t *testing.T) {
 	if err := query.InitViewRegistry(context.Background(), pg.Querier(), pg.Dialect(), in); err != nil {
 		t.Fatalf("Init: %v", err)
 	}
-	report, _ = query.DetectViewDrift(context.Background(), m, pg, []*query.ViewDefinition{v})
+	report, _ = query.DetectViewDrift(context.Background(), m, pg, []*query.ViewDefinition{v}, testResolver)
 	if report.Plans[0].Decision != query.DriftNone {
 		t.Errorf("expected DriftNone after seeding registry, got %v", report.Plans[0].Decision)
 	}

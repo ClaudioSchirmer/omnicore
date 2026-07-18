@@ -40,6 +40,10 @@ const maxInClauseSize = 900
 type Composer struct {
 	eng   core.RelationalEngine
 	mongo ReadModelStore
+	// resolver maps an embed's source collection to the physical collection it
+	// currently resolves to. Nil on a relational-only Composer (NewComposer),
+	// which never dispatches a Mongo embed; nil resolves to identity.
+	resolver *ViewResolver
 }
 
 // NewComposer builds a Composer with relational dispatch only.
@@ -48,9 +52,10 @@ func NewComposer(eng core.RelationalEngine) *Composer {
 }
 
 // NewComposerWithMongo builds a Composer that dispatches relational sources via
-// the engine AND Mongo sources via the supplied handle.
-func NewComposerWithMongo(eng core.RelationalEngine, mongo ReadModelStore) *Composer {
-	return &Composer{eng: eng, mongo: mongo}
+// the engine AND Mongo sources via the supplied handle, resolving embed source
+// collections through the shared resolver.
+func NewComposerWithMongo(eng core.RelationalEngine, mongo ReadModelStore, resolver *ViewResolver) *Composer {
+	return &Composer{eng: eng, mongo: mongo, resolver: resolver}
 }
 
 // schemaPK / schemaSoftDelete read the source's physical PK + soft-delete column
@@ -431,7 +436,7 @@ func (c *Composer) fetchMongoEmbed(ctx context.Context, doc Document, parentPK s
 		if !ok || id == nil {
 			return nil
 		}
-		docs, err := c.mongo.FindManyByField(ctx, e.source.table, e.JoinColumn(), id)
+		docs, err := c.mongo.FindManyByField(ctx, c.resolver.Active(e.source.table), e.JoinColumn(), id)
 		if err != nil {
 			return err
 		}
@@ -447,7 +452,7 @@ func (c *Composer) fetchMongoEmbed(ctx context.Context, doc Document, parentPK s
 	if !ok || fk == nil {
 		return nil
 	}
-	docs, err := c.mongo.FindManyByField(ctx, e.source.table, "_id", fk)
+	docs, err := c.mongo.FindManyByField(ctx, c.resolver.Active(e.source.table), "_id", fk)
 	if err != nil {
 		return err
 	}

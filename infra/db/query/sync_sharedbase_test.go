@@ -45,7 +45,7 @@ func TestProcess_SharedBaseFanOut(t *testing.T) {
 		return nil, nil
 	})
 	view := View("aluno").Root("aluno").Schema(fanOutRoleSchema()).Version(1)
-	s := NewSyncEngine(eng, newFakeMongo(coll), nil, "", []*ViewDefinition{view}, 1)
+	s := NewSyncEngine(eng, newFakeMongo(coll), identityResolver, nil, "", []*ViewDefinition{view}, 1)
 
 	// A base change (aggregate_type = the base table) fans out to the role views.
 	if err := s.process(context.Background(), kafkaEvent{AggregateType: "pessoa", EventType: "UPDATED", AggregateID: "p1"}); err != nil {

@@ -125,12 +125,12 @@ func TestBucketOf_DistributesAcrossWorkers(t *testing.T) {
 // channel-less consumer.
 func TestNewSyncEngine_WorkersFloor(t *testing.T) {
 	for _, in := range []int{-1, 0} {
-		s := NewSyncEngine(nil, nil, nil, "g", nil, in)
+		s := NewSyncEngine(nil, nil, identityResolver, nil, "g", nil, in)
 		if s.workers != 1 {
 			t.Fatalf("NewSyncEngine workers=%d clamped to %d, want 1", in, s.workers)
 		}
 	}
-	if s := NewSyncEngine(nil, nil, nil, "g", nil, 5); s.workers != 5 {
+	if s := NewSyncEngine(nil, nil, identityResolver, nil, "g", nil, 5); s.workers != 5 {
 		t.Fatalf("NewSyncEngine workers=5 stored as %d", s.workers)
 	}
 }

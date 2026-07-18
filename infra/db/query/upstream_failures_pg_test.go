@@ -14,7 +14,8 @@ import (
 func newUpstreamWithEngine(eng core.RelationalEngine) *UpstreamSubscriber {
 	s, err := NewUpstreamSubscriber(
 		eng, newFakeMongo(&fakeColl{}),
-		NewComposerWithMongo(eng, newFakeMongo(&fakeColl{})),
+		NewComposerWithMongo(eng, newFakeMongo(&fakeColl{}), identityResolver),
+		identityResolver,
 		UpstreamSubscriberConfig{Topic: "users.events", Collection: "users"},
 		nil, nil, nil,
 	)

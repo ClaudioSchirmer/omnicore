@@ -146,7 +146,7 @@ func reconcileViewDrift(ctx context.Context, cfg *Config, deps Deps, sync *query
 		return nil
 	}
 
-	report, err := query.DetectViewDrift(ctx, deps.Mongo, deps.DB, views)
+	report, err := query.DetectViewDrift(ctx, deps.Mongo, deps.DB, views, deps.Resolver)
 	if err != nil {
 		return fmt.Errorf("bootstrap: mongo drift detect: %w", err)
 	}

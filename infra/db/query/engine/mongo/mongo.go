@@ -99,8 +99,8 @@ func (m *MongoDB) Collection(name string) *mongo.Collection {
 	return m.db.Collection(name)
 }
 
-func (m *MongoDB) Upsert(ctx context.Context, collection, id string, doc query.Document) error {
-	col := m.collFn(collection)
+func (m *MongoDB) Upsert(ctx context.Context, collection query.PhysicalCollection, id string, doc query.Document) error {
+	col := m.collFn(collection.String())
 	filter := bson.M{"_id": id}
 	update := bson.M{"$set": doc}
 	opts := options.UpdateOne().SetUpsert(true)
@@ -117,7 +117,7 @@ func (m *MongoDB) Upsert(ctx context.Context, collection, id string, doc query.D
 // Each operation carries the same {$set: doc}, upsert:true shape as Upsert, so
 // the two paths write identical documents. An empty batch is a no-op — the
 // driver rejects a zero-length model slice, so the guard is required.
-func (m *MongoDB) BulkUpsert(ctx context.Context, collection string, docs []query.IdentifiedDocument) error {
+func (m *MongoDB) BulkUpsert(ctx context.Context, collection query.PhysicalCollection, docs []query.IdentifiedDocument) error {
 	if len(docs) == 0 {
 		return nil
 	}
@@ -128,13 +128,13 @@ func (m *MongoDB) BulkUpsert(ctx context.Context, collection string, docs []quer
 			SetUpdate(bson.M{"$set": d.Doc}).
 			SetUpsert(true))
 	}
-	col := m.collFn(collection)
+	col := m.collFn(collection.String())
 	_, err := col.BulkWrite(ctx, models, options.BulkWrite().SetOrdered(false))
 	return err
 }
 
-func (m *MongoDB) Delete(ctx context.Context, collection, id string) error {
-	col := m.collFn(collection)
+func (m *MongoDB) Delete(ctx context.Context, collection query.PhysicalCollection, id string) error {
+	col := m.collFn(collection.String())
 	_, err := col.DeleteOne(ctx, bson.M{"_id": id})
 	return err
 }
@@ -145,8 +145,8 @@ func (m *MongoDB) Delete(ctx context.Context, collection, id string) error {
 // the parent document. Empty slice when nothing matches — the caller is
 // expected to handle "no embed" by simply omitting the field, identical to
 // the PG fetchWhere path.
-func (m *MongoDB) FindManyByField(ctx context.Context, collection, field string, value any) ([]query.Document, error) {
-	col := m.collFn(collection)
+func (m *MongoDB) FindManyByField(ctx context.Context, collection query.PhysicalCollection, field string, value any) ([]query.Document, error) {
+	col := m.collFn(collection.String())
 	cur, err := col.Find(ctx, bson.M{field: value})
 	if err != nil {
 		return nil, err
@@ -172,8 +172,8 @@ func (m *MongoDB) FindManyByField(ctx context.Context, collection, field string,
 // (string is the canonical shape SyncEngine + UpstreamSubscriber use for
 // aggregate_id). Non-string _ids (rare in framework-managed collections)
 // fall through via fmt.Sprintf so the caller still gets a usable key.
-func (m *MongoDB) FindIDsByField(ctx context.Context, collection, field string, value any) ([]string, error) {
-	col := m.collFn(collection)
+func (m *MongoDB) FindIDsByField(ctx context.Context, collection query.PhysicalCollection, field string, value any) ([]string, error) {
+	col := m.collFn(collection.String())
 	opts := options.Find().SetProjection(bson.M{"_id": 1})
 	cur, err := col.Find(ctx, bson.M{field: value}, opts)
 	if err != nil {
@@ -208,19 +208,19 @@ func (m *MongoDB) FindIDsByField(ctx context.Context, collection, field string, 
 // design's "blank the field" semantic. Returns nil (no error) when the
 // document does not exist — anonymize is idempotent against a missing
 // target, same as Delete.
-func (m *MongoDB) UpdateFields(ctx context.Context, collection, id string, fields query.Document) error {
+func (m *MongoDB) UpdateFields(ctx context.Context, collection query.PhysicalCollection, id string, fields query.Document) error {
 	if len(fields) == 0 {
 		return nil
 	}
-	col := m.collFn(collection)
+	col := m.collFn(collection.String())
 	_, err := col.UpdateOne(ctx, bson.M{"_id": id}, bson.M{"$set": fields})
 	return err
 }
 
 // HasDocuments reports whether collection holds at least one document. Drives
 // the drift detector's "Mongo has user data" branch.
-func (m *MongoDB) HasDocuments(ctx context.Context, collection string) (bool, error) {
-	col := m.collFn(collection)
+func (m *MongoDB) HasDocuments(ctx context.Context, collection query.PhysicalCollection) (bool, error) {
+	col := m.collFn(collection.String())
 	count, err := col.CountDocuments(ctx, bson.M{}, options.Count().SetLimit(1))
 	if err != nil {
 		return false, fmt.Errorf("count documents on %q: %w", collection, err)
@@ -231,8 +231,8 @@ func (m *MongoDB) HasDocuments(ctx context.Context, collection string) (bool, er
 // ObservedFieldNames returns the union of every top-level field name across all
 // docs in collection ($objectToArray + $unwind + $addToSet). Drives orphan-field
 // cleanup on rebuild.
-func (m *MongoDB) ObservedFieldNames(ctx context.Context, collection string) (map[string]struct{}, error) {
-	col := m.Collection(collection)
+func (m *MongoDB) ObservedFieldNames(ctx context.Context, collection query.PhysicalCollection) (map[string]struct{}, error) {
+	col := m.Collection(collection.String())
 	pipeline := []bson.D{
 		{{Key: "$project", Value: bson.M{"arr": bson.M{"$objectToArray": "$$ROOT"}}}},
 		{{Key: "$unwind", Value: "$arr"}},
@@ -267,7 +267,7 @@ func (m *MongoDB) ObservedFieldNames(ctx context.Context, collection string) (ma
 
 // UnsetFields removes the given top-level fields from every document in one
 // updateMany ($unset). No-op for an empty list.
-func (m *MongoDB) UnsetFields(ctx context.Context, collection string, fields []string) error {
+func (m *MongoDB) UnsetFields(ctx context.Context, collection query.PhysicalCollection, fields []string) error {
 	if len(fields) == 0 {
 		return nil
 	}
@@ -275,7 +275,7 @@ func (m *MongoDB) UnsetFields(ctx context.Context, collection string, fields []s
 	for _, f := range fields {
 		unset[f] = ""
 	}
-	col := m.Collection(collection)
+	col := m.Collection(collection.String())
 	_, err := col.UpdateMany(ctx, bson.M{}, bson.M{"$unset": unset})
 	if err != nil {
 		return fmt.Errorf("$unset orphan fields on %q: %w", collection, err)
@@ -289,8 +289,8 @@ func (m *MongoDB) UnsetFields(ctx context.Context, collection string, fields []s
 // server streams every full document over the wire only to discard all but
 // the _id, which on a large projection is the difference between a lean
 // index-only scan and shipping the whole collection.
-func (m *MongoDB) SnapshotDocumentIDs(ctx context.Context, collection string) (map[string]struct{}, error) {
-	col := m.Collection(collection)
+func (m *MongoDB) SnapshotDocumentIDs(ctx context.Context, collection query.PhysicalCollection) (map[string]struct{}, error) {
+	col := m.Collection(collection.String())
 	cur, err := col.Find(ctx, bson.M{}, options.Find().SetProjection(bson.M{"_id": 1}))
 	if err != nil {
 		return nil, fmt.Errorf("snapshot ids on %q: %w", collection, err)
@@ -315,11 +315,11 @@ func (m *MongoDB) SnapshotDocumentIDs(ctx context.Context, collection string) (m
 
 // DeleteByIDs removes the documents whose _id is in ids (single deleteMany).
 // Returns the deleted count. No-op (0) for an empty list.
-func (m *MongoDB) DeleteByIDs(ctx context.Context, collection string, ids []string) (int, error) {
+func (m *MongoDB) DeleteByIDs(ctx context.Context, collection query.PhysicalCollection, ids []string) (int, error) {
 	if len(ids) == 0 {
 		return 0, nil
 	}
-	col := m.Collection(collection)
+	col := m.Collection(collection.String())
 	res, err := col.DeleteMany(ctx, bson.M{"_id": bson.M{"$in": ids}})
 	if err != nil {
 		return 0, fmt.Errorf("delete by ids on %q: %w", collection, err)

@@ -186,7 +186,7 @@ func TestMongoDB_UpsertAndDelete(t *testing.T) {
 	defer cleanup()
 
 	ctx := context.Background()
-	if err := m.Upsert(ctx, "things", "id-1", bson.M{"name": "alice"}); err != nil {
+	if err := m.Upsert(ctx, pc("things"), "id-1", bson.M{"name": "alice"}); err != nil {
 		t.Fatalf("first Upsert: %v", err)
 	}
 	doc := mongoDoc(t, m, "things", "id-1")
@@ -195,7 +195,7 @@ func TestMongoDB_UpsertAndDelete(t *testing.T) {
 	}
 
 	// Upsert again replaces fields.
-	if err := m.Upsert(ctx, "things", "id-1", bson.M{"name": "alice2"}); err != nil {
+	if err := m.Upsert(ctx, pc("things"), "id-1", bson.M{"name": "alice2"}); err != nil {
 		t.Fatalf("second Upsert: %v", err)
 	}
 	doc = mongoDoc(t, m, "things", "id-1")
@@ -203,7 +203,7 @@ func TestMongoDB_UpsertAndDelete(t *testing.T) {
 		t.Errorf("second upsert: %+v", doc)
 	}
 
-	if err := m.Delete(ctx, "things", "id-1"); err != nil {
+	if err := m.Delete(ctx, pc("things"), "id-1"); err != nil {
 		t.Fatalf("Delete: %v", err)
 	}
 	if mongoDoc(t, m, "things", "id-1") != nil {

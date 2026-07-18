@@ -18,7 +18,7 @@ func syncEngineForShutdownTest() *SyncEngine {
 	// the ensureTopics retry loop until its ctx is cancelled — a deterministic
 	// stand-in for "the loop is still working" (formerly an unroutable broker).
 	view := View("gadgets").Version(1).Root("gadgets").Schema(rootSchema("gadgets"))
-	return NewSyncEngine(nil, nil, fakeSubscriber{}, "shutdown-test-group",
+	return NewSyncEngine(nil, nil, identityResolver, fakeSubscriber{}, "shutdown-test-group",
 		[]*ViewDefinition{view}, 1)
 }
 
@@ -93,7 +93,7 @@ func TestSyncEngine_DoubleStartIsNoop(t *testing.T) {
 // assertion is the POST-CONDITION — a nil return implies `done` is already
 // closed — not a duration.
 func TestUpstreamSubscriber_ShutdownWaitsForRunExit(t *testing.T) {
-	sub, err := NewUpstreamSubscriber(nil, nil, nil,
+	sub, err := NewUpstreamSubscriber(nil, nil, nil, identityResolver,
 		UpstreamSubscriberConfig{
 			Topic:         "shutdown.test.topic",
 			Collection:    "shutdown_test",

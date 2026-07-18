@@ -34,7 +34,7 @@ func seedReaderDocs(t *testing.T, m *MongoDB, view string, n int) []string {
 			"name":       fmt.Sprintf("n-%02d", i),
 			"deleted_at": nil,
 		}
-		if err := m.Upsert(context.Background(), view, id, doc); err != nil {
+		if err := m.Upsert(context.Background(), pc(view), id, doc); err != nil {
 			t.Fatalf("seed [%d]: %v", i, err)
 		}
 	}
@@ -202,7 +202,7 @@ func TestReader_ForwardWithCustomSort_RespectsTiebreaker(t *testing.T) {
 		{"_id": "id-D", "name": "Carol", "deleted_at": nil},
 	}
 	for _, d := range docs {
-		if err := m.Upsert(context.Background(), view, d["_id"].(string), d); err != nil {
+		if err := m.Upsert(context.Background(), pc(view), d["_id"].(string), d); err != nil {
 			t.Fatalf("seed %v: %v", d["_id"], err)
 		}
 	}
@@ -309,7 +309,7 @@ func TestReader_FieldsProjectionStripsSortFieldFromWire(t *testing.T) {
 			"email":      fmt.Sprintf("e-%02d@x", i),
 			"deleted_at": nil,
 		}
-		if err := m.Upsert(context.Background(), view, id, doc); err != nil {
+		if err := m.Upsert(context.Background(), pc(view), id, doc); err != nil {
 			t.Fatalf("seed: %v", err)
 		}
 	}
@@ -358,7 +358,7 @@ func TestReader_KeysetCoexistsWithMultiClauseFilter(t *testing.T) {
 			"age":        20 + i,
 			"deleted_at": nil,
 		}
-		if err := m.Upsert(context.Background(), view, id, doc); err != nil {
+		if err := m.Upsert(context.Background(), pc(view), id, doc); err != nil {
 			t.Fatalf("seed: %v", err)
 		}
 	}
