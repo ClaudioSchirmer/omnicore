@@ -480,6 +480,17 @@ func (s *SyncEngine) RebuildAllViews(ctx context.Context) error {
 }
 
 func (s *SyncEngine) rebuildFromTable(ctx context.Context, view *ViewDefinition, since string) error {
+	return s.backfillInto(ctx, view, s.resolver.Active(view.name), since)
+}
+
+// backfillInto streams the view's root PKs, composes each batch from the
+// relational source in one set-based read, and bulk-upserts the composed
+// documents into target — the active slot for an in-place operator rebuild, or a
+// shadow slot for the blue-green driver. since != "" scopes the scan to rows
+// changed at/after that watermark (incremental); "" is a full backfill. An id
+// whose root vanished between the scan and the compose is absent from the
+// composed set, so it is simply never written (blue-green verify reconciles it).
+func (s *SyncEngine) backfillInto(ctx context.Context, view *ViewDefinition, target PhysicalCollection, since string) error {
 	var q string
 	var args []any
 
@@ -535,7 +546,7 @@ func (s *SyncEngine) rebuildFromTable(ctx context.Context, view *ViewDefinition,
 		for _, doc := range composed {
 			docs = append(docs, IdentifiedDocument{ID: fmt.Sprintf("%v", doc[pkColName]), Doc: doc})
 		}
-		return s.mongo.BulkUpsert(ctx, s.resolver.Active(view.name), docs)
+		return s.mongo.BulkUpsert(ctx, target, docs)
 	}
 
 	for rows.Next() {
