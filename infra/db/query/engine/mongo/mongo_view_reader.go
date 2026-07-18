@@ -32,7 +32,12 @@ const FrameworkDefaultMaxReadLimit int64 = 100
 // default. When the resolver is nil (manual construction in tests / custom
 // adapters), every view falls back to FrameworkDefaultMaxReadLimit.
 type MongoViewReader struct {
-	mongo      *MongoDB
+	mongo *MongoDB
+	// resolver maps a logical view name to the physical collection currently
+	// serving its reads (its active slot). Shared process-wide; the read path
+	// resolves through it so a rebuild flip is observed here without changing
+	// the ViewReader interface (which speaks logical names, per the layer rules).
+	resolver   *query.ViewResolver
 	maxLimitFn func(view string) int64
 	viewNodes  map[string]*query.ViewNode
 	// composed handles the read-time composed views (SetComposedViews). A read
@@ -44,8 +49,8 @@ type MongoViewReader struct {
 	composed *ComposedViewReader
 }
 
-func NewMongoViewReader(m *MongoDB) *MongoViewReader {
-	return &MongoViewReader{mongo: m}
+func NewMongoViewReader(m *MongoDB, resolver *query.ViewResolver) *MongoViewReader {
+	return &MongoViewReader{mongo: m, resolver: resolver}
 }
 
 // SetViews registers the collected ViewDefinitions so the reader can translate
@@ -214,7 +219,7 @@ func (r *MongoViewReader) ReadPage(ctx context.Context, view string, c queries.R
 		filter["$text"] = bson.M{"$search": c.Search}
 	}
 
-	col := r.mongo.collFn(view)
+	col := r.mongo.collFn(r.resolver.Active(view).String())
 
 	total, err := col.CountDocuments(ctx, filter)
 	if err != nil {
@@ -428,7 +433,7 @@ func (r *MongoViewReader) ReadByID(ctx context.Context, view, id string, c queri
 	}
 	node := r.resolveViewSchema(view)
 	sdCol, sdOn := node.SoftDeleteColumn()
-	col := r.mongo.collFn(view)
+	col := r.mongo.collFn(r.resolver.Active(view).String())
 	filter := bson.M{"_id": id}
 	applyFilter(filter, translateFilterKeys(node, c.Filter))
 	if !c.IncludeArchived && sdOn {

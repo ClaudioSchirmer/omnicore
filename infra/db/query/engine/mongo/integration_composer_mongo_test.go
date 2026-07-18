@@ -239,7 +239,7 @@ func TestMongoViewReader_ReadByID_HitMissAndArchivedFilter(t *testing.T) {
 	// marker (and to translate columns to Go field names on read); production
 	// always registers it via SetViews. Without it the by-id archived filter
 	// cannot engage.
-	reader := NewMongoViewReader(m).SetViews([]*query.ViewDefinition{
+	reader := NewMongoViewReader(m, testResolver).SetViews([]*query.ViewDefinition{
 		query.View("users").Root("users").
 			Schema(core.NewExternalSchema("users").PK("id").Field("Email", "email").SoftDelete("deleted_at")).
 			Version(1),
@@ -283,7 +283,7 @@ func TestMongoViewReader_ReadPage_HappyPath(t *testing.T) {
 		}
 	}
 
-	reader := NewMongoViewReader(m)
+	reader := NewMongoViewReader(m, testResolver)
 	page, err := reader.ReadPage(ctx, "users", queries.ReadCriteria{Limit: 3})
 	if err != nil {
 		t.Fatalf("ReadPage: %v", err)
@@ -327,7 +327,7 @@ func TestMongoViewReader_ReadPage_FilterWithMultiClause(t *testing.T) {
 		bson.M{"_id": "4", "age": 80, "deleted_at": nil},
 	})
 
-	reader := NewMongoViewReader(m)
+	reader := NewMongoViewReader(m, testResolver)
 	page, err := reader.ReadPage(ctx, "users", queries.ReadCriteria{
 		Filter: map[string]any{
 			"age": queries.MultiClause{Clauses: []any{
@@ -356,7 +356,7 @@ func TestMongoViewReader_ReadPage_Sort(t *testing.T) {
 		bson.M{"_id": "3", "score": 20, "deleted_at": nil},
 	})
 
-	reader := NewMongoViewReader(m)
+	reader := NewMongoViewReader(m, testResolver)
 	page, err := reader.ReadPage(ctx, "users", queries.ReadCriteria{
 		Sort: []queries.SortField{{Field: "score", Desc: true}},
 	})
@@ -379,7 +379,7 @@ func TestMongoViewReader_ReadPage_Projection(t *testing.T) {
 	ctx := context.Background()
 	col.InsertOne(ctx, bson.M{"_id": "1", "email": "a@x", "name": "alice", "deleted_at": nil})
 
-	reader := NewMongoViewReader(m)
+	reader := NewMongoViewReader(m, testResolver)
 	page, err := reader.ReadPage(ctx, "users", queries.ReadCriteria{
 		Projection: map[string]int{"email": 1},
 	})
@@ -410,7 +410,7 @@ func TestMongoViewReader_ReadPage_RegexMatchSentinel(t *testing.T) {
 		bson.M{"_id": "3", "name": "bobby", "deleted_at": nil},
 	})
 
-	reader := NewMongoViewReader(m)
+	reader := NewMongoViewReader(m, testResolver)
 	page, err := reader.ReadPage(ctx, "users", queries.ReadCriteria{
 		Filter: map[string]any{
 			"name": queries.RegexMatch{Pattern: "^bob", CaseInsensitive: true},
@@ -436,7 +436,7 @@ func TestMongoViewReader_ReadPage_RegexMatchListSentinel(t *testing.T) {
 		bson.M{"_id": "3", "name": "carlos", "deleted_at": nil},
 	})
 
-	reader := NewMongoViewReader(m)
+	reader := NewMongoViewReader(m, testResolver)
 	page, err := reader.ReadPage(ctx, "users", queries.ReadCriteria{
 		Filter: map[string]any{
 			"name": queries.RegexMatchList{
@@ -465,7 +465,7 @@ func TestMongoViewReader_DefaultLimitWhenZero(t *testing.T) {
 		col.InsertOne(ctx, bson.M{"_id": i, "deleted_at": nil})
 	}
 
-	reader := NewMongoViewReader(m)
+	reader := NewMongoViewReader(m, testResolver)
 	page, err := reader.ReadPage(ctx, "users", queries.ReadCriteria{}) // Limit unset
 	if err != nil {
 		t.Fatalf("ReadPage: %v", err)
@@ -488,7 +488,7 @@ func TestMongoViewReader_BadCursorRejected(t *testing.T) {
 	ctx := context.Background()
 	col.InsertOne(ctx, bson.M{"_id": "1", "deleted_at": nil})
 
-	reader := NewMongoViewReader(m)
+	reader := NewMongoViewReader(m, testResolver)
 	// A malformed cursor is strictly rejected (keyset contract: an invalid
 	// cursor surfaces as an error, mapped to the canonical 400 upstream —
 	// never silently ignored).

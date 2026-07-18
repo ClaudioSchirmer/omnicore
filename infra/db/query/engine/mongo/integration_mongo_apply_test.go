@@ -24,7 +24,7 @@ func TestApplyMongoSpecs_CreatesCollectionWithIndexes(t *testing.T) {
 			query.Index("created_at").Desc(),
 		)
 
-	if err := ApplyMongoSpecs(context.Background(), m, []*query.ViewDefinition{v}); err != nil {
+	if err := ApplyMongoSpecs(context.Background(), m, []*query.ViewDefinition{v}, testResolver); err != nil {
 		t.Fatalf("ApplyMongoSpecs: %v", err)
 	}
 
@@ -61,7 +61,7 @@ func TestApplyMongoSpecs_IsIdempotent(t *testing.T) {
 		Indexes(query.Index("email").Unique())
 
 	for i := 0; i < 3; i++ {
-		if err := ApplyMongoSpecs(context.Background(), m, []*query.ViewDefinition{v}); err != nil {
+		if err := ApplyMongoSpecs(context.Background(), m, []*query.ViewDefinition{v}, testResolver); err != nil {
 			t.Fatalf("ApplyMongoSpecs iter %d: %v", i, err)
 		}
 	}
@@ -73,7 +73,7 @@ func TestApplyMongoSpecs_RejectsInvalidView(t *testing.T) {
 
 	// Missing Version() — ValidateMongoSpec rejects.
 	v := query.View("invalid").Root("invalid")
-	err := ApplyMongoSpecs(context.Background(), m, []*query.ViewDefinition{v})
+	err := ApplyMongoSpecs(context.Background(), m, []*query.ViewDefinition{v}, testResolver)
 	if err == nil {
 		t.Fatal("expected ApplyMongoSpecs to reject view without Version()")
 	}
@@ -90,7 +90,7 @@ func TestApplyMongoSpecs_CreatesValidatorOnFreshCollection(t *testing.T) {
 	v := query.View("apply_validator").Root("apply_validator").Version(1).
 		JSONSchema(schema)
 
-	if err := ApplyMongoSpecs(context.Background(), m, []*query.ViewDefinition{v}); err != nil {
+	if err := ApplyMongoSpecs(context.Background(), m, []*query.ViewDefinition{v}, testResolver); err != nil {
 		t.Fatalf("ApplyMongoSpecs: %v", err)
 	}
 
@@ -120,7 +120,7 @@ func TestCheckServiceRegistry_HappyPathAndIdempotent(t *testing.T) {
 	defer cleanup()
 
 	v := query.View("my_view").Root("my_view").Version(1)
-	if err := ApplyMongoSpecs(context.Background(), m, []*query.ViewDefinition{v}); err != nil {
+	if err := ApplyMongoSpecs(context.Background(), m, []*query.ViewDefinition{v}, testResolver); err != nil {
 		t.Fatalf("apply: %v", err)
 	}
 
@@ -162,7 +162,7 @@ func TestCheckServiceRegistry_DevDowngradesForeignToWarn(t *testing.T) {
 	}
 
 	v := query.View("declared").Root("declared").Version(1)
-	if err := ApplyMongoSpecs(context.Background(), m, []*query.ViewDefinition{v}); err != nil {
+	if err := ApplyMongoSpecs(context.Background(), m, []*query.ViewDefinition{v}, testResolver); err != nil {
 		t.Fatalf("apply: %v", err)
 	}
 
@@ -180,7 +180,7 @@ func TestCheckServiceRegistry_NonDevAbortsOnForeign(t *testing.T) {
 		t.Fatalf("seed orphan: %v", err)
 	}
 	v := query.View("declared").Root("declared").Version(1)
-	if err := ApplyMongoSpecs(context.Background(), m, []*query.ViewDefinition{v}); err != nil {
+	if err := ApplyMongoSpecs(context.Background(), m, []*query.ViewDefinition{v}, testResolver); err != nil {
 		t.Fatalf("apply: %v", err)
 	}
 

@@ -13,7 +13,7 @@ import (
 func viewReaderFixture(coll mongoColl) *MongoViewReader {
 	vd := query.View("builder_view").Version(1).Root("builder_test_entities").
 		Schema(builderTestSchema)
-	r := NewMongoViewReader(newFakeMongo(coll))
+	r := NewMongoViewReader(newFakeMongo(coll), testResolver)
 	r.SetViews([]*query.ViewDefinition{vd})
 	return r
 }

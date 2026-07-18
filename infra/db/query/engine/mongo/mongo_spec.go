@@ -63,7 +63,7 @@ const (
 // collation / capped / time-series) only trigger a listCollections lookup
 // to confirm the collection exists or is creatable — the framework does
 // not touch it beyond that.
-func ApplyMongoSpecs(ctx context.Context, m *MongoDB, views []*query.ViewDefinition) error {
+func ApplyMongoSpecs(ctx context.Context, m *MongoDB, views []*query.ViewDefinition, resolver *query.ViewResolver) error {
 	forceRebuild := os.Getenv(EnvForceRebuild) == "true"
 	slog.InfoContext(ctx, "mongo.apply.start",
 		slog.Int("views", len(views)),
@@ -73,7 +73,10 @@ func ApplyMongoSpecs(ctx context.Context, m *MongoDB, views []*query.ViewDefinit
 		if err := v.ValidateMongoSpec(); err != nil {
 			return err
 		}
-		if err := applyOneView(ctx, m, v, forceRebuild); err != nil {
+		// Apply the declared shape to the view's ACTIVE slot (the bare
+		// collection until the first flip). provisionSlot reuses applyOneView
+		// against the shadow slot during a rebuild.
+		if err := applyOneView(ctx, m, v, resolver.Active(v.Name()), forceRebuild); err != nil {
 			return err
 		}
 	}
@@ -89,14 +92,17 @@ func ApplyMongoSpecs(ctx context.Context, m *MongoDB, views []*query.ViewDefinit
 //  3. collMod validator — update validator on an existing collection
 //     (skipped when we just created it with the validator embedded).
 //  4. createIndexes — ensure every declared index exists.
-func applyOneView(ctx context.Context, m *MongoDB, v *query.ViewDefinition, forceRebuild bool) error {
-	exists, observed, err := lookupCollection(ctx, m, v.Name())
+func applyOneView(ctx context.Context, m *MongoDB, v *query.ViewDefinition, target query.PhysicalCollection, forceRebuild bool) error {
+	// name is the physical collection to shape (the active slot at boot, or a
+	// shadow slot during provisioning); v stays the source of the declared spec.
+	name := target.String()
+	exists, observed, err := lookupCollection(ctx, m, name)
 	if err != nil {
 		return fmt.Errorf("view %q: listCollections failed: %w", v.Name(), err)
 	}
 
 	if !exists {
-		if err := createCollectionWithSpec(ctx, m, v); err != nil {
+		if err := createCollectionWithSpec(ctx, m, v, name); err != nil {
 			return fmt.Errorf("view %q: createCollection failed: %w", v.Name(), err)
 		}
 		// Validator already embedded in createCollection — skip collMod.
@@ -105,18 +111,26 @@ func applyOneView(ctx context.Context, m *MongoDB, v *query.ViewDefinition, forc
 			return err
 		}
 		if v.SchemaSpec() != nil {
-			if err := applyValidator(ctx, m, v); err != nil {
+			if err := applyValidator(ctx, m, v, name); err != nil {
 				return fmt.Errorf("view %q: collMod validator failed: %w", v.Name(), err)
 			}
 		}
 	}
 
 	if specs := v.IndexSpecs(); len(specs) > 0 {
-		if err := applyIndexes(ctx, m, v.Name(), specs, forceRebuild); err != nil {
+		if err := applyIndexes(ctx, m, name, specs, forceRebuild); err != nil {
 			return err
 		}
 	}
 	return nil
+}
+
+// provisionSlot brings a shadow slot to the view's declared shape (create with
+// collation/capped/time-series/validator + every declared index), reusing the
+// boot-time apply sequence against an explicit target collection. The rebuild
+// driver calls it on resolver.Shadow(view) before backfilling.
+func provisionSlot(ctx context.Context, m *MongoDB, v *query.ViewDefinition, target query.PhysicalCollection) error {
+	return applyOneView(ctx, m, v, target, false)
 }
 
 // lookupCollection runs listCollections({name}) and returns either the
@@ -143,9 +157,9 @@ func lookupCollection(ctx context.Context, m *MongoDB, name string) (bool, bson.
 // declared collation / capped / time-series / validator options. Mongo's
 // API accepts all four in one call — no need for follow-up collMod when
 // the collection is born from this path.
-func createCollectionWithSpec(ctx context.Context, m *MongoDB, v *query.ViewDefinition) error {
+func createCollectionWithSpec(ctx context.Context, m *MongoDB, v *query.ViewDefinition, name string) error {
 	opts := buildCreateCollectionOptions(v)
-	return m.db.CreateCollection(ctx, v.Name(), opts)
+	return m.db.CreateCollection(ctx, name, opts)
 }
 
 // buildCreateCollectionOptions assembles the driver-native options
@@ -187,18 +201,18 @@ func buildCreateCollectionOptions(v *query.ViewDefinition) *options.CreateCollec
 // applyValidator runs collMod to set / update the $jsonSchema validator
 // on an existing collection. collMod is idempotent: running it twice
 // with the same payload is a no-op as far as observable state goes.
-func applyValidator(ctx context.Context, m *MongoDB, v *query.ViewDefinition) error {
-	cmd := buildValidatorCommand(v)
+func applyValidator(ctx context.Context, m *MongoDB, v *query.ViewDefinition, name string) error {
+	cmd := buildValidatorCommand(v, name)
 	return m.db.RunCommand(ctx, cmd).Err()
 }
 
 // buildValidatorCommand assembles the collMod payload from the
 // declarative spec. Returns a bson.D (order matters for collMod —
 // `collMod` must come first as the command name).
-func buildValidatorCommand(v *query.ViewDefinition) bson.D {
+func buildValidatorCommand(v *query.ViewDefinition, name string) bson.D {
 	js := v.SchemaSpec()
 	cmd := bson.D{
-		{Key: "collMod", Value: v.Name()},
+		{Key: "collMod", Value: name},
 		{Key: "validator", Value: bson.M{"$jsonSchema": js.Schema}},
 	}
 	if js.ValidationLevel != "" {

@@ -47,7 +47,7 @@ func TestReader_ForwardWalk_BasicKeyset(t *testing.T) {
 	view := "rdr_fwd"
 	ids := seedReaderDocs(t, m, view, 25)
 
-	r := NewMongoViewReader(m)
+	r := NewMongoViewReader(m, testResolver)
 
 	// Page 1.
 	page1, err := r.ReadPage(context.Background(), view, queries.ReadCriteria{Limit: 10})
@@ -111,7 +111,7 @@ func TestReader_BackwardWalk_ReachesPreviousPage(t *testing.T) {
 	view := "rdr_bwd"
 	ids := seedReaderDocs(t, m, view, 25)
 
-	r := NewMongoViewReader(m)
+	r := NewMongoViewReader(m, testResolver)
 
 	// Walk forward to page 2 to get its first-doc cursor.
 	page1, _ := r.ReadPage(context.Background(), view, queries.ReadCriteria{Limit: 10})
@@ -158,7 +158,7 @@ func TestReader_BackwardFromEnd_LastN(t *testing.T) {
 	view := "rdr_last"
 	ids := seedReaderDocs(t, m, view, 25)
 
-	r := NewMongoViewReader(m)
+	r := NewMongoViewReader(m, testResolver)
 
 	// last: 10 → Backward with no cursor.
 	page, err := r.ReadPage(context.Background(), view, queries.ReadCriteria{
@@ -207,7 +207,7 @@ func TestReader_ForwardWithCustomSort_RespectsTiebreaker(t *testing.T) {
 		}
 	}
 
-	r := NewMongoViewReader(m)
+	r := NewMongoViewReader(m, testResolver)
 	sort := []queries.SortField{{Field: "name"}}
 
 	page1, err := r.ReadPage(context.Background(), view, queries.ReadCriteria{
@@ -246,7 +246,7 @@ func TestReader_LimitExceedsMax_400Like(t *testing.T) {
 	view := "rdr_max"
 	seedReaderDocs(t, m, view, 3)
 
-	r := NewMongoViewReader(m).SetMaxLimitResolver(func(v string) int64 {
+	r := NewMongoViewReader(m, testResolver).SetMaxLimitResolver(func(v string) int64 {
 		if v == "rdr_max" {
 			return 5
 		}
@@ -277,7 +277,7 @@ func TestReader_LimitUnsetUsesResolvedMax(t *testing.T) {
 	seedReaderDocs(t, m, view, 30)
 
 	// Resolver returns 5; consumer sends NO ?limit=. Expect 5 docs back.
-	r := NewMongoViewReader(m).SetMaxLimitResolver(func(v string) int64 {
+	r := NewMongoViewReader(m, testResolver).SetMaxLimitResolver(func(v string) int64 {
 		if v == view {
 			return 5
 		}
@@ -314,7 +314,7 @@ func TestReader_FieldsProjectionStripsSortFieldFromWire(t *testing.T) {
 		}
 	}
 
-	r := NewMongoViewReader(m)
+	r := NewMongoViewReader(m, testResolver)
 	// Consumer asks for ONLY email in wire AND sorts by name. The reader
 	// must auto-include `name` for the cursor builder, then strip it from
 	// the returned doc so the wire shape is exactly {email}.
@@ -363,7 +363,7 @@ func TestReader_KeysetCoexistsWithMultiClauseFilter(t *testing.T) {
 		}
 	}
 
-	r := NewMongoViewReader(m)
+	r := NewMongoViewReader(m, testResolver)
 	// MultiClause: age between 22 and 27.
 	multi := queries.MultiClause{Clauses: []any{
 		bson.M{"$gte": 22},

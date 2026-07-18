@@ -153,7 +153,9 @@ func createFrameworkTables(ctx context.Context, pool *pgxpool.Pool) error {
 			host TEXT,
 			applied_at TIMESTAMP NOT NULL,
 			applied_by TEXT NOT NULL,
-			code_version TEXT
+			code_version TEXT,
+			active_collection TEXT,
+			shadow_collection TEXT
 		)`,
 		`CREATE TABLE audit_events (
 			id            UUID         NOT NULL,

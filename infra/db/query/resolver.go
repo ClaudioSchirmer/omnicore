@@ -1,6 +1,23 @@
 package query
 
-import "github.com/ClaudioSchirmer/omnicore/infra/db/core"
+import (
+	"context"
+	"fmt"
+	"sync"
+
+	"github.com/ClaudioSchirmer/omnicore/infra/db/core"
+)
+
+// slotSuffix0 / slotSuffix1 are the two physical slots a view alternates between
+// across rebuilds. A view has a logical name and at most these two collections;
+// the registry's active_collection pointer names which one currently serves
+// reads. A NULL pointer means the bare <view> collection is active (the
+// pre-blue-green state), so the physical set a view can resolve to is
+// {<view>, <view>__0, <view>__1} — three states only until the first flip.
+const (
+	slotSuffix0 = "__0"
+	slotSuffix1 = "__1"
+)
 
 // PhysicalCollection is the physical Mongo collection a logical view currently
 // resolves to. It is deliberately NOT a bare string: the ReadModelStore port
@@ -14,41 +31,127 @@ type PhysicalCollection struct{ name string }
 // String returns the raw Mongo collection name for the driver-facing seam.
 func (p PhysicalCollection) String() string { return p.name }
 
-// ViewResolver maps a logical view name to the PhysicalCollection currently
-// serving it. The mapping is served from an in-memory pointer view: the
-// relational registry is consulted only at boot and on a slow per-lease refresh,
-// never per operation, because the active-slot pointer changes only on a rebuild
-// flip (a rare event). One instance is shared process-wide so every read-model
-// component observes a single, consistent pointer.
-//
-// Phase 1 is identity: no slot pointer is set yet (omnicore_mongo_views
-// .active_collection is NULL for every row), so Active returns the bare view
-// name and Shadow is unused. The engine handle is retained for the
-// registry-backed phase (it exposes Querier/Dialect); Phase 1 never touches it.
-type ViewResolver struct {
-	eng core.RelationalEngine
+// viewPointer is the cached slot state of one view. active is the collection
+// currently serving reads ("" means NULL ⇒ the bare view name); shadow is the
+// slot a rebuild is building ("" means no rebuild in flight).
+type viewPointer struct {
+	active string
+	shadow string
 }
 
-// NewViewResolver builds the process-wide resolver. One instance is shared by
-// every read-model component so they observe a single, consistent pointer view.
+// ViewResolver maps a logical view name to the PhysicalCollection currently
+// serving it. The mapping is served from an in-memory pointer cache: the
+// relational registry is consulted only by Refresh (at boot and, later, on a
+// slow per-lease cadence), never per operation, because the active-slot pointer
+// changes only on a rebuild flip (a rare event). One instance is shared
+// process-wide so every read-model component observes a single, consistent
+// pointer.
+//
+// A view absent from the cache (never refreshed, or a name that is not a managed
+// view — an externally-materialized upstream/embed collection) resolves to the
+// bare name, so an unwired or nil resolver behaves exactly as the pre-blue-green
+// code.
+type ViewResolver struct {
+	eng core.RelationalEngine
+
+	mu    sync.RWMutex
+	cache map[string]viewPointer
+}
+
+// NewViewResolver builds the process-wide resolver. eng backs Refresh (via its
+// neutral Querier/Dialect); a nil eng makes Refresh a no-op, so a resolver built
+// without a backend resolves every name to identity — the shape tests rely on.
 func NewViewResolver(eng core.RelationalEngine) *ViewResolver {
-	return &ViewResolver{eng: eng}
+	return &ViewResolver{eng: eng, cache: map[string]viewPointer{}}
 }
 
 // Active returns the collection currently serving reads for the given logical
-// name. For a managed view mid/post-flip this is its active slot; for any other
-// name — an externally-materialized upstream/embed collection, or (in Phase 1)
-// every view — it is the name itself. A nil resolver resolves to identity, so a
-// component wired without one behaves exactly as the pre-blue-green code.
+// name: its cached active slot, or the bare name when the pointer is NULL, the
+// view is absent from the cache, or the resolver is nil.
 func (r *ViewResolver) Active(name string) PhysicalCollection {
-	// Phase 1: identity. Phase 2 consults the cached registry pointer here,
-	// falling back to the bare name for any name that is not a managed view.
+	if r == nil {
+		return PhysicalCollection{name: name}
+	}
+	r.mu.RLock()
+	p, ok := r.cache[name]
+	r.mu.RUnlock()
+	if ok && p.active != "" {
+		return PhysicalCollection{name: p.active}
+	}
 	return PhysicalCollection{name: name}
 }
 
-// Shadow returns the inactive slot a rebuild driver builds for the given view.
-// Unused until Phase 2 introduces the slot lifecycle; defined now so the write
-// seam and the driver share one construction path for physical names.
+// Shadow returns the inactive slot a rebuild builds for the given view: the
+// other of the two slots relative to the current active one. From the bare
+// state the first shadow is <view>__0; thereafter it alternates __0 ↔ __1.
 func (r *ViewResolver) Shadow(name string) PhysicalCollection {
-	return PhysicalCollection{name: name}
+	active := name
+	if r != nil {
+		r.mu.RLock()
+		if p, ok := r.cache[name]; ok && p.active != "" {
+			active = p.active
+		}
+		r.mu.RUnlock()
+	}
+	return PhysicalCollection{name: inactiveSlot(name, active)}
+}
+
+// inactiveSlot returns the slot that is NOT the current active one. From bare
+// (active == view name or empty) the first build target is __0.
+func inactiveSlot(viewName, active string) string {
+	switch active {
+	case viewName + slotSuffix0:
+		return viewName + slotSuffix1
+	case viewName + slotSuffix1:
+		return viewName + slotSuffix0
+	default:
+		return viewName + slotSuffix0
+	}
+}
+
+// sqlLoadViewPointers reads every view's slot pointers in one scan. Bare column
+// identifiers are valid unquoted on every dialect; no placeholders, so it is
+// dialect-agnostic.
+const sqlLoadViewPointers = `SELECT view_name, active_collection, shadow_collection
+FROM omnicore_mongo_views`
+
+// Refresh reloads the whole pointer cache from the registry. Called at boot and
+// (from Phase 3) on the bounded-staleness lease. A nil resolver or a resolver
+// with no backend (nil eng — the test shape) is a no-op: the cache stays empty
+// and every name resolves to identity. Refresh swaps the cache atomically, so
+// concurrent Active/Shadow readers always see a whole, consistent snapshot.
+func (r *ViewResolver) Refresh(ctx context.Context) error {
+	if r == nil || r.eng == nil {
+		return nil
+	}
+	rows, err := r.eng.Querier().Query(ctx, sqlLoadViewPointers)
+	if err != nil {
+		return fmt.Errorf("view resolver refresh: %w", err)
+	}
+	defer rows.Close()
+
+	next := make(map[string]viewPointer)
+	for rows.Next() {
+		var name string
+		var active, shadow *string
+		if err := rows.Scan(&name, &active, &shadow); err != nil {
+			return fmt.Errorf("view resolver refresh: %w", err)
+		}
+		p := viewPointer{}
+		if active != nil {
+			p.active = *active
+		}
+		if shadow != nil {
+			p.shadow = *shadow
+		}
+		next[name] = p
+	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("view resolver refresh: %w", err)
+	}
+
+	r.mu.Lock()
+	r.cache = next
+	r.mu.Unlock()
+	return nil
 }

@@ -99,6 +99,13 @@ func (m *MongoDB) Collection(name string) *mongo.Collection {
 	return m.db.Collection(name)
 }
 
+// DropCollection drops the named collection — the retired slot reclaimed one
+// lease after a blue-green flip. A missing collection is not an error (Mongo's
+// drop is idempotent), matching Delete's "missing target is fine" posture.
+func (m *MongoDB) DropCollection(ctx context.Context, collection query.PhysicalCollection) error {
+	return m.db.Collection(collection.String()).Drop(ctx)
+}
+
 func (m *MongoDB) Upsert(ctx context.Context, collection query.PhysicalCollection, id string, doc query.Document) error {
 	col := m.collFn(collection.String())
 	filter := bson.M{"_id": id}

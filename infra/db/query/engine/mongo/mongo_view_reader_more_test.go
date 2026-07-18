@@ -25,7 +25,7 @@ func aggViewFixture(coll mongoColl) *MongoViewReader {
 	agg := query.View("agg_view").Version(1).Root("builder_test_entities").
 		Schema(builderTestSchema).
 		EmbedMany("addresses", query.FromSchema(childSchema).As("Addresses"))
-	r := NewMongoViewReader(newFakeMongo(coll))
+	r := NewMongoViewReader(newFakeMongo(coll), testResolver)
 	r.SetViews([]*query.ViewDefinition{agg})
 	return r
 }
@@ -326,7 +326,7 @@ func TestMongoViewReader_ReadByID_FilterAndIncludeArchived(t *testing.T) {
 
 func TestMongoViewReader_ResolveViewSchema_Fallbacks(t *testing.T) {
 	// A reader with no SetViews call has nil viewNodes → identity fallback node.
-	r := NewMongoViewReader(newFakeMongo(&fakeColl{count: 0}))
+	r := NewMongoViewReader(newFakeMongo(&fakeColl{count: 0}), testResolver)
 	if _, err := r.ReadPage(context.Background(), "unregistered", queries.ReadCriteria{Limit: 5}); err != nil {
 		t.Fatalf("ReadPage on nil-viewNodes reader: %v", err)
 	}

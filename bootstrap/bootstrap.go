@@ -162,6 +162,15 @@ func runWithConfig(cfg *Config, wire func(Deps) Wiring) error {
 		return err
 	}
 
+	// Prime the view resolver's pointer cache from the registry now that the
+	// schema (including migration 0002's slot columns) is in place. A failure
+	// here — e.g. an autoRun=false deployment that has not applied 0002 yet —
+	// is non-fatal: the cache stays empty and every view resolves to its bare
+	// collection, exactly the pre-blue-green behavior.
+	if err := deps.Resolver.Refresh(ctx); err != nil {
+		deps.Logger.Warn("view resolver refresh failed; serving bare collections", "err", err)
+	}
+
 	// Ensure the next 3 monthly partitions of audit_events exist. Idempotent
 	// across boots (CREATE TABLE IF NOT EXISTS), runs after migrations so the
 	// parent table is guaranteed to be in place, runs before serving HTTP so
@@ -263,7 +272,7 @@ func runWithConfig(cfg *Config, wire func(Deps) Wiring) error {
 		// collation, capped, time-series). Idempotent on steady state;
 		// strict-on-divergence by default, FORCE_REBUILD env var as the
 		// operator escape for index conflicts.
-		if err := mongo.ApplyMongoSpecs(ctx, deps.Mongo, views); err != nil {
+		if err := mongo.ApplyMongoSpecs(ctx, deps.Mongo, views, deps.Resolver); err != nil {
 			return fmt.Errorf("bootstrap: mongo apply specs: %w", err)
 		}
 
@@ -367,13 +376,13 @@ func buildDeps(cfg *Config) (Deps, error) {
 	// applyDefaults already.
 	eng.WithAudit(&cfg.Audit, logger, cfg.Auth.AuditClaims)
 	eng.WithEventPublisher(events.NewSlogPublisher(logger))
-	viewReader := mongo.NewMongoViewReader(mg)
 	// resolver maps every view to the physical collection it currently serves
 	// (its active slot). Constructed once here and shared by every read-model
-	// component (SyncEngine, composer, upstream subscribers, drift detection) so
-	// they observe one consistent pointer. eng backs the registry-consulting
-	// phase; Phase 1 resolves to the bare view name.
+	// component (the reader, SyncEngine, composer, upstream subscribers, drift
+	// detection) so they observe one consistent pointer. eng backs Refresh (the
+	// registry read); until the first flip every view resolves to its bare name.
 	resolver := query.NewViewResolver(eng)
+	viewReader := mongo.NewMongoViewReader(mg, resolver)
 
 	// Resolve the SERVICE-PRIVATE cache from cfg only (no Wire
 	// injection at this stage). If cfg.Cache.Store == "custom", the
