@@ -41,13 +41,15 @@ type ReadModelStore interface {
 	UpdateFields(ctx context.Context, collection PhysicalCollection, id string, fields Document) error
 	// HasDocuments reports whether the collection holds at least one document.
 	HasDocuments(ctx context.Context, collection PhysicalCollection) (bool, error)
-	// ObservedFieldNames returns the union of every top-level field name across
-	// all documents in the collection (drives orphan-field cleanup on rebuild).
-	ObservedFieldNames(ctx context.Context, collection PhysicalCollection) (map[string]struct{}, error)
-	// UnsetFields removes the given top-level fields from every document.
-	UnsetFields(ctx context.Context, collection PhysicalCollection, fields []string) error
 	// SnapshotDocumentIDs returns the set of every document _id in the collection.
 	SnapshotDocumentIDs(ctx context.Context, collection PhysicalCollection) (map[string]struct{}, error)
 	// DeleteByIDs removes the documents whose _id is in ids; returns the count.
 	DeleteByIDs(ctx context.Context, collection PhysicalCollection, ids []string) (int, error)
+	// ProvisionSlot brings target to the view's declared shape (indexes,
+	// validator, collation/capped/time-series) — the blue-green driver calls it
+	// on a shadow slot before backfilling.
+	ProvisionSlot(ctx context.Context, view *ViewDefinition, target PhysicalCollection) error
+	// DropCollection drops the collection — the retired slot reclaimed after a
+	// flip. A missing collection is not an error.
+	DropCollection(ctx context.Context, collection PhysicalCollection) error
 }

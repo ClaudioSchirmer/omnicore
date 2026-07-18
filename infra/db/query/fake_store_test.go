@@ -24,6 +24,11 @@ type fakeColl struct {
 
 type fakeStore struct {
 	fn func(name string) *fakeColl
+	// blue-green slot ops: recorders + forced errors.
+	provisioned  []string
+	dropped      []string
+	provisionErr error
+	dropErr      error
 }
 
 func newFakeMongo(coll *fakeColl) *fakeStore {
@@ -120,16 +125,14 @@ func (s *fakeStore) HasDocuments(_ context.Context, collection PhysicalCollectio
 	return c.count > 0, nil
 }
 
-func (s *fakeStore) ObservedFieldNames(_ context.Context, collection PhysicalCollection) (map[string]struct{}, error) {
-	c := s.fn(collection.String())
-	if c.findErr != nil {
-		return nil, c.findErr
-	}
-	return map[string]struct{}{}, nil
+func (s *fakeStore) ProvisionSlot(_ context.Context, _ *ViewDefinition, target PhysicalCollection) error {
+	s.provisioned = append(s.provisioned, target.String())
+	return s.provisionErr
 }
 
-func (s *fakeStore) UnsetFields(_ context.Context, _ PhysicalCollection, _ []string) error {
-	return nil
+func (s *fakeStore) DropCollection(_ context.Context, collection PhysicalCollection) error {
+	s.dropped = append(s.dropped, collection.String())
+	return s.dropErr
 }
 
 func (s *fakeStore) SnapshotDocumentIDs(_ context.Context, collection PhysicalCollection) (map[string]struct{}, error) {

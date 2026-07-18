@@ -106,6 +106,13 @@ func (m *MongoDB) DropCollection(ctx context.Context, collection query.PhysicalC
 	return m.db.Collection(collection.String()).Drop(ctx)
 }
 
+// ProvisionSlot brings target to view's declared Mongo shape (create with
+// collation/capped/time-series/validator + every declared index), reusing the
+// boot-time apply sequence against an explicit collection.
+func (m *MongoDB) ProvisionSlot(ctx context.Context, view *query.ViewDefinition, target query.PhysicalCollection) error {
+	return provisionSlot(ctx, m, view, target)
+}
+
 func (m *MongoDB) Upsert(ctx context.Context, collection query.PhysicalCollection, id string, doc query.Document) error {
 	col := m.collFn(collection.String())
 	filter := bson.M{"_id": id}
@@ -235,63 +242,8 @@ func (m *MongoDB) HasDocuments(ctx context.Context, collection query.PhysicalCol
 	return count > 0, nil
 }
 
-// ObservedFieldNames returns the union of every top-level field name across all
-// docs in collection ($objectToArray + $unwind + $addToSet). Drives orphan-field
-// cleanup on rebuild.
-func (m *MongoDB) ObservedFieldNames(ctx context.Context, collection query.PhysicalCollection) (map[string]struct{}, error) {
-	col := m.Collection(collection.String())
-	pipeline := []bson.D{
-		{{Key: "$project", Value: bson.M{"arr": bson.M{"$objectToArray": "$$ROOT"}}}},
-		{{Key: "$unwind", Value: "$arr"}},
-		{{Key: "$group", Value: bson.M{
-			"_id":    nil,
-			"fields": bson.M{"$addToSet": "$arr.k"},
-		}}},
-	}
-	cur, err := col.Aggregate(ctx, pipeline)
-	if err != nil {
-		return nil, fmt.Errorf("aggregate observed fields on %q: %w", collection, err)
-	}
-	defer cur.Close(ctx)
-
-	out := make(map[string]struct{})
-	if cur.Next(ctx) {
-		var doc struct {
-			Fields []string `bson:"fields"`
-		}
-		if err := cur.Decode(&doc); err != nil {
-			return nil, err
-		}
-		for _, f := range doc.Fields {
-			out[f] = struct{}{}
-		}
-	}
-	if err := cur.Err(); err != nil {
-		return nil, err
-	}
-	return out, nil
-}
-
-// UnsetFields removes the given top-level fields from every document in one
-// updateMany ($unset). No-op for an empty list.
-func (m *MongoDB) UnsetFields(ctx context.Context, collection query.PhysicalCollection, fields []string) error {
-	if len(fields) == 0 {
-		return nil
-	}
-	unset := make(bson.M, len(fields))
-	for _, f := range fields {
-		unset[f] = ""
-	}
-	col := m.Collection(collection.String())
-	_, err := col.UpdateMany(ctx, bson.M{}, bson.M{"$unset": unset})
-	if err != nil {
-		return fmt.Errorf("$unset orphan fields on %q: %w", collection, err)
-	}
-	return nil
-}
-
-// SnapshotDocumentIDs reads every doc _id into a set. The rebuild loop
-// decrements it as it composes+upserts; the leftover ids are the orphans.
+// SnapshotDocumentIDs reads every doc _id into a set. Blue-green verify uses it
+// for the shadow's completeness passes; the leftover ids are the orphans.
 // The {_id:1} projection keeps the scan to the id column — without it the
 // server streams every full document over the wire only to discard all but
 // the _id, which on a large projection is the difference between a lean

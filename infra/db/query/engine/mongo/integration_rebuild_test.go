@@ -149,16 +149,33 @@ func TestExecuteRebuild_HappyPath(t *testing.T) {
 		CurrentArtifactHash: view.ArtifactHash(),
 		CurrentCombinedHash: view.Hash(),
 	}
-	engine := query.NewSyncEngine(pg, m, testResolver, nil, "", []*query.ViewDefinition{view}, 1)
+	// Blue-green: a pg-backed resolver reflects the flip. (The driver waits one
+	// lease before backfill and one after flip; the default lease makes this
+	// test slow but correct.)
+	resolver := query.NewViewResolver(pg)
+	engine := query.NewSyncEngine(pg, m, resolver, nil, "", []*query.ViewDefinition{view}, 1)
 	if err := engine.ExecuteRebuild(context.Background(), plan, query.RebuildConfig{
 		Orphan: "delete", ServiceName: "svc",
 	}); err != nil {
 		t.Fatalf("ExecuteRebuild: %v", err)
 	}
 
-	n, _ := m.Collection("er_users").CountDocuments(context.Background(), bson.M{})
+	// The rebuild flipped to the shadow slot (er_users__0) and reclaimed the bare
+	// collection; the docs live in the now-active slot.
+	if err := resolver.Refresh(context.Background()); err != nil {
+		t.Fatalf("resolver refresh: %v", err)
+	}
+	active := resolver.Active(view.Name()).String()
+	if active != view.Name()+"__0" {
+		t.Errorf("active slot after rebuild = %q, want er_users__0", active)
+	}
+	n, _ := m.Collection(active).CountDocuments(context.Background(), bson.M{})
 	if n != 3 {
-		t.Errorf("expected 3 mongo docs after rebuild, got %d", n)
+		t.Errorf("expected 3 mongo docs in the active slot, got %d", n)
+	}
+	bare, _ := m.Collection(view.Name()).CountDocuments(context.Background(), bson.M{})
+	if bare != 0 {
+		t.Errorf("expected the bare collection reclaimed (empty), got %d docs", bare)
 	}
 	row, _ := query.ReadViewRegistry(context.Background(), pg.Querier(), pg.Dialect(), view.Name())
 	if row.Status != query.ViewRegistryStatusDone {
