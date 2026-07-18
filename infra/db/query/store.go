@@ -2,6 +2,14 @@ package query
 
 import "context"
 
+// IdentifiedDocument pairs a composed document with its _id for batch writes.
+// The rebuild loop accumulates a slice of these and hands it to BulkUpsert so
+// the whole batch crosses the store boundary in one call.
+type IdentifiedDocument struct {
+	ID  string
+	Doc Document
+}
+
 // ReadModelStore is the backend-neutral port the read-model machinery
 // (composer, SyncEngine, rebuild, drift, upstream subscriber) depends on to
 // read and write composed documents. The Mongo adapter (*MongoDB) implements
@@ -12,6 +20,12 @@ import "context"
 type ReadModelStore interface {
 	// Upsert replaces (or inserts) the document keyed by id in collection.
 	Upsert(ctx context.Context, collection, id string, doc Document) error
+	// BulkUpsert applies a batch of upserts in as few round trips as the
+	// backend allows (one unordered bulk write on Mongo). Semantically
+	// identical to calling Upsert once per element and order-independent; the
+	// rebuild loop uses it where per-document round trips dominate cost. An
+	// empty batch is a no-op.
+	BulkUpsert(ctx context.Context, collection string, docs []IdentifiedDocument) error
 	// Delete removes the document keyed by id; missing target is not an error.
 	Delete(ctx context.Context, collection, id string) error
 	// FindManyByField returns every document where field == value.

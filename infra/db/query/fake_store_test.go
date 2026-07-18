@@ -45,6 +45,17 @@ func (s *fakeStore) Upsert(_ context.Context, collection, _ string, doc Document
 	return nil
 }
 
+func (s *fakeStore) BulkUpsert(_ context.Context, collection string, docs []IdentifiedDocument) error {
+	c := s.fn(collection)
+	if c.updateErr != nil {
+		return c.updateErr
+	}
+	for _, d := range docs {
+		c.updates = append(c.updates, map[string]any{"$set": d.Doc})
+	}
+	return nil
+}
+
 func (s *fakeStore) UpdateFields(_ context.Context, collection, _ string, fields Document) error {
 	c := s.fn(collection)
 	if c.updateErr != nil {

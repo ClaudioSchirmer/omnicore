@@ -52,8 +52,11 @@ func (s *scriptStore) SnapshotDocumentIDs(ctx context.Context, collection string
 }
 
 // rebuildQuerier scripts the three surfaces ExecuteRebuild touches: the
-// registry Execs, the SELECT-id scan (ids), and the composer's per-id
-// QueryMaps (rootDoc by id; a nil map simulates a hard-deleted root).
+// registry Execs, the SELECT-id scan (ids), and the composer's batched
+// QueryMaps. ComposeBatch fetches the whole batch of roots in one IN (...)
+// lookup, so the fake returns a row for EVERY arg id that has a live root
+// (rootDoc non-nil); a nil map simulates a hard-deleted root that the IN
+// lookup simply does not return.
 func rebuildQuerier(ids []string, rootDoc func(id string) map[string]any) *fakeQuerier {
 	return &fakeQuerier{
 		queryFn: func(sql string, _ []any) (core.Rows, error) {
@@ -65,14 +68,14 @@ func rebuildQuerier(ids []string, rootDoc func(id string) map[string]any) *fakeQ
 			}}, nil
 		},
 		queryMapsFn: func(_ string, args []any) ([]map[string]any, error) {
-			if len(args) == 0 {
-				return nil, nil
+			var out []map[string]any
+			for _, a := range args {
+				id, _ := a.(string)
+				if doc := rootDoc(id); doc != nil {
+					out = append(out, doc)
+				}
 			}
-			id, _ := args[0].(string)
-			if doc := rootDoc(id); doc != nil {
-				return []map[string]any{doc}, nil
-			}
-			return nil, nil
+			return out, nil
 		},
 	}
 }

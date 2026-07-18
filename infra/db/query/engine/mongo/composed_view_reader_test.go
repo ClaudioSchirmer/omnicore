@@ -123,6 +123,10 @@ func (c *filterColl) DeleteOne(ctx context.Context, filter any, opts ...deleteOp
 	return &mongo.DeleteResult{}, nil
 }
 
+func (c *filterColl) BulkWrite(ctx context.Context, models []mongo.WriteModel, opts ...bulkOpt) (*mongo.BulkWriteResult, error) {
+	return &mongo.BulkWriteResult{UpsertedCount: int64(len(models))}, nil
+}
+
 // ─── fixtures ────────────────────────────────────────────────────────────────
 
 type cvrGadget struct{ ID, Code, MirrorID string }

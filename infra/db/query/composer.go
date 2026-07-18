@@ -3,10 +3,18 @@ package query
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	"github.com/ClaudioSchirmer/omnicore/domain"
 	"github.com/ClaudioSchirmer/omnicore/infra/db/core"
 )
+
+// maxInClauseSize caps how many ids fetchByIDs binds into a single IN (...)
+// predicate. Kept under the tightest backend ceiling (Oracle's ORA-01795 caps
+// an expression list at 1000; SQL Server tolerates ~2100 parameters) so a
+// rebuild batch of rebuildBatchSize ids is split into as many index-only IN
+// lookups as needed rather than one oversized predicate that a backend rejects.
+const maxInClauseSize = 900
 
 // Composer turns a ViewDefinition + a root key into the composed Mongo document
 // the SyncEngine upserts. The document is column-keyed (a physical mirror of
@@ -93,33 +101,71 @@ func (c *Composer) ComposeAll(ctx context.Context, view *ViewDefinition) ([]Docu
 	if err != nil {
 		return nil, err
 	}
+	if err := c.composeRows(ctx, view, rows, includeArchived); err != nil {
+		return nil, err
+	}
+	return rows, nil
+}
+
+// ComposeBatch composes exactly the roots named by ids — the batched companion
+// of the per-id Compose the rebuild loop drives. It fetches the whole batch of
+// root rows in one IN (...) lookup (chunked at maxInClauseSize) instead of one
+// SELECT per id, then runs the identical merge chain per row. The dominant
+// per-root round trip of a large rebuild collapses from one-per-row to
+// one-per-batch; the aggregate's inner reads (siblings, children, roles,
+// embeds) stay per-row, so a rich aggregate still pays for its closure. A root
+// whose id has no live row (hard-deleted, or archived under DeleteOnArchive)
+// simply does not appear in the result — the caller reconciles it as an orphan.
+// The returned documents carry their _id in the root PK column, identical to
+// Compose, so the caller keys the upsert the same way on either path.
+func (c *Composer) ComposeBatch(ctx context.Context, view *ViewDefinition, ids []string) ([]Document, error) {
+	if len(ids) == 0 {
+		return nil, nil
+	}
+	includeArchived := !view.deleteOnArchive
+	sd, _ := schemaSoftDelete(view.schema)
+	rows, err := c.fetchByIDs(ctx, view.schema, view.rootTable, schemaPK(view.schema), ids, sd, includeArchived)
+	if err != nil {
+		return nil, err
+	}
+	if err := c.composeRows(ctx, view, rows, includeArchived); err != nil {
+		return nil, err
+	}
+	return rows, nil
+}
+
+// composeRows runs the per-row merge chain over already-fetched root rows —
+// the shared body of ComposeAll and ComposeBatch. SharedBase roots recompose
+// their role sub-documents; a plain root merges siblings, shared base, base
+// children, own children, then external embeds.
+func (c *Composer) composeRows(ctx context.Context, view *ViewDefinition, rows []Document, includeArchived bool) error {
 	pk := schemaPK(view.schema)
 	if view.isSharedBaseView {
 		for _, row := range rows {
 			if err := c.composeBaseRootedRow(ctx, view, row, fmt.Sprintf("%v", row[pk]), includeArchived); err != nil {
-				return nil, err
+				return err
 			}
 		}
-		return rows, nil
+		return nil
 	}
 	for _, row := range rows {
 		if err := c.mergeOwnerSiblings(ctx, row, view.schema, fmt.Sprintf("%v", row[pk]), includeArchived); err != nil {
-			return nil, err
+			return err
 		}
 		if err := c.mergeSharedBase(ctx, row, view.schema, includeArchived); err != nil {
-			return nil, err
+			return err
 		}
 		if err := c.mergeSharedBaseChildren(ctx, row, view.schema, includeArchived); err != nil {
-			return nil, err
+			return err
 		}
 		if err := c.mergeOwnChildren(ctx, row, view.schema, includeArchived); err != nil {
-			return nil, err
+			return err
 		}
 		if err := c.applyEmbeds(ctx, row, pk, view.embeds, includeArchived); err != nil {
-			return nil, err
+			return err
 		}
 	}
-	return rows, nil
+	return nil
 }
 
 // composeBaseRootedRow fills a SharedBaseView document from its already-fetched
@@ -468,6 +514,43 @@ func (c *Composer) fetchWhere(ctx context.Context, schema *core.TableSchema, tab
 		return nil, err
 	}
 	return toBsonMaps(results, schema), nil
+}
+
+// fetchByIDs selects every row whose keyCol is in ids, applying the same
+// soft-delete gate as the single-row fetch. The id set is chunked at
+// maxInClauseSize so no single IN (...) predicate exceeds a backend's list
+// ceiling; each chunk's placeholders are rendered through the dialect and each
+// id is encoded exactly as the single-key path encodes it, so the WHERE matches
+// the stored id column on every backend. Rows arrive in no guaranteed order —
+// the caller keys each document by its PK column, never by position.
+func (c *Composer) fetchByIDs(ctx context.Context, schema *core.TableSchema, table, keyCol string, ids []string, sdCol string, includeArchived bool) ([]Document, error) {
+	d := c.eng.Dialect()
+	cond := ""
+	if !includeArchived && sdCol != "" {
+		cond = " AND " + d.QuoteIdent(sdCol) + " IS NULL"
+	}
+	out := make([]Document, 0, len(ids))
+	for start := 0; start < len(ids); start += maxInClauseSize {
+		end := start + maxInClauseSize
+		if end > len(ids) {
+			end = len(ids)
+		}
+		chunk := ids[start:end]
+		placeholders := make([]string, len(chunk))
+		args := make([]any, len(chunk))
+		for i, id := range chunk {
+			placeholders[i] = d.Placeholder(i + 1)
+			args[i] = c.encodeKey(id)
+		}
+		sql := fmt.Sprintf("SELECT * FROM %s WHERE %s IN (%s)%s",
+			d.QuoteIdent(table), d.QuoteIdent(keyCol), strings.Join(placeholders, ", "), cond)
+		results, err := c.eng.Querier().QueryMaps(ctx, sql, args...)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, toBsonMaps(results, schema)...)
+	}
+	return out, nil
 }
 
 func (c *Composer) fetchAll(ctx context.Context, schema *core.TableSchema, table, sdCol string, includeArchived bool) ([]Document, error) {

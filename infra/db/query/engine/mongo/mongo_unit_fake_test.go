@@ -16,6 +16,7 @@ type (
 	findOneOpt = options.Lister[options.FindOneOptions]
 	updateOpt  = options.Lister[options.UpdateOneOptions]
 	deleteOpt  = options.Lister[options.DeleteOneOptions]
+	bulkOpt    = options.Lister[options.BulkWriteOptions]
 )
 
 // This file provides a hand-rolled, in-process fake of the unexported
@@ -44,6 +45,10 @@ type fakeColl struct {
 	updates []bson.M // captured UpdateOne update documents
 	deletes []any    // captured DeleteOne filters
 	upd     int64    // ModifiedCount/MatchedCount to report
+
+	bulkErr    error // forced error from BulkWrite
+	bulkModels int   // total write models seen across BulkWrite calls
+	bulkCalls  int   // number of BulkWrite invocations
 }
 
 func (c *fakeColl) CountDocuments(ctx context.Context, filter any, opts ...countOpt) (int64, error) {
@@ -75,6 +80,15 @@ func (c *fakeColl) UpdateOne(ctx context.Context, filter, update any, opts ...up
 		c.updates = append(c.updates, u)
 	}
 	return &mongo.UpdateResult{MatchedCount: c.upd, ModifiedCount: c.upd}, nil
+}
+
+func (c *fakeColl) BulkWrite(ctx context.Context, models []mongo.WriteModel, opts ...bulkOpt) (*mongo.BulkWriteResult, error) {
+	if c.bulkErr != nil {
+		return nil, c.bulkErr
+	}
+	c.bulkCalls++
+	c.bulkModels += len(models)
+	return &mongo.BulkWriteResult{UpsertedCount: int64(len(models))}, nil
 }
 
 func (c *fakeColl) DeleteOne(ctx context.Context, filter any, opts ...deleteOpt) (*mongo.DeleteResult, error) {

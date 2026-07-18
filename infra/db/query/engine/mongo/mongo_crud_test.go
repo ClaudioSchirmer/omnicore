@@ -4,6 +4,7 @@ import (
 	"context"
 	"testing"
 
+	"github.com/ClaudioSchirmer/omnicore/infra/db/query"
 	"go.mongodb.org/mongo-driver/v2/bson"
 )
 
@@ -38,6 +39,43 @@ func TestMongoDB_Upsert_Error(t *testing.T) {
 	m := newFakeMongo(&fakeColl{updateErr: context.Canceled})
 	if err := m.Upsert(context.Background(), "c", "id1", bson.M{"name": "x"}); err == nil {
 		t.Fatal("expected Upsert UpdateOne error")
+	}
+}
+
+func TestMongoDB_BulkUpsert_Batches(t *testing.T) {
+	coll := &fakeColl{}
+	m := newFakeMongo(coll)
+	docs := []query.IdentifiedDocument{
+		{ID: "a", Doc: bson.M{"name": "x"}},
+		{ID: "b", Doc: bson.M{"name": "y"}},
+	}
+	if err := m.BulkUpsert(context.Background(), "c", docs); err != nil {
+		t.Fatalf("BulkUpsert: %v", err)
+	}
+	if coll.bulkCalls != 1 {
+		t.Errorf("expected 1 BulkWrite call, got %d", coll.bulkCalls)
+	}
+	if coll.bulkModels != 2 {
+		t.Errorf("expected 2 write models, got %d", coll.bulkModels)
+	}
+}
+
+func TestMongoDB_BulkUpsert_EmptyIsNoop(t *testing.T) {
+	coll := &fakeColl{bulkErr: context.Canceled} // would surface if BulkWrite ran
+	m := newFakeMongo(coll)
+	if err := m.BulkUpsert(context.Background(), "c", nil); err != nil {
+		t.Fatalf("empty BulkUpsert must be a no-op, got %v", err)
+	}
+	if coll.bulkCalls != 0 {
+		t.Errorf("empty batch must not call BulkWrite, got %d calls", coll.bulkCalls)
+	}
+}
+
+func TestMongoDB_BulkUpsert_Error(t *testing.T) {
+	m := newFakeMongo(&fakeColl{bulkErr: context.Canceled})
+	docs := []query.IdentifiedDocument{{ID: "a", Doc: bson.M{"name": "x"}}}
+	if err := m.BulkUpsert(context.Background(), "c", docs); err == nil {
+		t.Fatal("expected BulkWrite error to surface")
 	}
 }
 

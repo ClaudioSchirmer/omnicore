@@ -23,6 +23,7 @@ type mongoColl interface {
 	FindOne(ctx context.Context, filter any, opts ...options.Lister[options.FindOneOptions]) *mongo.SingleResult
 	UpdateOne(ctx context.Context, filter, update any, opts ...options.Lister[options.UpdateOneOptions]) (*mongo.UpdateResult, error)
 	DeleteOne(ctx context.Context, filter any, opts ...options.Lister[options.DeleteOneOptions]) (*mongo.DeleteResult, error)
+	BulkWrite(ctx context.Context, models []mongo.WriteModel, opts ...options.Lister[options.BulkWriteOptions]) (*mongo.BulkWriteResult, error)
 }
 
 type MongoDB struct {
@@ -104,6 +105,31 @@ func (m *MongoDB) Upsert(ctx context.Context, collection, id string, doc query.D
 	update := bson.M{"$set": doc}
 	opts := options.UpdateOne().SetUpsert(true)
 	_, err := col.UpdateOne(ctx, filter, update, opts)
+	return err
+}
+
+// BulkUpsert applies a batch of upsert-by-_id operations in a single unordered
+// bulk write — one round trip for the whole batch instead of one UpdateOne per
+// document. The rebuild loop drives it: on a 10M-row projection this collapses
+// 10M individual round trips into one per batch. Unordered so an individual
+// document failure does not stop the rest of the batch (the error still
+// surfaces, matching Upsert's per-call semantics; the rebuild aborts on it).
+// Each operation carries the same {$set: doc}, upsert:true shape as Upsert, so
+// the two paths write identical documents. An empty batch is a no-op — the
+// driver rejects a zero-length model slice, so the guard is required.
+func (m *MongoDB) BulkUpsert(ctx context.Context, collection string, docs []query.IdentifiedDocument) error {
+	if len(docs) == 0 {
+		return nil
+	}
+	models := make([]mongo.WriteModel, 0, len(docs))
+	for _, d := range docs {
+		models = append(models, mongo.NewUpdateOneModel().
+			SetFilter(bson.M{"_id": d.ID}).
+			SetUpdate(bson.M{"$set": d.Doc}).
+			SetUpsert(true))
+	}
+	col := m.collFn(collection)
+	_, err := col.BulkWrite(ctx, models, options.BulkWrite().SetOrdered(false))
 	return err
 }
 
@@ -259,9 +285,13 @@ func (m *MongoDB) UnsetFields(ctx context.Context, collection string, fields []s
 
 // SnapshotDocumentIDs reads every doc _id into a set. The rebuild loop
 // decrements it as it composes+upserts; the leftover ids are the orphans.
+// The {_id:1} projection keeps the scan to the id column — without it the
+// server streams every full document over the wire only to discard all but
+// the _id, which on a large projection is the difference between a lean
+// index-only scan and shipping the whole collection.
 func (m *MongoDB) SnapshotDocumentIDs(ctx context.Context, collection string) (map[string]struct{}, error) {
 	col := m.Collection(collection)
-	cur, err := col.Find(ctx, bson.M{}, nil)
+	cur, err := col.Find(ctx, bson.M{}, options.Find().SetProjection(bson.M{"_id": 1}))
 	if err != nil {
 		return nil, fmt.Errorf("snapshot ids on %q: %w", collection, err)
 	}

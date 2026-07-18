@@ -153,23 +153,38 @@ func (s *SyncEngine) ExecuteRebuild(ctx context.Context, plan DriftPlan, cfg Reb
 		return err
 	}
 
-	// Step 7 — compose+upsert from Postgres, tracking which ids we touched.
+	// Step 7 — compose each batch from the relational source in one set-based
+	// read and write it in one bulk upsert, tracking which ids we touched.
+	// ComposeBatch fetches the whole batch's root rows in a single IN (...)
+	// lookup and BulkUpsert writes them in a single round trip, so the two
+	// per-document round trips that dominate a large rebuild (fetch, then write)
+	// each collapse to one per batch of rebuildBatchSize. An id whose root
+	// vanished (hard-deleted, or archived under DeleteOnArchive) is absent from
+	// the composed set, so it is never written — it stays in the snapshot and is
+	// reconciled as an orphan below.
+	pkCol := view.schema.PKColumn()
 	upserted := 0
 	flush := func(batch []string) error {
-		for _, id := range batch {
-			doc, composeErr := s.composer.Compose(ctx, view, id)
-			if composeErr != nil {
-				return composeErr
-			}
-			if doc == nil {
-				continue
-			}
-			if upsertErr := s.mongo.Upsert(ctx, collection, id, doc); upsertErr != nil {
-				return upsertErr
-			}
-			delete(snapshot, id)
-			upserted++
+		if len(batch) == 0 {
+			return nil
 		}
+		composed, err := s.composer.ComposeBatch(ctx, view, batch)
+		if err != nil {
+			return err
+		}
+		if len(composed) == 0 {
+			return nil
+		}
+		docs := make([]IdentifiedDocument, 0, len(composed))
+		for _, doc := range composed {
+			id := fmt.Sprintf("%v", doc[pkCol])
+			docs = append(docs, IdentifiedDocument{ID: id, Doc: doc})
+			delete(snapshot, id)
+		}
+		if err := s.mongo.BulkUpsert(ctx, collection, docs); err != nil {
+			return err
+		}
+		upserted += len(docs)
 		return nil
 	}
 
@@ -499,22 +514,25 @@ func (s *SyncEngine) rebuildFromTable(ctx context.Context, view *ViewDefinition,
 	defer rows.Close()
 
 	batch := make([]string, 0, rebuildBatchSize)
+	pkColName := schema.PKColumn()
 
 	flush := func() error {
-		for _, id := range batch {
-			doc, err := s.composer.Compose(ctx, view, id)
-			if err != nil {
-				return err
-			}
-			if doc == nil {
-				continue
-			}
-			if err := s.mongo.Upsert(ctx, view.name, id, doc); err != nil {
-				return err
-			}
+		if len(batch) == 0 {
+			return nil
+		}
+		composed, err := s.composer.ComposeBatch(ctx, view, batch)
+		if err != nil {
+			return err
 		}
 		batch = batch[:0]
-		return nil
+		if len(composed) == 0 {
+			return nil
+		}
+		docs := make([]IdentifiedDocument, 0, len(composed))
+		for _, doc := range composed {
+			docs = append(docs, IdentifiedDocument{ID: fmt.Sprintf("%v", doc[pkColName]), Doc: doc})
+		}
+		return s.mongo.BulkUpsert(ctx, view.name, docs)
 	}
 
 	for rows.Next() {
