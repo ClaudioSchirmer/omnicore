@@ -26,6 +26,12 @@ WHERE view_name = ` + d.Placeholder(1) + `
   AND shadow_collection IS NOT NULL`
 }
 
+func sqlAbortSlotRebuild(d core.Dialect) string {
+	return `UPDATE omnicore_mongo_views
+   SET shadow_collection = NULL
+WHERE view_name = ` + d.Placeholder(1)
+}
+
 // beginSlotRebuild records the shadow slot a rebuild is building on the view's
 // registry row. From this point Refresh reports shadow != "" for the view; the
 // flip promotes it. Idempotent — re-recording the same shadow is a no-op write.
@@ -43,6 +49,18 @@ func beginSlotRebuild(ctx context.Context, q core.Querier, d core.Dialect, viewN
 func flipSlot(ctx context.Context, q core.Querier, d core.Dialect, viewName string) error {
 	if err := q.Exec(ctx, sqlFlipSlot(d), viewName); err != nil {
 		return fmt.Errorf("flip slot %q: %w", viewName, err)
+	}
+	return nil
+}
+
+// abortSlotRebuild clears the shadow pointer, ending dual-apply for the view
+// cluster-wide (every pod stops writing the shadow after its next Refresh). The
+// SyncEngine calls it when a shadow write fails past its bounded retry: the
+// half-built shadow is abandoned rather than flipped, and the live path is
+// untouched.
+func abortSlotRebuild(ctx context.Context, q core.Querier, d core.Dialect, viewName string) error {
+	if err := q.Exec(ctx, sqlAbortSlotRebuild(d), viewName); err != nil {
+		return fmt.Errorf("abort slot rebuild %q: %w", viewName, err)
 	}
 	return nil
 }

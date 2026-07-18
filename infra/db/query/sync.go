@@ -25,6 +25,14 @@ import (
 // absorbing short bursts from the Kafka reader.
 const defaultWorkerQueueDepth = 4
 
+// shadowWriteRetries / shadowWriteBackoff bound dual-apply's per-write retry on
+// the shadow slot during a rebuild. On exhaustion the rebuild is aborted (the
+// shadow flag is cleared cluster-wide) rather than failing the live path.
+const (
+	shadowWriteRetries = 3
+	shadowWriteBackoff = 50 * time.Millisecond
+)
+
 // ensureTopicsTimeout caps how long SyncEngine waits for the broker to be
 // reachable AND accept topic creation requests on startup. Tuned for
 // docker-compose boot races where Debezium/Kafka may still be coming up when
@@ -315,6 +323,16 @@ func (s *SyncEngine) run(ctx context.Context) {
 			log.Printf("sync engine: read error: %v", err)
 			continue
 		}
+		// G3 activation fence: before applying this message, ensure the pointer
+		// cache is within the lease. If it is stale and cannot be re-read, stop
+		// consuming rather than apply with a stale view of which rebuilds are
+		// active — a dual-apply that missed the shadow would leave it permanently
+		// gapped at the flip. Refreshing here also guarantees that once a driver
+		// has waited one lease after enabling dual-apply, every pod observed it.
+		if ferr := s.resolver.EnsureFresh(ctx); ferr != nil {
+			log.Printf("sync engine: dual-apply fence — cannot refresh view pointers, stopping consumption: %v", ferr)
+			return
+		}
 		event := extractEvent(msg)
 		if event.AggregateID == "" || event.AggregateType == "" || event.EventType == "" {
 			log.Printf("sync engine: incomplete metadata, skipping (topic=%s, key=%s, type=%q, eventType=%q)",
@@ -331,6 +349,62 @@ func (s *SyncEngine) run(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		}
+	}
+}
+
+// applyUpsert writes the composed document to the view's active slot and, when a
+// rebuild is in flight for the view, also to the shadow slot (dual-apply). The
+// active write keeps the steady-state semantics — its error fails the event so
+// at-least-once redelivery reconverges. A shadow-write failure is handled by
+// dualApply (bounded retry → abort) and never fails the live path.
+func (s *SyncEngine) applyUpsert(ctx context.Context, viewName, id string, doc Document) error {
+	if err := s.mongo.Upsert(ctx, s.resolver.Active(viewName), id, doc); err != nil {
+		return err
+	}
+	if shadow, on := s.resolver.ShadowActive(viewName); on {
+		s.dualApply(ctx, viewName, func() error { return s.mongo.Upsert(ctx, shadow, id, doc) })
+	}
+	return nil
+}
+
+// applyDelete removes the document from the active slot and, during a rebuild,
+// from the shadow slot too, with the same dual-apply discipline as applyUpsert.
+func (s *SyncEngine) applyDelete(ctx context.Context, viewName, id string) error {
+	if err := s.mongo.Delete(ctx, s.resolver.Active(viewName), id); err != nil {
+		return err
+	}
+	if shadow, on := s.resolver.ShadowActive(viewName); on {
+		s.dualApply(ctx, viewName, func() error { return s.mongo.Delete(ctx, shadow, id) })
+	}
+	return nil
+}
+
+// dualApply runs a shadow-slot write with a bounded retry. On exhaustion it
+// aborts the rebuild — clearing the shadow flag cluster-wide — instead of
+// failing the live path: the active write already succeeded and the offset
+// advances, so a shadow that cannot be kept current is abandoned, not flipped.
+func (s *SyncEngine) dualApply(ctx context.Context, viewName string, write func() error) {
+	var err error
+	for attempt := 0; attempt < shadowWriteRetries; attempt++ {
+		if err = write(); err == nil {
+			return
+		}
+		if attempt < shadowWriteRetries-1 {
+			select {
+			case <-time.After(shadowWriteBackoff):
+			case <-ctx.Done():
+				return
+			}
+		}
+	}
+	log.Printf("sync engine: shadow write failed for view %q after %d attempts, aborting rebuild: %v",
+		viewName, shadowWriteRetries, err)
+	if aerr := abortSlotRebuild(ctx, s.eng.Querier(), s.eng.Dialect(), viewName); aerr != nil {
+		log.Printf("sync engine: abort rebuild %q failed: %v", viewName, aerr)
+		return
+	}
+	if rerr := s.resolver.Refresh(ctx); rerr != nil {
+		log.Printf("sync engine: resolver refresh after abort %q failed: %v", viewName, rerr)
 	}
 }
 
@@ -373,7 +447,7 @@ func (s *SyncEngine) process(ctx context.Context, event kafkaEvent) error {
 		// document on ARCHIVED. An UNARCHIVED event always hits the upsert
 		// branch regardless of the flag.
 		if shouldDeleteFromView(event.EventType, view.deleteOnArchive) {
-			if err := s.mongo.Delete(ctx, s.resolver.Active(view.name), event.AggregateID); err != nil {
+			if err := s.applyDelete(ctx, view.name, event.AggregateID); err != nil {
 				return err
 			}
 			continue
@@ -385,7 +459,7 @@ func (s *SyncEngine) process(ctx context.Context, event kafkaEvent) error {
 		if doc == nil {
 			continue
 		}
-		if err := s.mongo.Upsert(ctx, s.resolver.Active(view.name), event.AggregateID, doc); err != nil {
+		if err := s.applyUpsert(ctx, view.name, event.AggregateID, doc); err != nil {
 			return err
 		}
 	}
@@ -414,12 +488,12 @@ func (s *SyncEngine) fanOutSharedBase(ctx context.Context, event kafkaEvent, bas
 				return err
 			}
 			if doc == nil {
-				if err := s.mongo.Delete(ctx, s.resolver.Active(view.name), roleID); err != nil {
+				if err := s.applyDelete(ctx, view.name, roleID); err != nil {
 					return err
 				}
 				continue
 			}
-			if err := s.mongo.Upsert(ctx, s.resolver.Active(view.name), roleID, doc); err != nil {
+			if err := s.applyUpsert(ctx, view.name, roleID, doc); err != nil {
 				return err
 			}
 		}
@@ -451,12 +525,12 @@ func (s *SyncEngine) recomposeBaseRooted(ctx context.Context, event kafkaEvent, 
 			return err
 		}
 		if doc == nil {
-			if err := s.mongo.Delete(ctx, s.resolver.Active(rt.view.name), baseID); err != nil {
+			if err := s.applyDelete(ctx, rt.view.name, baseID); err != nil {
 				return err
 			}
 			continue
 		}
-		if err := s.mongo.Upsert(ctx, s.resolver.Active(rt.view.name), baseID, doc); err != nil {
+		if err := s.applyUpsert(ctx, rt.view.name, baseID, doc); err != nil {
 			return err
 		}
 	}

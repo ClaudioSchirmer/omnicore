@@ -4,9 +4,16 @@ import (
 	"context"
 	"fmt"
 	"sync"
+	"time"
 
 	"github.com/ClaudioSchirmer/omnicore/infra/db/core"
 )
+
+// defaultResolverLease bounds how stale a pod's pointer cache may be before an
+// apply forces a re-read. It is the bounded-staleness lease of the G3 fence: a
+// rebuild driver waits one lease (plus margin) after enabling dual-apply so that
+// every consuming pod has re-read the flag before the backfill starts.
+const defaultResolverLease = 15 * time.Second
 
 // slotSuffix0 / slotSuffix1 are the two physical slots a view alternates between
 // across rebuilds. A view has a logical name and at most these two collections;
@@ -52,17 +59,19 @@ type viewPointer struct {
 // bare name, so an unwired or nil resolver behaves exactly as the pre-blue-green
 // code.
 type ViewResolver struct {
-	eng core.RelationalEngine
+	eng   core.RelationalEngine
+	lease time.Duration
 
-	mu    sync.RWMutex
-	cache map[string]viewPointer
+	mu          sync.RWMutex
+	cache       map[string]viewPointer
+	lastRefresh time.Time
 }
 
 // NewViewResolver builds the process-wide resolver. eng backs Refresh (via its
 // neutral Querier/Dialect); a nil eng makes Refresh a no-op, so a resolver built
 // without a backend resolves every name to identity — the shape tests rely on.
 func NewViewResolver(eng core.RelationalEngine) *ViewResolver {
-	return &ViewResolver{eng: eng, cache: map[string]viewPointer{}}
+	return &ViewResolver{eng: eng, lease: defaultResolverLease, cache: map[string]viewPointer{}}
 }
 
 // Active returns the collection currently serving reads for the given logical
@@ -152,6 +161,42 @@ func (r *ViewResolver) Refresh(ctx context.Context) error {
 
 	r.mu.Lock()
 	r.cache = next
+	r.lastRefresh = time.Now()
 	r.mu.Unlock()
 	return nil
+}
+
+// ShadowActive reports whether a rebuild is in flight for the view — i.e. its
+// registry row records a shadow slot — and returns that slot. The SyncEngine
+// consults it per write: when true, dual-apply fans the recompose/delete into
+// the shadow as well as the active slot.
+func (r *ViewResolver) ShadowActive(name string) (PhysicalCollection, bool) {
+	if r == nil {
+		return PhysicalCollection{}, false
+	}
+	r.mu.RLock()
+	p, ok := r.cache[name]
+	r.mu.RUnlock()
+	if ok && p.shadow != "" {
+		return PhysicalCollection{name: p.shadow}, true
+	}
+	return PhysicalCollection{}, false
+}
+
+// EnsureFresh is the G3 activation fence: if the cache is older than the lease it
+// re-reads the registry before the caller applies anything, and surfaces the
+// error if the re-read fails so the caller can stop consuming rather than apply
+// with a stale view of which rebuilds are active. A nil resolver or one with no
+// backend is always "fresh" (nothing to fence).
+func (r *ViewResolver) EnsureFresh(ctx context.Context) error {
+	if r == nil || r.eng == nil {
+		return nil
+	}
+	r.mu.RLock()
+	stale := time.Since(r.lastRefresh) > r.lease
+	r.mu.RUnlock()
+	if !stale {
+		return nil
+	}
+	return r.Refresh(ctx)
 }

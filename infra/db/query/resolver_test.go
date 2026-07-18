@@ -3,6 +3,7 @@ package query
 import (
 	"context"
 	"testing"
+	"time"
 
 	"github.com/ClaudioSchirmer/omnicore/infra/db/core"
 )
@@ -76,6 +77,60 @@ func TestViewResolver_NilSafe(t *testing.T) {
 	}
 	if got := r.Shadow("x").String(); got != "x__0" {
 		t.Errorf("nil Shadow = %q, want x__0", got)
+	}
+}
+
+// ShadowActive reports (shadow, true) only while a rebuild is recorded.
+func TestViewResolver_ShadowActive(t *testing.T) {
+	if _, on := NewViewResolver(nil).ShadowActive("v"); on {
+		t.Error("empty resolver must report no active rebuild")
+	}
+	shadow := "v__0"
+	r := NewViewResolver(newFakeEngine(&fakeQuerier{queryFn: pointerRows("v", nil, &shadow)}))
+	if err := r.Refresh(context.Background()); err != nil {
+		t.Fatalf("Refresh: %v", err)
+	}
+	got, on := r.ShadowActive("v")
+	if !on || got.String() != "v__0" {
+		t.Errorf("ShadowActive = (%q, %v), want (v__0, true)", got.String(), on)
+	}
+}
+
+// EnsureFresh re-reads only when the cache is older than the lease, and surfaces
+// a re-read failure so the caller can stop consuming.
+func TestViewResolver_EnsureFresh(t *testing.T) {
+	if err := NewViewResolver(nil).EnsureFresh(context.Background()); err != nil {
+		t.Fatalf("nil-eng EnsureFresh must be a no-op, got %v", err)
+	}
+
+	var calls int
+	q := &fakeQuerier{queryFn: func(string, []any) (core.Rows, error) { calls++; return &fakeRows{}, nil }}
+	r := NewViewResolver(newFakeEngine(q))
+	if err := r.Refresh(context.Background()); err != nil { // calls == 1, lastRefresh = now
+		t.Fatalf("Refresh: %v", err)
+	}
+	if err := r.EnsureFresh(context.Background()); err != nil {
+		t.Fatalf("fresh EnsureFresh: %v", err)
+	}
+	if calls != 1 {
+		t.Errorf("fresh cache must not re-read, calls = %d", calls)
+	}
+	r.lease = -time.Second // force staleness
+	if err := r.EnsureFresh(context.Background()); err != nil {
+		t.Fatalf("stale EnsureFresh: %v", err)
+	}
+	if calls != 2 {
+		t.Errorf("stale cache must re-read, calls = %d", calls)
+	}
+}
+
+func TestViewResolver_EnsureFresh_RefreshErrorSurfaces(t *testing.T) {
+	r := NewViewResolver(newFakeEngine(&fakeQuerier{
+		queryFn: func(string, []any) (core.Rows, error) { return nil, errFake },
+	}))
+	r.lease = -time.Second // stale → forces the failing re-read
+	if err := r.EnsureFresh(context.Background()); err == nil {
+		t.Fatal("stale EnsureFresh with a failing re-read must surface the error")
 	}
 }
 
