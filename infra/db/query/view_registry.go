@@ -52,6 +52,13 @@ type ViewRegistryRow struct {
 	AppliedAt            time.Time
 	AppliedBy            string
 	CodeVersion          *string
+	// ActiveCollection is the physical Mongo collection currently serving reads
+	// for this view; nil (NULL) means the bare <ViewName> collection is active
+	// (the pre-blue-green state). ShadowCollection is the slot being built during
+	// an online rebuild; non-nil is the dual-apply signal and names the build
+	// target, nil between rebuilds.
+	ActiveCollection *string
+	ShadowCollection *string
 }
 
 // The registry helpers run through the backend-neutral core.Querier (the engine's
@@ -66,7 +73,8 @@ type ViewRegistryRow struct {
 const registrySelectColumns = `view_name, version, rebuild_hash, artifact_hash, combined_hash,
        previous_version, previous_combined_hash, previous_applied_at,
        status, started_at, pid, host,
-       applied_at, applied_by, code_version`
+       applied_at, applied_by, code_version,
+       active_collection, shadow_collection`
 
 // newControlPlaneID mints the framework-standard surrogate id for a
 // control-plane row: a UUID v7 generated in Go, returned as a domain.ID so the
@@ -156,6 +164,8 @@ func scanRegistryRow(s interface{ Scan(...any) error }, out *ViewRegistryRow) er
 		&out.AppliedAt,
 		&out.AppliedBy,
 		&out.CodeVersion,
+		&out.ActiveCollection,
+		&out.ShadowCollection,
 	)
 }
 

@@ -353,11 +353,13 @@ func TestUp_AppliesFrameworkThenService(t *testing.T) {
 	}
 
 	fwV, fwDirty := fw.state()
-	if fwV != 1 || fwDirty {
-		t.Errorf("framework plane must land at (1, clean), got (%d, %v)", fwV, fwDirty)
+	if fwV != 2 || fwDirty {
+		t.Errorf("framework plane must land at (2, clean), got (%d, %v)", fwV, fwDirty)
 	}
-	if runs := fw.runBodies(); len(runs) != 1 || !strings.Contains(runs[0], "OmniCore framework control plane") {
-		t.Errorf("framework must run exactly the embedded 0001 migration, got %d run(s)", len(runs))
+	if runs := fw.runBodies(); len(runs) != 2 ||
+		!strings.Contains(runs[0], "OmniCore framework control plane") ||
+		!strings.Contains(runs[1], "blue-green view rebuild slots") {
+		t.Errorf("framework must run the embedded 0001 then 0002 migrations, got %d run(s)", len(runs))
 	}
 
 	svcV, svcDirty := svc.state()
@@ -387,8 +389,8 @@ func TestUp_NoChangeOnRerun(t *testing.T) {
 	if err := m.Up(context.Background()); err != nil {
 		t.Fatalf("second Up must absorb ErrNoChange, got: %v", err)
 	}
-	if got := len(fw.runBodies()); got != 1 {
-		t.Errorf("framework migration must run once, ran %d times", got)
+	if got := len(fw.runBodies()); got != 2 {
+		t.Errorf("framework migrations must run twice (0001+0002), ran %d times", got)
 	}
 	if got := len(svc.runBodies()); got != 1 {
 		t.Errorf("service migration must run once, ran %d times", got)
@@ -444,7 +446,7 @@ func TestUp_MissingServiceDirSkipsServiceStage(t *testing.T) {
 	if err := m.Up(context.Background()); err != nil {
 		t.Fatalf("missing service dir must be treated as an empty sequence, got: %v", err)
 	}
-	if v, _ := fw.state(); v != 1 {
+	if v, _ := fw.state(); v != 2 {
 		t.Errorf("framework plane must still be applied, got version %d", v)
 	}
 }
@@ -465,11 +467,11 @@ func TestUp_EmptyServiceDirSkipsServiceStage(t *testing.T) {
 	if err := m.Up(context.Background()); err != nil {
 		t.Fatalf("empty service dir must be treated as an empty sequence, got: %v", err)
 	}
-	if v, _ := fw.state(); v != 1 {
+	if v, _ := fw.state(); v != 2 {
 		t.Errorf("framework plane must still be applied, got version %d", v)
 	}
-	if runs := fw.runBodies(); len(runs) != 1 {
-		t.Errorf("framework must run exactly its embedded migration, got %d run(s)", len(runs))
+	if runs := fw.runBodies(); len(runs) != 2 {
+		t.Errorf("framework must run exactly its embedded migrations (0001+0002), got %d run(s)", len(runs))
 	}
 }
 

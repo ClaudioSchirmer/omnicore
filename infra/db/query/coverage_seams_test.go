@@ -144,7 +144,7 @@ func covAssign(dst any, src any) error {
 // EndRebuild / ListNonDone (backend-neutral over core.Querier + core.Dialect)
 // ============================================================================
 
-// registryRowValues returns a positional value slice aligned to the 15-column
+// registryRowValues returns a positional value slice aligned to the 17-column
 // SELECT in sqlReadViewRegistry. Pointer columns are passed nil (NULL).
 func registryRowValues() []any {
 	return []any{
@@ -163,6 +163,8 @@ func registryRowValues() []any {
 		time.Now(),        // applied_at
 		"users-svc@pid:1", // applied_by
 		nil,               // code_version *string
+		nil,               // active_collection *string
+		nil,               // shadow_collection *string
 	}
 }
 
