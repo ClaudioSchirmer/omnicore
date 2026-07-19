@@ -2,6 +2,7 @@ package query
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"log/slog"
@@ -11,6 +12,13 @@ import (
 )
 
 const rebuildBatchSize = 1000
+
+// ErrRebuildLockHeld is returned by ExecuteRebuild when another live instance
+// holds the per-view rebuild lock. It is NOT a failure: the boot path treats it
+// as "this pod is a follower — serve the current active slot and pick up the
+// driver's flip at runtime via the resolver's lease refresh", rather than
+// aborting the boot. Detect it with errors.Is(err, ErrRebuildLockHeld).
+var ErrRebuildLockHeld = errors.New("view rebuild lock held by another instance")
 
 // RebuildConfig governs the per-view rebuild execution. Mirrors the
 // mongo.rebuild yaml block — see bootstrap.MongoRebuildConfig and
@@ -87,12 +95,14 @@ func (s *SyncEngine) ExecuteRebuild(ctx context.Context, plan DriftPlan, cfg Reb
 		}
 	}()
 
-	// Step 3 — abort when another instance holds the lock.
+	// Step 3 — another instance holds the lock. Return the ErrRebuildLockHeld
+	// sentinel so the boot path treats this pod as a FOLLOWER (serve the active
+	// slot, wait for the driver's flip) instead of aborting.
 	if !lock.Acquired() {
 		if holder := lock.Holder(); holder != "" {
-			return fmt.Errorf("rebuild lock on view %q held by %s — another instance is rebuilding", collection, holder)
+			return fmt.Errorf("rebuild lock on view %q held by %s — another instance is rebuilding: %w", collection, holder, ErrRebuildLockHeld)
 		}
-		return fmt.Errorf("rebuild lock on view %q held by another session (holder details unavailable) — another instance of the service is rebuilding this view", collection)
+		return fmt.Errorf("rebuild lock on view %q held by another session (holder details unavailable) — another instance is rebuilding this view: %w", collection, ErrRebuildLockHeld)
 	}
 
 	// regQ is the pinned-session Querier the status writes (BeginRebuild /

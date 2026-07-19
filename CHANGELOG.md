@@ -11,6 +11,46 @@ with `1.0.0`.
 
 ## [Unreleased]
 
+### Added
+
+- **Online blue-green view rebuild.** A full rebuild (a `Version` bump or the
+  drift path at boot) no longer mutates the live Mongo collection. It builds a
+  fresh physical *shadow* slot from the relational source while the *active*
+  slot keeps serving, keeps the shadow current with in-flight writes via
+  dual-apply, verifies it (reverse + forward completeness + a field-shape
+  sample), then flips readers to it with a single registry write and reclaims
+  the retired slot — no downtime, no half-built collection ever exposed.
+  Migration `0002` (×4 dialects) adds the `active_collection`/`shadow_collection`
+  pointer columns to `omnicore_mongo_views` (NULL active = the bare `<view>`
+  collection, so no backfill on upgrade). Reads resolve `view → active slot`
+  through an in-memory pointer cache refreshed on a bounded-staleness lease,
+  never per query. See `mongo-schema-evolution.html`.
+
+- **The boot view rebuild is now non-blocking.** It runs in the background:
+  `/livez` comes up immediately (a long rebuild is never killed by a liveness
+  probe) while `/readyz` stays 503 until the rebuild finishes and the consumer
+  joins — the pod is alive but out of rotation until its read model is ready. A
+  fatal rebuild error still exits the process non-zero. A pod that boots while
+  another instance holds the rebuild lock is a follower — it serves the active
+  slot and picks up the flip at runtime instead of aborting. New
+  `mongo.rebuild.pointerLeaseSeconds` (0 = default 15s) tunes the activation
+  fence / settle lease and thus the boot-rebuild window.
+
+### Changed
+
+- **breaking: the `query.ReadModelStore` port signatures.** Every method now
+  takes a typed `query.PhysicalCollection` instead of a `collection string`, so
+  a raw view name can no longer reach the store as a collection by accident (it
+  will not compile) — physical names come only from the shared `ViewResolver`.
+  The orphan-field-cleanup methods `ObservedFieldNames`/`UnsetFields` are
+  **removed** from the port (blue-green builds a fresh shadow, so there are no
+  orphan fields to `$unset`); `ProvisionSlot`/`DropCollection` are added. A
+  custom `ReadModelStore` implementation must adopt the new signatures.
+  `query.DetectViewDrift` gains a trailing `*ViewResolver` argument.
+  `SyncEngine.ExecuteRebuild` now runs the blue-green sequence; the operator
+  ad-hoc `RebuildView`/`RebuildViewSince` remain in-place upsert-only. The
+  `mongo.rebuild.orphan` YAML key is retained but no longer suppresses deletion.
+
 ## [0.34.1] - 2026-07-17
 
 ### Fixed

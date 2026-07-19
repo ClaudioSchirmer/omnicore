@@ -132,7 +132,14 @@ func formatMigrationDirtyDiagnostic(version uint) string {
 // Returns nil only when the registry is fully reconciled to the declared
 // shape (every plan either No-op'd, was Init'd, was Refreshed, or
 // completed a rebuild).
-func reconcileViewDrift(ctx context.Context, cfg *Config, deps Deps, sync *query.SyncEngine, views []*query.ViewDefinition) error {
+// reconcileViewDrift runs the SYNCHRONOUS part of drift reconciliation at boot:
+// detection, the unconditional / check-mode aborts (so a bad drift still crashes
+// the boot before the HTTP server comes up), and the fast registry-only paths
+// (InitRegistryOnly / RefreshRegistryArtifactOnly). It returns the plans that
+// need a full ExecuteRebuild — the SLOW blue-green rebuild the caller runs in the
+// background so the HTTP probes come up immediately (livez 200, readyz 503 until
+// the rebuilds finish). rebuildCfg is returned alongside for the caller's loop.
+func reconcileViewDrift(ctx context.Context, cfg *Config, deps Deps, sync *query.SyncEngine, views []*query.ViewDefinition) (rebuildPlans []query.DriftPlan, rebuildCfg query.RebuildConfig, err error) {
 	// The Mongo-view drift/rebuild control plane is backend-neutral: it reads the
 	// omnicore_mongo_views registry through the engine's Querier/Dialect and
 	// serializes rebuilds on the engine's AcquireRebuildLock (PG pg_advisory_lock,
@@ -143,27 +150,27 @@ func reconcileViewDrift(ctx context.Context, cfg *Config, deps Deps, sync *query
 	// shape mismatch are their responsibility.
 	if cfg.Mongo.Rebuild.AutoRun.IsFalse() {
 		deps.Logger.Info("view drift reconciliation skipped (autoRun=false)")
-		return nil
+		return nil, rebuildCfg, nil
 	}
 
 	report, err := query.DetectViewDrift(ctx, deps.Mongo, deps.DB, views, deps.Resolver)
 	if err != nil {
-		return fmt.Errorf("bootstrap: mongo drift detect: %w", err)
+		return nil, rebuildCfg, fmt.Errorf("bootstrap: mongo drift detect: %w", err)
 	}
 
 	// Unconditional aborts under autoRun ∈ {check, true} — no escape.
 	if report.HasAny(query.DriftAlienData) {
-		return errors.New(query.FormatAlienDataDiagnostic(cfg.Relational.Dialect, report.PlansBy(query.DriftAlienData)))
+		return nil, rebuildCfg, errors.New(query.FormatAlienDataDiagnostic(cfg.Relational.Dialect, report.PlansBy(query.DriftAlienData)))
 	}
 	if report.HasAny(query.DriftForgotToBump) {
-		return errors.New(query.FormatForgotToBumpDiagnostic(report.PlansBy(query.DriftForgotToBump)))
+		return nil, rebuildCfg, errors.New(query.FormatForgotToBumpDiagnostic(report.PlansBy(query.DriftForgotToBump)))
 	}
 
 	// autoRun=check — abort on any non-None decision.
 	if cfg.Mongo.Rebuild.AutoRun.IsCheck() {
 		if !report.NeedsAction() {
 			deps.Logger.Info("view drift up to date (check mode)", "views", len(views))
-			return nil
+			return nil, rebuildCfg, nil
 		}
 		// Aggregate all check-mode diagnostics into one message naming
 		// every offending view. Each diagnostic carries the specific
@@ -185,15 +192,15 @@ func reconcileViewDrift(ctx context.Context, cfg *Config, deps Deps, sync *query
 		if plans := report.PlansBy(query.DriftDowngrade); len(plans) > 0 {
 			diags = append(diags, query.FormatDowngradeDiagnostic(plans))
 		}
-		return errors.New(strings.Join(diags, "\n"))
+		return nil, rebuildCfg, errors.New(strings.Join(diags, "\n"))
 	}
 
 	// autoRun=true — under allowDowngrade=false, downgrades still abort.
 	if !cfg.Mongo.Rebuild.AllowDowngrade && report.HasAny(query.DriftDowngrade) {
-		return errors.New(query.FormatDowngradeDiagnostic(report.PlansBy(query.DriftDowngrade)))
+		return nil, rebuildCfg, errors.New(query.FormatDowngradeDiagnostic(report.PlansBy(query.DriftDowngrade)))
 	}
 
-	rebuildCfg := query.RebuildConfig{
+	rebuildCfg = query.RebuildConfig{
 		Orphan:      cfg.Mongo.Rebuild.Orphan,
 		ServiceName: cfg.Service,
 	}
@@ -204,25 +211,26 @@ func reconcileViewDrift(ctx context.Context, cfg *Config, deps Deps, sync *query
 			continue
 		case query.DriftFreshInit:
 			if err := sync.InitRegistryOnly(ctx, plan, cfg.Service); err != nil {
-				return fmt.Errorf("bootstrap: init registry on view %q: %w", plan.View.Name(), err)
+				return nil, rebuildCfg, fmt.Errorf("bootstrap: init registry on view %q: %w", plan.View.Name(), err)
 			}
 			deps.Logger.Info("view registry initialized",
 				"view", plan.View.Name(),
 				"version", plan.CurrentVersion)
 		case query.DriftArtifactOnly:
 			if err := sync.RefreshRegistryArtifactOnly(ctx, plan, cfg.Service); err != nil {
-				return fmt.Errorf("bootstrap: refresh registry artifact on view %q: %w", plan.View.Name(), err)
+				return nil, rebuildCfg, fmt.Errorf("bootstrap: refresh registry artifact on view %q: %w", plan.View.Name(), err)
 			}
 			deps.Logger.Info("view registry artifact refreshed",
 				"view", plan.View.Name(),
 				"version", plan.CurrentVersion)
 		case query.DriftMongoWiped, query.DriftRebuildRequired, query.DriftDowngrade:
-			// All three drive a rebuild under autoRun=true (Downgrade only
-			// when allowDowngrade gated above).
-			if err := sync.ExecuteRebuild(ctx, plan, rebuildCfg); err != nil {
-				return fmt.Errorf("bootstrap: rebuild view %q: %w", plan.View.Name(), err)
-			}
+			// All three drive a full blue-green rebuild under autoRun=true
+			// (Downgrade only when allowDowngrade gated above). These are the
+			// SLOW paths — collected and returned so the caller runs them in the
+			// background while the HTTP probes are already up (readyz 503 until
+			// they finish).
+			rebuildPlans = append(rebuildPlans, plan)
 		}
 	}
-	return nil
+	return rebuildPlans, rebuildCfg, nil
 }

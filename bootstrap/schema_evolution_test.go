@@ -98,7 +98,7 @@ func TestReconcileViewDrift_AutoRunFalse_SkipsDetection(t *testing.T) {
 		// Postgres + Mongo intentionally nil — must NOT be accessed.
 	}
 
-	if err := reconcileViewDrift(context.Background(), cfg, deps, nil, nil); err != nil {
+	if _, _, err := reconcileViewDrift(context.Background(), cfg, deps, nil, nil); err != nil {
 		t.Fatalf("autoRun=false must return nil without touching the relational engine/Mongo; got: %v", err)
 	}
 }

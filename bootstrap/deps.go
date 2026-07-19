@@ -157,4 +157,9 @@ type Deps struct {
 	// and Mongo handles close. nil when the service declares no views;
 	// SyncEngine.Shutdown is nil-safe either way.
 	SyncEngine *query.SyncEngine
+
+	// bootRebuild coordinates the background boot-time view rebuild with the
+	// probes and the drain. Unexported — internal boot machinery. nil when the
+	// service declares no views or autoRun skipped the rebuild.
+	bootRebuild *bootRebuild
 }

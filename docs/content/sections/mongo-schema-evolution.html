@@ -1,5 +1,5 @@
 <h2>Mongo schema evolution</h2>
-    <p>Symmetric to the relational migration policy, but operating on Mongo read-side projections rather than the relational schema. Covers drift detection between the code-declared <code>ViewDefinition</code> shape and the materialized Mongo collection state, the rebuild trigger, cleanup of orphan fields and documents, and concurrency protection across rolling-deployed pods. The control plane lives entirely in the relational backend — the <code>omnicore_mongo_views</code> table created by framework migration 0001 (present in the Postgres, MySQL, SQL Server and Oracle dialects alike) — and is backend-neutral: drift reads go through the engine's <code>Querier</code>/<code>Dialect</code> and the rebuild mutex through <code>AcquireRebuildLock</code>. Mongo collections carry only domain data — no framework-reserved <code>_id</code>s.</p>
+    <p>Symmetric to the relational migration policy, but operating on Mongo read-side projections rather than the relational schema. Covers drift detection between the code-declared <code>ViewDefinition</code> shape and the materialized Mongo collection state, the rebuild trigger, and concurrency protection across rolling-deployed pods. A full rebuild runs <strong>online, blue-green</strong>: it builds a fresh physical collection from the relational source while the live one keeps serving, keeps it current with in-flight writes, verifies it, then flips readers to it atomically — no downtime, no half-built collection ever exposed. The control plane lives entirely in the relational backend — the <code>omnicore_mongo_views</code> table created by framework migration 0001, with the blue-green slot pointers added in migration 0002 (present in the Postgres, MySQL, SQL Server and Oracle dialects alike) — and is backend-neutral: drift reads go through the engine's <code>Querier</code>/<code>Dialect</code> and the rebuild mutex through <code>AcquireRebuildLock</code>. Mongo collections carry only domain data — no framework-reserved <code>_id</code>s.</p>
 
     <h3>Three-mode control model</h3>
     <p>Both <code>migrations.autoRun</code> and <code>mongo.rebuild.autoRun</code> carry the same closed-set enum: <strong><code>check | true | false</code></strong>.</p>
@@ -49,8 +49,11 @@ pid                    TEXT                         -- holder pid during 'proces
 host                   TEXT                         -- holder host during 'processing'
 applied_at             TIMESTAMP NOT NULL
 applied_by             TEXT NOT NULL                -- "&lt;svc&gt;@pid:&lt;n&gt;" or "manual-reconcile-*"
-code_version           TEXT                         -- OMNICORE_CODE_VERSION env</code></pre>
+code_version           TEXT                         -- OMNICORE_CODE_VERSION env
+active_collection      TEXT                         -- migration 0002: physical slot serving reads; NULL = the bare &lt;view&gt; collection
+shadow_collection      TEXT                         -- migration 0002: slot being built; NON-NULL turns on dual-apply cluster-wide</code></pre>
     <p>Partial index <code>omnicore_mongo_views_status_idx ON status WHERE status &lt;&gt; 'done'</code> keeps "show every rebuild mid-flight" queries on a constant-cost path.</p>
+    <p><strong>The active-slot pointer.</strong> A view has a logical name and <strong>two physical slots</strong>, <code>&lt;view&gt;__0</code> and <code>&lt;view&gt;__1</code>; <code>active_collection</code> names the one currently serving reads. A NULL pointer means the bare <code>&lt;view&gt;</code> collection is active — the pre-blue-green state every existing deployment starts in, so migration 0002 needs no data backfill. The physical set a view resolves to is therefore <code>{&lt;view&gt;, &lt;view&gt;__0, &lt;view&gt;__1}</code>, three states only until the first flip; storage is bounded at two collections per view forever (no accumulation, no version-named collections to garbage-collect). Every read site resolves <code>view → active slot</code> through an in-memory pointer cache — the registry is read only at boot and on a slow per-lease refresh, never per query, because the pointer changes only on a flip.</p>
 
     <h3>Hybrid concurrency primitive</h3>
     <p>The rebuild path uses two primitives in tandem:</p>
@@ -65,7 +68,7 @@ code_version           TEXT                         -- OMNICORE_CODE_VERSION env
                                                                     │
 processing  ──UPDATE status='done', version, hashes, applied_at,
               started_at=NULL──&gt;  done</code></pre>
-    <p>Crash recovery: if a pod dies between the two transitions, the advisory lock auto-releases when the session drops. The next boot acquires the lock cleanly, reads the row, sees <code>status='processing'</code> AND it just acquired the lock → emits <code>slog.Warn "previous rebuild died at started_at=X, pid=Y, host=Z; taking over"</code> → re-runs <code>BeginRebuild</code> (overwrites <code>started_at</code>/<code>pid</code>/<code>host</code> with own values) → proceeds normally.</p>
+    <p>Crash recovery: if a pod dies between the two transitions, the advisory lock auto-releases when the session drops. The next boot acquires the lock cleanly, reads the row, sees <code>status='processing'</code> AND it just acquired the lock → emits <code>slog.Warn "previous rebuild died…; taking over"</code> → re-runs <code>BeginRebuild</code> (overwrites <code>started_at</code>/<code>pid</code>/<code>host</code> with own values) → proceeds normally. A crashed driver may also have left a <code>shadow_collection</code> set and a half-built shadow collection on Mongo; the takeover clears the flag (ending any lingering dual-apply) and drops the abandoned shadow before starting fresh, so no pod keeps writing an orphaned slot.</p>
 
     <h3>Drift detection at boot</h3>
     <p><code>bootstrap.Run</code> runs <code>query.DetectViewDrift</code> between <code>ApplyMongoSpecs</code> and <code>SyncEngine.Start</code>. Eight branches over (registry × Mongo × code version):</p>
@@ -82,22 +85,27 @@ processing  ──UPDATE status='done', version, hashes, applied_at,
     </tbody></table>
     <p>Under <code>autoRun=false</code>, every branch (including <code>DriftAlienData</code> and <code>DriftForgotToBump</code>) is skipped — boot proceeds and runtime errors are the operator's concern.</p>
 
+    <h3>Blue-green online rebuild</h3>
+    <p>A full rebuild never mutates the live collection. It builds the fresh <em>shadow</em> slot from the relational source while the <em>active</em> slot keeps serving, keeps the shadow current with in-flight writes via <strong>dual-apply</strong>, verifies it, then <strong>flips</strong> readers to it with a single registry write and reclaims the retired slot. Two framework properties make this clean: reads go through the active-slot pointer (the flip is one metadata write), and event apply is idempotent — the SyncEngine recomposes the whole aggregate from the source on every event — so the backfill and the live stream may overlap freely, and dual-apply needs no watermark/dedup bookkeeping.</p>
+    <p><strong>Dual-apply.</strong> While a rebuild is in flight (<code>shadow_collection</code> set), every pod fans each recompose <em>and delete</em> into BOTH the active and the shadow slot — because in a consumer group any pod may consume the event for a given aggregate. A shadow write is bounded-retried; if it keeps failing the rebuild is aborted cluster-wide (flag cleared, shadow discarded) rather than failing the live path — the active write and the consumer offset always advance.</p>
+    <p><strong>The activation fence.</strong> Dual-apply must be active on every pod BEFORE the backfill reads anything, or an event applied to the active slot only — after the backfill passed that aggregate — would leave the shadow permanently gapped. This is a bounded-staleness lease, not a stop-the-world barrier: each pod re-reads the pointer at least once per lease before applying and stops consuming rather than apply with a stale view; the driver sets the flag and waits one lease before backfilling, so every live pod has observed it.</p>
+
     <h3>Rebuild execution</h3>
-    <p><code>SyncEngine.ExecuteRebuild(ctx, plan, cfg)</code> runs the sequence on one view, on a pinned session:</p>
+    <p><code>SyncEngine.ExecuteRebuild(ctx, plan, cfg)</code> runs the blue-green sequence on one view, on a pinned session:</p>
     <ol>
-        <li><code>engine.AcquireRebuildLock(ctx, viewName)</code> — pin a session and take the lock.</li>
-        <li>If <code>!lock.Acquired()</code>, abort with a descriptive error carrying <code>lock.Holder()</code> (the current owner — pid/application/client on Postgres, connection/host on MySQL, session/host on SQL Server, session/machine on Oracle).</li>
-        <li>Defer <code>lock.Release(ctx)</code> (unlock + return the session).</li>
-        <li>Detect takeover: if <code>plan.Registry.Status=='processing'</code>, emit <code>slog.Warn</code> before the next write.</li>
-        <li><code>BeginRebuild</code> — UPDATE registry to status='processing', <code>started_at=NOW()</code>, pid, host (on the lock's pinned-session <code>Querier()</code>).</li>
-        <li><code>slog.Info "view.rebuild.start"</code>.</li>
-        <li>Cleanup orphan fields (skip on empty collection): aggregation full-scan (<code>$objectToArray + $unwind + $group</code>) returns observed top-level field names; sample-Compose on ≤5 real source ids returns expected; <code>$unset</code> the difference.</li>
-        <li>Snapshot existing <code>_id</code> set.</li>
-        <li>Compose+upsert from the relational source in batches of 1000 (root ids read via <code>engine.Querier()</code>, each decoded through <code>Dialect.DecodeID</code>). Each upsert decrements the snapshot.</li>
-        <li>Orphan reconciliation: <code>delete</code> (<code>deleteMany</code> the leftover snapshot) or <code>warn</code> per <code>cfg.Orphan</code>.</li>
-        <li><code>EndRebuild</code> — UPDATE registry to status='done' + new hashes + <code>applied_at=NOW()</code>, captures <code>previous_*</code> from row's current state via the SQL itself. <strong>Last data write.</strong></li>
-        <li><code>slog.Info "view.rebuild.end"</code> with counts + duration.</li>
+        <li><code>engine.AcquireRebuildLock(ctx, viewName)</code> — pin a session and take the lock; abort with <code>lock.Holder()</code> if another pod holds it; defer <code>lock.Release</code>.</li>
+        <li>Takeover: if the row is <code>status='processing'</code>, <code>slog.Warn</code>; if it also carries a stale <code>shadow_collection</code> (crashed driver), clear the flag and drop the abandoned shadow.</li>
+        <li><code>BeginRebuild</code> — status='processing', <code>started_at</code>/pid/host on the lock's pinned-session <code>Querier()</code>.</li>
+        <li><strong>Provision</strong> the shadow slot (the inactive one) to the declared shape — indexes, validator, collation/capped/time-series.</li>
+        <li>Record the shadow on the registry row (<code>shadow_collection</code>) — turning on dual-apply cluster-wide — and wait one lease so every pod's fence has observed it.</li>
+        <li><strong>Backfill</strong> the shadow from the relational source in batches of 1000 (root ids via <code>engine.Querier()</code>, set-based-composed and bulk-upserted). Aggregates that change during the backfill are carried in by dual-apply.</li>
+        <li><strong>Verify</strong> before any reader can see the shadow: reverse completeness (delete shadow documents whose root no longer exists — the tail reconcile of the backfill/delete race), forward completeness (recompose any live source id the shadow is missing — auto-correcting a dropped dual-apply write), and a bounded value sample comparing field shape. On failure the shadow is discarded and the flag cleared — the flip never happens, readers keep serving the untouched active slot.</li>
+        <li><strong>Flip</strong> — one registry write moves <code>active_collection</code> to the shadow and clears <code>shadow_collection</code>; readers resolve to the new slot.</li>
+        <li><code>EndRebuild</code> — status='done' + new hashes + <code>applied_at</code>, capturing <code>previous_*</code> from the row's current state. <strong>Last hash write.</strong></li>
+        <li><strong>Settle &amp; reclaim</strong> — wait one lease so dual-apply is off everywhere, then drop the retired slot (best-effort; a leaked collection is drop-and-recreated by the next rebuild).</li>
     </ol>
+    <p>Because the shadow starts empty there is nothing to reconcile against a prior shape — a removed field is simply never composed, a deleted source row simply never written; the one residual case (a row deleted during the backfill, after it was read) is caught by verify's reverse pass. At boot the same online sequence runs, but in the BACKGROUND: <code>/livez</code> comes up immediately (so a long rebuild is never killed by a liveness probe) while <code>/readyz</code> stays 503 until the rebuild finishes and the projection consumer joins — the pod is alive but out of rotation until its read model is ready. A fatal rebuild error exits the process non-zero (the orchestrator restarts it), exactly as the old synchronous boot did. A pod that boots while another instance already holds the rebuild lock is a FOLLOWER: it does not abort — it serves the current active slot and picks up the driver's flip at runtime via the resolver's lease refresh.</p>
+    <p><strong>Incremental vs full, and rollback.</strong> The blue-green path is the full rebuild (a <code>Version</code> bump or the operator <code>RebuildAllViews</code>). The operator ad-hoc <code>RebuildView</code>/<code>RebuildViewSince</code> patch the live collection in place (upsert-only — no orphan hazard) and do not use blue-green. Reverting the framework past migration 0002 drops the pointer columns; the older binary reads the bare <code>&lt;view&gt;</code> collection and, if a flip had already retired it, rebuilds it from source via its existing wipe-recovery path — automatic, no manual step.</p>
     <p>Two fast-path siblings for non-rebuild cases: <code>SyncEngine.InitRegistryOnly</code> (DriftFreshInit under autoRun=true — writes the initial registry row; no rebuild loop) and <code>SyncEngine.RefreshRegistryArtifactOnly</code> (DriftArtifactOnly under autoRun=true — UPDATE-only; indexes already reconciled by ApplyMongoSpecs).</p>
 
     <h3>YAML</h3>
@@ -106,8 +114,9 @@ processing  ──UPDATE status='done', version, hashes, applied_at,
   database: ...
   rebuild:
     autoRun: check          # check | true | false — default by profile: dev=true / else=check
-    orphan: delete          # delete | warn — default delete
-    allowDowngrade: false   # default; opt-in for canary / blue-green rollback flow</code></pre>
+    orphan: delete          # delete | warn — retained for compatibility; the blue-green shadow is always cleaned before the flip, so this no longer suppresses deletion
+    allowDowngrade: false   # default; opt-in for canary / blue-green rollback flow
+    pointerLeaseSeconds: 15 # 0 = framework default (15s). The bounded-staleness lease of the activation fence: how long the driver waits for every pod to observe the dual-apply flag before backfilling, and the post-flip settle before reclaim. Also bounds a boot rebuild's fence waits — lower it on single-pod / dev to shrink that window.</code></pre>
     <p>Strict YAML decoding on <code>mongo.rebuild</code> — unknown keys abort boot, including the removed <code>lockTTL</code> field. Consumer yamls must drop the line.</p>
     <p><code>OMNICORE_MONGO_FORCE_REBUILD=true</code> continues to govern only index divergence in <code>ApplyMongoSpecs</code> (drop+recreate divergent indexes). It does NOT trigger the rebuild path defined here and never drops collections.</p>
 
@@ -125,8 +134,8 @@ query.ListNonDone(ctx, q) ([]ViewRegistryRow, error)
 engine.AcquireRebuildLock(ctx, viewName) (core.RebuildLock, error)
 //   RebuildLock: Acquired() bool · Holder() string · Querier() core.Querier · Release(ctx) error
 
-// Drift detection
-query.DetectViewDrift(ctx, mongo, engine, views) (*DriftReport, error)
+// Drift detection (resolver = the shared ViewResolver that maps a view to its active slot)
+query.DetectViewDrift(ctx, mongo, engine, views, resolver) (*DriftReport, error)
 (*DriftReport).PlansBy(decision) []DriftPlan
 (*DriftReport).HasAny(decisions...) bool
 (*DriftReport).NeedsAction() bool

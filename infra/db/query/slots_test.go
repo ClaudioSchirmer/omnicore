@@ -46,3 +46,13 @@ func TestFlipSlot_ErrorPropagates(t *testing.T) {
 		t.Fatal("expected flip error to propagate")
 	}
 }
+
+func TestBeginAndAbortSlot_ErrorsPropagate(t *testing.T) {
+	q := &fakeQuerier{execFn: func(string, []any) error { return errFake }}
+	if err := beginSlotRebuild(context.Background(), q, fakeDialect{}, "v", "v__0"); err == nil {
+		t.Error("beginSlotRebuild must propagate the exec error")
+	}
+	if err := abortSlotRebuild(context.Background(), q, fakeDialect{}, "v"); err == nil {
+		t.Error("abortSlotRebuild must propagate the exec error")
+	}
+}

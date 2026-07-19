@@ -80,6 +80,20 @@ func TestViewResolver_NilSafe(t *testing.T) {
 	}
 }
 
+// NewViewResolverWithLease honours a positive lease and falls back to the
+// default for a non-positive one (the mongo.rebuild.pointerLeaseSeconds knob).
+func TestNewViewResolverWithLease(t *testing.T) {
+	if got := NewViewResolverWithLease(nil, 3*time.Second).lease; got != 3*time.Second {
+		t.Errorf("lease = %v, want 3s", got)
+	}
+	if got := NewViewResolverWithLease(nil, 0).lease; got != defaultResolverLease {
+		t.Errorf("zero lease must fall back to the default, got %v", got)
+	}
+	if got := NewViewResolverWithLease(nil, -time.Second).lease; got != defaultResolverLease {
+		t.Errorf("negative lease must fall back to the default, got %v", got)
+	}
+}
+
 // ShadowActive reports (shadow, true) only while a rebuild is recorded.
 func TestViewResolver_ShadowActive(t *testing.T) {
 	if _, on := NewViewResolver(nil).ShadowActive("v"); on {
@@ -93,6 +107,11 @@ func TestViewResolver_ShadowActive(t *testing.T) {
 	got, on := r.ShadowActive("v")
 	if !on || got.String() != "v__0" {
 		t.Errorf("ShadowActive = (%q, %v), want (v__0, true)", got.String(), on)
+	}
+	// nil receiver → no active rebuild.
+	var nilr *ViewResolver
+	if _, on := nilr.ShadowActive("v"); on {
+		t.Error("nil resolver must report no active rebuild")
 	}
 }
 

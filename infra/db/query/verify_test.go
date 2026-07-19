@@ -72,6 +72,17 @@ func TestVerifyShadow_SourceScanErrorPropagates(t *testing.T) {
 	}
 }
 
+func TestVerifyShadow_SourceSchemaNilErrors(t *testing.T) {
+	// A view with no root .Schema(...) has no PK to scan → sourceIDSet errors,
+	// which verify surfaces.
+	bare := View("bare").Version(1).Root("bare")
+	shadow := &fakeColl{docs: []any{shapedDoc("a")}}
+	s := scriptSyncEngine(newScriptEngine([]string{"a"}, aliveRoot), newFakeMongo(shadow), []*ViewDefinition{bare})
+	if err := s.verifyShadow(context.Background(), bare, pc("shadow")); err == nil {
+		t.Fatal("expected the no-schema error from the source scan")
+	}
+}
+
 // A clean shadow (matches the source exactly) passes all three passes untouched.
 func TestVerifyShadow_CleanPasses(t *testing.T) {
 	view := rebuildView()

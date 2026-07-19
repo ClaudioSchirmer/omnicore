@@ -67,11 +67,24 @@ type ViewResolver struct {
 	lastRefresh time.Time
 }
 
-// NewViewResolver builds the process-wide resolver. eng backs Refresh (via its
-// neutral Querier/Dialect); a nil eng makes Refresh a no-op, so a resolver built
-// without a backend resolves every name to identity — the shape tests rely on.
+// NewViewResolver builds the process-wide resolver with the default lease. eng
+// backs Refresh (via its neutral Querier/Dialect); a nil eng makes Refresh a
+// no-op, so a resolver built without a backend resolves every name to identity —
+// the shape tests rely on.
 func NewViewResolver(eng core.RelationalEngine) *ViewResolver {
-	return &ViewResolver{eng: eng, lease: defaultResolverLease, cache: map[string]viewPointer{}}
+	return NewViewResolverWithLease(eng, defaultResolverLease)
+}
+
+// NewViewResolverWithLease is NewViewResolver with an explicit bounded-staleness
+// lease — the operator knob (mongo.rebuild.pointerLeaseSeconds) that tunes how
+// long a rebuild driver waits for every pod's fence before backfilling (and thus
+// how long a boot rebuild's fence waits block). A non-positive lease falls back
+// to the default.
+func NewViewResolverWithLease(eng core.RelationalEngine, lease time.Duration) *ViewResolver {
+	if lease <= 0 {
+		lease = defaultResolverLease
+	}
+	return &ViewResolver{eng: eng, lease: lease, cache: map[string]viewPointer{}}
 }
 
 // Active returns the collection currently serving reads for the given logical

@@ -76,6 +76,23 @@ func TestSyncEngine_DualApply_ActiveFailFailsTheEvent(t *testing.T) {
 	}
 }
 
+func TestSyncEngine_DualApply_AbortErrorNeverFailsLive(t *testing.T) {
+	// Shadow write fails AND the abort's registry write also fails: dualApply
+	// logs and moves on — the live path (the active write) still succeeds.
+	ctx := context.Background()
+	resolver, eng := shadowResolver(t, "v__0")
+	eng.q.(*fakeQuerier).execFn = func(string, []any) error { return errFake }
+	colls := map[string]*fakeColl{"v": {}, "v__0": {updateErr: errFake, deleteErr: errFake}}
+	mongo := newFakeMongoFunc(func(name string) *fakeColl { return colls[name] })
+	s := &SyncEngine{eng: eng, mongo: mongo, resolver: resolver}
+	if err := s.applyDelete(ctx, "v", "id1"); err != nil {
+		t.Fatalf("live path must not fail even when the abort itself errors: %v", err)
+	}
+	if len(colls["v"].deletes) != 1 {
+		t.Errorf("active slot must still be deleted, got %d", len(colls["v"].deletes))
+	}
+}
+
 func TestSyncEngine_DualApply_ShadowFailAbortsWithoutFailingLive(t *testing.T) {
 	ctx := context.Background()
 	resolver, eng := shadowResolver(t, "v__0")

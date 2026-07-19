@@ -546,6 +546,13 @@ type MongoRebuildConfig struct {
 	AutoRun        AutoRunMode `yaml:"autoRun"`
 	Orphan         string      `yaml:"orphan"`
 	AllowDowngrade bool        `yaml:"allowDowngrade"`
+	// PointerLeaseSeconds is the bounded-staleness lease of the blue-green
+	// activation fence: how long a rebuild driver waits for every pod to observe
+	// the dual-apply flag before backfilling, and how long a post-flip settle
+	// waits before reclaim. It bounds how quickly a pod observes a flip. 0
+	// (unset) → the framework default (15s). Lower it on single-pod / dev to
+	// shrink the boot-rebuild window; raise it if pods refresh slowly.
+	PointerLeaseSeconds int `yaml:"pointerLeaseSeconds"`
 }
 
 // MongoRebuildOrphan* are the closed set of values for MongoRebuildConfig.Orphan.
@@ -559,9 +566,10 @@ const (
 // (notably lockTTL, which the hybrid lock design eliminated) instead of
 // silently ignoring them.
 var knownMongoRebuildKeys = map[string]bool{
-	"autoRun":        true,
-	"orphan":         true,
-	"allowDowngrade": true,
+	"autoRun":             true,
+	"orphan":              true,
+	"allowDowngrade":      true,
+	"pointerLeaseSeconds": true,
 }
 
 // UnmarshalYAML decodes the block and rejects unknown keys. lockTTL —
@@ -579,7 +587,7 @@ func (m *MongoRebuildConfig) UnmarshalYAML(value *yaml.Node) error {
 		keyNode := value.Content[i]
 		if !knownMongoRebuildKeys[keyNode.Value] {
 			return fmt.Errorf(
-				"mongo.rebuild: unknown field %q (allowed: autoRun, orphan, allowDowngrade) — "+
+				"mongo.rebuild: unknown field %q (allowed: autoRun, orphan, allowDowngrade, pointerLeaseSeconds) — "+
 					"see tasks/mongo_schema_evolution_2.md §17.5",
 				keyNode.Value,
 			)
@@ -624,6 +632,9 @@ func (m *MongoRebuildConfig) validate() error {
 	default:
 		return fmt.Errorf("mongo.rebuild.orphan %q invalid (want %q | %q)",
 			m.Orphan, MongoRebuildOrphanDelete, MongoRebuildOrphanWarn)
+	}
+	if m.PointerLeaseSeconds < 0 {
+		return fmt.Errorf("mongo.rebuild.pointerLeaseSeconds %d invalid (want >= 0; 0 = framework default)", m.PointerLeaseSeconds)
 	}
 	return nil
 }
