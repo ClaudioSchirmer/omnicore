@@ -32,7 +32,11 @@ with `1.0.0`.
   joins — the pod is alive but out of rotation until its read model is ready. A
   fatal rebuild error still exits the process non-zero. A pod that boots while
   another instance holds the rebuild lock is a follower — it serves the active
-  slot and picks up the flip at runtime instead of aborting. New
+  slot and picks up the flip at runtime instead of aborting. While the pod waits,
+  the `/readyz` 503 body's `reason` names the view under rebuild and its position
+  in the run (`initializing: rebuilding view "users_view" (2/5)`), falling back to
+  the generic `initializing: view rebuild in progress` in the drift-reconcile
+  window before the first view starts. New
   `mongo.rebuild.pointerLeaseSeconds` (0 = default 15s) tunes the activation
   fence / settle lease and thus the boot-rebuild window.
 

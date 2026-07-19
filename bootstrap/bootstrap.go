@@ -309,11 +309,15 @@ func runWithConfig(cfg *Config, wire func(Deps) Wiring) error {
 		// normal return path too.
 		rebuildCtx, rebuildCancel := context.WithCancel(ctx)
 		defer rebuildCancel()
-		boot := &bootRebuild{done: make(chan struct{}), errCh: make(chan error, 1), cancel: rebuildCancel}
+		boot := &bootRebuild{done: make(chan struct{}), errCh: make(chan error, 1), cancel: rebuildCancel, total: len(rebuildPlans)}
 		deps.bootRebuild = boot
 		go func() {
 			defer close(boot.done)
-			for _, plan := range rebuildPlans {
+			for i, plan := range rebuildPlans {
+				// Record which view (1-based) is rebuilding so /readyz names it in
+				// the 503 reason. Set before ExecuteRebuild so the reason reflects
+				// the view currently under work, not the one just finished.
+				boot.progress.Store(&rebuildProgress{view: plan.View.Name(), index: i + 1})
 				if err := syncEngine.ExecuteRebuild(rebuildCtx, plan, rebuildCfg); err != nil {
 					if rebuildCtx.Err() != nil {
 						return // shutting down / boot aborting mid-rebuild — not a failure
@@ -945,6 +949,23 @@ type bootRebuild struct {
 	// listener that failed to bind, a fatal rebuild) can abort an in-flight
 	// rebuild/consumer and wait for it to unwind BEFORE the stores close.
 	cancel context.CancelFunc
+	// total is the number of views the goroutine will rebuild; progress carries
+	// the one it is on right now. Both feed the /readyz 503 reason so an operator
+	// who curls the probe sees WHICH view is rebuilding and how far the run is.
+	// progress is written by the rebuild goroutine and read by the probe goroutine
+	// (readiness.check), so it is an atomic pointer; nil until the first view
+	// starts (the reconcile window falls back to the generic reason).
+	total    int
+	progress atomic.Pointer[rebuildProgress]
+}
+
+// rebuildProgress is the snapshot readiness.check renders into the /readyz reason
+// while a boot rebuild runs: the view being rebuilt and its 1-based position in
+// the run. view and index update together (one atomic Store of a fresh value), so
+// the probe never reads a torn pair.
+type rebuildProgress struct {
+	view  string
+	index int
 }
 
 // bootRebuildStopGrace bounds how long serve() waits for the background boot
@@ -980,6 +1001,12 @@ func (r *readiness) check(ctx context.Context) error {
 		return errors.New("draining")
 	}
 	if r.boot != nil && !r.boot.complete.Load() {
+		// Name the view under rebuild + its position when the goroutine has
+		// started one; the generic reason covers the window before the first view
+		// (drift reconcile) where no progress is recorded yet.
+		if p := r.boot.progress.Load(); p != nil {
+			return fmt.Errorf("initializing: rebuilding view %q (%d/%d)", p.view, p.index, r.boot.total)
+		}
 		return errors.New("initializing: view rebuild in progress")
 	}
 	ctx, cancel := context.WithTimeout(ctx, readinessProbeTimeout)
