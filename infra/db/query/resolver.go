@@ -26,6 +26,16 @@ const (
 	slotSuffix1 = "__1"
 )
 
+// PhysicalCollectionNames returns every physical collection a view named viewName
+// can occupy: the bare <view> (pre-first-flip / no blue-green) plus its two slots
+// <view>__0 and <view>__1. Any consumer that must recognize where a view may
+// physically live — most importantly the DB-per-service foreign-collection guard,
+// which would otherwise flag a view's own active/shadow slot as an orphan and
+// abort a non-dev boot — whitelists all three.
+func PhysicalCollectionNames(viewName string) []string {
+	return []string{viewName, viewName + slotSuffix0, viewName + slotSuffix1}
+}
+
 // PhysicalCollection is the physical Mongo collection a logical view currently
 // resolves to. It is deliberately NOT a bare string: the ReadModelStore port
 // accepts only this type, so a raw view name can never be handed to the store as

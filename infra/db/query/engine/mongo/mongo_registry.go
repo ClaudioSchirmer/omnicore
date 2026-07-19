@@ -180,9 +180,14 @@ func scanForeignCollections(
 // framework-owned collections + `system.*` namespace). Output is sorted
 // for deterministic error / log diagnostics.
 func filterForeignCollections(observed []string, views []*query.ViewDefinition) []string {
-	declared := make(map[string]struct{}, len(views)+1)
+	declared := make(map[string]struct{}, len(views)*3+1)
 	for _, v := range views {
-		declared[v.Name()] = struct{}{}
+		// A view can physically live in the bare <view> OR either blue-green slot
+		// (<view>__0 / <view>__1). Whitelist all three, or the guard flags the
+		// view's own active/shadow slot as a foreign orphan and aborts a non-dev boot.
+		for _, name := range query.PhysicalCollectionNames(v.Name()) {
+			declared[name] = struct{}{}
+		}
 	}
 	for _, name := range frameworkOwnedCollections() {
 		declared[name] = struct{}{}

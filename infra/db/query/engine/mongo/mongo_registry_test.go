@@ -28,6 +28,22 @@ func TestFilterForeignCollections_AllDeclared_Empty(t *testing.T) {
 	}
 }
 
+// A view's own blue-green slots (<view>__0 / <view>__1) are NOT foreign — the
+// guard must recognize a view living in a slot, or it aborts a non-dev boot on the
+// view's own active/shadow collection.
+func TestFilterForeignCollections_SlotsAreNotForeign(t *testing.T) {
+	views := []*query.ViewDefinition{query.View("gadgets").Root("gadgets")}
+	got := filterForeignCollections([]string{"gadgets", "gadgets__0", "gadgets__1"}, views)
+	if len(got) != 0 {
+		t.Errorf("got %v, want [] — a view's own slots must not be flagged foreign", got)
+	}
+	// A genuinely foreign slot (of an undeclared view) is still flagged.
+	got = filterForeignCollections([]string{"gadgets__0", "orders__0"}, views)
+	if len(got) != 1 || got[0] != "orders__0" {
+		t.Errorf("got %v, want [orders__0] (an undeclared view's slot is still foreign)", got)
+	}
+}
+
 func TestFilterForeignCollections_RegistryIsFrameworkOwned(t *testing.T) {
 	views := []*query.ViewDefinition{query.View("users").Root("users")}
 	got := filterForeignCollections([]string{"users", RegistryCollectionName}, views)
