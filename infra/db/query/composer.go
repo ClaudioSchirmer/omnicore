@@ -139,33 +139,37 @@ func (c *Composer) ComposeBatch(ctx context.Context, view *ViewDefinition, ids [
 	return rows, nil
 }
 
-// composeRows runs the per-row merge chain over already-fetched root rows —
-// the shared body of ComposeAll and ComposeBatch. SharedBase roots recompose
-// their role sub-documents; a plain root merges siblings, shared base, base
-// children, own children, then external embeds.
+// composeRows runs the merge chain over already-fetched root rows — the shared
+// body of ComposeAll and ComposeBatch. It is SET-BASED: each step fetches its
+// related source for the WHOLE batch in one IN (...) query and groups in memory
+// (composer_batch.go), so a rebuild pays one round trip per related table per
+// batch instead of one per aggregate — the difference between minutes and hours
+// at millions of rows, largest on the engines with the heaviest per-query cost.
+// The per-doc result is identical to the per-row chain (Compose): the steps run
+// in the same order — siblings, shared base, base children, own children, embeds
+// — just fanned across every row at each step. (The per-row helpers stay for the
+// single-root Compose, where there is no N+1 to collapse.)
 func (c *Composer) composeRows(ctx context.Context, view *ViewDefinition, rows []Document, includeArchived bool) error {
-	pk := schemaPK(view.schema)
-	if view.isSharedBaseView {
-		for _, row := range rows {
-			if err := c.composeBaseRootedRow(ctx, view, row, fmt.Sprintf("%v", row[pk]), includeArchived); err != nil {
-				return err
-			}
-		}
+	if len(rows) == 0 {
 		return nil
 	}
+	if view.isSharedBaseView {
+		return c.composeBaseRootedRowsBatched(ctx, view, rows, includeArchived)
+	}
+	if err := c.mergeOwnerSiblingsBatch(ctx, rows, view.schema, includeArchived); err != nil {
+		return err
+	}
+	if err := c.mergeSharedBaseBatch(ctx, rows, view.schema, includeArchived); err != nil {
+		return err
+	}
+	if err := c.mergeSharedBaseChildrenBatch(ctx, rows, view.schema, includeArchived); err != nil {
+		return err
+	}
+	if err := c.mergeOwnChildrenBatch(ctx, rows, view.schema, includeArchived); err != nil {
+		return err
+	}
+	pk := schemaPK(view.schema)
 	for _, row := range rows {
-		if err := c.mergeOwnerSiblings(ctx, row, view.schema, fmt.Sprintf("%v", row[pk]), includeArchived); err != nil {
-			return err
-		}
-		if err := c.mergeSharedBase(ctx, row, view.schema, includeArchived); err != nil {
-			return err
-		}
-		if err := c.mergeSharedBaseChildren(ctx, row, view.schema, includeArchived); err != nil {
-			return err
-		}
-		if err := c.mergeOwnChildren(ctx, row, view.schema, includeArchived); err != nil {
-			return err
-		}
 		if err := c.applyEmbeds(ctx, row, pk, view.embeds, includeArchived); err != nil {
 			return err
 		}
