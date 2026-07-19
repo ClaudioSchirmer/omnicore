@@ -157,9 +157,16 @@ func TestExecuteRebuild_StepErrors(t *testing.T) {
 	})
 	t.Run("backfillUpsertError", func(t *testing.T) {
 		slot := &fakeColl{updateErr: errFake}
-		s := scriptSyncEngine(newScriptEngine([]string{"id1"}, aliveRoot), &scriptStore{fakeStore: newFakeMongo(slot)}, []*ViewDefinition{view})
+		store := &scriptStore{fakeStore: newFakeMongo(slot)}
+		s := scriptSyncEngine(newScriptEngine([]string{"id1"}, aliveRoot), store, []*ViewDefinition{view})
 		if err := s.ExecuteRebuild(context.Background(), mkPlan(), RebuildConfig{Orphan: "delete"}); err == nil {
 			t.Fatal("expected the backfill upsert error")
+		}
+		// An aborted backfill discards the half-built shadow (clears the dual-apply
+		// flag + drops the collection) instead of leaving it live; it never flips,
+		// so the bare active is never reclaimed. dropped == [shadow] proves it.
+		if len(store.dropped) != 1 || store.dropped[0] != view.Name()+"__0" {
+			t.Errorf("expected the shadow discarded on backfill abort, dropped=%v", store.dropped)
 		}
 	})
 	t.Run("verifyError", func(t *testing.T) {

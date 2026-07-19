@@ -482,18 +482,34 @@ func (s *SyncEngine) fanOutSharedBase(ctx context.Context, event kafkaEvent, bas
 		if err != nil {
 			return err
 		}
-		for _, roleID := range roleIDs {
-			doc, err := s.composer.Compose(ctx, view, roleID)
-			if err != nil {
+		if len(roleIDs) == 0 {
+			continue
+		}
+		// Recompose all affected role docs in one set-based pass — collapses the
+		// relational N+1 (one closure re-read per role id) into one round trip per
+		// related table. The Mongo write stays per-doc through applyUpsert /
+		// applyDelete so the dual-apply-to-shadow discipline (blue-green) and the
+		// per-id at-least-once semantics are unchanged. A role id absent from the
+		// composed set is a vanished row (hard-deleted / archived under
+		// DeleteOnArchive) — its doc is removed, exactly as the nil Compose did.
+		composed, err := s.composer.ComposeBatch(ctx, view, roleIDs)
+		if err != nil {
+			return err
+		}
+		pkCol := schemaPK(view.schema)
+		present := make(map[string]struct{}, len(composed))
+		for _, doc := range composed {
+			id := fmt.Sprintf("%v", doc[pkCol])
+			present[id] = struct{}{}
+			if err := s.applyUpsert(ctx, view.name, id, doc); err != nil {
 				return err
 			}
-			if doc == nil {
-				if err := s.applyDelete(ctx, view.name, roleID); err != nil {
-					return err
-				}
+		}
+		for _, roleID := range roleIDs {
+			if _, ok := present[roleID]; ok {
 				continue
 			}
-			if err := s.applyUpsert(ctx, view.name, roleID, doc); err != nil {
+			if err := s.applyDelete(ctx, view.name, roleID); err != nil {
 				return err
 			}
 		}

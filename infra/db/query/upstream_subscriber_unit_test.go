@@ -53,8 +53,21 @@ func ordersBuyerView() *ViewDefinition {
 // ordersRootEngine returns a fakeEngine whose composer root fetch yields the
 // order root row carrying the buyer_id FK that points at the upstream doc.
 func ordersRootEngine() *fakeEngine {
-	return composerEngine(func(string, []any) ([]map[string]any, error) {
-		return mapsFromColsData([]string{"id", "buyer_id", "name"}, [][]any{{"o1", "u1", "first"}}), nil
+	// Echo a root row per requested id so BOTH the per-id (WHERE id = ?) and the
+	// set-based (WHERE id IN (...)) root fetch resolve exactly the ids they ask
+	// for — the batched ripple composes several parents in one IN lookup, and its
+	// _id must match the requested local id. An argless query keeps the legacy
+	// single "o1" row.
+	return composerEngine(func(_ string, args []any) ([]map[string]any, error) {
+		if len(args) == 0 {
+			return mapsFromColsData([]string{"id", "buyer_id", "name"}, [][]any{{"o1", "u1", "first"}}), nil
+		}
+		data := make([][]any, 0, len(args))
+		for _, a := range args {
+			id, _ := a.(string)
+			data = append(data, []any{id, "u1", "first"})
+		}
+		return mapsFromColsData([]string{"id", "buyer_id", "name"}, data), nil
 	})
 }
 

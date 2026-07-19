@@ -6,12 +6,20 @@ import (
 	"fmt"
 	"log"
 	"log/slog"
+	"sync"
 	"time"
 
 	"github.com/ClaudioSchirmer/omnicore/infra/db/core"
 )
 
-const rebuildBatchSize = 1000
+// rebuildBatchSize is the default number of root ids composed + bulk-upserted per
+// batch when yaml leaves mongo.rebuild.batchSize unset. rebuildWorkers is the
+// default number of concurrent compose+write workers driving the backfill
+// pipeline when mongo.rebuild.workers is unset — see backfillInto.
+const (
+	rebuildBatchSize = 1000
+	rebuildWorkers   = 4
+)
 
 // ErrRebuildLockHeld is returned by ExecuteRebuild when another live instance
 // holds the per-view rebuild lock. It is NOT a failure: the boot path treats it
@@ -30,6 +38,18 @@ type RebuildConfig struct {
 	// ServiceName is stamped on the registry row's applied_by field for
 	// forensics. Typically the cfg.Service value from bootstrap.LoadConfig.
 	ServiceName string
+
+	// Workers is the number of concurrent compose+write workers the backfill
+	// pipeline runs (mongo.rebuild.workers). 0 → the framework default
+	// (rebuildWorkers). Each worker composes a batch from the relational source
+	// and bulk-upserts it; they run independently because every root document is
+	// independent. The relational pool should carry at least Workers+1
+	// connections (one is pinned by the streaming root-id scan).
+	Workers int
+
+	// BatchSize is the number of root ids composed + bulk-upserted per batch
+	// (mongo.rebuild.batchSize). 0 → the framework default (rebuildBatchSize).
+	BatchSize int
 }
 
 // ExecuteRebuild runs the §10.1 sequence on one view, under the hybrid
@@ -183,8 +203,16 @@ func (s *SyncEngine) ExecuteRebuild(ctx context.Context, plan DriftPlan, cfg Reb
 	// Step 7 — backfill the shadow from the relational source. Aggregates that
 	// change during the backfill are carried into the shadow by dual-apply; the
 	// backfill captures everything else.
-	if err := s.backfillInto(ctx, view, shadow, ""); err != nil {
-		return err
+	if err := s.backfillInto(ctx, view, shadow, "", cfg.Workers, cfg.BatchSize, regQ); err != nil {
+		// A partial/aborted backfill must not linger. The pipeline already stopped
+		// every worker and returned the first error (no goroutine outlives Wait),
+		// but the dual-apply flag + half-built shadow are still live cluster-wide.
+		// Clear the flag and drop the shadow — symmetric with the verify-failure
+		// path — so no pod keeps dual-applying to a shadow that will never flip and
+		// the next rebuild starts clean. The active slot is never touched, so
+		// readers keep serving authoritative data: no flip, no data loss.
+		s.discardShadow(ctx, regQ, regD, collection, shadow)
+		return fmt.Errorf("rebuild %q: backfill shadow: %w", collection, err)
 	}
 
 	// Step 8 — verify the shadow (completeness + shape) before any reader can see
@@ -367,17 +395,49 @@ func (s *SyncEngine) RebuildAllViews(ctx context.Context) error {
 }
 
 func (s *SyncEngine) rebuildFromTable(ctx context.Context, view *ViewDefinition, since string) error {
-	return s.backfillInto(ctx, view, s.resolver.Active(view.name), since)
+	// Operator-triggered path: no RebuildConfig and no rebuild lock, so the
+	// pipeline runs at the framework defaults (0 → rebuildWorkers / rebuildBatchSize)
+	// and the scan uses the shared pool (nil scanQ).
+	return s.backfillInto(ctx, view, s.resolver.Active(view.name), since, 0, 0, nil)
 }
 
-// backfillInto streams the view's root PKs, composes each batch from the
-// relational source in one set-based read, and bulk-upserts the composed
+// backfillInto streams the view's root PKs and drives a bounded producer/consumer
+// pipeline: the scanning goroutine (this one) accumulates ids into batches and
+// hands each to a pool of `workers` goroutines, each of which composes its batch
+// from the relational source in one set-based read and bulk-upserts the composed
 // documents into target — the active slot for an in-place operator rebuild, or a
-// shadow slot for the blue-green driver. since != "" scopes the scan to rows
-// changed at/after that watermark (incremental); "" is a full backfill. An id
-// whose root vanished between the scan and the compose is absent from the
-// composed set, so it is simply never written (blue-green verify reconciles it).
-func (s *SyncEngine) backfillInto(ctx context.Context, view *ViewDefinition, target PhysicalCollection, since string) error {
+// shadow slot for the blue-green driver. Overlapping the relational scan+compose
+// with the Mongo write (and fanning independent batches across workers) collapses
+// the wall-clock from Σ(read+compose+write) toward the slowest single stage.
+//
+// since != "" scopes the scan to rows changed at/after that watermark
+// (incremental); "" is a full backfill. An id whose root vanished between the
+// scan and the compose is absent from the composed set, so it is simply never
+// written (blue-green verify reconciles it). Every root document is independent,
+// so batch order does not matter; the upsert is idempotent on _id.
+//
+// workers/batchSize come from mongo.rebuild (0 → the framework defaults).
+//
+// scanQ is the querier the streaming root-id scan runs on. The blue-green driver
+// passes the lock's PINNED session (already reserved for this rebuild and idle
+// during the backfill), so the long-lived scan cursor does NOT consume a second
+// pool connection — leaving the whole pool for the workers' composer queries.
+// The minimum pool for progress is then 2 (one for lock+scan, one for a
+// composer) instead of 3, and there is no path where the scan cursor starves the
+// composers. A nil scanQ (the operator ad-hoc path, no lock) falls back to the
+// shared pool. Either way the pool should carry at least workers+1 connections to
+// let all workers compose concurrently.
+func (s *SyncEngine) backfillInto(ctx context.Context, view *ViewDefinition, target PhysicalCollection, since string, workers, batchSize int, scanQ core.Querier) error {
+	if workers <= 0 {
+		workers = rebuildWorkers
+	}
+	if batchSize <= 0 {
+		batchSize = rebuildBatchSize
+	}
+	if scanQ == nil {
+		scanQ = s.eng.Querier()
+	}
+
 	var q string
 	var args []any
 
@@ -401,31 +461,51 @@ func (s *SyncEngine) backfillInto(ctx context.Context, view *ViewDefinition, tar
 		q = "SELECT " + pkCol + " FROM " + table + " WHERE " + uq + " >= " + idDialect.Placeholder(1) + " ORDER BY " + uq
 		args = []any{since}
 	} else {
-		order := pkCol
-		if createdCol := schema.CreatedAtColumn(); createdCol != "" {
-			order = idDialect.QuoteIdent(createdCol)
-		}
-		q = "SELECT " + pkCol + " FROM " + table + " ORDER BY " + order
+		// Full backfill: NO ORDER BY. Every live root is composed exactly once
+		// regardless of scan order, so ordering buys nothing but forces the engine
+		// to materialize a full sort of the root table (O(n log n) + temp space)
+		// before the first row can flow — a real cost at millions of rows. Dropping
+		// it lets the first batch start immediately and streams straight off the
+		// scan. Safety is unchanged: the scan reads one consistent snapshot (each
+		// live row exactly once, order-independent), a row changed during the scan
+		// is carried by dual-apply, and verify's forward-completeness pass composes
+		// any id the snapshot missed — duplicate composes are idempotent on _id.
+		q = "SELECT " + pkCol + " FROM " + table
 	}
 
-	rows, err := s.eng.Querier().Query(ctx, q, args...)
+	rows, err := scanQ.Query(ctx, q, args...)
 	if err != nil {
 		return err
 	}
 	defer rows.Close()
 
-	batch := make([]string, 0, rebuildBatchSize)
 	pkColName := schema.PKColumn()
 
-	flush := func() error {
-		if len(batch) == 0 {
-			return nil
+	// A cancelable child context lets the first failing worker/scan stop the whole
+	// pipeline; batches is bounded so a slow Mongo write back-pressures the scan.
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
+	batches := make(chan []string, workers)
+	var (
+		wg       sync.WaitGroup
+		errMu    sync.Mutex
+		firstErr error
+	)
+	fail := func(err error) {
+		errMu.Lock()
+		if firstErr == nil {
+			firstErr = err
+			cancel()
 		}
+		errMu.Unlock()
+	}
+
+	composeAndWrite := func(batch []string) error {
 		composed, err := s.composer.ComposeBatch(ctx, view, batch)
 		if err != nil {
 			return err
 		}
-		batch = batch[:0]
 		if len(composed) == 0 {
 			return nil
 		}
@@ -436,26 +516,64 @@ func (s *SyncEngine) backfillInto(ctx context.Context, view *ViewDefinition, tar
 		return s.mongo.BulkUpsert(ctx, target, docs)
 	}
 
+	for i := 0; i < workers; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for batch := range batches {
+				if ctx.Err() != nil {
+					continue // drain the channel without work once cancelled
+				}
+				if err := composeAndWrite(batch); err != nil {
+					fail(err)
+				}
+			}
+		}()
+	}
+
+	// Producer: scan the root ids, cut fixed-size batches, and hand each (a fresh
+	// slice — the sent batch is owned by a worker) to the pool. A scan error or a
+	// cancelled context stops production; close(batches) then drains the workers.
+	batch := make([]string, 0, batchSize)
+	send := func() bool {
+		select {
+		case batches <- batch:
+			batch = make([]string, 0, batchSize)
+			return true
+		case <-ctx.Done():
+			return false
+		}
+	}
 	for rows.Next() {
+		if ctx.Err() != nil {
+			break
+		}
 		var raw string
 		if err := rows.Scan(&raw); err != nil {
-			return err
+			fail(err)
+			break
 		}
 		id, err := idDialect.DecodeID(raw)
 		if err != nil {
-			return err
+			fail(err)
+			break
 		}
 		batch = append(batch, id)
-		if len(batch) >= rebuildBatchSize {
-			if err := flush(); err != nil {
-				return err
+		if len(batch) >= batchSize {
+			if !send() {
+				break
 			}
 		}
 	}
-	if rows.Err() != nil {
-		return rows.Err()
+	if err := rows.Err(); err != nil {
+		fail(err)
+	} else if ctx.Err() == nil && len(batch) > 0 {
+		send()
 	}
-	return flush()
+
+	close(batches)
+	wg.Wait()
+	return firstErr
 }
 
 // rebuildScanSQL builds the id-scan SELECT a rebuild walks: the view's root PK

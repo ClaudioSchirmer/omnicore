@@ -9,6 +9,11 @@ import (
 // recomposed and structurally compared to their shadow document before a flip.
 const verifySampleSize = 20
 
+// verifyReconcileChunk bounds how many ids a single forward-recompose or
+// reverse-delete batch carries, so the reconcile buffers stay bounded even when
+// a shadow is far off (normally both are near-empty).
+const verifyReconcileChunk = 1000
+
 // verifyShadow validates a freshly-built shadow slot before a flip. Three passes:
 //
 //  1. Reverse completeness (the G2b tail reconcile): shadow documents whose root
@@ -23,74 +28,103 @@ const verifySampleSize = 20
 //
 // Snapshot order matters: the shadow ids are read BEFORE the source ids, so a row
 // inserted mid-verify (already dual-applied into the shadow) is never mistaken
-// for an orphan and deleted.
+// for an orphan and deleted. The source ids are STREAMED against the frozen
+// shadow set rather than materialized into a second full set — only the shadow
+// snapshot plus small reconcile buffers live at once (half the footprint of the
+// old two-full-set diff), while the completeness guarantee stays exact and the
+// snapshot ordering is preserved (the shadow set is the frozen reference).
 func (s *SyncEngine) verifyShadow(ctx context.Context, view *ViewDefinition, shadow PhysicalCollection) error {
 	shadowIDs, err := s.mongo.SnapshotDocumentIDs(ctx, shadow)
 	if err != nil {
 		return fmt.Errorf("verify %q: snapshot shadow ids: %w", view.name, err)
 	}
-	sourceIDs, err := s.sourceIDSet(ctx, view)
-	if err != nil {
+
+	// Stream the source ids against the frozen shadow set: a matched id is present
+	// (removed from the set), an unmatched id is a forward gap (recompose). No
+	// recompose runs DURING the stream, so the source cursor never contends with a
+	// composer connection. A bounded sample of source ids is captured in passing
+	// for pass 3.
+	var missing []string
+	sample := make([]string, 0, verifySampleSize)
+	if err := s.streamSourceIDs(ctx, view, func(id string) error {
+		if _, ok := shadowIDs[id]; ok {
+			delete(shadowIDs, id)
+		} else {
+			missing = append(missing, id)
+		}
+		if len(sample) < verifySampleSize {
+			sample = append(sample, id)
+		}
+		return nil
+	}); err != nil {
 		return err
 	}
 
-	// Pass 1 — reverse completeness (tail reconcile).
-	var orphans []string
-	for id := range shadowIDs {
-		if _, live := sourceIDs[id]; !live {
-			orphans = append(orphans, id)
+	// Pass 2 — forward completeness (auto-correct the gaps). The source cursor is
+	// closed now, so recompose may borrow pool connections freely. Chunked so a
+	// far-off shadow does not build one oversized batch.
+	for start := 0; start < len(missing); start += verifyReconcileChunk {
+		end := start + verifyReconcileChunk
+		if end > len(missing) {
+			end = len(missing)
 		}
-	}
-	if len(orphans) > 0 {
-		if _, err := s.mongo.DeleteByIDs(ctx, shadow, orphans); err != nil {
-			return fmt.Errorf("verify %q: delete shadow orphans: %w", view.name, err)
-		}
-	}
-
-	// Pass 2 — forward completeness (auto-correct).
-	var missing []string
-	for id := range sourceIDs {
-		if _, present := shadowIDs[id]; !present {
-			missing = append(missing, id)
-		}
-	}
-	if len(missing) > 0 {
-		if err := s.recomposeInto(ctx, view, shadow, missing); err != nil {
+		if err := s.recomposeInto(ctx, view, shadow, missing[start:end]); err != nil {
 			return fmt.Errorf("verify %q: auto-correct missing ids: %w", view.name, err)
 		}
 	}
 
+	// Pass 1 — reverse completeness (tail reconcile): whatever remains in the
+	// shadow set is in the shadow but not in the source, i.e. an orphan. Chunked
+	// delete for the same reason.
+	if len(shadowIDs) > 0 {
+		orphans := make([]string, 0, len(shadowIDs))
+		for id := range shadowIDs {
+			orphans = append(orphans, id)
+		}
+		for start := 0; start < len(orphans); start += verifyReconcileChunk {
+			end := start + verifyReconcileChunk
+			if end > len(orphans) {
+				end = len(orphans)
+			}
+			if _, err := s.mongo.DeleteByIDs(ctx, shadow, orphans[start:end]); err != nil {
+				return fmt.Errorf("verify %q: delete shadow orphans: %w", view.name, err)
+			}
+		}
+	}
+
 	// Pass 3 — value sample.
-	return s.verifyValueSample(ctx, view, shadow, sourceIDs)
+	return s.verifyValueSample(ctx, view, shadow, sample)
 }
 
-// sourceIDSet returns the set of live root PKs of the view from the relational
-// source — the ground truth the shadow is verified against.
-func (s *SyncEngine) sourceIDSet(ctx context.Context, view *ViewDefinition) (map[string]struct{}, error) {
+// streamSourceIDs scans the view's live root PKs from the relational source and
+// invokes fn once per id — the streaming companion of the old full-set scan, so
+// verify never holds a second complete id set in memory.
+func (s *SyncEngine) streamSourceIDs(ctx context.Context, view *ViewDefinition, fn func(id string) error) error {
 	idDialect := s.eng.Dialect()
 	schema := view.SchemaDef()
 	if schema == nil {
-		return nil, fmt.Errorf("verify %q: view declares no root .Schema(...)", view.name)
+		return fmt.Errorf("verify %q: view declares no root .Schema(...)", view.name)
 	}
 	q := "SELECT " + idDialect.QuoteIdent(schema.PKColumn()) + " FROM " + idDialect.QuoteIdent(view.rootTable)
 	rows, err := s.eng.Querier().Query(ctx, q)
 	if err != nil {
-		return nil, fmt.Errorf("verify %q: scan source ids: %w", view.name, err)
+		return fmt.Errorf("verify %q: scan source ids: %w", view.name, err)
 	}
 	defer rows.Close()
-	set := make(map[string]struct{})
 	for rows.Next() {
 		var raw string
 		if err := rows.Scan(&raw); err != nil {
-			return nil, err
+			return err
 		}
 		id, err := idDialect.DecodeID(raw)
 		if err != nil {
-			return nil, err
+			return err
 		}
-		set[id] = struct{}{}
+		if err := fn(id); err != nil {
+			return err
+		}
 	}
-	return set, rows.Err()
+	return rows.Err()
 }
 
 // recomposeInto composes the given ids from the source and bulk-upserts the
@@ -113,15 +147,9 @@ func (s *SyncEngine) recomposeInto(ctx context.Context, view *ViewDefinition, ta
 
 // verifyValueSample recomposes a bounded sample of source ids and compares each
 // to its stored shadow document by field shape. A mismatch is re-checked once
-// (a concurrent in-flight write can transiently diverge) before it aborts.
-func (s *SyncEngine) verifyValueSample(ctx context.Context, view *ViewDefinition, shadow PhysicalCollection, sourceIDs map[string]struct{}) error {
-	sample := make([]string, 0, verifySampleSize)
-	for id := range sourceIDs {
-		sample = append(sample, id)
-		if len(sample) >= verifySampleSize {
-			break
-		}
-	}
+// (a concurrent in-flight write can transiently diverge) before it aborts. The
+// sample is gathered by verifyShadow while it streams the source ids.
+func (s *SyncEngine) verifyValueSample(ctx context.Context, view *ViewDefinition, shadow PhysicalCollection, sample []string) error {
 	for _, id := range sample {
 		ok, err := s.sampleMatches(ctx, view, shadow, id)
 		if err != nil {

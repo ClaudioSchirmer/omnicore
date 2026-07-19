@@ -656,43 +656,86 @@ func (s *UpstreamSubscriber) ripple(ctx context.Context, upstreamID string, befo
 		if discoverErr {
 			continue
 		}
+		// Collapse the relational N+1: recompose every affected local doc in ONE
+		// set-based pass (ComposeBatch) instead of one Composer.Compose per local
+		// id. The Mongo write stays per-id (a single _id upsert), so an upsert
+		// failure is still isolated to its local id in the failure registry. On a
+		// batch-compose error the batch is opaque — which id was at fault is
+		// unknown — so we fall back to per-id compose to isolate the offender
+		// exactly as the pre-batch path did.
 		failed := false
-		for _, localID := range localIDs {
-			doc, err := s.composer.Compose(ctx, v, localID)
-			if err != nil {
-				s.metrics.inc(s.cfg.Topic, v.Name(), upstreamRecomposeStageCompose)
-				s.logger.Error("upstream.recompose.compose",
-					"subscription", s.cfg.Topic,
-					"collection", s.cfg.Collection,
-					"view", v.Name(),
-					"upstreamID", upstreamID,
-					"localID", localID,
-					"err", err)
-				s.recordFailure(ctx, v.Name(), upstreamID, localID, UpstreamFailureStageCompose, err)
-				failed = true
-				continue
+		composed, batchErr := s.composer.ComposeBatch(ctx, v, localIDs)
+		if batchErr != nil {
+			for _, localID := range localIDs {
+				if s.rippleRecomposeOne(ctx, v, upstreamID, localID) {
+					failed = true
+				}
 			}
-			if doc == nil {
-				continue
+		} else {
+			pkCol := schemaPK(v.schema)
+			byID := make(map[string]Document, len(composed))
+			for _, doc := range composed {
+				byID[fmt.Sprintf("%v", doc[pkCol])] = doc
 			}
-			if err := s.mongo.Upsert(ctx, s.resolver.Active(v.Name()), localID, doc); err != nil {
-				s.metrics.inc(s.cfg.Topic, v.Name(), upstreamRecomposeStageUpsert)
-				s.logger.Error("upstream.recompose.upsert",
-					"subscription", s.cfg.Topic,
-					"collection", s.cfg.Collection,
-					"view", v.Name(),
-					"upstreamID", upstreamID,
-					"localID", localID,
-					"err", err)
-				s.recordFailure(ctx, v.Name(), upstreamID, localID, UpstreamFailureStageUpsert, err)
-				failed = true
-				continue
+			for _, localID := range localIDs {
+				doc := byID[localID]
+				if doc == nil {
+					continue // the local root vanished between discover and compose — skip, as the nil compose did
+				}
+				if s.rippleUpsertOne(ctx, v, upstreamID, localID, doc) {
+					failed = true
+				}
 			}
 		}
 		if !failed {
 			s.resolveFailures(ctx, v.Name(), upstreamID)
 		}
 	}
+}
+
+// rippleRecomposeOne composes one local doc and upserts it, recording any
+// compose- or upsert-stage failure to the registry. Returns true iff a failure
+// was recorded (a vanished local root — nil compose — is NOT a failure). It is
+// the per-id fallback the batch ripple drops to when a set-based ComposeBatch
+// fails, so a single offending id is isolated exactly as the pre-batch path did.
+func (s *UpstreamSubscriber) rippleRecomposeOne(ctx context.Context, v *ViewDefinition, upstreamID, localID string) (failed bool) {
+	doc, err := s.composer.Compose(ctx, v, localID)
+	if err != nil {
+		s.metrics.inc(s.cfg.Topic, v.Name(), upstreamRecomposeStageCompose)
+		s.logger.Error("upstream.recompose.compose",
+			"subscription", s.cfg.Topic,
+			"collection", s.cfg.Collection,
+			"view", v.Name(),
+			"upstreamID", upstreamID,
+			"localID", localID,
+			"err", err)
+		s.recordFailure(ctx, v.Name(), upstreamID, localID, UpstreamFailureStageCompose, err)
+		return true
+	}
+	if doc == nil {
+		return false
+	}
+	return s.rippleUpsertOne(ctx, v, upstreamID, localID, doc)
+}
+
+// rippleUpsertOne upserts one recomposed local doc into the view's active slot,
+// recording an upsert-stage failure to the registry on error. Returns true iff a
+// failure was recorded. Shared by the batch happy path and the per-id fallback so
+// upsert failures stay isolated per local id on both.
+func (s *UpstreamSubscriber) rippleUpsertOne(ctx context.Context, v *ViewDefinition, upstreamID, localID string, doc Document) (failed bool) {
+	if err := s.mongo.Upsert(ctx, s.resolver.Active(v.Name()), localID, doc); err != nil {
+		s.metrics.inc(s.cfg.Topic, v.Name(), upstreamRecomposeStageUpsert)
+		s.logger.Error("upstream.recompose.upsert",
+			"subscription", s.cfg.Topic,
+			"collection", s.cfg.Collection,
+			"view", v.Name(),
+			"upstreamID", upstreamID,
+			"localID", localID,
+			"err", err)
+		s.recordFailure(ctx, v.Name(), upstreamID, localID, UpstreamFailureStageUpsert, err)
+		return true
+	}
+	return false
 }
 
 // discoverRippleTargets computes the distinct local parent _ids to recompose for

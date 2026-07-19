@@ -40,6 +40,17 @@ with `1.0.0`.
   `mongo.rebuild.pointerLeaseSeconds` (0 = default 15s) tunes the activation
   fence / settle lease and thus the boot-rebuild window.
 
+- **Parallel rebuild backfill.** The shadow backfill is now a bounded
+  producer/consumer pipeline instead of a serial read→compose→write loop: the
+  streaming root-id scan cuts fixed-size batches and hands them to a pool of
+  workers that set-based-compose and bulk-upsert concurrently, so the relational
+  scan+compose overlaps the Mongo write and independent batches run in parallel.
+  Two new `mongo.rebuild` knobs tune it — `workers` (0 = default 4; the
+  relational pool must carry ≥ workers+1 connections, one pinned by the scan) and
+  `batchSize` (0 = default 1000). Every root document is independent and the
+  upsert is idempotent on `_id`, so batch order never matters. See
+  `mongo-schema-evolution.html`.
+
 ### Changed
 
 - **breaking: the `query.ReadModelStore` port signatures.** Every method now

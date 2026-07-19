@@ -55,3 +55,76 @@ func TestProcess_SharedBaseFanOut(t *testing.T) {
 		t.Errorf("base fan-out must recompose the referencing role doc, got %d upserts", len(coll.updates))
 	}
 }
+
+// No role doc references the changed identity — the fan-out is a no-op (neither
+// upsert nor delete), exercising the len(roleIDs)==0 short-circuit.
+func TestProcess_SharedBaseFanOut_NoReferencingDocs(t *testing.T) {
+	coll := &fakeColl{} // no aluno references the base
+	eng := composerEngine(func(string, []any) ([]map[string]any, error) { return nil, nil })
+	view := View("aluno").Root("aluno").Schema(fanOutRoleSchema()).Version(1)
+	s := NewSyncEngine(eng, newFakeMongo(coll), identityResolver, nil, "", []*ViewDefinition{view}, 1)
+
+	if err := s.process(context.Background(), kafkaEvent{AggregateType: "pessoa", EventType: "UPDATED", AggregateID: "p1"}); err != nil {
+		t.Fatalf("process base event: %v", err)
+	}
+	if len(coll.updates) != 0 || len(coll.deletes) != 0 {
+		t.Errorf("no referencing role docs must be a no-op, got %d upserts / %d deletes", len(coll.updates), len(coll.deletes))
+	}
+}
+
+// The projection still holds a1 but its role row vanished from the source, so the
+// batched recompose yields nothing for a1 and the fan-out removes the stale doc —
+// covering the "role id absent from the composed set → applyDelete" branch.
+func TestProcess_SharedBaseFanOut_VanishedRoleDeleted(t *testing.T) {
+	coll := &fakeColl{docs: []any{map[string]any{"_id": "a1"}}}
+	eng := composerEngine(func(sql string, _ []any) ([]map[string]any, error) {
+		return nil, nil // FROM aluno returns nothing — the role row is gone
+	})
+	view := View("aluno").Root("aluno").Schema(fanOutRoleSchema()).Version(1)
+	s := NewSyncEngine(eng, newFakeMongo(coll), identityResolver, nil, "", []*ViewDefinition{view}, 1)
+
+	if err := s.process(context.Background(), kafkaEvent{AggregateType: "pessoa", EventType: "DELETED", AggregateID: "p1"}); err != nil {
+		t.Fatalf("process base event: %v", err)
+	}
+	if len(coll.updates) != 0 {
+		t.Errorf("a vanished role must not upsert, got %d", len(coll.updates))
+	}
+	if len(coll.deletes) != 1 || coll.deletes[0] != "a1" {
+		t.Errorf("a vanished role doc must be deleted, got %v", coll.deletes)
+	}
+}
+
+// Error paths of the fan-out propagate to the caller (fail the event → redelivery).
+func TestProcess_SharedBaseFanOut_Errors(t *testing.T) {
+	view := View("aluno").Root("aluno").Schema(fanOutRoleSchema()).Version(1)
+	aluno := func(sql string, _ []any) ([]map[string]any, error) {
+		if strings.Contains(sql, "FROM aluno") {
+			return mapsFromColsData([]string{"id", "email", "pessoa_id"}, [][]any{{"a1", "a@x", "p1"}}), nil
+		}
+		return nil, nil
+	}
+	event := kafkaEvent{AggregateType: "pessoa", EventType: "UPDATED", AggregateID: "p1"}
+
+	t.Run("findIDsError", func(t *testing.T) {
+		coll := &fakeColl{findErr: errFake}
+		s := NewSyncEngine(composerEngine(aluno), newFakeMongo(coll), identityResolver, nil, "", []*ViewDefinition{view}, 1)
+		if err := s.process(context.Background(), event); err == nil {
+			t.Fatal("expected the FindIDsByField error to propagate")
+		}
+	})
+	t.Run("composeError", func(t *testing.T) {
+		coll := &fakeColl{docs: []any{map[string]any{"_id": "a1"}}}
+		s := NewSyncEngine(composerEngine(func(string, []any) ([]map[string]any, error) { return nil, errFake }),
+			newFakeMongo(coll), identityResolver, nil, "", []*ViewDefinition{view}, 1)
+		if err := s.process(context.Background(), event); err == nil {
+			t.Fatal("expected the ComposeBatch error to propagate")
+		}
+	})
+	t.Run("upsertError", func(t *testing.T) {
+		coll := &fakeColl{docs: []any{map[string]any{"_id": "a1"}}, updateErr: errFake}
+		s := NewSyncEngine(composerEngine(aluno), newFakeMongo(coll), identityResolver, nil, "", []*ViewDefinition{view}, 1)
+		if err := s.process(context.Background(), event); err == nil {
+			t.Fatal("expected the applyUpsert error to propagate")
+		}
+	})
+}

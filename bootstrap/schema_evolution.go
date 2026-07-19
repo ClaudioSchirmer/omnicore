@@ -203,6 +203,8 @@ func reconcileViewDrift(ctx context.Context, cfg *Config, deps Deps, sync *query
 	rebuildCfg = query.RebuildConfig{
 		Orphan:      cfg.Mongo.Rebuild.Orphan,
 		ServiceName: cfg.Service,
+		Workers:     cfg.Mongo.Rebuild.Workers,
+		BatchSize:   cfg.Mongo.Rebuild.BatchSize,
 	}
 
 	for _, plan := range report.Plans {

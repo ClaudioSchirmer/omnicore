@@ -553,6 +553,22 @@ type MongoRebuildConfig struct {
 	// (unset) → the framework default (15s). Lower it on single-pod / dev to
 	// shrink the boot-rebuild window; raise it if pods refresh slowly.
 	PointerLeaseSeconds int `yaml:"pointerLeaseSeconds"`
+
+	// Workers is the number of concurrent compose+write workers the boot-time
+	// blue-green backfill pipeline runs: each worker composes a batch of roots
+	// from the relational source and bulk-upserts it into the shadow slot, and
+	// batches fan across workers so the relational scan+compose overlaps the
+	// Mongo write. 0 (unset) → the framework default (4). Raise it to saturate a
+	// multi-core box + a Mongo that can absorb parallel bulk writes; the
+	// relational pool must carry at least Workers+1 connections (the streaming
+	// root-id scan pins one).
+	Workers int `yaml:"workers"`
+
+	// BatchSize is the number of root ids composed + bulk-upserted per batch.
+	// 0 (unset) → the framework default (1000). Larger batches cut the number of
+	// SQL and Mongo round trips at the cost of more memory per in-flight batch;
+	// keep each comfortably under Mongo's 16MB command envelope.
+	BatchSize int `yaml:"batchSize"`
 }
 
 // MongoRebuildOrphan* are the closed set of values for MongoRebuildConfig.Orphan.
@@ -570,6 +586,8 @@ var knownMongoRebuildKeys = map[string]bool{
 	"orphan":              true,
 	"allowDowngrade":      true,
 	"pointerLeaseSeconds": true,
+	"workers":             true,
+	"batchSize":           true,
 }
 
 // UnmarshalYAML decodes the block and rejects unknown keys. lockTTL —
@@ -587,7 +605,7 @@ func (m *MongoRebuildConfig) UnmarshalYAML(value *yaml.Node) error {
 		keyNode := value.Content[i]
 		if !knownMongoRebuildKeys[keyNode.Value] {
 			return fmt.Errorf(
-				"mongo.rebuild: unknown field %q (allowed: autoRun, orphan, allowDowngrade, pointerLeaseSeconds) — "+
+				"mongo.rebuild: unknown field %q (allowed: autoRun, orphan, allowDowngrade, pointerLeaseSeconds, workers, batchSize) — "+
 					"see tasks/mongo_schema_evolution_2.md §17.5",
 				keyNode.Value,
 			)
@@ -635,6 +653,12 @@ func (m *MongoRebuildConfig) validate() error {
 	}
 	if m.PointerLeaseSeconds < 0 {
 		return fmt.Errorf("mongo.rebuild.pointerLeaseSeconds %d invalid (want >= 0; 0 = framework default)", m.PointerLeaseSeconds)
+	}
+	if m.Workers < 0 {
+		return fmt.Errorf("mongo.rebuild.workers %d invalid (want >= 0; 0 = framework default)", m.Workers)
+	}
+	if m.BatchSize < 0 {
+		return fmt.Errorf("mongo.rebuild.batchSize %d invalid (want >= 0; 0 = framework default)", m.BatchSize)
 	}
 	return nil
 }

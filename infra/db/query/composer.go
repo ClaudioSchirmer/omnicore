@@ -344,11 +344,12 @@ func (c *Composer) mergeOwnChildren(ctx context.Context, doc Document, schema *c
 		if err != nil {
 			return err
 		}
-		childPK := schemaPK(child)
-		for _, row := range rows {
-			if err := c.mergeOwnerSiblings(ctx, row, child, fmt.Sprintf("%v", row[childPK]), includeArchived); err != nil {
-				return err
-			}
+		// The child rows carry their own siblings (shape #4). Merge them SET-BASED
+		// across all rows of this child collection — one IN (...) query per
+		// child-sibling table instead of one per child row (the batch helper
+		// produces the identical flat merge the per-row path did).
+		if err := c.mergeOwnerSiblingsBatch(ctx, rows, child, includeArchived); err != nil {
+			return err
 		}
 		doc[childDocSegment(child)] = rows
 	}
