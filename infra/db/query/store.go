@@ -34,6 +34,14 @@ type ReadModelStore interface {
 	Delete(ctx context.Context, collection PhysicalCollection, id string) error
 	// FindManyByField returns every document where field == value.
 	FindManyByField(ctx context.Context, collection PhysicalCollection, field string, value any) ([]Document, error)
+	// FindManyByFieldIn returns every document where field ∈ values — the
+	// set-based companion of FindManyByField (one {field: {$in: values}} query).
+	// The composer's batched embed resolution uses it to fetch a whole batch of
+	// parents' external embeds in one round trip per embed source instead of one
+	// FindManyByField per parent. An empty values slice returns no documents;
+	// duplicate values are tolerated. Documents come back in no guaranteed order —
+	// the caller groups them by field.
+	FindManyByFieldIn(ctx context.Context, collection PhysicalCollection, field string, values []any) ([]Document, error)
 	// FindIDsByField returns only the _id of every document where field == value.
 	FindIDsByField(ctx context.Context, collection PhysicalCollection, field string, value any) ([]string, error)
 	// UpdateFields applies a partial $set to the document keyed by id; missing

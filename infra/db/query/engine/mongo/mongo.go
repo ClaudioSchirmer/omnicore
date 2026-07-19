@@ -173,6 +173,29 @@ func (m *MongoDB) FindManyByField(ctx context.Context, collection query.Physical
 	return out, nil
 }
 
+// FindManyByFieldIn returns every document in collection where field ∈ values —
+// the set-based companion of FindManyByField (a single {field: {$in: values}}
+// query). The composer's batched embed path drives it: one round trip resolves a
+// whole batch of parents' external embeds instead of one FindManyByField per
+// parent. An empty values slice is a no-op (an empty $in matches nothing; the
+// guard skips the round trip). Empty slice on no match, matching FindManyByField.
+func (m *MongoDB) FindManyByFieldIn(ctx context.Context, collection query.PhysicalCollection, field string, values []any) ([]query.Document, error) {
+	if len(values) == 0 {
+		return nil, nil
+	}
+	col := m.collFn(collection.String())
+	cur, err := col.Find(ctx, bson.M{field: bson.M{"$in": values}})
+	if err != nil {
+		return nil, err
+	}
+	defer cur.Close(ctx)
+	var out []query.Document
+	if err := cur.All(ctx, &out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // FindIDsByField returns only the _id of every document in collection where
 // field == value. Consumed by the UpstreamSubscriber's recompose-ripple:
 // after an upsert/delete on the upstream Mongo collection, the subscriber

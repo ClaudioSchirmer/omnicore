@@ -51,6 +51,15 @@ with `1.0.0`.
   upsert is idempotent on `_id`, so batch order never matters. See
   `mongo-schema-evolution.html`.
 
+- **Batched external-embed resolution on rebuild.** A view's external `Embed`
+  (1:1) / `EmbedMany` (1:N) sources are now resolved SET-BASED during a rebuild
+  (and any multi-root batch compose): one `{field: {$in: …}}` per embed source for
+  the whole batch, grouped by the join key, instead of one Mongo lookup per
+  parent — nested embeds collapse the same way per level. The composed document is
+  identical to the per-event result (same 1:1 sub-document / 1:N array, same null
+  semantics); only the round-trip count drops. Carried by the new
+  `ReadModelStore.FindManyByFieldIn` port method (below).
+
 ### Changed
 
 - **breaking: the `query.ReadModelStore` port signatures.** Every method now
@@ -65,6 +74,8 @@ with `1.0.0`.
   `SyncEngine.ExecuteRebuild` now runs the blue-green sequence; the operator
   ad-hoc `RebuildView`/`RebuildViewSince` remain in-place upsert-only. The
   `mongo.rebuild.orphan` YAML key is retained but no longer suppresses deletion.
+  The port also gains `FindManyByFieldIn` (a set-based `{field: {$in: …}}` read)
+  for the batched external-embed path — a custom `ReadModelStore` must add it.
 
 ## [0.34.1] - 2026-07-17
 

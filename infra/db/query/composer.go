@@ -168,13 +168,7 @@ func (c *Composer) composeRows(ctx context.Context, view *ViewDefinition, rows [
 	if err := c.mergeOwnChildrenBatch(ctx, rows, view.schema, includeArchived); err != nil {
 		return err
 	}
-	pk := schemaPK(view.schema)
-	for _, row := range rows {
-		if err := c.applyEmbeds(ctx, row, pk, view.embeds, includeArchived); err != nil {
-			return err
-		}
-	}
-	return nil
+	return c.applyEmbedsBatch(ctx, rows, schemaPK(view.schema), view.embeds, includeArchived)
 }
 
 // composeBaseRootedRow fills a SharedBaseView document from its already-fetched

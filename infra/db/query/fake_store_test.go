@@ -1,6 +1,9 @@
 package query
 
-import "context"
+import (
+	"context"
+	"fmt"
+)
 
 // fakeColl is the port-level recorder the read-model unit tests drive instead
 // of a live Mongo collection. It mirrors the field surface of the old
@@ -95,6 +98,35 @@ func (s *fakeStore) FindManyByField(_ context.Context, collection PhysicalCollec
 	out := make([]Document, 0, len(c.docs))
 	for _, d := range c.docs {
 		if m, ok := d.(map[string]any); ok {
+			out = append(out, m)
+		}
+	}
+	return out, nil
+}
+
+// FindManyByFieldIn returns docs whose field value (stringified) is in values —
+// unlike FindManyByField (which the fakes leave unfiltered), this one filters so
+// the batched-embed grouping tests can assert docs land under the RIGHT parent.
+func (s *fakeStore) FindManyByFieldIn(_ context.Context, collection PhysicalCollection, field string, values []any) ([]Document, error) {
+	c := s.fn(collection.String())
+	if c.findErr != nil {
+		return nil, c.findErr
+	}
+	want := make(map[string]struct{}, len(values))
+	for _, v := range values {
+		want[fmt.Sprintf("%v", v)] = struct{}{}
+	}
+	out := make([]Document, 0)
+	for _, d := range c.docs {
+		m, ok := d.(map[string]any)
+		if !ok {
+			continue
+		}
+		fv, ok := m[field]
+		if !ok {
+			continue
+		}
+		if _, hit := want[fmt.Sprintf("%v", fv)]; hit {
 			out = append(out, m)
 		}
 	}

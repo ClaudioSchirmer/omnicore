@@ -329,11 +329,121 @@ func (c *Composer) composeBaseRootedRowsBatched(ctx context.Context, view *ViewD
 			}
 		}
 	}
-	// Embeds are external (Mongo) and per-parent — the relational N+1 is what this
-	// file collapses; the embed reads stay as the per-row path leaves them.
-	for _, row := range rows {
-		if err := c.applyEmbeds(ctx, row, basePK, view.embeds, includeArchived); err != nil {
-			return err
+	// Embeds are external (Mongo). The batched path resolves them SET-BASED across
+	// the whole batch (one $in per embed source), same as the own relational legs.
+	return c.applyEmbedsBatch(ctx, rows, basePK, view.embeds, includeArchived)
+}
+
+// findEmbedsGrouped fetches every embed doc whose keyCol is in the distinct keys
+// (one FindManyByFieldIn per embed source — a single $in) and groups them by the
+// stringified keyCol value. The set-based companion of the per-parent
+// FindManyByField in fetchMongoEmbed.
+func (c *Composer) findEmbedsGrouped(ctx context.Context, coll PhysicalCollection, keyCol string, keys []any) (map[string][]Document, error) {
+	out := make(map[string][]Document)
+	if len(keys) == 0 {
+		return out, nil
+	}
+	seen := make(map[string]struct{}, len(keys))
+	uniq := make([]any, 0, len(keys))
+	for _, k := range keys {
+		ks := fmt.Sprintf("%v", k)
+		if _, ok := seen[ks]; ok {
+			continue
+		}
+		seen[ks] = struct{}{}
+		uniq = append(uniq, k)
+	}
+	docs, err := c.mongo.FindManyByFieldIn(ctx, coll, keyCol, uniq)
+	if err != nil {
+		return nil, err
+	}
+	for _, d := range docs {
+		v, ok := d[keyCol]
+		if !ok || v == nil {
+			continue
+		}
+		gk := fmt.Sprintf("%v", v)
+		out[gk] = append(out[gk], d)
+	}
+	return out, nil
+}
+
+// applyEmbedsBatch is the set-based applyEmbeds: for a whole batch of parent docs
+// it resolves each external embed in ONE $in per embed source instead of one
+// FindManyByField per parent, groups the results by the join key, and lands the
+// 1:1 sub-document / 1:N array on each parent with the SAME null semantics the
+// per-row path (fetchMongoEmbed) produces:
+//   - 1:N: a parent with a nil/absent join key gets no field; otherwise the field
+//     is the (possibly nil) grouped slice — identical to FindManyByField's result.
+//   - 1:1: a parent with a nil/absent FK, or no matching embed doc, leaves the
+//     field ABSENT; otherwise it is the single matched doc.
+//
+// Nested embeds recurse batched across the whole fetched set, so a chain of
+// embeds collapses to one $in per level per batch, not one per parent per level.
+func (c *Composer) applyEmbedsBatch(ctx context.Context, docs []Document, parentPK string, embeds []embedDef, includeArchived bool) error {
+	if len(embeds) == 0 || len(docs) == 0 {
+		return nil
+	}
+	if c.mongo == nil {
+		return fmt.Errorf("composer: view embed requires a MongoDB handle " +
+			"(builder constructed without NewComposerWithMongo)")
+	}
+	for _, e := range embeds {
+		srcPK := schemaPK(e.source.schema)
+		coll := c.resolver.Active(e.source.table)
+		if e.many {
+			// 1:N — embed.JoinColumn == parent.PK.
+			keys := make([]any, 0, len(docs))
+			for _, doc := range docs {
+				if v, ok := doc[parentPK]; ok && v != nil {
+					keys = append(keys, v)
+				}
+			}
+			grouped, err := c.findEmbedsGrouped(ctx, coll, e.JoinColumn(), keys)
+			if err != nil {
+				return err
+			}
+			var nested []Document
+			for _, doc := range docs {
+				v, ok := doc[parentPK]
+				if !ok || v == nil {
+					continue
+				}
+				rows := grouped[fmt.Sprintf("%v", v)]
+				doc[e.field] = rows
+				nested = append(nested, rows...)
+			}
+			if err := c.applyEmbedsBatch(ctx, nested, srcPK, e.source.embeds, false); err != nil {
+				return err
+			}
+		} else {
+			// 1:1 — embed._id == parent[JoinColumn].
+			keys := make([]any, 0, len(docs))
+			for _, doc := range docs {
+				if v, ok := doc[e.JoinColumn()]; ok && v != nil {
+					keys = append(keys, v)
+				}
+			}
+			grouped, err := c.findEmbedsGrouped(ctx, coll, "_id", keys)
+			if err != nil {
+				return err
+			}
+			var nested []Document
+			for _, doc := range docs {
+				v, ok := doc[e.JoinColumn()]
+				if !ok || v == nil {
+					continue
+				}
+				rows := grouped[fmt.Sprintf("%v", v)]
+				if len(rows) == 0 {
+					continue
+				}
+				doc[e.field] = rows[0]
+				nested = append(nested, rows[0])
+			}
+			if err := c.applyEmbedsBatch(ctx, nested, srcPK, e.source.embeds, false); err != nil {
+				return err
+			}
 		}
 	}
 	return nil

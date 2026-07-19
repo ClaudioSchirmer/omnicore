@@ -35,6 +35,41 @@ func TestMongoDB_FindManyByField_FindError(t *testing.T) {
 	}
 }
 
+func TestMongoDB_FindManyByFieldIn_Happy(t *testing.T) {
+	coll := &fakeColl{docs: []any{
+		map[string]any{"_id": "a", "fk": "x"},
+		map[string]any{"_id": "b", "fk": "y"},
+	}}
+	m := newFakeMongo(coll)
+	out, err := m.FindManyByFieldIn(context.Background(), pc("c"), "fk", []any{"x", "y"})
+	if err != nil {
+		t.Fatalf("FindManyByFieldIn: %v", err)
+	}
+	if len(out) != 2 {
+		t.Errorf("FindManyByFieldIn returned %d docs, want 2", len(out))
+	}
+}
+
+func TestMongoDB_FindManyByFieldIn_EmptyValuesNoRoundTrip(t *testing.T) {
+	// An empty values slice must short-circuit WITHOUT hitting the driver — the
+	// forced Find error proves Find was never called.
+	m := newFakeMongo(&fakeColl{findErr: context.Canceled})
+	out, err := m.FindManyByFieldIn(context.Background(), pc("c"), "fk", nil)
+	if err != nil {
+		t.Fatalf("empty values must be a no-op, got %v", err)
+	}
+	if out != nil {
+		t.Errorf("empty values must return nil, got %v", out)
+	}
+}
+
+func TestMongoDB_FindManyByFieldIn_FindError(t *testing.T) {
+	m := newFakeMongo(&fakeColl{findErr: context.Canceled})
+	if _, err := m.FindManyByFieldIn(context.Background(), pc("c"), "fk", []any{"x"}); err == nil {
+		t.Fatal("expected Find error to surface")
+	}
+}
+
 func TestMongoDB_Upsert_Error(t *testing.T) {
 	m := newFakeMongo(&fakeColl{updateErr: context.Canceled})
 	if err := m.Upsert(context.Background(), pc("c"), "id1", bson.M{"name": "x"}); err == nil {
