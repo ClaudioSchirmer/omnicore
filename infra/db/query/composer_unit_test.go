@@ -2,6 +2,7 @@ package query
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -328,6 +329,105 @@ func TestComposeAll_QueryError(t *testing.T) {
 	view := View("orders").Version(1).Root("orders").Schema(composerRootSchema())
 	if _, err := c.ComposeAll(context.Background(), view); err == nil {
 		t.Fatal("expected query error from ComposeAll")
+	}
+}
+
+func TestComposeBatch(t *testing.T) {
+	var boundArgs int
+	sawIn := false
+	eng := composerEngine(func(sql string, args []any) ([]map[string]any, error) {
+		if strings.Contains(sql, "FROM orders") {
+			if strings.Contains(sql, " IN (") {
+				sawIn = true
+			}
+			boundArgs = len(args)
+			rows := make([][]any, 0, len(args))
+			for _, a := range args {
+				rows = append(rows, []any{a, "n"})
+			}
+			return mapsFromColsData([]string{"id", "name"}, rows), nil
+		}
+		return nil, nil
+	})
+	c := NewComposer(eng)
+	view := View("orders").Version(1).Root("orders").Schema(composerRootSchema())
+
+	docs, err := c.ComposeBatch(context.Background(), view, []string{"o1", "o2"})
+	if err != nil {
+		t.Fatalf("ComposeBatch: %v", err)
+	}
+	if !sawIn {
+		t.Error("expected an IN (...) predicate on the batched root fetch")
+	}
+	if boundArgs != 2 {
+		t.Errorf("bound args = %d, want 2", boundArgs)
+	}
+	if len(docs) != 2 {
+		t.Fatalf("ComposeBatch = %d docs, want 2", len(docs))
+	}
+	// Each composed doc carries its _id in the root PK column, exactly like Compose.
+	if fmt.Sprintf("%v", docs[0]["id"]) != "o1" {
+		t.Errorf("first doc _id column = %v, want o1", docs[0]["id"])
+	}
+}
+
+func TestComposeBatch_EmptyDoesNotQuery(t *testing.T) {
+	called := false
+	eng := composerEngine(func(string, []any) ([]map[string]any, error) { called = true; return nil, nil })
+	c := NewComposer(eng)
+	view := View("orders").Version(1).Root("orders").Schema(composerRootSchema())
+	docs, err := c.ComposeBatch(context.Background(), view, nil)
+	if err != nil || docs != nil {
+		t.Fatalf("empty batch: docs=%v err=%v", docs, err)
+	}
+	if called {
+		t.Error("an empty batch must not hit the engine")
+	}
+}
+
+func TestComposeBatch_QueryError(t *testing.T) {
+	eng := composerEngine(func(string, []any) ([]map[string]any, error) { return nil, errFake })
+	c := NewComposer(eng)
+	view := View("orders").Version(1).Root("orders").Schema(composerRootSchema())
+	if _, err := c.ComposeBatch(context.Background(), view, []string{"o1"}); err == nil {
+		t.Fatal("expected query error from ComposeBatch")
+	}
+}
+
+// A batch larger than maxInClauseSize must split into several IN lookups so no
+// single predicate exceeds a backend's list ceiling (Oracle's ORA-01795), and
+// every id must still be fetched across the chunks.
+func TestComposeBatch_ChunksLargeIDSet(t *testing.T) {
+	calls, total := 0, 0
+	eng := composerEngine(func(sql string, args []any) ([]map[string]any, error) {
+		if strings.Contains(sql, "FROM orders") {
+			calls++
+			total += len(args)
+			rows := make([][]any, 0, len(args))
+			for _, a := range args {
+				rows = append(rows, []any{a, "n"})
+			}
+			return mapsFromColsData([]string{"id", "name"}, rows), nil
+		}
+		return nil, nil
+	})
+	c := NewComposer(eng)
+	view := View("orders").Version(1).Root("orders").Schema(composerRootSchema())
+
+	n := maxInClauseSize + 50
+	ids := make([]string, n)
+	for i := range ids {
+		ids[i] = fmt.Sprintf("o%d", i)
+	}
+	docs, err := c.ComposeBatch(context.Background(), view, ids)
+	if err != nil {
+		t.Fatalf("ComposeBatch: %v", err)
+	}
+	if calls != 2 {
+		t.Errorf("expected 2 chunked IN lookups for %d ids (cap %d), got %d", n, maxInClauseSize, calls)
+	}
+	if total != n || len(docs) != n {
+		t.Errorf("expected all %d ids fetched, got total=%d docs=%d", n, total, len(docs))
 	}
 }
 

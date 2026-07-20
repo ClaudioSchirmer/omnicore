@@ -1,6 +1,9 @@
 package query
 
-import "context"
+import (
+	"context"
+	"fmt"
+)
 
 // fakeColl is the port-level recorder the read-model unit tests drive instead
 // of a live Mongo collection. It mirrors the field surface of the old
@@ -24,6 +27,11 @@ type fakeColl struct {
 
 type fakeStore struct {
 	fn func(name string) *fakeColl
+	// blue-green slot ops: recorders + forced errors.
+	provisioned  []string
+	dropped      []string
+	provisionErr error
+	dropErr      error
 }
 
 func newFakeMongo(coll *fakeColl) *fakeStore {
@@ -36,8 +44,16 @@ func newFakeMongoFunc(fn func(name string) *fakeColl) *fakeStore {
 
 var _ ReadModelStore = (*fakeStore)(nil)
 
-func (s *fakeStore) Upsert(_ context.Context, collection, _ string, doc Document) error {
-	c := s.fn(collection)
+// pc builds a PhysicalCollection from a raw name for tests in this package (the
+// resolver is the production path; tests short-circuit it). identityResolver is a
+// ViewResolver with no registry backing whose Active/Shadow resolve to the bare
+// name — handed to the constructors that now require one.
+func pc(name string) PhysicalCollection { return PhysicalCollection{name: name} }
+
+var identityResolver = NewViewResolver(nil)
+
+func (s *fakeStore) Upsert(_ context.Context, collection PhysicalCollection, _ string, doc Document) error {
+	c := s.fn(collection.String())
 	if c.updateErr != nil {
 		return c.updateErr
 	}
@@ -45,8 +61,19 @@ func (s *fakeStore) Upsert(_ context.Context, collection, _ string, doc Document
 	return nil
 }
 
-func (s *fakeStore) UpdateFields(_ context.Context, collection, _ string, fields Document) error {
-	c := s.fn(collection)
+func (s *fakeStore) BulkUpsert(_ context.Context, collection PhysicalCollection, docs []IdentifiedDocument) error {
+	c := s.fn(collection.String())
+	if c.updateErr != nil {
+		return c.updateErr
+	}
+	for _, d := range docs {
+		c.updates = append(c.updates, map[string]any{"$set": d.Doc})
+	}
+	return nil
+}
+
+func (s *fakeStore) UpdateFields(_ context.Context, collection PhysicalCollection, _ string, fields Document) error {
+	c := s.fn(collection.String())
 	if c.updateErr != nil {
 		return c.updateErr
 	}
@@ -54,8 +81,8 @@ func (s *fakeStore) UpdateFields(_ context.Context, collection, _ string, fields
 	return nil
 }
 
-func (s *fakeStore) Delete(_ context.Context, collection, id string) error {
-	c := s.fn(collection)
+func (s *fakeStore) Delete(_ context.Context, collection PhysicalCollection, id string) error {
+	c := s.fn(collection.String())
 	if c.deleteErr != nil {
 		return c.deleteErr
 	}
@@ -63,8 +90,8 @@ func (s *fakeStore) Delete(_ context.Context, collection, id string) error {
 	return nil
 }
 
-func (s *fakeStore) FindManyByField(_ context.Context, collection, _ string, _ any) ([]Document, error) {
-	c := s.fn(collection)
+func (s *fakeStore) FindManyByField(_ context.Context, collection PhysicalCollection, _ string, _ any) ([]Document, error) {
+	c := s.fn(collection.String())
 	if c.findErr != nil {
 		return nil, c.findErr
 	}
@@ -77,8 +104,37 @@ func (s *fakeStore) FindManyByField(_ context.Context, collection, _ string, _ a
 	return out, nil
 }
 
-func (s *fakeStore) FindIDsByField(_ context.Context, collection, _ string, _ any) ([]string, error) {
-	c := s.fn(collection)
+// FindManyByFieldIn returns docs whose field value (stringified) is in values —
+// unlike FindManyByField (which the fakes leave unfiltered), this one filters so
+// the batched-embed grouping tests can assert docs land under the RIGHT parent.
+func (s *fakeStore) FindManyByFieldIn(_ context.Context, collection PhysicalCollection, field string, values []any) ([]Document, error) {
+	c := s.fn(collection.String())
+	if c.findErr != nil {
+		return nil, c.findErr
+	}
+	want := make(map[string]struct{}, len(values))
+	for _, v := range values {
+		want[fmt.Sprintf("%v", v)] = struct{}{}
+	}
+	out := make([]Document, 0)
+	for _, d := range c.docs {
+		m, ok := d.(map[string]any)
+		if !ok {
+			continue
+		}
+		fv, ok := m[field]
+		if !ok {
+			continue
+		}
+		if _, hit := want[fmt.Sprintf("%v", fv)]; hit {
+			out = append(out, m)
+		}
+	}
+	return out, nil
+}
+
+func (s *fakeStore) FindIDsByField(_ context.Context, collection PhysicalCollection, _ string, _ any) ([]string, error) {
+	c := s.fn(collection.String())
 	if c.findErr != nil {
 		return nil, c.findErr
 	}
@@ -93,26 +149,26 @@ func (s *fakeStore) FindIDsByField(_ context.Context, collection, _ string, _ an
 	return ids, nil
 }
 
-func (s *fakeStore) HasDocuments(_ context.Context, collection string) (bool, error) {
-	c := s.fn(collection)
+func (s *fakeStore) HasDocuments(_ context.Context, collection PhysicalCollection) (bool, error) {
+	c := s.fn(collection.String())
 	if c.countErr != nil {
 		return false, c.countErr
 	}
 	return c.count > 0, nil
 }
 
-func (s *fakeStore) ObservedFieldNames(_ context.Context, collection string) (map[string]struct{}, error) {
-	c := s.fn(collection)
-	if c.findErr != nil {
-		return nil, c.findErr
-	}
-	return map[string]struct{}{}, nil
+func (s *fakeStore) ProvisionSlot(_ context.Context, _ *ViewDefinition, target PhysicalCollection) error {
+	s.provisioned = append(s.provisioned, target.String())
+	return s.provisionErr
 }
 
-func (s *fakeStore) UnsetFields(_ context.Context, _ string, _ []string) error { return nil }
+func (s *fakeStore) DropCollection(_ context.Context, collection PhysicalCollection) error {
+	s.dropped = append(s.dropped, collection.String())
+	return s.dropErr
+}
 
-func (s *fakeStore) SnapshotDocumentIDs(_ context.Context, collection string) (map[string]struct{}, error) {
-	c := s.fn(collection)
+func (s *fakeStore) SnapshotDocumentIDs(_ context.Context, collection PhysicalCollection) (map[string]struct{}, error) {
+	c := s.fn(collection.String())
 	if c.findErr != nil {
 		return nil, c.findErr
 	}
@@ -127,8 +183,8 @@ func (s *fakeStore) SnapshotDocumentIDs(_ context.Context, collection string) (m
 	return set, nil
 }
 
-func (s *fakeStore) DeleteByIDs(_ context.Context, collection string, ids []string) (int, error) {
-	c := s.fn(collection)
+func (s *fakeStore) DeleteByIDs(_ context.Context, collection PhysicalCollection, ids []string) (int, error) {
+	c := s.fn(collection.String())
 	if c.deleteErr != nil {
 		return 0, c.deleteErr
 	}

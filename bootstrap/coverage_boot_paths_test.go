@@ -384,21 +384,21 @@ func TestReconcileViewDrift_NoViewsFastPaths(t *testing.T) {
 	t.Run("checkModeUpToDate", func(t *testing.T) {
 		cfg := &Config{Service: "t"}
 		cfg.Mongo.Rebuild.AutoRun = AutoRunCheck
-		if err := reconcileViewDrift(context.Background(), cfg, d, nil, nil); err != nil {
+		if _, _, err := reconcileViewDrift(context.Background(), cfg, d, nil, nil); err != nil {
 			t.Fatalf("check mode with no views: %v", err)
 		}
 	})
 	t.Run("autoRunTrueNoPlans", func(t *testing.T) {
 		cfg := &Config{Service: "t"}
 		cfg.Mongo.Rebuild.AutoRun = AutoRunTrue
-		if err := reconcileViewDrift(context.Background(), cfg, d, nil, nil); err != nil {
+		if _, _, err := reconcileViewDrift(context.Background(), cfg, d, nil, nil); err != nil {
 			t.Fatalf("autoRun=true with no views: %v", err)
 		}
 	})
 	t.Run("autoRunFalseSkips", func(t *testing.T) {
 		cfg := &Config{Service: "t"}
 		cfg.Mongo.Rebuild.AutoRun = AutoRunFalse
-		if err := reconcileViewDrift(context.Background(), cfg, d, nil, nil); err != nil {
+		if _, _, err := reconcileViewDrift(context.Background(), cfg, d, nil, nil); err != nil {
 			t.Fatalf("autoRun=false: %v", err)
 		}
 	})

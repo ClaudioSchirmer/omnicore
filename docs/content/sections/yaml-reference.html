@@ -98,6 +98,9 @@ mongo:
     autoRun: check                       # check | true | false — default: dev=true / else=check
     orphan: delete                       # delete | warn — default delete (reconcile docs whose source vanished)
     allowDowngrade: false                # default false — opt-in for canary/blue-green rollback
+    pointerLeaseSeconds: 0               # 0/unset → default 15s — activation-fence / settle lease
+    workers: 0                           # 0/unset → default 4 — concurrent compose+write backfill workers (pool ≥ workers+1)
+    batchSize: 0                         # 0/unset → default 1000 — root ids composed + bulk-upserted per batch
 
 transport:                               # neutral; the -tags kafka|nats build tag picks the adapter
   endpoints: ["${TRANSPORT_ENDPOINTS:localhost:9092}"]  # MANDATORY — Kafka/Redpanda brokers OR NATS URL(s)

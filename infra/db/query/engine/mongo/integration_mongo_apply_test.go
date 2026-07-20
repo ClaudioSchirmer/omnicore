@@ -24,7 +24,7 @@ func TestApplyMongoSpecs_CreatesCollectionWithIndexes(t *testing.T) {
 			query.Index("created_at").Desc(),
 		)
 
-	if err := ApplyMongoSpecs(context.Background(), m, []*query.ViewDefinition{v}); err != nil {
+	if err := ApplyMongoSpecs(context.Background(), m, []*query.ViewDefinition{v}, testResolver); err != nil {
 		t.Fatalf("ApplyMongoSpecs: %v", err)
 	}
 
@@ -61,7 +61,7 @@ func TestApplyMongoSpecs_IsIdempotent(t *testing.T) {
 		Indexes(query.Index("email").Unique())
 
 	for i := 0; i < 3; i++ {
-		if err := ApplyMongoSpecs(context.Background(), m, []*query.ViewDefinition{v}); err != nil {
+		if err := ApplyMongoSpecs(context.Background(), m, []*query.ViewDefinition{v}, testResolver); err != nil {
 			t.Fatalf("ApplyMongoSpecs iter %d: %v", i, err)
 		}
 	}
@@ -73,7 +73,7 @@ func TestApplyMongoSpecs_RejectsInvalidView(t *testing.T) {
 
 	// Missing Version() — ValidateMongoSpec rejects.
 	v := query.View("invalid").Root("invalid")
-	err := ApplyMongoSpecs(context.Background(), m, []*query.ViewDefinition{v})
+	err := ApplyMongoSpecs(context.Background(), m, []*query.ViewDefinition{v}, testResolver)
 	if err == nil {
 		t.Fatal("expected ApplyMongoSpecs to reject view without Version()")
 	}
@@ -90,7 +90,7 @@ func TestApplyMongoSpecs_CreatesValidatorOnFreshCollection(t *testing.T) {
 	v := query.View("apply_validator").Root("apply_validator").Version(1).
 		JSONSchema(schema)
 
-	if err := ApplyMongoSpecs(context.Background(), m, []*query.ViewDefinition{v}); err != nil {
+	if err := ApplyMongoSpecs(context.Background(), m, []*query.ViewDefinition{v}, testResolver); err != nil {
 		t.Fatalf("ApplyMongoSpecs: %v", err)
 	}
 
@@ -120,7 +120,7 @@ func TestCheckServiceRegistry_HappyPathAndIdempotent(t *testing.T) {
 	defer cleanup()
 
 	v := query.View("my_view").Root("my_view").Version(1)
-	if err := ApplyMongoSpecs(context.Background(), m, []*query.ViewDefinition{v}); err != nil {
+	if err := ApplyMongoSpecs(context.Background(), m, []*query.ViewDefinition{v}, testResolver); err != nil {
 		t.Fatalf("apply: %v", err)
 	}
 
@@ -162,7 +162,7 @@ func TestCheckServiceRegistry_DevDowngradesForeignToWarn(t *testing.T) {
 	}
 
 	v := query.View("declared").Root("declared").Version(1)
-	if err := ApplyMongoSpecs(context.Background(), m, []*query.ViewDefinition{v}); err != nil {
+	if err := ApplyMongoSpecs(context.Background(), m, []*query.ViewDefinition{v}, testResolver); err != nil {
 		t.Fatalf("apply: %v", err)
 	}
 
@@ -180,7 +180,7 @@ func TestCheckServiceRegistry_NonDevAbortsOnForeign(t *testing.T) {
 		t.Fatalf("seed orphan: %v", err)
 	}
 	v := query.View("declared").Root("declared").Version(1)
-	if err := ApplyMongoSpecs(context.Background(), m, []*query.ViewDefinition{v}); err != nil {
+	if err := ApplyMongoSpecs(context.Background(), m, []*query.ViewDefinition{v}, testResolver); err != nil {
 		t.Fatalf("apply: %v", err)
 	}
 
@@ -202,8 +202,14 @@ func TestDetectViewDrift_FreshInit(t *testing.T) {
 	defer cleanupMongo()
 
 	v := query.View("drift_users").Root("drift_users").Version(1)
-	// No registry row, no Mongo docs → FreshInit.
-	report, err := query.DetectViewDrift(context.Background(), m, pg, []*query.ViewDefinition{v})
+	// The root table exists but is EMPTY — at boot, migrations create it BEFORE
+	// drift detection runs (bootstrap: migrations → ApplyMongoSpecs → DetectViewDrift),
+	// so DetectViewDrift always probes a present table. No registry row, no Mongo
+	// docs, empty SoR → FreshInit.
+	if err := pg.Querier().Exec(context.Background(), `CREATE TABLE drift_users (id text)`); err != nil {
+		t.Fatalf("create root table: %v", err)
+	}
+	report, err := query.DetectViewDrift(context.Background(), m, pg, []*query.ViewDefinition{v}, testResolver)
 	if err != nil {
 		t.Fatalf("DetectViewDrift: %v", err)
 	}
@@ -221,9 +227,16 @@ func TestDetectViewDrift_NoneAndArtifactOnlyAndAlienData(t *testing.T) {
 	v := query.View("drift_x").Root("drift_x").Version(1).
 		Indexes(query.Index("email").Unique())
 
+	// The root table exists but is empty (migrations create it before drift
+	// detection at boot); the drift decisions below turn on the registry + Mongo
+	// state, not on the SoR having rows.
+	if err := pg.Querier().Exec(context.Background(), `CREATE TABLE drift_x (id text)`); err != nil {
+		t.Fatalf("create root table: %v", err)
+	}
+
 	// First: AlienData — populate Mongo without writing the registry row.
 	m.Collection("drift_x").InsertOne(context.Background(), bson.M{"_id": "1"})
-	report, err := query.DetectViewDrift(context.Background(), m, pg, []*query.ViewDefinition{v})
+	report, err := query.DetectViewDrift(context.Background(), m, pg, []*query.ViewDefinition{v}, testResolver)
 	if err != nil {
 		t.Fatalf("DetectViewDrift: %v", err)
 	}
@@ -244,7 +257,7 @@ func TestDetectViewDrift_NoneAndArtifactOnlyAndAlienData(t *testing.T) {
 	if err := query.InitViewRegistry(context.Background(), pg.Querier(), pg.Dialect(), in); err != nil {
 		t.Fatalf("Init: %v", err)
 	}
-	report, _ = query.DetectViewDrift(context.Background(), m, pg, []*query.ViewDefinition{v})
+	report, _ = query.DetectViewDrift(context.Background(), m, pg, []*query.ViewDefinition{v}, testResolver)
 	if report.Plans[0].Decision != query.DriftNone {
 		t.Errorf("expected DriftNone after seeding registry, got %v", report.Plans[0].Decision)
 	}

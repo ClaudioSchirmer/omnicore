@@ -233,6 +233,63 @@ func TestMongoRebuildConfig_AllowDowngradeExplicitTrue(t *testing.T) {
 	}
 }
 
+func TestMongoRebuildConfig_WorkersAndBatchSizeDefaultZero(t *testing.T) {
+	yml := validRebuildYAMLBase + "mongo:\n" + mandatoryMongoMinimal
+	path := writeTempRebuildYAML(t, yml)
+	cfg, err := LoadConfigFrom(path)
+	if err != nil {
+		t.Fatalf("LoadConfigFrom: %v", err)
+	}
+	if cfg.Mongo.Rebuild.Workers != 0 {
+		t.Errorf("Workers default = %d, want 0 (framework default)", cfg.Mongo.Rebuild.Workers)
+	}
+	if cfg.Mongo.Rebuild.BatchSize != 0 {
+		t.Errorf("BatchSize default = %d, want 0 (framework default)", cfg.Mongo.Rebuild.BatchSize)
+	}
+}
+
+func TestMongoRebuildConfig_WorkersAndBatchSizeExplicit(t *testing.T) {
+	yml := validRebuildYAMLBase + "mongo:\n" + mandatoryMongoMinimal +
+		"  rebuild:\n    workers: 8\n    batchSize: 5000\n"
+	path := writeTempRebuildYAML(t, yml)
+	cfg, err := LoadConfigFrom(path)
+	if err != nil {
+		t.Fatalf("LoadConfigFrom: %v", err)
+	}
+	if cfg.Mongo.Rebuild.Workers != 8 {
+		t.Errorf("Workers = %d, want 8", cfg.Mongo.Rebuild.Workers)
+	}
+	if cfg.Mongo.Rebuild.BatchSize != 5000 {
+		t.Errorf("BatchSize = %d, want 5000", cfg.Mongo.Rebuild.BatchSize)
+	}
+}
+
+func TestMongoRebuildConfig_NegativeWorkersRejected(t *testing.T) {
+	yml := validRebuildYAMLBase + "mongo:\n" + mandatoryMongoMinimal +
+		"  rebuild:\n    workers: -1\n"
+	path := writeTempRebuildYAML(t, yml)
+	_, err := LoadConfigFrom(path)
+	if err == nil {
+		t.Fatal("LoadConfigFrom: want error for negative workers, got nil")
+	}
+	if !strings.Contains(err.Error(), "workers") {
+		t.Errorf("error should mention workers: %v", err)
+	}
+}
+
+func TestMongoRebuildConfig_NegativeBatchSizeRejected(t *testing.T) {
+	yml := validRebuildYAMLBase + "mongo:\n" + mandatoryMongoMinimal +
+		"  rebuild:\n    batchSize: -1\n"
+	path := writeTempRebuildYAML(t, yml)
+	_, err := LoadConfigFrom(path)
+	if err == nil {
+		t.Fatal("LoadConfigFrom: want error for negative batchSize, got nil")
+	}
+	if !strings.Contains(err.Error(), "batchSize") {
+		t.Errorf("error should mention batchSize: %v", err)
+	}
+}
+
 // Strict yaml decoding on mongo.rebuild — unknown keys (notably the
 // removed lockTTL) abort boot.
 

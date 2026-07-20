@@ -61,6 +61,11 @@ type Deps struct {
 	Pipeline   *pipeline.Pipeline
 	ViewReader queries.ViewReader
 
+	// Resolver maps a logical view name to the physical Mongo collection it
+	// currently resolves to (its active slot). One instance is shared by every
+	// read-model component so they observe a single, consistent pointer view.
+	Resolver *query.ViewResolver
+
 	// Transport is the message-transport port — the linked broker adapter
 	// (Kafka/Redpanda now, NATS later) selected once at boot by the transport
 	// build tag (-tags kafka | -tags nats), through the subscriber registry.
@@ -152,4 +157,9 @@ type Deps struct {
 	// and Mongo handles close. nil when the service declares no views;
 	// SyncEngine.Shutdown is nil-safe either way.
 	SyncEngine *query.SyncEngine
+
+	// bootRebuild coordinates the background boot-time view rebuild with the
+	// probes and the drain. Unexported — internal boot machinery. nil when the
+	// service declares no views or autoRun skipped the rebuild.
+	bootRebuild *bootRebuild
 }

@@ -440,7 +440,7 @@ func (r *ComposedViewReader) attachOne(ctx context.Context, leg *legRuntime, s *
 		if proj != nil {
 			findOpts.SetProjection(proj)
 		}
-		col := r.inner.mongo.collFn(leg.link.Collection)
+		col := r.inner.mongo.collFn(r.inner.resolver.Active(leg.link.Collection).String())
 		cur, err := col.Find(ctx, filter, findOpts)
 		if err != nil {
 			return err
@@ -489,7 +489,7 @@ func (r *ComposedViewReader) attachMany(ctx context.Context, leg *legRuntime, s 
 	}
 	sortDoc := buildStableSortDoc(legSort, false)
 
-	col := r.inner.mongo.collFn(leg.link.Collection)
+	col := r.inner.mongo.collFn(r.inner.resolver.Active(leg.link.Collection).String())
 	sem := make(chan struct{}, legFetchConcurrency)
 	var wg sync.WaitGroup
 	var mu sync.Mutex

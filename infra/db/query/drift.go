@@ -172,7 +172,7 @@ func (r *DriftReport) NeedsAction() bool {
 //
 // "Populated collection" is determined by a single ultra-fast query —
 // CountDocuments with limit:1. O(1) regardless of collection size.
-func DetectViewDrift(ctx context.Context, mongo ReadModelStore, eng core.RelationalEngine, views []*ViewDefinition) (*DriftReport, error) {
+func DetectViewDrift(ctx context.Context, mongo ReadModelStore, eng core.RelationalEngine, views []*ViewDefinition, resolver *ViewResolver) (*DriftReport, error) {
 	report := &DriftReport{Plans: make([]DriftPlan, 0, len(views))}
 	q := eng.Querier()
 	d := eng.Dialect()
@@ -181,7 +181,7 @@ func DetectViewDrift(ctx context.Context, mongo ReadModelStore, eng core.Relatio
 		if err != nil {
 			return nil, err
 		}
-		populated, err := mongo.HasDocuments(ctx, v.Name())
+		populated, err := mongo.HasDocuments(ctx, resolver.Active(v.Name()))
 		if err != nil {
 			return nil, err
 		}

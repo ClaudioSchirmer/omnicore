@@ -13,7 +13,7 @@ import (
 func viewReaderFixture(coll mongoColl) *MongoViewReader {
 	vd := query.View("builder_view").Version(1).Root("builder_test_entities").
 		Schema(builderTestSchema)
-	r := NewMongoViewReader(newFakeMongo(coll))
+	r := NewMongoViewReader(newFakeMongo(coll), testResolver)
 	r.SetViews([]*query.ViewDefinition{vd})
 	return r
 }
@@ -95,23 +95,23 @@ func TestMongoDB_Upsert_Delete_UpdateFields(t *testing.T) {
 	m := newFakeMongo(coll)
 	ctx := context.Background()
 
-	if err := m.Upsert(ctx, "c", "id1", map[string]any{"name": "x"}); err != nil {
+	if err := m.Upsert(ctx, pc("c"), "id1", map[string]any{"name": "x"}); err != nil {
 		t.Fatalf("Upsert: %v", err)
 	}
 	if len(coll.updates) != 1 {
 		t.Errorf("expected one UpdateOne, got %d", len(coll.updates))
 	}
-	if err := m.Delete(ctx, "c", "id1"); err != nil {
+	if err := m.Delete(ctx, pc("c"), "id1"); err != nil {
 		t.Fatalf("Delete: %v", err)
 	}
 	if len(coll.deletes) != 1 {
 		t.Errorf("expected one DeleteOne, got %d", len(coll.deletes))
 	}
-	if err := m.UpdateFields(ctx, "c", "id1", map[string]any{"name": nil}); err != nil {
+	if err := m.UpdateFields(ctx, pc("c"), "id1", map[string]any{"name": nil}); err != nil {
 		t.Fatalf("UpdateFields: %v", err)
 	}
 	// Empty field map is a no-op (no driver call).
-	if err := m.UpdateFields(ctx, "c", "id1", map[string]any{}); err != nil {
+	if err := m.UpdateFields(ctx, pc("c"), "id1", map[string]any{}); err != nil {
 		t.Fatalf("UpdateFields empty: %v", err)
 	}
 }
@@ -123,7 +123,7 @@ func TestMongoDB_FindIDsByField(t *testing.T) {
 	}}
 	m := newFakeMongo(coll)
 
-	ids, err := m.FindIDsByField(context.Background(), "c", "fk", "x")
+	ids, err := m.FindIDsByField(context.Background(), pc("c"), "fk", "x")
 	if err != nil {
 		t.Fatalf("FindIDsByField: %v", err)
 	}

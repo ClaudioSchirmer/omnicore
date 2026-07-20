@@ -129,7 +129,7 @@ func TestBuildCreateCollectionOptions_FullSpec_BuildsClean(t *testing.T) {
 func TestBuildValidatorCommand_DefaultLevelAction(t *testing.T) {
 	v := query.View("users").Root("users").
 		JSONSchema(bson.M{"bsonType": "object"})
-	cmd := buildValidatorCommand(v)
+	cmd := buildValidatorCommand(v, v.Name())
 	if len(cmd) < 4 {
 		t.Fatalf("cmd length = %d, want 4 (collMod + validator + level + action)", len(cmd))
 	}
@@ -152,7 +152,7 @@ func TestBuildValidatorCommand_OverrideLevelAndAction(t *testing.T) {
 		JSONSchema(bson.M{"bsonType": "object"}).
 		JSONSchemaValidationLevel(query.ValidationLevelModerate).
 		JSONSchemaValidationAction(query.ValidationActionWarn)
-	cmd := buildValidatorCommand(v)
+	cmd := buildValidatorCommand(v, v.Name())
 	if cmd[2].Value != query.ValidationLevelModerate {
 		t.Errorf("validationLevel = %v, want %q", cmd[2].Value, query.ValidationLevelModerate)
 	}
@@ -164,7 +164,7 @@ func TestBuildValidatorCommand_OverrideLevelAndAction(t *testing.T) {
 func TestBuildValidatorCommand_PayloadWrapsJSONSchema(t *testing.T) {
 	schema := bson.M{"required": []string{"_id", "name"}}
 	v := query.View("users").Root("users").JSONSchema(schema)
-	cmd := buildValidatorCommand(v)
+	cmd := buildValidatorCommand(v, v.Name())
 	wrapper, ok := cmd[1].Value.(bson.M)
 	if !ok {
 		t.Fatalf("validator value type = %T, want bson.M", cmd[1].Value)

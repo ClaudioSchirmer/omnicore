@@ -123,6 +123,10 @@ func (c *filterColl) DeleteOne(ctx context.Context, filter any, opts ...deleteOp
 	return &mongo.DeleteResult{}, nil
 }
 
+func (c *filterColl) BulkWrite(ctx context.Context, models []mongo.WriteModel, opts ...bulkOpt) (*mongo.BulkWriteResult, error) {
+	return &mongo.BulkWriteResult{UpsertedCount: int64(len(models))}, nil
+}
+
 // ─── fixtures ────────────────────────────────────────────────────────────────
 
 type cvrGadget struct{ ID, Code, MirrorID string }
@@ -203,7 +207,7 @@ func newCVREnv() *cvrEnv {
 		return &filterColl{}
 	})
 	primary, notes := cvrPrimaryView(), cvrNotesView()
-	inner := NewMongoViewReader(db).SetViews([]*query.ViewDefinition{primary, notes})
+	inner := NewMongoViewReader(db, testResolver).SetViews([]*query.ViewDefinition{primary, notes})
 	env.reader = NewComposedViewReader(inner,
 		[]*query.ComposedViewDefinition{cvrComposed(primary, notes)}, 0)
 	return env
@@ -606,7 +610,7 @@ func newCVREnvByMirrorID() *cvrEnv {
 		Link("upstreamMirror", query.JoinUpstream(cvrUpstreamSchema()).
 			FK("mirror_id").
 			As("UpstreamMirror"))
-	inner := NewMongoViewReader(db).SetViews([]*query.ViewDefinition{primary})
+	inner := NewMongoViewReader(db, testResolver).SetViews([]*query.ViewDefinition{primary})
 	env.reader = NewComposedViewReader(inner, []*query.ComposedViewDefinition{composed}, 0)
 	return env
 }
@@ -784,7 +788,7 @@ func TestMongoViewReader_SetComposedViewsMutatesInPlace(t *testing.T) {
 		return &filterColl{}
 	})
 	primary, notes := cvrPrimaryView(), cvrNotesView()
-	mvr := NewMongoViewReader(db).SetViews([]*query.ViewDefinition{primary, notes})
+	mvr := NewMongoViewReader(db, testResolver).SetViews([]*query.ViewDefinition{primary, notes})
 
 	// The early capture — the port value a handler stored before wiring.
 	var captured queries.ViewReader = mvr
@@ -839,7 +843,7 @@ func TestMongoViewReader_OverlayFilterCursorRoundTrip(t *testing.T) {
 			Field("Code", "code").
 			Field("MirrorID", "mirror_id").
 			SoftDelete("deleted_at"))
-	r := NewMongoViewReader(newFakeMongo(coll)).SetViews([]*query.ViewDefinition{primary})
+	r := NewMongoViewReader(newFakeMongo(coll), testResolver).SetViews([]*query.ViewDefinition{primary})
 
 	// The criteria AS THE READER SEES IT: the wire filter (Code) plus a
 	// ToCriteria security overlay (MirrorID standing in for a tenant column).

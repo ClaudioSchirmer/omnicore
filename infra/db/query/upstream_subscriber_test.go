@@ -142,18 +142,18 @@ func TestUpstreamMetrics_NilSafe(t *testing.T) {
 }
 
 func TestUpstreamSubscriberConfig_NewUpstreamSubscriber_RequiresTopicAndCollection(t *testing.T) {
-	if _, err := NewUpstreamSubscriber(nil, nil, nil,
+	if _, err := NewUpstreamSubscriber(nil, nil, nil, identityResolver,
 		UpstreamSubscriberConfig{Collection: "users"}, nil, nil, nil); err == nil {
 		t.Error("expected error on missing Topic")
 	}
-	if _, err := NewUpstreamSubscriber(nil, nil, nil,
+	if _, err := NewUpstreamSubscriber(nil, nil, nil, identityResolver,
 		UpstreamSubscriberConfig{Topic: "users.events"}, nil, nil, nil); err == nil {
 		t.Error("expected error on missing Collection")
 	}
 }
 
 func TestUpstreamSubscriberConfig_NewUpstreamSubscriber_ParsesOffset(t *testing.T) {
-	s, err := NewUpstreamSubscriber(nil, nil, nil,
+	s, err := NewUpstreamSubscriber(nil, nil, nil, identityResolver,
 		UpstreamSubscriberConfig{
 			Topic:      "users.events",
 			Collection: "users",

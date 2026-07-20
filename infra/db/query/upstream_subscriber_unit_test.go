@@ -53,8 +53,21 @@ func ordersBuyerView() *ViewDefinition {
 // ordersRootEngine returns a fakeEngine whose composer root fetch yields the
 // order root row carrying the buyer_id FK that points at the upstream doc.
 func ordersRootEngine() *fakeEngine {
-	return composerEngine(func(string, []any) ([]map[string]any, error) {
-		return mapsFromColsData([]string{"id", "buyer_id", "name"}, [][]any{{"o1", "u1", "first"}}), nil
+	// Echo a root row per requested id so BOTH the per-id (WHERE id = ?) and the
+	// set-based (WHERE id IN (...)) root fetch resolve exactly the ids they ask
+	// for — the batched ripple composes several parents in one IN lookup, and its
+	// _id must match the requested local id. An argless query keeps the legacy
+	// single "o1" row.
+	return composerEngine(func(_ string, args []any) ([]map[string]any, error) {
+		if len(args) == 0 {
+			return mapsFromColsData([]string{"id", "buyer_id", "name"}, [][]any{{"o1", "u1", "first"}}), nil
+		}
+		data := make([][]any, 0, len(args))
+		for _, a := range args {
+			id, _ := a.(string)
+			data = append(data, []any{id, "u1", "first"})
+		}
+		return mapsFromColsData([]string{"id", "buyer_id", "name"}, data), nil
 	})
 }
 
@@ -79,8 +92,8 @@ func newTestUpstream(t *testing.T, cfg UpstreamSubscriberConfig, mongo ReadModel
 	// The composer drives Compose's root fetch via the engine seam; the
 	// subscriber's own engine handle is nil so the best-effort failure writers
 	// no-op (their nil-guard branch — see file header note).
-	composer := NewComposerWithMongo(eng, mongo)
-	s, err := NewUpstreamSubscriber(nil, mongo, composer, cfg,
+	composer := NewComposerWithMongo(eng, mongo, identityResolver)
+	s, err := NewUpstreamSubscriber(nil, mongo, composer, identityResolver, cfg,
 		[]*ViewDefinition{ordersBuyerView()}, nil, nil)
 	if err != nil {
 		t.Fatalf("NewUpstreamSubscriber: %v", err)
@@ -375,8 +388,8 @@ func TestRipple_NoJoinField(t *testing.T) {
 	other := FromSchema(core.NewExternalSchema("partners").PK("id")).FK("partner_id").As("Partner")
 	view := View("orders").Version(1).Root("orders").Schema(composerRootSchema()).Embed("partner", other)
 	mongo := upstreamFakeMongo(happyColls())
-	composer := NewComposerWithMongo(ordersRootEngine(), mongo)
-	s, err := NewUpstreamSubscriber(nil, mongo, composer,
+	composer := NewComposerWithMongo(ordersRootEngine(), mongo, identityResolver)
+	s, err := NewUpstreamSubscriber(nil, mongo, composer, identityResolver,
 		UpstreamSubscriberConfig{Topic: "users.events", Collection: "users"},
 		[]*ViewDefinition{view}, nil, nil)
 	if err != nil {
@@ -404,8 +417,8 @@ func ordersItemsView() *ViewDefinition {
 // upstream "users" collection one-to-many.
 func newManyUpstream(t *testing.T, mongo ReadModelStore, eng core.RelationalEngine) *UpstreamSubscriber {
 	t.Helper()
-	composer := NewComposerWithMongo(eng, mongo)
-	s, err := NewUpstreamSubscriber(nil, mongo, composer,
+	composer := NewComposerWithMongo(eng, mongo, identityResolver)
+	s, err := NewUpstreamSubscriber(nil, mongo, composer, identityResolver,
 		UpstreamSubscriberConfig{Topic: "users.events", Collection: "users"},
 		[]*ViewDefinition{ordersItemsView()}, nil, nil)
 	if err != nil {
@@ -504,8 +517,8 @@ func ordersBothView() *ViewDefinition {
 
 func newBothUpstream(t *testing.T, mongo ReadModelStore, eng core.RelationalEngine) *UpstreamSubscriber {
 	t.Helper()
-	composer := NewComposerWithMongo(eng, mongo)
-	s, err := NewUpstreamSubscriber(nil, mongo, composer,
+	composer := NewComposerWithMongo(eng, mongo, identityResolver)
+	s, err := NewUpstreamSubscriber(nil, mongo, composer, identityResolver,
 		UpstreamSubscriberConfig{Topic: "users.events", Collection: "users"},
 		[]*ViewDefinition{ordersBothView()}, nil, nil)
 	if err != nil {
@@ -635,7 +648,7 @@ func TestDocFieldString(t *testing.T) {
 
 func TestRecordFailure_NilPostgres(t *testing.T) {
 	mongo := upstreamFakeMongo(happyColls())
-	s, err := NewUpstreamSubscriber(nil, mongo, NewComposerWithMongo(nil, mongo),
+	s, err := NewUpstreamSubscriber(nil, mongo, NewComposerWithMongo(nil, mongo, identityResolver), identityResolver,
 		UpstreamSubscriberConfig{Topic: "t", Collection: "users"},
 		[]*ViewDefinition{ordersBuyerView()}, nil, nil)
 	if err != nil {
@@ -648,7 +661,7 @@ func TestRecordFailure_NilPostgres(t *testing.T) {
 
 func TestRetryPendingFailures_NilPostgres(t *testing.T) {
 	mongo := upstreamFakeMongo(happyColls())
-	s, err := NewUpstreamSubscriber(nil, mongo, NewComposerWithMongo(nil, mongo),
+	s, err := NewUpstreamSubscriber(nil, mongo, NewComposerWithMongo(nil, mongo, identityResolver), identityResolver,
 		UpstreamSubscriberConfig{Topic: "t", Collection: "users"},
 		[]*ViewDefinition{ordersBuyerView()}, nil, nil)
 	if err != nil {
@@ -703,21 +716,21 @@ func TestJoinFieldFor(t *testing.T) {
 func TestNewUpstreamSubscriber_Validation(t *testing.T) {
 	mongo := upstreamFakeMongo(happyColls())
 	pg := ordersRootEngine()
-	cmp := NewComposerWithMongo(pg, mongo)
+	cmp := NewComposerWithMongo(pg, mongo, identityResolver)
 	views := []*ViewDefinition{ordersBuyerView()}
 
-	if _, err := NewUpstreamSubscriber(pg, mongo, cmp, UpstreamSubscriberConfig{Collection: "users"}, views, nil, nil); err == nil {
+	if _, err := NewUpstreamSubscriber(pg, mongo, cmp, identityResolver, UpstreamSubscriberConfig{Collection: "users"}, views, nil, nil); err == nil {
 		t.Error("missing Topic must error")
 	}
-	if _, err := NewUpstreamSubscriber(pg, mongo, cmp, UpstreamSubscriberConfig{Topic: "t"}, views, nil, nil); err == nil {
+	if _, err := NewUpstreamSubscriber(pg, mongo, cmp, identityResolver, UpstreamSubscriberConfig{Topic: "t"}, views, nil, nil); err == nil {
 		t.Error("missing Collection must error")
 	}
-	if _, err := NewUpstreamSubscriber(pg, mongo, cmp,
+	if _, err := NewUpstreamSubscriber(pg, mongo, cmp, identityResolver,
 		UpstreamSubscriberConfig{Topic: "t", Collection: "users", StartFrom: "offset:notnum"}, views, nil, nil); err == nil {
 		t.Error("malformed offset StartFrom must error")
 	}
 	// Valid offset seek populates the target without error.
-	s, err := NewUpstreamSubscriber(pg, mongo, cmp,
+	s, err := NewUpstreamSubscriber(pg, mongo, cmp, identityResolver,
 		UpstreamSubscriberConfig{Topic: "t", Collection: "users", StartFrom: "offset:42"}, views, nil, nil)
 	if err != nil {
 		t.Fatalf("valid offset StartFrom must succeed: %v", err)

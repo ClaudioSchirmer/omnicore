@@ -2,7 +2,6 @@ package query
 
 import (
 	"context"
-	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -18,7 +17,7 @@ import (
 // Start/run remain integration-only.
 
 func rebuildSyncEngine(eng core.RelationalEngine, coll *fakeColl, views []*ViewDefinition) *SyncEngine {
-	return NewSyncEngine(eng, newFakeMongo(coll), nil, "grp", views, 1)
+	return NewSyncEngine(eng, newFakeMongo(coll), identityResolver, nil, "grp", views, 1)
 }
 
 func rebuildView() *ViewDefinition {
@@ -145,81 +144,6 @@ func TestInitRegistryOnly_ExecError(t *testing.T) {
 	plan := DriftPlan{View: rebuildView(), CurrentVersion: 1}
 	if err := s.InitRegistryOnly(context.Background(), plan, "svc"); err == nil {
 		t.Fatal("expected exec error from InitRegistryOnly")
-	}
-}
-
-func TestSampleExpectedFieldNames(t *testing.T) {
-	eng := newFakeEngine(&fakeQuerier{
-		// Sample-id query: one root id "o1". The row cap must ride the
-		// dialect's ApplyLimit (a TOP-style engine rewrites the SELECT head) —
-		// never a concatenated LIMIT tail.
-		queryFn: func(sql string, args []any) (core.Rows, error) {
-			if want := (fakeDialect{}).ApplyLimit("SELECT id FROM orders", sampleSizeForCleanup); sql != want {
-				return nil, fmt.Errorf("sample-id SQL = %q, want %q (row cap must come from Dialect.ApplyLimit)", sql, want)
-			}
-			return &fakeRows{rows: 1, scan: func(_ int, dest []any) error {
-				if p, ok := dest[0].(*string); ok {
-					*p = "o1"
-				}
-				return nil
-			}}, nil
-		},
-		// Compose's root fetch (SELECT * FROM orders ...).
-		queryMapsFn: func(string, []any) ([]map[string]any, error) {
-			return mapsFromColsData([]string{"id", "name"}, [][]any{{"o1", "first"}}), nil
-		},
-	})
-	c := NewComposer(eng)
-	got, err := sampleExpectedFieldNames(context.Background(), c, rebuildView())
-	if err != nil {
-		t.Fatalf("sampleExpectedFieldNames: %v", err)
-	}
-	if _, ok := got["id"]; !ok {
-		t.Errorf("expected 'id' in field set, got %v", got)
-	}
-	if _, ok := got["name"]; !ok {
-		t.Errorf("expected 'name' in field set, got %v", got)
-	}
-}
-
-func TestSampleExpectedFieldNames_EmptyAndError(t *testing.T) {
-	// No rows → empty expected set (the "skip cleanup" branch).
-	emptyEng := newFakeEngine(&fakeQuerier{
-		queryFn: func(string, []any) (core.Rows, error) { return &fakeRows{rows: 0}, nil },
-	})
-	got, err := sampleExpectedFieldNames(context.Background(), NewComposer(emptyEng), rebuildView())
-	if err != nil || len(got) != 0 {
-		t.Fatalf("empty sample = %v, err=%v, want empty", got, err)
-	}
-	// Sample-id query error surfaces.
-	errEng := newFakeEngine(&fakeQuerier{
-		queryFn: func(string, []any) (core.Rows, error) { return nil, errFake },
-	})
-	if _, err := sampleExpectedFieldNames(context.Background(), NewComposer(errEng), rebuildView()); err == nil {
-		t.Fatal("expected sample-id query error")
-	}
-}
-
-// The rebuild sample SELECT must use the schema's PK column name (resolved
-// through the dialect), not a hardcoded "id" — so a renamed PK (PK("key")) and a
-// reserved-word table rebuild correctly on every backend.
-func TestSampleExpectedFieldNames_UsesSchemaPKColumn(t *testing.T) {
-	var captured string
-	eng := newFakeEngine(&fakeQuerier{
-		queryFn: func(sql string, _ []any) (core.Rows, error) {
-			captured = sql
-			return &fakeRows{rows: 0}, nil // 0 rows → empty set, no compose needed
-		},
-	})
-	view := View("orders").Version(1).Root("orders").Schema(
-		core.NewTableSchema[*builderTestEntity]("orders").
-			PK("key").Field("Name", "name").SoftDelete("deleted_at"))
-
-	if _, err := sampleExpectedFieldNames(context.Background(), NewComposer(eng), view); err != nil {
-		t.Fatalf("sampleExpectedFieldNames: %v", err)
-	}
-	if !strings.Contains(captured, "SELECT key FROM orders") {
-		t.Errorf("rebuild sample must select the schema PK column, got %q", captured)
 	}
 }
 

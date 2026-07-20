@@ -12,6 +12,7 @@ import (
 	"os/signal"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -162,6 +163,15 @@ func runWithConfig(cfg *Config, wire func(Deps) Wiring) error {
 		return err
 	}
 
+	// Prime the view resolver's pointer cache from the registry now that the
+	// schema (including migration 0002's slot columns) is in place. A failure
+	// here — e.g. an autoRun=false deployment that has not applied 0002 yet —
+	// is non-fatal: the cache stays empty and every view resolves to its bare
+	// collection, exactly the pre-blue-green behavior.
+	if err := deps.Resolver.Refresh(ctx); err != nil {
+		deps.Logger.Warn("view resolver refresh failed; serving bare collections", "err", err)
+	}
+
 	// Ensure the next 3 monthly partitions of audit_events exist. Idempotent
 	// across boots (CREATE TABLE IF NOT EXISTS), runs after migrations so the
 	// parent table is guaranteed to be in place, runs before serving HTTP so
@@ -263,11 +273,11 @@ func runWithConfig(cfg *Config, wire func(Deps) Wiring) error {
 		// collation, capped, time-series). Idempotent on steady state;
 		// strict-on-divergence by default, FORCE_REBUILD env var as the
 		// operator escape for index conflicts.
-		if err := mongo.ApplyMongoSpecs(ctx, deps.Mongo, views); err != nil {
+		if err := mongo.ApplyMongoSpecs(ctx, deps.Mongo, views, deps.Resolver); err != nil {
 			return fmt.Errorf("bootstrap: mongo apply specs: %w", err)
 		}
 
-		syncEngine := query.NewSyncEngine(deps.DB, deps.Mongo,
+		syncEngine := query.NewSyncEngine(deps.DB, deps.Mongo, deps.Resolver,
 			deps.Transport, cfg.Transport.SyncGroup, views, cfg.Transport.SyncWorkers).
 			WithKafkaTracing(cfg.Observability.Tracing.Resolve(cfg.Service).Instruments(tracing.SubKafka))
 		// Surfaced on Deps so serve's coordinated drain can wait for the
@@ -275,27 +285,69 @@ func runWithConfig(cfg *Config, wire func(Deps) Wiring) error {
 		// before the stores close — same reason UpstreamSubscribers is there.
 		deps.SyncEngine = syncEngine
 
-		// Drift detection + rebuild reconciliation. Runs AFTER
-		// ApplyMongoSpecs (collection shape reconciled) and BEFORE
-		// SyncEngine.Start (no live events should reach a drifted view).
-		if err := reconcileViewDrift(ctx, cfg, deps, syncEngine, views); err != nil {
+		// Drift detection + the FAST reconciliation paths run synchronously
+		// here (AFTER ApplyMongoSpecs): detection, the unconditional / check-mode
+		// aborts (a bad drift still crashes the boot), and the registry-only
+		// InitRegistryOnly / RefreshRegistryArtifactOnly paths. It returns the
+		// plans that need a full blue-green rebuild — the SLOW path.
+		rebuildPlans, rebuildCfg, err := reconcileViewDrift(ctx, cfg, deps, syncEngine, views)
+		if err != nil {
 			return err
 		}
 
-		// Start cross-service subscribers BEFORE SyncEngine so any
-		// upstream-projected docs in B's Mongo are ready when local
-		// views start composing — recompose-ripple inside the
-		// subscriber + the local SyncEngine path both reach the same
-		// composer (shared via the explicit handle) so cross-store
-		// embeds resolve consistently.
-		deps.UpstreamSubscribers = startUpstreamSubscribers(ctx, deps, cfg, upstreamSubs, views)
-
-		syncEngine.Start(ctx)
-		deps.Logger.Info("sync engine started",
-			"endpoints", cfg.Transport.Endpoints,
-			"syncGroup", cfg.Transport.SyncGroup,
-			"views", len(views),
-			"workers", cfg.Transport.SyncWorkers)
+		// Run the slow rebuilds in the background so the HTTP probes come up now:
+		// /livez 200 (a long rebuild never gets the pod killed by Kubernetes) and
+		// /readyz 503 until the rebuild finishes and the consumer joins. A fatal
+		// rebuild error feeds boot.errCh → serve() returns non-zero (parity with
+		// the old synchronous boot-abort). The cross-service subscribers and the
+		// projection consumer start only AFTER the rebuild — no live event ever
+		// reaches a drifted view — so they live in this goroutine too.
+		// The goroutine runs on its OWN cancellable context (a child of ctx, so a
+		// shutdown signal still cancels it). serve() cancels it via boot.cancel on
+		// any early exit and waits for boot.done, so the stores never close under an
+		// in-flight rebuild/consumer. defer keeps `go vet` happy and cancels on the
+		// normal return path too.
+		rebuildCtx, rebuildCancel := context.WithCancel(ctx)
+		defer rebuildCancel()
+		boot := &bootRebuild{done: make(chan struct{}), errCh: make(chan error, 1), cancel: rebuildCancel, total: len(rebuildPlans)}
+		deps.bootRebuild = boot
+		go func() {
+			defer close(boot.done)
+			for i, plan := range rebuildPlans {
+				// Record which view (1-based) is rebuilding so /readyz names it in
+				// the 503 reason. Set before ExecuteRebuild so the reason reflects
+				// the view currently under work, not the one just finished.
+				boot.progress.Store(&rebuildProgress{view: plan.View.Name(), index: i + 1})
+				if err := syncEngine.ExecuteRebuild(rebuildCtx, plan, rebuildCfg); err != nil {
+					if rebuildCtx.Err() != nil {
+						return // shutting down / boot aborting mid-rebuild — not a failure
+					}
+					if errors.Is(err, query.ErrRebuildLockHeld) {
+						// Follower: another live instance is driving this view's
+						// rebuild. Do NOT abort — serve the current active slot and
+						// pick up the driver's flip at runtime via the resolver's
+						// lease refresh. Keep going for any other view we can drive.
+						deps.Logger.Info("view rebuild driven by another instance; serving the active slot until the flip",
+							"view", plan.View.Name())
+						continue
+					}
+					deps.Logger.Error("boot rebuild failed", "view", plan.View.Name(), "err", err)
+					select {
+					case boot.errCh <- fmt.Errorf("bootstrap: rebuild view %q: %w", plan.View.Name(), err):
+					default:
+					}
+					return
+				}
+			}
+			boot.upstream = startUpstreamSubscribers(rebuildCtx, deps, cfg, upstreamSubs, views)
+			syncEngine.Start(rebuildCtx)
+			boot.complete.Store(true) // readiness gate opens
+			deps.Logger.Info("sync engine started",
+				"endpoints", cfg.Transport.Endpoints,
+				"syncGroup", cfg.Transport.SyncGroup,
+				"views", len(views),
+				"workers", cfg.Transport.SyncWorkers)
+		}()
 	} else if len(upstreamSubs) > 0 {
 		// Degenerate case: B declared upstream subscriptions but no
 		// local views. The subscribers still materialize the local
@@ -367,7 +419,13 @@ func buildDeps(cfg *Config) (Deps, error) {
 	// applyDefaults already.
 	eng.WithAudit(&cfg.Audit, logger, cfg.Auth.AuditClaims)
 	eng.WithEventPublisher(events.NewSlogPublisher(logger))
-	viewReader := mongo.NewMongoViewReader(mg)
+	// resolver maps every view to the physical collection it currently serves
+	// (its active slot). Constructed once here and shared by every read-model
+	// component (the reader, SyncEngine, composer, upstream subscribers, drift
+	// detection) so they observe one consistent pointer. eng backs Refresh (the
+	// registry read); until the first flip every view resolves to its bare name.
+	resolver := query.NewViewResolverWithLease(eng, time.Duration(cfg.Mongo.Rebuild.PointerLeaseSeconds)*time.Second)
+	viewReader := mongo.NewMongoViewReader(mg, resolver)
 
 	// Resolve the SERVICE-PRIVATE cache from cfg only (no Wire
 	// injection at this stage). If cfg.Cache.Store == "custom", the
@@ -454,6 +512,7 @@ func buildDeps(cfg *Config) (Deps, error) {
 		Translator:          tr,
 		Pipeline:            pipe,
 		ViewReader:          viewReader,
+		Resolver:            resolver,
 		Transport:           sub,
 		Export:              fwweb.ExportDeps{Translator: tr, MaxExportRows: cfg.Query.MaxExportRows},
 		Cache:               privateCache,
@@ -602,7 +661,7 @@ func buildApp(ctx context.Context, deps Deps, wiring Wiring) (*fiber.App, error)
 	// readiness type doc). Like /livez it is framework-owned but NOT auto-public;
 	// the operator lists "GET /readyz" in auth.publicRoutes so a tokenless kubelet
 	// can reach it.
-	ready := &readiness{shutdown: ctx, db: deps.DB, mongo: deps.Mongo}
+	ready := &readiness{shutdown: ctx, db: deps.DB, mongo: deps.Mongo, boot: deps.bootRebuild}
 	openapi.MountRaw(deps.OpenAPIRegistry, app, fiber.MethodGet, "/readyz",
 		func(c fiber.Ctx) error {
 			if err := ready.check(c.Context()); err != nil {
@@ -866,13 +925,89 @@ type readiness struct {
 	shutdown context.Context
 	db       core.RelationalEngine
 	mongo    *mongo.MongoDB
+	// boot gates readiness on the background boot-time view rebuild: while it
+	// runs, /readyz returns 503 so the pod stays out of rotation (but /livez is
+	// up, so a long rebuild is not killed). Nil when there is no boot rebuild.
+	boot *bootRebuild
+}
+
+// bootRebuild coordinates the background boot-time view rebuild with the HTTP
+// probes and the shutdown drain. The slow blue-green backfill runs in a
+// goroutine so /livez comes up immediately (Kubernetes never kills a pod through
+// a long rebuild); /readyz stays 503 until complete flips true. A fatal rebuild
+// error is sent on errCh so serve() returns non-zero — parity with the old
+// synchronous boot-abort. done closes when the goroutine exits (success or a
+// shutdown stop), so the drain reads upstream only once it is final. upstream
+// carries the subscribers the goroutine starts after the rebuild (deps is passed
+// to serve by value, so the goroutine cannot hand them over through deps).
+type bootRebuild struct {
+	done     chan struct{}
+	errCh    chan error
+	complete atomic.Bool
+	upstream []*query.UpstreamSubscriber
+	// cancel stops the goroutine's own context so an early serve() exit (a
+	// listener that failed to bind, a fatal rebuild) can abort an in-flight
+	// rebuild/consumer and wait for it to unwind BEFORE the stores close.
+	cancel context.CancelFunc
+	// total is the number of views the goroutine will rebuild; progress carries
+	// the one it is on right now. Both feed the /readyz 503 reason so an operator
+	// who curls the probe sees WHICH view is rebuilding and how far the run is.
+	// progress is written by the rebuild goroutine and read by the probe goroutine
+	// (readiness.check), so it is an atomic pointer; nil until the first view
+	// starts (the reconcile window falls back to the generic reason).
+	total    int
+	progress atomic.Pointer[rebuildProgress]
+}
+
+// rebuildProgress is the snapshot readiness.check renders into the /readyz reason
+// while a boot rebuild runs: the view being rebuilt and its 1-based position in
+// the run. view and index update together (one atomic Store of a fresh value), so
+// the probe never reads a torn pair.
+type rebuildProgress struct {
+	view  string
+	index int
+}
+
+// bootRebuildStopGrace bounds how long serve() waits for the background boot
+// rebuild to unwind after cancelling it, so a wedged rebuild that ignores its
+// context cannot delay a boot-failure exit forever. A var so tests can shrink it.
+var bootRebuildStopGrace = 5 * time.Second
+
+// stopBootRebuild aborts the background boot-rebuild goroutine and waits (bounded)
+// for it to exit. serve() defers it so that EVERY exit path — a listener bind
+// failure, a fatal rebuild, any early return — unwinds the goroutine before
+// runWithConfig's deferred store closes run. Without it those closes race the
+// still-running rebuild/consumer and surface a misleading "client is disconnected"
+// that masks the real cause (e.g. "bind: address already in use"). No-op when
+// there is no boot rebuild, and effectively instant on the graceful-drain path
+// (that path has already awaited boot.done, so the channel is closed).
+func stopBootRebuild(deps Deps) {
+	if deps.bootRebuild == nil {
+		return
+	}
+	if deps.bootRebuild.cancel != nil {
+		deps.bootRebuild.cancel()
+	}
+	select {
+	case <-deps.bootRebuild.done:
+	case <-time.After(bootRebuildStopGrace):
+	}
 }
 
 // check returns nil when the service can serve, or an error naming the reason it
-// cannot (draining, or a store that failed to answer under the probe deadline).
+// cannot (draining, a rebuild in progress, or a store that failed to answer).
 func (r *readiness) check(ctx context.Context) error {
 	if r.shutdown != nil && r.shutdown.Err() != nil {
 		return errors.New("draining")
+	}
+	if r.boot != nil && !r.boot.complete.Load() {
+		// Name the view under rebuild + its position when the goroutine has
+		// started one; the generic reason covers the window before the first view
+		// (drift reconcile) where no progress is recorded yet.
+		if p := r.boot.progress.Load(); p != nil {
+			return fmt.Errorf("initializing: rebuilding view %q (%d/%d)", p.view, p.index, r.boot.total)
+		}
+		return errors.New("initializing: view rebuild in progress")
 	}
 	ctx, cancel := context.WithTimeout(ctx, readinessProbeTimeout)
 	defer cancel()
@@ -928,6 +1063,14 @@ func authOptionsFromConfig(a AuthConfig) fwweb.AuthOptions {
 }
 
 func serve(ctx context.Context, deps Deps, wiring Wiring) error {
+	// Whatever ends serve() — a listener that failed to bind, a fatal boot
+	// rebuild, any early return, or the graceful drain below — the background
+	// boot-rebuild goroutine must be unwound before runWithConfig's deferred
+	// store closes run, or those closes race an in-flight rebuild/consumer and
+	// surface a misleading "client is disconnected". On the drain path this is a
+	// no-op (boot.done already awaited there); on every error path it does the work.
+	defer stopBootRebuild(deps)
+
 	app, err := buildApp(ctx, deps, wiring)
 	if err != nil {
 		return err
@@ -1025,11 +1168,20 @@ func serve(ctx context.Context, deps Deps, wiring Wiring) error {
 		deps.Logger.Info("grpc listening", "addr", grpcCfg.Addr, "tls", grpcTLS)
 	}
 
+	// A fatal background boot-rebuild error surfaces here so the process exits
+	// non-zero — exactly the old synchronous boot-abort. Nil channel (no boot
+	// rebuild) is never selected.
+	var bootErrCh <-chan error
+	if deps.bootRebuild != nil {
+		bootErrCh = deps.bootRebuild.errCh
+	}
 	select {
 	case <-ctx.Done():
 		deps.Logger.Info("shutdown signal received, draining...")
 	case err := <-errCh:
 		return fmt.Errorf("bootstrap: %w", err)
+	case err := <-bootErrCh:
+		return err
 	}
 
 	drainSeconds := deps.Config.Shutdown.DrainTimeoutSeconds
@@ -1103,6 +1255,23 @@ func serve(ctx context.Context, deps Deps, wiring Wiring) error {
 	if consumerPool != nil {
 		drain("integration", func() error { return consumerPool.Shutdown(shutdownCtx) })
 	}
+	// Wait for the background boot rebuild goroutine to stop before draining the
+	// consumers it starts (ctx is cancelled, so a rebuild in flight exits
+	// promptly). This makes boot.upstream + the started SyncEngine final — no
+	// race between the goroutine's Start and the drain's Shutdown. Bounded by
+	// shutdownCtx so a wedged rebuild cannot eat the whole budget.
+	if deps.bootRebuild != nil {
+		select {
+		case <-deps.bootRebuild.done:
+		case <-shutdownCtx.Done():
+			deps.Logger.Warn("boot rebuild did not stop before the drain deadline")
+		}
+		for i, sub := range deps.bootRebuild.upstream {
+			i, sub := i, sub
+			drain(fmt.Sprintf("upstream[%d]", i), func() error { return sub.Shutdown(shutdownCtx) })
+		}
+	}
+	// The degenerate no-views case starts its subscribers synchronously.
 	for i, sub := range deps.UpstreamSubscribers {
 		i, sub := i, sub
 		drain(fmt.Sprintf("upstream[%d]", i), func() error { return sub.Shutdown(shutdownCtx) })

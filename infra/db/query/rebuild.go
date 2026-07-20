@@ -6,16 +6,27 @@ import (
 	"fmt"
 	"log"
 	"log/slog"
+	"sync"
 	"time"
+
+	"github.com/ClaudioSchirmer/omnicore/infra/db/core"
 )
 
-const rebuildBatchSize = 1000
+// rebuildBatchSize is the default number of root ids composed + bulk-upserted per
+// batch when yaml leaves mongo.rebuild.batchSize unset. rebuildWorkers is the
+// default number of concurrent compose+write workers driving the backfill
+// pipeline when mongo.rebuild.workers is unset — see backfillInto.
+const (
+	rebuildBatchSize = 1000
+	rebuildWorkers   = 4
+)
 
-// sampleSizeForCleanup is the number of relational ids the rebuild
-// composes during the cleanup step to derive the expected field set.
-// Small enough to cost milliseconds; large enough that a single row
-// with NULL columns does not skew the expected keys.
-const sampleSizeForCleanup = 5
+// ErrRebuildLockHeld is returned by ExecuteRebuild when another live instance
+// holds the per-view rebuild lock. It is NOT a failure: the boot path treats it
+// as "this pod is a follower — serve the current active slot and pick up the
+// driver's flip at runtime via the resolver's lease refresh", rather than
+// aborting the boot. Detect it with errors.Is(err, ErrRebuildLockHeld).
+var ErrRebuildLockHeld = errors.New("view rebuild lock held by another instance")
 
 // RebuildConfig governs the per-view rebuild execution. Mirrors the
 // mongo.rebuild yaml block — see bootstrap.MongoRebuildConfig and
@@ -27,6 +38,18 @@ type RebuildConfig struct {
 	// ServiceName is stamped on the registry row's applied_by field for
 	// forensics. Typically the cfg.Service value from bootstrap.LoadConfig.
 	ServiceName string
+
+	// Workers is the number of concurrent compose+write workers the backfill
+	// pipeline runs (mongo.rebuild.workers). 0 → the framework default
+	// (rebuildWorkers). Each worker composes a batch from the relational source
+	// and bulk-upserts it; they run independently because every root document is
+	// independent. The relational pool should carry at least Workers+1
+	// connections (one is pinned by the streaming root-id scan).
+	Workers int
+
+	// BatchSize is the number of root ids composed + bulk-upserted per batch
+	// (mongo.rebuild.batchSize). 0 → the framework default (rebuildBatchSize).
+	BatchSize int
 }
 
 // ExecuteRebuild runs the §10.1 sequence on one view, under the hybrid
@@ -60,6 +83,11 @@ type RebuildConfig struct {
 func (s *SyncEngine) ExecuteRebuild(ctx context.Context, plan DriftPlan, cfg RebuildConfig) error {
 	view := plan.View
 	collection := view.Name()
+	// oldActive is the slot serving reads now; the rebuild builds the shadow slot
+	// and flips readers to it, then reclaims oldActive. collection stays the
+	// logical name for logging.
+	oldActive := s.resolver.Active(collection)
+	shadow := s.resolver.Shadow(collection)
 	now := time.Now()
 
 	switch cfg.Orphan {
@@ -87,12 +115,14 @@ func (s *SyncEngine) ExecuteRebuild(ctx context.Context, plan DriftPlan, cfg Reb
 		}
 	}()
 
-	// Step 3 — abort when another instance holds the lock.
+	// Step 3 — another instance holds the lock. Return the ErrRebuildLockHeld
+	// sentinel so the boot path treats this pod as a FOLLOWER (serve the active
+	// slot, wait for the driver's flip) instead of aborting.
 	if !lock.Acquired() {
 		if holder := lock.Holder(); holder != "" {
-			return fmt.Errorf("rebuild lock on view %q held by %s — another instance is rebuilding", collection, holder)
+			return fmt.Errorf("rebuild lock on view %q held by %s — another instance is rebuilding: %w", collection, holder, ErrRebuildLockHeld)
 		}
-		return fmt.Errorf("rebuild lock on view %q held by another session (holder details unavailable) — another instance of the service is rebuilding this view", collection)
+		return fmt.Errorf("rebuild lock on view %q held by another session (holder details unavailable) — another instance is rebuilding this view: %w", collection, ErrRebuildLockHeld)
 	}
 
 	// regQ is the pinned-session Querier the status writes (BeginRebuild /
@@ -120,6 +150,26 @@ func (s *SyncEngine) ExecuteRebuild(ctx context.Context, plan DriftPlan, cfg Reb
 			slog.String("previous_host", holderHost))
 	}
 
+	// G5a — a crashed prior driver may have left a shadow flag + half-built
+	// shadow collection. Clear the flag (ending any lingering dual-apply) and
+	// drop the abandoned shadow before starting fresh, so the new rebuild builds
+	// a clean slot and no pod keeps writing an orphaned one.
+	if plan.Registry != nil && plan.Registry.ShadowCollection != nil {
+		stale := PhysicalCollection{name: *plan.Registry.ShadowCollection}
+		slog.WarnContext(ctx, "view.rebuild.takeover_shadow_reset",
+			slog.String("view", collection), slog.String("stale_shadow", stale.String()))
+		if err := abortSlotRebuild(ctx, regQ, regD, collection); err != nil {
+			return fmt.Errorf("takeover %q: clear stale shadow flag: %w", collection, err)
+		}
+		if err := s.mongo.DropCollection(ctx, stale); err != nil {
+			slog.WarnContext(ctx, "view.rebuild.takeover_shadow_drop_failed",
+				slog.String("view", collection), slog.String("err", err.Error()))
+		}
+		if err := s.resolver.Refresh(ctx); err != nil {
+			return fmt.Errorf("takeover %q: refresh after shadow reset: %w", collection, err)
+		}
+	}
+
 	if err := BeginRebuild(ctx, regQ, regD, collection, now); err != nil {
 		return err
 	}
@@ -129,98 +179,57 @@ func (s *SyncEngine) ExecuteRebuild(ctx context.Context, plan DriftPlan, cfg Reb
 		slog.String("from_hash", registryCombinedOrNone(plan.Registry)),
 		slog.String("to_hash", plan.CurrentCombinedHash))
 
-	// Step 5 — cleanup (skip when collection empty).
-	populated, err := s.mongo.HasDocuments(ctx, collection)
-	if err != nil {
+	// Step 5 — provision the shadow slot to the view's declared shape, record it
+	// on the registry row (turning on dual-apply cluster-wide), and refresh so
+	// this driver observes the shadow too.
+	if err := s.mongo.ProvisionSlot(ctx, view, shadow); err != nil {
+		return fmt.Errorf("rebuild %q: provision shadow %q: %w", collection, shadow, err)
+	}
+	if err := beginSlotRebuild(ctx, regQ, regD, collection, shadow.String()); err != nil {
 		return err
 	}
-	var orphanFields []string
-	if populated {
-		orphanFields, err = computeOrphanFields(ctx, s.mongo, s.composer, view)
-		if err != nil {
-			return err
-		}
-		if len(orphanFields) > 0 {
-			if err := s.mongo.UnsetFields(ctx, collection, orphanFields); err != nil {
-				return err
-			}
-		}
+	if err := s.resolver.Refresh(ctx); err != nil {
+		return fmt.Errorf("rebuild %q: refresh after begin: %w", collection, err)
 	}
 
-	// Step 6 — snapshot _id set for orphan reconciliation.
-	snapshot, err := s.mongo.SnapshotDocumentIDs(ctx, collection)
-	if err != nil {
+	// Step 6 — wait one lease so every pod's read-loop fence has observed the
+	// dual-apply flag BEFORE the backfill reads anything (the G3 ordering
+	// invariant): an event applied to the active slot only, after the backfill
+	// passed that aggregate, would leave the shadow permanently gapped.
+	if err := s.awaitFenceLease(ctx); err != nil {
 		return err
 	}
 
-	// Step 7 — compose+upsert from Postgres, tracking which ids we touched.
-	upserted := 0
-	flush := func(batch []string) error {
-		for _, id := range batch {
-			doc, composeErr := s.composer.Compose(ctx, view, id)
-			if composeErr != nil {
-				return composeErr
-			}
-			if doc == nil {
-				continue
-			}
-			if upsertErr := s.mongo.Upsert(ctx, collection, id, doc); upsertErr != nil {
-				return upsertErr
-			}
-			delete(snapshot, id)
-			upserted++
-		}
-		return nil
+	// Step 7 — backfill the shadow from the relational source. Aggregates that
+	// change during the backfill are carried into the shadow by dual-apply; the
+	// backfill captures everything else.
+	if err := s.backfillInto(ctx, view, shadow, "", cfg.Workers, cfg.BatchSize, regQ); err != nil {
+		// A partial/aborted backfill must not linger. The pipeline already stopped
+		// every worker and returned the first error (no goroutine outlives Wait),
+		// but the dual-apply flag + half-built shadow are still live cluster-wide.
+		// Clear the flag and drop the shadow — symmetric with the verify-failure
+		// path — so no pod keeps dual-applying to a shadow that will never flip and
+		// the next rebuild starts clean. The active slot is never touched, so
+		// readers keep serving authoritative data: no flip, no data loss.
+		s.discardShadow(ctx, regQ, regD, collection, shadow)
+		return fmt.Errorf("rebuild %q: backfill shadow: %w", collection, err)
 	}
 
-	// The root ids are read through the engine's neutral Querier (the pool, not
-	// the lock's pinned session — a plain read needs no lock affinity). Each
-	// scanned key is decoded via the dialect (identity on PG; BINARY(16) → uuid
-	// string on MySQL), matching the canonical id form Compose expects. The
-	// columns come from the view's root schema — the PK is whatever the schema
-	// declares, and the scan order falls back to the PK when the root declares
-	// no CreatedAt (e.g. a SharedBase root, whose timestamps are typically
-	// DDL-defaulted rather than schema-declared).
-	idDialect := s.eng.Dialect()
-	q := rebuildScanSQL(view)
-	rows, err := s.eng.Querier().Query(ctx, q)
-	if err != nil {
-		return err
-	}
-	batch := make([]string, 0, rebuildBatchSize)
-	for rows.Next() {
-		var raw string
-		if err := rows.Scan(&raw); err != nil {
-			rows.Close()
-			return err
-		}
-		id, err := idDialect.DecodeID(raw)
-		if err != nil {
-			rows.Close()
-			return err
-		}
-		batch = append(batch, id)
-		if len(batch) >= rebuildBatchSize {
-			if err := flush(batch); err != nil {
-				rows.Close()
-				return err
-			}
-			batch = batch[:0]
-		}
-	}
-	if err := rows.Err(); err != nil {
-		rows.Close()
-		return err
-	}
-	rows.Close()
-	if err := flush(batch); err != nil {
-		return err
+	// Step 8 — verify the shadow (completeness + shape) before any reader can see
+	// it. On failure the shadow is discarded and the flag cleared — the flip
+	// never happens, so readers keep serving the untouched active slot.
+	if err := s.verifyShadow(ctx, view, shadow); err != nil {
+		s.discardShadow(ctx, regQ, regD, collection, shadow)
+		return fmt.Errorf("rebuild %q: verify shadow: %w", collection, err)
 	}
 
-	// Step 8 — orphan reconciliation.
-	orphanCount, err := reconcileOrphans(ctx, s.mongo, collection, snapshot, cfg.Orphan)
-	if err != nil {
+	// Step 9 — flip: one registry write moves the active pointer to the shadow
+	// and clears the flag; refresh so this driver resolves reads to the new slot.
+	if err := flipSlot(ctx, regQ, regD, collection); err != nil {
 		return err
+	}
+	if err := s.resolver.Refresh(ctx); err != nil {
+		return fmt.Errorf("rebuild %q: refresh after flip: %w", collection, err)
 	}
 
 	// Step 9 — UPDATE registry row to status='done' with new hashes.
@@ -240,14 +249,60 @@ func (s *SyncEngine) ExecuteRebuild(ctx context.Context, plan DriftPlan, cfg Reb
 		return err
 	}
 
+	// Step 11 — settle: wait one lease so dual-apply is off on every pod, then
+	// reclaim the retired slot. A failed drop only leaks a collection the next
+	// rebuild drop-and-recreates, so reclaim is best-effort.
+	if err := s.awaitFenceLease(ctx); err != nil {
+		return err
+	}
+	if err := s.mongo.DropCollection(ctx, oldActive); err != nil {
+		slog.WarnContext(ctx, "view.rebuild.reclaim_failed",
+			slog.String("view", collection),
+			slog.String("retired", oldActive.String()),
+			slog.String("err", err.Error()))
+	}
+
 	slog.InfoContext(ctx, "view.rebuild.end",
 		slog.String("view", collection),
-		slog.Int("upserted", upserted),
-		slog.Int("orphan_fields_unset", len(orphanFields)),
-		slog.Int("orphan_docs", orphanCount),
+		slog.String("active", shadow.String()),
 		slog.Duration("duration", time.Since(now)))
 
 	return nil
+}
+
+// awaitFenceLease waits one bounded-staleness lease so every pod's read-loop
+// fence has re-read the registry — before the backfill (so dual-apply is on
+// everywhere) and after the flip (so it is off everywhere). A zero lease (tests)
+// returns immediately.
+func (s *SyncEngine) awaitFenceLease(ctx context.Context) error {
+	wait := s.resolver.lease
+	if wait <= 0 {
+		return nil
+	}
+	select {
+	case <-time.After(wait):
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+// discardShadow aborts a rebuild whose shadow failed verification: clear the flag
+// (ending dual-apply cluster-wide) and drop the abandoned shadow. Best-effort —
+// a leaked shadow is drop-and-recreated by the next rebuild.
+func (s *SyncEngine) discardShadow(ctx context.Context, q core.Querier, d core.Dialect, viewName string, shadow PhysicalCollection) {
+	if err := abortSlotRebuild(ctx, q, d, viewName); err != nil {
+		slog.WarnContext(ctx, "view.rebuild.discard_flag_failed",
+			slog.String("view", viewName), slog.String("err", err.Error()))
+	}
+	if err := s.mongo.DropCollection(ctx, shadow); err != nil {
+		slog.WarnContext(ctx, "view.rebuild.discard_drop_failed",
+			slog.String("view", viewName), slog.String("err", err.Error()))
+	}
+	if err := s.resolver.Refresh(ctx); err != nil {
+		slog.WarnContext(ctx, "view.rebuild.discard_refresh_failed",
+			slog.String("view", viewName), slog.String("err", err.Error()))
+	}
 }
 
 // InitRegistryOnly is the fast path for the DriftFreshInit case under
@@ -286,128 +341,6 @@ func (s *SyncEngine) RefreshRegistryArtifactOnly(ctx context.Context, plan Drift
 		ServiceName:  serviceName,
 		Now:          time.Now(),
 	})
-}
-
-// computeOrphanFields runs the aggregation full-scan to discover every
-// top-level field currently present in the collection, samples up to
-// sampleSizeForCleanup real ids from Postgres to derive the expected
-// field set via Compose, and returns the (observed - expected) set.
-//
-// Returns an empty slice when nothing diverges (steady state). When the
-// collection has data but Postgres is empty (Compose returns nothing on
-// every sample), returns an empty slice rather than the full observed
-// set — the orphan reconciliation step will deleteMany every doc; there
-// is no point in $unset-ing fields on docs that are about to disappear.
-func computeOrphanFields(ctx context.Context, m ReadModelStore, c *Composer, view *ViewDefinition) ([]string, error) {
-	observed, err := m.ObservedFieldNames(ctx, view.Name())
-	if err != nil {
-		return nil, err
-	}
-	if len(observed) == 0 {
-		return nil, nil
-	}
-	expected, err := sampleExpectedFieldNames(ctx, c, view)
-	if err != nil {
-		return nil, err
-	}
-	if len(expected) == 0 {
-		return nil, nil
-	}
-
-	// "_id" is always present and is never an orphan — Mongo's primary
-	// key, not a domain field.
-	expected["_id"] = struct{}{}
-
-	var orphan []string
-	for k := range observed {
-		if _, ok := expected[k]; !ok {
-			orphan = append(orphan, k)
-		}
-	}
-	return orphan, nil
-}
-
-// sampleExpectedFieldNames composes a handful of real relational ids to
-// derive the field set the current code emits. Returns an empty map when
-// the root table has no rows to sample — caller treats this as "skip cleanup"
-// because the orphan reconciliation will deleteMany every Mongo doc.
-func sampleExpectedFieldNames(ctx context.Context, c *Composer, view *ViewDefinition) (map[string]struct{}, error) {
-	idDialect := c.eng.Dialect()
-	schema := view.SchemaDef()
-	if schema == nil {
-		return nil, fmt.Errorf("sample ids: view %q declares no root .Schema(...)", view.Name())
-	}
-	q := idDialect.ApplyLimit(
-		"SELECT "+idDialect.QuoteIdent(schema.PKColumn())+" FROM "+idDialect.QuoteIdent(view.rootTable),
-		sampleSizeForCleanup)
-	rows, err := c.eng.Querier().Query(ctx, q)
-	if err != nil {
-		return nil, fmt.Errorf("sample ids from %q: %w", view.rootTable, err)
-	}
-	defer rows.Close()
-
-	var ids []string
-	for rows.Next() {
-		var raw string
-		if err := rows.Scan(&raw); err != nil {
-			return nil, err
-		}
-		id, err := idDialect.DecodeID(raw)
-		if err != nil {
-			return nil, err
-		}
-		ids = append(ids, id)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-
-	expected := make(map[string]struct{})
-	for _, id := range ids {
-		doc, err := c.Compose(ctx, view, id)
-		if err != nil {
-			return nil, fmt.Errorf("compose sample id %q on view %q: %w", id, view.Name(), err)
-		}
-		if doc == nil {
-			continue
-		}
-		for k := range doc {
-			expected[k] = struct{}{}
-		}
-	}
-	return expected, nil
-}
-
-// reconcileOrphans handles the leftover _ids after the compose+upsert
-// loop — documents whose Postgres source returned nil (hard-deleted, or
-// archived in a DeleteOnArchive view). cfg.Orphan governs the action:
-// "delete" issues a single deleteMany; "warn" emits a slog.Warn listing
-// the ids and leaves them untouched.
-func reconcileOrphans(ctx context.Context, m ReadModelStore, collection string, snapshot map[string]struct{}, mode string) (int, error) {
-	if len(snapshot) == 0 {
-		return 0, nil
-	}
-	ids := make([]string, 0, len(snapshot))
-	for id := range snapshot {
-		ids = append(ids, id)
-	}
-
-	switch mode {
-	case "delete":
-		n, err := m.DeleteByIDs(ctx, collection, ids)
-		if err != nil {
-			return 0, fmt.Errorf("delete orphans on %q: %w", collection, err)
-		}
-		return n, nil
-	case "warn":
-		slog.WarnContext(ctx, "view.rebuild.orphans_warning",
-			slog.String("view", collection),
-			slog.Int("orphan_count", len(ids)),
-			slog.Any("orphan_ids", ids))
-		return 0, nil
-	default:
-		return 0, errors.New("reconcileOrphans: invalid mode " + mode)
-	}
 }
 
 func registryCombinedOrNone(r *ViewRegistryRow) string {
@@ -462,6 +395,49 @@ func (s *SyncEngine) RebuildAllViews(ctx context.Context) error {
 }
 
 func (s *SyncEngine) rebuildFromTable(ctx context.Context, view *ViewDefinition, since string) error {
+	// Operator-triggered path: no RebuildConfig and no rebuild lock, so the
+	// pipeline runs at the framework defaults (0 → rebuildWorkers / rebuildBatchSize)
+	// and the scan uses the shared pool (nil scanQ).
+	return s.backfillInto(ctx, view, s.resolver.Active(view.name), since, 0, 0, nil)
+}
+
+// backfillInto streams the view's root PKs and drives a bounded producer/consumer
+// pipeline: the scanning goroutine (this one) accumulates ids into batches and
+// hands each to a pool of `workers` goroutines, each of which composes its batch
+// from the relational source in one set-based read and bulk-upserts the composed
+// documents into target — the active slot for an in-place operator rebuild, or a
+// shadow slot for the blue-green driver. Overlapping the relational scan+compose
+// with the Mongo write (and fanning independent batches across workers) collapses
+// the wall-clock from Σ(read+compose+write) toward the slowest single stage.
+//
+// since != "" scopes the scan to rows changed at/after that watermark
+// (incremental); "" is a full backfill. An id whose root vanished between the
+// scan and the compose is absent from the composed set, so it is simply never
+// written (blue-green verify reconciles it). Every root document is independent,
+// so batch order does not matter; the upsert is idempotent on _id.
+//
+// workers/batchSize come from mongo.rebuild (0 → the framework defaults).
+//
+// scanQ is the querier the streaming root-id scan runs on. The blue-green driver
+// passes the lock's PINNED session (already reserved for this rebuild and idle
+// during the backfill), so the long-lived scan cursor does NOT consume a second
+// pool connection — leaving the whole pool for the workers' composer queries.
+// The minimum pool for progress is then 2 (one for lock+scan, one for a
+// composer) instead of 3, and there is no path where the scan cursor starves the
+// composers. A nil scanQ (the operator ad-hoc path, no lock) falls back to the
+// shared pool. Either way the pool should carry at least workers+1 connections to
+// let all workers compose concurrently.
+func (s *SyncEngine) backfillInto(ctx context.Context, view *ViewDefinition, target PhysicalCollection, since string, workers, batchSize int, scanQ core.Querier) error {
+	if workers <= 0 {
+		workers = rebuildWorkers
+	}
+	if batchSize <= 0 {
+		batchSize = rebuildBatchSize
+	}
+	if scanQ == nil {
+		scanQ = s.eng.Querier()
+	}
+
 	var q string
 	var args []any
 
@@ -485,58 +461,119 @@ func (s *SyncEngine) rebuildFromTable(ctx context.Context, view *ViewDefinition,
 		q = "SELECT " + pkCol + " FROM " + table + " WHERE " + uq + " >= " + idDialect.Placeholder(1) + " ORDER BY " + uq
 		args = []any{since}
 	} else {
-		order := pkCol
-		if createdCol := schema.CreatedAtColumn(); createdCol != "" {
-			order = idDialect.QuoteIdent(createdCol)
-		}
-		q = "SELECT " + pkCol + " FROM " + table + " ORDER BY " + order
+		// Full backfill: NO ORDER BY. Every live root is composed exactly once
+		// regardless of scan order, so ordering buys nothing but forces the engine
+		// to materialize a full sort of the root table (O(n log n) + temp space)
+		// before the first row can flow — a real cost at millions of rows. Dropping
+		// it lets the first batch start immediately and streams straight off the
+		// scan. Safety is unchanged: the scan reads one consistent snapshot (each
+		// live row exactly once, order-independent), a row changed during the scan
+		// is carried by dual-apply, and verify's forward-completeness pass composes
+		// any id the snapshot missed — duplicate composes are idempotent on _id.
+		q = "SELECT " + pkCol + " FROM " + table
 	}
 
-	rows, err := s.eng.Querier().Query(ctx, q, args...)
+	rows, err := scanQ.Query(ctx, q, args...)
 	if err != nil {
 		return err
 	}
 	defer rows.Close()
 
-	batch := make([]string, 0, rebuildBatchSize)
+	pkColName := schema.PKColumn()
 
-	flush := func() error {
-		for _, id := range batch {
-			doc, err := s.composer.Compose(ctx, view, id)
-			if err != nil {
-				return err
-			}
-			if doc == nil {
-				continue
-			}
-			if err := s.mongo.Upsert(ctx, view.name, id, doc); err != nil {
-				return err
-			}
+	// A cancelable child context lets the first failing worker/scan stop the whole
+	// pipeline; batches is bounded so a slow Mongo write back-pressures the scan.
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
+	batches := make(chan []string, workers)
+	var (
+		wg       sync.WaitGroup
+		errMu    sync.Mutex
+		firstErr error
+	)
+	fail := func(err error) {
+		errMu.Lock()
+		if firstErr == nil {
+			firstErr = err
+			cancel()
 		}
-		batch = batch[:0]
-		return nil
+		errMu.Unlock()
 	}
 
-	for rows.Next() {
-		var raw string
-		if err := rows.Scan(&raw); err != nil {
-			return err
-		}
-		id, err := idDialect.DecodeID(raw)
+	composeAndWrite := func(batch []string) error {
+		composed, err := s.composer.ComposeBatch(ctx, view, batch)
 		if err != nil {
 			return err
 		}
+		if len(composed) == 0 {
+			return nil
+		}
+		docs := make([]IdentifiedDocument, 0, len(composed))
+		for _, doc := range composed {
+			docs = append(docs, IdentifiedDocument{ID: fmt.Sprintf("%v", doc[pkColName]), Doc: doc})
+		}
+		return s.mongo.BulkUpsert(ctx, target, docs)
+	}
+
+	for i := 0; i < workers; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for batch := range batches {
+				if ctx.Err() != nil {
+					continue // drain the channel without work once cancelled
+				}
+				if err := composeAndWrite(batch); err != nil {
+					fail(err)
+				}
+			}
+		}()
+	}
+
+	// Producer: scan the root ids, cut fixed-size batches, and hand each (a fresh
+	// slice — the sent batch is owned by a worker) to the pool. A scan error or a
+	// cancelled context stops production; close(batches) then drains the workers.
+	batch := make([]string, 0, batchSize)
+	send := func() bool {
+		select {
+		case batches <- batch:
+			batch = make([]string, 0, batchSize)
+			return true
+		case <-ctx.Done():
+			return false
+		}
+	}
+	for rows.Next() {
+		if ctx.Err() != nil {
+			break
+		}
+		var raw string
+		if err := rows.Scan(&raw); err != nil {
+			fail(err)
+			break
+		}
+		id, err := idDialect.DecodeID(raw)
+		if err != nil {
+			fail(err)
+			break
+		}
 		batch = append(batch, id)
-		if len(batch) >= rebuildBatchSize {
-			if err := flush(); err != nil {
-				return err
+		if len(batch) >= batchSize {
+			if !send() {
+				break
 			}
 		}
 	}
-	if rows.Err() != nil {
-		return rows.Err()
+	if err := rows.Err(); err != nil {
+		fail(err)
+	} else if ctx.Err() == nil && len(batch) > 0 {
+		send()
 	}
-	return flush()
+
+	close(batches)
+	wg.Wait()
+	return firstErr
 }
 
 // rebuildScanSQL builds the id-scan SELECT a rebuild walks: the view's root PK

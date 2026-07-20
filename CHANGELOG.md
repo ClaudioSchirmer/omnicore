@@ -11,6 +11,76 @@ with `1.0.0`.
 
 ## [Unreleased]
 
+## [0.35.0] - 2026-07-19
+
+### Added
+
+- **Online blue-green view rebuild.** A full rebuild (a `Version` bump or the
+  drift path at boot) no longer mutates the live Mongo collection. It builds a
+  fresh physical *shadow* slot from the relational source while the *active*
+  slot keeps serving, keeps the shadow current with in-flight writes via
+  dual-apply, verifies it (reverse + forward completeness + a field-shape
+  sample), then flips readers to it with a single registry write and reclaims
+  the retired slot — no downtime, no half-built collection ever exposed.
+  Migration `0002` (×4 dialects) adds the `active_collection`/`shadow_collection`
+  pointer columns to `omnicore_mongo_views` (NULL active = the bare `<view>`
+  collection, so no backfill on upgrade). Reads resolve `view → active slot`
+  through an in-memory pointer cache refreshed on a bounded-staleness lease,
+  never per query. See `mongo-schema-evolution.html`.
+
+- **The boot view rebuild is now non-blocking.** It runs in the background:
+  `/livez` comes up immediately (a long rebuild is never killed by a liveness
+  probe) while `/readyz` stays 503 until the rebuild finishes and the consumer
+  joins — the pod is alive but out of rotation until its read model is ready. A
+  fatal rebuild error still exits the process non-zero. A pod that boots while
+  another instance holds the rebuild lock is a follower — it serves the active
+  slot and picks up the flip at runtime instead of aborting. While the pod waits,
+  the `/readyz` 503 body's `reason` names the view under rebuild and its position
+  in the run (`initializing: rebuilding view "users_view" (2/5)`), falling back to
+  the generic `initializing: view rebuild in progress` in the drift-reconcile
+  window before the first view starts. New
+  `mongo.rebuild.pointerLeaseSeconds` (0 = default 15s) tunes the activation
+  fence / settle lease and thus the boot-rebuild window.
+
+- **Parallel rebuild backfill.** The shadow backfill is now a bounded
+  producer/consumer pipeline instead of a serial read→compose→write loop: the
+  streaming root-id scan cuts fixed-size batches and hands them to a pool of
+  workers that set-based-compose and bulk-upsert concurrently, so the relational
+  scan+compose overlaps the Mongo write and independent batches run in parallel.
+  Two new `mongo.rebuild` knobs tune it — `workers` (0 = default 4; the
+  relational pool must carry ≥ workers+1 connections, one pinned by the scan) and
+  `batchSize` (0 = default 1000). Every root document is independent and the
+  upsert is idempotent on `_id`, so batch order never matters. See
+  `mongo-schema-evolution.html`.
+
+- **Batched external-embed resolution on rebuild.** A view's external `Embed`
+  (1:1) / `EmbedMany` (1:N) sources are now resolved SET-BASED during a rebuild —
+  and on any multi-root write-time recompose (the shared-base identity fan-out and
+  the upstream embed ripple, where one event fans out to many documents): one
+  `{field: {$in: …}}` per embed source for the whole batch, grouped by the join
+  key, instead of one Mongo lookup per parent — nested embeds collapse the same
+  way per level. The composed document is
+  identical to the per-event result (same 1:1 sub-document / 1:N array, same null
+  semantics); only the round-trip count drops. Carried by the new
+  `ReadModelStore.FindManyByFieldIn` port method (below).
+
+### Changed
+
+- **breaking: the `query.ReadModelStore` port signatures.** Every method now
+  takes a typed `query.PhysicalCollection` instead of a `collection string`, so
+  a raw view name can no longer reach the store as a collection by accident (it
+  will not compile) — physical names come only from the shared `ViewResolver`.
+  The orphan-field-cleanup methods `ObservedFieldNames`/`UnsetFields` are
+  **removed** from the port (blue-green builds a fresh shadow, so there are no
+  orphan fields to `$unset`); `ProvisionSlot`/`DropCollection` are added. A
+  custom `ReadModelStore` implementation must adopt the new signatures.
+  `query.DetectViewDrift` gains a trailing `*ViewResolver` argument.
+  `SyncEngine.ExecuteRebuild` now runs the blue-green sequence; the operator
+  ad-hoc `RebuildView`/`RebuildViewSince` remain in-place upsert-only. The
+  `mongo.rebuild.orphan` YAML key is retained but no longer suppresses deletion.
+  The port also gains `FindManyByFieldIn` (a set-based `{field: {$in: …}}` read)
+  for the batched external-embed path — a custom `ReadModelStore` must add it.
+
 ## [0.34.1] - 2026-07-17
 
 ### Fixed

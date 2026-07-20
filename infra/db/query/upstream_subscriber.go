@@ -119,9 +119,13 @@ type UpstreamSubscriber struct {
 	// eng is the relational engine the side-channel failure registry
 	// (omnicore_upstream_failures) is read/written through, via the neutral
 	// Querier + core.Dialect; the recompose ripple itself is Mongo + the composer.
-	eng            core.RelationalEngine
-	mongo          ReadModelStore
-	composer       *Composer
+	eng      core.RelationalEngine
+	mongo    ReadModelStore
+	composer *Composer
+	// resolver maps this subscription's own collection and each dependent
+	// view name to the physical collection it currently resolves to; shared
+	// process-wide so every read-model component observes one pointer view.
+	resolver       *ViewResolver
 	cfg            UpstreamSubscriberConfig
 	dependentViews []*ViewDefinition
 	// hasManyEmbed is true when at least one dependent view embeds this
@@ -183,6 +187,7 @@ func NewUpstreamSubscriber(
 	eng core.RelationalEngine,
 	mongo ReadModelStore,
 	composer *Composer,
+	resolver *ViewResolver,
 	cfg UpstreamSubscriberConfig,
 	dependentViews []*ViewDefinition,
 	sub transport.Subscriber,
@@ -210,6 +215,7 @@ func NewUpstreamSubscriber(
 		eng:            eng,
 		mongo:          mongo,
 		composer:       composer,
+		resolver:       resolver,
 		cfg:            cfg,
 		dependentViews: dependentViews,
 		sub:            sub,
@@ -554,7 +560,7 @@ func (s *UpstreamSubscriber) upsertAndRipple(ctx context.Context, id string, pay
 	// child's prior FK value) to recompose a parent the child just moved away
 	// from. No-op read for one-to-one-only subscriptions.
 	before := s.readLocalDoc(ctx, id)
-	if err := s.mongo.Upsert(ctx, s.cfg.Collection, id, payload); err != nil {
+	if err := s.mongo.Upsert(ctx, s.resolver.Active(s.cfg.Collection), id, payload); err != nil {
 		s.logger.Error("upstream subscriber: local upsert failed",
 			"topic", s.cfg.Topic, "collection", s.cfg.Collection, "id", id, "err", err)
 		return
@@ -570,7 +576,7 @@ func (s *UpstreamSubscriber) deleteAndRipple(ctx context.Context, id string) {
 	// recompose (drop the child from its array) from the child's FK value, which
 	// is gone once the doc is deleted. No-op read for one-to-one-only subscriptions.
 	before := s.readLocalDoc(ctx, id)
-	if err := s.mongo.Delete(ctx, s.cfg.Collection, id); err != nil {
+	if err := s.mongo.Delete(ctx, s.resolver.Active(s.cfg.Collection), id); err != nil {
 		s.logger.Error("upstream subscriber: local delete failed",
 			"topic", s.cfg.Topic, "collection", s.cfg.Collection, "id", id, "err", err)
 		return
@@ -591,7 +597,7 @@ func (s *UpstreamSubscriber) dispatchDelete(ctx context.Context, id string) {
 		for _, f := range s.cfg.AnonymizeFields {
 			blanked[f] = nil
 		}
-		if err := s.mongo.UpdateFields(ctx, s.cfg.Collection, id, blanked); err != nil {
+		if err := s.mongo.UpdateFields(ctx, s.resolver.Active(s.cfg.Collection), id, blanked); err != nil {
 			s.logger.Error("upstream subscriber: anonymize failed",
 				"topic", s.cfg.Topic, "id", id, "err", err)
 			return
@@ -650,43 +656,86 @@ func (s *UpstreamSubscriber) ripple(ctx context.Context, upstreamID string, befo
 		if discoverErr {
 			continue
 		}
+		// Collapse the relational N+1: recompose every affected local doc in ONE
+		// set-based pass (ComposeBatch) instead of one Composer.Compose per local
+		// id. The Mongo write stays per-id (a single _id upsert), so an upsert
+		// failure is still isolated to its local id in the failure registry. On a
+		// batch-compose error the batch is opaque — which id was at fault is
+		// unknown — so we fall back to per-id compose to isolate the offender
+		// exactly as the pre-batch path did.
 		failed := false
-		for _, localID := range localIDs {
-			doc, err := s.composer.Compose(ctx, v, localID)
-			if err != nil {
-				s.metrics.inc(s.cfg.Topic, v.Name(), upstreamRecomposeStageCompose)
-				s.logger.Error("upstream.recompose.compose",
-					"subscription", s.cfg.Topic,
-					"collection", s.cfg.Collection,
-					"view", v.Name(),
-					"upstreamID", upstreamID,
-					"localID", localID,
-					"err", err)
-				s.recordFailure(ctx, v.Name(), upstreamID, localID, UpstreamFailureStageCompose, err)
-				failed = true
-				continue
+		composed, batchErr := s.composer.ComposeBatch(ctx, v, localIDs)
+		if batchErr != nil {
+			for _, localID := range localIDs {
+				if s.rippleRecomposeOne(ctx, v, upstreamID, localID) {
+					failed = true
+				}
 			}
-			if doc == nil {
-				continue
+		} else {
+			pkCol := schemaPK(v.schema)
+			byID := make(map[string]Document, len(composed))
+			for _, doc := range composed {
+				byID[fmt.Sprintf("%v", doc[pkCol])] = doc
 			}
-			if err := s.mongo.Upsert(ctx, v.Name(), localID, doc); err != nil {
-				s.metrics.inc(s.cfg.Topic, v.Name(), upstreamRecomposeStageUpsert)
-				s.logger.Error("upstream.recompose.upsert",
-					"subscription", s.cfg.Topic,
-					"collection", s.cfg.Collection,
-					"view", v.Name(),
-					"upstreamID", upstreamID,
-					"localID", localID,
-					"err", err)
-				s.recordFailure(ctx, v.Name(), upstreamID, localID, UpstreamFailureStageUpsert, err)
-				failed = true
-				continue
+			for _, localID := range localIDs {
+				doc := byID[localID]
+				if doc == nil {
+					continue // the local root vanished between discover and compose — skip, as the nil compose did
+				}
+				if s.rippleUpsertOne(ctx, v, upstreamID, localID, doc) {
+					failed = true
+				}
 			}
 		}
 		if !failed {
 			s.resolveFailures(ctx, v.Name(), upstreamID)
 		}
 	}
+}
+
+// rippleRecomposeOne composes one local doc and upserts it, recording any
+// compose- or upsert-stage failure to the registry. Returns true iff a failure
+// was recorded (a vanished local root — nil compose — is NOT a failure). It is
+// the per-id fallback the batch ripple drops to when a set-based ComposeBatch
+// fails, so a single offending id is isolated exactly as the pre-batch path did.
+func (s *UpstreamSubscriber) rippleRecomposeOne(ctx context.Context, v *ViewDefinition, upstreamID, localID string) (failed bool) {
+	doc, err := s.composer.Compose(ctx, v, localID)
+	if err != nil {
+		s.metrics.inc(s.cfg.Topic, v.Name(), upstreamRecomposeStageCompose)
+		s.logger.Error("upstream.recompose.compose",
+			"subscription", s.cfg.Topic,
+			"collection", s.cfg.Collection,
+			"view", v.Name(),
+			"upstreamID", upstreamID,
+			"localID", localID,
+			"err", err)
+		s.recordFailure(ctx, v.Name(), upstreamID, localID, UpstreamFailureStageCompose, err)
+		return true
+	}
+	if doc == nil {
+		return false
+	}
+	return s.rippleUpsertOne(ctx, v, upstreamID, localID, doc)
+}
+
+// rippleUpsertOne upserts one recomposed local doc into the view's active slot,
+// recording an upsert-stage failure to the registry on error. Returns true iff a
+// failure was recorded. Shared by the batch happy path and the per-id fallback so
+// upsert failures stay isolated per local id on both.
+func (s *UpstreamSubscriber) rippleUpsertOne(ctx context.Context, v *ViewDefinition, upstreamID, localID string, doc Document) (failed bool) {
+	if err := s.mongo.Upsert(ctx, s.resolver.Active(v.Name()), localID, doc); err != nil {
+		s.metrics.inc(s.cfg.Topic, v.Name(), upstreamRecomposeStageUpsert)
+		s.logger.Error("upstream.recompose.upsert",
+			"subscription", s.cfg.Topic,
+			"collection", s.cfg.Collection,
+			"view", v.Name(),
+			"upstreamID", upstreamID,
+			"localID", localID,
+			"err", err)
+		s.recordFailure(ctx, v.Name(), upstreamID, localID, UpstreamFailureStageUpsert, err)
+		return true
+	}
+	return false
 }
 
 // discoverRippleTargets computes the distinct local parent _ids to recompose for
@@ -730,7 +779,7 @@ func (s *UpstreamSubscriber) discoverRippleTargets(
 			add(docFieldString(after, fkCol))
 			continue
 		}
-		ids, err := s.mongo.FindIDsByField(ctx, v.Name(), e.JoinColumn(), upstreamID)
+		ids, err := s.mongo.FindIDsByField(ctx, s.resolver.Active(v.Name()), e.JoinColumn(), upstreamID)
 		if err != nil {
 			s.metrics.inc(s.cfg.Topic, v.Name(), upstreamRecomposeStageDiscover)
 			s.logger.Error("upstream.recompose.discover",
@@ -758,7 +807,7 @@ func (s *UpstreamSubscriber) readLocalDoc(ctx context.Context, id string) Docume
 	if !s.hasManyEmbed {
 		return nil
 	}
-	docs, err := s.mongo.FindManyByField(ctx, s.cfg.Collection, "_id", id)
+	docs, err := s.mongo.FindManyByField(ctx, s.resolver.Active(s.cfg.Collection), "_id", id)
 	if err != nil || len(docs) == 0 {
 		return nil
 	}

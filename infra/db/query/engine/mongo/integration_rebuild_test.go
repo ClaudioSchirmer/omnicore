@@ -30,7 +30,7 @@ func TestRebuildView_RebuildsFromTable(t *testing.T) {
 		`INSERT INTO rv_users (name) VALUES ('a'), ('b'), ('c')`)
 
 	view := query.View("rv_users").Root("rv_users").Schema(rootSchema("rv_users")).Version(1)
-	engine := query.NewSyncEngine(pg, m, nil, "", []*query.ViewDefinition{view}, 1)
+	engine := query.NewSyncEngine(pg, m, testResolver, nil, "", []*query.ViewDefinition{view}, 1)
 	if err := engine.RebuildView(context.Background(), view); err != nil {
 		t.Fatalf("RebuildView: %v", err)
 	}
@@ -66,7 +66,7 @@ func TestRebuildAllViews(t *testing.T) {
 
 	va := query.View("rv_a").Root("rv_a").Schema(rootSchema("rv_a")).Version(1)
 	vb := query.View("rv_b").Root("rv_b").Schema(rootSchema("rv_b")).Version(1)
-	engine := query.NewSyncEngine(pg, m, nil, "", []*query.ViewDefinition{va, vb}, 1)
+	engine := query.NewSyncEngine(pg, m, testResolver, nil, "", []*query.ViewDefinition{va, vb}, 1)
 	if err := engine.RebuildAllViews(context.Background()); err != nil {
 		t.Fatalf("RebuildAllViews: %v", err)
 	}
@@ -101,7 +101,7 @@ func TestRebuildViewSince_FiltersByUpdatedAt(t *testing.T) {
 	// a view that supports incremental rebuild must declare it.
 	view := query.View("rv_since").Root("rv_since").
 		Schema(rootSchema("rv_since").UpdatedAt("updated_at")).Version(1)
-	engine := query.NewSyncEngine(pg, m, nil, "", []*query.ViewDefinition{view}, 1)
+	engine := query.NewSyncEngine(pg, m, testResolver, nil, "", []*query.ViewDefinition{view}, 1)
 	since := time.Now().Add(-1 * time.Hour)
 	if err := engine.RebuildViewSince(context.Background(), view, since); err != nil {
 		t.Fatalf("RebuildViewSince: %v", err)
@@ -149,16 +149,33 @@ func TestExecuteRebuild_HappyPath(t *testing.T) {
 		CurrentArtifactHash: view.ArtifactHash(),
 		CurrentCombinedHash: view.Hash(),
 	}
-	engine := query.NewSyncEngine(pg, m, nil, "", []*query.ViewDefinition{view}, 1)
+	// Blue-green: a pg-backed resolver reflects the flip. (The driver waits one
+	// lease before backfill and one after flip; the default lease makes this
+	// test slow but correct.)
+	resolver := query.NewViewResolver(pg)
+	engine := query.NewSyncEngine(pg, m, resolver, nil, "", []*query.ViewDefinition{view}, 1)
 	if err := engine.ExecuteRebuild(context.Background(), plan, query.RebuildConfig{
 		Orphan: "delete", ServiceName: "svc",
 	}); err != nil {
 		t.Fatalf("ExecuteRebuild: %v", err)
 	}
 
-	n, _ := m.Collection("er_users").CountDocuments(context.Background(), bson.M{})
+	// The rebuild flipped to the shadow slot (er_users__0) and reclaimed the bare
+	// collection; the docs live in the now-active slot.
+	if err := resolver.Refresh(context.Background()); err != nil {
+		t.Fatalf("resolver refresh: %v", err)
+	}
+	active := resolver.Active(view.Name()).String()
+	if active != view.Name()+"__0" {
+		t.Errorf("active slot after rebuild = %q, want er_users__0", active)
+	}
+	n, _ := m.Collection(active).CountDocuments(context.Background(), bson.M{})
 	if n != 3 {
-		t.Errorf("expected 3 mongo docs after rebuild, got %d", n)
+		t.Errorf("expected 3 mongo docs in the active slot, got %d", n)
+	}
+	bare, _ := m.Collection(view.Name()).CountDocuments(context.Background(), bson.M{})
+	if bare != 0 {
+		t.Errorf("expected the bare collection reclaimed (empty), got %d docs", bare)
 	}
 	row, _ := query.ReadViewRegistry(context.Background(), pg.Querier(), pg.Dialect(), view.Name())
 	if row.Status != query.ViewRegistryStatusDone {
@@ -174,7 +191,7 @@ func TestExecuteRebuild_RejectsInvalidOrphanMode(t *testing.T) {
 
 	view := query.View("er_x").Root("er_x").Schema(rootSchema("er_x")).Version(1)
 	plan := query.DriftPlan{View: view}
-	engine := query.NewSyncEngine(pg, m, nil, "", []*query.ViewDefinition{view}, 1)
+	engine := query.NewSyncEngine(pg, m, testResolver, nil, "", []*query.ViewDefinition{view}, 1)
 	if err := engine.ExecuteRebuild(context.Background(), plan, query.RebuildConfig{Orphan: "banana"}); err == nil {
 		t.Error("expected ExecuteRebuild to reject invalid Orphan mode")
 	}
@@ -189,7 +206,7 @@ func TestInitRegistryOnly_WritesRow(t *testing.T) {
 	defer cleanupMongo()
 
 	view := query.View("ir_users").Root("ir_users").Schema(rootSchema("ir_users")).Version(1)
-	engine := query.NewSyncEngine(pg, m, nil, "", []*query.ViewDefinition{view}, 1)
+	engine := query.NewSyncEngine(pg, m, testResolver, nil, "", []*query.ViewDefinition{view}, 1)
 	plan := query.DriftPlan{
 		View:                view,
 		CurrentVersion:      view.VersionNumber(),
@@ -220,7 +237,7 @@ func TestRefreshRegistryArtifactOnly(t *testing.T) {
 		CombinedHash: "old", ServiceName: "svc", Now: now,
 	})
 
-	engine := query.NewSyncEngine(pg, m, nil, "", []*query.ViewDefinition{view}, 1)
+	engine := query.NewSyncEngine(pg, m, testResolver, nil, "", []*query.ViewDefinition{view}, 1)
 	plan := query.DriftPlan{
 		View: view, CurrentVersion: 1,
 		CurrentRebuildHash:  view.RebuildHash(),
