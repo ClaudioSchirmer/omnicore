@@ -202,7 +202,13 @@ func TestDetectViewDrift_FreshInit(t *testing.T) {
 	defer cleanupMongo()
 
 	v := query.View("drift_users").Root("drift_users").Version(1)
-	// No registry row, no Mongo docs → FreshInit.
+	// The root table exists but is EMPTY — at boot, migrations create it BEFORE
+	// drift detection runs (bootstrap: migrations → ApplyMongoSpecs → DetectViewDrift),
+	// so DetectViewDrift always probes a present table. No registry row, no Mongo
+	// docs, empty SoR → FreshInit.
+	if err := pg.Querier().Exec(context.Background(), `CREATE TABLE drift_users (id text)`); err != nil {
+		t.Fatalf("create root table: %v", err)
+	}
 	report, err := query.DetectViewDrift(context.Background(), m, pg, []*query.ViewDefinition{v}, testResolver)
 	if err != nil {
 		t.Fatalf("DetectViewDrift: %v", err)
@@ -220,6 +226,13 @@ func TestDetectViewDrift_NoneAndArtifactOnlyAndAlienData(t *testing.T) {
 
 	v := query.View("drift_x").Root("drift_x").Version(1).
 		Indexes(query.Index("email").Unique())
+
+	// The root table exists but is empty (migrations create it before drift
+	// detection at boot); the drift decisions below turn on the registry + Mongo
+	// state, not on the SoR having rows.
+	if err := pg.Querier().Exec(context.Background(), `CREATE TABLE drift_x (id text)`); err != nil {
+		t.Fatalf("create root table: %v", err)
+	}
 
 	// First: AlienData — populate Mongo without writing the registry row.
 	m.Collection("drift_x").InsertOne(context.Background(), bson.M{"_id": "1"})

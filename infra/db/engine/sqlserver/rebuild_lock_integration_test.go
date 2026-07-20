@@ -48,6 +48,8 @@ func createMongoViewsTable(t *testing.T, raw *sql.DB) {
 		applied_at             DATETIME2(6)  NOT NULL,
 		applied_by             NVARCHAR(255) NOT NULL,
 		code_version           NVARCHAR(255) NULL,
+		active_collection      NVARCHAR(255) NULL,
+		shadow_collection      NVARCHAR(255) NULL,
 		PRIMARY KEY (id),
 		CONSTRAINT omnicore_mongo_views_view_name_key UNIQUE (view_name)
 	)`); err != nil {
