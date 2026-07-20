@@ -54,10 +54,12 @@ with `1.0.0`.
   `mongo-schema-evolution.html`.
 
 - **Batched external-embed resolution on rebuild.** A view's external `Embed`
-  (1:1) / `EmbedMany` (1:N) sources are now resolved SET-BASED during a rebuild
-  (and any multi-root batch compose): one `{field: {$in: …}}` per embed source for
-  the whole batch, grouped by the join key, instead of one Mongo lookup per
-  parent — nested embeds collapse the same way per level. The composed document is
+  (1:1) / `EmbedMany` (1:N) sources are now resolved SET-BASED during a rebuild —
+  and on any multi-root write-time recompose (the shared-base identity fan-out and
+  the upstream embed ripple, where one event fans out to many documents): one
+  `{field: {$in: …}}` per embed source for the whole batch, grouped by the join
+  key, instead of one Mongo lookup per parent — nested embeds collapse the same
+  way per level. The composed document is
   identical to the per-event result (same 1:1 sub-document / 1:N array, same null
   semantics); only the round-trip count drops. Carried by the new
   `ReadModelStore.FindManyByFieldIn` port method (below).
