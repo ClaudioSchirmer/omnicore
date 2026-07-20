@@ -109,11 +109,11 @@ CREATE TABLE audit_events (
     payload       NVARCHAR(MAX) NOT NULL,
     CONSTRAINT audit_events_pkey PRIMARY KEY CLUSTERED (id)
 );
-CREATE INDEX audit_events_entity_timeline_idx ON audit_events (entity_type, aggregate_id, occurred_at);
-CREATE INDEX audit_events_actor_idx           ON audit_events (actor, occurred_at);
-CREATE INDEX audit_events_tenant_idx          ON audit_events (tenant_id, occurred_at);
-CREATE INDEX audit_events_thread_idx          ON audit_events (thread_id);
-CREATE INDEX audit_events_created_at_idx      ON audit_events (created_at);
+-- Only the entity-timeline index (serves FindByAggregate); FindByID is served by
+-- the clustered PK. audit_events is written in every write's TX, so it carries the
+-- minimum index set — forensic indexes (actor/tenant/thread/time) are ad-hoc,
+-- added by devops when a deployment needs them.
+CREATE INDEX audit_events_entity_timeline_idx ON audit_events (entity_type, aggregate_id, occurred_at DESC);
 
 -- ── integration_events ────────────────────────────────────────────────────────
 -- Producer-side authoritative store of cross-service integration events (in-TX

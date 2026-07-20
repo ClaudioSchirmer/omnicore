@@ -11,6 +11,39 @@ with `1.0.0`.
 
 ## [Unreleased]
 
+## [0.36.0] - 2026-07-20
+
+### Changed
+
+- **BREAKING: `audit_events` is now a plain table on every backend; the
+  Postgres-only partitioning is removed.** The audit id is a time-ordered
+  UUID v7, so the primary key alone gives append-only insert locality — the
+  Postgres table drops `PARTITION BY RANGE (created_at)`, its default partition,
+  and the composite `(id, created_at)` PK (now just `(id)`). Monthly-partition
+  maintenance is gone. Because `audit_events` is written inside every write's
+  transaction, the index set is now the minimum that serves the framework's own
+  reads — the primary key (`FindByID`) and `audit_events_entity_timeline_idx`
+  (`entity_type, aggregate_id, occurred_at DESC`, serving `FindByAggregate`) —
+  identical on all four dialects. The four forensic indexes (`actor`,
+  `tenant_id`, `thread_id`, `created_at`/BRIN) are removed on every dialect;
+  retention and any forensic lookup index are now devops concerns, added against
+  the live table when a deployment needs them. The framework's embedded `0001`
+  is edited in place: a fresh install gets the plain table; an existing Postgres
+  deployment keeps its already-applied partitioned table (writes land in the
+  default partition; no future partitions are created), and converting or
+  pruning it is a devops migration.
+- **BREAKING: `postgres.AsPostgres` and `audit.EnsureFuturePartitions` are
+  removed; `migration.New` → `migration.NewPostgres(dsn, dir)`.** With
+  partitioning gone, the migration runner was the last framework code recovering
+  the concrete PG adapter through the neutral port; it now opens its own
+  connection from `relational.dsn` like the MySQL/SQL Server/Oracle runners. No
+  production code recovers a concrete engine from `core.RelationalEngine`
+  anymore — custom reads use the neutral `DB.Querier()`, and the only remaining
+  PG-specific escape is the in-TX `UnwrapPgxTx` (one of the per-engine
+  `Unwrap<Engine>Tx` family). Migration: replace `postgres.AsPostgres(DB).Pool()`
+  reads with `DB.Querier()`, and any direct `migration.New` call with
+  `migration.NewPostgres(dsn, dir)`.
+
 ## [0.35.0] - 2026-07-19
 
 ### Added

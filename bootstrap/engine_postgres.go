@@ -3,35 +3,26 @@
 package bootstrap
 
 import (
-	"context"
-
-	"github.com/ClaudioSchirmer/omnicore/infra/audit"
-	"github.com/ClaudioSchirmer/omnicore/infra/db/engine/postgres"
+	_ "github.com/ClaudioSchirmer/omnicore/infra/db/engine/postgres"
 	"github.com/ClaudioSchirmer/omnicore/infra/migration"
 )
 
 // This file is the Postgres engine's bootstrap binding, compiled under the
 // `postgres` build tag (alone or alongside other engine tags — dispatch is by
-// the runtime relational.dialect through the engineBoots registry, never by
-// tag exclusion). Importing infra/db/engine/postgres runs its init(), which
-// registers the "postgres" dialect in the engine registry so core.NewEngine
-// resolves it. The two boot steps that still speak pgx directly — audit
-// partition maintenance and the migration runner over the live pool — register
-// here, so a build without this tag links neither pgx nor this wiring.
+// the runtime relational.dialect through the engineBoots registry, never by tag
+// exclusion). The blank import runs the engine package's init(), which registers
+// the "postgres" dialect in the engine registry so core.NewEngine resolves it —
+// behind the build tag so a build without it links neither the engine nor pgx.
 
 func init() {
 	registerEngineBoot(dialectPostgres, engineBoot{
-		newMigrator: func(deps Deps, cfg *Config) *migration.Manager {
-			return migration.New(pgEngine(deps).Pool(), cfg.Migrations.Dir)
-		},
-		ensureFuturePartitions: func(ctx context.Context, deps Deps, n int) error {
-			return audit.EnsureFuturePartitions(ctx, pgEngine(deps).Pool(), n)
+		// The Postgres runner opens its own *sql.DB from the DSN, never the
+		// engine's live pool — the same discipline as the other engines, so this
+		// binding needs no concrete-engine recovery. No partition maintenance:
+		// audit_events is a plain table on every backend (retention/partitioning
+		// is a devops concern).
+		newMigrator: func(_ Deps, cfg *Config) *migration.Manager {
+			return migration.NewPostgres(cfg.Relational.DSN, cfg.Migrations.Dir)
 		},
 	})
 }
-
-// pgEngine recovers the concrete *postgres.Postgres from Deps for framework
-// wiring that speaks pgx directly. It panics on a non-Postgres engine — safe
-// here because the registry dispatches these steps only when the configured
-// dialect is "postgres", where the registered engine is always Postgres.
-func pgEngine(deps Deps) *postgres.Postgres { return postgres.AsPostgres(deps.DB) }

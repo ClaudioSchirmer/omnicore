@@ -1,5 +1,4 @@
--- Reverse of 0001_framework.up.sql. DROP TABLE removes the table's indexes;
--- the audit_events default partition drops with its parent.
+-- Reverse of 0001_framework.up.sql. DROP TABLE removes the table's indexes.
 DROP TABLE IF EXISTS omnicore_integration_processed;
 DROP TABLE IF EXISTS omnicore_integration_failures;
 DROP TABLE IF EXISTS integration_events;

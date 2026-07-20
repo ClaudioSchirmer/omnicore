@@ -17,7 +17,7 @@
         <li><code>outbox</code> — the Debezium CDC source.</li>
         <li><code>omnicore_mongo_views</code> — the Mongo view registry.</li>
         <li><code>omnicore_upstream_failures</code> — cross-service composition failure registry.</li>
-        <li><code>audit_events</code> — the audit trail (RANGE-partitioned by <code>created_at</code> on Postgres; a plain table on MySQL, SQL Server and Oracle).</li>
+        <li><code>audit_events</code> — the audit trail (a plain table on every backend; the id is a time-ordered UUID v7, so the primary key alone gives append-only insert locality — no partitioning). Retention and any forensic index (by actor / tenant / thread / time) are operational concerns owned by devops.</li>
         <li><code>integration_events</code> — producer-side integration-event store.</li>
         <li><code>omnicore_integration_failures</code> / <code>omnicore_integration_processed</code> — the consumer failure registry + dedup table.</li>
     </ul>

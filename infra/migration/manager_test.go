@@ -45,11 +45,11 @@ func managerWithFiles(t *testing.T, names ...string) *Manager {
 			t.Fatalf("write %s: %v", n, err)
 		}
 	}
-	return New(nil, dir)
+	return NewPostgres("", dir)
 }
 
 func TestValidateDownExists_MissingDirIsOK(t *testing.T) {
-	m := New(nil, filepath.Join(t.TempDir(), "does-not-exist"))
+	m := NewPostgres("", filepath.Join(t.TempDir(), "does-not-exist"))
 	if err := m.ValidateDownExists(); err != nil {
 		t.Fatalf("missing dir must be a no-op, got: %v", err)
 	}

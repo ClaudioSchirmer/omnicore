@@ -67,7 +67,7 @@ env:
 </code></pre>
 
     <h3 id="engine-build-tag">Relational engine build tag</h3>
-    <p>The relational engine is selected by a Go build tag, and at least <strong>one</strong> tag is mandatory — there is no default. Each engine self-registers in the engine registry (<code>core.RegisterEngine</code>, database/sql-style) and brings its own driver stack (<code>pgx</code> for Postgres, <code>go-sql-driver</code> for MySQL, <code>go-mssqldb</code> for SQL Server, <code>go-ora</code> for Oracle) plus its dialect-bound boot wiring — the migration runner and, on Postgres, the audit-partition maintenance — registered per dialect in a boot registry, so any tag combination composes. The valid shapes:</p>
+    <p>The relational engine is selected by a Go build tag, and at least <strong>one</strong> tag is mandatory — there is no default. Each engine self-registers in the engine registry (<code>core.RegisterEngine</code>, database/sql-style) and brings its own driver stack (<code>pgx</code> for Postgres, <code>go-sql-driver</code> for MySQL, <code>go-mssqldb</code> for SQL Server, <code>go-ora</code> for Oracle) plus its dialect-bound boot wiring — the migration runner — registered per dialect in a boot registry, so any tag combination composes. The valid shapes:</p>
     <ul>
         <li><code>-tags postgres</code> — links only the Postgres engine.</li>
         <li><code>-tags mysql</code> — links only the MySQL engine.</li>

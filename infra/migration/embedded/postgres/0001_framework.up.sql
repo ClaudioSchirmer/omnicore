@@ -141,8 +141,11 @@ CREATE INDEX omnicore_upstream_failures_last_attempt_idx
 
 -- ── audit_events ──────────────────────────────────────────────────────────────
 -- The authoritative audit trail: one row per write, inserted in the SAME TX as
--- the data row when the "database" destination is on. Partitioned by created_at
--- (RANGE) so old partitions can be detached/dropped cheaply.
+-- the data row when the "database" destination is on. Plain table: the id is a
+-- time-ordered UUID v7, so the primary key alone gives append-only insert
+-- locality — no partitioning. Retention (dropping old rows) and any forensic
+-- index (by actor / tenant / thread / time) are operational concerns owned by
+-- devops, added against the live table when a deployment needs them.
 CREATE TABLE audit_events (
     id            UUID         NOT NULL,
     aggregate_id  CHAR(36)     COLLATE "C" NOT NULL,
@@ -158,13 +161,11 @@ CREATE TABLE audit_events (
     occurred_at   TIMESTAMP    NOT NULL,
     created_at    TIMESTAMP    NOT NULL DEFAULT NOW(),
     payload       JSONB        NOT NULL,
-    PRIMARY KEY (id, created_at)
-) PARTITION BY RANGE (created_at);
+    PRIMARY KEY (id)
+);
 
-CREATE TABLE audit_events_default PARTITION OF audit_events DEFAULT;
-
-COMMENT ON TABLE  audit_events              IS 'Authoritative audit trail: one row per write, in-TX with the data row. Partitioned by created_at (RANGE) for cheap retention management.';
-COMMENT ON COLUMN audit_events.id           IS 'Audit row id — UUID v7 minted in Go (the framework id standard; no DB default). PK is (id, created_at) — created_at is required in the key because the table is partitioned by it.';
+COMMENT ON TABLE  audit_events              IS 'Authoritative audit trail: one row per write, in-TX with the data row.';
+COMMENT ON COLUMN audit_events.id           IS 'Audit row id — UUID v7 minted in Go (the framework id standard; no DB default). PK is (id) alone — the v7 id is time-ordered, so inserts append to the index tail.';
 COMMENT ON COLUMN audit_events.aggregate_id IS 'Id of the audited aggregate root.';
 COMMENT ON COLUMN audit_events.entity_type  IS 'Entity/aggregate Go type name (e.g. "User").';
 COMMENT ON COLUMN audit_events.verb         IS 'SQL-grounded verb: insert | update | archive | unarchive | delete (PUT and PATCH both map to update).';
@@ -176,19 +177,16 @@ COMMENT ON COLUMN audit_events.tenant_id    IS 'Tenant claim when multi-tenant; 
 COMMENT ON COLUMN audit_events.thread_id    IS 'Request id (AppContext.ID) tying the audit row to logs/traces of the same request.';
 COMMENT ON COLUMN audit_events.trace_id     IS 'Pivot column: 32-char hex trace id of the producing request, to jump straight to the trace. NULL when tracing is off.';
 COMMENT ON COLUMN audit_events.occurred_at  IS 'When the domain operation happened (business time).';
-COMMENT ON COLUMN audit_events.created_at   IS 'When the row was written (NOW()); the partition key.';
+COMMENT ON COLUMN audit_events.created_at   IS 'When the row was written (NOW()).';
 COMMENT ON COLUMN audit_events.payload      IS 'JSON body: snapshot | changes (delta) | children, per kind.';
 
+-- The only index the framework's reads need: FindByAggregate
+-- (WHERE entity_type = ? AND aggregate_id = ? ORDER BY occurred_at DESC). FindByID
+-- is served by the primary key. audit_events is written inside every write's TX,
+-- so it carries the minimum index set — forensic lookups (actor/tenant/thread/time)
+-- are ad-hoc indexes devops adds when a deployment needs them.
 CREATE INDEX audit_events_entity_timeline_idx
     ON audit_events (entity_type, aggregate_id, occurred_at DESC);
-CREATE INDEX audit_events_actor_idx
-    ON audit_events (actor, occurred_at DESC) WHERE actor IS NOT NULL;
-CREATE INDEX audit_events_tenant_idx
-    ON audit_events (tenant_id, occurred_at DESC) WHERE tenant_id IS NOT NULL;
-CREATE INDEX audit_events_thread_idx
-    ON audit_events (thread_id);
-CREATE INDEX audit_events_created_at_brin
-    ON audit_events USING BRIN (created_at);
 
 -- ── integration_events ────────────────────────────────────────────────────────
 -- Producer-side authoritative store of cross-service integration events. Written

@@ -435,7 +435,7 @@ type Address struct {
 // Forensic single-row lookup — you saw an id in the slog echo and want the full row.
 ev, err := reader.FindByID(ctx, eventID)   // eventID is a uuid.UUID
 if errors.Is(err, audit.ErrAuditNotFound) {
-    // no row with that id — partition pruned? archived?
+    // no row with that id — pruned by a retention job? never audited?
 }
 
 // Timeline by aggregate — index-served (entity_type, aggregate_id, …), newest first.
@@ -451,7 +451,7 @@ for _, ev := range events {
         <code>Children</code>.
     </p>
     <p>
-        Caveats: <code>FindByID</code> issues a multi-partition index scan because the PK is composite <code>(id, created_at)</code>; the common case (recent rows from a slog id) is fast, but archived partitions add cost — pass <code>created_at</code> explicitly via raw SQL when the lookup goes deep. <code>FindByAggregate</code> returns every matching row; aggregates with very long timelines should slice the result downstream or call raw SQL with explicit <code>LIMIT</code> / <code>OFFSET</code>. JSON round-trip on the payload returns <code>float64</code> / <code>string</code> / <code>bool</code> / <code>map</code> / <code>slice</code> — assert on stringified values, not on Go-typed scalars.
+        Caveats: <code>FindByID</code> is a single primary-key lookup — <code>audit_events</code> is a plain table on every backend and the v7 id is time-ordered, so the common case (recent rows from a slog id) touches the hot pages. <code>FindByAggregate</code> returns every matching row; aggregates with very long timelines should slice the result downstream or call raw SQL with explicit <code>LIMIT</code> / <code>OFFSET</code>. JSON round-trip on the payload returns <code>float64</code> / <code>string</code> / <code>bool</code> / <code>map</code> / <code>slice</code> — assert on stringified values, not on Go-typed scalars.
     </p>
 
     <h4>Reading the audit row — <code>audit.RenderLabels</code> and <code>audit.RenderLabelsInJSON</code></h4>

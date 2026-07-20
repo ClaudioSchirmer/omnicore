@@ -103,7 +103,8 @@ CREATE INDEX omnicore_upstream_failures_last_attempt_idx
 
 -- ── audit_events ──────────────────────────────────────────────────────────────
 -- Authoritative audit trail: one row per write, in-TX with the data row. Plain
--- table (no partitioning); a B-tree on created_at replaces the PG BRIN.
+-- table (no partitioning). The id is a time-ordered UUID v7 stored RAW(16), so the
+-- primary-key index grows at the right edge (append-only insert locality).
 CREATE TABLE audit_events (
     id            RAW(16)            NOT NULL,
     aggregate_id  VARCHAR2(36)       NOT NULL,
@@ -121,11 +122,11 @@ CREATE TABLE audit_events (
     payload       JSON               NOT NULL,
     CONSTRAINT audit_events_pkey PRIMARY KEY (id)
 );
-CREATE INDEX audit_events_entity_timeline_idx ON audit_events (entity_type, aggregate_id, occurred_at);
-CREATE INDEX audit_events_actor_idx           ON audit_events (actor, occurred_at);
-CREATE INDEX audit_events_tenant_idx          ON audit_events (tenant_id, occurred_at);
-CREATE INDEX audit_events_thread_idx          ON audit_events (thread_id);
-CREATE INDEX audit_events_created_at_idx      ON audit_events (created_at);
+-- Only the entity-timeline index (serves FindByAggregate); FindByID is served by
+-- the PK. audit_events is written in every write's TX, so it carries the minimum
+-- index set — forensic indexes (actor/tenant/thread/time) are ad-hoc, added by
+-- devops when a deployment needs them.
+CREATE INDEX audit_events_entity_timeline_idx ON audit_events (entity_type, aggregate_id, occurred_at DESC);
 
 -- ── integration_events ────────────────────────────────────────────────────────
 -- Producer-side authoritative store of cross-service integration events (in-TX

@@ -69,9 +69,10 @@ func TestSplitOracleStatements(t *testing.T) {
 			t.Fatalf("read embedded up: %v", err)
 		}
 		stmts := splitOracleStatements(string(up))
-		// 7 CREATE TABLE + 15 CREATE INDEX.
-		if len(stmts) != 22 {
-			t.Fatalf("framework up split into %d statements, want 22", len(stmts))
+		// 7 CREATE TABLE + 11 CREATE INDEX (audit_events carries only its PK and
+		// the entity-timeline index; the four forensic indexes are devops-added).
+		if len(stmts) != 18 {
+			t.Fatalf("framework up split into %d statements, want 18", len(stmts))
 		}
 		for _, s := range stmts {
 			if !strings.Contains(s, "CREATE TABLE") && !strings.Contains(s, "CREATE INDEX") {

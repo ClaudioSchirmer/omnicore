@@ -91,6 +91,12 @@ func dropDatabase(adminPool *pgxpool.Pool, dbName string) {
 	_, _ = adminPool.Exec(ctx, fmt.Sprintf(`DROP DATABASE IF EXISTS %q`, dbName))
 }
 
+// dsnOf recovers the connection string a test pool was built from, so the
+// migration runner (NewPostgres opens its own *sql.DB from a DSN, like the other
+// engines) can point at the same throw-away database the test verifies through
+// pool.
+func dsnOf(pool *pgxpool.Pool) string { return pool.Config().ConnString() }
+
 // withDatabase swaps the database name in a postgres DSN. The DSN may be in
 // "postgres://" URL form (only form used in the test bench).
 func withDatabase(dsn, db string) string {
@@ -128,7 +134,7 @@ func TestUp_ApplyFrameworkAndService(t *testing.T) {
 		`CREATE TABLE t_users (id UUID PRIMARY KEY, name TEXT NOT NULL);`,
 		`DROP TABLE t_users;`)
 
-	mgr := New(pool, dir)
+	mgr := NewPostgres(dsnOf(pool), dir)
 	if err := mgr.Up(context.Background()); err != nil {
 		t.Fatalf("Up failed: %v", err)
 	}
@@ -159,7 +165,7 @@ func TestUp_IsIdempotent(t *testing.T) {
 		`CREATE TABLE t_one (id INT);`,
 		`DROP TABLE t_one;`)
 
-	mgr := New(pool, dir)
+	mgr := NewPostgres(dsnOf(pool), dir)
 	if err := mgr.Up(context.Background()); err != nil {
 		t.Fatalf("first Up failed: %v", err)
 	}
@@ -174,7 +180,7 @@ func TestStatus_NoMigrationsAppliedReturnsZero(t *testing.T) {
 
 	// No migrations on disk → an empty Status query should not error.
 	dir := t.TempDir()
-	mgr := New(pool, dir)
+	mgr := NewPostgres(dsnOf(pool), dir)
 	v, dirty, err := mgr.Status(context.Background())
 	if err != nil {
 		t.Fatalf("Status() err = %v", err)
@@ -192,7 +198,7 @@ func TestStatus_AfterUpReportsLatest(t *testing.T) {
 		`CREATE TABLE t_seven (id INT);`,
 		`DROP TABLE t_seven;`)
 
-	mgr := New(pool, dir)
+	mgr := NewPostgres(dsnOf(pool), dir)
 	if err := mgr.Up(context.Background()); err != nil {
 		t.Fatalf("Up failed: %v", err)
 	}
@@ -210,7 +216,7 @@ func TestDown_StepsAreValidated(t *testing.T) {
 	defer cleanup()
 
 	dir := writeService(t, 2, "skip", `SELECT 1;`, `SELECT 1;`)
-	mgr := New(pool, dir)
+	mgr := NewPostgres(dsnOf(pool), dir)
 	if err := mgr.Down(context.Background(), 0); err == nil {
 		t.Error("Down(0) should fail")
 	}
@@ -227,7 +233,7 @@ func TestDown_RevertsService(t *testing.T) {
 		`CREATE TABLE t_drop (id INT);`,
 		`DROP TABLE t_drop;`)
 
-	mgr := New(pool, dir)
+	mgr := NewPostgres(dsnOf(pool), dir)
 	if err := mgr.Up(context.Background()); err != nil {
 		t.Fatalf("Up failed: %v", err)
 	}
@@ -265,7 +271,7 @@ func TestPending_ListsFutureFiles(t *testing.T) {
 	write(3, "b")
 	write(4, "c")
 
-	mgr := New(pool, dir)
+	mgr := NewPostgres(dsnOf(pool), dir)
 	pending, err := mgr.Pending(context.Background())
 	if err != nil {
 		t.Fatalf("Pending err = %v", err)
@@ -291,7 +297,7 @@ func TestPending_ListsFutureFiles(t *testing.T) {
 			}
 		}
 	}
-	mgr2 := New(pool, dir2)
+	mgr2 := NewPostgres(dsnOf(pool), dir2)
 	if err := mgr2.Up(context.Background()); err != nil {
 		t.Fatalf("Up after splice: %v", err)
 	}
@@ -310,7 +316,7 @@ func TestPending_MissingDirReturnsNil(t *testing.T) {
 	pool, cleanup := newTestDB(t)
 	defer cleanup()
 
-	mgr := New(pool, filepath.Join(t.TempDir(), "does-not-exist"))
+	mgr := NewPostgres(dsnOf(pool), filepath.Join(t.TempDir(), "does-not-exist"))
 	// Status needs the dir; on missing dir golang-migrate will surface a
 	// source-open error from openService. To trigger the os.IsNotExist branch
 	// of Pending specifically, status must succeed first, which can't happen
@@ -318,7 +324,7 @@ func TestPending_MissingDirReturnsNil(t *testing.T) {
 	// where the dir exists but is empty (status -> 0, ReadDir -> empty slice
 	// -> no entries -> empty result).
 	emptyDir := t.TempDir()
-	mgr = New(pool, emptyDir)
+	mgr = NewPostgres(dsnOf(pool), emptyDir)
 	pending, err := mgr.Pending(context.Background())
 	if err != nil {
 		t.Fatalf("Pending on empty dir err = %v", err)
@@ -341,7 +347,7 @@ func TestPending_IgnoresInvalidFilenames(t *testing.T) {
 	mustWrite(t, dir, "README.md", "ignore me")
 	mustWrite(t, dir, "0007_other.down.sql", "SELECT 1;") // .down without .up
 
-	mgr := New(pool, dir)
+	mgr := NewPostgres(dsnOf(pool), dir)
 	pending, err := mgr.Pending(context.Background())
 	if err != nil {
 		t.Fatalf("Pending err = %v", err)
@@ -359,7 +365,7 @@ func TestForce_ResetsTrackingPointer(t *testing.T) {
 		`CREATE TABLE t_force (id INT);`,
 		`DROP TABLE t_force;`)
 
-	mgr := New(pool, dir)
+	mgr := NewPostgres(dsnOf(pool), dir)
 	if err := mgr.Up(context.Background()); err != nil {
 		t.Fatalf("Up: %v", err)
 	}
@@ -377,7 +383,7 @@ func TestForce_ResetsTrackingPointer(t *testing.T) {
 
 func TestValidateDownExists_MissingDirOK(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "does-not-exist")
-	mgr := New(nil, dir)
+	mgr := NewPostgres("", dir)
 	if err := mgr.ValidateDownExists(); err != nil {
 		t.Errorf("missing dir should be OK, got %v", err)
 	}
@@ -385,7 +391,7 @@ func TestValidateDownExists_MissingDirOK(t *testing.T) {
 
 func TestValidateDownExists_EmptyDirOK(t *testing.T) {
 	dir := t.TempDir()
-	mgr := New(nil, dir)
+	mgr := NewPostgres("", dir)
 	if err := mgr.ValidateDownExists(); err != nil {
 		t.Errorf("empty dir should be OK, got %v", err)
 	}
@@ -398,7 +404,7 @@ func TestValidateDownExists_AllPaired(t *testing.T) {
 	mustWrite(t, dir, "0003_more.up.sql", "SELECT 1;")
 	mustWrite(t, dir, "0003_more.down.sql", "SELECT 1;")
 
-	mgr := New(nil, dir)
+	mgr := NewPostgres("", dir)
 	if err := mgr.ValidateDownExists(); err != nil {
 		t.Errorf("paired files should pass, got %v", err)
 	}
@@ -411,7 +417,7 @@ func TestValidateDownExists_MissingDownReportsNotification(t *testing.T) {
 	mustWrite(t, dir, "0003_orphan.up.sql", "SELECT 1;")
 	// No 0003_orphan.down.sql.
 
-	mgr := New(nil, dir)
+	mgr := NewPostgres("", dir)
 	err := mgr.ValidateDownExists()
 	if err == nil {
 		t.Fatal("expected ValidateDownExists to fail when down is missing")
@@ -457,7 +463,7 @@ func TestUp_FailureMarksDirty(t *testing.T) {
 	dir := writeService(t, 2, "broken",
 		`THIS IS NOT VALID SQL;`,
 		`SELECT 1;`)
-	mgr := New(pool, dir)
+	mgr := NewPostgres(dsnOf(pool), dir)
 	if err := mgr.Up(context.Background()); err == nil {
 		t.Fatal("expected Up to fail on bad SQL")
 	}
@@ -488,7 +494,7 @@ func TestUp_MissingServiceDirBootsFrameworkOnly(t *testing.T) {
 	// framework's embedded control plane and SKIPS the service stage, instead
 	// of crashing golang-migrate's file source on the missing dir. The
 	// service's real 0001 arrives with its first entity.
-	mgr := New(pool, filepath.Join(t.TempDir(), "no-such-dir"))
+	mgr := NewPostgres(dsnOf(pool), filepath.Join(t.TempDir(), "no-such-dir"))
 	if err := mgr.Up(context.Background()); err != nil {
 		t.Fatalf("Up on a missing service dir = %v, want nil (framework-only boot)", err)
 	}

@@ -301,7 +301,7 @@ reader := read.NewAuditReader(deps.DB)
 // Forensic single-row lookup — you saw an id in the slog echo and want the full row.
 ev, err := reader.FindByID(ctx, eventID)
 if errors.Is(err, audit.ErrAuditNotFound) {
-    // no row with that id — partition pruned? archived?
+    // no row with that id — pruned by a retention job? never audited?
 }
 
 // Timeline by aggregate — index-served by audit_events_entity_timeline_idx
@@ -336,10 +336,9 @@ audit.RenderLabelsInJSON(doc, deps.Translator, configuration.LangPTBR)
         per <code>(lang, key)</code> tuple.
     </p>
     <p>
-        Caveats: <code>FindByID</code> issues a multi-partition index scan (composite PK
-        <code>(id, created_at)</code>) — fast for recent rows, costlier into archived partitions
-        (narrow it with <code>created_at</code> via a bespoke query through the engine's
-        <code>Querier</code> when the lookup goes deep). <code>FindByAggregate</code> returns every
+        Caveats: <code>FindByID</code> is a single primary-key lookup — <code>audit_events</code> is a
+        plain table on every backend, and the v7 id is time-ordered, so recent rows (the common case
+        from a slog id) sit in the hot pages. <code>FindByAggregate</code> returns every
         matching row; long timelines should slice downstream or run a bespoke query with explicit
         <code>LIMIT</code>/<code>OFFSET</code>. The JSON round-trip yields
         <code>float64</code>/<code>string</code>/<code>bool</code>/<code>map</code>/<code>slice</code>
