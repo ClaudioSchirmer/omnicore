@@ -11,6 +11,8 @@ with `1.0.0`.
 
 ## [Unreleased]
 
+## [0.35.0] - 2026-07-19
+
 ### Added
 
 - **Online blue-green view rebuild.** A full rebuild (a `Version` bump or the
