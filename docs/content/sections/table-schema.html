@@ -139,8 +139,8 @@ func UserSchema() *core.TableSchema {
         Field("Email", "mail").         // renamed column
         Field("Phone", "phone").
         SoftDelete("deleted_at").       // managed: presence enables the predicate
-        CreatedAt("created_at").        // managed: framework stamps NOW() on INSERT
-        UpdatedAt("updated_at").        // managed: framework stamps NOW() on INSERT + UPDATE
+        CreatedAt("created_at").        // managed: framework stamps the op's app-clock instant on INSERT
+        UpdatedAt("updated_at").        // managed: framework stamps the op's app-clock instant on INSERT + UPDATE
         Child(AddressSchema())          // aggregate child, keyed by Go type name
 }
 
@@ -202,24 +202,28 @@ core.NewExternalSchema("users").PK("id").Field("Email", "mail")</code></pre>
     <tbody>
         <tr>
             <td><code>SoftDelete(col)</code></td>
-            <td>the read scope-gate uses <code>col IS NULL</code>; Archive/Unarchive write <code>col = NOW()</code> / <code>col = NULL</code></td>
+            <td>the read scope-gate uses <code>col IS NULL</code>; Archive/Unarchive write <code>col = $now</code> / <code>col = NULL</code></td>
             <td>no scope-gate; Archive/Unarchive unavailable (boot check + runtime guard)</td>
         </tr>
         <tr>
             <td><code>CreatedAt(col)</code></td>
-            <td>the framework stamps <code>col = NOW()</code> on INSERT</td>
+            <td>the framework stamps <code>col = $now</code> on INSERT</td>
             <td>no creation timestamp stamped</td>
         </tr>
         <tr>
             <td><code>UpdatedAt(col)</code></td>
-            <td>the framework stamps <code>col = NOW()</code> on INSERT and UPDATE</td>
+            <td>the framework stamps <code>col = $now</code> on INSERT and UPDATE</td>
             <td><code>buildUpdate</code> omits the <code>SET</code></td>
         </tr>
     </tbody>
 </table>
 <p>
-    The framework <strong>actively generates</strong> these timestamps — it never relies on a DB <code>DEFAULT NOW()</code>
-    it does not own. The soft-delete predicate shape is fixed (nullable timestamp: <code>IS NULL</code> = active); the
+    The framework <strong>actively generates</strong> these timestamps <strong>in Go</strong> — <code>$now</code> above is
+    one <em>application-clock</em> instant minted per write operation (UTC, truncated to microseconds — the precision every
+    supported backend stores) and bound as an ordinary argument, exactly like the Go-minted UUID&nbsp;v7 ids. No dialect
+    <code>NOW()</code> expression appears in the data DML and the framework never relies on a DB <code>DEFAULT NOW()</code>
+    it does not own; every statement of one operation (root, children, siblings, shared-base cascade) carries the SAME
+    instant, known before COMMIT. The soft-delete predicate shape is fixed (nullable timestamp: <code>IS NULL</code> = active); the
     schema controls only the column's <em>name and presence</em>. On the read path these three columns are also readable
     under fixed logical Go names (<code>CreatedAt</code>, <code>UpdatedAt</code>, <code>DeletedAt</code>) so a view can
     project them without a domain Go field.

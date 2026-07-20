@@ -74,14 +74,14 @@ func (testSQLServerDialect) BuildUpsert(table string, _, _ []string, _ []UpsertS
 func TestBuildInsert_SQLServer(t *testing.T) {
 	fields := domain.Fields{"name": "alice", "email": "a@x"}
 	id := "11111111-1111-1111-1111-111111111111"
-	sql, args := buildInsert(testSQLServerDialect{}, "users", "id", id, fields, []string{"created_at", "updated_at"})
+	sql, args := buildInsert(testSQLServerDialect{}, "users", "id", id, fields, []string{"created_at", "updated_at"}, testNow)
 
-	want := "INSERT INTO [users] ([id], [email], [name], [created_at], [updated_at]) VALUES (@p1, @p2, @p3, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)"
+	want := "INSERT INTO [users] ([id], [email], [name], [created_at], [updated_at]) VALUES (@p1, @p2, @p3, @p4, @p5)"
 	if sql != want {
 		t.Fatalf("sql =\n  %q\nwant\n  %q", sql, want)
 	}
-	if len(args) != 3 {
-		t.Fatalf("args = %v, want 3 (id + email + name)", args)
+	if len(args) != 5 {
+		t.Fatalf("args = %v, want 5 (id + email + name + created_at + updated_at)", args)
 	}
 	b, ok := args[0].([]byte)
 	if !ok || len(b) != 16 {
@@ -95,18 +95,18 @@ func TestBuildInsert_SQLServer(t *testing.T) {
 func TestBuildUpdate_SQLServer(t *testing.T) {
 	fields := domain.Fields{"name": "bob", "email": "b@x"}
 	id := "22222222-2222-2222-2222-222222222222"
-	sql, args := buildUpdate(testSQLServerDialect{}, "users", "id", id, fields, []string{"updated_at"})
+	sql, args := buildUpdate(testSQLServerDialect{}, "users", "id", id, fields, []string{"updated_at"}, testNow)
 
-	want := "UPDATE [users] SET [email] = @p1, [name] = @p2, [updated_at] = CURRENT_TIMESTAMP WHERE [id] = @p3"
+	want := "UPDATE [users] SET [email] = @p1, [name] = @p2, [updated_at] = @p3 WHERE [id] = @p4"
 	if sql != want {
 		t.Fatalf("sql =\n  %q\nwant\n  %q", sql, want)
 	}
-	if len(args) != 3 || args[0] != "b@x" || args[1] != "bob" {
+	if len(args) != 4 || args[0] != "b@x" || args[1] != "bob" || args[2] != testNow {
 		t.Fatalf("SET args = %v, want [b@x bob ...] in that order", args)
 	}
-	b, ok := args[2].([]byte)
+	b, ok := args[3].([]byte)
 	if !ok || len(b) != 16 {
-		t.Errorf("WHERE id arg = %v (%T), want a 16-byte BINARY(16) form", args[2], args[2])
+		t.Errorf("WHERE id arg = %v (%T), want a 16-byte BINARY(16) form", args[3], args[3])
 	}
 }
 
@@ -114,7 +114,7 @@ func TestBuildUpdate_SQLServer(t *testing.T) {
 // expression (CURRENT_TIMESTAMP), never a baked-in NOW().
 func TestArchiveUnarchiveDelete_SQLServer(t *testing.T) {
 	d := testSQLServerDialect{}
-	if got := archiveSQL(d, "users", "deleted_at", "id"); got != "UPDATE [users] SET [deleted_at] = CURRENT_TIMESTAMP WHERE [id] = @p1" {
+	if got := archiveSQL(d, "users", "deleted_at", "id"); got != "UPDATE [users] SET [deleted_at] = @p1 WHERE [id] = @p2" {
 		t.Errorf("archiveSQL = %q", got)
 	}
 	if got := unarchiveSQL(d, "users", "deleted_at", "id"); got != "UPDATE [users] SET [deleted_at] = NULL WHERE [id] = @p1" {
@@ -132,8 +132,8 @@ func TestArchiveUnarchiveDelete_SQLServer(t *testing.T) {
 // already resolved against the dialect (nowSetExpr → CURRENT_TIMESTAMP here).
 func TestChildCascadeSQL_SQLServer(t *testing.T) {
 	d := testSQLServerDialect{}
-	archive := childCascadeSQL(d, "addresses", "deleted_at", "user_id", nowSetExpr(d), " IS NULL")
-	if archive != "UPDATE [addresses] SET [deleted_at] = CURRENT_TIMESTAMP WHERE [user_id] = @p1 AND [deleted_at] IS NULL" {
+	archive := archiveCascadeSQL(d, "addresses", "deleted_at", "user_id")
+	if archive != "UPDATE [addresses] SET [deleted_at] = @p1 WHERE [user_id] = @p2 AND [deleted_at] IS NULL" {
 		t.Errorf("archive cascade = %q", archive)
 	}
 	unarchive := childCascadeSQL(d, "addresses", "deleted_at", "user_id", nullSetExpr(d), " IS NOT NULL")
@@ -156,7 +156,7 @@ func TestBuildInsert_SQLServer_TypedIDFields(t *testing.T) {
 		"legacy_ref": "018f8b2c-1d3e-7a9b-bc4d-5e6f7a8b9c0d",
 	}
 	id := "11111111-1111-1111-1111-111111111111"
-	_, args := buildInsert(testSQLServerDialect{}, "orders", "id", id, fields, nil)
+	_, args := buildInsert(testSQLServerDialect{}, "orders", "id", id, fields, nil, testNow)
 
 	// Bind order: PK, then SortedKeys (absent_id, buyer_id, legacy_ref).
 	if len(args) != 4 {

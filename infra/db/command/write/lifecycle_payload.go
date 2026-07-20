@@ -43,16 +43,16 @@ func sharedBaseFKField(schema *TableSchema, src domain.Entity) (fkCol, baseID st
 }
 
 // softWritePayload assembles the ARCHIVED/UNARCHIVED outbox payload: the same
-// column→value map INSERTED/UPDATED carry, plus the soft-delete column — a
-// Go-side UTC timestamp on ARCHIVED (informational; the authoritative value is
-// the row's database-stamped NOW()) or an explicit JSON null on UNARCHIVED —
-// plus the shared-base FK when the role links its base through a separate
-// column (mirroring the INSERTED payload, where the FK is injected the same
-// way).
-func softWritePayload(schema *TableSchema, src domain.Entity, sdCol, eventType string) domain.Fields {
+// column→value map INSERTED/UPDATED carry, plus the soft-delete column — the
+// operation's writeNow() stamp on ARCHIVED (the EXACT value bound into the
+// archive UPDATE, since managed timestamps are app-clock authored) or an
+// explicit JSON null on UNARCHIVED — plus the shared-base FK when the role
+// links its base through a separate column (mirroring the INSERTED payload,
+// where the FK is injected the same way).
+func softWritePayload(schema *TableSchema, src domain.Entity, sdCol, eventType string, now time.Time) domain.Fields {
 	fields := schema.WriteFields(src)
 	if eventType == "ARCHIVED" {
-		fields[sdCol] = time.Now().UTC()
+		fields[sdCol] = now
 	} else {
 		fields[sdCol] = nil
 	}

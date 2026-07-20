@@ -11,6 +11,27 @@ with `1.0.0`.
 
 ## [Unreleased]
 
+### Changed
+
+- **Managed timestamps are now application-clock authored.** The managed
+  columns (`created_at`/`updated_at` and the soft-delete stamp written by
+  archive and its cascades, the shared-base lifecycle convergence included)
+  are no longer stamped with the dialect's `NOW()`/`CURRENT_TIMESTAMP`/
+  `SYSTIMESTAMP` expression inside the generated DML. Instead the write path
+  mints ONE `time.Now()` instant per write operation (UTC, truncated to
+  microseconds — the precision every supported backend stores) and binds it as
+  an ordinary argument, the same move the ids made with the Go-minted UUID v7:
+  root, children, siblings and the shared-base cascade of one operation all
+  carry the exact same instant, and the value is known in Go before COMMIT —
+  the prerequisite for the outbox payload to carry authoritative timestamps.
+  The ARCHIVED outbox payload's soft-delete value is now that same bound stamp
+  (previously an informational Go-side approximation of the DB stamp).
+  Control-plane timestamps (`outbox.created_at`, the integration/upstream
+  failure registries, the replay admin) keep the dialect `NOW()` expression,
+  and `Dialect.NowExpr()` remains on the interface for them. Operational note:
+  the authoritative clock for row timestamps is now the application host's
+  (keep pods on NTP); the database server's clock no longer participates.
+
 ## [0.36.0] - 2026-07-20
 
 ### Changed

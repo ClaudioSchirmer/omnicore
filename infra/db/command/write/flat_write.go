@@ -3,6 +3,7 @@ package write
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"github.com/ClaudioSchirmer/omnicore/application/audit"
 	"github.com/ClaudioSchirmer/omnicore/application/persistence"
@@ -35,6 +36,7 @@ func (b *BaseEngine) Insert(ctx persistence.RequestContext, entity domain.Insert
 	if err != nil {
 		return domain.WriteResult{}, err
 	}
+	now := writeNow()
 
 	tx, err := b.beginner.Begin(ctx)
 	if err != nil {
@@ -47,11 +49,11 @@ func (b *BaseEngine) Insert(ctx persistence.RequestContext, entity domain.Insert
 	if err := b.FireAfterBegin(ctx, tx, src, hook, hctx); err != nil {
 		return domain.WriteResult{}, err
 	}
-	sql, args := buildInsert(d, schema.Table(), schema.PKColumn(), id, fields, schema.InsertNowColumns())
+	sql, args := buildInsert(d, schema.Table(), schema.PKColumn(), id, fields, schema.InsertNowColumns(), now)
 	if err := tx.Exec(ctx, sql, args...); err != nil {
 		return domain.WriteResult{}, err
 	}
-	if err := insertSiblings(ctx, tx, d, schema, src, id); err != nil {
+	if err := insertSiblings(ctx, tx, d, schema, src, id, now); err != nil {
 		return domain.WriteResult{}, err
 	}
 	if err := WriteOutbox(ctx, tx, schema.Table(), "INSERTED", id, fields); err != nil {
@@ -82,6 +84,7 @@ func (b *BaseEngine) Update(ctx persistence.RequestContext, entity domain.Updata
 	}
 	src := entity.Source()
 	fields := schema.WriteFields(src)
+	now := writeNow()
 
 	tx, err := b.beginner.Begin(ctx)
 	if err != nil {
@@ -94,7 +97,7 @@ func (b *BaseEngine) Update(ctx persistence.RequestContext, entity domain.Updata
 	if err := b.FireAfterBegin(ctx, tx, src, hook, hctx); err != nil {
 		return domain.WriteResult{}, err
 	}
-	sql, args := buildUpdate(d, schema.Table(), schema.PKColumn(), entity.ID().Value(), fields, schema.UpdateNowColumns())
+	sql, args := buildUpdate(d, schema.Table(), schema.PKColumn(), entity.ID().Value(), fields, schema.UpdateNowColumns(), now)
 	if err := execExpectingRow(ctx, tx, sql, args, entity.EntityName(), schema.PKColumn(), entity.ID().Value()); err != nil {
 		return domain.WriteResult{}, err
 	}
@@ -128,10 +131,10 @@ func (b *BaseEngine) Archive(ctx persistence.RequestContext, entity domain.Archi
 	if err != nil {
 		return err
 	}
+	now := writeNow()
 	return b.flatSoftWrite(ctx, entity.Source(), entity.ID().Value(), schema, hook,
-		HookContext{Verb: "Archive", EntityType: entity.EntityName()}, "ARCHIVED",
-		softWritePayload(schema, entity.Source(), sdCol, "ARCHIVED"),
-		func(d Dialect) string { return archiveSQL(d, schema.Table(), sdCol, schema.PKColumn()) },
+		HookContext{Verb: "Archive", EntityType: entity.EntityName()}, "ARCHIVED", sdCol, now,
+		softWritePayload(schema, entity.Source(), sdCol, "ARCHIVED", now),
 		func() audit.AuditEvent { return BuildArchiveEvent(ctx, entity, schema, b.auditClaims) },
 		entity.Events())
 }
@@ -144,10 +147,10 @@ func (b *BaseEngine) Unarchive(ctx persistence.RequestContext, entity domain.Una
 	if err != nil {
 		return err
 	}
+	now := writeNow()
 	return b.flatSoftWrite(ctx, entity.Source(), entity.ID().Value(), schema, hook,
-		HookContext{Verb: "Unarchive", EntityType: entity.EntityName()}, "UNARCHIVED",
-		softWritePayload(schema, entity.Source(), sdCol, "UNARCHIVED"),
-		func(d Dialect) string { return unarchiveSQL(d, schema.Table(), sdCol, schema.PKColumn()) },
+		HookContext{Verb: "Unarchive", EntityType: entity.EntityName()}, "UNARCHIVED", sdCol, now,
+		softWritePayload(schema, entity.Source(), sdCol, "UNARCHIVED", now),
 		func() audit.AuditEvent { return BuildUnarchiveEvent(ctx, entity, schema, b.auditClaims) },
 		entity.Events())
 }
@@ -171,9 +174,11 @@ func (b *BaseEngine) Delete(ctx persistence.RequestContext, entity domain.Deleta
 // flatSoftWrite is the shared body of the bodyless flat verbs
 // (Archive/Unarchive): one single-statement write keyed on the PK + the
 // outbox row (payload built by the caller via softWritePayload) + the in-TX
-// audit row + the A/D hooks, then the post-commit echo + publish. buildStmt
-// renders the verb's SQL via the tx Dialect; the id is the sole bound arg
-// (encoded per dialect).
+// audit row + the A/D hooks, then the post-commit echo + publish. `now` is the
+// operation stamp minted by the verb (writeNow()): ARCHIVED binds it as the
+// soft-delete value; UNARCHIVED sets SQL NULL and needs no stamp on the root,
+// but the base convergence still receives it (a role archive may archive the
+// base with the same instant).
 func (b *BaseEngine) flatSoftWrite(
 	ctx persistence.RequestContext,
 	src domain.Entity,
@@ -181,9 +186,9 @@ func (b *BaseEngine) flatSoftWrite(
 	schema *TableSchema,
 	hook WriteHook,
 	hctx HookContext,
-	eventType string,
+	eventType, sdCol string,
+	now time.Time,
 	payload any,
-	buildStmt func(Dialect) string,
 	buildEvent func() audit.AuditEvent,
 	evs []domain.DomainEvent,
 ) error {
@@ -205,12 +210,19 @@ func (b *BaseEngine) flatSoftWrite(
 			return err
 		}
 	}
-	if err := tx.Exec(ctx, buildStmt(d), d.EncodeArg(domain.NewID(id))); err != nil {
+	if eventType == "ARCHIVED" {
+		err = tx.Exec(ctx, archiveSQL(d, schema.Table(), sdCol, schema.PKColumn()),
+			d.EncodeArg(now), d.EncodeArg(domain.NewID(id)))
+	} else {
+		err = tx.Exec(ctx, unarchiveSQL(d, schema.Table(), sdCol, schema.PKColumn()),
+			d.EncodeArg(domain.NewID(id)))
+	}
+	if err != nil {
 		return err
 	}
 	// SharedBase role (flat): drive the shared identity's lifecycle from this verb
 	// (archive once no role stays active; reactivate on unarchive). No-op otherwise.
-	if err := b.convergeBaseAfterSoftWrite(ctx, tx, d, schema, src, eventType); err != nil {
+	if err := b.convergeBaseAfterSoftWrite(ctx, tx, d, schema, src, eventType, now); err != nil {
 		return err
 	}
 	if err := WriteOutbox(ctx, tx, schema.Table(), eventType, id, payload); err != nil {
@@ -264,6 +276,7 @@ func (b *BaseEngine) Batch(ctx context.Context, entity domain.Batch, schemas []*
 // builders. A missing-row Update maps to RecordNotFoundNotification, identical
 // to the standalone Update verb.
 func execOneWithTx(ctx context.Context, tx WriteTx, d Dialect, entity domain.ValidEntity, schema *TableSchema) (domain.WriteResult, error) {
+	now := writeNow()
 	switch e := entity.(type) {
 	case domain.Insertable:
 		fields := schema.WriteFields(e.Source())
@@ -271,7 +284,7 @@ func execOneWithTx(ctx context.Context, tx WriteTx, d Dialect, entity domain.Val
 		if err != nil {
 			return domain.WriteResult{}, err
 		}
-		sql, args := buildInsert(d, schema.Table(), schema.PKColumn(), id, fields, schema.InsertNowColumns())
+		sql, args := buildInsert(d, schema.Table(), schema.PKColumn(), id, fields, schema.InsertNowColumns(), now)
 		if err := tx.Exec(ctx, sql, args...); err != nil {
 			return domain.WriteResult{}, err
 		}
@@ -282,7 +295,7 @@ func execOneWithTx(ctx context.Context, tx WriteTx, d Dialect, entity domain.Val
 
 	case domain.Updatable:
 		fields := schema.WriteFields(e.Source())
-		sql, args := buildUpdate(d, schema.Table(), schema.PKColumn(), e.ID().Value(), fields, schema.UpdateNowColumns())
+		sql, args := buildUpdate(d, schema.Table(), schema.PKColumn(), e.ID().Value(), fields, schema.UpdateNowColumns(), now)
 		if err := execExpectingRow(ctx, tx, sql, args, e.EntityName(), schema.PKColumn(), e.ID().Value()); err != nil {
 			return domain.WriteResult{}, err
 		}
@@ -296,10 +309,11 @@ func execOneWithTx(ctx context.Context, tx WriteTx, d Dialect, entity domain.Val
 		if err != nil {
 			return domain.WriteResult{}, err
 		}
-		if err := tx.Exec(ctx, archiveSQL(d, schema.Table(), sdCol, schema.PKColumn()), d.EncodeArg(domain.NewID(e.ID().Value()))); err != nil {
+		if err := tx.Exec(ctx, archiveSQL(d, schema.Table(), sdCol, schema.PKColumn()),
+			d.EncodeArg(now), d.EncodeArg(domain.NewID(e.ID().Value()))); err != nil {
 			return domain.WriteResult{}, err
 		}
-		if err := WriteOutbox(ctx, tx, schema.Table(), "ARCHIVED", e.ID().Value(), softWritePayload(schema, e.Source(), sdCol, "ARCHIVED")); err != nil {
+		if err := WriteOutbox(ctx, tx, schema.Table(), "ARCHIVED", e.ID().Value(), softWritePayload(schema, e.Source(), sdCol, "ARCHIVED", now)); err != nil {
 			return domain.WriteResult{}, err
 		}
 		return domain.WriteResult{ID: e.ID()}, nil
@@ -312,7 +326,7 @@ func execOneWithTx(ctx context.Context, tx WriteTx, d Dialect, entity domain.Val
 		if err := tx.Exec(ctx, unarchiveSQL(d, schema.Table(), sdCol, schema.PKColumn()), d.EncodeArg(domain.NewID(e.ID().Value()))); err != nil {
 			return domain.WriteResult{}, err
 		}
-		if err := WriteOutbox(ctx, tx, schema.Table(), "UNARCHIVED", e.ID().Value(), softWritePayload(schema, e.Source(), sdCol, "UNARCHIVED")); err != nil {
+		if err := WriteOutbox(ctx, tx, schema.Table(), "UNARCHIVED", e.ID().Value(), softWritePayload(schema, e.Source(), sdCol, "UNARCHIVED", now)); err != nil {
 			return domain.WriteResult{}, err
 		}
 		return domain.WriteResult{ID: e.ID()}, nil

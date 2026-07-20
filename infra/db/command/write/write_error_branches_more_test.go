@@ -172,7 +172,7 @@ func TestBatch_SoftMembersAndUnsupported(t *testing.T) {
 
 	t.Run("archiveExecError", func(t *testing.T) {
 		arc, _ := domain.GetArchivable(mk(), nil, "GetArchivable")
-		tx := &recTx{execErrSub: "SET deleted_at = NOW()"}
+		tx := &recTx{execErrSub: "SET deleted_at = $1"}
 		be := newFlatBE(&recBeginner{tx: tx})
 		if _, err := be.Batch(newBuilderCtx(), domain.NewBatch([]domain.ValidEntity{arc}), []*TableSchema{builderTestSchema}); !errors.Is(err, errRecExec) {
 			t.Fatalf("expected the archive exec error, got %v", err)

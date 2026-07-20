@@ -3,6 +3,7 @@ package write
 import (
 	"context"
 	"reflect"
+	"time"
 
 	"github.com/ClaudioSchirmer/omnicore/domain"
 )
@@ -53,13 +54,13 @@ func allNilFields(fields domain.Fields) bool {
 // (owner.PKColumn() = id). A sibling whose fields are all nil is skipped. src is
 // the owner value the sibling fields are read from — a root Entity OR an
 // aggregate child (AggregateValueObject), so it is typed `any`.
-func insertSiblings(ctx context.Context, tx WriteTx, d Dialect, owner *TableSchema, src any, id string) error {
+func insertSiblings(ctx context.Context, tx WriteTx, d Dialect, owner *TableSchema, src any, id string, now time.Time) error {
 	for _, sib := range owner.Siblings() {
 		fields := sib.WriteFields(src)
 		if allNilFields(fields) {
 			continue
 		}
-		sql, args := buildInsert(d, sib.Table(), owner.PKColumn(), id, fields, sib.InsertNowColumns())
+		sql, args := buildInsert(d, sib.Table(), owner.PKColumn(), id, fields, sib.InsertNowColumns(), now)
 		if err := tx.Exec(ctx, sql, args...); err != nil {
 			return err
 		}

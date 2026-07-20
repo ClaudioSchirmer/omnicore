@@ -14,6 +14,13 @@
         map readable. Manual handlers have full control of every layer and can opt out of any step; what they
         cannot opt out of is the SQL the persister emits, which is what the audit verb echoes.
     </p>
+    <p>
+        <code>$now</code> in the SQL below denotes the write operation's <strong>app-clock stamp</strong>: one
+        <code>time.Now()</code> instant (UTC, microsecond-truncated) minted in Go per operation and bound as an
+        ordinary argument — like the Go-minted UUID&nbsp;v7 id, never a dialect <code>NOW()</code> expression. Root,
+        children, siblings and the shared-base cascade of one operation all carry the same instant, known before
+        COMMIT (see <a href="#table-schema">Table schema → managed columns</a>).
+    </p>
 
     <h3>Root verbs</h3>
     <table>
@@ -36,7 +43,7 @@
                     <code>GetInsertable(e, svc, "GetInsertable")</code><br>
                     Mode <code>ModeInsert</code> → <code>IfInsert</code> + <code>IfInsertOrUpdate</code> fire on root and on every AVO via <code>runAggregateValidations</code>
                 </td>
-                <td><code>INSERT INTO users (...) RETURNING id</code></td>
+                <td><code>INSERT INTO users (id, ..., created_at, updated_at) VALUES ($1, ..., $now, $now)</code> <span class="muted">(id minted in Go — no RETURNING)</span></td>
                 <td><code>INSERTED</code></td>
                 <td><code>Upsert</code> (compose + insert)</td>
                 <td><code>insert</code></td>
@@ -48,7 +55,7 @@
                     <code>GetUpdatable(loaded, apply, svc, "GetUpdatable")</code><br>
                     Mode <code>ModeUpdate</code> → <code>IfUpdate</code> + <code>IfInsertOrUpdate</code> fire; AVOs validated the same way; <code>actionName="GetUpdatable"</code> available for verb-specific branches
                 </td>
-                <td><code>UPDATE users SET col=val, updated_at=NOW() WHERE id=$1</code></td>
+                <td><code>UPDATE users SET col=val, updated_at=$now WHERE id=$1</code></td>
                 <td><code>UPDATED</code></td>
                 <td><code>Upsert</code> (re-compose + replace)</td>
                 <td><code>update</code></td>
@@ -60,7 +67,7 @@
                     <code>GetPartialUpdatable(loaded, applyPartial, svc, "GetPartialUpdatable")</code><br>
                     Mode <code>ModeUpdate</code> → <strong>same <code>IfUpdate</code> as PUT</strong>; <code>actionName="GetPartialUpdatable"</code> differentiates when the rule needs to branch
                 </td>
-                <td><code>UPDATE users SET col=val, updated_at=NOW() WHERE id=$1</code> <span class="muted">(identical to PUT)</span></td>
+                <td><code>UPDATE users SET col=val, updated_at=$now WHERE id=$1</code> <span class="muted">(identical to PUT)</span></td>
                 <td><code>UPDATED</code> <span class="muted">(identical to PUT)</span></td>
                 <td><code>Upsert</code> <span class="muted">(identical to PUT)</span></td>
                 <td><code>update</code> <span class="muted">(same as PUT — SQL fingerprint identical; PUT vs PATCH lives in <code>actionName</code>)</span></td>
@@ -72,7 +79,7 @@
                     <code>GetArchivable(loaded, svc, "GetArchivable")</code><br>
                     Mode <code>ModeUpdate</code> + <code>actionName="GetArchivable"</code> → <code>IfUpdate</code> fires; rule branches on <code>actionName</code> for archive-specific invariants (owner check etc.). State-transition guard then verifies <code>ModeArchive</code> is declared
                 </td>
-                <td><code>UPDATE users SET deleted_at=NOW() WHERE id=$1</code></td>
+                <td><code>UPDATE users SET deleted_at=$now WHERE id=$1</code></td>
                 <td><code>ARCHIVED</code></td>
                 <td><code>Upsert</code> (default — document survives with <code>deleted_at</code> populated) — <code>Delete</code> on views with <code>DeleteOnArchive()</code></td>
                 <td><code>archive</code></td>
@@ -109,8 +116,8 @@
         payload alongside the <code>aggregate_id</code>: <code>INSERTED</code>/<code>UPDATED</code> carry the bound
         column→value map (aggregates: a <code>{root, children}</code> snapshot);
         <code>ARCHIVED</code>/<code>UNARCHIVED</code> carry the same field map <em>plus</em> the soft-delete column
-        reflecting the verb's outcome — a Go-side UTC timestamp on archive (informational; the row's authoritative
-        value is the database-stamped <code>NOW()</code>) or an explicit JSON <code>null</code> on unarchive — plus
+        reflecting the verb's outcome — the operation's app-clock stamp on archive (the EXACT value bound into the
+        archive UPDATE; managed timestamps are Go-authored) or an explicit JSON <code>null</code> on unarchive — plus
         the shared-base FK when the role links its base through a separate column; <code>DELETED</code> carries the
         structural keys only (the row is gone): the PK under its physical column name plus the shared-base FK, and
         the orphan purge's own <code>DELETED</code> row carries the base PK. The payload is informational for the
@@ -156,13 +163,13 @@
             <tr>
                 <td><code>update</code> — <code>OpUpdate</code> <span class="muted">(<code>Constructor→Changed</code> or <code>Constructor→Added</code>: a DB-loaded child changed or re-added)</span></td>
                 <td><code>User.ChangeAddressByID(id, replacement)</code> → <code>ChangeAggregateChild</code></td>
-                <td><code>UPDATE addresses SET col=val, updated_at=NOW() WHERE id=$1</code></td>
+                <td><code>UPDATE addresses SET col=val, updated_at=$now WHERE id=$1</code></td>
                 <td><code>updated</code></td>
             </tr>
             <tr>
                 <td><code>update</code> — <code>OpDelete</code> <span class="muted">(<code>Constructor→Removed</code>: a DB-loaded child removed)</span></td>
                 <td><code>User.ReplaceAddresses(addrs)</code> → <code>ReplaceAggregateChildrenOf</code> (or <code>RemoveAggregateChild</code> direct)</td>
-                <td><code>UPDATE addresses SET deleted_at=NOW() WHERE id=$1</code> <span class="muted">(the row stays in the DB, recoverable via unarchive)</span></td>
+                <td><code>UPDATE addresses SET deleted_at=$now WHERE id=$1</code> <span class="muted">(the row stays in the DB, recoverable via unarchive)</span></td>
                 <td><code>archived</code> <span class="muted">(same op as the cascade below — same SQL)</span></td>
             </tr>
             <tr>
@@ -174,7 +181,7 @@
             <tr>
                 <td><code>archive</code> — cascade</td>
                 <td><code>archiveAggregate</code> walks active children</td>
-                <td><code>UPDATE addresses SET deleted_at=NOW() WHERE user_id=$1 AND deleted_at IS NULL</code></td>
+                <td><code>UPDATE addresses SET deleted_at=$now WHERE user_id=$1 AND deleted_at IS NULL</code></td>
                 <td><code>archived</code></td>
             </tr>
             <tr>

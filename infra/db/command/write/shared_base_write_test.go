@@ -297,8 +297,8 @@ func TestDeleteRoleWithBase_VetoThenArchivesBase(t *testing.T) {
 	if len(tx.execs) != 7 {
 		t.Fatalf("expected 7 statements, got %d: %v", len(tx.execs), tx.execs)
 	}
-	if !strings.HasPrefix(tx.execs[4], "UPDATE pessoa SET deleted_at = NOW()") {
-		t.Errorf("the vetoed orphan must be archived (UPDATE pessoa SET deleted_at = NOW()), got %q", tx.execs[4])
+	if !strings.HasPrefix(tx.execs[4], "UPDATE pessoa SET deleted_at = $1") {
+		t.Errorf("the vetoed orphan must be archived (UPDATE pessoa SET deleted_at = $1), got %q", tx.execs[4])
 	}
 }
 
@@ -423,7 +423,7 @@ func TestDeleteRoleWithBase_KeepOrphanArchivesSoftDeletableBase(t *testing.T) {
 	if len(tx.execs) != 4 {
 		t.Fatalf("expected 4 statements, got %d: %v", len(tx.execs), tx.execs)
 	}
-	if !strings.HasPrefix(tx.execs[1], "UPDATE pessoa SET deleted_at = NOW()") {
+	if !strings.HasPrefix(tx.execs[1], "UPDATE pessoa SET deleted_at = $1") {
 		t.Errorf("the orphaned soft-deletable base must archive, got %q", tx.execs[1])
 	}
 }
@@ -723,7 +723,7 @@ func TestVetoUnarchive_DefensiveNoOps(t *testing.T) {
 	if err := be.vetoUnarchiveWithActiveSibling(newBuilderCtx(), tx, testPGDialect{}, noSD, src, "some-id", "Aluno"); err != nil {
 		t.Fatalf("no-SoftDelete veto must no-op, got %v", err)
 	}
-	if err := be.convergeBaseAfterSoftWrite(newBuilderCtx(), tx, testPGDialect{}, roleTestSchema(), src, "OTHER"); err != nil {
+	if err := be.convergeBaseAfterSoftWrite(newBuilderCtx(), tx, testPGDialect{}, roleTestSchema(), src, "OTHER", writeNow()); err != nil {
 		t.Fatalf("a neutral event type must no-op, got %v", err)
 	}
 }

@@ -106,7 +106,7 @@ func TestBaseChild_RemovedArchivesWhenSoftDelete(t *testing.T) {
 		t.Fatalf("Update: %v", err)
 	}
 	if !hasStmt(tx.execs, func(s string) bool {
-		return strings.HasPrefix(s, "UPDATE endereco SET deleted_at = NOW()")
+		return strings.HasPrefix(s, "UPDATE endereco SET deleted_at = $1")
 	}) {
 		t.Errorf("a Removed base-child WITH soft-delete must archive (UPDATE endereco SET deleted_at), got %v", tx.execs)
 	}
@@ -197,11 +197,11 @@ func TestConvergeBase_ArchiveLastActiveRoleArchivesBase(t *testing.T) {
 	if err := be.Archive(newBuilderCtx(), arch, bcRoleSchema(true), firingHook); err != nil {
 		t.Fatalf("Archive: %v", err)
 	}
-	if !hasStmt(tx.execs, func(s string) bool { return strings.HasPrefix(s, "UPDATE pessoa SET deleted_at = NOW()") }) {
-		t.Errorf("archiving the last active role must archive the base (UPDATE pessoa SET deleted_at = NOW()), got %v", tx.execs)
+	if !hasStmt(tx.execs, func(s string) bool { return strings.HasPrefix(s, "UPDATE pessoa SET deleted_at = $1") }) {
+		t.Errorf("archiving the last active role must archive the base (UPDATE pessoa SET deleted_at = $1), got %v", tx.execs)
 	}
-	if !hasStmt(tx.execs, func(s string) bool { return strings.HasPrefix(s, "UPDATE endereco SET deleted_at = NOW()") }) {
-		t.Errorf("the base archive must cascade to the base-children (UPDATE endereco SET deleted_at = NOW()), got %v", tx.execs)
+	if !hasStmt(tx.execs, func(s string) bool { return strings.HasPrefix(s, "UPDATE endereco SET deleted_at = $1") }) {
+		t.Errorf("the base archive must cascade to the base-children (UPDATE endereco SET deleted_at = $1), got %v", tx.execs)
 	}
 }
 
@@ -215,7 +215,7 @@ func TestConvergeBase_ArchiveWithAnotherActiveRoleKeepsBase(t *testing.T) {
 		t.Fatalf("Archive: %v", err)
 	}
 	for _, s := range tx.execs {
-		if strings.HasPrefix(s, "UPDATE pessoa SET deleted_at = NOW()") {
+		if strings.HasPrefix(s, "UPDATE pessoa SET deleted_at = $1") {
 			t.Errorf("the base must stay active while another role is active, got %q", s)
 		}
 	}

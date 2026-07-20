@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"reflect"
+	"time"
 
 	"github.com/google/uuid"
 
@@ -157,6 +158,7 @@ func (b *BaseEngine) insertWithBase(ctx persistence.RequestContext, entity domai
 	if !sharedPK {
 		roleFields[fkCol] = domain.NewID(baseID)
 	}
+	now := writeNow()
 
 	tx, err := b.beginner.Begin(ctx)
 	if err != nil {
@@ -184,7 +186,7 @@ func (b *BaseEngine) insertWithBase(ctx persistence.RequestContext, entity domai
 				"(SharedBaseInsertCommandHandler, or repo.LoadForSharedBaseInsert in a manual handler) before "+
 				"Insert; a blind insert would duplicate the shared identity's native data", entity.EntityName())
 	}
-	if err := b.upsertSharedBase(ctx, tx, d, base, baseID, baseFields, basePreExisted); err != nil {
+	if err := b.upsertSharedBase(ctx, tx, d, base, baseID, baseFields, basePreExisted, now); err != nil {
 		return domain.WriteResult{}, err
 	}
 	active, err := b.findActiveRoleByFK(ctx, tx, d, schema, fkCol, baseID)
@@ -211,7 +213,7 @@ func (b *BaseEngine) insertWithBase(ctx persistence.RequestContext, entity domai
 		}
 		id = nid
 	}
-	sql, args := buildInsert(d, schema.Table(), schema.PKColumn(), id, roleFields, schema.InsertNowColumns())
+	sql, args := buildInsert(d, schema.Table(), schema.PKColumn(), id, roleFields, schema.InsertNowColumns(), now)
 	if err := tx.Exec(ctx, sql, args...); err != nil {
 		return domain.WriteResult{}, err
 	}
@@ -219,10 +221,10 @@ func (b *BaseEngine) insertWithBase(ctx persistence.RequestContext, entity domai
 	// native children (FK→base id) by the OperationOf categorization: a loaded
 	// base-child arrives as Constructor → no-op (not re-inserted); only the request's
 	// new ones insert (and re-added/changed update, removed delete) — the upsert.
-	if err := writeChildren(ctx, tx, d, root, schema, id, baseID); err != nil {
+	if err := writeChildren(ctx, tx, d, root, schema, id, baseID, now); err != nil {
 		return domain.WriteResult{}, err
 	}
-	if err := insertSiblings(ctx, tx, d, schema, src, id); err != nil {
+	if err := insertSiblings(ctx, tx, d, schema, src, id, now); err != nil {
 		return domain.WriteResult{}, err
 	}
 	// A new active role means the shared identity must be active: if it was
@@ -269,6 +271,7 @@ func (b *BaseEngine) updateWithBase(ctx persistence.RequestContext, entity domai
 		return domain.WriteResult{}, err
 	}
 	baseID := deterministicBaseID(nk)
+	now := writeNow()
 
 	tx, err := b.beginner.Begin(ctx)
 	if err != nil {
@@ -284,14 +287,14 @@ func (b *BaseEngine) updateWithBase(ctx persistence.RequestContext, entity domai
 	if err := guardNaturalKeyImmutable(ctx, tx, d, schema, base, entity.EntityName(), entity.ID().Value(), fkCol, baseID); err != nil {
 		return domain.WriteResult{}, err
 	}
-	sql, args := buildUpdate(d, schema.Table(), schema.PKColumn(), entity.ID().Value(), roleFields, schema.UpdateNowColumns())
+	sql, args := buildUpdate(d, schema.Table(), schema.PKColumn(), entity.ID().Value(), roleFields, schema.UpdateNowColumns(), now)
 	if err := execExpectingRow(ctx, tx, sql, args, entity.EntityName(), schema.PKColumn(), entity.ID().Value()); err != nil {
 		return domain.WriteResult{}, err
 	}
 	// Aggregate role: role + shared-base children, persisted by OperationOf
 	// (writeChildren) + sibling updates. Update is load-first, so loaded children are
 	// Constructor (no-op) and only real changes touch the DB.
-	if err := writeChildren(ctx, tx, d, root, schema, entity.ID().Value(), baseID); err != nil {
+	if err := writeChildren(ctx, tx, d, root, schema, entity.ID().Value(), baseID, now); err != nil {
 		return domain.WriteResult{}, err
 	}
 	if err := applySiblingUpdates(ctx, tx, d, schema, src, entity.ID().Value(), entity.IsPartial()); err != nil {
@@ -299,7 +302,7 @@ func (b *BaseEngine) updateWithBase(ctx persistence.RequestContext, entity domai
 	}
 	// The base always exists here (we are updating an existing role, whose FK
 	// references it), so this is always the UPDATE branch.
-	if err := b.upsertSharedBase(ctx, tx, d, base, baseID, baseFields, true); err != nil {
+	if err := b.upsertSharedBase(ctx, tx, d, base, baseID, baseFields, true, now); err != nil {
 		return domain.WriteResult{}, err
 	}
 	// An updated role is active → keep the shared identity active (reactivate if a
@@ -409,6 +412,7 @@ func (b *BaseEngine) convergeBaseAfterHardDelete(
 	d Dialect,
 	schema *TableSchema,
 	src domain.Entity,
+	now time.Time,
 	buildPurgeEvent func(baseID string) audit.AuditEvent,
 ) (AuditBundle, error) {
 	base, _, ok := schema.SharedBaseRef()
@@ -449,7 +453,7 @@ func (b *BaseEngine) convergeBaseAfterHardDelete(
 			// vetoed — the base survives; fall through to the archive convergence.
 		}
 	}
-	return AuditBundle{}, b.archiveBaseIfNoActiveRole(ctx, tx, d, schema, src)
+	return AuditBundle{}, b.archiveBaseIfNoActiveRole(ctx, tx, d, schema, src, now)
 }
 
 // anyRoleRowReferences reports whether any role row — active OR archived, from
@@ -539,12 +543,13 @@ func (b *BaseEngine) reactivateBaseIfArchived(ctx context.Context, tx WriteTx, d
 	if err != nil || !archived {
 		return err
 	}
-	return cascadeBaseLifecycle(ctx, tx, d, base, sd, baseID, "NULL", " IS NOT NULL")
+	return cascadeBaseLifecycle(ctx, tx, d, base, sd, baseID, nil)
 }
 
 // archiveBaseIfNoActiveRole archives the base + its native children once the role
-// just archived leaves NO active role referencing the base.
-func (b *BaseEngine) archiveBaseIfNoActiveRole(ctx context.Context, tx WriteTx, d Dialect, schema *TableSchema, src domain.Entity) error {
+// just archived leaves NO active role referencing the base — stamped with the
+// SAME writeNow() instant the triggering role operation bound.
+func (b *BaseEngine) archiveBaseIfNoActiveRole(ctx context.Context, tx WriteTx, d Dialect, schema *TableSchema, src domain.Entity, now time.Time) error {
 	base, sd, baseID, ok, err := baseLifecycleTarget(schema, src)
 	if !ok || err != nil {
 		return err
@@ -553,7 +558,7 @@ func (b *BaseEngine) archiveBaseIfNoActiveRole(ctx context.Context, tx WriteTx, 
 	if err != nil || active {
 		return err
 	}
-	return cascadeBaseLifecycle(ctx, tx, d, base, sd, baseID, d.NowExpr(), " IS NULL")
+	return cascadeBaseLifecycle(ctx, tx, d, base, sd, baseID, &now)
 }
 
 // convergeBaseAfterSoftWrite routes a role's archive/unarchive to the matching
@@ -563,10 +568,10 @@ func (b *BaseEngine) archiveBaseIfNoActiveRole(ctx context.Context, tx WriteTx, 
 // soft-write paths ahead of the root UPDATE) — otherwise the dev's active-only
 // unique index vetoes the UPDATE itself first, surfacing a raw constraint
 // error instead of the friendly conflict.
-func (b *BaseEngine) convergeBaseAfterSoftWrite(ctx context.Context, tx WriteTx, d Dialect, schema *TableSchema, src domain.Entity, eventType string) error {
+func (b *BaseEngine) convergeBaseAfterSoftWrite(ctx context.Context, tx WriteTx, d Dialect, schema *TableSchema, src domain.Entity, eventType string, now time.Time) error {
 	switch eventType {
 	case "ARCHIVED":
-		return b.archiveBaseIfNoActiveRole(ctx, tx, d, schema, src)
+		return b.archiveBaseIfNoActiveRole(ctx, tx, d, schema, src, now)
 	case "UNARCHIVED":
 		return b.reactivateBaseIfArchived(ctx, tx, d, schema, src)
 	}
@@ -633,11 +638,20 @@ func baseLifecycleTarget(schema *TableSchema, src domain.Entity) (base *TableSch
 	return base, sd, deterministicBaseID(nk), true, nil
 }
 
-// cascadeBaseLifecycle archives (NowExpr()/" IS NULL") or unarchives (NULL/" IS NOT
-// NULL") the base row and each soft-deletable native child, gated so it is
-// idempotent (a no-op when already in the target state).
-func cascadeBaseLifecycle(ctx context.Context, tx WriteTx, d Dialect, base *TableSchema, sd, baseID, setExpr, gate string) error {
-	if err := tx.Exec(ctx, childCascadeSQL(d, base.Table(), sd, base.PKColumn(), setExpr, gate), d.EncodeArg(domain.NewID(baseID))); err != nil {
+// cascadeBaseLifecycle archives (stamp != nil — the operation's writeNow()
+// value bound as the soft-delete stamp) or unarchives (stamp == nil — SQL NULL)
+// the base row and each soft-deletable native child, gated so it is idempotent
+// (a no-op when already in the target state).
+func cascadeBaseLifecycle(ctx context.Context, tx WriteTx, d Dialect, base *TableSchema, sd, baseID string, stamp *time.Time) error {
+	exec := func(table, sdCol, keyCol string) error {
+		if stamp != nil {
+			return tx.Exec(ctx, archiveCascadeSQL(d, table, sdCol, keyCol),
+				d.EncodeArg(*stamp), d.EncodeArg(domain.NewID(baseID)))
+		}
+		return tx.Exec(ctx, childCascadeSQL(d, table, sdCol, keyCol, nullSetExpr(d), " IS NOT NULL"),
+			d.EncodeArg(domain.NewID(baseID)))
+	}
+	if err := exec(base.Table(), sd, base.PKColumn()); err != nil {
 		return err
 	}
 	for _, bc := range base.ChildSchemas() {
@@ -645,7 +659,7 @@ func cascadeBaseLifecycle(ctx context.Context, tx WriteTx, d Dialect, base *Tabl
 		if !ok {
 			continue
 		}
-		if err := tx.Exec(ctx, childCascadeSQL(d, bc.Table(), csd, bc.FKColumn(), setExpr, gate), d.EncodeArg(domain.NewID(baseID))); err != nil {
+		if err := exec(bc.Table(), csd, bc.FKColumn()); err != nil {
 			return err
 		}
 	}
@@ -739,15 +753,16 @@ func baseExists(ctx context.Context, tx WriteTx, d Dialect, base *TableSchema, b
 // of a silent last-write-wins merge — the more correct outcome.)
 // Managed columns are honored when the base DECLARES them: CreatedAt(+UpdatedAt)
 // stamped on the identity's creation, UpdatedAt on every role-driven change of the
-// shared fields (the warm upsert and the role update both land here). A base that
-// declares none — the common shape — yields empty lists and byte-identical SQL to
-// before. Lifecycle-converge writes (archive/unarchive) touch only deleted_at,
-// same as every other table.
-func (b *BaseEngine) upsertSharedBase(ctx context.Context, tx WriteTx, d Dialect, base *TableSchema, baseID string, baseFields domain.Fields, baseExists bool) error {
+// shared fields (the warm upsert and the role update both land here) — always the
+// operation's writeNow() stamp, shared with the role row. A base that declares
+// none — the common shape — yields empty lists and byte-identical SQL to before.
+// Lifecycle-converge writes (archive/unarchive) touch only deleted_at, same as
+// every other table.
+func (b *BaseEngine) upsertSharedBase(ctx context.Context, tx WriteTx, d Dialect, base *TableSchema, baseID string, baseFields domain.Fields, baseExists bool, now time.Time) error {
 	if baseExists {
-		sql, args := buildUpdate(d, base.Table(), base.PKColumn(), baseID, baseFields, base.UpdateNowColumns())
+		sql, args := buildUpdate(d, base.Table(), base.PKColumn(), baseID, baseFields, base.UpdateNowColumns(), now)
 		return tx.Exec(ctx, sql, args...)
 	}
-	sql, args := buildInsert(d, base.Table(), base.PKColumn(), baseID, baseFields, base.InsertNowColumns())
+	sql, args := buildInsert(d, base.Table(), base.PKColumn(), baseID, baseFields, base.InsertNowColumns(), now)
 	return tx.Exec(ctx, sql, args...)
 }

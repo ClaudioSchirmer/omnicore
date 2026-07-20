@@ -181,7 +181,7 @@ audit:
     </table>
     <p>
         <code>PartialUpdate</code> (PATCH) shares <code>verb: "update"</code> with PUT because the
-        SQL is identical (<code>UPDATE … SET col=val, updated_at=NOW()</code>); the PUT-vs-PATCH
+        SQL is identical (<code>UPDATE … SET col=val, updated_at=$now</code>); the PUT-vs-PATCH
         distinction lives in <code>actionName</code> (<code>GetUpdatable</code> vs
         <code>GetPartialUpdatable</code>) — the same unification the domain applies, where
         <code>IfUpdate</code> fires for both. See the <a href="#lifecycle-map">Write lifecycle map</a>
@@ -205,10 +205,10 @@ audit:
         <tbody><tr><th>Root verb</th><th>Children included</th><th>Per-child <code>op</code></th><th>SQL on the child row</th></tr>
         <tr><td><code>insert</code></td><td>all current</td><td><code>inserted</code></td><td><code>INSERT INTO addresses (...)</code></td></tr>
         <tr><td><code>update</code> — <code>OpInsert</code></td><td>brand-new child kept (added, never DB-loaded)</td><td><code>inserted</code></td><td><code>INSERT INTO addresses (...)</code></td></tr>
-        <tr><td><code>update</code> — <code>OpUpdate</code></td><td>DB-loaded child changed OR re-added (<code>Constructor→Changed/Added</code>)</td><td><code>updated</code></td><td><code>UPDATE addresses SET col=val, updated_at=NOW()</code></td></tr>
-        <tr><td><code>update</code> — <code>OpDelete</code></td><td>DB-loaded child removed (<code>Constructor→Removed</code>)</td><td><code>archived</code></td><td><code>UPDATE addresses SET deleted_at=NOW()</code> (row stays, recoverable)</td></tr>
+        <tr><td><code>update</code> — <code>OpUpdate</code></td><td>DB-loaded child changed OR re-added (<code>Constructor→Changed/Added</code>)</td><td><code>updated</code></td><td><code>UPDATE addresses SET col=val, updated_at=$now</code></td></tr>
+        <tr><td><code>update</code> — <code>OpDelete</code></td><td>DB-loaded child removed (<code>Constructor→Removed</code>)</td><td><code>archived</code></td><td><code>UPDATE addresses SET deleted_at=$now</code> (row stays, recoverable)</td></tr>
         <tr><td><code>update</code> — <code>OpNoop</code></td><td>untouched DB child (<code>Constructor→Constructor</code>) OR new-then-removed (<code>Added→Removed</code>) — <strong>both skipped</strong></td><td>—</td><td>(no SQL, no entry)</td></tr>
-        <tr><td><code>archive</code></td><td>every loaded active child (cascade)</td><td><code>archived</code></td><td><code>UPDATE addresses SET deleted_at=NOW() WHERE user_id=$1 AND deleted_at IS NULL</code></td></tr>
+        <tr><td><code>archive</code></td><td>every loaded active child (cascade)</td><td><code>archived</code></td><td><code>UPDATE addresses SET deleted_at=$now WHERE user_id=$1 AND deleted_at IS NULL</code></td></tr>
         <tr><td><code>unarchive</code></td><td>every loaded archived child (cascade)</td><td><code>unarchived</code></td><td><code>UPDATE addresses SET deleted_at=NULL WHERE user_id=$1 AND deleted_at IS NOT NULL</code></td></tr>
         <tr><td><code>delete</code></td><td>every loaded child</td><td><code>deleted</code></td><td>explicit <code>DELETE FROM addresses WHERE user_id=$1</code> per child table (same TX, before the root DELETE)</td></tr>
     </table>

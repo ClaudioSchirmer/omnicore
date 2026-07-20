@@ -681,8 +681,10 @@ func (s *TableSchema) childSchema(typeName string) *TableSchema {
 	return s.children[typeName]
 }
 
-// insertNowColumns returns the managed columns stamped with the dialect's now
-// expression on INSERT — created_at then updated_at, each when enabled.
+// insertNowColumns returns the managed columns stamped with the write
+// operation's app-clock instant on INSERT — created_at then updated_at, each
+// when enabled. The stamp is minted in Go and bound as an ordinary argument
+// (never a dialect NOW() expression), so it is known before COMMIT.
 func (s *TableSchema) insertNowColumns() []string {
 	var out []string
 	if c, ok := s.createdAtColumn(); ok {
@@ -694,8 +696,8 @@ func (s *TableSchema) insertNowColumns() []string {
 	return out
 }
 
-// updateNowColumns returns the managed columns stamped with the dialect's now
-// expression on UPDATE.
+// updateNowColumns returns the managed columns stamped with the write
+// operation's app-clock instant on UPDATE.
 func (s *TableSchema) updateNowColumns() []string {
 	if c, ok := s.updatedAtColumn(); ok {
 		return []string{c}
@@ -705,8 +707,8 @@ func (s *TableSchema) updateNowColumns() []string {
 
 // writeFields returns the column → value map the INSERT/UPDATE binds, by reading
 // each declared field's value via its resolved index. The PK is excluded
-// (DB-generated + separate WHERE); managed NOW() columns are appended by the
-// statement builders, not here.
+// (Go-minted + separate WHERE); managed timestamp columns are appended by the
+// statement builders (bound to the operation stamp), not here.
 func (s *TableSchema) writeFields(e any) domain.Fields {
 	v := reflect.ValueOf(e)
 	for v.Kind() == reflect.Pointer {
@@ -725,11 +727,11 @@ func (s *TableSchema) writeFields(e any) domain.Fields {
 // Exported write-path accessors. A relational engine living in its own package
 // (the MySQL engine under its build tag) builds INSERT/UPDATE statements from a
 // TableSchema; these thin wrappers expose the column → value map and the managed
-// NOW() columns + soft-delete column it needs, without widening the surface the
-// in-package write path consumes (which keeps using the unexported forms).
+// timestamp columns + soft-delete column it needs, without widening the surface
+// the in-package write path consumes (which keeps using the unexported forms).
 
 // WriteFields is the exported form of writeFields — the column → value map an
-// engine binds for INSERT/UPDATE (PK and managed NOW() columns excluded).
+// engine binds for INSERT/UPDATE (PK and managed timestamp columns excluded).
 func (s *TableSchema) WriteFields(e any) domain.Fields { return s.writeFields(e) }
 
 // InsertNowColumns is the exported form of insertNowColumns.
