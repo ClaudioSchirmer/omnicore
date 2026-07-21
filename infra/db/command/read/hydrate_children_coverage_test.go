@@ -66,7 +66,7 @@ func TestHydrateChildren_ManualScannerRowErrorPropagates(t *testing.T) {
 }
 
 func TestHydrateChildren_ChildSchemaWithoutColumnsErrors(t *testing.T) {
-	schema := NewTableSchema[*covAgg]("cov_aggs").PK("id").Field("Name", "name").
+	schema := NewTableSchema[*covAgg]("cov_aggs").PK("id").Revision("revision").Field("Name", "name").
 		Child(noColsChildSchema("cov_agg_id"))
 	l := newCovAggLoader(fakeEngine(nil), schema)
 
@@ -173,7 +173,7 @@ func TestHydrateBaseChildren_BaseChildWithoutColumnsErrors(t *testing.T) {
 	base := NewSharedBase("pessoa").Revision("revision").PK("id").Field("Name", "name").NaturalKey("name").
 		Child(noColsChildSchema("pessoa_id"))
 	schema := NewTableSchema[*roleAggLoad]("aluno").
-		PK("id").
+		PK("id").Revision("revision").
 		Field("Matricula", "matricula").
 		SharedBase(base, "pessoa_id")
 	l := NewAggregateLoader[*roleAggLoad](fakeEngine(nil), func() *roleAggLoad { return &roleAggLoad{} }).

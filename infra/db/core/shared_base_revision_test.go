@@ -43,10 +43,18 @@ func TestRevision_MandatoryOnAttach(t *testing.T) {
 	})
 }
 
-func TestRevision_SharedBaseOnly(t *testing.T) {
-	mustPanicContains(t, "applies only to a SharedBase", func() {
-		NewTableSchema[*revRoleEntity]("aluno").Revision("revision")
+func TestRevision_RootOnly(t *testing.T) {
+	// Generalized in 4b-3: any ROOT schema declares it; a sibling or child
+	// (owner-guarded rows) must not.
+	mustPanicContains(t, "ROOT schema", func() {
+		NewSiblingSchema[*revRoleEntity]("aluno_extra").Revision("revision")
 	})
+	mustPanicContains(t, "ROOT schema", func() {
+		NewTableSchema[*revRoleEntity]("aluno_children").FK("aluno_id").Revision("revision")
+	})
+	if got := NewTableSchema[*revRoleEntity]("aluno").PK("id").Revision("revision").RevisionColumn(); got != "revision" {
+		t.Fatalf("a plain root schema must accept Revision, got %q", got)
+	}
 }
 
 func TestRevision_EmptyAndReservedRejected(t *testing.T) {
@@ -86,4 +94,23 @@ func TestReservedColumnPrefix_RejectedEverywhere(t *testing.T) {
 	mustPanicContains(t, "reserved", func() {
 		NewTableSchema[*revRoleEntity]("t").PK("id").SoftDelete("_deleted_at")
 	})
+}
+
+func TestPayloadColumnTypes_CoversAllScalarSources(t *testing.T) {
+	base := revBase().Revision("brev")
+	role := NewTableSchema[*revRoleEntity]("aluno").PK("id").Revision("revision").
+		Field("Extra", "extra").SoftDelete("deleted_at").
+		SharedBase(base, "pessoa_id")
+	types := role.PayloadColumnTypes()
+	for _, col := range []string{"id", "extra", "deleted_at", "pessoa_id", "name", "document", "brev"} {
+		if _, ok := types[col]; !ok {
+			t.Errorf("PayloadColumnTypes must cover %q, got %v", col, types)
+		}
+	}
+	if got := role.SharedBaseBusinessColumns(); len(got) != 2 {
+		t.Errorf("SharedBaseBusinessColumns = %v, want the base's business fields", got)
+	}
+	if NewTableSchema[*revRoleEntity]("solo").PK("id").SharedBaseBusinessColumns() != nil {
+		t.Error("a schema without a shared base answers nil")
+	}
 }

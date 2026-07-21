@@ -53,7 +53,7 @@ func sbAuditSchema() *TableSchema {
 	addr := NewTableSchema[sbAuditAddr]("addresses").PK("id").FK("person_id").
 		Field("Street", "street").Field("City", "city").SoftDelete("deleted_at")
 	base = base.Child(addr)
-	role := NewTableSchema[*sbAuditRole]("users").PK("id").Field("UserName", "user_name").SoftDelete("deleted_at")
+	role := NewTableSchema[*sbAuditRole]("users").PK("id").Revision("revision").Field("UserName", "user_name").SoftDelete("deleted_at")
 	sib := NewSiblingSchema[*sbAuditRole]("user_configurations").Field("SmsOptIn", "sms_notification")
 	return role.SharedBase(base, "person_id").Sibling(sib)
 }

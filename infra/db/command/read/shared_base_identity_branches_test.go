@@ -161,7 +161,7 @@ func TestLoadBaseChildrenConstructor_SkipPaths(t *testing.T) {
 	t.Run("baseWithoutChildren", func(t *testing.T) {
 		base := NewSharedBase("pessoa").Revision("revision").PK("id").Field("Name", "name").NaturalKey("name")
 		schema := NewTableSchema[*roleAggLoad]("aluno").
-			PK("id").Field("Matricula", "matricula").SoftDelete("deleted_at").
+			PK("id").Revision("revision").Field("Matricula", "matricula").SoftDelete("deleted_at").
 			SharedBase(base, "pessoa_id")
 		l := newRoleLoader(baseRowThenNone(nil), schema)
 		got, existed, err := l.LoadSharedBaseIdentity(context.Background(), &roleAggLoad{Name: "Ana"})

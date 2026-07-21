@@ -71,7 +71,7 @@ func (testMySQLDialect) BuildUpsert(table string, _, _ []string, _ []UpsertSet) 
 func TestBuildInsert_MySQL(t *testing.T) {
 	fields := domain.Fields{"name": "alice", "email": "a@x"}
 	id := "11111111-1111-1111-1111-111111111111"
-	sql, args := buildInsert(testMySQLDialect{}, "users", "id", id, fields, []string{"created_at", "updated_at"}, testNow)
+	sql, args := buildInsert(testMySQLDialect{}, "users", "id", id, fields, []string{"created_at", "updated_at"}, testNow, "")
 
 	want := "INSERT INTO `users` (`id`, `email`, `name`, `created_at`, `updated_at`) VALUES (?, ?, ?, ?, ?)"
 	if sql != want {
@@ -97,7 +97,7 @@ func TestBuildInsert_MySQL(t *testing.T) {
 func TestBuildUpdate_MySQL(t *testing.T) {
 	fields := domain.Fields{"name": "bob", "email": "b@x"}
 	id := "22222222-2222-2222-2222-222222222222"
-	sql, args := buildUpdate(testMySQLDialect{}, "users", "id", id, fields, []string{"updated_at"}, testNow)
+	sql, args := buildUpdate(testMySQLDialect{}, "users", "id", id, fields, []string{"updated_at"}, testNow, "")
 
 	want := "UPDATE `users` SET `email` = ?, `name` = ?, `updated_at` = ? WHERE `id` = ?"
 	if sql != want {
@@ -116,10 +116,10 @@ func TestBuildUpdate_MySQL(t *testing.T) {
 
 func TestArchiveUnarchiveDelete_MySQL(t *testing.T) {
 	d := testMySQLDialect{}
-	if got := archiveSQL(d, "users", "deleted_at", "id"); got != "UPDATE `users` SET `deleted_at` = ? WHERE `id` = ?" {
+	if got := archiveSQL(d, "users", "deleted_at", "id", ""); got != "UPDATE `users` SET `deleted_at` = ? WHERE `id` = ?" {
 		t.Errorf("archiveSQL = %q", got)
 	}
-	if got := unarchiveSQL(d, "users", "deleted_at", "id"); got != "UPDATE `users` SET `deleted_at` = NULL WHERE `id` = ?" {
+	if got := unarchiveSQL(d, "users", "deleted_at", "id", ""); got != "UPDATE `users` SET `deleted_at` = NULL WHERE `id` = ?" {
 		t.Errorf("unarchiveSQL = %q", got)
 	}
 	if got := deleteSQL(d, "users", "id"); got != "DELETE FROM `users` WHERE `id` = ?" {
@@ -178,7 +178,7 @@ func TestBuildInsert_MySQL_TypedIDFields(t *testing.T) {
 		"legacy_ref": "018f8b2c-1d3e-7a9b-bc4d-5e6f7a8b9c0d", // string → text, always
 	}
 	id := "11111111-1111-1111-1111-111111111111"
-	_, args := buildInsert(testMySQLDialect{}, "orders", "id", id, fields, nil, testNow)
+	_, args := buildInsert(testMySQLDialect{}, "orders", "id", id, fields, nil, testNow, "")
 
 	// Bind order: PK, then SortedKeys (absent_id, buyer_id, legacy_ref, partner_id).
 	if len(args) != 5 {

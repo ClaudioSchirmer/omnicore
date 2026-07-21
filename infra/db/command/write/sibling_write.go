@@ -60,7 +60,7 @@ func insertSiblings(ctx context.Context, tx WriteTx, d Dialect, owner *TableSche
 		if allNilFields(fields) {
 			continue
 		}
-		sql, args := buildInsert(d, sib.Table(), owner.PKColumn(), id, fields, sib.InsertNowColumns(), now)
+		sql, args := buildInsert(d, sib.Table(), owner.PKColumn(), id, fields, sib.InsertNowColumns(), now, "")
 		if err := tx.Exec(ctx, sql, args...); err != nil {
 			return err
 		}

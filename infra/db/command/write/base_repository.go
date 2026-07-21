@@ -141,6 +141,14 @@ func (r *BaseRepository[T]) WithSchema(schema *TableSchema) *BaseRepository[T] {
 			schema.Table(),
 		))
 	}
+	if schema.RevisionColumn() == "" {
+		panic(fmt.Sprintf(
+			"infra.TableSchema(%s): no Revision declared — declare .Revision(column) "+
+				"(revision BIGINT NOT NULL DEFAULT 0 in the migration): it is the commit-order token "+
+				"that lets the read side refuse stale document writes (zombie consumers, redelivery)",
+			schema.Table(),
+		))
+	}
 	schema.ValidateChildDepth()
 	schema.ValidateSiblings()
 	schema.ValidateSharedBaseChildren()

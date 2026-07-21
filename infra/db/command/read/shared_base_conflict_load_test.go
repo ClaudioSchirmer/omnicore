@@ -31,7 +31,7 @@ func roleAggLoadSchemaSD() *TableSchema {
 	base := NewSharedBase("pessoa").Revision("revision").PK("id").Field("Name", "name").NaturalKey("name").
 		Child(NewTableSchema[addrLoad]("endereco").PK("id").FK("pessoa_id").Field("Street", "street"))
 	return NewTableSchema[*roleAggLoad]("aluno").
-		PK("id").
+		PK("id").Revision("revision").
 		Field("Matricula", "matricula").
 		SoftDelete("deleted_at").
 		SharedBase(base, "pessoa_id")

@@ -26,7 +26,7 @@ var testNow = time.Date(2026, 7, 20, 12, 0, 0, 0, time.UTC)
 func TestBuildInsert_Shared(t *testing.T) {
 	fields := domain.Fields{"name": "alice", "email": "a@x"}
 	id := "11111111-1111-1111-1111-111111111111"
-	sql, args := buildInsert(testPGDialect{}, "users", "id", id, fields, []string{"created_at", "updated_at"}, testNow)
+	sql, args := buildInsert(testPGDialect{}, "users", "id", id, fields, []string{"created_at", "updated_at"}, testNow, "")
 
 	want := "INSERT INTO users (id, email, name, created_at, updated_at) VALUES ($1, $2, $3, $4, $5)"
 	if sql != want {
@@ -52,7 +52,7 @@ func TestBuildInsert_Shared(t *testing.T) {
 func TestBuildUpdate_Shared(t *testing.T) {
 	fields := domain.Fields{"name": "bob", "email": "b@x"}
 	id := "22222222-2222-2222-2222-222222222222"
-	sql, args := buildUpdate(testPGDialect{}, "users", "id", id, fields, []string{"updated_at"}, testNow)
+	sql, args := buildUpdate(testPGDialect{}, "users", "id", id, fields, []string{"updated_at"}, testNow, "")
 
 	want := "UPDATE users SET email = $1, name = $2, updated_at = $3 WHERE id = $4"
 	if sql != want {
@@ -75,10 +75,10 @@ func TestWriteNow_UTCMicrosecond(t *testing.T) {
 
 func TestArchiveUnarchiveDelete_SQL(t *testing.T) {
 	d := testPGDialect{}
-	if got := archiveSQL(d, "users", "deleted_at", "id"); got != "UPDATE users SET deleted_at = $1 WHERE id = $2" {
+	if got := archiveSQL(d, "users", "deleted_at", "id", ""); got != "UPDATE users SET deleted_at = $1 WHERE id = $2" {
 		t.Errorf("archiveSQL = %q", got)
 	}
-	if got := unarchiveSQL(d, "users", "deleted_at", "id"); got != "UPDATE users SET deleted_at = NULL WHERE id = $1" {
+	if got := unarchiveSQL(d, "users", "deleted_at", "id", ""); got != "UPDATE users SET deleted_at = NULL WHERE id = $1" {
 		t.Errorf("unarchiveSQL = %q", got)
 	}
 	if got := deleteSQL(d, "users", "id"); got != "DELETE FROM users WHERE id = $1" {

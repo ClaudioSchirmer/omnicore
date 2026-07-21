@@ -32,6 +32,7 @@ func (c covChild) BuildRules(string, domain.Service, *domain.Rules) {}
 
 var covAggSchema = NewTableSchema[*covAgg]("cov_aggs").
 	PK("id").
+	Revision("revision").
 	Field("Name", "name").
 	SoftDelete("deleted_at").
 	Child(NewTableSchema[covChild]("cov_children").

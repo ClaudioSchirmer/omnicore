@@ -192,8 +192,10 @@ func (s *SyncEngine) sampleMatches(ctx context.Context, view *ViewDefinition, sh
 	return sameFieldShape(fresh, stored[0]), nil
 }
 
-// sameFieldShape compares two documents by their top-level field names, ignoring
-// Mongo's _id (present on the stored doc, absent on a fresh compose).
+// sameFieldShape compares two documents by their top-level field names,
+// ignoring Mongo's _id AND every framework-internal "_"-prefixed field (the
+// projection watermarks _revision/_base_revision): a document written before
+// the watermarks existed must not read as drift against a fresh compose.
 func sameFieldShape(fresh, stored Document) bool {
 	fk := fieldNamesExceptID(fresh)
 	sk := fieldNamesExceptID(stored)
@@ -211,9 +213,10 @@ func sameFieldShape(fresh, stored Document) bool {
 func fieldNamesExceptID(d Document) map[string]struct{} {
 	set := make(map[string]struct{}, len(d))
 	for k := range d {
-		if k != "_id" {
-			set[k] = struct{}{}
+		if len(k) > 0 && k[0] == '_' {
+			continue // _id + framework watermarks (_revision/_base_revision)
 		}
+		set[k] = struct{}{}
 	}
 	return set
 }

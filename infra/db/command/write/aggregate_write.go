@@ -44,7 +44,7 @@ func (b *BaseEngine) insertAggregate(ctx persistence.RequestContext, entity doma
 	if err := b.FireAfterBegin(ctx, tx, src, hook, hctx); err != nil {
 		return domain.WriteResult{}, err
 	}
-	sql, args := buildInsert(d, schema.Table(), schema.PKColumn(), id, rootFields, schema.InsertNowColumns(), now)
+	sql, args := buildInsert(d, schema.Table(), schema.PKColumn(), id, rootFields, schema.InsertNowColumns(), now, schema.RevisionColumn())
 	if err := tx.Exec(ctx, sql, args...); err != nil {
 		return domain.WriteResult{}, err
 	}
@@ -55,7 +55,7 @@ func (b *BaseEngine) insertAggregate(ctx persistence.RequestContext, entity doma
 		return domain.WriteResult{}, err
 	}
 	if err := WriteOutbox(ctx, tx, schema.Table(), "INSERTED", id,
-		buildWritePayloadV2(schema, src, root, "INSERTED", now, rootFields, outboxMeta{ID: id})); err != nil {
+		buildWritePayloadV2(schema, src, root, "INSERTED", now, rootFields, outboxMeta{ID: id, Revision: 1})); err != nil {
 		return domain.WriteResult{}, err
 	}
 	ab := b.BuildAudit(func() audit.AuditEvent {
@@ -91,7 +91,7 @@ func (b *BaseEngine) updateAggregate(ctx persistence.RequestContext, entity doma
 	if err := b.FireAfterBegin(ctx, tx, src, hook, hctx); err != nil {
 		return domain.WriteResult{}, err
 	}
-	sql, args := buildUpdate(d, schema.Table(), schema.PKColumn(), entity.ID().Value(), rootFields, schema.UpdateNowColumns(), now)
+	sql, args := buildUpdate(d, schema.Table(), schema.PKColumn(), entity.ID().Value(), rootFields, schema.UpdateNowColumns(), now, schema.RevisionColumn())
 	if err := execExpectingRow(ctx, tx, sql, args, entity.EntityName(), schema.PKColumn(), entity.ID().Value()); err != nil {
 		return domain.WriteResult{}, err
 	}
@@ -101,8 +101,12 @@ func (b *BaseEngine) updateAggregate(ctx persistence.RequestContext, entity doma
 	if err := applySiblingUpdates(ctx, tx, d, schema, src, entity.ID().Value(), entity.IsPartial()); err != nil {
 		return domain.WriteResult{}, err
 	}
+	meta, err := outboxMetaFor(ctx, tx, d, schema, src, entity.ID().Value())
+	if err != nil {
+		return domain.WriteResult{}, err
+	}
 	if err := WriteOutbox(ctx, tx, schema.Table(), "UPDATED", entity.ID().Value(),
-		buildWritePayloadV2(schema, src, root, "UPDATED", now, rootFields, outboxMeta{ID: entity.ID().Value()})); err != nil {
+		buildWritePayloadV2(schema, src, root, "UPDATED", now, rootFields, meta)); err != nil {
 		return domain.WriteResult{}, err
 	}
 	ab := b.BuildAudit(func() audit.AuditEvent {
@@ -282,10 +286,10 @@ func (b *BaseEngine) softWriteAggregate(
 	}
 	archive := eventType == "ARCHIVED"
 	if archive {
-		err = tx.Exec(ctx, archiveSQL(d, schema.Table(), sdCol, schema.PKColumn()),
+		err = tx.Exec(ctx, archiveSQL(d, schema.Table(), sdCol, schema.PKColumn(), schema.RevisionColumn()),
 			d.EncodeArg(now), d.EncodeArg(domain.NewID(id)))
 	} else {
-		err = tx.Exec(ctx, unarchiveSQL(d, schema.Table(), sdCol, schema.PKColumn()),
+		err = tx.Exec(ctx, unarchiveSQL(d, schema.Table(), sdCol, schema.PKColumn(), schema.RevisionColumn()),
 			d.EncodeArg(domain.NewID(id)))
 	}
 	if err != nil {
@@ -323,7 +327,7 @@ func (b *BaseEngine) softWriteAggregate(
 	}
 	// Base meta AFTER the convergence, so the payload's revision reflects any
 	// lifecycle transition this verb caused on the base row.
-	meta, err := baseMetaFor(ctx, tx, d, schema, src, id)
+	meta, err := outboxMetaFor(ctx, tx, d, schema, src, id)
 	if err != nil {
 		return err
 	}
@@ -419,7 +423,7 @@ func insertChild(ctx context.Context, tx WriteTx, d Dialect, child *TableSchema,
 	if err != nil {
 		return "", err
 	}
-	sql, args := buildInsert(d, child.Table(), child.PKColumn(), childID, fields, child.InsertNowColumns(), now)
+	sql, args := buildInsert(d, child.Table(), child.PKColumn(), childID, fields, child.InsertNowColumns(), now, "")
 	if err := tx.Exec(ctx, sql, args...); err != nil {
 		return "", err
 	}
@@ -437,7 +441,7 @@ func updateChild(ctx context.Context, tx WriteTx, d Dialect, child *TableSchema,
 		return fmt.Errorf("db: cannot update child %q without id", child.Table())
 	}
 	fields := child.WriteFields(item)
-	sql, args := buildUpdate(d, child.Table(), child.PKColumn(), id, fields, child.UpdateNowColumns(), now)
+	sql, args := buildUpdate(d, child.Table(), child.PKColumn(), id, fields, child.UpdateNowColumns(), now, "")
 	if err := execExpectingRow(ctx, tx, sql, args, child.Table(), child.PKColumn(), id); err != nil {
 		return err
 	}
@@ -457,7 +461,7 @@ func archiveChild(ctx context.Context, tx WriteTx, d Dialect, child *TableSchema
 	if err != nil {
 		return err
 	}
-	return tx.Exec(ctx, archiveSQL(d, child.Table(), sdCol, child.PKColumn()),
+	return tx.Exec(ctx, archiveSQL(d, child.Table(), sdCol, child.PKColumn(), ""),
 		d.EncodeArg(now), d.EncodeArg(domain.NewID(id)))
 }
 

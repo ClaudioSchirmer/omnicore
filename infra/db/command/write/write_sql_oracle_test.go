@@ -76,7 +76,7 @@ func (testOracleDialect) BuildUpsert(table string, _, _ []string, _ []UpsertSet)
 func TestBuildInsert_Oracle(t *testing.T) {
 	fields := domain.Fields{"name": "alice", "email": "a@x"}
 	id := "11111111-1111-1111-1111-111111111111"
-	sql, args := buildInsert(testOracleDialect{}, "users", "id", id, fields, []string{"created_at", "updated_at"}, testNow)
+	sql, args := buildInsert(testOracleDialect{}, "users", "id", id, fields, []string{"created_at", "updated_at"}, testNow, "")
 
 	want := `INSERT INTO "USERS" ("ID", "EMAIL", "NAME", "CREATED_AT", "UPDATED_AT") VALUES (:1, :2, :3, :4, :5)`
 	if sql != want {
@@ -97,7 +97,7 @@ func TestBuildInsert_Oracle(t *testing.T) {
 func TestBuildUpdate_Oracle(t *testing.T) {
 	fields := domain.Fields{"name": "bob", "email": "b@x"}
 	id := "22222222-2222-2222-2222-222222222222"
-	sql, args := buildUpdate(testOracleDialect{}, "users", "id", id, fields, []string{"updated_at"}, testNow)
+	sql, args := buildUpdate(testOracleDialect{}, "users", "id", id, fields, []string{"updated_at"}, testNow, "")
 
 	want := `UPDATE "USERS" SET "EMAIL" = :1, "NAME" = :2, "UPDATED_AT" = :3 WHERE "ID" = :4`
 	if sql != want {
@@ -116,10 +116,10 @@ func TestBuildUpdate_Oracle(t *testing.T) {
 // expression (SYSTIMESTAMP), never a baked-in NOW().
 func TestArchiveUnarchiveDelete_Oracle(t *testing.T) {
 	d := testOracleDialect{}
-	if got := archiveSQL(d, "users", "deleted_at", "id"); got != `UPDATE "USERS" SET "DELETED_AT" = :1 WHERE "ID" = :2` {
+	if got := archiveSQL(d, "users", "deleted_at", "id", ""); got != `UPDATE "USERS" SET "DELETED_AT" = :1 WHERE "ID" = :2` {
 		t.Errorf("archiveSQL = %q", got)
 	}
-	if got := unarchiveSQL(d, "users", "deleted_at", "id"); got != `UPDATE "USERS" SET "DELETED_AT" = NULL WHERE "ID" = :1` {
+	if got := unarchiveSQL(d, "users", "deleted_at", "id", ""); got != `UPDATE "USERS" SET "DELETED_AT" = NULL WHERE "ID" = :1` {
 		t.Errorf("unarchiveSQL = %q", got)
 	}
 	if got := deleteSQL(d, "users", "id"); got != `DELETE FROM "USERS" WHERE "ID" = :1` {
@@ -158,7 +158,7 @@ func TestBuildInsert_Oracle_TypedIDFields(t *testing.T) {
 		"legacy_ref": "018f8b2c-1d3e-7a9b-bc4d-5e6f7a8b9c0d",
 	}
 	id := "11111111-1111-1111-1111-111111111111"
-	_, args := buildInsert(testOracleDialect{}, "orders", "id", id, fields, nil, testNow)
+	_, args := buildInsert(testOracleDialect{}, "orders", "id", id, fields, nil, testNow, "")
 
 	// Bind order: PK, then SortedKeys (absent_id, buyer_id, legacy_ref).
 	if len(args) != 4 {

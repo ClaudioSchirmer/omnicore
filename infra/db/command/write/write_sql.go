@@ -43,7 +43,11 @@ func writeNow() time.Time { return time.Now().UTC().Truncate(time.Microsecond) }
 // PK (and any UUID-shaped value) in the dialect's wire form — uuid text on
 // Postgres, BINARY(16) on MySQL. No RETURNING: the id AND the timestamps are
 // known up front.
-func buildInsert(d Dialect, table, pk, id string, fields domain.Fields, nowCols []string, now time.Time) (string, []any) {
+func buildInsert(d Dialect, table, pk, id string, fields domain.Fields, nowCols []string, now time.Time, revCol string) (string, []any) {
+	if revCol != "" {
+		// A fresh row starts its commit-order token at 1 — a plain bound field.
+		fields[revCol] = int64(1)
+	}
 	keys := SortedKeys(fields)
 	cols := make([]string, 0, len(keys)+1+len(nowCols))
 	phs := make([]string, 0, len(keys)+1+len(nowCols))
@@ -76,9 +80,9 @@ func buildInsert(d Dialect, table, pk, id string, fields domain.Fields, nowCols 
 // columns (bound to the operation stamp `now`), keyed on the PK. Existence is
 // checked by the caller via the rows-affected count (no RETURNING) — uniform
 // across dialects.
-func buildUpdate(d Dialect, table, pk, id string, fields domain.Fields, nowCols []string, now time.Time) (string, []any) {
+func buildUpdate(d Dialect, table, pk, id string, fields domain.Fields, nowCols []string, now time.Time, revCol string) (string, []any) {
 	keys := SortedKeys(fields)
-	sets := make([]string, 0, len(keys)+len(nowCols))
+	sets := make([]string, 0, len(keys)+len(nowCols)+1)
 	args := make([]any, 0, len(keys)+len(nowCols)+1)
 	n := 0
 	for _, k := range keys {
@@ -91,6 +95,10 @@ func buildUpdate(d Dialect, table, pk, id string, fields domain.Fields, nowCols 
 		sets = append(sets, d.QuoteIdent(nc)+" = "+d.Placeholder(n))
 		args = append(args, d.EncodeArg(now))
 	}
+	if revCol != "" {
+		rc := d.QuoteIdent(revCol)
+		sets = append(sets, rc+" = "+rc+" + 1")
+	}
 	n++
 	sql := fmt.Sprintf("UPDATE %s SET %s WHERE %s = %s",
 		d.QuoteIdent(table), strings.Join(sets, ", "), d.QuoteIdent(pk), d.Placeholder(n))
@@ -101,14 +109,24 @@ func buildUpdate(d Dialect, table, pk, id string, fields domain.Fields, nowCols 
 // archiveSQL soft-deletes one row: the archive stamp binds as the FIRST arg
 // (the operation's writeNow() value), the PK as the second — the same
 // app-clock stamp every other statement of the operation carries.
-func archiveSQL(d Dialect, table, sdCol, pk string) string {
-	return fmt.Sprintf("UPDATE %s SET %s = %s WHERE %s = %s",
-		d.QuoteIdent(table), d.QuoteIdent(sdCol), d.Placeholder(1), d.QuoteIdent(pk), d.Placeholder(2))
+func archiveSQL(d Dialect, table, sdCol, pk, revCol string) string {
+	bump := ""
+	if revCol != "" {
+		rc := d.QuoteIdent(revCol)
+		bump = ", " + rc + " = " + rc + " + 1"
+	}
+	return fmt.Sprintf("UPDATE %s SET %s = %s%s WHERE %s = %s",
+		d.QuoteIdent(table), d.QuoteIdent(sdCol), d.Placeholder(1), bump, d.QuoteIdent(pk), d.Placeholder(2))
 }
 
-func unarchiveSQL(d Dialect, table, sdCol, pk string) string {
-	return fmt.Sprintf("UPDATE %s SET %s = NULL WHERE %s = %s",
-		d.QuoteIdent(table), d.QuoteIdent(sdCol), d.QuoteIdent(pk), d.Placeholder(1))
+func unarchiveSQL(d Dialect, table, sdCol, pk, revCol string) string {
+	bump := ""
+	if revCol != "" {
+		rc := d.QuoteIdent(revCol)
+		bump = ", " + rc + " = " + rc + " + 1"
+	}
+	return fmt.Sprintf("UPDATE %s SET %s = NULL%s WHERE %s = %s",
+		d.QuoteIdent(table), d.QuoteIdent(sdCol), bump, d.QuoteIdent(pk), d.Placeholder(1))
 }
 
 // nullSetExpr is the unarchive assignment of the symmetric cascade (SQL NULL —

@@ -303,7 +303,7 @@ func TestFindRoots_UnknownOrderFieldErrors(t *testing.T) {
 }
 
 func TestFindRoots_SchemaWithoutColumnsErrors(t *testing.T) {
-	bare := NewTableSchema[*covAgg]("cov_aggs").PK("id") // no Field(...) → empty scan plan
+	bare := NewTableSchema[*covAgg]("cov_aggs").PK("id").Revision("revision") // no Field(...) → empty scan plan
 	l := newCovAggLoader(fakeEngine(nil), bare)
 	if _, err := l.FindAll(context.Background(), criteria.Where(nil)); err == nil || !strings.Contains(err.Error(), "schema declares no columns") {
 		t.Fatalf("expected the no-columns configuration error, got %v", err)

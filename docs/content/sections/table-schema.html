@@ -498,7 +498,10 @@ func OrdersView() *query.ViewDefinition {
     column and bumps the revision.
 </p>
 <p>
-    <strong><code>Revision(col)</code> is mandatory — the last-writer-wins token of shared-identity data.</strong> A
+    <strong><code>Revision(col)</code> is mandatory on EVERY root schema — the last-writer-wins token of the read
+    side.</strong> Declare it on every root <code>NewTableSchema</code> (and on every shared base, below); a repository
+    attach without it is a boot failure. Siblings and aggregate children declare none — their rows are guarded by the
+    owner's token. For the shared base specifically: a
     framework-managed BIGINT the write path initializes to 1 on the identity's creation and increments
     (<code>revision = revision + 1</code>) on every statement that touches the base row — the shared-field upsert and
     the lifecycle convergence — <em>under the base row's lock</em>. Concurrent role writes of one identity therefore

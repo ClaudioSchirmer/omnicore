@@ -37,7 +37,7 @@ func TestBuildWritePayloadV2_FlatInsertShape(t *testing.T) {
 }
 
 func TestBuildWritePayloadV2_TimestampsByVerb(t *testing.T) {
-	schema := NewTableSchema[*builderTestEntity]("t").PK("id").
+	schema := NewTableSchema[*builderTestEntity]("t").PK("id").Revision("revision").
 		Field("Name", "name").
 		SoftDelete("deleted_at").CreatedAt("created_at").UpdatedAt("updated_at")
 	e := &builderTestEntity{Name: "a"}
@@ -159,27 +159,27 @@ func TestBuildBaseUpdate_BumpsRevisionInOneStatement(t *testing.T) {
 	}
 }
 
-// baseMetaFor edge branches: no shared base → bare id; an empty natural key
+// outboxMetaFor edge branches: no shared base → bare id; an empty natural key
 // never vetoes payload assembly; a revision-read error propagates.
-func TestBaseMetaFor_Branches(t *testing.T) {
+func TestOutboxMetaFor_Branches(t *testing.T) {
 	ctx := context.Background()
 	d := testPGDialect{}
 
 	// No shared base.
-	m, err := baseMetaFor(ctx, &recTx{}, d, builderTestSchema, &builderTestEntity{Name: "a"}, "x1")
+	m, err := outboxMetaFor(ctx, &recTx{}, d, builderTestSchema, &builderTestEntity{Name: "a"}, "x1")
 	if err != nil || m.BaseID != "" || m.ID != "x1" {
 		t.Fatalf("no-base meta = %+v, %v", m, err)
 	}
 
 	// Empty natural key → bare id, no error (payload assembly never vetoes).
-	m, err = baseMetaFor(ctx, &recTx{}, d, roleTestSchema(), &roleTestEntity{Name: "Ana", Document: ""}, "x2")
+	m, err = outboxMetaFor(ctx, &recTx{}, d, roleTestSchema(), &roleTestEntity{Name: "Ana", Document: ""}, "x2")
 	if err != nil || m.BaseID != "" {
 		t.Fatalf("empty-nk meta = %+v, %v", m, err)
 	}
 
 	// Revision read error propagates.
 	tx := &recTx{queryFn: func(string, []any) (Rows, error) { return nil, errBoom }}
-	if _, err := baseMetaFor(ctx, tx, d, roleTestSchema(), &roleTestEntity{Name: "Ana", Document: "D1"}, "x3"); !errors.Is(err, errBoom) {
+	if _, err := outboxMetaFor(ctx, tx, d, roleTestSchema(), &roleTestEntity{Name: "Ana", Document: "D1"}, "x3"); !errors.Is(err, errBoom) {
 		t.Fatalf("revision read error must propagate, got %v", err)
 	}
 }
@@ -188,7 +188,7 @@ func TestBaseMetaFor_Branches(t *testing.T) {
 // an all-nil sibling is omitted, mirroring the write.
 func TestBuildWritePayloadV2_SiblingsMergeFlat(t *testing.T) {
 	sib := NewSiblingSchema[*sibTestEntity]("usuario_login").Field("UserName", "user_name")
-	schema := NewTableSchema[*sibTestEntity]("usuario").PK("id").
+	schema := NewTableSchema[*sibTestEntity]("usuario").PK("id").Revision("revision").
 		Field("Name", "name").Sibling(sib)
 	un := "alice"
 	e := &sibTestEntity{Name: "Ana", UserName: &un}

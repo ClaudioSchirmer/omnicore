@@ -23,8 +23,19 @@ import (
 //     shared child).
 //
 // A document written by this path is shaped exactly like the composer's (the
-// equivalence gate of the phase); `_base_revision` and the elements' `_rev`
-// are the two framework-internal additions, inside the reserved `_` namespace.
+// equivalence gate of the phase); `_revision`, `_base_revision` and the
+// elements' `_rev` are the framework-internal additions, inside the reserved
+// `_` namespace. ACCEPTED divergence: consult-composed base-child elements
+// carry no `_rev` (rows have no per-child revision to read) — the guard
+// treats a missing `_rev` as older, and every `_`-prefixed field is excluded
+// from doc-a-doc comparisons (verify's shape check included).
+
+// docRevisionField is the document-level watermark of the aggregate's OWN
+// data (root/sibling scalars + own children) — the event's _ids.revision must
+// beat it or the whole own-data part of the pipeline is a no-op. This is the
+// zombie-consumer defense: a slow pod finishing an in-flight event after a
+// partition handoff carries an older revision and cannot regress the document.
+const docRevisionField = "_revision"
 
 // docBaseRevisionField is the document-level watermark of shared-base data.
 const docBaseRevisionField = "_base_revision"
@@ -55,34 +66,68 @@ func buildProjectionStages(schema *core.TableSchema, ev *decodedEvent) []Documen
 		}
 		own[col] = lit(v)
 	}
-	stages := make([]Document, 0, 4)
-	if len(own) > 0 {
-		stages = append(stages, Document{"$set": own})
-	}
+	// Stage ORDER is load-bearing: pipeline stages are sequential, so every
+	// own-data stage guarded by the _revision watermark must run BEFORE the
+	// stage that advances the watermark (the own-scalars set below).
+	stages := make([]Document, 0, 6)
+	stages = append(stages, ownGuardedChildStages(schema, ev)...)
+	stages = append(stages, childStages(schema, ev.BaseChildren, ev.IDs.BaseRevision, true)...)
 	if len(base) > 0 && ev.IDs.BaseID != "" {
 		stages = append(stages, baseGuardedSetStage(base, ev.IDs.BaseRevision))
 	}
-	stages = append(stages, childStages(schema, ev.Children, 0, false)...)
-	stages = append(stages, childStages(schema, ev.BaseChildren, ev.IDs.BaseRevision, true)...)
+	if len(own) > 0 {
+		stages = append(stages, guardedSetStage(docRevisionField, own, ev.IDs.Revision))
+	}
 	return stages
 }
 
-// baseGuardedSetStage renders one $set where every shared-base column applies
-// only when the stored watermark is older than the incoming revision — and the
-// watermark itself advances monotonically.
-func baseGuardedSetStage(base Document, revision int64) Document {
+// ownGuardedChildStages renders the OWN child edits, each array expression
+// wrapped in the document-revision guard (reading the still-unchanged
+// watermark — these stages precede the own-scalars stage that advances it).
+// A pre-4b3 payload (revision 0) applies unguarded.
+func ownGuardedChildStages(schema *core.TableSchema, ev *decodedEvent) []Document {
+	stages := childStages(schema, ev.Children, 0, false)
+	if ev.IDs.Revision <= 0 {
+		return stages
+	}
 	newer := Document{"$lt": []any{
-		Document{"$ifNull": []any{"$" + docBaseRevisionField, int64(-1)}},
+		Document{"$ifNull": []any{"$" + docRevisionField, int64(-1)}},
+		ev.IDs.Revision,
+	}}
+	for _, st := range stages {
+		set, _ := st["$set"].(Document)
+		for seg, expr := range set {
+			set[seg] = Document{"$cond": []any{newer, expr, "$" + seg}}
+		}
+	}
+	return stages
+}
+
+// guardedSetStage renders one $set where every column applies only when the
+// stored watermark (watermarkField) is older than the incoming revision — and
+// the watermark itself advances monotonically. revision <= 0 (a pre-4b3
+// payload) degrades to an unconditional set with no watermark write.
+func guardedSetStage(watermarkField string, set Document, revision int64) Document {
+	if revision <= 0 {
+		return Document{"$set": set}
+	}
+	newer := Document{"$lt": []any{
+		Document{"$ifNull": []any{"$" + watermarkField, int64(-1)}},
 		revision,
 	}}
-	set := Document{}
-	for col, v := range base {
-		set[col] = Document{"$cond": []any{newer, v, "$" + col}}
+	out := Document{}
+	for col, v := range set {
+		out[col] = Document{"$cond": []any{newer, v, "$" + col}}
 	}
-	set[docBaseRevisionField] = Document{"$cond": []any{
-		newer, revision, Document{"$ifNull": []any{"$" + docBaseRevisionField, revision}},
+	out[watermarkField] = Document{"$cond": []any{
+		newer, revision, Document{"$ifNull": []any{"$" + watermarkField, revision}},
 	}}
-	return Document{"$set": set}
+	return Document{"$set": out}
+}
+
+// baseGuardedSetStage guards shared-base columns behind the base watermark.
+func baseGuardedSetStage(base Document, revision int64) Document {
+	return guardedSetStage(docBaseRevisionField, base, revision)
 }
 
 // childStages renders one $set stage per child operation — surgical edits on

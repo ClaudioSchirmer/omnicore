@@ -1,6 +1,7 @@
 package write
 
 import (
+	"context"
 	"time"
 
 	"github.com/ClaudioSchirmer/omnicore/domain"
@@ -38,6 +39,7 @@ const (
 	payloadKeyOp           = "_op"
 
 	payloadIDsID           = "id"
+	payloadIDsRevision     = "revision"
 	payloadIDsBaseID       = "base_id"
 	payloadIDsBaseRevision = "base_revision"
 	payloadIDsBasePurged   = "base_purged"
@@ -46,6 +48,7 @@ const (
 // outboxMeta is the structural identity block of one outbox payload.
 type outboxMeta struct {
 	ID           string
+	Revision     int64  // the aggregate row's own commit-order token (0 = row gone)
 	BaseID       string // "" when the schema has no shared base
 	BaseRevision int64  // valid when BaseID != "" and the base row still exists
 	BasePurged   bool   // DELETED only: the hard-delete purged the identity
@@ -54,6 +57,9 @@ type outboxMeta struct {
 // idsBlock renders the "_ids" map of a payload.
 func (m outboxMeta) idsBlock() map[string]any {
 	ids := map[string]any{payloadIDsID: m.ID}
+	if m.Revision > 0 {
+		ids[payloadIDsRevision] = m.Revision
+	}
 	if m.BaseID != "" {
 		ids[payloadIDsBaseID] = m.BaseID
 		ids[payloadIDsBaseRevision] = m.BaseRevision
@@ -219,3 +225,56 @@ func buildDeletePayloadV2(schema *TableSchema, src domain.Entity, id string, met
 	keys[payloadKeyIDs] = meta.idsBlock()
 	return keys
 }
+
+// readRevision reads a row's commit-order token inside the write TX — after
+// the row's own statements ran, so the payload stamps the value THIS
+// operation's lock scope produced. A vanished row answers 0.
+func readRevision(ctx context.Context, tx WriteTx, d Dialect, table, revCol, pkCol, id string) (int64, error) {
+	q := d.ApplyLimit("SELECT "+d.QuoteIdent(revCol)+" FROM "+d.QuoteIdent(table)+
+		" WHERE "+d.QuoteIdent(pkCol)+" = "+d.Placeholder(1), 1)
+	rows, err := tx.Query(ctx, q, d.EncodeArg(domain.NewID(id)))
+	if err != nil || rows == nil {
+		return 0, err
+	}
+	defer rows.Close()
+	if !rows.Next() {
+		return 0, rows.Err()
+	}
+	var rev int64
+	if err := rows.Scan(&rev); err != nil {
+		return 0, err
+	}
+	return rev, rows.Err()
+}
+
+// outboxMetaFor resolves the outbox structural identity (_ids) for any verb
+// that did not compute it inline: the row's OWN revision (read in-TX, after
+// this operation's statements) and — only when the schema declares a shared
+// base — the deterministic base id + the base's revision. For a plain flat or
+// aggregate entity it is just the own-revision read.
+func outboxMetaFor(ctx context.Context, tx WriteTx, d Dialect, schema *TableSchema, src domain.Entity, id string) (outboxMeta, error) {
+	meta := outboxMeta{ID: id}
+	if rc := schema.RevisionColumn(); rc != "" {
+		rev, err := readRevision(ctx, tx, d, schema.Table(), rc, schema.PKColumn(), id)
+		if err != nil {
+			return meta, err
+		}
+		meta.Revision = rev
+	}
+	base, _, ok := schema.SharedBaseRef()
+	if !ok {
+		return meta, nil
+	}
+	_, nk := sharedBaseValues(base, src)
+	if nk == "" {
+		return meta, nil // payload assembly never vetoes a write the verb allows
+	}
+	meta.BaseID = deterministicBaseID(nk)
+	rev, err := readBaseRevision(ctx, tx, d, base, meta.BaseID)
+	if err != nil {
+		return meta, err
+	}
+	meta.BaseRevision = rev
+	return meta, nil
+}
+

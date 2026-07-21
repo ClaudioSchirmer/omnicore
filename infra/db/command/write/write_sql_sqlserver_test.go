@@ -74,7 +74,7 @@ func (testSQLServerDialect) BuildUpsert(table string, _, _ []string, _ []UpsertS
 func TestBuildInsert_SQLServer(t *testing.T) {
 	fields := domain.Fields{"name": "alice", "email": "a@x"}
 	id := "11111111-1111-1111-1111-111111111111"
-	sql, args := buildInsert(testSQLServerDialect{}, "users", "id", id, fields, []string{"created_at", "updated_at"}, testNow)
+	sql, args := buildInsert(testSQLServerDialect{}, "users", "id", id, fields, []string{"created_at", "updated_at"}, testNow, "")
 
 	want := "INSERT INTO [users] ([id], [email], [name], [created_at], [updated_at]) VALUES (@p1, @p2, @p3, @p4, @p5)"
 	if sql != want {
@@ -95,7 +95,7 @@ func TestBuildInsert_SQLServer(t *testing.T) {
 func TestBuildUpdate_SQLServer(t *testing.T) {
 	fields := domain.Fields{"name": "bob", "email": "b@x"}
 	id := "22222222-2222-2222-2222-222222222222"
-	sql, args := buildUpdate(testSQLServerDialect{}, "users", "id", id, fields, []string{"updated_at"}, testNow)
+	sql, args := buildUpdate(testSQLServerDialect{}, "users", "id", id, fields, []string{"updated_at"}, testNow, "")
 
 	want := "UPDATE [users] SET [email] = @p1, [name] = @p2, [updated_at] = @p3 WHERE [id] = @p4"
 	if sql != want {
@@ -114,10 +114,10 @@ func TestBuildUpdate_SQLServer(t *testing.T) {
 // expression (CURRENT_TIMESTAMP), never a baked-in NOW().
 func TestArchiveUnarchiveDelete_SQLServer(t *testing.T) {
 	d := testSQLServerDialect{}
-	if got := archiveSQL(d, "users", "deleted_at", "id"); got != "UPDATE [users] SET [deleted_at] = @p1 WHERE [id] = @p2" {
+	if got := archiveSQL(d, "users", "deleted_at", "id", ""); got != "UPDATE [users] SET [deleted_at] = @p1 WHERE [id] = @p2" {
 		t.Errorf("archiveSQL = %q", got)
 	}
-	if got := unarchiveSQL(d, "users", "deleted_at", "id"); got != "UPDATE [users] SET [deleted_at] = NULL WHERE [id] = @p1" {
+	if got := unarchiveSQL(d, "users", "deleted_at", "id", ""); got != "UPDATE [users] SET [deleted_at] = NULL WHERE [id] = @p1" {
 		t.Errorf("unarchiveSQL = %q", got)
 	}
 	if got := deleteSQL(d, "users", "id"); got != "DELETE FROM [users] WHERE [id] = @p1" {
@@ -156,7 +156,7 @@ func TestBuildInsert_SQLServer_TypedIDFields(t *testing.T) {
 		"legacy_ref": "018f8b2c-1d3e-7a9b-bc4d-5e6f7a8b9c0d",
 	}
 	id := "11111111-1111-1111-1111-111111111111"
-	_, args := buildInsert(testSQLServerDialect{}, "orders", "id", id, fields, nil, testNow)
+	_, args := buildInsert(testSQLServerDialect{}, "orders", "id", id, fields, nil, testNow, "")
 
 	// Bind order: PK, then SortedKeys (absent_id, buyer_id, legacy_ref).
 	if len(args) != 4 {

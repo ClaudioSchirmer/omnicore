@@ -476,7 +476,7 @@ func TestBatch_ErrorBranches(t *testing.T) {
 		}
 	})
 	t.Run("archiveMemberWithoutSoftDelete", func(t *testing.T) {
-		noSD := NewTableSchema[*builderTestEntity]("nsd").PK("id").Field("Name", "name").Field("Email", "email")
+		noSD := NewTableSchema[*builderTestEntity]("nsd").PK("id").Revision("revision").Field("Name", "name").Field("Email", "email")
 		e := &builderTestEntity{Name: "a", Email: "a@x"}
 		e.SetID(domain.NewID(uuid.NewString()))
 		arc, _ := domain.GetArchivable(e, nil, "GetArchivable")

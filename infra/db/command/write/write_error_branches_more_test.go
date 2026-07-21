@@ -187,7 +187,7 @@ func TestBatch_SoftMembersAndUnsupported(t *testing.T) {
 		}
 	})
 	t.Run("unarchiveWithoutSoftDelete", func(t *testing.T) {
-		noSD := NewTableSchema[*builderTestEntity]("nsd").PK("id").Field("Name", "name").Field("Email", "email")
+		noSD := NewTableSchema[*builderTestEntity]("nsd").PK("id").Revision("revision").Field("Name", "name").Field("Email", "email")
 		una, _ := domain.GetUnarchivable(mk(), nil, "GetUnarchivable")
 		be := newFlatBE(&recBeginner{tx: &recTx{}})
 		if _, err := be.Batch(newBuilderCtx(), domain.NewBatch([]domain.ValidEntity{una}), []*TableSchema{noSD}); err == nil {
@@ -206,7 +206,7 @@ func TestBatch_SoftMembersAndUnsupported(t *testing.T) {
 
 // The flat Unarchive on a schema without SoftDelete errors before any statement.
 func TestFlatUnarchive_MissingSoftDeleteIsError(t *testing.T) {
-	noSD := NewTableSchema[*builderTestEntity]("nsd").PK("id").Field("Name", "name").Field("Email", "email")
+	noSD := NewTableSchema[*builderTestEntity]("nsd").PK("id").Revision("revision").Field("Name", "name").Field("Email", "email")
 	e := &builderTestEntity{Name: "a", Email: "a@x"}
 	e.SetID(domain.NewID(uuid.NewString()))
 	u, _ := domain.GetUnarchivable(e, nil, "GetUnarchivable")

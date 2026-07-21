@@ -56,8 +56,16 @@ with `1.0.0`.
   admin's synthetic events remain pre-v2-shaped and skip the payload-driven
   routes. Migration: after upgrading, run a view rebuild to converge documents
   produced during the rollout window.
-- **BREAKING: `SharedBase` requires a `Revision(column)` declaration — the
-  deterministic last-writer-wins token for shared-identity data.** A BIGINT
+- **BREAKING: EVERY root schema requires a `Revision(column)` declaration —
+  the deterministic last-writer-wins token of the read side.** (Initially
+  shipped for the shared base, then generalized: the zombie-consumer window —
+  a slow pod finishing an in-flight event after a partition handoff — affects
+  every aggregate, so every root table carries the token.) A root schema
+  attached to a repository without `Revision` is a boot failure; siblings and
+  aggregate children declare none (owner-guarded). The projector refuses any
+  document write whose `_ids.revision` is older than the document's
+  `_revision` watermark — the whole own-data pipeline no-ops atomically.
+  Original shared-base rationale: A BIGINT
   NOT NULL column the framework fully manages: initialized to 1 on the
   identity's creation and incremented (`revision = revision + 1`) by every
   statement that touches the base row — the shared-field upsert and the

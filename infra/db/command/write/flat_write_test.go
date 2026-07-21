@@ -277,7 +277,7 @@ func TestBaseEngine_ArchiveUnarchiveDelete(t *testing.T) {
 }
 
 func TestBaseEngine_Archive_MissingSoftDeleteIsError(t *testing.T) {
-	noSD := NewTableSchema[*builderTestEntity]("nsd").PK("id").Field("Name", "name").Field("Email", "email")
+	noSD := NewTableSchema[*builderTestEntity]("nsd").PK("id").Revision("revision").Field("Name", "name").Field("Email", "email")
 	tx := &recTx{}
 	be := newFlatBE(&recBeginner{tx: tx})
 	e := &builderTestEntity{Name: "a", Email: "a@x"}

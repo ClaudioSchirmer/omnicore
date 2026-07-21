@@ -44,7 +44,7 @@ func TestHydrateChildren_FlatEntityReturnsNil(t *testing.T) {
 // A child type with a scanner but no .Child(...) schema is a configuration bug
 // surfaced as an error.
 func TestHydrateChildren_UndeclaredChildSchemaErrors(t *testing.T) {
-	schema := NewTableSchema[*covAgg]("cov_aggs").PK("id").Field("Name", "name").SoftDelete("deleted_at")
+	schema := NewTableSchema[*covAgg]("cov_aggs").PK("id").Revision("revision").Field("Name", "name").SoftDelete("deleted_at")
 	l := newCovAggLoader(fakeEngine(nil), schema).
 		WithChildScanner("Ghost", func(Rows) (domain.AggregateValueObject, error) { return nil, nil })
 

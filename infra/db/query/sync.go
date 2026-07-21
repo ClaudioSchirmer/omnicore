@@ -130,6 +130,7 @@ type kafkaEvent struct {
 // identity the write side stamps on every event.
 type payloadIDs struct {
 	ID           string `json:"id"`
+	Revision     int64  `json:"revision"`
 	BaseID       string `json:"base_id"`
 	BaseRevision int64  `json:"base_revision"`
 	BasePurged   bool   `json:"base_purged"`

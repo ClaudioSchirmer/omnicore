@@ -49,7 +49,7 @@ func (b *BaseEngine) Insert(ctx persistence.RequestContext, entity domain.Insert
 	if err := b.FireAfterBegin(ctx, tx, src, hook, hctx); err != nil {
 		return domain.WriteResult{}, err
 	}
-	sql, args := buildInsert(d, schema.Table(), schema.PKColumn(), id, fields, schema.InsertNowColumns(), now)
+	sql, args := buildInsert(d, schema.Table(), schema.PKColumn(), id, fields, schema.InsertNowColumns(), now, schema.RevisionColumn())
 	if err := tx.Exec(ctx, sql, args...); err != nil {
 		return domain.WriteResult{}, err
 	}
@@ -57,7 +57,7 @@ func (b *BaseEngine) Insert(ctx persistence.RequestContext, entity domain.Insert
 		return domain.WriteResult{}, err
 	}
 	if err := WriteOutbox(ctx, tx, schema.Table(), "INSERTED", id,
-		buildWritePayloadV2(schema, src, nil, "INSERTED", now, fields, outboxMeta{ID: id})); err != nil {
+		buildWritePayloadV2(schema, src, nil, "INSERTED", now, fields, outboxMeta{ID: id, Revision: 1})); err != nil {
 		return domain.WriteResult{}, err
 	}
 	ab := b.BuildAudit(func() audit.AuditEvent {
@@ -98,15 +98,19 @@ func (b *BaseEngine) Update(ctx persistence.RequestContext, entity domain.Updata
 	if err := b.FireAfterBegin(ctx, tx, src, hook, hctx); err != nil {
 		return domain.WriteResult{}, err
 	}
-	sql, args := buildUpdate(d, schema.Table(), schema.PKColumn(), entity.ID().Value(), fields, schema.UpdateNowColumns(), now)
+	sql, args := buildUpdate(d, schema.Table(), schema.PKColumn(), entity.ID().Value(), fields, schema.UpdateNowColumns(), now, schema.RevisionColumn())
 	if err := execExpectingRow(ctx, tx, sql, args, entity.EntityName(), schema.PKColumn(), entity.ID().Value()); err != nil {
 		return domain.WriteResult{}, err
 	}
 	if err := applySiblingUpdates(ctx, tx, d, schema, src, entity.ID().Value(), entity.IsPartial()); err != nil {
 		return domain.WriteResult{}, err
 	}
+	meta, err := outboxMetaFor(ctx, tx, d, schema, src, entity.ID().Value())
+	if err != nil {
+		return domain.WriteResult{}, err
+	}
 	if err := WriteOutbox(ctx, tx, schema.Table(), "UPDATED", entity.ID().Value(),
-		buildWritePayloadV2(schema, src, nil, "UPDATED", now, fields, outboxMeta{ID: entity.ID().Value()})); err != nil {
+		buildWritePayloadV2(schema, src, nil, "UPDATED", now, fields, meta)); err != nil {
 		return domain.WriteResult{}, err
 	}
 	ab := b.BuildAudit(func() audit.AuditEvent {
@@ -209,10 +213,10 @@ func (b *BaseEngine) flatSoftWrite(
 		}
 	}
 	if eventType == "ARCHIVED" {
-		err = tx.Exec(ctx, archiveSQL(d, schema.Table(), sdCol, schema.PKColumn()),
+		err = tx.Exec(ctx, archiveSQL(d, schema.Table(), sdCol, schema.PKColumn(), schema.RevisionColumn()),
 			d.EncodeArg(now), d.EncodeArg(domain.NewID(id)))
 	} else {
-		err = tx.Exec(ctx, unarchiveSQL(d, schema.Table(), sdCol, schema.PKColumn()),
+		err = tx.Exec(ctx, unarchiveSQL(d, schema.Table(), sdCol, schema.PKColumn(), schema.RevisionColumn()),
 			d.EncodeArg(domain.NewID(id)))
 	}
 	if err != nil {
@@ -223,7 +227,7 @@ func (b *BaseEngine) flatSoftWrite(
 	if err := b.convergeBaseAfterSoftWrite(ctx, tx, d, schema, src, eventType, now); err != nil {
 		return err
 	}
-	meta, err := baseMetaFor(ctx, tx, d, schema, src, id)
+	meta, err := outboxMetaFor(ctx, tx, d, schema, src, id)
 	if err != nil {
 		return err
 	}
@@ -287,14 +291,17 @@ func execOneWithTx(ctx context.Context, tx WriteTx, d Dialect, entity domain.Val
 		if err != nil {
 			return domain.WriteResult{}, err
 		}
-		sql, args := buildInsert(d, schema.Table(), schema.PKColumn(), id, fields, schema.InsertNowColumns(), now)
+		sql, args := buildInsert(d, schema.Table(), schema.PKColumn(), id, fields, schema.InsertNowColumns(), now, schema.RevisionColumn())
 		if err := tx.Exec(ctx, sql, args...); err != nil {
 			return domain.WriteResult{}, err
 		}
-		meta, err := baseMetaFor(ctx, tx, d, schema, e.Source(), id)
+		meta, err := outboxMetaFor(ctx, tx, d, schema, e.Source(), id)
 		if err != nil {
 			return domain.WriteResult{}, err
 		}
+		// A row born in THIS TX starts at 1 by definition — no read needed
+		// (outboxMetaFor served the base half; the own token is known).
+		meta.Revision = 1
 		if err := WriteOutbox(ctx, tx, schema.Table(), "INSERTED", id,
 			buildWritePayloadV2(schema, e.Source(), nil, "INSERTED", now, fields, meta)); err != nil {
 			return domain.WriteResult{}, err
@@ -303,11 +310,11 @@ func execOneWithTx(ctx context.Context, tx WriteTx, d Dialect, entity domain.Val
 
 	case domain.Updatable:
 		fields := schema.WriteFields(e.Source())
-		sql, args := buildUpdate(d, schema.Table(), schema.PKColumn(), e.ID().Value(), fields, schema.UpdateNowColumns(), now)
+		sql, args := buildUpdate(d, schema.Table(), schema.PKColumn(), e.ID().Value(), fields, schema.UpdateNowColumns(), now, schema.RevisionColumn())
 		if err := execExpectingRow(ctx, tx, sql, args, e.EntityName(), schema.PKColumn(), e.ID().Value()); err != nil {
 			return domain.WriteResult{}, err
 		}
-		meta, err := baseMetaFor(ctx, tx, d, schema, e.Source(), e.ID().Value())
+		meta, err := outboxMetaFor(ctx, tx, d, schema, e.Source(), e.ID().Value())
 		if err != nil {
 			return domain.WriteResult{}, err
 		}
@@ -322,11 +329,11 @@ func execOneWithTx(ctx context.Context, tx WriteTx, d Dialect, entity domain.Val
 		if err != nil {
 			return domain.WriteResult{}, err
 		}
-		if err := tx.Exec(ctx, archiveSQL(d, schema.Table(), sdCol, schema.PKColumn()),
+		if err := tx.Exec(ctx, archiveSQL(d, schema.Table(), sdCol, schema.PKColumn(), schema.RevisionColumn()),
 			d.EncodeArg(now), d.EncodeArg(domain.NewID(e.ID().Value()))); err != nil {
 			return domain.WriteResult{}, err
 		}
-		meta, err := baseMetaFor(ctx, tx, d, schema, e.Source(), e.ID().Value())
+		meta, err := outboxMetaFor(ctx, tx, d, schema, e.Source(), e.ID().Value())
 		if err != nil {
 			return domain.WriteResult{}, err
 		}
@@ -341,10 +348,10 @@ func execOneWithTx(ctx context.Context, tx WriteTx, d Dialect, entity domain.Val
 		if err != nil {
 			return domain.WriteResult{}, err
 		}
-		if err := tx.Exec(ctx, unarchiveSQL(d, schema.Table(), sdCol, schema.PKColumn()), d.EncodeArg(domain.NewID(e.ID().Value()))); err != nil {
+		if err := tx.Exec(ctx, unarchiveSQL(d, schema.Table(), sdCol, schema.PKColumn(), schema.RevisionColumn()), d.EncodeArg(domain.NewID(e.ID().Value()))); err != nil {
 			return domain.WriteResult{}, err
 		}
-		meta, err := baseMetaFor(ctx, tx, d, schema, e.Source(), e.ID().Value())
+		meta, err := outboxMetaFor(ctx, tx, d, schema, e.Source(), e.ID().Value())
 		if err != nil {
 			return domain.WriteResult{}, err
 		}
@@ -358,7 +365,7 @@ func execOneWithTx(ctx context.Context, tx WriteTx, d Dialect, entity domain.Val
 		if err := tx.Exec(ctx, deleteSQL(d, schema.Table(), schema.PKColumn()), d.EncodeArg(domain.NewID(e.ID().Value()))); err != nil {
 			return domain.WriteResult{}, err
 		}
-		meta, err := baseMetaFor(ctx, tx, d, schema, e.Source(), e.ID().Value())
+		meta, err := outboxMetaFor(ctx, tx, d, schema, e.Source(), e.ID().Value())
 		if err != nil {
 			return domain.WriteResult{}, err
 		}

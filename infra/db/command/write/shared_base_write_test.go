@@ -38,6 +38,7 @@ func roleTestSchema() *TableSchema {
 		NaturalKey("document")
 	return NewTableSchema[*roleTestEntity]("aluno").
 		PK("id").
+		Revision("revision").
 		Field("Matricula", "matricula").
 		SoftDelete("deleted_at").
 		SharedBase(base, "pessoa_id")
@@ -161,6 +162,7 @@ func roleTestSchemaPurge() *TableSchema {
 		OrphanPolicy(DeleteWhenUnreferenced)
 	return NewTableSchema[*roleTestEntity]("aluno").
 		PK("id").
+		Revision("revision").
 		Field("Matricula", "matricula").
 		SoftDelete("deleted_at").
 		SharedBase(base, "pessoa_id")
@@ -718,7 +720,7 @@ func TestUnarchiveRoleWithBase_EmptyNaturalKeyErrors(t *testing.T) {
 // convergence call with a neutral event type.
 func TestVetoUnarchive_DefensiveNoOps(t *testing.T) {
 	base := NewSharedBase("pessoa").Revision("revision").PK("id").Field("Name", "name").Field("Document", "document").NaturalKey("document")
-	noSD := NewTableSchema[*roleTestEntity]("aluno").PK("id").Field("Matricula", "matricula").SharedBase(base, "pessoa_id")
+	noSD := NewTableSchema[*roleTestEntity]("aluno").PK("id").Revision("revision").Field("Matricula", "matricula").SharedBase(base, "pessoa_id")
 	tx := &recTx{queryFn: func(string, []any) (Rows, error) {
 		t.Fatal("no probe may run for a role without SoftDelete")
 		return nil, nil

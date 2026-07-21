@@ -99,19 +99,22 @@ func (s *TableSchema) OrphanPolicy(p OrphanPolicy) *TableSchema {
 	return s
 }
 
-// Revision declares the shared base's framework-managed revision column — a
-// BIGINT NOT NULL the write path initializes to 1 on the identity's creation
-// and increments (revision = revision + 1) on EVERY statement that touches the
-// base row, under that row's lock. Concurrent role writes therefore serialize
-// in real relational commit order, and the resulting value — carried on the
-// outbox payload as _ids.base_revision — is the deterministic last-writer-wins
-// token guarding every read-model write of base data. MANDATORY on a shared
-// base (enforced when a role attaches via .SharedBase). SharedBase only; the
-// column must not also be a declared Field.
+// Revision declares the schema's framework-managed revision column — a BIGINT
+// NOT NULL the write path initializes to 1 on the row's creation and
+// increments (revision = revision + 1) IN THE SAME STATEMENT of every
+// UPDATE/archive/unarchive, under that row's lock. The value is therefore a
+// deterministic commit-order token: it travels on the outbox payload
+// (_ids.revision for the aggregate's own row, _ids.base_revision for a shared
+// base) and the read side refuses any document write carrying an OLDER
+// revision — the defense that makes a zombie consumer (a slow pod finishing an
+// in-flight event after a partition handoff) harmless. MANDATORY on every
+// ROOT schema attached to a repository and on every shared base; a sibling or
+// aggregate child declares none (its rows are guarded by its owner's token).
 func (s *TableSchema) Revision(column string) *TableSchema {
-	if !s.isSharedBase {
+	if s.secondary || s.fkColumn != "" {
 		panic(fmt.Sprintf(
-			"infra.TableSchema(%s): Revision applies only to a SharedBase (NewSharedBase).", s.table))
+			"infra.TableSchema(%s): Revision belongs to the ROOT schema (or a SharedBase) — a sibling/child row "+
+				"is guarded by its owner's revision. Drop this Revision(%q) call.", s.table, column))
 	}
 	if column == "" {
 		panic(fmt.Sprintf("infra.TableSchema(%s): Revision requires a non-empty column.", s.table))

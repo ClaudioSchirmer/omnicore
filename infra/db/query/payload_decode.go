@@ -82,6 +82,11 @@ func decodeIDsBlock(m map[string]any) payloadIDs {
 	if s, ok := m["base_id"].(string); ok {
 		ids.BaseID = s
 	}
+	if n, ok := m["revision"].(json.Number); ok {
+		if v, err := n.Int64(); err == nil {
+			ids.Revision = v
+		}
+	}
 	if n, ok := m["base_revision"].(json.Number); ok {
 		if v, err := n.Int64(); err == nil {
 			ids.BaseRevision = v

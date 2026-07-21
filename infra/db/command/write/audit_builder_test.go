@@ -27,6 +27,7 @@ func (e *builderTestEntity) BuildRules(string, domain.Service, *domain.Rules) {}
 
 var builderTestSchema = NewTableSchema[*builderTestEntity]("builder_test_entities").
 	PK("id").
+	Revision("revision").
 	Field("Name", "name").
 	Field("Email", "email").
 	SoftDelete("deleted_at").

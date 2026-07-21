@@ -52,7 +52,7 @@ func bcRoleSchema(softDelete bool) *TableSchema {
 		addr = addr.SoftDelete("deleted_at")
 	}
 	base = base.Child(addr)
-	role := NewTableSchema[*bcRole]("aluno").PK("id").Field("Matricula", "matricula").SoftDelete("deleted_at")
+	role := NewTableSchema[*bcRole]("aluno").PK("id").Revision("revision").Field("Matricula", "matricula").SoftDelete("deleted_at")
 	return role.SharedBase(base, "pessoa_id")
 }
 

@@ -75,6 +75,7 @@ func (c *Composer) Compose(ctx context.Context, view *ViewDefinition, rootID str
 	if row == nil {
 		return nil, nil
 	}
+	remapRevision(row, view.schema, docRevisionField)
 	if view.isSharedBaseView {
 		if err := c.composeBaseRootedRow(ctx, view, row, rootID, includeArchived); err != nil {
 			return nil, err
@@ -153,6 +154,9 @@ func (c *Composer) composeRows(ctx context.Context, view *ViewDefinition, rows [
 	if len(rows) == 0 {
 		return nil
 	}
+	for _, row := range rows {
+		remapRevision(row, view.schema, docRevisionField)
+	}
 	if view.isSharedBaseView {
 		return c.composeBaseRootedRowsBatched(ctx, view, rows, includeArchived)
 	}
@@ -201,6 +205,7 @@ func (c *Composer) composeBaseRootedRow(ctx context.Context, view *ViewDefinitio
 		if err := c.mergeOwnChildren(ctx, roleRow, r.schema, includeArchived); err != nil {
 			return err
 		}
+		remapRevision(roleRow, r.schema, docRevisionField)
 		row[r.segment] = roleRow
 	}
 	return c.applyEmbeds(ctx, row, schemaPK(base), view.embeds, includeArchived)
@@ -380,6 +385,7 @@ func (c *Composer) mergeSharedBase(ctx context.Context, doc Document, schema *co
 	if row == nil {
 		return nil
 	}
+	remapRevision(row, base, docBaseRevisionField)
 	skip := map[string]bool{base.PKColumn(): true}
 	if col, ok := base.SoftDeleteColumn(); ok {
 		if _, roleHas := schema.SoftDeleteColumn(); roleHas {
@@ -579,6 +585,25 @@ func toBsonMaps(ms []map[string]any, schema *core.TableSchema) []Document {
 		coerceTypes(out[i], schema)
 	}
 	return out
+}
+
+// remapRevision moves a schema's physical revision column into its
+// framework-internal document watermark (_revision / _base_revision) — the
+// composer-path documents must carry the SAME watermark fields the
+// payload-direct pipeline writes, or the two paths would diverge doc-a-doc
+// and the guards would not survive a rebuild/consult overwrite.
+func remapRevision(row Document, schema *core.TableSchema, watermarkField string) {
+	if row == nil || schema == nil {
+		return
+	}
+	rc := schema.RevisionColumn()
+	if rc == "" {
+		return
+	}
+	if v, ok := row[rc]; ok {
+		row[watermarkField] = v
+		delete(row, rc)
+	}
 }
 
 // coerceTypes rewrites scanned values that lost type fidelity on the relational

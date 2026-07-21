@@ -215,7 +215,7 @@ func (b *BaseEngine) insertWithBase(ctx persistence.RequestContext, entity domai
 		}
 		id = nid
 	}
-	sql, args := buildInsert(d, schema.Table(), schema.PKColumn(), id, roleFields, schema.InsertNowColumns(), now)
+	sql, args := buildInsert(d, schema.Table(), schema.PKColumn(), id, roleFields, schema.InsertNowColumns(), now, schema.RevisionColumn())
 	if err := tx.Exec(ctx, sql, args...); err != nil {
 		return domain.WriteResult{}, err
 	}
@@ -242,7 +242,7 @@ func (b *BaseEngine) insertWithBase(ctx persistence.RequestContext, entity domai
 	// historical empty base-table UPDATED row is no longer emitted.
 	if err := WriteOutbox(ctx, tx, schema.Table(), "INSERTED", id,
 		buildWritePayloadV2(schema, src, root, "INSERTED", now, roleFields,
-			outboxMeta{ID: id, BaseID: baseID, BaseRevision: baseRev})); err != nil {
+			outboxMeta{ID: id, Revision: 1, BaseID: baseID, BaseRevision: baseRev})); err != nil {
 		return domain.WriteResult{}, err
 	}
 	ab := b.BuildAudit(func() audit.AuditEvent {
@@ -290,7 +290,7 @@ func (b *BaseEngine) updateWithBase(ctx persistence.RequestContext, entity domai
 	if err := guardNaturalKeyImmutable(ctx, tx, d, schema, base, entity.EntityName(), entity.ID().Value(), fkCol, baseID); err != nil {
 		return domain.WriteResult{}, err
 	}
-	sql, args := buildUpdate(d, schema.Table(), schema.PKColumn(), entity.ID().Value(), roleFields, schema.UpdateNowColumns(), now)
+	sql, args := buildUpdate(d, schema.Table(), schema.PKColumn(), entity.ID().Value(), roleFields, schema.UpdateNowColumns(), now, schema.RevisionColumn())
 	if err := execExpectingRow(ctx, tx, sql, args, entity.EntityName(), schema.PKColumn(), entity.ID().Value()); err != nil {
 		return domain.WriteResult{}, err
 	}
@@ -314,11 +314,17 @@ func (b *BaseEngine) updateWithBase(ctx persistence.RequestContext, entity domai
 	if err := b.reactivateBaseIfArchived(ctx, tx, d, schema, src); err != nil {
 		return domain.WriteResult{}, err
 	}
+	ownRev := int64(0)
+	if rc := schema.RevisionColumn(); rc != "" {
+		if ownRev, err = readRevision(ctx, tx, d, schema.Table(), rc, schema.PKColumn(), entity.ID().Value()); err != nil {
+			return domain.WriteResult{}, err
+		}
+	}
 	// ONE outbox row per write (see insertWithBase): the v2 payload carries the
 	// base id + revision, so the fan-out rides this event — no empty base row.
 	if err := WriteOutbox(ctx, tx, schema.Table(), "UPDATED", entity.ID().Value(),
 		buildWritePayloadV2(schema, src, root, "UPDATED", now, roleFields,
-			outboxMeta{ID: entity.ID().Value(), BaseID: baseID, BaseRevision: baseRev})); err != nil {
+			outboxMeta{ID: entity.ID().Value(), Revision: ownRev, BaseID: baseID, BaseRevision: baseRev})); err != nil {
 		return domain.WriteResult{}, err
 	}
 	ab := b.BuildAudit(func() audit.AuditEvent {
@@ -783,45 +789,7 @@ func buildBaseUpdate(d Dialect, base *TableSchema, baseID string, fields domain.
 // outbox payload is the one THIS operation's lock scope produced. A vanished
 // base row (purged) answers 0.
 func readBaseRevision(ctx context.Context, tx WriteTx, d Dialect, base *TableSchema, baseID string) (int64, error) {
-	q := d.ApplyLimit("SELECT "+d.QuoteIdent(base.RevisionColumn())+" FROM "+d.QuoteIdent(base.Table())+
-		" WHERE "+d.QuoteIdent(base.PKColumn())+" = "+d.Placeholder(1), 1)
-	rows, err := tx.Query(ctx, q, d.EncodeArg(domain.NewID(baseID)))
-	if err != nil || rows == nil {
-		return 0, err
-	}
-	defer rows.Close()
-	if !rows.Next() {
-		return 0, rows.Err()
-	}
-	var rev int64
-	if err := rows.Scan(&rev); err != nil {
-		return 0, err
-	}
-	return rev, rows.Err()
-}
-
-// baseMetaFor resolves the outbox structural identity for a shared-base role
-// on the verbs that do NOT run the base upsert themselves (soft writes, batch
-// members): the deterministic base id from the entity's natural key + the
-// CURRENT revision read in-TX. A schema without a shared base answers the
-// bare role id.
-func baseMetaFor(ctx context.Context, tx WriteTx, d Dialect, schema *TableSchema, src domain.Entity, id string) (outboxMeta, error) {
-	meta := outboxMeta{ID: id}
-	base, _, ok := schema.SharedBaseRef()
-	if !ok {
-		return meta, nil
-	}
-	_, nk := sharedBaseValues(base, src)
-	if nk == "" {
-		return meta, nil // payload assembly never vetoes a write the verb allows
-	}
-	meta.BaseID = deterministicBaseID(nk)
-	rev, err := readBaseRevision(ctx, tx, d, base, meta.BaseID)
-	if err != nil {
-		return meta, err
-	}
-	meta.BaseRevision = rev
-	return meta, nil
+	return readRevision(ctx, tx, d, base.Table(), base.RevisionColumn(), base.PKColumn(), baseID)
 }
 
 // baseExists probes whether the shared base row already exists (the identity
@@ -875,8 +843,7 @@ func (b *BaseEngine) upsertSharedBase(ctx context.Context, tx WriteTx, d Dialect
 		}
 		return readBaseRevision(ctx, tx, d, base, baseID)
 	}
-	baseFields[base.RevisionColumn()] = int64(1)
-	sql, args := buildInsert(d, base.Table(), base.PKColumn(), baseID, baseFields, base.InsertNowColumns(), now)
+	sql, args := buildInsert(d, base.Table(), base.PKColumn(), baseID, baseFields, base.InsertNowColumns(), now, base.RevisionColumn())
 	if err := tx.Exec(ctx, sql, args...); err != nil {
 		return 0, err
 	}
