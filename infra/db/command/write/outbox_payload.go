@@ -297,4 +297,3 @@ func outboxMetaFor(ctx context.Context, tx WriteTx, d Dialect, schema *TableSche
 	meta.BaseRevision = rev
 	return meta, nil
 }
-

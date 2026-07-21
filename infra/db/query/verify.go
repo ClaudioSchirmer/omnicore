@@ -1,9 +1,9 @@
 package query
 
 import (
-	"sort"
 	"context"
 	"fmt"
+	"sort"
 )
 
 // verifySampleSize bounds the value-sample pass: this many source ids are

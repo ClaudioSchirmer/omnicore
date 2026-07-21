@@ -83,12 +83,6 @@ func covAggRootMap(id, name string) func() []map[string]any {
 	return func() []map[string]any { return []map[string]any{{"id": id, "name": name}} }
 }
 
-func covChildMap(fk, id, label string) func() []map[string]any {
-	return func() []map[string]any {
-		return []map[string]any{{"cov_agg_id": fk, "id": id, "label": label}}
-	}
-}
-
 func noMaps() []map[string]any { return nil }
 
 func TestFindOne_FoundHydratesRootAndChildren(t *testing.T) {
@@ -422,4 +416,3 @@ func TestFindRoots_ManualRootScanner_MissingIDErrors(t *testing.T) {
 		t.Fatalf("a manual scanner that skips SetID is a loud configuration error, got %v", err)
 	}
 }
-
