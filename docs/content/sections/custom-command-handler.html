@@ -486,6 +486,7 @@ SELECT user_id, id, label, street, number, complement, neighborhood, city, state
     <pre><code>func UserSchema() *core.TableSchema {
     return core.NewTableSchema[*User]("users").
         PK("id").
+        Revision("revision").
         Field("Name", "name").
         Field("DisplayName", "display_name").  // any Go field ↔ any column
         Field("Email", "mail").                // a rename lives only here

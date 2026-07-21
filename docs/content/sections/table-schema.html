@@ -135,6 +135,7 @@
 func UserSchema() *core.TableSchema {
     return core.NewTableSchema[*User]("users").
         PK("id").                       // column "id" — Go side fixed to ID (single-column PK)
+        Revision("revision").           // managed: MANDATORY commit-order token (BIGINT NOT NULL DEFAULT 0)
         Field("Name", "name").
         Field("Email", "mail").         // renamed column
         Field("Phone", "phone").
@@ -192,14 +193,31 @@ core.NewExternalSchema("users").PK("id").Field("Email", "mail")</code></pre>
     of a child the schema already projects (same derived segment) is a boot error.
 </div>
 
-<h3>The three managed columns — by presence, not a flag</h3>
+<h3>The managed columns — by presence, not a flag</h3>
 <p>
     Soft-delete, created-at, and updated-at are declared by <em>calling</em> the matching builder method with the column
-    name. Omitting the call disables the behavior — there is no boolean knob.
+    name. Omitting the call disables the behavior — there is no boolean knob. The exception is
+    <code>Revision(col)</code>: on an <strong>entity schema</strong> (<code>NewTableSchema[T]</code> attached to a
+    repository) and on a <strong>shared base</strong> (<code>NewSharedBase</code>) it is <strong>mandatory</strong> —
+    omitting it is a boot failure; on a <strong>sibling or aggregate child</strong> it is <strong>forbidden</strong> —
+    declaring it panics at construction, because their rows are guarded by the owner's token.
 </p>
 <table>
     <thead><tr><th>Builder</th><th>Declared</th><th>Omitted</th></tr></thead>
     <tbody>
+        <tr>
+            <td><code>Revision(col)</code></td>
+            <td>the framework owns the column end to end: INSERT binds <code>col = 1</code>; UPDATE, Archive and
+                Unarchive append <code>col = col + 1</code> to their own statement, under the row lock — so the value
+                is the row's real commit order. It travels on the outbox payload (<code>_ids.revision</code>; a shared
+                base's as <code>_ids.base_revision</code>) and the projection refuses any document write carrying an
+                older value (the last-writer-wins guard)</td>
+            <td>entity schema / shared base: <strong>boot failure</strong> (at the repository's <code>WithSchema</code>
+                / at the role's <code>.SharedBase(...)</code> attach) — DDL required:
+                <code>revision BIGINT NOT NULL DEFAULT 0</code>. Sibling or aggregate child: omitting is the ONLY
+                valid state — declaring it panics at construction (<code>Revision(...)</code> itself, or the
+                <code>Child(...)</code> attach)</td>
+        </tr>
         <tr>
             <td><code>SoftDelete(col)</code></td>
             <td>the read scope-gate uses <code>col IS NULL</code>; Archive/Unarchive write <code>col = $now</code> / <code>col = NULL</code></td>

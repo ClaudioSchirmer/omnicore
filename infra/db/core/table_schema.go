@@ -448,6 +448,14 @@ func (s *TableSchema) Child(child *TableSchema) *TableSchema {
 			s.table,
 		))
 	}
+	if child.revisionCol != "" {
+		// Revision() itself rejects a schema whose FK is already declared; this
+		// closes the declaration-order hole (Revision before FK): a child's rows
+		// are guarded by the OWNER's commit-order token, never their own.
+		panic(fmt.Sprintf(
+			"infra.TableSchema(%s): aggregate child %q declares Revision(%q) — a child row is guarded by its "+
+				"owner's revision; drop the call.", s.table, child.table, child.revisionCol))
+	}
 	if !child.hasPKDeclared() {
 		panic(fmt.Sprintf(
 			"infra.TableSchema(%s): aggregate child %q declares no primary key — declare .PK(column) "+

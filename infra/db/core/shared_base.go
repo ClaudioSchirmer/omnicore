@@ -113,7 +113,7 @@ func (s *TableSchema) OrphanPolicy(p OrphanPolicy) *TableSchema {
 func (s *TableSchema) Revision(column string) *TableSchema {
 	if s.secondary || s.fkColumn != "" {
 		panic(fmt.Sprintf(
-			"infra.TableSchema(%s): Revision belongs to the ROOT schema (or a SharedBase) — a sibling/child row "+
+			"infra.TableSchema(%s): Revision belongs to an ENTITY schema or a SharedBase — a sibling/child row "+
 				"is guarded by its owner's revision. Drop this Revision(%q) call.", s.table, column))
 	}
 	if column == "" {

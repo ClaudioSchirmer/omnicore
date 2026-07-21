@@ -46,10 +46,10 @@ func TestRevision_MandatoryOnAttach(t *testing.T) {
 func TestRevision_RootOnly(t *testing.T) {
 	// Generalized in 4b-3: any ROOT schema declares it; a sibling or child
 	// (owner-guarded rows) must not.
-	mustPanicContains(t, "ROOT schema", func() {
+	mustPanicContains(t, "ENTITY schema", func() {
 		NewSiblingSchema[*revRoleEntity]("aluno_extra").Revision("revision")
 	})
-	mustPanicContains(t, "ROOT schema", func() {
+	mustPanicContains(t, "ENTITY schema", func() {
 		NewTableSchema[*revRoleEntity]("aluno_children").FK("aluno_id").Revision("revision")
 	})
 	if got := NewTableSchema[*revRoleEntity]("aluno").PK("id").Revision("revision").RevisionColumn(); got != "revision" {
@@ -113,4 +113,14 @@ func TestPayloadColumnTypes_CoversAllScalarSources(t *testing.T) {
 	if NewTableSchema[*revRoleEntity]("solo").PK("id").SharedBaseBusinessColumns() != nil {
 		t.Error("a schema without a shared base answers nil")
 	}
+}
+
+// The declaration-order hole: Revision declared BEFORE FK slips past Revision's
+// own guard — Child() closes it at attach time.
+func TestRevision_ChildAttachRejectsOwnToken(t *testing.T) {
+	sneaky := NewTableSchema[*revRoleEntity]("kids").PK("id").Revision("revision")
+	sneaky.FK("parent_id").Field("Name", "name")
+	mustPanicContains(t, "guarded by its owner's revision", func() {
+		NewTableSchema[*revRoleEntity]("parents").PK("id").Revision("revision").Child(sneaky)
+	})
 }
