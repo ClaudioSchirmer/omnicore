@@ -13,6 +13,24 @@ with `1.0.0`.
 
 ## [0.36.0] - 2026-07-20
 
+### Added
+
+- **Upstream-mirror soft-delete boot guard (§8.5) — a subscription `filter`
+  that would strip the archive state now fails loud instead of silently.** The
+  `filter` on an `upstreamSubscriptions` entry is a string allowlist over the
+  raw upstream payload and consults no schema, so an `ARCHIVED` event's
+  soft-delete column (e.g. `deleted_at`) is dropped unless the `filter` lists
+  it — and the local mirror would then never reflect the archive (archived rows
+  look active forever). Boot now cross-checks each subscription against the
+  soft-delete column declared on the external `FromSchema` embed(s) of its
+  collection: a column DECLARED on the embed schema but OMITTED by a non-empty
+  `filter` ABORTS the boot naming the offending subscription and column; a
+  mirror whose embed schema declares no soft-delete column at all logs an
+  ADVISORY warning (the consumer often cannot know whether the upstream
+  soft-deletes); an empty `filter` mirrors the full payload and always passes.
+  See the upstream-mirror note under Table schema and the `upstreamSubscriptions`
+  block in the YAML reference.
+
 ### Changed
 
 - **BREAKING: the day-to-day projection is PAYLOAD-DIRECT — the SyncEngine no

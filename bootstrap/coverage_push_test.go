@@ -20,7 +20,7 @@ func TestValidateUpstreamSubscriptions_SurfacesMaterializingSource(t *testing.T)
 			Version(1),
 	}
 	// No subscriptions → "users" has no materializing source → §8.3.
-	err := validateUpstreamSubscriptions(nil, views, profileDev)
+	err := validateUpstreamSubscriptions(nil, views, profileDev, nil)
 	if err == nil || !strings.Contains(err.Error(), "§8.3") {
 		t.Fatalf("expected §8.3 materializing-source violation, got %v", err)
 	}

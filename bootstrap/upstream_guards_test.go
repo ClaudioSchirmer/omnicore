@@ -1,6 +1,8 @@
 package bootstrap
 
 import (
+	"io"
+	"log/slog"
 	"strings"
 	"testing"
 
@@ -261,7 +263,7 @@ func TestValidateUpstreamSubscriptions_AccumulatesAllViolations(t *testing.T) {
 			Embed("buyer", extEmbed("users", "buyer_id", "Buyer")).
 			Version(1),
 	}
-	err := validateUpstreamSubscriptions(subs, views, profileDev)
+	err := validateUpstreamSubscriptions(subs, views, profileDev, nil)
 	if err == nil {
 		t.Fatal("expected violations")
 	}
@@ -270,5 +272,132 @@ func TestValidateUpstreamSubscriptions_AccumulatesAllViolations(t *testing.T) {
 	if !strings.Contains(msg, "§8.1") || !strings.Contains(msg, "§8.2") ||
 		!strings.Contains(msg, "§8.4") {
 		t.Errorf("expected diagnostic to surface all three section codes, got: %s", msg)
+	}
+}
+
+// extEmbedSD is extEmbed with a soft-delete column declared on the external
+// schema — the §8.5 guard reads it via Source().SchemaDef().SoftDeleteColumn().
+func extEmbedSD(collection, softDelete, fk, as string) *query.Source {
+	return query.FromSchema(
+		core.NewExternalSchema(collection).PK("id").SoftDelete(softDelete).FK(fk),
+	).FK(fk).As(as)
+}
+
+func TestGuardSoftDeleteFilter_AbortsWhenFilterDropsSoftDelete(t *testing.T) {
+	subs := []UpstreamSubscription{
+		{Topic: "users.events", Collection: "users", Filter: []string{"id", "name"}},
+	}
+	views := []*query.ViewDefinition{
+		query.View("orders").Root("orders").
+			Embed("buyer", extEmbedSD("users", "deleted_at", "buyer_id", "Buyer")).
+			Version(1),
+	}
+	violations, warnings := guardSoftDeleteFilter(subs, views)
+	if len(violations) != 1 || !strings.Contains(violations[0], "§8.5") ||
+		!strings.Contains(violations[0], "deleted_at") {
+		t.Errorf("expected one §8.5 abort naming deleted_at, got %v", violations)
+	}
+	if len(warnings) != 0 {
+		t.Errorf("expected no warnings when the soft-delete column is declared, got %v", warnings)
+	}
+}
+
+func TestGuardSoftDeleteFilter_OKWhenFilterKeepsSoftDelete(t *testing.T) {
+	subs := []UpstreamSubscription{
+		{Topic: "users.events", Collection: "users", Filter: []string{"id", "name", "deleted_at"}},
+	}
+	views := []*query.ViewDefinition{
+		query.View("orders").Root("orders").
+			Embed("buyer", extEmbedSD("users", "deleted_at", "buyer_id", "Buyer")).
+			Version(1),
+	}
+	violations, warnings := guardSoftDeleteFilter(subs, views)
+	if len(violations) != 0 || len(warnings) != 0 {
+		t.Errorf("a filter keeping the soft-delete column must be clean, got violations=%v warnings=%v", violations, warnings)
+	}
+}
+
+func TestGuardSoftDeleteFilter_OKWhenFilterEmpty(t *testing.T) {
+	subs := []UpstreamSubscription{
+		{Topic: "users.events", Collection: "users"}, // nil filter mirrors the full payload
+	}
+	views := []*query.ViewDefinition{
+		query.View("orders").Root("orders").
+			Embed("buyer", extEmbedSD("users", "deleted_at", "buyer_id", "Buyer")).
+			Version(1),
+	}
+	violations, warnings := guardSoftDeleteFilter(subs, views)
+	if len(violations) != 0 || len(warnings) != 0 {
+		t.Errorf("an empty filter must be clean (mirrors everything), got violations=%v warnings=%v", violations, warnings)
+	}
+}
+
+func TestGuardSoftDeleteFilter_WarnsWhenNoSoftDeleteDeclared(t *testing.T) {
+	subs := []UpstreamSubscription{
+		{Topic: "users.events", Collection: "users", Filter: []string{"id", "name"}},
+	}
+	views := []*query.ViewDefinition{
+		query.View("orders").Root("orders").
+			Embed("buyer", extEmbed("users", "buyer_id", "Buyer")). // no soft-delete declared
+			Version(1),
+	}
+	violations, warnings := guardSoftDeleteFilter(subs, views)
+	if len(violations) != 0 {
+		t.Errorf("a missing soft-delete declaration must not abort the boot, got %v", violations)
+	}
+	if len(warnings) != 1 || !strings.Contains(warnings[0], "§8.5") ||
+		!strings.Contains(warnings[0], "Advisory") {
+		t.Errorf("expected one §8.5 advisory warning, got %v", warnings)
+	}
+}
+
+func TestGuardSoftDeleteFilter_SkipsCollectionEmbeddedByNoView(t *testing.T) {
+	subs := []UpstreamSubscription{
+		{Topic: "users.events", Collection: "users", Filter: []string{"id"}},
+	}
+	// No view embeds "users" → §8.3 owns the never-embedded case; §8.5 stays silent.
+	violations, warnings := guardSoftDeleteFilter(subs, nil)
+	if len(violations) != 0 || len(warnings) != 0 {
+		t.Errorf("a never-embedded mirror must be silent in §8.5, got violations=%v warnings=%v", violations, warnings)
+	}
+}
+
+func TestValidateUpstreamSubscriptions_SurfacesSoftDeleteAbort(t *testing.T) {
+	subs := []UpstreamSubscription{
+		{Topic: "users.events", Collection: "users",
+			OnUpstreamDelete: UpstreamDeleteCascade,
+			StartFrom:        StartFromLatest,
+			Filter:           []string{"id", "name"}}, // drops deleted_at → §8.5 abort
+	}
+	views := []*query.ViewDefinition{
+		query.View("orders").Root("orders").
+			Embed("buyer", extEmbedSD("users", "deleted_at", "buyer_id", "Buyer")).
+			Indexes(query.Index("buyer_id")). // satisfy §8.1 so only §8.5 fires
+			Version(1),
+	}
+	// nil logger must be safe on the warn path.
+	err := validateUpstreamSubscriptions(subs, views, profileDev, nil)
+	if err == nil || !strings.Contains(err.Error(), "§8.5") ||
+		!strings.Contains(err.Error(), "deleted_at") {
+		t.Errorf("expected §8.5 abort naming deleted_at through the aggregator, got %v", err)
+	}
+}
+
+func TestValidateUpstreamSubscriptions_LogsSoftDeleteAdvisory(t *testing.T) {
+	subs := []UpstreamSubscription{
+		{Topic: "users.events", Collection: "users",
+			OnUpstreamDelete: UpstreamDeleteCascade,
+			StartFrom:        StartFromLatest,
+			Filter:           []string{"id", "name"}},
+	}
+	views := []*query.ViewDefinition{
+		query.View("orders").Root("orders").
+			Embed("buyer", extEmbed("users", "buyer_id", "Buyer")). // no soft-delete → advisory only
+			Indexes(query.Index("buyer_id")).
+			Version(1),
+	}
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	if err := validateUpstreamSubscriptions(subs, views, profileDev, logger); err != nil {
+		t.Errorf("an advisory-only case must not abort the boot, got %v", err)
 	}
 }

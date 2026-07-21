@@ -204,7 +204,7 @@ func runWithConfig(cfg *Config, wire func(Deps) Wiring) error {
 	}
 	upstreamSubs = applyUpstreamSubscriptionDefaults(upstreamSubs, cfg.Service)
 	if len(upstreamSubs) > 0 {
-		if err := validateUpstreamSubscriptions(upstreamSubs, views, cfg.Profile); err != nil {
+		if err := validateUpstreamSubscriptions(upstreamSubs, views, cfg.Profile, deps.Logger); err != nil {
 			return err
 		}
 	}
