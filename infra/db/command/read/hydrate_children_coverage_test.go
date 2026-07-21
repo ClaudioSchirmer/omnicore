@@ -27,25 +27,25 @@ func TestHydrateChildren_NoEntitiesIsNoop(t *testing.T) {
 
 func TestHydrateChildren_ManualScannerRowsAttach(t *testing.T) {
 	var manualSQL string
-	query := func(sql string, _ []any) (Rows, error) {
+	mapsFn := func(sql string, _ []any) ([]map[string]any, error) {
 		manualSQL = sql
-		return &fakeDBRows{rows: 2}, nil // manual scanner owns the Scan; row content irrelevant
+		return []map[string]any{{}, {}}, nil // 2 rows; manual scanner owns the decode, content irrelevant
 	}
 	n := 0
-	manual := func(Rows) (domain.AggregateValueObject, error) {
+	manual := func(map[string]any) (domain.AggregateValueObject, error) {
 		n++
 		return covChild{ID: "c" + string(rune('0'+n)), Label: "L"}, nil
 	}
-	l := newCovAggLoader(fakeEngine(query), covAggSchema).WithChildScanner("covChild", manual)
+	l := newCovAggLoader(fakeEngineWithMaps(nil, mapsFn), covAggSchema).WithChildScanner("covChild", manual)
 
 	root := &covAgg{Name: "a"}
 	root.SetID(domain.NewID("r1"))
 	if err := l.hydrateChildren(context.Background(), []*covAgg{root}, []string{"r1"}, criteria.ScopeActive); err != nil {
 		t.Fatalf("hydrateChildren: %v", err)
 	}
-	// The manual path is one SELECT * per root, FK-filtered.
-	if !strings.Contains(manualSQL, "SELECT * FROM cov_children WHERE cov_agg_id = $1") {
-		t.Errorf("manual child SELECT wrong: %q", manualSQL)
+	// The manual path is one explicit-column SELECT per root, FK-filtered — never SELECT *.
+	if !strings.Contains(manualSQL, "FROM cov_children WHERE cov_agg_id = $1") || strings.Contains(manualSQL, "SELECT *") {
+		t.Errorf("manual child SELECT wrong (must name columns, FK-filtered): %q", manualSQL)
 	}
 	items := domain.GetCurrentItemsOf[covChild](&root.AggregateRoot)
 	if len(items) != 2 {
@@ -54,9 +54,9 @@ func TestHydrateChildren_ManualScannerRowsAttach(t *testing.T) {
 }
 
 func TestHydrateChildren_ManualScannerRowErrorPropagates(t *testing.T) {
-	query := func(string, []any) (Rows, error) { return &fakeDBRows{rows: 1}, nil }
-	manual := func(Rows) (domain.AggregateValueObject, error) { return nil, errFakeDB }
-	l := newCovAggLoader(fakeEngine(query), covAggSchema).WithChildScanner("covChild", manual)
+	mapsFn := func(string, []any) ([]map[string]any, error) { return []map[string]any{{}}, nil }
+	manual := func(map[string]any) (domain.AggregateValueObject, error) { return nil, errFakeDB }
+	l := newCovAggLoader(fakeEngineWithMaps(nil, mapsFn), covAggSchema).WithChildScanner("covChild", manual)
 
 	root := &covAgg{Name: "a"}
 	root.SetID(domain.NewID("r1"))

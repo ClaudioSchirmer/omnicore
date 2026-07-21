@@ -282,15 +282,15 @@ func TestHydrateChildren_ScanError(t *testing.T) {
 
 func TestFindOne_ManualRootScanner(t *testing.T) {
 	pg := loaderPostgres(func(sql string, _ []any) (pgx.Rows, error) {
-		// Manual scanner uses SELECT * — assert the loader took that branch.
-		if !strings.Contains(sql, "SELECT *") {
-			t.Errorf("manual scanner expected SELECT *, got %q", sql)
+		// Manual scanner names its columns (never SELECT *).
+		if strings.Contains(sql, "SELECT *") {
+			t.Errorf("manual scanner must name columns, got SELECT *: %q", sql)
 		}
 		return &fakeRows{rows: 1}, nil
 	})
 	l := read.NewAggregateLoader[*builderTestEntity](pg, func() *builderTestEntity { return &builderTestEntity{} }).
 		WithSchema(builderTestSchema).
-		WithRootScanner(func(core.Row) (*builderTestEntity, error) {
+		WithRootScanner(func(map[string]any) (*builderTestEntity, error) {
 			e := &builderTestEntity{Name: "manual"}
 			e.SetID(domain.NewID(liveRootID))
 			return e, nil
@@ -311,7 +311,7 @@ func TestFindOne_ManualRootScanner_EmptyID(t *testing.T) {
 	})
 	l := read.NewAggregateLoader[*builderTestEntity](pg, func() *builderTestEntity { return &builderTestEntity{} }).
 		WithSchema(builderTestSchema).
-		WithRootScanner(func(core.Row) (*builderTestEntity, error) {
+		WithRootScanner(func(map[string]any) (*builderTestEntity, error) {
 			return &builderTestEntity{Name: "noid"}, nil // never calls SetID
 		})
 
@@ -327,7 +327,7 @@ func TestFindRoots_ManualScannerError(t *testing.T) {
 	})
 	l := read.NewAggregateLoader[*builderTestEntity](pg, func() *builderTestEntity { return &builderTestEntity{} }).
 		WithSchema(builderTestSchema).
-		WithRootScanner(func(core.Row) (*builderTestEntity, error) { return nil, errFake })
+		WithRootScanner(func(map[string]any) (*builderTestEntity, error) { return nil, errFake })
 
 	if _, err := l.FindAll(context.Background(), criteria.Where(nil)); !errors.Is(err, errFake) {
 		t.Fatalf("expected manual scanner error, got %v", err)
@@ -339,9 +339,9 @@ func TestFindRoots_ManualScannerError(t *testing.T) {
 func TestHydrateChildren_ManualChildScanner(t *testing.T) {
 	pg := loaderPostgres(func(sql string, args []any) (pgx.Rows, error) {
 		if strings.Contains(sql, "cov_children") {
-			// Manual child scanner runs one SELECT * per root id ($1).
-			if !strings.Contains(sql, "SELECT *") {
-				t.Errorf("manual child scanner expected SELECT *, got %q", sql)
+			// Manual child scanner runs one explicit-column SELECT per root id ($1).
+			if strings.Contains(sql, "SELECT *") {
+				t.Errorf("manual child scanner must name columns, got SELECT *: %q", sql)
 			}
 			return &fakeRows{rows: 1}, nil
 		}
@@ -352,7 +352,7 @@ func TestHydrateChildren_ManualChildScanner(t *testing.T) {
 	})
 	l := read.NewAggregateLoader[*covAgg](pg, func() *covAgg { return &covAgg{} }).
 		WithSchema(covAggSchema).
-		WithChildScanner("covChild", func(core.Rows) (domain.AggregateValueObject, error) {
+		WithChildScanner("covChild", func(map[string]any) (domain.AggregateValueObject, error) {
 			return covChild{ID: "m1", Label: "manual"}, nil
 		})
 
@@ -378,7 +378,7 @@ func TestHydrateChildren_ManualChildScannerError(t *testing.T) {
 	})
 	l := read.NewAggregateLoader[*covAgg](pg, func() *covAgg { return &covAgg{} }).
 		WithSchema(covAggSchema).
-		WithChildScanner("covChild", func(core.Rows) (domain.AggregateValueObject, error) {
+		WithChildScanner("covChild", func(map[string]any) (domain.AggregateValueObject, error) {
 			return nil, errFake
 		})
 

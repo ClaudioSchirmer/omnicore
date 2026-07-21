@@ -165,6 +165,8 @@ type fakeRows struct {
 	rows    int
 	pos     int
 	scan    func(idx int, dest []any) error
+	fields  []pgconn.FieldDescription
+	values  func(idx int) []any
 	nextErr error
 }
 
@@ -185,5 +187,16 @@ func (r *fakeRows) Scan(dest ...any) error {
 
 func (r *fakeRows) Close()     {}
 func (r *fakeRows) Err() error { return r.nextErr }
+
+// FieldDescriptions + Values back the QueryMaps path (manual scanners). The
+// covered manual-scanner tests ignore the row content, so nil/empty is enough;
+// per-row Values are driven by the `values` hook when a test needs them.
+func (r *fakeRows) FieldDescriptions() []pgconn.FieldDescription { return r.fields }
+func (r *fakeRows) Values() ([]any, error) {
+	if r.values != nil {
+		return r.values(r.pos - 1), nil
+	}
+	return nil, nil
+}
 
 var errFake = errors.New("fake pg error")

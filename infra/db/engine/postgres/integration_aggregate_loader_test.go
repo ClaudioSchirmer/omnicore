@@ -241,16 +241,14 @@ func TestAggregateLoader_Load_WithManualRootScanner(t *testing.T) {
 
 	loader := read.NewAggregateLoader[*loaderRoot](pg, func() *loaderRoot { return &loaderRoot{} }).
 		WithSchema(loaderRootSchemaFlat()).
-		WithRootScanner(func(row core.Row) (*loaderRoot, error) {
+		WithRootScanner(func(m map[string]any) (*loaderRoot, error) {
 			r := &loaderRoot{}
-			// SELECT * returns: id, name, email, deleted_at, created_at, updated_at.
+			// The map is keyed by column name — read BY NAME, order-independent.
 			// On the criteria path a manual scanner MUST populate the id (the
-			// framework no longer injects it), so scan it and SetID.
-			var sink any
-			var idv, name, email string
-			if err := row.Scan(&idv, &name, &email, &sink, &sink, &sink); err != nil {
-				return nil, err
-			}
+			// framework no longer injects it), so read it and SetID.
+			idv, _ := m["id"].(string)
+			name, _ := m["name"].(string)
+			email, _ := m["email"].(string)
 			r.SetID(domain.NewID(idv))
 			r.Name = name + "_via_manual"
 			r.Email = email
@@ -273,11 +271,8 @@ func TestAggregateLoader_Load_ManualRootScannerNotFound(t *testing.T) {
 
 	loader := read.NewAggregateLoader[*loaderRoot](pg, func() *loaderRoot { return &loaderRoot{} }).
 		WithSchema(loaderRootSchemaFlat()).
-		WithRootScanner(func(row core.Row) (*loaderRoot, error) {
-			r := &loaderRoot{}
-			var sink any
-			var name, email string
-			return r, row.Scan(&sink, &name, &email, &sink, &sink, &sink)
+		WithRootScanner(func(map[string]any) (*loaderRoot, error) {
+			return &loaderRoot{}, nil // the by-id query returns no row, so this never runs
 		})
 
 	_, err := loader.FindOne(context.Background(), criteria.ByID(domain.NewID("00000000-0000-0000-0000-000000000000")))
@@ -305,12 +300,9 @@ func TestAggregateLoader_Load_WithManualChildScanner(t *testing.T) {
 
 	loader := read.NewAggregateLoader[*loaderRoot](pg, func() *loaderRoot { return &loaderRoot{} }).
 		WithSchema(loaderRootSchemaTagsOnly()).
-		WithChildScanner("loaderTagVO", func(rows core.Rows) (domain.AggregateValueObject, error) {
-			var sink any
-			var idval, label string
-			if err := rows.Scan(&idval, &sink, &label, &sink, &sink, &sink); err != nil {
-				return nil, err
-			}
+		WithChildScanner("loaderTagVO", func(m map[string]any) (domain.AggregateValueObject, error) {
+			idval, _ := m["id"].(string)
+			label, _ := m["label"].(string)
 			return loaderTagVO{ID: idval, Label: label + "_manual"}, nil
 		})
 

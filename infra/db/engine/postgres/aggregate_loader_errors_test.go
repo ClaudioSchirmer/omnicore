@@ -11,7 +11,6 @@ import (
 
 	"github.com/ClaudioSchirmer/omnicore/domain"
 	"github.com/ClaudioSchirmer/omnicore/infra/db/command/read"
-	"github.com/ClaudioSchirmer/omnicore/infra/db/core"
 	"github.com/ClaudioSchirmer/omnicore/infra/db/criteria"
 )
 
@@ -22,7 +21,7 @@ import (
 
 // --- manual root scanner (findRoots) -----------------------------------------
 
-func manualRootScanner(_ core.Row) (*aggLoaderTestEntity, error) {
+func manualRootScanner(map[string]any) (*aggLoaderTestEntity, error) {
 	e := &aggLoaderTestEntity{}
 	e.SetID(domain.NewID(uuid.NewString()))
 	return e, nil
@@ -69,7 +68,7 @@ func TestFindRoots_ManualScanner_EmptyIDErrors(t *testing.T) {
 	pool := newFakePool()
 	pool.queryHandler = func(string, []any) (pgx.Rows, error) { return &fakeRows{rows: 1}, nil }
 	// Scanner that forgets to populate the id — findRoots must reject it loudly.
-	scanner := func(core.Row) (*aggLoaderTestEntity, error) { return &aggLoaderTestEntity{}, nil }
+	scanner := func(map[string]any) (*aggLoaderTestEntity, error) { return &aggLoaderTestEntity{}, nil }
 	l := read.NewAggregateLoader[*aggLoaderTestEntity](newFakePostgres(pool), newAggLoaderTestEntity).
 		WithSchema(loaderSchema()).WithRootScanner(scanner)
 

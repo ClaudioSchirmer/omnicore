@@ -33,6 +33,20 @@ with `1.0.0`.
 
 ### Changed
 
+- **BREAKING: manual aggregate scanners decode by column NAME, not by position.**
+  `read.RootScanner`/`read.ChildScanner` now receive a `map[string]any` — the row
+  read by name, values normalized per backend (uuid → string, etc.) — instead of
+  a positional `core.Row`/`core.Rows` scanned with `row.Scan(&a, &b, ...)`. The
+  loader's manual path selects explicit columns (never `SELECT *`), so a manual
+  scanner is order-independent and DDL-safe (an online ADD COLUMN can no longer
+  shift the positions it reads), and the dialect-specific id decode (e.g. a MySQL
+  BINARY(16) id via `uuid.FromBytes`) is gone — the map already carries the
+  normalized string. *Migration*: change `func(core.Row) (T, error)` doing
+  `row.Scan(&id, &name, …)` to `func(map[string]any) (T, error)` reading
+  `m["id"]`/`m["name"]`; same for `WithChildScanner`. The manual scanner remains
+  the ONLY read that is not schema-driven-column-explicit (its query names the
+  schema's columns; only the developer's decode is manual).
+
 - **BREAKING: the day-to-day projection is PAYLOAD-DIRECT — the SyncEngine no
   longer re-reads the relational source per event.** For entity-rooted views
   without external embeds, each v2 event applies as ONE atomic

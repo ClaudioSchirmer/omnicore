@@ -62,6 +62,35 @@ func covChildRow(fk, id, label string) func() Rows {
 
 func noRows() Rows { return &fakeDBRows{} }
 
+// covAggMaps scripts the manual-scanner SELECT shapes (QueryMaps path): the root
+// SELECT (FROM cov_aggs) and the manual child SELECT (FROM cov_children).
+func covAggMaps(rootMaps, childMaps func() []map[string]any, capture *string) func(string, []any) ([]map[string]any, error) {
+	return func(sql string, _ []any) ([]map[string]any, error) {
+		switch {
+		case strings.Contains(sql, "FROM cov_children"):
+			return childMaps(), nil
+		case strings.Contains(sql, "FROM cov_aggs"):
+			if capture != nil {
+				*capture = sql
+			}
+			return rootMaps(), nil
+		}
+		return nil, nil
+	}
+}
+
+func covAggRootMap(id, name string) func() []map[string]any {
+	return func() []map[string]any { return []map[string]any{{"id": id, "name": name}} }
+}
+
+func covChildMap(fk, id, label string) func() []map[string]any {
+	return func() []map[string]any {
+		return []map[string]any{{"cov_agg_id": fk, "id": id, "label": label}}
+	}
+}
+
+func noMaps() []map[string]any { return nil }
+
 func TestFindOne_FoundHydratesRootAndChildren(t *testing.T) {
 	var rootSQL string
 	l := newCovAggLoader(fakeEngine(covAggQuery(covAggRootRow("r1", "Ana"), covChildRow("r1", "c1", "L1"), &rootSQL)), covAggSchema)
@@ -337,27 +366,27 @@ func TestFindRoots_AutoScanRowsErrPropagates(t *testing.T) {
 
 // ─── findRoots: manual root scanner path ─────────────────────────────────────
 
-func manualCovAggScanner(r Row) (*covAgg, error) {
-	var id, name string
-	if err := r.Scan(&id, &name); err != nil {
-		return nil, err
-	}
+func manualCovAggScanner(m map[string]any) (*covAgg, error) {
+	id, _ := m["id"].(string)
+	name, _ := m["name"].(string)
 	e := &covAgg{Name: name}
 	e.SetID(domain.NewID(id))
 	return e, nil
 }
 
-func TestFindRoots_ManualRootScanner_SelectStarAndIDRecovered(t *testing.T) {
+func TestFindRoots_ManualRootScanner_ExplicitColumnsAndIDRecovered(t *testing.T) {
 	var rootSQL string
-	l := newCovAggLoader(fakeEngine(covAggQuery(covAggRootRow("r1", "Ana"), noRows, &rootSQL)), covAggSchema).
-		WithRootScanner(manualCovAggScanner)
+	l := newCovAggLoader(
+		fakeEngineWithMaps(covAggQuery(noRows, noRows, nil), covAggMaps(covAggRootMap("r1", "Ana"), noMaps, &rootSQL)),
+		covAggSchema,
+	).WithRootScanner(manualCovAggScanner)
 
 	all, err := l.FindAll(context.Background(), criteria.Where(nil))
 	if err != nil {
 		t.Fatalf("FindAll: %v", err)
 	}
-	if !strings.HasPrefix(rootSQL, "SELECT * FROM cov_aggs") {
-		t.Errorf("a manual root scanner drives a SELECT *, got %q", rootSQL)
+	if !strings.Contains(rootSQL, "FROM cov_aggs") || strings.Contains(rootSQL, "SELECT *") {
+		t.Errorf("a manual root scanner drives an explicit-column SELECT (never SELECT *), got %q", rootSQL)
 	}
 	if len(all) != 1 || all[0].GetID().Value() != "r1" || all[0].Name != "Ana" {
 		t.Errorf("manual-scanned root wrong: %+v", all)
@@ -365,7 +394,8 @@ func TestFindRoots_ManualRootScanner_SelectStarAndIDRecovered(t *testing.T) {
 }
 
 func TestFindRoots_ManualRootScanner_QueryErrorPropagates(t *testing.T) {
-	l := newCovAggLoader(fakeEngine(func(string, []any) (Rows, error) { return nil, errFakeDB }), covAggSchema).
+	mapsErr := func(string, []any) ([]map[string]any, error) { return nil, errFakeDB }
+	l := newCovAggLoader(fakeEngineWithMaps(nil, mapsErr), covAggSchema).
 		WithRootScanner(manualCovAggScanner)
 	if _, err := l.FindAll(context.Background(), criteria.Where(nil)); !errors.Is(err, errFakeDB) {
 		t.Fatalf("expected query error, got %v", err)
@@ -373,27 +403,23 @@ func TestFindRoots_ManualRootScanner_QueryErrorPropagates(t *testing.T) {
 }
 
 func TestFindRoots_ManualRootScanner_ScannerErrorPropagates(t *testing.T) {
-	l := newCovAggLoader(fakeEngine(covAggQuery(covAggRootRow("r1", "Ana"), noRows, nil)), covAggSchema).
-		WithRootScanner(func(Row) (*covAgg, error) { return nil, errFakeDB })
+	l := newCovAggLoader(
+		fakeEngineWithMaps(covAggQuery(noRows, noRows, nil), covAggMaps(covAggRootMap("r1", "Ana"), noMaps, nil)),
+		covAggSchema,
+	).WithRootScanner(func(map[string]any) (*covAgg, error) { return nil, errFakeDB })
 	if _, err := l.FindAll(context.Background(), criteria.Where(nil)); !errors.Is(err, errFakeDB) {
 		t.Fatalf("expected scanner error, got %v", err)
 	}
 }
 
 func TestFindRoots_ManualRootScanner_MissingIDErrors(t *testing.T) {
-	l := newCovAggLoader(fakeEngine(covAggQuery(covAggRootRow("r1", "Ana"), noRows, nil)), covAggSchema).
-		WithRootScanner(func(Row) (*covAgg, error) { return &covAgg{Name: "no id set"}, nil })
+	l := newCovAggLoader(
+		fakeEngineWithMaps(covAggQuery(noRows, noRows, nil), covAggMaps(covAggRootMap("r1", "Ana"), noMaps, nil)),
+		covAggSchema,
+	).WithRootScanner(func(map[string]any) (*covAgg, error) { return &covAgg{Name: "no id set"}, nil })
 	_, err := l.FindAll(context.Background(), criteria.Where(nil))
 	if err == nil || !strings.Contains(err.Error(), "must populate the id") {
 		t.Fatalf("a manual scanner that skips SetID is a loud configuration error, got %v", err)
 	}
 }
 
-func TestFindRoots_ManualRootScanner_RowsErrPropagates(t *testing.T) {
-	erring := func() Rows { return &fakeDBRows{nextErr: errFakeDB} }
-	l := newCovAggLoader(fakeEngine(covAggQuery(erring, noRows, nil)), covAggSchema).
-		WithRootScanner(manualCovAggScanner)
-	if _, err := l.FindAll(context.Background(), criteria.Where(nil)); !errors.Is(err, errFakeDB) {
-		t.Fatalf("expected rows.Err to propagate, got %v", err)
-	}
-}

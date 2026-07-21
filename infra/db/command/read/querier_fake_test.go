@@ -12,6 +12,7 @@ var errFakeDB = errors.New("fake db error")
 // covered paths never reach them.
 type fakeQuerier struct {
 	queryFn func(sql string, args []any) (Rows, error)
+	mapsFn  func(sql string, args []any) ([]map[string]any, error)
 }
 
 func (q fakeQuerier) Query(_ context.Context, sql string, args ...any) (Rows, error) {
@@ -22,7 +23,10 @@ func (q fakeQuerier) Query(_ context.Context, sql string, args ...any) (Rows, er
 }
 func (fakeQuerier) QueryRow(context.Context, string, ...any) Row { return fakeDBRow{} }
 func (fakeQuerier) Exec(context.Context, string, ...any) error   { return nil }
-func (fakeQuerier) QueryMaps(context.Context, string, ...any) ([]map[string]any, error) {
+func (q fakeQuerier) QueryMaps(_ context.Context, sql string, args ...any) ([]map[string]any, error) {
+	if q.mapsFn != nil {
+		return q.mapsFn(sql, args)
+	}
 	return nil, nil
 }
 

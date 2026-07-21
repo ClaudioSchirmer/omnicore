@@ -13,16 +13,17 @@ import (
 )
 
 // RootScanner deserializes one row into a populated entity T. The loader passes
-// the backend-neutral infra.Row; the scanner does row.Scan(&t.field1, ...) and
-// returns the entity. It does not need to set the ID — the loader reads it via
-// t.GetID(). Because the scanner takes infra.Row (not pgx.Row), a manual scanner
-// runs on any engine; the consumer owns any dialect-specific column decoding
-// (e.g. a MySQL BINARY(16) id).
-type RootScanner[T domain.Entity] func(Row) (T, error)
+// a column-keyed map — the row read BY NAME, never by position, so it is
+// order-independent and stable across an online ADD COLUMN: the scanner reads
+// m["column"], type-asserts, and returns the entity. On the criteria path it MUST
+// set the ID (SetID) — the loader reads it back via t.GetID(). The map carries the
+// schema's declared columns, values normalized per backend (uuid → string, etc.),
+// so a manual scanner runs on any engine.
+type RootScanner[T domain.Entity] func(map[string]any) (T, error)
 
-// ChildScanner deserializes one row into an AggregateValueObject (neutral
-// infra.Rows — the scanner reads the current row via Scan).
-type ChildScanner func(Rows) (domain.AggregateValueObject, error)
+// ChildScanner deserializes one column-keyed row map into an AggregateValueObject
+// (read by name, same normalization as RootScanner).
+type ChildScanner func(map[string]any) (domain.AggregateValueObject, error)
 
 // AggregateLoader[T] loads an aggregate root + its children from the configured
 // relational backend. The
@@ -306,26 +307,26 @@ func (l *AggregateLoader[T]) findRoots(ctx context.Context, q *criteria.Query, l
 		offset = 0
 	}
 
-	// Manual root scanner: SELECT * + dev-controlled scan; id via GetID().
-	// Runs through the neutral Querier — the scanner receives infra.Row, so this
-	// works on any engine (the consumer owns any dialect-specific decoding).
+	// Manual root scanner: explicit columns (never SELECT *) + dev-controlled
+	// decode BY NAME; id via GetID(). Runs through the neutral Querier's QueryMaps
+	// (column-keyed rows), so it works on any engine and the selected column set
+	// stays stable across an online ADD COLUMN.
 	if l.rootScanner != nil {
-		sql := "SELECT * FROM " + dialect.QuoteIdent(table) + tailClause(clause, orderSQL)
+		sql := "SELECT " + selectColumns(dialect, l.schema.ReadColumns()) + " FROM " + dialect.QuoteIdent(table) + tailClause(clause, orderSQL)
 		sql, err = applyWindow(dialect, sql, limit, offset, orderSQL)
 		if err != nil {
 			return nil, nil, err
 		}
-		rows, err := l.eng.Querier().Query(ctx, sql, args...)
+		rowMaps, err := l.eng.Querier().QueryMaps(ctx, sql, args...)
 		if err != nil {
 			return nil, nil, err
 		}
-		defer rows.Close()
 		var (
 			entities []T
 			ids      []string
 		)
-		for rows.Next() {
-			root, err := l.rootScanner(rows)
+		for _, m := range rowMaps {
+			root, err := l.rootScanner(m)
 			if err != nil {
 				return nil, nil, err
 			}
@@ -333,15 +334,12 @@ func (l *AggregateLoader[T]) findRoots(ctx context.Context, q *criteria.Query, l
 			if idp == nil || idp.IsEmpty() {
 				return nil, nil, fmt.Errorf(
 					"AggregateLoader[%s]: a manual root scanner used with FindOne/FindAll must populate the id "+
-						"(scan it and call SetID) — the framework injects no id on the criteria path",
+						"(read m[\"<pk>\"] and call SetID) — the framework injects no id on the criteria path",
 					l.effectiveContextName(),
 				)
 			}
 			entities = append(entities, root)
 			ids = append(ids, idp.Value())
-		}
-		if err := rows.Err(); err != nil {
-			return nil, nil, err
 		}
 		return entities, ids, nil
 	}
@@ -404,6 +402,17 @@ func (l *AggregateLoader[T]) findRoots(ctx context.Context, q *criteria.Query, l
 
 // tailClause renders the " WHERE … [ORDER BY …]" suffix shared by the
 // auto-scan and manual-scanner root SELECTs (each part already validated). The
+// selectColumns renders an explicit, dialect-quoted column list for a read —
+// never SELECT *, so the result type stays stable across an online ADD COLUMN
+// (see core.TableSchema.ReadColumns for the rationale).
+func selectColumns(d Dialect, cols []string) string {
+	quoted := make([]string, len(cols))
+	for i, c := range cols {
+		quoted[i] = d.QuoteIdent(c)
+	}
+	return strings.Join(quoted, ", ")
+}
+
 // row cap is NOT part of the tail: the caller applies it over the complete
 // statement via Dialect.ApplyLimit, so each engine caps in its native position.
 func tailClause(clause, orderSQL string) string {
@@ -494,30 +503,25 @@ func (l *AggregateLoader[T]) hydrateChildren(ctx context.Context, entities []T, 
 		childFilter := childScopeFilter(scope, child, dialect, "")
 
 		if manual, ok := l.childScanners[typeName]; ok {
-			// Manual child scanner: neutral Querier; the FK arg is dialect-encoded
-			// (text on PG, BINARY(16) bytes on MySQL) just like the auto path.
+			// Manual child scanner: explicit columns (never SELECT *) + decode BY
+			// NAME via QueryMaps; the FK arg is dialect-encoded (text on PG,
+			// BINARY(16) bytes on MySQL) just like the auto path.
 			sql := fmt.Sprintf(
-				"SELECT * FROM %s WHERE %s = %s %s",
-				dialect.QuoteIdent(childTable), dialect.QuoteIdent(fkCol), dialect.Placeholder(1), childFilter,
+				"SELECT %s FROM %s WHERE %s = %s %s",
+				selectColumns(dialect, child.ReadColumns()), dialect.QuoteIdent(childTable), dialect.QuoteIdent(fkCol), dialect.Placeholder(1), childFilter,
 			)
 			for _, id := range rootIDs {
-				rows, err := l.eng.Querier().Query(ctx, sql, dialect.EncodeArg(domain.NewID(id)))
+				maps, err := l.eng.Querier().QueryMaps(ctx, sql, dialect.EncodeArg(domain.NewID(id)))
 				if err != nil {
 					return err
 				}
-				for rows.Next() {
-					avo, err := manual(rows)
+				for _, m := range maps {
+					avo, err := manual(m)
 					if err != nil {
-						rows.Close()
 						return err
 					}
 					avosByRoot[id] = append(avosByRoot[id], avo)
 				}
-				if err := rows.Err(); err != nil {
-					rows.Close()
-					return err
-				}
-				rows.Close()
 			}
 			continue
 		}

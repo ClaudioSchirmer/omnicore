@@ -541,15 +541,16 @@ SELECT user_id, id, label, street, number, complement, neighborhood, city, state
         <code>WithRootScanner</code> and/or <code>WithChildScanner</code>. The loader keeps handling
         children dispatch and <code>AggregateConstructor</code>; only the decoding is up to you.
     </p>
-    <pre><code>// Manual mode runs SELECT * — scan id first (the framework no longer injects
-// it on the criteria path) and SetID, then decode the rest however you like.
+    <pre><code>// Manual mode selects the schema's columns (never SELECT *) and hands you a
+// column-keyed map — read BY NAME, order-independent and stable across an online
+// ADD COLUMN. Populate the id and SetID (the framework no longer injects it on
+// the criteria path), then decode the rest however you like.
 r.loader = read.NewAggregateLoader[*User](eng, factory).
-    WithRootScanner(func(row read.Row) (*User, error) {
+    WithRootScanner(func(m map[string]any) (*User, error) {
         u := &amp;User{}
-        var id, firstName, lastName string
-        if err := row.Scan(&amp;id, &amp;firstName, &amp;lastName /* …, &amp;u.Email, etc */); err != nil {
-            return nil, err
-        }
+        id, _ := m["id"].(string)
+        firstName, _ := m["first_name"].(string)
+        lastName, _ := m["last_name"].(string)
         u.SetID(domain.NewID(id)) // REQUIRED: FindOne/FindAll recover the id via GetID()
         u.Name = firstName + " " + lastName
         return u, nil
