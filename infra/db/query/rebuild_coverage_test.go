@@ -91,9 +91,11 @@ func TestExecuteRebuild_BlueGreenSequence(t *testing.T) {
 	if len(slot.updates) < 2 {
 		t.Errorf("expected the shadow backfilled (>=2 upserts), got %d", len(slot.updates))
 	}
-	// After the flip the retired bare collection was reclaimed.
-	if len(store.dropped) != 1 || store.dropped[0] != view.Name() {
-		t.Errorf("expected the bare collection reclaimed, got %v", store.dropped)
+	// The shadow slot is dropped BEFORE provisioning (clean by construction —
+	// an unreclaimed retiree must never leak documents into the new build),
+	// then, after the flip, the retired bare collection is reclaimed.
+	if len(store.dropped) != 2 || store.dropped[0] != view.Name()+"__0" || store.dropped[1] != view.Name() {
+		t.Errorf("expected [shadow pre-drop, retired reclaim], got %v", store.dropped)
 	}
 }
 
@@ -164,9 +166,10 @@ func TestExecuteRebuild_StepErrors(t *testing.T) {
 		}
 		// An aborted backfill discards the half-built shadow (clears the dual-apply
 		// flag + drops the collection) instead of leaving it live; it never flips,
-		// so the bare active is never reclaimed. dropped == [shadow] proves it.
-		if len(store.dropped) != 1 || store.dropped[0] != view.Name()+"__0" {
-			t.Errorf("expected the shadow discarded on backfill abort, dropped=%v", store.dropped)
+		// so the bare active is never reclaimed. dropped == [pre-drop, discard]
+		// (both on the shadow) proves it.
+		if len(store.dropped) != 2 || store.dropped[0] != view.Name()+"__0" || store.dropped[1] != view.Name()+"__0" {
+			t.Errorf("expected the shadow pre-dropped and discarded on backfill abort, dropped=%v", store.dropped)
 		}
 	})
 	t.Run("verifyError", func(t *testing.T) {

@@ -203,3 +203,40 @@ func TestBuildWritePayloadV2_SiblingsMergeFlat(t *testing.T) {
 		t.Errorf("an all-nil sibling must be omitted, got %v", p2)
 	}
 }
+
+// Shape #4 on the wire: a child's SIBLING fields merge FLAT into the child's
+// payload item, exactly like the composed document renders them.
+func TestBuildWritePayloadV2_ChildSiblingFieldsFlat(t *testing.T) {
+	child := NewTableSchema[bcAddr]("bc_addrs").PK("id").FK("root_id").
+		Field("Street", "street").
+		Sibling(NewSiblingSchema[bcAddr]("bc_addr_extras").Field("Street", "street_copy"))
+	base := NewSharedBase("pessoa").Revision("revision").PK("id").
+		Field("Name", "name").Field("Document", "document").NaturalKey("document")
+	schema := NewTableSchema[*bcRole]("aluno").PK("id").Revision("revision").
+		Field("Matricula", "matricula").SharedBase(base, "pessoa_id").Child(child)
+	e := &bcRole{Name: "Ana", Document: "D9", Matricula: "M9"}
+	domain.AddAggregateChild(e, bcAddr{Street: "Main"})
+	root, _ := any(e).(domain.AggregateRootProvider)
+
+	p := buildWritePayloadV2(schema, e, root.GetAggregateRoot(), "INSERTED", testNow,
+		schema.WriteFields(e), outboxMeta{ID: "r1", Revision: 1, BaseID: deterministicBaseID("D9"), BaseRevision: 1})
+	items := p["_children"].(map[string]any)["bcAddr"].([]map[string]any)
+	if items[0]["street_copy"] != "Main" {
+		t.Fatalf("child item must carry the child-sibling field flat, got %v", items[0])
+	}
+}
+
+// The physical revision column must NEVER leak into the payload's scalars —
+// buildInsert appends it to the statement without mutating the caller's map
+// (which becomes the outbox payload and WriteResult.Fields).
+func TestBuildInsert_DoesNotLeakRevisionIntoFields(t *testing.T) {
+	fields := domain.Fields{"name": "alice"}
+	_, args := buildInsert(testPGDialect{}, "users", "id", "11111111-1111-1111-1111-111111111111",
+		fields, nil, testNow, "revision")
+	if _, leaked := fields["revision"]; leaked {
+		t.Fatal("buildInsert mutated the caller's fields map — the payload would carry the physical revision column")
+	}
+	if args[len(args)-1] != int64(1) {
+		t.Fatalf("the revision init must bind 1 as the last arg, got %v", args)
+	}
+}

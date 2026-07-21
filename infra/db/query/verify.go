@@ -1,6 +1,7 @@
 package query
 
 import (
+	"sort"
 	"context"
 	"fmt"
 )
@@ -164,7 +165,8 @@ func (s *SyncEngine) verifyValueSample(ctx context.Context, view *ViewDefinition
 			return err
 		}
 		if !ok {
-			return fmt.Errorf("verify %q: shadow document %q diverges in shape from a fresh compose", view.name, id)
+			return fmt.Errorf("verify %q: shadow document %q diverges in shape from a fresh compose%s",
+				view.name, id, s.shapeDiffDetail(ctx, view, shadow, id))
 		}
 	}
 	return nil
@@ -190,6 +192,36 @@ func (s *SyncEngine) sampleMatches(ctx context.Context, view *ViewDefinition, sh
 		return false, nil // the forward pass should have filled it
 	}
 	return sameFieldShape(fresh, stored[0]), nil
+}
+
+// shapeDiffDetail names the diverging top-level keys for the verify error —
+// " (fresh-only: [...]; stored-only: [...])" — so an equivalence failure is
+// diagnosable from the log alone. Best-effort: any re-read error yields "".
+func (s *SyncEngine) shapeDiffDetail(ctx context.Context, view *ViewDefinition, shadow PhysicalCollection, id string) string {
+	fresh, err := s.composer.Compose(ctx, view, id)
+	if err != nil || fresh == nil {
+		return ""
+	}
+	stored, err := s.mongo.FindManyByField(ctx, shadow, "_id", id)
+	if err != nil || len(stored) == 0 {
+		return ""
+	}
+	fk := fieldNamesExceptID(fresh)
+	sk := fieldNamesExceptID(stored[0])
+	var freshOnly, storedOnly []string
+	for k := range fk {
+		if _, ok := sk[k]; !ok {
+			freshOnly = append(freshOnly, k)
+		}
+	}
+	for k := range sk {
+		if _, ok := fk[k]; !ok {
+			storedOnly = append(storedOnly, k)
+		}
+	}
+	sort.Strings(freshOnly)
+	sort.Strings(storedOnly)
+	return fmt.Sprintf(" (fresh-only: %v; stored-only: %v)", freshOnly, storedOnly)
 }
 
 // sameFieldShape compares two documents by their top-level field names,

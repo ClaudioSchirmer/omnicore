@@ -170,6 +170,10 @@ func (c *Composer) mergeSharedBaseBatch(ctx context.Context, docs []Document, sc
 		if len(rows) == 0 {
 			continue
 		}
+		// Same watermark discipline as the per-row mergeSharedBase: the base's
+		// physical revision column becomes the _base_revision watermark, never a
+		// document field (idempotent — the grouped row is shared across docs).
+		remapRevision(rows[0], base, docBaseRevisionField)
 		for col, val := range rows[0] {
 			if skip[col] {
 				continue
@@ -321,8 +325,11 @@ func (c *Composer) composeBaseRootedRowsBatched(ctx context.Context, view *ViewD
 
 		// Attach the sub-document (an absent role writes an explicit nil segment so
 		// the $set upsert overwrites a vanished role rather than leaving it stale).
+		// The role row's physical revision column becomes the segment's _revision
+		// watermark — same discipline as the per-row composeBaseRootedRow.
 		for _, row := range rows {
 			if rr := roleByBase[keyOf(row, basePK)]; rr != nil {
+				remapRevision(rr, r.schema, docRevisionField)
 				row[r.segment] = rr
 			} else {
 				row[r.segment] = nil

@@ -342,6 +342,15 @@ func OrdersView() *query.ViewDefinition {
     external/type-less (an embed composes EXTERNAL data only — see above), so it inherits no Go type to derive its segment
     from: <code>.As(...)</code> is always required, never an optional override.
 </p>
+<p>
+    <strong>Two writers, one document — field ownership.</strong> A view with external embeds is kept current by two
+    independent consumers: the SyncEngine recomposes it on the entity's own events, and the recompose-ripple recomposes it
+    on the upstream collection's events. Neither write can regress the other's data: each is one atomic pipeline upsert
+    claiming only the fields its writer read freshly — the ripple owns the embed segments, the SyncEngine owns everything
+    else — and whichever arrives first materializes the complete document (the other's next update then touches only its
+    own fields). Cross-topic event ordering therefore never matters for correctness: an embed array always converges to the
+    upstream mirror's current state even when the parent's own event and the embedded rows' events race across CDC topics.
+</p>
 
 <h3 id="boot-checks">Boot checks</h3>
 <ul>

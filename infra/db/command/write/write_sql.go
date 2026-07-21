@@ -44,10 +44,6 @@ func writeNow() time.Time { return time.Now().UTC().Truncate(time.Microsecond) }
 // Postgres, BINARY(16) on MySQL. No RETURNING: the id AND the timestamps are
 // known up front.
 func buildInsert(d Dialect, table, pk, id string, fields domain.Fields, nowCols []string, now time.Time, revCol string) (string, []any) {
-	if revCol != "" {
-		// A fresh row starts its commit-order token at 1 — a plain bound field.
-		fields[revCol] = int64(1)
-	}
 	keys := SortedKeys(fields)
 	cols := make([]string, 0, len(keys)+1+len(nowCols))
 	phs := make([]string, 0, len(keys)+1+len(nowCols))
@@ -70,6 +66,16 @@ func buildInsert(d Dialect, table, pk, id string, fields domain.Fields, nowCols 
 		n++
 		phs = append(phs, d.Placeholder(n))
 		args = append(args, d.EncodeArg(now))
+	}
+	if revCol != "" {
+		// A fresh row starts its commit-order token at 1 — appended here so the
+		// caller's fields map stays untouched (it flows into the outbox payload
+		// and WriteResult.Fields; the physical revision column must never leak
+		// there — the document form is the _revision watermark).
+		cols = append(cols, d.QuoteIdent(revCol))
+		n++
+		phs = append(phs, d.Placeholder(n))
+		args = append(args, int64(1))
 	}
 	sql := fmt.Sprintf("INSERT INTO %s (%s) VALUES (%s)",
 		d.QuoteIdent(table), strings.Join(cols, ", "), strings.Join(phs, ", "))

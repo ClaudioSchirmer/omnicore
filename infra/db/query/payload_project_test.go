@@ -33,8 +33,14 @@ func TestBuildProjectionStages_OrderAndGuards(t *testing.T) {
 		t.Fatal("decode failed")
 	}
 	stages := buildProjectionStages(pdSchema(), ev)
-	if len(stages) != 2 {
-		t.Fatalf("want child stage + guarded scalar stage, got %d: %v", len(stages), stages)
+	if len(stages) != 3 {
+		t.Fatalf("want child stage + guarded scalar stage + segment normalize, got %d: %v", len(stages), stages)
+	}
+	// The final stage materializes every declared child segment ($ifNull → [])
+	// so the projected shape matches the composed one.
+	norm := stages[2]["$set"].(Document)
+	if _, ok := norm["pdChilds"]; !ok {
+		t.Fatalf("segment normalize stage must cover declared children, got %v", norm)
 	}
 	// Stage order is load-bearing: the child edit (guarded by the ORIGINAL
 	// _revision) must precede the scalar stage that advances the watermark.

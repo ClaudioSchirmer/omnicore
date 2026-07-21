@@ -393,6 +393,20 @@ func (s *SyncEngine) applyUpsert(ctx context.Context, viewName, id string, doc D
 	return nil
 }
 
+// applyConsultUpsert writes a consult-composed document. A view without
+// embeds has a single writer family per document, so the full-document Upsert
+// stands. A view WITH embeds shares its documents with the recompose-ripple
+// (UpstreamSubscriber): the embed segments composed here may be staler than a
+// concurrent ripple, so the write claims only the non-embed fields and leaves
+// the embed segments to their owner (see fieldOwnershipStages).
+func (s *SyncEngine) applyConsultUpsert(ctx context.Context, view *ViewDefinition, id string, doc Document) error {
+	if len(view.embeds) == 0 {
+		return s.applyUpsert(ctx, view.name, id, doc)
+	}
+	stages := fieldOwnershipStages(doc, schemaPK(view.schema), embedFieldSet(view.embeds), false)
+	return s.applyProjection(ctx, view.name, id, stages)
+}
+
 // applyProjection runs the payload-direct pipeline on the view's active slot
 // and, during a rebuild, on the shadow slot too — the same dual-apply
 // discipline as applyUpsert, so the blue-green window misses nothing.
@@ -541,7 +555,7 @@ func (s *SyncEngine) process(ctx context.Context, event kafkaEvent) error {
 		if doc == nil {
 			continue
 		}
-		if err := s.applyUpsert(ctx, view.name, event.AggregateID, doc); err != nil {
+		if err := s.applyConsultUpsert(ctx, view, event.AggregateID, doc); err != nil {
 			return err
 		}
 	}
@@ -584,7 +598,7 @@ func (s *SyncEngine) fanOutSharedBase(ctx context.Context, baseID string, baseVi
 		for _, doc := range composed {
 			id := fmt.Sprintf("%v", doc[pkCol])
 			present[id] = struct{}{}
-			if err := s.applyUpsert(ctx, view.name, id, doc); err != nil {
+			if err := s.applyConsultUpsert(ctx, view, id, doc); err != nil {
 				return err
 			}
 		}
@@ -664,7 +678,7 @@ func (s *SyncEngine) recomposeBaseRooted(ctx context.Context, event kafkaEvent, 
 			}
 			continue
 		}
-		if err := s.applyUpsert(ctx, rt.view.name, baseID, doc); err != nil {
+		if err := s.applyConsultUpsert(ctx, rt.view, baseID, doc); err != nil {
 			return err
 		}
 	}

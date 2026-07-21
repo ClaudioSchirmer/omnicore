@@ -59,12 +59,25 @@ func buildProjectionStages(schema *core.TableSchema, ev *decodedEvent) []Documen
 	}
 	own := Document{}
 	base := Document{}
+	revCol := schema.RevisionColumn()
 	for col, v := range ev.Scalars {
+		if col == revCol && revCol != "" {
+			continue // the doc form of the token is the _revision watermark
+		}
 		if baseCols[col] {
 			base[col] = lit(v)
 			continue
 		}
 		own[col] = lit(v)
+	}
+	// The document is a COLUMN-KEYED physical mirror: the PK column must exist
+	// on it exactly as the composer's SELECT * produced it — readers project it
+	// (GraphQL root.id) and the shared-base fan-out FINDS the sibling-role docs
+	// by it (FindIDsByField on the link column, which under the shared-PK model
+	// IS the PK). WriteFields excludes the PK, so the projector restores it
+	// from the structural ids.
+	if pk := schema.PKColumn(); pk != "" && ev.IDs.ID != "" {
+		own[pk] = lit(ev.IDs.ID)
 	}
 	// Stage ORDER is load-bearing: pipeline stages are sequential, so every
 	// own-data stage guarded by the _revision watermark must run BEFORE the
@@ -78,7 +91,32 @@ func buildProjectionStages(schema *core.TableSchema, ev *decodedEvent) []Documen
 	if len(own) > 0 {
 		stages = append(stages, guardedSetStage(docRevisionField, own, ev.IDs.Revision))
 	}
+	if norm := segmentNormalizeStage(schema); norm != nil {
+		stages = append(stages, norm)
+	}
 	return stages
+}
+
+// segmentNormalizeStage guarantees every DECLARED child segment exists on the
+// document (missing → empty array, existing untouched): the composed document
+// always materializes the arrays (a childless aggregate composes `[]`), so the
+// projected document must match shape — the blue-green verify compares them.
+func segmentNormalizeStage(schema *core.TableSchema) Document {
+	set := Document{}
+	addSegs := func(children []*core.TableSchema) {
+		for _, child := range children {
+			seg := childDocSegment(child)
+			set[seg] = Document{"$ifNull": []any{"$" + seg, []any{}}}
+		}
+	}
+	addSegs(schema.ChildSchemas())
+	if base, _, ok := schema.SharedBaseRef(); ok {
+		addSegs(base.ChildSchemas())
+	}
+	if len(set) == 0 {
+		return nil
+	}
+	return Document{"$set": set}
 }
 
 // ownGuardedChildStages renders the OWN child edits, each array expression

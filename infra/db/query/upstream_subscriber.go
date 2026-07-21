@@ -722,8 +722,14 @@ func (s *UpstreamSubscriber) rippleRecomposeOne(ctx context.Context, v *ViewDefi
 // recording an upsert-stage failure to the registry on error. Returns true iff a
 // failure was recorded. Shared by the batch happy path and the per-id fallback so
 // upsert failures stay isolated per local id on both.
+//
+// The write claims ONLY the embed segments (plus the full document when this
+// upsert is creating it): the non-embed fields composed here may be staler
+// than a concurrent SyncEngine recompose of the same document, and a
+// full-document Upsert would regress them — see fieldOwnershipStages.
 func (s *UpstreamSubscriber) rippleUpsertOne(ctx context.Context, v *ViewDefinition, upstreamID, localID string, doc Document) (failed bool) {
-	if err := s.mongo.Upsert(ctx, s.resolver.Active(v.Name()), localID, doc); err != nil {
+	stages := fieldOwnershipStages(doc, schemaPK(v.schema), embedFieldSet(v.embeds), true)
+	if err := s.mongo.ApplyProjection(ctx, s.resolver.Active(v.Name()), localID, stages); err != nil {
 		s.metrics.inc(s.cfg.Topic, v.Name(), upstreamRecomposeStageUpsert)
 		s.logger.Error("upstream.recompose.upsert",
 			"subscription", s.cfg.Topic,

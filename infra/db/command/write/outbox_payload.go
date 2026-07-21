@@ -120,6 +120,12 @@ func buildWritePayloadV2(
 		if u := schema.UpdatedAtColumn(); u != "" {
 			out[u] = now
 		}
+		// The composed document ALWAYS carries the soft-delete key (SELECT *
+		// includes the NULL column); the projected document must match shape,
+		// so a fresh row travels with an explicit null.
+		if sd, ok := schema.SoftDeleteColumn(); ok {
+			out[sd] = nil
+		}
 	case "UPDATED":
 		if u := schema.UpdatedAtColumn(); u != "" {
 			out[u] = now
@@ -161,6 +167,18 @@ func appendChildrenBlocks(out map[string]any, schema *TableSchema, root *domain.
 			if op != "archive" && op != "delete" {
 				for k, v := range child.WriteFields(it.Item) {
 					item[k] = v
+				}
+				// The child's SIBLING fields merge FLAT into the item (shape #4),
+				// exactly like the composed document renders them — an all-nil
+				// sibling slice stays absent, mirroring the write itself.
+				for _, sib := range child.Siblings() {
+					sf := sib.WriteFields(it.Item)
+					if allNilFields(sf) {
+						continue
+					}
+					for k, v := range sf {
+						item[k] = v
+					}
 				}
 			}
 			// An archive op carries the exact stamp the child UPDATE bound, so

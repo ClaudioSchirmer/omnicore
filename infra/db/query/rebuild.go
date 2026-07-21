@@ -179,9 +179,20 @@ func (s *SyncEngine) ExecuteRebuild(ctx context.Context, plan DriftPlan, cfg Reb
 		slog.String("from_hash", registryCombinedOrNone(plan.Registry)),
 		slog.String("to_hash", plan.CurrentCombinedHash))
 
-	// Step 5 — provision the shadow slot to the view's declared shape, record it
-	// on the registry row (turning on dual-apply cluster-wide), and refresh so
-	// this driver observes the shadow too.
+	// Step 5 — the shadow ALWAYS starts empty: drop whatever occupies the slot
+	// first. A retired slot whose one-lease reclaim never ran (the process shut
+	// down before the lease elapsed) still holds the PREVIOUS generation's
+	// documents — G5a only covers registry-FLAGGED shadows, so an unreclaimed
+	// retiree is invisible to it. Reusing it without the drop resurrects
+	// leftover documents: verify's reverse pass deletes the ones its snapshot
+	// saw, but its deliberate late-write protection (a doc arriving after the
+	// snapshot is presumed a dual-applied concurrent write) cannot tell a
+	// leftover from a live write — so the slot must be clean BY CONSTRUCTION,
+	// never by reconciliation. Then provision the declared shape and record the
+	// slot on the registry row (turning on dual-apply cluster-wide).
+	if err := s.mongo.DropCollection(ctx, shadow); err != nil {
+		return fmt.Errorf("rebuild %q: drop stale shadow %q: %w", collection, shadow, err)
+	}
 	if err := s.mongo.ProvisionSlot(ctx, view, shadow); err != nil {
 		return fmt.Errorf("rebuild %q: provision shadow %q: %w", collection, shadow, err)
 	}

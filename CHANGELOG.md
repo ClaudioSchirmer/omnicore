@@ -125,6 +125,21 @@ with `1.0.0`.
   reads with `DB.Querier()`, and any direct `migration.New` call with
   `migration.NewPostgres(dsn, dir)`.
 
+### Fixed
+
+- **Consult-class view documents no longer lose fields to a concurrent-writer
+  race.** A view with external embeds has TWO independent writers converging on
+  the same document `_id` — the SyncEngine (recomposing on the entity's own
+  events) and the UpstreamSubscriber recompose-ripple (recomposing on upstream
+  events) — and both wrote full-document Upserts, so whichever landed last
+  regressed the other's freshly-read fields (observed as an `EmbedMany` array
+  frozen without its newest item whenever the parent's own event out-raced the
+  item ripples across CDC topics; the wider the relay's batching skew, the more
+  likely). Both writers now write ONE atomic pipeline upsert claiming only the
+  fields they read freshly — the ripple owns the embed segments, the SyncEngine
+  owns everything else; whoever arrives first still materializes the complete
+  document. Views without embeds keep the plain full-document Upsert.
+
 ## [0.35.0] - 2026-07-19
 
 ### Added
