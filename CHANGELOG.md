@@ -145,6 +145,21 @@ with `1.0.0`.
 
 ### Fixed
 
+- **Schema-driven reads name their columns explicitly — an online column-add
+  can no longer transiently break an in-flight projection.** The composer's read
+  path issued `SELECT *`; a cached prepared-statement plan of a `SELECT *` binds
+  to the table's column layout, so a blue-green view rebuild that adds a
+  projected column (online, while a pod keeps serving the old version)
+  invalidated the plan and the next execution failed with "cached plan must not
+  change result type" (Postgres SQLSTATE 0A000) — one CDC event then failed to
+  project until a later redelivery (a transient off-by-one on the new slot; no
+  permanent loss). Every schema-driven read now emits an explicit column list
+  (new `TableSchema.ReadColumns()` — PK + business fields + shared-base/child
+  FKs + managed columns, in a deterministic order that keeps the prepared-plan
+  cache to one entry per shape), so an added-but-unlisted column never changes
+  the result type. The developer's manual aggregate scanner (which decodes raw
+  rows) and the offline admin replay tool keep `SELECT *` by design.
+
 - **Consult-class view documents no longer lose fields to a concurrent-writer
   race.** A view with external embeds has TWO independent writers converging on
   the same document `_id` — the SyncEngine (recomposing on the entity's own

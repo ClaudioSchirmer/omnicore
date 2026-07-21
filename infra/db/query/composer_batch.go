@@ -91,8 +91,8 @@ func (c *Composer) fetchInGrouped(ctx context.Context, schema *core.TableSchema,
 			ph[i] = d.Placeholder(i + 1)
 			args[i] = c.encodeKey(k)
 		}
-		sql := fmt.Sprintf("SELECT * FROM %s WHERE %s IN (%s)%s",
-			d.QuoteIdent(table), d.QuoteIdent(keyCol), strings.Join(ph, ", "), cond)
+		sql := fmt.Sprintf("SELECT %s FROM %s WHERE %s IN (%s)%s",
+			selectList(d, readColsWithKey(schema, keyCol)), d.QuoteIdent(table), d.QuoteIdent(keyCol), strings.Join(ph, ", "), cond)
 		results, err := c.eng.Querier().QueryMaps(ctx, sql, args...)
 		if err != nil {
 			return nil, err

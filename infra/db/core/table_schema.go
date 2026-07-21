@@ -866,6 +866,45 @@ func (s *TableSchema) ScanPlan() (cols []string, byCol map[string]int) {
 	return cols, byCol
 }
 
+// ReadColumns is the complete, deterministically ordered set of PHYSICAL columns
+// this schema's table carries — the explicit column list a read issues instead of
+// SELECT *. Order: PK, business fields (declaration order), the shared-base FK (a
+// role's link to its base) and the aggregate-child FK, then the managed columns
+// (created_at, updated_at, deleted_at, revision) — each included only when
+// declared, deduplicated (PK==FK collapses to one). It names the columns of THIS
+// ONE table only: siblings and the shared base are separate tables read through
+// their own schema.
+//
+// Naming the columns (never SELECT *) keeps a prepared statement's result type
+// stable across an online ADD COLUMN, so a blue-green view rebuild that adds a
+// projected column cannot break an in-flight read on a pod still serving the old
+// version ("cached plan must not change result type", SQLSTATE 0A000). Every
+// column a read consumes lives in the schema by invariant, so the list is
+// complete by construction; an undeclared physical column is never scanned.
+func (s *TableSchema) ReadColumns() []string {
+	seen := make(map[string]bool)
+	cols := make([]string, 0, len(s.fields)+6)
+	add := func(c string) {
+		if c != "" && !seen[c] {
+			seen[c] = true
+			cols = append(cols, c)
+		}
+	}
+	add(s.pkColumn)
+	for _, f := range s.fields {
+		add(f.column)
+	}
+	if s.sharedBaseLink != nil {
+		add(s.sharedBaseLink.fkColumn)
+	}
+	add(s.fkColumn)
+	add(s.createdAt)
+	add(s.updatedAt)
+	add(s.softDelete)
+	add(s.revisionCol)
+	return cols
+}
+
 // FieldResolver maps a Go field name to its SQL column. The criteria translator
 // builds one from the entity's TableSchema (TableSchema.FieldResolver); ok=false
 // for an unknown / non-persisted field → the translator fails fast (developer

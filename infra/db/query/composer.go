@@ -245,8 +245,8 @@ func (c *Composer) fetchRoleRow(ctx context.Context, r roleDef, baseID string, i
 // base — the deterministic remnant pick when no active row exists.
 func (c *Composer) fetchLatestArchived(ctx context.Context, schema *core.TableSchema, keyCol, keyVal, sdCol string) (Document, error) {
 	d := c.eng.Dialect()
-	sql := d.ApplyLimit(fmt.Sprintf("SELECT * FROM %s WHERE %s = %s AND %s IS NOT NULL ORDER BY %s DESC",
-		d.QuoteIdent(schema.Table()), d.QuoteIdent(keyCol), d.Placeholder(1), d.QuoteIdent(sdCol), d.QuoteIdent(sdCol)), 1)
+	sql := d.ApplyLimit(fmt.Sprintf("SELECT %s FROM %s WHERE %s = %s AND %s IS NOT NULL ORDER BY %s DESC",
+		selectList(d, readColsWithKey(schema, keyCol)), d.QuoteIdent(schema.Table()), d.QuoteIdent(keyCol), d.Placeholder(1), d.QuoteIdent(sdCol), d.QuoteIdent(sdCol)), 1)
 	results, err := c.eng.Querier().QueryMaps(ctx, sql, c.encodeKey(keyVal))
 	if err != nil || len(results) == 0 {
 		return nil, err
@@ -482,7 +482,8 @@ func (c *Composer) fetchMongoEmbed(ctx context.Context, doc Document, parentPK s
 // the source has soft-delete AND archived rows are excluded. The dialect renders
 // the placeholder ($1 on PG, ? on MySQL) and identifier quoting so the same
 // composer drives any backend.
-func buildFetchSQL(d core.Dialect, verb, table, keyCol, sdCol string, includeArchived bool) string {
+func buildFetchSQL(d core.Dialect, verb, table string, cols []string, keyCol, sdCol string, includeArchived bool) string {
+	sel := selectList(d, cols)
 	cond := ""
 	if !includeArchived && sdCol != "" {
 		cond = " AND " + d.QuoteIdent(sdCol) + " IS NULL"
@@ -490,16 +491,50 @@ func buildFetchSQL(d core.Dialect, verb, table, keyCol, sdCol string, includeArc
 	if keyCol == "" {
 		// fetchAll: no key predicate.
 		if cond == "" {
-			return fmt.Sprintf("SELECT * FROM %s", d.QuoteIdent(table))
+			return fmt.Sprintf("SELECT %s FROM %s", sel, d.QuoteIdent(table))
 		}
-		return fmt.Sprintf("SELECT * FROM %s WHERE %s IS NULL", d.QuoteIdent(table), d.QuoteIdent(sdCol))
+		return fmt.Sprintf("SELECT %s FROM %s WHERE %s IS NULL", sel, d.QuoteIdent(table), d.QuoteIdent(sdCol))
 	}
-	sqlStr := fmt.Sprintf("SELECT * FROM %s WHERE %s = %s%s",
-		d.QuoteIdent(table), d.QuoteIdent(keyCol), d.Placeholder(1), cond)
+	sqlStr := fmt.Sprintf("SELECT %s FROM %s WHERE %s = %s%s",
+		sel, d.QuoteIdent(table), d.QuoteIdent(keyCol), d.Placeholder(1), cond)
 	if verb == "row" {
 		sqlStr = d.ApplyLimit(sqlStr, 1)
 	}
 	return sqlStr
+}
+
+// readColsWithKey is the schema's read columns PLUS the key column the fetch
+// groups or maps rows by — the composer reads row[keyCol] to bucket results, so
+// the key MUST come back in the row. ReadColumns names a table's OWN columns, but
+// the join key can be a column the schema does not list among them (a sibling's
+// shared-PK join column, say, owned by its parent), so it is unioned in
+// explicitly. keyCol == "" (fetchAll) adds nothing.
+func readColsWithKey(schema *core.TableSchema, keyCol string) []string {
+	cols := schema.ReadColumns()
+	if keyCol == "" {
+		return cols
+	}
+	for _, c := range cols {
+		if c == keyCol {
+			return cols
+		}
+	}
+	return append(cols, keyCol)
+}
+
+// selectList renders an explicit, dialect-quoted column list for a read — never
+// SELECT * (see core.TableSchema.ReadColumns for why: a named result type stays
+// stable across an online ADD COLUMN). Falls back to "*" only if a caller passes
+// no columns, which a real schema never does (it always has at least a PK).
+func selectList(d core.Dialect, cols []string) string {
+	if len(cols) == 0 {
+		return "*"
+	}
+	quoted := make([]string, len(cols))
+	for i, c := range cols {
+		quoted[i] = d.QuoteIdent(c)
+	}
+	return strings.Join(quoted, ", ")
 }
 
 // encodeKey wraps the (always uuid-shaped) composer key as a domain.ID and runs
@@ -513,7 +548,7 @@ func (c *Composer) encodeKey(keyVal string) any {
 func (c *Composer) fetchRow(ctx context.Context, schema *core.TableSchema, table, keyCol, keyVal, sdCol string, includeArchived bool) (Document, error) {
 	d := c.eng.Dialect()
 	results, err := c.eng.Querier().QueryMaps(ctx,
-		buildFetchSQL(d, "row", table, keyCol, sdCol, includeArchived), c.encodeKey(keyVal))
+		buildFetchSQL(d, "row", table, readColsWithKey(schema, keyCol), keyCol, sdCol, includeArchived), c.encodeKey(keyVal))
 	if err != nil || len(results) == 0 {
 		return nil, err
 	}
@@ -525,7 +560,7 @@ func (c *Composer) fetchRow(ctx context.Context, schema *core.TableSchema, table
 func (c *Composer) fetchWhere(ctx context.Context, schema *core.TableSchema, table, keyCol, keyVal, sdCol string, includeArchived bool) ([]Document, error) {
 	d := c.eng.Dialect()
 	results, err := c.eng.Querier().QueryMaps(ctx,
-		buildFetchSQL(d, "where", table, keyCol, sdCol, includeArchived), c.encodeKey(keyVal))
+		buildFetchSQL(d, "where", table, readColsWithKey(schema, keyCol), keyCol, sdCol, includeArchived), c.encodeKey(keyVal))
 	if err != nil {
 		return nil, err
 	}
@@ -558,8 +593,8 @@ func (c *Composer) fetchByIDs(ctx context.Context, schema *core.TableSchema, tab
 			placeholders[i] = d.Placeholder(i + 1)
 			args[i] = c.encodeKey(id)
 		}
-		sql := fmt.Sprintf("SELECT * FROM %s WHERE %s IN (%s)%s",
-			d.QuoteIdent(table), d.QuoteIdent(keyCol), strings.Join(placeholders, ", "), cond)
+		sql := fmt.Sprintf("SELECT %s FROM %s WHERE %s IN (%s)%s",
+			selectList(d, readColsWithKey(schema, keyCol)), d.QuoteIdent(table), d.QuoteIdent(keyCol), strings.Join(placeholders, ", "), cond)
 		results, err := c.eng.Querier().QueryMaps(ctx, sql, args...)
 		if err != nil {
 			return nil, err
@@ -572,7 +607,7 @@ func (c *Composer) fetchByIDs(ctx context.Context, schema *core.TableSchema, tab
 func (c *Composer) fetchAll(ctx context.Context, schema *core.TableSchema, table, sdCol string, includeArchived bool) ([]Document, error) {
 	d := c.eng.Dialect()
 	results, err := c.eng.Querier().QueryMaps(ctx,
-		buildFetchSQL(d, "all", table, "", sdCol, includeArchived))
+		buildFetchSQL(d, "all", table, readColsWithKey(schema, ""), "", sdCol, includeArchived))
 	if err != nil {
 		return nil, err
 	}
