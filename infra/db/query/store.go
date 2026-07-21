@@ -47,6 +47,13 @@ type ReadModelStore interface {
 	// UpdateFields applies a partial $set to the document keyed by id; missing
 	// target is not an error.
 	UpdateFields(ctx context.Context, collection PhysicalCollection, id string, fields Document) error
+	// ApplyProjection applies an aggregation-pipeline update (upsert) to the
+	// document keyed by id — the payload-direct projection's atomic write:
+	// unconditional own-field sets, revision-guarded shared-base sets and
+	// surgical child-array edits execute server-side in ONE operation, so
+	// interleaved writers (role events, shared-base fan-out) never
+	// read-modify-write. stages are standard update-pipeline documents.
+	ApplyProjection(ctx context.Context, collection PhysicalCollection, id string, stages []Document) error
 	// HasDocuments reports whether the collection holds at least one document.
 	HasDocuments(ctx context.Context, collection PhysicalCollection) (bool, error)
 	// SnapshotDocumentIDs returns the set of every document _id in the collection.

@@ -81,6 +81,15 @@ func (s *fakeStore) UpdateFields(_ context.Context, collection PhysicalCollectio
 	return nil
 }
 
+func (s *fakeStore) ApplyProjection(_ context.Context, collection PhysicalCollection, id string, stages []Document) error {
+	c := s.fn(collection.String())
+	if c.updateErr != nil {
+		return c.updateErr
+	}
+	c.updates = append(c.updates, map[string]any{"$pipeline": stages, "_id": id})
+	return nil
+}
+
 func (s *fakeStore) Delete(_ context.Context, collection PhysicalCollection, id string) error {
 	c := s.fn(collection.String())
 	if c.deleteErr != nil {

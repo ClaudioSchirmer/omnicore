@@ -28,11 +28,30 @@ func processEngineWithRow() *fakeEngine {
 func TestProcess_Inserted_UpsertsDoc(t *testing.T) {
 	coll := &fakeColl{}
 	s := NewSyncEngine(processEngineWithRow(), newFakeMongo(coll), identityResolver, nil, "", []*ViewDefinition{processView("t", false)}, 1)
-	if err := s.process(context.Background(), kafkaEvent{AggregateType: "t", EventType: "INSERTED", AggregateID: "r1"}); err != nil {
+	// v2 payload → payload-direct projection (one atomic pipeline, no re-read).
+	ev := kafkaEvent{AggregateType: "t", EventType: "INSERTED", AggregateID: "r1",
+		Payload: []byte(`{"name":"Ana","_ids":{"id":"r1"}}`)}
+	if err := s.process(context.Background(), ev); err != nil {
 		t.Fatalf("process INSERTED: %v", err)
 	}
 	if len(coll.updates) != 1 {
-		t.Errorf("INSERTED must upsert once, got %d updates", len(coll.updates))
+		t.Fatalf("INSERTED must project once, got %d updates", len(coll.updates))
+	}
+	if _, ok := coll.updates[0]["$pipeline"]; !ok {
+		t.Errorf("the projection must be a pipeline update, got %v", coll.updates[0])
+	}
+}
+
+// A pre-v2 payload on an entity view is a WARNING + SKIP — never a silent
+// relational re-read (maintainer decision; the post-upgrade rebuild converges).
+func TestProcess_NonV2Payload_SkipsProjection(t *testing.T) {
+	coll := &fakeColl{}
+	s := NewSyncEngine(processEngineWithRow(), newFakeMongo(coll), identityResolver, nil, "", []*ViewDefinition{processView("t", false)}, 1)
+	if err := s.process(context.Background(), kafkaEvent{AggregateType: "t", EventType: "INSERTED", AggregateID: "r1"}); err != nil {
+		t.Fatalf("process legacy INSERTED: %v", err)
+	}
+	if len(coll.updates) != 0 {
+		t.Errorf("a non-v2 payload must be skipped, got %d updates", len(coll.updates))
 	}
 }
 
@@ -50,11 +69,12 @@ func TestProcess_Deleted_RemovesDoc(t *testing.T) {
 func TestProcess_ArchivedDefault_KeepsDocViaUpsert(t *testing.T) {
 	coll := &fakeColl{}
 	s := NewSyncEngine(processEngineWithRow(), newFakeMongo(coll), identityResolver, nil, "", []*ViewDefinition{processView("t", false)}, 1)
-	if err := s.process(context.Background(), kafkaEvent{AggregateType: "t", EventType: "ARCHIVED", AggregateID: "r1"}); err != nil {
+	if err := s.process(context.Background(), kafkaEvent{AggregateType: "t", EventType: "ARCHIVED", AggregateID: "r1",
+		Payload: []byte(`{"name":"Ana","deleted_at":"2026-07-20T12:00:00Z","_ids":{"id":"r1"}}`)}); err != nil {
 		t.Fatalf("process ARCHIVED: %v", err)
 	}
 	if len(coll.updates) != 1 || len(coll.deletes) != 0 {
-		t.Errorf("default ARCHIVED must upsert (keep), got %d updates %d deletes", len(coll.updates), len(coll.deletes))
+		t.Errorf("default ARCHIVED must project (keep), got %d updates %d deletes", len(coll.updates), len(coll.deletes))
 	}
 }
 

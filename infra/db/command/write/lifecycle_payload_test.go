@@ -149,8 +149,11 @@ func TestDeleteRoleWithBase_PurgedBase_OutboxPayloadIsBasePK(t *testing.T) {
 	}
 	baseID := deterministicBaseID("D1")
 	p := outboxPayloadFor(t, tx, "pessoa", "DELETED")
-	if len(p) != 1 || p["id"] != baseID {
-		t.Errorf("base purge DELETED payload must be exactly the base PK, got %v", p)
+	if len(p) != 2 || p["id"] != baseID {
+		t.Errorf("base purge DELETED payload must be the base PK + _ids, got %v", p)
+	}
+	if ids, ok := p["_ids"].(map[string]any); !ok || ids["id"] != baseID || ids["base_purged"] != true {
+		t.Errorf("the purge row must carry _ids with the purge flag (every framework event is v2), got %v", p)
 	}
 }
 

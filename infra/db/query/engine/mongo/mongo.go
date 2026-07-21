@@ -147,6 +147,21 @@ func (m *MongoDB) BulkUpsert(ctx context.Context, collection query.PhysicalColle
 	return err
 }
 
+// ApplyProjection runs an aggregation-pipeline update keyed by _id, upserting
+// when the document does not exist yet — the payload-direct projection's one
+// atomic write (conditional shared-base sets + surgical child-array edits are
+// pipeline stages evaluated server-side).
+func (m *MongoDB) ApplyProjection(ctx context.Context, collection query.PhysicalCollection, id string, stages []query.Document) error {
+	col := m.collFn(collection.String())
+	pipeline := make(bson.A, 0, len(stages))
+	for _, st := range stages {
+		pipeline = append(pipeline, bson.M(st))
+	}
+	opts := options.UpdateOne().SetUpsert(true)
+	_, err := col.UpdateOne(ctx, bson.M{"_id": id}, pipeline, opts)
+	return err
+}
+
 func (m *MongoDB) Delete(ctx context.Context, collection query.PhysicalCollection, id string) error {
 	col := m.collFn(collection.String())
 	_, err := col.DeleteOne(ctx, bson.M{"_id": id})

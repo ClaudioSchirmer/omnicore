@@ -392,6 +392,19 @@ func (s *SyncEngine) applyUpsert(ctx context.Context, viewName, id string, doc D
 	return nil
 }
 
+// applyProjection runs the payload-direct pipeline on the view's active slot
+// and, during a rebuild, on the shadow slot too — the same dual-apply
+// discipline as applyUpsert, so the blue-green window misses nothing.
+func (s *SyncEngine) applyProjection(ctx context.Context, viewName, id string, stages []Document) error {
+	if err := s.mongo.ApplyProjection(ctx, s.resolver.Active(viewName), id, stages); err != nil {
+		return err
+	}
+	if shadow, on := s.resolver.ShadowActive(viewName); on {
+		s.dualApply(ctx, viewName, func() error { return s.mongo.ApplyProjection(ctx, shadow, id, stages) })
+	}
+	return nil
+}
+
 // applyDelete removes the document from the active slot and, during a rebuild,
 // from the shadow slot too, with the same dual-apply discipline as applyUpsert.
 func (s *SyncEngine) applyDelete(ctx context.Context, viewName, id string) error {
@@ -458,7 +471,7 @@ func (s *SyncEngine) process(ctx context.Context, event kafkaEvent) error {
 	if baseTable, ok := s.index.baseOfRole[event.AggregateType]; ok {
 		if baseViews, ok := s.index.bySharedBase[baseTable]; ok {
 			if ids, ok := parsePayloadIDs(event.Payload); ok && ids.BaseID != "" {
-				if err := s.fanOutSharedBase(ctx, ids.BaseID, baseViews); err != nil {
+				if err := s.fanOutSharedBasePayload(ctx, event, ids.BaseID, baseViews); err != nil {
 					return err
 				}
 			}
@@ -481,15 +494,41 @@ func (s *SyncEngine) process(ctx context.Context, event kafkaEvent) error {
 	}
 	for _, view := range views {
 		// DELETED always removes from the read side (hard delete, no flag
-		// overrides it). ARCHIVED by default goes through the upsert branch
-		// below — the composer keeps archived rows and lands the document
-		// with deleted_at populated, so consumers that pass
-		// IncludeArchived=true (e.g. ?includeArchived=true) can read it. Views that
-		// opt in via ViewDefinition.DeleteOnArchive() instead remove the
-		// document on ARCHIVED. An UNARCHIVED event always hits the upsert
-		// branch regardless of the flag.
+		// overrides it). ARCHIVED by default goes through the projection branch
+		// below — the document survives with deleted_at populated, so consumers
+		// that pass IncludeArchived=true can read it. Views that opt in via
+		// ViewDefinition.DeleteOnArchive() instead remove the document on
+		// ARCHIVED. An UNARCHIVED event always hits the projection branch.
 		if shouldDeleteFromView(event.EventType, view.deleteOnArchive) {
 			if err := s.applyDelete(ctx, view.name, event.AggregateID); err != nil {
+				return err
+			}
+			continue
+		}
+		// PAYLOAD-DIRECT projection — the day-to-day path: the v2 payload IS the
+		// state, applied as one atomic pipeline (typed decode + revision-guarded
+		// base fields + surgical child edits). No relational read.
+		//
+		// The composer (consult) remains for exactly three cases:
+		//   - SharedBaseView documents (base-rooted; the archived-remnant
+		//     segment pick is cross-row — recomposeBaseRooted owns them);
+		//   - views with external EMBEDS (the embed enrichment on first
+		//     composition still reads the local Mongo mirror — next step);
+		//   - a non-v2 payload, which per the maintainer's decision is a
+		//     WARNING + SKIP (pre-v2 backlog / replay events; the post-upgrade
+		//     rebuild converges them) — never a silent re-read.
+		if !view.isSharedBaseView && len(view.embeds) == 0 {
+			ev, ok := decodePayloadEvent(view.schema, event.Payload)
+			if !ok {
+				log.Printf("sync engine: WARNING — non-v2 payload on %s %s (id=%s), projection skipped (rebuild converges it)",
+					event.AggregateType, event.EventType, event.AggregateID)
+				continue
+			}
+			stages := buildProjectionStages(view.schema, ev)
+			if len(stages) == 0 {
+				continue
+			}
+			if err := s.applyProjection(ctx, view.name, event.AggregateID, stages); err != nil {
 				return err
 			}
 			continue
@@ -553,6 +592,41 @@ func (s *SyncEngine) fanOutSharedBase(ctx context.Context, baseID string, baseVi
 				continue
 			}
 			if err := s.applyDelete(ctx, view.name, roleID); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+// fanOutSharedBasePayload is the payload-direct shared-identity fan-out: on a
+// role event carrying the v2 payload it applies the revision-guarded base
+// fields + surgical base-children edits to every role document referencing the
+// identity — no relational read. The writer's own document receives the same
+// guarded stages on top of its full projection: idempotent by construction.
+// Vanished roles need no reconciliation here — their own DELETED events remove
+// their documents. The legacy base-event trigger (fanOutSharedBase) keeps the
+// consult recompose for pre-v2 backlog rows.
+func (s *SyncEngine) fanOutSharedBasePayload(ctx context.Context, event kafkaEvent, baseID string, baseViews []*ViewDefinition) error {
+	for _, view := range baseViews {
+		_, fkCol, ok := view.schema.SharedBaseRef()
+		if !ok {
+			continue
+		}
+		ev, ok2 := decodePayloadEvent(view.schema, event.Payload)
+		if !ok2 {
+			return nil // caller checked _ids; defensive
+		}
+		stages := buildFanOutStages(view.schema, ev)
+		if len(stages) == 0 {
+			continue
+		}
+		roleIDs, err := s.mongo.FindIDsByField(ctx, s.resolver.Active(view.name), fkCol, baseID)
+		if err != nil {
+			return err
+		}
+		for _, rid := range roleIDs {
+			if err := s.applyProjection(ctx, view.name, rid, stages); err != nil {
 				return err
 			}
 		}

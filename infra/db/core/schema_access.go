@@ -3,6 +3,7 @@ package core
 import (
 	"reflect"
 	"sync"
+	"time"
 )
 
 // Exported accessors over TableSchema's internals, for the framework's Mongo
@@ -142,4 +143,88 @@ func (s *TableSchema) GoFieldValues(e any) map[string]any {
 		out[f.goName] = v.Field(f.index).Interface()
 	}
 	return out
+}
+
+// PayloadColumnTypes returns the Go type of every SCALAR column the v2 outbox
+// payload can carry flat at the top for this schema — the type map the
+// read-side payload decoder uses to restore native values from JSON (numbers
+// via json.Number, timestamps from RFC 3339, []byte from base64) so the
+// projected document carries the same value shapes the composer produces:
+//
+//   - the schema's own declared fields (typed via the anchored struct);
+//   - every sibling's fields (same struct — a sibling partitions the row);
+//   - the shared-base business fields (type-less base, typed via the ROLE's
+//     struct through the resolved scan plan);
+//   - the managed timestamp / soft-delete columns (time.Time), own and base's;
+//   - the PK column and the shared-base FK column (canonical uuid strings on
+//     the wire and in the document alike).
+//
+// Type-less schemas (external sources) contribute nothing beyond PK/managed —
+// they never ride the write-side payload.
+func (s *TableSchema) PayloadColumnTypes() map[string]reflect.Type {
+	out := map[string]reflect.Type{}
+	stringT := reflect.TypeOf("")
+	timeT := reflect.TypeOf(time.Time{})
+	addFields := func(sc *TableSchema) {
+		if sc == nil || s.typ == nil {
+			return
+		}
+		for _, f := range sc.fields {
+			if f.index >= 0 {
+				out[f.column] = s.typ.Field(f.index).Type
+			}
+		}
+	}
+	addManaged := func(sc *TableSchema) {
+		if sc == nil {
+			return
+		}
+		if sc.softDelete != "" {
+			out[sc.softDelete] = timeT
+		}
+		if sc.createdAt != "" {
+			out[sc.createdAt] = timeT
+		}
+		if sc.updatedAt != "" {
+			out[sc.updatedAt] = timeT
+		}
+	}
+	addFields(s)
+	for _, sib := range s.siblings {
+		addFields(sib)
+	}
+	if s.pkColumn != "" {
+		out[s.pkColumn] = stringT
+	}
+	addManaged(s)
+	if l := s.sharedBaseLink; l != nil {
+		out[l.fkColumn] = stringT
+		if s.typ != nil {
+			for col, idx := range l.scanByCol {
+				out[col] = s.typ.Field(idx).Type
+			}
+		}
+		addManaged(l.base)
+		if rc := l.base.revisionCol; rc != "" {
+			out[rc] = reflect.TypeOf(int64(0))
+		}
+	}
+	// A child schema answers for its own columns (the caller walks children
+	// through ChildSchemas); its FK column is uuid-shaped like the PK.
+	if s.fkColumn != "" {
+		out[s.fkColumn] = stringT
+	}
+	return out
+}
+
+// SharedBaseBusinessColumns returns, for a ROLE schema, the physical columns
+// of its shared base's BUSINESS fields — the subset of the payload's flat
+// scalars that belongs to the shared identity and must be revision-guarded on
+// every read-model write (multi-writer data: any role of the identity writes
+// them). Nil when the schema declares no shared base.
+func (s *TableSchema) SharedBaseBusinessColumns() []string {
+	if s == nil || s.sharedBaseLink == nil {
+		return nil
+	}
+	return s.sharedBaseLink.scanCols
 }

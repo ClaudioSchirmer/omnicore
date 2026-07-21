@@ -128,7 +128,7 @@ func buildWritePayloadV2(
 		}
 	}
 	out[payloadKeyIDs] = meta.idsBlock()
-	appendChildrenBlocks(out, schema, root, eventType)
+	appendChildrenBlocks(out, schema, root, eventType, now)
 	return out
 }
 
@@ -136,7 +136,7 @@ func buildWritePayloadV2(
 // map: every non-absent item, column-keyed, with its "_op" verb. On the soft
 // verbs every item is "noop" — the cascade is implied by the ROOT verb, not by
 // per-child operations.
-func appendChildrenBlocks(out map[string]any, schema *TableSchema, root *domain.AggregateRoot, eventType string) {
+func appendChildrenBlocks(out map[string]any, schema *TableSchema, root *domain.AggregateRoot, eventType string, now time.Time) {
 	if root == nil {
 		return
 	}
@@ -155,6 +155,13 @@ func appendChildrenBlocks(out map[string]any, schema *TableSchema, root *domain.
 			if op != "archive" && op != "delete" {
 				for k, v := range child.WriteFields(it.Item) {
 					item[k] = v
+				}
+			}
+			// An archive op carries the exact stamp the child UPDATE bound, so
+			// the surgical read-side edit lands the same value.
+			if op == "archive" {
+				if sd, ok := child.SoftDeleteColumn(); ok {
+					item[sd] = now
 				}
 			}
 			if id := it.Item.GetID().Value(); id != "" {

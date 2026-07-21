@@ -150,7 +150,7 @@ func TestProcess_RoleEventFansOutViaPayloadIDs(t *testing.T) {
 
 	event := kafkaEvent{
 		AggregateType: "aluno", EventType: "UPDATED", AggregateID: "a1",
-		Payload: []byte(`{"email":"a@x","_ids":{"id":"a1","base_id":"p1","base_revision":3}}`),
+		Payload: []byte(`{"email":"a@x","name":"Ana","_ids":{"id":"a1","base_id":"p1","base_revision":3}}`),
 	}
 	if err := s.process(context.Background(), event); err != nil {
 		t.Fatalf("process role event: %v", err)
@@ -181,8 +181,9 @@ func TestProcess_RoleEventWithoutIDs_SkipsPayloadFanOut(t *testing.T) {
 	if err := s.process(context.Background(), event); err != nil {
 		t.Fatalf("process legacy role event: %v", err)
 	}
-	// Only the direct byPGTable recompose runs — exactly one upsert.
-	if len(coll.updates) != 1 {
-		t.Errorf("a legacy role event must not payload-fan-out, got %d upserts", len(coll.updates))
+	// A legacy (non-v2) event neither fans out nor projects — WARNING + skip;
+	// its paired base row (old producer) and the post-upgrade rebuild converge.
+	if len(coll.updates) != 0 {
+		t.Errorf("a legacy role event must be skipped entirely, got %d upserts", len(coll.updates))
 	}
 }

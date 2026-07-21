@@ -15,6 +15,24 @@ with `1.0.0`.
 
 ### Changed
 
+- **BREAKING: the day-to-day projection is PAYLOAD-DIRECT — the SyncEngine no
+  longer re-reads the relational source per event.** For entity-rooted views
+  without external embeds, each v2 event applies as ONE atomic
+  aggregation-pipeline update (new `ReadModelStore.ApplyProjection`, dual-apply
+  to the blue-green shadow preserved): typed decode against the TableSchema
+  (json.Number keeps int64 precision; RFC 3339 → time.Time; base64 → []byte),
+  unconditional own-field sets, shared-base fields behind the `_base_revision`
+  document watermark (the base row-lock's commit order replayed on the read
+  side — the last writer into the base wins on every document), and SURGICAL
+  child-array edits (per-element by child PK, base-children elements carrying a
+  `_rev` watermark) that preserve archived child history the payload does not
+  carry. The shared-identity fan-out applies the same guarded stages to the
+  other roles' documents — no `ComposeBatch` on the hot path. The composer
+  remains for: SharedBaseView documents (cross-row remnant pick), views with
+  external embeds, rebuild/verify/drift, and the upstream ripple. A non-v2
+  payload (pre-v2 backlog, replay events) logs a WARNING and is SKIPPED —
+  never silently re-read; run a view rebuild after upgrading. Custom
+  `ReadModelStore` implementations must add `ApplyProjection`.
 - **BREAKING: the outbox payload is the v2 event-carried-state contract — one
   self-sufficient shape for every verb, ONE outbox row per write.** Every body
   verb now emits: all scalars column-keyed flat at the top (root/role fields ∪

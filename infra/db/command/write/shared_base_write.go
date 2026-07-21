@@ -444,8 +444,13 @@ func (b *BaseEngine) convergeBaseAfterHardDelete(
 				return AuditBundle{}, false, err
 			}
 			if purged {
+				// The purge row carries _ids too: EVERY framework-produced event is
+				// v2 (the consumer warns-and-skips anything without the block).
 				if err := WriteOutbox(ctx, tx, base.Table(), "DELETED", baseID,
-					domain.Fields{base.PKColumn(): domain.NewID(baseID)}); err != nil {
+					domain.Fields{
+						base.PKColumn(): domain.NewID(baseID),
+						payloadKeyIDs:   outboxMeta{ID: baseID, BasePurged: true}.idsBlock(),
+					}); err != nil {
 					return AuditBundle{}, false, err
 				}
 				ab := b.BuildAudit(func() audit.AuditEvent { return buildPurgeEvent(baseID) }, nil)
