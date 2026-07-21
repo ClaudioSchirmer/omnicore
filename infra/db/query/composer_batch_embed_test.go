@@ -115,12 +115,13 @@ func TestApplyEmbedsBatch_OneToOne_NoMatchOmits(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ComposeBatch: %v", err)
 	}
-	if _, present := docByID(docs, "id", "o1")["buyer"]; present {
-		t.Error("a 1:1 embed with no match must omit the field (per-row parity)")
+	v, present := docByID(docs, "id", "o1")["buyer"]
+	if !present || v != nil {
+		t.Errorf("an unresolved 1:1 embed must write the EXPLICIT null ($set-merged docs would otherwise keep a stale sub-document), got present=%v value=%v", present, v)
 	}
 }
 
-// 1:1 with a nil/absent FK → the embed is skipped (no field).
+// 1:1 with a nil/absent FK → explicit null, same clearing contract.
 func TestApplyEmbedsBatch_OneToOne_NilFKSkips(t *testing.T) {
 	eng := rootRowsByID([]string{"id"}, map[string][]any{"o1": {"o1"}}) // no buyer_id column
 	c := NewComposerWithMongo(eng, newFakeMongo(&fakeColl{}), identityResolver)
@@ -131,8 +132,9 @@ func TestApplyEmbedsBatch_OneToOne_NilFKSkips(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ComposeBatch: %v", err)
 	}
-	if _, present := docByID(docs, "id", "o1")["buyer"]; present {
-		t.Error("a missing FK must skip the 1:1 embed")
+	v, present := docByID(docs, "id", "o1")["buyer"]
+	if !present || v != nil {
+		t.Errorf("a missing FK must write the explicit null, got present=%v value=%v", present, v)
 	}
 }
 

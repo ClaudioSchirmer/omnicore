@@ -81,12 +81,12 @@ func (s *fakeStore) UpdateFields(_ context.Context, collection PhysicalCollectio
 	return nil
 }
 
-func (s *fakeStore) ApplyProjection(_ context.Context, collection PhysicalCollection, id string, stages []Document) error {
+func (s *fakeStore) ApplyProjection(_ context.Context, collection PhysicalCollection, id string, stages []Document, upsert bool) error {
 	c := s.fn(collection.String())
 	if c.updateErr != nil {
 		return c.updateErr
 	}
-	c.updates = append(c.updates, map[string]any{"$pipeline": stages, "_id": id})
+	c.updates = append(c.updates, map[string]any{"$pipeline": stages, "_id": id, "$upsert": upsert})
 	return nil
 }
 

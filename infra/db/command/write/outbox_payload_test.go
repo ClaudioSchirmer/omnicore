@@ -184,8 +184,11 @@ func TestOutboxMetaFor_Branches(t *testing.T) {
 	}
 }
 
-// The sibling fields of a materialized sibling row merge flat into the payload;
-// an all-nil sibling is omitted, mirroring the write.
+// The sibling fields merge flat into the payload UNCONDITIONALLY — an all-nil
+// facet emits explicit nulls (the removed-row marker): under event-carried
+// state an absent key is indistinguishable from "untouched", so a PUT that
+// cleared the sibling row would otherwise leave stale values on the projected
+// document forever. The projector drops the keys when the whole group is null.
 func TestBuildWritePayloadV2_SiblingsMergeFlat(t *testing.T) {
 	sib := NewSiblingSchema[*sibTestEntity]("usuario_login").Field("UserName", "user_name")
 	schema := NewTableSchema[*sibTestEntity]("usuario").PK("id").Revision("revision").
@@ -196,11 +199,15 @@ func TestBuildWritePayloadV2_SiblingsMergeFlat(t *testing.T) {
 	if got, _ := p["user_name"].(*string); got == nil || *got != "alice" {
 		t.Errorf("sibling fields must merge flat, got %v", p)
 	}
-	// All-nil sibling omitted.
+	// All-nil sibling → columns PRESENT with null values (removed-row marker).
 	e2 := &sibTestEntity{Name: "Bo"}
 	p2 := buildWritePayloadV2(schema, e2, nil, "INSERTED", testNow, schema.WriteFields(e2), outboxMeta{ID: "u2"})
-	if _, has := p2["user_name"]; has {
-		t.Errorf("an all-nil sibling must be omitted, got %v", p2)
+	v, has := p2["user_name"]
+	if !has {
+		t.Fatalf("an all-nil sibling must still emit its columns (explicit nulls), got %v", p2)
+	}
+	if s, isPtr := v.(*string); isPtr && s != nil {
+		t.Errorf("cleared sibling column must be null, got %v", *s)
 	}
 }
 

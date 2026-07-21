@@ -437,12 +437,17 @@ func (c *Composer) applyEmbedsBatch(ctx context.Context, docs []Document, parent
 			}
 			var nested []Document
 			for _, doc := range docs {
+				// Unresolved 1:1 → explicit null, same reason as the per-row
+				// path: $set-merged writes would keep a stale sub-document if
+				// the key were omitted.
 				v, ok := doc[e.JoinColumn()]
 				if !ok || v == nil {
+					doc[e.field] = nil
 					continue
 				}
 				rows := grouped[fmt.Sprintf("%v", v)]
 				if len(rows) == 0 {
+					doc[e.field] = nil
 					continue
 				}
 				doc[e.field] = rows[0]

@@ -28,11 +28,11 @@ func TestIntegration_ApplyProjection_RevisionGuard(t *testing.T) {
 		}}}
 	}
 	// rev 2 lands…
-	if err := m.ApplyProjection(ctx, coll, "d1", stage("new", 2)); err != nil {
+	if err := m.ApplyProjection(ctx, coll, "d1", stage("new", 2), true); err != nil {
 		t.Fatalf("apply rev2: %v", err)
 	}
 	// …a zombie rev 1 must be a no-op…
-	if err := m.ApplyProjection(ctx, coll, "d1", stage("old", 1)); err != nil {
+	if err := m.ApplyProjection(ctx, coll, "d1", stage("old", 1), true); err != nil {
 		t.Fatalf("apply rev1: %v", err)
 	}
 	docs, err := m.FindManyByField(ctx, coll, "_id", "d1")
@@ -43,7 +43,7 @@ func TestIntegration_ApplyProjection_RevisionGuard(t *testing.T) {
 		t.Fatalf("the older revision must not regress the document, got %v", docs[0])
 	}
 	// …and a newer rev 3 lands again.
-	if err := m.ApplyProjection(ctx, coll, "d1", stage("newer", 3)); err != nil {
+	if err := m.ApplyProjection(ctx, coll, "d1", stage("newer", 3), true); err != nil {
 		t.Fatalf("apply rev3: %v", err)
 	}
 	docs, _ = m.FindManyByField(ctx, coll, "_id", "d1")

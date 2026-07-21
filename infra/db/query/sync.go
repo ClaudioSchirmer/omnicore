@@ -404,18 +404,22 @@ func (s *SyncEngine) applyConsultUpsert(ctx context.Context, view *ViewDefinitio
 		return s.applyUpsert(ctx, view.name, id, doc)
 	}
 	stages := fieldOwnershipStages(doc, schemaPK(view.schema), embedFieldSet(view.embeds), false)
-	return s.applyProjection(ctx, view.name, id, stages)
+	if err := s.applyProjection(ctx, view.name, id, stages); err != nil {
+		return err
+	}
+	repairDanglingOneToOne(ctx, s.mongo, s.resolver, s.eng, s.composer, view, id, doc)
+	return nil
 }
 
 // applyProjection runs the payload-direct pipeline on the view's active slot
 // and, during a rebuild, on the shadow slot too — the same dual-apply
 // discipline as applyUpsert, so the blue-green window misses nothing.
 func (s *SyncEngine) applyProjection(ctx context.Context, viewName, id string, stages []Document) error {
-	if err := s.mongo.ApplyProjection(ctx, s.resolver.Active(viewName), id, stages); err != nil {
+	if err := s.mongo.ApplyProjection(ctx, s.resolver.Active(viewName), id, stages, true); err != nil {
 		return err
 	}
 	if shadow, on := s.resolver.ShadowActive(viewName); on {
-		s.dualApply(ctx, viewName, func() error { return s.mongo.ApplyProjection(ctx, shadow, id, stages) })
+		s.dualApply(ctx, viewName, func() error { return s.mongo.ApplyProjection(ctx, shadow, id, stages, true) })
 	}
 	return nil
 }
@@ -437,6 +441,16 @@ func (s *SyncEngine) applyDelete(ctx context.Context, viewName, id string) error
 // failing the live path: the active write already succeeded and the offset
 // advances, so a shadow that cannot be kept current is abandoned, not flipped.
 func (s *SyncEngine) dualApply(ctx context.Context, viewName string, write func() error) {
+	dualApplyShadow(ctx, s.eng, s.resolver, viewName, write)
+}
+
+// dualApplyShadow is the shared shadow-write discipline behind SyncEngine's
+// dual-apply, also used by the UpstreamSubscriber's recompose-ripple: EVERY
+// writer of a view document must reach the shadow slot during a rebuild
+// window, or the flipped collection silently misses the writes that landed
+// only on the retiring active slot. Bounded retry; on exhaustion the rebuild
+// is aborted cluster-wide rather than failing the live path.
+func dualApplyShadow(ctx context.Context, eng core.RelationalEngine, resolver *ViewResolver, viewName string, write func() error) {
 	var err error
 	for attempt := 0; attempt < shadowWriteRetries; attempt++ {
 		if err = write(); err == nil {
@@ -452,11 +466,11 @@ func (s *SyncEngine) dualApply(ctx context.Context, viewName string, write func(
 	}
 	log.Printf("sync engine: shadow write failed for view %q after %d attempts, aborting rebuild: %v",
 		viewName, shadowWriteRetries, err)
-	if aerr := abortSlotRebuild(ctx, s.eng.Querier(), s.eng.Dialect(), viewName); aerr != nil {
+	if aerr := abortSlotRebuild(ctx, eng.Querier(), eng.Dialect(), viewName); aerr != nil {
 		log.Printf("sync engine: abort rebuild %q failed: %v", viewName, aerr)
 		return
 	}
-	if rerr := s.resolver.Refresh(ctx); rerr != nil {
+	if rerr := resolver.Refresh(ctx); rerr != nil {
 		log.Printf("sync engine: resolver refresh after abort %q failed: %v", viewName, rerr)
 	}
 }

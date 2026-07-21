@@ -344,12 +344,27 @@ func OrdersView() *query.ViewDefinition {
 </p>
 <p>
     <strong>Two writers, one document — field ownership.</strong> A view with external embeds is kept current by two
-    independent consumers: the SyncEngine recomposes it on the entity's own events, and the recompose-ripple recomposes it
-    on the upstream collection's events. Neither write can regress the other's data: each is one atomic pipeline upsert
+    independent consumers: the SyncEngine recomposes it on the entity's own events, and the recompose-ripple reacts to the
+    upstream collection's events. Neither write can regress the other's data: each is one atomic pipeline upsert
     claiming only the fields its writer read freshly — the ripple owns the embed segments, the SyncEngine owns everything
     else — and whichever arrives first materializes the complete document (the other's next update then touches only its
     own fields). Cross-topic event ordering therefore never matters for correctness: an embed array always converges to the
     upstream mirror's current state even when the parent's own event and the embedded rows' events race across CDC topics.
+</p>
+<p>
+    <strong>Ripples are per-element edits, not snapshots.</strong> Within its embed segments the ripple applies the
+    event's own change surgically: the one array element keyed by the changed upstream id is stripped/appended (and a 1:1
+    sub-document conditionally set — the explicit <code>null</code> when the source was deleted or the FK is unset). Edits
+    for different upstream ids touch disjoint elements and commute, so concurrent ripples — multiple subscription workers,
+    partitions spread across pods — converge to the same array regardless of interleaving, and events for the same id are
+    serialized end to end by broker partitioning and the subscriber's keyed worker dispatch. The ripple's hot path reads no
+    relational data; a parent whose document does not exist yet is materialized by a full recompose instead. During a
+    blue-green rebuild every ripple write also dual-applies to the shadow slot, exactly like the SyncEngine's writes, so
+    the flipped collection never misses a mid-window upstream event. A 1:1 segment additionally self-repairs after every
+    document write that carries its FK: the writer re-reads the mirror fresh and sets the segment under a double guard (FK
+    still matches, stored element not already that id) — so a document created before its referenced mirror doc existed,
+    or an FK changed by an entity update, converges through whichever side runs last, and the repair can never regress the
+    element's own fresher ripple.
 </p>
 
 <h3 id="boot-checks">Boot checks</h3>

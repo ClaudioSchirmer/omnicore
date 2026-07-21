@@ -453,8 +453,13 @@ func (c *Composer) fetchMongoEmbed(ctx context.Context, doc Document, parentPK s
 		doc[e.field] = docs
 		return nil
 	}
+	// An unresolved 1:1 (null FK, or the source doc gone) writes an EXPLICIT
+	// null: view documents are $set-merged, so omitting the key would leave a
+	// stale sub-document from a previous resolution in place forever — the
+	// documented contract is "null when unset/unresolved".
 	fk, ok := doc[e.JoinColumn()]
 	if !ok || fk == nil {
+		doc[e.field] = nil
 		return nil
 	}
 	docs, err := c.mongo.FindManyByField(ctx, c.resolver.Active(e.source.table), "_id", fk)
@@ -462,6 +467,7 @@ func (c *Composer) fetchMongoEmbed(ctx context.Context, doc Document, parentPK s
 		return err
 	}
 	if len(docs) == 0 {
+		doc[e.field] = nil
 		return nil
 	}
 	row := docs[0]

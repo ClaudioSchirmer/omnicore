@@ -88,14 +88,16 @@ func buildWritePayloadV2(
 	for k, v := range rootFields {
 		out[k] = v
 	}
-	// Siblings — flat at the top, mirroring the document (absent slice omitted,
-	// exactly like the write skips an all-nil sibling row).
+	// Siblings — flat at the top, ALWAYS present. An all-nil facet still emits
+	// its columns as explicit nulls: under event-carried state the consumer
+	// cannot distinguish "sibling cleared by this write" from "sibling
+	// untouched" if the keys are simply absent — a PUT that removed the 1:1
+	// sibling row would leave the projected document carrying the stale values
+	// forever. The projector recognizes the all-null group as the removed row
+	// and DROPS the keys (shape parity with the composer, which omits a
+	// missing sibling row).
 	for _, sib := range schema.Siblings() {
-		f := sib.WriteFields(src)
-		if allNilFields(f) {
-			continue
-		}
-		for k, v := range f {
+		for k, v := range sib.WriteFields(src) {
 			out[k] = v
 		}
 	}

@@ -139,6 +139,59 @@ with `1.0.0`.
   fields they read freshly — the ripple owns the embed segments, the SyncEngine
   owns everything else; whoever arrives first still materializes the complete
   document. Views without embeds keep the plain full-document Upsert.
+- **The recompose-ripple edits embed segments PER ELEMENT, so concurrent
+  ripples commute.** The ripple used to `$set` each embed segment to a
+  freshly-composed snapshot of the mirror; two concurrent ripples for
+  different upstream ids converging on the same parent (`workers > 1` in one
+  subscription, or partitions spread over pods) could interleave and the older
+  snapshot would erase the newer one's element. Each ripple now applies the
+  event's own change surgically (strip/append the one element keyed by the
+  upstream id; conditionally set the 1:1 sub-document) — edits for different
+  ids touch disjoint elements and commute, and events for the same id are
+  already serialized end to end (broker partitioning + hash-bucketed worker
+  dispatch). The ripple hot path no longer reads the relational source at all;
+  the full recompose remains for materializing a parent document that does not
+  exist yet (non-upsert on the surgical write keeps a ripple racing a
+  concurrent document delete from resurrecting a skeleton — the
+  `ReadModelStore.ApplyProjection` port gained the `upsert bool` parameter for
+  this). An embed source that declares nested embeds keeps the full-recompose
+  path. A 1:1 embed's last ordering window — a document written with an FK
+  whose segment is unresolved (the composing read raced the mirror write) or
+  stale (a consult update changed the FK, which by ownership never rewrites
+  segments) — closes with a post-write repair handshake: after every consult
+  upsert and ripple fallback create the mirror is re-read fresh and the
+  segment set under a double guard (FK still matches AND the stored element is
+  not already that id), so either the repair heals it or the mirror doc's own
+  later insert ripple does, and a repair can never regress the element's own
+  fresher ripple.
+- **Ripple writes dual-apply to the blue-green shadow.** During a rebuild
+  window the recompose-ripple wrote only the active slot, so an upstream event
+  landing mid-rebuild could be missing from the flipped collection (only a
+  lucky verify sample would catch it). Ripple writes now follow the same
+  dual-apply discipline as the SyncEngine — active + shadow, bounded retry,
+  abort the rebuild rather than fail the live path.
+- **An unresolved 1:1 embed writes an explicit `null`.** When the FK is null
+  or the source document is gone, the composer omitted the segment key — and
+  under `$set`-merged document writes the stale sub-document survived
+  indefinitely (the documented contract is "null when unset/unresolved"). Both
+  compose paths (per-row and batched) now write the explicit `null`, and the
+  surgical delete path clears the 1:1 segment the same way.
+- **Clearing a 1:1 sibling now reaches the projected document.** The v2
+  payload omitted an all-nil sibling facet ("mirroring the write"), so a PUT
+  that removed the sibling row (e.g. nulling every notification flag) left the
+  projected document carrying the stale sibling values forever — under
+  event-carried state an absent key is indistinguishable from "untouched".
+  The payload now emits the sibling columns unconditionally (explicit nulls
+  when the facet is nil), and the projector recognizes the all-null group as
+  the removed row and DROPS the keys (`$$REMOVE`) — matching the composer,
+  which omits a missing sibling row, so the blue-green verify's shape
+  comparison stays exact. A live row with a null column still projects the
+  explicit null.
+- **The `anonymize` upstream-delete policy ripples the retained document.**
+  The post-anonymize recompose was triggered with a delete-shaped (nil) after
+  state; it now carries the blanked-but-retained mirror document, so dependent
+  views keep embedding it with the blanked fields rather than treating the
+  event as a source deletion.
 
 ## [0.35.0] - 2026-07-19
 

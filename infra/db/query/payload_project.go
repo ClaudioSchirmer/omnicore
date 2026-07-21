@@ -70,6 +70,34 @@ func buildProjectionStages(schema *core.TableSchema, ev *decodedEvent) []Documen
 		}
 		own[col] = lit(v)
 	}
+	// Sibling groups: an ALL-NULL group means the 1:1 sibling ROW was removed
+	// by this write (the write path deletes an all-nil facet, and a surviving
+	// row always carries at least one non-null column — the payload emits the
+	// columns unconditionally so the consumer can tell removal from absence).
+	// The document must DROP the keys, not store nulls: the composer omits a
+	// missing sibling row, and shape parity with a fresh compose is exactly
+	// what the blue-green verify checks.
+	for _, sib := range schema.Siblings() {
+		present, allNull := 0, true
+		for _, c := range sib.MappedColumns() {
+			v, has := ev.Scalars[c]
+			if !has {
+				continue
+			}
+			present++
+			if v != nil {
+				allNull = false
+			}
+		}
+		if present == 0 || !allNull {
+			continue
+		}
+		for _, c := range sib.MappedColumns() {
+			if _, has := ev.Scalars[c]; has {
+				own[c] = "$$REMOVE"
+			}
+		}
+	}
 	// The document is a COLUMN-KEYED physical mirror: the PK column must exist
 	// on it exactly as the composer's SELECT * produced it — readers project it
 	// (GraphQL root.id) and the shared-base fan-out FINDS the sibling-role docs
