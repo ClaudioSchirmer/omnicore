@@ -79,7 +79,7 @@ func (e *baseChildRole) AggregateChildren() []domain.AggregateValueObject {
 }
 
 func baseChildRoleSchema() *TableSchema {
-	base := NewSharedBase("pessoa").
+	base := NewSharedBase("pessoa").Revision("revision").
 		PK("id").
 		Field("Name", "name").
 		Field("Document", "document").
@@ -306,18 +306,26 @@ func TestSharedBaseReactivationProbeError(t *testing.T) {
 			t.Error("must not commit")
 		}
 	})
-	t.Run("updateBaseFanOutOutboxError", func(t *testing.T) {
+	t.Run("updateEmitsSingleOutboxRow", func(t *testing.T) {
+		// v2 single-row contract: the role UPDATE emits exactly ONE outbox row
+		// (the self-sufficient v2 payload) — the historical empty base-table
+		// fan-out row must NOT exist.
 		e := &roleTestEntity{Name: "Ana", Document: "D1", Matricula: "M1"}
 		e.SetID(domain.NewID(uuid.NewString()))
 		upd, _ := domain.GetUpdatable(e, func(*roleTestEntity) error { return nil }, nil, "GetUpdatable")
-		inner := &recTx{count: 1, queryFn: scriptedQuery(nil, []string{"FROM aluno"})}
-		tx := &nthFailTx{recTx: inner, failSub: "INSERT INTO outbox", failOn: 2}
-		be := newFlatBE(singleTxBeginner{tx})
-		if _, err := be.Update(newBuilderCtx(), upd, roleTestSchema(), firingHook); !errors.Is(err, errBoom) {
-			t.Fatalf("expected the fan-out outbox failure, got %v", err)
+		tx := &recTx{count: 1, queryFn: scriptedQuery(nil, []string{"FROM aluno"})}
+		be := newFlatBE(&recBeginner{tx: tx})
+		if _, err := be.Update(newBuilderCtx(), upd, roleTestSchema(), firingHook); err != nil {
+			t.Fatalf("Update: %v", err)
 		}
-		if inner.committed {
-			t.Error("must not commit")
+		outboxRows := 0
+		for _, s := range tx.execs {
+			if strings.HasPrefix(s, "INSERT INTO outbox") {
+				outboxRows++
+			}
+		}
+		if outboxRows != 1 {
+			t.Fatalf("a role update must emit exactly ONE outbox row (v2), got %d: %v", outboxRows, tx.execs)
 		}
 	})
 }

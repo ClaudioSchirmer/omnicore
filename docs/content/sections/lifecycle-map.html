@@ -112,19 +112,21 @@
     </table>
 
     <div class="note">
-        <strong>Outbox <code>payload</code> per <code>event_type</code>.</strong> Every outbox row carries a JSON
-        payload alongside the <code>aggregate_id</code>: <code>INSERTED</code>/<code>UPDATED</code> carry the bound
-        column→value map (aggregates: a <code>{root, children}</code> snapshot);
-        <code>ARCHIVED</code>/<code>UNARCHIVED</code> carry the same field map <em>plus</em> the soft-delete column
-        reflecting the verb's outcome — the operation's app-clock stamp on archive (the EXACT value bound into the
-        archive UPDATE; managed timestamps are Go-authored) or an explicit JSON <code>null</code> on unarchive — plus
-        the shared-base FK when the role links its base through a separate column; <code>DELETED</code> carries the
-        structural keys only (the row is gone): the PK under its physical column name plus the shared-base FK, and
-        the orphan purge's own <code>DELETED</code> row carries the base PK. The payload is informational for the
-        local SyncEngine — it re-reads the authoritative state by <code>aggregate_id</code> — and exists for CDC
-        consumers (Debezium → external subscribers, including <code>UpstreamSubscription</code>s in other services).
-        The base-table <code>UPDATED</code> fan-out row of a SharedBase write is the one exception and carries
-        <code>NULL</code>: it is a local recompose trigger, not a consumer-facing snapshot.
+        <strong>Outbox <code>payload</code> — the v2 event-carried-state contract, ONE row per write.</strong> Every
+        body verb emits one self-sufficient JSON shape: all scalars column-keyed flat at the top (root/role fields ∪
+        sibling fields ∪ shared-base business fields ∪ the verb's managed timestamps — the EXACT app-clock values the
+        DML bound: <code>INSERTED</code> carries <code>created_at</code>+<code>updated_at</code>;
+        <code>UPDATED</code> only <code>updated_at</code>; <code>ARCHIVED</code> the soft-delete stamp;
+        <code>UNARCHIVED</code> an explicit <code>null</code>); an <code>_ids</code> structural block
+        (<code>id</code>, and for SharedBase roles <code>base_id</code> + <code>base_revision</code> — the
+        row-lock-serialized last-writer-wins token — plus <code>base_purged</code> on the purging DELETED); and
+        <code>_children</code>/<code>_base_children</code> groups, each item column-keyed with an <code>_op</code>
+        verb (insert/update/archive/delete/noop) from the same <code>OperationOf</code> categorization the persister
+        executed. <code>DELETED</code> keeps the historical structural keys (PK + shared-base FK) and only ADDS
+        <code>_ids</code>. A SharedBase write emits NO separate base-table row anymore — the SyncEngine fans out to
+        the other roles' documents from the role event's <code>_ids.base_id</code>; the one base-table event left is
+        the orphan purge's <code>DELETED</code>. Keys starting with <code>_</code> are the framework's reserved
+        namespace (a physical column may never claim them — boot failure at declaration).
     </div>
 
     <h3>Child cascade (aggregate)</h3>

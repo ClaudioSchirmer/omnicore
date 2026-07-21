@@ -941,6 +941,16 @@ func findMongoJoinField(embeds []embedDef, collection string) string {
 // JSON object (when StringConverter/JSONConverter is used end-to-end)
 // or wrapped under {"payload": ...} (some Debezium configurations leak
 // the schema envelope). The decoder tolerates both shapes.
+// decodePayload turns the raw outbox payload into the mirror document. Three
+// producer generations are tolerated:
+//   - a Debezium "payload" envelope is unwrapped;
+//   - the legacy aggregate shape {"root": {...}, "children": {...}} has its
+//     root merged flat to the top (the children block was informational and is
+//     dropped — pre-v2 events only);
+//   - v2 framework keys (the "_" reserved namespace: _ids, _children,
+//     _base_children) are STRIPPED from the mirror by default — they are
+//     routing metadata, not upstream state. A consumer that wants one listed
+//     in cfg.Filter keeps it (the allowlist wins).
 func (s *UpstreamSubscriber) decodePayload(raw []byte) (bson.M, error) {
 	if len(raw) == 0 {
 		return bson.M{}, nil
@@ -950,7 +960,23 @@ func (s *UpstreamSubscriber) decodePayload(raw []byte) (bson.M, error) {
 		return nil, err
 	}
 	if inner, ok := top["payload"].(map[string]any); ok {
-		return bson.M(inner), nil
+		top = inner
+	}
+	if rootDoc, ok := top["root"].(map[string]any); ok {
+		merged := make(map[string]any, len(rootDoc))
+		for k, v := range rootDoc {
+			merged[k] = v
+		}
+		top = merged
+	}
+	allow := make(map[string]bool, len(s.cfg.Filter))
+	for _, f := range s.cfg.Filter {
+		allow[f] = true
+	}
+	for k := range top {
+		if strings.HasPrefix(k, "_") && !allow[k] {
+			delete(top, k)
+		}
 	}
 	return bson.M(top), nil
 }

@@ -159,7 +159,7 @@ func TestLoadSharedBaseIdentity_ErrorSurfaces(t *testing.T) {
 
 func TestLoadBaseChildrenConstructor_SkipPaths(t *testing.T) {
 	t.Run("baseWithoutChildren", func(t *testing.T) {
-		base := NewSharedBase("pessoa").PK("id").Field("Name", "name").NaturalKey("name")
+		base := NewSharedBase("pessoa").Revision("revision").PK("id").Field("Name", "name").NaturalKey("name")
 		schema := NewTableSchema[*roleAggLoad]("aluno").
 			PK("id").Field("Matricula", "matricula").SoftDelete("deleted_at").
 			SharedBase(base, "pessoa_id")
@@ -170,7 +170,7 @@ func TestLoadBaseChildrenConstructor_SkipPaths(t *testing.T) {
 		}
 	})
 	t.Run("baseChildWithoutColumnsSkips", func(t *testing.T) {
-		base := NewSharedBase("pessoa").PK("id").Field("Name", "name").NaturalKey("name").
+		base := NewSharedBase("pessoa").Revision("revision").PK("id").Field("Name", "name").NaturalKey("name").
 			Child(noColsChildSchema("pessoa_id"))
 		schema := NewTableSchema[*noColsRole]("aluno").
 			PK("id").Field("Matricula", "matricula").SoftDelete("deleted_at").

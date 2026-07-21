@@ -47,7 +47,7 @@ func (e *sbAuditRole) AggregateChildren() []domain.AggregateValueObject {
 // sbAuditSchema: role "users" over persons (SharedBase, natural key document)
 // with an addresses base-child and a user_configurations sibling.
 func sbAuditSchema() *TableSchema {
-	base := NewSharedBase("persons").PK("id").
+	base := NewSharedBase("persons").Revision("revision").PK("id").
 		Field("Name", "name").Field("Email", "email").Field("Document", "document").
 		NaturalKey("document").SoftDelete("deleted_at")
 	addr := NewTableSchema[sbAuditAddr]("addresses").PK("id").FK("person_id").

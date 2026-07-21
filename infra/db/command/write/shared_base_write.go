@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"reflect"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -186,7 +187,8 @@ func (b *BaseEngine) insertWithBase(ctx persistence.RequestContext, entity domai
 				"(SharedBaseInsertCommandHandler, or repo.LoadForSharedBaseInsert in a manual handler) before "+
 				"Insert; a blind insert would duplicate the shared identity's native data", entity.EntityName())
 	}
-	if err := b.upsertSharedBase(ctx, tx, d, base, baseID, baseFields, basePreExisted, now); err != nil {
+	baseRev, err := b.upsertSharedBase(ctx, tx, d, base, baseID, baseFields, basePreExisted, now)
+	if err != nil {
 		return domain.WriteResult{}, err
 	}
 	active, err := b.findActiveRoleByFK(ctx, tx, d, schema, fkCol, baseID)
@@ -234,12 +236,13 @@ func (b *BaseEngine) insertWithBase(ctx persistence.RequestContext, entity domai
 	if err := b.reactivateBaseIfArchived(ctx, tx, d, schema, src); err != nil {
 		return domain.WriteResult{}, err
 	}
-	if err := WriteOutbox(ctx, tx, schema.Table(), "INSERTED", id, roleFields); err != nil {
-		return domain.WriteResult{}, err
-	}
-	// Fan-out trigger: a base outbox row recomposes the OTHER roles' read models
-	// of this identity (SyncEngine.fanOutSharedBase).
-	if err := WriteOutbox(ctx, tx, base.Table(), "UPDATED", baseID, nil); err != nil {
+	// ONE outbox row per write: the v2 payload is self-sufficient (role ∪ base ∪
+	// sibling fields, children with ops, structural ids + base revision), so the
+	// SyncEngine fans out to the OTHER roles' read models from THIS event — the
+	// historical empty base-table UPDATED row is no longer emitted.
+	if err := WriteOutbox(ctx, tx, schema.Table(), "INSERTED", id,
+		buildWritePayloadV2(schema, src, root, "INSERTED", now, roleFields,
+			outboxMeta{ID: id, BaseID: baseID, BaseRevision: baseRev})); err != nil {
 		return domain.WriteResult{}, err
 	}
 	ab := b.BuildAudit(func() audit.AuditEvent {
@@ -302,7 +305,8 @@ func (b *BaseEngine) updateWithBase(ctx persistence.RequestContext, entity domai
 	}
 	// The base always exists here (we are updating an existing role, whose FK
 	// references it), so this is always the UPDATE branch.
-	if err := b.upsertSharedBase(ctx, tx, d, base, baseID, baseFields, true, now); err != nil {
+	baseRev, err := b.upsertSharedBase(ctx, tx, d, base, baseID, baseFields, true, now)
+	if err != nil {
 		return domain.WriteResult{}, err
 	}
 	// An updated role is active → keep the shared identity active (reactivate if a
@@ -310,11 +314,11 @@ func (b *BaseEngine) updateWithBase(ctx persistence.RequestContext, entity domai
 	if err := b.reactivateBaseIfArchived(ctx, tx, d, schema, src); err != nil {
 		return domain.WriteResult{}, err
 	}
-	if err := WriteOutbox(ctx, tx, schema.Table(), "UPDATED", entity.ID().Value(), roleFields); err != nil {
-		return domain.WriteResult{}, err
-	}
-	// Fan-out trigger: a base outbox row recomposes the OTHER roles' read models.
-	if err := WriteOutbox(ctx, tx, base.Table(), "UPDATED", baseID, nil); err != nil {
+	// ONE outbox row per write (see insertWithBase): the v2 payload carries the
+	// base id + revision, so the fan-out rides this event — no empty base row.
+	if err := WriteOutbox(ctx, tx, schema.Table(), "UPDATED", entity.ID().Value(),
+		buildWritePayloadV2(schema, src, root, "UPDATED", now, roleFields,
+			outboxMeta{ID: entity.ID().Value(), BaseID: baseID, BaseRevision: baseRev})); err != nil {
 		return domain.WriteResult{}, err
 	}
 	ab := b.BuildAudit(func() audit.AuditEvent {
@@ -414,46 +418,46 @@ func (b *BaseEngine) convergeBaseAfterHardDelete(
 	src domain.Entity,
 	now time.Time,
 	buildPurgeEvent func(baseID string) audit.AuditEvent,
-) (AuditBundle, error) {
+) (AuditBundle, bool, error) {
 	base, _, ok := schema.SharedBaseRef()
 	if !ok {
-		return AuditBundle{}, nil
+		return AuditBundle{}, false, nil
 	}
 	_, baseHasSD := base.SoftDeleteColumn()
 	wantsPurge := base.OrphanPolicyValue() == DeleteWhenUnreferenced
 	if !wantsPurge && !baseHasSD {
-		return AuditBundle{}, nil // no lifecycle to drive
+		return AuditBundle{}, false, nil // no lifecycle to drive
 	}
 	_, nk := sharedBaseValues(base, src)
 	if err := requireNaturalKey(base, nk); err != nil {
-		return AuditBundle{}, err
+		return AuditBundle{}, false, err
 	}
 	baseID := deterministicBaseID(nk)
 	if wantsPurge {
 		referenced, err := b.anyRoleRowReferences(ctx, tx, d, base, baseID)
 		if err != nil {
-			return AuditBundle{}, err
+			return AuditBundle{}, false, err
 		}
 		if !referenced {
 			purged, err := b.purgeOrphanBase(ctx, tx, d, base, baseID)
 			if err != nil {
-				return AuditBundle{}, err
+				return AuditBundle{}, false, err
 			}
 			if purged {
 				if err := WriteOutbox(ctx, tx, base.Table(), "DELETED", baseID,
 					domain.Fields{base.PKColumn(): domain.NewID(baseID)}); err != nil {
-					return AuditBundle{}, err
+					return AuditBundle{}, false, err
 				}
 				ab := b.BuildAudit(func() audit.AuditEvent { return buildPurgeEvent(baseID) }, nil)
 				if err := b.WriteAuditRow(ctx, tx, ab.Ev); err != nil {
-					return AuditBundle{}, err
+					return AuditBundle{}, false, err
 				}
-				return ab, nil
+				return ab, true, nil
 			}
 			// vetoed — the base survives; fall through to the archive convergence.
 		}
 	}
-	return AuditBundle{}, b.archiveBaseIfNoActiveRole(ctx, tx, d, schema, src, now)
+	return AuditBundle{}, false, b.archiveBaseIfNoActiveRole(ctx, tx, d, schema, src, now)
 }
 
 // anyRoleRowReferences reports whether any role row — active OR archived, from
@@ -641,25 +645,42 @@ func baseLifecycleTarget(schema *TableSchema, src domain.Entity) (base *TableSch
 // cascadeBaseLifecycle archives (stamp != nil — the operation's writeNow()
 // value bound as the soft-delete stamp) or unarchives (stamp == nil — SQL NULL)
 // the base row and each soft-deletable native child, gated so it is idempotent
-// (a no-op when already in the target state).
+// (a no-op when already in the target state). The BASE-ROW statement also bumps
+// `revision = revision + 1` — a lifecycle transition is a base-data change and
+// must move the last-writer-wins token like any other base write; the gate
+// guarantees the bump fires only on a real transition.
 func cascadeBaseLifecycle(ctx context.Context, tx WriteTx, d Dialect, base *TableSchema, sd, baseID string, stamp *time.Time) error {
-	exec := func(table, sdCol, keyCol string) error {
-		if stamp != nil {
-			return tx.Exec(ctx, archiveCascadeSQL(d, table, sdCol, keyCol),
-				d.EncodeArg(*stamp), d.EncodeArg(domain.NewID(baseID)))
+	rev := d.QuoteIdent(base.RevisionColumn())
+	bump := ", " + rev + " = " + rev + " + 1"
+	if stamp != nil {
+		sql := fmt.Sprintf("UPDATE %s SET %s = %s%s WHERE %s = %s AND %s IS NULL",
+			d.QuoteIdent(base.Table()), d.QuoteIdent(sd), d.Placeholder(1), bump,
+			d.QuoteIdent(base.PKColumn()), d.Placeholder(2), d.QuoteIdent(sd))
+		if err := tx.Exec(ctx, sql, d.EncodeArg(*stamp), d.EncodeArg(domain.NewID(baseID))); err != nil {
+			return err
 		}
-		return tx.Exec(ctx, childCascadeSQL(d, table, sdCol, keyCol, nullSetExpr(d), " IS NOT NULL"),
-			d.EncodeArg(domain.NewID(baseID)))
-	}
-	if err := exec(base.Table(), sd, base.PKColumn()); err != nil {
-		return err
+	} else {
+		sql := fmt.Sprintf("UPDATE %s SET %s = NULL%s WHERE %s = %s AND %s IS NOT NULL",
+			d.QuoteIdent(base.Table()), d.QuoteIdent(sd), bump,
+			d.QuoteIdent(base.PKColumn()), d.Placeholder(1), d.QuoteIdent(sd))
+		if err := tx.Exec(ctx, sql, d.EncodeArg(domain.NewID(baseID))); err != nil {
+			return err
+		}
 	}
 	for _, bc := range base.ChildSchemas() {
 		csd, ok := bc.SoftDeleteColumn()
 		if !ok {
 			continue
 		}
-		if err := exec(bc.Table(), csd, bc.FKColumn()); err != nil {
+		if stamp != nil {
+			if err := tx.Exec(ctx, archiveCascadeSQL(d, bc.Table(), csd, bc.FKColumn()),
+				d.EncodeArg(*stamp), d.EncodeArg(domain.NewID(baseID))); err != nil {
+				return err
+			}
+			continue
+		}
+		if err := tx.Exec(ctx, childCascadeSQL(d, bc.Table(), csd, bc.FKColumn(), nullSetExpr(d), " IS NOT NULL"),
+			d.EncodeArg(domain.NewID(baseID))); err != nil {
 			return err
 		}
 	}
@@ -720,6 +741,84 @@ func (b *BaseEngine) anyActiveRole(ctx context.Context, tx WriteTx, d Dialect, b
 	return false, nil
 }
 
+// buildBaseUpdate renders the shared-base field UPDATE with the in-place
+// revision bump appended to the SET list — ONE statement, one row lock:
+// `UPDATE base SET <fields…>, <updatedAt?>, revision = revision + 1 WHERE pk`.
+// The increment runs server-side under the base row's lock, so concurrent role
+// writes of the same identity serialize in real commit order; the caller reads
+// the resulting value back inside the same TX (readBaseRevision) to stamp the
+// outbox payload.
+func buildBaseUpdate(d Dialect, base *TableSchema, baseID string, fields domain.Fields, now time.Time) (string, []any) {
+	keys := SortedKeys(fields)
+	nowCols := base.UpdateNowColumns()
+	sets := make([]string, 0, len(keys)+len(nowCols)+1)
+	args := make([]any, 0, len(keys)+len(nowCols)+1)
+	n := 0
+	for _, k := range keys {
+		n++
+		sets = append(sets, d.QuoteIdent(k)+" = "+d.Placeholder(n))
+		args = append(args, d.EncodeArg(fields[k]))
+	}
+	for _, nc := range nowCols {
+		n++
+		sets = append(sets, d.QuoteIdent(nc)+" = "+d.Placeholder(n))
+		args = append(args, d.EncodeArg(now))
+	}
+	rev := d.QuoteIdent(base.RevisionColumn())
+	sets = append(sets, rev+" = "+rev+" + 1")
+	n++
+	sql := fmt.Sprintf("UPDATE %s SET %s WHERE %s = %s",
+		d.QuoteIdent(base.Table()), strings.Join(sets, ", "), d.QuoteIdent(base.PKColumn()), d.Placeholder(n))
+	args = append(args, d.EncodeArg(domain.NewID(baseID)))
+	return sql, args
+}
+
+// readBaseRevision reads the shared base's current revision inside the write
+// TX — after the base ops of the operation ran, so the value stamped on the
+// outbox payload is the one THIS operation's lock scope produced. A vanished
+// base row (purged) answers 0.
+func readBaseRevision(ctx context.Context, tx WriteTx, d Dialect, base *TableSchema, baseID string) (int64, error) {
+	q := d.ApplyLimit("SELECT "+d.QuoteIdent(base.RevisionColumn())+" FROM "+d.QuoteIdent(base.Table())+
+		" WHERE "+d.QuoteIdent(base.PKColumn())+" = "+d.Placeholder(1), 1)
+	rows, err := tx.Query(ctx, q, d.EncodeArg(domain.NewID(baseID)))
+	if err != nil || rows == nil {
+		return 0, err
+	}
+	defer rows.Close()
+	if !rows.Next() {
+		return 0, rows.Err()
+	}
+	var rev int64
+	if err := rows.Scan(&rev); err != nil {
+		return 0, err
+	}
+	return rev, rows.Err()
+}
+
+// baseMetaFor resolves the outbox structural identity for a shared-base role
+// on the verbs that do NOT run the base upsert themselves (soft writes, batch
+// members): the deterministic base id from the entity's natural key + the
+// CURRENT revision read in-TX. A schema without a shared base answers the
+// bare role id.
+func baseMetaFor(ctx context.Context, tx WriteTx, d Dialect, schema *TableSchema, src domain.Entity, id string) (outboxMeta, error) {
+	meta := outboxMeta{ID: id}
+	base, _, ok := schema.SharedBaseRef()
+	if !ok {
+		return meta, nil
+	}
+	_, nk := sharedBaseValues(base, src)
+	if nk == "" {
+		return meta, nil // payload assembly never vetoes a write the verb allows
+	}
+	meta.BaseID = deterministicBaseID(nk)
+	rev, err := readBaseRevision(ctx, tx, d, base, meta.BaseID)
+	if err != nil {
+		return meta, err
+	}
+	meta.BaseRevision = rev
+	return meta, nil
+}
+
 // baseExists probes whether the shared base row already exists (the identity
 // pre-dates this write) — the signal the SharedBase insert forgot-guard pairs with
 // the actionName.
@@ -754,15 +853,27 @@ func baseExists(ctx context.Context, tx WriteTx, d Dialect, base *TableSchema, b
 // Managed columns are honored when the base DECLARES them: CreatedAt(+UpdatedAt)
 // stamped on the identity's creation, UpdatedAt on every role-driven change of the
 // shared fields (the warm upsert and the role update both land here) — always the
-// operation's writeNow() stamp, shared with the role row. A base that declares
-// none — the common shape — yields empty lists and byte-identical SQL to before.
-// Lifecycle-converge writes (archive/unarchive) touch only deleted_at, same as
-// every other table.
-func (b *BaseEngine) upsertSharedBase(ctx context.Context, tx WriteTx, d Dialect, base *TableSchema, baseID string, baseFields domain.Fields, baseExists bool, now time.Time) error {
+// operation's writeNow() stamp, shared with the role row.
+//
+// REVISION: the warm UPDATE bumps `revision = revision + 1` in the SAME
+// statement (buildBaseUpdate) — server-side, under the base row's lock, so
+// concurrent role writes of one identity serialize in real commit order; the
+// cold INSERT initializes it to 1 as a plain bound field. The new value is read
+// back in-TX and returned so the caller stamps it on the outbox payload
+// (_ids.base_revision) — the deterministic last-writer-wins token of every
+// read-model write of base data.
+func (b *BaseEngine) upsertSharedBase(ctx context.Context, tx WriteTx, d Dialect, base *TableSchema, baseID string, baseFields domain.Fields, baseExists bool, now time.Time) (int64, error) {
 	if baseExists {
-		sql, args := buildUpdate(d, base.Table(), base.PKColumn(), baseID, baseFields, base.UpdateNowColumns(), now)
-		return tx.Exec(ctx, sql, args...)
+		sql, args := buildBaseUpdate(d, base, baseID, baseFields, now)
+		if err := tx.Exec(ctx, sql, args...); err != nil {
+			return 0, err
+		}
+		return readBaseRevision(ctx, tx, d, base, baseID)
 	}
+	baseFields[base.RevisionColumn()] = int64(1)
 	sql, args := buildInsert(d, base.Table(), base.PKColumn(), baseID, baseFields, base.InsertNowColumns(), now)
-	return tx.Exec(ctx, sql, args...)
+	if err := tx.Exec(ctx, sql, args...); err != nil {
+		return 0, err
+	}
+	return 1, nil
 }

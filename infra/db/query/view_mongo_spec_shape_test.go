@@ -136,7 +136,7 @@ type sbShapeRole struct {
 }
 
 func sbShapeView() *ViewDefinition {
-	base := core.NewSharedBase("persons").
+	base := core.NewSharedBase("persons").Revision("revision").
 		PK("id").
 		Field("Document", "document").
 		Field("Name", "name").

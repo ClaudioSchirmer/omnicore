@@ -6,23 +6,13 @@ import (
 	"github.com/ClaudioSchirmer/omnicore/domain"
 )
 
-// Outbox payloads for the bodyless verbs. INSERTED/UPDATED always carried the
-// bound column→value map; ARCHIVED/UNARCHIVED/DELETED historically carried
-// NULL, which left CDC consumers (Debezium → external subscribers, including
-// the framework's own UpstreamSubscriber) with nothing but the aggregate_id.
-// These builders close that gap:
-//
-//   - ARCHIVED/UNARCHIVED follow the INSERTED/UPDATED pattern — the full
-//     WriteFields map — plus the soft-delete column reflecting the verb's
-//     outcome, so a consumer that keeps archived documents can mirror the
-//     transition from the payload alone.
-//   - DELETED carries the structural keys only (the row is gone): the PK and,
-//     for a SharedBase role with a separate FK column, the FK to the shared
-//     identity — enough for a consumer to cascade or clean up references.
-//
-// Like every outbox payload, these are informational for the local SyncEngine
-// (it re-reads the source by aggregate_id) and contractual only in shape for
-// external consumers.
+// Structural-key helpers of the outbox payload. DELETED carries the
+// historical structural keys (the PK and, for a SharedBase role with a
+// separate FK column, the FK to the shared identity) — a contract external
+// consumers cascade on, so these keys only GROW (the v2 payload adds the _ids
+// block on top, see outbox_payload.go). softWritePayload remains the LEGACY
+// ARCHIVED/UNARCHIVED field-map builder (superseded by buildWritePayloadV2;
+// kept per maintainer instruction).
 
 // sharedBaseFKField resolves the role's separate FK column and the
 // deterministic base id for payload purposes. ok=false when the schema has no

@@ -2,14 +2,12 @@ package write
 
 import "github.com/ClaudioSchirmer/omnicore/domain"
 
-// BuildAggregatePayload assembles the outbox JSON snapshot for an aggregate
-// write: the root fields plus the active (non-Removed) children grouped by Go
-// type name. It is dialect-neutral — it touches only domain.Fields, the
-// AggregateRoot item map, and the TableSchema — so every relational engine
-// emits the byte-identical snapshot shape. The payload is informational: the
-// SyncEngine re-reads the authoritative state from the database; keeping a
-// single builder here is what guarantees Postgres and MySQL never diverge on
-// the outbox/CDC payload.
+// BuildAggregatePayload is the LEGACY (pre-v2) outbox snapshot builder:
+// {"root": <fields>, "children": {...active}}. The write path now emits the
+// v2 shape via buildWritePayloadV2 (outbox_payload.go) — flat scalars + _ids +
+// _children/_base_children with per-item ops. Kept per maintainer instruction
+// as the reference of the old wire shape (the upstream decoder still unwraps
+// it for pre-v2 backlog events).
 func BuildAggregatePayload(rootFields domain.Fields, root *domain.AggregateRoot, schema *TableSchema) map[string]any {
 	payload := map[string]any{"root": rootFields}
 	if root == nil {

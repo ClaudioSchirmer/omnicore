@@ -38,7 +38,7 @@ type sbvDependent struct{ Name string }
 type sbvAddr struct{ Street string }
 
 func sbvBase() *core.TableSchema {
-	return core.NewSharedBase("sbv_persons").
+	return core.NewSharedBase("sbv_persons").Revision("revision").
 		PK("id").
 		Field("Document", "document").
 		Field("Name", "name").
@@ -126,14 +126,14 @@ func TestSharedBaseView_BuilderPanics(t *testing.T) {
 			core.NewTableSchema[*sbvUser]("plain_users").PK("id").Field("UserName", "user_name"))
 	})
 	assertPanics(t, "role of another base table", func() {
-		otherBase := core.NewSharedBase("other_persons").PK("id").
+		otherBase := core.NewSharedBase("other_persons").Revision("revision").PK("id").
 			Field("Document", "document").Field("Name", "name").NaturalKey("document")
 		role := core.NewTableSchema[*sbvUser]("sbv_users").PK("id").
 			Field("UserName", "user_name").SharedBase(otherBase, "id")
 		SharedBaseView(sbvBase(), "x").Role(role)
 	})
 	assertPanics(t, "divergent base declaration", func() {
-		divergent := core.NewSharedBase("sbv_persons").PK("id").
+		divergent := core.NewSharedBase("sbv_persons").Revision("revision").PK("id").
 			Field("Document", "document").NaturalKey("document") // missing Name + SoftDelete
 		role := core.NewTableSchema[*sbvUser]("sbv_users").PK("id").
 			Field("UserName", "user_name").SharedBase(divergent, "id")

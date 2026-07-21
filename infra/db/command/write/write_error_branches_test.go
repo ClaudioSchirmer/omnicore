@@ -730,21 +730,23 @@ func TestInsertWithBase_StepFailures(t *testing.T) {
 			t.Fatalf("expected the forgot-guard error, got %v", err)
 		}
 	})
-	t.Run("baseFanOutOutboxError", func(t *testing.T) {
-		// The SECOND outbox row (base fan-out) fails: let the first pass by
-		// injecting on the pessoa aggregate_type argument being present is not
-		// expressible via substring — instead fail every outbox after recording
-		// one success through a counting wrapper.
-		inner := &recTx{queryFn: scriptedQuery(nil, nil)}
-		tx := &nthFailTx{recTx: inner, failSub: "INSERT INTO outbox", failOn: 2}
-		be := newFlatBE(&recBeginner{tx: inner})
-		be.SetBeginner(singleTxBeginner{tx})
-		_, err := be.Insert(newBuilderCtx(), roleInsertable(t, "GetUpsertable"), roleTestSchema(), firingHook)
-		if !errors.Is(err, errBoom) {
-			t.Fatalf("expected the fan-out outbox failure, got %v", err)
+	t.Run("insertEmitsSingleOutboxRow", func(t *testing.T) {
+		// v2 single-row contract: the role INSERT emits exactly ONE outbox row
+		// (the self-sufficient v2 payload) — the historical empty base-table
+		// fan-out row must NOT exist.
+		tx := &recTx{queryFn: scriptedQuery(nil, nil)}
+		be := newFlatBE(&recBeginner{tx: tx})
+		if _, err := be.Insert(newBuilderCtx(), roleInsertable(t, "GetUpsertable"), roleTestSchema(), firingHook); err != nil {
+			t.Fatalf("Insert: %v", err)
 		}
-		if inner.committed {
-			t.Error("must not commit")
+		outboxRows := 0
+		for _, s := range tx.execs {
+			if strings.HasPrefix(s, "INSERT INTO outbox") {
+				outboxRows++
+			}
+		}
+		if outboxRows != 1 {
+			t.Fatalf("a role insert must emit exactly ONE outbox row (v2), got %d: %v", outboxRows, tx.execs)
 		}
 	})
 }
@@ -840,7 +842,7 @@ func (c cascadeBaseChild) GetID() domain.ID                                 { re
 func (c cascadeBaseChild) BuildRules(string, domain.Service, *domain.Rules) {}
 
 func cascadeRoleSchema() *TableSchema {
-	base := NewSharedBase("pessoa").
+	base := NewSharedBase("pessoa").Revision("revision").
 		PK("id").
 		Field("Name", "name").
 		Field("Document", "document").

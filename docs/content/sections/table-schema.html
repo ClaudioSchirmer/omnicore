@@ -480,7 +480,8 @@ func OrdersView() *query.ViewDefinition {
     is shared by several <em>independent</em> role tables (<code>student</code>, <code>teacher</code>, <code>user</code>),
     each linking to it by a foreign key. Unlike a sibling (1 : 1, private), a base is referenced by N roles (N : 1) and is
     <strong>deduplicated by a natural key</strong>. Declare the base type-less with <code>core.NewSharedBase(table)</code>,
-    its dedup column with <code>.NaturalKey(col)</code>, and its orphan lifecycle with <code>.OrphanPolicy(p)</code>; each
+    its dedup column with <code>.NaturalKey(col)</code>, its <strong>mandatory revision column</strong> with
+    <code>.Revision(col)</code> (below), and its orphan lifecycle with <code>.OrphanPolicy(p)</code>; each
     role references it with <code>.SharedBase(base, fkColumn)</code>. Sharing one base instance across the role files is
     idiomatic but <em>not required</em>: at repository construction (<code>WithSchema</code>) the engine registers every
     role on a registry keyed by the base's <em>table</em>, so N identical <code>NewSharedBase</code> declarations behave
@@ -493,14 +494,26 @@ func OrdersView() *query.ViewDefinition {
     table: on the identity's <em>creation</em> (the cold insert) and — <code>UpdatedAt</code> — on every
     <em>role-driven change of the shared fields</em> (the warm upsert and a role's update both write the base row). A
     base that declares neither is never touched: keep a database <code>DEFAULT</code> on the DDL columns if you only
-    want a creation timestamp. Lifecycle convergence (archive/unarchive of the identity) touches only the soft-delete
-    column, on the base as on every other table.
+    want a creation timestamp. Lifecycle convergence (archive/unarchive of the identity) touches the soft-delete
+    column and bumps the revision.
+</p>
+<p>
+    <strong><code>Revision(col)</code> is mandatory — the last-writer-wins token of shared-identity data.</strong> A
+    framework-managed BIGINT the write path initializes to 1 on the identity's creation and increments
+    (<code>revision = revision + 1</code>) on every statement that touches the base row — the shared-field upsert and
+    the lifecycle convergence — <em>under the base row's lock</em>. Concurrent role writes of one identity therefore
+    serialize in real relational commit order, and the value (carried on the outbox payload as
+    <code>_ids.base_revision</code>) deterministically orders every read-model write of base data: the last writer to
+    enter the base wins, regardless of consumer latency, worker interleaving or redelivery. Attaching a base without
+    <code>Revision</code> is a boot failure. DDL: <code>revision BIGINT NOT NULL DEFAULT 0</code> (the framework never
+    reads the DEFAULT — it always binds/increments explicitly).
 </p>
 <pre><code>var person = core.NewSharedBase("person").
     PK("id").                                      // the deterministic UUIDv5 lands here
     Field("Name", "name").
     Field("Document", "document").                 // the natural-key column
     NaturalKey("document").
+    Revision("revision").                          // MANDATORY — BIGINT NOT NULL DEFAULT 0 in the migration
     SoftDelete("deleted_at").
     OrphanPolicy(core.KeepOrphan)                  // default; destruction is opt-in via core.DeleteWhenUnreferenced
 

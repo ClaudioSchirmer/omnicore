@@ -44,7 +44,7 @@ func (e *bcRole) AggregateChildren() []domain.AggregateValueObject {
 // The purge policy is declared explicitly (the default is KeepOrphan) so the
 // orphan-delete test below exercises the purge branch.
 func bcRoleSchema(softDelete bool) *TableSchema {
-	base := NewSharedBase("pessoa").PK("id").Field("Name", "name").Field("Document", "document").
+	base := NewSharedBase("pessoa").Revision("revision").PK("id").Field("Name", "name").Field("Document", "document").
 		NaturalKey("document").OrphanPolicy(DeleteWhenUnreferenced)
 	addr := NewTableSchema[bcAddr]("endereco").PK("id").FK("pessoa_id").Field("Street", "street")
 	if softDelete {
@@ -68,8 +68,8 @@ func TestBaseChild_InsertRoutesToBaseFK(t *testing.T) {
 	if _, err := be.Insert(newBuilderCtx(), ins, bcRoleSchema(true), firingHook); err != nil {
 		t.Fatalf("Insert: %v", err)
 	}
-	// upsert pessoa + insert aluno + insert endereco + outbox(role) + outbox(base) + audit = 6.
-	if len(tx.execs) != 6 {
+	// upsert pessoa + insert aluno + insert endereco + outbox(role, v2 single row) + audit = 5.
+	if len(tx.execs) != 5 {
 		t.Fatalf("expected 6 statements, got %d: %v", len(tx.execs), tx.execs)
 	}
 	var found string

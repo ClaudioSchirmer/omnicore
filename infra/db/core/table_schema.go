@@ -64,9 +64,16 @@ type TableSchema struct {
 	// dedup/identity column; orphanPolicy governs the base's lifecycle when no
 	// role references it. A role schema references its base via sharedBaseLink
 	// (set by .SharedBase(base, fk)) — at most one per role.
-	isSharedBase   bool
-	naturalKeyCol  string
-	orphanPolicy   OrphanPolicy
+	isSharedBase  bool
+	naturalKeyCol string
+	orphanPolicy  OrphanPolicy
+	// revisionCol is, on a SHARED BASE, the framework-managed BIGINT column that
+	// versions the identity row: every write that touches the base row
+	// increments it UNDER THE BASE ROW LOCK, so concurrent role writes serialize
+	// in real relational commit order and the value is a deterministic
+	// last-writer-wins token for every read-model write of base data. Mandatory
+	// on a shared base (enforced at .SharedBase time); meaningless elsewhere.
+	revisionCol    string
 	sharedBaseLink *sharedBaseLink
 	// referencingRoleLinks is, on a SHARED BASE, the set of roles that reference
 	// it — each a pointer to the role schema + the FK column it links through
@@ -228,6 +235,24 @@ func (s *TableSchema) ensureColumnFree(column, self string) {
 	if self != "UpdatedAt" && column == s.updatedAt {
 		collide("UpdatedAt")
 	}
+	if self != "Revision" && column == s.revisionCol {
+		collide("Revision")
+	}
+}
+
+// mustNotReservedColumn rejects a physical column name starting with "_": the
+// underscore prefix is the framework's reserved namespace on the wire — the v2
+// outbox payload carries its structural keys there (_ids, _children,
+// _base_children, _op), and Mongo itself owns _id. A user column in that
+// namespace would collide with the payload contract, so it is a boot failure at
+// declaration, never a runtime surprise.
+func mustNotReservedColumn(table, column string) {
+	if len(column) > 0 && column[0] == '_' {
+		panic(fmt.Sprintf(
+			"infra.TableSchema(%s): column %q — physical column names starting with %q are reserved by the "+
+				"framework (outbox payload structural keys such as _ids/_children); rename the column.",
+			table, column, "_"))
+	}
 }
 
 // pkGoField is the fixed Go-side name of every primary key. Identity is locked
@@ -260,6 +285,7 @@ func (s *TableSchema) PK(column string) *TableSchema {
 			s.table,
 		))
 	}
+	mustNotReservedColumn(s.table, column)
 	s.ensureColumnFree(column, "PK")
 	s.pkGo = pkGoField
 	s.pkColumn = column
@@ -280,6 +306,7 @@ func (s *TableSchema) FK(column string) *TableSchema {
 			s.table, column,
 		))
 	}
+	mustNotReservedColumn(s.table, column)
 	s.fkColumn = column
 	return s
 }
@@ -313,7 +340,8 @@ func (s *TableSchema) Field(goName, column string, labelKey ...string) *TableSch
 	if _, dup := s.byCol[column]; dup {
 		panic(fmt.Sprintf("infra.TableSchema(%s): column %q claimed by more than one field — the map must be a bijection", s.table, column))
 	}
-	if column == s.pkColumn || column == s.softDelete || column == s.createdAt || column == s.updatedAt {
+	mustNotReservedColumn(s.table, column)
+	if column == s.pkColumn || column == s.softDelete || column == s.createdAt || column == s.updatedAt || column == s.revisionCol {
 		panic(fmt.Sprintf("infra.TableSchema(%s): field column %q collides with a PK/managed column", s.table, column))
 	}
 	lk := ""
@@ -359,6 +387,7 @@ func (s *TableSchema) SoftDelete(col string) *TableSchema {
 			s.table, col,
 		))
 	}
+	mustNotReservedColumn(s.table, col)
 	s.ensureColumnFree(col, "SoftDelete")
 	s.softDelete = col
 	return s
@@ -376,6 +405,7 @@ func (s *TableSchema) CreatedAt(col string) *TableSchema {
 			s.table, col,
 		))
 	}
+	mustNotReservedColumn(s.table, col)
 	s.ensureColumnFree(col, "CreatedAt")
 	s.createdAt = col
 	return s
@@ -392,6 +422,7 @@ func (s *TableSchema) UpdatedAt(col string) *TableSchema {
 			s.table, col,
 		))
 	}
+	mustNotReservedColumn(s.table, col)
 	s.ensureColumnFree(col, "UpdatedAt")
 	s.updatedAt = col
 	return s

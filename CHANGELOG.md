@@ -11,8 +11,47 @@ with `1.0.0`.
 
 ## [Unreleased]
 
+## [0.36.0] - 2026-07-20
+
 ### Changed
 
+- **BREAKING: the outbox payload is the v2 event-carried-state contract — one
+  self-sufficient shape for every verb, ONE outbox row per write.** Every body
+  verb now emits: all scalars column-keyed flat at the top (root/role fields ∪
+  sibling fields ∪ shared-base business fields ∪ the verb's managed
+  timestamps — the exact app-clock values the DML bound), an `_ids` structural
+  block (`id`, and for SharedBase roles `base_id` + `base_revision` +
+  `base_purged` on the purging DELETED), and `_children`/`_base_children`
+  groups (per-item column-keyed fields + an `_op` verb — insert/update/
+  archive/delete/noop — from the same OperationOf categorization the persister
+  executed; the warm shared-base insert hydrates the base children, so a
+  second role's INSERTED payload carries the full shared collection). DELETED
+  keeps its historical structural keys (PK + shared-base FK) and only ADDS
+  `_ids`. The empty base-table `UPDATED` fan-out row of a SharedBase write is
+  NO LONGER EMITTED — the SyncEngine fans out to the other roles' documents
+  from the role event's `_ids.base_id` (the orphan-purge base `DELETED` row
+  remains, external cascade depends on it). The `"_"` column-name prefix is
+  now a reserved framework namespace (boot failure at TableSchema
+  declaration). External `UpstreamSubscription` consumers: the mirror decode
+  unwraps the legacy `{"root","children"}` shape for pre-v2 backlog and
+  strips `_`-prefixed keys unless the `Filter` allowlists them; the replay
+  admin's synthetic events remain pre-v2-shaped and skip the payload-driven
+  routes. Migration: after upgrading, run a view rebuild to converge documents
+  produced during the rollout window.
+- **BREAKING: `SharedBase` requires a `Revision(column)` declaration — the
+  deterministic last-writer-wins token for shared-identity data.** A BIGINT
+  NOT NULL column the framework fully manages: initialized to 1 on the
+  identity's creation and incremented (`revision = revision + 1`) by every
+  statement that touches the base row — the shared-field upsert and the
+  lifecycle convergence (archive/reactivate) — UNDER THE BASE ROW'S LOCK, so
+  concurrent role writes of one identity serialize in real relational commit
+  order. The resulting value travels on the outbox payload
+  (`_ids.base_revision`) and orders every read-model write of base data:
+  the last writer to enter the base wins regardless of consumer latency,
+  worker interleaving or redelivery. A role attaching a base without
+  `Revision` is a boot failure. Migration: add the column
+  (`revision BIGINT NOT NULL DEFAULT 0`) to each shared-base table and declare
+  `.Revision("revision")` on its `NewSharedBase`.
 - **Managed timestamps are now application-clock authored.** The managed
   columns (`created_at`/`updated_at` and the soft-delete stamp written by
   archive and its cascades, the shared-base lifecycle convergence included)
@@ -31,11 +70,6 @@ with `1.0.0`.
   and `Dialect.NowExpr()` remains on the interface for them. Operational note:
   the authoritative clock for row timestamps is now the application host's
   (keep pods on NTP); the database server's clock no longer participates.
-
-## [0.36.0] - 2026-07-20
-
-### Changed
-
 - **BREAKING: `audit_events` is now a plain table on every backend; the
   Postgres-only partitioning is removed.** The audit id is a time-ordered
   UUID v7, so the primary key alone gives append-only insert locality — the

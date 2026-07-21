@@ -54,7 +54,8 @@ func (b *BaseEngine) insertAggregate(ctx persistence.RequestContext, entity doma
 	if err := insertSiblings(ctx, tx, d, schema, src, id, now); err != nil {
 		return domain.WriteResult{}, err
 	}
-	if err := WriteOutbox(ctx, tx, schema.Table(), "INSERTED", id, BuildAggregatePayload(rootFields, root, schema)); err != nil {
+	if err := WriteOutbox(ctx, tx, schema.Table(), "INSERTED", id,
+		buildWritePayloadV2(schema, src, root, "INSERTED", now, rootFields, outboxMeta{ID: id})); err != nil {
 		return domain.WriteResult{}, err
 	}
 	ab := b.BuildAudit(func() audit.AuditEvent {
@@ -100,7 +101,8 @@ func (b *BaseEngine) updateAggregate(ctx persistence.RequestContext, entity doma
 	if err := applySiblingUpdates(ctx, tx, d, schema, src, entity.ID().Value(), entity.IsPartial()); err != nil {
 		return domain.WriteResult{}, err
 	}
-	if err := WriteOutbox(ctx, tx, schema.Table(), "UPDATED", entity.ID().Value(), BuildAggregatePayload(rootFields, root, schema)); err != nil {
+	if err := WriteOutbox(ctx, tx, schema.Table(), "UPDATED", entity.ID().Value(),
+		buildWritePayloadV2(schema, src, root, "UPDATED", now, rootFields, outboxMeta{ID: entity.ID().Value()})); err != nil {
 		return domain.WriteResult{}, err
 	}
 	ab := b.BuildAudit(func() audit.AuditEvent {
@@ -202,11 +204,22 @@ func (b *BaseEngine) hardDelete(
 	// converge the base — the database-vetoable purge (DeleteWhenUnreferenced) or
 	// the orphan archive (soft-deletable base). An actual purge carries its own
 	// outbox row + audit event; the bundle echoes post-commit below.
-	purge, err := b.convergeBaseAfterHardDelete(ctx, tx, d, schema, src, now, buildPurgeEvent)
+	purge, basePurged, err := b.convergeBaseAfterHardDelete(ctx, tx, d, schema, src, now, buildPurgeEvent)
 	if err != nil {
 		return err
 	}
-	if err := WriteOutbox(ctx, tx, schema.Table(), "DELETED", id, deleteKeysPayload(schema, src, id)); err != nil {
+	meta := outboxMeta{ID: id, BasePurged: basePurged}
+	if base, _, ok := schema.SharedBaseRef(); ok {
+		if _, nk := sharedBaseValues(base, src); nk != "" {
+			meta.BaseID = deterministicBaseID(nk)
+			if !basePurged {
+				if meta.BaseRevision, err = readBaseRevision(ctx, tx, d, base, meta.BaseID); err != nil {
+					return err
+				}
+			}
+		}
+	}
+	if err := WriteOutbox(ctx, tx, schema.Table(), "DELETED", id, buildDeletePayloadV2(schema, src, id, meta)); err != nil {
 		return err
 	}
 	ab := b.BuildAudit(buildEvent, evs)
@@ -308,8 +321,14 @@ func (b *BaseEngine) softWriteAggregate(
 	if err := b.convergeBaseAfterSoftWrite(ctx, tx, d, schema, src, eventType, now); err != nil {
 		return err
 	}
+	// Base meta AFTER the convergence, so the payload's revision reflects any
+	// lifecycle transition this verb caused on the base row.
+	meta, err := baseMetaFor(ctx, tx, d, schema, src, id)
+	if err != nil {
+		return err
+	}
 	if err := WriteOutbox(ctx, tx, schema.Table(), eventType, id,
-		BuildAggregatePayload(softWritePayload(schema, src, sdCol, eventType, now), root, schema)); err != nil {
+		buildWritePayloadV2(schema, src, root, eventType, now, schema.WriteFields(src), meta)); err != nil {
 		return err
 	}
 	ab := b.BuildAudit(buildEvent, evs)

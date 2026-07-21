@@ -99,6 +99,34 @@ func (s *TableSchema) OrphanPolicy(p OrphanPolicy) *TableSchema {
 	return s
 }
 
+// Revision declares the shared base's framework-managed revision column — a
+// BIGINT NOT NULL the write path initializes to 1 on the identity's creation
+// and increments (revision = revision + 1) on EVERY statement that touches the
+// base row, under that row's lock. Concurrent role writes therefore serialize
+// in real relational commit order, and the resulting value — carried on the
+// outbox payload as _ids.base_revision — is the deterministic last-writer-wins
+// token guarding every read-model write of base data. MANDATORY on a shared
+// base (enforced when a role attaches via .SharedBase). SharedBase only; the
+// column must not also be a declared Field.
+func (s *TableSchema) Revision(column string) *TableSchema {
+	if !s.isSharedBase {
+		panic(fmt.Sprintf(
+			"infra.TableSchema(%s): Revision applies only to a SharedBase (NewSharedBase).", s.table))
+	}
+	if column == "" {
+		panic(fmt.Sprintf("infra.TableSchema(%s): Revision requires a non-empty column.", s.table))
+	}
+	mustNotReservedColumn(s.table, column)
+	s.ensureColumnFree(column, "Revision")
+	s.revisionCol = column
+	return s
+}
+
+// RevisionColumn returns the shared base's revision column ("" when not a
+// shared base — Revision is mandatory on every attached base, so a role's
+// resolved base always answers non-empty).
+func (s *TableSchema) RevisionColumn() string { return s.revisionCol }
+
 // SharedBase attaches a shared base to this role schema: the base identity plus
 // the role's FK column referencing the base's deterministic id. A role
 // references AT MOST ONE shared base (more than one would mean multiple
@@ -138,6 +166,12 @@ func (s *TableSchema) SharedBase(base *TableSchema, fkColumn string) *TableSchem
 		panic(fmt.Sprintf(
 			"infra.TableSchema(%s): shared base %q NaturalKey(%q) is not a declared field of the base.",
 			s.table, base.table, base.naturalKeyCol))
+	}
+	if base.revisionCol == "" {
+		panic(fmt.Sprintf(
+			"infra.TableSchema(%s): shared base %q declares no Revision — declare .Revision(column) (BIGINT NOT NULL "+
+				"DEFAULT 0 in the migration): it is the write-serialized token that orders concurrent role writes of "+
+				"the shared identity on the read side.", s.table, base.table))
 	}
 	if len(base.fields) == 0 {
 		panic(fmt.Sprintf("infra.TableSchema(%s): shared base %q declares no fields.", s.table, base.table))
@@ -255,6 +289,9 @@ func AssertSharedBaseEquivalent(a, b *TableSchema) {
 	}
 	if a.softDelete != b.softDelete {
 		diverges("the SoftDelete column", a.softDelete, b.softDelete)
+	}
+	if a.revisionCol != b.revisionCol {
+		diverges("the Revision column", a.revisionCol, b.revisionCol)
 	}
 	if len(a.fields) != len(b.fields) {
 		diverges("the field count", fmt.Sprintf("%d", len(a.fields)), fmt.Sprintf("%d", len(b.fields)))

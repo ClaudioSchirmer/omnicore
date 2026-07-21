@@ -14,7 +14,7 @@ import (
 // ViewNode round-trips that nested collection to Go vocabulary.
 
 func composeRoleWithBaseChild() *core.TableSchema {
-	base := core.NewSharedBase("pessoa").PK("id").Field("Name", "name").NaturalKey("name").
+	base := core.NewSharedBase("pessoa").Revision("revision").PK("id").Field("Name", "name").NaturalKey("name").
 		Child(core.NewTableSchema[fakeVO]("endereco").PK("id").FK("pessoa_id").Field("Label", "street"))
 	return core.NewTableSchema[*builderTestEntity]("aluno").
 		PK("id").

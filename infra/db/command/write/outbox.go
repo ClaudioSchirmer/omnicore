@@ -16,11 +16,11 @@ import (
 // only the positional placeholders vary by dialect, rendered via tx.Dialect()
 // ($n on Postgres, ? on MySQL). The aggregate_id is the canonical UUID string
 // (the CDC routing key) on every backend — outbox.aggregate_id is text, never
-// BINARY(16). payload is the JSON snapshot (informational for the local
-// SyncEngine, which re-reads from the source): the bound fields on
-// INSERTED/UPDATED, the fields + the soft-delete column on
-// ARCHIVED/UNARCHIVED, the structural keys (PK + shared-base FK) on DELETED —
-// see lifecycle_payload.go. The producing request's W3C traceparent is stamped
+// BINARY(16). payload is the v2 EVENT-CARRIED-STATE snapshot (see
+// outbox_payload.go): every scalar flat at the top, the _ids structural block
+// (aggregate PK, base id + revision, purge flag), and the children groups with
+// per-item ops; DELETED keeps the historical structural keys and adds _ids.
+// The producing request's W3C traceparent is stamped
 // so the async projection links back to its trace; nil → NULL when tracing is
 // off or no span is active (an empty string would store "" instead of NULL).
 func WriteOutbox(ctx context.Context, tx Tx, table, eventType, id string, payload any) error {

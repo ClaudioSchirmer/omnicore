@@ -13,7 +13,7 @@ import (
 // document referencing a changed shared identity.
 
 func fanOutRoleSchema() *core.TableSchema {
-	base := core.NewSharedBase("pessoa").PK("id").Field("Name", "name").NaturalKey("name")
+	base := core.NewSharedBase("pessoa").Revision("revision").PK("id").Field("Name", "name").NaturalKey("name")
 	return core.NewTableSchema[*builderTestEntity]("aluno").
 		PK("id").
 		Field("Email", "email").
@@ -127,4 +127,62 @@ func TestProcess_SharedBaseFanOut_Errors(t *testing.T) {
 			t.Fatal("expected the applyUpsert error to propagate")
 		}
 	})
+}
+
+// A ROLE event carrying the v2 payload drives the SAME fan-out from its
+// _ids.base_id — the empty base-table row no longer exists, so this is the
+// steady-state trigger. The role's own view recompose (byPGTable) runs too:
+// the fan-out targets a1 via the base id AND the direct route targets a1 via
+// the aggregate id — both upserts land (idempotent by _id).
+func TestProcess_RoleEventFansOutViaPayloadIDs(t *testing.T) {
+	coll := &fakeColl{docs: []any{map[string]any{"_id": "a1"}}}
+	eng := composerEngine(func(sql string, args []any) ([]map[string]any, error) {
+		switch {
+		case strings.Contains(sql, "FROM pessoa"):
+			return mapsFromColsData([]string{"id", "name"}, [][]any{{"p1", "Ana"}}), nil
+		case strings.Contains(sql, "FROM aluno"):
+			return mapsFromColsData([]string{"id", "email", "pessoa_id"}, [][]any{{"a1", "a@x", "p1"}}), nil
+		}
+		return nil, nil
+	})
+	view := View("aluno").Root("aluno").Schema(fanOutRoleSchema()).Version(1)
+	s := NewSyncEngine(eng, newFakeMongo(coll), identityResolver, nil, "", []*ViewDefinition{view}, 1)
+
+	event := kafkaEvent{
+		AggregateType: "aluno", EventType: "UPDATED", AggregateID: "a1",
+		Payload: []byte(`{"email":"a@x","_ids":{"id":"a1","base_id":"p1","base_revision":3}}`),
+	}
+	if err := s.process(context.Background(), event); err != nil {
+		t.Fatalf("process role event: %v", err)
+	}
+	if len(coll.updates) < 2 {
+		t.Errorf("the role event must fan out (base id from _ids) AND recompose its own doc, got %d upserts", len(coll.updates))
+	}
+}
+
+// An OLD role event (no _ids) skips the payload fan-out silently — its paired
+// base-table row from the old producer drives the fan-out instead.
+func TestProcess_RoleEventWithoutIDs_SkipsPayloadFanOut(t *testing.T) {
+	coll := &fakeColl{docs: []any{map[string]any{"_id": "a1"}}}
+	eng := composerEngine(func(sql string, args []any) ([]map[string]any, error) {
+		switch {
+		case strings.Contains(sql, "FROM pessoa"):
+			return mapsFromColsData([]string{"id", "name"}, [][]any{{"p1", "Ana"}}), nil
+		case strings.Contains(sql, "FROM aluno"):
+			return mapsFromColsData([]string{"id", "email", "pessoa_id"}, [][]any{{"a1", "a@x", "p1"}}), nil
+		}
+		return nil, nil
+	})
+	view := View("aluno").Root("aluno").Schema(fanOutRoleSchema()).Version(1)
+	s := NewSyncEngine(eng, newFakeMongo(coll), identityResolver, nil, "", []*ViewDefinition{view}, 1)
+
+	event := kafkaEvent{AggregateType: "aluno", EventType: "UPDATED", AggregateID: "a1",
+		Payload: []byte(`{"email":"a@x"}`)}
+	if err := s.process(context.Background(), event); err != nil {
+		t.Fatalf("process legacy role event: %v", err)
+	}
+	// Only the direct byPGTable recompose runs — exactly one upsert.
+	if len(coll.updates) != 1 {
+		t.Errorf("a legacy role event must not payload-fan-out, got %d upserts", len(coll.updates))
+	}
 }

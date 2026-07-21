@@ -104,13 +104,14 @@ func (s *SyncEngine) WithKafkaTracing(on bool) *SyncEngine {
 //   - aggregate_type, event_type → message.Headers
 //   - the outbox payload JSON → message.Value
 //
-// The message Value is never a STATE source — the composer re-reads current
-// state from the relational backend. It is carried as a ROUTING HINT for
-// exactly one case: a role DELETED under the separate-FK SharedBase model,
-// where the row is gone and nothing is left to consult — the write side
-// records the structural keys (the role PK + the shared-base FK) in the
-// DELETED payload precisely so the base-rooted recompose can find its
-// document (resolveBaseID).
+// The v2 payload carries the event's STRUCTURAL IDENTITY in its "_ids" block
+// (aggregate PK, shared-base id + revision, purge flag), so routing decisions
+// — which shared identity to fan out for, which person document a role
+// DELETED belongs to — read the payload and touch no database. The document
+// CONTENT still comes from the composer's re-read in this phase (the
+// payload-direct projection is the next phase); a payload without "_ids"
+// (pre-v2 backlog, the replay admin's synthetic events) simply skips the
+// payload-driven shortcuts and rides the legacy routes.
 type kafkaEvent struct {
 	AggregateType string
 	EventType     string
@@ -120,10 +121,34 @@ type kafkaEvent struct {
 	// when the producing write had tracing off. Used to LINK the projection
 	// span back to the producing trace.
 	Traceparent string
-	// Payload is the raw outbox payload (message.Value) — a routing hint only
-	// (see the type comment), parsed lazily and exclusively on the role-DELETED
-	// branch of the base-rooted recompose.
+	// Payload is the raw outbox payload (message.Value), parsed lazily where a
+	// routing decision needs the structural ids (see the type comment).
 	Payload []byte
+}
+
+// payloadIDs is the "_ids" block of a v2 outbox payload — the structural
+// identity the write side stamps on every event.
+type payloadIDs struct {
+	ID           string `json:"id"`
+	BaseID       string `json:"base_id"`
+	BaseRevision int64  `json:"base_revision"`
+	BasePurged   bool   `json:"base_purged"`
+}
+
+// parsePayloadIDs extracts the "_ids" block. ok=false on an empty/malformed
+// payload or one without the block (pre-v2 backlog, replay events) — callers
+// fall back to their legacy route.
+func parsePayloadIDs(payload []byte) (payloadIDs, bool) {
+	if len(payload) == 0 {
+		return payloadIDs{}, false
+	}
+	var envelope struct {
+		IDs *payloadIDs `json:"_ids"`
+	}
+	if err := json.Unmarshal(payload, &envelope); err != nil || envelope.IDs == nil {
+		return payloadIDs{}, false
+	}
+	return *envelope.IDs, true
 }
 
 func extractEvent(msg transport.Message) kafkaEvent {
@@ -415,11 +440,28 @@ func (s *SyncEngine) process(ctx context.Context, event kafkaEvent) error {
 	defer span.End()
 
 	// A SharedBase change fans out: recompose every role view's document that
-	// references the changed identity. The base table is not a view root, so it
-	// only appears in bySharedBase.
+	// references the changed identity. Two triggers converge here:
+	//   - a BASE-table event (pre-v2 backlog rows, the purge DELETED): the
+	//     event's aggregate_id IS the base id;
+	//   - a ROLE-table event carrying the v2 payload: the write side stamps
+	//     the base id in _ids.base_id, so the fan-out rides the role event
+	//     itself — the empty base-table UPDATED row no longer exists. An old
+	//     role event without _ids skips silently: its paired base row (the old
+	//     producer emitted both) drives the fan-out instead.
+	// During a mixed-version rollout both may fire for one write — the
+	// recompose is idempotent, so the duplicate is harmless.
 	if baseViews, ok := s.index.bySharedBase[event.AggregateType]; ok {
-		if err := s.fanOutSharedBase(ctx, event, baseViews); err != nil {
+		if err := s.fanOutSharedBase(ctx, event.AggregateID, baseViews); err != nil {
 			return err
+		}
+	}
+	if baseTable, ok := s.index.baseOfRole[event.AggregateType]; ok {
+		if baseViews, ok := s.index.bySharedBase[baseTable]; ok {
+			if ids, ok := parsePayloadIDs(event.Payload); ok && ids.BaseID != "" {
+				if err := s.fanOutSharedBase(ctx, ids.BaseID, baseViews); err != nil {
+					return err
+				}
+			}
 		}
 	}
 	// The INVERSE direction: an event on a ROLE table recomposes the person
@@ -467,18 +509,19 @@ func (s *SyncEngine) process(ctx context.Context, event kafkaEvent) error {
 }
 
 // fanOutSharedBase recomposes every role-view document that references a changed
-// shared identity. For each role view embedding the base, it finds the role docs
+// shared identity (baseID — from a base event's aggregate_id or a role event's
+// _ids.base_id). For each role view embedding the base, it finds the role docs
 // whose FK equals the base id (index-only via FindIDsByField on the role's link
 // column) and recomposes each by its own id — so a shared-field change made
 // through one role reaches the read models of the OTHER roles of that identity.
 // A role row that has since vanished is removed from its view.
-func (s *SyncEngine) fanOutSharedBase(ctx context.Context, event kafkaEvent, baseViews []*ViewDefinition) error {
+func (s *SyncEngine) fanOutSharedBase(ctx context.Context, baseID string, baseViews []*ViewDefinition) error {
 	for _, view := range baseViews {
 		_, fkCol, ok := view.schema.SharedBaseRef()
 		if !ok {
 			continue
 		}
-		roleIDs, err := s.mongo.FindIDsByField(ctx, s.resolver.Active(view.name), fkCol, event.AggregateID)
+		roleIDs, err := s.mongo.FindIDsByField(ctx, s.resolver.Active(view.name), fkCol, baseID)
 		if err != nil {
 			return err
 		}
@@ -553,22 +596,21 @@ func (s *SyncEngine) recomposeBaseRooted(ctx context.Context, event kafkaEvent, 
 	return nil
 }
 
-// resolveBaseID resolves the shared-base id a role event refers to, per the
-// role's link model:
+// resolveBaseID resolves the shared-base id a role event refers to. The v2
+// payload answers it directly (_ids.base_id — the write side stamps it on
+// EVERY role event), so the resolution is payload-first and touches no
+// database. The remaining branches serve the pre-v2 backlog:
 //
-//   - shared-PK (fk == role PK): the event's aggregate_id IS the base id — no
-//     access at all.
-//   - separate-FK, event ≠ DELETED: the row exists — consult the source (the
-//     same consult-always rule every other read follows). A row that vanished
-//     between the event and its processing yields "" (skip); the DELETED event
-//     that removed it follows on the same partition (same key → same worker,
-//     ordered) carrying the payload keys, so the document still converges.
-//   - separate-FK DELETED: nothing is left to consult — read the FK from the
-//     event payload, which the write side records (structural keys, flat map)
-//     for exactly this moment. No fallback: the payload dispatch is guaranteed
-//     by the current write side; a missing key is a malformed event, surfaced
-//     by the caller's log.
+//   - shared-PK (fk == role PK): the event's aggregate_id IS the base id.
+//   - separate-FK, event ≠ DELETED: the row exists — read the FK from the
+//     source. A row that vanished between the event and its processing yields
+//     "" (skip); the DELETED event that removed it follows on the same
+//     partition carrying the payload keys, so the document still converges.
+//   - separate-FK DELETED: read the FK from the legacy flat structural keys.
 func (s *SyncEngine) resolveBaseID(ctx context.Context, event kafkaEvent, r roleDef) (string, error) {
+	if ids, ok := parsePayloadIDs(event.Payload); ok && ids.BaseID != "" {
+		return ids.BaseID, nil
+	}
 	_, fkCol, ok := r.schema.SharedBaseRef()
 	if !ok {
 		return "", nil
