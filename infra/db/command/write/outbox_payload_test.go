@@ -144,12 +144,15 @@ func TestBuildDeletePayloadV2_KeysGrowOnly(t *testing.T) {
 	}
 }
 
-func TestBuildBaseUpdate_BumpsRevisionInOneStatement(t *testing.T) {
+// The warm shared-base UPDATE (upsertSharedBase's exact buildUpdate call) must
+// bump the revision in the SAME statement — one row lock serializes concurrent
+// role writes of the identity.
+func TestSharedBaseUpdate_BumpsRevisionInOneStatement(t *testing.T) {
 	base := NewSharedBase("pessoa").Revision("revision").PK("id").
 		Field("Name", "name").Field("Document", "document").NaturalKey("document")
-	// Attach to resolve nothing — buildBaseUpdate reads only the base schema.
 	baseID := deterministicBaseID("D1")
-	sql, args := buildBaseUpdate(testPGDialect{}, base, baseID, domain.Fields{"name": "Ana"}, testNow)
+	sql, args := buildUpdate(testPGDialect{}, base.Table(), base.PKColumn(), baseID,
+		domain.Fields{"name": "Ana"}, base.UpdateNowColumns(), testNow, base.RevisionColumn())
 	want := "UPDATE pessoa SET name = $1, revision = revision + 1 WHERE id = $2"
 	if sql != want {
 		t.Fatalf("sql = %q, want %q", sql, want)

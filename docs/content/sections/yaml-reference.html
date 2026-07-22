@@ -329,6 +329,16 @@ shutdown:
         logs an <em>advisory</em> (the consumer often cannot know whether the upstream soft-deletes). An empty
         <code>filter</code> mirrors the full payload, so the column always survives.
     </p>
+    <p class="note">
+        <strong>The mirror is a flat-scalar document — child collections of an upstream aggregate are not
+        mirrored.</strong> The v2 payload's <code>_</code>-prefixed blocks (<code>_ids</code>,
+        <code>_children</code>/<code>_base_children</code>) are routing metadata and per-item <em>write deltas</em>
+        (each item carries an <code>_op</code> verb; a delete op carries no fields), not a stable full-state
+        snapshot — so the decode strips every <code>_</code>-key from the mirror by default, exactly as the legacy
+        <code>{"root","children"}</code> shape always dropped its children block. A consumer that wants a raw
+        <code>_</code>-block anyway can allowlist it in <code>filter</code> (the allowlist wins), but it arrives
+        as-is: the framework does not apply upstream child deltas to a mirror.
+    </p>
 
     <h3>integration</h3>
     <p>

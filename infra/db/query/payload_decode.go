@@ -40,9 +40,13 @@ type decodedEvent struct {
 	BaseChildren map[string][]childOp
 }
 
-// decodePayloadEvent decodes payload against the view's root schema. ok=false
-// when the payload is not a v2 event (no _ids) or is malformed.
-func decodePayloadEvent(schema *core.TableSchema, payload []byte) (*decodedEvent, bool) {
+// decodeRawPayload parses the payload bytes ONCE into the raw JSON map
+// (numbers as json.Number). ok=false when the payload is empty, malformed or
+// not a v2 event (no "_ids" block). The map is the shared input of every
+// per-view coercion of one event: SyncEngine.process parses here once and runs
+// coercePayloadEvent per view over it — the typed half is schema-dependent
+// (PayloadColumnTypes differ per view), the parse is not.
+func decodeRawPayload(payload []byte) (map[string]any, bool) {
 	if len(payload) == 0 {
 		return nil, false
 	}
@@ -52,12 +56,26 @@ func decodePayloadEvent(schema *core.TableSchema, payload []byte) (*decodedEvent
 	if err := dec.Decode(&raw); err != nil {
 		return nil, false
 	}
-	idsRaw, ok := raw["_ids"].(map[string]any)
-	if !ok {
+	if _, ok := raw["_ids"].(map[string]any); !ok {
 		return nil, false
 	}
+	return raw, true
+}
+
+// rawPayloadIDs reads the structural identity from a decodeRawPayload result
+// (which guaranteed the "_ids" block exists).
+func rawPayloadIDs(raw map[string]any) payloadIDs {
+	ids, _ := raw["_ids"].(map[string]any)
+	return decodeIDsBlock(ids)
+}
+
+// coercePayloadEvent restores one already-parsed raw payload into the TYPED
+// projection input of one view. It reads the shared raw map and NEVER mutates
+// it — every produced Document/childOp is freshly built — so any number of
+// views coerce over the same parse.
+func coercePayloadEvent(schema *core.TableSchema, raw map[string]any) *decodedEvent {
 	ev := &decodedEvent{
-		IDs:     decodeIDsBlock(idsRaw),
+		IDs:     rawPayloadIDs(raw),
 		Scalars: Document{},
 	}
 	types := schema.PayloadColumnTypes()
@@ -69,7 +87,19 @@ func decodePayloadEvent(schema *core.TableSchema, payload []byte) (*decodedEvent
 	}
 	ev.Children = decodeChildGroups(schema, raw["_children"])
 	ev.BaseChildren = decodeChildGroups(schema, raw["_base_children"])
-	return ev, true
+	return ev
+}
+
+// decodePayloadEvent decodes payload against the view's root schema — parse +
+// coerce in one call, for callers holding a single view. ok=false when the
+// payload is not a v2 event (no _ids) or is malformed. Multi-view callers
+// parse once (decodeRawPayload) and coerce per view instead.
+func decodePayloadEvent(schema *core.TableSchema, payload []byte) (*decodedEvent, bool) {
+	raw, ok := decodeRawPayload(payload)
+	if !ok {
+		return nil, false
+	}
+	return coercePayloadEvent(schema, raw), true
 }
 
 // decodeIDsBlock reads the _ids map (json.Number-safe — parsePayloadIDs stays

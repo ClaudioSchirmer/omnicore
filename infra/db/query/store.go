@@ -54,9 +54,11 @@ type ReadModelStore interface {
 	// interleaved writers (role events, shared-base fan-out) never
 	// read-modify-write. stages are standard update-pipeline documents.
 	// upsert=true materializes a missing document; upsert=false makes a
-	// missing document a no-op — the recompose-ripple's surgical embed edits
-	// require it, or a ripple racing a concurrent document delete would
-	// resurrect a skeleton holding nothing but the edited segment.
+	// missing document a no-op — required wherever the target id comes from a
+	// snapshot another writer may have invalidated (the recompose-ripple's
+	// surgical embed edits, the shared-base fan-out), or a write racing a
+	// concurrent document delete would resurrect a skeleton holding nothing
+	// but the edited fields.
 	ApplyProjection(ctx context.Context, collection PhysicalCollection, id string, stages []Document, upsert bool) error
 	// HasDocuments reports whether the collection holds at least one document.
 	HasDocuments(ctx context.Context, collection PhysicalCollection) (bool, error)

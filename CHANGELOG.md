@@ -127,7 +127,10 @@ with `1.0.0`.
   failure registries, the replay admin) keep the dialect `NOW()` expression,
   and `Dialect.NowExpr()` remains on the interface for them. Operational note:
   the authoritative clock for row timestamps is now the application host's
-  (keep pods on NTP); the database server's clock no longer participates.
+  (keep pods on NTP — a correctness requirement); the database server's clock
+  no longer participates. Under clock skew across pods, `updated_at` is not
+  monotonic between concurrent writers — the ordering token is `Revision`,
+  never `updated_at`.
 - **BREAKING: `audit_events` is now a plain table on every backend; the
   Postgres-only partitioning is removed.** The audit id is a time-ordered
   UUID v7, so the primary key alone gives append-only insert locality — the

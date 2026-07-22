@@ -295,13 +295,12 @@ func execOneWithTx(ctx context.Context, tx WriteTx, d Dialect, entity domain.Val
 		if err := tx.Exec(ctx, sql, args...); err != nil {
 			return domain.WriteResult{}, err
 		}
-		meta, err := outboxMetaFor(ctx, tx, d, schema, e.Source(), id)
-		if err != nil {
+		// A row born in THIS TX starts at 1 by definition — no own-revision
+		// read; only the base half (when a shared base is declared) consults.
+		meta := outboxMeta{ID: id, Revision: 1}
+		if err := fillBaseMeta(ctx, tx, d, schema, e.Source(), &meta); err != nil {
 			return domain.WriteResult{}, err
 		}
-		// A row born in THIS TX starts at 1 by definition — no read needed
-		// (outboxMetaFor served the base half; the own token is known).
-		meta.Revision = 1
 		if err := WriteOutbox(ctx, tx, schema.Table(), "INSERTED", id,
 			buildWritePayloadV2(schema, e.Source(), nil, "INSERTED", now, fields, meta)); err != nil {
 			return domain.WriteResult{}, err

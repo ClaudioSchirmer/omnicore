@@ -271,7 +271,9 @@ func readRevision(ctx context.Context, tx WriteTx, d Dialect, table, revCol, pkC
 // that did not compute it inline: the row's OWN revision (read in-TX, after
 // this operation's statements) and — only when the schema declares a shared
 // base — the deterministic base id + the base's revision. For a plain flat or
-// aggregate entity it is just the own-revision read.
+// aggregate entity it is just the own-revision read. A verb that already
+// KNOWS the own token (an INSERT: a row born in this TX is 1 by definition)
+// skips this and calls fillBaseMeta directly — no wasted read.
 func outboxMetaFor(ctx context.Context, tx WriteTx, d Dialect, schema *TableSchema, src domain.Entity, id string) (outboxMeta, error) {
 	meta := outboxMeta{ID: id}
 	if rc := schema.RevisionColumn(); rc != "" {
@@ -281,19 +283,31 @@ func outboxMetaFor(ctx context.Context, tx WriteTx, d Dialect, schema *TableSche
 		}
 		meta.Revision = rev
 	}
+	if err := fillBaseMeta(ctx, tx, d, schema, src, &meta); err != nil {
+		return meta, err
+	}
+	return meta, nil
+}
+
+// fillBaseMeta resolves the shared-base half of the structural identity —
+// the deterministic base id + the base's revision (read in-TX, after this
+// operation's base statements ran). A no-op when the schema declares no
+// shared base or the natural key is unreadable (payload assembly never
+// vetoes a write the verb allows).
+func fillBaseMeta(ctx context.Context, tx WriteTx, d Dialect, schema *TableSchema, src domain.Entity, meta *outboxMeta) error {
 	base, _, ok := schema.SharedBaseRef()
 	if !ok {
-		return meta, nil
+		return nil
 	}
 	_, nk := sharedBaseValues(base, src)
 	if nk == "" {
-		return meta, nil // payload assembly never vetoes a write the verb allows
+		return nil
 	}
 	meta.BaseID = deterministicBaseID(nk)
 	rev, err := readBaseRevision(ctx, tx, d, base, meta.BaseID)
 	if err != nil {
-		return meta, err
+		return err
 	}
 	meta.BaseRevision = rev
-	return meta, nil
+	return nil
 }

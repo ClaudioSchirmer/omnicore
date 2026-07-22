@@ -432,6 +432,60 @@ func TestBatch_AllVerbsOneTx(t *testing.T) {
 	}
 }
 
+// A batch INSERT knows its own revision (a row born in this TX is 1 by
+// definition) and must NOT read it back; a batch UPDATE cannot know the
+// post-increment value and must. Pins the split introduced by fillBaseMeta —
+// a regression here silently re-adds one wasted SELECT per inserted item.
+func TestBatch_InsertSkipsOwnRevisionRead(t *testing.T) {
+	revisionReads := func(queries []string) int {
+		n := 0
+		for _, q := range queries {
+			if strings.HasPrefix(q, "SELECT revision ") {
+				n++
+			}
+		}
+		return n
+	}
+	t.Run("insertDoesNotRead", func(t *testing.T) {
+		var queries []string
+		tx := &recTx{count: 1, queryFn: func(sql string, _ []any) (Rows, error) {
+			queries = append(queries, sql)
+			return nil, nil
+		}}
+		be := newFlatBE(&recBeginner{tx: tx})
+		ins, err := domain.GetInsertable(&builderTestEntity{Name: "a", Email: "a@x"}, nil, "GetInsertable")
+		if err != nil {
+			t.Fatalf("GetInsertable: %v", err)
+		}
+		if _, err := be.Batch(newBuilderCtx(), domain.NewBatch([]domain.ValidEntity{ins}), []*TableSchema{builderTestSchema}); err != nil {
+			t.Fatalf("Batch: %v", err)
+		}
+		if n := revisionReads(queries); n != 0 {
+			t.Errorf("a batch INSERT must not read its own revision back, got %d reads: %v", n, queries)
+		}
+	})
+	t.Run("updateStillReads", func(t *testing.T) {
+		var queries []string
+		tx := &recTx{count: 1, queryFn: func(sql string, _ []any) (Rows, error) {
+			queries = append(queries, sql)
+			return nil, nil
+		}}
+		be := newFlatBE(&recBeginner{tx: tx})
+		e := &builderTestEntity{Name: "a", Email: "a@x"}
+		e.SetID(domain.NewID(uuid.NewString()))
+		upd, err := domain.GetUpdatable(e, func(*builderTestEntity) error { return nil }, nil, "GetUpdatable")
+		if err != nil {
+			t.Fatalf("GetUpdatable: %v", err)
+		}
+		if _, err := be.Batch(newBuilderCtx(), domain.NewBatch([]domain.ValidEntity{upd}), []*TableSchema{builderTestSchema}); err != nil {
+			t.Fatalf("Batch: %v", err)
+		}
+		if n := revisionReads(queries); n != 1 {
+			t.Errorf("a batch UPDATE must read the post-increment revision exactly once, got %d reads: %v", n, queries)
+		}
+	})
+}
+
 func TestBatch_ErrorBranches(t *testing.T) {
 	t.Run("schemaCountMismatch", func(t *testing.T) {
 		ops, _ := batchOps(t)

@@ -121,8 +121,10 @@ type kafkaEvent struct {
 	// when the producing write had tracing off. Used to LINK the projection
 	// span back to the producing trace.
 	Traceparent string
-	// Payload is the raw outbox payload (message.Value), parsed lazily where a
-	// routing decision needs the structural ids (see the type comment).
+	// Payload is the raw outbox payload (message.Value), parsed ONCE per event
+	// at the top of process (decodeRawPayload) and coerced per view from that
+	// shared map; only the consult-path resolveBaseID re-reads the _ids
+	// envelope on its own (see the type comment).
 	Payload []byte
 }
 
@@ -404,7 +406,7 @@ func (s *SyncEngine) applyConsultUpsert(ctx context.Context, view *ViewDefinitio
 		return s.applyUpsert(ctx, view.name, id, doc)
 	}
 	stages := fieldOwnershipStages(doc, schemaPK(view.schema), embedFieldSet(view.embeds), false)
-	if err := s.applyProjection(ctx, view.name, id, stages); err != nil {
+	if err := s.applyProjection(ctx, view.name, id, stages, true); err != nil {
 		return err
 	}
 	repairDanglingOneToOne(ctx, s.mongo, s.resolver, s.eng, s.composer, view, id, doc)
@@ -414,12 +416,21 @@ func (s *SyncEngine) applyConsultUpsert(ctx context.Context, view *ViewDefinitio
 // applyProjection runs the payload-direct pipeline on the view's active slot
 // and, during a rebuild, on the shadow slot too — the same dual-apply
 // discipline as applyUpsert, so the blue-green window misses nothing.
-func (s *SyncEngine) applyProjection(ctx context.Context, viewName, id string, stages []Document) error {
-	if err := s.mongo.ApplyProjection(ctx, s.resolver.Active(viewName), id, stages, true); err != nil {
+//
+// upsert decides what a MISSING document means. The writer's OWN document
+// passes true — the projection must materialize a document the first event
+// creates. The shared-base fan-out passes false: it targets ids another
+// writer's FindIDsByField snapshot produced, so a missing document there means
+// a role deleted concurrently — upserting would resurrect a skeleton carrying
+// only base fields (no PK, no FK, no deleted_at: invisible to every future
+// fan-out and reconciliation, yet listed as an active row) that only a full
+// rebuild could remove.
+func (s *SyncEngine) applyProjection(ctx context.Context, viewName, id string, stages []Document, upsert bool) error {
+	if err := s.mongo.ApplyProjection(ctx, s.resolver.Active(viewName), id, stages, upsert); err != nil {
 		return err
 	}
 	if shadow, on := s.resolver.ShadowActive(viewName); on {
-		s.dualApply(ctx, viewName, func() error { return s.mongo.ApplyProjection(ctx, shadow, id, stages, true) })
+		s.dualApply(ctx, viewName, func() error { return s.mongo.ApplyProjection(ctx, shadow, id, stages, upsert) })
 	}
 	return nil
 }
@@ -481,6 +492,12 @@ func (s *SyncEngine) process(ctx context.Context, event kafkaEvent) error {
 		"sync "+event.AggregateType, event.Traceparent)
 	defer span.End()
 
+	// The payload is parsed ONCE per event; every consumer below (the payload
+	// fan-out, the per-view payload-direct projection) coerces its typed input
+	// over this shared map — never a second unmarshal of the same bytes.
+	// rawOK=false marks a non-v2 event (pre-v2 backlog, replay rows).
+	raw, rawOK := decodeRawPayload(event.Payload)
+
 	// A SharedBase change fans out: recompose every role view's document that
 	// references the changed identity. Two triggers converge here:
 	//   - a BASE-table event (pre-v2 backlog rows, the purge DELETED): the
@@ -498,9 +515,9 @@ func (s *SyncEngine) process(ctx context.Context, event kafkaEvent) error {
 		}
 	}
 	if baseTable, ok := s.index.baseOfRole[event.AggregateType]; ok {
-		if baseViews, ok := s.index.bySharedBase[baseTable]; ok {
-			if ids, ok := parsePayloadIDs(event.Payload); ok && ids.BaseID != "" {
-				if err := s.fanOutSharedBasePayload(ctx, event, ids.BaseID, baseViews); err != nil {
+		if baseViews, ok := s.index.bySharedBase[baseTable]; ok && rawOK {
+			if ids := rawPayloadIDs(raw); ids.BaseID != "" {
+				if err := s.fanOutSharedBasePayload(ctx, raw, ids.BaseID, baseViews); err != nil {
 					return err
 				}
 			}
@@ -547,17 +564,16 @@ func (s *SyncEngine) process(ctx context.Context, event kafkaEvent) error {
 		//     WARNING + SKIP (pre-v2 backlog / replay events; the post-upgrade
 		//     rebuild converges them) — never a silent re-read.
 		if !view.isSharedBaseView && len(view.embeds) == 0 {
-			ev, ok := decodePayloadEvent(view.schema, event.Payload)
-			if !ok {
+			if !rawOK {
 				log.Printf("sync engine: WARNING — non-v2 payload on %s %s (id=%s), projection skipped (rebuild converges it)",
 					event.AggregateType, event.EventType, event.AggregateID)
 				continue
 			}
-			stages := buildProjectionStages(view.schema, ev)
+			stages := buildProjectionStages(view.schema, coercePayloadEvent(view.schema, raw))
 			if len(stages) == 0 {
 				continue
 			}
-			if err := s.applyProjection(ctx, view.name, event.AggregateID, stages); err != nil {
+			if err := s.applyProjection(ctx, view.name, event.AggregateID, stages, true); err != nil {
 				return err
 			}
 			continue
@@ -634,19 +650,26 @@ func (s *SyncEngine) fanOutSharedBase(ctx context.Context, baseID string, baseVi
 // identity — no relational read. The writer's own document receives the same
 // guarded stages on top of its full projection: idempotent by construction.
 // Vanished roles need no reconciliation here — their own DELETED events remove
-// their documents. The legacy base-event trigger (fanOutSharedBase) keeps the
-// consult recompose for pre-v2 backlog rows.
-func (s *SyncEngine) fanOutSharedBasePayload(ctx context.Context, event kafkaEvent, baseID string, baseViews []*ViewDefinition) error {
+// their documents — but that removal must not be UNDONE by this write: the
+// target ids come from a FindIDsByField snapshot, so a document missing at
+// write time is a role deleted concurrently (the only way a snapshotted id can
+// be absent), and the projection applies with upsert=false — a no-op instead
+// of resurrecting a base-fields-only skeleton no future event could ever
+// clean. A role created concurrently loses nothing either: its document is not
+// in the snapshot, and its own INSERTED projection carries the same base
+// fields. The legacy base-event trigger (fanOutSharedBase) keeps the consult
+// recompose for pre-v2 backlog rows.
+//
+// raw is the event's payload parsed once by the caller (decodeRawPayload);
+// each view coerces its typed input over that shared map — no re-parse per
+// view, and no per-view "not v2" branch (the caller already proved the block).
+func (s *SyncEngine) fanOutSharedBasePayload(ctx context.Context, raw map[string]any, baseID string, baseViews []*ViewDefinition) error {
 	for _, view := range baseViews {
 		_, fkCol, ok := view.schema.SharedBaseRef()
 		if !ok {
 			continue
 		}
-		ev, ok2 := decodePayloadEvent(view.schema, event.Payload)
-		if !ok2 {
-			return nil // caller checked _ids; defensive
-		}
-		stages := buildFanOutStages(view.schema, ev)
+		stages := buildFanOutStages(view.schema, coercePayloadEvent(view.schema, raw))
 		if len(stages) == 0 {
 			continue
 		}
@@ -655,7 +678,7 @@ func (s *SyncEngine) fanOutSharedBasePayload(ctx context.Context, event kafkaEve
 			return err
 		}
 		for _, rid := range roleIDs {
-			if err := s.applyProjection(ctx, view.name, rid, stages); err != nil {
+			if err := s.applyProjection(ctx, view.name, rid, stages, false); err != nil {
 				return err
 			}
 		}

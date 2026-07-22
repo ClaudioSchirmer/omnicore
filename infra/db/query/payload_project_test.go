@@ -18,7 +18,7 @@ func TestGuardedSetStage_Semantics(t *testing.T) {
 	if _, ok := inner[docRevisionField]; !ok {
 		t.Fatalf("the watermark itself must advance, got %v", inner)
 	}
-	// revision <= 0 (pre-4b3 payload) degrades to an unconditional set.
+	// revision <= 0 (token-less pre-v0.36 payload) degrades to an unconditional set.
 	st0 := guardedSetStage(docRevisionField, Document{"name": lit("Ana")}, 0)
 	if _, has := st0["$set"].(Document)[docRevisionField]; has {
 		t.Errorf("revision 0 must not write a watermark, got %v", st0)

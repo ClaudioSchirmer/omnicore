@@ -187,3 +187,42 @@ func TestProcess_RoleEventWithoutIDs_SkipsPayloadFanOut(t *testing.T) {
 		t.Errorf("a legacy role event must be skipped entirely, got %d upserts", len(coll.updates))
 	}
 }
+
+// The payload fan-out writes with upsert=false; the writer's OWN projection
+// with upsert=true. The fan-out targets ids from a FindIDsByField snapshot, so
+// a document missing at write time is a concurrently-deleted role — upserting
+// there would resurrect a base-fields-only skeleton (no PK, no FK, no
+// deleted_at) that no future event could clean and that default reads would
+// list as an active row. This pins the flag on both writes of one role event.
+func TestProcess_PayloadFanOut_NeverUpserts(t *testing.T) {
+	coll := &fakeColl{docs: []any{map[string]any{"_id": "a1"}}}
+	eng := composerEngine(func(string, []any) ([]map[string]any, error) { return nil, nil })
+	view := View("aluno").Root("aluno").Schema(fanOutRoleSchema()).Version(1)
+	s := NewSyncEngine(eng, newFakeMongo(coll), identityResolver, nil, "", []*ViewDefinition{view}, 1)
+
+	event := kafkaEvent{
+		AggregateType: "aluno", EventType: "UPDATED", AggregateID: "a1",
+		Payload: []byte(`{"email":"a@x","name":"Ana","_ids":{"id":"a1","revision":2,"base_id":"p1","base_revision":3}}`),
+	}
+	if err := s.process(context.Background(), event); err != nil {
+		t.Fatalf("process role event: %v", err)
+	}
+	var fanOuts, own int
+	for _, u := range coll.updates {
+		upsert, ok := u["$upsert"].(bool)
+		if !ok {
+			t.Fatalf("expected only pipeline writes on this path, got %v", u)
+		}
+		if upsert {
+			own++
+		} else {
+			fanOuts++
+		}
+	}
+	if fanOuts != 1 {
+		t.Errorf("the fan-out write must run exactly once with upsert=false, got %d (updates: %d)", fanOuts, len(coll.updates))
+	}
+	if own != 1 {
+		t.Errorf("the own-document projection must run exactly once with upsert=true, got %d (updates: %d)", own, len(coll.updates))
+	}
+}

@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"reflect"
-	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -752,38 +751,6 @@ func (b *BaseEngine) anyActiveRole(ctx context.Context, tx WriteTx, d Dialect, b
 	return false, nil
 }
 
-// buildBaseUpdate renders the shared-base field UPDATE with the in-place
-// revision bump appended to the SET list — ONE statement, one row lock:
-// `UPDATE base SET <fields…>, <updatedAt?>, revision = revision + 1 WHERE pk`.
-// The increment runs server-side under the base row's lock, so concurrent role
-// writes of the same identity serialize in real commit order; the caller reads
-// the resulting value back inside the same TX (readBaseRevision) to stamp the
-// outbox payload.
-func buildBaseUpdate(d Dialect, base *TableSchema, baseID string, fields domain.Fields, now time.Time) (string, []any) {
-	keys := SortedKeys(fields)
-	nowCols := base.UpdateNowColumns()
-	sets := make([]string, 0, len(keys)+len(nowCols)+1)
-	args := make([]any, 0, len(keys)+len(nowCols)+1)
-	n := 0
-	for _, k := range keys {
-		n++
-		sets = append(sets, d.QuoteIdent(k)+" = "+d.Placeholder(n))
-		args = append(args, d.EncodeArg(fields[k]))
-	}
-	for _, nc := range nowCols {
-		n++
-		sets = append(sets, d.QuoteIdent(nc)+" = "+d.Placeholder(n))
-		args = append(args, d.EncodeArg(now))
-	}
-	rev := d.QuoteIdent(base.RevisionColumn())
-	sets = append(sets, rev+" = "+rev+" + 1")
-	n++
-	sql := fmt.Sprintf("UPDATE %s SET %s WHERE %s = %s",
-		d.QuoteIdent(base.Table()), strings.Join(sets, ", "), d.QuoteIdent(base.PKColumn()), d.Placeholder(n))
-	args = append(args, d.EncodeArg(domain.NewID(baseID)))
-	return sql, args
-}
-
 // readBaseRevision reads the shared base's current revision inside the write
 // TX — after the base ops of the operation ran, so the value stamped on the
 // outbox payload is the one THIS operation's lock scope produced. A vanished
@@ -829,15 +796,15 @@ func baseExists(ctx context.Context, tx WriteTx, d Dialect, base *TableSchema, b
 // operation's writeNow() stamp, shared with the role row.
 //
 // REVISION: the warm UPDATE bumps `revision = revision + 1` in the SAME
-// statement (buildBaseUpdate) — server-side, under the base row's lock, so
-// concurrent role writes of one identity serialize in real commit order; the
-// cold INSERT initializes it to 1 as a plain bound field. The new value is read
-// back in-TX and returned so the caller stamps it on the outbox payload
-// (_ids.base_revision) — the deterministic last-writer-wins token of every
-// read-model write of base data.
+// statement (buildUpdate's revCol append) — server-side, under the base row's
+// lock, so concurrent role writes of one identity serialize in real commit
+// order; the cold INSERT initializes it to 1 as a plain bound field. The new
+// value is read back in-TX and returned so the caller stamps it on the outbox
+// payload (_ids.base_revision) — the deterministic last-writer-wins token of
+// every read-model write of base data.
 func (b *BaseEngine) upsertSharedBase(ctx context.Context, tx WriteTx, d Dialect, base *TableSchema, baseID string, baseFields domain.Fields, baseExists bool, now time.Time) (int64, error) {
 	if baseExists {
-		sql, args := buildBaseUpdate(d, base, baseID, baseFields, now)
+		sql, args := buildUpdate(d, base.Table(), base.PKColumn(), baseID, baseFields, base.UpdateNowColumns(), now, base.RevisionColumn())
 		if err := tx.Exec(ctx, sql, args...); err != nil {
 			return 0, err
 		}

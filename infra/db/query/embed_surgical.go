@@ -3,6 +3,7 @@ package query
 import (
 	"context"
 	"fmt"
+	"log"
 
 	"github.com/ClaudioSchirmer/omnicore/infra/db/core"
 )
@@ -146,7 +147,12 @@ func repairDanglingOneToOne(ctx context.Context, mongo ReadModelStore, resolver 
 		var val any
 		docs, err := mongo.FindManyByField(ctx, resolver.Active(e.source.table), "_id", fk)
 		if err != nil {
-			continue // best-effort: the segment stays repairable by the next event
+			// Best-effort by design (the main write already succeeded), but never
+			// silent: a systematic Mongo failure here would leave 1:1 segments
+			// dangling with no trace to diagnose by.
+			log.Printf("sync: WARNING — 1:1 embed repair read failed on view %q doc %q (segment %q): %v — segment stays repairable by the next event",
+				view.name, id, e.field, err)
+			continue
 		}
 		if len(docs) == 0 {
 			val = lit(nil)
@@ -154,6 +160,8 @@ func repairDanglingOneToOne(ctx context.Context, mongo ReadModelStore, resolver 
 			elem := docs[0]
 			if len(e.source.embeds) > 0 && composer != nil {
 				if nerr := composer.applyEmbeds(ctx, elem, schemaPK(e.source.schema), e.source.embeds, false); nerr != nil {
+					log.Printf("sync: WARNING — 1:1 embed repair nested-embed compose failed on view %q doc %q (segment %q): %v — segment stays repairable by the next event",
+						view.name, id, e.field, nerr)
 					continue
 				}
 			}
@@ -170,6 +178,8 @@ func repairDanglingOneToOne(ctx context.Context, mongo ReadModelStore, resolver 
 			}},
 		}}}
 		if aerr := mongo.ApplyProjection(ctx, resolver.Active(view.name), id, stages, false); aerr != nil {
+			log.Printf("sync: WARNING — 1:1 embed repair write failed on view %q doc %q (segment %q): %v — segment stays repairable by the next event",
+				view.name, id, e.field, aerr)
 			continue
 		}
 		if shadow, on := resolver.ShadowActive(view.name); on {

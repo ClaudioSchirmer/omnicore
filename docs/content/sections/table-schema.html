@@ -247,6 +247,16 @@ core.NewExternalSchema("users").PK("id").Field("Email", "mail")</code></pre>
     project them without a domain Go field.
 </p>
 
+<div class="box">
+    <strong>Operational consequence — the time source is the pods' clock, not the database's.</strong>
+    With several pods writing, timestamp quality across writers is only as good as the cluster's clock sync:
+    keep every node on NTP — for <code>created_at</code>/<code>updated_at</code> and the audit trail it is a
+    <em>correctness</em> requirement, not hygiene. Under clock skew, two consecutive writes of the same row from
+    different pods can leave <code>updated_at</code> going <em>backwards</em>. That never affects the projection —
+    ordering between concurrent writes is carried by <code>Revision</code>, the commit-order token — but it means
+    <code>updated_at</code> is a <em>display</em> timestamp: never use it as a concurrency or ordering token.
+</div>
+
 <h3>One declaration, every consumer — <code>WithSchema</code></h3>
 <p>
     Declare the schema once and thread it with <code>BaseAggregateRepository.WithSchema(schema)</code>: it feeds BOTH the

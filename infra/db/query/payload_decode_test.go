@@ -105,3 +105,64 @@ func TestDecodePayloadEvent_UnknownChildGroupDropped(t *testing.T) {
 		t.Errorf("an undeclared child group must be dropped, got %v", ev.Children)
 	}
 }
+
+// process parses one event ONCE (decodeRawPayload) and coerces per view over
+// the shared raw map — valid only if coercion NEVER mutates that map. This
+// pins the property: after coercing against a schema that types the columns
+// differently (a fan-out sibling view), a fresh coercion still equals a
+// direct single-shot decode.
+func TestCoercePayloadEvent_SharedRawIsNotMutated(t *testing.T) {
+	payload := []byte(`{
+		"name": "Ana",
+		"age": 7,
+		"photo": "aGk=",
+		"created_at": "2026-07-20T12:00:00.000001Z",
+		"_ids": {"id": "r1", "revision": 2},
+		"_children": {"pdChild": [{"_op": "insert", "id": "c1", "label": "x", "rank": 5}]}
+	}`)
+	// A schema that knows NONE of the columns (types map empty beyond its own
+	// PK): its coercion takes the pass-through branches over the same values.
+	other := core.NewTableSchema[*pdChild]("pd_other").PK("id").
+		Field("Label", "other_label").Field("Rank", "other_rank")
+
+	raw, ok := decodeRawPayload(payload)
+	if !ok {
+		t.Fatal("a v2 payload must parse")
+	}
+	_ = coercePayloadEvent(other, raw)            // first consumer (different typing)
+	shared := coercePayloadEvent(pdSchema(), raw) // second consumer over the SAME map
+
+	direct, ok := decodePayloadEvent(pdSchema(), payload)
+	if !ok {
+		t.Fatal("direct decode failed")
+	}
+	if shared.IDs != direct.IDs {
+		t.Fatalf("_ids diverge: shared=%+v direct=%+v", shared.IDs, direct.IDs)
+	}
+	for k, want := range direct.Scalars {
+		got, has := shared.Scalars[k]
+		if !has {
+			t.Fatalf("scalar %q missing after shared coercion", k)
+		}
+		switch w := want.(type) {
+		case []byte:
+			if string(got.([]byte)) != string(w) {
+				t.Errorf("scalar %q = %v, want %v", k, got, want)
+			}
+		case time.Time:
+			if !got.(time.Time).Equal(w) {
+				t.Errorf("scalar %q = %v, want %v", k, got, want)
+			}
+		default:
+			if got != want {
+				t.Errorf("scalar %q = %v (%T), want %v (%T)", k, got, got, want, want)
+			}
+		}
+	}
+	if len(shared.Children["pdChild"]) != 1 || shared.Children["pdChild"][0].Op != "insert" {
+		t.Fatalf("children diverge after shared coercion: %+v", shared.Children)
+	}
+	if got, want := shared.Children["pdChild"][0].Fields["rank"], direct.Children["pdChild"][0].Fields["rank"]; got != want {
+		t.Errorf("child rank = %v (%T), want %v (%T)", got, got, want, want)
+	}
+}

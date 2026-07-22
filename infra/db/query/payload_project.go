@@ -116,6 +116,12 @@ func buildProjectionStages(schema *core.TableSchema, ev *decodedEvent) []Documen
 	if len(base) > 0 && ev.IDs.BaseID != "" {
 		stages = append(stages, baseGuardedSetStage(base, ev.IDs.BaseRevision))
 	}
+	// INVARIANT: own is never empty for a v2 write event — the PK restore above
+	// (schema.PKColumn() + _ids.id, both always present) guarantees it, so this
+	// stage ALWAYS runs and the _revision watermark ALWAYS advances. If a
+	// refactor ever moves the PK out of `own`, a children-only event would skip
+	// this stage, the watermark would stall, and a zombie consumer's older
+	// event could regress own data past the guard.
 	if len(own) > 0 {
 		stages = append(stages, guardedSetStage(docRevisionField, own, ev.IDs.Revision))
 	}
@@ -150,7 +156,8 @@ func segmentNormalizeStage(schema *core.TableSchema) Document {
 // ownGuardedChildStages renders the OWN child edits, each array expression
 // wrapped in the document-revision guard (reading the still-unchanged
 // watermark — these stages precede the own-scalars stage that advances it).
-// A pre-4b3 payload (revision 0) applies unguarded.
+// A token-less payload (revision 0 — produced before the universal Revision
+// tokens shipped in v0.36) applies unguarded.
 func ownGuardedChildStages(schema *core.TableSchema, ev *decodedEvent) []Document {
 	stages := childStages(schema, ev.Children, 0, false)
 	if ev.IDs.Revision <= 0 {
@@ -171,8 +178,8 @@ func ownGuardedChildStages(schema *core.TableSchema, ev *decodedEvent) []Documen
 
 // guardedSetStage renders one $set where every column applies only when the
 // stored watermark (watermarkField) is older than the incoming revision — and
-// the watermark itself advances monotonically. revision <= 0 (a pre-4b3
-// payload) degrades to an unconditional set with no watermark write.
+// the watermark itself advances monotonically. revision <= 0 (a token-less
+// pre-v0.36 payload) degrades to an unconditional set with no watermark write.
 func guardedSetStage(watermarkField string, set Document, revision int64) Document {
 	if revision <= 0 {
 		return Document{"$set": set}
@@ -261,10 +268,8 @@ func childArrayExpr(seg, pk, id string, op childOp, revision int64, guarded bool
 		}
 		return Document{"$concatArrays": []any{others, []any{lit(elem)}}}
 	case "archive":
-		mutate := Document{"deleted_at": lit(op.Fields[softDeleteOf(child)])}
-		if sd, ok := child.SoftDeleteColumn(); ok {
-			mutate = Document{sd: lit(op.Fields[sd])}
-		}
+		sd := softDeleteOf(child)
+		mutate := Document{sd: lit(op.Fields[sd])}
 		if guarded {
 			mutate[elemRevisionField] = revision
 		}

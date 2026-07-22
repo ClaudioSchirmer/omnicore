@@ -400,8 +400,6 @@ func (l *AggregateLoader[T]) findRoots(ctx context.Context, q *criteria.Query, l
 	return entities, ids, nil
 }
 
-// tailClause renders the " WHERE … [ORDER BY …]" suffix shared by the
-// auto-scan and manual-scanner root SELECTs (each part already validated). The
 // selectColumns renders an explicit, dialect-quoted column list for a read —
 // never SELECT *, so the result type stays stable across an online ADD COLUMN
 // (see core.TableSchema.ReadColumns for the rationale).
@@ -413,6 +411,8 @@ func selectColumns(d Dialect, cols []string) string {
 	return strings.Join(quoted, ", ")
 }
 
+// tailClause renders the " WHERE … [ORDER BY …]" suffix shared by the
+// auto-scan and manual-scanner root SELECTs (each part already validated). The
 // row cap is NOT part of the tail: the caller applies it over the complete
 // statement via Dialect.ApplyLimit, so each engine caps in its native position.
 func tailClause(clause, orderSQL string) string {
