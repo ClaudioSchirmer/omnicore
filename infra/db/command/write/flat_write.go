@@ -57,7 +57,7 @@ func (b *BaseEngine) Insert(ctx persistence.RequestContext, entity domain.Insert
 		return domain.WriteResult{}, err
 	}
 	if err := WriteOutbox(ctx, tx, schema.Table(), "INSERTED", id,
-		buildWritePayload(schema, src, nil, "INSERTED", now, fields, outboxMeta{ID: id, Revision: 1})); err != nil {
+		buildWritePayload(schema, src, nil, "INSERTED", now, fields, outboxMeta{ID: id, Revision: 1, CreatedAt: insertCreatedAt(schema, now)})); err != nil {
 		return domain.WriteResult{}, err
 	}
 	ab := b.BuildAudit(func() audit.AuditEvent {
@@ -297,7 +297,7 @@ func execOneWithTx(ctx context.Context, tx WriteTx, d Dialect, entity domain.Val
 		}
 		// A row born in THIS TX starts at 1 by definition — no own-revision
 		// read; only the base half (when a shared base is declared) consults.
-		meta := outboxMeta{ID: id, Revision: 1}
+		meta := outboxMeta{ID: id, Revision: 1, CreatedAt: insertCreatedAt(schema, now)}
 		if err := fillBaseMeta(ctx, tx, d, schema, e.Source(), &meta); err != nil {
 			return domain.WriteResult{}, err
 		}
@@ -361,17 +361,20 @@ func execOneWithTx(ctx context.Context, tx WriteTx, d Dialect, entity domain.Val
 		return domain.WriteResult{ID: e.ID()}, nil
 
 	case domain.Deletable:
-		// The row's last revision is captured BEFORE the DELETE removes it (the
-		// row answers 0 afterwards): the DELETED payload's _ids.revision feeds
-		// the read-side document tombstone. The base half still resolves after
-		// the delete — the base row is a separate row that survives the verb.
+		// The row's last revision + created_at instant are captured BEFORE the
+		// DELETE removes them (the row answers zero afterwards): the DELETED
+		// payload's _ids.revision + _ids.created_at feed the read-side document
+		// tombstone (revision guard + incarnation discriminator). The base half
+		// still resolves after the delete — the base row is a separate row that
+		// survives the verb.
 		meta := outboxMeta{ID: e.ID().Value()}
 		if rc := schema.RevisionColumn(); rc != "" {
-			rev, err := readRevision(ctx, tx, d, schema.Table(), rc, schema.PKColumn(), e.ID().Value())
+			rev, createdAt, err := readRevisionCreatedAt(ctx, tx, d, schema.Table(), rc, schema.CreatedAtColumn(), schema.PKColumn(), e.ID().Value())
 			if err != nil {
 				return domain.WriteResult{}, err
 			}
 			meta.Revision = rev
+			meta.CreatedAt = createdAt
 		}
 		if err := tx.Exec(ctx, deleteSQL(d, schema.Table(), schema.PKColumn()), d.EncodeArg(domain.NewID(e.ID().Value()))); err != nil {
 			return domain.WriteResult{}, err

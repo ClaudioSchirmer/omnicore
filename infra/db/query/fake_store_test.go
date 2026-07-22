@@ -227,13 +227,13 @@ func (s *fakeStore) DeleteByIDs(_ context.Context, collection PhysicalCollection
 // DeleteGuarded records the id like Delete (so existing assertions keep
 // reading c.deletes) and the guard revision in guardedDeletes for the tests
 // that fix the tombstone discipline.
-func (s *fakeStore) DeleteGuarded(_ context.Context, collection PhysicalCollection, id string, rev int64) error {
+func (s *fakeStore) DeleteGuarded(_ context.Context, collection PhysicalCollection, id string, rev int64, createdAtUnixMs int64) error {
 	c := s.coll(collection.String())
 	if c.deleteErr != nil {
 		return c.deleteErr
 	}
 	c.deletes = append(c.deletes, id)
-	c.guardedDeletes = append(c.guardedDeletes, map[string]any{"_id": id, "revision": rev})
+	c.guardedDeletes = append(c.guardedDeletes, map[string]any{"_id": id, "revision": rev, "created_at": createdAtUnixMs})
 	return nil
 }
 

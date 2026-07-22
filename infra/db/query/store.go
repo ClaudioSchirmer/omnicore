@@ -48,8 +48,16 @@ type ReadModelStore interface {
 	// The projection's DELETED path uses it with the deleted row's LAST
 	// revision: a document a fresher writer already re-materialized (its
 	// watermark exceeds the delete's revision) survives, so a redelivered or
-	// zombie DELETED cannot destroy newer state. Missing target is not an error.
-	DeleteGuarded(ctx context.Context, collection PhysicalCollection, id string, rev int64) error
+	// zombie DELETED cannot destroy newer state.
+	// createdAtUnixMs > 0 additionally scopes the delete to ONE incarnation of the
+	// id: only a document whose stored created_at equals that instant
+	// (a two-second window around the value — created_at columns round OR truncate depending on engine DDL) dies. A
+	// DETERMINISTIC id (shared-PK role, base) reborn under the same natural
+	// key restarts its revision at 1 — without the birth scope the old
+	// tombstone would kill every write of the new life for the tombstone's
+	// whole TTL. 0 skips the scope (schema without CreatedAt — revision-only
+	// fallback). Missing target is not an error.
+	DeleteGuarded(ctx context.Context, collection PhysicalCollection, id string, rev int64, createdAtUnixMs int64) error
 	// FindManyByField returns every document where field == value.
 	FindManyByField(ctx context.Context, collection PhysicalCollection, field string, value any) ([]Document, error)
 	// FindManyByFieldIn returns every document where field ∈ values — the

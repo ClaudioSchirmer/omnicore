@@ -590,7 +590,9 @@ func OrdersView() *query.ViewDefinition {
     Absence is guarded too: a DELETED event records the row's last revision as a <em>tombstone</em> in the
     <code>omnicore_projection_state</code> registry before a guarded delete, and every document-creating upsert
     re-checks it after writing — a zombie consumer's older upsert racing a delete removes its own write instead of
-    resurrecting the document. The same registry carries the base-revision handshake that heals a role document born
+    resurrecting the document — scoped to the dead row's incarnation by its <code>created_at</code>, so a
+    deterministic id (shared-PK role, base) re-created under the same natural key is never mistaken for a
+    zombie of the dead life. The same registry carries the base-revision handshake that heals a role document born
     concurrently with a fan-out that could not see it (the fan-out stamps the clock before probing; the newborn
     document's writer re-checks after writing and repairs by one guarded consult when a newer clock proves a fan-out
     already passed). Tombstones expire after 24&nbsp;h (TTL index, provisioned at SyncEngine start); base-revision

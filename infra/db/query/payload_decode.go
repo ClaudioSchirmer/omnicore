@@ -123,6 +123,9 @@ func decodeIDsBlock(m map[string]any) payloadIDs {
 	if b, ok := m["base_purged"].(bool); ok {
 		ids.BasePurged = b
 	}
+	if s, ok := m["created_at"].(string); ok {
+		ids.CreatedAt = s
+	}
 	return ids
 }
 

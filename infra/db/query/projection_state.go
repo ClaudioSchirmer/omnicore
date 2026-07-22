@@ -98,22 +98,32 @@ func (s *SyncEngine) dropBaseRevision(ctx context.Context, baseTable, baseID str
 // was deleted at revision rev. Advance-only on rev (a redelivered DELETED
 // keeps the original stamp — and its original TTL window). Runs BEFORE the
 // guarded delete, mirroring stampBaseRevision's write-then-probe order.
-func (s *SyncEngine) stampTombstone(ctx context.Context, view, id string, rev int64) error {
+// createdAtMs > 0 scopes the tombstone to ONE incarnation of the id (the dead
+// row's created_at instant, millisecond grain): the guarded delete and the
+// creator's post-write check only kill documents whose stored created_at
+// matches it, so a deterministic id REBORN under the same natural key is never
+// mistaken for a zombie of the dead life. 0 (no CreatedAt on the schema)
+// falls back to the revision-only tombstone.
+func (s *SyncEngine) stampTombstone(ctx context.Context, view, id string, rev, createdAtMs int64) error {
 	if rev <= 0 {
 		return nil
 	}
-	stages := []Document{guardedSetStage("revision", Document{"at": lit(time.Now().UTC())}, rev)}
+	fields := Document{"at": lit(time.Now().UTC())}
+	if createdAtMs > 0 {
+		fields["created_at"] = lit(createdAtMs)
+	}
+	stages := []Document{guardedSetStage("revision", fields, rev)}
 	return s.mongo.ApplyProjection(ctx, projectionStateCollection(), tombstoneID(view, id), stages, true)
 }
 
-// tombstoneRevision reads the tombstone revision for one view document; 0 when no
-// tombstone exists.
-func (s *SyncEngine) tombstoneRevision(ctx context.Context, view, id string) (int64, error) {
+// tombstoneRevision reads the tombstone (revision + created_at discriminator) for
+// one view document; (0, 0) when no tombstone exists.
+func (s *SyncEngine) tombstoneRevision(ctx context.Context, view, id string) (int64, int64, error) {
 	docs, err := s.mongo.FindManyByField(ctx, projectionStateCollection(), "_id", tombstoneID(view, id))
 	if err != nil || len(docs) == 0 {
-		return 0, err
+		return 0, 0, err
 	}
-	return watermarkOf(docs[0]["revision"]), nil
+	return watermarkOf(docs[0]["revision"]), watermarkOf(docs[0]["created_at"]), nil
 }
 
 // checkTombstone is the creator-side half of the delete handshake: after any
@@ -125,18 +135,21 @@ func (s *SyncEngine) tombstoneRevision(ctx context.Context, view, id string) (in
 // against any tombstone. Best-effort: a registry read failure logs and leaves
 // the at-least-once redelivery to reconverge.
 func (s *SyncEngine) checkTombstone(ctx context.Context, viewName, id string, myRev int64) error {
-	rev, err := s.tombstoneRevision(ctx, viewName, id)
+	rev, born, err := s.tombstoneRevision(ctx, viewName, id)
 	if err != nil {
 		return fmt.Errorf("tombstone check %s/%s: %w", viewName, id, err)
 	}
 	if rev == 0 || rev < myRev {
 		return nil
 	}
-	if err := s.mongo.DeleteGuarded(ctx, s.resolver.Active(viewName), id, rev); err != nil {
+	// The guarded delete carries the tombstone's created_at discriminator: a REBORN
+	// document (a fresher created_at under the same deterministic id) never
+	// matches and survives — only the dead incarnation's zombies die.
+	if err := s.mongo.DeleteGuarded(ctx, s.resolver.Active(viewName), id, rev, born); err != nil {
 		return err
 	}
 	if shadow, on := s.resolver.ShadowActive(viewName); on {
-		s.dualApply(ctx, viewName, func() error { return s.mongo.DeleteGuarded(ctx, shadow, id, rev) })
+		s.dualApply(ctx, viewName, func() error { return s.mongo.DeleteGuarded(ctx, shadow, id, rev, born) })
 	}
 	return nil
 }

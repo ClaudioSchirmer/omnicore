@@ -55,7 +55,7 @@ func (b *BaseEngine) insertAggregate(ctx persistence.RequestContext, entity doma
 		return domain.WriteResult{}, err
 	}
 	if err := WriteOutbox(ctx, tx, schema.Table(), "INSERTED", id,
-		buildWritePayload(schema, src, root, "INSERTED", now, rootFields, outboxMeta{ID: id, Revision: 1})); err != nil {
+		buildWritePayload(schema, src, root, "INSERTED", now, rootFields, outboxMeta{ID: id, Revision: 1, CreatedAt: insertCreatedAt(schema, now)})); err != nil {
 		return domain.WriteResult{}, err
 	}
 	ab := b.BuildAudit(func() audit.AuditEvent {
@@ -201,14 +201,19 @@ func (b *BaseEngine) hardDelete(
 	if err := deleteSiblings(ctx, tx, d, schema, id); err != nil {
 		return err
 	}
-	// The row's LAST revision is read before the DELETE removes it: the DELETED
-	// payload stamps it as _ids.revision, and the read side writes it into the
-	// document tombstone — the guard that stops a zombie consumer's older upsert
-	// from resurrecting the document after this delete projects. Any event this
-	// aggregate ever produced carries a revision <= this value.
+	// The row's LAST revision AND its created_at instant are read before the DELETE
+	// removes them: the DELETED payload stamps them as _ids.revision +
+	// _ids.created_at, and the read side writes both into the document
+	// tombstone — the guard that stops a zombie consumer's older upsert from
+	// resurrecting the document after this delete projects. Any event this
+	// aggregate ever produced carries a revision <= this value; the birth
+	// instant scopes the tombstone to THIS incarnation of the id, so a
+	// deterministic id reborn under the same natural key is never mistaken for
+	// a zombie of the dead one.
 	var ownRev int64
+	var ownCreatedAt time.Time
 	if rc := schema.RevisionColumn(); rc != "" {
-		if ownRev, err = readRevision(ctx, tx, d, schema.Table(), rc, schema.PKColumn(), id); err != nil {
+		if ownRev, ownCreatedAt, err = readRevisionCreatedAt(ctx, tx, d, schema.Table(), rc, schema.CreatedAtColumn(), schema.PKColumn(), id); err != nil {
 			return err
 		}
 	}
@@ -223,7 +228,7 @@ func (b *BaseEngine) hardDelete(
 	if err != nil {
 		return err
 	}
-	meta := outboxMeta{ID: id, Revision: ownRev, BasePurged: basePurged}
+	meta := outboxMeta{ID: id, Revision: ownRev, CreatedAt: ownCreatedAt, BasePurged: basePurged}
 	if base, _, ok := schema.SharedBaseRef(); ok {
 		if _, nk := sharedBaseValues(base, src); nk != "" {
 			meta.BaseID = deterministicBaseID(nk)

@@ -41,7 +41,7 @@ func TestIntegration_DeleteGuarded_RevisionPredicate(t *testing.T) {
 
 	// Older-or-equal watermark → deleted.
 	seed("old", query.Document{"_revision": int64(3)})
-	if err := m.DeleteGuarded(ctx, coll, "old", 3); err != nil {
+	if err := m.DeleteGuarded(ctx, coll, "old", 3, 0); err != nil {
 		t.Fatalf("delete old: %v", err)
 	}
 	if exists("old") {
@@ -49,7 +49,7 @@ func TestIntegration_DeleteGuarded_RevisionPredicate(t *testing.T) {
 	}
 	// Newer watermark → survives (a fresher writer re-materialized it).
 	seed("new", query.Document{"_revision": int64(7)})
-	if err := m.DeleteGuarded(ctx, coll, "new", 3); err != nil {
+	if err := m.DeleteGuarded(ctx, coll, "new", 3, 0); err != nil {
 		t.Fatalf("delete new: %v", err)
 	}
 	if !exists("new") {
@@ -57,15 +57,102 @@ func TestIntegration_DeleteGuarded_RevisionPredicate(t *testing.T) {
 	}
 	// Watermark-less document counts as older → deleted.
 	seed("bare", query.Document{"name": "x"})
-	if err := m.DeleteGuarded(ctx, coll, "bare", 3); err != nil {
+	if err := m.DeleteGuarded(ctx, coll, "bare", 3, 0); err != nil {
 		t.Fatalf("delete bare: %v", err)
 	}
 	if exists("bare") {
 		t.Error("a watermark-less document must count as older and be removed")
 	}
 	// Missing target → no error (Delete parity).
-	if err := m.DeleteGuarded(ctx, coll, "ghost", 3); err != nil {
+	if err := m.DeleteGuarded(ctx, coll, "ghost", 3, 0); err != nil {
 		t.Errorf("a missing target must not error: %v", err)
+	}
+}
+
+// The incarnation scope: a DETERMINISTIC id reborn under the same natural key
+// restarts its revision — the tombstone's created_at keeps the old life's
+// guarded delete away from the new life's document.
+func TestIntegration_DeleteGuarded_CreatedAtScopesIncarnation(t *testing.T) {
+	m, cleanup := newTestMongo(t)
+	defer cleanup()
+	ctx := context.Background()
+	coll := pc("it_delete_guarded_rebirth")
+	defer func() { _ = m.DropCollection(ctx, coll) }()
+
+	oldLife := time.Date(2026, 7, 20, 10, 0, 0, 123_000_000, time.UTC)
+	newLife := time.Date(2026, 7, 22, 16, 24, 13, 456_000_000, time.UTC)
+
+	// The REBORN document: same _id, revision restarted, NEW created_at.
+	if err := m.Upsert(ctx, coll, "d1", query.Document{
+		"_revision": int64(1), "created_at": newLife, "name": "reborn",
+	}); err != nil {
+		t.Fatalf("seed reborn: %v", err)
+	}
+	// The old life's tombstone delete (rev 7 >= 1) must NOT kill it: the
+	// created_at scope misses.
+	if err := m.DeleteGuarded(ctx, coll, "d1", 7, oldLife.UnixMilli()); err != nil {
+		t.Fatalf("delete old-life: %v", err)
+	}
+	docs, _ := m.FindManyByField(ctx, coll, "_id", "d1")
+	if len(docs) != 1 {
+		t.Fatal("the reborn document must survive the old incarnation's tombstone delete")
+	}
+	// A zombie of the SAME incarnation dies: created_at matches.
+	if err := m.DeleteGuarded(ctx, coll, "d1", 7, newLife.UnixMilli()); err != nil {
+		t.Fatalf("delete same-life: %v", err)
+	}
+	docs, _ = m.FindManyByField(ctx, coll, "_id", "d1")
+	if len(docs) != 0 {
+		t.Error("a document of the SAME incarnation (created_at matches) must die under the guarded delete")
+	}
+
+	// A zombie re-materialized by a redelivered UPDATED after the delete has NO
+	// created_at (updates never carry it) — it must die too: only a document
+	// carrying a DIFFERENT created_at (a true rebirth) escapes the tombstone.
+	if err := m.Upsert(ctx, coll, "d2", query.Document{"_revision": int64(5), "name": "zombie"}); err != nil {
+		t.Fatalf("seed zombie: %v", err)
+	}
+	if err := m.DeleteGuarded(ctx, coll, "d2", 7, oldLife.UnixMilli()); err != nil {
+		t.Fatalf("delete zombie: %v", err)
+	}
+	docs, _ = m.FindManyByField(ctx, coll, "_id", "d2")
+	if len(docs) != 0 {
+		t.Error("a created_at-less document under a tombstoned id is a zombie and must die")
+	}
+
+	// Second-grain range: the tombstone's created_at may be SECOND-truncated
+	// (a MySQL DATETIME read-back) while the document carries the payload's
+	// full precision — same second must still match.
+	docSecond := time.Date(2026, 7, 22, 18, 37, 41, 431_000_000, time.UTC)
+	truncated := time.Date(2026, 7, 22, 18, 37, 41, 0, time.UTC)
+	if err := m.Upsert(ctx, coll, "d3", query.Document{
+		"_revision": int64(4), "created_at": docSecond, "name": "same-second",
+	}); err != nil {
+		t.Fatalf("seed d3: %v", err)
+	}
+	if err := m.DeleteGuarded(ctx, coll, "d3", 7, truncated.UnixMilli()); err != nil {
+		t.Fatalf("delete d3: %v", err)
+	}
+	docs, _ = m.FindManyByField(ctx, coll, "_id", "d3")
+	if len(docs) != 0 {
+		t.Error("a second-truncated tombstone must still kill the same second's incarnation")
+	}
+
+	// MySQL DATETIME(0) ROUNDS up: a document born at 12.731 is read back as
+	// 13.000 — the range must still kill it.
+	rounded := time.Date(2026, 7, 22, 18, 42, 13, 0, time.UTC)
+	docBefore := time.Date(2026, 7, 22, 18, 42, 12, 731_000_000, time.UTC)
+	if err := m.Upsert(ctx, coll, "d4", query.Document{
+		"_revision": int64(1), "created_at": docBefore, "name": "rounded-up",
+	}); err != nil {
+		t.Fatalf("seed d4: %v", err)
+	}
+	if err := m.DeleteGuarded(ctx, coll, "d4", 7, rounded.UnixMilli()); err != nil {
+		t.Fatalf("delete d4: %v", err)
+	}
+	docs, _ = m.FindManyByField(ctx, coll, "_id", "d4")
+	if len(docs) != 0 {
+		t.Error("a rounded-up tombstone (MySQL DATETIME) must still kill the just-before-the-second incarnation")
 	}
 }
 

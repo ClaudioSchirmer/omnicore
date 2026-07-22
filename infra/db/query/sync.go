@@ -133,6 +133,25 @@ type payloadIDs struct {
 	BaseID       string `json:"base_id"`
 	BaseRevision int64  `json:"base_revision"`
 	BasePurged   bool   `json:"base_purged"`
+	// CreatedAt is the row's created_at instant (RFC 3339) — the incarnation
+	// discriminator of the document tombstone: a DETERMINISTIC id reborn under
+	// the same natural key restarts its revision, and only the created_at instant
+	// tells the new life from a zombie of the dead one.
+	CreatedAt string `json:"created_at"`
+}
+
+// createdAtMillis renders the created_at instant at the millisecond grain the document
+// store keeps for datetimes (BSON) — the tombstone stores and compares at that
+// grain. 0 when the payload carries no created_at (schema without CreatedAt).
+func (p payloadIDs) createdAtMillis() int64 {
+	if p.CreatedAt == "" {
+		return 0
+	}
+	t, err := time.Parse(time.RFC3339Nano, p.CreatedAt)
+	if err != nil {
+		return 0
+	}
+	return t.UnixMilli()
 }
 
 // parsePayloadIDs extracts the "_ids" block. ok=false on an empty/malformed
@@ -461,16 +480,16 @@ func (s *SyncEngine) applyProjection(ctx context.Context, viewName, id string, s
 // one of the two sides always fires, by store write order). rev == 0 is a
 // consult-observed vanish (the composed row is gone): the delete stays
 // unconditional — the row's own DELETED event carries the durable tombstone.
-func (s *SyncEngine) applyDelete(ctx context.Context, viewName, id string, rev int64) error {
+func (s *SyncEngine) applyDelete(ctx context.Context, viewName, id string, rev, createdAtMs int64) error {
 	if rev > 0 {
-		if err := s.stampTombstone(ctx, viewName, id, rev); err != nil {
+		if err := s.stampTombstone(ctx, viewName, id, rev, createdAtMs); err != nil {
 			return err
 		}
-		if err := s.mongo.DeleteGuarded(ctx, s.resolver.Active(viewName), id, rev); err != nil {
+		if err := s.mongo.DeleteGuarded(ctx, s.resolver.Active(viewName), id, rev, createdAtMs); err != nil {
 			return err
 		}
 		if shadow, on := s.resolver.ShadowActive(viewName); on {
-			s.dualApply(ctx, viewName, func() error { return s.mongo.DeleteGuarded(ctx, shadow, id, rev) })
+			s.dualApply(ctx, viewName, func() error { return s.mongo.DeleteGuarded(ctx, shadow, id, rev, createdAtMs) })
 		}
 		return nil
 	}
@@ -607,7 +626,7 @@ func (s *SyncEngine) process(ctx context.Context, event kafkaEvent) error {
 		// tombstone — the guard that stops a zombie upsert from resurrecting
 		// the document after it is gone.
 		if shouldDeleteFromView(event.EventType, view.deleteOnArchive) {
-			if err := s.applyDelete(ctx, view.name, event.AggregateID, ids.Revision); err != nil {
+			if err := s.applyDelete(ctx, view.name, event.AggregateID, ids.Revision, ids.createdAtMillis()); err != nil {
 				return err
 			}
 			continue
@@ -724,7 +743,7 @@ func (s *SyncEngine) fanOutSharedBase(ctx context.Context, baseID string, baseVi
 			if _, ok := present[roleID]; ok {
 				continue
 			}
-			if err := s.applyDelete(ctx, view.name, roleID, 0); err != nil {
+			if err := s.applyDelete(ctx, view.name, roleID, 0, 0); err != nil {
 				return err
 			}
 		}
@@ -803,7 +822,7 @@ func (s *SyncEngine) recomposeBaseRooted(ctx context.Context, event kafkaEvent, 
 			return err
 		}
 		if doc == nil {
-			if err := s.applyDelete(ctx, rt.view.name, baseID, 0); err != nil {
+			if err := s.applyDelete(ctx, rt.view.name, baseID, 0, 0); err != nil {
 				return err
 			}
 			continue

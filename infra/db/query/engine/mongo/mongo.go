@@ -3,6 +3,7 @@ package mongo
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"github.com/ClaudioSchirmer/omnicore/infra/db/query"
 	"go.mongodb.org/mongo-driver/v2/bson"
@@ -173,7 +174,10 @@ func (m *MongoDB) Delete(ctx context.Context, collection query.PhysicalCollectio
 // watermark-less document counts as older, matching the projection guards'
 // $ifNull treatment). A document a fresher writer already advanced past rev
 // survives; a missing document is a no-op, like Delete.
-func (m *MongoDB) DeleteGuarded(ctx context.Context, collection query.PhysicalCollection, id string, rev int64) error {
+// createdAtUnixMs > 0 adds the incarnation scope: the document dies only when its
+// stored created_at equals the tombstone's created_at instant (BSON datetimes
+// compare at millisecond grain — the same grain the caller renders).
+func (m *MongoDB) DeleteGuarded(ctx context.Context, collection query.PhysicalCollection, id string, rev int64, createdAtUnixMs int64) error {
 	col := m.collFn(collection.String())
 	filter := bson.M{
 		"_id": id,
@@ -181,6 +185,30 @@ func (m *MongoDB) DeleteGuarded(ctx context.Context, collection query.PhysicalCo
 			bson.M{query.DocRevisionField: bson.M{"$lte": rev}},
 			bson.M{query.DocRevisionField: bson.M{"$exists": false}},
 		},
+	}
+	if createdAtUnixMs > 0 {
+		// Same incarnation OR no birth certificate at all:
+		//   - the incarnation match is a TWO-SECOND range centered on the
+		//     tombstone's value, not equality: that value is read back from
+		//     the relational column, whose precision is engine-DDL-dependent —
+		//     a MySQL DATETIME without fractional digits ROUNDS to the nearest
+		//     second (12.7 stores as 13), other engines truncate — while the
+		//     document's created_at came from the payload at full precision.
+		//     [T-1s, T+1s) covers both behaviors. Two incarnations of one
+		//     deterministic id born within that window are indistinguishable
+		//     (unreachable through API round-trips).
+		//   - a document WITHOUT created_at under a tombstoned id can only be
+		//     a zombie: an UPDATED carries no created_at, so a redelivered
+		//     update re-materializing the document after the delete produces
+		//     exactly that shape. The legitimately REBORN document always
+		//     materializes through its own INSERTED (serialized before its
+		//     updates on the aggregate's partition), which stamps the NEW
+		//     created_at — outside the range, never absent.
+		floor := time.UnixMilli(createdAtUnixMs).UTC().Truncate(time.Second)
+		filter["$and"] = bson.A{bson.M{"$or": bson.A{
+			bson.M{"created_at": bson.M{"$gte": floor.Add(-time.Second), "$lt": floor.Add(time.Second)}},
+			bson.M{"created_at": bson.M{"$exists": false}},
+		}}}
 	}
 	_, err := col.DeleteOne(ctx, filter)
 	return err

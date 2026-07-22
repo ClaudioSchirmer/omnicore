@@ -43,6 +43,7 @@ const (
 	payloadIDsBaseID       = "base_id"
 	payloadIDsBaseRevision = "base_revision"
 	payloadIDsBasePurged   = "base_purged"
+	payloadIDsCreatedAt    = "created_at"
 )
 
 // outboxMeta is the structural identity block of one outbox payload.
@@ -52,6 +53,17 @@ type outboxMeta struct {
 	BaseID       string // "" when the schema has no shared base
 	BaseRevision int64  // valid when BaseID != "" and the base row still exists
 	BasePurged   bool   // DELETED only: the hard-delete purged the identity
+	// CreatedAt is the row's created_at — the incarnation discriminator of this
+	// incarnation of the id. A DETERMINISTIC id (a shared-PK role, the base)
+	// can be REBORN: delete the natural key, re-create it, and the same id
+	// returns with its revision restarted at 1 — so the read side's document
+	// tombstone (recorded at the delete's revision) would treat every write of
+	// the new life as a zombie of the old one. The created_at tells the incarnations
+	// apart: the tombstone kills only documents whose stored created_at equals
+	// the DEAD row's created_at instant. Zero when the schema declares no
+	// CreatedAt column (the tombstone then falls back to revision-only —
+	// document that trade-off, never widen it silently).
+	CreatedAt time.Time
 }
 
 // idsBlock renders the "_ids" map of a payload.
@@ -66,6 +78,9 @@ func (m outboxMeta) idsBlock() map[string]any {
 	}
 	if m.BasePurged {
 		ids[payloadIDsBasePurged] = true
+	}
+	if !m.CreatedAt.IsZero() {
+		ids[payloadIDsCreatedAt] = m.CreatedAt
 	}
 	return ids
 }
@@ -246,25 +261,88 @@ func buildDeletePayload(schema *TableSchema, src domain.Entity, id string, meta 
 	return keys
 }
 
+// insertCreatedAt answers the created_at instant an INSERT stamps on its payload: the
+// operation's own writeNow() value IS the row's created_at, so no read-back is
+// needed. Zero when the schema declares no CreatedAt column (no discriminator
+// to carry).
+func insertCreatedAt(schema *TableSchema, now time.Time) time.Time {
+	if schema.CreatedAtColumn() == "" {
+		return time.Time{}
+	}
+	return now
+}
+
 // readRevision reads a row's commit-order token inside the write TX — after
 // the row's own statements ran, so the payload stamps the value THIS
 // operation's lock scope produced. A vanished row answers 0.
 func readRevision(ctx context.Context, tx WriteTx, d Dialect, table, revCol, pkCol, id string) (int64, error) {
-	q := d.ApplyLimit("SELECT "+d.QuoteIdent(revCol)+" FROM "+d.QuoteIdent(table)+
+	rev, _, err := readRevisionCreatedAt(ctx, tx, d, table, revCol, "", pkCol, id)
+	return rev, err
+}
+
+// readRevisionCreatedAt reads the row's commit-order token AND — when createdCol is
+// declared — its created_at created_at instant, in ONE statement. The created_at instant
+// is the incarnation discriminator the document tombstone needs (see
+// outboxMeta.CreatedAt). A vanished row answers (0, zero). The timestamp scan is
+// dialect-tolerant: drivers answer time.Time, string or []byte depending on
+// engine and connection options.
+func readRevisionCreatedAt(ctx context.Context, tx WriteTx, d Dialect, table, revCol, createdCol, pkCol, id string) (int64, time.Time, error) {
+	cols := d.QuoteIdent(revCol)
+	if createdCol != "" {
+		cols += ", " + d.QuoteIdent(createdCol)
+	}
+	q := d.ApplyLimit("SELECT "+cols+" FROM "+d.QuoteIdent(table)+
 		" WHERE "+d.QuoteIdent(pkCol)+" = "+d.Placeholder(1), 1)
 	rows, err := tx.Query(ctx, q, d.EncodeArg(domain.NewID(id)))
 	if err != nil || rows == nil {
-		return 0, err
+		return 0, time.Time{}, err
 	}
 	defer rows.Close()
 	if !rows.Next() {
-		return 0, rows.Err()
+		return 0, time.Time{}, rows.Err()
 	}
 	var rev int64
-	if err := rows.Scan(&rev); err != nil {
-		return 0, err
+	if createdCol == "" {
+		if err := rows.Scan(&rev); err != nil {
+			return 0, time.Time{}, err
+		}
+		return rev, time.Time{}, rows.Err()
 	}
-	return rev, rows.Err()
+	var rawCreatedAt any
+	if err := rows.Scan(&rev, &rawCreatedAt); err != nil {
+		return 0, time.Time{}, err
+	}
+	return rev, normalizeCreatedAt(rawCreatedAt), rows.Err()
+}
+
+// normalizeCreatedAt coerces a scanned created_at into a UTC time.Time. The write
+// path binds UTC values, so a naive string form (MySQL DATETIME without
+// parseTime) parses as UTC. An unrecognized form degrades to zero — the
+// tombstone then falls back to revision-only, never a wrong discriminator.
+func normalizeCreatedAt(v any) time.Time {
+	switch t := v.(type) {
+	case time.Time:
+		return t.UTC()
+	case string:
+		return parseCreatedAt(t)
+	case []byte:
+		return parseCreatedAt(string(t))
+	default:
+		return time.Time{}
+	}
+}
+
+func parseCreatedAt(s string) time.Time {
+	for _, layout := range []string{
+		time.RFC3339Nano,
+		"2006-01-02 15:04:05.999999999",
+		"2006-01-02 15:04:05",
+	} {
+		if t, err := time.Parse(layout, s); err == nil {
+			return t.UTC()
+		}
+	}
+	return time.Time{}
 }
 
 // outboxMetaFor resolves the outbox structural identity (_ids) for any verb
@@ -277,11 +355,14 @@ func readRevision(ctx context.Context, tx WriteTx, d Dialect, table, revCol, pkC
 func outboxMetaFor(ctx context.Context, tx WriteTx, d Dialect, schema *TableSchema, src domain.Entity, id string) (outboxMeta, error) {
 	meta := outboxMeta{ID: id}
 	if rc := schema.RevisionColumn(); rc != "" {
-		rev, err := readRevision(ctx, tx, d, schema.Table(), rc, schema.PKColumn(), id)
+		// The created_at instant rides the SAME statement as the revision read —
+		// zero extra round trips for the tombstone's incarnation discriminator.
+		rev, createdAt, err := readRevisionCreatedAt(ctx, tx, d, schema.Table(), rc, schema.CreatedAtColumn(), schema.PKColumn(), id)
 		if err != nil {
 			return meta, err
 		}
 		meta.Revision = rev
+		meta.CreatedAt = createdAt
 	}
 	if err := fillBaseMeta(ctx, tx, d, schema, src, &meta); err != nil {
 		return meta, err

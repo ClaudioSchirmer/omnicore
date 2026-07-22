@@ -47,7 +47,20 @@ with `1.0.0`.
   writer advanced past the delete's revision survives), and every
   document-creating upsert re-checks the tombstone after writing: a zombie
   consumer's older upsert racing the delete removes its own write instead of
-  resurrecting the document. Tombstones expire after 24h via a TTL index
+  resurrecting the document. Tombstones carry the dead row's
+  `created_at` as the INCARNATION discriminator (stamped on the DELETED
+  payload's `_ids.created_at`, read in the same statement as the pre-delete
+  revision): the guarded delete and the creator-side self-remove only kill
+  documents whose stored `created_at` falls in a two-second window around it
+  (created_at columns round OR truncate to their DDL precision per engine), so a DETERMINISTIC id (a shared-PK role, the
+  base) re-created under the same natural key — same id, revision restarted —
+  is never mistaken for a zombie of the dead life. A schema without
+  `CreatedAt()` falls back to the revision-only tombstone. *Upgrade note (pre-release builds only):* tombstones written by
+  builds before the `created_at` discriminator lack it — a deterministic
+  identity deleted on such a build and re-created after upgrading stays
+  blocked until the tombstone's TTL; clear them once
+  (`deleteMany({_id: /^doc:/, created_at: {$exists: false}})`) or wait out
+  the 24h. Tombstones expire after 24h via a TTL index
   (`EnsureProjectionState`, provisioned at SyncEngine start); base-revision
   records never expire. The registry lives outside the blue-green slots (like
   `omnicore_mongo_views`) and is never rebuilt.

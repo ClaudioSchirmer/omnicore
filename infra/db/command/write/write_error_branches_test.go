@@ -440,7 +440,10 @@ func TestBatch_InsertSkipsOwnRevisionRead(t *testing.T) {
 	revisionReads := func(queries []string) int {
 		n := 0
 		for _, q := range queries {
-			if strings.HasPrefix(q, "SELECT revision ") {
+			// The own-revision read may carry created_at in the same statement
+			// (the tombstone's incarnation discriminator rides for free) — both
+			// forms count as ONE revision read.
+			if strings.HasPrefix(q, "SELECT revision ") || strings.HasPrefix(q, "SELECT revision,") {
 				n++
 			}
 		}

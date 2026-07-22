@@ -241,7 +241,7 @@ func (b *BaseEngine) insertWithBase(ctx persistence.RequestContext, entity domai
 	// historical empty base-table UPDATED row is no longer emitted.
 	if err := WriteOutbox(ctx, tx, schema.Table(), "INSERTED", id,
 		buildWritePayload(schema, src, root, "INSERTED", now, roleFields,
-			outboxMeta{ID: id, Revision: 1, BaseID: baseID, BaseRevision: baseRev})); err != nil {
+			outboxMeta{ID: id, Revision: 1, CreatedAt: insertCreatedAt(schema, now), BaseID: baseID, BaseRevision: baseRev})); err != nil {
 		return domain.WriteResult{}, err
 	}
 	ab := b.BuildAudit(func() audit.AuditEvent {
@@ -314,8 +314,9 @@ func (b *BaseEngine) updateWithBase(ctx persistence.RequestContext, entity domai
 		return domain.WriteResult{}, err
 	}
 	ownRev := int64(0)
+	var ownCreatedAt time.Time
 	if rc := schema.RevisionColumn(); rc != "" {
-		if ownRev, err = readRevision(ctx, tx, d, schema.Table(), rc, schema.PKColumn(), entity.ID().Value()); err != nil {
+		if ownRev, ownCreatedAt, err = readRevisionCreatedAt(ctx, tx, d, schema.Table(), rc, schema.CreatedAtColumn(), schema.PKColumn(), entity.ID().Value()); err != nil {
 			return domain.WriteResult{}, err
 		}
 	}
@@ -323,7 +324,7 @@ func (b *BaseEngine) updateWithBase(ctx persistence.RequestContext, entity domai
 	// base id + revision, so the fan-out rides this event — no empty base row.
 	if err := WriteOutbox(ctx, tx, schema.Table(), "UPDATED", entity.ID().Value(),
 		buildWritePayload(schema, src, root, "UPDATED", now, roleFields,
-			outboxMeta{ID: entity.ID().Value(), Revision: ownRev, BaseID: baseID, BaseRevision: baseRev})); err != nil {
+			outboxMeta{ID: entity.ID().Value(), Revision: ownRev, CreatedAt: ownCreatedAt, BaseID: baseID, BaseRevision: baseRev})); err != nil {
 		return domain.WriteResult{}, err
 	}
 	ab := b.BuildAudit(func() audit.AuditEvent {

@@ -113,6 +113,63 @@ func TestProcess_RoleInsert_PullCheckHealsStaleBase(t *testing.T) {
 	}
 }
 
+// The rebirth discriminator: a DELETED carrying the dead row's created_at
+// scopes the tombstone AND the guarded delete to that incarnation, and the
+// creator-side check hands the tombstone's created_at to its self-remove — so
+// a deterministic id re-created under the same natural key is never killed by
+// the old life's tombstone.
+func TestProcess_Deleted_CreatedAtScopesTombstone(t *testing.T) {
+	coll := &fakeColl{}
+	store := newFakeMongo(coll)
+	view := convRoleView()
+	s := NewSyncEngine(composerEngine(func(string, []any) ([]map[string]any, error) { return nil, nil }),
+		store, identityResolver, nil, "", []*ViewDefinition{view}, 1)
+	event := kafkaEvent{
+		AggregateType: "aluno", EventType: "DELETED", AggregateID: "a1",
+		Payload: []byte(`{"id":"a1","pessoa_id":"p1","_ids":{"id":"a1","revision":7,"base_id":"p1","base_revision":9,"created_at":"2026-07-20T10:00:00.000123Z"}}`),
+	}
+	if err := s.process(context.Background(), event); err != nil {
+		t.Fatalf("process: %v", err)
+	}
+	wantMs := int64(1784541600000) // 2026-07-20T10:00:00Z in unix millis
+	if len(coll.guardedDeletes) != 1 || coll.guardedDeletes[0]["created_at"] != wantMs {
+		t.Fatalf("the guarded delete must carry the dead incarnation's created_at (%d), got %v", wantMs, coll.guardedDeletes)
+	}
+	var stamped bool
+	for _, u := range store.state.updates {
+		if u["_id"] != "doc:aluno:a1" {
+			continue
+		}
+		stages, _ := u["$pipeline"].([]Document)
+		set, _ := stages[0]["$set"].(Document)
+		if _, ok := set["created_at"]; ok {
+			stamped = true
+		}
+	}
+	if !stamped {
+		t.Error("the tombstone must record the dead incarnation's created_at")
+	}
+
+	// Creator side: a later write finds the tombstone {revision 7, created_at}
+	// and its self-remove is scoped to the OLD incarnation.
+	coll2 := &fakeColl{}
+	store2 := newFakeMongo(coll2)
+	store2.state = &fakeColl{docs: []any{map[string]any{
+		"_id": "doc:aluno:a1", "revision": int64(7), "created_at": wantMs,
+	}}}
+	s2 := NewSyncEngine(composerEngine(convComposerRows), store2, identityResolver, nil, "", []*ViewDefinition{view}, 1)
+	reborn := kafkaEvent{
+		AggregateType: "aluno", EventType: "INSERTED", AggregateID: "a1",
+		Payload: []byte(`{"email":"a@x","name":"Ana","_ids":{"id":"a1","revision":1,"base_id":"p1","base_revision":10}}`),
+	}
+	if err := s2.process(context.Background(), reborn); err != nil {
+		t.Fatalf("process reborn: %v", err)
+	}
+	if len(coll2.guardedDeletes) == 0 || coll2.guardedDeletes[0]["created_at"] != wantMs {
+		t.Fatalf("the creator check must scope its self-remove to the tombstone's created_at, got %v", coll2.guardedDeletes)
+	}
+}
+
 // The DELETED path records the tombstone BEFORE the guarded delete, and the
 // delete carries the row's last revision.
 func TestProcess_Deleted_TombstonesAndGuardsDelete(t *testing.T) {
@@ -563,7 +620,7 @@ func TestApplyDelete_Guarded_DualAppliesToShadow(t *testing.T) {
 	mongo, colls := bothSlotsMongo("v", "v__0")
 	resolver, eng := shadowResolver(t, "v__0")
 	s := &SyncEngine{eng: eng, mongo: mongo, resolver: resolver}
-	if err := s.applyDelete(context.Background(), "v", "id1", 5); err != nil {
+	if err := s.applyDelete(context.Background(), "v", "id1", 5, 0); err != nil {
 		t.Fatalf("applyDelete: %v", err)
 	}
 	if len(colls["v"].guardedDeletes) != 1 || len(colls["v__0"].guardedDeletes) != 1 {
@@ -657,7 +714,7 @@ func TestRegistryStamps_SkipNonPositiveRevision(t *testing.T) {
 	coll := &fakeColl{}
 	store := newFakeMongo(coll)
 	s := &SyncEngine{mongo: store, resolver: identityResolver}
-	if err := s.stampTombstone(context.Background(), "v", "id", 0); err != nil {
+	if err := s.stampTombstone(context.Background(), "v", "id", 0, 0); err != nil {
 		t.Fatalf("stampTombstone(0): %v", err)
 	}
 	if err := s.stampBaseRevision(context.Background(), "t", "id", 0); err != nil {
