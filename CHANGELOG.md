@@ -63,7 +63,12 @@ with `1.0.0`.
   the 24h. Tombstones expire after 24h via a TTL index
   (`EnsureProjectionState`, provisioned at SyncEngine start); base-revision
   records never expire. The registry lives outside the blue-green slots (like
-  `omnicore_mongo_views`) and is never rebuilt.
+  `omnicore_mongo_views`), is never rebuilt, and its writes carry
+  MAJORITY write concern — the registry is the fiduciary of the handshakes,
+  and a failover rollback of a primary-only stamp would silently dissolve
+  their ordering premise (view writes keep the deployment default; they
+  reconverge through redelivery). On a standalone node majority degrades to
+  the primary ack — zero cost.
 
 ### Changed
 
@@ -160,8 +165,9 @@ with `1.0.0`.
   now a no-op instead of a lost update — and it can no longer regress the
   document's watermarks. The composed document's data is always at least as
   fresh as its watermark (the composer reads the root/base row first), so the
-  guard only ever suppresses stale writes. At the EQUAL revision the consult
-  write FILLS what the document lacks without touching what it has — the
+  guard only ever suppresses stale writes. At the EQUAL revision every guarded write —
+  the consult pipelines AND the payload-direct stage — FILLS what the
+  document lacks without touching what it has — the
   rolling-deploy closure: a pod on the previous binary projects an event
   without the columns its schema does not know, leaving the document at the
   current revision missing exactly those fields; the fill supplies them at

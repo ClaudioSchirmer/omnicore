@@ -177,17 +177,35 @@ func ownGuardedChildStages(schema *core.TableSchema, ev *decodedEvent) []Documen
 	return stages
 }
 
-// guardedSetStage renders one $set where every column applies only when the
-// stored watermark (watermarkField) is older than the incoming revision — and
-// the watermark itself advances monotonically.
+// guardedSetStage renders one $set where every column applies when the stored
+// watermark (watermarkField) is older than the incoming revision — and, at the
+// EQUAL revision, when the column is MISSING on the document. The watermark
+// itself advances monotonically.
+//
+// The equal-revision completion is the rolling-deploy closure on the
+// payload-direct path: a pod on the previous binary can materialize the
+// document at the CURRENT revision without the columns its schema does not
+// know (its consult repair composes through the old schema's explicit column
+// list), and the newer binary's event for that same revision then arrives
+// carrying the full state — a strictly-newer guard would discard it forever.
+// Every writer of this stage is authoritative for its scope AT its revision
+// (the payload carries the scope's full state; the registry stamps write
+// their own record), so completing an absent column with the same-revision
+// value can never regress anything — present columns stay untouched.
 func guardedSetStage(watermarkField string, set Document, revision int64) Document {
 	newer := Document{"$lt": []any{
 		Document{"$ifNull": []any{"$" + watermarkField, int64(-1)}},
 		revision,
 	}}
+	equal := Document{"$eq": []any{"$" + watermarkField, revision}}
 	out := Document{}
 	for col, v := range set {
-		out[col] = Document{"$cond": []any{newer, v, "$" + col}}
+		missing := Document{"$eq": []any{Document{"$type": "$" + col}, "missing"}}
+		apply := Document{"$or": []any{
+			newer,
+			Document{"$and": []any{equal, missing}},
+		}}
+		out[col] = Document{"$cond": []any{apply, v, "$" + col}}
 	}
 	out[watermarkField] = Document{"$cond": []any{
 		newer, revision, Document{"$ifNull": []any{"$" + watermarkField, revision}},

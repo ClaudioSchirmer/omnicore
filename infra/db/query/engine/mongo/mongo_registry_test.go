@@ -194,3 +194,12 @@ func equalSlices(a, b []string) bool {
 	}
 	return true
 }
+
+// BulkApplyProjection's empty-batch guard needs no driver: the bulk write API
+// rejects a zero-length model slice, so the no-op return is load-bearing.
+func TestBulkApplyProjection_EmptyBatchIsNoOp(t *testing.T) {
+	m := &MongoDB{}
+	if err := m.BulkApplyProjection(context.Background(), query.PhysicalCollection{}, nil); err != nil {
+		t.Fatalf("empty batch must be a no-op, got %v", err)
+	}
+}

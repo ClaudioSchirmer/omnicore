@@ -9,6 +9,7 @@ import (
 	"go.mongodb.org/mongo-driver/v2/bson"
 	"go.mongodb.org/mongo-driver/v2/mongo"
 	"go.mongodb.org/mongo-driver/v2/mongo/options"
+	"go.mongodb.org/mongo-driver/v2/mongo/writeconcern"
 )
 
 // mongoColl is the minimal collection surface the read side and the
@@ -80,7 +81,21 @@ func NewMongoDB(ctx context.Context, uri, dbName string, opts ...MongoOption) (*
 		return nil, err
 	}
 	m := &MongoDB{client: client, db: client.Database(dbName)}
-	m.collFn = func(name string) mongoColl { return m.db.Collection(name) }
+	m.collFn = func(name string) mongoColl {
+		// The projection-state registry is the FIDUCIARY of the read side's
+		// write-then-check handshakes (base-revision stamps, tombstones): a
+		// record acknowledged by the primary alone can be ROLLED BACK on a
+		// failover, silently dissolving the ordering premise the handshake
+		// proofs rest on. Its writes therefore require MAJORITY
+		// acknowledgment — view collections keep the deployment default
+		// (their writes reconverge through event redelivery + guards; the
+		// registry has no redelivery to re-stamp it). On a standalone node
+		// majority degrades to the primary ack — zero cost.
+		if name == query.ProjectionStateCollectionName {
+			return m.db.Collection(name, options.Collection().SetWriteConcern(writeconcern.Majority()))
+		}
+		return m.db.Collection(name)
+	}
 	return m, nil
 }
 

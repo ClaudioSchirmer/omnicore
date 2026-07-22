@@ -724,3 +724,116 @@ func TestRegistryStamps_SkipNonPositiveRevision(t *testing.T) {
 		t.Errorf("non-positive revisions must not touch the registry, got %v", store.state.updates)
 	}
 }
+
+// consultGuardedStages with CHILD COLLECTIONS on both scopes: own children
+// ride the own scope's element-merge shape, base children the base scope's —
+// the arraySegs wiring a childless fixture never exercises.
+func TestConsultGuardedStages_ChildSegmentsInBothScopes(t *testing.T) {
+	base := core.NewSharedBase("pessoa").Revision("revision").PK("id").
+		Field("Name", "name").NaturalKey("name").
+		Child(core.NewTableSchema[*builderTestEntity]("enderecos").PK("id").FK("pessoa_id").Field("Email", "city"))
+	schema := core.NewTableSchema[*builderTestEntity]("aluno").
+		PK("id").Revision("revision").Field("Email", "email").
+		SharedBase(base, "pessoa_id")
+	view := View("aluno").Root("aluno").Schema(schema).Version(1)
+
+	doc := Document{
+		"id": "a1", "email": "a@x", "name": "Ana",
+		"builderTestEntities": []Document{{"id": "e1", "city": "POA"}},
+		docRevisionField:      int64(2),
+		docBaseRevisionField:  int64(5),
+	}
+	stages := consultGuardedStages(view, doc)
+	if len(stages) != 2 {
+		t.Fatalf("want own + base stages, got %d: %v", len(stages), stages)
+	}
+	baseSet, _ := stages[1]["$set"].(Document)
+	segCond, _ := baseSet["builderTestEntities"].(Document)["$cond"].([]any)
+	if len(segCond) != 3 {
+		t.Fatalf("base-children segment must be guard-wrapped, got %v", baseSet["builderTestEntities"])
+	}
+	equalBranch, _ := segCond[2].(Document)["$cond"].([]any)
+	fillBranch, _ := equalBranch[1].(Document)["$cond"].([]any)
+	if _, ok := fillBranch[1].(Document)["$map"]; !ok {
+		t.Errorf("base-children equal-revision fill must be the per-element merge, got %v", equalBranch[1])
+	}
+}
+
+// createdAtMillis: RFC 3339 parses to unix millis; empty and garbage degrade
+// to 0 (revision-only tombstone fallback).
+func TestPayloadIDs_CreatedAtMillis(t *testing.T) {
+	if got := (payloadIDs{CreatedAt: "2026-07-20T10:00:00.000123Z"}).createdAtMillis(); got != 1784541600000 {
+		t.Errorf("rfc3339 → %d, want 1784541600000", got)
+	}
+	if got := (payloadIDs{}).createdAtMillis(); got != 0 {
+		t.Errorf("empty → %d, want 0", got)
+	}
+	if got := (payloadIDs{CreatedAt: "garbage"}).createdAtMillis(); got != 0 {
+		t.Errorf("garbage → %d, want 0", got)
+	}
+}
+
+// The tombstone self-remove dual-applies to the SHADOW slot during a rebuild —
+// a zombie must not survive in the collection about to be flipped.
+func TestCheckTombstone_SelfRemoveDualAppliesToShadow(t *testing.T) {
+	mongo, colls := bothSlotsMongo("v", "v__0")
+	mongo.state = &fakeColl{docs: []any{map[string]any{
+		"_id": "doc:v:id1", "revision": int64(6), "created_at": int64(1784541600000),
+	}}}
+	resolver, eng := shadowResolver(t, "v__0")
+	s := &SyncEngine{eng: eng, mongo: mongo, resolver: resolver}
+	if err := s.checkTombstone(context.Background(), "v", "id1", 5); err != nil {
+		t.Fatalf("checkTombstone: %v", err)
+	}
+	for _, slot := range []string{"v", "v__0"} {
+		if len(colls[slot].guardedDeletes) != 1 {
+			t.Errorf("slot %s: the self-remove must land, got %v", slot, colls[slot].guardedDeletes)
+		} else if colls[slot].guardedDeletes[0]["created_at"] != int64(1784541600000) {
+			t.Errorf("slot %s: the self-remove must carry the tombstone's created_at, got %v", slot, colls[slot].guardedDeletes[0])
+		}
+	}
+}
+
+// A registry write failure on the tombstone stamp fails the DELETED event —
+// deleting the document without a durable tombstone would leave the zombie
+// window open with no record to close it.
+func TestApplyDelete_TombstoneStampErrorFailsEvent(t *testing.T) {
+	coll := &fakeColl{}
+	store := newFakeMongo(coll)
+	store.state = &fakeColl{updateErr: errFake}
+	s := &SyncEngine{mongo: store, resolver: identityResolver}
+	if err := s.applyDelete(context.Background(), "v", "id1", 7, 0); err == nil {
+		t.Fatal("a tombstone stamp failure must fail the delete for redelivery")
+	}
+	if len(coll.deletes) != 0 {
+		t.Errorf("no document delete may run before the tombstone is durable, got %v", coll.deletes)
+	}
+}
+
+// The PAYLOAD-DIRECT guard completes missing columns at the equal revision —
+// the rolling-deploy interleaving the oracle lane exposed: a previous-binary
+// pod's consult repair materializes the document at the CURRENT revision
+// without the columns its schema does not know; the newer binary's event for
+// that same revision must then supply them (and only them — present columns
+// stay untouched, and columns the event does not carry are never faked).
+func TestGuardedSetStage_EqualRevisionCompletesMissing(t *testing.T) {
+	st := guardedSetStage(docRevisionField, Document{"nickname": lit("rs-nick-value")}, 2)
+	set, _ := st["$set"].(Document)
+	cond, _ := set["nickname"].(Document)["$cond"].([]any)
+	if len(cond) != 3 || cond[2] != "$nickname" {
+		t.Fatalf("field must keep the stored value outside the apply condition, got %v", set["nickname"])
+	}
+	apply, _ := cond[0].(Document)["$or"].([]any)
+	if len(apply) != 2 {
+		t.Fatalf("apply must be newer OR (equal AND missing), got %v", cond[0])
+	}
+	and, _ := apply[1].(Document)["$and"].([]any)
+	if len(and) != 2 {
+		t.Fatalf("the equal branch must AND revision equality with column absence, got %v", apply[1])
+	}
+	// The watermark still advances ONLY on strictly newer.
+	wm, _ := set[docRevisionField].(Document)["$cond"].([]any)
+	if _, ok := wm[0].(Document)["$lt"]; !ok {
+		t.Errorf("the watermark must stay strictly-newer-gated, got %v", set[docRevisionField])
+	}
+}

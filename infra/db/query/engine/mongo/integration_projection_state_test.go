@@ -8,6 +8,8 @@ import (
 	"time"
 
 	"go.mongodb.org/mongo-driver/v2/bson"
+	"go.mongodb.org/mongo-driver/v2/mongo"
+	"go.mongodb.org/mongo-driver/v2/mongo/options"
 
 	query "github.com/ClaudioSchirmer/omnicore/infra/db/query"
 )
@@ -326,5 +328,20 @@ func TestIntegration_EnsureProjectionState_TTLIndexIdempotent(t *testing.T) {
 	}
 	if !found {
 		t.Error("the tombstone TTL index on \"at\" must exist")
+	}
+}
+
+// The registry collection handle carries w:majority — on a standalone node it
+// degrades to the primary ack, so a stamp-shaped write must simply succeed.
+func TestIntegration_ProjectionStateWrites_MajorityConcern(t *testing.T) {
+	m, cleanup := newTestMongo(t)
+	defer cleanup()
+	ctx := context.Background()
+	coll := m.collFn(query.ProjectionStateCollectionName)
+	if _, err := coll.UpdateOne(ctx,
+		bson.M{"_id": "base:t:x"},
+		mongo.Pipeline{{{Key: "$set", Value: bson.M{"base_revision": int64(1)}}}},
+		options.UpdateOne().SetUpsert(true)); err != nil {
+		t.Fatalf("majority-concern registry write must succeed on a standalone node: %v", err)
 	}
 }

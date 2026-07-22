@@ -1,8 +1,10 @@
 package write
 
 import (
+	"context"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 
@@ -206,5 +208,113 @@ func TestBatchRoleDelete_PayloadCarriesLastRevisionAndBumpsBase(t *testing.T) {
 	}
 	if !strings.Contains(payload, `"revision":9`) {
 		t.Errorf("the batch DELETED payload must carry the last revision, got %s", payload)
+	}
+}
+
+// The created_at scan tolerates every driver shape (time.Time, string, []byte)
+// and degrades to zero on an unknown form — the tombstone then falls back to
+// revision-only rather than carrying a wrong discriminator.
+func TestNormalizeCreatedAt_DriverShapes(t *testing.T) {
+	want := time.Date(2026, 7, 22, 18, 42, 12, 731000000, time.UTC)
+	cases := []struct {
+		name string
+		in   any
+		want time.Time
+	}{
+		{"time.Time", want, want},
+		{"rfc3339", "2026-07-22T18:42:12.731Z", want},
+		{"mysql naive", []byte("2026-07-22 18:42:12.731"), want},
+		{"seconds only", "2026-07-22 18:42:12", want.Truncate(time.Second)},
+		{"garbage", "not-a-time", time.Time{}},
+		{"nil", nil, time.Time{}},
+		{"int", 42, time.Time{}},
+	}
+	for _, c := range cases {
+		if got := normalizeCreatedAt(c.in); !got.Equal(c.want) {
+			t.Errorf("%s: normalizeCreatedAt(%v) = %v, want %v", c.name, c.in, got, c.want)
+		}
+	}
+}
+
+// insertCreatedAt hands the operation stamp only when the schema declares a
+// CreatedAt column — no column, no discriminator to carry.
+func TestInsertCreatedAt_RequiresDeclaredColumn(t *testing.T) {
+	now := time.Date(2026, 7, 22, 10, 0, 0, 0, time.UTC)
+	withCol := NewTableSchema[*roleTestEntity]("t1").PK("id").Revision("revision").
+		Field("Matricula", "m").CreatedAt("created_at")
+	if got := insertCreatedAt(withCol, now); !got.Equal(now) {
+		t.Errorf("declared CreatedAt must carry the stamp, got %v", got)
+	}
+	without := NewTableSchema[*roleTestEntity]("t2").PK("id").Revision("revision").
+		Field("Matricula", "m")
+	if got := insertCreatedAt(without, now); !got.IsZero() {
+		t.Errorf("no CreatedAt column → zero discriminator, got %v", got)
+	}
+}
+
+// readRevisionCreatedAt reads both values in ONE statement and answers zeros
+// for a vanished row — the DELETED of a row already gone tombstones nothing.
+func TestReadRevisionCreatedAt_OneStatementAndVanishedRow(t *testing.T) {
+	var sqls []string
+	tx := &recTx{queryFn: func(sql string, _ []any) (Rows, error) {
+		sqls = append(sqls, sql)
+		return &fakeRows{remaining: 0}, nil // vanished row
+	}}
+	rev, created, err := readRevisionCreatedAt(context.Background(), tx, testPGDialect{},
+		"aluno", "revision", "created_at", "id", "x")
+	if err != nil || rev != 0 || !created.IsZero() {
+		t.Fatalf("vanished row must answer zeros, got rev=%d created=%v err=%v", rev, created, err)
+	}
+	if len(sqls) != 1 || !strings.Contains(sqls[0], "revision, created_at") {
+		t.Errorf("both values must ride ONE statement, got %v", sqls)
+	}
+}
+
+// readRevisionCreatedAt error branches: a failing query propagates; a scan
+// error propagates; the createdCol=="" form scans revision alone.
+func TestReadRevisionCreatedAt_ErrorAndRevOnlyBranches(t *testing.T) {
+	// Query error propagates.
+	tx := &recTx{queryFn: func(string, []any) (Rows, error) { return nil, errRecExec }}
+	if _, _, err := readRevisionCreatedAt(context.Background(), tx, testPGDialect{},
+		"aluno", "revision", "created_at", "id", "x"); err == nil {
+		t.Error("a query error must propagate")
+	}
+	// Scan error propagates (both-column form).
+	tx = &recTx{queryFn: func(string, []any) (Rows, error) {
+		return &fakeRows{remaining: 1, scan: func([]any) error { return errRecExec }}, nil
+	}}
+	if _, _, err := readRevisionCreatedAt(context.Background(), tx, testPGDialect{},
+		"aluno", "revision", "created_at", "id", "x"); err == nil {
+		t.Error("a scan error must propagate")
+	}
+	// Revision-only form (no CreatedAt column declared) scans one value.
+	tx = &recTx{queryFn: func(sql string, _ []any) (Rows, error) {
+		if strings.Contains(sql, "created_at") {
+			t.Errorf("createdCol=\"\" must not select created_at: %s", sql)
+		}
+		return &fakeRows{remaining: 1, scan: func(dest []any) error {
+			if p, ok := dest[0].(*int64); ok {
+				*p = 6
+			}
+			return nil
+		}}, nil
+	}}
+	rev, created, err := readRevisionCreatedAt(context.Background(), tx, testPGDialect{},
+		"aluno", "revision", "", "id", "x")
+	if err != nil || rev != 6 || !created.IsZero() {
+		t.Errorf("rev-only form: got rev=%d created=%v err=%v", rev, created, err)
+	}
+}
+
+// A failing base-revision bump inside fillBaseMeta fails the verb — the
+// payload must never carry a base revision the bump did not produce.
+func TestFillBaseMeta_BumpErrorPropagates(t *testing.T) {
+	tx := &recTx{count: 1, execErrSub: "UPDATE pessoa SET revision", queryFn: rowsFKMatch()}
+	be := newFlatBE(&recBeginner{tx: tx})
+	if err := be.Archive(newBuilderCtx(), roleTestArchivable(t), roleTestSchema(), firingHook); err == nil {
+		t.Fatal("a failing identity-revision bump must fail the verb")
+	}
+	if tx.committed {
+		t.Error("the TX must not commit after a failed bump")
 	}
 }
