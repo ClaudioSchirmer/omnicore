@@ -79,7 +79,7 @@ func TestInsertRoleWithBase_New(t *testing.T) {
 	if _, err := be.Insert(newBuilderCtx(), ins, roleTestSchema(), firingHook); err != nil {
 		t.Fatalf("Insert: %v", err)
 	}
-	// upsert pessoa + insert aluno + outbox(role, v2 single row) + audit = 4.
+	// upsert pessoa + insert aluno + outbox(role, single row) + audit = 4.
 	if len(tx.execs) != 4 {
 		t.Fatalf("expected 5 statements, got %d: %v", len(tx.execs), tx.execs)
 	}
@@ -212,9 +212,15 @@ func TestDeleteRoleWithBase_StillReferencedKeepsBase(t *testing.T) {
 	if err := be.Delete(newBuilderCtx(), roleTestDeletable(t), roleTestSchemaPurge(), firingHook); err != nil {
 		t.Fatalf("Delete: %v", err)
 	}
-	// DELETE role + outbox + audit = 3 (base kept, purge never attempted).
-	if len(tx.execs) != 3 {
-		t.Fatalf("expected 3 statements (base kept), got %d: %v", len(tx.execs), tx.execs)
+	// DELETE role + base-revision bump + outbox + audit = 4 (base row kept,
+	// purge never attempted; the revision bump is the one base statement every
+	// role hard-delete emits — the base revision must advance on every
+	// identity-touching write).
+	if len(tx.execs) != 4 {
+		t.Fatalf("expected 4 statements (base kept), got %d: %v", len(tx.execs), tx.execs)
+	}
+	if !strings.HasPrefix(tx.execs[1], "UPDATE pessoa SET revision = revision + 1") {
+		t.Errorf("stmt[1] must advance the base revision, got %q", tx.execs[1])
 	}
 	for _, s := range tx.execs {
 		if strings.HasPrefix(s, "DELETE FROM pessoa") || strings.HasPrefix(s, "SAVEPOINT") {
@@ -232,13 +238,20 @@ func TestDeleteRoleWithBase_DefaultKeepsOrphanBase(t *testing.T) {
 	if err := be.Delete(newBuilderCtx(), roleTestDeletable(t), roleTestSchema(), firingHook); err != nil {
 		t.Fatalf("Delete: %v", err)
 	}
-	// DELETE role + outbox + audit = 3.
-	if len(tx.execs) != 3 {
-		t.Fatalf("expected 3 statements (orphan base kept by default), got %d: %v", len(tx.execs), tx.execs)
+	// DELETE role + base-revision bump + outbox + audit = 4. The default
+	// policy keeps the base ROW (no delete, no archive) — but the base
+	// revision still advances: a role hard-delete changes the identity's closure
+	// (remnant pick, SharedBaseView segments), so the revision bump is the one
+	// permitted base statement.
+	if len(tx.execs) != 4 {
+		t.Fatalf("expected 4 statements (orphan base kept by default), got %d: %v", len(tx.execs), tx.execs)
 	}
 	for _, s := range tx.execs {
+		if strings.HasPrefix(s, "UPDATE pessoa SET revision = revision + 1") {
+			continue // the base revision — the only base touch this verb may emit
+		}
 		if strings.Contains(s, "pessoa") {
-			t.Errorf("the default policy must never touch the base, got %q", s)
+			t.Errorf("the default policy must never touch the base beyond the base revision, got %q", s)
 		}
 	}
 }
@@ -258,9 +271,11 @@ func TestDeleteRoleWithBase_FKVetoKeepsBase(t *testing.T) {
 		t.Fatalf("a vetoed purge must not fail the role delete: %v", err)
 	}
 	// DELETE role + SAVEPOINT + DELETE base (vetoed) + ROLLBACK TO SAVEPOINT +
-	// outbox(role) + audit(role) = 6; no base outbox/audit, no RELEASE.
-	if len(tx.execs) != 6 {
-		t.Fatalf("expected 6 statements, got %d: %v", len(tx.execs), tx.execs)
+	// base-revision bump + outbox(role) + audit(role) = 7; no base
+	// outbox/audit, no RELEASE. The vetoed (surviving) base still gets its
+	// revision bumped — the role hard-delete changed the identity's closure.
+	if len(tx.execs) != 7 {
+		t.Fatalf("expected 7 statements, got %d: %v", len(tx.execs), tx.execs)
 	}
 	if tx.execs[3] != "ROLLBACK TO SAVEPOINT "+sharedBasePurgeSavepoint {
 		t.Errorf("stmt[3] must roll back to the purge savepoint, got %q", tx.execs[3])
@@ -295,9 +310,12 @@ func TestDeleteRoleWithBase_VetoThenArchivesBase(t *testing.T) {
 		t.Fatalf("Delete: %v", err)
 	}
 	// DELETE role + SAVEPOINT + DELETE base (vetoed) + ROLLBACK + archive base +
-	// outbox(role) + audit(role) = 7.
-	if len(tx.execs) != 7 {
-		t.Fatalf("expected 7 statements, got %d: %v", len(tx.execs), tx.execs)
+	// base-revision bump + outbox(role) + audit(role) = 8. (The archive
+	// bumped the revision in its own statement; the standalone bump after it
+	// is the unconditional base-revision advance every role hard-delete
+	// emits — double-bumping is harmless, the base revision is monotone, not dense.)
+	if len(tx.execs) != 8 {
+		t.Fatalf("expected 8 statements, got %d: %v", len(tx.execs), tx.execs)
 	}
 	if !strings.HasPrefix(tx.execs[4], "UPDATE pessoa SET deleted_at = $1") {
 		t.Errorf("the vetoed orphan must be archived (UPDATE pessoa SET deleted_at = $1), got %q", tx.execs[4])
@@ -421,12 +439,18 @@ func TestDeleteRoleWithBase_KeepOrphanArchivesSoftDeletableBase(t *testing.T) {
 	if err := be.Delete(newBuilderCtx(), roleTestDeletable(t), schema, firingHook); err != nil {
 		t.Fatalf("Delete: %v", err)
 	}
-	// DELETE role + archive base + outbox + audit = 4; never a DELETE FROM pessoa.
-	if len(tx.execs) != 4 {
-		t.Fatalf("expected 4 statements, got %d: %v", len(tx.execs), tx.execs)
+	// DELETE role + archive base + base-revision bump + outbox + audit = 5;
+	// never a DELETE FROM pessoa. (The archive already bumped the revision in
+	// its own statement; the standalone bump is the unconditional revision
+	// advance of every role hard-delete — monotone, so double is harmless.)
+	if len(tx.execs) != 5 {
+		t.Fatalf("expected 5 statements, got %d: %v", len(tx.execs), tx.execs)
 	}
 	if !strings.HasPrefix(tx.execs[1], "UPDATE pessoa SET deleted_at = $1") {
 		t.Errorf("the orphaned soft-deletable base must archive, got %q", tx.execs[1])
+	}
+	if !strings.HasPrefix(tx.execs[2], "UPDATE pessoa SET revision = revision + 1") {
+		t.Errorf("stmt[2] must advance the base revision, got %q", tx.execs[2])
 	}
 }
 
@@ -479,7 +503,7 @@ func TestInsertWithBase_AggregateRole(t *testing.T) {
 	if _, err := be.Insert(newBuilderCtx(), ins, aggRoleSchema(), firingHook); err != nil {
 		t.Fatalf("Insert: %v", err)
 	}
-	// upsert pessoa + insert aluno + insert child + outbox(role, v2 single row) + audit = 5.
+	// upsert pessoa + insert aluno + insert child + outbox(role, single row) + audit = 5.
 	if len(tx.execs) != 5 {
 		t.Fatalf("expected 6 statements, got %d: %v", len(tx.execs), tx.execs)
 	}
@@ -589,7 +613,7 @@ func TestUpdateRoleWithBase(t *testing.T) {
 	if _, err := be.Update(newBuilderCtx(), upd, roleTestSchema(), firingHook); err != nil {
 		t.Fatalf("Update: %v", err)
 	}
-	// update aluno + upsert pessoa (with revision bump) + outbox(role, v2 single row) + audit = 4.
+	// update aluno + upsert pessoa (with revision bump) + outbox(role, single row) + audit = 4.
 	if len(tx.execs) != 4 {
 		t.Fatalf("expected 5 statements, got %d: %v", len(tx.execs), tx.execs)
 	}
@@ -680,7 +704,7 @@ func TestUnarchiveRoleWithBase_SharedPKSkipsVeto(t *testing.T) {
 	if err := be.Unarchive(newBuilderCtx(), un, roleTestSchemaSharedPK(), firingHook); err != nil {
 		t.Fatalf("Unarchive: %v", err)
 	}
-	// The v2 payload reads the base revision (SELECT revision FROM pessoa) —
+	// The payload reads the base revision (SELECT revision FROM pessoa) —
 	// that is the only query allowed; the sibling veto probe (FROM aluno) must
 	// NOT run under the shared-PK model (the PK caps the table at one row).
 	for _, q := range probes {

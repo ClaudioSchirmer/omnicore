@@ -28,7 +28,7 @@ func processEngineWithRow() *fakeEngine {
 func TestProcess_Inserted_UpsertsDoc(t *testing.T) {
 	coll := &fakeColl{}
 	s := NewSyncEngine(processEngineWithRow(), newFakeMongo(coll), identityResolver, nil, "", []*ViewDefinition{processView("t", false)}, 1)
-	// v2 payload → payload-direct projection (one atomic pipeline, no re-read).
+	// the payload → payload-direct projection (one atomic pipeline, no re-read).
 	ev := kafkaEvent{AggregateType: "t", EventType: "INSERTED", AggregateID: "r1",
 		Payload: []byte(`{"name":"Ana","_ids":{"id":"r1"}}`)}
 	if err := s.process(context.Background(), ev); err != nil {
@@ -42,23 +42,24 @@ func TestProcess_Inserted_UpsertsDoc(t *testing.T) {
 	}
 }
 
-// A pre-v2 payload on an entity view is a WARNING + SKIP — never a silent
-// relational re-read (maintainer decision; the post-upgrade rebuild converges).
-func TestProcess_NonV2Payload_SkipsProjection(t *testing.T) {
+// A payload without the _ids block (corrupt or foreign) is skipped — never a
+// silent relational re-read.
+func TestProcess_PayloadWithoutIDs_Skipped(t *testing.T) {
 	coll := &fakeColl{}
 	s := NewSyncEngine(processEngineWithRow(), newFakeMongo(coll), identityResolver, nil, "", []*ViewDefinition{processView("t", false)}, 1)
 	if err := s.process(context.Background(), kafkaEvent{AggregateType: "t", EventType: "INSERTED", AggregateID: "r1"}); err != nil {
-		t.Fatalf("process legacy INSERTED: %v", err)
+		t.Fatalf("process: %v", err)
 	}
 	if len(coll.updates) != 0 {
-		t.Errorf("a non-v2 payload must be skipped, got %d updates", len(coll.updates))
+		t.Errorf("a payload without _ids must be skipped, got %d updates", len(coll.updates))
 	}
 }
 
 func TestProcess_Deleted_RemovesDoc(t *testing.T) {
 	coll := &fakeColl{}
 	s := NewSyncEngine(processEngineWithRow(), newFakeMongo(coll), identityResolver, nil, "", []*ViewDefinition{processView("t", false)}, 1)
-	if err := s.process(context.Background(), kafkaEvent{AggregateType: "t", EventType: "DELETED", AggregateID: "r1"}); err != nil {
+	if err := s.process(context.Background(), kafkaEvent{AggregateType: "t", EventType: "DELETED", AggregateID: "r1",
+		Payload: []byte(`{"_ids":{"id":"r1"}}`)}); err != nil {
 		t.Fatalf("process DELETED: %v", err)
 	}
 	if len(coll.deletes) != 1 || len(coll.updates) != 0 {
@@ -81,7 +82,8 @@ func TestProcess_ArchivedDefault_KeepsDocViaUpsert(t *testing.T) {
 func TestProcess_ArchivedDeleteOnArchive_RemovesDoc(t *testing.T) {
 	coll := &fakeColl{}
 	s := NewSyncEngine(processEngineWithRow(), newFakeMongo(coll), identityResolver, nil, "", []*ViewDefinition{processView("t", true)}, 1)
-	if err := s.process(context.Background(), kafkaEvent{AggregateType: "t", EventType: "ARCHIVED", AggregateID: "r1"}); err != nil {
+	if err := s.process(context.Background(), kafkaEvent{AggregateType: "t", EventType: "ARCHIVED", AggregateID: "r1",
+		Payload: []byte(`{"_ids":{"id":"r1"}}`)}); err != nil {
 		t.Fatalf("process ARCHIVED: %v", err)
 	}
 	if len(coll.deletes) != 1 || len(coll.updates) != 0 {

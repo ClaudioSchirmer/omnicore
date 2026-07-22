@@ -68,7 +68,7 @@ func TestBaseChild_InsertRoutesToBaseFK(t *testing.T) {
 	if _, err := be.Insert(newBuilderCtx(), ins, bcRoleSchema(true), firingHook); err != nil {
 		t.Fatalf("Insert: %v", err)
 	}
-	// upsert pessoa + insert aluno + insert endereco + outbox(role, v2 single row) + audit = 5.
+	// upsert pessoa + insert aluno + insert endereco + outbox(role, single row) + audit = 5.
 	if len(tx.execs) != 5 {
 		t.Fatalf("expected 6 statements, got %d: %v", len(tx.execs), tx.execs)
 	}

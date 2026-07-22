@@ -785,8 +785,8 @@ func TestInsertWithBase_StepFailures(t *testing.T) {
 		}
 	})
 	t.Run("insertEmitsSingleOutboxRow", func(t *testing.T) {
-		// v2 single-row contract: the role INSERT emits exactly ONE outbox row
-		// (the self-sufficient v2 payload) — the historical empty base-table
+		// single-row contract: the role INSERT emits exactly ONE outbox row
+		// (the self-sufficient payload) — the historical empty base-table
 		// fan-out row must NOT exist.
 		tx := &recTx{queryFn: scriptedQuery(nil, nil)}
 		be := newFlatBE(&recBeginner{tx: tx})
@@ -800,7 +800,7 @@ func TestInsertWithBase_StepFailures(t *testing.T) {
 			}
 		}
 		if outboxRows != 1 {
-			t.Fatalf("a role insert must emit exactly ONE outbox row (v2), got %d: %v", outboxRows, tx.execs)
+			t.Fatalf("a role insert must emit exactly ONE outbox row, got %d: %v", outboxRows, tx.execs)
 		}
 	})
 }

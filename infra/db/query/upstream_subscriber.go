@@ -537,7 +537,7 @@ func (s *UpstreamSubscriber) processMessage(ctx context.Context, msg transport.M
 		} else {
 			// Mirror the doc-survives-with-deleted_at semantic: an ARCHIVED
 			// outbox row carries the full field payload with the soft-delete
-			// column populated (write-side softWritePayload), so the upsert
+			// column populated (the write side's ARCHIVED payload), so the upsert
 			// lands the archived state on the local document.
 			s.upsertAndRipple(ctx, event.AggregateID, payload)
 		}
@@ -770,7 +770,7 @@ func (s *UpstreamSubscriber) rippleRecomposeOne(ctx context.Context, v *ViewDefi
 // than a concurrent SyncEngine recompose of the same document, and a
 // full-document Upsert would regress them — see fieldOwnershipStages.
 func (s *UpstreamSubscriber) rippleUpsertOne(ctx context.Context, v *ViewDefinition, upstreamID, localID string, doc Document) (failed bool) {
-	stages := fieldOwnershipStages(doc, schemaPK(v.schema), embedFieldSet(v.embeds), true)
+	stages := fieldOwnershipStages(doc, schemaPK(v.schema), embedFieldSet(v.embeds))
 	if failed = s.rippleApplyOne(ctx, v, upstreamID, localID, stages, true); failed {
 		return true
 	}
@@ -1004,18 +1004,11 @@ func findMongoJoinField(embeds []embedDef, collection string) string {
 	return ""
 }
 
-// decodePayload extracts the payload map from a Debezium Outbox Event
-// Router message. The event router emits the payload either as the raw
-// JSON object (when StringConverter/JSONConverter is used end-to-end)
-// or wrapped under {"payload": ...} (some Debezium configurations leak
-// the schema envelope). The decoder tolerates both shapes.
-// decodePayload turns the raw outbox payload into the mirror document. Three
-// producer generations are tolerated:
-//   - a Debezium "payload" envelope is unwrapped;
-//   - the legacy aggregate shape {"root": {...}, "children": {...}} has its
-//     root merged flat to the top (the children block was informational and is
-//     dropped — pre-v2 events only);
-//   - v2 framework keys (the "_" reserved namespace: _ids, _children,
+// decodePayload turns the raw outbox payload into the mirror document. Two
+// shapes are handled:
+//   - a Debezium "payload" envelope (some Debezium configurations leak the
+//     schema envelope, wrapping the row under {"payload": ...}) is unwrapped;
+//   - framework reserved keys (the "_" namespace: _ids, _children,
 //     _base_children) are STRIPPED from the mirror by default — they are
 //     routing metadata, not upstream state. A consumer that wants one listed
 //     in cfg.Filter keeps it (the allowlist wins).
@@ -1029,13 +1022,6 @@ func (s *UpstreamSubscriber) decodePayload(raw []byte) (bson.M, error) {
 	}
 	if inner, ok := top["payload"].(map[string]any); ok {
 		top = inner
-	}
-	if rootDoc, ok := top["root"].(map[string]any); ok {
-		merged := make(map[string]any, len(rootDoc))
-		for k, v := range rootDoc {
-			merged[k] = v
-		}
-		top = merged
 	}
 	allow := make(map[string]bool, len(s.cfg.Filter))
 	for _, f := range s.cfg.Filter {

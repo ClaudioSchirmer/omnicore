@@ -51,11 +51,11 @@ type Subscriber interface {
     <li>To a Kafka/Redpanda broker: Debezium via <strong>Kafka Connect</strong>, or standalone <strong>Debezium Server</strong>.</li>
     <li>To NATS: <strong>Debezium Server</strong> (&ge; 3.2 for header forwarding) with the JetStream sink. One instance tails every outbox table via predicate-gated EventRouter transforms.</li>
   </ul>
-  <p>The relay carries the routing metadata as message headers (<code>aggregate_type</code>, <code>event_type</code>, <code>traceparent</code>, <code>aggregate_id</code>); the payload is a routing hint only &mdash; the composer re-reads current state from the relational source on each event, which is why the read side is self-healing and tolerant of at-least-once redelivery. The reference consumer wires this end to end; see its bench for a concrete NATS + Debezium Server setup.</p>
+  <p>The relay carries the routing metadata as message headers (<code>aggregate_type</code>, <code>event_type</code>, <code>traceparent</code>, <code>aggregate_id</code>); the payload is the event-carried-state snapshot itself &mdash; an entity-rooted view projects its Mongo document straight from it, touching no relational source on the event path, while <code>SharedBaseView</code> and external-embed views recompose through the composer. Either way the read side is idempotent under at-least-once redelivery (the per-document revision guards reject a stale replay). The reference consumer wires this end to end; see its bench for a concrete NATS + Debezium Server setup.</p>
 
   <div class="box">
     <strong>Relay config contract — pass the payload through as opaque text; never let the relay type it.</strong>
-    Because the payload is a routing hint (above), the Event Router's JSON expansion must stay <strong>off</strong>:
+    Because the read side decodes the payload itself (the relay must never reinterpret it), the Event Router's JSON expansion must stay <strong>off</strong>:
     <code>table.expand.json.payload=false</code>, with the value format set to the pass-through converter
     (Debezium Server: <code>debezium.format.value=simplestring</code>; Kafka Connect:
     <code>value.converter=org.apache.kafka.connect.storage.StringConverter</code>). The wire bytes are then exactly

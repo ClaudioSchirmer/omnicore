@@ -153,7 +153,7 @@ func TestDeleteRoleWithBase_PurgedBase_OutboxPayloadIsBasePK(t *testing.T) {
 		t.Errorf("base purge DELETED payload must be the base PK + _ids, got %v", p)
 	}
 	if ids, ok := p["_ids"].(map[string]any); !ok || ids["id"] != baseID || ids["base_purged"] != true {
-		t.Errorf("the purge row must carry _ids with the purge flag (every framework event is v2), got %v", p)
+		t.Errorf("the purge row must carry _ids with the purge flag (every framework event carries _ids), got %v", p)
 	}
 }
 

@@ -168,6 +168,64 @@ func (m *MongoDB) Delete(ctx context.Context, collection query.PhysicalCollectio
 	return err
 }
 
+// DeleteGuarded removes the document keyed by id only when its stored revision
+// watermark is <= rev — or when it carries no watermark at all (a
+// watermark-less document counts as older, matching the projection guards'
+// $ifNull treatment). A document a fresher writer already advanced past rev
+// survives; a missing document is a no-op, like Delete.
+func (m *MongoDB) DeleteGuarded(ctx context.Context, collection query.PhysicalCollection, id string, rev int64) error {
+	col := m.collFn(collection.String())
+	filter := bson.M{
+		"_id": id,
+		"$or": bson.A{
+			bson.M{query.DocRevisionField: bson.M{"$lte": rev}},
+			bson.M{query.DocRevisionField: bson.M{"$exists": false}},
+		},
+	}
+	_, err := col.DeleteOne(ctx, filter)
+	return err
+}
+
+// BulkApplyProjection applies a batch of upserting pipeline updates in a single
+// unordered bulk write — ApplyProjection's batched companion, driven by the
+// rebuild/verify backfill with revision-guarded stages. Unordered so an
+// individual document failure does not stop the rest of the batch (the error
+// still surfaces; the rebuild aborts on it). An empty batch is a no-op — the
+// driver rejects a zero-length model slice, so the guard is required.
+func (m *MongoDB) BulkApplyProjection(ctx context.Context, collection query.PhysicalCollection, items []query.IdentifiedStages) error {
+	if len(items) == 0 {
+		return nil
+	}
+	models := make([]mongo.WriteModel, 0, len(items))
+	for _, it := range items {
+		pipeline := make(bson.A, 0, len(it.Stages))
+		for _, st := range it.Stages {
+			pipeline = append(pipeline, bson.M(st))
+		}
+		models = append(models, mongo.NewUpdateOneModel().
+			SetFilter(bson.M{"_id": it.ID}).
+			SetUpdate(pipeline).
+			SetUpsert(true))
+	}
+	col := m.collFn(collection.String())
+	_, err := col.BulkWrite(ctx, models, options.BulkWrite().SetOrdered(false))
+	return err
+}
+
+// EnsureProjectionState provisions the projection-state registry: the TTL
+// index that expires document tombstones by their "at" stamp after
+// query.TombstoneTTL. Base-revision documents carry no "at" field, so the TTL
+// sweep never touches them (Mongo's TTL monitor skips documents missing the
+// indexed field). CreateOne is idempotent for an identical existing index.
+func (m *MongoDB) EnsureProjectionState(ctx context.Context) error {
+	col := m.db.Collection(query.ProjectionStateCollectionName)
+	_, err := col.Indexes().CreateOne(ctx, mongo.IndexModel{
+		Keys:    bson.D{{Key: "at", Value: 1}},
+		Options: options.Index().SetExpireAfterSeconds(int32(query.TombstoneTTL.Seconds())),
+	})
+	return err
+}
+
 // FindManyByField returns every document in collection where field == value.
 // Used by the composer's Mongo dispatch when it follows an external FromSchema embed:
 // the field is the joinKey declared via Source.FK(...) and the value comes from

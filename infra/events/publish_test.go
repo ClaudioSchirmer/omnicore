@@ -31,7 +31,7 @@ func newCtxWithIdentity(sub, iss string) persistence.RequestContext {
 }
 
 // extractEvent returns the first JSON line in buf with msg=event parsed as a
-// flat map[string]any. Symmetric with audit.extractAuditLine — all v2 fields
+// flat map[string]any. Symmetric with audit.extractAuditLine — all flat fields
 // (threadId, entityType, eventType, actor, dateTime, message, values,
 // exception) live at the top level.
 func extractEvent(t *testing.T, buf *bytes.Buffer) map[string]any {
@@ -78,7 +78,7 @@ func TestSlogPublisher_FlatTopLevelFields(t *testing.T) {
 		}
 	}
 	if _, present := line["export"]; present {
-		t.Errorf("v2 shape must NOT carry nested export envelope; got %+v", line["export"])
+		t.Errorf("the flat shape must NOT carry nested export envelope; got %+v", line["export"])
 	}
 }
 

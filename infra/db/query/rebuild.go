@@ -512,6 +512,11 @@ func (s *SyncEngine) backfillInto(ctx context.Context, view *ViewDefinition, tar
 		errMu.Unlock()
 	}
 
+	// The batch write is GUARDED (consultGuardedStages via BulkApplyProjection),
+	// never a plain $set: a live write racing this batch dual-applies to the
+	// shadow with a fresher revision, and a full-document overwrite landing
+	// after it would silently regress the slot that is about to flip. The
+	// guarded pipeline makes the stale batch a no-op on that document instead.
 	composeAndWrite := func(batch []string) error {
 		composed, err := s.composer.ComposeBatch(ctx, view, batch)
 		if err != nil {
@@ -520,11 +525,11 @@ func (s *SyncEngine) backfillInto(ctx context.Context, view *ViewDefinition, tar
 		if len(composed) == 0 {
 			return nil
 		}
-		docs := make([]IdentifiedDocument, 0, len(composed))
+		items := make([]IdentifiedStages, 0, len(composed))
 		for _, doc := range composed {
-			docs = append(docs, IdentifiedDocument{ID: fmt.Sprintf("%v", doc[pkColName]), Doc: doc})
+			items = append(items, IdentifiedStages{ID: fmt.Sprintf("%v", doc[pkColName]), Stages: consultGuardedStages(view, doc)})
 		}
-		return s.mongo.BulkUpsert(ctx, target, docs)
+		return s.mongo.BulkApplyProjection(ctx, target, items)
 	}
 
 	for i := 0; i < workers; i++ {

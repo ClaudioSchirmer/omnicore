@@ -112,7 +112,7 @@
     </table>
 
     <div class="note">
-        <strong>Outbox <code>payload</code> — the v2 event-carried-state contract, ONE row per write.</strong> Every
+        <strong>Outbox <code>payload</code> — the event-carried-state contract, ONE row per write.</strong> Every
         body verb emits one self-sufficient JSON shape: all scalars column-keyed flat at the top (root/role fields ∪
         sibling fields ∪ shared-base business fields ∪ the verb's managed timestamps — the EXACT app-clock values the
         DML bound: <code>INSERTED</code> carries <code>created_at</code>+<code>updated_at</code>;

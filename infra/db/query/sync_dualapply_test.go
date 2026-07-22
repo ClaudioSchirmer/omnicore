@@ -41,7 +41,7 @@ func TestSyncEngine_DualApply_FansUpsertAndDeleteToBothSlots(t *testing.T) {
 			len(colls["v"].updates), len(colls["v__0"].updates))
 	}
 
-	if err := s.applyDelete(ctx, "v", "id1"); err != nil {
+	if err := s.applyDelete(ctx, "v", "id1", 0); err != nil {
 		t.Fatalf("applyDelete: %v", err)
 	}
 	if len(colls["v"].deletes) != 1 || len(colls["v__0"].deletes) != 1 {
@@ -71,7 +71,7 @@ func TestSyncEngine_DualApply_ActiveFailFailsTheEvent(t *testing.T) {
 	if err := s.applyUpsert(context.Background(), "v", "id1", Document{"_id": "id1"}); err == nil {
 		t.Error("active upsert failure must fail the event")
 	}
-	if err := s.applyDelete(context.Background(), "v", "id1"); err == nil {
+	if err := s.applyDelete(context.Background(), "v", "id1", 0); err == nil {
 		t.Error("active delete failure must fail the event")
 	}
 }
@@ -85,7 +85,7 @@ func TestSyncEngine_DualApply_AbortErrorNeverFailsLive(t *testing.T) {
 	colls := map[string]*fakeColl{"v": {}, "v__0": {updateErr: errFake, deleteErr: errFake}}
 	mongo := newFakeMongoFunc(func(name string) *fakeColl { return colls[name] })
 	s := &SyncEngine{eng: eng, mongo: mongo, resolver: resolver}
-	if err := s.applyDelete(ctx, "v", "id1"); err != nil {
+	if err := s.applyDelete(ctx, "v", "id1", 0); err != nil {
 		t.Fatalf("live path must not fail even when the abort itself errors: %v", err)
 	}
 	if len(colls["v"].deletes) != 1 {

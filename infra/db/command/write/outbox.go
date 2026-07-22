@@ -16,7 +16,7 @@ import (
 // only the positional placeholders vary by dialect, rendered via tx.Dialect()
 // ($n on Postgres, ? on MySQL). The aggregate_id is the canonical UUID string
 // (the CDC routing key) on every backend — outbox.aggregate_id is text, never
-// BINARY(16). payload is the v2 EVENT-CARRIED-STATE snapshot (see
+// BINARY(16). payload is the event-carried-state snapshot (see
 // outbox_payload.go): every scalar flat at the top, the _ids structural block
 // (aggregate PK, base id + revision, purge flag), and the children groups with
 // per-item ops; DELETED keeps the historical structural keys and adds _ids.

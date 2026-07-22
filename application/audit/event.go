@@ -2,7 +2,7 @@ package audit
 
 import "time"
 
-// AuditEvent is the v2 wire shape of an audit log line. One AuditEvent
+// AuditEvent is the wire shape of an audit log line. One AuditEvent
 // corresponds to one aggregate write (Insert / Update / PartialUpdate /
 // Archive / Unarchive / Delete) — granularity B preserved (the aggregate is
 // the event unit, identical to the outbox row that ships to Kafka).

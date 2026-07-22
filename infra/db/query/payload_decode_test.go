@@ -51,7 +51,7 @@ func TestDecodePayloadEvent_TypedRestoration(t *testing.T) {
 	}`)
 	ev, ok := decodePayloadEvent(pdSchema(), payload)
 	if !ok {
-		t.Fatal("a v2 payload must decode")
+		t.Fatal("the payload must decode")
 	}
 	if ev.IDs.ID != "r1" || ev.IDs.BaseID != "b1" || ev.IDs.BaseRevision != 42 {
 		t.Fatalf("_ids = %+v", ev.IDs)
@@ -84,15 +84,15 @@ func TestDecodePayloadEvent_TypedRestoration(t *testing.T) {
 	}
 }
 
-func TestDecodePayloadEvent_NonV2Rejected(t *testing.T) {
+func TestDecodePayloadEvent_WithoutIDsRejected(t *testing.T) {
 	if _, ok := decodePayloadEvent(pdSchema(), nil); ok {
-		t.Error("empty payload is not v2")
+		t.Error("empty payload has no _ids")
 	}
 	if _, ok := decodePayloadEvent(pdSchema(), []byte(`{"name":"Ana"}`)); ok {
-		t.Error("a payload without _ids is not v2 — WARNING + skip at the caller")
+		t.Error("a payload without _ids is rejected — the caller logs and skips it")
 	}
 	if _, ok := decodePayloadEvent(pdSchema(), []byte(`garbage`)); ok {
-		t.Error("malformed payload is not v2")
+		t.Error("malformed payload is rejected")
 	}
 }
 
@@ -127,7 +127,7 @@ func TestCoercePayloadEvent_SharedRawIsNotMutated(t *testing.T) {
 
 	raw, ok := decodeRawPayload(payload)
 	if !ok {
-		t.Fatal("a v2 payload must parse")
+		t.Fatal("the payload must parse")
 	}
 	_ = coercePayloadEvent(other, raw)            // first consumer (different typing)
 	shared := coercePayloadEvent(pdSchema(), raw) // second consumer over the SAME map

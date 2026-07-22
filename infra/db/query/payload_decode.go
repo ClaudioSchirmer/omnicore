@@ -12,7 +12,7 @@ import (
 	"github.com/ClaudioSchirmer/omnicore/infra/db/core"
 )
 
-// The read-side half of the v2 outbox contract: decodePayloadEvent turns the
+// The read-side half of the outbox contract: decodePayloadEvent turns the
 // raw payload into TYPED projection input — the same value shapes the
 // composer's relational read produces — using the schema's PayloadColumnTypes
 // as the restoration map. JSON alone would flatten every number to float64,
@@ -21,10 +21,8 @@ import (
 // byte-equivalent to the re-read one (numbers ride json.Number so int64
 // precision survives).
 //
-// A payload without the "_ids" block is NOT a v2 event (pre-v2 backlog, the
-// replay admin's synthetic rows, a foreign producer) — the caller logs a
-// warning and SKIPS the event (maintainer decision: no fallback reprocessing;
-// the post-upgrade rebuild converges the backlog).
+// A payload without the "_ids" block did not come from the framework write
+// path (a foreign or corrupt producer) — the caller logs and SKIPS it.
 
 // childOp is one surgically-applicable child operation carried by the payload.
 type childOp struct {
@@ -32,7 +30,7 @@ type childOp struct {
 	Fields Document // typed via the child schema; carries the child PK column
 }
 
-// decodedEvent is the typed projection input of one v2 event.
+// decodedEvent is the typed projection input of one event.
 type decodedEvent struct {
 	IDs          payloadIDs
 	Scalars      Document             // typed, column-keyed, reserved keys stripped
@@ -42,7 +40,7 @@ type decodedEvent struct {
 
 // decodeRawPayload parses the payload bytes ONCE into the raw JSON map
 // (numbers as json.Number). ok=false when the payload is empty, malformed or
-// not a v2 event (no "_ids" block). The map is the shared input of every
+// not a framework event (no "_ids" block). The map is the shared input of every
 // per-view coercion of one event: SyncEngine.process parses here once and runs
 // coercePayloadEvent per view over it — the typed half is schema-dependent
 // (PayloadColumnTypes differ per view), the parse is not.
@@ -92,7 +90,7 @@ func coercePayloadEvent(schema *core.TableSchema, raw map[string]any) *decodedEv
 
 // decodePayloadEvent decodes payload against the view's root schema — parse +
 // coerce in one call, for callers holding a single view. ok=false when the
-// payload is not a v2 event (no _ids) or is malformed. Multi-view callers
+// payload is not a framework event (no _ids) or is malformed. Multi-view callers
 // parse once (decodeRawPayload) and coerce per view instead.
 func decodePayloadEvent(schema *core.TableSchema, payload []byte) (*decodedEvent, bool) {
 	raw, ok := decodeRawPayload(payload)

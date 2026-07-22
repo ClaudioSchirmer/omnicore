@@ -453,7 +453,7 @@ type viewIndex struct {
 	// roleDef so the SyncEngine can resolve the base id per the role's link
 	// model (shared-PK vs separate-FK).
 	byRoleTable map[string][]roleRoute
-	// baseOfRole maps a ROLE table to its shared-base table. Since the v2
+	// baseOfRole maps a ROLE table to its shared-base table. Since the
 	// outbox payload carries the base id (_ids.base_id) on every role event,
 	// the SyncEngine drives the shared-identity fan-out from the ROLE event
 	// itself: baseOfRole names which bySharedBase entry to fan out for. Filled

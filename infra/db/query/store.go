@@ -10,6 +10,16 @@ type IdentifiedDocument struct {
 	Doc Document
 }
 
+// IdentifiedStages pairs an update pipeline with its target _id for batch
+// writes — the guarded companion of IdentifiedDocument. The rebuild/verify
+// backfill accumulates a slice of these (one revision-guarded pipeline per
+// composed document) and hands it to BulkApplyProjection, so a backfill batch
+// that lands AFTER a fresher dual-applied event write cannot regress it.
+type IdentifiedStages struct {
+	ID     string
+	Stages []Document
+}
+
 // ReadModelStore is the backend-neutral port the read-model machinery
 // (composer, SyncEngine, rebuild, drift, upstream subscriber) depends on to
 // read and write composed documents. The Mongo adapter (*MongoDB) implements
@@ -32,6 +42,14 @@ type ReadModelStore interface {
 	BulkUpsert(ctx context.Context, collection PhysicalCollection, docs []IdentifiedDocument) error
 	// Delete removes the document keyed by id; missing target is not an error.
 	Delete(ctx context.Context, collection PhysicalCollection, id string) error
+	// DeleteGuarded removes the document keyed by id ONLY when its stored
+	// revision watermark (DocRevisionField) is <= rev, or when the document
+	// carries no watermark at all (a watermark-less document counts as older).
+	// The projection's DELETED path uses it with the deleted row's LAST
+	// revision: a document a fresher writer already re-materialized (its
+	// watermark exceeds the delete's revision) survives, so a redelivered or
+	// zombie DELETED cannot destroy newer state. Missing target is not an error.
+	DeleteGuarded(ctx context.Context, collection PhysicalCollection, id string, rev int64) error
 	// FindManyByField returns every document where field == value.
 	FindManyByField(ctx context.Context, collection PhysicalCollection, field string, value any) ([]Document, error)
 	// FindManyByFieldIn returns every document where field ∈ values — the
@@ -60,6 +78,20 @@ type ReadModelStore interface {
 	// concurrent document delete would resurrect a skeleton holding nothing
 	// but the edited fields.
 	ApplyProjection(ctx context.Context, collection PhysicalCollection, id string, stages []Document, upsert bool) error
+	// BulkApplyProjection applies a batch of upserting pipeline updates in as
+	// few round trips as the backend allows (one unordered bulk write on
+	// Mongo) — ApplyProjection's batched, always-upserting companion. The
+	// rebuild/verify backfill drives it with revision-guarded stages so a bulk
+	// write of a composed batch cannot regress documents a concurrent
+	// dual-applied event already advanced. An empty batch is a no-op.
+	BulkApplyProjection(ctx context.Context, collection PhysicalCollection, items []IdentifiedStages) error
+	// EnsureProjectionState provisions the projection-state registry (the
+	// omnicore_projection_state collection): idempotently creates the TTL
+	// index that expires document tombstones (their "at" stamp) after the
+	// retention window. Base-revision documents carry no "at" field and never
+	// expire. Called once by the SyncEngine at start; failure degrades to
+	// tombstones without expiry, never to a projection stop.
+	EnsureProjectionState(ctx context.Context) error
 	// HasDocuments reports whether the collection holds at least one document.
 	HasDocuments(ctx context.Context, collection PhysicalCollection) (bool, error)
 	// SnapshotDocumentIDs returns the set of every document _id in the collection.

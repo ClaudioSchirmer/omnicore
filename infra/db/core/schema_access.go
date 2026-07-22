@@ -145,7 +145,7 @@ func (s *TableSchema) GoFieldValues(e any) map[string]any {
 	return out
 }
 
-// PayloadColumnTypes returns the Go type of every SCALAR column the v2 outbox
+// PayloadColumnTypes returns the Go type of every SCALAR column the outbox
 // payload can carry flat at the top for this schema — the type map the
 // read-side payload decoder uses to restore native values from JSON (numbers
 // via json.Number, timestamps from RFC 3339, []byte from base64) so the

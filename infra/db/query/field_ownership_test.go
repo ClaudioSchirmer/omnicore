@@ -5,10 +5,12 @@ import (
 	"time"
 )
 
-// Field-ownership coverage: the split write both writers of a consult-class
-// document use (SyncEngine consult vs UpstreamSubscriber ripple) so neither
-// can regress the other's freshly-read fields — the lost-update the oracle
-// lane's CDC skew exposed on EmbedMany segments.
+// Field-ownership coverage: the recompose-ripple's write shape — embeds
+// unconditionally (the ripple owns them), everything else only on document
+// creation — so the ripple can never regress the SyncEngine's freshly-read
+// relational fields (the lost-update the oracle lane's CDC skew exposed on
+// EmbedMany segments). The SyncEngine's side of the split lives in
+// consultGuardedStages and is covered by its own tests.
 
 func ownershipDoc() Document {
 	return Document{
@@ -57,7 +59,7 @@ func assertKeptUnlessCreating(t *testing.T, set Document, key string) {
 }
 
 func TestFieldOwnershipStages_RippleOwnsEmbeds(t *testing.T) {
-	stages := fieldOwnershipStages(ownershipDoc(), "id", ownershipEmbeds(), true)
+	stages := fieldOwnershipStages(ownershipDoc(), "id", ownershipEmbeds())
 	if len(stages) != 1 {
 		t.Fatalf("want one atomic $set stage, got %d", len(stages))
 	}
@@ -70,16 +72,6 @@ func TestFieldOwnershipStages_RippleOwnsEmbeds(t *testing.T) {
 	assertKeptUnlessCreating(t, set, "display_name")
 	assertKeptUnlessCreating(t, set, "updated_at")
 	assertKeptUnlessCreating(t, set, "id")
-}
-
-func TestFieldOwnershipStages_ConsultOwnsTheRest(t *testing.T) {
-	stages := fieldOwnershipStages(ownershipDoc(), "id", ownershipEmbeds(), false)
-	set := stages[0]["$set"].(Document)
-	assertLiteral(t, set, "display_name")
-	assertLiteral(t, set, "updated_at")
-	assertLiteral(t, set, "id")
-	assertKeptUnlessCreating(t, set, "Items")
-	assertKeptUnlessCreating(t, set, "FeaturedItem")
 }
 
 func TestEmbedFieldSet(t *testing.T) {

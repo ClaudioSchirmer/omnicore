@@ -57,7 +57,7 @@ func (b *BaseEngine) Insert(ctx persistence.RequestContext, entity domain.Insert
 		return domain.WriteResult{}, err
 	}
 	if err := WriteOutbox(ctx, tx, schema.Table(), "INSERTED", id,
-		buildWritePayloadV2(schema, src, nil, "INSERTED", now, fields, outboxMeta{ID: id, Revision: 1})); err != nil {
+		buildWritePayload(schema, src, nil, "INSERTED", now, fields, outboxMeta{ID: id, Revision: 1})); err != nil {
 		return domain.WriteResult{}, err
 	}
 	ab := b.BuildAudit(func() audit.AuditEvent {
@@ -110,7 +110,7 @@ func (b *BaseEngine) Update(ctx persistence.RequestContext, entity domain.Updata
 		return domain.WriteResult{}, err
 	}
 	if err := WriteOutbox(ctx, tx, schema.Table(), "UPDATED", entity.ID().Value(),
-		buildWritePayloadV2(schema, src, nil, "UPDATED", now, fields, meta)); err != nil {
+		buildWritePayload(schema, src, nil, "UPDATED", now, fields, meta)); err != nil {
 		return domain.WriteResult{}, err
 	}
 	ab := b.BuildAudit(func() audit.AuditEvent {
@@ -175,7 +175,7 @@ func (b *BaseEngine) Delete(ctx persistence.RequestContext, entity domain.Deleta
 
 // flatSoftWrite is the shared body of the bodyless flat verbs
 // (Archive/Unarchive): one single-statement write keyed on the PK + the
-// outbox row (the v2 payload, built AFTER the base convergence so its
+// outbox row (the payload, built AFTER the base convergence so its
 // base_revision reflects any lifecycle transition) + the in-TX audit row + the
 // A/D hooks, then the post-commit echo + publish. `now` is the operation stamp
 // minted by the verb (writeNow()): ARCHIVED binds it as the soft-delete value;
@@ -232,7 +232,7 @@ func (b *BaseEngine) flatSoftWrite(
 		return err
 	}
 	if err := WriteOutbox(ctx, tx, schema.Table(), eventType, id,
-		buildWritePayloadV2(schema, src, nil, eventType, now, schema.WriteFields(src), meta)); err != nil {
+		buildWritePayload(schema, src, nil, eventType, now, schema.WriteFields(src), meta)); err != nil {
 		return err
 	}
 	ab := b.BuildAudit(buildEvent, evs)
@@ -302,7 +302,7 @@ func execOneWithTx(ctx context.Context, tx WriteTx, d Dialect, entity domain.Val
 			return domain.WriteResult{}, err
 		}
 		if err := WriteOutbox(ctx, tx, schema.Table(), "INSERTED", id,
-			buildWritePayloadV2(schema, e.Source(), nil, "INSERTED", now, fields, meta)); err != nil {
+			buildWritePayload(schema, e.Source(), nil, "INSERTED", now, fields, meta)); err != nil {
 			return domain.WriteResult{}, err
 		}
 		return domain.WriteResult{ID: domain.NewID(id), Fields: fields}, nil
@@ -318,7 +318,7 @@ func execOneWithTx(ctx context.Context, tx WriteTx, d Dialect, entity domain.Val
 			return domain.WriteResult{}, err
 		}
 		if err := WriteOutbox(ctx, tx, schema.Table(), "UPDATED", e.ID().Value(),
-			buildWritePayloadV2(schema, e.Source(), nil, "UPDATED", now, fields, meta)); err != nil {
+			buildWritePayload(schema, e.Source(), nil, "UPDATED", now, fields, meta)); err != nil {
 			return domain.WriteResult{}, err
 		}
 		return domain.WriteResult{ID: e.ID(), Fields: fields}, nil
@@ -337,7 +337,7 @@ func execOneWithTx(ctx context.Context, tx WriteTx, d Dialect, entity domain.Val
 			return domain.WriteResult{}, err
 		}
 		if err := WriteOutbox(ctx, tx, schema.Table(), "ARCHIVED", e.ID().Value(),
-			buildWritePayloadV2(schema, e.Source(), nil, "ARCHIVED", now, schema.WriteFields(e.Source()), meta)); err != nil {
+			buildWritePayload(schema, e.Source(), nil, "ARCHIVED", now, schema.WriteFields(e.Source()), meta)); err != nil {
 			return domain.WriteResult{}, err
 		}
 		return domain.WriteResult{ID: e.ID()}, nil
@@ -355,21 +355,32 @@ func execOneWithTx(ctx context.Context, tx WriteTx, d Dialect, entity domain.Val
 			return domain.WriteResult{}, err
 		}
 		if err := WriteOutbox(ctx, tx, schema.Table(), "UNARCHIVED", e.ID().Value(),
-			buildWritePayloadV2(schema, e.Source(), nil, "UNARCHIVED", now, schema.WriteFields(e.Source()), meta)); err != nil {
+			buildWritePayload(schema, e.Source(), nil, "UNARCHIVED", now, schema.WriteFields(e.Source()), meta)); err != nil {
 			return domain.WriteResult{}, err
 		}
 		return domain.WriteResult{ID: e.ID()}, nil
 
 	case domain.Deletable:
+		// The row's last revision is captured BEFORE the DELETE removes it (the
+		// row answers 0 afterwards): the DELETED payload's _ids.revision feeds
+		// the read-side document tombstone. The base half still resolves after
+		// the delete — the base row is a separate row that survives the verb.
+		meta := outboxMeta{ID: e.ID().Value()}
+		if rc := schema.RevisionColumn(); rc != "" {
+			rev, err := readRevision(ctx, tx, d, schema.Table(), rc, schema.PKColumn(), e.ID().Value())
+			if err != nil {
+				return domain.WriteResult{}, err
+			}
+			meta.Revision = rev
+		}
 		if err := tx.Exec(ctx, deleteSQL(d, schema.Table(), schema.PKColumn()), d.EncodeArg(domain.NewID(e.ID().Value()))); err != nil {
 			return domain.WriteResult{}, err
 		}
-		meta, err := outboxMetaFor(ctx, tx, d, schema, e.Source(), e.ID().Value())
-		if err != nil {
+		if err := fillBaseMeta(ctx, tx, d, schema, e.Source(), &meta); err != nil {
 			return domain.WriteResult{}, err
 		}
 		if err := WriteOutbox(ctx, tx, schema.Table(), "DELETED", e.ID().Value(),
-			buildDeletePayloadV2(schema, e.Source(), e.ID().Value(), meta)); err != nil {
+			buildDeletePayload(schema, e.Source(), e.ID().Value(), meta)); err != nil {
 			return domain.WriteResult{}, err
 		}
 		return domain.WriteResult{ID: e.ID()}, nil

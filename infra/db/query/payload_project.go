@@ -4,7 +4,7 @@ import (
 	"github.com/ClaudioSchirmer/omnicore/infra/db/core"
 )
 
-// The payload-direct projector: turns one decoded v2 event into the update
+// The payload-direct projector: turns one decoded event into the update
 // PIPELINE the store applies atomically (ApplyProjection). No relational read
 // happens on this path — the payload IS the state:
 //
@@ -30,12 +30,18 @@ import (
 // treats a missing `_rev` as older, and every `_`-prefixed field is excluded
 // from doc-a-doc comparisons (verify's shape check included).
 
-// docRevisionField is the document-level watermark of the aggregate's OWN
+// DocRevisionField is the document-level watermark of the aggregate's OWN
 // data (root/sibling scalars + own children) — the event's _ids.revision must
 // beat it or the whole own-data part of the pipeline is a no-op. This is the
 // zombie-consumer defense: a slow pod finishing an in-flight event after a
 // partition handoff carries an older revision and cannot regress the document.
-const docRevisionField = "_revision"
+// Exported because store adapters implement the guarded delete against it
+// (ReadModelStore.DeleteGuarded compares the stored value to the deleted
+// row's last revision).
+const DocRevisionField = "_revision"
+
+// docRevisionField is the package-internal alias of DocRevisionField.
+const docRevisionField = DocRevisionField
 
 // docBaseRevisionField is the document-level watermark of shared-base data.
 const docBaseRevisionField = "_base_revision"
@@ -48,7 +54,7 @@ const elemRevisionField = "_rev"
 // as a field path; $literal makes the value inert.
 func lit(v any) Document { return Document{"$literal": v} }
 
-// buildProjectionStages assembles the pipeline for one v2 event on an
+// buildProjectionStages assembles the pipeline for one event on an
 // entity-rooted view (root = the aggregate's table; SharedBaseViews keep the
 // consult path). eventType is one of the upsert verbs — DELETED never lands
 // here (the sync engine deletes the document instead).
@@ -113,10 +119,10 @@ func buildProjectionStages(schema *core.TableSchema, ev *decodedEvent) []Documen
 	stages := make([]Document, 0, 6)
 	stages = append(stages, ownGuardedChildStages(schema, ev)...)
 	stages = append(stages, childStages(schema, ev.BaseChildren, ev.IDs.BaseRevision, true)...)
-	if len(base) > 0 && ev.IDs.BaseID != "" {
+	if len(base) > 0 && ev.IDs.BaseID != "" && ev.IDs.BaseRevision > 0 {
 		stages = append(stages, baseGuardedSetStage(base, ev.IDs.BaseRevision))
 	}
-	// INVARIANT: own is never empty for a v2 write event — the PK restore above
+	// INVARIANT: own is never empty for a write event — the PK restore above
 	// (schema.PKColumn() + _ids.id, both always present) guarantees it, so this
 	// stage ALWAYS runs and the _revision watermark ALWAYS advances. If a
 	// refactor ever moves the PK out of `own`, a children-only event would skip
@@ -156,13 +162,8 @@ func segmentNormalizeStage(schema *core.TableSchema) Document {
 // ownGuardedChildStages renders the OWN child edits, each array expression
 // wrapped in the document-revision guard (reading the still-unchanged
 // watermark — these stages precede the own-scalars stage that advances it).
-// A token-less payload (revision 0 — produced before the universal Revision
-// tokens shipped in v0.36) applies unguarded.
 func ownGuardedChildStages(schema *core.TableSchema, ev *decodedEvent) []Document {
 	stages := childStages(schema, ev.Children, 0, false)
-	if ev.IDs.Revision <= 0 {
-		return stages
-	}
 	newer := Document{"$lt": []any{
 		Document{"$ifNull": []any{"$" + docRevisionField, int64(-1)}},
 		ev.IDs.Revision,
@@ -178,12 +179,8 @@ func ownGuardedChildStages(schema *core.TableSchema, ev *decodedEvent) []Documen
 
 // guardedSetStage renders one $set where every column applies only when the
 // stored watermark (watermarkField) is older than the incoming revision — and
-// the watermark itself advances monotonically. revision <= 0 (a token-less
-// pre-v0.36 payload) degrades to an unconditional set with no watermark write.
+// the watermark itself advances monotonically.
 func guardedSetStage(watermarkField string, set Document, revision int64) Document {
-	if revision <= 0 {
-		return Document{"$set": set}
-	}
 	newer := Document{"$lt": []any{
 		Document{"$ifNull": []any{"$" + watermarkField, int64(-1)}},
 		revision,
@@ -308,7 +305,7 @@ func buildFanOutStages(schema *core.TableSchema, ev *decodedEvent) []Document {
 		}
 	}
 	var stages []Document
-	if len(base) > 0 && ev.IDs.BaseID != "" {
+	if len(base) > 0 && ev.IDs.BaseID != "" && ev.IDs.BaseRevision > 0 {
 		stages = append(stages, baseGuardedSetStage(base, ev.IDs.BaseRevision))
 	}
 	stages = append(stages, childStages(schema, ev.BaseChildren, ev.IDs.BaseRevision, true)...)

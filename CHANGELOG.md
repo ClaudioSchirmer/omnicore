@@ -11,6 +11,68 @@ with `1.0.0`.
 
 ## [Unreleased]
 
+### Added
+
+- **Projection-state registry (`omnicore_projection_state`) — the durable
+  rendezvous that makes the projection deterministic under multiple workers
+  and pods.** Two write-then-check handshakes close the windows a per-document
+  revision guard cannot see: (1) *base revision*: every shared-base role
+  event stamps its `base_revision` into the registry BEFORE the fan-out probes
+  for target documents; a role document that materializes AFTER a fan-out that
+  could not see it (its INSERTED/UNARCHIVED projection was still in flight)
+  re-checks the registry after writing and, when a newer clock proves a
+  fan-out already passed, repairs itself by one consult recompose applied
+  guarded — the store's write order guarantees one of the two sides always
+  fires. (2) *document tombstones*: DELETED records the row's LAST revision
+  (now stamped on the DELETED payload's `_ids.revision`) as a tombstone before
+  a GUARDED delete (`ReadModelStore.DeleteGuarded` — a document a fresher
+  writer advanced past the delete's revision survives), and every
+  document-creating upsert re-checks the tombstone after writing: a zombie
+  consumer's older upsert racing the delete removes its own write instead of
+  resurrecting the document. Tombstones expire after 24h via a TTL index
+  (`EnsureProjectionState`, provisioned at SyncEngine start); base-revision
+  records never expire. The registry lives outside the blue-green slots (like
+  `omnicore_mongo_views`) and is never rebuilt.
+
+### Changed
+
+- **BREAKING: the shared-base `Revision` column is now the base revision —
+  EVERY write that touches a shared identity advances it.** Role
+  archive/unarchive without a base lifecycle transition, role hard-delete
+  (non-purge branches included) and the batch role verbs now bump
+  `revision = revision + 1` on the base row under its lock (previously only
+  writes that upserted the base did). The clock totally orders the identity's
+  closure — shared scalars, base children, the SharedBaseView remnant pick and
+  the role rows themselves — which is what makes the guarded consult writes
+  (below) sound. Concurrent role writes of one identity now serialize on the
+  base row's lock; the write path's extra cost is one UPDATE where a SELECT of
+  the base revision already ran.
+
+- **BREAKING: every consult-composed write is revision-guarded — the
+  full-document `$set` upsert is gone from the projection.** A consult
+  recompose (SharedBaseView documents, views with embeds, the base-event
+  fan-out) and the rebuild/verify backfill (`ReadModelStore.
+  BulkApplyProjection`, replacing the backfill's plain `BulkUpsert`) now write
+  ONE guarded pipeline: own fields behind the document's `_revision`,
+  shared-base fields behind `_base_revision`, a SharedBaseView document as a
+  single base-revision scope, embed segments still owned by the
+  recompose-ripple (written only on document creation). A consult that read
+  the relational earlier but reaches the store later than a fresher writer is
+  now a no-op instead of a lost update — and it can no longer regress the
+  document's watermarks. The composed document's data is always at least as
+  fresh as its watermark (the composer reads the root/base row first), so the
+  guard only ever suppresses stale writes. At the EQUAL revision the consult
+  write FILLS what the document lacks without touching what it has — the
+  rolling-deploy closure: a pod on the previous binary projects an event
+  without the columns its schema does not know, leaving the document at the
+  current revision missing exactly those fields; the fill supplies them at
+  every level a column can surface (root/sibling/base scalars, a whole new
+  child segment, a child ELEMENT's column via per-element PK-keyed shallow
+  merge, a role segment's scalar via sub-document shallow merge), always
+  stored-wins. One level limit: an array nested inside a role segment of a
+  person document keeps the stored array whole — additions there converge on
+  that role's next write or a rebuild.
+
 ## [0.36.0] - 2026-07-20
 
 ### Added
@@ -49,7 +111,7 @@ with `1.0.0`.
 
 - **BREAKING: the day-to-day projection is PAYLOAD-DIRECT — the SyncEngine no
   longer re-reads the relational source per event.** For entity-rooted views
-  without external embeds, each v2 event applies as ONE atomic
+  without external embeds, each event applies as ONE atomic
   aggregation-pipeline update (new `ReadModelStore.ApplyProjection`, dual-apply
   to the blue-green shadow preserved): typed decode against the TableSchema
   (json.Number keeps int64 precision; RFC 3339 → time.Time; base64 → []byte),
@@ -61,11 +123,10 @@ with `1.0.0`.
   carry. The shared-identity fan-out applies the same guarded stages to the
   other roles' documents — no `ComposeBatch` on the hot path. The composer
   remains for: SharedBaseView documents (cross-row remnant pick), views with
-  external embeds, rebuild/verify/drift, and the upstream ripple. A non-v2
-  payload (pre-v2 backlog, replay events) logs a WARNING and is SKIPPED —
-  never silently re-read; run a view rebuild after upgrading. Custom
-  `ReadModelStore` implementations must add `ApplyProjection`.
-- **BREAKING: the outbox payload is the v2 event-carried-state contract — one
+  external embeds, rebuild/verify/drift, and the upstream ripple. A payload
+  without the `_ids` block (corrupt or foreign) is skipped — never silently
+  re-read. Custom `ReadModelStore` implementations must add `ApplyProjection`.
+- **BREAKING: the outbox payload is the event-carried-state contract — one
   self-sufficient shape for every verb, ONE outbox row per write.** Every body
   verb now emits: all scalars column-keyed flat at the top (root/role fields ∪
   sibling fields ∪ shared-base business fields ∪ the verb's managed
@@ -83,11 +144,9 @@ with `1.0.0`.
   remains, external cascade depends on it). The `"_"` column-name prefix is
   now a reserved framework namespace (boot failure at TableSchema
   declaration). External `UpstreamSubscription` consumers: the mirror decode
-  unwraps the legacy `{"root","children"}` shape for pre-v2 backlog and
-  strips `_`-prefixed keys unless the `Filter` allowlists them; the replay
-  admin's synthetic events remain pre-v2-shaped and skip the payload-driven
-  routes. Migration: after upgrading, run a view rebuild to converge documents
-  produced during the rollout window.
+  strips `_`-prefixed keys unless the `Filter` allowlists them, so a foreign
+  producer's flat payload passes through untouched. Migration: after upgrading,
+  run a view rebuild to converge documents produced during the rollout window.
 - **BREAKING: EVERY root schema requires a `Revision(column)` declaration —
   the deterministic last-writer-wins token of the read side.** (Initially
   shipped for the shared base, then generalized: the zombie-consumer window —
@@ -226,7 +285,7 @@ with `1.0.0`.
   indefinitely (the documented contract is "null when unset/unresolved"). Both
   compose paths (per-row and batched) now write the explicit `null`, and the
   surgical delete path clears the 1:1 segment the same way.
-- **Clearing a 1:1 sibling now reaches the projected document.** The v2
+- **Clearing a 1:1 sibling now reaches the projected document.** The
   payload omitted an all-nil sibling facet ("mirroring the write"), so a PUT
   that removed the sibling row (e.g. nulling every notification flag) left the
   projected document carrying the stale sibling values forever — under

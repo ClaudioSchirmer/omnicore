@@ -277,7 +277,7 @@ const (
             <td>The aggregate's own data — root fields flat, siblings merged flat, 1:N children nested —
                 derived automatically from the <code>TableSchema</code>; nothing is declared on the view
                 beyond the schema.</td>
-            <td>Materialized at write time (CDC → SyncEngine compose)</td>
+            <td>Materialized at write time (CDC → SyncEngine, payload-direct projection)</td>
             <td><a href="#table-schema">TableSchema</a></td>
         </tr>
         <tr>

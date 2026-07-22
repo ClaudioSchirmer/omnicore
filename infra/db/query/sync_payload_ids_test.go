@@ -2,13 +2,13 @@ package query
 
 import "testing"
 
-// The v2 payload's "_ids" block drives routing: parsePayloadIDs feeds the
+// The payload's "_ids" block drives routing: parsePayloadIDs feeds the
 // role-event shared-base fan-out and the payload-first resolveBaseID.
 
 func TestParsePayloadIDs(t *testing.T) {
 	ids, ok := parsePayloadIDs([]byte(`{"name":"Ana","_ids":{"id":"r1","base_id":"b1","base_revision":42,"base_purged":true}}`))
 	if !ok {
-		t.Fatal("a v2 payload must parse")
+		t.Fatal("the payload must parse")
 	}
 	if ids.ID != "r1" || ids.BaseID != "b1" || ids.BaseRevision != 42 || !ids.BasePurged {
 		t.Fatalf("ids = %+v", ids)
@@ -18,7 +18,7 @@ func TestParsePayloadIDs(t *testing.T) {
 		t.Error("an empty payload has no ids")
 	}
 	if _, ok := parsePayloadIDs([]byte(`{"name":"Ana"}`)); ok {
-		t.Error("a pre-v2 payload (no _ids) must answer ok=false — the legacy routes take over")
+		t.Error("a payload without _ids must answer ok=false")
 	}
 	if _, ok := parsePayloadIDs([]byte(`null`)); ok {
 		t.Error("a null payload must answer ok=false")

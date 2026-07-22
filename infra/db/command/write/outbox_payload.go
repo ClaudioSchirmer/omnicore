@@ -7,8 +7,8 @@ import (
 	"github.com/ClaudioSchirmer/omnicore/domain"
 )
 
-// The v2 outbox payload — the EVENT-CARRIED-STATE contract of the framework.
-// One shape for every verb with a body, produced by buildWritePayloadV2:
+// The outbox payload — the EVENT-CARRIED-STATE contract of the framework.
+// One shape for every verb with a body, produced by buildWritePayload:
 //
 //   - every scalar the aggregate owns lands COLUMN-KEYED at the TOP level:
 //     the root/role fields ∪ the sibling fields ∪ the shared-base business
@@ -31,7 +31,7 @@ import (
 // updated_at (an absent key is untouched by the consumer's $set, so the
 // document keeps its original created_at); ARCHIVED carries the soft-delete
 // stamp; UNARCHIVED an explicit null. DELETED does not come through here —
-// buildDeletePayloadV2 keeps the historical structural keys and only ADDS.
+// buildDeletePayload keeps the historical structural keys and only ADDS.
 const (
 	payloadKeyIDs          = "_ids"
 	payloadKeyChildren     = "_children"
@@ -70,12 +70,12 @@ func (m outboxMeta) idsBlock() map[string]any {
 	return ids
 }
 
-// buildWritePayloadV2 assembles the v2 payload for the body verbs
+// buildWritePayload assembles the payload for the body verbs
 // (INSERTED / UPDATED / ARCHIVED / UNARCHIVED). rootFields is the verb's bound
 // column→value map for the root/role table; src is the entity value the
 // sibling and shared-base fields read from; root is the aggregate (nil for a
 // flat entity); now is the operation stamp the DML bound.
-func buildWritePayloadV2(
+func buildWritePayload(
 	schema *TableSchema,
 	src domain.Entity,
 	root *domain.AggregateRoot,
@@ -236,11 +236,11 @@ func childOpName(op domain.AggregateItemOp, softVerb, fromBase bool, child *Tabl
 	}
 }
 
-// buildDeletePayloadV2 assembles the DELETED payload: the historical
+// buildDeletePayload assembles the DELETED payload: the historical
 // structural keys (the PK under its physical column name + the shared-base FK
 // — consumers depend on them, they only GROW) plus the "_ids" block with the
 // purge flag.
-func buildDeletePayloadV2(schema *TableSchema, src domain.Entity, id string, meta outboxMeta) domain.Fields {
+func buildDeletePayload(schema *TableSchema, src domain.Entity, id string, meta outboxMeta) domain.Fields {
 	keys := deleteKeysPayload(schema, src, id)
 	keys[payloadKeyIDs] = meta.idsBlock()
 	return keys
@@ -290,10 +290,16 @@ func outboxMetaFor(ctx context.Context, tx WriteTx, d Dialect, schema *TableSche
 }
 
 // fillBaseMeta resolves the shared-base half of the structural identity —
-// the deterministic base id + the base's revision (read in-TX, after this
-// operation's base statements ran). A no-op when the schema declares no
-// shared base or the natural key is unreadable (payload assembly never
-// vetoes a write the verb allows).
+// the deterministic base id + the base's revision. Before reading, it ADVANCES
+// the base revision (bumpBaseRevision): every caller of this helper is a role
+// verb that did NOT otherwise write the base row (role archive/unarchive
+// without a base transition, batch role ops, a batch role insert), and the
+// base revision must move on EVERY identity-touching write so the read side
+// can order compositions of the identity's closure. The verbs that upsert the
+// base themselves (insertWithBase/updateWithBase) bump inside that statement
+// and never come through here. A no-op when the schema declares no shared base
+// or the natural key is unreadable (payload assembly never vetoes a write the
+// verb allows).
 func fillBaseMeta(ctx context.Context, tx WriteTx, d Dialect, schema *TableSchema, src domain.Entity, meta *outboxMeta) error {
 	base, _, ok := schema.SharedBaseRef()
 	if !ok {
@@ -304,6 +310,9 @@ func fillBaseMeta(ctx context.Context, tx WriteTx, d Dialect, schema *TableSchem
 		return nil
 	}
 	meta.BaseID = deterministicBaseID(nk)
+	if err := bumpBaseRevision(ctx, tx, d, base, meta.BaseID); err != nil {
+		return err
+	}
 	rev, err := readBaseRevision(ctx, tx, d, base, meta.BaseID)
 	if err != nil {
 		return err

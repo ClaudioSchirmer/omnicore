@@ -55,7 +55,7 @@ func (b *BaseEngine) insertAggregate(ctx persistence.RequestContext, entity doma
 		return domain.WriteResult{}, err
 	}
 	if err := WriteOutbox(ctx, tx, schema.Table(), "INSERTED", id,
-		buildWritePayloadV2(schema, src, root, "INSERTED", now, rootFields, outboxMeta{ID: id, Revision: 1})); err != nil {
+		buildWritePayload(schema, src, root, "INSERTED", now, rootFields, outboxMeta{ID: id, Revision: 1})); err != nil {
 		return domain.WriteResult{}, err
 	}
 	ab := b.BuildAudit(func() audit.AuditEvent {
@@ -106,7 +106,7 @@ func (b *BaseEngine) updateAggregate(ctx persistence.RequestContext, entity doma
 		return domain.WriteResult{}, err
 	}
 	if err := WriteOutbox(ctx, tx, schema.Table(), "UPDATED", entity.ID().Value(),
-		buildWritePayloadV2(schema, src, root, "UPDATED", now, rootFields, meta)); err != nil {
+		buildWritePayload(schema, src, root, "UPDATED", now, rootFields, meta)); err != nil {
 		return domain.WriteResult{}, err
 	}
 	ab := b.BuildAudit(func() audit.AuditEvent {
@@ -201,6 +201,17 @@ func (b *BaseEngine) hardDelete(
 	if err := deleteSiblings(ctx, tx, d, schema, id); err != nil {
 		return err
 	}
+	// The row's LAST revision is read before the DELETE removes it: the DELETED
+	// payload stamps it as _ids.revision, and the read side writes it into the
+	// document tombstone — the guard that stops a zombie consumer's older upsert
+	// from resurrecting the document after this delete projects. Any event this
+	// aggregate ever produced carries a revision <= this value.
+	var ownRev int64
+	if rc := schema.RevisionColumn(); rc != "" {
+		if ownRev, err = readRevision(ctx, tx, d, schema.Table(), rc, schema.PKColumn(), id); err != nil {
+			return err
+		}
+	}
 	if err := tx.Exec(ctx, deleteSQL(d, schema.Table(), schema.PKColumn()), d.EncodeArg(domain.NewID(id))); err != nil {
 		return err
 	}
@@ -212,18 +223,26 @@ func (b *BaseEngine) hardDelete(
 	if err != nil {
 		return err
 	}
-	meta := outboxMeta{ID: id, BasePurged: basePurged}
+	meta := outboxMeta{ID: id, Revision: ownRev, BasePurged: basePurged}
 	if base, _, ok := schema.SharedBaseRef(); ok {
 		if _, nk := sharedBaseValues(base, src); nk != "" {
 			meta.BaseID = deterministicBaseID(nk)
 			if !basePurged {
+				// A role hard-delete is an identity-touching write (the remnant
+				// pick / segment of every SharedBaseView changes), so the
+				// base revision advances even when the convergence itself was a
+				// no-op on the base row (KeepOrphan, still-referenced, no
+				// soft-delete). The purge branch is exempt — the base row is gone.
+				if err = bumpBaseRevision(ctx, tx, d, base, meta.BaseID); err != nil {
+					return err
+				}
 				if meta.BaseRevision, err = readBaseRevision(ctx, tx, d, base, meta.BaseID); err != nil {
 					return err
 				}
 			}
 		}
 	}
-	if err := WriteOutbox(ctx, tx, schema.Table(), "DELETED", id, buildDeletePayloadV2(schema, src, id, meta)); err != nil {
+	if err := WriteOutbox(ctx, tx, schema.Table(), "DELETED", id, buildDeletePayload(schema, src, id, meta)); err != nil {
 		return err
 	}
 	ab := b.BuildAudit(buildEvent, evs)
@@ -332,7 +351,7 @@ func (b *BaseEngine) softWriteAggregate(
 		return err
 	}
 	if err := WriteOutbox(ctx, tx, schema.Table(), eventType, id,
-		buildWritePayloadV2(schema, src, root, eventType, now, schema.WriteFields(src), meta)); err != nil {
+		buildWritePayload(schema, src, root, eventType, now, schema.WriteFields(src), meta)); err != nil {
 		return err
 	}
 	ab := b.BuildAudit(buildEvent, evs)

@@ -569,15 +569,32 @@ func OrdersView() *query.ViewDefinition {
     <strong><code>Revision(col)</code> is mandatory on EVERY root schema — the last-writer-wins token of the read
     side.</strong> Declare it on every root <code>NewTableSchema</code> (and on every shared base, below); a repository
     attach without it is a boot failure. Siblings and aggregate children declare none — their rows are guarded by the
-    owner's token. For the shared base specifically: a
-    framework-managed BIGINT the write path initializes to 1 on the identity's creation and increments
-    (<code>revision = revision + 1</code>) on every statement that touches the base row — the shared-field upsert and
-    the lifecycle convergence — <em>under the base row's lock</em>. Concurrent role writes of one identity therefore
-    serialize in real relational commit order, and the value (carried on the outbox payload as
-    <code>_ids.base_revision</code>) deterministically orders every read-model write of base data: the last writer to
-    enter the base wins, regardless of consumer latency, worker interleaving or redelivery. Attaching a base without
-    <code>Revision</code> is a boot failure. DDL: <code>revision BIGINT NOT NULL DEFAULT 0</code> (the framework never
-    reads the DEFAULT — it always binds/increments explicitly).
+    owner's token. For the shared base specifically: a framework-managed BIGINT <strong>advanced by every
+    write that touches the identity</strong> — the write path initializes it to 1 on the identity's creation and increments
+    (<code>revision = revision + 1</code>) <em>under the base row's lock</em> on <strong>EVERY write that touches the
+    identity</strong>: the shared-field upsert, the lifecycle convergence, a role's archive/unarchive even without a
+    base transition, a role's hard-delete (except the purge — the row is gone) and the batch role verbs. Concurrent
+    writes of one identity therefore serialize in real relational commit order, and the value (carried on the outbox
+    payload as <code>_ids.base_revision</code>) totally orders the identity's closure — shared scalars, base children,
+    the SharedBaseView segment pick and the role rows themselves — so every read-model write of identity data is
+    deterministically last-writer-wins, regardless of consumer latency, worker interleaving, pod count or redelivery.
+    Attaching a base without <code>Revision</code> is a boot failure. DDL:
+    <code>revision BIGINT NOT NULL DEFAULT 0</code> (the framework never reads the DEFAULT — it always
+    binds/increments explicitly).
+</p>
+<p>
+    <strong>Every projection write is guarded by these tokens — including consult recomposes, and including
+    deletes.</strong> The payload-direct pipeline, the shared-identity fan-out, every consult-composed write
+    (SharedBaseView documents, views with external embeds, the base-event fan-out) and the rebuild/verify backfill all
+    apply as revision-guarded pipelines: a writer that read earlier but lands later is a no-op, never a lost update.
+    Absence is guarded too: a DELETED event records the row's last revision as a <em>tombstone</em> in the
+    <code>omnicore_projection_state</code> registry before a guarded delete, and every document-creating upsert
+    re-checks it after writing — a zombie consumer's older upsert racing a delete removes its own write instead of
+    resurrecting the document. The same registry carries the base-revision handshake that heals a role document born
+    concurrently with a fan-out that could not see it (the fan-out stamps the clock before probing; the newborn
+    document's writer re-checks after writing and repairs by one guarded consult when a newer clock proves a fan-out
+    already passed). Tombstones expire after 24&nbsp;h (TTL index, provisioned at SyncEngine start); base-revision
+    records live for the identity's lifetime and are dropped by the purge.
 </p>
 <pre><code>var person = core.NewSharedBase("person").
     PK("id").                                      // the deterministic UUIDv5 lands here
@@ -848,7 +865,20 @@ func StudentSchema() *core.TableSchema {
         inside its segment; a role's own children nest inside it, keyed on the role row's own PK.</li>
 </ul>
 
-<h4>Role selection — deterministic under separate-FK multiplicity</h4>
+<h4>Role selection — the identity's current specialization</h4>
+<div class="box warn">
+    <strong>A role segment is ONE specialization, never a list — it follows the DOMAIN, not the relational rows.</strong>
+    A <code>SharedBaseView</code> models a party-role: an identity that <em>plays</em> a role. Each role segment therefore
+    holds exactly one sub-document — the identity's <strong>current</strong> representative for that role: the
+    <strong>active</strong> row if one exists, otherwise the <strong>most recently deactivated (archived)</strong> one.
+    This holds <strong>regardless of the link model</strong> — whether the role links through a separate FK
+    (<code>SharedBase(base, "person_id")</code>, which may accumulate archived remnants) or shares the base's id as its
+    own PK (<code>SharedBase(base, "id")</code>, capped at a single row). The relational table may hold many role rows for
+    one identity; the projected document still shows the one current specialization.
+    <strong>Need the identity plus a LIST of N role rows instead?</strong> Keep this write model and add a read-time
+    <a href="#query-side">ComposedView</a> that <code>LinkMany</code>s the role's own view onto the person by its FK — it
+    yields the full list at read time, without changing the SharedBase model.
+</div>
 <p>
     Under the separate-FK model with active-only uniqueness (see the two DDL uniqueness contracts above), an identity may carry archived role remnants NEXT TO one
     active row. The composer picks <strong>the row that represents the specialization's current
@@ -876,12 +906,11 @@ func StudentSchema() *core.TableSchema {
         "drop the document when the BASE archives" — and archived role rows stop composing at all.</li>
     <li><strong>Role events recompose the person document.</strong> The SyncEngine subscribes to every
         role table's topic (mandatory: a role's ARCHIVE/UNARCHIVE emits only the role event — the base
-        convergence is SQL without its own outbox row). The base id resolves per link model: shared-PK
-        → the event's <code>aggregate_id</code> IS the base id; separate-FK → the role row is
-        consulted, except on <code>DELETED</code>, where the row is gone and the id comes from the
-        event payload's structural keys (the write side records <code>{pk, shared-base fk}</code> on
-        every role DELETE for exactly this moment). The payload is a routing hint only — state is
-        always re-read from the relational source.</li>
+        convergence is SQL without its own outbox row). The base id it recomposes for comes straight
+        from the event payload's <code>_ids.base_id</code> — the write side stamps it on every role
+        event, so the resolution touches no database. The SharedBaseView document is then recomposed
+        from the relational source (the base row plus its role rows): the cross-row archived-remnant
+        pick is why this view keeps the composer instead of the payload-direct projection.</li>
     <li><strong>Purge convergence.</strong> When the last role's DELETE also purges the identity
         (<code>DeleteWhenUnreferenced</code>), the recompose finds no base row and removes the person
         document.</li>

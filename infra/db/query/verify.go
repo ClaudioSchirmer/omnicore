@@ -128,8 +128,10 @@ func (s *SyncEngine) streamSourceIDs(ctx context.Context, view *ViewDefinition, 
 	return rows.Err()
 }
 
-// recomposeInto composes the given ids from the source and bulk-upserts the
-// non-nil results into target. Used by verify's forward pass to fill a gap.
+// recomposeInto composes the given ids from the source and applies the non-nil
+// results into target as GUARDED pipelines — the same discipline as the
+// backfill batches (a verify repair racing a fresher dual-applied write must
+// not regress it). Used by verify's forward pass to fill a gap.
 func (s *SyncEngine) recomposeInto(ctx context.Context, view *ViewDefinition, target PhysicalCollection, ids []string) error {
 	composed, err := s.composer.ComposeBatch(ctx, view, ids)
 	if err != nil {
@@ -139,11 +141,11 @@ func (s *SyncEngine) recomposeInto(ctx context.Context, view *ViewDefinition, ta
 		return nil
 	}
 	pkCol := view.schema.PKColumn()
-	docs := make([]IdentifiedDocument, 0, len(composed))
+	items := make([]IdentifiedStages, 0, len(composed))
 	for _, doc := range composed {
-		docs = append(docs, IdentifiedDocument{ID: fmt.Sprintf("%v", doc[pkCol]), Doc: doc})
+		items = append(items, IdentifiedStages{ID: fmt.Sprintf("%v", doc[pkCol]), Stages: consultGuardedStages(view, doc)})
 	}
-	return s.mongo.BulkUpsert(ctx, target, docs)
+	return s.mongo.BulkApplyProjection(ctx, target, items)
 }
 
 // verifyValueSample recomposes a bounded sample of source ids and compares each

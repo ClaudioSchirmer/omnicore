@@ -52,6 +52,18 @@ func TestFilterForeignCollections_RegistryIsFrameworkOwned(t *testing.T) {
 	}
 }
 
+// The projection-state registry (base-revision records + tombstones) is materialized
+// by the SyncEngine itself on its first start — the guard must recognize it,
+// or every boot AFTER the first against the same database aborts on the
+// framework's own collection.
+func TestFilterForeignCollections_ProjectionStateIsFrameworkOwned(t *testing.T) {
+	views := []*query.ViewDefinition{query.View("users").Root("users")}
+	got := filterForeignCollections([]string{"users", query.ProjectionStateCollectionName}, views)
+	if len(got) != 0 {
+		t.Errorf("got %v, want [] (projection-state registry must be framework-owned)", got)
+	}
+}
+
 func TestFilterForeignCollections_SystemNamespaceIgnored(t *testing.T) {
 	views := []*query.ViewDefinition{query.View("users").Root("users")}
 	got := filterForeignCollections([]string{

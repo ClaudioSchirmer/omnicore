@@ -235,12 +235,12 @@ func (b *BaseEngine) insertWithBase(ctx persistence.RequestContext, entity domai
 	if err := b.reactivateBaseIfArchived(ctx, tx, d, schema, src); err != nil {
 		return domain.WriteResult{}, err
 	}
-	// ONE outbox row per write: the v2 payload is self-sufficient (role ∪ base ∪
+	// ONE outbox row per write: the payload is self-sufficient (role ∪ base ∪
 	// sibling fields, children with ops, structural ids + base revision), so the
 	// SyncEngine fans out to the OTHER roles' read models from THIS event — the
 	// historical empty base-table UPDATED row is no longer emitted.
 	if err := WriteOutbox(ctx, tx, schema.Table(), "INSERTED", id,
-		buildWritePayloadV2(schema, src, root, "INSERTED", now, roleFields,
+		buildWritePayload(schema, src, root, "INSERTED", now, roleFields,
 			outboxMeta{ID: id, Revision: 1, BaseID: baseID, BaseRevision: baseRev})); err != nil {
 		return domain.WriteResult{}, err
 	}
@@ -319,10 +319,10 @@ func (b *BaseEngine) updateWithBase(ctx persistence.RequestContext, entity domai
 			return domain.WriteResult{}, err
 		}
 	}
-	// ONE outbox row per write (see insertWithBase): the v2 payload carries the
+	// ONE outbox row per write (see insertWithBase): the payload carries the
 	// base id + revision, so the fan-out rides this event — no empty base row.
 	if err := WriteOutbox(ctx, tx, schema.Table(), "UPDATED", entity.ID().Value(),
-		buildWritePayloadV2(schema, src, root, "UPDATED", now, roleFields,
+		buildWritePayload(schema, src, root, "UPDATED", now, roleFields,
 			outboxMeta{ID: entity.ID().Value(), Revision: ownRev, BaseID: baseID, BaseRevision: baseRev})); err != nil {
 		return domain.WriteResult{}, err
 	}
@@ -449,8 +449,8 @@ func (b *BaseEngine) convergeBaseAfterHardDelete(
 				return AuditBundle{}, false, err
 			}
 			if purged {
-				// The purge row carries _ids too: EVERY framework-produced event is
-				// v2 (the consumer warns-and-skips anything without the block).
+				// The purge row carries _ids too — every framework-produced event
+				// does; the SyncEngine reads the base id from it to fan out.
 				if err := WriteOutbox(ctx, tx, base.Table(), "DELETED", baseID,
 					domain.Fields{
 						base.PKColumn(): domain.NewID(baseID),
@@ -757,6 +757,35 @@ func (b *BaseEngine) anyActiveRole(ctx context.Context, tx WriteTx, d Dialect, b
 // base row (purged) answers 0.
 func readBaseRevision(ctx context.Context, tx WriteTx, d Dialect, base *TableSchema, baseID string) (int64, error) {
 	return readRevision(ctx, tx, d, base.Table(), base.RevisionColumn(), base.PKColumn(), baseID)
+}
+
+// bumpBaseRevision advances the shared identity's revision — the IDENTITY
+// CLOCK — under the base row's lock. EVERY write that touches the identity
+// (any role verb, base upsert, lifecycle convergence, role hard-delete)
+// advances it, so the base revision totally orders the identity's closure: shared
+// scalars, base children, the remnant pick AND the role rows themselves (a
+// role-only write bumps it too). The read side depends on that totality — a
+// SharedBaseView composition, a fan-out and a consult repair are all guarded
+// by this value, and revisions of different rows are not comparable without
+// one shared counter.
+//
+// The verbs that already write the base row bump inside their own statement
+// (upsertSharedBase's warm UPDATE, cascadeBaseLifecycle); this helper covers
+// the verbs that otherwise would not touch the base at all (role archive /
+// unarchive without a base transition, role hard-delete, batch role ops).
+// Double-bumping in one TX (helper + a real transition) is harmless — the
+// revision must be monotone, not dense. Lock order stays role row → base row on
+// every verb that uses it (the role statement always precedes). A vanished
+// base row (purge) makes the UPDATE a 0-row no-op.
+func bumpBaseRevision(ctx context.Context, tx WriteTx, d Dialect, base *TableSchema, baseID string) error {
+	rc := base.RevisionColumn()
+	if rc == "" {
+		return nil // unreachable on the canonical path (Revision is boot-mandatory); defensive
+	}
+	rev := d.QuoteIdent(rc)
+	sql := "UPDATE " + d.QuoteIdent(base.Table()) + " SET " + rev + " = " + rev + " + 1" +
+		" WHERE " + d.QuoteIdent(base.PKColumn()) + " = " + d.Placeholder(1)
+	return tx.Exec(ctx, sql, d.EncodeArg(domain.NewID(baseID)))
 }
 
 // baseExists probes whether the shared base row already exists (the identity

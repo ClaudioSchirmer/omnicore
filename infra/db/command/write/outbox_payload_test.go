@@ -10,15 +10,15 @@ import (
 	"github.com/ClaudioSchirmer/omnicore/domain"
 )
 
-// White-box coverage of the v2 outbox payload builder: the one shape every
+// White-box coverage of the outbox payload builder: the one shape every
 // body verb emits — scalars flat at the top (root ∪ base ∪ siblings ∪ verb
 // timestamps), the _ids structural block, and the _children/_base_children
 // groups with per-item _op verbs.
 
-func TestBuildWritePayloadV2_FlatInsertShape(t *testing.T) {
+func TestBuildWritePayload_FlatInsertShape(t *testing.T) {
 	e := &builderTestEntity{Name: "alice"}
 	id := uuid.NewString()
-	p := buildWritePayloadV2(builderTestSchema, e, nil, "INSERTED", testNow,
+	p := buildWritePayload(builderTestSchema, e, nil, "INSERTED", testNow,
 		builderTestSchema.WriteFields(e), outboxMeta{ID: id})
 
 	if p["name"] != "alice" {
@@ -36,29 +36,29 @@ func TestBuildWritePayloadV2_FlatInsertShape(t *testing.T) {
 	}
 }
 
-func TestBuildWritePayloadV2_TimestampsByVerb(t *testing.T) {
+func TestBuildWritePayload_TimestampsByVerb(t *testing.T) {
 	schema := NewTableSchema[*builderTestEntity]("t").PK("id").Revision("revision").
 		Field("Name", "name").
 		SoftDelete("deleted_at").CreatedAt("created_at").UpdatedAt("updated_at")
 	e := &builderTestEntity{Name: "a"}
 	meta := outboxMeta{ID: uuid.NewString()}
 
-	ins := buildWritePayloadV2(schema, e, nil, "INSERTED", testNow, schema.WriteFields(e), meta)
+	ins := buildWritePayload(schema, e, nil, "INSERTED", testNow, schema.WriteFields(e), meta)
 	if ins["created_at"] != testNow || ins["updated_at"] != testNow {
 		t.Errorf("INSERTED must carry created_at + updated_at = the op stamp, got %v", ins)
 	}
-	upd := buildWritePayloadV2(schema, e, nil, "UPDATED", testNow, schema.WriteFields(e), meta)
+	upd := buildWritePayload(schema, e, nil, "UPDATED", testNow, schema.WriteFields(e), meta)
 	if _, has := upd["created_at"]; has {
 		t.Errorf("UPDATED must NOT carry created_at (absent key = untouched on $set), got %v", upd)
 	}
 	if upd["updated_at"] != testNow {
 		t.Errorf("UPDATED must carry updated_at = the op stamp, got %v", upd)
 	}
-	arc := buildWritePayloadV2(schema, e, nil, "ARCHIVED", testNow, schema.WriteFields(e), meta)
+	arc := buildWritePayload(schema, e, nil, "ARCHIVED", testNow, schema.WriteFields(e), meta)
 	if arc["deleted_at"] != testNow {
 		t.Errorf("ARCHIVED must carry the soft-delete stamp, got %v", arc)
 	}
-	una := buildWritePayloadV2(schema, e, nil, "UNARCHIVED", testNow, schema.WriteFields(e), meta)
+	una := buildWritePayload(schema, e, nil, "UNARCHIVED", testNow, schema.WriteFields(e), meta)
 	if v, has := una["deleted_at"]; !has || v != nil {
 		t.Errorf("UNARCHIVED must carry an explicit null soft-delete, got %v", una)
 	}
@@ -67,7 +67,7 @@ func TestBuildWritePayloadV2_TimestampsByVerb(t *testing.T) {
 // Shared-base role with one own child (insert) and one base child (noop, the
 // warm's Constructor): base business fields land flat, the separate FK is
 // injected, the children split into _children vs _base_children with their ops.
-func TestBuildWritePayloadV2_SharedBaseRoleWithChildren(t *testing.T) {
+func TestBuildWritePayload_SharedBaseRoleWithChildren(t *testing.T) {
 	schema := bcRoleSchema(true) // aluno + base pessoa with base-child endereco
 	e := &bcRole{Name: "Ana", Document: "D1", Matricula: "M1"}
 	addr := bcAddr{Street: "Main St"}
@@ -75,7 +75,7 @@ func TestBuildWritePayloadV2_SharedBaseRoleWithChildren(t *testing.T) {
 	root, _ := any(e).(domain.AggregateRootProvider)
 	baseID := deterministicBaseID("D1")
 
-	p := buildWritePayloadV2(schema, e, root.GetAggregateRoot(), "INSERTED", testNow,
+	p := buildWritePayload(schema, e, root.GetAggregateRoot(), "INSERTED", testNow,
 		schema.WriteFields(e), outboxMeta{ID: uuid.NewString(), BaseID: baseID, BaseRevision: 7})
 
 	if p["name"] != "Ana" || p["document"] != "D1" {
@@ -127,15 +127,15 @@ func TestChildOpName_Mapping(t *testing.T) {
 	}
 }
 
-func TestBuildDeletePayloadV2_KeysGrowOnly(t *testing.T) {
+func TestBuildDeletePayload_KeysGrowOnly(t *testing.T) {
 	e := &roleTestEntity{Name: "Ana", Document: "D1", Matricula: "M1"}
 	id := uuid.NewString()
 	baseID := deterministicBaseID("D1")
-	p := buildDeletePayloadV2(roleTestSchema(), e, id, outboxMeta{ID: id, BaseID: baseID, BaseRevision: 3, BasePurged: true})
+	p := buildDeletePayload(roleTestSchema(), e, id, outboxMeta{ID: id, BaseID: baseID, BaseRevision: 3, BasePurged: true})
 
 	// The historical structural keys survive untouched…
 	if p["id"] != domain.NewID(id) || p["pessoa_id"] != domain.NewID(baseID) {
-		t.Errorf("the legacy structural keys must survive, got %v", p)
+		t.Errorf("the structural keys must survive, got %v", p)
 	}
 	// …and the _ids block only ADDS.
 	ids := p["_ids"].(map[string]any)
@@ -192,19 +192,19 @@ func TestOutboxMetaFor_Branches(t *testing.T) {
 // state an absent key is indistinguishable from "untouched", so a PUT that
 // cleared the sibling row would otherwise leave stale values on the projected
 // document forever. The projector drops the keys when the whole group is null.
-func TestBuildWritePayloadV2_SiblingsMergeFlat(t *testing.T) {
+func TestBuildWritePayload_SiblingsMergeFlat(t *testing.T) {
 	sib := NewSiblingSchema[*sibTestEntity]("usuario_login").Field("UserName", "user_name")
 	schema := NewTableSchema[*sibTestEntity]("usuario").PK("id").Revision("revision").
 		Field("Name", "name").Sibling(sib)
 	un := "alice"
 	e := &sibTestEntity{Name: "Ana", UserName: &un}
-	p := buildWritePayloadV2(schema, e, nil, "INSERTED", testNow, schema.WriteFields(e), outboxMeta{ID: "u1"})
+	p := buildWritePayload(schema, e, nil, "INSERTED", testNow, schema.WriteFields(e), outboxMeta{ID: "u1"})
 	if got, _ := p["user_name"].(*string); got == nil || *got != "alice" {
 		t.Errorf("sibling fields must merge flat, got %v", p)
 	}
 	// All-nil sibling → columns PRESENT with null values (removed-row marker).
 	e2 := &sibTestEntity{Name: "Bo"}
-	p2 := buildWritePayloadV2(schema, e2, nil, "INSERTED", testNow, schema.WriteFields(e2), outboxMeta{ID: "u2"})
+	p2 := buildWritePayload(schema, e2, nil, "INSERTED", testNow, schema.WriteFields(e2), outboxMeta{ID: "u2"})
 	v, has := p2["user_name"]
 	if !has {
 		t.Fatalf("an all-nil sibling must still emit its columns (explicit nulls), got %v", p2)
@@ -216,7 +216,7 @@ func TestBuildWritePayloadV2_SiblingsMergeFlat(t *testing.T) {
 
 // Shape #4 on the wire: a child's SIBLING fields merge FLAT into the child's
 // payload item, exactly like the composed document renders them.
-func TestBuildWritePayloadV2_ChildSiblingFieldsFlat(t *testing.T) {
+func TestBuildWritePayload_ChildSiblingFieldsFlat(t *testing.T) {
 	child := NewTableSchema[bcAddr]("bc_addrs").PK("id").FK("root_id").
 		Field("Street", "street").
 		Sibling(NewSiblingSchema[bcAddr]("bc_addr_extras").Field("Street", "street_copy"))
@@ -228,7 +228,7 @@ func TestBuildWritePayloadV2_ChildSiblingFieldsFlat(t *testing.T) {
 	domain.AddAggregateChild(e, bcAddr{Street: "Main"})
 	root, _ := any(e).(domain.AggregateRootProvider)
 
-	p := buildWritePayloadV2(schema, e, root.GetAggregateRoot(), "INSERTED", testNow,
+	p := buildWritePayload(schema, e, root.GetAggregateRoot(), "INSERTED", testNow,
 		schema.WriteFields(e), outboxMeta{ID: "r1", Revision: 1, BaseID: deterministicBaseID("D9"), BaseRevision: 1})
 	items := p["_children"].(map[string]any)["bcAddr"].([]map[string]any)
 	if items[0]["street_copy"] != "Main" {

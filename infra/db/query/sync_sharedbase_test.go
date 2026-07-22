@@ -48,7 +48,7 @@ func TestProcess_SharedBaseFanOut(t *testing.T) {
 	s := NewSyncEngine(eng, newFakeMongo(coll), identityResolver, nil, "", []*ViewDefinition{view}, 1)
 
 	// A base change (aggregate_type = the base table) fans out to the role views.
-	if err := s.process(context.Background(), kafkaEvent{AggregateType: "pessoa", EventType: "UPDATED", AggregateID: "p1"}); err != nil {
+	if err := s.process(context.Background(), kafkaEvent{AggregateType: "pessoa", EventType: "UPDATED", AggregateID: "p1", Payload: []byte(`{"_ids":{"id":"p1"}}`)}); err != nil {
 		t.Fatalf("process base event: %v", err)
 	}
 	if len(coll.updates) != 1 {
@@ -64,7 +64,7 @@ func TestProcess_SharedBaseFanOut_NoReferencingDocs(t *testing.T) {
 	view := View("aluno").Root("aluno").Schema(fanOutRoleSchema()).Version(1)
 	s := NewSyncEngine(eng, newFakeMongo(coll), identityResolver, nil, "", []*ViewDefinition{view}, 1)
 
-	if err := s.process(context.Background(), kafkaEvent{AggregateType: "pessoa", EventType: "UPDATED", AggregateID: "p1"}); err != nil {
+	if err := s.process(context.Background(), kafkaEvent{AggregateType: "pessoa", EventType: "UPDATED", AggregateID: "p1", Payload: []byte(`{"_ids":{"id":"p1"}}`)}); err != nil {
 		t.Fatalf("process base event: %v", err)
 	}
 	if len(coll.updates) != 0 || len(coll.deletes) != 0 {
@@ -83,7 +83,8 @@ func TestProcess_SharedBaseFanOut_VanishedRoleDeleted(t *testing.T) {
 	view := View("aluno").Root("aluno").Schema(fanOutRoleSchema()).Version(1)
 	s := NewSyncEngine(eng, newFakeMongo(coll), identityResolver, nil, "", []*ViewDefinition{view}, 1)
 
-	if err := s.process(context.Background(), kafkaEvent{AggregateType: "pessoa", EventType: "DELETED", AggregateID: "p1"}); err != nil {
+	if err := s.process(context.Background(), kafkaEvent{AggregateType: "pessoa", EventType: "DELETED", AggregateID: "p1",
+		Payload: []byte(`{"_ids":{"id":"p1","base_purged":true}}`)}); err != nil {
 		t.Fatalf("process base event: %v", err)
 	}
 	if len(coll.updates) != 0 {
@@ -103,7 +104,7 @@ func TestProcess_SharedBaseFanOut_Errors(t *testing.T) {
 		}
 		return nil, nil
 	}
-	event := kafkaEvent{AggregateType: "pessoa", EventType: "UPDATED", AggregateID: "p1"}
+	event := kafkaEvent{AggregateType: "pessoa", EventType: "UPDATED", AggregateID: "p1", Payload: []byte(`{"_ids":{"id":"p1"}}`)}
 
 	t.Run("findIDsError", func(t *testing.T) {
 		coll := &fakeColl{findErr: errFake}
@@ -129,7 +130,7 @@ func TestProcess_SharedBaseFanOut_Errors(t *testing.T) {
 	})
 }
 
-// A ROLE event carrying the v2 payload drives the SAME fan-out from its
+// A ROLE event carrying the payload drives the SAME fan-out from its
 // _ids.base_id — the empty base-table row no longer exists, so this is the
 // steady-state trigger. The role's own view recompose (byPGTable) runs too:
 // the fan-out targets a1 via the base id AND the direct route targets a1 via
@@ -160,9 +161,9 @@ func TestProcess_RoleEventFansOutViaPayloadIDs(t *testing.T) {
 	}
 }
 
-// An OLD role event (no _ids) skips the payload fan-out silently — its paired
-// base-table row from the old producer drives the fan-out instead.
-func TestProcess_RoleEventWithoutIDs_SkipsPayloadFanOut(t *testing.T) {
+// A role event whose payload lacks the _ids block is skipped entirely — no
+// fan-out, no projection (a corrupt or foreign payload, never a framework one).
+func TestProcess_RoleEventWithoutIDs_Skipped(t *testing.T) {
 	coll := &fakeColl{docs: []any{map[string]any{"_id": "a1"}}}
 	eng := composerEngine(func(sql string, args []any) ([]map[string]any, error) {
 		switch {
@@ -179,12 +180,11 @@ func TestProcess_RoleEventWithoutIDs_SkipsPayloadFanOut(t *testing.T) {
 	event := kafkaEvent{AggregateType: "aluno", EventType: "UPDATED", AggregateID: "a1",
 		Payload: []byte(`{"email":"a@x"}`)}
 	if err := s.process(context.Background(), event); err != nil {
-		t.Fatalf("process legacy role event: %v", err)
+		t.Fatalf("process: %v", err)
 	}
-	// A legacy (non-v2) event neither fans out nor projects — WARNING + skip;
-	// its paired base row (old producer) and the post-upgrade rebuild converge.
+	// A payload without _ids neither fans out nor projects — it is skipped.
 	if len(coll.updates) != 0 {
-		t.Errorf("a legacy role event must be skipped entirely, got %d upserts", len(coll.updates))
+		t.Errorf("a payload without _ids must be skipped entirely, got %d upserts", len(coll.updates))
 	}
 }
 

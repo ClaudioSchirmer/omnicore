@@ -104,14 +104,12 @@ func (s *SyncEngine) WithKafkaTracing(on bool) *SyncEngine {
 //   - aggregate_type, event_type → message.Headers
 //   - the outbox payload JSON → message.Value
 //
-// The v2 payload carries the event's STRUCTURAL IDENTITY in its "_ids" block
+// The payload carries the event's STRUCTURAL IDENTITY in its "_ids" block
 // (aggregate PK, shared-base id + revision, purge flag), so routing decisions
 // — which shared identity to fan out for, which person document a role
-// DELETED belongs to — read the payload and touch no database. The document
-// CONTENT still comes from the composer's re-read in this phase (the
-// payload-direct projection is the next phase); a payload without "_ids"
-// (pre-v2 backlog, the replay admin's synthetic events) simply skips the
-// payload-driven shortcuts and rides the legacy routes.
+// DELETED belongs to — read the payload and touch no database. Entity-rooted
+// views project their document straight from the payload; SharedBaseView and
+// embed views recompose through the composer.
 type kafkaEvent struct {
 	AggregateType string
 	EventType     string
@@ -123,12 +121,11 @@ type kafkaEvent struct {
 	Traceparent string
 	// Payload is the raw outbox payload (message.Value), parsed ONCE per event
 	// at the top of process (decodeRawPayload) and coerced per view from that
-	// shared map; only the consult-path resolveBaseID re-reads the _ids
-	// envelope on its own (see the type comment).
+	// shared map.
 	Payload []byte
 }
 
-// payloadIDs is the "_ids" block of a v2 outbox payload — the structural
+// payloadIDs is the "_ids" block of an outbox payload — the structural
 // identity the write side stamps on every event.
 type payloadIDs struct {
 	ID           string `json:"id"`
@@ -139,8 +136,7 @@ type payloadIDs struct {
 }
 
 // parsePayloadIDs extracts the "_ids" block. ok=false on an empty/malformed
-// payload or one without the block (pre-v2 backlog, replay events) — callers
-// fall back to their legacy route.
+// payload or one without the block.
 func parsePayloadIDs(payload []byte) (payloadIDs, bool) {
 	if len(payload) == 0 {
 		return payloadIDs{}, false
@@ -294,6 +290,12 @@ func (s *SyncEngine) run(ctx context.Context) {
 		return
 	}
 
+	// Provision the projection-state registry (tombstone TTL index). Failure
+	// degrades to tombstones that never expire — never a projection stop.
+	if err := s.mongo.EnsureProjectionState(ctx); err != nil {
+		log.Printf("sync engine: projection-state registry provisioning failed (tombstones will not expire): %v", err)
+	}
+
 	// StartFrom earliest preserves the prior kafka-go default (an unset
 	// StartOffset defaulted to FirstOffset): a fresh consumer group replays the
 	// outbox topics from the beginning to build the projection.
@@ -301,10 +303,10 @@ func (s *SyncEngine) run(ctx context.Context) {
 	// CommitInterval > 0 batches offset commits asynchronously on a ticker
 	// instead of a sync OffsetCommit RPC per message (which caps throughput at
 	// ~9 msg/s in local Docker because each commit roundtrip costs ~100 ms).
-	// Safe under at-least-once: the composer re-reads current state from the
-	// relational backend on each message and mongo.Upsert keyed by _id is
-	// idempotent, so reprocessing the last <=1s window after a consumer crash
-	// converges to the same Mongo state.
+	// Safe under at-least-once: each event projects from its self-sufficient
+	// payload and the Mongo write keyed by _id is idempotent (the revision
+	// guards reject a stale replay), so reprocessing the last <=1s window after
+	// a consumer crash converges to the same Mongo state.
 	sub, err := s.sub.Subscribe(ctx, transport.SubscribeConfig{
 		Topics:         s.topics,
 		GroupID:        s.groupID,
@@ -395,21 +397,34 @@ func (s *SyncEngine) applyUpsert(ctx context.Context, viewName, id string, doc D
 	return nil
 }
 
-// applyConsultUpsert writes a consult-composed document. A view without
-// embeds has a single writer family per document, so the full-document Upsert
-// stands. A view WITH embeds shares its documents with the recompose-ripple
-// (UpstreamSubscriber): the embed segments composed here may be staler than a
-// concurrent ripple, so the write claims only the non-embed fields and leaves
-// the embed segments to their owner (see fieldOwnershipStages).
+// applyConsultUpsert writes a consult-composed document as ONE revision-guarded
+// pipeline (consultGuardedStages): own data behind the document's _revision,
+// shared-base data behind _base_revision (a SharedBaseView document is a single
+// base-revision scope), embed segments only on document creation (the
+// recompose-ripple owns them on an existing document — the fieldOwnershipStages
+// rule, now composed WITH the guards). A consult that read the relational
+// earlier but reaches the store later than a fresher writer is a no-op instead
+// of a lost-update: the composed document's data is always at least as fresh as
+// its watermark (the composer reads the root/base row FIRST), so the guard can
+// only suppress stale writes, never fresh ones. After the write, the document
+// tombstone handshake runs for entity-rooted views (a consult racing a DELETED
+// must not leave a resurrected document behind).
 func (s *SyncEngine) applyConsultUpsert(ctx context.Context, view *ViewDefinition, id string, doc Document) error {
-	if len(view.embeds) == 0 {
-		return s.applyUpsert(ctx, view.name, id, doc)
+	stages := consultGuardedStages(view, doc)
+	if len(stages) == 0 {
+		return nil
 	}
-	stages := fieldOwnershipStages(doc, schemaPK(view.schema), embedFieldSet(view.embeds), false)
 	if err := s.applyProjection(ctx, view.name, id, stages, true); err != nil {
 		return err
 	}
-	repairDanglingOneToOne(ctx, s.mongo, s.resolver, s.eng, s.composer, view, id, doc)
+	if len(view.embeds) > 0 {
+		repairDanglingOneToOne(ctx, s.mongo, s.resolver, s.eng, s.composer, view, id, doc)
+	}
+	if !view.isSharedBaseView {
+		if err := s.checkTombstone(ctx, view.name, id, watermarkOf(doc[docRevisionField])); err != nil {
+			return err
+		}
+	}
 	return nil
 }
 
@@ -437,7 +452,28 @@ func (s *SyncEngine) applyProjection(ctx context.Context, viewName, id string, s
 
 // applyDelete removes the document from the active slot and, during a rebuild,
 // from the shadow slot too, with the same dual-apply discipline as applyUpsert.
-func (s *SyncEngine) applyDelete(ctx context.Context, viewName, id string) error {
+//
+// rev > 0 is the deleted row's LAST revision (the DELETED payload's
+// _ids.revision): the delete becomes the full tombstone handshake — record the
+// tombstone FIRST, then delete GUARDED (a document a fresher writer already
+// advanced past rev survives; the zombie upsert that resurrects one after this
+// delete finds the tombstone on its own post-write check and removes itself —
+// one of the two sides always fires, by store write order). rev == 0 is a
+// consult-observed vanish (the composed row is gone): the delete stays
+// unconditional — the row's own DELETED event carries the durable tombstone.
+func (s *SyncEngine) applyDelete(ctx context.Context, viewName, id string, rev int64) error {
+	if rev > 0 {
+		if err := s.stampTombstone(ctx, viewName, id, rev); err != nil {
+			return err
+		}
+		if err := s.mongo.DeleteGuarded(ctx, s.resolver.Active(viewName), id, rev); err != nil {
+			return err
+		}
+		if shadow, on := s.resolver.ShadowActive(viewName); on {
+			s.dualApply(ctx, viewName, func() error { return s.mongo.DeleteGuarded(ctx, shadow, id, rev) })
+		}
+		return nil
+	}
 	if err := s.mongo.Delete(ctx, s.resolver.Active(viewName), id); err != nil {
 		return err
 	}
@@ -494,32 +530,54 @@ func (s *SyncEngine) process(ctx context.Context, event kafkaEvent) error {
 
 	// The payload is parsed ONCE per event; every consumer below (the payload
 	// fan-out, the per-view payload-direct projection) coerces its typed input
-	// over this shared map — never a second unmarshal of the same bytes.
-	// rawOK=false marks a non-v2 event (pre-v2 backlog, replay rows).
-	raw, rawOK := decodeRawPayload(event.Payload)
+	// over this shared map — never a second unmarshal of the same bytes. A
+	// payload that does not decode (corrupt or truncated) is skipped: every
+	// framework event carries a well-formed payload with its _ids block.
+	raw, ok := decodeRawPayload(event.Payload)
+	if !ok {
+		log.Printf("sync engine: undecodable payload on %s %s (id=%s), skipping",
+			event.AggregateType, event.EventType, event.AggregateID)
+		return nil
+	}
+
+	ids := rawPayloadIDs(raw)
 
 	// A SharedBase change fans out: recompose every role view's document that
 	// references the changed identity. Two triggers converge here:
-	//   - a BASE-table event (pre-v2 backlog rows, the purge DELETED): the
-	//     event's aggregate_id IS the base id;
-	//   - a ROLE-table event carrying the v2 payload: the write side stamps
-	//     the base id in _ids.base_id, so the fan-out rides the role event
-	//     itself — the empty base-table UPDATED row no longer exists. An old
-	//     role event without _ids skips silently: its paired base row (the old
-	//     producer emitted both) drives the fan-out instead.
-	// During a mixed-version rollout both may fire for one write — the
-	// recompose is idempotent, so the duplicate is harmless.
+	//   - a BASE-table event (the purge DELETED): the event's aggregate_id IS
+	//     the base id;
+	//   - a ROLE-table event: the write side stamps the base id in
+	//     _ids.base_id, so the fan-out rides the role event itself — there is
+	//     no empty base-table row.
+	// Both may fire across one identity's writes — the recompose is idempotent,
+	// so a duplicate is harmless.
 	if baseViews, ok := s.index.bySharedBase[event.AggregateType]; ok {
 		if err := s.fanOutSharedBase(ctx, event.AggregateID, baseViews); err != nil {
 			return err
 		}
+		// The purge destroyed the identity: drop its registry base-revision record.
+		// (A zombie role event may recreate it later — inert garbage, no role
+		// document exists to pull from it; the TTL-less base-revision record is bounded
+		// by the purge volume.)
+		if event.EventType == "DELETED" && ids.BasePurged {
+			if err := s.dropBaseRevision(ctx, event.AggregateType, event.AggregateID); err != nil {
+				return err
+			}
+		}
 	}
-	if baseTable, ok := s.index.baseOfRole[event.AggregateType]; ok {
-		if baseViews, ok := s.index.bySharedBase[baseTable]; ok && rawOK {
-			if ids := rawPayloadIDs(raw); ids.BaseID != "" {
-				if err := s.fanOutSharedBasePayload(ctx, raw, ids.BaseID, baseViews); err != nil {
-					return err
-				}
+	roleBaseTable, isRole := s.index.baseOfRole[event.AggregateType]
+	if isRole && ids.BaseID != "" {
+		// HANDSHAKE, push side: the base revision is stamped into the registry
+		// BEFORE the fan-out probes for target documents. If the probe misses a
+		// document still being born, that document's writer — whose own write
+		// necessarily enters the store after our probe, hence after this stamp —
+		// finds the newer base revision on its post-write pull check and repairs.
+		if err := s.stampBaseRevision(ctx, roleBaseTable, ids.BaseID, ids.BaseRevision); err != nil {
+			return err
+		}
+		if baseViews, ok := s.index.bySharedBase[roleBaseTable]; ok {
+			if err := s.fanOutSharedBasePayload(ctx, raw, ids.BaseID, baseViews); err != nil {
+				return err
 			}
 		}
 	}
@@ -545,35 +603,35 @@ func (s *SyncEngine) process(ctx context.Context, event kafkaEvent) error {
 		// that pass IncludeArchived=true can read it. Views that opt in via
 		// ViewDefinition.DeleteOnArchive() instead remove the document on
 		// ARCHIVED. An UNARCHIVED event always hits the projection branch.
+		// The event's own revision (the row's last) rides along as the
+		// tombstone — the guard that stops a zombie upsert from resurrecting
+		// the document after it is gone.
 		if shouldDeleteFromView(event.EventType, view.deleteOnArchive) {
-			if err := s.applyDelete(ctx, view.name, event.AggregateID); err != nil {
+			if err := s.applyDelete(ctx, view.name, event.AggregateID, ids.Revision); err != nil {
 				return err
 			}
 			continue
 		}
-		// PAYLOAD-DIRECT projection — the day-to-day path: the v2 payload IS the
+		// PAYLOAD-DIRECT projection — the day-to-day path: the payload IS the
 		// state, applied as one atomic pipeline (typed decode + revision-guarded
-		// base fields + surgical child edits). No relational read.
+		// base fields + surgical child edits). No relational read. The
+		// post-write tombstone check closes the delete race (a zombie write
+		// after DELETED removes itself).
 		//
-		// The composer (consult) remains for exactly three cases:
+		// The composer (consult) remains for exactly two cases:
 		//   - SharedBaseView documents (base-rooted; the archived-remnant
 		//     segment pick is cross-row — recomposeBaseRooted owns them);
 		//   - views with external EMBEDS (the embed enrichment on first
-		//     composition still reads the local Mongo mirror — next step);
-		//   - a non-v2 payload, which per the maintainer's decision is a
-		//     WARNING + SKIP (pre-v2 backlog / replay events; the post-upgrade
-		//     rebuild converges them) — never a silent re-read.
+		//     composition still reads the local Mongo mirror).
 		if !view.isSharedBaseView && len(view.embeds) == 0 {
-			if !rawOK {
-				log.Printf("sync engine: WARNING — non-v2 payload on %s %s (id=%s), projection skipped (rebuild converges it)",
-					event.AggregateType, event.EventType, event.AggregateID)
-				continue
-			}
 			stages := buildProjectionStages(view.schema, coercePayloadEvent(view.schema, raw))
 			if len(stages) == 0 {
 				continue
 			}
 			if err := s.applyProjection(ctx, view.name, event.AggregateID, stages, true); err != nil {
+				return err
+			}
+			if err := s.checkTombstone(ctx, view.name, event.AggregateID, ids.Revision); err != nil {
 				return err
 			}
 			continue
@@ -587,6 +645,36 @@ func (s *SyncEngine) process(ctx context.Context, event kafkaEvent) error {
 		}
 		if err := s.applyConsultUpsert(ctx, view, event.AggregateID, doc); err != nil {
 			return err
+		}
+	}
+	// HANDSHAKE, pull side: a document this event just MATERIALIZED
+	// (INSERTED, or UNARCHIVED re-creating under DeleteOnArchive) may carry
+	// base state older than a fan-out that could not find it (the fan-out's
+	// FindIDsByField snapshot predates the document). The registry's base revision
+	// record proves it: when a newer base revision was pushed, repair by consult —
+	// the composed closure is read fresh from the relational and applied
+	// guarded, so the repair can never regress anything. The store's write
+	// order makes the two sides meet: if the fan-out's probe missed this
+	// document, this pull necessarily sees that fan-out's base-revision stamp.
+	if isRole && ids.BaseID != "" && ids.BaseRevision > 0 &&
+		(event.EventType == "INSERTED" || event.EventType == "UNARCHIVED") {
+		stamped, err := s.stampedBaseRevision(ctx, roleBaseTable, ids.BaseID)
+		if err != nil {
+			return err
+		}
+		if stamped > ids.BaseRevision {
+			for _, view := range views {
+				doc, err := s.composer.Compose(ctx, view, event.AggregateID)
+				if err != nil {
+					return err
+				}
+				if doc == nil {
+					continue
+				}
+				if err := s.applyConsultUpsert(ctx, view, event.AggregateID, doc); err != nil {
+					return err
+				}
+			}
 		}
 	}
 	return nil
@@ -636,7 +724,7 @@ func (s *SyncEngine) fanOutSharedBase(ctx context.Context, baseID string, baseVi
 			if _, ok := present[roleID]; ok {
 				continue
 			}
-			if err := s.applyDelete(ctx, view.name, roleID); err != nil {
+			if err := s.applyDelete(ctx, view.name, roleID, 0); err != nil {
 				return err
 			}
 		}
@@ -645,8 +733,8 @@ func (s *SyncEngine) fanOutSharedBase(ctx context.Context, baseID string, baseVi
 }
 
 // fanOutSharedBasePayload is the payload-direct shared-identity fan-out: on a
-// role event carrying the v2 payload it applies the revision-guarded base
-// fields + surgical base-children edits to every role document referencing the
+// role event it applies the revision-guarded base fields + surgical
+// base-children edits to every role document referencing the
 // identity — no relational read. The writer's own document receives the same
 // guarded stages on top of its full projection: idempotent by construction.
 // Vanished roles need no reconciliation here — their own DELETED events remove
@@ -655,14 +743,20 @@ func (s *SyncEngine) fanOutSharedBase(ctx context.Context, baseID string, baseVi
 // write time is a role deleted concurrently (the only way a snapshotted id can
 // be absent), and the projection applies with upsert=false — a no-op instead
 // of resurrecting a base-fields-only skeleton no future event could ever
-// clean. A role created concurrently loses nothing either: its document is not
-// in the snapshot, and its own INSERTED projection carries the same base
-// fields. The legacy base-event trigger (fanOutSharedBase) keeps the consult
-// recompose for pre-v2 backlog rows.
+// clean.
+//
+// A role document BORN concurrently is the one target this push can lose: the
+// snapshot cannot see a document whose INSERTED/UNARCHIVED projection has not
+// landed yet, and that document's own payload carries the base state of ITS
+// commit — possibly older than this event's. The registry handshake closes it:
+// the caller stamped this event's base revision BEFORE this probe, so the
+// late-born document's writer — whose store write necessarily follows the
+// probe that missed it — finds the newer base revision on its post-write pull check
+// and repairs by consult. The base-table trigger (fanOutSharedBase) handles a
+// base event (the purge DELETED) instead.
 //
 // raw is the event's payload parsed once by the caller (decodeRawPayload);
-// each view coerces its typed input over that shared map — no re-parse per
-// view, and no per-view "not v2" branch (the caller already proved the block).
+// each view coerces its typed input over that shared map — no re-parse per view.
 func (s *SyncEngine) fanOutSharedBasePayload(ctx context.Context, raw map[string]any, baseID string, baseViews []*ViewDefinition) error {
 	for _, view := range baseViews {
 		_, fkCol, ok := view.schema.SharedBaseRef()
@@ -695,22 +789,21 @@ func (s *SyncEngine) fanOutSharedBasePayload(ctx context.Context, raw map[string
 // unresolvable base id (a malformed DELETED payload — not an expected state)
 // logs and skips rather than failing the whole event.
 func (s *SyncEngine) recomposeBaseRooted(ctx context.Context, event kafkaEvent, routes []roleRoute) error {
+	// The base id is a property of the event (its payload's _ids.base_id), not
+	// of the route — resolve it once for every base-rooted view the role feeds.
+	baseID := resolveBaseID(event)
+	if baseID == "" {
+		log.Printf("sync engine: role event %s on %s: shared-base id unresolvable — skipping",
+			event.EventType, event.AggregateType)
+		return nil
+	}
 	for _, rt := range routes {
-		baseID, err := s.resolveBaseID(ctx, event, rt.role)
-		if err != nil {
-			return err
-		}
-		if baseID == "" {
-			log.Printf("sync engine: role event %s on %s: shared-base id unresolvable — skipping view %s",
-				event.EventType, event.AggregateType, rt.view.name)
-			continue
-		}
 		doc, err := s.composer.Compose(ctx, rt.view, baseID)
 		if err != nil {
 			return err
 		}
 		if doc == nil {
-			if err := s.applyDelete(ctx, rt.view.name, baseID); err != nil {
+			if err := s.applyDelete(ctx, rt.view.name, baseID, 0); err != nil {
 				return err
 			}
 			continue
@@ -722,57 +815,13 @@ func (s *SyncEngine) recomposeBaseRooted(ctx context.Context, event kafkaEvent, 
 	return nil
 }
 
-// resolveBaseID resolves the shared-base id a role event refers to. The v2
-// payload answers it directly (_ids.base_id — the write side stamps it on
-// EVERY role event), so the resolution is payload-first and touches no
-// database. The remaining branches serve the pre-v2 backlog:
-//
-//   - shared-PK (fk == role PK): the event's aggregate_id IS the base id.
-//   - separate-FK, event ≠ DELETED: the row exists — read the FK from the
-//     source. A row that vanished between the event and its processing yields
-//     "" (skip); the DELETED event that removed it follows on the same
-//     partition carrying the payload keys, so the document still converges.
-//   - separate-FK DELETED: read the FK from the legacy flat structural keys.
-func (s *SyncEngine) resolveBaseID(ctx context.Context, event kafkaEvent, r roleDef) (string, error) {
-	if ids, ok := parsePayloadIDs(event.Payload); ok && ids.BaseID != "" {
-		return ids.BaseID, nil
-	}
-	_, fkCol, ok := r.schema.SharedBaseRef()
-	if !ok {
-		return "", nil
-	}
-	if fkCol == r.schema.PKColumn() {
-		return event.AggregateID, nil
-	}
-	if event.EventType == "DELETED" {
-		return baseIDFromDeletePayload(event.Payload, fkCol), nil
-	}
-	row, err := s.composer.fetchRow(ctx, r.schema, r.schema.Table(), r.schema.PKColumn(), event.AggregateID, "", true)
-	if err != nil || row == nil {
-		return "", err
-	}
-	fk := row[fkCol]
-	if fk == nil {
-		return "", nil
-	}
-	return fmt.Sprintf("%v", fk), nil
-}
-
-// baseIDFromDeletePayload reads the shared-base FK from a role DELETED outbox
-// payload — the flat structural-keys map the write side records
-// ({pkCol: roleID, fkCol: baseID}). Returns "" on a missing/malformed payload.
-func baseIDFromDeletePayload(payload []byte, fkCol string) string {
-	if len(payload) == 0 {
-		return ""
-	}
-	var keys map[string]any
-	if err := json.Unmarshal(payload, &keys); err != nil {
-		return ""
-	}
-	if v, ok := keys[fkCol].(string); ok {
-		return v
-	}
-	return ""
+// resolveBaseID resolves the shared-base id a role event refers to, read
+// straight from the payload's _ids.base_id — the write side stamps it on every
+// role event, so the resolution touches no database. "" when the event carries
+// no base id.
+func resolveBaseID(event kafkaEvent) string {
+	ids, _ := parsePayloadIDs(event.Payload)
+	return ids.BaseID
 }
 
 // shouldDeleteFromView is the routing decision for read-side events. DELETED

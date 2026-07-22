@@ -241,7 +241,7 @@ func (s *TableSchema) ensureColumnFree(column, self string) {
 }
 
 // mustNotReservedColumn rejects a physical column name starting with "_": the
-// underscore prefix is the framework's reserved namespace on the wire — the v2
+// underscore prefix is the framework's reserved namespace on the wire — the
 // outbox payload carries its structural keys there (_ids, _children,
 // _base_children, _op), and Mongo itself owns _id. A user column in that
 // namespace would collide with the payload contract, so it is a boot failure at

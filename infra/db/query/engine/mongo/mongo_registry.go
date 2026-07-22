@@ -238,5 +238,9 @@ func listOtherServices(ctx context.Context, m *MongoDB, serviceName string) ([]s
 // framework reserves for its own use. Centralized here so a future
 // addition (telemetry buffer, lease table, …) only updates one place.
 func frameworkOwnedCollections() []string {
-	return []string{RegistryCollectionName}
+	// The projection-state registry (base-revision records + document tombstones) is
+	// materialized by the SyncEngine itself (EnsureProjectionState) — a
+	// framework-owned collection exactly like the service marker, never a
+	// foreign orphan.
+	return []string{RegistryCollectionName, query.ProjectionStateCollectionName}
 }
