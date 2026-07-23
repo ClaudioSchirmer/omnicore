@@ -61,6 +61,7 @@ func sbMySetup(t *testing.T) (*Engine, *sql.DB) {
 			id BINARY(16) PRIMARY KEY,
 			document VARCHAR(64) NOT NULL UNIQUE,
 			name VARCHAR(255) NOT NULL,
+			revision BIGINT NOT NULL DEFAULT 0,
 			deleted_at DATETIME NULL,
 			created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
 			updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
@@ -277,7 +278,8 @@ func TestMySQL_SharedBase_PurgeAndVeto(t *testing.T) {
 		`CREATE TABLE sbp_persons (
 			id BINARY(16) NOT NULL PRIMARY KEY,
 			document VARCHAR(64) NOT NULL UNIQUE,
-			name VARCHAR(255) NOT NULL
+			name VARCHAR(255) NOT NULL,
+			revision BIGINT NOT NULL DEFAULT 0
 		)`,
 		`CREATE TABLE sbp_students (
 			id BINARY(16) NOT NULL PRIMARY KEY,

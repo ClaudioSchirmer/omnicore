@@ -226,6 +226,7 @@ func setup(t *testing.T) (*Engine, *sql.DB) {
 			name NVARCHAR(255) NOT NULL,
 			email NVARCHAR(255) NOT NULL,
 			phone NVARCHAR(32) NULL,
+			revision BIGINT NOT NULL DEFAULT 0,
 			deleted_at DATETIME2(6) NULL,
 			created_at DATETIME2(6) NOT NULL,
 			updated_at DATETIME2(6) NOT NULL,
@@ -695,14 +696,14 @@ func TestSQLServerEngine_UniqueViolation(t *testing.T) {
 	eng, _ := setup(t)
 	ctx := ctxFor()
 
-	repo := &write.BaseRepository[*flatPerson]{
+	repo := (&write.BaseRepository[*flatPerson]{
 		Engine:      eng,
+		NewEntity:   func() *flatPerson { return &flatPerson{} },
 		ContextName: "Person",
 		Constraints: map[string]write.ConstraintBinding{
 			"uniq_email": {Notification: dupEmailNotification{}, Field: "email"},
 		},
-		Schema: flatSchema(),
-	}
+	}).WithSchema(flatSchema().Revision("revision"))
 	mk := func(name string) domain.Insertable {
 		ins, err := domain.GetInsertable(&flatPerson{Name: name, Email: "dup@x"}, nil, "GetInsertable")
 		if err != nil {

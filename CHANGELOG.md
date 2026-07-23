@@ -11,6 +11,22 @@ with `1.0.0`.
 
 ## [Unreleased]
 
+## [0.36.1] - 2026-07-23
+
+### Changed
+
+- **`BaseRepository.Schema` is now unexported — `WithSchema` is the only way to
+  bind a repository's TableSchema.** The field was a direct-assignment escape
+  hatch that bypassed the construction-time boot checks (PK, Revision,
+  aggregate depth, old-clone safety, `Modes()` ⟺ `SoftDelete`); an entity that
+  declared `ModeArchive`/`ModeUnarchive` without a `SoftDelete` column could
+  slip past the boot panic and fail only at the first archive write. Binding
+  now always runs the full validated path, so a misconfigured schema panics at
+  construction as intended. No production or example code set the field
+  directly (every repository already used `WithSchema`); the framework's own
+  engine integration tests that constructed a repository via the struct literal
+  were migrated to `WithSchema`.
+
 ## [0.36.0] - 2026-07-23
 
 ### Added

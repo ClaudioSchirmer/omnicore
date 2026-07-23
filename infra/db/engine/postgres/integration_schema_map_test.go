@@ -44,6 +44,7 @@ func (v schemaTag) BuildRules(string, domain.Service, *domain.Rules) {}
 func schemaPersonSchema() *core.TableSchema {
 	return core.NewTableSchema[*schemaPerson]("tb_people").
 		PK("person_pk").
+		Revision("revision").
 		Field("FullName", "full_name").
 		Field("Email", "mail").
 		SoftDelete("removed_at").
@@ -67,6 +68,7 @@ func createSchemaMapTables(t *testing.T, pg *Postgres) {
 		person_pk  UUID PRIMARY KEY DEFAULT gen_random_uuid(),
 		full_name  TEXT NOT NULL,
 		mail       TEXT NOT NULL,
+		revision   BIGINT NOT NULL DEFAULT 0,
 		removed_at TIMESTAMP,
 		created_at TIMESTAMP NOT NULL,
 		updated_at TIMESTAMP NOT NULL

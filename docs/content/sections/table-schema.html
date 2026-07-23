@@ -457,8 +457,9 @@ func OrdersView() *query.ViewDefinition {
     <code>BaseAggregateRepository.WithSchema</code> (aggregate) and <code>BaseRepository.WithSchema</code> (flat, non-aggregate)
     each run the type-anchored, PK-declared, aggregate-depth, old-clone safety, and <code>Modes()</code> ⟺ <code>SoftDelete</code> checks at construction (the
     aggregate path additionally runs the boundary-agreement check and threads the schema into the read loader). Calling
-    <code>WithSchema</code> also surfaces a nil <code>NewEntity</code> factory at construction. Assigning <code>r.Schema</code>
-    directly still works as the unchecked escape hatch — <code>WithSchema</code> is the validated canonical entry.</p>
+    <code>WithSchema</code> also surfaces a nil <code>NewEntity</code> factory at construction. <code>WithSchema</code> is the
+    <em>only</em> way to bind the schema — the field is unexported, so there is no direct-assignment path that bypasses
+    these checks.</p>
 
 <h3>Audit stays in the domain vocabulary</h3>
 <p>

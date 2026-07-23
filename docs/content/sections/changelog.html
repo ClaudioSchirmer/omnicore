@@ -12,6 +12,12 @@
         </ul>
     </div>
     <div class="release">
+        <div class="release-head"><span class="release-tag">v0.36.1</span><span class="release-date">July 23, 2026</span></div>
+        <ul>
+            <li><strong>Changed</strong> — <strong><code>BaseRepository.Schema</code> is now unexported — <code>WithSchema</code> is the only way to bind a repository's TableSchema.</strong> The field was a direct-assignment escape hatch that bypassed the construction-time boot checks (PK, Revision, aggregate depth, old-clone safety, <code>Modes()</code> ⟺ <code>SoftDelete</code>): an entity that declared <code>ModeArchive</code>/<code>ModeUnarchive</code> without a <code>SoftDelete</code> column could slip past the boot panic and fail only at the first archive write. Binding now always runs the full validated path, so a misconfigured schema panics at construction as intended. Every repository already used <code>WithSchema</code> (no production or example code set the field directly). See <a href="#table-schema">Table schema</a>.</li>
+        </ul>
+    </div>
+    <div class="release">
         <div class="release-head"><span class="release-tag">v0.36.0</span><span class="release-date">July 23, 2026</span></div>
         <ul>
             <li><strong>Added</strong> — <strong>Upstream-mirror soft-delete boot guard (§8.5) — a subscription <code>filter</code> that would strip the archive state now fails loud instead of silently.</strong> The <code>filter</code> on an <code>upstreamSubscriptions</code> entry is a string allowlist over the raw upstream payload and consults no schema, so an <code>ARCHIVED</code> event's soft-delete column (e.g. <code>deleted_at</code>) is dropped unless the <code>filter</code> lists it — leaving the local mirror unable to reflect the archive (archived rows look active forever). Boot now cross-checks each subscription against the soft-delete column declared on the external <code>FromSchema</code> embed(s) of its collection: a column DECLARED on the embed schema but OMITTED by a non-empty <code>filter</code> ABORTS the boot naming the offending subscription and column; a mirror whose embed schema declares no soft-delete column at all draws an ADVISORY log (the consumer often cannot know whether the upstream soft-deletes); an empty <code>filter</code> mirrors the full payload and always passes. See <a href="#table-schema">Table schema</a> (archive-aware external embeds) and <a href="#yaml-reference">the YAML reference</a>.</li>

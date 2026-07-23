@@ -55,9 +55,11 @@ func TestBaseAggregateRepository_WithSchemaThreadsBothSides(t *testing.T) {
 	bar := NewBaseAggregateRepository[*barTestEntity](nil, newBARTestEntity)
 	schema := NewTableSchema[*barTestEntity]("bars").PK("id").Revision("revision").SoftDelete("deleted_at")
 	bar.WithSchema(schema)
-	if bar.Schema != schema {
-		t.Error("WithSchema must set the write-side Schema")
-	}
+	// The write-side binding (BaseRepository.schema is unexported and set only
+	// via WithSchema) is asserted in the write package's
+	// TestBaseRepositoryWithSchema_Valid_SetsSchema; the aggregate WithSchema
+	// reaches it through r.BaseRepository.WithSchema(schema). Here we assert the
+	// half unique to the aggregate path: the SAME call threads the Loader.
 	if bar.Loader.schema != schema {
 		t.Error("WithSchema must thread the schema into the Loader")
 	}

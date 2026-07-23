@@ -267,11 +267,10 @@ func (erroringEngine) Insert(persistence.RequestContext, domain.Insertable, *Tab
 
 // A non-constraint engine error passes through mapErr raw.
 func TestBoundWriter_MapErrRawPassThrough(t *testing.T) {
-	repo := &BaseRepository[*builderTestEntity]{
+	repo := (&BaseRepository[*builderTestEntity]{
 		Engine:    erroringEngine{},
 		NewEntity: func() *builderTestEntity { return &builderTestEntity{} },
-		Schema:    builderTestSchema,
-	}
+	}).WithSchema(builderTestSchema)
 	w := repo.Scope(configuration.NewAppContextWithRandomID(configuration.LangENG))
 	ins, _ := domain.GetInsertable(&builderTestEntity{Name: "a", Email: "a@x"}, nil, "GetInsertable")
 	if _, err := w.Insert(ins); !errors.Is(err, errBoom) {
