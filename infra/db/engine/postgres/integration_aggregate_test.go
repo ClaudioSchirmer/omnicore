@@ -118,7 +118,7 @@ func TestPostgres_InsertAggregate_PersistsRootAndChildren(t *testing.T) {
 	}
 	var payload map[string]any
 	_ = json.Unmarshal(rows[0].Payload, &payload)
-	if _, ok := payload["children"].(map[string]any); !ok {
+	if _, ok := payload["_children"].(map[string]any); !ok {
 		t.Errorf("expected outbox payload to carry children block, got %v", payload)
 	}
 }
@@ -402,11 +402,10 @@ func TestBaseRepository_InsertUpdateArchiveUnarchiveDelete(t *testing.T) {
 	defer cleanup()
 	createFlatPersonsTable(t, pg)
 
-	repo := &write.BaseRepository[*flatPerson]{
+	repo := (&write.BaseRepository[*flatPerson]{
 		Engine:    pg,
 		NewEntity: func() *flatPerson { return &flatPerson{} },
-		Schema:    flatPersonSchema(),
-	}
+	}).WithSchema(flatPersonSchema().Revision("revision"))
 
 	// Insert via repo.
 	e := &flatPerson{Name: "R", Email: "r@x"}
@@ -468,18 +467,17 @@ func TestBaseRepository_ConstraintBindingMapsTo23505Notification(t *testing.T) {
 		t.Fatalf("create unique index: %v", err)
 	}
 
-	repo := &write.BaseRepository[*flatPerson]{
+	repo := (&write.BaseRepository[*flatPerson]{
 		Engine:      pg,
 		NewEntity:   func() *flatPerson { return &flatPerson{} },
 		ContextName: "Person",
-		Schema:      flatPersonSchema(),
 		Constraints: map[string]write.ConstraintBinding{
 			"persons_email_uq": {
 				Notification: domain.EntityAlreadyAddedNotification{},
 				Field:        "email",
 			},
 		},
-	}
+	}).WithSchema(flatPersonSchema().Revision("revision"))
 
 	e1 := &flatPerson{Name: "A", Email: "same@x"}
 	ins1, _ := domain.GetInsertable(e1, nil, "GetInsertable")
@@ -525,19 +523,19 @@ func TestBaseRepository_ConstraintCodeOtherThan23505ReturnsRaw(t *testing.T) {
 		email TEXT NOT NULL,
 		phone TEXT,
 		mandatory TEXT NOT NULL,
+		revision BIGINT NOT NULL DEFAULT 0,
 		deleted_at TIMESTAMP,
 		created_at TIMESTAMP NOT NULL DEFAULT NOW(),
 		updated_at TIMESTAMP NOT NULL DEFAULT NOW()
 	)`)
 
-	repo := &write.BaseRepository[*flatPerson]{
+	repo := (&write.BaseRepository[*flatPerson]{
 		Engine:    pg,
 		NewEntity: func() *flatPerson { return &flatPerson{} },
-		Schema:    flatPersonSchemaOn("flat_persons_nn"),
 		Constraints: map[string]write.ConstraintBinding{
 			"any_name": {Notification: domain.RequiredFieldNotification{}, Field: "x"},
 		},
-	}
+	}).WithSchema(flatPersonSchemaOn("flat_persons_nn").Revision("revision"))
 
 	ins, err := domain.GetInsertable(&flatPerson{Name: "X", Email: "x@x"}, nil, "GetInsertable")
 	if err != nil {

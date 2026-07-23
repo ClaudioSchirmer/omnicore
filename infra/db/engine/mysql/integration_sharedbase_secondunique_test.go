@@ -62,6 +62,7 @@ func sbEmailSetup(t *testing.T) (*Engine, *sql.DB) {
 			document VARCHAR(64) NOT NULL,
 			name VARCHAR(255) NOT NULL,
 			email VARCHAR(255) NOT NULL,
+			revision BIGINT NOT NULL DEFAULT 0,
 			deleted_at DATETIME NULL,
 			created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
 			updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,

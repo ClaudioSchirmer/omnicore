@@ -55,6 +55,7 @@ func createSharedBaseTables(t *testing.T, pg *Postgres) {
 		id UUID PRIMARY KEY,
 		document TEXT NOT NULL UNIQUE,
 		name TEXT NOT NULL,
+		revision BIGINT NOT NULL DEFAULT 0,
 		deleted_at TIMESTAMP,
 		created_at TIMESTAMP NOT NULL DEFAULT NOW(),
 		updated_at TIMESTAMP NOT NULL DEFAULT NOW()
@@ -275,7 +276,8 @@ func TestPostgres_SharedBase_PurgeAndVeto(t *testing.T) {
 	createTable(t, pg, `CREATE TABLE sbp_persons (
 		id UUID PRIMARY KEY,
 		document TEXT NOT NULL UNIQUE,
-		name TEXT NOT NULL
+		name TEXT NOT NULL,
+		revision BIGINT NOT NULL DEFAULT 0
 	)`)
 	createTable(t, pg, `CREATE TABLE sbp_students (
 		id UUID PRIMARY KEY,

@@ -61,7 +61,7 @@ func NewBaseAggregateRepository[T domain.Entity](eng RelationalEngine, newEntity
 }
 
 // WithSchema declares the mandatory TableSchema once and threads it into BOTH
-// the write binding (BaseRepository.Schema) and the read loader
+// the write binding (via BaseRepository.WithSchema) and the read loader
 // (Loader.WithSchema) — one declaration feeds write, criteria and scan. The
 // Modes() ⟺ SoftDelete and the aggregate-depth (no grandchildren) boot checks
 // run here; the field-existence + bijection checks already ran while the

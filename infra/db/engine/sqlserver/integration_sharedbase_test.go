@@ -60,6 +60,7 @@ func sbMsSetup(t *testing.T) (*Engine, *sql.DB) {
 			id BINARY(16) NOT NULL PRIMARY KEY,
 			document VARCHAR(64) NOT NULL UNIQUE,
 			name NVARCHAR(255) NOT NULL,
+			revision BIGINT NOT NULL DEFAULT 0,
 			deleted_at DATETIME2(6) NULL,
 			created_at DATETIME2(6) NOT NULL DEFAULT CURRENT_TIMESTAMP,
 			updated_at DATETIME2(6) NOT NULL DEFAULT CURRENT_TIMESTAMP
@@ -279,7 +280,8 @@ func TestSQLServer_SharedBase_PurgeAndVeto(t *testing.T) {
 		`CREATE TABLE sbp_persons (
 			id BINARY(16) NOT NULL PRIMARY KEY,
 			document VARCHAR(64) NOT NULL UNIQUE,
-			name NVARCHAR(255) NOT NULL
+			name NVARCHAR(255) NOT NULL,
+			revision BIGINT NOT NULL DEFAULT 0
 		)`,
 		`CREATE TABLE sbp_students (
 			id BINARY(16) NOT NULL PRIMARY KEY,

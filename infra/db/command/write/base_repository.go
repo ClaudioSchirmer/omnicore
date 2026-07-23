@@ -53,11 +53,13 @@ type BaseRepository[T any] struct {
 	Constraints map[string]ConstraintBinding
 	NewEntity   func() T
 
-	// Schema is the mandatory explicit Go↔column map for this repository's
-	// entity (root + aggregate children). Set it directly or via
-	// BaseAggregateRepository.WithSchema. There is no convention fallback — a
-	// write with a nil Schema panics.
-	Schema *TableSchema
+	// schema is the mandatory explicit Go↔column map for this repository's
+	// entity (root + aggregate children). It is UNEXPORTED and bound only
+	// through WithSchema — there is no way to set it that bypasses the
+	// construction-time boot checks (PK, Revision, aggregate depth, old-clone
+	// safety, Modes() ⟺ SoftDelete). There is no convention fallback — a write
+	// with a nil schema panics.
+	schema *TableSchema
 }
 
 // Scope binds the request-scoped concerns — the ctx (cancellation via
@@ -86,7 +88,7 @@ type boundWriter[T any] struct {
 }
 
 func (w boundWriter[T]) Insert(i domain.Insertable) (domain.ID, error) {
-	res, err := w.repo.Engine.Insert(w.ctx, i, w.repo.Schema, w.hook)
+	res, err := w.repo.Engine.Insert(w.ctx, i, w.repo.schema, w.hook)
 	if err != nil {
 		return domain.ID{}, w.repo.mapErr(err)
 	}
@@ -94,20 +96,20 @@ func (w boundWriter[T]) Insert(i domain.Insertable) (domain.ID, error) {
 }
 
 func (w boundWriter[T]) Update(u domain.Updatable) error {
-	_, err := w.repo.Engine.Update(w.ctx, u, w.repo.Schema, w.hook)
+	_, err := w.repo.Engine.Update(w.ctx, u, w.repo.schema, w.hook)
 	return w.repo.mapErr(err)
 }
 
 func (w boundWriter[T]) Delete(d domain.Deletable) error {
-	return w.repo.mapErr(w.repo.Engine.Delete(w.ctx, d, w.repo.Schema, w.hook))
+	return w.repo.mapErr(w.repo.Engine.Delete(w.ctx, d, w.repo.schema, w.hook))
 }
 
 func (w boundWriter[T]) Archive(a domain.Archivable) error {
-	return w.repo.mapErr(w.repo.Engine.Archive(w.ctx, a, w.repo.Schema, w.hook))
+	return w.repo.mapErr(w.repo.Engine.Archive(w.ctx, a, w.repo.schema, w.hook))
 }
 
 func (w boundWriter[T]) Unarchive(u domain.Unarchivable) error {
-	return w.repo.mapErr(w.repo.Engine.Unarchive(w.ctx, u, w.repo.Schema, w.hook))
+	return w.repo.mapErr(w.repo.Engine.Unarchive(w.ctx, u, w.repo.schema, w.hook))
 }
 
 // WithSchema declares the mandatory TableSchema and runs the construction-time
@@ -121,8 +123,8 @@ func (w boundWriter[T]) Unarchive(u domain.Unarchivable) error {
 // gets the same fail-fast the aggregate path has via
 // BaseAggregateRepository.WithSchema.
 //
-// Setting r.Schema directly stays supported (the escape hatch) but bypasses
-// these checks; WithSchema is the validated canonical path. Calling it also
+// WithSchema is the ONLY way to bind the schema — the field is unexported, so
+// there is no direct-set path that bypasses these checks. Calling it also
 // surfaces a nil NewEntity factory at construction (via r.New()) instead of on
 // the first write.
 func (r *BaseRepository[T]) WithSchema(schema *TableSchema) *BaseRepository[T] {
@@ -163,7 +165,7 @@ func (r *BaseRepository[T]) WithSchema(schema *TableSchema) *BaseRepository[T] {
 	if reg, ok := any(r.Engine).(interface{ RegisterSharedBaseRole(*TableSchema) }); ok {
 		reg.RegisterSharedBaseRole(schema)
 	}
-	r.Schema = schema
+	r.schema = schema
 	return r
 }
 

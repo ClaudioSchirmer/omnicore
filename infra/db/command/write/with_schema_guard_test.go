@@ -41,7 +41,7 @@ func TestBaseRepositoryWithSchema_Valid_SetsSchema(t *testing.T) {
 	repo := &BaseRepository[*flatArchivable]{NewEntity: func() *flatArchivable { return &flatArchivable{} }}
 	schema := NewTableSchema[*flatArchivable]("flats").PK("id").Revision("revision").SoftDelete("deleted_at")
 	repo.WithSchema(schema)
-	if repo.Schema != schema {
+	if repo.schema != schema {
 		t.Error("WithSchema must bind the schema on the happy path")
 	}
 }

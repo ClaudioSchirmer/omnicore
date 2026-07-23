@@ -88,10 +88,10 @@ func (b *BaseEngine) RegisterSharedBaseRole(role *TableSchema) {
 
 // effectiveReferencingRoles returns every role known to reference base: the
 // base INSTANCE registry (roles attached to this very *TableSchema via
-// .SharedBase — the floor that keeps the r.Schema escape hatch working) unioned
-// with the ENGINE registry (roles registered through WithSchema, across every
-// NewSharedBase instance of the same table), deduped by role table. Engine
-// entries are appended in table order for deterministic probing.
+// .SharedBase) unioned with the ENGINE registry (roles registered through
+// WithSchema, across every NewSharedBase instance of the same table), deduped
+// by role table. Engine entries are appended in table order for deterministic
+// probing.
 func (b *BaseEngine) effectiveReferencingRoles(base *TableSchema) []RoleRef {
 	out := base.ReferencingRoles()
 	seen := make(map[string]bool, len(out))

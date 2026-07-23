@@ -62,6 +62,7 @@ func sbOraSetup(t *testing.T) (*Engine, *sql.DB) {
 			id RAW(16) NOT NULL PRIMARY KEY,
 			document VARCHAR2(64) NOT NULL UNIQUE,
 			name VARCHAR2(255 CHAR) NOT NULL,
+			revision NUMBER(19) DEFAULT 0 NOT NULL,
 			deleted_at TIMESTAMP(6) NULL,
 			created_at TIMESTAMP(6) DEFAULT SYSTIMESTAMP NOT NULL,
 			updated_at TIMESTAMP(6) DEFAULT SYSTIMESTAMP NOT NULL
@@ -282,7 +283,8 @@ func TestOracle_SharedBase_PurgeAndVeto(t *testing.T) {
 		`CREATE TABLE sbp_persons (
 			id RAW(16) NOT NULL PRIMARY KEY,
 			document VARCHAR2(64) NOT NULL UNIQUE,
-			name VARCHAR2(255 CHAR) NOT NULL
+			name VARCHAR2(255 CHAR) NOT NULL,
+			revision NUMBER(19) DEFAULT 0 NOT NULL
 		)`,
 		// Oracle has no explicit ON DELETE NO ACTION clause — omitting the ON
 		// DELETE action IS the restrict/no-action default.
