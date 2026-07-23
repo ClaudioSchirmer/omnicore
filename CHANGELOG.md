@@ -166,18 +166,23 @@ with `1.0.0`.
   now a no-op instead of a lost update — and it can no longer regress the
   document's watermarks. The composed document's data is always at least as
   fresh as its watermark (the composer reads the root/base row first), so the
-  guard only ever suppresses stale writes. At the EQUAL revision every guarded write —
-  the consult pipelines AND the payload-direct stage — FILLS what the
-  document lacks without touching what it has — the
-  rolling-deploy closure: a pod on the previous binary projects an event
-  without the columns its schema does not know, leaving the document at the
-  current revision missing exactly those fields; the fill supplies them at
-  every level a column can surface (root/sibling/base scalars, a whole new
-  child segment, a child ELEMENT's column via per-element PK-keyed shallow
-  merge, a role segment's scalar via sub-document shallow merge), always
-  stored-wins. One level limit: an array nested inside a role segment of a
-  person document keeps the stored array whole — additions there converge on
-  that role's next write or a rebuild.
+  guard only ever suppresses stale writes. At the EQUAL revision the two write
+  families split by what they carry — the rolling-deploy closure: a pod on
+  the previous binary can advance a document to the current revision through
+  its own (older) column list, leaving the columns its schema does not know
+  behind (missing, null or stale-valued). The PAYLOAD-DIRECT stage applies its
+  full carried state at the equal revision — the payload is the emitting
+  transaction's own truth (one revision ↔ one committed state, so a
+  redelivered duplicate overwrites idempotently) and re-asserting it replaces
+  any value a schema-blind consult left stale under the watermark; columns the
+  event does not carry are never touched. The CONSULT pipelines are READ
+  snapshots, so at the equal revision they only FILL what the document lacks,
+  always stored-wins, at every level a column can surface (root/sibling/base
+  scalars, a whole new child segment, a child ELEMENT's column via per-element
+  PK-keyed shallow merge, a role segment's scalar via sub-document shallow
+  merge). One level limit: an array nested inside a role segment of a person
+  document keeps the stored array whole — additions there converge on that
+  role's next write or a rebuild.
 - **Managed timestamps are now application-clock authored.** The managed
   columns (`created_at`/`updated_at` and the soft-delete stamp written by
   archive and its cascades, the shared-base lifecycle convergence included)

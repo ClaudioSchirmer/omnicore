@@ -133,8 +133,10 @@ func consultGuardedStages(view *ViewDefinition, doc Document) []Document {
 // scopeStage guards one scope behind its watermark; a scope composed without
 // one (rev == 0) writes unguarded — the defensive legacy form.
 //
-// Unlike the payload-direct guard (strictly newer or nothing), a CONSULT scope
-// also FILLS MISSING FIELDS AT THE EQUAL REVISION: a field the fresh
+// Unlike the payload-direct guard (which applies its full carried state at the
+// equal revision — the payload is the emitting transaction's own truth), a
+// CONSULT scope is a READ snapshot, so at the equal revision it only FILLS
+// MISSING FIELDS — stored data wins: a field the fresh
 // composition produced but the document lacks is written even when the stored
 // watermark equals the incoming one. "Equal revision ⇒ identical data" holds
 // only when every writer runs the same schema — during a rolling deploy a pod

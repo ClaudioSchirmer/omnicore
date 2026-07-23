@@ -178,33 +178,34 @@ func ownGuardedChildStages(schema *core.TableSchema, ev *decodedEvent) []Documen
 }
 
 // guardedSetStage renders one $set where every column applies when the stored
-// watermark (watermarkField) is older than the incoming revision — and, at the
-// EQUAL revision, when the column is MISSING on the document. The watermark
-// itself advances monotonically.
+// watermark (watermarkField) is older than OR EQUAL TO the incoming revision.
+// The watermark itself advances monotonically (strictly-newer only).
 //
-// The equal-revision completion is the rolling-deploy closure on the
-// payload-direct path: a pod on the previous binary can materialize the
-// document at the CURRENT revision without the columns its schema does not
-// know (its consult repair composes through the old schema's explicit column
-// list), and the newer binary's event for that same revision then arrives
-// carrying the full state — a strictly-newer guard would discard it forever.
-// Every writer of this stage is authoritative for its scope AT its revision
-// (the payload carries the scope's full state; the registry stamps write
-// their own record), so completing an absent column with the same-revision
-// value can never regress anything — present columns stay untouched.
+// Equal-revision writes apply IN FULL — the rolling-deploy closure on the
+// payload-direct path. The revision bump rides the write's own DML under the
+// row lock and the payload is read back inside the same transaction, so one
+// revision identifies exactly one committed state: two events at the same
+// revision are the same emission redelivered (identical bytes — the overwrite
+// is idempotent). The document, however, can sit AT that revision while
+// carrying older column values: a previous-binary pod's consult repair reads
+// the row after a later commit and advances the watermark through its OWN
+// (older) column list, leaving every column it does not know exactly as some
+// earlier event wrote it — null or stale-valued, not necessarily missing. A
+// missing-only fill would keep that stale value forever; applying the payload's
+// full carried state re-asserts the scope's truth at that revision instead.
+// The one thing an equal-revision overwrite can transiently regress is a
+// fresher fragment a torn consult read left above its watermark — and that
+// fragment's own producing event carries a HIGHER revision and restores it,
+// the same self-healing order the consult guards already rely on.
 func guardedSetStage(watermarkField string, set Document, revision int64) Document {
 	newer := Document{"$lt": []any{
 		Document{"$ifNull": []any{"$" + watermarkField, int64(-1)}},
 		revision,
 	}}
 	equal := Document{"$eq": []any{"$" + watermarkField, revision}}
+	apply := Document{"$or": []any{newer, equal}}
 	out := Document{}
 	for col, v := range set {
-		missing := Document{"$eq": []any{Document{"$type": "$" + col}, "missing"}}
-		apply := Document{"$or": []any{
-			newer,
-			Document{"$and": []any{equal, missing}},
-		}}
 		out[col] = Document{"$cond": []any{apply, v, "$" + col}}
 	}
 	out[watermarkField] = Document{"$cond": []any{

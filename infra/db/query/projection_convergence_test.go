@@ -810,13 +810,19 @@ func TestApplyDelete_TombstoneStampErrorFailsEvent(t *testing.T) {
 	}
 }
 
-// The PAYLOAD-DIRECT guard completes missing columns at the equal revision —
-// the rolling-deploy interleaving the oracle lane exposed: a previous-binary
-// pod's consult repair materializes the document at the CURRENT revision
-// without the columns its schema does not know; the newer binary's event for
-// that same revision must then supply them (and only them — present columns
-// stay untouched, and columns the event does not carry are never faked).
-func TestGuardedSetStage_EqualRevisionCompletesMissing(t *testing.T) {
+// The PAYLOAD-DIRECT guard applies its FULL carried state at the equal
+// revision — the rolling-deploy closure: a previous-binary pod's consult
+// repair can advance the document TO the event's revision through its own
+// (older) column list, leaving a column the old schema does not know exactly
+// as an earlier event wrote it — null or stale-valued, not necessarily
+// missing. A missing-only completion kept that stale value forever (the
+// rebuild_scale nickname RED); one revision identifies exactly one committed
+// state, so re-asserting every carried column at the equal revision is
+// idempotent for redeliveries and can only replace stale-under-watermark
+// values with that revision's truth. Columns the event does not carry are
+// still never touched, and the watermark still advances on strictly-newer
+// only.
+func TestGuardedSetStage_EqualRevisionAppliesPayload(t *testing.T) {
 	st := guardedSetStage(docRevisionField, Document{"nickname": lit("rs-nick-value")}, 2)
 	set, _ := st["$set"].(Document)
 	cond, _ := set["nickname"].(Document)["$cond"].([]any)
@@ -825,11 +831,13 @@ func TestGuardedSetStage_EqualRevisionCompletesMissing(t *testing.T) {
 	}
 	apply, _ := cond[0].(Document)["$or"].([]any)
 	if len(apply) != 2 {
-		t.Fatalf("apply must be newer OR (equal AND missing), got %v", cond[0])
+		t.Fatalf("apply must be newer OR equal, got %v", cond[0])
 	}
-	and, _ := apply[1].(Document)["$and"].([]any)
-	if len(and) != 2 {
-		t.Fatalf("the equal branch must AND revision equality with column absence, got %v", apply[1])
+	if _, ok := apply[0].(Document)["$lt"]; !ok {
+		t.Errorf("the first arm must be the strictly-newer $lt, got %v", apply[0])
+	}
+	if _, ok := apply[1].(Document)["$eq"]; !ok {
+		t.Errorf("the second arm must be plain revision equality (no column-absence AND), got %v", apply[1])
 	}
 	// The watermark still advances ONLY on strictly newer.
 	wm, _ := set[docRevisionField].(Document)["$cond"].([]any)
