@@ -162,16 +162,29 @@ func segmentNormalizeStage(schema *core.TableSchema) Document {
 // ownGuardedChildStages renders the OWN child edits, each array expression
 // wrapped in the document-revision guard (reading the still-unchanged
 // watermark — these stages precede the own-scalars stage that advances it).
+// The guard applies at older-or-EQUAL, the same equal arm guardedSetStage
+// carries for the scalars: a previous-binary pod's consult repair can advance
+// the watermark to this event's revision while replacing the child array
+// through its own (older) column list, and the event's child ops are then the
+// only carrier of the columns that composition could not see. One revision
+// identifies one committed transaction, so re-applying a surgical per-element
+// edit at the equal revision is idempotent (a redelivered duplicate rewrites
+// the same element state) and can only restore what schema-blind composition
+// dropped — a genuinely fresher write carries a higher revision and never
+// meets this guard.
 func ownGuardedChildStages(schema *core.TableSchema, ev *decodedEvent) []Document {
 	stages := childStages(schema, ev.Children, 0, false)
-	newer := Document{"$lt": []any{
-		Document{"$ifNull": []any{"$" + docRevisionField, int64(-1)}},
-		ev.IDs.Revision,
+	apply := Document{"$or": []any{
+		Document{"$lt": []any{
+			Document{"$ifNull": []any{"$" + docRevisionField, int64(-1)}},
+			ev.IDs.Revision,
+		}},
+		Document{"$eq": []any{"$" + docRevisionField, ev.IDs.Revision}},
 	}}
 	for _, st := range stages {
 		set, _ := st["$set"].(Document)
 		for seg, expr := range set {
-			set[seg] = Document{"$cond": []any{newer, expr, "$" + seg}}
+			set[seg] = Document{"$cond": []any{apply, expr, "$" + seg}}
 		}
 	}
 	return stages

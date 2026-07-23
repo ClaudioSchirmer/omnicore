@@ -175,7 +175,12 @@ with `1.0.0`.
   transaction's own truth (one revision ↔ one committed state, so a
   redelivered duplicate overwrites idempotently) and re-asserting it replaces
   any value a schema-blind consult left stale under the watermark; columns the
-  event does not carry are never touched. The CONSULT pipelines are READ
+  event does not carry are never touched. The same equal arm rides the OWN-child
+  edits (the surgical per-element array stages guarded by `_revision`): a child
+  op at the document's current revision re-asserts its element, restoring child
+  columns a schema-blind composition dropped — shared-base children already
+  converge through the per-element `_rev` rule (a consult-composed element
+  carries none and counts as older). The CONSULT pipelines are READ
   snapshots, so at the equal revision they only FILL what the document lacks,
   always stored-wins, at every level a column can surface (root/sibling/base
   scalars, a whole new child segment, a child ELEMENT's column via per-element
