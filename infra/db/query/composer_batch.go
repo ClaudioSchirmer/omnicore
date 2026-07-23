@@ -91,8 +91,8 @@ func (c *Composer) fetchInGrouped(ctx context.Context, schema *core.TableSchema,
 			ph[i] = d.Placeholder(i + 1)
 			args[i] = c.encodeKey(k)
 		}
-		sql := fmt.Sprintf("SELECT * FROM %s WHERE %s IN (%s)%s",
-			d.QuoteIdent(table), d.QuoteIdent(keyCol), strings.Join(ph, ", "), cond)
+		sql := fmt.Sprintf("SELECT %s FROM %s WHERE %s IN (%s)%s",
+			selectList(d, readColsWithKey(schema, keyCol)), d.QuoteIdent(table), d.QuoteIdent(keyCol), strings.Join(ph, ", "), cond)
 		results, err := c.eng.Querier().QueryMaps(ctx, sql, args...)
 		if err != nil {
 			return nil, err
@@ -170,6 +170,10 @@ func (c *Composer) mergeSharedBaseBatch(ctx context.Context, docs []Document, sc
 		if len(rows) == 0 {
 			continue
 		}
+		// Same watermark discipline as the per-row mergeSharedBase: the base's
+		// physical revision column becomes the _base_revision watermark, never a
+		// document field (idempotent — the grouped row is shared across docs).
+		remapRevision(rows[0], base, docBaseRevisionField)
 		for col, val := range rows[0] {
 			if skip[col] {
 				continue
@@ -321,8 +325,11 @@ func (c *Composer) composeBaseRootedRowsBatched(ctx context.Context, view *ViewD
 
 		// Attach the sub-document (an absent role writes an explicit nil segment so
 		// the $set upsert overwrites a vanished role rather than leaving it stale).
+		// The role row's physical revision column becomes the segment's _revision
+		// watermark — same discipline as the per-row composeBaseRootedRow.
 		for _, row := range rows {
 			if rr := roleByBase[keyOf(row, basePK)]; rr != nil {
+				remapRevision(rr, r.schema, docRevisionField)
 				row[r.segment] = rr
 			} else {
 				row[r.segment] = nil
@@ -430,12 +437,17 @@ func (c *Composer) applyEmbedsBatch(ctx context.Context, docs []Document, parent
 			}
 			var nested []Document
 			for _, doc := range docs {
+				// Unresolved 1:1 → explicit null, same reason as the per-row
+				// path: $set-merged writes would keep a stale sub-document if
+				// the key were omitted.
 				v, ok := doc[e.JoinColumn()]
 				if !ok || v == nil {
+					doc[e.field] = nil
 					continue
 				}
 				rows := grouped[fmt.Sprintf("%v", v)]
 				if len(rows) == 0 {
+					doc[e.field] = nil
 					continue
 				}
 				doc[e.field] = rows[0]

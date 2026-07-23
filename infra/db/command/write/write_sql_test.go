@@ -4,10 +4,16 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"time"
 
 	"github.com/ClaudioSchirmer/omnicore/application/persistence"
 	"github.com/ClaudioSchirmer/omnicore/domain"
 )
+
+// testNow is the fixed operation stamp the builder tests bind — asserting the
+// managed timestamps travel as ordinary args (app-clock authored), never as a
+// dialect NOW() expression.
+var testNow = time.Date(2026, 7, 20, 12, 0, 0, 0, time.UTC)
 
 // The shared write builders render one statement for every backend via the
 // Dialect (placeholders, identifier quoting, arg encoding). These white-box
@@ -20,46 +26,59 @@ import (
 func TestBuildInsert_Shared(t *testing.T) {
 	fields := domain.Fields{"name": "alice", "email": "a@x"}
 	id := "11111111-1111-1111-1111-111111111111"
-	sql, args := buildInsert(testPGDialect{}, "users", "id", id, fields, []string{"created_at", "updated_at"})
+	sql, args := buildInsert(testPGDialect{}, "users", "id", id, fields, []string{"created_at", "updated_at"}, testNow, "")
 
-	want := "INSERT INTO users (id, email, name, created_at, updated_at) VALUES ($1, $2, $3, NOW(), NOW())"
+	want := "INSERT INTO users (id, email, name, created_at, updated_at) VALUES ($1, $2, $3, $4, $5)"
 	if sql != want {
 		t.Fatalf("sql =\n  %q\nwant\n  %q", sql, want)
 	}
 	// PK is prepended and encoded (domain.ID → string under testPGDialect);
-	// remaining args follow SortedKeys order (email, name). NOW() columns bind
-	// no args.
-	if len(args) != 3 {
-		t.Fatalf("args = %v, want 3 (id + email + name)", args)
+	// remaining args follow SortedKeys order (email, name); the managed
+	// timestamp columns bind the operation stamp.
+	if len(args) != 5 {
+		t.Fatalf("args = %v, want 5 (id + email + name + created_at + updated_at)", args)
 	}
 	if args[0] != id {
 		t.Errorf("args[0] = %v, want the encoded id %q", args[0], id)
 	}
 	if args[1] != "a@x" || args[2] != "alice" {
-		t.Errorf("field args = %v, want [a@x alice]", args[1:])
+		t.Errorf("field args = %v, want [a@x alice]", args[1:3])
+	}
+	if args[3] != testNow || args[4] != testNow {
+		t.Errorf("timestamp args = %v, want the operation stamp twice", args[3:])
 	}
 }
 
 func TestBuildUpdate_Shared(t *testing.T) {
 	fields := domain.Fields{"name": "bob", "email": "b@x"}
 	id := "22222222-2222-2222-2222-222222222222"
-	sql, args := buildUpdate(testPGDialect{}, "users", "id", id, fields, []string{"updated_at"})
+	sql, args := buildUpdate(testPGDialect{}, "users", "id", id, fields, []string{"updated_at"}, testNow, "")
 
-	want := "UPDATE users SET email = $1, name = $2, updated_at = NOW() WHERE id = $3"
+	want := "UPDATE users SET email = $1, name = $2, updated_at = $3 WHERE id = $4"
 	if sql != want {
 		t.Fatalf("sql =\n  %q\nwant\n  %q", sql, want)
 	}
-	if len(args) != 3 || args[0] != "b@x" || args[1] != "bob" || args[2] != id {
-		t.Fatalf("args = %v, want [b@x bob %s]", args, id)
+	if len(args) != 4 || args[0] != "b@x" || args[1] != "bob" || args[2] != testNow || args[3] != id {
+		t.Fatalf("args = %v, want [b@x bob %v %s]", args, testNow, id)
+	}
+}
+
+func TestWriteNow_UTCMicrosecond(t *testing.T) {
+	now := writeNow()
+	if now.Location() != time.UTC {
+		t.Errorf("writeNow() location = %v, want UTC", now.Location())
+	}
+	if now.Truncate(time.Microsecond) != now {
+		t.Errorf("writeNow() = %v, want microsecond-truncated", now)
 	}
 }
 
 func TestArchiveUnarchiveDelete_SQL(t *testing.T) {
 	d := testPGDialect{}
-	if got := archiveSQL(d, "users", "deleted_at", "id"); got != "UPDATE users SET deleted_at = NOW() WHERE id = $1" {
+	if got := archiveSQL(d, "users", "deleted_at", "id", ""); got != "UPDATE users SET deleted_at = $1 WHERE id = $2" {
 		t.Errorf("archiveSQL = %q", got)
 	}
-	if got := unarchiveSQL(d, "users", "deleted_at", "id"); got != "UPDATE users SET deleted_at = NULL WHERE id = $1" {
+	if got := unarchiveSQL(d, "users", "deleted_at", "id", ""); got != "UPDATE users SET deleted_at = NULL WHERE id = $1" {
 		t.Errorf("unarchiveSQL = %q", got)
 	}
 	if got := deleteSQL(d, "users", "id"); got != "DELETE FROM users WHERE id = $1" {
@@ -83,13 +102,17 @@ func TestBuildSiblingUpsert_ArgsOrder_PG(t *testing.T) {
 
 func TestChildCascadeSQL_Shared(t *testing.T) {
 	d := testPGDialect{}
-	archive := childCascadeSQL(d, "addresses", "deleted_at", "user_id", "NOW()", " IS NULL")
-	if archive != "UPDATE addresses SET deleted_at = NOW() WHERE user_id = $1 AND deleted_at IS NULL" {
+	archive := archiveCascadeSQL(d, "addresses", "deleted_at", "user_id")
+	if archive != "UPDATE addresses SET deleted_at = $1 WHERE user_id = $2 AND deleted_at IS NULL" {
 		t.Errorf("archive cascade = %q", archive)
 	}
 	unarchive := childCascadeSQL(d, "addresses", "deleted_at", "user_id", "NULL", " IS NOT NULL")
 	if unarchive != "UPDATE addresses SET deleted_at = NULL WHERE user_id = $1 AND deleted_at IS NOT NULL" {
 		t.Errorf("unarchive cascade = %q", unarchive)
+	}
+	// nowSetExpr stays as the dialect-NOW counterpart for non-data-path callers.
+	if got := nowSetExpr(d); got != "NOW()" {
+		t.Errorf("nowSetExpr = %q, want NOW()", got)
 	}
 }
 

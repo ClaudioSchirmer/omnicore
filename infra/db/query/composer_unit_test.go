@@ -217,7 +217,7 @@ func TestCompose_AbsentSiblingOmitsFields(t *testing.T) {
 // composerRoleSchema is a role (aluno) over builderTestEntity: Email is role-own,
 // Name lives on the shared base pessoa (natural key on name), linked by pessoa_id.
 func composerRoleSchema() *core.TableSchema {
-	base := core.NewSharedBase("pessoa").PK("id").Field("Name", "name").NaturalKey("name")
+	base := core.NewSharedBase("pessoa").Revision("revision").PK("id").Field("Name", "name").NaturalKey("name")
 	return core.NewTableSchema[*builderTestEntity]("aluno").
 		PK("id").
 		Field("Email", "email").
@@ -435,7 +435,7 @@ func TestComposeBatch_ChunksLargeIDSet(t *testing.T) {
 // declaring the managed columns (soft-delete + timestamps) — the collision the
 // A5 guard resolves in favor of the ROLE.
 func composerRoleSchemaManaged() *core.TableSchema {
-	base := core.NewSharedBase("pessoa").PK("id").Field("Name", "name").NaturalKey("name").
+	base := core.NewSharedBase("pessoa").Revision("revision").PK("id").Field("Name", "name").NaturalKey("name").
 		SoftDelete("deleted_at").CreatedAt("created_at").UpdatedAt("updated_at")
 	return core.NewTableSchema[*builderTestEntity]("aluno").
 		PK("id").

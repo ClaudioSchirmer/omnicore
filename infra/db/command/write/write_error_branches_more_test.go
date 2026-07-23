@@ -79,7 +79,7 @@ func (e *baseChildRole) AggregateChildren() []domain.AggregateValueObject {
 }
 
 func baseChildRoleSchema() *TableSchema {
-	base := NewSharedBase("pessoa").
+	base := NewSharedBase("pessoa").Revision("revision").
 		PK("id").
 		Field("Name", "name").
 		Field("Document", "document").
@@ -172,7 +172,7 @@ func TestBatch_SoftMembersAndUnsupported(t *testing.T) {
 
 	t.Run("archiveExecError", func(t *testing.T) {
 		arc, _ := domain.GetArchivable(mk(), nil, "GetArchivable")
-		tx := &recTx{execErrSub: "SET deleted_at = NOW()"}
+		tx := &recTx{execErrSub: "SET deleted_at = $1"}
 		be := newFlatBE(&recBeginner{tx: tx})
 		if _, err := be.Batch(newBuilderCtx(), domain.NewBatch([]domain.ValidEntity{arc}), []*TableSchema{builderTestSchema}); !errors.Is(err, errRecExec) {
 			t.Fatalf("expected the archive exec error, got %v", err)
@@ -187,7 +187,7 @@ func TestBatch_SoftMembersAndUnsupported(t *testing.T) {
 		}
 	})
 	t.Run("unarchiveWithoutSoftDelete", func(t *testing.T) {
-		noSD := NewTableSchema[*builderTestEntity]("nsd").PK("id").Field("Name", "name").Field("Email", "email")
+		noSD := NewTableSchema[*builderTestEntity]("nsd").PK("id").Revision("revision").Field("Name", "name").Field("Email", "email")
 		una, _ := domain.GetUnarchivable(mk(), nil, "GetUnarchivable")
 		be := newFlatBE(&recBeginner{tx: &recTx{}})
 		if _, err := be.Batch(newBuilderCtx(), domain.NewBatch([]domain.ValidEntity{una}), []*TableSchema{noSD}); err == nil {
@@ -206,7 +206,7 @@ func TestBatch_SoftMembersAndUnsupported(t *testing.T) {
 
 // The flat Unarchive on a schema without SoftDelete errors before any statement.
 func TestFlatUnarchive_MissingSoftDeleteIsError(t *testing.T) {
-	noSD := NewTableSchema[*builderTestEntity]("nsd").PK("id").Field("Name", "name").Field("Email", "email")
+	noSD := NewTableSchema[*builderTestEntity]("nsd").PK("id").Revision("revision").Field("Name", "name").Field("Email", "email")
 	e := &builderTestEntity{Name: "a", Email: "a@x"}
 	e.SetID(domain.NewID(uuid.NewString()))
 	u, _ := domain.GetUnarchivable(e, nil, "GetUnarchivable")
@@ -306,18 +306,26 @@ func TestSharedBaseReactivationProbeError(t *testing.T) {
 			t.Error("must not commit")
 		}
 	})
-	t.Run("updateBaseFanOutOutboxError", func(t *testing.T) {
+	t.Run("updateEmitsSingleOutboxRow", func(t *testing.T) {
+		// single-row contract: the role UPDATE emits exactly ONE outbox row
+		// (the self-sufficient payload) — the historical empty base-table
+		// fan-out row must NOT exist.
 		e := &roleTestEntity{Name: "Ana", Document: "D1", Matricula: "M1"}
 		e.SetID(domain.NewID(uuid.NewString()))
 		upd, _ := domain.GetUpdatable(e, func(*roleTestEntity) error { return nil }, nil, "GetUpdatable")
-		inner := &recTx{count: 1, queryFn: scriptedQuery(nil, []string{"FROM aluno"})}
-		tx := &nthFailTx{recTx: inner, failSub: "INSERT INTO outbox", failOn: 2}
-		be := newFlatBE(singleTxBeginner{tx})
-		if _, err := be.Update(newBuilderCtx(), upd, roleTestSchema(), firingHook); !errors.Is(err, errBoom) {
-			t.Fatalf("expected the fan-out outbox failure, got %v", err)
+		tx := &recTx{count: 1, queryFn: scriptedQuery(nil, []string{"FROM aluno"})}
+		be := newFlatBE(&recBeginner{tx: tx})
+		if _, err := be.Update(newBuilderCtx(), upd, roleTestSchema(), firingHook); err != nil {
+			t.Fatalf("Update: %v", err)
 		}
-		if inner.committed {
-			t.Error("must not commit")
+		outboxRows := 0
+		for _, s := range tx.execs {
+			if strings.HasPrefix(s, "INSERT INTO outbox") {
+				outboxRows++
+			}
+		}
+		if outboxRows != 1 {
+			t.Fatalf("a role update must emit exactly ONE outbox row, got %d: %v", outboxRows, tx.execs)
 		}
 	})
 }

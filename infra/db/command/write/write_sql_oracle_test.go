@@ -76,14 +76,14 @@ func (testOracleDialect) BuildUpsert(table string, _, _ []string, _ []UpsertSet)
 func TestBuildInsert_Oracle(t *testing.T) {
 	fields := domain.Fields{"name": "alice", "email": "a@x"}
 	id := "11111111-1111-1111-1111-111111111111"
-	sql, args := buildInsert(testOracleDialect{}, "users", "id", id, fields, []string{"created_at", "updated_at"})
+	sql, args := buildInsert(testOracleDialect{}, "users", "id", id, fields, []string{"created_at", "updated_at"}, testNow, "")
 
-	want := `INSERT INTO "USERS" ("ID", "EMAIL", "NAME", "CREATED_AT", "UPDATED_AT") VALUES (:1, :2, :3, SYSTIMESTAMP, SYSTIMESTAMP)`
+	want := `INSERT INTO "USERS" ("ID", "EMAIL", "NAME", "CREATED_AT", "UPDATED_AT") VALUES (:1, :2, :3, :4, :5)`
 	if sql != want {
 		t.Fatalf("sql =\n  %q\nwant\n  %q", sql, want)
 	}
-	if len(args) != 3 {
-		t.Fatalf("args = %v, want 3 (id + email + name)", args)
+	if len(args) != 5 {
+		t.Fatalf("args = %v, want 5 (id + email + name + created_at + updated_at)", args)
 	}
 	b, ok := args[0].([]byte)
 	if !ok || len(b) != 16 {
@@ -97,18 +97,18 @@ func TestBuildInsert_Oracle(t *testing.T) {
 func TestBuildUpdate_Oracle(t *testing.T) {
 	fields := domain.Fields{"name": "bob", "email": "b@x"}
 	id := "22222222-2222-2222-2222-222222222222"
-	sql, args := buildUpdate(testOracleDialect{}, "users", "id", id, fields, []string{"updated_at"})
+	sql, args := buildUpdate(testOracleDialect{}, "users", "id", id, fields, []string{"updated_at"}, testNow, "")
 
-	want := `UPDATE "USERS" SET "EMAIL" = :1, "NAME" = :2, "UPDATED_AT" = SYSTIMESTAMP WHERE "ID" = :3`
+	want := `UPDATE "USERS" SET "EMAIL" = :1, "NAME" = :2, "UPDATED_AT" = :3 WHERE "ID" = :4`
 	if sql != want {
 		t.Fatalf("sql =\n  %q\nwant\n  %q", sql, want)
 	}
-	if len(args) != 3 || args[0] != "b@x" || args[1] != "bob" {
+	if len(args) != 4 || args[0] != "b@x" || args[1] != "bob" || args[2] != testNow {
 		t.Fatalf("SET args = %v, want [b@x bob ...] in that order", args)
 	}
-	b, ok := args[2].([]byte)
+	b, ok := args[3].([]byte)
 	if !ok || len(b) != 16 {
-		t.Errorf("WHERE id arg = %v (%T), want a 16-byte RAW(16) form", args[2], args[2])
+		t.Errorf("WHERE id arg = %v (%T), want a 16-byte RAW(16) form", args[3], args[3])
 	}
 }
 
@@ -116,10 +116,10 @@ func TestBuildUpdate_Oracle(t *testing.T) {
 // expression (SYSTIMESTAMP), never a baked-in NOW().
 func TestArchiveUnarchiveDelete_Oracle(t *testing.T) {
 	d := testOracleDialect{}
-	if got := archiveSQL(d, "users", "deleted_at", "id"); got != `UPDATE "USERS" SET "DELETED_AT" = SYSTIMESTAMP WHERE "ID" = :1` {
+	if got := archiveSQL(d, "users", "deleted_at", "id", ""); got != `UPDATE "USERS" SET "DELETED_AT" = :1 WHERE "ID" = :2` {
 		t.Errorf("archiveSQL = %q", got)
 	}
-	if got := unarchiveSQL(d, "users", "deleted_at", "id"); got != `UPDATE "USERS" SET "DELETED_AT" = NULL WHERE "ID" = :1` {
+	if got := unarchiveSQL(d, "users", "deleted_at", "id", ""); got != `UPDATE "USERS" SET "DELETED_AT" = NULL WHERE "ID" = :1` {
 		t.Errorf("unarchiveSQL = %q", got)
 	}
 	if got := deleteSQL(d, "users", "id"); got != `DELETE FROM "USERS" WHERE "ID" = :1` {
@@ -134,8 +134,8 @@ func TestArchiveUnarchiveDelete_Oracle(t *testing.T) {
 // already resolved against the dialect (nowSetExpr → SYSTIMESTAMP here).
 func TestChildCascadeSQL_Oracle(t *testing.T) {
 	d := testOracleDialect{}
-	archive := childCascadeSQL(d, "addresses", "deleted_at", "user_id", nowSetExpr(d), " IS NULL")
-	if archive != `UPDATE "ADDRESSES" SET "DELETED_AT" = SYSTIMESTAMP WHERE "USER_ID" = :1 AND "DELETED_AT" IS NULL` {
+	archive := archiveCascadeSQL(d, "addresses", "deleted_at", "user_id")
+	if archive != `UPDATE "ADDRESSES" SET "DELETED_AT" = :1 WHERE "USER_ID" = :2 AND "DELETED_AT" IS NULL` {
 		t.Errorf("archive cascade = %q", archive)
 	}
 	unarchive := childCascadeSQL(d, "addresses", "deleted_at", "user_id", nullSetExpr(d), " IS NOT NULL")
@@ -158,7 +158,7 @@ func TestBuildInsert_Oracle_TypedIDFields(t *testing.T) {
 		"legacy_ref": "018f8b2c-1d3e-7a9b-bc4d-5e6f7a8b9c0d",
 	}
 	id := "11111111-1111-1111-1111-111111111111"
-	_, args := buildInsert(testOracleDialect{}, "orders", "id", id, fields, nil)
+	_, args := buildInsert(testOracleDialect{}, "orders", "id", id, fields, nil, testNow, "")
 
 	// Bind order: PK, then SortedKeys (absent_id, buyer_id, legacy_ref).
 	if len(args) != 4 {

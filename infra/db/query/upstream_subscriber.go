@@ -537,7 +537,7 @@ func (s *UpstreamSubscriber) processMessage(ctx context.Context, msg transport.M
 		} else {
 			// Mirror the doc-survives-with-deleted_at semantic: an ARCHIVED
 			// outbox row carries the full field payload with the soft-delete
-			// column populated (write-side softWritePayload), so the upsert
+			// column populated (the write side's ARCHIVED payload), so the upsert
 			// lands the archived state on the local document.
 			s.upsertAndRipple(ctx, event.AggregateID, payload)
 		}
@@ -602,7 +602,16 @@ func (s *UpstreamSubscriber) dispatchDelete(ctx context.Context, id string) {
 				"topic", s.cfg.Topic, "id", id, "err", err)
 			return
 		}
-		s.ripple(ctx, id, before, nil)
+		// Ripple with the RETAINED post-update doc as the after state: the
+		// anonymized mirror doc still embeds (with blanked fields) — a nil
+		// after would read as a mirror delete and strip the element from its
+		// parents. Read it back directly (readLocalDoc is gated on 1:N views
+		// and this is needed for 1:1 too).
+		var after Document
+		if docs, err := s.mongo.FindManyByField(ctx, s.resolver.Active(s.cfg.Collection), "_id", id); err == nil && len(docs) > 0 {
+			after = docs[0]
+		}
+		s.ripple(ctx, id, before, after)
 
 	case upstreamDeletePolicyKeep:
 		// No-op on the local collection AND no downstream recompose
@@ -656,34 +665,67 @@ func (s *UpstreamSubscriber) ripple(ctx context.Context, upstreamID string, befo
 		if discoverErr {
 			continue
 		}
-		// Collapse the relational N+1: recompose every affected local doc in ONE
-		// set-based pass (ComposeBatch) instead of one Composer.Compose per local
-		// id. The Mongo write stays per-id (a single _id upsert), so an upsert
-		// failure is still isolated to its local id in the failure registry. On a
-		// batch-compose error the batch is opaque — which id was at fault is
-		// unknown — so we fall back to per-id compose to isolate the offender
-		// exactly as the pre-batch path did.
+		// EXISTING parent docs take the surgical per-element edit (see
+		// embed_surgical.go): no relational read, and edits for different
+		// upstream ids commute, so concurrent ripples cannot erase each
+		// other's elements. A parent with no document yet falls back to the
+		// full recompose below, which materializes the complete composition
+		// (racing a concurrent SyncEngine create is safe — both writers use
+		// the field-ownership upsert). Non-upsert on the surgical write keeps
+		// a ripple racing a concurrent document delete from resurrecting a
+		// skeleton.
 		failed := false
-		composed, batchErr := s.composer.ComposeBatch(ctx, v, localIDs)
-		if batchErr != nil {
-			for _, localID := range localIDs {
-				if s.rippleRecomposeOne(ctx, v, upstreamID, localID) {
-					failed = true
-				}
-			}
+		var fallback []string
+		stages := surgicalEmbedStages(embeds, upstreamID, after)
+		if stages == nil {
+			fallback = localIDs
 		} else {
-			pkCol := schemaPK(v.schema)
-			byID := make(map[string]Document, len(composed))
-			for _, doc := range composed {
-				byID[fmt.Sprintf("%v", doc[pkCol])] = doc
-			}
 			for _, localID := range localIDs {
-				doc := byID[localID]
-				if doc == nil {
-					continue // the local root vanished between discover and compose — skip, as the nil compose did
-				}
-				if s.rippleUpsertOne(ctx, v, upstreamID, localID, doc) {
+				present, err := s.mongo.FindIDsByField(ctx, s.resolver.Active(v.Name()), "_id", localID)
+				if err != nil {
+					s.metrics.inc(s.cfg.Topic, v.Name(), upstreamRecomposeStageUpsert)
+					s.logger.Error("upstream.recompose.exists",
+						"subscription", s.cfg.Topic, "view", v.Name(),
+						"upstreamID", upstreamID, "localID", localID, "err", err)
+					s.recordFailure(ctx, v.Name(), upstreamID, localID, UpstreamFailureStageUpsert, err)
 					failed = true
+					continue
+				}
+				if len(present) == 0 {
+					fallback = append(fallback, localID)
+					continue
+				}
+				if s.rippleApplyOne(ctx, v, upstreamID, localID, stages, false) {
+					failed = true
+				}
+			}
+		}
+		// Full-recompose fallback (parent doc absent, or an embed with nested
+		// embeds — the element in hand cannot carry nested content). One
+		// set-based ComposeBatch; on a batch error drop to per-id compose to
+		// isolate the offender, exactly as before.
+		if len(fallback) > 0 {
+			composed, batchErr := s.composer.ComposeBatch(ctx, v, fallback)
+			if batchErr != nil {
+				for _, localID := range fallback {
+					if s.rippleRecomposeOne(ctx, v, upstreamID, localID) {
+						failed = true
+					}
+				}
+			} else {
+				pkCol := schemaPK(v.schema)
+				byID := make(map[string]Document, len(composed))
+				for _, doc := range composed {
+					byID[fmt.Sprintf("%v", doc[pkCol])] = doc
+				}
+				for _, localID := range fallback {
+					doc := byID[localID]
+					if doc == nil {
+						continue // the local root vanished between discover and compose — skip, as the nil compose did
+					}
+					if s.rippleUpsertOne(ctx, v, upstreamID, localID, doc) {
+						failed = true
+					}
 				}
 			}
 		}
@@ -722,8 +764,29 @@ func (s *UpstreamSubscriber) rippleRecomposeOne(ctx context.Context, v *ViewDefi
 // recording an upsert-stage failure to the registry on error. Returns true iff a
 // failure was recorded. Shared by the batch happy path and the per-id fallback so
 // upsert failures stay isolated per local id on both.
+//
+// The write claims ONLY the embed segments (plus the full document when this
+// upsert is creating it): the non-embed fields composed here may be staler
+// than a concurrent SyncEngine recompose of the same document, and a
+// full-document Upsert would regress them — see fieldOwnershipStages.
 func (s *UpstreamSubscriber) rippleUpsertOne(ctx context.Context, v *ViewDefinition, upstreamID, localID string, doc Document) (failed bool) {
-	if err := s.mongo.Upsert(ctx, s.resolver.Active(v.Name()), localID, doc); err != nil {
+	stages := fieldOwnershipStages(doc, schemaPK(v.schema), embedFieldSet(v.embeds))
+	if failed = s.rippleApplyOne(ctx, v, upstreamID, localID, stages, true); failed {
+		return true
+	}
+	repairDanglingOneToOne(ctx, s.mongo, s.resolver, s.eng, s.composer, v, localID, doc)
+	return false
+}
+
+// rippleApplyOne runs one pipeline write against the view's active slot and —
+// during a rebuild window — against the shadow slot too, with the same
+// dual-apply discipline as the SyncEngine (dualApplyShadow: bounded retry,
+// then abort the rebuild rather than fail the live path). Without the shadow
+// leg, a ripple landing mid-rebuild would reach only the retiring active slot
+// and the flipped collection would silently miss it. Records an upsert-stage
+// failure on error; returns true iff a failure was recorded.
+func (s *UpstreamSubscriber) rippleApplyOne(ctx context.Context, v *ViewDefinition, upstreamID, localID string, stages []Document, upsert bool) (failed bool) {
+	if err := s.mongo.ApplyProjection(ctx, s.resolver.Active(v.Name()), localID, stages, upsert); err != nil {
 		s.metrics.inc(s.cfg.Topic, v.Name(), upstreamRecomposeStageUpsert)
 		s.logger.Error("upstream.recompose.upsert",
 			"subscription", s.cfg.Topic,
@@ -734,6 +797,11 @@ func (s *UpstreamSubscriber) rippleUpsertOne(ctx context.Context, v *ViewDefinit
 			"err", err)
 		s.recordFailure(ctx, v.Name(), upstreamID, localID, UpstreamFailureStageUpsert, err)
 		return true
+	}
+	if shadow, on := s.resolver.ShadowActive(v.Name()); on {
+		dualApplyShadow(ctx, s.eng, s.resolver, v.Name(), func() error {
+			return s.mongo.ApplyProjection(ctx, shadow, localID, stages, upsert)
+		})
 	}
 	return false
 }
@@ -936,11 +1004,14 @@ func findMongoJoinField(embeds []embedDef, collection string) string {
 	return ""
 }
 
-// decodePayload extracts the payload map from a Debezium Outbox Event
-// Router message. The event router emits the payload either as the raw
-// JSON object (when StringConverter/JSONConverter is used end-to-end)
-// or wrapped under {"payload": ...} (some Debezium configurations leak
-// the schema envelope). The decoder tolerates both shapes.
+// decodePayload turns the raw outbox payload into the mirror document. Two
+// shapes are handled:
+//   - a Debezium "payload" envelope (some Debezium configurations leak the
+//     schema envelope, wrapping the row under {"payload": ...}) is unwrapped;
+//   - framework reserved keys (the "_" namespace: _ids, _children,
+//     _base_children) are STRIPPED from the mirror by default — they are
+//     routing metadata, not upstream state. A consumer that wants one listed
+//     in cfg.Filter keeps it (the allowlist wins).
 func (s *UpstreamSubscriber) decodePayload(raw []byte) (bson.M, error) {
 	if len(raw) == 0 {
 		return bson.M{}, nil
@@ -950,7 +1021,16 @@ func (s *UpstreamSubscriber) decodePayload(raw []byte) (bson.M, error) {
 		return nil, err
 	}
 	if inner, ok := top["payload"].(map[string]any); ok {
-		return bson.M(inner), nil
+		top = inner
+	}
+	allow := make(map[string]bool, len(s.cfg.Filter))
+	for _, f := range s.cfg.Filter {
+		allow[f] = true
+	}
+	for k := range top {
+		if strings.HasPrefix(k, "_") && !allow[k] {
+			delete(top, k)
+		}
 	}
 	return bson.M(top), nil
 }

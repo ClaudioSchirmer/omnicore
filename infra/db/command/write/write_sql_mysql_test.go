@@ -71,40 +71,44 @@ func (testMySQLDialect) BuildUpsert(table string, _, _ []string, _ []UpsertSet) 
 func TestBuildInsert_MySQL(t *testing.T) {
 	fields := domain.Fields{"name": "alice", "email": "a@x"}
 	id := "11111111-1111-1111-1111-111111111111"
-	sql, args := buildInsert(testMySQLDialect{}, "users", "id", id, fields, []string{"created_at", "updated_at"})
+	sql, args := buildInsert(testMySQLDialect{}, "users", "id", id, fields, []string{"created_at", "updated_at"}, testNow, "")
 
-	want := "INSERT INTO `users` (`id`, `email`, `name`, `created_at`, `updated_at`) VALUES (?, ?, ?, NOW(), NOW())"
+	want := "INSERT INTO `users` (`id`, `email`, `name`, `created_at`, `updated_at`) VALUES (?, ?, ?, ?, ?)"
 	if sql != want {
 		t.Fatalf("sql =\n  %q\nwant\n  %q", sql, want)
 	}
 	// Positional bind order: PK first (BINARY(16)-encoded on MySQL), then the
 	// SortedKeys field order (email, name). NOW() columns bind no args.
-	if len(args) != 3 {
-		t.Fatalf("args = %v, want 3 (id + email + name)", args)
+	if len(args) != 5 {
+		t.Fatalf("args = %v, want 5 (id + email + name + created_at + updated_at)", args)
 	}
 	b, ok := args[0].([]byte)
 	if !ok || len(b) != 16 {
 		t.Errorf("args[0] = %v (%T), want the id as a 16-byte BINARY(16) form", args[0], args[0])
 	}
 	if args[1] != "a@x" || args[2] != "alice" {
-		t.Errorf("field args = %v, want [a@x alice] in that exact order", args[1:])
+		t.Errorf("field args = %v, want [a@x alice] in that exact order", args[1:3])
+	}
+	if args[3] != testNow || args[4] != testNow {
+		t.Errorf("timestamp args = %v, want the operation stamp twice", args[3:])
 	}
 }
 
 func TestBuildUpdate_MySQL(t *testing.T) {
 	fields := domain.Fields{"name": "bob", "email": "b@x"}
 	id := "22222222-2222-2222-2222-222222222222"
-	sql, args := buildUpdate(testMySQLDialect{}, "users", "id", id, fields, []string{"updated_at"})
+	sql, args := buildUpdate(testMySQLDialect{}, "users", "id", id, fields, []string{"updated_at"}, testNow, "")
 
-	want := "UPDATE `users` SET `email` = ?, `name` = ?, `updated_at` = NOW() WHERE `id` = ?"
+	want := "UPDATE `users` SET `email` = ?, `name` = ?, `updated_at` = ? WHERE `id` = ?"
 	if sql != want {
 		t.Fatalf("sql =\n  %q\nwant\n  %q", sql, want)
 	}
-	// SET args in SortedKeys order, then the WHERE id last (BINARY(16)-encoded).
-	if len(args) != 3 || args[0] != "b@x" || args[1] != "bob" {
-		t.Fatalf("SET args = %v, want [b@x bob ...] in that order", args)
+	// SET args in SortedKeys order, then the stamp, then the WHERE id last
+	// (BINARY(16)-encoded).
+	if len(args) != 4 || args[0] != "b@x" || args[1] != "bob" || args[2] != testNow {
+		t.Fatalf("SET args = %v, want [b@x bob %v ...] in that order", args, testNow)
 	}
-	b, ok := args[2].([]byte)
+	b, ok := args[3].([]byte)
 	if !ok || len(b) != 16 {
 		t.Errorf("WHERE id arg = %v (%T), want a 16-byte BINARY(16) form", args[2], args[2])
 	}
@@ -112,10 +116,10 @@ func TestBuildUpdate_MySQL(t *testing.T) {
 
 func TestArchiveUnarchiveDelete_MySQL(t *testing.T) {
 	d := testMySQLDialect{}
-	if got := archiveSQL(d, "users", "deleted_at", "id"); got != "UPDATE `users` SET `deleted_at` = NOW() WHERE `id` = ?" {
+	if got := archiveSQL(d, "users", "deleted_at", "id", ""); got != "UPDATE `users` SET `deleted_at` = ? WHERE `id` = ?" {
 		t.Errorf("archiveSQL = %q", got)
 	}
-	if got := unarchiveSQL(d, "users", "deleted_at", "id"); got != "UPDATE `users` SET `deleted_at` = NULL WHERE `id` = ?" {
+	if got := unarchiveSQL(d, "users", "deleted_at", "id", ""); got != "UPDATE `users` SET `deleted_at` = NULL WHERE `id` = ?" {
 		t.Errorf("unarchiveSQL = %q", got)
 	}
 	if got := deleteSQL(d, "users", "id"); got != "DELETE FROM `users` WHERE `id` = ?" {
@@ -147,8 +151,8 @@ func TestBuildSiblingUpsert_ArgsOrder_MySQL(t *testing.T) {
 
 func TestChildCascadeSQL_MySQL(t *testing.T) {
 	d := testMySQLDialect{}
-	archive := childCascadeSQL(d, "addresses", "deleted_at", "user_id", "NOW()", " IS NULL")
-	if archive != "UPDATE `addresses` SET `deleted_at` = NOW() WHERE `user_id` = ? AND `deleted_at` IS NULL" {
+	archive := archiveCascadeSQL(d, "addresses", "deleted_at", "user_id")
+	if archive != "UPDATE `addresses` SET `deleted_at` = ? WHERE `user_id` = ? AND `deleted_at` IS NULL" {
 		t.Errorf("archive cascade = %q", archive)
 	}
 	unarchive := childCascadeSQL(d, "addresses", "deleted_at", "user_id", "NULL", " IS NOT NULL")
@@ -174,7 +178,7 @@ func TestBuildInsert_MySQL_TypedIDFields(t *testing.T) {
 		"legacy_ref": "018f8b2c-1d3e-7a9b-bc4d-5e6f7a8b9c0d", // string → text, always
 	}
 	id := "11111111-1111-1111-1111-111111111111"
-	_, args := buildInsert(testMySQLDialect{}, "orders", "id", id, fields, nil)
+	_, args := buildInsert(testMySQLDialect{}, "orders", "id", id, fields, nil, testNow, "")
 
 	// Bind order: PK, then SortedKeys (absent_id, buyer_id, legacy_ref, partner_id).
 	if len(args) != 5 {

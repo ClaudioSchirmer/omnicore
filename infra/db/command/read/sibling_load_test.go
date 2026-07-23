@@ -131,7 +131,7 @@ func TestHydrateSiblings_NoSiblingsNoQuery(t *testing.T) {
 		t.Fatal("hydrateSiblings must not query when no siblings are declared")
 		return nil, nil
 	}
-	schema := NewTableSchema[*sibLoadEntity]("pessoa").PK("id").Field("Name", "name")
+	schema := NewTableSchema[*sibLoadEntity]("pessoa").PK("id").Revision("revision").Field("Name", "name")
 	l := NewAggregateLoader[*sibLoadEntity](fakeEngine(query), func() *sibLoadEntity { return &sibLoadEntity{} }).
 		WithSchema(schema)
 

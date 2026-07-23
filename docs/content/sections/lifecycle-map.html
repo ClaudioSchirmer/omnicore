@@ -14,6 +14,13 @@
         map readable. Manual handlers have full control of every layer and can opt out of any step; what they
         cannot opt out of is the SQL the persister emits, which is what the audit verb echoes.
     </p>
+    <p>
+        <code>$now</code> in the SQL below denotes the write operation's <strong>app-clock stamp</strong>: one
+        <code>time.Now()</code> instant (UTC, microsecond-truncated) minted in Go per operation and bound as an
+        ordinary argument — like the Go-minted UUID&nbsp;v7 id, never a dialect <code>NOW()</code> expression. Root,
+        children, siblings and the shared-base cascade of one operation all carry the same instant, known before
+        COMMIT (see <a href="#table-schema">Table schema → managed columns</a>).
+    </p>
 
     <h3>Root verbs</h3>
     <table>
@@ -36,7 +43,7 @@
                     <code>GetInsertable(e, svc, "GetInsertable")</code><br>
                     Mode <code>ModeInsert</code> → <code>IfInsert</code> + <code>IfInsertOrUpdate</code> fire on root and on every AVO via <code>runAggregateValidations</code>
                 </td>
-                <td><code>INSERT INTO users (...) RETURNING id</code></td>
+                <td><code>INSERT INTO users (id, ..., created_at, updated_at) VALUES ($1, ..., $now, $now)</code> <span class="muted">(id minted in Go — no RETURNING)</span></td>
                 <td><code>INSERTED</code></td>
                 <td><code>Upsert</code> (compose + insert)</td>
                 <td><code>insert</code></td>
@@ -48,7 +55,7 @@
                     <code>GetUpdatable(loaded, apply, svc, "GetUpdatable")</code><br>
                     Mode <code>ModeUpdate</code> → <code>IfUpdate</code> + <code>IfInsertOrUpdate</code> fire; AVOs validated the same way; <code>actionName="GetUpdatable"</code> available for verb-specific branches
                 </td>
-                <td><code>UPDATE users SET col=val, updated_at=NOW() WHERE id=$1</code></td>
+                <td><code>UPDATE users SET col=val, updated_at=$now WHERE id=$1</code></td>
                 <td><code>UPDATED</code></td>
                 <td><code>Upsert</code> (re-compose + replace)</td>
                 <td><code>update</code></td>
@@ -60,7 +67,7 @@
                     <code>GetPartialUpdatable(loaded, applyPartial, svc, "GetPartialUpdatable")</code><br>
                     Mode <code>ModeUpdate</code> → <strong>same <code>IfUpdate</code> as PUT</strong>; <code>actionName="GetPartialUpdatable"</code> differentiates when the rule needs to branch
                 </td>
-                <td><code>UPDATE users SET col=val, updated_at=NOW() WHERE id=$1</code> <span class="muted">(identical to PUT)</span></td>
+                <td><code>UPDATE users SET col=val, updated_at=$now WHERE id=$1</code> <span class="muted">(identical to PUT)</span></td>
                 <td><code>UPDATED</code> <span class="muted">(identical to PUT)</span></td>
                 <td><code>Upsert</code> <span class="muted">(identical to PUT)</span></td>
                 <td><code>update</code> <span class="muted">(same as PUT — SQL fingerprint identical; PUT vs PATCH lives in <code>actionName</code>)</span></td>
@@ -72,7 +79,7 @@
                     <code>GetArchivable(loaded, svc, "GetArchivable")</code><br>
                     Mode <code>ModeUpdate</code> + <code>actionName="GetArchivable"</code> → <code>IfUpdate</code> fires; rule branches on <code>actionName</code> for archive-specific invariants (owner check etc.). State-transition guard then verifies <code>ModeArchive</code> is declared
                 </td>
-                <td><code>UPDATE users SET deleted_at=NOW() WHERE id=$1</code></td>
+                <td><code>UPDATE users SET deleted_at=$now WHERE id=$1</code></td>
                 <td><code>ARCHIVED</code></td>
                 <td><code>Upsert</code> (default — document survives with <code>deleted_at</code> populated) — <code>Delete</code> on views with <code>DeleteOnArchive()</code></td>
                 <td><code>archive</code></td>
@@ -105,26 +112,29 @@
     </table>
 
     <div class="note">
-        <strong>Outbox <code>payload</code> per <code>event_type</code>.</strong> Every outbox row carries a JSON
-        payload alongside the <code>aggregate_id</code>: <code>INSERTED</code>/<code>UPDATED</code> carry the bound
-        column→value map (aggregates: a <code>{root, children}</code> snapshot);
-        <code>ARCHIVED</code>/<code>UNARCHIVED</code> carry the same field map <em>plus</em> the soft-delete column
-        reflecting the verb's outcome — a Go-side UTC timestamp on archive (informational; the row's authoritative
-        value is the database-stamped <code>NOW()</code>) or an explicit JSON <code>null</code> on unarchive — plus
-        the shared-base FK when the role links its base through a separate column; <code>DELETED</code> carries the
-        structural keys only (the row is gone): the PK under its physical column name plus the shared-base FK, and
-        the orphan purge's own <code>DELETED</code> row carries the base PK. The payload is informational for the
-        local SyncEngine — it re-reads the authoritative state by <code>aggregate_id</code> — and exists for CDC
-        consumers (Debezium → external subscribers, including <code>UpstreamSubscription</code>s in other services).
-        The base-table <code>UPDATED</code> fan-out row of a SharedBase write is the one exception and carries
-        <code>NULL</code>: it is a local recompose trigger, not a consumer-facing snapshot.
+        <strong>Outbox <code>payload</code> — the event-carried-state contract, ONE row per write.</strong> Every
+        body verb emits one self-sufficient JSON shape: all scalars column-keyed flat at the top (root/role fields ∪
+        sibling fields ∪ shared-base business fields ∪ the verb's managed timestamps — the EXACT app-clock values the
+        DML bound: <code>INSERTED</code> carries <code>created_at</code>+<code>updated_at</code>;
+        <code>UPDATED</code> only <code>updated_at</code>; <code>ARCHIVED</code> the soft-delete stamp;
+        <code>UNARCHIVED</code> an explicit <code>null</code>); an <code>_ids</code> structural block
+        (<code>id</code>, and for SharedBase roles <code>base_id</code> + <code>base_revision</code> — the
+        row-lock-serialized last-writer-wins token — plus <code>base_purged</code> on the purging DELETED); and
+        <code>_children</code>/<code>_base_children</code> groups, each item column-keyed with an <code>_op</code>
+        verb (insert/update/archive/delete/noop) from the same <code>OperationOf</code> categorization the persister
+        executed. <code>DELETED</code> keeps the historical structural keys (PK + shared-base FK) and only ADDS
+        <code>_ids</code>. A SharedBase write emits NO separate base-table row anymore — the SyncEngine fans out to
+        the other roles' documents from the role event's <code>_ids.base_id</code>; the one base-table event left is
+        the orphan purge's <code>DELETED</code>. Keys starting with <code>_</code> are the framework's reserved
+        namespace (a physical column may never claim them — boot failure at declaration).
     </div>
 
     <h3>Child cascade (aggregate)</h3>
     <p>
         Children of an <code>AggregateRoot</code> don't have their own outbox event or Mongo op — granularity B
-        means one outbox row per aggregate operation, and the read side re-composes the whole doc from the root's
-        event. What children DO have, per row, is per-op SQL emitted by <code>writeChildren</code> +
+        means one outbox row per aggregate operation, and the read side applies the root event's
+        <code>_children</code> deltas surgically — per child row, keyed by PK, each carrying its own
+        <code>_op</code> — never a whole-document recompose. What children DO have, per row, is per-op SQL emitted by <code>writeChildren</code> +
         cascade SQL emitted by <code>archiveAggregate</code>/<code>unarchiveAggregate</code>/<code>deleteAggregate</code>,
         and a per-row audit <code>op</code> that mirrors the SQL fingerprint identically to the root verb. On an
         <code>update</code>, each child's operation is <code>domain.OperationOf(OriginalStatus, CurrentStatus)</code> —
@@ -156,13 +166,13 @@
             <tr>
                 <td><code>update</code> — <code>OpUpdate</code> <span class="muted">(<code>Constructor→Changed</code> or <code>Constructor→Added</code>: a DB-loaded child changed or re-added)</span></td>
                 <td><code>User.ChangeAddressByID(id, replacement)</code> → <code>ChangeAggregateChild</code></td>
-                <td><code>UPDATE addresses SET col=val, updated_at=NOW() WHERE id=$1</code></td>
+                <td><code>UPDATE addresses SET col=val, updated_at=$now WHERE id=$1</code></td>
                 <td><code>updated</code></td>
             </tr>
             <tr>
                 <td><code>update</code> — <code>OpDelete</code> <span class="muted">(<code>Constructor→Removed</code>: a DB-loaded child removed)</span></td>
                 <td><code>User.ReplaceAddresses(addrs)</code> → <code>ReplaceAggregateChildrenOf</code> (or <code>RemoveAggregateChild</code> direct)</td>
-                <td><code>UPDATE addresses SET deleted_at=NOW() WHERE id=$1</code> <span class="muted">(the row stays in the DB, recoverable via unarchive)</span></td>
+                <td><code>UPDATE addresses SET deleted_at=$now WHERE id=$1</code> <span class="muted">(the row stays in the DB, recoverable via unarchive)</span></td>
                 <td><code>archived</code> <span class="muted">(same op as the cascade below — same SQL)</span></td>
             </tr>
             <tr>
@@ -174,7 +184,7 @@
             <tr>
                 <td><code>archive</code> — cascade</td>
                 <td><code>archiveAggregate</code> walks active children</td>
-                <td><code>UPDATE addresses SET deleted_at=NOW() WHERE user_id=$1 AND deleted_at IS NULL</code></td>
+                <td><code>UPDATE addresses SET deleted_at=$now WHERE user_id=$1 AND deleted_at IS NULL</code></td>
                 <td><code>archived</code></td>
             </tr>
             <tr>

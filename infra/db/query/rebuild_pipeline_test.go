@@ -8,31 +8,33 @@ import (
 )
 
 // countingStore is a concurrency-safe ReadModelStore recorder: it tallies how
-// many times each _id was bulk-upserted, under a mutex, so a workers>1 backfill
-// can be asserted for data integrity under the race detector (the plain fakeColl
-// is not safe for concurrent BulkUpsert). Every other port method is promoted
-// from the embedded fakeStore (unused by backfillInto, which only writes).
+// many times each _id was written by the backfill's batched port call, under a
+// mutex, so a workers>1 backfill can be asserted for data integrity under the
+// race detector (the plain fakeColl is not safe for concurrent bulk writes).
+// The backfill drives BulkApplyProjection (the guarded pipeline batch), so
+// that is the method counted. Every other port method is promoted from the
+// embedded fakeStore (unused by backfillInto, which only writes).
 type countingStore struct {
 	*fakeStore
 	mu   sync.Mutex
 	byID map[string]int
-	fail string // if set, BulkUpsert errors on any batch containing this id
+	fail string // if set, BulkApplyProjection errors on any batch containing this id
 }
 
 func newCountingStore() *countingStore {
 	return &countingStore{fakeStore: newFakeMongo(&fakeColl{}), byID: map[string]int{}}
 }
 
-func (c *countingStore) BulkUpsert(_ context.Context, _ PhysicalCollection, docs []IdentifiedDocument) error {
+func (c *countingStore) BulkApplyProjection(_ context.Context, _ PhysicalCollection, items []IdentifiedStages) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	for _, d := range docs {
-		if c.fail != "" && d.ID == c.fail {
+	for _, it := range items {
+		if c.fail != "" && it.ID == c.fail {
 			return errFake
 		}
 	}
-	for _, d := range docs {
-		c.byID[d.ID]++
+	for _, it := range items {
+		c.byID[it.ID]++
 	}
 	return nil
 }

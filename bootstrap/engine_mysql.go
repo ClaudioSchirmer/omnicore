@@ -18,8 +18,7 @@ import (
 func init() {
 	registerEngineBoot(dialectMySQL, engineBoot{
 		// The MySQL runner opens its own *sql.DB from the DSN, never the
-		// engine's live pool. No ensureFuturePartitions: the MySQL audit_events
-		// table is not range-partitioned.
+		// engine's live pool.
 		newMigrator: func(_ Deps, cfg *Config) *migration.Manager {
 			return migration.NewMySQL(cfg.Relational.DSN, cfg.Migrations.Dir)
 		},

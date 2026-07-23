@@ -49,9 +49,10 @@ type Execer interface {
 // is for entity tables, not the audit trail).
 //
 // Sentinel handling:
-//   - Actor == "" or persistence.AnonymousActor → NULL on the row so the
-//     audit_events_actor_idx (partial on Postgres: WHERE actor IS NOT NULL)
-//     excludes anonymous writes. Filters for "what alice did" stay on the index.
+//   - Actor == "" or persistence.AnonymousActor → NULL on the row: an anonymous
+//     write carries no principal, so the column is genuinely absent rather than a
+//     magic string, and a forensic "what alice did" filter (an ad-hoc index ops
+//     adds when needed) then matches real actors only.
 //   - ActorIssuer / TenantID empty → NULL on the row, same rationale.
 func InsertAuditEvent(ctx context.Context, exec Execer, placeholder func(int) string, encode func(any) any, ev appaudit.AuditEvent) error {
 	payload, err := buildAuditPayload(ev)

@@ -38,7 +38,7 @@ func (e *composerRole) AggregateChildren() []domain.AggregateValueObject {
 }
 
 func composerRoleView() *ViewDefinition {
-	base := core.NewSharedBase("pessoa").PK("id").Field("Name", "name").NaturalKey("name").
+	base := core.NewSharedBase("pessoa").Revision("revision").PK("id").Field("Name", "name").NaturalKey("name").
 		Child(core.NewTableSchema[composerRoleChild]("pessoa_filhos").
 			PK("id").FK("pessoa_id").Field("Label", "label"))
 	schema := core.NewTableSchema[*composerRole]("aluno").

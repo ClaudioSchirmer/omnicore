@@ -18,8 +18,8 @@ func (e *aggLoaderTestEntity) BuildRules(string, domain.Service, *domain.Rules) 
 func newAggLoaderTestEntity() *aggLoaderTestEntity { return &aggLoaderTestEntity{} }
 
 func TestAggregateLoader_FluentSettersChain(t *testing.T) {
-	rootScanner := func(Row) (*aggLoaderTestEntity, error) { return nil, nil }
-	childScanner := func(Rows) (domain.AggregateValueObject, error) { return nil, nil }
+	rootScanner := func(map[string]any) (*aggLoaderTestEntity, error) { return nil, nil }
+	childScanner := func(map[string]any) (domain.AggregateValueObject, error) { return nil, nil }
 
 	l := NewAggregateLoader[*aggLoaderTestEntity](nil, newAggLoaderTestEntity).
 		WithContextName("AggLoaderTest").
@@ -55,8 +55,8 @@ func TestAggregateLoader_NewInitializesChildScannersMap(t *testing.T) {
 }
 
 func TestAggregateLoader_WithChildScannerReplacesOnSameKey(t *testing.T) {
-	first := func(Rows) (domain.AggregateValueObject, error) { return nil, nil }
-	second := func(Rows) (domain.AggregateValueObject, error) { return nil, nil }
+	first := func(map[string]any) (domain.AggregateValueObject, error) { return nil, nil }
+	second := func(map[string]any) (domain.AggregateValueObject, error) { return nil, nil }
 
 	l := NewAggregateLoader[*aggLoaderTestEntity](nil, newAggLoaderTestEntity).
 		WithChildScanner("Address", first).
@@ -97,7 +97,7 @@ func TestChildSchema_ScanPlanIncludesPK(t *testing.T) {
 // The loader auto-scans every child declared on the schema unless a manual
 // scanner overrides it by type name.
 func TestAggregateLoader_WithSchema_DrivesChildren(t *testing.T) {
-	manualScanner := func(Rows) (domain.AggregateValueObject, error) { return nil, nil }
+	manualScanner := func(map[string]any) (domain.AggregateValueObject, error) { return nil, nil }
 	root := NewTableSchema[*aggLoaderTestEntity]("agg").
 		Child(NewTableSchema[fakeVO]("tags").PK("id").FK("agg_id").Field("Label", "label"))
 	l := NewAggregateLoader[*aggLoaderTestEntity](nil, newAggLoaderTestEntity).

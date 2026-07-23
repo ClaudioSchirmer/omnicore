@@ -13,7 +13,7 @@ type addrFixture struct {
 
 // baseWithChild builds a shared base (pessoa) that owns a native child (endereco).
 func baseWithChild() *TableSchema {
-	return NewSharedBase("pessoa").
+	return NewSharedBase("pessoa").Revision("revision").
 		PK("id").
 		Field("Name", "name").
 		Field("Created", "document").
@@ -76,19 +76,19 @@ func TestBaseChildren_ResolveAggregateChild_RoleVsBase(t *testing.T) {
 func TestBaseChildren_BootGuards(t *testing.T) {
 	// A shared base cannot declare a Sibling.
 	assertPanics(t, "Sibling on a shared base", func() {
-		NewSharedBase("pessoa").PK("id").Field("Name", "name").NaturalKey("name").
+		NewSharedBase("pessoa").Revision("revision").PK("id").Field("Name", "name").NaturalKey("name").
 			Sibling(NewSiblingSchema[addrFixture]("pessoa_x").Field("Street", "street"))
 	})
 	// A base-child cannot itself nest a Child (no grandchildren).
 	assertPanics(t, "grandchild under a base child", func() {
 		grand := NewTableSchema[embedFixture]("grand").PK("id").FK("endereco_id")
-		NewSharedBase("pessoa").PK("id").Field("Name", "name").NaturalKey("name").
+		NewSharedBase("pessoa").Revision("revision").PK("id").Field("Name", "name").NaturalKey("name").
 			Child(NewTableSchema[addrFixture]("endereco").PK("id").FK("pessoa_id").
 				Field("Street", "street").Child(grand))
 	})
 	// A base-child cannot declare a Sibling (v1).
 	assertPanics(t, "sibling under a base child", func() {
-		NewSharedBase("pessoa").PK("id").Field("Name", "name").NaturalKey("name").
+		NewSharedBase("pessoa").Revision("revision").PK("id").Field("Name", "name").NaturalKey("name").
 			Child(NewTableSchema[addrFixture]("endereco").PK("id").FK("pessoa_id").
 				Field("Street", "street").
 				Sibling(NewSiblingSchema[addrFixture]("endereco_x").Field("Zip", "zip")))
@@ -106,7 +106,7 @@ func TestBaseChildren_ValidateSharedBaseChildren(t *testing.T) {
 	})
 	// A base-child with SoftDelete but a base without SoftDelete is rejected.
 	assertPanics(t, "base child soft-delete without base soft-delete", func() {
-		base := NewSharedBase("pessoa").PK("id").Field("Name", "name").NaturalKey("name").
+		base := NewSharedBase("pessoa").Revision("revision").PK("id").Field("Name", "name").NaturalKey("name").
 			Child(NewTableSchema[addrFixture]("endereco").PK("id").FK("pessoa_id").
 				Field("Street", "street").SoftDelete("deleted_at"))
 		role := NewTableSchema[schemaSample]("aluno").PK("id").Field("Removed", "matricula").
@@ -114,7 +114,7 @@ func TestBaseChildren_ValidateSharedBaseChildren(t *testing.T) {
 		role.ValidateSharedBaseChildren()
 	})
 	// A base + base-child that BOTH declare SoftDelete validate cleanly (all-or-nothing satisfied).
-	base := NewSharedBase("pessoa").PK("id").Field("Name", "name").NaturalKey("name").SoftDelete("deleted_at").
+	base := NewSharedBase("pessoa").Revision("revision").PK("id").Field("Name", "name").NaturalKey("name").SoftDelete("deleted_at").
 		Child(NewTableSchema[addrFixture]("endereco").PK("id").FK("pessoa_id").
 			Field("Street", "street").SoftDelete("deleted_at"))
 	role := NewTableSchema[schemaSample]("aluno").PK("id").Field("Removed", "matricula").
@@ -131,7 +131,7 @@ func TestBaseChildren_ValidateSharedBaseChildren(t *testing.T) {
 func TestChild_CannotReferenceSharedBase(t *testing.T) {
 	// A root's own child that itself references a SharedBase is rejected at boot.
 	assertPanics(t, "root child referencing a shared base", func() {
-		base := NewSharedBase("pessoa").PK("id").Field("Street", "b_street").NaturalKey("b_street")
+		base := NewSharedBase("pessoa").Revision("revision").PK("id").Field("Street", "b_street").NaturalKey("b_street")
 		childWithBase := NewTableSchema[addrFixture]("endereco").PK("id").FK("root_id").
 			SharedBase(base, "pessoa_id")
 		NewTableSchema[schemaSample]("root").PK("id").Field("Removed", "matricula").
@@ -139,15 +139,15 @@ func TestChild_CannotReferenceSharedBase(t *testing.T) {
 	})
 	// The same rule on the base side: a base-child may not reference a SharedBase.
 	assertPanics(t, "base child referencing a shared base", func() {
-		other := NewSharedBase("org").PK("id").Field("Street", "o_street").NaturalKey("o_street")
+		other := NewSharedBase("org").Revision("revision").PK("id").Field("Street", "o_street").NaturalKey("o_street")
 		baseChildWithBase := NewTableSchema[addrFixture]("endereco").PK("id").FK("pessoa_id").
 			SharedBase(other, "org_id")
-		NewSharedBase("pessoa").PK("id").Field("Name", "name").NaturalKey("name").
+		NewSharedBase("pessoa").Revision("revision").PK("id").Field("Name", "name").NaturalKey("name").
 			Child(baseChildWithBase)
 	})
 	// Control: a normal root child (no SharedBase) plus a separate role that DOES
 	// reference the base is the supported shape — it must NOT panic.
-	base := NewSharedBase("pessoa").PK("id").Field("Name", "name").NaturalKey("name")
+	base := NewSharedBase("pessoa").Revision("revision").PK("id").Field("Name", "name").NaturalKey("name")
 	NewTableSchema[schemaSample]("aluno").PK("id").Field("Removed", "matricula").
 		Child(NewTableSchema[addrFixture]("nota").PK("id").FK("aluno_id").Field("Street", "street")).
 		SharedBase(base, "pessoa_id")

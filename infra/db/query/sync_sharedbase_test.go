@@ -13,7 +13,7 @@ import (
 // document referencing a changed shared identity.
 
 func fanOutRoleSchema() *core.TableSchema {
-	base := core.NewSharedBase("pessoa").PK("id").Field("Name", "name").NaturalKey("name")
+	base := core.NewSharedBase("pessoa").Revision("revision").PK("id").Field("Name", "name").NaturalKey("name")
 	return core.NewTableSchema[*builderTestEntity]("aluno").
 		PK("id").
 		Field("Email", "email").
@@ -48,7 +48,7 @@ func TestProcess_SharedBaseFanOut(t *testing.T) {
 	s := NewSyncEngine(eng, newFakeMongo(coll), identityResolver, nil, "", []*ViewDefinition{view}, 1)
 
 	// A base change (aggregate_type = the base table) fans out to the role views.
-	if err := s.process(context.Background(), kafkaEvent{AggregateType: "pessoa", EventType: "UPDATED", AggregateID: "p1"}); err != nil {
+	if err := s.process(context.Background(), kafkaEvent{AggregateType: "pessoa", EventType: "UPDATED", AggregateID: "p1", Payload: []byte(`{"_ids":{"id":"p1"}}`)}); err != nil {
 		t.Fatalf("process base event: %v", err)
 	}
 	if len(coll.updates) != 1 {
@@ -64,7 +64,7 @@ func TestProcess_SharedBaseFanOut_NoReferencingDocs(t *testing.T) {
 	view := View("aluno").Root("aluno").Schema(fanOutRoleSchema()).Version(1)
 	s := NewSyncEngine(eng, newFakeMongo(coll), identityResolver, nil, "", []*ViewDefinition{view}, 1)
 
-	if err := s.process(context.Background(), kafkaEvent{AggregateType: "pessoa", EventType: "UPDATED", AggregateID: "p1"}); err != nil {
+	if err := s.process(context.Background(), kafkaEvent{AggregateType: "pessoa", EventType: "UPDATED", AggregateID: "p1", Payload: []byte(`{"_ids":{"id":"p1"}}`)}); err != nil {
 		t.Fatalf("process base event: %v", err)
 	}
 	if len(coll.updates) != 0 || len(coll.deletes) != 0 {
@@ -83,7 +83,8 @@ func TestProcess_SharedBaseFanOut_VanishedRoleDeleted(t *testing.T) {
 	view := View("aluno").Root("aluno").Schema(fanOutRoleSchema()).Version(1)
 	s := NewSyncEngine(eng, newFakeMongo(coll), identityResolver, nil, "", []*ViewDefinition{view}, 1)
 
-	if err := s.process(context.Background(), kafkaEvent{AggregateType: "pessoa", EventType: "DELETED", AggregateID: "p1"}); err != nil {
+	if err := s.process(context.Background(), kafkaEvent{AggregateType: "pessoa", EventType: "DELETED", AggregateID: "p1",
+		Payload: []byte(`{"_ids":{"id":"p1","base_purged":true}}`)}); err != nil {
 		t.Fatalf("process base event: %v", err)
 	}
 	if len(coll.updates) != 0 {
@@ -103,7 +104,7 @@ func TestProcess_SharedBaseFanOut_Errors(t *testing.T) {
 		}
 		return nil, nil
 	}
-	event := kafkaEvent{AggregateType: "pessoa", EventType: "UPDATED", AggregateID: "p1"}
+	event := kafkaEvent{AggregateType: "pessoa", EventType: "UPDATED", AggregateID: "p1", Payload: []byte(`{"_ids":{"id":"p1"}}`)}
 
 	t.Run("findIDsError", func(t *testing.T) {
 		coll := &fakeColl{findErr: errFake}
@@ -127,4 +128,101 @@ func TestProcess_SharedBaseFanOut_Errors(t *testing.T) {
 			t.Fatal("expected the applyUpsert error to propagate")
 		}
 	})
+}
+
+// A ROLE event carrying the payload drives the SAME fan-out from its
+// _ids.base_id — the empty base-table row no longer exists, so this is the
+// steady-state trigger. The role's own view recompose (byPGTable) runs too:
+// the fan-out targets a1 via the base id AND the direct route targets a1 via
+// the aggregate id — both upserts land (idempotent by _id).
+func TestProcess_RoleEventFansOutViaPayloadIDs(t *testing.T) {
+	coll := &fakeColl{docs: []any{map[string]any{"_id": "a1"}}}
+	eng := composerEngine(func(sql string, args []any) ([]map[string]any, error) {
+		switch {
+		case strings.Contains(sql, "FROM pessoa"):
+			return mapsFromColsData([]string{"id", "name"}, [][]any{{"p1", "Ana"}}), nil
+		case strings.Contains(sql, "FROM aluno"):
+			return mapsFromColsData([]string{"id", "email", "pessoa_id"}, [][]any{{"a1", "a@x", "p1"}}), nil
+		}
+		return nil, nil
+	})
+	view := View("aluno").Root("aluno").Schema(fanOutRoleSchema()).Version(1)
+	s := NewSyncEngine(eng, newFakeMongo(coll), identityResolver, nil, "", []*ViewDefinition{view}, 1)
+
+	event := kafkaEvent{
+		AggregateType: "aluno", EventType: "UPDATED", AggregateID: "a1",
+		Payload: []byte(`{"email":"a@x","name":"Ana","_ids":{"id":"a1","base_id":"p1","base_revision":3}}`),
+	}
+	if err := s.process(context.Background(), event); err != nil {
+		t.Fatalf("process role event: %v", err)
+	}
+	if len(coll.updates) < 2 {
+		t.Errorf("the role event must fan out (base id from _ids) AND recompose its own doc, got %d upserts", len(coll.updates))
+	}
+}
+
+// A role event whose payload lacks the _ids block is skipped entirely — no
+// fan-out, no projection (a corrupt or foreign payload, never a framework one).
+func TestProcess_RoleEventWithoutIDs_Skipped(t *testing.T) {
+	coll := &fakeColl{docs: []any{map[string]any{"_id": "a1"}}}
+	eng := composerEngine(func(sql string, args []any) ([]map[string]any, error) {
+		switch {
+		case strings.Contains(sql, "FROM pessoa"):
+			return mapsFromColsData([]string{"id", "name"}, [][]any{{"p1", "Ana"}}), nil
+		case strings.Contains(sql, "FROM aluno"):
+			return mapsFromColsData([]string{"id", "email", "pessoa_id"}, [][]any{{"a1", "a@x", "p1"}}), nil
+		}
+		return nil, nil
+	})
+	view := View("aluno").Root("aluno").Schema(fanOutRoleSchema()).Version(1)
+	s := NewSyncEngine(eng, newFakeMongo(coll), identityResolver, nil, "", []*ViewDefinition{view}, 1)
+
+	event := kafkaEvent{AggregateType: "aluno", EventType: "UPDATED", AggregateID: "a1",
+		Payload: []byte(`{"email":"a@x"}`)}
+	if err := s.process(context.Background(), event); err != nil {
+		t.Fatalf("process: %v", err)
+	}
+	// A payload without _ids neither fans out nor projects — it is skipped.
+	if len(coll.updates) != 0 {
+		t.Errorf("a payload without _ids must be skipped entirely, got %d upserts", len(coll.updates))
+	}
+}
+
+// The payload fan-out writes with upsert=false; the writer's OWN projection
+// with upsert=true. The fan-out targets ids from a FindIDsByField snapshot, so
+// a document missing at write time is a concurrently-deleted role — upserting
+// there would resurrect a base-fields-only skeleton (no PK, no FK, no
+// deleted_at) that no future event could clean and that default reads would
+// list as an active row. This pins the flag on both writes of one role event.
+func TestProcess_PayloadFanOut_NeverUpserts(t *testing.T) {
+	coll := &fakeColl{docs: []any{map[string]any{"_id": "a1"}}}
+	eng := composerEngine(func(string, []any) ([]map[string]any, error) { return nil, nil })
+	view := View("aluno").Root("aluno").Schema(fanOutRoleSchema()).Version(1)
+	s := NewSyncEngine(eng, newFakeMongo(coll), identityResolver, nil, "", []*ViewDefinition{view}, 1)
+
+	event := kafkaEvent{
+		AggregateType: "aluno", EventType: "UPDATED", AggregateID: "a1",
+		Payload: []byte(`{"email":"a@x","name":"Ana","_ids":{"id":"a1","revision":2,"base_id":"p1","base_revision":3}}`),
+	}
+	if err := s.process(context.Background(), event); err != nil {
+		t.Fatalf("process role event: %v", err)
+	}
+	var fanOuts, own int
+	for _, u := range coll.updates {
+		upsert, ok := u["$upsert"].(bool)
+		if !ok {
+			t.Fatalf("expected only pipeline writes on this path, got %v", u)
+		}
+		if upsert {
+			own++
+		} else {
+			fanOuts++
+		}
+	}
+	if fanOuts != 1 {
+		t.Errorf("the fan-out write must run exactly once with upsert=false, got %d (updates: %d)", fanOuts, len(coll.updates))
+	}
+	if own != 1 {
+		t.Errorf("the own-document projection must run exactly once with upsert=true, got %d (updates: %d)", own, len(coll.updates))
+	}
 }

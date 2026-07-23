@@ -3,6 +3,7 @@ package query
 import (
 	"context"
 	"fmt"
+	"sort"
 )
 
 // verifySampleSize bounds the value-sample pass: this many source ids are
@@ -127,8 +128,10 @@ func (s *SyncEngine) streamSourceIDs(ctx context.Context, view *ViewDefinition, 
 	return rows.Err()
 }
 
-// recomposeInto composes the given ids from the source and bulk-upserts the
-// non-nil results into target. Used by verify's forward pass to fill a gap.
+// recomposeInto composes the given ids from the source and applies the non-nil
+// results into target as GUARDED pipelines — the same discipline as the
+// backfill batches (a verify repair racing a fresher dual-applied write must
+// not regress it). Used by verify's forward pass to fill a gap.
 func (s *SyncEngine) recomposeInto(ctx context.Context, view *ViewDefinition, target PhysicalCollection, ids []string) error {
 	composed, err := s.composer.ComposeBatch(ctx, view, ids)
 	if err != nil {
@@ -138,11 +141,11 @@ func (s *SyncEngine) recomposeInto(ctx context.Context, view *ViewDefinition, ta
 		return nil
 	}
 	pkCol := view.schema.PKColumn()
-	docs := make([]IdentifiedDocument, 0, len(composed))
+	items := make([]IdentifiedStages, 0, len(composed))
 	for _, doc := range composed {
-		docs = append(docs, IdentifiedDocument{ID: fmt.Sprintf("%v", doc[pkCol]), Doc: doc})
+		items = append(items, IdentifiedStages{ID: fmt.Sprintf("%v", doc[pkCol]), Stages: consultGuardedStages(view, doc)})
 	}
-	return s.mongo.BulkUpsert(ctx, target, docs)
+	return s.mongo.BulkApplyProjection(ctx, target, items)
 }
 
 // verifyValueSample recomposes a bounded sample of source ids and compares each
@@ -164,7 +167,8 @@ func (s *SyncEngine) verifyValueSample(ctx context.Context, view *ViewDefinition
 			return err
 		}
 		if !ok {
-			return fmt.Errorf("verify %q: shadow document %q diverges in shape from a fresh compose", view.name, id)
+			return fmt.Errorf("verify %q: shadow document %q diverges in shape from a fresh compose%s",
+				view.name, id, s.shapeDiffDetail(ctx, view, shadow, id))
 		}
 	}
 	return nil
@@ -192,8 +196,40 @@ func (s *SyncEngine) sampleMatches(ctx context.Context, view *ViewDefinition, sh
 	return sameFieldShape(fresh, stored[0]), nil
 }
 
-// sameFieldShape compares two documents by their top-level field names, ignoring
-// Mongo's _id (present on the stored doc, absent on a fresh compose).
+// shapeDiffDetail names the diverging top-level keys for the verify error —
+// " (fresh-only: [...]; stored-only: [...])" — so an equivalence failure is
+// diagnosable from the log alone. Best-effort: any re-read error yields "".
+func (s *SyncEngine) shapeDiffDetail(ctx context.Context, view *ViewDefinition, shadow PhysicalCollection, id string) string {
+	fresh, err := s.composer.Compose(ctx, view, id)
+	if err != nil || fresh == nil {
+		return ""
+	}
+	stored, err := s.mongo.FindManyByField(ctx, shadow, "_id", id)
+	if err != nil || len(stored) == 0 {
+		return ""
+	}
+	fk := fieldNamesExceptID(fresh)
+	sk := fieldNamesExceptID(stored[0])
+	var freshOnly, storedOnly []string
+	for k := range fk {
+		if _, ok := sk[k]; !ok {
+			freshOnly = append(freshOnly, k)
+		}
+	}
+	for k := range sk {
+		if _, ok := fk[k]; !ok {
+			storedOnly = append(storedOnly, k)
+		}
+	}
+	sort.Strings(freshOnly)
+	sort.Strings(storedOnly)
+	return fmt.Sprintf(" (fresh-only: %v; stored-only: %v)", freshOnly, storedOnly)
+}
+
+// sameFieldShape compares two documents by their top-level field names,
+// ignoring Mongo's _id AND every framework-internal "_"-prefixed field (the
+// projection watermarks _revision/_base_revision): a document written before
+// the watermarks existed must not read as drift against a fresh compose.
 func sameFieldShape(fresh, stored Document) bool {
 	fk := fieldNamesExceptID(fresh)
 	sk := fieldNamesExceptID(stored)
@@ -211,9 +247,10 @@ func sameFieldShape(fresh, stored Document) bool {
 func fieldNamesExceptID(d Document) map[string]struct{} {
 	set := make(map[string]struct{}, len(d))
 	for k := range d {
-		if k != "_id" {
-			set[k] = struct{}{}
+		if len(k) > 0 && k[0] == '_' {
+			continue // _id + framework watermarks (_revision/_base_revision)
 		}
+		set[k] = struct{}{}
 	}
 	return set
 }

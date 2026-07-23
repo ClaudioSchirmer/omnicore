@@ -11,9 +11,8 @@ import (
 
 // Coverage for the SharedBaseView SyncEngine routing: the byRoleTable index,
 // the role-table topic subscription, and the base-rooted recompose — base id
-// resolution per link model (shared-PK identity / separate-FK source lookup /
-// DELETED payload keys), the purge-convergence delete and the malformed-payload
-// skip.
+// resolved from the event payload's _ids.base_id (no source consult), the
+// purge-convergence delete and the missing-payload skip.
 
 func TestBuildViewIndex_RegistersRoleTables(t *testing.T) {
 	idx := buildViewIndex([]*ViewDefinition{sbvView()})
@@ -70,8 +69,8 @@ func sbvBaseRows() map[string][]map[string]any {
 	}
 }
 
-// A shared-PK role event resolves the base id by identity (aggregate_id IS the
-// base id) and recomposes the person document.
+// A role event resolves the base id from its payload's _ids.base_id and
+// recomposes the person document.
 func TestProcess_RoleEvent_SharedPKIdentity(t *testing.T) {
 	var calls []string
 	var args [][]any
@@ -79,49 +78,51 @@ func TestProcess_RoleEvent_SharedPKIdentity(t *testing.T) {
 
 	if err := s.process(context.Background(), kafkaEvent{
 		AggregateType: "sbv_users", EventType: "UPDATED", AggregateID: "p1",
+		Payload: []byte(`{"_ids":{"id":"p1","base_id":"p1"}}`),
 	}); err != nil {
 		t.Fatalf("process: %v", err)
 	}
 	if len(coll.updates) != 1 {
 		t.Fatalf("a shared-PK role event must recompose the person doc, got %d upserts", len(coll.updates))
 	}
-	doc, _ := coll.updates[0]["$set"].(Document)
+	// The consult write is a guarded pipeline now; effectiveDoc asserts the
+	// CONTENT it materializes — unchanged from the full-$set era.
+	doc := effectiveDoc(coll.updates[0])
 	if doc["id"] != "p1" || doc["name"] != "Ana" {
 		t.Errorf("recomposed doc must be the person p1, got %v", doc)
 	}
 }
 
-// A separate-FK role event (row still exists) consults the source for the FK.
-func TestProcess_RoleEvent_SeparateFKConsultsSource(t *testing.T) {
+// A separate-FK role event resolves the base id from its payload's _ids.base_id
+// — never a source consult of the role row.
+func TestProcess_RoleEvent_SeparateFKFromPayload(t *testing.T) {
 	var calls []string
 	var args [][]any
 	s, coll := sbvSyncEngine(t, sbvBaseRows(), &calls, &args)
 
 	if err := s.process(context.Background(), kafkaEvent{
 		AggregateType: "sbv_employees", EventType: "ARCHIVED", AggregateID: "e9",
+		Payload: []byte(`{"_ids":{"id":"e9","base_id":"p1"}}`),
 	}); err != nil {
 		t.Fatalf("process: %v", err)
 	}
 	if len(coll.updates) != 1 {
 		t.Fatalf("a separate-FK role event must recompose the person doc, got %d upserts", len(coll.updates))
 	}
-	// The resolution consults the role row BY ITS PK (the consult-always rule).
-	consulted := false
+	// The base id came from the payload — no FK-resolution consult of the role
+	// row by its PK.
 	for i, sql := range calls {
-		if strings.Contains(sql, "FROM sbv_employees") && strings.Contains(sql, "WHERE id =") {
-			if len(args[i]) == 1 && args[i][0] == "e9" {
-				consulted = true
-			}
+		if strings.Contains(sql, "FROM sbv_employees") && strings.Contains(sql, "WHERE id =") &&
+			len(args[i]) == 1 && args[i][0] == "e9" {
+			t.Errorf("the base id must come from the payload, not a source consult, got %q", sql)
 		}
-	}
-	if !consulted {
-		t.Errorf("the FK must be resolved from the source row (pk lookup), calls: %v", calls)
 	}
 }
 
-// A separate-FK role DELETED has nothing left to consult: the base id comes
-// from the payload's structural keys, and the recompose flips the segment.
-func TestProcess_RoleDeleted_SeparateFKUsesPayload(t *testing.T) {
+// A separate-FK role DELETED resolves the base id from its payload's
+// _ids.base_id and recomposes the person document (the deleted role's segment
+// flips to explicit nil); the vanished row is never consulted.
+func TestProcess_RoleDeleted_UsesPayloadBaseID(t *testing.T) {
 	rows := sbvBaseRows()
 	delete(rows, "FROM sbv_employees") // the row is gone
 	var calls []string
@@ -130,14 +131,15 @@ func TestProcess_RoleDeleted_SeparateFKUsesPayload(t *testing.T) {
 
 	if err := s.process(context.Background(), kafkaEvent{
 		AggregateType: "sbv_employees", EventType: "DELETED", AggregateID: "e9",
-		Payload: []byte(`{"id":"e9","person_id":"p1"}`),
+		Payload: []byte(`{"id":"e9","person_id":"p1","_ids":{"id":"e9","base_id":"p1"}}`),
 	}); err != nil {
 		t.Fatalf("process: %v", err)
 	}
 	if len(coll.updates) != 1 {
 		t.Fatalf("a role DELETED must recompose the person doc via the payload FK, got %d upserts", len(coll.updates))
 	}
-	doc, _ := coll.updates[0]["$set"].(Document)
+	// Guarded-pipeline write; effectiveDoc asserts the materialized content.
+	doc := effectiveDoc(coll.updates[0])
 	if seg, present := doc["sbvEmployee"]; !present || seg != nil {
 		t.Errorf("the deleted role's segment must recompose to explicit nil, got %#v", seg)
 	}
@@ -158,7 +160,7 @@ func TestProcess_RoleDeleted_PurgedIdentityRemovesDoc(t *testing.T) {
 
 	if err := s.process(context.Background(), kafkaEvent{
 		AggregateType: "sbv_employees", EventType: "DELETED", AggregateID: "e9",
-		Payload: []byte(`{"id":"e9","person_id":"p1"}`),
+		Payload: []byte(`{"id":"e9","person_id":"p1","_ids":{"id":"e9","base_id":"p1","base_purged":true}}`),
 	}); err != nil {
 		t.Fatalf("process: %v", err)
 	}
@@ -219,6 +221,7 @@ func TestProcess_BaseArchived_DeleteOnArchiveRemovesDoc(t *testing.T) {
 
 	if err := s.process(context.Background(), kafkaEvent{
 		AggregateType: "sbv_persons", EventType: "ARCHIVED", AggregateID: "p1",
+		Payload: []byte(`{"_ids":{"id":"p1"}}`),
 	}); err != nil {
 		t.Fatalf("process: %v", err)
 	}
@@ -247,21 +250,7 @@ func TestRebuildScanSQL(t *testing.T) {
 // Error propagation of the base-rooted recompose: the resolve lookup, the
 // composition, the delete and the upsert each surface their failure.
 func TestProcess_RoleEvent_ErrorPropagation(t *testing.T) {
-	// resolveBaseID lookup failure (separate-FK, non-DELETED).
-	engErr := composerEngine(func(sql string, a []any) ([]map[string]any, error) {
-		if strings.Contains(sql, "FROM sbv_employees") {
-			return nil, errFake
-		}
-		return nil, nil
-	})
-	s := NewSyncEngine(engErr, newFakeMongo(&fakeColl{}), identityResolver, nil, "", []*ViewDefinition{sbvView()}, 1)
-	if err := s.process(context.Background(), kafkaEvent{
-		AggregateType: "sbv_employees", EventType: "UPDATED", AggregateID: "e9",
-	}); err == nil {
-		t.Error("a resolve lookup failure must propagate")
-	}
-
-	// Compose failure (the person fetch errors after a successful resolve).
+	// Compose failure (the person fetch errors after the payload resolves the base id).
 	engCompose := composerEngine(func(sql string, a []any) ([]map[string]any, error) {
 		switch {
 		case strings.Contains(sql, "FROM sbv_persons"):
@@ -271,9 +260,10 @@ func TestProcess_RoleEvent_ErrorPropagation(t *testing.T) {
 		}
 		return nil, nil
 	})
-	s = NewSyncEngine(engCompose, newFakeMongo(&fakeColl{}), identityResolver, nil, "", []*ViewDefinition{sbvView()}, 1)
+	s := NewSyncEngine(engCompose, newFakeMongo(&fakeColl{}), identityResolver, nil, "", []*ViewDefinition{sbvView()}, 1)
 	if err := s.process(context.Background(), kafkaEvent{
 		AggregateType: "sbv_employees", EventType: "UPDATED", AggregateID: "e9",
+		Payload: []byte(`{"_ids":{"id":"e9","base_id":"p1"}}`),
 	}); err == nil {
 		t.Error("a compose failure must propagate")
 	}
@@ -285,6 +275,7 @@ func TestProcess_RoleEvent_ErrorPropagation(t *testing.T) {
 	s = NewSyncEngine(engOK, newFakeMongo(&fakeColl{updateErr: errFake}), identityResolver, nil, "", []*ViewDefinition{sbvView()}, 1)
 	if err := s.process(context.Background(), kafkaEvent{
 		AggregateType: "sbv_users", EventType: "UPDATED", AggregateID: "p1",
+		Payload: []byte(`{"_ids":{"id":"p1","base_id":"p1"}}`),
 	}); err == nil {
 		t.Error("an upsert failure must propagate")
 	}
@@ -295,36 +286,26 @@ func TestProcess_RoleEvent_ErrorPropagation(t *testing.T) {
 	s = NewSyncEngine(engEmpty, newFakeMongo(&fakeColl{deleteErr: errFake}), identityResolver, nil, "", []*ViewDefinition{sbvView()}, 1)
 	if err := s.process(context.Background(), kafkaEvent{
 		AggregateType: "sbv_employees", EventType: "DELETED", AggregateID: "e9",
-		Payload: []byte(`{"id":"e9","person_id":"p1"}`),
+		Payload: []byte(`{"id":"e9","person_id":"p1","_ids":{"id":"e9","base_id":"p1"}}`),
 	}); err == nil {
 		t.Error("a delete failure must propagate")
 	}
 }
 
-// resolveBaseID defensive branches: a role without a SharedBase reference
-// yields "" (unreachable through Role(), which vetoes it), and a role row whose
-// FK column is NULL yields "" too.
-func TestResolveBaseID_DefensiveBranches(t *testing.T) {
-	var calls []string
-	var args [][]any
-	s, _ := sbvSyncEngine(t, map[string][]map[string]any{
-		"FROM sbv_employees": mapsFromColsData([]string{"id", "person_id", "employee_number"},
-			[][]any{{"e9", nil, "M1"}}), // NULL FK
-	}, &calls, &args)
-
-	noRef := roleDef{schema: core.NewTableSchema[*sbvUser]("loose").PK("id").Field("UserName", "user_name")}
-	if id, err := s.resolveBaseID(context.Background(), kafkaEvent{AggregateID: "x"}, noRef); err != nil || id != "" {
-		t.Errorf("a role without SharedBaseRef must resolve to nothing, got %q err=%v", id, err)
+// resolveBaseID reads the shared-base id straight from the payload's
+// _ids.base_id and touches no database; an event without it resolves to "".
+func TestResolveBaseID_PayloadAndEmpty(t *testing.T) {
+	if got := resolveBaseID(kafkaEvent{
+		Payload: []byte(`{"_ids":{"id":"e9","base_id":"p1"}}`),
+	}); got != "p1" {
+		t.Errorf("payload base id must win, got %q", got)
 	}
-	empRole := roleDef{schema: sbvEmployeeSchema(), segment: "sbvEmployee"}
-	if id, err := s.resolveBaseID(context.Background(), kafkaEvent{
-		AggregateType: "sbv_employees", EventType: "UPDATED", AggregateID: "e9",
-	}, empRole); err != nil || id != "" {
-		t.Errorf("a NULL FK must resolve to nothing, got %q err=%v", id, err)
+	if got := resolveBaseID(kafkaEvent{AggregateID: "x"}); got != "" {
+		t.Errorf("an event without _ids.base_id must resolve to nothing, got %q", got)
 	}
 }
 
-// extractEvent carries the payload (routing hint) and every header, including
+// extractEvent carries the payload and every header, including
 // the traceparent link.
 func TestExtractEvent_CarriesPayloadAndHeaders(t *testing.T) {
 	msg := kafkaMessageFor(t, "sbv_employees", "DELETED", "e9", `{"id":"e9","person_id":"p1"}`)

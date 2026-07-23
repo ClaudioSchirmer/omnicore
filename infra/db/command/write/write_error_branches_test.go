@@ -432,6 +432,63 @@ func TestBatch_AllVerbsOneTx(t *testing.T) {
 	}
 }
 
+// A batch INSERT knows its own revision (a row born in this TX is 1 by
+// definition) and must NOT read it back; a batch UPDATE cannot know the
+// post-increment value and must. Pins the split introduced by fillBaseMeta —
+// a regression here silently re-adds one wasted SELECT per inserted item.
+func TestBatch_InsertSkipsOwnRevisionRead(t *testing.T) {
+	revisionReads := func(queries []string) int {
+		n := 0
+		for _, q := range queries {
+			// The own-revision read may carry created_at in the same statement
+			// (the tombstone's incarnation discriminator rides for free) — both
+			// forms count as ONE revision read.
+			if strings.HasPrefix(q, "SELECT revision ") || strings.HasPrefix(q, "SELECT revision,") {
+				n++
+			}
+		}
+		return n
+	}
+	t.Run("insertDoesNotRead", func(t *testing.T) {
+		var queries []string
+		tx := &recTx{count: 1, queryFn: func(sql string, _ []any) (Rows, error) {
+			queries = append(queries, sql)
+			return nil, nil
+		}}
+		be := newFlatBE(&recBeginner{tx: tx})
+		ins, err := domain.GetInsertable(&builderTestEntity{Name: "a", Email: "a@x"}, nil, "GetInsertable")
+		if err != nil {
+			t.Fatalf("GetInsertable: %v", err)
+		}
+		if _, err := be.Batch(newBuilderCtx(), domain.NewBatch([]domain.ValidEntity{ins}), []*TableSchema{builderTestSchema}); err != nil {
+			t.Fatalf("Batch: %v", err)
+		}
+		if n := revisionReads(queries); n != 0 {
+			t.Errorf("a batch INSERT must not read its own revision back, got %d reads: %v", n, queries)
+		}
+	})
+	t.Run("updateStillReads", func(t *testing.T) {
+		var queries []string
+		tx := &recTx{count: 1, queryFn: func(sql string, _ []any) (Rows, error) {
+			queries = append(queries, sql)
+			return nil, nil
+		}}
+		be := newFlatBE(&recBeginner{tx: tx})
+		e := &builderTestEntity{Name: "a", Email: "a@x"}
+		e.SetID(domain.NewID(uuid.NewString()))
+		upd, err := domain.GetUpdatable(e, func(*builderTestEntity) error { return nil }, nil, "GetUpdatable")
+		if err != nil {
+			t.Fatalf("GetUpdatable: %v", err)
+		}
+		if _, err := be.Batch(newBuilderCtx(), domain.NewBatch([]domain.ValidEntity{upd}), []*TableSchema{builderTestSchema}); err != nil {
+			t.Fatalf("Batch: %v", err)
+		}
+		if n := revisionReads(queries); n != 1 {
+			t.Errorf("a batch UPDATE must read the post-increment revision exactly once, got %d reads: %v", n, queries)
+		}
+	})
+}
+
 func TestBatch_ErrorBranches(t *testing.T) {
 	t.Run("schemaCountMismatch", func(t *testing.T) {
 		ops, _ := batchOps(t)
@@ -476,7 +533,7 @@ func TestBatch_ErrorBranches(t *testing.T) {
 		}
 	})
 	t.Run("archiveMemberWithoutSoftDelete", func(t *testing.T) {
-		noSD := NewTableSchema[*builderTestEntity]("nsd").PK("id").Field("Name", "name").Field("Email", "email")
+		noSD := NewTableSchema[*builderTestEntity]("nsd").PK("id").Revision("revision").Field("Name", "name").Field("Email", "email")
 		e := &builderTestEntity{Name: "a", Email: "a@x"}
 		e.SetID(domain.NewID(uuid.NewString()))
 		arc, _ := domain.GetArchivable(e, nil, "GetArchivable")
@@ -730,21 +787,23 @@ func TestInsertWithBase_StepFailures(t *testing.T) {
 			t.Fatalf("expected the forgot-guard error, got %v", err)
 		}
 	})
-	t.Run("baseFanOutOutboxError", func(t *testing.T) {
-		// The SECOND outbox row (base fan-out) fails: let the first pass by
-		// injecting on the pessoa aggregate_type argument being present is not
-		// expressible via substring — instead fail every outbox after recording
-		// one success through a counting wrapper.
-		inner := &recTx{queryFn: scriptedQuery(nil, nil)}
-		tx := &nthFailTx{recTx: inner, failSub: "INSERT INTO outbox", failOn: 2}
-		be := newFlatBE(&recBeginner{tx: inner})
-		be.SetBeginner(singleTxBeginner{tx})
-		_, err := be.Insert(newBuilderCtx(), roleInsertable(t, "GetUpsertable"), roleTestSchema(), firingHook)
-		if !errors.Is(err, errBoom) {
-			t.Fatalf("expected the fan-out outbox failure, got %v", err)
+	t.Run("insertEmitsSingleOutboxRow", func(t *testing.T) {
+		// single-row contract: the role INSERT emits exactly ONE outbox row
+		// (the self-sufficient payload) — the historical empty base-table
+		// fan-out row must NOT exist.
+		tx := &recTx{queryFn: scriptedQuery(nil, nil)}
+		be := newFlatBE(&recBeginner{tx: tx})
+		if _, err := be.Insert(newBuilderCtx(), roleInsertable(t, "GetUpsertable"), roleTestSchema(), firingHook); err != nil {
+			t.Fatalf("Insert: %v", err)
 		}
-		if inner.committed {
-			t.Error("must not commit")
+		outboxRows := 0
+		for _, s := range tx.execs {
+			if strings.HasPrefix(s, "INSERT INTO outbox") {
+				outboxRows++
+			}
+		}
+		if outboxRows != 1 {
+			t.Fatalf("a role insert must emit exactly ONE outbox row, got %d: %v", outboxRows, tx.execs)
 		}
 	})
 }
@@ -840,7 +899,7 @@ func (c cascadeBaseChild) GetID() domain.ID                                 { re
 func (c cascadeBaseChild) BuildRules(string, domain.Service, *domain.Rules) {}
 
 func cascadeRoleSchema() *TableSchema {
-	base := NewSharedBase("pessoa").
+	base := NewSharedBase("pessoa").Revision("revision").
 		PK("id").
 		Field("Name", "name").
 		Field("Document", "document").

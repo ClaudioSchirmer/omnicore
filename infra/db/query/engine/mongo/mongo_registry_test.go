@@ -52,6 +52,18 @@ func TestFilterForeignCollections_RegistryIsFrameworkOwned(t *testing.T) {
 	}
 }
 
+// The projection-state registry (base-revision records + tombstones) is materialized
+// by the SyncEngine itself on its first start — the guard must recognize it,
+// or every boot AFTER the first against the same database aborts on the
+// framework's own collection.
+func TestFilterForeignCollections_ProjectionStateIsFrameworkOwned(t *testing.T) {
+	views := []*query.ViewDefinition{query.View("users").Root("users")}
+	got := filterForeignCollections([]string{"users", query.ProjectionStateCollectionName}, views)
+	if len(got) != 0 {
+		t.Errorf("got %v, want [] (projection-state registry must be framework-owned)", got)
+	}
+}
+
 func TestFilterForeignCollections_SystemNamespaceIgnored(t *testing.T) {
 	views := []*query.ViewDefinition{query.View("users").Root("users")}
 	got := filterForeignCollections([]string{
@@ -181,4 +193,13 @@ func equalSlices(a, b []string) bool {
 		}
 	}
 	return true
+}
+
+// BulkApplyProjection's empty-batch guard needs no driver: the bulk write API
+// rejects a zero-length model slice, so the no-op return is load-bearing.
+func TestBulkApplyProjection_EmptyBatchIsNoOp(t *testing.T) {
+	m := &MongoDB{}
+	if err := m.BulkApplyProjection(context.Background(), query.PhysicalCollection{}, nil); err != nil {
+		t.Fatalf("empty batch must be a no-op, got %v", err)
+	}
 }

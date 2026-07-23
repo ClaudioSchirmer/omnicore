@@ -135,12 +135,13 @@
 func UserSchema() *core.TableSchema {
     return core.NewTableSchema[*User]("users").
         PK("id").                       // column "id" — Go side fixed to ID (single-column PK)
+        Revision("revision").           // managed: MANDATORY commit-order token (BIGINT NOT NULL DEFAULT 0)
         Field("Name", "name").
         Field("Email", "mail").         // renamed column
         Field("Phone", "phone").
         SoftDelete("deleted_at").       // managed: presence enables the predicate
-        CreatedAt("created_at").        // managed: framework stamps NOW() on INSERT
-        UpdatedAt("updated_at").        // managed: framework stamps NOW() on INSERT + UPDATE
+        CreatedAt("created_at").        // managed: framework stamps the op's app-clock instant on INSERT
+        UpdatedAt("updated_at").        // managed: framework stamps the op's app-clock instant on INSERT + UPDATE
         Child(AddressSchema())          // aggregate child, keyed by Go type name
 }
 
@@ -192,38 +193,69 @@ core.NewExternalSchema("users").PK("id").Field("Email", "mail")</code></pre>
     of a child the schema already projects (same derived segment) is a boot error.
 </div>
 
-<h3>The three managed columns — by presence, not a flag</h3>
+<h3>The managed columns — by presence, not a flag</h3>
 <p>
     Soft-delete, created-at, and updated-at are declared by <em>calling</em> the matching builder method with the column
-    name. Omitting the call disables the behavior — there is no boolean knob.
+    name. Omitting the call disables the behavior — there is no boolean knob. The exception is
+    <code>Revision(col)</code>: on an <strong>entity schema</strong> (<code>NewTableSchema[T]</code> attached to a
+    repository) and on a <strong>shared base</strong> (<code>NewSharedBase</code>) it is <strong>mandatory</strong> —
+    omitting it is a boot failure; on a <strong>sibling or aggregate child</strong> it is <strong>forbidden</strong> —
+    declaring it panics at construction, because their rows are guarded by the owner's token.
 </p>
 <table>
     <thead><tr><th>Builder</th><th>Declared</th><th>Omitted</th></tr></thead>
     <tbody>
         <tr>
+            <td><code>Revision(col)</code></td>
+            <td>the framework owns the column end to end: INSERT binds <code>col = 1</code>; UPDATE, Archive and
+                Unarchive append <code>col = col + 1</code> to their own statement, under the row lock — so the value
+                is the row's real commit order. It travels on the outbox payload (<code>_ids.revision</code>; a shared
+                base's as <code>_ids.base_revision</code>) and the projection refuses any document write carrying an
+                older value (the last-writer-wins guard)</td>
+            <td>entity schema / shared base: <strong>boot failure</strong> (at the repository's <code>WithSchema</code>
+                / at the role's <code>.SharedBase(...)</code> attach) — DDL required:
+                <code>revision BIGINT NOT NULL DEFAULT 0</code>. Sibling or aggregate child: omitting is the ONLY
+                valid state — declaring it panics at construction (<code>Revision(...)</code> itself, or the
+                <code>Child(...)</code> attach)</td>
+        </tr>
+        <tr>
             <td><code>SoftDelete(col)</code></td>
-            <td>the read scope-gate uses <code>col IS NULL</code>; Archive/Unarchive write <code>col = NOW()</code> / <code>col = NULL</code></td>
+            <td>the read scope-gate uses <code>col IS NULL</code>; Archive/Unarchive write <code>col = $now</code> / <code>col = NULL</code></td>
             <td>no scope-gate; Archive/Unarchive unavailable (boot check + runtime guard)</td>
         </tr>
         <tr>
             <td><code>CreatedAt(col)</code></td>
-            <td>the framework stamps <code>col = NOW()</code> on INSERT</td>
+            <td>the framework stamps <code>col = $now</code> on INSERT</td>
             <td>no creation timestamp stamped</td>
         </tr>
         <tr>
             <td><code>UpdatedAt(col)</code></td>
-            <td>the framework stamps <code>col = NOW()</code> on INSERT and UPDATE</td>
+            <td>the framework stamps <code>col = $now</code> on INSERT and UPDATE</td>
             <td><code>buildUpdate</code> omits the <code>SET</code></td>
         </tr>
     </tbody>
 </table>
 <p>
-    The framework <strong>actively generates</strong> these timestamps — it never relies on a DB <code>DEFAULT NOW()</code>
-    it does not own. The soft-delete predicate shape is fixed (nullable timestamp: <code>IS NULL</code> = active); the
+    The framework <strong>actively generates</strong> these timestamps <strong>in Go</strong> — <code>$now</code> above is
+    one <em>application-clock</em> instant minted per write operation (UTC, truncated to microseconds — the precision every
+    supported backend stores) and bound as an ordinary argument, exactly like the Go-minted UUID&nbsp;v7 ids. No dialect
+    <code>NOW()</code> expression appears in the data DML and the framework never relies on a DB <code>DEFAULT NOW()</code>
+    it does not own; every statement of one operation (root, children, siblings, shared-base cascade) carries the SAME
+    instant, known before COMMIT. The soft-delete predicate shape is fixed (nullable timestamp: <code>IS NULL</code> = active); the
     schema controls only the column's <em>name and presence</em>. On the read path these three columns are also readable
     under fixed logical Go names (<code>CreatedAt</code>, <code>UpdatedAt</code>, <code>DeletedAt</code>) so a view can
     project them without a domain Go field.
 </p>
+
+<div class="box">
+    <strong>Operational consequence — the time source is the pods' clock, not the database's.</strong>
+    With several pods writing, timestamp quality across writers is only as good as the cluster's clock sync:
+    keep every node on NTP — for <code>created_at</code>/<code>updated_at</code> and the audit trail it is a
+    <em>correctness</em> requirement, not hygiene. Under clock skew, two consecutive writes of the same row from
+    different pods can leave <code>updated_at</code> going <em>backwards</em>. That never affects the projection —
+    ordering between concurrent writes is carried by <code>Revision</code>, the commit-order token — but it means
+    <code>updated_at</code> is a <em>display</em> timestamp: never use it as a concurrency or ordering token.
+</div>
 
 <h3>One declaration, every consumer — <code>WithSchema</code></h3>
 <p>
@@ -312,6 +344,22 @@ func OrdersView() *query.ViewDefinition {
             As("Buyer")).                        // REQUIRED — external embeds have no Go type to derive from
         Indexes(query.Index("buyer_id"))       // boot guard requires the join-field index
 }</code></pre>
+<p class="note">
+    <strong>Archive-aware external embeds — declare the soft-delete column, and keep it in the subscription
+    <code>filter</code>.</strong> If the upstream entity soft-deletes (archive), declare
+    <code>.SoftDelete("deleted_at")</code> on the <code>NewExternalSchema</code> so the mirror can carry the archived
+    state. The declaration alone is not enough, though: the <a href="#yaml-reference">UpstreamSubscription
+    <code>filter</code></a> is a string allowlist over the <em>raw upstream payload</em> and consults no schema, so if it
+    drops the soft-delete column the mirror never receives it — an archived upstream entity would look active forever.
+    The boot cross-checks the two (<strong>§8.5</strong>): an external <code>FromSchema</code> embed that <em>declares</em>
+    the soft-delete column while the feeding subscription's non-empty <code>filter</code> <em>omits</em> it is a
+    <strong>fatal boot error</strong> (the mirror could never reflect an archive) naming the offending subscription and
+    column; declared-and-kept — or an empty <code>filter</code>, which mirrors the full payload — is accepted; a mirror
+    whose external schema declares <em>no</em> soft-delete column at all draws only an <em>advisory</em> log, because the
+    consumer often cannot know whether the upstream soft-deletes. This rule governs the column <em>reaching</em> the
+    mirror; the embed still carries the whole mirror document, so hiding an archived sub-document at read time is a
+    separate concern.
+</p>
 <p>
     <strong>Schema is mandatory on every view.</strong> The root (<code>ViewDefinition.Schema(ts)</code>) and every embed
     (<code>FromSchema</code> always carries one) must declare a schema. A missing root schema, or an external embed missing
@@ -319,6 +367,30 @@ func OrdersView() *query.ViewDefinition {
     by <code>bootstrap.Run</code>). There is no optional / pass-through / schema-less mode. Every embed source is
     external/type-less (an embed composes EXTERNAL data only — see above), so it inherits no Go type to derive its segment
     from: <code>.As(...)</code> is always required, never an optional override.
+</p>
+<p>
+    <strong>Two writers, one document — field ownership.</strong> A view with external embeds is kept current by two
+    independent consumers: the SyncEngine recomposes it on the entity's own events, and the recompose-ripple reacts to the
+    upstream collection's events. Neither write can regress the other's data: each is one atomic pipeline upsert
+    claiming only the fields its writer read freshly — the ripple owns the embed segments, the SyncEngine owns everything
+    else — and whichever arrives first materializes the complete document (the other's next update then touches only its
+    own fields). Cross-topic event ordering therefore never matters for correctness: an embed array always converges to the
+    upstream mirror's current state even when the parent's own event and the embedded rows' events race across CDC topics.
+</p>
+<p>
+    <strong>Ripples are per-element edits, not snapshots.</strong> Within its embed segments the ripple applies the
+    event's own change surgically: the one array element keyed by the changed upstream id is stripped/appended (and a 1:1
+    sub-document conditionally set — the explicit <code>null</code> when the source was deleted or the FK is unset). Edits
+    for different upstream ids touch disjoint elements and commute, so concurrent ripples — multiple subscription workers,
+    partitions spread across pods — converge to the same array regardless of interleaving, and events for the same id are
+    serialized end to end by broker partitioning and the subscriber's keyed worker dispatch. The ripple's hot path reads no
+    relational data; a parent whose document does not exist yet is materialized by a full recompose instead. During a
+    blue-green rebuild every ripple write also dual-applies to the shadow slot, exactly like the SyncEngine's writes, so
+    the flipped collection never misses a mid-window upstream event. A 1:1 segment additionally self-repairs after every
+    document write that carries its FK: the writer re-reads the mirror fresh and sets the segment under a double guard (FK
+    still matches, stored element not already that id) — so a document created before its referenced mirror doc existed,
+    or an FK changed by an entity update, converges through whichever side runs last, and the repair can never regress the
+    element's own fresher ripple.
 </p>
 
 <h3 id="boot-checks">Boot checks</h3>
@@ -476,7 +548,8 @@ func OrdersView() *query.ViewDefinition {
     is shared by several <em>independent</em> role tables (<code>student</code>, <code>teacher</code>, <code>user</code>),
     each linking to it by a foreign key. Unlike a sibling (1 : 1, private), a base is referenced by N roles (N : 1) and is
     <strong>deduplicated by a natural key</strong>. Declare the base type-less with <code>core.NewSharedBase(table)</code>,
-    its dedup column with <code>.NaturalKey(col)</code>, and its orphan lifecycle with <code>.OrphanPolicy(p)</code>; each
+    its dedup column with <code>.NaturalKey(col)</code>, its <strong>mandatory revision column</strong> with
+    <code>.Revision(col)</code> (below), and its orphan lifecycle with <code>.OrphanPolicy(p)</code>; each
     role references it with <code>.SharedBase(base, fkColumn)</code>. Sharing one base instance across the role files is
     idiomatic but <em>not required</em>: at repository construction (<code>WithSchema</code>) the engine registers every
     role on a registry keyed by the base's <em>table</em>, so N identical <code>NewSharedBase</code> declarations behave
@@ -489,14 +562,48 @@ func OrdersView() *query.ViewDefinition {
     table: on the identity's <em>creation</em> (the cold insert) and — <code>UpdatedAt</code> — on every
     <em>role-driven change of the shared fields</em> (the warm upsert and a role's update both write the base row). A
     base that declares neither is never touched: keep a database <code>DEFAULT</code> on the DDL columns if you only
-    want a creation timestamp. Lifecycle convergence (archive/unarchive of the identity) touches only the soft-delete
-    column, on the base as on every other table.
+    want a creation timestamp. Lifecycle convergence (archive/unarchive of the identity) touches the soft-delete
+    column and bumps the revision.
+</p>
+<p>
+    <strong><code>Revision(col)</code> is mandatory on EVERY root schema — the last-writer-wins token of the read
+    side.</strong> Declare it on every root <code>NewTableSchema</code> (and on every shared base, below); a repository
+    attach without it is a boot failure. Siblings and aggregate children declare none — their rows are guarded by the
+    owner's token. For the shared base specifically: a framework-managed BIGINT <strong>advanced by every
+    write that touches the identity</strong> — the write path initializes it to 1 on the identity's creation and increments
+    (<code>revision = revision + 1</code>) <em>under the base row's lock</em> on <strong>EVERY write that touches the
+    identity</strong>: the shared-field upsert, the lifecycle convergence, a role's archive/unarchive even without a
+    base transition, a role's hard-delete (except the purge — the row is gone) and the batch role verbs. Concurrent
+    writes of one identity therefore serialize in real relational commit order, and the value (carried on the outbox
+    payload as <code>_ids.base_revision</code>) totally orders the identity's closure — shared scalars, base children,
+    the SharedBaseView segment pick and the role rows themselves — so every read-model write of identity data is
+    deterministically last-writer-wins, regardless of consumer latency, worker interleaving, pod count or redelivery.
+    Attaching a base without <code>Revision</code> is a boot failure. DDL:
+    <code>revision BIGINT NOT NULL DEFAULT 0</code> (the framework never reads the DEFAULT — it always
+    binds/increments explicitly).
+</p>
+<p>
+    <strong>Every projection write is guarded by these tokens — including consult recomposes, and including
+    deletes.</strong> The payload-direct pipeline, the shared-identity fan-out, every consult-composed write
+    (SharedBaseView documents, views with external embeds, the base-event fan-out) and the rebuild/verify backfill all
+    apply as revision-guarded pipelines: a writer that read earlier but lands later is a no-op, never a lost update.
+    Absence is guarded too: a DELETED event records the row's last revision as a <em>tombstone</em> in the
+    <code>omnicore_projection_state</code> registry before a guarded delete, and every document-creating upsert
+    re-checks it after writing — a zombie consumer's older upsert racing a delete removes its own write instead of
+    resurrecting the document — scoped to the dead row's incarnation by its <code>created_at</code>, so a
+    deterministic id (shared-PK role, base) re-created under the same natural key is never mistaken for a
+    zombie of the dead life. The same registry carries the base-revision handshake that heals a role document born
+    concurrently with a fan-out that could not see it (the fan-out stamps its base revision before probing; the newborn
+    document's writer re-checks after writing and repairs by one guarded consult when a newer base revision proves a fan-out
+    already passed). Tombstones expire after 24&nbsp;h (TTL index, provisioned at SyncEngine start); base-revision
+    records live for the identity's lifetime and are dropped by the purge.
 </p>
 <pre><code>var person = core.NewSharedBase("person").
     PK("id").                                      // the deterministic UUIDv5 lands here
     Field("Name", "name").
     Field("Document", "document").                 // the natural-key column
     NaturalKey("document").
+    Revision("revision").                          // MANDATORY — BIGINT NOT NULL DEFAULT 0 in the migration
     SoftDelete("deleted_at").
     OrphanPolicy(core.KeepOrphan)                  // default; destruction is opt-in via core.DeleteWhenUnreferenced
 
@@ -760,7 +867,20 @@ func StudentSchema() *core.TableSchema {
         inside its segment; a role's own children nest inside it, keyed on the role row's own PK.</li>
 </ul>
 
-<h4>Role selection — deterministic under separate-FK multiplicity</h4>
+<h4>Role selection — the identity's current specialization</h4>
+<div class="box warn">
+    <strong>A role segment is ONE specialization, never a list — it follows the DOMAIN, not the relational rows.</strong>
+    A <code>SharedBaseView</code> models a party-role: an identity that <em>plays</em> a role. Each role segment therefore
+    holds exactly one sub-document — the identity's <strong>current</strong> representative for that role: the
+    <strong>active</strong> row if one exists, otherwise the <strong>most recently deactivated (archived)</strong> one.
+    This holds <strong>regardless of the link model</strong> — whether the role links through a separate FK
+    (<code>SharedBase(base, "person_id")</code>, which may accumulate archived remnants) or shares the base's id as its
+    own PK (<code>SharedBase(base, "id")</code>, capped at a single row). The relational table may hold many role rows for
+    one identity; the projected document still shows the one current specialization.
+    <strong>Need the identity plus a LIST of N role rows instead?</strong> Keep this write model and add a read-time
+    <a href="#query-side">ComposedView</a> that <code>LinkMany</code>s the role's own view onto the person by its FK — it
+    yields the full list at read time, without changing the SharedBase model.
+</div>
 <p>
     Under the separate-FK model with active-only uniqueness (see the two DDL uniqueness contracts above), an identity may carry archived role remnants NEXT TO one
     active row. The composer picks <strong>the row that represents the specialization's current
@@ -788,12 +908,11 @@ func StudentSchema() *core.TableSchema {
         "drop the document when the BASE archives" — and archived role rows stop composing at all.</li>
     <li><strong>Role events recompose the person document.</strong> The SyncEngine subscribes to every
         role table's topic (mandatory: a role's ARCHIVE/UNARCHIVE emits only the role event — the base
-        convergence is SQL without its own outbox row). The base id resolves per link model: shared-PK
-        → the event's <code>aggregate_id</code> IS the base id; separate-FK → the role row is
-        consulted, except on <code>DELETED</code>, where the row is gone and the id comes from the
-        event payload's structural keys (the write side records <code>{pk, shared-base fk}</code> on
-        every role DELETE for exactly this moment). The payload is a routing hint only — state is
-        always re-read from the relational source.</li>
+        convergence is SQL without its own outbox row). The base id it recomposes for comes straight
+        from the event payload's <code>_ids.base_id</code> — the write side stamps it on every role
+        event, so the resolution touches no database. The SharedBaseView document is then recomposed
+        from the relational source (the base row plus its role rows): the cross-row archived-remnant
+        pick is why this view keeps the composer instead of the payload-direct projection.</li>
     <li><strong>Purge convergence.</strong> When the last role's DELETE also purges the identity
         (<code>DeleteWhenUnreferenced</code>), the recompose finds no base row and removes the person
         document.</li>

@@ -75,13 +75,14 @@ func TestFetchMongoEmbed_OneToOne_NoMatch(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Compose: %v", err)
 	}
-	if _, present := doc["buyer"]; present {
-		t.Error("no matching mongo doc must omit the embed")
+	v, present := doc["buyer"]
+	if !present || v != nil {
+		t.Errorf("an unresolved 1:1 embed must write the explicit null (clears a stale sub-document under $set-merge), got present=%v value=%v", present, v)
 	}
 }
 
 func TestFetchMongoEmbed_OneToOne_MissingFK(t *testing.T) {
-	// Root row lacks the buyer_id FK column → the one-to-one embed is skipped.
+	// Root row lacks the buyer_id FK column → explicit null, same clearing contract.
 	eng := rootMapsEngine([]string{"id", "name"}, [][]any{{"o1", "first"}})
 	c := NewComposerWithMongo(eng, newFakeMongo(&fakeColl{}), identityResolver)
 	external := FromSchema(core.NewExternalSchema("buyers").PK("id")).FK("buyer_id").As("Buyer")
@@ -92,8 +93,9 @@ func TestFetchMongoEmbed_OneToOne_MissingFK(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Compose: %v", err)
 	}
-	if _, present := doc["buyer"]; present {
-		t.Error("missing FK must skip the one-to-one mongo embed")
+	v, present := doc["buyer"]
+	if !present || v != nil {
+		t.Errorf("a missing FK must write the explicit null, got present=%v value=%v", present, v)
 	}
 }
 

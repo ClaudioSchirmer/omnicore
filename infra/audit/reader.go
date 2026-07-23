@@ -65,14 +65,10 @@ FROM audit_events`
 
 // FindByID returns the audit_events row whose id matches the supplied UUID.
 //
-// Caveat: the table's primary key is composite — (id, created_at) — to
-// satisfy the partition-by-range strategy. A bare `WHERE id = $1` lookup
-// triggers a multi-partition index scan; B-tree per partition keeps the
-// constant-factor cost low and BRIN on created_at narrows hot ranges,
-// but a forensic lookup deep in archived partitions can be slow. A caller
-// holding an approximate created_at can narrow the scan with a bespoke query
-// against the engine's Querier; this helper stays minimal because the common
-// case (a recent row from a slog line) is fast enough as-is.
+// Served directly by the primary key (id): audit_events is a plain table (no
+// partitioning) on every backend, so `WHERE id = $1` is a single unique-index
+// lookup. The id is a time-ordered UUID v7, so inserts append at the index tail
+// and the recent rows a forensic lookup usually wants sit in the hot pages.
 //
 // The id binds through the dialect's value codec (uuid text on PG, BINARY(16)
 // elsewhere) — the framework id standard, mirroring how InsertAuditEvent

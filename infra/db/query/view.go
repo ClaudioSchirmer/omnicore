@@ -453,6 +453,13 @@ type viewIndex struct {
 	// roleDef so the SyncEngine can resolve the base id per the role's link
 	// model (shared-PK vs separate-FK).
 	byRoleTable map[string][]roleRoute
+	// baseOfRole maps a ROLE table to its shared-base table. Since the
+	// outbox payload carries the base id (_ids.base_id) on every role event,
+	// the SyncEngine drives the shared-identity fan-out from the ROLE event
+	// itself: baseOfRole names which bySharedBase entry to fan out for. Filled
+	// from role views AND from SharedBaseView role declarations, so the
+	// fan-out fires even when only one of the two exists.
+	baseOfRole map[string]string
 }
 
 // roleRoute pairs a SharedBaseView with one of its declared roles — the
@@ -500,6 +507,7 @@ func buildViewIndex(views []*ViewDefinition) viewIndex {
 		byMongoColl:  make(map[string][]*ViewDefinition),
 		bySharedBase: make(map[string][]*ViewDefinition),
 		byRoleTable:  make(map[string][]roleRoute),
+		baseOfRole:   make(map[string]string),
 	}
 	for _, v := range views {
 		// The root is always a Postgres table — UpstreamSubscription
@@ -513,12 +521,16 @@ func buildViewIndex(views []*ViewDefinition) viewIndex {
 		if v.schema != nil {
 			if base, _, ok := v.schema.SharedBaseRef(); ok {
 				idx.bySharedBase[base.Table()] = append(idx.bySharedBase[base.Table()], v)
+				idx.baseOfRole[v.rootTable] = base.Table()
 			}
 		}
 		// A SharedBaseView is indexed by each ROLE table too: a role event must
 		// recompose the person document (the inverse of bySharedBase).
 		for _, r := range v.roles {
 			idx.byRoleTable[r.schema.Table()] = append(idx.byRoleTable[r.schema.Table()], roleRoute{view: v, role: r})
+			if base, _, ok := r.schema.SharedBaseRef(); ok {
+				idx.baseOfRole[r.schema.Table()] = base.Table()
+			}
 		}
 		indexEmbeds(v.embeds, v, idx)
 	}

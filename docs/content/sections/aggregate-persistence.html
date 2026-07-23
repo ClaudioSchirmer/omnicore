@@ -129,6 +129,7 @@ func (u *User) ReplaceAddresses(addrs []Address) {
 func UserSchema() *core.TableSchema {
     return core.NewTableSchema[*User]("users").
         PK("id").
+        Revision("revision").
         Field("Name", "name").
         Field("Email", "email").
         Field("Username", "username").

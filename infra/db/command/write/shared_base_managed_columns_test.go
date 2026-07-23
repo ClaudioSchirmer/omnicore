@@ -9,12 +9,14 @@ import (
 
 // A shared base that DECLARES managed columns must have them honored by the
 // base write: CreatedAt(+UpdatedAt) stamped on the identity's creation (cold
-// insert), UpdatedAt stamped on the warm role-driven update of shared fields.
+// insert), UpdatedAt stamped on the warm role-driven update of shared fields —
+// both bound as ordinary args carrying the operation's writeNow() stamp (the
+// app clock authors managed timestamps; no dialect NOW() in the data DML).
 // A base that declares none keeps byte-identical SQL (covered by the existing
 // upsert-scoped tests, whose base declares no managed columns).
 
 func roleTestSchemaManagedBase() *TableSchema {
-	base := NewSharedBase("pessoa").
+	base := NewSharedBase("pessoa").Revision("revision").
 		PK("id").
 		Field("Name", "name").
 		Field("Document", "document").
@@ -46,8 +48,8 @@ func TestUpsertSharedBase_ColdInsertStampsDeclaredManagedColumns(t *testing.T) {
 	if !strings.Contains(sql, "created_at") || !strings.Contains(sql, "updated_at") {
 		t.Errorf("declared managed columns must be stamped on the base's creation, got %q", sql)
 	}
-	if !strings.Contains(strings.ToUpper(sql), "NOW()") {
-		t.Errorf("managed columns must be stamped with NOW(), got %q", sql)
+	if strings.Contains(strings.ToUpper(sql), "NOW()") {
+		t.Errorf("managed columns must bind the app-clock stamp, never a dialect NOW(), got %q", sql)
 	}
 }
 
@@ -71,8 +73,8 @@ func TestUpsertSharedBase_WarmUpdateStampsDeclaredUpdatedAt(t *testing.T) {
 	if baseUpdate == "" {
 		t.Fatalf("warm path must UPDATE pessoa, got %v", tx.execs)
 	}
-	if !strings.Contains(baseUpdate, "updated_at") || !strings.Contains(strings.ToUpper(baseUpdate), "NOW()") {
-		t.Errorf("a declared UpdatedAt must be stamped on the role-driven base update, got %q", baseUpdate)
+	if !strings.Contains(baseUpdate, "updated_at") || strings.Contains(strings.ToUpper(baseUpdate), "NOW()") {
+		t.Errorf("a declared UpdatedAt must bind the app-clock stamp (no dialect NOW()), got %q", baseUpdate)
 	}
 	if strings.Contains(baseUpdate, "created_at") {
 		t.Errorf("CreatedAt must never be re-stamped on update, got %q", baseUpdate)

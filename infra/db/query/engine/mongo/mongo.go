@@ -3,11 +3,13 @@ package mongo
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"github.com/ClaudioSchirmer/omnicore/infra/db/query"
 	"go.mongodb.org/mongo-driver/v2/bson"
 	"go.mongodb.org/mongo-driver/v2/mongo"
 	"go.mongodb.org/mongo-driver/v2/mongo/options"
+	"go.mongodb.org/mongo-driver/v2/mongo/writeconcern"
 )
 
 // mongoColl is the minimal collection surface the read side and the
@@ -79,7 +81,21 @@ func NewMongoDB(ctx context.Context, uri, dbName string, opts ...MongoOption) (*
 		return nil, err
 	}
 	m := &MongoDB{client: client, db: client.Database(dbName)}
-	m.collFn = func(name string) mongoColl { return m.db.Collection(name) }
+	m.collFn = func(name string) mongoColl {
+		// The projection-state registry is the FIDUCIARY of the read side's
+		// write-then-check handshakes (base-revision stamps, tombstones): a
+		// record acknowledged by the primary alone can be ROLLED BACK on a
+		// failover, silently dissolving the ordering premise the handshake
+		// proofs rest on. Its writes therefore require MAJORITY
+		// acknowledgment — view collections keep the deployment default
+		// (their writes reconverge through event redelivery + guards; the
+		// registry has no redelivery to re-stamp it). On a standalone node
+		// majority degrades to the primary ack — zero cost.
+		if name == query.ProjectionStateCollectionName {
+			return m.db.Collection(name, options.Collection().SetWriteConcern(writeconcern.Majority()))
+		}
+		return m.db.Collection(name)
+	}
 	return m, nil
 }
 
@@ -147,9 +163,109 @@ func (m *MongoDB) BulkUpsert(ctx context.Context, collection query.PhysicalColle
 	return err
 }
 
+// ApplyProjection runs an aggregation-pipeline update keyed by _id, upserting
+// when the document does not exist yet — the payload-direct projection's one
+// atomic write (conditional shared-base sets + surgical child-array edits are
+// pipeline stages evaluated server-side).
+func (m *MongoDB) ApplyProjection(ctx context.Context, collection query.PhysicalCollection, id string, stages []query.Document, upsert bool) error {
+	col := m.collFn(collection.String())
+	pipeline := make(bson.A, 0, len(stages))
+	for _, st := range stages {
+		pipeline = append(pipeline, bson.M(st))
+	}
+	opts := options.UpdateOne().SetUpsert(upsert)
+	_, err := col.UpdateOne(ctx, bson.M{"_id": id}, pipeline, opts)
+	return err
+}
+
 func (m *MongoDB) Delete(ctx context.Context, collection query.PhysicalCollection, id string) error {
 	col := m.collFn(collection.String())
 	_, err := col.DeleteOne(ctx, bson.M{"_id": id})
+	return err
+}
+
+// DeleteGuarded removes the document keyed by id only when its stored revision
+// watermark is <= rev — or when it carries no watermark at all (a
+// watermark-less document counts as older, matching the projection guards'
+// $ifNull treatment). A document a fresher writer already advanced past rev
+// survives; a missing document is a no-op, like Delete.
+// createdAtUnixMs > 0 adds the incarnation scope: the document dies only when its
+// stored created_at equals the tombstone's created_at instant (BSON datetimes
+// compare at millisecond grain — the same grain the caller renders).
+func (m *MongoDB) DeleteGuarded(ctx context.Context, collection query.PhysicalCollection, id string, rev int64, createdAtUnixMs int64) error {
+	col := m.collFn(collection.String())
+	filter := bson.M{
+		"_id": id,
+		"$or": bson.A{
+			bson.M{query.DocRevisionField: bson.M{"$lte": rev}},
+			bson.M{query.DocRevisionField: bson.M{"$exists": false}},
+		},
+	}
+	if createdAtUnixMs > 0 {
+		// Same incarnation OR no birth certificate at all:
+		//   - the incarnation match is a TWO-SECOND range centered on the
+		//     tombstone's value, not equality: that value is read back from
+		//     the relational column, whose precision is engine-DDL-dependent —
+		//     a MySQL DATETIME without fractional digits ROUNDS to the nearest
+		//     second (12.7 stores as 13), other engines truncate — while the
+		//     document's created_at came from the payload at full precision.
+		//     [T-1s, T+1s) covers both behaviors. Two incarnations of one
+		//     deterministic id born within that window are indistinguishable
+		//     (unreachable through API round-trips).
+		//   - a document WITHOUT created_at under a tombstoned id can only be
+		//     a zombie: an UPDATED carries no created_at, so a redelivered
+		//     update re-materializing the document after the delete produces
+		//     exactly that shape. The legitimately REBORN document always
+		//     materializes through its own INSERTED (serialized before its
+		//     updates on the aggregate's partition), which stamps the NEW
+		//     created_at — outside the range, never absent.
+		floor := time.UnixMilli(createdAtUnixMs).UTC().Truncate(time.Second)
+		filter["$and"] = bson.A{bson.M{"$or": bson.A{
+			bson.M{"created_at": bson.M{"$gte": floor.Add(-time.Second), "$lt": floor.Add(time.Second)}},
+			bson.M{"created_at": bson.M{"$exists": false}},
+		}}}
+	}
+	_, err := col.DeleteOne(ctx, filter)
+	return err
+}
+
+// BulkApplyProjection applies a batch of upserting pipeline updates in a single
+// unordered bulk write — ApplyProjection's batched companion, driven by the
+// rebuild/verify backfill with revision-guarded stages. Unordered so an
+// individual document failure does not stop the rest of the batch (the error
+// still surfaces; the rebuild aborts on it). An empty batch is a no-op — the
+// driver rejects a zero-length model slice, so the guard is required.
+func (m *MongoDB) BulkApplyProjection(ctx context.Context, collection query.PhysicalCollection, items []query.IdentifiedStages) error {
+	if len(items) == 0 {
+		return nil
+	}
+	models := make([]mongo.WriteModel, 0, len(items))
+	for _, it := range items {
+		pipeline := make(bson.A, 0, len(it.Stages))
+		for _, st := range it.Stages {
+			pipeline = append(pipeline, bson.M(st))
+		}
+		models = append(models, mongo.NewUpdateOneModel().
+			SetFilter(bson.M{"_id": it.ID}).
+			SetUpdate(pipeline).
+			SetUpsert(true))
+	}
+	col := m.collFn(collection.String())
+	_, err := col.BulkWrite(ctx, models, options.BulkWrite().SetOrdered(false))
+	return err
+}
+
+// EnsureProjectionState provisions the projection-state registry: the TTL
+// index that expires document tombstones by their "at" stamp after
+// query.TombstoneTTL. Base-revision documents carry no "at" field, so the TTL
+// sweep never touches them (Mongo's TTL monitor skips documents missing the
+// indexed field). CreateOne is idempotent for an identical existing index.
+func (m *MongoDB) EnsureProjectionState(ctx context.Context) error {
+	col := m.db.Collection(query.ProjectionStateCollectionName)
+	_, err := col.Indexes().CreateOne(ctx, mongo.IndexModel{
+		Keys:    bson.D{{Key: "at", Value: 1}},
+		Options: options.Index().SetExpireAfterSeconds(int32(query.TombstoneTTL.Seconds())),
+	})
 	return err
 }
 

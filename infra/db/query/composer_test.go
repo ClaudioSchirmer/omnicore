@@ -8,6 +8,12 @@ import (
 // The pg-internal value normalizer (normalizeSQLValue / NormalizeSQLValue) is
 // tested in infra/db/pg; this file covers the composer's backend-neutral
 // buildFetchSQL shaping (dialect-rendered) and the DeleteOnArchive cascade.
+//
+// buildFetchSQL now names the read columns explicitly (never SELECT *); these
+// tests pass a fixed two-column read list ["id", "name"] and assert the exact
+// SELECT shape. The cascade tests below pass ["id"] (no soft-delete column) so a
+// "deleted_at" substring can only come from the WHERE filter, never the column
+// list — keeping the filter-presence assertions precise.
 
 // TestBuildFetchSQL_IncludeArchivedOmitsFilter locks the SQL shape used by
 // the canonical default (keep-archived): Compose passes includeArchived=true
@@ -19,13 +25,13 @@ func TestBuildFetchSQL_IncludeArchivedOmitsFilter(t *testing.T) {
 	cases := []struct {
 		name, verb, table, keyCol, want string
 	}{
-		{"row", "row", "users", "id", "SELECT * FROM users WHERE id = $1 LIMIT 1"},
-		{"where", "where", "addresses", "user_id", "SELECT * FROM addresses WHERE user_id = $1"},
-		{"all", "all", "users", "", "SELECT * FROM users"},
+		{"row", "row", "users", "id", "SELECT id, name FROM users WHERE id = $1 LIMIT 1"},
+		{"where", "where", "addresses", "user_id", "SELECT id, name FROM addresses WHERE user_id = $1"},
+		{"all", "all", "users", "", "SELECT id, name FROM users"},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			got := buildFetchSQL(fakeDialect{}, c.verb, c.table, c.keyCol, "deleted_at", true)
+			got := buildFetchSQL(fakeDialect{}, c.verb, c.table, []string{"id", "name"}, c.keyCol, "deleted_at", true)
 			if got != c.want {
 				t.Fatalf("buildFetchSQL(fakeDialect{},%q, %q, %q, true) = %q, want %q",
 					c.verb, c.table, c.keyCol, got, c.want)
@@ -47,13 +53,13 @@ func TestBuildFetchSQL_DeleteOnArchiveAppliesFilter(t *testing.T) {
 	cases := []struct {
 		name, verb, table, keyCol, want string
 	}{
-		{"row", "row", "users", "id", "SELECT * FROM users WHERE id = $1 AND deleted_at IS NULL LIMIT 1"},
-		{"where", "where", "addresses", "user_id", "SELECT * FROM addresses WHERE user_id = $1 AND deleted_at IS NULL"},
-		{"all", "all", "users", "", "SELECT * FROM users WHERE deleted_at IS NULL"},
+		{"row", "row", "users", "id", "SELECT id, name FROM users WHERE id = $1 AND deleted_at IS NULL LIMIT 1"},
+		{"where", "where", "addresses", "user_id", "SELECT id, name FROM addresses WHERE user_id = $1 AND deleted_at IS NULL"},
+		{"all", "all", "users", "", "SELECT id, name FROM users WHERE deleted_at IS NULL"},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			got := buildFetchSQL(fakeDialect{}, c.verb, c.table, c.keyCol, "deleted_at", false)
+			got := buildFetchSQL(fakeDialect{}, c.verb, c.table, []string{"id", "name"}, c.keyCol, "deleted_at", false)
 			if got != c.want {
 				t.Fatalf("buildFetchSQL(fakeDialect{},%q, %q, %q, false) = %q, want %q",
 					c.verb, c.table, c.keyCol, got, c.want)
@@ -74,7 +80,7 @@ func TestCompose_CascadeFromViewFlag_DefaultKeep_Root(t *testing.T) {
 		t.Fatal("default view must report DeletesOnArchive()=false")
 	}
 	include := !v.DeletesOnArchive()
-	sql := buildFetchSQL(fakeDialect{}, "row", v.RootTable(), "id", "deleted_at", include)
+	sql := buildFetchSQL(fakeDialect{}, "row", v.RootTable(), []string{"id"}, "id", "deleted_at", include)
 	if strings.Contains(sql, "deleted_at") {
 		t.Fatalf("default view must omit deleted_at filter on root SELECT, got %q", sql)
 	}
@@ -93,12 +99,12 @@ func TestCompose_CascadeFromViewFlag_DefaultKeep_Aggregate(t *testing.T) {
 		t.Fatal("default aggregate view must report DeletesOnArchive()=false")
 	}
 	include := !v.DeletesOnArchive()
-	rootSQL := buildFetchSQL(fakeDialect{}, "row", v.RootTable(), "id", "deleted_at", include)
+	rootSQL := buildFetchSQL(fakeDialect{}, "row", v.RootTable(), []string{"id"}, "id", "deleted_at", include)
 	if strings.Contains(rootSQL, "deleted_at") {
 		t.Fatalf("default aggregate view must omit deleted_at on root, got %q", rootSQL)
 	}
 	for _, e := range v.Embeds() {
-		childSQL := buildFetchSQL(fakeDialect{}, "where", e.source.table, e.JoinColumn(), "deleted_at", include)
+		childSQL := buildFetchSQL(fakeDialect{}, "where", e.source.table, []string{"id"}, e.JoinColumn(), "deleted_at", include)
 		if strings.Contains(childSQL, "deleted_at") {
 			t.Fatalf("default aggregate view must omit deleted_at on embed %q, got %q",
 				e.field, childSQL)
@@ -118,7 +124,7 @@ func TestCompose_CascadeFromViewFlag_DeleteOnArchive_Root(t *testing.T) {
 		t.Fatal("DeleteOnArchive() view must report DeletesOnArchive()=true")
 	}
 	include := !v.DeletesOnArchive()
-	sql := buildFetchSQL(fakeDialect{}, "row", v.RootTable(), "id", "deleted_at", include)
+	sql := buildFetchSQL(fakeDialect{}, "row", v.RootTable(), []string{"id"}, "id", "deleted_at", include)
 	if !strings.Contains(sql, "AND deleted_at IS NULL") {
 		t.Fatalf("DeleteOnArchive view must apply deleted_at filter on root, got %q", sql)
 	}
@@ -135,12 +141,12 @@ func TestCompose_CascadeFromViewFlag_DeleteOnArchive_Aggregate(t *testing.T) {
 		t.Fatal("DeleteOnArchive() aggregate view must report DeletesOnArchive()=true")
 	}
 	include := !v.DeletesOnArchive()
-	rootSQL := buildFetchSQL(fakeDialect{}, "row", v.RootTable(), "id", "deleted_at", include)
+	rootSQL := buildFetchSQL(fakeDialect{}, "row", v.RootTable(), []string{"id"}, "id", "deleted_at", include)
 	if !strings.Contains(rootSQL, "AND deleted_at IS NULL") {
 		t.Fatalf("DeleteOnArchive aggregate must apply filter on root, got %q", rootSQL)
 	}
 	for _, e := range v.Embeds() {
-		childSQL := buildFetchSQL(fakeDialect{}, "where", e.source.table, e.JoinColumn(), "deleted_at", include)
+		childSQL := buildFetchSQL(fakeDialect{}, "where", e.source.table, []string{"id"}, e.JoinColumn(), "deleted_at", include)
 		if !strings.Contains(childSQL, "AND deleted_at IS NULL") {
 			t.Fatalf("DeleteOnArchive aggregate must apply filter on embed %q, got %q",
 				e.field, childSQL)

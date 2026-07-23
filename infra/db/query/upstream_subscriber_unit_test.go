@@ -83,6 +83,11 @@ func happyColls() map[string]*fakeColl {
 
 func newTestUpstream(t *testing.T, cfg UpstreamSubscriberConfig, mongo ReadModelStore, eng core.RelationalEngine) *UpstreamSubscriber {
 	t.Helper()
+	return newTestUpstreamViews(t, cfg, mongo, eng, ordersBuyerView())
+}
+
+func newTestUpstreamViews(t *testing.T, cfg UpstreamSubscriberConfig, mongo ReadModelStore, eng core.RelationalEngine, views ...*ViewDefinition) *UpstreamSubscriber {
+	t.Helper()
 	if cfg.Topic == "" {
 		cfg.Topic = "users.events"
 	}
@@ -94,11 +99,27 @@ func newTestUpstream(t *testing.T, cfg UpstreamSubscriberConfig, mongo ReadModel
 	// no-op (their nil-guard branch — see file header note).
 	composer := NewComposerWithMongo(eng, mongo, identityResolver)
 	s, err := NewUpstreamSubscriber(nil, mongo, composer, identityResolver, cfg,
-		[]*ViewDefinition{ordersBuyerView()}, nil, nil)
+		views, nil, nil)
 	if err != nil {
 		t.Fatalf("NewUpstreamSubscriber: %v", err)
 	}
 	return s
+}
+
+// ordersBuyerNestedView is ordersBuyerView with a NESTED embed on the buyer
+// source: surgicalEmbedStages refuses nested embeds, so a ripple over this
+// view always takes the full-recompose fallback — the lever the compose-branch
+// tests below use to reach Compose deterministically.
+func ordersBuyerNestedView() *ViewDefinition {
+	nested := FromSchema(
+		core.NewExternalSchema("avatars").PK("id").Field("URL", "url")).
+		FK("avatar_id").As("Avatar")
+	external := FromSchema(
+		core.NewExternalSchema("users").PK("id").Field("Name", "name")).
+		FK("buyer_id").As("Buyer").
+		Embed("avatar", nested)
+	return View("orders").Version(1).Root("orders").Schema(composerRootSchema()).
+		Embed("buyer", external)
 }
 
 func upstreamMsg(id, eventType string, value string) transport.Message {
@@ -335,11 +356,13 @@ func TestRipple_DiscoverFailure(t *testing.T) {
 }
 
 func TestRipple_ComposeFailure(t *testing.T) {
+	// The nested-embed view forces the full-recompose fallback (surgical edits
+	// cannot carry nested content), which is where Compose runs today.
 	colls := happyColls()
 	eng := composerEngine(func(string, []any) ([]map[string]any, error) {
 		return nil, errFake // Compose root fetch fails
 	})
-	s := newTestUpstream(t, UpstreamSubscriberConfig{}, upstreamFakeMongo(colls), eng)
+	s := newTestUpstreamViews(t, UpstreamSubscriberConfig{}, upstreamFakeMongo(colls), eng, ordersBuyerNestedView())
 
 	s.ripple(context.Background(), "u1", nil, nil)
 	snap := s.Metrics().Snapshot()
@@ -366,12 +389,13 @@ func TestRipple_UpsertFailure(t *testing.T) {
 func TestRipple_ComposeReturnsNilDoc(t *testing.T) {
 	// FindIDsByField yields a local id, but the composer's root fetch finds no
 	// row (empty result) → Compose returns (nil, nil) → ripple skips the upsert
-	// without recording a failure.
+	// without recording a failure. Nested-embed view → fallback path, where
+	// Compose runs.
 	colls := happyColls()
 	eng := composerEngine(func(string, []any) ([]map[string]any, error) {
 		return nil, nil // root fetch finds no row → Compose returns (nil, nil)
 	})
-	s := newTestUpstream(t, UpstreamSubscriberConfig{}, upstreamFakeMongo(colls), eng)
+	s := newTestUpstreamViews(t, UpstreamSubscriberConfig{}, upstreamFakeMongo(colls), eng, ordersBuyerNestedView())
 
 	s.ripple(context.Background(), "u1", nil, nil)
 	if len(colls["orders"].updates) != 0 {
@@ -379,6 +403,52 @@ func TestRipple_ComposeReturnsNilDoc(t *testing.T) {
 	}
 	if got := s.Metrics().Snapshot(); len(got) != 0 {
 		t.Errorf("a nil doc is a skip, not a failure, got %v", got)
+	}
+}
+
+func TestRipple_SurgicalOnExistingDoc(t *testing.T) {
+	// The parent doc exists → the ripple applies the per-element pipeline edit,
+	// NON-upsert (a concurrent doc delete must not resurrect a skeleton), and
+	// never composes from the relational source.
+	colls := happyColls()
+	eng := composerEngine(func(string, []any) ([]map[string]any, error) {
+		t.Fatal("surgical path must not read the relational source")
+		return nil, nil
+	})
+	s := newTestUpstreamViews(t, UpstreamSubscriberConfig{}, upstreamFakeMongo(colls), eng, ordersItemsView())
+
+	s.ripple(context.Background(), "u1", nil, Document{"order_id": "o1", "name": "alice"})
+	ups := colls["orders"].updates
+	if len(ups) != 1 {
+		t.Fatalf("want one surgical write, got %d", len(ups))
+	}
+	if ups[0]["$upsert"] != false {
+		t.Errorf("surgical edit must be non-upsert, got %v", ups[0]["$upsert"])
+	}
+	stages := ups[0]["$pipeline"].([]Document)
+	set := stages[0]["$set"].(Document)
+	if _, ok := set["members"]; !ok {
+		t.Errorf("surgical write must edit the embed segment, got %v", set)
+	}
+	if len(set) != 1 {
+		t.Errorf("surgical write must touch ONLY embed segments, got %v", set)
+	}
+}
+
+func TestRipple_FallbackComposesMissingParent(t *testing.T) {
+	// No parent doc yet → the ripple falls back to the full recompose and
+	// materializes the complete document (upsert), field-ownership shaped.
+	colls := happyColls()
+	colls["orders"].docs = nil // discover(1:N) targets o1 via the FK, but no doc exists
+	s := newTestUpstreamViews(t, UpstreamSubscriberConfig{}, upstreamFakeMongo(colls), ordersRootEngine(), ordersItemsView())
+
+	s.ripple(context.Background(), "u1", nil, Document{"order_id": "o1", "name": "alice"})
+	ups := colls["orders"].updates
+	if len(ups) != 1 {
+		t.Fatalf("want one fallback write, got %d", len(ups))
+	}
+	if ups[0]["$upsert"] != true {
+		t.Errorf("the fallback materializes the doc — must upsert, got %v", ups[0]["$upsert"])
 	}
 }
 

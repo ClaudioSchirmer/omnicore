@@ -56,18 +56,11 @@ func TestOracleLoader_ManualRootScanner(t *testing.T) {
 	// the id).
 	loader := read.NewAggregateLoader[*scanProbe](eng, func() *scanProbe { return &scanProbe{} }).
 		WithSchema(scanProbeSchema()).
-		WithRootScanner(func(row core.Row) (*scanProbe, error) {
-			var idBytes []byte
-			var label string
-			if err := row.Scan(&idBytes, &label); err != nil {
-				return nil, err
-			}
-			u, err := uuid.FromBytes(idBytes)
-			if err != nil {
-				return nil, err
-			}
+		WithRootScanner(func(m map[string]any) (*scanProbe, error) {
+			label, _ := m["label"].(string)
+			id, _ := m["id"].(string)
 			p := &scanProbe{Label: label}
-			p.SetID(domain.NewID(u.String()))
+			p.SetID(domain.NewID(id))
 			return p, nil
 		})
 

@@ -148,9 +148,8 @@ func createFrameworkTables(ctx context.Context, pool *pgxpool.Pool) error {
 			occurred_at   TIMESTAMP    NOT NULL,
 			created_at    TIMESTAMP    NOT NULL DEFAULT NOW(),
 			payload       JSONB        NOT NULL,
-			PRIMARY KEY (id, created_at)
-		) PARTITION BY RANGE (created_at)`,
-		`CREATE TABLE audit_events_default PARTITION OF audit_events DEFAULT`,
+			PRIMARY KEY (id)
+		)`,
 		`CREATE INDEX audit_events_entity_timeline_idx
 			ON audit_events (entity_type, aggregate_id, occurred_at DESC)`,
 	}

@@ -64,9 +64,16 @@ type TableSchema struct {
 	// dedup/identity column; orphanPolicy governs the base's lifecycle when no
 	// role references it. A role schema references its base via sharedBaseLink
 	// (set by .SharedBase(base, fk)) — at most one per role.
-	isSharedBase   bool
-	naturalKeyCol  string
-	orphanPolicy   OrphanPolicy
+	isSharedBase  bool
+	naturalKeyCol string
+	orphanPolicy  OrphanPolicy
+	// revisionCol is, on a SHARED BASE, the framework-managed BIGINT column that
+	// versions the identity row: every write that touches the base row
+	// increments it UNDER THE BASE ROW LOCK, so concurrent role writes serialize
+	// in real relational commit order and the value is a deterministic
+	// last-writer-wins token for every read-model write of base data. Mandatory
+	// on a shared base (enforced at .SharedBase time); meaningless elsewhere.
+	revisionCol    string
 	sharedBaseLink *sharedBaseLink
 	// referencingRoleLinks is, on a SHARED BASE, the set of roles that reference
 	// it — each a pointer to the role schema + the FK column it links through
@@ -228,6 +235,24 @@ func (s *TableSchema) ensureColumnFree(column, self string) {
 	if self != "UpdatedAt" && column == s.updatedAt {
 		collide("UpdatedAt")
 	}
+	if self != "Revision" && column == s.revisionCol {
+		collide("Revision")
+	}
+}
+
+// mustNotReservedColumn rejects a physical column name starting with "_": the
+// underscore prefix is the framework's reserved namespace on the wire — the
+// outbox payload carries its structural keys there (_ids, _children,
+// _base_children, _op), and Mongo itself owns _id. A user column in that
+// namespace would collide with the payload contract, so it is a boot failure at
+// declaration, never a runtime surprise.
+func mustNotReservedColumn(table, column string) {
+	if len(column) > 0 && column[0] == '_' {
+		panic(fmt.Sprintf(
+			"infra.TableSchema(%s): column %q — physical column names starting with %q are reserved by the "+
+				"framework (outbox payload structural keys such as _ids/_children); rename the column.",
+			table, column, "_"))
+	}
 }
 
 // pkGoField is the fixed Go-side name of every primary key. Identity is locked
@@ -260,6 +285,7 @@ func (s *TableSchema) PK(column string) *TableSchema {
 			s.table,
 		))
 	}
+	mustNotReservedColumn(s.table, column)
 	s.ensureColumnFree(column, "PK")
 	s.pkGo = pkGoField
 	s.pkColumn = column
@@ -280,6 +306,7 @@ func (s *TableSchema) FK(column string) *TableSchema {
 			s.table, column,
 		))
 	}
+	mustNotReservedColumn(s.table, column)
 	s.fkColumn = column
 	return s
 }
@@ -313,7 +340,8 @@ func (s *TableSchema) Field(goName, column string, labelKey ...string) *TableSch
 	if _, dup := s.byCol[column]; dup {
 		panic(fmt.Sprintf("infra.TableSchema(%s): column %q claimed by more than one field — the map must be a bijection", s.table, column))
 	}
-	if column == s.pkColumn || column == s.softDelete || column == s.createdAt || column == s.updatedAt {
+	mustNotReservedColumn(s.table, column)
+	if column == s.pkColumn || column == s.softDelete || column == s.createdAt || column == s.updatedAt || column == s.revisionCol {
 		panic(fmt.Sprintf("infra.TableSchema(%s): field column %q collides with a PK/managed column", s.table, column))
 	}
 	lk := ""
@@ -359,6 +387,7 @@ func (s *TableSchema) SoftDelete(col string) *TableSchema {
 			s.table, col,
 		))
 	}
+	mustNotReservedColumn(s.table, col)
 	s.ensureColumnFree(col, "SoftDelete")
 	s.softDelete = col
 	return s
@@ -376,6 +405,7 @@ func (s *TableSchema) CreatedAt(col string) *TableSchema {
 			s.table, col,
 		))
 	}
+	mustNotReservedColumn(s.table, col)
 	s.ensureColumnFree(col, "CreatedAt")
 	s.createdAt = col
 	return s
@@ -392,6 +422,7 @@ func (s *TableSchema) UpdatedAt(col string) *TableSchema {
 			s.table, col,
 		))
 	}
+	mustNotReservedColumn(s.table, col)
 	s.ensureColumnFree(col, "UpdatedAt")
 	s.updatedAt = col
 	return s
@@ -416,6 +447,14 @@ func (s *TableSchema) Child(child *TableSchema) *TableSchema {
 				"(NewSiblingSchema). A sibling is a 1:1 shared-PK secondary table, not a 1:N aggregate child.",
 			s.table,
 		))
+	}
+	if child.revisionCol != "" {
+		// Revision() itself rejects a schema whose FK is already declared; this
+		// closes the declaration-order hole (Revision before FK): a child's rows
+		// are guarded by the OWNER's commit-order token, never their own.
+		panic(fmt.Sprintf(
+			"infra.TableSchema(%s): aggregate child %q declares Revision(%q) — a child row is guarded by its "+
+				"owner's revision; drop the call.", s.table, child.table, child.revisionCol))
 	}
 	if !child.hasPKDeclared() {
 		panic(fmt.Sprintf(
@@ -681,8 +720,10 @@ func (s *TableSchema) childSchema(typeName string) *TableSchema {
 	return s.children[typeName]
 }
 
-// insertNowColumns returns the managed columns stamped with the dialect's now
-// expression on INSERT — created_at then updated_at, each when enabled.
+// insertNowColumns returns the managed columns stamped with the write
+// operation's app-clock instant on INSERT — created_at then updated_at, each
+// when enabled. The stamp is minted in Go and bound as an ordinary argument
+// (never a dialect NOW() expression), so it is known before COMMIT.
 func (s *TableSchema) insertNowColumns() []string {
 	var out []string
 	if c, ok := s.createdAtColumn(); ok {
@@ -694,8 +735,8 @@ func (s *TableSchema) insertNowColumns() []string {
 	return out
 }
 
-// updateNowColumns returns the managed columns stamped with the dialect's now
-// expression on UPDATE.
+// updateNowColumns returns the managed columns stamped with the write
+// operation's app-clock instant on UPDATE.
 func (s *TableSchema) updateNowColumns() []string {
 	if c, ok := s.updatedAtColumn(); ok {
 		return []string{c}
@@ -705,8 +746,8 @@ func (s *TableSchema) updateNowColumns() []string {
 
 // writeFields returns the column → value map the INSERT/UPDATE binds, by reading
 // each declared field's value via its resolved index. The PK is excluded
-// (DB-generated + separate WHERE); managed NOW() columns are appended by the
-// statement builders, not here.
+// (Go-minted + separate WHERE); managed timestamp columns are appended by the
+// statement builders (bound to the operation stamp), not here.
 func (s *TableSchema) writeFields(e any) domain.Fields {
 	v := reflect.ValueOf(e)
 	for v.Kind() == reflect.Pointer {
@@ -725,11 +766,11 @@ func (s *TableSchema) writeFields(e any) domain.Fields {
 // Exported write-path accessors. A relational engine living in its own package
 // (the MySQL engine under its build tag) builds INSERT/UPDATE statements from a
 // TableSchema; these thin wrappers expose the column → value map and the managed
-// NOW() columns + soft-delete column it needs, without widening the surface the
-// in-package write path consumes (which keeps using the unexported forms).
+// timestamp columns + soft-delete column it needs, without widening the surface
+// the in-package write path consumes (which keeps using the unexported forms).
 
 // WriteFields is the exported form of writeFields — the column → value map an
-// engine binds for INSERT/UPDATE (PK and managed NOW() columns excluded).
+// engine binds for INSERT/UPDATE (PK and managed timestamp columns excluded).
 func (s *TableSchema) WriteFields(e any) domain.Fields { return s.writeFields(e) }
 
 // InsertNowColumns is the exported form of insertNowColumns.
@@ -823,6 +864,45 @@ func (s *TableSchema) ScanPlan() (cols []string, byCol map[string]int) {
 		byCol[f.column] = f.index
 	}
 	return cols, byCol
+}
+
+// ReadColumns is the complete, deterministically ordered set of PHYSICAL columns
+// this schema's table carries — the explicit column list a read issues instead of
+// SELECT *. Order: PK, business fields (declaration order), the shared-base FK (a
+// role's link to its base) and the aggregate-child FK, then the managed columns
+// (created_at, updated_at, deleted_at, revision) — each included only when
+// declared, deduplicated (PK==FK collapses to one). It names the columns of THIS
+// ONE table only: siblings and the shared base are separate tables read through
+// their own schema.
+//
+// Naming the columns (never SELECT *) keeps a prepared statement's result type
+// stable across an online ADD COLUMN, so a blue-green view rebuild that adds a
+// projected column cannot break an in-flight read on a pod still serving the old
+// version ("cached plan must not change result type", SQLSTATE 0A000). Every
+// column a read consumes lives in the schema by invariant, so the list is
+// complete by construction; an undeclared physical column is never scanned.
+func (s *TableSchema) ReadColumns() []string {
+	seen := make(map[string]bool)
+	cols := make([]string, 0, len(s.fields)+6)
+	add := func(c string) {
+		if c != "" && !seen[c] {
+			seen[c] = true
+			cols = append(cols, c)
+		}
+	}
+	add(s.pkColumn)
+	for _, f := range s.fields {
+		add(f.column)
+	}
+	if s.sharedBaseLink != nil {
+		add(s.sharedBaseLink.fkColumn)
+	}
+	add(s.fkColumn)
+	add(s.createdAt)
+	add(s.updatedAt)
+	add(s.softDelete)
+	add(s.revisionCol)
+	return cols
 }
 
 // FieldResolver maps a Go field name to its SQL column. The criteria translator

@@ -28,23 +28,6 @@ import (
 var _ core.RelationalEngine = (*Postgres)(nil)
 var _ core.WriteBeginner = (*Postgres)(nil)
 
-// AsPostgres recovers the concrete *Postgres from a core.RelationalEngine. It is the
-// PG-only escape hatch for the framework wiring that still speaks pgx directly
-// (pool access, partitions, migrations, the rebuild lock). Using it pins the
-// caller to Postgres — exactly like UnwrapPgxTx on the in-TX side. Panics when
-// the engine is not the PG adapter, failing loudly at the composition root
-// rather than producing a nil pool that would NPE deep in a query.
-//
-// NOTE: this returns the concrete *Postgres, which lives here; infra/db must not
-// depend back on the engine.
-func AsPostgres(e core.RelationalEngine) *Postgres {
-	pg, ok := e.(*Postgres)
-	if !ok {
-		panic(fmt.Sprintf("infra.AsPostgres: engine is %T, not *Postgres — this code path is Postgres-specific", e))
-	}
-	return pg
-}
-
 // init registers the Postgres engine under the "postgres" dialect,
 // database/sql-style. Postgres ships untagged (the default backend); the
 // composition root looks it up by name via core.NewEngine.
@@ -191,12 +174,12 @@ func (p *Postgres) Begin(ctx context.Context) (core.WriteTx, error) {
 	return pgTx{tx: tx}, nil
 }
 
-// Pool returns the underlying pgxpool so repositories can run custom SELECTs
-// (FindByID with JOINs, paginated lookups, etc.) that don't fit the write
-// API. Use only for reads — writes must go through Insert/Update/Archive/
-// Delete/Unarchive to preserve the outbox + audit guarantees. In production
-// the adapter always holds a *pgxpool.Pool; a unit-test fake yields nil here
-// (such tests exercise the write API, never Pool()).
+// Pool returns the underlying pgxpool for integration tests that set up fixtures
+// with raw DDL/DML the write API can't express (CREATE TABLE, direct INSERT/SELECT
+// COUNT). It is not a consumer path: production code holds core.RelationalEngine
+// and never recovers the concrete *Postgres (there is no "AsPostgres" cast), so a
+// consumer needing custom reads uses the neutral Querier() instead. In production
+// the adapter always holds a *pgxpool.Pool; a unit-test fake yields nil here.
 func (p *Postgres) Pool() *pgxpool.Pool {
 	if pool, ok := p.pool.(*pgxpool.Pool); ok {
 		return pool
@@ -206,16 +189,17 @@ func (p *Postgres) Pool() *pgxpool.Pool {
 
 // querier exposes the pool as the minimal Exec/Query/QueryRow surface for
 // read helpers (the aggregate loader's SELECTs). It returns the internal
-// seam so those helpers run against a unit-test fake as well as a live
-// pool, without widening the public surface — Pool() stays the public,
-// concrete read handle for consumer repositories.
+// seam so those helpers run against a unit-test fake as well as a live pool,
+// without widening the public surface — the neutral core.Querier (Querier())
+// is the read handle consumers use across every backend.
 func (p *Postgres) querier() pgExec { return p.pool }
 
 // Acquire pins a connection from the underlying pool for the rebuild
-// advisory-lock path (the Mongo-view control plane in infra recovers it via
-// AsPostgres). It is pool-only (no core.Tx/Conn equivalent), so it stays off the
-// pgxPool interface and is reached through this concrete assertion. Production
-// always holds a real pool.
+// advisory-lock path (the Mongo-view control plane reaches it through the
+// neutral AcquireRebuildLock, whose PG implementation calls this). It is
+// pool-only (no core.Tx/Conn equivalent), so it stays off the pgxPool interface
+// and is reached through this concrete assertion. Production always holds a real
+// pool.
 func (p *Postgres) Acquire(ctx context.Context) (*pgxpool.Conn, error) {
 	pool, ok := p.pool.(*pgxpool.Pool)
 	if !ok {

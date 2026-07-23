@@ -20,6 +20,15 @@ func fakeEngine(queryFn func(sql string, args []any) (Rows, error)) RelationalEn
 	return fakeRelEngine{q: fakeQuerier{queryFn: queryFn}}
 }
 
+// fakeEngineWithMaps wires both the row seam (queryFn, used by the auto-scan
+// path) and the map seam (mapsFn, used by the manual-scanner path via QueryMaps).
+func fakeEngineWithMaps(
+	queryFn func(sql string, args []any) (Rows, error),
+	mapsFn func(sql string, args []any) ([]map[string]any, error),
+) RelationalEngine {
+	return fakeRelEngine{q: fakeQuerier{queryFn: queryFn, mapsFn: mapsFn}}
+}
+
 func newCovAggLoader(eng RelationalEngine, schema *TableSchema) *AggregateLoader[*covAgg] {
 	return NewAggregateLoader[*covAgg](eng, func() *covAgg { return &covAgg{} }).
 		WithSchema(schema)
@@ -44,9 +53,9 @@ func TestHydrateChildren_FlatEntityReturnsNil(t *testing.T) {
 // A child type with a scanner but no .Child(...) schema is a configuration bug
 // surfaced as an error.
 func TestHydrateChildren_UndeclaredChildSchemaErrors(t *testing.T) {
-	schema := NewTableSchema[*covAgg]("cov_aggs").PK("id").Field("Name", "name").SoftDelete("deleted_at")
+	schema := NewTableSchema[*covAgg]("cov_aggs").PK("id").Revision("revision").Field("Name", "name").SoftDelete("deleted_at")
 	l := newCovAggLoader(fakeEngine(nil), schema).
-		WithChildScanner("Ghost", func(Rows) (domain.AggregateValueObject, error) { return nil, nil })
+		WithChildScanner("Ghost", func(map[string]any) (domain.AggregateValueObject, error) { return nil, nil })
 
 	root := &covAgg{Name: "a"}
 	root.SetID(domain.NewID(uuid.NewString()))
@@ -55,23 +64,16 @@ func TestHydrateChildren_UndeclaredChildSchemaErrors(t *testing.T) {
 	}
 }
 
-func TestHydrateChildren_ManualChildScanner_QueryAndRowsErrors(t *testing.T) {
-	manual := func(Rows) (domain.AggregateValueObject, error) { return covChild{ID: "c1"}, nil }
-	for _, tc := range []struct {
-		name  string
-		query func(sql string, args []any) (Rows, error)
-	}{
-		{"queryError", func(string, []any) (Rows, error) { return nil, errFakeDB }},
-		{"rowsErr", func(string, []any) (Rows, error) { return &fakeDBRows{nextErr: errFakeDB}, nil }},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			l := newCovAggLoader(fakeEngine(tc.query), covAggSchema).WithChildScanner("covChild", manual)
-			root := &covAgg{Name: "a"}
-			root.SetID(domain.NewID(uuid.NewString()))
-			if err := l.hydrateChildren(context.Background(), []*covAgg{root}, []string{"r1"}, activeScope()); err == nil {
-				t.Fatalf("%s: expected error", tc.name)
-			}
-		})
+// The manual child path reads via QueryMaps (all rows at once), so its only IO
+// failure is a QueryMaps error — the old per-row Rows.Err() case no longer exists.
+func TestHydrateChildren_ManualChildScanner_QueryMapsError(t *testing.T) {
+	manual := func(map[string]any) (domain.AggregateValueObject, error) { return covChild{ID: "c1"}, nil }
+	mapsErr := func(string, []any) ([]map[string]any, error) { return nil, errFakeDB }
+	l := newCovAggLoader(fakeEngineWithMaps(nil, mapsErr), covAggSchema).WithChildScanner("covChild", manual)
+	root := &covAgg{Name: "a"}
+	root.SetID(domain.NewID(uuid.NewString()))
+	if err := l.hydrateChildren(context.Background(), []*covAgg{root}, []string{"r1"}, activeScope()); err == nil {
+		t.Fatal("expected QueryMaps error to propagate")
 	}
 }
 

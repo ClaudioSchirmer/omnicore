@@ -73,8 +73,10 @@ CREATE TABLE omnicore_upstream_failures (
 ) COMMENT='Cross-service recompose failure registry (mirrors live state); retried by UpstreamSubscriber.RetryPendingFailures.';
 
 -- ── audit_events ──────────────────────────────────────────────────────────────
--- Plain table on MySQL (no RANGE-by-DEFAULT partitioning); a btree on created_at
--- replaces the PG BRIN. Otherwise identical to the Postgres design.
+-- Plain table on MySQL (no partitioning). The id is a time-ordered UUID v7 stored
+-- BINARY(16), so the clustered primary key gives append-only insert locality.
+-- Only the entity-timeline index is carried (it serves FindByAggregate); FindByID
+-- is served by the PK, and forensic lookups are ad-hoc indexes devops adds.
 CREATE TABLE audit_events (
     id            BINARY(16)   NOT NULL COMMENT 'Audit row id — UUID v7 minted in Go (the framework id standard).',
     aggregate_id  CHAR(36)     CHARACTER SET ascii NOT NULL COMMENT 'Id of the audited aggregate root.',
@@ -91,11 +93,7 @@ CREATE TABLE audit_events (
     created_at    DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT 'When the row was written.',
     payload       JSON         NOT NULL COMMENT 'JSON body: snapshot | changes (delta) | children, per kind.',
     PRIMARY KEY (id),
-    KEY audit_events_entity_timeline_idx (entity_type, aggregate_id, occurred_at),
-    KEY audit_events_actor_idx (actor, occurred_at),
-    KEY audit_events_tenant_idx (tenant_id, occurred_at),
-    KEY audit_events_thread_idx (thread_id),
-    KEY audit_events_created_at_idx (created_at)
+    KEY audit_events_entity_timeline_idx (entity_type, aggregate_id, occurred_at DESC)
 ) COMMENT='Authoritative audit trail: one row per write, in-TX with the data row.';
 
 -- ── integration_events ────────────────────────────────────────────────────────

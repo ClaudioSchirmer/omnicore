@@ -109,8 +109,12 @@ func TestDelete_OutboxPayloadIsPKOnly(t *testing.T) {
 		t.Fatalf("Delete: %v", err)
 	}
 	p := outboxPayloadFor(t, tx, "builder_test_entities", "DELETED")
-	if len(p) != 1 || p["id"] != id {
-		t.Errorf("DELETED payload must be exactly the PK, got %v", p)
+	if len(p) != 2 || p["id"] != id {
+		t.Errorf("DELETED payload must be the PK + the _ids block, got %v", p)
+	}
+	ids, ok := p["_ids"].(map[string]any)
+	if !ok || ids["id"] != id {
+		t.Errorf("DELETED payload must carry _ids with the aggregate PK, got %v", p)
 	}
 }
 
@@ -128,8 +132,12 @@ func TestDeleteRoleWithBase_OutboxPayloadCarriesPKAndBaseFK(t *testing.T) {
 	if p["pessoa_id"] != deterministicBaseID("D1") {
 		t.Errorf("role DELETED payload must carry the shared-base FK, got %v", p)
 	}
-	if len(p) != 2 {
-		t.Errorf("role DELETED payload must be keys only, got %v", p)
+	if len(p) != 3 {
+		t.Errorf("role DELETED payload must be the structural keys + the _ids block, got %v", p)
+	}
+	ids, ok := p["_ids"].(map[string]any)
+	if !ok || ids["base_id"] != deterministicBaseID("D1") {
+		t.Errorf("role DELETED payload must carry _ids with the base id, got %v", p)
 	}
 }
 
@@ -141,8 +149,11 @@ func TestDeleteRoleWithBase_PurgedBase_OutboxPayloadIsBasePK(t *testing.T) {
 	}
 	baseID := deterministicBaseID("D1")
 	p := outboxPayloadFor(t, tx, "pessoa", "DELETED")
-	if len(p) != 1 || p["id"] != baseID {
-		t.Errorf("base purge DELETED payload must be exactly the base PK, got %v", p)
+	if len(p) != 2 || p["id"] != baseID {
+		t.Errorf("base purge DELETED payload must be the base PK + _ids, got %v", p)
+	}
+	if ids, ok := p["_ids"].(map[string]any); !ok || ids["id"] != baseID || ids["base_purged"] != true {
+		t.Errorf("the purge row must carry _ids with the purge flag (every framework event carries _ids), got %v", p)
 	}
 }
 
@@ -164,7 +175,7 @@ func (e *roleArchTestEntity) Modes() []domain.EntityMode {
 func (e *roleArchTestEntity) BuildRules(string, domain.Service, *domain.Rules) {}
 
 func roleArchTestSchema() *TableSchema {
-	base := NewSharedBase("pessoa").
+	base := NewSharedBase("pessoa").Revision("revision").
 		PK("id").
 		Field("Name", "name").
 		Field("Document", "document").
@@ -214,18 +225,23 @@ func TestArchiveAggregate_OutboxPayloadRootCarriesDeletedAt(t *testing.T) {
 		t.Fatalf("Archive: %v", err)
 	}
 	p := outboxPayloadFor(t, tx, "agg_w", "ARCHIVED")
-	rootPayload, ok := p["root"].(map[string]any)
-	if !ok {
-		t.Fatalf("aggregate ARCHIVED payload must carry the root snapshot, got %v", p)
+	if p["name"] != "r" {
+		t.Errorf("aggregate ARCHIVED payload must carry the root fields flat at the top, got %v", p)
 	}
-	if rootPayload["name"] != "r" {
-		t.Errorf("aggregate ARCHIVED root payload must carry the root fields, got %v", rootPayload)
+	if v, present := p["deleted_at"]; !present || v == nil {
+		t.Errorf("aggregate ARCHIVED payload must carry a populated soft-delete column, got %v", p)
 	}
-	if v, present := rootPayload["deleted_at"]; !present || v == nil {
-		t.Errorf("aggregate ARCHIVED root payload must carry a populated soft-delete column, got %v", rootPayload)
+	ch, present := p["_children"].(map[string]any)
+	if !present {
+		t.Fatalf("aggregate ARCHIVED payload must carry _children, got %v", p)
 	}
-	if _, present := p["children"]; !present {
-		t.Errorf("aggregate ARCHIVED payload must carry the active children, got %v", p)
+	items, _ := ch["aggWriteChild"].([]any)
+	if len(items) != 1 {
+		t.Fatalf("aggregate ARCHIVED _children must list the loaded child, got %v", ch)
+	}
+	item, _ := items[0].(map[string]any)
+	if item["_op"] != "noop" {
+		t.Errorf("a soft verb lists children as _op noop (the cascade is verb-implied), got %v", item)
 	}
 }
 
@@ -244,8 +260,11 @@ func TestDeleteAggregate_OutboxPayloadIsPKOnly(t *testing.T) {
 		t.Fatalf("Delete: %v", err)
 	}
 	p := outboxPayloadFor(t, tx, "agg_w", "DELETED")
-	if len(p) != 1 || p["id"] != id {
-		t.Errorf("aggregate DELETED payload must be exactly the root PK, got %v", p)
+	if len(p) != 2 || p["id"] != id {
+		t.Errorf("aggregate DELETED payload must be the root PK + the _ids block, got %v", p)
+	}
+	if ids, ok := p["_ids"].(map[string]any); !ok || ids["id"] != id {
+		t.Errorf("aggregate DELETED payload must carry _ids, got %v", p)
 	}
 }
 

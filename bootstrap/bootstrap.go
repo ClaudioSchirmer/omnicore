@@ -21,7 +21,6 @@ import (
 	"github.com/ClaudioSchirmer/omnicore/application/configuration"
 	"github.com/ClaudioSchirmer/omnicore/application/pipeline"
 	"github.com/ClaudioSchirmer/omnicore/application/translation"
-	"github.com/ClaudioSchirmer/omnicore/infra/audit"
 	"github.com/ClaudioSchirmer/omnicore/infra/db/core"
 	"github.com/ClaudioSchirmer/omnicore/infra/db/query"
 	"github.com/ClaudioSchirmer/omnicore/infra/db/query/engine/mongo"
@@ -172,20 +171,6 @@ func runWithConfig(cfg *Config, wire func(Deps) Wiring) error {
 		deps.Logger.Warn("view resolver refresh failed; serving bare collections", "err", err)
 	}
 
-	// Ensure the next 3 monthly partitions of audit_events exist. Idempotent
-	// across boots (CREATE TABLE IF NOT EXISTS), runs after migrations so the
-	// parent table is guaranteed to be in place, runs before serving HTTP so
-	// the first write of the day never lands in a missing partition. Skipped
-	// when audit is fully off (destinations: []) since no row will ever land.
-	// ensureFuturePartitions is dialect-bound and resolved through the
-	// engineBoots registry: real when the configured dialect is postgres, a
-	// no-op on the dialects whose audit table is not partitioned.
-	if cfg.Audit.Includes(audit.DestinationDatabase) {
-		if err := ensureFuturePartitions(ctx, deps, cfg, 3); err != nil {
-			return fmt.Errorf("bootstrap: ensure audit partitions: %w", err)
-		}
-	}
-
 	views, err := collectViews(wiring.Features)
 	if err != nil {
 		return err
@@ -219,7 +204,7 @@ func runWithConfig(cfg *Config, wire func(Deps) Wiring) error {
 	}
 	upstreamSubs = applyUpstreamSubscriptionDefaults(upstreamSubs, cfg.Service)
 	if len(upstreamSubs) > 0 {
-		if err := validateUpstreamSubscriptions(upstreamSubs, views, cfg.Profile); err != nil {
+		if err := validateUpstreamSubscriptions(upstreamSubs, views, cfg.Profile, deps.Logger); err != nil {
 			return err
 		}
 	}

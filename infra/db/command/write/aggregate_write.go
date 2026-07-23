@@ -3,6 +3,7 @@ package write
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"github.com/ClaudioSchirmer/omnicore/application/audit"
 	"github.com/ClaudioSchirmer/omnicore/application/persistence"
@@ -30,6 +31,7 @@ func (b *BaseEngine) insertAggregate(ctx persistence.RequestContext, entity doma
 	if err != nil {
 		return domain.WriteResult{}, err
 	}
+	now := writeNow()
 
 	tx, err := b.beginner.Begin(ctx)
 	if err != nil {
@@ -42,17 +44,18 @@ func (b *BaseEngine) insertAggregate(ctx persistence.RequestContext, entity doma
 	if err := b.FireAfterBegin(ctx, tx, src, hook, hctx); err != nil {
 		return domain.WriteResult{}, err
 	}
-	sql, args := buildInsert(d, schema.Table(), schema.PKColumn(), id, rootFields, schema.InsertNowColumns())
+	sql, args := buildInsert(d, schema.Table(), schema.PKColumn(), id, rootFields, schema.InsertNowColumns(), now, schema.RevisionColumn())
 	if err := tx.Exec(ctx, sql, args...); err != nil {
 		return domain.WriteResult{}, err
 	}
-	if err := writeChildren(ctx, tx, d, root, schema, id, ""); err != nil {
+	if err := writeChildren(ctx, tx, d, root, schema, id, "", now); err != nil {
 		return domain.WriteResult{}, err
 	}
-	if err := insertSiblings(ctx, tx, d, schema, src, id); err != nil {
+	if err := insertSiblings(ctx, tx, d, schema, src, id, now); err != nil {
 		return domain.WriteResult{}, err
 	}
-	if err := WriteOutbox(ctx, tx, schema.Table(), "INSERTED", id, BuildAggregatePayload(rootFields, root, schema)); err != nil {
+	if err := WriteOutbox(ctx, tx, schema.Table(), "INSERTED", id,
+		buildWritePayload(schema, src, root, "INSERTED", now, rootFields, outboxMeta{ID: id, Revision: 1, CreatedAt: insertCreatedAt(schema, now)})); err != nil {
 		return domain.WriteResult{}, err
 	}
 	ab := b.BuildAudit(func() audit.AuditEvent {
@@ -75,6 +78,7 @@ func (b *BaseEngine) updateAggregate(ctx persistence.RequestContext, entity doma
 	root, _ := entity.AggregateInfo()
 	src := entity.Source()
 	rootFields := schema.WriteFields(src)
+	now := writeNow()
 
 	tx, err := b.beginner.Begin(ctx)
 	if err != nil {
@@ -87,17 +91,22 @@ func (b *BaseEngine) updateAggregate(ctx persistence.RequestContext, entity doma
 	if err := b.FireAfterBegin(ctx, tx, src, hook, hctx); err != nil {
 		return domain.WriteResult{}, err
 	}
-	sql, args := buildUpdate(d, schema.Table(), schema.PKColumn(), entity.ID().Value(), rootFields, schema.UpdateNowColumns())
+	sql, args := buildUpdate(d, schema.Table(), schema.PKColumn(), entity.ID().Value(), rootFields, schema.UpdateNowColumns(), now, schema.RevisionColumn())
 	if err := execExpectingRow(ctx, tx, sql, args, entity.EntityName(), schema.PKColumn(), entity.ID().Value()); err != nil {
 		return domain.WriteResult{}, err
 	}
-	if err := writeChildren(ctx, tx, d, root, schema, entity.ID().Value(), ""); err != nil {
+	if err := writeChildren(ctx, tx, d, root, schema, entity.ID().Value(), "", now); err != nil {
 		return domain.WriteResult{}, err
 	}
 	if err := applySiblingUpdates(ctx, tx, d, schema, src, entity.ID().Value(), entity.IsPartial()); err != nil {
 		return domain.WriteResult{}, err
 	}
-	if err := WriteOutbox(ctx, tx, schema.Table(), "UPDATED", entity.ID().Value(), BuildAggregatePayload(rootFields, root, schema)); err != nil {
+	meta, err := outboxMetaFor(ctx, tx, d, schema, src, entity.ID().Value())
+	if err != nil {
+		return domain.WriteResult{}, err
+	}
+	if err := WriteOutbox(ctx, tx, schema.Table(), "UPDATED", entity.ID().Value(),
+		buildWritePayload(schema, src, root, "UPDATED", now, rootFields, meta)); err != nil {
 		return domain.WriteResult{}, err
 	}
 	ab := b.BuildAudit(func() audit.AuditEvent {
@@ -119,8 +128,7 @@ func (b *BaseEngine) updateAggregate(ctx persistence.RequestContext, entity doma
 func (b *BaseEngine) archiveAggregate(ctx persistence.RequestContext, entity domain.Archivable, schema *TableSchema, hook WriteHook) error {
 	root, _ := entity.AggregateInfo()
 	return b.softWriteAggregate(ctx, root, entity.Source(), entity.ID().Value(), schema, hook,
-		HookContext{Verb: "Archive", EntityType: entity.EntityName()}, "ARCHIVED",
-		archiveSQL, nowSetExpr, " IS NULL",
+		HookContext{Verb: "Archive", EntityType: entity.EntityName()}, "ARCHIVED", writeNow(),
 		func() audit.AuditEvent { return BuildArchiveEvent(ctx, entity, schema, b.auditClaims) },
 		entity.Events())
 }
@@ -128,8 +136,7 @@ func (b *BaseEngine) archiveAggregate(ctx persistence.RequestContext, entity dom
 func (b *BaseEngine) unarchiveAggregate(ctx persistence.RequestContext, entity domain.Unarchivable, schema *TableSchema, hook WriteHook) error {
 	root, _ := entity.AggregateInfo()
 	return b.softWriteAggregate(ctx, root, entity.Source(), entity.ID().Value(), schema, hook,
-		HookContext{Verb: "Unarchive", EntityType: entity.EntityName()}, "UNARCHIVED",
-		unarchiveSQL, nullSetExpr, " IS NOT NULL",
+		HookContext{Verb: "Unarchive", EntityType: entity.EntityName()}, "UNARCHIVED", writeNow(),
 		func() audit.AuditEvent { return BuildUnarchiveEvent(ctx, entity, schema, b.auditClaims) },
 		entity.Events())
 }
@@ -168,6 +175,7 @@ func (b *BaseEngine) hardDelete(
 	buildPurgeEvent func(baseID string) audit.AuditEvent,
 	evs []domain.DomainEvent,
 ) error {
+	now := writeNow()
 	tx, err := b.beginner.Begin(ctx)
 	if err != nil {
 		return err
@@ -193,6 +201,22 @@ func (b *BaseEngine) hardDelete(
 	if err := deleteSiblings(ctx, tx, d, schema, id); err != nil {
 		return err
 	}
+	// The row's LAST revision AND its created_at instant are read before the DELETE
+	// removes them: the DELETED payload stamps them as _ids.revision +
+	// _ids.created_at, and the read side writes both into the document
+	// tombstone — the guard that stops a zombie consumer's older upsert from
+	// resurrecting the document after this delete projects. Any event this
+	// aggregate ever produced carries a revision <= this value; the birth
+	// instant scopes the tombstone to THIS incarnation of the id, so a
+	// deterministic id reborn under the same natural key is never mistaken for
+	// a zombie of the dead one.
+	var ownRev int64
+	var ownCreatedAt time.Time
+	if rc := schema.RevisionColumn(); rc != "" {
+		if ownRev, ownCreatedAt, err = readRevisionCreatedAt(ctx, tx, d, schema.Table(), rc, schema.CreatedAtColumn(), schema.PKColumn(), id); err != nil {
+			return err
+		}
+	}
 	if err := tx.Exec(ctx, deleteSQL(d, schema.Table(), schema.PKColumn()), d.EncodeArg(domain.NewID(id))); err != nil {
 		return err
 	}
@@ -200,11 +224,30 @@ func (b *BaseEngine) hardDelete(
 	// converge the base — the database-vetoable purge (DeleteWhenUnreferenced) or
 	// the orphan archive (soft-deletable base). An actual purge carries its own
 	// outbox row + audit event; the bundle echoes post-commit below.
-	purge, err := b.convergeBaseAfterHardDelete(ctx, tx, d, schema, src, buildPurgeEvent)
+	purge, basePurged, err := b.convergeBaseAfterHardDelete(ctx, tx, d, schema, src, now, buildPurgeEvent)
 	if err != nil {
 		return err
 	}
-	if err := WriteOutbox(ctx, tx, schema.Table(), "DELETED", id, deleteKeysPayload(schema, src, id)); err != nil {
+	meta := outboxMeta{ID: id, Revision: ownRev, CreatedAt: ownCreatedAt, BasePurged: basePurged}
+	if base, _, ok := schema.SharedBaseRef(); ok {
+		if _, nk := sharedBaseValues(base, src); nk != "" {
+			meta.BaseID = deterministicBaseID(nk)
+			if !basePurged {
+				// A role hard-delete is an identity-touching write (the remnant
+				// pick / segment of every SharedBaseView changes), so the
+				// base revision advances even when the convergence itself was a
+				// no-op on the base row (KeepOrphan, still-referenced, no
+				// soft-delete). The purge branch is exempt — the base row is gone.
+				if err = bumpBaseRevision(ctx, tx, d, base, meta.BaseID); err != nil {
+					return err
+				}
+				if meta.BaseRevision, err = readBaseRevision(ctx, tx, d, base, meta.BaseID); err != nil {
+					return err
+				}
+			}
+		}
+	}
+	if err := WriteOutbox(ctx, tx, schema.Table(), "DELETED", id, buildDeletePayload(schema, src, id, meta)); err != nil {
 		return err
 	}
 	ab := b.BuildAudit(buildEvent, evs)
@@ -224,9 +267,11 @@ func (b *BaseEngine) hardDelete(
 
 // softWriteAggregate is the shared root-soft-write + child-cascade path for
 // archive/unarchive: soft-write the root, then cascade onto each declared child
-// (childSet = nowSetExpr/nullSetExpr resolved against the dialect, gate =
-// " IS NULL"/" IS NOT NULL"), then outbox (the aggregate snapshot with the
-// root's soft-delete column reflecting the verb) + audit + hooks + post-commit.
+// with a soft-delete column (archive binds the operation stamp `now`; unarchive
+// sets SQL NULL), then outbox (the aggregate snapshot with the root's
+// soft-delete column reflecting the verb) + audit + hooks + post-commit. One
+// stamp per operation: root, children and the base convergence all carry the
+// same writeNow() instant.
 func (b *BaseEngine) softWriteAggregate(
 	ctx persistence.RequestContext,
 	root *domain.AggregateRoot,
@@ -236,9 +281,7 @@ func (b *BaseEngine) softWriteAggregate(
 	hook WriteHook,
 	hctx HookContext,
 	eventType string,
-	rootStmt func(d Dialect, table, sdCol, pk string) string,
-	childSet func(Dialect) string,
-	childGate string,
+	now time.Time,
 	buildEvent func() audit.AuditEvent,
 	evs []domain.DomainEvent,
 ) error {
@@ -265,7 +308,15 @@ func (b *BaseEngine) softWriteAggregate(
 			return err
 		}
 	}
-	if err := tx.Exec(ctx, rootStmt(d, schema.Table(), sdCol, schema.PKColumn()), d.EncodeArg(domain.NewID(id))); err != nil {
+	archive := eventType == "ARCHIVED"
+	if archive {
+		err = tx.Exec(ctx, archiveSQL(d, schema.Table(), sdCol, schema.PKColumn(), schema.RevisionColumn()),
+			d.EncodeArg(now), d.EncodeArg(domain.NewID(id)))
+	} else {
+		err = tx.Exec(ctx, unarchiveSQL(d, schema.Table(), sdCol, schema.PKColumn(), schema.RevisionColumn()),
+			d.EncodeArg(domain.NewID(id)))
+	}
+	if err != nil {
 		return err
 	}
 	// Cascade onto each declared child with a soft-delete column.
@@ -279,8 +330,14 @@ func (b *BaseEngine) softWriteAggregate(
 			if !ok {
 				continue
 			}
-			cq := childCascadeSQL(d, child.Table(), childSd, child.FKColumn(), childSet(d), childGate)
-			if err := tx.Exec(ctx, cq, d.EncodeArg(domain.NewID(id))); err != nil {
+			if archive {
+				cq := archiveCascadeSQL(d, child.Table(), childSd, child.FKColumn())
+				err = tx.Exec(ctx, cq, d.EncodeArg(now), d.EncodeArg(domain.NewID(id)))
+			} else {
+				cq := childCascadeSQL(d, child.Table(), childSd, child.FKColumn(), nullSetExpr(d), " IS NOT NULL")
+				err = tx.Exec(ctx, cq, d.EncodeArg(domain.NewID(id)))
+			}
+			if err != nil {
 				return err
 			}
 		}
@@ -289,11 +346,17 @@ func (b *BaseEngine) softWriteAggregate(
 	// verb — archive it once no role stays active, reactivate on unarchive. The
 	// base's NATIVE children cascade with the base, not with this role. No-op when
 	// the role declares no shared base.
-	if err := b.convergeBaseAfterSoftWrite(ctx, tx, d, schema, src, eventType); err != nil {
+	if err := b.convergeBaseAfterSoftWrite(ctx, tx, d, schema, src, eventType, now); err != nil {
+		return err
+	}
+	// Base meta AFTER the convergence, so the payload's revision reflects any
+	// lifecycle transition this verb caused on the base row.
+	meta, err := outboxMetaFor(ctx, tx, d, schema, src, id)
+	if err != nil {
 		return err
 	}
 	if err := WriteOutbox(ctx, tx, schema.Table(), eventType, id,
-		BuildAggregatePayload(softWritePayload(schema, src, sdCol, eventType), root, schema)); err != nil {
+		buildWritePayload(schema, src, root, eventType, now, schema.WriteFields(src), meta)); err != nil {
 		return err
 	}
 	ab := b.BuildAudit(buildEvent, evs)
@@ -320,7 +383,7 @@ func (b *BaseEngine) softWriteAggregate(
 // Each child is FK-routed by ResolveAggregateChild: a role's own child takes the
 // role id (rootID); a shared-base native child takes the base id (baseID, "" when
 // the schema has no shared base).
-func writeChildren(ctx context.Context, tx WriteTx, d Dialect, root *domain.AggregateRoot, schema *TableSchema, rootID, baseID string) error {
+func writeChildren(ctx context.Context, tx WriteTx, d Dialect, root *domain.AggregateRoot, schema *TableSchema, rootID, baseID string, now time.Time) error {
 	if root == nil {
 		return nil
 	}
@@ -336,7 +399,7 @@ func writeChildren(ctx context.Context, tx WriteTx, d Dialect, root *domain.Aggr
 		for _, it := range items {
 			switch domain.OperationOf(it.OriginalStatus, it.CurrentStatus) {
 			case domain.OpInsert:
-				childID, err := insertChild(ctx, tx, d, child, it.Item, fkID)
+				childID, err := insertChild(ctx, tx, d, child, it.Item, fkID, now)
 				if err != nil {
 					return err
 				}
@@ -345,11 +408,11 @@ func writeChildren(ctx context.Context, tx WriteTx, d Dialect, root *domain.Aggr
 				// built after this loop) see the child as persisted, id included.
 				root.AssignAggregateItemID(it.Item, childID)
 			case domain.OpUpdate:
-				if err := updateChild(ctx, tx, d, child, it.Item); err != nil {
+				if err := updateChild(ctx, tx, d, child, it.Item, now); err != nil {
 					return err
 				}
 			case domain.OpDelete:
-				if err := removeChild(ctx, tx, d, child, typeName, it.Item, fromBase); err != nil {
+				if err := removeChild(ctx, tx, d, child, typeName, it.Item, fromBase, now); err != nil {
 					return err
 				}
 			}
@@ -362,7 +425,7 @@ func writeChildren(ctx context.Context, tx WriteTx, d Dialect, root *domain.Aggr
 // soft-delete column, else — only for a base-child, whose lifecycle follows the
 // shared base — hard-delete the row. A role child without soft-delete still errors
 // inside archiveChild (unchanged): a removable role child must be archivable.
-func removeChild(ctx context.Context, tx WriteTx, d Dialect, child *TableSchema, typeName string, item domain.AggregateValueObject, fromBase bool) error {
+func removeChild(ctx context.Context, tx WriteTx, d Dialect, child *TableSchema, typeName string, item domain.AggregateValueObject, fromBase bool, now time.Time) error {
 	if fromBase {
 		if _, ok := child.SoftDeleteColumn(); !ok {
 			id := item.GetID().Value()
@@ -372,37 +435,37 @@ func removeChild(ctx context.Context, tx WriteTx, d Dialect, child *TableSchema,
 			return tx.Exec(ctx, deleteSQL(d, child.Table(), child.PKColumn()), d.EncodeArg(domain.NewID(id)))
 		}
 	}
-	return archiveChild(ctx, tx, d, child, typeName, item)
+	return archiveChild(ctx, tx, d, child, typeName, item, now)
 }
 
 // insertChild persists one Added child and returns the PK it minted — the
 // caller writes that id back into the aggregate map (AssignAggregateItemID).
-func insertChild(ctx context.Context, tx WriteTx, d Dialect, child *TableSchema, item domain.AggregateValueObject, rootID string) (string, error) {
+func insertChild(ctx context.Context, tx WriteTx, d Dialect, child *TableSchema, item domain.AggregateValueObject, rootID string, now time.Time) (string, error) {
 	fields := child.WriteFields(item)
 	fields[child.FKColumn()] = domain.NewID(rootID) // FK to the root, dialect-encoded by buildInsert
 	childID, err := newWriteID()
 	if err != nil {
 		return "", err
 	}
-	sql, args := buildInsert(d, child.Table(), child.PKColumn(), childID, fields, child.InsertNowColumns())
+	sql, args := buildInsert(d, child.Table(), child.PKColumn(), childID, fields, child.InsertNowColumns(), now, "")
 	if err := tx.Exec(ctx, sql, args...); err != nil {
 		return "", err
 	}
 	// A child may carry its own siblings (the one allowed recursive width); they
 	// share the child's PK, read from the same AVO.
-	if err := insertSiblings(ctx, tx, d, child, item, childID); err != nil {
+	if err := insertSiblings(ctx, tx, d, child, item, childID, now); err != nil {
 		return "", err
 	}
 	return childID, nil
 }
 
-func updateChild(ctx context.Context, tx WriteTx, d Dialect, child *TableSchema, item domain.AggregateValueObject) error {
+func updateChild(ctx context.Context, tx WriteTx, d Dialect, child *TableSchema, item domain.AggregateValueObject, now time.Time) error {
 	id := item.GetID().Value()
 	if id == "" {
 		return fmt.Errorf("db: cannot update child %q without id", child.Table())
 	}
 	fields := child.WriteFields(item)
-	sql, args := buildUpdate(d, child.Table(), child.PKColumn(), id, fields, child.UpdateNowColumns())
+	sql, args := buildUpdate(d, child.Table(), child.PKColumn(), id, fields, child.UpdateNowColumns(), now, "")
 	if err := execExpectingRow(ctx, tx, sql, args, child.Table(), child.PKColumn(), id); err != nil {
 		return err
 	}
@@ -413,7 +476,7 @@ func updateChild(ctx context.Context, tx WriteTx, d Dialect, child *TableSchema,
 
 // archiveChild: Removed → Archive. A child with soft-delete disabled cannot be
 // archived — surfaced as an error.
-func archiveChild(ctx context.Context, tx WriteTx, d Dialect, child *TableSchema, typeName string, item domain.AggregateValueObject) error {
+func archiveChild(ctx context.Context, tx WriteTx, d Dialect, child *TableSchema, typeName string, item domain.AggregateValueObject, now time.Time) error {
 	id := item.GetID().Value()
 	if id == "" {
 		return fmt.Errorf("db: cannot archive child %q without id", child.Table())
@@ -422,7 +485,8 @@ func archiveChild(ctx context.Context, tx WriteTx, d Dialect, child *TableSchema
 	if err != nil {
 		return err
 	}
-	return tx.Exec(ctx, archiveSQL(d, child.Table(), sdCol, child.PKColumn()), d.EncodeArg(domain.NewID(id)))
+	return tx.Exec(ctx, archiveSQL(d, child.Table(), sdCol, child.PKColumn(), ""),
+		d.EncodeArg(now), d.EncodeArg(domain.NewID(id)))
 }
 
 // undeclaredChildErr is the loud error when an aggregate child type has no

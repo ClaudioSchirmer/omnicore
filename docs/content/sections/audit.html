@@ -181,7 +181,7 @@ audit:
     </table>
     <p>
         <code>PartialUpdate</code> (PATCH) shares <code>verb: "update"</code> with PUT because the
-        SQL is identical (<code>UPDATE … SET col=val, updated_at=NOW()</code>); the PUT-vs-PATCH
+        SQL is identical (<code>UPDATE … SET col=val, updated_at=$now</code>); the PUT-vs-PATCH
         distinction lives in <code>actionName</code> (<code>GetUpdatable</code> vs
         <code>GetPartialUpdatable</code>) — the same unification the domain applies, where
         <code>IfUpdate</code> fires for both. See the <a href="#lifecycle-map">Write lifecycle map</a>
@@ -205,10 +205,10 @@ audit:
         <tbody><tr><th>Root verb</th><th>Children included</th><th>Per-child <code>op</code></th><th>SQL on the child row</th></tr>
         <tr><td><code>insert</code></td><td>all current</td><td><code>inserted</code></td><td><code>INSERT INTO addresses (...)</code></td></tr>
         <tr><td><code>update</code> — <code>OpInsert</code></td><td>brand-new child kept (added, never DB-loaded)</td><td><code>inserted</code></td><td><code>INSERT INTO addresses (...)</code></td></tr>
-        <tr><td><code>update</code> — <code>OpUpdate</code></td><td>DB-loaded child changed OR re-added (<code>Constructor→Changed/Added</code>)</td><td><code>updated</code></td><td><code>UPDATE addresses SET col=val, updated_at=NOW()</code></td></tr>
-        <tr><td><code>update</code> — <code>OpDelete</code></td><td>DB-loaded child removed (<code>Constructor→Removed</code>)</td><td><code>archived</code></td><td><code>UPDATE addresses SET deleted_at=NOW()</code> (row stays, recoverable)</td></tr>
+        <tr><td><code>update</code> — <code>OpUpdate</code></td><td>DB-loaded child changed OR re-added (<code>Constructor→Changed/Added</code>)</td><td><code>updated</code></td><td><code>UPDATE addresses SET col=val, updated_at=$now</code></td></tr>
+        <tr><td><code>update</code> — <code>OpDelete</code></td><td>DB-loaded child removed (<code>Constructor→Removed</code>)</td><td><code>archived</code></td><td><code>UPDATE addresses SET deleted_at=$now</code> (row stays, recoverable)</td></tr>
         <tr><td><code>update</code> — <code>OpNoop</code></td><td>untouched DB child (<code>Constructor→Constructor</code>) OR new-then-removed (<code>Added→Removed</code>) — <strong>both skipped</strong></td><td>—</td><td>(no SQL, no entry)</td></tr>
-        <tr><td><code>archive</code></td><td>every loaded active child (cascade)</td><td><code>archived</code></td><td><code>UPDATE addresses SET deleted_at=NOW() WHERE user_id=$1 AND deleted_at IS NULL</code></td></tr>
+        <tr><td><code>archive</code></td><td>every loaded active child (cascade)</td><td><code>archived</code></td><td><code>UPDATE addresses SET deleted_at=$now WHERE user_id=$1 AND deleted_at IS NULL</code></td></tr>
         <tr><td><code>unarchive</code></td><td>every loaded archived child (cascade)</td><td><code>unarchived</code></td><td><code>UPDATE addresses SET deleted_at=NULL WHERE user_id=$1 AND deleted_at IS NOT NULL</code></td></tr>
         <tr><td><code>delete</code></td><td>every loaded child</td><td><code>deleted</code></td><td>explicit <code>DELETE FROM addresses WHERE user_id=$1</code> per child table (same TX, before the root DELETE)</td></tr>
     </table>
@@ -301,7 +301,7 @@ reader := read.NewAuditReader(deps.DB)
 // Forensic single-row lookup — you saw an id in the slog echo and want the full row.
 ev, err := reader.FindByID(ctx, eventID)
 if errors.Is(err, audit.ErrAuditNotFound) {
-    // no row with that id — partition pruned? archived?
+    // no row with that id — pruned by a retention job? never audited?
 }
 
 // Timeline by aggregate — index-served by audit_events_entity_timeline_idx
@@ -336,10 +336,9 @@ audit.RenderLabelsInJSON(doc, deps.Translator, configuration.LangPTBR)
         per <code>(lang, key)</code> tuple.
     </p>
     <p>
-        Caveats: <code>FindByID</code> issues a multi-partition index scan (composite PK
-        <code>(id, created_at)</code>) — fast for recent rows, costlier into archived partitions
-        (narrow it with <code>created_at</code> via a bespoke query through the engine's
-        <code>Querier</code> when the lookup goes deep). <code>FindByAggregate</code> returns every
+        Caveats: <code>FindByID</code> is a single primary-key lookup — <code>audit_events</code> is a
+        plain table on every backend, and the v7 id is time-ordered, so recent rows (the common case
+        from a slog id) sit in the hot pages. <code>FindByAggregate</code> returns every
         matching row; long timelines should slice downstream or run a bespoke query with explicit
         <code>LIMIT</code>/<code>OFFSET</code>. The JSON round-trip yields
         <code>float64</code>/<code>string</code>/<code>bool</code>/<code>map</code>/<code>slice</code>

@@ -82,18 +82,19 @@
    SyncEngine                   read-side consumer — at-least-once, per-aggregate ordering
         │
         ▼
-    composer                    re-reads CURRENT state from the relational source
-        │
-        ▼
-   Mongo view                   the pre-composed projection the query side reads</code></pre>
+   Mongo view                   the projection the query side reads — written straight from
+                                the event's self-sufficient payload, no relational re-read
+                                (SharedBaseView / external-embed views recompose via the composer)</code></pre>
     <div class="box">
         <strong>This is not event sourcing.</strong> The relational database remains the single
-        source of truth. The outbox event's payload is a <em>routing hint</em>, not a state
-        carrier: on each event the composer re-reads the aggregate's current state from the
-        relational source and upserts the projection. State is never derived by folding an event
-        log &mdash; which is exactly what makes the read side self-healing and every view
-        rebuildable from the system of record at any time (see
-        <a href="#mongo-schema-evolution">Mongo schema evolution</a>).
+        source of truth. The outbox event carries the aggregate's <em>event-carried-state</em>
+        snapshot (every scalar, the structural <code>_ids</code> block, the children with
+        per-item ops — see the <a href="#lifecycle-map">lifecycle map</a>): an entity-rooted view
+        writes its Mongo document straight from that payload, so the projection touches no database
+        on the event path. Views that compose across rows — a <code>SharedBaseView</code>, or a
+        view with external embeds — recompose through the composer instead. State is never derived
+        by folding an event log &mdash; every view remains rebuildable from the system of record at
+        any time (see <a href="#mongo-schema-evolution">Mongo schema evolution</a>).
     </div>
     <p>
         The step-by-step traces live in the <a href="#lifecycle-map">write lifecycle map</a> and

@@ -88,7 +88,7 @@
 }</code></pre>
     <p>
         PUT and PATCH share <code>verb: "update"</code> — SQL fingerprint is identical
-        (<code>UPDATE col=val, updated_at=NOW()</code>), so the audit verb is identical. The PUT vs PATCH distinction
+        (<code>UPDATE col=val, updated_at=$now</code>), so the audit verb is identical. The PUT vs PATCH distinction
         lives in <code>actionName</code> (<code>GetUpdatable</code> vs <code>GetPartialUpdatable</code>) — same way
         the domain unifies them via <code>IfUpdate</code>. Unchanged columns never appear in <code>changes</code>
         — no redundancy with the snapshot.
@@ -114,7 +114,7 @@
             <tr><td>insert</td><td>all current items</td><td><code>"inserted"</code></td><td><code>snapshot</code></td></tr>
             <tr><td>update — StatusAdded</td><td>via <code>AddAggregateChild</code></td><td><code>"inserted"</code></td><td><code>snapshot</code></td></tr>
             <tr><td>update — StatusChanged</td><td>via <code>ChangeAggregateChild</code></td><td><code>"updated"</code></td><td><code>changes</code> (diff vs pre-mutation child)</td></tr>
-            <tr><td>update — StatusRemoved</td><td>via <code>RemoveAggregateChild</code> / <code>ReplaceAggregateChildrenOf</code></td><td><code>"archived"</code> <span class="muted">(SQL is <code>UPDATE deleted_at=NOW()</code> — row stays in the DB)</span></td><td><code>snapshot</code> (pre-archive state)</td></tr>
+            <tr><td>update — StatusRemoved</td><td>via <code>RemoveAggregateChild</code> / <code>ReplaceAggregateChildrenOf</code></td><td><code>"archived"</code> <span class="muted">(SQL is <code>UPDATE deleted_at=$now</code> — row stays in the DB)</span></td><td><code>snapshot</code> (pre-archive state)</td></tr>
             <tr><td>update — StatusConstructor</td><td colspan="3"><em>untouched — skipped (no SQL)</em></td></tr>
             <tr><td>archive</td><td>every loaded active child (cascade)</td><td><code>"archived"</code></td><td><code>snapshot</code></td></tr>
             <tr><td>unarchive</td><td>every loaded child (cascade restore)</td><td><code>"unarchived"</code></td><td><code>snapshot</code></td></tr>

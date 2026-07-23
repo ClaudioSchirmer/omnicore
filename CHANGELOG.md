@@ -11,6 +11,317 @@ with `1.0.0`.
 
 ## [Unreleased]
 
+## [0.36.0] - 2026-07-22
+
+### Added
+
+- **Upstream-mirror soft-delete boot guard (§8.5) — a subscription `filter`
+  that would strip the archive state now fails loud instead of silently.** The
+  `filter` on an `upstreamSubscriptions` entry is a string allowlist over the
+  raw upstream payload and consults no schema, so an `ARCHIVED` event's
+  soft-delete column (e.g. `deleted_at`) is dropped unless the `filter` lists
+  it — and the local mirror would then never reflect the archive (archived rows
+  look active forever). Boot now cross-checks each subscription against the
+  soft-delete column declared on the external `FromSchema` embed(s) of its
+  collection: a column DECLARED on the embed schema but OMITTED by a non-empty
+  `filter` ABORTS the boot naming the offending subscription and column; a
+  mirror whose embed schema declares no soft-delete column at all logs an
+  ADVISORY warning (the consumer often cannot know whether the upstream
+  soft-deletes); an empty `filter` mirrors the full payload and always passes.
+  See the upstream-mirror note under Table schema and the `upstreamSubscriptions`
+  block in the YAML reference.
+
+- **Projection-state registry (`omnicore_projection_state`) — the durable
+  rendezvous that makes the projection deterministic under multiple workers
+  and pods.** Two write-then-check handshakes close the windows a per-document
+  revision guard cannot see: (1) *base revision*: every shared-base role
+  event stamps its `base_revision` into the registry BEFORE the fan-out probes
+  for target documents; a role document that materializes AFTER a fan-out that
+  could not see it (its INSERTED/UNARCHIVED projection was still in flight)
+  re-checks the registry after writing and, when a newer base revision proves a
+  fan-out already passed, repairs itself by one consult recompose applied
+  guarded — the store's write order guarantees one of the two sides always
+  fires. (2) *document tombstones*: DELETED records the row's LAST revision
+  (now stamped on the DELETED payload's `_ids.revision`) as a tombstone before
+  a GUARDED delete (`ReadModelStore.DeleteGuarded` — a document a fresher
+  writer advanced past the delete's revision survives), and every
+  document-creating upsert re-checks the tombstone after writing: a zombie
+  consumer's older upsert racing the delete removes its own write instead of
+  resurrecting the document. Tombstones carry the dead row's
+  `created_at` as the INCARNATION discriminator (stamped on the DELETED
+  payload's `_ids.created_at`, read in the same statement as the pre-delete
+  revision): the guarded delete and the creator-side self-remove only kill
+  documents whose stored `created_at` falls in a two-second window around it
+  (created_at columns round OR truncate to their DDL precision per engine), so a DETERMINISTIC id (a shared-PK role, the
+  base) re-created under the same natural key — same id, revision restarted —
+  is never mistaken for a zombie of the dead life. A schema without
+  `CreatedAt()` falls back to the revision-only tombstone. *Upgrade note (pre-release builds only):* tombstones written by
+  builds before the `created_at` discriminator lack it — a deterministic
+  identity deleted on such a build and re-created after upgrading stays
+  blocked until the tombstone's TTL; clear them once
+  (`deleteMany({_id: /^doc:/, created_at: {$exists: false}})`) or wait out
+  the 24h. Tombstones expire after 24h via a TTL index
+  (`EnsureProjectionState`, provisioned at SyncEngine start); base-revision
+  records never expire. The registry lives outside the blue-green slots (like
+  `omnicore_mongo_views`), is never rebuilt, and its writes carry
+  MAJORITY write concern — the registry is the fiduciary of the handshakes,
+  and a failover rollback of a primary-only stamp would silently dissolve
+  their ordering premise (view writes keep the deployment default; they
+  reconverge through redelivery). On a standalone node majority degrades to
+  the primary ack — zero cost. Custom `ReadModelStore` implementations must add
+  `DeleteGuarded`, `BulkApplyProjection` and `EnsureProjectionState`.
+
+### Changed
+
+- **BREAKING: manual aggregate scanners decode by column NAME, not by position.**
+  `read.RootScanner`/`read.ChildScanner` now receive a `map[string]any` — the row
+  read by name, values normalized per backend (uuid → string, etc.) — instead of
+  a positional `core.Row`/`core.Rows` scanned with `row.Scan(&a, &b, ...)`. The
+  loader's manual path selects explicit columns (never `SELECT *`), so a manual
+  scanner is order-independent and DDL-safe (an online ADD COLUMN can no longer
+  shift the positions it reads), and the dialect-specific id decode (e.g. a MySQL
+  BINARY(16) id via `uuid.FromBytes`) is gone — the map already carries the
+  normalized string. *Migration*: change `func(core.Row) (T, error)` doing
+  `row.Scan(&id, &name, …)` to `func(map[string]any) (T, error)` reading
+  `m["id"]`/`m["name"]`; same for `WithChildScanner`. The manual scanner remains
+  the ONLY read that is not schema-driven-column-explicit (its query names the
+  schema's columns; only the developer's decode is manual).
+
+- **BREAKING: the day-to-day projection is PAYLOAD-DIRECT — the SyncEngine no
+  longer re-reads the relational source per event.** For entity-rooted views
+  without external embeds, each event applies as ONE atomic
+  aggregation-pipeline update (new `ReadModelStore.ApplyProjection`, dual-apply
+  to the blue-green shadow preserved): typed decode against the TableSchema
+  (json.Number keeps int64 precision; RFC 3339 → time.Time; base64 → []byte),
+  unconditional own-field sets, shared-base fields behind the `_base_revision`
+  document watermark (the base row-lock's commit order replayed on the read
+  side — the last writer into the base wins on every document), and SURGICAL
+  child-array edits (per-element by child PK, base-children elements carrying a
+  `_rev` watermark) that preserve archived child history the payload does not
+  carry. The shared-identity fan-out applies the same guarded stages to the
+  other roles' documents — no `ComposeBatch` on the hot path. The composer
+  remains for: SharedBaseView documents (cross-row remnant pick), views with
+  external embeds, rebuild/verify/drift, and the upstream ripple. A payload
+  without the `_ids` block (corrupt or foreign) is skipped — never silently
+  re-read. Custom `ReadModelStore` implementations must add `ApplyProjection`.
+- **BREAKING: the outbox payload is the event-carried-state contract — one
+  self-sufficient shape for every verb, ONE outbox row per write.** Every body
+  verb now emits: all scalars column-keyed flat at the top (root/role fields ∪
+  sibling fields ∪ shared-base business fields ∪ the verb's managed
+  timestamps — the exact app-clock values the DML bound), an `_ids` structural
+  block (`id`, and for SharedBase roles `base_id` + `base_revision` +
+  `base_purged` on the purging DELETED), and `_children`/`_base_children`
+  groups (per-item column-keyed fields + an `_op` verb — insert/update/
+  archive/delete/noop — from the same OperationOf categorization the persister
+  executed; the warm shared-base insert hydrates the base children, so a
+  second role's INSERTED payload carries the full shared collection). DELETED
+  keeps its historical structural keys (PK + shared-base FK) and only ADDS
+  `_ids`. The empty base-table `UPDATED` fan-out row of a SharedBase write is
+  NO LONGER EMITTED — the SyncEngine fans out to the other roles' documents
+  from the role event's `_ids.base_id` (the orphan-purge base `DELETED` row
+  remains, external cascade depends on it). The `"_"` column-name prefix is
+  now a reserved framework namespace (boot failure at TableSchema
+  declaration). External `UpstreamSubscription` consumers: the mirror decode
+  strips `_`-prefixed keys unless the `Filter` allowlists them, so a foreign
+  producer's flat payload passes through untouched. Migration: after upgrading,
+  run a view rebuild to converge documents produced during the rollout window.
+- **BREAKING: EVERY root schema requires a `Revision(column)` declaration —
+  the deterministic last-writer-wins token of the read side.** (Initially
+  shipped for the shared base, then generalized: the zombie-consumer window —
+  a slow pod finishing an in-flight event after a partition handoff — affects
+  every aggregate, so every root table carries the token.) A root schema
+  attached to a repository without `Revision` is a boot failure; siblings and
+  aggregate children declare none (owner-guarded). The projector refuses any
+  document write whose `_ids.revision` is older than the document's
+  `_revision` watermark — the whole own-data pipeline no-ops atomically.
+  For the SHARED BASE the column is a BIGINT
+  NOT NULL the framework fully manages: initialized to 1 on the identity's
+  creation and incremented (`revision = revision + 1`) UNDER THE BASE ROW'S
+  LOCK by EVERY write that touches the identity — the shared-field upsert, the
+  lifecycle convergence (archive/reactivate), a role's archive/unarchive even
+  without a base transition, a role's hard-delete (non-purge branches
+  included; the purge removes the row) and the batch role verbs — so
+  concurrent writes of one identity serialize in real relational commit order
+  and the value totally orders the identity's closure: shared scalars, base
+  children, the SharedBaseView segment pick and the role rows themselves
+  (which is what makes the guarded consult writes below sound). The resulting
+  value travels on the outbox payload (`_ids.base_revision`) and orders every
+  read-model write of identity data: the last writer to enter the base wins
+  regardless of consumer latency, worker interleaving, pod count or
+  redelivery. The write path's extra cost is one UPDATE where a SELECT of the
+  base revision already ran. A role attaching a base without `Revision` is a
+  boot failure. Migration: add the column
+  (`revision BIGINT NOT NULL DEFAULT 0`) to each shared-base table and declare
+  `.Revision("revision")` on its `NewSharedBase`.
+- **BREAKING: every consult-composed write is revision-guarded — the
+  full-document `$set` upsert is gone from the projection.** A consult
+  recompose (SharedBaseView documents, views with embeds, the base-event
+  fan-out) and the rebuild/verify backfill (`ReadModelStore.
+  BulkApplyProjection`, replacing the backfill's plain `BulkUpsert`) now write
+  ONE guarded pipeline: own fields behind the document's `_revision`,
+  shared-base fields behind `_base_revision`, a SharedBaseView document as a
+  single base-revision scope, embed segments still owned by the
+  recompose-ripple (written only on document creation). A consult that read
+  the relational earlier but reaches the store later than a fresher writer is
+  now a no-op instead of a lost update — and it can no longer regress the
+  document's watermarks. The composed document's data is always at least as
+  fresh as its watermark (the composer reads the root/base row first), so the
+  guard only ever suppresses stale writes. At the EQUAL revision the two write
+  families split by what they carry — the rolling-deploy closure: a pod on
+  the previous binary can advance a document to the current revision through
+  its own (older) column list, leaving the columns its schema does not know
+  behind (missing, null or stale-valued). The PAYLOAD-DIRECT stage applies its
+  full carried state at the equal revision — the payload is the emitting
+  transaction's own truth (one revision ↔ one committed state, so a
+  redelivered duplicate overwrites idempotently) and re-asserting it replaces
+  any value a schema-blind consult left stale under the watermark; columns the
+  event does not carry are never touched. The same equal arm rides the OWN-child
+  edits (the surgical per-element array stages guarded by `_revision`): a child
+  op at the document's current revision re-asserts its element, restoring child
+  columns a schema-blind composition dropped — shared-base children already
+  converge through the per-element `_rev` rule (a consult-composed element
+  carries none and counts as older). The CONSULT pipelines are READ
+  snapshots, so at the equal revision they only FILL what the document lacks,
+  always stored-wins, at every level a column can surface (root/sibling/base
+  scalars, a whole new child segment, a child ELEMENT's column via per-element
+  PK-keyed shallow merge, a role segment's scalar via sub-document shallow
+  merge). One level limit: an array nested inside a role segment of a person
+  document keeps the stored array whole — additions there converge on that
+  role's next write or a rebuild.
+- **Managed timestamps are now application-clock authored.** The managed
+  columns (`created_at`/`updated_at` and the soft-delete stamp written by
+  archive and its cascades, the shared-base lifecycle convergence included)
+  are no longer stamped with the dialect's `NOW()`/`CURRENT_TIMESTAMP`/
+  `SYSTIMESTAMP` expression inside the generated DML. Instead the write path
+  mints ONE `time.Now()` instant per write operation (UTC, truncated to
+  microseconds — the precision every supported backend stores) and binds it as
+  an ordinary argument, the same move the ids made with the Go-minted UUID v7:
+  root, children, siblings and the shared-base cascade of one operation all
+  carry the exact same instant, and the value is known in Go before COMMIT —
+  the prerequisite for the outbox payload to carry authoritative timestamps.
+  The ARCHIVED outbox payload's soft-delete value is now that same bound stamp
+  (previously an informational Go-side approximation of the DB stamp).
+  Control-plane timestamps (`outbox.created_at`, the integration/upstream
+  failure registries, the replay admin) keep the dialect `NOW()` expression,
+  and `Dialect.NowExpr()` remains on the interface for them. Operational note:
+  the authoritative clock for row timestamps is now the application host's
+  (keep pods on NTP — a correctness requirement); the database server's clock
+  no longer participates. Under clock skew across pods, `updated_at` is not
+  monotonic between concurrent writers — the ordering token is `Revision`,
+  never `updated_at`.
+- **BREAKING: `audit_events` is now a plain table on every backend; the
+  Postgres-only partitioning is removed.** The audit id is a time-ordered
+  UUID v7, so the primary key alone gives append-only insert locality — the
+  Postgres table drops `PARTITION BY RANGE (created_at)`, its default partition,
+  and the composite `(id, created_at)` PK (now just `(id)`). Monthly-partition
+  maintenance is gone. Because `audit_events` is written inside every write's
+  transaction, the index set is now the minimum that serves the framework's own
+  reads — the primary key (`FindByID`) and `audit_events_entity_timeline_idx`
+  (`entity_type, aggregate_id, occurred_at DESC`, serving `FindByAggregate`) —
+  identical on all four dialects. The four forensic indexes (`actor`,
+  `tenant_id`, `thread_id`, `created_at`/BRIN) are removed on every dialect;
+  retention and any forensic lookup index are now devops concerns, added against
+  the live table when a deployment needs them. The framework's embedded `0001`
+  is edited in place: a fresh install gets the plain table; an existing Postgres
+  deployment keeps its already-applied partitioned table (writes land in the
+  default partition; no future partitions are created), and converting or
+  pruning it is a devops migration.
+- **BREAKING: `postgres.AsPostgres` and `audit.EnsureFuturePartitions` are
+  removed; `migration.New` → `migration.NewPostgres(dsn, dir)`.** With
+  partitioning gone, the migration runner was the last framework code recovering
+  the concrete PG adapter through the neutral port; it now opens its own
+  connection from `relational.dsn` like the MySQL/SQL Server/Oracle runners. No
+  production code recovers a concrete engine from `core.RelationalEngine`
+  anymore — custom reads use the neutral `DB.Querier()`, and the only remaining
+  PG-specific escape is the in-TX `UnwrapPgxTx` (one of the per-engine
+  `Unwrap<Engine>Tx` family). Migration: replace `postgres.AsPostgres(DB).Pool()`
+  reads with `DB.Querier()`, and any direct `migration.New` call with
+  `migration.NewPostgres(dsn, dir)`.
+
+### Fixed
+
+- **Schema-driven reads name their columns explicitly — an online column-add
+  can no longer transiently break an in-flight projection.** The composer's read
+  path issued `SELECT *`; a cached prepared-statement plan of a `SELECT *` binds
+  to the table's column layout, so a blue-green view rebuild that adds a
+  projected column (online, while a pod keeps serving the old version)
+  invalidated the plan and the next execution failed with "cached plan must not
+  change result type" (Postgres SQLSTATE 0A000) — one CDC event then failed to
+  project until a later redelivery (a transient off-by-one on the new slot; no
+  permanent loss). Every schema-driven read now emits an explicit column list
+  (new `TableSchema.ReadColumns()` — PK + business fields + shared-base/child
+  FKs + managed columns, in a deterministic order that keeps the prepared-plan
+  cache to one entry per shape), so an added-but-unlisted column never changes
+  the result type. The developer's manual aggregate scanner (which decodes raw
+  rows) and the offline admin replay tool keep `SELECT *` by design.
+
+- **Consult-class view documents no longer lose fields to a concurrent-writer
+  race.** A view with external embeds has TWO independent writers converging on
+  the same document `_id` — the SyncEngine (recomposing on the entity's own
+  events) and the UpstreamSubscriber recompose-ripple (recomposing on upstream
+  events) — and both wrote full-document Upserts, so whichever landed last
+  regressed the other's freshly-read fields (observed as an `EmbedMany` array
+  frozen without its newest item whenever the parent's own event out-raced the
+  item ripples across CDC topics; the wider the relay's batching skew, the more
+  likely). Both writers now write ONE atomic pipeline upsert claiming only the
+  fields they read freshly — the ripple owns the embed segments, the SyncEngine
+  owns everything else; whoever arrives first still materializes the complete
+  document. (Embed-less consult views moved off the plain Upsert too — see the
+  revision-guarded consult writes under Changed.)
+- **The recompose-ripple edits embed segments PER ELEMENT, so concurrent
+  ripples commute.** The ripple used to `$set` each embed segment to a
+  freshly-composed snapshot of the mirror; two concurrent ripples for
+  different upstream ids converging on the same parent (`workers > 1` in one
+  subscription, or partitions spread over pods) could interleave and the older
+  snapshot would erase the newer one's element. Each ripple now applies the
+  event's own change surgically (strip/append the one element keyed by the
+  upstream id; conditionally set the 1:1 sub-document) — edits for different
+  ids touch disjoint elements and commute, and events for the same id are
+  already serialized end to end (broker partitioning + hash-bucketed worker
+  dispatch). The ripple hot path no longer reads the relational source at all;
+  the full recompose remains for materializing a parent document that does not
+  exist yet (non-upsert on the surgical write keeps a ripple racing a
+  concurrent document delete from resurrecting a skeleton — the
+  `ReadModelStore.ApplyProjection` port gained the `upsert bool` parameter for
+  this). An embed source that declares nested embeds keeps the full-recompose
+  path. A 1:1 embed's last ordering window — a document written with an FK
+  whose segment is unresolved (the composing read raced the mirror write) or
+  stale (a consult update changed the FK, which by ownership never rewrites
+  segments) — closes with a post-write repair handshake: after every consult
+  upsert and ripple fallback create the mirror is re-read fresh and the
+  segment set under a double guard (FK still matches AND the stored element is
+  not already that id), so either the repair heals it or the mirror doc's own
+  later insert ripple does, and a repair can never regress the element's own
+  fresher ripple.
+- **Ripple writes dual-apply to the blue-green shadow.** During a rebuild
+  window the recompose-ripple wrote only the active slot, so an upstream event
+  landing mid-rebuild could be missing from the flipped collection (only a
+  lucky verify sample would catch it). Ripple writes now follow the same
+  dual-apply discipline as the SyncEngine — active + shadow, bounded retry,
+  abort the rebuild rather than fail the live path.
+- **An unresolved 1:1 embed writes an explicit `null`.** When the FK is null
+  or the source document is gone, the composer omitted the segment key — and
+  under `$set`-merged document writes the stale sub-document survived
+  indefinitely (the documented contract is "null when unset/unresolved"). Both
+  compose paths (per-row and batched) now write the explicit `null`, and the
+  surgical delete path clears the 1:1 segment the same way.
+- **Clearing a 1:1 sibling now reaches the projected document.** The
+  payload omitted an all-nil sibling facet ("mirroring the write"), so a PUT
+  that removed the sibling row (e.g. nulling every notification flag) left the
+  projected document carrying the stale sibling values forever — under
+  event-carried state an absent key is indistinguishable from "untouched".
+  The payload now emits the sibling columns unconditionally (explicit nulls
+  when the facet is nil), and the projector recognizes the all-null group as
+  the removed row and DROPS the keys (`$$REMOVE`) — matching the composer,
+  which omits a missing sibling row, so the blue-green verify's shape
+  comparison stays exact. A live row with a null column still projects the
+  explicit null.
+- **The `anonymize` upstream-delete policy ripples the retained document.**
+  The post-anonymize recompose was triggered with a delete-shaped (nil) after
+  state; it now carries the blanked-but-retained mirror document, so dependent
+  views keep embedding it with the blanked fields rather than treating the
+  event as a source deletion.
+
 ## [0.35.0] - 2026-07-19
 
 ### Added

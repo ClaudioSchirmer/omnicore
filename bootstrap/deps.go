@@ -46,12 +46,12 @@ const (
 // DB is the backend-neutral relational engine; the dialect is chosen at boot via
 // relational.dialect and resolved through the engine registry (core.NewEngine).
 // Consumers depend on the interface, not a concrete driver. A build links exactly
-// one engine, selected by build tag (-tags postgres | -tags mysql); the matching
-// engine_<dialect>.go file registers it and carries any dialect-bound boot wiring
-// (pgEngine + audit partitions + migration runner for Postgres; the migration
-// runner for MySQL). Code that genuinely needs Postgres-specific access (the pgx
-// pool for custom SELECTs) recovers it via postgres.AsPostgres(d.DB) — a
-// documented PG-only escape hatch, available only in a postgres-tagged build.
+// one engine, selected by build tag (-tags postgres | -tags mysql | -tags
+// sqlserver | -tags oracle); the matching engine_<dialect>.go file registers it
+// and carries its migration-runner factory. Every engine reaches its backend the
+// same way — the neutral core.RelationalEngine surface (DB.Querier() for custom
+// reads, the in-TX Unwrap<Engine>Tx escape hatch for hooks) — with no
+// concrete-engine recovery: there is no per-engine "AsX" cast.
 type Deps struct {
 	Config     *Config
 	Logger     *slog.Logger
