@@ -132,8 +132,9 @@
     <h3>Child cascade (aggregate)</h3>
     <p>
         Children of an <code>AggregateRoot</code> don't have their own outbox event or Mongo op — granularity B
-        means one outbox row per aggregate operation, and the read side re-composes the whole doc from the root's
-        event. What children DO have, per row, is per-op SQL emitted by <code>writeChildren</code> +
+        means one outbox row per aggregate operation, and the read side applies the root event's
+        <code>_children</code> deltas surgically — per child row, keyed by PK, each carrying its own
+        <code>_op</code> — never a whole-document recompose. What children DO have, per row, is per-op SQL emitted by <code>writeChildren</code> +
         cascade SQL emitted by <code>archiveAggregate</code>/<code>unarchiveAggregate</code>/<code>deleteAggregate</code>,
         and a per-row audit <code>op</code> that mirrors the SQL fingerprint identically to the root verb. On an
         <code>update</code>, each child's operation is <code>domain.OperationOf(OriginalStatus, CurrentStatus)</code> —

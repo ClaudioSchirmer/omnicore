@@ -516,21 +516,13 @@ SELECT user_id, id, label, street, number, complement, neighborhood, city, state
     <p>
         The engine caches the <code>column → field index</code> mapping by <code>reflect.Type</code>
         in <code>sync.Map</code>. The first call pays the reflection (~µs); subsequent calls
-        do direct lookup and <code>row.Scan</code> writes into the field address
-        with no intermediate allocations. Benchmark against the manual scanner (8 columns, 1 row,
-        Apple M4 Max):
-    </p>
-    <table>
-        <thead><tr><th>Variant</th><th>ns/op</th><th>B/op</th><th>allocs/op</th></tr></thead>
-        <tbody>
-            <tr><td>Manual scanner</td><td>116478</td><td>1380</td><td>26</td></tr>
-            <tr><td>Auto-scan (cached reflection)</td><td><strong>115094</strong></td><td><strong>916</strong></td><td><strong>11</strong></td></tr>
-        </tbody>
-    </table>
-    <p>
-        Auto-scan came out <strong>slightly faster</strong> and allocates less memory than the
-        manual scanner, because the manual path allocates temporary pointers (<code>var phone *string;
-        var deletedAt *time.Time</code>) that auto-scan avoids — it writes directly into the fields.
+        do direct lookup and <code>row.Scan</code> writes each column straight into its struct
+        field address, with no intermediate allocations. This is why auto-scan is the leaner
+        default: the manual scanner receives a column-keyed <code>map[string]any</code> — every
+        column boxed into an interface value, plus the map itself — so it allocates more per row
+        than auto-scan's direct field writes. The manual path's cost buys arbitrary decode
+        flexibility (JOINs, <code>CASE</code>/<code>COALESCE</code>, non-id lookups); reach for it
+        only when the query needs something auto-scan cannot express.
     </p>
 
     <h4 id="aggregate-loader-manual">Manual mode (escape hatch)</h4>

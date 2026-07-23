@@ -68,7 +68,8 @@ with `1.0.0`.
   and a failover rollback of a primary-only stamp would silently dissolve
   their ordering premise (view writes keep the deployment default; they
   reconverge through redelivery). On a standalone node majority degrades to
-  the primary ack — zero cost.
+  the primary ack — zero cost. Custom `ReadModelStore` implementations must add
+  `DeleteGuarded`, `BulkApplyProjection` and `EnsureProjectionState`.
 
 ### Changed
 

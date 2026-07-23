@@ -593,8 +593,8 @@ func OrdersView() *query.ViewDefinition {
     resurrecting the document — scoped to the dead row's incarnation by its <code>created_at</code>, so a
     deterministic id (shared-PK role, base) re-created under the same natural key is never mistaken for a
     zombie of the dead life. The same registry carries the base-revision handshake that heals a role document born
-    concurrently with a fan-out that could not see it (the fan-out stamps the clock before probing; the newborn
-    document's writer re-checks after writing and repairs by one guarded consult when a newer clock proves a fan-out
+    concurrently with a fan-out that could not see it (the fan-out stamps its base revision before probing; the newborn
+    document's writer re-checks after writing and repairs by one guarded consult when a newer base revision proves a fan-out
     already passed). Tombstones expire after 24&nbsp;h (TTL index, provisioned at SyncEngine start); base-revision
     records live for the identity's lifetime and are dropped by the purge.
 </p>

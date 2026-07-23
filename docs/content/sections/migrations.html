@@ -45,8 +45,8 @@
 
     <h3>API — one Manager, a per-dialect constructor</h3>
     <p>The <code>migration.Manager</code> is dialect-neutral; only its constructor (and the connection it opens) is dialect-bound, and each constructor lives behind its engine build tag. Pick the one matching <code>relational.dialect</code>:</p>
-    <pre><code>// Postgres — borrows the live pgx pool (build tag: postgres)
-mgr := migration.New(pg.Pool(), "./migrations/postgres")
+    <pre><code>// Postgres — opens its own *sql.DB from the DSN (build tag: postgres)
+mgr := migration.NewPostgres(dsn, "./migrations/postgres")
 
 // MySQL — opens its own *sql.DB from the DSN (build tag: mysql)
 mgr := migration.NewMySQL(dsn, "./migrations/mysql")

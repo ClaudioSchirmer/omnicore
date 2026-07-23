@@ -78,7 +78,7 @@ func (s *SyncEngine) stampBaseRevision(ctx context.Context, baseTable, baseID st
 	return s.mongo.ApplyProjection(ctx, projectionStateCollection(), baseRevisionID(baseTable, baseID), stages, true)
 }
 
-// identityClock reads the registry's base-revision record for one shared identity;
+// stampedBaseRevision reads the registry's base-revision record for one shared identity;
 // 0 when the identity has no record yet.
 func (s *SyncEngine) stampedBaseRevision(ctx context.Context, baseTable, baseID string) (int64, error) {
 	docs, err := s.mongo.FindManyByField(ctx, projectionStateCollection(), "_id", baseRevisionID(baseTable, baseID))
