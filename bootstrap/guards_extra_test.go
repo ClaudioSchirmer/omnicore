@@ -48,7 +48,7 @@ func TestGuardJoinFieldIndex_RejectsMissingJoinField(t *testing.T) {
 	// External embed declared without a join field (no .On / no FK) — the
 	// guard reports the missing-join-field diagnostic rather than the
 	// missing-index one.
-	v := query.View("orders").Root("orders").
+	v := query.View("orders").
 		Embed("buyer", query.FromSchema(core.NewExternalSchema("users").PK("id")).As("Buyer")).
 		Version(1)
 	errs := guardJoinFieldIndex([]*query.ViewDefinition{v})
@@ -66,7 +66,7 @@ func TestValidateUpstreamSubscriptions_PassesWhenClean(t *testing.T) {
 			StartFrom: StartFromLatest, OnUpstreamDelete: UpstreamDeleteCascade},
 	}
 	views := []*query.ViewDefinition{
-		query.View("orders").Root("orders").
+		query.View("orders").
 			Embed("buyer", extEmbed("users", "buyer_id", "Buyer")).
 			Indexes(query.Index("buyer_id")).
 			Version(1),

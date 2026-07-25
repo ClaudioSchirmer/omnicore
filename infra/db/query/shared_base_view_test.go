@@ -38,7 +38,7 @@ type sbvDependent struct{ Name string }
 type sbvAddr struct{ Street string }
 
 func sbvBase() *core.TableSchema {
-	return core.NewSharedBase("sbv_persons").Revision("revision").
+	return core.NewSharedBaseSchema("sbv_persons").Revision("revision").
 		PK("id").
 		Field("Document", "document").
 		Field("Name", "name").
@@ -69,7 +69,7 @@ func sbvEmployeeSchema() *core.TableSchema {
 }
 
 func sbvView() *ViewDefinition {
-	return SharedBaseView(sbvBase(), "sbv_persons_view").
+	return SharedBaseView("sbv_persons_view").Schema(sbvBase()).
 		Role(sbvUserSchema()).
 		Role(sbvEmployeeSchema()).
 		Version(1)
@@ -106,49 +106,57 @@ func TestSharedBaseView_BuilderAccessors(t *testing.T) {
 }
 
 func TestSharedBaseView_BuilderPanics(t *testing.T) {
-	assertPanics(t, "non-SharedBase root", func() {
-		SharedBaseView(sbvUserSchema(), "x")
-	})
-	assertPanics(t, "nil root", func() {
-		SharedBaseView(nil, "x")
+	assertPanics(t, "Role before Schema", func() {
+		SharedBaseView("x").Role(sbvUserSchema())
 	})
 	assertPanics(t, "Role on a regular View", func() {
 		View("plain").Role(sbvUserSchema())
 	})
 	assertPanics(t, "nil role", func() {
-		SharedBaseView(sbvBase(), "x").Role(nil)
+		SharedBaseView("x").Schema(sbvBase()).Role(nil)
 	})
 	assertPanics(t, "type-less role", func() {
-		SharedBaseView(sbvBase(), "x").Role(core.NewExternalSchema("ext").PK("id"))
+		SharedBaseView("x").Schema(sbvBase()).Role(core.NewExternalSchema("ext").PK("id"))
 	})
 	assertPanics(t, "role without SharedBase", func() {
-		SharedBaseView(sbvBase(), "x").Role(
+		SharedBaseView("x").Schema(sbvBase()).Role(
 			core.NewTableSchema[*sbvUser]("plain_users").PK("id").Field("UserName", "user_name"))
 	})
 	assertPanics(t, "role of another base table", func() {
-		otherBase := core.NewSharedBase("other_persons").Revision("revision").PK("id").
+		otherBase := core.NewSharedBaseSchema("other_persons").Revision("revision").PK("id").
 			Field("Document", "document").Field("Name", "name").NaturalKey("document")
 		role := core.NewTableSchema[*sbvUser]("sbv_users").PK("id").
 			Field("UserName", "user_name").SharedBase(otherBase, "id")
-		SharedBaseView(sbvBase(), "x").Role(role)
+		SharedBaseView("x").Schema(sbvBase()).Role(role)
 	})
 	assertPanics(t, "divergent base declaration", func() {
-		divergent := core.NewSharedBase("sbv_persons").Revision("revision").PK("id").
+		divergent := core.NewSharedBaseSchema("sbv_persons").Revision("revision").PK("id").
 			Field("Document", "document").NaturalKey("document") // missing Name + SoftDelete
 		role := core.NewTableSchema[*sbvUser]("sbv_users").PK("id").
 			Field("UserName", "user_name").SharedBase(divergent, "id")
-		SharedBaseView(sbvBase(), "x").Role(role)
+		SharedBaseView("x").Schema(sbvBase()).Role(role)
 	})
 	assertPanics(t, "duplicate role segment", func() {
-		SharedBaseView(sbvBase(), "x").Role(sbvUserSchema()).Role(sbvUserSchema())
+		SharedBaseView("x").Schema(sbvBase()).Role(sbvUserSchema()).Role(sbvUserSchema())
 	})
 }
 
 func TestValidateViewSchemas_SharedBaseView(t *testing.T) {
 	// No roles → boot error.
-	err := ValidateViewSchemas([]*ViewDefinition{SharedBaseView(sbvBase(), "empty").Version(1)})
+	err := ValidateViewSchemas([]*ViewDefinition{SharedBaseView("empty").Schema(sbvBase()).Version(1)})
 	if err == nil || !strings.Contains(err.Error(), "declares no .Role") {
 		t.Fatalf("a role-less SharedBaseView must be rejected, got %v", err)
+	}
+	// No .Schema(...) → boot error (the schema-mandatory gate, shared with a regular View).
+	err = ValidateViewSchemas([]*ViewDefinition{SharedBaseView("noschema").Version(1)})
+	if err == nil || !strings.Contains(err.Error(), "no root .Schema") {
+		t.Fatalf("a schema-less SharedBaseView must be rejected, got %v", err)
+	}
+	// A non-shared-base .Schema(...) → boot error (the base-kind gate that used to
+	// panic in the constructor).
+	err = ValidateViewSchemas([]*ViewDefinition{SharedBaseView("wrongkind").Schema(sbvUserSchema()).Version(1)})
+	if err == nil || !strings.Contains(err.Error(), "must be a core.NewSharedBaseSchema") {
+		t.Fatalf("a non-shared-base SharedBaseView schema must be rejected, got %v", err)
 	}
 	// A well-formed two-role view passes.
 	if err := ValidateViewSchemas([]*ViewDefinition{sbvView()}); err != nil {
@@ -328,7 +336,7 @@ func TestComposeBaseRooted_DeleteOnArchiveSkipsRemnant(t *testing.T) {
 		"FROM sbv_users":   mapsFromColsData([]string{"id", "user_name"}, [][]any{{"p1", "ana"}}),
 	}, &calls, &args)
 
-	view := SharedBaseView(sbvBase(), "hot").Role(sbvUserSchema()).Role(sbvEmployeeSchema()).Version(1).DeleteOnArchive()
+	view := SharedBaseView("hot").Schema(sbvBase()).Role(sbvUserSchema()).Role(sbvEmployeeSchema()).Version(1).DeleteOnArchive()
 	doc, err := NewComposer(eng).Compose(context.Background(), view, "p1")
 	if err != nil {
 		t.Fatalf("Compose: %v", err)
@@ -484,14 +492,14 @@ func TestSharedBaseViewNode_ChildSoftDeletePaths(t *testing.T) {
 // --- rebuild hash --------------------------------------------------------------
 
 func TestSharedBaseView_RebuildHashMovesWithRoles(t *testing.T) {
-	none := SharedBaseView(sbvBase(), "v").Version(1)
-	one := SharedBaseView(sbvBase(), "v").Role(sbvUserSchema()).Version(1)
-	two := SharedBaseView(sbvBase(), "v").Role(sbvUserSchema()).Role(sbvEmployeeSchema()).Version(1)
+	none := SharedBaseView("v").Schema(sbvBase()).Version(1)
+	one := SharedBaseView("v").Schema(sbvBase()).Role(sbvUserSchema()).Version(1)
+	two := SharedBaseView("v").Schema(sbvBase()).Role(sbvUserSchema()).Role(sbvEmployeeSchema()).Version(1)
 	if none.RebuildHash() == one.RebuildHash() || one.RebuildHash() == two.RebuildHash() {
 		t.Error("adding a role must move the RebuildHash (forgot-to-bump guard)")
 	}
 	// Order-independent: declaring roles in any order yields the same hash.
-	twoSwapped := SharedBaseView(sbvBase(), "v").Role(sbvEmployeeSchema()).Role(sbvUserSchema()).Version(1)
+	twoSwapped := SharedBaseView("v").Schema(sbvBase()).Role(sbvEmployeeSchema()).Role(sbvUserSchema()).Version(1)
 	if two.RebuildHash() != twoSwapped.RebuildHash() {
 		t.Error("role declaration order must not change the RebuildHash")
 	}
@@ -569,7 +577,7 @@ func TestComposedColumnSet_OwnChildrenWalk(t *testing.T) {
 		Field("EmployeeNumber", "employee_number").
 		Child(core.NewTableSchema[sbvDependent]("plain_deps").
 			PK("id").FK("emp_id").Field("Name", "dep_name"))
-	set := View("plain").Version(1).Root("plain_emps").Schema(schema).composedColumnSet()
+	set := View("plain").Version(1).Schema(schema).composedColumnSet()
 	if _, ok := set[sbvDepSeg+".dep_name"]; !ok {
 		t.Errorf("own-child columns must be addressable (%s.dep_name), got %v", sbvDepSeg, set)
 	}
@@ -600,7 +608,7 @@ func TestComposeBaseRooted_RoleWithoutSoftDelete(t *testing.T) {
 		"FROM sbv_badges":  mapsFromColsData([]string{"id", "person_id", "code"}, [][]any{{"b1", "p1", "C7"}}),
 	}, &calls, &args)
 
-	view := SharedBaseView(sbvBase(), "v").Role(sbvBadgeSchema()).Version(1)
+	view := SharedBaseView("v").Schema(sbvBase()).Role(sbvBadgeSchema()).Version(1)
 	doc, err := NewComposer(eng).Compose(context.Background(), view, "p1")
 	if err != nil {
 		t.Fatalf("Compose: %v", err)
@@ -653,7 +661,7 @@ func TestComposeBaseRooted_ErrorPropagation(t *testing.T) {
 }
 
 func TestSharedBaseViewNode_NoSoftDeleteRole(t *testing.T) {
-	view := SharedBaseView(sbvBase(), "v").Role(sbvBadgeSchema()).Version(1)
+	view := SharedBaseView("v").Schema(sbvBase()).Role(sbvBadgeSchema()).Version(1)
 	n := view.BuildViewNode()
 	// ChildSoftDeletePaths: the badge role has no soft-delete, so no path for it
 	// (the base-child path stays).
@@ -692,7 +700,7 @@ func TestViewNode_StripAndPathsDefensiveBranches(t *testing.T) {
 		Field("EmployeeNumber", "employee_number").
 		Child(core.NewTableSchema[sbvDependent]("se_deps").
 			PK("id").FK("emp_id").Field("Name", "dep_name")) // no SoftDelete
-	v := View("se").Version(1).Root("se_emps").Schema(schema).
+	v := View("se").Version(1).Schema(schema).
 		EmbedMany("mirror", FromSchema(core.NewExternalSchema("se_ext").PK("id").FK("emp_id")).As("Mirror"))
 	n := v.BuildViewNode()
 	if paths := n.ChildSoftDeletePaths(); len(paths) != 0 {
@@ -715,13 +723,13 @@ func TestViewNode_StripAndPathsDefensiveBranches(t *testing.T) {
 // the base-children segment claim in the collision validation and the
 // base-children walk (plus a nil embed source) in the composed-column set.
 func TestRoleView_BaseChildBranches(t *testing.T) {
-	roleView := View("sbv_users_role").Version(1).Root("sbv_users").Schema(sbvUserSchema())
+	roleView := View("sbv_users_role").Version(1).Schema(sbvUserSchema())
 	// A valid role view passes (the base-child segment claim runs clean).
 	if err := ValidateViewSchemas([]*ViewDefinition{roleView}); err != nil {
 		t.Fatalf("valid role view rejected: %v", err)
 	}
 	// An embed claiming the base-child's derived segment collides.
-	colliding := View("sbv_users_role2").Version(1).Root("sbv_users").Schema(sbvUserSchema()).
+	colliding := View("sbv_users_role2").Version(1).Schema(sbvUserSchema()).
 		EmbedMany("mirror", FromSchema(core.NewExternalSchema("ext").PK("id").FK("person_id")).As(sbvAddrSeg))
 	if err := ValidateViewSchemas([]*ViewDefinition{colliding}); err == nil ||
 		!strings.Contains(err.Error(), "base-child") {

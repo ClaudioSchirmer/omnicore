@@ -68,7 +68,7 @@ func schemaSoftDelete(s *core.TableSchema) (string, bool) { return s.SoftDeleteC
 func (c *Composer) Compose(ctx context.Context, view *ViewDefinition, rootID string) (Document, error) {
 	includeArchived := !view.deleteOnArchive
 	sd, _ := schemaSoftDelete(view.schema)
-	row, err := c.fetchRow(ctx, view.schema, view.rootTable, schemaPK(view.schema), rootID, sd, includeArchived)
+	row, err := c.fetchRow(ctx, view.schema, view.RootTable(), schemaPK(view.schema), rootID, sd, includeArchived)
 	if err != nil {
 		return nil, err
 	}
@@ -103,7 +103,7 @@ func (c *Composer) Compose(ctx context.Context, view *ViewDefinition, rootID str
 func (c *Composer) ComposeAll(ctx context.Context, view *ViewDefinition) ([]Document, error) {
 	includeArchived := !view.deleteOnArchive
 	sd, _ := schemaSoftDelete(view.schema)
-	rows, err := c.fetchAll(ctx, view.schema, view.rootTable, sd, includeArchived)
+	rows, err := c.fetchAll(ctx, view.schema, view.RootTable(), sd, includeArchived)
 	if err != nil {
 		return nil, err
 	}
@@ -130,7 +130,7 @@ func (c *Composer) ComposeBatch(ctx context.Context, view *ViewDefinition, ids [
 	}
 	includeArchived := !view.deleteOnArchive
 	sd, _ := schemaSoftDelete(view.schema)
-	rows, err := c.fetchByIDs(ctx, view.schema, view.rootTable, schemaPK(view.schema), ids, sd, includeArchived)
+	rows, err := c.fetchByIDs(ctx, view.schema, view.RootTable(), schemaPK(view.schema), ids, sd, includeArchived)
 	if err != nil {
 		return nil, err
 	}

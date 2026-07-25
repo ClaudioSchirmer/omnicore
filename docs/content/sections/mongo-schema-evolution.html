@@ -15,8 +15,6 @@
     <p>Every <code>ViewDefinition</code> declares a mandatory <code>Version(N)</code> (positive integer). The version is the developer-intent signal — bump it whenever the rebuild-relevant declarative state changes (root table, embeds, DeleteOnArchive, $jsonSchema, collation, capped, time-series). Index-only changes do NOT require a bump.</p>
     <pre><code>query.View("users").
     Version(3).                                                    // ← mandatory
-    Root("users").
-
     Schema(UserSchema()).                                          // ← mandatory; addresses (.Child) auto-project
     Indexes(query.Index("email").Unique())</code></pre>
     <p><code>Version(N)</code> participates in <code>RebuildHash</code>, so the framework detects:</p>

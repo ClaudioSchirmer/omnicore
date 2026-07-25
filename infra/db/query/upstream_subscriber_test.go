@@ -88,7 +88,7 @@ func TestUpstreamSubscriber_ParseOffsetSeek_Numeric(t *testing.T) {
 
 func TestUpstreamSubscriber_JoinFieldFor_DirectEmbed(t *testing.T) {
 	s := &UpstreamSubscriber{cfg: UpstreamSubscriberConfig{Collection: "users"}}
-	v := View("orders").Root("orders").
+	v := View("orders").
 		Embed("buyer", mongoEmbed("users", "").FK("buyer_id").As("Buyer")).
 		Version(1)
 	if got := s.joinFieldFor(v); got != "buyer_id" {
@@ -98,7 +98,7 @@ func TestUpstreamSubscriber_JoinFieldFor_DirectEmbed(t *testing.T) {
 
 func TestUpstreamSubscriber_JoinFieldFor_NonMatchingCollectionReturnsEmpty(t *testing.T) {
 	s := &UpstreamSubscriber{cfg: UpstreamSubscriberConfig{Collection: "products"}}
-	v := View("orders").Root("orders").
+	v := View("orders").
 		Embed("buyer", mongoEmbed("users", "").FK("buyer_id").As("Buyer")).
 		Version(1)
 	if got := s.joinFieldFor(v); got != "" {

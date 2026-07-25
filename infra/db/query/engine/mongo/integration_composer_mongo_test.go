@@ -33,7 +33,7 @@ func TestComposer_ComposeRoot(t *testing.T) {
 		t.Fatalf("seed: %v", err)
 	}
 
-	view := query.View("c_widgets").Root("c_widgets").Schema(rootSchema("c_widgets")).Version(1)
+	view := query.View("c_widgets").Schema(labeledSchema("c_widgets")).Version(1)
 	c := query.NewComposer(pg)
 	doc, err := c.Compose(context.Background(), view, id)
 	if err != nil {
@@ -51,7 +51,7 @@ func TestComposer_Compose_AbsentRowReturnsNil(t *testing.T) {
 		id UUID PRIMARY KEY,
 		deleted_at TIMESTAMP
 	)`)
-	view := query.View("c_empty").Root("c_empty").Schema(rootSchema("c_empty")).Version(1)
+	view := query.View("c_empty").Schema(rootSchema("c_empty")).Version(1)
 	c := query.NewComposer(pg)
 	doc, err := c.Compose(context.Background(), view, "00000000-0000-0000-0000-000000000000")
 	if err != nil {
@@ -97,7 +97,7 @@ func TestComposer_ComposeWithOwnChild(t *testing.T) {
 	rootWithChild := core.NewTableSchema[embedFixture]("oc_orders").PK("id").SoftDelete("deleted_at").
 		Child(core.NewTableSchema[ocLineRow]("oc_lines").PK("id").FK("order_id").
 			Field("Qty", "qty").SoftDelete("deleted_at"))
-	view := query.View("oc_orders").Root("oc_orders").Schema(rootWithChild).Version(1)
+	view := query.View("oc_orders").Schema(rootWithChild).Version(1)
 
 	doc, err := query.NewComposer(pg).Compose(context.Background(), view, orderID)
 	if err != nil {
@@ -131,7 +131,7 @@ func TestComposer_ComposeAll(t *testing.T) {
 	pg.Pool().Exec(context.Background(),
 		`INSERT INTO c_items (name) VALUES ('a'), ('b'), ('c')`)
 
-	view := query.View("c_items").Root("c_items").Schema(rootSchema("c_items")).Version(1)
+	view := query.View("c_items").Schema(rootSchema("c_items")).Version(1)
 	c := query.NewComposer(pg)
 	docs, err := c.ComposeAll(context.Background(), view)
 	if err != nil {
@@ -161,14 +161,14 @@ func TestComposer_DeleteOnArchive_FiltersDeletedAtFromRoot(t *testing.T) {
 		`INSERT INTO c_keep (name, deleted_at) VALUES ('archived', NOW()) RETURNING id`).Scan(&archivedID)
 
 	// Default view (keep-archived) — should see both.
-	defaultView := query.View("c_keep").Root("c_keep").Schema(rootSchema("c_keep")).Version(1)
+	defaultView := query.View("c_keep").Schema(rootSchema("c_keep")).Version(1)
 	c := query.NewComposer(pg)
 	if doc, err := c.Compose(context.Background(), defaultView, archivedID); err != nil || doc == nil {
 		t.Errorf("default view should return the archived row, got doc=%v err=%v", doc, err)
 	}
 
 	// DeleteOnArchive view — should skip the archived row.
-	hotView := query.View("c_keep").Root("c_keep").Schema(rootSchema("c_keep")).DeleteOnArchive().Version(1)
+	hotView := query.View("c_keep").Schema(rootSchema("c_keep")).DeleteOnArchive().Version(1)
 	if doc, err := c.Compose(context.Background(), hotView, archivedID); err != nil {
 		t.Errorf("DeleteOnArchive Compose returned err = %v", err)
 	} else if doc != nil {
@@ -240,7 +240,7 @@ func TestMongoViewReader_ReadByID_HitMissAndArchivedFilter(t *testing.T) {
 	// always registers it via SetViews. Without it the by-id archived filter
 	// cannot engage.
 	reader := NewMongoViewReader(m, testResolver).SetViews([]*query.ViewDefinition{
-		query.View("users").Root("users").
+		query.View("users").
 			Schema(core.NewExternalSchema("users").PK("id").Field("Email", "email").SoftDelete("deleted_at")).
 			Version(1),
 	})
@@ -517,7 +517,7 @@ func TestComposer_NormalizeUUID_TurnedIntoString(t *testing.T) {
 	pg.Pool().QueryRow(context.Background(),
 		`INSERT INTO c_uuid (other) VALUES (gen_random_uuid()) RETURNING id`).Scan(&id)
 
-	view := query.View("c_uuid").Root("c_uuid").Schema(rootSchema("c_uuid")).Version(1)
+	view := query.View("c_uuid").Schema(otherSchema("c_uuid")).Version(1)
 	c := query.NewComposer(pg)
 	doc, err := c.Compose(context.Background(), view, id)
 	if err != nil {

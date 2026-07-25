@@ -14,7 +14,7 @@ import (
 // an error that validateUpstreamSubscriptions folds into the violation list.
 func TestValidateUpstreamSubscriptions_SurfacesMaterializingSource(t *testing.T) {
 	views := []*query.ViewDefinition{
-		query.View("orders").Root("orders").
+		query.View("orders").
 			Embed("buyer", extEmbed("users", "buyer_id", "Buyer")).
 			Indexes(query.Index("buyer_id")). // §8.1 satisfied
 			Version(1),

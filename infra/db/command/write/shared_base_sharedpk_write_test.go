@@ -16,7 +16,7 @@ import (
 // roleTestSchemaSharedPK mirrors roleTestSchema (shared_base_write_test.go) but points
 // the SharedBase reference at the PK column instead of a separate person_id.
 func roleTestSchemaSharedPK() *TableSchema {
-	base := NewSharedBase("pessoa").Revision("revision").
+	base := NewSharedBaseSchema("pessoa").Revision("revision").
 		PK("id").
 		Field("Name", "name").
 		Field("Document", "document").

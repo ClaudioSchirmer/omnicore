@@ -48,6 +48,7 @@ func createLoaderTables(t *testing.T, p *postgres.Postgres) {
 	t.Helper()
 	createTable(t, p, `CREATE TABLE loader_roots (
 		id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+		revision BIGINT NOT NULL DEFAULT 0,
 		name TEXT NOT NULL,
 		email TEXT NOT NULL,
 		deleted_at TIMESTAMP,
@@ -86,6 +87,7 @@ func loaderTagSchema() *core.TableSchema {
 func loaderRootSchema() *core.TableSchema {
 	return core.NewTableSchema[*loaderRoot]("loader_roots").
 		PK("id").
+		Revision("revision").
 		Field("Name", "name").
 		Field("Email", "email").
 		SoftDelete("deleted_at").

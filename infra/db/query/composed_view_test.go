@@ -24,7 +24,7 @@ func cvPrimarySchema() *core.TableSchema {
 }
 
 func cvPrimaryView() *ViewDefinition {
-	return View("gadgets").Version(1).Root("gadgets").Schema(cvPrimarySchema())
+	return View("gadgets").Version(1).Schema(cvPrimarySchema())
 }
 
 func cvNotesSchema() *core.TableSchema {
@@ -36,7 +36,7 @@ func cvNotesSchema() *core.TableSchema {
 }
 
 func cvNotesView() *ViewDefinition {
-	return View("gadget_notes").Version(1).Root("gadget_notes").Schema(cvNotesSchema()).
+	return View("gadget_notes").Version(1).Schema(cvNotesSchema()).
 		Indexes(Index("gadget_id")) // the LinkMany FK must be index-covered (boot-enforced)
 }
 
@@ -145,7 +145,7 @@ func TestValidateComposedViews_Rejections(t *testing.T) {
 		},
 		{
 			name:     "primary not registered",
-			composed: ComposedView("gadgets_full").Primary(View("ghosts").Version(1).Root("ghosts").Schema(rootSchema("ghosts"))).LinkMany("notes", JoinView(cvNotesView()).FK("gadget_id")),
+			composed: ComposedView("gadgets_full").Primary(View("ghosts").Version(1).Schema(rootSchema("ghosts"))).LinkMany("notes", JoinView(cvNotesView()).FK("gadget_id")),
 			views:    cvRegistered(), ups: cvUpstreams(),
 			fragment: "is not registered",
 		},
@@ -180,7 +180,7 @@ func TestValidateComposedViews_Rejections(t *testing.T) {
 		{
 			name: "internal leg not registered",
 			composed: ComposedView("gadgets_full").Primary(cvPrimaryView()).
-				LinkMany("ghosts", JoinView(View("ghosts").Version(1).Root("ghosts").Schema(cvNotesSchema())).FK("gadget_id").As("Ghosts")),
+				LinkMany("ghosts", JoinView(View("ghosts").Version(1).Schema(cvNotesSchema())).FK("gadget_id").As("Ghosts")),
 			views: cvRegistered(), ups: cvUpstreams(),
 			fragment: "which is not registered",
 		},
@@ -258,9 +258,9 @@ func TestValidateComposedViews_Rejections(t *testing.T) {
 			name: "LinkMany FK without a covering index",
 			composed: ComposedView("gadgets_full").Primary(cvPrimaryView()).
 				LinkMany("notes", JoinView(
-					View("gadget_notes").Version(1).Root("gadget_notes").Schema(cvNotesSchema()),
+					View("gadget_notes").Version(1).Schema(cvNotesSchema()),
 				).FK("gadget_id")),
-			views:    []*ViewDefinition{cvPrimaryView(), View("gadget_notes").Version(1).Root("gadget_notes").Schema(cvNotesSchema())},
+			views:    []*ViewDefinition{cvPrimaryView(), View("gadget_notes").Version(1).Schema(cvNotesSchema())},
 			ups:      cvUpstreams(),
 			fragment: "NO covering index",
 		},
@@ -282,7 +282,7 @@ func TestValidateComposedViews_DuplicateComposedName(t *testing.T) {
 func TestValidateComposedViews_SegmentCollidesWithDerivedSegment(t *testing.T) {
 	// The primary declares an external embed landing on Go segment "Mirror";
 	// a link claiming the same segment is a boot error.
-	primary := View("gadgets").Version(1).Root("gadgets").Schema(cvPrimarySchema()).
+	primary := View("gadgets").Version(1).Schema(cvPrimarySchema()).
 		Embed("mirror", mongoEmbed("mirrors", "").FK("id").As("Mirror"))
 	composed := ComposedView("gadgets_full").Primary(primary).
 		Link("mirror2", JoinUpstream(cvUpstreamSchema()).FK("id").As("Mirror"))

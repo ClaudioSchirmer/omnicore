@@ -31,7 +31,7 @@ func (e *roleTestEntity) Modes() []domain.EntityMode {
 func (e *roleTestEntity) BuildRules(string, domain.Service, *domain.Rules) {}
 
 func roleTestSchema() *TableSchema {
-	base := NewSharedBase("pessoa").Revision("revision").
+	base := NewSharedBaseSchema("pessoa").Revision("revision").
 		PK("id").
 		Field("Name", "name").
 		Field("Document", "document").
@@ -154,7 +154,7 @@ func TestFindActiveRoleByFK_ProbeFiltersArchivedInSQL(t *testing.T) {
 // explicitly — the default is KeepOrphan, so DeleteWhenUnreferenced is always a
 // conscious opt-in.
 func roleTestSchemaPurge() *TableSchema {
-	base := NewSharedBase("pessoa").Revision("revision").
+	base := NewSharedBaseSchema("pessoa").Revision("revision").
 		PK("id").
 		Field("Name", "name").
 		Field("Document", "document").
@@ -288,7 +288,7 @@ func TestDeleteRoleWithBase_FKVetoKeepsBase(t *testing.T) {
 func TestDeleteRoleWithBase_VetoThenArchivesBase(t *testing.T) {
 	// Purge policy + a soft-deletable base: when the database vetoes the purge,
 	// the standing lifecycle convergence still archives the orphaned identity.
-	base := NewSharedBase("pessoa").Revision("revision").
+	base := NewSharedBaseSchema("pessoa").Revision("revision").
 		PK("id").
 		Field("Name", "name").
 		Field("Document", "document").
@@ -422,7 +422,7 @@ func TestDeleteRoleWithBase_KeepOrphanArchivesSoftDeletableBase(t *testing.T) {
 	// Default policy + a soft-deletable base: the last role's hard-delete leaves
 	// the identity dormant (archived), never destroyed — and revivable by a
 	// future insert of the same natural key.
-	base := NewSharedBase("pessoa").Revision("revision").
+	base := NewSharedBaseSchema("pessoa").Revision("revision").
 		PK("id").
 		Field("Name", "name").
 		Field("Document", "document").
@@ -482,7 +482,7 @@ func (e *aggRoleEntity) AggregateChildren() []domain.AggregateValueObject {
 }
 
 func aggRoleSchema() *TableSchema {
-	base := NewSharedBase("pessoa").Revision("revision").PK("id").Field("Name", "name").Field("Document", "document").NaturalKey("document")
+	base := NewSharedBaseSchema("pessoa").Revision("revision").PK("id").Field("Name", "name").Field("Document", "document").NaturalKey("document")
 	return NewTableSchema[*aggRoleEntity]("aluno").
 		PK("id").
 		Field("Matricula", "matricula").
@@ -519,12 +519,12 @@ func TestInsertWithBase_AggregateRole(t *testing.T) {
 }
 
 func TestDeleteRoleWithBase_EngineRegistryUnionsRoles(t *testing.T) {
-	// aluno and professor each declared their OWN NewSharedBase("pessoa").Revision("revision") — an
+	// aluno and professor each declared their OWN NewSharedBaseSchema("pessoa").Revision("revision") — an
 	// identical shape, but two instances, so neither instance registry sees the
 	// other role. The consumer never needs a singleton: WithSchema registers
 	// both on the ENGINE, and deleting the last aluno must probe professor too.
 	alunoSchema := roleTestSchemaPurge()
-	profBase := NewSharedBase("pessoa").Revision("revision").
+	profBase := NewSharedBaseSchema("pessoa").Revision("revision").
 		PK("id").
 		Field("Name", "name").
 		Field("Document", "document").
@@ -571,7 +571,7 @@ func TestRegisterSharedBaseRole_DivergentDeclarationPanics(t *testing.T) {
 	be := &BaseEngine{}
 	be.RegisterSharedBaseRole(roleTestSchemaPurge())
 
-	divergent := NewSharedBase("pessoa").Revision("revision").
+	divergent := NewSharedBaseSchema("pessoa").Revision("revision").
 		PK("id").
 		Field("Name", "name").
 		Field("Document", "document").
@@ -743,7 +743,7 @@ func TestUnarchiveRoleWithBase_EmptyNaturalKeyErrors(t *testing.T) {
 // SoftDelete (unreachable through the unarchive verb, which requires it) and a
 // convergence call with a neutral event type.
 func TestVetoUnarchive_DefensiveNoOps(t *testing.T) {
-	base := NewSharedBase("pessoa").Revision("revision").PK("id").Field("Name", "name").Field("Document", "document").NaturalKey("document")
+	base := NewSharedBaseSchema("pessoa").Revision("revision").PK("id").Field("Name", "name").Field("Document", "document").NaturalKey("document")
 	noSD := NewTableSchema[*roleTestEntity]("aluno").PK("id").Revision("revision").Field("Matricula", "matricula").SharedBase(base, "pessoa_id")
 	tx := &recTx{queryFn: func(string, []any) (Rows, error) {
 		t.Fatal("no probe may run for a role without SoftDelete")

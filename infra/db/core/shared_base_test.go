@@ -7,7 +7,7 @@ import "testing"
 // guard.
 
 func sharedBaseFixture() *TableSchema {
-	return NewSharedBase("pessoa").Revision("revision").
+	return NewSharedBaseSchema("pessoa").Revision("revision").
 		PK("id").
 		Field("Name", "name").
 		Field("Created", "document"). // Created is a real schemaSample field; "document" is its column
@@ -23,7 +23,7 @@ func TestSharedBase_HappyPath(t *testing.T) {
 		SharedBase(base, "pessoa_id")
 
 	if !base.IsSharedBase() {
-		t.Error("NewSharedBase must report IsSharedBase() == true")
+		t.Error("NewSharedBaseSchema must report IsSharedBase() == true")
 	}
 	if base.NaturalKeyColumn() != "document" {
 		t.Errorf("NaturalKeyColumn() = %q, want \"document\"", base.NaturalKeyColumn())
@@ -84,13 +84,13 @@ func TestSharedBase_BootGuards(t *testing.T) {
 		role().SharedBase(sharedBaseFixture(), "pessoa_id").SharedBase(sharedBaseFixture(), "outra_id")
 	})
 	assertPanics(t, "shared base without PK", func() {
-		role().SharedBase(NewSharedBase("pessoa").Revision("revision").Field("Name", "name").NaturalKey("name"), "pessoa_id")
+		role().SharedBase(NewSharedBaseSchema("pessoa").Revision("revision").Field("Name", "name").NaturalKey("name"), "pessoa_id")
 	})
 	assertPanics(t, "shared base without NaturalKey", func() {
-		role().SharedBase(NewSharedBase("pessoa").Revision("revision").PK("id").Field("Name", "name"), "pessoa_id")
+		role().SharedBase(NewSharedBaseSchema("pessoa").Revision("revision").PK("id").Field("Name", "name"), "pessoa_id")
 	})
 	assertPanics(t, "NaturalKey column not a declared field", func() {
-		role().SharedBase(NewSharedBase("pessoa").Revision("revision").PK("id").Field("Name", "name").NaturalKey("cpf"), "pessoa_id")
+		role().SharedBase(NewSharedBaseSchema("pessoa").Revision("revision").PK("id").Field("Name", "name").NaturalKey("cpf"), "pessoa_id")
 	})
 	assertPanics(t, "FK column also a role field", func() {
 		NewTableSchema[schemaSample]("aluno").PK("id").Field("Removed", "matricula").
@@ -98,7 +98,7 @@ func TestSharedBase_BootGuards(t *testing.T) {
 	})
 	assertPanics(t, "base field not on the role type", func() {
 		// schemaSample has no "Unknown" field; a base mapping it must fail at attach.
-		role().SharedBase(NewSharedBase("pessoa").Revision("revision").PK("id").Field("Unknown", "u").NaturalKey("u"), "pessoa_id")
+		role().SharedBase(NewSharedBaseSchema("pessoa").Revision("revision").PK("id").Field("Unknown", "u").NaturalKey("u"), "pessoa_id")
 	})
 	assertPanics(t, "empty FK column", func() {
 		role().SharedBase(sharedBaseFixture(), "")

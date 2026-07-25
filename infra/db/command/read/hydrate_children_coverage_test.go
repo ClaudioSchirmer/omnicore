@@ -122,7 +122,7 @@ func TestHydrateChildren_AutoScanBranchErrors(t *testing.T) {
 // on a shared base that DOES declare native children — the shape that reaches
 // the provider check inside hydrateBaseChildren.
 func flatRoleWithBaseChildrenSchema() *TableSchema {
-	base := NewSharedBase("pessoa").Revision("revision").PK("id").Field("Name", "name").NaturalKey("name").
+	base := NewSharedBaseSchema("pessoa").Revision("revision").PK("id").Field("Name", "name").NaturalKey("name").
 		Child(NewTableSchema[addrLoad]("endereco").PK("id").FK("pessoa_id").Field("Street", "street"))
 	return NewTableSchema[*roleLoadEntity]("aluno").
 		PK("id").
@@ -170,7 +170,7 @@ func TestHydrateBaseChildren_NoEntitiesIsNoop(t *testing.T) {
 }
 
 func TestHydrateBaseChildren_BaseChildWithoutColumnsErrors(t *testing.T) {
-	base := NewSharedBase("pessoa").Revision("revision").PK("id").Field("Name", "name").NaturalKey("name").
+	base := NewSharedBaseSchema("pessoa").Revision("revision").PK("id").Field("Name", "name").NaturalKey("name").
 		Child(noColsChildSchema("pessoa_id"))
 	schema := NewTableSchema[*roleAggLoad]("aluno").
 		PK("id").Revision("revision").

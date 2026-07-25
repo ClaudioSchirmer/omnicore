@@ -23,7 +23,7 @@ func TestReader_FollowsActiveSlotPointer(t *testing.T) {
 	defer cleanupMongo()
 
 	ctx := context.Background()
-	v := query.View("slotview").Root("slotview").Version(1)
+	v := query.View("slotview").Version(1)
 	resolver := query.NewViewResolver(pg)
 	reader := NewMongoViewReader(m, resolver)
 	reader.SetViews([]*query.ViewDefinition{v})

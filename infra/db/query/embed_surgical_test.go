@@ -110,7 +110,7 @@ func TestRepairDanglingOneToOne_HealsAndGuards(t *testing.T) {
 	// The written doc references i9, mirror has it → repair writes a guarded
 	// $cond: FK still matches AND stored segment _id ≠ FK (so the element's own
 	// fresher ripple is never regressed), non-upsert.
-	view := View("qa_accounts_view").Version(1).Root("qa_accounts").Schema(composerRootSchema()).
+	view := View("qa_accounts_view").Version(1).Schema(composerRootSchema()).
 		Embed("featuredItem", FromSchema(
 			core.NewExternalSchema("upstream_items").PK("id").Field("Label", "label")).
 			FK("featured_item_id").As("FeaturedItem"))
@@ -142,7 +142,7 @@ func TestRepairDanglingOneToOne_HealsAndGuards(t *testing.T) {
 }
 
 func TestRepairDanglingOneToOne_MissingMirrorClearsToNull(t *testing.T) {
-	view := View("qa_accounts_view").Version(1).Root("qa_accounts").Schema(composerRootSchema()).
+	view := View("qa_accounts_view").Version(1).Schema(composerRootSchema()).
 		Embed("featuredItem", FromSchema(
 			core.NewExternalSchema("upstream_items").PK("id").Field("Label", "label")).
 			FK("featured_item_id").As("FeaturedItem"))
@@ -167,7 +167,7 @@ func TestRepairDanglingOneToOne_MissingMirrorClearsToNull(t *testing.T) {
 }
 
 func TestRepairDanglingOneToOne_NoFKNoWrite(t *testing.T) {
-	view := View("qa_accounts_view").Version(1).Root("qa_accounts").Schema(composerRootSchema()).
+	view := View("qa_accounts_view").Version(1).Schema(composerRootSchema()).
 		Embed("featuredItem", FromSchema(
 			core.NewExternalSchema("upstream_items").PK("id").Field("Label", "label")).
 			FK("featured_item_id").As("FeaturedItem"))

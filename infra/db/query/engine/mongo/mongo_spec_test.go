@@ -104,7 +104,7 @@ func TestIsIndexConflict_NonCommandError(t *testing.T) {
 // of a declaration produces a no-op builder (cheap idempotency proof).
 
 func TestBuildCreateCollectionOptions_EmptySpec_NonNil(t *testing.T) {
-	v := query.View("x").Root("x")
+	v := query.View("x")
 	opts := buildCreateCollectionOptions(v)
 	if opts == nil {
 		t.Fatal("builder returned nil on empty spec")
@@ -112,7 +112,7 @@ func TestBuildCreateCollectionOptions_EmptySpec_NonNil(t *testing.T) {
 }
 
 func TestBuildCreateCollectionOptions_FullSpec_BuildsClean(t *testing.T) {
-	v := query.View("x").Root("x").
+	v := query.View("x").
 		Collation(&query.CollationSpec{Locale: "pt", Strength: 1}).
 		JSONSchema(bson.M{"bsonType": "object"})
 	opts := buildCreateCollectionOptions(v)
@@ -127,7 +127,7 @@ func TestBuildCreateCollectionOptions_FullSpec_BuildsClean(t *testing.T) {
 // ─── buildValidatorCommand ───────────────────────────────────────────────────
 
 func TestBuildValidatorCommand_DefaultLevelAction(t *testing.T) {
-	v := query.View("users").Root("users").
+	v := query.View("users").
 		JSONSchema(bson.M{"bsonType": "object"})
 	cmd := buildValidatorCommand(v, v.Name())
 	if len(cmd) < 4 {
@@ -148,7 +148,7 @@ func TestBuildValidatorCommand_DefaultLevelAction(t *testing.T) {
 }
 
 func TestBuildValidatorCommand_OverrideLevelAndAction(t *testing.T) {
-	v := query.View("users").Root("users").
+	v := query.View("users").
 		JSONSchema(bson.M{"bsonType": "object"}).
 		JSONSchemaValidationLevel(query.ValidationLevelModerate).
 		JSONSchemaValidationAction(query.ValidationActionWarn)
@@ -163,7 +163,7 @@ func TestBuildValidatorCommand_OverrideLevelAndAction(t *testing.T) {
 
 func TestBuildValidatorCommand_PayloadWrapsJSONSchema(t *testing.T) {
 	schema := bson.M{"required": []string{"_id", "name"}}
-	v := query.View("users").Root("users").JSONSchema(schema)
+	v := query.View("users").JSONSchema(schema)
 	cmd := buildValidatorCommand(v, v.Name())
 	wrapper, ok := cmd[1].Value.(bson.M)
 	if !ok {
@@ -347,7 +347,7 @@ func TestTimeSeriesDivergence_GranularityMismatch(t *testing.T) {
 // ─── assertCollectionMatches composition ─────────────────────────────────────
 
 func TestAssertCollectionMatches_OK(t *testing.T) {
-	v := query.View("users").Root("users").
+	v := query.View("users").
 		Collation(&query.CollationSpec{Locale: "pt", Strength: 1})
 	observed := bson.M{"options": bson.M{
 		"collation": bson.M{"locale": "pt", "strength": int32(1)},
@@ -358,7 +358,7 @@ func TestAssertCollectionMatches_OK(t *testing.T) {
 }
 
 func TestAssertCollectionMatches_PropagatesCollationDiag(t *testing.T) {
-	v := query.View("users").Root("users").
+	v := query.View("users").
 		Collation(&query.CollationSpec{Locale: "pt"})
 	observed := bson.M{"options": bson.M{
 		"collation": bson.M{"locale": "en"},
@@ -370,7 +370,7 @@ func TestAssertCollectionMatches_PropagatesCollationDiag(t *testing.T) {
 }
 
 func TestAssertCollectionMatches_PropagatesCappedDiag(t *testing.T) {
-	v := query.View("audit").Root("audit").Capped(&query.CappedSpec{SizeBytes: 1 << 20})
+	v := query.View("audit").Capped(&query.CappedSpec{SizeBytes: 1 << 20})
 	observed := bson.M{"options": bson.M{
 		"capped": true, "size": int64(1 << 30),
 	}}
@@ -385,7 +385,7 @@ func TestAssertCollectionMatches_NoOptionsKey_TreatsAsEmpty(t *testing.T) {
 	// sub-document (rare, but possible on legacy collections) must NOT
 	// be confused with a divergence — empty observed equals no
 	// declaration.
-	v := query.View("legacy").Root("legacy")
+	v := query.View("legacy")
 	if err := assertCollectionMatches(v, bson.M{}); err != nil {
 		t.Errorf("got %v, want nil when both declaration and observed empty", err)
 	}

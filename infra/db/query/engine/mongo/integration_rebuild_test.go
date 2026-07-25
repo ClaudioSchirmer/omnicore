@@ -29,7 +29,7 @@ func TestRebuildView_RebuildsFromTable(t *testing.T) {
 	pg.Pool().Exec(context.Background(),
 		`INSERT INTO rv_users (name) VALUES ('a'), ('b'), ('c')`)
 
-	view := query.View("rv_users").Root("rv_users").Schema(rootSchema("rv_users")).Version(1)
+	view := query.View("rv_users").Schema(rootSchema("rv_users")).Version(1)
 	engine := query.NewSyncEngine(pg, m, testResolver, nil, "", []*query.ViewDefinition{view}, 1)
 	if err := engine.RebuildView(context.Background(), view); err != nil {
 		t.Fatalf("RebuildView: %v", err)
@@ -64,8 +64,8 @@ func TestRebuildAllViews(t *testing.T) {
 	pg.Pool().Exec(context.Background(), `INSERT INTO rv_a (name) VALUES ('x')`)
 	pg.Pool().Exec(context.Background(), `INSERT INTO rv_b (label) VALUES ('y')`)
 
-	va := query.View("rv_a").Root("rv_a").Schema(rootSchema("rv_a")).Version(1)
-	vb := query.View("rv_b").Root("rv_b").Schema(rootSchema("rv_b")).Version(1)
+	va := query.View("rv_a").Schema(rootSchema("rv_a")).Version(1)
+	vb := query.View("rv_b").Schema(rootSchema("rv_b")).Version(1)
 	engine := query.NewSyncEngine(pg, m, testResolver, nil, "", []*query.ViewDefinition{va, vb}, 1)
 	if err := engine.RebuildAllViews(context.Background()); err != nil {
 		t.Fatalf("RebuildAllViews: %v", err)
@@ -99,7 +99,7 @@ func TestRebuildViewSince_FiltersByUpdatedAt(t *testing.T) {
 
 	// RebuildViewSince scans/orders on the schema's declared UpdatedAt column, so
 	// a view that supports incremental rebuild must declare it.
-	view := query.View("rv_since").Root("rv_since").
+	view := query.View("rv_since").
 		Schema(rootSchema("rv_since").UpdatedAt("updated_at")).Version(1)
 	engine := query.NewSyncEngine(pg, m, testResolver, nil, "", []*query.ViewDefinition{view}, 1)
 	since := time.Now().Add(-1 * time.Hour)
@@ -132,7 +132,7 @@ func TestExecuteRebuild_HappyPath(t *testing.T) {
 			`INSERT INTO er_users (name) VALUES ($1)`, n)
 	}
 
-	view := query.View("er_users").Root("er_users").Schema(rootSchema("er_users")).Version(1)
+	view := query.View("er_users").Schema(rootSchema("er_users")).Version(1)
 
 	// Seed the registry row at the SAME hash so EndRebuild can find it.
 	now := time.Now().UTC()
@@ -189,7 +189,7 @@ func TestExecuteRebuild_RejectsInvalidOrphanMode(t *testing.T) {
 	m, cleanupMongo := newTestMongo(t)
 	defer cleanupMongo()
 
-	view := query.View("er_x").Root("er_x").Schema(rootSchema("er_x")).Version(1)
+	view := query.View("er_x").Schema(rootSchema("er_x")).Version(1)
 	plan := query.DriftPlan{View: view}
 	engine := query.NewSyncEngine(pg, m, testResolver, nil, "", []*query.ViewDefinition{view}, 1)
 	if err := engine.ExecuteRebuild(context.Background(), plan, query.RebuildConfig{Orphan: "banana"}); err == nil {
@@ -205,7 +205,7 @@ func TestInitRegistryOnly_WritesRow(t *testing.T) {
 	m, cleanupMongo := newTestMongo(t)
 	defer cleanupMongo()
 
-	view := query.View("ir_users").Root("ir_users").Schema(rootSchema("ir_users")).Version(1)
+	view := query.View("ir_users").Schema(rootSchema("ir_users")).Version(1)
 	engine := query.NewSyncEngine(pg, m, testResolver, nil, "", []*query.ViewDefinition{view}, 1)
 	plan := query.DriftPlan{
 		View:                view,
@@ -228,7 +228,7 @@ func TestRefreshRegistryArtifactOnly(t *testing.T) {
 	m, cleanupMongo := newTestMongo(t)
 	defer cleanupMongo()
 
-	view := query.View("rfa").Root("rfa").Schema(rootSchema("rfa")).Version(1)
+	view := query.View("rfa").Schema(rootSchema("rfa")).Version(1)
 	// Seed.
 	now := time.Now().UTC()
 	query.InitViewRegistry(context.Background(), pg.Querier(), pg.Dialect(), query.InitViewRegistryInput{

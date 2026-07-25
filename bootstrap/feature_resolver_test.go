@@ -8,8 +8,8 @@ import (
 
 func TestBuildViewMaxLimitResolver_OverrideWinsOverYamlDefault(t *testing.T) {
 	views := []*query.ViewDefinition{
-		query.View("capped").Root("capped").Version(1).MaxLimit(25),
-		query.View("plain").Root("plain").Version(1), // no per-view override
+		query.View("capped").Version(1).MaxLimit(25),
+		query.View("plain").Version(1), // no per-view override
 	}
 	resolve := buildViewMaxLimitResolver(views, 200)
 
@@ -28,7 +28,7 @@ func TestBuildViewMaxLimitResolver_ZeroOverrideIgnored(t *testing.T) {
 	// MaxLimitValue() == 0 means "no override" — the resolver must not
 	// register it, so the yaml default applies.
 	views := []*query.ViewDefinition{
-		query.View("v").Root("v").Version(1), // MaxLimit unset → 0
+		query.View("v").Version(1), // MaxLimit unset → 0
 	}
 	resolve := buildViewMaxLimitResolver(views, 0)
 	if got := resolve("v"); got != 0 {

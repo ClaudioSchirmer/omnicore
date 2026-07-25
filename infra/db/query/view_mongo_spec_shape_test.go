@@ -33,7 +33,7 @@ func shapeView() *ViewDefinition {
 		PK("id").
 		FK("user_id").
 		Field("ZipCode", "zip_code")
-	return View("users").Version(1).Root("users").
+	return View("users").Version(1).
 		Schema(root).
 		EmbedMany("addresses", FromSchema(child))
 }
@@ -115,7 +115,7 @@ func TestValidateMongoSpec_JSONSchemaRequired_BsonA_OK(t *testing.T) {
 func TestValidateMongoSpec_NoSchema_ShapeGuardSkipped(t *testing.T) {
 	// A schema-less view (only built in isolation) has no column set to
 	// compare against — the shape guard must not fire.
-	v := View("anon").Version(1).Root("anon").Indexes(Index("whatever"))
+	v := View("anon").Version(1).Indexes(Index("whatever"))
 	if err := v.ValidateMongoSpec(); err != nil {
 		t.Fatalf("shape guard must be skipped without a schema; got: %v", err)
 	}
@@ -136,7 +136,7 @@ type sbShapeRole struct {
 }
 
 func sbShapeView() *ViewDefinition {
-	base := core.NewSharedBase("persons").Revision("revision").
+	base := core.NewSharedBaseSchema("persons").Revision("revision").
 		PK("id").
 		Field("Document", "document").
 		Field("Name", "name").
@@ -148,7 +148,7 @@ func sbShapeView() *ViewDefinition {
 		Field("UserName", "user_name").
 		Sibling(core.NewSiblingSchema[sbShapeRole]("user_configurations").
 			Field("EmailNotif", "email_notification"))
-	return View("users").Version(1).Root("users").Schema(role)
+	return View("users").Version(1).Schema(role)
 }
 
 func TestValidateMongoSpec_IndexKey_SharedBaseAndSiblingColumns_OK(t *testing.T) {

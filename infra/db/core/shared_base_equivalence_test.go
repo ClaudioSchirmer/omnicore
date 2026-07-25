@@ -13,7 +13,7 @@ import (
 // panic with a message naming what diverged.
 
 func equivBase() *TableSchema {
-	return NewSharedBase("pessoa").Revision("revision").
+	return NewSharedBaseSchema("pessoa").Revision("revision").
 		PK("id").
 		Field("Name", "name").
 		Field("Document", "document").
@@ -50,7 +50,7 @@ func TestAssertSharedBaseEquivalent_IdenticalPasses(t *testing.T) {
 func TestAssertSharedBaseEquivalent_DivergenceAxes(t *testing.T) {
 	t.Run("different tables is a caller bug", func(t *testing.T) {
 		mustPanicWith(t, "different tables", func() {
-			AssertSharedBaseEquivalent(equivBase(), NewSharedBase("outra").Revision("revision").PK("id").Field("Name", "name").NaturalKey("name"))
+			AssertSharedBaseEquivalent(equivBase(), NewSharedBaseSchema("outra").Revision("revision").PK("id").Field("Name", "name").NaturalKey("name"))
 		})
 	})
 	t.Run("pk", func(t *testing.T) {
@@ -76,8 +76,8 @@ func TestAssertSharedBaseEquivalent_DivergenceAxes(t *testing.T) {
 		mustPanicWith(t, "field count", func() { AssertSharedBaseEquivalent(equivBase(), b) })
 	})
 	t.Run("field column", func(t *testing.T) {
-		a := NewSharedBase("pessoa").Revision("revision").PK("id").Field("Name", "name").NaturalKey("name")
-		b := NewSharedBase("pessoa").Revision("revision").PK("id").Field("Name", "full_name").NaturalKey("full_name")
+		a := NewSharedBaseSchema("pessoa").Revision("revision").PK("id").Field("Name", "name").NaturalKey("name")
+		b := NewSharedBaseSchema("pessoa").Revision("revision").PK("id").Field("Name", "full_name").NaturalKey("full_name")
 		b.naturalKeyCol = "name" // align NK so the field divergence is what trips
 		mustPanicWith(t, "field Name", func() { AssertSharedBaseEquivalent(a, b) })
 	})
@@ -87,7 +87,7 @@ func TestAssertSharedBaseEquivalent_DivergenceAxes(t *testing.T) {
 		mustPanicWith(t, "native-children count", func() { AssertSharedBaseEquivalent(equivBase(), b) })
 	})
 	t.Run("child shape", func(t *testing.T) {
-		b := NewSharedBase("pessoa").Revision("revision").
+		b := NewSharedBaseSchema("pessoa").Revision("revision").
 			PK("id").
 			Field("Name", "name").
 			Field("Document", "document").

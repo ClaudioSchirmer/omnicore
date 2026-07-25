@@ -32,10 +32,26 @@ var builderTestSchema = core.NewTableSchema[*builderTestEntity]("builder_test_en
 	CreatedAt("created_at").
 	UpdatedAt("updated_at")
 
-type embedFixture struct{ ID string }
+type embedFixture struct {
+	ID    string
+	Label string
+	Other string
+}
 
 func rootSchema(table string) *core.TableSchema {
 	return core.NewTableSchema[embedFixture](table).PK("id").SoftDelete("deleted_at")
+}
+
+// labeledSchema / otherSchema are the rootSchema variants for the composer
+// tests whose fixture table carries a business column the composer must read
+// back (the plain rootSchema declares none). Kept separate so tables without
+// these columns keep using the minimal rootSchema.
+func labeledSchema(table string) *core.TableSchema {
+	return core.NewTableSchema[embedFixture](table).PK("id").Field("Label", "label").SoftDelete("deleted_at")
+}
+
+func otherSchema(table string) *core.TableSchema {
+	return core.NewTableSchema[embedFixture](table).PK("id").Field("Other", "other").SoftDelete("deleted_at")
 }
 
 // derivedName bridges the adapter tests to the index-name derivation that now

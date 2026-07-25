@@ -11,6 +11,30 @@ with `1.0.0`.
 
 ## [Unreleased]
 
+### Changed
+
+- **breaking** — **a view's root table is derived from its schema; `.Root(table)`
+  is removed.** `query.View(name)` and `query.SharedBaseView(name)` no longer take
+  a `.Root(...)` call — the root table (the broker routing key and the composer's
+  `FROM`) is now `RootTable()` = the attached schema's `Table()`. The value always
+  equalled the schema's table, so this removes a redundant, unvalidated second
+  declaration (a misspelled `.Root("user")` used to leave the view silently muted).
+  *Migration*: delete every `.Root(table)` call from view declarations.
+- **breaking** — **`SharedBaseView` takes only the collection name; the base
+  schema moves to `.Schema(...)`, matching a regular `View`.** `SharedBaseView(base,
+  name)` → `SharedBaseView(name).Schema(base)`, and `.Schema(base)` must precede the
+  first `.Role(...)` (the role is validated against the base). The "must be a shared
+  base" check moved from the constructor panic to boot validation
+  (`ValidateViewSchemas`), and a new guard rejects a `ComposedView` whose primary
+  declares no schema — so the "a view must declare a schema" rule is now one boot
+  error across regular views, shared-base views and composed-view primaries.
+  *Migration*: `SharedBaseView(personBase(), "persons")` →
+  `SharedBaseView("persons").Schema(personBase())`.
+- **breaking** — **`core.NewSharedBase` is renamed `core.NewSharedBaseSchema`,**
+  completing the schema-constructor family (`NewTableSchema` / `NewSiblingSchema` /
+  `NewExternalSchema` / `NewSharedBaseSchema`). Behavior is unchanged.
+  *Migration*: rename every `NewSharedBase(` call to `NewSharedBaseSchema(`.
+
 ## [0.36.1] - 2026-07-23
 
 ### Changed

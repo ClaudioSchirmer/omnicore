@@ -29,12 +29,13 @@ import (
 //
 // Sequence (the exact interleave the rebuild_scale Phase 3.5 forces end to
 // end, here in isolation):
-//   1. V2 insert event rev1 — child c1 born with the new column null;
-//   2. V1 consult repair at row revision 2 — composed WITHOUT the new column
-//      keys (root scalar and child element alike): watermark advances to 2,
-//      the child array is replaced by the schema-blind composition;
-//   3. V2 update event rev2 — root scalar nick + child column rank carry the
-//      values.
+//  1. V2 insert event rev1 — child c1 born with the new column null;
+//  2. V1 consult repair at row revision 2 — composed WITHOUT the new column
+//     keys (root scalar and child element alike): watermark advances to 2,
+//     the child array is replaced by the schema-blind composition;
+//  3. V2 update event rev2 — root scalar nick + child column rank carry the
+//     values.
+//
 // Contract under test: after step 3 the document holds BOTH values. The root
 // scalar (`nick`) is the CONTROL — the fixed path. The child column (`rank`)
 // is the question: ownGuardedChildStages wraps child edits in a
@@ -73,7 +74,7 @@ func TestIntegration_MixedBinaryWindow_OwnChildEqualRevision(t *testing.T) {
 		Field("Name", "name").Field("Nick", "nick").
 		SoftDelete("deleted_at").CreatedAt("created_at").UpdatedAt("updated_at").
 		Child(child)
-	view := View("mb_view").Version(2).Root("mb_roots").Schema(root)
+	view := View("mb_view").Version(2).Schema(root)
 	seg := childDocSegment(child)
 
 	apply := func(label string, stages []Document) {
@@ -202,7 +203,7 @@ func TestIntegration_MixedBinaryWindow_V1ConsumerChildReplace(t *testing.T) {
 		Field("Name", "name").
 		SoftDelete("deleted_at").CreatedAt("created_at").UpdatedAt("updated_at").
 		Child(childV1)
-	viewV1 := View("mb1_view").Version(1).Root("mb1_roots").Schema(rootV1)
+	viewV1 := View("mb1_view").Version(1).Schema(rootV1)
 	seg := childDocSegment(childV1)
 
 	apply := func(label string, stages []Document) {

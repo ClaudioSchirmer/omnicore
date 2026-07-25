@@ -9,7 +9,7 @@ import "testing"
 
 func TestSharedBase_NaturalKeyRequiresColumn(t *testing.T) {
 	assertPanics(t, "empty NaturalKey column", func() {
-		NewSharedBase("pessoa").Revision("revision").PK("id").Field("Name", "name").NaturalKey("")
+		NewSharedBaseSchema("pessoa").Revision("revision").PK("id").Field("Name", "name").NaturalKey("")
 	})
 }
 
@@ -18,7 +18,7 @@ func TestSharedBase_ReferencingRoles(t *testing.T) {
 	if got := nilSchema.ReferencingRoles(); got != nil {
 		t.Errorf("nil schema ReferencingRoles() = %v, want nil", got)
 	}
-	base := NewSharedBase("pessoa").Revision("revision").PK("id").Field("Name", "name").NaturalKey("name")
+	base := NewSharedBaseSchema("pessoa").Revision("revision").PK("id").Field("Name", "name").NaturalKey("name")
 	if got := base.ReferencingRoles(); got != nil {
 		t.Errorf("unreferenced base ReferencingRoles() = %v, want nil", got)
 	}
@@ -57,7 +57,7 @@ func TestSharedBase_ScanPlanAbsent(t *testing.T) {
 func TestAssertSharedBaseEquivalent_ChildNameDiverges(t *testing.T) {
 	// Same child COUNT, different child type names — the absent-child axis.
 	declare := func() *TableSchema {
-		return NewSharedBase("pessoa").Revision("revision").PK("id").Field("Name", "name").NaturalKey("name")
+		return NewSharedBaseSchema("pessoa").Revision("revision").PK("id").Field("Name", "name").NaturalKey("name")
 	}
 	a := declare().Child(NewTableSchema[embedFixture]("docs").PK("id").FK("pessoa_id"))
 	b := declare().Child(NewTableSchema[schemaSample]("docs").PK("id").FK("pessoa_id"))

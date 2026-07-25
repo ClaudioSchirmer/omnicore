@@ -138,7 +138,7 @@ func cvrPrimaryView() *query.ViewDefinition {
 		Field("Code", "code").
 		Field("MirrorID", "mirror_id").
 		SoftDelete("deleted_at")
-	return query.View("gadgets").Version(1).Root("gadgets").Schema(schema)
+	return query.View("gadgets").Version(1).Schema(schema)
 }
 
 func cvrNotesView() *query.ViewDefinition {
@@ -147,7 +147,7 @@ func cvrNotesView() *query.ViewDefinition {
 		Field("GadgetID", "gadget_id").
 		Field("Text", "text").
 		SoftDelete("deleted_at")
-	return query.View("gadget_notes").Version(1).Root("gadget_notes").Schema(schema)
+	return query.View("gadget_notes").Version(1).Schema(schema)
 }
 
 func cvrUpstreamSchema() *core.TableSchema {
@@ -837,7 +837,7 @@ func TestMongoViewReader_OverlayFilterCursorRoundTrip(t *testing.T) {
 			{"_id": "g2", "code": "A", "mirror_id": "t1"},
 		},
 	}
-	primary := query.View("gadgets").Version(1).Root("gadgets").Schema(
+	primary := query.View("gadgets").Version(1).Schema(
 		core.NewTableSchema[cvrGadget]("gadgets").
 			PK("id").
 			Field("Code", "code").

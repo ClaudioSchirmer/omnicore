@@ -13,7 +13,7 @@ import (
 // document referencing a changed shared identity.
 
 func fanOutRoleSchema() *core.TableSchema {
-	base := core.NewSharedBase("pessoa").Revision("revision").PK("id").Field("Name", "name").NaturalKey("name")
+	base := core.NewSharedBaseSchema("pessoa").Revision("revision").PK("id").Field("Name", "name").NaturalKey("name")
 	return core.NewTableSchema[*builderTestEntity]("aluno").
 		PK("id").
 		Field("Email", "email").
@@ -21,7 +21,7 @@ func fanOutRoleSchema() *core.TableSchema {
 }
 
 func TestBuildViewIndex_RegistersSharedBase(t *testing.T) {
-	view := View("aluno").Root("aluno").Schema(fanOutRoleSchema()).Version(1)
+	view := View("aluno").Schema(fanOutRoleSchema()).Version(1)
 	idx := buildViewIndex([]*ViewDefinition{view})
 	if got := len(idx.bySharedBase["pessoa"]); got != 1 {
 		t.Fatalf("bySharedBase[pessoa] = %d views, want 1", got)
@@ -44,7 +44,7 @@ func TestProcess_SharedBaseFanOut(t *testing.T) {
 		}
 		return nil, nil
 	})
-	view := View("aluno").Root("aluno").Schema(fanOutRoleSchema()).Version(1)
+	view := View("aluno").Schema(fanOutRoleSchema()).Version(1)
 	s := NewSyncEngine(eng, newFakeMongo(coll), identityResolver, nil, "", []*ViewDefinition{view}, 1)
 
 	// A base change (aggregate_type = the base table) fans out to the role views.
@@ -61,7 +61,7 @@ func TestProcess_SharedBaseFanOut(t *testing.T) {
 func TestProcess_SharedBaseFanOut_NoReferencingDocs(t *testing.T) {
 	coll := &fakeColl{} // no aluno references the base
 	eng := composerEngine(func(string, []any) ([]map[string]any, error) { return nil, nil })
-	view := View("aluno").Root("aluno").Schema(fanOutRoleSchema()).Version(1)
+	view := View("aluno").Schema(fanOutRoleSchema()).Version(1)
 	s := NewSyncEngine(eng, newFakeMongo(coll), identityResolver, nil, "", []*ViewDefinition{view}, 1)
 
 	if err := s.process(context.Background(), kafkaEvent{AggregateType: "pessoa", EventType: "UPDATED", AggregateID: "p1", Payload: []byte(`{"_ids":{"id":"p1"}}`)}); err != nil {
@@ -80,7 +80,7 @@ func TestProcess_SharedBaseFanOut_VanishedRoleDeleted(t *testing.T) {
 	eng := composerEngine(func(sql string, _ []any) ([]map[string]any, error) {
 		return nil, nil // FROM aluno returns nothing — the role row is gone
 	})
-	view := View("aluno").Root("aluno").Schema(fanOutRoleSchema()).Version(1)
+	view := View("aluno").Schema(fanOutRoleSchema()).Version(1)
 	s := NewSyncEngine(eng, newFakeMongo(coll), identityResolver, nil, "", []*ViewDefinition{view}, 1)
 
 	if err := s.process(context.Background(), kafkaEvent{AggregateType: "pessoa", EventType: "DELETED", AggregateID: "p1",
@@ -97,7 +97,7 @@ func TestProcess_SharedBaseFanOut_VanishedRoleDeleted(t *testing.T) {
 
 // Error paths of the fan-out propagate to the caller (fail the event → redelivery).
 func TestProcess_SharedBaseFanOut_Errors(t *testing.T) {
-	view := View("aluno").Root("aluno").Schema(fanOutRoleSchema()).Version(1)
+	view := View("aluno").Schema(fanOutRoleSchema()).Version(1)
 	aluno := func(sql string, _ []any) ([]map[string]any, error) {
 		if strings.Contains(sql, "FROM aluno") {
 			return mapsFromColsData([]string{"id", "email", "pessoa_id"}, [][]any{{"a1", "a@x", "p1"}}), nil
@@ -146,7 +146,7 @@ func TestProcess_RoleEventFansOutViaPayloadIDs(t *testing.T) {
 		}
 		return nil, nil
 	})
-	view := View("aluno").Root("aluno").Schema(fanOutRoleSchema()).Version(1)
+	view := View("aluno").Schema(fanOutRoleSchema()).Version(1)
 	s := NewSyncEngine(eng, newFakeMongo(coll), identityResolver, nil, "", []*ViewDefinition{view}, 1)
 
 	event := kafkaEvent{
@@ -174,7 +174,7 @@ func TestProcess_RoleEventWithoutIDs_Skipped(t *testing.T) {
 		}
 		return nil, nil
 	})
-	view := View("aluno").Root("aluno").Schema(fanOutRoleSchema()).Version(1)
+	view := View("aluno").Schema(fanOutRoleSchema()).Version(1)
 	s := NewSyncEngine(eng, newFakeMongo(coll), identityResolver, nil, "", []*ViewDefinition{view}, 1)
 
 	event := kafkaEvent{AggregateType: "aluno", EventType: "UPDATED", AggregateID: "a1",
@@ -197,7 +197,7 @@ func TestProcess_RoleEventWithoutIDs_Skipped(t *testing.T) {
 func TestProcess_PayloadFanOut_NeverUpserts(t *testing.T) {
 	coll := &fakeColl{docs: []any{map[string]any{"_id": "a1"}}}
 	eng := composerEngine(func(string, []any) ([]map[string]any, error) { return nil, nil })
-	view := View("aluno").Root("aluno").Schema(fanOutRoleSchema()).Version(1)
+	view := View("aluno").Schema(fanOutRoleSchema()).Version(1)
 	s := NewSyncEngine(eng, newFakeMongo(coll), identityResolver, nil, "", []*ViewDefinition{view}, 1)
 
 	event := kafkaEvent{

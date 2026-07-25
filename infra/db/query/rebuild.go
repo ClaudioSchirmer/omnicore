@@ -369,7 +369,7 @@ func registryCombinedOrNone(r *ViewRegistryRow) string {
 // reconciliation in bootstrap.
 
 func (s *SyncEngine) RebuildView(ctx context.Context, view *ViewDefinition) error {
-	log.Printf("rebuilding view %s from table %s", view.name, view.rootTable)
+	log.Printf("rebuilding view %s from table %s", view.name, view.RootTable())
 	return s.rebuildFromTable(ctx, view, "")
 }
 
@@ -461,7 +461,7 @@ func (s *SyncEngine) backfillInto(ctx context.Context, view *ViewDefinition, tar
 	// Postgres) and the column names come from the schema — never hardcoded — so a
 	// reserved-word table (e.g. `order`) or a renamed PK/timestamp column (PK("key"))
 	// rebuilds correctly on every backend.
-	table := idDialect.QuoteIdent(view.rootTable)
+	table := idDialect.QuoteIdent(view.RootTable())
 	pkCol := idDialect.QuoteIdent(schema.PKColumn())
 	if since != "" {
 		updatedCol := schema.UpdatedAtColumn()
@@ -603,6 +603,6 @@ func rebuildScanSQL(view *ViewDefinition) string {
 	if orderCol == "" {
 		orderCol = pkCol
 	}
-	return "SELECT " + validIdentifier(pkCol) + " FROM " + validIdentifier(view.rootTable) +
+	return "SELECT " + validIdentifier(pkCol) + " FROM " + validIdentifier(view.RootTable()) +
 		" ORDER BY " + validIdentifier(orderCol)
 }

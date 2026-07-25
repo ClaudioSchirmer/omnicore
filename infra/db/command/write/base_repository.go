@@ -160,7 +160,7 @@ func (r *BaseRepository[T]) WithSchema(schema *TableSchema) *BaseRepository[T] {
 	}
 	// SharedBase role: register on the engine-scoped registry, so the
 	// refcount/lifecycle probes see every role of the base's TABLE regardless of
-	// how many NewSharedBase instances declared it — the consumer never needs a
+	// how many NewSharedBaseSchema instances declared it — the consumer never needs a
 	// singleton. A divergent re-declaration of the same base panics here (boot).
 	if reg, ok := any(r.Engine).(interface{ RegisterSharedBaseRole(*TableSchema) }); ok {
 		reg.RegisterSharedBaseRole(schema)

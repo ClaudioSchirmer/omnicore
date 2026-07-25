@@ -175,7 +175,7 @@ func (e *roleArchTestEntity) Modes() []domain.EntityMode {
 func (e *roleArchTestEntity) BuildRules(string, domain.Service, *domain.Rules) {}
 
 func roleArchTestSchema() *TableSchema {
-	base := NewSharedBase("pessoa").Revision("revision").
+	base := NewSharedBaseSchema("pessoa").Revision("revision").
 		PK("id").
 		Field("Name", "name").
 		Field("Document", "document").

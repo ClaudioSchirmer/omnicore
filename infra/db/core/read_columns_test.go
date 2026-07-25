@@ -44,7 +44,7 @@ func TestReadColumns_AggregateChild(t *testing.T) {
 // shared base; ReadColumns must include it (it lives in sharedBaseLink, not the
 // field set, so a naive PK+fields+managed list would silently drop it).
 func TestReadColumns_SharedBaseRole(t *testing.T) {
-	base := NewSharedBase("persons").
+	base := NewSharedBaseSchema("persons").
 		Revision("revision").
 		PK("id").
 		Field("Removed", "removed").
@@ -65,7 +65,7 @@ func TestReadColumns_SharedBaseRole(t *testing.T) {
 // TestReadColumns_DeduplicatesPKEqualsFK — when a role links to its base through
 // the PK column itself (PK == FK), the column appears once.
 func TestReadColumns_DeduplicatesPKEqualsFK(t *testing.T) {
-	base := NewSharedBase("persons").
+	base := NewSharedBaseSchema("persons").
 		Revision("revision").
 		PK("id").
 		Field("Removed", "removed").

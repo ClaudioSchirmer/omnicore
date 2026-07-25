@@ -12,7 +12,7 @@ import (
 // interaction run end-to-end in the default unit suite.
 
 func processView(table string, deleteOnArchive bool) *ViewDefinition {
-	v := View(table).Root(table).Schema(rootSchema(table)).Version(1)
+	v := View(table).Schema(rootSchema(table)).Version(1)
 	if deleteOnArchive {
 		v.DeleteOnArchive()
 	}

@@ -30,7 +30,7 @@ func TestFetchMongoEmbed_EmbedMany(t *testing.T) {
 	c := NewComposerWithMongo(eng, newFakeMongo(mongoColl), identityResolver)
 
 	external := FromSchema(core.NewExternalSchema("buyers").PK("id").FK("order_id")).As("Buyers")
-	view := View("orders").Version(1).Root("orders").Schema(composerRootSchema()).
+	view := View("orders").Version(1).Schema(composerRootSchema()).
 		EmbedMany("buyers", external)
 
 	doc, err := c.Compose(context.Background(), view, "o1")
@@ -49,7 +49,7 @@ func TestFetchMongoEmbed_OneToOne(t *testing.T) {
 	c := NewComposerWithMongo(eng, newFakeMongo(mongoColl), identityResolver)
 
 	external := FromSchema(core.NewExternalSchema("buyers").PK("id")).FK("buyer_id").As("Buyer")
-	view := View("orders").Version(1).Root("orders").Schema(composerRootSchema()).
+	view := View("orders").Version(1).Schema(composerRootSchema()).
 		Embed("buyer", external)
 
 	doc, err := c.Compose(context.Background(), view, "o1")
@@ -68,7 +68,7 @@ func TestFetchMongoEmbed_OneToOne_NoMatch(t *testing.T) {
 	c := NewComposerWithMongo(eng, newFakeMongo(mongoColl), identityResolver)
 
 	external := FromSchema(core.NewExternalSchema("buyers").PK("id")).FK("buyer_id").As("Buyer")
-	view := View("orders").Version(1).Root("orders").Schema(composerRootSchema()).
+	view := View("orders").Version(1).Schema(composerRootSchema()).
 		Embed("buyer", external)
 
 	doc, err := c.Compose(context.Background(), view, "o1")
@@ -86,7 +86,7 @@ func TestFetchMongoEmbed_OneToOne_MissingFK(t *testing.T) {
 	eng := rootMapsEngine([]string{"id", "name"}, [][]any{{"o1", "first"}})
 	c := NewComposerWithMongo(eng, newFakeMongo(&fakeColl{}), identityResolver)
 	external := FromSchema(core.NewExternalSchema("buyers").PK("id")).FK("buyer_id").As("Buyer")
-	view := View("orders").Version(1).Root("orders").Schema(composerRootSchema()).
+	view := View("orders").Version(1).Schema(composerRootSchema()).
 		Embed("buyer", external)
 
 	doc, err := c.Compose(context.Background(), view, "o1")
@@ -103,7 +103,7 @@ func TestFetchMongoEmbed_OneToOne_FindError(t *testing.T) {
 	eng := rootMapsEngine([]string{"id", "buyer_id", "name"}, [][]any{{"o1", "u1", "first"}})
 	c := NewComposerWithMongo(eng, newFakeMongo(&fakeColl{findErr: context.Canceled}), identityResolver)
 	external := FromSchema(core.NewExternalSchema("buyers").PK("id")).FK("buyer_id").As("Buyer")
-	view := View("orders").Version(1).Root("orders").Schema(composerRootSchema()).
+	view := View("orders").Version(1).Schema(composerRootSchema()).
 		Embed("buyer", external)
 
 	if _, err := c.Compose(context.Background(), view, "o1"); err == nil {
@@ -116,7 +116,7 @@ func TestFetchMongoEmbed_NilHandle(t *testing.T) {
 	eng := rootMapsEngine([]string{"id", "name"}, [][]any{{"o1", "first"}})
 	c := NewComposer(eng)
 	external := FromSchema(core.NewExternalSchema("buyers").PK("id").FK("order_id")).As("Buyers")
-	view := View("orders").Version(1).Root("orders").Schema(composerRootSchema()).
+	view := View("orders").Version(1).Schema(composerRootSchema()).
 		EmbedMany("buyers", external)
 
 	if _, err := c.Compose(context.Background(), view, "o1"); err == nil ||
@@ -129,7 +129,7 @@ func TestFetchMongoEmbed_FindError(t *testing.T) {
 	eng := rootMapsEngine([]string{"id", "name"}, [][]any{{"o1", "first"}})
 	c := NewComposerWithMongo(eng, newFakeMongo(&fakeColl{findErr: context.Canceled}), identityResolver)
 	external := FromSchema(core.NewExternalSchema("buyers").PK("id").FK("order_id")).As("Buyers")
-	view := View("orders").Version(1).Root("orders").Schema(composerRootSchema()).
+	view := View("orders").Version(1).Schema(composerRootSchema()).
 		EmbedMany("buyers", external)
 
 	if _, err := c.Compose(context.Background(), view, "o1"); err == nil {
@@ -142,7 +142,7 @@ func TestFetchMongoEmbed_EmbedMany_MissingParentKey(t *testing.T) {
 	eng := rootMapsEngine([]string{"name"}, [][]any{{"first"}})
 	c := NewComposerWithMongo(eng, newFakeMongo(&fakeColl{}), identityResolver)
 	external := FromSchema(core.NewExternalSchema("buyers").PK("id").FK("order_id")).As("Buyers")
-	view := View("orders").Version(1).Root("orders").Schema(composerRootSchema()).
+	view := View("orders").Version(1).Schema(composerRootSchema()).
 		EmbedMany("buyers", external)
 
 	doc, err := c.Compose(context.Background(), view, "o1")

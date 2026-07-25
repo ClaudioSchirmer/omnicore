@@ -44,7 +44,7 @@ func (e *bcRole) AggregateChildren() []domain.AggregateValueObject {
 // The purge policy is declared explicitly (the default is KeepOrphan) so the
 // orphan-delete test below exercises the purge branch.
 func bcRoleSchema(softDelete bool) *TableSchema {
-	base := NewSharedBase("pessoa").Revision("revision").PK("id").Field("Name", "name").Field("Document", "document").
+	base := NewSharedBaseSchema("pessoa").Revision("revision").PK("id").Field("Name", "name").Field("Document", "document").
 		NaturalKey("document").OrphanPolicy(DeleteWhenUnreferenced)
 	addr := NewTableSchema[bcAddr]("endereco").PK("id").FK("pessoa_id").Field("Street", "street")
 	if softDelete {

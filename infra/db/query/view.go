@@ -11,7 +11,6 @@ import (
 type ViewDefinition struct {
 	name            string
 	version         int
-	rootTable       string
 	schema          *core.TableSchema
 	embeds          []embedDef
 	deleteOnArchive bool
@@ -29,9 +28,9 @@ type ViewDefinition struct {
 	// part of RebuildHash / ArtifactHash.
 	maxExportRows int64
 	// isSharedBaseView marks a view rooted at a shared base (SharedBaseView):
-	// schema is the base's core.NewSharedBase declaration, rootTable the base
-	// table, and roles carries one segment per declared specialization. False
-	// for a regular query.View.
+	// schema is the base's core.NewSharedBaseSchema declaration (whose table is the
+	// root table) and roles carries one segment per declared specialization.
+	// False for a regular query.View.
 	isSharedBaseView bool
 	roles            []roleDef
 }
@@ -81,11 +80,6 @@ type Source struct {
 
 func View(name string) *ViewDefinition {
 	return &ViewDefinition{name: name}
-}
-
-func (v *ViewDefinition) Root(table string) *ViewDefinition {
-	v.rootTable = table
-	return v
 }
 
 // Schema attaches the view's root core.TableSchema (Go↔column + PK + soft-delete) —
@@ -176,9 +170,22 @@ func (v *ViewDefinition) MaxLimit(n int64) *ViewDefinition {
 
 func (v *ViewDefinition) Name() string           { return v.name }
 func (v *ViewDefinition) VersionNumber() int     { return v.version }
-func (v *ViewDefinition) RootTable() string      { return v.rootTable }
 func (v *ViewDefinition) Embeds() []embedDef     { return v.embeds }
 func (v *ViewDefinition) DeletesOnArchive() bool { return v.deleteOnArchive }
+
+// RootTable is the physical aggregate-root table the view is fed from (the
+// broker routing key) and the composer reads FROM. It is DERIVED from the
+// attached root schema — a regular view's .Schema(...) and a SharedBaseView's
+// base both carry it — so there is no separate declaration to keep in sync and
+// no way to misspell it. A view with no schema is rejected at boot
+// (ValidateViewSchemas), so in a booted service this is always the schema's
+// table.
+func (v *ViewDefinition) RootTable() string {
+	if v.schema == nil {
+		return ""
+	}
+	return v.schema.Table()
+}
 
 // MaxLimitValue returns the declared per-view cap or 0 when the consumer left
 // the value unset. The reader is the only canonical consumer; it falls back
@@ -296,6 +303,13 @@ func ValidateViewSchemas(views []*ViewDefinition) error {
 			problems = append(problems, fmt.Sprintf(
 				"view %q: root schema (table %q) declares no primary key — declare .PK(column)",
 				v.Name(), v.schema.Table()))
+		}
+		// A SharedBaseView's .Schema(...) must be the identity's core.NewSharedBaseSchema
+		// declaration (a role/table schema roots a regular query.View instead).
+		if v.isSharedBaseView && v.schema != nil && !v.schema.IsSharedBase() {
+			problems = append(problems, fmt.Sprintf(
+				"view %q: SharedBaseView .Schema(...) must be a core.NewSharedBaseSchema declaration — "+
+					"a role/table schema roots a regular query.View instead", v.Name()))
 		}
 		// A SharedBaseView with no roles is a person view with nothing to
 		// compose beyond the base — declare at least one specialization.
@@ -513,7 +527,7 @@ func buildViewIndex(views []*ViewDefinition) viewIndex {
 		// The root is always a Postgres table — UpstreamSubscription
 		// projects upstream entities into Mongo collections that are
 		// embedded, not chosen as a view root.
-		idx.byPGTable[v.rootTable] = append(idx.byPGTable[v.rootTable], v)
+		idx.byPGTable[v.RootTable()] = append(idx.byPGTable[v.RootTable()], v)
 		// A role view referencing a SharedBase is indexed by the base table, so a
 		// base change fans out to every role view (SyncEngine.process). A
 		// base-rooted SharedBaseView never lands here — its root schema IS the
@@ -521,7 +535,7 @@ func buildViewIndex(views []*ViewDefinition) viewIndex {
 		if v.schema != nil {
 			if base, _, ok := v.schema.SharedBaseRef(); ok {
 				idx.bySharedBase[base.Table()] = append(idx.bySharedBase[base.Table()], v)
-				idx.baseOfRole[v.rootTable] = base.Table()
+				idx.baseOfRole[v.RootTable()] = base.Table()
 			}
 		}
 		// A SharedBaseView is indexed by each ROLE table too: a role event must

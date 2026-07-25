@@ -69,7 +69,7 @@ func TestCompose_CoercesBoolColumns(t *testing.T) {
 			[][]any{{"o1", int64(1), nil, "first"}}), nil
 	})
 	c := NewComposer(eng)
-	view := View("flags").Version(1).Root("flags").Schema(composerBoolSchema())
+	view := View("flags").Version(1).Schema(composerBoolSchema())
 
 	doc, err := c.Compose(context.Background(), view, "o1")
 	if err != nil {
@@ -91,7 +91,7 @@ func TestCompose_RootMissing(t *testing.T) {
 		return nil, nil // zero rows
 	})
 	c := NewComposer(eng)
-	view := View("orders").Version(1).Root("orders").Schema(composerRootSchema())
+	view := View("orders").Version(1).Schema(composerRootSchema())
 
 	doc, err := c.Compose(context.Background(), view, "o1")
 	if err != nil {
@@ -107,7 +107,7 @@ func TestCompose_QueryError(t *testing.T) {
 		return nil, errFake
 	})
 	c := NewComposer(eng)
-	view := View("orders").Version(1).Root("orders").Schema(composerRootSchema())
+	view := View("orders").Version(1).Schema(composerRootSchema())
 
 	if _, err := c.Compose(context.Background(), view, "o1"); err == nil {
 		t.Fatal("expected query error from Compose")
@@ -119,7 +119,7 @@ func TestCompose_RootOnly(t *testing.T) {
 		return mapsFromColsData([]string{"id", "name"}, [][]any{{"o1", "first"}}), nil
 	})
 	c := NewComposer(eng)
-	view := View("orders").Version(1).Root("orders").Schema(composerRootSchema())
+	view := View("orders").Version(1).Schema(composerRootSchema())
 
 	doc, err := c.Compose(context.Background(), view, "o1")
 	if err != nil {
@@ -160,7 +160,7 @@ func TestCompose_MergesSiblingFlat(t *testing.T) {
 		return nil, nil
 	})
 	c := NewComposer(eng)
-	view := View("orders").Version(1).Root("orders").Schema(composerSiblingRootSchema())
+	view := View("orders").Version(1).Schema(composerSiblingRootSchema())
 
 	doc, err := c.Compose(context.Background(), view, "o1")
 	if err != nil {
@@ -178,7 +178,7 @@ func TestCompose_MergesSiblingFlat(t *testing.T) {
 // projection pushdown, and column→Go in ToGoDoc so the merged sibling column
 // reaches the response instead of being dropped.
 func TestViewNode_SiblingFieldTranslatesBothWays(t *testing.T) {
-	view := View("orders").Version(1).Root("orders").Schema(composerSiblingRootSchema())
+	view := View("orders").Version(1).Schema(composerSiblingRootSchema())
 	node := view.BuildViewNode()
 
 	cp, ok := node.ColumnPath([]string{"Email"}) // Email lives in the sibling table
@@ -203,7 +203,7 @@ func TestCompose_AbsentSiblingOmitsFields(t *testing.T) {
 		return nil, nil
 	})
 	c := NewComposer(eng)
-	view := View("orders").Version(1).Root("orders").Schema(composerSiblingRootSchema())
+	view := View("orders").Version(1).Schema(composerSiblingRootSchema())
 
 	doc, err := c.Compose(context.Background(), view, "o1")
 	if err != nil {
@@ -217,7 +217,7 @@ func TestCompose_AbsentSiblingOmitsFields(t *testing.T) {
 // composerRoleSchema is a role (aluno) over builderTestEntity: Email is role-own,
 // Name lives on the shared base pessoa (natural key on name), linked by pessoa_id.
 func composerRoleSchema() *core.TableSchema {
-	base := core.NewSharedBase("pessoa").Revision("revision").PK("id").Field("Name", "name").NaturalKey("name")
+	base := core.NewSharedBaseSchema("pessoa").Revision("revision").PK("id").Field("Name", "name").NaturalKey("name")
 	return core.NewTableSchema[*builderTestEntity]("aluno").
 		PK("id").
 		Field("Email", "email").
@@ -237,7 +237,7 @@ func TestCompose_MergesSharedBaseFlat(t *testing.T) {
 		return nil, nil
 	})
 	c := NewComposer(eng)
-	view := View("aluno").Version(1).Root("aluno").Schema(composerRoleSchema())
+	view := View("aluno").Version(1).Schema(composerRoleSchema())
 
 	doc, err := c.Compose(context.Background(), view, "a1")
 	if err != nil {
@@ -272,7 +272,7 @@ func TestCompose_OwnChildrenAutoNested(t *testing.T) {
 	rootWithChild := core.NewTableSchema[*builderTestEntity]("orders").
 		PK("id").Field("Name", "name").SoftDelete("deleted_at").
 		Child(childSchema)
-	view := View("orders").Version(1).Root("orders").Schema(rootWithChild) // no EmbedMany
+	view := View("orders").Version(1).Schema(rootWithChild) // no EmbedMany
 
 	eng := composerEngine(func(sql string, args []any) ([]map[string]any, error) {
 		switch {
@@ -312,7 +312,7 @@ func TestComposeAll(t *testing.T) {
 		return nil, nil
 	})
 	c := NewComposer(eng)
-	view := View("orders").Version(1).Root("orders").Schema(composerRootSchema())
+	view := View("orders").Version(1).Schema(composerRootSchema())
 
 	docs, err := c.ComposeAll(context.Background(), view)
 	if err != nil {
@@ -326,7 +326,7 @@ func TestComposeAll(t *testing.T) {
 func TestComposeAll_QueryError(t *testing.T) {
 	eng := composerEngine(func(string, []any) ([]map[string]any, error) { return nil, errFake })
 	c := NewComposer(eng)
-	view := View("orders").Version(1).Root("orders").Schema(composerRootSchema())
+	view := View("orders").Version(1).Schema(composerRootSchema())
 	if _, err := c.ComposeAll(context.Background(), view); err == nil {
 		t.Fatal("expected query error from ComposeAll")
 	}
@@ -350,7 +350,7 @@ func TestComposeBatch(t *testing.T) {
 		return nil, nil
 	})
 	c := NewComposer(eng)
-	view := View("orders").Version(1).Root("orders").Schema(composerRootSchema())
+	view := View("orders").Version(1).Schema(composerRootSchema())
 
 	docs, err := c.ComposeBatch(context.Background(), view, []string{"o1", "o2"})
 	if err != nil {
@@ -375,7 +375,7 @@ func TestComposeBatch_EmptyDoesNotQuery(t *testing.T) {
 	called := false
 	eng := composerEngine(func(string, []any) ([]map[string]any, error) { called = true; return nil, nil })
 	c := NewComposer(eng)
-	view := View("orders").Version(1).Root("orders").Schema(composerRootSchema())
+	view := View("orders").Version(1).Schema(composerRootSchema())
 	docs, err := c.ComposeBatch(context.Background(), view, nil)
 	if err != nil || docs != nil {
 		t.Fatalf("empty batch: docs=%v err=%v", docs, err)
@@ -388,7 +388,7 @@ func TestComposeBatch_EmptyDoesNotQuery(t *testing.T) {
 func TestComposeBatch_QueryError(t *testing.T) {
 	eng := composerEngine(func(string, []any) ([]map[string]any, error) { return nil, errFake })
 	c := NewComposer(eng)
-	view := View("orders").Version(1).Root("orders").Schema(composerRootSchema())
+	view := View("orders").Version(1).Schema(composerRootSchema())
 	if _, err := c.ComposeBatch(context.Background(), view, []string{"o1"}); err == nil {
 		t.Fatal("expected query error from ComposeBatch")
 	}
@@ -412,7 +412,7 @@ func TestComposeBatch_ChunksLargeIDSet(t *testing.T) {
 		return nil, nil
 	})
 	c := NewComposer(eng)
-	view := View("orders").Version(1).Root("orders").Schema(composerRootSchema())
+	view := View("orders").Version(1).Schema(composerRootSchema())
 
 	n := maxInClauseSize + 50
 	ids := make([]string, n)
@@ -435,7 +435,7 @@ func TestComposeBatch_ChunksLargeIDSet(t *testing.T) {
 // declaring the managed columns (soft-delete + timestamps) — the collision the
 // A5 guard resolves in favor of the ROLE.
 func composerRoleSchemaManaged() *core.TableSchema {
-	base := core.NewSharedBase("pessoa").Revision("revision").PK("id").Field("Name", "name").NaturalKey("name").
+	base := core.NewSharedBaseSchema("pessoa").Revision("revision").PK("id").Field("Name", "name").NaturalKey("name").
 		SoftDelete("deleted_at").CreatedAt("created_at").UpdatedAt("updated_at")
 	return core.NewTableSchema[*builderTestEntity]("aluno").
 		PK("id").
@@ -465,7 +465,7 @@ func TestCompose_SharedBase_ManagedColumnsStayRoleScoped(t *testing.T) {
 		return nil, nil
 	})
 	c := NewComposer(eng)
-	view := View("aluno").Version(1).Root("aluno").Schema(composerRoleSchemaManaged())
+	view := View("aluno").Version(1).Schema(composerRoleSchemaManaged())
 
 	doc, err := c.Compose(context.Background(), view, "a1")
 	if err != nil {
@@ -497,7 +497,7 @@ func TestViewNode_StripArchivedChildren(t *testing.T) {
 		Field("Name", "name").
 		SoftDelete("deleted_at").
 		Child(child)
-	node := View("aluno").Version(1).Root("aluno").Schema(root).BuildViewNode()
+	node := View("aluno").Version(1).Schema(root).BuildViewNode()
 
 	seg := childDocSegment(child)
 	doc := map[string]any{

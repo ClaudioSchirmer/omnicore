@@ -106,7 +106,7 @@ func (s *SyncEngine) streamSourceIDs(ctx context.Context, view *ViewDefinition, 
 	if schema == nil {
 		return fmt.Errorf("verify %q: view declares no root .Schema(...)", view.name)
 	}
-	q := "SELECT " + idDialect.QuoteIdent(schema.PKColumn()) + " FROM " + idDialect.QuoteIdent(view.rootTable)
+	q := "SELECT " + idDialect.QuoteIdent(schema.PKColumn()) + " FROM " + idDialect.QuoteIdent(view.RootTable())
 	rows, err := s.eng.Querier().Query(ctx, q)
 	if err != nil {
 		return fmt.Errorf("verify %q: scan source ids: %w", view.name, err)

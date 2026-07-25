@@ -58,7 +58,7 @@ type TableSchema struct {
 	// entity's columns across tables. Width is unlimited; siblings do not nest.
 	siblings []*TableSchema
 
-	// M2 SharedBase (NewSharedBase) — a type-less identity table shared by
+	// M2 SharedBase (NewSharedBaseSchema) — a type-less identity table shared by
 	// multiple role schemas, deduplicated by a natural key whose value derives the
 	// base's deterministic id. isSharedBase marks the base; naturalKeyCol is its
 	// dedup/identity column; orphanPolicy governs the base's lifecycle when no
@@ -991,7 +991,7 @@ func (s *TableSchema) validateOwnSiblings() {
 // type fidelity when it materializes the Mongo view — neither is possible without
 // a struct. A type-less schema describes an UPSTREAM service's Mongo collection
 // and is only ever a view EMBED source (FromSchema), never a write-backed root.
-// The composer routes by the view root TABLE NAME (the .Root(table) string), not
+// The composer routes by the view root TABLE NAME (the root schema's table), not
 // by the schema's kind, so a type-less root that names a real local table would
 // be composed relationally with an empty BoolColumns and silently lose boolean
 // fidelity on a backend without a native bool (MySQL TINYINT(1) → number). This

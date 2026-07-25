@@ -198,7 +198,7 @@ core.NewExternalSchema("users").PK("id").Field("Email", "mail")</code></pre>
     Soft-delete, created-at, and updated-at are declared by <em>calling</em> the matching builder method with the column
     name. Omitting the call disables the behavior — there is no boolean knob. The exception is
     <code>Revision(col)</code>: on an <strong>entity schema</strong> (<code>NewTableSchema[T]</code> attached to a
-    repository) and on a <strong>shared base</strong> (<code>NewSharedBase</code>) it is <strong>mandatory</strong> —
+    repository) and on a <strong>shared base</strong> (<code>NewSharedBaseSchema</code>) it is <strong>mandatory</strong> —
     omitting it is a boot failure; on a <strong>sibling or aggregate child</strong> it is <strong>forbidden</strong> —
     declaring it panics at construction, because their rows are guarded by the owner's token.
 </p>
@@ -302,7 +302,6 @@ func NewUserRepository(eng core.RelationalEngine) *UserRepository {
 <pre><code>func UserView() *query.ViewDefinition {
     return query.View("users").
         Version(1).
-        Root("users").
         Schema(UserSchema()).   // addresses (a .Child of UserSchema) auto-project as "Addresses"
         Indexes( /* … */ )
 }</code></pre>
@@ -333,7 +332,6 @@ func NewUserRepository(eng core.RelationalEngine) *UserRepository {
 func OrdersView() *query.ViewDefinition {
     return query.View("orders").
         Version(1).
-        Root("orders").
         Schema(OrderSchema()).
         Embed("buyer", query.FromSchema(
             core.NewExternalSchema("users").  // type-less: names the UPSTREAM's columns
@@ -491,7 +489,7 @@ func OrdersView() *query.ViewDefinition {
     <tbody>
         <tr><td><code>.Child(NewTableSchema[C](...))</code></td><td>1 : N</td><td>aggregate children in their own table, linked by an <code>FK</code> to the root (see "Declaring a schema" above)</td></tr>
         <tr><td><code>.Sibling(NewSiblingSchema[T](...))</code></td><td>1 : 1</td><td>a disjoint slice of the <em>same</em> entity's fields in a secondary table sharing the root's PK (no FK)</td></tr>
-        <tr><td><code>.SharedBase(NewSharedBase(...), fk)</code></td><td>N : 1</td><td>an identity table shared by several independent role tables, deduplicated by a natural key</td></tr>
+        <tr><td><code>.SharedBase(NewSharedBaseSchema(...), fk)</code></td><td>N : 1</td><td>an identity table shared by several independent role tables, deduplicated by a natural key</td></tr>
     </tbody>
 </table>
 <p>
@@ -548,12 +546,12 @@ func OrdersView() *query.ViewDefinition {
     A <strong>shared base</strong> models the party-role pattern: one identity table (e.g. <code>person</code>) whose data
     is shared by several <em>independent</em> role tables (<code>student</code>, <code>teacher</code>, <code>user</code>),
     each linking to it by a foreign key. Unlike a sibling (1 : 1, private), a base is referenced by N roles (N : 1) and is
-    <strong>deduplicated by a natural key</strong>. Declare the base type-less with <code>core.NewSharedBase(table)</code>,
+    <strong>deduplicated by a natural key</strong>. Declare the base type-less with <code>core.NewSharedBaseSchema(table)</code>,
     its dedup column with <code>.NaturalKey(col)</code>, its <strong>mandatory revision column</strong> with
     <code>.Revision(col)</code> (below), and its orphan lifecycle with <code>.OrphanPolicy(p)</code>; each
     role references it with <code>.SharedBase(base, fkColumn)</code>. Sharing one base instance across the role files is
     idiomatic but <em>not required</em>: at repository construction (<code>WithSchema</code>) the engine registers every
-    role on a registry keyed by the base's <em>table</em>, so N identical <code>NewSharedBase</code> declarations behave
+    role on a registry keyed by the base's <em>table</em>, so N identical <code>NewSharedBaseSchema</code> declarations behave
     exactly like one — no consumer-side singleton. Two <em>divergent</em> declarations of the same table (different natural
     key, policy, soft-delete, fields, or children) panic at boot:
 </p>
@@ -599,7 +597,7 @@ func OrdersView() *query.ViewDefinition {
     already passed). Tombstones expire after 24&nbsp;h (TTL index, provisioned at SyncEngine start); base-revision
     records live for the identity's lifetime and are dropped by the purge.
 </p>
-<pre><code>var person = core.NewSharedBase("person").
+<pre><code>var person = core.NewSharedBaseSchema("person").
     PK("id").                                      // the deterministic UUIDv5 lands here
     Field("Name", "name").
     Field("Document", "document").                 // the natural-key column
@@ -782,9 +780,9 @@ func StudentSchema() *core.TableSchema {
     <em>identity</em>, not to any single role, so every role of that identity sees the same children (e.g. a
     <code>Person</code>'s addresses, shared by its <code>Student</code> and <code>Teacher</code> roles). They are declared
     with the ordinary <code>.Child(...)</code> builder — the <em>same</em> one a normal aggregate uses — but called on the
-    <code>NewSharedBase(...)</code> value instead of a root schema. There is no separate base-child constructor:
+    <code>NewSharedBaseSchema(...)</code> value instead of a root schema. There is no separate base-child constructor:
 </p>
-<pre><code>var person = core.NewSharedBase("person").
+<pre><code>var person = core.NewSharedBaseSchema("person").
     PK("id").
     Field("Name", "name").
     Field("Document", "document").
@@ -832,7 +830,8 @@ func StudentSchema() *core.TableSchema {
 </p>
 
 <pre><code>func PersonView() *query.ViewDefinition {
-    return query.SharedBaseView(personBase(), "persons").
+    return query.SharedBaseView("persons").
+        Schema(personBase()).                  // the core.NewSharedBaseSchema identity
         Role(UserSchema()).                    // repeatable — the role set is open-ended
         Role(EmployeeSchema()).
         Version(1).
@@ -937,10 +936,11 @@ func StudentSchema() *core.TableSchema {
 
 <h4>Rules &amp; validation</h4>
 <ul>
-    <li>The root must be a <code>core.NewSharedBase</code> schema; each <code>Role</code> must be a
-        type-anchored schema declaring <code>.SharedBase(...)</code> back to the SAME base table with
-        an equivalent declaration — violations panic at declaration, and a role-less view is a boot
-        error.</li>
+    <li>The <code>.Schema(...)</code> must be a <code>core.NewSharedBaseSchema</code> declaration — attached
+        exactly like a regular view's root schema, and validated at boot. Each <code>Role</code> must be a
+        type-anchored schema declaring <code>.SharedBase(...)</code> back to the SAME base table with an
+        equivalent declaration (checked when the role is declared, so <code>.Schema(base)</code> comes before
+        the first <code>.Role(...)</code>); a wrong-kind schema or a role-less view is a boot error.</li>
     <li>Segment collisions (role vs base-child vs embed) are boot errors, like every other
         double-producer segment.</li>
     <li><strong>The role set participates in the rebuild hash</strong>: adding/removing a role, or

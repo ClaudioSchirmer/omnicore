@@ -224,7 +224,7 @@ func filterClaims(all map[string]any, allowlist []string) map[string]any {
 func composedFieldValues(schema *TableSchema, src any) map[string]any {
 	out := schema.GoFieldValues(src)
 	if base, _, ok := schema.SharedBaseRef(); ok {
-		// The shared base is type-less (built with NewSharedBase, no [T]), so its
+		// The shared base is type-less (built with NewSharedBaseSchema, no [T]), so its
 		// field struct-indexes are unresolved; read the shared fields off the flat
 		// role entity by Go field name — exactly how sharedBaseValues feeds the
 		// base UPSERT.

@@ -65,7 +65,7 @@ func TestViewNode_ColumnPathEdges(t *testing.T) {
 	}
 	rootSchema := core.NewTableSchema[vsRoot]("people").PK("person_pk").Field("Email", "mail")
 	childSchema := core.NewExternalSchema("tags").PK("tag_pk").FK("person_ref").Field("ZipCode", "zip")
-	v := View("people").Root("people").Schema(rootSchema).
+	v := View("people").Schema(rootSchema).
 		EmbedMany("addresses", FromSchema(childSchema).As("Addresses"))
 	node := v.BuildViewNode()
 
@@ -86,7 +86,7 @@ func TestViewNode_ColumnPathEdges(t *testing.T) {
 func TestViewNode_ToGoDoc_OneToOneEmbedAndDrop(t *testing.T) {
 	rootSchema := core.NewTableSchema[vsRoot]("people").PK("person_pk").Field("Email", "mail")
 	buyerSchema := core.NewExternalSchema("buyers").PK("b_pk").Field("Email", "b_mail")
-	v := View("people").Root("people").Schema(rootSchema).
+	v := View("people").Schema(rootSchema).
 		Embed("buyer", FromSchema(buyerSchema).FK("buyer_ref").As("Buyer"))
 	node := v.BuildViewNode()
 
@@ -193,7 +193,7 @@ func TestResolveGoSegment_ExternalNoAsIsEmpty(t *testing.T) {
 
 func TestValidateViewSchemas_ExternalEmbedMissingAs(t *testing.T) {
 	src := FromSchema(core.NewExternalSchema("users").PK("id").FK("user_id")) // no .As
-	v := View("orders").Version(1).Root("orders").
+	v := View("orders").Version(1).
 		Schema(rootSchema("orders")).
 		EmbedMany("buyers", src)
 	err := ValidateViewSchemas([]*ViewDefinition{v})
@@ -208,7 +208,7 @@ func TestDependentMongoViews_NestedMatch(t *testing.T) {
 	nestedMongo := FromSchema(core.NewExternalSchema("users").PK("id").FK("order_id")).As("Buyer").FK("buyer_id")
 	pgLines := FromSchema(core.NewTableSchema[embedFixture]("lines").PK("id").FK("order_id")).
 		Embed("buyer", nestedMongo)
-	v := View("orders").Version(1).Root("orders").Schema(rootSchema("orders")).
+	v := View("orders").Version(1).Schema(rootSchema("orders")).
 		EmbedMany("lines", pgLines)
 
 	dep := DependentMongoViews([]*ViewDefinition{v}, "users")
@@ -224,7 +224,7 @@ func TestDependentMongoViews_NestedMatch(t *testing.T) {
 func TestBuildViewIndex_PGAndMongo(t *testing.T) {
 	mongoSrc := FromSchema(core.NewExternalSchema("users").PK("id").FK("order_id")).As("Buyers")
 	pgSrc := FromSchema(core.NewTableSchema[embedFixture]("lines").PK("id").FK("order_id"))
-	v := View("orders").Version(1).Root("orders").Schema(rootSchema("orders")).
+	v := View("orders").Version(1).Schema(rootSchema("orders")).
 		EmbedMany("lines", pgSrc).
 		EmbedMany("buyers", mongoSrc)
 
@@ -290,7 +290,7 @@ func TestViewEmbedsMongoCollection_NilSourceSkipped(t *testing.T) {
 }
 
 func TestValidateViewSchemas_NoRootSchema(t *testing.T) {
-	v := View("orphan").Version(1).Root("orphan") // no .Schema(...)
+	v := View("orphan").Version(1) // no .Schema(...)
 	err := ValidateViewSchemas([]*ViewDefinition{v})
 	if err == nil || !strings.Contains(err.Error(), "no root .Schema") {
 		t.Fatalf("expected no-root-schema error, got %v", err)
@@ -301,7 +301,7 @@ func TestBuildViewIndex_NestedEmbedRecursion(t *testing.T) {
 	grandchild := FromSchema(core.NewTableSchema[embedFixture]("tags").PK("id").FK("line_id"))
 	lines := FromSchema(core.NewTableSchema[embedFixture]("lines").PK("id").FK("order_id")).
 		EmbedMany("tags", grandchild)
-	v := View("orders").Version(1).Root("orders").Schema(rootSchema("orders")).
+	v := View("orders").Version(1).Schema(rootSchema("orders")).
 		EmbedMany("lines", lines)
 
 	idx := buildViewIndex([]*ViewDefinition{v})
@@ -350,7 +350,7 @@ func TestComposeAll_EmbedChildError(t *testing.T) {
 	})
 	// External embed whose Mongo fetch fails → applyEmbeds error → ComposeAll error.
 	c := NewComposerWithMongo(eng, newFakeMongo(&fakeColl{findErr: context.Canceled}), identityResolver)
-	view := View("orders").Version(1).Root("orders").Schema(composerRootSchema()).
+	view := View("orders").Version(1).Schema(composerRootSchema()).
 		EmbedMany("buyers", FromSchema(core.NewExternalSchema("buyers").PK("id").FK("order_id")).As("Buyers"))
 	if _, err := c.ComposeAll(context.Background(), view); err == nil {
 		t.Fatal("expected child query error from ComposeAll")
@@ -360,7 +360,7 @@ func TestComposeAll_EmbedChildError(t *testing.T) {
 // ─── view_export.go: MaxExportRowsValue ──────────────────────────────────────
 
 func TestMaxExportRowsValue(t *testing.T) {
-	v := View("x").Version(1).Root("x")
+	v := View("x").Version(1)
 	if got := v.MaxExportRowsValue(); got != 0 {
 		t.Errorf("default MaxExportRowsValue = %d, want 0", got)
 	}
@@ -395,12 +395,12 @@ func TestStringList(t *testing.T) {
 
 func TestJSONSchemaValidationAction_NilAndPresent(t *testing.T) {
 	// nil jsonSchema → allocate-with-default-level branch.
-	v := View("x").Version(1).Root("x").JSONSchemaValidationAction(ValidationActionWarn)
+	v := View("x").Version(1).JSONSchemaValidationAction(ValidationActionWarn)
 	if s := v.SchemaSpec(); s == nil || s.ValidationAction != ValidationActionWarn || s.ValidationLevel != ValidationLevelStrict {
 		t.Fatalf("nil-path spec drifted: %+v", v.SchemaSpec())
 	}
 	// Existing jsonSchema → just set the action.
-	v2 := View("y").Version(1).Root("y").JSONSchema(bson.M{"bsonType": "object"}).
+	v2 := View("y").Version(1).JSONSchema(bson.M{"bsonType": "object"}).
 		JSONSchemaValidationAction(ValidationActionWarn)
 	if s := v2.SchemaSpec(); s == nil || s.ValidationAction != ValidationActionWarn {
 		t.Fatalf("present-path spec drifted: %+v", v2.SchemaSpec())

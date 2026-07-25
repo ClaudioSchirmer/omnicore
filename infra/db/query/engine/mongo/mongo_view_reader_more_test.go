@@ -22,7 +22,7 @@ import (
 func aggViewFixture(coll mongoColl) *MongoViewReader {
 	childSchema := core.NewExternalSchema("addresses").
 		PK("id").FK("user_id").Field("ZipCode", "zip")
-	agg := query.View("agg_view").Version(1).Root("builder_test_entities").
+	agg := query.View("agg_view").Version(1).
 		Schema(builderTestSchema).
 		EmbedMany("addresses", query.FromSchema(childSchema).As("Addresses"))
 	r := NewMongoViewReader(newFakeMongo(coll), testResolver)

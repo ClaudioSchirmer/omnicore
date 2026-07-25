@@ -326,8 +326,8 @@ const (
             <td>Yes — write time</td>
         </tr>
         <tr>
-            <td><code>query.SharedBaseView(base, name)</code></td>
-            <td>A shared base (<code>core.NewSharedBase</code>).</td>
+            <td><code>query.SharedBaseView(name).Schema(base)</code></td>
+            <td>A shared base (<code>core.NewSharedBaseSchema</code>).</td>
             <td>The all-in-one identity: base fields flat, base children nested, one sub-document per <code>.Role(...)</code>
                 (each role's siblings flat, children nested) — plus any <code>Embed</code>/<code>EmbedMany</code> of EXTERNAL
                 sources.</td>

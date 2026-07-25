@@ -19,8 +19,8 @@ import (
 
 func TestFilterForeignCollections_AllDeclared_Empty(t *testing.T) {
 	views := []*query.ViewDefinition{
-		query.View("users").Root("users"),
-		query.View("orders").Root("orders"),
+		query.View("users"),
+		query.View("orders"),
 	}
 	got := filterForeignCollections([]string{"users", "orders"}, views)
 	if len(got) != 0 {
@@ -32,7 +32,7 @@ func TestFilterForeignCollections_AllDeclared_Empty(t *testing.T) {
 // guard must recognize a view living in a slot, or it aborts a non-dev boot on the
 // view's own active/shadow collection.
 func TestFilterForeignCollections_SlotsAreNotForeign(t *testing.T) {
-	views := []*query.ViewDefinition{query.View("gadgets").Root("gadgets")}
+	views := []*query.ViewDefinition{query.View("gadgets")}
 	got := filterForeignCollections([]string{"gadgets", "gadgets__0", "gadgets__1"}, views)
 	if len(got) != 0 {
 		t.Errorf("got %v, want [] — a view's own slots must not be flagged foreign", got)
@@ -45,7 +45,7 @@ func TestFilterForeignCollections_SlotsAreNotForeign(t *testing.T) {
 }
 
 func TestFilterForeignCollections_RegistryIsFrameworkOwned(t *testing.T) {
-	views := []*query.ViewDefinition{query.View("users").Root("users")}
+	views := []*query.ViewDefinition{query.View("users")}
 	got := filterForeignCollections([]string{"users", RegistryCollectionName}, views)
 	if len(got) != 0 {
 		t.Errorf("got %v, want [] (registry collection must be framework-owned)", got)
@@ -57,7 +57,7 @@ func TestFilterForeignCollections_RegistryIsFrameworkOwned(t *testing.T) {
 // or every boot AFTER the first against the same database aborts on the
 // framework's own collection.
 func TestFilterForeignCollections_ProjectionStateIsFrameworkOwned(t *testing.T) {
-	views := []*query.ViewDefinition{query.View("users").Root("users")}
+	views := []*query.ViewDefinition{query.View("users")}
 	got := filterForeignCollections([]string{"users", query.ProjectionStateCollectionName}, views)
 	if len(got) != 0 {
 		t.Errorf("got %v, want [] (projection-state registry must be framework-owned)", got)
@@ -65,7 +65,7 @@ func TestFilterForeignCollections_ProjectionStateIsFrameworkOwned(t *testing.T) 
 }
 
 func TestFilterForeignCollections_SystemNamespaceIgnored(t *testing.T) {
-	views := []*query.ViewDefinition{query.View("users").Root("users")}
+	views := []*query.ViewDefinition{query.View("users")}
 	got := filterForeignCollections([]string{
 		"users", "system.profile", "system.namespaces", "system.indexes",
 	}, views)
@@ -75,7 +75,7 @@ func TestFilterForeignCollections_SystemNamespaceIgnored(t *testing.T) {
 }
 
 func TestFilterForeignCollections_OneForeign(t *testing.T) {
-	views := []*query.ViewDefinition{query.View("users").Root("users")}
+	views := []*query.ViewDefinition{query.View("users")}
 	got := filterForeignCollections([]string{"users", "legacy_audit"}, views)
 	if len(got) != 1 || got[0] != "legacy_audit" {
 		t.Errorf("got %v, want [legacy_audit]", got)
@@ -83,7 +83,7 @@ func TestFilterForeignCollections_OneForeign(t *testing.T) {
 }
 
 func TestFilterForeignCollections_MultipleForeignSortedDeterministic(t *testing.T) {
-	views := []*query.ViewDefinition{query.View("users").Root("users")}
+	views := []*query.ViewDefinition{query.View("users")}
 	got := filterForeignCollections(
 		[]string{"zeta", "alpha", "users", "mike"}, views)
 	want := []string{"alpha", "mike", "zeta"}
@@ -103,7 +103,7 @@ func TestFilterForeignCollections_NoDeclaredViews_AllObservedAreForeign(t *testi
 }
 
 func TestFilterForeignCollections_EmptyObserved(t *testing.T) {
-	views := []*query.ViewDefinition{query.View("users").Root("users")}
+	views := []*query.ViewDefinition{query.View("users")}
 	got := filterForeignCollections(nil, views)
 	if len(got) != 0 {
 		t.Errorf("got %v, want []", got)
