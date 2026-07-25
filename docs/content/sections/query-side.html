@@ -342,6 +342,29 @@ const (
         </tr>
     </tbody></table>
     <p>
+        <strong>When each view updates — the projection fan-out.</strong> A materialized view is kept
+        current by the SyncEngine, driven by writes to the schema it is built on:
+    </p>
+    <ul>
+        <li><strong><code>query.View</code></strong> — every write to the aggregate whose table it roots on
+            recomposes it. The trigger is the schema's <em>table</em>, so a write to <code>users</code>
+            updates <strong>every</strong> view rooted on <code>users</code>: declare five views over the
+            User schema and one user update refreshes all five, each into its own collection — independent
+            Version, indexes and shape, same source event.</li>
+        <li><strong><code>query.SharedBaseView</code></strong> — updated by writes to the base identity
+            <em>and</em> to any of its declared roles. Editing the shared Person fields, or writing through
+            the User role, or through the Employee role, all recompose the one person document (role events
+            fan out to it by the base id).</li>
+        <li><strong><code>query.ComposedView</code></strong> — never &ldquo;updated&rdquo;: it is not
+            materialized. It reads its primary and legs fresh on every query, so it always reflects the
+            current state of the views it composes, with no projection step of its own.</li>
+    </ul>
+    <p>
+        A view embedding EXTERNAL data (<code>Embed</code>/<code>EmbedMany</code> / an upstream mirror) also
+        recomposes when that external source changes — the recompose-ripple — so the embedded segment stays
+        current alongside the aggregate's own data.
+    </p>
+    <p>
         <strong>Why embeds are external-only.</strong> An aggregate's own children, siblings and shared base already
         decompose out of the declarative schema, so the two materialized constructors reach OTHER data only through an
         external <code>Embed</code>/<code>EmbedMany</code> — a write-anchored (internal) embed source is a fatal boot error.
