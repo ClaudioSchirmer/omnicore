@@ -199,6 +199,8 @@ func (s *SyncEngine) sampleMatches(ctx context.Context, view *ViewDefinition, sh
 // shapeDiffDetail names the diverging top-level keys for the verify error —
 // " (fresh-only: [...]; stored-only: [...])" — so an equivalence failure is
 // diagnosable from the log alone. Best-effort: any re-read error yields "".
+// It reports the same keys sameFieldShape counts as drift: a non-null key
+// present on one side and absent on the other.
 func (s *SyncEngine) shapeDiffDetail(ctx context.Context, view *ViewDefinition, shadow PhysicalCollection, id string) string {
 	fresh, err := s.composer.Compose(ctx, view, id)
 	if err != nil || fresh == nil {
@@ -208,60 +210,63 @@ func (s *SyncEngine) shapeDiffDetail(ctx context.Context, view *ViewDefinition, 
 	if err != nil || len(stored) == 0 {
 		return ""
 	}
-	fk := fieldNamesExceptID(fresh)
-	sk := fieldNamesExceptID(stored[0])
-	var freshOnly, storedOnly []string
-	for k := range fk {
-		if _, ok := sk[k]; !ok {
-			freshOnly = append(freshOnly, k)
-		}
-	}
-	for k := range sk {
-		if _, ok := fk[k]; !ok {
-			storedOnly = append(storedOnly, k)
-		}
-	}
+	freshOnly := nonNullMissingKeys(fresh, stored[0])
+	storedOnly := nonNullMissingKeys(stored[0], fresh)
 	sort.Strings(freshOnly)
 	sort.Strings(storedOnly)
 	return fmt.Sprintf(" (fresh-only: %v; stored-only: %v)", freshOnly, storedOnly)
 }
 
-// sameFieldShape compares two documents by their top-level field names,
-// ignoring Mongo's _id AND every framework-internal "_"-prefixed field (the
-// projection watermarks _revision/_base_revision): a document written before
-// the watermarks existed must not read as drift against a fresh compose.
+// sameFieldShape reports whether the stored shadow document is shape-equivalent
+// to a fresh compose. It compares top-level field PRESENCE, ignoring Mongo's
+// _id and every framework-internal "_"-prefixed key (the projection watermarks
+// _revision/_base_revision), and is value-blind for keys present on BOTH sides
+// (deep value comparison is an integration concern — a document written before
+// the watermarks existed must not read as drift either).
 //
-// A key present with a NULL value is treated as ABSENT (see fieldNamesExceptID):
-// during a rebuild that adds a nullable column, a mid-rebuild writer on the
-// PREVIOUS binary — whose schema does not declare the new column — legitimately
-// creates a shadow document without that key, which reads identically to the
-// null a fresh compose of that (null) row emits (the reader decodes an absent
-// key and an explicit null to the same nil pointer). Only a NON-null field
-// present on one side and absent on the other is real shape drift.
+// A key ABSENT on one side is drift ONLY when its value on the other side is
+// NON-null. An absent key and an explicit null read identically (the reader
+// decodes both to a nil pointer), so during a rebuild that adds a nullable
+// column a writer still on the previous binary — whose schema does not declare
+// it — legitimately materializes the shadow document without that key. Because
+// a key present on both sides is never counted, a present-null vs present-value
+// difference (e.g. an embed array a later event fills) does NOT fail the
+// rebuild; only a genuinely dropped non-null field does.
 func sameFieldShape(fresh, stored Document) bool {
-	fk := fieldNamesExceptID(fresh)
-	sk := fieldNamesExceptID(stored)
-	if len(fk) != len(sk) {
-		return false
-	}
-	for k := range fk {
-		if _, ok := sk[k]; !ok {
-			return false
-		}
-	}
-	return true
+	return !hasNonNullMissingKey(fresh, stored) && !hasNonNullMissingKey(stored, fresh)
 }
 
-func fieldNamesExceptID(d Document) map[string]struct{} {
-	set := make(map[string]struct{}, len(d))
-	for k, v := range d {
+// hasNonNullMissingKey reports whether a holds a non-internal, non-null key that
+// is ABSENT from b.
+func hasNonNullMissingKey(a, b Document) bool {
+	for k, v := range a {
 		if len(k) > 0 && k[0] == '_' {
 			continue // _id + framework watermarks (_revision/_base_revision)
 		}
 		if v == nil {
-			continue // an explicit null key ≡ an absent key — both read as null
+			continue // an absent counterpart reads as null — equivalent, not drift
 		}
-		set[k] = struct{}{}
+		if _, ok := b[k]; !ok {
+			return true
+		}
 	}
-	return set
+	return false
+}
+
+// nonNullMissingKeys returns a's non-internal, non-null keys that are absent
+// from b — exactly the keys sameFieldShape counts as real shape drift.
+func nonNullMissingKeys(a, b Document) []string {
+	var out []string
+	for k, v := range a {
+		if len(k) > 0 && k[0] == '_' {
+			continue
+		}
+		if v == nil {
+			continue
+		}
+		if _, ok := b[k]; !ok {
+			out = append(out, k)
+		}
+	}
+	return out
 }

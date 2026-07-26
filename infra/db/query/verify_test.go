@@ -143,3 +143,20 @@ func TestSameFieldShape_SoftDeleteTransitionIsStillDrift(t *testing.T) {
 		t.Error("alive-null and alive-absent must be equivalent")
 	}
 }
+
+// A key PRESENT on both sides but with different values — e.g. the shadow stored
+// an embed array as `items: null` while a fresh compose materialized it as a
+// populated array (a later event fills it) — is a VALUE difference on a present
+// key, NOT shape drift. The verify is value-blind for present keys, so it must
+// not abort the rebuild on this (regression guard: an over-broad null-skip would
+// drop the stored null key and mis-read it as fresh-only).
+func TestSameFieldShape_PresentNullVsPopulatedIsNotDrift(t *testing.T) {
+	fresh := Document{"_id": "1", "name": "Ann", "items": []any{map[string]any{"id": "x"}}}
+	stored := Document{"_id": "1", "name": "Ann", "items": nil} // present, but null
+	if !sameFieldShape(fresh, stored) {
+		t.Error("present-null vs present-populated is a value diff, not shape drift")
+	}
+	if !sameFieldShape(stored, fresh) {
+		t.Error("symmetric: present-null vs present-populated must not be drift")
+	}
+}

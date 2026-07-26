@@ -46,9 +46,12 @@ with `1.0.0`.
   intermittently aborted the rebuild — `diverges in shape (fresh-only: [<col>])` —
   on a document that is in fact correct (the reader decodes an absent key and an
   explicit null to the same nil pointer, and the source row's value genuinely is
-  null). The shape check now skips null-valued keys, so an absent≡null
-  representation difference no longer fails the rebuild, while a genuine drop (a
-  NON-null field present on one side and absent on the other) still does.
+  null). The shape check now counts a key as drift only when it is present with
+  a NON-null value on one side and ABSENT from the other, and stays value-blind
+  for keys present on both sides — so neither an absent≡null difference nor a
+  present-null-vs-populated difference (e.g. an embed array a later event fills)
+  fails the rebuild, while a genuine drop (a non-null field present on one side
+  and absent on the other) still does.
 
 ## [0.36.1] - 2026-07-23
 
