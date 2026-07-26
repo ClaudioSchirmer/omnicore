@@ -123,3 +123,23 @@ func TestSameFieldShape_NonNullDropIsStillDrift(t *testing.T) {
 		t.Error("a non-null field missing from the stored doc must be flagged as drift")
 	}
 }
+
+// deleted_at is the soft-delete gate: null=alive, timestamp=archived. The
+// absent≡null tolerance equates two ALIVE representations (null and absent), but
+// the sensitive alive↔archived transition is a null↔non-null difference and MUST
+// still be flagged — a doc archived in the source whose shadow reads as alive
+// (or vice-versa) is real drift, not a benign representation difference.
+func TestSameFieldShape_SoftDeleteTransitionIsStillDrift(t *testing.T) {
+	archived := Document{"_id": "1", "name": "Ann", "deleted_at": "2026-01-01T00:00:00Z"}
+	alive := Document{"_id": "1", "name": "Ann"} // deleted_at absent → alive
+	if sameFieldShape(archived, alive) {
+		t.Error("archived (non-null deleted_at) vs alive (absent) must be drift")
+	}
+	if sameFieldShape(alive, archived) {
+		t.Error("alive (absent) vs archived (non-null deleted_at) must be drift")
+	}
+	// Two ALIVE representations — null and absent — are equivalent.
+	if !sameFieldShape(Document{"_id": "1", "name": "Ann", "deleted_at": nil}, alive) {
+		t.Error("alive-null and alive-absent must be equivalent")
+	}
+}
