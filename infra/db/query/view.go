@@ -65,10 +65,12 @@ func (e embedDef) Many() bool { return e.many }
 // composer fetches every embed via MongoDB.FindManyByField against the local DB.
 //
 // Mongo-kind sources are the embedding surface for upstream-projected
-// collections (declared via bootstrap.UpstreamSubscription) as well as
-// composition between B's own Mongo views — the boot guard §8.3 enforces that
-// `table` resolves either to an UpstreamSubscription.Collection or to a local
-// ViewDefinition.Name().
+// collections (declared via bootstrap.UpstreamSubscription): the boot guard §8.3
+// requires `table` to resolve to an UpstreamSubscription.Collection. A name that
+// is a local ViewDefinition is REJECTED — view-on-view via an external FromSchema
+// is not supported, because the recompose ripple is one-hop and driven only by
+// the UpstreamSubscriber (over subscription collections), so a local-view embed
+// would drift silently. Join a local view at read time with query.ComposedView.
 type Source struct {
 	table     string
 	joinKey   string
