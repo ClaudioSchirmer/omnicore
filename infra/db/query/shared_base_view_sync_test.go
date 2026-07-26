@@ -216,7 +216,7 @@ func TestProcess_RoleEvent_VanishedRowSkips(t *testing.T) {
 func TestProcess_BaseArchived_DeleteOnArchiveRemovesDoc(t *testing.T) {
 	coll := &fakeColl{}
 	eng := composerEngine(nil)
-	view := SharedBaseView(sbvBase(), "persons_hot").Role(sbvUserSchema()).Version(1).DeleteOnArchive()
+	view := SharedBaseView("persons_hot").Schema(sbvBase()).Role(sbvUserSchema()).Version(1).DeleteOnArchive()
 	s := NewSyncEngine(eng, newFakeMongo(coll), identityResolver, nil, "", []*ViewDefinition{view}, 1)
 
 	if err := s.process(context.Background(), kafkaEvent{
@@ -236,7 +236,7 @@ func TestRebuildScanSQL(t *testing.T) {
 	// A view whose root declares CreatedAt keeps the creation-order scan.
 	withCreated := core.NewTableSchema[*sbvEmployee]("stamped").
 		PK("emp_id").Field("EmployeeNumber", "employee_number").CreatedAt("created_at")
-	regular := View("emps").Version(1).Root("stamped").Schema(withCreated)
+	regular := View("emps").Version(1).Schema(withCreated)
 	if q := rebuildScanSQL(regular); q != "SELECT emp_id FROM stamped ORDER BY created_at" {
 		t.Errorf("scan = %q, want SELECT emp_id FROM stamped ORDER BY created_at", q)
 	}

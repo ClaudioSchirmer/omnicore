@@ -16,7 +16,8 @@ import (
 // (query.View rooted at a role table) each show one specialization, this view
 // shows the whole composed aggregate.
 //
-//	query.SharedBaseView(personBase(), "persons").
+//	query.SharedBaseView("persons").
+//	    Schema(personBase()).
 //	    Role(UserSchema()).
 //	    Role(EmployeeSchema()).
 //	    Version(1).
@@ -38,20 +39,16 @@ import (
 // MaxLimit/MaxExportRows, DeleteOnArchive (drop the doc when the BASE
 // archives), Embed/EmbedMany for external sources.
 //
-// The base must be a core.NewSharedBase schema; every Role must be a
-// type-anchored schema declaring .SharedBase(...) back to the SAME base table
-// with an equivalent declaration (core.AssertSharedBaseEquivalent). Violations
-// panic at declaration — a mis-wired view must never boot.
-func SharedBaseView(base *core.TableSchema, name string) *ViewDefinition {
-	if base == nil || !base.IsSharedBase() {
-		panic(fmt.Sprintf(
-			"query.SharedBaseView(%q): the root schema must be a core.NewSharedBase declaration — "+
-				"a role/table schema roots a regular query.View instead", name))
-	}
+// The .Schema(...) must be a core.NewSharedBaseSchema declaration — attached exactly
+// like a regular view attaches its root schema — and is validated at boot by
+// ValidateViewSchemas. Every Role must be a type-anchored schema declaring
+// .SharedBase(...) back to the SAME base table with an equivalent declaration
+// (core.AssertSharedBaseEquivalent), checked when .Role(...) is declared; so
+// .Schema(base) must come before the first .Role(...). A mis-wired view never
+// boots.
+func SharedBaseView(name string) *ViewDefinition {
 	return &ViewDefinition{
 		name:             name,
-		rootTable:        base.Table(),
-		schema:           base,
 		isSharedBaseView: true,
 	}
 }
@@ -91,6 +88,11 @@ func (v *ViewDefinition) Role(role *core.TableSchema) *ViewDefinition {
 		panic(fmt.Sprintf(
 			"query view %q: .Role(...) applies only to a query.SharedBaseView — a regular query.View "+
 				"projects one role per view (root = the role table)", v.name))
+	}
+	if v.schema == nil {
+		panic(fmt.Sprintf(
+			"query.SharedBaseView(%q): declare .Schema(base) before .Role(...) — a role is validated "+
+				"against the base identity schema", v.name))
 	}
 	if role == nil {
 		panic(fmt.Sprintf("query.SharedBaseView(%q): .Role(nil)", v.name))

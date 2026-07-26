@@ -17,14 +17,14 @@ import (
 
 // convRoleView builds the aluno role view with revisions on both role and base.
 func convRoleView() *ViewDefinition {
-	base := core.NewSharedBase("pessoa").Revision("revision").PK("id").
+	base := core.NewSharedBaseSchema("pessoa").Revision("revision").PK("id").
 		Field("Name", "name").NaturalKey("name")
 	schema := core.NewTableSchema[*builderTestEntity]("aluno").
 		PK("id").
 		Revision("revision").
 		Field("Email", "email").
 		SharedBase(base, "pessoa_id")
-	return View("aluno").Root("aluno").Schema(schema).Version(1)
+	return View("aluno").Schema(schema).Version(1)
 }
 
 // convComposerRows scripts the relational reads of the aluno/pessoa closure.
@@ -304,11 +304,11 @@ func TestConsultGuardedStages_ScopesAndGuards(t *testing.T) {
 // (base scalars, segments) rides the _revision guard — the base revision the
 // composer stamped from the base row.
 func TestConsultGuardedStages_SharedBaseViewSingleScope(t *testing.T) {
-	base := core.NewSharedBase("sbv_persons").Revision("revision").PK("id").
+	base := core.NewSharedBaseSchema("sbv_persons").Revision("revision").PK("id").
 		Field("Name", "name").NaturalKey("name")
 	role := core.NewTableSchema[*builderTestEntity]("sbv_users").
 		PK("id").Revision("revision").Field("Email", "email").SharedBase(base, "id")
-	view := SharedBaseView(base, "persons").Role(role).Version(1)
+	view := SharedBaseView("persons").Schema(base).Role(role).Version(1)
 	doc := Document{
 		"id": "p1", "name": "Ana",
 		"sbvUser":        Document{"id": "p1", "email": "a@x"},
@@ -503,12 +503,12 @@ func TestProcess_RoleUnarchive_PullCheckHealsStaleBase(t *testing.T) {
 func TestProcess_DeleteOnArchive_TombstonesAndGuardsDelete(t *testing.T) {
 	coll := &fakeColl{}
 	store := newFakeMongo(coll)
-	base := core.NewSharedBase("pessoa").Revision("revision").PK("id").
+	base := core.NewSharedBaseSchema("pessoa").Revision("revision").PK("id").
 		Field("Name", "name").NaturalKey("name")
 	schema := core.NewTableSchema[*builderTestEntity]("aluno").
 		PK("id").Revision("revision").Field("Email", "email").
 		SoftDelete("deleted_at").SharedBase(base, "pessoa_id")
-	view := View("aluno_hot").Root("aluno").Schema(schema).Version(1).DeleteOnArchive()
+	view := View("aluno_hot").Schema(schema).Version(1).DeleteOnArchive()
 	s := NewSyncEngine(composerEngine(func(string, []any) ([]map[string]any, error) { return nil, nil }),
 		store, identityResolver, nil, "", []*ViewDefinition{view}, 1)
 
@@ -543,7 +543,7 @@ func TestConsultGuardedStages_EmbedsCreateOnlyAndFirst(t *testing.T) {
 	external := FromSchema(core.NewExternalSchema("buyers").PK("id").FK("order_id")).As("Buyers")
 	schema := core.NewTableSchema[*builderTestEntity]("orders").
 		PK("id").Revision("revision").Field("Email", "email")
-	view := View("orders").Version(1).Root("orders").Schema(schema).EmbedMany("buyers", external)
+	view := View("orders").Version(1).Schema(schema).EmbedMany("buyers", external)
 
 	doc := Document{
 		"id": "o1", "email": "a@x",
@@ -729,13 +729,13 @@ func TestRegistryStamps_SkipNonPositiveRevision(t *testing.T) {
 // ride the own scope's element-merge shape, base children the base scope's —
 // the arraySegs wiring a childless fixture never exercises.
 func TestConsultGuardedStages_ChildSegmentsInBothScopes(t *testing.T) {
-	base := core.NewSharedBase("pessoa").Revision("revision").PK("id").
+	base := core.NewSharedBaseSchema("pessoa").Revision("revision").PK("id").
 		Field("Name", "name").NaturalKey("name").
 		Child(core.NewTableSchema[*builderTestEntity]("enderecos").PK("id").FK("pessoa_id").Field("Email", "city"))
 	schema := core.NewTableSchema[*builderTestEntity]("aluno").
 		PK("id").Revision("revision").Field("Email", "email").
 		SharedBase(base, "pessoa_id")
-	view := View("aluno").Root("aluno").Schema(schema).Version(1)
+	view := View("aluno").Schema(schema).Version(1)
 
 	doc := Document{
 		"id": "a1", "email": "a@x", "name": "Ana",

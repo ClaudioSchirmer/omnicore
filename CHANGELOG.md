@@ -11,6 +11,50 @@ with `1.0.0`.
 
 ## [Unreleased]
 
+## [0.37.0] - 2026-07-25
+
+### Changed
+
+- **breaking** — **a view's root table is derived from its schema; `.Root(table)`
+  is removed.** `query.View(name)` and `query.SharedBaseView(name)` no longer take
+  a `.Root(...)` call — the root table (the broker routing key and the composer's
+  `FROM`) is now `RootTable()` = the attached schema's `Table()`. The value always
+  equalled the schema's table, so this removes a redundant, unvalidated second
+  declaration (a misspelled `.Root("user")` used to leave the view silently muted).
+  *Migration*: delete every `.Root(table)` call from view declarations.
+- **breaking** — **`SharedBaseView` takes only the collection name; the base
+  schema moves to `.Schema(...)`, matching a regular `View`.** `SharedBaseView(base,
+  name)` → `SharedBaseView(name).Schema(base)`, and `.Schema(base)` must precede the
+  first `.Role(...)` (the role is validated against the base). The "must be a shared
+  base" check moved from the constructor panic to boot validation
+  (`ValidateViewSchemas`), and a new guard rejects a `ComposedView` whose primary
+  declares no schema — so the "a view must declare a schema" rule is now one boot
+  error across regular views, shared-base views and composed-view primaries.
+  *Migration*: `SharedBaseView(personBase(), "persons")` →
+  `SharedBaseView("persons").Schema(personBase())`.
+- **breaking** — **`core.NewSharedBase` is renamed `core.NewSharedBaseSchema`,**
+  completing the schema-constructor family (`NewTableSchema` / `NewSiblingSchema` /
+  `NewExternalSchema` / `NewSharedBaseSchema`). Behavior is unchanged.
+  *Migration*: rename every `NewSharedBase(` call to `NewSharedBaseSchema(`.
+
+### Fixed
+
+- **The blue-green rebuild's shape verify treats an absent field and an explicit
+  null field as equivalent — no more spurious `diverges in shape` aborts.** During
+  a rebuild that adds a nullable column, a mid-rebuild writer still on the PREVIOUS
+  binary (whose schema does not declare the new column) creates the shadow document
+  without that key, while a fresh compose on the new binary emits it as an explicit
+  null. The verify's field-shape sample compared key-presence value-blind, so it
+  intermittently aborted the rebuild — `diverges in shape (fresh-only: [<col>])` —
+  on a document that is in fact correct (the reader decodes an absent key and an
+  explicit null to the same nil pointer, and the source row's value genuinely is
+  null). The shape check now counts a key as drift only when it is present with
+  a NON-null value on one side and ABSENT from the other, and stays value-blind
+  for keys present on both sides — so neither an absent≡null difference nor a
+  present-null-vs-populated difference (e.g. an embed array a later event fills)
+  fails the rebuild, while a genuine drop (a non-null field present on one side
+  and absent on the other) still does.
+
 ## [0.36.1] - 2026-07-23
 
 ### Changed

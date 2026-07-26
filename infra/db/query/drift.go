@@ -373,7 +373,7 @@ func FormatForgotToBumpDiagnostic(plans []DriftPlan) string {
 	sb.WriteString("\nautoRun cannot resolve this — the Version(N) integer is the framework's only signal of developer intent.\n\n")
 	sb.WriteString("To proceed, choose one:\n")
 	sb.WriteString("  A. The shape change was intentional — bump the Version and redeploy:\n")
-	sb.WriteString("       fwinfra.View(\"<view>\").Version(N+1).Root(...).<...>\n")
+	sb.WriteString("       fwinfra.View(\"<view>\").Version(N+1).Schema(...).<...>\n")
 	sb.WriteString("  B. The shape change was accidental — revert your code to the previous shape and redeploy.\n")
 	return sb.String()
 }

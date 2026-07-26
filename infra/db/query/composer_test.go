@@ -75,7 +75,7 @@ func TestBuildFetchSQL_DeleteOnArchiveAppliesFilter(t *testing.T) {
 // deleted_at filter. The relationship between the public flag and the SQL
 // form is the contract this test protects against silent inversion.
 func TestCompose_CascadeFromViewFlag_DefaultKeep_Root(t *testing.T) {
-	v := View("things").Root("things")
+	v := View("things").Schema(rootSchema("things"))
 	if v.DeletesOnArchive() {
 		t.Fatal("default view must report DeletesOnArchive()=false")
 	}
@@ -93,7 +93,7 @@ func TestCompose_CascadeFromViewFlag_DefaultKeep_Root(t *testing.T) {
 // root but vanish from children (or vice-versa), producing an inconsistent
 // projection.
 func TestCompose_CascadeFromViewFlag_DefaultKeep_Aggregate(t *testing.T) {
-	v := View("users").Root("users").
+	v := View("users").Schema(rootSchema("users")).
 		EmbedMany("addresses", pgEmbed("addresses", "user_id"))
 	if v.DeletesOnArchive() {
 		t.Fatal("default aggregate view must report DeletesOnArchive()=false")
@@ -119,7 +119,7 @@ func TestCompose_CascadeFromViewFlag_DefaultKeep_Aggregate(t *testing.T) {
 // appends `AND deleted_at IS NULL`. Combined with the default test above,
 // this fixes the direction of the inversion explicitly.
 func TestCompose_CascadeFromViewFlag_DeleteOnArchive_Root(t *testing.T) {
-	v := View("things").DeleteOnArchive().Root("things")
+	v := View("things").DeleteOnArchive().Schema(rootSchema("things"))
 	if !v.DeletesOnArchive() {
 		t.Fatal("DeleteOnArchive() view must report DeletesOnArchive()=true")
 	}
@@ -135,7 +135,7 @@ func TestCompose_CascadeFromViewFlag_DeleteOnArchive_Root(t *testing.T) {
 // child fetch applies the deleted_at filter (there is no per-embed override
 // — the flag governs the whole projection symmetrically).
 func TestCompose_CascadeFromViewFlag_DeleteOnArchive_Aggregate(t *testing.T) {
-	v := View("users").DeleteOnArchive().Root("users").
+	v := View("users").DeleteOnArchive().Schema(rootSchema("users")).
 		EmbedMany("addresses", pgEmbed("addresses", "user_id"))
 	if !v.DeletesOnArchive() {
 		t.Fatal("DeleteOnArchive() aggregate view must report DeletesOnArchive()=true")

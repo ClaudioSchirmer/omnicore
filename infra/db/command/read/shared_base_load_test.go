@@ -25,7 +25,7 @@ func (e *roleLoadEntity) Modes() []domain.EntityMode {
 func (e *roleLoadEntity) BuildRules(string, domain.Service, *domain.Rules) {}
 
 func roleLoadSchema() *TableSchema {
-	base := NewSharedBase("pessoa").Revision("revision").PK("id").Field("Name", "name").NaturalKey("name")
+	base := NewSharedBaseSchema("pessoa").Revision("revision").PK("id").Field("Name", "name").NaturalKey("name")
 	return NewTableSchema[*roleLoadEntity]("aluno").
 		PK("id").
 		Field("Matricula", "matricula").

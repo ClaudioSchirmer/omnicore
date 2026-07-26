@@ -18,7 +18,7 @@ func TestApplyMongoSpecs_CreatesCollectionWithIndexes(t *testing.T) {
 	m, cleanup := newTestMongo(t)
 	defer cleanup()
 
-	v := query.View("apply_users").Root("apply_users").Version(1).
+	v := query.View("apply_users").Version(1).
 		Indexes(
 			query.Index("email").Unique(),
 			query.Index("created_at").Desc(),
@@ -57,7 +57,7 @@ func TestApplyMongoSpecs_IsIdempotent(t *testing.T) {
 	m, cleanup := newTestMongo(t)
 	defer cleanup()
 
-	v := query.View("apply_idem").Root("apply_idem").Version(1).
+	v := query.View("apply_idem").Version(1).
 		Indexes(query.Index("email").Unique())
 
 	for i := 0; i < 3; i++ {
@@ -72,7 +72,7 @@ func TestApplyMongoSpecs_RejectsInvalidView(t *testing.T) {
 	defer cleanup()
 
 	// Missing Version() — ValidateMongoSpec rejects.
-	v := query.View("invalid").Root("invalid")
+	v := query.View("invalid")
 	err := ApplyMongoSpecs(context.Background(), m, []*query.ViewDefinition{v}, testResolver)
 	if err == nil {
 		t.Fatal("expected ApplyMongoSpecs to reject view without Version()")
@@ -87,7 +87,7 @@ func TestApplyMongoSpecs_CreatesValidatorOnFreshCollection(t *testing.T) {
 		"bsonType": "object",
 		"required": []string{"_id"},
 	}
-	v := query.View("apply_validator").Root("apply_validator").Version(1).
+	v := query.View("apply_validator").Version(1).
 		JSONSchema(schema)
 
 	if err := ApplyMongoSpecs(context.Background(), m, []*query.ViewDefinition{v}, testResolver); err != nil {
@@ -119,7 +119,7 @@ func TestCheckServiceRegistry_HappyPathAndIdempotent(t *testing.T) {
 	m, cleanup := newTestMongo(t)
 	defer cleanup()
 
-	v := query.View("my_view").Root("my_view").Version(1)
+	v := query.View("my_view").Version(1)
 	if err := ApplyMongoSpecs(context.Background(), m, []*query.ViewDefinition{v}, testResolver); err != nil {
 		t.Fatalf("apply: %v", err)
 	}
@@ -161,7 +161,7 @@ func TestCheckServiceRegistry_DevDowngradesForeignToWarn(t *testing.T) {
 		t.Fatalf("seed orphan: %v", err)
 	}
 
-	v := query.View("declared").Root("declared").Version(1)
+	v := query.View("declared").Version(1)
 	if err := ApplyMongoSpecs(context.Background(), m, []*query.ViewDefinition{v}, testResolver); err != nil {
 		t.Fatalf("apply: %v", err)
 	}
@@ -179,7 +179,7 @@ func TestCheckServiceRegistry_NonDevAbortsOnForeign(t *testing.T) {
 	if _, err := m.Collection("not_declared").InsertOne(context.Background(), bson.M{"a": 1}); err != nil {
 		t.Fatalf("seed orphan: %v", err)
 	}
-	v := query.View("declared").Root("declared").Version(1)
+	v := query.View("declared").Version(1)
 	if err := ApplyMongoSpecs(context.Background(), m, []*query.ViewDefinition{v}, testResolver); err != nil {
 		t.Fatalf("apply: %v", err)
 	}
@@ -201,7 +201,7 @@ func TestDetectViewDrift_FreshInit(t *testing.T) {
 	m, cleanupMongo := newTestMongo(t)
 	defer cleanupMongo()
 
-	v := query.View("drift_users").Root("drift_users").Version(1)
+	v := query.View("drift_users").Schema(rootSchema("drift_users")).Version(1)
 	// The root table exists but is EMPTY — at boot, migrations create it BEFORE
 	// drift detection runs (bootstrap: migrations → ApplyMongoSpecs → DetectViewDrift),
 	// so DetectViewDrift always probes a present table. No registry row, no Mongo
@@ -224,7 +224,7 @@ func TestDetectViewDrift_NoneAndArtifactOnlyAndAlienData(t *testing.T) {
 	m, cleanupMongo := newTestMongo(t)
 	defer cleanupMongo()
 
-	v := query.View("drift_x").Root("drift_x").Version(1).
+	v := query.View("drift_x").Schema(rootSchema("drift_x")).Version(1).
 		Indexes(query.Index("email").Unique())
 
 	// The root table exists but is empty (migrations create it before drift

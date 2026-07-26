@@ -14,7 +14,7 @@ import (
 // ViewNode round-trips that nested collection to Go vocabulary.
 
 func composeRoleWithBaseChild() *core.TableSchema {
-	base := core.NewSharedBase("pessoa").Revision("revision").PK("id").Field("Name", "name").NaturalKey("name").
+	base := core.NewSharedBaseSchema("pessoa").Revision("revision").PK("id").Field("Name", "name").NaturalKey("name").
 		Child(core.NewTableSchema[fakeVO]("endereco").PK("id").FK("pessoa_id").Field("Label", "street"))
 	return core.NewTableSchema[*builderTestEntity]("aluno").
 		PK("id").
@@ -37,7 +37,7 @@ func TestCompose_NestsSharedBaseChildren(t *testing.T) {
 	})
 	c := NewComposer(eng)
 	schema := composeRoleWithBaseChild()
-	view := View("aluno").Version(1).Root("aluno").Schema(schema)
+	view := View("aluno").Version(1).Schema(schema)
 	seg := domain.PluralizeWord("fakeVO") // the derived doc field + Go segment
 
 	doc, err := c.Compose(context.Background(), view, "a1")

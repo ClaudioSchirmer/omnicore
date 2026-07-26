@@ -14,7 +14,7 @@ import (
 // elsewhere — here we exercise the orchestration + error wiring.
 
 func driftView() *ViewDefinition {
-	return View("orders").Version(1).Root("orders").Schema(composerRootSchema())
+	return View("orders").Version(1).Schema(composerRootSchema())
 }
 
 // noRegistryRowEngine yields zero registry rows from Query, so ReadViewRegistry

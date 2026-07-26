@@ -29,7 +29,7 @@ func TestParsePayloadIDs(t *testing.T) {
 }
 
 func TestBuildViewIndex_BaseOfRole(t *testing.T) {
-	view := View("aluno").Root("aluno").Schema(fanOutRoleSchema()).Version(1)
+	view := View("aluno").Schema(fanOutRoleSchema()).Version(1)
 	idx := buildViewIndex([]*ViewDefinition{view})
 	if got := idx.baseOfRole["aluno"]; got != "pessoa" {
 		t.Fatalf("baseOfRole[aluno] = %q, want pessoa — the role-event fan-out depends on it", got)

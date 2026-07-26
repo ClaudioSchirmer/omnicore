@@ -38,7 +38,7 @@ func (e *composerRole) AggregateChildren() []domain.AggregateValueObject {
 }
 
 func composerRoleView() *ViewDefinition {
-	base := core.NewSharedBase("pessoa").Revision("revision").PK("id").Field("Name", "name").NaturalKey("name").
+	base := core.NewSharedBaseSchema("pessoa").Revision("revision").PK("id").Field("Name", "name").NaturalKey("name").
 		Child(core.NewTableSchema[composerRoleChild]("pessoa_filhos").
 			PK("id").FK("pessoa_id").Field("Label", "label"))
 	schema := core.NewTableSchema[*composerRole]("aluno").
@@ -49,7 +49,7 @@ func composerRoleView() *ViewDefinition {
 		Child(core.NewTableSchema[composerRoleChild]("aluno_filhos").
 			PK("id").FK("aluno_id").Field("Label", "label")).
 		SharedBase(base, "pessoa_id")
-	return View("alunos").Version(1).Root("aluno").Schema(schema)
+	return View("alunos").Version(1).Schema(schema)
 }
 
 // composerMaps scripts QueryMaps per table: failSub errors, everything else

@@ -11,7 +11,7 @@ import (
 // viewReaderFixture registers a single flat view backed by builderTestSchema
 // and returns a reader plus the fake collection so a test can program docs.
 func viewReaderFixture(coll mongoColl) *MongoViewReader {
-	vd := query.View("builder_view").Version(1).Root("builder_test_entities").
+	vd := query.View("builder_view").Version(1).
 		Schema(builderTestSchema)
 	r := NewMongoViewReader(newFakeMongo(coll), testResolver)
 	r.SetViews([]*query.ViewDefinition{vd})

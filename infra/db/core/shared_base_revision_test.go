@@ -16,7 +16,7 @@ type revRoleEntity struct {
 }
 
 func revBase() *TableSchema {
-	return NewSharedBase("pessoa").
+	return NewSharedBaseSchema("pessoa").
 		PK("id").
 		Field("Name", "name").
 		Field("Document", "document").

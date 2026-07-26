@@ -512,7 +512,7 @@ func (v *ViewDefinition) ValidateMongoSpec() error {
 	ms := &v.mongoSpec
 
 	if v.version <= 0 {
-		return fmt.Errorf("view %q: Version(N) is mandatory and must be > 0 (got %d) — declare via View(%q).Version(N).Root(...) per tasks/mongo_schema_evolution_2.md §8", v.name, v.version, v.name)
+		return fmt.Errorf("view %q: Version(N) is mandatory and must be > 0 (got %d) — declare via View(%q).Version(N).Schema(...) per tasks/mongo_schema_evolution_2.md §8", v.name, v.version, v.name)
 	}
 
 	if ms.capped != nil && ms.timeSeries != nil {

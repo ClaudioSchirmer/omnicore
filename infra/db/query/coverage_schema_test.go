@@ -13,7 +13,7 @@ import (
 func TestViewDefinition_Getters(t *testing.T) {
 	root := builderTestSchema
 	child := core.NewTableSchema[fakeVO]("c").PK("id").FK("t_id").Field("Label", "label")
-	v := View("users").Version(4).Root("t").Schema(root).
+	v := View("users").Version(4).Schema(root).
 		EmbedMany("kids", FromSchema(child))
 
 	if v.SchemaDef() != root {
@@ -29,7 +29,7 @@ func TestViewDefinition_Getters(t *testing.T) {
 }
 
 func TestViewDefinition_SchemaDef_NilWhenUnset(t *testing.T) {
-	v := View("bare").Version(1).Root("t")
+	v := View("bare").Version(1)
 	if v.SchemaDef() != nil {
 		t.Error("SchemaDef must be nil before Schema(...) is called")
 	}

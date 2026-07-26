@@ -420,6 +420,11 @@ func ValidateComposedViews(composed []*ComposedViewDefinition, views []*ViewDefi
 			addf("composed view %q: primary view %q is not registered — the primary must be an internal view "+
 				"contributed by a ReadableFeature (Views())", c.name, c.primary.Name())
 		}
+		if c.primary.SchemaDef() == nil {
+			addf("composed view %q: primary view %q declares no .Schema(...) — a composed view has no schema of "+
+				"its own; it derives its shape from the primary, so the primary must declare its root .Schema(...)",
+				c.name, c.primary.Name())
+		}
 		if len(c.links) == 0 {
 			addf("composed view %q: declares no .Link/.LinkMany — a composition without legs is the primary view itself; read it directly", c.name)
 		}

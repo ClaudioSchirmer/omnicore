@@ -17,7 +17,7 @@ func extEmbed(collection, fk, as string) *query.Source {
 }
 
 func TestValidateViewSchemas_RejectsMissingRootSchema(t *testing.T) {
-	v := query.View("orders").Root("orders").Version(1) // no .Schema(...)
+	v := query.View("orders").Version(1) // no .Schema(...)
 	err := query.ValidateViewSchemas([]*query.ViewDefinition{v})
 	if err == nil || !strings.Contains(err.Error(), "no root") {
 		t.Errorf("expected missing-root-schema error, got %v", err)
@@ -25,7 +25,7 @@ func TestValidateViewSchemas_RejectsMissingRootSchema(t *testing.T) {
 }
 
 func TestValidateViewSchemas_RejectsExternalEmbedWithoutAs(t *testing.T) {
-	v := query.View("orders").Root("orders").
+	v := query.View("orders").
 		Schema(core.NewExternalSchema("orders").PK("id")).
 		Embed("buyer", query.FromSchema(core.NewExternalSchema("users").PK("id")).FK("buyer_id")). // no .As
 		Version(1)
@@ -36,7 +36,7 @@ func TestValidateViewSchemas_RejectsExternalEmbedWithoutAs(t *testing.T) {
 }
 
 func TestValidateViewSchemas_PassesWhenComplete(t *testing.T) {
-	v := query.View("orders").Root("orders").
+	v := query.View("orders").
 		Schema(core.NewExternalSchema("orders").PK("id")).
 		Embed("buyer", extEmbed("users", "buyer_id", "Buyer")).
 		Version(1)
@@ -91,7 +91,7 @@ func TestGuardCollectionCollision_SubLocalView(t *testing.T) {
 	subs := []UpstreamSubscription{
 		{Topic: "users.events", Collection: "users"},
 	}
-	views := []*query.ViewDefinition{query.View("users").Root("users").Version(1)}
+	views := []*query.ViewDefinition{query.View("users").Version(1)}
 	errs := guardCollectionCollision(subs, views)
 	if len(errs) != 1 || !strings.Contains(errs[0], "local view") {
 		t.Errorf("expected local-view collision diagnostic, got %v", errs)
@@ -99,7 +99,7 @@ func TestGuardCollectionCollision_SubLocalView(t *testing.T) {
 }
 
 func TestGuardMaterializingSource_RejectsUnknownCollection(t *testing.T) {
-	v := query.View("orders").Root("orders").
+	v := query.View("orders").
 		Embed("buyer", extEmbed("users", "buyer_id", "Buyer")).
 		Version(1)
 	errs := guardMaterializingSource(nil, []*query.ViewDefinition{v})
@@ -111,7 +111,7 @@ func TestGuardMaterializingSource_RejectsUnknownCollection(t *testing.T) {
 
 func TestGuardMaterializingSource_AcceptsSubscriptionCollection(t *testing.T) {
 	subs := []UpstreamSubscription{{Topic: "users.events", Collection: "users"}}
-	v := query.View("orders").Root("orders").
+	v := query.View("orders").
 		Embed("buyer", extEmbed("users", "buyer_id", "Buyer")).
 		Version(1)
 	errs := guardMaterializingSource(subs, []*query.ViewDefinition{v})
@@ -127,10 +127,10 @@ func TestGuardMaterializingSource_RejectsLocalView(t *testing.T) {
 	// derivative_view but never re-ripple to orders. Drift would silently
 	// accumulate. The guard catches the trap before any subscriber starts.
 	views := []*query.ViewDefinition{
-		query.View("orders").Root("orders").
+		query.View("orders").
 			Embed("derivative", extEmbed("derivative_view", "orders_id", "Derivative")).
 			Version(1),
-		query.View("derivative_view").Root("derivative_table").Version(1),
+		query.View("derivative_view").Version(1),
 	}
 	errs := guardMaterializingSource(nil, views)
 	if len(errs) != 1 || !strings.Contains(errs[0], "§8.3") ||
@@ -141,7 +141,7 @@ func TestGuardMaterializingSource_RejectsLocalView(t *testing.T) {
 }
 
 func TestGuardJoinFieldIndex_RejectsMissingIndex(t *testing.T) {
-	v := query.View("orders").Root("orders").
+	v := query.View("orders").
 		Embed("buyer", extEmbed("users", "buyer_id", "Buyer")).
 		Version(1)
 	errs := guardJoinFieldIndex([]*query.ViewDefinition{v})
@@ -152,7 +152,7 @@ func TestGuardJoinFieldIndex_RejectsMissingIndex(t *testing.T) {
 }
 
 func TestGuardJoinFieldIndex_AcceptsSingleFieldIndex(t *testing.T) {
-	v := query.View("orders").Root("orders").
+	v := query.View("orders").
 		Embed("buyer", extEmbed("users", "buyer_id", "Buyer")).
 		Indexes(query.Index("buyer_id")).
 		Version(1)
@@ -163,7 +163,7 @@ func TestGuardJoinFieldIndex_AcceptsSingleFieldIndex(t *testing.T) {
 }
 
 func TestGuardJoinFieldIndex_AcceptsCompoundIndexJoinFieldFirst(t *testing.T) {
-	v := query.View("orders").Root("orders").
+	v := query.View("orders").
 		Embed("buyer", extEmbed("users", "buyer_id", "Buyer")).
 		Indexes(query.Compound("buyer_id", "created_at")).
 		Version(1)
@@ -174,7 +174,7 @@ func TestGuardJoinFieldIndex_AcceptsCompoundIndexJoinFieldFirst(t *testing.T) {
 }
 
 func TestGuardJoinFieldIndex_RejectsCompoundIndexJoinFieldNotFirst(t *testing.T) {
-	v := query.View("orders").Root("orders").
+	v := query.View("orders").
 		Embed("buyer", extEmbed("users", "buyer_id", "Buyer")).
 		Indexes(query.Compound("created_at", "buyer_id")).
 		Version(1)
@@ -191,7 +191,7 @@ func TestGuardJoinFieldIndex_EmbedManyNeedsNoIndex(t *testing.T) {
 	// not carry at top level). So — unlike a one-to-one Embed — it requires NO
 	// covering index on the view, even without any Indexes(...) declared.
 	src := query.FromSchema(core.NewExternalSchema("items").PK("id").FK("order_id")).As("Members")
-	v := query.View("orders").Root("orders").
+	v := query.View("orders").
 		EmbedMany("members", src).
 		Version(1)
 	if errs := guardJoinFieldIndex([]*query.ViewDefinition{v}); len(errs) != 0 {
@@ -205,7 +205,7 @@ func TestGuardJoinFieldIndex_OneToOneStillNeedsIndexAlongsideEmbedMany(t *testin
 	// guard is satisfied (no 1:N complaint).
 	one := extEmbed("items", "featured_id", "Featured")
 	many := query.FromSchema(core.NewExternalSchema("items").PK("id").FK("order_id")).As("Members")
-	v := query.View("orders").Root("orders").
+	v := query.View("orders").
 		Embed("featured", one).
 		EmbedMany("members", many).
 		Indexes(query.Index("featured_id")).
@@ -259,7 +259,7 @@ func TestValidateUpstreamSubscriptions_AccumulatesAllViolations(t *testing.T) {
 	}
 	views := []*query.ViewDefinition{
 		// §8.1 — external FromSchema without covering index
-		query.View("orders").Root("orders").
+		query.View("orders").
 			Embed("buyer", extEmbed("users", "buyer_id", "Buyer")).
 			Version(1),
 	}
@@ -288,7 +288,7 @@ func TestGuardSoftDeleteFilter_AbortsWhenFilterDropsSoftDelete(t *testing.T) {
 		{Topic: "users.events", Collection: "users", Filter: []string{"id", "name"}},
 	}
 	views := []*query.ViewDefinition{
-		query.View("orders").Root("orders").
+		query.View("orders").
 			Embed("buyer", extEmbedSD("users", "deleted_at", "buyer_id", "Buyer")).
 			Version(1),
 	}
@@ -307,7 +307,7 @@ func TestGuardSoftDeleteFilter_OKWhenFilterKeepsSoftDelete(t *testing.T) {
 		{Topic: "users.events", Collection: "users", Filter: []string{"id", "name", "deleted_at"}},
 	}
 	views := []*query.ViewDefinition{
-		query.View("orders").Root("orders").
+		query.View("orders").
 			Embed("buyer", extEmbedSD("users", "deleted_at", "buyer_id", "Buyer")).
 			Version(1),
 	}
@@ -322,7 +322,7 @@ func TestGuardSoftDeleteFilter_OKWhenFilterEmpty(t *testing.T) {
 		{Topic: "users.events", Collection: "users"}, // nil filter mirrors the full payload
 	}
 	views := []*query.ViewDefinition{
-		query.View("orders").Root("orders").
+		query.View("orders").
 			Embed("buyer", extEmbedSD("users", "deleted_at", "buyer_id", "Buyer")).
 			Version(1),
 	}
@@ -337,7 +337,7 @@ func TestGuardSoftDeleteFilter_WarnsWhenNoSoftDeleteDeclared(t *testing.T) {
 		{Topic: "users.events", Collection: "users", Filter: []string{"id", "name"}},
 	}
 	views := []*query.ViewDefinition{
-		query.View("orders").Root("orders").
+		query.View("orders").
 			Embed("buyer", extEmbed("users", "buyer_id", "Buyer")). // no soft-delete declared
 			Version(1),
 	}
@@ -370,7 +370,7 @@ func TestValidateUpstreamSubscriptions_SurfacesSoftDeleteAbort(t *testing.T) {
 			Filter:           []string{"id", "name"}}, // drops deleted_at → §8.5 abort
 	}
 	views := []*query.ViewDefinition{
-		query.View("orders").Root("orders").
+		query.View("orders").
 			Embed("buyer", extEmbedSD("users", "deleted_at", "buyer_id", "Buyer")).
 			Indexes(query.Index("buyer_id")). // satisfy §8.1 so only §8.5 fires
 			Version(1),
@@ -391,7 +391,7 @@ func TestValidateUpstreamSubscriptions_LogsSoftDeleteAdvisory(t *testing.T) {
 			Filter:           []string{"id", "name"}},
 	}
 	views := []*query.ViewDefinition{
-		query.View("orders").Root("orders").
+		query.View("orders").
 			Embed("buyer", extEmbed("users", "buyer_id", "Buyer")). // no soft-delete → advisory only
 			Indexes(query.Index("buyer_id")).
 			Version(1),

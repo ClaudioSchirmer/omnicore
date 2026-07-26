@@ -47,7 +47,7 @@ func (f *readableFeature) Mount(app *fiber.App, d Deps) {
 func (f *readableFeature) Views() []*query.ViewDefinition {
 	out := make([]*query.ViewDefinition, 0, len(f.viewNames))
 	for _, n := range f.viewNames {
-		out = append(out, query.View(n).Root(n))
+		out = append(out, query.View(n))
 	}
 	return out
 }

@@ -40,7 +40,7 @@ func rootSchema(table string) *core.TableSchema {
 // children) projects automatically from the TableSchema, never through an embed.
 func TestValidateViewSchemas_RejectsAnchoredEmbedSource(t *testing.T) {
 	src := FromSchema(core.NewTableSchema[embedFixture]("addresses").PK("id").FK("user_id"))
-	v := View("users").Version(1).Root("users").
+	v := View("users").Version(1).
 		Schema(rootSchema("users")).
 		EmbedMany("addresses", src)
 
@@ -58,7 +58,7 @@ func TestValidateViewSchemas_RejectsAnchoredEmbedSource(t *testing.T) {
 func TestValidateViewSchemas_RootSchemaWithChildrenOK(t *testing.T) {
 	rootWithChild := core.NewTableSchema[embedFixture]("users").PK("id").SoftDelete("deleted_at").
 		Child(core.NewTableSchema[schemaSample]("addresses").PK("id").FK("user_id"))
-	v := View("users").Version(1).Root("users").
+	v := View("users").Version(1).
 		Schema(rootWithChild)
 
 	if err := ValidateViewSchemas([]*ViewDefinition{v}); err != nil {
@@ -75,7 +75,7 @@ func TestValidateViewSchemas_RejectsSegmentCollision(t *testing.T) {
 	rootWithChild := core.NewTableSchema[embedFixture]("users").PK("id").SoftDelete("deleted_at").
 		Child(child)
 	// A legal external embed whose .As segment collides with the own-child segment.
-	v := View("users").Version(1).Root("users").
+	v := View("users").Version(1).
 		Schema(rootWithChild).
 		EmbedMany("ext", FromSchema(core.NewExternalSchema("ext_coll").PK("id").FK("user_id")).As(seg))
 
@@ -93,7 +93,7 @@ func TestValidateViewSchemas_RejectsSegmentCollision(t *testing.T) {
 // TestValidateViewSchemas_RejectsRootWithoutPK proves a view root schema with no
 // explicit PK is a fatal view-validation error.
 func TestValidateViewSchemas_RejectsRootWithoutPK(t *testing.T) {
-	v := View("users").Version(1).Root("users").
+	v := View("users").Version(1).
 		Schema(core.NewTableSchema[embedFixture]("users").SoftDelete("deleted_at")). // no .PK
 		EmbedMany("addresses", pgEmbed("addresses", "user_id"))
 	err := ValidateViewSchemas([]*ViewDefinition{v})
@@ -106,7 +106,7 @@ func TestValidateViewSchemas_RejectsRootWithoutPK(t *testing.T) {
 // with no explicit PK is a fatal view-validation error.
 func TestValidateViewSchemas_RejectsEmbedSourceWithoutPK(t *testing.T) {
 	src := FromSchema(core.NewTableSchema[embedFixture]("addresses").FK("user_id")) // no .PK
-	v := View("users").Version(1).Root("users").
+	v := View("users").Version(1).
 		Schema(rootSchema("users")).
 		EmbedMany("addresses", src)
 	err := ValidateViewSchemas([]*ViewDefinition{v})
@@ -122,7 +122,7 @@ func TestValidateViewSchemas_RejectsEmbedSourceWithoutPK(t *testing.T) {
 // the child rows on it.
 func TestValidateViewSchemas_RejectsEmbedManyWithoutFK(t *testing.T) {
 	src := FromSchema(core.NewTableSchema[embedFixture]("addresses").PK("id")) // no .FK
-	v := View("users").Version(1).Root("users").
+	v := View("users").Version(1).
 		Schema(rootSchema("users")).
 		EmbedMany("addresses", src)
 	err := ValidateViewSchemas([]*ViewDefinition{v})
@@ -136,7 +136,7 @@ func TestValidateViewSchemas_RejectsEmbedManyWithoutFK(t *testing.T) {
 // FK column, which must be named.
 func TestValidateViewSchemas_RejectsOneToOneEmbedWithoutOn(t *testing.T) {
 	src := FromSchema(core.NewTableSchema[embedFixture]("buyer").PK("id")) // no .On
-	v := View("orders").Version(1).Root("orders").
+	v := View("orders").Version(1).
 		Schema(rootSchema("orders")).
 		Embed("buyer", src)
 	err := ValidateViewSchemas([]*ViewDefinition{v})
@@ -148,14 +148,14 @@ func TestValidateViewSchemas_RejectsOneToOneEmbedWithoutOn(t *testing.T) {
 // ─── DeleteOnArchive opt-in ──────────────────────────────────────────────────
 
 func TestViewDefinition_DeleteOnArchiveDefaultFalse_Flat(t *testing.T) {
-	v := View("things").Root("things")
+	v := View("things")
 	if v.DeletesOnArchive() {
 		t.Fatal("DeletesOnArchive() must default to false on a flat view")
 	}
 }
 
 func TestViewDefinition_DeleteOnArchiveDefaultFalse_Aggregate(t *testing.T) {
-	v := View("users").Root("users").
+	v := View("users").
 		EmbedMany("addresses", pgEmbed("addresses", "user_id"))
 	if v.DeletesOnArchive() {
 		t.Fatal("DeletesOnArchive() must default to false on an aggregate view")
@@ -166,7 +166,7 @@ func TestViewDefinition_DeleteOnArchiveDefaultFalse_Aggregate(t *testing.T) {
 }
 
 func TestViewDefinition_DeleteOnArchiveBuilder_Flat(t *testing.T) {
-	v := View("things").DeleteOnArchive().Root("things")
+	v := View("things").DeleteOnArchive().Schema(rootSchema("things"))
 	if !v.DeletesOnArchive() {
 		t.Fatal("expected DeletesOnArchive() = true after .DeleteOnArchive() builder")
 	}
@@ -176,7 +176,7 @@ func TestViewDefinition_DeleteOnArchiveBuilder_Flat(t *testing.T) {
 }
 
 func TestViewDefinition_DeleteOnArchiveBuilder_Aggregate(t *testing.T) {
-	v := View("users").DeleteOnArchive().Root("users").
+	v := View("users").DeleteOnArchive().
 		EmbedMany("addresses", pgEmbed("addresses", "user_id"))
 	if !v.DeletesOnArchive() {
 		t.Fatal("expected DeletesOnArchive() = true after builder on aggregate view")
@@ -226,7 +226,7 @@ func TestViewNode_OwnChildPathResolves(t *testing.T) {
 	rootWithChild := core.NewTableSchema[*builderTestEntity]("orders").
 		PK("id").Field("Name", "name").SoftDelete("deleted_at").
 		Child(childSchema)
-	node := View("orders").Root("orders").Schema(rootWithChild).BuildViewNode()
+	node := View("orders").Schema(rootWithChild).BuildViewNode()
 
 	seg := childDocSegment(childSchema)
 	if col, ok := node.ColumnPath([]string{seg, "Label"}); !ok || len(col) != 2 || col[0] != seg || col[1] != "label" {
@@ -258,7 +258,7 @@ func TestViewNode_TranslatesGoPathToColumnAndBack(t *testing.T) {
 		FK("person_ref").
 		Field("ZipCode", "zip")
 
-	v := View("people").Root("people").Schema(rootSchema).
+	v := View("people").Schema(rootSchema).
 		EmbedMany("addresses", FromSchema(childSchema).As("Addresses"))
 
 	node := v.BuildViewNode()

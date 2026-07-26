@@ -246,7 +246,7 @@ func TestCollationSpec_DriverCollation_FieldMirror(t *testing.T) {
 // ─── ViewDefinition extensions ────────────────────────────────────────────────
 
 func TestViewDefinition_Indexes_Accumulates(t *testing.T) {
-	v := View("users").Root("users").
+	v := View("users").
 		Indexes(Index("email").Unique()).
 		Indexes(Index("created_at").Desc(), Compound("email", "created_at"))
 	if got := len(v.IndexSpecs()); got != 3 {
@@ -255,7 +255,7 @@ func TestViewDefinition_Indexes_Accumulates(t *testing.T) {
 }
 
 func TestViewDefinition_JSONSchema_DefaultsToStrictError(t *testing.T) {
-	v := View("users").Root("users").JSONSchema(bson.M{"bsonType": "object"})
+	v := View("users").JSONSchema(bson.M{"bsonType": "object"})
 	js := v.SchemaSpec()
 	if js == nil {
 		t.Fatal("SchemaSpec() = nil after JSONSchema()")
@@ -269,7 +269,7 @@ func TestViewDefinition_JSONSchema_DefaultsToStrictError(t *testing.T) {
 }
 
 func TestViewDefinition_JSONSchema_OverrideLevelAndAction(t *testing.T) {
-	v := View("users").Root("users").
+	v := View("users").
 		JSONSchema(bson.M{"bsonType": "object"}).
 		JSONSchemaValidationLevel(ValidationLevelModerate).
 		JSONSchemaValidationAction(ValidationActionWarn)
@@ -285,7 +285,7 @@ func TestViewDefinition_JSONSchema_OverrideLevelAndAction(t *testing.T) {
 func TestViewDefinition_JSONSchemaValidationLevel_BeforeSchema(t *testing.T) {
 	// Order independence: calling the level setter before JSONSchema(schema)
 	// must initialize the spec with the override + default action.
-	v := View("users").Root("users").
+	v := View("users").
 		JSONSchemaValidationLevel(ValidationLevelOff)
 	js := v.SchemaSpec()
 	if js == nil {
@@ -301,7 +301,7 @@ func TestViewDefinition_JSONSchemaValidationLevel_BeforeSchema(t *testing.T) {
 
 func TestViewDefinition_Collation_StoresPointer(t *testing.T) {
 	c := &CollationSpec{Locale: "pt", Strength: 1}
-	v := View("users").Root("users").Collation(c)
+	v := View("users").Collation(c)
 	if v.CollectionCollation() != c {
 		t.Error("CollectionCollation() != injected pointer")
 	}
@@ -309,13 +309,13 @@ func TestViewDefinition_Collation_StoresPointer(t *testing.T) {
 
 func TestViewDefinition_CappedAndTimeSeries_StorageRoundTrip(t *testing.T) {
 	cap := &CappedSpec{SizeBytes: 1 << 30, MaxDocs: 1_000_000}
-	v := View("audit").Root("audit").Capped(cap)
+	v := View("audit").Capped(cap)
 	if v.CappedDeclaration() != cap {
 		t.Error("CappedDeclaration() != injected pointer")
 	}
 
 	ts := &TimeSeriesSpec{TimeField: "ts", MetaField: "sensor_id", Granularity: "seconds"}
-	v2 := View("metrics").Root("metrics").TimeSeries(ts)
+	v2 := View("metrics").TimeSeries(ts)
 	if v2.TimeSeriesDeclaration() != ts {
 		t.Error("TimeSeriesDeclaration() != injected pointer")
 	}
@@ -324,7 +324,7 @@ func TestViewDefinition_CappedAndTimeSeries_StorageRoundTrip(t *testing.T) {
 // ─── ValidateMongoSpec ───────────────────────────────────────────────────────
 
 func TestValidateMongoSpec_OK(t *testing.T) {
-	v := View("users").Version(1).Root("users").
+	v := View("users").Version(1).
 		Indexes(
 			Index("email").Unique(),
 			Compound("email", "created_at").Desc(),
@@ -338,7 +338,7 @@ func TestValidateMongoSpec_OK(t *testing.T) {
 }
 
 func TestValidateMongoSpec_CappedAndTimeSeriesMutuallyExclusive(t *testing.T) {
-	v := View("x").Version(1).Root("x").
+	v := View("x").Version(1).
 		Capped(&CappedSpec{SizeBytes: 1 << 20}).
 		TimeSeries(&TimeSeriesSpec{TimeField: "ts"})
 	err := v.ValidateMongoSpec()
@@ -348,7 +348,7 @@ func TestValidateMongoSpec_CappedAndTimeSeriesMutuallyExclusive(t *testing.T) {
 }
 
 func TestValidateMongoSpec_CappedRequiresPositiveSize(t *testing.T) {
-	v := View("x").Version(1).Root("x").Capped(&CappedSpec{SizeBytes: 0})
+	v := View("x").Version(1).Capped(&CappedSpec{SizeBytes: 0})
 	err := v.ValidateMongoSpec()
 	if err == nil || !strings.Contains(err.Error(), "SizeBytes") {
 		t.Errorf("err = %v, want SizeBytes diagnostic", err)
@@ -356,7 +356,7 @@ func TestValidateMongoSpec_CappedRequiresPositiveSize(t *testing.T) {
 }
 
 func TestValidateMongoSpec_TimeSeriesRequiresTimeField(t *testing.T) {
-	v := View("x").Version(1).Root("x").TimeSeries(&TimeSeriesSpec{Granularity: "seconds"})
+	v := View("x").Version(1).TimeSeries(&TimeSeriesSpec{Granularity: "seconds"})
 	err := v.ValidateMongoSpec()
 	if err == nil || !strings.Contains(err.Error(), "TimeField") {
 		t.Errorf("err = %v, want TimeField diagnostic", err)
@@ -364,7 +364,7 @@ func TestValidateMongoSpec_TimeSeriesRequiresTimeField(t *testing.T) {
 }
 
 func TestValidateMongoSpec_TimeSeriesGranularityClosedSet(t *testing.T) {
-	v := View("x").Version(1).Root("x").TimeSeries(&TimeSeriesSpec{TimeField: "ts", Granularity: "days"})
+	v := View("x").Version(1).TimeSeries(&TimeSeriesSpec{TimeField: "ts", Granularity: "days"})
 	err := v.ValidateMongoSpec()
 	if err == nil || !strings.Contains(err.Error(), "Granularity") {
 		t.Errorf("err = %v, want Granularity diagnostic", err)
@@ -372,7 +372,7 @@ func TestValidateMongoSpec_TimeSeriesGranularityClosedSet(t *testing.T) {
 }
 
 func TestValidateMongoSpec_TextIndexAtMostOne(t *testing.T) {
-	v := View("x").Version(1).Root("x").Indexes(
+	v := View("x").Version(1).Indexes(
 		TextIndex("name"),
 		TextIndex("email"),
 	)
@@ -383,7 +383,7 @@ func TestValidateMongoSpec_TextIndexAtMostOne(t *testing.T) {
 }
 
 func TestValidateMongoSpec_RejectsEmptyKeys(t *testing.T) {
-	v := View("x").Version(1).Root("x").Indexes(&IndexSpec{})
+	v := View("x").Version(1).Indexes(&IndexSpec{})
 	err := v.ValidateMongoSpec()
 	if err == nil || !strings.Contains(err.Error(), "no keys") {
 		t.Errorf("err = %v, want no-keys diagnostic", err)
@@ -391,7 +391,7 @@ func TestValidateMongoSpec_RejectsEmptyKeys(t *testing.T) {
 }
 
 func TestValidateMongoSpec_JSONSchemaLevelClosedSet(t *testing.T) {
-	v := View("x").Version(1).Root("x").
+	v := View("x").Version(1).
 		JSONSchema(bson.M{}).
 		JSONSchemaValidationLevel("loose") // not in {strict, moderate, off}
 	err := v.ValidateMongoSpec()
@@ -401,7 +401,7 @@ func TestValidateMongoSpec_JSONSchemaLevelClosedSet(t *testing.T) {
 }
 
 func TestValidateMongoSpec_JSONSchemaActionClosedSet(t *testing.T) {
-	v := View("x").Version(1).Root("x").
+	v := View("x").Version(1).
 		JSONSchema(bson.M{}).
 		JSONSchemaValidationAction("drop") // not in {error, warn}
 	err := v.ValidateMongoSpec()
@@ -411,7 +411,7 @@ func TestValidateMongoSpec_JSONSchemaActionClosedSet(t *testing.T) {
 }
 
 func TestValidateMongoSpec_DiagnosticCarriesViewName(t *testing.T) {
-	v := View("orders").Version(1).Root("orders").
+	v := View("orders").Version(1).
 		Capped(&CappedSpec{SizeBytes: 1 << 20}).
 		TimeSeries(&TimeSeriesSpec{TimeField: "ts"})
 	err := v.ValidateMongoSpec()
@@ -428,7 +428,7 @@ func TestValidateMongoSpec_DiagnosticCarriesViewName(t *testing.T) {
 // so ValidateMongoSpec passes — the mandatory Version is orthogonal to
 // the mongo-spec accessors being unset.
 func TestViewDefinition_DefaultMongoSpec_AllNil(t *testing.T) {
-	v := View("x").Version(1).Root("x")
+	v := View("x").Version(1)
 	if len(v.IndexSpecs()) != 0 {
 		t.Errorf("IndexSpecs len = %d, want 0", len(v.IndexSpecs()))
 	}

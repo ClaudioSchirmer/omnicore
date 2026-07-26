@@ -42,7 +42,7 @@ func buildExportTestView() *ViewDefinition {
 		PK("id").
 		Field("PartnerName", "name", "PartnerNameField")
 
-	return View("users").Version(1).Root("users").
+	return View("users").Version(1).
 		Schema(userSchema).
 		Embed("partner", FromSchema(partnerSchema).FK("partner_id").As("Partner"))
 }

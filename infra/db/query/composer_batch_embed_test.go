@@ -58,7 +58,7 @@ func TestApplyEmbedsBatch_EmbedMany_GroupedPerParent(t *testing.T) {
 	}}
 	c := NewComposerWithMongo(eng, newFakeMongo(buyers), identityResolver)
 	external := FromSchema(core.NewExternalSchema("buyers").PK("id").FK("order_id")).As("Buyers")
-	view := View("orders").Version(1).Root("orders").Schema(composerRootSchema()).EmbedMany("buyers", external)
+	view := View("orders").Version(1).Schema(composerRootSchema()).EmbedMany("buyers", external)
 
 	docs, err := c.ComposeBatch(context.Background(), view, []string{"o1", "o2"})
 	if err != nil {
@@ -89,7 +89,7 @@ func TestApplyEmbedsBatch_OneToOne_GroupedPerParent(t *testing.T) {
 	}}
 	c := NewComposerWithMongo(eng, newFakeMongo(buyers), identityResolver)
 	external := FromSchema(core.NewExternalSchema("buyers").PK("id")).FK("buyer_id").As("Buyer")
-	view := View("orders").Version(1).Root("orders").Schema(composerRootSchema()).Embed("buyer", external)
+	view := View("orders").Version(1).Schema(composerRootSchema()).Embed("buyer", external)
 
 	docs, err := c.ComposeBatch(context.Background(), view, []string{"o1", "o2"})
 	if err != nil {
@@ -109,7 +109,7 @@ func TestApplyEmbedsBatch_OneToOne_NoMatchOmits(t *testing.T) {
 	buyers := &fakeColl{docs: []any{map[string]any{"_id": "u1", "name": "alice"}}}
 	c := NewComposerWithMongo(eng, newFakeMongo(buyers), identityResolver)
 	external := FromSchema(core.NewExternalSchema("buyers").PK("id")).FK("buyer_id").As("Buyer")
-	view := View("orders").Version(1).Root("orders").Schema(composerRootSchema()).Embed("buyer", external)
+	view := View("orders").Version(1).Schema(composerRootSchema()).Embed("buyer", external)
 
 	docs, err := c.ComposeBatch(context.Background(), view, []string{"o1"})
 	if err != nil {
@@ -126,7 +126,7 @@ func TestApplyEmbedsBatch_OneToOne_NilFKSkips(t *testing.T) {
 	eng := rootRowsByID([]string{"id"}, map[string][]any{"o1": {"o1"}}) // no buyer_id column
 	c := NewComposerWithMongo(eng, newFakeMongo(&fakeColl{}), identityResolver)
 	external := FromSchema(core.NewExternalSchema("buyers").PK("id")).FK("buyer_id").As("Buyer")
-	view := View("orders").Version(1).Root("orders").Schema(composerRootSchema()).Embed("buyer", external)
+	view := View("orders").Version(1).Schema(composerRootSchema()).Embed("buyer", external)
 
 	docs, err := c.ComposeBatch(context.Background(), view, []string{"o1"})
 	if err != nil {
@@ -146,7 +146,7 @@ func TestApplyEmbedsBatch_EmbedMany_NoMatchEmpty(t *testing.T) {
 	buyers := &fakeColl{docs: []any{map[string]any{"_id": "b1", "order_id": "oOther"}}}
 	c := NewComposerWithMongo(eng, newFakeMongo(buyers), identityResolver)
 	external := FromSchema(core.NewExternalSchema("buyers").PK("id").FK("order_id")).As("Buyers")
-	view := View("orders").Version(1).Root("orders").Schema(composerRootSchema()).EmbedMany("buyers", external)
+	view := View("orders").Version(1).Schema(composerRootSchema()).EmbedMany("buyers", external)
 
 	docs, err := c.ComposeBatch(context.Background(), view, []string{"o1"})
 	if err != nil {
@@ -166,7 +166,7 @@ func TestApplyEmbedsBatch_FindError(t *testing.T) {
 	eng := rootRowsByID([]string{"id"}, map[string][]any{"o1": {"o1"}})
 	c := NewComposerWithMongo(eng, newFakeMongo(&fakeColl{findErr: context.Canceled}), identityResolver)
 	external := FromSchema(core.NewExternalSchema("buyers").PK("id").FK("order_id")).As("Buyers")
-	view := View("orders").Version(1).Root("orders").Schema(composerRootSchema()).EmbedMany("buyers", external)
+	view := View("orders").Version(1).Schema(composerRootSchema()).EmbedMany("buyers", external)
 
 	if _, err := c.ComposeBatch(context.Background(), view, []string{"o1"}); err == nil {
 		t.Fatal("expected the FindManyByFieldIn error to surface from ComposeBatch")
@@ -179,7 +179,7 @@ func TestApplyEmbedsBatch_NilHandle(t *testing.T) {
 	eng := rootRowsByID([]string{"id"}, map[string][]any{"o1": {"o1"}})
 	c := NewComposer(eng) // no Mongo handle
 	external := FromSchema(core.NewExternalSchema("buyers").PK("id").FK("order_id")).As("Buyers")
-	view := View("orders").Version(1).Root("orders").Schema(composerRootSchema()).EmbedMany("buyers", external)
+	view := View("orders").Version(1).Schema(composerRootSchema()).EmbedMany("buyers", external)
 
 	if _, err := c.ComposeBatch(context.Background(), view, []string{"o1"}); err == nil ||
 		!strings.Contains(err.Error(), "requires a MongoDB handle") {

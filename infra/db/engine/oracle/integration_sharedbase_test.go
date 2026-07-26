@@ -38,7 +38,7 @@ func (e *sbOraStudent) Modes() []domain.EntityMode {
 func (*sbOraStudent) BuildRules(string, domain.Service, *domain.Rules) {}
 
 func sbOraSchema() *core.TableSchema {
-	base := core.NewSharedBase("sb_persons").Revision("revision").
+	base := core.NewSharedBaseSchema("sb_persons").Revision("revision").
 		PK("id").
 		Field("Document", "document").
 		Field("Name", "name").
@@ -257,7 +257,7 @@ func (e *sbpStudent) Modes() []domain.EntityMode {
 func (*sbpStudent) BuildRules(string, domain.Service, *domain.Rules) {}
 
 func sbpSchema() *core.TableSchema {
-	base := core.NewSharedBase("sbp_persons").Revision("revision").
+	base := core.NewSharedBaseSchema("sbp_persons").Revision("revision").
 		PK("id").
 		Field("Document", "document").
 		Field("Name", "name").

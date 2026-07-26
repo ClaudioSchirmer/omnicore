@@ -1,0 +1,663 @@
+<h2>Views — the read-side declaration</h2>
+<p>
+    A <strong>view</strong> is to the read side what a <a href="#table-schema">TableSchema</a> is to the write side:
+    a single, explicit declaration of a read model's <em>structure</em> — its root, its composition, its indexes, and how
+    it stays current. It lives in the <code>infra/db/query</code> layer and is declared with <code>query.View(...)</code>,
+    <code>query.SharedBaseView(...)</code> or <code>query.ComposedView(...)</code>. The <a href="#query-side">query
+    side</a> is the read <em>operation</em> (criteria, filters, pagination) — this section is the read <em>declaration</em>.
+</p>
+<p>
+    CQRS by construction: a view materializes into a <strong>MongoDB document</strong> (the two materialized kinds) kept
+    <strong>eventually consistent</strong> with the relational source of truth by the framework's write→read spine
+    (outbox → CDC relay → broker → SyncEngine → Mongo). The read side serves <em>documents</em>, not aggregates. One
+    declaration drives compose, the reader's Go↔column translation, index provisioning and the rebuild hash — nothing is
+    inferred (mirroring the TableSchema philosophy).
+</p>
+
+<h3 id="views-constructors">The three view constructors</h3>
+<p>
+    Every read model is declared through exactly one of three constructors. Two <strong>materialize</strong> (a CDC-fed
+    Mongo collection the SyncEngine keeps in sync); the third joins at <strong>read time</strong> and stores nothing:
+</p>
+<table>
+    <tbody><tr><th>Constructor</th><th>Root — where it is fed from</th><th>What it projects</th><th>Materialized?</th></tr>
+    <tr>
+        <td><code>query.View(name)</code></td>
+        <td>A regular table — an aggregate root or a role table (derived from the attached schema).</td>
+        <td>The aggregate's own data, decomposed automatically from its <a href="#table-schema">TableSchema</a> — root
+            fields flat, <code>.Sibling</code> tables merged flat, 1:N <code>.Child</code> children nested — plus any
+            <code>Embed</code>/<code>EmbedMany</code> of EXTERNAL sources.</td>
+        <td>Yes — write time</td>
+    </tr>
+    <tr>
+        <td><code>query.SharedBaseView(name).Schema(base)</code></td>
+        <td>A shared base identity (<code>core.NewSharedBaseSchema</code>).</td>
+        <td>The all-in-one identity: base fields flat, base children nested, one sub-document per <code>.Role(...)</code>
+            (each role's siblings flat, its children nested) — plus any external <code>Embed</code>/<code>EmbedMany</code>.</td>
+        <td>Yes — write time</td>
+    </tr>
+    <tr>
+        <td><code>query.ComposedView(name)</code></td>
+        <td>A <code>Primary(...)</code> view — regular OR shared-base.</td>
+        <td>The primary read exactly as a direct read would, enriched at read time with <code>Link</code>/<code>LinkMany</code>
+            legs — internal views AND external collections. No new collection.</td>
+        <td><strong>No</strong> — read time</td>
+    </tr>
+</tbody></table>
+
+<h4 id="views-fanout">When each view updates — the projection fan-out</h4>
+<p>
+    A materialized view is kept current by the SyncEngine, driven by writes to the schema(s) it is built on:
+</p>
+<ul>
+    <li><strong><code>query.View</code></strong> — every write to the aggregate whose table it roots on recomposes it.
+        The trigger is the schema's <em>table</em>, so a write to <code>users</code> updates <strong>every</strong> view
+        rooted on <code>users</code>: declare five views over the User schema and one user update refreshes all five, each
+        into its own collection — independent Version, indexes and shape, same source event.</li>
+    <li><strong><code>query.SharedBaseView</code></strong> — updated by writes to the base identity <em>and</em> to any of
+        its declared roles. Editing the shared Person fields, or writing through the User role, or through the Employee
+        role, all recompose the one person document (role events fan out to it by the base id).</li>
+    <li><strong><code>query.ComposedView</code></strong> — never &ldquo;updated&rdquo;: it is not materialized. It reads
+        its primary and legs fresh on every query, so it always reflects the current state of the views it composes.</li>
+</ul>
+<p>
+    A view embedding EXTERNAL data (<code>Embed</code>/<code>EmbedMany</code> / an upstream mirror) also recomposes when
+    that external source changes — the <em>recompose-ripple</em> — so the embedded segment stays current alongside the
+    aggregate's own data. The mechanics are in <a href="#views~views-sync">How views stay current</a> below.
+</p>
+
+<h3 id="views-plain">query.View — the aggregate's own projection</h3>
+<p>
+    The plain view reuses the SAME <code>TableSchema</code> the write repository declares, so the composer (physical
+    columns into Mongo) and the reader (Go field ↔ column back) agree on every name across write and read. The aggregate's
+    own closure — root scalars, <code>.Sibling</code> tables (merged flat), 1:N <code>.Child</code> children (nested
+    arrays), a <code>.SharedBase</code> identity (merged flat) — projects <strong>automatically</strong> from that schema;
+    you declare only the root schema, the mandatory <code>Version(N)</code>, and the indexes the read endpoints rely on.
+    The root table is <strong>derived from the schema</strong> — there is no separate root declaration to keep in sync.
+</p>
+<pre><code>func UserView() *query.ViewDefinition {
+    return query.View("users").
+        Version(1).
+        Schema(UserSchema()).   // addresses (a .Child of UserSchema) auto-project as "Addresses"
+        Indexes(
+            query.Index("document"),
+            query.Index("email"),
+            query.Index("created_at").Desc(),
+            query.TextIndex("name", "email").DefaultLanguage("english"),
+        )
+}</code></pre>
+
+<h3 id="views-external">The external schema — the view-exclusive declaration</h3>
+<p>
+    A view is the ONLY place a <strong>type-less</strong> schema exists: <code>core.NewExternalSchema(collection)</code>,
+    attached to a view through <code>query.FromSchema(...)</code>. Unlike a write-anchored <code>NewTableSchema[T]</code>
+    (bound to a Go type, validated at construction), an external schema has <strong>no Go struct</strong> — its physical
+    columns belong to an <em>upstream</em> service's Mongo collection (or a derived projection) that another team owns.
+    Being type-less is the very signal that marks a source as EXTERNAL; there is no separate <code>FromMongo</code>
+    constructor.
+</p>
+<p>
+    On an external <code>Field(goName, column[, labelKey])</code> the left side is the <em>logical Go name</em> the local
+    view's Response/criteria speak; the right side names the <em>upstream's physical column</em>. It is validated by
+    bijection (no two fields share a column) but against no type — there is none. Because there is no Go type to derive a
+    segment from, <code>.As(goSegment)</code> is <strong>mandatory</strong> (a fatal boot error otherwise);
+    <code>.FK(column)</code> names the parent document's FK column pointing at the source's PK.
+</p>
+<pre><code>// The upstream users service is mirrored locally (see Service-to-service);
+// this type-less schema describes THAT collection's columns.
+query.FromSchema(
+    core.NewExternalSchema("upstream_users").
+        PK("id").
+        Field("Name", "name").
+        Field("Email", "mail")).      // logical Go name ↔ upstream column
+    FK("buyer_id").                   // parent doc FK → source PK (one-to-one)
+    As("Buyer")                       // REQUIRED — no Go type to derive the segment</code></pre>
+
+<h3 id="views-embed">Embed and EmbedMany — composing external data</h3>
+<p>
+    The two materialized constructors (<code>View</code> and <code>SharedBaseView</code>) reach OTHER data only through an
+    external embed. <code>Embed(field, src)</code> is 1:1 (a single sub-document, <code>null</code> when unresolved);
+    <code>EmbedMany(field, src)</code> is 1:N (an array, empty when none). Both take a <code>*Source</code> built with
+    <code>query.FromSchema(core.NewExternalSchema(...))</code> — the FK lives on the parent for 1:1 and on the child schema
+    for 1:N.
+</p>
+<div class="box">
+    <strong>Embeds are EXTERNAL-only — by design.</strong> An aggregate's own children, siblings and shared base already
+    decompose out of the declarative schema, so declaring them as an embed would be a redundant second path
+    (a write-anchored embed source is a fatal boot error). And joining an <em>internal</em> view that already exists is
+    precisely what the read-time <a href="#views~views-composed">ComposedView</a> does. A boot guard (§8.3) enforces that an
+    embed source collection resolves to an <code>UpstreamSubscription.Collection</code> — a local <code>ViewDefinition</code>
+    name is rejected, because its recompose ripple would be one-hop and drift silently.
+</div>
+<p>
+    The embedded segment is kept fresh by the <strong>recompose-ripple</strong>: when the upstream source collection
+    changes, every dependent view that embeds it is recomposed (surgically, per element). Declaration, the ripple, the
+    failure registry and the channel decision matrix live under <a href="#service-to-service">Service-to-service</a>.
+</p>
+<p>
+    The full composition vocabulary, side by side — the two materialized kinds embed EXTERNAL data; the read-time
+    <code>ComposedView</code> below links INTERNAL views (or external collections):
+</p>
+<table>
+    <tbody><tr><th>Constructor(s)</th><th>Method</th><th>2nd arg</th><th>Built from — and reach</th></tr>
+    <tr><td><code>View</code> / <code>SharedBaseView</code></td><td><code>Embed(seg, src)</code> — 1:1</td><td><code>*Source</code></td><td><code>query.FromSchema(core.NewExternalSchema(…))</code> — EXTERNAL only; FK on the parent.</td></tr>
+    <tr><td><code>View</code> / <code>SharedBaseView</code></td><td><code>EmbedMany(seg, src)</code> — 1:N</td><td><code>*Source</code></td><td><code>query.FromSchema(core.NewExternalSchema(…))</code> — EXTERNAL only; FK on the child schema.</td></tr>
+    <tr><td><code>ComposedView</code></td><td><code>Link(seg, leg)</code> — 1:1</td><td><code>*Leg</code></td><td><code>query.JoinView(view)</code> (INTERNAL registered view) <em>or</em> <code>query.JoinUpstream(core.NewExternalSchema(…))</code> (EXTERNAL); FK on the primary.</td></tr>
+    <tr><td><code>ComposedView</code></td><td><code>LinkMany(seg, leg)</code> — 1:N</td><td><code>*Leg</code></td><td>Same two constructors; FK on the leg (<code>leg.fk → primary._id</code>); <code>OrderBy</code> + <code>MaxLinkManyLimit</code> apply.</td></tr>
+</tbody></table>
+<p>
+    Both families share <code>.FK(column)</code> — the FK always points at the other side's PK/<code>_id</code>; the 1:1
+    side that holds it is the parent/primary, the 1:N side is the child/leg — and <code>.As(goSegment)</code>, mandatory on
+    every external source (a type-less schema has no Go type to derive a segment from). Note the symmetry:
+    <code>FromSchema</code> and <code>JoinUpstream</code> take the SAME thing (a <code>core.NewExternalSchema</code>); only
+    <code>JoinView</code> has no embed counterpart, because embedding an internal view would duplicate data the schema
+    already projects — join it at read time with a <a href="#views~views-composed">ComposedView</a> instead.
+</p>
+<div class="box">
+    <strong>Composing your OWN internal aggregates.</strong> Data already inside one aggregate — its children, siblings, or
+    shared-base identity — projects automatically (declare the schema, nothing else). To join two <em>separate</em> internal
+    aggregates into one read model there are two paths: a <a href="#views~views-sharedbase">SharedBaseView</a> when they
+    share an identity (the party-role pattern), or a read-time <a href="#views~views-composed">ComposedView</a> that
+    <code>JoinView</code>s one onto the other by key. A <em>materialized</em> cross-aggregate join is deliberately not
+    offered — an embed of a local view would keep only a one-hop ripple and drift silently, which is why embeds stay
+    EXTERNAL-only.
+</div>
+
+<h3 id="views-sharedbase">SharedBaseView — the all-in-one identity</h3>
+<p>
+    A <code>SharedBaseView</code> is rooted at a <strong>shared base</strong> (<code>core.NewSharedBaseSchema</code>): one
+    Mongo document per shared identity (e.g. a Person) carrying the base's shared fields FLAT at the root, the base's native
+    children nested at the root, and <strong>one sub-document per declared role</strong> (e.g. User, Employee) with that
+    role's private fields, its siblings merged flat and its own children nested. It is the read-side mirror of the write
+    side's shared-base normalization — where a plain <code>query.View</code> rooted at a role table shows ONE
+    specialization, this view shows the whole composed identity.
+</p>
+<p>
+    The base is attached through <code>.Schema(base)</code> — exactly like a regular view attaches its root schema — and it
+    must come before the first <code>.Role(...)</code> (each role is validated against the base). <code>_id</code> is the
+    base's deterministic PK; the document's soft-delete gate is the base's (the identity hides only when its last active
+    role archives). An absent role is an explicit <code>null</code> segment; an archived role stores its
+    <code>deleted_at</code> and is stripped on default reads unless <code>?includeArchived</code>. Everything a regular view
+    declares applies unchanged (Version participates in the rebuild hash — the role set included — indexes/validators,
+    <code>MaxLimit</code>, <code>DeleteOnArchive</code>, external embeds).
+</p>
+<pre><code>func PersonView() *query.ViewDefinition {
+    return query.SharedBaseView("persons").
+        Schema(PersonBase()).                  // the core.NewSharedBaseSchema identity
+        Role(UserSchema()).                    // repeatable — the role set is open-ended
+        Role(EmployeeSchema()).
+        Version(1).
+        Indexes(
+            query.Index("document"),           // the natural key
+            query.TextIndex("name", "email").DefaultLanguage("english"),
+        )
+}</code></pre>
+<p>
+    Fan-out: the SyncEngine subscribes to the base topic AND every role table's topic, so a write to the base or to any role
+    recomposes the one person document (the base id resolved from the role event's stamped ids). The base's own
+    <code>NewSharedBaseSchema</code> declaration — its natural key, orphan policy and children — lives under
+    <a href="#table-schema">TableSchema</a> (the write-side declaration); this view only <em>composes</em> it.
+</p>
+
+<h4>Document shape</h4>
+<pre><code>{
+  "_id":      "&lt;UUIDv5(document)&gt;",          // the base's deterministic PK
+  "document": "52998224725",                  // base fields — FLAT at the root
+  "name":     "Ana Souza",
+  "Addresses": [ ... ],                       // base-children — nested at the ROOT (shared across roles)
+  "User":     { "user_name": "ana", "email_notification": true },   // role segment: fields + siblings flat
+  "Employee": { "employee_number": "E-77",                          // role segment
+                "Dependents":   [ { "dep_name": "Rita", ... } ],    // role children — nested INSIDE the segment
+                "JobHistories": [ ... ] }
+}</code></pre>
+<ul>
+    <li><strong><code>_id</code> = the base PK</strong> — <code>UUIDv5(naturalKey)</code>, stable
+        under both role link models (shared-PK and separate-FK).</li>
+    <li><strong>Role segments are named by the role's Go type</strong> (<code>"User"</code>,
+        <code>"Employee"</code>) — the same derivation rule nested children use, minus the
+        pluralization: a role is a single optional sub-document, not a collection. The wire name comes
+        from your Response DTO's json tag (<code>json:"user"</code>), exactly like every other field.</li>
+    <li><strong>An absent role is an explicit <code>null</code> segment</strong> — the store upserts
+        via <code>$set</code>, so a vanished role must overwrite its stale segment. Response DTOs
+        declare role fields as pointers with <code>omitempty</code> (the sparse-render contract), so a
+        null segment simply disappears from the wire.</li>
+    <li><strong>Base fields never repeat inside a segment</strong>; a role's siblings merge flat
+        inside its segment; a role's own children nest inside it, keyed on the role row's own PK.</li>
+</ul>
+
+<h4>Role selection — the identity's current specialization</h4>
+<div class="box warn">
+    <strong>A role segment is ONE specialization, never a list — it follows the DOMAIN, not the relational rows.</strong>
+    A <code>SharedBaseView</code> models a party-role: an identity that <em>plays</em> a role. Each role segment therefore
+    holds exactly one sub-document — the identity's <strong>current</strong> representative for that role: the
+    <strong>active</strong> row if one exists, otherwise the <strong>most recently deactivated (archived)</strong> one.
+    This holds <strong>regardless of the link model</strong> — whether the role links through a separate FK
+    (<code>SharedBase(base, "person_id")</code>, which may accumulate archived remnants) or shares the base's id as its
+    own PK (<code>SharedBase(base, "id")</code>, capped at a single row). The relational table may hold many role rows for
+    one identity; the projected document still shows the one current specialization.
+    <strong>Need the identity plus a LIST of N role rows instead?</strong> Keep this write model and add a read-time
+    <a href="#views~views-composed">ComposedView</a> that <code>LinkMany</code>s the role's own view onto the person by its FK — it
+    yields the full list at read time, without changing the SharedBase model.
+</div>
+<p>
+    Under the separate-FK model with active-only uniqueness (see the two DDL uniqueness contracts above), an identity may carry archived role remnants NEXT TO one
+    active row. The composer picks <strong>the row that represents the specialization's current
+    state</strong>:
+</p>
+<ol>
+    <li>the ACTIVE row (<code>fk = baseID AND deleted_at IS NULL</code>) — the one-active-role
+        invariant caps it at one;</li>
+    <li>otherwise the most recently archived remnant (<code>ORDER BY deleted_at DESC</code>), stored
+        WITH its soft-delete timestamp — hidden on default reads, surfaced by
+        <code>?includeArchived=true</code>;</li>
+    <li>otherwise the explicit <code>null</code> segment.</li>
+</ol>
+<p>
+    Remnant HISTORY is deliberately not enumerated in the person document — the role views with
+    <code>?includeArchived</code> cover it. A role without <code>SoftDelete</code> has no archived
+    state; a single FK fetch decides its segment.
+</p>
+
+<h4>Lifecycle &amp; sync</h4>
+<ul>
+    <li><strong>Document gate = the base's soft-delete.</strong> The base archives only when its last
+        active role archives (write-side convergence), so the root <code>deleted_at</code> gate hides
+        the person exactly when every specialization is archived. <code>DeleteOnArchive()</code> means
+        "drop the document when the BASE archives" — and archived role rows stop composing at all.</li>
+    <li><strong>Role events recompose the person document.</strong> The SyncEngine subscribes to every
+        role table's topic (mandatory: a role's ARCHIVE/UNARCHIVE emits only the role event — the base
+        convergence is SQL without its own outbox row). The base id it recomposes for comes straight
+        from the event payload's <code>_ids.base_id</code> — the write side stamps it on every role
+        event, so the resolution touches no database. The SharedBaseView document is then recomposed
+        from the relational source (the base row plus its role rows): the cross-row archived-remnant
+        pick is why this view keeps the composer instead of the payload-direct projection.</li>
+    <li><strong>Purge convergence.</strong> When the last role's DELETE also purges the identity
+        (<code>DeleteWhenUnreferenced</code>), the recompose finds no base row and removes the person
+        document.</li>
+    <li><strong>Base events route as root events</strong> (the base IS this view's root table):
+        INSERTED/UPDATED upsert, DELETED removes, ARCHIVED honors <code>DeleteOnArchive()</code>.</li>
+</ul>
+
+<h4>Reading it</h4>
+<p>
+    Everything a regular view offers applies unchanged — the same
+    <a href="#auto-query-handlers">Auto query handlers</a>, filter-operator vocabulary, keyset
+    pagination, <code>?fields=</code> sparse render, <code>?includeArchived</code>, field-level
+    <code>Restrict()</code>, GraphQL exposure and CSV/XLSX export. Role sub-fields address through the
+    segment: <code>?user.userName=ana</code>, <code>?employee.dependents.relationship=daughter</code>,
+    sort and projection likewise. On a default read an ARCHIVED role's whole segment is hidden (the
+    single-map counterpart of the archived-entry strip on child collections);
+    <code>?includeArchived=true</code> surfaces it with its <code>deletedAt</code>. Exports render
+    each role as a nested branch (role fields + siblings, then its child collections), never repeating
+    the base columns.
+</p>
+
+<h4>Rules &amp; validation</h4>
+<ul>
+    <li>The <code>.Schema(...)</code> must be a <code>core.NewSharedBaseSchema</code> declaration — attached
+        exactly like a regular view's root schema, and validated at boot. Each <code>Role</code> must be a
+        type-anchored schema declaring <code>.SharedBase(...)</code> back to the SAME base table with an
+        equivalent declaration (checked when the role is declared, so <code>.Schema(base)</code> comes before
+        the first <code>.Role(...)</code>); a wrong-kind schema or a role-less view is a boot error.</li>
+    <li>Segment collisions (role vs base-child vs embed) are boot errors, like every other
+        double-producer segment.</li>
+    <li><strong>The role set participates in the rebuild hash</strong>: adding/removing a role, or
+        changing any part of a role's schema closure, without bumping <code>Version(N)</code> is
+        detected as forgot-to-bump and aborts boot — same contract as every rebuild-relevant change
+        (see <a href="#mongo-schema-evolution">Mongo schema evolution</a>).</li>
+    <li><code>Embed</code>/<code>EmbedMany</code> still compose external data only, joined on the base
+        PK at the root.</li>
+</ul>
+
+<div class="box">
+    <strong>When to declare one.</strong> A SharedBaseView complements — never replaces — the role
+    views: keep <code>users</code>/<code>employees</code> for the per-role surfaces and add the person
+    view when a consumer needs the whole identity in one read (a 360° profile, a back-office screen, a
+    data export). It is one more projection over the same CDC stream: no extra writes, one more
+    recompose per role event.
+</div>
+<h3 id="views-composed">ComposedView — read-time composition</h3>
+    <p>
+        <strong>A ComposedView is not a view like the others.</strong> It is never materialized, never
+        synced, never rebuilt: there is no Mongo collection, no <code>Version(n)</code>, no
+        schema-evolution entry, no recompose ripple. It is a <em>read-time orchestration</em> over views
+        that already exist: a read against the composed name reads the <strong>primary</strong> view
+        exactly as a direct read would, then enriches each returned item with data fetched
+        <strong>by key, in batch</strong>, from the linked views (the <em>legs</em>) — the
+        NoSQL-idiomatic join, resolved in code, not <code>$lookup</code>. Nothing to invalidate, nothing
+        to keep in sync; the cost moves to the request path (one extra round-trip per leg per page, not
+        per document).
+    </p>
+    <p>
+        It exists to give the developer <strong>JOIN power over views that share no write-side
+        declaration</strong> — two aggregates connected by nothing but a foreign key — without
+        hand-writing two reads and a merge loop, and without creating yet another materialized
+        projection.
+    </p>
+
+    <h4 id="views-composed-declare">Declaring one</h4>
+    <pre><code>// infra — same package and vocabulary as View / SharedBaseView / FromSchema.
+func GadgetFullView() *query.ComposedViewDefinition {
+    return query.ComposedView("gadgets_full").
+        Primary(GadgetView()).                      // drives EVERYTHING row-shaped
+
+        // 1:1 — the PRIMARY holds the FK (gadgets column "id" → the upstream
+        // doc's _id). External leg: a locally materialized upstream collection,
+        // described by its core.NewExternalSchema. Null segment when absent.
+        Link("upstreamMirror", query.JoinUpstream(GadgetUpstreamMirrorSchema()).
+            FK("id").
+            As("UpstreamMirror")).                  // Go segment — mandatory on external legs
+
+        // 1:N — the LEG holds the FK (gadget_notes column "gadget_id" → the
+        // gadget's _id). Internal leg: any registered view. Empty array when absent.
+        LinkMany("notes", query.JoinView(GadgetNotesView()).
+            FK("gadget_id").
+            As("Notes").
+            OrderBy("text").                        // deterministic segment order (default: _id asc)
+            MaxLinkManyLimit(3))                    // per-parent ceiling: link → yaml → 100
+}
+
+// Registration — the bootstrap opt-in, mirroring ReadableFeature:
+func (f *GadgetFeature) ComposedViews() []*query.ComposedViewDefinition {
+    return []*query.ComposedViewDefinition{GadgetFullView()}
+}</code></pre>
+    <p>
+        <strong>One join vocabulary — PK/FK only.</strong> Every relationship declares one
+        <code>FK(column)</code>; the FK always points at the other side's PK/<code>_id</code>; who holds
+        it follows the multiplicity: on a 1:1 <code>Link</code> the <em>primary</em> holds it
+        (<code>primary.fk → leg._id</code>), on a 1:N <code>LinkMany</code> the <em>leg</em> holds it
+        (<code>leg.fk → primary._id</code>). This is the same rule the whole schema system speaks
+        (<code>TableSchema.FK</code> for children, <code>Source.FK</code> for embeds). The builder speaks
+        physical columns, like <code>Indexes</code> and every other view declaration.
+    </p>
+    <table>
+        <tbody><tr><th>Builder</th><th>Meaning</th></tr>
+        <tr><td><code>ComposedView(name)</code></td><td>The read-side identity — goes wherever a view name goes. Must not collide with any view or composed name.</td></tr>
+        <tr><td><code>Primary(view)</code></td><td>Exactly one, always an <strong>internal registered view</strong> (regular or shared-base). Its <code>MaxLimit</code>, indexes, text search, archived gate apply unchanged.</td></tr>
+        <tr><td><code>Link(segment, leg)</code></td><td>1:1 — sub-document under <code>segment</code>; explicit <code>null</code> when absent.</td></tr>
+        <tr><td><code>LinkMany(segment, leg)</code></td><td>1:N — array under <code>segment</code>, in the declared order, capped per parent; empty array when absent.</td></tr>
+        <tr><td><code>JoinView(view)</code></td><td>Internal leg: any registered view — it arrives exactly as a direct read of that view would (children, embeds, roles, archived strip included).</td></tr>
+        <tr><td><code>JoinUpstream(schema)</code></td><td>External leg: a locally materialized <code>UpstreamSubscription</code> collection described by its <code>NewExternalSchema</code>. A leg NEVER reads another service's live storage — materialize first, then compose.</td></tr>
+        <tr><td><code>FK(column)</code></td><td>The join column (see the multiplicity rule above). Mandatory on every leg.</td></tr>
+        <tr><td><code>As(goSegment)</code></td><td>The Go segment criteria/Responses refer to. Mandatory on external legs; optional override on internal ones (default: the leg root type name, pluralized on a LinkMany).</td></tr>
+        <tr><td><code>OrderBy(column)</code> / <code>.Desc()</code></td><td>LinkMany only — the segment's deterministic order (default <code>_id</code> ascending). Not an end-user sort (see the control matrix below).</td></tr>
+        <tr><td><code>MaxLinkManyLimit(n)</code></td><td>LinkMany only — the per-parent item ceiling. Cascade: per-link → yaml <code>query.maxLinkManyLimit</code> → framework default 100. At the ceiling the segment truncates silently and deterministically: "the first N in the declared order" — payload protection, not validation. The full set lives on the leg's own view, paginated.</td></tr>
+    </tbody></table>
+    <div class="note">
+        <strong>Fatal boot, never silent.</strong> Every declaration exceeding the contract aborts the
+        boot with an explanatory message: unknown FK/OrderBy columns, an unregistered primary or leg
+        view, an external leg without a matching <code>UpstreamSubscription</code>, a LinkMany FK
+        without a covering index on the leg view, a segment colliding
+        with a primary field or another segment, <code>OrderBy</code>/<code>MaxLinkManyLimit</code> on a
+        1:1 link, <code>.Desc()</code> without <code>OrderBy</code>, a composed name shadowing a view.
+        Depth is 1 by design: a leg is a plain view (as deep as its own materialization goes), never
+        another composition.
+    </div>
+
+    <h4 id="views-composed-rules">The core rule — the primary drives selection</h4>
+    <p>
+        <strong>Pagination, sort, <code>?search=</code>, <code>total</code> and cursors belong
+        exclusively to the primary view. Legs only enrich items already selected — they never add,
+        remove or reorder primary rows.</strong> Keyset pagination is a tuple over one collection,
+        sealed by a context hash; the moment a leg could decide which rows appear, pages would underfill
+        with unbounded refill work and <code>total</code> would lie. Everything below derives from this:
+    </p>
+    <ul>
+        <li><strong>Row-selecting filters target the primary</strong> — full 16-operator vocabulary via
+            the same <code>filter:"ops"</code> allowlist, unchanged.</li>
+        <li><strong>Segment filters never select rows.</strong> A filter addressed to a leg segment
+            (<code>?notes.text=b</code>, declared as a nested group on the Request DTO whose Go field
+            name matches the segment) filters <em>what enters the segment</em> — which documents appear
+            in the array, whether the 1:1 sub-document attaches — never which primary items return.
+            Segment filter paths resolve at <strong>every level</strong> of the linked document, with the
+            same operators a direct read of that view would accept.</li>
+        <li><strong>Sort targets the primary only.</strong> A <code>?sort=</code> path into a segment is
+            rejected with 400 <code>SchemaViolationNotification</code> — segment order is declared on the
+            link, deterministically, precisely so truncation and array order never depend on wire input.</li>
+        <li><strong>LEFT join always.</strong> 1:1 → explicit <code>null</code>; 1:N → empty array. There
+            is no INNER mode — "require a match" would be a row-selecting filter in disguise.</li>
+        <li><strong><code>total</code>, <code>onlyTotal</code>, <code>has_next/has_prev</code> and both
+            cursors are the primary's</strong>, byte-for-byte. <code>?onlyTotal=true</code>
+            short-circuits before any leg is fetched.</li>
+        <li><strong>Cursors bind to the composed listing context</strong> — segment filters included
+            (they shape the page's content). Changing any filter, row or segment, means requesting page 1
+            of the new context; a stale cursor is rejected with 400, never silently honored.</li>
+    </ul>
+
+    <h4 id="views-composed-exec">Execution model</h4>
+    <div class="flow">GET /gadgets-full?code.startswith=CV&amp;notes.text=b&amp;limit=20
+   │
+   ▼
+wrapper parses + validates the allowlist (row filters, segment filters, control keys)
+   │
+   ▼
+ComposedViewReader (decorates the framework ViewReader; composed names only)
+   │   ├─► split criteria: row-shaped knobs → primary; segment knobs → their legs
+   │   ▼
+   ├─► 1. primary read: ReadPage("gadgets", primary criteria)   ← the EXISTING pipeline,
+   │      keyset + context hash + MaxLimit + archived gate untouched
+   │   ▼
+   ├─► 2. per 1:1 leg: ONE find({_id: {$in: [page FK values]}}) + segment filters
+   │      + the leg's own archived gate + segment projection → group by _id → attach
+   │      sub-document or explicit null
+   │   ▼
+   ├─► 3. per 1:N leg: one small indexed find per parent ({fk: parent._id}, declared
+   │      order + _id tiebreaker, LIMIT = resolved ceiling), concurrency-bounded →
+   │      attach array (empty when none)
+   │   ▼
+   └─► 4. page returned: items enriched; total/cursors/has_* = the primary's
+   │
+   ▼
+same envelope, same projector, same pagination block as any view read</div>
+    <p>
+        <code>ReadByID</code> is the same with a key set of one — a primary fetch plus one keyed batch
+        per leg; 404 semantics unchanged. Every leg document passes through the same read membrane a
+        direct read of that view applies: BSON normalization, the default-read strip of archived nested
+        children, column→Go translation.
+    </p>
+
+    <h4 id="views-composed-cost">Read cost model — use it consciously</h4>
+    <p>
+        A composed read trades storage for request-path work, so its cost must be understood BEFORE
+        declaring one — the framework bounds every axis, but the developer chooses the shape. With
+        <code>p</code> = the page size (≤ the resolved <code>maxLimit</code>, the same universal
+        ceiling every read obeys — plain, shared-base or composed) and <code>c</code> = a link's
+        resolved <code>MaxLinkManyLimit</code>:
+    </p>
+    <table>
+        <tbody><tr><th>Step</th><th>Mongo queries</th><th>Documents moved</th><th>Why it is bounded</th></tr>
+        <tr>
+            <td>Primary page</td>
+            <td><strong>O(1)</strong> — one find (+ one count)</td>
+            <td>≤ p</td>
+            <td><code>maxLimit</code> cascade; identical to a plain view read.</td>
+        </tr>
+        <tr>
+            <td>Each 1:1 leg</td>
+            <td><strong>O(1)</strong> — ONE <code>$in</code> batch</td>
+            <td>≤ p (one per distinct key)</td>
+            <td>The page's FK values, <em>deduplicated</em>, nulls skipped; each key is a point
+                lookup on the leg's <code>_id</code> — uniqueness caps the result at one doc per key.
+                A batch of point lookups in one round-trip, never a scan.</td>
+        </tr>
+        <tr>
+            <td>Each 1:N leg</td>
+            <td><strong>O(p)</strong> — one indexed subquery per page parent, 8 in flight</td>
+            <td>≤ p × c</td>
+            <td>Each subquery is <code>find({fk: parent})</code> + declared order +
+                <code>LIMIT c</code>. The per-parent ceiling is what forbids a single global-limit
+                <code>$in</code> here — Mongo limits are per QUERY, not per group, so one fat parent
+                would starve the others' segments.</td>
+        </tr>
+        <tr>
+            <td>By-id read</td>
+            <td><strong>O(1)</strong> — 1 + one fetch per leg</td>
+            <td>≤ 1 + legs × c</td>
+            <td>The page has one parent.</td>
+        </tr>
+    </tbody></table>
+    <p>
+        <strong>Total per request: <code>1 + (#1:1 legs) + (#1:N legs × p)</code> queries, every one
+        index-driven, moving at most <code>p + p·(#1:1) + p·c·(#1:N)</code> documents.</strong>
+        There is no unbounded axis: no query without a <code>LIMIT</code>, no N+1 that grows with the
+        dataset (the query count grows with the PAGE, which you cap), no fan-out beyond the declared
+        ceilings. What keeps each promise honest:
+    </p>
+    <ul>
+        <li><strong>The 1:N FK must be index-covered — enforced at boot.</strong> Without an index
+            whose first key is the FK column, each per-parent subquery is a full collection scan —
+            <code>O(p × leg collection size)</code> per request, the classic silent monster. An
+            internal leg whose view declares no covering index is a <strong>fatal boot</strong>; for
+            an external leg (an upstream collection, whose indexes the operator owns) the same rule
+            applies as a hard operational requirement. A compound index starting with the FK (e.g.
+            <code>(gadget_id, text)</code>) additionally serves the declared order for free.</li>
+        <li><strong>Deep pages multiply legs.</strong> Raising <code>maxLimit</code> raises the 1:N
+            query count linearly (<code>p</code> subqueries per 1:N leg). A composed view meant for
+            wide listings should keep its page ceiling modest — or the composition belongs on the
+            materialization path.</li>
+        <li><strong>Export is the deliberate heavy case.</strong> CSV/XLSX ignores pagination and
+            walks the filtered set up to <code>maxExportRows</code> (default 10,000): the 1:1
+            <code>$in</code> batches thousands of keys and each 1:N leg runs thousands of subqueries.
+            That is the read-time analogue of what the materialized path pays continuously in
+            recompose — concentrated in the export request. The knobs are the existing ones:
+            <code>maxExportRows</code> / per-view <code>MaxExportRows</code> (a composed export
+            delegates to its primary's).</li>
+        <li><strong>More legs = more round-trips, linearly.</strong> Every declared leg costs its row
+            of the table above on EVERY read of the composed name. Declare the legs a surface
+            actually renders — a "kitchen-sink" composition taxes every consumer for segments most
+            never use; split it into two composed views instead.</li>
+    </ul>
+    <div class="note">
+        Rule of thumb: a composed read costs <code>O(1)</code> extra round-trips per 1:1 leg and
+        <code>O(page)</code> tiny indexed lookups per 1:N leg. If the read is hot enough that
+        <code>O(page)</code> subqueries hurt, or consumers need to FILTER/SORT rows by the joined
+        data, that is the signal the composition has outgrown read time — materialize it
+        (<code>Embed</code>/<code>SharedBaseView</code>) and pay at write time instead. The two-paths
+        table below is the decision matrix.
+    </div>
+
+    <h4 id="views-composed-authz">Per-leg authorization — the <code>ToCriteria</code> seam, unchanged</h4>
+    <p>
+        A composed view can reach, via join, a view the identity could not query directly — so gates
+        matter. The seam is the one the read side already has: <strong>the Query's
+        <code>ToCriteria(ctx)</code></strong>, with overlays addressed to a leg as
+        <strong>segment-prefixed filter entries</strong> — the same channel wire segment filters travel.
+        The framework guarantees mechanically that a segment filter can never select or leak primary
+        rows; keeping a leg's data properly gated is <strong>fully the developer's responsibility in
+        <code>ToCriteria</code></strong>, exactly as tenant scoping is on every view today.
+    </p>
+    <pre><code>func (q FindGadgetFullByIDQuery) ToCriteria(_ *configuration.AppContext) (fwqueries.ReadCriteria, error) {
+    return fwqueries.ReadCriteria{
+        IncludeArchived: q.IncludeArchived,
+        // Per-leg overlay: the composed surface never exposes internal notes,
+        // regardless of what the wire asked. Segment paths resolve at every
+        // level of the linked document.
+        Filter: map[string]any{"Notes.Kind": "public"},
+    }, nil
+}</code></pre>
+    <div class="note">
+        Overlay filters participate in the cursor's listing context and <strong>compose freely with
+        pagination</strong>: the authoritative context-hash validation runs at the reader,
+        post-<code>ToCriteria</code> — the same context outgoing cursors are stamped with — so adding
+        a security overlay (tenant, owner, business gate) to a paged query, plain or composed, never
+        breaks <code>?after=</code>/<code>?before=</code> navigation. The wire layer performs
+        structural cursor checks only.
+    </div>
+
+    <h4 id="views-composed-archived">Archived gates and consistency</h4>
+    <ul>
+        <li><strong>One knob, every leg (R8):</strong> <code>?includeArchived=true</code> lifts the
+            primary's gate AND each leg's own gate. A schema is not required to declare
+            <code>SoftDelete</code> — a leg without one has no archived concept; the knob is a silent
+            no-op there, never an error.</li>
+        <li><strong>No cross-leg snapshot:</strong> each view keeps its own CDC latency; a composed read
+            inherits each leg's freshness individually and adds no cross-view guarantee. It is the same
+            eventual-consistency class the read side already assumes — a segment can be one tick behind
+            the primary.</li>
+    </ul>
+
+    <h4 id="views-composed-matrix">Who controls what — wire vs declaration</h4>
+    <p>
+        A composed read has two masters: the end user steering the query string, and the developer
+        fixing shape-level decisions at declaration time. The split is deliberate — every dev-only knob
+        exists to keep the composition deterministic:
+    </p>
+    <table>
+        <tbody><tr><th>Knob</th><th>Controlled by</th><th>Where</th><th>Why it lives there</th></tr>
+        <tr><td>Row-selecting filters</td><td>End user</td><td><code>?field.op=</code> (allowlisted)</td><td>Selecting primary rows is the read's purpose.</td></tr>
+        <tr><td>Segment filters</td><td>End user</td><td><code>?segment.field.op=</code> (allowlisted)</td><td>Shaping segment content is safe — it cannot touch row selection.</td></tr>
+        <tr><td>Sort</td><td>End user</td><td><code>?sort=</code> (primary paths only)</td><td>Order of ROWS is the primary's; a segment path is 400.</td></tr>
+        <tr><td><code>fields</code> / <code>limit</code> / cursors / <code>search</code> / <code>onlyTotal</code> / <code>includeArchived</code></td><td>End user</td><td>reserved keys</td><td>Same contract as every view; <code>fields</code> projects into segments too.</td></tr>
+        <tr><td>Segment order</td><td>Developer</td><td><code>OrderBy(column)[.Desc()]</code> on the link</td><td>Truncation and array order must be deterministic; it is NOT an end-user sort and carries no pagination semantics.</td></tr>
+        <tr><td>Per-parent ceiling</td><td>Developer / operator</td><td><code>MaxLinkManyLimit(n)</code> → yaml → 100</td><td>Payload protection; silent deterministic truncation, full set on the leg's own view.</td></tr>
+        <tr><td>Join keys, LEFT semantics, leg set</td><td>Developer</td><td>the declaration</td><td>The composition's identity — boot-validated, never wire-negotiable.</td></tr>
+        <tr><td>Per-leg authz overlays</td><td>Developer</td><td><code>ToCriteria(ctx)</code></td><td>The single read-side authz seam; a join is never an authz bypass.</td></tr>
+    </tbody></table>
+
+    <h4 id="views-composed-vs">Two ways to compose — materialize or query</h4>
+    <p>
+        The framework now has two roads to a composed document, and the reference service ships both
+        over the SAME upstream-mirror data so they can be compared side by side
+        (<code>gadgets_embedded</code> vs <code>gadgets_full</code> in the QA fixtures):
+    </p>
+    <table>
+        <tbody><tr><th></th><th>Materialization path — <code>Embed</code>/<code>SharedBaseView</code></th><th>Direct-query path — <code>ComposedView</code></th></tr>
+        <tr><td>When it composes</td><td>Write time (SyncEngine / ripple)</td><td>Read time (per request)</td></tr>
+        <tr><td>Storage</td><td>Its own collection, versioned, rebuildable</td><td>None</td></tr>
+        <tr><td>Freshness</td><td>Eventually consistent with its sources; recompose lag</td><td>Always as fresh as the underlying views are</td></tr>
+        <tr><td>Read cost</td><td>One find — the document is ready</td><td>1 + one batch per leg (1:1) / per parent capped finds (1:N)</td></tr>
+        <tr><td>Write cost</td><td>Recompose ripple on every source change</td><td>Zero</td></tr>
+        <tr><td>Schema evolution</td><td><code>Version(n)</code>, drift detection, rebuild</td><td>Not applicable — nothing stored</td></tr>
+        <tr><td>Filter/sort on composed data</td><td>Full (it is ONE document)</td><td>Row knobs on the primary; segment knobs shape segments only</td></tr>
+        <tr><td>Reach</td><td>Sources the write side declares</td><td>ANY registered view + locally materialized upstream collections — arbitrary FK links</td></tr>
+        <tr><td>Choose it when…</td><td>The composition is hot, filtered/sorted across sources, or read far more than sources change</td><td>The link is arbitrary/occasional, freshness beats latency, or you refuse another synced collection</td></tr>
+    </tbody></table>
+    <p>
+        Consumption is identical by design: the composed name goes wherever a view name goes — the Auto
+        wrappers, a manual handler calling <code>Reader.ReadPage</code>, GraphQL connections, the
+        CSV/XLSX export (leg branches nest exactly like embed branches in the export tree). The
+        <a href="#auto-query-handlers">Auto query handlers</a> page lists the wire deltas for composed
+        names.
+    </p>
+<h3 id="views-sync">How views stay current — the SyncEngine and recompose</h3>
+<p>
+    Materialized views are driven by the write→read spine (see <a href="#architecture">Architecture</a> and
+    <a href="#read-lifecycle-map">the read lifecycle map</a>): each write emits one <strong>outbox</strong> row in the same
+    transaction; a <strong>CDC relay</strong> streams it to the <strong>broker</strong>; the <strong>SyncEngine</strong>
+    consumes it and projects to Mongo. The event header carries an <code>aggregate_type</code> equal to the aggregate's
+    root <em>table name</em> — the same string a view's schema declares — which is how one event finds its views.
+</p>
+<p>
+    <strong>Routing (the fan-out).</strong> At boot the SyncEngine builds an index keyed by table: a write to table
+    <code>X</code> recomposes every view whose root is <code>X</code> (plain views), plus — for a role table — the
+    shared-base identity documents that role feeds, plus — for an upstream collection — every dependent view that embeds it
+    (the ripple). One write can therefore touch several documents across several collections, each projected independently.
+</p>
+<p>
+    <strong>Two projection paths, same document.</strong> The day-to-day path is <strong>payload-direct</strong>: for a
+    plain entity-rooted view with no external embeds, the SyncEngine turns the event's own payload into one atomic Mongo
+    update pipeline — it does NOT re-read the relational source. For a SharedBaseView or a view with external embeds it
+    falls back to a <strong>consult recompose</strong> (the composer re-reads the relational closure). Both are engineered
+    to produce a byte-identical document (the equivalence gate the blue-green rebuild verifies), and both are guarded by a
+    monotonic <code>_revision</code> watermark so a stale or redelivered event is a no-op rather than a lost update —
+    ordering per aggregate is preserved by hashing each aggregate id onto a fixed worker.
+</p>
+<p>
+    <strong>Archive by default.</strong> Mongo mirrors the relational backend: an <code>ARCHIVED</code> event keeps the
+    document (with <code>deleted_at</code> populated, hidden on default reads, surfaced by <code>?includeArchived</code>)
+    unless the view opts into <code>.DeleteOnArchive()</code> — the hot-tier choice that drops archived rows from that
+    collection. A hard <code>DELETED</code> always removes the document. The concrete lifecycle, the composer, the
+    watermark guards and the tombstone handshake are detailed in <a href="#read-lifecycle-map">the read lifecycle map</a>.
+</p>
+
+<h3 id="views-versioning">Versioning and rebuild</h3>
+<p>
+    Every materialized view declares a mandatory <code>Version(N)</code>. Bump it whenever the view's rebuild-relevant
+    declarative shape changes (root schema columns, embeds, <code>DeleteOnArchive</code>, <code>$jsonSchema</code>,
+    collation, capped, time-series, or — for a SharedBaseView — the role set). The version participates in the rebuild
+    hash: changing the shape WITHOUT bumping is detected at boot as <code>DriftForgotToBump</code> and aborts; bumping
+    triggers an <strong>online blue-green rebuild</strong> — a fresh shadow collection is built from the source while the
+    active one keeps serving, kept current by dual-apply, verified, then flipped atomically. Index-only changes take the
+    fast path (re-apply indexes, no rebuild). The full control plane — drift detection, slots, the advisory lock, the
+    verify — is <a href="#mongo-schema-evolution">Mongo schema evolution</a>.
+</p>

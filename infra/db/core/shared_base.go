@@ -8,7 +8,7 @@ import "fmt"
 // key, deduplicated by a NATURAL KEY whose value derives the base's
 // deterministic id (UUIDv5). The base has NO lifecycle of its own: roles control
 // their own soft-delete, and the base is governed by reference counting per its
-// OrphanPolicy. Declared once with NewSharedBase and referenced from each role
+// OrphanPolicy. Declared once with NewSharedBaseSchema and referenced from each role
 // with .SharedBase(base, fkColumn) — the SAME instance referenced by every role
 // IS the cross-schema registry.
 
@@ -63,12 +63,12 @@ type sharedBaseLink struct {
 	scanByCol map[string]int // base column → field index in the role's Go type
 }
 
-// NewSharedBase starts a shared-base schema for table. It is TYPE-LESS like
+// NewSharedBaseSchema starts a shared-base schema for table. It is TYPE-LESS like
 // NewExternalSchema (its fields are validated against each referencing role's Go
 // type at .SharedBase time, since the same base is shared across several roles).
 // Declare its columns with Field, the dedup/identity column with NaturalKey, and
 // the lifecycle with OrphanPolicy.
-func NewSharedBase(table string) *TableSchema {
+func NewSharedBaseSchema(table string) *TableSchema {
 	s := newSchema(table)
 	s.isSharedBase = true
 	return s
@@ -80,7 +80,7 @@ func NewSharedBase(table string) *TableSchema {
 func (s *TableSchema) NaturalKey(column string) *TableSchema {
 	if !s.isSharedBase {
 		panic(fmt.Sprintf(
-			"infra.TableSchema(%s): NaturalKey applies only to a SharedBase (NewSharedBase).", s.table))
+			"infra.TableSchema(%s): NaturalKey applies only to a SharedBase (NewSharedBaseSchema).", s.table))
 	}
 	if column == "" {
 		panic(fmt.Sprintf("infra.TableSchema(%s): NaturalKey requires a non-empty column.", s.table))
@@ -93,7 +93,7 @@ func (s *TableSchema) NaturalKey(column string) *TableSchema {
 func (s *TableSchema) OrphanPolicy(p OrphanPolicy) *TableSchema {
 	if !s.isSharedBase {
 		panic(fmt.Sprintf(
-			"infra.TableSchema(%s): OrphanPolicy applies only to a SharedBase (NewSharedBase).", s.table))
+			"infra.TableSchema(%s): OrphanPolicy applies only to a SharedBase (NewSharedBaseSchema).", s.table))
 	}
 	s.orphanPolicy = p
 	return s
@@ -143,7 +143,7 @@ func (s *TableSchema) SharedBase(base *TableSchema, fkColumn string) *TableSchem
 	}
 	if base == nil || !base.isSharedBase {
 		panic(fmt.Sprintf(
-			"infra.TableSchema(%s): SharedBase(...) expects a NewSharedBase(...); got a non-shared-base schema.",
+			"infra.TableSchema(%s): SharedBase(...) expects a NewSharedBaseSchema(...); got a non-shared-base schema.",
 			s.table))
 	}
 	if s.sharedBaseLink != nil {
@@ -215,7 +215,7 @@ func (s *TableSchema) SharedBase(base *TableSchema, fkColumn string) *TableSchem
 
 // --- accessors ---------------------------------------------------------------
 
-// IsSharedBase reports whether this schema is a shared base (NewSharedBase).
+// IsSharedBase reports whether this schema is a shared base (NewSharedBaseSchema).
 func (s *TableSchema) IsSharedBase() bool { return s != nil && s.isSharedBase }
 
 // NaturalKeyColumn returns the shared base's natural-key column ("" when not a
@@ -261,7 +261,7 @@ func (s *TableSchema) SharedBaseScanPlan() (cols []string, byCol map[string]int,
 	return s.sharedBaseLink.scanCols, s.sharedBaseLink.scanByCol, true
 }
 
-// AssertSharedBaseEquivalent asserts that two NewSharedBase declarations of the
+// AssertSharedBaseEquivalent asserts that two NewSharedBaseSchema declarations of the
 // SAME table describe the SAME shape — PK, natural key, orphan policy,
 // soft-delete, field set, and native children. The engine registry accepts a
 // base declared once and referenced everywhere OR re-declared identically per
@@ -277,7 +277,7 @@ func AssertSharedBaseEquivalent(a, b *TableSchema) {
 	}
 	diverges := func(what, va, vb string) {
 		panic(fmt.Sprintf(
-			"infra.SharedBase(%s): two NewSharedBase declarations of this table diverge on %s (%q vs %q). "+
+			"infra.SharedBase(%s): two NewSharedBaseSchema declarations of this table diverge on %s (%q vs %q). "+
 				"Every declaration of a shared base must be identical — declare it once and reference it from "+
 				"each role, or repeat the exact same declaration.", a.table, what, va, vb))
 	}

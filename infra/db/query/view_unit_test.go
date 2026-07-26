@@ -39,11 +39,13 @@ func TestSource_CollectionAliasesTable(t *testing.T) {
 }
 
 func TestBuildViewIndex_SplitsByKind(t *testing.T) {
-	v1 := View("orders").Root("orders").
+	v1 := View("orders").
+		Schema(rootSchema("orders")).
 		EmbedMany("lines", pgEmbed("order_lines", "order_id")).
 		Embed("buyer", mongoEmbed("users", "").FK("buyer_id")).
 		Version(1)
-	v2 := View("invoices").Root("invoices").
+	v2 := View("invoices").
+		Schema(rootSchema("invoices")).
 		Embed("order", mongoEmbed("orders_view", "").FK("order_id")).
 		Version(1)
 	idx := buildViewIndex([]*ViewDefinition{v1, v2})
@@ -71,11 +73,11 @@ func TestBuildViewIndex_SplitsByKind(t *testing.T) {
 }
 
 func TestDependentMongoViews_FindsEmbedders(t *testing.T) {
-	v1 := View("orders").Root("orders").
+	v1 := View("orders").
 		Embed("buyer", mongoEmbed("users", "").FK("buyer_id")).
 		Version(1)
-	v2 := View("invoices").Root("invoices").Version(1) // no Mongo embed
-	v3 := View("audit").Root("audit").
+	v2 := View("invoices").Version(1) // no Mongo embed
+	v3 := View("audit").
 		EmbedMany("perpetrator", mongoEmbed("users", "").FK("audit_id")).
 		Version(1)
 	got := DependentMongoViews([]*ViewDefinition{v1, v2, v3}, "users")
@@ -85,7 +87,7 @@ func TestDependentMongoViews_FindsEmbedders(t *testing.T) {
 }
 
 func TestDependentMongoViews_EmptyWhenNoMatches(t *testing.T) {
-	v := View("orders").Root("orders").
+	v := View("orders").
 		Embed("buyer", mongoEmbed("users", "").FK("buyer_id")).
 		Version(1)
 	got := DependentMongoViews([]*ViewDefinition{v}, "products")
@@ -95,7 +97,7 @@ func TestDependentMongoViews_EmptyWhenNoMatches(t *testing.T) {
 }
 
 func TestEmbedDef_AccessorsExposeSourceAndField(t *testing.T) {
-	v := View("orders").Root("orders").
+	v := View("orders").
 		Embed("buyer", mongoEmbed("users", "").FK("buyer_id")).
 		Version(1)
 	embeds := v.Embeds()

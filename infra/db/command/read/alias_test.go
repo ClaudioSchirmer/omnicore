@@ -21,4 +21,4 @@ func NewTableSchema[T any](table string) *core.TableSchema { return core.NewTabl
 
 func NewSiblingSchema[T any](table string) *core.TableSchema { return core.NewSiblingSchema[T](table) }
 
-var NewSharedBase = core.NewSharedBase
+var NewSharedBaseSchema = core.NewSharedBaseSchema

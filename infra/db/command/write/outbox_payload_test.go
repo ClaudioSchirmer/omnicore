@@ -148,7 +148,7 @@ func TestBuildDeletePayload_KeysGrowOnly(t *testing.T) {
 // bump the revision in the SAME statement — one row lock serializes concurrent
 // role writes of the identity.
 func TestSharedBaseUpdate_BumpsRevisionInOneStatement(t *testing.T) {
-	base := NewSharedBase("pessoa").Revision("revision").PK("id").
+	base := NewSharedBaseSchema("pessoa").Revision("revision").PK("id").
 		Field("Name", "name").Field("Document", "document").NaturalKey("document")
 	baseID := deterministicBaseID("D1")
 	sql, args := buildUpdate(testPGDialect{}, base.Table(), base.PKColumn(), baseID,
@@ -220,7 +220,7 @@ func TestBuildWritePayload_ChildSiblingFieldsFlat(t *testing.T) {
 	child := NewTableSchema[bcAddr]("bc_addrs").PK("id").FK("root_id").
 		Field("Street", "street").
 		Sibling(NewSiblingSchema[bcAddr]("bc_addr_extras").Field("Street", "street_copy"))
-	base := NewSharedBase("pessoa").Revision("revision").PK("id").
+	base := NewSharedBaseSchema("pessoa").Revision("revision").PK("id").
 		Field("Name", "name").Field("Document", "document").NaturalKey("document")
 	schema := NewTableSchema[*bcRole]("aluno").PK("id").Revision("revision").
 		Field("Matricula", "matricula").SharedBase(base, "pessoa_id").Child(child)

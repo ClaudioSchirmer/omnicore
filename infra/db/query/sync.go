@@ -219,7 +219,7 @@ func NewSyncEngine(eng core.RelationalEngine, mongo ReadModelStore, resolver *Vi
 		}
 	}
 	for _, v := range views {
-		addTopic(v.rootTable)
+		addTopic(v.RootTable())
 		// Subscribe to a role view's SharedBase topic too, so a base change
 		// (emitted as an aggregate_type=base outbox row) reaches the fan-out.
 		if v.schema != nil {

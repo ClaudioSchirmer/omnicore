@@ -79,7 +79,7 @@ func (e *baseChildRole) AggregateChildren() []domain.AggregateValueObject {
 }
 
 func baseChildRoleSchema() *TableSchema {
-	base := NewSharedBase("pessoa").Revision("revision").
+	base := NewSharedBaseSchema("pessoa").Revision("revision").
 		PK("id").
 		Field("Name", "name").
 		Field("Document", "document").

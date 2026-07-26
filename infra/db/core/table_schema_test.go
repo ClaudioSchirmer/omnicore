@@ -370,7 +370,7 @@ func TestTableSchema_ValidateOldCloneSafety(t *testing.T) {
 			ValidateOldCloneSafety()
 	})
 	assertPanics(t, "shared-base field tagged json:\"-\"", func() {
-		base := NewSharedBase("people").Revision("revision").PK("id").
+		base := NewSharedBaseSchema("people").Revision("revision").PK("id").
 			Field("PersonName", "person_name").NaturalKey("person_name")
 		NewTableSchema[oldCloneRoleTag]("alunos").PK("id").Field("RoleField", "role_field").
 			SharedBase(base, "person_id").

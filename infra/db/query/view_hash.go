@@ -63,7 +63,7 @@ func (v *ViewDefinition) Hash() string {
 func (v *ViewDefinition) writeRebuildShape(w *canonicalWriter) {
 	w.writeTag("rebuild_v2")
 	w.writeInt(int64(v.version))
-	w.writeString(v.rootTable)
+	w.writeString(v.RootTable())
 	w.writeBool(v.deleteOnArchive)
 
 	w.writeTag("embeds")

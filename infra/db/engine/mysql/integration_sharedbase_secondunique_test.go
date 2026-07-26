@@ -36,7 +36,7 @@ func (e *sbEmailStudent) Modes() []domain.EntityMode {
 func (*sbEmailStudent) BuildRules(string, domain.Service, *domain.Rules) {}
 
 func sbEmailSchema() *core.TableSchema {
-	base := core.NewSharedBase("sb2_persons").Revision("revision").
+	base := core.NewSharedBaseSchema("sb2_persons").Revision("revision").
 		PK("id").
 		Field("Document", "document").
 		Field("Name", "name").

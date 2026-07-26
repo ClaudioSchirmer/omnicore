@@ -32,7 +32,7 @@ func TestComposeBatch_SiblingFetchedOncePerBatch(t *testing.T) {
 		return nil, nil
 	})
 	c := NewComposer(eng)
-	view := View("orders").Version(1).Root("orders").Schema(composerSiblingRootSchema())
+	view := View("orders").Version(1).Schema(composerSiblingRootSchema())
 
 	docs, err := c.ComposeBatch(context.Background(), view, []string{"o1", "o2"})
 	if err != nil {
@@ -94,7 +94,7 @@ func TestComposeBatch_OwnChildrenGroupedPerRoot(t *testing.T) {
 		PK("id").Field("Name", "name").SoftDelete("deleted_at").
 		Child(childSchema)
 	c := NewComposer(eng)
-	view := View("orders").Version(1).Root("orders").Schema(rootWithChild)
+	view := View("orders").Version(1).Schema(rootWithChild)
 
 	docs, err := c.ComposeBatch(context.Background(), view, []string{"o1", "o2"})
 	if err != nil {

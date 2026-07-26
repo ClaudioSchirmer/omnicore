@@ -899,7 +899,7 @@ func (c cascadeBaseChild) GetID() domain.ID                                 { re
 func (c cascadeBaseChild) BuildRules(string, domain.Service, *domain.Rules) {}
 
 func cascadeRoleSchema() *TableSchema {
-	base := NewSharedBase("pessoa").Revision("revision").
+	base := NewSharedBaseSchema("pessoa").Revision("revision").
 		PK("id").
 		Field("Name", "name").
 		Field("Document", "document").

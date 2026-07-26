@@ -113,7 +113,7 @@ func TestFieldTypes_SharedBaseFieldsValidatedAtRoleAnchor(t *testing.T) {
 		Email uuid.UUID // shared-base field carried by the role, wrong type
 		Name  string
 	}
-	base := NewSharedBase("persons").Revision("revision").PK("id").Field("Email", "email").NaturalKey("email")
+	base := NewSharedBaseSchema("persons").Revision("revision").PK("id").Field("Email", "email").NaturalKey("email")
 	mustPanicContaining(t, "shared-base field via role anchor", "domain.ID", func() {
 		NewTableSchema[*badRole]("students").
 			PK("id").

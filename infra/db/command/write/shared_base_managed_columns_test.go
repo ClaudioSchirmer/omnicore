@@ -16,7 +16,7 @@ import (
 // upsert-scoped tests, whose base declares no managed columns).
 
 func roleTestSchemaManagedBase() *TableSchema {
-	base := NewSharedBase("pessoa").Revision("revision").
+	base := NewSharedBaseSchema("pessoa").Revision("revision").
 		PK("id").
 		Field("Name", "name").
 		Field("Document", "document").

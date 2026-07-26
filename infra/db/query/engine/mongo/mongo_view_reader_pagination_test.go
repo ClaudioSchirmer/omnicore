@@ -369,8 +369,8 @@ func TestLimitExceededError_CarriesSchemaContextAndFieldValue(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestViewDefinition_MaxLimit_DoesNotChangeRebuildHash(t *testing.T) {
-	base := query.View("users").Version(1).Root("users")
-	bumped := query.View("users").Version(1).Root("users").MaxLimit(500)
+	base := query.View("users").Version(1)
+	bumped := query.View("users").Version(1).MaxLimit(500)
 	if base.RebuildHash() != bumped.RebuildHash() {
 		t.Fatalf("MaxLimit must not affect RebuildHash; base=%s bumped=%s",
 			base.RebuildHash(), bumped.RebuildHash())
@@ -378,8 +378,8 @@ func TestViewDefinition_MaxLimit_DoesNotChangeRebuildHash(t *testing.T) {
 }
 
 func TestViewDefinition_MaxLimit_DoesNotChangeArtifactHash(t *testing.T) {
-	base := query.View("users").Version(1).Root("users")
-	bumped := query.View("users").Version(1).Root("users").MaxLimit(500)
+	base := query.View("users").Version(1)
+	bumped := query.View("users").Version(1).MaxLimit(500)
 	if base.ArtifactHash() != bumped.ArtifactHash() {
 		t.Fatalf("MaxLimit must not affect ArtifactHash; base=%s bumped=%s",
 			base.ArtifactHash(), bumped.ArtifactHash())

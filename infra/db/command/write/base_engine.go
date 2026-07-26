@@ -35,12 +35,12 @@ type BaseEngine struct {
 	publisher   events.Publisher
 
 	// Engine-scoped shared-base registry (M2). A base's role registry naturally
-	// lives on the *TableSchema instance NewSharedBase returned — which would
+	// lives on the *TableSchema instance NewSharedBaseSchema returned — which would
 	// make correctness depend on the consumer funneling every role through ONE
 	// instance (a singleton the framework must not demand). WithSchema therefore
 	// registers every shared-base role here, keyed by the base's TABLE name, and
 	// the refcount/lifecycle probes read the union of instance + engine registry:
-	// N identical NewSharedBase declarations behave exactly like one. Divergent
+	// N identical NewSharedBaseSchema declarations behave exactly like one. Divergent
 	// declarations of the same table panic at registration (AssertSharedBaseEquivalent).
 	sbMu    sync.RWMutex
 	sbDecl  map[string]*TableSchema      // base table → first-registered declaration
@@ -89,7 +89,7 @@ func (b *BaseEngine) RegisterSharedBaseRole(role *TableSchema) {
 // effectiveReferencingRoles returns every role known to reference base: the
 // base INSTANCE registry (roles attached to this very *TableSchema via
 // .SharedBase) unioned with the ENGINE registry (roles registered through
-// WithSchema, across every NewSharedBase instance of the same table), deduped
+// WithSchema, across every NewSharedBaseSchema instance of the same table), deduped
 // by role table. Engine entries are appended in table order for deterministic
 // probing.
 func (b *BaseEngine) effectiveReferencingRoles(base *TableSchema) []RoleRef {

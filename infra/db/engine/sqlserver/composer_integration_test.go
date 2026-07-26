@@ -89,7 +89,7 @@ func TestSQLServerComposer_OwnChild(t *testing.T) {
 		SoftDelete("deleted_at").CreatedAt("created_at").UpdatedAt("updated_at").
 		Child(core.NewTableSchema[mcLineRow]("mc_lines").PK("id").FK("user_id").
 			Field("Qty", "qty").SoftDelete("deleted_at"))
-	view := query.View("flat_persons").Version(1).Root("flat_persons").Schema(rootWithChild)
+	view := query.View("flat_persons").Version(1).Schema(rootWithChild)
 
 	doc, err := query.NewComposer(eng).Compose(ctx, view, res.ID.Value())
 	if err != nil {
@@ -133,7 +133,7 @@ func TestSQLServerComposer_BoolColumn(t *testing.T) {
 		t.Fatalf("insert flag: %v", err)
 	}
 
-	view := query.View("flags").Version(1).Root("flags").Schema(flagSchema())
+	view := query.View("flags").Version(1).Schema(flagSchema())
 	doc, err := query.NewComposer(eng).Compose(ctx, view, id.String())
 	if err != nil {
 		t.Fatalf("Compose: %v", err)

@@ -24,7 +24,7 @@ func rebuildView() *ViewDefinition {
 	// Declare the managed timestamp columns: the incremental rebuild (since != "")
 	// scans/orders on the schema's UpdatedAt column, so a root that supports it must
 	// declare it (a root table without updated_at can only be rebuilt in full).
-	return View("orders").Version(1).Root("orders").Schema(
+	return View("orders").Version(1).Schema(
 		composerRootSchema().CreatedAt("created_at").UpdatedAt("updated_at"))
 }
 
@@ -151,7 +151,7 @@ func TestRebuildAllViews_EmptyTables(t *testing.T) {
 	// A view with a PG root + an external Mongo embed so both byPGTable and
 	// byMongoColl index buckets are walked.
 	external := FromSchema(core.NewExternalSchema("buyers").PK("id").FK("order_id")).As("Buyers")
-	v := View("orders").Version(1).Root("orders").Schema(composerRootSchema()).
+	v := View("orders").Version(1).Schema(composerRootSchema()).
 		EmbedMany("buyers", external)
 	s := rebuildSyncEngine(emptyRowsEngine(), &fakeColl{}, []*ViewDefinition{v})
 	if err := s.RebuildAllViews(context.Background()); err != nil {

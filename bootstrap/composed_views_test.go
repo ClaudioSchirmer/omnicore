@@ -14,7 +14,7 @@ type cvBootGadget struct{ ID, Code string }
 func cvBootPrimary() *query.ViewDefinition {
 	schema := core.NewTableSchema[cvBootGadget]("gadgets").
 		PK("id").Field("Code", "code").SoftDelete("deleted_at")
-	return query.View("gadgets").Version(1).Root("gadgets").Schema(schema)
+	return query.View("gadgets").Version(1).Schema(schema)
 }
 
 func cvBootComposed(name string) *query.ComposedViewDefinition {

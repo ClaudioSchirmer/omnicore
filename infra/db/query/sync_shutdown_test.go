@@ -17,7 +17,7 @@ func syncEngineForShutdownTest() *SyncEngine {
 	// The fake transport's EnsureTopics always errors, so run() stays alive in
 	// the ensureTopics retry loop until its ctx is cancelled — a deterministic
 	// stand-in for "the loop is still working" (formerly an unroutable broker).
-	view := View("gadgets").Version(1).Root("gadgets").Schema(rootSchema("gadgets"))
+	view := View("gadgets").Version(1).Schema(rootSchema("gadgets"))
 	return NewSyncEngine(nil, nil, identityResolver, fakeSubscriber{}, "shutdown-test-group",
 		[]*ViewDefinition{view}, 1)
 }

@@ -235,7 +235,7 @@ func TestRebuildFromTable_PathsAndErrors(t *testing.T) {
 		}
 	})
 	t.Run("sinceWithoutUpdatedAtErrors", func(t *testing.T) {
-		bare := View("orders").Version(1).Root("orders").Schema(composerRootSchema()) // no UpdatedAt
+		bare := View("orders").Version(1).Schema(composerRootSchema()) // no UpdatedAt
 		s := scriptSyncEngine(newScriptEngine(nil, aliveRoot), newFakeMongo(&fakeColl{}), []*ViewDefinition{bare})
 		if err := s.RebuildViewSince(context.Background(), bare, time.Unix(1700000000, 0)); err == nil ||
 			!strings.Contains(err.Error(), "no UpdatedAt") {
@@ -243,7 +243,7 @@ func TestRebuildFromTable_PathsAndErrors(t *testing.T) {
 		}
 	})
 	t.Run("viewWithoutSchemaErrors", func(t *testing.T) {
-		bare := View("bare").Version(1).Root("bare")
+		bare := View("bare").Version(1)
 		s := scriptSyncEngine(newScriptEngine(nil, aliveRoot), newFakeMongo(&fakeColl{}), []*ViewDefinition{bare})
 		if err := s.RebuildView(context.Background(), bare); err == nil ||
 			!strings.Contains(err.Error(), "no root .Schema") {
@@ -319,7 +319,7 @@ func TestRebuildAllViews(t *testing.T) {
 // ─── small pure surfaces ─────────────────────────────────────────────────────
 
 func TestViewMaxLimit(t *testing.T) {
-	v := View("orders").Version(1).Root("orders").MaxLimit(25)
+	v := View("orders").Version(1).MaxLimit(25)
 	if got := v.MaxLimitValue(); got != 25 {
 		t.Errorf("MaxLimitValue = %d, want 25", got)
 	}

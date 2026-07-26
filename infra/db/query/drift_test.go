@@ -153,7 +153,7 @@ func TestDriftReport_PlansBy_FiltersCorrectly(t *testing.T) {
 func TestFormatAlienDataDiagnostic_NamesEveryViewAndSQL(t *testing.T) {
 	plans := []DriftPlan{
 		{
-			View:                View("users").Version(1).Root("users"),
+			View:                View("users").Version(1),
 			Decision:            DriftAlienData,
 			CurrentVersion:      1,
 			CurrentRebuildHash:  "rh",
@@ -161,7 +161,7 @@ func TestFormatAlienDataDiagnostic_NamesEveryViewAndSQL(t *testing.T) {
 			CurrentCombinedHash: "ch",
 		},
 		{
-			View:                View("orders").Version(1).Root("orders"),
+			View:                View("orders").Version(1),
 			Decision:            DriftAlienData,
 			CurrentVersion:      1,
 			CurrentRebuildHash:  "rh2",
@@ -186,7 +186,7 @@ func TestFormatAlienDataDiagnostic_EmptyOnNoPlans(t *testing.T) {
 func TestFormatForgotToBumpDiagnostic_NamesViewAndHashes(t *testing.T) {
 	plans := []DriftPlan{
 		{
-			View:                View("users").Version(1).Root("users"),
+			View:                View("users").Version(1),
 			Decision:            DriftForgotToBump,
 			CurrentVersion:      3,
 			CurrentCombinedHash: "spec_hash_12345678",
@@ -207,7 +207,7 @@ func TestFormatForgotToBumpDiagnostic_NamesViewAndHashes(t *testing.T) {
 func TestFormatDowngradeDiagnostic_OffersAllowDowngradeFlag(t *testing.T) {
 	plans := []DriftPlan{
 		{
-			View:                View("users").Version(1).Root("users"),
+			View:                View("users").Version(1),
 			Decision:            DriftDowngrade,
 			CurrentVersion:      3,
 			CurrentRebuildHash:  "rh",
@@ -230,7 +230,7 @@ func TestFormatDowngradeDiagnostic_OffersAllowDowngradeFlag(t *testing.T) {
 func TestFormatMongoWipedDiagnostic_OffersAutoRunFlip(t *testing.T) {
 	plans := []DriftPlan{
 		{
-			View:     View("users").Version(1).Root("users"),
+			View:     View("users").Version(1),
 			Decision: DriftMongoWiped,
 			Registry: &ViewRegistryRow{Version: 1, CombinedHash: "rh"},
 		},
@@ -246,7 +246,7 @@ func TestFormatMongoWipedDiagnostic_OffersAutoRunFlip(t *testing.T) {
 func TestFormatArtifactOnlyDiagnostic_NoRebuildMention(t *testing.T) {
 	plans := []DriftPlan{
 		{
-			View:                View("users").Version(1).Root("users"),
+			View:                View("users").Version(1),
 			Decision:            DriftArtifactOnly,
 			CurrentArtifactHash: "ah_new",
 			CurrentCombinedHash: "ch_new",
@@ -267,7 +267,7 @@ func TestFormatArtifactOnlyDiagnostic_NoRebuildMention(t *testing.T) {
 func TestFormatFreshInitDiagnostic_OffersInitSQL(t *testing.T) {
 	plans := []DriftPlan{
 		{
-			View:                View("users").Version(1).Root("users"),
+			View:                View("users").Version(1),
 			Decision:            DriftFreshInit,
 			CurrentVersion:      1,
 			CurrentRebuildHash:  "rh",
@@ -286,7 +286,7 @@ func TestFormatFreshInitDiagnostic_OffersInitSQL(t *testing.T) {
 func TestFormatRebuildRequiredDiagnostic_ShowsVersionAndHashes(t *testing.T) {
 	plans := []DriftPlan{
 		{
-			View:                View("users").Version(1).Root("users"),
+			View:                View("users").Version(1),
 			Decision:            DriftRebuildRequired,
 			CurrentVersion:      2,
 			CurrentCombinedHash: "spec_combined_0123456789abcdef",

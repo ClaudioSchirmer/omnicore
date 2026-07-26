@@ -121,6 +121,10 @@
         "label": "TableSchema"
       },
       {
+        "id": "views",
+        "label": "Views"
+      },
+      {
         "id": "service-to-service",
         "label": "Service-to-service"
       },
