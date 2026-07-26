@@ -670,9 +670,11 @@ fwopenapi.Mount(d.OpenAPIRegistry, app, fiber.MethodGet, "/users.csv", csvH, csv
         View <strong>declaration</strong> — the three constructors, the external <code>NewExternalSchema</code>,
         <code>Embed</code>/<code>EmbedMany</code>, <code>SharedBaseView</code>, <code>ComposedView</code> and the
         SyncEngine/recompose fan-out — is covered canonically under <a href="#views">Views</a>. The example below shows it
-        in the context of wiring an auto query handler; note the embed sources (<code>CustomerProjection</code>/<code>ProductProjection</code>)
-        are EXTERNAL upstream mirrors of another service (see <a href="#service-to-service">Service-to-service</a>) —
-        embedding a <em>local</em> view is not supported, so join those at read time with a
+        in the context of wiring an auto query handler; note the embed sources (the <code>customer</code> and
+        <code>shipments</code> mirrors) are EXTERNAL upstream projections of OTHER services (the customers and logistics
+        services — see <a href="#service-to-service">Service-to-service</a>), each a type-less
+        <code>NewExternalSchema</code>. Embedding a <em>local</em> view is not supported, and an embed source may not nest a
+        further embed (single-level) — reach a deeper or internal join at read time with a
         <a href="#views~views-composed">ComposedView</a> instead.
     </p>
     <p>
@@ -708,27 +710,40 @@ import (
 
 // Internal data is automatic. CustomerSchema declares .Child(AddressSchema()),
 // so the addresses collection projects into the document with NO embed — a
-// faithful mirror of the write closure. The view declares only its root schema.
+// faithful mirror of the write closure. This service's read model is just the
+// root schema. (Steps 2–4 below wire THIS view.)
 var CustomerView = query.View("customers").
     Version(1).
     Schema(views.CustomerSchema())   // addresses (a .Child of CustomerSchema) auto-project
 
-// Custom pattern — fluent when crossing bounded contexts via UpstreamSubscription
-// (cross-service Embed is NOT derivable from the aggregate). An external FromSchema
-// (built from a type-less NewExternalSchema) resolves to the local Mongo collection
-// materialized by the framework's UpstreamSubscriber on each upstream event (see
-// "Cross-service composition" below). External embeds need .As(...) (no Go type to
-// derive the segment from); .FK(...) names the parent doc FK on a one-to-one Embed.
+// ─── a DIFFERENT service (SALES) — internal/views/sale.go ───
+//
+// The Sale is local here: SaleSchema + its own .Child(SaleItemSchema()) line
+// items project automatically (never embedded — internal data is automatic).
+// The customer and the shipments are owned by OTHER services, so they are
+// composed as EXTERNAL embeds: each source is a type-less NewExternalSchema
+// naming a local Mongo collection the framework materializes from that service's
+// event stream via an UpstreamSubscription (see "Cross-service composition").
+// External embeds need .As(...) (no Go type to derive the segment from);
+// .FK(...) names the parent doc FK on a one-to-one Embed.
+//
+// Embeds are SINGLE-LEVEL: an embed source may NOT declare a further Embed/
+// EmbedMany (embed-of-embed is a fatal boot error). "customer" (customers
+// service) and "shipments" (logistics service) are each ONE top-level external
+// hop; a deeper join composes at read time with a ComposedView.
 var SaleView = query.View("sales_view").
     Version(1).
-    Schema(views.SaleSchema()).
-    Embed("customer", query.FromSchema(views.CustomerProjection()).
-        FK("customer_id").As("Customer")).
-    EmbedMany("items", query.FromSchema(views.SaleItemSchema()).
-        Embed("product", query.FromSchema(views.ProductProjection()).
-            FK("product_id").As("Product")),
-    ).
-    Indexes(query.Index("customer_id"))   // boot guard §8.1 requires the join field index
+    Schema(views.SaleSchema()).                          // sale + its own line items (a .Child) auto-project
+    Embed("customer", query.FromSchema(
+        core.NewExternalSchema("customers").             // type-less → the CUSTOMERS service's mirror
+            PK("id").Field("Name", "name")).
+        FK("customer_id").                               // parent Sale's FK → customer._id (1:1)
+        As("Customer")).
+    EmbedMany("shipments", query.FromSchema(
+        core.NewExternalSchema("shipments").             // type-less → the LOGISTICS service's mirror
+            PK("id").FK("sale_id")).                     // child FK → sale._id (1:N)
+        As("Shipments")).
+    Indexes(query.Index("customer_id"))                  // boot guard §8.1: covering index for the 1:1 embed join
 
 // Drop archived rows from the projection — opt in via .DeleteOnArchive().
 // Default behavior (flag absent): ARCHIVED outbox events compose+upsert the
@@ -916,10 +931,10 @@ sync.Start(ctx)
 return bootstrap.Wiring{
     UpstreamSubscriptions: []bootstrap.UpstreamSubscription{
         {Topic: "people.customers.events", Collection: "customers",
-         Filter: []string{"id", "name", "username"},
+         Filter: []string{"id", "name"},
          OnUpstreamDelete: bootstrap.UpstreamDeleteCascade},
-        {Topic: "catalog.products.events", Collection: "products",
-         Filter: []string{"id", "name", "price"},
+        {Topic: "logistics.shipments.events", Collection: "shipments",
+         Filter: []string{"id", "sale_id", "status", "tracking_code"},
          OnUpstreamDelete: bootstrap.UpstreamDeleteCascade},
     },
 }</code></pre>

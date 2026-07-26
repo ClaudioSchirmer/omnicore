@@ -11,6 +11,17 @@ with `1.0.0`.
 
 ## [Unreleased]
 
+### Changed
+
+- **embed-of-embed is rejected at boot; embeds are single-level.** A view may
+  declare any number of top-level `Embed`/`EmbedMany`, but an embed's `*Source`
+  may no longer declare a further `Embed`/`EmbedMany`: `ValidateViewSchemas` now
+  aborts the boot naming the offending view and embed. Nesting was never a
+  supported surface — first-time compose and a full rebuild materialized a nested
+  segment, but the recompose-ripple that keeps an embed fresh is one-hop and only
+  reaches a view's top-level embeds, so a nested segment would materialize once
+  and then drift silently. *Workaround*: embed each external hop at the top level,
+  or join at read time with a `ComposedView`.
 ### Fixed
 
 - The view base-kind boot gate is now **symmetric**. A `query.SharedBaseView`

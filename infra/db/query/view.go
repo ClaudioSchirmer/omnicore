@@ -351,6 +351,23 @@ func appendEmbedSchemaProblems(acc []string, viewName string, embeds []embedDef)
 		if e.source == nil {
 			continue
 		}
+		// Embed-of-embed is NOT supported. A view may declare any number of
+		// top-level Embed/EmbedMany, but an embed's source may not itself declare
+		// a further Embed/EmbedMany. First-time compose and a full rebuild would
+		// materialize a nested segment, but the recompose-ripple that keeps an
+		// embed fresh is one-hop, so a nested embed would materialize once and then
+		// drift silently. Reject the whole shape at boot rather than ship silent
+		// staleness; flatten to top-level embeds, or join at read time with a
+		// ComposedView.
+		if len(e.source.embeds) > 0 {
+			acc = append(acc, fmt.Sprintf(
+				"view %q: embed %q (source %q) declares its own nested embed(s) — embed-of-embed is NOT "+
+					"supported. Embed/EmbedMany compose a SINGLE external level; the recompose-ripple that keeps "+
+					"an embed fresh is one-hop, so a nested embed would materialize once and then drift silently. "+
+					"Keep any number of top-level Embed/EmbedMany on the view, or join at read time with "+
+					"query.ComposedView.",
+				viewName, e.field, e.source.table))
+		}
 		if e.source.schema == nil {
 			acc = append(acc, fmt.Sprintf("view %q: embed %q (source %q) has no schema", viewName, e.field, e.source.table))
 		} else {

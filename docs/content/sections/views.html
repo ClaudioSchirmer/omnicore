@@ -129,6 +129,15 @@ query.FromSchema(
     embed source collection resolves to an <code>UpstreamSubscription.Collection</code> — a local <code>ViewDefinition</code>
     name is rejected, because its recompose ripple would be one-hop and drift silently.
 </div>
+<div class="box">
+    <strong>Embeds are SINGLE-LEVEL — embed-of-embed is not supported.</strong> A view may declare
+    <em>any number</em> of top-level <code>Embed</code>/<code>EmbedMany</code>, but an embed's <code>*Source</code> may not
+    itself declare a further <code>Embed</code>/<code>EmbedMany</code>. A nested embed is rejected at boot
+    (<code>ValidateViewSchemas</code> aborts the boot). The reason is the same one-hop ripple: first-time compose and a full
+    rebuild would materialize a nested segment, but the recompose-ripple that keeps an embed fresh only reaches the view's
+    top-level embeds — a nested segment would materialize once and then drift silently. To reach two external hops, embed
+    each one at the top level, or join at read time with a <a href="#views~views-composed">ComposedView</a>.
+</div>
 <p>
     The embedded segment is kept fresh by the <strong>recompose-ripple</strong>: when the upstream source collection
     changes, every dependent view that embeds it is recomposed (surgically, per element). Declaration, the ripple, the
