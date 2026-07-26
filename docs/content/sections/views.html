@@ -299,6 +299,12 @@ query.FromSchema(
         type-anchored schema declaring <code>.SharedBase(...)</code> back to the SAME base table with an
         equivalent declaration (checked when the role is declared, so <code>.Schema(base)</code> comes before
         the first <code>.Role(...)</code>); a wrong-kind schema or a role-less view is a boot error.</li>
+    <li><strong>The base-kind gate is symmetric.</strong> The two constructors are type-exclusive in
+        <em>both</em> directions: a <code>SharedBaseView</code> rejects a plain <code>core.NewTableSchema</code>
+        (above), and a regular <code>query.View</code> rejects a <code>core.NewSharedBaseSchema</code> root — a
+        shared identity is projected only through <code>SharedBaseView(name).Schema(base).Role(...)</code>, never a
+        plain view. Either mis-wire is a fatal boot error, so a shared-base schema can never be silently flattened
+        into an ordinary view document.</li>
     <li>Segment collisions (role vs base-child vs embed) are boot errors, like every other
         double-producer segment.</li>
     <li><strong>The role set participates in the rebuild hash</strong>: adding/removing a role, or

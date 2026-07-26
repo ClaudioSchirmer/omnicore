@@ -11,6 +11,16 @@ with `1.0.0`.
 
 ## [Unreleased]
 
+### Fixed
+
+- The view base-kind boot gate is now **symmetric**. A `query.SharedBaseView`
+  already rejected a non-shared-base `.Schema(...)`; the mirror was missing — a
+  regular `query.View` rooted at a `core.NewSharedBaseSchema` was silently
+  accepted and would flatten a shared identity into an ordinary view document.
+  `ValidateViewSchemas` now also rejects that mis-wire at boot with an
+  explanatory message, so the two constructors are type-exclusive in both
+  directions.
+
 ## [0.37.0] - 2026-07-25
 
 ### Changed
