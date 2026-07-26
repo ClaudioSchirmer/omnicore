@@ -38,15 +38,13 @@ import (
 // of a moved child removes the element from one and upserts it into the other.
 
 // surgicalEmbedStages builds the single $set stage for one upstream event
-// (after == nil means the mirror doc was deleted). Returns nil when any embed
-// source declares NESTED embeds — the element in hand carries no nested
-// content, so the caller must fall back to a full recompose.
+// (after == nil means the mirror doc was deleted). Returns nil when no embed
+// contributes a $set (nothing to edit surgically), so the caller falls back to
+// a full recompose. Embeds are single-level, so every embed edits in place —
+// there is no nested content to force the fallback.
 func surgicalEmbedStages(embeds []embedDef, upstreamID string, after Document) []Document {
 	set := Document{}
 	for _, e := range embeds {
-		if len(e.source.embeds) > 0 {
-			return nil
-		}
 		if e.many {
 			set[e.field] = surgicalManyExpr(e, upstreamID, after)
 			continue
@@ -133,7 +131,7 @@ func surgicalElement(id string, after Document) Document {
 // same id → no-op. A missing mirror doc repairs the segment to the explicit
 // null under the same guard (a stale element from a dead reference clears; a
 // later mirror insert re-heals through its own ripple).
-func repairDanglingOneToOne(ctx context.Context, mongo ReadModelStore, resolver *ViewResolver, eng core.RelationalEngine, composer *Composer, view *ViewDefinition, id string, written Document) {
+func repairDanglingOneToOne(ctx context.Context, mongo ReadModelStore, resolver *ViewResolver, eng core.RelationalEngine, view *ViewDefinition, id string, written Document) {
 	for _, e := range view.embeds {
 		if e.many || !e.source.isMongo {
 			continue
@@ -157,15 +155,7 @@ func repairDanglingOneToOne(ctx context.Context, mongo ReadModelStore, resolver 
 		if len(docs) == 0 {
 			val = lit(nil)
 		} else {
-			elem := docs[0]
-			if len(e.source.embeds) > 0 && composer != nil {
-				if nerr := composer.applyEmbeds(ctx, elem, schemaPK(e.source.schema), e.source.embeds, false); nerr != nil {
-					log.Printf("sync: WARNING — 1:1 embed repair nested-embed compose failed on view %q doc %q (segment %q): %v — segment stays repairable by the next event",
-						view.name, id, e.field, nerr)
-					continue
-				}
-			}
-			val = lit(elem)
+			val = lit(docs[0])
 		}
 		stages := []Document{{"$set": Document{
 			e.field: Document{"$cond": []any{

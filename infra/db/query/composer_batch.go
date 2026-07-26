@@ -385,8 +385,9 @@ func (c *Composer) findEmbedsGrouped(ctx context.Context, coll PhysicalCollectio
 //   - 1:1: a parent with a nil/absent FK, or no matching embed doc, leaves the
 //     field ABSENT; otherwise it is the single matched doc.
 //
-// Nested embeds recurse batched across the whole fetched set, so a chain of
-// embeds collapses to one $in per level per batch, not one per parent per level.
+// Embeds are single-level (a source carries no embeds of its own), so this
+// resolves exactly the view's top-level embeds — one $in per embed source, no
+// descent.
 func (c *Composer) applyEmbedsBatch(ctx context.Context, docs []Document, parentPK string, embeds []embedDef, includeArchived bool) error {
 	if len(embeds) == 0 || len(docs) == 0 {
 		return nil
@@ -396,7 +397,6 @@ func (c *Composer) applyEmbedsBatch(ctx context.Context, docs []Document, parent
 			"(builder constructed without NewComposerWithMongo)")
 	}
 	for _, e := range embeds {
-		srcPK := schemaPK(e.source.schema)
 		coll := c.resolver.Active(e.source.table)
 		if e.many {
 			// 1:N — embed.JoinColumn == parent.PK.
@@ -410,18 +410,12 @@ func (c *Composer) applyEmbedsBatch(ctx context.Context, docs []Document, parent
 			if err != nil {
 				return err
 			}
-			var nested []Document
 			for _, doc := range docs {
 				v, ok := doc[parentPK]
 				if !ok || v == nil {
 					continue
 				}
-				rows := grouped[fmt.Sprintf("%v", v)]
-				doc[e.field] = rows
-				nested = append(nested, rows...)
-			}
-			if err := c.applyEmbedsBatch(ctx, nested, srcPK, e.source.embeds, false); err != nil {
-				return err
+				doc[e.field] = grouped[fmt.Sprintf("%v", v)]
 			}
 		} else {
 			// 1:1 — embed._id == parent[JoinColumn].
@@ -435,7 +429,6 @@ func (c *Composer) applyEmbedsBatch(ctx context.Context, docs []Document, parent
 			if err != nil {
 				return err
 			}
-			var nested []Document
 			for _, doc := range docs {
 				// Unresolved 1:1 → explicit null, same reason as the per-row
 				// path: $set-merged writes would keep a stale sub-document if
@@ -451,10 +444,6 @@ func (c *Composer) applyEmbedsBatch(ctx context.Context, docs []Document, parent
 					continue
 				}
 				doc[e.field] = rows[0]
-				nested = append(nested, rows[0])
-			}
-			if err := c.applyEmbedsBatch(ctx, nested, srcPK, e.source.embeds, false); err != nil {
-				return err
 			}
 		}
 	}

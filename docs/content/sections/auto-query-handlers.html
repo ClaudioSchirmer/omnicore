@@ -727,10 +727,11 @@ var CustomerView = query.View("customers").
 // External embeds need .As(...) (no Go type to derive the segment from);
 // .FK(...) names the parent doc FK on a one-to-one Embed.
 //
-// Embeds are SINGLE-LEVEL: an embed source may NOT declare a further Embed/
-// EmbedMany (embed-of-embed is a fatal boot error). "customer" (customers
-// service) and "shipments" (logistics service) are each ONE top-level external
-// hop; a deeper join composes at read time with a ComposedView.
+// Embeds are SINGLE-LEVEL: a *Source exposes no Embed/EmbedMany builder, so an
+// embed source cannot nest a further embed (embed-of-embed does not compile).
+// "customer" (customers service) and "shipments" (logistics service) are each
+// ONE top-level external hop; a deeper join composes at read time with a
+// ComposedView.
 var SaleView = query.View("sales_view").
     Version(1).
     Schema(views.SaleSchema()).                          // sale + its own line items (a .Child) auto-project

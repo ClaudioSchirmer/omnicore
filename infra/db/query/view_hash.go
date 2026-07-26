@@ -159,7 +159,11 @@ func writeEmbedList(w *canonicalWriter, embeds []embedDef) {
 		// for one-to-one — so an FK change still moves the rebuild hash.
 		w.writeString(e.JoinColumn())
 		w.writeBool(e.source.isMongo)
-		writeEmbedList(w, e.source.embeds)
+		// Embeds are single-level: a source carries no nested embeds. Emit the
+		// empty-list encoding (length 0) that the old nested writeEmbedList call
+		// produced for every real (non-nested) view, so the RebuildHash stays
+		// byte-identical across this refactor — no spurious drift/rebuild.
+		w.writeInt(0)
 	}
 }
 

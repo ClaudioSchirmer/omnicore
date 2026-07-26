@@ -283,7 +283,9 @@ const (
         <tr>
             <td><code>Embed</code> / <code>EmbedMany</code></td>
             <td>An EXTERNAL collection (an upstream projection or a derived local view) nested into the
-                document under a declared segment, joined by FK at compose time.</td>
+                document under a declared segment, joined by FK at compose time. <strong>Single-level</strong>:
+                an embed source exposes no <code>Embed</code>/<code>EmbedMany</code> builder, so embed-of-embed
+                does not compile.</td>
             <td>Materialized at write time; recompose-ripple on source changes</td>
             <td><a href="#views~views-embed">Views</a></td>
         </tr>
@@ -304,7 +306,8 @@ const (
         <tr>
             <td><code>ComposedView</code></td>
             <td>An existing view enriched at READ TIME with segments fetched by key from other views —
-                a code-side join, no new collection.</td>
+                a code-side join, no new collection. <strong>Single-level</strong>: a leg is always a plain
+                view, never another <code>ComposedView</code> (no link-of-link).</td>
             <td><strong>Never materialized, never synced</strong> — always as fresh as the underlying views</td>
             <td><a href="#views~views-composed">Views</a></td>
         </tr>

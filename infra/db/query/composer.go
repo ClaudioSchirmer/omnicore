@@ -435,7 +435,6 @@ func (c *Composer) fetchMongoEmbed(ctx context.Context, doc Document, parentPK s
 		return fmt.Errorf("composer: view embed on Mongo collection %q requires a MongoDB handle "+
 			"(builder constructed without NewComposerWithMongo)", e.source.table)
 	}
-	srcPK := schemaPK(e.source.schema)
 	if e.many {
 		id, ok := doc[parentPK]
 		if !ok || id == nil {
@@ -444,11 +443,6 @@ func (c *Composer) fetchMongoEmbed(ctx context.Context, doc Document, parentPK s
 		docs, err := c.mongo.FindManyByField(ctx, c.resolver.Active(e.source.table), e.JoinColumn(), id)
 		if err != nil {
 			return err
-		}
-		for _, d := range docs {
-			if err := c.applyEmbeds(ctx, d, srcPK, e.source.embeds, false); err != nil {
-				return err
-			}
 		}
 		doc[e.field] = docs
 		return nil
@@ -470,11 +464,7 @@ func (c *Composer) fetchMongoEmbed(ctx context.Context, doc Document, parentPK s
 		doc[e.field] = nil
 		return nil
 	}
-	row := docs[0]
-	if err := c.applyEmbeds(ctx, row, srcPK, e.source.embeds, false); err != nil {
-		return err
-	}
-	doc[e.field] = row
+	doc[e.field] = docs[0]
 	return nil
 }
 

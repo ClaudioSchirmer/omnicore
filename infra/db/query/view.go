@@ -77,7 +77,6 @@ type Source struct {
 	isMongo   bool
 	schema    *core.TableSchema
 	goSegment string
-	embeds    []embedDef
 }
 
 func View(name string) *ViewDefinition {
@@ -234,21 +233,21 @@ func (s *Source) As(goSegment string) *Source {
 	return s
 }
 
-func (s *Source) Embed(field string, src *Source) *Source {
-	s.embeds = append(s.embeds, embedDef{field: field, source: src, many: false})
-	return s
-}
-
-func (s *Source) EmbedMany(field string, src *Source) *Source {
-	s.embeds = append(s.embeds, embedDef{field: field, source: src, many: true})
-	return s
-}
+// A *Source deliberately exposes NO Embed/EmbedMany builder AND carries no
+// embeds of its own: embeds are single-level BY CONSTRUCTION, declaration
+// through compose. Only a ViewDefinition declares embeds (top-level, any
+// number); an embed's source cannot nest a further one, so embed-of-embed is
+// not expressible and does not compile — and no composer/hash/index/ripple path
+// descends past the top level, because there is nothing below it. The reason it
+// was never a supported surface: the recompose-ripple that keeps an embed fresh
+// is one-hop and only reaches a view's top-level embeds, so a nested segment
+// would materialize once and then drift silently. To reach two external hops,
+// embed each at the top level, or join at read time with query.ComposedView.
 
 func (s *Source) Table() string      { return s.table }
 func (s *Source) JoinKey() string    { return s.joinKey }
 func (s *Source) IsMongo() bool      { return s.isMongo }
 func (s *Source) Collection() string { return s.table }
-func (s *Source) Embeds() []embedDef { return s.embeds }
 
 // SchemaDef returns the embed source's core.TableSchema (always set — FromSchema is
 // the only constructor). Symmetric with ViewDefinition.SchemaDef().
@@ -347,26 +346,12 @@ func ValidateViewSchemas(views []*ViewDefinition) error {
 }
 
 func appendEmbedSchemaProblems(acc []string, viewName string, embeds []embedDef) []string {
+	// Embed-of-embed needs no boot guard: a *Source exposes no Embed/EmbedMany
+	// builder, so a nested embed is not expressible and fails to compile (see the
+	// note on Source). This validator only checks each top-level embed's own schema.
 	for _, e := range embeds {
 		if e.source == nil {
 			continue
-		}
-		// Embed-of-embed is NOT supported. A view may declare any number of
-		// top-level Embed/EmbedMany, but an embed's source may not itself declare
-		// a further Embed/EmbedMany. First-time compose and a full rebuild would
-		// materialize a nested segment, but the recompose-ripple that keeps an
-		// embed fresh is one-hop, so a nested embed would materialize once and then
-		// drift silently. Reject the whole shape at boot rather than ship silent
-		// staleness; flatten to top-level embeds, or join at read time with a
-		// ComposedView.
-		if len(e.source.embeds) > 0 {
-			acc = append(acc, fmt.Sprintf(
-				"view %q: embed %q (source %q) declares its own nested embed(s) — embed-of-embed is NOT "+
-					"supported. Embed/EmbedMany compose a SINGLE external level; the recompose-ripple that keeps "+
-					"an embed fresh is one-hop, so a nested embed would materialize once and then drift silently. "+
-					"Keep any number of top-level Embed/EmbedMany on the view, or join at read time with "+
-					"query.ComposedView.",
-				viewName, e.field, e.source.table))
 		}
 		if e.source.schema == nil {
 			acc = append(acc, fmt.Sprintf("view %q: embed %q (source %q) has no schema", viewName, e.field, e.source.table))
@@ -414,8 +399,10 @@ func appendEmbedSchemaProblems(acc []string, viewName string, embeds []embedDef)
 					viewName, e.field, e.source.table))
 			}
 		}
-		acc = appendSegmentCollisions(acc, viewName, e.source.schema, e.source.embeds, nil)
-		acc = appendEmbedSchemaProblems(acc, viewName, e.source.embeds)
+		// The source's own schema-derived child segments still get a collision
+		// check; embeds are single-level, so a source contributes no further
+		// embeds to validate.
+		acc = appendSegmentCollisions(acc, viewName, e.source.schema, nil, nil)
 	}
 	return acc
 }
@@ -537,9 +524,6 @@ func viewEmbedsMongoCollection(embeds []embedDef, collection string) bool {
 		if e.source.IsMongo() && e.source.Collection() == collection {
 			return true
 		}
-		if len(e.source.embeds) > 0 && viewEmbedsMongoCollection(e.source.embeds, collection) {
-			return true
-		}
 	}
 	return false
 }
@@ -586,9 +570,6 @@ func indexEmbeds(embeds []embedDef, v *ViewDefinition, idx viewIndex) {
 			idx.byMongoColl[e.source.table] = append(idx.byMongoColl[e.source.table], v)
 		} else {
 			idx.byPGTable[e.source.table] = append(idx.byPGTable[e.source.table], v)
-		}
-		if len(e.source.embeds) > 0 {
-			indexEmbeds(e.source.embeds, v, idx)
 		}
 	}
 }

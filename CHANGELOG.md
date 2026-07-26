@@ -11,17 +11,27 @@ with `1.0.0`.
 
 ## [Unreleased]
 
+## [0.38.0] - 2026-07-26
+
 ### Changed
 
-- **embed-of-embed is rejected at boot; embeds are single-level.** A view may
-  declare any number of top-level `Embed`/`EmbedMany`, but an embed's `*Source`
-  may no longer declare a further `Embed`/`EmbedMany`: `ValidateViewSchemas` now
-  aborts the boot naming the offending view and embed. Nesting was never a
-  supported surface — first-time compose and a full rebuild materialized a nested
-  segment, but the recompose-ripple that keeps an embed fresh is one-hop and only
-  reaches a view's top-level embeds, so a nested segment would materialize once
-  and then drift silently. *Workaround*: embed each external hop at the top level,
-  or join at read time with a `ComposedView`.
+- **breaking** — **embeds are single-level by construction; `Source.Embed`,
+  `Source.EmbedMany` and `Source.Embeds()` are removed.** A view still declares
+  any number of top-level `Embed`/`EmbedMany`, but a `*Source` no longer carries
+  embeds of its own nor exposes a builder for them — so embed-of-embed is not
+  expressible and fails to compile, never a runtime surprise (the former boot
+  rejection in `ValidateViewSchemas` is removed with the surface it guarded).
+  Single-level now holds end to end: the composer, rebuild-hash, index,
+  recompose-ripple and export paths no longer descend past a view's top-level
+  embeds, because a source has nothing below it. Nesting was never a supported
+  shape — first-time compose and a full rebuild materialized a nested segment,
+  but the recompose-ripple that keeps an embed fresh is one-hop and only reaches
+  a view's top-level embeds, so a nested segment would materialize once and then
+  drift silently. Rebuild hashes are unchanged (a real view's empty nested list
+  always hashed the same), so no view rebuilds on upgrade. *Migration*: no
+  working program breaks (a nested embed always failed at boot); to reach two
+  external hops, embed each at the top level, or join at read time with a
+  `ComposedView`.
 ### Fixed
 
 - The view base-kind boot gate is now **symmetric**. A `query.SharedBaseView`

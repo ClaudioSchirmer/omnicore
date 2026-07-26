@@ -130,13 +130,15 @@ query.FromSchema(
     name is rejected, because its recompose ripple would be one-hop and drift silently.
 </div>
 <div class="box">
-    <strong>Embeds are SINGLE-LEVEL — embed-of-embed is not supported.</strong> A view may declare
-    <em>any number</em> of top-level <code>Embed</code>/<code>EmbedMany</code>, but an embed's <code>*Source</code> may not
-    itself declare a further <code>Embed</code>/<code>EmbedMany</code>. A nested embed is rejected at boot
-    (<code>ValidateViewSchemas</code> aborts the boot). The reason is the same one-hop ripple: first-time compose and a full
-    rebuild would materialize a nested segment, but the recompose-ripple that keeps an embed fresh only reaches the view's
-    top-level embeds — a nested segment would materialize once and then drift silently. To reach two external hops, embed
-    each one at the top level, or join at read time with a <a href="#views~views-composed">ComposedView</a>.
+    <strong>Embeds are SINGLE-LEVEL — by construction, not by a runtime check.</strong> A view may declare
+    <em>any number</em> of top-level <code>Embed</code>/<code>EmbedMany</code>, but a <code>*Source</code> exposes
+    <em>no</em> <code>Embed</code>/<code>EmbedMany</code> builder — only <code>FromSchema</code>, <code>FK</code> and
+    <code>As</code>. An embed's source therefore cannot nest a further embed: embed-of-embed is <strong>not expressible and
+    fails to compile</strong>, never a boot or runtime surprise. The reason it was never a supported shape is the one-hop
+    ripple: first-time compose and a full rebuild would materialize a nested segment, but the recompose-ripple that keeps an
+    embed fresh only reaches the view's top-level embeds — a nested segment would materialize once and then drift silently.
+    To reach two external hops, embed each one at the top level, or join at read time with a
+    <a href="#views~views-composed">ComposedView</a>.
 </div>
 <p>
     The embedded segment is kept fresh by the <strong>recompose-ripple</strong>: when the upstream source collection
@@ -349,6 +351,18 @@ query.FromSchema(
         hand-writing two reads and a merge loop, and without creating yet another materialized
         projection.
     </p>
+    <div class="box">
+        <strong>A ComposedView is SINGLE-LEVEL — there is NO link-of-link.</strong> Both the primary and
+        <em>every</em> leg are plain views. A leg is always a materialized view (<code>JoinView</code>) or a
+        locally materialized external collection (<code>JoinUpstream</code>) — <strong>never</strong> another
+        <code>ComposedView</code>. The type system guarantees it: <code>Link</code>/<code>LinkMany</code> take
+        a <code>*Leg</code> that can only be built from a view or an external schema, so a
+        composition-of-composition <strong>does not compile</strong> — exactly as embed-of-embed does not.
+        The only depth a leg carries is its OWN materialization: the leg's children, siblings, roles and
+        embeds arrive just as a direct read of that view would — that is the leg view's shape, not a second
+        join hop. To reach further, add more legs at the <em>same</em> level on one ComposedView, or push the
+        data into the leg view's own aggregate.
+    </div>
 
     <h4 id="views-composed-declare">Declaring one</h4>
     <pre><code>// infra — same package and vocabulary as View / SharedBaseView / FromSchema.

@@ -188,11 +188,11 @@ core.NewExternalSchema("users").PK("id").Field("Email", "mail")</code></pre>
     grandchild would silently never persist. Model the sub-collection as a <strong>separate aggregate</strong> (its own
     root + FK). On the <em>read side</em>, a schema's own children (like a shared base's children) <strong>project
     automatically</strong> into the Mongo view — the composer nests each declared <code>Child(...)</code> wherever the
-    schema is used, so a child on a view root or on an embed source is materialized, not ignored. An embed source may
-    NOT declare a further <code>Embed(...)</code> / <code>EmbedMany(...)</code>, though — embed-of-embed is a fatal boot
-    error (embeds are single-level; reach a second external hop with a top-level embed or a read-time
-    <code>ComposedView</code>). A redundant explicit embed of a child the schema already projects (same derived segment)
-    is also a boot error.
+    schema is used, so a child on a view root or on an embed source is materialized, not ignored. An embed source
+    <em>cannot</em> declare a further <code>Embed(...)</code> / <code>EmbedMany(...)</code>, though — a <code>*Source</code>
+    exposes no such builder, so embed-of-embed does not compile (embeds are single-level; reach a second external hop with a
+    top-level embed or a read-time <code>ComposedView</code>). A redundant explicit embed of a child the schema already
+    projects (same derived segment) is still a boot error.
 </div>
 
 <h3>The managed columns — by presence, not a flag</h3>

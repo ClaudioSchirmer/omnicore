@@ -51,6 +51,13 @@ const FrameworkDefaultMaxLinkManyLimit int64 = 100
 // UpstreamSubscription declares). A leg addressing another service's live
 // storage is forbidden — the request path never leaves the process.
 //
+// Composition is SINGLE-LEVEL — there is NO link-of-link. A leg is NEVER another
+// ComposedView: Link/LinkMany take a *Leg that JoinView/JoinUpstream build only
+// from a view or an external schema, so a composition-of-composition does not
+// compile (depth is 1, enforced by the type system, exactly as embed-of-embed
+// is). The only depth a leg carries is its own materialization (its children,
+// siblings, roles and embeds), not a second join hop.
+//
 // Consumption is unchanged by design: the composed name goes wherever a view
 // name goes (FindByParamsQueryHandler{Reader, View: "gadgets_full"}, auto or
 // manual wiring, GraphQL, tabular export).

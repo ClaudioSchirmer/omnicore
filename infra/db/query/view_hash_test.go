@@ -296,19 +296,6 @@ func TestRebuildHash_StableUnderIndexChanges(t *testing.T) {
 	}
 }
 
-// Nested source.embeds participate in the hash.
-
-func TestRebuildHash_NestedEmbedChange(t *testing.T) {
-	a := View("orders").
-		EmbedMany("lines", pgEmbed("order_lines", "order_id").
-			Embed("product", pgEmbed("products", "").FK("product_id")))
-	b := View("orders").
-		EmbedMany("lines", pgEmbed("order_lines", "order_id"))
-	if a.RebuildHash() == b.RebuildHash() {
-		t.Error("RebuildHash same despite nested embed change")
-	}
-}
-
 // Version participates in RebuildHash — bumping the version always produces
 // a new hash even if every other declarative field is identical. Closes the
 // loop between "developer signals intent via Version(N)" and "framework
