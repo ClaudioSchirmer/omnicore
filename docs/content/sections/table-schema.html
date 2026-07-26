@@ -816,148 +816,16 @@ func StudentSchema() *core.TableSchema {
         <code>.Child(...)</code>, exactly like an aggregate child (model a separate aggregate for deeper nesting).</li>
 </ul>
 
+
 <h3 id="shared-base-view">Shared-base view — the all-in-one identity projection</h3>
 <p>
-    A second read-side view kind, alongside <code>query.View</code>: a view <strong>rooted at a
-    SharedBase</strong> (the deduplicated identity table — see
-    <a href="#table-schema~shared-base">the shared base above</a>). Where each role view projects ONE
-    specialization (a <code>users</code> document, an <code>employees</code> document), a
-    <code>SharedBaseView</code> projects the WHOLE composed aggregate: one Mongo document per shared
-    identity, carrying the base's shared fields flat at the root, the base's native children nested at
-    the root, and <strong>one sub-document per declared role</strong> — the read-side mirror of the
-    write side's third-normal-form normalization, denormalized back into a single "everything about
-    this person" document.
+    The <strong>read-side</strong> projection of a shared base — the <code>SharedBaseView</code>
+    (<code>SharedBaseView(name).Schema(base).Role(...)</code>): one Mongo document per identity with the base
+    fields flat and one sub-document per role, plus its document shape, role selection (active-first),
+    lifecycle and reading — is declared and documented under
+    <a href="#views~views-sharedbase">Views → SharedBaseView</a>. The write-side base schema it composes
+    (the <code>core.NewSharedBaseSchema</code> identity) is <a href="#table-schema~shared-base">above</a>.
 </p>
-
-<pre><code>func PersonView() *query.ViewDefinition {
-    return query.SharedBaseView("persons").
-        Schema(personBase()).                  // the core.NewSharedBaseSchema identity
-        Role(UserSchema()).                    // repeatable — the role set is open-ended
-        Role(EmployeeSchema()).
-        Version(1).
-        Indexes(
-            query.Index("document"),           // the natural key
-            query.TextIndex("name", "email").DefaultLanguage("english"),
-        )
-}</code></pre>
-
-<h4>Document shape</h4>
-<pre><code>{
-  "_id":      "&lt;UUIDv5(document)&gt;",          // the base's deterministic PK
-  "document": "52998224725",                  // base fields — FLAT at the root
-  "name":     "Ana Souza",
-  "Addresses": [ ... ],                       // base-children — nested at the ROOT (shared across roles)
-  "User":     { "user_name": "ana", "email_notification": true },   // role segment: fields + siblings flat
-  "Employee": { "employee_number": "E-77",                          // role segment
-                "Dependents":   [ { "dep_name": "Rita", ... } ],    // role children — nested INSIDE the segment
-                "JobHistories": [ ... ] }
-}</code></pre>
-<ul>
-    <li><strong><code>_id</code> = the base PK</strong> — <code>UUIDv5(naturalKey)</code>, stable
-        under both role link models (shared-PK and separate-FK).</li>
-    <li><strong>Role segments are named by the role's Go type</strong> (<code>"User"</code>,
-        <code>"Employee"</code>) — the same derivation rule nested children use, minus the
-        pluralization: a role is a single optional sub-document, not a collection. The wire name comes
-        from your Response DTO's json tag (<code>json:"user"</code>), exactly like every other field.</li>
-    <li><strong>An absent role is an explicit <code>null</code> segment</strong> — the store upserts
-        via <code>$set</code>, so a vanished role must overwrite its stale segment. Response DTOs
-        declare role fields as pointers with <code>omitempty</code> (the sparse-render contract), so a
-        null segment simply disappears from the wire.</li>
-    <li><strong>Base fields never repeat inside a segment</strong>; a role's siblings merge flat
-        inside its segment; a role's own children nest inside it, keyed on the role row's own PK.</li>
-</ul>
-
-<h4>Role selection — the identity's current specialization</h4>
-<div class="box warn">
-    <strong>A role segment is ONE specialization, never a list — it follows the DOMAIN, not the relational rows.</strong>
-    A <code>SharedBaseView</code> models a party-role: an identity that <em>plays</em> a role. Each role segment therefore
-    holds exactly one sub-document — the identity's <strong>current</strong> representative for that role: the
-    <strong>active</strong> row if one exists, otherwise the <strong>most recently deactivated (archived)</strong> one.
-    This holds <strong>regardless of the link model</strong> — whether the role links through a separate FK
-    (<code>SharedBase(base, "person_id")</code>, which may accumulate archived remnants) or shares the base's id as its
-    own PK (<code>SharedBase(base, "id")</code>, capped at a single row). The relational table may hold many role rows for
-    one identity; the projected document still shows the one current specialization.
-    <strong>Need the identity plus a LIST of N role rows instead?</strong> Keep this write model and add a read-time
-    <a href="#query-side">ComposedView</a> that <code>LinkMany</code>s the role's own view onto the person by its FK — it
-    yields the full list at read time, without changing the SharedBase model.
-</div>
-<p>
-    Under the separate-FK model with active-only uniqueness (see the two DDL uniqueness contracts above), an identity may carry archived role remnants NEXT TO one
-    active row. The composer picks <strong>the row that represents the specialization's current
-    state</strong>:
-</p>
-<ol>
-    <li>the ACTIVE row (<code>fk = baseID AND deleted_at IS NULL</code>) — the one-active-role
-        invariant caps it at one;</li>
-    <li>otherwise the most recently archived remnant (<code>ORDER BY deleted_at DESC</code>), stored
-        WITH its soft-delete timestamp — hidden on default reads, surfaced by
-        <code>?includeArchived=true</code>;</li>
-    <li>otherwise the explicit <code>null</code> segment.</li>
-</ol>
-<p>
-    Remnant HISTORY is deliberately not enumerated in the person document — the role views with
-    <code>?includeArchived</code> cover it. A role without <code>SoftDelete</code> has no archived
-    state; a single FK fetch decides its segment.
-</p>
-
-<h4>Lifecycle &amp; sync</h4>
-<ul>
-    <li><strong>Document gate = the base's soft-delete.</strong> The base archives only when its last
-        active role archives (write-side convergence), so the root <code>deleted_at</code> gate hides
-        the person exactly when every specialization is archived. <code>DeleteOnArchive()</code> means
-        "drop the document when the BASE archives" — and archived role rows stop composing at all.</li>
-    <li><strong>Role events recompose the person document.</strong> The SyncEngine subscribes to every
-        role table's topic (mandatory: a role's ARCHIVE/UNARCHIVE emits only the role event — the base
-        convergence is SQL without its own outbox row). The base id it recomposes for comes straight
-        from the event payload's <code>_ids.base_id</code> — the write side stamps it on every role
-        event, so the resolution touches no database. The SharedBaseView document is then recomposed
-        from the relational source (the base row plus its role rows): the cross-row archived-remnant
-        pick is why this view keeps the composer instead of the payload-direct projection.</li>
-    <li><strong>Purge convergence.</strong> When the last role's DELETE also purges the identity
-        (<code>DeleteWhenUnreferenced</code>), the recompose finds no base row and removes the person
-        document.</li>
-    <li><strong>Base events route as root events</strong> (the base IS this view's root table):
-        INSERTED/UPDATED upsert, DELETED removes, ARCHIVED honors <code>DeleteOnArchive()</code>.</li>
-</ul>
-
-<h4>Reading it</h4>
-<p>
-    Everything a regular view offers applies unchanged — the same
-    <a href="#auto-query-handlers">Auto query handlers</a>, filter-operator vocabulary, keyset
-    pagination, <code>?fields=</code> sparse render, <code>?includeArchived</code>, field-level
-    <code>Restrict()</code>, GraphQL exposure and CSV/XLSX export. Role sub-fields address through the
-    segment: <code>?user.userName=ana</code>, <code>?employee.dependents.relationship=daughter</code>,
-    sort and projection likewise. On a default read an ARCHIVED role's whole segment is hidden (the
-    single-map counterpart of the archived-entry strip on child collections);
-    <code>?includeArchived=true</code> surfaces it with its <code>deletedAt</code>. Exports render
-    each role as a nested branch (role fields + siblings, then its child collections), never repeating
-    the base columns.
-</p>
-
-<h4>Rules &amp; validation</h4>
-<ul>
-    <li>The <code>.Schema(...)</code> must be a <code>core.NewSharedBaseSchema</code> declaration — attached
-        exactly like a regular view's root schema, and validated at boot. Each <code>Role</code> must be a
-        type-anchored schema declaring <code>.SharedBase(...)</code> back to the SAME base table with an
-        equivalent declaration (checked when the role is declared, so <code>.Schema(base)</code> comes before
-        the first <code>.Role(...)</code>); a wrong-kind schema or a role-less view is a boot error.</li>
-    <li>Segment collisions (role vs base-child vs embed) are boot errors, like every other
-        double-producer segment.</li>
-    <li><strong>The role set participates in the rebuild hash</strong>: adding/removing a role, or
-        changing any part of a role's schema closure, without bumping <code>Version(N)</code> is
-        detected as forgot-to-bump and aborts boot — same contract as every rebuild-relevant change
-        (see <a href="#mongo-schema-evolution">Mongo schema evolution</a>).</li>
-    <li><code>Embed</code>/<code>EmbedMany</code> still compose external data only, joined on the base
-        PK at the root.</li>
-</ul>
-
-<div class="box">
-    <strong>When to declare one.</strong> A SharedBaseView complements — never replaces — the role
-    views: keep <code>users</code>/<code>employees</code> for the per-role surfaces and add the person
-    view when a consumer needs the whole identity in one read (a 360° profile, a back-office screen, a
-    data export). It is one more projection over the same CDC stream: no extra writes, one more
-    recompose per role event.
-</div>
 
 <h3>Supported column shapes</h3>
 <div class="box">

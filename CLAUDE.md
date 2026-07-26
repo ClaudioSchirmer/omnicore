@@ -115,7 +115,7 @@ For any contract, behavior, field list, or example, open the mapped file under `
 | Auto query handlers (`QueryWithParams`/`QueryByID`), filter operators, control keys (`fields`/`sort`/`after`/`before`/`limit`/`onlyTotal`), tabular export (CSV/XLSX) | `auto-query-handlers.html` | Allowlist by tag; projector `func(map[string]any) R`; keyset pagination. |
 | Manual query handler (`NewQueryParser`, `ParseCriteria`, `RespondPaged`) | `custom-query-handler.html` | Escape hatch for bespoke parsing/envelopes. |
 | Concrete read lifecycle, composer, SyncEngine, keep-by-default archive | `read-lifecycle-map.html` | Mongo mirrors PG; `DeleteOnArchive()` opt-in for hot-tier. |
-| `SharedBaseView` — the all-in-one identity projection (base root + one sub-document per role) | `table-schema.html` (Shared-base view) | `SharedBaseView(name).Schema(base).Role(...)`; `_id` = base PK; role events recompose; active-first segment pick. |
+| `SharedBaseView` — the all-in-one identity projection (base root + one sub-document per role) | `views.html` (SharedBaseView) | `SharedBaseView(name).Schema(base).Role(...)`; `_id` = base PK; role events recompose; active-first segment pick. |
 
 ### Pipeline
 | Topic | Section | Essence |
@@ -126,6 +126,7 @@ For any contract, behavior, field list, or example, open the mapped file under `
 | Topic | Section | Essence |
 |---|---|---|
 | `TableSchema` — mandatory explicit Go-field↔column map; managed columns; boot checks; drives write+criteria+scan+view | `table-schema.html` | `NewTableSchema[T]`; no inference; one declaration, every consumer. |
+| Views — the read-side declaration: the three view kinds, the view-exclusive `NewExternalSchema`, `Embed`/`EmbedMany`, `SharedBaseView`, `ComposedView`, and the SyncEngine/recompose fan-out | `views.html` | `View(name).Schema(...)` (root derived from schema); `SharedBaseView(name).Schema(base).Role(...)`; `ComposedView(name).Primary(...)`; materialized vs read-time; a view updates by its schema(s). |
 | Cross-service communication — the channel decision matrix (sync internal → gRPC, sync external → httpclient, async facts → integration events, async view composition → `UpstreamSubscription`/`FromSchema` with ripple recompose + failure registry) | `service-to-service.html` | One canonical path per question; composition stays event-driven (B never reads A on the request path for VIEW data). |
 | Cache subsystem (`cache.Cache` port, Private vs Shared, memory/redis/custom) | `cache-subsystem.html` | DI-enforced split; typed `GetJSON`/`SetJSON` tolerate nil. |
 | httpclient — outbound HTTP (`Call[Req,Resp]`, tag binding, middleware chain, retry/cache/breaker/idempotency/TLS/streaming/HMAC, auth providers) | `httpclient.html` | Per-service transport; handlers never import it (adapter in `infra/external/`). |

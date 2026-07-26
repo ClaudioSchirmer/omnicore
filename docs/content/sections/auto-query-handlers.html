@@ -667,6 +667,15 @@ fwopenapi.Mount(d.OpenAPIRegistry, app, fiber.MethodGet, "/users.csv", csvH, csv
     <h3 id="qry-example">Full example</h3>
     <h4>1. Define the ViewDefinition</h4>
     <p>
+        View <strong>declaration</strong> — the three constructors, the external <code>NewExternalSchema</code>,
+        <code>Embed</code>/<code>EmbedMany</code>, <code>SharedBaseView</code>, <code>ComposedView</code> and the
+        SyncEngine/recompose fan-out — is covered canonically under <a href="#views">Views</a>. The example below shows it
+        in the context of wiring an auto query handler; note the embed sources (<code>CustomerProjection</code>/<code>ProductProjection</code>)
+        are EXTERNAL upstream mirrors of another service (see <a href="#service-to-service">Service-to-service</a>) —
+        embedding a <em>local</em> view is not supported, so join those at read time with a
+        <a href="#views~views-composed">ComposedView</a> instead.
+    </p>
+    <p>
         Every view is declared explicitly with the fluent <code>View(name)</code> builder. The root
         <code>.Schema(...)</code> is the aggregate's own write <code>TableSchema</code> — the same one the repository uses
         — so the whole internal closure (root / siblings / SharedBase / children) projects automatically. Each embed's
@@ -976,7 +985,7 @@ GET /users?role=admin
 
     <h3 id="aqh-composed">Wire deltas on a composed name</h3>
     <p>
-        A <a href="#query-side">ComposedView</a> name goes wherever a view name goes — same wrappers,
+        A <a href="#views~views-composed">ComposedView</a> name goes wherever a view name goes — same wrappers,
         same Request DTO reflection, same envelope. The wire behaves identically except for the
         segment-shaped additions:
     </p>
