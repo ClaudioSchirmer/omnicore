@@ -188,9 +188,11 @@ core.NewExternalSchema("users").PK("id").Field("Email", "mail")</code></pre>
     grandchild would silently never persist. Model the sub-collection as a <strong>separate aggregate</strong> (its own
     root + FK). On the <em>read side</em>, a schema's own children (like a shared base's children) <strong>project
     automatically</strong> into the Mongo view — the composer nests each declared <code>Child(...)</code> wherever the
-    schema is used, so a child on a view root or on an embed source is materialized, not ignored. Deeper cross-source
-    nesting still composes through nested <code>EmbedMany(...)</code> / <code>Embed(...)</code>; a redundant explicit embed
-    of a child the schema already projects (same derived segment) is a boot error.
+    schema is used, so a child on a view root or on an embed source is materialized, not ignored. An embed source may
+    NOT declare a further <code>Embed(...)</code> / <code>EmbedMany(...)</code>, though — embed-of-embed is a fatal boot
+    error (embeds are single-level; reach a second external hop with a top-level embed or a read-time
+    <code>ComposedView</code>). A redundant explicit embed of a child the schema already projects (same derived segment)
+    is also a boot error.
 </div>
 
 <h3>The managed columns — by presence, not a flag</h3>
@@ -1257,7 +1259,7 @@ func StudentSchema() *core.TableSchema {
         the roles that reference it). The idiomatic expression is the DDD one: the two aggregates reference each other by
         <code>domain.ID</code>, and the join itself — when it carries any data of its own (a role, a date, a quantity) —
         becomes an <strong>associative entity of its own</strong> (its own aggregate, holding the two foreign keys). On
-        the read side a view can still traverse the relationship through nested <code>EmbedMany</code>/<code>Embed</code>
-        across those aggregates; there is no junction/through-table primitive that materializes both sides
-        automatically.</li>
+        the read side a view composes the relationship with a top-level <code>Embed</code>/<code>EmbedMany</code>
+        (single-level — an embed source cannot nest a further embed) or a read-time <code>ComposedView</code> across those
+        aggregates; there is no junction/through-table primitive that materializes both sides automatically.</li>
 </ul>

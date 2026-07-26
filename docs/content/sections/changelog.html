@@ -9,6 +9,7 @@
     <div class="release">
         <div class="release-head"><span class="release-tag">Unreleased</span><span class="release-date">—</span></div>
         <ul>
+            <li><strong>Changed</strong> — <strong>embed-of-embed is rejected at boot — embeds are single-level.</strong> A view may declare any number of top-level <code>Embed</code>/<code>EmbedMany</code>, but an embed's <code>*Source</code> may no longer declare a further <code>Embed</code>/<code>EmbedMany</code>: <code>ValidateViewSchemas</code> now aborts the boot naming the offending view and embed. Nesting was never a supported surface — first-time compose and a full rebuild materialized a nested segment, but the recompose-ripple that keeps an embed fresh is one-hop and only reaches a view's top-level embeds, so a nested segment would materialize once and then drift silently. To reach two external hops, embed each at the top level, or join at read time with a <code>ComposedView</code>. See <a href="#views~views-embed">Views → Embed and EmbedMany</a>.</li>
         </ul>
     </div>
     <div class="release">
