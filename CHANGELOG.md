@@ -11,6 +11,8 @@ with `1.0.0`.
 
 ## [Unreleased]
 
+## [0.37.0] - 2026-07-25
+
 ### Changed
 
 - **breaking** — **a view's root table is derived from its schema; `.Root(table)`
