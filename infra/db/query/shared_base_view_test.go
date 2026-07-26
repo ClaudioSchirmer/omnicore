@@ -171,6 +171,23 @@ func TestValidateViewSchemas_SharedBaseView(t *testing.T) {
 	}
 }
 
+// TestValidateViewSchemas_PlainViewRejectsSharedBaseSchema proves the mirror of
+// the base-kind gate: a regular query.View may NOT be rooted at a
+// core.NewSharedBaseSchema — that identity is a SharedBaseView's job. The two
+// constructors are type-exclusive in BOTH directions.
+func TestValidateViewSchemas_PlainViewRejectsSharedBaseSchema(t *testing.T) {
+	// A plain View rooted at a shared-base schema → boot error.
+	err := ValidateViewSchemas([]*ViewDefinition{View("plain").Schema(sbvBase()).Version(1)})
+	if err == nil || !strings.Contains(err.Error(), "is a core.NewSharedBaseSchema") {
+		t.Fatalf("a plain View rooted at a shared-base schema must be rejected, got %v", err)
+	}
+	// The positive control: a plain View rooted at a regular TableSchema passes.
+	ok := View("plain").Schema(core.NewTableSchema[embedFixture]("users").PK("id").SoftDelete("deleted_at")).Version(1)
+	if err := ValidateViewSchemas([]*ViewDefinition{ok}); err != nil {
+		t.Fatalf("a plain View over a regular TableSchema must pass, got %v", err)
+	}
+}
+
 // --- composer ----------------------------------------------------------------
 
 // sbvComposerEngine scripts the relational reads of a two-role person and
