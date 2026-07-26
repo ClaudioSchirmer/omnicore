@@ -95,13 +95,14 @@ func buildExportNode(schema *core.TableSchema, embeds []embedDef, goSegment, wir
 			appendSchemaColumns(node, base)
 		}
 	}
-	// External embeds nest as children (recursive to view depth).
+	// External embeds nest as children. Embeds are single-level, so a source
+	// contributes no further embeds (nil) — only its own schema-derived closure.
 	for _, e := range embeds {
 		if e.source == nil {
 			continue
 		}
 		node.Children = append(node.Children, buildExportNode(
-			e.source.schema, e.source.embeds,
+			e.source.schema, nil,
 			resolveGoSegment(e), // parent-side Go field (renderer descends doc[goSegment])
 			e.field,             // embed doc field = ?fields wire segment
 		))

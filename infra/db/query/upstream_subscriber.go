@@ -774,7 +774,7 @@ func (s *UpstreamSubscriber) rippleUpsertOne(ctx context.Context, v *ViewDefinit
 	if failed = s.rippleApplyOne(ctx, v, upstreamID, localID, stages, true); failed {
 		return true
 	}
-	repairDanglingOneToOne(ctx, s.mongo, s.resolver, s.eng, s.composer, v, localID, doc)
+	repairDanglingOneToOne(ctx, s.mongo, s.resolver, s.eng, v, localID, doc)
 	return false
 }
 
@@ -882,8 +882,9 @@ func (s *UpstreamSubscriber) readLocalDoc(ctx context.Context, id string) Docume
 	return docs[0]
 }
 
-// collectMongoEmbeds returns every embed (recursively, including nested) whose
-// source is the given upstream Mongo collection.
+// collectMongoEmbeds returns every embed whose source is the given upstream
+// Mongo collection. Embeds are single-level, so this walks the view's top-level
+// embeds only — a source has no nested embeds to descend into.
 func collectMongoEmbeds(embeds []embedDef, collection string) []embedDef {
 	var out []embedDef
 	for _, e := range embeds {
@@ -893,7 +894,6 @@ func collectMongoEmbeds(embeds []embedDef, collection string) []embedDef {
 		if e.source.IsMongo() && e.source.Collection() == collection {
 			out = append(out, e)
 		}
-		out = append(out, collectMongoEmbeds(e.source.embeds, collection)...)
 	}
 	return out
 }
@@ -996,9 +996,6 @@ func findMongoJoinField(embeds []embedDef, collection string) string {
 	for _, e := range embeds {
 		if e.source != nil && e.source.IsMongo() && e.source.Collection() == collection {
 			return e.JoinColumn()
-		}
-		if jf := findMongoJoinField(e.source.embeds, collection); jf != "" {
-			return jf
 		}
 	}
 	return ""

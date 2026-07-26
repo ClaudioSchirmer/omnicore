@@ -92,7 +92,7 @@ func newViewNode(schema *core.TableSchema, embeds []embedDef) *ViewNode {
 		ve := &viewEmbed{
 			goSegment: seg,
 			docField:  e.field,
-			node:      newViewNode(e.source.schema, e.source.embeds),
+			node:      newViewNode(e.source.schema, nil),
 		}
 		n.embeds[seg] = ve
 		n.embedsByDoc[e.field] = ve

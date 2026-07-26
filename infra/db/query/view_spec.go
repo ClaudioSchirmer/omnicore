@@ -643,7 +643,7 @@ func collectComposedColumns(schema *core.TableSchema, embeds []embedDef, prefix 
 			continue
 		}
 		addComposedColumn(set, prefix, e.field)
-		collectComposedColumns(e.source.schema, e.source.embeds, joinColumnPrefix(prefix, e.field), set)
+		collectComposedColumns(e.source.schema, nil, joinColumnPrefix(prefix, e.field), set)
 	}
 	if schema != nil {
 		// The SharedBase's native children (base-children) nest under their derived

@@ -169,15 +169,7 @@ func TestNewViewNode_NilSourceAndSegmentFallback(t *testing.T) {
 	}
 }
 
-// ─── view.go: Source.Embeds, resolveGoSegment, DependentMongoViews, index ────
-
-func TestSource_Embeds(t *testing.T) {
-	src := FromSchema(core.NewTableSchema[embedFixture]("orders").PK("id")).
-		EmbedMany("lines", FromSchema(core.NewTableSchema[embedFixture]("lines").PK("id").FK("order_id")))
-	if len(src.Embeds()) != 1 {
-		t.Fatalf("Source.Embeds() = %d, want 1", len(src.Embeds()))
-	}
-}
+// ─── view.go: resolveGoSegment, DependentMongoViews, index ───────────────────
 
 func TestResolveGoSegment_ExternalNoAsIsEmpty(t *testing.T) {
 	ext := FromSchema(core.NewExternalSchema("users").PK("id"))
@@ -202,18 +194,16 @@ func TestValidateViewSchemas_ExternalEmbedMissingAs(t *testing.T) {
 	}
 }
 
-func TestDependentMongoViews_NestedMatch(t *testing.T) {
-	// A view embedding an external (Mongo) collection at a nested level must be
+func TestDependentMongoViews_Match(t *testing.T) {
+	// A view embedding an external (Mongo) collection at the top level must be
 	// reported by DependentMongoViews / viewEmbedsMongoCollection.
-	nestedMongo := FromSchema(core.NewExternalSchema("users").PK("id").FK("order_id")).As("Buyer").FK("buyer_id")
-	pgLines := FromSchema(core.NewTableSchema[embedFixture]("lines").PK("id").FK("order_id")).
-		Embed("buyer", nestedMongo)
+	buyer := FromSchema(core.NewExternalSchema("users").PK("id")).As("Buyer").FK("buyer_id")
 	v := View("orders").Version(1).Schema(rootSchema("orders")).
-		EmbedMany("lines", pgLines)
+		Embed("buyer", buyer)
 
 	dep := DependentMongoViews([]*ViewDefinition{v}, "users")
 	if len(dep) != 1 {
-		t.Fatalf("expected 1 dependent view for nested mongo embed, got %d", len(dep))
+		t.Fatalf("expected 1 dependent view for the mongo embed, got %d", len(dep))
 	}
 	// A non-matching collection name yields nothing.
 	if got := DependentMongoViews([]*ViewDefinition{v}, "nope"); len(got) != 0 {
@@ -297,16 +287,16 @@ func TestValidateViewSchemas_NoRootSchema(t *testing.T) {
 	}
 }
 
-func TestBuildViewIndex_NestedEmbedRecursion(t *testing.T) {
-	grandchild := FromSchema(core.NewTableSchema[embedFixture]("tags").PK("id").FK("line_id"))
-	lines := FromSchema(core.NewTableSchema[embedFixture]("lines").PK("id").FK("order_id")).
-		EmbedMany("tags", grandchild)
+func TestBuildViewIndex_EmbedTableIndexed(t *testing.T) {
+	// A top-level embed's source table is indexed by buildViewIndex so an
+	// upstream change on it resolves back to the dependent view.
+	lines := FromSchema(core.NewTableSchema[embedFixture]("lines").PK("id").FK("order_id"))
 	v := View("orders").Version(1).Schema(rootSchema("orders")).
 		EmbedMany("lines", lines)
 
 	idx := buildViewIndex([]*ViewDefinition{v})
-	if len(idx.byPGTable["tags"]) != 1 {
-		t.Errorf("nested grandchild table must be indexed via recursion, got %v", idx.byPGTable["tags"])
+	if len(idx.byPGTable["lines"]) != 1 {
+		t.Errorf("embed source table must be indexed, got %v", idx.byPGTable["lines"])
 	}
 }
 

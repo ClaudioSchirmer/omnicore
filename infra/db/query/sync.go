@@ -437,7 +437,7 @@ func (s *SyncEngine) applyConsultUpsert(ctx context.Context, view *ViewDefinitio
 		return err
 	}
 	if len(view.embeds) > 0 {
-		repairDanglingOneToOne(ctx, s.mongo, s.resolver, s.eng, s.composer, view, id, doc)
+		repairDanglingOneToOne(ctx, s.mongo, s.resolver, s.eng, view, id, doc)
 	}
 	if !view.isSharedBaseView {
 		if err := s.checkTombstone(ctx, view.name, id, watermarkOf(doc[docRevisionField])); err != nil {

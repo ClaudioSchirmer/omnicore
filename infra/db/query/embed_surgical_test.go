@@ -119,7 +119,7 @@ func TestRepairDanglingOneToOne_HealsAndGuards(t *testing.T) {
 		"qa_accounts_view": {},
 	}
 	mongo := upstreamFakeMongo(colls)
-	repairDanglingOneToOne(context.Background(), mongo, identityResolver, nil, nil, view, "acc1",
+	repairDanglingOneToOne(context.Background(), mongo, identityResolver, nil, view, "acc1",
 		Document{"id": "acc1", "featured_item_id": "i9"})
 
 	ups := colls["qa_accounts_view"].updates
@@ -151,7 +151,7 @@ func TestRepairDanglingOneToOne_MissingMirrorClearsToNull(t *testing.T) {
 		"qa_accounts_view": {},
 	}
 	mongo := upstreamFakeMongo(colls)
-	repairDanglingOneToOne(context.Background(), mongo, identityResolver, nil, nil, view, "acc1",
+	repairDanglingOneToOne(context.Background(), mongo, identityResolver, nil, view, "acc1",
 		Document{"id": "acc1", "featured_item_id": "i9"})
 
 	ups := colls["qa_accounts_view"].updates
@@ -172,17 +172,9 @@ func TestRepairDanglingOneToOne_NoFKNoWrite(t *testing.T) {
 			core.NewExternalSchema("upstream_items").PK("id").Field("Label", "label")).
 			FK("featured_item_id").As("FeaturedItem"))
 	colls := map[string]*fakeColl{"qa_accounts_view": {}}
-	repairDanglingOneToOne(context.Background(), upstreamFakeMongo(colls), identityResolver, nil, nil, view, "acc1",
+	repairDanglingOneToOne(context.Background(), upstreamFakeMongo(colls), identityResolver, nil, view, "acc1",
 		Document{"id": "acc1", "featured_item_id": nil})
 	if len(colls["qa_accounts_view"].updates) != 0 {
 		t.Errorf("a null FK needs no repair (the composed null was written by the create), got %v", colls["qa_accounts_view"].updates)
-	}
-}
-
-func TestSurgicalEmbedStages_NestedEmbedsFallBack(t *testing.T) {
-	def := surgicalManyDef(t)
-	def.source.embeds = []embedDef{surgicalOneDef(t)}
-	if got := surgicalEmbedStages([]embedDef{def}, "i1", Document{"account_id": "a"}); got != nil {
-		t.Fatalf("nested embeds cannot be edited surgically — want nil (full-recompose fallback), got %v", got)
 	}
 }

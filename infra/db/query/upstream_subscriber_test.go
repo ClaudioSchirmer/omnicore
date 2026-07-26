@@ -106,13 +106,13 @@ func TestUpstreamSubscriber_JoinFieldFor_NonMatchingCollectionReturnsEmpty(t *te
 	}
 }
 
-func TestUpstreamSubscriber_FindMongoJoinField_NestedEmbed(t *testing.T) {
-	// Build an outer source whose embed targets an upstream Mongo
-	// collection (rare but legal — nested composition).
-	outer := pgEmbed("level1", "").EmbedMany("inner", mongoEmbed("upstream_x", "level1_id").As("Inner"))
-	embeds := []embedDef{{field: "level0", source: outer, many: false}}
+func TestUpstreamSubscriber_FindMongoJoinField(t *testing.T) {
+	// Embeds are single-level: findMongoJoinField matches a top-level Mongo embed
+	// by its collection and returns its join column; an unrelated collection
+	// yields the empty string.
+	embeds := []embedDef{{field: "members", source: mongoEmbed("upstream_x", "level1_id").As("Members"), many: true}}
 	if got := findMongoJoinField(embeds, "upstream_x"); got != "level1_id" {
-		t.Errorf("expected nested Mongo join field, got %q", got)
+		t.Errorf("expected Mongo join field, got %q", got)
 	}
 	if got := findMongoJoinField(embeds, "unrelated"); got != "" {
 		t.Errorf("expected empty for unrelated collection, got %q", got)
