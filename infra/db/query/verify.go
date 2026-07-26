@@ -230,6 +230,14 @@ func (s *SyncEngine) shapeDiffDetail(ctx context.Context, view *ViewDefinition, 
 // ignoring Mongo's _id AND every framework-internal "_"-prefixed field (the
 // projection watermarks _revision/_base_revision): a document written before
 // the watermarks existed must not read as drift against a fresh compose.
+//
+// A key present with a NULL value is treated as ABSENT (see fieldNamesExceptID):
+// during a rebuild that adds a nullable column, a mid-rebuild writer on the
+// PREVIOUS binary — whose schema does not declare the new column — legitimately
+// creates a shadow document without that key, which reads identically to the
+// null a fresh compose of that (null) row emits (the reader decodes an absent
+// key and an explicit null to the same nil pointer). Only a NON-null field
+// present on one side and absent on the other is real shape drift.
 func sameFieldShape(fresh, stored Document) bool {
 	fk := fieldNamesExceptID(fresh)
 	sk := fieldNamesExceptID(stored)
@@ -246,9 +254,12 @@ func sameFieldShape(fresh, stored Document) bool {
 
 func fieldNamesExceptID(d Document) map[string]struct{} {
 	set := make(map[string]struct{}, len(d))
-	for k := range d {
+	for k, v := range d {
 		if len(k) > 0 && k[0] == '_' {
 			continue // _id + framework watermarks (_revision/_base_revision)
+		}
+		if v == nil {
+			continue // an explicit null key ≡ an absent key — both read as null
 		}
 		set[k] = struct{}{}
 	}

@@ -35,6 +35,21 @@ with `1.0.0`.
   `NewExternalSchema` / `NewSharedBaseSchema`). Behavior is unchanged.
   *Migration*: rename every `NewSharedBase(` call to `NewSharedBaseSchema(`.
 
+### Fixed
+
+- **The blue-green rebuild's shape verify treats an absent field and an explicit
+  null field as equivalent — no more spurious `diverges in shape` aborts.** During
+  a rebuild that adds a nullable column, a mid-rebuild writer still on the PREVIOUS
+  binary (whose schema does not declare the new column) creates the shadow document
+  without that key, while a fresh compose on the new binary emits it as an explicit
+  null. The verify's field-shape sample compared key-presence value-blind, so it
+  intermittently aborted the rebuild — `diverges in shape (fresh-only: [<col>])` —
+  on a document that is in fact correct (the reader decodes an absent key and an
+  explicit null to the same nil pointer, and the source row's value genuinely is
+  null). The shape check now skips null-valued keys, so an absent≡null
+  representation difference no longer fails the rebuild, while a genuine drop (a
+  NON-null field present on one side and absent on the other) still does.
+
 ## [0.36.1] - 2026-07-23
 
 ### Changed

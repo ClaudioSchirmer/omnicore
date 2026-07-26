@@ -42,9 +42,11 @@ func TestVerifyShadow_ForwardAutoCorrectsGap(t *testing.T) {
 
 func TestVerifyShadow_AbortsOnShapeRegression(t *testing.T) {
 	view := rebuildView()
-	// The stored doc for "a" is missing a composed field → structural mismatch
-	// that survives the single re-check → abort.
-	shadow := &fakeColl{docs: []any{map[string]any{"_id": "a", "id": "a", "name": "n-a"}}}
+	// The stored doc for "a" is missing the NON-null composed field "name" → a
+	// real structural drop that survives the single re-check → abort. (A missing
+	// nullable field, e.g. deleted_at, reads as null and is NOT drift — covered
+	// by TestSameFieldShape_NullKeyEqualsAbsent.)
+	shadow := &fakeColl{docs: []any{map[string]any{"_id": "a", "id": "a", "deleted_at": nil}}}
 	s := scriptSyncEngine(newScriptEngine([]string{"a"}, aliveRoot), newFakeMongo(shadow), []*ViewDefinition{view})
 	err := s.verifyShadow(context.Background(), view, pc("shadow"))
 	if err == nil || !strings.Contains(err.Error(), "diverges in shape") {
@@ -93,5 +95,31 @@ func TestVerifyShadow_CleanPasses(t *testing.T) {
 	}
 	if len(shadow.deletes) != 0 {
 		t.Errorf("clean verify must delete nothing, got %v", shadow.deletes)
+	}
+}
+
+// A rebuild that adds a nullable column: a fresh compose emits it as an explicit
+// null key, while a mid-rebuild writer on the PREVIOUS binary (schema without
+// the column) creates the shadow document WITHOUT the key. Both read as null —
+// the shape check must treat "key present = null" and "key absent" as the same.
+func TestSameFieldShape_NullKeyEqualsAbsent(t *testing.T) {
+	fresh := Document{"_id": "1", "name": "Ann", "nickname": nil} // V2 compose: explicit null
+	stored := Document{"_id": "1", "name": "Ann"}                 // V1-created shadow: no key
+	if !sameFieldShape(fresh, stored) {
+		t.Error("a null-valued fresh key must be equivalent to an absent stored key")
+	}
+	// Symmetric — an explicit null on the stored side too (e.g. a removed column).
+	if !sameFieldShape(fresh, Document{"_id": "1", "name": "Ann", "nickname": nil}) {
+		t.Error("explicit null on both sides must match")
+	}
+}
+
+// The fix must NOT mask a real drop: a field with a NON-null value present on
+// one side and absent on the other is genuine shape drift.
+func TestSameFieldShape_NonNullDropIsStillDrift(t *testing.T) {
+	fresh := Document{"_id": "1", "name": "Ann", "nickname": "Annie"}
+	stored := Document{"_id": "1", "name": "Ann"} // dropped a real, non-null value
+	if sameFieldShape(fresh, stored) {
+		t.Error("a non-null field missing from the stored doc must be flagged as drift")
 	}
 }
