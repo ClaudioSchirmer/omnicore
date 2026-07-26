@@ -313,6 +313,16 @@ func ValidateViewSchemas(views []*ViewDefinition) error {
 				"view %q: SharedBaseView .Schema(...) must be a core.NewSharedBaseSchema declaration — "+
 					"a role/table schema roots a regular query.View instead", v.Name()))
 		}
+		// The mirror rule: a regular query.View must NOT be rooted at a shared-base
+		// schema — a shared identity (base + role sub-documents) is projected by
+		// query.SharedBaseView(...).Role(...), never a plain view. Reject the
+		// mis-wire at boot so the two constructors stay type-exclusive both ways.
+		if !v.isSharedBaseView && v.schema != nil && v.schema.IsSharedBase() {
+			problems = append(problems, fmt.Sprintf(
+				"view %q: root schema (table %q) is a core.NewSharedBaseSchema — a shared-base identity is "+
+					"projected by query.SharedBaseView(name).Schema(base).Role(...), not a plain query.View",
+				v.Name(), v.schema.Table()))
+		}
 		// A SharedBaseView with no roles is a person view with nothing to
 		// compose beyond the base — declare at least one specialization.
 		// (Everything else about a role — type anchor, SharedBaseRef to this

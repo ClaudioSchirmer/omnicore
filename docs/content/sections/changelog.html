@@ -9,6 +9,7 @@
     <div class="release">
         <div class="release-head"><span class="release-tag">Unreleased</span><span class="release-date">—</span></div>
         <ul>
+            <li><strong>Fixed</strong> — <strong>the view base-kind boot gate is now symmetric.</strong> A <code>query.SharedBaseView</code> already rejected a non-shared-base <code>.Schema(...)</code>, but the mirror was missing: a regular <code>query.View</code> rooted at a <code>core.NewSharedBaseSchema</code> was silently accepted and would flatten a shared identity into an ordinary view document. <code>ValidateViewSchemas</code> now also rejects that mis-wire at boot with an explanatory message, so the two constructors are type-exclusive in both directions. See <a href="#views~views-sharedbase">Views &rarr; SharedBaseView</a>.</li>
         </ul>
     </div>
     <div class="release">
