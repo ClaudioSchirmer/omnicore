@@ -58,12 +58,3 @@ func otherSchema(table string) *core.TableSchema {
 // lives as a method on query.IndexSpec.
 func derivedName(s *query.IndexSpec) string { return s.DerivedIndexName() }
 
-// pgEmbed / mongoEmbed mirror the query-package test helpers (a relational vs
-// external embed source), duplicated here for the adapter integration tests.
-func pgEmbed(table, fk string) *query.Source {
-	return query.FromSchema(core.NewTableSchema[embedFixture](table).PK("id").FK(fk))
-}
-
-func mongoEmbed(table, fk string) *query.Source {
-	return query.FromSchema(core.NewExternalSchema(table).PK("id").FK(fk))
-}

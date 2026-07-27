@@ -12,9 +12,9 @@ import (
 
 func TestViewDefinition_Getters(t *testing.T) {
 	root := builderTestSchema
-	child := core.NewTableSchema[fakeVO]("c").PK("id").FK("t_id").Field("Label", "label")
+	child := core.NewExternalSchema("c").PK("id").Field("Label", "label")
 	v := View("users").Version(4).Schema(root).
-		EmbedMany("kids", FromSchema(child))
+		EmbedMany(JoinUpstream(child, "Kids", "kids")).On("t_id")
 
 	if v.SchemaDef() != root {
 		t.Error("SchemaDef must return the attached root schema")

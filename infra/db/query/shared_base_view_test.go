@@ -163,8 +163,7 @@ func TestValidateViewSchemas_SharedBaseView(t *testing.T) {
 		t.Fatalf("valid SharedBaseView rejected: %v", err)
 	}
 	// An embed claiming a role's segment collides.
-	v := sbvView().EmbedMany("mirror", FromSchema(
-		core.NewExternalSchema("ext_coll").PK("id").FK("person_id")).As("sbvUser"))
+	v := sbvView().EmbedMany(JoinUpstream(core.NewExternalSchema("ext_coll").PK("id"), "sbvUser", "mirror")).On("person_id")
 	err = ValidateViewSchemas([]*ViewDefinition{v})
 	if err == nil || !strings.Contains(err.Error(), `segment "sbvUser"`) {
 		t.Fatalf("an embed colliding with a role segment must be rejected, got %v", err)
@@ -718,7 +717,7 @@ func TestViewNode_StripAndPathsDefensiveBranches(t *testing.T) {
 		Child(core.NewTableSchema[sbvDependent]("se_deps").
 			PK("id").FK("emp_id").Field("Name", "dep_name")) // no SoftDelete
 	v := View("se").Version(1).Schema(schema).
-		EmbedMany("mirror", FromSchema(core.NewExternalSchema("se_ext").PK("id").FK("emp_id")).As("Mirror"))
+		EmbedMany(JoinUpstream(core.NewExternalSchema("se_ext").PK("id"), "Mirror", "mirror")).On("emp_id")
 	n := v.BuildViewNode()
 	if paths := n.ChildSoftDeletePaths(); len(paths) != 0 {
 		t.Errorf("no lifecycle segments here — paths must be empty, got %v", paths)
@@ -747,14 +746,14 @@ func TestRoleView_BaseChildBranches(t *testing.T) {
 	}
 	// An embed claiming the base-child's derived segment collides.
 	colliding := View("sbv_users_role2").Version(1).Schema(sbvUserSchema()).
-		EmbedMany("mirror", FromSchema(core.NewExternalSchema("ext").PK("id").FK("person_id")).As(sbvAddrSeg))
+		EmbedMany(JoinUpstream(core.NewExternalSchema("ext").PK("id"), sbvAddrSeg, "mirror")).On("person_id")
 	if err := ValidateViewSchemas([]*ViewDefinition{colliding}); err == nil ||
 		!strings.Contains(err.Error(), "base-child") {
 		t.Fatalf("an embed colliding with a base-child segment must be rejected, got %v", err)
 	}
 	// The composed-column set walks the base-children of a role view (the
 	// addresses subtree is addressable) and tolerates a nil embed source.
-	roleView.embeds = append(roleView.embeds, embedDef{field: "ghost", source: nil, many: true})
+	roleView.embeds = append(roleView.embeds, embedDef{leg: nil, many: true})
 	set := roleView.composedColumnSet()
 	if _, ok := set[sbvAddrSeg+".street"]; !ok {
 		t.Errorf("a role view's base-child columns must be addressable, got %v", set)

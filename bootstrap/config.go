@@ -265,7 +265,7 @@ type Config struct {
 	// surface — for each entry, bootstrap.Run spins a Kafka consumer
 	// + worker pool that materializes A's events into a local Mongo
 	// collection and triggers recompose on every B view embedding it
-	// via an external fwmongo.FromSchema. YAML is the canonical source; Wiring
+	// via an external query.JoinUpstream. YAML is the canonical source; Wiring
 	// exposes the same slice for manual lifecycle paths
 	// (bootstrap.Build + Serve) and integration tests, with the
 	// merge rule documented on Wiring.UpstreamSubscriptions.

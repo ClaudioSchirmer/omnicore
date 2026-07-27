@@ -66,7 +66,7 @@ func applyUpstreamSubscriptionDefaults(subs []UpstreamSubscription, service stri
 //
 // Each guard is implemented in its own helper for readability and tests:
 //
-//   - §8.1 — Mandatory index on join field (every external FromSchema embed)
+//   - §8.1 — Mandatory index on join field (every external JoinUpstream embed)
 //   - §8.2 — Collection name collision (sub↔sub and sub↔local view)
 //   - §8.3 — Mongo embed must have a materializing source
 //   - §8.4 — Anonymize policy requires AnonymizeFields
@@ -143,9 +143,8 @@ func guardJoinFieldIndex(views []*query.ViewDefinition) []string {
 			joinField := e.JoinColumn()
 			if joinField == "" {
 				out = append(out, fmt.Sprintf(
-					"§8.1 view %q embeds upstream Mongo collection %q with no join field declared "+
-						"(declare the FK on the source schema via .FK(\"<field>\") for an EmbedMany, "+
-						"or .FK(\"<field>\") for a one-to-one Embed)",
+					"§8.1 view %q embeds upstream Mongo collection %q with an empty join column — "+
+						"name it via .On(\"<field>\") on the Embed/EmbedMany",
 					v.Name(), e.Source().Collection(),
 				))
 				continue
@@ -237,7 +236,7 @@ func guardCollectionCollision(subs []UpstreamSubscription, views []*query.ViewDe
 // UpstreamSubscription.Collection — otherwise the embed would silently
 // resolve to an empty slice in production.
 //
-// View-on-view via an external FromSchema (an external FromSchema targeting
+// View-on-view via an external JoinUpstream (an external JoinUpstream targeting
 // another local ViewDefinition.Name()) is explicitly NOT supported: the recompose
 // ripple is one-hop (see UpstreamSubscriber.ripple consulting
 // viewIndex.byMongoColl, populated from subscription collections only),
@@ -266,22 +265,21 @@ func guardMaterializingSource(subs []UpstreamSubscription, views []*query.ViewDe
 			}
 			if localViews[coll] {
 				out = append(out, fmt.Sprintf(
-					"§8.3 view %q embeds Mongo collection %q via an external FromSchema, but %q is the name of a local "+
-						"ViewDefinition — view-on-view composition via an external FromSchema is NOT supported. The "+
-						"recompose ripple is one-hop: an upstream change recomposes %q but never re-ripples "+
-						"to %q, so %q would drift silently. Either embed the upstream collection directly "+
-						"with FromSchema(NewExternalSchema(\"<upstream_collection>\")).FK(...), or model the JOIN at the "+
-						"Postgres root via a local FromSchema over %q if %q is a regular table.",
-					v.Name(), coll, coll, coll, v.Name(), v.Name(), coll, coll,
+					"§8.3 view %q embeds Mongo collection %q, but %q is the name of a local ViewDefinition — "+
+						"view-on-view composition through an Embed is NOT supported. The recompose ripple is "+
+						"one-hop: an upstream change recomposes %q but never re-ripples to %q, so %q would drift "+
+						"silently. Either Embed an upstream collection directly with "+
+						"Embed(query.JoinUpstream(query.NewExternalSchema(\"<upstream_collection>\"), \"Go\", \"doc\")).On(...), "+
+						"or join the view %q at read time with query.ComposedView.",
+					v.Name(), coll, coll, coll, v.Name(), v.Name(), coll,
 				))
 				continue
 			}
 			out = append(out, fmt.Sprintf(
-				"§8.3 view %q embeds Mongo collection %q via an external FromSchema but no UpstreamSubscription "+
-					"declares collection=%q — the embed would always resolve to empty. Either declare "+
-					"an UpstreamSubscription{Topic, Collection: %q, ...} or replace the external FromSchema over %q with "+
-					"a local FromSchema over %q for Postgres.",
-				v.Name(), coll, coll, coll, coll, coll,
+				"§8.3 view %q embeds Mongo collection %q but no UpstreamSubscription declares collection=%q — "+
+					"the embed would always resolve to empty. Declare an UpstreamSubscription{Topic, "+
+					"Collection: %q, ...} that materializes it (materialize, then embed).",
+				v.Name(), coll, coll, coll,
 			))
 		}
 	}

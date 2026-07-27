@@ -13,23 +13,19 @@ import (
 
 func surgicalManyDef(t *testing.T) embedDef {
 	t.Helper()
-	src := FromSchema(core.NewExternalSchema("upstream_items").
+	leg := JoinUpstream(core.NewExternalSchema("upstream_items").
 		PK("id").
 		Field("Label", "label").
-		Field("AccountID", "account_id").
-		FK("account_id")).
-		As("Items")
-	return embedDef{field: "Items", source: src, many: true}
+		Field("AccountID", "account_id"), "Items", "Items")
+	return embedDef{leg: leg, joinCol: "account_id", many: true}
 }
 
 func surgicalOneDef(t *testing.T) embedDef {
 	t.Helper()
-	src := FromSchema(core.NewExternalSchema("upstream_items").
+	leg := JoinUpstream(core.NewExternalSchema("upstream_items").
 		PK("id").
-		Field("Label", "label")).
-		FK("featured_item_id").
-		As("FeaturedItem")
-	return embedDef{field: "FeaturedItem", source: src, many: false}
+		Field("Label", "label"), "FeaturedItem", "FeaturedItem")
+	return embedDef{leg: leg, joinCol: "featured_item_id", many: false}
 }
 
 func stageSet(t *testing.T, stages []Document) Document {
@@ -111,9 +107,7 @@ func TestRepairDanglingOneToOne_HealsAndGuards(t *testing.T) {
 	// $cond: FK still matches AND stored segment _id ≠ FK (so the element's own
 	// fresher ripple is never regressed), non-upsert.
 	view := View("qa_accounts_view").Version(1).Schema(composerRootSchema()).
-		Embed("featuredItem", FromSchema(
-			core.NewExternalSchema("upstream_items").PK("id").Field("Label", "label")).
-			FK("featured_item_id").As("FeaturedItem"))
+		Embed(JoinUpstream(core.NewExternalSchema("upstream_items").PK("id").Field("Label", "label"), "FeaturedItem", "featuredItem")).On("featured_item_id")
 	colls := map[string]*fakeColl{
 		"upstream_items":   {docs: []any{map[string]any{"_id": "i9", "label": "FA"}}},
 		"qa_accounts_view": {},
@@ -143,9 +137,7 @@ func TestRepairDanglingOneToOne_HealsAndGuards(t *testing.T) {
 
 func TestRepairDanglingOneToOne_MissingMirrorClearsToNull(t *testing.T) {
 	view := View("qa_accounts_view").Version(1).Schema(composerRootSchema()).
-		Embed("featuredItem", FromSchema(
-			core.NewExternalSchema("upstream_items").PK("id").Field("Label", "label")).
-			FK("featured_item_id").As("FeaturedItem"))
+		Embed(JoinUpstream(core.NewExternalSchema("upstream_items").PK("id").Field("Label", "label"), "FeaturedItem", "featuredItem")).On("featured_item_id")
 	colls := map[string]*fakeColl{
 		"upstream_items":   {}, // referenced doc does not exist (yet, or anymore)
 		"qa_accounts_view": {},
@@ -168,9 +160,7 @@ func TestRepairDanglingOneToOne_MissingMirrorClearsToNull(t *testing.T) {
 
 func TestRepairDanglingOneToOne_NoFKNoWrite(t *testing.T) {
 	view := View("qa_accounts_view").Version(1).Schema(composerRootSchema()).
-		Embed("featuredItem", FromSchema(
-			core.NewExternalSchema("upstream_items").PK("id").Field("Label", "label")).
-			FK("featured_item_id").As("FeaturedItem"))
+		Embed(JoinUpstream(core.NewExternalSchema("upstream_items").PK("id").Field("Label", "label"), "FeaturedItem", "featuredItem")).On("featured_item_id")
 	colls := map[string]*fakeColl{"qa_accounts_view": {}}
 	repairDanglingOneToOne(context.Background(), upstreamFakeMongo(colls), identityResolver, nil, view, "acc1",
 		Document{"id": "acc1", "featured_item_id": nil})

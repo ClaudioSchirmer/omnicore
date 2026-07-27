@@ -243,7 +243,7 @@ func NewSyncEngine(eng core.RelationalEngine, mongo ReadModelStore, resolver *Vi
 		eng:      eng,
 		mongo:    mongo,
 		resolver: resolver,
-		// NewComposerWithMongo so views embedding external FromSchema collections
+		// NewComposerWithMongo so views embedding external JoinUpstream collections
 		// resolve correctly through the composer during recompose.
 		composer: NewComposerWithMongo(eng, mongo, resolver),
 		index:    buildViewIndex(views),

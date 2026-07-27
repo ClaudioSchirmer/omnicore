@@ -397,7 +397,7 @@ func (c *Composer) applyEmbedsBatch(ctx context.Context, docs []Document, parent
 			"(builder constructed without NewComposerWithMongo)")
 	}
 	for _, e := range embeds {
-		coll := c.resolver.Active(e.source.table)
+		coll := c.resolver.Active(e.leg.Collection())
 		if e.many {
 			// 1:N — embed.JoinColumn == parent.PK.
 			keys := make([]any, 0, len(docs))
@@ -415,7 +415,7 @@ func (c *Composer) applyEmbedsBatch(ctx context.Context, docs []Document, parent
 				if !ok || v == nil {
 					continue
 				}
-				doc[e.field] = grouped[fmt.Sprintf("%v", v)]
+				doc[e.Field()] = grouped[fmt.Sprintf("%v", v)]
 			}
 		} else {
 			// 1:1 — embed._id == parent[JoinColumn].
@@ -435,15 +435,15 @@ func (c *Composer) applyEmbedsBatch(ctx context.Context, docs []Document, parent
 				// the key were omitted.
 				v, ok := doc[e.JoinColumn()]
 				if !ok || v == nil {
-					doc[e.field] = nil
+					doc[e.Field()] = nil
 					continue
 				}
 				rows := grouped[fmt.Sprintf("%v", v)]
 				if len(rows) == 0 {
-					doc[e.field] = nil
+					doc[e.Field()] = nil
 					continue
 				}
-				doc[e.field] = rows[0]
+				doc[e.Field()] = rows[0]
 			}
 		}
 	}

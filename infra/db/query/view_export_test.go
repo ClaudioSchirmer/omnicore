@@ -44,7 +44,7 @@ func buildExportTestView() *ViewDefinition {
 
 	return View("users").Version(1).
 		Schema(userSchema).
-		Embed("partner", FromSchema(partnerSchema).FK("partner_id").As("Partner"))
+		Embed(JoinUpstream(partnerSchema, "Partner", "partner")).On("partner_id")
 }
 
 func TestExportPlan_BuildsColumnsLabelsAndSegments(t *testing.T) {

@@ -3,6 +3,7 @@ package query
 import (
 	"github.com/ClaudioSchirmer/omnicore/domain"
 
+	"fmt"
 	"strings"
 	"testing"
 
@@ -11,18 +12,18 @@ import (
 
 // ─── test embed-source helpers ───────────────────────────────────────────────
 //
-// pgEmbed / mongoEmbed build a FromSchema source with a minimal schema (PK + FK)
-// for tests. pgEmbed is type-anchored (local PG); mongoEmbed is type-less
-// (external/Mongo). For a one-to-one Embed, pass fk="" and set the parent join
-// via Source.FK(...).
+// extLeg builds an external JoinUpstream leg (a type-less NewExternalSchema with a
+// PK) for embed/link tests, carrying the mandatory Go and doc segment names. The
+// join column is named at the call site via .On(...). extLegNoPK omits the PK for
+// the "embed source without PK" boot-guard test.
 type embedFixture struct{ ID string }
 
-func pgEmbed(table, fk string) *Source {
-	return FromSchema(core.NewTableSchema[embedFixture](table).PK("id").FK(fk))
+func extLeg(table, goName, ext string) *Leg {
+	return JoinUpstream(core.NewExternalSchema(table).PK("id"), goName, ext)
 }
 
-func mongoEmbed(table, fk string) *Source {
-	return FromSchema(core.NewExternalSchema(table).PK("id").FK(fk))
+func extLegNoPK(table, goName, ext string) *Leg {
+	return JoinUpstream(core.NewExternalSchema(table), goName, ext)
 }
 
 // rootSchema is a minimal type-anchored schema for a composing test view's root
@@ -34,23 +35,22 @@ func rootSchema(table string) *core.TableSchema {
 
 // ─── own children on a schema project automatically (read side) ──────────────
 
-// TestValidateViewSchemas_RejectsAnchoredEmbedSource proves the canonical split:
-// Embed/EmbedMany compose only EXTERNAL data, so a write-anchored embed source is
-// a boot error. A local aggregate's own data (root / siblings / SharedBase / own
-// children) projects automatically from the TableSchema, never through an embed.
-func TestValidateViewSchemas_RejectsAnchoredEmbedSource(t *testing.T) {
-	src := FromSchema(core.NewTableSchema[embedFixture]("addresses").PK("id").FK("user_id"))
-	v := View("users").Version(1).
-		Schema(rootSchema("users")).
-		EmbedMany("addresses", src)
-
-	err := ValidateViewSchemas([]*ViewDefinition{v})
-	if err == nil {
-		t.Fatal("expected a validation error for a write-anchored embed source")
-	}
-	if !strings.Contains(err.Error(), "write-anchored") {
-		t.Errorf("error should name the external-only rule, got: %v", err)
-	}
+// TestJoinUpstream_RejectsAnchoredSchema proves the canonical split: an embed leg
+// composes only EXTERNAL data, so JoinUpstream over a write-anchored (type-anchored)
+// schema panics at declaration — a local aggregate's own data projects automatically
+// from the TableSchema, never through an embed. (An internal view is joined at read
+// time with query.ComposedView / JoinView, not embedded.)
+func TestJoinUpstream_RejectsAnchoredSchema(t *testing.T) {
+	defer func() {
+		r := recover()
+		if r == nil {
+			t.Fatal("expected JoinUpstream over a write-anchored schema to panic")
+		}
+		if !strings.Contains(fmt.Sprint(r), "write-anchored") {
+			t.Errorf("panic should name the external-only rule, got: %v", r)
+		}
+	}()
+	JoinUpstream(core.NewTableSchema[embedFixture]("addresses").PK("id"), "Addresses", "addresses")
 }
 
 // TestValidateViewSchemas_RootSchemaWithChildrenOK confirms the view ROOT schema
@@ -74,10 +74,10 @@ func TestValidateViewSchemas_RejectsSegmentCollision(t *testing.T) {
 	seg := childDocSegment(child) // the auto own-child doc segment
 	rootWithChild := core.NewTableSchema[embedFixture]("users").PK("id").SoftDelete("deleted_at").
 		Child(child)
-	// A legal external embed whose .As segment collides with the own-child segment.
+	// A legal external embed whose Go segment collides with the own-child segment.
 	v := View("users").Version(1).
 		Schema(rootWithChild).
-		EmbedMany("ext", FromSchema(core.NewExternalSchema("ext_coll").PK("id").FK("user_id")).As(seg))
+		EmbedMany(extLeg("ext_coll", seg, "ext")).On("user_id")
 
 	err := ValidateViewSchemas([]*ViewDefinition{v})
 	if err == nil {
@@ -95,7 +95,7 @@ func TestValidateViewSchemas_RejectsSegmentCollision(t *testing.T) {
 func TestValidateViewSchemas_RejectsRootWithoutPK(t *testing.T) {
 	v := View("users").Version(1).
 		Schema(core.NewTableSchema[embedFixture]("users").SoftDelete("deleted_at")). // no .PK
-		EmbedMany("addresses", pgEmbed("addresses", "user_id"))
+		EmbedMany(extLeg("addresses", "Addresses", "addresses")).On("user_id")
 	err := ValidateViewSchemas([]*ViewDefinition{v})
 	if err == nil || !strings.Contains(err.Error(), "no primary key") {
 		t.Errorf("expected root-without-PK error, got %v", err)
@@ -105,43 +105,40 @@ func TestValidateViewSchemas_RejectsRootWithoutPK(t *testing.T) {
 // TestValidateViewSchemas_RejectsEmbedSourceWithoutPK proves an embed source
 // with no explicit PK is a fatal view-validation error.
 func TestValidateViewSchemas_RejectsEmbedSourceWithoutPK(t *testing.T) {
-	src := FromSchema(core.NewTableSchema[embedFixture]("addresses").FK("user_id")) // no .PK
 	v := View("users").Version(1).
 		Schema(rootSchema("users")).
-		EmbedMany("addresses", src)
+		EmbedMany(extLegNoPK("addresses", "Addresses", "addresses")).On("user_id")
 	err := ValidateViewSchemas([]*ViewDefinition{v})
 	if err == nil || !strings.Contains(err.Error(), "no primary key") {
 		t.Errorf("expected embed-source-without-PK error, got %v", err)
 	}
 }
 
-// ─── mandatory join keys on embed sources (read side) ────────────────────────
+// ─── mandatory join column on embeds (read side) ─────────────────────────────
 
-// TestValidateViewSchemas_RejectsEmbedManyWithoutFK proves an EmbedMany source
-// without a foreign key is a fatal view-validation error — the composer joins
-// the child rows on it.
-func TestValidateViewSchemas_RejectsEmbedManyWithoutFK(t *testing.T) {
-	src := FromSchema(core.NewTableSchema[embedFixture]("addresses").PK("id")) // no .FK
+// TestValidateViewSchemas_RejectsEmbedManyWithEmptyOn proves an EmbedMany whose
+// .On names an empty join column is a fatal view-validation error — the composer
+// joins the child rows on it.
+func TestValidateViewSchemas_RejectsEmbedManyWithEmptyOn(t *testing.T) {
 	v := View("users").Version(1).
 		Schema(rootSchema("users")).
-		EmbedMany("addresses", src)
+		EmbedMany(extLeg("addresses", "Addresses", "addresses")).On("")
 	err := ValidateViewSchemas([]*ViewDefinition{v})
-	if err == nil || !strings.Contains(err.Error(), "no foreign key") {
-		t.Errorf("expected EmbedMany-without-FK error, got %v", err)
+	if err == nil || !strings.Contains(err.Error(), "empty join column") {
+		t.Errorf("expected EmbedMany-with-empty-.On error, got %v", err)
 	}
 }
 
-// TestValidateViewSchemas_RejectsOneToOneEmbedWithoutOn proves a one-to-one
-// Embed without .On is a fatal view-validation error — it joins on the parent's
-// FK column, which must be named.
-func TestValidateViewSchemas_RejectsOneToOneEmbedWithoutOn(t *testing.T) {
-	src := FromSchema(core.NewTableSchema[embedFixture]("buyer").PK("id")) // no .On
+// TestValidateViewSchemas_RejectsOneToOneEmbedWithEmptyOn proves a one-to-one
+// Embed whose .On names an empty join column is a fatal view-validation error —
+// it joins on the parent's FK column, which must be named.
+func TestValidateViewSchemas_RejectsOneToOneEmbedWithEmptyOn(t *testing.T) {
 	v := View("orders").Version(1).
 		Schema(rootSchema("orders")).
-		Embed("buyer", src)
+		Embed(extLeg("buyer", "Buyer", "buyer")).On("")
 	err := ValidateViewSchemas([]*ViewDefinition{v})
-	if err == nil || !strings.Contains(err.Error(), "parent join key") {
-		t.Errorf("expected one-to-one-Embed-without-.On error, got %v", err)
+	if err == nil || !strings.Contains(err.Error(), "empty join column") {
+		t.Errorf("expected one-to-one-Embed-with-empty-.On error, got %v", err)
 	}
 }
 
@@ -156,7 +153,7 @@ func TestViewDefinition_DeleteOnArchiveDefaultFalse_Flat(t *testing.T) {
 
 func TestViewDefinition_DeleteOnArchiveDefaultFalse_Aggregate(t *testing.T) {
 	v := View("users").
-		EmbedMany("addresses", pgEmbed("addresses", "user_id"))
+		EmbedMany(extLeg("addresses", "Addresses", "addresses")).On("user_id")
 	if v.DeletesOnArchive() {
 		t.Fatal("DeletesOnArchive() must default to false on an aggregate view")
 	}
@@ -177,7 +174,7 @@ func TestViewDefinition_DeleteOnArchiveBuilder_Flat(t *testing.T) {
 
 func TestViewDefinition_DeleteOnArchiveBuilder_Aggregate(t *testing.T) {
 	v := View("users").DeleteOnArchive().
-		EmbedMany("addresses", pgEmbed("addresses", "user_id"))
+		EmbedMany(extLeg("addresses", "Addresses", "addresses")).On("user_id")
 	if !v.DeletesOnArchive() {
 		t.Fatal("expected DeletesOnArchive() = true after builder on aggregate view")
 	}
@@ -186,21 +183,19 @@ func TestViewDefinition_DeleteOnArchiveBuilder_Aggregate(t *testing.T) {
 	}
 }
 
-func TestSource_SchemaDef_AndKindFromSchema(t *testing.T) {
+// TestLeg_Accessors covers the surviving leg accessors the embed boot guards use:
+// SchemaDef returns the external schema; IsMongo/Collection/Table describe it.
+func TestLeg_Accessors(t *testing.T) {
 	ext := core.NewExternalSchema("users").PK("id")
-	mongo := FromSchema(ext)
-	if mongo.SchemaDef() != ext {
-		t.Error("SchemaDef() must return the schema FromSchema was built with")
+	leg := JoinUpstream(ext, "Buyer", "buyer")
+	if leg.SchemaDef() != ext {
+		t.Error("SchemaDef() must return the schema JoinUpstream was built with")
 	}
-	if !mongo.IsMongo() {
-		t.Error("FromSchema(core.NewExternalSchema(...)) must be a Mongo source")
+	if !leg.IsMongo() {
+		t.Error("JoinUpstream(core.NewExternalSchema(...)) must be a Mongo leg")
 	}
-	pg := FromSchema(core.NewTableSchema[embedFixture]("addresses").PK("id"))
-	if pg.IsMongo() {
-		t.Error("FromSchema(core.NewTableSchema[...]) must be a PG source")
-	}
-	if pg.Table() != "addresses" {
-		t.Errorf("Table() = %q, want addresses (from schema)", pg.Table())
+	if leg.Collection() != "users" || leg.Table() != "users" {
+		t.Errorf("Collection()/Table() = %q/%q, want users (from schema)", leg.Collection(), leg.Table())
 	}
 }
 
@@ -255,11 +250,10 @@ func TestViewNode_TranslatesGoPathToColumnAndBack(t *testing.T) {
 		CreatedAt("created_at")
 	childSchema := core.NewExternalSchema("tags").
 		PK("tag_pk").
-		FK("person_ref").
 		Field("ZipCode", "zip")
 
 	v := View("people").Schema(rootSchema).
-		EmbedMany("addresses", FromSchema(childSchema).As("Addresses"))
+		EmbedMany(JoinUpstream(childSchema, "Addresses", "addresses")).On("person_ref")
 
 	node := v.BuildViewNode()
 

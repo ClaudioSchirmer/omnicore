@@ -22,14 +22,15 @@ func childSrc() *core.TableSchema {
 	return core.NewTableSchema[childFixture]("sale_items").PK("id").FK("sales_id")
 }
 
-// upstreamSrc is the external enrichment source (a Mongo collection).
-func upstreamSrc(fk string) *Source {
-	return mongoEmbed("upstream_products", "").FK(fk)
+// upstreamLeg is the external enrichment leg (a Mongo collection); the element FK
+// is named at the call site via .On(...).
+func upstreamLeg() *Leg {
+	return extLeg("upstream_products", "Product", "product")
 }
 
 func TestEmbedInChild_DeclarationPopulatesChildEmbeds(t *testing.T) {
 	v := View("sales").Version(1).Schema(rootWithChild("sales", "sale_items")).
-		EmbedInChild(childSrc(), "product", upstreamSrc("product_id").As("Product"))
+		EmbedInChild(childSrc(), upstreamLeg()).On("product_id")
 	if len(v.ChildEmbeds()) != 1 {
 		t.Fatalf("want 1 child embed, got %d", len(v.ChildEmbeds()))
 	}
@@ -51,7 +52,7 @@ func TestEmbedInChild_DeclarationPopulatesChildEmbeds(t *testing.T) {
 func TestEmbedInChild_ValidPassesValidation(t *testing.T) {
 	child := childSrc()
 	v := View("sales").Version(1).Schema(rootWithChild("sales", "sale_items")).
-		EmbedInChild(child, "product", upstreamSrc("product_id").As("Product")).
+		EmbedInChild(child, upstreamLeg()).On("product_id").
 		Indexes(Index(childDocSegment(child) + ".product_id"))
 	if err := ValidateViewSchemas([]*ViewDefinition{v}); err != nil {
 		t.Fatalf("a valid EmbedInChild must validate, got: %v", err)
@@ -63,7 +64,7 @@ func TestEmbedInChild_ValidPassesValidation(t *testing.T) {
 func TestEmbedInChild_RejectsNonNativeChild(t *testing.T) {
 	notAChild := core.NewTableSchema[childFixture]("random_table").PK("id").FK("sales_id")
 	v := View("sales").Version(1).Schema(rootWithChild("sales", "sale_items")).
-		EmbedInChild(notAChild, "product", upstreamSrc("product_id").As("Product")).
+		EmbedInChild(notAChild, upstreamLeg()).On("product_id").
 		Indexes(Index(childDocSegment(notAChild) + ".product_id"))
 	err := ValidateViewSchemas([]*ViewDefinition{v})
 	if err == nil || !strings.Contains(err.Error(), "NOT a native child") {
@@ -71,16 +72,17 @@ func TestEmbedInChild_RejectsNonNativeChild(t *testing.T) {
 	}
 }
 
-func TestEmbedInChild_RejectsWriteAnchoredSource(t *testing.T) {
+// EmbedInChild composes only external collections: a JoinView leg (a registered
+// view) is rejected at boot.
+func TestEmbedInChild_RejectsViewLeg(t *testing.T) {
 	child := childSrc()
-	// A type-anchored (write-anchored) source is not allowed — must be external.
-	anchored := FromSchema(core.NewTableSchema[embedFixture]("products").PK("id")).FK("product_id")
+	legView := View("someview").Version(1).Schema(rootSchema("someview"))
 	v := View("sales").Version(1).Schema(rootWithChild("sales", "sale_items")).
-		EmbedInChild(child, "product", anchored).
+		EmbedInChild(child, JoinView(legView, "Product", "product")).On("product_id").
 		Indexes(Index(childDocSegment(child) + ".product_id"))
 	err := ValidateViewSchemas([]*ViewDefinition{v})
-	if err == nil || !strings.Contains(err.Error(), "write-anchored") {
-		t.Fatalf("a write-anchored source must be rejected, got: %v", err)
+	if err == nil || !strings.Contains(err.Error(), "must be a JoinUpstream leg") {
+		t.Fatalf("a JoinView enrichment leg must be rejected, got: %v", err)
 	}
 }
 
@@ -89,7 +91,7 @@ func TestEmbedInChild_RejectsWriteAnchoredSource(t *testing.T) {
 func TestEmbedInChild_RejectsMissingIndex(t *testing.T) {
 	child := childSrc()
 	v := View("sales").Version(1).Schema(rootWithChild("sales", "sale_items")).
-		EmbedInChild(child, "product", upstreamSrc("product_id").As("Product"))
+		EmbedInChild(child, upstreamLeg()).On("product_id")
 	// no .Indexes(...)
 	err := ValidateViewSchemas([]*ViewDefinition{v})
 	if err == nil || !strings.Contains(err.Error(), "multikey index") {
@@ -101,7 +103,7 @@ func TestEmbedInChild_RejectsMissingIndex(t *testing.T) {
 // view), so a view with only an EmbedMany and no index still validates.
 func TestEmbedMany_ExemptFromIndexGuard(t *testing.T) {
 	v := View("orders").Version(1).Schema(rootSchema("orders")).
-		EmbedMany("items", mongoEmbed("upstream_items", "order_id").As("Items"))
+		EmbedMany(extLeg("upstream_items", "Items", "items")).On("order_id")
 	if err := ValidateViewSchemas([]*ViewDefinition{v}); err != nil {
 		t.Fatalf("EmbedMany must not require an index, got: %v", err)
 	}
@@ -112,7 +114,7 @@ func TestEmbedInChild_ChangesRebuildHash(t *testing.T) {
 	child := childSrc()
 	base := View("sales").Version(1).Schema(rootWithChild("sales", "sale_items"))
 	withCE := View("sales").Version(1).Schema(rootWithChild("sales", "sale_items")).
-		EmbedInChild(child, "product", upstreamSrc("product_id").As("Product")).
+		EmbedInChild(child, upstreamLeg()).On("product_id").
 		Indexes(Index(childDocSegment(child) + ".product_id"))
 	if base.RebuildHash() == withCE.RebuildHash() {
 		t.Fatalf("declaring an EmbedInChild must move the RebuildHash")

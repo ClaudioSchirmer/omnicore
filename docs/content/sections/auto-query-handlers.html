@@ -124,8 +124,8 @@
             <th>Who does it</th>
             <th>Where</th>
         </tr>
-        <tr><td>Define the <code>ViewDefinition</code> (every case — single aggregate, legacy, cross-service)</td><td><span class="tag manual">manual</span></td><td><code>query.View(name).Version(1).Schema(TSchema())</code> — the aggregate's own data (root / siblings / SharedBase / children) projects automatically from the root <code>TableSchema</code>. Add <code>.EmbedMany("field", query.FromSchema(ExternalSchema()).As("Seg"))</code> only to compose EXTERNAL data (another service's read model / a derived projection); a write-anchored embed source is a boot error</td></tr>
-        <tr><td>Define cross-service <code>Embed</code>s (an external <code>FromSchema</code> over an upstream-projected collection)</td><td><span class="tag manual">manual</span></td><td>in the <code>ViewDefinition</code> via <code>query.FromSchema(core.NewExternalSchema("coll")…).FK("fk").As("GoSegment")</code> — not derivable from the aggregate; the type-less schema marks it external; <code>.As(...)</code> is required; the projection + recompose ripple is automatic (next row)</td></tr>
+        <tr><td>Define the <code>ViewDefinition</code> (every case — single aggregate, legacy, cross-service)</td><td><span class="tag manual">manual</span></td><td><code>query.View(name).Version(1).Schema(TSchema())</code> — the aggregate's own data (root / siblings / SharedBase / children) projects automatically from the root <code>TableSchema</code>. Add <code>.EmbedMany(query.JoinUpstream(ExternalSchema(), "Seg", "field")).On("fk")</code> only to compose EXTERNAL data (another service's read model / a derived projection); a JoinView leg is rejected (join a registered view at read time with a ComposedView)</td></tr>
+        <tr><td>Define cross-service <code>Embed</code>s (an external <code>JoinUpstream</code> over an upstream-projected collection)</td><td><span class="tag manual">manual</span></td><td>in the <code>ViewDefinition</code> via <code>Embed(query.JoinUpstream(core.NewExternalSchema("coll")…, "GoSegment", "seg")).On("fk")</code> — not derivable from the aggregate; the type-less schema marks it external; both segment names are mandatory on the leg; the projection + recompose ripple is automatic (next row)</td></tr>
         <tr><td>Drop archived rows from the projection (hot-tier read side)</td><td><span class="tag manual">manual</span></td><td><code>query.View(...).Schema(...).DeleteOnArchive()</code> — opt-in per view; cascade governs root + embeds. Default keeps archived rows so Mongo mirrors the relational store symmetrically.</td></tr>
         <tr><td>Create MongoDB indexes (single-field, compound, partial, sparse, TTL, text, 2dsphere, hashed)</td><td><span class="tag auto">automatic</span></td><td><code>query.View(...).Indexes(query.Index("email").Unique(), query.Compound("email","created_at"), query.TextIndex("name","email").DefaultLanguage("portuguese"), ...)</code> — declared on the same builder; <code>bootstrap.Run</code> calls <code>mongo.ApplyMongoSpecs</code> right after <code>collectViews</code> and before <code>SyncEngine.Start</code>. Idempotent on steady state; strict-on-divergence by default; <code>OMNICORE_MONGO_FORCE_REBUILD=true</code> as operator escape (drops divergent indexes and recreates from the declared spec; never auto-enabled). Boot validation: every index key must name a column the composer emits — a typo (<code>Index("emial")</code>) or a Go field name instead of the physical column (<code>addresses.zipCode</code> vs <code>addresses.zip_code</code>) aborts the boot rather than creating a dead index.</td></tr>
         <tr><td>Collection-level features ($jsonSchema validator, collation, capped, time-series)</td><td><span class="tag auto">automatic</span></td><td><code>query.View(...).JSONSchema(bson.M{...}).Collation(&amp;query.CollationSpec{Locale:"pt",Strength:1}).Capped(&amp;query.CappedSpec{SizeBytes: 1&lt;&lt;30}).TimeSeries(&amp;query.TimeSeriesSpec{TimeField:"ts"})</code> — same builder; framework forwards onto <code>createCollection</code> for fresh collections, <code>collMod</code> for validator updates on existing ones. <code>Capped</code> ⊕ <code>TimeSeries</code> (boot rejects both); collation is immutable on existing collections (divergence aborts boot, never auto-drops). Boot validation: every top-level <code>$jsonSchema.required</code> entry must name a column the composer emits — otherwise, with the default <code>validationAction: error</code>, Mongo would reject every SyncEngine upsert and silently freeze the projection.</td></tr>
@@ -148,7 +148,7 @@
         <tr><td>404 when document does not exist</td><td><span class="tag auto">automatic</span></td><td><code>FindByIDQueryHandler</code> emits <code>RecordNotFoundNotification</code></td></tr>
         <tr><td>Inject security claims from AppContext (tenant_id, etc.)</td><td><span class="tag manual">manual</span></td><td><code>Query.ToCriteria(ctx)</code> in <code>application/queries/</code> — the only layer below the web boundary that consumes <code>*AppContext</code> on the read side; overlays land on the <code>ReadCriteria.Filter</code> the handler forwards to <code>ViewReader.ReadPage</code> / <code>ReadByID</code></td></tr>
         <tr><td>View recomposition after table change</td><td><span class="tag auto">automatic</span></td><td><code>SyncEngine</code> consumes the transport and re-upserts</td></tr>
-        <tr><td>Cross-service composition (upstream Mongo projection + recompose ripple)</td><td><span class="tag auto">automatic</span></td><td><code>UpstreamSubscription</code> (declarative) + <code>UpstreamSubscriber</code> (runtime) + an external <code>FromSchema</code> (embed)</td></tr>
+        <tr><td>Cross-service composition (upstream Mongo projection + recompose ripple)</td><td><span class="tag auto">automatic</span></td><td><code>UpstreamSubscription</code> (declarative) + <code>UpstreamSubscriber</code> (runtime) + an external <code>JoinUpstream</code> (embed)</td></tr>
         <tr><td>Offline view rebuild</td><td><span class="tag auto">automatic</span></td><td><code>RebuildView</code> / <code>RebuildAllViews</code></td></tr>
     </tbody></table>
 
@@ -624,7 +624,7 @@ fwopenapi.Mount(d.OpenAPIRegistry, app, fiber.MethodGet, "/users.csv", csvH, csv
         label. A <strong>blank separator line</strong> follows each item's cascade once it
         concludes, so every aggregate (and sub-aggregate) is visually delimited; consecutive blanks
         from several levels concluding at once collapse into one. This applies identically to
-        locally-mapped embeds and cross-service external (<code>FromSchema</code>) embeds, in both
+        locally-mapped embeds and cross-service external (<code>JoinUpstream</code>) embeds, in both
         CSV (an empty record) and Excel (an empty worksheet row).
     </p>
     <p>
@@ -681,11 +681,10 @@ fwopenapi.Mount(d.OpenAPIRegistry, app, fiber.MethodGet, "/users.csv", csvH, csv
         Every view is declared explicitly with the fluent <code>View(name)</code> builder. The root
         <code>.Schema(...)</code> is the aggregate's own write <code>TableSchema</code> — the same one the repository uses
         — so the whole internal closure (root / siblings / SharedBase / children) projects automatically. Each embed's
-        <code>query.FromSchema(...)</code> carries an <strong>external</strong> (type-less <code>NewExternalSchema</code>)
-        schema describing an upstream collection's columns; the framework derives its collection, store kind, and — for an
-        <code>EmbedMany</code> — the join FK from it. An external embed declares its parent-side Go segment via
-        <code>.As(...)</code> (no Go type to derive it from); <code>.FK(...)</code> names the parent doc FK on a one-to-one
-        <code>Embed</code>.
+        <code>query.JoinUpstream(...)</code> carries an <strong>external</strong> (type-less <code>NewExternalSchema</code>)
+        schema describing an upstream collection's columns, plus its two mandatory segment names (Go, then doc field); the
+        framework derives the collection from the schema. The join column is named on the verb via <code>.On(...)</code> —
+        the parent FK on a 1:1 <code>Embed</code>, the leg FK on an <code>EmbedMany</code>.
     </p>
     <div class="box">
         <strong>One canonical path per case: internal data is automatic, embeds are external-only.</strong> The aggregate's
@@ -694,7 +693,7 @@ fwopenapi.Mount(d.OpenAPIRegistry, app, fiber.MethodGet, "/users.csv", csvH, csv
         faithful mirror of the write closure. You declare <strong>nothing</strong> for it; a nested collection lands under
         its pluralized child-type segment, filterable/sortable by its dotted Go path (<code>Items.SKU</code>).
         <code>EmbedMany</code>/<code>Embed</code> compose <strong>only EXTERNAL data</strong> the aggregate does not own —
-        another service's read model (<code>UpstreamSubscription</code> / external <code>FromSchema</code> over a type-less
+        another service's read model (<code>UpstreamSubscription</code> / external <code>JoinUpstream</code> over a type-less
         <code>NewExternalSchema</code>) or a derived projection. A <strong>write-anchored embed source is a boot error</strong>
         (there is no relational cross-aggregate embed — compose the read model instead), as is a redundant embed whose
         segment clashes with a child the schema already projects. Tabular export (CSV/XLSX) walks the same full tree —
@@ -724,26 +723,27 @@ var CustomerView = query.View("customers").
 // composed as EXTERNAL embeds: each source is a type-less NewExternalSchema
 // naming a local Mongo collection the framework materializes from that service's
 // event stream via an UpstreamSubscription (see "Cross-service composition").
-// External embeds need .As(...) (no Go type to derive the segment from);
-// .FK(...) names the parent doc FK on a one-to-one Embed.
+// External legs carry both segment names (no Go type to derive them from);
+// .On(...) on the verb names the join column.
 //
-// Embeds are SINGLE-LEVEL: a *Source exposes no Embed/EmbedMany builder, so an
-// embed source cannot nest a further embed (embed-of-embed does not compile).
+// Embeds are SINGLE-LEVEL: a leg exposes no Embed/EmbedMany builder, so an
+// embed leg cannot nest a further embed (embed-of-embed does not compile).
 // "customer" (customers service) and "shipments" (logistics service) are each
 // ONE top-level external hop; a deeper join composes at read time with a
 // ComposedView.
 var SaleView = query.View("sales_view").
     Version(1).
     Schema(views.SaleSchema()).                          // sale + its own line items (a .Child) auto-project
-    Embed("customer", query.FromSchema(
+    Embed(query.JoinUpstream(
         core.NewExternalSchema("customers").             // type-less → the CUSTOMERS service's mirror
-            PK("id").Field("Name", "name")).
-        FK("customer_id").                               // parent Sale's FK → customer._id (1:1)
-        As("Customer")).
-    EmbedMany("shipments", query.FromSchema(
+            PK("id").Field("Name", "name"),
+        "Customer", "customer")).
+        On("customer_id").                               // parent Sale's FK → customer._id (1:1)
+    EmbedMany(query.JoinUpstream(
         core.NewExternalSchema("shipments").             // type-less → the LOGISTICS service's mirror
-            PK("id").FK("sale_id")).                     // child FK → sale._id (1:N)
-        As("Shipments")).
+            PK("id"),
+        "Shipments", "shipments")).
+        On("sale_id").                                   // leg FK → sale._id (1:N)
     Indexes(query.Index("customer_id"))                  // boot guard §8.1: covering index for the 1:1 embed join
 
 // Drop archived rows from the projection — opt in via .DeleteOnArchive().
@@ -928,7 +928,7 @@ sync.Start(ctx)
 // microservice.&lt;profile&gt;.yaml; manual Wiring form shown for illustration).
 // bootstrap.Run spins one query.UpstreamSubscriber per entry and ripples
 // recompose to every view embedding the materialized collection via an
-// external FromSchema embed.
+// external JoinUpstream embed.
 return bootstrap.Wiring{
     UpstreamSubscriptions: []bootstrap.UpstreamSubscription{
         {Topic: "people.customers.events", Collection: "customers",

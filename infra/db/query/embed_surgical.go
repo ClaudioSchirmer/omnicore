@@ -46,10 +46,10 @@ func surgicalEmbedStages(embeds []embedDef, upstreamID string, after Document) [
 	set := Document{}
 	for _, e := range embeds {
 		if e.many {
-			set[e.field] = surgicalManyExpr(e, upstreamID, after)
+			set[e.Field()] = surgicalManyExpr(e, upstreamID, after)
 			continue
 		}
-		set[e.field] = surgicalOneExpr(e, upstreamID, after)
+		set[e.Field()] = surgicalOneExpr(e, upstreamID, after)
 	}
 	if len(set) == 0 {
 		return nil
@@ -62,11 +62,11 @@ func surgicalEmbedStages(embeds []embedDef, upstreamID string, after Document) [
 // other parent (the old side of a move, a delete) the strip alone stands.
 func surgicalManyExpr(e embedDef, upstreamID string, after Document) Document {
 	strip := Document{"$filter": Document{
-		"input": Document{"$ifNull": []any{"$" + e.field, []any{}}},
+		"input": Document{"$ifNull": []any{"$" + e.Field(), []any{}}},
 		"as":    "it",
 		"cond":  Document{"$ne": []any{"$$it._id", lit(upstreamID)}},
 	}}
-	fkVal := docFieldString(after, e.Source().SchemaDef().FKColumn())
+	fkVal := docFieldString(after, e.JoinColumn())
 	if fkVal == "" {
 		return strip
 	}
@@ -91,7 +91,7 @@ func surgicalOneExpr(e embedDef, upstreamID string, after Document) Document {
 	return Document{"$cond": []any{
 		Document{"$eq": []any{"$" + e.JoinColumn(), lit(upstreamID)}},
 		val,
-		"$" + e.field,
+		"$" + e.Field(),
 	}}
 }
 
@@ -133,7 +133,7 @@ func surgicalElement(id string, after Document) Document {
 // later mirror insert re-heals through its own ripple).
 func repairDanglingOneToOne(ctx context.Context, mongo ReadModelStore, resolver *ViewResolver, eng core.RelationalEngine, view *ViewDefinition, id string, written Document) {
 	for _, e := range view.embeds {
-		if e.many || !e.source.isMongo {
+		if e.many || !e.leg.IsMongo() {
 			continue
 		}
 		joinCol := e.JoinColumn()
@@ -143,13 +143,13 @@ func repairDanglingOneToOne(ctx context.Context, mongo ReadModelStore, resolver 
 		}
 		fkStr := fmt.Sprintf("%v", fk)
 		var val any
-		docs, err := mongo.FindManyByField(ctx, resolver.Active(e.source.table), "_id", fk)
+		docs, err := mongo.FindManyByField(ctx, resolver.Active(e.leg.Collection()), "_id", fk)
 		if err != nil {
 			// Best-effort by design (the main write already succeeded), but never
 			// silent: a systematic Mongo failure here would leave 1:1 segments
 			// dangling with no trace to diagnose by.
 			log.Printf("sync: WARNING — 1:1 embed repair read failed on view %q doc %q (segment %q): %v — segment stays repairable by the next event",
-				view.name, id, e.field, err)
+				view.name, id, e.Field(), err)
 			continue
 		}
 		if len(docs) == 0 {
@@ -158,18 +158,18 @@ func repairDanglingOneToOne(ctx context.Context, mongo ReadModelStore, resolver 
 			val = lit(docs[0])
 		}
 		stages := []Document{{"$set": Document{
-			e.field: Document{"$cond": []any{
+			e.Field(): Document{"$cond": []any{
 				Document{"$and": []any{
 					Document{"$eq": []any{"$" + joinCol, lit(fkStr)}},
-					Document{"$ne": []any{"$" + e.field + "._id", lit(fkStr)}},
+					Document{"$ne": []any{"$" + e.Field() + "._id", lit(fkStr)}},
 				}},
 				val,
-				"$" + e.field,
+				"$" + e.Field(),
 			}},
 		}}}
 		if aerr := mongo.ApplyProjection(ctx, resolver.Active(view.name), id, stages, false); aerr != nil {
 			log.Printf("sync: WARNING — 1:1 embed repair write failed on view %q doc %q (segment %q): %v — segment stays repairable by the next event",
-				view.name, id, e.field, aerr)
+				view.name, id, e.Field(), aerr)
 			continue
 		}
 		if shadow, on := resolver.ShadowActive(view.name); on {

@@ -15,7 +15,7 @@ import (
 func TestHash_DeterministicAcrossInstances(t *testing.T) {
 	build := func() *ViewDefinition {
 		return View("users").
-			EmbedMany("addresses", pgEmbed("addresses", "user_id")).
+			EmbedMany(extLeg("addresses", "Addresses", "addresses")).On("user_id").
 			Indexes(Index("email").Unique(), Compound("email", "created_at"))
 	}
 	a, b := build(), build()
@@ -64,9 +64,9 @@ func TestRebuildHash_RootTableChange(t *testing.T) {
 
 func TestRebuildHash_EmbedShapeChange(t *testing.T) {
 	a := View("users").
-		EmbedMany("addresses", pgEmbed("addresses", "user_id"))
+		EmbedMany(extLeg("addresses", "Addresses", "addresses")).On("user_id")
 	b := View("users").
-		EmbedMany("addresses", pgEmbed("addresses", "uid")) // different joinKey
+		EmbedMany(extLeg("addresses", "Addresses", "addresses")).On("uid") // different joinKey
 	if a.RebuildHash() == b.RebuildHash() {
 		t.Error("RebuildHash same despite different embed joinKey")
 	}
@@ -75,7 +75,7 @@ func TestRebuildHash_EmbedShapeChange(t *testing.T) {
 func TestRebuildHash_EmbedAddition(t *testing.T) {
 	a := View("orders")
 	b := View("orders").
-		EmbedMany("lines", pgEmbed("order_lines", "order_id"))
+		EmbedMany(extLeg("order_lines", "Lines", "lines")).On("order_id")
 	if a.RebuildHash() == b.RebuildHash() {
 		t.Error("RebuildHash same despite added embed")
 	}
@@ -322,9 +322,9 @@ func TestRebuildHash_VersionParticipates_ArtifactStable(t *testing.T) {
 
 func TestRebuildHash_SameVersionSameSpec(t *testing.T) {
 	a := View("users").Version(3).
-		EmbedMany("addresses", pgEmbed("addresses", "user_id"))
+		EmbedMany(extLeg("addresses", "Addresses", "addresses")).On("user_id")
 	b := View("users").Version(3).
-		EmbedMany("addresses", pgEmbed("addresses", "user_id"))
+		EmbedMany(extLeg("addresses", "Addresses", "addresses")).On("user_id")
 	if a.RebuildHash() != b.RebuildHash() {
 		t.Errorf("RebuildHash not deterministic across instances with same version + spec: %q vs %q", a.RebuildHash(), b.RebuildHash())
 	}

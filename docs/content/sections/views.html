@@ -249,7 +249,7 @@
 <h3 id="views-external">The external schema — the view-exclusive declaration</h3>
 <p>
     A view is the ONLY place a <strong>type-less</strong> schema exists: <code>core.NewExternalSchema(collection)</code>,
-    attached to a view through <code>query.FromSchema(...)</code>. Unlike a write-anchored <code>NewTableSchema[T]</code>
+    attached to a view through <code>query.JoinUpstream(...)</code>. Unlike a write-anchored <code>NewTableSchema[T]</code>
     (bound to a Go type, validated at construction), an external schema has <strong>no Go struct</strong> — its physical
     columns belong to an <em>upstream</em> service's Mongo collection (or a derived projection) that another team owns.
     Being type-less is the very signal that marks a source as EXTERNAL; there is no separate <code>FromMongo</code>
@@ -258,27 +258,29 @@
 <p>
     On an external <code>Field(goName, column[, labelKey])</code> the left side is the <em>logical Go name</em> the local
     view's Response/criteria speak; the right side names the <em>upstream's physical column</em>. It is validated by
-    bijection (no two fields share a column) but against no type — there is none. Because there is no Go type to derive a
-    segment from, <code>.As(goSegment)</code> is <strong>mandatory</strong> (a fatal boot error otherwise);
-    <code>.FK(column)</code> names the parent document's FK column pointing at the source's PK.
+    bijection (no two fields share a column) but against no type — there is none. Because there is no Go type to derive
+    the segment names from, the leg constructor takes them explicitly: <code>JoinUpstream(schema, goName, externalName)</code>
+    — both <strong>mandatory</strong>, in <code>TableSchema.Field</code> order (Go first, external second). The join column
+    is named on the verb via <code>.On(column)</code>, never on the leg.
 </p>
 <pre><code>// The upstream users service is mirrored locally (see Service-to-service);
 // this type-less schema describes THAT collection's columns.
-query.FromSchema(
+query.JoinUpstream(
     core.NewExternalSchema("upstream_users").
         PK("id").
         Field("Name", "name").
-        Field("Email", "mail")).      // logical Go name ↔ upstream column
-    FK("buyer_id").                   // parent doc FK → source PK (one-to-one)
-    As("Buyer")                       // REQUIRED — no Go type to derive the segment</code></pre>
+        Field("Email", "mail"),       // logical Go name ↔ upstream column
+    "Buyer", "buyer")                 // Go segment, doc segment — both REQUIRED
+// … then on the verb:  Embed(buyer).On("buyer_id")   // parent FK → source PK (1:1)</code></pre>
 
 <h3 id="views-embed">Embed and EmbedMany — composing external data</h3>
 <p>
     The two materialized constructors (<code>View</code> and <code>SharedBaseView</code>) reach OTHER data only through an
-    external embed. <code>Embed(field, src)</code> is 1:1 (a single sub-document, <code>null</code> when unresolved);
-    <code>EmbedMany(field, src)</code> is 1:N (an array, empty when none). Both take a <code>*Source</code> built with
-    <code>query.FromSchema(core.NewExternalSchema(...))</code> — the FK lives on the parent for 1:1 and on the child schema
-    for 1:N.
+    external embed. <code>Embed(leg).On(col)</code> is 1:1 (a single sub-document, <code>null</code> when unresolved);
+    <code>EmbedMany(leg).On(col)</code> is 1:N (an array, empty when none). Both take a <em>leg</em> built with
+    <code>query.JoinUpstream(core.NewExternalSchema(...), goName, externalName)</code>. The verb names the join column via
+    the mandatory terminal <code>.On(col)</code> — the FK lives on the parent for 1:1 and on the leg (child) for 1:N — and
+    the verb's multiplicity, not the declaration, fixes which side holds it.
 </p>
 <div class="box">
     <strong>Embeds are EXTERNAL-only — by design.</strong> An aggregate's own children, siblings and shared base already
@@ -290,9 +292,9 @@ query.FromSchema(
 </div>
 <div class="box">
     <strong>Embeds are SINGLE-LEVEL — by construction, not by a runtime check.</strong> A view may declare
-    <em>any number</em> of top-level <code>Embed</code>/<code>EmbedMany</code>, but a <code>*Source</code> exposes
-    <em>no</em> <code>Embed</code>/<code>EmbedMany</code> builder — only <code>FromSchema</code>, <code>FK</code> and
-    <code>As</code>. An embed's source therefore cannot nest a further embed: embed-of-embed is <strong>not expressible and
+    <em>any number</em> of top-level <code>Embed</code>/<code>EmbedMany</code>, but a <em>leg</em> exposes
+    <em>no</em> <code>Embed</code>/<code>EmbedMany</code> builder — it carries only what to pull plus its two segment names.
+    An embed's leg therefore cannot nest a further embed: embed-of-embed is <strong>not expressible and
     fails to compile</strong>, never a boot or runtime surprise. The reason it was never a supported shape is the one-hop
     ripple: first-time compose and a full rebuild would materialize a nested segment, but the recompose-ripple that keeps an
     embed fresh only reaches the view's top-level embeds — a nested segment would materialize once and then drift silently.
@@ -313,19 +315,20 @@ query.FromSchema(
     <code>ComposedView</code> below links INTERNAL views (or external collections):
 </p>
 <table>
-    <tbody><tr><th>Constructor(s)</th><th>Method</th><th>2nd arg</th><th>Built from — and reach</th></tr>
-    <tr><td><code>View</code> / <code>SharedBaseView</code></td><td><code>Embed(seg, src)</code> — 1:1</td><td><code>*Source</code></td><td><code>query.FromSchema(core.NewExternalSchema(…))</code> — EXTERNAL only; FK on the parent.</td></tr>
-    <tr><td><code>View</code> / <code>SharedBaseView</code></td><td><code>EmbedMany(seg, src)</code> — 1:N</td><td><code>*Source</code></td><td><code>query.FromSchema(core.NewExternalSchema(…))</code> — EXTERNAL only; FK on the child schema.</td></tr>
-    <tr><td><code>View</code> / <code>SharedBaseView</code></td><td><code>EmbedInChild(childSchema, seg, src)</code> — 1:1 into a native child</td><td><code>*Source</code></td><td><code>query.FromSchema(core.NewExternalSchema(…))</code> — EXTERNAL only; FK <em>inside each element</em> of a native aggregate child.</td></tr>
-    <tr><td><code>ComposedView</code></td><td><code>Link(seg, leg)</code> — 1:1</td><td><code>*Leg</code></td><td><code>query.JoinView(view)</code> (INTERNAL registered view) <em>or</em> <code>query.JoinUpstream(core.NewExternalSchema(…))</code> (EXTERNAL); FK on the primary.</td></tr>
-    <tr><td><code>ComposedView</code></td><td><code>LinkMany(seg, leg)</code> — 1:N</td><td><code>*Leg</code></td><td>Same two constructors; FK on the leg (<code>leg.fk → primary._id</code>); <code>OrderBy</code> + <code>MaxLinkManyLimit</code> apply.</td></tr>
+    <tbody><tr><th>Constructor(s)</th><th>Verb</th><th>Leg</th><th>Built from — and reach</th></tr>
+    <tr><td><code>View</code> / <code>SharedBaseView</code></td><td><code>Embed(leg).On(col)</code> — 1:1</td><td><code>*Leg</code></td><td><code>query.JoinUpstream(core.NewExternalSchema(…), Go, ext)</code> — EXTERNAL only; <code>.On</code> = parent FK.</td></tr>
+    <tr><td><code>View</code> / <code>SharedBaseView</code></td><td><code>EmbedMany(leg).On(col)</code> — 1:N</td><td><code>*Leg</code></td><td><code>query.JoinUpstream(core.NewExternalSchema(…), Go, ext)</code> — EXTERNAL only; <code>.On</code> = leg FK.</td></tr>
+    <tr><td><code>View</code> / <code>SharedBaseView</code></td><td><code>EmbedInChild(childSchema, leg).On(col)</code> — 1:1 into a native child</td><td><code>*Leg</code></td><td><code>query.JoinUpstream(core.NewExternalSchema(…), Go, ext)</code> — EXTERNAL only; <code>.On</code> = FK <em>inside each element</em> of a native aggregate child.</td></tr>
+    <tr><td><code>ComposedView</code></td><td><code>Link(leg).On(col)</code> — 1:1</td><td><code>*Leg</code></td><td><code>query.JoinView(view, Go, ext)</code> (INTERNAL registered view) <em>or</em> <code>query.JoinUpstream(core.NewExternalSchema(…), Go, ext)</code> (EXTERNAL); <code>.On</code> = primary FK.</td></tr>
+    <tr><td><code>ComposedView</code></td><td><code>LinkMany(leg).OrderBy(…).MaxLinkManyLimit(…).On(col)</code> — 1:N</td><td><code>*Leg</code></td><td>Same two constructors; <code>.On</code> = leg FK (<code>leg.on → primary._id</code>); <code>OrderBy</code>/<code>Desc</code>/<code>MaxLinkManyLimit</code> chain on the verb before <code>.On</code>.</td></tr>
 </tbody></table>
 <p>
-    Both families share <code>.FK(column)</code> — the FK always points at the other side's PK/<code>_id</code>; the 1:1
-    side that holds it is the parent/primary, the 1:N side is the child/leg — and <code>.As(goSegment)</code>, mandatory on
-    every external source (a type-less schema has no Go type to derive a segment from). Note the symmetry:
-    <code>FromSchema</code> and <code>JoinUpstream</code> take the SAME thing (a <code>core.NewExternalSchema</code>); only
-    <code>JoinView</code> has no embed counterpart, because embedding an internal view would duplicate data the schema
+    Every family names its join column on the verb via <code>.On(column)</code> — the FK always points at the other side's
+    PK/<code>_id</code>; the verb's multiplicity fixes which side holds it (1:1 → parent/primary, 1:N → child/leg), so the
+    same leg plugs into an <code>Embed</code> (re-materialized) and a <code>Link</code> (read-time). The two segment names
+    (Go and doc field) live on the leg constructor (<code>JoinUpstream</code>/<code>JoinView</code>), both mandatory. Note
+    the symmetry: <code>JoinUpstream</code> is the SAME leg an embed and a link accept (a <code>core.NewExternalSchema</code>);
+    only <code>JoinView</code> has no embed counterpart, because embedding an internal view would duplicate data the schema
     already projects — join it at read time with a <a href="#views~views-composed">ComposedView</a> instead.
 </p>
 <div class="box">
@@ -341,23 +344,23 @@ query.FromSchema(
 <h3 id="views-embed-child">EmbedInChild — enriching a child array</h3>
 <p>
     Where <code>Embed</code> and <code>EmbedMany</code> compose external data off the root document,
-    <code>EmbedInChild(childSchema, field, src)</code> composes it one level down: every element of a
+    <code>EmbedInChild(childSchema, leg).On(col)</code> composes it one level down: every element of a
     <strong>native aggregate-child</strong> array gains a 1:1 sub-document resolved from a foreign key the element itself
     carries. It is the read model for the "list of X with the name of Y on each line" shape — a sale view whose line items
     each store a <code>product_id</code> and read back with the product beside it. The write side keeps the element
     normalized (it stores only the foreign key); the enrichment exists only in the projection, kept current by the same
     recompose-ripple that keeps a root embed fresh.
 </p>
-<pre><code>view.EmbedInChild(SaleItemSchema(), "product",
-    query.FromSchema(query.NewExternalSchema("upstream_products")).
-        FK("product_id").As("Product"))
+<pre><code>view.EmbedInChild(SaleItemSchema(),
+    query.JoinUpstream(core.NewExternalSchema("upstream_products"), "Product", "product")).
+    On("product_id")
 </code></pre>
 <p>
     <code>childSchema</code> is a child of the view root — declared with <code>root.Child(...)</code> on a
     <code>query.View</code>, or on the base of a <code>SharedBaseView</code> (a role's own children are not a target). The
-    source is external, exactly as a root embed: a <code>query.FromSchema(core.NewExternalSchema(...))</code> whose
-    <code>.FK(column)</code> names the join column each child element carries — resolved against the source's
-    <code>_id</code> — and whose <code>.As(segment)</code> names the Go field the sub-document reads back under. The
+    leg is external, exactly as a root embed: a <code>query.JoinUpstream(core.NewExternalSchema(...), goName, externalName)</code>
+    whose <code>.On(column)</code> on the verb names the join column each child element carries — resolved against the leg's
+    <code>_id</code> — with <code>goName</code> the Go field the sub-document reads back under. The
     enrichment is a first-class part of the projection: it is filtered, sorted and pruned with <code>?fields=</code> at the
     child's segment path (<code>items.product.name</code>), walked by tabular export, and folded into the
     <code>RebuildHash</code> — so changing it without a <code>Version(N)</code> bump surfaces as
@@ -403,7 +406,7 @@ query.FromSchema(
     </div>
 
     <h4 id="views-composed-declare">Declaring one</h4>
-    <pre><code>// infra — same package and vocabulary as View / SharedBaseView / FromSchema.
+    <pre><code>// infra — same package and vocabulary as View / SharedBaseView / JoinUpstream.
 func GadgetFullView() *query.ComposedViewDefinition {
     return query.ComposedView("gadgets_full").
         Primary(GadgetView()).                      // drives EVERYTHING row-shaped
@@ -411,17 +414,16 @@ func GadgetFullView() *query.ComposedViewDefinition {
         // 1:1 — the PRIMARY holds the FK (gadgets column "id" → the upstream
         // doc's _id). External leg: a locally materialized upstream collection,
         // described by its core.NewExternalSchema. Null segment when absent.
-        Link("upstreamMirror", query.JoinUpstream(GadgetUpstreamMirrorSchema()).
-            FK("id").
-            As("UpstreamMirror")).                  // Go segment — mandatory on external legs
+        Link(query.JoinUpstream(GadgetUpstreamMirrorSchema(),
+            "UpstreamMirror", "upstreamMirror")).   // Go + doc segments — both mandatory
+            On("id").                               // the join column, on the verb
 
         // 1:N — the LEG holds the FK (gadget_notes column "gadget_id" → the
         // gadget's _id). Internal leg: any registered view. Empty array when absent.
-        LinkMany("notes", query.JoinView(GadgetNotesView()).
-            FK("gadget_id").
-            As("Notes").
+        LinkMany(query.JoinView(GadgetNotesView(), "Notes", "notes")).
             OrderBy("text").                        // deterministic segment order (default: _id asc)
-            MaxLinkManyLimit(3))                    // per-parent ceiling: link → yaml → 100
+            MaxLinkManyLimit(3).                     // per-parent ceiling: link → yaml → 100
+            On("gadget_id")                         // the join column terminates the leg
 }
 
 // Registration — the bootstrap opt-in, mirroring ReadableFeature:
@@ -429,24 +431,23 @@ func (f *GadgetFeature) ComposedViews() []*query.ComposedViewDefinition {
     return []*query.ComposedViewDefinition{GadgetFullView()}
 }</code></pre>
     <p>
-        <strong>One join vocabulary — PK/FK only.</strong> Every relationship declares one
-        <code>FK(column)</code>; the FK always points at the other side's PK/<code>_id</code>; who holds
+        <strong>One join vocabulary — PK/FK only.</strong> Every relationship names one join column on the verb via
+        <code>.On(column)</code>; the FK always points at the other side's PK/<code>_id</code>; who holds
         it follows the multiplicity: on a 1:1 <code>Link</code> the <em>primary</em> holds it
-        (<code>primary.fk → leg._id</code>), on a 1:N <code>LinkMany</code> the <em>leg</em> holds it
-        (<code>leg.fk → primary._id</code>). This is the same rule the whole schema system speaks
-        (<code>TableSchema.FK</code> for children, <code>Source.FK</code> for embeds). The builder speaks
+        (<code>primary.on → leg._id</code>), on a 1:N <code>LinkMany</code> the <em>leg</em> holds it
+        (<code>leg.on → primary._id</code>). The same <code>.On</code> is the join for embeds too, so one leg
+        (<code>JoinUpstream</code>) plugs into both an <code>Embed</code> and a <code>Link</code>. The builder speaks
         physical columns, like <code>Indexes</code> and every other view declaration.
     </p>
     <table>
         <tbody><tr><th>Builder</th><th>Meaning</th></tr>
         <tr><td><code>ComposedView(name)</code></td><td>The read-side identity — goes wherever a view name goes. Must not collide with any view or composed name.</td></tr>
         <tr><td><code>Primary(view)</code></td><td>Exactly one, always an <strong>internal registered view</strong> (regular or shared-base). Its <code>MaxLimit</code>, indexes, text search, archived gate apply unchanged.</td></tr>
-        <tr><td><code>Link(segment, leg)</code></td><td>1:1 — sub-document under <code>segment</code>; explicit <code>null</code> when absent.</td></tr>
-        <tr><td><code>LinkMany(segment, leg)</code></td><td>1:N — array under <code>segment</code>, in the declared order, capped per parent; empty array when absent.</td></tr>
-        <tr><td><code>JoinView(view)</code></td><td>Internal leg: any registered view — it arrives exactly as a direct read of that view would (children, embeds, roles, archived strip included).</td></tr>
-        <tr><td><code>JoinUpstream(schema)</code></td><td>External leg: a locally materialized <code>UpstreamSubscription</code> collection described by its <code>NewExternalSchema</code>. A leg NEVER reads another service's live storage — materialize first, then compose.</td></tr>
-        <tr><td><code>FK(column)</code></td><td>The join column (see the multiplicity rule above). Mandatory on every leg.</td></tr>
-        <tr><td><code>As(goSegment)</code></td><td>The Go segment criteria/Responses refer to. Mandatory on external legs; optional override on internal ones (default: the leg root type name, pluralized on a LinkMany).</td></tr>
+        <tr><td><code>Link(leg).On(col)</code></td><td>1:1 — sub-document under the leg's doc segment; explicit <code>null</code> when absent. <code>.On</code> = primary FK, mandatory.</td></tr>
+        <tr><td><code>LinkMany(leg)…On(col)</code></td><td>1:N — array under the leg's doc segment, in the declared order, capped per parent; empty array when absent. <code>OrderBy</code>/<code>Desc</code>/<code>MaxLinkManyLimit</code> chain before the terminal <code>.On</code> = leg FK.</td></tr>
+        <tr><td><code>JoinView(view, goName, ext)</code></td><td>Internal leg: any registered view — it arrives exactly as a direct read of that view would (children, embeds, roles, archived strip included). Both segment names mandatory.</td></tr>
+        <tr><td><code>JoinUpstream(schema, goName, ext)</code></td><td>External leg: a locally materialized <code>UpstreamSubscription</code> collection described by its <code>NewExternalSchema</code>. A leg NEVER reads another service's live storage — materialize first, then compose. Also the only leg an <code>Embed</code>/<code>EmbedMany</code>/<code>EmbedInChild</code> accepts.</td></tr>
+        <tr><td><code>.On(column)</code></td><td>The join column, named on the verb (see the multiplicity rule above). Mandatory — the verb's binding routes back to the builder only through <code>.On</code>, so a missing join does not compile.</td></tr>
         <tr><td><code>OrderBy(column)</code> / <code>.Desc()</code></td><td>LinkMany only — the segment's deterministic order (default <code>_id</code> ascending). Not an end-user sort (see the control matrix below).</td></tr>
         <tr><td><code>MaxLinkManyLimit(n)</code></td><td>LinkMany only — the per-parent item ceiling. Cascade: per-link → yaml <code>query.maxLinkManyLimit</code> → framework default 100. At the ceiling the segment truncates silently and deterministically: "the first N in the declared order" — payload protection, not validation. The full set lives on the leg's own view, paginated.</td></tr>
     </tbody></table>

@@ -20,10 +20,9 @@ func cvBootPrimary() *query.ViewDefinition {
 func cvBootComposed(name string) *query.ComposedViewDefinition {
 	return query.ComposedView(name).
 		Primary(cvBootPrimary()).
-		Link("upstreamMirror", query.JoinUpstream(
-			core.NewExternalSchema("upstream_gadgets").PK("id").Field("Code", "code")).
-			FK("id").
-			As("UpstreamMirror"))
+		Link(query.JoinUpstream(
+			core.NewExternalSchema("upstream_gadgets").PK("id").Field("Code", "code"),
+			"UpstreamMirror", "upstreamMirror")).On("id")
 }
 
 type composingStubFeature struct {

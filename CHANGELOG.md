@@ -13,7 +13,7 @@ with `1.0.0`.
 
 ### Added
 
-- **`ViewDefinition.EmbedInChild(childSchema, field, src)` — read-side 1:1
+- **`ViewDefinition.EmbedInChild(childSchema, leg).On(col)` — read-side 1:1
   enrichment of a view's native child array.** For the "list of X with the name
   of Y per line" shape (e.g. a sale view whose line items each carry
   `product_id`, enriched with the product name from an upstream projection): each
@@ -39,6 +39,35 @@ with `1.0.0`.
   resolves the parent by the child's FK → parent `_id`, never a reverse scan of
   the view). Existing services with an un-indexed 1:1 embed must add the index to
   boot.
+
+- **breaking** — **view composition speaks one join vocabulary: the join column
+  and the two segment names moved off the source onto the verb and the leg
+  constructor; `FromSchema`, the `Source` type, `Source.FK`, `Source.As` and
+  `Leg.FK`/`Leg.As` are removed.** An embed/link source is now a single *leg*
+  built by `query.JoinUpstream(schema, goName, externalName)` (an external
+  collection — the only kind an `Embed`/`EmbedMany`/`EmbedInChild` accepts) or
+  `query.JoinView(view, goName, externalName)` (a registered view — a
+  `ComposedView` leg only). Both segment names are mandatory, declared in
+  `TableSchema.Field` order (Go first, external second). The join column is named
+  on the verb via `.On(column)` — mandatory and compile-time enforced (the verb
+  returns a binding whose only route back to the builder is `.On`) — and feeds
+  the view hash uniformly for every embed/leg kind. The verb's multiplicity fixes
+  which side holds the FK, so the same leg plugs into an `Embed` (re-materialized)
+  and a `Link` (read-time). A `LinkMany`'s `OrderBy`/`Desc`/`MaxLinkManyLimit`
+  move onto its binding, so they can no longer be misplaced on a 1:1 `Link` (the
+  former boot guards for that misplacement are removed with the surface). The
+  external-embed-missing-Go-segment and missing-`.FK` boot guards are gone too:
+  the names and (compile-time) join are now mandatory at declaration.
+  `TableSchema.FK` is unchanged — it declares an aggregate child's FK to its root
+  (a write-side concern). *Migration*:
+  `Embed("seg", query.FromSchema(sch).FK("col").As("Go"))` →
+  `Embed(query.JoinUpstream(sch, "Go", "seg")).On("col")`; the inline
+  `schema.FK(...)` on an EmbedMany source becomes the verb's `.On(...)`;
+  `Link("seg", query.JoinUpstream(sch).FK("col").As("Go"))` →
+  `Link(query.JoinUpstream(sch, "Go", "seg")).On("col")`;
+  `LinkMany`'s `OrderBy`/`Desc`/`MaxLinkManyLimit` chain before the terminal
+  `.On(...)`. Rebuild hashes are unchanged for an unchanged view, so no view
+  rebuilds on upgrade.
 
 ## [0.38.0] - 2026-07-26
 

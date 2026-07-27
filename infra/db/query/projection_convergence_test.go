@@ -540,10 +540,10 @@ func TestProcess_DeleteOnArchive_TombstonesAndGuardsDelete(t *testing.T) {
 // placed FIRST (before the own stage writes the PK the probe reads), and never
 // enters the revision-guarded scopes.
 func TestConsultGuardedStages_EmbedsCreateOnlyAndFirst(t *testing.T) {
-	external := FromSchema(core.NewExternalSchema("buyers").PK("id").FK("order_id")).As("Buyers")
+	external := JoinUpstream(core.NewExternalSchema("buyers").PK("id"), "Buyers", "buyers")
 	schema := core.NewTableSchema[*builderTestEntity]("orders").
 		PK("id").Revision("revision").Field("Email", "email")
-	view := View("orders").Version(1).Schema(schema).EmbedMany("buyers", external)
+	view := View("orders").Version(1).Schema(schema).EmbedMany(external).On("order_id")
 
 	doc := Document{
 		"id": "o1", "email": "a@x",
