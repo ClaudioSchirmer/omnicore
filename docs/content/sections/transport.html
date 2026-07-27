@@ -22,6 +22,44 @@ type Subscriber interface {
 }</code></pre>
   <p>Per-aggregate ordering is enforced <em>inside</em> the consumer (a stable hash of <code>aggregate_id</code> routes to a fixed worker), so the transport only has to guarantee FIFO within a partition/subject &mdash; a requirement both Kafka and JetStream satisfy trivially.</p>
 
+  <h3>Delivery &amp; fan-out &mdash; consumer groups and the three consumers</h3>
+  <p>Every topic is <strong>broadcast</strong>: the broker delivers <strong>one copy per consumer group</strong>. Within a single group the topic's partitions/subjects are <em>split</em> across the group's members, so a service running N replicas (pods) still processes each message <strong>once</strong> &mdash; replicas share the load, they do not duplicate it. Two independent <em>groups</em>, by contrast, each receive the full stream. So the unit of fan-out is the <strong>distinct group id</strong>, never the process count.</p>
+  <div class="box"><strong>Same group → one reaction; different groups → one reaction each.</strong> Adding replicas of a service never multiplies its reactions (they join the same group and divide the partitions). Adding a <em>second service</em> does (it joins under its own group and gets its own copy). Per-aggregate ordering survives the split because the partition key is <code>aggregate_id</code> &mdash; the same aggregate always lands on the same partition, hence the same replica.</div>
+  <p>Each of the three consumers owns its group id differently, and that is what makes the read-side projection singular while cross-service composition fans out:</p>
+  <ul>
+    <li><strong>SyncEngine</strong> &mdash; one group per service (<code>transport.syncGroup</code>), and it subscribes only to the <code>&lt;table&gt;.events</code> topics of the service's <em>own</em> views. On a producer's topic there is therefore exactly <strong>one</strong> sync group: the owner's.</li>
+    <li><strong>UpstreamSubscriber</strong> &mdash; one group per <em>subscription</em> (default <code>&lt;service&gt;-upstream-&lt;topic&gt;</code>). Any number of downstream services can each declare a subscription to the same upstream <code>&lt;table&gt;.events</code>, so that one topic carries <strong>N</strong> upstream groups &mdash; one per consuming service.</li>
+    <li><strong>Integration <code>ConsumerPool</code></strong> &mdash; one group per subscribing service (default <code>&lt;service&gt;-integration</code>). Each service that declares <code>subscribes</code> for an event reacts under its own group.</li>
+  </ul>
+  <p>The producer is oblivious to all of it: it only writes its outbox and lets the CDC relay publish. A consumer subscribes <em>unilaterally and declaratively</em> &mdash; it names itself (<code>service:</code>, which prefixes the default group) and the topic it wants (<code>upstreamSubscriptions[].topic</code> or <code>integration.subscribes</code>); nothing registers with, or changes on, the producer. See <a href="#service-to-service">Service-to-service communication</a> for the upstream declaration and <a href="#integration-events">Integration events</a> for the event path.</p>
+<pre><code> users service ──write──► outbox ──CDC relay──► topic: users.events  (published once)
+                                                        │
+                                    the broker delivers ONE copy per group
+                     ┌──────────────────────┬───────────┴──────────────┐
+                     ▼                       ▼                          ▼
+             group: users-sync     group: orders-upstream-    group: billing-upstream-
+             (owner's projection)         users.events               users.events
+             5 replicas, split      3 replicas, split          4 replicas, split
+             → 1 replica / message  → 1 replica / message      → 1 replica / message
+                     │                       │                          │
+             writes users' own      materializes users         materializes users
+             Mongo views            locally (orders)           locally (billing)
+             ── 1 reaction ──       ── 1 reaction ──           ── 1 reaction ──
+
+ 12 replicas total, still 3 reactions — one per GROUP, never per replica.</code></pre>
+  <table>
+    <tbody><tr>
+      <th>Consumer group on <code>users.events</code></th>
+      <th>Service</th>
+      <th>Role</th>
+      <th>Groups on this topic</th>
+      <th>Reactions</th>
+    </tr>
+    <tr><td><code>users-sync</code></td><td>users (owner)</td><td>SyncEngine</td><td>always 1</td><td>1</td></tr>
+    <tr><td><code>orders-upstream-users.events</code></td><td>orders</td><td>UpstreamSubscriber</td><td rowspan="2">0..N (one per consuming service)</td><td>1</td></tr>
+    <tr><td><code>billing-upstream-users.events</code></td><td>billing</td><td>UpstreamSubscriber</td><td>1</td></tr>
+  </tbody></table>
+
   <h3>Selection &mdash; the build tag</h3>
   <p>Selection mirrors the engine registry (the <code>database/sql</code> driver pattern): each adapter self-registers under a name in <code>init()</code> (<code>transport.RegisterSubscriber</code>) behind its own build tag, and the composition root resolves it by name (<code>transport.NewSubscriber</code>). So <code>bootstrap</code> never imports a broker client, and a build links only the one adapter its tag selects:</p>
   <ul>
