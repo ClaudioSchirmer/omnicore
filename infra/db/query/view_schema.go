@@ -37,6 +37,13 @@ type viewEmbed struct {
 	// archived role's segment is hidden on default reads, and the role's own
 	// child collections strip recursively.
 	isRole bool
+	// isViewLeg marks a segment materialized from a LOCAL view (query.JoinView):
+	// the stored sub-document is a copy of that view's own document, so the
+	// reader must treat its INSIDES exactly as a direct read of the source view
+	// would — the archived-entry strip and the soft-delete auto-include descend
+	// into it. An EXTERNAL (mirror) leg does not: a cross-service source's
+	// lifecycle belongs to its upstream, and the mirror is stored as received.
+	isViewLeg bool
 }
 
 // BuildViewNode assembles the translator tree for a view. On a SharedBaseView
@@ -69,11 +76,24 @@ func (v *ViewDefinition) BuildViewNode() *ViewNode {
 			continue // boot-validated to be a native child; defensive
 		}
 		seg := ce.leg.goSegment
-		ive := &viewEmbed{goSegment: seg, docField: ce.Field(), node: newViewNode(ce.leg.schema, nil)}
+		ive := &viewEmbed{goSegment: seg, docField: ce.Field(), node: legViewNode(ce.leg), isViewLeg: ce.leg.view != nil}
 		childVE.node.embeds[seg] = ive
 		childVE.node.embedsByDoc[ce.Field()] = ive
 	}
 	return n
+}
+
+// legViewNode builds the translator node for one embed leg: a VIEW leg
+// (query.JoinView) resolves through the source view's own BuildViewNode — the
+// materialized segment mirrors a direct read of that view, embeds and children
+// included, and the recursion terminates because the embed graph is acyclic
+// (appendEmbedCycles). An EXTERNAL leg (query.JoinUpstream) is a flat mirror
+// schema with no closure of its own.
+func legViewNode(leg *Leg) *ViewNode {
+	if leg.view != nil {
+		return leg.view.BuildViewNode()
+	}
+	return newViewNode(leg.schema, nil)
 }
 
 // newRoleViewNode builds the translator node for one role segment: the role's
@@ -105,7 +125,13 @@ func newViewNode(schema *core.TableSchema, embeds []embedDef) *ViewNode {
 		ve := &viewEmbed{
 			goSegment: seg,
 			docField:  e.Field(),
-			node:      newViewNode(e.leg.schema, nil),
+			// A VIEW leg translates with the source view's FULL node (its children,
+			// roles and own embeds) — the materialized document carries exactly what
+			// a direct read of that view would, so the translator must too. This is
+			// the same node a composed view's internal leg uses (ComposedLink.Node).
+			// An EXTERNAL leg has only its flat mirror schema.
+			node:      legViewNode(e.leg),
+			isViewLeg: e.leg.view != nil,
 		}
 		n.embeds[seg] = ve
 		n.embedsByDoc[e.Field()] = ve
@@ -163,6 +189,17 @@ func (n *ViewNode) ChildSoftDeletePaths() map[string]string {
 	}
 	out := map[string]string{}
 	for docField, emb := range n.embedsByDoc {
+		// A materialized VIEW segment contributes only what lives INSIDE it: its
+		// own lifecycle segments, dotted under this one. Its ROOT soft-delete
+		// column is deliberately not auto-included — an archived source document
+		// stays embedded (the segment mirrors the stored state, like a mirror
+		// segment does), so there is nothing at this level to hide.
+		if emb.isViewLeg {
+			for sub, sd := range emb.node.ChildSoftDeletePaths() {
+				out[docField+"."+sub] = sd
+			}
+			continue
+		}
 		if !emb.isChild && !emb.isRole {
 			continue
 		}
@@ -213,6 +250,30 @@ func (n *ViewNode) StripArchivedChildren(doc map[string]any) {
 			emb.node.StripArchivedChildren(m)
 			// asStringMap may have copied (bson.M via reflection) — write back.
 			doc[docField] = m
+			continue
+		}
+		// A materialized VIEW segment carries a copy of the source view's own
+		// document, so its INSIDES must read exactly as a direct read of that view
+		// would: recurse so ITS child collections drop their archived entries.
+		// Applies to both multiplicities — a 1:1 sub-document and every element of
+		// a 1:N array. The segment itself is never dropped: an archived SOURCE
+		// document stays embedded, mirroring the stored state exactly like an
+		// external mirror segment does.
+		if emb.isViewLeg {
+			if items, ok := asAnySlice(doc[docField]); ok {
+				for i, item := range items {
+					if m, isMap := asStringMap(item); isMap {
+						emb.node.StripArchivedChildren(m)
+						items[i] = m
+					}
+				}
+				doc[docField] = items
+				continue
+			}
+			if m, isMap := asStringMap(doc[docField]); isMap {
+				emb.node.StripArchivedChildren(m)
+				doc[docField] = m
+			}
 			continue
 		}
 		if !emb.isChild {

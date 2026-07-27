@@ -298,7 +298,20 @@ func runWithConfig(cfg *Config, wire func(Deps) Wiring) error {
 		deps.bootRebuild = boot
 		go func() {
 			defer close(boot.done)
+			// notRebuilt names the views this run did NOT bring to a flip (a
+			// follower's skip). A view materializing one of them must be skipped
+			// too: rebuilding it now would compose its segments from the source's
+			// pre-flip content and finish stale, with no event left to repair it.
+			// The driver instance holds both plans in the same dependency order and
+			// rebuilds the pair correctly, so skipping here converges.
+			notRebuilt := map[string]bool{}
 			for i, plan := range rebuildPlans {
+				if src := blockedEmbedSource(plan.View, notRebuilt); src != "" {
+					notRebuilt[plan.View.Name()] = true
+					deps.Logger.Info("view rebuild deferred: it materializes a view this instance did not rebuild",
+						"view", plan.View.Name(), "source", src)
+					continue
+				}
 				// Record which view (1-based) is rebuilding so /readyz names it in
 				// the 503 reason. Set before ExecuteRebuild so the reason reflects
 				// the view currently under work, not the one just finished.
@@ -314,6 +327,7 @@ func runWithConfig(cfg *Config, wire func(Deps) Wiring) error {
 						// lease refresh. Keep going for any other view we can drive.
 						deps.Logger.Info("view rebuild driven by another instance; serving the active slot until the flip",
 							"view", plan.View.Name())
+						notRebuilt[plan.View.Name()] = true
 						continue
 					}
 					deps.Logger.Error("boot rebuild failed", "view", plan.View.Name(), "err", err)
@@ -324,7 +338,7 @@ func runWithConfig(cfg *Config, wire func(Deps) Wiring) error {
 					return
 				}
 			}
-			boot.upstream = startUpstreamSubscribers(rebuildCtx, deps, cfg, upstreamSubs, views)
+			boot.upstream = startUpstreamSubscribers(rebuildCtx, deps, cfg, upstreamSubs, views, syncEngine)
 			syncEngine.Start(rebuildCtx)
 			boot.complete.Store(true) // readiness gate opens
 			deps.Logger.Info("sync engine started",
@@ -339,7 +353,7 @@ func runWithConfig(cfg *Config, wire func(Deps) Wiring) error {
 		// Mongo collection (operator may consume via mongosh or a
 		// custom adapter); the recompose-ripple is a no-op since no
 		// view embeds the collection.
-		deps.UpstreamSubscribers = startUpstreamSubscribers(ctx, deps, cfg, upstreamSubs, views)
+		deps.UpstreamSubscribers = startUpstreamSubscribers(ctx, deps, cfg, upstreamSubs, views, nil)
 	}
 
 	return serve(ctx, deps, wiring)

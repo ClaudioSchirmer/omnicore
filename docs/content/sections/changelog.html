@@ -9,6 +9,38 @@
     <div class="release">
         <div class="release-head"><span class="release-tag">Unreleased</span><span class="release-date">—</span></div>
         <ul>
+            <li><strong>Added</strong> — <code>query.JoinView(view, Go, ext)</code> is now accepted as an
+                <code>Embed</code>/<code>EmbedMany</code>/<code>EmbedInChild</code> source: a local view can be
+                <strong>materialized</strong> inside another view. The two families became fully symmetric —
+                <code>Join*</code> says WHERE the data comes from (a local view or a mirror of another service's data),
+                <code>Embed*</code> vs <code>Link*</code> says WHEN the join is paid (on every write, materialized, or on
+                every read, composed per request). Composing read models over your OWN aggregates no longer needs the
+                self-subscription workaround (publishing to your own topic to consume it back as a mirror of local data).
+                Freshness: every write the SyncEngine applies to a view document asks whether that view is materialized
+                inside another one and, when it is, runs the same recompose-ripple an upstream change runs — and the
+                ripple's own writes ask it again, so a chain (<code>products</code> → <code>sales</code> →
+                <code>dashboard</code>) propagates hop by hop. Boot guards: the embed graph must be ACYCLIC (a loop is a
+                fatal boot error naming the cycle), the source view must be registered, and an <code>EmbedMany</code> over
+                a view leg requires a covering index on the join column ON THE SOURCE VIEW. A view leg folds the source's
+                <code>Version(n)</code> into the embedder's <code>RebuildHash</code>, so bumping the source makes the
+                forgot-to-bump guard fire on the embedder too. Read-side parity: a filter on a segment field SELECTS rows
+                (it is one document, not a join), <code>?fields=</code> descends into it, archived children inside the
+                segment hide exactly as a direct read of the source hides them (and <code>?includeArchived</code> surfaces
+                them), and a 1:1 segment field is a first-class sort key. ORDERING is the boundary: a 1:N segment is
+                neither a sort nor a cursor key (an array has no single value), and an embed has no per-segment
+                <code>OrderBy</code>/ceiling — that pair exists only on a <code>ComposedView</code>'s
+                <code>LinkMany</code>, which builds its array per request.
+                An ARCHIVED source under the default keep policy stays in the segment carrying its soft-delete stamp;
+                declare <code>DeleteOnArchive()</code> on the SOURCE view for the removal semantics. Rebuilds are ordered
+                automatically: the boot's plan list and <code>RebuildAllViews</code> run in embed-dependency order (source
+                before embedder, transitively) and defer a view whose source this instance did not flip — rebuilding an
+                embedder against a source's pre-flip collection would finish stale, and a <code>Version</code> bump puts
+                both in the same run. The ad-hoc <code>RebuildView</code>/<code>RebuildViewSince</code> stay literal.</li>
+            <li><strong>Fixed</strong> — three defects on the embed path: the dangling 1:1 repair now covers a
+                <code>JoinView</code> leg (an FK change on the EMBEDDING document would otherwise leave the segment
+                pointing at the old source forever, with no future event able to heal it); a zombie-document removal now
+                signals the views embedding it; and <code>?fields=</code> no longer leaks an auto-included soft-delete
+                column out of a 1:N segment whose elements carry their own child collections.</li>
             <li><strong>Added</strong> — <code>ViewDefinition.EmbedInChild(childSchema, leg).On(col)</code>: read-side 1:1
                 enrichment of a view's native child array (the "list of X with the name of Y per line" shape — e.g. sale
                 line items enriched with the product name from an upstream projection). The write model stays normalized;

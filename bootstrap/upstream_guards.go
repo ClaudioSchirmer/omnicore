@@ -236,14 +236,13 @@ func guardCollectionCollision(subs []UpstreamSubscription, views []*query.ViewDe
 // UpstreamSubscription.Collection — otherwise the embed would silently
 // resolve to an empty slice in production.
 //
-// View-on-view via an external JoinUpstream (an external JoinUpstream targeting
-// another local ViewDefinition.Name()) is explicitly NOT supported: the recompose
-// ripple is one-hop (see UpstreamSubscriber.ripple consulting
-// viewIndex.byMongoColl, populated from subscription collections only),
-// so a change in the upstream of view Y would recompose Y but never
-// trigger view X that embeds Y. Drift would accumulate silently. The
-// guard rejects this shape at boot so consumers never reach the trap;
-// the diagnostic suggests the supported alternatives.
+// A JoinUpstream leg naming a LOCAL view's collection stays rejected — but for
+// a declaration reason, not a propagation one: materializing a local view is
+// declared with query.JoinView (which carries the view, so the SyncEngine
+// signals every write to it and the embedding view is refreshed), never by
+// pointing an external schema at the view's collection behind the framework's
+// back (that leg has no view to signal on, and no subscription materializes it).
+// The diagnostic names the supported form.
 func guardMaterializingSource(subs []UpstreamSubscription, views []*query.ViewDefinition) []string {
 	var out []string
 	subCollections := make(map[string]bool, len(subs))
@@ -265,13 +264,13 @@ func guardMaterializingSource(subs []UpstreamSubscription, views []*query.ViewDe
 			}
 			if localViews[coll] {
 				out = append(out, fmt.Sprintf(
-					"§8.3 view %q embeds Mongo collection %q, but %q is the name of a local ViewDefinition — "+
-						"view-on-view composition through an Embed is NOT supported. The recompose ripple is "+
-						"one-hop: an upstream change recomposes %q but never re-ripples to %q, so %q would drift "+
-						"silently. Either Embed an upstream collection directly with "+
-						"Embed(query.JoinUpstream(query.NewExternalSchema(\"<upstream_collection>\"), \"Go\", \"doc\")).On(...), "+
-						"or join the view %q at read time with query.ComposedView.",
-					v.Name(), coll, coll, coll, v.Name(), v.Name(), coll,
+					"§8.3 view %q embeds Mongo collection %q through a JoinUpstream leg, but %q is the name of a "+
+						"local ViewDefinition — an external schema pointing at a local view's collection is not "+
+						"the way to materialize it (nothing signals that leg on a write, and no UpstreamSubscription "+
+						"materializes it). Materialize the view with its own leg: "+
+						"Embed(query.JoinView(%sView(), \"Go\", \"doc\")).On(...) — the SyncEngine then refreshes %q on "+
+						"every write to %q. To join without materializing, use query.ComposedView.",
+					v.Name(), coll, coll, coll, v.Name(), coll,
 				))
 				continue
 			}

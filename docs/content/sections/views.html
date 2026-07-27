@@ -26,14 +26,15 @@
         <td>A regular table — an aggregate root or a role table (derived from the attached schema).</td>
         <td>The aggregate's own data, decomposed automatically from its <a href="#table-schema">TableSchema</a> — root
             fields flat, <code>.Sibling</code> tables merged flat, 1:N <code>.Child</code> children nested — plus any
-            <code>Embed</code>/<code>EmbedMany</code> of EXTERNAL sources.</td>
+            <code>Embed</code>/<code>EmbedMany</code>/<code>EmbedInChild</code> of a materialized source (an upstream
+            mirror or another local view).</td>
         <td>Yes — write time</td>
     </tr>
     <tr>
         <td><code>query.SharedBaseView(name).Schema(base)</code></td>
         <td>A shared base identity (<code>core.NewSharedBaseSchema</code>).</td>
         <td>The all-in-one identity: base fields flat, base children nested, one sub-document per <code>.Role(...)</code>
-            (each role's siblings flat, its children nested) — plus any external <code>Embed</code>/<code>EmbedMany</code>.</td>
+            (each role's siblings flat, its children nested) — plus any <code>Embed</code>/<code>EmbedMany</code>.</td>
         <td>Yes — write time</td>
     </tr>
     <tr>
@@ -61,9 +62,12 @@
         its primary and legs fresh on every query, so it always reflects the current state of the views it composes.</li>
 </ul>
 <p>
-    A view embedding EXTERNAL data (<code>Embed</code>/<code>EmbedMany</code> / an upstream mirror) also recomposes when
-    that external source changes — the <em>recompose-ripple</em> — so the embedded segment stays current alongside the
-    aggregate's own data. The mechanics are in <a href="#views~views-sync">How views stay current</a> below.
+    A view that EMBEDS another source (<code>Embed</code>/<code>EmbedMany</code>/<code>EmbedInChild</code> — an upstream
+    mirror or another local view) also recomposes when that source changes — the <em>recompose-ripple</em> — so the
+    embedded segment stays current alongside the aggregate's own data. When the source is a local view, the trigger is the
+    SyncEngine's own write to it, so the two fan-outs chain: a write updates the source view, which refreshes every view
+    materializing it, hop by hop along an acyclic graph. The mechanics are in
+    <a href="#views~views-sync">How views stay current</a> below.
 </p>
 
 <h3 id="views-plain">query.View — the aggregate's own projection</h3>
@@ -103,7 +107,7 @@
     role archives). An absent role is an explicit <code>null</code> segment; an archived role stores its
     <code>deleted_at</code> and is stripped on default reads unless <code>?includeArchived</code>. Everything a regular view
     declares applies unchanged (Version participates in the rebuild hash — the role set included — indexes/validators,
-    <code>MaxLimit</code>, <code>DeleteOnArchive</code>, external embeds).
+    <code>MaxLimit</code>, <code>DeleteOnArchive</code>, embeds).
 </p>
 <pre><code>func PersonView() *query.ViewDefinition {
     return query.SharedBaseView("persons").
@@ -275,35 +279,38 @@ query.JoinUpstream(
 
 <h3 id="views-embed">Embed and EmbedMany — composing external data</h3>
 <p>
-    The two materialized constructors (<code>View</code> and <code>SharedBaseView</code>) reach OTHER data only through an
-    external embed. <code>Embed(leg).On(col)</code> is 1:1 (a single sub-document, <code>null</code> when unresolved);
+    The two materialized constructors (<code>View</code> and <code>SharedBaseView</code>) reach OTHER data through an
+    embed. <code>Embed(leg).On(col)</code> is 1:1 (a single sub-document, <code>null</code> when unresolved);
     <code>EmbedMany(leg).On(col)</code> is 1:N (an array, empty when none). Both take a <em>leg</em> built with
     <code>query.JoinUpstream(core.NewExternalSchema(...), goName, externalName)</code>. The verb names the join column via
     the mandatory terminal <code>.On(col)</code> — the FK lives on the parent for 1:1 and on the leg (child) for 1:N — and
     the verb's multiplicity, not the declaration, fixes which side holds it.
 </p>
 <div class="box">
-    <strong>Embeds are EXTERNAL-only — by design.</strong> An aggregate's own children, siblings and shared base already
-    decompose out of the declarative schema, so declaring them as an embed would be a redundant second path
-    (a write-anchored embed source is a fatal boot error). And joining an <em>internal</em> view that already exists is
-    precisely what the read-time <a href="#views~views-composed">ComposedView</a> does. A boot guard (§8.3) enforces that an
-    embed source collection resolves to an <code>UpstreamSubscription.Collection</code> — a local <code>ViewDefinition</code>
-    name is rejected, because its recompose ripple would be one-hop and drift silently.
+    <strong>An embed source is always MATERIAL — never an aggregate's own data, never a composition.</strong> Two leg
+    kinds qualify, and only two: <code>query.JoinUpstream(core.NewExternalSchema(…), …)</code> (a locally materialized
+    upstream mirror) and <code>query.JoinView(view, …)</code> (a registered LOCAL view — see
+    <a href="#views~views-embed-view">Embedding a local view</a> below). An aggregate's own children, siblings and shared
+    base already decompose out of the declarative schema, so declaring them as an embed would be a redundant second path
+    (a write-anchored embed source is a fatal boot error). A <code>ComposedView</code> is not a source in either family:
+    it stores nothing, so there is no collection to read and no write to signal on. A boot guard (§8.3) still rejects a
+    <em>JoinUpstream</em> leg whose collection happens to name a local view — that leg carries no view to signal on and no
+    subscription materializes it; declare the view leg with <code>query.JoinView</code> instead.
 </div>
 <div class="box">
-    <strong>Embeds are SINGLE-LEVEL — by construction, not by a runtime check.</strong> A view may declare
-    <em>any number</em> of top-level <code>Embed</code>/<code>EmbedMany</code>, but a <em>leg</em> exposes
-    <em>no</em> <code>Embed</code>/<code>EmbedMany</code> builder — it carries only what to pull plus its two segment names.
-    An embed's leg therefore cannot nest a further embed: embed-of-embed is <strong>not expressible and
-    fails to compile</strong>, never a boot or runtime surprise. The reason it was never a supported shape is the one-hop
-    ripple: first-time compose and a full rebuild would materialize a nested segment, but the recompose-ripple that keeps an
-    embed fresh only reaches the view's top-level embeds — a nested segment would materialize once and then drift silently.
-    To reach two external hops, embed each one at the top level, or join at read time with a
-    <a href="#views~views-composed">ComposedView</a>.
+    <strong>A leg never nests an embed of its own — depth comes from the SOURCE VIEW's declaration.</strong> A <em>leg</em>
+    exposes no <code>Embed</code>/<code>EmbedMany</code> builder, so embed-of-embed is <strong>not expressible and fails to
+    compile</strong>. An upstream mirror is therefore always a leaf: it is a raw collection with no declaration of its own
+    (the composition on the producing side happened <em>before</em> it was published). A <code>JoinView</code> source, by
+    contrast, is a full view — whatever IT embeds arrives materialized inside the segment, so a chain
+    <code>products → sales → dashboard</code> is expressible and stays fresh: every write to a view signals the views that
+    materialize it, hop by hop. The one hard rule is that the graph must be <strong>acyclic</strong> — a loop would
+    recompose forever, so it is a fatal boot error naming the exact cycle.
 </div>
 <p>
-    The embedded segment is kept fresh by the <strong>recompose-ripple</strong>: when the upstream source collection
-    changes, every dependent view that embeds it is recomposed surgically, per element. To find the documents a change
+    The embedded segment is kept fresh by the <strong>recompose-ripple</strong>: when the source changes — an upstream
+    mirror receiving an event, or a local view being written by the SyncEngine — every dependent view that embeds it is
+    recomposed surgically, per element. To find the documents a change
     affects, a 1:1 <code>Embed</code> scans the view by the parent's join column and an <code>EmbedInChild</code> scans it
     by the <code>&lt;childSegment&gt;.&lt;fk&gt;</code> path; each therefore requires a covering index on that path,
     declared with <code>.Indexes(query.Index(...))</code> and verified at boot. An <code>EmbedMany</code> needs no such
@@ -311,14 +318,14 @@ query.JoinUpstream(
     failure registry and the channel decision matrix live under <a href="#service-to-service">Service-to-service</a>.
 </p>
 <p>
-    The full composition vocabulary, side by side — the two materialized kinds embed EXTERNAL data; the read-time
-    <code>ComposedView</code> below links INTERNAL views (or external collections):
+    The full composition vocabulary, side by side. Both leg constructors serve both families — the two materialized kinds
+    EMBED (pay on write), the read-time <code>ComposedView</code> below LINKS (pay on read):
 </p>
 <table>
     <tbody><tr><th>Constructor(s)</th><th>Verb</th><th>Leg</th><th>Built from — and reach</th></tr>
-    <tr><td><code>View</code> / <code>SharedBaseView</code></td><td><code>Embed(leg).On(col)</code> — 1:1</td><td><code>*Leg</code></td><td><code>query.JoinUpstream(core.NewExternalSchema(…), Go, ext)</code> — EXTERNAL only; <code>.On</code> = parent FK.</td></tr>
-    <tr><td><code>View</code> / <code>SharedBaseView</code></td><td><code>EmbedMany(leg).On(col)</code> — 1:N</td><td><code>*Leg</code></td><td><code>query.JoinUpstream(core.NewExternalSchema(…), Go, ext)</code> — EXTERNAL only; <code>.On</code> = leg FK.</td></tr>
-    <tr><td><code>View</code> / <code>SharedBaseView</code></td><td><code>EmbedInChild(childSchema, leg).On(col)</code> — 1:1 into a native child</td><td><code>*Leg</code></td><td><code>query.JoinUpstream(core.NewExternalSchema(…), Go, ext)</code> — EXTERNAL only; <code>.On</code> = FK <em>inside each element</em> of a native aggregate child.</td></tr>
+    <tr><td><code>View</code> / <code>SharedBaseView</code></td><td><code>Embed(leg).On(col)</code> — 1:1</td><td><code>*Leg</code></td><td><code>query.JoinUpstream(core.NewExternalSchema(…), Go, ext)</code> (EXTERNAL mirror) <em>or</em> <code>query.JoinView(view, Go, ext)</code> (LOCAL registered view); <code>.On</code> = parent FK. Requires a covering index on that column (the ripple's reverse scan).</td></tr>
+    <tr><td><code>View</code> / <code>SharedBaseView</code></td><td><code>EmbedMany(leg).On(col)</code> — 1:N</td><td><code>*Leg</code></td><td>Same two constructors; <code>.On</code> = leg FK. A <code>JoinView</code> leg additionally requires a covering index on that column <em>on the SOURCE view</em> — the composer runs one lookup per parent document.</td></tr>
+    <tr><td><code>View</code> / <code>SharedBaseView</code></td><td><code>EmbedInChild(childSchema, leg).On(col)</code> — 1:1 into a native child</td><td><code>*Leg</code></td><td>Same two constructors; <code>.On</code> = FK <em>inside each element</em> of a native aggregate child. Requires a multikey index on <code>&lt;childSegment&gt;.&lt;fk&gt;</code>.</td></tr>
     <tr><td><code>ComposedView</code></td><td><code>Link(leg).On(col)</code> — 1:1</td><td><code>*Leg</code></td><td><code>query.JoinView(view, Go, ext)</code> (INTERNAL registered view) <em>or</em> <code>query.JoinUpstream(core.NewExternalSchema(…), Go, ext)</code> (EXTERNAL); <code>.On</code> = primary FK.</td></tr>
     <tr><td><code>ComposedView</code></td><td><code>LinkMany(leg).OrderBy(…).MaxLinkManyLimit(…).On(col)</code> — 1:N</td><td><code>*Leg</code></td><td>Same two constructors; <code>.On</code> = leg FK (<code>leg.on → primary._id</code>); <code>OrderBy</code>/<code>Desc</code>/<code>MaxLinkManyLimit</code> chain on the verb before <code>.On</code>.</td></tr>
     <tr><td><code>ComposedView</code></td><td><code>LinkInChild(childSchema, leg).On(col)</code> — 1:1 into a primary child</td><td><code>*Leg</code></td><td>The read-time twin of <code>EmbedInChild</code>: enriches each element of the PRIMARY's native child array. Same two leg constructors; <code>.On</code> = the element's FK. Never materialized, so — unlike <code>EmbedInChild</code> — it needs no covering index.</td></tr>
@@ -327,25 +334,196 @@ query.JoinUpstream(
     Every family names its join column on the verb via <code>.On(column)</code> — the FK always points at the other side's
     PK/<code>_id</code>; the verb's multiplicity fixes which side holds it (1:1 → parent/primary, 1:N → child/leg), so the
     same leg plugs into an <code>Embed</code> (re-materialized) and a <code>Link</code> (read-time). The two segment names
-    (Go and doc field) live on the leg constructor (<code>JoinUpstream</code>/<code>JoinView</code>), both mandatory. Note
-    the symmetry: <code>JoinUpstream</code> is the SAME leg an embed and a link accept (a <code>core.NewExternalSchema</code>);
-    only <code>JoinView</code> has no embed counterpart, because embedding an internal view would duplicate data the schema
-    already projects — join it at read time with a <a href="#views~views-composed">ComposedView</a> instead.
+    (Go and doc field) live on the leg constructor (<code>JoinUpstream</code>/<code>JoinView</code>), both mandatory.
 </p>
 <div class="box">
-    <strong>Composing your OWN internal aggregates.</strong> Data already inside one aggregate — its children, siblings, or
-    shared-base identity — projects automatically (declare the schema, nothing else). To join two <em>separate</em> internal
-    aggregates into one read model there are two paths: a <a href="#views~views-sharedbase">SharedBaseView</a> when they
-    share an identity (the party-role pattern), or a read-time <a href="#views~views-composed">ComposedView</a> that
-    <code>JoinView</code>s one onto the other by key. A <em>materialized</em> cross-aggregate join is deliberately not
-    offered — an embed of a local view would keep only a one-hop ripple and drift silently, which is why embeds stay
-    EXTERNAL-only.
+    <strong>The symmetry, in one line.</strong> <code>Join*</code> says WHERE the data comes from
+    (<code>JoinView</code> = a local view, <code>JoinUpstream</code> = a mirror of another service's data);
+    <code>Embed*</code> vs <code>Link*</code> says WHEN you pay for the join — on every WRITE (materialized, kept fresh by
+    the ripple) or on every READ (composed per request, nothing stored). Both leg kinds plug into all six verbs, so the
+    two questions are answered independently.
 </div>
+<div class="box">
+    <strong>Composing your OWN internal aggregates — three paths, one choice each.</strong> Data already inside one
+    aggregate — its children, siblings, or shared-base identity — projects automatically (declare the schema, nothing
+    else). To join two <em>separate</em> internal aggregates into one read model: a
+    <a href="#views~views-sharedbase">SharedBaseView</a> when they share an identity (the party-role pattern); an
+    <code>Embed</code>/<code>EmbedMany</code>/<code>EmbedInChild</code> over a <code>JoinView</code> leg when you want the
+    join <strong>materialized</strong> (pay on write, read one document); or a read-time
+    <a href="#views~views-composed">ComposedView</a> when you want it <strong>composed per request</strong> (pay on read,
+    store nothing). The materialized path is the one to reach for when the joined shape is read far more often than it
+    changes — which is the usual case for a read model.
+</div>
+
+<h3 id="views-embed-view">Embedding a local view — query.JoinView as an embed source</h3>
+<p>
+    A <code>JoinView</code> leg materializes a <strong>registered local view</strong> inside another one. Declaring it is
+    the only change from an external embed — the source view you already have becomes the leg:
+</p>
+<pre><code>// The product view already exists — it is the leg.
+func ProductView() *query.ViewDefinition {
+    return query.View("products").Version(1).Schema(ProductSchema()).
+        Indexes(query.Index("code"))
+}
+
+func SaleView() *query.ViewDefinition {
+    return query.View("sales").Version(1).Schema(SaleSchema()).
+        Embed(query.JoinView(ProductView(), "Product", "product")).On("product_id").
+        Indexes(query.Index("product_id"))   // the ripple's reverse scan
+}</code></pre>
+<p>
+    <strong>What keeps it fresh.</strong> Every write the SyncEngine applies to a view document asks one question — "is
+    this view materialized inside another one?" — and, when it is, runs the same recompose-ripple an upstream mirror
+    change runs. The refresh is in-process and happens after the source document is written, so it never reads a stale
+    source; a view nobody embeds costs one map lookup. Because the ripple itself writes a view document, the question is
+    asked again for that document: a chain propagates hop by hop with no extra declaration.
+</p>
+<p>
+    <strong>Version coupling — the source's shape cannot change behind your back.</strong> A <code>JoinView</code> leg
+    folds the source view's <code>Version(n)</code> into the embedding view's rebuild identity. Bump the source and the
+    embedder's hash moves too, so the boot's forgot-to-bump guard fires on the embedder and its documents are rebuilt
+    against the new shape instead of keeping copies of the old one. Bump both, deploy once.
+</p>
+<div class="box">
+    <strong>Rebuilds are ordered for you — source first.</strong> A rebuild composes its segments by reading the source
+    through the <a href="#mongo-schema-evolution">active-slot pointer</a>, and that pointer switches only at the source's
+    own flip. Rebuilding <code>sales</code> while <code>products</code> is mid-rebuild would therefore materialize
+    <code>products</code>' pre-flip content and finish stale — with nothing left to repair it, since rebuild writes raise
+    no embed signal (a rebuild of millions of documents must not fan out millions of ripples). This is the COMMON case,
+    not an exotic one: bumping a source's <code>Version</code> moves every embedder's hash too, so both land in one
+    rebuild run. So the framework sequences them itself: the boot's rebuild list and
+    <code>RebuildAllViews</code> both run in <strong>embed-dependency order</strong> (every source before the views
+    materializing it, transitively along the chain), and a view whose source this instance did not bring to a flip —
+    another pod is driving it — is DEFERRED rather than rebuilt against the old content; the instance driving that source
+    holds both plans and rebuilds the pair in order. Views that embed no view keep their declaration order.
+</div>
+<div class="box">
+    <strong>What still needs you: an ad-hoc rebuild of a single view.</strong> The operator entry points that rebuild ONE
+    named view (<code>RebuildView</code> / <code>RebuildViewSince</code>) do exactly what you ask and nothing more — they
+    have no dependency list to reason about. Rebuilding a SOURCE that way refreshes its own collection but does not
+    refresh the copies already materialized in its dependents (again: rebuild writes raise no signal), so follow it with a
+    rebuild of each dependent, or run <code>RebuildAllViews</code>, which is ordered. A <code>Version</code> bump never
+    needs this care: it is the ordered path.
+</div>
+<div class="box">
+    <strong>An ARCHIVED source stays in the segment — and that is deliberate.</strong> Under the default archive policy
+    (the source view did not declare <code>DeleteOnArchive()</code>), archiving the source keeps its document with
+    <code>deleted_at</code> populated, and the segment <em>mirrors that state</em>: the sub-document remains, carrying its
+    soft-delete stamp, and a 1:N element stays in the array. So a document can show a source that a DIRECT read of the
+    source view hides — by design, for three reasons: it is the contract an upstream-mirror segment already has; the
+    ripple and a full rebuild produce the identical segment (no divergence between the two write paths); and a read model
+    of a past fact should not lose data because a referenced record was archived today. When you want the opposite —
+    archiving REMOVES the reference — declare <code>DeleteOnArchive()</code> on the SOURCE view: archiving then deletes its
+    document, the removal signals, and the segment becomes the explicit <code>null</code> (or the element leaves the
+    array). The choice lives in the source's declaration, where the lifecycle belongs.
+</div>
+<p>
+    <strong>Archiving, level by level — the whole picture.</strong> Three independent gates apply to one document, and
+    conflating them is the usual source of confusion:
+</p>
+<table>
+    <tbody><tr><th>What is archived</th><th>Default read</th><th>With <code>?includeArchived=true</code></th></tr>
+    <tr>
+        <td>The EMBEDDING document itself (its own <code>deleted_at</code>)</td>
+        <td>Hidden — the root soft-delete gate, applied in the Mongo filter.</td>
+        <td>Returned.</td>
+    </tr>
+    <tr>
+        <td>The SOURCE document behind a segment (source view in keep mode)</td>
+        <td><strong>Shown</strong>, carrying its <code>deleted_at</code> — the segment mirrors the stored state. Filter it
+            out yourself (<code>product.deleted_at</code> is an ordinary field) or declare
+            <code>DeleteOnArchive()</code> on the source view to have archiving REMOVE the reference.</td>
+        <td>Unchanged — the flag does not govern this level.</td>
+    </tr>
+    <tr>
+        <td>A CHILD of the source, inside the segment (e.g. <code>product.ProductLines[]</code>)</td>
+        <td>Hidden — the archived-entry strip descends into a materialized view segment exactly as it does into the view's
+            own children, so the segment reads like a direct read of the source view.</td>
+        <td>Returned, with their <code>deleted_at</code>.</td>
+    </tr>
+</tbody></table>
+<p>
+    An <strong>upstream mirror</strong> segment differs on the third row only: a mirror is a flat stored payload with no
+    child collections of its own and no local lifecycle, so nothing inside it is stripped — its archive state is whatever
+    the producing service published (which is why the subscription's <code>filter</code> must keep the soft-delete column).
+</p>
+<p>
+    <strong>Shape — what the stored document actually looks like.</strong> A <code>JoinView</code> segment carries the
+    source view's document <em>as that view stores it</em>: its root fields, its own child collections, its role
+    sub-documents if it is a <code>SharedBaseView</code>, and its own embed segments. Two consequences worth declaring out
+    loud before you model:
+</p>
+<ul>
+    <li>An <code>EmbedMany</code> of a view whose documents carry children produces an <strong>array inside an
+        array</strong> (<code>sales[].SaleItems[]</code>). It reads, translates, strips and exports correctly, but it is a
+        genuinely large document — the ceiling is Mongo's 16 MB per document, and you own the fan-out.</li>
+    <li>There is no per-segment projection knob: the segment is the source document, whole. When you want a NARROWER
+        shape, the tool is a narrower SOURCE VIEW — declare a second view over the same schema with only the fields the
+        embedder needs and embed that one. (A view costs one collection and one recompose per source event; five views
+        over one schema is a normal, supported shape.)</li>
+</ul>
+<div class="box">
+    <strong>Write cost model — the mirror image of a ComposedView's read cost.</strong> A materialized join is not free,
+    it is <em>prepaid</em>. Per write to an embedded source: one read-back of the source document, plus — only when some
+    dependent embeds it 1:N — one read of its pre-write state (needed to find the parent a moved element is leaving),
+    plus one surgical write per affected embedder document (discovered by an indexed lookup, never a scan — that is what
+    the covering-index guards enforce). A 1:1 embed of a rarely-changing source is nearly free; a 1:N embed of a
+    high-churn source with thousands of parents is not, and a chain multiplies it hop by hop. The trade is explicit:
+    reads become a single indexed document fetch, forever. When the joined shape changes far more often than it is read,
+    a read-time <a href="#views~views-composed">ComposedView</a> is the better side of the trade.
+</div>
+<p>
+    <strong>Reading through the segment — what works, exactly.</strong> A materialized segment is ordinary document
+    content, so it carries almost none of the read-time restrictions a <a href="#views~views-composed">ComposedView</a>
+    leg has. The one real boundary is ORDERING inside a 1:N segment, and it is worth being explicit about all of it:
+</p>
+<table>
+    <tbody><tr><th>Read operation</th><th>1:1 segment (<code>Embed</code>)</th><th>1:N segment (<code>EmbedMany</code>)</th></tr>
+    <tr>
+        <td><code>filter</code> on a segment field (<code>Product.Name</code>)</td>
+        <td colspan="2"><strong>Yes — and it SELECTS rows.</strong> The segment lives in the same document, so the
+            predicate decides which documents come back. This is the substantive difference from a
+            <code>ComposedView</code> leg, where a leg filter only shapes what enters the segment and never removes a
+            primary row. On a 1:N segment the predicate matches a document when ANY element satisfies it (standard array
+            matching, identical to a native child collection).</td>
+    </tr>
+    <tr>
+        <td><code>?fields=</code> into the segment (<code>Product.Name</code>, <code>Product.Lines.Label</code>)</td>
+        <td colspan="2">Yes, at any depth. Lifecycle columns the archived-entry strip needs are re-included transparently
+            and removed again before responding, so the wire shape matches the request exactly.</td>
+    </tr>
+    <tr>
+        <td><code>sort</code> / keyset cursor by a segment field</td>
+        <td><strong>Yes</strong> — a first-class sort key, like any root field.</td>
+        <td><strong>No.</strong> An array has no single value to order by or to build a cursor from. Keyset pagination
+            requires a scalar sort key, so it must be a root field or a 1:1 segment path. Exactly the rule a native child
+            collection already follows — a 1:N segment is data you read, not data you order the page by.</td>
+    </tr>
+    <tr>
+        <td><code>?search=</code> (text index)</td>
+        <td colspan="2">Only over fields the view's own <code>TextIndex(...)</code> declares. A segment field is indexable
+            like any other document path — declare it if you want it searchable; it is not implicit.</td>
+    </tr>
+    <tr>
+        <td>Tabular export (CSV / XLSX)</td>
+        <td colspan="2">Yes — the segment contributes the source view's full column tree, re-rooted under its segment
+            name (children included).</td>
+    </tr>
+</tbody></table>
+<p>
+    <strong>Ordering INSIDE a 1:N segment</strong> deserves the same clarity: the elements arrive in the order the source
+    collection returns them, and there is no per-segment <code>OrderBy</code> knob on an embed (that knob exists only on a
+    <code>ComposedView</code>'s <code>LinkMany</code>, which builds its array per request and can therefore sort and cap
+    it). When a materialized 1:N segment must be ordered or bounded, order it in the consumer after reading, or model the
+    ordering into the source view's own document. If a guaranteed order and a per-parent ceiling are requirements of the
+    contract, that is the signal to use <code>LinkMany</code> on a <code>ComposedView</code> instead — paying the join on
+    read buys exactly those two knobs.
+</p>
 
 <h3 id="views-embed-child">EmbedInChild — enriching a child array</h3>
 <p>
-    Where <code>Embed</code> and <code>EmbedMany</code> compose external data off the root document,
-    <code>EmbedInChild(childSchema, leg).On(col)</code> composes it one level down: every element of a
+    Where <code>Embed</code> and <code>EmbedMany</code> compose off the root document,
+    <code>EmbedInChild(childSchema, leg).On(col)</code> composes one level down: every element of a
     <strong>native aggregate-child</strong> array gains a 1:1 sub-document resolved from a foreign key the element itself
     carries. It is the read model for the "list of X with the name of Y on each line" shape — a sale view whose line items
     each store a <code>product_id</code> and read back with the product beside it. The write side keeps the element
@@ -359,8 +537,9 @@ query.JoinUpstream(
 <p>
     <code>childSchema</code> is a child of the view root — declared with <code>root.Child(...)</code> on a
     <code>query.View</code>, or on the base of a <code>SharedBaseView</code> (a role's own children are not a target). The
-    leg is external, exactly as a root embed: a <code>query.JoinUpstream(core.NewExternalSchema(...), goName, externalName)</code>
-    whose <code>.On(column)</code> on the verb names the join column each child element carries — resolved against the leg's
+    leg is either kind, exactly as a root embed — <code>query.JoinUpstream(core.NewExternalSchema(...), goName, externalName)</code>
+    for an upstream mirror or <code>query.JoinView(view, goName, externalName)</code> for a local view — and its
+    <code>.On(column)</code> on the verb names the join column each child element carries, resolved against the leg's
     <code>_id</code> — with <code>goName</code> the Go field the sub-document reads back under. The
     enrichment is a first-class part of the projection: it is filtered, sorted and pruned with <code>?fields=</code> at the
     child's segment path (<code>items.product.name</code>), walked by tabular export, and folded into the
@@ -707,9 +886,12 @@ same envelope, same projector, same pagination block as any view read</div>
         <tr><td>Read cost</td><td>One find — the document is ready</td><td>1 + one batch per leg (1:1) / per parent capped finds (1:N)</td></tr>
         <tr><td>Write cost</td><td>Recompose ripple on every source change</td><td>Zero</td></tr>
         <tr><td>Schema evolution</td><td><code>Version(n)</code>, drift detection, rebuild</td><td>Not applicable — nothing stored</td></tr>
-        <tr><td>Filter/sort on composed data</td><td>Full (it is ONE document)</td><td>Row knobs on the primary; segment knobs shape segments only</td></tr>
-        <tr><td>Reach</td><td>Sources the write side declares</td><td>ANY registered view + locally materialized upstream collections — arbitrary FK links</td></tr>
-        <tr><td>Choose it when…</td><td>The composition is hot, filtered/sorted across sources, or read far more than sources change</td><td>The link is arbitrary/occasional, freshness beats latency, or you refuse another synced collection</td></tr>
+        <tr><td>Filter on composed data</td><td>Full — it is ONE document, so a segment predicate SELECTS rows</td><td>Row selection stays the primary's; a leg predicate shapes the segment only</td></tr>
+        <tr><td>Sort by composed data</td><td>A 1:1 segment field is a first-class sort key; a 1:N segment cannot be a sort/cursor key (no single value)</td><td>Page order is always the primary's; a 1:N leg has its OWN <code>OrderBy</code>/<code>MaxLinkManyLimit</code> for the segment's contents</td></tr>
+        <tr><td>Ordering INSIDE a 1:N segment</td><td>No knob — source order; model it in the source view or order in the consumer</td><td><code>OrderBy</code>/<code>Desc</code> + a per-parent ceiling, declared on the verb</td></tr>
+        <tr><td>Reach</td><td>ANY registered view (<code>JoinView</code>) + locally materialized upstream collections — acyclic, chainable</td><td>ANY registered view + locally materialized upstream collections — one join layer, never a composition of compositions</td></tr>
+        <tr><td>Depth</td><td>Unlimited along an acyclic chain — a source view brings whatever IT embeds, and each hop is kept fresh by its own ripple</td><td>Exactly one layer — a leg is a view or a mirror, never another <code>ComposedView</code> (compose-of-compose does not compile)</td></tr>
+        <tr><td>Choose it when…</td><td>The composition is hot, filtered across sources, or read far more than sources change</td><td>The link is arbitrary/occasional, freshness beats latency, the 1:N segment needs a declared order/cap, or you refuse another synced collection</td></tr>
     </tbody></table>
     <p>
         Consumption is identical by design: the composed name goes wherever a view name goes — the Auto
@@ -733,9 +915,39 @@ same envelope, same projector, same pagination block as any view read</div>
     (the ripple). One write can therefore touch several documents across several collections, each projected independently.
 </p>
 <p>
+    <strong>The second index: view → view.</strong> Alongside the table index the SyncEngine builds one keyed by view NAME,
+    listing the views that materialize each view through a <code>query.JoinView</code> embed. Every successful write to a
+    view document consults it — "is this view embedded anywhere?" — and, when it is, runs the same recompose-ripple an
+    upstream change runs. Four properties follow, and they are the whole contract:
+</p>
+<ul>
+    <li><strong>Read-your-write.</strong> The signal fires AFTER the source document is stored and re-reads it, so the
+        segment can never carry a state older than the event that triggered it. The write that a projection pipeline
+        performs is partial (stages, not a whole document) — only the read-back knows the resulting document.</li>
+    <li><strong>Chaining.</strong> The ripple's own writes land on view documents, so they consult the same index: a chain
+        <code>products → sales → dashboard</code> propagates hop by hop with nothing extra declared. Termination is
+        guaranteed by the acyclic-graph boot guard; each hop pays its own ripple.</li>
+    <li><strong>Ordering under concurrent writers.</strong> A view has SEVERAL writers with different work partitioning
+        (the projection loop keys workers by the view root's aggregate id; a ripple refreshing that same view is keyed by
+        ITS source's id), so two refreshes of one source document can reach an embedder out of order. Every view-sourced
+        edit therefore carries the source's <code>_revision</code> watermark and is applied only when the STORED segment is
+        not newer — the same revision-guarded discipline the rest of the projection pipeline uses. (An upstream mirror
+        needs no such guard: it has a single writer and per-id serialized events.)</li>
+    <li><strong>Failure isolation.</strong> A ripple failure is logged, counted and recorded in the failure registry, then
+        SKIPPED — the source's own projection always completes and the event is acknowledged. A deterministic recompose
+        bug degrades one segment; it never becomes a poison pill that stops the projection loop. See
+        <a href="#auto-query-handlers">the failure registry</a> for the queries and the retry surface.</li>
+</ul>
+<p>
+    <strong>What does NOT signal.</strong> A rebuild writes the shadow slot directly, outside this path — deliberately: a
+    rebuild of millions of documents must not fan out millions of ripples. That is why rebuilding a chain is ordered
+    (source first, then dependents) and why a rebuild of an EMBEDDING view heals any drift by recomposing from the source's
+    current collection.
+</p>
+<p>
     <strong>Two projection paths, same document.</strong> The day-to-day path is <strong>payload-direct</strong>: for a
-    plain entity-rooted view with no external embeds, the SyncEngine turns the event's own payload into one atomic Mongo
-    update pipeline — it does NOT re-read the relational source. For a SharedBaseView or a view with external embeds it
+    plain entity-rooted view with no embeds, the SyncEngine turns the event's own payload into one atomic Mongo
+    update pipeline — it does NOT re-read the relational source. For a SharedBaseView or a view with embeds it
     falls back to a <strong>consult recompose</strong> (the composer re-reads the relational closure). Both are engineered
     to produce a byte-identical document (the equivalence gate the blue-green rebuild verifies), and both are guarded by a
     monotonic <code>_revision</code> watermark so a stale or redelivered event is a no-op rather than a lost update —
@@ -752,11 +964,21 @@ same envelope, same projector, same pagination block as any view read</div>
 <h3 id="views-versioning">Versioning and rebuild</h3>
 <p>
     Every materialized view declares a mandatory <code>Version(N)</code>. Bump it whenever the view's rebuild-relevant
-    declarative shape changes (root schema columns, embeds, <code>DeleteOnArchive</code>, <code>$jsonSchema</code>,
+    declarative shape changes (root schema columns, embeds — including the <code>Version</code> of a view a
+    <code>JoinView</code> leg embeds — <code>DeleteOnArchive</code>, <code>$jsonSchema</code>,
     collation, capped, time-series, or — for a SharedBaseView — the role set). The version participates in the rebuild
     hash: changing the shape WITHOUT bumping is detected at boot as <code>DriftForgotToBump</code> and aborts; bumping
     triggers an <strong>online blue-green rebuild</strong> — a fresh shadow collection is built from the source while the
     active one keeps serving, kept current by dual-apply, verified, then flipped atomically. Index-only changes take the
     fast path (re-apply indexes, no rebuild). The full control plane — drift detection, slots, the advisory lock, the
     verify — is <a href="#mongo-schema-evolution">Mongo schema evolution</a>.
+</p>
+<p>
+    <strong>A view embedded in another carries its version there too.</strong> A <code>query.JoinView</code> leg folds the
+    SOURCE view's <code>Version(n)</code> into the EMBEDDING view's rebuild hash, so bumping the source moves the
+    embedder's hash as well: the forgot-to-bump guard fires on the embedder, and bumping both rebuilds the embedding
+    projection against the source's new shape instead of leaving it holding copies of the old one. Deploy the two bumps
+    together: the boot runs the resulting rebuilds in <strong>embed-dependency order</strong> (source before embedder,
+    transitively), because a dependent rebuilt while its source is still mid-rebuild would read the source's pre-flip
+    collection — the active-slot pointer switches only at the flip — and re-materialize the old content.
 </p>

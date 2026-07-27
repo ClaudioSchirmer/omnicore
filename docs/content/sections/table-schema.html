@@ -289,10 +289,12 @@ func NewUserRepository(eng core.RelationalEngine) *UserRepository {
     <a href="#table-schema~shared-base-view">SharedBaseView</a> for the shared base + roles).
 </p>
 <p>
-    <code>Embed</code> / <code>EmbedMany</code> exist for one thing only — <strong>EXTERNAL data</strong> — so each embed
-    leg is built via <code>query.JoinUpstream(...)</code> over a type-less <code>core.NewExternalSchema</code>; a
-    write-anchored <code>NewTableSchema[T]</code> as an embed leg panics at <code>JoinUpstream</code> — local data has no
-    business being embedded when it already auto-projects. From the schema the framework derives the collection
+    <code>Embed</code> / <code>EmbedMany</code> exist for data the aggregate does <strong>not own</strong>: another
+    service's mirrored collection, whose leg is built via <code>query.JoinUpstream(...)</code> over a type-less
+    <code>core.NewExternalSchema</code>, or another LOCAL view, whose leg is <code>query.JoinView(view, …)</code> (see
+    <a href="#views~views-embed-view">Views</a>). A write-anchored <code>NewTableSchema[T]</code> as an embed leg panics at
+    <code>JoinUpstream</code> — an aggregate's OWN closure already auto-projects, and declaring it twice is the redundant
+    path the split removes. From an external schema the framework derives the collection
     (<code>ts.Table()</code>); the join column is named on the verb via <code>.On(...)</code>. The composer writes physical
     columns to Mongo; the reader translates each leaf back to its Go field name (so <code>mail</code> → <code>Email</code>,
     <code>zip_code</code> → <code>ZipCode</code>). Because an external source has no Go type to derive them from, both

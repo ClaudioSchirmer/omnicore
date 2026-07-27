@@ -76,6 +76,10 @@ type SyncEngine struct {
 	groupID string
 	topics  []string
 	workers int
+	// viewSignal fans a projection write out to the views that MATERIALIZE this
+	// one via a query.JoinView embed. Nil when no view embeds a view (the default
+	// shape) — every call on it is then a no-op on a nil receiver.
+	viewSignal *viewEmbedSignal
 	// traceKafka gates the per-message consumer span (the tracing `kafka`
 	// instrument toggle). bootstrap sets it via WithKafkaTracing; false (the
 	// default) leaves the projection loop untraced and pays nothing.
@@ -239,21 +243,24 @@ func NewSyncEngine(eng core.RelationalEngine, mongo ReadModelStore, resolver *Vi
 	if workers < 1 {
 		workers = 1
 	}
+	// NewComposerWithMongo so views embedding external JoinUpstream collections
+	// (and local JoinView sources) resolve correctly through the composer.
+	composer := NewComposerWithMongo(eng, mongo, resolver)
 	return &SyncEngine{
-		eng:      eng,
-		mongo:    mongo,
-		resolver: resolver,
-		// NewComposerWithMongo so views embedding external JoinUpstream collections
-		// resolve correctly through the composer during recompose.
-		composer: NewComposerWithMongo(eng, mongo, resolver),
-		index:    buildViewIndex(views),
-		sub:      sub,
-		groupID:  groupID,
-		topics:   topics,
-		workers:  workers,
-		done:     make(chan struct{}),
+		eng:        eng,
+		mongo:      mongo,
+		resolver:   resolver,
+		composer:   composer,
+		index:      buildViewIndex(views),
+		sub:        sub,
+		groupID:    groupID,
+		topics:     topics,
+		workers:    workers,
+		viewSignal: newViewEmbedSignal(eng, mongo, composer, resolver, views, nil, newUpstreamMetrics()),
+		done:       make(chan struct{}),
 	}
 }
+
 
 // Start launches the projection loop. Idempotent — a second call is a no-op
 // (guarding the done channel against a double close).
@@ -407,12 +414,14 @@ func (s *SyncEngine) run(ctx context.Context) {
 // at-least-once redelivery reconverges. A shadow-write failure is handled by
 // dualApply (bounded retry → abort) and never fails the live path.
 func (s *SyncEngine) applyUpsert(ctx context.Context, viewName, id string, doc Document) error {
+	before := s.viewSignal.Before(ctx, viewName, id)
 	if err := s.mongo.Upsert(ctx, s.resolver.Active(viewName), id, doc); err != nil {
 		return err
 	}
 	if shadow, on := s.resolver.ShadowActive(viewName); on {
 		s.dualApply(ctx, viewName, func() error { return s.mongo.Upsert(ctx, shadow, id, doc) })
 	}
+	s.viewSignal.WrittenWithBefore(ctx, viewName, id, before)
 	return nil
 }
 
@@ -437,7 +446,7 @@ func (s *SyncEngine) applyConsultUpsert(ctx context.Context, view *ViewDefinitio
 		return err
 	}
 	if len(view.embeds) > 0 {
-		repairDanglingOneToOne(ctx, s.mongo, s.resolver, s.eng, view, id, doc)
+		repairDanglingOneToOne(ctx, s.mongo, s.resolver, s.eng, view, id, doc, s.viewSignal.Written)
 	}
 	if !view.isSharedBaseView {
 		if err := s.checkTombstone(ctx, view.name, id, watermarkOf(doc[docRevisionField])); err != nil {
@@ -460,12 +469,18 @@ func (s *SyncEngine) applyConsultUpsert(ctx context.Context, view *ViewDefinitio
 // fan-out and reconciliation, yet listed as an active row) that only a full
 // rebuild could remove.
 func (s *SyncEngine) applyProjection(ctx context.Context, viewName, id string, stages []Document, upsert bool) error {
+	before := s.viewSignal.Before(ctx, viewName, id)
 	if err := s.mongo.ApplyProjection(ctx, s.resolver.Active(viewName), id, stages, upsert); err != nil {
 		return err
 	}
 	if shadow, on := s.resolver.ShadowActive(viewName); on {
 		s.dualApply(ctx, viewName, func() error { return s.mongo.ApplyProjection(ctx, shadow, id, stages, upsert) })
 	}
+	// The signal rides EVERY successful projection write — including the
+	// upsert=false fan-out passes, which are no-ops when the document is absent:
+	// the post-write read-back is what decides, and an absent document produces
+	// no signal at all (see viewEmbedSignal.Written).
+	s.viewSignal.WrittenWithBefore(ctx, viewName, id, before)
 	return nil
 }
 
@@ -481,6 +496,9 @@ func (s *SyncEngine) applyProjection(ctx context.Context, viewName, id string, s
 // consult-observed vanish (the composed row is gone): the delete stays
 // unconditional — the row's own DELETED event carries the durable tombstone.
 func (s *SyncEngine) applyDelete(ctx context.Context, viewName, id string, rev, createdAtMs int64) error {
+	// The pre-delete document is the ONLY source of the 1:N parent id once the
+	// row is gone — captured before either delete path runs.
+	before := s.viewSignal.Before(ctx, viewName, id)
 	if rev > 0 {
 		if err := s.stampTombstone(ctx, viewName, id, rev, createdAtMs); err != nil {
 			return err
@@ -491,6 +509,7 @@ func (s *SyncEngine) applyDelete(ctx context.Context, viewName, id string, rev, 
 		if shadow, on := s.resolver.ShadowActive(viewName); on {
 			s.dualApply(ctx, viewName, func() error { return s.mongo.DeleteGuarded(ctx, shadow, id, rev, createdAtMs) })
 		}
+		s.viewSignal.Deleted(ctx, viewName, id, before, rev)
 		return nil
 	}
 	if err := s.mongo.Delete(ctx, s.resolver.Active(viewName), id); err != nil {
@@ -499,6 +518,7 @@ func (s *SyncEngine) applyDelete(ctx context.Context, viewName, id string, rev, 
 	if shadow, on := s.resolver.ShadowActive(viewName); on {
 		s.dualApply(ctx, viewName, func() error { return s.mongo.Delete(ctx, shadow, id) })
 	}
+	s.viewSignal.Deleted(ctx, viewName, id, before, 0)
 	return nil
 }
 

@@ -145,11 +145,17 @@ func (s *SyncEngine) checkTombstone(ctx context.Context, viewName, id string, my
 	// The guarded delete carries the tombstone's created_at discriminator: a REBORN
 	// document (a fresher created_at under the same deterministic id) never
 	// matches and survives — only the dead incarnation's zombies die.
+	// A zombie removal is a REMOVAL: the views materializing this one must lose
+	// the segment too, or they would keep serving a document the projection just
+	// disowned. Captured before the delete (the pre-delete document is the only
+	// route to a 1:N parent id) and signalled after it.
+	before := s.viewSignal.Before(ctx, viewName, id)
 	if err := s.mongo.DeleteGuarded(ctx, s.resolver.Active(viewName), id, rev, born); err != nil {
 		return err
 	}
 	if shadow, on := s.resolver.ShadowActive(viewName); on {
 		s.dualApply(ctx, viewName, func() error { return s.mongo.DeleteGuarded(ctx, shadow, id, rev, born) })
 	}
+	s.viewSignal.Deleted(ctx, viewName, id, before, rev)
 	return nil
 }

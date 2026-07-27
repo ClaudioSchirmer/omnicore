@@ -37,19 +37,49 @@ import (
 // column for 1:1), so the same pipeline applied to the old and the new parent
 // of a moved child removes the element from one and upserts it into the other.
 
-// surgicalEmbedStages builds the single $set stage for one upstream event
-// (after == nil means the mirror doc was deleted). Returns nil when no embed
+// The srcRev watermark — why a SOURCE-side guard exists at all
+//
+// An upstream MIRROR has ONE writer (§8.2 forbids two subscriptions per
+// collection) and its events are bucketed per aggregate id, so edits for the
+// same source id are serialized end to end and the last one is the newest by
+// construction — no guard needed (srcRev == 0 keeps the byte-identical stages
+// that path always produced).
+//
+// A source VIEW (query.JoinView) has SEVERAL writers with DIFFERENT bucketing:
+// the SyncEngine keys its workers by the view root's aggregate id, while a
+// ripple refreshing that same view is keyed by ITS source's id. Two writes to
+// one source document can therefore land out of order on the embedding
+// document — the older one last, leaving a stale segment until the next event.
+// So a view-sourced ripple carries the source document's watermark
+// (_revision) and every edit is applied only when the STORED element is not
+// newer, in the same revision-guarded style as the rest of the projection
+// pipeline. srcRev <= 0 disables the guard entirely.
+
+// notNewerThan is the guard predicate: the stored element at path has no
+// watermark, or a watermark not newer than srcRev.
+func notNewerThan(path string, srcRev int64) Document {
+	return Document{"$lte": []any{
+		Document{"$ifNull": []any{path + "." + docRevisionField, lit(int64(-1))}},
+		lit(srcRev),
+	}}
+}
+
+// surgicalEmbedStages builds the single $set stage for one source event
+// (after == nil means the source doc was deleted). srcRev is the source
+// document's revision watermark (0 = unwatermarked source, e.g. an upstream
+// mirror: no guard, byte-identical stages). Returns nil when no embed
 // contributes a $set (nothing to edit surgically), so the caller falls back to
-// a full recompose. Embeds are single-level, so every embed edits in place —
-// there is no nested content to force the fallback.
-func surgicalEmbedStages(embeds []embedDef, upstreamID string, after Document) []Document {
+// a full recompose. Every embed edits in place — a nested source contributes
+// its own materialized content, so there is no nested content to force the
+// fallback.
+func surgicalEmbedStages(embeds []embedDef, upstreamID string, after Document, srcRev int64) []Document {
 	set := Document{}
 	for _, e := range embeds {
 		if e.many {
-			set[e.Field()] = surgicalManyExpr(e, upstreamID, after)
+			set[e.Field()] = surgicalManyExpr(e, upstreamID, after, srcRev)
 			continue
 		}
-		set[e.Field()] = surgicalOneExpr(e, upstreamID, after)
+		set[e.Field()] = surgicalOneExpr(e, upstreamID, after, srcRev)
 	}
 	if len(set) == 0 {
 		return nil
@@ -60,39 +90,63 @@ func surgicalEmbedStages(embeds []embedDef, upstreamID string, after Document) [
 // surgicalManyExpr edits a 1:N array: strip the element by its _id, then — on
 // the parent the event's FK names — append the new element. Applied to any
 // other parent (the old side of a move, a delete) the strip alone stands.
-func surgicalManyExpr(e embedDef, upstreamID string, after Document) Document {
-	strip := Document{"$filter": Document{
-		"input": Document{"$ifNull": []any{"$" + e.Field(), []any{}}},
-		"as":    "it",
-		"cond":  Document{"$ne": []any{"$$it._id", lit(upstreamID)}},
-	}}
+//
+// Under a watermark (srcRev > 0) the whole edit is skipped for a parent whose
+// STORED element for this id is newer: the strip keeps it and the append is
+// suppressed, so a late-arriving older write cannot regress the array.
+func surgicalManyExpr(e embedDef, upstreamID string, after Document, srcRev int64) Document {
+	input := Document{"$ifNull": []any{"$" + e.Field(), []any{}}}
+	stripCond := Document{"$ne": []any{"$$it._id", lit(upstreamID)}}
+	var hasNewer Document
+	if srcRev > 0 {
+		// Is a NEWER element for this id already stored?
+		hasNewer = Document{"$gt": []any{
+			Document{"$size": Document{"$filter": Document{
+				"input": input,
+				"as":    "it",
+				"cond": Document{"$and": []any{
+					Document{"$eq": []any{"$$it._id", lit(upstreamID)}},
+					Document{"$not": []any{notNewerThan("$$it", srcRev)}},
+				}},
+			}}},
+			lit(int64(0)),
+		}}
+		// Keep every element when a newer one is stored (nothing is stripped).
+		stripCond = Document{"$or": []any{stripCond, hasNewer}}
+	}
+	strip := Document{"$filter": Document{"input": input, "as": "it", "cond": stripCond}}
 	fkVal := docFieldString(after, e.JoinColumn())
 	if fkVal == "" {
 		return strip
 	}
+	appendCond := Document{"$eq": []any{"$_id", lit(fkVal)}}
+	if srcRev > 0 {
+		appendCond = Document{"$and": []any{appendCond, Document{"$not": []any{hasNewer}}}}
+	}
 	return Document{"$cond": []any{
-		Document{"$eq": []any{"$_id", lit(fkVal)}},
+		appendCond,
 		Document{"$concatArrays": []any{strip, []any{lit(surgicalElement(upstreamID, after))}}},
 		strip,
 	}}
 }
 
 // surgicalOneExpr edits a 1:1 sub-document on the parents whose FK column
-// names the changed upstream id: the new element, or the explicit null the
+// names the changed source id: the new element, or the explicit null the
 // unresolved contract requires when the source was deleted. Other parents keep
-// their stored value untouched.
-func surgicalOneExpr(e embedDef, upstreamID string, after Document) Document {
+// their stored value untouched. Under a watermark (srcRev > 0) a stored
+// segment newer than this event is kept too.
+func surgicalOneExpr(e embedDef, upstreamID string, after Document, srcRev int64) Document {
 	var val any
 	if after == nil {
 		val = lit(nil)
 	} else {
 		val = lit(surgicalElement(upstreamID, after))
 	}
-	return Document{"$cond": []any{
-		Document{"$eq": []any{"$" + e.JoinColumn(), lit(upstreamID)}},
-		val,
-		"$" + e.Field(),
-	}}
+	cond := Document{"$eq": []any{"$" + e.JoinColumn(), lit(upstreamID)}}
+	if srcRev > 0 {
+		cond = Document{"$and": []any{cond, notNewerThan("$"+e.Field(), srcRev)}}
+	}
+	return Document{"$cond": []any{cond, val, "$" + e.Field()}}
 }
 
 // surgicalElement is the array/sub-doc element as the mirror stores it — the
@@ -131,9 +185,18 @@ func surgicalElement(id string, after Document) Document {
 // same id → no-op. A missing mirror doc repairs the segment to the explicit
 // null under the same guard (a stale element from a dead reference clears; a
 // later mirror insert re-heals through its own ripple).
-func repairDanglingOneToOne(ctx context.Context, mongo ReadModelStore, resolver *ViewResolver, eng core.RelationalEngine, view *ViewDefinition, id string, written Document) {
+// chain, when non-nil, receives (viewName, id) after a repair actually wrote —
+// the repair edits an embed segment of a VIEW document, so a view materializing
+// THIS one must learn about it too.
+func repairDanglingOneToOne(ctx context.Context, mongo ReadModelStore, resolver *ViewResolver, eng core.RelationalEngine, view *ViewDefinition, id string, written Document, chain func(context.Context, string, string)) {
 	for _, e := range view.embeds {
-		if e.many || !e.leg.IsMongo() {
+		// 1:1 only (a 1:N segment has no single FK to dangle), and only a
+		// materialized source — BOTH kinds: an upstream mirror AND a local view
+		// (query.JoinView). A view leg needs this repair MORE than a mirror does,
+		// because an FK change on the embedding document is otherwise permanent
+		// staleness: field ownership keeps the consult write off the segment, and
+		// the source view's own ripple never fires (nothing changed on ITS side).
+		if e.many || e.leg == nil {
 			continue
 		}
 		joinCol := e.JoinColumn()
@@ -176,6 +239,9 @@ func repairDanglingOneToOne(ctx context.Context, mongo ReadModelStore, resolver 
 			dualApplyShadow(ctx, eng, resolver, view.name, func() error {
 				return mongo.ApplyProjection(ctx, shadow, id, stages, false)
 			})
+		}
+		if chain != nil {
+			chain(ctx, view.name, id)
 		}
 	}
 }

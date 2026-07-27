@@ -117,11 +117,11 @@ func TestGuardMaterializingSource_AcceptsSubscriptionCollection(t *testing.T) {
 }
 
 func TestGuardMaterializingSource_RejectsLocalView(t *testing.T) {
-	// View-on-view via an external JoinUpstream leg (targeting another local
-	// ViewDefinition.Name()) is rejected at boot: the recompose ripple is
-	// one-hop, so a change upstream of derivative_view would recompose
-	// derivative_view but never re-ripple to orders. Drift would silently
-	// accumulate. The guard catches the trap before any subscriber starts.
+	// Materializing a local view is declared with query.JoinView (which carries
+	// the view, so the SyncEngine signals every write to it). Pointing an
+	// EXTERNAL schema at a local view's collection stays rejected: that leg has
+	// no view to signal on and no UpstreamSubscription materializes it, so the
+	// embed would silently go stale. The diagnostic names the supported form.
 	views := []*query.ViewDefinition{
 		query.View("orders").
 			Embed(extEmbed("derivative_view", "Derivative")).On("orders_id").
@@ -130,9 +130,9 @@ func TestGuardMaterializingSource_RejectsLocalView(t *testing.T) {
 	}
 	errs := guardMaterializingSource(nil, views)
 	if len(errs) != 1 || !strings.Contains(errs[0], "§8.3") ||
-		!strings.Contains(errs[0], "view-on-view") ||
-		!strings.Contains(errs[0], "NOT supported") {
-		t.Errorf("expected §8.3 view-on-view diagnostic, got %v", errs)
+		!strings.Contains(errs[0], "JoinUpstream leg") ||
+		!strings.Contains(errs[0], "query.JoinView") {
+		t.Errorf("expected §8.3 external-leg-on-local-view diagnostic, got %v", errs)
 	}
 }
 
@@ -394,5 +394,29 @@ func TestValidateUpstreamSubscriptions_LogsSoftDeleteAdvisory(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	if err := validateUpstreamSubscriptions(subs, views, profileDev, logger); err != nil {
 		t.Errorf("an advisory-only case must not abort the boot, got %v", err)
+	}
+}
+
+// blockedEmbedSource is the boot's guard against rebuilding a view whose SOURCE
+// this instance did not bring to a flip (a follower's skip, or a source it
+// deferred): composing now would materialize the source's pre-flip content and
+// finish stale, with no event left to repair it.
+func TestBlockedEmbedSource(t *testing.T) {
+	products := query.View("products").Version(1).Schema(core.NewExternalSchema("products").PK("id"))
+	sales := query.View("sales").Version(1).Schema(core.NewExternalSchema("sales").PK("id")).
+		Embed(query.JoinView(products, "Product", "product")).On("product_id").
+		Indexes(query.Index("product_id"))
+
+	if got := blockedEmbedSource(sales, map[string]bool{}); got != "" {
+		t.Errorf("nothing skipped yet — must not defer, got %q", got)
+	}
+	if got := blockedEmbedSource(sales, map[string]bool{"products": true}); got != "products" {
+		t.Errorf("a skipped source must defer its embedder, got %q", got)
+	}
+	if got := blockedEmbedSource(products, map[string]bool{"products": true}); got != "" {
+		t.Errorf("a view embedding nothing is never deferred, got %q", got)
+	}
+	if got := blockedEmbedSource(sales, map[string]bool{"unrelated": true}); got != "" {
+		t.Errorf("an unrelated skip must not defer, got %q", got)
 	}
 }

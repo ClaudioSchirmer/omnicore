@@ -773,8 +773,21 @@ var _ queries.ViewReader = (*MongoViewReader)(nil)
 // Intermediate segments are always maps (dotted paths only descend through
 // role segments); anything absent or differently shaped is a no-op.
 func removeChildSDColumn(container any, segs []string, sdCol string) {
+	if len(segs) == 0 {
+		return
+	}
+	// An intermediate segment may be an ARRAY of sub-documents: a 1:N embed of a
+	// local view (query.JoinView) whose own child collections carry lifecycles,
+	// e.g. "sales.SaleItems" where `sales` is an array. Descend into every
+	// element. (Role segments and 1:1 embeds are maps, handled below.)
+	if items, ok := container.([]any); ok {
+		for _, item := range items {
+			removeChildSDColumn(item, segs, sdCol)
+		}
+		return
+	}
 	m, ok := container.(map[string]any)
-	if !ok || len(segs) == 0 {
+	if !ok {
 		return
 	}
 	if len(segs) > 1 {

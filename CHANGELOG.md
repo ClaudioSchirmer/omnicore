@@ -13,6 +13,98 @@ with `1.0.0`.
 
 ### Added
 
+- **`query.JoinView(view, goName, externalName)` is now accepted as an
+  Embed/EmbedMany/EmbedInChild source — a local view can be MATERIALIZED inside
+  another view.** The leg family and the verb family became fully symmetric:
+  `Join*` says where the data comes from (`JoinView` = a registered local view,
+  `JoinUpstream` = a locally materialized mirror of another service's data),
+  `Embed*` vs `Link*` says when the join is paid (on every write, materialized,
+  or on every read, composed per request). Composing read models over your OWN
+  aggregates therefore no longer needs the self-subscription workaround
+  (publishing to your own broker topic and consuming it back to build a mirror
+  of data that is already local): declare the view as the leg and the framework
+  keeps the segment fresh.
+
+  What makes it correct — the freshness signal: every write the SyncEngine
+  applies to a view document asks whether that view is materialized inside
+  another one and, when it is, runs the same recompose ripple an upstream mirror
+  change runs. The ripple's own writes ask the same question, so a chain
+  (`products` → `sales` → `dashboard`) propagates hop by hop with no extra
+  declaration. A view nobody embeds costs one map lookup.
+
+  Boot guards: the embed graph must be ACYCLIC (a loop would recompose forever —
+  a fatal boot error naming the exact cycle, self-embed included); the source
+  view must be registered (contributed by a `ReadableFeature`); an `EmbedMany`
+  over a view leg requires a covering index on the join column ON THE SOURCE
+  VIEW (the composer runs one lookup per parent document), mirroring the rule
+  `LinkMany` already applies to an internal leg.
+
+  Version coupling: a `JoinView` leg folds the SOURCE view's `Version(n)` into
+  the embedding view's `RebuildHash`, so bumping the source moves the embedder's
+  hash too and the forgot-to-bump guard fires on it — the embedding projection is
+  rebuilt against the new shape instead of keeping copies of the old one.
+
+  Read-side parity, and the one boundary: a materialized segment is ordinary
+  document content, so a filter on a segment field SELECTS rows (it is one
+  document, not a join — the substantive difference from a `ComposedView` leg
+  predicate, which only shapes the segment), `?fields=` descends into it at any
+  depth, archived children inside the segment are hidden exactly as a direct read
+  of the source view hides them, and a 1:1 segment field is a first-class sort
+  key. ORDERING is the boundary: a 1:N segment cannot be a sort or cursor key (an
+  array has no single value — the rule a native child collection already
+  follows), and an embed has no per-segment `OrderBy`/ceiling knob (that pair
+  exists only on a `ComposedView`'s `LinkMany`, which builds its array per
+  request). Order a materialized 1:N segment in the consumer, model the ordering
+  into the source view, or use `LinkMany` when a declared order and a per-parent
+  cap are contract requirements.
+
+  Lifecycle, level by level: the EMBEDDING document's own `deleted_at` gates the
+  read as always (`?includeArchived` lifts it); a CHILD of the source inside the
+  segment is stripped on default reads and surfaced by `?includeArchived`, so the
+  segment reads like a direct read of the source view; and an ARCHIVED SOURCE
+  under the default (keep) policy stays in the
+  segment carrying its soft-delete stamp — the contract an upstream-mirror
+  segment already has, and what both write paths (surgical ripple and full
+  recompose) produce identically. Declare `DeleteOnArchive()` on the SOURCE view
+  for the opposite semantics (archiving removes the document, so the segment
+  becomes the explicit `null` / the element leaves the array).
+
+  Rebuild ordering (automatic): because a rebuild composes its segments by
+  reading the source's ACTIVE collection — a pointer that switches only at the
+  source's flip — an embedder rebuilt first would materialize the content about
+  to be replaced and finish stale, with no event left to repair it (rebuild
+  writes raise no embed signal, by design). Since bumping a source's `Version`
+  also moves every embedder's hash, the two always land in the same rebuild run,
+  so the framework sequences it: the boot's rebuild plan list and
+  `RebuildAllViews` now execute in EMBED-DEPENDENCY ORDER (each source before the
+  views materializing it, transitively), and a view whose source this instance
+  did not bring to a flip (a follower whose driver holds that source's lock) is
+  deferred rather than rebuilt against stale input — the driving instance holds
+  both plans in the same order. Views embedding no view keep their declaration
+  order. The ad-hoc single-view entry points (`RebuildView` / `RebuildViewSince`)
+  stay literal: rebuild a source that way and its dependents' copies are not
+  refreshed, so rebuild them too (or use the ordered `RebuildAllViews`).
+
+### Fixed
+
+- **The dangling 1:1 embed repair now covers a `JoinView` leg.** The post-write
+  repair that heals a 1:1 segment after the EMBEDDING document changes its FK
+  (field ownership keeps the consult write off the segment, and the source emits
+  no event of its own) was gated to external legs only. With a view leg the
+  segment would have kept pointing at the previously referenced document with no
+  future event able to heal it.
+- **A zombie-document removal now signals the views that embed it.** The
+  post-write tombstone check deletes a document a fresher writer already
+  disowned; that removal bypassed the embed fan-out, so a view materializing it
+  could keep serving the removed content.
+- **`?fields=` no longer leaks an auto-included soft-delete column out of a 1:N
+  segment.** The reader re-includes a nested collection's soft-delete column so
+  the archived-entry strip can see it, then removes it before responding; the
+  removal walk stopped at an ARRAY intermediate segment, so with a 1:N embed of a
+  view whose documents carry their own children the column reached the wire.
+
+### Added
+
 - **`ViewDefinition.EmbedInChild(childSchema, leg).On(col)` — read-side 1:1
   enrichment of a view's native child array.** For the "list of X with the name
   of Y per line" shape (e.g. a sale view whose line items each carry

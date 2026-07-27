@@ -378,27 +378,34 @@ func (s *SyncEngine) RebuildViewSince(ctx context.Context, view *ViewDefinition,
 	return s.rebuildFromTable(ctx, view, since.Format(time.RFC3339))
 }
 
+// RebuildAllViews rebuilds every known view, in EMBED-DEPENDENCY ORDER: a view
+// materialized inside another (a query.JoinView leg) is rebuilt first, so the
+// embedder composes its segments from the source's already-rebuilt content
+// instead of the pre-flip one it would otherwise read. Without views embedding
+// views the order is the index walk it always was.
 func (s *SyncEngine) RebuildAllViews(ctx context.Context) error {
 	seen := map[string]bool{}
-	walk := func(views []*ViewDefinition) error {
+	var all []*ViewDefinition
+	collect := func(views []*ViewDefinition) {
 		for _, v := range views {
 			if seen[v.name] {
 				continue
 			}
 			seen[v.name] = true
-			if err := s.RebuildView(ctx, v); err != nil {
-				return err
-			}
+			all = append(all, v)
 		}
-		return nil
 	}
 	for _, views := range s.index.byPGTable {
-		if err := walk(views); err != nil {
-			return err
-		}
+		collect(views)
 	}
 	for _, views := range s.index.byMongoColl {
-		if err := walk(views); err != nil {
+		collect(views)
+	}
+	for _, views := range s.index.byViewSource {
+		collect(views)
+	}
+	for _, v := range OrderViewsByEmbedDependency(all) {
+		if err := s.RebuildView(ctx, v); err != nil {
 			return err
 		}
 	}

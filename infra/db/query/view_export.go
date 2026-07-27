@@ -70,9 +70,17 @@ func (v *ViewDefinition) ExportPlan() *queries.ExportPlan {
 		}
 		seg := ce.ChildSegment()
 		goSeg := ce.leg.goSegment
+		var branch *queries.ExportNode
+		if ce.leg.view != nil {
+			branch = ce.leg.view.ExportPlan().Root
+			branch.GoSegment = goSeg
+			branch.WireSegment = ce.Field()
+		} else {
+			branch = buildExportNode(ce.leg.schema, nil, goSeg, ce.Field())
+		}
 		for _, cn := range root.Children {
 			if cn.GoSegment == seg {
-				cn.Children = append(cn.Children, buildExportNode(ce.leg.schema, nil, goSeg, ce.Field()))
+				cn.Children = append(cn.Children, branch)
 				break
 			}
 		}
@@ -112,17 +120,28 @@ func buildExportNode(schema *core.TableSchema, embeds []embedDef, goSegment, wir
 			appendSchemaColumns(node, base)
 		}
 	}
-	// External embeds nest as children. Embeds are single-level, so a source
-	// contributes no further embeds (nil) — only its own schema-derived closure.
+	// Embeds nest as children. An EXTERNAL source contributes only its own
+	// schema-derived closure (a mirror declares no embeds of its own). A VIEW
+	// source (JoinView) contributes its FULL export tree — its children, roles
+	// and its own embeds — re-rooted under this embed's segments, exactly as a
+	// composed view's internal leg does (ComposedViewDefinition.ExportPlan).
 	for _, e := range embeds {
 		if e.leg == nil {
 			continue
 		}
-		node.Children = append(node.Children, buildExportNode(
-			e.leg.schema, nil,
-			resolveGoSegment(e), // parent-side Go field (renderer descends doc[goSegment])
-			e.Field(),           // embed doc field = ?fields wire segment
-		))
+		var branch *queries.ExportNode
+		if e.leg.view != nil {
+			branch = e.leg.view.ExportPlan().Root
+			branch.GoSegment = resolveGoSegment(e)
+			branch.WireSegment = e.Field()
+		} else {
+			branch = buildExportNode(
+				e.leg.schema, nil,
+				resolveGoSegment(e), // parent-side Go field (renderer descends doc[goSegment])
+				e.Field(),           // embed doc field = ?fields wire segment
+			)
+		}
+		node.Children = append(node.Children, branch)
 	}
 	if schema != nil {
 		// Nested 1:N collections project under their derived segment (matching the
