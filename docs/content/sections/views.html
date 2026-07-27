@@ -321,6 +321,7 @@ query.JoinUpstream(
     <tr><td><code>View</code> / <code>SharedBaseView</code></td><td><code>EmbedInChild(childSchema, leg).On(col)</code> — 1:1 into a native child</td><td><code>*Leg</code></td><td><code>query.JoinUpstream(core.NewExternalSchema(…), Go, ext)</code> — EXTERNAL only; <code>.On</code> = FK <em>inside each element</em> of a native aggregate child.</td></tr>
     <tr><td><code>ComposedView</code></td><td><code>Link(leg).On(col)</code> — 1:1</td><td><code>*Leg</code></td><td><code>query.JoinView(view, Go, ext)</code> (INTERNAL registered view) <em>or</em> <code>query.JoinUpstream(core.NewExternalSchema(…), Go, ext)</code> (EXTERNAL); <code>.On</code> = primary FK.</td></tr>
     <tr><td><code>ComposedView</code></td><td><code>LinkMany(leg).OrderBy(…).MaxLinkManyLimit(…).On(col)</code> — 1:N</td><td><code>*Leg</code></td><td>Same two constructors; <code>.On</code> = leg FK (<code>leg.on → primary._id</code>); <code>OrderBy</code>/<code>Desc</code>/<code>MaxLinkManyLimit</code> chain on the verb before <code>.On</code>.</td></tr>
+    <tr><td><code>ComposedView</code></td><td><code>LinkInChild(childSchema, leg).On(col)</code> — 1:1 into a primary child</td><td><code>*Leg</code></td><td>The read-time twin of <code>EmbedInChild</code>: enriches each element of the PRIMARY's native child array. Same two leg constructors; <code>.On</code> = the element's FK. Never materialized, so — unlike <code>EmbedInChild</code> — it needs no covering index.</td></tr>
 </tbody></table>
 <p>
     Every family names its join column on the verb via <code>.On(column)</code> — the FK always points at the other side's
@@ -365,7 +366,8 @@ query.JoinUpstream(
     child's segment path (<code>items.product.name</code>), walked by tabular export, and folded into the
     <code>RebuildHash</code> — so changing it without a <code>Version(N)</code> bump surfaces as
     <code>DriftForgotToBump</code>. Its recompose-ripple, and the covering index it requires, are the same ones a 1:1 root
-    embed uses (see above).
+    embed uses (see above). Its read-time twin — the same child-element enrichment computed per request instead of
+    materialized — is <a href="#views~views-composed"><code>LinkInChild</code></a> on a <code>ComposedView</code>.
 </p>
 <div class="box">
     <strong>The enrichment is a single sub-document — there is no <code>EmbedManyInChild</code>.</strong> A one-to-many
@@ -445,6 +447,7 @@ func (f *GadgetFeature) ComposedViews() []*query.ComposedViewDefinition {
         <tr><td><code>Primary(view)</code></td><td>Exactly one, always an <strong>internal registered view</strong> (regular or shared-base). Its <code>MaxLimit</code>, indexes, text search, archived gate apply unchanged.</td></tr>
         <tr><td><code>Link(leg).On(col)</code></td><td>1:1 — sub-document under the leg's doc segment; explicit <code>null</code> when absent. <code>.On</code> = primary FK, mandatory.</td></tr>
         <tr><td><code>LinkMany(leg)…On(col)</code></td><td>1:N — array under the leg's doc segment, in the declared order, capped per parent; empty array when absent. <code>OrderBy</code>/<code>Desc</code>/<code>MaxLinkManyLimit</code> chain before the terminal <code>.On</code> = leg FK.</td></tr>
+        <tr><td><code>LinkInChild(childSchema, leg).On(col)</code></td><td>1:1 read-time enrichment INSIDE a primary child array — the non-materialized twin of a view's <code>EmbedInChild</code>. <code>childSchema</code> MUST be a native child of the primary (boot-validated); <code>.On</code> = the element's FK → the leg's <code>_id</code>; the sub-document lands under the leg's Go segment inside each element, addressed at <code>&lt;childSeg&gt;.&lt;legSeg&gt;.&lt;field&gt;</code> for filter/<code>?fields=</code>. 1:1 only (no <code>LinkManyInChild</code>); no covering index (no ripple). Accepts both leg kinds.</td></tr>
         <tr><td><code>JoinView(view, goName, ext)</code></td><td>Internal leg: any registered view — it arrives exactly as a direct read of that view would (children, embeds, roles, archived strip included). Both segment names mandatory.</td></tr>
         <tr><td><code>JoinUpstream(schema, goName, ext)</code></td><td>External leg: a locally materialized <code>UpstreamSubscription</code> collection described by its <code>NewExternalSchema</code>. A leg NEVER reads another service's live storage — materialize first, then compose. Also the only leg an <code>Embed</code>/<code>EmbedMany</code>/<code>EmbedInChild</code> accepts.</td></tr>
         <tr><td><code>.On(column)</code></td><td>The join column, named on the verb (see the multiplicity rule above). Mandatory — the verb's binding routes back to the builder only through <code>.On</code>, so a missing join does not compile.</td></tr>
@@ -457,10 +460,34 @@ func (f *GadgetFeature) ComposedViews() []*query.ComposedViewDefinition {
         view, an external leg without a matching <code>UpstreamSubscription</code>, a LinkMany FK
         without a covering index on the leg view, a segment colliding
         with a primary field or another segment, <code>OrderBy</code>/<code>MaxLinkManyLimit</code> on a
-        1:1 link, <code>.Desc()</code> without <code>OrderBy</code>, a composed name shadowing a view.
+        1:1 link, <code>.Desc()</code> without <code>OrderBy</code>, a composed name shadowing a view, a
+        <code>LinkInChild</code> whose <code>childSchema</code> is not a native child of the primary or whose
+        leg segment collides with a field the child element already carries.
         Depth is 1 by design: a leg is a plain view (as deep as its own materialization goes), never
         another composition.
     </div>
+
+    <h4 id="views-composed-inchild">LinkInChild — the read-time twin of EmbedInChild</h4>
+    <p>
+        Where <code>Link</code>/<code>LinkMany</code> enrich the composed ROOT, <code>LinkInChild(childSchema, leg).On(col)</code>
+        enriches one level down: every element of the PRIMARY's native child array gains a 1:1 sub-document, looked up by the
+        element's own FK at read time — the exact shape <a href="#views~views-embed-child"><code>EmbedInChild</code></a>
+        materializes, computed per request instead. <code>childSchema</code> MUST be a native child of the primary's schema
+        (a shared-base primary targets the base's children), boot-validated; the leg is either kind (<code>JoinUpstream</code>
+        <em>or</em> <code>JoinView</code> — read-time, so no upstream-only restriction). It obeys the same leg contract as
+        every other link: filter and <code>?fields=</code> address it at the nested path
+        <code>&lt;childSeg&gt;.&lt;legSeg&gt;.&lt;field&gt;</code> and shape the enrichment <em>per element</em> — never
+        which rows or child lines return — while sort, <code>?search=</code>, pagination and cursors stay the primary's.
+        Having no recompose ripple, it needs NO covering index (the one asymmetry with <code>EmbedInChild</code>). 1:1 only
+        — there is no <code>LinkManyInChild</code> (the forbidden grandchild shape).
+    </p>
+<pre><code>ComposedView("catalog_full").
+    Primary(CatalogView()).                                      // a view whose CatalogLines carry item_id
+    LinkInChild(CatalogLineSchema(),
+        query.JoinUpstream(UpstreamItemSchema(), "Item", "item")). // 1:1 leg; both segment names
+        On("item_id")                                            // the element's FK → the leg's _id
+// read time: each CatalogLine element gains an "item" sub-document, joined by the line's own item_id.
+</code></pre>
 
     <h4 id="views-composed-rules">The core rule — the primary drives selection</h4>
     <p>
@@ -664,9 +691,13 @@ same envelope, same projector, same pagination block as any view read</div>
 
     <h4 id="views-composed-vs">Two ways to compose — materialize or query</h4>
     <p>
-        The framework now has two roads to a composed document, and the reference service ships both
-        over the SAME upstream-mirror data so they can be compared side by side
-        (<code>gadgets_embedded</code> vs <code>gadgets_full</code> in the QA fixtures):
+        The framework has two roads to a composed document, and the pairing is complete at every level — each
+        materialization verb has a read-time twin: <code>Embed</code>↔<code>Link</code>,
+        <code>EmbedMany</code>↔<code>LinkMany</code>, and <code>EmbedInChild</code>↔<code>LinkInChild</code>. The reference
+        service ships both roads over the SAME upstream data so they can be compared side by side:
+        <code>gadgets_embedded</code> (Embed) vs <code>gadgets_full</code> (Link/LinkMany), and
+        <code>qa_catalog_view</code> (EmbedInChild <code>item</code>) vs <code>qa_catalog_full</code> (LinkInChild
+        <code>liveItem</code>, the read-time twin on the same lines):
     </p>
     <table>
         <tbody><tr><th></th><th>Materialization path — <code>Embed</code>/<code>SharedBaseView</code></th><th>Direct-query path — <code>ComposedView</code></th></tr>

@@ -28,6 +28,18 @@ with `1.0.0`.
   as `DriftForgotToBump`). The schema passed must be a native child of the view
   root — a non-child is rejected at boot.
 
+- **`ComposedViewDefinition.LinkInChild(childSchema, leg).On(col)` — the
+  read-time, non-materialized twin of `EmbedInChild`.** On a `ComposedView` whose
+  primary carries a native child array, it enriches each child element with a 1:1
+  sub-document looked up by the element's own FK at read time, never stored. Same
+  signature shape as `EmbedInChild`; `childSchema` must be a native child of the
+  PRIMARY's schema (boot-validated). Accepts BOTH leg kinds (`JoinUpstream` and
+  `JoinView`), and — having no recompose ripple — requires no covering index
+  (unlike `EmbedInChild`). Read-side leg parity: filter and `?fields=` into the
+  `<childSeg>.<legSeg>.<field>` path shape what enters the enrichment per element
+  (never which rows/lines return); sort/search/pagination stay the primary's (a
+  sort into the segment is a 400). 1:1 only (no `LinkManyInChild`).
+
 ### Changed
 
 - **breaking** — **a 1:1 `Embed` and every `EmbedInChild` now REQUIRE a covering

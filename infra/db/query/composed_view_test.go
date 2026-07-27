@@ -393,3 +393,123 @@ func TestComposedView_Accessors(t *testing.T) {
 		t.Fatal("unexpected primary view")
 	}
 }
+
+// ─── LinkInChild ─────────────────────────────────────────────────────────────
+
+type cvLine struct{ ID, GadgetID, ItemID string }
+
+func cvLineSchema() *core.TableSchema {
+	return core.NewTableSchema[cvLine]("gadget_lines").
+		PK("id").FK("gadget_id").
+		Field("ItemID", "item_id")
+}
+
+func cvPrimaryWithChildSchema() *core.TableSchema {
+	return core.NewTableSchema[composedGadget]("gadgets").
+		PK("id").Field("Code", "code").Field("MirrorID", "mirror_id").
+		SoftDelete("deleted_at").
+		Child(cvLineSchema())
+}
+
+func cvPrimaryWithChild() *ViewDefinition {
+	return View("gadgets").Version(1).Schema(cvPrimaryWithChildSchema())
+}
+
+// cvValidInChild enriches each gadget_lines element with its upstream item (1:1,
+// keyed by the element's item_id → upstream_gadgets._id). No covering index is
+// required (LinkInChild is read-time, no ripple).
+func cvValidInChild() *ComposedViewDefinition {
+	return ComposedView("gadgets_full").
+		Primary(cvPrimaryWithChild()).
+		LinkInChild(cvLineSchema(), JoinUpstream(cvUpstreamSchema(), "Item", "item")).On("item_id")
+}
+
+func TestComposedView_LinkInChild_DeclarationPanics(t *testing.T) {
+	wantPanic(t, ".LinkInChild(nil leg)", func() { ComposedView("x").LinkInChild(cvLineSchema(), nil) })
+	wantPanic(t, ".LinkInChild(nil childSchema)", func() {
+		ComposedView("x").LinkInChild(nil, JoinUpstream(cvUpstreamSchema(), "Item", "item"))
+	})
+}
+
+func TestValidateComposedViews_LinkInChild_HappyPath_External(t *testing.T) {
+	// No Indexes(...) declared — proves LinkInChild needs no covering index.
+	if err := validateOne(cvValidInChild(), []*ViewDefinition{cvPrimaryWithChild()}, cvUpstreams()); err != nil {
+		t.Fatalf("valid external LinkInChild must pass, got: %v", err)
+	}
+}
+
+func TestValidateComposedViews_LinkInChild_HappyPath_InternalView(t *testing.T) {
+	// A JoinView leg is accepted (unlike EmbedInChild, which is external-only).
+	composed := ComposedView("gadgets_full").
+		Primary(cvPrimaryWithChild()).
+		LinkInChild(cvLineSchema(), JoinView(cvNotesView(), "Line", "line")).On("item_id")
+	views := []*ViewDefinition{cvPrimaryWithChild(), cvNotesView()}
+	if err := validateOne(composed, views, cvUpstreams()); err != nil {
+		t.Fatalf("valid internal-view LinkInChild must pass, got: %v", err)
+	}
+}
+
+func TestValidateComposedViews_LinkInChild_Rejections(t *testing.T) {
+	notAChild := core.NewTableSchema[cvLine]("random_lines").PK("id").FK("gadget_id").Field("ItemID", "item_id")
+	cases := []struct {
+		name     string
+		composed *ComposedViewDefinition
+		fragment string
+	}{
+		{
+			name: "not a native child of the primary",
+			composed: ComposedView("gadgets_full").Primary(cvPrimaryWithChild()).
+				LinkInChild(notAChild, JoinUpstream(cvUpstreamSchema(), "Item", "item")).On("item_id"),
+			fragment: "NOT a native child of the primary",
+		},
+		{
+			name: "empty join column",
+			composed: ComposedView("gadgets_full").Primary(cvPrimaryWithChild()).
+				LinkInChild(cvLineSchema(), JoinUpstream(cvUpstreamSchema(), "Item", "item")).On(""),
+			fragment: "empty join column",
+		},
+		{
+			name: "join column not on the child schema",
+			composed: ComposedView("gadgets_full").Primary(cvPrimaryWithChild()).
+				LinkInChild(cvLineSchema(), JoinUpstream(cvUpstreamSchema(), "Item", "item")).On("bogus"),
+			fragment: "does not exist on the child schema",
+		},
+		{
+			name: "leg Go segment collides with a child field",
+			composed: ComposedView("gadgets_full").Primary(cvPrimaryWithChild()).
+				LinkInChild(cvLineSchema(), JoinUpstream(cvUpstreamSchema(), "ItemID", "item")).On("item_id"),
+			fragment: "already carries",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			wantProblem(t, validateOne(tc.composed, []*ViewDefinition{cvPrimaryWithChild()}, cvUpstreams()), tc.fragment)
+		})
+	}
+}
+
+func TestComposedView_LinkInChild_LinksProjection(t *testing.T) {
+	links := cvValidInChild().Links()
+	if len(links) != 1 {
+		t.Fatalf("expected 1 link, got %d", len(links))
+	}
+	l := links[0]
+	if !l.InChild() {
+		t.Fatal("link must report InChild() == true")
+	}
+	if l.ChildSegment != childDocSegment(cvLineSchema()) {
+		t.Errorf("ChildSegment = %q, want %q", l.ChildSegment, childDocSegment(cvLineSchema()))
+	}
+	if l.FKGoField != "ItemID" {
+		t.Errorf("FKGoField = %q, want ItemID (Go name of item_id)", l.FKGoField)
+	}
+	if l.GoSegment != "Item" || l.DocField != "item" {
+		t.Errorf("segment naming = %q/%q, want Item/item", l.GoSegment, l.DocField)
+	}
+	if l.Many {
+		t.Error("LinkInChild must be 1:1 (Many == false)")
+	}
+	if !l.External {
+		t.Error("expected an external (JoinUpstream) leg")
+	}
+}

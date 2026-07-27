@@ -63,6 +63,25 @@ type legRuntime struct {
 	link     query.ComposedLink
 	node     *query.ViewNode
 	maxItems int64 // resolved LinkMany ceiling (1:1 legs: unused)
+	// segKey is the Go path a filter/projection/sort addresses this leg by: the
+	// leg's GoSegment for a root Link/LinkMany, or "<ChildSegment>.<GoSegment>"
+	// for a LinkInChild (two levels deep — inside a primary child array).
+	segKey string
+}
+
+// segMatch finds the leg a Go path addresses: the longest dotted-prefix of path
+// that is a registered leg segKey. Returns the leg, the remaining sub-path, and
+// whether a leg matched. "Notes.Text" → (Notes leg, "Text"); "Lines.Item.Label"
+// → (LinkInChild leg keyed "Lines.Item", "Label"); a primary-only path → no match.
+func (rt *composedRuntime) segMatch(path string) (*legRuntime, string, bool) {
+	parts := strings.Split(path, ".")
+	for n := len(parts); n >= 1; n-- {
+		key := strings.Join(parts[:n], ".")
+		if leg := rt.bySeg[key]; leg != nil {
+			return leg, strings.Join(parts[n:], "."), true
+		}
+	}
+	return nil, "", false
 }
 
 // NewComposedViewReader wraps inner with the given composed-view definitions.
@@ -78,13 +97,18 @@ func NewComposedViewReader(inner *MongoViewReader, defs []*query.ComposedViewDef
 			bySeg:   map[string]*legRuntime{},
 		}
 		for _, link := range def.Links() {
+			segKey := link.GoSegment
+			if link.InChild() {
+				segKey = link.ChildSegment + "." + link.GoSegment
+			}
 			leg := &legRuntime{
 				link:     link,
 				node:     link.Node(),
 				maxItems: link.ResolveMaxLinkManyLimit(yamlMaxLinkManyLimit),
+				segKey:   segKey,
 			}
 			rt.legs = append(rt.legs, leg)
-			rt.bySeg[link.GoSegment] = leg
+			rt.bySeg[segKey] = leg
 		}
 		r.composed[def.Name()] = rt
 	}
@@ -112,7 +136,7 @@ func (r *ComposedViewReader) ReadPage(ctx context.Context, view string, c querie
 	// emits; surfaces that do not pre-validate (GraphQL, manual criteria)
 	// reach it here.
 	for _, sf := range c.Sort {
-		if head, _, _ := strings.Cut(sf.Field, "."); rt.bySeg[head] != nil {
+		if _, _, ok := rt.segMatch(sf.Field); ok {
 			return queries.Page{}, core.SingleNotificationError("Schema", "sort", domain.SchemaViolationNotification{})
 		}
 	}
@@ -182,7 +206,13 @@ type composedSplit struct {
 	fetchLeg   map[string]bool
 	stripID    bool
 	stripKeys  []string
+	// stripChildFK names the (childSegment, elementFKGoField) pairs ensureJoinKeys
+	// force-included on the primary so a LinkInChild could join a sparse
+	// projection; stripHelperFields removes them from each child element after.
+	stripChildFK []childFKStrip
 }
+
+type childFKStrip struct{ seg, field string }
 
 // splitComposedCriteria routes filters and projection entries by their first
 // Go path segment: entries addressing a leg segment go to that leg; everything
@@ -200,11 +230,11 @@ func splitComposedCriteria(rt *composedRuntime, c queries.ReadCriteria) *compose
 	if len(c.Filter) > 0 {
 		primaryFilter := make(map[string]any, len(c.Filter))
 		for k, v := range c.Filter {
-			if head, rest, dotted := strings.Cut(k, "."); dotted && rt.bySeg[head] != nil {
-				lf := s.legFilters[head]
+			if leg, rest, ok := rt.segMatch(k); ok && rest != "" {
+				lf := s.legFilters[leg.segKey]
 				if lf == nil {
 					lf = map[string]any{}
-					s.legFilters[head] = lf
+					s.legFilters[leg.segKey] = lf
 				}
 				lf[rest] = v
 				continue
@@ -228,26 +258,27 @@ func splitComposedCriteria(rt *composedRuntime, c queries.ReadCriteria) *compose
 	if len(c.Projection) > 0 {
 		primaryProj := make(map[string]int, len(c.Projection))
 		for k, v := range c.Projection {
-			if leg := rt.bySeg[k]; leg != nil {
-				legTouched[k] = true
-				if v == 1 {
-					legIncluded[k] = true
-					inclusionMode = true
-				} else {
-					legExcluded[k] = true
+			if leg, rest, ok := rt.segMatch(k); ok {
+				sk := leg.segKey
+				if rest == "" { // whole segment included/excluded
+					legTouched[sk] = true
+					if v == 1 {
+						legIncluded[sk] = true
+						inclusionMode = true
+					} else {
+						legExcluded[sk] = true
+					}
+					continue
 				}
-				continue
-			}
-			if head, rest, dotted := strings.Cut(k, "."); dotted && rt.bySeg[head] != nil {
-				lp := s.legProj[head]
+				lp := s.legProj[sk] // a sub-path into the segment
 				if lp == nil {
 					lp = map[string]int{}
-					s.legProj[head] = lp
+					s.legProj[sk] = lp
 				}
 				lp[rest] = v
-				legTouched[head] = true
+				legTouched[sk] = true
 				if v == 1 {
-					legIncluded[head] = true
+					legIncluded[sk] = true
 					inclusionMode = true
 				}
 				continue
@@ -261,7 +292,7 @@ func splitComposedCriteria(rt *composedRuntime, c queries.ReadCriteria) *compose
 	}
 
 	for _, leg := range rt.legs {
-		seg := leg.link.GoSegment
+		seg := leg.segKey
 		switch {
 		case len(c.Projection) == 0:
 			s.fetchLeg[seg] = true
@@ -290,8 +321,13 @@ func ensureJoinKeys(rt *composedRuntime, s *composedSplit) {
 	}
 	needsID := false
 	needKeys := map[string]bool{}
+	needChild := map[string]bool{} // "childSeg.fkGoField" nested join paths (LinkInChild)
 	for _, leg := range rt.legs {
-		if !s.fetchLeg[leg.link.GoSegment] {
+		if !s.fetchLeg[leg.segKey] {
+			continue
+		}
+		if leg.link.InChild() {
+			needChild[leg.link.ChildSegment+"."+leg.link.FKGoField] = true
 			continue
 		}
 		if leg.link.ParentKeyGoField == "_id" {
@@ -300,7 +336,7 @@ func ensureJoinKeys(rt *composedRuntime, s *composedSplit) {
 			needKeys[leg.link.ParentKeyGoField] = true
 		}
 	}
-	if !needsID && len(needKeys) == 0 {
+	if !needsID && len(needKeys) == 0 && len(needChild) == 0 {
 		return
 	}
 	inclusion := false
@@ -327,12 +363,26 @@ func ensureJoinKeys(rt *composedRuntime, s *composedSplit) {
 			s.stripKeys = append(s.stripKeys, k)
 		}
 	}
+	// LinkInChild joins per child element: the child array + the element's FK Go
+	// field must survive a sparse projection so attachInChild can look the leg up.
+	for path := range needChild {
+		seg, field, _ := strings.Cut(path, ".")
+		v, present := proj[path]
+		switch {
+		case inclusion && (!present || v == 0):
+			proj[path] = 1
+			s.stripChildFK = append(s.stripChildFK, childFKStrip{seg, field})
+		case !inclusion && present && v == 0:
+			delete(proj, path)
+			s.stripChildFK = append(s.stripChildFK, childFKStrip{seg, field})
+		}
+	}
 }
 
 // stripHelperFields removes the join-key fields ensureJoinKeys added so the
 // items match the consumer's requested projection exactly.
 func stripHelperFields(items []map[string]any, s *composedSplit) {
-	if !s.stripID && len(s.stripKeys) == 0 {
+	if !s.stripID && len(s.stripKeys) == 0 && len(s.stripChildFK) == 0 {
 		return
 	}
 	for _, item := range items {
@@ -342,6 +392,30 @@ func stripHelperFields(items []map[string]any, s *composedSplit) {
 		for _, k := range s.stripKeys {
 			delete(item, k)
 		}
+		for _, cs := range s.stripChildFK {
+			for _, el := range childElems(item[cs.seg]) {
+				delete(el, cs.field)
+			}
+		}
+	}
+}
+
+// childElems normalizes a child-array value (as ToGoDoc produces it) into the
+// map elements the composer/attach step edits in place.
+func childElems(v any) []map[string]any {
+	switch arr := v.(type) {
+	case []any:
+		out := make([]map[string]any, 0, len(arr))
+		for _, e := range arr {
+			if m, ok := e.(map[string]any); ok {
+				out = append(out, m)
+			}
+		}
+		return out
+	case []map[string]any:
+		return arr
+	default:
+		return nil
 	}
 }
 
@@ -353,17 +427,20 @@ func (r *ComposedViewReader) attachLegs(ctx context.Context, rt *composedRuntime
 		return nil
 	}
 	for _, leg := range rt.legs {
-		if !s.fetchLeg[leg.link.GoSegment] {
+		if !s.fetchLeg[leg.segKey] {
 			continue
 		}
 		var err error
-		if leg.link.Many {
+		switch {
+		case leg.link.InChild():
+			err = r.attachInChild(ctx, leg, s, items, includeArchived)
+		case leg.link.Many:
 			err = r.attachMany(ctx, leg, s, items, includeArchived)
-		} else {
+		default:
 			err = r.attachOne(ctx, leg, s, items, includeArchived)
 		}
 		if err != nil {
-			return fmt.Errorf("composed view: leg %q: %w", leg.link.GoSegment, err)
+			return fmt.Errorf("composed view: leg %q: %w", leg.segKey, err)
 		}
 	}
 	return nil
@@ -375,7 +452,7 @@ func (r *ComposedViewReader) attachLegs(ctx context.Context, rt *composedRuntime
 // no-op there, never an error).
 func (r *ComposedViewReader) legBaseFilter(leg *legRuntime, s *composedSplit, includeArchived bool) bson.M {
 	filter := bson.M{}
-	if lf := s.legFilters[leg.link.GoSegment]; len(lf) > 0 {
+	if lf := s.legFilters[leg.segKey]; len(lf) > 0 {
 		applyFilter(filter, translateFilterKeys(leg.node, lf))
 	}
 	if sdCol, sdOn := leg.node.SoftDeleteColumn(); sdOn && !includeArchived {
@@ -391,7 +468,7 @@ func (r *ComposedViewReader) legBaseFilter(leg *legRuntime, s *composedSplit, in
 // grouping (stripID reports that). Whole-segment attaches keep the full doc,
 // `_id` included, exactly like a direct read of the leg view.
 func (r *ComposedViewReader) legProjection(leg *legRuntime, s *composedSplit) (proj bson.D, stripID bool) {
-	lp := s.legProj[leg.link.GoSegment]
+	lp := s.legProj[leg.segKey]
 	if len(lp) == 0 {
 		return nil, false
 	}
@@ -470,6 +547,78 @@ func (r *ComposedViewReader) attachOne(ctx context.Context, leg *legRuntime, s *
 			}
 		}
 		item[leg.link.GoSegment] = match
+	}
+	return nil
+}
+
+// attachInChild resolves a LinkInChild (the read-time twin of a view's
+// EmbedInChild): every element of the primary's native child array gains a 1:1
+// sub-document looked up by the element's own FK. It is attachOne one level down —
+// ONE find({_id:{$in:keys}}) across every element on the page (same segment
+// filter, archived gate and projection), grouped by _id, stitched per element,
+// with an explicit null when the FK is absent or the segment filter drops it.
+func (r *ComposedViewReader) attachInChild(ctx context.Context, leg *legRuntime, s *composedSplit, items []map[string]any, includeArchived bool) error {
+	childSeg := leg.link.ChildSegment
+	fkField := leg.link.FKGoField
+	field := leg.link.GoSegment
+
+	var keys []any
+	seen := map[string]bool{}
+	for _, item := range items {
+		for _, el := range childElems(item[childSeg]) {
+			v, present := el[fkField]
+			if !present || v == nil {
+				continue
+			}
+			k := fmt.Sprintf("%v", v)
+			if !seen[k] {
+				seen[k] = true
+				keys = append(keys, v)
+			}
+		}
+	}
+
+	byKey := map[string]map[string]any{}
+	if len(keys) > 0 {
+		filter := r.legBaseFilter(leg, s, includeArchived)
+		filter["_id"] = bson.M{"$in": keys}
+		findOpts := options.Find().SetLimit(int64(len(keys)))
+		proj, stripLegID := r.legProjection(leg, s)
+		if proj != nil {
+			findOpts.SetProjection(proj)
+		}
+		col := r.inner.mongo.collFn(r.inner.resolver.Active(leg.link.Collection).String())
+		cur, err := col.Find(ctx, filter, findOpts)
+		if err != nil {
+			return err
+		}
+		var docs []bson.M
+		if err := cur.All(ctx, &docs); err != nil {
+			cur.Close(ctx)
+			return err
+		}
+		cur.Close(ctx)
+		for _, d := range docs {
+			m := map[string]any(d)
+			key := fmt.Sprintf("%v", m["_id"])
+			goDoc := r.toGoLegDoc(leg, m, includeArchived)
+			if stripLegID {
+				delete(goDoc, "_id")
+			}
+			byKey[key] = goDoc
+		}
+	}
+
+	for _, item := range items {
+		for _, el := range childElems(item[childSeg]) {
+			var match any // explicit null when absent or filtered out
+			if v, present := el[fkField]; present && v != nil {
+				if doc, found := byKey[fmt.Sprintf("%v", v)]; found {
+					match = doc
+				}
+			}
+			el[field] = match
+		}
 	}
 	return nil
 }
