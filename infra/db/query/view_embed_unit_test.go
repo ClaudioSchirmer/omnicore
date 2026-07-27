@@ -17,10 +17,13 @@ func TestView_EmbedAddsOneToOneSource(t *testing.T) {
 // Embed/EmbedMany builder, so embed-of-embed is not expressible and fails to
 // compile (no runtime guard, hence no negative test).
 func TestValidateViewSchemas_ManyTopLevelEmbedsAllowed(t *testing.T) {
+	// The 1:1 Embed requires a covering index on its parent join column (the
+	// recompose ripple's reverse scan) — enforced at boot; EmbedMany is exempt.
 	v := View("orders").Version(1).Schema(rootSchema("orders")).
 		EmbedMany("buyers", mongoEmbed("buyers", "order_id").As("Buyers")).
 		EmbedMany("items", mongoEmbed("items", "order_id").As("Items")).
-		Embed("owner", mongoEmbed("owners", "").As("Owner").FK("owner_id"))
+		Embed("owner", mongoEmbed("owners", "").As("Owner").FK("owner_id")).
+		Indexes(Index("owner_id"))
 	if err := ValidateViewSchemas([]*ViewDefinition{v}); err != nil {
 		t.Fatalf("any number of top-level embeds must validate, got: %v", err)
 	}

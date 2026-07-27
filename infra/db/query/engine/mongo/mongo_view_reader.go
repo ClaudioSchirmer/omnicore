@@ -302,12 +302,9 @@ func (r *MongoViewReader) ReadPage(ctx context.Context, view string, c queries.R
 	// matches the consumer's request exactly.
 	childSDCleanup := map[string]string{}
 	if len(colProj) > 0 && !c.IncludeArchived {
-		for docField, sdCol := range node.ChildSoftDeletePaths() {
-			if projectionTouchesField(colProj, docField) {
-				autoIncluded = append(autoIncluded, docField+"."+sdCol)
-				childSDCleanup[docField] = sdCol
-			}
-		}
+		var extra []string
+		extra, childSDCleanup = childSoftDeleteAutoIncludes(colProj, node.ChildSoftDeletePaths())
+		autoIncluded = append(autoIncluded, extra...)
 	}
 	if len(colProj) > 0 {
 		findOpts.SetProjection(buildProjection(colProj, autoIncluded))
@@ -806,4 +803,35 @@ func projectionTouchesField(colProj map[string]int, docField string) bool {
 		}
 	}
 	return false
+}
+
+// childSoftDeleteAutoIncludes decides which child soft-delete columns a
+// consumer projection must transparently re-include so the default-read
+// archived-entry strip can still see (and hide) archived nested entries, plus
+// the per-field cleanup map (docField -> sdCol) used to remove those columns
+// from the returned docs afterwards so the wire shape matches the request.
+//
+// It fires ONLY when the projection narrows to a STRICT SUBFIELD of the child
+// (dependents.name): that projection would otherwise drop the child's
+// soft-delete column, blinding the strip. When the WHOLE child field is
+// projected (?fields=dependents) the returned object ALREADY carries its
+// soft-delete column, so re-including "dependents.deleted_at" is both
+// unnecessary and an ILLEGAL projection — Mongo rejects an inclusion that lists
+// a field and a subpath of it together (Location31249 "Path collision at
+// <field>.<sub>"). The whole-field case is skipped, so it behaves exactly like
+// a no-?fields read for that segment: the strip sees the column, and
+// ToGoDoc/the Response DTO drop it on the wire.
+func childSoftDeleteAutoIncludes(colProj map[string]int, childSDPaths map[string]string) ([]string, map[string]string) {
+	var autoIncluded []string
+	cleanup := map[string]string{}
+	for docField, sdCol := range childSDPaths {
+		if _, whole := colProj[docField]; whole {
+			continue
+		}
+		if projectionTouchesField(colProj, docField) {
+			autoIncluded = append(autoIncluded, docField+"."+sdCol)
+			cleanup[docField] = sdCol
+		}
+	}
+	return autoIncluded, cleanup
 }

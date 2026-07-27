@@ -9,6 +9,19 @@
     <div class="release">
         <div class="release-head"><span class="release-tag">Unreleased</span><span class="release-date">—</span></div>
         <ul>
+            <li><strong>Added</strong> — <code>ViewDefinition.EmbedInChild(childSchema, field, src)</code>: read-side 1:1
+                enrichment of a view's native child array (the "list of X with the name of Y per line" shape — e.g. sale
+                line items enriched with the product name from an upstream projection). The write model stays normalized;
+                the enrichment lives only in the view, kept fresh by the recompose-ripple. 1:1 only (no
+                <code>EmbedManyInChild</code> — a 1:N would nest an array inside a child element, the forbidden grandchild
+                shape). For a <code>SharedBaseView</code> it targets the BASE's native children. The schema passed must be a
+                native child of the view root (a non-child aborts boot), and the enrichment participates in the RebuildHash.</li>
+            <li><strong>Changed</strong> — <strong>breaking</strong> — a 1:1 <code>Embed</code> and every
+                <code>EmbedInChild</code> now REQUIRE a covering index at boot for the recompose ripple's reverse scan (a
+                1:1 <code>Embed</code>: an index on its parent join column; an <code>EmbedInChild</code>: a multikey index on
+                <code>"&lt;childSegment&gt;.&lt;fk&gt;"</code>). Declare it via <code>.Indexes(query.Index(...))</code>; a
+                missing index aborts boot instead of silently degrading the ripple to a collection scan. <code>EmbedMany</code>
+                is exempt. Existing services with an un-indexed 1:1 embed must add the index to boot.</li>
         </ul>
     </div>
     <div class="release">

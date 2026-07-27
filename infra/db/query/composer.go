@@ -97,6 +97,9 @@ func (c *Composer) Compose(ctx context.Context, view *ViewDefinition, rootID str
 	if err := c.applyEmbeds(ctx, row, schemaPK(view.schema), view.embeds, includeArchived); err != nil {
 		return nil, err
 	}
+	if err := c.applyChildEmbeds(ctx, row, view.childEmbeds); err != nil {
+		return nil, err
+	}
 	return row, nil
 }
 
@@ -158,21 +161,38 @@ func (c *Composer) composeRows(ctx context.Context, view *ViewDefinition, rows [
 		remapRevision(row, view.schema, docRevisionField)
 	}
 	if view.isSharedBaseView {
-		return c.composeBaseRootedRowsBatched(ctx, view, rows, includeArchived)
+		if err := c.composeBaseRootedRowsBatched(ctx, view, rows, includeArchived); err != nil {
+			return err
+		}
+	} else {
+		if err := c.mergeOwnerSiblingsBatch(ctx, rows, view.schema, includeArchived); err != nil {
+			return err
+		}
+		if err := c.mergeSharedBaseBatch(ctx, rows, view.schema, includeArchived); err != nil {
+			return err
+		}
+		if err := c.mergeSharedBaseChildrenBatch(ctx, rows, view.schema, includeArchived); err != nil {
+			return err
+		}
+		if err := c.mergeOwnChildrenBatch(ctx, rows, view.schema, includeArchived); err != nil {
+			return err
+		}
+		if err := c.applyEmbedsBatch(ctx, rows, schemaPK(view.schema), view.embeds, includeArchived); err != nil {
+			return err
+		}
 	}
-	if err := c.mergeOwnerSiblingsBatch(ctx, rows, view.schema, includeArchived); err != nil {
-		return err
+	// EmbedInChild enrichment — after the native child arrays are merged, for both
+	// the shared-base and regular paths. Per-row (one $in per row per child-embed):
+	// correct and idempotent; collapsing it across the whole batch is a deferred
+	// optimization. No-op when the view declares no child-embeds.
+	if len(view.childEmbeds) > 0 {
+		for _, row := range rows {
+			if err := c.applyChildEmbeds(ctx, row, view.childEmbeds); err != nil {
+				return err
+			}
+		}
 	}
-	if err := c.mergeSharedBaseBatch(ctx, rows, view.schema, includeArchived); err != nil {
-		return err
-	}
-	if err := c.mergeSharedBaseChildrenBatch(ctx, rows, view.schema, includeArchived); err != nil {
-		return err
-	}
-	if err := c.mergeOwnChildrenBatch(ctx, rows, view.schema, includeArchived); err != nil {
-		return err
-	}
-	return c.applyEmbedsBatch(ctx, rows, schemaPK(view.schema), view.embeds, includeArchived)
+	return nil
 }
 
 // composeBaseRootedRow fills a SharedBaseView document from its already-fetched
@@ -208,7 +228,12 @@ func (c *Composer) composeBaseRootedRow(ctx context.Context, view *ViewDefinitio
 		remapRevision(roleRow, r.schema, docRevisionField)
 		row[r.segment] = roleRow
 	}
-	return c.applyEmbeds(ctx, row, schemaPK(base), view.embeds, includeArchived)
+	if err := c.applyEmbeds(ctx, row, schemaPK(base), view.embeds, includeArchived); err != nil {
+		return err
+	}
+	// EmbedInChild enriches the BASE's native children (validated at boot). Role
+	// sub-documents are never targeted.
+	return c.applyChildEmbeds(ctx, row, view.childEmbeds)
 }
 
 // fetchRoleRow selects THE role row that represents a specialization of the
@@ -465,6 +490,71 @@ func (c *Composer) fetchMongoEmbed(ctx context.Context, doc Document, parentPK s
 		return nil
 	}
 	doc[e.field] = docs[0]
+	return nil
+}
+
+// applyChildEmbeds resolves every EmbedInChild of the view against the ROOT doc
+// (or the SharedBaseView base doc): for each declared child-embed it enriches
+// each element of the native child array (doc[<childSegment>]) with a 1:1
+// external lookup by the element's own FK, landing the source document under the
+// child-embed's field. Set-based per child-embed — ONE $in against the source
+// collection for all elements of this doc, keyed by the source _id. A missing /
+// nil FK, or an unresolved source, writes an EXPLICIT null on that element (the
+// $set-merge contract, identical to a root 1:1 embed). It runs ONLY on the root
+// native children (the view's declared child-embeds target those, validated at
+// boot); role sub-documents of a SharedBaseView are never enriched here.
+func (c *Composer) applyChildEmbeds(ctx context.Context, doc Document, childEmbeds []childEmbedDef) error {
+	if len(childEmbeds) == 0 {
+		return nil
+	}
+	if c.mongo == nil {
+		return fmt.Errorf("composer: EmbedInChild requires a MongoDB handle " +
+			"(builder constructed without NewComposerWithMongo)")
+	}
+	for _, ce := range childEmbeds {
+		arr, ok := doc[ce.ChildSegment()].([]Document)
+		if !ok || len(arr) == 0 {
+			continue
+		}
+		fkCol := ce.FKColumn()
+		field := ce.Field()
+		values := make([]any, 0, len(arr))
+		seen := map[string]struct{}{}
+		for _, el := range arr {
+			v, has := el[fkCol]
+			if !has || v == nil {
+				continue
+			}
+			key := fmt.Sprintf("%v", v)
+			if _, dup := seen[key]; dup {
+				continue
+			}
+			seen[key] = struct{}{}
+			values = append(values, v)
+		}
+		byID := make(map[string]Document, len(values))
+		if len(values) > 0 {
+			srcDocs, err := c.mongo.FindManyByFieldIn(ctx, c.resolver.Active(ce.Source().Table()), "_id", values)
+			if err != nil {
+				return err
+			}
+			for _, sd := range srcDocs {
+				byID[fmt.Sprintf("%v", sd["_id"])] = sd
+			}
+		}
+		for _, el := range arr {
+			v, has := el[fkCol]
+			if !has || v == nil {
+				el[field] = nil
+				continue
+			}
+			if sd, ok := byID[fmt.Sprintf("%v", v)]; ok {
+				el[field] = sd
+			} else {
+				el[field] = nil
+			}
+		}
+	}
 	return nil
 }
 

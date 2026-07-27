@@ -11,6 +11,35 @@ with `1.0.0`.
 
 ## [Unreleased]
 
+### Added
+
+- **`ViewDefinition.EmbedInChild(childSchema, field, src)` — read-side 1:1
+  enrichment of a view's native child array.** For the "list of X with the name
+  of Y per line" shape (e.g. a sale view whose line items each carry
+  `product_id`, enriched with the product name from an upstream projection): each
+  element of a native aggregate child (declared via `root.Child(...)`) is
+  enriched with a 1:1 external lookup by the element's own FK, materialized into
+  the view and kept fresh by the recompose ripple. The write model stays
+  normalized — the element keeps only its FK; the enrichment lives only in the
+  view. 1:1 only (no `EmbedManyInChild`: a 1:N would nest an array inside a child
+  element, the forbidden grandchild shape). For a `SharedBaseView` it targets the
+  BASE's native children; role-nested children are not supported. The enrichment
+  participates in the RebuildHash (a change without a `Version(N)` bump is caught
+  as `DriftForgotToBump`). The schema passed must be a native child of the view
+  root — a non-child is rejected at boot.
+
+### Changed
+
+- **breaking** — **a 1:1 `Embed` and every `EmbedInChild` now REQUIRE a covering
+  index at boot** for the recompose ripple's reverse scan: a 1:1 `Embed` needs an
+  index on its parent join column, an `EmbedInChild` a multikey index on
+  `"<childSegment>.<fk>"`. The developer declares it via `.Indexes(query.Index(...))`;
+  a missing index aborts boot (`ValidateViewSchemas`) instead of silently
+  degrading the ripple to a collection scan. `EmbedMany` is exempt (its ripple
+  resolves the parent by the child's FK → parent `_id`, never a reverse scan of
+  the view). Existing services with an un-indexed 1:1 embed must add the index to
+  boot.
+
 ## [0.38.0] - 2026-07-26
 
 ### Changed
