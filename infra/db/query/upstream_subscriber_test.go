@@ -89,7 +89,7 @@ func TestUpstreamSubscriber_ParseOffsetSeek_Numeric(t *testing.T) {
 func TestUpstreamSubscriber_JoinFieldFor_DirectEmbed(t *testing.T) {
 	s := &UpstreamSubscriber{cfg: UpstreamSubscriberConfig{Collection: "users"}}
 	v := View("orders").
-		Embed("buyer", mongoEmbed("users", "").FK("buyer_id").As("Buyer")).
+		Embed(extLeg("users", "Buyer", "buyer")).On("buyer_id").
 		Version(1)
 	if got := s.joinFieldFor(v); got != "buyer_id" {
 		t.Errorf("joinFieldFor = %q, want buyer_id", got)
@@ -99,7 +99,7 @@ func TestUpstreamSubscriber_JoinFieldFor_DirectEmbed(t *testing.T) {
 func TestUpstreamSubscriber_JoinFieldFor_NonMatchingCollectionReturnsEmpty(t *testing.T) {
 	s := &UpstreamSubscriber{cfg: UpstreamSubscriberConfig{Collection: "products"}}
 	v := View("orders").
-		Embed("buyer", mongoEmbed("users", "").FK("buyer_id").As("Buyer")).
+		Embed(extLeg("users", "Buyer", "buyer")).On("buyer_id").
 		Version(1)
 	if got := s.joinFieldFor(v); got != "" {
 		t.Errorf("non-matching collection should return empty, got %q", got)
@@ -110,7 +110,7 @@ func TestUpstreamSubscriber_FindMongoJoinField(t *testing.T) {
 	// Embeds are single-level: findMongoJoinField matches a top-level Mongo embed
 	// by its collection and returns its join column; an unrelated collection
 	// yields the empty string.
-	embeds := []embedDef{{field: "members", source: mongoEmbed("upstream_x", "level1_id").As("Members"), many: true}}
+	embeds := []embedDef{{leg: extLeg("upstream_x", "Members", "members"), joinCol: "level1_id", many: true}}
 	if got := findMongoJoinField(embeds, "upstream_x"); got != "level1_id" {
 		t.Errorf("expected Mongo join field, got %q", got)
 	}

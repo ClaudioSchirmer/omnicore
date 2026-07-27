@@ -22,7 +22,7 @@ import (
 //
 // Type-anchored: NewTableSchema[T] binds the schema to the Go type so the boot
 // validates every declared field exists on T and resolves its field index once.
-// External view sources (fwinfra.FromSchema over a type-less NewExternalSchema,
+// External view sources (query.JoinUpstream over a type-less NewExternalSchema,
 // whose physical columns belong to an upstream service) carry no Go struct.
 type TableSchema struct {
 	table string
@@ -166,7 +166,7 @@ func NewSiblingSchema[T any](table string) *TableSchema {
 }
 
 // NewExternalSchema starts a type-less schema for a Mongo view source whose
-// physical columns belong to an upstream service (consumed via fwinfra.FromSchema). Field
+// physical columns belong to an upstream service (consumed via query.JoinUpstream). Field
 // declarations carry logical Go names (consumed by the composite view's
 // criteria/Response) mapped to the upstream's doc columns; there is no struct
 // to validate against.
@@ -696,7 +696,7 @@ func (s *TableSchema) columnForRead(goName string) (string, bool) {
 // isExternal reports whether the schema is type-less (built via
 // NewExternalSchema, no Go struct anchor). A view embed's source kind is derived
 // from this: an external schema describes an upstream Mongo collection
-// (FromSchema → isMongo), a type-anchored schema a local relational table.
+// (JoinUpstream → external Mongo collection), a type-anchored schema a local relational table.
 func (s *TableSchema) isExternal() bool { return s.typ == nil }
 
 // typeName returns the schema's Go type name ("Address"), or "" for a type-less
@@ -990,7 +990,7 @@ func (s *TableSchema) validateOwnSiblings() {
 // INSERT/UPDATE, and the read-side composer reflects it (BoolColumns) to restore
 // type fidelity when it materializes the Mongo view — neither is possible without
 // a struct. A type-less schema describes an UPSTREAM service's Mongo collection
-// and is only ever a view EMBED source (FromSchema), never a write-backed root.
+// and is only ever a view EMBED source (JoinUpstream), never a write-backed root.
 // The composer routes by the view root TABLE NAME (the root schema's table), not
 // by the schema's kind, so a type-less root that names a real local table would
 // be composed relationally with an empty BoolColumns and silently lose boolean
@@ -1006,7 +1006,7 @@ func (s *TableSchema) ValidateAnchored() {
 	panic(fmt.Sprintf(
 		"infra.TableSchema(%s): a write-backed schema must be type-anchored — build it with "+
 			"NewTableSchema[T], not NewExternalSchema. A type-less schema describes an upstream "+
-			"Mongo collection and can only be a view embed source (FromSchema), never a repository root.",
+			"Mongo collection and can only be a view embed source (JoinUpstream), never a repository root.",
 		s.table,
 	))
 }

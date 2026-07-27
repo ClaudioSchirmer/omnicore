@@ -40,14 +40,13 @@ func upstreamFakeMongo(colls map[string]*fakeColl) ReadModelStore {
 }
 
 // ordersBuyerView is a B view rooted at "orders" embedding the upstream "users"
-// collection one-to-one via an external FromSchema joined on the parent FK
+// collection one-to-one via an external JoinUpstream leg joined on the parent FK
 // "buyer_id" — exactly the shape UpstreamSubscriber.ripple recomposes.
 func ordersBuyerView() *ViewDefinition {
-	external := FromSchema(
-		core.NewExternalSchema("users").PK("id").Field("Name", "name")).
-		FK("buyer_id").As("Buyer")
+	external := JoinUpstream(
+		core.NewExternalSchema("users").PK("id").Field("Name", "name"), "Buyer", "buyer")
 	return View("orders").Version(1).Schema(composerRootSchema()).
-		Embed("buyer", external)
+		Embed(external).On("buyer_id")
 }
 
 // ordersRootEngine returns a fakeEngine whose composer root fetch yields the
@@ -453,8 +452,8 @@ func TestRipple_FallbackComposesMissingParent(t *testing.T) {
 func TestRipple_NoJoinField(t *testing.T) {
 	// A view that does NOT embed the upstream collection → joinFieldFor == ""
 	// → ripple logs and skips it (defensive branch).
-	other := FromSchema(core.NewExternalSchema("partners").PK("id")).FK("partner_id").As("Partner")
-	view := View("orders").Version(1).Schema(composerRootSchema()).Embed("partner", other)
+	other := JoinUpstream(core.NewExternalSchema("partners").PK("id"), "Partner", "partner")
+	view := View("orders").Version(1).Schema(composerRootSchema()).Embed(other).On("partner_id")
 	mongo := upstreamFakeMongo(happyColls())
 	composer := NewComposerWithMongo(ordersRootEngine(), mongo, identityResolver)
 	s, err := NewUpstreamSubscriber(nil, mongo, composer, identityResolver,
@@ -474,11 +473,10 @@ func TestRipple_NoJoinField(t *testing.T) {
 // shape the EmbedMany recompose-ripple resolves by the changed child's FK value
 // → the parent _id (no reverse scan of the parent view, no covering index).
 func ordersItemsView() *ViewDefinition {
-	external := FromSchema(
-		core.NewExternalSchema("users").PK("id").FK("order_id").Field("Name", "name")).
-		As("Members")
+	external := JoinUpstream(
+		core.NewExternalSchema("users").PK("id").Field("Name", "name"), "Members", "members")
 	return View("orders").Version(1).Schema(composerRootSchema()).
-		EmbedMany("members", external)
+		EmbedMany(external).On("order_id")
 }
 
 // newManyUpstream builds a subscriber whose only dependent view embeds the
@@ -577,10 +575,10 @@ func TestUpsertAndRipple_EmbedManyMoveRecomposesBothParents(t *testing.T) {
 // (parent FK "buyer_id") and one-to-many (child FK "order_id") — the mixed
 // shape a view may declare; the ripple must union both discoveries.
 func ordersBothView() *ViewDefinition {
-	one := FromSchema(core.NewExternalSchema("users").PK("id")).FK("buyer_id").As("Buyer")
-	many := FromSchema(core.NewExternalSchema("users").PK("id").FK("order_id")).As("Members")
+	one := JoinUpstream(core.NewExternalSchema("users").PK("id"), "Buyer", "buyer")
+	many := JoinUpstream(core.NewExternalSchema("users").PK("id"), "Members", "members")
 	return View("orders").Version(1).Schema(composerRootSchema()).
-		Embed("buyer", one).EmbedMany("members", many)
+		Embed(one).On("buyer_id").EmbedMany(many).On("order_id")
 }
 
 func newBothUpstream(t *testing.T, mongo ReadModelStore, eng core.RelationalEngine) *UpstreamSubscriber {
@@ -690,8 +688,8 @@ func TestCollectMongoEmbeds(t *testing.T) {
 	if got := collectMongoEmbeds(v.Embeds(), "unrelated"); len(got) != 0 {
 		t.Errorf("a non-embedded collection returns none, got %d", len(got))
 	}
-	// Defensive: a nil-source embed is skipped (never produced by FromSchema).
-	if got := collectMongoEmbeds([]embedDef{{source: nil}}, "users"); len(got) != 0 {
+	// Defensive: a nil-leg embed is skipped (never produced by JoinUpstream).
+	if got := collectMongoEmbeds([]embedDef{{leg: nil}}, "users"); len(got) != 0 {
 		t.Errorf("nil-source embed must be skipped, got %d", len(got))
 	}
 }
@@ -775,7 +773,7 @@ func TestJoinFieldFor(t *testing.T) {
 		t.Errorf("expected join field buyer_id, got %q", jf)
 	}
 	other := View("x").Version(1).Schema(composerRootSchema()).
-		Embed("partner", FromSchema(core.NewExternalSchema("partners").PK("id")).FK("partner_id").As("Partner"))
+		Embed(JoinUpstream(core.NewExternalSchema("partners").PK("id"), "Partner", "partner")).On("partner_id")
 	if jf := s.joinFieldFor(other); jf != "" {
 		t.Errorf("view not embedding the upstream collection must yield empty join field, got %q", jf)
 	}

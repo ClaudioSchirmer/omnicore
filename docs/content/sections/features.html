@@ -158,7 +158,7 @@
                 <li><a href="#service-to-service">The channel decision matrix</a> — sync internal → gRPC, sync external → HTTP, async facts → events, async views → composition</li>
                 <li><a href="#httpclient"><code>httpclient</code></a> — outbound HTTP from YAML: retry, cache, breaker, idempotency, TLS, HMAC, OAuth2, streaming</li>
                 <li><a href="#grpc"><code>grpcclient</code></a> — outbound gRPC toolbox; retry/breaker/backoff cores shared with <code>httpclient</code></li>
-                <li><a href="#service-to-service">Upstream composition</a> — <code>UpstreamSubscription</code> / <code>FromSchema</code>, ripple recompose, failure registry</li>
+                <li><a href="#service-to-service">Upstream composition</a> — <code>UpstreamSubscription</code> / <code>JoinUpstream</code>, ripple recompose, failure registry</li>
                 <li><a href="#integration-events">Integration events</a> — typed <code>Dispatch</code> / <code>Receiver</code>, best-effort dedup, operator retry surface</li>
             </ul>
             <div class="cap-more"><a href="#service-to-service">Service-to-service →</a></div>

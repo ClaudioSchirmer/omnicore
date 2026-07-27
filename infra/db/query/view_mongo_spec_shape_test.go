@@ -29,13 +29,12 @@ func shapeView() *ViewDefinition {
 		SoftDelete("deleted_at").
 		CreatedAt("created_at").
 		UpdatedAt("updated_at")
-	child := core.NewTableSchema[shapeChild]("addresses").
+	child := core.NewExternalSchema("addresses").
 		PK("id").
-		FK("user_id").
 		Field("ZipCode", "zip_code")
 	return View("users").Version(1).
 		Schema(root).
-		EmbedMany("addresses", FromSchema(child))
+		EmbedMany(JoinUpstream(child, "Addresses", "addresses")).On("user_id")
 }
 
 func TestValidateMongoSpec_IndexKey_ValidColumns_OK(t *testing.T) {

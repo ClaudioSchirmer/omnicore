@@ -323,7 +323,7 @@ shutdown:
         allowlist applied to the <em>raw upstream payload</em> — it consults no schema. An <code>ARCHIVED</code> upstream
         event carries the soft-delete column (e.g. <code>deleted_at</code>) populated; if the <code>filter</code> drops it,
         the local mirror can never reflect the archive (archived rows look active forever). The boot enforces this
-        (<strong>§8.5</strong>): when a view's external <a href="#table-schema"><code>FromSchema</code> embed</a> of this
+        (<strong>§8.5</strong>): when a view's external <a href="#table-schema"><code>JoinUpstream</code> embed</a> of this
         collection declares <code>.SoftDelete(col)</code> but the <code>filter</code> omits that column, the boot
         <strong>aborts</strong> naming the offender; when no embedding schema declares a soft-delete column at all, the boot
         logs an <em>advisory</em> (the consumer often cannot know whether the upstream soft-deletes). An empty

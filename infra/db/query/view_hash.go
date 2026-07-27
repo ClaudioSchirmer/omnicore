@@ -109,15 +109,15 @@ func (v *ViewDefinition) writeRebuildShape(w *canonicalWriter) {
 		w.writeTag("child_embeds")
 		ces := append([]childEmbedDef(nil), v.childEmbeds...)
 		sort.Slice(ces, func(i, j int) bool {
-			return ces[i].ChildSegment()+"\x00"+ces[i].field < ces[j].ChildSegment()+"\x00"+ces[j].field
+			return ces[i].ChildSegment()+"\x00"+ces[i].Field() < ces[j].ChildSegment()+"\x00"+ces[j].Field()
 		})
 		w.writeInt(int64(len(ces)))
 		for _, ce := range ces {
 			w.writeString(ce.childSchema.Table())
-			w.writeString(ce.field)
-			w.writeString(ce.source.Table())
-			w.writeString(ce.source.joinKey)
-			w.writeString(ce.source.goSegment)
+			w.writeString(ce.Field())
+			w.writeString(ce.leg.Table())
+			w.writeString(ce.joinCol)
+			w.writeString(ce.leg.goSegment)
 		}
 	}
 
@@ -169,18 +169,20 @@ func indexCanonKey(s *IndexSpec) string {
 func writeEmbedList(w *canonicalWriter, embeds []embedDef) {
 	w.writeInt(int64(len(embeds)))
 	for _, e := range embeds {
-		w.writeString(e.field)
-		w.writeBool(e.many)
-		if e.source == nil {
+		if e.leg == nil {
+			w.writeString("")
+			w.writeBool(e.many)
 			w.writeTag("nil_source")
 			continue
 		}
+		w.writeString(e.Field())
+		w.writeBool(e.many)
 		w.writeTag("source")
-		w.writeString(e.source.table)
-		// Effective join column: the schema FK for one-to-many, the parent .On
-		// for one-to-one — so an FK change still moves the rebuild hash.
+		w.writeString(e.leg.Collection())
+		// The join column named via .On — one-to-many (leg FK) or one-to-one
+		// (parent FK) alike — so an FK change still moves the rebuild hash.
 		w.writeString(e.JoinColumn())
-		w.writeBool(e.source.isMongo)
+		w.writeBool(e.leg.IsMongo())
 		// Embeds are single-level: a source carries no nested embeds. Emit the
 		// empty-list encoding (length 0) that the old nested writeEmbedList call
 		// produced for every real (non-nested) view, so the RebuildHash stays

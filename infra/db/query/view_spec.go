@@ -452,7 +452,7 @@ func (v *ViewDefinition) TimeSeries(ts *TimeSeriesSpec) *ViewDefinition {
 // IndexSpecs returns the declared indexes — consumed by Phase B's
 // ApplyMongoSpecs to feed Collection.Indexes().CreateMany, and by the
 // boot guards in bootstrap/upstream_guards.go to check coverage on
-// external FromSchema embed join fields (§8.1).
+// external JoinUpstream embed join fields (§8.1).
 func (v *ViewDefinition) IndexSpecs() []*IndexSpec { return v.mongoSpec.indexes }
 
 // KeyNames returns the field names of the spec's keys in declaration
@@ -639,11 +639,18 @@ func collectComposedColumns(schema *core.TableSchema, embeds []embedDef, prefix 
 		}
 	}
 	for _, e := range embeds {
-		if e.source == nil {
+		if e.leg == nil {
 			continue
 		}
-		addComposedColumn(set, prefix, e.field)
-		collectComposedColumns(e.source.schema, nil, joinColumnPrefix(prefix, e.field), set)
+		addComposedColumn(set, prefix, e.Field())
+		embedPrefix := joinColumnPrefix(prefix, e.Field())
+		collectComposedColumns(e.leg.schema, nil, embedPrefix, set)
+		// A 1:N embed's join column lives on each embedded (leg) element, so it is a
+		// queryable column of the embed segment (e.g. "addresses.user_id"). The 1:1
+		// join column lives on the PARENT, emitted at the parent level if declared.
+		if e.many {
+			addComposedColumn(set, embedPrefix, e.joinCol)
+		}
 	}
 	if schema != nil {
 		// The SharedBase's native children (base-children) nest under their derived

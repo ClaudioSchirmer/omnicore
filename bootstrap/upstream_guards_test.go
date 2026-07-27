@@ -10,10 +10,11 @@ import (
 	"github.com/ClaudioSchirmer/omnicore/infra/db/query"
 )
 
-// extEmbed builds an external (Mongo) embed source from a type-less schema for
-// the guard tests — table + FK from the schema, .As supplies the Go segment.
-func extEmbed(collection, fk, as string) *query.Source {
-	return query.FromSchema(core.NewExternalSchema(collection).PK("id").FK(fk)).FK(fk).As(as)
+// extEmbed builds an external (Mongo) embed leg from a type-less schema for the
+// guard tests — the collection is both table and doc field; as supplies the Go
+// segment. The join column is named at the call site via .On(...).
+func extEmbed(collection, as string) *query.Leg {
+	return query.JoinUpstream(core.NewExternalSchema(collection).PK("id"), as, collection)
 }
 
 func TestValidateViewSchemas_RejectsMissingRootSchema(t *testing.T) {
@@ -24,23 +25,15 @@ func TestValidateViewSchemas_RejectsMissingRootSchema(t *testing.T) {
 	}
 }
 
-func TestValidateViewSchemas_RejectsExternalEmbedWithoutAs(t *testing.T) {
-	v := query.View("orders").
-		Schema(core.NewExternalSchema("orders").PK("id")).
-		Embed("buyer", query.FromSchema(core.NewExternalSchema("users").PK("id")).FK("buyer_id")). // no .As
-		Version(1)
-	err := query.ValidateViewSchemas([]*query.ViewDefinition{v})
-	if err == nil || !strings.Contains(err.Error(), ".As(") {
-		t.Errorf("expected external-embed-missing-.As error, got %v", err)
-	}
-}
+// The external-embed-missing-Go-segment guard is gone: goName is mandatory on the
+// JoinUpstream/JoinView constructors (a declaration-time panic).
 
 func TestValidateViewSchemas_PassesWhenComplete(t *testing.T) {
 	// The 1:1 Embed now requires a covering index on its join column at boot (the
 	// recompose ripple's reverse scan) — the retroactive breaking guard.
 	v := query.View("orders").
 		Schema(core.NewExternalSchema("orders").PK("id")).
-		Embed("buyer", extEmbed("users", "buyer_id", "Buyer")).
+		Embed(extEmbed("users", "Buyer")).On("buyer_id").
 		Indexes(query.Index("buyer_id")).
 		Version(1)
 	if err := query.ValidateViewSchemas([]*query.ViewDefinition{v}); err != nil {
@@ -103,7 +96,7 @@ func TestGuardCollectionCollision_SubLocalView(t *testing.T) {
 
 func TestGuardMaterializingSource_RejectsUnknownCollection(t *testing.T) {
 	v := query.View("orders").
-		Embed("buyer", extEmbed("users", "buyer_id", "Buyer")).
+		Embed(extEmbed("users", "Buyer")).On("buyer_id").
 		Version(1)
 	errs := guardMaterializingSource(nil, []*query.ViewDefinition{v})
 	if len(errs) != 1 || !strings.Contains(errs[0], "§8.3") ||
@@ -115,7 +108,7 @@ func TestGuardMaterializingSource_RejectsUnknownCollection(t *testing.T) {
 func TestGuardMaterializingSource_AcceptsSubscriptionCollection(t *testing.T) {
 	subs := []UpstreamSubscription{{Topic: "users.events", Collection: "users"}}
 	v := query.View("orders").
-		Embed("buyer", extEmbed("users", "buyer_id", "Buyer")).
+		Embed(extEmbed("users", "Buyer")).On("buyer_id").
 		Version(1)
 	errs := guardMaterializingSource(subs, []*query.ViewDefinition{v})
 	if len(errs) != 0 {
@@ -124,14 +117,14 @@ func TestGuardMaterializingSource_AcceptsSubscriptionCollection(t *testing.T) {
 }
 
 func TestGuardMaterializingSource_RejectsLocalView(t *testing.T) {
-	// View-on-view via an external FromSchema (targeting another local
+	// View-on-view via an external JoinUpstream leg (targeting another local
 	// ViewDefinition.Name()) is rejected at boot: the recompose ripple is
 	// one-hop, so a change upstream of derivative_view would recompose
 	// derivative_view but never re-ripple to orders. Drift would silently
 	// accumulate. The guard catches the trap before any subscriber starts.
 	views := []*query.ViewDefinition{
 		query.View("orders").
-			Embed("derivative", extEmbed("derivative_view", "orders_id", "Derivative")).
+			Embed(extEmbed("derivative_view", "Derivative")).On("orders_id").
 			Version(1),
 		query.View("derivative_view").Version(1),
 	}
@@ -145,7 +138,7 @@ func TestGuardMaterializingSource_RejectsLocalView(t *testing.T) {
 
 func TestGuardJoinFieldIndex_RejectsMissingIndex(t *testing.T) {
 	v := query.View("orders").
-		Embed("buyer", extEmbed("users", "buyer_id", "Buyer")).
+		Embed(extEmbed("users", "Buyer")).On("buyer_id").
 		Version(1)
 	errs := guardJoinFieldIndex([]*query.ViewDefinition{v})
 	if len(errs) != 1 || !strings.Contains(errs[0], "§8.1") ||
@@ -156,7 +149,7 @@ func TestGuardJoinFieldIndex_RejectsMissingIndex(t *testing.T) {
 
 func TestGuardJoinFieldIndex_AcceptsSingleFieldIndex(t *testing.T) {
 	v := query.View("orders").
-		Embed("buyer", extEmbed("users", "buyer_id", "Buyer")).
+		Embed(extEmbed("users", "Buyer")).On("buyer_id").
 		Indexes(query.Index("buyer_id")).
 		Version(1)
 	errs := guardJoinFieldIndex([]*query.ViewDefinition{v})
@@ -167,7 +160,7 @@ func TestGuardJoinFieldIndex_AcceptsSingleFieldIndex(t *testing.T) {
 
 func TestGuardJoinFieldIndex_AcceptsCompoundIndexJoinFieldFirst(t *testing.T) {
 	v := query.View("orders").
-		Embed("buyer", extEmbed("users", "buyer_id", "Buyer")).
+		Embed(extEmbed("users", "Buyer")).On("buyer_id").
 		Indexes(query.Compound("buyer_id", "created_at")).
 		Version(1)
 	errs := guardJoinFieldIndex([]*query.ViewDefinition{v})
@@ -178,7 +171,7 @@ func TestGuardJoinFieldIndex_AcceptsCompoundIndexJoinFieldFirst(t *testing.T) {
 
 func TestGuardJoinFieldIndex_RejectsCompoundIndexJoinFieldNotFirst(t *testing.T) {
 	v := query.View("orders").
-		Embed("buyer", extEmbed("users", "buyer_id", "Buyer")).
+		Embed(extEmbed("users", "Buyer")).On("buyer_id").
 		Indexes(query.Compound("created_at", "buyer_id")).
 		Version(1)
 	errs := guardJoinFieldIndex([]*query.ViewDefinition{v})
@@ -193,9 +186,9 @@ func TestGuardJoinFieldIndex_EmbedManyNeedsNoIndex(t *testing.T) {
 	// of the embedding view on the child FK column (which the parent doc does
 	// not carry at top level). So — unlike a one-to-one Embed — it requires NO
 	// covering index on the view, even without any Indexes(...) declared.
-	src := query.FromSchema(core.NewExternalSchema("items").PK("id").FK("order_id")).As("Members")
+	src := query.JoinUpstream(core.NewExternalSchema("items").PK("id"), "Members", "members")
 	v := query.View("orders").
-		EmbedMany("members", src).
+		EmbedMany(src).On("order_id").
 		Version(1)
 	if errs := guardJoinFieldIndex([]*query.ViewDefinition{v}); len(errs) != 0 {
 		t.Errorf("an external EmbedMany must not require a covering index, got %v", errs)
@@ -206,11 +199,11 @@ func TestGuardJoinFieldIndex_OneToOneStillNeedsIndexAlongsideEmbedMany(t *testin
 	// A view mixing both embeds of the same collection: the 1:1 still needs its
 	// covering index; the 1:N does not. With only the 1:1 index declared, the
 	// guard is satisfied (no 1:N complaint).
-	one := extEmbed("items", "featured_id", "Featured")
-	many := query.FromSchema(core.NewExternalSchema("items").PK("id").FK("order_id")).As("Members")
+	one := extEmbed("items", "Featured")
+	many := query.JoinUpstream(core.NewExternalSchema("items").PK("id"), "Members", "members")
 	v := query.View("orders").
-		Embed("featured", one).
-		EmbedMany("members", many).
+		Embed(one).On("featured_id").
+		EmbedMany(many).On("order_id").
 		Indexes(query.Index("featured_id")).
 		Version(1)
 	if errs := guardJoinFieldIndex([]*query.ViewDefinition{v}); len(errs) != 0 {
@@ -261,9 +254,9 @@ func TestValidateUpstreamSubscriptions_AccumulatesAllViolations(t *testing.T) {
 			StartFrom:        StartFromLatest},
 	}
 	views := []*query.ViewDefinition{
-		// §8.1 — external FromSchema without covering index
+		// §8.1 — external JoinUpstream leg without covering index
 		query.View("orders").
-			Embed("buyer", extEmbed("users", "buyer_id", "Buyer")).
+			Embed(extEmbed("users", "Buyer")).On("buyer_id").
 			Version(1),
 	}
 	err := validateUpstreamSubscriptions(subs, views, profileDev, nil)
@@ -280,10 +273,9 @@ func TestValidateUpstreamSubscriptions_AccumulatesAllViolations(t *testing.T) {
 
 // extEmbedSD is extEmbed with a soft-delete column declared on the external
 // schema — the §8.5 guard reads it via Source().SchemaDef().SoftDeleteColumn().
-func extEmbedSD(collection, softDelete, fk, as string) *query.Source {
-	return query.FromSchema(
-		core.NewExternalSchema(collection).PK("id").SoftDelete(softDelete).FK(fk),
-	).FK(fk).As(as)
+func extEmbedSD(collection, softDelete, as string) *query.Leg {
+	return query.JoinUpstream(
+		core.NewExternalSchema(collection).PK("id").SoftDelete(softDelete), as, collection)
 }
 
 func TestGuardSoftDeleteFilter_AbortsWhenFilterDropsSoftDelete(t *testing.T) {
@@ -292,7 +284,7 @@ func TestGuardSoftDeleteFilter_AbortsWhenFilterDropsSoftDelete(t *testing.T) {
 	}
 	views := []*query.ViewDefinition{
 		query.View("orders").
-			Embed("buyer", extEmbedSD("users", "deleted_at", "buyer_id", "Buyer")).
+			Embed(extEmbedSD("users", "deleted_at", "Buyer")).On("buyer_id").
 			Version(1),
 	}
 	violations, warnings := guardSoftDeleteFilter(subs, views)
@@ -311,7 +303,7 @@ func TestGuardSoftDeleteFilter_OKWhenFilterKeepsSoftDelete(t *testing.T) {
 	}
 	views := []*query.ViewDefinition{
 		query.View("orders").
-			Embed("buyer", extEmbedSD("users", "deleted_at", "buyer_id", "Buyer")).
+			Embed(extEmbedSD("users", "deleted_at", "Buyer")).On("buyer_id").
 			Version(1),
 	}
 	violations, warnings := guardSoftDeleteFilter(subs, views)
@@ -326,7 +318,7 @@ func TestGuardSoftDeleteFilter_OKWhenFilterEmpty(t *testing.T) {
 	}
 	views := []*query.ViewDefinition{
 		query.View("orders").
-			Embed("buyer", extEmbedSD("users", "deleted_at", "buyer_id", "Buyer")).
+			Embed(extEmbedSD("users", "deleted_at", "Buyer")).On("buyer_id").
 			Version(1),
 	}
 	violations, warnings := guardSoftDeleteFilter(subs, views)
@@ -341,7 +333,7 @@ func TestGuardSoftDeleteFilter_WarnsWhenNoSoftDeleteDeclared(t *testing.T) {
 	}
 	views := []*query.ViewDefinition{
 		query.View("orders").
-			Embed("buyer", extEmbed("users", "buyer_id", "Buyer")). // no soft-delete declared
+			Embed(extEmbed("users", "Buyer")).On("buyer_id"). // no soft-delete declared
 			Version(1),
 	}
 	violations, warnings := guardSoftDeleteFilter(subs, views)
@@ -374,7 +366,7 @@ func TestValidateUpstreamSubscriptions_SurfacesSoftDeleteAbort(t *testing.T) {
 	}
 	views := []*query.ViewDefinition{
 		query.View("orders").
-			Embed("buyer", extEmbedSD("users", "deleted_at", "buyer_id", "Buyer")).
+			Embed(extEmbedSD("users", "deleted_at", "Buyer")).On("buyer_id").
 			Indexes(query.Index("buyer_id")). // satisfy §8.1 so only §8.5 fires
 			Version(1),
 	}
@@ -395,7 +387,7 @@ func TestValidateUpstreamSubscriptions_LogsSoftDeleteAdvisory(t *testing.T) {
 	}
 	views := []*query.ViewDefinition{
 		query.View("orders").
-			Embed("buyer", extEmbed("users", "buyer_id", "Buyer")). // no soft-delete → advisory only
+			Embed(extEmbed("users", "Buyer")).On("buyer_id"). // no soft-delete → advisory only
 			Indexes(query.Index("buyer_id")).
 			Version(1),
 	}

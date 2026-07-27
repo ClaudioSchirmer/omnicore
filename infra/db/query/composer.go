@@ -29,7 +29,7 @@ const maxInClauseSize = 900
 // own + base children) compose RELATIONALLY — fetchRow / fetchWhere against the
 // engine's neutral read surface (core.Querier.QueryMaps + Dialect), so they
 // compose the same way on any backend. Embeds are always EXTERNAL sources
-// (FromSchema over a type-less core.NewExternalSchema): MongoDB.FindManyByField
+// (a JoinUpstream leg over a type-less core.NewExternalSchema): MongoDB.FindManyByField
 // against the local DB. A write-anchored embed source is rejected at boot
 // (ValidateViewSchemas) — internal data projects automatically, never via an embed.
 //
@@ -458,18 +458,18 @@ func (c *Composer) fetchEmbed(ctx context.Context, doc Document, parentPK string
 func (c *Composer) fetchMongoEmbed(ctx context.Context, doc Document, parentPK string, e embedDef) error {
 	if c.mongo == nil {
 		return fmt.Errorf("composer: view embed on Mongo collection %q requires a MongoDB handle "+
-			"(builder constructed without NewComposerWithMongo)", e.source.table)
+			"(builder constructed without NewComposerWithMongo)", e.leg.Collection())
 	}
 	if e.many {
 		id, ok := doc[parentPK]
 		if !ok || id == nil {
 			return nil
 		}
-		docs, err := c.mongo.FindManyByField(ctx, c.resolver.Active(e.source.table), e.JoinColumn(), id)
+		docs, err := c.mongo.FindManyByField(ctx, c.resolver.Active(e.leg.Collection()), e.JoinColumn(), id)
 		if err != nil {
 			return err
 		}
-		doc[e.field] = docs
+		doc[e.Field()] = docs
 		return nil
 	}
 	// An unresolved 1:1 (null FK, or the source doc gone) writes an EXPLICIT
@@ -478,18 +478,18 @@ func (c *Composer) fetchMongoEmbed(ctx context.Context, doc Document, parentPK s
 	// documented contract is "null when unset/unresolved".
 	fk, ok := doc[e.JoinColumn()]
 	if !ok || fk == nil {
-		doc[e.field] = nil
+		doc[e.Field()] = nil
 		return nil
 	}
-	docs, err := c.mongo.FindManyByField(ctx, c.resolver.Active(e.source.table), "_id", fk)
+	docs, err := c.mongo.FindManyByField(ctx, c.resolver.Active(e.leg.Collection()), "_id", fk)
 	if err != nil {
 		return err
 	}
 	if len(docs) == 0 {
-		doc[e.field] = nil
+		doc[e.Field()] = nil
 		return nil
 	}
-	doc[e.field] = docs[0]
+	doc[e.Field()] = docs[0]
 	return nil
 }
 

@@ -64,9 +64,9 @@ func TestViewNode_ColumnPathEdges(t *testing.T) {
 		t.Error("nil node must not resolve")
 	}
 	rootSchema := core.NewTableSchema[vsRoot]("people").PK("person_pk").Field("Email", "mail")
-	childSchema := core.NewExternalSchema("tags").PK("tag_pk").FK("person_ref").Field("ZipCode", "zip")
+	childSchema := core.NewExternalSchema("tags").PK("tag_pk").Field("ZipCode", "zip")
 	v := View("people").Schema(rootSchema).
-		EmbedMany("addresses", FromSchema(childSchema).As("Addresses"))
+		EmbedMany(JoinUpstream(childSchema, "Addresses", "addresses")).On("person_ref")
 	node := v.BuildViewNode()
 
 	if _, ok := node.ColumnPath(nil); ok {
@@ -87,7 +87,7 @@ func TestViewNode_ToGoDoc_OneToOneEmbedAndDrop(t *testing.T) {
 	rootSchema := core.NewTableSchema[vsRoot]("people").PK("person_pk").Field("Email", "mail")
 	buyerSchema := core.NewExternalSchema("buyers").PK("b_pk").Field("Email", "b_mail")
 	v := View("people").Schema(rootSchema).
-		Embed("buyer", FromSchema(buyerSchema).FK("buyer_ref").As("Buyer"))
+		Embed(JoinUpstream(buyerSchema, "Buyer", "buyer")).On("buyer_ref")
 	node := v.BuildViewNode()
 
 	doc := map[string]any{
@@ -155,51 +155,43 @@ func TestAsStringMap_AsAnySlice_ReflectAndNegatives(t *testing.T) {
 	}
 }
 
-func TestNewViewNode_NilSourceAndSegmentFallback(t *testing.T) {
-	// An embed with a nil source is skipped.
-	n := newViewNode(builderTestSchema, []embedDef{{field: "skipme", source: nil}})
-	if _, ok := n.embeds["skipme"]; ok {
-		t.Error("nil-source embed must be skipped")
+func TestNewViewNode_NilLegSkippedAndSegment(t *testing.T) {
+	// An embed with a nil leg is skipped.
+	n := newViewNode(builderTestSchema, []embedDef{{leg: nil}})
+	if len(n.embeds) != 0 {
+		t.Error("nil-leg embed must be skipped")
 	}
-	// An external embed with no .As falls back to the doc field as the segment.
-	ext := FromSchema(core.NewExternalSchema("u").PK("id"))
-	n2 := newViewNode(builderTestSchema, []embedDef{{field: "buyer", source: ext}})
-	if _, ok := n2.embeds["buyer"]; !ok {
-		t.Errorf("segment fallback to doc field expected, embeds=%v", n2.embeds)
+	// An embed registers under its leg's Go segment (mandatory on the constructor).
+	leg := JoinUpstream(core.NewExternalSchema("u").PK("id"), "Buyer", "buyer")
+	n2 := newViewNode(builderTestSchema, []embedDef{{leg: leg, joinCol: "buyer_id"}})
+	if _, ok := n2.embeds["Buyer"]; !ok {
+		t.Errorf("embed must register under its Go segment, embeds=%v", n2.embeds)
 	}
 }
 
 // ─── view.go: resolveGoSegment, DependentMongoViews, index ───────────────────
 
-func TestResolveGoSegment_ExternalNoAsIsEmpty(t *testing.T) {
-	ext := FromSchema(core.NewExternalSchema("users").PK("id"))
-	e := embedDef{field: "buyer", source: ext, many: false}
-	if seg := resolveGoSegment(e); seg != "" {
-		t.Errorf("external embed without .As must resolve to empty segment, got %q", seg)
+func TestResolveGoSegment(t *testing.T) {
+	leg := JoinUpstream(core.NewExternalSchema("users").PK("id"), "Buyer", "buyer")
+	if seg := resolveGoSegment(embedDef{leg: leg}); seg != "Buyer" {
+		t.Errorf("resolveGoSegment must return the leg goName, got %q", seg)
 	}
-	// nil source → empty.
-	if seg := resolveGoSegment(embedDef{field: "x", source: nil}); seg != "" {
-		t.Errorf("nil source must resolve to empty segment, got %q", seg)
+	// nil leg → empty.
+	if seg := resolveGoSegment(embedDef{leg: nil}); seg != "" {
+		t.Errorf("nil leg must resolve to empty segment, got %q", seg)
 	}
 }
 
-func TestValidateViewSchemas_ExternalEmbedMissingAs(t *testing.T) {
-	src := FromSchema(core.NewExternalSchema("users").PK("id").FK("user_id")) // no .As
-	v := View("orders").Version(1).
-		Schema(rootSchema("orders")).
-		EmbedMany("buyers", src)
-	err := ValidateViewSchemas([]*ViewDefinition{v})
-	if err == nil || !strings.Contains(err.Error(), "no Go segment") {
-		t.Fatalf("expected external-embed-missing-As error, got %v", err)
-	}
-}
+// The external-embed-missing-Go-segment guard is gone: goName is mandatory on the
+// JoinUpstream/JoinView constructors (a declaration-time panic), covered by the
+// composed-view panic tests and TestJoinUpstream_RejectsAnchoredSchema.
 
 func TestDependentMongoViews_Match(t *testing.T) {
 	// A view embedding an external (Mongo) collection at the top level must be
 	// reported by DependentMongoViews / viewEmbedsMongoCollection.
-	buyer := FromSchema(core.NewExternalSchema("users").PK("id")).As("Buyer").FK("buyer_id")
+	buyer := JoinUpstream(core.NewExternalSchema("users").PK("id"), "Buyer", "buyer")
 	v := View("orders").Version(1).Schema(rootSchema("orders")).
-		Embed("buyer", buyer)
+		Embed(buyer).On("buyer_id")
 
 	dep := DependentMongoViews([]*ViewDefinition{v}, "users")
 	if len(dep) != 1 {
@@ -211,19 +203,19 @@ func TestDependentMongoViews_Match(t *testing.T) {
 	}
 }
 
-func TestBuildViewIndex_PGAndMongo(t *testing.T) {
-	mongoSrc := FromSchema(core.NewExternalSchema("users").PK("id").FK("order_id")).As("Buyers")
-	pgSrc := FromSchema(core.NewTableSchema[embedFixture]("lines").PK("id").FK("order_id"))
+func TestBuildViewIndex_RootAndMongoEmbeds(t *testing.T) {
+	// Every embed is external now: the root indexes by PG table, each embed by its
+	// Mongo collection.
 	v := View("orders").Version(1).Schema(rootSchema("orders")).
-		EmbedMany("lines", pgSrc).
-		EmbedMany("buyers", mongoSrc)
+		EmbedMany(JoinUpstream(core.NewExternalSchema("lines").PK("id"), "Lines", "lines")).On("order_id").
+		EmbedMany(JoinUpstream(core.NewExternalSchema("users").PK("id"), "Buyers", "buyers")).On("order_id")
 
 	idx := buildViewIndex([]*ViewDefinition{v})
 	if len(idx.byPGTable["orders"]) != 1 {
 		t.Errorf("root table must index into byPGTable")
 	}
-	if len(idx.byPGTable["lines"]) != 1 {
-		t.Errorf("pg embed must index into byPGTable")
+	if len(idx.byMongoColl["lines"]) != 1 {
+		t.Errorf("external embed must index into byMongoColl")
 	}
 	if len(idx.byMongoColl["users"]) != 1 {
 		t.Errorf("mongo embed must index into byMongoColl")
@@ -267,14 +259,14 @@ func TestToGoDoc_IDPassthrough(t *testing.T) {
 
 func TestAppendEmbedSchemaProblems_NilSourceSkipped(t *testing.T) {
 	// A nil-source embed is skipped without producing a problem.
-	got := appendEmbedSchemaProblems(nil, "v", []embedDef{{field: "x", source: nil}})
+	got := appendEmbedSchemaProblems(nil, "v", []embedDef{{leg: nil}})
 	if len(got) != 0 {
 		t.Errorf("nil-source embed must be skipped, got %v", got)
 	}
 }
 
 func TestViewEmbedsMongoCollection_NilSourceSkipped(t *testing.T) {
-	if viewEmbedsMongoCollection([]embedDef{{field: "x", source: nil}}, "users") {
+	if viewEmbedsMongoCollection([]embedDef{{leg: nil}}, "users") {
 		t.Error("nil-source embed must not match any collection")
 	}
 }
@@ -288,15 +280,15 @@ func TestValidateViewSchemas_NoRootSchema(t *testing.T) {
 }
 
 func TestBuildViewIndex_EmbedTableIndexed(t *testing.T) {
-	// A top-level embed's source table is indexed by buildViewIndex so an
-	// upstream change on it resolves back to the dependent view.
-	lines := FromSchema(core.NewTableSchema[embedFixture]("lines").PK("id").FK("order_id"))
+	// A top-level embed's collection is indexed by buildViewIndex so an upstream
+	// change on it resolves back to the dependent view.
+	lines := JoinUpstream(core.NewExternalSchema("lines").PK("id"), "Lines", "lines")
 	v := View("orders").Version(1).Schema(rootSchema("orders")).
-		EmbedMany("lines", lines)
+		EmbedMany(lines).On("order_id")
 
 	idx := buildViewIndex([]*ViewDefinition{v})
-	if len(idx.byPGTable["lines"]) != 1 {
-		t.Errorf("embed source table must be indexed, got %v", idx.byPGTable["lines"])
+	if len(idx.byMongoColl["lines"]) != 1 {
+		t.Errorf("embed source collection must be indexed, got %v", idx.byMongoColl["lines"])
 	}
 }
 
@@ -305,7 +297,7 @@ func TestBuildViewIndex_EmbedTableIndexed(t *testing.T) {
 func TestWriteEmbedList_NilSource(t *testing.T) {
 	w := newCanonicalWriter()
 	// Must not panic on a nil-source embed; the nil_source tag path runs.
-	writeEmbedList(w, []embedDef{{field: "x", many: true, source: nil}})
+	writeEmbedList(w, []embedDef{{leg: nil, many: true}})
 	if w.hexDigest() == "" {
 		t.Error("expected a non-empty digest")
 	}
@@ -341,7 +333,7 @@ func TestComposeAll_EmbedChildError(t *testing.T) {
 	// External embed whose Mongo fetch fails → applyEmbeds error → ComposeAll error.
 	c := NewComposerWithMongo(eng, newFakeMongo(&fakeColl{findErr: context.Canceled}), identityResolver)
 	view := View("orders").Version(1).Schema(composerRootSchema()).
-		EmbedMany("buyers", FromSchema(core.NewExternalSchema("buyers").PK("id").FK("order_id")).As("Buyers"))
+		EmbedMany(JoinUpstream(core.NewExternalSchema("buyers").PK("id"), "Buyers", "buyers")).On("order_id")
 	if _, err := c.ComposeAll(context.Background(), view); err == nil {
 		t.Fatal("expected child query error from ComposeAll")
 	}

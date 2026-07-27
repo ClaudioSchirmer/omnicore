@@ -20,8 +20,8 @@
         </tr>
         <tr>
             <td>Read another service's state inside <em>my own</em> queries</td>
-            <td><a href="#auto-query-handlers~qry-auto-vs-manual"><code>UpstreamSubscription</code> + an external <code>FromSchema</code> embed</a> (read-side)</td>
-            <td>You do not need a call — you need the data local. The framework materializes the upstream collection from its event stream and ripples recompose into every view that embeds it. Reads never leave the process. See the <a href="#table-schema">TableSchema</a> page for the external <code>FromSchema</code> embed wiring.</td>
+            <td><a href="#auto-query-handlers~qry-auto-vs-manual"><code>UpstreamSubscription</code> + an external <code>JoinUpstream</code> embed</a> (read-side)</td>
+            <td>You do not need a call — you need the data local. The framework materializes the upstream collection from its event stream and ripples recompose into every view that embeds it. Reads never leave the process. See the <a href="#table-schema">TableSchema</a> page for the external <code>JoinUpstream</code> embed wiring.</td>
         </tr>
         <tr>
             <td>Signal that something happened so other services can react</td>
@@ -32,7 +32,7 @@
 
     <p><strong>What about sending a <em>command</em> to another service — "do X", no return value?</strong> There is no fifth mechanism, by design. The instinct to issue a cross-service command is almost always a <em>fact</em> in disguise: instead of telling <code>orders</code> → <code>email</code> "send the confirmation", the <code>orders</code> service announces "order confirmed" and <code>email</code> reacts. Modeling it as an event keeps the producer from knowing who consumes it — add a second reactor (loyalty points, analytics) and the producer doesn't change. So a cross-service command collapses into the async path above: a subscriber's <code>Receiver.On</code> runs the <strong>same</strong> <code>pipeline.Handler</code> an HTTP route would, and the event DTO's <code>ToCommand()</code> is where the event becomes a local command inside the consumer. The imperative verb (<code>InsertUser</code>, <code>SendEmail</code>) still exists — but as <code>B</code>'s internal detail, never as a contract between <code>A</code> and <code>B</code>. The genuinely-rare case where you <em>do</em> want a directed imperative (an explicit saga orchestrator, a "refund transaction X" addressed to one actor) travels the same integration-event path.</p>
 
-    <p class="note"><strong>The read-side path and the event path share one spine.</strong> An external <code>FromSchema</code> embed is not a parallel universe to integration events — the upstream collection it reads is itself materialized by the framework consuming an event stream. "Read another service's state" and "react to another service's event" are two consumer-facing surfaces over the same CDC backbone; the difference is whether you want the <em>data</em> projected locally or a <em>handler</em> invoked.</p>
+    <p class="note"><strong>The read-side path and the event path share one spine.</strong> An external <code>JoinUpstream</code> embed is not a parallel universe to integration events — the upstream collection it reads is itself materialized by the framework consuming an event stream. "Read another service's state" and "react to another service's event" are two consumer-facing surfaces over the same CDC backbone; the difference is whether you want the <em>data</em> projected locally or a <em>handler</em> invoked.</p>
 
     <p><a href="#cache-subsystem">Cache</a> is orthogonal to all four — a cross-cutting accelerator for the edge sync path (<code>httpclient</code> response cache) and read amplification, never a transport in its own right. (The gRPC plane deliberately has no response cache — no GET/no-store vocabulary; heavy reads belong to the local projections above.)</p>
 

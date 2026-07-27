@@ -4,81 +4,48 @@ import (
 	"testing"
 )
 
-func TestFromSchema_ExternalIsMongo(t *testing.T) {
-	s := mongoEmbed("users", "").FK("buyer_id")
-	if !s.IsMongo() {
-		t.Error("FromSchema(db.NewExternalSchema) should mark IsMongo=true")
-	}
-	if s.Collection() != "users" {
-		t.Errorf("Collection() = %q", s.Collection())
-	}
-	if s.JoinKey() != "buyer_id" {
-		t.Errorf("JoinKey() = %q", s.JoinKey())
-	}
-}
+// Leg accessor / kind coverage lives in TestLeg_Accessors (view_test.go); the old
+// Source-constructor kind tests were removed with the type.
 
-func TestFromSchema_AnchoredIsPG(t *testing.T) {
-	s := pgEmbed("addresses", "user_id")
-	if s.IsMongo() {
-		t.Error("FromSchema(db.NewTableSchema) should mark IsMongo=false")
-	}
-	if s.Table() != "addresses" {
-		t.Errorf("Table() = %q", s.Table())
-	}
-}
-
-func TestSource_CollectionAliasesTable(t *testing.T) {
-	pg := pgEmbed("addresses", "")
-	mg := mongoEmbed("users", "")
-	if pg.Collection() != pg.Table() {
-		t.Errorf("Collection should alias Table for PG source")
-	}
-	if mg.Collection() != mg.Table() {
-		t.Errorf("Collection should alias Table for Mongo source")
-	}
-}
-
-func TestBuildViewIndex_SplitsByKind(t *testing.T) {
+func TestBuildViewIndex_RootsAndEmbeds(t *testing.T) {
+	// Every embed is external now, so it indexes by Mongo collection; roots index
+	// by their PG table.
 	v1 := View("orders").
 		Schema(rootSchema("orders")).
-		EmbedMany("lines", pgEmbed("order_lines", "order_id")).
-		Embed("buyer", mongoEmbed("users", "").FK("buyer_id")).
+		EmbedMany(extLeg("order_lines", "Lines", "lines")).On("order_id").
+		Embed(extLeg("users", "Buyer", "buyer")).On("buyer_id").
 		Version(1)
 	v2 := View("invoices").
 		Schema(rootSchema("invoices")).
-		Embed("order", mongoEmbed("orders_view", "").FK("order_id")).
+		Embed(extLeg("orders_view", "Order", "order")).On("order_id").
 		Version(1)
 	idx := buildViewIndex([]*ViewDefinition{v1, v2})
-	// PG side: roots + PG embeds
+	// PG side: roots only.
 	if len(idx.byPGTable["orders"]) != 1 {
 		t.Errorf("byPGTable[orders] = %d, want 1", len(idx.byPGTable["orders"]))
-	}
-	if len(idx.byPGTable["order_lines"]) != 1 {
-		t.Errorf("byPGTable[order_lines] = %d, want 1", len(idx.byPGTable["order_lines"]))
 	}
 	if len(idx.byPGTable["invoices"]) != 1 {
 		t.Errorf("byPGTable[invoices] = %d, want 1", len(idx.byPGTable["invoices"]))
 	}
-	// Mongo side: only external FromSchema embeds
+	// Mongo side: every external embed collection.
 	if len(idx.byMongoColl["users"]) != 1 {
 		t.Errorf("byMongoColl[users] = %d, want 1", len(idx.byMongoColl["users"]))
 	}
 	if len(idx.byMongoColl["orders_view"]) != 1 {
 		t.Errorf("byMongoColl[orders_view] = %d, want 1", len(idx.byMongoColl["orders_view"]))
 	}
-	// Negative: PG embed table should NOT leak to Mongo map
-	if _, leaked := idx.byMongoColl["order_lines"]; leaked {
-		t.Error("byMongoColl should not contain PG embed tables")
+	if len(idx.byMongoColl["order_lines"]) != 1 {
+		t.Errorf("byMongoColl[order_lines] = %d, want 1", len(idx.byMongoColl["order_lines"]))
 	}
 }
 
 func TestDependentMongoViews_FindsEmbedders(t *testing.T) {
 	v1 := View("orders").
-		Embed("buyer", mongoEmbed("users", "").FK("buyer_id")).
+		Embed(extLeg("users", "Buyer", "buyer")).On("buyer_id").
 		Version(1)
 	v2 := View("invoices").Version(1) // no Mongo embed
 	v3 := View("audit").
-		EmbedMany("perpetrator", mongoEmbed("users", "").FK("audit_id")).
+		EmbedMany(extLeg("users", "Perpetrator", "perpetrator")).On("audit_id").
 		Version(1)
 	got := DependentMongoViews([]*ViewDefinition{v1, v2, v3}, "users")
 	if len(got) != 2 {
@@ -88,7 +55,7 @@ func TestDependentMongoViews_FindsEmbedders(t *testing.T) {
 
 func TestDependentMongoViews_EmptyWhenNoMatches(t *testing.T) {
 	v := View("orders").
-		Embed("buyer", mongoEmbed("users", "").FK("buyer_id")).
+		Embed(extLeg("users", "Buyer", "buyer")).On("buyer_id").
 		Version(1)
 	got := DependentMongoViews([]*ViewDefinition{v}, "products")
 	if len(got) != 0 {
@@ -98,7 +65,7 @@ func TestDependentMongoViews_EmptyWhenNoMatches(t *testing.T) {
 
 func TestEmbedDef_AccessorsExposeSourceAndField(t *testing.T) {
 	v := View("orders").
-		Embed("buyer", mongoEmbed("users", "").FK("buyer_id")).
+		Embed(extLeg("users", "Buyer", "buyer")).On("buyer_id").
 		Version(1)
 	embeds := v.Embeds()
 	if len(embeds) != 1 {
@@ -113,6 +80,9 @@ func TestEmbedDef_AccessorsExposeSourceAndField(t *testing.T) {
 	}
 	if e.Source() == nil || e.Source().Collection() != "users" {
 		t.Errorf("Source().Collection() = %v", e.Source())
+	}
+	if e.JoinColumn() != "buyer_id" {
+		t.Errorf("JoinColumn() = %q, want buyer_id", e.JoinColumn())
 	}
 }
 

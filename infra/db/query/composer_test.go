@@ -94,7 +94,7 @@ func TestCompose_CascadeFromViewFlag_DefaultKeep_Root(t *testing.T) {
 // projection.
 func TestCompose_CascadeFromViewFlag_DefaultKeep_Aggregate(t *testing.T) {
 	v := View("users").Schema(rootSchema("users")).
-		EmbedMany("addresses", pgEmbed("addresses", "user_id"))
+		EmbedMany(extLeg("addresses", "Addresses", "addresses")).On("user_id")
 	if v.DeletesOnArchive() {
 		t.Fatal("default aggregate view must report DeletesOnArchive()=false")
 	}
@@ -104,10 +104,10 @@ func TestCompose_CascadeFromViewFlag_DefaultKeep_Aggregate(t *testing.T) {
 		t.Fatalf("default aggregate view must omit deleted_at on root, got %q", rootSQL)
 	}
 	for _, e := range v.Embeds() {
-		childSQL := buildFetchSQL(fakeDialect{}, "where", e.source.table, []string{"id"}, e.JoinColumn(), "deleted_at", include)
+		childSQL := buildFetchSQL(fakeDialect{}, "where", e.leg.Collection(), []string{"id"}, e.JoinColumn(), "deleted_at", include)
 		if strings.Contains(childSQL, "deleted_at") {
 			t.Fatalf("default aggregate view must omit deleted_at on embed %q, got %q",
-				e.field, childSQL)
+				e.Field(), childSQL)
 		}
 	}
 }
@@ -136,7 +136,7 @@ func TestCompose_CascadeFromViewFlag_DeleteOnArchive_Root(t *testing.T) {
 // — the flag governs the whole projection symmetrically).
 func TestCompose_CascadeFromViewFlag_DeleteOnArchive_Aggregate(t *testing.T) {
 	v := View("users").DeleteOnArchive().Schema(rootSchema("users")).
-		EmbedMany("addresses", pgEmbed("addresses", "user_id"))
+		EmbedMany(extLeg("addresses", "Addresses", "addresses")).On("user_id")
 	if !v.DeletesOnArchive() {
 		t.Fatal("DeleteOnArchive() aggregate view must report DeletesOnArchive()=true")
 	}
@@ -146,10 +146,10 @@ func TestCompose_CascadeFromViewFlag_DeleteOnArchive_Aggregate(t *testing.T) {
 		t.Fatalf("DeleteOnArchive aggregate must apply filter on root, got %q", rootSQL)
 	}
 	for _, e := range v.Embeds() {
-		childSQL := buildFetchSQL(fakeDialect{}, "where", e.source.table, []string{"id"}, e.JoinColumn(), "deleted_at", include)
+		childSQL := buildFetchSQL(fakeDialect{}, "where", e.leg.Collection(), []string{"id"}, e.JoinColumn(), "deleted_at", include)
 		if !strings.Contains(childSQL, "AND deleted_at IS NULL") {
 			t.Fatalf("DeleteOnArchive aggregate must apply filter on embed %q, got %q",
-				e.field, childSQL)
+				e.Field(), childSQL)
 		}
 	}
 }

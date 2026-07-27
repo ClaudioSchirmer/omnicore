@@ -33,7 +33,7 @@ import "github.com/ClaudioSchirmer/omnicore/application/queries"
 // levels popping at once collapse into one — so a leaf cascade gets one blank,
 // not a stack. A blank line is a zero-cell Row{}; the encoder realizes it (CSV:
 // an empty record; XLSX: an empty worksheet row). Identical for locally-mapped
-// embeds and cross-service external (FromSchema) embeds — the walk is over the
+// embeds and cross-service external (JoinUpstream) embeds — the walk is over the
 // plan tree + the Go-keyed document, agnostic to the embed's store.
 func Generate(plan *queries.ExportPlan, items []map[string]any, label func(labelKey, goField string) string, sink Sink) error {
 	if plan == nil || plan.Root == nil {

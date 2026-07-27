@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/ClaudioSchirmer/omnicore/domain"
 	"github.com/ClaudioSchirmer/omnicore/infra/db/core"
 )
 
@@ -37,35 +36,35 @@ type ViewDefinition struct {
 }
 
 type embedDef struct {
-	field  string
-	source *Source
-	many   bool
+	leg     *Leg
+	many    bool
+	joinCol string
 }
 
-// Source exposes the read-only Source associated with this embed. Used by
+// Source exposes the read-only Leg associated with this embed. Used by
 // bootstrap-side boot guards that walk Embeds() and must inspect IsMongo /
-// Collection / JoinKey without reaching into private fields across package
+// Collection / SchemaDef without reaching into private fields across package
 // boundaries.
-func (e embedDef) Source() *Source { return e.source }
+func (e embedDef) Source() *Leg { return e.leg }
 
 // childEmbedDef is one EmbedInChild declaration: a 1:1 enrichment applied to
 // every element of a NATIVE aggregate-child array of the view (declared via
 // root.Child(childSchema)). Unlike embedDef (which joins off the root doc), the
 // join key lives INSIDE each child element: for each element the composer reads
-// element[source.joinKey] and looks the source doc up by _id, landing it under
-// `field`. There is deliberately no EmbedMany-in-child: a 1:N enrichment would
-// nest an array inside a child-array element (a third collection level, the
+// element[joinCol] and looks the leg doc up by _id, landing it under
+// leg.externalName. There is deliberately no EmbedMany-in-child: a 1:N enrichment
+// would nest an array inside a child-array element (a third collection level, the
 // forbidden "grandchild" shape), so only the 1:1 form exists.
 type childEmbedDef struct {
 	// childSchema identifies WHICH native child of the view root this enriches.
 	// Validated at boot against root.ChildSchemas() by table identity (schema
 	// constructors return fresh instances, so the match is by table, not pointer).
 	childSchema *core.TableSchema
-	// field is the doc field the enrichment lands under inside each child element.
-	field string
-	// source is the external embed source (a Mongo collection); source.joinKey is
-	// the FK column that lives INSIDE each child element (e.g. "product_id").
-	source *Source
+	// leg is the external enrichment source (a Mongo collection).
+	leg *Leg
+	// joinCol is the FK column that lives INSIDE each child element (e.g.
+	// "product_id"), resolved against the leg's _id. Declared via .On(...).
+	joinCol string
 }
 
 // ChildSegment is the doc field where the enriched child array lives — derived
@@ -73,49 +72,25 @@ type childEmbedDef struct {
 // nested-field fan-out and the required multikey index agree on the path.
 func (c childEmbedDef) ChildSegment() string { return childDocSegment(c.childSchema) }
 
-// FKColumn is the join column inside each child element (source.joinKey).
-func (c childEmbedDef) FKColumn() string { return c.source.joinKey }
+// FKColumn is the join column inside each child element (declared via .On).
+func (c childEmbedDef) FKColumn() string { return c.joinCol }
 
 // Field returns the doc field the enrichment lands under inside each element.
-func (c childEmbedDef) Field() string { return c.field }
+func (c childEmbedDef) Field() string { return c.leg.externalName }
 
-// Source returns the external embed source.
-func (c childEmbedDef) Source() *Source { return c.source }
+// Source returns the external enrichment leg.
+func (c childEmbedDef) Source() *Leg { return c.leg }
 
 // ChildSchema returns the native child schema this enrichment targets.
 func (c childEmbedDef) ChildSchema() *core.TableSchema { return c.childSchema }
 
 // Field returns the document field name where the embed lands in the
 // composed Mongo document. Symmetric with Source() for boot guards.
-func (e embedDef) Field() string { return e.field }
+func (e embedDef) Field() string { return e.leg.externalName }
 
 // Many reports whether the embed is EmbedMany (one-to-many) vs Embed
-// (one-to-one). Boot guards do not consume it today; exposed for symmetry
-// with Field/Source so future external inspection has the same surface as
-// the framework's own dispatch.
+// (one-to-one).
 func (e embedDef) Many() bool { return e.many }
-
-// Source describes one embed leaf inside a ViewDefinition. A valid embed source is
-// EXTERNAL — FromSchema over a type-less NewExternalSchema, resolving to a local
-// Mongo collection (`table`), so isMongo is true. A write-anchored source (isMongo
-// false) is rejected at boot by ValidateViewSchemas: the aggregate's own data
-// projects automatically from the root schema, never through an embed. The
-// composer fetches every embed via MongoDB.FindManyByField against the local DB.
-//
-// Mongo-kind sources are the embedding surface for upstream-projected
-// collections (declared via bootstrap.UpstreamSubscription): the boot guard §8.3
-// requires `table` to resolve to an UpstreamSubscription.Collection. A name that
-// is a local ViewDefinition is REJECTED — view-on-view via an external FromSchema
-// is not supported, because the recompose ripple is one-hop and driven only by
-// the UpstreamSubscriber (over subscription collections), so a local-view embed
-// would drift silently. Join a local view at read time with query.ComposedView.
-type Source struct {
-	table     string
-	joinKey   string
-	isMongo   bool
-	schema    *core.TableSchema
-	goSegment string
-}
 
 func View(name string) *ViewDefinition {
 	return &ViewDefinition{name: name}
@@ -179,14 +154,47 @@ func (v *ViewDefinition) DeleteOnArchive() *ViewDefinition {
 	return v
 }
 
-func (v *ViewDefinition) Embed(field string, src *Source) *ViewDefinition {
-	v.embeds = append(v.embeds, embedDef{field: field, source: src, many: false})
-	return v
+// Embed declares a 1:1 external enrichment: the leg's document (matched by the
+// PARENT's FK column, named on the returned binding via .On(col)) lands under
+// leg.externalName as a sub-document. The leg MUST be a JoinUpstream leg (an
+// external collection); a JoinView leg is rejected at boot (a registered view is
+// joined at read time with query.ComposedView, never materialized into another
+// view). .On(col) is mandatory — the binding it returns is the only route back to
+// the ViewDefinition, so a missing join key does not compile.
+func (v *ViewDefinition) Embed(leg *Leg) *embedBinding {
+	return &embedBinding{v: v, leg: leg, many: false}
 }
 
-func (v *ViewDefinition) EmbedMany(field string, src *Source) *ViewDefinition {
-	v.embeds = append(v.embeds, embedDef{field: field, source: src, many: true})
-	return v
+// EmbedMany declares a 1:N external enrichment: every leg document whose FK
+// column (named on the returned binding via .On(col)) points at this view's _id
+// lands under leg.externalName as an array. Same JoinUpstream-only rule and
+// mandatory .On as Embed.
+func (v *ViewDefinition) EmbedMany(leg *Leg) *embedBinding {
+	return &embedBinding{v: v, leg: leg, many: true}
+}
+
+// embedBinding is the intermediate a root Embed/EmbedMany/EmbedInChild returns.
+// Its only method, On, names the join column and returns the ViewDefinition, so
+// the join is a compile-time requirement (the chain cannot continue without it).
+type embedBinding struct {
+	v     *ViewDefinition
+	leg   *Leg
+	many  bool
+	child *core.TableSchema // non-nil for EmbedInChild
+}
+
+// On names the join column and completes the embed. For Embed/EmbedInChild (1:1)
+// it is the PARENT-side column holding the FK to the leg's _id (for EmbedInChild,
+// the FK column inside each child element); for EmbedMany (1:N) it is the LEG
+// column pointing back at this view's _id. The FK always points at the other
+// side's PK — who holds it follows the verb's multiplicity.
+func (b *embedBinding) On(joinColumn string) *ViewDefinition {
+	if b.child != nil {
+		b.v.childEmbeds = append(b.v.childEmbeds, childEmbedDef{childSchema: b.child, leg: b.leg, joinCol: joinColumn})
+		return b.v
+	}
+	b.v.embeds = append(b.v.embeds, embedDef{leg: b.leg, many: b.many, joinCol: joinColumn})
+	return b.v
 }
 
 // EmbedInChild enriches every element of a NATIVE aggregate-child array of this
@@ -196,25 +204,24 @@ func (v *ViewDefinition) EmbedMany(field string, src *Source) *ViewDefinition {
 // projection). The write model stays normalized (the element keeps only its FK);
 // the enrichment lives only in the view, kept fresh by the recompose ripple.
 //
-//		.EmbedInChild(SaleItemSchema(), "product",
-//		    query.FromSchema(query.NewExternalSchema("upstream_products")).
-//		        FK("product_id").As("Product"))
+//		.EmbedInChild(SaleItemSchema(),
+//		    query.JoinUpstream(query.NewExternalSchema("upstream_products"), "Product", "product")).
+//		    On("product_id")
 //
 //	  - childSchema MUST be a native child declared on the view root via
 //	    .Child(...) (validated at boot against root.ChildSchemas() by table
 //	    identity). For a SharedBaseView it targets the BASE's native children;
 //	    role-nested children are not supported.
-//	  - src is an external source (NewExternalSchema); src.FK(col) names the join
-//	    column that lives INSIDE each child element, resolved against the source's
-//	    _id. As(...) names the Go segment.
+//	  - leg is a JoinUpstream leg (an external NewExternalSchema) carrying the Go
+//	    and doc segment names; .On(col) names the join column that lives INSIDE
+//	    each child element, resolved against the leg's _id.
 //	  - 1:1 only — there is no EmbedManyInChild (a 1:N would nest an array inside a
 //	    child element, the forbidden grandchild shape).
 //
 // The ripple's fan-out reverse-scans the view on "<childSegment>.<fk>", so a
 // covering multikey index on that path is REQUIRED and enforced at boot.
-func (v *ViewDefinition) EmbedInChild(childSchema *core.TableSchema, field string, src *Source) *ViewDefinition {
-	v.childEmbeds = append(v.childEmbeds, childEmbedDef{childSchema: childSchema, field: field, source: src})
-	return v
+func (v *ViewDefinition) EmbedInChild(childSchema *core.TableSchema, leg *Leg) *embedBinding {
+	return &embedBinding{v: v, leg: leg, child: childSchema}
 }
 
 // MaxLimit overrides the per-view ceiling on `?limit=` for endpoints reading
@@ -260,100 +267,30 @@ func (v *ViewDefinition) RootTable() string {
 // to the yaml / framework defaults when this returns 0.
 func (v *ViewDefinition) MaxLimitValue() int64 { return v.maxLimit }
 
-// FromSchema produces an embed source from a core.TableSchema — the single,
-// mandatory source constructor. Everything physical is derived from the schema:
-//
-//   - the table / collection is ts.Table();
-//   - the source kind is the schema's kind — a type-less core.NewExternalSchema
-//     describes an upstream Mongo collection (Mongo source), a type-anchored
-//     NewTableSchema a local Postgres table;
-//   - for an EmbedMany the join key is the schema's FK column (declared via
-//     .FK(...)), so it is never repeated on the embed.
-//
-// The schema is required on every embed: the read membrane translates Go↔column
-// through it, so there is no convention fallback (no inferred "id"/"deleted_at",
-// no identity pass-through). A local FromSchema source (type-anchored schema)
-// reuses the child's repository schema; an upstream FromSchema source over a
-// NewExternalSchema describes the upstream's columns.
-func FromSchema(ts *core.TableSchema) *Source {
-	return &Source{table: ts.Table(), isMongo: ts.IsExternal(), schema: ts}
-}
-
-// FK declares the join key for a one-to-one Embed: the column on the PARENT
-// document holding the foreign key that points at this source's primary key —
-// the same one-rule join vocabulary the whole system speaks (the FK always
-// points at the other side's PK; the 1:1 parent holds it). It is NOT used for
-// EmbedMany — there the join is the child FK declared on the source's own
-// schema via TableSchema.FK(...). Has no effect on an EmbedMany source.
-func (s *Source) FK(key string) *Source {
-	s.joinKey = key
-	return s
-}
-
-// As declares the parent-side Go field name (segment) for this embed — what the
-// criteria/Response refer to (e.g. "Addresses"), as opposed to the doc field
-// where the composer lands the embed (the EmbedMany field, e.g. "addresses").
-// Required when the two differ (the common case: snake doc field vs PascalCase
-// Go field); defaults to the doc field when unset.
-func (s *Source) As(goSegment string) *Source {
-	s.goSegment = goSegment
-	return s
-}
-
-// A *Source deliberately exposes NO Embed/EmbedMany builder AND carries no
-// embeds of its own: embeds are single-level BY CONSTRUCTION, declaration
-// through compose. Only a ViewDefinition declares embeds (top-level, any
-// number); an embed's source cannot nest a further one, so embed-of-embed is
-// not expressible and does not compile — and no composer/hash/index/ripple path
-// descends past the top level, because there is nothing below it. The reason it
+// A leg (JoinUpstream / JoinView, defined in composed_view.go) deliberately
+// exposes NO Embed/EmbedMany builder AND carries no embeds of its own: embeds are
+// single-level BY CONSTRUCTION, declaration through compose. Only a ViewDefinition
+// declares embeds (top-level, any number); an embed's leg cannot nest a further
+// one, so embed-of-embed is not expressible and does not compile. The reason it
 // was never a supported surface: the recompose-ripple that keeps an embed fresh
 // is one-hop and only reaches a view's top-level embeds, so a nested segment
 // would materialize once and then drift silently. To reach two external hops,
 // embed each at the top level, or join at read time with query.ComposedView.
 
-func (s *Source) Table() string      { return s.table }
-func (s *Source) JoinKey() string    { return s.joinKey }
-func (s *Source) IsMongo() bool      { return s.isMongo }
-func (s *Source) Collection() string { return s.table }
-
-// SchemaDef returns the embed source's core.TableSchema (always set — FromSchema is
-// the only constructor). Symmetric with ViewDefinition.SchemaDef().
-func (s *Source) SchemaDef() *core.TableSchema { return s.schema }
-
-// JoinColumn returns the physical column the composer joins this embed on:
-// the source's FK column (from the schema) for a one-to-many embed, or the
-// parent-side FK declared via Source.FK for a one-to-one embed.
-func (e embedDef) JoinColumn() string {
-	if e.many {
-		return e.source.schema.FKColumn()
-	}
-	return e.source.joinKey
-}
+// JoinColumn returns the physical column the composer joins this embed on — the
+// column named via .On(...): the LEG's FK column for a one-to-many embed, the
+// PARENT-side FK for a one-to-one embed. The verb's multiplicity fixes which
+// side holds it; the column value is the same declaration either way.
+func (e embedDef) JoinColumn() string { return e.joinCol }
 
 // resolveGoSegment returns the parent-side Go field name for an embed (what the
-// criteria/Response refer to). Resolution:
-//
-//   - an explicit .As value wins;
-//   - otherwise, for a LOCAL (type-anchored) source it is derived from the
-//     schema's Go type — pluralized for a one-to-many EmbedMany ("Address" →
-//     "Addresses"), the type name itself for a one-to-one Embed;
-//   - for an EXTERNAL (type-less) source with no .As it returns "" — there is
-//     no Go type to inherit from, so .As is required; the boot guard rejects it.
+// criteria/Response refer to) — the mandatory Go name declared on the leg
+// constructor (JoinUpstream/JoinView).
 func resolveGoSegment(e embedDef) string {
-	if e.source == nil {
+	if e.leg == nil {
 		return ""
 	}
-	if e.source.goSegment != "" {
-		return e.source.goSegment
-	}
-	name := e.source.schema.TypeName() // "" for an external schema
-	if name == "" {
-		return ""
-	}
-	if e.many {
-		return domain.PluralizeWord(name)
-	}
-	return name
+	return e.leg.goSegment
 }
 
 // ValidateViewSchemas enforces the view-side mandatory-schema rule: every view
@@ -409,7 +346,7 @@ func ValidateViewSchemas(views []*ViewDefinition) error {
 	}
 	return fmt.Errorf(
 		"view schema(s) incomplete — every view (root + every embed) must declare a core.TableSchema, "+
-			"and every external embed must declare its Go segment via .As(...):\n  - %s",
+			"and every embed names its join column via .On(...):\n  - %s",
 		strings.Join(problems, "\n  - "),
 	)
 }
@@ -427,10 +364,10 @@ func viewHasIndexPrefix(v *ViewDefinition, col string) bool {
 }
 
 // appendChildEmbedProblems validates every EmbedInChild: the targeted schema MUST
-// be a NATIVE child of the view root (declared via root.Child(...)); the source
-// MUST be external (a Mongo collection) with a PK; and the FK column inside the
-// element MUST be declared via .FK(...). For a SharedBaseView the root native
-// children are the BASE's children (role-nested children are out of scope).
+// be a NATIVE child of the view root (declared via root.Child(...)); the leg MUST
+// be a JoinUpstream leg (an external Mongo collection) with a PK; and the FK column
+// inside the element MUST be named via .On(...). For a SharedBaseView the root
+// native children are the BASE's children (role-nested children are out of scope).
 func appendChildEmbedProblems(acc []string, viewName string, v *ViewDefinition) []string {
 	if v.schema == nil || len(v.childEmbeds) == 0 {
 		return acc
@@ -452,25 +389,35 @@ func appendChildEmbedProblems(acc []string, viewName string, v *ViewDefinition) 
 				viewName, ce.childSchema.Table(), ce.childSchema.Table(), v.schema.Table()))
 			continue
 		}
-		if ce.source == nil || ce.source.schema == nil {
+		if ce.leg == nil {
+			acc = append(acc, fmt.Sprintf("view %q: EmbedInChild(%q, ...) has no leg", viewName, ce.childSchema.Table()))
+			continue
+		}
+		if ce.leg.view != nil {
+			acc = append(acc, fmt.Sprintf(
+				"view %q: EmbedInChild(%q, ...) joins a registered view — an enrichment leg must be a JoinUpstream "+
+					"leg (an external NewExternalSchema collection); join a view at read time with query.ComposedView.",
+				viewName, ce.childSchema.Table()))
+			continue
+		}
+		if ce.leg.schema == nil {
 			acc = append(acc, fmt.Sprintf("view %q: EmbedInChild(%q, ...) has no source schema", viewName, ce.childSchema.Table()))
 			continue
 		}
-		if !ce.source.schema.IsExternal() {
+		if !ce.leg.schema.IsExternal() {
 			acc = append(acc, fmt.Sprintf(
 				"view %q: EmbedInChild(%q, ...) source %q is write-anchored — the source must be an EXTERNAL "+
 					"collection (NewExternalSchema over an upstream projection), like a root Embed.",
-				viewName, ce.childSchema.Table(), ce.source.table))
+				viewName, ce.childSchema.Table(), ce.leg.schema.Table()))
 		}
-		if !ce.source.schema.HasPKDeclared() {
+		if !ce.leg.schema.HasPKDeclared() {
 			acc = append(acc, fmt.Sprintf(
 				"view %q: EmbedInChild(%q, ...) source %q declares no primary key — declare .PK(column)",
-				viewName, ce.childSchema.Table(), ce.source.table))
+				viewName, ce.childSchema.Table(), ce.leg.schema.Table()))
 		}
-		if ce.source.joinKey == "" {
+		if ce.joinCol == "" {
 			acc = append(acc, fmt.Sprintf(
-				"view %q: EmbedInChild(%q, ...) declares no FK inside the child element — set the element's join "+
-					"column via .FK(\"...\") on the source.",
+				"view %q: EmbedInChild(%q, ...) declares an empty join column — name the element's FK column via .On(\"...\").",
 				viewName, ce.childSchema.Table()))
 		}
 	}
@@ -487,10 +434,10 @@ func appendChildEmbedProblems(acc []string, viewName string, v *ViewDefinition) 
 // _id (always indexed), never a reverse scan of the view.
 func appendEmbedIndexProblems(acc []string, viewName string, v *ViewDefinition) []string {
 	for _, e := range v.embeds {
-		if e.many || e.source == nil {
+		if e.many || e.leg == nil {
 			continue
 		}
-		col := e.source.joinKey
+		col := e.joinCol
 		if col == "" {
 			continue // schema-level problem already reported elsewhere
 		}
@@ -498,14 +445,14 @@ func appendEmbedIndexProblems(acc []string, viewName string, v *ViewDefinition) 
 			acc = append(acc, fmt.Sprintf(
 				"view %q: 1:1 Embed %q requires a covering index on its parent join column %q for the recompose "+
 					"ripple's reverse scan — declare .Indexes(query.Index(%q)).",
-				viewName, e.field, col, col))
+				viewName, e.leg.externalName, col, col))
 		}
 	}
 	for _, ce := range v.childEmbeds {
-		if ce.source == nil || ce.childSchema == nil || ce.source.joinKey == "" {
+		if ce.leg == nil || ce.childSchema == nil || ce.joinCol == "" {
 			continue
 		}
-		col := ce.ChildSegment() + "." + ce.source.joinKey
+		col := ce.ChildSegment() + "." + ce.joinCol
 		if !viewHasIndexPrefix(v, col) {
 			acc = append(acc, fmt.Sprintf(
 				"view %q: EmbedInChild(%q, ...) requires a multikey index on %q for the recompose ripple's "+
@@ -517,15 +464,26 @@ func appendEmbedIndexProblems(acc []string, viewName string, v *ViewDefinition) 
 }
 
 func appendEmbedSchemaProblems(acc []string, viewName string, embeds []embedDef) []string {
-	// Embed-of-embed needs no boot guard: a *Source exposes no Embed/EmbedMany
-	// builder, so a nested embed is not expressible and fails to compile (see the
-	// note on Source). This validator only checks each top-level embed's own schema.
+	// Embed-of-embed needs no boot guard: a leg exposes no Embed/EmbedMany builder,
+	// so a nested embed is not expressible and fails to compile. This validator only
+	// checks each top-level embed's own leg.
 	for _, e := range embeds {
-		if e.source == nil {
+		if e.leg == nil {
 			continue
 		}
-		if e.source.schema == nil {
-			acc = append(acc, fmt.Sprintf("view %q: embed %q (source %q) has no schema", viewName, e.field, e.source.table))
+		field := e.leg.externalName
+		// Embeds compose ONLY external collections. A JoinView leg (a registered
+		// view) is joined at read time with query.ComposedView, never materialized
+		// into another view — reject it here.
+		if e.leg.view != nil {
+			acc = append(acc, fmt.Sprintf(
+				"view %q: embed %q joins a registered view — Embed/EmbedMany compose only EXTERNAL collections "+
+					"(a JoinUpstream leg); join a view at read time with query.ComposedView.",
+				viewName, field))
+			continue
+		}
+		if e.leg.schema == nil {
+			acc = append(acc, fmt.Sprintf("view %q: embed %q has no schema", viewName, field))
 		} else {
 			// Embeds compose ONLY external data — another service's read model
 			// (UpstreamSubscription / FromMongo) or a derived projection. A
@@ -533,47 +491,35 @@ func appendEmbedSchemaProblems(acc []string, viewName string, embeds []embedDef)
 			// automatically from the TableSchema (root / siblings / SharedBase /
 			// own children); declaring it as an embed is the redundant second path
 			// the canonical split removes. Reject an anchored embed source at boot.
-			if !e.source.schema.IsExternal() {
+			if !e.leg.schema.IsExternal() {
 				acc = append(acc, fmt.Sprintf(
 					"view %q: embed %q (source %q) is a write-anchored schema — Embed/EmbedMany compose only "+
 						"EXTERNAL data (another service's read model via UpstreamSubscription / FromMongo, or a "+
 						"derived projection). A local aggregate's own data projects automatically from its "+
 						"TableSchema; declare a 1:N child with .Child(...) on the root schema, not as an embed.",
-					viewName, e.field, e.source.table))
+					viewName, field, e.leg.schema.Table()))
 			}
-			if resolveGoSegment(e) == "" {
-				acc = append(acc, fmt.Sprintf(
-					"view %q: external embed %q (source %q) has no Go segment — declare it via .As(\"...\") "+
-						"(an external/type-less schema cannot derive it from a Go type)",
-					viewName, e.field, e.source.table))
-			}
-			if !e.source.schema.HasPKDeclared() {
+			if !e.leg.schema.HasPKDeclared() {
 				acc = append(acc, fmt.Sprintf(
 					"view %q: embed %q (source %q) declares no primary key — declare .PK(column)",
-					viewName, e.field, e.source.table))
+					viewName, field, e.leg.schema.Table()))
 			}
-			// Join key is mandatory: EmbedMany joins on the child's FK (declared on
-			// its schema via .FK), a one-to-one Embed joins on the parent's FK
-			// (declared via Source.FK). Either missing makes the composer emit
-			// broken SQL, so reject it at boot instead.
-			if e.many {
-				if e.source.schema.FKColumn() == "" {
-					acc = append(acc, fmt.Sprintf(
-						"view %q: EmbedMany %q (source %q) declares no foreign key — declare .FK(col) on "+
-							"its schema; the composer joins the child rows on it (child_fk = parent_pk)",
-						viewName, e.field, e.source.table))
+			// Join key is mandatory and named via .On(...): EmbedMany joins on the
+			// leg's FK (child_fk = parent_pk), a one-to-one Embed on the parent's FK.
+			// An empty column makes the composer emit broken SQL, so reject it at boot.
+			if e.joinCol == "" {
+				kind := "one-to-one Embed"
+				if e.many {
+					kind = "EmbedMany"
 				}
-			} else if e.source.joinKey == "" {
 				acc = append(acc, fmt.Sprintf(
-					"view %q: one-to-one Embed %q (source %q) declares no parent join key — declare "+
-						".FK(col) naming the parent column that holds the FK to this source's PK",
-					viewName, e.field, e.source.table))
+					"view %q: %s %q declares an empty join column — name it via .On(\"...\").",
+					viewName, kind, field))
 			}
 		}
-		// The source's own schema-derived child segments still get a collision
-		// check; embeds are single-level, so a source contributes no further
-		// embeds to validate.
-		acc = appendSegmentCollisions(acc, viewName, e.source.schema, nil, nil)
+		// The leg's own schema-derived child segments still get a collision check;
+		// embeds are single-level, so a leg contributes no further embeds to validate.
+		acc = appendSegmentCollisions(acc, viewName, e.leg.schema, nil, nil)
 	}
 	return acc
 }
@@ -608,7 +554,11 @@ func appendSegmentCollisions(acc []string, viewName string, schema *core.TableSc
 		owner[seg] = producer
 	}
 	for _, e := range embeds {
-		claim(resolveGoSegment(e), fmt.Sprintf("embed %q", e.field))
+		field := ""
+		if e.leg != nil {
+			field = e.leg.externalName
+		}
+		claim(resolveGoSegment(e), fmt.Sprintf("embed %q", field))
 	}
 	if base, _, ok := schema.SharedBaseRef(); ok {
 		for _, bc := range base.ChildSchemas() {
@@ -627,7 +577,7 @@ func appendSegmentCollisions(acc []string, viewName string, schema *core.TableSc
 // viewIndex splits the rebuild lookup by source kind. The original
 // single-map implementation conflated Postgres tables and Mongo collection
 // names — a PG-root view named "users" would collide in the lookup with a
-// view embedding FromSchema(core.NewExternalSchema("users")). The split keeps the namespaces separate:
+// view embedding JoinUpstream(core.NewExternalSchema("users"), ...). The split keeps the namespaces separate:
 //
 //   - byPGTable: SyncEngine consults this on each Kafka message
 //     (aggregate_type ≡ PG root table) to find every view that needs to be
@@ -671,7 +621,7 @@ type roleRoute struct {
 }
 
 // DependentMongoViews returns the subset of views that embed the named
-// Mongo collection via an external fwinfra.FromSchema (at any nesting level). Used by
+// Mongo collection via an external query.JoinUpstream (at any nesting level). Used by
 // bootstrap when wiring UpstreamSubscriber instances — the subscriber
 // receives this slice as its recompose-ripple targets.
 //
@@ -692,10 +642,10 @@ func DependentMongoViews(views []*ViewDefinition, collection string) []*ViewDefi
 // ripples into the view's child arrays.
 func viewChildEmbedsMongoCollection(childEmbeds []childEmbedDef, collection string) bool {
 	for _, ce := range childEmbeds {
-		if ce.source == nil {
+		if ce.leg == nil {
 			continue
 		}
-		if ce.source.IsMongo() && ce.source.Collection() == collection {
+		if ce.leg.IsMongo() && ce.leg.Collection() == collection {
 			return true
 		}
 	}
@@ -704,10 +654,10 @@ func viewChildEmbedsMongoCollection(childEmbeds []childEmbedDef, collection stri
 
 func viewEmbedsMongoCollection(embeds []embedDef, collection string) bool {
 	for _, e := range embeds {
-		if e.source == nil {
+		if e.leg == nil {
 			continue
 		}
-		if e.source.IsMongo() && e.source.Collection() == collection {
+		if e.leg.IsMongo() && e.leg.Collection() == collection {
 			return true
 		}
 	}
@@ -752,10 +702,10 @@ func buildViewIndex(views []*ViewDefinition) viewIndex {
 
 func indexEmbeds(embeds []embedDef, v *ViewDefinition, idx viewIndex) {
 	for _, e := range embeds {
-		if e.source.isMongo {
-			idx.byMongoColl[e.source.table] = append(idx.byMongoColl[e.source.table], v)
+		if e.leg.IsMongo() {
+			idx.byMongoColl[e.leg.Collection()] = append(idx.byMongoColl[e.leg.Collection()], v)
 		} else {
-			idx.byPGTable[e.source.table] = append(idx.byPGTable[e.source.table], v)
+			idx.byPGTable[e.leg.Collection()] = append(idx.byPGTable[e.leg.Collection()], v)
 		}
 	}
 }

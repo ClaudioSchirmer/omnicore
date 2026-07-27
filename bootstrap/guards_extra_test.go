@@ -45,16 +45,15 @@ func TestApplyUpstreamSubscriptionDefaults_FillsPerEntry(t *testing.T) {
 // ─── guardJoinFieldIndex — missing join field branch ─────────────────────────
 
 func TestGuardJoinFieldIndex_RejectsMissingJoinField(t *testing.T) {
-	// External embed declared without a join field (no .On / no FK) — the
-	// guard reports the missing-join-field diagnostic rather than the
-	// missing-index one.
+	// External embed declared with an empty join column (.On("")) — the guard
+	// reports the empty-join-column diagnostic rather than the missing-index one.
 	v := query.View("orders").
-		Embed("buyer", query.FromSchema(core.NewExternalSchema("users").PK("id")).As("Buyer")).
+		Embed(query.JoinUpstream(core.NewExternalSchema("users").PK("id"), "Buyer", "buyer")).On("").
 		Version(1)
 	errs := guardJoinFieldIndex([]*query.ViewDefinition{v})
 	if len(errs) != 1 || !strings.Contains(errs[0], "§8.1") ||
-		!strings.Contains(errs[0], "no join field declared") {
-		t.Errorf("expected missing-join-field diagnostic, got %v", errs)
+		!strings.Contains(errs[0], "empty join column") {
+		t.Errorf("expected empty-join-column diagnostic, got %v", errs)
 	}
 }
 
@@ -67,7 +66,7 @@ func TestValidateUpstreamSubscriptions_PassesWhenClean(t *testing.T) {
 	}
 	views := []*query.ViewDefinition{
 		query.View("orders").
-			Embed("buyer", extEmbed("users", "buyer_id", "Buyer")).
+			Embed(extEmbed("users", "Buyer")).On("buyer_id").
 			Indexes(query.Index("buyer_id")).
 			Version(1),
 	}

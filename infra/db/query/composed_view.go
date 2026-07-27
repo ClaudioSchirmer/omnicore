@@ -5,7 +5,6 @@ import (
 	"strings"
 
 	"github.com/ClaudioSchirmer/omnicore/application/queries"
-	"github.com/ClaudioSchirmer/omnicore/domain"
 	"github.com/ClaudioSchirmer/omnicore/infra/db/core"
 )
 
@@ -33,17 +32,17 @@ const FrameworkDefaultMaxLinkManyLimit int64 = 100
 //
 //	query.ComposedView("gadgets_full").
 //	    Primary(GadgetView()).
-//	    Link("upstreamMirror", query.JoinUpstream(GadgetUpstreamMirrorSchema()).
-//	        FK("id").
-//	        As("UpstreamMirror")).
-//	    LinkMany("notes", query.JoinView(GadgetNotesView()).
-//	        FK("gadget_id").
-//	        OrderBy("created_at").Desc().
-//	        MaxLinkManyLimit(50))
+//	    Link(query.JoinUpstream(GadgetUpstreamMirrorSchema(), "UpstreamMirror", "upstreamMirror")).
+//	        On("id").
+//	    LinkMany(query.JoinView(GadgetNotesView(), "Notes", "notes")).
+//	        OrderBy("created_at").Desc().MaxLinkManyLimit(50).
+//	        On("gadget_id")
 //
-// Join vocabulary: every relationship declares one FK(column); the FK always
-// points at the other side's PK/_id; who holds the FK follows the multiplicity
-// — 1:1 (Link) → the PRIMARY holds it; 1:N (LinkMany) → the LEG holds it.
+// Join vocabulary: every relationship names one join column via .On(column); the
+// FK always points at the other side's PK/_id; who holds the FK follows the
+// multiplicity — 1:1 (Link) → the PRIMARY holds it; 1:N (LinkMany) → the LEG
+// holds it. The leg carries only the two segment names (JoinView/JoinUpstream);
+// the join column and the 1:N knobs live on the verb's binding.
 //
 // The primary is always an internal registered view. A leg is either an
 // internal view (JoinView) or a locally materialized external collection
@@ -68,27 +67,46 @@ type ComposedViewDefinition struct {
 }
 
 type composedLinkDef struct {
-	docField string // wire segment (the document field the leg lands under)
+	docField string // wire segment (the document field the leg lands under) = leg.externalName
 	leg      *Leg
 	many     bool
-}
-
-// Leg is one side of a composed-view link: an internal view (JoinView) or a
-// locally materialized external collection (JoinUpstream). Configure it with
-// FK (mandatory), As (mandatory for external legs), and — on a LinkMany only —
-// OrderBy/Desc and MaxLinkManyLimit.
-type Leg struct {
-	view      *ViewDefinition   // internal leg (nil for external)
-	schema    *core.TableSchema // external leg schema (nil for internal)
-	fk        string
-	goSegment string
-	orderBy   string
+	joinCol  string // the FK column, named via .On(...)
+	orderBy  string
 	orderDesc bool
 	// orderDescOnly marks ".Desc() without OrderBy" — a declaration mistake
 	// surfaced at boot rather than silently reordering the _id default.
 	orderDescOnly bool
 	maxItems      int64
 }
+
+// Leg is one side of a composed-view link OR a root-embed source: an internal
+// view (JoinView) or a locally materialized external collection (JoinUpstream).
+// It is a pure piece — what to pull plus the two segment names (goSegment for
+// criteria/Response, externalName for the document field). The join column and
+// the LinkMany-only knobs (OrderBy/Desc/MaxLinkManyLimit) are declared on the
+// verb's binding, not here. An Embed accepts only a JoinUpstream (external) leg.
+type Leg struct {
+	view         *ViewDefinition   // internal leg (nil for external)
+	schema       *core.TableSchema // external leg schema (nil for internal)
+	goSegment    string
+	externalName string
+}
+
+// IsMongo reports whether the leg resolves to a local external Mongo collection
+// (a JoinUpstream leg). Used by the embed boot guards, which accept external legs
+// only. A JoinView leg returns false.
+func (l *Leg) IsMongo() bool { return l.schema != nil && l.schema.IsExternal() }
+
+// Collection is the leg's local Mongo collection — the external schema's table or
+// the internal leg view's name.
+func (l *Leg) Collection() string { return legCollection(l) }
+
+// Table is an alias of Collection, kept for the embed boot guards that inspect a
+// leg as an embed source.
+func (l *Leg) Table() string { return legCollection(l) }
+
+// SchemaDef returns the external leg's core.TableSchema (nil for a JoinView leg).
+func (l *Leg) SchemaDef() *core.TableSchema { return l.schema }
 
 // ComposedView starts a composed-view declaration. The name is the read-side
 // identity the consumer passes wherever a view name goes; it must not collide
@@ -111,50 +129,120 @@ func (c *ComposedViewDefinition) Primary(v *ViewDefinition) *ComposedViewDefinit
 	return c
 }
 
-// Link declares a 1:1 leg: the PRIMARY holds the FK (declared via leg.FK,
-// naming a primary column) pointing at the leg's _id. The matched document is
-// attached under docField as a sub-document; an explicit null when absent
-// (LEFT semantics).
-func (c *ComposedViewDefinition) Link(docField string, leg *Leg) *ComposedViewDefinition {
-	return c.link(docField, leg, false)
-}
-
-// LinkMany declares a 1:N leg: the LEG holds the FK (declared via leg.FK,
-// naming a leg column) pointing at the primary's _id. Matching documents are
-// attached under docField as an array in the leg's declared order (OrderBy,
-// default _id ascending), capped per parent by the MaxLinkManyLimit cascade;
-// an empty array when absent (LEFT semantics).
-func (c *ComposedViewDefinition) LinkMany(docField string, leg *Leg) *ComposedViewDefinition {
-	return c.link(docField, leg, true)
-}
-
-func (c *ComposedViewDefinition) link(docField string, leg *Leg, many bool) *ComposedViewDefinition {
+// Link declares a 1:1 leg: the PRIMARY holds the FK (named on the returned
+// binding via .On(col), a primary column) pointing at the leg's _id. The matched
+// document is attached under leg.externalName as a sub-document; an explicit null
+// when absent (LEFT semantics). .On is mandatory — the binding it returns is the
+// only route back to the ComposedViewDefinition, so a missing join key does not
+// compile.
+func (c *ComposedViewDefinition) Link(leg *Leg) *composedLink1Binding {
 	if leg == nil {
-		panic(fmt.Sprintf("query.ComposedView(%q): link %q declares a nil leg", c.name, docField))
+		panic(fmt.Sprintf("query.ComposedView(%q): .Link(nil)", c.name))
 	}
-	if docField == "" {
-		panic(fmt.Sprintf("query.ComposedView(%q): a link declares an empty document field", c.name))
+	return &composedLink1Binding{c: c, leg: leg}
+}
+
+// LinkMany declares a 1:N leg: the LEG holds the FK (named on the returned binding
+// via .On(col), a leg column) pointing at the primary's _id. Matching documents
+// are attached under leg.externalName as an array in the declared order (OrderBy,
+// default _id ascending), capped per parent by the MaxLinkManyLimit cascade; an
+// empty array when absent (LEFT semantics). The optional OrderBy/Desc/
+// MaxLinkManyLimit precede the mandatory terminal .On(col).
+func (c *ComposedViewDefinition) LinkMany(leg *Leg) *composedLinkManyBinding {
+	if leg == nil {
+		panic(fmt.Sprintf("query.ComposedView(%q): .LinkMany(nil)", c.name))
 	}
-	c.links = append(c.links, composedLinkDef{docField: docField, leg: leg, many: many})
-	return c
+	return &composedLinkManyBinding{c: c, leg: leg}
+}
+
+// composedLink1Binding is what Link returns: On names the primary-side FK column
+// and completes the link, returning the ComposedViewDefinition.
+type composedLink1Binding struct {
+	c   *ComposedViewDefinition
+	leg *Leg
+}
+
+// On names the primary column holding the FK to the leg's _id and completes the
+// 1:1 link.
+func (b *composedLink1Binding) On(joinColumn string) *ComposedViewDefinition {
+	b.c.links = append(b.c.links, composedLinkDef{docField: b.leg.externalName, leg: b.leg, many: false, joinCol: joinColumn})
+	return b.c
+}
+
+// composedLinkManyBinding is what LinkMany returns: the optional 1:N knobs
+// (OrderBy/Desc/MaxLinkManyLimit) chain on it, and the mandatory terminal On
+// names the leg-side FK column and completes the link.
+type composedLinkManyBinding struct {
+	c         *ComposedViewDefinition
+	leg       *Leg
+	orderBy   string
+	orderDesc bool
+	maxItems  int64
+}
+
+// OrderBy declares the deterministic order of the LinkMany segment by a leg
+// column (default: _id ascending). Every 1:N segment always has a guaranteed
+// order — with or without truncation.
+func (b *composedLinkManyBinding) OrderBy(column string) *composedLinkManyBinding {
+	b.orderBy = column
+	return b
+}
+
+// Desc inverts the OrderBy direction.
+func (b *composedLinkManyBinding) Desc() *composedLinkManyBinding {
+	b.orderDesc = true
+	return b
+}
+
+// MaxLinkManyLimit declares the per-parent item ceiling of the LinkMany segment,
+// mirroring the view-level MaxLimit pattern. Resolution at read time: this value
+// (when > 0) wins; else the yaml default query.maxLinkManyLimit; else
+// FrameworkDefaultMaxLinkManyLimit. When the ceiling is hit the segment is
+// truncated deterministically in the declared order — silently, never an error:
+// the ceiling is payload protection, not validation.
+func (b *composedLinkManyBinding) MaxLinkManyLimit(n int64) *composedLinkManyBinding {
+	b.maxItems = n
+	return b
+}
+
+// On names the leg column holding the FK to the primary's _id and completes the
+// 1:N link.
+func (b *composedLinkManyBinding) On(joinColumn string) *ComposedViewDefinition {
+	b.c.links = append(b.c.links, composedLinkDef{
+		docField:      b.leg.externalName,
+		leg:           b.leg,
+		many:          true,
+		joinCol:       joinColumn,
+		orderBy:       b.orderBy,
+		orderDesc:     b.orderDesc,
+		orderDescOnly: b.orderDesc && b.orderBy == "",
+		maxItems:      b.maxItems,
+	})
+	return b.c
 }
 
 // JoinView produces an internal leg over a registered view. The leg reads the
 // view's own Mongo collection with the view's schema tree (children, embeds,
-// roles translate exactly as a direct read of that view would).
-func JoinView(v *ViewDefinition) *Leg {
+// roles translate exactly as a direct read of that view would). goName is the Go
+// segment (criteria/Response), externalName the document field the leg lands
+// under — both mandatory (declared like TableSchema.Field(go, external)).
+func JoinView(v *ViewDefinition, goName, externalName string) *Leg {
 	if v == nil {
 		panic("query.JoinView(nil)")
 	}
-	return &Leg{view: v}
+	if goName == "" || externalName == "" {
+		panic(fmt.Sprintf("query.JoinView(%q): goName and externalName are both mandatory", v.Name()))
+	}
+	return &Leg{view: v, goSegment: goName, externalName: externalName}
 }
 
 // JoinUpstream produces an external leg over a locally materialized upstream
 // collection — a core.NewExternalSchema describing the collection an
-// UpstreamSubscription declares. Boot validates the subscription exists (a
-// composed view never reads another service's live storage). .As is mandatory
-// (a type-less schema cannot derive its Go segment).
-func JoinUpstream(ts *core.TableSchema) *Leg {
+// UpstreamSubscription declares. It is also the ONLY source an Embed/EmbedMany/
+// EmbedInChild accepts. Boot validates the subscription exists (a composed view
+// never reads another service's live storage). goName / externalName are both
+// mandatory (a type-less schema cannot derive them).
+func JoinUpstream(ts *core.TableSchema, goName, externalName string) *Leg {
 	if ts == nil {
 		panic("query.JoinUpstream(nil)")
 	}
@@ -164,56 +252,10 @@ func JoinUpstream(ts *core.TableSchema) *Leg {
 				"describing a locally materialized upstream collection; an internal view joins via query.JoinView",
 			ts.Table()))
 	}
-	return &Leg{schema: ts}
-}
-
-// FK declares the join's foreign-key column. The FK always points at the other
-// side's PK/_id; who holds it follows the multiplicity: on a 1:1 Link the
-// column belongs to the PRIMARY (primary.fk → leg._id), on a 1:N LinkMany it
-// belongs to the LEG (leg.fk → primary._id).
-func (l *Leg) FK(column string) *Leg {
-	l.fk = column
-	return l
-}
-
-// As declares the Go segment name for this leg — what criteria and Response
-// refer to (e.g. "UpstreamMirror"). Mandatory for an external leg (no Go type
-// to derive it from); an optional override for an internal one (default: the
-// leg view root type name, pluralized on a LinkMany).
-func (l *Leg) As(goSegment string) *Leg {
-	l.goSegment = goSegment
-	return l
-}
-
-// OrderBy declares the deterministic order of a LinkMany segment by a leg
-// column (default: _id ascending). Every 1:N segment always has a guaranteed
-// order — with or without truncation. LinkMany only: declaring it on a 1:1
-// Link is a fatal boot.
-func (l *Leg) OrderBy(column string) *Leg {
-	l.orderBy = column
-	return l
-}
-
-// Desc inverts the OrderBy direction. LinkMany only.
-func (l *Leg) Desc() *Leg {
-	l.orderDesc = true
-	if l.orderBy == "" {
-		l.orderDescOnly = true
+	if goName == "" || externalName == "" {
+		panic(fmt.Sprintf("query.JoinUpstream(%q): goName and externalName are both mandatory", ts.Table()))
 	}
-	return l
-}
-
-// MaxLinkManyLimit declares the per-parent item ceiling of a LinkMany segment
-// — named after the LinkMany builder it constrains, mirroring the view-level
-// MaxLimit pattern. Resolution at read time: this value (when > 0) wins; else
-// the yaml default query.maxLinkManyLimit; else
-// FrameworkDefaultMaxLinkManyLimit. When the ceiling is hit the segment is
-// truncated deterministically in the declared order — silently, never an
-// error: the ceiling is payload protection, not validation. Operational state,
-// like MaxLimit. LinkMany only: declaring it on a 1:1 Link is a fatal boot.
-func (l *Leg) MaxLinkManyLimit(n int64) *Leg {
-	l.maxItems = n
-	return l
+	return &Leg{schema: ts, goSegment: goName, externalName: externalName}
 }
 
 // Name returns the composed view's read-side identity.
@@ -264,24 +306,10 @@ func (l *Leg) schemaAndEmbeds() (*core.TableSchema, []embedDef) {
 	return l.schema, nil
 }
 
-// resolveLinkSegment resolves a link's Go segment: explicit .As wins; an
-// internal leg derives it from the leg view root's Go type (pluralized on a
-// LinkMany); an external leg without .As returns "" (rejected at boot).
+// resolveLinkSegment resolves a link's Go segment — the mandatory goName declared
+// on the leg constructor (JoinView/JoinUpstream).
 func (c *ComposedViewDefinition) resolveLinkSegment(ln composedLinkDef) string {
-	if ln.leg.goSegment != "" {
-		return ln.leg.goSegment
-	}
-	if ln.leg.view != nil && ln.leg.view.schema != nil {
-		name := ln.leg.view.schema.TypeName()
-		if name == "" {
-			return ""
-		}
-		if ln.many {
-			return domain.PluralizeWord(name)
-		}
-		return name
-	}
-	return ""
+	return ln.leg.goSegment
 }
 
 // ComposedLink is the read-only, boot-validated projection of one link,
@@ -347,8 +375,8 @@ func (c *ComposedViewDefinition) Links() []ComposedLink {
 		}
 		parentKey := "_id"
 		if !ln.many && c.primary != nil && c.primary.schema != nil {
-			if ln.leg.fk != c.primary.schema.PKColumn() {
-				if goName, ok := c.primary.schema.GoNameForRead(ln.leg.fk); ok {
+			if ln.joinCol != c.primary.schema.PKColumn() {
+				if goName, ok := c.primary.schema.GoNameForRead(ln.joinCol); ok {
 					parentKey = goName
 				}
 			}
@@ -359,11 +387,11 @@ func (c *ComposedViewDefinition) Links() []ComposedLink {
 			Many:             ln.many,
 			Collection:       legCollection(ln.leg),
 			External:         ln.leg.view == nil,
-			FKColumn:         ln.leg.fk,
+			FKColumn:         ln.joinCol,
 			ParentKeyGoField: parentKey,
-			OrderByColumn:    ln.leg.orderBy,
-			OrderByDesc:      ln.leg.orderDesc,
-			maxItems:         ln.leg.maxItems,
+			OrderByColumn:    ln.orderBy,
+			OrderByDesc:      ln.orderDesc,
+			maxItems:         ln.maxItems,
 			node:             node,
 		})
 	}
@@ -471,10 +499,7 @@ func validateComposedLinks(problems []string, c *ComposedViewDefinition, viewNam
 			kind = "LinkMany"
 		}
 		seg := c.resolveLinkSegment(ln)
-		if seg == "" {
-			addf("composed view %q: external %s %q has no Go segment — declare it via .As(\"...\") "+
-				"(a type-less schema cannot derive it from a Go type)", c.name, kind, ln.docField)
-		} else if prev, dup := owner[seg]; dup {
+		if prev, dup := owner[seg]; dup {
 			addf("composed view %q: %s %q would land on Go segment %q, already produced by %s — each segment has exactly one source",
 				c.name, kind, ln.docField, seg, prev)
 		} else {
@@ -499,18 +524,18 @@ func validateComposedLinks(problems []string, c *ComposedViewDefinition, viewNam
 			}
 		}
 
-		if ln.leg.fk == "" {
-			holder := "the PRIMARY (primary.fk → leg._id)"
+		if ln.joinCol == "" {
+			holder := "the PRIMARY (primary.on → leg._id)"
 			if ln.many {
-				holder = "the LEG (leg.fk → primary._id)"
+				holder = "the LEG (leg.on → primary._id)"
 			}
-			addf("composed view %q: %s %q declares no .FK(column) — the FK column belongs to %s",
+			addf("composed view %q: %s %q declares an empty join column — name it via .On(column); the FK column belongs to %s",
 				c.name, kind, ln.docField, holder)
 		} else if ln.many {
 			if schema != nil {
-				if _, ok := schema.GoNameForRead(ln.leg.fk); !ok {
-					addf("composed view %q: LinkMany %q FK column %q does not exist on the leg schema (collection %q)",
-						c.name, ln.docField, ln.leg.fk, schema.Table())
+				if _, ok := schema.GoNameForRead(ln.joinCol); !ok {
+					addf("composed view %q: LinkMany %q join column %q does not exist on the leg schema (collection %q)",
+						c.name, ln.docField, ln.joinCol, schema.Table())
 				}
 			}
 			// A LinkMany runs ONE find({fk: parent}) subquery PER PAGE PARENT;
@@ -521,43 +546,37 @@ func validateComposedLinks(problems []string, c *ComposedViewDefinition, viewNam
 			// (An external leg has no index declaration to inspect — the
 			// operator owns the upstream collection's indexes; the manual
 			// carries the same rule as guidance.)
-			if ln.leg.view != nil && !composedLegIndexCovers(ln.leg.view, ln.leg.fk) {
-				addf("composed view %q: LinkMany %q joins view %q on FK column %q with NO covering index — "+
+			if ln.leg.view != nil && !composedLegIndexCovers(ln.leg.view, ln.joinCol) {
+				addf("composed view %q: LinkMany %q joins view %q on join column %q with NO covering index — "+
 					"every page parent runs one find({%s: parent}) subquery, and without an index each one "+
 					"is a full collection scan. Declare query.Index(%q) (or a compound index starting with it) "+
 					"on the leg view",
-					c.name, ln.docField, ln.leg.view.Name(), ln.leg.fk, ln.leg.fk, ln.leg.fk)
+					c.name, ln.docField, ln.leg.view.Name(), ln.joinCol, ln.joinCol, ln.joinCol)
 			}
 		} else if c.primary.schema != nil {
-			if ln.leg.fk != c.primary.schema.PKColumn() {
-				if _, ok := c.primary.schema.GoNameForRead(ln.leg.fk); !ok {
-					addf("composed view %q: Link %q FK column %q does not exist on the primary schema (table %q)",
-						c.name, ln.docField, ln.leg.fk, c.primary.schema.Table())
+			if ln.joinCol != c.primary.schema.PKColumn() {
+				if _, ok := c.primary.schema.GoNameForRead(ln.joinCol); !ok {
+					addf("composed view %q: Link %q join column %q does not exist on the primary schema (table %q)",
+						c.name, ln.docField, ln.joinCol, c.primary.schema.Table())
 				}
 			}
 		}
 
-		if !ln.many {
-			if ln.leg.orderBy != "" || ln.leg.orderDesc {
-				addf("composed view %q: Link %q declares OrderBy/Desc — segment order applies to LinkMany only "+
-					"(a 1:1 sub-document has no order)", c.name, ln.docField)
-			}
-			if ln.leg.maxItems != 0 {
-				addf("composed view %q: Link %q declares MaxLinkManyLimit — the per-parent ceiling applies to LinkMany only "+
-					"(a 1:1 sub-document cannot fan out)", c.name, ln.docField)
-			}
-		} else {
-			if ln.leg.orderBy != "" && schema != nil {
-				if _, ok := schema.GoNameForRead(ln.leg.orderBy); !ok {
+		// OrderBy/Desc/MaxLinkManyLimit are 1:N-only knobs and live on the LinkMany
+		// binding by construction — they cannot be declared on a 1:1 Link, so there
+		// is no misplacement to reject. Only their value validity is checked here.
+		if ln.many {
+			if ln.orderBy != "" && schema != nil {
+				if _, ok := schema.GoNameForRead(ln.orderBy); !ok {
 					addf("composed view %q: LinkMany %q OrderBy column %q does not exist on the leg schema (collection %q)",
-						c.name, ln.docField, ln.leg.orderBy, schema.Table())
+						c.name, ln.docField, ln.orderBy, schema.Table())
 				}
 			}
-			if ln.leg.orderDescOnly {
+			if ln.orderDescOnly {
 				addf("composed view %q: LinkMany %q declares .Desc() without .OrderBy(column) — name the order column",
 					c.name, ln.docField)
 			}
-			if ln.leg.maxItems < 0 {
+			if ln.maxItems < 0 {
 				addf("composed view %q: LinkMany %q declares a negative MaxLinkManyLimit", c.name, ln.docField)
 			}
 		}

@@ -9,7 +9,7 @@
     <div class="release">
         <div class="release-head"><span class="release-tag">Unreleased</span><span class="release-date">—</span></div>
         <ul>
-            <li><strong>Added</strong> — <code>ViewDefinition.EmbedInChild(childSchema, field, src)</code>: read-side 1:1
+            <li><strong>Added</strong> — <code>ViewDefinition.EmbedInChild(childSchema, leg).On(col)</code>: read-side 1:1
                 enrichment of a view's native child array (the "list of X with the name of Y per line" shape — e.g. sale
                 line items enriched with the product name from an upstream projection). The write model stays normalized;
                 the enrichment lives only in the view, kept fresh by the recompose-ripple. 1:1 only (no
@@ -22,6 +22,29 @@
                 <code>"&lt;childSegment&gt;.&lt;fk&gt;"</code>). Declare it via <code>.Indexes(query.Index(...))</code>; a
                 missing index aborts boot instead of silently degrading the ripple to a collection scan. <code>EmbedMany</code>
                 is exempt. Existing services with an un-indexed 1:1 embed must add the index to boot.</li>
+            <li><strong>Changed</strong> — <strong>breaking</strong> — <strong>view composition speaks one join
+                vocabulary: the join column and the two segment names moved off the source onto the verb and the leg
+                constructor; <code>FromSchema</code>, <code>Source</code>, <code>Source.FK</code>, <code>Source.As</code> and
+                <code>Leg.FK</code>/<code>Leg.As</code> are removed.</strong> An embed/link source is now a single
+                <em>leg</em> built by <code>query.JoinUpstream(schema, goName, externalName)</code> (an external
+                collection — the only kind an <code>Embed</code>/<code>EmbedMany</code>/<code>EmbedInChild</code> accepts)
+                or <code>query.JoinView(view, goName, externalName)</code> (a registered view — a <code>ComposedView</code>
+                leg only). Both segment names are mandatory, in <code>TableSchema.Field</code> order (Go first, external
+                second). The join column is named on the verb via <code>.On(column)</code> — mandatory and compile-time
+                enforced (the verb returns a binding whose only route back is <code>.On</code>) — and feeds the view hash
+                uniformly for every embed/leg kind. The verb's multiplicity fixes which side holds the FK, so the same leg
+                plugs into an <code>Embed</code> (re-materialized) and a <code>Link</code> (read-time). A
+                <code>LinkMany</code>'s <code>OrderBy</code>/<code>Desc</code>/<code>MaxLinkManyLimit</code> move onto its
+                binding (they can no longer be misplaced on a 1:1 <code>Link</code>). <code>TableSchema.FK</code> is
+                unchanged — it declares an aggregate child's FK to its root (a write-side concern). <em>Migration</em>:
+                <code>Embed("seg", query.FromSchema(sch).FK("col").As("Go"))</code> →
+                <code>Embed(query.JoinUpstream(sch, "Go", "seg")).On("col")</code>; the inline <code>schema.FK(...)</code> on
+                an EmbedMany source becomes the verb's <code>.On(...)</code>;
+                <code>Link("seg", query.JoinUpstream(sch).FK("col").As("Go"))</code> →
+                <code>Link(query.JoinUpstream(sch, "Go", "seg")).On("col")</code>. Rebuild hashes are unchanged for an
+                unchanged view, so no view rebuilds on upgrade. See
+                <a href="#views~views-embed">Views → Embed and EmbedMany</a> and
+                <a href="#query-side">Query side → ComposedView</a>.</li>
         </ul>
     </div>
     <div class="release">

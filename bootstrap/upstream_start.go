@@ -9,7 +9,7 @@ import (
 
 // startUpstreamSubscribers spins one query.UpstreamSubscriber goroutine
 // per declared subscription, wired with its recompose-ripple targets
-// (every view embedding the subscription's Collection via an external FromSchema).
+// (every view embedding the subscription's Collection via an external JoinUpstream).
 //
 // Lifecycle: the subscribers share the same ctx as SyncEngine + HTTP
 // server, so SIGINT/SIGTERM cancels them in parallel. Each subscriber

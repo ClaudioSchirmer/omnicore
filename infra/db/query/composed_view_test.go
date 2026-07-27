@@ -11,8 +11,7 @@ import (
 
 type composedGadget struct{ ID, Code, MirrorID string }
 
-// Note anchors the 1:N leg schema; the derived LinkMany segment is the
-// pluralized type name ("Notes").
+// Note anchors the 1:N leg schema; the LinkMany segment is named "Notes".
 type Note struct{ ID, GadgetID, Text string }
 
 func cvPrimarySchema() *core.TableSchema {
@@ -47,13 +46,9 @@ func cvUpstreamSchema() *core.TableSchema {
 func cvValidComposed() *ComposedViewDefinition {
 	return ComposedView("gadgets_full").
 		Primary(cvPrimaryView()).
-		Link("upstreamMirror", JoinUpstream(cvUpstreamSchema()).
-			FK("id").
-			As("UpstreamMirror")).
-		LinkMany("notes", JoinView(cvNotesView()).
-			FK("gadget_id").
-			OrderBy("text").Desc().
-			MaxLinkManyLimit(5))
+		Link(JoinUpstream(cvUpstreamSchema(), "UpstreamMirror", "upstreamMirror")).On("id").
+		LinkMany(JoinView(cvNotesView(), "Notes", "notes")).
+		OrderBy("text").Desc().MaxLinkManyLimit(5).On("gadget_id")
 }
 
 func cvRegistered() []*ViewDefinition {
@@ -100,13 +95,14 @@ func TestComposedView_DeclarationPanics(t *testing.T) {
 	wantPanic(t, "declared twice", func() {
 		ComposedView("x").Primary(cvPrimaryView()).Primary(cvPrimaryView())
 	})
-	wantPanic(t, "nil leg", func() { ComposedView("x").Link("seg", nil) })
-	wantPanic(t, "empty document field", func() {
-		ComposedView("x").Link("", JoinView(cvNotesView()).FK("gadget_id"))
-	})
-	wantPanic(t, "JoinView(nil)", func() { JoinView(nil) })
-	wantPanic(t, "JoinUpstream(nil)", func() { JoinUpstream(nil) })
-	wantPanic(t, "write-anchored", func() { JoinUpstream(cvNotesSchema()) })
+	wantPanic(t, ".Link(nil)", func() { ComposedView("x").Link(nil) })
+	wantPanic(t, ".LinkMany(nil)", func() { ComposedView("x").LinkMany(nil) })
+	wantPanic(t, "JoinView(nil)", func() { JoinView(nil, "G", "g") })
+	wantPanic(t, "JoinUpstream(nil)", func() { JoinUpstream(nil, "G", "g") })
+	wantPanic(t, "write-anchored", func() { JoinUpstream(cvNotesSchema(), "G", "g") })
+	// goName / externalName are both mandatory on the leg constructors.
+	wantPanic(t, "mandatory", func() { JoinUpstream(cvUpstreamSchema(), "G", "") })
+	wantPanic(t, "mandatory", func() { JoinView(cvNotesView(), "", "g") })
 }
 
 // ─── boot validation ─────────────────────────────────────────────────────────
@@ -133,7 +129,7 @@ func TestValidateComposedViews_Rejections(t *testing.T) {
 		},
 		{
 			name:     "name collides with a view",
-			composed: ComposedView("gadgets").Primary(cvPrimaryView()).LinkMany("notes", JoinView(cvNotesView()).FK("gadget_id")),
+			composed: ComposedView("gadgets").Primary(cvPrimaryView()).LinkMany(JoinView(cvNotesView(), "Notes", "notes")).On("gadget_id"),
 			views:    cvRegistered(), ups: cvUpstreams(),
 			fragment: "collides with a registered view",
 		},
@@ -145,7 +141,7 @@ func TestValidateComposedViews_Rejections(t *testing.T) {
 		},
 		{
 			name:     "primary not registered",
-			composed: ComposedView("gadgets_full").Primary(View("ghosts").Version(1).Schema(rootSchema("ghosts"))).LinkMany("notes", JoinView(cvNotesView()).FK("gadget_id")),
+			composed: ComposedView("gadgets_full").Primary(View("ghosts").Version(1).Schema(rootSchema("ghosts"))).LinkMany(JoinView(cvNotesView(), "Notes", "notes")).On("gadget_id"),
 			views:    cvRegistered(), ups: cvUpstreams(),
 			fragment: "is not registered",
 		},
@@ -156,110 +152,89 @@ func TestValidateComposedViews_Rejections(t *testing.T) {
 			fragment: "declares no .Link",
 		},
 		{
-			name: "external leg without As",
-			composed: ComposedView("gadgets_full").Primary(cvPrimaryView()).
-				Link("upstreamMirror", JoinUpstream(cvUpstreamSchema()).FK("id")),
-			views: cvRegistered(), ups: cvUpstreams(),
-			fragment: "has no Go segment",
-		},
-		{
 			name: "segment collides with a primary field",
 			composed: ComposedView("gadgets_full").Primary(cvPrimaryView()).
-				Link("code", JoinUpstream(cvUpstreamSchema()).FK("id").As("Code")),
+				Link(JoinUpstream(cvUpstreamSchema(), "Code", "code")).On("id"),
 			views: cvRegistered(), ups: cvUpstreams(),
 			fragment: "already produced by a primary root field",
 		},
 		{
 			name: "duplicate link segment",
 			composed: ComposedView("gadgets_full").Primary(cvPrimaryView()).
-				Link("a", JoinUpstream(cvUpstreamSchema()).FK("id").As("Mirror")).
-				Link("b", JoinUpstream(cvUpstreamSchema()).FK("id").As("Mirror")),
+				Link(JoinUpstream(cvUpstreamSchema(), "Mirror", "a")).On("id").
+				Link(JoinUpstream(cvUpstreamSchema(), "Mirror", "b")).On("id"),
 			views: cvRegistered(), ups: cvUpstreams(),
 			fragment: "each segment has exactly one source",
 		},
 		{
 			name: "internal leg not registered",
 			composed: ComposedView("gadgets_full").Primary(cvPrimaryView()).
-				LinkMany("ghosts", JoinView(View("ghosts").Version(1).Schema(cvNotesSchema())).FK("gadget_id").As("Ghosts")),
+				LinkMany(JoinView(View("ghosts").Version(1).Schema(cvNotesSchema()), "Ghosts", "ghosts")).On("gadget_id"),
 			views: cvRegistered(), ups: cvUpstreams(),
 			fragment: "which is not registered",
 		},
 		{
 			name: "external leg without subscription",
 			composed: ComposedView("gadgets_full").Primary(cvPrimaryView()).
-				Link("upstreamMirror", JoinUpstream(cvUpstreamSchema()).FK("id").As("UpstreamMirror")),
+				Link(JoinUpstream(cvUpstreamSchema(), "UpstreamMirror", "upstreamMirror")).On("id"),
 			views: cvRegistered(), ups: map[string]bool{},
 			fragment: "no UpstreamSubscription materializes it",
 		},
 		{
 			name: "external leg without PK",
 			composed: ComposedView("gadgets_full").Primary(cvPrimaryView()).
-				Link("upstreamMirror", JoinUpstream(core.NewExternalSchema("upstream_gadgets").Field("Code", "code")).FK("id").As("UpstreamMirror")),
+				Link(JoinUpstream(core.NewExternalSchema("upstream_gadgets").Field("Code", "code"), "UpstreamMirror", "upstreamMirror")).On("id"),
 			views: cvRegistered(), ups: cvUpstreams(),
 			fragment: "declares no primary key",
 		},
 		{
-			name: "missing FK",
+			name: "empty join column",
 			composed: ComposedView("gadgets_full").Primary(cvPrimaryView()).
-				LinkMany("notes", JoinView(cvNotesView())),
+				LinkMany(JoinView(cvNotesView(), "Notes", "notes")).On(""),
 			views: cvRegistered(), ups: cvUpstreams(),
-			fragment: "declares no .FK",
+			fragment: "empty join column",
 		},
 		{
-			name: "1:N FK column not on leg schema",
+			name: "1:N join column not on leg schema",
 			composed: ComposedView("gadgets_full").Primary(cvPrimaryView()).
-				LinkMany("notes", JoinView(cvNotesView()).FK("bogus_fk")),
+				LinkMany(JoinView(cvNotesView(), "Notes", "notes")).On("bogus_fk"),
 			views: cvRegistered(), ups: cvUpstreams(),
 			fragment: "does not exist on the leg schema",
 		},
 		{
-			name: "1:1 FK column not on primary schema",
+			name: "1:1 join column not on primary schema",
 			composed: ComposedView("gadgets_full").Primary(cvPrimaryView()).
-				Link("upstreamMirror", JoinUpstream(cvUpstreamSchema()).FK("bogus_fk").As("UpstreamMirror")),
+				Link(JoinUpstream(cvUpstreamSchema(), "UpstreamMirror", "upstreamMirror")).On("bogus_fk"),
 			views: cvRegistered(), ups: cvUpstreams(),
 			fragment: "does not exist on the primary schema",
 		},
 		{
-			name: "OrderBy on a 1:1 link",
-			composed: ComposedView("gadgets_full").Primary(cvPrimaryView()).
-				Link("upstreamMirror", JoinUpstream(cvUpstreamSchema()).FK("id").As("UpstreamMirror").OrderBy("code")),
-			views: cvRegistered(), ups: cvUpstreams(),
-			fragment: "segment order applies to LinkMany only",
-		},
-		{
-			name: "MaxLinkManyLimit on a 1:1 link",
-			composed: ComposedView("gadgets_full").Primary(cvPrimaryView()).
-				Link("upstreamMirror", JoinUpstream(cvUpstreamSchema()).FK("id").As("UpstreamMirror").MaxLinkManyLimit(5)),
-			views: cvRegistered(), ups: cvUpstreams(),
-			fragment: "ceiling applies to LinkMany only",
-		},
-		{
 			name: "OrderBy column not on leg schema",
 			composed: ComposedView("gadgets_full").Primary(cvPrimaryView()).
-				LinkMany("notes", JoinView(cvNotesView()).FK("gadget_id").OrderBy("bogus")),
+				LinkMany(JoinView(cvNotesView(), "Notes", "notes")).OrderBy("bogus").On("gadget_id"),
 			views: cvRegistered(), ups: cvUpstreams(),
 			fragment: "OrderBy column \"bogus\" does not exist",
 		},
 		{
 			name: "Desc without OrderBy",
 			composed: ComposedView("gadgets_full").Primary(cvPrimaryView()).
-				LinkMany("notes", JoinView(cvNotesView()).FK("gadget_id").Desc()),
+				LinkMany(JoinView(cvNotesView(), "Notes", "notes")).Desc().On("gadget_id"),
 			views: cvRegistered(), ups: cvUpstreams(),
 			fragment: ".Desc() without .OrderBy",
 		},
 		{
 			name: "negative MaxLinkManyLimit",
 			composed: ComposedView("gadgets_full").Primary(cvPrimaryView()).
-				LinkMany("notes", JoinView(cvNotesView()).FK("gadget_id").MaxLinkManyLimit(-1)),
+				LinkMany(JoinView(cvNotesView(), "Notes", "notes")).MaxLinkManyLimit(-1).On("gadget_id"),
 			views: cvRegistered(), ups: cvUpstreams(),
 			fragment: "negative MaxLinkManyLimit",
 		},
 		{
 			name: "LinkMany FK without a covering index",
 			composed: ComposedView("gadgets_full").Primary(cvPrimaryView()).
-				LinkMany("notes", JoinView(
-					View("gadget_notes").Version(1).Schema(cvNotesSchema()),
-				).FK("gadget_id")),
+				LinkMany(JoinView(
+					View("gadget_notes").Version(1).Schema(cvNotesSchema()), "Notes", "notes",
+				)).On("gadget_id"),
 			views:    []*ViewDefinition{cvPrimaryView(), View("gadget_notes").Version(1).Schema(cvNotesSchema())},
 			ups:      cvUpstreams(),
 			fragment: "NO covering index",
@@ -283,9 +258,9 @@ func TestValidateComposedViews_SegmentCollidesWithDerivedSegment(t *testing.T) {
 	// The primary declares an external embed landing on Go segment "Mirror";
 	// a link claiming the same segment is a boot error.
 	primary := View("gadgets").Version(1).Schema(cvPrimarySchema()).
-		Embed("mirror", mongoEmbed("mirrors", "").FK("id").As("Mirror"))
+		Embed(extLeg("mirrors", "Mirror", "mirror")).On("id")
 	composed := ComposedView("gadgets_full").Primary(primary).
-		Link("mirror2", JoinUpstream(cvUpstreamSchema()).FK("id").As("Mirror"))
+		Link(JoinUpstream(cvUpstreamSchema(), "Mirror", "mirror2")).On("id")
 	err := validateOne(composed, []*ViewDefinition{primary, cvNotesView()}, cvUpstreams())
 	wantProblem(t, err, "already produced by a primary document segment")
 }
@@ -333,7 +308,7 @@ func TestComposedView_LinksProjection(t *testing.T) {
 
 func TestComposedView_LinkParentKeyFromNonPKColumn(t *testing.T) {
 	composed := ComposedView("gadgets_full").Primary(cvPrimaryView()).
-		Link("upstreamMirror", JoinUpstream(cvUpstreamSchema()).FK("mirror_id").As("UpstreamMirror"))
+		Link(JoinUpstream(cvUpstreamSchema(), "UpstreamMirror", "upstreamMirror")).On("mirror_id")
 	if err := validateOne(composed, cvRegistered(), cvUpstreams()); err != nil {
 		t.Fatalf("unexpected validation error: %v", err)
 	}
@@ -351,7 +326,7 @@ func TestComposedLink_ResolveMaxLinkManyLimit(t *testing.T) {
 		t.Fatalf("per-link value must win, got %d", got)
 	}
 	noCap := ComposedView("x").Primary(cvPrimaryView()).
-		LinkMany("notes", JoinView(cvNotesView()).FK("gadget_id")).Links()[0]
+		LinkMany(JoinView(cvNotesView(), "Notes", "notes")).On("gadget_id").Links()[0]
 	if got := noCap.ResolveMaxLinkManyLimit(30); got != 30 {
 		t.Fatalf("yaml default must win when the link is silent, got %d", got)
 	}
@@ -401,7 +376,7 @@ func TestComposedView_ExportPlan(t *testing.T) {
 func TestComposedView_ResolveMaxExportRowsDelegatesToPrimary(t *testing.T) {
 	primary := cvPrimaryView().MaxExportRows(7)
 	composed := ComposedView("gadgets_full").Primary(primary).
-		LinkMany("notes", JoinView(cvNotesView()).FK("gadget_id"))
+		LinkMany(JoinView(cvNotesView(), "Notes", "notes")).On("gadget_id")
 	if got := composed.ResolveMaxExportRows(999); got != 7 {
 		t.Fatalf("expected the primary's export ceiling, got %d", got)
 	}

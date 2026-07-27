@@ -270,7 +270,7 @@ func (m *MongoDB) EnsureProjectionState(ctx context.Context) error {
 }
 
 // FindManyByField returns every document in collection where field == value.
-// Used by the composer's Mongo dispatch when it follows an external FromSchema embed:
+// Used by the composer's Mongo dispatch when it follows an external JoinUpstream embed:
 // the field is the joinKey declared via Source.FK(...) and the value comes from
 // the parent document. Empty slice when nothing matches — the caller is
 // expected to handle "no embed" by simply omitting the field, identical to

@@ -157,14 +157,9 @@ func cvrUpstreamSchema() *core.TableSchema {
 func cvrComposed(primary, notes *query.ViewDefinition) *query.ComposedViewDefinition {
 	return query.ComposedView("gadgets_full").
 		Primary(primary).
-		Link("upstreamMirror", query.JoinUpstream(cvrUpstreamSchema()).
-			FK("id").
-			As("UpstreamMirror")).
-		LinkMany("notes", query.JoinView(notes).
-			FK("gadget_id").
-			As("Notes"). // the fixture type is cvrNote — override the derived segment
-			OrderBy("text").
-			MaxLinkManyLimit(2))
+		Link(query.JoinUpstream(cvrUpstreamSchema(), "UpstreamMirror", "upstreamMirror")).On("id").
+		LinkMany(query.JoinView(notes, "Notes", "notes")).
+		OrderBy("text").MaxLinkManyLimit(2).On("gadget_id")
 }
 
 type cvrEnv struct {
@@ -607,9 +602,7 @@ func newCVREnvByMirrorID() *cvrEnv {
 	primary := cvrPrimaryView()
 	composed := query.ComposedView("gadgets_mirrored").
 		Primary(primary).
-		Link("upstreamMirror", query.JoinUpstream(cvrUpstreamSchema()).
-			FK("mirror_id").
-			As("UpstreamMirror"))
+		Link(query.JoinUpstream(cvrUpstreamSchema(), "UpstreamMirror", "upstreamMirror")).On("mirror_id")
 	inner := NewMongoViewReader(db, testResolver).SetViews([]*query.ViewDefinition{primary})
 	env.reader = NewComposedViewReader(inner, []*query.ComposedViewDefinition{composed}, 0)
 	return env

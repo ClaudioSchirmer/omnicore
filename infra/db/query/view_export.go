@@ -65,17 +65,14 @@ func (v *ViewDefinition) ExportPlan() *queries.ExportPlan {
 	// (e.g. catalogLines[].item.label). The native child node was appended above by
 	// buildExportNode, keyed by the child's derived segment.
 	for _, ce := range v.childEmbeds {
-		if ce.source == nil {
+		if ce.leg == nil {
 			continue
 		}
 		seg := ce.ChildSegment()
-		goSeg := ce.source.goSegment
-		if goSeg == "" {
-			goSeg = ce.field
-		}
+		goSeg := ce.leg.goSegment
 		for _, cn := range root.Children {
 			if cn.GoSegment == seg {
-				cn.Children = append(cn.Children, buildExportNode(ce.source.schema, nil, goSeg, ce.field))
+				cn.Children = append(cn.Children, buildExportNode(ce.leg.schema, nil, goSeg, ce.Field()))
 				break
 			}
 		}
@@ -118,13 +115,13 @@ func buildExportNode(schema *core.TableSchema, embeds []embedDef, goSegment, wir
 	// External embeds nest as children. Embeds are single-level, so a source
 	// contributes no further embeds (nil) — only its own schema-derived closure.
 	for _, e := range embeds {
-		if e.source == nil {
+		if e.leg == nil {
 			continue
 		}
 		node.Children = append(node.Children, buildExportNode(
-			e.source.schema, nil,
+			e.leg.schema, nil,
 			resolveGoSegment(e), // parent-side Go field (renderer descends doc[goSegment])
-			e.field,             // embed doc field = ?fields wire segment
+			e.Field(),           // embed doc field = ?fields wire segment
 		))
 	}
 	if schema != nil {

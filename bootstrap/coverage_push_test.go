@@ -15,7 +15,7 @@ import (
 func TestValidateUpstreamSubscriptions_SurfacesMaterializingSource(t *testing.T) {
 	views := []*query.ViewDefinition{
 		query.View("orders").
-			Embed("buyer", extEmbed("users", "buyer_id", "Buyer")).
+			Embed(extEmbed("users", "Buyer")).On("buyer_id").
 			Indexes(query.Index("buyer_id")). // §8.1 satisfied
 			Version(1),
 	}

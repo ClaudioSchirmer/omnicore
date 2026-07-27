@@ -3,6 +3,8 @@ package query
 import (
 	"testing"
 	"time"
+
+	"github.com/ClaudioSchirmer/omnicore/infra/db/core"
 )
 
 // Field-ownership coverage: the recompose-ripple's write shape — embeds
@@ -78,7 +80,9 @@ func TestEmbedFieldSet(t *testing.T) {
 	if embedFieldSet(nil) != nil {
 		t.Error("no embeds → nil set")
 	}
-	got := embedFieldSet([]embedDef{{field: "Items"}, {field: "FeaturedItem", many: false}})
+	itemsLeg := JoinUpstream(core.NewExternalSchema("items").PK("id"), "Items", "Items")
+	featLeg := JoinUpstream(core.NewExternalSchema("feat").PK("id"), "FeaturedItem", "FeaturedItem")
+	got := embedFieldSet([]embedDef{{leg: itemsLeg}, {leg: featLeg, many: false}})
 	if len(got) != 2 {
 		t.Fatalf("want both segments, got %v", got)
 	}

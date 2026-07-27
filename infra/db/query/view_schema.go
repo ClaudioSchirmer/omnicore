@@ -68,13 +68,10 @@ func (v *ViewDefinition) BuildViewNode() *ViewNode {
 		if !ok || childVE.node == nil {
 			continue // boot-validated to be a native child; defensive
 		}
-		seg := ce.source.goSegment
-		if seg == "" {
-			seg = ce.field
-		}
-		ive := &viewEmbed{goSegment: seg, docField: ce.field, node: newViewNode(ce.source.schema, nil)}
+		seg := ce.leg.goSegment
+		ive := &viewEmbed{goSegment: seg, docField: ce.Field(), node: newViewNode(ce.leg.schema, nil)}
 		childVE.node.embeds[seg] = ive
-		childVE.node.embedsByDoc[ce.field] = ive
+		childVE.node.embedsByDoc[ce.Field()] = ive
 	}
 	return n
 }
@@ -99,24 +96,19 @@ func newViewNode(schema *core.TableSchema, embeds []embedDef) *ViewNode {
 		embedsByDoc: map[string]*viewEmbed{},
 	}
 	for _, e := range embeds {
-		if e.source == nil {
+		if e.leg == nil {
 			continue
 		}
-		// Parent-side Go segment: explicit .As, else derived from the source's
-		// Go type (local), else the doc field as a last-resort (the boot guard
-		// ValidateViewSchemas rejects an external embed that reaches this with
-		// no resolvable segment, so this fallback is defensive only).
+		// Parent-side Go segment: the mandatory goName declared on the leg
+		// constructor (JoinUpstream/JoinView).
 		seg := resolveGoSegment(e)
-		if seg == "" {
-			seg = e.field
-		}
 		ve := &viewEmbed{
 			goSegment: seg,
-			docField:  e.field,
-			node:      newViewNode(e.source.schema, nil),
+			docField:  e.Field(),
+			node:      newViewNode(e.leg.schema, nil),
 		}
 		n.embeds[seg] = ve
-		n.embedsByDoc[e.field] = ve
+		n.embedsByDoc[e.Field()] = ve
 	}
 	// A role's shared base may own NATIVE children (base-children) that are not
 	// declared as view embeds — they are derived from the base schema. Register

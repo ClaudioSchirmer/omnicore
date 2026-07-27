@@ -100,7 +100,7 @@ func (m *upstreamMetrics) Snapshot() map[string]uint64 {
 
 // UpstreamSubscriber materializes one upstream topic into a local Mongo
 // collection and triggers downstream recompose-ripple on every view that
-// embeds the collection via an external fwinfra.FromSchema. One instance per
+// embeds the collection via an external query.JoinUpstream. One instance per
 // bootstrap.UpstreamSubscription declared in the service Wiring / yaml.
 //
 // The subscriber's lifecycle is owned by bootstrap.Run, which spawns one
@@ -173,7 +173,7 @@ func (s *UpstreamSubscriber) WithKafkaTracing(on bool) *UpstreamSubscriber {
 }
 
 // NewUpstreamSubscriber wires the subscriber. dependentViews is the slice
-// of B views that embed cfg.Collection via an external FromSchema — bootstrap looks
+// of B views that embed cfg.Collection via an external JoinUpstream — bootstrap looks
 // this up from viewIndex.byMongoColl after collectViews returns and
 // passes the result here so the subscriber's per-message recompose loop
 // is index-only.
@@ -750,10 +750,10 @@ func (s *UpstreamSubscriber) ripple(ctx context.Context, upstreamID string, befo
 func collectChildMongoEmbeds(childEmbeds []childEmbedDef, collection string) []childEmbedDef {
 	var out []childEmbedDef
 	for _, ce := range childEmbeds {
-		if ce.source == nil {
+		if ce.leg == nil {
 			continue
 		}
-		if ce.source.IsMongo() && ce.source.Collection() == collection {
+		if ce.leg.IsMongo() && ce.leg.Collection() == collection {
 			out = append(out, ce)
 		}
 	}
@@ -926,7 +926,7 @@ func (s *UpstreamSubscriber) discoverRippleTargets(
 	}
 	for _, e := range embeds {
 		if e.Many() {
-			fkCol := e.Source().SchemaDef().FKColumn()
+			fkCol := e.JoinColumn()
 			add(docFieldString(before, fkCol))
 			add(docFieldString(after, fkCol))
 			continue
@@ -972,10 +972,10 @@ func (s *UpstreamSubscriber) readLocalDoc(ctx context.Context, id string) Docume
 func collectMongoEmbeds(embeds []embedDef, collection string) []embedDef {
 	var out []embedDef
 	for _, e := range embeds {
-		if e.source == nil {
+		if e.leg == nil {
 			continue
 		}
-		if e.source.IsMongo() && e.source.Collection() == collection {
+		if e.leg.IsMongo() && e.leg.Collection() == collection {
 			out = append(out, e)
 		}
 	}
@@ -1062,7 +1062,7 @@ func (s *UpstreamSubscriber) resolveFailures(ctx context.Context, viewName, upst
 }
 
 // joinFieldFor walks v.Embeds() looking for the embed that points at
-// s.cfg.Collection via an external FromSchema. Used by ripple to compute the Mongo
+// s.cfg.Collection via an external JoinUpstream. Used by ripple to compute the Mongo
 // query "which docs reference the changed upstream id?".
 //
 // A view typically declares a single embed per upstream collection, but
@@ -1078,7 +1078,7 @@ func (s *UpstreamSubscriber) joinFieldFor(v *ViewDefinition) string {
 
 func findMongoJoinField(embeds []embedDef, collection string) string {
 	for _, e := range embeds {
-		if e.source != nil && e.source.IsMongo() && e.source.Collection() == collection {
+		if e.leg != nil && e.leg.IsMongo() && e.leg.Collection() == collection {
 			return e.JoinColumn()
 		}
 	}

@@ -150,9 +150,9 @@ func TestInitRegistryOnly_ExecError(t *testing.T) {
 func TestRebuildAllViews_EmptyTables(t *testing.T) {
 	// A view with a PG root + an external Mongo embed so both byPGTable and
 	// byMongoColl index buckets are walked.
-	external := FromSchema(core.NewExternalSchema("buyers").PK("id").FK("order_id")).As("Buyers")
+	external := JoinUpstream(core.NewExternalSchema("buyers").PK("id"), "Buyers", "buyers")
 	v := View("orders").Version(1).Schema(composerRootSchema()).
-		EmbedMany("buyers", external)
+		EmbedMany(external).On("order_id")
 	s := rebuildSyncEngine(emptyRowsEngine(), &fakeColl{}, []*ViewDefinition{v})
 	if err := s.RebuildAllViews(context.Background()); err != nil {
 		t.Fatalf("RebuildAllViews: %v", err)

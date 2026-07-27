@@ -129,7 +129,7 @@
     A type-anchored schema validates every field against the Go type <strong>at construction</strong> — a
     <code>Field</code> naming a missing or unexported field panics immediately, which is the enforcement that replaces
     convention. A type-less external schema describes an upstream service's columns for an external
-    <code>FromSchema</code> embed source (there is no local struct to validate against).
+    <code>JoinUpstream</code> embed source (there is no local struct to validate against).
 </p>
 <pre><code>// Type-anchored — validated against *User at call time.
 func UserSchema() *core.TableSchema {
@@ -156,7 +156,7 @@ func AddressSchema() *core.TableSchema {
         UpdatedAt("updated_at")
 }
 
-// Type-less — for an upstream-projected external FromSchema source (no local struct).
+// Type-less — for an upstream-projected external JoinUpstream source (no local struct).
 core.NewExternalSchema("users").PK("id").Field("Email", "mail")</code></pre>
 <p>
     The Go-side primary-key field is fixed to <code>ID</code> by the <code>BaseEntity</code>/AVO contract (an aggregate
@@ -188,8 +188,8 @@ core.NewExternalSchema("users").PK("id").Field("Email", "mail")</code></pre>
     grandchild would silently never persist. Model the sub-collection as a <strong>separate aggregate</strong> (its own
     root + FK). On the <em>read side</em>, a schema's own children (like a shared base's children) <strong>project
     automatically</strong> into the Mongo view — the composer nests each declared <code>Child(...)</code> wherever the
-    schema is used, so a child on a view root or on an embed source is materialized, not ignored. An embed source
-    <em>cannot</em> declare a further <code>Embed(...)</code> / <code>EmbedMany(...)</code>, though — a <code>*Source</code>
+    schema is used, so a child on a view root or on an embed leg is materialized, not ignored. An embed leg
+    <em>cannot</em> declare a further <code>Embed(...)</code> / <code>EmbedMany(...)</code>, though — a leg
     exposes no such builder, so embed-of-embed does not compile (embeds are single-level; reach a second external hop with a
     top-level embed or a read-time <code>ComposedView</code>). A redundant explicit embed of a child the schema already
     projects (same derived segment) is still a boot error.
@@ -290,14 +290,14 @@ func NewUserRepository(eng core.RelationalEngine) *UserRepository {
 </p>
 <p>
     <code>Embed</code> / <code>EmbedMany</code> exist for one thing only — <strong>EXTERNAL data</strong> — so each embed
-    source is constructed via <code>query.FromSchema(...)</code> (the single embed source constructor) over a type-less
-    <code>core.NewExternalSchema</code>; a write-anchored <code>NewTableSchema[T]</code> as an embed source is a
-    <strong>fatal boot error</strong> (<code>ValidateViewSchemas</code>) — local data has no business being embedded when it
-    already auto-projects. From the schema the framework derives the collection (<code>ts.Table()</code>) and — for an
-    <code>EmbedMany</code> — the join FK (<code>ts.FKColumn()</code>). The composer writes physical columns to Mongo; the
-    reader translates each leaf back to its Go field name (so <code>mail</code> → <code>Email</code>, <code>zip_code</code>
-    → <code>ZipCode</code>). Because an external source has no Go type to derive a segment from, <code>.As(...)</code> is
-    <strong>mandatory</strong> on every embed. The view also honors the schema's soft-delete column when
+    leg is built via <code>query.JoinUpstream(...)</code> over a type-less <code>core.NewExternalSchema</code>; a
+    write-anchored <code>NewTableSchema[T]</code> as an embed leg panics at <code>JoinUpstream</code> — local data has no
+    business being embedded when it already auto-projects. From the schema the framework derives the collection
+    (<code>ts.Table()</code>); the join column is named on the verb via <code>.On(...)</code>. The composer writes physical
+    columns to Mongo; the reader translates each leaf back to its Go field name (so <code>mail</code> → <code>Email</code>,
+    <code>zip_code</code> → <code>ZipCode</code>). Because an external source has no Go type to derive them from, both
+    segment names are <strong>mandatory</strong> on the <code>JoinUpstream</code> constructor. The view also honors the
+    schema's soft-delete column when
     <code>DeleteOnArchive</code> is set. This holds identically for a regular <code>query.View</code> and a
     <code>SharedBaseView</code> — both may embed external sources; neither may embed internal data.
 </p>
@@ -322,26 +322,27 @@ func NewUserRepository(eng core.RelationalEngine) *UserRepository {
     <strong>External (cross-service) embeds — no local struct.</strong> When a view embeds data owned by another service
     (materialized locally via an <a href="#service-to-service">UpstreamSubscription</a>), there is no Go struct in this
     service to anchor the embed's schema. Build the source from a type-less <code>NewExternalSchema(collection)</code> and
-    pass it to <code>query.FromSchema(...)</code> — the schema being type-less is the very signal that makes it an
+    pass it to <code>query.JoinUpstream(...)</code> — the schema being type-less is the very signal that makes it an
     external/Mongo source (no separate <code>FromMongo</code> constructor). The left side of each <code>Field</code> is the
     <em>logical Go name</em> the local view's Response/criteria speak; the right side names the <em>upstream's physical
     column</em>. It is validated by bijection (no two fields share a column) but not against any type — there is none.
-    Because an external source has no Go type to derive a segment from, <code>.As(...)</code> is <strong>required</strong>
-    (a fatal boot error otherwise). <code>.FK(...)</code> is the parent document’s FK column pointing at the source’s PK —
-    used only on a one-to-one <code>Embed</code>.
+    Because an external source has no Go type to derive them from, both segment names are <strong>required</strong> on the
+    <code>JoinUpstream</code>/<code>JoinView</code> constructor (a declaration-time panic otherwise). The join column is
+    named on the verb via <code>.On(...)</code> — the parent document's FK column pointing at the leg's PK on a one-to-one
+    <code>Embed</code>/<code>Link</code>.
 </p>
 <pre><code>// Cross-service embed — buyer projected from the upstream users service.
 func OrdersView() *query.ViewDefinition {
     return query.View("orders").
         Version(1).
         Schema(OrderSchema()).
-        Embed("buyer", query.FromSchema(
+        Embed(query.JoinUpstream(
             core.NewExternalSchema("users").  // type-less: names the UPSTREAM's columns
                 PK("id").
                 Field("Name", "name").
-                Field("Email", "mail")).         // logical Go name ↔ upstream column
-            FK("buyer_id").                      // parent doc FK pointing at the source PK
-            As("Buyer")).                        // REQUIRED — external embeds have no Go type to derive from
+                Field("Email", "mail"),          // logical Go name ↔ upstream column
+            "Buyer", "buyer")).                  // Go + doc segments — both REQUIRED (no Go type to derive from)
+            On("buyer_id").                      // parent doc FK → leg PK, named on the verb
         Indexes(query.Index("buyer_id"))       // boot guard requires the join-field index
 }</code></pre>
 <p class="note">
@@ -351,7 +352,7 @@ func OrdersView() *query.ViewDefinition {
     state. The declaration alone is not enough, though: the <a href="#yaml-reference">UpstreamSubscription
     <code>filter</code></a> is a string allowlist over the <em>raw upstream payload</em> and consults no schema, so if it
     drops the soft-delete column the mirror never receives it — an archived upstream entity would look active forever.
-    The boot cross-checks the two (<strong>§8.5</strong>): an external <code>FromSchema</code> embed that <em>declares</em>
+    The boot cross-checks the two (<strong>§8.5</strong>): an external <code>JoinUpstream</code> embed that <em>declares</em>
     the soft-delete column while the feeding subscription's non-empty <code>filter</code> <em>omits</em> it is a
     <strong>fatal boot error</strong> (the mirror could never reflect an archive) naming the offending subscription and
     column; declared-and-kept — or an empty <code>filter</code>, which mirrors the full payload — is accepted; a mirror
@@ -362,11 +363,11 @@ func OrdersView() *query.ViewDefinition {
 </p>
 <p>
     <strong>Schema is mandatory on every view.</strong> The root (<code>ViewDefinition.Schema(ts)</code>) and every embed
-    (<code>FromSchema</code> always carries one) must declare a schema. A missing root schema, or an external embed missing
-    <code>.As(...)</code>, is a <strong>fatal boot error</strong> via <code>query.ValidateViewSchemas(views)</code> (called
-    by <code>bootstrap.Run</code>). There is no optional / pass-through / schema-less mode. Every embed source is
-    external/type-less (an embed composes EXTERNAL data only — see above), so it inherits no Go type to derive its segment
-    from: <code>.As(...)</code> is always required, never an optional override.
+    (<code>JoinUpstream</code> always carries one) must declare a schema. A missing root schema is a <strong>fatal boot
+    error</strong> via <code>query.ValidateViewSchemas(views)</code> (called by <code>bootstrap.Run</code>). There is no
+    optional / pass-through / schema-less mode. Every embed leg is external/type-less (an embed composes EXTERNAL data only —
+    see above), so it inherits no Go type to derive its segment names from: both names are mandatory on the
+    <code>JoinUpstream</code> constructor (a declaration-time panic), never an optional override.
 </p>
 <p>
     <strong>Two writers, one document — field ownership.</strong> A view with external embeds is kept current by two
@@ -400,7 +401,7 @@ func OrdersView() *query.ViewDefinition {
         type, since the persister reflects the entity to build the <code>INSERT</code>/<code>UPDATE</code> and the read-side
         composer reflects it (<code>BoolColumns</code>) to restore type fidelity when it materializes the Mongo view. A
         type-less schema describes an <em>upstream</em> service's Mongo collection and is only ever a view <em>embed</em>
-        source (<code>FromSchema</code>), never a root. The composer routes by the view root <em>table name</em>, not by the
+        source (<code>JoinUpstream</code>), never a root. The composer routes by the view root <em>table name</em>, not by the
         schema's kind, so a type-less root naming a real local table would otherwise compose relationally with an empty
         <code>BoolColumns</code> and silently lose boolean fidelity on a backend without a native bool (MySQL
         <code>TINYINT(1)</code> → number). Aggregate children are covered at declaration — <code>Child(...)</code> rejects a
@@ -435,9 +436,9 @@ func OrdersView() *query.ViewDefinition {
         <code>WithSchema</code> / <code>Child</code> / <code>ValidateViewSchemas</code> without a declared PK is a boot
         failure. Single-column only.</li>
     <li><strong>FK on children + embed join keys</strong> — an aggregate <code>Child(...)</code> without <code>.FK(col)</code>
-        panics (the persister injects the root id into it). On the read side, an <code>EmbedMany</code> source without
-        <code>.FK(col)</code>, and a one-to-one <code>Embed</code> without <code>.FK(col)</code>, are fatal
-        <code>ValidateViewSchemas</code> errors.</li>
+        panics (the persister injects the root id into it). On the read side, every embed/link names its join column on the
+        verb via <code>.On(col)</code> — mandatory and compile-time enforced (the verb's binding routes back to the builder
+        only through <code>.On</code>); an empty <code>.On("")</code> is a fatal <code>ValidateViewSchemas</code> error.</li>
     <li><strong>Aggregate depth = 1 (no grandchildren)</strong> — a child schema that declares its own
         <code>Child(...)</code> panics at <code>WithSchema</code> (write side); an embed source whose schema carries
         <code>Child(...)</code> is a fatal error in <code>ValidateViewSchemas</code> (read side). Width is unlimited;
