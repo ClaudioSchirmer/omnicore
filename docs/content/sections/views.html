@@ -87,126 +87,6 @@
         )
 }</code></pre>
 
-<h3 id="views-external">The external schema — the view-exclusive declaration</h3>
-<p>
-    A view is the ONLY place a <strong>type-less</strong> schema exists: <code>core.NewExternalSchema(collection)</code>,
-    attached to a view through <code>query.FromSchema(...)</code>. Unlike a write-anchored <code>NewTableSchema[T]</code>
-    (bound to a Go type, validated at construction), an external schema has <strong>no Go struct</strong> — its physical
-    columns belong to an <em>upstream</em> service's Mongo collection (or a derived projection) that another team owns.
-    Being type-less is the very signal that marks a source as EXTERNAL; there is no separate <code>FromMongo</code>
-    constructor.
-</p>
-<p>
-    On an external <code>Field(goName, column[, labelKey])</code> the left side is the <em>logical Go name</em> the local
-    view's Response/criteria speak; the right side names the <em>upstream's physical column</em>. It is validated by
-    bijection (no two fields share a column) but against no type — there is none. Because there is no Go type to derive a
-    segment from, <code>.As(goSegment)</code> is <strong>mandatory</strong> (a fatal boot error otherwise);
-    <code>.FK(column)</code> names the parent document's FK column pointing at the source's PK.
-</p>
-<pre><code>// The upstream users service is mirrored locally (see Service-to-service);
-// this type-less schema describes THAT collection's columns.
-query.FromSchema(
-    core.NewExternalSchema("upstream_users").
-        PK("id").
-        Field("Name", "name").
-        Field("Email", "mail")).      // logical Go name ↔ upstream column
-    FK("buyer_id").                   // parent doc FK → source PK (one-to-one)
-    As("Buyer")                       // REQUIRED — no Go type to derive the segment</code></pre>
-
-<h3 id="views-embed">Embed and EmbedMany — composing external data</h3>
-<p>
-    The two materialized constructors (<code>View</code> and <code>SharedBaseView</code>) reach OTHER data only through an
-    external embed. <code>Embed(field, src)</code> is 1:1 (a single sub-document, <code>null</code> when unresolved);
-    <code>EmbedMany(field, src)</code> is 1:N (an array, empty when none). Both take a <code>*Source</code> built with
-    <code>query.FromSchema(core.NewExternalSchema(...))</code> — the FK lives on the parent for 1:1 and on the child schema
-    for 1:N.
-</p>
-<div class="box">
-    <strong>Embeds are EXTERNAL-only — by design.</strong> An aggregate's own children, siblings and shared base already
-    decompose out of the declarative schema, so declaring them as an embed would be a redundant second path
-    (a write-anchored embed source is a fatal boot error). And joining an <em>internal</em> view that already exists is
-    precisely what the read-time <a href="#views~views-composed">ComposedView</a> does. A boot guard (§8.3) enforces that an
-    embed source collection resolves to an <code>UpstreamSubscription.Collection</code> — a local <code>ViewDefinition</code>
-    name is rejected, because its recompose ripple would be one-hop and drift silently.
-</div>
-<div class="box">
-    <strong>Embeds are SINGLE-LEVEL — by construction, not by a runtime check.</strong> A view may declare
-    <em>any number</em> of top-level <code>Embed</code>/<code>EmbedMany</code>, but a <code>*Source</code> exposes
-    <em>no</em> <code>Embed</code>/<code>EmbedMany</code> builder — only <code>FromSchema</code>, <code>FK</code> and
-    <code>As</code>. An embed's source therefore cannot nest a further embed: embed-of-embed is <strong>not expressible and
-    fails to compile</strong>, never a boot or runtime surprise. The reason it was never a supported shape is the one-hop
-    ripple: first-time compose and a full rebuild would materialize a nested segment, but the recompose-ripple that keeps an
-    embed fresh only reaches the view's top-level embeds — a nested segment would materialize once and then drift silently.
-    To reach two external hops, embed each one at the top level, or join at read time with a
-    <a href="#views~views-composed">ComposedView</a>.
-</div>
-<p>
-    The embedded segment is kept fresh by the <strong>recompose-ripple</strong>: when the upstream source collection
-    changes, every dependent view that embeds it is recomposed (surgically, per element). Declaration, the ripple, the
-    failure registry and the channel decision matrix live under <a href="#service-to-service">Service-to-service</a>.
-</p>
-<p>
-    The full composition vocabulary, side by side — the two materialized kinds embed EXTERNAL data; the read-time
-    <code>ComposedView</code> below links INTERNAL views (or external collections):
-</p>
-<table>
-    <tbody><tr><th>Constructor(s)</th><th>Method</th><th>2nd arg</th><th>Built from — and reach</th></tr>
-    <tr><td><code>View</code> / <code>SharedBaseView</code></td><td><code>Embed(seg, src)</code> — 1:1</td><td><code>*Source</code></td><td><code>query.FromSchema(core.NewExternalSchema(…))</code> — EXTERNAL only; FK on the parent.</td></tr>
-    <tr><td><code>View</code> / <code>SharedBaseView</code></td><td><code>EmbedMany(seg, src)</code> — 1:N</td><td><code>*Source</code></td><td><code>query.FromSchema(core.NewExternalSchema(…))</code> — EXTERNAL only; FK on the child schema.</td></tr>
-    <tr><td><code>View</code> / <code>SharedBaseView</code></td><td><code>EmbedInChild(childSchema, seg, src)</code> — 1:1 into a native child</td><td><code>*Source</code></td><td><code>query.FromSchema(core.NewExternalSchema(…))</code> — EXTERNAL only; FK <em>inside each element</em> of a native aggregate child.</td></tr>
-    <tr><td><code>ComposedView</code></td><td><code>Link(seg, leg)</code> — 1:1</td><td><code>*Leg</code></td><td><code>query.JoinView(view)</code> (INTERNAL registered view) <em>or</em> <code>query.JoinUpstream(core.NewExternalSchema(…))</code> (EXTERNAL); FK on the primary.</td></tr>
-    <tr><td><code>ComposedView</code></td><td><code>LinkMany(seg, leg)</code> — 1:N</td><td><code>*Leg</code></td><td>Same two constructors; FK on the leg (<code>leg.fk → primary._id</code>); <code>OrderBy</code> + <code>MaxLinkManyLimit</code> apply.</td></tr>
-</tbody></table>
-<p>
-    Both families share <code>.FK(column)</code> — the FK always points at the other side's PK/<code>_id</code>; the 1:1
-    side that holds it is the parent/primary, the 1:N side is the child/leg — and <code>.As(goSegment)</code>, mandatory on
-    every external source (a type-less schema has no Go type to derive a segment from). Note the symmetry:
-    <code>FromSchema</code> and <code>JoinUpstream</code> take the SAME thing (a <code>core.NewExternalSchema</code>); only
-    <code>JoinView</code> has no embed counterpart, because embedding an internal view would duplicate data the schema
-    already projects — join it at read time with a <a href="#views~views-composed">ComposedView</a> instead.
-</p>
-<div class="box">
-    <strong>Composing your OWN internal aggregates.</strong> Data already inside one aggregate — its children, siblings, or
-    shared-base identity — projects automatically (declare the schema, nothing else). To join two <em>separate</em> internal
-    aggregates into one read model there are two paths: a <a href="#views~views-sharedbase">SharedBaseView</a> when they
-    share an identity (the party-role pattern), or a read-time <a href="#views~views-composed">ComposedView</a> that
-    <code>JoinView</code>s one onto the other by key. A <em>materialized</em> cross-aggregate join is deliberately not
-    offered — an embed of a local view would keep only a one-hop ripple and drift silently, which is why embeds stay
-    EXTERNAL-only.
-</div>
-
-<h3 id="views-embed-child">EmbedInChild — enriching a child array (per-element 1:1)</h3>
-<p>
-    <code>Embed</code>/<code>EmbedMany</code> join off the <em>root</em> document. <code>EmbedInChild</code> enriches
-    every element of a view's <strong>native aggregate child</strong> array with a 1:1 external lookup keyed by a FK that
-    lives <em>inside each element</em> — the read-side denormalization for the "list of X with the name of Y per line"
-    shape. The canonical case: a sale view whose line items each carry <code>product_id</code>, enriched with the product
-    name from an upstream projection. The write model stays normalized (the element keeps only its FK); the enrichment
-    lives only in the view, kept fresh by the recompose-ripple.
-</p>
-<pre><code>view.EmbedInChild(SaleItemSchema(), "product",
-    query.FromSchema(query.NewExternalSchema("upstream_products")).
-        FK("product_id").As("Product"))
-</code></pre>
-<ul>
-    <li><strong>Native child only.</strong> <code>childSchema</code> must be a child declared on the view root via
-        <code>root.Child(...)</code> — validated at boot against the root's declared children (a non-child aborts boot).
-        For a <code>SharedBaseView</code> it targets the BASE's native children; role-nested children are not supported.</li>
-    <li><strong>1:1 only.</strong> There is no <code>EmbedManyInChild</code>: a 1:N enrichment would nest an array inside a
-        child-array element — a third collection level, the forbidden grandchild shape.</li>
-    <li><strong>External source, FK inside the element.</strong> <code>src</code> is a
-        <code>FromSchema(NewExternalSchema(...))</code> (a Mongo collection, like a root embed); <code>.FK(col)</code> names
-        the join column inside each element, resolved against the source's <code>_id</code>; <code>.As(...)</code> names
-        the Go segment.</li>
-    <li><strong>Covering index required (breaking).</strong> The ripple's fan-out reverse-scans the view on
-        <code>"&lt;childSegment&gt;.&lt;fk&gt;"</code>, so a multikey index on that path is mandatory and enforced at boot —
-        declare it via <code>.Indexes(query.Index("items.product_id"))</code>. The same boot requirement now applies to a
-        1:1 root <code>Embed</code> (an index on its parent join column); <code>EmbedMany</code> is exempt (its ripple never
-        reverse-scans the view).</li>
-    <li><strong>Rebuild shape.</strong> The enrichment participates in the <code>RebuildHash</code>, so changing it without
-        a <code>Version(N)</code> bump is caught as <code>DriftForgotToBump</code>.</li>
-</ul>
-
 <h3 id="views-sharedbase">SharedBaseView — the all-in-one identity</h3>
 <p>
     A <code>SharedBaseView</code> is rooted at a <strong>shared base</strong> (<code>core.NewSharedBaseSchema</code>): one
@@ -355,8 +235,8 @@ query.FromSchema(
         changing any part of a role's schema closure, without bumping <code>Version(N)</code> is
         detected as forgot-to-bump and aborts boot — same contract as every rebuild-relevant change
         (see <a href="#mongo-schema-evolution">Mongo schema evolution</a>).</li>
-    <li><code>Embed</code>/<code>EmbedMany</code> still compose external data only, joined on the base
-        PK at the root.</li>
+    <li>The external opt-ins below (<code>Embed</code>/<code>EmbedMany</code>/<code>EmbedInChild</code>) apply here too,
+        joined on the base PK at the root.</li>
 </ul>
 
 <div class="box">
@@ -366,6 +246,131 @@ query.FromSchema(
     data export). It is one more projection over the same CDC stream: no extra writes, one more
     recompose per role event.
 </div>
+<h3 id="views-external">The external schema — the view-exclusive declaration</h3>
+<p>
+    A view is the ONLY place a <strong>type-less</strong> schema exists: <code>core.NewExternalSchema(collection)</code>,
+    attached to a view through <code>query.FromSchema(...)</code>. Unlike a write-anchored <code>NewTableSchema[T]</code>
+    (bound to a Go type, validated at construction), an external schema has <strong>no Go struct</strong> — its physical
+    columns belong to an <em>upstream</em> service's Mongo collection (or a derived projection) that another team owns.
+    Being type-less is the very signal that marks a source as EXTERNAL; there is no separate <code>FromMongo</code>
+    constructor.
+</p>
+<p>
+    On an external <code>Field(goName, column[, labelKey])</code> the left side is the <em>logical Go name</em> the local
+    view's Response/criteria speak; the right side names the <em>upstream's physical column</em>. It is validated by
+    bijection (no two fields share a column) but against no type — there is none. Because there is no Go type to derive a
+    segment from, <code>.As(goSegment)</code> is <strong>mandatory</strong> (a fatal boot error otherwise);
+    <code>.FK(column)</code> names the parent document's FK column pointing at the source's PK.
+</p>
+<pre><code>// The upstream users service is mirrored locally (see Service-to-service);
+// this type-less schema describes THAT collection's columns.
+query.FromSchema(
+    core.NewExternalSchema("upstream_users").
+        PK("id").
+        Field("Name", "name").
+        Field("Email", "mail")).      // logical Go name ↔ upstream column
+    FK("buyer_id").                   // parent doc FK → source PK (one-to-one)
+    As("Buyer")                       // REQUIRED — no Go type to derive the segment</code></pre>
+
+<h3 id="views-embed">Embed and EmbedMany — composing external data</h3>
+<p>
+    The two materialized constructors (<code>View</code> and <code>SharedBaseView</code>) reach OTHER data only through an
+    external embed. <code>Embed(field, src)</code> is 1:1 (a single sub-document, <code>null</code> when unresolved);
+    <code>EmbedMany(field, src)</code> is 1:N (an array, empty when none). Both take a <code>*Source</code> built with
+    <code>query.FromSchema(core.NewExternalSchema(...))</code> — the FK lives on the parent for 1:1 and on the child schema
+    for 1:N.
+</p>
+<div class="box">
+    <strong>Embeds are EXTERNAL-only — by design.</strong> An aggregate's own children, siblings and shared base already
+    decompose out of the declarative schema, so declaring them as an embed would be a redundant second path
+    (a write-anchored embed source is a fatal boot error). And joining an <em>internal</em> view that already exists is
+    precisely what the read-time <a href="#views~views-composed">ComposedView</a> does. A boot guard (§8.3) enforces that an
+    embed source collection resolves to an <code>UpstreamSubscription.Collection</code> — a local <code>ViewDefinition</code>
+    name is rejected, because its recompose ripple would be one-hop and drift silently.
+</div>
+<div class="box">
+    <strong>Embeds are SINGLE-LEVEL — by construction, not by a runtime check.</strong> A view may declare
+    <em>any number</em> of top-level <code>Embed</code>/<code>EmbedMany</code>, but a <code>*Source</code> exposes
+    <em>no</em> <code>Embed</code>/<code>EmbedMany</code> builder — only <code>FromSchema</code>, <code>FK</code> and
+    <code>As</code>. An embed's source therefore cannot nest a further embed: embed-of-embed is <strong>not expressible and
+    fails to compile</strong>, never a boot or runtime surprise. The reason it was never a supported shape is the one-hop
+    ripple: first-time compose and a full rebuild would materialize a nested segment, but the recompose-ripple that keeps an
+    embed fresh only reaches the view's top-level embeds — a nested segment would materialize once and then drift silently.
+    To reach two external hops, embed each one at the top level, or join at read time with a
+    <a href="#views~views-composed">ComposedView</a>.
+</div>
+<p>
+    The embedded segment is kept fresh by the <strong>recompose-ripple</strong>: when the upstream source collection
+    changes, every dependent view that embeds it is recomposed surgically, per element. To find the documents a change
+    affects, a 1:1 <code>Embed</code> scans the view by the parent's join column and an <code>EmbedInChild</code> scans it
+    by the <code>&lt;childSegment&gt;.&lt;fk&gt;</code> path; each therefore requires a covering index on that path,
+    declared with <code>.Indexes(query.Index(...))</code> and verified at boot. An <code>EmbedMany</code> needs no such
+    index — it reads the parent id straight from the changed child's own foreign key. Declaration, the ripple, the
+    failure registry and the channel decision matrix live under <a href="#service-to-service">Service-to-service</a>.
+</p>
+<p>
+    The full composition vocabulary, side by side — the two materialized kinds embed EXTERNAL data; the read-time
+    <code>ComposedView</code> below links INTERNAL views (or external collections):
+</p>
+<table>
+    <tbody><tr><th>Constructor(s)</th><th>Method</th><th>2nd arg</th><th>Built from — and reach</th></tr>
+    <tr><td><code>View</code> / <code>SharedBaseView</code></td><td><code>Embed(seg, src)</code> — 1:1</td><td><code>*Source</code></td><td><code>query.FromSchema(core.NewExternalSchema(…))</code> — EXTERNAL only; FK on the parent.</td></tr>
+    <tr><td><code>View</code> / <code>SharedBaseView</code></td><td><code>EmbedMany(seg, src)</code> — 1:N</td><td><code>*Source</code></td><td><code>query.FromSchema(core.NewExternalSchema(…))</code> — EXTERNAL only; FK on the child schema.</td></tr>
+    <tr><td><code>View</code> / <code>SharedBaseView</code></td><td><code>EmbedInChild(childSchema, seg, src)</code> — 1:1 into a native child</td><td><code>*Source</code></td><td><code>query.FromSchema(core.NewExternalSchema(…))</code> — EXTERNAL only; FK <em>inside each element</em> of a native aggregate child.</td></tr>
+    <tr><td><code>ComposedView</code></td><td><code>Link(seg, leg)</code> — 1:1</td><td><code>*Leg</code></td><td><code>query.JoinView(view)</code> (INTERNAL registered view) <em>or</em> <code>query.JoinUpstream(core.NewExternalSchema(…))</code> (EXTERNAL); FK on the primary.</td></tr>
+    <tr><td><code>ComposedView</code></td><td><code>LinkMany(seg, leg)</code> — 1:N</td><td><code>*Leg</code></td><td>Same two constructors; FK on the leg (<code>leg.fk → primary._id</code>); <code>OrderBy</code> + <code>MaxLinkManyLimit</code> apply.</td></tr>
+</tbody></table>
+<p>
+    Both families share <code>.FK(column)</code> — the FK always points at the other side's PK/<code>_id</code>; the 1:1
+    side that holds it is the parent/primary, the 1:N side is the child/leg — and <code>.As(goSegment)</code>, mandatory on
+    every external source (a type-less schema has no Go type to derive a segment from). Note the symmetry:
+    <code>FromSchema</code> and <code>JoinUpstream</code> take the SAME thing (a <code>core.NewExternalSchema</code>); only
+    <code>JoinView</code> has no embed counterpart, because embedding an internal view would duplicate data the schema
+    already projects — join it at read time with a <a href="#views~views-composed">ComposedView</a> instead.
+</p>
+<div class="box">
+    <strong>Composing your OWN internal aggregates.</strong> Data already inside one aggregate — its children, siblings, or
+    shared-base identity — projects automatically (declare the schema, nothing else). To join two <em>separate</em> internal
+    aggregates into one read model there are two paths: a <a href="#views~views-sharedbase">SharedBaseView</a> when they
+    share an identity (the party-role pattern), or a read-time <a href="#views~views-composed">ComposedView</a> that
+    <code>JoinView</code>s one onto the other by key. A <em>materialized</em> cross-aggregate join is deliberately not
+    offered — an embed of a local view would keep only a one-hop ripple and drift silently, which is why embeds stay
+    EXTERNAL-only.
+</div>
+
+<h3 id="views-embed-child">EmbedInChild — enriching a child array</h3>
+<p>
+    Where <code>Embed</code> and <code>EmbedMany</code> compose external data off the root document,
+    <code>EmbedInChild(childSchema, field, src)</code> composes it one level down: every element of a
+    <strong>native aggregate-child</strong> array gains a 1:1 sub-document resolved from a foreign key the element itself
+    carries. It is the read model for the "list of X with the name of Y on each line" shape — a sale view whose line items
+    each store a <code>product_id</code> and read back with the product beside it. The write side keeps the element
+    normalized (it stores only the foreign key); the enrichment exists only in the projection, kept current by the same
+    recompose-ripple that keeps a root embed fresh.
+</p>
+<pre><code>view.EmbedInChild(SaleItemSchema(), "product",
+    query.FromSchema(query.NewExternalSchema("upstream_products")).
+        FK("product_id").As("Product"))
+</code></pre>
+<p>
+    <code>childSchema</code> is a child of the view root — declared with <code>root.Child(...)</code> on a
+    <code>query.View</code>, or on the base of a <code>SharedBaseView</code> (a role's own children are not a target). The
+    source is external, exactly as a root embed: a <code>query.FromSchema(core.NewExternalSchema(...))</code> whose
+    <code>.FK(column)</code> names the join column each child element carries — resolved against the source's
+    <code>_id</code> — and whose <code>.As(segment)</code> names the Go field the sub-document reads back under. The
+    enrichment is a first-class part of the projection: it is filtered, sorted and pruned with <code>?fields=</code> at the
+    child's segment path (<code>items.product.name</code>), walked by tabular export, and folded into the
+    <code>RebuildHash</code> — so changing it without a <code>Version(N)</code> bump surfaces as
+    <code>DriftForgotToBump</code>. Its recompose-ripple, and the covering index it requires, are the same ones a 1:1 root
+    embed uses (see above).
+</p>
+<div class="box">
+    <strong>The enrichment is a single sub-document — there is no <code>EmbedManyInChild</code>.</strong> A one-to-many
+    enrichment would nest an array inside a child-array element: a third collection level below the root, the grandchild
+    shape aggregate persistence itself forbids. So each element holds one enriched sub-document, and the child array stays
+    the view's deepest collection.
+</div>
+
 <h3 id="views-composed">ComposedView — read-time composition</h3>
     <p>
         <strong>A ComposedView is not a view like the others.</strong> It is never materialized, never
