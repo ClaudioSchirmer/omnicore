@@ -13,6 +13,7 @@ type ViewDefinition struct {
 	version         int
 	schema          *core.TableSchema
 	embeds          []embedDef
+	childEmbeds     []childEmbedDef
 	deleteOnArchive bool
 	mongoSpec       mongoSpec
 	// maxLimit caps the per-page document count returned by ViewReader.ReadPage.
@@ -46,6 +47,43 @@ type embedDef struct {
 // Collection / JoinKey without reaching into private fields across package
 // boundaries.
 func (e embedDef) Source() *Source { return e.source }
+
+// childEmbedDef is one EmbedInChild declaration: a 1:1 enrichment applied to
+// every element of a NATIVE aggregate-child array of the view (declared via
+// root.Child(childSchema)). Unlike embedDef (which joins off the root doc), the
+// join key lives INSIDE each child element: for each element the composer reads
+// element[source.joinKey] and looks the source doc up by _id, landing it under
+// `field`. There is deliberately no EmbedMany-in-child: a 1:N enrichment would
+// nest an array inside a child-array element (a third collection level, the
+// forbidden "grandchild" shape), so only the 1:1 form exists.
+type childEmbedDef struct {
+	// childSchema identifies WHICH native child of the view root this enriches.
+	// Validated at boot against root.ChildSchemas() by table identity (schema
+	// constructors return fresh instances, so the match is by table, not pointer).
+	childSchema *core.TableSchema
+	// field is the doc field the enrichment lands under inside each child element.
+	field string
+	// source is the external embed source (a Mongo collection); source.joinKey is
+	// the FK column that lives INSIDE each child element (e.g. "product_id").
+	source *Source
+}
+
+// ChildSegment is the doc field where the enriched child array lives — derived
+// from the child schema exactly like the composer names it, so the ripple's
+// nested-field fan-out and the required multikey index agree on the path.
+func (c childEmbedDef) ChildSegment() string { return childDocSegment(c.childSchema) }
+
+// FKColumn is the join column inside each child element (source.joinKey).
+func (c childEmbedDef) FKColumn() string { return c.source.joinKey }
+
+// Field returns the doc field the enrichment lands under inside each element.
+func (c childEmbedDef) Field() string { return c.field }
+
+// Source returns the external embed source.
+func (c childEmbedDef) Source() *Source { return c.source }
+
+// ChildSchema returns the native child schema this enrichment targets.
+func (c childEmbedDef) ChildSchema() *core.TableSchema { return c.childSchema }
 
 // Field returns the document field name where the embed lands in the
 // composed Mongo document. Symmetric with Source() for boot guards.
@@ -151,6 +189,34 @@ func (v *ViewDefinition) EmbedMany(field string, src *Source) *ViewDefinition {
 	return v
 }
 
+// EmbedInChild enriches every element of a NATIVE aggregate-child array of this
+// view with a 1:1 external lookup — the read-side denormalization for the
+// "list of X with the name of Y per line" shape (e.g. a sale view whose line
+// items each carry product_id, enriched with the product name from an upstream
+// projection). The write model stays normalized (the element keeps only its FK);
+// the enrichment lives only in the view, kept fresh by the recompose ripple.
+//
+//		.EmbedInChild(SaleItemSchema(), "product",
+//		    query.FromSchema(query.NewExternalSchema("upstream_products")).
+//		        FK("product_id").As("Product"))
+//
+//	  - childSchema MUST be a native child declared on the view root via
+//	    .Child(...) (validated at boot against root.ChildSchemas() by table
+//	    identity). For a SharedBaseView it targets the BASE's native children;
+//	    role-nested children are not supported.
+//	  - src is an external source (NewExternalSchema); src.FK(col) names the join
+//	    column that lives INSIDE each child element, resolved against the source's
+//	    _id. As(...) names the Go segment.
+//	  - 1:1 only — there is no EmbedManyInChild (a 1:N would nest an array inside a
+//	    child element, the forbidden grandchild shape).
+//
+// The ripple's fan-out reverse-scans the view on "<childSegment>.<fk>", so a
+// covering multikey index on that path is REQUIRED and enforced at boot.
+func (v *ViewDefinition) EmbedInChild(childSchema *core.TableSchema, field string, src *Source) *ViewDefinition {
+	v.childEmbeds = append(v.childEmbeds, childEmbedDef{childSchema: childSchema, field: field, source: src})
+	return v
+}
+
 // MaxLimit overrides the per-view ceiling on `?limit=` for endpoints reading
 // from this projection. Applies uniformly to every endpoint that consults the
 // view, regardless of how many handlers point at it — the cap describes the
@@ -169,10 +235,11 @@ func (v *ViewDefinition) MaxLimit(n int64) *ViewDefinition {
 	return v
 }
 
-func (v *ViewDefinition) Name() string           { return v.name }
-func (v *ViewDefinition) VersionNumber() int     { return v.version }
-func (v *ViewDefinition) Embeds() []embedDef     { return v.embeds }
-func (v *ViewDefinition) DeletesOnArchive() bool { return v.deleteOnArchive }
+func (v *ViewDefinition) Name() string                 { return v.name }
+func (v *ViewDefinition) VersionNumber() int           { return v.version }
+func (v *ViewDefinition) Embeds() []embedDef           { return v.embeds }
+func (v *ViewDefinition) ChildEmbeds() []childEmbedDef { return v.childEmbeds }
+func (v *ViewDefinition) DeletesOnArchive() bool       { return v.deleteOnArchive }
 
 // RootTable is the physical aggregate-root table the view is fed from (the
 // broker routing key) and the composer reads FROM. It is DERIVED from the
@@ -334,6 +401,8 @@ func ValidateViewSchemas(views []*ViewDefinition) error {
 		}
 		problems = appendSegmentCollisions(problems, v.Name(), v.schema, v.embeds, v.roles)
 		problems = appendEmbedSchemaProblems(problems, v.Name(), v.embeds)
+		problems = appendChildEmbedProblems(problems, v.Name(), v)
+		problems = appendEmbedIndexProblems(problems, v.Name(), v)
 	}
 	if len(problems) == 0 {
 		return nil
@@ -343,6 +412,108 @@ func ValidateViewSchemas(views []*ViewDefinition) error {
 			"and every external embed must declare its Go segment via .As(...):\n  - %s",
 		strings.Join(problems, "\n  - "),
 	)
+}
+
+// viewHasIndexPrefix reports whether some declared index of the view has col as
+// its FIRST key — a covering index for an equality (FindIDsByField) on col. A
+// compound index serves a prefix equality, so only the first key qualifies.
+func viewHasIndexPrefix(v *ViewDefinition, col string) bool {
+	for _, spec := range v.IndexSpecs() {
+		if len(spec.Keys) > 0 && spec.Keys[0].Field == col {
+			return true
+		}
+	}
+	return false
+}
+
+// appendChildEmbedProblems validates every EmbedInChild: the targeted schema MUST
+// be a NATIVE child of the view root (declared via root.Child(...)); the source
+// MUST be external (a Mongo collection) with a PK; and the FK column inside the
+// element MUST be declared via .FK(...). For a SharedBaseView the root native
+// children are the BASE's children (role-nested children are out of scope).
+func appendChildEmbedProblems(acc []string, viewName string, v *ViewDefinition) []string {
+	if v.schema == nil || len(v.childEmbeds) == 0 {
+		return acc
+	}
+	nativeChildren := map[string]struct{}{}
+	for _, ch := range v.schema.ChildSchemas() {
+		nativeChildren[ch.Table()] = struct{}{}
+	}
+	for _, ce := range v.childEmbeds {
+		if ce.childSchema == nil {
+			acc = append(acc, fmt.Sprintf("view %q: EmbedInChild(...) has no child schema", viewName))
+			continue
+		}
+		if _, ok := nativeChildren[ce.childSchema.Table()]; !ok {
+			acc = append(acc, fmt.Sprintf(
+				"view %q: EmbedInChild(%q, ...) — %q is NOT a native child of the view root %q; only a "+
+					"schema declared via root.Child(...) can be enriched (for a SharedBaseView, a child of the BASE). "+
+					"Declare it as a child, or embed at the root.",
+				viewName, ce.childSchema.Table(), ce.childSchema.Table(), v.schema.Table()))
+			continue
+		}
+		if ce.source == nil || ce.source.schema == nil {
+			acc = append(acc, fmt.Sprintf("view %q: EmbedInChild(%q, ...) has no source schema", viewName, ce.childSchema.Table()))
+			continue
+		}
+		if !ce.source.schema.IsExternal() {
+			acc = append(acc, fmt.Sprintf(
+				"view %q: EmbedInChild(%q, ...) source %q is write-anchored — the source must be an EXTERNAL "+
+					"collection (NewExternalSchema over an upstream projection), like a root Embed.",
+				viewName, ce.childSchema.Table(), ce.source.table))
+		}
+		if !ce.source.schema.HasPKDeclared() {
+			acc = append(acc, fmt.Sprintf(
+				"view %q: EmbedInChild(%q, ...) source %q declares no primary key — declare .PK(column)",
+				viewName, ce.childSchema.Table(), ce.source.table))
+		}
+		if ce.source.joinKey == "" {
+			acc = append(acc, fmt.Sprintf(
+				"view %q: EmbedInChild(%q, ...) declares no FK inside the child element — set the element's join "+
+					"column via .FK(\"...\") on the source.",
+				viewName, ce.childSchema.Table()))
+		}
+	}
+	return acc
+}
+
+// appendEmbedIndexProblems enforces the covering index the recompose ripple needs
+// (a boot requirement, breaking retroactively for existing embeds). Only embeds
+// whose ripple REVERSE-SCANS the view need one:
+//   - a 1:1 root Embed → an index prefix on its parent join column;
+//   - an EmbedInChild → a multikey index prefix on "<childSegment>.<fk>".
+//
+// EmbedMany is exempt: its ripple resolves the parent by the child's FK → parent
+// _id (always indexed), never a reverse scan of the view.
+func appendEmbedIndexProblems(acc []string, viewName string, v *ViewDefinition) []string {
+	for _, e := range v.embeds {
+		if e.many || e.source == nil {
+			continue
+		}
+		col := e.source.joinKey
+		if col == "" {
+			continue // schema-level problem already reported elsewhere
+		}
+		if !viewHasIndexPrefix(v, col) {
+			acc = append(acc, fmt.Sprintf(
+				"view %q: 1:1 Embed %q requires a covering index on its parent join column %q for the recompose "+
+					"ripple's reverse scan — declare .Indexes(query.Index(%q)).",
+				viewName, e.field, col, col))
+		}
+	}
+	for _, ce := range v.childEmbeds {
+		if ce.source == nil || ce.childSchema == nil || ce.source.joinKey == "" {
+			continue
+		}
+		col := ce.ChildSegment() + "." + ce.source.joinKey
+		if !viewHasIndexPrefix(v, col) {
+			acc = append(acc, fmt.Sprintf(
+				"view %q: EmbedInChild(%q, ...) requires a multikey index on %q for the recompose ripple's "+
+					"reverse scan — declare .Indexes(query.Index(%q)).",
+				viewName, ce.childSchema.Table(), col, col))
+		}
+	}
+	return acc
 }
 
 func appendEmbedSchemaProblems(acc []string, viewName string, embeds []embedDef) []string {
@@ -509,11 +680,26 @@ type roleRoute struct {
 func DependentMongoViews(views []*ViewDefinition, collection string) []*ViewDefinition {
 	var out []*ViewDefinition
 	for _, v := range views {
-		if viewEmbedsMongoCollection(v.embeds, collection) {
+		if viewEmbedsMongoCollection(v.embeds, collection) || viewChildEmbedsMongoCollection(v.childEmbeds, collection) {
 			out = append(out, v)
 		}
 	}
 	return out
+}
+
+// viewChildEmbedsMongoCollection reports whether some EmbedInChild of the view
+// enriches from the named collection — so a change to that upstream collection
+// ripples into the view's child arrays.
+func viewChildEmbedsMongoCollection(childEmbeds []childEmbedDef, collection string) bool {
+	for _, ce := range childEmbeds {
+		if ce.source == nil {
+			continue
+		}
+		if ce.source.IsMongo() && ce.source.Collection() == collection {
+			return true
+		}
+	}
+	return false
 }
 
 func viewEmbedsMongoCollection(embeds []embedDef, collection string) bool {

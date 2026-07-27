@@ -642,7 +642,7 @@ func (s *SyncEngine) process(ctx context.Context, event kafkaEvent) error {
 		//     segment pick is cross-row — recomposeBaseRooted owns them);
 		//   - views with external EMBEDS (the embed enrichment on first
 		//     composition still reads the local Mongo mirror).
-		if !view.isSharedBaseView && len(view.embeds) == 0 {
+		if !view.isSharedBaseView && len(view.embeds) == 0 && len(view.childEmbeds) == 0 {
 			stages := buildProjectionStages(view.schema, coercePayloadEvent(view.schema, raw))
 			if len(stages) == 0 {
 				continue

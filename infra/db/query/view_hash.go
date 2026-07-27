@@ -99,6 +99,28 @@ func (v *ViewDefinition) writeRebuildShape(w *canonicalWriter) {
 		}
 	}
 
+	// EmbedInChild enrichments are projection shape: the enriched field, the
+	// child it lands in, the source collection and the element FK all change the
+	// materialized document, so a change without a Version bump must move the
+	// RebuildHash. Emitted ONLY when the view declares child-embeds, so a view
+	// without them keeps its byte-identical rebuild_v2 stream (no existing view's
+	// hash moves on upgrade). Sorted by (childSegment, field) for order-independence.
+	if len(v.childEmbeds) > 0 {
+		w.writeTag("child_embeds")
+		ces := append([]childEmbedDef(nil), v.childEmbeds...)
+		sort.Slice(ces, func(i, j int) bool {
+			return ces[i].ChildSegment()+"\x00"+ces[i].field < ces[j].ChildSegment()+"\x00"+ces[j].field
+		})
+		w.writeInt(int64(len(ces)))
+		for _, ce := range ces {
+			w.writeString(ce.childSchema.Table())
+			w.writeString(ce.field)
+			w.writeString(ce.source.Table())
+			w.writeString(ce.source.joinKey)
+			w.writeString(ce.source.goSegment)
+		}
+	}
+
 	w.writeTag("schema")
 	writeJSONSchema(w, v.mongoSpec.jsonSchema)
 

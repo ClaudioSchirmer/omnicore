@@ -55,6 +55,27 @@ func (v *ViewDefinition) BuildViewNode() *ViewNode {
 		n.embeds[r.segment] = ve
 		n.embedsByDoc[r.segment] = ve
 	}
+	// EmbedInChild: register the enriched sub-document INSIDE the native child's
+	// node, so ToGoDoc translates the nested segment (column→Go) on read and
+	// ColumnPath resolves a filter/sort/?fields= path into it
+	// (e.g. "catalogLines.item.label"). The native child node was registered by
+	// registerOwnChildren / the SharedBaseRef branch and is keyed by the child's
+	// doc segment. Registered as a plain embed (NOT isChild): the enrichment is
+	// external data with no aggregate lifecycle, so the archived-entry strip must
+	// not touch it.
+	for _, ce := range v.childEmbeds {
+		childVE, ok := n.embedsByDoc[ce.ChildSegment()]
+		if !ok || childVE.node == nil {
+			continue // boot-validated to be a native child; defensive
+		}
+		seg := ce.source.goSegment
+		if seg == "" {
+			seg = ce.field
+		}
+		ive := &viewEmbed{goSegment: seg, docField: ce.field, node: newViewNode(ce.source.schema, nil)}
+		childVE.node.embeds[seg] = ive
+		childVE.node.embedsByDoc[ce.field] = ive
+	}
 	return n
 }
 

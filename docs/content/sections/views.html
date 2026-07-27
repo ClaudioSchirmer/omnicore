@@ -153,6 +153,7 @@ query.FromSchema(
     <tbody><tr><th>Constructor(s)</th><th>Method</th><th>2nd arg</th><th>Built from — and reach</th></tr>
     <tr><td><code>View</code> / <code>SharedBaseView</code></td><td><code>Embed(seg, src)</code> — 1:1</td><td><code>*Source</code></td><td><code>query.FromSchema(core.NewExternalSchema(…))</code> — EXTERNAL only; FK on the parent.</td></tr>
     <tr><td><code>View</code> / <code>SharedBaseView</code></td><td><code>EmbedMany(seg, src)</code> — 1:N</td><td><code>*Source</code></td><td><code>query.FromSchema(core.NewExternalSchema(…))</code> — EXTERNAL only; FK on the child schema.</td></tr>
+    <tr><td><code>View</code> / <code>SharedBaseView</code></td><td><code>EmbedInChild(childSchema, seg, src)</code> — 1:1 into a native child</td><td><code>*Source</code></td><td><code>query.FromSchema(core.NewExternalSchema(…))</code> — EXTERNAL only; FK <em>inside each element</em> of a native aggregate child.</td></tr>
     <tr><td><code>ComposedView</code></td><td><code>Link(seg, leg)</code> — 1:1</td><td><code>*Leg</code></td><td><code>query.JoinView(view)</code> (INTERNAL registered view) <em>or</em> <code>query.JoinUpstream(core.NewExternalSchema(…))</code> (EXTERNAL); FK on the primary.</td></tr>
     <tr><td><code>ComposedView</code></td><td><code>LinkMany(seg, leg)</code> — 1:N</td><td><code>*Leg</code></td><td>Same two constructors; FK on the leg (<code>leg.fk → primary._id</code>); <code>OrderBy</code> + <code>MaxLinkManyLimit</code> apply.</td></tr>
 </tbody></table>
@@ -173,6 +174,38 @@ query.FromSchema(
     offered — an embed of a local view would keep only a one-hop ripple and drift silently, which is why embeds stay
     EXTERNAL-only.
 </div>
+
+<h3 id="views-embed-child">EmbedInChild — enriching a child array (per-element 1:1)</h3>
+<p>
+    <code>Embed</code>/<code>EmbedMany</code> join off the <em>root</em> document. <code>EmbedInChild</code> enriches
+    every element of a view's <strong>native aggregate child</strong> array with a 1:1 external lookup keyed by a FK that
+    lives <em>inside each element</em> — the read-side denormalization for the "list of X with the name of Y per line"
+    shape. The canonical case: a sale view whose line items each carry <code>product_id</code>, enriched with the product
+    name from an upstream projection. The write model stays normalized (the element keeps only its FK); the enrichment
+    lives only in the view, kept fresh by the recompose-ripple.
+</p>
+<pre><code>view.EmbedInChild(SaleItemSchema(), "product",
+    query.FromSchema(query.NewExternalSchema("upstream_products")).
+        FK("product_id").As("Product"))
+</code></pre>
+<ul>
+    <li><strong>Native child only.</strong> <code>childSchema</code> must be a child declared on the view root via
+        <code>root.Child(...)</code> — validated at boot against the root's declared children (a non-child aborts boot).
+        For a <code>SharedBaseView</code> it targets the BASE's native children; role-nested children are not supported.</li>
+    <li><strong>1:1 only.</strong> There is no <code>EmbedManyInChild</code>: a 1:N enrichment would nest an array inside a
+        child-array element — a third collection level, the forbidden grandchild shape.</li>
+    <li><strong>External source, FK inside the element.</strong> <code>src</code> is a
+        <code>FromSchema(NewExternalSchema(...))</code> (a Mongo collection, like a root embed); <code>.FK(col)</code> names
+        the join column inside each element, resolved against the source's <code>_id</code>; <code>.As(...)</code> names
+        the Go segment.</li>
+    <li><strong>Covering index required (breaking).</strong> The ripple's fan-out reverse-scans the view on
+        <code>"&lt;childSegment&gt;.&lt;fk&gt;"</code>, so a multikey index on that path is mandatory and enforced at boot —
+        declare it via <code>.Indexes(query.Index("items.product_id"))</code>. The same boot requirement now applies to a
+        1:1 root <code>Embed</code> (an index on its parent join column); <code>EmbedMany</code> is exempt (its ripple never
+        reverse-scans the view).</li>
+    <li><strong>Rebuild shape.</strong> The enrichment participates in the <code>RebuildHash</code>, so changing it without
+        a <code>Version(N)</code> bump is caught as <code>DriftForgotToBump</code>.</li>
+</ul>
 
 <h3 id="views-sharedbase">SharedBaseView — the all-in-one identity</h3>
 <p>

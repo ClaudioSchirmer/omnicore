@@ -649,13 +649,9 @@ func (s *UpstreamSubscriber) ripple(ctx context.Context, upstreamID string, befo
 	for _, v := range s.dependentViews {
 		embeds := collectMongoEmbeds(v.Embeds(), s.cfg.Collection)
 		if len(embeds) == 0 {
-			// Defensive — bootstrap.validateUpstreamSubscriptions rejected views
-			// with external FromSchema embeds without a join field, and this view
-			// is a dependent only because it embeds this collection. If we land
-			// here, the view's shape changed at runtime (impossible today) — log
-			// and skip.
-			s.logger.Error("upstream subscriber: dependent view has no embed of the collection",
-				"topic", s.cfg.Topic, "view", v.Name(), "collection", s.cfg.Collection)
+			// No ROOT embed of this collection — the view may be a dependent only
+			// via EmbedInChild, handled in the child-embed pass below. Skip the
+			// root-embed handling.
 			continue
 		}
 		// Discover the local parent docs to recompose — the UNION across every
@@ -727,6 +723,94 @@ func (s *UpstreamSubscriber) ripple(ctx context.Context, upstreamID string, befo
 						failed = true
 					}
 				}
+			}
+		}
+		if !failed {
+			s.resolveFailures(ctx, v.Name(), upstreamID)
+		}
+	}
+	// Child-embed pass (EmbedInChild): the enrichment lives INSIDE a native child
+	// array (items[].product), not a root embed segment, so the surgical /
+	// field-ownership write above cannot reach it. Each affected doc is FULLY
+	// recomposed and written with the consult-guarded pipeline (own data behind
+	// _revision, equal-revision fill landing the refreshed enrichment) — the same
+	// write the SyncEngine uses, so a concurrent local write is never regressed.
+	for _, v := range s.dependentViews {
+		childEmbeds := collectChildMongoEmbeds(v.ChildEmbeds(), s.cfg.Collection)
+		if len(childEmbeds) == 0 {
+			continue
+		}
+		s.rippleChildEmbeds(ctx, v, childEmbeds, upstreamID, after)
+	}
+}
+
+// collectChildMongoEmbeds returns the EmbedInChild declarations of the view whose
+// external source is the named collection — the child-array enrichments a change
+// to that collection must ripple into.
+func collectChildMongoEmbeds(childEmbeds []childEmbedDef, collection string) []childEmbedDef {
+	var out []childEmbedDef
+	for _, ce := range childEmbeds {
+		if ce.source == nil {
+			continue
+		}
+		if ce.source.IsMongo() && ce.source.Collection() == collection {
+			out = append(out, ce)
+		}
+	}
+	return out
+}
+
+// rippleChildEmbeds surgically updates the enriched sub-document inside every
+// matching child element, for each EmbedInChild of this collection — the
+// per-element analog of the root embed's surgical ripple. The enrichment lives
+// INSIDE the child array and is owned by THIS ripple (the upstream mirror's
+// writes), NOT by the parent's revision, so it must NOT go through the
+// revision-guarded consult path: at the parent's unchanged revision a consult
+// scope only fills MISSING fields (stored wins), which could never overwrite a
+// stale enrichment. Instead a `$map` rewrites ONLY the matched elements'
+// enrichment field — unguarded, and commuting with concurrent ripples for other
+// items (each touches a disjoint element set). `after` is the changed upstream
+// document (the new sub-doc value); nil on delete clears the enrichment to null.
+func (s *UpstreamSubscriber) rippleChildEmbeds(ctx context.Context, v *ViewDefinition, childEmbeds []childEmbedDef, upstreamID string, after Document) {
+	// The enrichment value is embedded as a $literal: it is DATA (the upstream
+	// sub-document, or null on delete), not an aggregation expression. Without
+	// $literal Mongo would evaluate the map as an expression object — the same
+	// reason surgicalManyExpr wraps its element in lit(...).
+	var itemVal any
+	if after != nil {
+		itemVal = map[string]any(after)
+	} // else nil → clear the enrichment to null (source deleted)
+	litVal := lit(itemVal)
+	for _, ce := range childEmbeds {
+		seg := ce.ChildSegment()
+		fkCol := ce.FKColumn()
+		// $map over the child array (defensive $ifNull for a missing/absent
+		// array): each element whose FK equals the changed upstream id gets its
+		// enrichment field merged in; every other element is left untouched.
+		stage := Document{"$set": Document{
+			seg: Document{"$map": Document{
+				"input": Document{"$ifNull": []any{"$" + seg, []any{}}},
+				"as":    "e",
+				"in": Document{"$cond": []any{
+					Document{"$eq": []any{"$$e." + fkCol, upstreamID}},
+					Document{"$mergeObjects": []any{"$$e", Document{ce.Field(): litVal}}},
+					"$$e",
+				}},
+			}},
+		}}
+		ids, err := s.mongo.FindIDsByField(ctx, s.resolver.Active(v.Name()), seg+"."+fkCol, upstreamID)
+		if err != nil {
+			s.metrics.inc(s.cfg.Topic, v.Name(), upstreamRecomposeStageDiscover)
+			s.logger.Error("upstream.recompose.discover.child",
+				"subscription", s.cfg.Topic, "view", v.Name(),
+				"upstreamID", upstreamID, "field", seg+"."+fkCol, "err", err)
+			s.recordFailure(ctx, v.Name(), upstreamID, "", UpstreamFailureStageDiscover, err)
+			continue
+		}
+		failed := false
+		for _, id := range ids {
+			if s.rippleApplyOne(ctx, v, upstreamID, id, []Document{stage}, false) {
+				failed = true
 			}
 		}
 		if !failed {

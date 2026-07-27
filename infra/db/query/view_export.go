@@ -60,6 +60,26 @@ func (v *ViewDefinition) ExportPlan() *queries.ExportPlan {
 	for _, r := range v.roles {
 		root.Children = append(root.Children, roleExportNode(r))
 	}
+	// EmbedInChild: attach the enriched sub-document as a branch INSIDE the native
+	// child's export node, so the tabular export walks the enrichment columns too
+	// (e.g. catalogLines[].item.label). The native child node was appended above by
+	// buildExportNode, keyed by the child's derived segment.
+	for _, ce := range v.childEmbeds {
+		if ce.source == nil {
+			continue
+		}
+		seg := ce.ChildSegment()
+		goSeg := ce.source.goSegment
+		if goSeg == "" {
+			goSeg = ce.field
+		}
+		for _, cn := range root.Children {
+			if cn.GoSegment == seg {
+				cn.Children = append(cn.Children, buildExportNode(ce.source.schema, nil, goSeg, ce.field))
+				break
+			}
+		}
+	}
 	return &queries.ExportPlan{Root: root}
 }
 

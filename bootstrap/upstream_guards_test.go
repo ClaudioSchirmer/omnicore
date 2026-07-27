@@ -36,9 +36,12 @@ func TestValidateViewSchemas_RejectsExternalEmbedWithoutAs(t *testing.T) {
 }
 
 func TestValidateViewSchemas_PassesWhenComplete(t *testing.T) {
+	// The 1:1 Embed now requires a covering index on its join column at boot (the
+	// recompose ripple's reverse scan) — the retroactive breaking guard.
 	v := query.View("orders").
 		Schema(core.NewExternalSchema("orders").PK("id")).
 		Embed("buyer", extEmbed("users", "buyer_id", "Buyer")).
+		Indexes(query.Index("buyer_id")).
 		Version(1)
 	if err := query.ValidateViewSchemas([]*query.ViewDefinition{v}); err != nil {
 		t.Errorf("expected no error for a complete view, got %v", err)
