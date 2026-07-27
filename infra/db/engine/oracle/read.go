@@ -54,16 +54,17 @@ func (q oracleQuerier) Query(ctx context.Context, sqlText string, args ...any) (
 		rows *sql.Rows
 		err  error
 	}
-	ch := make(chan result) // unbuffered: the try-send below detects abandonment
+	// Buffered (cap 1) so the goroutine's send ALWAYS succeeds and returns — it
+	// never blocks and never abandons. A non-blocking try-send on an unbuffered
+	// channel raced the consumer: a fast driver return could hit the send before
+	// the consumer reached <-ch, drop the result on `default`, and leave the
+	// consumer blocked forever when ctx never fires (a 10-minute hang under a
+	// context.Background() call). On abandonment the ctx.Done branch drains the
+	// buffered result in the background and releases the rows.
+	ch := make(chan result, 1)
 	go func() {
 		rows, err := q.exec.QueryContext(ctx, sqlText, args...)
-		select {
-		case ch <- result{rows, err}:
-		default: // abandoned — nobody will consume; release the connection
-			if rows != nil {
-				_ = rows.Close()
-			}
-		}
+		ch <- result{rows, err}
 	}()
 	select {
 	case r := <-ch:
@@ -72,6 +73,11 @@ func (q oracleQuerier) Query(ctx context.Context, sqlText string, args ...any) (
 		}
 		return &rawDecodingRows{Rows: r.rows}, nil
 	case <-ctx.Done():
+		go func() {
+			if r := <-ch; r.rows != nil {
+				_ = r.rows.Close()
+			}
+		}()
 		return nil, ctx.Err()
 	}
 }
@@ -168,15 +174,15 @@ func (r oracleRow) Scan(dest ...any) error {
 }
 
 func (q oracleQuerier) Exec(ctx context.Context, sqlText string, args ...any) error {
-	ch := make(chan error) // unbuffered: the try-send below detects abandonment
+	// Buffered (cap 1): the goroutine's send always succeeds, so a fast return can
+	// never race the consumer into a hang (see Query). On abandonment nothing
+	// leaks — only the error value is discarded; the statement may still apply
+	// when the network thaws, and the Querier's Exec consumers are the
+	// control-plane side-channels, whose statements are idempotent upserts.
+	ch := make(chan error, 1)
 	go func() {
 		_, err := q.exec.ExecContext(ctx, sqlText, args...)
-		select {
-		case ch <- err:
-		default: // abandoned — the statement may still apply when the network
-			// thaws; the Querier's Exec consumers are the control-plane
-			// side-channels, whose statements are idempotent upserts by design.
-		}
+		ch <- err
 	}()
 	select {
 	case err := <-ch:
@@ -210,13 +216,14 @@ func (q oracleQuerier) QueryMaps(ctx context.Context, sqlText string, args ...an
 		out []map[string]any
 		err error
 	}
-	ch := make(chan result) // unbuffered: the try-send below detects abandonment
+	// Buffered (cap 1): the goroutine's send always succeeds, so a fast return can
+	// never race the consumer into a hang (see Query). queryMapsBlocking closes
+	// its own rows via defer, so an abandoned run leaks nothing — the private
+	// buffers it built are simply discarded from the channel.
+	ch := make(chan result, 1)
 	go func() {
 		out, err := q.queryMapsBlocking(ctx, sqlText, args...)
-		select {
-		case ch <- result{out, err}:
-		default: // abandoned — the private buffers below are simply discarded
-		}
+		ch <- result{out, err}
 	}()
 	select {
 	case r := <-ch:

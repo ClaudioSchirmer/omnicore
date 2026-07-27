@@ -77,6 +77,11 @@ type composedLinkDef struct {
 	// surfaced at boot rather than silently reordering the _id default.
 	orderDescOnly bool
 	maxItems      int64
+	// childSchema non-nil marks a LinkInChild: a 1:1 read-time enrichment landing
+	// INSIDE each element of the primary's native child array (childSchema), keyed
+	// by the element's own FK (joinCol) → the leg's _id. nil = a normal root
+	// Link/LinkMany. A LinkInChild is always 1:1 (many == false).
+	childSchema *core.TableSchema
 }
 
 // Leg is one side of a composed-view link OR a root-embed source: an internal
@@ -153,6 +158,47 @@ func (c *ComposedViewDefinition) LinkMany(leg *Leg) *composedLinkManyBinding {
 		panic(fmt.Sprintf("query.ComposedView(%q): .LinkMany(nil)", c.name))
 	}
 	return &composedLinkManyBinding{c: c, leg: leg}
+}
+
+// LinkInChild declares a 1:1 read-time enrichment INSIDE a native child array of
+// the PRIMARY — the non-materialized twin of a view's EmbedInChild. childSchema
+// MUST be a native child of the primary's schema (boot-validated); for each
+// primary row, every element of that child array gains a sub-document (under
+// leg.externalName) looked up by the element's own FK — named on the returned
+// binding via .On(col) — against the leg's _id. The leg is either an external
+// JoinUpstream collection or an internal JoinView. 1:1 only (no
+// LinkManyInChild — a 1:N inside a child element is the forbidden grandchild
+// shape). Unlike EmbedInChild it is never materialized and needs no covering
+// index (there is no recompose ripple). .On is the mandatory terminal.
+func (c *ComposedViewDefinition) LinkInChild(childSchema *core.TableSchema, leg *Leg) *composedLinkInChildBinding {
+	if leg == nil {
+		panic(fmt.Sprintf("query.ComposedView(%q): .LinkInChild(nil leg)", c.name))
+	}
+	if childSchema == nil {
+		panic(fmt.Sprintf("query.ComposedView(%q): .LinkInChild(nil childSchema)", c.name))
+	}
+	return &composedLinkInChildBinding{c: c, child: childSchema, leg: leg}
+}
+
+// composedLinkInChildBinding is what LinkInChild returns: On names the child
+// element's FK column and completes the link.
+type composedLinkInChildBinding struct {
+	c     *ComposedViewDefinition
+	child *core.TableSchema
+	leg   *Leg
+}
+
+// On names the FK column each child element carries (→ the leg's _id) and
+// completes the in-child link.
+func (b *composedLinkInChildBinding) On(joinColumn string) *ComposedViewDefinition {
+	b.c.links = append(b.c.links, composedLinkDef{
+		docField:    b.leg.externalName,
+		leg:         b.leg,
+		many:        false,
+		joinCol:     joinColumn,
+		childSchema: b.child,
+	})
+	return b.c
 }
 
 // composedLink1Binding is what Link returns: On names the primary-side FK column
@@ -284,6 +330,18 @@ func (c *ComposedViewDefinition) ExportPlan() *queries.ExportPlan {
 		}
 		branch.GoSegment = seg
 		branch.WireSegment = ln.docField
+		if ln.childSchema != nil {
+			// LinkInChild nests INSIDE the primary child's export node (the primary
+			// plan already produced it), mirroring EmbedInChild's tabular walk.
+			childSeg := childDocSegment(ln.childSchema)
+			for _, cn := range plan.Root.Children {
+				if cn.GoSegment == childSeg {
+					cn.Children = append(cn.Children, branch)
+					break
+				}
+			}
+			continue
+		}
 		plan.Root.Children = append(plan.Root.Children, branch)
 	}
 	return plan
@@ -340,7 +398,18 @@ type ComposedLink struct {
 	OrderByDesc   bool
 	maxItems      int64
 	node          *ViewNode
+	// ChildSegment is non-empty for a LinkInChild: the Go segment (== doc segment)
+	// of the primary's native child array the 1:1 enrichment lands inside. Empty
+	// for a root Link/LinkMany.
+	ChildSegment string
+	// FKGoField is the Go field name each child element carries the join FK under
+	// (the child schema's Go name for FKColumn) — for a LinkInChild only.
+	FKGoField string
 }
+
+// InChild reports whether this link is a LinkInChild (a 1:1 enrichment landing
+// inside a primary child array) rather than a root Link/LinkMany.
+func (l ComposedLink) InChild() bool { return l.ChildSegment != "" }
 
 // ResolveMaxLinkManyLimit resolves the per-parent ceiling: the per-link value
 // when declared, else the yaml default (query.maxLinkManyLimit) when positive,
@@ -374,11 +443,19 @@ func (c *ComposedViewDefinition) Links() []ComposedLink {
 			node = newViewNode(schema, nil)
 		}
 		parentKey := "_id"
-		if !ln.many && c.primary != nil && c.primary.schema != nil {
+		if !ln.many && ln.childSchema == nil && c.primary != nil && c.primary.schema != nil {
 			if ln.joinCol != c.primary.schema.PKColumn() {
 				if goName, ok := c.primary.schema.GoNameForRead(ln.joinCol); ok {
 					parentKey = goName
 				}
+			}
+		}
+		childSeg, fkGoField := "", ""
+		if ln.childSchema != nil {
+			childSeg = childDocSegment(ln.childSchema)
+			fkGoField = ln.joinCol
+			if gn, ok := ln.childSchema.GoNameForRead(ln.joinCol); ok {
+				fkGoField = gn
 			}
 		}
 		out = append(out, ComposedLink{
@@ -393,6 +470,8 @@ func (c *ComposedViewDefinition) Links() []ComposedLink {
 			OrderByDesc:      ln.orderDesc,
 			maxItems:         ln.maxItems,
 			node:             node,
+			ChildSegment:     childSeg,
+			FKGoField:        fkGoField,
 		})
 	}
 	return out
@@ -495,11 +574,51 @@ func validateComposedLinks(problems []string, c *ComposedViewDefinition, viewNam
 	}
 	for _, ln := range c.links {
 		kind := "Link"
-		if ln.many {
+		switch {
+		case ln.childSchema != nil:
+			kind = "LinkInChild"
+		case ln.many:
 			kind = "LinkMany"
 		}
 		seg := c.resolveLinkSegment(ln)
-		if prev, dup := owner[seg]; dup {
+		if ln.childSchema != nil {
+			// LinkInChild lands INSIDE each element of a primary child array, not at
+			// the composed root — so it does NOT enter the root segment-ownership map.
+			// It gets its own two checks: the child must be a native child of the
+			// primary, and the leg's Go segment must not collide with a field the
+			// child element already carries.
+			nativeChild := false
+			primaryTbl := ""
+			if c.primary.schema != nil {
+				primaryTbl = c.primary.schema.Table()
+				for _, ch := range c.primary.schema.ChildSchemas() {
+					if ch.Table() == ln.childSchema.Table() {
+						nativeChild = true
+						break
+					}
+				}
+			}
+			if !nativeChild {
+				addf("composed view %q: LinkInChild %q — %q is NOT a native child of the primary schema %q; only a "+
+					"child declared via root.Child(...) on the primary (for a shared-base primary, a child of the BASE) "+
+					"can be enriched", c.name, ln.docField, ln.childSchema.Table(), primaryTbl)
+			} else {
+				for _, gf := range ln.childSchema.GoFields() {
+					if gf == seg {
+						addf("composed view %q: LinkInChild %q lands on Go field %q, which the child %q already carries — "+
+							"rename the leg's Go segment", c.name, ln.docField, seg, ln.childSchema.Table())
+						break
+					}
+				}
+				for _, gc := range ln.childSchema.ChildSchemas() {
+					if childDocSegment(gc) == seg {
+						addf("composed view %q: LinkInChild %q lands on segment %q, already produced by a child of %q",
+							c.name, ln.docField, seg, ln.childSchema.Table())
+						break
+					}
+				}
+			}
+		} else if prev, dup := owner[seg]; dup {
 			addf("composed view %q: %s %q would land on Go segment %q, already produced by %s — each segment has exactly one source",
 				c.name, kind, ln.docField, seg, prev)
 		} else {
@@ -528,9 +647,16 @@ func validateComposedLinks(problems []string, c *ComposedViewDefinition, viewNam
 			holder := "the PRIMARY (primary.on → leg._id)"
 			if ln.many {
 				holder = "the LEG (leg.on → primary._id)"
+			} else if ln.childSchema != nil {
+				holder = "each CHILD ELEMENT (element.on → leg._id)"
 			}
 			addf("composed view %q: %s %q declares an empty join column — name it via .On(column); the FK column belongs to %s",
 				c.name, kind, ln.docField, holder)
+		} else if ln.childSchema != nil {
+			if _, ok := ln.childSchema.GoNameForRead(ln.joinCol); !ok {
+				addf("composed view %q: LinkInChild %q join column %q does not exist on the child schema (table %q) — "+
+					"each element must carry the FK as a declared field", c.name, ln.docField, ln.joinCol, ln.childSchema.Table())
+			}
 		} else if ln.many {
 			if schema != nil {
 				if _, ok := schema.GoNameForRead(ln.joinCol); !ok {

@@ -869,3 +869,61 @@ func TestMongoViewReader_OverlayFilterCursorRoundTrip(t *testing.T) {
 		t.Fatal("a changed listing context must still reject the cursor")
 	}
 }
+
+// ─── LinkInChild (read-time in-child enrichment) ─────────────────────────────
+
+type cvrLine struct{ ID, GadgetID, ItemID string }
+
+func cvrLineSchema() *core.TableSchema {
+	return core.NewTableSchema[cvrLine]("gadget_lines").
+		PK("id").FK("gadget_id").Field("ItemID", "item_id")
+}
+
+func newInChildEnv() (*ComposedViewReader, *filterColl, string) {
+	lineSchema := cvrLineSchema()
+	primarySchema := core.NewTableSchema[cvrGadget]("gadgets").
+		PK("id").Field("Code", "code").Field("MirrorID", "mirror_id").
+		SoftDelete("deleted_at").Child(lineSchema)
+	primary := query.View("gadgets").Version(1).Schema(primarySchema)
+	composed := query.ComposedView("gadgets_full").Primary(primary).
+		LinkInChild(lineSchema, query.JoinUpstream(cvrUpstreamSchema(), "Item", "item")).On("item_id")
+
+	childSeg := composed.Links()[0].ChildSegment
+	gadgets := &filterColl{
+		count: 1,
+		docs: []bson.M{
+			{"_id": "g1", "code": "A", "mirror_id": "m1", childSeg: []any{
+				bson.M{"id": "l1", "gadget_id": "g1", "item_id": "i1"},
+				bson.M{"id": "l2", "gadget_id": "g1", "item_id": "i2"},
+				bson.M{"id": "l3", "gadget_id": "g1", "item_id": nil}, // null FK → null enrichment
+				bson.M{"id": "l4", "gadget_id": "g1", "item_id": "i9"}, // no leg match → null
+			}},
+		},
+	}
+	items := &filterColl{docs: []bson.M{
+		{"_id": "i1", "code": "UP-1"},
+		{"_id": "i2", "code": "UP-2"},
+	}}
+	db := newFakeMongoFunc(func(name string) mongoColl {
+		switch name {
+		case "gadgets":
+			return gadgets
+		case "upstream_gadgets":
+			return items
+		}
+		return &filterColl{}
+	})
+	inner := NewMongoViewReader(db, testResolver).SetViews([]*query.ViewDefinition{primary})
+	reader := NewComposedViewReader(inner, []*query.ComposedViewDefinition{composed}, 0)
+	return reader, items, childSeg
+}
+
+func TestComposedReader_LinkInChild_SortIntoSegmentRejected(t *testing.T) {
+	reader, _, childSeg := newInChildEnv()
+	_, err := reader.ReadPage(context.Background(), "gadgets_full", queries.ReadCriteria{
+		Sort: []queries.SortField{{Field: childSeg + ".Item.Code"}},
+	})
+	if err == nil {
+		t.Fatal("a sort into the in-child segment must be rejected (400)")
+	}
+}
