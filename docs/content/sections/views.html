@@ -276,6 +276,18 @@ query.JoinUpstream(
         Field("Email", "mail"),       // logical Go name ↔ upstream column
     "Buyer", "buyer")                 // Go segment, doc segment — both REQUIRED
 // … then on the verb:  Embed(buyer).On("buyer_id")   // parent FK → source PK (1:1)</code></pre>
+<div class="box">
+    <strong>Declaring a column is a TRANSLATION, not a projection — the schema removes nothing.</strong>
+    An external schema is the Go ↔ column name map and the semantic declaration (PK, soft-delete) of a collection
+    someone else materializes; it never shapes what is STORED. The mirror keeps whatever the subscription's
+    <code>filter:</code> let through, and a materialized embed segment copies that mirror document whole —
+    including columns this schema never declares. Undeclared columns are simply invisible to the read side
+    (criteria, Response, <code>?fields=</code> and export cannot name them). The division of labor:
+    the <a href="#yaml-reference"><code>filter:</code></a> (yaml) decides which fields SURVIVE into the mirror —
+    per mirror, shared by every consumer; <code>NewExternalSchema</code> decides which surviving columns
+    <em>this consumer</em> reads, under which Go names, and with which semantics. To remove a field from
+    storage, remove it from the <code>filter:</code>; narrowing the schema narrows only the wire.
+</div>
 
 <h3 id="views-embed">Embed and EmbedMany — composing external data</h3>
 <p>
