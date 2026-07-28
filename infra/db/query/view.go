@@ -39,7 +39,20 @@ type embedDef struct {
 	leg     *Leg
 	many    bool
 	joinCol string
+	// orderBy / orderDesc are the declared order of a 1:N segment's elements
+	// (EmbedMany only). Empty column = unordered: the array carries whatever
+	// order the writes produced, which is the historical behavior and stays the
+	// default. orderDescOnly marks ".Desc() without .OrderBy(...)" — a
+	// declaration mistake surfaced at boot rather than silently ignored.
+	orderBy       string
+	orderDesc     bool
+	orderDescOnly bool
 }
+
+// OrderColumn / OrderDesc expose the declared 1:N segment order to the boot
+// guards and the hash. Empty column = unordered.
+func (e embedDef) OrderColumn() string { return e.orderBy }
+func (e embedDef) OrderDesc() bool     { return e.orderDesc }
 
 // Source exposes the read-only Leg associated with this embed. Used by
 // bootstrap-side boot guards that walk Embeds() and must inspect IsMongo /
@@ -169,8 +182,62 @@ func (v *ViewDefinition) Embed(leg *Leg) *embedBinding {
 // column (named on the returned binding via .On(col)) points at this view's _id
 // lands under leg.externalName as an array. Same JoinUpstream-only rule and
 // mandatory .On as Embed.
-func (v *ViewDefinition) EmbedMany(leg *Leg) *embedBinding {
-	return &embedBinding{v: v, leg: leg, many: true}
+func (v *ViewDefinition) EmbedMany(leg *Leg) *embedManyBinding {
+	return &embedManyBinding{v: v, leg: leg}
+}
+
+// embedManyBinding is what EmbedMany returns: the 1:N-only knob (OrderBy/Desc)
+// chains on it, and the mandatory terminal On names the leg-side FK column. A
+// dedicated type — not a flag on the shared binding — so declaring an order on
+// a 1:1 Embed or on an EmbedInChild is NOT EXPRESSIBLE rather than rejected at
+// boot, the same way the ComposedView's LinkMany binding works.
+type embedManyBinding struct {
+	v         *ViewDefinition
+	leg       *Leg
+	orderBy   string
+	orderDesc bool
+}
+
+// OrderBy declares the deterministic order of the materialized 1:N segment by a
+// column of the SOURCE (leg) documents. Without it the array keeps whatever
+// order the writes produced — the historical behavior, unchanged for every view
+// that does not declare one.
+//
+// The order is materialized, not applied at read time: every writer of the
+// segment (first compose, rebuild backfill, and the surgical ripple) sorts
+// through the SAME MongoDB pipeline operator, so the stored array is already in
+// order and all writers converge byte for byte. The sort is TOTAL — the declared
+// column, then `_id` — because neither the driver nor the server promises a
+// stable sort on ties, and two writers producing different arrays for identical
+// state would surface as a blue-green verify divergence.
+//
+// Requires MongoDB 5.2+ ($sortArray). There is deliberately no per-parent
+// ceiling to go with it: truncating a MATERIALIZED array would discard elements
+// no later edit could promote back (the surgical edit never sees what was cut),
+// so a cap belongs to the read-time twin — ComposedView's LinkMany.
+func (b *embedManyBinding) OrderBy(column string) *embedManyBinding {
+	b.orderBy = column
+	return b
+}
+
+// Desc inverts the OrderBy direction.
+func (b *embedManyBinding) Desc() *embedManyBinding {
+	b.orderDesc = true
+	return b
+}
+
+// On names the leg column holding the FK to this view's _id and completes the
+// 1:N embed.
+func (b *embedManyBinding) On(joinColumn string) *ViewDefinition {
+	b.v.embeds = append(b.v.embeds, embedDef{
+		leg:           b.leg,
+		many:          true,
+		joinCol:       joinColumn,
+		orderBy:       b.orderBy,
+		orderDesc:     b.orderDesc,
+		orderDescOnly: b.orderDesc && b.orderBy == "",
+	})
+	return b.v
 }
 
 // embedBinding is the intermediate a root Embed/EmbedMany/EmbedInChild returns.
@@ -492,6 +559,9 @@ func appendEmbedSchemaProblems(acc []string, viewName string, embeds []embedDef,
 			continue
 		}
 		field := e.leg.externalName
+		// The declared 1:N order is validated for BOTH leg kinds, before the
+		// kind-specific branches below (each of which returns early).
+		acc = appendEmbedOrderProblems(acc, viewName, e)
 		// A JoinView leg materializes a LOCAL view into this one. Validate it as an
 		// internal leg (registered + schema + PK) plus, for a 1:N EmbedMany, the
 		// covering index its per-parent lookup needs on the leg view.
@@ -558,6 +628,39 @@ func appendEmbedSchemaProblems(acc []string, viewName string, embeds []embedDef,
 		// The leg's own schema-derived child segments still get a collision check;
 		// embeds are single-level, so a leg contributes no further embeds to validate.
 		acc = appendSegmentCollisions(acc, viewName, e.leg.schema, nil, nil)
+	}
+	return acc
+}
+
+// appendEmbedOrderProblems validates a declared 1:N element order: the column
+// must exist on the SOURCE (the leg view's root schema, or the external
+// schema), and .Desc() without .OrderBy(...) is a declaration mistake rather
+// than a silent no-op. Runs for both leg kinds.
+func appendEmbedOrderProblems(acc []string, viewName string, e embedDef) []string {
+	if e.leg == nil {
+		return acc
+	}
+	if e.orderDescOnly {
+		acc = append(acc, fmt.Sprintf(
+			"view %q: EmbedMany %q declares .Desc() without .OrderBy(column) — name the order column",
+			viewName, e.Field()))
+		return acc
+	}
+	if e.orderBy == "" {
+		return acc
+	}
+	src := e.leg.schema
+	if e.leg.view != nil {
+		src = e.leg.view.schema
+	}
+	if src == nil {
+		return acc // the missing-schema problem is reported elsewhere
+	}
+	if _, ok := src.GoNameForRead(e.orderBy); !ok {
+		acc = append(acc, fmt.Sprintf(
+			"view %q: EmbedMany %q declares OrderBy(%q), which is not a column of the embedded source %q — "+
+				"the order is materialized INTO this view's documents, so it must name a column the source "+
+				"projects", viewName, e.Field(), e.orderBy, e.leg.Collection()))
 	}
 	return acc
 }

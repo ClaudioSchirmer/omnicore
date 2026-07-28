@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"log"
 
+	"go.mongodb.org/mongo-driver/v2/bson"
+
 	"github.com/ClaudioSchirmer/omnicore/infra/db/core"
 )
 
@@ -54,6 +56,57 @@ import (
 // (_revision) and every edit is applied only when the STORED element is not
 // newer, in the same revision-guarded style as the rest of the projection
 // pipeline. srcRev <= 0 disables the guard entirely.
+
+// embedOrder is a materialized 1:N segment's declared element order.
+type embedOrder struct {
+	column string
+	desc   bool
+}
+
+// sortedSegment wraps a 1:N segment expression in $sortArray when the embed
+// declares an order (nil = unordered, the historical shape).
+//
+// ONE sort implementation, and it lives HERE — in the pipeline. Every writer of
+// a materialized segment already writes through a pipeline update (the consult
+// projection, the rebuild's bulk apply, and the surgical ripple), so routing all
+// of them through this helper is what makes them converge byte for byte. Sorting
+// the composed array in Go instead would mean TWO implementations — Go's byte
+// order versus the server's, which honors the view's declared collation — and
+// the divergence would surface as an intermittent blue-green verify failure.
+//
+// The sort is TOTAL: the declared column, then `_id`. Neither the driver nor the
+// server promises a stable sort on ties, so without the tiebreaker two writers
+// could store different arrays for identical state. sortBy is a bson.D because
+// key ORDER is semantic here — a map would marshal in random order and could
+// silently make `_id` the primary key of the sort.
+//
+// Requires MongoDB 5.2+ ($sortArray).
+func sortedSegment(expr Document, ord *embedOrder) Document {
+	if ord == nil || ord.column == "" {
+		return expr
+	}
+	dir := 1
+	if ord.desc {
+		dir = -1
+	}
+	return Document{"$sortArray": Document{
+		"input":  expr,
+		"sortBy": bson.D{{Key: ord.column, Value: dir}, {Key: "_id", Value: 1}},
+	}}
+}
+
+// embedOrders maps each declared embed's document field to its element order
+// (absent = unordered / 1:1). Handed to the stage builders so every writer of a
+// segment applies the identical sort.
+func embedOrders(embeds []embedDef) map[string]*embedOrder {
+	out := map[string]*embedOrder{}
+	for _, e := range embeds {
+		if e.many && e.orderBy != "" {
+			out[e.Field()] = &embedOrder{column: e.orderBy, desc: e.orderDesc}
+		}
+	}
+	return out
+}
 
 // notNewerThan is the guard predicate: the stored element at path has no
 // watermark, or a watermark not newer than srcRev.
@@ -117,17 +170,24 @@ func surgicalManyExpr(e embedDef, upstreamID string, after Document, srcRev int6
 	strip := Document{"$filter": Document{"input": input, "as": "it", "cond": stripCond}}
 	fkVal := docFieldString(after, e.JoinColumn())
 	if fkVal == "" {
+		if e.orderBy != "" {
+			return sortedSegment(strip, &embedOrder{column: e.orderBy, desc: e.orderDesc})
+		}
 		return strip
 	}
 	appendCond := Document{"$eq": []any{"$_id", lit(fkVal)}}
 	if srcRev > 0 {
 		appendCond = Document{"$and": []any{appendCond, Document{"$not": []any{hasNewer}}}}
 	}
-	return Document{"$cond": []any{
+	var ord *embedOrder
+	if e.orderBy != "" {
+		ord = &embedOrder{column: e.orderBy, desc: e.orderDesc}
+	}
+	return sortedSegment(Document{"$cond": []any{
 		appendCond,
 		Document{"$concatArrays": []any{strip, []any{lit(surgicalElement(upstreamID, after))}}},
 		strip,
-	}}
+	}}, ord)
 }
 
 // surgicalOneExpr edits a 1:1 sub-document on the parents whose FK column

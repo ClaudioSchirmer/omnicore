@@ -36,6 +36,20 @@
                 before embedder, transitively) and defer a view whose source this instance did not flip — rebuilding an
                 embedder against a source's pre-flip collection would finish stale, and a <code>Version</code> bump puts
                 both in the same run. The ad-hoc <code>RebuildView</code>/<code>RebuildViewSince</code> stay literal.</li>
+            <li><strong>Added</strong> — <code>EmbedMany(leg).OrderBy(column).Desc()</code>: a materialized 1:N segment
+                can declare the order of its stored elements (previously the array kept whatever order the writes
+                produced — still the default for views that declare none). The order is materialized, so reads pay
+                nothing: all three writers of a segment (first compose, rebuild backfill, surgical ripple) emit the same
+                server-side <code>$sortArray</code> stage, so a late element lands in its position rather than at the end
+                and concurrent workers/pods and a blue-green shadow all converge on the identical array. The sort is
+                TOTAL (declared column, then <code>_id</code>) because an unbroken tie would let two writers store
+                different arrays for the same state. <code>EmbedMany</code> now returns its own binding type, so the knob
+                is not expressible on a 1:1 <code>Embed</code> or an <code>EmbedInChild</code>; the order column is
+                boot-validated against the embedded source and <code>.Desc()</code> without <code>.OrderBy</code> is a
+                declaration error; declaring or changing it moves the RebuildHash. There is deliberately no per-parent
+                ceiling — a materialized array cannot forget what it truncated, so a cap stays
+                <code>LinkMany</code>'s. <strong>Requires MongoDB 5.2+</strong>, and only for views that declare an
+                order.</li>
             <li><strong>Fixed</strong> — three defects on the embed path: the dangling 1:1 repair now covers a
                 <code>JoinView</code> leg (an FK change on the EMBEDDING document would otherwise leave the segment
                 pointing at the old source forever, with no future event able to heal it); a zombie-document removal now

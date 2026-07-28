@@ -30,7 +30,7 @@ Go framework library providing **DDD + CQRS infrastructure** for microservices. 
 ## Stack
 
 - Go ≥ 1.21 (`log/slog` + generics); toolchain pinned to `go 1.26.3`.
-- Fiber v3 (HTTP), connectrpc.com/connect (gRPC surface), pgx v5 (Postgres), go-sql-driver (MySQL), microsoft/go-mssqldb (SQL Server), sijms/go-ora (Oracle, 23ai+), mongo-driver v2, segmentio/kafka-go + nats.go (message-transport adapters, each tag-gated), google/uuid (canonical — don't add another uuid lib).
+- Fiber v3 (HTTP), connectrpc.com/connect (gRPC surface), pgx v5 (Postgres), go-sql-driver (MySQL), microsoft/go-mssqldb (SQL Server), sijms/go-ora (Oracle, 23ai+), mongo-driver v2 (MongoDB 5.2+ — `$sortArray` backs EmbedMany's materialized ordering), segmentio/kafka-go + nats.go (message-transport adapters, each tag-gated), google/uuid (canonical — don't add another uuid lib).
 
 ## Build and test
 

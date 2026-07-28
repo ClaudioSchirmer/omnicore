@@ -324,7 +324,7 @@ func (r *embedRippler) rippleRecomposeOne(ctx context.Context, v *ViewDefinition
 // than a concurrent SyncEngine recompose of the same document, and a
 // full-document Upsert would regress them — see fieldOwnershipStages.
 func (r *embedRippler) rippleUpsertOne(ctx context.Context, v *ViewDefinition, upstreamID, localID string, doc Document) (failed bool) {
-	stages := fieldOwnershipStages(doc, schemaPK(v.schema), embedFieldSet(v.embeds))
+	stages := fieldOwnershipStages(doc, schemaPK(v.schema), embedFieldSet(v.embeds), embedOrders(v.embeds))
 	if failed = r.rippleApplyOne(ctx, v, upstreamID, localID, stages, true); failed {
 		return true
 	}

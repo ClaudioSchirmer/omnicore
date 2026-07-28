@@ -324,7 +324,7 @@ query.JoinUpstream(
 <table>
     <tbody><tr><th>Constructor(s)</th><th>Verb</th><th>Leg</th><th>Built from — and reach</th></tr>
     <tr><td><code>View</code> / <code>SharedBaseView</code></td><td><code>Embed(leg).On(col)</code> — 1:1</td><td><code>*Leg</code></td><td><code>query.JoinUpstream(core.NewExternalSchema(…), Go, ext)</code> (EXTERNAL mirror) <em>or</em> <code>query.JoinView(view, Go, ext)</code> (LOCAL registered view); <code>.On</code> = parent FK. Requires a covering index on that column (the ripple's reverse scan).</td></tr>
-    <tr><td><code>View</code> / <code>SharedBaseView</code></td><td><code>EmbedMany(leg).On(col)</code> — 1:N</td><td><code>*Leg</code></td><td>Same two constructors; <code>.On</code> = leg FK. A <code>JoinView</code> leg additionally requires a covering index on that column <em>on the SOURCE view</em> — the composer runs one lookup per parent document.</td></tr>
+    <tr><td><code>View</code> / <code>SharedBaseView</code></td><td><code>EmbedMany(leg).On(col)</code> — 1:N</td><td><code>*Leg</code></td><td>Same two constructors; <code>.On</code> = leg FK; optional <code>OrderBy(col)</code>/<code>Desc</code> before it declare the stored element order (<a href="#views~views-embed-order">materialized ordering</a>, MongoDB 5.2+). A <code>JoinView</code> leg additionally requires a covering index on the join column <em>on the SOURCE view</em> — the composer runs one lookup per parent document.</td></tr>
     <tr><td><code>View</code> / <code>SharedBaseView</code></td><td><code>EmbedInChild(childSchema, leg).On(col)</code> — 1:1 into a native child</td><td><code>*Leg</code></td><td>Same two constructors; <code>.On</code> = FK <em>inside each element</em> of a native aggregate child. Requires a multikey index on <code>&lt;childSegment&gt;.&lt;fk&gt;</code>.</td></tr>
     <tr><td><code>ComposedView</code></td><td><code>Link(leg).On(col)</code> — 1:1</td><td><code>*Leg</code></td><td><code>query.JoinView(view, Go, ext)</code> (INTERNAL registered view) <em>or</em> <code>query.JoinUpstream(core.NewExternalSchema(…), Go, ext)</code> (EXTERNAL); <code>.On</code> = primary FK.</td></tr>
     <tr><td><code>ComposedView</code></td><td><code>LinkMany(leg).OrderBy(…).MaxLinkManyLimit(…).On(col)</code> — 1:N</td><td><code>*Leg</code></td><td>Same two constructors; <code>.On</code> = leg FK (<code>leg.on → primary._id</code>); <code>OrderBy</code>/<code>Desc</code>/<code>MaxLinkManyLimit</code> chain on the verb before <code>.On</code>.</td></tr>
@@ -495,9 +495,10 @@ func SaleView() *query.ViewDefinition {
     <tr>
         <td><code>sort</code> / keyset cursor by a segment field</td>
         <td><strong>Yes</strong> — a first-class sort key, like any root field.</td>
-        <td><strong>No.</strong> An array has no single value to order by or to build a cursor from. Keyset pagination
-            requires a scalar sort key, so it must be a root field or a 1:1 segment path. Exactly the rule a native child
-            collection already follows — a 1:N segment is data you read, not data you order the page by.</td>
+        <td><strong>No</strong> — an array has no single value to build a cursor from, so a keyset sort key must be a
+            root field or a 1:1 segment path (the rule a native child collection already follows). Ordering the elements
+            INSIDE the segment is a different question, and it has its own answer:
+            <a href="#views~views-embed-order"><code>EmbedMany.OrderBy</code></a>.</td>
     </tr>
     <tr>
         <td><code>?search=</code> (text index)</td>
@@ -510,15 +511,110 @@ func SaleView() *query.ViewDefinition {
             name (children included).</td>
     </tr>
 </tbody></table>
+<h4 id="views-embed-order">Ordering a materialized 1:N segment — EmbedMany.OrderBy</h4>
 <p>
-    <strong>Ordering INSIDE a 1:N segment</strong> deserves the same clarity: the elements arrive in the order the source
-    collection returns them, and there is no per-segment <code>OrderBy</code> knob on an embed (that knob exists only on a
-    <code>ComposedView</code>'s <code>LinkMany</code>, which builds its array per request and can therefore sort and cap
-    it). When a materialized 1:N segment must be ordered or bounded, order it in the consumer after reading, or model the
-    ordering into the source view's own document. If a guaranteed order and a per-parent ceiling are requirements of the
-    contract, that is the signal to use <code>LinkMany</code> on a <code>ComposedView</code> instead — paying the join on
-    read buys exactly those two knobs.
+    <code>EmbedMany(leg).OrderBy(column).Desc().On(fk)</code> declares the element order of the stored array. Without it
+    the array keeps whatever order the writes produced — the default, unchanged for every view that declares none.
 </p>
+<pre><code>EmbedMany(query.JoinView(SalePartsView(), "Parts", "parts")).
+    OrderBy("slot").           // a column of the SOURCE documents
+    On("kit_id")</code></pre>
+<p>
+    The order is <strong>materialized, not applied at read time</strong>: the array is already stored sorted, so a read
+    pays nothing for it. What makes that safe is that every writer of the segment sorts through the SAME server-side
+    operator — the first compose, the rebuild backfill and the surgical ripple all emit one <code>$sortArray</code> stage,
+    so a late-arriving element lands in its position instead of at the end, and concurrent writers converge on the
+    identical array. (Sorting the composed array in Go instead would mean two implementations — Go's byte order versus the
+    server's, which honors the view's declared collation — and the divergence would surface as an intermittent
+    rebuild-verify failure.) The sort is <strong>total</strong>: the declared column, then <code>_id</code>, because a tie
+    left unbroken would let two writers store different arrays for the same state. Declaring or changing an order is
+    projection shape: it moves the rebuild hash, so it needs a <code>Version(N)</code> bump.
+</p>
+<div class="box">
+    <strong>There is deliberately no per-parent ceiling to go with it.</strong> A cap on a MATERIALIZED array would
+    discard elements permanently: when a kept element is later deleted, the element that should be promoted in its place
+    was never stored, and the surgical edit cannot know it — only a full recompose per change could, which defeats the
+    cheap incremental path. A ceiling therefore belongs to the read-time twin, <code>LinkMany</code> on a
+    <a href="#views~views-composed">ComposedView</a>, which rebuilds its array per request and can bound it honestly.
+    That is the one knob the two families do not share.
+</div>
+<p class="note">
+    <strong>Requires MongoDB 5.2+</strong> (<code>$sortArray</code>). Only views that DECLARE an order emit it — an
+    unordered <code>EmbedMany</code> produces the same stages it always did, so an older server keeps working for
+    everything else.
+</p>
+
+<h4 id="views-embed-matrix">Who controls what — wire vs declaration</h4>
+<p>
+    Same split as the read-time twin, different answers — and the differences are exactly where
+    materializing changes the semantics. The end user steers the query string; the developer fixes at
+    declaration time everything that is baked INTO the stored document:
+</p>
+<table>
+    <tbody><tr><th>Knob</th><th>Controlled by</th><th>Where</th><th>Why it lives there — and how it differs from a ComposedView</th></tr>
+    <tr>
+        <td>Row-selecting filters</td><td>End user</td><td><code>?field.op=</code> (allowlisted)</td>
+        <td>Same as anywhere: selecting rows is the read's purpose.</td>
+    </tr>
+    <tr>
+        <td>Segment filters</td><td>End user</td><td><code>?segment.field.op=</code> (allowlisted)</td>
+        <td><strong>They SELECT ROWS here.</strong> The segment lives in the same document, so a predicate on it decides
+            which documents come back — the opposite of a composed leg filter, which only shapes what enters the segment
+            and never removes a primary row. The single most important difference between the two families.</td>
+    </tr>
+    <tr>
+        <td>Sort</td><td>End user</td><td><code>?sort=</code> (root or 1:1 segment paths)</td>
+        <td>A 1:1 segment field is a first-class sort key (it is ordinary document content), where a composed read
+            rejects any segment path with 400. A path inside a 1:N segment is still not a sort key on either family — an
+            array has no single value to build a cursor from.</td>
+    </tr>
+    <tr>
+        <td><code>fields</code> / <code>limit</code> / cursors / <code>search</code> / <code>onlyTotal</code> / <code>includeArchived</code></td>
+        <td>End user</td><td>the usual control keys</td>
+        <td>Unchanged, and they descend into the segments at any depth (<code>?fields=parts.gadget.code</code>).</td>
+    </tr>
+    <tr>
+        <td>Order of the elements INSIDE a 1:N segment</td><td>Developer</td>
+        <td><a href="#views~views-embed-order"><code>OrderBy(column)[.Desc()]</code></a> on <code>EmbedMany</code></td>
+        <td>The array is STORED in that order, so it is projection shape (it moves the rebuild hash) rather than a
+            per-request choice. A composed <code>LinkMany</code> declares the same knob but applies it per request.</td>
+    </tr>
+    <tr>
+        <td>Per-parent ceiling on a 1:N segment</td><td><strong>Nobody — it does not exist</strong></td><td>—</td>
+        <td>The one knob with no materialized form: a stored array cannot forget what it truncated (nothing could promote
+            the cut elements back). Use <code>LinkMany</code>'s <code>MaxLinkManyLimit</code> when a ceiling is a
+            requirement.</td>
+    </tr>
+    <tr>
+        <td>Which sources are embedded, join keys, LEFT semantics</td><td>Developer</td><td>the declaration</td>
+        <td>The projection's identity — boot-validated, versioned, and rebuilt when it changes.</td>
+    </tr>
+    <tr>
+        <td>Archive semantics of a source</td><td>Developer of the SOURCE view</td>
+        <td><code>DeleteOnArchive()</code> on the embedded view</td>
+        <td>Keep (default) mirrors the archived source into the segment; <code>DeleteOnArchive()</code> makes archiving
+            remove the reference. The choice lives with the source's lifecycle, not with the embedder.</td>
+    </tr>
+    <tr>
+        <td>Freshness of a segment</td><td>Nobody — the framework</td><td>the recompose ripple</td>
+        <td>There is no consumer-facing knob: every write to a source refreshes the views materializing it. A composed
+            read has no freshness knob either, for the opposite reason — it never stores anything.</td>
+    </tr>
+</tbody></table>
+
+<div class="note">
+    <strong>Fatal boot, never silent.</strong> The embed family aborts the boot with an explanatory message on every
+    declaration that exceeds the contract: a write-anchored embed source (an aggregate's own data already projects), a
+    <code>JoinUpstream</code> leg whose collection has no matching <code>UpstreamSubscription</code> — or names a local
+    view, which is <code>JoinView</code>'s job (§8.3); a <code>JoinView</code> leg naming a view no
+    <code>ReadableFeature</code> contributes; a <strong>cycle</strong> in the view→view embed graph (printed as the exact
+    loop); a missing covering index — on the parent join column of a 1:1 <code>Embed</code>, on
+    <code>&lt;childSegment&gt;.&lt;fk&gt;</code> for an <code>EmbedInChild</code>, or on the join column
+    <em>of the source view</em> for an <code>EmbedMany</code> over a <code>JoinView</code> leg; an
+    <code>OrderBy</code> column that is not a column of the embedded source; <code>.Desc()</code> without
+    <code>OrderBy</code>; an empty <code>.On(...)</code>; a segment colliding with a root field, a child collection or
+    another segment; and an <code>EmbedInChild</code> whose schema is not a native child of the view root.
+</div>
 
 <h3 id="views-embed-child">EmbedInChild — enriching a child array</h3>
 <p>
@@ -630,8 +726,8 @@ func (f *GadgetFeature) ComposedViews() []*query.ComposedViewDefinition {
         <tr><td><code>JoinView(view, goName, ext)</code></td><td>Internal leg: any registered view — it arrives exactly as a direct read of that view would (children, embeds, roles, archived strip included). Both segment names mandatory.</td></tr>
         <tr><td><code>JoinUpstream(schema, goName, ext)</code></td><td>External leg: a locally materialized <code>UpstreamSubscription</code> collection described by its <code>NewExternalSchema</code>. A leg NEVER reads another service's live storage — materialize first, then compose. Also the only leg an <code>Embed</code>/<code>EmbedMany</code>/<code>EmbedInChild</code> accepts.</td></tr>
         <tr><td><code>.On(column)</code></td><td>The join column, named on the verb (see the multiplicity rule above). Mandatory — the verb's binding routes back to the builder only through <code>.On</code>, so a missing join does not compile.</td></tr>
-        <tr><td><code>OrderBy(column)</code> / <code>.Desc()</code></td><td>LinkMany only — the segment's deterministic order (default <code>_id</code> ascending). Not an end-user sort (see the control matrix below).</td></tr>
-        <tr><td><code>MaxLinkManyLimit(n)</code></td><td>LinkMany only — the per-parent item ceiling. Cascade: per-link → yaml <code>query.maxLinkManyLimit</code> → framework default 100. At the ceiling the segment truncates silently and deterministically: "the first N in the declared order" — payload protection, not validation. The full set lives on the leg's own view, paginated.</td></tr>
+        <tr><td><code>OrderBy(column)</code> / <code>.Desc()</code></td><td>1:N only — the segment's deterministic order (default <code>_id</code> ascending), applied per request here and the read-time twin of <a href="#views~views-embed-order"><code>EmbedMany.OrderBy</code></a>, which materializes it instead. Not an end-user sort (see the control matrix below).</td></tr>
+        <tr><td><code>MaxLinkManyLimit(n)</code></td><td>LinkMany only — and the ONE knob with no materialized twin (a stored array cannot forget what it truncated): the per-parent item ceiling. Cascade: per-link → yaml <code>query.maxLinkManyLimit</code> → framework default 100. At the ceiling the segment truncates silently and deterministically: "the first N in the declared order" — payload protection, not validation. The full set lives on the leg's own view, paginated.</td></tr>
     </tbody></table>
     <div class="note">
         <strong>Fatal boot, never silent.</strong> Every declaration exceeding the contract aborts the
@@ -888,7 +984,8 @@ same envelope, same projector, same pagination block as any view read</div>
         <tr><td>Schema evolution</td><td><code>Version(n)</code>, drift detection, rebuild</td><td>Not applicable — nothing stored</td></tr>
         <tr><td>Filter on composed data</td><td>Full — it is ONE document, so a segment predicate SELECTS rows</td><td>Row selection stays the primary's; a leg predicate shapes the segment only</td></tr>
         <tr><td>Sort by composed data</td><td>A 1:1 segment field is a first-class sort key; a 1:N segment cannot be a sort/cursor key (no single value)</td><td>Page order is always the primary's; a 1:N leg has its OWN <code>OrderBy</code>/<code>MaxLinkManyLimit</code> for the segment's contents</td></tr>
-        <tr><td>Ordering INSIDE a 1:N segment</td><td>No knob — source order; model it in the source view or order in the consumer</td><td><code>OrderBy</code>/<code>Desc</code> + a per-parent ceiling, declared on the verb</td></tr>
+        <tr><td>Ordering INSIDE a 1:N segment</td><td><code>OrderBy</code>/<code>Desc</code> on the verb — materialized (stored sorted, free on read)</td><td><code>OrderBy</code>/<code>Desc</code> on the verb — applied per request</td></tr>
+        <tr><td>Per-parent ceiling on a 1:N segment</td><td><strong>None</strong> — a materialized array cannot forget what it truncated (nothing could promote the cut elements back)</td><td><code>MaxLinkManyLimit</code> — the array is rebuilt per request, so a cap is honest</td></tr>
         <tr><td>Reach</td><td>ANY registered view (<code>JoinView</code>) + locally materialized upstream collections — acyclic, chainable</td><td>ANY registered view + locally materialized upstream collections — one join layer, never a composition of compositions</td></tr>
         <tr><td>Depth</td><td>Unlimited along an acyclic chain — a source view brings whatever IT embeds, and each hop is kept fresh by its own ripple</td><td>Exactly one layer — a leg is a view or a mirror, never another <code>ComposedView</code> (compose-of-compose does not compile)</td></tr>
         <tr><td>Choose it when…</td><td>The composition is hot, filtered across sources, or read far more than sources change</td><td>The link is arbitrary/occasional, freshness beats latency, the 1:N segment needs a declared order/cap, or you refuse another synced collection</td></tr>

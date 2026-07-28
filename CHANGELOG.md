@@ -85,6 +85,39 @@ with `1.0.0`.
   stay literal: rebuild a source that way and its dependents' copies are not
   refreshed, so rebuild them too (or use the ordered `RebuildAllViews`).
 
+- **`EmbedMany(leg).OrderBy(column).Desc()` — a materialized 1:N segment can now
+  declare the order of its elements.** Without it the array keeps whatever order
+  the writes produced (the previous behavior, unchanged for every view that
+  declares none). The order is materialized, not applied at read time: the array
+  is stored sorted, so reads pay nothing.
+
+  What makes it safe across every path: all three writers of a segment — the
+  first compose, the rebuild backfill and the surgical ripple — emit the SAME
+  server-side `$sortArray` stage, so a late-arriving element lands in its
+  position instead of at the end, concurrent workers and pods converge on the
+  identical array, and a blue-green rebuild's shadow matches its active slot.
+  (Sorting the composed array in Go would have meant two implementations — Go's
+  byte order versus the server's, which honors the view's declared collation —
+  diverging as intermittent rebuild-verify failures.) The sort is TOTAL: the
+  declared column, then `_id`, since an unbroken tie would let two writers store
+  different arrays for identical state.
+
+  `EmbedMany` now returns its own binding type, so `OrderBy`/`Desc` on a 1:1
+  `Embed` or on an `EmbedInChild` is not expressible rather than rejected at
+  boot. Boot guards: the order column must exist on the embedded source, and
+  `.Desc()` without `.OrderBy(...)` is a declaration error. Declaring or changing
+  an order moves the RebuildHash (it is projection shape), so it needs a
+  `Version(N)` bump.
+
+  There is deliberately NO per-parent ceiling to go with it: a cap on a
+  materialized array would discard elements no later edit could promote back (the
+  surgical edit never sees what was cut). A ceiling stays the read-time twin's —
+  `MaxLinkManyLimit` on a `ComposedView`'s `LinkMany`, which rebuilds its array
+  per request. That is now the ONE knob the two families do not share.
+
+  **Requires MongoDB 5.2+**, and only for views that declare an order: an
+  unordered `EmbedMany` emits the stages it always did.
+
 ### Fixed
 
 - **The dangling 1:1 embed repair now covers a `JoinView` leg.** The post-write

@@ -61,7 +61,7 @@ func assertKeptUnlessCreating(t *testing.T, set Document, key string) {
 }
 
 func TestFieldOwnershipStages_RippleOwnsEmbeds(t *testing.T) {
-	stages := fieldOwnershipStages(ownershipDoc(), "id", ownershipEmbeds())
+	stages := fieldOwnershipStages(ownershipDoc(), "id", ownershipEmbeds(), nil)
 	if len(stages) != 1 {
 		t.Fatalf("want one atomic $set stage, got %d", len(stages))
 	}

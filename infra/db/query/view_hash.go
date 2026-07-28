@@ -199,6 +199,15 @@ func writeEmbedList(w *canonicalWriter, embeds []embedDef) {
 			w.writeTag("leg_view")
 			w.writeInt(int64(e.leg.view.VersionNumber()))
 		}
+		// A declared 1:N element order is materialized INTO the document, so it
+		// is projection shape: changing it must move the rebuild hash. Emitted
+		// only when declared, so an unordered EmbedMany keeps its byte-identical
+		// stream and no deployed view rebuilds on upgrade.
+		if e.orderBy != "" {
+			w.writeTag("order")
+			w.writeString(e.orderBy)
+			w.writeBool(e.orderDesc)
+		}
 		// Embeds are single-level: a source carries no nested embeds. Emit the
 		// empty-list encoding (length 0) that the old nested writeEmbedList call
 		// produced for every real (non-nested) view, so the RebuildHash stays
