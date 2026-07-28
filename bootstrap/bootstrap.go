@@ -203,8 +203,18 @@ func runWithConfig(cfg *Config, wire func(Deps) Wiring) error {
 		return err
 	}
 	upstreamSubs = applyUpstreamSubscriptionDefaults(upstreamSubs, cfg.Service)
+	// Composed views are collected HERE, before the subscription guards, because a
+	// mirror has TWO kinds of consumer — a view that EMBEDS it and a composed view
+	// that LINKS it — and both apply the mirror's soft-delete column. Both must
+	// therefore be cross-checked against the subscription's filter (§8.5).
+	// Collection is a pure walk over the features; the composition's own
+	// validation still runs later, once the upstream collection set is known.
+	composedViews, err := collectComposedViews(wiring.Features)
+	if err != nil {
+		return err
+	}
 	if len(upstreamSubs) > 0 {
-		if err := validateUpstreamSubscriptions(upstreamSubs, views, cfg.Profile, deps.Logger); err != nil {
+		if err := validateUpstreamSubscriptions(upstreamSubs, views, composedViews, cfg.Profile, deps.Logger); err != nil {
 			return err
 		}
 	}
@@ -226,10 +236,6 @@ func runWithConfig(cfg *Config, wire func(Deps) Wiring) error {
 	// point, e.g. GraphQL fields registered inside the consumer's Wire(),
 	// resolve composed names too). Runs AFTER the upstream subscriptions are
 	// resolved (an external leg must name a locally materialized collection).
-	composedViews, err := collectComposedViews(wiring.Features)
-	if err != nil {
-		return err
-	}
 	if len(composedViews) > 0 {
 		if err := query.ValidateComposedViews(composedViews, views, upstreamCollectionSet(upstreamSubs)); err != nil {
 			return fmt.Errorf("bootstrap: %w", err)
@@ -298,7 +304,20 @@ func runWithConfig(cfg *Config, wire func(Deps) Wiring) error {
 		deps.bootRebuild = boot
 		go func() {
 			defer close(boot.done)
+			// notRebuilt names the views this run did NOT bring to a flip (a
+			// follower's skip). A view materializing one of them must be skipped
+			// too: rebuilding it now would compose its segments from the source's
+			// pre-flip content and finish stale, with no event left to repair it.
+			// The driver instance holds both plans in the same dependency order and
+			// rebuilds the pair correctly, so skipping here converges.
+			notRebuilt := map[string]bool{}
 			for i, plan := range rebuildPlans {
+				if src := blockedEmbedSource(plan.View, notRebuilt); src != "" {
+					notRebuilt[plan.View.Name()] = true
+					deps.Logger.Info("view rebuild deferred: it materializes a view this instance did not rebuild",
+						"view", plan.View.Name(), "source", src)
+					continue
+				}
 				// Record which view (1-based) is rebuilding so /readyz names it in
 				// the 503 reason. Set before ExecuteRebuild so the reason reflects
 				// the view currently under work, not the one just finished.
@@ -314,6 +333,7 @@ func runWithConfig(cfg *Config, wire func(Deps) Wiring) error {
 						// lease refresh. Keep going for any other view we can drive.
 						deps.Logger.Info("view rebuild driven by another instance; serving the active slot until the flip",
 							"view", plan.View.Name())
+						notRebuilt[plan.View.Name()] = true
 						continue
 					}
 					deps.Logger.Error("boot rebuild failed", "view", plan.View.Name(), "err", err)
@@ -324,7 +344,7 @@ func runWithConfig(cfg *Config, wire func(Deps) Wiring) error {
 					return
 				}
 			}
-			boot.upstream = startUpstreamSubscribers(rebuildCtx, deps, cfg, upstreamSubs, views)
+			boot.upstream = startUpstreamSubscribers(rebuildCtx, deps, cfg, upstreamSubs, views, syncEngine)
 			syncEngine.Start(rebuildCtx)
 			boot.complete.Store(true) // readiness gate opens
 			deps.Logger.Info("sync engine started",
@@ -339,7 +359,7 @@ func runWithConfig(cfg *Config, wire func(Deps) Wiring) error {
 		// Mongo collection (operator may consume via mongosh or a
 		// custom adapter); the recompose-ripple is a no-op since no
 		// view embeds the collection.
-		deps.UpstreamSubscribers = startUpstreamSubscribers(ctx, deps, cfg, upstreamSubs, views)
+		deps.UpstreamSubscribers = startUpstreamSubscribers(ctx, deps, cfg, upstreamSubs, views, nil)
 	}
 
 	return serve(ctx, deps, wiring)

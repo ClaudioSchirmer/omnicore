@@ -42,7 +42,7 @@ func stageSet(t *testing.T, stages []Document) Document {
 
 func TestSurgicalEmbedStages_ManyUpsert(t *testing.T) {
 	after := Document{"label": "A2", "account_id": "acc-1"}
-	stages := surgicalEmbedStages([]embedDef{surgicalManyDef(t)}, "i2", after)
+	stages := surgicalEmbedStages([]embedDef{surgicalManyDef(t)}, "i2", after, 0)
 	set := stageSet(t, stages)
 	cond, ok := set["Items"].(Document)["$cond"].([]any)
 	if !ok || len(cond) != 3 {
@@ -68,7 +68,7 @@ func TestSurgicalEmbedStages_ManyUpsert(t *testing.T) {
 }
 
 func TestSurgicalEmbedStages_ManyDelete(t *testing.T) {
-	stages := surgicalEmbedStages([]embedDef{surgicalManyDef(t)}, "i2", nil)
+	stages := surgicalEmbedStages([]embedDef{surgicalManyDef(t)}, "i2", nil, 0)
 	set := stageSet(t, stages)
 	filter, ok := set["Items"].(Document)["$filter"].(Document)
 	if !ok {
@@ -81,7 +81,7 @@ func TestSurgicalEmbedStages_ManyDelete(t *testing.T) {
 
 func TestSurgicalEmbedStages_OneUpsertAndDelete(t *testing.T) {
 	after := Document{"label": "FA"}
-	set := stageSet(t, surgicalEmbedStages([]embedDef{surgicalOneDef(t)}, "i9", after))
+	set := stageSet(t, surgicalEmbedStages([]embedDef{surgicalOneDef(t)}, "i9", after, 0))
 	cond := set["FeaturedItem"].(Document)["$cond"].([]any)
 	eq := cond[0].(Document)["$eq"].([]any)
 	if eq[0] != "$featured_item_id" {
@@ -91,7 +91,7 @@ func TestSurgicalEmbedStages_OneUpsertAndDelete(t *testing.T) {
 		t.Errorf("non-referencing parents keep their stored value, got %v", cond[2])
 	}
 
-	setDel := stageSet(t, surgicalEmbedStages([]embedDef{surgicalOneDef(t)}, "i9", nil))
+	setDel := stageSet(t, surgicalEmbedStages([]embedDef{surgicalOneDef(t)}, "i9", nil, 0))
 	condDel := setDel["FeaturedItem"].(Document)["$cond"].([]any)
 	null, ok := condDel[1].(Document)
 	if !ok {
@@ -114,7 +114,7 @@ func TestRepairDanglingOneToOne_HealsAndGuards(t *testing.T) {
 	}
 	mongo := upstreamFakeMongo(colls)
 	repairDanglingOneToOne(context.Background(), mongo, identityResolver, nil, view, "acc1",
-		Document{"id": "acc1", "featured_item_id": "i9"})
+		Document{"id": "acc1", "featured_item_id": "i9"}, nil)
 
 	ups := colls["qa_accounts_view"].updates
 	if len(ups) != 1 {
@@ -144,7 +144,7 @@ func TestRepairDanglingOneToOne_MissingMirrorClearsToNull(t *testing.T) {
 	}
 	mongo := upstreamFakeMongo(colls)
 	repairDanglingOneToOne(context.Background(), mongo, identityResolver, nil, view, "acc1",
-		Document{"id": "acc1", "featured_item_id": "i9"})
+		Document{"id": "acc1", "featured_item_id": "i9"}, nil)
 
 	ups := colls["qa_accounts_view"].updates
 	if len(ups) != 1 {
@@ -163,7 +163,7 @@ func TestRepairDanglingOneToOne_NoFKNoWrite(t *testing.T) {
 		Embed(JoinUpstream(core.NewExternalSchema("upstream_items").PK("id").Field("Label", "label"), "FeaturedItem", "featuredItem")).On("featured_item_id")
 	colls := map[string]*fakeColl{"qa_accounts_view": {}}
 	repairDanglingOneToOne(context.Background(), upstreamFakeMongo(colls), identityResolver, nil, view, "acc1",
-		Document{"id": "acc1", "featured_item_id": nil})
+		Document{"id": "acc1", "featured_item_id": nil}, nil)
 	if len(colls["qa_accounts_view"].updates) != 0 {
 		t.Errorf("a null FK needs no repair (the composed null was written by the create), got %v", colls["qa_accounts_view"].updates)
 	}

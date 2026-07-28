@@ -72,17 +72,31 @@ func TestEmbedInChild_RejectsNonNativeChild(t *testing.T) {
 	}
 }
 
-// EmbedInChild composes only external collections: a JoinView leg (a registered
-// view) is rejected at boot.
-func TestEmbedInChild_RejectsViewLeg(t *testing.T) {
+// EmbedInChild composes an external mirror OR a local view (JoinView): the view
+// leg is accepted when the source view is registered — the SyncEngine signals
+// every write to it, so the enrichment is kept fresh by the same ripple.
+func TestEmbedInChild_AcceptsRegisteredViewLeg(t *testing.T) {
 	child := childSrc()
 	legView := View("someview").Version(1).Schema(rootSchema("someview"))
 	v := View("sales").Version(1).Schema(rootWithChild("sales", "sale_items")).
 		EmbedInChild(child, JoinView(legView, "Product", "product")).On("product_id").
 		Indexes(Index(childDocSegment(child) + ".product_id"))
-	err := ValidateViewSchemas([]*ViewDefinition{v})
-	if err == nil || !strings.Contains(err.Error(), "must be a JoinUpstream leg") {
-		t.Fatalf("a JoinView enrichment leg must be rejected, got: %v", err)
+	if err := ValidateViewSchemas([]*ViewDefinition{v, legView}); err != nil {
+		t.Fatalf("a registered JoinView enrichment leg must be accepted, got: %v", err)
+	}
+}
+
+// An UNregistered source view is rejected: nothing contributes its collection,
+// so the enrichment would resolve to null forever.
+func TestEmbedInChild_RejectsUnregisteredViewLeg(t *testing.T) {
+	child := childSrc()
+	legView := View("someview").Version(1).Schema(rootSchema("someview"))
+	v := View("sales").Version(1).Schema(rootWithChild("sales", "sale_items")).
+		EmbedInChild(child, JoinView(legView, "Product", "product")).On("product_id").
+		Indexes(Index(childDocSegment(child) + ".product_id"))
+	err := ValidateViewSchemas([]*ViewDefinition{v}) // legView not contributed
+	if err == nil || !strings.Contains(err.Error(), "not registered") {
+		t.Fatalf("an unregistered JoinView enrichment leg must be rejected, got: %v", err)
 	}
 }
 

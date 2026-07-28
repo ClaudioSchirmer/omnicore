@@ -418,13 +418,13 @@ func TestStartUpstreamSubscribers(t *testing.T) {
 	d.Transport, _ = newTransportSubscriber(cfg)
 
 	t.Run("emptyList", func(t *testing.T) {
-		if got := startUpstreamSubscribers(cancelledCtx(), d, cfg, nil, nil); got != nil {
+		if got := startUpstreamSubscribers(cancelledCtx(), d, cfg, nil, nil, nil); got != nil {
 			t.Fatalf("expected nil for no subscriptions, got %v", got)
 		}
 	})
 	t.Run("constructorErrorSkips", func(t *testing.T) {
 		subs := []UpstreamSubscription{{Topic: "", Collection: "c1"}} // empty topic → constructor error
-		if got := startUpstreamSubscribers(cancelledCtx(), d, cfg, subs, nil); len(got) != 0 {
+		if got := startUpstreamSubscribers(cancelledCtx(), d, cfg, subs, nil, nil); len(got) != 0 {
 			t.Fatalf("a failed constructor must be skipped, got %d subscribers", len(got))
 		}
 	})
@@ -433,7 +433,7 @@ func TestStartUpstreamSubscribers(t *testing.T) {
 			t.Skip("no transport adapter linked (build without a transport tag) — startsAndDrains needs a real Subscriber")
 		}
 		subs := []UpstreamSubscription{{Topic: "t1", Collection: "c1", ConsumerGroup: "g1", Workers: 1}}
-		started := startUpstreamSubscribers(cancelledCtx(), d, cfg, subs, nil)
+		started := startUpstreamSubscribers(cancelledCtx(), d, cfg, subs, nil, nil)
 		if len(started) != 1 {
 			t.Fatalf("expected 1 subscriber, got %d", len(started))
 		}

@@ -19,9 +19,9 @@
             <td>Third parties speak HTTP — request/response over the per-service registry (breaker, pool, TLS, oauth2/HMAC auth providers, response cache). It also works service-to-service when a team needs it, with the edge semantics that entails: strict token validation on the receiving side (expiry rejects — no attribution tolerance), permission gates always enforced, and none of the internal-plane conveniences. Internal sync traffic should default to gRPC and reserve <code>httpclient</code> for the boundary.</td>
         </tr>
         <tr>
-            <td>Read another service's state inside <em>my own</em> queries</td>
+            <td>Read <strong>another service's</strong> state inside <em>my own</em> queries</td>
             <td><a href="#auto-query-handlers~qry-auto-vs-manual"><code>UpstreamSubscription</code> + an external <code>JoinUpstream</code> embed</a> (read-side)</td>
-            <td>You do not need a call — you need the data local. The framework materializes the upstream collection from its event stream and ripples recompose into every view that embeds it. Reads never leave the process. See the <a href="#table-schema">TableSchema</a> page for the external <code>JoinUpstream</code> embed wiring.</td>
+            <td>You do not need a call — you need the data local. The framework materializes the upstream collection from its event stream and ripples recompose into every view that embeds it. Reads never leave the process. See the <a href="#table-schema">TableSchema</a> page for the external <code>JoinUpstream</code> embed wiring. <strong>This row is about ANOTHER service's data.</strong> To compose read models over your OWN aggregates there is no broker hop at all: embed the local view with <a href="#views~views-embed-view"><code>query.JoinView</code></a> (materialized, kept fresh in-process) or join it per request with a <a href="#views~views-composed"><code>ComposedView</code></a>.</td>
         </tr>
         <tr>
             <td>Signal that something happened so other services can react</td>

@@ -25,7 +25,7 @@ package query
 // other side's fields untouched — unless the document does not exist yet, in
 // which case whoever arrives first materializes the full composition. Either
 // way the write remains ONE atomic pipeline upsert.
-func fieldOwnershipStages(doc Document, pkCol string, embedFields map[string]struct{}) []Document {
+func fieldOwnershipStages(doc Document, pkCol string, embedFields map[string]struct{}, orders map[string]*embedOrder) []Document {
 	exists := Document{"$ne": []any{Document{"$type": "$" + pkCol}, "missing"}}
 	set := Document{}
 	for k, v := range doc {
@@ -33,7 +33,10 @@ func fieldOwnershipStages(doc Document, pkCol string, embedFields map[string]str
 			continue
 		}
 		if _, isEmbed := embedFields[k]; isEmbed {
-			set[k] = lit(v)
+			// A declared 1:N order applies to EVERY writer of the segment, this
+			// one included — the composed array is sorted by the same pipeline
+			// operator the surgical edit uses (see sortedSegment).
+			set[k] = sortedSegment(lit(v), orders[k])
 			continue
 		}
 		// The SyncEngine's field: keep the stored value; write the composed

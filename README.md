@@ -44,7 +44,8 @@ Each row links to its manual page.
 |---|---|---|
 | Mongo projections | Eventually-consistent views; keyset pagination; sparse `?fields=` responses | [query-side](https://claudioschirmer.github.io/omnicore/#query-side) |
 | Auto query handlers | Filter-operator allowlist by tag; CSV / Excel export of any view | [auto-query-handlers](https://claudioschirmer.github.io/omnicore/#auto-query-handlers) |
-| Composed views | Read-time joins across services, event-driven — never materialized on the request path | [service-to-service](https://claudioschirmer.github.io/omnicore/#service-to-service) |
+| View composition | Join by key with the same two legs (a local view or another service's mirrored data), choosing when you pay: materialized on write (`Embed`) or composed per request (`Link`) | [views](https://claudioschirmer.github.io/omnicore/#views) |
+| Cross-service reads | Another service's data projected locally from its event stream — never a call on the request path | [service-to-service](https://claudioschirmer.github.io/omnicore/#service-to-service) |
 | Schema evolution | Declarative `Version(N)`, drift detection, online blue-green rebuild (zero-downtime) | [mongo-schema-evolution](https://claudioschirmer.github.io/omnicore/#mongo-schema-evolution) |
 
 ### Transports & surfaces
@@ -213,7 +214,7 @@ semantics, same audit guarantees. → [CommandHandler](https://claudioschirmer.g
 ## Stack
 
 Fiber v3 (HTTP) · connectrpc.com/connect (gRPC) · pgx v5 (PostgreSQL) · go-sql-driver (MySQL) · go-mssqldb (SQL Server) ·
-go-ora (Oracle) · mongo-driver v2 (MongoDB) · segmentio/kafka-go (Kafka) · nats.go (NATS) ·
+go-ora (Oracle) · mongo-driver v2 (MongoDB 5.2+) · segmentio/kafka-go (Kafka) · nats.go (NATS) ·
 golang-migrate v4 (SQL migrations) · golang-jwt v5 + MicahParks/keyfunc (JWT).
 
 ## License

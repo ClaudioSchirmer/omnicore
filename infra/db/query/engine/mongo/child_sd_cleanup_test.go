@@ -41,6 +41,22 @@ func TestRemoveChildSDColumn(t *testing.T) {
 		t.Error("a dotted role-child path must lose the sd column")
 	}
 
+	// An intermediate segment that is an ARRAY: a 1:N embed of a local view
+	// (query.JoinView) whose elements carry their own child collections — the
+	// array-in-array shape. Every element must be descended into.
+	doc["sales"] = []any{
+		map[string]any{"total": 10, "SaleItems": []any{map[string]any{"label": "a", "deleted_at": nil}}},
+		map[string]any{"total": 20, "SaleItems": []any{map[string]any{"label": "b", "deleted_at": "2026-01-01"}}},
+	}
+	removeChildSDColumn(doc, []string{"sales", "SaleItems"}, "deleted_at")
+	for i, sale := range doc["sales"].([]any) {
+		for j, item := range sale.(map[string]any)["SaleItems"].([]any) {
+			if _, has := item.(map[string]any)["deleted_at"]; has {
+				t.Errorf("sales[%d].SaleItems[%d] must lose the sd column inside a 1:N view segment", i, j)
+			}
+		}
+	}
+
 	// No-ops: absent field, non-map container, nil segment list, scalar leaf.
 	removeChildSDColumn(doc, []string{"missing"}, "deleted_at")
 	removeChildSDColumn(doc, []string{"missing", "deeper"}, "deleted_at")

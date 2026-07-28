@@ -259,7 +259,7 @@ func TestToGoDoc_IDPassthrough(t *testing.T) {
 
 func TestAppendEmbedSchemaProblems_NilSourceSkipped(t *testing.T) {
 	// A nil-source embed is skipped without producing a problem.
-	got := appendEmbedSchemaProblems(nil, "v", []embedDef{{leg: nil}})
+	got := appendEmbedSchemaProblems(nil, "v", []embedDef{{leg: nil}}, map[string]bool{})
 	if len(got) != 0 {
 		t.Errorf("nil-source embed must be skipped, got %v", got)
 	}

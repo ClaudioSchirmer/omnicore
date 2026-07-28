@@ -163,6 +163,27 @@ type UpstreamSubscriber struct {
 	// instrument toggle). bootstrap sets it via WithKafkaTracing; false (the
 	// default) leaves the ripple loop untraced and pays nothing.
 	traceKafka bool
+	// viewSignal chains this subscriber's ripple into the view→view fan-out:
+	// a mirror change refreshes view Y, and Y may itself be materialized into X
+	// (query.JoinView), so Y's refreshed document must signal onward. Installed
+	// by WithViewChaining; nil (the default) makes the chain a no-op.
+	viewSignal *viewEmbedSignal
+}
+
+// WithViewChaining connects this subscriber's recompose ripple to the view→view
+// fan-out owned by the SyncEngine, so a chain upstream → Y → X propagates: the
+// ripple refreshes Y's document, and that write signals every view materializing
+// Y. Without it the chain would stop at the first hop and X would drift.
+//
+// Takes the engine (rather than the fan-out) so the two writers of a view
+// document always share ONE instance — there is no way to wire a second,
+// divergent fan-out by accident. A nil engine, or an engine whose view set
+// embeds no view, leaves chaining off.
+func (s *UpstreamSubscriber) WithViewChaining(engine *SyncEngine) *UpstreamSubscriber {
+	if engine != nil {
+		s.viewSignal = engine.viewSignal
+	}
+	return s
 }
 
 // WithKafkaTracing enables the consumer span on each processed message. bootstrap
@@ -629,119 +650,40 @@ func (s *UpstreamSubscriber) dispatchDelete(ctx context.Context, id string) {
 	}
 }
 
-// ripple is the downstream recompose pass. For every dependent view it
-// asks Mongo "which docs reference the changed upstream id?", recomposes
-// each one through the Composer, and upserts the result. Failures are
-// per-view isolated: a Composer bug or upsert error on view A does not
-// block view B referencing the same upstream entity. Kafka offset still
-// advances after this returns — the alternative (block on failure) turns
-// a deterministic recompose bug into a poison pill across the whole
-// consumer group.
+// rippleEngine derives the shared embedRippler for this subscription — the
+// recompose pass extracted to embed_rippler.go so other source kinds (a view
+// embedded via query.JoinView) drive the identical pass. Derived per call from
+// the subscriber's current fields (never cached): literal-constructed test
+// subscribers stay valid, and the cost is one small struct next to the Mongo
+// round trips a ripple performs anyway.
+func (s *UpstreamSubscriber) rippleEngine() *embedRippler {
+	r := &embedRippler{
+		eng:            s.eng,
+		mongo:          s.mongo,
+		composer:       s.composer,
+		resolver:       s.resolver,
+		topic:          s.cfg.Topic,
+		collection:     s.cfg.Collection,
+		dependentViews: s.dependentViews,
+		logger:         s.logger,
+		metrics:        s.metrics,
+	}
+	if s.viewSignal != nil {
+		r.onViewWritten = s.viewSignal.Written
+	}
+	return r
+}
+
+// ripple delegates the downstream recompose pass to the shared embedRippler
+// (see embed_rippler.go for the full contract: per-view failure isolation,
+// failure registry, surgical edits, dual-apply to a rebuild shadow).
 //
-// Every failure is persisted to omnicore_upstream_failures alongside the
-// in-memory metric so operators have a queryable record of stale docs
-// surviving past the consumer group's offset. A view+upstream_id pair
-// that completes the full recompose pass without errors triggers
-// ResolveUpstreamFailures so prior pending rows for the same coordinate
-// are marked as resolved — the failure table mirrors the live state, not
-// a monotonically-growing log.
+// The watermark is 0: an upstream mirror has ONE writer and per-id serialized
+// events, so its edits need no revision guard (see the srcRev commentary in
+// embed_surgical.go) and the emitted stages stay byte-identical to what this
+// path always produced.
 func (s *UpstreamSubscriber) ripple(ctx context.Context, upstreamID string, before, after Document) {
-	for _, v := range s.dependentViews {
-		embeds := collectMongoEmbeds(v.Embeds(), s.cfg.Collection)
-		if len(embeds) == 0 {
-			// No ROOT embed of this collection — the view may be a dependent only
-			// via EmbedInChild, handled in the child-embed pass below. Skip the
-			// root-embed handling.
-			continue
-		}
-		// Discover the local parent docs to recompose — the UNION across every
-		// embed of this collection on the view (a view may embed the same
-		// collection both 1:1 and 1:N). See discoverRippleTargets.
-		localIDs, discoverErr := s.discoverRippleTargets(ctx, v, embeds, upstreamID, before, after)
-		if discoverErr {
-			continue
-		}
-		// EXISTING parent docs take the surgical per-element edit (see
-		// embed_surgical.go): no relational read, and edits for different
-		// upstream ids commute, so concurrent ripples cannot erase each
-		// other's elements. A parent with no document yet falls back to the
-		// full recompose below, which materializes the complete composition
-		// (racing a concurrent SyncEngine create is safe — both writers use
-		// the field-ownership upsert). Non-upsert on the surgical write keeps
-		// a ripple racing a concurrent document delete from resurrecting a
-		// skeleton.
-		failed := false
-		var fallback []string
-		stages := surgicalEmbedStages(embeds, upstreamID, after)
-		if stages == nil {
-			fallback = localIDs
-		} else {
-			for _, localID := range localIDs {
-				present, err := s.mongo.FindIDsByField(ctx, s.resolver.Active(v.Name()), "_id", localID)
-				if err != nil {
-					s.metrics.inc(s.cfg.Topic, v.Name(), upstreamRecomposeStageUpsert)
-					s.logger.Error("upstream.recompose.exists",
-						"subscription", s.cfg.Topic, "view", v.Name(),
-						"upstreamID", upstreamID, "localID", localID, "err", err)
-					s.recordFailure(ctx, v.Name(), upstreamID, localID, UpstreamFailureStageUpsert, err)
-					failed = true
-					continue
-				}
-				if len(present) == 0 {
-					fallback = append(fallback, localID)
-					continue
-				}
-				if s.rippleApplyOne(ctx, v, upstreamID, localID, stages, false) {
-					failed = true
-				}
-			}
-		}
-		// Full-recompose fallback (parent doc absent, or an embed with nested
-		// embeds — the element in hand cannot carry nested content). One
-		// set-based ComposeBatch; on a batch error drop to per-id compose to
-		// isolate the offender, exactly as before.
-		if len(fallback) > 0 {
-			composed, batchErr := s.composer.ComposeBatch(ctx, v, fallback)
-			if batchErr != nil {
-				for _, localID := range fallback {
-					if s.rippleRecomposeOne(ctx, v, upstreamID, localID) {
-						failed = true
-					}
-				}
-			} else {
-				pkCol := schemaPK(v.schema)
-				byID := make(map[string]Document, len(composed))
-				for _, doc := range composed {
-					byID[fmt.Sprintf("%v", doc[pkCol])] = doc
-				}
-				for _, localID := range fallback {
-					doc := byID[localID]
-					if doc == nil {
-						continue // the local root vanished between discover and compose — skip, as the nil compose did
-					}
-					if s.rippleUpsertOne(ctx, v, upstreamID, localID, doc) {
-						failed = true
-					}
-				}
-			}
-		}
-		if !failed {
-			s.resolveFailures(ctx, v.Name(), upstreamID)
-		}
-	}
-	// Child-embed pass (EmbedInChild): the enrichment lives INSIDE a native child
-	// array (items[].product), not a root embed segment, so the surgical /
-	// field-ownership write above cannot reach it. Each affected doc is FULLY
-	// recomposed and written with the consult-guarded pipeline (own data behind
-	// _revision, equal-revision fill landing the refreshed enrichment) — the same
-	// write the SyncEngine uses, so a concurrent local write is never regressed.
-	for _, v := range s.dependentViews {
-		childEmbeds := collectChildMongoEmbeds(v.ChildEmbeds(), s.cfg.Collection)
-		if len(childEmbeds) == 0 {
-			continue
-		}
-		s.rippleChildEmbeds(ctx, v, childEmbeds, upstreamID, after)
-	}
+	s.rippleEngine().ripple(ctx, upstreamID, before, after, 0)
 }
 
 // collectChildMongoEmbeds returns the EmbedInChild declarations of the view whose
@@ -760,151 +702,9 @@ func collectChildMongoEmbeds(childEmbeds []childEmbedDef, collection string) []c
 	return out
 }
 
-// rippleChildEmbeds surgically updates the enriched sub-document inside every
-// matching child element, for each EmbedInChild of this collection — the
-// per-element analog of the root embed's surgical ripple. The enrichment lives
-// INSIDE the child array and is owned by THIS ripple (the upstream mirror's
-// writes), NOT by the parent's revision, so it must NOT go through the
-// revision-guarded consult path: at the parent's unchanged revision a consult
-// scope only fills MISSING fields (stored wins), which could never overwrite a
-// stale enrichment. Instead a `$map` rewrites ONLY the matched elements'
-// enrichment field — unguarded, and commuting with concurrent ripples for other
-// items (each touches a disjoint element set). `after` is the changed upstream
-// document (the new sub-doc value); nil on delete clears the enrichment to null.
-func (s *UpstreamSubscriber) rippleChildEmbeds(ctx context.Context, v *ViewDefinition, childEmbeds []childEmbedDef, upstreamID string, after Document) {
-	// The enrichment value is embedded as a $literal: it is DATA (the upstream
-	// sub-document, or null on delete), not an aggregation expression. Without
-	// $literal Mongo would evaluate the map as an expression object — the same
-	// reason surgicalManyExpr wraps its element in lit(...).
-	var itemVal any
-	if after != nil {
-		itemVal = map[string]any(after)
-	} // else nil → clear the enrichment to null (source deleted)
-	litVal := lit(itemVal)
-	for _, ce := range childEmbeds {
-		seg := ce.ChildSegment()
-		fkCol := ce.FKColumn()
-		// $map over the child array (defensive $ifNull for a missing/absent
-		// array): each element whose FK equals the changed upstream id gets its
-		// enrichment field merged in; every other element is left untouched.
-		stage := Document{"$set": Document{
-			seg: Document{"$map": Document{
-				"input": Document{"$ifNull": []any{"$" + seg, []any{}}},
-				"as":    "e",
-				"in": Document{"$cond": []any{
-					Document{"$eq": []any{"$$e." + fkCol, upstreamID}},
-					Document{"$mergeObjects": []any{"$$e", Document{ce.Field(): litVal}}},
-					"$$e",
-				}},
-			}},
-		}}
-		ids, err := s.mongo.FindIDsByField(ctx, s.resolver.Active(v.Name()), seg+"."+fkCol, upstreamID)
-		if err != nil {
-			s.metrics.inc(s.cfg.Topic, v.Name(), upstreamRecomposeStageDiscover)
-			s.logger.Error("upstream.recompose.discover.child",
-				"subscription", s.cfg.Topic, "view", v.Name(),
-				"upstreamID", upstreamID, "field", seg+"."+fkCol, "err", err)
-			s.recordFailure(ctx, v.Name(), upstreamID, "", UpstreamFailureStageDiscover, err)
-			continue
-		}
-		failed := false
-		for _, id := range ids {
-			if s.rippleApplyOne(ctx, v, upstreamID, id, []Document{stage}, false) {
-				failed = true
-			}
-		}
-		if !failed {
-			s.resolveFailures(ctx, v.Name(), upstreamID)
-		}
-	}
-}
-
-// rippleRecomposeOne composes one local doc and upserts it, recording any
-// compose- or upsert-stage failure to the registry. Returns true iff a failure
-// was recorded (a vanished local root — nil compose — is NOT a failure). It is
-// the per-id fallback the batch ripple drops to when a set-based ComposeBatch
-// fails, so a single offending id is isolated exactly as the pre-batch path did.
-func (s *UpstreamSubscriber) rippleRecomposeOne(ctx context.Context, v *ViewDefinition, upstreamID, localID string) (failed bool) {
-	doc, err := s.composer.Compose(ctx, v, localID)
-	if err != nil {
-		s.metrics.inc(s.cfg.Topic, v.Name(), upstreamRecomposeStageCompose)
-		s.logger.Error("upstream.recompose.compose",
-			"subscription", s.cfg.Topic,
-			"collection", s.cfg.Collection,
-			"view", v.Name(),
-			"upstreamID", upstreamID,
-			"localID", localID,
-			"err", err)
-		s.recordFailure(ctx, v.Name(), upstreamID, localID, UpstreamFailureStageCompose, err)
-		return true
-	}
-	if doc == nil {
-		return false
-	}
-	return s.rippleUpsertOne(ctx, v, upstreamID, localID, doc)
-}
-
-// rippleUpsertOne upserts one recomposed local doc into the view's active slot,
-// recording an upsert-stage failure to the registry on error. Returns true iff a
-// failure was recorded. Shared by the batch happy path and the per-id fallback so
-// upsert failures stay isolated per local id on both.
-//
-// The write claims ONLY the embed segments (plus the full document when this
-// upsert is creating it): the non-embed fields composed here may be staler
-// than a concurrent SyncEngine recompose of the same document, and a
-// full-document Upsert would regress them — see fieldOwnershipStages.
-func (s *UpstreamSubscriber) rippleUpsertOne(ctx context.Context, v *ViewDefinition, upstreamID, localID string, doc Document) (failed bool) {
-	stages := fieldOwnershipStages(doc, schemaPK(v.schema), embedFieldSet(v.embeds))
-	if failed = s.rippleApplyOne(ctx, v, upstreamID, localID, stages, true); failed {
-		return true
-	}
-	repairDanglingOneToOne(ctx, s.mongo, s.resolver, s.eng, v, localID, doc)
-	return false
-}
-
-// rippleApplyOne runs one pipeline write against the view's active slot and —
-// during a rebuild window — against the shadow slot too, with the same
-// dual-apply discipline as the SyncEngine (dualApplyShadow: bounded retry,
-// then abort the rebuild rather than fail the live path). Without the shadow
-// leg, a ripple landing mid-rebuild would reach only the retiring active slot
-// and the flipped collection would silently miss it. Records an upsert-stage
-// failure on error; returns true iff a failure was recorded.
-func (s *UpstreamSubscriber) rippleApplyOne(ctx context.Context, v *ViewDefinition, upstreamID, localID string, stages []Document, upsert bool) (failed bool) {
-	if err := s.mongo.ApplyProjection(ctx, s.resolver.Active(v.Name()), localID, stages, upsert); err != nil {
-		s.metrics.inc(s.cfg.Topic, v.Name(), upstreamRecomposeStageUpsert)
-		s.logger.Error("upstream.recompose.upsert",
-			"subscription", s.cfg.Topic,
-			"collection", s.cfg.Collection,
-			"view", v.Name(),
-			"upstreamID", upstreamID,
-			"localID", localID,
-			"err", err)
-		s.recordFailure(ctx, v.Name(), upstreamID, localID, UpstreamFailureStageUpsert, err)
-		return true
-	}
-	if shadow, on := s.resolver.ShadowActive(v.Name()); on {
-		dualApplyShadow(ctx, s.eng, s.resolver, v.Name(), func() error {
-			return s.mongo.ApplyProjection(ctx, shadow, localID, stages, upsert)
-		})
-	}
-	return false
-}
-
-// discoverRippleTargets computes the distinct local parent _ids to recompose for
-// one dependent view, unioning every embed of the changed collection:
-//
-//   - one-to-one Embed: the PARENT holds the FK column, so scan the parent view
-//     for docs whose join field == the changed upstream _id
-//     (FindIDsByField(view, parentFK, upstreamID)).
-//   - one-to-many EmbedMany: the CHILD holds the FK, and its value IS the parent
-//     _id, so read it from the doc state BEFORE and AFTER the change — a moved or
-//     deleted child must recompose both the old and the new parent, and neither
-//     is reachable by scanning the parent view (the FK lives on the child, under
-//     the embed segment). No reverse scan, no covering index: the target is the
-//     parent primary key, always indexed.
-//
-// Returns (ids, discoverErr): discoverErr is true when a 1:1 reverse scan errored
-// (already recorded), signalling the caller to skip this view for this pass.
+// discoverRippleTargets delegates to the shared embedRippler (see
+// embed_rippler.go) — kept as a subscriber method because the unit suite
+// drives the discovery contract through the subscriber's surface.
 func (s *UpstreamSubscriber) discoverRippleTargets(
 	ctx context.Context,
 	v *ViewDefinition,
@@ -912,42 +712,7 @@ func (s *UpstreamSubscriber) discoverRippleTargets(
 	upstreamID string,
 	before, after Document,
 ) ([]string, bool) {
-	seen := map[string]struct{}{}
-	var ordered []string
-	add := func(id string) {
-		if id == "" {
-			return
-		}
-		if _, dup := seen[id]; dup {
-			return
-		}
-		seen[id] = struct{}{}
-		ordered = append(ordered, id)
-	}
-	for _, e := range embeds {
-		if e.Many() {
-			fkCol := e.JoinColumn()
-			add(docFieldString(before, fkCol))
-			add(docFieldString(after, fkCol))
-			continue
-		}
-		ids, err := s.mongo.FindIDsByField(ctx, s.resolver.Active(v.Name()), e.JoinColumn(), upstreamID)
-		if err != nil {
-			s.metrics.inc(s.cfg.Topic, v.Name(), upstreamRecomposeStageDiscover)
-			s.logger.Error("upstream.recompose.discover",
-				"subscription", s.cfg.Topic,
-				"collection", s.cfg.Collection,
-				"view", v.Name(),
-				"upstreamID", upstreamID,
-				"err", err)
-			s.recordFailure(ctx, v.Name(), upstreamID, "", UpstreamFailureStageDiscover, err)
-			return nil, true
-		}
-		for _, id := range ids {
-			add(id)
-		}
-	}
-	return ordered, false
+	return s.rippleEngine().discoverRippleTargets(ctx, v, embeds, upstreamID, before, after)
 }
 
 // readLocalDoc returns the current local upstream document by id — the source of
@@ -1009,56 +774,20 @@ func docFieldString(doc Document, field string) string {
 	return fmt.Sprintf("%v", v)
 }
 
-// recordFailure persists one ripple failure row in PG. Best-effort: any
-// PG error is logged at Warn and discarded — the framework's failure
-// isolation contract requires that the Kafka offset advances regardless
-// of side-channel writes. Skipped entirely when s.pg is nil (test
-// scaffolds that drive ripple without a Postgres handle).
+// recordFailure / resolveFailures delegate to the shared embedRippler (see
+// embed_rippler.go): best-effort, nil-engine-safe side-channel writes to the
+// omnicore_upstream_failures registry — the contract is unchanged.
 func (s *UpstreamSubscriber) recordFailure(
 	ctx context.Context,
 	viewName, upstreamID, localID string,
 	stage UpstreamFailureStage,
 	cause error,
 ) {
-	if s.eng == nil {
-		return
-	}
-	msg := ""
-	if cause != nil {
-		msg = cause.Error()
-	}
-	rec := UpstreamFailureRecord{
-		SubscriptionTopic: s.cfg.Topic,
-		ViewName:          viewName,
-		UpstreamID:        upstreamID,
-		LocalID:           localID,
-		Stage:             stage,
-		Error:             msg,
-	}
-	if err := RecordUpstreamFailure(ctx, s.eng.Querier(), s.eng.Dialect(), rec); err != nil {
-		s.logger.Warn("upstream.recompose.record_failure_failed",
-			"subscription", s.cfg.Topic,
-			"view", viewName,
-			"upstreamID", upstreamID,
-			"localID", localID,
-			"stage", stage,
-			"err", err)
-	}
+	s.rippleEngine().recordFailure(ctx, viewName, upstreamID, localID, stage, cause)
 }
 
-// resolveFailures marks any pending failure for (subscription, view,
-// upstream_id) as resolved. Best-effort + nil-safe like recordFailure.
 func (s *UpstreamSubscriber) resolveFailures(ctx context.Context, viewName, upstreamID string) {
-	if s.eng == nil {
-		return
-	}
-	if err := ResolveUpstreamFailures(ctx, s.eng.Querier(), s.eng.Dialect(), s.cfg.Topic, viewName, upstreamID); err != nil {
-		s.logger.Warn("upstream.recompose.resolve_failures_failed",
-			"subscription", s.cfg.Topic,
-			"view", viewName,
-			"upstreamID", upstreamID,
-			"err", err)
-	}
+	s.rippleEngine().resolveFailures(ctx, viewName, upstreamID)
 }
 
 // joinFieldFor walks v.Embeds() looking for the embed that points at

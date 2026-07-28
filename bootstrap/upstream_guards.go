@@ -82,6 +82,7 @@ func applyUpstreamSubscriptionDefaults(subs []UpstreamSubscription, service stri
 func validateUpstreamSubscriptions(
 	subs []UpstreamSubscription,
 	views []*query.ViewDefinition,
+	composed []*query.ComposedViewDefinition,
 	profile string,
 	logger *slog.Logger,
 ) error {
@@ -106,7 +107,7 @@ func validateUpstreamSubscriptions(
 	// §8.5 — a declared soft-delete column that the subscription filter drops is a
 	// silent-archive bug (abort); a mirror whose embed schema declares no soft-delete
 	// column at all is an advisory (logged, not fatal).
-	sdViolations, sdWarnings := guardSoftDeleteFilter(subs, views)
+	sdViolations, sdWarnings := guardSoftDeleteFilter(subs, views, composed)
 	violations = append(violations, sdViolations...)
 	if logger != nil {
 		for _, w := range sdWarnings {
@@ -236,14 +237,13 @@ func guardCollectionCollision(subs []UpstreamSubscription, views []*query.ViewDe
 // UpstreamSubscription.Collection — otherwise the embed would silently
 // resolve to an empty slice in production.
 //
-// View-on-view via an external JoinUpstream (an external JoinUpstream targeting
-// another local ViewDefinition.Name()) is explicitly NOT supported: the recompose
-// ripple is one-hop (see UpstreamSubscriber.ripple consulting
-// viewIndex.byMongoColl, populated from subscription collections only),
-// so a change in the upstream of view Y would recompose Y but never
-// trigger view X that embeds Y. Drift would accumulate silently. The
-// guard rejects this shape at boot so consumers never reach the trap;
-// the diagnostic suggests the supported alternatives.
+// A JoinUpstream leg naming a LOCAL view's collection stays rejected — but for
+// a declaration reason, not a propagation one: materializing a local view is
+// declared with query.JoinView (which carries the view, so the SyncEngine
+// signals every write to it and the embedding view is refreshed), never by
+// pointing an external schema at the view's collection behind the framework's
+// back (that leg has no view to signal on, and no subscription materializes it).
+// The diagnostic names the supported form.
 func guardMaterializingSource(subs []UpstreamSubscription, views []*query.ViewDefinition) []string {
 	var out []string
 	subCollections := make(map[string]bool, len(subs))
@@ -265,13 +265,13 @@ func guardMaterializingSource(subs []UpstreamSubscription, views []*query.ViewDe
 			}
 			if localViews[coll] {
 				out = append(out, fmt.Sprintf(
-					"§8.3 view %q embeds Mongo collection %q, but %q is the name of a local ViewDefinition — "+
-						"view-on-view composition through an Embed is NOT supported. The recompose ripple is "+
-						"one-hop: an upstream change recomposes %q but never re-ripples to %q, so %q would drift "+
-						"silently. Either Embed an upstream collection directly with "+
-						"Embed(query.JoinUpstream(query.NewExternalSchema(\"<upstream_collection>\"), \"Go\", \"doc\")).On(...), "+
-						"or join the view %q at read time with query.ComposedView.",
-					v.Name(), coll, coll, coll, v.Name(), v.Name(), coll,
+					"§8.3 view %q embeds Mongo collection %q through a JoinUpstream leg, but %q is the name of a "+
+						"local ViewDefinition — an external schema pointing at a local view's collection is not "+
+						"the way to materialize it (nothing signals that leg on a write, and no UpstreamSubscription "+
+						"materializes it). Materialize the view with its own leg: "+
+						"Embed(query.JoinView(%sView(), \"Go\", \"doc\")).On(...) — the SyncEngine then refreshes %q on "+
+						"every write to %q. To join without materializing, use query.ComposedView.",
+					v.Name(), coll, coll, coll, v.Name(), coll,
 				))
 				continue
 			}
@@ -331,7 +331,7 @@ func guardAnonymizePolicy(subs []UpstreamSubscription) []string {
 // An empty Filter mirrors the full payload, so the soft-delete column survives
 // unconditionally — never a violation. A subscription whose Collection is
 // embedded by no view is skipped here (§8.3 governs the never-embedded case).
-func guardSoftDeleteFilter(subs []UpstreamSubscription, views []*query.ViewDefinition) (violations, warnings []string) {
+func guardSoftDeleteFilter(subs []UpstreamSubscription, views []*query.ViewDefinition, composed []*query.ComposedViewDefinition) (violations, warnings []string) {
 	// Per embedded upstream Mongo collection: the soft-delete columns declared on
 	// its external schema (with the view that declared each, for the diagnostic).
 	// The same collection may be embedded by several views with independent
@@ -352,6 +352,22 @@ func guardSoftDeleteFilter(subs []UpstreamSubscription, views []*query.ViewDefin
 			}
 		}
 	}
+	// A mirror has TWO kinds of consumer, and both apply its soft-delete column:
+	// an Embed materializes the gate into the document, and a ComposedView's
+	// external leg applies it per request (the composed reader gates each leg on
+	// its own schema's soft-delete unless ?includeArchived). A filter that drops
+	// the column breaks them identically, so the link family is cross-checked
+	// here too — otherwise the same silent-archive bug simply walks in through the
+	// door this guard does not watch.
+	for _, c := range composed {
+		for _, leg := range c.ExternalLegs() {
+			coll := leg.Collection()
+			embedded[coll] = true
+			if sd, ok := leg.SchemaDef().SoftDeleteColumn(); ok {
+				declaredBy[coll] = append(declaredBy[coll], declaration{column: sd, view: "composed " + c.Name()})
+			}
+		}
+	}
 	for _, s := range subs {
 		if !embedded[s.Collection] {
 			continue // never embedded — §8.3 owns that case; nothing to cross-check here
@@ -359,7 +375,7 @@ func guardSoftDeleteFilter(subs []UpstreamSubscription, views []*query.ViewDefin
 		decls := declaredBy[s.Collection]
 		if len(decls) == 0 {
 			warnings = append(warnings, fmt.Sprintf(
-				"§8.5 subscription topic=%q collection=%q: no view embedding this mirror declares a "+
+				"§8.5 subscription topic=%q collection=%q: no view embedding or composing this mirror declares a "+
 					"soft-delete column on its external schema. If the upstream entity soft-deletes "+
 					"(archive), declare .SoftDelete(\"<column>\") on the NewExternalSchema AND keep that "+
 					"column in the subscription's filter — otherwise an archived upstream entity stays "+
@@ -392,7 +408,7 @@ func guardSoftDeleteFilter(subs []UpstreamSubscription, views []*query.ViewDefin
 		for _, col := range dropped {
 			violations = append(violations, fmt.Sprintf(
 				"§8.5 subscription topic=%q collection=%q declares filter %s which OMITS the soft-delete "+
-					"column %q that view %q's embed schema declares — an archived upstream entity carries "+
+					"column %q that %q's leg schema declares — an archived upstream entity carries "+
 					"%q in its event, the filter would strip it, and the mirror could never reflect the "+
 					"archive (archived rows would look active forever). Add %q to the filter, or clear the "+
 					"filter to mirror the full payload.",

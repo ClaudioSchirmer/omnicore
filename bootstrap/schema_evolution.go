@@ -139,6 +139,21 @@ func formatMigrationDirtyDiagnostic(version uint) string {
 // need a full ExecuteRebuild — the SLOW blue-green rebuild the caller runs in the
 // background so the HTTP probes come up immediately (livez 200, readyz 503 until
 // the rebuilds finish). rebuildCfg is returned alongside for the caller's loop.
+// blockedEmbedSource returns the first LOCAL view this one materializes (a
+// query.JoinView leg) that the current rebuild run did not bring to a flip —
+// the signal to defer this view's rebuild. "" when every source is clear.
+func blockedEmbedSource(v *query.ViewDefinition, notRebuilt map[string]bool) string {
+	if len(notRebuilt) == 0 {
+		return ""
+	}
+	for _, src := range query.EmbedSourceViews(v) {
+		if notRebuilt[src] {
+			return src
+		}
+	}
+	return ""
+}
+
 func reconcileViewDrift(ctx context.Context, cfg *Config, deps Deps, sync *query.SyncEngine, views []*query.ViewDefinition) (rebuildPlans []query.DriftPlan, rebuildCfg query.RebuildConfig, err error) {
 	// The Mongo-view drift/rebuild control plane is backend-neutral: it reads the
 	// omnicore_mongo_views registry through the engine's Querier/Dialect and
@@ -234,5 +249,35 @@ func reconcileViewDrift(ctx context.Context, cfg *Config, deps Deps, sync *query
 			rebuildPlans = append(rebuildPlans, plan)
 		}
 	}
+	// EMBED-DEPENDENCY ORDER. A rebuild composes its embed segments by reading
+	// the SOURCE view's active collection, and that pointer flips only when the
+	// source's own rebuild completes — so an embedder rebuilt first would
+	// materialize the source's pre-flip content and finish stale, with no event
+	// left to repair it (rebuild writes raise no embed signal, by design). The
+	// unordered case is the COMMON one: bumping a source's Version moves every
+	// embedder's hash too (the leg's version rides in it), so both land in this
+	// list together, in declaration order. Reorder them here, once, where the
+	// list is built. A stable no-op for a service whose views embed no view.
+	rebuildPlans = orderPlansByEmbedDependency(rebuildPlans)
 	return rebuildPlans, rebuildCfg, nil
+}
+
+// orderPlansByEmbedDependency sorts the plan list so a view materialized inside
+// another is rebuilt first, delegating the graph walk to the query package
+// (which owns the embed graph and its acyclicity guarantee).
+func orderPlansByEmbedDependency(plans []query.DriftPlan) []query.DriftPlan {
+	if len(plans) < 2 {
+		return plans
+	}
+	views := make([]*query.ViewDefinition, 0, len(plans))
+	planOf := make(map[string]query.DriftPlan, len(plans))
+	for _, p := range plans {
+		views = append(views, p.View)
+		planOf[p.View.Name()] = p
+	}
+	ordered := make([]query.DriftPlan, 0, len(plans))
+	for _, v := range query.OrderViewsByEmbedDependency(views) {
+		ordered = append(ordered, planOf[v.Name()])
+	}
+	return ordered
 }

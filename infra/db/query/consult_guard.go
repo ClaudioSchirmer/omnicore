@@ -119,7 +119,7 @@ func consultGuardedStages(view *ViewDefinition, doc Document) []Document {
 	// embeds it should materialize.
 	stages := make([]Document, 0, 3)
 	if len(embeds) > 0 {
-		stages = append(stages, embedCreateStage(embeds, pk))
+		stages = append(stages, embedCreateStage(embeds, pk, embedOrders(view.embeds)))
 	}
 	if len(own) > 0 {
 		stages = append(stages, scopeStage(docRevisionField, own, ownRev, ownShape))
@@ -231,11 +231,11 @@ func equalRevisionExpr(col string, v any, shape scopeShape) Document {
 // (the ripple owns it) and materializes the composed value only when this
 // upsert is creating the document. Existence is probed via the root PK column
 // — absent on a fresh upsert-insert, present on every materialized document.
-func embedCreateStage(embeds Document, pkCol string) Document {
+func embedCreateStage(embeds Document, pkCol string, orders map[string]*embedOrder) Document {
 	exists := Document{"$ne": []any{Document{"$type": "$" + pkCol}, "missing"}}
 	set := Document{}
 	for k, v := range embeds {
-		set[k] = Document{"$cond": []any{exists, "$" + k, lit(v)}}
+		set[k] = Document{"$cond": []any{exists, "$" + k, sortedSegment(lit(v), orders[k])}}
 	}
 	return Document{"$set": set}
 }

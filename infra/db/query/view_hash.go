@@ -118,6 +118,12 @@ func (v *ViewDefinition) writeRebuildShape(w *canonicalWriter) {
 			w.writeString(ce.leg.Table())
 			w.writeString(ce.joinCol)
 			w.writeString(ce.leg.goSegment)
+			// Same version coupling as a root view leg (see writeEmbedList):
+			// conditional, so an external-sourced EmbedInChild keeps its stream.
+			if ce.leg.view != nil {
+				w.writeTag("leg_view")
+				w.writeInt(int64(ce.leg.view.VersionNumber()))
+			}
 		}
 	}
 
@@ -183,6 +189,25 @@ func writeEmbedList(w *canonicalWriter, embeds []embedDef) {
 		// (parent FK) alike — so an FK change still moves the rebuild hash.
 		w.writeString(e.JoinColumn())
 		w.writeBool(e.leg.IsMongo())
+		// A JoinView leg couples this view's rebuild identity to the EMBEDDED
+		// view's declared Version: bumping the source view moves this hash too, so
+		// the forgot-to-bump guard fires here and the embedding projection is
+		// rebuilt against the new shape instead of silently keeping copies of the
+		// old one. Emitted ONLY for a view leg, so every existing (external-leg)
+		// view keeps its byte-identical rebuild_v2 stream.
+		if e.leg.view != nil {
+			w.writeTag("leg_view")
+			w.writeInt(int64(e.leg.view.VersionNumber()))
+		}
+		// A declared 1:N element order is materialized INTO the document, so it
+		// is projection shape: changing it must move the rebuild hash. Emitted
+		// only when declared, so an unordered EmbedMany keeps its byte-identical
+		// stream and no deployed view rebuilds on upgrade.
+		if e.orderBy != "" {
+			w.writeTag("order")
+			w.writeString(e.orderBy)
+			w.writeBool(e.orderDesc)
+		}
 		// Embeds are single-level: a source carries no nested embeds. Emit the
 		// empty-list encoding (length 0) that the old nested writeEmbedList call
 		// produced for every real (non-nested) view, so the RebuildHash stays

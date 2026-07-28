@@ -105,6 +105,13 @@
 
     <h3 id="engine-seam">The relational engine seam</h3>
     <p>
+        The read side is <strong>MongoDB</strong>, and the floor is <strong>MongoDB 5.2 or higher</strong> — the version
+        that introduced <code>$sortArray</code>, which backs the declared element order of a materialized 1:N segment
+        (<a href="#views~views-embed-order"><code>EmbedMany.OrderBy</code></a>). Only views that DECLARE an order emit
+        it, so everything else works on an older server; the floor is what the framework supports, not what every feature
+        demands.
+    </p>
+    <p>
         The relational layer is <strong>backend-agnostic by design</strong>.
         <strong>PostgreSQL</strong>, <strong>MySQL</strong>, <strong>SQL Server</strong>, and <strong>Oracle</strong>
         (Oracle Database <strong>23ai or higher</strong> — the engine adopts the native <code>BOOLEAN</code>/<code>JSON</code>

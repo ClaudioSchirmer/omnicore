@@ -26,6 +26,10 @@ func startUpstreamSubscribers(
 	cfg *Config,
 	subs []UpstreamSubscription,
 	views []*query.ViewDefinition,
+	// engine owns the view→view fan-out; passing it lets a mirror ripple chain
+	// onward (upstream → Y → X) when Y is materialized into another view. Nil in
+	// the degenerate no-views boot, where there is nothing to chain into.
+	engine *query.SyncEngine,
 ) []*query.UpstreamSubscriber {
 	if len(subs) == 0 {
 		return nil
@@ -63,7 +67,8 @@ func startUpstreamSubscribers(
 				"topic", s.Topic, "err", err)
 			continue
 		}
-		sub.WithKafkaTracing(cfg.Observability.Tracing.Resolve(cfg.Service).Instruments(tracing.SubKafka))
+		sub.WithKafkaTracing(cfg.Observability.Tracing.Resolve(cfg.Service).Instruments(tracing.SubKafka)).
+			WithViewChaining(engine)
 		sub.Start(ctx)
 		started = append(started, sub)
 		deps.Logger.Info("upstream subscriber started",
