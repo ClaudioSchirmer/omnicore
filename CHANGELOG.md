@@ -118,8 +118,53 @@ with `1.0.0`.
   **Requires MongoDB 5.2+**, and only for views that declare an order: an
   unordered `EmbedMany` emits the stages it always did.
 
+### Changed
+
+- **BREAKING — archived content is now hidden on a default read in EVERY
+  segment, under one rule.** Previously the archived-entry strip covered only
+  native child collections and `SharedBaseView` roles; a materialized `Embed`
+  segment (1:1 or 1:N, over a local view or an upstream mirror) and an
+  `EmbedInChild` enrichment were never filtered, so an archived source stayed
+  visible in the segment while a direct read of that same source hid it. Every
+  segment now behaves identically: a default read hides archived content and
+  `?includeArchived=true` reveals all of it at once — the same contract a
+  `ComposedView` leg already followed.
+
+  **The one condition is the SOURCE SCHEMA**: a segment is filtered if, and only
+  if, the schema behind it declares `SoftDelete(column)`. That declaration is
+  what states the source HAS an archived state and names the column carrying it;
+  a source declaring none has no archived concept and is never touched (the flag
+  is a silent no-op there, never an error). The behavior is a property of the
+  declaration — not of the verb, the leg kind, or whether the data is
+  materialized.
+
+  Hiding stays content-level, never row-level (a segment is a LEFT join, so the
+  document always survives): a 1:1 segment becomes the explicit `null` — the value
+  an unresolved reference already carries — and a 1:N segment drops the archived
+  elements, keeping the rest in their declared order.
+
+  *Migration*: a consumer that relied on seeing archived sources in a segment
+  passes `?includeArchived=true`. A source whose archived state must remain
+  visible unconditionally should not declare `SoftDelete` on its embed schema —
+  and for an upstream mirror, remember the column must also survive the
+  subscription's `filter:` allowlist (§8.5) for the rule to have anything to act
+  on. Nothing changes for a source that declares no soft-delete column.
+
 ### Fixed
 
+- **The §8.5 soft-delete-filter guard now covers a `ComposedView`'s external
+  legs, not just embeds.** A locally materialized mirror has TWO kinds of
+  consumer, and both apply its soft-delete column: a view that EMBEDS it
+  (materialized gate) and a composed view that LINKS it (the composed reader
+  gates each leg on its own schema unless `?includeArchived`). The guard walked
+  embeds only, so declaring `.SoftDelete("deleted_at")` on the leg's
+  `NewExternalSchema` while omitting `deleted_at` from the subscription's
+  `filter:` booted cleanly when the mirror was consumed by a link — and archived
+  upstream rows then looked active in the segment forever, exactly the
+  silent-archive bug the guard exists to prevent. Both consumers are now
+  cross-checked in one pass, with the same abort/advisory split.
+  `ComposedViewDefinition.ExternalLegs()` is the accessor the guard reads (safe
+  before validation: it resolves nothing).
 - **The dangling 1:1 embed repair now covers a `JoinView` leg.** The post-write
   repair that heals a 1:1 segment after the EMBEDDING document changes its FK
   (field ownership keeps the consult write off the segment, and the source emits

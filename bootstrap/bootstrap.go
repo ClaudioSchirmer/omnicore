@@ -203,8 +203,18 @@ func runWithConfig(cfg *Config, wire func(Deps) Wiring) error {
 		return err
 	}
 	upstreamSubs = applyUpstreamSubscriptionDefaults(upstreamSubs, cfg.Service)
+	// Composed views are collected HERE, before the subscription guards, because a
+	// mirror has TWO kinds of consumer — a view that EMBEDS it and a composed view
+	// that LINKS it — and both apply the mirror's soft-delete column. Both must
+	// therefore be cross-checked against the subscription's filter (§8.5).
+	// Collection is a pure walk over the features; the composition's own
+	// validation still runs later, once the upstream collection set is known.
+	composedViews, err := collectComposedViews(wiring.Features)
+	if err != nil {
+		return err
+	}
 	if len(upstreamSubs) > 0 {
-		if err := validateUpstreamSubscriptions(upstreamSubs, views, cfg.Profile, deps.Logger); err != nil {
+		if err := validateUpstreamSubscriptions(upstreamSubs, views, composedViews, cfg.Profile, deps.Logger); err != nil {
 			return err
 		}
 	}
@@ -226,10 +236,6 @@ func runWithConfig(cfg *Config, wire func(Deps) Wiring) error {
 	// point, e.g. GraphQL fields registered inside the consumer's Wire(),
 	// resolve composed names too). Runs AFTER the upstream subscriptions are
 	// resolved (an external leg must name a locally materialized collection).
-	composedViews, err := collectComposedViews(wiring.Features)
-	if err != nil {
-		return err
-	}
 	if len(composedViews) > 0 {
 		if err := query.ValidateComposedViews(composedViews, views, upstreamCollectionSet(upstreamSubs)); err != nil {
 			return fmt.Errorf("bootstrap: %w", err)

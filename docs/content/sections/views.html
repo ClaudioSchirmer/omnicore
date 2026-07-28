@@ -406,111 +406,100 @@ func SaleView() *query.ViewDefinition {
     needs this care: it is the ordered path.
 </div>
 <div class="box">
-    <strong>An ARCHIVED source stays in the segment — and that is deliberate.</strong> Under the default archive policy
-    (the source view did not declare <code>DeleteOnArchive()</code>), archiving the source keeps its document with
-    <code>deleted_at</code> populated, and the segment <em>mirrors that state</em>: the sub-document remains, carrying its
-    soft-delete stamp, and a 1:N element stays in the array. So a document can show a source that a DIRECT read of the
-    source view hides — by design, for three reasons: it is the contract an upstream-mirror segment already has; the
-    ripple and a full rebuild produce the identical segment (no divergence between the two write paths); and a read model
-    of a past fact should not lose data because a referenced record was archived today. When you want the opposite —
-    archiving REMOVES the reference — declare <code>DeleteOnArchive()</code> on the SOURCE view: archiving then deletes its
-    document, the removal signals, and the segment becomes the explicit <code>null</code> (or the element leaves the
-    array). The choice lives in the source's declaration, where the lifecycle belongs.
+    <strong>Archived data is hidden automatically — everywhere, under one rule.</strong> A default read hides ARCHIVED
+    content in <em>every</em> segment of the document, and <code>?includeArchived=true</code> brings all of it back at
+    once. There is no per-family exception: a native child collection, a <code>SharedBaseView</code> role, a
+    materialized <code>Embed</code> (1:1 or 1:N, over a local view or an upstream mirror), an
+    <code>EmbedInChild</code> enrichment and a <code>ComposedView</code> leg all behave the same way.
+    <br><br>
+    <strong>The one condition is the SOURCE SCHEMA.</strong> A segment is filtered if — and only if — the schema behind
+    it declares <code>SoftDelete(column)</code>. That declaration is what tells the framework the source HAS an archived
+    state and which column carries it; without it there is nothing to filter on and the segment is never touched. So the
+    behavior is not a property of the verb you used, of the leg kind, or of whether the data is materialized: it is a
+    property of the declaration.
+</div>
+<pre><code>// This source has an archived state → its segment is filtered on a default read.
+core.NewExternalSchema("upstream_products").
+    PK("id").
+    Field("Name", "name").
+    SoftDelete("deleted_at")     // ← the declaration that switches the rule on
+
+// This one does not → its segment is always returned as stored.
+core.NewExternalSchema("upstream_regions").
+    PK("id").
+    Field("Name", "name")        // no SoftDelete: no archived concept, no filtering</code></pre>
+<div class="note">
+    <strong>For an upstream mirror, declaring it is only half the job.</strong> The column must also survive the
+    subscription's <code>filter:</code> allowlist — otherwise the archive marker never reaches the mirror and there is
+    nothing to filter on, however the schema is declared. The boot cross-checks the two and aborts on the contradiction
+    (<strong>§8.5</strong>), for every consumer of the mirror: a view that embeds it and a
+    <a href="#views~views-composed">ComposedView</a> that links it.
 </div>
 <p>
-    <strong>Archiving, level by level — the whole picture.</strong> Three independent gates apply to one document, and
-    conflating them is the usual source of confusion:
+    <strong>What "hidden" means, per shape.</strong> Hiding is always content-level, never row-level — the document
+    itself always comes back, because a segment is a LEFT join:
 </p>
+<ul>
+    <li>a <strong>1:1</strong> segment (an <code>Embed</code>, an <code>EmbedInChild</code> enrichment, a role) becomes
+        the explicit <code>null</code> — the same value it carries when the reference is unresolved;</li>
+    <li>a <strong>1:N</strong> segment drops the archived elements and keeps the rest, in the declared
+        <a href="#views~views-embed-order">order</a>;</li>
+    <li>the <strong>root document's own</strong> <code>deleted_at</code> is different in kind: that gate runs inside the
+        Mongo query, so an archived document does not appear at all (it also governs counts and pagination).</li>
+</ul>
 <table>
-    <tbody><tr><th>What is archived</th><th>Default read</th><th>With <code>?includeArchived=true</code></th></tr>
+    <tbody><tr><th>What is archived</th><th>Source declares <code>SoftDelete</code>?</th><th>Default read</th><th>With <code>?includeArchived=true</code></th></tr>
     <tr>
-        <td>The EMBEDDING document itself (its own <code>deleted_at</code>)</td>
-        <td>Hidden — the root soft-delete gate, applied in the Mongo filter.</td>
+        <td>The EMBEDDING document itself</td>
+        <td>its own root schema</td>
+        <td>Not returned — the root gate, applied in the query.</td>
         <td>Returned.</td>
     </tr>
     <tr>
-        <td>The SOURCE document behind a segment (source view in keep mode)</td>
-        <td><strong>Shown</strong>, carrying its <code>deleted_at</code> — the segment mirrors the stored state. Filter it
-            out yourself (<code>product.deleted_at</code> is an ordinary field) or declare
-            <code>DeleteOnArchive()</code> on the source view to have archiving REMOVE the reference.</td>
-        <td>Unchanged — the flag does not govern this level.</td>
+        <td>A native CHILD collection entry</td>
+        <td>the child schema</td>
+        <td>The entry is dropped from the array.</td>
+        <td>Returned, carrying its stamp.</td>
     </tr>
     <tr>
-        <td>A CHILD of the source, inside the segment (e.g. <code>product.ProductLines[]</code>)</td>
-        <td>Hidden — the archived-entry strip descends into a materialized view segment exactly as it does into the view's
-            own children, so the segment reads like a direct read of the source view.</td>
-        <td>Returned, with their <code>deleted_at</code>.</td>
+        <td>A <code>SharedBaseView</code> ROLE</td>
+        <td>the role schema</td>
+        <td>The role segment becomes <code>null</code>.</td>
+        <td>Returned.</td>
+    </tr>
+    <tr>
+        <td>The SOURCE behind a 1:1 <code>Embed</code></td>
+        <td>the embedded view's / mirror's schema</td>
+        <td>The segment becomes <code>null</code>.</td>
+        <td>Returned.</td>
+    </tr>
+    <tr>
+        <td>An element of a 1:N <code>EmbedMany</code></td>
+        <td>the embedded view's / mirror's schema</td>
+        <td>The element leaves the array.</td>
+        <td>Returned, in the declared order.</td>
+    </tr>
+    <tr>
+        <td>An <code>EmbedInChild</code> enrichment</td>
+        <td>the enrichment source's schema</td>
+        <td>The enrichment becomes <code>null</code> inside its element.</td>
+        <td>Returned.</td>
+    </tr>
+    <tr>
+        <td>Anything whose source declares <strong>no</strong> <code>SoftDelete</code></td>
+        <td>—</td>
+        <td colspan="2"><strong>Returned as stored, always.</strong> No declaration, no archived concept, no filtering —
+            the flag is a silent no-op there, never an error.</td>
     </tr>
 </tbody></table>
 <p>
-    An <strong>upstream mirror</strong> segment differs on the third row only: a mirror is a flat stored payload with no
-    child collections of its own and no local lifecycle, so nothing inside it is stripped — its archive state is whatever
-    the producing service published (which is why the subscription's <code>filter</code> must keep the soft-delete column).
+    <strong>When you want archiving to REMOVE the reference for good</strong> — not merely hide it behind a flag —
+    declare <code>DeleteOnArchive()</code> on the SOURCE view. Archiving then deletes the source document outright, the
+    removal signals through the ripple, and the segment becomes the explicit <code>null</code> (or the element leaves
+    the array) for every reader, with or without <code>?includeArchived</code>. Hiding is a READ decision the consumer
+    can lift; <code>DeleteOnArchive()</code> is a WRITE decision the source's owner makes once.
 </p>
-<p>
-    <strong>Shape — what the stored document actually looks like.</strong> A <code>JoinView</code> segment carries the
-    source view's document <em>as that view stores it</em>: its root fields, its own child collections, its role
-    sub-documents if it is a <code>SharedBaseView</code>, and its own embed segments. Two consequences worth declaring out
-    loud before you model:
-</p>
-<ul>
-    <li>An <code>EmbedMany</code> of a view whose documents carry children produces an <strong>array inside an
-        array</strong> (<code>sales[].SaleItems[]</code>). It reads, translates, strips and exports correctly, but it is a
-        genuinely large document — the ceiling is Mongo's 16 MB per document, and you own the fan-out.</li>
-    <li>There is no per-segment projection knob: the segment is the source document, whole. When you want a NARROWER
-        shape, the tool is a narrower SOURCE VIEW — declare a second view over the same schema with only the fields the
-        embedder needs and embed that one. (A view costs one collection and one recompose per source event; five views
-        over one schema is a normal, supported shape.)</li>
-</ul>
-<div class="box">
-    <strong>Write cost model — the mirror image of a ComposedView's read cost.</strong> A materialized join is not free,
-    it is <em>prepaid</em>. Per write to an embedded source: one read-back of the source document, plus — only when some
-    dependent embeds it 1:N — one read of its pre-write state (needed to find the parent a moved element is leaving),
-    plus one surgical write per affected embedder document (discovered by an indexed lookup, never a scan — that is what
-    the covering-index guards enforce). A 1:1 embed of a rarely-changing source is nearly free; a 1:N embed of a
-    high-churn source with thousands of parents is not, and a chain multiplies it hop by hop. The trade is explicit:
-    reads become a single indexed document fetch, forever. When the joined shape changes far more often than it is read,
-    a read-time <a href="#views~views-composed">ComposedView</a> is the better side of the trade.
-</div>
-<p>
-    <strong>Reading through the segment — what works, exactly.</strong> A materialized segment is ordinary document
-    content, so it carries almost none of the read-time restrictions a <a href="#views~views-composed">ComposedView</a>
-    leg has. The one real boundary is ORDERING inside a 1:N segment, and it is worth being explicit about all of it:
-</p>
-<table>
-    <tbody><tr><th>Read operation</th><th>1:1 segment (<code>Embed</code>)</th><th>1:N segment (<code>EmbedMany</code>)</th></tr>
-    <tr>
-        <td><code>filter</code> on a segment field (<code>Product.Name</code>)</td>
-        <td colspan="2"><strong>Yes — and it SELECTS rows.</strong> The segment lives in the same document, so the
-            predicate decides which documents come back. This is the substantive difference from a
-            <code>ComposedView</code> leg, where a leg filter only shapes what enters the segment and never removes a
-            primary row. On a 1:N segment the predicate matches a document when ANY element satisfies it (standard array
-            matching, identical to a native child collection).</td>
-    </tr>
-    <tr>
-        <td><code>?fields=</code> into the segment (<code>Product.Name</code>, <code>Product.Lines.Label</code>)</td>
-        <td colspan="2">Yes, at any depth. Lifecycle columns the archived-entry strip needs are re-included transparently
-            and removed again before responding, so the wire shape matches the request exactly.</td>
-    </tr>
-    <tr>
-        <td><code>sort</code> / keyset cursor by a segment field</td>
-        <td><strong>Yes</strong> — a first-class sort key, like any root field.</td>
-        <td><strong>No</strong> — an array has no single value to build a cursor from, so a keyset sort key must be a
-            root field or a 1:1 segment path (the rule a native child collection already follows). Ordering the elements
-            INSIDE the segment is a different question, and it has its own answer:
-            <a href="#views~views-embed-order"><code>EmbedMany.OrderBy</code></a>.</td>
-    </tr>
-    <tr>
-        <td><code>?search=</code> (text index)</td>
-        <td colspan="2">Only over fields the view's own <code>TextIndex(...)</code> declares. A segment field is indexable
-            like any other document path — declare it if you want it searchable; it is not implicit.</td>
-    </tr>
-    <tr>
-        <td>Tabular export (CSV / XLSX)</td>
-        <td colspan="2">Yes — the segment contributes the source view's full column tree, re-rooted under its segment
-            name (children included).</td>
-    </tr>
-</tbody></table>
+
 <h4 id="views-embed-order">Ordering a materialized 1:N segment — EmbedMany.OrderBy</h4>
 <p>
     <code>EmbedMany(leg).OrderBy(column).Desc().On(fk)</code> declares the element order of the stored array. Without it
@@ -590,10 +579,23 @@ func SaleView() *query.ViewDefinition {
         <td>The projection's identity — boot-validated, versioned, and rebuilt when it changes.</td>
     </tr>
     <tr>
-        <td>Archive semantics of a source</td><td>Developer of the SOURCE view</td>
+        <td>Whether a segment HAS an archived state</td><td>Developer of the SOURCE</td>
+        <td><code>SoftDelete(column)</code> on the embedded view's / mirror's schema</td>
+        <td>The declaration is the switch: declared ⇒ archived content is hidden on a default read and revealed by
+            <code>?includeArchived=true</code>; not declared ⇒ the segment is never filtered. Same rule in both
+            families — see <a href="#views~views-embed">the archived rule</a>.</td>
+    </tr>
+    <tr>
+        <td>Seeing archived content</td><td>End user</td><td><code>?includeArchived=true</code></td>
+        <td>One flag, whole read: it lifts the gate on the document AND on every segment at once. There is no
+            per-segment variant.</td>
+    </tr>
+    <tr>
+        <td>Archiving REMOVING the reference (not merely hiding it)</td><td>Developer of the SOURCE view</td>
         <td><code>DeleteOnArchive()</code> on the embedded view</td>
-        <td>Keep (default) mirrors the archived source into the segment; <code>DeleteOnArchive()</code> makes archiving
-            remove the reference. The choice lives with the source's lifecycle, not with the embedder.</td>
+        <td>Archiving then deletes the source document, so the segment becomes the explicit <code>null</code> for every
+            reader, with or without the flag. Hiding is a READ decision the consumer can lift;
+            <code>DeleteOnArchive()</code> is a WRITE decision the source's owner makes once.</td>
     </tr>
     <tr>
         <td>Freshness of a segment</td><td>Nobody — the framework</td><td>the recompose ripple</td>
@@ -936,6 +938,11 @@ same envelope, same projector, same pagination block as any view read</div>
 
     <h4 id="views-composed-archived">Archived gates and consistency</h4>
     <ul>
+        <li><strong>Cut at the source, not filtered afterwards:</strong> a leg's archived gate is added to the leg's own
+            query, so an archived document is never fetched. The materialized twin reaches the same outcome one step
+            later — it hides the archived segment on the fetched document — so both families answer
+            <code>?includeArchived</code> identically; they are compared under
+            <a href="#views~views-composed-vs">Two ways to compose</a>.</li>
         <li><strong>One knob, every leg (R8):</strong> <code>?includeArchived=true</code> lifts the
             primary's gate AND each leg's own gate. A schema is not required to declare
             <code>SoftDelete</code> — a leg without one has no archived concept; the knob is a silent
@@ -986,8 +993,34 @@ same envelope, same projector, same pagination block as any view read</div>
         <tr><td>Sort by composed data</td><td>A 1:1 segment field is a first-class sort key; a 1:N segment cannot be a sort/cursor key (no single value)</td><td>Page order is always the primary's; a 1:N leg has its OWN <code>OrderBy</code>/<code>MaxLinkManyLimit</code> for the segment's contents</td></tr>
         <tr><td>Ordering INSIDE a 1:N segment</td><td><code>OrderBy</code>/<code>Desc</code> on the verb — materialized (stored sorted, free on read)</td><td><code>OrderBy</code>/<code>Desc</code> on the verb — applied per request</td></tr>
         <tr><td>Per-parent ceiling on a 1:N segment</td><td><strong>None</strong> — a materialized array cannot forget what it truncated (nothing could promote the cut elements back)</td><td><code>MaxLinkManyLimit</code> — the array is rebuilt per request, so a cap is honest</td></tr>
+        <tr>
+            <td>An ARCHIVED source inside a segment</td>
+            <td><strong>Hidden on a default read</strong> when the source schema declares <code>SoftDelete</code> — the
+                1:1 segment becomes <code>null</code>, a 1:N element leaves the array. Applied to the fetched document,
+                so the row itself always survives.</td>
+            <td><strong>Hidden on a default read</strong> when the leg schema declares <code>SoftDelete</code> — the gate
+                is added to the leg's own query, so the archived document is never fetched.</td>
+        </tr>
+        <tr>
+            <td><code>?includeArchived=true</code> on a segment</td>
+            <td colspan="2"><strong>Same knob, same reach in both families:</strong> one flag lifts the gate on the
+                document (or primary) AND on every segment/leg at once. There is no per-segment variant — archived is a
+                mode of the whole read.</td>
+        </tr>
+        <tr>
+            <td>A source declaring NO <code>SoftDelete</code></td>
+            <td colspan="2"><strong>Never filtered, in either family.</strong> The declaration is what defines an
+                archived state; without it the flag is a silent no-op on that segment.</td>
+        </tr>
         <tr><td>Reach</td><td>ANY registered view (<code>JoinView</code>) + locally materialized upstream collections — acyclic, chainable</td><td>ANY registered view + locally materialized upstream collections — one join layer, never a composition of compositions</td></tr>
         <tr><td>Depth</td><td>Unlimited along an acyclic chain — a source view brings whatever IT embeds, and each hop is kept fresh by its own ripple</td><td>Exactly one layer — a leg is a view or a mirror, never another <code>ComposedView</code> (compose-of-compose does not compile)</td></tr>
+        <tr>
+            <td><em>Archived, in one line</em></td>
+            <td colspan="2"><strong>Both families hide archived content by default and reveal it with the same flag; the
+                only thing that varies is WHERE the gate runs — inside the leg's query (link) or on the fetched document
+                (embed). What decides IF it runs is neither family nor verb: it is whether the source schema declares
+                <code>SoftDelete</code>.</strong></td>
+        </tr>
         <tr><td>Choose it when…</td><td>The composition is hot, filtered across sources, or read far more than sources change</td><td>The link is arbitrary/occasional, freshness beats latency, the 1:N segment needs a declared order/cap, or you refuse another synced collection</td></tr>
     </tbody></table>
     <p>

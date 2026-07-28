@@ -293,13 +293,14 @@ func (r *MongoViewReader) ReadPage(ctx context.Context, view string, c queries.R
 	// PrevCursor. Strip them from the returned doc after the cursor build so
 	// the wire shape stays exactly as the consumer asked.
 	autoIncluded := projectionAutoIncluded(colProj, colSort)
-	// A consumer projection that narrows a derived child collection's
-	// subfields (?fields=dependents.name / a GraphQL selection set) would
-	// strip the child's soft-delete column from the returned entries — and
-	// the default-read archived-entry strip below can only hide what the
-	// entries still carry. Auto-include each projected child's soft-delete
-	// column, and remember it for post-strip removal so the wire shape still
-	// matches the consumer's request exactly.
+	// A consumer projection that narrows a SEGMENT's subfields
+	// (?fields=dependents.name, ?fields=product.code, a GraphQL selection set)
+	// would drop that segment's soft-delete column from the returned entries —
+	// and the default-read archived strip below can only hide what the entries
+	// still carry. Auto-include the soft-delete column of every segment that
+	// declares one (child collections, roles, materialized embeds, EmbedInChild
+	// enrichments alike), and remember it for post-strip removal so the wire
+	// shape still matches the consumer's request exactly.
 	childSDCleanup := map[string]string{}
 	if len(colProj) > 0 && !c.IncludeArchived {
 		var extra []string
@@ -373,9 +374,11 @@ func (r *MongoViewReader) ReadPage(ctx context.Context, view string, c queries.R
 		m := map[string]any(d)
 		normalizeBSONValues(m)
 		// The root-level soft-delete gate ran in the Mongo filter; the same
-		// default-read contract applies one level down — archived entries in
-		// the nested aggregate-child collections are stripped unless the
-		// caller asked for archived data.
+		// default-read contract applies to EVERY segment below it — child
+		// collections, roles, materialized embed segments and EmbedInChild
+		// enrichments — each filtered only where its own source schema declares
+		// a soft-delete column. Skipped wholesale when the caller asked for
+		// archived data, which is what makes one flag reveal every level.
 		if !c.IncludeArchived {
 			node.StripArchivedChildren(m)
 		}
@@ -818,11 +821,13 @@ func projectionTouchesField(colProj map[string]int, docField string) bool {
 	return false
 }
 
-// childSoftDeleteAutoIncludes decides which child soft-delete columns a
+// childSoftDeleteAutoIncludes decides which segment soft-delete columns a
 // consumer projection must transparently re-include so the default-read
-// archived-entry strip can still see (and hide) archived nested entries, plus
-// the per-field cleanup map (docField -> sdCol) used to remove those columns
-// from the returned docs afterwards so the wire shape matches the request.
+// archived strip can still see (and hide) archived content, plus the per-field
+// cleanup map (docField -> sdCol) used to remove those columns from the
+// returned docs afterwards so the wire shape matches the request. "child" in
+// the name is historical: the paths cover every segment kind that declares a
+// soft-delete column, not only child collections.
 //
 // It fires ONLY when the projection narrows to a STRICT SUBFIELD of the child
 // (dependents.name): that projection would otherwise drop the child's

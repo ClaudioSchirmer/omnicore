@@ -30,8 +30,7 @@
                 neither a sort nor a cursor key (an array has no single value), and an embed has no per-segment
                 <code>OrderBy</code>/ceiling — that pair exists only on a <code>ComposedView</code>'s
                 <code>LinkMany</code>, which builds its array per request.
-                An ARCHIVED source under the default keep policy stays in the segment carrying its soft-delete stamp;
-                declare <code>DeleteOnArchive()</code> on the SOURCE view for the removal semantics. Rebuilds are ordered
+                Archived content is hidden on a default read in EVERY segment (see the breaking entry below). Rebuilds are ordered
                 automatically: the boot's plan list and <code>RebuildAllViews</code> run in embed-dependency order (source
                 before embedder, transitively) and defer a view whose source this instance did not flip — rebuilding an
                 embedder against a source's pre-flip collection would finish stale, and a <code>Version</code> bump puts
@@ -50,6 +49,26 @@
                 ceiling — a materialized array cannot forget what it truncated, so a cap stays
                 <code>LinkMany</code>'s. <strong>Requires MongoDB 5.2+</strong>, and only for views that declare an
                 order.</li>
+            <li><strong>Changed</strong> — <strong>breaking</strong> — archived content is now hidden on a default read
+                in EVERY segment, under one rule. The strip previously covered only native child collections and
+                <code>SharedBaseView</code> roles: a materialized <code>Embed</code> (1:1 or 1:N, over a local view or an
+                upstream mirror) and an <code>EmbedInChild</code> enrichment were never filtered, so an archived source
+                stayed visible in the segment while a direct read of that same source hid it. Now every segment behaves
+                identically — a default read hides archived content and <code>?includeArchived=true</code> reveals all of
+                it at once, the contract a <code>ComposedView</code> leg already followed. <strong>The one condition is
+                the source schema</strong>: a segment is filtered if and only if the schema behind it declares
+                <code>SoftDelete(column)</code>; a source declaring none has no archived concept and is never touched.
+                Hiding stays content-level (a 1:1 segment becomes the explicit <code>null</code>, a 1:N element leaves
+                the array), so the document itself always survives. <em>Migration</em>: pass
+                <code>?includeArchived=true</code> to keep seeing archived sources; nothing changes for a source that
+                declares no soft-delete column. See <a href="#views~views-embed">Views → Embed</a>.</li>
+            <li><strong>Fixed</strong> — the §8.5 soft-delete-filter guard now covers a <code>ComposedView</code>'s
+                external legs, not just embeds. A mirror has two kinds of consumer and both apply its soft-delete column
+                (an embed materializes the gate; a composed leg applies it per request), so declaring
+                <code>.SoftDelete("deleted_at")</code> on the leg schema while dropping <code>deleted_at</code> from the
+                subscription's <code>filter:</code> used to boot cleanly when the mirror was consumed by a link — and
+                archived upstream rows then looked active in the segment forever. Both consumers are cross-checked in one
+                pass now, same abort/advisory split.</li>
             <li><strong>Fixed</strong> — three defects on the embed path: the dangling 1:1 repair now covers a
                 <code>JoinView</code> leg (an FK change on the EMBEDDING document would otherwise leave the segment
                 pointing at the old source forever, with no future event able to heal it); a zombie-document removal now

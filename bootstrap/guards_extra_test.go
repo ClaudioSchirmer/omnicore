@@ -70,7 +70,7 @@ func TestValidateUpstreamSubscriptions_PassesWhenClean(t *testing.T) {
 			Indexes(query.Index("buyer_id")).
 			Version(1),
 	}
-	if err := validateUpstreamSubscriptions(subs, views, profileDev, nil); err != nil {
+	if err := validateUpstreamSubscriptions(subs, views, nil, profileDev, nil); err != nil {
 		t.Fatalf("clean subscriptions must validate, got %v", err)
 	}
 }
@@ -81,7 +81,7 @@ func TestValidateUpstreamSubscriptions_SurfacesShapeViolation(t *testing.T) {
 	subs := []UpstreamSubscription{
 		{Collection: "users", StartFrom: StartFromLatest, OnUpstreamDelete: UpstreamDeleteCascade},
 	}
-	err := validateUpstreamSubscriptions(subs, nil, profileDev, nil)
+	err := validateUpstreamSubscriptions(subs, nil, nil, profileDev, nil)
 	if err == nil || !strings.Contains(err.Error(), "entry[0]") {
 		t.Errorf("expected entry-indexed shape violation, got %v", err)
 	}

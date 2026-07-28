@@ -307,6 +307,21 @@ func JoinUpstream(ts *core.TableSchema, goName, externalName string) *Leg {
 // Name returns the composed view's read-side identity.
 func (c *ComposedViewDefinition) Name() string { return c.name }
 
+// ExternalLegs returns the EXTERNAL (JoinUpstream) legs this composition reads —
+// the ones backed by a locally materialized mirror. Safe to call BEFORE
+// ValidateComposedViews (unlike Links, it builds no translator node and resolves
+// nothing): it exists for the boot guards that must cross-check a subscription's
+// declaration against every consumer of its mirror, links included.
+func (c *ComposedViewDefinition) ExternalLegs() []*Leg {
+	var out []*Leg
+	for _, ln := range c.links {
+		if ln.leg != nil && ln.leg.schema != nil && ln.leg.schema.IsExternal() {
+			out = append(out, ln.leg)
+		}
+	}
+	return out
+}
+
 // PrimaryView returns the declared primary view (nil when not declared —
 // rejected at boot by ValidateComposedViews).
 func (c *ComposedViewDefinition) PrimaryView() *ViewDefinition { return c.primary }

@@ -27,23 +27,17 @@ type viewEmbed struct {
 	goSegment string
 	docField  string
 	node      *ViewNode
-	// isChild marks a derived aggregate-child collection (a shared base's
-	// native child or a schema's own child) as opposed to an explicitly
-	// declared embed. Only child collections carry the aggregate's soft-delete
-	// lifecycle, so only they are subject to the reader's archived-entry strip.
+	// isChild marks a derived aggregate-child collection (a shared base's native
+	// child or a schema's own child) as opposed to an explicitly declared embed.
+	// It no longer gates the archived-entry strip — every segment follows one
+	// rule now (hide when the SOURCE SCHEMA declares a soft-delete column) — but
+	// it still distinguishes the two shapes for the rest of the read path.
 	isChild bool
 	// isRole marks a SharedBaseView role segment: a SINGLE optional
 	// sub-document (not a collection) carrying the role's own lifecycle — an
 	// archived role's segment is hidden on default reads, and the role's own
 	// child collections strip recursively.
 	isRole bool
-	// isViewLeg marks a segment materialized from a LOCAL view (query.JoinView):
-	// the stored sub-document is a copy of that view's own document, so the
-	// reader must treat its INSIDES exactly as a direct read of the source view
-	// would — the archived-entry strip and the soft-delete auto-include descend
-	// into it. An EXTERNAL (mirror) leg does not: a cross-service source's
-	// lifecycle belongs to its upstream, and the mirror is stored as received.
-	isViewLeg bool
 }
 
 // BuildViewNode assembles the translator tree for a view. On a SharedBaseView
@@ -67,16 +61,16 @@ func (v *ViewDefinition) BuildViewNode() *ViewNode {
 	// ColumnPath resolves a filter/sort/?fields= path into it
 	// (e.g. "catalogLines.item.label"). The native child node was registered by
 	// registerOwnChildren / the SharedBaseRef branch and is keyed by the child's
-	// doc segment. Registered as a plain embed (NOT isChild): the enrichment is
-	// external data with no aggregate lifecycle, so the archived-entry strip must
-	// not touch it.
+	// doc segment. Registered as a plain embed (NOT isChild): it is a SEGMENT, not
+	// an aggregate child collection. Like every other segment it is hidden on a
+	// default read when its own source schema declares a soft-delete column.
 	for _, ce := range v.childEmbeds {
 		childVE, ok := n.embedsByDoc[ce.ChildSegment()]
 		if !ok || childVE.node == nil {
 			continue // boot-validated to be a native child; defensive
 		}
 		seg := ce.leg.goSegment
-		ive := &viewEmbed{goSegment: seg, docField: ce.Field(), node: legViewNode(ce.leg), isViewLeg: ce.leg.view != nil}
+		ive := &viewEmbed{goSegment: seg, docField: ce.Field(), node: legViewNode(ce.leg)}
 		childVE.node.embeds[seg] = ive
 		childVE.node.embedsByDoc[ce.Field()] = ive
 	}
@@ -130,8 +124,7 @@ func newViewNode(schema *core.TableSchema, embeds []embedDef) *ViewNode {
 			// a direct read of that view would, so the translator must too. This is
 			// the same node a composed view's internal leg uses (ComposedLink.Node).
 			// An EXTERNAL leg has only its flat mirror schema.
-			node:      legViewNode(e.leg),
-			isViewLeg: e.leg.view != nil,
+			node: legViewNode(e.leg),
 		}
 		n.embeds[seg] = ve
 		n.embedsByDoc[e.Field()] = ve
@@ -174,74 +167,84 @@ func registerOwnChildren(n *ViewNode, schema *core.TableSchema) {
 	}
 }
 
-// ChildSoftDeletePaths returns, for every DERIVED lifecycle-carrying segment
-// that declares a soft-delete column, the doc-field path → soft-delete column
-// pair. The reader consults it to auto-include the segment's soft-delete
-// column when a consumer projection narrows the subfields —
-// StripArchivedChildren can only hide what the projected entries still carry.
-// Covered segments: aggregate-child collections (base-children + own children)
-// at this level, plus — on a SharedBaseView root — each role segment (a
-// single-map path, e.g. "User") and, DOTTED, each role's own child collection
-// (e.g. "User.Dependents"). Regular views never produce dotted paths.
+// ChildSoftDeletePaths returns, for EVERY segment whose source schema declares a
+// soft-delete column, the doc-field path → soft-delete column pair. The reader
+// consults it to auto-include that column when a consumer projection narrows the
+// subfields — StripArchivedChildren can only hide what the projected entries
+// still carry — and removes it again before responding, so the wire shape matches
+// the request.
+//
+// Covered: every shape the strip covers, because the two must agree — aggregate
+// child collections (base-children + own children), SharedBaseView roles,
+// materialized embed segments (1:1 and 1:N, over a local view or an upstream
+// mirror) and EmbedInChild enrichments. Nested content contributes DOTTED paths
+// (a role's own children, "User.Dependents"; a materialized view's children,
+// "product.ProductLines"; an enrichment inside a child element,
+// "items.product"). A segment whose schema declares NO soft-delete contributes
+// nothing: it has no archived state to hide.
 func (n *ViewNode) ChildSoftDeletePaths() map[string]string {
 	if !n.hasSchema() {
 		return nil
 	}
 	out := map[string]string{}
 	for docField, emb := range n.embedsByDoc {
-		// A materialized VIEW segment contributes only what lives INSIDE it: its
-		// own lifecycle segments, dotted under this one. Its ROOT soft-delete
-		// column is deliberately not auto-included — an archived source document
-		// stays embedded (the segment mirrors the stored state, like a mirror
-		// segment does), so there is nothing at this level to hide.
-		if emb.isViewLeg {
-			for sub, sd := range emb.node.ChildSoftDeletePaths() {
-				out[docField+"."+sub] = sd
-			}
-			continue
-		}
-		if !emb.isChild && !emb.isRole {
-			continue
-		}
+		// ONE rule for every segment kind: a segment whose source schema declares
+		// a soft-delete column carries a lifecycle the default read hides, so the
+		// column must survive a narrowed projection for the strip to see it.
 		if sdCol, ok := emb.node.SoftDeleteColumn(); ok {
 			out[docField] = sdCol
 		}
-		if emb.isRole {
-			for sub, sd := range emb.node.ChildSoftDeletePaths() {
-				out[docField+"."+sub] = sd
-			}
+		// …and whatever lives INSIDE it (a role's children, a materialized view's
+		// children, an EmbedInChild enrichment inside a child element) contributes
+		// its own dotted path.
+		for sub, sd := range emb.node.ChildSoftDeletePaths() {
+			out[docField+"."+sub] = sd
 		}
 	}
 	return out
 }
 
-// StripArchivedChildren removes ARCHIVED entries from the doc's nested
-// aggregate-child collections — the read-time counterpart, one level down, of
-// the root-level soft-delete gate. The stored document deliberately mirrors
-// the relational store (archived children INCLUDED, each carrying its
-// soft-delete timestamp, so an ?includeArchived read can surface them); a
-// default read must hide them exactly like the write-side loader hydrates only
-// active children. Operates on the PHYSICAL (column-keyed) doc, before
-// ToGoDoc: each entry's soft-delete column comes from the child's own schema.
-// Scope: derived child collections only (base-children + own children);
-// explicitly declared embeds are untouched — a cross-service source's
-// lifecycle belongs to its upstream. Mutates doc in place.
+// StripArchivedChildren hides ARCHIVED content in EVERY segment of the document
+// — the read-time counterpart of the root-level soft-delete gate, applied one or
+// more levels down. The stored document deliberately mirrors the relational
+// store (archived entries INCLUDED, each carrying its soft-delete timestamp, so
+// an ?includeArchived read can surface them); a default read hides them exactly
+// like the write-side loader hydrates only active children.
+//
+// ONE rule, every shape — a native child collection, a SharedBaseView role, a
+// materialized embed (1:1 or 1:N, over a local view or an upstream mirror) and
+// an EmbedInChild enrichment: a segment is filtered if, and ONLY IF, the schema
+// behind it declares a soft-delete column. That declaration is what says the
+// source has an archived state and names the column carrying it; a source that
+// declares none has no archived concept and is never touched. The behavior is a
+// property of the DECLARATION, not of the verb, the leg kind, or whether the
+// data was materialized.
+//
+// Hiding is content-level, never row-level (a segment is a LEFT join, so the
+// document always survives): a 1:1 segment becomes the explicit null — the same
+// value an unresolved reference carries — and a 1:N segment drops the archived
+// elements, keeping the rest in their stored order. Operates on the PHYSICAL
+// (column-keyed) doc, before ToGoDoc, and recurses so content nested inside a
+// segment follows the same rule. Mutates doc in place.
+//
+// The caller skips this pass entirely under ?includeArchived, which is what
+// makes that one flag reveal every level at once.
 func (n *ViewNode) StripArchivedChildren(doc map[string]any) {
 	if !n.hasSchema() || doc == nil {
 		return
 	}
 	for docField, emb := range n.embedsByDoc {
+		sdCol, hasSD := emb.node.SoftDeleteColumn()
+
 		// A SharedBaseView role segment is a SINGLE optional sub-document with
-		// the role's own lifecycle: an archived role (its soft-delete column
-		// populated — the composer's remnant pick) is hidden on a default read
-		// by nulling the whole segment; an active role recurses so the role's
-		// own child collections strip like any aggregate children.
+		// the role's own lifecycle: an archived role is hidden by nulling the
+		// whole segment; an active one recurses.
 		if emb.isRole {
 			m, isMap := asStringMap(doc[docField])
 			if !isMap {
 				continue // absent or explicit null segment
 			}
-			if sdCol, ok := emb.node.SoftDeleteColumn(); ok {
+			if hasSD {
 				if v, present := m[sdCol]; present && v != nil {
 					doc[docField] = nil
 					continue
@@ -252,51 +255,47 @@ func (n *ViewNode) StripArchivedChildren(doc map[string]any) {
 			doc[docField] = m
 			continue
 		}
-		// A materialized VIEW segment carries a copy of the source view's own
-		// document, so its INSIDES must read exactly as a direct read of that view
-		// would: recurse so ITS child collections drop their archived entries.
-		// Applies to both multiplicities — a 1:1 sub-document and every element of
-		// a 1:N array. The segment itself is never dropped: an archived SOURCE
-		// document stays embedded, mirroring the stored state exactly like an
-		// external mirror segment does.
-		if emb.isViewLeg {
-			if items, ok := asAnySlice(doc[docField]); ok {
-				for i, item := range items {
-					if m, isMap := asStringMap(item); isMap {
-						emb.node.StripArchivedChildren(m)
-						items[i] = m
+
+		// EVERY OTHER SEGMENT — a native child collection, a materialized embed
+		// (1:1 or 1:N, over a local view or an upstream mirror), an EmbedInChild
+		// enrichment — follows ONE rule: when its source schema declares a
+		// soft-delete column, an archived entry is hidden on a default read, and
+		// `?includeArchived=true` (which skips this whole pass) brings it back.
+		// A source that declares NO soft-delete has no archived concept and is
+		// never touched. Hiding is content-level, never row-level: a 1:1 segment
+		// becomes the explicit null and a 1:N element leaves the array, but the
+		// document itself always survives (the LEFT semantics of a segment).
+		if items, ok := asAnySlice(doc[docField]); ok {
+			kept := make([]any, 0, len(items))
+			for _, item := range items {
+				m, isMap := asStringMap(item)
+				if !isMap {
+					kept = append(kept, item)
+					continue
+				}
+				if hasSD {
+					if v, present := m[sdCol]; present && v != nil {
+						continue // archived entry: hidden on a default read
 					}
 				}
-				doc[docField] = items
-				continue
-			}
-			if m, isMap := asStringMap(doc[docField]); isMap {
+				// Recurse so whatever lives inside the entry follows the same rule
+				// (a materialized view's own children, an EmbedInChild enrichment).
 				emb.node.StripArchivedChildren(m)
-				doc[docField] = m
+				kept = append(kept, m)
 			}
+			doc[docField] = kept
 			continue
 		}
-		if !emb.isChild {
-			continue
-		}
-		sdCol, ok := emb.node.SoftDeleteColumn()
-		if !ok {
-			continue
-		}
-		items, ok := asAnySlice(doc[docField])
-		if !ok {
-			continue
-		}
-		kept := make([]any, 0, len(items))
-		for _, item := range items {
-			if m, isMap := asStringMap(item); isMap {
+		if m, isMap := asStringMap(doc[docField]); isMap {
+			if hasSD {
 				if v, present := m[sdCol]; present && v != nil {
+					doc[docField] = nil
 					continue
 				}
 			}
-			kept = append(kept, item)
+			emb.node.StripArchivedChildren(m)
+			doc[docField] = m
 		}
-		doc[docField] = kept
 	}
 }
 

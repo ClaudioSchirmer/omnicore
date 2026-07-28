@@ -354,7 +354,7 @@ func OrdersView() *query.ViewDefinition {
     state. The declaration alone is not enough, though: the <a href="#yaml-reference">UpstreamSubscription
     <code>filter</code></a> is a string allowlist over the <em>raw upstream payload</em> and consults no schema, so if it
     drops the soft-delete column the mirror never receives it — an archived upstream entity would look active forever.
-    The boot cross-checks the two (<strong>§8.5</strong>): an external <code>JoinUpstream</code> embed that <em>declares</em>
+    The boot cross-checks the two for EVERY consumer of the mirror — a view that embeds it and a <code>ComposedView</code> that links it, both of which apply its soft-delete column (<strong>§8.5</strong>): an external <code>JoinUpstream</code> embed that <em>declares</em>
     the soft-delete column while the feeding subscription's non-empty <code>filter</code> <em>omits</em> it is a
     <strong>fatal boot error</strong> (the mirror could never reflect an archive) naming the offending subscription and
     column; declared-and-kept — or an empty <code>filter</code>, which mirrors the full payload — is accepted; a mirror
