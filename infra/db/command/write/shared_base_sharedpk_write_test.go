@@ -8,21 +8,21 @@ import (
 	"github.com/ClaudioSchirmer/omnicore/domain"
 )
 
-// White-box coverage for the shared-primary-key SharedBase model: the role's PK
+// White-box coverage for the shared-primary-key SharedBase model: the role's ID
 // column IS the base link (fkCol == "id"), so role.id == base.id == UUIDv5(document).
-// The write path must write the id column exactly once (as the PK) and use the base
-// id as the role's own id — no separate FK column, no duplicate column.
+// The write path must write the id column exactly once (as the ID) and use the base
+// id as the role's own id — no separate ParentID column, no duplicate column.
 
 // roleTestSchemaSharedPK mirrors roleTestSchema (shared_base_write_test.go) but points
-// the SharedBase reference at the PK column instead of a separate person_id.
+// the SharedBase reference at the ID column instead of a separate person_id.
 func roleTestSchemaSharedPK() *TableSchema {
 	base := NewSharedBaseSchema("pessoa").Revision("revision").
-		PK("id").
+		ID("id").
 		Field("Name", "name").
 		Field("Document", "document").
-		NaturalKey("document")
+		NaturalID("document")
 	return NewTableSchema[*roleTestEntity]("aluno").
-		PK("id").
+		ID("id").
 		Field("Matricula", "matricula").
 		SoftDelete("deleted_at").
 		SharedBase(base, "id")
@@ -39,25 +39,25 @@ func TestInsertRoleWithBase_SharedPK_New(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Insert: %v", err)
 	}
-	// The role's own PK IS the deterministic base id.
+	// The role's own ID IS the deterministic base id.
 	if want := deterministicBaseID("D1"); res.ID.Value() != want {
-		t.Errorf("shared-PK role id must equal the base id %q, got %q", want, res.ID)
+		t.Errorf("shared-ID role id must equal the base id %q, got %q", want, res.ID)
 	}
-	// The role INSERT writes the id column once (as the PK) and no separate FK column.
+	// The role INSERT writes the id column once (as the ID) and no separate ParentID column.
 	i := indexOfPrefix(tx.execs, "INSERT INTO aluno")
 	if i < 0 {
 		t.Fatalf("no role INSERT recorded: %v", tx.execs)
 	}
 	insertSQL := tx.execs[i]
 	if strings.Contains(insertSQL, "id, id") {
-		t.Errorf("shared-PK insert must not emit a duplicate id column: %q", insertSQL)
+		t.Errorf("shared-ID insert must not emit a duplicate id column: %q", insertSQL)
 	}
 	if strings.Contains(insertSQL, "pessoa_id") {
-		t.Errorf("shared-PK insert must not emit a separate FK column: %q", insertSQL)
+		t.Errorf("shared-ID insert must not emit a separate ParentID column: %q", insertSQL)
 	}
 }
 
-// The existence matrix is unchanged under shared-PK: an active role still conflicts
+// The existence matrix is unchanged under shared-ID: an active role still conflicts
 // (409), found by the active-role probe keying WHERE id = baseID.
 func TestInsertRoleWithBase_SharedPK_ActiveConflict409(t *testing.T) {
 	ins, _ := domain.GetInsertable(&roleTestEntity{Name: "Ana", Document: "D1", Matricula: "M1"}, nil, "GetUpsertable")
@@ -66,11 +66,11 @@ func TestInsertRoleWithBase_SharedPK_ActiveConflict409(t *testing.T) {
 	_, err := be.Insert(newBuilderCtx(), ins, roleTestSchemaSharedPK(), firingHook)
 	var carrier domain.NotificationCarrier
 	if !errors.As(err, &carrier) {
-		t.Fatalf("an active existing role must conflict under shared-PK too, got %T (%v)", err, err)
+		t.Fatalf("an active existing role must conflict under shared-ID too, got %T (%v)", err, err)
 	}
 }
 
-// Under shared-PK an ARCHIVED remnant is likewise invisible to the probe: the
+// Under shared-ID an ARCHIVED remnant is likewise invisible to the probe: the
 // insert proceeds keyed on the deterministic base id and the PRIMARY KEY
 // arbitrates the collision on a real backend (mapped by the repository's
 // ConstraintBinding, e.g. to a 409). No revive UPDATE exists on this path.
@@ -82,7 +82,7 @@ func TestInsertRoleWithBase_SharedPK_ArchivedRemnantIsInvisible_InsertProceeds(t
 		t.Fatalf("Insert: %v", err)
 	}
 	if !hasStmt(tx.execs, func(s string) bool { return strings.HasPrefix(s, "INSERT INTO aluno") }) {
-		t.Errorf("insert must proceed as a plain INSERT under shared-PK, got %v", tx.execs)
+		t.Errorf("insert must proceed as a plain INSERT under shared-ID, got %v", tx.execs)
 	}
 	if hasStmt(tx.execs, func(s string) bool { return strings.HasPrefix(s, "UPDATE aluno SET deleted_at = NULL") }) {
 		t.Errorf("no revive UPDATE may run on the insert path, got %v", tx.execs)

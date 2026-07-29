@@ -36,7 +36,7 @@ func (*probeItem) BuildRules(string, domain.Service, *domain.Rules) {}
 
 func probeSchema() *core.TableSchema {
 	return core.NewTableSchema[*probeItem]("probe_items").
-		PK("id").
+		ID("id").
 		Field("Code", "code").
 		Field("Cents", "cents").
 		Field("Area", "area").
@@ -93,7 +93,7 @@ func TestProbes_SQLServer_ExistsScopeAndExcludeSelf(t *testing.T) {
 	if ok, err := l.Exists(ctx, criteria.Where(criteria.Eq("Code", "ZZ"))); err != nil || ok {
 		t.Fatalf("Exists(ZZ) = (%v, %v), want false", ok, err)
 	}
-	// Ne("ID", <uuid string>) against a BINARY(16) PK — the encode path that a
+	// Ne("ID", <uuid string>) against a BINARY(16) ID — the encode path that a
 	// text/binary mismatch would silently break: excluding the active A leaves
 	// only the archived twin → false proves BOTH the encoding and the gate.
 	if ok, err := l.Exists(ctx, criteria.Where(criteria.And(

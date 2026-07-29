@@ -20,7 +20,7 @@ func (c csLoadChild) GetID() domain.ID                                 { return 
 func (c csLoadChild) BuildRules(string, domain.Service, *domain.Rules) {}
 
 func TestChildScanSQL_WithSibling(t *testing.T) {
-	child := NewTableSchema[csLoadChild]("cs_child").PK("id").FK("root_id").Field("Label", "label").
+	child := NewTableSchema[csLoadChild]("cs_child").ID("id").ParentID("root_id").Field("Label", "label").
 		Sibling(NewSiblingSchema[csLoadChild]("cs_child_ext").Field("Note", "note"))
 	cols, byCol := child.ScanPlan()
 	sql, scanCols, scanByCol := childScanSQL(child, "root_id", cols, byCol, []string{"$1"}, "AND deleted_at IS NULL", testPGDialect{})
@@ -43,7 +43,7 @@ func TestChildScanSQL_WithSibling(t *testing.T) {
 }
 
 func TestChildScanSQL_NoSibling(t *testing.T) {
-	child := NewTableSchema[csLoadChild]("cs_child").PK("id").FK("root_id").Field("Label", "label")
+	child := NewTableSchema[csLoadChild]("cs_child").ID("id").ParentID("root_id").Field("Label", "label")
 	cols, byCol := child.ScanPlan()
 	sql, _, _ := childScanSQL(child, "root_id", cols, byCol, []string{"$1"}, "", testPGDialect{})
 	if strings.Contains(sql, "LEFT JOIN") {

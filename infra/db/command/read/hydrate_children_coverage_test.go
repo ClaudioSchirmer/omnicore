@@ -43,9 +43,9 @@ func TestHydrateChildren_ManualScannerRowsAttach(t *testing.T) {
 	if err := l.hydrateChildren(context.Background(), []*covAgg{root}, []string{"r1"}, criteria.ScopeActive); err != nil {
 		t.Fatalf("hydrateChildren: %v", err)
 	}
-	// The manual path is one explicit-column SELECT per root, FK-filtered — never SELECT *.
+	// The manual path is one explicit-column SELECT per root, ParentID-filtered — never SELECT *.
 	if !strings.Contains(manualSQL, "FROM cov_children WHERE cov_agg_id = $1") || strings.Contains(manualSQL, "SELECT *") {
-		t.Errorf("manual child SELECT wrong (must name columns, FK-filtered): %q", manualSQL)
+		t.Errorf("manual child SELECT wrong (must name columns, ParentID-filtered): %q", manualSQL)
 	}
 	items := domain.GetCurrentItemsOf[covChild](&root.AggregateRoot)
 	if len(items) != 2 {
@@ -66,7 +66,7 @@ func TestHydrateChildren_ManualScannerRowErrorPropagates(t *testing.T) {
 }
 
 func TestHydrateChildren_ChildSchemaWithoutColumnsErrors(t *testing.T) {
-	schema := NewTableSchema[*covAgg]("cov_aggs").PK("id").Revision("revision").Field("Name", "name").
+	schema := NewTableSchema[*covAgg]("cov_aggs").ID("id").Revision("revision").Field("Name", "name").
 		Child(noColsChildSchema("cov_agg_id"))
 	l := newCovAggLoader(fakeEngine(nil), schema)
 
@@ -99,9 +99,9 @@ func TestHydrateChildren_AutoScanBranchErrors(t *testing.T) {
 		{"scanError", fakeEngine(func(string, []any) (Rows, error) {
 			return &fakeDBRows{rows: 1, scan: func(int, []any) error { return errFakeDB }}, nil
 		})},
-		// FK is the leading key → its DecodeID failure is the fk-decode branch.
+		// ParentID is the leading key → its DecodeID failure is the fk-decode branch.
 		{"fkDecodeError", decodeErrFakeEngine(childRow([]string{"bad-fk", "c1", "L"}), "bad-fk")},
-		// The child's own PK is decoded after the scan (decodeChildPK).
+		// The child's own ID is decoded after the scan (decodeChildPK).
 		{"childPKDecodeError", decodeErrFakeEngine(childRow([]string{"r1", "bad-pk", "L"}), "bad-pk")},
 	}
 	for _, tc := range cases {
@@ -122,10 +122,10 @@ func TestHydrateChildren_AutoScanBranchErrors(t *testing.T) {
 // on a shared base that DOES declare native children — the shape that reaches
 // the provider check inside hydrateBaseChildren.
 func flatRoleWithBaseChildrenSchema() *TableSchema {
-	base := NewSharedBaseSchema("pessoa").Revision("revision").PK("id").Field("Name", "name").NaturalKey("name").
-		Child(NewTableSchema[addrLoad]("endereco").PK("id").FK("pessoa_id").Field("Street", "street"))
+	base := NewSharedBaseSchema("pessoa").Revision("revision").ID("id").Field("Name", "name").NaturalID("name").
+		Child(NewTableSchema[addrLoad]("endereco").ID("id").ParentID("pessoa_id").Field("Street", "street"))
 	return NewTableSchema[*roleLoadEntity]("aluno").
-		PK("id").
+		ID("id").
 		Field("Matricula", "matricula").
 		SharedBase(base, "pessoa_id")
 }
@@ -170,10 +170,10 @@ func TestHydrateBaseChildren_NoEntitiesIsNoop(t *testing.T) {
 }
 
 func TestHydrateBaseChildren_BaseChildWithoutColumnsErrors(t *testing.T) {
-	base := NewSharedBaseSchema("pessoa").Revision("revision").PK("id").Field("Name", "name").NaturalKey("name").
+	base := NewSharedBaseSchema("pessoa").Revision("revision").ID("id").Field("Name", "name").NaturalID("name").
 		Child(noColsChildSchema("pessoa_id"))
 	schema := NewTableSchema[*roleAggLoad]("aluno").
-		PK("id").Revision("revision").
+		ID("id").Revision("revision").
 		Field("Matricula", "matricula").
 		SharedBase(base, "pessoa_id")
 	l := NewAggregateLoader[*roleAggLoad](fakeEngine(nil), func() *roleAggLoad { return &roleAggLoad{} }).

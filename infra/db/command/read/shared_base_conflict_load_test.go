@@ -28,10 +28,10 @@ func carrierHasNotification(c domain.NotificationCarrier, key string) bool {
 // roleAggLoadSchemaSD is roleAggLoadSchema (shared_base_children_load_test.go) with a
 // soft-delete column on the role, so the pre-flight probe filters archived rows out.
 func roleAggLoadSchemaSD() *TableSchema {
-	base := NewSharedBaseSchema("pessoa").Revision("revision").PK("id").Field("Name", "name").NaturalKey("name").
-		Child(NewTableSchema[addrLoad]("endereco").PK("id").FK("pessoa_id").Field("Street", "street"))
+	base := NewSharedBaseSchema("pessoa").Revision("revision").ID("id").Field("Name", "name").NaturalID("name").
+		Child(NewTableSchema[addrLoad]("endereco").ID("id").ParentID("pessoa_id").Field("Street", "street"))
 	return NewTableSchema[*roleAggLoad]("aluno").
-		PK("id").Revision("revision").
+		ID("id").Revision("revision").
 		Field("Matricula", "matricula").
 		SoftDelete("deleted_at").
 		SharedBase(base, "pessoa_id")

@@ -19,14 +19,14 @@ func (s *TableSchema) IsExternal() bool { return s.isExternal() }
 // schema). Used to derive a local embed's parent-side document segment.
 func (s *TableSchema) TypeName() string { return s.typeName() }
 
-// HasPKDeclared reports whether a PK column was declared (every local schema must
+// HasPKDeclared reports whether a ID column was declared (every local schema must
 // declare one; the read-side boot guard checks it).
 func (s *TableSchema) HasPKDeclared() bool { return s.hasPKDeclared() }
 
 // HasChildren reports whether the schema declares any aggregate child schemas.
 func (s *TableSchema) HasChildren() bool { return len(s.children) > 0 }
 
-// GoFields returns the Go field names of the mapped (non-PK, non-managed)
+// GoFields returns the Go field names of the mapped (non-ID, non-managed)
 // persisted fields, in declaration order — the business columns the tabular
 // export and the view spec iterate.
 func (s *TableSchema) GoFields() []string {
@@ -114,10 +114,10 @@ func (s *TableSchema) ChildSchemaNames() []string {
 // (reflect.New) before scanning a child row into it.
 func (s *TableSchema) GoType() reflect.Type { return s.typ }
 
-// PKIndex is the reflect struct-field index of the PK on the schema's Go type,
-// or < 0 when there is no struct-field PK (e.g. an external schema). The
-// aggregate loader uses it to decode a child's own PK column on scan.
-func (s *TableSchema) PKIndex() int { return s.pkIndex }
+// IDIndex is the reflect struct-field index of the ID on the schema's Go type,
+// or < 0 when there is no struct-field ID (e.g. an external schema). The
+// aggregate loader uses it to decode a child's own ID column on scan.
+func (s *TableSchema) IDIndex() int { return s.idIndex }
 
 // GoFieldValues returns the schema's persisted fields of e keyed by Go field
 // name (PascalCase) — the faithful domain vocabulary the audit timeline speaks.
@@ -156,10 +156,10 @@ func (s *TableSchema) GoFieldValues(e any) map[string]any {
 //   - the shared-base business fields (type-less base, typed via the ROLE's
 //     struct through the resolved scan plan);
 //   - the managed timestamp / soft-delete columns (time.Time), own and base's;
-//   - the PK column and the shared-base FK column (canonical uuid strings on
+//   - the ID column and the shared-base ParentID column (canonical uuid strings on
 //     the wire and in the document alike).
 //
-// Type-less schemas (external sources) contribute nothing beyond PK/managed —
+// Type-less schemas (external sources) contribute nothing beyond ID/managed —
 // they never ride the write-side payload.
 func (s *TableSchema) PayloadColumnTypes() map[string]reflect.Type {
 	out := map[string]reflect.Type{}
@@ -193,12 +193,12 @@ func (s *TableSchema) PayloadColumnTypes() map[string]reflect.Type {
 	for _, sib := range s.siblings {
 		addFields(sib)
 	}
-	if s.pkColumn != "" {
-		out[s.pkColumn] = stringT
+	if s.idColumn != "" {
+		out[s.idColumn] = stringT
 	}
 	addManaged(s)
 	if l := s.sharedBaseLink; l != nil {
-		out[l.fkColumn] = stringT
+		out[l.parentIDColumn] = stringT
 		if s.typ != nil {
 			for col, idx := range l.scanByCol {
 				out[col] = s.typ.Field(idx).Type
@@ -210,9 +210,9 @@ func (s *TableSchema) PayloadColumnTypes() map[string]reflect.Type {
 		}
 	}
 	// A child schema answers for its own columns (the caller walks children
-	// through ChildSchemas); its FK column is uuid-shaped like the PK.
-	if s.fkColumn != "" {
-		out[s.fkColumn] = stringT
+	// through ChildSchemas); its ParentID column is uuid-shaped like the ID.
+	if s.parentIDColumn != "" {
+		out[s.parentIDColumn] = stringT
 	}
 	return out
 }

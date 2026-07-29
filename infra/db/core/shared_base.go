@@ -3,13 +3,13 @@ package core
 import "fmt"
 
 // SharedBase (Modelagem 2 / Party-Role) — an identity table shared by multiple
-// ROLE schemas. Unlike a Sibling (1:1 private, shared PK), a shared base is
+// ROLE schemas. Unlike a Sibling (1:1 private, shared ID), a shared base is
 // referenced by N independent roles (aluno, professor, usuario) via a foreign
 // key, deduplicated by a NATURAL KEY whose value derives the base's
 // deterministic id (UUIDv5). The base has NO lifecycle of its own: roles control
 // their own soft-delete, and the base is governed by reference counting per its
 // OrphanPolicy. Declared once with NewSharedBaseSchema and referenced from each role
-// with .SharedBase(base, fkColumn) — the SAME instance referenced by every role
+// with .SharedBase(base, parentIDColumn) — the SAME instance referenced by every role
 // IS the cross-schema registry.
 
 // OrphanPolicy governs a shared base row when no role references it anymore
@@ -28,45 +28,45 @@ const (
 	// table — including one the schema registry does not know about (another
 	// system sharing the database) — keeps the base instead of failing the role
 	// delete. Declare the role→base FKs as plain/RESTRICT so the veto can fire; an
-	// ON DELETE CASCADE FK opts that table into the destruction instead.
+	// ON DELETE CASCADE ParentID opts that table into the destruction instead.
 	DeleteWhenUnreferenced
 )
 
-// RoleRef names a role table that references a shared base + the FK column it
+// RoleRef names a role table that references a shared base + the ParentID column it
 // links through + the role's own soft-delete column ("" when the role has none).
 // A shared base accumulates one per referencing role (the instance is the
 // cross-schema registry). The unified lifecycle uses SoftDeleteCol to tell an
 // ACTIVE role row apart from an archived one when it decides whether the base
 // (driven by its roles) should be active or archived.
 type RoleRef struct {
-	Table         string
-	FKColumn      string
-	SoftDeleteCol string
+	Table          string
+	ParentIDColumn string
+	SoftDeleteCol  string
 }
 
 // roleLink is, on a shared base, one referencing role: a pointer to the role
 // schema (so its soft-delete column reads lazily, after the schema is fully
-// assembled) + the FK column the role links through to the base's PK.
+// assembled) + the ParentID column the role links through to the base's ID.
 type roleLink struct {
-	schema   *TableSchema
-	fkColumn string
+	schema         *TableSchema
+	parentIDColumn string
 }
 
 // sharedBaseLink is a role schema's reference to its shared base: the base
-// schema + the role's FK column pointing to the base's PK, plus the pre-resolved
+// schema + the role's ParentID column pointing to the base's ID, plus the pre-resolved
 // scan plan (base column → field index in the ROLE's Go type) so the loader can
 // scan the shared columns straight into the role struct.
 type sharedBaseLink struct {
-	base      *TableSchema
-	fkColumn  string
-	scanCols  []string       // base columns, in declaration order
-	scanByCol map[string]int // base column → field index in the role's Go type
+	base           *TableSchema
+	parentIDColumn string
+	scanCols       []string       // base columns, in declaration order
+	scanByCol      map[string]int // base column → field index in the role's Go type
 }
 
 // NewSharedBaseSchema starts a shared-base schema for table. It is TYPE-LESS like
 // NewExternalSchema (its fields are validated against each referencing role's Go
 // type at .SharedBase time, since the same base is shared across several roles).
-// Declare its columns with Field, the dedup/identity column with NaturalKey, and
+// Declare its columns with Field, the dedup/identity column with NaturalID, and
 // the lifecycle with OrphanPolicy.
 func NewSharedBaseSchema(table string) *TableSchema {
 	s := newSchema(table)
@@ -74,18 +74,19 @@ func NewSharedBaseSchema(table string) *TableSchema {
 	return s
 }
 
-// NaturalKey declares the shared base's natural-key column — the immutable
+// NaturalID declares the shared base's natural-key column — the immutable
 // business key that deduplicates the identity and derives its deterministic id.
 // SharedBase only; the column must be a declared Field of the base.
-func (s *TableSchema) NaturalKey(column string) *TableSchema {
+func (s *TableSchema) NaturalID(column string) *TableSchema {
 	if !s.isSharedBase {
 		panic(fmt.Sprintf(
-			"infra.TableSchema(%s): NaturalKey applies only to a SharedBase (NewSharedBaseSchema).", s.table))
+			"infra.TableSchema(%s): NaturalID applies only to a SharedBase (NewSharedBaseSchema).", s.table))
 	}
 	if column == "" {
-		panic(fmt.Sprintf("infra.TableSchema(%s): NaturalKey requires a non-empty column.", s.table))
+		panic(fmt.Sprintf("infra.TableSchema(%s): NaturalID requires a non-empty column.", s.table))
 	}
-	s.naturalKeyCol = column
+	s.mustNotRedeclare(s.naturalIDCol, "NaturalID", column)
+	s.naturalIDCol = column
 	return s
 }
 
@@ -111,7 +112,7 @@ func (s *TableSchema) OrphanPolicy(p OrphanPolicy) *TableSchema {
 // ROOT schema attached to a repository and on every shared base; a sibling or
 // aggregate child declares none (its rows are guarded by its owner's token).
 func (s *TableSchema) Revision(column string) *TableSchema {
-	if s.secondary || s.fkColumn != "" {
+	if s.secondary || s.parentIDColumn != "" {
 		panic(fmt.Sprintf(
 			"infra.TableSchema(%s): Revision belongs to an ENTITY schema or a SharedBase — a sibling/child row "+
 				"is guarded by its owner's revision. Drop this Revision(%q) call.", s.table, column))
@@ -119,6 +120,7 @@ func (s *TableSchema) Revision(column string) *TableSchema {
 	if column == "" {
 		panic(fmt.Sprintf("infra.TableSchema(%s): Revision requires a non-empty column.", s.table))
 	}
+	s.mustNotRedeclare(s.revisionCol, "Revision", column)
 	mustNotReservedColumn(s.table, column)
 	s.ensureColumnFree(column, "Revision")
 	s.revisionCol = column
@@ -131,15 +133,23 @@ func (s *TableSchema) Revision(column string) *TableSchema {
 func (s *TableSchema) RevisionColumn() string { return s.revisionCol }
 
 // SharedBase attaches a shared base to this role schema: the base identity plus
-// the role's FK column referencing the base's deterministic id. A role
+// the role's ParentID column referencing the base's deterministic id. A role
 // references AT MOST ONE shared base (more than one would mean multiple
 // candidate natural keys — a domain concern, not infra). The base's fields are
 // validated against THIS role's Go type (the base is type-less; each role
 // supplies the type to validate the shared columns against).
-func (s *TableSchema) SharedBase(base *TableSchema, fkColumn string) *TableSchema {
+func (s *TableSchema) SharedBase(base *TableSchema, parentIDColumn string) *TableSchema {
 	if s.secondary || s.isSharedBase {
 		panic(fmt.Sprintf(
 			"infra.TableSchema(%s): only a root/role schema may reference a SharedBase.", s.table))
+	}
+	// A role cannot ALSO be an aggregate child: two FKs = two parents, and an
+	// ambiguous "ParentID" projection. Reject the combination (the mirror of the guard
+	// in ParentID()).
+	if s.parentIDColumn != "" {
+		panic(fmt.Sprintf(
+			"infra.TableSchema(%s): a schema cannot declare both SharedBase(...) (role) and ParentID(...) (aggregate "+
+				"child) — it would have two parents. Model it as one or the other.", s.table))
 	}
 	if base == nil || !base.isSharedBase {
 		panic(fmt.Sprintf(
@@ -152,23 +162,23 @@ func (s *TableSchema) SharedBase(base *TableSchema, fkColumn string) *TableSchem
 				"multiple candidate natural keys, a domain concern. Model it in the domain or a manual handler.",
 			s.table))
 	}
-	if fkColumn == "" {
-		panic(fmt.Sprintf("infra.TableSchema(%s): SharedBase requires a non-empty FK column.", s.table))
+	if parentIDColumn == "" {
+		panic(fmt.Sprintf("infra.TableSchema(%s): SharedBase requires a non-empty ParentID column.", s.table))
 	}
 	if !base.hasPKDeclared() {
 		panic(fmt.Sprintf(
-			"infra.TableSchema(%s): shared base %q declares no PK — declare .PK(column) for the id column "+
-				"(the deterministic UUIDv5 lands there; the role FK references it).", s.table, base.table))
+			"infra.TableSchema(%s): shared base %q declares no ID — declare .ID(column) for the id column "+
+				"(the deterministic UUIDv5 lands there; the role ParentID references it).", s.table, base.table))
 	}
-	if base.naturalKeyCol == "" {
+	if base.naturalIDCol == "" {
 		panic(fmt.Sprintf(
-			"infra.TableSchema(%s): shared base %q declares no NaturalKey — it is the source of the deterministic "+
+			"infra.TableSchema(%s): shared base %q declares no NaturalID — it is the source of the deterministic "+
 				"id and of de-duplication.", s.table, base.table))
 	}
-	if _, ok := base.byCol[base.naturalKeyCol]; !ok {
+	if _, ok := base.byCol[base.naturalIDCol]; !ok {
 		panic(fmt.Sprintf(
-			"infra.TableSchema(%s): shared base %q NaturalKey(%q) is not a declared field of the base.",
-			s.table, base.table, base.naturalKeyCol))
+			"infra.TableSchema(%s): shared base %q NaturalID(%q) is not a declared field of the base.",
+			s.table, base.table, base.naturalIDCol))
 	}
 	if base.revisionCol == "" {
 		panic(fmt.Sprintf(
@@ -179,10 +189,10 @@ func (s *TableSchema) SharedBase(base *TableSchema, fkColumn string) *TableSchem
 	if len(base.fields) == 0 {
 		panic(fmt.Sprintf("infra.TableSchema(%s): shared base %q declares no fields.", s.table, base.table))
 	}
-	if _, dup := s.byCol[fkColumn]; dup {
+	if _, dup := s.byCol[parentIDColumn]; dup {
 		panic(fmt.Sprintf(
 			"infra.TableSchema(%s): the shared-base link column %q must not also be a declared field — it is the "+
-				"FK to the base.", s.table, fkColumn))
+				"ParentID to the base.", s.table, parentIDColumn))
 	}
 	// The base is type-less; validate its shared field Go-names exist on THIS
 	// role's Go type (the role anchors the type the shared columns map into) —
@@ -204,12 +214,12 @@ func (s *TableSchema) SharedBase(base *TableSchema, fkColumn string) *TableSchem
 			scanByCol[f.column] = idx
 		}
 	}
-	s.sharedBaseLink = &sharedBaseLink{base: base, fkColumn: fkColumn, scanCols: scanCols, scanByCol: scanByCol}
+	s.sharedBaseLink = &sharedBaseLink{base: base, parentIDColumn: parentIDColumn, scanCols: scanCols, scanByCol: scanByCol}
 	// Register this role on the base — the shared instance is the cross-schema
 	// registry the refcount delete + CDC fan-out + lifecycle convergence enumerate.
 	// Store the schema pointer (not a snapshot) so the role's soft-delete column is
 	// read lazily, order-independent of .SoftDelete vs .SharedBase.
-	base.referencingRoleLinks = append(base.referencingRoleLinks, roleLink{schema: s, fkColumn: fkColumn})
+	base.referencingRoleLinks = append(base.referencingRoleLinks, roleLink{schema: s, parentIDColumn: parentIDColumn})
 	return s
 }
 
@@ -218,24 +228,24 @@ func (s *TableSchema) SharedBase(base *TableSchema, fkColumn string) *TableSchem
 // IsSharedBase reports whether this schema is a shared base (NewSharedBaseSchema).
 func (s *TableSchema) IsSharedBase() bool { return s != nil && s.isSharedBase }
 
-// NaturalKeyColumn returns the shared base's natural-key column ("" when not a
+// NaturalIDColumn returns the shared base's natural-key column ("" when not a
 // shared base or undeclared).
-func (s *TableSchema) NaturalKeyColumn() string { return s.naturalKeyCol }
+func (s *TableSchema) NaturalIDColumn() string { return s.naturalIDCol }
 
 // OrphanPolicyValue returns the shared base's orphan policy.
 func (s *TableSchema) OrphanPolicyValue() OrphanPolicy { return s.orphanPolicy }
 
-// SharedBaseRef returns the role's shared base + FK column, and whether the role
+// SharedBaseRef returns the role's shared base + ParentID column, and whether the role
 // declares one.
-func (s *TableSchema) SharedBaseRef() (base *TableSchema, fkColumn string, ok bool) {
+func (s *TableSchema) SharedBaseRef() (base *TableSchema, parentIDColumn string, ok bool) {
 	if s == nil || s.sharedBaseLink == nil {
 		return nil, "", false
 	}
-	return s.sharedBaseLink.base, s.sharedBaseLink.fkColumn, true
+	return s.sharedBaseLink.base, s.sharedBaseLink.parentIDColumn, true
 }
 
 // ReferencingRoles returns, for a shared base, the role tables that reference it
-// (empty for a non-base or an unreferenced base), each with its FK column and its
+// (empty for a non-base or an unreferenced base), each with its ParentID column and its
 // soft-delete column resolved LAZILY from the role schema — correct regardless of
 // .SoftDelete vs .SharedBase declaration order. The refcount delete + lifecycle
 // convergence walk it.
@@ -245,7 +255,7 @@ func (s *TableSchema) ReferencingRoles() []RoleRef {
 	}
 	out := make([]RoleRef, 0, len(s.referencingRoleLinks))
 	for _, l := range s.referencingRoleLinks {
-		out = append(out, RoleRef{Table: l.schema.table, FKColumn: l.fkColumn, SoftDeleteCol: l.schema.softDelete})
+		out = append(out, RoleRef{Table: l.schema.table, ParentIDColumn: l.parentIDColumn, SoftDeleteCol: l.schema.softDelete})
 	}
 	return out
 }
@@ -262,7 +272,7 @@ func (s *TableSchema) SharedBaseScanPlan() (cols []string, byCol map[string]int,
 }
 
 // AssertSharedBaseEquivalent asserts that two NewSharedBaseSchema declarations of the
-// SAME table describe the SAME shape — PK, natural key, orphan policy,
+// SAME table describe the SAME shape — ID, natural key, orphan policy,
 // soft-delete, field set, and native children. The engine registry accepts a
 // base declared once and referenced everywhere OR re-declared identically per
 // role file (no singleton required of the consumer); what it must refuse is two
@@ -281,11 +291,11 @@ func AssertSharedBaseEquivalent(a, b *TableSchema) {
 				"Every declaration of a shared base must be identical — declare it once and reference it from "+
 				"each role, or repeat the exact same declaration.", a.table, what, va, vb))
 	}
-	if a.pkColumn != b.pkColumn {
-		diverges("the PK column", a.pkColumn, b.pkColumn)
+	if a.idColumn != b.idColumn {
+		diverges("the ID column", a.idColumn, b.idColumn)
 	}
-	if a.naturalKeyCol != b.naturalKeyCol {
-		diverges("the NaturalKey column", a.naturalKeyCol, b.naturalKeyCol)
+	if a.naturalIDCol != b.naturalIDCol {
+		diverges("the NaturalID column", a.naturalIDCol, b.naturalIDCol)
 	}
 	if a.orphanPolicy != b.orphanPolicy {
 		diverges("the OrphanPolicy", fmt.Sprintf("%d", a.orphanPolicy), fmt.Sprintf("%d", b.orphanPolicy))
@@ -313,9 +323,9 @@ func AssertSharedBaseEquivalent(a, b *TableSchema) {
 		if !ok {
 			diverges("native child "+name, ac.table, "<absent>")
 		}
-		if ac.table != bc.table || ac.fkColumn != bc.fkColumn || ac.softDelete != bc.softDelete {
+		if ac.table != bc.table || ac.parentIDColumn != bc.parentIDColumn || ac.softDelete != bc.softDelete {
 			diverges("native child "+name,
-				ac.table+"/"+ac.fkColumn+"/"+ac.softDelete, bc.table+"/"+bc.fkColumn+"/"+bc.softDelete)
+				ac.table+"/"+ac.parentIDColumn+"/"+ac.softDelete, bc.table+"/"+bc.parentIDColumn+"/"+bc.softDelete)
 		}
 	}
 }

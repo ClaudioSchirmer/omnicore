@@ -25,9 +25,9 @@ func (e *roleLoadEntity) Modes() []domain.EntityMode {
 func (e *roleLoadEntity) BuildRules(string, domain.Service, *domain.Rules) {}
 
 func roleLoadSchema() *TableSchema {
-	base := NewSharedBaseSchema("pessoa").Revision("revision").PK("id").Field("Name", "name").NaturalKey("name")
+	base := NewSharedBaseSchema("pessoa").Revision("revision").ID("id").Field("Name", "name").NaturalID("name")
 	return NewTableSchema[*roleLoadEntity]("aluno").
-		PK("id").
+		ID("id").
 		Field("Matricula", "matricula").
 		SharedBase(base, "pessoa_id")
 }
@@ -60,7 +60,7 @@ func TestHydrateSharedBase_PopulatesRoleFromBase(t *testing.T) {
 	}
 }
 
-// A criteria on a SHARED-BASE field LEFT JOINs the base table (role FK → base PK).
+// A criteria on a SHARED-BASE field LEFT JOINs the base table (role ParentID → base ID).
 func TestFindRoots_SharedBaseFilterJoins(t *testing.T) {
 	var rootSQL string
 	query := func(sql string, args []any) (Rows, error) {

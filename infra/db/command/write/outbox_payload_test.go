@@ -26,7 +26,7 @@ func TestBuildWritePayload_FlatInsertShape(t *testing.T) {
 	}
 	ids, ok := p["_ids"].(map[string]any)
 	if !ok || ids["id"] != id {
-		t.Fatalf("_ids must carry the aggregate PK, got %v", p)
+		t.Fatalf("_ids must carry the aggregate ID, got %v", p)
 	}
 	if _, has := ids["base_id"]; has {
 		t.Errorf("a schema without a shared base must not carry base ids, got %v", ids)
@@ -37,7 +37,7 @@ func TestBuildWritePayload_FlatInsertShape(t *testing.T) {
 }
 
 func TestBuildWritePayload_TimestampsByVerb(t *testing.T) {
-	schema := NewTableSchema[*builderTestEntity]("t").PK("id").Revision("revision").
+	schema := NewTableSchema[*builderTestEntity]("t").ID("id").Revision("revision").
 		Field("Name", "name").
 		SoftDelete("deleted_at").CreatedAt("created_at").UpdatedAt("updated_at")
 	e := &builderTestEntity{Name: "a"}
@@ -65,7 +65,7 @@ func TestBuildWritePayload_TimestampsByVerb(t *testing.T) {
 }
 
 // Shared-base role with one own child (insert) and one base child (noop, the
-// warm's Constructor): base business fields land flat, the separate FK is
+// warm's Constructor): base business fields land flat, the separate ParentID is
 // injected, the children split into _children vs _base_children with their ops.
 func TestBuildWritePayload_SharedBaseRoleWithChildren(t *testing.T) {
 	schema := bcRoleSchema(true) // aluno + base pessoa with base-child endereco
@@ -82,7 +82,7 @@ func TestBuildWritePayload_SharedBaseRoleWithChildren(t *testing.T) {
 		t.Errorf("base business fields must land flat at the top, got %v", p)
 	}
 	if got := p["pessoa_id"]; got != domain.NewID(baseID) {
-		t.Errorf("the separate FK column must carry the base id, got %v", got)
+		t.Errorf("the separate ParentID column must carry the base id, got %v", got)
 	}
 	ids := p["_ids"].(map[string]any)
 	if ids["base_id"] != baseID || ids["base_revision"] != int64(7) {
@@ -102,9 +102,9 @@ func TestBuildWritePayload_SharedBaseRoleWithChildren(t *testing.T) {
 }
 
 func TestChildOpName_Mapping(t *testing.T) {
-	withSD := NewTableSchema[*builderTestEntity]("c").PK("id").FK("r_id").
+	withSD := NewTableSchema[*builderTestEntity]("c").ID("id").ParentID("r_id").
 		Field("Name", "name").SoftDelete("deleted_at")
-	noSD := NewTableSchema[*builderTestEntity]("c2").PK("id").FK("r_id").
+	noSD := NewTableSchema[*builderTestEntity]("c2").ID("id").ParentID("r_id").
 		Field("Name", "name")
 
 	if got := childOpName(domain.OperationOf(domain.StatusAdded, domain.StatusAdded), false, false, withSD); got != "insert" {
@@ -148,10 +148,10 @@ func TestBuildDeletePayload_KeysGrowOnly(t *testing.T) {
 // bump the revision in the SAME statement — one row lock serializes concurrent
 // role writes of the identity.
 func TestSharedBaseUpdate_BumpsRevisionInOneStatement(t *testing.T) {
-	base := NewSharedBaseSchema("pessoa").Revision("revision").PK("id").
-		Field("Name", "name").Field("Document", "document").NaturalKey("document")
+	base := NewSharedBaseSchema("pessoa").Revision("revision").ID("id").
+		Field("Name", "name").Field("Document", "document").NaturalID("document")
 	baseID := deterministicBaseID("D1")
-	sql, args := buildUpdate(testPGDialect{}, base.Table(), base.PKColumn(), baseID,
+	sql, args := buildUpdate(testPGDialect{}, base.Table(), base.IDColumn(), baseID,
 		domain.Fields{"name": "Ana"}, base.UpdateNowColumns(), testNow, base.RevisionColumn())
 	want := "UPDATE pessoa SET name = $1, revision = revision + 1 WHERE id = $2"
 	if sql != want {
@@ -194,7 +194,7 @@ func TestOutboxMetaFor_Branches(t *testing.T) {
 // document forever. The projector drops the keys when the whole group is null.
 func TestBuildWritePayload_SiblingsMergeFlat(t *testing.T) {
 	sib := NewSiblingSchema[*sibTestEntity]("usuario_login").Field("UserName", "user_name")
-	schema := NewTableSchema[*sibTestEntity]("usuario").PK("id").Revision("revision").
+	schema := NewTableSchema[*sibTestEntity]("usuario").ID("id").Revision("revision").
 		Field("Name", "name").Sibling(sib)
 	un := "alice"
 	e := &sibTestEntity{Name: "Ana", UserName: &un}
@@ -217,12 +217,12 @@ func TestBuildWritePayload_SiblingsMergeFlat(t *testing.T) {
 // Shape #4 on the wire: a child's SIBLING fields merge FLAT into the child's
 // payload item, exactly like the composed document renders them.
 func TestBuildWritePayload_ChildSiblingFieldsFlat(t *testing.T) {
-	child := NewTableSchema[bcAddr]("bc_addrs").PK("id").FK("root_id").
+	child := NewTableSchema[bcAddr]("bc_addrs").ID("id").ParentID("root_id").
 		Field("Street", "street").
 		Sibling(NewSiblingSchema[bcAddr]("bc_addr_extras").Field("Street", "street_copy"))
-	base := NewSharedBaseSchema("pessoa").Revision("revision").PK("id").
-		Field("Name", "name").Field("Document", "document").NaturalKey("document")
-	schema := NewTableSchema[*bcRole]("aluno").PK("id").Revision("revision").
+	base := NewSharedBaseSchema("pessoa").Revision("revision").ID("id").
+		Field("Name", "name").Field("Document", "document").NaturalID("document")
+	schema := NewTableSchema[*bcRole]("aluno").ID("id").Revision("revision").
 		Field("Matricula", "matricula").SharedBase(base, "pessoa_id").Child(child)
 	e := &bcRole{Name: "Ana", Document: "D9", Matricula: "M9"}
 	domain.AddAggregateChild(e, bcAddr{Street: "Main"})

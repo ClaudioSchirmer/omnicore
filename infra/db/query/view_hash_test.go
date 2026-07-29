@@ -366,9 +366,9 @@ type renameB struct{ Heading string }
 
 func TestRebuildHash_SchemaColumnAddition(t *testing.T) {
 	a := View("users").Schema(
-		core.NewTableSchema[*expUser]("users").PK("id").Field("Name", "name"))
+		core.NewTableSchema[*expUser]("users").ID("id").Field("Name", "name"))
 	b := View("users").Schema(
-		core.NewTableSchema[*expUser]("users").PK("id").Field("Name", "name").Field("Email", "email"))
+		core.NewTableSchema[*expUser]("users").ID("id").Field("Name", "name").Field("Email", "email"))
 	if a.RebuildHash() == b.RebuildHash() {
 		t.Error("RebuildHash same despite an added schema column")
 	}
@@ -376,10 +376,10 @@ func TestRebuildHash_SchemaColumnAddition(t *testing.T) {
 
 func TestRebuildHash_SchemaChildAddition(t *testing.T) {
 	a := View("users").Schema(
-		core.NewTableSchema[*expUser]("users").PK("id").Field("Name", "name"))
+		core.NewTableSchema[*expUser]("users").ID("id").Field("Name", "name"))
 	b := View("users").Schema(
-		core.NewTableSchema[*expUser]("users").PK("id").Field("Name", "name").
-			Child(core.NewTableSchema[expAddr]("addresses").PK("id").FK("user_id").Field("ZipCode", "zip")))
+		core.NewTableSchema[*expUser]("users").ID("id").Field("Name", "name").
+			Child(core.NewTableSchema[expAddr]("addresses").ID("id").ParentID("user_id").Field("ZipCode", "zip")))
 	if a.RebuildHash() == b.RebuildHash() {
 		t.Error("RebuildHash same despite an added .Child (own children auto-project, no embed)")
 	}
@@ -387,9 +387,9 @@ func TestRebuildHash_SchemaChildAddition(t *testing.T) {
 
 func TestRebuildHash_SchemaSiblingAddition(t *testing.T) {
 	a := View("users").Schema(
-		core.NewTableSchema[*expUser]("users").PK("id").Field("Name", "name"))
+		core.NewTableSchema[*expUser]("users").ID("id").Field("Name", "name"))
 	b := View("users").Schema(
-		core.NewTableSchema[*expUser]("users").PK("id").Field("Name", "name").
+		core.NewTableSchema[*expUser]("users").ID("id").Field("Name", "name").
 			Sibling(core.NewSiblingSchema[*expUser]("users_ext").Field("Phone", "phone")))
 	if a.RebuildHash() == b.RebuildHash() {
 		t.Error("RebuildHash same despite an added sibling")
@@ -398,9 +398,9 @@ func TestRebuildHash_SchemaSiblingAddition(t *testing.T) {
 
 func TestRebuildHash_SchemaFieldReorderStable(t *testing.T) {
 	a := View("users").Schema(
-		core.NewTableSchema[*expUser]("users").PK("id").Field("Name", "name").Field("Email", "email"))
+		core.NewTableSchema[*expUser]("users").ID("id").Field("Name", "name").Field("Email", "email"))
 	b := View("users").Schema(
-		core.NewTableSchema[*expUser]("users").PK("id").Field("Email", "email").Field("Name", "name"))
+		core.NewTableSchema[*expUser]("users").ID("id").Field("Email", "email").Field("Name", "name"))
 	if a.RebuildHash() != b.RebuildHash() {
 		t.Error("RebuildHash must be stable across field declaration order (columns are sorted)")
 	}
@@ -410,9 +410,9 @@ func TestRebuildHash_GoRenameSameColumnStable(t *testing.T) {
 	// Two entities whose different Go field names map to the SAME column: the
 	// projected document is identical, so the hash must not move (column-granular).
 	a := View("users").Schema(
-		core.NewTableSchema[renameA]("users").PK("id").Field("Title", "label"))
+		core.NewTableSchema[renameA]("users").ID("id").Field("Title", "label"))
 	b := View("users").Schema(
-		core.NewTableSchema[renameB]("users").PK("id").Field("Heading", "label"))
+		core.NewTableSchema[renameB]("users").ID("id").Field("Heading", "label"))
 	if a.RebuildHash() != b.RebuildHash() {
 		t.Error("a Go-only rename that keeps the same column must not change RebuildHash")
 	}

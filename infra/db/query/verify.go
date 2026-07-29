@@ -126,7 +126,7 @@ func (s *SyncEngine) verifyShadow(ctx context.Context, view *ViewDefinition, sha
 	return nil
 }
 
-// streamSourceRevisions scans the view's live root (PK, revision) pairs from the
+// streamSourceRevisions scans the view's live root (ID, revision) pairs from the
 // relational source and invokes fn once per row — the streaming companion of a
 // full-set scan, so verify never holds a second complete set in memory.
 func (s *SyncEngine) streamSourceRevisions(ctx context.Context, view *ViewDefinition, fn func(id string, rev int64) error) error {
@@ -139,7 +139,7 @@ func (s *SyncEngine) streamSourceRevisions(ctx context.Context, view *ViewDefini
 	if revCol == "" {
 		return fmt.Errorf("verify %q: root schema declares no Revision column — parity is not defined", view.name)
 	}
-	q := "SELECT " + idDialect.QuoteIdent(schema.PKColumn()) + ", " + idDialect.QuoteIdent(revCol) +
+	q := "SELECT " + idDialect.QuoteIdent(schema.IDColumn()) + ", " + idDialect.QuoteIdent(revCol) +
 		" FROM " + idDialect.QuoteIdent(view.RootTable())
 	rows, err := s.eng.Querier().Query(ctx, q)
 	if err != nil {
@@ -175,7 +175,7 @@ func (s *SyncEngine) recomposeInto(ctx context.Context, view *ViewDefinition, ta
 	if len(composed) == 0 {
 		return nil
 	}
-	pkCol := view.schema.PKColumn()
+	pkCol := view.schema.IDColumn()
 	items := make([]IdentifiedStages, 0, len(composed))
 	for _, doc := range composed {
 		items = append(items, IdentifiedStages{ID: fmt.Sprintf("%v", doc[pkCol]), Stages: consultGuardedStages(view, doc)})

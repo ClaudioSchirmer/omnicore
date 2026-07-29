@@ -24,7 +24,7 @@ func (e *flatArchivable) BuildRules(string, domain.Service, *domain.Rules) {}
 
 func TestBaseRepositoryWithSchema_ModesVsSoftDelete_Panics(t *testing.T) {
 	repo := &BaseRepository[*flatArchivable]{NewEntity: func() *flatArchivable { return &flatArchivable{} }}
-	schema := NewTableSchema[*flatArchivable]("flats").PK("id").Revision("revision") // no SoftDelete
+	schema := NewTableSchema[*flatArchivable]("flats").ID("id").Revision("revision") // no SoftDelete
 	defer func() {
 		r := recover()
 		if r == nil {
@@ -39,7 +39,7 @@ func TestBaseRepositoryWithSchema_ModesVsSoftDelete_Panics(t *testing.T) {
 
 func TestBaseRepositoryWithSchema_Valid_SetsSchema(t *testing.T) {
 	repo := &BaseRepository[*flatArchivable]{NewEntity: func() *flatArchivable { return &flatArchivable{} }}
-	schema := NewTableSchema[*flatArchivable]("flats").PK("id").Revision("revision").SoftDelete("deleted_at")
+	schema := NewTableSchema[*flatArchivable]("flats").ID("id").Revision("revision").SoftDelete("deleted_at")
 	repo.WithSchema(schema)
 	if repo.schema != schema {
 		t.Error("WithSchema must bind the schema on the happy path")
@@ -56,7 +56,7 @@ func TestBaseRepositoryWithSchema_Valid_SetsSchema(t *testing.T) {
 // loud boot failure.
 func TestBaseRepositoryWithSchema_ExternalRoot_Panics(t *testing.T) {
 	repo := &BaseRepository[*flatArchivable]{NewEntity: func() *flatArchivable { return &flatArchivable{} }}
-	external := NewExternalSchema("flats").PK("id").Field("Name", "name")
+	external := NewExternalSchema("flats").ID("id").Field("Name", "name")
 	defer func() {
 		r := recover()
 		if r == nil {
@@ -71,7 +71,7 @@ func TestBaseRepositoryWithSchema_ExternalRoot_Panics(t *testing.T) {
 
 func TestBaseRepositoryWithSchema_NilFactory_Panics(t *testing.T) {
 	repo := &BaseRepository[*flatArchivable]{} // NewEntity nil
-	schema := NewTableSchema[*flatArchivable]("flats").PK("id").Revision("revision").SoftDelete("deleted_at")
+	schema := NewTableSchema[*flatArchivable]("flats").ID("id").Revision("revision").SoftDelete("deleted_at")
 	defer func() {
 		if recover() == nil {
 			t.Fatal("expected panic: nil NewEntity surfaced at WithSchema construction")

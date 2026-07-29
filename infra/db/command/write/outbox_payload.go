@@ -14,7 +14,7 @@ import (
 //     the root/role fields ∪ the sibling fields ∪ the shared-base business
 //     fields ∪ the verb's managed timestamps (the operation's writeNow() stamp
 //     — the exact values bound into the DML);
-//   - "_ids" carries the structural identity: the aggregate PK, and — for a
+//   - "_ids" carries the structural identity: the aggregate ID, and — for a
 //     SharedBase role — the deterministic base id plus the base's REVISION
 //     (the row-lock-serialized last-writer-wins token) and the purge flag;
 //   - "_children" / "_base_children" carry the aggregate's child collections,
@@ -54,7 +54,7 @@ type outboxMeta struct {
 	BaseRevision int64  // valid when BaseID != "" and the base row still exists
 	BasePurged   bool   // DELETED only: the hard-delete purged the identity
 	// CreatedAt is the row's created_at — the incarnation discriminator of this
-	// incarnation of the id. A DETERMINISTIC id (a shared-PK role, the base)
+	// incarnation of the id. A DETERMINISTIC id (a shared-ID role, the base)
 	// can be REBORN: delete the natural key, re-create it, and the same id
 	// returns with its revision restarted at 1 — so the read side's document
 	// tombstone (recorded at the delete's revision) would treat every write of
@@ -118,13 +118,13 @@ func buildWritePayload(
 	}
 	// Shared-base business fields — flat at the top (managed base columns do
 	// not travel; the consumer's precedence rules own them), plus the role's
-	// separate FK column so the payload is self-sufficient on every verb.
+	// separate ParentID column so the payload is self-sufficient on every verb.
 	if base, fkCol, ok := schema.SharedBaseRef(); ok && meta.BaseID != "" {
 		bf, _ := sharedBaseValues(base, src)
 		for k, v := range bf {
 			out[k] = v
 		}
-		if fkCol != schema.PKColumn() {
+		if fkCol != schema.IDColumn() {
 			out[fkCol] = domain.NewID(meta.BaseID)
 		}
 	}
@@ -206,7 +206,7 @@ func appendChildrenBlocks(out map[string]any, schema *TableSchema, root *domain.
 				}
 			}
 			if id := it.Item.GetID().Value(); id != "" {
-				item[child.PKColumn()] = domain.NewID(id)
+				item[child.IDColumn()] = domain.NewID(id)
 			}
 			list = append(list, item)
 		}
@@ -252,7 +252,7 @@ func childOpName(op domain.AggregateItemOp, softVerb, fromBase bool, child *Tabl
 }
 
 // buildDeletePayload assembles the DELETED payload: the historical
-// structural keys (the PK under its physical column name + the shared-base FK
+// structural keys (the ID under its physical column name + the shared-base ParentID
 // — consumers depend on them, they only GROW) plus the "_ids" block with the
 // purge flag.
 func buildDeletePayload(schema *TableSchema, src domain.Entity, id string, meta outboxMeta) domain.Fields {
@@ -357,7 +357,7 @@ func outboxMetaFor(ctx context.Context, tx WriteTx, d Dialect, schema *TableSche
 	if rc := schema.RevisionColumn(); rc != "" {
 		// The created_at instant rides the SAME statement as the revision read —
 		// zero extra round trips for the tombstone's incarnation discriminator.
-		rev, createdAt, err := readRevisionCreatedAt(ctx, tx, d, schema.Table(), rc, schema.CreatedAtColumn(), schema.PKColumn(), id)
+		rev, createdAt, err := readRevisionCreatedAt(ctx, tx, d, schema.Table(), rc, schema.CreatedAtColumn(), schema.IDColumn(), id)
 		if err != nil {
 			return meta, err
 		}

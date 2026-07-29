@@ -79,10 +79,10 @@ func (v fakeVO) GetID() domain.ID                                 { return domai
 func (v fakeVO) BuildRules(string, domain.Service, *domain.Rules) {}
 
 // A child's read column plan comes from its TableSchema (the same the write
-// side uses); scanPlan INCLUDES the PK column (the child's ID is scanned).
+// side uses); scanPlan INCLUDES the ID column (the child's ID is scanned).
 func TestChildSchema_ScanPlanIncludesPK(t *testing.T) {
 	child := NewTableSchema[fakeVO]("tags").
-		PK("id").
+		ID("id").
 		Field("Label", "label")
 	cols, byCol := child.ScanPlan()
 	wantCols := []string{"id", "label"}
@@ -99,7 +99,7 @@ func TestChildSchema_ScanPlanIncludesPK(t *testing.T) {
 func TestAggregateLoader_WithSchema_DrivesChildren(t *testing.T) {
 	manualScanner := func(map[string]any) (domain.AggregateValueObject, error) { return nil, nil }
 	root := NewTableSchema[*aggLoaderTestEntity]("agg").
-		Child(NewTableSchema[fakeVO]("tags").PK("id").FK("agg_id").Field("Label", "label"))
+		Child(NewTableSchema[fakeVO]("tags").ID("id").ParentID("agg_id").Field("Label", "label"))
 	l := NewAggregateLoader[*aggLoaderTestEntity](nil, newAggLoaderTestEntity).
 		WithSchema(root).
 		WithChildScanner("Manual", manualScanner)

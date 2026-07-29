@@ -236,7 +236,7 @@ func GetUnarchivable(e Entity, service Service, actionName string) (Unarchivable
 // infra.Postgres methods consume to decide between simple and aggregate paths.
 //
 // Phase 19: aggregateMeta only carries the root pointer. Children types are
-// discovered via reflection on root.AllAggregateItems(); table/FK inferred by
+// discovered via reflection on root.AllAggregateItems(); table/ParentID inferred by
 // infra (with optional per-Repository overrides).
 func extractAggregateMeta(e Entity) *aggregateMeta {
 	provider, ok := e.(AggregateRootProvider)

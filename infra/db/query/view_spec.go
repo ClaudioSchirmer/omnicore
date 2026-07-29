@@ -621,8 +621,8 @@ func (v *ViewDefinition) composedColumnSet() map[string]struct{} {
 // them at this level), PLUS the base's native children nested under their
 // derived segment (mergeSharedBaseChildren), PLUS external embeds. The embed's
 // whole subtree is addressable at its doc field (e.g. "addresses"), and each
-// nested column is prefixed by it (e.g. "addresses.zip_code"). FK + the three
-// managed columns are included so a legitimately-indexed soft-delete / FK
+// nested column is prefixed by it (e.g. "addresses.zip_code"). ParentID + the three
+// managed columns are included so a legitimately-indexed soft-delete / ParentID
 // column is not flagged.
 func collectComposedColumns(schema *core.TableSchema, embeds []embedDef, prefix string, set map[string]struct{}) {
 	if schema != nil {
@@ -633,7 +633,7 @@ func collectComposedColumns(schema *core.TableSchema, embeds []embedDef, prefix 
 			addSchemaFlatColumns(set, prefix, sib)
 		}
 		// The SharedBase merges FLAT too (mergeSharedBase) — every base column
-		// (the base PK the merge skips is already covered by the role's PK).
+		// (the base ID the merge skips is already covered by the role's ID).
 		if base, _, ok := schema.SharedBaseRef(); ok {
 			addSchemaFlatColumns(set, prefix, base)
 		}
@@ -698,11 +698,11 @@ func addComposedColumn(set map[string]struct{}, prefix, col string) {
 	set[joinColumnPrefix(prefix, col)] = struct{}{}
 }
 
-// addSchemaFlatColumns adds a schema's flat physical columns (PK, FK, managed,
+// addSchemaFlatColumns adds a schema's flat physical columns (ID, ParentID, managed,
 // business) at the given prefix.
 func addSchemaFlatColumns(set map[string]struct{}, prefix string, s *core.TableSchema) {
-	addComposedColumn(set, prefix, s.PKColumn())
-	addComposedColumn(set, prefix, s.FKColumn())
+	addComposedColumn(set, prefix, s.IDColumn())
+	addComposedColumn(set, prefix, s.ParentIDColumn())
 	sd, _ := s.SoftDeleteColumn()
 	addComposedColumn(set, prefix, sd)
 	addComposedColumn(set, prefix, s.CreatedAtColumn())

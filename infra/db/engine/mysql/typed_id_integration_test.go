@@ -40,7 +40,7 @@ func (*linkEntity) BuildRules(string, domain.Service, *domain.Rules) {}
 
 func linkSchema() *core.TableSchema {
 	return core.NewTableSchema[*linkEntity]("links").
-		PK("id").
+		ID("id").
 		Field("Name", "name").
 		Field("PartnerID", "partner_id")
 }
@@ -132,7 +132,7 @@ func (*textRefEntity) BuildRules(string, domain.Service, *domain.Rules) {}
 
 func textRefSchema() *core.TableSchema {
 	return core.NewTableSchema[*textRefEntity]("text_refs").
-		PK("id").
+		ID("id").
 		Field("Name", "name").
 		Field("OwnerID", "owner_id").
 		Field("BuddyID", "buddy_id")

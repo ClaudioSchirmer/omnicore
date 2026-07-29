@@ -21,9 +21,9 @@ import (
 //   - QueryMaps decodes a RAW(16) column back to a canonical uuid string AND
 //     lowercases the uppercase catalog column names back to the declared form;
 //   - the root fetch encodes the (uuid-string) key into the 16-byte form so
-//     the WHERE matches the stored RAW(16) PK;
+//     the WHERE matches the stored RAW(16) ID;
 //   - the own-child projection re-encodes the parent id extracted from the
-//     composed root doc (a string) back into bytes to match the child FK;
+//     composed root doc (a string) back into bytes to match the child ParentID;
 //   - a native BOOLEAN column composes as a real bool: go-ora yields the value
 //     as a NUMBER-typed "1"/"0" string on the dynamic read, QueryMaps
 //     normalizes the whole number to int64, and the composer's schema-driven
@@ -38,7 +38,7 @@ type flagRow struct {
 
 func flagSchema() *core.TableSchema {
 	return core.NewTableSchema[*flagRow]("flags").
-		PK("id").
+		ID("id").
 		Field("Active", "active").
 		Field("Name", "name")
 }
@@ -50,7 +50,7 @@ type mcLineRow struct {
 
 // TestOracleComposer_OwnChild proves the own-child auto path: the child is
 // declared on the ROOT schema (no EmbedMany) and projects automatically,
-// joined root.PK → child.FK with the RAW(16) id re-encoded for the WHERE.
+// joined root.ID → child.ParentID with the RAW(16) id re-encoded for the WHERE.
 func TestOracleComposer_OwnChild(t *testing.T) {
 	eng, raw := setup(t)
 	ctx := ctxFor()
@@ -89,9 +89,9 @@ func TestOracleComposer_OwnChild(t *testing.T) {
 
 	// Child declared on the ROOT schema (replicating flatSchema's fields) — no embed.
 	rootWithChild := core.NewTableSchema[*flatPerson]("flat_persons").
-		PK("id").Field("Name", "name").Field("Email", "email").Field("Phone", "phone").
+		ID("id").Field("Name", "name").Field("Email", "email").Field("Phone", "phone").
 		SoftDelete("deleted_at").CreatedAt("created_at").UpdatedAt("updated_at").
-		Child(core.NewTableSchema[mcLineRow]("mc_lines").PK("id").FK("user_id").
+		Child(core.NewTableSchema[mcLineRow]("mc_lines").ID("id").ParentID("user_id").
 			Field("Qty", "qty").SoftDelete("deleted_at"))
 	view := query.View("flat_persons").Version(1).Schema(rootWithChild)
 
@@ -109,7 +109,7 @@ func TestOracleComposer_OwnChild(t *testing.T) {
 	}
 	for _, l := range lines {
 		if uid, ok := l["user_id"].(string); !ok || uid != res.ID.Value() {
-			t.Fatalf("child user_id = %#v, want %q (RAW(16) FK must decode to the root uuid)", l["user_id"], res.ID)
+			t.Fatalf("child user_id = %#v, want %q (RAW(16) ParentID must decode to the root uuid)", l["user_id"], res.ID)
 		}
 	}
 }

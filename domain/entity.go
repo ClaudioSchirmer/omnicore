@@ -33,7 +33,7 @@ func newMetadata() metadata {
 // nil for non-aggregate entities — the simple single-table path is used.
 //
 // Phase 19: only carries the *AggregateRoot. Children types are discovered via
-// reflection on root.AllAggregateItems(); table/FK names are inferred from
+// reflection on root.AllAggregateItems(); table/ParentID names are inferred from
 // the Go type names by infra (with optional per-Repository overrides).
 type aggregateMeta struct {
 	root *AggregateRoot
@@ -119,7 +119,7 @@ func (un Unarchivable) ID() ID         { return un.id }
 // ok=false means the simple single-table path applies.
 //
 // Phase 19: signature lost the mapping return — children types are discovered
-// via reflection from root.AllAggregateItems(); table/FK inferred by infra.
+// via reflection from root.AllAggregateItems(); table/ParentID inferred by infra.
 func (i Insertable) AggregateInfo() (root *AggregateRoot, ok bool) {
 	return aggregateInfo(i.aggregate)
 }

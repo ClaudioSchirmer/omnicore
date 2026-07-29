@@ -175,7 +175,7 @@ func RecordProjectionFailure(ctx context.Context, q core.Querier, d core.Dialect
 }
 
 // nullableText binds "" as NULL — the nullable-text convention the unified
-// columns share (and the only representable form on Oracle, which stores ''
+// columns share (and the only representable form on Oracle, which stores ”
 // as NULL).
 func nullableText(s string) any {
 	if s == "" {

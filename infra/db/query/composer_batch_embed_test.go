@@ -57,7 +57,7 @@ func TestApplyEmbedsBatch_EmbedMany_GroupedPerParent(t *testing.T) {
 		map[string]any{"_id": "b4", "order_id": "oX"}, // belongs to neither parent
 	}}
 	c := NewComposerWithMongo(eng, newFakeMongo(buyers), identityResolver)
-	external := JoinUpstream(core.NewExternalSchema("buyers").PK("id"), "Buyers", "buyers")
+	external := JoinUpstream(core.NewExternalSchema("buyers").ID("id"), "Buyers", "buyers")
 	view := View("orders").Version(1).Schema(composerRootSchema()).EmbedMany(external).On("order_id")
 
 	docs, err := c.ComposeBatch(context.Background(), view, []string{"o1", "o2"})
@@ -88,7 +88,7 @@ func TestApplyEmbedsBatch_OneToOne_GroupedPerParent(t *testing.T) {
 		map[string]any{"_id": "u2", "name": "bob"},
 	}}
 	c := NewComposerWithMongo(eng, newFakeMongo(buyers), identityResolver)
-	external := JoinUpstream(core.NewExternalSchema("buyers").PK("id"), "Buyer", "buyer")
+	external := JoinUpstream(core.NewExternalSchema("buyers").ID("id"), "Buyer", "buyer")
 	view := View("orders").Version(1).Schema(composerRootSchema()).Embed(external).On("buyer_id")
 
 	docs, err := c.ComposeBatch(context.Background(), view, []string{"o1", "o2"})
@@ -108,7 +108,7 @@ func TestApplyEmbedsBatch_OneToOne_NoMatchOmits(t *testing.T) {
 	eng := rootRowsByID([]string{"id", "buyer_id"}, map[string][]any{"o1": {"o1", "u9"}})
 	buyers := &fakeColl{docs: []any{map[string]any{"_id": "u1", "name": "alice"}}}
 	c := NewComposerWithMongo(eng, newFakeMongo(buyers), identityResolver)
-	external := JoinUpstream(core.NewExternalSchema("buyers").PK("id"), "Buyer", "buyer")
+	external := JoinUpstream(core.NewExternalSchema("buyers").ID("id"), "Buyer", "buyer")
 	view := View("orders").Version(1).Schema(composerRootSchema()).Embed(external).On("buyer_id")
 
 	docs, err := c.ComposeBatch(context.Background(), view, []string{"o1"})
@@ -121,11 +121,11 @@ func TestApplyEmbedsBatch_OneToOne_NoMatchOmits(t *testing.T) {
 	}
 }
 
-// 1:1 with a nil/absent FK → explicit null, same clearing contract.
+// 1:1 with a nil/absent ParentID → explicit null, same clearing contract.
 func TestApplyEmbedsBatch_OneToOne_NilFKSkips(t *testing.T) {
 	eng := rootRowsByID([]string{"id"}, map[string][]any{"o1": {"o1"}}) // no buyer_id column
 	c := NewComposerWithMongo(eng, newFakeMongo(&fakeColl{}), identityResolver)
-	external := JoinUpstream(core.NewExternalSchema("buyers").PK("id"), "Buyer", "buyer")
+	external := JoinUpstream(core.NewExternalSchema("buyers").ID("id"), "Buyer", "buyer")
 	view := View("orders").Version(1).Schema(composerRootSchema()).Embed(external).On("buyer_id")
 
 	docs, err := c.ComposeBatch(context.Background(), view, []string{"o1"})
@@ -134,7 +134,7 @@ func TestApplyEmbedsBatch_OneToOne_NilFKSkips(t *testing.T) {
 	}
 	v, present := docByID(docs, "id", "o1")["buyer"]
 	if !present || v != nil {
-		t.Errorf("a missing FK must write the explicit null, got present=%v value=%v", present, v)
+		t.Errorf("a missing ParentID must write the explicit null, got present=%v value=%v", present, v)
 	}
 }
 
@@ -145,7 +145,7 @@ func TestApplyEmbedsBatch_EmbedMany_NoMatchEmpty(t *testing.T) {
 	eng := rootRowsByID([]string{"id"}, map[string][]any{"o1": {"o1"}})
 	buyers := &fakeColl{docs: []any{map[string]any{"_id": "b1", "order_id": "oOther"}}}
 	c := NewComposerWithMongo(eng, newFakeMongo(buyers), identityResolver)
-	external := JoinUpstream(core.NewExternalSchema("buyers").PK("id"), "Buyers", "buyers")
+	external := JoinUpstream(core.NewExternalSchema("buyers").ID("id"), "Buyers", "buyers")
 	view := View("orders").Version(1).Schema(composerRootSchema()).EmbedMany(external).On("order_id")
 
 	docs, err := c.ComposeBatch(context.Background(), view, []string{"o1"})
@@ -165,7 +165,7 @@ func TestApplyEmbedsBatch_EmbedMany_NoMatchEmpty(t *testing.T) {
 func TestApplyEmbedsBatch_FindError(t *testing.T) {
 	eng := rootRowsByID([]string{"id"}, map[string][]any{"o1": {"o1"}})
 	c := NewComposerWithMongo(eng, newFakeMongo(&fakeColl{findErr: context.Canceled}), identityResolver)
-	external := JoinUpstream(core.NewExternalSchema("buyers").PK("id"), "Buyers", "buyers")
+	external := JoinUpstream(core.NewExternalSchema("buyers").ID("id"), "Buyers", "buyers")
 	view := View("orders").Version(1).Schema(composerRootSchema()).EmbedMany(external).On("order_id")
 
 	if _, err := c.ComposeBatch(context.Background(), view, []string{"o1"}); err == nil {
@@ -178,7 +178,7 @@ func TestApplyEmbedsBatch_FindError(t *testing.T) {
 func TestApplyEmbedsBatch_NilHandle(t *testing.T) {
 	eng := rootRowsByID([]string{"id"}, map[string][]any{"o1": {"o1"}})
 	c := NewComposer(eng) // no Mongo handle
-	external := JoinUpstream(core.NewExternalSchema("buyers").PK("id"), "Buyers", "buyers")
+	external := JoinUpstream(core.NewExternalSchema("buyers").ID("id"), "Buyers", "buyers")
 	view := View("orders").Version(1).Schema(composerRootSchema()).EmbedMany(external).On("order_id")
 
 	if _, err := c.ComposeBatch(context.Background(), view, []string{"o1"}); err == nil ||

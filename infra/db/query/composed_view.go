@@ -39,7 +39,7 @@ const FrameworkDefaultMaxLinkManyLimit int64 = 100
 //	        On("gadget_id")
 //
 // Join vocabulary: every relationship names one join column via .On(column); the
-// FK always points at the other side's PK/_id; who holds the FK follows the
+// ParentID always points at the other side's ID/_id; who holds the ParentID follows the
 // multiplicity — 1:1 (Link) → the PRIMARY holds it; 1:N (LinkMany) → the LEG
 // holds it. The leg carries only the two segment names (JoinView/JoinUpstream);
 // the join column and the 1:N knobs live on the verb's binding.
@@ -67,11 +67,11 @@ type ComposedViewDefinition struct {
 }
 
 type composedLinkDef struct {
-	docField string // wire segment (the document field the leg lands under) = leg.externalName
-	leg      *Leg
-	many     bool
-	joinCol  string // the FK column, named via .On(...)
-	orderBy  string
+	docField  string // wire segment (the document field the leg lands under) = leg.externalName
+	leg       *Leg
+	many      bool
+	joinCol   string // the ParentID column, named via .On(...)
+	orderBy   string
 	orderDesc bool
 	// orderDescOnly marks ".Desc() without OrderBy" — a declaration mistake
 	// surfaced at boot rather than silently reordering the _id default.
@@ -79,7 +79,7 @@ type composedLinkDef struct {
 	maxItems      int64
 	// childSchema non-nil marks a LinkInChild: a 1:1 read-time enrichment landing
 	// INSIDE each element of the primary's native child array (childSchema), keyed
-	// by the element's own FK (joinCol) → the leg's _id. nil = a normal root
+	// by the element's own ParentID (joinCol) → the leg's _id. nil = a normal root
 	// Link/LinkMany. A LinkInChild is always 1:1 (many == false).
 	childSchema *core.TableSchema
 }
@@ -134,7 +134,7 @@ func (c *ComposedViewDefinition) Primary(v *ViewDefinition) *ComposedViewDefinit
 	return c
 }
 
-// Link declares a 1:1 leg: the PRIMARY holds the FK (named on the returned
+// Link declares a 1:1 leg: the PRIMARY holds the ParentID (named on the returned
 // binding via .On(col), a primary column) pointing at the leg's _id. The matched
 // document is attached under leg.externalName as a sub-document; an explicit null
 // when absent (LEFT semantics). .On is mandatory — the binding it returns is the
@@ -147,7 +147,7 @@ func (c *ComposedViewDefinition) Link(leg *Leg) *composedLink1Binding {
 	return &composedLink1Binding{c: c, leg: leg}
 }
 
-// LinkMany declares a 1:N leg: the LEG holds the FK (named on the returned binding
+// LinkMany declares a 1:N leg: the LEG holds the ParentID (named on the returned binding
 // via .On(col), a leg column) pointing at the primary's _id. Matching documents
 // are attached under leg.externalName as an array in the declared order (OrderBy,
 // default _id ascending), capped per parent by the MaxLinkManyLimit cascade; an
@@ -164,7 +164,7 @@ func (c *ComposedViewDefinition) LinkMany(leg *Leg) *composedLinkManyBinding {
 // the PRIMARY — the non-materialized twin of a view's EmbedInChild. childSchema
 // MUST be a native child of the primary's schema (boot-validated); for each
 // primary row, every element of that child array gains a sub-document (under
-// leg.externalName) looked up by the element's own FK — named on the returned
+// leg.externalName) looked up by the element's own ParentID — named on the returned
 // binding via .On(col) — against the leg's _id. The leg is either an external
 // JoinUpstream collection or an internal JoinView. 1:1 only (no
 // LinkManyInChild — a 1:N inside a child element is the forbidden grandchild
@@ -181,14 +181,14 @@ func (c *ComposedViewDefinition) LinkInChild(childSchema *core.TableSchema, leg 
 }
 
 // composedLinkInChildBinding is what LinkInChild returns: On names the child
-// element's FK column and completes the link.
+// element's ParentID column and completes the link.
 type composedLinkInChildBinding struct {
 	c     *ComposedViewDefinition
 	child *core.TableSchema
 	leg   *Leg
 }
 
-// On names the FK column each child element carries (→ the leg's _id) and
+// On names the ParentID column each child element carries (→ the leg's _id) and
 // completes the in-child link.
 func (b *composedLinkInChildBinding) On(joinColumn string) *ComposedViewDefinition {
 	b.c.links = append(b.c.links, composedLinkDef{
@@ -201,14 +201,14 @@ func (b *composedLinkInChildBinding) On(joinColumn string) *ComposedViewDefiniti
 	return b.c
 }
 
-// composedLink1Binding is what Link returns: On names the primary-side FK column
+// composedLink1Binding is what Link returns: On names the primary-side ParentID column
 // and completes the link, returning the ComposedViewDefinition.
 type composedLink1Binding struct {
 	c   *ComposedViewDefinition
 	leg *Leg
 }
 
-// On names the primary column holding the FK to the leg's _id and completes the
+// On names the primary column holding the ParentID to the leg's _id and completes the
 // 1:1 link.
 func (b *composedLink1Binding) On(joinColumn string) *ComposedViewDefinition {
 	b.c.links = append(b.c.links, composedLinkDef{docField: b.leg.externalName, leg: b.leg, many: false, joinCol: joinColumn})
@@ -217,7 +217,7 @@ func (b *composedLink1Binding) On(joinColumn string) *ComposedViewDefinition {
 
 // composedLinkManyBinding is what LinkMany returns: the optional 1:N knobs
 // (OrderBy/Desc/MaxLinkManyLimit) chain on it, and the mandatory terminal On
-// names the leg-side FK column and completes the link.
+// names the leg-side ParentID column and completes the link.
 type composedLinkManyBinding struct {
 	c         *ComposedViewDefinition
 	leg       *Leg
@@ -251,7 +251,7 @@ func (b *composedLinkManyBinding) MaxLinkManyLimit(n int64) *composedLinkManyBin
 	return b
 }
 
-// On names the leg column holding the FK to the primary's _id and completes the
+// On names the leg column holding the ParentID to the primary's _id and completes the
 // 1:N link.
 func (b *composedLinkManyBinding) On(joinColumn string) *ComposedViewDefinition {
 	b.c.links = append(b.c.links, composedLinkDef{
@@ -399,13 +399,13 @@ type ComposedLink struct {
 	Collection string
 	// External marks a JoinUpstream leg.
 	External bool
-	// FKColumn is the declared join column — on the primary for a 1:1 link,
+	// ParentIDColumn is the declared join column — on the primary for a 1:1 link,
 	// on the leg for a 1:N link.
-	FKColumn string
+	ParentIDColumn string
 	// ParentKeyGoField is the Go-keyed field of the PRIMARY item carrying the
 	// join value: "_id" on a 1:N link (leg.fk → primary._id) and on a 1:1 link
-	// whose FK column is the primary's PK; otherwise the Go name of the
-	// primary FK column.
+	// whose ParentID column is the primary's ID; otherwise the Go name of the
+	// primary ParentID column.
 	ParentKeyGoField string
 	// OrderByColumn / OrderByDesc are the declared LinkMany order (column
 	// resolved on the leg schema; empty column = _id ascending default).
@@ -417,8 +417,8 @@ type ComposedLink struct {
 	// of the primary's native child array the 1:1 enrichment lands inside. Empty
 	// for a root Link/LinkMany.
 	ChildSegment string
-	// FKGoField is the Go field name each child element carries the join FK under
-	// (the child schema's Go name for FKColumn) — for a LinkInChild only.
+	// FKGoField is the Go field name each child element carries the join ParentID under
+	// (the child schema's Go name for ParentIDColumn) — for a LinkInChild only.
 	FKGoField string
 }
 
@@ -459,18 +459,18 @@ func (c *ComposedViewDefinition) Links() []ComposedLink {
 		}
 		parentKey := "_id"
 		if !ln.many && ln.childSchema == nil && c.primary != nil && c.primary.schema != nil {
-			if ln.joinCol != c.primary.schema.PKColumn() {
+			if ln.joinCol != c.primary.schema.IDColumn() {
 				if goName, ok := c.primary.schema.GoNameForRead(ln.joinCol); ok {
 					parentKey = goName
 				}
 			}
 		}
-		childSeg, fkGoField := "", ""
+		childSeg, parentIDGoField := "", ""
 		if ln.childSchema != nil {
 			childSeg = childDocSegment(ln.childSchema)
-			fkGoField = ln.joinCol
+			parentIDGoField = ln.joinCol
 			if gn, ok := ln.childSchema.GoNameForRead(ln.joinCol); ok {
-				fkGoField = gn
+				parentIDGoField = gn
 			}
 		}
 		out = append(out, ComposedLink{
@@ -479,14 +479,14 @@ func (c *ComposedViewDefinition) Links() []ComposedLink {
 			Many:             ln.many,
 			Collection:       legCollection(ln.leg),
 			External:         ln.leg.view == nil,
-			FKColumn:         ln.joinCol,
+			ParentIDColumn:   ln.joinCol,
 			ParentKeyGoField: parentKey,
 			OrderByColumn:    ln.orderBy,
 			OrderByDesc:      ln.orderDesc,
 			maxItems:         ln.maxItems,
 			node:             node,
 			ChildSegment:     childSeg,
-			FKGoField:        fkGoField,
+			FKGoField:        parentIDGoField,
 		})
 	}
 	return out
@@ -564,7 +564,7 @@ func ValidateComposedViews(composed []*ComposedViewDefinition, views []*ViewDefi
 	}
 	return fmt.Errorf(
 		"composed view declaration(s) invalid — a ComposedView reads only registered internal views and locally "+
-			"materialized upstream collections, every link declares its FK, and LinkMany-only knobs stay off 1:1 links:\n  - %s",
+			"materialized upstream collections, every link declares its ParentID, and LinkMany-only knobs stay off 1:1 links:\n  - %s",
 		strings.Join(problems, "\n  - "),
 	)
 }
@@ -653,7 +653,7 @@ func validateComposedLinks(problems []string, c *ComposedViewDefinition, viewNam
 					c.name, kind, ln.docField, schema.Table())
 			}
 			if !schema.HasPKDeclared() {
-				addf("composed view %q: %s %q external schema (collection %q) declares no primary key — declare .PK(column)",
+				addf("composed view %q: %s %q external schema (collection %q) declares no primary key — declare .ID(column)",
 					c.name, kind, ln.docField, schema.Table())
 			}
 		}
@@ -665,12 +665,12 @@ func validateComposedLinks(problems []string, c *ComposedViewDefinition, viewNam
 			} else if ln.childSchema != nil {
 				holder = "each CHILD ELEMENT (element.on → leg._id)"
 			}
-			addf("composed view %q: %s %q declares an empty join column — name it via .On(column); the FK column belongs to %s",
+			addf("composed view %q: %s %q declares an empty join column — name it via .On(column); the ParentID column belongs to %s",
 				c.name, kind, ln.docField, holder)
 		} else if ln.childSchema != nil {
 			if _, ok := ln.childSchema.GoNameForRead(ln.joinCol); !ok {
 				addf("composed view %q: LinkInChild %q join column %q does not exist on the child schema (table %q) — "+
-					"each element must carry the FK as a declared field", c.name, ln.docField, ln.joinCol, ln.childSchema.Table())
+					"each element must carry the ParentID as a declared field", c.name, ln.docField, ln.joinCol, ln.childSchema.Table())
 			}
 		} else if ln.many {
 			if schema != nil {
@@ -680,7 +680,7 @@ func validateComposedLinks(problems []string, c *ComposedViewDefinition, viewNam
 				}
 			}
 			// A LinkMany runs ONE find({fk: parent}) subquery PER PAGE PARENT;
-			// without an index whose first key is the FK, each subquery is a
+			// without an index whose first key is the ParentID, each subquery is a
 			// full collection scan — O(parents × leg docs) per request, the
 			// classic silent monster. An internal leg declares its indexes on
 			// the ViewDefinition, so this is verifiable at boot; reject it.
@@ -695,7 +695,7 @@ func validateComposedLinks(problems []string, c *ComposedViewDefinition, viewNam
 					c.name, ln.docField, ln.leg.view.Name(), ln.joinCol, ln.joinCol, ln.joinCol)
 			}
 		} else if c.primary.schema != nil {
-			if ln.joinCol != c.primary.schema.PKColumn() {
+			if ln.joinCol != c.primary.schema.IDColumn() {
 				if _, ok := c.primary.schema.GoNameForRead(ln.joinCol); !ok {
 					addf("composed view %q: Link %q join column %q does not exist on the primary schema (table %q)",
 						c.name, ln.docField, ln.joinCol, c.primary.schema.Table())

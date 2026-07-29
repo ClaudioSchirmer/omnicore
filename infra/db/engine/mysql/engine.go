@@ -20,9 +20,9 @@
 //
 // Design choices locked for the second backend (see tasks/mysql_pluggable_backend.md
 // and tasks/equalizacao_db.md):
-//   - PK + every new id is a UUID v7 generated in Go (no RETURNING, no
+//   - ID + every new id is a UUID v7 generated in Go (no RETURNING, no
 //     gen_random_uuid) and stored as BINARY(16) — time-ordered so the InnoDB
-//     clustered PK stays local. The id generation + INSERT shape are now shared
+//     clustered ID stays local. The id generation + INSERT shape are now shared
 //     in infra/db; this package only supplies the BINARY(16) value codec.
 //   - Placeholders are `?`, identifiers are backtick-quoted.
 //   - The value codec (Dialect.EncodeArg/DecodeID) converts UUIDs ⇄ BINARY(16).

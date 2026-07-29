@@ -26,12 +26,12 @@ func (mysqlLikeDialect) DecodeID(raw string) (string, error) {
 
 func covChildSchemaForDecode() *TableSchema {
 	return NewTableSchema[covChild]("cov_children").
-		PK("id").FK("agg_id").Field("Label", "label").SoftDelete("deleted_at")
+		ID("id").ParentID("agg_id").Field("Label", "label").SoftDelete("deleted_at")
 }
 
-// On a MySQL-style backend the child's own PK is auto-scanned as raw BINARY(16)
+// On a MySQL-style backend the child's own ID is auto-scanned as raw BINARY(16)
 // bytes into its string field; decodeChildPK must normalize it to the canonical
-// uuid (the leading FK is decoded by the loader, but the child PK is not).
+// uuid (the leading ParentID is decoded by the loader, but the child ID is not).
 func TestDecodeChildPK_MySQLBinaryNormalized(t *testing.T) {
 	child := covChildSchemaForDecode()
 	id := uuid.New()
@@ -42,7 +42,7 @@ func TestDecodeChildPK_MySQLBinaryNormalized(t *testing.T) {
 		t.Fatalf("decodeChildPK: %v", err)
 	}
 	if got := vp.Elem().Interface().(covChild).GetID(); got.Value() != id.String() {
-		t.Errorf("child PK not decoded: got %q want %q", got, id.String())
+		t.Errorf("child ID not decoded: got %q want %q", got, id.String())
 	}
 }
 

@@ -5,3 +5,12 @@ package core
 // keeps its own copy since test fixtures do not cross a package boundary.
 
 type embedFixture struct{ ID string }
+
+// otherFixture is a second, distinct entity type used where a test needs a
+// sibling/child of a DIFFERENT type than the owner, with a non-reserved field to
+// map ("ID"/"ParentID" are reserved Go names, so a fixture that only carries ID
+// cannot supply a mappable filler field).
+type otherFixture struct {
+	ID  string
+	Tag string
+}

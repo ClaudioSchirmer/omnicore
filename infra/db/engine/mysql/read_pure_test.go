@@ -57,7 +57,7 @@ func TestNormalizeMySQLValue(t *testing.T) {
 }
 
 // TestDecodeID covers the leading-key decoder the aggregate loader uses to turn a
-// scanned PK/FK back into the canonical UUID string. A BINARY(16) column scans
+// scanned ID/ParentID back into the canonical UUID string. A BINARY(16) column scans
 // into a 16-byte string (→ decode); anything else (a CHAR id, an already-decoded
 // value) passes through defensively. The PG DecodeID is a trivial passthrough;
 // the MySQL one carries real branching, so it earns its own test.

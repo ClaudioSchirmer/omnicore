@@ -23,9 +23,9 @@ import (
 //	    Version(1).
 //	    Indexes(query.Index("document"))
 //
-// Document identity: `_id` = the base's deterministic PK (UUIDv5 of the
-// natural key) — stable across both role link models (shared-PK and
-// separate-FK). The root soft-delete gate is the base's SoftDelete column: the
+// Document identity: `_id` = the base's deterministic ID (UUIDv5 of the
+// natural key) — stable across both role link models (shared-ID and
+// separate-ParentID). The root soft-delete gate is the base's SoftDelete column: the
 // base archives only when its last active role archives (write-side
 // convergence), which is exactly the document-level visibility this view
 // wants. Role sub-documents follow the ROLE's lifecycle: an absent role is an
@@ -71,16 +71,16 @@ type RoleView struct {
 	Schema *core.TableSchema
 	// Segment is the document field / Go segment the role projects under.
 	Segment string
-	// FKColumn is the role table's link to the base PK — the role's own PK
-	// column under the shared-PK model, a distinct column under separate-FK.
-	FKColumn string
+	// ParentIDColumn is the role table's link to the base ID — the role's own ID
+	// column under the shared-ID model, a distinct column under separate-ParentID.
+	ParentIDColumn string
 }
 
 // Role declares one specialization of the shared identity. Repeatable — the
 // number of roles is open-ended. The role's TableSchema carries everything the
 // projection needs: the role-private fields, the siblings (merged flat inside
 // the segment), the role children (nested inside the segment) and the
-// .SharedBase reference that names the FK column. The segment is the role's
+// .SharedBase reference that names the ParentID column. The segment is the role's
 // TypeName; declare roles of distinct types (two roles of the same Go type
 // cannot share one view).
 func (v *ViewDefinition) Role(role *core.TableSchema) *ViewDefinition {
@@ -138,7 +138,7 @@ func (v *ViewDefinition) RoleViews() []RoleView {
 	out := make([]RoleView, 0, len(v.roles))
 	for _, r := range v.roles {
 		_, fkCol, _ := r.schema.SharedBaseRef()
-		out = append(out, RoleView{Schema: r.schema, Segment: r.segment, FKColumn: fkCol})
+		out = append(out, RoleView{Schema: r.schema, Segment: r.segment, ParentIDColumn: fkCol})
 	}
 	return out
 }

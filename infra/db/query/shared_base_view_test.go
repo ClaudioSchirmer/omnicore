@@ -10,14 +10,14 @@ import (
 )
 
 // White-box coverage for the SharedBaseView kind: the builder guards, the
-// base-rooted composition (active-first role selection under separate-FK
+// base-rooted composition (active-first role selection under separate-ParentID
 // multiplicity), the ViewNode role segments (translation + strip), the rebuild
 // hash roles block, the export role branches and the composed-column allowlist.
 
 // --- fixtures ---------------------------------------------------------------
 //
 // Two roles over one person identity, mirroring the reference consumer:
-// sbvUser links shared-PK (fk == PK), sbvEmployee links separate-FK and owns a
+// sbvUser links shared-ID (fk == ID), sbvEmployee links separate-ParentID and owns a
 // child collection — so one fixture exercises both link models.
 
 type sbvUser struct {
@@ -39,33 +39,33 @@ type sbvAddr struct{ Street string }
 
 func sbvBase() *core.TableSchema {
 	return core.NewSharedBaseSchema("sbv_persons").Revision("revision").
-		PK("id").
+		ID("id").
 		Field("Document", "document").
 		Field("Name", "name").
-		NaturalKey("document").
+		NaturalID("document").
 		SoftDelete("deleted_at").
 		Child(core.NewTableSchema[sbvAddr]("sbv_addresses").
-			PK("id").FK("person_id").Field("Street", "street").SoftDelete("deleted_at"))
+			ID("id").ParentID("person_id").Field("Street", "street").SoftDelete("deleted_at"))
 }
 
 func sbvUserSchema() *core.TableSchema {
 	return core.NewTableSchema[*sbvUser]("sbv_users").
-		PK("id").
+		ID("id").
 		Field("UserName", "user_name").
 		SoftDelete("deleted_at").
 		Sibling(core.NewSiblingSchema[*sbvUser]("sbv_user_configs").
 						Field("EmailNotification", "email_notification")).
-		SharedBase(sbvBase(), "id") // shared-PK model
+		SharedBase(sbvBase(), "id") // shared-ID model
 }
 
 func sbvEmployeeSchema() *core.TableSchema {
 	return core.NewTableSchema[*sbvEmployee]("sbv_employees").
-		PK("id").
+		ID("id").
 		Field("EmployeeNumber", "employee_number").
 		SoftDelete("deleted_at").
 		Child(core.NewTableSchema[sbvDependent]("sbv_dependents").
-							PK("id").FK("employee_id").Field("Name", "dep_name").SoftDelete("deleted_at")).
-		SharedBase(sbvBase(), "person_id") // separate-FK model
+							ID("id").ParentID("employee_id").Field("Name", "dep_name").SoftDelete("deleted_at")).
+		SharedBase(sbvBase(), "person_id") // separate-ParentID model
 }
 
 func sbvView() *ViewDefinition {
@@ -97,10 +97,10 @@ func TestSharedBaseView_BuilderAccessors(t *testing.T) {
 	if len(roles) != 2 {
 		t.Fatalf("RoleViews = %d, want 2", len(roles))
 	}
-	if roles[0].Segment != "sbvUser" || roles[0].FKColumn != "id" {
-		t.Errorf("role[0] = %+v, want segment sbvUser fk id (shared-PK)", roles[0])
+	if roles[0].Segment != "sbvUser" || roles[0].ParentIDColumn != "id" {
+		t.Errorf("role[0] = %+v, want segment sbvUser fk id (shared-ID)", roles[0])
 	}
-	if roles[1].Segment != "sbvEmployee" || roles[1].FKColumn != "person_id" {
+	if roles[1].Segment != "sbvEmployee" || roles[1].ParentIDColumn != "person_id" {
 		t.Errorf("role[1] = %+v, want segment sbvEmployee fk person_id", roles[1])
 	}
 }
@@ -116,23 +116,23 @@ func TestSharedBaseView_BuilderPanics(t *testing.T) {
 		SharedBaseView("x").Schema(sbvBase()).Role(nil)
 	})
 	assertPanics(t, "type-less role", func() {
-		SharedBaseView("x").Schema(sbvBase()).Role(core.NewExternalSchema("ext").PK("id"))
+		SharedBaseView("x").Schema(sbvBase()).Role(core.NewExternalSchema("ext").ID("id"))
 	})
 	assertPanics(t, "role without SharedBase", func() {
 		SharedBaseView("x").Schema(sbvBase()).Role(
-			core.NewTableSchema[*sbvUser]("plain_users").PK("id").Field("UserName", "user_name"))
+			core.NewTableSchema[*sbvUser]("plain_users").ID("id").Field("UserName", "user_name"))
 	})
 	assertPanics(t, "role of another base table", func() {
-		otherBase := core.NewSharedBaseSchema("other_persons").Revision("revision").PK("id").
-			Field("Document", "document").Field("Name", "name").NaturalKey("document")
-		role := core.NewTableSchema[*sbvUser]("sbv_users").PK("id").
+		otherBase := core.NewSharedBaseSchema("other_persons").Revision("revision").ID("id").
+			Field("Document", "document").Field("Name", "name").NaturalID("document")
+		role := core.NewTableSchema[*sbvUser]("sbv_users").ID("id").
 			Field("UserName", "user_name").SharedBase(otherBase, "id")
 		SharedBaseView("x").Schema(sbvBase()).Role(role)
 	})
 	assertPanics(t, "divergent base declaration", func() {
-		divergent := core.NewSharedBaseSchema("sbv_persons").Revision("revision").PK("id").
-			Field("Document", "document").NaturalKey("document") // missing Name + SoftDelete
-		role := core.NewTableSchema[*sbvUser]("sbv_users").PK("id").
+		divergent := core.NewSharedBaseSchema("sbv_persons").Revision("revision").ID("id").
+			Field("Document", "document").NaturalID("document") // missing Name + SoftDelete
+		role := core.NewTableSchema[*sbvUser]("sbv_users").ID("id").
 			Field("UserName", "user_name").SharedBase(divergent, "id")
 		SharedBaseView("x").Schema(sbvBase()).Role(role)
 	})
@@ -163,7 +163,7 @@ func TestValidateViewSchemas_SharedBaseView(t *testing.T) {
 		t.Fatalf("valid SharedBaseView rejected: %v", err)
 	}
 	// An embed claiming a role's segment collides.
-	v := sbvView().EmbedMany(JoinUpstream(core.NewExternalSchema("ext_coll").PK("id"), "sbvUser", "mirror")).On("person_id")
+	v := sbvView().EmbedMany(JoinUpstream(core.NewExternalSchema("ext_coll").ID("id"), "sbvUser", "mirror")).On("person_id")
 	err = ValidateViewSchemas([]*ViewDefinition{v})
 	if err == nil || !strings.Contains(err.Error(), `segment "sbvUser"`) {
 		t.Fatalf("an embed colliding with a role segment must be rejected, got %v", err)
@@ -181,7 +181,7 @@ func TestValidateViewSchemas_PlainViewRejectsSharedBaseSchema(t *testing.T) {
 		t.Fatalf("a plain View rooted at a shared-base schema must be rejected, got %v", err)
 	}
 	// The positive control: a plain View rooted at a regular TableSchema passes.
-	ok := View("plain").Schema(core.NewTableSchema[embedFixture]("users").PK("id").SoftDelete("deleted_at")).Version(1)
+	ok := View("plain").Schema(core.NewTableSchema[embedFixture]("users").ID("id").SoftDelete("deleted_at")).Version(1)
 	if err := ValidateViewSchemas([]*ViewDefinition{ok}); err != nil {
 		t.Fatalf("a plain View over a regular TableSchema must pass, got %v", err)
 	}
@@ -245,14 +245,14 @@ func TestComposeBaseRooted_TwoRoles(t *testing.T) {
 	if !ok || len(deps) != 1 || deps[0]["dep_name"] != "Rita" {
 		t.Errorf("role children must nest INSIDE the segment, got %#v", emp[sbvDepSeg])
 	}
-	// The dependents fetch must key on the CHOSEN ROLE ROW's PK (e9), never the
-	// base id — under separate-FK they differ.
+	// The dependents fetch must key on the CHOSEN ROLE ROW's ID (e9), never the
+	// base id — under separate-ParentID they differ.
 	found := false
 	for i, sql := range calls {
 		if strings.Contains(sql, "FROM sbv_dependents") {
 			found = true
 			if len(args[i]) != 1 || args[i][0] != "e9" {
-				t.Errorf("dependents must be fetched by the role row PK e9, got %v", args[i])
+				t.Errorf("dependents must be fetched by the role row ID e9, got %v", args[i])
 			}
 		}
 	}
@@ -589,10 +589,10 @@ func TestSharedBaseView_ComposedColumnSet(t *testing.T) {
 // own-child path must validate.
 func TestComposedColumnSet_OwnChildrenWalk(t *testing.T) {
 	schema := core.NewTableSchema[*sbvEmployee]("plain_emps").
-		PK("id").
+		ID("id").
 		Field("EmployeeNumber", "employee_number").
 		Child(core.NewTableSchema[sbvDependent]("plain_deps").
-			PK("id").FK("emp_id").Field("Name", "dep_name"))
+			ID("id").ParentID("emp_id").Field("Name", "dep_name"))
 	set := View("plain").Version(1).Schema(schema).composedColumnSet()
 	if _, ok := set[sbvDepSeg+".dep_name"]; !ok {
 		t.Errorf("own-child columns must be addressable (%s.dep_name), got %v", sbvDepSeg, set)
@@ -602,7 +602,7 @@ func TestComposedColumnSet_OwnChildrenWalk(t *testing.T) {
 // --- coverage: no-SoftDelete role + error propagation -------------------------
 
 // sbvBadge is a role WITHOUT SoftDelete: hard delete is delete, so a single
-// FK fetch decides the segment.
+// ParentID fetch decides the segment.
 type sbvBadge struct {
 	Name     string
 	Document string
@@ -611,7 +611,7 @@ type sbvBadge struct {
 
 func sbvBadgeSchema() *core.TableSchema {
 	return core.NewTableSchema[*sbvBadge]("sbv_badges").
-		PK("id").
+		ID("id").
 		Field("Code", "code").
 		SharedBase(sbvBase(), "person_id")
 }
@@ -631,7 +631,7 @@ func TestComposeBaseRooted_RoleWithoutSoftDelete(t *testing.T) {
 	}
 	badge, ok := doc["sbvBadge"].(Document)
 	if !ok || badge["code"] != "C7" {
-		t.Fatalf("a no-SoftDelete role must compose from the single FK fetch, got %#v", doc["sbvBadge"])
+		t.Fatalf("a no-SoftDelete role must compose from the single ParentID fetch, got %#v", doc["sbvBadge"])
 	}
 	for _, sql := range calls {
 		if strings.Contains(sql, "FROM sbv_badges") && strings.Contains(sql, "deleted_at") {
@@ -712,12 +712,12 @@ func TestViewNode_StripAndPathsDefensiveBranches(t *testing.T) {
 	// soft-delete-less own child: neither contributes a strip path, and the
 	// strip leaves both segments untouched.
 	schema := core.NewTableSchema[*sbvEmployee]("se_emps").
-		PK("id").
+		ID("id").
 		Field("EmployeeNumber", "employee_number").
 		Child(core.NewTableSchema[sbvDependent]("se_deps").
-			PK("id").FK("emp_id").Field("Name", "dep_name")) // no SoftDelete
+			ID("id").ParentID("emp_id").Field("Name", "dep_name")) // no SoftDelete
 	v := View("se").Version(1).Schema(schema).
-		EmbedMany(JoinUpstream(core.NewExternalSchema("se_ext").PK("id"), "Mirror", "mirror")).On("emp_id")
+		EmbedMany(JoinUpstream(core.NewExternalSchema("se_ext").ID("id"), "Mirror", "mirror")).On("emp_id")
 	n := v.BuildViewNode()
 	if paths := n.ChildSoftDeletePaths(); len(paths) != 0 {
 		t.Errorf("no lifecycle segments here — paths must be empty, got %v", paths)
@@ -746,7 +746,7 @@ func TestRoleView_BaseChildBranches(t *testing.T) {
 	}
 	// An embed claiming the base-child's derived segment collides.
 	colliding := View("sbv_users_role2").Version(1).Schema(sbvUserSchema()).
-		EmbedMany(JoinUpstream(core.NewExternalSchema("ext").PK("id"), sbvAddrSeg, "mirror")).On("person_id")
+		EmbedMany(JoinUpstream(core.NewExternalSchema("ext").ID("id"), sbvAddrSeg, "mirror")).On("person_id")
 	if err := ValidateViewSchemas([]*ViewDefinition{colliding}); err == nil ||
 		!strings.Contains(err.Error(), "base-child") {
 		t.Fatalf("an embed colliding with a base-child segment must be rejected, got %v", err)

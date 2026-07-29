@@ -32,7 +32,7 @@ func TestBuildInsert_Shared(t *testing.T) {
 	if sql != want {
 		t.Fatalf("sql =\n  %q\nwant\n  %q", sql, want)
 	}
-	// PK is prepended and encoded (domain.ID → string under testPGDialect);
+	// ID is prepended and encoded (domain.ID → string under testPGDialect);
 	// remaining args follow SortedKeys order (email, name); the managed
 	// timestamp columns bind the operation stamp.
 	if len(args) != 5 {
@@ -90,7 +90,7 @@ func TestArchiveUnarchiveDelete_SQL(t *testing.T) {
 }
 
 // TestBuildSiblingUpsert_ArgsOrder_PG locks the positional bind order of the
-// sibling upsert: the shared PK first, then field values in SortedKeys order.
+// sibling upsert: the shared ID first, then field values in SortedKeys order.
 func TestBuildSiblingUpsert_ArgsOrder_PG(t *testing.T) {
 	sib := NewSiblingSchema[*sibTestEntity]("usuario").Field("UserName", "user_name")
 	id := "33333333-3333-3333-3333-333333333333"

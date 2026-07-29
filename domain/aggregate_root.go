@@ -142,7 +142,7 @@ func (ar *AggregateRoot) ClearAggregateItemsOfType(typeName string) {
 
 // AssignAggregateItemID stamps a persistence-minted id onto a tracked item —
 // the write-back half of child insertion. The relational persister mints each
-// child's PK inside the INSERT (the domain never generates child ids); this
+// child's ID inside the INSERT (the domain never generates child ids); this
 // method lets it reflect that id back into the aggregate map, so post-write
 // readers (FromEntity result projections, the audit/outbox snapshots) see the
 // child exactly as persisted instead of with an empty id. It matches the

@@ -14,15 +14,15 @@ type childFixture struct{ ID string }
 // rootWithChild builds a root schema declaring one native aggregate child — the
 // only kind EmbedInChild may enrich.
 func rootWithChild(table, childTable string) *core.TableSchema {
-	return core.NewTableSchema[embedFixture](table).PK("id").SoftDelete("deleted_at").
-		Child(core.NewTableSchema[childFixture](childTable).PK("id").FK(table + "_id"))
+	return core.NewTableSchema[embedFixture](table).ID("id").SoftDelete("deleted_at").
+		Child(core.NewTableSchema[childFixture](childTable).ID("id").ParentID(table + "_id"))
 }
 
 func childSrc() *core.TableSchema {
-	return core.NewTableSchema[childFixture]("sale_items").PK("id").FK("sales_id")
+	return core.NewTableSchema[childFixture]("sale_items").ID("id").ParentID("sales_id")
 }
 
-// upstreamLeg is the external enrichment leg (a Mongo collection); the element FK
+// upstreamLeg is the external enrichment leg (a Mongo collection); the element ParentID
 // is named at the call site via .On(...).
 func upstreamLeg() *Leg {
 	return extLeg("upstream_products", "Product", "product")
@@ -38,8 +38,8 @@ func TestEmbedInChild_DeclarationPopulatesChildEmbeds(t *testing.T) {
 	if ce.Field() != "product" {
 		t.Errorf("field: got %q want %q", ce.Field(), "product")
 	}
-	if ce.FKColumn() != "product_id" {
-		t.Errorf("fk: got %q want %q", ce.FKColumn(), "product_id")
+	if ce.ParentIDColumn() != "product_id" {
+		t.Errorf("fk: got %q want %q", ce.ParentIDColumn(), "product_id")
 	}
 	if ce.ChildSchema().Table() != "sale_items" {
 		t.Errorf("child table: got %q want %q", ce.ChildSchema().Table(), "sale_items")
@@ -62,7 +62,7 @@ func TestEmbedInChild_ValidPassesValidation(t *testing.T) {
 // The boot guard the design mandates: the schema passed to EmbedInChild MUST be
 // a native child of the view root, else boot fails.
 func TestEmbedInChild_RejectsNonNativeChild(t *testing.T) {
-	notAChild := core.NewTableSchema[childFixture]("random_table").PK("id").FK("sales_id")
+	notAChild := core.NewTableSchema[childFixture]("random_table").ID("id").ParentID("sales_id")
 	v := View("sales").Version(1).Schema(rootWithChild("sales", "sale_items")).
 		EmbedInChild(notAChild, upstreamLeg()).On("product_id").
 		Indexes(Index(childDocSegment(notAChild) + ".product_id"))

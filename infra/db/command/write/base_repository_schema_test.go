@@ -15,7 +15,7 @@ func mustPanicRepo(t *testing.T, name string, fn func()) {
 	fn()
 }
 
-// TestWithSchema_NoPKPanics asserts the write binding rejects a PK-less schema
+// TestWithSchema_NoPKPanics asserts the write binding rejects a ID-less schema
 // at WithSchema (boot) rather than at first write. The schema itself lives in
 // core; the BaseRepository guard is a db-side concern, so the test stays here.
 func TestWithSchema_NoPKPanics(t *testing.T) {
@@ -23,5 +23,5 @@ func TestWithSchema_NoPKPanics(t *testing.T) {
 		NewEntity: func() *builderTestEntity { return &builderTestEntity{} },
 	}
 	noPK := NewTableSchema[*builderTestEntity]("t").Field("Name", "name")
-	mustPanicRepo(t, "WithSchema no PK", func() { repo.WithSchema(noPK) })
+	mustPanicRepo(t, "WithSchema no ID", func() { repo.WithSchema(noPK) })
 }

@@ -10,7 +10,7 @@ import (
 
 // Audit composition over a SharedBase role: the entity is one flat Go struct
 // whose fields infra partitions across the base table (shared identity), the
-// role's own table, a sibling (1:1 shared PK), and a base-child collection
+// role's own table, a sibling (1:1 shared ID), and a base-child collection
 // (1:N owned by the base). The audit timeline must speak the WHOLE domain
 // object — role ∪ base ∪ sibling fields in the snapshot/delta, and populated
 // base-child snapshots — not just the role's own column. Before the composition
@@ -47,13 +47,13 @@ func (e *sbAuditRole) AggregateChildren() []domain.AggregateValueObject {
 // sbAuditSchema: role "users" over persons (SharedBase, natural key document)
 // with an addresses base-child and a user_configurations sibling.
 func sbAuditSchema() *TableSchema {
-	base := NewSharedBaseSchema("persons").Revision("revision").PK("id").
+	base := NewSharedBaseSchema("persons").Revision("revision").ID("id").
 		Field("Name", "name").Field("Email", "email").Field("Document", "document").
-		NaturalKey("document").SoftDelete("deleted_at")
-	addr := NewTableSchema[sbAuditAddr]("addresses").PK("id").FK("person_id").
+		NaturalID("document").SoftDelete("deleted_at")
+	addr := NewTableSchema[sbAuditAddr]("addresses").ID("id").ParentID("person_id").
 		Field("Street", "street").Field("City", "city").SoftDelete("deleted_at")
 	base = base.Child(addr)
-	role := NewTableSchema[*sbAuditRole]("users").PK("id").Revision("revision").Field("UserName", "user_name").SoftDelete("deleted_at")
+	role := NewTableSchema[*sbAuditRole]("users").ID("id").Revision("revision").Field("UserName", "user_name").SoftDelete("deleted_at")
 	sib := NewSiblingSchema[*sbAuditRole]("user_configurations").Field("SmsOptIn", "sms_notification")
 	return role.SharedBase(base, "person_id").Sibling(sib)
 }

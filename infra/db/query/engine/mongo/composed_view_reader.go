@@ -217,7 +217,7 @@ type childFKStrip struct{ seg, field string }
 // splitComposedCriteria routes filters and projection entries by their first
 // Go path segment: entries addressing a leg segment go to that leg; everything
 // else stays on the primary. It also guarantees the primary projection carries
-// the join keys the attach step needs ("_id" and each 1:1 parent FK field),
+// the join keys the attach step needs ("_id" and each 1:1 parent ParentID field),
 // remembering what it added so the wire shape is restored afterwards.
 func splitComposedCriteria(rt *composedRuntime, c queries.ReadCriteria) *composedSplit {
 	s := &composedSplit{
@@ -311,8 +311,8 @@ func splitComposedCriteria(rt *composedRuntime, c queries.ReadCriteria) *compose
 }
 
 // ensureJoinKeys guarantees the primary projection still carries every field
-// the attach step joins on: "_id" (1:N parents and PK-joined 1:1 legs) and the
-// Go field of each 1:1 parent FK. Added or un-excluded entries are recorded so
+// the attach step joins on: "_id" (1:N parents and ID-joined 1:1 legs) and the
+// Go field of each 1:1 parent ParentID. Added or un-excluded entries are recorded so
 // stripHelperFields restores the consumer's exact wire shape afterwards.
 func ensureJoinKeys(rt *composedRuntime, s *composedSplit) {
 	proj := s.primary.Projection
@@ -321,7 +321,7 @@ func ensureJoinKeys(rt *composedRuntime, s *composedSplit) {
 	}
 	needsID := false
 	needKeys := map[string]bool{}
-	needChild := map[string]bool{} // "childSeg.fkGoField" nested join paths (LinkInChild)
+	needChild := map[string]bool{} // "childSeg.parentIDGoField" nested join paths (LinkInChild)
 	for _, leg := range rt.legs {
 		if !s.fetchLeg[leg.segKey] {
 			continue
@@ -363,7 +363,7 @@ func ensureJoinKeys(rt *composedRuntime, s *composedSplit) {
 			s.stripKeys = append(s.stripKeys, k)
 		}
 	}
-	// LinkInChild joins per child element: the child array + the element's FK Go
+	// LinkInChild joins per child element: the child array + the element's ParentID Go
 	// field must survive a sparse projection so attachInChild can look the leg up.
 	for path := range needChild {
 		seg, field, _ := strings.Cut(path, ".")
@@ -533,7 +533,7 @@ func (r *ComposedViewReader) attachOne(ctx context.Context, leg *legRuntime, s *
 			key := fmt.Sprintf("%v", m["_id"])
 			goDoc := r.toGoLegDoc(leg, m, includeArchived)
 			if stripLegID {
-				delete(goDoc, "_id")
+				leg.node.StripJoinKeyID(goDoc)
 			}
 			byKey[key] = goDoc
 		}
@@ -553,10 +553,10 @@ func (r *ComposedViewReader) attachOne(ctx context.Context, leg *legRuntime, s *
 
 // attachInChild resolves a LinkInChild (the read-time twin of a view's
 // EmbedInChild): every element of the primary's native child array gains a 1:1
-// sub-document looked up by the element's own FK. It is attachOne one level down —
+// sub-document looked up by the element's own ParentID. It is attachOne one level down —
 // ONE find({_id:{$in:keys}}) across every element on the page (same segment
 // filter, archived gate and projection), grouped by _id, stitched per element,
-// with an explicit null when the FK is absent or the segment filter drops it.
+// with an explicit null when the ParentID is absent or the segment filter drops it.
 func (r *ComposedViewReader) attachInChild(ctx context.Context, leg *legRuntime, s *composedSplit, items []map[string]any, includeArchived bool) error {
 	childSeg := leg.link.ChildSegment
 	fkField := leg.link.FKGoField
@@ -603,7 +603,7 @@ func (r *ComposedViewReader) attachInChild(ctx context.Context, leg *legRuntime,
 			key := fmt.Sprintf("%v", m["_id"])
 			goDoc := r.toGoLegDoc(leg, m, includeArchived)
 			if stripLegID {
-				delete(goDoc, "_id")
+				leg.node.StripJoinKeyID(goDoc)
 			}
 			byKey[key] = goDoc
 		}
@@ -624,7 +624,7 @@ func (r *ComposedViewReader) attachInChild(ctx context.Context, leg *legRuntime,
 }
 
 // attachMany resolves a 1:N leg: one small find per parent — indexed on the
-// leg FK, sorted by the declared order (+ _id tiebreaker, the same stable-sort
+// leg ParentID, sorted by the declared order (+ _id tiebreaker, the same stable-sort
 // rule every reader query follows), capped at the resolved per-parent ceiling
 // (deterministic silent truncation: "the first N in the declared order") —
 // with the fetches concurrency-bounded. Empty array when nothing matches.
@@ -657,7 +657,7 @@ func (r *ComposedViewReader) attachMany(ctx context.Context, leg *legRuntime, s 
 			defer wg.Done()
 			defer func() { <-sem }()
 
-			filter := bson.M{leg.link.FKColumn: parentKey}
+			filter := bson.M{leg.link.ParentIDColumn: parentKey}
 			for k, v := range base {
 				filter[k] = v
 			}
@@ -675,7 +675,7 @@ func (r *ComposedViewReader) attachMany(ctx context.Context, leg *legRuntime, s 
 					for _, d := range docs {
 						goDoc := r.toGoLegDoc(leg, map[string]any(d), includeArchived)
 						if stripLegID {
-							delete(goDoc, "_id")
+							leg.node.StripJoinKeyID(goDoc)
 						}
 						out = append(out, goDoc)
 					}

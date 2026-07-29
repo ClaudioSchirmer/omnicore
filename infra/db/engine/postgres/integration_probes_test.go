@@ -32,7 +32,7 @@ func (*probeItem) BuildRules(string, domain.Service, *domain.Rules) {}
 
 func probeSchema() *core.TableSchema {
 	return core.NewTableSchema[*probeItem]("probe_items").
-		PK("id").
+		ID("id").
 		Field("Code", "code").
 		Field("Cents", "cents").
 		Field("Area", "area").

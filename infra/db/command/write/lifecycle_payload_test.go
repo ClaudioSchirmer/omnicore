@@ -12,7 +12,7 @@ import (
 
 // White-box coverage for the bodyless-verb outbox payloads (lifecycle_payload.go):
 // ARCHIVED/UNARCHIVED carry the full field map + the soft-delete column,
-// DELETED carries the structural keys (PK + shared-base FK). Payloads are read
+// DELETED carries the structural keys (ID + shared-base ParentID). Payloads are read
 // back off the recording fake's captured args and decoded as JSON — the same
 // bytes a CDC consumer would see.
 
@@ -110,11 +110,11 @@ func TestDelete_OutboxPayloadIsPKOnly(t *testing.T) {
 	}
 	p := outboxPayloadFor(t, tx, "builder_test_entities", "DELETED")
 	if len(p) != 2 || p["id"] != id {
-		t.Errorf("DELETED payload must be the PK + the _ids block, got %v", p)
+		t.Errorf("DELETED payload must be the ID + the _ids block, got %v", p)
 	}
 	ids, ok := p["_ids"].(map[string]any)
 	if !ok || ids["id"] != id {
-		t.Errorf("DELETED payload must carry _ids with the aggregate PK, got %v", p)
+		t.Errorf("DELETED payload must carry _ids with the aggregate ID, got %v", p)
 	}
 }
 
@@ -127,10 +127,10 @@ func TestDeleteRoleWithBase_OutboxPayloadCarriesPKAndBaseFK(t *testing.T) {
 	}
 	p := outboxPayloadFor(t, tx, "aluno", "DELETED")
 	if p["id"] != del.ID().Value() {
-		t.Errorf("role DELETED payload must carry the role PK, got %v", p)
+		t.Errorf("role DELETED payload must carry the role ID, got %v", p)
 	}
 	if p["pessoa_id"] != deterministicBaseID("D1") {
-		t.Errorf("role DELETED payload must carry the shared-base FK, got %v", p)
+		t.Errorf("role DELETED payload must carry the shared-base ParentID, got %v", p)
 	}
 	if len(p) != 3 {
 		t.Errorf("role DELETED payload must be the structural keys + the _ids block, got %v", p)
@@ -150,7 +150,7 @@ func TestDeleteRoleWithBase_PurgedBase_OutboxPayloadIsBasePK(t *testing.T) {
 	baseID := deterministicBaseID("D1")
 	p := outboxPayloadFor(t, tx, "pessoa", "DELETED")
 	if len(p) != 2 || p["id"] != baseID {
-		t.Errorf("base purge DELETED payload must be the base PK + _ids, got %v", p)
+		t.Errorf("base purge DELETED payload must be the base ID + _ids, got %v", p)
 	}
 	if ids, ok := p["_ids"].(map[string]any); !ok || ids["id"] != baseID || ids["base_purged"] != true {
 		t.Errorf("the purge row must carry _ids with the purge flag (every framework event carries _ids), got %v", p)
@@ -176,12 +176,12 @@ func (e *roleArchTestEntity) BuildRules(string, domain.Service, *domain.Rules) {
 
 func roleArchTestSchema() *TableSchema {
 	base := NewSharedBaseSchema("pessoa").Revision("revision").
-		PK("id").
+		ID("id").
 		Field("Name", "name").
 		Field("Document", "document").
-		NaturalKey("document")
+		NaturalID("document")
 	return NewTableSchema[*roleArchTestEntity]("aluno").
-		PK("id").
+		ID("id").
 		Field("Matricula", "matricula").
 		SoftDelete("deleted_at").
 		SharedBase(base, "pessoa_id")
@@ -204,7 +204,7 @@ func TestArchiveRoleWithBase_OutboxPayloadCarriesBaseFK(t *testing.T) {
 		t.Errorf("role ARCHIVED payload must carry the role fields, got %v", p)
 	}
 	if p["pessoa_id"] != deterministicBaseID("D1") {
-		t.Errorf("role ARCHIVED payload must carry the shared-base FK, got %v", p)
+		t.Errorf("role ARCHIVED payload must carry the shared-base ParentID, got %v", p)
 	}
 	if v, ok := p["deleted_at"]; !ok || v == nil {
 		t.Errorf("role ARCHIVED payload must carry a populated soft-delete column, got %v", p)
@@ -261,7 +261,7 @@ func TestDeleteAggregate_OutboxPayloadIsPKOnly(t *testing.T) {
 	}
 	p := outboxPayloadFor(t, tx, "agg_w", "DELETED")
 	if len(p) != 2 || p["id"] != id {
-		t.Errorf("aggregate DELETED payload must be the root PK + the _ids block, got %v", p)
+		t.Errorf("aggregate DELETED payload must be the root ID + the _ids block, got %v", p)
 	}
 	if ids, ok := p["_ids"].(map[string]any); !ok || ids["id"] != id {
 		t.Errorf("aggregate DELETED payload must carry _ids, got %v", p)
@@ -272,28 +272,28 @@ func TestDeleteAggregate_OutboxPayloadIsPKOnly(t *testing.T) {
 
 func TestSharedBaseFKField_SharedPKModel_Skipped(t *testing.T) {
 	// role.id IS the base link: the id already travels as the outbox
-	// aggregate_id, so no FK field is added.
+	// aggregate_id, so no ParentID field is added.
 	src := &roleTestEntity{Name: "Ana", Document: "D1", Matricula: "M1"}
 	if _, _, ok := sharedBaseFKField(roleTestSchemaSharedPK(), src); ok {
-		t.Error("a shared-PK role must not contribute a separate FK payload field")
+		t.Error("a shared-ID role must not contribute a separate ParentID payload field")
 	}
 	p := deleteKeysPayload(roleTestSchemaSharedPK(), src, "some-id")
 	if len(p) != 1 {
-		t.Errorf("shared-PK DELETED payload must be exactly the PK, got %v", p)
+		t.Errorf("shared-ID DELETED payload must be exactly the ID, got %v", p)
 	}
 }
 
 func TestSharedBaseFKField_EmptyNaturalKey_Skipped(t *testing.T) {
 	// Payload assembly must never veto a write the verb itself allows: an
-	// unreadable natural key just omits the FK field.
+	// unreadable natural key just omits the ParentID field.
 	src := &roleTestEntity{Name: "Ana", Document: "", Matricula: "M1"}
 	if _, _, ok := sharedBaseFKField(roleTestSchema(), src); ok {
-		t.Error("an empty natural key must omit the FK payload field, not resolve one")
+		t.Error("an empty natural key must omit the ParentID payload field, not resolve one")
 	}
 }
 
 func TestSharedBaseFKField_NoSharedBase_Skipped(t *testing.T) {
 	if _, _, ok := sharedBaseFKField(builderTestSchema, &builderTestEntity{}); ok {
-		t.Error("a schema without a shared base must not contribute an FK payload field")
+		t.Error("a schema without a shared base must not contribute an ParentID payload field")
 	}
 }

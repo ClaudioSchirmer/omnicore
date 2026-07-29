@@ -42,14 +42,14 @@ func (v *ViewDefinition) ResolveMaxExportRows(yamlDefault int64) int64 {
 
 // ExportPlan builds the format-neutral tabular-export plan for this view from
 // its core.TableSchema + embed tree. Each level's columns are the schema's declared
-// non-PK, non-managed fields (the business columns) in declaration order; the
+// non-ID, non-managed fields (the business columns) in declaration order; the
 // header label is resolved per field via the same precedence the audit path
 // uses (external-schema inline labelKey, else the type-anchored struct tag).
 // Embeds recurse to the view's full depth, carrying the parent-side Go segment
 // (so the renderer descends the Go-keyed document) and the embed doc-field name
 // (the `?fields=` wire segment).
 //
-// The PK and managed columns (created_at/updated_at/deleted_at) are
+// The ID and managed columns (created_at/updated_at/deleted_at) are
 // intentionally excluded — the export carries the labeled business columns; the
 // surrogate id and framework timestamps are not part of the human-facing sheet.
 func (v *ViewDefinition) ExportPlan() *queries.ExportPlan {
@@ -160,7 +160,7 @@ func buildExportNode(schema *core.TableSchema, embeds []embedDef, goSegment, wir
 }
 
 // appendSchemaColumns adds one ExportColumn per declared business field of s
-// (PK + managed columns excluded by GoFields), labeled via s's own label source
+// (ID + managed columns excluded by GoFields), labeled via s's own label source
 // (external inline labelKey, else the type-anchored struct tag).
 func appendSchemaColumns(node *queries.ExportNode, s *core.TableSchema) {
 	labels := s.LabelKeysByGoField()

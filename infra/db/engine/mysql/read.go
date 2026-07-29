@@ -34,7 +34,7 @@ func (q mysqlQuerier) Query(ctx context.Context, sqlText string, args ...any) (c
 // into a *string dest as 16 raw bytes; on Postgres pgx formats a uuid column as
 // text, so without this a secondary uuid column scanned into the framework's
 // canonical Go string (a cross-aggregate reference such as a BuyerID/TenantID,
-// not the leading PK/FK the loader already DecodeID's) would carry garbage on
+// not the leading ID/ParentID the loader already DecodeID's) would carry garbage on
 // MySQL. Detection is by driver column type (BINARY) + value length 16 — the same
 // heuristic QueryMaps/normalizeMySQLValue use — so a 16-char text column (whose
 // type is VARCHAR/CHAR, never BINARY) is never misread. Only *string dests are

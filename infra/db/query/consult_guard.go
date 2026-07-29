@@ -20,7 +20,7 @@ import "encoding/json"
 // means an identical closure state, so there is nothing to lose.
 //
 // Scopes:
-//   - the aggregate's OWN data (root scalars, own children, siblings, the PK)
+//   - the aggregate's OWN data (root scalars, own children, siblings, the ID)
 //     guards on _revision;
 //   - shared-base data (base scalars + base-children segments) guards on
 //     _base_revision — for a SharedBaseView document the composer stamps the
@@ -40,9 +40,9 @@ import "encoding/json"
 // segment's scalar), so key-level fill alone would miss additions nested
 // inside a value that already exists:
 //
-//   - arraySegs maps a child-collection segment to its element PK column: at
+//   - arraySegs maps a child-collection segment to its element ID column: at
 //     the equal revision each STORED element shallow-merges the composed
-//     element with the same PK (stored keys win; composed supplies only the
+//     element with the same ID (stored keys win; composed supplies only the
 //     keys the element lacks — the columns a previous-binary writer's schema
 //     could not see);
 //   - objectSegs names sub-document segments (a SharedBaseView's role
@@ -75,7 +75,7 @@ func consultGuardedStages(view *ViewDefinition, doc Document) []Document {
 		// One revision-guarded scope: base children merge per element, role
 		// segments merge as sub-documents.
 		for _, bc := range view.schema.ChildSchemas() {
-			ownShape.arraySegs[childDocSegment(bc)] = bc.PKColumn()
+			ownShape.arraySegs[childDocSegment(bc)] = bc.IDColumn()
 		}
 		for _, r := range view.roles {
 			ownShape.objectSegs[r.segment] = true
@@ -85,13 +85,13 @@ func consultGuardedStages(view *ViewDefinition, doc Document) []Document {
 			baseCols[c] = true
 		}
 		for _, ch := range view.schema.ChildSchemas() {
-			ownShape.arraySegs[childDocSegment(ch)] = ch.PKColumn()
+			ownShape.arraySegs[childDocSegment(ch)] = ch.IDColumn()
 		}
 		if base, _, ok := view.schema.SharedBaseRef(); ok {
 			for _, bc := range base.ChildSchemas() {
 				seg := childDocSegment(bc)
 				baseCols[seg] = true
-				baseShape.arraySegs[seg] = bc.PKColumn()
+				baseShape.arraySegs[seg] = bc.IDColumn()
 			}
 		}
 	}
@@ -113,9 +113,9 @@ func consultGuardedStages(view *ViewDefinition, doc Document) []Document {
 	}
 
 	// Stage ORDER is load-bearing: the embed-ownership stage probes document
-	// EXISTENCE via the PK field, and the own stage right after it SETS the PK
+	// EXISTENCE via the ID field, and the own stage right after it SETS the ID
 	// — pipeline stages are sequential, so the probe must run first or a fresh
-	// upsert-insert would see the PK its own pipeline just wrote and skip the
+	// upsert-insert would see the ID its own pipeline just wrote and skip the
 	// embeds it should materialize.
 	stages := make([]Document, 0, 3)
 	if len(embeds) > 0 {
@@ -182,7 +182,7 @@ func scopeStage(watermarkField string, set Document, rev int64, shape scopeShape
 // at the granularity the field's shape allows:
 //
 //   - child-collection segment (shape.arraySegs): each stored element
-//     shallow-merges the composed element with the same PK ($mergeObjects with
+//     shallow-merges the composed element with the same ID ($mergeObjects with
 //     the stored element LAST, so its keys win and the composed one only adds
 //     the missing columns). Elements only the stored array carries survive
 //     untouched; the stored element SET is never changed. A stored value that
@@ -229,7 +229,7 @@ func equalRevisionExpr(col string, v any, shape scopeShape) Document {
 // embedCreateStage renders the recompose-ripple ownership rule as a pipeline
 // stage: each embed segment keeps its stored value on an EXISTING document
 // (the ripple owns it) and materializes the composed value only when this
-// upsert is creating the document. Existence is probed via the root PK column
+// upsert is creating the document. Existence is probed via the root ID column
 // — absent on a fresh upsert-insert, present on every materialized document.
 func embedCreateStage(embeds Document, pkCol string, orders map[string]*embedOrder) Document {
 	exists := Document{"$ne": []any{Document{"$type": "$" + pkCol}, "missing"}}

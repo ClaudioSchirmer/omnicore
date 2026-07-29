@@ -20,18 +20,18 @@ type licGadget struct{ ID, Code string }
 type licLine struct{ ID, GadgetID, ItemID, Note string }
 
 func licChildSchema() *core.TableSchema {
-	return core.NewTableSchema[licLine]("lic_lines").PK("id").FK("gadget_id").
+	return core.NewTableSchema[licLine]("lic_lines").ID("id").ParentID("gadget_id").
 		Field("ItemID", "item_id").Field("Note", "note")
 }
 
 func licPrimary() *query.ViewDefinition {
-	root := core.NewTableSchema[licGadget]("lic_gadgets").PK("id").Field("Code", "code").
+	root := core.NewTableSchema[licGadget]("lic_gadgets").ID("id").Field("Code", "code").
 		SoftDelete("deleted_at").Child(licChildSchema())
 	return query.View("lic_gadgets").Version(1).Schema(root)
 }
 
 func licItemSchema() *core.TableSchema {
-	return core.NewExternalSchema("lic_items").PK("id").Field("Label", "label")
+	return core.NewExternalSchema("lic_items").ID("id").Field("Label", "label")
 }
 
 func licComposed() *query.ComposedViewDefinition {
@@ -53,7 +53,7 @@ func TestIntegration_LinkInChild(t *testing.T) {
 		childSeg: []any{
 			map[string]any{"id": "l1", "gadget_id": "g1", "item_id": "i1", "note": "one"},
 			map[string]any{"id": "l2", "gadget_id": "g1", "item_id": "i2", "note": "two"},
-			map[string]any{"id": "l3", "gadget_id": "g1", "item_id": nil, "note": "three"}, // null FK → null
+			map[string]any{"id": "l3", "gadget_id": "g1", "item_id": nil, "note": "three"}, // null ParentID → null
 			map[string]any{"id": "l4", "gadget_id": "g1", "item_id": "i9", "note": "four"}, // no leg match → null
 		},
 	}
@@ -86,7 +86,7 @@ func TestIntegration_LinkInChild(t *testing.T) {
 		return nil
 	}
 
-	// 1) whole-doc read: each element enriched by its own FK; LEFT null per element.
+	// 1) whole-doc read: each element enriched by its own ParentID; LEFT null per element.
 	doc, found, err := reader.ReadByID(ctx, "lic_full", "g1", queries.ReadCriteria{})
 	if err != nil || !found {
 		t.Fatalf("ReadByID: err=%v found=%v", err, found)
@@ -121,8 +121,8 @@ func TestIntegration_LinkInChild(t *testing.T) {
 	}
 
 	// 3) ?fields= into the in-child segment alongside a primary field:
-	// ensureChildProjection must force the child array + element FK so the join
-	// survives the sparse projection, and the helper FK is stripped afterward.
+	// ensureChildProjection must force the child array + element ParentID so the join
+	// survives the sparse projection, and the helper ParentID is stripped afterward.
 	// (Pruning the child's OWN fields is a general reader concern, not LinkInChild's
 	// — the child array is materialized on the primary and returns whole.)
 	pdoc, _, err := reader.ReadByID(ctx, "lic_full", "g1", queries.ReadCriteria{
@@ -137,6 +137,6 @@ func TestIntegration_LinkInChild(t *testing.T) {
 		t.Errorf("fields: enrichment must survive a sparse projection, got %#v", el0["Item"])
 	}
 	if _, present := el0["ItemID"]; present {
-		t.Errorf("fields: the helper FK must be stripped from the element, got %#v", el0)
+		t.Errorf("fields: the helper ParentID must be stripped from the element, got %#v", el0)
 	}
 }

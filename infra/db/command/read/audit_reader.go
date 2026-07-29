@@ -25,7 +25,7 @@ func (a auditQuerier) Query(ctx context.Context, sql string, args ...any) (audit
 // registry are wired. The audit trail stores ids as UUID text on every dialect
 // (Postgres UUID / MySQL CHAR(36)), so the reader binds them verbatim — the only
 // engine-specific inputs it needs are Dialect().Placeholder and the value
-// codec for the uuid PK (Dialect().EncodeArg).
+// codec for the uuid ID (Dialect().EncodeArg).
 //
 // This is the audit-side parallel of db.NewAggregateLoader: a free constructor
 // taking the neutral engine, so a service exposes audit reads with one line and

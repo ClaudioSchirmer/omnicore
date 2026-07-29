@@ -16,7 +16,7 @@ import (
 // ─── filter-aware fake collection ────────────────────────────────────────────
 //
 // The composed reader's leg fetches carry real filters ($in batches, per-parent
-// FK equality, the soft-delete gate) and real find options (limit, sort,
+// ParentID equality, the soft-delete gate) and real find options (limit, sort,
 // projection). filterColl honors the filter and the limit — enough to verify
 // grouping, LEFT semantics, archived gates and truncation — and captures both
 // so tests can assert exactly what was sent to the driver.
@@ -134,7 +134,7 @@ type cvrNote struct{ ID, GadgetID, Text string }
 
 func cvrPrimaryView() *query.ViewDefinition {
 	schema := core.NewTableSchema[cvrGadget]("gadgets").
-		PK("id").
+		ID("id").
 		Field("Code", "code").
 		Field("MirrorID", "mirror_id").
 		SoftDelete("deleted_at")
@@ -143,7 +143,7 @@ func cvrPrimaryView() *query.ViewDefinition {
 
 func cvrNotesView() *query.ViewDefinition {
 	schema := core.NewTableSchema[cvrNote]("gadget_notes").
-		PK("id").
+		ID("id").
 		Field("GadgetID", "gadget_id").
 		Field("Text", "text").
 		SoftDelete("deleted_at")
@@ -151,7 +151,7 @@ func cvrNotesView() *query.ViewDefinition {
 }
 
 func cvrUpstreamSchema() *core.TableSchema {
-	return core.NewExternalSchema("upstream_gadgets").PK("id").Field("Code", "code")
+	return core.NewExternalSchema("upstream_gadgets").ID("id").Field("Code", "code")
 }
 
 func cvrComposed(primary, notes *query.ViewDefinition) *query.ComposedViewDefinition {
@@ -576,7 +576,7 @@ func asInfra(err error, target **core.InfrastructureError) bool {
 
 // ─── coverage of the narrower branches ───────────────────────────────────────
 
-// cvrComposedByMirrorID joins the 1:1 leg through a NON-PK primary column, so
+// cvrComposedByMirrorID joins the 1:1 leg through a NON-ID primary column, so
 // the parent key is a Go field ("MirrorID") instead of _id.
 func newCVREnvByMirrorID() *cvrEnv {
 	env := &cvrEnv{
@@ -611,7 +611,7 @@ func newCVREnvByMirrorID() *cvrEnv {
 func TestComposedReader_NonPKParentKey(t *testing.T) {
 	env := newCVREnvByMirrorID()
 
-	// Whole-doc read: the parent key is the MirrorID Go field; a nil FK value
+	// Whole-doc read: the parent key is the MirrorID Go field; a nil ParentID value
 	// yields the explicit null segment without ever querying for it.
 	page, err := env.reader.ReadPage(context.Background(), "gadgets_mirrored", queries.ReadCriteria{})
 	if err != nil {
@@ -622,10 +622,10 @@ func TestComposedReader_NonPKParentKey(t *testing.T) {
 		t.Fatalf("expected the mirror joined through MirrorID, got %#v", page.Items[0]["UpstreamMirror"])
 	}
 	if v, present := page.Items[1]["UpstreamMirror"]; !present || v != nil {
-		t.Fatalf("expected an explicit null for the nil FK, got %#v", v)
+		t.Fatalf("expected an explicit null for the nil ParentID, got %#v", v)
 	}
 
-	// Inclusion projection without the FK field: the decorator includes it as
+	// Inclusion projection without the ParentID field: the decorator includes it as
 	// a helper and strips it afterwards.
 	env2 := newCVREnvByMirrorID()
 	page2, err := env2.reader.ReadPage(context.Background(), "gadgets_mirrored",
@@ -635,13 +635,13 @@ func TestComposedReader_NonPKParentKey(t *testing.T) {
 	}
 	item := page2.Items[0]
 	if _, present := item["MirrorID"]; present {
-		t.Fatal("the helper-included FK field must be stripped from the wire shape")
+		t.Fatal("the helper-included ParentID field must be stripped from the wire shape")
 	}
 	if _, present := item["UpstreamMirror"]; !present {
 		t.Fatal("the requested segment must attach")
 	}
 
-	// Exclusion projection that excludes the FK field: the exclusion is
+	// Exclusion projection that excludes the ParentID field: the exclusion is
 	// lifted for the join and restored afterwards.
 	env3 := newCVREnvByMirrorID()
 	page3, err := env3.reader.ReadPage(context.Background(), "gadgets_mirrored",
@@ -651,7 +651,7 @@ func TestComposedReader_NonPKParentKey(t *testing.T) {
 	}
 	item3 := page3.Items[0]
 	if _, present := item3["MirrorID"]; present {
-		t.Fatal("the excluded FK field must not surface")
+		t.Fatal("the excluded ParentID field must not surface")
 	}
 	if m, _ := item3["UpstreamMirror"].(map[string]any); m["Code"] != "UP-A" {
 		t.Fatalf("the join must still resolve, got %#v", item3["UpstreamMirror"])
@@ -832,7 +832,7 @@ func TestMongoViewReader_OverlayFilterCursorRoundTrip(t *testing.T) {
 	}
 	primary := query.View("gadgets").Version(1).Schema(
 		core.NewTableSchema[cvrGadget]("gadgets").
-			PK("id").
+			ID("id").
 			Field("Code", "code").
 			Field("MirrorID", "mirror_id").
 			SoftDelete("deleted_at"))
@@ -876,13 +876,13 @@ type cvrLine struct{ ID, GadgetID, ItemID string }
 
 func cvrLineSchema() *core.TableSchema {
 	return core.NewTableSchema[cvrLine]("gadget_lines").
-		PK("id").FK("gadget_id").Field("ItemID", "item_id")
+		ID("id").ParentID("gadget_id").Field("ItemID", "item_id")
 }
 
 func newInChildEnv() (*ComposedViewReader, *filterColl, string) {
 	lineSchema := cvrLineSchema()
 	primarySchema := core.NewTableSchema[cvrGadget]("gadgets").
-		PK("id").Field("Code", "code").Field("MirrorID", "mirror_id").
+		ID("id").Field("Code", "code").Field("MirrorID", "mirror_id").
 		SoftDelete("deleted_at").Child(lineSchema)
 	primary := query.View("gadgets").Version(1).Schema(primarySchema)
 	composed := query.ComposedView("gadgets_full").Primary(primary).
@@ -895,7 +895,7 @@ func newInChildEnv() (*ComposedViewReader, *filterColl, string) {
 			{"_id": "g1", "code": "A", "mirror_id": "m1", childSeg: []any{
 				bson.M{"id": "l1", "gadget_id": "g1", "item_id": "i1"},
 				bson.M{"id": "l2", "gadget_id": "g1", "item_id": "i2"},
-				bson.M{"id": "l3", "gadget_id": "g1", "item_id": nil}, // null FK → null enrichment
+				bson.M{"id": "l3", "gadget_id": "g1", "item_id": nil},  // null ParentID → null enrichment
 				bson.M{"id": "l4", "gadget_id": "g1", "item_id": "i9"}, // no leg match → null
 			}},
 		},

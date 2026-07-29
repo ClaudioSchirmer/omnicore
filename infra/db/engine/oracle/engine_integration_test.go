@@ -138,7 +138,7 @@ func (*flatPerson) BuildRules(string, domain.Service, *domain.Rules) {}
 
 func flatSchema() *core.TableSchema {
 	return core.NewTableSchema[*flatPerson]("flat_persons").
-		PK("id").
+		ID("id").
 		Field("Name", "name").
 		Field("Email", "email").
 		Field("Phone", "phone").
@@ -149,7 +149,7 @@ func flatSchema() *core.TableSchema {
 
 // refEntity carries a secondary identity reference (TenantID) typed
 // domain.ID — the field TYPE is the declaration: it pairs with a RAW(16)
-// column that is neither the PK nor an aggregate FK, binding as 16 bytes on
+// column that is neither the ID nor an aggregate ParentID, binding as 16 bytes on
 // write and restoring canonical through the id scan proxy on read.
 type refEntity struct {
 	domain.BaseEntity
@@ -164,12 +164,12 @@ func (*refEntity) BuildRules(string, domain.Service, *domain.Rules) {}
 
 func refSchema() *core.TableSchema {
 	return core.NewTableSchema[*refEntity]("refs").
-		PK("id").
+		ID("id").
 		Field("Name", "name").
 		Field("TenantID", "tenant_id")
 }
 
-// A secondary RAW(16) identity column (not the PK, not an aggregate FK) typed
+// A secondary RAW(16) identity column (not the ID, not an aggregate ParentID) typed
 // domain.ID must round-trip: written as 16 bytes (the typed EncodeArg case)
 // and auto-scanned back to the canonical value (the id scan proxy) —
 // Postgres/MySQL/SQL Server parity for a cross-aggregate reference.
@@ -321,7 +321,7 @@ func TestOracleEngine_WritePath(t *testing.T) {
 	}
 	id := res.ID
 
-	// Row persisted with RAW(16) PK round-tripping back to the same UUID.
+	// Row persisted with RAW(16) ID round-tripping back to the same UUID.
 	var rawID []byte
 	var name, email string
 	if err := raw.QueryRow(`SELECT id, name, email FROM flat_persons`).Scan(&rawID, &name, &email); err != nil {
@@ -329,7 +329,7 @@ func TestOracleEngine_WritePath(t *testing.T) {
 	}
 	gotID, err := uuid.FromBytes(rawID)
 	if err != nil || gotID.String() != id.Value() {
-		t.Fatalf("RAW(16) PK did not round-trip: bytes=%x got=%v want=%s err=%v", rawID, gotID, id, err)
+		t.Fatalf("RAW(16) ID did not round-trip: bytes=%x got=%v want=%s err=%v", rawID, gotID, id, err)
 	}
 	if name != "Alice" || email != "alice@x" {
 		t.Fatalf("row mismatch: name=%q email=%q", name, email)
@@ -597,10 +597,10 @@ func (tag) BuildRules(string, domain.Service, *domain.Rules) {}
 
 func acctSchema() *core.TableSchema {
 	return core.NewTableSchema[*acct]("accts").
-		PK("id").Field("Name", "name").
+		ID("id").Field("Name", "name").
 		SoftDelete("deleted_at").CreatedAt("created_at").UpdatedAt("updated_at").
 		Child(core.NewTableSchema[tag]("acct_tags").
-			PK("id").FK("acct_id").Field("Label", "label").
+			ID("id").ParentID("acct_id").Field("Label", "label").
 			SoftDelete("deleted_at").CreatedAt("created_at").UpdatedAt("updated_at"))
 }
 
@@ -643,9 +643,9 @@ func setupAgg(t *testing.T) (*Engine, *sql.DB) {
 
 // TestOracleEngine_AggregateRoundTrip writes an aggregate (root + 2 children)
 // via the engine and reads it back via the loader — proving the aggregate
-// write path (child FK injection as RAW(16), one TX) and the aggregate read
+// write path (child ParentID injection as RAW(16), one TX) and the aggregate read
 // path (batched child load) on Oracle — then archives it (cascade) and
-// deletes it (FK ON DELETE CASCADE).
+// deletes it (ParentID ON DELETE CASCADE).
 func TestOracleEngine_AggregateRoundTrip(t *testing.T) {
 	eng, raw := setupAgg(t)
 	ctx := ctxFor()
@@ -662,7 +662,7 @@ func TestOracleEngine_AggregateRoundTrip(t *testing.T) {
 		t.Fatalf("Insert aggregate: %v", err)
 	}
 
-	// 2 child rows persisted with the RAW(16) FK to the root.
+	// 2 child rows persisted with the RAW(16) ParentID to the root.
 	var childCount int
 	if err := raw.QueryRow(`SELECT COUNT(*) FROM acct_tags`).Scan(&childCount); err != nil {
 		t.Fatalf("count children: %v", err)
@@ -701,7 +701,7 @@ func TestOracleEngine_AggregateRoundTrip(t *testing.T) {
 		t.Fatalf("archive cascade left %d active children", activeChildren)
 	}
 
-	// Hard delete relies on FK ON DELETE CASCADE — both tables emptied.
+	// Hard delete relies on ParentID ON DELETE CASCADE — both tables emptied.
 	del, err := domain.GetDeletable(got, nil, "GetDeletable")
 	if err != nil {
 		t.Fatalf("GetDeletable: %v", err)

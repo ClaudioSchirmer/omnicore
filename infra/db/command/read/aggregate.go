@@ -23,7 +23,7 @@ import (
 //	total.Value, cents.Value, area.Value, area.Found
 //
 // Specs resolve Go fields through the same schema resolution as FindOne/
-// FindAll (sibling and shared-base fields pull their LEFT JOINs; the PK is
+// FindAll (sibling and shared-base fields pull their LEFT JOINs; the ID is
 // addressable as "ID") and run under the same scope gate (active rows by
 // default). A spec instance is stateful: create fresh specs per call site and
 // do not share one across goroutines.

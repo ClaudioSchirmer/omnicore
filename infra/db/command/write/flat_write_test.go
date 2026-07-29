@@ -27,7 +27,7 @@ import (
 type recTx struct {
 	count      int64            // ExecCount return value (matched rows)
 	execErrSub string           // Exec/ExecCount fails when the SQL contains this substring
-	execErr    error            // the injected failure (errRecExec when unset) — e.g. a *pgconn.PgError for the FK-veto branch
+	execErr    error            // the injected failure (errRecExec when unset) — e.g. a *pgconn.PgError for the ParentID-veto branch
 	execErrs   map[string]error // multi-injection: substring → error (first match wins), for chained failures
 	commitErr  error
 	execs      []string
@@ -277,7 +277,7 @@ func TestBaseEngine_ArchiveUnarchiveDelete(t *testing.T) {
 }
 
 func TestBaseEngine_Archive_MissingSoftDeleteIsError(t *testing.T) {
-	noSD := NewTableSchema[*builderTestEntity]("nsd").PK("id").Revision("revision").Field("Name", "name").Field("Email", "email")
+	noSD := NewTableSchema[*builderTestEntity]("nsd").ID("id").Revision("revision").Field("Name", "name").Field("Email", "email")
 	tx := &recTx{}
 	be := newFlatBE(&recBeginner{tx: tx})
 	e := &builderTestEntity{Name: "a", Email: "a@x"}

@@ -178,7 +178,7 @@ func TestExecute_NeutralReplay(t *testing.T) {
 		t.Fatalf("execute: %v", err)
 	}
 	// The generated SELECT must be dialect-quoted + capped via the dialect's
-	// ApplyLimit (keyset pagination over the PK — no LIMIT/OFFSET literal,
+	// ApplyLimit (keyset pagination over the ID — no LIMIT/OFFSET literal,
 	// which is a PG/MySQL-ism T-SQL rejects).
 	gotSelect := f.seenSQL[len(f.seenSQL)-1]
 	for _, want := range []string{`"users"`, `ORDER BY "id"`, "LIMIT 1000"} {

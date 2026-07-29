@@ -31,7 +31,7 @@ func (*scanProbe) BuildRules(string, domain.Service, *domain.Rules) {}
 
 func scanProbeSchema() *core.TableSchema {
 	return core.NewTableSchema[*scanProbe]("scan_probe").
-		PK("id").
+		ID("id").
 		Field("Label", "label")
 }
 

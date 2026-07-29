@@ -14,12 +14,12 @@ import (
 
 // Regression for the MySQL shared-base second-unique-column bug. A SharedBase
 // base carrying a SECOND unique column (email, beside the natural-key-derived
-// PK) must let a NEW-identity insert whose email already exists raise a CLEAN
+// ID) must let a NEW-identity insert whose email already exists raise a CLEAN
 // unique violation on that column. The old blind DB upsert broke this on MySQL:
 // `ON DUPLICATE KEY UPDATE` fires on ANY unique key, so a dup email hijacked the
 // write onto the WRONG persons row (its document overwritten, the new base never
-// inserted), then the role FK failed → 500 + corruption. The write is now an
-// explicit INSERT (new) / UPDATE-by-PK (existing) branch, so the email index
+// inserted), then the role ParentID failed → 500 + corruption. The write is now an
+// explicit INSERT (new) / UPDATE-by-ID (existing) branch, so the email index
 // fires like any other unique violation on both engines.
 
 type sbEmailStudent struct {
@@ -37,19 +37,19 @@ func (*sbEmailStudent) BuildRules(string, domain.Service, *domain.Rules) {}
 
 func sbEmailSchema() *core.TableSchema {
 	base := core.NewSharedBaseSchema("sb2_persons").Revision("revision").
-		PK("id").
+		ID("id").
 		Field("Document", "document").
 		Field("Name", "name").
 		Field("Email", "email").
-		NaturalKey("document").
+		NaturalID("document").
 		SoftDelete("deleted_at")
 	return core.NewTableSchema[*sbEmailStudent]("sb2_students").
-		PK("id").
+		ID("id").
 		Field("Enroll", "enrollment").
 		SoftDelete("deleted_at").
 		CreatedAt("created_at").
 		UpdatedAt("updated_at").
-		SharedBase(base, "id") // shared-PK: sb2_students.id == sb2_persons.id
+		SharedBase(base, "id") // shared-ID: sb2_students.id == sb2_persons.id
 }
 
 func sbEmailSetup(t *testing.T) (*Engine, *sql.DB) {
@@ -111,7 +111,7 @@ func TestMySQL_SharedBase_SecondUniqueColumn_DupEmailRaisesCleanViolation(t *tes
 		t.Fatal("a new identity carrying a duplicate email must fail with a unique violation, got nil")
 	}
 	if !strings.Contains(strings.ToLower(err.Error()), "email") {
-		t.Errorf("the violation must name the email unique constraint (not the FK / not the document), got: %v", err)
+		t.Errorf("the violation must name the email unique constraint (not the ParentID / not the document), got: %v", err)
 	}
 
 	// No corruption: exactly ONE identity (D1), no D2 base, no D2 role.

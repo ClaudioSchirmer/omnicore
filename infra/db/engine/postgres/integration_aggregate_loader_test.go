@@ -77,7 +77,7 @@ func createLoaderTables(t *testing.T, pg *Postgres) {
 // (loaderTagVO + loaderNoteVO) — the explicit map the loader resolves from.
 func loaderRootSchema() *core.TableSchema {
 	return core.NewTableSchema[*loaderRoot]("loader_roots").
-		PK("id").
+		ID("id").
 		Field("Name", "name").
 		Field("Email", "email").
 		SoftDelete("deleted_at").
@@ -85,8 +85,8 @@ func loaderRootSchema() *core.TableSchema {
 		UpdatedAt("updated_at").
 		Child(loaderTagSchema()).
 		Child(core.NewTableSchema[loaderNoteVO]("loader_note_vos").
-			PK("id").
-			FK("loader_root_id").
+			ID("id").
+			ParentID("loader_root_id").
 			Field("Body", "body").
 			SoftDelete("deleted_at").
 			CreatedAt("created_at").
@@ -97,7 +97,7 @@ func loaderRootSchema() *core.TableSchema {
 // loaderTagVO child — for tests that exercise a single child type.
 func loaderRootSchemaTagsOnly() *core.TableSchema {
 	return core.NewTableSchema[*loaderRoot]("loader_roots").
-		PK("id").
+		ID("id").
 		Field("Name", "name").
 		Field("Email", "email").
 		SoftDelete("deleted_at").
@@ -110,7 +110,7 @@ func loaderRootSchemaTagsOnly() *core.TableSchema {
 // the root-only path.
 func loaderRootSchemaFlat() *core.TableSchema {
 	return core.NewTableSchema[*loaderRoot]("loader_roots").
-		PK("id").
+		ID("id").
 		Field("Name", "name").
 		Field("Email", "email").
 		SoftDelete("deleted_at").
@@ -120,8 +120,8 @@ func loaderRootSchemaFlat() *core.TableSchema {
 
 func loaderTagSchema() *core.TableSchema {
 	return core.NewTableSchema[loaderTagVO]("loader_tag_vos").
-		PK("id").
-		FK("loader_root_id").
+		ID("id").
+		ParentID("loader_root_id").
 		Field("Label", "label").
 		SoftDelete("deleted_at").
 		CreatedAt("created_at").
@@ -316,7 +316,7 @@ func TestAggregateLoader_Load_WithManualChildScanner(t *testing.T) {
 	}
 }
 
-// --- WithContextName + schema table/FK overrides --------------------------
+// --- WithContextName + schema table/ParentID overrides --------------------------
 
 func TestAggregateLoader_Schema_TableAndFKOverride(t *testing.T) {
 	pg, cleanup := newTestPG(t)
@@ -348,15 +348,15 @@ func TestAggregateLoader_Schema_TableAndFKOverride(t *testing.T) {
 	loader := read.NewAggregateLoader[*loaderRoot](pg, func() *loaderRoot { return &loaderRoot{} }).
 		WithContextName("LegacyLoader").
 		WithSchema(core.NewTableSchema[*loaderRoot]("tb_loader_legacy").
-			PK("id").
+			ID("id").
 			Field("Name", "name").
 			Field("Email", "email").
 			SoftDelete("deleted_at").
 			CreatedAt("created_at").
 			UpdatedAt("updated_at").
 			Child(core.NewTableSchema[loaderTagVO]("tb_tags").
-				PK("id").
-				FK("owner_id").
+				ID("id").
+				ParentID("owner_id").
 				Field("Label", "label").
 				SoftDelete("deleted_at").
 				CreatedAt("created_at").
@@ -418,7 +418,7 @@ func TestAggregateLoader_Load_AutoScanWithNoFieldsErrors(t *testing.T) {
 		created_at TIMESTAMP NOT NULL DEFAULT NOW()
 	)`)
 	loader := read.NewAggregateLoader[*emptyEntity](pg, func() *emptyEntity { return &emptyEntity{} }).
-		WithSchema(core.NewTableSchema[*emptyEntity]("empty_entities").PK("id").SoftDelete("deleted_at").CreatedAt("created_at"))
+		WithSchema(core.NewTableSchema[*emptyEntity]("empty_entities").ID("id").SoftDelete("deleted_at").CreatedAt("created_at"))
 	_, err := loader.FindOne(context.Background(), criteria.ByID(domain.NewID("00000000-0000-0000-0000-000000000000")))
 	if err == nil {
 		t.Fatal("expected error from auto-scan with zero columns")

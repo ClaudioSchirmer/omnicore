@@ -57,7 +57,7 @@ func (e *builderTestEntity) BuildRules(string, domain.Service, *domain.Rules) {}
 // builderTestSchema is the flat schema anchoring builderTestEntity in the view
 // and composer tests.
 var builderTestSchema = core.NewTableSchema[*builderTestEntity]("builder_test_entities").
-	PK("id").
+	ID("id").
 	Field("Name", "name").
 	Field("Email", "email").
 	SoftDelete("deleted_at").

@@ -26,9 +26,9 @@ type pdChild struct {
 }
 
 func pdSchema() *core.TableSchema {
-	child := core.NewTableSchema[*pdChild]("pd_children").PK("id").FK("root_id").
+	child := core.NewTableSchema[*pdChild]("pd_children").ID("id").ParentID("root_id").
 		Field("Label", "label").Field("Rank", "rank")
-	return core.NewTableSchema[*pdRoot]("pd_roots").PK("id").
+	return core.NewTableSchema[*pdRoot]("pd_roots").ID("id").
 		Field("Name", "name").Field("Age", "age").Field("Active", "active").
 		Field("Nick", "nick").Field("Photo", "photo").
 		SoftDelete("deleted_at").CreatedAt("created_at").UpdatedAt("updated_at").
@@ -80,7 +80,7 @@ func TestDecodePayloadEvent_TypedRestoration(t *testing.T) {
 		t.Errorf("child rank = %v (%T), want int64 5", ops[0].Fields["rank"], ops[0].Fields["rank"])
 	}
 	if ops[1].Fields["id"] != "c2" {
-		t.Errorf("archive op must carry the child PK, got %v", ops[1].Fields)
+		t.Errorf("archive op must carry the child ID, got %v", ops[1].Fields)
 	}
 }
 
@@ -121,8 +121,8 @@ func TestCoercePayloadEvent_SharedRawIsNotMutated(t *testing.T) {
 		"_children": {"pdChild": [{"_op": "insert", "id": "c1", "label": "x", "rank": 5}]}
 	}`)
 	// A schema that knows NONE of the columns (types map empty beyond its own
-	// PK): its coercion takes the pass-through branches over the same values.
-	other := core.NewTableSchema[*pdChild]("pd_other").PK("id").
+	// ID): its coercion takes the pass-through branches over the same values.
+	other := core.NewTableSchema[*pdChild]("pd_other").ID("id").
 		Field("Label", "other_label").Field("Rank", "other_rank")
 
 	raw, ok := decodeRawPayload(payload)

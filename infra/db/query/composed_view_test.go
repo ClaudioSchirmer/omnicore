@@ -16,7 +16,7 @@ type Note struct{ ID, GadgetID, Text string }
 
 func cvPrimarySchema() *core.TableSchema {
 	return core.NewTableSchema[composedGadget]("gadgets").
-		PK("id").
+		ID("id").
 		Field("Code", "code").
 		Field("MirrorID", "mirror_id").
 		SoftDelete("deleted_at")
@@ -28,7 +28,7 @@ func cvPrimaryView() *ViewDefinition {
 
 func cvNotesSchema() *core.TableSchema {
 	return core.NewTableSchema[Note]("gadget_notes").
-		PK("id").
+		ID("id").
 		Field("GadgetID", "gadget_id").
 		Field("Text", "text").
 		SoftDelete("deleted_at")
@@ -36,11 +36,11 @@ func cvNotesSchema() *core.TableSchema {
 
 func cvNotesView() *ViewDefinition {
 	return View("gadget_notes").Version(1).Schema(cvNotesSchema()).
-		Indexes(Index("gadget_id")) // the LinkMany FK must be index-covered (boot-enforced)
+		Indexes(Index("gadget_id")) // the LinkMany ParentID must be index-covered (boot-enforced)
 }
 
 func cvUpstreamSchema() *core.TableSchema {
-	return core.NewExternalSchema("upstream_gadgets").PK("id").Field("Code", "code")
+	return core.NewExternalSchema("upstream_gadgets").ID("id").Field("Code", "code")
 }
 
 func cvValidComposed() *ComposedViewDefinition {
@@ -181,7 +181,7 @@ func TestValidateComposedViews_Rejections(t *testing.T) {
 			fragment: "no UpstreamSubscription materializes it",
 		},
 		{
-			name: "external leg without PK",
+			name: "external leg without ID",
 			composed: ComposedView("gadgets_full").Primary(cvPrimaryView()).
 				Link(JoinUpstream(core.NewExternalSchema("upstream_gadgets").Field("Code", "code"), "UpstreamMirror", "upstreamMirror")).On("id"),
 			views: cvRegistered(), ups: cvUpstreams(),
@@ -230,7 +230,7 @@ func TestValidateComposedViews_Rejections(t *testing.T) {
 			fragment: "negative MaxLinkManyLimit",
 		},
 		{
-			name: "LinkMany FK without a covering index",
+			name: "LinkMany ParentID without a covering index",
 			composed: ComposedView("gadgets_full").Primary(cvPrimaryView()).
 				LinkMany(JoinView(
 					View("gadget_notes").Version(1).Schema(cvNotesSchema()), "Notes", "notes",
@@ -283,9 +283,9 @@ func TestComposedView_LinksProjection(t *testing.T) {
 	if mirror.Collection != "upstream_gadgets" {
 		t.Fatalf("unexpected mirror collection %q", mirror.Collection)
 	}
-	// FK "id" is the primary's PK → the parent join value is the item's _id.
+	// ParentID "id" is the primary's ID → the parent join value is the item's _id.
 	if mirror.ParentKeyGoField != "_id" {
-		t.Fatalf("PK-joined 1:1 link must read the parent key from _id, got %q", mirror.ParentKeyGoField)
+		t.Fatalf("ID-joined 1:1 link must read the parent key from _id, got %q", mirror.ParentKeyGoField)
 	}
 	if mirror.Node() == nil {
 		t.Fatal("mirror link carries no translator node")
@@ -295,7 +295,7 @@ func TestComposedView_LinksProjection(t *testing.T) {
 	if notes.GoSegment != "Notes" || !notes.Many || notes.External {
 		t.Fatalf("unexpected notes link: %+v", notes)
 	}
-	if notes.Collection != "gadget_notes" || notes.FKColumn != "gadget_id" {
+	if notes.Collection != "gadget_notes" || notes.ParentIDColumn != "gadget_id" {
 		t.Fatalf("unexpected notes join: %+v", notes)
 	}
 	if notes.ParentKeyGoField != "_id" {
@@ -314,7 +314,7 @@ func TestComposedView_LinkParentKeyFromNonPKColumn(t *testing.T) {
 	}
 	links := composed.Links()
 	if links[0].ParentKeyGoField != "MirrorID" {
-		t.Fatalf("expected the Go name of the primary FK column, got %q", links[0].ParentKeyGoField)
+		t.Fatalf("expected the Go name of the primary ParentID column, got %q", links[0].ParentKeyGoField)
 	}
 }
 
@@ -400,13 +400,13 @@ type cvLine struct{ ID, GadgetID, ItemID string }
 
 func cvLineSchema() *core.TableSchema {
 	return core.NewTableSchema[cvLine]("gadget_lines").
-		PK("id").FK("gadget_id").
+		ID("id").ParentID("gadget_id").
 		Field("ItemID", "item_id")
 }
 
 func cvPrimaryWithChildSchema() *core.TableSchema {
 	return core.NewTableSchema[composedGadget]("gadgets").
-		PK("id").Field("Code", "code").Field("MirrorID", "mirror_id").
+		ID("id").Field("Code", "code").Field("MirrorID", "mirror_id").
 		SoftDelete("deleted_at").
 		Child(cvLineSchema())
 }
@@ -450,7 +450,7 @@ func TestValidateComposedViews_LinkInChild_HappyPath_InternalView(t *testing.T) 
 }
 
 func TestValidateComposedViews_LinkInChild_Rejections(t *testing.T) {
-	notAChild := core.NewTableSchema[cvLine]("random_lines").PK("id").FK("gadget_id").Field("ItemID", "item_id")
+	notAChild := core.NewTableSchema[cvLine]("random_lines").ID("id").ParentID("gadget_id").Field("ItemID", "item_id")
 	cases := []struct {
 		name     string
 		composed *ComposedViewDefinition

@@ -13,7 +13,7 @@ type cvBootGadget struct{ ID, Code string }
 
 func cvBootPrimary() *query.ViewDefinition {
 	schema := core.NewTableSchema[cvBootGadget]("gadgets").
-		PK("id").Field("Code", "code").SoftDelete("deleted_at")
+		ID("id").Field("Code", "code").SoftDelete("deleted_at")
 	return query.View("gadgets").Version(1).Schema(schema)
 }
 
@@ -21,7 +21,7 @@ func cvBootComposed(name string) *query.ComposedViewDefinition {
 	return query.ComposedView(name).
 		Primary(cvBootPrimary()).
 		Link(query.JoinUpstream(
-			core.NewExternalSchema("upstream_gadgets").PK("id").Field("Code", "code"),
+			core.NewExternalSchema("upstream_gadgets").ID("id").Field("Code", "code"),
 			"UpstreamMirror", "upstreamMirror")).On("id")
 }
 

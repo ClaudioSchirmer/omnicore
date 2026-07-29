@@ -9,6 +9,52 @@
     <div class="release">
         <div class="release-head"><span class="release-tag">Unreleased</span><span class="release-date">—</span></div>
         <ul>
+            <li><strong>Changed</strong> — <strong>breaking</strong> — <strong>the schema-declaration DSL is renamed for
+                symmetry with the Go field it maps.</strong> The identity methods drop the SQL-borrowed <code>PK</code>/<code>FK</code>
+                names (misleading: an omnicore <code>FK</code> is not a SQL foreign key — it is the link to the aggregate
+                ROOT). Migrate every schema: <code>PK(col)</code>→<code>ID(col)</code>, <code>FK(col)</code>→<code>ParentID(col)</code>,
+                <code>NaturalKey(col)</code>→<code>NaturalID(col)</code>, and the accessors <code>PKColumn()</code>/<code>FKColumn()</code>/<code>NaturalKeyColumn()</code>/<code>PKIndex()</code>
+                → <code>IDColumn()</code>/<code>ParentIDColumn()</code>/<code>NaturalIDColumn()</code>/<code>IDIndex()</code>. The read-only
+                FK projection Go name <code>FID</code> becomes <code>ParentID</code>, and <code>NaturalKeyImmutableNotification</code>
+                → <code>NaturalIDImmutableNotification</code>. The id still binds to the Go field <code>ID</code>; now the
+                declaration matches it, and the parent link is <code>ParentID</code> end to end. Purely a rename — no
+                behavior change. See <a href="#table-schema">TableSchema</a>.</li>
+            <li><strong>Changed</strong> — <strong>breaking</strong> — <strong>the aggregate-root ParentID column can no longer
+                also be a mapped domain <code>Field</code>.</strong> A child declares <code>ParentID(column)</code> to point at
+                its parent, and the write cascade sets that column to the parent's id on every write — so a
+                <code>Field(goName, column)</code> on the same column was silently overwritten (a writable-looking but
+                non-authoritative field). Both declaration orders now fail at boot with a message pointing at the fix.
+                The legitimate shared-ID model (the ID column that IS the ParentID) is untouched — the ID is never a mapped
+                field, so the guard never fires on it. Two companion identity guards ship alongside: <code>ID</code> and
+                <code>ParentID</code> become <strong>reserved Go names</strong> (<code>Field("ID", …)</code>, which silently
+                double-mapped the identity, and <code>Field("ParentID", …)</code> now panic), and a schema can no longer
+                declare both <code>ParentID(...)</code> and <code>SharedBase(...)</code> (two parents, and an ambiguous
+                <code>ParentID</code>). And every single-column slot (<code>ID</code>, <code>ParentID</code>,
+                <code>SoftDelete</code>, <code>CreatedAt</code>, <code>UpdatedAt</code>, <code>Revision</code>,
+                <code>NaturalID</code>) now rejects a second declaration — a silent overwrite before. A second aggregate
+                <code>Child(...)</code> of the same Go type — which the type-keyed child map would silently drop — panics
+                likewise. To expose a ParentID value on the read side, declare a <code>ParentID</code> field. See
+                <a href="#table-schema">TableSchema</a>.</li>
+            <li><strong>Added</strong> — <strong>the primary key is recoverable at every document level, symmetric with
+                the root.</strong> A view document and every embedded segment inside it (a <code>JoinView</code> or
+                <code>JoinUpstream</code> embed, a native child, a SharedBaseView role) carries its identity in the
+                canonical <code>_id</code>. Any node with a schema and a declared <code>ID</code> now promotes that
+                <code>_id</code> onto the ID Go field (<code>ID</code> / <code>json:"id"</code>) on read — so a declared
+                segment id binds in typed DTOs, GraphQL and <code>RawDoc</code> alike, not only at the root. It fills the
+                gap where a segment's stored source did not also carry the physical ID column (e.g. an upstream mirror
+                whose subscription <code>filter:</code> omits the id column). It is a real field, not a decoration: a
+                <code>filter</code> / <code>sort</code> / <code>?fields=</code> on the segment id resolves to
+                <code>_id</code> (always present), so the promoted id is fully queryable. Additive and non-breaking — it
+                only fills a declared id that was previously empty; where the physical ID column is present the behavior
+                is unchanged.</li>
+            <li><strong>Added</strong> — <strong>the foreign key is exposed read-only under <code>ParentID</code>, symmetric
+                with <code>ID</code>.</strong> A schema's ParentID column is written by the cascade and has no Go field on the
+                write side, so it was stripped on read; it is now projected under the fixed logical name <code>ParentID</code>.
+                A view/DTO that declares a <code>ParentID</code> field (its <code>json:</code> tag names the wire) gets the
+                parent link, and a <code>filter</code> / <code>sort</code> / <code>?fields=</code> on it resolves to the
+                physical ParentID column — a real query, not a dead field. Projected automatically when the schema declares an
+                ParentID (aggregate-child or SharedBase role); additive — it appears only when a DTO declares it. See
+                <a href="#table-schema">TableSchema</a>.</li>
             <li><strong>Changed</strong> — <strong>breaking</strong> — <strong>the message-transport port reports a
                 per-message OUTCOME, and the read-side projection is genuinely at-least-once.</strong>
                 <code>Subscription.Read</code> now returns <code>(Message, Completion, error)</code>; exactly one of
@@ -136,7 +182,7 @@
                 archived upstream rows then looked active in the segment forever. Both consumers are cross-checked in one
                 pass now, same abort/advisory split.</li>
             <li><strong>Fixed</strong> — three defects on the embed path: the dangling 1:1 repair now covers a
-                <code>JoinView</code> leg (an FK change on the EMBEDDING document would otherwise leave the segment
+                <code>JoinView</code> leg (a ParentID change on the EMBEDDING document would otherwise leave the segment
                 pointing at the old source forever, with no future event able to heal it); a zombie-document removal now
                 signals the views embedding it; and <code>?fields=</code> no longer leaks an auto-included soft-delete
                 column out of a 1:N segment whose elements carry their own child collections.</li>
@@ -149,7 +195,7 @@
                 native child of the view root (a non-child aborts boot), and the enrichment participates in the RebuildHash.</li>
             <li><strong>Added</strong> — <code>ComposedViewDefinition.LinkInChild(childSchema, leg).On(col)</code>: the
                 READ-TIME, non-materialized twin of <code>EmbedInChild</code>. On a <code>ComposedView</code> whose primary
-                carries a native child array, each child element gains a 1:1 sub-document looked up by the element's own FK
+                carries a native child array, each child element gains a 1:1 sub-document looked up by the element's own ParentID
                 at read time, never stored. <code>childSchema</code> must be a native child of the PRIMARY (boot-validated);
                 it accepts BOTH leg kinds (<code>JoinUpstream</code> and <code>JoinView</code>) and — having no ripple —
                 needs no covering index (unlike <code>EmbedInChild</code>). Leg read-side parity: filter and
@@ -163,23 +209,23 @@
                 is exempt. Existing services with an un-indexed 1:1 embed must add the index to boot.</li>
             <li><strong>Changed</strong> — <strong>breaking</strong> — <strong>view composition speaks one join
                 vocabulary: the join column and the two segment names moved off the source onto the verb and the leg
-                constructor; <code>FromSchema</code>, <code>Source</code>, <code>Source.FK</code>, <code>Source.As</code> and
-                <code>Leg.FK</code>/<code>Leg.As</code> are removed.</strong> An embed/link source is now a single
+                constructor; <code>FromSchema</code>, <code>Source</code>, <code>Source.ParentID</code>, <code>Source.As</code> and
+                <code>Leg.ParentID</code>/<code>Leg.As</code> are removed.</strong> An embed/link source is now a single
                 <em>leg</em> built by <code>query.JoinUpstream(schema, goName, externalName)</code> (an external
                 collection — the only kind an <code>Embed</code>/<code>EmbedMany</code>/<code>EmbedInChild</code> accepts)
                 or <code>query.JoinView(view, goName, externalName)</code> (a registered view — a <code>ComposedView</code>
                 leg only). Both segment names are mandatory, in <code>TableSchema.Field</code> order (Go first, external
                 second). The join column is named on the verb via <code>.On(column)</code> — mandatory and compile-time
                 enforced (the verb returns a binding whose only route back is <code>.On</code>) — and feeds the view hash
-                uniformly for every embed/leg kind. The verb's multiplicity fixes which side holds the FK, so the same leg
+                uniformly for every embed/leg kind. The verb's multiplicity fixes which side holds the ParentID, so the same leg
                 plugs into an <code>Embed</code> (re-materialized) and a <code>Link</code> (read-time). A
                 <code>LinkMany</code>'s <code>OrderBy</code>/<code>Desc</code>/<code>MaxLinkManyLimit</code> move onto its
-                binding (they can no longer be misplaced on a 1:1 <code>Link</code>). <code>TableSchema.FK</code> is
-                unchanged — it declares an aggregate child's FK to its root (a write-side concern). <em>Migration</em>:
-                <code>Embed("seg", query.FromSchema(sch).FK("col").As("Go"))</code> →
-                <code>Embed(query.JoinUpstream(sch, "Go", "seg")).On("col")</code>; the inline <code>schema.FK(...)</code> on
+                binding (they can no longer be misplaced on a 1:1 <code>Link</code>). <code>TableSchema.ParentID</code> is
+                unchanged — it declares an aggregate child's ParentID to its root (a write-side concern). <em>Migration</em>:
+                <code>Embed("seg", query.FromSchema(sch).ParentID("col").As("Go"))</code> →
+                <code>Embed(query.JoinUpstream(sch, "Go", "seg")).On("col")</code>; the inline <code>schema.ParentID(...)</code> on
                 an EmbedMany source becomes the verb's <code>.On(...)</code>;
-                <code>Link("seg", query.JoinUpstream(sch).FK("col").As("Go"))</code> →
+                <code>Link("seg", query.JoinUpstream(sch).ParentID("col").As("Go"))</code> →
                 <code>Link(query.JoinUpstream(sch, "Go", "seg")).On("col")</code>. Rebuild hashes are unchanged for an
                 unchanged view, so no view rebuilds on upgrade. See
                 <a href="#views~views-embed">Views → Embed and EmbedMany</a> and

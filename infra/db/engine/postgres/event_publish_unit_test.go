@@ -47,7 +47,7 @@ func (e *eventEmittingEntity) BuildRules(_ string, _ domain.Service, _ *domain.R
 }
 
 var eventEmittingSchema = core.NewTableSchema[*eventEmittingEntity]("event_entities").
-	PK("id").
+	ID("id").
 	Field("Name", "name").
 	SoftDelete("deleted_at").
 	CreatedAt("created_at").

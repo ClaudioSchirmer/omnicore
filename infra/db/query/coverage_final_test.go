@@ -63,8 +63,8 @@ func TestViewNode_ColumnPathEdges(t *testing.T) {
 	if _, ok := nilNode.ColumnPath([]string{"X"}); ok {
 		t.Error("nil node must not resolve")
 	}
-	rootSchema := core.NewTableSchema[vsRoot]("people").PK("person_pk").Field("Email", "mail")
-	childSchema := core.NewExternalSchema("tags").PK("tag_pk").Field("ZipCode", "zip")
+	rootSchema := core.NewTableSchema[vsRoot]("people").ID("person_pk").Field("Email", "mail")
+	childSchema := core.NewExternalSchema("tags").ID("tag_pk").Field("ZipCode", "zip")
 	v := View("people").Schema(rootSchema).
 		EmbedMany(JoinUpstream(childSchema, "Addresses", "addresses")).On("person_ref")
 	node := v.BuildViewNode()
@@ -84,8 +84,8 @@ func TestViewNode_ColumnPathEdges(t *testing.T) {
 }
 
 func TestViewNode_ToGoDoc_OneToOneEmbedAndDrop(t *testing.T) {
-	rootSchema := core.NewTableSchema[vsRoot]("people").PK("person_pk").Field("Email", "mail")
-	buyerSchema := core.NewExternalSchema("buyers").PK("b_pk").Field("Email", "b_mail")
+	rootSchema := core.NewTableSchema[vsRoot]("people").ID("person_pk").Field("Email", "mail")
+	buyerSchema := core.NewExternalSchema("buyers").ID("b_pk").Field("Email", "b_mail")
 	v := View("people").Schema(rootSchema).
 		Embed(JoinUpstream(buyerSchema, "Buyer", "buyer")).On("buyer_ref")
 	node := v.BuildViewNode()
@@ -110,7 +110,7 @@ func TestViewNode_ToGoDoc_OneToOneEmbedAndDrop(t *testing.T) {
 }
 
 func TestTranslateValue_MapAndPassthrough(t *testing.T) {
-	childSchema := core.NewExternalSchema("tags").PK("tag_pk").FK("ref").Field("ZipCode", "zip")
+	childSchema := core.NewExternalSchema("tags").ID("tag_pk").ParentID("ref").Field("ZipCode", "zip")
 	node := newViewNode(childSchema, nil)
 	e := &viewEmbed{goSegment: "Addresses", docField: "addresses", node: node}
 
@@ -162,7 +162,7 @@ func TestNewViewNode_NilLegSkippedAndSegment(t *testing.T) {
 		t.Error("nil-leg embed must be skipped")
 	}
 	// An embed registers under its leg's Go segment (mandatory on the constructor).
-	leg := JoinUpstream(core.NewExternalSchema("u").PK("id"), "Buyer", "buyer")
+	leg := JoinUpstream(core.NewExternalSchema("u").ID("id"), "Buyer", "buyer")
 	n2 := newViewNode(builderTestSchema, []embedDef{{leg: leg, joinCol: "buyer_id"}})
 	if _, ok := n2.embeds["Buyer"]; !ok {
 		t.Errorf("embed must register under its Go segment, embeds=%v", n2.embeds)
@@ -172,7 +172,7 @@ func TestNewViewNode_NilLegSkippedAndSegment(t *testing.T) {
 // ─── view.go: resolveGoSegment, DependentMongoViews, index ───────────────────
 
 func TestResolveGoSegment(t *testing.T) {
-	leg := JoinUpstream(core.NewExternalSchema("users").PK("id"), "Buyer", "buyer")
+	leg := JoinUpstream(core.NewExternalSchema("users").ID("id"), "Buyer", "buyer")
 	if seg := resolveGoSegment(embedDef{leg: leg}); seg != "Buyer" {
 		t.Errorf("resolveGoSegment must return the leg goName, got %q", seg)
 	}
@@ -189,7 +189,7 @@ func TestResolveGoSegment(t *testing.T) {
 func TestDependentMongoViews_Match(t *testing.T) {
 	// A view embedding an external (Mongo) collection at the top level must be
 	// reported by DependentMongoViews / viewEmbedsMongoCollection.
-	buyer := JoinUpstream(core.NewExternalSchema("users").PK("id"), "Buyer", "buyer")
+	buyer := JoinUpstream(core.NewExternalSchema("users").ID("id"), "Buyer", "buyer")
 	v := View("orders").Version(1).Schema(rootSchema("orders")).
 		Embed(buyer).On("buyer_id")
 
@@ -207,8 +207,8 @@ func TestBuildViewIndex_RootAndMongoEmbeds(t *testing.T) {
 	// Every embed is external now: the root indexes by PG table, each embed by its
 	// Mongo collection.
 	v := View("orders").Version(1).Schema(rootSchema("orders")).
-		EmbedMany(JoinUpstream(core.NewExternalSchema("lines").PK("id"), "Lines", "lines")).On("order_id").
-		EmbedMany(JoinUpstream(core.NewExternalSchema("users").PK("id"), "Buyers", "buyers")).On("order_id")
+		EmbedMany(JoinUpstream(core.NewExternalSchema("lines").ID("id"), "Lines", "lines")).On("order_id").
+		EmbedMany(JoinUpstream(core.NewExternalSchema("users").ID("id"), "Buyers", "buyers")).On("order_id")
 
 	idx := buildViewIndex([]*ViewDefinition{v})
 	if len(idx.byPGTable["orders"]) != 1 {
@@ -237,14 +237,14 @@ func TestIndexCanonKey_NamedAndKeyed(t *testing.T) {
 }
 
 // The relational embed path (fetchPGEmbed) was removed when embeds were narrowed
-// to external sources only; its nil-key / missing-FK / child-error edge tests are
+// to external sources only; its nil-key / missing-ParentID / child-error edge tests are
 // gone with it. The external (Mongo) embed error + skip paths are covered in
 // composer_mongo_test.go (TestFetchMongoEmbed_*).
 
 // ─── view_schema.go: ToGoDoc _id passthrough ─────────────────────────────────
 
 func TestToGoDoc_IDPassthrough(t *testing.T) {
-	rootSchema := core.NewTableSchema[vsRoot]("people").PK("person_pk").Field("Email", "mail")
+	rootSchema := core.NewTableSchema[vsRoot]("people").ID("person_pk").Field("Email", "mail")
 	node := newViewNode(rootSchema, nil)
 	got := node.ToGoDoc(map[string]any{"_id": "doc-1", "mail": "a@x"})
 	if got["_id"] != "doc-1" {
@@ -282,7 +282,7 @@ func TestValidateViewSchemas_NoRootSchema(t *testing.T) {
 func TestBuildViewIndex_EmbedTableIndexed(t *testing.T) {
 	// A top-level embed's collection is indexed by buildViewIndex so an upstream
 	// change on it resolves back to the dependent view.
-	lines := JoinUpstream(core.NewExternalSchema("lines").PK("id"), "Lines", "lines")
+	lines := JoinUpstream(core.NewExternalSchema("lines").ID("id"), "Lines", "lines")
 	v := View("orders").Version(1).Schema(rootSchema("orders")).
 		EmbedMany(lines).On("order_id")
 
@@ -333,7 +333,7 @@ func TestComposeAll_EmbedChildError(t *testing.T) {
 	// External embed whose Mongo fetch fails → applyEmbeds error → ComposeAll error.
 	c := NewComposerWithMongo(eng, newFakeMongo(&fakeColl{findErr: context.Canceled}), identityResolver)
 	view := View("orders").Version(1).Schema(composerRootSchema()).
-		EmbedMany(JoinUpstream(core.NewExternalSchema("buyers").PK("id"), "Buyers", "buyers")).On("order_id")
+		EmbedMany(JoinUpstream(core.NewExternalSchema("buyers").ID("id"), "Buyers", "buyers")).On("order_id")
 	if _, err := c.ComposeAll(context.Background(), view); err == nil {
 		t.Fatal("expected child query error from ComposeAll")
 	}

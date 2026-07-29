@@ -122,7 +122,7 @@
         row-lock-serialized last-writer-wins token — plus <code>base_purged</code> on the purging DELETED); and
         <code>_children</code>/<code>_base_children</code> groups, each item column-keyed with an <code>_op</code>
         verb (insert/update/archive/delete/noop) from the same <code>OperationOf</code> categorization the persister
-        executed. <code>DELETED</code> keeps the historical structural keys (PK + shared-base FK) and only ADDS
+        executed. <code>DELETED</code> keeps the historical structural keys (ID + shared-base ParentID) and only ADDS
         <code>_ids</code>. A SharedBase write emits NO separate base-table row anymore — the SyncEngine fans out to
         the other roles' documents from the role event's <code>_ids.base_id</code>; the one base-table event left is
         the orphan purge's <code>DELETED</code>. Keys starting with <code>_</code> are the framework's reserved
@@ -133,7 +133,7 @@
     <p>
         Children of an <code>AggregateRoot</code> don't have their own outbox event or Mongo op — granularity B
         means one outbox row per aggregate operation, and the read side applies the root event's
-        <code>_children</code> deltas surgically — per child row, keyed by PK, each carrying its own
+        <code>_children</code> deltas surgically — per child row, keyed by ID, each carrying its own
         <code>_op</code> — never a whole-document recompose. What children DO have, per row, is per-op SQL emitted by <code>writeChildren</code> +
         cascade SQL emitted by <code>archiveAggregate</code>/<code>unarchiveAggregate</code>/<code>deleteAggregate</code>,
         and a per-row audit <code>op</code> that mirrors the SQL fingerprint identically to the root verb. On an
@@ -195,7 +195,7 @@
             </tr>
             <tr>
                 <td><code>delete</code> — cascade</td>
-                <td><code>deleteAggregate</code> deletes every declared child table explicitly (by FK) before the root DELETE — the framework owns the cascade in Go, independent of any <code>ON DELETE CASCADE</code></td>
+                <td><code>deleteAggregate</code> deletes every declared child table explicitly (by ParentID) before the root DELETE — the framework owns the cascade in Go, independent of any <code>ON DELETE CASCADE</code></td>
                 <td><code>DELETE FROM addresses WHERE user_id=$1</code> per child table, then <code>DELETE FROM users WHERE id=$1</code> (same TX)</td>
                 <td><code>deleted</code></td>
             </tr>

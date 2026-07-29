@@ -240,12 +240,12 @@ func TestNormalizeCreatedAt_DriverShapes(t *testing.T) {
 // CreatedAt column — no column, no discriminator to carry.
 func TestInsertCreatedAt_RequiresDeclaredColumn(t *testing.T) {
 	now := time.Date(2026, 7, 22, 10, 0, 0, 0, time.UTC)
-	withCol := NewTableSchema[*roleTestEntity]("t1").PK("id").Revision("revision").
+	withCol := NewTableSchema[*roleTestEntity]("t1").ID("id").Revision("revision").
 		Field("Matricula", "m").CreatedAt("created_at")
 	if got := insertCreatedAt(withCol, now); !got.Equal(now) {
 		t.Errorf("declared CreatedAt must carry the stamp, got %v", got)
 	}
-	without := NewTableSchema[*roleTestEntity]("t2").PK("id").Revision("revision").
+	without := NewTableSchema[*roleTestEntity]("t2").ID("id").Revision("revision").
 		Field("Matricula", "m")
 	if got := insertCreatedAt(without, now); !got.IsZero() {
 		t.Errorf("no CreatedAt column → zero discriminator, got %v", got)

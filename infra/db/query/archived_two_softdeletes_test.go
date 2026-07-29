@@ -11,8 +11,8 @@ import (
 // ITS OWN map using ITS OWN schema's column — a shared column NAME must never
 // let one decide the other's fate.
 func TestTwoSoftDeletes_AreIndependent(t *testing.T) {
-	child := core.NewTableSchema[arcItem]("lines").PK("id").FK("orders_id").SoftDelete("deleted_at")
-	root := core.NewTableSchema[arcRoot]("orders").PK("id").SoftDelete("deleted_at").Child(child)
+	child := core.NewTableSchema[arcItem]("lines").ID("id").ParentID("orders_id").SoftDelete("deleted_at")
+	root := core.NewTableSchema[arcRoot]("orders").ID("id").SoftDelete("deleted_at").Child(child)
 	v := View("orders").Version(1).Schema(root).
 		EmbedInChild(child, mirrorWithSD()).On("item_id").
 		Indexes(Index(childDocSegment(child) + ".item_id"))
@@ -44,7 +44,7 @@ func TestTwoSoftDeletes_AreIndependent(t *testing.T) {
 func TestTwoSiblingSegments_DecideIndependently(t *testing.T) {
 	v := View("parts").Version(1).Schema(arcRootSchema("parts")).
 		Embed(mirrorWithSD()).On("item_id").
-		Embed(JoinUpstream(core.NewExternalSchema("upstream_brands").PK("id").
+		Embed(JoinUpstream(core.NewExternalSchema("upstream_brands").ID("id").
 			Field("Name", "name").SoftDelete("deleted_at"), "Brand", "brand")).On("brand_id").
 		Indexes(Index("item_id"), Index("brand_id"))
 	doc := map[string]any{

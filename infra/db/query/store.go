@@ -44,7 +44,7 @@ type ReadModelStore interface {
 	// createdAtUnixMs > 0 additionally scopes the delete to ONE incarnation of the
 	// id: only a document whose stored created_at equals that instant
 	// (a two-second window around the value — created_at columns round OR truncate depending on engine DDL) dies. A
-	// DETERMINISTIC id (shared-PK role, base) reborn under the same natural
+	// DETERMINISTIC id (shared-ID role, base) reborn under the same natural
 	// key restarts its revision at 1 — without the birth scope the old
 	// tombstone would kill every write of the new life for the tombstone's
 	// whole TTL. 0 skips the scope (schema without CreatedAt — revision-only

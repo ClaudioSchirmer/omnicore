@@ -13,13 +13,13 @@ import (
 // ─── test embed-source helpers ───────────────────────────────────────────────
 //
 // extLeg builds an external JoinUpstream leg (a type-less NewExternalSchema with a
-// PK) for embed/link tests, carrying the mandatory Go and doc segment names. The
-// join column is named at the call site via .On(...). extLegNoPK omits the PK for
-// the "embed source without PK" boot-guard test.
+// ID) for embed/link tests, carrying the mandatory Go and doc segment names. The
+// join column is named at the call site via .On(...). extLegNoPK omits the ID for
+// the "embed source without ID" boot-guard test.
 type embedFixture struct{ ID string }
 
 func extLeg(table, goName, ext string) *Leg {
-	return JoinUpstream(core.NewExternalSchema(table).PK("id"), goName, ext)
+	return JoinUpstream(core.NewExternalSchema(table).ID("id"), goName, ext)
 }
 
 func extLegNoPK(table, goName, ext string) *Leg {
@@ -27,10 +27,10 @@ func extLegNoPK(table, goName, ext string) *Leg {
 }
 
 // rootSchema is a minimal type-anchored schema for a composing test view's root
-// (PK + soft-delete). The composer only reads PK + soft-delete from the root
+// (ID + soft-delete). The composer only reads ID + soft-delete from the root
 // schema; row columns are read generically, so the dummy type suffices.
 func rootSchema(table string) *core.TableSchema {
-	return core.NewTableSchema[embedFixture](table).PK("id").SoftDelete("deleted_at")
+	return core.NewTableSchema[embedFixture](table).ID("id").SoftDelete("deleted_at")
 }
 
 // ─── own children on a schema project automatically (read side) ──────────────
@@ -50,14 +50,14 @@ func TestJoinUpstream_RejectsAnchoredSchema(t *testing.T) {
 			t.Errorf("panic should name the external-only rule, got: %v", r)
 		}
 	}()
-	JoinUpstream(core.NewTableSchema[embedFixture]("addresses").PK("id"), "Addresses", "addresses")
+	JoinUpstream(core.NewTableSchema[embedFixture]("addresses").ID("id"), "Addresses", "addresses")
 }
 
 // TestValidateViewSchemas_RootSchemaWithChildrenOK confirms the view ROOT schema
 // may carry Child(...) — its own children auto-project, no embed needed.
 func TestValidateViewSchemas_RootSchemaWithChildrenOK(t *testing.T) {
-	rootWithChild := core.NewTableSchema[embedFixture]("users").PK("id").SoftDelete("deleted_at").
-		Child(core.NewTableSchema[schemaSample]("addresses").PK("id").FK("user_id"))
+	rootWithChild := core.NewTableSchema[embedFixture]("users").ID("id").SoftDelete("deleted_at").
+		Child(core.NewTableSchema[schemaSample]("addresses").ID("id").ParentID("user_id"))
 	v := View("users").Version(1).
 		Schema(rootWithChild)
 
@@ -70,9 +70,9 @@ func TestValidateViewSchemas_RootSchemaWithChildrenOK(t *testing.T) {
 // legal EXTERNAL embed whose .As segment collides with an auto-projected own-child
 // segment is a boot error — one segment, one source.
 func TestValidateViewSchemas_RejectsSegmentCollision(t *testing.T) {
-	child := core.NewTableSchema[schemaSample]("addresses").PK("id").FK("user_id")
+	child := core.NewTableSchema[schemaSample]("addresses").ID("id").ParentID("user_id")
 	seg := childDocSegment(child) // the auto own-child doc segment
-	rootWithChild := core.NewTableSchema[embedFixture]("users").PK("id").SoftDelete("deleted_at").
+	rootWithChild := core.NewTableSchema[embedFixture]("users").ID("id").SoftDelete("deleted_at").
 		Child(child)
 	// A legal external embed whose Go segment collides with the own-child segment.
 	v := View("users").Version(1).
@@ -88,29 +88,29 @@ func TestValidateViewSchemas_RejectsSegmentCollision(t *testing.T) {
 	}
 }
 
-// ─── mandatory PK on every view schema (read side) ───────────────────────────
+// ─── mandatory ID on every view schema (read side) ───────────────────────────
 
 // TestValidateViewSchemas_RejectsRootWithoutPK proves a view root schema with no
-// explicit PK is a fatal view-validation error.
+// explicit ID is a fatal view-validation error.
 func TestValidateViewSchemas_RejectsRootWithoutPK(t *testing.T) {
 	v := View("users").Version(1).
-		Schema(core.NewTableSchema[embedFixture]("users").SoftDelete("deleted_at")). // no .PK
+		Schema(core.NewTableSchema[embedFixture]("users").SoftDelete("deleted_at")). // no .ID
 		EmbedMany(extLeg("addresses", "Addresses", "addresses")).On("user_id")
 	err := ValidateViewSchemas([]*ViewDefinition{v})
 	if err == nil || !strings.Contains(err.Error(), "no primary key") {
-		t.Errorf("expected root-without-PK error, got %v", err)
+		t.Errorf("expected root-without-ID error, got %v", err)
 	}
 }
 
 // TestValidateViewSchemas_RejectsEmbedSourceWithoutPK proves an embed source
-// with no explicit PK is a fatal view-validation error.
+// with no explicit ID is a fatal view-validation error.
 func TestValidateViewSchemas_RejectsEmbedSourceWithoutPK(t *testing.T) {
 	v := View("users").Version(1).
 		Schema(rootSchema("users")).
 		EmbedMany(extLegNoPK("addresses", "Addresses", "addresses")).On("user_id")
 	err := ValidateViewSchemas([]*ViewDefinition{v})
 	if err == nil || !strings.Contains(err.Error(), "no primary key") {
-		t.Errorf("expected embed-source-without-PK error, got %v", err)
+		t.Errorf("expected embed-source-without-ID error, got %v", err)
 	}
 }
 
@@ -131,7 +131,7 @@ func TestValidateViewSchemas_RejectsEmbedManyWithEmptyOn(t *testing.T) {
 
 // TestValidateViewSchemas_RejectsOneToOneEmbedWithEmptyOn proves a one-to-one
 // Embed whose .On names an empty join column is a fatal view-validation error —
-// it joins on the parent's FK column, which must be named.
+// it joins on the parent's ParentID column, which must be named.
 func TestValidateViewSchemas_RejectsOneToOneEmbedWithEmptyOn(t *testing.T) {
 	v := View("orders").Version(1).
 		Schema(rootSchema("orders")).
@@ -186,7 +186,7 @@ func TestViewDefinition_DeleteOnArchiveBuilder_Aggregate(t *testing.T) {
 // TestLeg_Accessors covers the surviving leg accessors the embed boot guards use:
 // SchemaDef returns the external schema; IsMongo/Collection/Table describe it.
 func TestLeg_Accessors(t *testing.T) {
-	ext := core.NewExternalSchema("users").PK("id")
+	ext := core.NewExternalSchema("users").ID("id")
 	leg := JoinUpstream(ext, "Buyer", "buyer")
 	if leg.SchemaDef() != ext {
 		t.Error("SchemaDef() must return the schema JoinUpstream was built with")
@@ -217,9 +217,9 @@ func (v vsChild) GetID() domain.ID { return domain.NewID(v.ID) }
 // resolves via ColumnPath and the read-back nests the collection under its Go
 // segment — the translator half of Phase-1 own-child projection.
 func TestViewNode_OwnChildPathResolves(t *testing.T) {
-	childSchema := core.NewTableSchema[csComposeVO]("lines").PK("id").FK("order_id").Field("Label", "label")
+	childSchema := core.NewTableSchema[csComposeVO]("lines").ID("id").ParentID("order_id").Field("Label", "label")
 	rootWithChild := core.NewTableSchema[*builderTestEntity]("orders").
-		PK("id").Field("Name", "name").SoftDelete("deleted_at").
+		ID("id").Field("Name", "name").SoftDelete("deleted_at").
 		Child(childSchema)
 	node := View("orders").Schema(rootWithChild).BuildViewNode()
 
@@ -244,12 +244,12 @@ func TestViewNode_OwnChildPathResolves(t *testing.T) {
 
 func TestViewNode_TranslatesGoPathToColumnAndBack(t *testing.T) {
 	rootSchema := core.NewTableSchema[vsRoot]("people").
-		PK("person_pk").
+		ID("person_pk").
 		Field("Email", "mail").
 		SoftDelete("removed_at").
 		CreatedAt("created_at")
 	childSchema := core.NewExternalSchema("tags").
-		PK("tag_pk").
+		ID("tag_pk").
 		Field("ZipCode", "zip")
 
 	v := View("people").Schema(rootSchema).
@@ -300,5 +300,117 @@ func TestViewNode_TranslatesGoPathToColumnAndBack(t *testing.T) {
 	child := addrs[0].(map[string]any)
 	if child["ZipCode"] != "10001" || child["ID"] != "t1" {
 		t.Errorf("read-back child = %v", child)
+	}
+}
+
+// TestViewNode_IDAndParentID_AllLevels covers the id AND parentId translation at
+// every distinct node kind — root, own child, and an external upstream mirror
+// embed — in BOTH directions: ColumnPath (which drives a filter / sort / ?fields=
+// at that level) and ToGoDoc (the wire output). A regular schema's id/parentId
+// resolve to their PHYSICAL columns (so the projection includes/excludes them
+// like any field); a mirror's id resolves to `_id` (its only carrier).
+func TestViewNode_IDAndParentID_AllLevels(t *testing.T) {
+	line := core.NewTableSchema[csComposeVO]("lines").
+		ID("id").ParentID("order_id").Field("Label", "label")
+	item := core.NewExternalSchema("items"). // upstream mirror: id lives only in `_id`
+							ID("item_id").Field("Label", "label")
+	root := core.NewTableSchema[vsRoot]("orders").
+		ID("order_pk").Field("Email", "mail").Child(line)
+	node := View("orders").Schema(root).
+		EmbedMany(JoinUpstream(item, "Items", "items")).On("order_ref").
+		BuildViewNode()
+	seg := childDocSegment(line)
+
+	// ColumnPath — the single translator every filter / sort / ?fields= goes
+	// through, so if it resolves right, all three operations respect the field.
+	for _, c := range []struct {
+		name string
+		in   []string
+		want []string
+	}{
+		{"root id → physical pk", []string{"ID"}, []string{"order_pk"}},
+		{"own-child id → physical pk", []string{seg, "ID"}, []string{seg, "id"}},
+		{"own-child parentId → physical fk", []string{seg, "ParentID"}, []string{seg, "order_id"}},
+		{"mirror id → _id", []string{"Items", "ID"}, []string{"items", "_id"}},
+	} {
+		got, ok := node.ColumnPath(c.in)
+		bad := !ok || len(got) != len(c.want)
+		for i := 0; !bad && i < len(got); i++ {
+			bad = got[i] != c.want[i]
+		}
+		if bad {
+			t.Errorf("%s: ColumnPath(%v) = %v,%v want %v", c.name, c.in, got, ok, c.want)
+		}
+	}
+
+	// ToGoDoc — regular schemas expose id/parentId from the physical columns; the
+	// mirror element (which carries only `_id`) still surfaces its id.
+	got := node.ToGoDoc(map[string]any{
+		"order_pk": "o1",
+		"mail":     "e@x.test",
+		seg:        []any{map[string]any{"id": "l1", "order_id": "o1", "label": "L1"}},
+		"items":    []any{map[string]any{"_id": "it1", "label": "I1"}},
+	})
+	if got["ID"] != "o1" {
+		t.Errorf("root ID = %v want o1", got["ID"])
+	}
+	child := got[seg].([]any)[0].(map[string]any)
+	if child["ID"] != "l1" || child["ParentID"] != "o1" {
+		t.Errorf("child ID/ParentID = %v/%v want l1/o1", child["ID"], child["ParentID"])
+	}
+	mItem := got["Items"].([]any)[0].(map[string]any)
+	if mItem["ID"] != "it1" {
+		t.Errorf("mirror item ID = %v want it1 (promoted from _id)", mItem["ID"])
+	}
+}
+
+// The id is a field like any other — it is just carried under a different name
+// depending on the source: a REGULAR schema (root, child, materialized view
+// embed) keeps it in the physical PK column (so it obeys the projection like any
+// column); an EXTERNAL upstream MIRROR has no physical id column and carries the
+// identity only in the Mongo `_id`, so there it is promoted onto the ID Go field.
+// A regular schema is NOT promoted from the incidental `_id` — that would leak the
+// id past a ?fields= that excluded it.
+func TestViewNode_IDProjection(t *testing.T) {
+	rootSchema := core.NewTableSchema[vsRoot]("people").
+		ID("person_pk").
+		Field("Email", "mail")
+	itemSchema := core.NewExternalSchema("items"). // upstream mirror: id lives in `_id`
+							ID("id").
+							Field("Label", "label")
+
+	v := View("people").Schema(rootSchema).
+		Embed(JoinUpstream(itemSchema, "Featured", "featured")).On("featured_ref")
+	node := v.BuildViewNode()
+
+	// Regular ROOT: id resolves to the physical PK column (subject to the projection).
+	if col, ok := node.ColumnPath([]string{"ID"}); !ok || len(col) != 1 || col[0] != "person_pk" {
+		t.Errorf("root ID path → %v,%v want [person_pk]", col, ok)
+	}
+	// Mirror SEGMENT: id lives in `_id`, so it resolves there.
+	if col, ok := node.ColumnPath([]string{"Featured", "ID"}); !ok || len(col) != 2 || col[0] != "featured" || col[1] != "_id" {
+		t.Errorf("Featured.ID path → %v,%v want [featured _id]", col, ok)
+	}
+
+	// Regular root WITH the physical id column exposes ID; the same root carrying
+	// ONLY the incidental `_id` does NOT — a regular id is a physical-column field.
+	if got := node.ToGoDoc(map[string]any{"person_pk": "p1", "mail": "a@x.test"}); got["ID"] != "p1" {
+		t.Errorf("regular root ID = %v want p1 (physical column)", got["ID"])
+	}
+	if got := node.ToGoDoc(map[string]any{"_id": "p1", "mail": "a@x.test"}); func() bool { _, ok := got["ID"]; return ok }() {
+		t.Errorf("regular root with only _id must NOT promote ID")
+	}
+
+	// Mirror segment: the id is ONLY in `_id`, so it IS promoted to ID (the mirror
+	// has no physical id column — the whole reason the promotion exists).
+	seg := node.ToGoDoc(map[string]any{
+		"person_pk": "p1",
+		"featured":  map[string]any{"_id": "it-9", "label": "Widget"},
+	})["Featured"].(map[string]any)
+	if seg["ID"] != "it-9" {
+		t.Errorf("mirror segment ID = %v want it-9 (promoted from _id)", seg["ID"])
+	}
+	if seg["Label"] != "Widget" {
+		t.Errorf("mirror segment Label = %v", seg["Label"])
 	}
 }

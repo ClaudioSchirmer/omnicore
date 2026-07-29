@@ -22,7 +22,7 @@ const maxInClauseSize = 900
 //
 // Per-source physical names come from each source's core.TableSchema (root via
 // View.Schema, embeds via Source.Schema): the root key + each embed's key are
-// the source's PK column, and the soft-delete filter uses the source's
+// the source's ID column, and the soft-delete filter uses the source's
 // soft-delete column. A schema-less source falls back to id / deleted_at.
 //
 // The root document and the aggregate's internal closure (siblings, SharedBase,
@@ -58,11 +58,11 @@ func NewComposerWithMongo(eng core.RelationalEngine, mongo ReadModelStore, resol
 	return &Composer{eng: eng, mongo: mongo, resolver: resolver}
 }
 
-// schemaPK / schemaSoftDelete read the source's physical PK + soft-delete column
+// schemaPK / schemaSoftDelete read the source's physical ID + soft-delete column
 // straight from its core.TableSchema. The schema is mandatory on every view (root and
 // embed), so there is no convention fallback — a view declared without a schema
 // is rejected at boot, not silently mapped to "id"/"deleted_at".
-func schemaPK(s *core.TableSchema) string                 { return s.PKColumn() }
+func schemaPK(s *core.TableSchema) string                 { return s.IDColumn() }
 func schemaSoftDelete(s *core.TableSchema) (string, bool) { return s.SoftDeleteColumn() }
 
 func (c *Composer) Compose(ctx context.Context, view *ViewDefinition, rootID string) (Document, error) {
@@ -125,7 +125,7 @@ func (c *Composer) ComposeAll(ctx context.Context, view *ViewDefinition) ([]Docu
 // embeds) stay per-row, so a rich aggregate still pays for its closure. A root
 // whose id has no live row (hard-deleted, or archived under DeleteOnArchive)
 // simply does not appear in the result — the caller reconciles it as an orphan.
-// The returned documents carry their _id in the root PK column, identical to
+// The returned documents carry their _id in the root ID column, identical to
 // Compose, so the caller keys the upsert the same way on either path.
 func (c *Composer) ComposeBatch(ctx context.Context, view *ViewDefinition, ids []string) ([]Document, error) {
 	if len(ids) == 0 {
@@ -200,8 +200,8 @@ func (c *Composer) composeRows(ctx context.Context, view *ViewDefinition, rows [
 // base IS the schema that owns them), then ONE SUB-DOCUMENT PER DECLARED ROLE,
 // then the external embeds. A role's sub-document carries the role row (chosen
 // active-first, see fetchRoleRow) with its siblings merged flat and its own
-// children nested — keyed on the CHOSEN ROLE ROW's PK, never the base id (under
-// the separate-FK model they differ). An absent role writes an explicit nil
+// children nested — keyed on the CHOSEN ROLE ROW's ID, never the base id (under
+// the separate-ParentID model they differ). An absent role writes an explicit nil
 // segment: the store's Upsert is $set, so a vanished role must overwrite its
 // stale segment rather than silently survive it.
 func (c *Composer) composeBaseRootedRow(ctx context.Context, view *ViewDefinition, row Document, baseID string, includeArchived bool) error {
@@ -237,7 +237,7 @@ func (c *Composer) composeBaseRootedRow(ctx context.Context, view *ViewDefinitio
 }
 
 // fetchRoleRow selects THE role row that represents a specialization of the
-// identity — deterministic under the separate-FK multiplicity the write side
+// identity — deterministic under the separate-ParentID multiplicity the write side
 // admits (archived remnants NEXT TO at most one active row):
 //
 //  1. the ACTIVE row (fk = baseID AND deleted_at IS NULL) when one exists —
@@ -249,7 +249,7 @@ func (c *Composer) composeBaseRootedRow(ctx context.Context, view *ViewDefinitio
 //  3. otherwise nil (the caller writes the explicit null segment).
 //
 // A role without SoftDelete has no archived state (hard delete is delete), so
-// a single fetch by FK decides it.
+// a single fetch by ParentID decides it.
 func (c *Composer) fetchRoleRow(ctx context.Context, r roleDef, baseID string, includeArchived bool) (Document, error) {
 	_, fkCol, _ := r.schema.SharedBaseRef()
 	sd, hasSD := schemaSoftDelete(r.schema)
@@ -287,7 +287,7 @@ func (c *Composer) fetchLatestArchived(ctx context.Context, schema *core.TableSc
 // reflection of how the write side partitioned the row. An absent sibling row
 // leaves its fields omitted (never forced empty). Siblings carry no soft-delete
 // (the owner's gate governs the row's visibility), so the sibling fetch passes
-// an empty soft-delete column — no per-sibling filter. The shared PK column is
+// an empty soft-delete column — no per-sibling filter. The shared ID column is
 // already on the owner doc, so it is not re-copied. coerceTypes (inside
 // fetchRow) restores bool fidelity on the sibling's own columns.
 func (c *Composer) mergeOwnerSiblings(ctx context.Context, doc Document, ownerSchema *core.TableSchema, pkVal string, includeArchived bool) error {
@@ -312,8 +312,8 @@ func (c *Composer) mergeOwnerSiblings(ctx context.Context, doc Document, ownerSc
 
 // mergeSharedBaseChildren nests the shared base's NATIVE children (base-children)
 // into the role document — the person-native collections (e.g. a person's
-// addresses) shared across every role. They are fetched by the base-child's FK to
-// the base id, which is the role's FK to the base already on the doc (the role row
+// addresses) shared across every role. They are fetched by the base-child's ParentID to
+// the base id, which is the role's ParentID to the base already on the doc (the role row
 // carries pessoa_id). Each collection lands under its derived Go segment (the same
 // name BuildViewNode registers, so ToGoDoc translates it). No-op without a shared
 // base or base children.
@@ -333,7 +333,7 @@ func (c *Composer) mergeSharedBaseChildren(ctx context.Context, doc Document, sc
 	idStr := fmt.Sprintf("%v", baseID)
 	for _, bc := range baseChildren {
 		sd, _ := schemaSoftDelete(bc)
-		rows, err := c.fetchWhere(ctx, bc, bc.Table(), bc.FKColumn(), idStr, sd, includeArchived)
+		rows, err := c.fetchWhere(ctx, bc, bc.Table(), bc.ParentIDColumn(), idStr, sd, includeArchived)
 		if err != nil {
 			return err
 		}
@@ -345,8 +345,8 @@ func (c *Composer) mergeSharedBaseChildren(ctx context.Context, doc Document, sc
 // mergeOwnChildren nests the schema's OWN aggregate children (schema.Child(...))
 // into the document — the read-side mirror of hydrateChildren on the write side.
 // Unlike base-children (keyed on the base's deterministic id via
-// mergeSharedBaseChildren), an own child is joined on root.PK → child.FK: the
-// child's FK column matched against the PK value already on the doc. Each
+// mergeSharedBaseChildren), an own child is joined on root.ID → child.ParentID: the
+// child's ParentID column matched against the ID value already on the doc. Each
 // collection lands under its derived Go segment (the same name newViewNode
 // registers, so ToGoDoc translates it). Every fetched child row also gets its
 // siblings merged FLAT (shape #4 — the child-sibling merge). No-op when the schema
@@ -364,7 +364,7 @@ func (c *Composer) mergeOwnChildren(ctx context.Context, doc Document, schema *c
 	idStr := fmt.Sprintf("%v", pkVal)
 	for _, child := range children {
 		sd, _ := schemaSoftDelete(child)
-		rows, err := c.fetchWhere(ctx, child, child.Table(), child.FKColumn(), idStr, sd, includeArchived)
+		rows, err := c.fetchWhere(ctx, child, child.Table(), child.ParentIDColumn(), idStr, sd, includeArchived)
 		if err != nil {
 			return err
 		}
@@ -381,9 +381,9 @@ func (c *Composer) mergeOwnChildren(ctx context.Context, doc Document, schema *c
 }
 
 // mergeSharedBase merges a role's shared identity (SharedBase) FLAT into the role
-// document, fetched by the role's FK to the base's deterministic id. Like a
+// document, fetched by the role's ParentID to the base's deterministic id. Like a
 // sibling, the base fields land at the role's level (the doc stays flat). The
-// base PK column equals the FK value already on the doc, so it is not re-copied.
+// base ID column equals the ParentID value already on the doc, so it is not re-copied.
 //
 // The base's MANAGED columns (soft-delete, created_at, updated_at) never
 // overwrite the role's own: the document represents the ROLE, whose lifecycle
@@ -403,7 +403,7 @@ func (c *Composer) mergeSharedBase(ctx context.Context, doc Document, schema *co
 	if !present || fk == nil {
 		return nil
 	}
-	row, err := c.fetchRow(ctx, base, base.Table(), base.PKColumn(), fmt.Sprintf("%v", fk), "", includeArchived)
+	row, err := c.fetchRow(ctx, base, base.Table(), base.IDColumn(), fmt.Sprintf("%v", fk), "", includeArchived)
 	if err != nil {
 		return err
 	}
@@ -411,7 +411,7 @@ func (c *Composer) mergeSharedBase(ctx context.Context, doc Document, schema *co
 		return nil
 	}
 	remapRevision(row, base, docBaseRevisionField)
-	skip := map[string]bool{base.PKColumn(): true}
+	skip := map[string]bool{base.IDColumn(): true}
 	if col, ok := base.SoftDeleteColumn(); ok {
 		if _, roleHas := schema.SoftDeleteColumn(); roleHas {
 			skip[col] = true
@@ -433,7 +433,7 @@ func (c *Composer) mergeSharedBase(ctx context.Context, doc Document, schema *co
 }
 
 // applyEmbeds resolves each embed of the parent doc. parentPK is the parent
-// source's PK column — the value matched against an EmbedMany child's FK.
+// source's ID column — the value matched against an EmbedMany child's ParentID.
 func (c *Composer) applyEmbeds(ctx context.Context, doc Document, parentPK string, embeds []embedDef, includeArchived bool) error {
 	for _, e := range embeds {
 		if err := c.fetchEmbed(ctx, doc, parentPK, e, includeArchived); err != nil {
@@ -472,7 +472,7 @@ func (c *Composer) fetchMongoEmbed(ctx context.Context, doc Document, parentPK s
 		doc[e.Field()] = docs
 		return nil
 	}
-	// An unresolved 1:1 (null FK, or the source doc gone) writes an EXPLICIT
+	// An unresolved 1:1 (null ParentID, or the source doc gone) writes an EXPLICIT
 	// null: view documents are $set-merged, so omitting the key would leave a
 	// stale sub-document from a previous resolution in place forever — the
 	// documented contract is "null when unset/unresolved".
@@ -496,10 +496,10 @@ func (c *Composer) fetchMongoEmbed(ctx context.Context, doc Document, parentPK s
 // applyChildEmbeds resolves every EmbedInChild of the view against the ROOT doc
 // (or the SharedBaseView base doc): for each declared child-embed it enriches
 // each element of the native child array (doc[<childSegment>]) with a 1:1
-// external lookup by the element's own FK, landing the source document under the
+// external lookup by the element's own ParentID, landing the source document under the
 // child-embed's field. Set-based per child-embed — ONE $in against the source
 // collection for all elements of this doc, keyed by the source _id. A missing /
-// nil FK, or an unresolved source, writes an EXPLICIT null on that element (the
+// nil ParentID, or an unresolved source, writes an EXPLICIT null on that element (the
 // $set-merge contract, identical to a root 1:1 embed). It runs ONLY on the root
 // native children (the view's declared child-embeds target those, validated at
 // boot); role sub-documents of a SharedBaseView are never enriched here.
@@ -516,7 +516,7 @@ func (c *Composer) applyChildEmbeds(ctx context.Context, doc Document, childEmbe
 		if !ok || len(arr) == 0 {
 			continue
 		}
-		fkCol := ce.FKColumn()
+		fkCol := ce.ParentIDColumn()
 		field := ce.Field()
 		values := make([]any, 0, len(arr))
 		seen := map[string]struct{}{}
@@ -587,7 +587,7 @@ func buildFetchSQL(d core.Dialect, verb, table string, cols []string, keyCol, sd
 // groups or maps rows by — the composer reads row[keyCol] to bucket results, so
 // the key MUST come back in the row. ReadColumns names a table's OWN columns, but
 // the join key can be a column the schema does not list among them (a sibling's
-// shared-PK join column, say, owned by its parent), so it is unioned in
+// shared-ID join column, say, owned by its parent), so it is unioned in
 // explicitly. keyCol == "" (fetchAll) adds nothing.
 func readColsWithKey(schema *core.TableSchema, keyCol string) []string {
 	cols := schema.ReadColumns()
@@ -605,7 +605,7 @@ func readColsWithKey(schema *core.TableSchema, keyCol string) []string {
 // selectList renders an explicit, dialect-quoted column list for a read — never
 // SELECT * (see core.TableSchema.ReadColumns for why: a named result type stays
 // stable across an online ADD COLUMN). Falls back to "*" only if a caller passes
-// no columns, which a real schema never does (it always has at least a PK).
+// no columns, which a real schema never does (it always has at least a ID).
 func selectList(d core.Dialect, cols []string) string {
 	if len(cols) == 0 {
 		return "*"
@@ -653,7 +653,7 @@ func (c *Composer) fetchWhere(ctx context.Context, schema *core.TableSchema, tab
 // ceiling; each chunk's placeholders are rendered through the dialect and each
 // id is encoded exactly as the single-key path encodes it, so the WHERE matches
 // the stored id column on every backend. Rows arrive in no guaranteed order —
-// the caller keys each document by its PK column, never by position.
+// the caller keys each document by its ID column, never by position.
 func (c *Composer) fetchByIDs(ctx context.Context, schema *core.TableSchema, table, keyCol string, ids []string, sdCol string, includeArchived bool) ([]Document, error) {
 	d := c.eng.Dialect()
 	cond := ""

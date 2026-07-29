@@ -14,7 +14,7 @@ import (
 func surgicalManyDef(t *testing.T) embedDef {
 	t.Helper()
 	leg := JoinUpstream(core.NewExternalSchema("upstream_items").
-		PK("id").
+		ID("id").
 		Field("Label", "label").
 		Field("AccountID", "account_id"), "Items", "Items")
 	return embedDef{leg: leg, joinCol: "account_id", many: true}
@@ -23,7 +23,7 @@ func surgicalManyDef(t *testing.T) embedDef {
 func surgicalOneDef(t *testing.T) embedDef {
 	t.Helper()
 	leg := JoinUpstream(core.NewExternalSchema("upstream_items").
-		PK("id").
+		ID("id").
 		Field("Label", "label"), "FeaturedItem", "FeaturedItem")
 	return embedDef{leg: leg, joinCol: "featured_item_id", many: false}
 }
@@ -46,7 +46,7 @@ func TestSurgicalEmbedStages_ManyUpsert(t *testing.T) {
 	set := stageSet(t, stages)
 	cond, ok := set["Items"].(Document)["$cond"].([]any)
 	if !ok || len(cond) != 3 {
-		t.Fatalf("FK present → a parent-conditional edit, got %v", set["Items"])
+		t.Fatalf("ParentID present → a parent-conditional edit, got %v", set["Items"])
 	}
 	// The condition keys on the DOCUMENT's own _id, so one stage set serves
 	// every target parent (old and new side of a move alike).
@@ -85,7 +85,7 @@ func TestSurgicalEmbedStages_OneUpsertAndDelete(t *testing.T) {
 	cond := set["FeaturedItem"].(Document)["$cond"].([]any)
 	eq := cond[0].(Document)["$eq"].([]any)
 	if eq[0] != "$featured_item_id" {
-		t.Errorf("1:1 keys on the parent's FK column, got %v", eq[0])
+		t.Errorf("1:1 keys on the parent's ParentID column, got %v", eq[0])
 	}
 	if cond[2] != "$FeaturedItem" {
 		t.Errorf("non-referencing parents keep their stored value, got %v", cond[2])
@@ -104,10 +104,10 @@ func TestSurgicalEmbedStages_OneUpsertAndDelete(t *testing.T) {
 
 func TestRepairDanglingOneToOne_HealsAndGuards(t *testing.T) {
 	// The written doc references i9, mirror has it → repair writes a guarded
-	// $cond: FK still matches AND stored segment _id ≠ FK (so the element's own
+	// $cond: ParentID still matches AND stored segment _id ≠ ParentID (so the element's own
 	// fresher ripple is never regressed), non-upsert.
 	view := View("qa_accounts_view").Version(1).Schema(composerRootSchema()).
-		Embed(JoinUpstream(core.NewExternalSchema("upstream_items").PK("id").Field("Label", "label"), "FeaturedItem", "featuredItem")).On("featured_item_id")
+		Embed(JoinUpstream(core.NewExternalSchema("upstream_items").ID("id").Field("Label", "label"), "FeaturedItem", "featuredItem")).On("featured_item_id")
 	colls := map[string]*fakeColl{
 		"upstream_items":   {docs: []any{map[string]any{"_id": "i9", "label": "FA"}}},
 		"qa_accounts_view": {},
@@ -127,7 +127,7 @@ func TestRepairDanglingOneToOne_HealsAndGuards(t *testing.T) {
 	cond := set["featuredItem"].(Document)["$cond"].([]any)
 	and := cond[0].(Document)["$and"].([]any)
 	if len(and) != 2 {
-		t.Fatalf("repair must double-guard (FK match + not-already-this-id), got %v", cond[0])
+		t.Fatalf("repair must double-guard (ParentID match + not-already-this-id), got %v", cond[0])
 	}
 	elem := cond[1].(Document)["$literal"].(map[string]any)
 	if elem["_id"] != "i9" {
@@ -137,7 +137,7 @@ func TestRepairDanglingOneToOne_HealsAndGuards(t *testing.T) {
 
 func TestRepairDanglingOneToOne_MissingMirrorClearsToNull(t *testing.T) {
 	view := View("qa_accounts_view").Version(1).Schema(composerRootSchema()).
-		Embed(JoinUpstream(core.NewExternalSchema("upstream_items").PK("id").Field("Label", "label"), "FeaturedItem", "featuredItem")).On("featured_item_id")
+		Embed(JoinUpstream(core.NewExternalSchema("upstream_items").ID("id").Field("Label", "label"), "FeaturedItem", "featuredItem")).On("featured_item_id")
 	colls := map[string]*fakeColl{
 		"upstream_items":   {}, // referenced doc does not exist (yet, or anymore)
 		"qa_accounts_view": {},
@@ -160,11 +160,11 @@ func TestRepairDanglingOneToOne_MissingMirrorClearsToNull(t *testing.T) {
 
 func TestRepairDanglingOneToOne_NoFKNoWrite(t *testing.T) {
 	view := View("qa_accounts_view").Version(1).Schema(composerRootSchema()).
-		Embed(JoinUpstream(core.NewExternalSchema("upstream_items").PK("id").Field("Label", "label"), "FeaturedItem", "featuredItem")).On("featured_item_id")
+		Embed(JoinUpstream(core.NewExternalSchema("upstream_items").ID("id").Field("Label", "label"), "FeaturedItem", "featuredItem")).On("featured_item_id")
 	colls := map[string]*fakeColl{"qa_accounts_view": {}}
 	repairDanglingOneToOne(context.Background(), upstreamFakeMongo(colls), identityResolver, nil, view, "acc1",
 		Document{"id": "acc1", "featured_item_id": nil}, nil)
 	if len(colls["qa_accounts_view"].updates) != 0 {
-		t.Errorf("a null FK needs no repair (the composed null was written by the create), got %v", colls["qa_accounts_view"].updates)
+		t.Errorf("a null ParentID needs no repair (the composed null was written by the create), got %v", colls["qa_accounts_view"].updates)
 	}
 }

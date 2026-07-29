@@ -48,7 +48,7 @@ func TestGuardJoinFieldIndex_RejectsMissingJoinField(t *testing.T) {
 	// External embed declared with an empty join column (.On("")) — the guard
 	// reports the empty-join-column diagnostic rather than the missing-index one.
 	v := query.View("orders").
-		Embed(query.JoinUpstream(core.NewExternalSchema("users").PK("id"), "Buyer", "buyer")).On("").
+		Embed(query.JoinUpstream(core.NewExternalSchema("users").ID("id"), "Buyer", "buyer")).On("").
 		Version(1)
 	errs := guardJoinFieldIndex([]*query.ViewDefinition{v})
 	if len(errs) != 1 || !strings.Contains(errs[0], "§8.1") ||

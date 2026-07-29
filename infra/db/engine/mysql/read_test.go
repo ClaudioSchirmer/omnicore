@@ -83,7 +83,7 @@ func TestIsForeignKeyViolation(t *testing.T) {
 		}
 	})
 
-	t.Run("non-FK mysql error", func(t *testing.T) {
+	t.Run("non-ParentID mysql error", func(t *testing.T) {
 		if name, ok := d.IsForeignKeyViolation(&driver.MySQLError{Number: 1062, Message: "Duplicate entry"}); ok || name != "" {
 			t.Fatalf("got (%q,%v), want ('',false)", name, ok)
 		}

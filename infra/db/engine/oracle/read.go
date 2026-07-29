@@ -86,7 +86,7 @@ func (q oracleQuerier) Query(ctx context.Context, sqlText string, args ...any) (
 // columns to their canonical string form. database/sql copies a RAW(16) value
 // into a *string dest as 16 raw bytes; without this a secondary uuid column
 // scanned into the framework's canonical Go string (a cross-aggregate
-// reference such as a BuyerID/TenantID, not the leading PK/FK the loader
+// reference such as a BuyerID/TenantID, not the leading ID/ParentID the loader
 // already DecodeID's) would carry garbage. Detection is by driver column type
 // (RAW) + value length 16 — the same guard QueryMaps / normalizeOracleValue
 // use — so a 16-char text column (VARCHAR2, never RAW) is never misread. Only

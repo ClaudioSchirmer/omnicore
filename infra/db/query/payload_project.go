@@ -15,7 +15,7 @@ import (
 //     the relational row lock serialized the writers, the guard replays that
 //     order here, so the LAST writer into the base wins on every document no
 //     matter how consumers interleave (maintainer requirement);
-//   - child collections edit SURGICALLY (per-element by child PK), never by
+//   - child collections edit SURGICALLY (per-element by child ID), never by
 //     whole-array replace: the document keeps archived child history the
 //     payload does not carry. Base-children elements carry a per-element
 //     `_rev` stamp and each op applies only over an older element — the same
@@ -104,13 +104,13 @@ func buildProjectionStages(schema *core.TableSchema, ev *decodedEvent) []Documen
 			}
 		}
 	}
-	// The document is a COLUMN-KEYED physical mirror: the PK column must exist
+	// The document is a COLUMN-KEYED physical mirror: the ID column must exist
 	// on it exactly as the composer's SELECT * produced it — readers project it
 	// (GraphQL root.id) and the shared-base fan-out FINDS the sibling-role docs
-	// by it (FindIDsByField on the link column, which under the shared-PK model
-	// IS the PK). WriteFields excludes the PK, so the projector restores it
+	// by it (FindIDsByField on the link column, which under the shared-ID model
+	// IS the ID). WriteFields excludes the ID, so the projector restores it
 	// from the structural ids.
-	if pk := schema.PKColumn(); pk != "" && ev.IDs.ID != "" {
+	if pk := schema.IDColumn(); pk != "" && ev.IDs.ID != "" {
 		own[pk] = lit(ev.IDs.ID)
 	}
 	// Stage ORDER is load-bearing: pipeline stages are sequential, so every
@@ -122,10 +122,10 @@ func buildProjectionStages(schema *core.TableSchema, ev *decodedEvent) []Documen
 	if len(base) > 0 && ev.IDs.BaseID != "" && ev.IDs.BaseRevision > 0 {
 		stages = append(stages, baseGuardedSetStage(base, ev.IDs.BaseRevision))
 	}
-	// INVARIANT: own is never empty for a write event — the PK restore above
-	// (schema.PKColumn() + _ids.id, both always present) guarantees it, so this
+	// INVARIANT: own is never empty for a write event — the ID restore above
+	// (schema.IDColumn() + _ids.id, both always present) guarantees it, so this
 	// stage ALWAYS runs and the _revision watermark ALWAYS advances. If a
-	// refactor ever moves the PK out of `own`, a children-only event would skip
+	// refactor ever moves the ID out of `own`, a children-only event would skip
 	// this stage, the watermark would stall, and a zombie consumer's older
 	// event could regress own data past the guard.
 	if len(own) > 0 {
@@ -233,7 +233,7 @@ func baseGuardedSetStage(base Document, revision int64) Document {
 }
 
 // childStages renders one $set stage per child operation — surgical edits on
-// the child's document segment (childDocSegment), keyed by the child PK.
+// the child's document segment (childDocSegment), keyed by the child ID.
 // guarded=true (base children) stamps each written element with the event's
 // base revision and refuses to overwrite a NEWER element.
 func childStages(schema *core.TableSchema, groups map[string][]childOp, revision int64, guarded bool) []Document {
@@ -247,7 +247,7 @@ func childStages(schema *core.TableSchema, groups map[string][]childOp, revision
 			continue
 		}
 		seg := childDocSegment(child)
-		pk := child.PKColumn()
+		pk := child.IDColumn()
 		for _, op := range ops {
 			if op.Op == "noop" {
 				continue

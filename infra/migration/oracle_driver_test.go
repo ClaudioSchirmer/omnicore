@@ -69,7 +69,7 @@ func TestSplitOracleStatements(t *testing.T) {
 			t.Fatalf("read embedded up: %v", err)
 		}
 		stmts := splitOracleStatements(string(up))
-		// 6 CREATE TABLE + 9 CREATE INDEX (audit_events carries only its PK and
+		// 6 CREATE TABLE + 9 CREATE INDEX (audit_events carries only its ID and
 		// the entity-timeline index; the four forensic indexes are devops-added;
 		// omnicore_upstream_failures left with the unified failure ledger — its
 		// rows live in 0003's omnicore_projection_failures now).

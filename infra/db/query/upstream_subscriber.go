@@ -520,7 +520,7 @@ func (s *UpstreamSubscriber) processMessage(ctx context.Context, msg transport.M
 	}
 	// DELETED is dispatched on the aggregate id ALONE, before any payload
 	// decode. A current hard-delete's outbox row carries a keys-only payload
-	// (PK + shared-base FK), but rows produced before that change — and any
+	// (ID + shared-base ParentID), but rows produced before that change — and any
 	// replay of them — carry NULL, which the CDC pipeline surfaces as a JSON
 	// scalar (not an object) whose decode into a map fails. Since
 	// dispatchDelete needs only the id (cascade/anonymize/keep all key off
@@ -569,7 +569,7 @@ func (s *UpstreamSubscriber) processMessage(ctx context.Context, msg transport.M
 // ARCHIVED.
 func (s *UpstreamSubscriber) upsertAndRipple(ctx context.Context, id string, payload bson.M) {
 	// Read the pre-change doc first: a 1:N EmbedMany needs the OLD parent id (the
-	// child's prior FK value) to recompose a parent the child just moved away
+	// child's prior ParentID value) to recompose a parent the child just moved away
 	// from. No-op read for one-to-one-only subscriptions.
 	before := s.readLocalDoc(ctx, id)
 	if err := s.mongo.Upsert(ctx, s.resolver.Active(s.cfg.Collection), id, payload); err != nil {
@@ -585,7 +585,7 @@ func (s *UpstreamSubscriber) upsertAndRipple(ctx context.Context, id string, pay
 // cascade policy.
 func (s *UpstreamSubscriber) deleteAndRipple(ctx context.Context, id string) {
 	// Capture the doc before deleting it: a 1:N EmbedMany learns which parent to
-	// recompose (drop the child from its array) from the child's FK value, which
+	// recompose (drop the child from its array) from the child's ParentID value, which
 	// is gone once the doc is deleted. No-op read for one-to-one-only subscriptions.
 	before := s.readLocalDoc(ctx, id)
 	if err := s.mongo.Delete(ctx, s.resolver.Active(s.cfg.Collection), id); err != nil {

@@ -26,7 +26,7 @@ type orderPart struct {
 func orderedManyEmbed(t *testing.T, desc bool) embedDef {
 	t.Helper()
 	src := View("parts").Version(1).Schema(
-		core.NewTableSchema[orderPart]("parts").PK("id").Field("Slot", "slot")).
+		core.NewTableSchema[orderPart]("parts").ID("id").Field("Slot", "slot")).
 		Indexes(Index("kit_id"))
 	b := View("kits").Version(1).Schema(composerRootSchema()).
 		EmbedMany(JoinView(src, "Parts", "parts")).OrderBy("slot")
@@ -118,7 +118,7 @@ func TestEmbedOrder_UnorderedSegmentIsUntouched(t *testing.T) {
 func TestEmbedOrder_MovesTheRebuildHash(t *testing.T) {
 	build := func(order string, desc bool) string {
 		src := View("parts").Version(1).Schema(
-			core.NewTableSchema[orderPart]("parts").PK("id").Field("Slot", "slot")).
+			core.NewTableSchema[orderPart]("parts").ID("id").Field("Slot", "slot")).
 			Indexes(Index("kit_id"))
 		b := View("kits").Version(1).Schema(composerRootSchema()).EmbedMany(JoinView(src, "Parts", "parts"))
 		if order != "" {
@@ -142,7 +142,7 @@ func TestEmbedOrder_MovesTheRebuildHash(t *testing.T) {
 // a declaration mistake.
 func TestEmbedOrder_BootGuards(t *testing.T) {
 	src := View("parts").Version(1).Schema(
-		core.NewTableSchema[orderPart]("parts").PK("id").Field("Slot", "slot")).
+		core.NewTableSchema[orderPart]("parts").ID("id").Field("Slot", "slot")).
 		Indexes(Index("kit_id"))
 
 	bad := View("kits").Version(1).Schema(composerRootSchema()).

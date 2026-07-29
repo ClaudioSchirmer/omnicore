@@ -31,12 +31,12 @@ func (c covChild) GetID() domain.ID                                 { return dom
 func (c covChild) BuildRules(string, domain.Service, *domain.Rules) {}
 
 var covAggSchema = NewTableSchema[*covAgg]("cov_aggs").
-	PK("id").
+	ID("id").
 	Revision("revision").
 	Field("Name", "name").
 	SoftDelete("deleted_at").
 	Child(NewTableSchema[covChild]("cov_children").
-		PK("id").
-		FK("cov_agg_id").
+		ID("id").
+		ParentID("cov_agg_id").
 		Field("Label", "label").
 		SoftDelete("deleted_at"))

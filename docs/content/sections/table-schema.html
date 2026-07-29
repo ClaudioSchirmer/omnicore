@@ -134,7 +134,7 @@
 <pre><code>// Type-anchored — validated against *User at call time.
 func UserSchema() *core.TableSchema {
     return core.NewTableSchema[*User]("users").
-        PK("id").                       // column "id" — Go side fixed to ID (single-column PK)
+        ID("id").                       // column "id" — Go side fixed to ID (single-column ID)
         Revision("revision").           // managed: MANDATORY commit-order token (BIGINT NOT NULL DEFAULT 0)
         Field("Name", "name").
         Field("Email", "mail").         // renamed column
@@ -147,8 +147,8 @@ func UserSchema() *core.TableSchema {
 
 func AddressSchema() *core.TableSchema {
     return core.NewTableSchema[Address]("addresses").
-        PK("id").
-        FK("user_id").                  // FK to the root — injected by the persister
+        ID("id").
+        ParentID("user_id").                  // ParentID to the root — injected by the persister
         Field("Street", "street").
         Field("ZipCode", "zip_code").
         SoftDelete("deleted_at").
@@ -157,13 +157,27 @@ func AddressSchema() *core.TableSchema {
 }
 
 // Type-less — for an upstream-projected external JoinUpstream source (no local struct).
-core.NewExternalSchema("users").PK("id").Field("Email", "mail")</code></pre>
+core.NewExternalSchema("users").ID("id").Field("Email", "mail")</code></pre>
 <p>
     The Go-side primary-key field is fixed to <code>ID</code> by the <code>BaseEntity</code>/AVO contract (an aggregate
     root carries it privately and exposes <code>GetID</code>/<code>SetID</code>; an AVO exposes the exported field
-    <code>ID</code>), so <code>PK("col")</code> declares only the column. <code>FK</code> names the child's foreign-key column referencing the
+    <code>ID</code>), so <code>ID("col")</code> declares only the column. <code>ParentID</code> names the child's foreign-key column referencing the
     root — it is injected by the persister and is <strong>not</strong> a struct field. Every other persisted field is a
-    <code>Field("Go", "column")</code> pair.
+    <code>Field("Go", "column")</code> pair. Because the persister owns the ParentID column (the write cascade sets it to the
+    parent's id on every save), that column cannot ALSO be a mapped <code>Field</code> — the write would silently
+    overwrite the field's value — so declaring both, in either order, is a <strong>boot panic</strong>. The shared-ID
+    model, where the ID column IS the ParentID, is unaffected: the ID is never a mapped field, so the guard never fires on it.
+</p>
+<p>
+    <strong>Exposing the ParentID on read — <code>ParentID</code>, the read-only twin of <code>ID</code>.</strong> Symmetric with the
+    primary key, the foreign key is exposed <strong>read-only</strong> under the fixed logical Go name <code>ParentID</code>: a
+    view/DTO that declares a <code>ParentID</code> field (its <code>json:</code> tag chooses the wire name) receives the
+    parent link, and a <code>filter</code> / <code>sort</code> / <code>?fields=</code> on it is a real query, not a dead
+    field — it resolves to the physical ParentID column. You never <em>map</em> it: it is projected automatically whenever the
+    schema declares a ParentID, exactly as <code>ID</code> is projected from the ID. Like <code>ID</code>, <code>ParentID</code> is a
+    <strong>reserved</strong> Go name — <code>Field("ID", …)</code> and <code>Field("ParentID", …)</code> are both boot panics.
+    A schema carries at most one ParentID (an aggregate child's ParentID to its root, or a SharedBase role's ParentID to its base — declaring
+    <code>ParentID(...)</code> and <code>SharedBase(...)</code> together is a boot panic), so <code>ParentID</code> is unambiguous.
 </p>
 
 <div class="box">
@@ -186,7 +200,7 @@ core.NewExternalSchema("users").PK("id").Field("Email", "mail")</code></pre>
     unlimited. <strong>Depth is not:</strong> calling <code>Child(...)</code> on a schema that is itself a child (a
     grandchild) is a <strong>boot panic</strong>. Aggregate persistence is root + one level in a single transaction; a
     grandchild would silently never persist. Model the sub-collection as a <strong>separate aggregate</strong> (its own
-    root + FK). On the <em>read side</em>, a schema's own children (like a shared base's children) <strong>project
+    root + ParentID). On the <em>read side</em>, a schema's own children (like a shared base's children) <strong>project
     automatically</strong> into the Mongo view — the composer nests each declared <code>Child(...)</code> wherever the
     schema is used, so a child on a view root or on an embed leg is materialized, not ignored. An embed leg
     <em>cannot</em> declare a further <code>Embed(...)</code> / <code>EmbedMany(...)</code>, though — a leg
@@ -330,7 +344,7 @@ func NewUserRepository(eng core.RelationalEngine) *UserRepository {
     column</em>. It is validated by bijection (no two fields share a column) but not against any type — there is none.
     Because an external source has no Go type to derive them from, both segment names are <strong>required</strong> on the
     <code>JoinUpstream</code>/<code>JoinView</code> constructor (a declaration-time panic otherwise). The join column is
-    named on the verb via <code>.On(...)</code> — the parent document's FK column pointing at the leg's PK on a one-to-one
+    named on the verb via <code>.On(...)</code> — the parent document's ParentID column pointing at the leg's ID on a one-to-one
     <code>Embed</code>/<code>Link</code>.
 </p>
 <pre><code>// Cross-service embed — buyer projected from the upstream users service.
@@ -340,11 +354,11 @@ func OrdersView() *query.ViewDefinition {
         Schema(OrderSchema()).
         Embed(query.JoinUpstream(
             core.NewExternalSchema("users").  // type-less: names the UPSTREAM's columns
-                PK("id").
+                ID("id").
                 Field("Name", "name").
                 Field("Email", "mail"),          // logical Go name ↔ upstream column
             "Buyer", "buyer")).                  // Go + doc segments — both REQUIRED (no Go type to derive from)
-            On("buyer_id").                      // parent doc FK → leg PK, named on the verb
+            On("buyer_id").                      // parent doc ParentID → leg ID, named on the verb
         Indexes(query.Index("buyer_id"))       // boot guard requires the join-field index
 }</code></pre>
 <p class="note">
@@ -383,16 +397,16 @@ func OrdersView() *query.ViewDefinition {
 <p>
     <strong>Ripples are per-element edits, not snapshots.</strong> Within its embed segments the ripple applies the
     event's own change surgically: the one array element keyed by the changed upstream id is stripped/appended (and a 1:1
-    sub-document conditionally set — the explicit <code>null</code> when the source was deleted or the FK is unset). Edits
+    sub-document conditionally set — the explicit <code>null</code> when the source was deleted or the ParentID is unset). Edits
     for different upstream ids touch disjoint elements and commute, so concurrent ripples — multiple subscription workers,
     partitions spread across pods — converge to the same array regardless of interleaving, and events for the same id are
     serialized end to end by broker partitioning and the subscriber's keyed worker dispatch. The ripple's hot path reads no
     relational data; a parent whose document does not exist yet is materialized by a full recompose instead. During a
     blue-green rebuild every ripple write also dual-applies to the shadow slot, exactly like the SyncEngine's writes, so
     the flipped collection never misses a mid-window upstream event. A 1:1 segment additionally self-repairs after every
-    document write that carries its FK: the writer re-reads the mirror fresh and sets the segment under a double guard (FK
+    document write that carries its ParentID: the writer re-reads the mirror fresh and sets the segment under a double guard (ParentID
     still matches, stored element not already that id) — so a document created before its referenced mirror doc existed,
-    or an FK changed by an entity update, converges through whichever side runs last, and the repair can never regress the
+    or a ParentID changed by an entity update, converges through whichever side runs last, and the repair can never regress the
     element's own fresher ripple.
 </p>
 
@@ -417,7 +431,7 @@ func OrdersView() *query.ViewDefinition {
         <code>domain.ID</code> — and every other unknown type gets the fix and a pointer back to this page. Identity
         matching is literal (a named type over a supported underlying is rejected), so the cross-engine guarantee never
         depends on driver-specific reflection behavior.</li>
-    <li><strong>Bijection over the whole column set</strong> — across each source's mapped fields + the PK column + every
+    <li><strong>Bijection over the whole column set</strong> — across each source's mapped fields + the ID column + every
         declared managed column, no two map to the same physical column. The collision panic names both offenders.</li>
     <li><strong>Modes() ⟺ SoftDelete</strong> — an entity declaring <code>ModeArchive</code>/<code>ModeUnarchive</code>
         without <code>SoftDelete</code> panics; a runtime guard backs it up.</li>
@@ -432,12 +446,12 @@ func OrdersView() *query.ViewDefinition {
         exempt (cloned by value, never through JSON). Ordinary <em>renaming</em> tags (<code>json:"name"</code>) stay
         allowed — the round-trip marshals and unmarshals the same type, so renames are symmetric. Wire names belong on
         the web-layer DTOs regardless.</li>
-    <li><strong>PK is mandatory (no default) + single-column</strong> — every schema (root, child, embed source) must
-        declare its PK column via <code>PK(column)</code>, which rejects an empty column. The Go side is fixed to the
+    <li><strong>ID is mandatory (no default) + single-column</strong> — every schema (root, child, embed source) must
+        declare its ID column via <code>ID(column)</code>, which rejects an empty column. The Go side is fixed to the
         Entity contract's <code>ID</code> (never guessed from the column name). A schema reaching
-        <code>WithSchema</code> / <code>Child</code> / <code>ValidateViewSchemas</code> without a declared PK is a boot
+        <code>WithSchema</code> / <code>Child</code> / <code>ValidateViewSchemas</code> without a declared ID is a boot
         failure. Single-column only.</li>
-    <li><strong>FK on children + embed join keys</strong> — an aggregate <code>Child(...)</code> without <code>.FK(col)</code>
+    <li><strong>ParentID on children + embed join keys</strong> — an aggregate <code>Child(...)</code> without <code>.ParentID(col)</code>
         panics (the persister injects the root id into it). On the read side, every embed/link names its join column on the
         verb via <code>.On(col)</code> — mandatory and compile-time enforced (the verb's binding routes back to the builder
         only through <code>.On</code>); an empty <code>.On("")</code> is a fatal <code>ValidateViewSchemas</code> error.</li>
@@ -445,6 +459,14 @@ func OrdersView() *query.ViewDefinition {
         <code>Child(...)</code> panics at <code>WithSchema</code> (write side); an embed source whose schema carries
         <code>Child(...)</code> is a fatal error in <code>ValidateViewSchemas</code> (read side). Width is unlimited;
         depth is one.</li>
+    <li><strong>Every single-column slot is declared once</strong> — <code>ID</code>, <code>ParentID</code>,
+        <code>SoftDelete</code>, <code>CreatedAt</code>, <code>UpdatedAt</code>, <code>Revision</code> and
+        <code>NaturalID</code> each reject a SECOND declaration with a boot panic: a repeat call would otherwise silently
+        overwrite the first (the bijection check deliberately skips a slot's own value so an idempotent same-column re-set
+        is allowed — which is exactly what let a DIFFERENT column slip through unnoticed).</li>
+    <li><strong>One child collection per Go type</strong> — aggregate children are keyed by Go type name, so a second
+        <code>Child(...)</code> of the SAME type panics at declaration rather than silently dropping the first (two
+        collections of one type are unsupported — they would share one derived segment and one key).</li>
     <li><strong>Only a root/role schema may reference a SharedBase</strong> — passing a child schema that itself
         declared <code>.SharedBase(...)</code> to <code>.Child(...)</code> panics at declaration. Write and load resolve the
         shared base from the schema they are handed (the root's <code>SharedBaseRef</code>), never from a child, so a
@@ -458,7 +480,7 @@ func OrdersView() *query.ViewDefinition {
 </ul>
 <p>These checks run inside <code>WithSchema</code> on <em>both</em> repository shapes:
     <code>BaseAggregateRepository.WithSchema</code> (aggregate) and <code>BaseRepository.WithSchema</code> (flat, non-aggregate)
-    each run the type-anchored, PK-declared, aggregate-depth, old-clone safety, and <code>Modes()</code> ⟺ <code>SoftDelete</code> checks at construction (the
+    each run the type-anchored, ID-declared, aggregate-depth, old-clone safety, and <code>Modes()</code> ⟺ <code>SoftDelete</code> checks at construction (the
     aggregate path additionally runs the boundary-agreement check and threads the schema into the read loader). Calling
     <code>WithSchema</code> also surfaces a nil <code>NewEntity</code> factory at construction. <code>WithSchema</code> is the
     <em>only</em> way to bind the schema — the field is unexported, so there is no direct-assignment path that bypasses
@@ -492,8 +514,8 @@ func OrdersView() *query.ViewDefinition {
 <table>
     <thead><tr><th>Tool</th><th>Cardinality</th><th>Shape</th></tr></thead>
     <tbody>
-        <tr><td><code>.Child(NewTableSchema[C](...))</code></td><td>1 : N</td><td>aggregate children in their own table, linked by an <code>FK</code> to the root (see "Declaring a schema" above)</td></tr>
-        <tr><td><code>.Sibling(NewSiblingSchema[T](...))</code></td><td>1 : 1</td><td>a disjoint slice of the <em>same</em> entity's fields in a secondary table sharing the root's PK (no FK)</td></tr>
+        <tr><td><code>.Child(NewTableSchema[C](...))</code></td><td>1 : N</td><td>aggregate children in their own table, linked by a <code>ParentID</code> to the root (see "Declaring a schema" above)</td></tr>
+        <tr><td><code>.Sibling(NewSiblingSchema[T](...))</code></td><td>1 : 1</td><td>a disjoint slice of the <em>same</em> entity's fields in a secondary table sharing the root's ID (no ParentID)</td></tr>
         <tr><td><code>.SharedBase(NewSharedBaseSchema(...), fk)</code></td><td>N : 1</td><td>an identity table shared by several independent role tables, deduplicated by a natural key</td></tr>
     </tbody>
 </table>
@@ -511,7 +533,7 @@ func OrdersView() *query.ViewDefinition {
     with <code>.Sibling(...)</code>:
 </p>
 <pre><code>core.NewTableSchema[*Person]("person").
-    PK("id").
+    ID("id").
     Field("Name", "name").
     Field("Email", "email").
     SoftDelete("deleted_at").
@@ -519,10 +541,10 @@ func OrdersView() *query.ViewDefinition {
         Field("Bio", "bio").              // disjoint fields — never declared on the owner
         Field("AvatarURL", "avatar_url"))</code></pre>
 <p>
-    A sibling has <strong>no identity or lifecycle of its own</strong>: it declares no PK (it borrows the owner's), no FK
-    (the shared PK <em>is</em> the link), no soft-delete, no managed timestamps (the owner's
+    A sibling has <strong>no identity or lifecycle of its own</strong>: it declares no ID (it borrows the owner's), no ParentID
+    (the shared ID <em>is</em> the link), no soft-delete, no managed timestamps (the owner's
     <code>CreatedAt</code>/<code>UpdatedAt</code> already date the 1 : 1 row), no children, and no nested sibling — the
-    owner owns all of that. Calling <code>PK</code>/<code>FK</code>/<code>SoftDelete</code>/<code>CreatedAt</code>/<code>UpdatedAt</code>/<code>Child</code>/<code>Sibling</code>
+    owner owns all of that. Calling <code>ID</code>/<code>ParentID</code>/<code>SoftDelete</code>/<code>CreatedAt</code>/<code>UpdatedAt</code>/<code>Child</code>/<code>Sibling</code>
     on a sibling schema <strong>fails at boot, at the declaration call</strong>, with a message naming the contract — none
     of them is supported on a sibling.
     Width is unlimited (a node may declare many siblings) but the partition is strict: every Go field and every column
@@ -530,19 +552,19 @@ func OrdersView() *query.ViewDefinition {
     run inside <code>WithSchema</code>). Both a root and an aggregate child may carry siblings.
 </p>
 <p>
-    <strong>The DDL contract that follows: the sibling table's physical PK column carries the SAME NAME as the owner's PK
+    <strong>The DDL contract that follows: the sibling table's physical ID column carries the SAME NAME as the owner's ID
     column</strong> (usually <code>id</code>). The framework writes the sibling row and compiles every join/lookup using
-    the <em>owner's</em> PK column name against the sibling table — there is no seam to declare a different one. Naming
-    the column FK-style (<code>person_profile.person_id</code>) compiles and boots, but fails at the <em>first write</em>
-    with the backend's <em>Unknown column</em> error: a sibling is not a foreign entity linked by FK — it is the same row,
+    the <em>owner's</em> ID column name against the sibling table — there is no seam to declare a different one. Naming
+    the column ParentID-style (<code>person_profile.person_id</code>) compiles and boots, but fails at the <em>first write</em>
+    with the backend's <em>Unknown column</em> error: a sibling is not a foreign entity linked by ParentID — it is the same row,
     partitioned.
 </p>
 <p>
     On <strong>write</strong>, the persister splits the entity across the owner row and each sibling row in the same
     transaction. A sibling whose mapped fields are all <code>nil</code> is materialized conditionally: skipped on INSERT,
     left untouched on a PATCH, and <em>deleted</em> on a full PUT (the absent facet means "remove it"). A hard delete
-    removes the sibling rows by shared PK before the owner. On <strong>read</strong>, the loader <code>LEFT JOIN</code>s
-    each sibling on the shared PK and scans its columns straight into the flat struct (an absent sibling row leaves those
+    removes the sibling rows by shared ID before the owner. On <strong>read</strong>, the loader <code>LEFT JOIN</code>s
+    each sibling on the shared ID and scans its columns straight into the flat struct (an absent sibling row leaves those
     fields at their zero value); a criteria predicate on a sibling field triggers the same <code>LEFT JOIN</code>.
 </p>
 
@@ -552,9 +574,9 @@ func OrdersView() *query.ViewDefinition {
     is shared by several <em>independent</em> role tables (<code>student</code>, <code>teacher</code>, <code>user</code>),
     each linking to it by a foreign key. Unlike a sibling (1 : 1, private), a base is referenced by N roles (N : 1) and is
     <strong>deduplicated by a natural key</strong>. Declare the base type-less with <code>core.NewSharedBaseSchema(table)</code>,
-    its dedup column with <code>.NaturalKey(col)</code>, its <strong>mandatory revision column</strong> with
+    its dedup column with <code>.NaturalID(col)</code>, its <strong>mandatory revision column</strong> with
     <code>.Revision(col)</code> (below), and its orphan lifecycle with <code>.OrphanPolicy(p)</code>; each
-    role references it with <code>.SharedBase(base, fkColumn)</code>. Sharing one base instance across the role files is
+    role references it with <code>.SharedBase(base, parentIDColumn)</code>. Sharing one base instance across the role files is
     idiomatic but <em>not required</em>: at repository construction (<code>WithSchema</code>) the engine registers every
     role on a registry keyed by the base's <em>table</em>, so N identical <code>NewSharedBaseSchema</code> declarations behave
     exactly like one — no consumer-side singleton. Two <em>divergent</em> declarations of the same table (different natural
@@ -595,7 +617,7 @@ func OrdersView() *query.ViewDefinition {
     <code>omnicore_projection_state</code> registry before a guarded delete, and every document-creating upsert
     re-checks it after writing — a zombie consumer's older upsert racing a delete removes its own write instead of
     resurrecting the document — scoped to the dead row's incarnation by its <code>created_at</code>, so a
-    deterministic id (shared-PK role, base) re-created under the same natural key is never mistaken for a
+    deterministic id (shared-ID role, base) re-created under the same natural key is never mistaken for a
     zombie of the dead life. The same registry carries the base-revision handshake that heals a role document born
     concurrently with a fan-out that could not see it (the fan-out stamps its base revision before probing; the newborn
     document's writer re-checks after writing and repairs by one guarded consult when a newer base revision proves a fan-out
@@ -603,10 +625,10 @@ func OrdersView() *query.ViewDefinition {
     records live for the identity's lifetime and are dropped by the purge.
 </p>
 <pre><code>var person = core.NewSharedBaseSchema("person").
-    PK("id").                                      // the deterministic UUIDv5 lands here
+    ID("id").                                      // the deterministic UUIDv5 lands here
     Field("Name", "name").
     Field("Document", "document").                 // the natural-key column
-    NaturalKey("document").
+    NaturalID("document").
     Revision("revision").                          // MANDATORY — BIGINT NOT NULL DEFAULT 0 in the migration
     SoftDelete("deleted_at").
     OrphanPolicy(core.KeepOrphan)                  // default; destruction is opt-in via core.DeleteWhenUnreferenced
@@ -617,30 +639,30 @@ func OrdersView() *query.ViewDefinition {
 // person table, never to student.
 func StudentSchema() *core.TableSchema {
     return core.NewTableSchema[*Student]("student").
-        PK("id").
+        ID("id").
         Field("Enrollment", "enrollment").         // role-private column (the only one student stores)
         SoftDelete("deleted_at").
-        SharedBase(person, "person_id")            // role FK → base's deterministic id
+        SharedBase(person, "person_id")            // role ParentID → base's deterministic id
 }</code></pre>
 
 <p>
-    <strong>The role→base link is the developer's choice: a separate FK column, or the role's own primary key.</strong>
+    <strong>The role→base link is the developer's choice: a separate ParentID column, or the role's own primary key.</strong>
     Passing a distinct column — <code>.SharedBase(person, "person_id")</code> above — gives the role its own surrogate key
-    (a fresh UUIDv7 per row) alongside a <code>person_id</code> FK. Passing the role's <em>PK</em> column instead —
+    (a fresh UUIDv7 per row) alongside a <code>person_id</code> ParentID. Passing the role's <em>ID</em> column instead —
     <code>.SharedBase(person, "id")</code> — selects the <strong>shared primary key</strong> model: the role's own id IS
-    the base's deterministic id (<code>role.id == base.id == UUIDv5(document)</code>), there is no separate FK column, and
+    the base's deterministic id (<code>role.id == base.id == UUIDv5(document)</code>), there is no separate ParentID column, and
     the primary key itself caps the table at <strong>one row per identity</strong> (a second role for the same identity
-    collides on the PK — an archived remnant included). The framework detects the mode from the schema — when the
-    SharedBase column equals the PK column it writes the id once, as the PK, carrying the base id; otherwise it writes a
-    separate FK — so choosing between the two is a one-line schema change with no code impact.
+    collides on the ID — an archived remnant included). The framework detects the mode from the schema — when the
+    SharedBase column equals the ID column it writes the id once, as the ID, carrying the base id; otherwise it writes a
+    separate ParentID — so choosing between the two is a one-line schema change with no code impact.
 </p>
 
 <p>
-    <strong>Under the separate-FK model, row multiplicity is a second choice — expressed in your DDL.</strong> The
+    <strong>Under the separate-ParentID model, row multiplicity is a second choice — expressed in your DDL.</strong> The
     framework invariant is about <em>active</em> rows only: at most ONE ACTIVE role row per identity per role table,
     enforced on <code>POST</code> (an existing active role is a 409) and on <code>/unarchive</code> (reviving a row while
     another row of the same role table is active is the same 409). How many TOTAL rows an identity may accumulate is your
-    uniqueness contract on the FK column:
+    uniqueness contract on the ParentID column:
 </p>
 <ul>
     <li><strong>Full <code>UNIQUE(person_id)</code></strong> — 0 : 1 rows per identity, period. An archived remnant
@@ -661,14 +683,14 @@ func StudentSchema() *core.TableSchema {
 <p>
     <strong>Declare one of the two — the index, not the framework's probe, is the arbiter under concurrency.</strong> The
     write path probes for an active role before inserting (a fast, friendly 409), but two concurrent <code>POST</code>s
-    can both pass the probe; the uniqueness index is what guarantees the invariant when they race. The shared-PK model
+    can both pass the probe; the uniqueness index is what guarantees the invariant when they race. The shared-ID model
     gets this for free (the primary key is the index).
 </p>
 
 <div class="box bad">
     <strong>The natural-key column MUST be a UNIQUE, NOT NULL index — this is mandatory, not advisory.</strong>
     The natural key is not just a lookup column: <strong>its value derives the shared base's primary key</strong>. The
-    framework computes <code>base.id = UUIDv5(fixed-namespace, naturalKeyValue)</code> — a deterministic hash — so the
+    framework computes <code>base.id = UUIDv5(fixed-namespace, naturalIDValue)</code> — a deterministic hash — so the
     application and the persister reach the <em>same</em> id with no read-back, and equal natural keys necessarily produce
     the <em>same</em> primary key. That single mechanism is what makes the dedup work, and it is exactly why the column is
     required to be a unique, non-null index:
@@ -677,8 +699,8 @@ func StudentSchema() *core.TableSchema {
             record would collapse into one shared-base row — silent identity corruption (interpolated data colliding on a
             single id). The framework guards this at runtime (a write whose natural key resolves empty fails loudly), but
             the database must still enforce <code>NOT NULL</code> so the invariant holds for every writer.</li>
-        <li><strong>UNIQUE.</strong> Because equal natural keys derive the equal deterministic PK, uniqueness of the
-            identity is <em>structurally self-enforced</em> by that PK: a second write carrying a natural-key value that
+        <li><strong>UNIQUE.</strong> Because equal natural keys derive the equal deterministic ID, uniqueness of the
+            identity is <em>structurally self-enforced</em> by that ID: a second write carrying a natural-key value that
             already exists resolves to the same id and <code>UPSERT</code>s the one identity row (last-write-wins on the
             shared fields) instead of inserting a duplicate. Declaring the column <code>UNIQUE NOT NULL</code> makes that
             invariant explicit at the schema level — guarding against any non-framework writer that might insert a
@@ -689,15 +711,15 @@ func StudentSchema() *core.TableSchema {
             aim all of them at a <em>different</em> identity — up to last-write-wins overwriting a third party's shared
             fields while the role row keeps pointing at the old base. A role <code>UPDATE</code> whose natural-key value
             diverges from the persisted identity is rejected with
-            <code>NaturalKeyImmutableNotification</code> (422): under shared-PK by pure arithmetic (the role id IS
-            <code>UUIDv5(naturalKey)</code>, so the id derived from the request must equal the row id), under separate-FK
-            by one PK-indexed in-TX probe comparing the stored FK with the request-derived id — which also covers a
+            <code>NaturalIDImmutableNotification</code> (422): under shared-ID by pure arithmetic (the role id IS
+            <code>UUIDv5(naturalKey)</code>, so the id derived from the request must equal the row id), under separate-ParentID
+            by one ID-indexed in-TX probe comparing the stored ParentID with the request-derived id — which also covers a
             hand-rolled manual handler that skipped load-first. Keeping the field off your update DTOs (as the reference
             consumer does) remains good hygiene; the guard makes it an invariant rather than a convention.</li>
     </ul>
 </div>
 <p>
-    <strong>Why this matters.</strong> The natural-key → deterministic-PK mapping is what lets the framework
+    <strong>Why this matters.</strong> The natural-key → deterministic-ID mapping is what lets the framework
     <strong>automatically normalize a DDD business entity into third normal form</strong> and denormalize it back: you
     model a flat role entity that carries the shared fields, declare the <code>TableSchema</code>, and the framework writes
     the shared columns into the one identity row (deduplicated by the natural key) and the role-private columns into the
@@ -718,8 +740,8 @@ func StudentSchema() *core.TableSchema {
     alongside the role's. A role <code>INSERT</code> upserts the identity and then applies a two-level existence matrix on
     the role row: an existing <em>active</em> role for that identity is a conflict (409); an <em>archived</em> role is
     <strong>invisible to the insert</strong> — soft-delete is delete here like on every other read/write path — so the
-    insert proceeds and your uniqueness contract on the FK column arbitrates the collision with the physical remnant (in
-    the shared-PK model the primary key vetoes it, mapped by the repository's <code>ConstraintBinding</code> — typically
+    insert proceeds and your uniqueness contract on the ParentID column arbitrates the collision with the physical remnant (in
+    the shared-ID model the primary key vetoes it, mapped by the repository's <code>ConstraintBinding</code> — typically
     to the same 409; under a full <code>UNIQUE(fk)</code> the index vetoes it the same way; under active-only uniqueness
     the insert lands next to the remnant — see the two contracts above). Bringing an archived role back is the explicit
     <code>/unarchive</code> verb's job, never a POST side effect — and that verb carries the same active-conflict veto:
@@ -758,7 +780,7 @@ func StudentSchema() *core.TableSchema {
     between the probe and the <code>DELETE</code> blocks it. For this protection to exist physically, declare the
     role→base FKs in your migrations as plain / <code>ON DELETE RESTRICT</code> constraints — that is ordinary relational
     hygiene, and it is what lets other systems share the database safely. Two things no framework can see, and the reason
-    <code>KeepOrphan</code> is the default: a reference held <em>without</em> a FK constraint, and a copy of the id stored
+    <code>KeepOrphan</code> is the default: a reference held <em>without</em> a foreign-key constraint, and a copy of the id stored
     in another database. Note that a foreign table declaring <code>ON DELETE CASCADE</code> opts itself into the
     destruction — that is that schema's explicit choice, not a veto.
 </div>
@@ -788,18 +810,18 @@ func StudentSchema() *core.TableSchema {
     <code>NewSharedBaseSchema(...)</code> value instead of a root schema. There is no separate base-child constructor:
 </p>
 <pre><code>var person = core.NewSharedBaseSchema("person").
-    PK("id").
+    ID("id").
     Field("Name", "name").
     Field("Document", "document").
-    NaturalKey("document").
+    NaturalID("document").
     SoftDelete("deleted_at").
     Child(core.NewTableSchema[Address]("person_address").  // child of the BASE, shared by all roles
-        PK("id").
-        FK("person_id").                                  // FK → the base's deterministic UUIDv5 id
+        ID("id").
+        ParentID("person_id").                                  // ParentID → the base's deterministic UUIDv5 id
         Field("Street", "street").
         SoftDelete("deleted_at"))</code></pre>
 <p>
-    The child's <code>FK</code> targets the base's deterministic id (not a role id), so the one child row is reachable
+    The child's <code>ParentID</code> targets the base's deterministic id (not a role id), so the one child row is reachable
     from every role of that identity. The role's Go struct carries the child collection (the same
     <code>AggregateChildren()</code> declaration a normal aggregate root uses) — checked when <code>.SharedBase(...)</code>
     is attached. On read, the children nest into <em>every</em> role's document; on the warm upsert insert they load as
@@ -812,7 +834,7 @@ func StudentSchema() *core.TableSchema {
 </p>
 <ul>
     <li><strong>A type is a base-child OR a role-child, never both.</strong> The framework dispatches each declared child
-        type to exactly one owner (the base or the role) when it injects the FK; a type claimed by both is a boot panic.</li>
+        type to exactly one owner (the base or the role) when it injects the ParentID; a type claimed by both is a boot panic.</li>
     <li><strong>Soft-delete is all-or-nothing per base.</strong> A base-child that declares <code>SoftDelete</code> requires
         the base itself to declare <code>SoftDelete</code> — the shared lifecycle converges as a unit (archiving the last
         active role archives the base <em>and</em> its native children), so a child cannot be archivable under a
@@ -857,7 +879,7 @@ func StudentSchema() *core.TableSchema {
     SQL Server, <code>RAW(16)</code> on Oracle), with
     <code>nil</code> ⇄ SQL <code>NULL</code> on the pointer. A <code>string</code> field is text, ALWAYS — even when the
     value happens to look like a uuid — pairing with <code>CHAR(36)</code>/<code>VARCHAR(36)</code> columns; nothing is
-    ever guessed from a value's shape. The PK and the child FK are framework-managed slots, always stored in the native
+    ever guessed from a value's shape. The ID and the child ParentID are framework-managed slots, always stored in the native
     id form. (<code>domain.ID</code> validates nothing on its own — <code>IsValid</code> stays the explicit seam; a
     non-uuid id value degrades to its text form and the column, not the codec, rejects it.)
 </p>
@@ -882,7 +904,7 @@ func StudentSchema() *core.TableSchema {
             <td><code>UUID</code></td>
             <td><strong>the identity type — the field's Go type IS the declaration.</strong> Bound as uuid text (the
                 server casts into the native <code>UUID</code> column) and restored by the framework's id scan proxy;
-                a nil <code>*domain.ID</code> ⇄ SQL <code>NULL</code>. The PK and every FK are framework-managed slots
+                a nil <code>*domain.ID</code> ⇄ SQL <code>NULL</code>. The ID and every ParentID are framework-managed slots
                 on <code>UUID</code> columns. A <code>string</code> field is NEVER coerced — it pairs with the text
                 family above, whatever the value's shape. There is <em>no</em> <code>google/uuid.UUID</code> field
                 mapping (see the note below).</td>
@@ -961,7 +983,7 @@ func StudentSchema() *core.TableSchema {
     On MySQL the engine is driven by <code>database/sql</code> + <code>go-sql-driver/mysql</code> (the DSN is forced to
     <code>parseTime=true</code> so temporal columns scan into <code>time.Time</code>). Placeholders are <code>?</code> and
     identifiers are backtick-quoted. The framework owns one value codec on top of the driver, driven by the field's Go
-    TYPE: a <code>domain.ID</code> / <code>*domain.ID</code> field (and the managed PK/FK slots) is stored as
+    TYPE: a <code>domain.ID</code> / <code>*domain.ID</code> field (and the managed ID/ParentID slots) is stored as
     <code>BINARY(16)</code> — bound as 16 raw bytes on write and in lifted criteria probes, restored to the canonical
     value by the id scan proxy on read, <code>nil</code> ⇄ SQL <code>NULL</code> on the pointer — and ids are generated
     in Go as <strong>UUID v7</strong> (time-ordered for InnoDB locality — there is no <code>RETURNING</code> and no DB
@@ -982,7 +1004,7 @@ func StudentSchema() *core.TableSchema {
             <td><code>BINARY(16)</code></td>
             <td><strong>the identity type — the field's Go type IS the declaration.</strong> Encoded to 16 raw bytes on
                 write and in lifted criteria probes; the id scan proxy restores the canonical value on read; a nil
-                <code>*domain.ID</code> ⇄ SQL <code>NULL</code>. The PK and every FK are framework-managed slots on
+                <code>*domain.ID</code> ⇄ SQL <code>NULL</code>. The ID and every ParentID are framework-managed slots on
                 <code>BINARY(16)</code>. A <code>string</code> field is NEVER coerced — it pairs with the text family
                 above (<code>CHAR(36)</code>/<code>VARCHAR(36)</code> for uuid-valued text), whatever the value's
                 shape. Ids are generated in Go (UUID v7) — no <code>gen_random_uuid()</code>, no DB default.</td>
@@ -1046,11 +1068,11 @@ func StudentSchema() *core.TableSchema {
 <p>
     On SQL Server the engine is driven by <code>database/sql</code> + <code>microsoft/go-mssqldb</code>. Placeholders are
     <code>@pN</code> and identifiers are bracket-quoted. The framework owns one value codec on top of the driver, driven
-    by the field's Go TYPE: a <code>domain.ID</code> / <code>*domain.ID</code> field (and the managed PK/FK slots) is
+    by the field's Go TYPE: a <code>domain.ID</code> / <code>*domain.ID</code> field (and the managed ID/ParentID slots) is
     stored as <code>BINARY(16)</code> — bound as 16 raw bytes on write and in lifted criteria probes, restored to the
     canonical value by the id scan proxy on read, <code>nil</code> ⇄ SQL <code>NULL</code> on the pointer — and ids are
     generated in Go as <strong>UUID v7</strong>. <code>BINARY(16)</code> compares bytewise, so the v7 time order keeps
-    the clustered PK append-friendly; <strong><code>UNIQUEIDENTIFIER</code> is deliberately NOT the id column type</strong>
+    the clustered ID append-friendly; <strong><code>UNIQUEIDENTIFIER</code> is deliberately NOT the id column type</strong>
     — SQL Server orders GUIDs last-byte-group-first, which would scatter time-ordered ids across the clustered index and
     fragment it. A <code>string</code> field binds and scans as plain text, whatever the value's shape. Everything else
     passes through to the driver's default conversions.
@@ -1068,7 +1090,7 @@ func StudentSchema() *core.TableSchema {
             <td><code>BINARY(16)</code></td>
             <td><strong>the identity type — the field's Go type IS the declaration.</strong> Encoded to 16 raw bytes on
                 write and in lifted criteria probes; the id scan proxy restores the canonical value on read; a nil
-                <code>*domain.ID</code> ⇄ SQL <code>NULL</code>. The PK and every FK are framework-managed slots on
+                <code>*domain.ID</code> ⇄ SQL <code>NULL</code>. The ID and every ParentID are framework-managed slots on
                 <code>BINARY(16)</code> — never <code>UNIQUEIDENTIFIER</code> (its GUID sort order destroys the v7 time
                 locality). A <code>string</code> field is NEVER coerced — it pairs with the text family above
                 (<code>CHAR(36)</code> for uuid-valued text), whatever the value's shape. Ids are generated in Go
@@ -1140,10 +1162,10 @@ func StudentSchema() *core.TableSchema {
     reserved-word list. The engine folds names back to the declared lowercase form at its read and error seams.
     Declare schema names in lowercase, as everywhere else; write your migration DDL unquoted — and when Oracle rejects
     a name as reserved (<code>ORA-03050</code>), quote that identifier in UPPERCASE (<code>"NUMBER"</code>) in the DDL. The framework owns one value codec on top of the driver, driven by the field's Go
-    TYPE: a <code>domain.ID</code> / <code>*domain.ID</code> field (and the managed PK/FK slots) is stored as
+    TYPE: a <code>domain.ID</code> / <code>*domain.ID</code> field (and the managed ID/ParentID slots) is stored as
     <code>RAW(16)</code> — bound as 16 raw bytes on write and in lifted criteria probes, restored to the canonical
     value by the id scan proxy on read, <code>nil</code> ⇄ SQL <code>NULL</code> on the pointer — and ids are generated
-    in Go as <strong>UUID v7</strong>; <code>RAW</code> compares bytewise, so the v7 time order keeps the PK index
+    in Go as <strong>UUID v7</strong>; <code>RAW</code> compares bytewise, so the v7 time order keeps the ID index
     append-friendly (no <code>SYS_GUID()</code>, no DB default). A <code>string</code> field binds and scans as plain
     text, whatever the value's shape. The engine forces go-ora's <code>lob fetch=post</code> connection option into the
     DSN when absent — without it the driver truncates native-<code>JSON</code> reads at 32&nbsp;KiB.
@@ -1162,7 +1184,7 @@ func StudentSchema() *core.TableSchema {
             <td><code>RAW(16)</code></td>
             <td><strong>the identity type — the field's Go type IS the declaration.</strong> Encoded to 16 raw bytes on
                 write and in lifted criteria probes; the id scan proxy restores the canonical value on read; a nil
-                <code>*domain.ID</code> ⇄ SQL <code>NULL</code>. The PK and every FK are framework-managed slots on
+                <code>*domain.ID</code> ⇄ SQL <code>NULL</code>. The ID and every ParentID are framework-managed slots on
                 <code>RAW(16)</code> — bytewise comparison preserves the UUID v7 time locality. A <code>string</code>
                 field is NEVER coerced — it pairs with the text family above (<code>VARCHAR2(36)</code> for uuid-valued
                 text), whatever the value's shape. Ids are generated in Go (UUID v7).</td>
@@ -1249,7 +1271,7 @@ func StudentSchema() *core.TableSchema {
     <li><strong>Adapting to non-conforming structural conventions.</strong> The schema maps <em>names</em>, it does not
         reshape a schema. Mapping a renamed column on an otherwise-conforming legacy table <a href="#table-schema~why-it-exists-and-why-it-is-mandatory">is supported</a>;
         adapting to a <em>shape</em> the framework does not manage is not — predicate-shaped soft-delete (a boolean/enum
-        flag instead of a timestamp column), a composite PK, and exotic column types outside the
+        flag instead of a timestamp column), a composite primary key, and exotic column types outside the
         <a href="#table-schema~supported-column-shapes">supported shapes</a> are all rejected. The scope is
         "an explicit map over the schema the framework manages", not "adapt to any arbitrary schema".</li>
     <li><strong>Many-to-many (N : N) inside a single entity.</strong> The schema decomposes <em>one</em> entity into a
@@ -1258,7 +1280,7 @@ func StudentSchema() *core.TableSchema {
         and by design: a many-to-many is not a decomposition of one entity, it is a <em>relationship between two
         independent aggregates</em> (each with its own lifecycle and boundary). Modeling it inside a single
         <code>TableSchema</code> would violate the aggregate boundary the framework rests on — root plus one level of
-        children, each row with a single owner (a child owned by its root, a sibling by its shared PK, a base identity by
+        children, each row with a single owner (a child owned by its root, a sibling by its shared ID, a base identity by
         the roles that reference it). The idiomatic expression is the DDD one: the two aggregates reference each other by
         <code>domain.ID</code>, and the join itself — when it carries any data of its own (a role, a date, a quantity) —
         becomes an <strong>associative entity of its own</strong> (its own aggregate, holding the two foreign keys). On

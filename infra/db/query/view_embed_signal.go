@@ -108,7 +108,7 @@ func viewFailureLabel(viewName string) string { return "view:" + viewName }
 
 // Before captures the pre-write state of a source document, needed ONLY when
 // some dependent embeds this view 1:N (the old parent of a moved child is
-// unreachable once the FK changed). Nil — and no Mongo read — otherwise, so a
+// unreachable once the ParentID changed). Nil — and no Mongo read — otherwise, so a
 // 1:1-only or unembedded view pays nothing. Call BEFORE the write. A read
 // error degrades to nil (the post-write signal is the recorded one).
 func (g *viewEmbedSignal) Before(ctx context.Context, viewName, id string) Document {
@@ -230,4 +230,3 @@ func (g *viewEmbedSignal) read(ctx context.Context, viewName, id string) (Docume
 	}
 	return docs[0], nil
 }
-

@@ -33,7 +33,7 @@ import (
 // GroupBy declares the grouping key(s) of an AggregateBy call — one or more Go
 // fields of the entity, resolved through the same schema resolution as the
 // criteria (sibling and shared-base fields pull their LEFT JOINs; grouping by
-// the PK is nonsensical — every group would hold one row).
+// the ID is nonsensical — every group would hold one row).
 type GroupBy struct {
 	fields []string
 }

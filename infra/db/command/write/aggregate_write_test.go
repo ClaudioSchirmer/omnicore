@@ -42,14 +42,14 @@ func (e *aggWriteRoot) AggregateChildren() []domain.AggregateValueObject {
 
 func aggWriteSchema() *TableSchema {
 	return NewTableSchema[*aggWriteRoot]("agg_w").
-		PK("id").
+		ID("id").
 		Field("Name", "name").
 		SoftDelete("deleted_at").
 		CreatedAt("created_at").
 		UpdatedAt("updated_at").
 		Child(NewTableSchema[aggWriteChild]("agg_w_children").
-			PK("id").
-			FK("agg_w_id").
+			ID("id").
+			ParentID("agg_w_id").
 			Field("Label", "label").
 			SoftDelete("deleted_at").
 			CreatedAt("created_at").
@@ -93,7 +93,7 @@ func TestBaseEngine_InsertAggregate_WritesMintedChildIDBack(t *testing.T) {
 		t.Fatalf("insertAggregate: %v", err)
 	}
 
-	// The persister mints the child PK inside the INSERT; the write-back must
+	// The persister mints the child ID inside the INSERT; the write-back must
 	// surface it in the aggregate map so post-write readers (FromEntity
 	// projections, outbox/audit snapshots) see the child as persisted.
 	items := domain.GetCurrentItemsOf[aggWriteChild](&root.AggregateRoot)
@@ -185,14 +185,14 @@ func TestBaseEngine_DeleteAggregate(t *testing.T) {
 	if err := be.Delete(newBuilderCtx(), d, aggWriteSchema(), firingHook); err != nil {
 		t.Fatalf("deleteAggregate: %v", err)
 	}
-	// The framework owns the cascade in Go: an explicit child DELETE (by FK)
+	// The framework owns the cascade in Go: an explicit child DELETE (by ParentID)
 	// precedes the root DELETE, then outbox + audit = 4 statements — no reliance
 	// on a database ON DELETE CASCADE.
 	if len(tx.execs) != 4 {
 		t.Fatalf("expected 4 statements (child delete + root delete + outbox + audit), got %d: %v", len(tx.execs), tx.execs)
 	}
 	if !strings.HasPrefix(tx.execs[0], "DELETE FROM agg_w_children WHERE agg_w_id") {
-		t.Errorf("stmt[0]: expected child DELETE by FK first, got %q", tx.execs[0])
+		t.Errorf("stmt[0]: expected child DELETE by ParentID first, got %q", tx.execs[0])
 	}
 	if !strings.HasPrefix(tx.execs[1], "DELETE FROM agg_w WHERE id") {
 		t.Errorf("stmt[1]: expected root DELETE after children, got %q", tx.execs[1])
@@ -201,7 +201,7 @@ func TestBaseEngine_DeleteAggregate(t *testing.T) {
 
 // A declared child with NO loaded items must still be deleted: deleteAggregate
 // enumerates the schema's declared ChildSchemas(), not the loaded aggregate
-// items, so every child table is cleared by FK — the reach of ON DELETE CASCADE
+// items, so every child table is cleared by ParentID — the reach of ON DELETE CASCADE
 // without depending on it.
 func TestBaseEngine_DeleteAggregate_DeclaredChildWithoutLoadedItems(t *testing.T) {
 	root := &aggWriteRoot{Name: "r"}
@@ -218,7 +218,7 @@ func TestBaseEngine_DeleteAggregate_DeclaredChildWithoutLoadedItems(t *testing.T
 		t.Fatalf("expected 4 statements even with no loaded children, got %d: %v", len(tx.execs), tx.execs)
 	}
 	if !strings.HasPrefix(tx.execs[0], "DELETE FROM agg_w_children WHERE agg_w_id") {
-		t.Errorf("stmt[0]: declared child must be deleted by FK, got %q", tx.execs[0])
+		t.Errorf("stmt[0]: declared child must be deleted by ParentID, got %q", tx.execs[0])
 	}
 }
 
@@ -246,7 +246,7 @@ func TestBaseEngine_InsertAggregate_UndeclaredChildSchemaIsError(t *testing.T) {
 
 	// Schema WITHOUT the child declaration → childSchemaOrErr must fail loudly.
 	schemaNoChild := NewTableSchema[*aggWriteRoot]("agg_w").
-		PK("id").Field("Name", "name").
+		ID("id").Field("Name", "name").
 		SoftDelete("deleted_at").CreatedAt("created_at").UpdatedAt("updated_at")
 
 	tx := &recTx{}

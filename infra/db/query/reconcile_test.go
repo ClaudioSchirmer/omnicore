@@ -228,7 +228,7 @@ func TestRunReconcileLoop_PacesAndStops(t *testing.T) {
 // degrading to a presence-only check would silently narrow what the sweep
 // actually proves. It must refuse rather than under-report.
 func TestReconcile_RequiresARevisionColumn(t *testing.T) {
-	schema := core.NewTableSchema[*builderTestEntity]("norev").PK("id").Field("Email", "email")
+	schema := core.NewTableSchema[*builderTestEntity]("norev").ID("id").Field("Email", "email")
 	view := View("norev").Schema(schema).Version(1)
 	eng := newFakeEngine(&fakeQuerier{})
 	s := NewSyncEngine(eng, newFakeMongo(&fakeColl{}), identityResolver, nil, "grp", []*ViewDefinition{view}, 1)

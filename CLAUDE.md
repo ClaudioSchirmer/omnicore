@@ -111,11 +111,11 @@ For any contract, behavior, field list, or example, open the mapped file under `
 ### Read side (CQRS)
 | Topic | Section | Essence |
 |---|---|---|
-| QueryHandler, `ViewReader`, `ReadCriteria`/`Page`, CQRS split, read-side composition catalog, `ComposedView` (read-time join: primary + FK legs, never materialized) | `query-side.html` | Eventually-consistent Mongo projections; documents, not aggregates; composed names read like view names. |
+| QueryHandler, `ViewReader`, `ReadCriteria`/`Page`, CQRS split, read-side composition catalog, `ComposedView` (read-time join: primary + foreign-key legs, never materialized) | `query-side.html` | Eventually-consistent Mongo projections; documents, not aggregates; composed names read like view names. |
 | Auto query handlers (`QueryWithParams`/`QueryByID`), filter operators, control keys (`fields`/`sort`/`after`/`before`/`limit`/`onlyTotal`), tabular export (CSV/XLSX) | `auto-query-handlers.html` | Allowlist by tag; projector `func(map[string]any) R`; keyset pagination. |
 | Manual query handler (`NewQueryParser`, `ParseCriteria`, `RespondPaged`) | `custom-query-handler.html` | Escape hatch for bespoke parsing/envelopes. |
 | Concrete read lifecycle, composer, SyncEngine, keep-by-default archive | `read-lifecycle-map.html` | Mongo mirrors PG; `DeleteOnArchive()` opt-in for hot-tier. |
-| `SharedBaseView` — the all-in-one identity projection (base root + one sub-document per role) | `views.html` (SharedBaseView) | `SharedBaseView(name).Schema(base).Role(...)`; `_id` = base PK; role events recompose; active-first segment pick. |
+| `SharedBaseView` — the all-in-one identity projection (base root + one sub-document per role) | `views.html` (SharedBaseView) | `SharedBaseView(name).Schema(base).Role(...)`; `_id` = base id; role events recompose; active-first segment pick. |
 
 ### Pipeline
 | Topic | Section | Essence |

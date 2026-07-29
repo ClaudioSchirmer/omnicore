@@ -19,7 +19,7 @@ import (
 // win is largest on the engines with the heaviest per-query cost.
 //
 // Correctness rests on one property: the group key is fmt("%v", row[col]) taken on
-// BOTH sides — the parent's PK/FK value AND the child's FK value. Both are the same
+// BOTH sides — the parent's ID/ParentID value AND the child's ParentID value. Both are the same
 // id-typed column read through the same core.Querier.QueryMaps surface, so equal
 // ids stringify equally regardless of the backend's physical id encoding; and each
 // key is re-encoded through the exact encodeKey the single-row path uses, so the IN
@@ -108,8 +108,8 @@ func (c *Composer) fetchInGrouped(ctx context.Context, schema *core.TableSchema,
 }
 
 // mergeOwnerSiblingsBatch is the set-based mergeOwnerSiblings: each declared
-// sibling is fetched for the whole batch by the shared PK, grouped, then merged
-// FLAT into each owner doc (columns minus the shared PK). A sibling is 1:1 by PK,
+// sibling is fetched for the whole batch by the shared ID, grouped, then merged
+// FLAT into each owner doc (columns minus the shared ID). A sibling is 1:1 by ID,
 // so at most one row per key — take the first.
 func (c *Composer) mergeOwnerSiblingsBatch(ctx context.Context, docs []Document, ownerSchema *core.TableSchema, includeArchived bool) error {
 	sibs := ownerSchema.Siblings()
@@ -140,7 +140,7 @@ func (c *Composer) mergeOwnerSiblingsBatch(ctx context.Context, docs []Document,
 }
 
 // mergeSharedBaseBatch is the set-based mergeSharedBase: the shared base is fetched
-// for the whole batch by its PK (the roles' FK values), then merged FLAT into each
+// for the whole batch by its ID (the roles' ParentID values), then merged FLAT into each
 // role doc — with the SAME managed-column skip as the per-row path so a base's
 // NULL soft-delete / its timestamps never overwrite the role's authoritative ones.
 func (c *Composer) mergeSharedBaseBatch(ctx context.Context, docs []Document, schema *core.TableSchema, includeArchived bool) error {
@@ -149,11 +149,11 @@ func (c *Composer) mergeSharedBaseBatch(ctx context.Context, docs []Document, sc
 		return nil
 	}
 	keys := collectKeys(docs, fkCol)
-	grouped, err := c.fetchInGrouped(ctx, base, base.Table(), base.PKColumn(), keys, "", includeArchived)
+	grouped, err := c.fetchInGrouped(ctx, base, base.Table(), base.IDColumn(), keys, "", includeArchived)
 	if err != nil {
 		return err
 	}
-	skip := map[string]bool{base.PKColumn(): true}
+	skip := map[string]bool{base.IDColumn(): true}
 	if col, ok := base.SoftDeleteColumn(); ok {
 		if _, roleHas := schema.SoftDeleteColumn(); roleHas {
 			skip[col] = true
@@ -185,9 +185,9 @@ func (c *Composer) mergeSharedBaseBatch(ctx context.Context, docs []Document, sc
 }
 
 // mergeSharedBaseChildrenBatch is the set-based mergeSharedBaseChildren: each base
-// child collection is fetched for the whole batch by its FK to the base id (the
-// role's FK already on the doc), grouped, then nested under its Go segment. A doc
-// without the base FK gets no base-child segments (as in the per-row path).
+// child collection is fetched for the whole batch by its ParentID to the base id (the
+// role's ParentID already on the doc), grouped, then nested under its Go segment. A doc
+// without the base ParentID gets no base-child segments (as in the per-row path).
 func (c *Composer) mergeSharedBaseChildrenBatch(ctx context.Context, docs []Document, schema *core.TableSchema, includeArchived bool) error {
 	base, fkCol, ok := schema.SharedBaseRef()
 	if !ok {
@@ -200,7 +200,7 @@ func (c *Composer) mergeSharedBaseChildrenBatch(ctx context.Context, docs []Docu
 	keys := collectKeys(docs, fkCol)
 	for _, bc := range baseChildren {
 		sd, _ := schemaSoftDelete(bc)
-		grouped, err := c.fetchInGrouped(ctx, bc, bc.Table(), bc.FKColumn(), keys, sd, includeArchived)
+		grouped, err := c.fetchInGrouped(ctx, bc, bc.Table(), bc.ParentIDColumn(), keys, sd, includeArchived)
 		if err != nil {
 			return err
 		}
@@ -216,7 +216,7 @@ func (c *Composer) mergeSharedBaseChildrenBatch(ctx context.Context, docs []Docu
 }
 
 // mergeOwnChildrenBatch is the set-based mergeOwnChildren: each own child
-// collection is fetched for the whole batch by root.PK → child.FK, grouped, then
+// collection is fetched for the whole batch by root.ID → child.ParentID, grouped, then
 // nested under its Go segment. Every fetched child row also gets its OWN siblings
 // merged flat — batched across ALL child rows of the batch (one query per
 // child-sibling table), not per child row.
@@ -229,7 +229,7 @@ func (c *Composer) mergeOwnChildrenBatch(ctx context.Context, docs []Document, s
 	keys := collectKeys(docs, pkCol)
 	for _, child := range children {
 		sd, _ := schemaSoftDelete(child)
-		grouped, err := c.fetchInGrouped(ctx, child, child.Table(), child.FKColumn(), keys, sd, includeArchived)
+		grouped, err := c.fetchInGrouped(ctx, child, child.Table(), child.ParentIDColumn(), keys, sd, includeArchived)
 		if err != nil {
 			return err
 		}
@@ -272,7 +272,7 @@ func (c *Composer) composeBaseRootedRowsBatched(ctx context.Context, view *ViewD
 		baseIDs := collectKeys(rows, basePK)
 
 		// Active role rows (or, without soft-delete, simply the row) for the whole
-		// batch in one lookup, grouped by the base FK.
+		// batch in one lookup, grouped by the base ParentID.
 		var grouped map[string][]Document
 		var err error
 		if !hasSD {
@@ -382,7 +382,7 @@ func (c *Composer) findEmbedsGrouped(ctx context.Context, coll PhysicalCollectio
 // per-row path (fetchMongoEmbed) produces:
 //   - 1:N: a parent with a nil/absent join key gets no field; otherwise the field
 //     is the (possibly nil) grouped slice — identical to FindManyByField's result.
-//   - 1:1: a parent with a nil/absent FK, or no matching embed doc, leaves the
+//   - 1:1: a parent with a nil/absent ParentID, or no matching embed doc, leaves the
 //     field ABSENT; otherwise it is the single matched doc.
 //
 // Embeds are single-level (a source carries no embeds of its own), so this
@@ -399,7 +399,7 @@ func (c *Composer) applyEmbedsBatch(ctx context.Context, docs []Document, parent
 	for _, e := range embeds {
 		coll := c.resolver.Active(e.leg.Collection())
 		if e.many {
-			// 1:N — embed.JoinColumn == parent.PK.
+			// 1:N — embed.JoinColumn == parent.ID.
 			keys := make([]any, 0, len(docs))
 			for _, doc := range docs {
 				if v, ok := doc[parentPK]; ok && v != nil {

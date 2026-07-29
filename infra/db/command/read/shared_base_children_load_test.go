@@ -39,10 +39,10 @@ func (e *roleAggLoad) AggregateChildren() []domain.AggregateValueObject {
 }
 
 func roleAggLoadSchema() *TableSchema {
-	base := NewSharedBaseSchema("pessoa").Revision("revision").PK("id").Field("Name", "name").NaturalKey("name").
-		Child(NewTableSchema[addrLoad]("endereco").PK("id").FK("pessoa_id").Field("Street", "street"))
+	base := NewSharedBaseSchema("pessoa").Revision("revision").ID("id").Field("Name", "name").NaturalID("name").
+		Child(NewTableSchema[addrLoad]("endereco").ID("id").ParentID("pessoa_id").Field("Street", "street"))
 	return NewTableSchema[*roleAggLoad]("aluno").
-		PK("id").Revision("revision").
+		ID("id").Revision("revision").
 		Field("Matricula", "matricula").
 		SharedBase(base, "pessoa_id")
 }
@@ -78,7 +78,7 @@ func TestHydrateBaseChildren_LoadsAsConstructor(t *testing.T) {
 		t.Fatalf("hydrateBaseChildren: %v", err)
 	}
 
-	// The base-child JOIN must link the base-child to the role on the shared FK.
+	// The base-child JOIN must link the base-child to the role on the shared ParentID.
 	if !strings.Contains(joinSQL, "FROM endereco JOIN aluno") || !strings.Contains(joinSQL, "endereco.pessoa_id = aluno.pessoa_id") {
 		t.Errorf("base-children must JOIN base-child → role on the shared base id; got %q", joinSQL)
 	}
@@ -88,7 +88,7 @@ func TestHydrateBaseChildren_LoadsAsConstructor(t *testing.T) {
 	}
 	for _, it := range items {
 		if it.GetID().Value() == "" {
-			t.Error("a hydrated base-child must carry its own PK (for the UPDATE diff)")
+			t.Error("a hydrated base-child must carry its own ID (for the UPDATE diff)")
 		}
 	}
 }

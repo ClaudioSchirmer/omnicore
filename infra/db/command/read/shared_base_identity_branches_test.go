@@ -159,9 +159,9 @@ func TestLoadSharedBaseIdentity_ErrorSurfaces(t *testing.T) {
 
 func TestLoadBaseChildrenConstructor_SkipPaths(t *testing.T) {
 	t.Run("baseWithoutChildren", func(t *testing.T) {
-		base := NewSharedBaseSchema("pessoa").Revision("revision").PK("id").Field("Name", "name").NaturalKey("name")
+		base := NewSharedBaseSchema("pessoa").Revision("revision").ID("id").Field("Name", "name").NaturalID("name")
 		schema := NewTableSchema[*roleAggLoad]("aluno").
-			PK("id").Revision("revision").Field("Matricula", "matricula").SoftDelete("deleted_at").
+			ID("id").Revision("revision").Field("Matricula", "matricula").SoftDelete("deleted_at").
 			SharedBase(base, "pessoa_id")
 		l := newRoleLoader(baseRowThenNone(nil), schema)
 		got, existed, err := l.LoadSharedBaseIdentity(context.Background(), &roleAggLoad{Name: "Ana"})
@@ -170,10 +170,10 @@ func TestLoadBaseChildrenConstructor_SkipPaths(t *testing.T) {
 		}
 	})
 	t.Run("baseChildWithoutColumnsSkips", func(t *testing.T) {
-		base := NewSharedBaseSchema("pessoa").Revision("revision").PK("id").Field("Name", "name").NaturalKey("name").
+		base := NewSharedBaseSchema("pessoa").Revision("revision").ID("id").Field("Name", "name").NaturalID("name").
 			Child(noColsChildSchema("pessoa_id"))
 		schema := NewTableSchema[*noColsRole]("aluno").
-			PK("id").Field("Matricula", "matricula").SoftDelete("deleted_at").
+			ID("id").Field("Matricula", "matricula").SoftDelete("deleted_at").
 			SharedBase(base, "pessoa_id")
 		l := NewAggregateLoader[*noColsRole](fakeEngine(baseRowThenNone(nil)), func() *noColsRole { return &noColsRole{} }).
 			WithSchema(schema)

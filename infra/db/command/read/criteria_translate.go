@@ -187,7 +187,7 @@ func compileWhere(e criteria.Expr, resolve core.FieldResolver, dialect Dialect, 
 // soft-delete column, or "" to leave it bare. It MUST be non-empty when the
 // query JOINs another soft-deletable table (a role's SharedBase, whose own
 // deleted_at would otherwise make the bare column reference ambiguous), matching
-// how the leading PK is qualified under the same joins.
+// how the leading ID is qualified under the same joins.
 func scopeGate(s criteria.Scope, schema *TableSchema, dialect Dialect, qualifier string) string {
 	col, ok := schema.SoftDeleteColumn()
 	if !ok {

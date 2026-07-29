@@ -14,7 +14,7 @@ import (
 // exact 16-byte form, and a non-UUID id surfaces a wiring error instead of
 // silently writing garbage into a RAW(16) column. Storing the canonical bytes
 // verbatim is the load-bearing decision here: RAW compares bytewise, so the
-// UUIDv7 time order survives in the PK index (the BINARY(16) rationale,
+// UUIDv7 time order survives in the ID index (the BINARY(16) rationale,
 // verified against a live Oracle Free 23ai).
 func TestUUIDBytes(t *testing.T) {
 	u := uuid.MustParse("018f8b2c-1d3e-7a9b-bc4d-5e6f7a8b9c0d")

@@ -20,17 +20,17 @@ type shapeChild struct {
 }
 
 // shapeView builds a realistic view: root users(id,email,name + managed
-// cols) with an embedded addresses(id, user_id FK, zip_code) collection.
+// cols) with an embedded addresses(id, user_id ParentID, zip_code) collection.
 func shapeView() *ViewDefinition {
 	root := core.NewTableSchema[shapeRoot]("users").
-		PK("id").
+		ID("id").
 		Field("Email", "email").
 		Field("Name", "name").
 		SoftDelete("deleted_at").
 		CreatedAt("created_at").
 		UpdatedAt("updated_at")
 	child := core.NewExternalSchema("addresses").
-		PK("id").
+		ID("id").
 		Field("ZipCode", "zip_code")
 	return View("users").Version(1).
 		Schema(root).
@@ -42,7 +42,7 @@ func TestValidateMongoSpec_IndexKey_ValidColumns_OK(t *testing.T) {
 		Index("email"),
 		Index("created_at").Desc(),  // managed column
 		Index("addresses.zip_code"), // embed nested column
-		Index("addresses.user_id"),  // embed FK column
+		Index("addresses.user_id"),  // embed ParentID column
 		Compound("email", "name"),
 		TextIndex("name", "email"),
 	)
@@ -136,13 +136,13 @@ type sbShapeRole struct {
 
 func sbShapeView() *ViewDefinition {
 	base := core.NewSharedBaseSchema("persons").Revision("revision").
-		PK("id").
+		ID("id").
 		Field("Document", "document").
 		Field("Name", "name").
 		Field("Email", "email").
-		NaturalKey("document")
+		NaturalID("document")
 	role := core.NewTableSchema[sbShapeRole]("users").
-		PK("id").
+		ID("id").
 		SharedBase(base, "person_id").
 		Field("UserName", "user_name").
 		Sibling(core.NewSiblingSchema[sbShapeRole]("user_configurations").

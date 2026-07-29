@@ -75,8 +75,8 @@ func createLoaderTables(t *testing.T, p *postgres.Postgres) {
 
 func loaderTagSchema() *core.TableSchema {
 	return core.NewTableSchema[loaderTagVO]("loader_tag_vos").
-		PK("id").
-		FK("loader_root_id").
+		ID("id").
+		ParentID("loader_root_id").
 		Field("Label", "label").
 		SoftDelete("deleted_at").
 		CreatedAt("created_at").
@@ -86,7 +86,7 @@ func loaderTagSchema() *core.TableSchema {
 // loaderRootSchema declares the loaderRoot aggregate with both children.
 func loaderRootSchema() *core.TableSchema {
 	return core.NewTableSchema[*loaderRoot]("loader_roots").
-		PK("id").
+		ID("id").
 		Revision("revision").
 		Field("Name", "name").
 		Field("Email", "email").
@@ -95,8 +95,8 @@ func loaderRootSchema() *core.TableSchema {
 		UpdatedAt("updated_at").
 		Child(loaderTagSchema()).
 		Child(core.NewTableSchema[loaderNoteVO]("loader_note_vos").
-			PK("id").
-			FK("loader_root_id").
+			ID("id").
+			ParentID("loader_root_id").
 			Field("Body", "body").
 			SoftDelete("deleted_at").
 			CreatedAt("created_at").

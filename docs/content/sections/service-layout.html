@@ -93,7 +93,7 @@
     <h3>Migrations</h3>
     <ul>
         <li>The service's own sequence starts at <code>0001</code>, independent of the framework's (<a href="#migrations">Migrations</a>).</li>
-        <li><strong>One migration pair per scaffolded entity</strong> — all of the entity's tables (base, role, every child, every sibling) in a single <code>000N_&lt;entity&gt;.up.sql</code> in FK-dependency order, with its <code>.down.sql</code> dropping in reverse. Not one pair per table: five files for one entity wastes version numbers and scatters one atomic schema.</li>
+        <li><strong>One migration pair per scaffolded entity</strong> — all of the entity's tables (base, role, every child, every sibling) in a single <code>000N_&lt;entity&gt;.up.sql</code> in ParentID-dependency order, with its <code>.down.sql</code> dropping in reverse. Not one pair per table: five files for one entity wastes version numbers and scatters one atomic schema.</li>
         <li><strong>Child and sibling tables are owner-prefixed</strong> — <code>person_addresses</code>, <code>student_grades</code>, <code>student_scholarships</code> — never bare generic names.</li>
         <li><strong>Unique constraints are named <code>&lt;table&gt;_&lt;col&gt;_key</code></strong>, identically in every dialect, so the repository binds a single name.</li>
         <li>Tables and columns are snake_case; the Go↔column type mapping per dialect is the <a href="#table-schema">TableSchema</a> section's authority.</li>

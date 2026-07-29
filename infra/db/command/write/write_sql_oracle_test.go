@@ -160,7 +160,7 @@ func TestBuildInsert_Oracle_TypedIDFields(t *testing.T) {
 	id := "11111111-1111-1111-1111-111111111111"
 	_, args := buildInsert(testOracleDialect{}, "orders", "id", id, fields, nil, testNow, "")
 
-	// Bind order: PK, then SortedKeys (absent_id, buyer_id, legacy_ref).
+	// Bind order: ID, then SortedKeys (absent_id, buyer_id, legacy_ref).
 	if len(args) != 4 {
 		t.Fatalf("args = %v, want 4", args)
 	}

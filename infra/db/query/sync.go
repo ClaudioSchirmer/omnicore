@@ -147,7 +147,7 @@ func (s *SyncEngine) WithKafkaTracing(on bool) *SyncEngine {
 //   - the outbox payload JSON → message.Value
 //
 // The payload carries the event's STRUCTURAL IDENTITY in its "_ids" block
-// (aggregate PK, shared-base id + revision, purge flag), so routing decisions
+// (aggregate ID, shared-base id + revision, purge flag), so routing decisions
 // — which shared identity to fan out for, which person document a role
 // DELETED belongs to — read the payload and touch no database. Entity-rooted
 // views project their document straight from the payload; SharedBaseView and
@@ -865,7 +865,7 @@ func (s *SyncEngine) applyConsultUpsert(ctx context.Context, view *ViewDefinitio
 // creates. The shared-base fan-out passes false: it targets ids another
 // writer's FindIDsByField snapshot produced, so a missing document there means
 // a role deleted concurrently — upserting would resurrect a skeleton carrying
-// only base fields (no PK, no FK, no deleted_at: invisible to every future
+// only base fields (no ID, no ParentID, no deleted_at: invisible to every future
 // fan-out and reconciliation, yet listed as an active row) that only a full
 // rebuild could remove.
 func (s *SyncEngine) applyProjection(ctx context.Context, viewName, id string, stages []Document, upsert bool) error {
@@ -1239,7 +1239,7 @@ func (s *SyncEngine) pullSideRepair(ctx context.Context, event kafkaEvent, ids p
 // fanOutSharedBase recomposes every role-view document that references a changed
 // shared identity (baseID — from a base event's aggregate_id or a role event's
 // _ids.base_id). For each role view embedding the base, it finds the role docs
-// whose FK equals the base id (index-only via FindIDsByField on the role's link
+// whose ParentID equals the base id (index-only via FindIDsByField on the role's link
 // column) and recomposes each by its own id — so a shared-field change made
 // through one role reaches the read models of the OTHER roles of that identity.
 // A role row that has since vanished is removed from its view.

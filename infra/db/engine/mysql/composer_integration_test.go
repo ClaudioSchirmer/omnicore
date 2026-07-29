@@ -24,13 +24,13 @@ import (
 //   - QueryMaps decodes a BINARY(16) column back to a canonical uuid string
 //     (and other columns out of the driver's raw []byte into strings);
 //   - the root fetch encodes the (uuid-string) key into the 16-byte form so the
-//     WHERE matches the stored BINARY(16) PK;
+//     WHERE matches the stored BINARY(16) ID;
 //   - the one-to-many embed round-trips the parent id extracted from the composed
-//     root doc (a string) back into bytes to match the child FK.
+//     root doc (a string) back into bytes to match the child ParentID.
 
-// The relational EmbedMany integration test (root + BINARY(16) FK embed) was
+// The relational EmbedMany integration test (root + BINARY(16) ParentID embed) was
 // removed with the relational embed path. Own-child projection with the same
-// BINARY(16) FK re-encoding is covered by TestMySQLComposer_OwnChild below.
+// BINARY(16) ParentID re-encoding is covered by TestMySQLComposer_OwnChild below.
 
 type flagRow struct {
 	domain.BaseEntity
@@ -40,7 +40,7 @@ type flagRow struct {
 
 func flagSchema() *core.TableSchema {
 	return core.NewTableSchema[*flagRow]("flags").
-		PK("id").
+		ID("id").
 		Field("Active", "active").
 		Field("Name", "name")
 }
@@ -52,7 +52,7 @@ type mcLineRow struct {
 
 // TestMySQLComposer_OwnChild proves the Phase-1 own-child auto path on MySQL: the
 // child is declared on the ROOT schema (no EmbedMany) and projects automatically,
-// joined root.PK → child.FK with the BINARY(16) id re-encoded for the WHERE.
+// joined root.ID → child.ParentID with the BINARY(16) id re-encoded for the WHERE.
 func TestMySQLComposer_OwnChild(t *testing.T) {
 	eng, raw := setup(t)
 	ctx := ctxFor()
@@ -95,9 +95,9 @@ func TestMySQLComposer_OwnChild(t *testing.T) {
 
 	// Child declared on the ROOT schema (replicating flatSchema's fields) — no embed.
 	rootWithChild := core.NewTableSchema[*flatPerson]("flat_persons").
-		PK("id").Field("Name", "name").Field("Email", "email").Field("Phone", "phone").
+		ID("id").Field("Name", "name").Field("Email", "email").Field("Phone", "phone").
 		SoftDelete("deleted_at").CreatedAt("created_at").UpdatedAt("updated_at").
-		Child(core.NewTableSchema[mcLineRow]("mc_lines").PK("id").FK("user_id").
+		Child(core.NewTableSchema[mcLineRow]("mc_lines").ID("id").ParentID("user_id").
 			Field("Qty", "qty").SoftDelete("deleted_at"))
 	view := query.View("flat_persons").Version(1).Schema(rootWithChild)
 
@@ -115,7 +115,7 @@ func TestMySQLComposer_OwnChild(t *testing.T) {
 	}
 	for _, l := range lines {
 		if uid, ok := l["user_id"].(string); !ok || uid != res.ID.Value() {
-			t.Fatalf("child user_id = %#v, want %q (BINARY(16) FK must decode to the root uuid)", l["user_id"], res.ID)
+			t.Fatalf("child user_id = %#v, want %q (BINARY(16) ParentID must decode to the root uuid)", l["user_id"], res.ID)
 		}
 	}
 }

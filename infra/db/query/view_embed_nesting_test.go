@@ -33,15 +33,15 @@ type nestCustomer struct{ ID string }
 // productWithLines is the SOURCE view's schema: a root with one native child
 // collection that carries its own soft-delete lifecycle.
 func productWithLines() *core.TableSchema {
-	return core.NewTableSchema[nestProduct]("products").PK("id").SoftDelete("deleted_at").
+	return core.NewTableSchema[nestProduct]("products").ID("id").SoftDelete("deleted_at").
 		Field("Name", "name").
-		Child(core.NewTableSchema[nestLine]("product_lines").PK("id").FK("products_id").
+		Child(core.NewTableSchema[nestLine]("product_lines").ID("id").ParentID("products_id").
 			SoftDelete("deleted_at").Field("Label", "label"))
 }
 
 // lineSeg is the derived doc segment of the source view's child collection —
 // computed, never hardcoded (the derivation is from the Go TYPE name).
-var lineSeg = childDocSegment(core.NewTableSchema[nestLine]("product_lines").PK("id").FK("products_id"))
+var lineSeg = childDocSegment(core.NewTableSchema[nestLine]("product_lines").ID("id").ParentID("products_id"))
 
 func productsWithLinesView() *ViewDefinition {
 	return View("products").Version(1).Schema(productWithLines())
@@ -50,7 +50,7 @@ func productsWithLinesView() *ViewDefinition {
 // salesEmbeddingProducts materializes that source 1:1 inside "sales".
 func salesEmbeddingProducts() *ViewDefinition {
 	return View("sales").Version(1).
-		Schema(core.NewTableSchema[nestSale]("sales").PK("id").SoftDelete("deleted_at").
+		Schema(core.NewTableSchema[nestSale]("sales").ID("id").SoftDelete("deleted_at").
 			Field("ProductID", "product_id")).
 		Embed(JoinView(productsWithLinesView(), "Product", "product")).On("product_id").
 		Indexes(Index("product_id"))
@@ -153,7 +153,7 @@ func TestNestedViewLeg_StripsArchivedChildrenInsideSegment(t *testing.T) {
 // children — the array-in-array shape. Every element's child collection strips.
 func TestNestedViewLeg_StripsInsideEmbedManyElements(t *testing.T) {
 	dashboard := View("dashboard").Version(1).
-		Schema(core.NewTableSchema[nestCustomer]("customers").PK("id").SoftDelete("deleted_at")).
+		Schema(core.NewTableSchema[nestCustomer]("customers").ID("id").SoftDelete("deleted_at")).
 		EmbedMany(JoinView(productsWithLinesView(), "Products", "products")).On("owner_id")
 	doc := map[string]any{
 		"_id": "c1",

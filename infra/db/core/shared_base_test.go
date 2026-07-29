@@ -8,25 +8,25 @@ import "testing"
 
 func sharedBaseFixture() *TableSchema {
 	return NewSharedBaseSchema("pessoa").Revision("revision").
-		PK("id").
+		ID("id").
 		Field("Name", "name").
 		Field("Created", "document"). // Created is a real schemaSample field; "document" is its column
-		NaturalKey("document").
+		NaturalID("document").
 		OrphanPolicy(DeleteWhenUnreferenced)
 }
 
 func TestSharedBase_HappyPath(t *testing.T) {
 	base := sharedBaseFixture()
 	role := NewTableSchema[schemaSample]("aluno").
-		PK("id").
+		ID("id").
 		Field("Removed", "matricula").
 		SharedBase(base, "pessoa_id")
 
 	if !base.IsSharedBase() {
 		t.Error("NewSharedBaseSchema must report IsSharedBase() == true")
 	}
-	if base.NaturalKeyColumn() != "document" {
-		t.Errorf("NaturalKeyColumn() = %q, want \"document\"", base.NaturalKeyColumn())
+	if base.NaturalIDColumn() != "document" {
+		t.Errorf("NaturalIDColumn() = %q, want \"document\"", base.NaturalIDColumn())
 	}
 	if base.OrphanPolicyValue() != DeleteWhenUnreferenced {
 		t.Errorf("OrphanPolicyValue() = %v, want DeleteWhenUnreferenced", base.OrphanPolicyValue())
@@ -44,8 +44,8 @@ func TestSharedBase_HappyPath(t *testing.T) {
 // fields (the base is merged FLAT into the role doc), and the scan plan maps the
 // base columns to the role's struct field indices.
 func TestSharedBase_ReadTranslationAndScanPlan(t *testing.T) {
-	base := sharedBaseFixture() // PK id, Name→name, Created→document, NaturalKey document
-	role := NewTableSchema[schemaSample]("aluno").PK("id").Field("Removed", "matricula").
+	base := sharedBaseFixture() // ID id, Name→name, Created→document, NaturalID document
+	role := NewTableSchema[schemaSample]("aluno").ID("id").Field("Removed", "matricula").
 		SharedBase(base, "pessoa_id")
 
 	if c, ok := role.ColumnForRead("Name"); !ok || c != "name" {
@@ -68,39 +68,39 @@ func TestSharedBase_ReadTranslationAndScanPlan(t *testing.T) {
 
 func TestSharedBase_BootGuards(t *testing.T) {
 	role := func() *TableSchema {
-		return NewTableSchema[schemaSample]("aluno").PK("id").Field("Removed", "matricula")
+		return NewTableSchema[schemaSample]("aluno").ID("id").Field("Removed", "matricula")
 	}
 
-	assertPanics(t, "NaturalKey on a non-shared-base", func() {
-		NewTableSchema[schemaSample]("t").PK("id").NaturalKey("email")
+	assertPanics(t, "NaturalID on a non-shared-base", func() {
+		NewTableSchema[schemaSample]("t").ID("id").NaturalID("email")
 	})
 	assertPanics(t, "OrphanPolicy on a non-shared-base", func() {
-		NewTableSchema[schemaSample]("t").PK("id").OrphanPolicy(KeepOrphan)
+		NewTableSchema[schemaSample]("t").ID("id").OrphanPolicy(KeepOrphan)
 	})
 	assertPanics(t, "SharedBase given a non-shared-base", func() {
-		role().SharedBase(NewTableSchema[schemaSample]("x").PK("id"), "pessoa_id")
+		role().SharedBase(NewTableSchema[schemaSample]("x").ID("id"), "pessoa_id")
 	})
 	assertPanics(t, "SharedBase declared twice", func() {
 		role().SharedBase(sharedBaseFixture(), "pessoa_id").SharedBase(sharedBaseFixture(), "outra_id")
 	})
-	assertPanics(t, "shared base without PK", func() {
-		role().SharedBase(NewSharedBaseSchema("pessoa").Revision("revision").Field("Name", "name").NaturalKey("name"), "pessoa_id")
+	assertPanics(t, "shared base without ID", func() {
+		role().SharedBase(NewSharedBaseSchema("pessoa").Revision("revision").Field("Name", "name").NaturalID("name"), "pessoa_id")
 	})
-	assertPanics(t, "shared base without NaturalKey", func() {
-		role().SharedBase(NewSharedBaseSchema("pessoa").Revision("revision").PK("id").Field("Name", "name"), "pessoa_id")
+	assertPanics(t, "shared base without NaturalID", func() {
+		role().SharedBase(NewSharedBaseSchema("pessoa").Revision("revision").ID("id").Field("Name", "name"), "pessoa_id")
 	})
-	assertPanics(t, "NaturalKey column not a declared field", func() {
-		role().SharedBase(NewSharedBaseSchema("pessoa").Revision("revision").PK("id").Field("Name", "name").NaturalKey("cpf"), "pessoa_id")
+	assertPanics(t, "NaturalID column not a declared field", func() {
+		role().SharedBase(NewSharedBaseSchema("pessoa").Revision("revision").ID("id").Field("Name", "name").NaturalID("cpf"), "pessoa_id")
 	})
-	assertPanics(t, "FK column also a role field", func() {
-		NewTableSchema[schemaSample]("aluno").PK("id").Field("Removed", "matricula").
+	assertPanics(t, "ParentID column also a role field", func() {
+		NewTableSchema[schemaSample]("aluno").ID("id").Field("Removed", "matricula").
 			SharedBase(sharedBaseFixture(), "matricula")
 	})
 	assertPanics(t, "base field not on the role type", func() {
 		// schemaSample has no "Unknown" field; a base mapping it must fail at attach.
-		role().SharedBase(NewSharedBaseSchema("pessoa").Revision("revision").PK("id").Field("Unknown", "u").NaturalKey("u"), "pessoa_id")
+		role().SharedBase(NewSharedBaseSchema("pessoa").Revision("revision").ID("id").Field("Unknown", "u").NaturalID("u"), "pessoa_id")
 	})
-	assertPanics(t, "empty FK column", func() {
+	assertPanics(t, "empty ParentID column", func() {
 		role().SharedBase(sharedBaseFixture(), "")
 	})
 	assertPanics(t, "a sibling cannot reference a shared base", func() {

@@ -13,9 +13,9 @@ import (
 // document referencing a changed shared identity.
 
 func fanOutRoleSchema() *core.TableSchema {
-	base := core.NewSharedBaseSchema("pessoa").Revision("revision").PK("id").Field("Name", "name").NaturalKey("name")
+	base := core.NewSharedBaseSchema("pessoa").Revision("revision").ID("id").Field("Name", "name").NaturalID("name")
 	return core.NewTableSchema[*builderTestEntity]("aluno").
-		PK("id").
+		ID("id").
 		Field("Email", "email").
 		SharedBase(base, "pessoa_id")
 }
@@ -191,7 +191,7 @@ func TestProcess_RoleEventWithoutIDs_Skipped(t *testing.T) {
 // The payload fan-out writes with upsert=false; the writer's OWN projection
 // with upsert=true. The fan-out targets ids from a FindIDsByField snapshot, so
 // a document missing at write time is a concurrently-deleted role — upserting
-// there would resurrect a base-fields-only skeleton (no PK, no FK, no
+// there would resurrect a base-fields-only skeleton (no ID, no ParentID, no
 // deleted_at) that no future event could clean and that default reads would
 // list as an active row. This pins the flag on both writes of one role event.
 func TestProcess_PayloadFanOut_NeverUpserts(t *testing.T) {

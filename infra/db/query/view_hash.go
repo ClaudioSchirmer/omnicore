@@ -79,7 +79,7 @@ func (v *ViewDefinition) writeRebuildShape(w *canonicalWriter) {
 	writeSchemaShape(w, v.schema)
 
 	// SharedBaseView roles — the role set IS projection shape: adding/removing
-	// a role, renaming its segment, changing its FK column or any part of its
+	// a role, renaming its segment, changing its ParentID column or any part of its
 	// schema closure (fields, siblings, children — writeSchemaShape recurses,
 	// its shared_base branch included) must move the RebuildHash so the
 	// forgot-to-bump guard fires. Sorted by segment (order-independent).
@@ -100,7 +100,7 @@ func (v *ViewDefinition) writeRebuildShape(w *canonicalWriter) {
 	}
 
 	// EmbedInChild enrichments are projection shape: the enriched field, the
-	// child it lands in, the source collection and the element FK all change the
+	// child it lands in, the source collection and the element ParentID all change the
 	// materialized document, so a change without a Version bump must move the
 	// RebuildHash. Emitted ONLY when the view declares child-embeds, so a view
 	// without them keeps its byte-identical rebuild_v2 stream (no existing view's
@@ -185,8 +185,8 @@ func writeEmbedList(w *canonicalWriter, embeds []embedDef) {
 		w.writeBool(e.many)
 		w.writeTag("source")
 		w.writeString(e.leg.Collection())
-		// The join column named via .On — one-to-many (leg FK) or one-to-one
-		// (parent FK) alike — so an FK change still moves the rebuild hash.
+		// The join column named via .On — one-to-many (leg ParentID) or one-to-one
+		// (parent ParentID) alike — so an ParentID change still moves the rebuild hash.
 		w.writeString(e.JoinColumn())
 		w.writeBool(e.leg.IsMongo())
 		// A JoinView leg couples this view's rebuild identity to the EMBEDDED
@@ -217,7 +217,7 @@ func writeEmbedList(w *canonicalWriter, embeds []embedDef) {
 }
 
 // writeSchemaShape hashes one schema node's PROJECTED shape and recurses into the
-// closure the composer materializes: the node's own physical columns (PK +
+// closure the composer materializes: the node's own physical columns (ID +
 // business + managed), then its siblings and SharedBase (merged FLAT) and its
 // children (nested). Column-granular, not Go-field: a rename that keeps the same
 // column does not force a rebuild; adding a column / .Child / sibling field does.
@@ -232,7 +232,7 @@ func writeSchemaShape(w *canonicalWriter, s *core.TableSchema) {
 	}
 	w.writeTag("schema_node")
 	w.writeString(s.Table())
-	w.writeString(s.PKColumn())
+	w.writeString(s.IDColumn())
 	// Managed columns land in the projected document too.
 	sd, _ := s.SoftDeleteColumn()
 	w.writeString(sd)
@@ -249,11 +249,11 @@ func writeSchemaShape(w *canonicalWriter, s *core.TableSchema) {
 		writeSchemaShape(w, sib)
 	}
 
-	// SharedBase (FLAT): the role FK + the base closure (incl. its base-children).
+	// SharedBase (FLAT): the role ParentID + the base closure (incl. its base-children).
 	if base, fk, ok := s.SharedBaseRef(); ok {
 		w.writeTag("shared_base")
 		w.writeString(fk)
-		w.writeString(base.NaturalKeyColumn())
+		w.writeString(base.NaturalIDColumn())
 		writeSchemaShape(w, base)
 	} else {
 		w.writeTag("no_shared_base")
@@ -264,7 +264,7 @@ func writeSchemaShape(w *canonicalWriter, s *core.TableSchema) {
 	w.writeTag("children")
 	w.writeInt(int64(len(children)))
 	for _, child := range children {
-		w.writeString(child.FKColumn())
+		w.writeString(child.ParentIDColumn())
 		writeSchemaShape(w, child)
 	}
 }

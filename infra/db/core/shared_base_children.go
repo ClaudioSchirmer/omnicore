@@ -6,8 +6,8 @@ import "fmt"
 // 1:N native collections via .Child(...) — data that belongs to the shared
 // IDENTITY, not to any single role (e.g. a person's addresses), so it is shared
 // across every role (aluno, professor) that references the base. Unlike a role's
-// own aggregate children (FK → role id), a base-child's rows key on the base's
-// DETERMINISTIC id (the role's FK to the base = UUIDv5(naturalKey)). The domain
+// own aggregate children (ParentID → role id), a base-child's rows key on the base's
+// DETERMINISTIC id (the role's ParentID to the base = UUIDv5(naturalKey)). The domain
 // stays oblivious: the role's aggregate lists the child type in AggregateChildren()
 // exactly like any other child; only the infra schema routes it to the base.
 //
@@ -39,8 +39,8 @@ func (s *TableSchema) BaseChildSchema(typeName string) *TableSchema {
 }
 
 // ResolveAggregateChild resolves an aggregate child type to its owning schema and
-// reports whether it belongs to the shared BASE (fromBase=true → FK to the base's
-// deterministic id) versus the role itself (fromBase=false → FK to the role id).
+// reports whether it belongs to the shared BASE (fromBase=true → ParentID to the base's
+// deterministic id) versus the role itself (fromBase=false → ParentID to the role id).
 // The write and load paths route each child collection by this flag. ok=false when
 // neither the role nor its base declares the type. A role's own child is checked
 // first (it can never be a base-child too — ValidateSharedBaseChildren forbids the

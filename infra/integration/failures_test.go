@@ -224,7 +224,7 @@ func assign(dst any, src any) error {
 
 func sampleFailureRow(id string) []any {
 	return []any{
-		id,                // ID — canonical uuid string (the surrogate PK)
+		id,                // ID — canonical uuid string (the surrogate ID)
 		"orders-int",      // ConsumerGroup string
 		"partners",        // SourceKey string
 		"onboarded",       // EventKey string

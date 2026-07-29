@@ -80,8 +80,8 @@ func TestEmbedFieldSet(t *testing.T) {
 	if embedFieldSet(nil) != nil {
 		t.Error("no embeds → nil set")
 	}
-	itemsLeg := JoinUpstream(core.NewExternalSchema("items").PK("id"), "Items", "Items")
-	featLeg := JoinUpstream(core.NewExternalSchema("feat").PK("id"), "FeaturedItem", "FeaturedItem")
+	itemsLeg := JoinUpstream(core.NewExternalSchema("items").ID("id"), "Items", "Items")
+	featLeg := JoinUpstream(core.NewExternalSchema("feat").ID("id"), "FeaturedItem", "FeaturedItem")
 	got := embedFieldSet([]embedDef{{leg: itemsLeg}, {leg: featLeg, many: false}})
 	if len(got) != 2 {
 		t.Fatalf("want both segments, got %v", got)

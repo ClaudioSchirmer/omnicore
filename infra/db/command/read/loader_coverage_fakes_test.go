@@ -7,7 +7,7 @@ import "github.com/ClaudioSchirmer/omnicore/domain"
 // selectiveDecodeDialect is testPGDialect with a scriptable DecodeID failure:
 // failOn == "" fails on every raw value; otherwise only the matching raw value
 // fails and everything else passes through. It drives the loader's per-branch
-// DecodeID error handling (root id, child FK, child own PK, base id) without a
+// DecodeID error handling (root id, child ParentID, child own ID, base id) without a
 // real engine — the same embed-and-override pattern mysqlLikeDialect uses.
 type selectiveDecodeDialect struct {
 	testPGDialect
@@ -38,7 +38,7 @@ func decodeErrFakeEngine(queryFn func(sql string, args []any) (Rows, error), fai
 }
 
 // noColsChild is an AggregateValueObject whose schema resolves ZERO scan
-// columns: its PK column has no exported "ID" struct field (pkIndex < 0) and it
+// columns: its ID column has no exported "ID" struct field (idIndex < 0) and it
 // declares no Field(...) — the shape the loader's "schema declares no columns"
 // guards fire on.
 type noColsChild struct{}
@@ -47,5 +47,5 @@ func (noColsChild) GetID() domain.ID                                 { return do
 func (noColsChild) BuildRules(string, domain.Service, *domain.Rules) {}
 
 func noColsChildSchema(fkCol string) *TableSchema {
-	return NewTableSchema[noColsChild]("no_cols_children").PK("id").FK(fkCol)
+	return NewTableSchema[noColsChild]("no_cols_children").ID("id").ParentID(fkCol)
 }

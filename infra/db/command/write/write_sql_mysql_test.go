@@ -77,7 +77,7 @@ func TestBuildInsert_MySQL(t *testing.T) {
 	if sql != want {
 		t.Fatalf("sql =\n  %q\nwant\n  %q", sql, want)
 	}
-	// Positional bind order: PK first (BINARY(16)-encoded on MySQL), then the
+	// Positional bind order: ID first (BINARY(16)-encoded on MySQL), then the
 	// SortedKeys field order (email, name). NOW() columns bind no args.
 	if len(args) != 5 {
 		t.Fatalf("args = %v, want 5 (id + email + name + created_at + updated_at)", args)
@@ -132,7 +132,7 @@ func TestArchiveUnarchiveDelete_MySQL(t *testing.T) {
 
 // TestBuildSiblingUpsert_ArgsOrder_MySQL locks the MySQL positional bind: the
 // `?` placeholders mean arg ORDER is the only thing binding a value to a column,
-// so the shared PK must be encoded BINARY(16) first, then field values.
+// so the shared ID must be encoded BINARY(16) first, then field values.
 func TestBuildSiblingUpsert_ArgsOrder_MySQL(t *testing.T) {
 	sib := NewSiblingSchema[*sibTestEntity]("usuario").Field("UserName", "user_name")
 	id := "33333333-3333-3333-3333-333333333333"
@@ -142,7 +142,7 @@ func TestBuildSiblingUpsert_ArgsOrder_MySQL(t *testing.T) {
 	}
 	b, ok := args[0].([]byte)
 	if !ok || len(b) != 16 {
-		t.Errorf("args[0] = %v (%T), want the shared PK as 16-byte BINARY(16)", args[0], args[0])
+		t.Errorf("args[0] = %v (%T), want the shared ID as 16-byte BINARY(16)", args[0], args[0])
 	}
 	if args[1] != "alice" {
 		t.Errorf("args[1] = %v, want \"alice\"", args[1])
@@ -180,7 +180,7 @@ func TestBuildInsert_MySQL_TypedIDFields(t *testing.T) {
 	id := "11111111-1111-1111-1111-111111111111"
 	_, args := buildInsert(testMySQLDialect{}, "orders", "id", id, fields, nil, testNow, "")
 
-	// Bind order: PK, then SortedKeys (absent_id, buyer_id, legacy_ref, partner_id).
+	// Bind order: ID, then SortedKeys (absent_id, buyer_id, legacy_ref, partner_id).
 	if len(args) != 5 {
 		t.Fatalf("args = %v, want 5", args)
 	}

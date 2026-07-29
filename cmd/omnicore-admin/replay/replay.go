@@ -126,7 +126,7 @@ func execute(ctx context.Context, q core.Querier, dialect core.Dialect, opt exec
 		return nil
 	}
 
-	// Keyset pagination over the PK — portable through the existing seam
+	// Keyset pagination over the ID — portable through the existing seam
 	// (Dialect.ApplyLimit renders the row cap in each engine's native
 	// position), where a LIMIT/OFFSET tail would be a PG/MySQL-ism (T-SQL
 	// pages via OFFSET…FETCH with a different arg order). Keyset also never

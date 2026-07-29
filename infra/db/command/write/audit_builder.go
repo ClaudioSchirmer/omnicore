@@ -481,7 +481,7 @@ func oldChildrenIndex(schema *TableSchema, src domain.Entity) map[string]map[str
 //	updated    | UPDATE addresses SET col=val, updated_at=$now WHERE id=$1
 //	archived   | UPDATE addresses SET deleted_at=$now WHERE id=$1
 //	unarchived | UPDATE addresses SET deleted_at=NULL WHERE id=$1
-//	deleted    | DELETE FROM addresses (via FK ON DELETE CASCADE on root delete)
+//	deleted    | DELETE FROM addresses (via ParentID ON DELETE CASCADE on root delete)
 //
 // Per-verb dispatch:
 //

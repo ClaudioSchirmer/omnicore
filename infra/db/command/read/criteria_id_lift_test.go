@@ -19,7 +19,7 @@ import (
 
 func testIDKinds() func(string) core.IDKind {
 	kinds := map[string]core.IDKind{
-		"ID":        core.IDValue, // the managed PK slot — always identity
+		"ID":        core.IDValue, // the managed ID slot — always identity
 		"BuyerID":   core.IDValue,
 		"PartnerID": core.IDPointer,
 	}
@@ -54,7 +54,7 @@ func TestIDLift_MySQL(t *testing.T) {
 		wantBytes(t, args[0])
 	})
 
-	t.Run("bare-string PK probe binds as 16 bytes (exclude-self parity)", func(t *testing.T) {
+	t.Run("bare-string ID probe binds as 16 bytes (exclude-self parity)", func(t *testing.T) {
 		_, args, err := compileWhere(criteria.Ne("ID", u.String()), liftResolver(), d, testIDKinds())
 		if err != nil {
 			t.Fatalf("compileWhere: %v", err)

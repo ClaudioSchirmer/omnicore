@@ -93,7 +93,7 @@ type CustomerRepo struct {
 
 func NewCustomerRepo(eng core.RelationalEngine) *CustomerRepo {
     newCustomer := func() *Customer { return &amp;Customer{} }   // single factory source
-    schema := CustomerSchema()   // core.NewTableSchema[*Customer]("customers").PK("id").Field("Name","name")...
+    schema := CustomerSchema()   // core.NewTableSchema[*Customer]("customers").ID("id").Field("Name","name")...
     r := &amp;CustomerRepo{
         BaseRepository: write.BaseRepository[*Customer]{
             Engine: eng, ContextName: "Customer", NewEntity: newCustomer,
@@ -273,7 +273,7 @@ var (
 // write-path scalar questions for BuildRules.
 
 // Uniqueness pre-check with exclude-self — one indexed probe, nothing hydrated.
-// "ID" is the fixed criteria name of the PK; on insert just drop the Ne term.
+// "ID" is the fixed criteria name of the ID; on insert just drop the Ne term.
 taken, err := repo.Loader.Exists(ctx, criteria.Where(criteria.And(
     criteria.Eq("Email", email),
     criteria.Ne("ID", excludeID),
@@ -308,7 +308,7 @@ _ = top.Found // false ⇔ no active order matched (0 can be a real MAX — chec
         where loading whole aggregates to answer a scalar question would waste the request's latency. All of
         them share the same scope gate (active rows by default; the Query's scope can include archived) and
         the same field resolution as the loads — a sibling/shared-base field pulls its LEFT JOIN whether it
-        appears in the predicate or in an aggregate spec, and <strong>the PK is addressable as the fixed Go
+        appears in the predicate or in an aggregate spec, and <strong>the ID is addressable as the fixed Go
         field <code>"ID"</code></strong>, so the exclude-self shape of an update-time uniqueness check is one
         expression: <code>criteria.Where(criteria.And(criteria.Eq("Email", v),
         criteria.Ne("ID", excludeID)))</code>. The loader has its
@@ -485,7 +485,7 @@ SELECT user_id, id, label, street, number, complement, neighborhood, city, state
     </p>
     <pre><code>func UserSchema() *core.TableSchema {
     return core.NewTableSchema[*User]("users").
-        PK("id").
+        ID("id").
         Revision("revision").
         Field("Name", "name").
         Field("DisplayName", "display_name").  // any Go field ↔ any column

@@ -17,10 +17,10 @@ import (
 
 // convRoleView builds the aluno role view with revisions on both role and base.
 func convRoleView() *ViewDefinition {
-	base := core.NewSharedBaseSchema("pessoa").Revision("revision").PK("id").
-		Field("Name", "name").NaturalKey("name")
+	base := core.NewSharedBaseSchema("pessoa").Revision("revision").ID("id").
+		Field("Name", "name").NaturalID("name")
 	schema := core.NewTableSchema[*builderTestEntity]("aluno").
-		PK("id").
+		ID("id").
 		Revision("revision").
 		Field("Email", "email").
 		SharedBase(base, "pessoa_id")
@@ -304,10 +304,10 @@ func TestConsultGuardedStages_ScopesAndGuards(t *testing.T) {
 // (base scalars, segments) rides the _revision guard — the base revision the
 // composer stamped from the base row.
 func TestConsultGuardedStages_SharedBaseViewSingleScope(t *testing.T) {
-	base := core.NewSharedBaseSchema("sbv_persons").Revision("revision").PK("id").
-		Field("Name", "name").NaturalKey("name")
+	base := core.NewSharedBaseSchema("sbv_persons").Revision("revision").ID("id").
+		Field("Name", "name").NaturalID("name")
 	role := core.NewTableSchema[*builderTestEntity]("sbv_users").
-		PK("id").Revision("revision").Field("Email", "email").SharedBase(base, "id")
+		ID("id").Revision("revision").Field("Email", "email").SharedBase(base, "id")
 	view := SharedBaseView("persons").Schema(base).Role(role).Version(1)
 	doc := Document{
 		"id": "p1", "name": "Ana",
@@ -370,7 +370,7 @@ func TestConsultScopeStage_EqualRevisionFillsMissing(t *testing.T) {
 }
 
 // Structured fill: a child-collection segment merges PER ELEMENT (keyed by the
-// child PK, stored keys winning) and a SharedBaseView role segment merges as a
+// child ID, stored keys winning) and a SharedBaseView role segment merges as a
 // sub-document — so a column added anywhere (root, sibling, base, child
 // element, role-segment scalar) reaches a document written by a
 // previous-binary pod at the same revision.
@@ -386,7 +386,7 @@ func TestConsultScopeStage_StructuredFillShapes(t *testing.T) {
 	set, _ := st["$set"].(Document)
 
 	// Array segment: the equal branch must $map the STORED array and
-	// $mergeObjects with the PK-matched composed element (stored last = wins).
+	// $mergeObjects with the ID-matched composed element (stored last = wins).
 	arrCond, _ := set["addresses"].(Document)["$cond"].([]any)
 	arrEqual, _ := arrCond[2].(Document)["$cond"].([]any)
 	arrFill, _ := arrEqual[1].(Document)["$cond"].([]any)
@@ -503,10 +503,10 @@ func TestProcess_RoleUnarchive_PullCheckHealsStaleBase(t *testing.T) {
 func TestProcess_DeleteOnArchive_TombstonesAndGuardsDelete(t *testing.T) {
 	coll := &fakeColl{}
 	store := newFakeMongo(coll)
-	base := core.NewSharedBaseSchema("pessoa").Revision("revision").PK("id").
-		Field("Name", "name").NaturalKey("name")
+	base := core.NewSharedBaseSchema("pessoa").Revision("revision").ID("id").
+		Field("Name", "name").NaturalID("name")
 	schema := core.NewTableSchema[*builderTestEntity]("aluno").
-		PK("id").Revision("revision").Field("Email", "email").
+		ID("id").Revision("revision").Field("Email", "email").
 		SoftDelete("deleted_at").SharedBase(base, "pessoa_id")
 	view := View("aluno_hot").Schema(schema).Version(1).DeleteOnArchive()
 	s := NewSyncEngine(composerEngine(func(string, []any) ([]map[string]any, error) { return nil, nil }),
@@ -537,12 +537,12 @@ func TestProcess_DeleteOnArchive_TombstonesAndGuardsDelete(t *testing.T) {
 
 // A consult view WITH embeds: the guarded pipeline must keep the ripple's
 // ownership — the embed segment rides an existence-probed create-only stage,
-// placed FIRST (before the own stage writes the PK the probe reads), and never
+// placed FIRST (before the own stage writes the ID the probe reads), and never
 // enters the revision-guarded scopes.
 func TestConsultGuardedStages_EmbedsCreateOnlyAndFirst(t *testing.T) {
-	external := JoinUpstream(core.NewExternalSchema("buyers").PK("id"), "Buyers", "buyers")
+	external := JoinUpstream(core.NewExternalSchema("buyers").ID("id"), "Buyers", "buyers")
 	schema := core.NewTableSchema[*builderTestEntity]("orders").
-		PK("id").Revision("revision").Field("Email", "email")
+		ID("id").Revision("revision").Field("Email", "email")
 	view := View("orders").Version(1).Schema(schema).EmbedMany(external).On("order_id")
 
 	doc := Document{
@@ -554,7 +554,7 @@ func TestConsultGuardedStages_EmbedsCreateOnlyAndFirst(t *testing.T) {
 	if len(stages) != 2 {
 		t.Fatalf("expected embed stage + own stage, got %d: %v", len(stages), stages)
 	}
-	// Embed stage FIRST: create-only via the PK existence probe.
+	// Embed stage FIRST: create-only via the ID existence probe.
 	embedSet, _ := stages[0]["$set"].(Document)
 	cond, _ := embedSet["buyers"].(Document)["$cond"].([]any)
 	if len(cond) != 3 || cond[1] != "$buyers" {
@@ -742,11 +742,11 @@ func TestRegistryStamps_SkipNonPositiveRevision(t *testing.T) {
 // ride the own scope's element-merge shape, base children the base scope's —
 // the arraySegs wiring a childless fixture never exercises.
 func TestConsultGuardedStages_ChildSegmentsInBothScopes(t *testing.T) {
-	base := core.NewSharedBaseSchema("pessoa").Revision("revision").PK("id").
-		Field("Name", "name").NaturalKey("name").
-		Child(core.NewTableSchema[*builderTestEntity]("enderecos").PK("id").FK("pessoa_id").Field("Email", "city"))
+	base := core.NewSharedBaseSchema("pessoa").Revision("revision").ID("id").
+		Field("Name", "name").NaturalID("name").
+		Child(core.NewTableSchema[*builderTestEntity]("enderecos").ID("id").ParentID("pessoa_id").Field("Email", "city"))
 	schema := core.NewTableSchema[*builderTestEntity]("aluno").
-		PK("id").Revision("revision").Field("Email", "email").
+		ID("id").Revision("revision").Field("Email", "email").
 		SharedBase(base, "pessoa_id")
 	view := View("aluno").Schema(schema).Version(1)
 
