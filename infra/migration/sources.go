@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"io/fs"
 	"path/filepath"
+	"strings"
 
 	"github.com/golang-migrate/migrate/v4/source"
 	"github.com/golang-migrate/migrate/v4/source/file"
@@ -52,4 +53,23 @@ func serviceSource(dir string) (source.Driver, error) {
 		return nil, fmt.Errorf("migration: service file source: %w", err)
 	}
 	return drv, nil
+}
+
+// frameworkMigrationNames lists the embedded framework migration base names for
+// the postgres dialect (every dialect carries the same logical sequence, so one
+// is representative). Used by tests to derive the expected framework version
+// instead of hardcoding a number that silently goes stale when the control plane
+// grows.
+func frameworkMigrationNames() []string {
+	entries, err := frameworkMigrations.ReadDir("embedded/postgres")
+	if err != nil {
+		return nil
+	}
+	var out []string
+	for _, e := range entries {
+		if strings.HasSuffix(e.Name(), ".up.sql") {
+			out = append(out, e.Name())
+		}
+	}
+	return out
 }

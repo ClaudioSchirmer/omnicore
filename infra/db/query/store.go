@@ -2,17 +2,8 @@ package query
 
 import "context"
 
-// IdentifiedDocument pairs a composed document with its _id for batch writes.
-// The rebuild loop accumulates a slice of these and hands it to BulkUpsert so
-// the whole batch crosses the store boundary in one call.
-type IdentifiedDocument struct {
-	ID  string
-	Doc Document
-}
-
 // IdentifiedStages pairs an update pipeline with its target _id for batch
-// writes — the guarded companion of IdentifiedDocument. The rebuild/verify
-// backfill accumulates a slice of these (one revision-guarded pipeline per
+// writes. The rebuild/verify backfill accumulates a slice of these (one revision-guarded pipeline per
 // composed document) and hands it to BulkApplyProjection, so a backfill batch
 // that lands AFTER a fresher dual-applied event write cannot regress it.
 type IdentifiedStages struct {
@@ -33,13 +24,14 @@ type IdentifiedStages struct {
 // compile). The id/field/value arguments stay plain strings.
 type ReadModelStore interface {
 	// Upsert replaces (or inserts) the document keyed by id in collection.
+	//
+	// UNGUARDED — it overwrites whatever is there. It therefore belongs ONLY to
+	// writers whose ordering comes from somewhere other than the aggregate's
+	// revision: today that is the upstream MIRROR collection, ordered by its own
+	// source topic. A VIEW SLOT must never be written through it; use
+	// ApplyProjection with a revision-guarded pipeline, or a concurrent writer's
+	// fresher document is silently regressed.
 	Upsert(ctx context.Context, collection PhysicalCollection, id string, doc Document) error
-	// BulkUpsert applies a batch of upserts in as few round trips as the
-	// backend allows (one unordered bulk write on Mongo). Semantically
-	// identical to calling Upsert once per element and order-independent; the
-	// rebuild loop uses it where per-document round trips dominate cost. An
-	// empty batch is a no-op.
-	BulkUpsert(ctx context.Context, collection PhysicalCollection, docs []IdentifiedDocument) error
 	// Delete removes the document keyed by id; missing target is not an error.
 	Delete(ctx context.Context, collection PhysicalCollection, id string) error
 	// DeleteGuarded removes the document keyed by id ONLY when its stored
@@ -102,6 +94,17 @@ type ReadModelStore interface {
 	EnsureProjectionState(ctx context.Context) error
 	// HasDocuments reports whether the collection holds at least one document.
 	HasDocuments(ctx context.Context, collection PhysicalCollection) (bool, error)
+	// RevisionsByIDs returns the stored revision watermark (DocRevisionField) of
+	// each requested _id. An id whose document does not exist is ABSENT from the
+	// map — absence and revision 0 are different answers, and the reconciler
+	// depends on telling them apart (missing document vs. document written before
+	// the watermark existed). An empty ids slice returns an empty map.
+	//
+	// This is the read half of revision parity: comparing (pk, revision) from the
+	// relational source against (_id, _revision) here detects a missing document,
+	// a stale one, and a rolled-back one — exactly the I1/I2 violations — without
+	// composing anything and without a content hash.
+	RevisionsByIDs(ctx context.Context, collection PhysicalCollection, ids []string) (map[string]int64, error)
 	// SnapshotDocumentIDs returns the set of every document _id in the collection.
 	SnapshotDocumentIDs(ctx context.Context, collection PhysicalCollection) (map[string]struct{}, error)
 	// DeleteByIDs removes the documents whose _id is in ids; returns the count.

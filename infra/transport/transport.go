@@ -45,10 +45,18 @@ const (
 // subscription (len(Topics) == 1) and a multi-topic group subscription are both
 // expressed here; the adapter picks the native shape.
 type SubscribeConfig struct {
-	Topics         []string      // one or many topics/subjects; all read under GroupID
-	GroupID        string        // consumer group / durable-consumer name
-	StartFrom      string        // StartFromEarliest | StartFromLatest (empty = latest)
-	CommitInterval time.Duration // async offset/ack batching window (0 lets the adapter default)
+	Topics    []string // one or many topics/subjects; all read under GroupID
+	GroupID   string   // consumer group / durable-consumer name
+	StartFrom string   // StartFromEarliest | StartFromLatest (empty = latest)
+
+	// CommitInterval bounds how often an adapter FLUSHES already-completed
+	// positions to the broker. It never decides WHICH positions are safe to
+	// flush — Completion does, and only a position whose message reported Done
+	// is eligible. It is a throughput knob (batching a commit round trip),
+	// never a durability one: a crash before a flush costs reprocessing of
+	// already-completed messages, which is at-least-once and idempotent, not
+	// loss. 0 lets the adapter default.
+	CommitInterval time.Duration
 }
 
 // TopicSpec is a topic the framework wants to exist before subscribing.
@@ -61,13 +69,52 @@ type TopicSpec struct {
 	ReplicationFactor int
 }
 
+// Completion is the outcome handle for ONE message. Every message returned by
+// Read carries one, and exactly one of Done/Failed must be called exactly once
+// on it — the transport cannot know whether a message was processed, and a
+// handle that is never completed holds its position forever (a Kafka partition
+// stops committing past it; a NATS message redelivers when its ack deadline
+// expires).
+//
+// The outcome is modelled as a RESULT, never as Ack(message). That shape
+// encodes the JetStream model, where confirmation is per message; on Kafka
+// confirmation is an OFFSET meaning "everything below N is done", so acking one
+// message out of order would commit PAST the ones still in flight and relocate
+// the loss instead of removing it. Naming the outcome instead lets each adapter
+// express it natively — see the adapters for how each does.
+//
+// There is deliberately no Retry outcome. Kafka has no in-session redelivery
+// (SetOffset is unavailable under a consumer group), so it would be meaningful
+// on one transport and empty on the other. In-process retry belongs to the
+// consumer, which owns the backoff policy; the port only learns the final
+// result.
+type Completion interface {
+	// Done reports the message as fully processed. On Kafka it releases the
+	// offset to the completed-prefix tracker; on NATS it acks.
+	//
+	// "Processed" includes an event the consumer durably PARKED after
+	// exhausting its retry budget: the work is recorded for replay, so the
+	// stream must move on. Blocking the stream on a defect the consumer has
+	// already captured stalls every healthy aggregate behind it.
+	Done(ctx context.Context) error
+
+	// Failed reports the message as NOT processed and asks for redelivery. Use
+	// it when reprocessing has a real chance of succeeding and the consumer is
+	// not going to retry in-process — most importantly on shutdown, where the
+	// event must survive to the next boot rather than be recorded as a defect.
+	Failed(ctx context.Context) error
+}
+
 // Subscription is one live consumer stream. Read blocks for the next message or
-// until ctx is cancelled; Close leaves the group (or the adapter's equivalent)
-// and releases resources. Close ordering matters for graceful shutdown: the
-// consumer loops drain their workers, THEN Close the subscription, so the
-// group-leave goes out only after in-flight work has settled.
+// until ctx is cancelled, returning the message together with its Completion;
+// Close leaves the group (or the adapter's equivalent) and releases resources.
+//
+// Close ordering matters for graceful shutdown: the consumer loops drain their
+// workers — completing every in-flight message — and THEN Close the
+// subscription, so the group-leave goes out only after outcomes have been
+// reported.
 type Subscription interface {
-	Read(ctx context.Context) (Message, error)
+	Read(ctx context.Context) (Message, Completion, error)
 	Close() error
 }
 

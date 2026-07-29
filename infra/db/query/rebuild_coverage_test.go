@@ -59,7 +59,12 @@ func rebuildQuerier(ids []string, rootDoc func(id string) map[string]any) *fakeQ
 }
 
 func aliveRoot(id string) map[string]any {
-	return map[string]any{"id": id, "name": "n-" + id, "deleted_at": nil}
+	// revision is present because production guarantees it (boot-mandatory on
+	// every schema): a row without one models a view that cannot exist, and it
+	// silently routes consultGuardedStages onto its defensive unguarded
+	// fallback — which is exactly what the backfill-clobber pin test exists to
+	// forbid on the real path.
+	return map[string]any{"id": id, "name": "n-" + id, "deleted_at": nil, "revision": int64(1)}
 }
 
 func newScriptEngine(ids []string, rootDoc func(string) map[string]any) *fakeEngine {
@@ -91,11 +96,14 @@ func TestExecuteRebuild_BlueGreenSequence(t *testing.T) {
 	if len(slot.updates) < 2 {
 		t.Errorf("expected the shadow backfilled (>=2 upserts), got %d", len(slot.updates))
 	}
-	// The shadow slot is dropped BEFORE provisioning (clean by construction —
-	// an unreclaimed retiree must never leak documents into the new build),
-	// then, after the flip, the retired bare collection is reclaimed.
-	if len(store.dropped) != 2 || store.dropped[0] != view.Name()+"__0" || store.dropped[1] != view.Name() {
-		t.Errorf("expected [shadow pre-drop, retired reclaim], got %v", store.dropped)
+	// CONTRACT: exactly ONE drop, and it is the pre-provision drop of the shadow
+	// slot (clean by construction — a retiree must never leak documents into the
+	// new build). The flip deliberately does NOT drop the retired slot: a drop
+	// there races operations that resolved the pointer while it was still valid
+	// and are still running, which the pointer lease does not bound. The retiree
+	// is reclaimed by the pre-provision drop of the NEXT rebuild instead.
+	if len(store.dropped) != 1 || store.dropped[0] != view.Name()+"__0" {
+		t.Errorf("expected exactly [shadow pre-drop] with no reclaim at the flip, got %v", store.dropped)
 	}
 }
 

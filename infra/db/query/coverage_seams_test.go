@@ -317,72 +317,70 @@ func TestListNonDone_RowsErr(t *testing.T) {
 }
 
 // ============================================================================
-// upstream_failures.go — list / scan path
+// projection_failures.go — list / scan path (the unified ledger)
 // ============================================================================
 
-func upstreamFailureRow(id string) []any {
+// projectionFailureRow mirrors selectProjectionFailures' column order. A
+// ripple-kind row exercises the nullable columns the unified shape added.
+func projectionFailureRow(id string) []any {
+	stage := "compose"
+	localID := "ord-7"
 	return []any{
-		id,             // id
-		"users.events", // subscription_topic
-		"orders",       // view_name
-		"u1",           // upstream_id
-		"ord-7",        // local_id
-		"compose",      // stage
-		"boom",         // error
-		2,              // attempt
-		time.Now(),     // first_seen_at
-		time.Now(),     // last_attempt_at
+		id,              // id
+		"ripple",        // kind
+		"svc-sync",      // consumer_group
+		"view:products", // topic (the source coordinate)
+		"orders",        // aggregate_type (the dependent view)
+		nil,             // event_type (NULL on ripple rows)
+		"u1",            // aggregate_id (the source doc id)
+		&stage,          // stage
+		&localID,        // local_id
+		nil,             // traceparent
+		nil,             // payload (NULL on ripple rows)
+		"boom",          // error
+		2,               // attempt
+		time.Now(),      // first_seen_at
+		time.Now(),      // last_attempt_at
 	}
 }
 
-func TestListPendingUpstreamFailures_ScansRows(t *testing.T) {
-	exec := &covExec{rows: &covRows{data: [][]any{upstreamFailureRow("00000000-0000-7000-8000-000000000001"), upstreamFailureRow("00000000-0000-7000-8000-000000000002")}}}
-	out, err := ListPendingUpstreamFailures(context.Background(), exec)
+func TestListPendingProjectionFailures_ScansRippleRows(t *testing.T) {
+	exec := &covExec{rows: &covRows{data: [][]any{projectionFailureRow("00000000-0000-7000-8000-000000000001"), projectionFailureRow("00000000-0000-7000-8000-000000000002")}}}
+	out, err := ListPendingProjectionFailures(context.Background(), exec, fakeDialect{}, "svc-sync")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if len(out) != 2 {
 		t.Fatalf("expected 2 rows, got %d", len(out))
 	}
-	if out[0].ID != "00000000-0000-7000-8000-000000000001" || out[0].Stage != UpstreamFailureStageCompose || out[0].Attempt != 2 {
-		t.Fatalf("scanned fields drifted: %+v", out[0])
+	r := out[0]
+	if r.ID != "00000000-0000-7000-8000-000000000001" || r.Kind != ProjectionFailureKindRipple ||
+		r.Stage != ProjectionFailureStageCompose || r.LocalID != "ord-7" || r.Attempt != 2 ||
+		r.EventType != "" || len(r.Payload) != 0 {
+		t.Fatalf("scanned fields drifted: %+v", r)
 	}
 }
 
-func TestListPendingUpstreamFailures_QueryError(t *testing.T) {
+func TestListPendingProjectionFailures_QueryError(t *testing.T) {
 	exec := &covExec{queryErr: errors.New("query boom")}
-	if _, err := ListPendingUpstreamFailures(context.Background(), exec); err == nil {
+	if _, err := ListPendingProjectionFailures(context.Background(), exec, fakeDialect{}, "svc-sync"); err == nil {
 		t.Fatal("expected query error")
 	}
 }
 
-func TestListPendingUpstreamFailures_ScanError(t *testing.T) {
-	exec := &covExec{rows: &covRows{data: [][]any{upstreamFailureRow("00000000-0000-7000-8000-000000000001")}, scanErr: errors.New("bad scan")}}
-	if _, err := ListPendingUpstreamFailures(context.Background(), exec); err == nil ||
+func TestListPendingProjectionFailures_ScanError(t *testing.T) {
+	exec := &covExec{rows: &covRows{data: [][]any{projectionFailureRow("00000000-0000-7000-8000-000000000001")}, scanErr: errors.New("bad scan")}}
+	if _, err := ListPendingProjectionFailures(context.Background(), exec, fakeDialect{}, "svc-sync"); err == nil ||
 		!strings.Contains(err.Error(), "scan") {
 		t.Fatalf("expected wrapped scan error, got %v", err)
 	}
 }
 
-func TestListPendingUpstreamFailures_RowsErr(t *testing.T) {
-	exec := &covExec{rows: &covRows{data: [][]any{upstreamFailureRow("00000000-0000-7000-8000-000000000001")}, errAfter: errors.New("late err")}}
-	if _, err := ListPendingUpstreamFailures(context.Background(), exec); err == nil ||
+func TestListPendingProjectionFailures_RowsErr(t *testing.T) {
+	exec := &covExec{rows: &covRows{data: [][]any{projectionFailureRow("00000000-0000-7000-8000-000000000001")}, errAfter: errors.New("late err")}}
+	if _, err := ListPendingProjectionFailures(context.Background(), exec, fakeDialect{}, "svc-sync"); err == nil ||
 		!strings.Contains(err.Error(), "rows") {
 		t.Fatalf("expected wrapped rows.Err, got %v", err)
-	}
-}
-
-func TestListPendingUpstreamFailuresByTopic_BindsTopicAndScans(t *testing.T) {
-	exec := &covExec{rows: &covRows{data: [][]any{upstreamFailureRow("00000000-0000-7000-8000-000000000007")}}}
-	out, err := ListPendingUpstreamFailuresByTopic(context.Background(), exec, fakeDialect{}, "users.events")
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if len(out) != 1 || out[0].ID != "00000000-0000-7000-8000-000000000007" {
-		t.Fatalf("unexpected rows: %+v", out)
-	}
-	if len(exec.lastQueryArgs) != 1 || exec.lastQueryArgs[0] != "users.events" {
-		t.Fatalf("topic must be the only bound arg, got %v", exec.lastQueryArgs)
 	}
 }
 

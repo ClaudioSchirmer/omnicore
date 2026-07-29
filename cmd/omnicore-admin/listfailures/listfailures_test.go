@@ -15,21 +15,22 @@ func TestRenderText_Empty(t *testing.T) {
 	if err := renderText(&buf, nil, false); err != nil {
 		t.Fatalf("renderText: %v", err)
 	}
-	if !strings.Contains(buf.String(), "no pending upstream failures") {
+	if !strings.Contains(buf.String(), "no pending projection failures") {
 		t.Errorf("expected empty-state message, got %q", buf.String())
 	}
 }
 
 func TestRenderText_Populated(t *testing.T) {
-	rows := []query.UpstreamFailureRecord{
+	rows := []query.ProjectionFailureRecord{
 		{
-			SubscriptionTopic: "users.events",
-			ViewName:          "orders",
-			UpstreamID:        "u1",
-			Stage:             query.UpstreamFailureStageCompose,
-			Error:             "boom",
-			Attempt:           3,
-			LastAttemptAt:     time.Date(2026, 6, 11, 14, 0, 0, 0, time.UTC),
+			Kind:          query.ProjectionFailureKindRipple,
+			Topic:         "users.events",
+			AggregateType: "orders",
+			AggregateID:   "u1",
+			Stage:         query.ProjectionFailureStageCompose,
+			Error:         "boom",
+			Attempt:       3,
+			LastAttemptAt: time.Date(2026, 6, 11, 14, 0, 0, 0, time.UTC),
 		},
 	}
 	var buf bytes.Buffer
@@ -38,7 +39,8 @@ func TestRenderText_Populated(t *testing.T) {
 	}
 	out := buf.String()
 	for _, want := range []string{
-		"1 pending upstream failure",
+		"1 pending projection failure",
+		"ripple",
 		"users.events",
 		"orders",
 		"u1",
@@ -53,8 +55,9 @@ func TestRenderText_Populated(t *testing.T) {
 }
 
 func TestRenderText_TruncatedHint(t *testing.T) {
-	rows := []query.UpstreamFailureRecord{
-		{SubscriptionTopic: "t", ViewName: "v", UpstreamID: "u", Stage: query.UpstreamFailureStageDiscover},
+	rows := []query.ProjectionFailureRecord{
+		{Kind: query.ProjectionFailureKindRipple, Topic: "t", AggregateType: "v",
+			AggregateID: "u", Stage: query.ProjectionFailureStageDiscover},
 	}
 	var buf bytes.Buffer
 	if err := renderText(&buf, rows, true); err != nil {
@@ -66,18 +69,18 @@ func TestRenderText_TruncatedHint(t *testing.T) {
 }
 
 func TestRenderJSON_Envelope(t *testing.T) {
-	rows := []query.UpstreamFailureRecord{
-		{SubscriptionTopic: "users.events", ViewName: "orders", UpstreamID: "u1",
-			Stage: query.UpstreamFailureStageCompose, Error: "boom", Attempt: 2},
+	rows := []query.ProjectionFailureRecord{
+		{Kind: query.ProjectionFailureKindEvent, Topic: "users.events", AggregateType: "users",
+			AggregateID: "u1", EventType: "UPDATED", Error: "boom", Attempt: 2},
 	}
 	var buf bytes.Buffer
 	if err := renderJSON(&buf, rows, true); err != nil {
 		t.Fatalf("renderJSON: %v", err)
 	}
 	var envelope struct {
-		Count     int                           `json:"count"`
-		Truncated bool                          `json:"truncated"`
-		Items     []query.UpstreamFailureRecord `json:"items"`
+		Count     int                             `json:"count"`
+		Truncated bool                            `json:"truncated"`
+		Items     []query.ProjectionFailureRecord `json:"items"`
 	}
 	if err := json.Unmarshal(buf.Bytes(), &envelope); err != nil {
 		t.Fatalf("unmarshal: %v\n%s", err, buf.String())
@@ -85,8 +88,8 @@ func TestRenderJSON_Envelope(t *testing.T) {
 	if envelope.Count != 1 || !envelope.Truncated || len(envelope.Items) != 1 {
 		t.Errorf("envelope shape wrong: %+v", envelope)
 	}
-	if envelope.Items[0].SubscriptionTopic != "users.events" {
-		t.Errorf("items[0].SubscriptionTopic = %q", envelope.Items[0].SubscriptionTopic)
+	if envelope.Items[0].Topic != "users.events" || envelope.Items[0].Kind != query.ProjectionFailureKindEvent {
+		t.Errorf("items[0] drifted: %+v", envelope.Items[0])
 	}
 }
 

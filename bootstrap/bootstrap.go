@@ -271,6 +271,8 @@ func runWithConfig(cfg *Config, wire func(Deps) Wiring) error {
 		syncEngine := query.NewSyncEngine(deps.DB, deps.Mongo, deps.Resolver,
 			deps.Transport, cfg.Transport.SyncGroup, views, cfg.Transport.SyncWorkers).
 			WithKafkaTracing(cfg.Observability.Tracing.Resolve(cfg.Service).Instruments(tracing.SubKafka))
+		syncEngine.ConfigureParkedRetry(*cfg.Mongo.ParkedRetry.Enabled,
+			time.Duration(cfg.Mongo.ParkedRetry.IntervalMinutes)*time.Minute)
 		// Surfaced on Deps so serve's coordinated drain can wait for the
 		// projection loop's FULL exit (worker drain + reader LeaveGroup)
 		// before the stores close — same reason UpstreamSubscribers is there.
@@ -352,6 +354,21 @@ func runWithConfig(cfg *Config, wire func(Deps) Wiring) error {
 				"syncGroup", cfg.Transport.SyncGroup,
 				"views", len(views),
 				"workers", cfg.Transport.SyncWorkers)
+			// The scheduled revision-parity sweep — opt-in via mongo.reconcile.
+			// Started only after the boot rebuilds finished (a view mid-rebuild
+			// is skipped by the pass anyway, but there is no reason to spin the
+			// loop before the read model exists).
+			if cfg.Mongo.Reconcile.Enabled {
+				go syncEngine.RunReconcileLoop(rebuildCtx,
+					time.Duration(cfg.Mongo.Reconcile.IntervalMinutes)*time.Minute,
+					query.ReconcileConfig{
+						RowsPerSecond: cfg.Mongo.Reconcile.RowsPerSecond,
+						BatchSize:     cfg.Mongo.Reconcile.BatchSize,
+					})
+				deps.Logger.Info("projection reconcile loop started",
+					"intervalMinutes", cfg.Mongo.Reconcile.IntervalMinutes,
+					"rowsPerSecond", cfg.Mongo.Reconcile.RowsPerSecond)
+			}
 		}()
 	} else if len(upstreamSubs) > 0 {
 		// Degenerate case: B declared upstream subscriptions but no

@@ -19,7 +19,17 @@ type fakeColl struct {
 	countErr  error // forced error from HasDocuments
 	updateErr error // forced error from Upsert / UpdateFields
 	deleteErr error // forced error from Delete
+	// failWrites makes the next N write calls (Upsert / UpdateFields /
+	// ApplyProjection) fail and then heal — the transient-outage shape the
+	// retry loop exists for, which the static updateErr cannot model.
+	failWrites int
+	// blockWrites makes write calls block until the caller's context ends,
+	// returning its error — the wedged-dependency shape (quorum loss, network
+	// black hole) the per-attempt deadline exists for.
+	blockWrites bool
 
+	idFinds        int              // FindIDsByField calls — the shared-base fan-out PROBE counter
+	ops            []string         // ordered trace: "write" / "idfind", so a test can pin ORDER not just occurrence
 	updates        []map[string]any // captured Upsert / UpdateFields docs, each {"$set": doc}
 	deletes        []any            // captured Delete ids (guarded deletes append here too)
 	guardedDeletes []map[string]any // captured DeleteGuarded calls, each {"_id": id, "revision": rev}
@@ -73,41 +83,45 @@ func pc(name string) PhysicalCollection { return PhysicalCollection{name: name} 
 
 var identityResolver = NewViewResolver(nil)
 
+// writeGate applies the collection's failure script to one write attempt:
+// failWrites burns down first (transient outage), then updateErr (permanent).
+func (c *fakeColl) writeGate() error {
+	if c.failWrites > 0 {
+		c.failWrites--
+		return errFake
+	}
+	return c.updateErr
+}
+
 func (s *fakeStore) Upsert(_ context.Context, collection PhysicalCollection, _ string, doc Document) error {
 	c := s.coll(collection.String())
-	if c.updateErr != nil {
-		return c.updateErr
+	if err := c.writeGate(); err != nil {
+		return err
 	}
 	c.updates = append(c.updates, map[string]any{"$set": doc})
 	return nil
 }
 
-func (s *fakeStore) BulkUpsert(_ context.Context, collection PhysicalCollection, docs []IdentifiedDocument) error {
-	c := s.coll(collection.String())
-	if c.updateErr != nil {
-		return c.updateErr
-	}
-	for _, d := range docs {
-		c.updates = append(c.updates, map[string]any{"$set": d.Doc})
-	}
-	return nil
-}
-
 func (s *fakeStore) UpdateFields(_ context.Context, collection PhysicalCollection, _ string, fields Document) error {
 	c := s.coll(collection.String())
-	if c.updateErr != nil {
-		return c.updateErr
+	if err := c.writeGate(); err != nil {
+		return err
 	}
 	c.updates = append(c.updates, map[string]any{"$set": fields})
 	return nil
 }
 
-func (s *fakeStore) ApplyProjection(_ context.Context, collection PhysicalCollection, id string, stages []Document, upsert bool) error {
+func (s *fakeStore) ApplyProjection(ctx context.Context, collection PhysicalCollection, id string, stages []Document, upsert bool) error {
 	c := s.coll(collection.String())
-	if c.updateErr != nil {
-		return c.updateErr
+	if c.blockWrites {
+		<-ctx.Done()
+		return ctx.Err()
+	}
+	if err := c.writeGate(); err != nil {
+		return err
 	}
 	c.updates = append(c.updates, map[string]any{"$pipeline": stages, "_id": id, "$upsert": upsert})
+	c.ops = append(c.ops, "write")
 	return nil
 }
 
@@ -165,6 +179,8 @@ func (s *fakeStore) FindManyByFieldIn(_ context.Context, collection PhysicalColl
 
 func (s *fakeStore) FindIDsByField(_ context.Context, collection PhysicalCollection, _ string, _ any) ([]string, error) {
 	c := s.coll(collection.String())
+	c.idFinds++
+	c.ops = append(c.ops, "idfind")
 	if c.findErr != nil {
 		return nil, c.findErr
 	}
@@ -195,6 +211,30 @@ func (s *fakeStore) ProvisionSlot(_ context.Context, _ *ViewDefinition, target P
 func (s *fakeStore) DropCollection(_ context.Context, collection PhysicalCollection) error {
 	s.dropped = append(s.dropped, collection.String())
 	return s.dropErr
+}
+
+func (s *fakeStore) RevisionsByIDs(_ context.Context, collection PhysicalCollection, ids []string) (map[string]int64, error) {
+	c := s.coll(collection.String())
+	if c.findErr != nil {
+		return nil, c.findErr
+	}
+	want := make(map[string]struct{}, len(ids))
+	for _, id := range ids {
+		want[id] = struct{}{}
+	}
+	out := map[string]int64{}
+	for _, d := range c.docs {
+		m, ok := d.(map[string]any)
+		if !ok {
+			continue
+		}
+		id := fmt.Sprintf("%v", m["_id"])
+		if _, wanted := want[id]; !wanted {
+			continue
+		}
+		out[id] = watermarkOf(m[DocRevisionField])
+	}
+	return out, nil
 }
 
 func (s *fakeStore) SnapshotDocumentIDs(_ context.Context, collection PhysicalCollection) (map[string]struct{}, error) {

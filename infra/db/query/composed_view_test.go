@@ -513,3 +513,22 @@ func TestComposedView_LinkInChild_LinksProjection(t *testing.T) {
 		t.Error("expected an external (JoinUpstream) leg")
 	}
 }
+
+// ExternalLegs is the boot guards' pre-validation accessor: it must select
+// ONLY the JoinUpstream legs (external schemas) and be safe before
+// ValidateComposedViews.
+func TestComposedView_ExternalLegs(t *testing.T) {
+	prodSrc := View("cv_products").Version(1).Schema(composerRootSchema())
+	cv := ComposedView("cv_full").
+		Primary(View("cv_primary").Version(1).Schema(composerRootSchema())).
+		Link(extLeg("upstream_mirror", "Mirror", "mirror")).On("mirror_id").
+		Link(JoinView(prodSrc, "Product", "product")).On("product_id")
+
+	legs := cv.ExternalLegs()
+	if len(legs) != 1 {
+		t.Fatalf("only the JoinUpstream leg is external, got %d", len(legs))
+	}
+	if legs[0].Collection() != "upstream_mirror" {
+		t.Errorf("wrong leg selected: %q", legs[0].Collection())
+	}
+}

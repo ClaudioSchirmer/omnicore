@@ -134,7 +134,7 @@ func extractConstraintName(msg string) string {
 //
 // The ON comparison is NULL-SAFE (`=` OR both-NULL) — an Oracle-only need: an
 // empty string binds as NULL here, so a conflict column that is "" on the
-// other engines (omnicore_upstream_failures.local_id on the discover stage)
+// other engines (nullable text columns of the framework control plane)
 // arrives NULL, and a plain `=` would never match it — every retry would take
 // the INSERT arm and die on ORA-00001 instead of incrementing the attempt.
 // The natural-key UNIQUE still dedups those rows (an Oracle B-tree treats
@@ -177,10 +177,17 @@ func (d oracleDialect) BuildUpsert(table string, cols, conflictCols []string, se
 			}
 			b.WriteString(d.QuoteIdent(s.Col))
 			b.WriteString(" = ")
-			if s.Mode == core.UpsertSetNew {
+			switch s.Mode {
+			case core.UpsertSetNew:
 				b.WriteString("source.")
 				b.WriteString(d.QuoteIdent(s.Col))
-			} else {
+			case core.UpsertSetBump:
+				// The existing row is the MERGE target, and the table is
+				// aliased — the alias is the only valid qualifier here.
+				b.WriteString("target.")
+				b.WriteString(d.QuoteIdent(s.Col))
+				b.WriteString(" + 1")
+			default:
 				b.WriteString(s.Expr)
 			}
 		}

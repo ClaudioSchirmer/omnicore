@@ -42,7 +42,7 @@ func TestMySQLEngine_BuildUpsertExecutes(t *testing.T) {
 		[]string{"k", "payload"}, []string{"k"},
 		[]core.UpsertSet{
 			{Col: "payload", Mode: core.UpsertSetNew},
-			{Col: "attempt", Mode: core.UpsertSetExpr, Expr: "attempt + 1"},
+			{Col: "attempt", Mode: core.UpsertSetBump},
 		})
 	if err := q.Exec(ctx, upd, "key1", "first"); err != nil {
 		t.Fatalf("upsert insert: %v\nSQL: %s", err, upd)

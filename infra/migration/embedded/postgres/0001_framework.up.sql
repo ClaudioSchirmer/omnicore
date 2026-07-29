@@ -92,53 +92,6 @@ CREATE INDEX omnicore_mongo_views_status_idx
     ON omnicore_mongo_views (status)
     WHERE status <> 'done';
 
--- ── omnicore_upstream_failures ────────────────────────────────────────────────
--- Cross-service composition failure registry. When B materializes A's events
--- into local Mongo and a recompose fails, the failure is recorded here (mirrors
--- live state, not a growing log) so an operator can see "what is stuck" and the
--- framework can retry. The Kafka offset still advances (no poison pill).
-CREATE TABLE omnicore_upstream_failures (
-    id                  UUID      PRIMARY KEY,
-    subscription_topic  TEXT      NOT NULL,
-    view_name           TEXT      NOT NULL,
-    upstream_id         TEXT      NOT NULL,
-    local_id            TEXT      NOT NULL DEFAULT '',
-    stage               TEXT      NOT NULL,
-    error               TEXT      NOT NULL,
-    attempt             INTEGER   NOT NULL DEFAULT 1,
-    first_seen_at       TIMESTAMP NOT NULL DEFAULT NOW(),
-    last_attempt_at     TIMESTAMP NOT NULL DEFAULT NOW(),
-    resolved_at         TIMESTAMP,
-
-    CONSTRAINT omnicore_upstream_failures_stage_valid
-        CHECK (stage IN ('discover', 'compose', 'upsert')),
-    CONSTRAINT omnicore_upstream_failures_attempt_positive
-        CHECK (attempt > 0),
-    CONSTRAINT omnicore_upstream_failures_natural_key
-        UNIQUE (subscription_topic, view_name, upstream_id, local_id, stage)
-);
-
-COMMENT ON TABLE  omnicore_upstream_failures                    IS 'Cross-service recompose failure registry (mirrors live state). One row per (topic, view, upstream_id, local_id, stage); retried by UpstreamSubscriber.RetryPendingFailures.';
-COMMENT ON COLUMN omnicore_upstream_failures.id                IS 'Surrogate row id — UUID v7 minted in Go (the framework id standard).';
-COMMENT ON COLUMN omnicore_upstream_failures.subscription_topic IS 'Upstream Kafka topic the subscription consumes.';
-COMMENT ON COLUMN omnicore_upstream_failures.view_name         IS 'Local B view whose recompose failed.';
-COMMENT ON COLUMN omnicore_upstream_failures.upstream_id       IS 'Id of the changed upstream (A) document that triggered the recompose.';
-COMMENT ON COLUMN omnicore_upstream_failures.local_id          IS 'Id of the local B doc being recomposed; empty string on the "discover" stage (before a local doc is known).';
-COMMENT ON COLUMN omnicore_upstream_failures.stage             IS 'Where it failed: discover | compose | upsert.';
-COMMENT ON COLUMN omnicore_upstream_failures.error             IS 'Last error message (overwritten per retry).';
-COMMENT ON COLUMN omnicore_upstream_failures.attempt           IS 'Retry counter; auto-incremented on conflict.';
-COMMENT ON COLUMN omnicore_upstream_failures.first_seen_at     IS 'When the failure was first recorded (frozen).';
-COMMENT ON COLUMN omnicore_upstream_failures.last_attempt_at   IS 'When the last retry ran (refreshed).';
-COMMENT ON COLUMN omnicore_upstream_failures.resolved_at       IS 'Set when a clean recompose pass succeeds; NULL while pending.';
-
-CREATE INDEX omnicore_upstream_failures_pending_idx
-    ON omnicore_upstream_failures (subscription_topic, view_name, upstream_id)
-    WHERE resolved_at IS NULL;
-
-CREATE INDEX omnicore_upstream_failures_last_attempt_idx
-    ON omnicore_upstream_failures (last_attempt_at DESC)
-    WHERE resolved_at IS NULL;
-
 -- ── audit_events ──────────────────────────────────────────────────────────────
 -- The authoritative audit trail: one row per write, inserted in the SAME TX as
 -- the data row when the "database" destination is on. Plain table: the id is a
@@ -232,7 +185,8 @@ CREATE INDEX integration_events_event_type_idx
     ON integration_events (event_type, created_at);
 
 -- ── omnicore_integration_failures ─────────────────────────────────────────────
--- Consumer-side integration failure registry (mirrors omnicore_upstream_failures).
+-- Consumer-side integration failure registry (same live-state-mirror shape as
+-- the projection parking ledger, omnicore_projection_failures in 0003).
 -- One row per (consumer_group, source_key, event_key, event_id), upserted on each
 -- retry, so an operator can query "which events are stuck right now?".
 CREATE TABLE omnicore_integration_failures (

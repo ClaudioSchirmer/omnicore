@@ -50,28 +50,6 @@ CREATE TABLE omnicore_mongo_views (
     CONSTRAINT omnicore_mongo_views_status_valid     CHECK (status IN ('done', 'processing'))
 ) COMMENT='Mongo read-side registry: declared shape + rebuild state per view (drift detection + crash recovery).';
 
--- ── omnicore_upstream_failures ────────────────────────────────────────────────
-CREATE TABLE omnicore_upstream_failures (
-    id                  BINARY(16)   NOT NULL COMMENT 'Surrogate row id — UUID v7 minted in Go (the framework id standard).',
-    subscription_topic  VARCHAR(255) CHARACTER SET ascii NOT NULL COMMENT 'Upstream Kafka topic the subscription consumes. (ascii VARCHAR(255): technical identifier; covers Kafka''s 249-char topic limit. With the other natural-key columns the composite UNIQUE stays well under MySQL''s 3072-byte index limit.)',
-    view_name           VARCHAR(255) CHARACTER SET ascii NOT NULL COMMENT 'Local view whose recompose failed.',
-    upstream_id         VARCHAR(255) CHARACTER SET ascii NOT NULL COMMENT 'Id of the changed upstream document that triggered the recompose (UUID / external id).',
-    local_id            VARCHAR(255) CHARACTER SET ascii NOT NULL DEFAULT '' COMMENT 'Id of the local doc being recomposed; empty on the discover stage.',
-    stage               VARCHAR(16)  NOT NULL COMMENT 'Where it failed: discover | compose | upsert.',
-    error               TEXT         NOT NULL COMMENT 'Last error message (overwritten per retry).',
-    attempt             INTEGER      NOT NULL DEFAULT 1 COMMENT 'Retry counter; auto-incremented on conflict.',
-    first_seen_at       DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT 'When first recorded (frozen).',
-    last_attempt_at     DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT 'When last retried (refreshed).',
-    resolved_at         DATETIME     NULL     COMMENT 'Set when a clean recompose pass succeeds; NULL while pending.',
-    PRIMARY KEY (id),
-    KEY omnicore_upstream_failures_pending_idx (subscription_topic, view_name, upstream_id),
-    KEY omnicore_upstream_failures_last_attempt_idx (last_attempt_at),
-    CONSTRAINT omnicore_upstream_failures_stage_valid    CHECK (stage IN ('discover', 'compose', 'upsert')),
-    CONSTRAINT omnicore_upstream_failures_attempt_positive CHECK (attempt > 0),
-    CONSTRAINT omnicore_upstream_failures_natural_key
-        UNIQUE (subscription_topic, view_name, upstream_id, local_id, stage)
-) COMMENT='Cross-service recompose failure registry (mirrors live state); retried by UpstreamSubscriber.RetryPendingFailures.';
-
 -- ── audit_events ──────────────────────────────────────────────────────────────
 -- Plain table on MySQL (no partitioning). The id is a time-ordered UUID v7 stored
 -- BINARY(16), so the clustered primary key gives append-only insert locality.

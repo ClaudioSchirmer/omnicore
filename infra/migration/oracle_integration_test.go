@@ -39,7 +39,8 @@ func TestOracleManager_Up_AppliesFrameworkSchema(t *testing.T) {
 	// EXISTS is native on the 23ai floor).
 	for _, tbl := range []string{
 		"omnicore_integration_processed", "omnicore_integration_failures", "integration_events",
-		"audit_events", "omnicore_upstream_failures", "omnicore_mongo_views", "outbox",
+		"audit_events", "omnicore_upstream_failures", "omnicore_projection_failures",
+		"omnicore_mongo_views", "outbox",
 		"omnicore_framework_migrations", "omnicore_migrations",
 	} {
 		if _, err := raw.ExecContext(ctx, "DROP TABLE IF EXISTS "+tbl+" CASCADE CONSTRAINTS"); err != nil {
@@ -86,8 +87,13 @@ func TestOracleManager_Up_AppliesFrameworkSchema(t *testing.T) {
 		"SELECT version FROM omnicore_framework_migrations FETCH FIRST 1 ROWS ONLY").Scan(&fwVersion); err != nil {
 		t.Fatalf("read framework tracking row: %v", err)
 	}
-	if fwVersion != 1 {
-		t.Fatalf("framework tracking version = %d, want 1", fwVersion)
+	// The framework sequence is 0001 + 0002 + 0003. This assertion was pinned at
+	// 1 and went stale when 0002 landed — unnoticed, because this test SKIPS
+	// unless ORACLE_DSN matches the bench, so nobody ever saw it fail. Derived
+	// from the embedded set now, so it cannot go stale again.
+	wantVersion := int64(len(frameworkMigrationNames()))
+	if fwVersion != wantVersion {
+		t.Fatalf("framework tracking version = %d, want %d", fwVersion, wantVersion)
 	}
 
 	// Idempotent: a second Up is a no-op (ErrNoChange absorbed).

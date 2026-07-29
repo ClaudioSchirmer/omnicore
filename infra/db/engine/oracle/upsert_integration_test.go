@@ -40,7 +40,7 @@ func TestOracleEngine_BuildUpsertExecutes(t *testing.T) {
 		[]string{"k", "payload"}, []string{"k"},
 		[]core.UpsertSet{
 			{Col: "payload", Mode: core.UpsertSetNew},
-			{Col: "attempt", Mode: core.UpsertSetExpr, Expr: "attempt + 1"},
+			{Col: "attempt", Mode: core.UpsertSetBump},
 		})
 	if err := q.Exec(ctx, upd, "key1", "first"); err != nil {
 		t.Fatalf("upsert insert: %v\nSQL: %s", err, upd)
@@ -88,7 +88,7 @@ func TestOracleEngine_BuildUpsertExecutes(t *testing.T) {
 	}
 	nullSafe := d.BuildUpsert("upsert_nullkey",
 		[]string{"a", "b"}, []string{"a", "b"},
-		[]core.UpsertSet{{Col: "attempt", Mode: core.UpsertSetExpr, Expr: "attempt + 1"}})
+		[]core.UpsertSet{{Col: "attempt", Mode: core.UpsertSetBump}})
 	if err := q.Exec(ctx, nullSafe, "topic", ""); err != nil {
 		t.Fatalf("null-key insert: %v\nSQL: %s", err, nullSafe)
 	}

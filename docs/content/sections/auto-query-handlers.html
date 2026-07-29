@@ -954,28 +954,28 @@ return bootstrap.Wiring{
         keeps archived documents — a filter that drops it would strip the archive marker from the
         <code>ARCHIVED</code> upsert.</p>
 
-    <p><strong>Persistent failure registry.</strong> Every ripple failure (discover / compose / upsert stage) is upserted into the framework relational table <code>omnicore_upstream_failures</code> alongside the slog line and the in-memory counter. The registry covers BOTH ripple sources: for an upstream subscription the <code>subscription_topic</code> column holds the topic; for a ripple whose source is a LOCAL view (a <code>query.JoinView</code> embed — see <a href="#views~views-embed-view">Views</a>) it holds <code>view:&lt;source view name&gt;</code>, a namespaced label that cannot collide with a topic, and <code>upstream_id</code> holds the source document's <code>_id</code>. So one query answers "which materialized segments are stale right now?" across both kinds. The natural key <code>(subscription_topic, view_name, upstream_id, local_id, stage)</code> turns retries into <code>attempt</code> increments — the table mirrors live state, never grows monotonically. A recompose round that finishes without errors for <code>(view, upstream_id)</code> automatically marks any pending rows under that coordinate as resolved (<code>resolved_at = NOW()</code>). Writes are best-effort: any relational error on Record/Resolve is logged at <code>slog.Warn</code> and discarded — the consumer's transport offset/ack still advances, preserving the failure-isolation contract.</p>
+    <p><strong>The unified failure ledger.</strong> Every ripple failure (discover / compose / upsert stage — plus <code>signal</code>, the post-write re-read of the source that feeds the ripple) is upserted into <code>omnicore_projection_failures</code> as a <code>kind='ripple'</code> row, alongside the slog line and the in-memory counter — the SAME ledger that parks failed projection events (<code>kind='event'</code>), so one table answers "what read-side work is deferred right now?". The <code>topic</code> column holds the source coordinate: the subscription topic for an upstream mirror, or <code>view:&lt;source view name&gt;</code> for a LOCAL view source (a <code>query.JoinView</code> embed — see <a href="#views~views-embed-view">Views</a>), a namespaced label that cannot collide with a topic. <code>aggregate_type</code> holds the DEPENDENT view, <code>aggregate_id</code> the source document's <code>_id</code>; <code>stage</code> and <code>local_id</code> describe the latest failure. A ripple row stores NO payload — its replay recomposes from the source's CURRENT document, never from a stale copy. One row per <code>(consumer_group, kind, topic, aggregate_type, aggregate_id)</code>; repeats increment <code>attempt</code> — the ledger mirrors live state, never grows monotonically. A recompose round that finishes without errors for <code>(view, source id)</code> automatically marks pending rows under that coordinate as resolved. Writes are best-effort: any relational error on Record/Resolve is logged at <code>slog.Warn</code> and discarded — the consumer's transport offset/ack still advances, preserving the failure-isolation contract.</p>
 
     <p>Operational queries (SQL on B's framework relational store):</p>
-    <pre><code>-- Currently stale entities:
-SELECT subscription_topic, view_name, upstream_id, local_id, stage, attempt,
-       last_attempt_at, error
-FROM omnicore_upstream_failures
-WHERE resolved_at IS NULL
+    <pre><code>-- Currently stale segments:
+SELECT topic, aggregate_type AS view_name, aggregate_id AS source_id,
+       local_id, stage, attempt, last_attempt_at, error
+FROM omnicore_projection_failures
+WHERE kind = 'ripple' AND resolved_at IS NULL
 ORDER BY last_attempt_at ASC;
 
 -- Top offending views (recurring failures may indicate a deterministic Composer bug):
-SELECT view_name, count(*) AS pending
-FROM omnicore_upstream_failures
-WHERE resolved_at IS NULL
-GROUP BY view_name
+SELECT aggregate_type AS view_name, count(*) AS pending
+FROM omnicore_projection_failures
+WHERE kind = 'ripple' AND resolved_at IS NULL
+GROUP BY aggregate_type
 ORDER BY pending DESC;</code></pre>
 
-    <p><strong>Retry surface.</strong> <code>UpstreamSubscriber.RetryPendingFailures(ctx) (retried int, err error)</code> is the public runtime API: it lists pending failures by the subscriber's topic, deduplicates by <code>upstream_id</code>, and re-runs <code>ripple</code> for each unique id. Idempotent — a successful re-ripple calls <code>ResolveUpstreamFailures</code>, so the next call against a drained slate is a no-op. The framework owns the primitive; the consumer decides how to expose it (in-process ticker, authenticated HTTP endpoint, or admin RPC).</p>
+    <p><strong>Replay is automatic.</strong> The SyncEngine's parked-retry loop (the <code>mongo.parkedRetry</code> knob — on by default) sweeps BOTH kinds on its cadence: ripple rows are deduplicated per source id and re-run through the same recompose a live event would drive — an upstream row through its subscriber, a <code>view:</code> row through the view fan-out — resolving on a clean pass. A row whose source no longer exists in the topology (the subscription or embed was removed) is resolved as moot with a log line. <code>SyncEngine.RetryPendingProjectionFailures(ctx)</code> forces one immediate sweep when an operator does not want to wait for the next tick.</p>
 
-    <p><strong>Draining a VIEW-sourced row</strong> (a <code>view:&lt;name&gt;</code> coordinate) needs no dedicated API: the next write to that source document re-runs its ripple and resolves the row automatically, and an operator can force convergence by rebuilding the EMBEDDING view (a rebuild recomposes every segment from the source's current collection). Pending rows under a <code>view:</code> label that never clear point at a deterministic compose or index problem in the embedding view — read the <code>error</code> column and the <code>stage</code>.</p>
+    <p>Pending rows under a <code>view:</code> label that never clear point at a deterministic compose or index problem in the embedding view — read the <code>error</code> column and the <code>stage</code>; a rebuild of the EMBEDDING view also forces convergence (it recomposes every segment from the source's current collection).</p>
 
-    <p><strong>Inspection CLI.</strong> <code>omnicore-admin upstream-list-failures [--topic &lt;name&gt;] [--view &lt;name&gt;] [--format text|json] [--limit N]</code> is the read-only triage tool: runs in B's process (loads <code>microservice.${APP_PROFILE}.yaml</code>), reads the table, prints text or JSON. The CLI binary has no Wiring of B and cannot call <code>RetryPendingFailures</code> — actual retry lives on the runtime API above.
+    <p><strong>Inspection CLI.</strong> <code>omnicore-admin list-failures [--kind event|ripple] [--topic &lt;source&gt;] [--view &lt;name&gt;] [--format text|json] [--limit N]</code> is the read-only triage tool: runs in B's process (loads <code>microservice.${APP_PROFILE}.yaml</code>), reads the ledger, prints text or JSON. The CLI binary has no Wiring of B and cannot replay — replay belongs to the runtime loop above.
 
     </p><h4>5. Client does GET with dynamic filters</h4>
     <pre><code>GET /users?email.in=a@x.com,b@y.com&amp;sort=-created_at&amp;limit=20

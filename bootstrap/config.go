@@ -166,9 +166,11 @@ type Config struct {
 	} `yaml:"relational"`
 
 	Mongo struct {
-		URI      string             `yaml:"uri"`
-		Database string             `yaml:"database"`
-		Rebuild  MongoRebuildConfig `yaml:"rebuild"`
+		URI         string                 `yaml:"uri"`
+		Database    string                 `yaml:"database"`
+		Rebuild     MongoRebuildConfig     `yaml:"rebuild"`
+		Reconcile   MongoReconcileConfig   `yaml:"reconcile"`
+		ParkedRetry MongoParkedRetryConfig `yaml:"parkedRetry"`
 	} `yaml:"mongo"`
 
 	// Transport is the async message-transport connection, neutral across the
@@ -577,6 +579,137 @@ const (
 	MongoRebuildOrphanWarn   = "warn"
 )
 
+// MongoReconcileConfig schedules the continuous revision-parity sweep
+// (SyncEngine.ReconcileAllViews): a background audit that compares every view
+// document's stored revision against its relational source and recomposes what
+// is missing or behind — the backstop for losses no failure ledger can see,
+// because nothing reported an error (an event that never arrived, a park that
+// itself failed, an acknowledged write the store lost).
+//
+// OFF by default, deliberately: the sweep's full-pass duration is the
+// convergence bound it provides (table size / rate), and that trade belongs to
+// the operator who can see both numbers — not to an upgrade. Leaving it off in
+// dev is also a feature: a projection bug then SURFACES as a stale document
+// instead of being quietly repaired every interval.
+type MongoReconcileConfig struct {
+	// Enabled turns the background sweep loop on. Off (the default), the
+	// mechanism still exists (ReconcileView / ReconcileAllViews are callable)
+	// but nothing runs on a cadence — and ProjectionHealth's LastReconcile
+	// stays zero, which is the observable an operator can alarm on if the
+	// sweep is expected to be running.
+	Enabled bool `yaml:"enabled"`
+	// IntervalMinutes is the pause between the END of one full pass and the
+	// START of the next — a slow pass never overlaps the next one. 0 (unset)
+	// → the framework default (60).
+	IntervalMinutes int `yaml:"intervalMinutes"`
+	// RowsPerSecond throttles the sweep; it is the ONLY cost knob, a hard
+	// ceiling on instantaneous load regardless of table size. What table size
+	// stretches is the pass DURATION (rows / rate), which is the detection
+	// bound this backstop provides. 0 (unset) → the framework default;
+	// negative → unthrottled.
+	RowsPerSecond int `yaml:"rowsPerSecond"`
+	// BatchSize is how many source rows are compared per round trip. 0 (unset)
+	// → the framework default.
+	BatchSize int `yaml:"batchSize"`
+}
+
+// MongoParkedRetryConfig governs the parked-events replay driver — the loop
+// that sweeps this consumer group's `omnicore_projection_failures` rows and
+// re-delivers them through the normal projection path. ON by default: the
+// driver is what turns "park and advance" into DEFERRED work rather than a
+// dead letter, and its idle cost is one indexed SELECT per interval. The knob
+// exists because the cadence is an operator's trade (recovery latency after an
+// outage heals vs. background polling), not a library constant.
+type MongoParkedRetryConfig struct {
+	// Enabled turns the replay driver on/off. Unset → true. Off, a parked
+	// event is replayed only by the reconcile sweep (when enabled) or by a
+	// manual RetryPendingProjectionFailures call.
+	Enabled *bool `yaml:"enabled"`
+	// IntervalMinutes is the sweep cadence. 0 (unset) → the framework default
+	// (10 minutes). Dev/QA profiles typically pin 1 for tight recovery.
+	IntervalMinutes int `yaml:"intervalMinutes"`
+}
+
+// knownMongoParkedRetryKeys is the strict allowlist of yaml keys under
+// mongo.parkedRetry.
+var knownMongoParkedRetryKeys = map[string]bool{
+	"enabled":         true,
+	"intervalMinutes": true,
+}
+
+// UnmarshalYAML decodes the block and rejects unknown keys.
+func (m *MongoParkedRetryConfig) UnmarshalYAML(value *yaml.Node) error {
+	if value.Kind != yaml.MappingNode {
+		return fmt.Errorf("mongo.parkedRetry: expected mapping, got %v", value.Kind)
+	}
+	for i := 0; i+1 < len(value.Content); i += 2 {
+		keyNode := value.Content[i]
+		if !knownMongoParkedRetryKeys[keyNode.Value] {
+			return fmt.Errorf(
+				"mongo.parkedRetry: unknown field %q (allowed: enabled, intervalMinutes)",
+				keyNode.Value,
+			)
+		}
+	}
+	type plain MongoParkedRetryConfig
+	var p plain
+	if err := value.Decode(&p); err != nil {
+		return err
+	}
+	*m = MongoParkedRetryConfig(p)
+	return nil
+}
+
+// applyDefaults resolves the default-ON semantics (a plain bool cannot tell
+// "absent" from "false", hence the pointer).
+func (m *MongoParkedRetryConfig) applyDefaults() {
+	if m.Enabled == nil {
+		on := true
+		m.Enabled = &on
+	}
+}
+
+// knownMongoReconcileKeys is the strict allowlist of yaml keys under
+// mongo.reconcile — an unknown key aborts the boot instead of being silently
+// ignored, mirroring mongo.rebuild.
+var knownMongoReconcileKeys = map[string]bool{
+	"enabled":         true,
+	"intervalMinutes": true,
+	"rowsPerSecond":   true,
+	"batchSize":       true,
+}
+
+// UnmarshalYAML decodes the block and rejects unknown keys.
+func (m *MongoReconcileConfig) UnmarshalYAML(value *yaml.Node) error {
+	if value.Kind != yaml.MappingNode {
+		return fmt.Errorf("mongo.reconcile: expected mapping, got %v", value.Kind)
+	}
+	for i := 0; i+1 < len(value.Content); i += 2 {
+		keyNode := value.Content[i]
+		if !knownMongoReconcileKeys[keyNode.Value] {
+			return fmt.Errorf(
+				"mongo.reconcile: unknown field %q (allowed: enabled, intervalMinutes, rowsPerSecond, batchSize)",
+				keyNode.Value,
+			)
+		}
+	}
+	type plain MongoReconcileConfig
+	var p plain
+	if err := value.Decode(&p); err != nil {
+		return err
+	}
+	*m = MongoReconcileConfig(p)
+	return nil
+}
+
+// applyDefaults fills the cadence default; the rate and batch defaults live in
+// the query package (they are shared with direct ReconcileAllViews callers).
+func (m *MongoReconcileConfig) applyDefaults() {
+	if m.IntervalMinutes == 0 {
+		m.IntervalMinutes = 60
+	}
+}
+
 // knownMongoRebuildKeys is the strict allowlist of yaml keys under
 // mongo.rebuild. Anything else aborts the boot — surfaces removed fields
 // (notably lockTTL, which the hybrid lock design eliminated) instead of
@@ -789,6 +922,8 @@ func (c *Config) applyDefaults() {
 		c.Relational.Pool.ConnMaxLifetimeSeconds = &d
 	}
 	c.Mongo.Rebuild.applyDefaults()
+	c.Mongo.Reconcile.applyDefaults()
+	c.Mongo.ParkedRetry.applyDefaults()
 	c.Query.applyDefaults()
 	c.Auth.applyDefaults()
 	c.Audit.ApplyDefaults()

@@ -23,13 +23,14 @@ import (
 //
 // Failure isolation contract (§7.3), unchanged from the subscriber: every
 // recompose error is logged + counted + persisted to
-// omnicore_upstream_failures and SKIPPED — the caller's offset/event always
-// advances; stale documents are drained through the next source event or
-// RetryPendingFailures.
+// the unified ledger (omnicore_projection_failures, kind=ripple) and SKIPPED —
+// the caller's offset/event always advances; stale documents are drained by the
+// parked-retry loop, or by the next source event.
 type embedRippler struct {
-	// eng is the relational engine the side-channel failure registry
-	// (omnicore_upstream_failures) is read/written through; the recompose
-	// ripple itself is Mongo + the composer. Nil-safe (test scaffolds).
+	// eng is the relational engine the unified failure ledger
+	// (omnicore_projection_failures, kind=ripple) is read/written through; the
+	// recompose ripple itself is Mongo + the composer. Nil-safe (test
+	// scaffolds).
 	eng      core.RelationalEngine
 	mongo    ReadModelStore
 	composer *Composer
@@ -39,6 +40,12 @@ type embedRippler struct {
 	// topic labels failures + metrics rows for this source (the subscription
 	// topic today; a synthetic "view:<name>" label for a view source).
 	topic string
+	// group is the sync consumer group that OWNS the ledger rows this rippler
+	// records — the parked-retry loop replays rows scoped to its group, so a
+	// row recorded under any other name would never be swept. Plumbed from the
+	// SyncEngine (view sources) or WithViewChaining (subscription sources);
+	// empty only in wiring-less test scaffolds, where eng is nil too.
+	group string
 	// collection is the source's local Mongo collection the dependent views
 	// embed (subscription.Collection, or the embedded view's name).
 	collection string
@@ -115,13 +122,12 @@ func (r *embedRippler) chain(ctx context.Context, viewName, localID string) {
 // turns a deterministic recompose bug into a poison pill across the whole
 // consumer group.
 //
-// Every failure is persisted to omnicore_upstream_failures alongside the
+// Every failure is persisted to the unified ledger alongside the
 // in-memory metric so operators have a queryable record of stale docs
 // surviving past the consumer group's offset. A view+upstream_id pair
-// that completes the full recompose pass without errors triggers
-// ResolveUpstreamFailures so prior pending rows for the same coordinate
-// are marked as resolved — the failure table mirrors the live state, not
-// a monotonically-growing log.
+// that completes the full recompose pass without errors resolves prior
+// pending rows for the same coordinate — the ledger mirrors the live
+// state, not a monotonically-growing log.
 // srcRev is the source document's revision watermark (0 for an unwatermarked
 // source such as an upstream mirror — see the srcRev commentary in
 // embed_surgical.go).
@@ -163,7 +169,7 @@ func (r *embedRippler) ripple(ctx context.Context, upstreamID string, before, af
 					r.logger.Error("upstream.recompose.exists",
 						"subscription", r.topic, "view", v.Name(),
 						"upstreamID", upstreamID, "localID", localID, "err", err)
-					r.recordFailure(ctx, v.Name(), upstreamID, localID, UpstreamFailureStageUpsert, err)
+					r.recordFailure(ctx, v.Name(), upstreamID, localID, ProjectionFailureStageUpsert, err)
 					failed = true
 					continue
 				}
@@ -274,7 +280,7 @@ func (r *embedRippler) rippleChildEmbeds(ctx context.Context, v *ViewDefinition,
 			r.logger.Error("upstream.recompose.discover.child",
 				"subscription", r.topic, "view", v.Name(),
 				"upstreamID", upstreamID, "field", seg+"."+fkCol, "err", err)
-			r.recordFailure(ctx, v.Name(), upstreamID, "", UpstreamFailureStageDiscover, err)
+			r.recordFailure(ctx, v.Name(), upstreamID, "", ProjectionFailureStageDiscover, err)
 			continue
 		}
 		failed := false
@@ -305,7 +311,7 @@ func (r *embedRippler) rippleRecomposeOne(ctx context.Context, v *ViewDefinition
 			"upstreamID", upstreamID,
 			"localID", localID,
 			"err", err)
-		r.recordFailure(ctx, v.Name(), upstreamID, localID, UpstreamFailureStageCompose, err)
+		r.recordFailure(ctx, v.Name(), upstreamID, localID, ProjectionFailureStageCompose, err)
 		return true
 	}
 	if doc == nil {
@@ -349,7 +355,7 @@ func (r *embedRippler) rippleApplyOne(ctx context.Context, v *ViewDefinition, up
 			"upstreamID", upstreamID,
 			"localID", localID,
 			"err", err)
-		r.recordFailure(ctx, v.Name(), upstreamID, localID, UpstreamFailureStageUpsert, err)
+		r.recordFailure(ctx, v.Name(), upstreamID, localID, ProjectionFailureStageUpsert, err)
 		return true
 	}
 	if shadow, on := r.resolver.ShadowActive(v.Name()); on {
@@ -412,7 +418,7 @@ func (r *embedRippler) discoverRippleTargets(
 				"view", v.Name(),
 				"upstreamID", upstreamID,
 				"err", err)
-			r.recordFailure(ctx, v.Name(), upstreamID, "", UpstreamFailureStageDiscover, err)
+			r.recordFailure(ctx, v.Name(), upstreamID, "", ProjectionFailureStageDiscover, err)
 			return nil, true
 		}
 		for _, id := range ids {
@@ -422,15 +428,15 @@ func (r *embedRippler) discoverRippleTargets(
 	return ordered, false
 }
 
-// recordFailure persists one ripple failure row in the relational registry.
-// Best-effort: any database error is logged at Warn and discarded — the
-// failure isolation contract requires that the caller's offset advances
-// regardless of side-channel writes. Skipped entirely when eng is nil (test
-// scaffolds that drive ripple without a relational handle).
+// recordFailure persists one ripple failure row in the unified ledger
+// (kind=ripple). Best-effort: any database error is logged at Warn and
+// discarded — the failure isolation contract requires that the caller's offset
+// advances regardless of side-channel writes. Skipped entirely when eng is nil
+// (test scaffolds that drive ripple without a relational handle).
 func (r *embedRippler) recordFailure(
 	ctx context.Context,
 	viewName, upstreamID, localID string,
-	stage UpstreamFailureStage,
+	stage ProjectionFailureStage,
 	cause error,
 ) {
 	if r.eng == nil {
@@ -440,15 +446,17 @@ func (r *embedRippler) recordFailure(
 	if cause != nil {
 		msg = cause.Error()
 	}
-	rec := UpstreamFailureRecord{
-		SubscriptionTopic: r.topic,
-		ViewName:          viewName,
-		UpstreamID:        upstreamID,
-		LocalID:           localID,
-		Stage:             stage,
-		Error:             msg,
+	rec := ProjectionFailureRecord{
+		Kind:          ProjectionFailureKindRipple,
+		ConsumerGroup: r.group,
+		Topic:         r.topic,
+		AggregateType: viewName,
+		AggregateID:   upstreamID,
+		LocalID:       localID,
+		Stage:         stage,
+		Error:         msg,
 	}
-	if err := RecordUpstreamFailure(ctx, r.eng.Querier(), r.eng.Dialect(), rec); err != nil {
+	if err := RecordProjectionFailure(ctx, r.eng.Querier(), r.eng.Dialect(), rec); err != nil {
 		r.logger.Warn("upstream.recompose.record_failure_failed",
 			"subscription", r.topic,
 			"view", viewName,
@@ -459,13 +467,14 @@ func (r *embedRippler) recordFailure(
 	}
 }
 
-// resolveFailures marks any pending failure for (subscription, view,
-// upstream_id) as resolved. Best-effort + nil-safe like recordFailure.
+// resolveFailures marks any pending ripple row for (source, view, upstream_id)
+// as resolved. Best-effort + nil-safe like recordFailure.
 func (r *embedRippler) resolveFailures(ctx context.Context, viewName, upstreamID string) {
 	if r.eng == nil {
 		return
 	}
-	if err := ResolveUpstreamFailures(ctx, r.eng.Querier(), r.eng.Dialect(), r.topic, viewName, upstreamID); err != nil {
+	if err := ResolveProjectionFailure(ctx, r.eng.Querier(), r.eng.Dialect(),
+		r.group, ProjectionFailureKindRipple, r.topic, viewName, upstreamID); err != nil {
 		r.logger.Warn("upstream.recompose.resolve_failures_failed",
 			"subscription", r.topic,
 			"view", viewName,

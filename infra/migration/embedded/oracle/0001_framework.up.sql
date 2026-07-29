@@ -19,13 +19,11 @@
 -- ║ the same HTTP status on every backend. Column semantics are documented in  ║
 -- ║ the sibling files (MySQL carries per-column COMMENTs; COMMENT ON here      ║
 -- ║ would triple the file).                                                    ║
--- ║ One deliberate Oracle deviation: omnicore_upstream_failures.local_id is    ║
--- ║ NULLABLE with no default (elsewhere NOT NULL DEFAULT ''). Oracle stores '' ║
--- ║ as NULL, so the empty discover-stage local_id CANNOT satisfy a NOT NULL    ║
--- ║ column; the natural-key UNIQUE still dedups those rows (an Oracle B-tree   ║
--- ║ treats identical entries with equal non-NULL prefixes and a NULL in the    ║
--- ║ same slot as duplicates) and the engine's MERGE upsert compares conflict   ║
--- ║ columns NULL-safely.                                                       ║
+-- ║ One deliberate Oracle rule carried by the sibling 0003 file: empty-string  ║
+-- ║ text columns are NULLABLE with no default (elsewhere NOT NULL DEFAULT ''). ║
+-- ║ Oracle stores '' as NULL, so an empty value CANNOT satisfy a NOT NULL      ║
+-- ║ column; natural-key UNIQUEs still dedup those rows and the engine's MERGE  ║
+-- ║ upsert compares conflict columns NULL-safely.                              ║
 -- ╚══════════════════════════════════════════════════════════════════════════╝
 
 -- ── outbox ──────────────────────────────────────────────────────────────────
@@ -73,33 +71,6 @@ CREATE TABLE omnicore_mongo_views (
 );
 CREATE INDEX omnicore_mongo_views_applied_at_idx ON omnicore_mongo_views (applied_at);
 CREATE INDEX omnicore_mongo_views_status_idx     ON omnicore_mongo_views (status);
-
--- ── omnicore_upstream_failures ────────────────────────────────────────────────
--- Cross-service recompose failure registry (mirrors live state); retried by
--- UpstreamSubscriber.RetryPendingFailures. local_id is NULLable here (see the
--- header): the discover stage records no local id and '' IS NULL on Oracle.
-CREATE TABLE omnicore_upstream_failures (
-    id                  RAW(16)       NOT NULL,
-    subscription_topic  VARCHAR2(255) NOT NULL,
-    view_name           VARCHAR2(255) NOT NULL,
-    upstream_id         VARCHAR2(255) NOT NULL,
-    local_id            VARCHAR2(255) NULL,
-    stage               VARCHAR2(16)  NOT NULL,
-    error               CLOB          NOT NULL,
-    attempt             NUMBER(10)    DEFAULT 1 NOT NULL,
-    first_seen_at       TIMESTAMP(6)  DEFAULT SYSTIMESTAMP NOT NULL,
-    last_attempt_at     TIMESTAMP(6)  DEFAULT SYSTIMESTAMP NOT NULL,
-    resolved_at         TIMESTAMP(6)  NULL,
-    CONSTRAINT omnicore_upstream_failures_pkey PRIMARY KEY (id),
-    CONSTRAINT omnicore_upstream_failures_stage_valid      CHECK (stage IN ('discover', 'compose', 'upsert')),
-    CONSTRAINT omnicore_upstream_failures_attempt_positive CHECK (attempt > 0),
-    CONSTRAINT omnicore_upstream_failures_natural_key
-        UNIQUE (subscription_topic, view_name, upstream_id, local_id, stage)
-);
-CREATE INDEX omnicore_upstream_failures_pending_idx
-    ON omnicore_upstream_failures (subscription_topic, view_name, upstream_id);
-CREATE INDEX omnicore_upstream_failures_last_attempt_idx
-    ON omnicore_upstream_failures (last_attempt_at);
 
 -- ── audit_events ──────────────────────────────────────────────────────────────
 -- Authoritative audit trail: one row per write, in-TX with the data row. Plain

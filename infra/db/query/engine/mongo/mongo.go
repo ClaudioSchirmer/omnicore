@@ -82,19 +82,37 @@ func NewMongoDB(ctx context.Context, uri, dbName string, opts ...MongoOption) (*
 	}
 	m := &MongoDB{client: client, db: client.Database(dbName)}
 	m.collFn = func(name string) mongoColl {
-		// The projection-state registry is the FIDUCIARY of the read side's
-		// write-then-check handshakes (base-revision stamps, tombstones): a
-		// record acknowledged by the primary alone can be ROLLED BACK on a
-		// failover, silently dissolving the ordering premise the handshake
-		// proofs rest on. Its writes therefore require MAJORITY
-		// acknowledgment — view collections keep the deployment default
-		// (their writes reconverge through event redelivery + guards; the
-		// registry has no redelivery to re-stamp it). On a standalone node
-		// majority degrades to the primary ack — zero cost.
-		if name == query.ProjectionStateCollectionName {
-			return m.db.Collection(name, options.Collection().SetWriteConcern(writeconcern.Majority()))
-		}
-		return m.db.Collection(name)
+		// EVERY read-side write requires MAJORITY acknowledgment. A record
+		// acknowledged by the primary alone can be ROLLED BACK on a failover:
+		// the write was confirmed to us and then withdrawn beneath us, so the
+		// event that produced it was legitimately complete and nothing on the
+		// delivery path will ever re-issue it.
+		//
+		// The projection-state registry needed this first — it is the fiduciary
+		// of the write-then-check handshakes (base-revision stamps, tombstones)
+		// and a rolled-back record silently dissolves the ordering premise those
+		// proofs rest on. View collections were left on the deployment default
+		// with the stated reason that "their writes reconverge through event
+		// redelivery + guards". That premise was false: the projection loop was
+		// at-most-once, and an insert-once aggregate has no later write to
+		// re-stamp its document. The redelivery half is fixed now, but redelivery
+		// does not help here either — the write SUCCEEDED and was then undone.
+		//
+		// Stated here rather than inherited: on MongoDB 5.0+ a replica set
+		// already defaults to majority, so this is usually a no-op today, and
+		// that is precisely the point — a correctness invariant must not rest on
+		// a default that can be changed outside this repository, nor silently
+		// lapse on an arbiter topology or an older server. On a standalone node
+		// majority degrades to the primary ack, which is why the QA bench cannot
+		// observe either the cost or the failover behaviour.
+		//
+		// No configuration knob: a switch that disables a correctness invariant
+		// is a trap, and the need is unmeasured. Where this is genuinely
+		// expensive is a cross-region replica set or a sharded cluster; the
+		// framework cannot assume the consumer's topology, so what it owes them
+		// is the measured number for a stated topology, not a claim that the
+		// cost is negligible.
+		return m.db.Collection(name, options.Collection().SetWriteConcern(writeconcern.Majority()))
 	}
 	return m, nil
 }
@@ -135,31 +153,6 @@ func (m *MongoDB) Upsert(ctx context.Context, collection query.PhysicalCollectio
 	update := bson.M{"$set": doc}
 	opts := options.UpdateOne().SetUpsert(true)
 	_, err := col.UpdateOne(ctx, filter, update, opts)
-	return err
-}
-
-// BulkUpsert applies a batch of upsert-by-_id operations in a single unordered
-// bulk write — one round trip for the whole batch instead of one UpdateOne per
-// document. The rebuild loop drives it: on a 10M-row projection this collapses
-// 10M individual round trips into one per batch. Unordered so an individual
-// document failure does not stop the rest of the batch (the error still
-// surfaces, matching Upsert's per-call semantics; the rebuild aborts on it).
-// Each operation carries the same {$set: doc}, upsert:true shape as Upsert, so
-// the two paths write identical documents. An empty batch is a no-op — the
-// driver rejects a zero-length model slice, so the guard is required.
-func (m *MongoDB) BulkUpsert(ctx context.Context, collection query.PhysicalCollection, docs []query.IdentifiedDocument) error {
-	if len(docs) == 0 {
-		return nil
-	}
-	models := make([]mongo.WriteModel, 0, len(docs))
-	for _, d := range docs {
-		models = append(models, mongo.NewUpdateOneModel().
-			SetFilter(bson.M{"_id": d.ID}).
-			SetUpdate(bson.M{"$set": d.Doc}).
-			SetUpsert(true))
-	}
-	col := m.collFn(collection.String())
-	_, err := col.BulkWrite(ctx, models, options.BulkWrite().SetOrdered(false))
 	return err
 }
 
@@ -387,6 +380,59 @@ func (m *MongoDB) HasDocuments(ctx context.Context, collection query.PhysicalCol
 // server streams every full document over the wire only to discard all but
 // the _id, which on a large projection is the difference between a lean
 // index-only scan and shipping the whole collection.
+// RevisionsByIDs projects only _id + the revision watermark for the requested
+// ids — an index-covered read, so a reconciliation sweep costs a key scan rather
+// than fetching documents it has no intention of reading.
+func (m *MongoDB) RevisionsByIDs(ctx context.Context, collection query.PhysicalCollection, ids []string) (map[string]int64, error) {
+	out := make(map[string]int64, len(ids))
+	if len(ids) == 0 {
+		return out, nil
+	}
+	col := m.collFn(collection.String())
+	cur, err := col.Find(ctx,
+		bson.M{"_id": bson.M{"$in": ids}},
+		options.Find().SetProjection(bson.M{"_id": 1, query.DocRevisionField: 1}))
+	if err != nil {
+		return nil, fmt.Errorf("revisions by ids on %q: %w", collection, err)
+	}
+	defer cur.Close(ctx)
+	for cur.Next(ctx) {
+		var doc bson.M
+		if err := cur.Decode(&doc); err != nil {
+			return nil, err
+		}
+		id, ok := doc["_id"]
+		if !ok {
+			continue
+		}
+		// A document written before the watermark existed decodes to 0, which is
+		// still PRESENT — distinct from absent, which is what the caller acts on.
+		out[fmt.Sprintf("%v", id)] = toInt64(doc[query.DocRevisionField])
+	}
+	if err := cur.Err(); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+// toInt64 normalizes a BSON numeric to int64; a non-numeric or absent watermark
+// answers 0 (treated as "older than anything", matching the projection guards'
+// $ifNull handling).
+func toInt64(v any) int64 {
+	switch n := v.(type) {
+	case int64:
+		return n
+	case int32:
+		return int64(n)
+	case int:
+		return int64(n)
+	case float64:
+		return int64(n)
+	default:
+		return 0
+	}
+}
+
 func (m *MongoDB) SnapshotDocumentIDs(ctx context.Context, collection query.PhysicalCollection) (map[string]struct{}, error) {
 	col := m.Collection(collection.String())
 	cur, err := col.Find(ctx, bson.M{}, options.Find().SetProjection(bson.M{"_id": 1}))

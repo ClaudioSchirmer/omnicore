@@ -927,3 +927,28 @@ func TestComposedReader_LinkInChild_SortIntoSegmentRejected(t *testing.T) {
 		t.Fatal("a sort into the in-child segment must be rejected (400)")
 	}
 }
+
+// TestChildElems_NormalizesBothArrayShapes: the in-child stitcher accepts the
+// two element shapes a child array legitimately carries ([]any of maps, or a
+// typed []map) and drops anything else — the tolerant half of attachInChild
+// (whose full page path is exercised end to end by the link_in_child QA suite).
+func TestChildElems_NormalizesBothArrayShapes(t *testing.T) {
+	mixed := []any{
+		map[string]any{"id": "l1"},
+		"not-a-map", // foreign junk must be dropped, not panic
+		map[string]any{"id": "l2"},
+	}
+	if got := childElems(mixed); len(got) != 2 || got[0]["id"] != "l1" || got[1]["id"] != "l2" {
+		t.Fatalf("[]any normalization drifted: %v", got)
+	}
+	typed := []map[string]any{{"id": "a"}}
+	if got := childElems(typed); len(got) != 1 || got[0]["id"] != "a" {
+		t.Fatalf("typed-slice passthrough drifted: %v", got)
+	}
+	if got := childElems("scalar"); got != nil {
+		t.Fatalf("a non-array must yield nil, got %v", got)
+	}
+	if got := childElems(nil); got != nil {
+		t.Fatalf("nil must yield nil, got %v", got)
+	}
+}

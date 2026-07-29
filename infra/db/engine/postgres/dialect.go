@@ -69,7 +69,10 @@ func (pgDialect) IsForeignKeyViolation(err error) (string, bool) {
 
 // BuildUpsert renders the Postgres upsert: `INSERT … VALUES … ON CONFLICT
 // (conflictCols) DO UPDATE SET …` (or `DO NOTHING` when sets is empty). The
-// proposed value for an core.UpsertSetNew assignment is `EXCLUDED.col`.
+// proposed value for an core.UpsertSetNew assignment is `EXCLUDED.col`; a
+// core.UpsertSetBump reads the existing row as `<table>.col` — inside DO UPDATE
+// a bare column is ambiguous against EXCLUDED (SQLSTATE 42702), so the table
+// qualifier is mandatory here.
 func (d pgDialect) BuildUpsert(table string, cols, conflictCols []string, sets []core.UpsertSet) string {
 	var b strings.Builder
 	writeInsertHead(&b, d, table, cols)
@@ -92,10 +95,16 @@ func (d pgDialect) BuildUpsert(table string, cols, conflictCols []string, sets [
 		}
 		b.WriteString(d.QuoteIdent(s.Col))
 		b.WriteString(" = ")
-		if s.Mode == core.UpsertSetNew {
+		switch s.Mode {
+		case core.UpsertSetNew:
 			b.WriteString("EXCLUDED.")
 			b.WriteString(d.QuoteIdent(s.Col))
-		} else {
+		case core.UpsertSetBump:
+			b.WriteString(d.QuoteIdent(table))
+			b.WriteString(".")
+			b.WriteString(d.QuoteIdent(s.Col))
+			b.WriteString(" + 1")
+		default:
 			b.WriteString(s.Expr)
 		}
 	}

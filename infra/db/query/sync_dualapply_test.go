@@ -33,7 +33,7 @@ func TestSyncEngine_DualApply_FansUpsertAndDeleteToBothSlots(t *testing.T) {
 	mongo, colls := bothSlotsMongo("v", "v__0")
 	s := &SyncEngine{eng: eng, mongo: mongo, resolver: resolver}
 
-	if err := s.applyUpsert(ctx, "v", "id1", Document{"_id": "id1"}); err != nil {
+	if err := s.applyProjection(ctx, "v", "id1", guardedStagesForTest(), true); err != nil {
 		t.Fatalf("applyUpsert: %v", err)
 	}
 	if len(colls["v"].updates) != 1 || len(colls["v__0"].updates) != 1 {
@@ -54,7 +54,7 @@ func TestSyncEngine_DualApply_ActiveOnlyWithoutRebuild(t *testing.T) {
 	// No shadow recorded → ShadowActive false → only the active slot is written.
 	mongo, colls := bothSlotsMongo("v")
 	s := &SyncEngine{mongo: mongo, resolver: NewViewResolver(nil)}
-	if err := s.applyUpsert(context.Background(), "v", "id1", Document{"_id": "id1"}); err != nil {
+	if err := s.applyProjection(context.Background(), "v", "id1", guardedStagesForTest(), true); err != nil {
 		t.Fatalf("applyUpsert: %v", err)
 	}
 	if len(colls["v"].updates) != 1 {
@@ -68,36 +68,29 @@ func TestSyncEngine_DualApply_ActiveFailFailsTheEvent(t *testing.T) {
 	colls := map[string]*fakeColl{"v": {updateErr: errFake, deleteErr: errFake}}
 	mongo := newFakeMongoFunc(func(name string) *fakeColl { return colls[name] })
 	s := &SyncEngine{mongo: mongo, resolver: NewViewResolver(nil)}
-	if err := s.applyUpsert(context.Background(), "v", "id1", Document{"_id": "id1"}); err == nil {
-		t.Error("active upsert failure must fail the event")
+	if err := s.applyProjection(context.Background(), "v", "id1", guardedStagesForTest(), true); err == nil {
+		t.Error("active projection failure must fail the event")
 	}
 	if err := s.applyDelete(context.Background(), "v", "id1", 0, 0); err == nil {
 		t.Error("active delete failure must fail the event")
 	}
 }
 
-func TestSyncEngine_DualApply_AbortErrorNeverFailsLive(t *testing.T) {
-	// Shadow write fails AND the abort's registry write also fails: dualApply
-	// logs and moves on — the live path (the active write) still succeeds.
+// CONTRACT CHANGE. A shadow-write failure used to be swallowed: the live path
+// succeeded, the event was confirmed, and the rebuild was abandoned
+// cluster-wide on 150 ms of evidence from ONE event. Both halves were wrong.
+//
+//   - Swallowing it was only survivable because nothing was retried. Now the
+//     event FAILS and the whole message is replayed, with the shadow write among
+//     the obligations retried — the cheap, local recovery.
+//   - Abandoning hours of backfill for every pod is the expensive, cluster-wide
+//     recovery, and it now needs sustained evidence (shadowAbortThreshold
+//     consecutive failing events).
+func TestSyncEngine_DualApply_ShadowFailFailsTheEventForRetry(t *testing.T) {
 	ctx := context.Background()
 	resolver, eng := shadowResolver(t, "v__0")
-	eng.q.(*fakeQuerier).execFn = func(string, []any) error { return errFake }
-	colls := map[string]*fakeColl{"v": {}, "v__0": {updateErr: errFake, deleteErr: errFake}}
-	mongo := newFakeMongoFunc(func(name string) *fakeColl { return colls[name] })
-	s := &SyncEngine{eng: eng, mongo: mongo, resolver: resolver}
-	if err := s.applyDelete(ctx, "v", "id1", 0, 0); err != nil {
-		t.Fatalf("live path must not fail even when the abort itself errors: %v", err)
-	}
-	if len(colls["v"].deletes) != 1 {
-		t.Errorf("active slot must still be deleted, got %d", len(colls["v"].deletes))
-	}
-}
+	shadowHealth.succeeded("v") // isolate from other tests' streaks
 
-func TestSyncEngine_DualApply_ShadowFailAbortsWithoutFailingLive(t *testing.T) {
-	ctx := context.Background()
-	resolver, eng := shadowResolver(t, "v__0")
-
-	// Any Exec in this path is abortSlotRebuild (Refresh uses Query, not Exec).
 	var aborted bool
 	eng.q.(*fakeQuerier).execFn = func(string, []any) error { aborted = true; return nil }
 
@@ -106,14 +99,78 @@ func TestSyncEngine_DualApply_ShadowFailAbortsWithoutFailingLive(t *testing.T) {
 	mongo := newFakeMongoFunc(func(name string) *fakeColl { return colls[name] })
 	s := &SyncEngine{eng: eng, mongo: mongo, resolver: resolver}
 
-	// The live path must NOT fail even though the shadow write does.
-	if err := s.applyUpsert(ctx, "v", "id1", Document{"_id": "id1"}); err != nil {
-		t.Fatalf("applyUpsert must not fail the live path on a shadow error: %v", err)
+	if err := s.applyProjection(ctx, "v", "id1", guardedStagesForTest(), true); err == nil {
+		t.Fatal("a shadow-write failure must fail the event so the message is retried")
 	}
+	// The active slot is still written — the failure is reported, not rolled back;
+	// the retry re-applies both writes idempotently.
 	if len(colls["v"].updates) != 1 {
 		t.Errorf("active slot must still be written, got %d", len(colls["v"].updates))
 	}
-	if !aborted {
-		t.Error("expected the rebuild to be aborted after the shadow retries were exhausted")
+	if aborted {
+		t.Error("one failing event must NOT abandon the rebuild — the abort needs sustained evidence")
 	}
+}
+
+// TestSyncEngine_DualApply_AbortsOnSustainedFailure: once the streak reaches the
+// threshold the shadow is genuinely unreachable and the rebuild is abandoned, so
+// no pod keeps dual-applying to a slot that will never flip.
+func TestSyncEngine_DualApply_AbortsOnSustainedFailure(t *testing.T) {
+	ctx := context.Background()
+	resolver, eng := shadowResolver(t, "v__0")
+	shadowHealth.succeeded("v")
+
+	var aborted bool
+	eng.q.(*fakeQuerier).execFn = func(string, []any) error { aborted = true; return nil }
+	colls := map[string]*fakeColl{"v": {}, "v__0": {updateErr: errFake}}
+	mongo := newFakeMongoFunc(func(name string) *fakeColl { return colls[name] })
+	s := &SyncEngine{eng: eng, mongo: mongo, resolver: resolver}
+
+	for i := 0; i < shadowAbortThreshold; i++ {
+		if err := s.applyProjection(ctx, "v", "id1", guardedStagesForTest(), true); err == nil {
+			t.Fatalf("event %d: shadow failure must fail the event", i+1)
+		}
+	}
+	if !aborted {
+		t.Errorf("expected the rebuild to be abandoned after %d consecutive failing events", shadowAbortThreshold)
+	}
+}
+
+// TestSyncEngine_DualApply_SuccessClearsTheStreak: one reachable shadow write
+// proves the slot is alive, so the evidence for abandoning it is gone. Without
+// this reset an intermittent shadow would accumulate failures forever and
+// eventually abandon a healthy rebuild.
+func TestSyncEngine_DualApply_SuccessClearsTheStreak(t *testing.T) {
+	ctx := context.Background()
+	resolver, eng := shadowResolver(t, "v__0")
+	shadowHealth.succeeded("v")
+
+	var aborted bool
+	eng.q.(*fakeQuerier).execFn = func(string, []any) error { aborted = true; return nil }
+	shadow := &fakeColl{updateErr: errFake}
+	colls := map[string]*fakeColl{"v": {}, "v__0": shadow}
+	mongo := newFakeMongoFunc(func(name string) *fakeColl { return colls[name] })
+	s := &SyncEngine{eng: eng, mongo: mongo, resolver: resolver}
+
+	// Fail just short of the threshold, then succeed once.
+	for i := 0; i < shadowAbortThreshold-1; i++ {
+		_ = s.applyProjection(ctx, "v", "id1", guardedStagesForTest(), true)
+	}
+	shadow.updateErr = nil
+	if err := s.applyProjection(ctx, "v", "id1", guardedStagesForTest(), true); err != nil {
+		t.Fatalf("a healthy shadow write must succeed: %v", err)
+	}
+	// The streak is cleared, so the next failure starts from one again.
+	shadow.updateErr = errFake
+	_ = s.applyProjection(ctx, "v", "id1", guardedStagesForTest(), true)
+	if aborted {
+		t.Error("a successful shadow write must clear the streak — the rebuild was abandoned anyway")
+	}
+}
+
+// guardedStagesForTest is the minimal revision-guarded pipeline the live write
+// path applies. These tests exercise dual-apply, not composition, so the stage
+// content only has to be well-formed.
+func guardedStagesForTest() []Document {
+	return []Document{{"$set": Document{"x": lit(1)}}}
 }

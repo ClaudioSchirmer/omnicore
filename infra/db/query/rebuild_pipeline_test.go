@@ -3,6 +3,7 @@ package query
 import (
 	"context"
 	"fmt"
+	"strings"
 	"sync"
 	"testing"
 )
@@ -16,9 +17,10 @@ import (
 // embedded fakeStore (unused by backfillInto, which only writes).
 type countingStore struct {
 	*fakeStore
-	mu   sync.Mutex
-	byID map[string]int
-	fail string // if set, BulkApplyProjection errors on any batch containing this id
+	mu      sync.Mutex
+	byID    map[string]int
+	fail    string // if set, BulkApplyProjection errors on any batch containing this id
+	capture func(items []IdentifiedStages)
 }
 
 func newCountingStore() *countingStore {
@@ -35,6 +37,9 @@ func (c *countingStore) BulkApplyProjection(_ context.Context, _ PhysicalCollect
 	}
 	for _, it := range items {
 		c.byID[it.ID]++
+	}
+	if c.capture != nil {
+		c.capture(items)
 	}
 	return nil
 }
@@ -61,6 +66,45 @@ func TestBackfillInto_ConcurrentWorkersWriteEveryRootOnce(t *testing.T) {
 	for _, id := range ids {
 		if store.byID[id] != 1 {
 			t.Errorf("root %s written %d times, want exactly 1", id, store.byID[id])
+		}
+	}
+}
+
+// TestBackfillInto_EveryWriteIsRevisionGuarded pins the backfill-clobber
+// guarantee (§10 of tasks/sync_fixes.md): the backfill batch writes through the
+// GUARDED pipeline, never a plain full-document overwrite. A live write racing
+// the backfill dual-applies to the shadow with a fresher revision; an unguarded
+// batch landing afterwards would silently regress the slot about to flip. The
+// observable at this seam: every IdentifiedStages carries guard stages that
+// reference the revision watermark (a plain $set of composed data would carry
+// no watermark at all — "watermarks travel via their guard stages, never as
+// data").
+func TestBackfillInto_EveryWriteIsRevisionGuarded(t *testing.T) {
+	view := rebuildView()
+	ids := []string{"id1", "id2", "id3"}
+	store := newCountingStore()
+	var mu sync.Mutex
+	var captured []IdentifiedStages
+	store.capture = func(items []IdentifiedStages) {
+		mu.Lock()
+		captured = append(captured, items...)
+		mu.Unlock()
+	}
+	s := scriptSyncEngine(newScriptEngine(ids, aliveRoot), store, []*ViewDefinition{view})
+
+	if err := s.backfillInto(context.Background(), view, pc("shadow"), "", 2, 2, nil); err != nil {
+		t.Fatalf("backfillInto: %v", err)
+	}
+	if len(captured) != len(ids) {
+		t.Fatalf("expected %d writes captured, got %d", len(ids), len(captured))
+	}
+	for _, it := range captured {
+		if len(it.Stages) == 0 {
+			t.Fatalf("root %s written with no stages — a raw overwrite", it.ID)
+		}
+		if !strings.Contains(fmt.Sprint(it.Stages), docRevisionField) {
+			t.Errorf("root %s written WITHOUT a revision guard — a stale backfill batch could clobber a fresher dual-applied write; stages: %v",
+				it.ID, it.Stages)
 		}
 	}
 }

@@ -3,6 +3,7 @@ package query
 import (
 	"context"
 	"errors"
+	"sync"
 	"time"
 
 	"github.com/ClaudioSchirmer/omnicore/infra/transport"
@@ -31,13 +32,46 @@ func (fakeSubscriber) Subscribe(context.Context, transport.SubscribeConfig) (tra
 
 type fakeSubscription struct{}
 
-func (fakeSubscription) Read(ctx context.Context) (transport.Message, error) {
+func (fakeSubscription) Read(ctx context.Context) (transport.Message, transport.Completion, error) {
 	select {
 	case <-ctx.Done():
-		return transport.Message{}, ctx.Err()
+		return transport.Message{}, nil, ctx.Err()
 	case <-time.After(20 * time.Millisecond):
-		return transport.Message{}, errors.New("fake transport: broker unreachable")
+		return transport.Message{}, nil, errors.New("fake transport: broker unreachable")
 	}
 }
 
 func (fakeSubscription) Close() error { return nil }
+
+// recordingCompletion is the unit-test Completion: it records which outcome was
+// reported so a test can assert the delivery contract itself — that a processed
+// event is confirmed, a shutdown-interrupted one is handed back, and neither is
+// reported twice. Mutex-guarded because the consume tests poll the counters
+// from the test goroutine while a WORKER goroutine reports the outcome; the
+// single-threaded tests may keep reading the fields directly.
+type recordingCompletion struct {
+	mu     sync.Mutex
+	done   int
+	failed int
+}
+
+func (c *recordingCompletion) Done(context.Context) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.done++
+	return nil
+}
+
+func (c *recordingCompletion) Failed(context.Context) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.failed++
+	return nil
+}
+
+// counts reads both outcomes under the lock — the concurrent-test accessor.
+func (c *recordingCompletion) counts() (done, failed int) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.done, c.failed
+}

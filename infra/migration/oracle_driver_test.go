@@ -69,10 +69,12 @@ func TestSplitOracleStatements(t *testing.T) {
 			t.Fatalf("read embedded up: %v", err)
 		}
 		stmts := splitOracleStatements(string(up))
-		// 7 CREATE TABLE + 11 CREATE INDEX (audit_events carries only its PK and
-		// the entity-timeline index; the four forensic indexes are devops-added).
-		if len(stmts) != 18 {
-			t.Fatalf("framework up split into %d statements, want 18", len(stmts))
+		// 6 CREATE TABLE + 9 CREATE INDEX (audit_events carries only its PK and
+		// the entity-timeline index; the four forensic indexes are devops-added;
+		// omnicore_upstream_failures left with the unified failure ledger — its
+		// rows live in 0003's omnicore_projection_failures now).
+		if len(stmts) != 15 {
+			t.Fatalf("framework up split into %d statements, want 15", len(stmts))
 		}
 		for _, s := range stmts {
 			if !strings.Contains(s, "CREATE TABLE") && !strings.Contains(s, "CREATE INDEX") {
@@ -84,14 +86,14 @@ func TestSplitOracleStatements(t *testing.T) {
 		}
 	})
 
-	t.Run("the framework down migration splits into 7 drops", func(t *testing.T) {
+	t.Run("the framework down migration splits into 6 drops", func(t *testing.T) {
 		down, err := frameworkMigrations.ReadFile("embedded/oracle/0001_framework.down.sql")
 		if err != nil {
 			t.Fatalf("read embedded down: %v", err)
 		}
 		stmts := splitOracleStatements(string(down))
-		if len(stmts) != 7 {
-			t.Fatalf("framework down split into %d statements, want 7", len(stmts))
+		if len(stmts) != 6 {
+			t.Fatalf("framework down split into %d statements, want 6", len(stmts))
 		}
 	})
 }

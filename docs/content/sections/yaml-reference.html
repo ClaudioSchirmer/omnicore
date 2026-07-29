@@ -101,6 +101,14 @@ mongo:
     pointerLeaseSeconds: 0               # 0/unset → default 15s — activation-fence / settle lease
     workers: 0                           # 0/unset → default 4 — concurrent compose+write backfill workers (pool ≥ workers+1)
     batchSize: 0                         # 0/unset → default 1000 — root ids composed + bulk-upserted per batch
+  reconcile:                             # scheduled revision-parity sweep (strict-decoded block) — OFF by default
+    enabled: false                       # the backstop audit: compares every doc's _revision to the source; repairs behind/missing
+    intervalMinutes: 60                  # pause between the END of one full pass and the START of the next (0/unset → 60)
+    rowsPerSecond: 5000                  # hard load ceiling; pass duration = rows/rate and IS the detection bound (0 → default; <0 → unthrottled)
+    batchSize: 0                         # 0/unset → framework default — source rows compared per round trip
+  parkedRetry:                           # unified-ledger replay driver (strict-decoded block) — ON by default
+    enabled: true                        # replays omnicore_projection_failures rows, BOTH kinds (parked events + failed embed ripples); off → dead letters until the sweep or a manual replay
+    intervalMinutes: 0                   # 0/unset → default 10 — recovery latency after an outage heals vs. background polling (dev/QA pin 1)
 
 transport:                               # neutral; the -tags kafka|nats build tag picks the adapter
   endpoints: ["${TRANSPORT_ENDPOINTS:localhost:9092}"]  # MANDATORY — Kafka/Redpanda brokers OR NATS URL(s)

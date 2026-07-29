@@ -1,13 +1,13 @@
-// Package listfailures implements the omnicore-admin
-// "upstream-list-failures" subcommand. It reads pending rows from
-// omnicore_upstream_failures (populated by UpstreamSubscriber.ripple)
-// and prints them as text or JSON for operator triage.
+// Package listfailures implements the omnicore-admin "list-failures"
+// subcommand. It reads pending rows from omnicore_projection_failures — the
+// read-side's unified failure ledger (kind=event parked projection events,
+// kind=ripple failed embed-segment refreshes) — and prints them as text or
+// JSON for operator triage.
 //
-// Read-only — the framework binary has no Wiring of the consumer
-// service B, so it cannot re-run ripple itself. The actual retry path
-// lives on UpstreamSubscriber.RetryPendingFailures, which B exposes
-// via cron/HTTP at its own discretion. This CLI is the inspection
-// surface; the runtime API is the action surface.
+// Read-only — the framework binary has no Wiring of the consumer service, so
+// it cannot replay rows itself. Replay is automatic: the service's parked-retry
+// loop (the mongo.parkedRetry knob) sweeps both kinds on its cadence. This CLI
+// is the inspection surface; the runtime loop is the action surface.
 package listfailures
 
 import (
@@ -34,15 +34,17 @@ const (
 // Returns nil on success; a non-nil error is printed to stderr and the
 // process exits with status 1.
 func Run(ctx context.Context, args []string) error {
-	fs := flag.NewFlagSet("upstream-list-failures", flag.ContinueOnError)
+	fs := flag.NewFlagSet("list-failures", flag.ContinueOnError)
 	fs.SetOutput(os.Stderr)
 	usage := newUsage(fs)
 	fs.Usage = usage
 
+	kind := fs.String("kind", "",
+		"Filter by kind — event | ripple (default: both)")
 	topic := fs.String("topic", "",
-		"Filter by subscription_topic (default: every topic). Example: users.events")
+		"Filter by topic/source (default: every source). Examples: users.events, view:products")
 	view := fs.String("view", "",
-		"Filter by view_name (applied after the SQL query). Example: orders")
+		"Filter by the dependent view of ripple rows / the aggregate type of event rows")
 	format := fs.String("format", formatText,
 		"Output format — text | json (default text)")
 	limit := fs.Int("limit", 100,
@@ -56,27 +58,32 @@ func Run(ctx context.Context, args []string) error {
 	}
 	if *format != formatText && *format != formatJSON {
 		usage()
-		return fmt.Errorf("upstream-list-failures: --format must be text or json, got %q", *format)
+		return fmt.Errorf("list-failures: --format must be text or json, got %q", *format)
+	}
+	if *kind != "" && *kind != string(query.ProjectionFailureKindEvent) && *kind != string(query.ProjectionFailureKindRipple) {
+		return fmt.Errorf("list-failures: --kind must be event or ripple, got %q", *kind)
 	}
 	if *limit < 0 {
-		return fmt.Errorf("upstream-list-failures: --limit must be >= 0, got %d", *limit)
+		return fmt.Errorf("list-failures: --limit must be >= 0, got %d", *limit)
 	}
 
 	cfg, err := bootstrap.LoadConfig()
 	if err != nil {
-		return fmt.Errorf("upstream-list-failures: load config: %w", err)
+		return fmt.Errorf("list-failures: load config: %w", err)
 	}
 	// Build through the relational-engine registry so inspection runs against the
-	// configured backend (relational.dialect). The failure-registry reads already go
+	// configured backend (relational.dialect). The ledger reads already go
 	// through the neutral Querier/Dialect; only construction was PG-bound. A MySQL
 	// deployment needs the admin binary built with -tags mysql.
 	engine, err := core.NewEngine(cfg.Relational.Dialect, ctx, core.EngineConfig{DSN: cfg.Relational.DSN})
 	if err != nil {
-		return fmt.Errorf("upstream-list-failures: connect: %w", err)
+		return fmt.Errorf("list-failures: connect: %w", err)
 	}
 	defer engine.Close()
 
 	return execute(ctx, engine, executeOptions{
+		Group:  cfg.Transport.SyncGroup,
+		Kind:   *kind,
 		Topic:  *topic,
 		View:   *view,
 		Format: *format,
@@ -86,6 +93,8 @@ func Run(ctx context.Context, args []string) error {
 }
 
 type executeOptions struct {
+	Group  string
+	Kind   string
 	Topic  string
 	View   string
 	Format string
@@ -96,25 +105,24 @@ type executeOptions struct {
 // execute does the read + render through the backend-neutral seam. Extracted
 // from Run so tests can drive it without touching env / config.
 func execute(ctx context.Context, engine core.RelationalEngine, opt executeOptions) error {
-	var rows []query.UpstreamFailureRecord
-	var err error
-	if opt.Topic != "" {
-		rows, err = query.ListPendingUpstreamFailuresByTopic(ctx, engine.Querier(), engine.Dialect(), opt.Topic)
-	} else {
-		rows, err = query.ListPendingUpstreamFailures(ctx, engine.Querier())
-	}
+	rows, err := query.ListPendingProjectionFailures(ctx, engine.Querier(), engine.Dialect(), opt.Group)
 	if err != nil {
-		return fmt.Errorf("upstream-list-failures: list: %w", err)
+		return fmt.Errorf("list-failures: list: %w", err)
 	}
-	if opt.View != "" {
-		filtered := rows[:0]
-		for _, r := range rows {
-			if r.ViewName == opt.View {
-				filtered = append(filtered, r)
-			}
+	filtered := rows[:0]
+	for _, r := range rows {
+		if opt.Kind != "" && string(r.Kind) != opt.Kind {
+			continue
 		}
-		rows = filtered
+		if opt.Topic != "" && r.Topic != opt.Topic {
+			continue
+		}
+		if opt.View != "" && r.AggregateType != opt.View {
+			continue
+		}
+		filtered = append(filtered, r)
 	}
+	rows = filtered
 	truncated := false
 	if opt.Limit > 0 && len(rows) > opt.Limit {
 		rows = rows[:opt.Limit]
@@ -130,11 +138,11 @@ func execute(ctx context.Context, engine core.RelationalEngine, opt executeOptio
 
 // renderJSON writes the rows as a JSON object — `{count, truncated, items}`
 // shape so downstream tooling never has to guess whether the array was capped.
-func renderJSON(out io.Writer, rows []query.UpstreamFailureRecord, truncated bool) error {
+func renderJSON(out io.Writer, rows []query.ProjectionFailureRecord, truncated bool) error {
 	envelope := struct {
-		Count     int                           `json:"count"`
-		Truncated bool                          `json:"truncated"`
-		Items     []query.UpstreamFailureRecord `json:"items"`
+		Count     int                             `json:"count"`
+		Truncated bool                            `json:"truncated"`
+		Items     []query.ProjectionFailureRecord `json:"items"`
 	}{
 		Count:     len(rows),
 		Truncated: truncated,
@@ -148,29 +156,30 @@ func renderJSON(out io.Writer, rows []query.UpstreamFailureRecord, truncated boo
 // renderText writes a fixed-column listing. Columns chosen for triage
 // signal — last_attempt_at + attempt + error help identify a stuck
 // failure vs a transient one at a glance.
-func renderText(out io.Writer, rows []query.UpstreamFailureRecord, truncated bool) error {
+func renderText(out io.Writer, rows []query.ProjectionFailureRecord, truncated bool) error {
 	if len(rows) == 0 {
-		fmt.Fprintln(out, "no pending upstream failures")
+		fmt.Fprintln(out, "no pending projection failures")
 		return nil
 	}
-	fmt.Fprintf(out, "%d pending upstream failure(s)", len(rows))
+	fmt.Fprintf(out, "%d pending projection failure(s)", len(rows))
 	if truncated {
 		fmt.Fprint(out, " (truncated — pass --limit 0 for the full list)")
 	}
 	fmt.Fprintln(out)
-	fmt.Fprintln(out, strings.Repeat("-", 110))
-	fmt.Fprintf(out, "%-25s %-20s %-36s %-10s %-3s %-19s %s\n",
-		"TOPIC", "VIEW", "UPSTREAM_ID", "STAGE", "AT#", "LAST_ATTEMPT_AT", "ERROR")
-	fmt.Fprintln(out, strings.Repeat("-", 110))
+	fmt.Fprintln(out, strings.Repeat("-", 125))
+	fmt.Fprintf(out, "%-7s %-25s %-20s %-36s %-9s %-3s %-19s %s\n",
+		"KIND", "TOPIC/SOURCE", "VIEW/TYPE", "ID", "STAGE", "AT#", "LAST_ATTEMPT_AT", "ERROR")
+	fmt.Fprintln(out, strings.Repeat("-", 125))
 	for _, r := range rows {
-		fmt.Fprintf(out, "%-25s %-20s %-36s %-10s %-3d %-19s %s\n",
-			truncateString(r.SubscriptionTopic, 25),
-			truncateString(r.ViewName, 20),
-			truncateString(r.UpstreamID, 36),
+		fmt.Fprintf(out, "%-7s %-25s %-20s %-36s %-9s %-3d %-19s %s\n",
+			r.Kind,
+			truncateString(r.Topic, 25),
+			truncateString(r.AggregateType, 20),
+			truncateString(r.AggregateID, 36),
 			r.Stage,
 			r.Attempt,
 			r.LastAttemptAt.UTC().Format("2006-01-02 15:04:05"),
-			truncateString(r.Error, 60),
+			truncateString(r.Error, 55),
 		)
 	}
 	return nil
@@ -192,10 +201,10 @@ func truncateString(s string, n int) string {
 func newUsage(fs *flag.FlagSet) func() {
 	return func() {
 		out := fs.Output()
-		fmt.Fprintln(out, "omnicore-admin upstream-list-failures — list pending upstream recompose failures")
+		fmt.Fprintln(out, "omnicore-admin list-failures — list pending rows of the unified projection failure ledger")
 		fmt.Fprintln(out)
 		fmt.Fprintln(out, "Usage:")
-		fmt.Fprintln(out, "  omnicore-admin upstream-list-failures [flags]")
+		fmt.Fprintln(out, "  omnicore-admin list-failures [flags]")
 		fmt.Fprintln(out)
 		fmt.Fprintln(out, "Flags:")
 		fs.PrintDefaults()
@@ -203,7 +212,7 @@ func newUsage(fs *flag.FlagSet) func() {
 		fmt.Fprintln(out, "Configuration is read from microservice.${APP_PROFILE}.yaml (override via OMNICORE_CONFIG_PATH).")
 		fmt.Fprintln(out, "Database DSN comes from there — no flag duplicates it.")
 		fmt.Fprintln(out)
-		fmt.Fprintln(out, "Read-only — this CLI does not re-run recompose. For actual retry use")
-		fmt.Fprintln(out, "UpstreamSubscriber.RetryPendingFailures from the service binary (cron or HTTP endpoint).")
+		fmt.Fprintln(out, "Read-only — replay is automatic: the service's parked-retry loop (mongo.parkedRetry)")
+		fmt.Fprintln(out, "sweeps both kinds on its cadence.")
 	}
 }

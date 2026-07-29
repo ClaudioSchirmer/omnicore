@@ -42,7 +42,8 @@ type fakeColl struct {
 	updateErr error // forced error from UpdateOne
 	deleteErr error // forced error from DeleteOne
 
-	updates []bson.M // captured UpdateOne update documents
+	updates   []bson.M // captured UpdateOne update documents
+	pipelines []bson.A // captured UpdateOne aggregation-pipeline updates
 	deletes []any    // captured DeleteOne filters
 	upd     int64    // ModifiedCount/MatchedCount to report
 
@@ -78,6 +79,9 @@ func (c *fakeColl) UpdateOne(ctx context.Context, filter, update any, opts ...up
 	}
 	if u, ok := update.(bson.M); ok {
 		c.updates = append(c.updates, u)
+	}
+	if p, ok := update.(bson.A); ok {
+		c.pipelines = append(c.pipelines, p)
 	}
 	return &mongo.UpdateResult{MatchedCount: c.upd, ModifiedCount: c.upd}, nil
 }
