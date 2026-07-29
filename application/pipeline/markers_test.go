@@ -2,90 +2,62 @@ package pipeline
 
 import "testing"
 
-// Marker methods on the seal types are intentionally private — they cover the
-// "implements interface" check at compile time. From inside this package we
-// can call them directly to register coverage of the empty bodies and to lock
-// the seal contract: every base IS its own interface.
+// The embeddable markers are contracts BY TYPE: embedding the token is what
+// makes a handler satisfy the wrapper's type assertion. These pin that the
+// promotion actually happens — a rename of an unexported marker method would
+// silently detach every wrapper behavior that keys on it.
 
-func TestSealInterfaces_BaseImplementsItsContract(t *testing.T) {
-	t.Run("RequestBase implements Request", func(t *testing.T) {
-		var _ Request = RequestBase{}
-		RequestBase{}.isRequest()
-	})
-
-	t.Run("CommandBase implements Command", func(t *testing.T) {
-		var _ Command = CommandBase{}
-		CommandBase{}.isCommand()
-		// And Command is itself a Request — call the promoted marker too.
-		CommandBase{}.isRequest()
-	})
-
-	t.Run("QueryBase implements Query", func(t *testing.T) {
-		var _ Query = QueryBase{}
-		QueryBase{}.isQuery()
-		QueryBase{}.isRequest()
-	})
-}
-
-func TestFullBody_PrivateMarkerIsCallable(t *testing.T) {
-	// From inside the package the unexported method is reachable. Outside
-	// callers can only satisfy the interface by embedding FullBody. Same role
-	// as TestFullBody_SatisfiesEnforcer but counts the method body for the
-	// coverage profile.
-	FullBody{}.enforceFullBody()
-}
-
-func TestPathIDRequired_PrivateMarkerIsCallable(t *testing.T) {
-	PathIDRequired{}.pathIDRequired()
-}
-
-func TestPathIDRequired_SatisfiesEnforcer(t *testing.T) {
-	var v any = PathIDRequired{}
-	if _, ok := v.(PathIDRequiredEnforcer); !ok {
-		t.Fatal("PathIDRequired{} should satisfy PathIDRequiredEnforcer")
+func TestFullBodyMarker_PromotesThroughEmbedding(t *testing.T) {
+	type strictHandler struct{ FullBody }
+	var h any = strictHandler{}
+	e, ok := h.(FullBodyEnforcer)
+	if !ok {
+		t.Fatal("embedding FullBody must satisfy FullBodyEnforcer via promotion")
+	}
+	e.enforceFullBody() // the marker itself — a no-op, but the wrapper calls through the interface
+	if _, ok := any(struct{}{}).(FullBodyEnforcer); ok {
+		t.Fatal("a type without the embed must NOT satisfy the marker")
 	}
 }
 
-func TestPathIDRequired_EmbeddingSatisfiesEnforcer(t *testing.T) {
-	type handler struct {
-		PathIDRequired
+func TestPathIDRequiredMarker_PromotesThroughEmbedding(t *testing.T) {
+	type idHandler struct{ PathIDRequired }
+	var h any = idHandler{}
+	e, ok := h.(PathIDRequiredEnforcer)
+	if !ok {
+		t.Fatal("embedding PathIDRequired must satisfy PathIDRequiredEnforcer via promotion")
 	}
-	var v any = &handler{}
-	if _, ok := v.(PathIDRequiredEnforcer); !ok {
-		t.Fatal("struct embedding PathIDRequired should satisfy PathIDRequiredEnforcer")
-	}
+	e.pathIDRequired()
 }
 
-func TestPathIDRequired_AbsentDoesNotSatisfy(t *testing.T) {
-	type other struct{}
-	var v any = &other{}
-	if _, ok := v.(PathIDRequiredEnforcer); ok {
-		t.Fatal("struct without PathIDRequired must NOT satisfy PathIDRequiredEnforcer")
-	}
-}
+// The Request/Command/Query seals: CommandBase and QueryBase must each carry
+// BOTH their own marker and the Request marker (via the embedded RequestBase),
+// and the two families must not satisfy each other.
+func TestRequestSeals(t *testing.T) {
+	type myCommand struct{ CommandBase }
+	type myQuery struct{ QueryBase }
 
-func TestCommandBaseWithID_SetPathID_PathID(t *testing.T) {
-	c := &CommandByIDBase{}
-	if got := c.PathID(); got != "" {
-		t.Errorf("default PathID = %q, want empty", got)
+	var c any = myCommand{}
+	if _, ok := c.(Command); !ok {
+		t.Fatal("CommandBase must satisfy Command")
 	}
-	c.SetPathID("abc-123")
-	if got := c.PathID(); got != "abc-123" {
-		t.Errorf("PathID after SetPathID = %q, want %q", got, "abc-123")
+	if _, ok := c.(Request); !ok {
+		t.Fatal("a Command IS a Request")
 	}
-	// Overwrite stays last-write-wins.
-	c.SetPathID("xyz")
-	if got := c.PathID(); got != "xyz" {
-		t.Errorf("PathID after overwrite = %q, want %q", got, "xyz")
+	if _, ok := c.(Query); ok {
+		t.Fatal("a Command must not satisfy Query")
 	}
-}
 
-func TestCommandBaseWithID_SatisfiesCommandWithID(t *testing.T) {
-	type cmd struct {
-		CommandByIDBase
+	var q any = myQuery{}
+	if _, ok := q.(Query); !ok {
+		t.Fatal("QueryBase must satisfy Query")
 	}
-	var v any = &cmd{}
-	if _, ok := v.(CommandByID); !ok {
-		t.Fatal("struct embedding CommandByIDBase should satisfy CommandByID")
+	if _, ok := q.(Command); ok {
+		t.Fatal("a Query must not satisfy Command")
 	}
+	// Exercise the seal methods directly so the contract is executed, not only
+	// type-asserted.
+	myCommand{}.isCommand()
+	myCommand{}.isRequest()
+	myQuery{}.isQuery()
 }

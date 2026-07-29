@@ -11,7 +11,173 @@ with `1.0.0`.
 
 ## [Unreleased]
 
+### Changed
+
+- **BREAKING — the message-transport port now reports a per-message OUTCOME, and
+  the read-side projection is genuinely at-least-once.** `Subscription.Read`
+  returns `(Message, Completion, error)`; exactly one of `Completion.Done` /
+  `Completion.Failed` must be called per message. Any third-party adapter
+  registered through `transport.RegisterSubscriber` must implement the new shape.
+
+  Why this is a correctness fix and not an ergonomics change: every safety
+  argument in the read side — the revision guards, the tombstone handshake, the
+  base-revision handshake — is written in terms of "a failed event comes back".
+  It did not. `process` returned its error, the worker logged it, and the offset
+  advanced anyway; separately, both adapters confirmed a message when it was
+  READ rather than when it was processed, so a crash lost everything still
+  queued. The projection was at-most-once while documenting itself as
+  at-least-once, and an insert-once aggregate (an audit row, a ledger entry, an
+  immutable record) has no later event to reconverge it.
+
+  The outcome is modelled as a RESULT, never as `Ack(message)`: that shape
+  encodes the JetStream model, and on Kafka — where confirmation is an offset
+  meaning "everything below N is done" — it would commit PAST a failed message
+  and relocate the loss instead of removing it. There is deliberately no `Retry`
+  outcome, because Kafka has no in-session redelivery (`SetOffset` is
+  unavailable under a consumer group); in-process retry belongs to the consumer,
+  which owns the backoff policy.
+
+  Adapter consequences: the Kafka adapter now drives `ConsumerGroup` +
+  `Generation` directly instead of the convenience `Reader`, so a completed-offset
+  tracker can be scoped to a generation — a commit issued from a revoked
+  generation carries a stale generation id and the coordinator rejects it, which
+  is what makes "a revoked partition never has its offset committed afterwards"
+  a property of the broker rather than of timing. Offsets advance only along the
+  contiguous completed prefix, because dispatch is by hash of the aggregate id
+  and one partition therefore completes out of order by design. The NATS adapter
+  acks on `Done`, NAKs on `Failed` (immediate redelivery instead of waiting out
+  `AckWait`), and heartbeats `InProgress` while an outcome is pending — without
+  it a retried event outlives its ack lease and JetStream redelivers a message
+  that is still being processed.
+
+- **BREAKING — `ReadModelStore.BulkUpsert` and `query.IdentifiedDocument` are
+  removed.** They were unguarded batch writes with no caller: the rebuild/verify
+  backfill goes through `BulkApplyProjection`, because an unguarded batch landing
+  after a fresher dual-applied write would regress the slot about to flip.
+  `Upsert` REMAINS — the upstream mirror writes through it and is ordered by its
+  own source topic, not by an aggregate revision — and its port documentation now
+  names the constraint: mirror yes, view slot never.
+
+- **Every read-side Mongo write now requires MAJORITY acknowledgment**, not only
+  the projection-state registry. A write acknowledged by the primary alone can be
+  rolled back by a failover: it was confirmed and then withdrawn, so the event
+  that produced it was legitimately complete and nothing on the delivery path
+  will re-issue it. The previous justification for exempting view collections —
+  "their writes reconverge through event redelivery" — rested on a redelivery
+  that did not exist, and would not have helped anyway. Stated in code rather
+  than inherited from a deployment default; no configuration knob, because a
+  switch that disables a correctness invariant is a trap.
+
+- **The retired slot is no longer dropped at the blue-green flip.** The drop
+  raced operations that had resolved the pointer while it was still valid and
+  were still running — the pointer lease bounds staleness, not in-flight
+  duration, and multi-pod makes a local drain useless because the pod that drops
+  is not the pod holding the operation. Nothing leaks: the next rebuild's
+  pre-provision drop of the shadow slot IS that reclaim. Costs one collection of
+  disk per view between rebuilds.
+
+- **A shadow-write failure now fails the event instead of abandoning the
+  rebuild.** Abandoning hours of backfill for the whole cluster used to be
+  triggered by three attempts spanning 150 ms of ONE event. It is now
+  evidence-based: twenty consecutive events failing to reach a view's shadow, and
+  one reachable write clears the streak.
+
+- **Verify before a flip compares REVISION PARITY across every document**,
+  replacing a twenty-document field-shape sample. The sample was not a random
+  twenty either — it was the first twenty the source cursor yielded, biased to
+  the oldest rows, i.e. the ones least likely to exercise a recent shape change.
+  The dual-apply leak count it computes is now reported instead of discarded: it
+  is the health metric of the blue-green mechanism.
+
+- **The projection loop is supervised.** A failed pointer refresh, subscribe or
+  topic-ensure used to return from the loop permanently, and the pod kept
+  answering `/readyz` 200 while its projection had silently stopped. Those now
+  end the consumer SESSION and a new one opens after a backoff.
+
 ### Added
+
+- **`omnicore_projection_failures` — the read-side's UNIFIED failure ledger**
+  (framework migration `0003`, all four dialects). Every piece of deferred
+  read-side work lands in ONE table, discriminated by `kind`:
+
+  - `kind='event'`: a projection event that exhausted its in-process retry
+    budget, recorded WITH ITS PAYLOAD so the replay needs no broker. It
+    dissolves the choice between holding the event (stalling every healthy
+    aggregate behind one broken document) and confirming it (silent
+    divergence).
+  - `kind='ripple'`: a failed EMBED-SEGMENT refresh — the (source, dependent
+    view) pair whose materialized copy could not be brought up to date. The
+    source coordinate is the upstream subscription topic, or `view:<name>` for
+    a local `query.JoinView` source. NO payload is stored: the replay
+    recomposes from the source's CURRENT document. The stages are
+    `discover | compose | upsert | signal` — `signal` is new and covers the
+    post-write re-read of the source that feeds the ripple, a loss that was
+    previously invisible even to the old registry.
+
+  Mirrors live state rather than accumulating a log: one row per
+  (consumer group, kind, topic, aggregate type, aggregate id); a newer failure
+  overwrites the older payload/stage/error. ONE background driver replays BOTH
+  kinds — governed by the **`mongo.parkedRetry` yaml block** (`enabled` default
+  true, `intervalMinutes` default 10, strict key allowlist): event rows
+  re-project from their payload; ripple rows re-run the recompose through the
+  same fan-out a live event drives (upstream rows via their subscriber,
+  `view:` rows via the view signal), resolving on a clean pass; rows whose
+  source left the topology are resolved as moot with a log line.
+  `SyncEngine.RetryPendingProjectionFailures` forces one immediate sweep. This
+  is also the answer to "where is the dead-letter queue": the transport port
+  stays consume-only and the relational control plane is the dead-letter store.
+
+- **BREAKING — the upstream failure registry is FOLDED INTO the unified ledger
+  and its old surface is removed.** `omnicore_upstream_failures` is no longer
+  created (erased from the `0001_framework` scripts; an upgraded deployment
+  keeps an inert orphan table until the operator drops it — nothing reads or
+  writes it). Removed with it: `UpstreamFailureRecord`, `UpstreamFailureStage`
+  (now `ProjectionFailureStage`), `RecordUpstreamFailure`,
+  `ResolveUpstreamFailures`, `ListPendingUpstreamFailures[ByTopic]`, and
+  `UpstreamSubscriber.RetryPendingFailures` — ripple replay is automatic via
+  the parked-retry loop, so the cron/HTTP wiring the old method required is
+  simply deleted on the consumer side. `RecordProjectionFailure` /
+  `ResolveProjectionFailure` / `ListPendingProjectionFailures` gained the
+  `kind` dimension (and `ProjectionFailureRecord` the `Kind`/`Stage`/`LocalID`
+  fields). The admin subcommand `upstream-list-failures` is now
+  `list-failures` (`--kind event|ripple`, `--topic`, `--view`). *Migration*:
+  SQL and dashboards move to `omnicore_projection_failures` with
+  `kind='ripple'` (`subscription_topic`→`topic`, `view_name`→`aggregate_type`,
+  `upstream_id`→`aggregate_id`); delete any operator cron/endpoint that called
+  `RetryPendingFailures`.
+
+- **`SyncEngine.ReconcileView` / `ReconcileAllViews` — continuous reconciliation
+  of derived state by revision parity**, plus `ReadModelStore.RevisionsByIDs`.
+  Projections are derived state and delivery guarantees fail eventually, so the
+  backstop compares the projection to its source through a mechanism independent
+  of the one being checked. The comparison is `(pk, revision)` against
+  `(_id, _revision)`: `revision` is boot-mandatory on every entity schema,
+  advances on every projection-relevant write — archive AND unarchive included,
+  and a child-only change advances the root — and is already stamped on the
+  document. So parity detects a missing, stale or rolled-back document with no
+  new column, no write-path cost and no composition. It needs no time window:
+  a set comparison keyed by primary key has no global cutoff, so commit skew and
+  clock skew do not apply. Forward-only against a live slot; the destructive
+  reverse direction runs only against a shadow before a flip, where snapshot
+  ordering makes it exact.
+
+  Scheduling is opt-in via the new **`mongo.reconcile` yaml block**
+  (`enabled` / `intervalMinutes` / `rowsPerSecond` / `batchSize`, strict key
+  allowlist): when enabled, bootstrap drives `SyncEngine.RunReconcileLoop` —
+  one full pass, then the interval measured END-to-start, per-view advisory
+  lock, rebuilds skipped, a failed pass logged and survived. OFF by default,
+  deliberately: `rowsPerSecond` is a hard ceiling on instantaneous load, but
+  the full-pass DURATION (rows / rate) is the detection bound the backstop
+  provides, and that trade belongs to the operator who can see both numbers.
+  Leaving it off in dev is a feature — a projection bug surfaces as a stale
+  document instead of being quietly repaired every interval.
+
+- **`SyncEngine.ProjectionHealth`** — counters plus liveness clocks for the
+  projection path. The clocks are the point: a loop that has stopped emits no
+  errors at all, so the operable alarm is STALENESS of the last processed event,
+  not an error count. Deliberately not wired into readiness — a broker outage
+  must not pull a pod out of the load balancer.
+
 
 - **`query.JoinView(view, goName, externalName)` is now accepted as an
   Embed/EmbedMany/EmbedInChild source — a local view can be MATERIALIZED inside
@@ -180,6 +346,24 @@ with `1.0.0`.
   the archived-entry strip can see it, then removes it before responding; the
   removal walk stopped at an ARRAY intermediate segment, so with a 1:N embed of a
   view whose documents carry their own children the column reached the wire.
+- **Every failure ledger's conflict UPDATE was broken on Postgres — recording a
+  repeat failure failed itself, always.** `RecordProjectionFailure`,
+  `RecordUpstreamFailure` and the integration-events `RecordFailure` all built
+  their upsert with the verbatim expression `attempt + 1`; inside PG's
+  `ON CONFLICT … DO UPDATE` a bare column is ambiguous against `EXCLUDED` and
+  the whole statement fails at parse time with SQLSTATE 42702 — on the fresh
+  insert too, not only on conflict. On MySQL the same text was one step from the
+  twin trap (a bare right-hand-side column under the `AS new` row alias is
+  errno 1052). The expression is replaced by a new assignment mode,
+  `core.UpsertSetBump`: the DIALECT renders "the existing row's column + 1"
+  with its own qualifier (PG: the table name; SQL Server/Oracle: the `target`
+  MERGE alias; MySQL: the table name under the row alias), because no verbatim
+  expression can spell "the existing row" portably. `core.UpsertSetExpr`'s
+  contract now states expressions must not reference target-table columns.
+  Found live by the new `projection_resilience` QA suite on its first real
+  park; each engine now carries an integration test that executes the conflict
+  branch against the real database, so the never-exercised path stays
+  exercised.
 
 ### Added
 

@@ -4,6 +4,7 @@ package nats
 
 import (
 	"context"
+	"errors"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -20,26 +21,31 @@ import (
 // dependency). Ack is counted atomically so tests can assert exactly-once.
 type fakeMsg struct {
 	jetstream.Msg
-	acks int32
-	data []byte
-	hdr  nats.Header
-	subj string
+	acks     int32
+	naks     int32
+	inflight int32
+	data     []byte
+	hdr      nats.Header
+	subj     string
 }
 
 func (f *fakeMsg) Ack() error           { atomic.AddInt32(&f.acks, 1); return nil }
+func (f *fakeMsg) Nak() error           { atomic.AddInt32(&f.naks, 1); return nil }
+func (f *fakeMsg) InProgress() error    { atomic.AddInt32(&f.inflight, 1); return nil }
 func (f *fakeMsg) Data() []byte         { return f.data }
 func (f *fakeMsg) Headers() nats.Header { return f.hdr }
 func (f *fakeMsg) Subject() string      { return f.subj }
 func (f *fakeMsg) ackCount() int32      { return atomic.LoadInt32(&f.acks) }
+func (f *fakeMsg) nakCount() int32      { return atomic.LoadInt32(&f.naks) }
+func (f *fakeMsg) progressCount() int32 { return atomic.LoadInt32(&f.inflight) }
 
 // newSub builds a subscription with no live consumer (cc == nil, which Close
-// tolerates), so the delayed-ack machinery is exercised in isolation.
-func newSub(commit time.Duration) *subscription {
+// tolerates), so the completion machinery is exercised in isolation.
+func newSub() *subscription {
 	return &subscription{
-		ch:             make(chan jetstream.Msg, 4),
-		done:           make(chan struct{}),
-		commitInterval: commit,
-		pending:        map[*time.Timer]jetstream.Msg{},
+		ch:      make(chan jetstream.Msg, 4),
+		done:    make(chan struct{}),
+		pending: map[*completion]struct{}{},
 	}
 }
 
@@ -132,121 +138,148 @@ func TestToMessage(t *testing.T) {
 	}
 }
 
-// TestScheduleAck_ImmediateWhenZeroInterval: a zero commit interval acks inline
-// (mirrors kafka-go committing synchronously) — nothing is left pending.
-func TestScheduleAck_ImmediateWhenZeroInterval(t *testing.T) {
-	sub := newSub(0)
-	m := &fakeMsg{}
-	sub.scheduleAck(m)
-	if m.ackCount() != 1 {
-		t.Fatalf("zero interval must ack immediately, acks=%d", m.ackCount())
-	}
-	if len(sub.pending) != 0 {
-		t.Fatalf("zero interval must leave nothing pending, pending=%d", len(sub.pending))
-	}
-}
+// --- Completion contract ------------------------------------------------
+//
+// These replace the previous delayed-ack tests. The timer-ack model they
+// covered is gone: it acked a message ~commitInterval after HAND-OFF, i.e.
+// before the consumer had processed it, so a crash in that window lost the
+// message. Confirmation is now the consumer's explicit outcome.
 
-// TestScheduleAck_WhenClosedAcksInline: after Close set closed, a late
-// scheduleAck must ack immediately rather than register a timer that would
-// outlive the subscription.
-func TestScheduleAck_WhenClosedAcksInline(t *testing.T) {
-	sub := newSub(time.Hour)
-	sub.closed = true
-	m := &fakeMsg{}
-	sub.scheduleAck(m)
-	if m.ackCount() != 1 {
-		t.Fatalf("closed subscription must ack inline, acks=%d", m.ackCount())
-	}
-	if len(sub.pending) != 0 {
-		t.Fatalf("closed subscription must not register a timer, pending=%d", len(sub.pending))
-	}
-}
-
-// TestCloseFlushesPendingAcksExactlyOnce: with a long interval the timer never
-// fires on its own, so Close's t.Stop() path deterministically flushes the
-// pending ack — exactly once, and pending is cleared. This is the graceful-drain
-// contract (workers finished before Close, so acking avoids needless redelivery).
-func TestCloseFlushesPendingAcksExactlyOnce(t *testing.T) {
-	sub := newSub(time.Hour)
-	m := &fakeMsg{}
-	sub.scheduleAck(m)
-	if m.ackCount() != 0 {
-		t.Fatalf("deferred ack must not fire before the interval, acks=%d", m.ackCount())
-	}
-	if len(sub.pending) != 1 {
-		t.Fatalf("deferred ack must be tracked as pending, pending=%d", len(sub.pending))
-	}
-	if err := sub.Close(); err != nil {
-		t.Fatalf("Close: %v", err)
-	}
-	if m.ackCount() != 1 {
-		t.Fatalf("Close must flush the pending ack exactly once, acks=%d", m.ackCount())
-	}
-	if len(sub.pending) != 0 {
-		t.Fatalf("Close must clear pending, pending=%d", len(sub.pending))
-	}
-	// Close is idempotent (doneOnce guards the done close); a second call must
-	// not panic or double-ack.
-	if err := sub.Close(); err != nil {
-		t.Fatalf("second Close: %v", err)
-	}
-	if m.ackCount() != 1 {
-		t.Fatalf("second Close must not re-ack, acks=%d", m.ackCount())
-	}
-}
-
-// TestTimerFiresAcksOnce_NoDoubleAckOnClose: once the timer fires and acks, a
-// following Close (whose t.Stop() returns false) must not ack again — the crux
-// of the timer/Close race the mutex guards.
-func TestTimerFiresAcksOnce_NoDoubleAckOnClose(t *testing.T) {
-	sub := newSub(20 * time.Millisecond)
-	m := &fakeMsg{}
-	sub.scheduleAck(m)
-
-	deadline := time.Now().Add(2 * time.Second)
-	for m.ackCount() == 0 {
-		if time.Now().After(deadline) {
-			t.Fatal("timer did not fire within 2s")
-		}
-		time.Sleep(2 * time.Millisecond)
-	}
-	if m.ackCount() != 1 {
-		t.Fatalf("timer must ack exactly once, acks=%d", m.ackCount())
-	}
-	// The fired timer must have removed itself from pending.
-	sub.mu.Lock()
-	n := len(sub.pending)
-	sub.mu.Unlock()
-	if n != 0 {
-		t.Fatalf("fired timer must remove itself from pending, pending=%d", n)
-	}
-	if err := sub.Close(); err != nil {
-		t.Fatalf("Close: %v", err)
-	}
-	if m.ackCount() != 1 {
-		t.Fatalf("Close after timer fired must not double-ack, acks=%d", m.ackCount())
-	}
-}
-
-// TestRead_DeliversAndSchedulesAck: a message on the channel is returned mapped
-// and acked (zero interval → inline ack).
-func TestRead_DeliversAndSchedulesAck(t *testing.T) {
-	sub := newSub(0)
+// TestRead_DoesNotConfirmOnItsOwn is the crux of the whole change: taking a
+// message off the stream must NOT confirm it. Before, Read scheduled an ack.
+func TestRead_DoesNotConfirmOnItsOwn(t *testing.T) {
+	sub := newSub()
 	m := &fakeMsg{
 		data: []byte("payload"),
 		subj: subjectPrefix + ".users.events",
 		hdr:  nats.Header{"aggregate_id": {`"k1"`}},
 	}
 	sub.ch <- m
-	got, err := sub.Read(context.Background())
+	got, completion, err := sub.Read(context.Background())
 	if err != nil {
 		t.Fatalf("Read: %v", err)
 	}
 	if string(got.Key) != "k1" || got.Topic != "users.events" {
 		t.Fatalf("Read mapped wrong message: %+v", got)
 	}
+	if completion == nil {
+		t.Fatal("Read must return a Completion")
+	}
+	if m.ackCount() != 0 || m.nakCount() != 0 {
+		t.Fatalf("Read must not confirm the message, acks=%d naks=%d", m.ackCount(), m.nakCount())
+	}
+}
+
+// TestCompletion_DoneAcksExactlyOnce: Done acks, and a second outcome is
+// refused rather than silently double-acking.
+func TestCompletion_DoneAcksExactlyOnce(t *testing.T) {
+	sub := newSub()
+	m := &fakeMsg{}
+	sub.ch <- m
+	_, completion, _ := sub.Read(context.Background())
+
+	if err := completion.Done(context.Background()); err != nil {
+		t.Fatalf("Done: %v", err)
+	}
 	if m.ackCount() != 1 {
-		t.Fatalf("Read with zero interval must ack, acks=%d", m.ackCount())
+		t.Fatalf("Done must ack once, acks=%d", m.ackCount())
+	}
+	if err := completion.Done(context.Background()); !errors.Is(err, ErrAlreadyCompleted) {
+		t.Fatalf("second Done = %v, want ErrAlreadyCompleted", err)
+	}
+	if err := completion.Failed(context.Background()); !errors.Is(err, ErrAlreadyCompleted) {
+		t.Fatalf("Failed after Done = %v, want ErrAlreadyCompleted", err)
+	}
+	if m.ackCount() != 1 || m.nakCount() != 0 {
+		t.Fatalf("first outcome must stand, acks=%d naks=%d", m.ackCount(), m.nakCount())
+	}
+	// A settled completion is no longer tracked, so Close has no heartbeat left.
+	sub.mu.Lock()
+	n := len(sub.pending)
+	sub.mu.Unlock()
+	if n != 0 {
+		t.Fatalf("settled completion must be forgotten, pending=%d", n)
+	}
+}
+
+// TestCompletion_FailedNaks: Failed asks for redelivery via Nak, which is
+// immediate — withholding the ack instead would cost the full AckWait.
+func TestCompletion_FailedNaks(t *testing.T) {
+	sub := newSub()
+	m := &fakeMsg{}
+	sub.ch <- m
+	_, completion, _ := sub.Read(context.Background())
+
+	if err := completion.Failed(context.Background()); err != nil {
+		t.Fatalf("Failed: %v", err)
+	}
+	if m.nakCount() != 1 {
+		t.Fatalf("Failed must nak once, naks=%d", m.nakCount())
+	}
+	if m.ackCount() != 0 {
+		t.Fatalf("Failed must never ack, acks=%d", m.ackCount())
+	}
+}
+
+// TestCompletion_HeartbeatExtendsAckDeadline pins the JetStream-specific
+// requirement Kafka has no analogue for: while an outcome is pending the
+// message must keep extending its ack lease, or AckWait expires and JetStream
+// redelivers a message that is still being processed — racing it against
+// itself. Driven at a test interval; production uses ackHeartbeat.
+func TestCompletion_HeartbeatExtendsAckDeadline(t *testing.T) {
+	m := &fakeMsg{}
+	c := &completion{msg: m, stop: make(chan struct{}), sub: newSub()}
+	go c.heartbeat(time.Millisecond)
+
+	deadline := time.Now().Add(2 * time.Second)
+	for m.progressCount() < 2 {
+		if time.Now().After(deadline) {
+			t.Fatalf("heartbeat did not extend the deadline within 2s, InProgress=%d", m.progressCount())
+		}
+		time.Sleep(time.Millisecond)
+	}
+	if err := c.Done(context.Background()); err != nil {
+		t.Fatalf("Done: %v", err)
+	}
+	// Settling stops the heartbeat: the count must go quiet.
+	settled := m.progressCount()
+	time.Sleep(20 * time.Millisecond)
+	if got := m.progressCount(); got != settled {
+		t.Fatalf("heartbeat kept running after the outcome (%d -> %d)", settled, got)
+	}
+}
+
+// TestClose_ConfirmsNothing: Close must never ack. The old model flushed
+// pending acks here, which confirmed work whose outcome nobody had reported.
+// Dropping the heartbeat instead lets AckWait expire and JetStream redeliver —
+// the safe direction.
+func TestClose_ConfirmsNothing(t *testing.T) {
+	sub := newSub()
+	m := &fakeMsg{}
+	sub.ch <- m
+	_, _, _ = sub.Read(context.Background())
+
+	sub.mu.Lock()
+	pending := len(sub.pending)
+	sub.mu.Unlock()
+	if pending != 1 {
+		t.Fatalf("an unsettled completion must be tracked, pending=%d", pending)
+	}
+	if err := sub.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	if m.ackCount() != 0 || m.nakCount() != 0 {
+		t.Fatalf("Close must confirm nothing, acks=%d naks=%d", m.ackCount(), m.nakCount())
+	}
+	sub.mu.Lock()
+	pending = len(sub.pending)
+	sub.mu.Unlock()
+	if pending != 0 {
+		t.Fatalf("Close must stop every heartbeat, pending=%d", pending)
+	}
+	// Close is idempotent (doneOnce guards the done close).
+	if err := sub.Close(); err != nil {
+		t.Fatalf("second Close: %v", err)
 	}
 }
 
@@ -254,10 +287,10 @@ func TestRead_DeliversAndSchedulesAck(t *testing.T) {
 // cancelled with no message available (the JetStream iterator alone can't do
 // this — the channel indirection is what buys cancellation).
 func TestRead_HonorsContextCancel(t *testing.T) {
-	sub := newSub(0)
+	sub := newSub()
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	if _, err := sub.Read(ctx); err != context.Canceled {
+	if _, _, err := sub.Read(ctx); err != context.Canceled {
 		t.Fatalf("Read = %v, want context.Canceled", err)
 	}
 }
@@ -265,9 +298,9 @@ func TestRead_HonorsContextCancel(t *testing.T) {
 // TestRead_AfterCloseErrors: Read on a closed subscription returns an error
 // rather than blocking forever.
 func TestRead_AfterCloseErrors(t *testing.T) {
-	sub := newSub(0)
+	sub := newSub()
 	_ = sub.Close()
-	if _, err := sub.Read(context.Background()); err == nil {
+	if _, _, err := sub.Read(context.Background()); err == nil {
 		t.Fatal("Read on a closed subscription must error")
 	}
 }

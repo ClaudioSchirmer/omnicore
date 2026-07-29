@@ -1075,10 +1075,12 @@ same envelope, same projector, same pagination block as any view read</div>
         edit therefore carries the source's <code>_revision</code> watermark and is applied only when the STORED segment is
         not newer — the same revision-guarded discipline the rest of the projection pipeline uses. (An upstream mirror
         needs no such guard: it has a single writer and per-id serialized events.)</li>
-    <li><strong>Failure isolation.</strong> A ripple failure is logged, counted and recorded in the failure registry, then
-        SKIPPED — the source's own projection always completes and the event is acknowledged. A deterministic recompose
-        bug degrades one segment; it never becomes a poison pill that stops the projection loop. See
-        <a href="#auto-query-handlers">the failure registry</a> for the queries and the retry surface.</li>
+    <li><strong>Failure isolation.</strong> A ripple failure is logged, counted and recorded in the unified failure
+        ledger (<code>omnicore_projection_failures</code>, <code>kind='ripple'</code>), then SKIPPED — the source's own
+        projection always completes and the event is acknowledged. A deterministic recompose bug degrades one segment;
+        it never becomes a poison pill that stops the projection loop. The parked-retry loop replays the pair from
+        current state on its cadence. See <a href="#auto-query-handlers">the failure ledger</a> for the queries and the
+        replay semantics.</li>
 </ul>
 <p>
     <strong>What does NOT signal.</strong> A rebuild writes the shadow slot directly, outside this path — deliberately: a
@@ -1094,6 +1096,32 @@ same envelope, same projector, same pagination block as any view read</div>
     to produce a byte-identical document (the equivalence gate the blue-green rebuild verifies), and both are guarded by a
     monotonic <code>_revision</code> watermark so a stale or redelivered event is a no-op rather than a lost update —
     ordering per aggregate is preserved by hashing each aggregate id onto a fixed worker.
+</p>
+<p>
+    <strong>Delivery is at-least-once, and failure is never silent.</strong> The SyncEngine confirms a message to the
+    broker only after the work finished (the transport's <code>Completion</code> outcome — see
+    <a href="#transport">Message transport</a>). A failed event is retried in-process with backoff, re-resolving the
+    active slot on every attempt so a retry after a blue-green flip lands on the new collection; each attempt is bounded
+    by a deadline, so a wedged dependency (a Mongo quorum loss, a network black hole) becomes a retriable error instead
+    of a stalled worker. When the budget is exhausted the whole message is <strong>parked</strong> in the UNIFIED
+    relational ledger <code>omnicore_projection_failures</code> as a <code>kind='event'</code> row — payload included,
+    so it can be replayed without the broker — and the stream advances: parking defers the work durably instead of
+    stalling a partition or dropping the event. The same ledger's <code>kind='ripple'</code> rows carry failed
+    embed-segment refreshes (no payload — their replay recomposes from current state). ONE background driver replays
+    both kinds on the <code>mongo.parkedRetry</code> cadence (on by default, every 10 minutes) and resolves the rows
+    that now succeed — turned off, the ledger holds dead letters until the reconcile sweep or a manual
+    <code>RetryPendingProjectionFailures</code> call. Independent
+    of both, a <strong>revision-parity reconciliation</strong> (<code>ReconcileAllViews</code>) can sweep every view's
+    key space against the source — document absent or behind the source's revision column → recompose through the
+    normal guards; ahead is healthy (the source page is a snapshot) — with a two-pass confirmation so an in-flight
+    event is never "repaired". Scheduling it is the <code>mongo.reconcile</code> yaml block (off by default; see
+    <a href="#yaml-reference">the YAML reference</a>): the throttle is a hard ceiling on instantaneous load, and the
+    full-pass duration (rows &divide; rate) is the detection bound the sweep provides. Each event carries several
+    independent obligations (its own document first, then the shared-base fan-out and base recompose), and no
+    obligation's failure discards another's. The engine exposes counters and liveness clocks
+    (<code>ProjectionHealth</code>) — last processed, last ledger sweep, last reconcile pass — because a projection loop
+    that has died emits no errors; staleness is the honest alarm. The consumer session itself is supervised: a fatal
+    reader error backs off and re-subscribes instead of killing the loop for the life of the process.
 </p>
 <p>
     <strong>Archive by default.</strong> Mongo mirrors the relational backend: an <code>ARCHIVED</code> event keeps the

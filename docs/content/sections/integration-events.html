@@ -98,7 +98,7 @@ func MountUserReceivers(reg *fwintegration.Registry, repo userRepo, d bootstrap.
 
     <h3>Failure registry — <code>omnicore_integration_failures</code></h3>
 
-    <p>Every handler failure is persisted to <code>omnicore_integration_failures</code>, mirroring <code>omnicore_upstream_failures</code> for parity in operator tooling. It is a framework-managed table created by the embedded <code>0001_framework</code> migration (you never write this DDL). Schema below is the <strong>Postgres</strong> flavor; the <strong>MySQL</strong>, <strong>SQL Server</strong> and <strong>Oracle</strong> flavors in <code>embedded/{mysql,sqlserver,oracle}/0001_framework</code> use dialect-appropriate types (the uuid PK is <code>UUID</code> on Postgres, <code>BINARY(16)</code> on MySQL/SQL Server, <code>RAW(16)</code> on Oracle; <code>JSONB</code> → <code>JSON</code> / <code>NVARCHAR(MAX)</code> / native <code>JSON</code>; the wire-crossing uuid references are uuid text everywhere — <code>CHAR(36)</code>, <code>VARCHAR2(36)</code> on Oracle):</p>
+    <p>Every handler failure is persisted to <code>omnicore_integration_failures</code>, mirroring the projection failure ledger's live-state shape for parity in operator tooling. It is a framework-managed table created by the embedded <code>0001_framework</code> migration (you never write this DDL). Schema below is the <strong>Postgres</strong> flavor; the <strong>MySQL</strong>, <strong>SQL Server</strong> and <strong>Oracle</strong> flavors in <code>embedded/{mysql,sqlserver,oracle}/0001_framework</code> use dialect-appropriate types (the uuid PK is <code>UUID</code> on Postgres, <code>BINARY(16)</code> on MySQL/SQL Server, <code>RAW(16)</code> on Oracle; <code>JSONB</code> → <code>JSON</code> / <code>NVARCHAR(MAX)</code> / native <code>JSON</code>; the wire-crossing uuid references are uuid text everywhere — <code>CHAR(36)</code>, <code>VARCHAR2(36)</code> on Oracle):</p>
 
     <pre><code>CREATE TABLE omnicore_integration_failures (
     id              UUID      PRIMARY KEY,  -- UUID v7 minted in Go (the framework id standard)
@@ -116,7 +116,7 @@ func MountUserReceivers(reg *fwintegration.Registry, repo userRepo, d bootstrap.
         UNIQUE (consumer_group, source_key, event_key, event_id)
 );</code></pre>
 
-    <p><strong>Retry surface.</strong> <code>Receiver.RetryPendingFailures(ctx, eng, pipe, logger)</code> (where <code>eng</code> is the <code>core.RelationalEngine</code>) re-dispatches every pending row for the receiver's natural key — same posture upstream subscribers adopt. Idempotent: a successful re-dispatch calls <code>ResolveIntegrationFailures</code> so the row is marked resolved. The framework does NOT auto-retry; operators drive retry explicitly.</p>
+    <p><strong>Retry surface.</strong> <code>Receiver.RetryPendingFailures(ctx, eng, pipe, logger)</code> (where <code>eng</code> is the <code>core.RelationalEngine</code>) re-dispatches every pending row for the receiver's natural key. Idempotent: a successful re-dispatch calls <code>ResolveIntegrationFailures</code> so the row is marked resolved. The framework does NOT auto-retry integration failures — a handler is consumer code with arbitrary side effects, so re-running it is the operator's explicit call (unlike the read-side projection ledger, whose writes are idempotent by construction and replay automatically).</p>
 
     <p>Canonical admin pattern in the consumer service: a mount-only <code>AdminFeature</code> registering two parallel routes behind <code>RequirePermission("admin:retry")</code>:</p>
 

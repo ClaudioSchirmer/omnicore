@@ -11,7 +11,10 @@ import (
 
 // TestPgDialect_BuildUpsert_DoUpdate locks the Postgres upsert shape: an
 // ON CONFLICT … DO UPDATE with EXCLUDED.col for the "set to new value" mode and
-// a verbatim expression (bare column refers to the existing row) for the rest.
+// the TABLE-qualified column for the bump mode — inside DO UPDATE a bare column
+// is ambiguous against EXCLUDED and fails with SQLSTATE 42702, which is exactly
+// how the failure ledgers' park INSERT was broken on Postgres until the
+// projection_resilience suite executed one for real.
 func TestPgDialect_BuildUpsert_DoUpdate(t *testing.T) {
 	got := pgDialect{}.BuildUpsert(
 		"omnicore_upstream_failures",
@@ -19,7 +22,7 @@ func TestPgDialect_BuildUpsert_DoUpdate(t *testing.T) {
 		[]string{"topic", "view"},
 		[]core.UpsertSet{
 			{Col: "error", Mode: core.UpsertSetNew},
-			{Col: "attempt", Mode: core.UpsertSetExpr, Expr: "attempt + 1"},
+			{Col: "attempt", Mode: core.UpsertSetBump},
 		},
 	)
 	for _, want := range []string{
@@ -27,7 +30,7 @@ func TestPgDialect_BuildUpsert_DoUpdate(t *testing.T) {
 		"VALUES ($1, $2, $3)",
 		"ON CONFLICT (topic, view) DO UPDATE SET",
 		"error = EXCLUDED.error",
-		"attempt = attempt + 1",
+		"attempt = omnicore_upstream_failures.attempt + 1",
 	} {
 		if !strings.Contains(got, want) {
 			t.Errorf("pg upsert missing %q in:\n%s", want, got)

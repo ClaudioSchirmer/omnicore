@@ -120,9 +120,14 @@ func TestExecuteRebuild_HappyPath(t *testing.T) {
 	m, cleanupMongo := newTestMongo(t)
 	defer cleanupMongo()
 
+	// revision is part of the fixture because production REQUIRES it (the
+	// repository panics at boot on a schema without one) and the blue-green
+	// verify checks REVISION PARITY between source and shadow. A fixture table
+	// without it was modelling a root that cannot exist.
 	createTable(t, pg, `CREATE TABLE er_users (
 		id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
 		name TEXT NOT NULL,
+		revision BIGINT NOT NULL DEFAULT 0,
 		deleted_at TIMESTAMP,
 		created_at TIMESTAMP NOT NULL DEFAULT NOW(),
 		updated_at TIMESTAMP NOT NULL DEFAULT NOW()
@@ -132,7 +137,7 @@ func TestExecuteRebuild_HappyPath(t *testing.T) {
 			`INSERT INTO er_users (name) VALUES ($1)`, n)
 	}
 
-	view := query.View("er_users").Schema(rootSchema("er_users")).Version(1)
+	view := query.View("er_users").Schema(rootSchema("er_users").Revision("revision")).Version(1)
 
 	// Seed the registry row at the SAME hash so EndRebuild can find it.
 	now := time.Now().UTC()
@@ -141,6 +146,14 @@ func TestExecuteRebuild_HappyPath(t *testing.T) {
 		RebuildHash: view.RebuildHash(), ArtifactHash: view.ArtifactHash(),
 		CombinedHash: view.Hash(), ServiceName: "svc", Now: now,
 	})
+
+	// Seed the slot this rebuild will RETIRE (before the first flip the bare
+	// collection is the active one) with a marker document, so the survival
+	// assertion below is a real observation and not a vacuous count of a
+	// collection that was empty all along.
+	if _, err := m.Collection(view.Name()).InsertOne(context.Background(), bson.M{"_id": "retired-marker"}); err != nil {
+		t.Fatalf("seed retired slot marker: %v", err)
+	}
 
 	plan := query.DriftPlan{
 		View:                view,
@@ -160,8 +173,8 @@ func TestExecuteRebuild_HappyPath(t *testing.T) {
 		t.Fatalf("ExecuteRebuild: %v", err)
 	}
 
-	// The rebuild flipped to the shadow slot (er_users__0) and reclaimed the bare
-	// collection; the docs live in the now-active slot.
+	// The rebuild flipped to the shadow slot (er_users__0); the docs live in the
+	// now-active slot and the RETIRED slot survives the flip.
 	if err := resolver.Refresh(context.Background()); err != nil {
 		t.Fatalf("resolver refresh: %v", err)
 	}
@@ -173,9 +186,13 @@ func TestExecuteRebuild_HappyPath(t *testing.T) {
 	if n != 3 {
 		t.Errorf("expected 3 mongo docs in the active slot, got %d", n)
 	}
+	// CONTRACT: the retired slot is NOT reclaimed at the flip — dropping it there
+	// races in-flight operations that resolved the pointer while it was valid. The
+	// marker seeded before the rebuild must still be there; the NEXT rebuild's
+	// pre-provision drop is what reclaims it.
 	bare, _ := m.Collection(view.Name()).CountDocuments(context.Background(), bson.M{})
-	if bare != 0 {
-		t.Errorf("expected the bare collection reclaimed (empty), got %d docs", bare)
+	if bare != 1 {
+		t.Errorf("expected the retired slot to survive the flip with its marker doc, got %d docs", bare)
 	}
 	row, _ := query.ReadViewRegistry(context.Background(), pg.Querier(), pg.Dialect(), view.Name())
 	if row.Status != query.ViewRegistryStatusDone {

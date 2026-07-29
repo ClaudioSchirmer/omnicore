@@ -50,10 +50,27 @@ const (
 	// delivery, letting a burst's projection fall behind the write path.
 	consumeBuffer = 256
 	// maxAckPending caps delivered-but-unacked messages. Kept well above
-	// consumeBuffer so the delayed ack (mirroring the Kafka commit interval)
-	// never trips JetStream's flow control and pauses delivery mid-burst.
+	// consumeBuffer so in-flight processing (a message is unacked from Read
+	// until its Completion settles) never trips JetStream's flow control and
+	// pauses delivery mid-burst.
 	maxAckPending = 2048
+	// ackHeartbeat is how often a delivered-but-unsettled message extends its
+	// ack deadline via InProgress. Half of defaultAckWait, so two consecutive
+	// missed beats are needed before JetStream considers the message abandoned.
+	//
+	// This exists because AckWait is a LEASE, and the consumer's retry budget
+	// can legitimately outlive it: a message retried with backoff would be
+	// redelivered by JetStream while the first attempt is still running,
+	// racing itself. Kafka has no analogue — it has no per-message lease, and
+	// kafka-go's session heartbeat covers the group-level equivalent.
+	ackHeartbeat = defaultAckWait / 2
 )
+
+// ErrAlreadyCompleted is returned by a second call to Done/Failed on the same
+// Completion. The port's contract is exactly-one-outcome-per-message, so a
+// double settle is a consumer bug; it is surfaced rather than absorbed, and the
+// first outcome stands.
+var ErrAlreadyCompleted = errors.New("nats transport: message already completed")
 
 func init() {
 	transport.RegisterSubscriber("nats", New)
@@ -146,11 +163,14 @@ func (s *subscriber) Subscribe(ctx context.Context, cfg transport.SubscribeConfi
 	if err != nil {
 		return nil, fmt.Errorf("nats transport: consumer %q: %w", cfg.GroupID, err)
 	}
+	// cfg.CommitInterval is deliberately unused here. It bounds how often an
+	// adapter FLUSHES completed positions, which is a Kafka concern: JetStream
+	// confirms per message, so an outcome is reported the instant it is known
+	// and there is nothing to batch.
 	sub := &subscription{
-		ch:             make(chan jetstream.Msg, consumeBuffer),
-		done:           make(chan struct{}),
-		commitInterval: cfg.CommitInterval,
-		pending:        map[*time.Timer]jetstream.Msg{},
+		ch:      make(chan jetstream.Msg, consumeBuffer),
+		done:    make(chan struct{}),
+		pending: map[*completion]struct{}{},
 	}
 	cc, err := cons.Consume(func(m jetstream.Msg) {
 		select {
@@ -166,63 +186,102 @@ func (s *subscriber) Subscribe(ctx context.Context, cfg transport.SubscribeConfi
 }
 
 type subscription struct {
-	cc             jetstream.ConsumeContext
-	ch             chan jetstream.Msg
-	done           chan struct{}
-	commitInterval time.Duration
+	cc   jetstream.ConsumeContext
+	ch   chan jetstream.Msg
+	done chan struct{}
 
 	mu       sync.Mutex
 	closed   bool
-	pending  map[*time.Timer]jetstream.Msg
+	pending  map[*completion]struct{}
 	doneOnce sync.Once
 }
 
 // Read returns the next message, honoring ctx (unlike the raw JetStream
-// iterator). The message is scheduled for a delayed ack that mirrors the Kafka
-// path's async offset commit — ack fires ~commitInterval after the message is
-// handed off, so a crash within that window leaves it unacked and JetStream
-// redelivers it (at-least-once; idempotent handlers + the dedup table absorb it).
-func (s *subscription) Read(ctx context.Context) (transport.Message, error) {
+// iterator), together with the Completion that reports its outcome. The message
+// stays UNACKED from here until that outcome is settled, so a crash mid-
+// processing leaves it for redelivery — the at-least-once property the whole
+// read side's correctness argument rests on.
+func (s *subscription) Read(ctx context.Context) (transport.Message, transport.Completion, error) {
 	select {
 	case m := <-s.ch:
-		s.scheduleAck(m)
-		return toMessage(m), nil
+		return toMessage(m), s.track(m), nil
 	case <-ctx.Done():
-		return transport.Message{}, ctx.Err()
+		return transport.Message{}, nil, ctx.Err()
 	case <-s.done:
-		return transport.Message{}, errors.New("nats transport: subscription closed")
+		return transport.Message{}, nil, errors.New("nats transport: subscription closed")
 	}
 }
 
-// scheduleAck acks the message after commitInterval (or immediately when the
-// interval is zero), mirroring kafka-go's CommitInterval batching. Pending
-// timers are tracked so Close can flush them.
-func (s *subscription) scheduleAck(m jetstream.Msg) {
-	if s.commitInterval <= 0 {
-		_ = m.Ack()
-		return
-	}
+// track builds the message's completion handle and registers it so Close can
+// stop its heartbeat. A subscription already closed yields an unregistered
+// handle: it still settles correctly, it simply has no heartbeat to stop.
+func (s *subscription) track(m jetstream.Msg) *completion {
+	c := &completion{msg: m, stop: make(chan struct{}), sub: s}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.closed {
-		_ = m.Ack()
-		return
+		return c
 	}
-	var t *time.Timer
-	t = time.AfterFunc(s.commitInterval, func() {
-		_ = m.Ack()
-		s.mu.Lock()
-		delete(s.pending, t)
-		s.mu.Unlock()
-	})
-	s.pending[t] = m
+	s.pending[c] = struct{}{}
+	go c.heartbeat(ackHeartbeat)
+	return c
 }
 
-// Close stops consuming and flushes pending acks. On graceful shutdown the
-// framework drains its workers BEFORE closing the subscription, so every pending
-// message is already processed — acking them here avoids needless redelivery on
-// the next boot. Messages still in the internal channel (never Read) stay
-// unacked and redeliver, as they must.
+func (s *subscription) forget(c *completion) {
+	s.mu.Lock()
+	delete(s.pending, c)
+	s.mu.Unlock()
+}
+
+// completion is the JetStream outcome handle. Confirmation is per message here,
+// so the mapping is direct: Done acks, Failed NAKs. Nak is deliberate over
+// simply withholding the ack — a nak redelivers immediately, where silence
+// costs the full AckWait (30s) before JetStream gives up on the delivery.
+type completion struct {
+	msg  jetstream.Msg
+	sub  *subscription
+	stop chan struct{}
+	once sync.Once
+}
+
+// heartbeat extends the message's ack deadline every `every` while its outcome
+// is pending. See ackHeartbeat for why this is mandatory on JetStream and
+// absent on Kafka.
+func (c *completion) heartbeat(every time.Duration) {
+	t := time.NewTicker(every)
+	defer t.Stop()
+	for {
+		select {
+		case <-t.C:
+			_ = c.msg.InProgress()
+		case <-c.stop:
+			return
+		}
+	}
+}
+
+func (c *completion) Done(context.Context) error   { return c.settle(c.msg.Ack) }
+func (c *completion) Failed(context.Context) error { return c.settle(c.msg.Nak) }
+
+// settle stops the heartbeat and reports the outcome exactly once. A second
+// call answers ErrAlreadyCompleted and changes nothing.
+func (c *completion) settle(report func() error) error {
+	err := ErrAlreadyCompleted
+	c.once.Do(func() {
+		close(c.stop)
+		c.sub.forget(c)
+		err = report()
+	})
+	return err
+}
+
+// Close stops consuming and stops every pending heartbeat. It deliberately acks
+// NOTHING: an outcome is the consumer's to report, and acking here would
+// confirm work that may never have happened. The framework drains its workers —
+// settling every in-flight Completion — BEFORE closing the subscription, so a
+// pending handle at this point is a leak; dropping its heartbeat lets AckWait
+// expire and JetStream redeliver, which is the safe direction. Messages still
+// in the internal channel (never Read) stay unacked and redeliver, as they must.
 func (s *subscription) Close() error {
 	s.doneOnce.Do(func() { close(s.done) })
 	if s.cc != nil {
@@ -230,11 +289,9 @@ func (s *subscription) Close() error {
 	}
 	s.mu.Lock()
 	s.closed = true
-	for t, m := range s.pending {
-		if t.Stop() {
-			_ = m.Ack()
-		}
-		delete(s.pending, t)
+	for c := range s.pending {
+		c.once.Do(func() { close(c.stop) })
+		delete(s.pending, c)
 	}
 	s.mu.Unlock()
 	return nil

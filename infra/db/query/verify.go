@@ -3,80 +3,103 @@ package query
 import (
 	"context"
 	"fmt"
-	"sort"
+	"log/slog"
 )
 
-// verifySampleSize bounds the value-sample pass: this many source ids are
-// recomposed and structurally compared to their shadow document before a flip.
-const verifySampleSize = 20
-
-// verifyReconcileChunk bounds how many ids a single forward-recompose or
-// reverse-delete batch carries, so the reconcile buffers stay bounded even when
-// a shadow is far off (normally both are near-empty).
+// verifyReconcileChunk bounds how many ids a single forward-recompose, reverse-delete
+// or parity batch carries, so the reconcile buffers stay bounded even when a
+// shadow is far off (normally all of them are near-empty).
 const verifyReconcileChunk = 1000
 
 // verifyShadow validates a freshly-built shadow slot before a flip. Three passes:
 //
-//  1. Reverse completeness (the G2b tail reconcile): shadow documents whose root
-//     no longer exists in the source are deleted — a doc resurrected by the
-//     backfill/delete race is removed so the flip never freezes an orphan.
-//  2. Forward completeness (the G1 net): every live source root that lacks a
-//     shadow document is recomposed and written, auto-correcting a dropped
-//     dual-apply write; a compose that yields nothing is legitimately absent.
-//  3. Value sample: a bounded sample of source ids is recomposed and its field
-//     shape compared to the stored shadow document; a persistent structural
-//     mismatch (re-checked once to shed a transient in-flight write) aborts.
+//  1. Forward PARITY: every live source root must have a shadow document whose
+//     revision watermark is at least the source's. This subsumes both the old
+//     forward-completeness check (an absent document is the extreme case of
+//     being behind) and the old value SAMPLE.
+//  2. Repair: everything the parity pass flagged is recomposed and written.
+//  3. Reverse completeness: shadow documents whose root no longer exists in the
+//     source are deleted, so the flip never freezes an orphan.
+//
+// The value sample this replaced compared FIELD SHAPE on twenty documents — and
+// not a random twenty, but the first twenty the source cursor yielded, biased to
+// the oldest rows, i.e. precisely the ones least likely to exercise a recent
+// shape change. A systematic corruption of 1%% of documents survived that check
+// about 82%% of the time. Revision parity covers 100%% of documents instead, at
+// set-comparison cost, because it compares a watermark both sides already carry
+// rather than recomposing anything.
 //
 // Snapshot order matters: the shadow ids are read BEFORE the source ids, so a row
 // inserted mid-verify (already dual-applied into the shadow) is never mistaken
-// for an orphan and deleted. The source ids are STREAMED against the frozen
+// for an orphan and deleted. The source rows are STREAMED against the frozen
 // shadow set rather than materialized into a second full set — only the shadow
-// snapshot plus small reconcile buffers live at once (half the footprint of the
-// old two-full-set diff), while the completeness guarantee stays exact and the
-// snapshot ordering is preserved (the shadow set is the frozen reference).
+// snapshot plus small bounded buffers live at once, while the completeness
+// guarantee stays exact and the snapshot ordering is preserved.
 func (s *SyncEngine) verifyShadow(ctx context.Context, view *ViewDefinition, shadow PhysicalCollection) error {
 	shadowIDs, err := s.mongo.SnapshotDocumentIDs(ctx, shadow)
 	if err != nil {
 		return fmt.Errorf("verify %q: snapshot shadow ids: %w", view.name, err)
 	}
 
-	// Stream the source ids against the frozen shadow set: a matched id is present
-	// (removed from the set), an unmatched id is a forward gap (recompose). No
-	// recompose runs DURING the stream, so the source cursor never contends with a
-	// composer connection. A bounded sample of source ids is captured in passing
-	// for pass 3.
-	var missing []string
-	sample := make([]string, 0, verifySampleSize)
-	if err := s.streamSourceIDs(ctx, view, func(id string) error {
-		if _, ok := shadowIDs[id]; ok {
-			delete(shadowIDs, id)
-		} else {
-			missing = append(missing, id)
+	// Stream the source rows against the frozen shadow set, comparing revisions in
+	// bounded batches. A matched id is present (removed from the set); an id whose
+	// shadow document is absent OR behind the source revision is a divergence.
+	var diverged []string
+	batchIDs := make([]string, 0, verifyReconcileChunk)
+	batchRevs := make(map[string]int64, verifyReconcileChunk)
+
+	flush := func() error {
+		if len(batchIDs) == 0 {
+			return nil
 		}
-		if len(sample) < verifySampleSize {
-			sample = append(sample, id)
+		stored, err := s.mongo.RevisionsByIDs(ctx, shadow, batchIDs)
+		if err != nil {
+			return fmt.Errorf("verify %q: read shadow revisions: %w", view.name, err)
+		}
+		for _, id := range batchIDs {
+			got, present := stored[id]
+			if !present || got < batchRevs[id] {
+				diverged = append(diverged, id)
+			}
+		}
+		batchIDs = batchIDs[:0]
+		batchRevs = make(map[string]int64, verifyReconcileChunk)
+		return nil
+	}
+
+	if err := s.streamSourceRevisions(ctx, view, func(id string, rev int64) error {
+		delete(shadowIDs, id)
+		batchIDs = append(batchIDs, id)
+		batchRevs[id] = rev
+		if len(batchIDs) >= verifyReconcileChunk {
+			return flush()
 		}
 		return nil
 	}); err != nil {
 		return err
 	}
+	if err := flush(); err != nil {
+		return err
+	}
 
-	// Pass 2 — forward completeness (auto-correct the gaps). The source cursor is
-	// closed now, so recompose may borrow pool connections freely. Chunked so a
-	// far-off shadow does not build one oversized batch.
-	for start := 0; start < len(missing); start += verifyReconcileChunk {
+	// Repair. The source cursor is closed now, so recompose may borrow pool
+	// connections freely. Chunked so a far-off shadow does not build one
+	// oversized batch.
+	for start := 0; start < len(diverged); start += verifyReconcileChunk {
 		end := start + verifyReconcileChunk
-		if end > len(missing) {
-			end = len(missing)
+		if end > len(diverged) {
+			end = len(diverged)
 		}
-		if err := s.recomposeInto(ctx, view, shadow, missing[start:end]); err != nil {
-			return fmt.Errorf("verify %q: auto-correct missing ids: %w", view.name, err)
+		if err := s.recomposeInto(ctx, view, shadow, diverged[start:end]); err != nil {
+			return fmt.Errorf("verify %q: repair diverged ids: %w", view.name, err)
 		}
 	}
 
-	// Pass 1 — reverse completeness (tail reconcile): whatever remains in the
-	// shadow set is in the shadow but not in the source, i.e. an orphan. Chunked
-	// delete for the same reason.
+	// Reverse completeness (tail reconcile): whatever remains in the shadow set is
+	// in the shadow but not in the source, i.e. an orphan. Chunked delete for the
+	// same reason. This direction is exact HERE — and only here — because the
+	// shadow snapshot was taken before the source scan; it is deliberately never
+	// run against a live slot, where "absent from source" is a normal transient.
 	if len(shadowIDs) > 0 {
 		orphans := make([]string, 0, len(shadowIDs))
 		for id := range shadowIDs {
@@ -93,35 +116,47 @@ func (s *SyncEngine) verifyShadow(ctx context.Context, view *ViewDefinition, sha
 		}
 	}
 
-	// Pass 3 — value sample.
-	return s.verifyValueSample(ctx, view, shadow, sample)
+	// The dual-apply leak rate IS the health metric of the blue-green mechanism:
+	// a rebuild that had to repair thousands of documents did not succeed quietly,
+	// it revealed a broken dual-apply. It used to be computed and discarded.
+	slog.InfoContext(ctx, "view.rebuild.verify",
+		slog.String("view", view.name),
+		slog.Int("diverged", len(diverged)),
+		slog.Int("orphans", len(shadowIDs)))
+	return nil
 }
 
-// streamSourceIDs scans the view's live root PKs from the relational source and
-// invokes fn once per id — the streaming companion of the old full-set scan, so
-// verify never holds a second complete id set in memory.
-func (s *SyncEngine) streamSourceIDs(ctx context.Context, view *ViewDefinition, fn func(id string) error) error {
+// streamSourceRevisions scans the view's live root (PK, revision) pairs from the
+// relational source and invokes fn once per row — the streaming companion of a
+// full-set scan, so verify never holds a second complete set in memory.
+func (s *SyncEngine) streamSourceRevisions(ctx context.Context, view *ViewDefinition, fn func(id string, rev int64) error) error {
 	idDialect := s.eng.Dialect()
 	schema := view.SchemaDef()
 	if schema == nil {
 		return fmt.Errorf("verify %q: view declares no root .Schema(...)", view.name)
 	}
-	q := "SELECT " + idDialect.QuoteIdent(schema.PKColumn()) + " FROM " + idDialect.QuoteIdent(view.RootTable())
+	revCol := schema.RevisionColumn()
+	if revCol == "" {
+		return fmt.Errorf("verify %q: root schema declares no Revision column — parity is not defined", view.name)
+	}
+	q := "SELECT " + idDialect.QuoteIdent(schema.PKColumn()) + ", " + idDialect.QuoteIdent(revCol) +
+		" FROM " + idDialect.QuoteIdent(view.RootTable())
 	rows, err := s.eng.Querier().Query(ctx, q)
 	if err != nil {
-		return fmt.Errorf("verify %q: scan source ids: %w", view.name, err)
+		return fmt.Errorf("verify %q: scan source revisions: %w", view.name, err)
 	}
 	defer rows.Close()
 	for rows.Next() {
 		var raw string
-		if err := rows.Scan(&raw); err != nil {
+		var rev int64
+		if err := rows.Scan(&raw, &rev); err != nil {
 			return err
 		}
 		id, err := idDialect.DecodeID(raw)
 		if err != nil {
 			return err
 		}
-		if err := fn(id); err != nil {
+		if err := fn(id, rev); err != nil {
 			return err
 		}
 	}
@@ -146,127 +181,4 @@ func (s *SyncEngine) recomposeInto(ctx context.Context, view *ViewDefinition, ta
 		items = append(items, IdentifiedStages{ID: fmt.Sprintf("%v", doc[pkCol]), Stages: consultGuardedStages(view, doc)})
 	}
 	return s.mongo.BulkApplyProjection(ctx, target, items)
-}
-
-// verifyValueSample recomposes a bounded sample of source ids and compares each
-// to its stored shadow document by field shape. A mismatch is re-checked once
-// (a concurrent in-flight write can transiently diverge) before it aborts. The
-// sample is gathered by verifyShadow while it streams the source ids.
-func (s *SyncEngine) verifyValueSample(ctx context.Context, view *ViewDefinition, shadow PhysicalCollection, sample []string) error {
-	for _, id := range sample {
-		ok, err := s.sampleMatches(ctx, view, shadow, id)
-		if err != nil {
-			return err
-		}
-		if ok {
-			continue
-		}
-		// Re-check once to shed a transient in-flight write.
-		ok, err = s.sampleMatches(ctx, view, shadow, id)
-		if err != nil {
-			return err
-		}
-		if !ok {
-			return fmt.Errorf("verify %q: shadow document %q diverges in shape from a fresh compose%s",
-				view.name, id, s.shapeDiffDetail(ctx, view, shadow, id))
-		}
-	}
-	return nil
-}
-
-// sampleMatches recomposes one id and compares its top-level field shape to the
-// stored shadow document. Structural (field-name set) rather than deep-value to
-// survive the BSON round-trip; deep value comparison is an integration concern.
-func (s *SyncEngine) sampleMatches(ctx context.Context, view *ViewDefinition, shadow PhysicalCollection, id string) (bool, error) {
-	fresh, err := s.composer.Compose(ctx, view, id)
-	if err != nil {
-		return false, err
-	}
-	stored, err := s.mongo.FindManyByField(ctx, shadow, "_id", id)
-	if err != nil {
-		return false, err
-	}
-	if fresh == nil {
-		// The source row vanished since the scan — absence is fine, presence isn't.
-		return len(stored) == 0, nil
-	}
-	if len(stored) == 0 {
-		return false, nil // the forward pass should have filled it
-	}
-	return sameFieldShape(fresh, stored[0]), nil
-}
-
-// shapeDiffDetail names the diverging top-level keys for the verify error —
-// " (fresh-only: [...]; stored-only: [...])" — so an equivalence failure is
-// diagnosable from the log alone. Best-effort: any re-read error yields "".
-// It reports the same keys sameFieldShape counts as drift: a non-null key
-// present on one side and absent on the other.
-func (s *SyncEngine) shapeDiffDetail(ctx context.Context, view *ViewDefinition, shadow PhysicalCollection, id string) string {
-	fresh, err := s.composer.Compose(ctx, view, id)
-	if err != nil || fresh == nil {
-		return ""
-	}
-	stored, err := s.mongo.FindManyByField(ctx, shadow, "_id", id)
-	if err != nil || len(stored) == 0 {
-		return ""
-	}
-	freshOnly := nonNullMissingKeys(fresh, stored[0])
-	storedOnly := nonNullMissingKeys(stored[0], fresh)
-	sort.Strings(freshOnly)
-	sort.Strings(storedOnly)
-	return fmt.Sprintf(" (fresh-only: %v; stored-only: %v)", freshOnly, storedOnly)
-}
-
-// sameFieldShape reports whether the stored shadow document is shape-equivalent
-// to a fresh compose. It compares top-level field PRESENCE, ignoring Mongo's
-// _id and every framework-internal "_"-prefixed key (the projection watermarks
-// _revision/_base_revision), and is value-blind for keys present on BOTH sides
-// (deep value comparison is an integration concern — a document written before
-// the watermarks existed must not read as drift either).
-//
-// A key ABSENT on one side is drift ONLY when its value on the other side is
-// NON-null. An absent key and an explicit null read identically (the reader
-// decodes both to a nil pointer), so during a rebuild that adds a nullable
-// column a writer still on the previous binary — whose schema does not declare
-// it — legitimately materializes the shadow document without that key. Because
-// a key present on both sides is never counted, a present-null vs present-value
-// difference (e.g. an embed array a later event fills) does NOT fail the
-// rebuild; only a genuinely dropped non-null field does.
-func sameFieldShape(fresh, stored Document) bool {
-	return !hasNonNullMissingKey(fresh, stored) && !hasNonNullMissingKey(stored, fresh)
-}
-
-// hasNonNullMissingKey reports whether a holds a non-internal, non-null key that
-// is ABSENT from b.
-func hasNonNullMissingKey(a, b Document) bool {
-	for k, v := range a {
-		if len(k) > 0 && k[0] == '_' {
-			continue // _id + framework watermarks (_revision/_base_revision)
-		}
-		if v == nil {
-			continue // an absent counterpart reads as null — equivalent, not drift
-		}
-		if _, ok := b[k]; !ok {
-			return true
-		}
-	}
-	return false
-}
-
-// nonNullMissingKeys returns a's non-internal, non-null keys that are absent
-// from b — exactly the keys sameFieldShape counts as real shape drift.
-func nonNullMissingKeys(a, b Document) []string {
-	var out []string
-	for k, v := range a {
-		if len(k) > 0 && k[0] == '_' {
-			continue
-		}
-		if v == nil {
-			continue
-		}
-		if _, ok := b[k]; !ok {
-			out = append(out, k)
-		}
-	}
-	return out
 }

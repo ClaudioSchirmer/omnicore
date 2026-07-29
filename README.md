@@ -43,6 +43,7 @@ Each row links to its manual page.
 | Capability | In one line | Docs |
 |---|---|---|
 | Mongo projections | Eventually-consistent views; keyset pagination; sparse `?fields=` responses | [query-side](https://claudioschirmer.github.io/omnicore/#query-side) |
+| Projection integrity | At-least-once delivery with a per-message outcome; failed events retry, park in a relational ledger and auto-replay; opt-in revision-parity reconciliation audits every view against its source | [views](https://claudioschirmer.github.io/omnicore/#views) |
 | Auto query handlers | Filter-operator allowlist by tag; CSV / Excel export of any view | [auto-query-handlers](https://claudioschirmer.github.io/omnicore/#auto-query-handlers) |
 | View composition | Join by key with the same two legs (a local view or another service's mirrored data), choosing when you pay: materialized on write (`Embed`) or composed per request (`Link`) | [views](https://claudioschirmer.github.io/omnicore/#views) |
 | Cross-service reads | Another service's data projected locally from its event stream — never a call on the request path | [service-to-service](https://claudioschirmer.github.io/omnicore/#service-to-service) |

@@ -13,9 +13,9 @@ import (
 // single MERGE INTO … USING (SELECT … FROM dual) statement (Oracle has no
 // HOLDLOCK equivalent — the concurrent-MERGE ORA-00001 is classified as a
 // unique violation instead; see tasks/oracle.md D2), source.col for the "set
-// to new value" mode and a verbatim expression (bare column = target row,
-// identical semantics to the other dialects) for the rest, WITHOUT a statement
-// terminator (the driver rejects a trailing semicolon on plain SQL).
+// to new value" mode and the target-alias-qualified column for the bump mode
+// (the table is aliased, so the alias is the only valid qualifier), WITHOUT a
+// statement terminator (the driver rejects a trailing semicolon on plain SQL).
 func TestOracleDialect_BuildUpsert_DoUpdate(t *testing.T) {
 	got := oracleDialect{}.BuildUpsert(
 		"omnicore_integration_failures",
@@ -23,7 +23,7 @@ func TestOracleDialect_BuildUpsert_DoUpdate(t *testing.T) {
 		[]string{"consumer_group", "event_id"},
 		[]core.UpsertSet{
 			{Col: "error", Mode: core.UpsertSetNew},
-			{Col: "attempt", Mode: core.UpsertSetExpr, Expr: "attempt + 1"},
+			{Col: "attempt", Mode: core.UpsertSetBump},
 		},
 	)
 	for _, want := range []string{
@@ -33,7 +33,7 @@ func TestOracleDialect_BuildUpsert_DoUpdate(t *testing.T) {
 		// match an empty-string conflict column and every retry would die on
 		// ORA-00001 instead of incrementing the attempt.
 		`ON ((target."CONSUMER_GROUP" = source."CONSUMER_GROUP" OR (target."CONSUMER_GROUP" IS NULL AND source."CONSUMER_GROUP" IS NULL)) AND (target."EVENT_ID" = source."EVENT_ID" OR (target."EVENT_ID" IS NULL AND source."EVENT_ID" IS NULL)))`,
-		`WHEN MATCHED THEN UPDATE SET "ERROR" = source."ERROR", "ATTEMPT" = attempt + 1`,
+		`WHEN MATCHED THEN UPDATE SET "ERROR" = source."ERROR", "ATTEMPT" = target."ATTEMPT" + 1`,
 		`WHEN NOT MATCHED THEN INSERT ("CONSUMER_GROUP", "EVENT_ID", "ERROR") VALUES (source."CONSUMER_GROUP", source."EVENT_ID", source."ERROR")`,
 	} {
 		if !strings.Contains(got, want) {

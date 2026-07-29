@@ -61,33 +61,6 @@ CREATE TABLE omnicore_mongo_views (
 CREATE INDEX omnicore_mongo_views_applied_at_idx ON omnicore_mongo_views (applied_at);
 CREATE INDEX omnicore_mongo_views_status_idx     ON omnicore_mongo_views (status);
 
--- ── omnicore_upstream_failures ────────────────────────────────────────────────
--- Cross-service recompose failure registry (mirrors live state); retried by
--- UpstreamSubscriber.RetryPendingFailures. Technical identifiers are VARCHAR
--- (single-byte, ASCII by contract), mirroring the MySQL ascii columns.
-CREATE TABLE omnicore_upstream_failures (
-    id                  BINARY(16)    NOT NULL,
-    subscription_topic  VARCHAR(255)  NOT NULL,
-    view_name           VARCHAR(255)  NOT NULL,
-    upstream_id         VARCHAR(255)  NOT NULL,
-    local_id            VARCHAR(255)  NOT NULL CONSTRAINT omnicore_upstream_failures_local_id_default DEFAULT '',
-    stage               VARCHAR(16)   NOT NULL,
-    error               NVARCHAR(MAX) NOT NULL,
-    attempt             INTEGER       NOT NULL CONSTRAINT omnicore_upstream_failures_attempt_default DEFAULT 1,
-    first_seen_at       DATETIME2(6)  NOT NULL CONSTRAINT omnicore_upstream_failures_first_seen_default DEFAULT CURRENT_TIMESTAMP,
-    last_attempt_at     DATETIME2(6)  NOT NULL CONSTRAINT omnicore_upstream_failures_last_attempt_default DEFAULT CURRENT_TIMESTAMP,
-    resolved_at         DATETIME2(6)  NULL,
-    CONSTRAINT omnicore_upstream_failures_pkey PRIMARY KEY CLUSTERED (id),
-    CONSTRAINT omnicore_upstream_failures_stage_valid      CHECK (stage IN ('discover', 'compose', 'upsert')),
-    CONSTRAINT omnicore_upstream_failures_attempt_positive CHECK (attempt > 0),
-    CONSTRAINT omnicore_upstream_failures_natural_key
-        UNIQUE (subscription_topic, view_name, upstream_id, local_id, stage)
-);
-CREATE INDEX omnicore_upstream_failures_pending_idx
-    ON omnicore_upstream_failures (subscription_topic, view_name, upstream_id);
-CREATE INDEX omnicore_upstream_failures_last_attempt_idx
-    ON omnicore_upstream_failures (last_attempt_at);
-
 -- ── audit_events ──────────────────────────────────────────────────────────────
 -- Authoritative audit trail: one row per write, in-TX with the data row. Plain
 -- table (no RANGE partitioning, like MySQL); a B-tree on created_at replaces

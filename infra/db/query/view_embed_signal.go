@@ -47,6 +47,7 @@ func newViewEmbedSignal(
 	composer *Composer,
 	resolver *ViewResolver,
 	views []*ViewDefinition,
+	group string,
 	logger *slog.Logger,
 	metrics *upstreamMetrics,
 ) *viewEmbedSignal {
@@ -74,10 +75,11 @@ func newViewEmbedSignal(
 				mongo:    mongo,
 				composer: composer,
 				resolver: resolver,
-				// The failure-registry coordinate of a view source. The registry
+				// The failure-ledger coordinate of a view source. The ledger
 				// column is the subscription topic; a view has none, so it is
 				// labelled by its own identity — queryable exactly like a topic.
 				topic:          viewFailureLabel(src.Name()),
+				group:          group,
 				collection:     src.Name(),
 				sourceIsView:   true,
 				dependentViews: dependents,
@@ -100,14 +102,15 @@ func newViewEmbedSignal(
 	return sig
 }
 
-// viewFailureLabel is the omnicore_upstream_failures coordinate of a view
+// viewFailureLabel is the unified-ledger source coordinate of a view
 // source — namespaced so it can never collide with a subscription topic.
 func viewFailureLabel(viewName string) string { return "view:" + viewName }
 
 // Before captures the pre-write state of a source document, needed ONLY when
 // some dependent embeds this view 1:N (the old parent of a moved child is
 // unreachable once the FK changed). Nil — and no Mongo read — otherwise, so a
-// 1:1-only or unembedded view pays nothing. Call BEFORE the write.
+// 1:1-only or unembedded view pays nothing. Call BEFORE the write. A read
+// error degrades to nil (the post-write signal is the recorded one).
 func (g *viewEmbedSignal) Before(ctx context.Context, viewName, id string) Document {
 	if g == nil {
 		return nil
@@ -116,7 +119,8 @@ func (g *viewEmbedSignal) Before(ctx context.Context, viewName, id string) Docum
 	if t == nil || !t.hasMany {
 		return nil
 	}
-	return g.read(ctx, viewName, id)
+	doc, _ := g.read(ctx, viewName, id)
+	return doc
 }
 
 // Written fans out after a successful write to a source view's document. It
@@ -142,11 +146,49 @@ func (g *viewEmbedSignal) WrittenWithBefore(ctx context.Context, viewName, id st
 	if t == nil {
 		return
 	}
-	after := g.read(ctx, viewName, id)
+	after, err := g.read(ctx, viewName, id)
+	if err != nil {
+		// The ripple never even started — without a ledger row this loss was
+		// invisible: no error reaches the event (its own write succeeded), no
+		// pair row exists (discovery needs the document), and the parity sweep
+		// does not see segments. One kind=ripple/stage=signal row per dependent
+		// view makes the retry driver re-run this exact fan-out later.
+		for _, d := range t.rippler.dependentViews {
+			t.rippler.recordFailure(ctx, d.Name(), id, "", ProjectionFailureStageSignal, err)
+		}
+		return
+	}
 	if after == nil {
 		return
 	}
 	t.rippler.ripple(ctx, id, before, after, watermarkOf(after[docRevisionField]))
+}
+
+// replay re-runs the fan-out for one source document from CURRENT state — the
+// parked-retry loop's entry point for view-sourced ripple rows. An absent
+// document replays as a removal (clear 1:1 segments, drop 1:N elements): the
+// source's own delete owns the disappearance, and the pending row exists
+// precisely because some segment never heard about it.
+func (g *viewEmbedSignal) replay(ctx context.Context, viewName, id string) {
+	if g == nil {
+		return
+	}
+	t := g.targets[viewName]
+	if t == nil {
+		return
+	}
+	after, err := g.read(ctx, viewName, id)
+	if err != nil {
+		for _, d := range t.rippler.dependentViews {
+			t.rippler.recordFailure(ctx, d.Name(), id, "", ProjectionFailureStageSignal, err)
+		}
+		return
+	}
+	var rev int64
+	if after != nil {
+		rev = watermarkOf(after[docRevisionField])
+	}
+	t.rippler.ripple(ctx, id, nil, after, rev)
 }
 
 // Deleted fans out a source document's removal: the embedders clear their 1:1
@@ -174,13 +216,18 @@ func (g *viewEmbedSignal) Tracks(viewName string) bool {
 	return g.targets[viewName] != nil
 }
 
-// read returns the source view's current document by id (nil when absent or on
-// a read error — a failed read degrades to "no signal", never to a wrong one).
-func (g *viewEmbedSignal) read(ctx context.Context, viewName, id string) Document {
+// read returns the source view's current document by id. Absence (nil, nil) is
+// a legitimate state — the source's own delete owns it; an ERROR is not: the
+// callers record it as a stage=signal ledger row, because a silently skipped
+// signal is a stale segment with no trail.
+func (g *viewEmbedSignal) read(ctx context.Context, viewName, id string) (Document, error) {
 	docs, err := g.mongo.FindManyByField(ctx, g.resolver.Active(viewName), "_id", id)
-	if err != nil || len(docs) == 0 {
-		return nil
+	if err != nil {
+		return nil, err
 	}
-	return docs[0]
+	if len(docs) == 0 {
+		return nil, nil
+	}
+	return docs[0], nil
 }
 

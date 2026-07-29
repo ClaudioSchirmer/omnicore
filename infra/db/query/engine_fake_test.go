@@ -216,9 +216,12 @@ func (d fakeDialect) BuildUpsert(table string, cols, conflictCols []string, sets
 		}
 		b.WriteString(d.QuoteIdent(s.Col))
 		b.WriteString(" = ")
-		if s.Mode == core.UpsertSetNew {
+		switch s.Mode {
+		case core.UpsertSetNew:
 			b.WriteString("EXCLUDED." + d.QuoteIdent(s.Col))
-		} else {
+		case core.UpsertSetBump:
+			b.WriteString(d.QuoteIdent(table) + "." + d.QuoteIdent(s.Col) + " + 1")
+		default:
 			b.WriteString(s.Expr)
 		}
 	}

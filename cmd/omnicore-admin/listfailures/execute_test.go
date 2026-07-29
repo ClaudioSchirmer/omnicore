@@ -29,7 +29,7 @@ type lfRows struct {
 }
 
 type fakeFailureRow struct {
-	topic, view, upstreamID string
+	kind, topic, view, upstreamID string
 }
 
 func (r *lfRows) Next() bool {
@@ -42,18 +42,31 @@ func (r *lfRows) Next() bool {
 
 func (r *lfRows) Scan(dest ...any) error {
 	row := r.rows[r.pos-1]
-	// Column order mirrors scanPendingUpstreamFailures: id, topic, view,
-	// upstream_id, local_id, stage, error, attempt, first_seen, last_attempt.
-	if p, ok := dest[0].(*int64); ok {
-		*p = int64(r.pos)
-	}
-	strDest := map[int]string{1: row.topic, 2: row.view, 3: row.upstreamID, 4: "l1", 5: "discover", 6: "boom"}
-	for i, v := range strDest {
+	// Column order mirrors selectProjectionFailures: id, kind, consumer_group,
+	// topic, aggregate_type, event_type*, aggregate_id, stage*, local_id*,
+	// traceparent*, payload*, error, attempt, first_seen, last_attempt
+	// (* = nullable, scanned into **string).
+	set := func(i int, v string) {
 		if p, ok := dest[i].(*string); ok {
 			*p = v
 		}
 	}
-	if p, ok := dest[7].(*int); ok {
+	setPtr := func(i int, v string) {
+		if p, ok := dest[i].(**string); ok {
+			s := v
+			*p = &s
+		}
+	}
+	set(0, fmt.Sprintf("row-%d", r.pos))
+	set(1, row.kind)
+	set(2, "svc-sync")
+	set(3, row.topic)
+	set(4, row.view)
+	set(6, row.upstreamID)
+	setPtr(7, "discover")
+	setPtr(8, "l1")
+	set(11, "boom")
+	if p, ok := dest[12].(*int); ok {
 		*p = 2
 	}
 	return nil
@@ -131,42 +144,43 @@ func (lfEngine) Close() {}
 
 func failureRows() []fakeFailureRow {
 	return []fakeFailureRow{
-		{topic: "t1", view: "users", upstreamID: "u1"},
-		{topic: "t1", view: "orders", upstreamID: "u2"},
-		{topic: "t1", view: "users", upstreamID: "u3"},
+		{kind: "ripple", topic: "t1", view: "users", upstreamID: "u1"},
+		{kind: "event", topic: "t1", view: "orders", upstreamID: "u2"},
+		{kind: "ripple", topic: "t2", view: "users", upstreamID: "u3"},
 	}
 }
 
 func TestExecute_TextListing(t *testing.T) {
 	q := &lfQuerier{rows: failureRows()}
 	var out bytes.Buffer
-	if err := execute(context.Background(), lfEngine{q: q}, executeOptions{Format: formatText, Out: &out}); err != nil {
+	if err := execute(context.Background(), lfEngine{q: q}, executeOptions{Group: "svc-sync", Format: formatText, Out: &out}); err != nil {
 		t.Fatalf("execute: %v", err)
+	}
+	if !strings.Contains(q.lastSQL, "consumer_group =") {
+		t.Errorf("the group scope must reach the SQL, got %q", q.lastSQL)
 	}
 	if !strings.Contains(out.String(), "u1") || !strings.Contains(out.String(), "u3") {
 		t.Errorf("text output missing rows:\n%s", out.String())
 	}
 }
 
-func TestExecute_TopicPathAndJSON(t *testing.T) {
+func TestExecute_KindAndTopicFiltersAndJSON(t *testing.T) {
 	q := &lfQuerier{rows: failureRows()}
 	var out bytes.Buffer
-	err := execute(context.Background(), lfEngine{q: q}, executeOptions{Topic: "t1", Format: formatJSON, Out: &out})
+	err := execute(context.Background(), lfEngine{q: q}, executeOptions{Group: "svc-sync", Kind: "event", Topic: "t1", Format: formatJSON, Out: &out})
 	if err != nil {
 		t.Fatalf("execute: %v", err)
 	}
-	if !strings.Contains(q.lastSQL, "subscription_topic =") {
-		t.Errorf("topic filter must reach the SQL, got %q", q.lastSQL)
-	}
-	if !strings.Contains(out.String(), `"u2"`) {
-		t.Errorf("json output missing rows:\n%s", out.String())
+	s := out.String()
+	if !strings.Contains(s, `"u2"`) || strings.Contains(s, `"u1"`) || strings.Contains(s, `"u3"`) {
+		t.Errorf("kind+topic filters must keep exactly u2:\n%s", s)
 	}
 }
 
 func TestExecute_ViewFilterAndLimit(t *testing.T) {
 	q := &lfQuerier{rows: failureRows()}
 	var out bytes.Buffer
-	err := execute(context.Background(), lfEngine{q: q}, executeOptions{View: "users", Limit: 1, Format: formatText, Out: &out})
+	err := execute(context.Background(), lfEngine{q: q}, executeOptions{Group: "svc-sync", View: "users", Limit: 1, Format: formatText, Out: &out})
 	if err != nil {
 		t.Fatalf("execute: %v", err)
 	}

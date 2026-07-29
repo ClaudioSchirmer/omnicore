@@ -24,12 +24,12 @@ func (fakeSubscriber) Subscribe(context.Context, transport.SubscribeConfig) (tra
 
 type fakeSubscription struct{}
 
-func (fakeSubscription) Read(ctx context.Context) (transport.Message, error) {
+func (fakeSubscription) Read(ctx context.Context) (transport.Message, transport.Completion, error) {
 	select {
 	case <-ctx.Done():
-		return transport.Message{}, ctx.Err()
+		return transport.Message{}, nil, ctx.Err()
 	case <-time.After(20 * time.Millisecond):
-		return transport.Message{}, errors.New("fake transport: broker unreachable")
+		return transport.Message{}, nil, errors.New("fake transport: broker unreachable")
 	}
 }
 

@@ -65,14 +65,6 @@ func TestChildArrayExpr_DeleteAndArchive(t *testing.T) {
 	}
 }
 
-func TestSameFieldShape_IgnoresFrameworkKeys(t *testing.T) {
-	fresh := Document{"name": "Ana", docRevisionField: int64(3)}
-	stored := Document{"_id": "r1", "name": "Ana"}
-	if !sameFieldShape(fresh, stored) {
-		t.Error("watermark-only differences must never read as drift")
-	}
-}
-
 // A sibling group that arrives ALL-NULL is the removed-row marker: the
 // projector must DROP the document keys ($$REMOVE) — shape parity with the
 // composer, which omits a missing sibling row — while a partially-null group

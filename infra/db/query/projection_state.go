@@ -154,7 +154,9 @@ func (s *SyncEngine) checkTombstone(ctx context.Context, viewName, id string, my
 		return err
 	}
 	if shadow, on := s.resolver.ShadowActive(viewName); on {
-		s.dualApply(ctx, viewName, func() error { return s.mongo.DeleteGuarded(ctx, shadow, id, rev, born) })
+		if err := s.dualApply(ctx, viewName, func() error { return s.mongo.DeleteGuarded(ctx, shadow, id, rev, born) }); err != nil {
+			return err
+		}
 	}
 	s.viewSignal.Deleted(ctx, viewName, id, before, rev)
 	return nil

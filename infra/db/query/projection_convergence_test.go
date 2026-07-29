@@ -669,10 +669,16 @@ func TestProcess_TombstoneCheckReadError_FailsEvent(t *testing.T) {
 	}
 }
 
-// A registry write failure on the base-revision stamp fails the event BEFORE
-// the fan-out — the handshake's premise (stamp precedes probe) must never be
-// silently skipped.
-func TestProcess_BaseRevisionStampError_FailsEvent(t *testing.T) {
+// A registry write failure on the base-revision stamp fails the event AND
+// blocks the fan-out probe — the handshake's premise (stamp precedes probe)
+// must never be silently skipped.
+//
+// It does NOT block the event's own document. That is the deliberate change:
+// the two are independent obligations over different documents, and the writer's
+// own projection is the one thing only this event can supply. Blocking it bought
+// nothing once the event is genuinely retried — the retry re-runs the stamp, the
+// probe, and (idempotently) the projection.
+func TestProcess_BaseRevisionStampError_BlocksProbeNotOwnWrite(t *testing.T) {
 	coll := &fakeColl{docs: []any{map[string]any{"_id": "a1"}}}
 	store := newFakeMongo(coll)
 	store.state = &fakeColl{updateErr: errFake}
@@ -685,8 +691,15 @@ func TestProcess_BaseRevisionStampError_FailsEvent(t *testing.T) {
 	if err := s.process(context.Background(), event); err == nil {
 		t.Fatal("a base-revision stamp failure must fail the event")
 	}
-	if len(coll.updates) != 0 {
-		t.Errorf("no projection write may run after a failed stamp, got %v", coll.updates)
+	// THE PREMISE: the probe reads target documents on the assumption that the
+	// stamp already landed. A failed stamp dissolves that, so the probe must not
+	// run — a late-born document it missed would have no stamp to repair from.
+	if coll.idFinds != 0 {
+		t.Errorf("the fan-out probe must not run after a failed stamp, FindIDsByField calls=%d", coll.idFinds)
+	}
+	// THE ISOLATION: the writer's own document is still projected.
+	if len(coll.updates) != 1 {
+		t.Errorf("the event's own document must still be projected, updates=%v", coll.updates)
 	}
 }
 

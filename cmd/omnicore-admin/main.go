@@ -47,7 +47,7 @@ func run() error {
 	switch sub {
 	case "replay-all-as-events":
 		return replay.Run(ctx, args)
-	case "upstream-list-failures":
+	case "list-failures":
 		return listfailures.Run(ctx, args)
 	case "-h", "--help", "help":
 		usage(os.Stdout)
@@ -67,8 +67,8 @@ func usage(out *os.File) {
 	fmt.Fprintln(out, "Subcommands:")
 	fmt.Fprintln(out, "  replay-all-as-events       Replay every active aggregate as a synthetic INSERTED event")
 	fmt.Fprintln(out, "                             (use to bootstrap a brand-new consumer against an existing producer)")
-	fmt.Fprintln(out, "  upstream-list-failures     List pending upstream recompose failures from omnicore_upstream_failures")
-	fmt.Fprintln(out, "                             (read-only — retry lives on UpstreamSubscriber.RetryPendingFailures)")
+	fmt.Fprintln(out, "  list-failures              List pending rows of the unified projection failure ledger")
+	fmt.Fprintln(out, "                             (read-only — replay is automatic via the mongo.parkedRetry loop)")
 	fmt.Fprintln(out, "  help                       Show this message")
 	fmt.Fprintln(out)
 	fmt.Fprintln(out, "Run 'omnicore-admin <subcommand> -h' for subcommand-specific help.")

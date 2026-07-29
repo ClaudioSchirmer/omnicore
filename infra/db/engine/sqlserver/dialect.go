@@ -164,10 +164,17 @@ func (d sqlserverDialect) BuildUpsert(table string, cols, conflictCols []string,
 			}
 			b.WriteString(d.QuoteIdent(s.Col))
 			b.WriteString(" = ")
-			if s.Mode == core.UpsertSetNew {
+			switch s.Mode {
+			case core.UpsertSetNew:
 				b.WriteString("source.")
 				b.WriteString(d.QuoteIdent(s.Col))
-			} else {
+			case core.UpsertSetBump:
+				// The existing row is the MERGE target, and the table is
+				// aliased — the alias is the only valid qualifier here.
+				b.WriteString("target.")
+				b.WriteString(d.QuoteIdent(s.Col))
+				b.WriteString(" + 1")
+			default:
 				b.WriteString(s.Expr)
 			}
 		}

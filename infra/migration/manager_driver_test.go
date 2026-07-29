@@ -15,6 +15,15 @@ import (
 	"github.com/golang-migrate/migrate/v4/database"
 )
 
+// frameworkMigrationCount is how many embedded framework migrations exist. It is
+// declared here, in the test, ON PURPOSE: adding one to the control plane must
+// be a deliberate edit of this expectation, never a silently-absorbed change.
+//
+//	0001_framework           — the control plane tables
+//	0002_view_slots          — blue-green rebuild pointers
+//	0003_projection_failures — the projection parking ledger
+const frameworkMigrationCount = 3
+
 // fakeDriver is an in-memory golang-migrate database.Driver. It tracks the
 // version pointer + dirty flag and records every migration body passed to
 // Run, so tests can assert exactly which SQL golang-migrate would have
@@ -352,14 +361,18 @@ func TestUp_AppliesFrameworkThenService(t *testing.T) {
 		t.Fatalf("Up: %v", err)
 	}
 
+	// The framework sequence grows as the control plane grows; assert the WHOLE
+	// ordered sequence rather than a count, so adding one is a deliberate edit
+	// here and never a silent reordering.
 	fwV, fwDirty := fw.state()
-	if fwV != 2 || fwDirty {
-		t.Errorf("framework plane must land at (2, clean), got (%d, %v)", fwV, fwDirty)
+	if fwV != frameworkMigrationCount || fwDirty {
+		t.Errorf("framework plane must land at (%d, clean), got (%d, %v)", frameworkMigrationCount, fwV, fwDirty)
 	}
-	if runs := fw.runBodies(); len(runs) != 2 ||
+	if runs := fw.runBodies(); len(runs) != frameworkMigrationCount ||
 		!strings.Contains(runs[0], "OmniCore framework control plane") ||
-		!strings.Contains(runs[1], "blue-green view rebuild slots") {
-		t.Errorf("framework must run the embedded 0001 then 0002 migrations, got %d run(s)", len(runs))
+		!strings.Contains(runs[1], "blue-green view rebuild slots") ||
+		!strings.Contains(runs[2], "UNIFIED failure ledger") {
+		t.Errorf("framework must run the embedded 0001, 0002 then 0003 migrations in order, got %d run(s)", len(runs))
 	}
 
 	svcV, svcDirty := svc.state()
@@ -389,8 +402,8 @@ func TestUp_NoChangeOnRerun(t *testing.T) {
 	if err := m.Up(context.Background()); err != nil {
 		t.Fatalf("second Up must absorb ErrNoChange, got: %v", err)
 	}
-	if got := len(fw.runBodies()); got != 2 {
-		t.Errorf("framework migrations must run twice (0001+0002), ran %d times", got)
+	if got := len(fw.runBodies()); got != frameworkMigrationCount {
+		t.Errorf("framework migrations must run once per embedded migration (%d), ran %d times", frameworkMigrationCount, got)
 	}
 	if got := len(svc.runBodies()); got != 1 {
 		t.Errorf("service migration must run once, ran %d times", got)
@@ -446,7 +459,7 @@ func TestUp_MissingServiceDirSkipsServiceStage(t *testing.T) {
 	if err := m.Up(context.Background()); err != nil {
 		t.Fatalf("missing service dir must be treated as an empty sequence, got: %v", err)
 	}
-	if v, _ := fw.state(); v != 2 {
+	if v, _ := fw.state(); v != frameworkMigrationCount {
 		t.Errorf("framework plane must still be applied, got version %d", v)
 	}
 }
@@ -467,11 +480,11 @@ func TestUp_EmptyServiceDirSkipsServiceStage(t *testing.T) {
 	if err := m.Up(context.Background()); err != nil {
 		t.Fatalf("empty service dir must be treated as an empty sequence, got: %v", err)
 	}
-	if v, _ := fw.state(); v != 2 {
+	if v, _ := fw.state(); v != frameworkMigrationCount {
 		t.Errorf("framework plane must still be applied, got version %d", v)
 	}
-	if runs := fw.runBodies(); len(runs) != 2 {
-		t.Errorf("framework must run exactly its embedded migrations (0001+0002), got %d run(s)", len(runs))
+	if runs := fw.runBodies(); len(runs) != frameworkMigrationCount {
+		t.Errorf("framework must run exactly its embedded migrations, got %d run(s)", len(runs))
 	}
 }
 

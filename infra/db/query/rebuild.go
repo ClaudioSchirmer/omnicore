@@ -180,10 +180,11 @@ func (s *SyncEngine) ExecuteRebuild(ctx context.Context, plan DriftPlan, cfg Reb
 		slog.String("to_hash", plan.CurrentCombinedHash))
 
 	// Step 5 — the shadow ALWAYS starts empty: drop whatever occupies the slot
-	// first. A retired slot whose one-lease reclaim never ran (the process shut
-	// down before the lease elapsed) still holds the PREVIOUS generation's
-	// documents — G5a only covers registry-FLAGGED shadows, so an unreclaimed
-	// retiree is invisible to it. Reusing it without the drop resurrects
+	// first. This drop IS the reclaim of the previous generation's retired slot —
+	// the flip deliberately leaves it in place (see Step 11), so by construction
+	// the slot being provisioned here still holds the PREVIOUS generation's
+	// documents. G5a only covers registry-FLAGGED shadows, so a retiree is
+	// invisible to it. Reusing it without the drop resurrects
 	// leftover documents: verify's reverse pass deletes the ones its snapshot
 	// saw, but its deliberate late-write protection (a doc arriving after the
 	// snapshot is presumed a dual-applied concurrent write) cannot tell a
@@ -260,22 +261,34 @@ func (s *SyncEngine) ExecuteRebuild(ctx context.Context, plan DriftPlan, cfg Reb
 		return err
 	}
 
-	// Step 11 — settle: wait one lease so dual-apply is off on every pod, then
-	// reclaim the retired slot. A failed drop only leaks a collection the next
-	// rebuild drop-and-recreates, so reclaim is best-effort.
+	// Step 11 — settle: wait one lease so every pod has observed the flip before
+	// this driver declares the rebuild finished. The next view in embed-dependency
+	// order composes FROM this one, so its writers should already resolve the new
+	// pointer when that rebuild starts.
+	//
+	// The retired slot is deliberately NOT dropped here. A drop at the flip races
+	// operations that resolved the pointer while it was still valid and are still
+	// running: the lease bounds POINTER STALENESS, not in-flight operation
+	// duration, and multi-pod makes a local drain useless anyway — the pod that
+	// drops is not the pod holding the operation. Mongo kills such an operation
+	// with QueryPlanKilled, which is the correct rejection of a stale reference;
+	// the damage came from that rejection failing an event that was then discarded.
+	//
+	// Nothing leaks. Step 5 of the NEXT rebuild of this view drops whatever
+	// occupies the shadow slot before provisioning it, and the shadow slot IS the
+	// slot retired here (inactiveSlot alternates __0 <-> __1). The cost is one
+	// collection of disk per view between rebuilds, and the retiree doubles as a
+	// forensic artifact of the previous generation. PhysicalCollectionNames already
+	// whitelists all three physical names, so a retained retiree never trips the
+	// foreign-collection guard.
 	if err := s.awaitFenceLease(ctx); err != nil {
 		return err
-	}
-	if err := s.mongo.DropCollection(ctx, oldActive); err != nil {
-		slog.WarnContext(ctx, "view.rebuild.reclaim_failed",
-			slog.String("view", collection),
-			slog.String("retired", oldActive.String()),
-			slog.String("err", err.Error()))
 	}
 
 	slog.InfoContext(ctx, "view.rebuild.end",
 		slog.String("view", collection),
 		slog.String("active", shadow.String()),
+		slog.String("retired", oldActive.String()),
 		slog.Duration("duration", time.Since(now)))
 
 	return nil

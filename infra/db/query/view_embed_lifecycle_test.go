@@ -44,7 +44,7 @@ func lifeFixture(t *testing.T) (*viewEmbedSignal, map[string]*fakeColl) {
 	colls := map[string]*fakeColl{"products": {}, "sales": {}}
 	mongo := upstreamFakeMongo(colls)
 	sig := newViewEmbedSignal(nil, mongo, NewComposerWithMongo(nil, mongo, identityResolver),
-		identityResolver, []*ViewDefinition{products, sales}, nil, newUpstreamMetrics())
+		identityResolver, []*ViewDefinition{products, sales}, "g", nil, newUpstreamMetrics())
 	if sig == nil {
 		t.Fatal("fixture must produce a fan-out")
 	}
@@ -210,7 +210,7 @@ func TestLifecycle_SourceMovedBetweenParentsTouchesBothSides(t *testing.T) {
 	}
 	mongo := upstreamFakeMongo(colls)
 	sig := newViewEmbedSignal(nil, mongo, NewComposerWithMongo(nil, mongo, identityResolver),
-		identityResolver, []*ViewDefinition{lifeProductsView(), dashboard}, nil, newUpstreamMetrics())
+		identityResolver, []*ViewDefinition{lifeProductsView(), dashboard}, "g", nil, newUpstreamMetrics())
 
 	// before: the source belonged to c1; after: it belongs to c2.
 	sig.WrittenWithBefore(context.Background(), "products", "p1",

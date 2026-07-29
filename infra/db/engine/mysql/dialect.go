@@ -150,10 +150,19 @@ func (d mysqlDialect) BuildUpsert(table string, cols, conflictCols []string, set
 		}
 		b.WriteString(d.QuoteIdent(s.Col))
 		b.WriteString(" = ")
-		if s.Mode == core.UpsertSetNew {
+		switch s.Mode {
+		case core.UpsertSetNew:
 			b.WriteString("new.")
 			b.WriteString(d.QuoteIdent(s.Col))
-		} else {
+		case core.UpsertSetBump:
+			// The existing row, table-qualified: with the `AS new` row alias
+			// present a bare column on the right-hand side is ambiguous
+			// (MySQL 8.4 errno 1052) — same trap the no-op branch above names.
+			b.WriteString(d.QuoteIdent(table))
+			b.WriteString(".")
+			b.WriteString(d.QuoteIdent(s.Col))
+			b.WriteString(" + 1")
+		default:
 			b.WriteString(s.Expr)
 		}
 	}

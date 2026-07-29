@@ -24,8 +24,13 @@ func rebuildView() *ViewDefinition {
 	// Declare the managed timestamp columns: the incremental rebuild (since != "")
 	// scans/orders on the schema's UpdatedAt column, so a root that supports it must
 	// declare it (a root table without updated_at can only be rebuilt in full).
+	//
+	// Revision is declared because production REQUIRES it — the repository panics
+	// at boot on a schema without one — and verify's parity pass is defined in
+	// terms of it. A fixture without Revision was modelling a view that cannot
+	// exist.
 	return View("orders").Version(1).Schema(
-		composerRootSchema().CreatedAt("created_at").UpdatedAt("updated_at"))
+		composerRootSchema().CreatedAt("created_at").UpdatedAt("updated_at").Revision("revision"))
 }
 
 // emptyRowsEngine is a fakeEngine whose SELECT-id Query yields zero rows (so the

@@ -30,7 +30,7 @@ func TestUsage(t *testing.T) {
 		"omnicore-admin",
 		"Usage:",
 		"replay-all-as-events",
-		"upstream-list-failures",
+		"list-failures",
 		"help",
 	} {
 		if !strings.Contains(out, want) {
@@ -61,7 +61,7 @@ func TestRun_Dispatch(t *testing.T) {
 		{"dash-dash-help", []string{"omnicore-admin", "--help"}, false, ""},
 		// Subcommand dispatch reaching the sub-Run's -h short-circuit (no DB).
 		{"replay-help", []string{"omnicore-admin", "replay-all-as-events", "-h"}, false, ""},
-		{"listfailures-help", []string{"omnicore-admin", "upstream-list-failures", "-h"}, false, ""},
+		{"listfailures-help", []string{"omnicore-admin", "list-failures", "-h"}, false, ""},
 		// Dispatch into replay with a failing arg-validation branch (no DB).
 		{"replay-missing-aggregate", []string{"omnicore-admin", "replay-all-as-events"}, true, "--aggregate is required"},
 	}

@@ -117,7 +117,7 @@ func (m *upstreamMetrics) Snapshot() map[string]uint64 {
 // recoverable degradation into a poison pill.
 type UpstreamSubscriber struct {
 	// eng is the relational engine the side-channel failure registry
-	// (omnicore_upstream_failures) is read/written through, via the neutral
+	// (omnicore_projection_failures, kind=ripple) is read/written through, via the neutral
 	// Querier + core.Dialect; the recompose ripple itself is Mongo + the composer.
 	eng      core.RelationalEngine
 	mongo    ReadModelStore
@@ -168,6 +168,11 @@ type UpstreamSubscriber struct {
 	// (query.JoinView), so Y's refreshed document must signal onward. Installed
 	// by WithViewChaining; nil (the default) makes the chain a no-op.
 	viewSignal *viewEmbedSignal
+	// syncGroup is the SYNC consumer group that owns this subscriber's ledger
+	// rows (installed by WithViewChaining). Falls back to the subscription's
+	// own group in the degenerate no-views boot, where no parked-retry loop
+	// exists to replay them but the rows stay queryable.
+	syncGroup string
 }
 
 // WithViewChaining connects this subscriber's recompose ripple to the view→view
@@ -182,6 +187,16 @@ type UpstreamSubscriber struct {
 func (s *UpstreamSubscriber) WithViewChaining(engine *SyncEngine) *UpstreamSubscriber {
 	if engine != nil {
 		s.viewSignal = engine.viewSignal
+		// The unified ledger: this subscriber's ripple failures are recorded
+		// under the SYNC group (the parked-retry loop replays rows scoped to
+		// that group), and the engine learns how to replay this topic's rows —
+		// re-run the ripple for the source id against CURRENT state, exactly
+		// what a live event would do.
+		s.syncGroup = engine.groupID
+		engine.registerRippleReplayer(s.cfg.Topic, func(ctx context.Context, sourceID string) {
+			current := s.readLocalDoc(ctx, sourceID)
+			s.ripple(ctx, sourceID, nil, current)
+		})
 	}
 	return s
 }
@@ -262,57 +277,14 @@ func NewUpstreamSubscriber(
 // concurrent reads are safe through Snapshot.
 func (s *UpstreamSubscriber) Metrics() *upstreamMetrics { return s.metrics }
 
-// RetryPendingFailures re-runs the recompose ripple for every distinct
-// upstream_id that currently has at least one pending row in
-// omnicore_upstream_failures for this subscriber's topic. Returns the
-// number of upstream_ids whose ripple was attempted.
-//
-// Use this when an operator wants to drain accumulated stale docs
-// without waiting for the next live upstream event. Typical wiring is
-// either an in-process cron (time.Ticker invoking this every N minutes)
-// or an authenticated HTTP endpoint that the operator hits manually —
-// the consumer service decides the ergonomics; the framework exposes
-// only the primitive.
-//
-// Semantics:
-//   - Idempotent. A successful ripple for (view, upstream_id) calls
-//     ResolveUpstreamFailures so the pending rows under that coordinate
-//     get marked resolved automatically. A second call against the same
-//     drained slate is a no-op.
-//   - Per-upstream_id deduplication. Multiple pending rows for the same
-//     upstream_id (different views, different stages, different local_ids)
-//     collapse into one ripple call — ripple already iterates every
-//     dependent view and every local doc.
-//   - Best-effort writes. RecordFailure / ResolveFailures inside ripple
-//     stay slog.Warn-and-discard on a database error, matching the failure
-//     isolation contract.
-//   - Returns the read error from the relational database only — that is the single failure
-//     mode the caller cannot ignore (no list = nothing to retry).
-func (s *UpstreamSubscriber) RetryPendingFailures(ctx context.Context) (int, error) {
-	if s.eng == nil {
-		return 0, fmt.Errorf("retry pending upstream failures: subscriber has no relational engine handle")
-	}
-	pendings, err := ListPendingUpstreamFailuresByTopic(ctx, s.eng.Querier(), s.eng.Dialect(), s.cfg.Topic)
-	if err != nil {
-		return 0, err
-	}
-	seen := make(map[string]bool, len(pendings))
-	for _, p := range pendings {
-		if seen[p.UpstreamID] {
-			continue
-		}
-		seen[p.UpstreamID] = true
-		// On retry there is no before/after event pair; read the current local doc
-		// so a 1:N EmbedMany can still resolve its parent. A one-to-one embed
-		// ignores it (it rediscovers by FindIDsByField on the upstream id).
-		current := s.readLocalDoc(ctx, p.UpstreamID)
-		s.ripple(ctx, p.UpstreamID, nil, current)
-		if ctx.Err() != nil {
-			return len(seen), ctx.Err()
-		}
-	}
-	return len(seen), nil
-}
+// Pending ripple failures for this subscriber's topic are replayed by the
+// SyncEngine's parked-retry loop (the mongo.parkedRetry knob), through the
+// replayer registered in WithViewChaining — the same driver that replays
+// parked events, so the ledger has ONE clock. On retry there is no
+// before/after event pair; the replayer reads the current local doc so a 1:N
+// EmbedMany can still resolve its parent (a 1:1 embed rediscovers by
+// FindIDsByField on the source id), which is exactly what a live upstream
+// event would do.
 
 // parseOffsetSeek extracts the numeric N from a "offset:N" StartFrom
 // value. Symbolic values leave offsetSeekTarget nil. Validation is
@@ -398,17 +370,23 @@ func (s *UpstreamSubscriber) run(ctx context.Context) {
 	}
 	defer sub.Close()
 
-	queues := make([]chan transport.Message, s.cfg.Workers)
+	queues := make([]chan queuedUpstream, s.cfg.Workers)
 	var wg sync.WaitGroup
 	for i := 0; i < s.cfg.Workers; i++ {
-		queues[i] = make(chan transport.Message, upstreamSubscriberWorkerDepth)
+		queues[i] = make(chan queuedUpstream, upstreamSubscriberWorkerDepth)
 		wg.Add(1)
-		go func(q <-chan transport.Message, idx int) {
+		go func(q <-chan queuedUpstream, idx int) {
 			defer wg.Done()
-			for msg := range q {
+			for qm := range q {
 				s.inflight.Add(1)
-				s.processMessage(ctx, msg, idx)
+				s.processMessage(ctx, qm.msg, idx)
 				s.inflight.Done()
+				// processMessage is total: every failure it can suffer is already
+				// recorded in the unified ledger and replayed by the parked-retry loop,
+				// which is this subscriber's parking mechanism. So the message is
+				// genuinely finished from the transport's point of view — the work
+				// either landed or is durably queued for repair.
+				_ = qm.completion.Done(ctx)
 			}
 		}(queues[i], i)
 	}
@@ -432,7 +410,7 @@ func (s *UpstreamSubscriber) run(ctx context.Context) {
 			return
 		default:
 		}
-		msg, err := sub.Read(ctx)
+		msg, completion, err := sub.Read(ctx)
 		if err != nil {
 			if ctx.Err() != nil {
 				return
@@ -447,10 +425,14 @@ func (s *UpstreamSubscriber) run(ctx context.Context) {
 			continue
 		}
 		select {
-		case queues[bucketOf(decodeAggregateID(msg.Key), s.cfg.Workers)] <- msg:
+		case queues[bucketOf(decodeAggregateID(msg.Key), s.cfg.Workers)] <- queuedUpstream{msg: msg, completion: completion}:
 		case <-ctx.Done():
+			_ = completion.Failed(ctx)
 			return
 		case <-s.stop:
+			// Shutting down before this message was dispatched: hand it back so
+			// the next boot receives it, rather than confirming work never done.
+			_ = completion.Failed(ctx)
 			return
 		}
 	}
@@ -465,7 +447,7 @@ func (s *UpstreamSubscriber) run(ctx context.Context) {
 //
 // Two gaps this closes, both coordinated by DEPENDENCY (never timing):
 //   - a SIGTERM mid-ripple would drop the in-flight recompose on the floor,
-//     leaving stale Mongo docs without an `omnicore_upstream_failures` row to
+//     leaving stale Mongo docs without a ledger row to
 //     surface them — waiting the worker drain guarantees every in-flight
 //     ripple either completes (offset advances; failure registry updated;
 //     Mongo matches PG) or surfaces as a slog.Warn drain timeout;
@@ -506,6 +488,15 @@ func (s *UpstreamSubscriber) Shutdown(drainCtx context.Context) error {
 	case <-drainCtx.Done():
 		return drainCtx.Err()
 	}
+}
+
+// queuedUpstream is one dispatched upstream message plus the handle that
+// reports its outcome to the transport. The completion travels with the message
+// so the confirmation is issued by the worker that finished the work, never by
+// the reader that merely saw it.
+type queuedUpstream struct {
+	msg        transport.Message
+	completion transport.Completion
 }
 
 // processMessage handles one Kafka message end to end: decode, dispatch
@@ -657,12 +648,17 @@ func (s *UpstreamSubscriber) dispatchDelete(ctx context.Context, id string) {
 // subscribers stay valid, and the cost is one small struct next to the Mongo
 // round trips a ripple performs anyway.
 func (s *UpstreamSubscriber) rippleEngine() *embedRippler {
+	group := s.syncGroup
+	if group == "" {
+		group = s.cfg.ConsumerGroup
+	}
 	r := &embedRippler{
 		eng:            s.eng,
 		mongo:          s.mongo,
 		composer:       s.composer,
 		resolver:       s.resolver,
 		topic:          s.cfg.Topic,
+		group:          group,
 		collection:     s.cfg.Collection,
 		dependentViews: s.dependentViews,
 		logger:         s.logger,
@@ -776,11 +772,11 @@ func docFieldString(doc Document, field string) string {
 
 // recordFailure / resolveFailures delegate to the shared embedRippler (see
 // embed_rippler.go): best-effort, nil-engine-safe side-channel writes to the
-// omnicore_upstream_failures registry — the contract is unchanged.
+// unified failure ledger (kind=ripple) — the contract is unchanged.
 func (s *UpstreamSubscriber) recordFailure(
 	ctx context.Context,
 	viewName, upstreamID, localID string,
-	stage UpstreamFailureStage,
+	stage ProjectionFailureStage,
 	cause error,
 ) {
 	s.rippleEngine().recordFailure(ctx, viewName, upstreamID, localID, stage, cause)

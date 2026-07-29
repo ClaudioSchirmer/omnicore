@@ -11,10 +11,11 @@ import (
 )
 
 // IntegrationFailureRecord mirrors one row of
-// omnicore_integration_failures. Mirrors the shape UpstreamFailureRecord
-// already follows so operators have a single mental model across both
-// failure registries. RawPayload is the JSON bytes verbatim — preserved
-// so an operator-driven retry replays the exact payload the receiver saw.
+// omnicore_integration_failures. Follows the same live-state-mirror shape as
+// the read-side projection ledger so operators have a single mental model
+// across the failure surfaces. RawPayload is the JSON bytes verbatim —
+// preserved so an operator-driven retry replays the exact payload the
+// receiver saw.
 type IntegrationFailureRecord struct {
 	// ID is the surrogate row id — the canonical uuid string (a UUID v7 on
 	// every dialect; the scan restores BINARY(16) to canonical text).
@@ -106,7 +107,7 @@ func RecordIntegrationFailure(ctx context.Context, q core.Querier, d core.Dialec
 	sql := d.BuildUpsert(integrationFailureTable, integrationFailureInsertCols, integrationFailureConflictCols, []core.UpsertSet{
 		{Col: "error", Mode: core.UpsertSetNew},
 		{Col: "payload", Mode: core.UpsertSetNew},
-		{Col: "attempt", Mode: core.UpsertSetExpr, Expr: "attempt + 1"},
+		{Col: "attempt", Mode: core.UpsertSetBump},
 		{Col: "last_attempt_at", Mode: core.UpsertSetExpr, Expr: d.NowExpr()},
 		{Col: "resolved_at", Mode: core.UpsertSetExpr, Expr: "NULL"},
 	})

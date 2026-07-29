@@ -8,14 +8,14 @@ import (
 )
 
 func TestNewUsage(t *testing.T) {
-	fs := flag.NewFlagSet("upstream-list-failures", flag.ContinueOnError)
+	fs := flag.NewFlagSet("list-failures", flag.ContinueOnError)
 	var buf strings.Builder
 	fs.SetOutput(&buf)
 	fs.String("format", formatText, "fmt")
 	newUsage(fs)()
 	out := buf.String()
 	for _, want := range []string{
-		"upstream-list-failures",
+		"list-failures",
 		"Usage:",
 		"-format",
 		"Read-only",

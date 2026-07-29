@@ -211,17 +211,21 @@ func (p *ConsumerPool) runConsumerGroup(ctx context.Context, g *receiverGroup) {
 	if workers < 1 {
 		workers = 1
 	}
-	queues := make([]chan transport.Message, workers)
+	queues := make([]chan queuedIntegration, workers)
 	var workerWG sync.WaitGroup
 	for i := 0; i < workers; i++ {
-		queues[i] = make(chan transport.Message, 4)
+		queues[i] = make(chan queuedIntegration, 4)
 		workerWG.Add(1)
-		go func(q <-chan transport.Message) {
+		go func(q <-chan queuedIntegration) {
 			defer workerWG.Done()
-			for msg := range q {
+			for qm := range q {
 				p.inflight.Add(1)
-				p.processGroupMessage(ctx, g, msg)
+				p.processGroupMessage(ctx, g, qm.msg)
 				p.inflight.Done()
+				// processGroupMessage is total: it dedups, dispatches and records
+				// its own outcome, so the message is finished from the transport's
+				// point of view once it returns.
+				_ = qm.completion.Done(ctx)
 			}
 		}(queues[i])
 	}
@@ -246,7 +250,7 @@ func (p *ConsumerPool) runConsumerGroup(ctx context.Context, g *receiverGroup) {
 			return
 		default:
 		}
-		msg, err := sub.Read(ctx)
+		msg, completion, err := sub.Read(ctx)
 		if err != nil {
 			if ctx.Err() != nil {
 				return
@@ -265,10 +269,14 @@ func (p *ConsumerPool) runConsumerGroup(ctx context.Context, g *receiverGroup) {
 		// dedup still works.
 		bucket := bucketOfMessage(msg, workers)
 		select {
-		case queues[bucket] <- msg:
+		case queues[bucket] <- queuedIntegration{msg: msg, completion: completion}:
 		case <-ctx.Done():
+			_ = completion.Failed(ctx)
 			return
 		case <-p.stop:
+			// Shutting down before dispatch: hand the message back so the next
+			// boot receives it instead of confirming work never done.
+			_ = completion.Failed(ctx)
 			return
 		}
 	}
@@ -284,6 +292,15 @@ func (p *ConsumerPool) runConsumerGroup(ctx context.Context, g *receiverGroup) {
 // whose message carries an ABSENT event_type header delivers to its only
 // receiver (mirrors the prior lenient filter that processed when the header
 // was missing); a present-but-unmatched header is always a skip.
+// queuedIntegration is one dispatched message plus the handle that reports its
+// outcome to the transport. The completion travels with the message so the
+// confirmation is issued by the worker that finished the work, never by the
+// reader that merely saw it.
+type queuedIntegration struct {
+	msg        transport.Message
+	completion transport.Completion
+}
+
 func (p *ConsumerPool) processGroupMessage(ctx context.Context, g *receiverGroup, msg transport.Message) {
 	headers := msg.Headers
 	r := g.route(headers["event_type"])

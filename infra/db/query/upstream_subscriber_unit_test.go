@@ -721,20 +721,40 @@ func TestRecordFailure_NilPostgres(t *testing.T) {
 		t.Fatalf("NewUpstreamSubscriber: %v", err)
 	}
 	// Both best-effort writers must no-op (and not panic) without a PG handle.
-	s.recordFailure(context.Background(), "orders", "u1", "o1", UpstreamFailureStageCompose, errFake)
+	s.recordFailure(context.Background(), "orders", "u1", "o1", ProjectionFailureStageCompose, errFake)
 	s.resolveFailures(context.Background(), "orders", "u1")
 }
 
-func TestRetryPendingFailures_NilPostgres(t *testing.T) {
+// TestWithViewChaining_RegistersRippleReplayer pins the unified-ledger wiring:
+// chaining a subscriber into the SyncEngine must (a) adopt the SYNC group as
+// the ledger-row owner and (b) register the topic's replayer, so the
+// parked-retry loop can re-run this subscription's ripples.
+func TestWithViewChaining_RegistersRippleReplayer(t *testing.T) {
 	mongo := upstreamFakeMongo(happyColls())
 	s, err := NewUpstreamSubscriber(nil, mongo, NewComposerWithMongo(nil, mongo, identityResolver), identityResolver,
-		UpstreamSubscriberConfig{Topic: "t", Collection: "users"},
+		UpstreamSubscriberConfig{Topic: "users.events", Collection: "users", ConsumerGroup: "sub-group"},
 		[]*ViewDefinition{ordersBuyerView()}, nil, nil)
 	if err != nil {
 		t.Fatalf("NewUpstreamSubscriber: %v", err)
 	}
-	if _, err := s.RetryPendingFailures(context.Background()); err == nil {
-		t.Error("RetryPendingFailures without a PG handle must error")
+	engine := NewSyncEngine(nil, mongo, identityResolver, nil, "svc-sync", nil, 1)
+	s.WithViewChaining(engine)
+	if s.syncGroup != "svc-sync" {
+		t.Errorf("chaining must adopt the sync group as the ledger owner, got %q", s.syncGroup)
+	}
+	if engine.rippleReplayers["users.events"] == nil {
+		t.Error("chaining must register the topic's ripple replayer with the retry driver")
+	}
+	// Unchained (the degenerate no-views boot): rows fall back to the
+	// subscription's own group so they stay queryable.
+	if got := s.rippleEngine().group; got != "svc-sync" {
+		t.Errorf("rippler must record under the sync group after chaining, got %q", got)
+	}
+	s2, _ := NewUpstreamSubscriber(nil, mongo, NewComposerWithMongo(nil, mongo, identityResolver), identityResolver,
+		UpstreamSubscriberConfig{Topic: "t2", Collection: "users", ConsumerGroup: "sub-only"},
+		[]*ViewDefinition{ordersBuyerView()}, nil, nil)
+	if got := s2.rippleEngine().group; got != "sub-only" {
+		t.Errorf("unchained rippler must fall back to the subscription group, got %q", got)
 	}
 }
 

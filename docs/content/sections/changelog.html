@@ -9,6 +9,72 @@
     <div class="release">
         <div class="release-head"><span class="release-tag">Unreleased</span><span class="release-date">—</span></div>
         <ul>
+            <li><strong>Changed</strong> — <strong>breaking</strong> — <strong>the message-transport port reports a
+                per-message OUTCOME, and the read-side projection is genuinely at-least-once.</strong>
+                <code>Subscription.Read</code> now returns <code>(Message, Completion, error)</code>; exactly one of
+                <code>Completion.Done</code> / <code>Completion.Failed</code> must be called per message, and the
+                message's position advances only on <code>Done</code>. Before this, a failed projection was logged and
+                the offset advanced anyway, and both adapters confirmed messages on READ rather than after processing —
+                at-most-once wearing an at-least-once contract, unsurvivable for an aggregate written exactly once. The
+                Kafka adapter now consumes through the consumer-group generation API and commits only the contiguous
+                completed prefix per partition (a failed message holds the line; a revoked generation's commit is
+                rejected by the coordinator); the NATS adapter maps <code>Done</code>/<code>Failed</code> to
+                <code>Ack</code>/<code>Nak</code> and heartbeats <code>InProgress</code> while an event is in flight.
+                Any third-party adapter registered through <code>transport.RegisterSubscriber</code> must implement the
+                new shape. See <a href="#transport">Message transport</a>.</li>
+            <li><strong>Changed</strong> — <strong>breaking</strong> — <code>ReadModelStore</code> loses its unguarded
+                write primitives: <code>BulkUpsert</code> and <code>IdentifiedDocument</code> are removed (no production
+                caller; both bypassed the revision guards and were available for a future writer to adopt by accident).
+                <code>Upsert</code> stays, constrained by its port comment to the upstream MIRROR collection — never a
+                view slot. A third-party store implementation must drop the removed methods.</li>
+            <li><strong>Changed</strong> — view collections are written with <strong>majority write concern</strong>,
+                like the projection-state registry — a projection acknowledged by a primary alone could be rolled back
+                by a failover with nothing to put it back. No configuration knob, deliberately: a switch that disables
+                a correctness invariant is a trap. On a single-node deployment majority degrades to the primary ack.</li>
+            <li><strong>Changed</strong> — a blue-green rebuild no longer drops the retired slot at the flip
+                (<strong>lazy reclaim</strong>): an in-flight operation that resolved the old pointer could be killed by
+                the drop and lose its event. The next rebuild reclaims the slot; the cost is one collection of disk per
+                view between rebuilds. Verify before the flip is now <strong>full-coverage revision parity</strong> —
+                every document, not a 20-document sample. See
+                <a href="#mongo-schema-evolution">Mongo schema evolution</a>.</li>
+            <li><strong>Fixed</strong> — every failure ledger's conflict UPDATE was broken on Postgres: the
+                <code>attempt + 1</code> increment inside <code>ON CONFLICT … DO UPDATE</code> is ambiguous against
+                <code>EXCLUDED</code> (SQLSTATE 42702), so recording a projection, upstream or integration failure
+                failed itself — on every execution, fresh insert included. The increment is now the
+                <code>core.UpsertSetBump</code> assignment mode, rendered by each dialect with its own qualifier for
+                the existing row; every engine gained an integration test that executes the conflict branch against
+                the real database. Found live by the new <code>projection_resilience</code> QA suite's first real
+                park.</li>
+            <li><strong>Changed</strong> — <strong>breaking</strong> — <strong>the upstream failure registry is folded
+                into the unified ledger.</strong> <code>omnicore_upstream_failures</code> is no longer created and its
+                surface is removed (<code>UpstreamSubscriber.RetryPendingFailures</code>,
+                <code>RecordUpstreamFailure</code> and friends); ripple failures now live in
+                <code>omnicore_projection_failures</code> as <code>kind='ripple'</code> rows and are replayed
+                AUTOMATICALLY by the same parked-retry loop that replays parked events — the operator cron/HTTP wiring
+                the old method required is simply deleted. The admin subcommand is now
+                <code>omnicore-admin list-failures</code>. SQL/dashboards move to the unified columns
+                (<code>subscription_topic</code>→<code>topic</code>, <code>view_name</code>→<code>aggregate_type</code>,
+                <code>upstream_id</code>→<code>aggregate_id</code>). See
+                <a href="#auto-query-handlers">the failure ledger</a>.</li>
+            <li><strong>Added</strong> — <strong>nothing fails silently</strong>: a projection event that exhausts its
+                in-process retry budget (bounded per-attempt, slot re-resolved each attempt) is <strong>parked</strong>
+                with its full payload in the new UNIFIED relational ledger <code>omnicore_projection_failures</code>
+                (framework migration <code>0003</code>, all four dialects; <code>kind='event'</code> parked events +
+                <code>kind='ripple'</code> failed embed-segment refreshes, including the new <code>signal</code> stage
+                for a failed post-write source re-read) and replayed automatically on the
+                <code>mongo.parkedRetry</code> cadence (on by default, every 10 minutes; off → dead letters until the
+                sweep or a manual replay); the consumer
+                session is supervised (a fatal reader error re-subscribes instead of dying silently);
+                <code>SyncEngine.ProjectionHealth()</code> exposes counters and liveness clocks (last processed, last
+                sweep, last reconcile) so staleness — the only honest signal of a dead loop — is observable; and
+                <code>ReconcileView</code>/<code>ReconcileAllViews</code> provide throttled revision-parity
+                reconciliation of a view against its relational source (missing/stale → recompose through the guards),
+                advisory-lock guarded per view — schedulable via the new <code>mongo.reconcile</code> yaml block
+                (<code>enabled</code>/<code>intervalMinutes</code>/<code>rowsPerSecond</code>/<code>batchSize</code>;
+                OFF by default: the pass duration is the detection bound, and that trade belongs to the operator —
+                and off in dev, a projection bug surfaces instead of being quietly repaired). See
+                <a href="#views~views-sync">Views → How views stay current</a> and
+                <a href="#yaml-reference">the YAML reference</a>.</li>
             <li><strong>Added</strong> — <code>query.JoinView(view, Go, ext)</code> is now accepted as an
                 <code>Embed</code>/<code>EmbedMany</code>/<code>EmbedInChild</code> source: a local view can be
                 <strong>materialized</strong> inside another view. The two families became fully symmetric —

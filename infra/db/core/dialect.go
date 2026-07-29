@@ -8,23 +8,32 @@ package core
 // seam long outgrew the read path it started on.
 
 // UpsertSetMode classifies one assignment in an upsert's update clause — the
-// only part of an upsert that diverges by dialect (how the proposed value is
-// referenced). Increment / NOW() / NULL are identical across engines (a bare
-// column in the update clause refers to the existing row on both PG and MySQL),
-// so they ride as UpsertSetExpr.
+// only part of an upsert that diverges by dialect (how the proposed value and
+// the EXISTING row are referenced).
 type UpsertSetMode int
 
 const (
 	// UpsertSetNew assigns the column to the value proposed for insertion:
-	// `EXCLUDED.col` on Postgres, `new.col` on MySQL.
+	// `EXCLUDED.col` on Postgres, `new.col` on MySQL, `source.col` in the
+	// MERGE dialects.
 	UpsertSetNew UpsertSetMode = iota
 	// UpsertSetExpr assigns the column to a verbatim SQL expression identical on
-	// every engine — e.g. "NULL" or "attempt + 1" (a bare column name in an
-	// upsert's update clause refers to the existing row on both PG and MySQL).
-	// A current-timestamp assignment is NOT engine-identical: pass the dialect's
-	// NowExpr() as the expression. Emitted as-is; framework-controlled, never
-	// user input.
+	// every engine — e.g. "NULL", or the dialect's NowExpr() for a current
+	// timestamp. Emitted as-is; framework-controlled, never user input.
+	//
+	// The expression must NOT reference a column of the target table: how the
+	// existing row is named differs by engine (Postgres requires the table
+	// qualifier inside DO UPDATE — a bare column there is ambiguous against
+	// EXCLUDED and fails with SQLSTATE 42702; the MERGE dialects alias the
+	// table as `target`; MySQL takes it bare). A read-modify assignment rides
+	// as UpsertSetBump instead.
 	UpsertSetExpr
+	// UpsertSetBump assigns the column to the EXISTING row's value plus one —
+	// `col = <old-row-reference>.col + 1`, each dialect supplying its own way
+	// of naming the old row. This is the increment the failure ledgers use to
+	// count attempts on conflict; it exists because no verbatim expression can
+	// spell "the existing row's column" portably.
+	UpsertSetBump
 )
 
 // UpsertSet is one `col = <value>` assignment applied when the natural key

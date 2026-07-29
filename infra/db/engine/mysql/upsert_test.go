@@ -11,9 +11,9 @@ import (
 
 // TestMySQLDialect_BuildUpsert_DoUpdate locks the MySQL upsert shape: a row
 // alias (AS new) + ON DUPLICATE KEY UPDATE with new.col for the "set to new
-// value" mode and a verbatim expression (bare column refers to the existing row,
-// identical to Postgres) for the rest. The conflict columns are NOT named — MySQL
-// keys off the existing unique index.
+// value" mode and the TABLE-qualified column for the bump mode (with the row
+// alias present, a bare right-hand-side column is ambiguous — errno 1052).
+// The conflict columns are NOT named — MySQL keys off the existing unique index.
 func TestMySQLDialect_BuildUpsert_DoUpdate(t *testing.T) {
 	got := mysqlDialect{}.BuildUpsert(
 		"omnicore_integration_failures",
@@ -21,7 +21,7 @@ func TestMySQLDialect_BuildUpsert_DoUpdate(t *testing.T) {
 		[]string{"consumer_group", "event_id"},
 		[]core.UpsertSet{
 			{Col: "error", Mode: core.UpsertSetNew},
-			{Col: "attempt", Mode: core.UpsertSetExpr, Expr: "attempt + 1"},
+			{Col: "attempt", Mode: core.UpsertSetBump},
 		},
 	)
 	for _, want := range []string{
@@ -29,7 +29,7 @@ func TestMySQLDialect_BuildUpsert_DoUpdate(t *testing.T) {
 		"VALUES (?, ?, ?)",
 		"AS new ON DUPLICATE KEY UPDATE",
 		"`error` = new.`error`",
-		"`attempt` = attempt + 1",
+		"`attempt` = `omnicore_integration_failures`.`attempt` + 1",
 	} {
 		if !strings.Contains(got, want) {
 			t.Errorf("mysql upsert missing %q in:\n%s", want, got)
