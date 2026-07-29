@@ -42,9 +42,9 @@ func TestRemovedChild_Guards(t *testing.T) {
 	t.Run("roleChildWithoutSoftDelete", func(t *testing.T) {
 		id := uuid.NewString()
 		schema := NewTableSchema[*aggWriteRoot]("agg_w").
-			PK("id").Field("Name", "name").SoftDelete("deleted_at").
+			ID("id").Field("Name", "name").SoftDelete("deleted_at").
 			Child(NewTableSchema[aggWriteChild]("agg_w_children").
-				PK("id").FK("agg_w_id").Field("Label", "label")) // no SoftDelete
+				ID("id").ParentID("agg_w_id").Field("Label", "label")) // no SoftDelete
 		root := &aggWriteRoot{Name: "r"}
 		root.SetID(domain.NewID(uuid.NewString()))
 		root.AggregateConstructor([]domain.AggregateValueObject{aggWriteChild{ID: domain.NewID(id), Label: "x"}})
@@ -80,14 +80,14 @@ func (e *baseChildRole) AggregateChildren() []domain.AggregateValueObject {
 
 func baseChildRoleSchema() *TableSchema {
 	base := NewSharedBaseSchema("pessoa").Revision("revision").
-		PK("id").
+		ID("id").
 		Field("Name", "name").
 		Field("Document", "document").
-		NaturalKey("document").
+		NaturalID("document").
 		Child(NewTableSchema[cascadeBaseChild]("pessoa_filhos").
-			PK("id").FK("pessoa_id").Field("Note", "note")) // no SoftDelete → hard-delete on remove
+			ID("id").ParentID("pessoa_id").Field("Note", "note")) // no SoftDelete → hard-delete on remove
 	return NewTableSchema[*baseChildRole]("aluno").
-		PK("id").
+		ID("id").
 		Field("Matricula", "matricula").
 		SoftDelete("deleted_at").
 		SharedBase(base, "pessoa_id")
@@ -187,7 +187,7 @@ func TestBatch_SoftMembersAndUnsupported(t *testing.T) {
 		}
 	})
 	t.Run("unarchiveWithoutSoftDelete", func(t *testing.T) {
-		noSD := NewTableSchema[*builderTestEntity]("nsd").PK("id").Revision("revision").Field("Name", "name").Field("Email", "email")
+		noSD := NewTableSchema[*builderTestEntity]("nsd").ID("id").Revision("revision").Field("Name", "name").Field("Email", "email")
 		una, _ := domain.GetUnarchivable(mk(), nil, "GetUnarchivable")
 		be := newFlatBE(&recBeginner{tx: &recTx{}})
 		if _, err := be.Batch(newBuilderCtx(), domain.NewBatch([]domain.ValidEntity{una}), []*TableSchema{noSD}); err == nil {
@@ -206,7 +206,7 @@ func TestBatch_SoftMembersAndUnsupported(t *testing.T) {
 
 // The flat Unarchive on a schema without SoftDelete errors before any statement.
 func TestFlatUnarchive_MissingSoftDeleteIsError(t *testing.T) {
-	noSD := NewTableSchema[*builderTestEntity]("nsd").PK("id").Revision("revision").Field("Name", "name").Field("Email", "email")
+	noSD := NewTableSchema[*builderTestEntity]("nsd").ID("id").Revision("revision").Field("Name", "name").Field("Email", "email")
 	e := &builderTestEntity{Name: "a", Email: "a@x"}
 	e.SetID(domain.NewID(uuid.NewString()))
 	u, _ := domain.GetUnarchivable(e, nil, "GetUnarchivable")

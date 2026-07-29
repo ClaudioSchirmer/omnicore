@@ -28,7 +28,7 @@ func (coreNL) Translations() map[string]string {
 
 		// Aggregate root
 		"EntityAlreadyAddedNotification":    "Entiteit is al toegevoegd.",
-		"NaturalKeyImmutableNotification":   "De natuurlijke sleutel is onveranderlijk en kan niet worden gewijzigd.",
+		"NaturalIDImmutableNotification":    "De natuurlijke sleutel is onveranderlijk en kan niet worden gewijzigd.",
 		"EntityDoesNotExistNotification":    "Entiteit bestaat niet.",
 		"EntityIsNotActiveNotification":     "Entiteit is niet actief.",
 		"InvalidAggregateChildNotification": "Dit objecttype behoort niet tot dit aggregaat.",

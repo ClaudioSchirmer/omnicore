@@ -49,7 +49,7 @@ type BaseEngine struct {
 
 // sbRole is one engine-registered shared-base role: the role schema pointer
 // (its soft-delete column reads lazily, like the instance registry's roleLink)
-// + the FK column it references the base through.
+// + the ParentID column it references the base through.
 type sbRole struct {
 	schema *TableSchema
 	fk     string
@@ -106,7 +106,7 @@ func (b *BaseEngine) effectiveReferencingRoles(base *TableSchema) []RoleRef {
 			continue
 		}
 		sd, _ := reg.schema.SoftDeleteColumn()
-		extra = append(extra, RoleRef{Table: tbl, FKColumn: reg.fk, SoftDeleteCol: sd})
+		extra = append(extra, RoleRef{Table: tbl, ParentIDColumn: reg.fk, SoftDeleteCol: sd})
 	}
 	sort.Slice(extra, func(i, j int) bool { return extra[i].Table < extra[j].Table })
 	return append(out, extra...)

@@ -50,8 +50,8 @@ func allNilFields(fields domain.Fields) bool {
 	return true
 }
 
-// insertSiblings INSERTs each materialized sibling row, sharing the owner's PK
-// (owner.PKColumn() = id). A sibling whose fields are all nil is skipped. src is
+// insertSiblings INSERTs each materialized sibling row, sharing the owner's ID
+// (owner.IDColumn() = id). A sibling whose fields are all nil is skipped. src is
 // the owner value the sibling fields are read from — a root Entity OR an
 // aggregate child (AggregateValueObject), so it is typed `any`.
 func insertSiblings(ctx context.Context, tx WriteTx, d Dialect, owner *TableSchema, src any, id string, now time.Time) error {
@@ -60,7 +60,7 @@ func insertSiblings(ctx context.Context, tx WriteTx, d Dialect, owner *TableSche
 		if allNilFields(fields) {
 			continue
 		}
-		sql, args := buildInsert(d, sib.Table(), owner.PKColumn(), id, fields, sib.InsertNowColumns(), now, "")
+		sql, args := buildInsert(d, sib.Table(), owner.IDColumn(), id, fields, sib.InsertNowColumns(), now, "")
 		if err := tx.Exec(ctx, sql, args...); err != nil {
 			return err
 		}
@@ -68,7 +68,7 @@ func insertSiblings(ctx context.Context, tx WriteTx, d Dialect, owner *TableSche
 	return nil
 }
 
-// applySiblingUpdates UPSERTs each sibling by the shared PK. The all-nil case is
+// applySiblingUpdates UPSERTs each sibling by the shared ID. The all-nil case is
 // verb-driven: PATCH (partial) leaves the row untouched; PUT (full replace)
 // removes it, because a full body that cleared every sibling field means the
 // slice is gone.
@@ -79,12 +79,12 @@ func applySiblingUpdates(ctx context.Context, tx WriteTx, d Dialect, owner *Tabl
 			if partial {
 				continue
 			}
-			if err := tx.Exec(ctx, deleteSQL(d, sib.Table(), owner.PKColumn()), d.EncodeArg(domain.NewID(id))); err != nil {
+			if err := tx.Exec(ctx, deleteSQL(d, sib.Table(), owner.IDColumn()), d.EncodeArg(domain.NewID(id))); err != nil {
 				return err
 			}
 			continue
 		}
-		sql, args := buildSiblingUpsert(d, sib, owner.PKColumn(), id, fields)
+		sql, args := buildSiblingUpsert(d, sib, owner.IDColumn(), id, fields)
 		if err := tx.Exec(ctx, sql, args...); err != nil {
 			return err
 		}
@@ -92,11 +92,11 @@ func applySiblingUpdates(ctx context.Context, tx WriteTx, d Dialect, owner *Tabl
 	return nil
 }
 
-// deleteSiblings hard-deletes every sibling row by the shared PK (id), before
+// deleteSiblings hard-deletes every sibling row by the shared ID (id), before
 // the owner row is deleted, in the same TX.
 func deleteSiblings(ctx context.Context, tx WriteTx, d Dialect, owner *TableSchema, id string) error {
 	for _, sib := range owner.Siblings() {
-		if err := tx.Exec(ctx, deleteSQL(d, sib.Table(), owner.PKColumn()), d.EncodeArg(domain.NewID(id))); err != nil {
+		if err := tx.Exec(ctx, deleteSQL(d, sib.Table(), owner.IDColumn()), d.EncodeArg(domain.NewID(id))); err != nil {
 			return err
 		}
 	}

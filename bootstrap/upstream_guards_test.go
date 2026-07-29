@@ -14,7 +14,7 @@ import (
 // guard tests — the collection is both table and doc field; as supplies the Go
 // segment. The join column is named at the call site via .On(...).
 func extEmbed(collection, as string) *query.Leg {
-	return query.JoinUpstream(core.NewExternalSchema(collection).PK("id"), as, collection)
+	return query.JoinUpstream(core.NewExternalSchema(collection).ID("id"), as, collection)
 }
 
 func TestValidateViewSchemas_RejectsMissingRootSchema(t *testing.T) {
@@ -32,7 +32,7 @@ func TestValidateViewSchemas_PassesWhenComplete(t *testing.T) {
 	// The 1:1 Embed now requires a covering index on its join column at boot (the
 	// recompose ripple's reverse scan) — the retroactive breaking guard.
 	v := query.View("orders").
-		Schema(core.NewExternalSchema("orders").PK("id")).
+		Schema(core.NewExternalSchema("orders").ID("id")).
 		Embed(extEmbed("users", "Buyer")).On("buyer_id").
 		Indexes(query.Index("buyer_id")).
 		Version(1)
@@ -182,11 +182,11 @@ func TestGuardJoinFieldIndex_RejectsCompoundIndexJoinFieldNotFirst(t *testing.T)
 
 func TestGuardJoinFieldIndex_EmbedManyNeedsNoIndex(t *testing.T) {
 	// A one-to-many EmbedMany resolves its recompose-ripple by the CHANGED
-	// child's FK value → the parent _id (always indexed), never a reverse scan
-	// of the embedding view on the child FK column (which the parent doc does
+	// child's ParentID value → the parent _id (always indexed), never a reverse scan
+	// of the embedding view on the child ParentID column (which the parent doc does
 	// not carry at top level). So — unlike a one-to-one Embed — it requires NO
 	// covering index on the view, even without any Indexes(...) declared.
-	src := query.JoinUpstream(core.NewExternalSchema("items").PK("id"), "Members", "members")
+	src := query.JoinUpstream(core.NewExternalSchema("items").ID("id"), "Members", "members")
 	v := query.View("orders").
 		EmbedMany(src).On("order_id").
 		Version(1)
@@ -200,7 +200,7 @@ func TestGuardJoinFieldIndex_OneToOneStillNeedsIndexAlongsideEmbedMany(t *testin
 	// covering index; the 1:N does not. With only the 1:1 index declared, the
 	// guard is satisfied (no 1:N complaint).
 	one := extEmbed("items", "Featured")
-	many := query.JoinUpstream(core.NewExternalSchema("items").PK("id"), "Members", "members")
+	many := query.JoinUpstream(core.NewExternalSchema("items").ID("id"), "Members", "members")
 	v := query.View("orders").
 		Embed(one).On("featured_id").
 		EmbedMany(many).On("order_id").
@@ -275,7 +275,7 @@ func TestValidateUpstreamSubscriptions_AccumulatesAllViolations(t *testing.T) {
 // schema — the §8.5 guard reads it via Source().SchemaDef().SoftDeleteColumn().
 func extEmbedSD(collection, softDelete, as string) *query.Leg {
 	return query.JoinUpstream(
-		core.NewExternalSchema(collection).PK("id").SoftDelete(softDelete), as, collection)
+		core.NewExternalSchema(collection).ID("id").SoftDelete(softDelete), as, collection)
 }
 
 func TestGuardSoftDeleteFilter_AbortsWhenFilterDropsSoftDelete(t *testing.T) {
@@ -402,8 +402,8 @@ func TestValidateUpstreamSubscriptions_LogsSoftDeleteAdvisory(t *testing.T) {
 // deferred): composing now would materialize the source's pre-flip content and
 // finish stale, with no event left to repair it.
 func TestBlockedEmbedSource(t *testing.T) {
-	products := query.View("products").Version(1).Schema(core.NewExternalSchema("products").PK("id"))
-	sales := query.View("sales").Version(1).Schema(core.NewExternalSchema("sales").PK("id")).
+	products := query.View("products").Version(1).Schema(core.NewExternalSchema("products").ID("id"))
+	sales := query.View("sales").Version(1).Schema(core.NewExternalSchema("sales").ID("id")).
 		Embed(query.JoinView(products, "Product", "product")).On("product_id").
 		Indexes(query.Index("product_id"))
 
@@ -429,9 +429,9 @@ func TestBlockedEmbedSource(t *testing.T) {
 // see both. It used to walk embeds only, which let the same silent-archive
 // misconfiguration in through the composed door.
 func TestGuardSoftDeleteFilter_CoversComposedLegs(t *testing.T) {
-	legSchema := core.NewExternalSchema("upstream_products").PK("id").
+	legSchema := core.NewExternalSchema("upstream_products").ID("id").
 		Field("Name", "name").SoftDelete("deleted_at")
-	primary := query.View("orders").Version(1).Schema(core.NewExternalSchema("orders").PK("id"))
+	primary := query.View("orders").Version(1).Schema(core.NewExternalSchema("orders").ID("id"))
 	composed := query.ComposedView("orders_full").
 		Primary(primary).
 		Link(query.JoinUpstream(legSchema, "Product", "product")).On("product_id")
@@ -456,7 +456,7 @@ func TestGuardSoftDeleteFilter_CoversComposedLegs(t *testing.T) {
 	// A mirror nobody declares a soft-delete for stays an ADVISORY, not an abort —
 	// the framework cannot know whether that upstream archives at all.
 	plain := query.ComposedView("orders_plain").Primary(primary).
-		Link(query.JoinUpstream(core.NewExternalSchema("upstream_plain").PK("id"), "P", "p")).On("p_id")
+		Link(query.JoinUpstream(core.NewExternalSchema("upstream_plain").ID("id"), "P", "p")).On("p_id")
 	subs2 := []UpstreamSubscription{{Topic: "t", Collection: "upstream_plain", Filter: []string{"id"}}}
 	violations, warnings := guardSoftDeleteFilter(subs2, nil, []*query.ComposedViewDefinition{plain})
 	if len(violations) != 0 || len(warnings) != 1 {

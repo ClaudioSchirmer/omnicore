@@ -18,7 +18,7 @@ import (
 
 func composerRootSchema() *core.TableSchema {
 	return core.NewTableSchema[*builderTestEntity]("orders").
-		PK("id").
+		ID("id").
 		Field("Name", "name").
 		SoftDelete("deleted_at")
 }
@@ -40,7 +40,7 @@ type composerBoolEntity struct {
 
 func composerBoolSchema() *core.TableSchema {
 	return core.NewTableSchema[*composerBoolEntity]("flags").
-		PK("id").
+		ID("id").
 		Field("Active", "active").
 		Field("Verified", "verified").
 		Field("Name", "name")
@@ -55,7 +55,7 @@ func TestBoolColumns(t *testing.T) {
 		t.Error("name is a string column, must not be reported as bool")
 	}
 	// External (type-less) schema has no Go struct to reflect → empty.
-	if ext := core.NewExternalSchema("flags").PK("id").Field("Active", "active").BoolColumns(); len(ext) != 0 {
+	if ext := core.NewExternalSchema("flags").ID("id").Field("Active", "active").BoolColumns(); len(ext) != 0 {
 		t.Errorf("external schema BoolColumns = %v, want empty", ext)
 	}
 }
@@ -141,7 +141,7 @@ func TestCompose_RootOnly(t *testing.T) {
 // "orders" (name) and a sibling table "orders_ext" (email), sharing the id.
 func composerSiblingRootSchema() *core.TableSchema {
 	return core.NewTableSchema[*builderTestEntity]("orders").
-		PK("id").
+		ID("id").
 		Field("Name", "name").
 		SoftDelete("deleted_at").
 		Sibling(core.NewSiblingSchema[*builderTestEntity]("orders_ext").Field("Email", "email"))
@@ -217,15 +217,15 @@ func TestCompose_AbsentSiblingOmitsFields(t *testing.T) {
 // composerRoleSchema is a role (aluno) over builderTestEntity: Email is role-own,
 // Name lives on the shared base pessoa (natural key on name), linked by pessoa_id.
 func composerRoleSchema() *core.TableSchema {
-	base := core.NewSharedBaseSchema("pessoa").Revision("revision").PK("id").Field("Name", "name").NaturalKey("name")
+	base := core.NewSharedBaseSchema("pessoa").Revision("revision").ID("id").Field("Name", "name").NaturalID("name")
 	return core.NewTableSchema[*builderTestEntity]("aluno").
-		PK("id").
+		ID("id").
 		Field("Email", "email").
 		SharedBase(base, "pessoa_id")
 }
 
 // A shared base's columns merge FLAT into the role doc (M2), fetched by the
-// role's FK to the base's deterministic id.
+// role's ParentID to the base's deterministic id.
 func TestCompose_MergesSharedBaseFlat(t *testing.T) {
 	eng := composerEngine(func(sql string, args []any) ([]map[string]any, error) {
 		switch {
@@ -267,10 +267,10 @@ func (v csComposeVO) BuildRules(string, domain.Service, *domain.Rules) {}
 // derived segment, mirroring hydrateChildren on the write side. Each child row
 // also gets its own sibling merged FLAT (shape #4) on this auto path.
 func TestCompose_OwnChildrenAutoNested(t *testing.T) {
-	childSchema := core.NewTableSchema[csComposeVO]("lines").PK("id").FK("order_id").Field("Label", "label").
+	childSchema := core.NewTableSchema[csComposeVO]("lines").ID("id").ParentID("order_id").Field("Label", "label").
 		Sibling(core.NewSiblingSchema[csComposeVO]("lines_ext").Field("Note", "note"))
 	rootWithChild := core.NewTableSchema[*builderTestEntity]("orders").
-		PK("id").Field("Name", "name").SoftDelete("deleted_at").
+		ID("id").Field("Name", "name").SoftDelete("deleted_at").
 		Child(childSchema)
 	view := View("orders").Version(1).Schema(rootWithChild) // no EmbedMany
 
@@ -365,7 +365,7 @@ func TestComposeBatch(t *testing.T) {
 	if len(docs) != 2 {
 		t.Fatalf("ComposeBatch = %d docs, want 2", len(docs))
 	}
-	// Each composed doc carries its _id in the root PK column, exactly like Compose.
+	// Each composed doc carries its _id in the root ID column, exactly like Compose.
 	if fmt.Sprintf("%v", docs[0]["id"]) != "o1" {
 		t.Errorf("first doc _id column = %v, want o1", docs[0]["id"])
 	}
@@ -435,10 +435,10 @@ func TestComposeBatch_ChunksLargeIDSet(t *testing.T) {
 // declaring the managed columns (soft-delete + timestamps) — the collision the
 // A5 guard resolves in favor of the ROLE.
 func composerRoleSchemaManaged() *core.TableSchema {
-	base := core.NewSharedBaseSchema("pessoa").Revision("revision").PK("id").Field("Name", "name").NaturalKey("name").
+	base := core.NewSharedBaseSchema("pessoa").Revision("revision").ID("id").Field("Name", "name").NaturalID("name").
 		SoftDelete("deleted_at").CreatedAt("created_at").UpdatedAt("updated_at")
 	return core.NewTableSchema[*builderTestEntity]("aluno").
-		PK("id").
+		ID("id").
 		Field("Email", "email").
 		SoftDelete("deleted_at").
 		CreatedAt("created_at").
@@ -488,12 +488,12 @@ func TestCompose_SharedBase_ManagedColumnsStayRoleScoped(t *testing.T) {
 // else — active entries, root fields — untouched.
 func TestViewNode_StripArchivedChildren(t *testing.T) {
 	child := core.NewTableSchema[csComposeVO]("aluno_notas").
-		PK("id").
-		FK("aluno_id").
+		ID("id").
+		ParentID("aluno_id").
 		Field("Label", "label").
 		SoftDelete("deleted_at")
 	root := core.NewTableSchema[*builderTestEntity]("aluno").
-		PK("id").
+		ID("id").
 		Field("Name", "name").
 		SoftDelete("deleted_at").
 		Child(child)

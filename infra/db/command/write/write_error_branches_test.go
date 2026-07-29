@@ -167,9 +167,9 @@ func TestSoftWriteAggregate_StepFailures(t *testing.T) {
 // before the TX opens.
 func TestSoftWriteAggregate_MissingSoftDeleteIsError(t *testing.T) {
 	schema := NewTableSchema[*aggWriteRoot]("agg_w").
-		PK("id").Field("Name", "name").
+		ID("id").Field("Name", "name").
 		Child(NewTableSchema[aggWriteChild]("agg_w_children").
-			PK("id").FK("agg_w_id").Field("Label", "label").SoftDelete("deleted_at"))
+			ID("id").ParentID("agg_w_id").Field("Label", "label").SoftDelete("deleted_at"))
 	root := &aggWriteRoot{Name: "r"}
 	root.SetID(domain.NewID(uuid.NewString()))
 	a, _ := domain.GetArchivable(root, nil, "GetArchivable")
@@ -188,7 +188,7 @@ func TestSoftWriteAggregate_MissingSoftDeleteIsError(t *testing.T) {
 func TestSoftWriteAggregate_CascadeSkips(t *testing.T) {
 	t.Run("undeclaredChildType", func(t *testing.T) {
 		schema := NewTableSchema[*aggWriteRoot]("agg_w").
-			PK("id").Field("Name", "name").SoftDelete("deleted_at")
+			ID("id").Field("Name", "name").SoftDelete("deleted_at")
 		root := &aggWriteRoot{Name: "r"}
 		root.SetID(domain.NewID(uuid.NewString()))
 		root.AggregateConstructor([]domain.AggregateValueObject{aggWriteChild{ID: domain.NewIDFromUUID(uuid.New()), Label: "c"}})
@@ -205,9 +205,9 @@ func TestSoftWriteAggregate_CascadeSkips(t *testing.T) {
 	})
 	t.Run("childWithoutSoftDelete", func(t *testing.T) {
 		schema := NewTableSchema[*aggWriteRoot]("agg_w").
-			PK("id").Field("Name", "name").SoftDelete("deleted_at").
+			ID("id").Field("Name", "name").SoftDelete("deleted_at").
 			Child(NewTableSchema[aggWriteChild]("agg_w_children").
-				PK("id").FK("agg_w_id").Field("Label", "label"))
+				ID("id").ParentID("agg_w_id").Field("Label", "label"))
 		root := &aggWriteRoot{Name: "r"}
 		root.SetID(domain.NewID(uuid.NewString()))
 		root.AggregateConstructor([]domain.AggregateValueObject{aggWriteChild{ID: domain.NewIDFromUUID(uuid.New()), Label: "c"}})
@@ -227,10 +227,10 @@ func TestSoftWriteAggregate_CascadeSkips(t *testing.T) {
 // the child's own sibling — hard delete must clear all four tables in order.
 func aggDeleteSchema() *TableSchema {
 	return NewTableSchema[*aggWriteRoot]("agg_w").
-		PK("id").Field("Name", "name").SoftDelete("deleted_at").
+		ID("id").Field("Name", "name").SoftDelete("deleted_at").
 		Sibling(NewSiblingSchema[*aggWriteRoot]("agg_w_sib").Field("Name", "name")).
 		Child(NewTableSchema[aggWriteChild]("agg_w_children").
-			PK("id").FK("agg_w_id").Field("Label", "label").SoftDelete("deleted_at").
+			ID("id").ParentID("agg_w_id").Field("Label", "label").SoftDelete("deleted_at").
 			Sibling(NewSiblingSchema[aggWriteChild]("agg_w_child_sib").Field("Label", "label")))
 }
 
@@ -533,7 +533,7 @@ func TestBatch_ErrorBranches(t *testing.T) {
 		}
 	})
 	t.Run("archiveMemberWithoutSoftDelete", func(t *testing.T) {
-		noSD := NewTableSchema[*builderTestEntity]("nsd").PK("id").Revision("revision").Field("Name", "name").Field("Email", "email")
+		noSD := NewTableSchema[*builderTestEntity]("nsd").ID("id").Revision("revision").Field("Name", "name").Field("Email", "email")
 		e := &builderTestEntity{Name: "a", Email: "a@x"}
 		e.SetID(domain.NewID(uuid.NewString()))
 		arc, _ := domain.GetArchivable(e, nil, "GetArchivable")
@@ -900,15 +900,15 @@ func (c cascadeBaseChild) BuildRules(string, domain.Service, *domain.Rules) {}
 
 func cascadeRoleSchema() *TableSchema {
 	base := NewSharedBaseSchema("pessoa").Revision("revision").
-		PK("id").
+		ID("id").
 		Field("Name", "name").
 		Field("Document", "document").
-		NaturalKey("document").
+		NaturalID("document").
 		SoftDelete("deleted_at").
 		Child(NewTableSchema[cascadeBaseChild]("pessoa_filhos").
-			PK("id").FK("pessoa_id").Field("Note", "note").SoftDelete("deleted_at"))
+			ID("id").ParentID("pessoa_id").Field("Note", "note").SoftDelete("deleted_at"))
 	return NewTableSchema[*roleTestEntity]("aluno").
-		PK("id").
+		ID("id").
 		Field("Matricula", "matricula").
 		SoftDelete("deleted_at").
 		SharedBase(base, "pessoa_id")

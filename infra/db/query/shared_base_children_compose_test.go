@@ -14,10 +14,10 @@ import (
 // ViewNode round-trips that nested collection to Go vocabulary.
 
 func composeRoleWithBaseChild() *core.TableSchema {
-	base := core.NewSharedBaseSchema("pessoa").Revision("revision").PK("id").Field("Name", "name").NaturalKey("name").
-		Child(core.NewTableSchema[fakeVO]("endereco").PK("id").FK("pessoa_id").Field("Label", "street"))
+	base := core.NewSharedBaseSchema("pessoa").Revision("revision").ID("id").Field("Name", "name").NaturalID("name").
+		Child(core.NewTableSchema[fakeVO]("endereco").ID("id").ParentID("pessoa_id").Field("Label", "street"))
 	return core.NewTableSchema[*builderTestEntity]("aluno").
-		PK("id").
+		ID("id").
 		Field("Email", "email").
 		SharedBase(base, "pessoa_id")
 }

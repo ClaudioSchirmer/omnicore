@@ -28,7 +28,7 @@ func (corePTBR) Translations() map[string]string {
 
 		// Aggregate root
 		"EntityAlreadyAddedNotification":    "Entidade já foi adicionada.",
-		"NaturalKeyImmutableNotification":   "A chave natural é imutável e não pode ser alterada.",
+		"NaturalIDImmutableNotification":    "A chave natural é imutável e não pode ser alterada.",
 		"EntityDoesNotExistNotification":    "Entidade não existe.",
 		"EntityIsNotActiveNotification":     "Entidade não está ativa.",
 		"InvalidAggregateChildNotification": "Este tipo de objeto não pertence a este agregado.",

@@ -15,7 +15,7 @@ import (
 
 // SharedBase (Modelagem 2 / Party-Role) write path. A ROLE schema that declares
 // .SharedBase(base, fkCol) is persisted across the shared identity table (the
-// base, e.g. pessoa) and its own role table (e.g. aluno), linked by an FK to the
+// base, e.g. pessoa) and its own role table (e.g. aluno), linked by an ParentID to the
 // base's DETERMINISTIC id (UUIDv5 of the natural-key value). Two levels of
 // existence (design §8.3/§8.4):
 //
@@ -31,13 +31,13 @@ import (
 //     on every other read/write path — so the insert proceeds) and on UNARCHIVE
 //     (reviving a remnant while another row of the same role table is active is
 //     the same 409 — vetoUnarchiveWithActiveSibling). TOTAL row multiplicity is
-//     the dev's DDL contract on the separate-FK model: a full UNIQUE(fk) index
+//     the dev's DDL contract on the separate-ParentID model: a full UNIQUE(fk) index
 //     caps the table at 0..1 rows per identity (an archived remnant physically
 //     blocks a new insert — the repository's ConstraintBinding maps the
 //     violation), while an active-only unique index (partial index on Postgres,
 //     unique generated column on MySQL) admits archived remnants NEXT TO one
 //     active row — the "keep the old archived role, open a fresh active one"
-//     modeling. The shared-PK model has no choice: the PK itself caps the table
+//     modeling. The shared-ID model has no choice: the ID itself caps the table
 //     at one row per identity. Under concurrency the uniqueness index — not the
 //     probe — is the arbiter; reviving an archived role is the explicit
 //     /unarchive verb's job, never a POST side effect.
@@ -54,22 +54,22 @@ import (
 // id from its natural-key value — stable across processes so app and infra agree.
 var sharedBaseNamespace = uuid.MustParse("9b2e7c4a-1f6d-5a83-b0c1-d2e3f4a5b6c7")
 
-// deterministicBaseID derives base.id = UUIDv5(namespace, naturalKeyValue).
-func deterministicBaseID(naturalKeyValue string) string {
-	return uuid.NewSHA1(sharedBaseNamespace, []byte(naturalKeyValue)).String()
+// deterministicBaseID derives base.id = UUIDv5(namespace, naturalIDValue).
+func deterministicBaseID(naturalIDValue string) string {
+	return uuid.NewSHA1(sharedBaseNamespace, []byte(naturalIDValue)).String()
 }
 
 // requireNaturalKey guards the one prerequisite the framework cannot enforce in
 // DDL: a non-empty natural key. An empty value hashes to a CONSTANT id, collapsing
 // every key-less identity into a single base row — a silent, corrupting footgun.
 // The UNIQUE(naturalKey) column constraint is otherwise self-enforced by the
-// deterministic id PK (equal keys → equal id → ON CONFLICT). Fails loudly instead.
+// deterministic id ID (equal keys → equal id → ON CONFLICT). Fails loudly instead.
 func requireNaturalKey(base *TableSchema, nk string) error {
 	if nk == "" {
 		return fmt.Errorf(
 			"db: shared base %q natural key (column %q) resolved empty — it must be NOT NULL / non-empty: "+
 				"its value derives the deterministic identity, and an empty key collapses every record into one",
-			base.Table(), base.NaturalKeyColumn())
+			base.Table(), base.NaturalIDColumn())
 	}
 	return nil
 }
@@ -83,7 +83,7 @@ func sharedBaseValues(base *TableSchema, src domain.Entity) (domain.Fields, stri
 		rv = rv.Elem()
 	}
 	fields := make(domain.Fields, len(base.GoFields()))
-	nkGo, _ := base.GoOf(base.NaturalKeyColumn())
+	nkGo, _ := base.GoOf(base.NaturalIDColumn())
 	var nk string
 	for _, goName := range base.GoFields() {
 		col, _ := base.ColumnOf(goName)
@@ -113,7 +113,7 @@ func scalarString(v any) string {
 // shared base id. Soft-delete IS delete on this probe, exactly like every other
 // read/write path: an archived role row is invisible here, so the caller's
 // insert proceeds and the dev's DDL arbitrates the collision with any physical
-// remnant (shared-PK → the primary key; separate FK → a full UNIQUE(fk) blocks
+// remnant (shared-ID → the primary key; separate ParentID → a full UNIQUE(fk) blocks
 // it, an active-only unique index admits it next to the remnants). The probe
 // asks "is any row active?", so LIMIT 1 decides it regardless of how many
 // archived remnants the identity carries; when two inserts race, the
@@ -149,12 +149,12 @@ func (b *BaseEngine) insertWithBase(ctx persistence.RequestContext, entity domai
 		return domain.WriteResult{}, err
 	}
 	baseID := deterministicBaseID(nk)
-	// A role either carries a SEPARATE FK column to the base, or shares the base's id
-	// as its OWN primary key (fkCol == the role PK — a strict 1:1 where role.id ==
-	// base.id). In the shared-PK model the id is written once, as the PK (buildInsert
+	// A role either carries a SEPARATE ParentID column to the base, or shares the base's id
+	// as its OWN primary key (fkCol == the role ID — a strict 1:1 where role.id ==
+	// base.id). In the shared-ID model the id is written once, as the ID (buildInsert
 	// prepends it), so injecting it as a field too would emit a duplicate column;
-	// inject the FK only when it is a distinct column.
-	sharedPK := fkCol == schema.PKColumn()
+	// inject the ParentID only when it is a distinct column.
+	sharedPK := fkCol == schema.IDColumn()
 	if !sharedPK {
 		roleFields[fkCol] = domain.NewID(baseID)
 	}
@@ -196,16 +196,16 @@ func (b *BaseEngine) insertWithBase(ctx persistence.RequestContext, entity domai
 	}
 	if active {
 		// Already a (live) role for this identity — POST is a conflict.
-		return domain.WriteResult{}, SingleNotificationError(entity.EntityName(), schema.PKColumn(), domain.EntityAlreadyAddedNotification{})
+		return domain.WriteResult{}, SingleNotificationError(entity.EntityName(), schema.IDColumn(), domain.EntityAlreadyAddedNotification{})
 	}
 	// No ACTIVE role → insert. An ARCHIVED remnant is deliberately not looked
 	// for (soft-delete is delete): if one exists, the schema's own constraints
-	// veto or admit this insert — shared-PK collides on the primary key (the
-	// repository's ConstraintBinding maps it), a separate-FK model decides
+	// veto or admit this insert — shared-ID collides on the primary key (the
+	// repository's ConstraintBinding maps it), a separate-ParentID model decides
 	// through its own unique index.
 	var id string
 	if sharedPK {
-		// The role's own PK IS the deterministic base id (role.id == base.id).
+		// The role's own ID IS the deterministic base id (role.id == base.id).
 		id = baseID
 	} else {
 		nid, err := newWriteID()
@@ -214,12 +214,12 @@ func (b *BaseEngine) insertWithBase(ctx persistence.RequestContext, entity domai
 		}
 		id = nid
 	}
-	sql, args := buildInsert(d, schema.Table(), schema.PKColumn(), id, roleFields, schema.InsertNowColumns(), now, schema.RevisionColumn())
+	sql, args := buildInsert(d, schema.Table(), schema.IDColumn(), id, roleFields, schema.InsertNowColumns(), now, schema.RevisionColumn())
 	if err := tx.Exec(ctx, sql, args...); err != nil {
 		return domain.WriteResult{}, err
 	}
-	// One pass (writeChildren) handles role children (FK→role id) and shared-base
-	// native children (FK→base id) by the OperationOf categorization: a loaded
+	// One pass (writeChildren) handles role children (ParentID→role id) and shared-base
+	// native children (ParentID→base id) by the OperationOf categorization: a loaded
 	// base-child arrives as Constructor → no-op (not re-inserted); only the request's
 	// new ones insert (and re-added/changed update, removed delete) — the upsert.
 	if err := writeChildren(ctx, tx, d, root, schema, id, baseID, now); err != nil {
@@ -260,7 +260,7 @@ func (b *BaseEngine) insertWithBase(ctx persistence.RequestContext, entity domai
 	return domain.WriteResult{ID: domain.NewID(id), Fields: roleFields}, nil
 }
 
-// updateWithBase is the role UPDATE (PUT/PATCH): UPDATE the role row by PK, apply
+// updateWithBase is the role UPDATE (PUT/PATCH): UPDATE the role row by ID, apply
 // aggregate child changes + sibling updates, and UPSERT the shared identity
 // (shared fields last-write-wins). The natural-key value is immutable — it
 // derives the id, so the UPSERT keys on the derived id and never rewrites the key.
@@ -289,8 +289,8 @@ func (b *BaseEngine) updateWithBase(ctx persistence.RequestContext, entity domai
 	if err := guardNaturalKeyImmutable(ctx, tx, d, schema, base, entity.EntityName(), entity.ID().Value(), fkCol, baseID); err != nil {
 		return domain.WriteResult{}, err
 	}
-	sql, args := buildUpdate(d, schema.Table(), schema.PKColumn(), entity.ID().Value(), roleFields, schema.UpdateNowColumns(), now, schema.RevisionColumn())
-	if err := execExpectingRow(ctx, tx, sql, args, entity.EntityName(), schema.PKColumn(), entity.ID().Value()); err != nil {
+	sql, args := buildUpdate(d, schema.Table(), schema.IDColumn(), entity.ID().Value(), roleFields, schema.UpdateNowColumns(), now, schema.RevisionColumn())
+	if err := execExpectingRow(ctx, tx, sql, args, entity.EntityName(), schema.IDColumn(), entity.ID().Value()); err != nil {
 		return domain.WriteResult{}, err
 	}
 	// Aggregate role: role + shared-base children, persisted by OperationOf
@@ -302,7 +302,7 @@ func (b *BaseEngine) updateWithBase(ctx persistence.RequestContext, entity domai
 	if err := applySiblingUpdates(ctx, tx, d, schema, src, entity.ID().Value(), entity.IsPartial()); err != nil {
 		return domain.WriteResult{}, err
 	}
-	// The base always exists here (we are updating an existing role, whose FK
+	// The base always exists here (we are updating an existing role, whose ParentID
 	// references it), so this is always the UPDATE branch.
 	baseRev, err := b.upsertSharedBase(ctx, tx, d, base, baseID, baseFields, true, now)
 	if err != nil {
@@ -316,7 +316,7 @@ func (b *BaseEngine) updateWithBase(ctx persistence.RequestContext, entity domai
 	ownRev := int64(0)
 	var ownCreatedAt time.Time
 	if rc := schema.RevisionColumn(); rc != "" {
-		if ownRev, ownCreatedAt, err = readRevisionCreatedAt(ctx, tx, d, schema.Table(), rc, schema.CreatedAtColumn(), schema.PKColumn(), entity.ID().Value()); err != nil {
+		if ownRev, ownCreatedAt, err = readRevisionCreatedAt(ctx, tx, d, schema.Table(), rc, schema.CreatedAtColumn(), schema.IDColumn(), entity.ID().Value()); err != nil {
 			return domain.WriteResult{}, err
 		}
 	}
@@ -350,9 +350,9 @@ func (b *BaseEngine) updateWithBase(ctx persistence.RequestContext, entity domai
 // assumes it never changes after insert; without this guard a request that
 // mutated the key would upsert a DIFFERENT identity (last-write-wins over a
 // third party's shared fields) while the role row keeps pointing at the old
-// base. Shared-PK model: pure arithmetic — the role id IS UUIDv5(naturalKey),
-// so the id derived from the request must equal the row's own id. Separate-FK
-// model: one PK-indexed SELECT (inside the open TX) projecting the comparison
+// base. Shared-ID model: pure arithmetic — the role id IS UUIDv5(naturalKey),
+// so the id derived from the request must equal the row's own id. Separate-ParentID
+// model: one ID-indexed SELECT (inside the open TX) projecting the comparison
 // as ANSI CASE 1/0 — the same dialect-safe form baseIsArchived uses (a bare
 // boolean-valued `fk = ?` in a SELECT list is a PG/MySQL-ism; T-SQL would
 // parse it as an alias assignment); a missing row skips the guard (the
@@ -361,16 +361,16 @@ func (b *BaseEngine) updateWithBase(ctx persistence.RequestContext, entity domai
 // captures the request itself as Old, so an Old-vs-request comparison would be
 // vacuous precisely in the case that needs guarding.
 func guardNaturalKeyImmutable(ctx context.Context, tx WriteTx, d Dialect, schema, base *TableSchema, entityName, id, fkCol, baseID string) error {
-	nkGo, _ := base.GoOf(base.NaturalKeyColumn())
-	if fkCol == schema.PKColumn() {
+	nkGo, _ := base.GoOf(base.NaturalIDColumn())
+	if fkCol == schema.IDColumn() {
 		if id != baseID {
-			return SingleNotificationError(entityName, nkGo, domain.NaturalKeyImmutableNotification{})
+			return SingleNotificationError(entityName, nkGo, domain.NaturalIDImmutableNotification{})
 		}
 		return nil
 	}
 	q := "SELECT CASE WHEN " + d.QuoteIdent(fkCol) + " = " + d.Placeholder(1) + " THEN 1 ELSE 0 END" +
 		" FROM " + d.QuoteIdent(schema.Table()) +
-		" WHERE " + d.QuoteIdent(schema.PKColumn()) + " = " + d.Placeholder(2)
+		" WHERE " + d.QuoteIdent(schema.IDColumn()) + " = " + d.Placeholder(2)
 	rows, err := tx.Query(ctx, q, d.EncodeArg(domain.NewID(baseID)), d.EncodeArg(domain.NewID(id)))
 	if err != nil {
 		return err
@@ -384,7 +384,7 @@ func guardNaturalKeyImmutable(ctx context.Context, tx WriteTx, d Dialect, schema
 		return err
 	}
 	if matches != 1 {
-		return SingleNotificationError(entityName, nkGo, domain.NaturalKeyImmutableNotification{})
+		return SingleNotificationError(entityName, nkGo, domain.NaturalIDImmutableNotification{})
 	}
 	return rows.Err()
 }
@@ -454,7 +454,7 @@ func (b *BaseEngine) convergeBaseAfterHardDelete(
 				// does; the SyncEngine reads the base id from it to fan out.
 				if err := WriteOutbox(ctx, tx, base.Table(), "DELETED", baseID,
 					domain.Fields{
-						base.PKColumn(): domain.NewID(baseID),
+						base.IDColumn(): domain.NewID(baseID),
 						payloadKeyIDs:   outboxMeta{ID: baseID, BasePurged: true}.idsBlock(),
 					}); err != nil {
 					return AuditBundle{}, false, err
@@ -477,7 +477,7 @@ func (b *BaseEngine) convergeBaseAfterHardDelete(
 func (b *BaseEngine) anyRoleRowReferences(ctx context.Context, tx WriteTx, d Dialect, base *TableSchema, baseID string) (bool, error) {
 	for _, rr := range b.effectiveReferencingRoles(base) {
 		q := d.ApplyLimit("SELECT 1 FROM "+d.QuoteIdent(rr.Table)+
-			" WHERE "+d.QuoteIdent(rr.FKColumn)+" = "+d.Placeholder(1), 1)
+			" WHERE "+d.QuoteIdent(rr.ParentIDColumn)+" = "+d.Placeholder(1), 1)
 		rows, err := tx.Query(ctx, q, d.EncodeArg(domain.NewID(baseID)))
 		if err != nil {
 			return false, err
@@ -495,7 +495,7 @@ func (b *BaseEngine) anyRoleRowReferences(ctx context.Context, tx WriteTx, d Dia
 	return false, nil
 }
 
-// purgeOrphanBase hard-deletes the base's native children (FK = base id) then
+// purgeOrphanBase hard-deletes the base's native children (ParentID = base id) then
 // the base row itself, explicitly in Go (same TX, C7), under a savepoint. A
 // foreign-key violation on any statement — a referencing table the registry
 // does not know about — rolls back to the savepoint and reports (false, nil):
@@ -507,11 +507,11 @@ func (b *BaseEngine) purgeOrphanBase(ctx context.Context, tx WriteTx, d Dialect,
 	}
 	err := func() error {
 		for _, bc := range base.ChildSchemas() {
-			if err := tx.Exec(ctx, childDeleteSQL(d, bc.Table(), bc.FKColumn()), d.EncodeArg(domain.NewID(baseID))); err != nil {
+			if err := tx.Exec(ctx, childDeleteSQL(d, bc.Table(), bc.ParentIDColumn()), d.EncodeArg(domain.NewID(baseID))); err != nil {
 				return err
 			}
 		}
-		return tx.Exec(ctx, deleteSQL(d, base.Table(), base.PKColumn()), d.EncodeArg(domain.NewID(baseID)))
+		return tx.Exec(ctx, deleteSQL(d, base.Table(), base.IDColumn()), d.EncodeArg(domain.NewID(baseID)))
 	}()
 	if err != nil {
 		if _, vetoed := d.IsForeignKeyViolation(err); vetoed {
@@ -595,18 +595,18 @@ func (b *BaseEngine) convergeBaseAfterSoftWrite(ctx context.Context, tx WriteTx,
 
 // vetoUnarchiveWithActiveSibling enforces, on the /unarchive verb, the invariant
 // the INSERT probe enforces on POST: at most one ACTIVE role row per identity
-// per role table. Under the separate-FK model the identity may carry archived
+// per role table. Under the separate-ParentID model the identity may carry archived
 // remnants NEXT TO a newer active row (the dev's active-only uniqueness
 // contract); reviving a remnant would then put two active roles on the same
 // identity, so it is the same 409 a POST raises. A no-op for a role without a
-// shared base and for the shared-PK model (the PK itself caps the table at one
+// shared base and for the shared-ID model (the ID itself caps the table at one
 // row per identity). It runs BEFORE the role's own unarchive UPDATE — probing
 // after would never fire under an active-only unique index (the index vetoes
 // the UPDATE first, as a raw constraint error). The probe excludes the row
 // being unarchived, keeping an already-active row's unarchive idempotent.
 func (b *BaseEngine) vetoUnarchiveWithActiveSibling(ctx context.Context, tx WriteTx, d Dialect, schema *TableSchema, src domain.Entity, id, entityName string) error {
 	base, fkCol, ok := schema.SharedBaseRef()
-	if !ok || fkCol == schema.PKColumn() {
+	if !ok || fkCol == schema.IDColumn() {
 		return nil
 	}
 	sd, hasSD := schema.SoftDeleteColumn()
@@ -620,7 +620,7 @@ func (b *BaseEngine) vetoUnarchiveWithActiveSibling(ctx context.Context, tx Writ
 	baseID := deterministicBaseID(nk)
 	q := d.ApplyLimit("SELECT 1 FROM "+d.QuoteIdent(schema.Table())+
 		" WHERE "+d.QuoteIdent(fkCol)+" = "+d.Placeholder(1)+
-		" AND "+d.QuoteIdent(schema.PKColumn())+" <> "+d.Placeholder(2)+
+		" AND "+d.QuoteIdent(schema.IDColumn())+" <> "+d.Placeholder(2)+
 		" AND "+d.QuoteIdent(sd)+" IS NULL", 1)
 	rows, err := tx.Query(ctx, q, d.EncodeArg(domain.NewID(baseID)), d.EncodeArg(domain.NewID(id)))
 	if err != nil {
@@ -628,7 +628,7 @@ func (b *BaseEngine) vetoUnarchiveWithActiveSibling(ctx context.Context, tx Writ
 	}
 	defer rows.Close()
 	if rows.Next() {
-		return SingleNotificationError(entityName, schema.PKColumn(), domain.EntityAlreadyAddedNotification{})
+		return SingleNotificationError(entityName, schema.IDColumn(), domain.EntityAlreadyAddedNotification{})
 	}
 	return rows.Err()
 }
@@ -666,14 +666,14 @@ func cascadeBaseLifecycle(ctx context.Context, tx WriteTx, d Dialect, base *Tabl
 	if stamp != nil {
 		sql := fmt.Sprintf("UPDATE %s SET %s = %s%s WHERE %s = %s AND %s IS NULL",
 			d.QuoteIdent(base.Table()), d.QuoteIdent(sd), d.Placeholder(1), bump,
-			d.QuoteIdent(base.PKColumn()), d.Placeholder(2), d.QuoteIdent(sd))
+			d.QuoteIdent(base.IDColumn()), d.Placeholder(2), d.QuoteIdent(sd))
 		if err := tx.Exec(ctx, sql, d.EncodeArg(*stamp), d.EncodeArg(domain.NewID(baseID))); err != nil {
 			return err
 		}
 	} else {
 		sql := fmt.Sprintf("UPDATE %s SET %s = NULL%s WHERE %s = %s AND %s IS NOT NULL",
 			d.QuoteIdent(base.Table()), d.QuoteIdent(sd), bump,
-			d.QuoteIdent(base.PKColumn()), d.Placeholder(1), d.QuoteIdent(sd))
+			d.QuoteIdent(base.IDColumn()), d.Placeholder(1), d.QuoteIdent(sd))
 		if err := tx.Exec(ctx, sql, d.EncodeArg(domain.NewID(baseID))); err != nil {
 			return err
 		}
@@ -684,13 +684,13 @@ func cascadeBaseLifecycle(ctx context.Context, tx WriteTx, d Dialect, base *Tabl
 			continue
 		}
 		if stamp != nil {
-			if err := tx.Exec(ctx, archiveCascadeSQL(d, bc.Table(), csd, bc.FKColumn()),
+			if err := tx.Exec(ctx, archiveCascadeSQL(d, bc.Table(), csd, bc.ParentIDColumn()),
 				d.EncodeArg(*stamp), d.EncodeArg(domain.NewID(baseID))); err != nil {
 				return err
 			}
 			continue
 		}
-		if err := tx.Exec(ctx, childCascadeSQL(d, bc.Table(), csd, bc.FKColumn(), nullSetExpr(d), " IS NOT NULL"),
+		if err := tx.Exec(ctx, childCascadeSQL(d, bc.Table(), csd, bc.ParentIDColumn(), nullSetExpr(d), " IS NOT NULL"),
 			d.EncodeArg(domain.NewID(baseID))); err != nil {
 			return err
 		}
@@ -709,7 +709,7 @@ func baseIsArchived(ctx context.Context, tx WriteTx, d Dialect, base *TableSchem
 	// PG/MySQL-ism — T-SQL has no boolean expressions outside predicates).
 	// CASE WHEN … THEN 1 ELSE 0 END scans into an int on every dialect.
 	q := "SELECT CASE WHEN " + d.QuoteIdent(sd) + " IS NOT NULL THEN 1 ELSE 0 END FROM " + d.QuoteIdent(base.Table()) +
-		" WHERE " + d.QuoteIdent(base.PKColumn()) + " = " + d.Placeholder(1)
+		" WHERE " + d.QuoteIdent(base.IDColumn()) + " = " + d.Placeholder(1)
 	rows, err := tx.Query(ctx, q, d.EncodeArg(domain.NewID(baseID)))
 	if err != nil {
 		return false, err
@@ -730,7 +730,7 @@ func baseIsArchived(ctx context.Context, tx WriteTx, d Dialect, base *TableSchem
 // column has no archived state, so every existing row counts as active.
 func (b *BaseEngine) anyActiveRole(ctx context.Context, tx WriteTx, d Dialect, base *TableSchema, baseID string) (bool, error) {
 	for _, rr := range b.effectiveReferencingRoles(base) {
-		q := "SELECT 1 FROM " + d.QuoteIdent(rr.Table) + " WHERE " + d.QuoteIdent(rr.FKColumn) + " = " + d.Placeholder(1)
+		q := "SELECT 1 FROM " + d.QuoteIdent(rr.Table) + " WHERE " + d.QuoteIdent(rr.ParentIDColumn) + " = " + d.Placeholder(1)
 		if rr.SoftDeleteCol != "" {
 			q += " AND " + d.QuoteIdent(rr.SoftDeleteCol) + " IS NULL"
 		}
@@ -757,7 +757,7 @@ func (b *BaseEngine) anyActiveRole(ctx context.Context, tx WriteTx, d Dialect, b
 // outbox payload is the one THIS operation's lock scope produced. A vanished
 // base row (purged) answers 0.
 func readBaseRevision(ctx context.Context, tx WriteTx, d Dialect, base *TableSchema, baseID string) (int64, error) {
-	return readRevision(ctx, tx, d, base.Table(), base.RevisionColumn(), base.PKColumn(), baseID)
+	return readRevision(ctx, tx, d, base.Table(), base.RevisionColumn(), base.IDColumn(), baseID)
 }
 
 // bumpBaseRevision advances the shared identity's revision — the IDENTITY
@@ -785,7 +785,7 @@ func bumpBaseRevision(ctx context.Context, tx WriteTx, d Dialect, base *TableSch
 	}
 	rev := d.QuoteIdent(rc)
 	sql := "UPDATE " + d.QuoteIdent(base.Table()) + " SET " + rev + " = " + rev + " + 1" +
-		" WHERE " + d.QuoteIdent(base.PKColumn()) + " = " + d.Placeholder(1)
+		" WHERE " + d.QuoteIdent(base.IDColumn()) + " = " + d.Placeholder(1)
 	return tx.Exec(ctx, sql, d.EncodeArg(domain.NewID(baseID)))
 }
 
@@ -794,7 +794,7 @@ func bumpBaseRevision(ctx context.Context, tx WriteTx, d Dialect, base *TableSch
 // the actionName.
 func baseExists(ctx context.Context, tx WriteTx, d Dialect, base *TableSchema, baseID string) (bool, error) {
 	q := d.ApplyLimit("SELECT 1 FROM "+d.QuoteIdent(base.Table())+
-		" WHERE "+d.QuoteIdent(base.PKColumn())+" = "+d.Placeholder(1), 1)
+		" WHERE "+d.QuoteIdent(base.IDColumn())+" = "+d.Placeholder(1), 1)
 	rows, err := tx.Query(ctx, q, d.EncodeArg(domain.NewID(baseID)))
 	if err != nil {
 		return false, err
@@ -813,12 +813,12 @@ func baseExists(ctx context.Context, tx WriteTx, d Dialect, base *TableSchema, b
 // KEY). Postgres' `ON CONFLICT (pk)` is scoped to the primary key, but MySQL's
 // `ON DUPLICATE KEY UPDATE` fires on ANY unique key — so if the shared base
 // carries a SECOND unique column (e.g. a unique email beside the natural-key
-// PK), a new-identity write whose email already exists would hijack the upsert
-// onto the wrong persons row on MySQL (new base never inserted → role FK fails →
-// 500). An explicit INSERT/UPDATE branch keyed on the PK behaves identically on
+// ID), a new-identity write whose email already exists would hijack the upsert
+// onto the wrong persons row on MySQL (new base never inserted → role ParentID fails →
+// 500). An explicit INSERT/UPDATE branch keyed on the ID behaves identically on
 // both dialects: the second unique column raises a clean unique violation that
 // the repo's ConstraintBinding maps to 409. (Trade-off: two concurrent COLD
-// inserts of the same brand-new identity now yield one PK-conflict 409 instead
+// inserts of the same brand-new identity now yield one ID-conflict 409 instead
 // of a silent last-write-wins merge — the more correct outcome.)
 // Managed columns are honored when the base DECLARES them: CreatedAt(+UpdatedAt)
 // stamped on the identity's creation, UpdatedAt on every role-driven change of the
@@ -834,13 +834,13 @@ func baseExists(ctx context.Context, tx WriteTx, d Dialect, base *TableSchema, b
 // every read-model write of base data.
 func (b *BaseEngine) upsertSharedBase(ctx context.Context, tx WriteTx, d Dialect, base *TableSchema, baseID string, baseFields domain.Fields, baseExists bool, now time.Time) (int64, error) {
 	if baseExists {
-		sql, args := buildUpdate(d, base.Table(), base.PKColumn(), baseID, baseFields, base.UpdateNowColumns(), now, base.RevisionColumn())
+		sql, args := buildUpdate(d, base.Table(), base.IDColumn(), baseID, baseFields, base.UpdateNowColumns(), now, base.RevisionColumn())
 		if err := tx.Exec(ctx, sql, args...); err != nil {
 			return 0, err
 		}
 		return readBaseRevision(ctx, tx, d, base, baseID)
 	}
-	sql, args := buildInsert(d, base.Table(), base.PKColumn(), baseID, baseFields, base.InsertNowColumns(), now, base.RevisionColumn())
+	sql, args := buildInsert(d, base.Table(), base.IDColumn(), baseID, baseFields, base.InsertNowColumns(), now, base.RevisionColumn())
 	if err := tx.Exec(ctx, sql, args...); err != nil {
 		return 0, err
 	}

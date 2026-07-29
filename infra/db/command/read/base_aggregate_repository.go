@@ -68,7 +68,7 @@ func NewBaseAggregateRepository[T domain.Entity](eng RelationalEngine, newEntity
 // TableSchema was built. A violation panics at construction, not on the first
 // request.
 func (r *BaseAggregateRepository[T]) WithSchema(schema *TableSchema) *BaseAggregateRepository[T] {
-	// PK-declared + aggregate-depth + Modes() ⟺ SoftDelete run in the shared
+	// ID-declared + aggregate-depth + Modes() ⟺ SoftDelete run in the shared
 	// BaseRepository.WithSchema (which also sets r.Schema). The aggregate path
 	// adds the boundary cross-check below + threads the schema into the loader.
 	r.BaseRepository.WithSchema(schema)

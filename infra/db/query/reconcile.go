@@ -124,7 +124,7 @@ func (s *SyncEngine) ReconcileView(ctx context.Context, view *ViewDefinition, cf
 	}
 
 	d := s.eng.Dialect()
-	pkCol := schema.PKColumn()
+	pkCol := schema.IDColumn()
 	table := d.QuoteIdent(view.RootTable())
 	qPK := d.QuoteIdent(pkCol)
 	qRev := d.QuoteIdent(revCol)

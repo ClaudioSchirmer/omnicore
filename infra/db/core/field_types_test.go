@@ -44,7 +44,7 @@ type allSupportedFields struct {
 }
 
 func TestFieldTypes_ClosedSetAccepts(t *testing.T) {
-	s := NewTableSchema[*allSupportedFields]("t").PK("id")
+	s := NewTableSchema[*allSupportedFields]("t").ID("id")
 	cols := []struct{ g, c string }{
 		{"Ref", "ref"}, {"OptR", "opt_r"}, {"S", "s"}, {"OptS", "opt_s"},
 		{"B", "b"}, {"OptB", "opt_b"}, {"I", "i"}, {"OptI", "opt_i"},
@@ -78,10 +78,10 @@ func TestFieldTypes_GoogleUUIDHintsDomainID(t *testing.T) {
 	type withUUIDPtr struct{ Ref *uuid.UUID }
 
 	mustPanicContaining(t, "uuid.UUID", "domain.ID", func() {
-		NewTableSchema[*withUUID]("t").PK("id").Field("Ref", "ref")
+		NewTableSchema[*withUUID]("t").ID("id").Field("Ref", "ref")
 	})
 	mustPanicContaining(t, "*uuid.UUID", "domain.ID", func() {
-		NewTableSchema[*withUUIDPtr]("t").PK("id").Field("Ref", "ref")
+		NewTableSchema[*withUUIDPtr]("t").ID("id").Field("Ref", "ref")
 	})
 }
 
@@ -96,10 +96,10 @@ func TestFieldTypes_UnknownTypesPointAtTheDocs(t *testing.T) {
 		name string
 		fn   func()
 	}{
-		{"named string (enum)", func() { NewTableSchema[*withEnum]("t").PK("id").Field("Status", "status") }},
-		{"slice (PG-only array)", func() { NewTableSchema[*withSlice]("t").PK("id").Field("Tags", "tags") }},
-		{"nested struct", func() { NewTableSchema[*withStruct]("t").PK("id").Field("Nested", "nested") }},
-		{"uint64", func() { NewTableSchema[*withUint]("t").PK("id").Field("N", "n") }},
+		{"named string (enum)", func() { NewTableSchema[*withEnum]("t").ID("id").Field("Status", "status") }},
+		{"slice (PG-only array)", func() { NewTableSchema[*withSlice]("t").ID("id").Field("Tags", "tags") }},
+		{"nested struct", func() { NewTableSchema[*withStruct]("t").ID("id").Field("Nested", "nested") }},
+		{"uint64", func() { NewTableSchema[*withUint]("t").ID("id").Field("N", "n") }},
 	}
 	for _, c := range cases {
 		mustPanicContaining(t, c.name, "table-schema.html", c.fn)
@@ -113,10 +113,10 @@ func TestFieldTypes_SharedBaseFieldsValidatedAtRoleAnchor(t *testing.T) {
 		Email uuid.UUID // shared-base field carried by the role, wrong type
 		Name  string
 	}
-	base := NewSharedBaseSchema("persons").Revision("revision").PK("id").Field("Email", "email").NaturalKey("email")
+	base := NewSharedBaseSchema("persons").Revision("revision").ID("id").Field("Email", "email").NaturalID("email")
 	mustPanicContaining(t, "shared-base field via role anchor", "domain.ID", func() {
 		NewTableSchema[*badRole]("students").
-			PK("id").
+			ID("id").
 			Field("Name", "name").
 			SharedBase(base, "person_id")
 	})

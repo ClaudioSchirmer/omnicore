@@ -25,7 +25,7 @@ import (
 // the all-pointer-with-omitempty rule before any request lands.
 type ProjectionSchema struct {
 	// Paths maps wire path → Go field path. The reader translates the Go path
-	// to the physical Mongo column (top-level "ID" → the PK column, etc.) using
+	// to the physical Mongo column (top-level "ID" → the ID column, etc.) using
 	// the view's TableSchema.
 	Paths map[string]string
 }

@@ -15,7 +15,7 @@ import (
 // with fake collections — no broker, no engine.
 
 // salesEmbedsProducts is the dependent: a 1:1 embed of the local "products"
-// view, joined on the parent's FK column.
+// view, joined on the parent's ParentID column.
 func salesEmbedsProducts() *ViewDefinition {
 	return View("sales").Version(1).Schema(composerRootSchema()).
 		Embed(JoinView(productsSourceView(), "Product", "product")).On("product_id").
@@ -65,7 +65,7 @@ func TestViewEmbedSignal_NilWhenNoViewEmbedsAView(t *testing.T) {
 func TestViewEmbedSignal_WrittenRipplesIntoEmbedder(t *testing.T) {
 	sig, colls := signalFixture(t, salesEmbedsProducts())
 	// The source document as the SyncEngine just wrote it, plus one dependent
-	// document referencing it by FK (what the 1:1 reverse scan finds).
+	// document referencing it by ParentID (what the 1:1 reverse scan finds).
 	colls["products"].docs = []any{map[string]any{"_id": "p1", "name": "Cable", docRevisionField: int64(5)}}
 	colls["sales"].docs = []any{map[string]any{"_id": "s1"}}
 
@@ -138,7 +138,7 @@ func TestSurgicalStages_WatermarkGuardsOneToOne(t *testing.T) {
 	cond := guarded["product"].(Document)["$cond"].([]any)
 	and, ok := cond[0].(Document)["$and"].([]any)
 	if !ok || len(and) != 2 {
-		t.Fatalf("a watermarked 1:1 edit must guard on FK match AND the stored revision, got %v", cond[0])
+		t.Fatalf("a watermarked 1:1 edit must guard on ParentID match AND the stored revision, got %v", cond[0])
 	}
 
 	// srcRev == 0 (an upstream mirror) keeps the unguarded shape — byte-identical
@@ -147,7 +147,7 @@ func TestSurgicalStages_WatermarkGuardsOneToOne(t *testing.T) {
 		Document{"_id": "p1"}, 0))
 	plain := unguarded["product"].(Document)["$cond"].([]any)
 	if _, guarded := plain[0].(Document)["$and"]; guarded {
-		t.Fatalf("an unwatermarked source must emit the plain FK condition, got %v", plain[0])
+		t.Fatalf("an unwatermarked source must emit the plain ParentID condition, got %v", plain[0])
 	}
 }
 
@@ -222,7 +222,7 @@ func TestViewLegRippleFailure_LandsInTheUnifiedLedger(t *testing.T) {
 	}}
 
 	// products: the source document the signal re-reads. sales: the dependent
-	// doc discovered by FK, whose SEGMENT WRITE FAILS — the leg falling over.
+	// doc discovered by ParentID, whose SEGMENT WRITE FAILS — the leg falling over.
 	prodColl := &fakeColl{docs: []any{map[string]any{"_id": "p1", DocRevisionField: int64(2), "name": "Widget"}}}
 	salesColl := &fakeColl{docs: []any{map[string]any{"_id": "s1", "product_id": "p1"}}, updateErr: errFake}
 	store := newFakeMongoFunc(func(name string) *fakeColl {

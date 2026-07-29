@@ -12,7 +12,7 @@ import (
 	"github.com/ClaudioSchirmer/omnicore/infra/db/core"
 )
 
-// SharedBase separate-FK integration against a REAL Oracle: the active-only
+// SharedBase separate-ParentID integration against a REAL Oracle: the active-only
 // uniqueness modeling — archived role remnants NEXT TO one active row — via a
 // FUNCTION-BASED UNIQUE INDEX (`CASE WHEN deleted_at IS NULL THEN person_id
 // END`): Oracle has no partial indexes, but an FBI whose expression yields
@@ -39,13 +39,13 @@ func (*sbOraStudent) BuildRules(string, domain.Service, *domain.Rules) {}
 
 func sbOraSchema() *core.TableSchema {
 	base := core.NewSharedBaseSchema("sb_persons").Revision("revision").
-		PK("id").
+		ID("id").
 		Field("Document", "document").
 		Field("Name", "name").
-		NaturalKey("document").
+		NaturalID("document").
 		SoftDelete("deleted_at")
 	return core.NewTableSchema[*sbOraStudent]("sb_students").
-		PK("id").
+		ID("id").
 		Field("Enrollment", "enrollment").
 		SoftDelete("deleted_at").
 		CreatedAt("created_at").
@@ -258,13 +258,13 @@ func (*sbpStudent) BuildRules(string, domain.Service, *domain.Rules) {}
 
 func sbpSchema() *core.TableSchema {
 	base := core.NewSharedBaseSchema("sbp_persons").Revision("revision").
-		PK("id").
+		ID("id").
 		Field("Document", "document").
 		Field("Name", "name").
-		NaturalKey("document").
+		NaturalID("document").
 		OrphanPolicy(core.DeleteWhenUnreferenced)
 	return core.NewTableSchema[*sbpStudent]("sbp_students").
-		PK("id").
+		ID("id").
 		Field("Enrollment", "enrollment").
 		SharedBase(base, "person_id")
 }
@@ -274,7 +274,7 @@ func sbpSchema() *core.TableSchema {
 // ROLLBACK TO SAVEPOINT forms with NO release statement (the empty-release
 // path, like T-SQL): (1) deleting the last role purges the base (the
 // savepoint is simply discarded at COMMIT); (2) with a foreign table still
-// referencing the person, the FK violation (ORA-02292) vetoes the purge —
+// referencing the person, the ParentID violation (ORA-02292) vetoes the purge —
 // role delete commits, base stays.
 func TestOracle_SharedBase_PurgeAndVeto(t *testing.T) {
 	eng, raw := setup(t)
@@ -339,7 +339,7 @@ func TestOracle_SharedBase_PurgeAndVeto(t *testing.T) {
 		t.Fatalf("purge leg: role must be gone, students = %d", got)
 	}
 
-	// Leg 2: an UNREGISTERED table references the person → FK ORA-02292 vetoes
+	// Leg 2: an UNREGISTERED table references the person → ParentID ORA-02292 vetoes
 	// the purge (ROLLBACK TO SAVEPOINT), the role delete commits.
 	s2 := insert("DP2")
 	if _, err := raw.ExecContext(ctx, `CREATE TABLE sbp_external_refs (

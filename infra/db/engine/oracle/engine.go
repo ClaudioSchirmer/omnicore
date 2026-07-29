@@ -23,7 +23,7 @@
 //     BOOLEAN columns and JSON payloads native JSON columns — earlier releases
 //     are not supported.
 //   - Identity is stored RAW(16): RAW compares bytewise, so the UUIDv7 ids
-//     minted in Go keep the PK index append-friendly (the BINARY(16)/InnoDB
+//     minted in Go keep the ID index append-friendly (the BINARY(16)/InnoDB
 //     rationale, verified against a live Oracle Free 23ai).
 //   - Identifiers are emitted QUOTED-UPPERCASE — equivalent by construction to
 //     the platform's unquoted resolution (the catalog folds unquoted names to

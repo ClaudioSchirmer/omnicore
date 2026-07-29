@@ -69,14 +69,14 @@ type EntityAlreadyAddedNotification struct{ DomainNotificationBase }
 type EntityDoesNotExistNotification struct{ DomainNotificationBase }
 type EntityIsNotActiveNotification struct{ DomainNotificationBase }
 
-// NaturalKeyImmutableNotification is emitted by the SharedBase write path when
+// NaturalIDImmutableNotification is emitted by the SharedBase write path when
 // an UPDATE carries a natural-key value that diverges from the persisted
 // identity. The natural key derives the deterministic base id, so every
 // SharedBase subsystem (identity upsert, refcount, lifecycle convergence, CDC
 // fan-out, payload FKs) depends on it never changing after insert. Default
 // Semantic (Validation → 422): the request is asking for something the model
 // forbids. FieldName carries the natural key's Go field name.
-type NaturalKeyImmutableNotification struct{ DomainNotificationBase }
+type NaturalIDImmutableNotification struct{ DomainNotificationBase }
 
 // InvalidAggregateChildNotification is emitted by AddAggregateChild,
 // ChangeAggregateChild, RemoveAggregateChild and ReplaceAggregateChildrenOf

@@ -172,7 +172,7 @@ func TestChildScopeFilter(t *testing.T) {
 // Under a JOIN that brings a second soft-deletable table into scope (a role's
 // SharedBase in scopeGate, or the role in the base-child loader), the
 // soft-delete column must be table-qualified so the bare reference is not
-// ambiguous (SQLSTATE 42702) — the same disambiguation the leading PK already
+// ambiguous (SQLSTATE 42702) — the same disambiguation the leading ID already
 // gets. With an empty qualifier the output stays bare (single-table path).
 func TestScopeGate_QualifiedUnderJoin(t *testing.T) {
 	std := NewExternalSchema("t").SoftDelete("deleted_at")
@@ -227,7 +227,7 @@ type fieldResolverSample struct {
 
 func TestSchemaFieldResolver(t *testing.T) {
 	r := NewTableSchema[fieldResolverSample]("t").
-		PK("id").
+		ID("id").
 		Field("Name", "full_name").
 		Field("ZipCode", "zip_code").
 		FieldResolver()

@@ -48,8 +48,8 @@ func AutoFromDoc[R any](doc map[string]any) R {
 	return out
 }
 
-// applyIDFallback returns a doc with the Go PK field "ID" ← _id when "ID" is
-// absent and "_id" is a string. The reader maps the PK column to the Go field
+// applyIDFallback returns a doc with the Go ID field "ID" ← _id when "ID" is
+// absent and "_id" is a string. The reader maps the ID column to the Go field
 // "ID"; this covers schema-less / RawDoc paths where the doc carries only the
 // Mongo _id. Top-level only. Does not mutate the input; allocates a shallow
 // copy only when a rewrite is needed.

@@ -29,7 +29,7 @@ func (e *sibTestEntity) BuildRules(string, domain.Service, *domain.Rules) {}
 
 func sibTestSchema() *TableSchema {
 	return NewTableSchema[*sibTestEntity]("pessoa").
-		PK("id").
+		ID("id").
 		Field("Name", "name").
 		Sibling(NewSiblingSchema[*sibTestEntity]("usuario").Field("UserName", "user_name"))
 }

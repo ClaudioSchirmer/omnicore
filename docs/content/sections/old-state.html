@@ -118,7 +118,7 @@
             <tr><td>update — StatusConstructor</td><td colspan="3"><em>untouched — skipped (no SQL)</em></td></tr>
             <tr><td>archive</td><td>every loaded active child (cascade)</td><td><code>"archived"</code></td><td><code>snapshot</code></td></tr>
             <tr><td>unarchive</td><td>every loaded child (cascade restore)</td><td><code>"unarchived"</code></td><td><code>snapshot</code></td></tr>
-            <tr><td>delete</td><td>every loaded child (explicit <code>DELETE</code> by FK, in-TX)</td><td><code>"deleted"</code></td><td><code>snapshot</code></td></tr>
+            <tr><td>delete</td><td>every loaded child (explicit <code>DELETE</code> by ParentID, in-TX)</td><td><code>"deleted"</code></td><td><code>snapshot</code></td></tr>
         </tbody>
     </table>
     <p>

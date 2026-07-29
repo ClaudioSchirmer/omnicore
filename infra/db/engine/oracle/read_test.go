@@ -94,7 +94,7 @@ func TestIsForeignKeyViolation(t *testing.T) {
 		}
 	})
 
-	t.Run("non-FK oracle error", func(t *testing.T) {
+	t.Run("non-ParentID oracle error", func(t *testing.T) {
 		if name, ok := d.IsForeignKeyViolation(&network.OracleError{ErrCode: 1, ErrMsg: "dup"}); ok || name != "" {
 			t.Fatalf("got (%q,%v), want ('',false)", name, ok)
 		}

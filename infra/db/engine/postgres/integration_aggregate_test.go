@@ -34,7 +34,7 @@ func (*aggCustomer) AggregateChildren() []domain.AggregateValueObject {
 }
 
 // aggChannel is the AggregateValueObject child. Has its own ID + Label.
-// Inferred child table: agg_channels; FK column: agg_customer_id.
+// Inferred child table: agg_channels; ParentID column: agg_customer_id.
 type aggChannel struct {
 	ID    domain.ID
 	Label string
@@ -66,15 +66,15 @@ func createAggregateTables(t *testing.T, pg *Postgres) {
 // aggCustomerSchema declares the aggCustomer aggregate (root + aggChannel child).
 func aggCustomerSchema() *core.TableSchema {
 	return core.NewTableSchema[*aggCustomer]("agg_customers").
-		PK("id").
+		ID("id").
 		Field("Name", "name").
 		Field("Email", "email").
 		SoftDelete("deleted_at").
 		CreatedAt("created_at").
 		UpdatedAt("updated_at").
 		Child(core.NewTableSchema[aggChannel]("agg_channels").
-			PK("id").
-			FK("agg_customer_id").
+			ID("id").
+			ParentID("agg_customer_id").
 			Field("Label", "label").
 			SoftDelete("deleted_at").
 			CreatedAt("created_at").
@@ -270,7 +270,7 @@ func TestPostgres_UnarchiveAggregate_RestoresArchivedChildren(t *testing.T) {
 	}
 }
 
-// --- deleteAggregate relies on FK CASCADE ----------------------------------
+// --- deleteAggregate relies on ParentID CASCADE ----------------------------------
 
 func TestPostgres_DeleteAggregate_FKDeleteCascade(t *testing.T) {
 	pg, cleanup := newTestPG(t)
@@ -293,7 +293,7 @@ func TestPostgres_DeleteAggregate_FKDeleteCascade(t *testing.T) {
 		t.Error("root not removed")
 	}
 	if rowCount(t, pg, "agg_channels") != 0 {
-		t.Error("expected FK ON DELETE CASCADE to remove children too")
+		t.Error("expected ParentID ON DELETE CASCADE to remove children too")
 	}
 }
 
@@ -375,14 +375,14 @@ func TestPostgres_InsertAggregate_RespectsChildTableAndFKOverride(t *testing.T) 
 	ins, _ := domain.GetInsertable(root, nil, "GetInsertable")
 
 	schema := core.NewTableSchema[*aggInvoice]("agg_invoices").
-		PK("id").
+		ID("id").
 		Field("Reference", "reference").
 		SoftDelete("deleted_at").
 		CreatedAt("created_at").
 		UpdatedAt("updated_at").
 		Child(core.NewTableSchema[lineItem]("tb_lines").
-			PK("id").
-			FK("invoice_id").
+			ID("id").
+			ParentID("invoice_id").
 			Field("Amount", "amount").
 			SoftDelete("deleted_at").
 			CreatedAt("created_at").

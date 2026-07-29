@@ -11,7 +11,7 @@ import (
 )
 
 // newWriteID mints the framework-authoritative id for a new row: a UUID v7
-// (time-ordered, so a clustered PK stays local) generated in Go on EVERY
+// (time-ordered, so a clustered ID stays local) generated in Go on EVERY
 // backend. No dialect generates ids anymore — Postgres' gen_random_uuid()
 // DEFAULT is simply overridden and MySQL never had one — so the INSERT is
 // byte-identical across dialects and carries no RETURNING.
@@ -37,10 +37,10 @@ func newWriteID() (string, error) {
 func writeNow() time.Time { return time.Now().UTC().Truncate(time.Microsecond) }
 
 // buildInsert renders the INSERT for the bound columns + the managed timestamp
-// columns (bound to the operation stamp `now`), with the Go-generated PK
+// columns (bound to the operation stamp `now`), with the Go-generated ID
 // prepended. Placeholders, identifier quoting and value encoding all come from
 // the Dialect, so the one statement serves both backends: EncodeArg renders the
-// PK (and any UUID-shaped value) in the dialect's wire form — uuid text on
+// ID (and any UUID-shaped value) in the dialect's wire form — uuid text on
 // Postgres, BINARY(16) on MySQL. No RETURNING: the id AND the timestamps are
 // known up front.
 func buildInsert(d Dialect, table, pk, id string, fields domain.Fields, nowCols []string, now time.Time, revCol string) (string, []any) {
@@ -83,7 +83,7 @@ func buildInsert(d Dialect, table, pk, id string, fields domain.Fields, nowCols 
 }
 
 // buildUpdate renders the UPDATE for the bound columns + the managed timestamp
-// columns (bound to the operation stamp `now`), keyed on the PK. Existence is
+// columns (bound to the operation stamp `now`), keyed on the ID. Existence is
 // checked by the caller via the rows-affected count (no RETURNING) — uniform
 // across dialects.
 func buildUpdate(d Dialect, table, pk, id string, fields domain.Fields, nowCols []string, now time.Time, revCol string) (string, []any) {
@@ -113,7 +113,7 @@ func buildUpdate(d Dialect, table, pk, id string, fields domain.Fields, nowCols 
 }
 
 // archiveSQL soft-deletes one row: the archive stamp binds as the FIRST arg
-// (the operation's writeNow() value), the PK as the second — the same
+// (the operation's writeNow() value), the ID as the second — the same
 // app-clock stamp every other statement of the operation carries.
 func archiveSQL(d Dialect, table, sdCol, pk, revCol string) string {
 	bump := ""
@@ -180,8 +180,8 @@ func archiveCascadeSQL(d Dialect, childTable, childSd, fkCol string) string {
 }
 
 // childSiblingDeleteSQL hard-deletes a child's sibling rows when the root is
-// deleted. The children are removed in bulk by their FK to the root (no per-row
-// ids), so a child's siblings — keyed on the child's shared PK — are removed via
+// deleted. The children are removed in bulk by their ParentID to the root (no per-row
+// ids), so a child's siblings — keyed on the child's shared ID — are removed via
 // a subquery over the soon-to-be-deleted child rows. Must run BEFORE the child
 // rows are deleted (the subquery reads them). The single arg is the root id.
 func childSiblingDeleteSQL(d Dialect, sibTable, childPKCol, childTable, childFKCol string) string {
@@ -192,7 +192,7 @@ func childSiblingDeleteSQL(d Dialect, sibTable, childPKCol, childTable, childFKC
 }
 
 // buildSiblingUpsert renders the INSERT-or-update of one sibling row keyed on
-// the shared PK: INSERT (pk + fields) ON CONFLICT(pk) DO UPDATE each field to the
+// the shared ID: INSERT (pk + fields) ON CONFLICT(pk) DO UPDATE each field to the
 // proposed value. Dialect-agnostic via Dialect.BuildUpsert (PG ON CONFLICT ⟷
 // MySQL ON DUPLICATE KEY). Args bind in cols order (pk first, then SortedKeys);
 // managed timestamp columns are not handled here (siblings carry plain fields).

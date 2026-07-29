@@ -331,6 +331,14 @@ func (n *ViewNode) ColumnPath(goPath []string) ([]string, bool) {
 		if !ok {
 			return nil, false
 		}
+		// A mirror (external) schema keeps its id in `_id` (no physical id column),
+		// so a filter / sort / ?fields= on the id resolves there. Regular schemas
+		// keep it in the physical PK column.
+		if n.schema.IsExternal() {
+			if pk := n.schema.IDColumn(); pk != "" && col == pk {
+				return []string{"_id"}, true
+			}
+		}
 		return []string{col}, true
 	}
 	emb, ok := n.embeds[goPath[0]]
@@ -355,6 +363,24 @@ func (n *ViewNode) SoftDeleteColumn() (string, bool) {
 	return n.schema.SoftDeleteColumn()
 }
 
+// StripJoinKeyID removes the `_id` a composed read kept on a leg segment ONLY to
+// attach it (the consumer did not request the id). For an external MIRROR schema
+// — whose id has no physical column and was therefore PROMOTED onto the ID Go
+// field by ToGoDoc — the promoted field is dropped too, so the id obeys the
+// projection exactly like any other field: kept only when requested. A regular
+// schema exposes its id through the physical column (which the projection already
+// excludes when unrequested), so it never carries a promoted field to drop here.
+func (n *ViewNode) StripJoinKeyID(doc map[string]any) {
+	delete(doc, "_id")
+	if n.hasSchema() && n.schema.IsExternal() {
+		if pk := n.schema.IDColumn(); pk != "" {
+			if idGo, ok := n.schema.GoOf(pk); ok {
+				delete(doc, idGo)
+			}
+		}
+	}
+}
+
 // ToGoDoc rewrites a physical (column-keyed) document into the Go-field
 // vocabulary the application/web layers consume — recursively for embeds.
 // `_id` passes through (the reader + AutoFromDoc rely on it). Columns not in
@@ -368,6 +394,23 @@ func (n *ViewNode) ToGoDoc(doc map[string]any) map[string]any {
 	for col, val := range doc {
 		if col == "_id" {
 			out["_id"] = val
+			// An upstream MIRROR schema (external) carries its identity ONLY in `_id`
+			// — the outbox payload has no physical id column — so promote it onto the
+			// schema's ID Go field. Regular schemas expose the id through their
+			// physical PK column (which is subject to the projection like any field),
+			// so they are NOT promoted from the incidental `_id` here: doing so would
+			// leak the id past a `?fields=` that excluded it. When a mirror segment's
+			// id is kept only as a composition join key, the composed reader strips
+			// both `_id` and this promoted field together.
+			if n.schema.IsExternal() {
+				if pk := n.schema.IDColumn(); pk != "" {
+					if idGo, ok := n.schema.GoOf(pk); ok {
+						if _, present := out[idGo]; !present {
+							out[idGo] = val
+						}
+					}
+				}
+			}
 			continue
 		}
 		if emb, ok := n.embedsByDoc[col]; ok {

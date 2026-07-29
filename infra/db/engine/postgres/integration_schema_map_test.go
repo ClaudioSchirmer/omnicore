@@ -12,12 +12,12 @@ import (
 	"github.com/ClaudioSchirmer/omnicore/infra/db/criteria"
 )
 
-// schemaPerson exercises the core.TableSchema end-to-end: a renamed PK
+// schemaPerson exercises the core.TableSchema end-to-end: a renamed ID
 // (person_pk), renamed domain columns (full_name, mail), a renamed soft-delete
 // column (removed_at), and managed created_at/updated_at columns the framework
 // must stamp (the table declares them NOT NULL with NO default, so a missing
-// stamp would fail the INSERT). The aggregate child diverges on its own PK,
-// FK, column, and soft-delete name.
+// stamp would fail the INSERT). The aggregate child diverges on its own ID,
+// ParentID, column, and soft-delete name.
 type schemaPerson struct {
 	domain.AggregateRoot
 	FullName string
@@ -43,7 +43,7 @@ func (v schemaTag) BuildRules(string, domain.Service, *domain.Rules) {}
 
 func schemaPersonSchema() *core.TableSchema {
 	return core.NewTableSchema[*schemaPerson]("tb_people").
-		PK("person_pk").
+		ID("person_pk").
 		Revision("revision").
 		Field("FullName", "full_name").
 		Field("Email", "mail").
@@ -52,8 +52,8 @@ func schemaPersonSchema() *core.TableSchema {
 		UpdatedAt("updated_at").
 		Child(
 			core.NewTableSchema[schemaTag]("tb_tags").
-				PK("tag_pk").
-				FK("person_ref").
+				ID("tag_pk").
+				ParentID("person_ref").
 				Field("Label", "caption").
 				SoftDelete("removed_at").
 				CreatedAt("created_at").

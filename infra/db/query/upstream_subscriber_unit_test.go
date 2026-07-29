@@ -40,17 +40,17 @@ func upstreamFakeMongo(colls map[string]*fakeColl) ReadModelStore {
 }
 
 // ordersBuyerView is a B view rooted at "orders" embedding the upstream "users"
-// collection one-to-one via an external JoinUpstream leg joined on the parent FK
+// collection one-to-one via an external JoinUpstream leg joined on the parent ParentID
 // "buyer_id" — exactly the shape UpstreamSubscriber.ripple recomposes.
 func ordersBuyerView() *ViewDefinition {
 	external := JoinUpstream(
-		core.NewExternalSchema("users").PK("id").Field("Name", "name"), "Buyer", "buyer")
+		core.NewExternalSchema("users").ID("id").Field("Name", "name"), "Buyer", "buyer")
 	return View("orders").Version(1).Schema(composerRootSchema()).
 		Embed(external).On("buyer_id")
 }
 
 // ordersRootEngine returns a fakeEngine whose composer root fetch yields the
-// order root row carrying the buyer_id FK that points at the upstream doc.
+// order root row carrying the buyer_id ParentID that points at the upstream doc.
 func ordersRootEngine() *fakeEngine {
 	// Echo a root row per requested id so BOTH the per-id (WHERE id = ?) and the
 	// set-based (WHERE id IN (...)) root fetch resolve exactly the ids they ask
@@ -340,7 +340,7 @@ func TestRipple_DiscoverFailure(t *testing.T) {
 
 func TestRipple_ComposeFailure(t *testing.T) {
 	// A 1:N ripple whose parent doc does not exist yet takes the full-recompose
-	// fallback (a create racing the mirror), which is where Compose runs. The FK
+	// fallback (a create racing the mirror), which is where Compose runs. The ParentID
 	// in `after` names the parent; the empty "orders" collection makes the
 	// present-check miss, so the id falls back to Compose.
 	colls := map[string]*fakeColl{
@@ -436,7 +436,7 @@ func TestRipple_FallbackComposesMissingParent(t *testing.T) {
 	// No parent doc yet → the ripple falls back to the full recompose and
 	// materializes the complete document (upsert), field-ownership shaped.
 	colls := happyColls()
-	colls["orders"].docs = nil // discover(1:N) targets o1 via the FK, but no doc exists
+	colls["orders"].docs = nil // discover(1:N) targets o1 via the ParentID, but no doc exists
 	s := newTestUpstreamViews(t, UpstreamSubscriberConfig{}, upstreamFakeMongo(colls), ordersRootEngine(), ordersItemsView())
 
 	s.ripple(context.Background(), "u1", nil, Document{"order_id": "o1", "name": "alice"})
@@ -452,7 +452,7 @@ func TestRipple_FallbackComposesMissingParent(t *testing.T) {
 func TestRipple_NoJoinField(t *testing.T) {
 	// A view that does NOT embed the upstream collection → joinFieldFor == ""
 	// → ripple logs and skips it (defensive branch).
-	other := JoinUpstream(core.NewExternalSchema("partners").PK("id"), "Partner", "partner")
+	other := JoinUpstream(core.NewExternalSchema("partners").ID("id"), "Partner", "partner")
 	view := View("orders").Version(1).Schema(composerRootSchema()).Embed(other).On("partner_id")
 	mongo := upstreamFakeMongo(happyColls())
 	composer := NewComposerWithMongo(ordersRootEngine(), mongo, identityResolver)
@@ -469,12 +469,12 @@ func TestRipple_NoJoinField(t *testing.T) {
 }
 
 // ordersItemsView embeds the upstream "users" collection ONE-TO-MANY: the child
-// (users) holds the FK "order_id" pointing at the orders root _id. This is the
-// shape the EmbedMany recompose-ripple resolves by the changed child's FK value
+// (users) holds the ParentID "order_id" pointing at the orders root _id. This is the
+// shape the EmbedMany recompose-ripple resolves by the changed child's ParentID value
 // → the parent _id (no reverse scan of the parent view, no covering index).
 func ordersItemsView() *ViewDefinition {
 	external := JoinUpstream(
-		core.NewExternalSchema("users").PK("id").Field("Name", "name"), "Members", "members")
+		core.NewExternalSchema("users").ID("id").Field("Name", "name"), "Members", "members")
 	return View("orders").Version(1).Schema(composerRootSchema()).
 		EmbedMany(external).On("order_id")
 }
@@ -535,9 +535,9 @@ func TestDiscoverRippleTargets_EmbedMany(t *testing.T) {
 	if len(got) != 2 || !set["o-old"] || !set["o-new"] {
 		t.Errorf("move: want [o-old,o-new], got %v", got)
 	}
-	// No FK on either side (a null-FK child) → nothing to recompose.
+	// No ParentID on either side (a null-ParentID child) → nothing to recompose.
 	if got := ids(nil, Document{"_id": "u1"}); len(got) != 0 {
-		t.Errorf("null-FK child: want [], got %v", got)
+		t.Errorf("null-ParentID child: want [], got %v", got)
 	}
 }
 
@@ -545,19 +545,19 @@ func TestRipple_EmbedManyRecomposesParent(t *testing.T) {
 	colls := happyColls()
 	s := newManyUpstream(t, upstreamFakeMongo(colls), ordersRootEngine())
 	// A child change carrying order_id=o1 must recompose parent order o1 — via
-	// the FK value, with no FindIDsByField reverse scan of the "orders" view.
+	// the ParentID value, with no FindIDsByField reverse scan of the "orders" view.
 	s.ripple(context.Background(), "u1", nil, Document{"_id": "u1", "order_id": "o1"})
 	if len(colls["orders"].updates) == 0 {
 		t.Error("EmbedMany ripple must recompose (upsert) the parent order")
 	}
-	// The FK-value discovery path is proved reverse-scan-free by
+	// The ParentID-value discovery path is proved reverse-scan-free by
 	// TestDiscoverRippleTargets_EmbedMany, whose many branch never touches Mongo.
 }
 
 func TestUpsertAndRipple_EmbedManyMoveRecomposesBothParents(t *testing.T) {
 	// The full upsert path: the local doc currently belongs to o-old; the event
 	// reassigns it to o-new. readLocalDoc (gated on hasManyEmbed) reads the
-	// pre-change doc for the old FK, and the ripple recomposes BOTH parents.
+	// pre-change doc for the old ParentID, and the ripple recomposes BOTH parents.
 	colls := map[string]*fakeColl{
 		"orders": {docs: []any{map[string]any{"_id": "o1"}}},
 		"users":  {docs: []any{map[string]any{"_id": "u1", "order_id": "o-old", "name": "alice"}}},
@@ -572,11 +572,11 @@ func TestUpsertAndRipple_EmbedManyMoveRecomposesBothParents(t *testing.T) {
 }
 
 // ordersBothView embeds the SAME upstream "users" collection BOTH one-to-one
-// (parent FK "buyer_id") and one-to-many (child FK "order_id") — the mixed
+// (parent ParentID "buyer_id") and one-to-many (child ParentID "order_id") — the mixed
 // shape a view may declare; the ripple must union both discoveries.
 func ordersBothView() *ViewDefinition {
-	one := JoinUpstream(core.NewExternalSchema("users").PK("id"), "Buyer", "buyer")
-	many := JoinUpstream(core.NewExternalSchema("users").PK("id"), "Members", "members")
+	one := JoinUpstream(core.NewExternalSchema("users").ID("id"), "Buyer", "buyer")
+	many := JoinUpstream(core.NewExternalSchema("users").ID("id"), "Members", "members")
 	return View("orders").Version(1).Schema(composerRootSchema()).
 		Embed(one).On("buyer_id").EmbedMany(many).On("order_id")
 }
@@ -793,7 +793,7 @@ func TestJoinFieldFor(t *testing.T) {
 		t.Errorf("expected join field buyer_id, got %q", jf)
 	}
 	other := View("x").Version(1).Schema(composerRootSchema()).
-		Embed(JoinUpstream(core.NewExternalSchema("partners").PK("id"), "Partner", "partner")).On("partner_id")
+		Embed(JoinUpstream(core.NewExternalSchema("partners").ID("id"), "Partner", "partner")).On("partner_id")
 	if jf := s.joinFieldFor(other); jf != "" {
 		t.Errorf("view not embedding the upstream collection must yield empty join field, got %q", jf)
 	}

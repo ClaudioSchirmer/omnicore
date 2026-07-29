@@ -68,7 +68,7 @@ func TestComposer_Compose_AbsentRowReturnsNil(t *testing.T) {
 
 // TestComposer_ComposeWithOwnChild proves the Phase-1 own-child auto path against
 // a real backend: the child is declared on the ROOT schema (no EmbedMany) and must
-// project automatically, joined root.PK → child.FK, mirroring hydrateChildren.
+// project automatically, joined root.ID → child.ParentID, mirroring hydrateChildren.
 func TestComposer_ComposeWithOwnChild(t *testing.T) {
 	pg, cleanup := newTestPG(t)
 	defer cleanup()
@@ -94,8 +94,8 @@ func TestComposer_ComposeWithOwnChild(t *testing.T) {
 		`INSERT INTO oc_lines (order_id, qty) VALUES ($1, 3), ($1, 5)`, orderID)
 
 	// Child declared on the ROOT schema — NO EmbedMany. It must auto-project.
-	rootWithChild := core.NewTableSchema[embedFixture]("oc_orders").PK("id").SoftDelete("deleted_at").
-		Child(core.NewTableSchema[ocLineRow]("oc_lines").PK("id").FK("order_id").
+	rootWithChild := core.NewTableSchema[embedFixture]("oc_orders").ID("id").SoftDelete("deleted_at").
+		Child(core.NewTableSchema[ocLineRow]("oc_lines").ID("id").ParentID("order_id").
 			Field("Qty", "qty").SoftDelete("deleted_at"))
 	view := query.View("oc_orders").Schema(rootWithChild).Version(1)
 
@@ -241,7 +241,7 @@ func TestMongoViewReader_ReadByID_HitMissAndArchivedFilter(t *testing.T) {
 	// cannot engage.
 	reader := NewMongoViewReader(m, testResolver).SetViews([]*query.ViewDefinition{
 		query.View("users").
-			Schema(core.NewExternalSchema("users").PK("id").Field("Email", "email").SoftDelete("deleted_at")).
+			Schema(core.NewExternalSchema("users").ID("id").Field("Email", "email").SoftDelete("deleted_at")).
 			Version(1),
 	})
 

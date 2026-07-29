@@ -71,7 +71,7 @@ func TestComposeBatch_SiblingFetchedOncePerBatch(t *testing.T) {
 }
 
 // An own child collection is nested per root from a single batched fetch: one
-// IN (...) query over the child table, grouped by FK back to each root.
+// IN (...) query over the child table, grouped by ParentID back to each root.
 func TestComposeBatch_OwnChildrenGroupedPerRoot(t *testing.T) {
 	childCalls := 0
 	eng := composerEngine(func(sql string, args []any) ([]map[string]any, error) {
@@ -81,7 +81,7 @@ func TestComposeBatch_OwnChildrenGroupedPerRoot(t *testing.T) {
 			if !strings.Contains(sql, " IN (") {
 				t.Errorf("own-child fetch must use IN (...), got: %s", sql)
 			}
-			// two lines for o1, one for o2 — keyed by the FK order_id.
+			// two lines for o1, one for o2 — keyed by the ParentID order_id.
 			return mapsFromColsData([]string{"id", "order_id", "label"},
 				[][]any{{"l1", "o1", "A"}, {"l2", "o1", "B"}, {"l3", "o2", "C"}}), nil
 		case strings.Contains(sql, "FROM orders"):
@@ -89,9 +89,9 @@ func TestComposeBatch_OwnChildrenGroupedPerRoot(t *testing.T) {
 		}
 		return nil, nil
 	})
-	childSchema := core.NewTableSchema[csComposeVO]("lines").PK("id").FK("order_id").Field("Label", "label")
+	childSchema := core.NewTableSchema[csComposeVO]("lines").ID("id").ParentID("order_id").Field("Label", "label")
 	rootWithChild := core.NewTableSchema[*builderTestEntity]("orders").
-		PK("id").Field("Name", "name").SoftDelete("deleted_at").
+		ID("id").Field("Name", "name").SoftDelete("deleted_at").
 		Child(childSchema)
 	c := NewComposer(eng)
 	view := View("orders").Version(1).Schema(rootWithChild)
@@ -111,9 +111,9 @@ func TestComposeBatch_OwnChildrenGroupedPerRoot(t *testing.T) {
 	o1Lines, _ := byID["o1"][seg].([]Document)
 	o2Lines, _ := byID["o2"][seg].([]Document)
 	if len(o1Lines) != 2 {
-		t.Errorf("o1 children = %d, want 2 (grouped by FK)", len(o1Lines))
+		t.Errorf("o1 children = %d, want 2 (grouped by ParentID)", len(o1Lines))
 	}
 	if len(o2Lines) != 1 {
-		t.Errorf("o2 children = %d, want 1 (grouped by FK)", len(o2Lines))
+		t.Errorf("o2 children = %d, want 1 (grouped by ParentID)", len(o2Lines))
 	}
 }

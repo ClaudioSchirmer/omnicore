@@ -219,7 +219,7 @@ func IsAlreadyProcessed(ctx context.Context, q core.Querier, d core.Dialect, eve
 	//
 	// Performance: SELECT 1 filtered on exactly the UNIQUE natural key's columns
 	// is an INDEX-ONLY probe on every engine (covering seek on the
-	// omnicore_integration_processed_natural_key index) — the surrogate uuid PK
+	// omnicore_integration_processed_natural_key index) — the surrogate uuid ID
 	// costs this read path nothing; only the insert maintains the extra index.
 	sql := "SELECT 1 FROM " + integrationProcessedTable +
 		" WHERE event_id = " + d.Placeholder(1) + " AND consumer_group = " + d.Placeholder(2)

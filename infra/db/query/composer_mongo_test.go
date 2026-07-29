@@ -29,7 +29,7 @@ func TestFetchMongoEmbed_EmbedMany(t *testing.T) {
 	}}
 	c := NewComposerWithMongo(eng, newFakeMongo(mongoColl), identityResolver)
 
-	external := JoinUpstream(core.NewExternalSchema("buyers").PK("id"), "Buyers", "buyers")
+	external := JoinUpstream(core.NewExternalSchema("buyers").ID("id"), "Buyers", "buyers")
 	view := View("orders").Version(1).Schema(composerRootSchema()).
 		EmbedMany(external).On("order_id")
 
@@ -48,7 +48,7 @@ func TestFetchMongoEmbed_OneToOne(t *testing.T) {
 	mongoColl := &fakeColl{docs: []any{map[string]any{"_id": "u1", "name": "alice"}}}
 	c := NewComposerWithMongo(eng, newFakeMongo(mongoColl), identityResolver)
 
-	external := JoinUpstream(core.NewExternalSchema("buyers").PK("id"), "Buyer", "buyer")
+	external := JoinUpstream(core.NewExternalSchema("buyers").ID("id"), "Buyer", "buyer")
 	view := View("orders").Version(1).Schema(composerRootSchema()).
 		Embed(external).On("buyer_id")
 
@@ -67,7 +67,7 @@ func TestFetchMongoEmbed_OneToOne_NoMatch(t *testing.T) {
 	mongoColl := &fakeColl{docs: nil} // FindManyByField returns empty
 	c := NewComposerWithMongo(eng, newFakeMongo(mongoColl), identityResolver)
 
-	external := JoinUpstream(core.NewExternalSchema("buyers").PK("id"), "Buyer", "buyer")
+	external := JoinUpstream(core.NewExternalSchema("buyers").ID("id"), "Buyer", "buyer")
 	view := View("orders").Version(1).Schema(composerRootSchema()).
 		Embed(external).On("buyer_id")
 
@@ -82,10 +82,10 @@ func TestFetchMongoEmbed_OneToOne_NoMatch(t *testing.T) {
 }
 
 func TestFetchMongoEmbed_OneToOne_MissingFK(t *testing.T) {
-	// Root row lacks the buyer_id FK column → explicit null, same clearing contract.
+	// Root row lacks the buyer_id ParentID column → explicit null, same clearing contract.
 	eng := rootMapsEngine([]string{"id", "name"}, [][]any{{"o1", "first"}})
 	c := NewComposerWithMongo(eng, newFakeMongo(&fakeColl{}), identityResolver)
-	external := JoinUpstream(core.NewExternalSchema("buyers").PK("id"), "Buyer", "buyer")
+	external := JoinUpstream(core.NewExternalSchema("buyers").ID("id"), "Buyer", "buyer")
 	view := View("orders").Version(1).Schema(composerRootSchema()).
 		Embed(external).On("buyer_id")
 
@@ -95,14 +95,14 @@ func TestFetchMongoEmbed_OneToOne_MissingFK(t *testing.T) {
 	}
 	v, present := doc["buyer"]
 	if !present || v != nil {
-		t.Errorf("a missing FK must write the explicit null, got present=%v value=%v", present, v)
+		t.Errorf("a missing ParentID must write the explicit null, got present=%v value=%v", present, v)
 	}
 }
 
 func TestFetchMongoEmbed_OneToOne_FindError(t *testing.T) {
 	eng := rootMapsEngine([]string{"id", "buyer_id", "name"}, [][]any{{"o1", "u1", "first"}})
 	c := NewComposerWithMongo(eng, newFakeMongo(&fakeColl{findErr: context.Canceled}), identityResolver)
-	external := JoinUpstream(core.NewExternalSchema("buyers").PK("id"), "Buyer", "buyer")
+	external := JoinUpstream(core.NewExternalSchema("buyers").ID("id"), "Buyer", "buyer")
 	view := View("orders").Version(1).Schema(composerRootSchema()).
 		Embed(external).On("buyer_id")
 
@@ -115,7 +115,7 @@ func TestFetchMongoEmbed_NilHandle(t *testing.T) {
 	// NewComposer (no Mongo handle) over a view with a Mongo embed → error.
 	eng := rootMapsEngine([]string{"id", "name"}, [][]any{{"o1", "first"}})
 	c := NewComposer(eng)
-	external := JoinUpstream(core.NewExternalSchema("buyers").PK("id"), "Buyers", "buyers")
+	external := JoinUpstream(core.NewExternalSchema("buyers").ID("id"), "Buyers", "buyers")
 	view := View("orders").Version(1).Schema(composerRootSchema()).
 		EmbedMany(external).On("order_id")
 
@@ -128,7 +128,7 @@ func TestFetchMongoEmbed_NilHandle(t *testing.T) {
 func TestFetchMongoEmbed_FindError(t *testing.T) {
 	eng := rootMapsEngine([]string{"id", "name"}, [][]any{{"o1", "first"}})
 	c := NewComposerWithMongo(eng, newFakeMongo(&fakeColl{findErr: context.Canceled}), identityResolver)
-	external := JoinUpstream(core.NewExternalSchema("buyers").PK("id"), "Buyers", "buyers")
+	external := JoinUpstream(core.NewExternalSchema("buyers").ID("id"), "Buyers", "buyers")
 	view := View("orders").Version(1).Schema(composerRootSchema()).
 		EmbedMany(external).On("order_id")
 
@@ -138,10 +138,10 @@ func TestFetchMongoEmbed_FindError(t *testing.T) {
 }
 
 func TestFetchMongoEmbed_EmbedMany_MissingParentKey(t *testing.T) {
-	// Root row lacks the PK column "id" → EmbedMany skipped.
+	// Root row lacks the ID column "id" → EmbedMany skipped.
 	eng := rootMapsEngine([]string{"name"}, [][]any{{"first"}})
 	c := NewComposerWithMongo(eng, newFakeMongo(&fakeColl{}), identityResolver)
-	external := JoinUpstream(core.NewExternalSchema("buyers").PK("id"), "Buyers", "buyers")
+	external := JoinUpstream(core.NewExternalSchema("buyers").ID("id"), "Buyers", "buyers")
 	view := View("orders").Version(1).Schema(composerRootSchema()).
 		EmbedMany(external).On("order_id")
 

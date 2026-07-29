@@ -56,7 +56,7 @@ type BaseRepository[T any] struct {
 	// schema is the mandatory explicit Go↔column map for this repository's
 	// entity (root + aggregate children). It is UNEXPORTED and bound only
 	// through WithSchema — there is no way to set it that bypasses the
-	// construction-time boot checks (PK, Revision, aggregate depth, old-clone
+	// construction-time boot checks (ID, Revision, aggregate depth, old-clone
 	// safety, Modes() ⟺ SoftDelete). There is no convention fallback — a write
 	// with a nil schema panics.
 	schema *TableSchema
@@ -114,7 +114,7 @@ func (w boundWriter[T]) Unarchive(u domain.Unarchivable) error {
 
 // WithSchema declares the mandatory TableSchema and runs the construction-time
 // boot checks before binding it: type-anchored (not NewExternalSchema),
-// PK-declared, aggregate-depth (no grandchildren), old-clone safety (no
+// ID-declared, aggregate-depth (no grandchildren), old-clone safety (no
 // `json:"-"` on a persisted field, no custom json.(Un)Marshaler on the entity —
 // either would corrupt the domain.Old() snapshot), and — when T exposes Modes()
 // — the Modes() ⟺ SoftDelete invariant. The field-existence + bijection checks
@@ -132,13 +132,13 @@ func (r *BaseRepository[T]) WithSchema(schema *TableSchema) *BaseRepository[T] {
 	if schema.IsSecondary() {
 		panic(fmt.Sprintf(
 			"infra.TableSchema(%s): a sibling (NewSiblingSchema) cannot be a repository root — "+
-				"it is a shared-PK secondary table; attach it to a root via root.Sibling(...)",
+				"it is a shared-ID secondary table; attach it to a root via root.Sibling(...)",
 			schema.Table(),
 		))
 	}
 	if !schema.HasPKDeclared() {
 		panic(fmt.Sprintf(
-			"infra.TableSchema(%s): no primary key declared — declare .PK(column); "+
+			"infra.TableSchema(%s): no primary key declared — declare .ID(column); "+
 				"there is no default, the developer must declare it",
 			schema.Table(),
 		))

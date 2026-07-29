@@ -11,7 +11,7 @@ import (
 
 // Exists is the hydration-free primitive for write-path uniqueness pre-checks.
 // It must compile to a bare probe over the SAME resolution + scope-gate
-// semantics as FindOne/FindAll — and the PK must be addressable as the fixed
+// semantics as FindOne/FindAll — and the ID must be addressable as the fixed
 // Go field "ID" (the exclude-self shape). The scalar facts live in the
 // aggregate DSL (aggregate.go / aggregate_test.go).
 
@@ -28,12 +28,12 @@ func (e *ecCodedEntity) BuildRules(string, domain.Service, *domain.Rules) {}
 func ecCodedLoader(queryFn func(sql string, args []any) (Rows, error)) *AggregateLoader[*ecCodedEntity] {
 	return NewAggregateLoader[*ecCodedEntity](fakeEngine(queryFn), func() *ecCodedEntity { return &ecCodedEntity{} }).
 		WithSchema(NewTableSchema[*ecCodedEntity]("listings").
-			PK("id").Field("Code", "announcement_code").SoftDelete("deleted_at"))
+			ID("id").Field("Code", "announcement_code").SoftDelete("deleted_at"))
 }
 
 func ecSchema() *TableSchema {
 	return NewTableSchema[*aggLoaderTestEntity]("listings").
-		PK("id").
+		ID("id").
 		SoftDelete("deleted_at")
 }
 
@@ -74,7 +74,7 @@ func TestExists_CompilesBareProbe_TrueOnRow(t *testing.T) {
 		t.Errorf("predicate must resolve Go field → column, got %q", gotSQL)
 	}
 	if !strings.Contains(gotSQL, "NOT (id = $2)") && !strings.Contains(gotSQL, "id <> $2") {
-		t.Errorf("the PK must be addressable as \"ID\" for exclude-self, got %q", gotSQL)
+		t.Errorf("the ID must be addressable as \"ID\" for exclude-self, got %q", gotSQL)
 	}
 	if !strings.Contains(gotSQL, "deleted_at IS NULL") {
 		t.Errorf("the default scope gate (active-only) must apply, got %q", gotSQL)
@@ -103,10 +103,10 @@ func TestExists_NeOperatorOnID(t *testing.T) {
 	})
 	if _, err := l.Exists(context.Background(),
 		criteria.Where(criteria.Ne("ID", "0198bbbb-0000-7000-8000-000000000002"))); err != nil {
-		t.Fatalf("Ne on the PK field must be addressable, got %v", err)
+		t.Fatalf("Ne on the ID field must be addressable, got %v", err)
 	}
 	if !strings.Contains(gotSQL, "id <> $1") {
-		t.Errorf("Ne(\"ID\", …) must render against the PK column, got %q", gotSQL)
+		t.Errorf("Ne(\"ID\", …) must render against the ID column, got %q", gotSQL)
 	}
 }
 

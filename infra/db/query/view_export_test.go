@@ -31,15 +31,15 @@ func (a expAddr) BuildRules(string, domain.Service, *domain.Rules) {}
 // own child nests under its derived segment, the external embed under its field.
 func buildExportTestView() *ViewDefinition {
 	userSchema := core.NewTableSchema[*expUser]("users").
-		PK("id").
+		ID("id").
 		Field("Name", "name").
 		Field("Email", "email").
 		Sibling(core.NewSiblingSchema[*expUser]("users_ext").Field("Phone", "phone")).
 		Child(core.NewTableSchema[expAddr]("addresses").
-			PK("id").FK("user_id").Field("ZipCode", "zip_code"))
+			ID("id").ParentID("user_id").Field("ZipCode", "zip_code"))
 	// External (type-less) source carries its labelKey inline — the "mini-domain".
 	partnerSchema := core.NewExternalSchema("partners").
-		PK("id").
+		ID("id").
 		Field("PartnerName", "name", "PartnerNameField")
 
 	return View("users").Version(1).
@@ -51,7 +51,7 @@ func TestExportPlan_BuildsColumnsLabelsAndSegments(t *testing.T) {
 	plan := buildExportTestView().ExportPlan()
 	root := plan.Root
 
-	// Root columns are FLAT: the root's own fields, then the sibling's — PK and
+	// Root columns are FLAT: the root's own fields, then the sibling's — ID and
 	// managed columns excluded.
 	if len(root.Columns) != 3 {
 		t.Fatalf("root columns=%d want 3 (Name, Email, sibling Phone)", len(root.Columns))

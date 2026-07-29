@@ -10,7 +10,7 @@ import (
 )
 
 // White-box coverage for AggregateLoader.hydrateSiblings (A3b): an owner
-// sibling's columns are loaded into the SAME entity struct by the shared PK,
+// sibling's columns are loaded into the SAME entity struct by the shared ID,
 // through the neutral read seam. Loading the sibling is what lets a later UPDATE
 // see the row's real sibling values rather than clobbering them with zeros.
 
@@ -27,13 +27,13 @@ func (e *sibLoadEntity) BuildRules(string, domain.Service, *domain.Rules) {}
 
 func sibLoadSchema() *TableSchema {
 	return NewTableSchema[*sibLoadEntity]("pessoa").
-		PK("id").
+		ID("id").
 		Field("Name", "name").
 		Sibling(NewSiblingSchema[*sibLoadEntity]("usuario").Field("UserName", "user_name"))
 }
 
 // A present sibling row populates the owner's sibling field (no JOIN: the SELECT
-// is against the sibling table alone, keyed by the shared PK).
+// is against the sibling table alone, keyed by the shared ID).
 func TestHydrateSiblings_PopulatesOwnerField(t *testing.T) {
 	query := func(sql string, args []any) (Rows, error) {
 		if !strings.Contains(sql, "FROM usuario") {
@@ -131,7 +131,7 @@ func TestHydrateSiblings_NoSiblingsNoQuery(t *testing.T) {
 		t.Fatal("hydrateSiblings must not query when no siblings are declared")
 		return nil, nil
 	}
-	schema := NewTableSchema[*sibLoadEntity]("pessoa").PK("id").Revision("revision").Field("Name", "name")
+	schema := NewTableSchema[*sibLoadEntity]("pessoa").ID("id").Revision("revision").Field("Name", "name")
 	l := NewAggregateLoader[*sibLoadEntity](fakeEngine(query), func() *sibLoadEntity { return &sibLoadEntity{} }).
 		WithSchema(schema)
 

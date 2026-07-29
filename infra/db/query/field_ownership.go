@@ -41,7 +41,7 @@ func fieldOwnershipStages(doc Document, pkCol string, embedFields map[string]str
 		}
 		// The SyncEngine's field: keep the stored value; write the composed
 		// one only when this upsert is creating the document. Existence is
-		// probed via the root PK column — absent on a fresh upsert-insert,
+		// probed via the root ID column — absent on a fresh upsert-insert,
 		// present on every materialized document (composer and payload
 		// projector both carry it).
 		set[k] = Document{"$cond": []any{exists, "$" + k, lit(v)}}

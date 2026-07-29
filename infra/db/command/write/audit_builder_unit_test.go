@@ -31,7 +31,7 @@ func TestFilterClaims_NoOverlapReturnsNil(t *testing.T) {
 func TestGoFieldValues_ExternalSchemaSkipsUnindexed(t *testing.T) {
 	// A type-less external schema carries fields with index < 0, so every field
 	// is skipped — the index<0 guard branch.
-	ext := NewExternalSchema("users").PK("id").Field("Name", "name")
+	ext := NewExternalSchema("users").ID("id").Field("Name", "name")
 	out := ext.GoFieldValues(struct{ Name string }{Name: "x"})
 	if len(out) != 0 {
 		t.Errorf("external goFieldValues must skip unindexed fields, got %v", out)

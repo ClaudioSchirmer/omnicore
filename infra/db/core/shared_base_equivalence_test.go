@@ -14,12 +14,12 @@ import (
 
 func equivBase() *TableSchema {
 	return NewSharedBaseSchema("pessoa").Revision("revision").
-		PK("id").
+		ID("id").
 		Field("Name", "name").
 		Field("Document", "document").
-		NaturalKey("document").
+		NaturalID("document").
 		SoftDelete("deleted_at").
-		Child(NewTableSchema[equivAddr]("endereco").PK("id").FK("pessoa_id").Field("Street", "street").SoftDelete("deleted_at"))
+		Child(NewTableSchema[equivAddr]("endereco").ID("id").ParentID("pessoa_id").Field("Street", "street").SoftDelete("deleted_at"))
 }
 
 type equivAddr struct {
@@ -50,17 +50,18 @@ func TestAssertSharedBaseEquivalent_IdenticalPasses(t *testing.T) {
 func TestAssertSharedBaseEquivalent_DivergenceAxes(t *testing.T) {
 	t.Run("different tables is a caller bug", func(t *testing.T) {
 		mustPanicWith(t, "different tables", func() {
-			AssertSharedBaseEquivalent(equivBase(), NewSharedBaseSchema("outra").Revision("revision").PK("id").Field("Name", "name").NaturalKey("name"))
+			AssertSharedBaseEquivalent(equivBase(), NewSharedBaseSchema("outra").Revision("revision").ID("id").Field("Name", "name").NaturalID("name"))
 		})
 	})
 	t.Run("pk", func(t *testing.T) {
 		b := equivBase()
-		b.pkColumn = "uuid"
-		mustPanicWith(t, "PK column", func() { AssertSharedBaseEquivalent(equivBase(), b) })
+		b.idColumn = "uuid"
+		mustPanicWith(t, "ID column", func() { AssertSharedBaseEquivalent(equivBase(), b) })
 	})
 	t.Run("natural key", func(t *testing.T) {
-		b := equivBase().NaturalKey("name")
-		mustPanicWith(t, "NaturalKey", func() { AssertSharedBaseEquivalent(equivBase(), b) })
+		b := equivBase()
+		b.naturalIDCol = "name" // set directly: re-declaring via .NaturalID() is now a boot panic
+		mustPanicWith(t, "NaturalID", func() { AssertSharedBaseEquivalent(equivBase(), b) })
 	})
 	t.Run("orphan policy", func(t *testing.T) {
 		b := equivBase().OrphanPolicy(DeleteWhenUnreferenced)
@@ -76,9 +77,9 @@ func TestAssertSharedBaseEquivalent_DivergenceAxes(t *testing.T) {
 		mustPanicWith(t, "field count", func() { AssertSharedBaseEquivalent(equivBase(), b) })
 	})
 	t.Run("field column", func(t *testing.T) {
-		a := NewSharedBaseSchema("pessoa").Revision("revision").PK("id").Field("Name", "name").NaturalKey("name")
-		b := NewSharedBaseSchema("pessoa").Revision("revision").PK("id").Field("Name", "full_name").NaturalKey("full_name")
-		b.naturalKeyCol = "name" // align NK so the field divergence is what trips
+		a := NewSharedBaseSchema("pessoa").Revision("revision").ID("id").Field("Name", "name").NaturalID("name")
+		b := NewSharedBaseSchema("pessoa").Revision("revision").ID("id").Field("Name", "full_name").NaturalID("full_name")
+		b.naturalIDCol = "name" // align NK so the field divergence is what trips
 		mustPanicWith(t, "field Name", func() { AssertSharedBaseEquivalent(a, b) })
 	})
 	t.Run("children count", func(t *testing.T) {
@@ -88,12 +89,12 @@ func TestAssertSharedBaseEquivalent_DivergenceAxes(t *testing.T) {
 	})
 	t.Run("child shape", func(t *testing.T) {
 		b := NewSharedBaseSchema("pessoa").Revision("revision").
-			PK("id").
+			ID("id").
 			Field("Name", "name").
 			Field("Document", "document").
-			NaturalKey("document").
+			NaturalID("document").
 			SoftDelete("deleted_at").
-			Child(NewTableSchema[equivAddr]("enderecos").PK("id").FK("pessoa_id").Field("Street", "street").SoftDelete("deleted_at"))
+			Child(NewTableSchema[equivAddr]("enderecos").ID("id").ParentID("pessoa_id").Field("Street", "street").SoftDelete("deleted_at"))
 		mustPanicWith(t, "native child equivAddr", func() { AssertSharedBaseEquivalent(equivBase(), b) })
 	})
 }

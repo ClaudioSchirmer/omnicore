@@ -88,7 +88,7 @@ func TestNormalizeOracleValue(t *testing.T) {
 }
 
 // TestDecodeID covers the leading-key decoder the aggregate loader uses to turn
-// a scanned PK/FK back into the canonical UUID string. A RAW(16) column scans
+// a scanned ID/ParentID back into the canonical UUID string. A RAW(16) column scans
 // into a 16-byte string (→ decode); anything else (a VARCHAR2 id, an
 // already-decoded value) passes through defensively — the same real branching
 // the other engines' DecodeID carries.

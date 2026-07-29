@@ -3,9 +3,9 @@ package domain
 // AggregateRootProvider is implemented by entities that embed AggregateRoot and
 // want to be persisted atomically with their child collections.
 //
-// Table and FK names are declared explicitly in infra via the per-Repository
+// Table and ParentID names are declared explicitly in infra via the per-Repository
 // fwinfra.TableSchema (root + Child schemas). Domain stays DDD-pure — it does
-// not pronounce table/column/FK.
+// not pronounce table/column/ParentID.
 //
 // Phase 20: the root regains authority over the aggregate boundary —
 // AggregateChildren() declares which AVO types belong to this aggregate.
@@ -17,7 +17,7 @@ package domain
 // Cascade is symmetric and universal:
 //   - Archive(root)   → Archive all children
 //   - Unarchive(root) → Unarchive all children archived
-//   - Delete(root)    → Delete all children via FK ON DELETE CASCADE
+//   - Delete(root)    → Delete all children via ParentID ON DELETE CASCADE
 //   - Update root with StatusRemoved children → Archive those children
 type AggregateRootProvider interface {
 	// GetAggregateRoot returns the embedded *AggregateRoot so the persister

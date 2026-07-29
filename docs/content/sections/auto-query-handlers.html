@@ -684,7 +684,7 @@ fwopenapi.Mount(d.OpenAPIRegistry, app, fiber.MethodGet, "/users.csv", csvH, csv
         <code>query.JoinUpstream(...)</code> carries an <strong>external</strong> (type-less <code>NewExternalSchema</code>)
         schema describing an upstream collection's columns, plus its two mandatory segment names (Go, then doc field); the
         framework derives the collection from the schema. The join column is named on the verb via <code>.On(...)</code> —
-        the parent FK on a 1:1 <code>Embed</code>, the leg FK on an <code>EmbedMany</code>.
+        the parent ParentID on a 1:1 <code>Embed</code>, the leg ParentID on an <code>EmbedMany</code>.
     </p>
     <div class="box">
         <strong>One canonical path per case: the aggregate's own data is automatic, an embed composes a MATERIAL source.</strong> The aggregate's
@@ -737,14 +737,14 @@ var SaleView = query.View("sales_view").
     Schema(views.SaleSchema()).                          // sale + its own line items (a .Child) auto-project
     Embed(query.JoinUpstream(
         core.NewExternalSchema("customers").             // type-less → the CUSTOMERS service's mirror
-            PK("id").Field("Name", "name"),
+            ID("id").Field("Name", "name"),
         "Customer", "customer")).
-        On("customer_id").                               // parent Sale's FK → customer._id (1:1)
+        On("customer_id").                               // parent Sale's ParentID → customer._id (1:1)
     EmbedMany(query.JoinUpstream(
         core.NewExternalSchema("shipments").             // type-less → the LOGISTICS service's mirror
-            PK("id"),
+            ID("id"),
         "Shipments", "shipments")).
-        On("sale_id").                                   // leg FK → sale._id (1:N)
+        On("sale_id").                                   // leg ParentID → sale._id (1:N)
     Indexes(query.Index("customer_id"))                  // boot guard §8.1: covering index for the 1:1 embed join
 
 // Drop archived rows from the projection — opt in via .DeleteOnArchive().
@@ -948,7 +948,7 @@ return bootstrap.Wiring{
         column populated, so the local document survives with <code>deleted_at</code> set, symmetric with the
         producer's own read side — while <code>deleteOnArchive: true</code> removes the document;
         <code>DELETED</code> is dispatched on the aggregate id alone, before any payload decode (its keys-only
-        payload — PK + shared-base FK — is available to bespoke consumers, but the framework's cascade / anonymize /
+        payload — ID + shared-base ParentID — is available to bespoke consumers, but the framework's cascade / anonymize /
         keep handling needs only the id, which also keeps replays of historical <code>NULL</code>-payload rows
         working). When declaring a <code>filter</code> allowlist, include the soft-delete column if the collection
         keeps archived documents — a filter that drops it would strip the archive marker from the

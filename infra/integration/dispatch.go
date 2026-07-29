@@ -230,7 +230,7 @@ var integrationEventCols = []string{
 }
 
 // insertIntegrationEventSQL renders the INSERT with the dialect's positional
-// placeholders. The PK follows the framework id standard (UUID v7 minted in
+// placeholders. The ID follows the framework id standard (UUID v7 minted in
 // Go, bound via Dialect.EncodeArg into the native id form); the wire-crossing
 // uuid references (event_id, aggregate_id, correlation/causation/thread) are
 // CHAR(36) on every dialect and bind as canonical uuid TEXT.
@@ -259,7 +259,7 @@ func writeIntegrationEvent(
 		return fmt.Errorf("integration.Dispatch: %w", err)
 	}
 
-	// Resolve the dialect first: the Go-minted PK binds through EncodeArg into
+	// Resolve the dialect first: the Go-minted ID binds through EncodeArg into
 	// the dialect's native id form, so the args depend on it.
 	var (
 		d    core.Dialect

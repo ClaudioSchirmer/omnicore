@@ -35,7 +35,7 @@ import (
 // exist yet (and for rebuild/verify, which own their slots).
 //
 // One stage set serves every target parent of the event: each edit is
-// conditioned on the DOCUMENT's own keys ($_id for the 1:N parent, the FK
+// conditioned on the DOCUMENT's own keys ($_id for the 1:N parent, the ParentID
 // column for 1:1), so the same pipeline applied to the old and the new parent
 // of a moved child removes the element from one and upserts it into the other.
 
@@ -141,7 +141,7 @@ func surgicalEmbedStages(embeds []embedDef, upstreamID string, after Document, s
 }
 
 // surgicalManyExpr edits a 1:N array: strip the element by its _id, then — on
-// the parent the event's FK names — append the new element. Applied to any
+// the parent the event's ParentID names — append the new element. Applied to any
 // other parent (the old side of a move, a delete) the strip alone stands.
 //
 // Under a watermark (srcRev > 0) the whole edit is skipped for a parent whose
@@ -190,7 +190,7 @@ func surgicalManyExpr(e embedDef, upstreamID string, after Document, srcRev int6
 	}}, ord)
 }
 
-// surgicalOneExpr edits a 1:1 sub-document on the parents whose FK column
+// surgicalOneExpr edits a 1:1 sub-document on the parents whose ParentID column
 // names the changed source id: the new element, or the explicit null the
 // unresolved contract requires when the source was deleted. Other parents keep
 // their stored value untouched. Under a watermark (srcRev > 0) a stored
@@ -222,25 +222,25 @@ func surgicalElement(id string, after Document) Document {
 }
 
 // repairDanglingOneToOne closes the LAST ordering window a 1:1 embed has: a
-// document written with an FK whose segment does not (or no longer) match it.
+// document written with an ParentID whose segment does not (or no longer) match it.
 // Two producers of that state exist —
 //
 //   - CREATE raced the mirror: the composing read ran before the referenced
 //     mirror doc was written, so the document materialized with a null
 //     segment, and the mirror doc's own insert ripple scanned the view before
 //     this document existed (both sides missed);
-//   - FK CHANGE under field ownership: a consult update rewrote the FK column
+//   - ParentID CHANGE under field ownership: a consult update rewrote the ParentID column
 //     but, by design, never touches embed segments — the stored segment still
 //     holds the previously-referenced element.
 //
 // The repair runs AFTER the document write and re-reads the mirror fresh:
 // either the mirror doc is visible by then (repair heals it here), or it is
 // not — in which case its insert ripple, which necessarily runs after the
-// mirror write, finds this already-written document by its FK scan and heals
+// mirror write, finds this already-written document by its ParentID scan and heals
 // it there. One of the two always fires; no timing assumption.
 //
-// The write carries a double guard — FK still matches AND the stored segment's
-// _id is NOT already the FK — so a repair can never regress the segment
+// The write carries a double guard — ParentID still matches AND the stored segment's
+// _id is NOT already the ParentID — so a repair can never regress the segment
 // written by the element's own ripple (per-id serialized, always fresher):
 // same id → no-op. A missing mirror doc repairs the segment to the explicit
 // null under the same guard (a stale element from a dead reference clears; a
@@ -250,10 +250,10 @@ func surgicalElement(id string, after Document) Document {
 // THIS one must learn about it too.
 func repairDanglingOneToOne(ctx context.Context, mongo ReadModelStore, resolver *ViewResolver, eng core.RelationalEngine, view *ViewDefinition, id string, written Document, chain func(context.Context, string, string)) {
 	for _, e := range view.embeds {
-		// 1:1 only (a 1:N segment has no single FK to dangle), and only a
+		// 1:1 only (a 1:N segment has no single ParentID to dangle), and only a
 		// materialized source — BOTH kinds: an upstream mirror AND a local view
 		// (query.JoinView). A view leg needs this repair MORE than a mirror does,
-		// because an FK change on the embedding document is otherwise permanent
+		// because an ParentID change on the embedding document is otherwise permanent
 		// staleness: field ownership keeps the consult write off the segment, and
 		// the source view's own ripple never fires (nothing changed on ITS side).
 		if e.many || e.leg == nil {

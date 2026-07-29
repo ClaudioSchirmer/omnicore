@@ -24,17 +24,17 @@ type arcItem struct {
 }
 
 func arcRootSchema(table string) *core.TableSchema {
-	return core.NewTableSchema[arcRoot](table).PK("id").SoftDelete("deleted_at")
+	return core.NewTableSchema[arcRoot](table).ID("id").SoftDelete("deleted_at")
 }
 
 // mirrorWithSD / mirrorNoSD are the two source shapes the rule distinguishes.
 func mirrorWithSD() *Leg {
-	return JoinUpstream(core.NewExternalSchema("upstream_items").PK("id").
+	return JoinUpstream(core.NewExternalSchema("upstream_items").ID("id").
 		Field("Label", "label").SoftDelete("deleted_at"), "Item", "item")
 }
 
 func mirrorNoSD() *Leg {
-	return JoinUpstream(core.NewExternalSchema("upstream_plain").PK("id").
+	return JoinUpstream(core.NewExternalSchema("upstream_plain").ID("id").
 		Field("Label", "label"), "Plain", "plain")
 }
 
@@ -104,9 +104,9 @@ func TestArchived_OneToManyUntouchedWithoutSoftDelete(t *testing.T) {
 // An EmbedInChild enrichment is a segment one level down, and follows the same
 // rule inside every child element.
 func TestArchived_EnrichmentInsideAChildElement(t *testing.T) {
-	child := core.NewTableSchema[arcItem]("order_lines").PK("id").FK("orders_id").
+	child := core.NewTableSchema[arcItem]("order_lines").ID("id").ParentID("orders_id").
 		Field("Label", "label").SoftDelete("deleted_at")
-	root := core.NewTableSchema[arcRoot]("orders").PK("id").SoftDelete("deleted_at").Child(child)
+	root := core.NewTableSchema[arcRoot]("orders").ID("id").SoftDelete("deleted_at").Child(child)
 	v := View("orders").Version(1).Schema(root).
 		EmbedInChild(child, mirrorWithSD()).On("item_id").
 		Indexes(Index(childDocSegment(child) + ".item_id"))
@@ -132,9 +132,9 @@ func TestArchived_EnrichmentInsideAChildElement(t *testing.T) {
 // segment that declares a lifecycle must contribute its soft-delete path for
 // the reader's auto-include — segments included, not just child collections.
 func TestArchived_SoftDeletePathsCoverEverySegment(t *testing.T) {
-	child := core.NewTableSchema[arcItem]("order_lines").PK("id").FK("orders_id").
+	child := core.NewTableSchema[arcItem]("order_lines").ID("id").ParentID("orders_id").
 		SoftDelete("deleted_at")
-	root := core.NewTableSchema[arcRoot]("orders").PK("id").SoftDelete("deleted_at").Child(child)
+	root := core.NewTableSchema[arcRoot]("orders").ID("id").SoftDelete("deleted_at").Child(child)
 	v := View("orders").Version(1).Schema(root).
 		Embed(mirrorWithSD()).On("item_id").
 		Embed(mirrorNoSD()).On("plain_id").

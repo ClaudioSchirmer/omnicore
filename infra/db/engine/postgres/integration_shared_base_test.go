@@ -11,7 +11,7 @@ import (
 	"github.com/ClaudioSchirmer/omnicore/infra/db/core"
 )
 
-// SharedBase separate-FK integration: the active-only uniqueness modeling
+// SharedBase separate-ParentID integration: the active-only uniqueness modeling
 // against a REAL Postgres — an identity may keep archived role remnants NEXT TO
 // one active row (partial unique index on active rows), the framework invariant
 // (at most one ACTIVE role row per identity per role table) holds on POST and
@@ -35,13 +35,13 @@ func (*sbStudent) BuildRules(string, domain.Service, *domain.Rules) {}
 
 func sbStudentSchema() *core.TableSchema {
 	base := core.NewSharedBaseSchema("sb_persons").Revision("revision").
-		PK("id").
+		ID("id").
 		Field("Document", "document").
 		Field("Name", "name").
-		NaturalKey("document").
+		NaturalID("document").
 		SoftDelete("deleted_at")
 	return core.NewTableSchema[*sbStudent]("sb_students").
-		PK("id").
+		ID("id").
 		Field("Enrollment", "enrollment").
 		SoftDelete("deleted_at").
 		CreatedAt("created_at").
@@ -253,13 +253,13 @@ func (*sbpStudent) BuildRules(string, domain.Service, *domain.Rules) {}
 
 func sbpSchema() *core.TableSchema {
 	base := core.NewSharedBaseSchema("sbp_persons").Revision("revision").
-		PK("id").
+		ID("id").
 		Field("Document", "document").
 		Field("Name", "name").
-		NaturalKey("document").
+		NaturalID("document").
 		OrphanPolicy(core.DeleteWhenUnreferenced)
 	return core.NewTableSchema[*sbpStudent]("sbp_students").
-		PK("id").
+		ID("id").
 		Field("Enrollment", "enrollment").
 		SharedBase(base, "person_id")
 }

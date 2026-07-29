@@ -17,7 +17,7 @@ import (
 func TestIsUniqueViolation(t *testing.T) {
 	d := sqlserverDialect{}
 
-	t.Run("2627 PK/unique constraint", func(t *testing.T) {
+	t.Run("2627 ID/unique constraint", func(t *testing.T) {
 		err := mssql.Error{Number: 2627, Message: "Violation of PRIMARY KEY constraint 'users_pkey'. Cannot insert duplicate key in object 'dbo.users'. The duplicate key value is (0x0102)."}
 		key, ok := d.IsUniqueViolation(err)
 		if !ok || key != "users_pkey" {
@@ -93,7 +93,7 @@ func TestIsForeignKeyViolation(t *testing.T) {
 		}
 	})
 
-	t.Run("non-FK mssql error", func(t *testing.T) {
+	t.Run("non-ParentID mssql error", func(t *testing.T) {
 		if name, ok := d.IsForeignKeyViolation(mssql.Error{Number: 2627, Message: "dup"}); ok || name != "" {
 			t.Fatalf("got (%q,%v), want ('',false)", name, ok)
 		}

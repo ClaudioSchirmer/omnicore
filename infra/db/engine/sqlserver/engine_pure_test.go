@@ -14,7 +14,7 @@ import (
 // its exact 16-byte form, and a non-UUID id surfaces a wiring error instead of
 // silently writing garbage into a BINARY(16) column. Storing the canonical
 // bytes verbatim is the load-bearing decision here: BINARY(16) compares
-// bytewise, so the UUIDv7 time order survives in the clustered PK —
+// bytewise, so the UUIDv7 time order survives in the clustered ID —
 // UNIQUEIDENTIFIER would reorder the comparison and fragment it.
 func TestUUIDBytes(t *testing.T) {
 	u := uuid.MustParse("018f8b2c-1d3e-7a9b-bc4d-5e6f7a8b9c0d")

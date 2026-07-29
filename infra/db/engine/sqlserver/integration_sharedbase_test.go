@@ -12,7 +12,7 @@ import (
 	"github.com/ClaudioSchirmer/omnicore/infra/db/core"
 )
 
-// SharedBase separate-FK integration against a REAL SQL Server: the
+// SharedBase separate-ParentID integration against a REAL SQL Server: the
 // active-only uniqueness modeling — archived role remnants NEXT TO one active
 // row — via a native FILTERED UNIQUE INDEX (`WHERE deleted_at IS NULL`), the
 // clean form MySQL has to emulate with a generated column. Covers the
@@ -37,13 +37,13 @@ func (*sbMsStudent) BuildRules(string, domain.Service, *domain.Rules) {}
 
 func sbMsSchema() *core.TableSchema {
 	base := core.NewSharedBaseSchema("sb_persons").Revision("revision").
-		PK("id").
+		ID("id").
 		Field("Document", "document").
 		Field("Name", "name").
-		NaturalKey("document").
+		NaturalID("document").
 		SoftDelete("deleted_at")
 	return core.NewTableSchema[*sbMsStudent]("sb_students").
-		PK("id").
+		ID("id").
 		Field("Enrollment", "enrollment").
 		SoftDelete("deleted_at").
 		CreatedAt("created_at").
@@ -255,13 +255,13 @@ func (*sbpStudent) BuildRules(string, domain.Service, *domain.Rules) {}
 
 func sbpSchema() *core.TableSchema {
 	base := core.NewSharedBaseSchema("sbp_persons").Revision("revision").
-		PK("id").
+		ID("id").
 		Field("Document", "document").
 		Field("Name", "name").
-		NaturalKey("document").
+		NaturalID("document").
 		OrphanPolicy(core.DeleteWhenUnreferenced)
 	return core.NewTableSchema[*sbpStudent]("sbp_students").
-		PK("id").
+		ID("id").
 		Field("Enrollment", "enrollment").
 		SharedBase(base, "person_id")
 }
@@ -271,7 +271,7 @@ func sbpSchema() *core.TableSchema {
 // (SAVE TRANSACTION / ROLLBACK TRANSACTION / no release) the audit e2e suite
 // caught missing: (1) deleting the last role purges the base (the savepoint is
 // simply discarded at COMMIT — the empty-release path); (2) with a foreign
-// table still referencing the person, the FK violation (error 547) vetoes the
+// table still referencing the person, the ParentID violation (error 547) vetoes the
 // purge — role delete commits, base stays.
 func TestSQLServer_SharedBase_PurgeAndVeto(t *testing.T) {
 	eng, raw := setup(t)
@@ -334,7 +334,7 @@ func TestSQLServer_SharedBase_PurgeAndVeto(t *testing.T) {
 		t.Fatalf("purge leg: role must be gone, students = %d", got)
 	}
 
-	// Leg 2: an UNREGISTERED table references the person → FK 547 vetoes the
+	// Leg 2: an UNREGISTERED table references the person → ParentID 547 vetoes the
 	// purge (ROLLBACK TRANSACTION to the savepoint), the role delete commits.
 	s2 := insert("DP2")
 	if _, err := raw.ExecContext(ctx, `CREATE TABLE sbp_external_refs (

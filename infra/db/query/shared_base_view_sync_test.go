@@ -83,7 +83,7 @@ func TestProcess_RoleEvent_SharedPKIdentity(t *testing.T) {
 		t.Fatalf("process: %v", err)
 	}
 	if len(coll.updates) != 1 {
-		t.Fatalf("a shared-PK role event must recompose the person doc, got %d upserts", len(coll.updates))
+		t.Fatalf("a shared-ID role event must recompose the person doc, got %d upserts", len(coll.updates))
 	}
 	// The consult write is a guarded pipeline now; effectiveDoc asserts the
 	// CONTENT it materializes — unchanged from the full-$set era.
@@ -93,7 +93,7 @@ func TestProcess_RoleEvent_SharedPKIdentity(t *testing.T) {
 	}
 }
 
-// A separate-FK role event resolves the base id from its payload's _ids.base_id
+// A separate-ParentID role event resolves the base id from its payload's _ids.base_id
 // — never a source consult of the role row.
 func TestProcess_RoleEvent_SeparateFKFromPayload(t *testing.T) {
 	var calls []string
@@ -107,10 +107,10 @@ func TestProcess_RoleEvent_SeparateFKFromPayload(t *testing.T) {
 		t.Fatalf("process: %v", err)
 	}
 	if len(coll.updates) != 1 {
-		t.Fatalf("a separate-FK role event must recompose the person doc, got %d upserts", len(coll.updates))
+		t.Fatalf("a separate-ParentID role event must recompose the person doc, got %d upserts", len(coll.updates))
 	}
-	// The base id came from the payload — no FK-resolution consult of the role
-	// row by its PK.
+	// The base id came from the payload — no ParentID-resolution consult of the role
+	// row by its ID.
 	for i, sql := range calls {
 		if strings.Contains(sql, "FROM sbv_employees") && strings.Contains(sql, "WHERE id =") &&
 			len(args[i]) == 1 && args[i][0] == "e9" {
@@ -119,7 +119,7 @@ func TestProcess_RoleEvent_SeparateFKFromPayload(t *testing.T) {
 	}
 }
 
-// A separate-FK role DELETED resolves the base id from its payload's
+// A separate-ParentID role DELETED resolves the base id from its payload's
 // _ids.base_id and recomposes the person document (the deleted role's segment
 // flips to explicit nil); the vanished row is never consulted.
 func TestProcess_RoleDeleted_UsesPayloadBaseID(t *testing.T) {
@@ -136,17 +136,17 @@ func TestProcess_RoleDeleted_UsesPayloadBaseID(t *testing.T) {
 		t.Fatalf("process: %v", err)
 	}
 	if len(coll.updates) != 1 {
-		t.Fatalf("a role DELETED must recompose the person doc via the payload FK, got %d upserts", len(coll.updates))
+		t.Fatalf("a role DELETED must recompose the person doc via the payload ParentID, got %d upserts", len(coll.updates))
 	}
 	// Guarded-pipeline write; effectiveDoc asserts the materialized content.
 	doc := effectiveDoc(coll.updates[0])
 	if seg, present := doc["sbvEmployee"]; !present || seg != nil {
 		t.Errorf("the deleted role's segment must recompose to explicit nil, got %#v", seg)
 	}
-	// Nothing may consult the vanished row by PK.
+	// Nothing may consult the vanished row by ID.
 	for i, sql := range calls {
 		if strings.Contains(sql, "FROM sbv_employees") && strings.Contains(sql, "WHERE id =") && len(args[i]) == 1 && args[i][0] == "e9" {
-			t.Errorf("a DELETED role must not be consulted by PK (the row is gone), got %q", sql)
+			t.Errorf("a DELETED role must not be consulted by ID (the row is gone), got %q", sql)
 		}
 	}
 }
@@ -172,7 +172,7 @@ func TestProcess_RoleDeleted_PurgedIdentityRemovesDoc(t *testing.T) {
 	}
 }
 
-// A malformed DELETED payload (missing the FK) cannot resolve the base id —
+// A malformed DELETED payload (missing the ParentID) cannot resolve the base id —
 // the event is skipped with a log, never an error (at-least-once safe).
 func TestProcess_RoleDeleted_MissingPayloadSkips(t *testing.T) {
 	for _, payload := range [][]byte{nil, []byte(`not-json`), []byte(`{"id":"e9"}`)} {
@@ -235,12 +235,12 @@ func TestProcess_BaseArchived_DeleteOnArchiveRemovesDoc(t *testing.T) {
 func TestRebuildScanSQL(t *testing.T) {
 	// A view whose root declares CreatedAt keeps the creation-order scan.
 	withCreated := core.NewTableSchema[*sbvEmployee]("stamped").
-		PK("emp_id").Field("EmployeeNumber", "employee_number").CreatedAt("created_at")
+		ID("emp_id").Field("EmployeeNumber", "employee_number").CreatedAt("created_at")
 	regular := View("emps").Version(1).Schema(withCreated)
 	if q := rebuildScanSQL(regular); q != "SELECT emp_id FROM stamped ORDER BY created_at" {
 		t.Errorf("scan = %q, want SELECT emp_id FROM stamped ORDER BY created_at", q)
 	}
-	// A base root declares no CreatedAt — the scan falls back to the PK.
+	// A base root declares no CreatedAt — the scan falls back to the ID.
 	person := sbvView()
 	if q := rebuildScanSQL(person); q != "SELECT id FROM sbv_persons ORDER BY id" {
 		t.Errorf("base-rooted scan = %q, want SELECT id FROM sbv_persons ORDER BY id", q)

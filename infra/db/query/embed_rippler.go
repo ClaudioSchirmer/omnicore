@@ -103,7 +103,7 @@ func (r *embedRippler) collectChildEmbeds(v *ViewDefinition) []childEmbedDef {
 
 // chain fires the next hop after a successful write to viewName's document.
 // The pre-write state is deliberately not captured for a chained hop: a ripple
-// only rewrites EMBED segments, never the document's own FK columns, so the old
+// only rewrites EMBED segments, never the document's own ParentID columns, so the old
 // and new 1:N parent of the chained document are the same and a nil `before`
 // discovers the identical target set.
 func (r *embedRippler) chain(ctx context.Context, viewName, localID string) {
@@ -253,9 +253,9 @@ func (r *embedRippler) rippleChildEmbeds(ctx context.Context, v *ViewDefinition,
 	litVal := lit(itemVal)
 	for _, ce := range childEmbeds {
 		seg := ce.ChildSegment()
-		fkCol := ce.FKColumn()
+		fkCol := ce.ParentIDColumn()
 		// $map over the child array (defensive $ifNull for a missing/absent
-		// array): each element whose FK equals the changed upstream id gets its
+		// array): each element whose ParentID equals the changed upstream id gets its
 		// enrichment field merged in; every other element is left untouched.
 		matches := Document{"$eq": []any{"$$e." + fkCol, upstreamID}}
 		if srcRev > 0 {
@@ -371,13 +371,13 @@ func (r *embedRippler) rippleApplyOne(ctx context.Context, v *ViewDefinition, up
 // discoverRippleTargets computes the distinct local parent _ids to recompose for
 // one dependent view, unioning every embed of the changed collection:
 //
-//   - one-to-one Embed: the PARENT holds the FK column, so scan the parent view
+//   - one-to-one Embed: the PARENT holds the ParentID column, so scan the parent view
 //     for docs whose join field == the changed upstream _id
 //     (FindIDsByField(view, parentFK, upstreamID)).
-//   - one-to-many EmbedMany: the CHILD holds the FK, and its value IS the parent
+//   - one-to-many EmbedMany: the CHILD holds the ParentID, and its value IS the parent
 //     _id, so read it from the doc state BEFORE and AFTER the change — a moved or
 //     deleted child must recompose both the old and the new parent, and neither
-//     is reachable by scanning the parent view (the FK lives on the child, under
+//     is reachable by scanning the parent view (the ParentID lives on the child, under
 //     the embed segment). No reverse scan, no covering index: the target is the
 //     parent primary key, always indexed.
 //

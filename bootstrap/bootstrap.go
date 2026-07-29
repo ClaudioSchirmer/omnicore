@@ -220,7 +220,7 @@ func runWithConfig(cfg *Config, wire func(Deps) Wiring) error {
 	}
 
 	// Schema is mandatory on every view — the read membrane (Go↔column) and the
-	// composer (PK + soft-delete) resolve through it, so a view without a root
+	// composer (ID + soft-delete) resolve through it, so a view without a root
 	// schema would have no lossless mapping. Embed schemas are guaranteed by
 	// construction (JoinUpstream is the only embed source constructor); the root schema
 	// is the one a consumer could forget, so it is enforced here.

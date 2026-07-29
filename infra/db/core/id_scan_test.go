@@ -133,12 +133,12 @@ func TestNullableIDScanTarget(t *testing.T) {
 }
 
 // IDKindOf derives the identity typing from the Go struct: domain.ID →
-// IDValue, *domain.ID → IDPointer, anything else → IDNone — and the managed PK
+// IDValue, *domain.ID → IDPointer, anything else → IDNone — and the managed ID
 // slot ("ID") is ALWAYS IDValue (framework-stored in the dialect's native id
-// form), so bare-string PK probes bind like the typed ByID does.
+// form), so bare-string ID probes bind like the typed ByID does.
 func TestIDKindOf(t *testing.T) {
 	s := NewTableSchema[*idScanFixture]("t").
-		PK("id").
+		ID("id").
 		Field("Ref", "ref").
 		Field("Opt", "opt").
 		Field("Name", "name")
@@ -150,7 +150,7 @@ func TestIDKindOf(t *testing.T) {
 		{"Ref", IDValue},
 		{"Opt", IDPointer},
 		{"Name", IDNone},
-		{"ID", IDValue},  // managed PK slot — always identity
+		{"ID", IDValue},  // managed ID slot — always identity
 		{"Nope", IDNone}, // unknown — the translator rejects it separately
 	}
 	for _, c := range cases {

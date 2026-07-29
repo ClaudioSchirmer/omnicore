@@ -12,7 +12,7 @@ import (
 	"github.com/ClaudioSchirmer/omnicore/infra/db/core"
 )
 
-// SharedBase separate-FK integration against a REAL MySQL: the active-only
+// SharedBase separate-ParentID integration against a REAL MySQL: the active-only
 // uniqueness modeling — archived role remnants NEXT TO one active row — via
 // the generated-column pattern (MySQL has no partial indexes: a UNIQUE index
 // admits multiple NULLs, so `IF(deleted_at IS NULL, person_id, NULL)` enforces
@@ -38,13 +38,13 @@ func (*sbMyStudent) BuildRules(string, domain.Service, *domain.Rules) {}
 
 func sbMySchema() *core.TableSchema {
 	base := core.NewSharedBaseSchema("sb_persons").Revision("revision").
-		PK("id").
+		ID("id").
 		Field("Document", "document").
 		Field("Name", "name").
-		NaturalKey("document").
+		NaturalID("document").
 		SoftDelete("deleted_at")
 	return core.NewTableSchema[*sbMyStudent]("sb_students").
-		PK("id").
+		ID("id").
 		Field("Enrollment", "enrollment").
 		SoftDelete("deleted_at").
 		CreatedAt("created_at").
@@ -254,13 +254,13 @@ func (*sbpStudent) BuildRules(string, domain.Service, *domain.Rules) {}
 
 func sbpSchema() *core.TableSchema {
 	base := core.NewSharedBaseSchema("sbp_persons").Revision("revision").
-		PK("id").
+		ID("id").
 		Field("Document", "document").
 		Field("Name", "name").
-		NaturalKey("document").
+		NaturalID("document").
 		OrphanPolicy(core.DeleteWhenUnreferenced)
 	return core.NewTableSchema[*sbpStudent]("sbp_students").
-		PK("id").
+		ID("id").
 		Field("Enrollment", "enrollment").
 		SharedBase(base, "person_id")
 }

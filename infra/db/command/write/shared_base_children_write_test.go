@@ -10,8 +10,8 @@ import (
 )
 
 // White-box coverage for SharedBase native children (base-children) on the write
-// path: a base-child is routed to the base's deterministic id (FK column = the
-// base FK, not the role FK), Removed archives (or hard-deletes when the base has
+// path: a base-child is routed to the base's deterministic id (ParentID column = the
+// base ParentID, not the role ParentID), Removed archives (or hard-deletes when the base has
 // no soft-delete), the orphan refcount removes base-children before the base, and
 // an empty natural key is rejected. Driven through the recording fake WriteTx.
 
@@ -44,15 +44,15 @@ func (e *bcRole) AggregateChildren() []domain.AggregateValueObject {
 // The purge policy is declared explicitly (the default is KeepOrphan) so the
 // orphan-delete test below exercises the purge branch.
 func bcRoleSchema(softDelete bool) *TableSchema {
-	base := NewSharedBaseSchema("pessoa").Revision("revision").PK("id").Field("Name", "name").Field("Document", "document").
-		NaturalKey("document").OrphanPolicy(DeleteWhenUnreferenced)
-	addr := NewTableSchema[bcAddr]("endereco").PK("id").FK("pessoa_id").Field("Street", "street")
+	base := NewSharedBaseSchema("pessoa").Revision("revision").ID("id").Field("Name", "name").Field("Document", "document").
+		NaturalID("document").OrphanPolicy(DeleteWhenUnreferenced)
+	addr := NewTableSchema[bcAddr]("endereco").ID("id").ParentID("pessoa_id").Field("Street", "street")
 	if softDelete {
 		base = base.SoftDelete("deleted_at")
 		addr = addr.SoftDelete("deleted_at")
 	}
 	base = base.Child(addr)
-	role := NewTableSchema[*bcRole]("aluno").PK("id").Revision("revision").Field("Matricula", "matricula").SoftDelete("deleted_at")
+	role := NewTableSchema[*bcRole]("aluno").ID("id").Revision("revision").Field("Matricula", "matricula").SoftDelete("deleted_at")
 	return role.SharedBase(base, "pessoa_id")
 }
 
@@ -82,10 +82,10 @@ func TestBaseChild_InsertRoutesToBaseFK(t *testing.T) {
 		t.Fatalf("the base-child INSERT into endereco is missing: %v", tx.execs)
 	}
 	if !strings.Contains(found, "pessoa_id") {
-		t.Errorf("a base-child must take the BASE FK (pessoa_id), not the role FK; got %q", found)
+		t.Errorf("a base-child must take the BASE ParentID (pessoa_id), not the role ParentID; got %q", found)
 	}
 	if strings.Contains(found, "aluno_id") {
-		t.Errorf("a base-child must NOT take the role FK (aluno_id); got %q", found)
+		t.Errorf("a base-child must NOT take the role ParentID (aluno_id); got %q", found)
 	}
 }
 
@@ -123,7 +123,7 @@ func TestBaseChild_RemovedHardDeletesWhenNoSoftDelete(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetUpdatable: %v", err)
 	}
-	tx := &recTx{count: 1, queryFn: rowsFKMatch()} // natural-key guard: stored FK matches
+	tx := &recTx{count: 1, queryFn: rowsFKMatch()} // natural-key guard: stored ParentID matches
 	be := newFlatBE(&recBeginner{tx: tx})
 	if _, err := be.Update(newBuilderCtx(), upd, bcRoleSchema(false), firingHook); err != nil {
 		t.Fatalf("Update: %v", err)
@@ -152,7 +152,7 @@ func TestBaseChild_OrphanDeletesBaseChildrenThenBase(t *testing.T) {
 		t.Fatalf("orphan delete must remove base-children AND the base, got %v", tx.execs)
 	}
 	if idxAddr > idxBase {
-		t.Errorf("base-children must be deleted BEFORE the base (FK integrity), got endereco@%d after pessoa@%d", idxAddr, idxBase)
+		t.Errorf("base-children must be deleted BEFORE the base (ParentID integrity), got endereco@%d after pessoa@%d", idxAddr, idxBase)
 	}
 }
 

@@ -21,7 +21,7 @@
 // Design decisions locked for the third backend (see tasks/sqlserver.md):
 //   - Identity is stored BINARY(16), NEVER UNIQUEIDENTIFIER: SQL Server orders
 //     GUIDs last-byte-group-first, which destroys the UUIDv7 time order and
-//     fragments the clustered PK; BINARY(16) compares bytewise, so the v7 ids
+//     fragments the clustered ID; BINARY(16) compares bytewise, so the v7 ids
 //     minted in Go keep the clustered index append-friendly (the InnoDB
 //     rationale, verified against a live SQL Server 2022).
 //   - The upsert is a single MERGE … WITH (HOLDLOCK) statement (BuildUpsert

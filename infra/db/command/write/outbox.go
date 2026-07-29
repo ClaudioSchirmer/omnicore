@@ -18,7 +18,7 @@ import (
 // (the CDC routing key) on every backend — outbox.aggregate_id is text, never
 // BINARY(16). payload is the event-carried-state snapshot (see
 // outbox_payload.go): every scalar flat at the top, the _ids structural block
-// (aggregate PK, base id + revision, purge flag), and the children groups with
+// (aggregate ID, base id + revision, purge flag), and the children groups with
 // per-item ops; DELETED keeps the historical structural keys and adds _ids.
 // The producing request's W3C traceparent is stamped
 // so the async projection links back to its trace; nil → NULL when tracing is
@@ -28,7 +28,7 @@ func WriteOutbox(ctx context.Context, tx Tx, table, eventType, id string, payloa
 	if err != nil {
 		return err
 	}
-	// The row PK follows the framework id standard like every other table: a
+	// The row ID follows the framework id standard like every other table: a
 	// UUID v7 minted in Go, bound in the dialect's native id form (uuid text on
 	// PG, BINARY(16) elsewhere) — no AUTO_INCREMENT/IDENTITY/DB default.
 	rowID, err := newWriteID()

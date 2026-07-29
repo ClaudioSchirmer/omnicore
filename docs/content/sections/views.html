@@ -103,7 +103,7 @@
 <p>
     The base is attached through <code>.Schema(base)</code> — exactly like a regular view attaches its root schema — and it
     must come before the first <code>.Role(...)</code> (each role is validated against the base). <code>_id</code> is the
-    base's deterministic PK; the document's soft-delete gate is the base's (the identity hides only when its last active
+    base's deterministic ID; the document's soft-delete gate is the base's (the identity hides only when its last active
     role archives). An absent role is an explicit <code>null</code> segment; an archived role stores its
     <code>deleted_at</code> and is stripped on default reads unless <code>?includeArchived</code>. Everything a regular view
     declares applies unchanged (Version participates in the rebuild hash — the role set included — indexes/validators,
@@ -129,7 +129,7 @@
 
 <h4>Document shape</h4>
 <pre><code>{
-  "_id":      "&lt;UUIDv5(document)&gt;",          // the base's deterministic PK
+  "_id":      "&lt;UUIDv5(document)&gt;",          // the base's deterministic ID
   "document": "52998224725",                  // base fields — FLAT at the root
   "name":     "Ana Souza",
   "Addresses": [ ... ],                       // base-children — nested at the ROOT (shared across roles)
@@ -139,8 +139,8 @@
                 "JobHistories": [ ... ] }
 }</code></pre>
 <ul>
-    <li><strong><code>_id</code> = the base PK</strong> — <code>UUIDv5(naturalKey)</code>, stable
-        under both role link models (shared-PK and separate-FK).</li>
+    <li><strong><code>_id</code> = the base ID</strong> — <code>UUIDv5(naturalKey)</code>, stable
+        under both role link models (shared-ID and separate-ParentID).</li>
     <li><strong>Role segments are named by the role's Go type</strong> (<code>"User"</code>,
         <code>"Employee"</code>) — the same derivation rule nested children use, minus the
         pluralization: a role is a single optional sub-document, not a collection. The wire name comes
@@ -150,7 +150,7 @@
         declare role fields as pointers with <code>omitempty</code> (the sparse-render contract), so a
         null segment simply disappears from the wire.</li>
     <li><strong>Base fields never repeat inside a segment</strong>; a role's siblings merge flat
-        inside its segment; a role's own children nest inside it, keyed on the role row's own PK.</li>
+        inside its segment; a role's own children nest inside it, keyed on the role row's own ID.</li>
 </ul>
 
 <h4>Role selection — the identity's current specialization</h4>
@@ -159,16 +159,16 @@
     A <code>SharedBaseView</code> models a party-role: an identity that <em>plays</em> a role. Each role segment therefore
     holds exactly one sub-document — the identity's <strong>current</strong> representative for that role: the
     <strong>active</strong> row if one exists, otherwise the <strong>most recently deactivated (archived)</strong> one.
-    This holds <strong>regardless of the link model</strong> — whether the role links through a separate FK
+    This holds <strong>regardless of the link model</strong> — whether the role links through a separate ParentID
     (<code>SharedBase(base, "person_id")</code>, which may accumulate archived remnants) or shares the base's id as its
-    own PK (<code>SharedBase(base, "id")</code>, capped at a single row). The relational table may hold many role rows for
+    own ID (<code>SharedBase(base, "id")</code>, capped at a single row). The relational table may hold many role rows for
     one identity; the projected document still shows the one current specialization.
     <strong>Need the identity plus a LIST of N role rows instead?</strong> Keep this write model and add a read-time
-    <a href="#views~views-composed">ComposedView</a> that <code>LinkMany</code>s the role's own view onto the person by its FK — it
+    <a href="#views~views-composed">ComposedView</a> that <code>LinkMany</code>s the role's own view onto the person by its ParentID — it
     yields the full list at read time, without changing the SharedBase model.
 </div>
 <p>
-    Under the separate-FK model with active-only uniqueness (see the two DDL uniqueness contracts above), an identity may carry archived role remnants NEXT TO one
+    Under the separate-ParentID model with active-only uniqueness (see the two DDL uniqueness contracts above), an identity may carry archived role remnants NEXT TO one
     active row. The composer picks <strong>the row that represents the specialization's current
     state</strong>:
 </p>
@@ -183,7 +183,7 @@
 <p>
     Remnant HISTORY is deliberately not enumerated in the person document — the role views with
     <code>?includeArchived</code> cover it. A role without <code>SoftDelete</code> has no archived
-    state; a single FK fetch decides its segment.
+    state; a single ParentID fetch decides its segment.
 </p>
 
 <h4>Lifecycle &amp; sync</h4>
@@ -240,7 +240,7 @@
         detected as forgot-to-bump and aborts boot — same contract as every rebuild-relevant change
         (see <a href="#mongo-schema-evolution">Mongo schema evolution</a>).</li>
     <li>The external opt-ins below (<code>Embed</code>/<code>EmbedMany</code>/<code>EmbedInChild</code>) apply here too,
-        joined on the base PK at the root.</li>
+        joined on the base ID at the root.</li>
 </ul>
 
 <div class="box">
@@ -271,14 +271,14 @@
 // this type-less schema describes THAT collection's columns.
 query.JoinUpstream(
     core.NewExternalSchema("upstream_users").
-        PK("id").
+        ID("id").
         Field("Name", "name").
         Field("Email", "mail"),       // logical Go name ↔ upstream column
     "Buyer", "buyer")                 // Go segment, doc segment — both REQUIRED
-// … then on the verb:  Embed(buyer).On("buyer_id")   // parent FK → source PK (1:1)</code></pre>
+// … then on the verb:  Embed(buyer).On("buyer_id")   // parent ParentID → source ID (1:1)</code></pre>
 <div class="box">
     <strong>Declaring a column is a TRANSLATION, not a projection — the schema removes nothing.</strong>
-    An external schema is the Go ↔ column name map and the semantic declaration (PK, soft-delete) of a collection
+    An external schema is the Go ↔ column name map and the semantic declaration (ID, soft-delete) of a collection
     someone else materializes; it never shapes what is STORED. The mirror keeps whatever the subscription's
     <code>filter:</code> let through, and a materialized embed segment copies that mirror document whole —
     including columns this schema never declares. Undeclared columns are simply invisible to the read side
@@ -295,7 +295,7 @@ query.JoinUpstream(
     embed. <code>Embed(leg).On(col)</code> is 1:1 (a single sub-document, <code>null</code> when unresolved);
     <code>EmbedMany(leg).On(col)</code> is 1:N (an array, empty when none). Both take a <em>leg</em> built with
     <code>query.JoinUpstream(core.NewExternalSchema(...), goName, externalName)</code>. The verb names the join column via
-    the mandatory terminal <code>.On(col)</code> — the FK lives on the parent for 1:1 and on the leg (child) for 1:N — and
+    the mandatory terminal <code>.On(col)</code> — the ParentID lives on the parent for 1:1 and on the leg (child) for 1:N — and
     the verb's multiplicity, not the declaration, fixes which side holds it.
 </p>
 <div class="box">
@@ -335,16 +335,16 @@ query.JoinUpstream(
 </p>
 <table>
     <tbody><tr><th>Constructor(s)</th><th>Verb</th><th>Leg</th><th>Built from — and reach</th></tr>
-    <tr><td><code>View</code> / <code>SharedBaseView</code></td><td><code>Embed(leg).On(col)</code> — 1:1</td><td><code>*Leg</code></td><td><code>query.JoinUpstream(core.NewExternalSchema(…), Go, ext)</code> (EXTERNAL mirror) <em>or</em> <code>query.JoinView(view, Go, ext)</code> (LOCAL registered view); <code>.On</code> = parent FK. Requires a covering index on that column (the ripple's reverse scan).</td></tr>
-    <tr><td><code>View</code> / <code>SharedBaseView</code></td><td><code>EmbedMany(leg).On(col)</code> — 1:N</td><td><code>*Leg</code></td><td>Same two constructors; <code>.On</code> = leg FK; optional <code>OrderBy(col)</code>/<code>Desc</code> before it declare the stored element order (<a href="#views~views-embed-order">materialized ordering</a>, MongoDB 5.2+). A <code>JoinView</code> leg additionally requires a covering index on the join column <em>on the SOURCE view</em> — the composer runs one lookup per parent document.</td></tr>
-    <tr><td><code>View</code> / <code>SharedBaseView</code></td><td><code>EmbedInChild(childSchema, leg).On(col)</code> — 1:1 into a native child</td><td><code>*Leg</code></td><td>Same two constructors; <code>.On</code> = FK <em>inside each element</em> of a native aggregate child. Requires a multikey index on <code>&lt;childSegment&gt;.&lt;fk&gt;</code>.</td></tr>
-    <tr><td><code>ComposedView</code></td><td><code>Link(leg).On(col)</code> — 1:1</td><td><code>*Leg</code></td><td><code>query.JoinView(view, Go, ext)</code> (INTERNAL registered view) <em>or</em> <code>query.JoinUpstream(core.NewExternalSchema(…), Go, ext)</code> (EXTERNAL); <code>.On</code> = primary FK.</td></tr>
-    <tr><td><code>ComposedView</code></td><td><code>LinkMany(leg).OrderBy(…).MaxLinkManyLimit(…).On(col)</code> — 1:N</td><td><code>*Leg</code></td><td>Same two constructors; <code>.On</code> = leg FK (<code>leg.on → primary._id</code>); <code>OrderBy</code>/<code>Desc</code>/<code>MaxLinkManyLimit</code> chain on the verb before <code>.On</code>.</td></tr>
-    <tr><td><code>ComposedView</code></td><td><code>LinkInChild(childSchema, leg).On(col)</code> — 1:1 into a primary child</td><td><code>*Leg</code></td><td>The read-time twin of <code>EmbedInChild</code>: enriches each element of the PRIMARY's native child array. Same two leg constructors; <code>.On</code> = the element's FK. Never materialized, so — unlike <code>EmbedInChild</code> — it needs no covering index.</td></tr>
+    <tr><td><code>View</code> / <code>SharedBaseView</code></td><td><code>Embed(leg).On(col)</code> — 1:1</td><td><code>*Leg</code></td><td><code>query.JoinUpstream(core.NewExternalSchema(…), Go, ext)</code> (EXTERNAL mirror) <em>or</em> <code>query.JoinView(view, Go, ext)</code> (LOCAL registered view); <code>.On</code> = parent ParentID. Requires a covering index on that column (the ripple's reverse scan).</td></tr>
+    <tr><td><code>View</code> / <code>SharedBaseView</code></td><td><code>EmbedMany(leg).On(col)</code> — 1:N</td><td><code>*Leg</code></td><td>Same two constructors; <code>.On</code> = leg ParentID; optional <code>OrderBy(col)</code>/<code>Desc</code> before it declare the stored element order (<a href="#views~views-embed-order">materialized ordering</a>, MongoDB 5.2+). A <code>JoinView</code> leg additionally requires a covering index on the join column <em>on the SOURCE view</em> — the composer runs one lookup per parent document.</td></tr>
+    <tr><td><code>View</code> / <code>SharedBaseView</code></td><td><code>EmbedInChild(childSchema, leg).On(col)</code> — 1:1 into a native child</td><td><code>*Leg</code></td><td>Same two constructors; <code>.On</code> = ParentID <em>inside each element</em> of a native aggregate child. Requires a multikey index on <code>&lt;childSegment&gt;.&lt;fk&gt;</code>.</td></tr>
+    <tr><td><code>ComposedView</code></td><td><code>Link(leg).On(col)</code> — 1:1</td><td><code>*Leg</code></td><td><code>query.JoinView(view, Go, ext)</code> (INTERNAL registered view) <em>or</em> <code>query.JoinUpstream(core.NewExternalSchema(…), Go, ext)</code> (EXTERNAL); <code>.On</code> = primary ParentID.</td></tr>
+    <tr><td><code>ComposedView</code></td><td><code>LinkMany(leg).OrderBy(…).MaxLinkManyLimit(…).On(col)</code> — 1:N</td><td><code>*Leg</code></td><td>Same two constructors; <code>.On</code> = leg ParentID (<code>leg.on → primary._id</code>); <code>OrderBy</code>/<code>Desc</code>/<code>MaxLinkManyLimit</code> chain on the verb before <code>.On</code>.</td></tr>
+    <tr><td><code>ComposedView</code></td><td><code>LinkInChild(childSchema, leg).On(col)</code> — 1:1 into a primary child</td><td><code>*Leg</code></td><td>The read-time twin of <code>EmbedInChild</code>: enriches each element of the PRIMARY's native child array. Same two leg constructors; <code>.On</code> = the element's ParentID. Never materialized, so — unlike <code>EmbedInChild</code> — it needs no covering index.</td></tr>
 </tbody></table>
 <p>
-    Every family names its join column on the verb via <code>.On(column)</code> — the FK always points at the other side's
-    PK/<code>_id</code>; the verb's multiplicity fixes which side holds it (1:1 → parent/primary, 1:N → child/leg), so the
+    Every family names its join column on the verb via <code>.On(column)</code> — the ParentID always points at the other side's
+    ID/<code>_id</code>; the verb's multiplicity fixes which side holds it (1:1 → parent/primary, 1:N → child/leg), so the
     same leg plugs into an <code>Embed</code> (re-materialized) and a <code>Link</code> (read-time). The two segment names
     (Go and doc field) live on the leg constructor (<code>JoinUpstream</code>/<code>JoinView</code>), both mandatory.
 </p>
@@ -432,13 +432,13 @@ func SaleView() *query.ViewDefinition {
 </div>
 <pre><code>// This source has an archived state → its segment is filtered on a default read.
 core.NewExternalSchema("upstream_products").
-    PK("id").
+    ID("id").
     Field("Name", "name").
     SoftDelete("deleted_at")     // ← the declaration that switches the rule on
 
 // This one does not → its segment is always returned as stored.
 core.NewExternalSchema("upstream_regions").
-    PK("id").
+    ID("id").
     Field("Name", "name")        // no SoftDelete: no archived concept, no filtering</code></pre>
 <div class="note">
     <strong>For an upstream mirror, declaring it is only half the job.</strong> The column must also survive the
@@ -702,14 +702,14 @@ func GadgetFullView() *query.ComposedViewDefinition {
     return query.ComposedView("gadgets_full").
         Primary(GadgetView()).                      // drives EVERYTHING row-shaped
 
-        // 1:1 — the PRIMARY holds the FK (gadgets column "id" → the upstream
+        // 1:1 — the PRIMARY holds the ParentID (gadgets column "id" → the upstream
         // doc's _id). External leg: a locally materialized upstream collection,
         // described by its core.NewExternalSchema. Null segment when absent.
         Link(query.JoinUpstream(GadgetUpstreamMirrorSchema(),
             "UpstreamMirror", "upstreamMirror")).   // Go + doc segments — both mandatory
             On("id").                               // the join column, on the verb
 
-        // 1:N — the LEG holds the FK (gadget_notes column "gadget_id" → the
+        // 1:N — the LEG holds the ParentID (gadget_notes column "gadget_id" → the
         // gadget's _id). Internal leg: any registered view. Empty array when absent.
         LinkMany(query.JoinView(GadgetNotesView(), "Notes", "notes")).
             OrderBy("text").                        // deterministic segment order (default: _id asc)
@@ -722,8 +722,8 @@ func (f *GadgetFeature) ComposedViews() []*query.ComposedViewDefinition {
     return []*query.ComposedViewDefinition{GadgetFullView()}
 }</code></pre>
     <p>
-        <strong>One join vocabulary — PK/FK only.</strong> Every relationship names one join column on the verb via
-        <code>.On(column)</code>; the FK always points at the other side's PK/<code>_id</code>; who holds
+        <strong>One join vocabulary — ID/ParentID only.</strong> Every relationship names one join column on the verb via
+        <code>.On(column)</code>; the ParentID always points at the other side's ID/<code>_id</code>; who holds
         it follows the multiplicity: on a 1:1 <code>Link</code> the <em>primary</em> holds it
         (<code>primary.on → leg._id</code>), on a 1:N <code>LinkMany</code> the <em>leg</em> holds it
         (<code>leg.on → primary._id</code>). The same <code>.On</code> is the join for embeds too, so one leg
@@ -734,9 +734,9 @@ func (f *GadgetFeature) ComposedViews() []*query.ComposedViewDefinition {
         <tbody><tr><th>Builder</th><th>Meaning</th></tr>
         <tr><td><code>ComposedView(name)</code></td><td>The read-side identity — goes wherever a view name goes. Must not collide with any view or composed name.</td></tr>
         <tr><td><code>Primary(view)</code></td><td>Exactly one, always an <strong>internal registered view</strong> (regular or shared-base). Its <code>MaxLimit</code>, indexes, text search, archived gate apply unchanged.</td></tr>
-        <tr><td><code>Link(leg).On(col)</code></td><td>1:1 — sub-document under the leg's doc segment; explicit <code>null</code> when absent. <code>.On</code> = primary FK, mandatory.</td></tr>
-        <tr><td><code>LinkMany(leg)…On(col)</code></td><td>1:N — array under the leg's doc segment, in the declared order, capped per parent; empty array when absent. <code>OrderBy</code>/<code>Desc</code>/<code>MaxLinkManyLimit</code> chain before the terminal <code>.On</code> = leg FK.</td></tr>
-        <tr><td><code>LinkInChild(childSchema, leg).On(col)</code></td><td>1:1 read-time enrichment INSIDE a primary child array — the non-materialized twin of a view's <code>EmbedInChild</code>. <code>childSchema</code> MUST be a native child of the primary (boot-validated); <code>.On</code> = the element's FK → the leg's <code>_id</code>; the sub-document lands under the leg's Go segment inside each element, addressed at <code>&lt;childSeg&gt;.&lt;legSeg&gt;.&lt;field&gt;</code> for filter/<code>?fields=</code>. 1:1 only (no <code>LinkManyInChild</code>); no covering index (no ripple). Accepts both leg kinds.</td></tr>
+        <tr><td><code>Link(leg).On(col)</code></td><td>1:1 — sub-document under the leg's doc segment; explicit <code>null</code> when absent. <code>.On</code> = primary ParentID, mandatory.</td></tr>
+        <tr><td><code>LinkMany(leg)…On(col)</code></td><td>1:N — array under the leg's doc segment, in the declared order, capped per parent; empty array when absent. <code>OrderBy</code>/<code>Desc</code>/<code>MaxLinkManyLimit</code> chain before the terminal <code>.On</code> = leg ParentID.</td></tr>
+        <tr><td><code>LinkInChild(childSchema, leg).On(col)</code></td><td>1:1 read-time enrichment INSIDE a primary child array — the non-materialized twin of a view's <code>EmbedInChild</code>. <code>childSchema</code> MUST be a native child of the primary (boot-validated); <code>.On</code> = the element's ParentID → the leg's <code>_id</code>; the sub-document lands under the leg's Go segment inside each element, addressed at <code>&lt;childSeg&gt;.&lt;legSeg&gt;.&lt;field&gt;</code> for filter/<code>?fields=</code>. 1:1 only (no <code>LinkManyInChild</code>); no covering index (no ripple). Accepts both leg kinds.</td></tr>
         <tr><td><code>JoinView(view, goName, ext)</code></td><td>Internal leg: any registered view — it arrives exactly as a direct read of that view would (children, embeds, roles, archived strip included). Both segment names mandatory.</td></tr>
         <tr><td><code>JoinUpstream(schema, goName, ext)</code></td><td>External leg: a locally materialized <code>UpstreamSubscription</code> collection described by its <code>NewExternalSchema</code>. A leg NEVER reads another service's live storage — materialize first, then compose. Also the only leg an <code>Embed</code>/<code>EmbedMany</code>/<code>EmbedInChild</code> accepts.</td></tr>
         <tr><td><code>.On(column)</code></td><td>The join column, named on the verb (see the multiplicity rule above). Mandatory — the verb's binding routes back to the builder only through <code>.On</code>, so a missing join does not compile.</td></tr>
@@ -745,8 +745,8 @@ func (f *GadgetFeature) ComposedViews() []*query.ComposedViewDefinition {
     </tbody></table>
     <div class="note">
         <strong>Fatal boot, never silent.</strong> Every declaration exceeding the contract aborts the
-        boot with an explanatory message: unknown FK/OrderBy columns, an unregistered primary or leg
-        view, an external leg without a matching <code>UpstreamSubscription</code>, a LinkMany FK
+        boot with an explanatory message: unknown ParentID/OrderBy columns, an unregistered primary or leg
+        view, an external leg without a matching <code>UpstreamSubscription</code>, a LinkMany ParentID
         without a covering index on the leg view, a segment colliding
         with a primary field or another segment, <code>OrderBy</code>/<code>MaxLinkManyLimit</code> on a
         1:1 link, <code>.Desc()</code> without <code>OrderBy</code>, a composed name shadowing a view, a
@@ -760,7 +760,7 @@ func (f *GadgetFeature) ComposedViews() []*query.ComposedViewDefinition {
     <p>
         Where <code>Link</code>/<code>LinkMany</code> enrich the composed ROOT, <code>LinkInChild(childSchema, leg).On(col)</code>
         enriches one level down: every element of the PRIMARY's native child array gains a 1:1 sub-document, looked up by the
-        element's own FK at read time — the exact shape <a href="#views~views-embed-child"><code>EmbedInChild</code></a>
+        element's own ParentID at read time — the exact shape <a href="#views~views-embed-child"><code>EmbedInChild</code></a>
         materializes, computed per request instead. <code>childSchema</code> MUST be a native child of the primary's schema
         (a shared-base primary targets the base's children), boot-validated; the leg is either kind (<code>JoinUpstream</code>
         <em>or</em> <code>JoinView</code> — read-time, so no upstream-only restriction). It obeys the same leg contract as
@@ -774,7 +774,7 @@ func (f *GadgetFeature) ComposedViews() []*query.ComposedViewDefinition {
     Primary(CatalogView()).                                      // a view whose CatalogLines carry item_id
     LinkInChild(CatalogLineSchema(),
         query.JoinUpstream(UpstreamItemSchema(), "Item", "item")). // 1:1 leg; both segment names
-        On("item_id")                                            // the element's FK → the leg's _id
+        On("item_id")                                            // the element's ParentID → the leg's _id
 // read time: each CatalogLine element gains an "item" sub-document, joined by the line's own item_id.
 </code></pre>
 
@@ -821,7 +821,7 @@ ComposedViewReader (decorates the framework ViewReader; composed names only)
    ├─► 1. primary read: ReadPage("gadgets", primary criteria)   ← the EXISTING pipeline,
    │      keyset + context hash + MaxLimit + archived gate untouched
    │   ▼
-   ├─► 2. per 1:1 leg: ONE find({_id: {$in: [page FK values]}}) + segment filters
+   ├─► 2. per 1:1 leg: ONE find({_id: {$in: [page ParentID values]}}) + segment filters
    │      + the leg's own archived gate + segment projection → group by _id → attach
    │      sub-document or explicit null
    │   ▼
@@ -860,7 +860,7 @@ same envelope, same projector, same pagination block as any view read</div>
             <td>Each 1:1 leg</td>
             <td><strong>O(1)</strong> — ONE <code>$in</code> batch</td>
             <td>≤ p (one per distinct key)</td>
-            <td>The page's FK values, <em>deduplicated</em>, nulls skipped; each key is a point
+            <td>The page's ParentID values, <em>deduplicated</em>, nulls skipped; each key is a point
                 lookup on the leg's <code>_id</code> — uniqueness caps the result at one doc per key.
                 A batch of point lookups in one round-trip, never a scan.</td>
         </tr>
@@ -888,12 +888,12 @@ same envelope, same projector, same pagination block as any view read</div>
         ceilings. What keeps each promise honest:
     </p>
     <ul>
-        <li><strong>The 1:N FK must be index-covered — enforced at boot.</strong> Without an index
-            whose first key is the FK column, each per-parent subquery is a full collection scan —
+        <li><strong>The 1:N ParentID must be index-covered — enforced at boot.</strong> Without an index
+            whose first key is the ParentID column, each per-parent subquery is a full collection scan —
             <code>O(p × leg collection size)</code> per request, the classic silent monster. An
             internal leg whose view declares no covering index is a <strong>fatal boot</strong>; for
             an external leg (an upstream collection, whose indexes the operator owns) the same rule
-            applies as a hard operational requirement. A compound index starting with the FK (e.g.
+            applies as a hard operational requirement. A compound index starting with the ParentID (e.g.
             <code>(gadget_id, text)</code>) additionally serves the declared order for free.</li>
         <li><strong>Deep pages multiply legs.</strong> Raising <code>maxLimit</code> raises the 1:N
             query count linearly (<code>p</code> subqueries per 1:N leg). A composed view meant for
@@ -1151,4 +1151,49 @@ same envelope, same projector, same pagination block as any view read</div>
     together: the boot runs the resulting rebuilds in <strong>embed-dependency order</strong> (source before embedder,
     transitively), because a dependent rebuilt while its source is still mid-rebuild would read the source's pre-flip
     collection — the active-slot pointer switches only at the flip — and re-materialize the old content.
+</p>
+
+<h3 id="views-race">Concurrency &amp; staleness — the projection race model</h3>
+<p>
+    A materialized segment is a stored copy, so two writers refreshing it can land out of order; a read-time composition
+    is joined per request, so it has nothing to fall behind. Which family you declared therefore decides whether a race
+    is even a question — and, when it is, the <em>source kind</em> decides how it is defended. The whole model rests on
+    one reserved field, the source-revision watermark <code>_revision</code>.
+</p>
+<table>
+    <tbody><tr><th>Kind</th><th>Verbs</th><th>Stored?</th><th>Can a race leave it stale?</th></tr>
+    <tr><td><strong>Materialized</strong></td><td><code>Embed</code> / <code>EmbedMany</code> / <code>EmbedInChild</code></td><td>Yes — a segment inside the Mongo document, kept current by the ripple</td><td>This is the only family where the question applies — and the watermark guard below answers it.</td></tr>
+    <tr><td><strong>Read-time</strong></td><td><code>Link</code> / <code>LinkMany</code> / <code>LinkInChild</code> / <code>ComposedView</code></td><td>No — joined against the source at query time, nothing stored</td><td>No such thing: every read reflects the source's current state, so there is no copy to fall behind.</td></tr>
+</tbody></table>
+<p>
+    <strong>The guard — a source-revision watermark.</strong> Each materialized element carries the SOURCE document's
+    <code>_revision</code> (the whole source document is embedded, watermark included; it is a reserved <code>_</code>
+    field, so it is stripped on read and never reaches the wire). When a source changes, the ripple refreshes the segment
+    in every embedding document, carrying that source revision as <code>srcRev</code>, and applies each edit only when the
+    STORED element is <em>not newer</em> — the same last-writer-wins discipline the rest of the projection pipeline uses.
+    A ripple that lands out of order is therefore a no-op, not a regression: the segment converges to the newest source
+    revision, it never stalls at an older one.
+</p>
+<table>
+    <tbody><tr><th>Source (the <code>Join*</code> leg)</th><th>Watermarked?</th><th>Guard</th><th>Why it is safe</th></tr>
+    <tr><td><code>JoinView</code> — a local registered view</td><td>Yes — a local view is always projected with <code>_revision</code></td><td><strong>Active</strong> — <code>srcRev</code> = the source's <code>_revision</code></td><td>A view has SEVERAL writers with different bucketing (the SyncEngine keys by the view root's aggregate id; a ripple keys by ITS source's id), so two writes to one source document CAN arrive out of order — the guard is what keeps the newer one.</td></tr>
+    <tr><td><code>JoinUpstream</code> — a mirror of another service's data</td><td>No — <code>srcRev = 0</code>, the mirror's edits run unguarded</td><td><strong>None, by design</strong></td><td>A mirror has ONE writer (one subscription per collection) and its events are bucketed per source id, so edits for the same id are serialized end to end — the last is the newest by construction, and there is no out-of-order race to defend against.</td></tr>
+</tbody></table>
+<div class="box">
+    <strong>Where the Filter fits.</strong> The only column filter today is the <code>UpstreamSubscription</code>
+    <code>filter:</code> allowlist, and it applies to a <code>JoinUpstream</code> mirror only: it chooses which DATA
+    columns the mirror keeps — it does NOT switch the guard on or off (a mirror is unguarded regardless of it). A
+    <code>JoinView</code> leg has no column filter — it materializes the whole source view — so a <code>JoinView</code>
+    embed is <em>always</em> watermarked and <em>always</em> guarded; there is no supported way to strip its
+    <code>_revision</code> and turn the guard off.
+</div>
+<p>
+    <strong>What the guard does NOT cover.</strong> The watermark defends against RE-ORDERING. It does not, on its own,
+    heal a ripple that never arrived — a refresh dropped because the delivery to one embedding document failed and was
+    <strong>parked</strong>. That case belongs to a different layer: the unified failure ledger
+    (<code>omnicore_projection_failures</code>, <code>kind='ripple'</code> rows) with its automatic replay, and the
+    revision-parity reconciliation sweep that recomposes a segment found behind its source. See
+    <a href="#views~views-sync">How views stay current</a> for the delivery, parking and reconcile machinery the guard
+    sits on top of, and <a href="#read-lifecycle-map">the read lifecycle map</a> for the concrete watermark and tombstone
+    handshakes.
 </p>

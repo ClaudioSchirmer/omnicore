@@ -87,7 +87,7 @@ func (l *AggregateLoader[T]) effectiveContextName() string {
 }
 
 // WithSchema attaches the repository's TableSchema (root + child schemas) so the
-// loader resolves table/PK/FK/column from the same explicit map the write side
+// loader resolves table/ID/ParentID/column from the same explicit map the write side
 // uses. Shared between write and read sides of a Repository.
 func (l *AggregateLoader[T]) WithSchema(schema *TableSchema) *AggregateLoader[T] {
 	l.schema = schema
@@ -176,7 +176,7 @@ func (l *AggregateLoader[T]) FindAll(ctx context.Context, q *criteria.Query) ([]
 // LIMIT 1 — and hydrates NOTHING: this is the primitive for uniqueness
 // pre-checks and cardinality guards on the write path, where loading whole
 // aggregates to answer a yes/no question would waste the request's latency.
-// The PK is addressable as the fixed Go-side field "ID" (exclude-self checks:
+// The ID is addressable as the fixed Go-side field "ID" (exclude-self checks:
 // And(Eq("Field", v), Not(Eq("ID", id)))); criteria may reference sibling and
 // shared-base fields — the same LEFT JOINs FindAll uses apply.
 func (l *AggregateLoader[T]) Exists(ctx context.Context, q *criteria.Query) (bool, error) {
@@ -202,7 +202,7 @@ func (l *AggregateLoader[T]) compileFilter(q *criteria.Query) (fromJoin, clause 
 // siblings, then the shared base. The kind is derived from the Go struct
 // (TableSchema.IDKindOf — the field TYPE is the declaration), so a bare-string
 // probe on a domain.ID-typed field binds in the dialect's native id form; the
-// managed PK slot ("ID") is always IDValue via the anchor. A type-less shared
+// managed ID slot ("ID") is always IDValue via the anchor. A type-less shared
 // base derives nothing and answers IDNone for its own fields.
 func (l *AggregateLoader[T]) idKindResolver() func(string) core.IDKind {
 	anchor := l.schema
@@ -276,7 +276,7 @@ func (l *AggregateLoader[T]) findRoots(ctx context.Context, q *criteria.Query, l
 	// lives in a sibling resolves to the sibling's column AND records the sibling
 	// so it is LEFT JOINed below. Sibling columns are unique across the node
 	// (the schema's bijection), so they stay unqualified and unambiguous; only
-	// the shared PK is qualified (in the JOIN ON + the SELECT leading key).
+	// the shared ID is qualified (in the JOIN ON + the SELECT leading key).
 	joins := &relSpecJoins{siblings: map[string]*TableSchema{}}
 	resolve := l.specResolver(joins)
 	dialect := l.eng.Dialect()
@@ -291,7 +291,7 @@ func (l *AggregateLoader[T]) findRoots(ctx context.Context, q *criteria.Query, l
 	}
 	// When the criteria pulled in a sibling/base LEFT JOIN, the root's soft-delete
 	// column must be table-qualified (the base carries its own deleted_at) — the
-	// same disambiguation the leading PK gets below.
+	// same disambiguation the leading ID gets below.
 	rootQualifier := ""
 	if len(joins.siblings) > 0 || joins.base != nil {
 		rootQualifier = dialect.QuoteIdent(table)
@@ -344,7 +344,7 @@ func (l *AggregateLoader[T]) findRoots(ctx context.Context, q *criteria.Query, l
 		return entities, ids, nil
 	}
 
-	// Auto-scan: SELECT <pk>, <cols> + positional scan with the PK read back.
+	// Auto-scan: SELECT <pk>, <cols> + positional scan with the ID read back.
 	cols, byCol := l.schema.ScanPlan()
 	if len(cols) == 0 {
 		return nil, nil, fmt.Errorf(
@@ -356,13 +356,13 @@ func (l *AggregateLoader[T]) findRoots(ctx context.Context, q *criteria.Query, l
 	// When the criteria referenced a sibling field, LEFT JOIN those tables so the
 	// WHERE/ORDER can resolve against them. The SELECT list stays anchor-only (the
 	// sibling VALUES are loaded separately by hydrateSiblings); the join exists
-	// only to make the sibling columns reachable for filtering. The leading PK is
-	// qualified to the anchor table because the shared PK is the one ambiguous
+	// only to make the sibling columns reachable for filtering. The leading ID is
+	// qualified to the anchor table because the shared ID is the one ambiguous
 	// column under the join.
 	joinSQL := l.specJoinClause(joins, dialect)
-	leadingPK := dialect.QuoteIdent(l.schema.PKColumn())
+	leadingPK := dialect.QuoteIdent(l.schema.IDColumn())
 	if joinSQL != "" {
-		leadingPK = dialect.QuoteIdent(table) + "." + dialect.QuoteIdent(l.schema.PKColumn())
+		leadingPK = dialect.QuoteIdent(table) + "." + dialect.QuoteIdent(l.schema.IDColumn())
 	}
 	sql := "SELECT " + leadingPK + ", " + strings.Join(quoteIdentifiers(cols, dialect), ", ") + " FROM " + dialect.QuoteIdent(table) + joinSQL
 	sql += tailClause(clause, orderSQL)
@@ -455,8 +455,8 @@ func applyWindow(d Dialect, sql string, limit, offset int64, orderSQL string) (s
 
 // hydrateChildren loads + attaches children for the given roots. Auto-scan
 // children are loaded in one batched SELECT per type (WHERE fk IN (...)) and
-// grouped by FK; a manual ChildScanner falls back to one SELECT per root (it
-// cannot expose the FK generically). Child rows honor the scope the same way
+// grouped by ParentID; a manual ChildScanner falls back to one SELECT per root (it
+// cannot expose the ParentID generically). Child rows honor the scope the same way
 // the root gate does — see childScopeFilter (active → deleted_at IS NULL; any
 // archived scope → unfiltered, so the unarchive cascade sees every child via
 // AllAggregateItems()).
@@ -499,12 +499,12 @@ func (l *AggregateLoader[T]) hydrateChildren(ctx context.Context, entities []T, 
 			)
 		}
 		childTable := child.Table()
-		fkCol := child.FKColumn()
+		fkCol := child.ParentIDColumn()
 		childFilter := childScopeFilter(scope, child, dialect, "")
 
 		if manual, ok := l.childScanners[typeName]; ok {
 			// Manual child scanner: explicit columns (never SELECT *) + decode BY
-			// NAME via QueryMaps; the FK arg is dialect-encoded (text on PG,
+			// NAME via QueryMaps; the ParentID arg is dialect-encoded (text on PG,
 			// BINARY(16) bytes on MySQL) just like the auto path.
 			sql := fmt.Sprintf(
 				"SELECT %s FROM %s WHERE %s = %s %s",
@@ -556,7 +556,7 @@ func (l *AggregateLoader[T]) hydrateChildren(ctx context.Context, entities []T, 
 				rows.Close()
 				return err
 			}
-			// The FK is the leading key (decoded above); the child's OWN PK is a
+			// The ParentID is the leading key (decoded above); the child's OWN ID is a
 			// non-leading column scanned straight into its struct field, so on a
 			// backend that stores ids as raw bytes (MySQL BINARY(16)) the field
 			// holds 16 raw bytes, not the canonical uuid. Normalize it through the
@@ -586,7 +586,7 @@ func (l *AggregateLoader[T]) hydrateChildren(ctx context.Context, entities []T, 
 // hydrateBaseChildren loads the shared base's NATIVE children (base-children) into
 // each role aggregate as Constructor items — the read-side mirror of the write
 // routing. They key on the base's deterministic id, reached by JOINing the
-// base-child to the role on the shared FK (baseChild.fk = role.fkToBase), so the
+// base-child to the role on the shared ParentID (baseChild.fk = role.fkToBase), so the
 // rows come back grouped by the ROLE id and attach to the right aggregate. Loading
 // them here is what lets an UPDATE diff the person-native collection instead of
 // re-inserting it (the same clobber the role's own children already avoid). No-op
@@ -616,7 +616,7 @@ func (l *AggregateLoader[T]) hydrateBaseChildren(ctx context.Context, entities [
 	}
 	d := l.eng.Dialect()
 	roleTbl := d.QuoteIdent(l.schema.Table())
-	rolePK := d.QuoteIdent(l.schema.PKColumn())
+	rolePK := d.QuoteIdent(l.schema.IDColumn())
 	roleFK := d.QuoteIdent(fkCol)
 
 	placeholders := make([]string, len(rootIDs))
@@ -642,7 +642,7 @@ func (l *AggregateLoader[T]) hydrateBaseChildren(ctx context.Context, entities [
 			sel += ", " + bcTbl + "." + d.QuoteIdent(c)
 		}
 		sql := "SELECT " + sel + " FROM " + bcTbl +
-			" JOIN " + roleTbl + " ON " + bcTbl + "." + d.QuoteIdent(bc.FKColumn()) + " = " + roleTbl + "." + roleFK +
+			" JOIN " + roleTbl + " ON " + bcTbl + "." + d.QuoteIdent(bc.ParentIDColumn()) + " = " + roleTbl + "." + roleFK +
 			// bcTbl-qualified: the JOIN to the role table brings a second deleted_at
 			// into scope, so the base-child's active gate must name its own table.
 			" WHERE " + roleTbl + "." + rolePK + " IN (" + strings.Join(placeholders, ", ") + ") " + childScopeFilter(scope, bc, d, bcTbl)
@@ -693,7 +693,7 @@ func (l *AggregateLoader[T]) LoadSharedBaseIdentity(ctx context.Context, fresh T
 	if !ok {
 		return fresh, false, nil
 	}
-	nkCol := base.NaturalKeyColumn()
+	nkCol := base.NaturalIDColumn()
 	nkGo, ok := base.GoOf(nkCol)
 	if !ok {
 		return fresh, false, fmt.Errorf(
@@ -705,7 +705,7 @@ func (l *AggregateLoader[T]) LoadSharedBaseIdentity(ctx context.Context, fresh T
 	}
 	cols, byCol, _ := l.schema.SharedBaseScanPlan()
 	d := l.eng.Dialect()
-	sel := d.QuoteIdent(base.PKColumn())
+	sel := d.QuoteIdent(base.IDColumn())
 	for _, c := range cols {
 		sel += ", " + d.QuoteIdent(c)
 	}
@@ -745,7 +745,7 @@ func (l *AggregateLoader[T]) LoadSharedBaseIdentity(ctx context.Context, fresh T
 	}
 	if roleExists {
 		return fresh, false, core.SingleNotificationError(
-			l.effectiveContextName(), l.schema.PKColumn(), domain.EntityAlreadyAddedNotification{})
+			l.effectiveContextName(), l.schema.IDColumn(), domain.EntityAlreadyAddedNotification{})
 	}
 	if err := l.loadBaseChildrenConstructor(ctx, newE, base, baseID); err != nil {
 		return fresh, false, err
@@ -759,7 +759,7 @@ func (l *AggregateLoader[T]) LoadSharedBaseIdentity(ctx context.Context, fresh T
 // uses it to reject a re-POST of an existing active role with the canonical
 // conflict, before the request is re-applied onto the loaded identity.
 func (l *AggregateLoader[T]) activeRoleExists(ctx context.Context, fkCol, baseID string) (bool, error) {
-	// COLUMN-level probe (the FK is injected by infra, not a Go field), so it
+	// COLUMN-level probe (the ParentID is injected by infra, not a Go field), so it
 	// cannot ride the criteria-based Exists — but it shares probeExists, the
 	// single home of the SELECT 1 … LIMIT 1 execution.
 	d := l.eng.Dialect()
@@ -789,7 +789,7 @@ func (l *AggregateLoader[T]) probeExists(ctx context.Context, fromWhere string, 
 // loadBaseChildrenConstructor loads the shared base's native children by the base
 // id and attaches them to newE as Constructor items, so the command's ApplyTo can
 // dedup the request against them. Keyed directly by the base id (the role does not
-// exist yet); the base-child FK is the leading key (discarded), reusing ScanLeadingKey.
+// exist yet); the base-child ParentID is the leading key (discarded), reusing ScanLeadingKey.
 func (l *AggregateLoader[T]) loadBaseChildrenConstructor(ctx context.Context, newE T, base *TableSchema, baseID string) error {
 	baseChildren := base.ChildSchemas()
 	if len(baseChildren) == 0 {
@@ -806,7 +806,7 @@ func (l *AggregateLoader[T]) loadBaseChildrenConstructor(ctx context.Context, ne
 		if len(bcCols) == 0 {
 			continue
 		}
-		bcFK := d.QuoteIdent(bc.FKColumn())
+		bcFK := d.QuoteIdent(bc.ParentIDColumn())
 		sel := bcFK
 		for _, c := range bcCols {
 			sel += ", " + d.QuoteIdent(c)
@@ -868,7 +868,7 @@ func goStringFieldValue(e any, goName string) string {
 // hydrateSiblings loads each owner sibling's columns into the root entity by the
 // shared primary key — the read-side mirror of the write-side partition. Each
 // sibling is a SEPARATE single-table SELECT (not a JOIN): column names are unique
-// by the schema's bijection, but the shared PK would be ambiguous under a join,
+// by the schema's bijection, but the shared ID would be ambiguous under a join,
 // and a per-table SELECT keeps the driver's scan + NULL handling simple. The
 // sibling's own fields scan straight into the SAME struct at the indices its
 // TableSchema resolved against T (a sibling is over the same Go type as its
@@ -881,14 +881,14 @@ func (l *AggregateLoader[T]) hydrateSiblings(ctx context.Context, entities []T, 
 		return nil
 	}
 	dialect := l.eng.Dialect()
-	pkCol := l.schema.PKColumn()
+	pkCol := l.schema.IDColumn()
 	for _, sib := range sibs {
 		sibCols, sibByCol := sib.ScanPlan()
 		if len(sibCols) == 0 {
 			continue
 		}
 		// SELECT pk (leading key, discarded) + sibling columns, keyed by the
-		// shared PK. The leading-key form reuses ScanLeadingKey, which scans the
+		// shared ID. The leading-key form reuses ScanLeadingKey, which scans the
 		// remaining columns into the target struct at the byCol indices.
 		sql := dialect.ApplyLimit("SELECT "+dialect.QuoteIdent(pkCol)+", "+
 			strings.Join(quoteIdentifiers(sibCols, dialect), ", ")+
@@ -918,19 +918,19 @@ func (l *AggregateLoader[T]) scanSiblingInto(ctx context.Context, sql, id string
 	return rows.Err()
 }
 
-// decodeChildPK normalizes an aggregate child's own PK struct field to the
+// decodeChildPK normalizes an aggregate child's own ID struct field to the
 // canonical uuid string via the dialect, after the row has been auto-scanned.
-// A child's PK is mapped to an exported string field (the AggregateValueObject
+// A child's ID is mapped to an exported string field (the AggregateValueObject
 // GetID() contract) and read as a non-leading column, so it bypasses the
-// leading-key DecodeID the loader runs on the root PK and the child FK. On MySQL
+// leading-key DecodeID the loader runs on the root ID and the child ParentID. On MySQL
 // the field would otherwise carry the raw BINARY(16) bytes; on Postgres DecodeID
 // is a passthrough (the scanned text is not 16 bytes). No-op when the schema
-// declares no struct-field PK (PKIndex() < 0) or the field is not a string.
+// declares no struct-field ID (IDIndex() < 0) or the field is not a string.
 func decodeChildPK(vp reflect.Value, child *TableSchema, dialect Dialect) error {
-	if child.PKIndex() < 0 {
+	if child.IDIndex() < 0 {
 		return nil
 	}
-	f := vp.Elem().Field(child.PKIndex())
+	f := vp.Elem().Field(child.IDIndex())
 	if f.Kind() != reflect.String {
 		return nil
 	}
@@ -944,7 +944,7 @@ func decodeChildPK(vp reflect.Value, child *TableSchema, dialect Dialect) error 
 
 // relSpecJoins records which relational-specialization tables a criteria
 // referenced so findRoots can LEFT JOIN exactly those: sibling tables (joined on
-// the shared PK) and/or the shared base (joined on the role's FK → base PK).
+// the shared ID) and/or the shared base (joined on the role's ParentID → base ID).
 type relSpecJoins struct {
 	siblings map[string]*TableSchema
 	base     *TableSchema
@@ -954,9 +954,9 @@ type relSpecJoins struct {
 // specResolver resolves a criteria Go field to its column, checking the anchor,
 // then each sibling, then the shared base — recording any sibling/base referenced
 // so the matching LEFT JOIN is emitted. Sibling and base columns are unique vs
-// the anchor (the schema bijection), so they stay unqualified; only the shared PK
-// is qualified by findRoots. A criteria mixing the PK and a specialization field
-// is the one unsupported case (PK ambiguity) — filtering by PK makes any other
+// the anchor (the schema bijection), so they stay unqualified; only the shared ID
+// is qualified by findRoots. A criteria mixing the ID and a specialization field
+// is the one unsupported case (ID ambiguity) — filtering by ID makes any other
 // predicate redundant.
 func (l *AggregateLoader[T]) specResolver(j *relSpecJoins) core.FieldResolver {
 	return func(goField string) (string, bool) {
@@ -979,15 +979,15 @@ func (l *AggregateLoader[T]) specResolver(j *relSpecJoins) core.FieldResolver {
 	}
 }
 
-// specJoinClause renders a LEFT JOIN per referenced sibling (shared PK) and the
-// shared base (role FK → base PK), ordered deterministically. Empty when the
+// specJoinClause renders a LEFT JOIN per referenced sibling (shared ID) and the
+// shared base (role ParentID → base ID), ordered deterministically. Empty when the
 // criteria referenced no specialization field.
 func (l *AggregateLoader[T]) specJoinClause(j *relSpecJoins, dialect Dialect) string {
 	if len(j.siblings) == 0 && j.base == nil {
 		return ""
 	}
 	anchor := dialect.QuoteIdent(l.schema.Table())
-	pk := dialect.QuoteIdent(l.schema.PKColumn())
+	pk := dialect.QuoteIdent(l.schema.IDColumn())
 	var sb strings.Builder
 	tables := make([]string, 0, len(j.siblings))
 	for t := range j.siblings {
@@ -1000,14 +1000,14 @@ func (l *AggregateLoader[T]) specJoinClause(j *relSpecJoins, dialect Dialect) st
 	}
 	if j.base != nil {
 		bt := dialect.QuoteIdent(j.base.Table())
-		sb.WriteString(" LEFT JOIN " + bt + " ON " + bt + "." + dialect.QuoteIdent(j.base.PKColumn()) +
+		sb.WriteString(" LEFT JOIN " + bt + " ON " + bt + "." + dialect.QuoteIdent(j.base.IDColumn()) +
 			" = " + anchor + "." + dialect.QuoteIdent(j.baseFK))
 	}
 	return sb.String()
 }
 
 // hydrateSharedBase loads a role's shared-base columns into the role entity,
-// joining the base on the role's FK to the base PK and scanning the shared
+// joining the base on the role's ParentID to the base ID and scanning the shared
 // columns into the SAME struct at the role-field indices the schema pre-resolved.
 // No-op when the role declares no shared base.
 func (l *AggregateLoader[T]) hydrateSharedBase(ctx context.Context, entities []T, ids []string) error {
@@ -1022,13 +1022,13 @@ func (l *AggregateLoader[T]) hydrateSharedBase(ctx context.Context, entities []T
 	d := l.eng.Dialect()
 	roleTbl := d.QuoteIdent(l.schema.Table())
 	baseTbl := d.QuoteIdent(base.Table())
-	rolePK := d.QuoteIdent(l.schema.PKColumn())
+	rolePK := d.QuoteIdent(l.schema.IDColumn())
 	sel := roleTbl + "." + rolePK
 	for _, c := range cols {
 		sel += ", " + baseTbl + "." + d.QuoteIdent(c)
 	}
 	sql := d.ApplyLimit("SELECT "+sel+" FROM "+roleTbl+
-		" JOIN "+baseTbl+" ON "+baseTbl+"."+d.QuoteIdent(base.PKColumn())+" = "+roleTbl+"."+d.QuoteIdent(fkCol)+
+		" JOIN "+baseTbl+" ON "+baseTbl+"."+d.QuoteIdent(base.IDColumn())+" = "+roleTbl+"."+d.QuoteIdent(fkCol)+
 		" WHERE "+roleTbl+"."+rolePK+" = "+d.Placeholder(1), 1)
 	for i, ent := range entities {
 		if err := l.scanSiblingInto(ctx, sql, ids[i], ent, cols, byCol); err != nil {
@@ -1039,8 +1039,8 @@ func (l *AggregateLoader[T]) hydrateSharedBase(ctx context.Context, entities []T
 }
 
 // childScanSQL builds the child SELECT + the scan plan. With no child siblings it
-// is the plain single-table SELECT (leading FK + child columns). With siblings it
-// LEFT JOINs each on the shared child PK and folds the sibling columns into the
+// is the plain single-table SELECT (leading ParentID + child columns). With siblings it
+// LEFT JOINs each on the shared child ID and folds the sibling columns into the
 // scan plan — they map into the SAME child struct (a sibling is over the child's
 // Go type). Everything is qualified by table under the join; sibling/child
 // business columns are unique (the schema bijection), so the scan keys cleanly.
@@ -1052,7 +1052,7 @@ func childScanSQL(child *TableSchema, fkCol string, childCols []string, childByC
 			" FROM " + ct + " WHERE " + dialect.QuoteIdent(fkCol) + " IN (" + strings.Join(placeholders, ", ") + ") " + childFilter
 		return sql, childCols, childByCol
 	}
-	pk := dialect.QuoteIdent(child.PKColumn())
+	pk := dialect.QuoteIdent(child.IDColumn())
 	sel := ct + "." + dialect.QuoteIdent(fkCol)
 	for _, c := range childCols {
 		sel += ", " + ct + "." + dialect.QuoteIdent(c)

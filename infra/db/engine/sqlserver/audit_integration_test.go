@@ -42,7 +42,7 @@ func (e *eventfulPerson) BuildRules(_ string, _ domain.Service, _ *domain.Rules)
 
 func eventfulSchema() *core.TableSchema {
 	return core.NewTableSchema[*eventfulPerson]("flat_persons").
-		PK("id").
+		ID("id").
 		Field("Name", "name").
 		Field("Email", "email").
 		CreatedAt("created_at").
@@ -142,7 +142,7 @@ func TestSQLServerEngine_AuditAndEvents(t *testing.T) {
 	if err := raw.QueryRow(`SELECT id FROM audit_events WHERE aggregate_id = @p1`, res.ID.Value()).Scan(&rowIDRaw); err != nil {
 		t.Fatalf("read audit row id: %v", err)
 	}
-	// The PK is BINARY(16) now (the framework id standard) — decode the 16
+	// The ID is BINARY(16) now (the framework id standard) — decode the 16
 	// raw bytes back to the uuid the reader's codec-bound FindByID expects.
 	rowUUID, err := uuid.FromBytes(rowIDRaw)
 	if err != nil {

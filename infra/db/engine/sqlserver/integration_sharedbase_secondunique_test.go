@@ -14,9 +14,9 @@ import (
 
 // The shared-base second-unique-column regression, on SQL Server. A SharedBase
 // base carrying a SECOND unique column (email, beside the natural-key-derived
-// PK) must let a NEW-identity insert whose email already exists raise a CLEAN
+// ID) must let a NEW-identity insert whose email already exists raise a CLEAN
 // unique violation on that column — the write is an explicit INSERT (new) /
-// UPDATE-by-PK (existing) branch, so the email constraint fires like any other
+// UPDATE-by-ID (existing) branch, so the email constraint fires like any other
 // unique violation (error 2627, classified by IsUniqueViolation with the
 // constraint name extracted for the ConstraintBinding).
 
@@ -35,19 +35,19 @@ func (*sbEmailStudent) BuildRules(string, domain.Service, *domain.Rules) {}
 
 func sbEmailSchema() *core.TableSchema {
 	base := core.NewSharedBaseSchema("sb2_persons").Revision("revision").
-		PK("id").
+		ID("id").
 		Field("Document", "document").
 		Field("Name", "name").
 		Field("Email", "email").
-		NaturalKey("document").
+		NaturalID("document").
 		SoftDelete("deleted_at")
 	return core.NewTableSchema[*sbEmailStudent]("sb2_students").
-		PK("id").
+		ID("id").
 		Field("Enroll", "enrollment").
 		SoftDelete("deleted_at").
 		CreatedAt("created_at").
 		UpdatedAt("updated_at").
-		SharedBase(base, "id") // shared-PK: sb2_students.id == sb2_persons.id
+		SharedBase(base, "id") // shared-ID: sb2_students.id == sb2_persons.id
 }
 
 func sbEmailSetup(t *testing.T) (*Engine, *sql.DB) {
@@ -108,7 +108,7 @@ func TestSQLServer_SharedBase_SecondUniqueColumn_DupEmailRaisesCleanViolation(t 
 		t.Fatal("a new identity carrying a duplicate email must fail with a unique violation, got nil")
 	}
 	if !strings.Contains(strings.ToLower(err.Error()), "email") {
-		t.Errorf("the violation must name the email unique constraint (not the FK / not the document), got: %v", err)
+		t.Errorf("the violation must name the email unique constraint (not the ParentID / not the document), got: %v", err)
 	}
 
 	// No corruption: exactly ONE identity (D1), no D2 base, no D2 role.

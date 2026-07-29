@@ -32,12 +32,12 @@ func (e *roleTestEntity) BuildRules(string, domain.Service, *domain.Rules) {}
 
 func roleTestSchema() *TableSchema {
 	base := NewSharedBaseSchema("pessoa").Revision("revision").
-		PK("id").
+		ID("id").
 		Field("Name", "name").
 		Field("Document", "document").
-		NaturalKey("document")
+		NaturalID("document")
 	return NewTableSchema[*roleTestEntity]("aluno").
-		PK("id").
+		ID("id").
 		Revision("revision").
 		Field("Matricula", "matricula").
 		SoftDelete("deleted_at").
@@ -57,7 +57,7 @@ func rowsFound() func(string, []any) (Rows, error) {
 
 // rowsFKMatch scripts the natural-key guard probe (the ANSI
 // `SELECT CASE WHEN fk = $1 THEN 1 ELSE 0 END FROM role WHERE pk = $2`
-// projection) to report the stored FK matching the request-derived base id.
+// projection) to report the stored ParentID matching the request-derived base id.
 func rowsFKMatch() func(string, []any) (Rows, error) {
 	return func(string, []any) (Rows, error) {
 		return &fakeRows{remaining: 1, scan: func(dest []any) error {
@@ -155,13 +155,13 @@ func TestFindActiveRoleByFK_ProbeFiltersArchivedInSQL(t *testing.T) {
 // conscious opt-in.
 func roleTestSchemaPurge() *TableSchema {
 	base := NewSharedBaseSchema("pessoa").Revision("revision").
-		PK("id").
+		ID("id").
 		Field("Name", "name").
 		Field("Document", "document").
-		NaturalKey("document").
+		NaturalID("document").
 		OrphanPolicy(DeleteWhenUnreferenced)
 	return NewTableSchema[*roleTestEntity]("aluno").
-		PK("id").
+		ID("id").
 		Revision("revision").
 		Field("Matricula", "matricula").
 		SoftDelete("deleted_at").
@@ -289,14 +289,14 @@ func TestDeleteRoleWithBase_VetoThenArchivesBase(t *testing.T) {
 	// Purge policy + a soft-deletable base: when the database vetoes the purge,
 	// the standing lifecycle convergence still archives the orphaned identity.
 	base := NewSharedBaseSchema("pessoa").Revision("revision").
-		PK("id").
+		ID("id").
 		Field("Name", "name").
 		Field("Document", "document").
-		NaturalKey("document").
+		NaturalID("document").
 		SoftDelete("deleted_at").
 		OrphanPolicy(DeleteWhenUnreferenced)
 	schema := NewTableSchema[*roleTestEntity]("aluno").
-		PK("id").
+		ID("id").
 		Field("Matricula", "matricula").
 		SoftDelete("deleted_at").
 		SharedBase(base, "pessoa_id")
@@ -327,14 +327,14 @@ func TestDeleteRoleWithBase_PurgeNonFKErrorFails(t *testing.T) {
 	// not a veto — it propagates and rolls the whole delete back.
 	tx := &recTx{
 		queryFn:    func(string, []any) (Rows, error) { return &fakeRows{remaining: 0}, nil },
-		execErrSub: "DELETE FROM pessoa", // default injected error is errRecExec (non-FK)
+		execErrSub: "DELETE FROM pessoa", // default injected error is errRecExec (non-ParentID)
 	}
 	be := newFlatBE(&recBeginner{tx: tx})
 	if err := be.Delete(newBuilderCtx(), roleTestDeletable(t), roleTestSchemaPurge(), firingHook); !errors.Is(err, errRecExec) {
-		t.Fatalf("a non-FK purge error must propagate, got %v", err)
+		t.Fatalf("a non-ParentID purge error must propagate, got %v", err)
 	}
 	if tx.committed {
-		t.Error("the delete must not commit on a non-FK purge error")
+		t.Error("the delete must not commit on a non-ParentID purge error")
 	}
 }
 
@@ -423,13 +423,13 @@ func TestDeleteRoleWithBase_KeepOrphanArchivesSoftDeletableBase(t *testing.T) {
 	// the identity dormant (archived), never destroyed — and revivable by a
 	// future insert of the same natural key.
 	base := NewSharedBaseSchema("pessoa").Revision("revision").
-		PK("id").
+		ID("id").
 		Field("Name", "name").
 		Field("Document", "document").
-		NaturalKey("document").
+		NaturalID("document").
 		SoftDelete("deleted_at")
 	schema := NewTableSchema[*roleTestEntity]("aluno").
-		PK("id").
+		ID("id").
 		Field("Matricula", "matricula").
 		SoftDelete("deleted_at").
 		SharedBase(base, "pessoa_id")
@@ -482,12 +482,12 @@ func (e *aggRoleEntity) AggregateChildren() []domain.AggregateValueObject {
 }
 
 func aggRoleSchema() *TableSchema {
-	base := NewSharedBaseSchema("pessoa").Revision("revision").PK("id").Field("Name", "name").Field("Document", "document").NaturalKey("document")
+	base := NewSharedBaseSchema("pessoa").Revision("revision").ID("id").Field("Name", "name").Field("Document", "document").NaturalID("document")
 	return NewTableSchema[*aggRoleEntity]("aluno").
-		PK("id").
+		ID("id").
 		Field("Matricula", "matricula").
 		SoftDelete("deleted_at").
-		Child(NewTableSchema[aggRoleChild]("aluno_disciplines").PK("id").FK("aluno_id").Field("Label", "label")).
+		Child(NewTableSchema[aggRoleChild]("aluno_disciplines").ID("id").ParentID("aluno_id").Field("Label", "label")).
 		SharedBase(base, "pessoa_id")
 }
 
@@ -525,13 +525,13 @@ func TestDeleteRoleWithBase_EngineRegistryUnionsRoles(t *testing.T) {
 	// both on the ENGINE, and deleting the last aluno must probe professor too.
 	alunoSchema := roleTestSchemaPurge()
 	profBase := NewSharedBaseSchema("pessoa").Revision("revision").
-		PK("id").
+		ID("id").
 		Field("Name", "name").
 		Field("Document", "document").
-		NaturalKey("document").
+		NaturalID("document").
 		OrphanPolicy(DeleteWhenUnreferenced)
 	profSchema := NewTableSchema[*roleTestEntity]("professor").
-		PK("id").
+		ID("id").
 		Field("Matricula", "matricula").
 		SoftDelete("deleted_at").
 		SharedBase(profBase, "pessoa_id")
@@ -572,13 +572,13 @@ func TestRegisterSharedBaseRole_DivergentDeclarationPanics(t *testing.T) {
 	be.RegisterSharedBaseRole(roleTestSchemaPurge())
 
 	divergent := NewSharedBaseSchema("pessoa").Revision("revision").
-		PK("id").
+		ID("id").
 		Field("Name", "name").
 		Field("Document", "document").
-		NaturalKey("name"). // same table, DIFFERENT natural key — a corrupting divergence
+		NaturalID("name"). // same table, DIFFERENT natural key — a corrupting divergence
 		OrphanPolicy(DeleteWhenUnreferenced)
 	role := NewTableSchema[*roleTestEntity]("professor").
-		PK("id").
+		ID("id").
 		Field("Matricula", "matricula").
 		SoftDelete("deleted_at").
 		SharedBase(divergent, "pessoa_id")
@@ -608,7 +608,7 @@ func TestUpdateRoleWithBase(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetUpdatable: %v", err)
 	}
-	tx := &recTx{count: 1, queryFn: rowsFKMatch()} // role UPDATE matches one row; guard probe: FK matches
+	tx := &recTx{count: 1, queryFn: rowsFKMatch()} // role UPDATE matches one row; guard probe: ParentID matches
 	be := newFlatBE(&recBeginner{tx: tx})
 	if _, err := be.Update(newBuilderCtx(), upd, roleTestSchema(), firingHook); err != nil {
 		t.Fatalf("Update: %v", err)
@@ -628,7 +628,7 @@ func TestUpdateRoleWithBase(t *testing.T) {
 // --- unarchive active-sibling veto ------------------------------------------
 //
 // The /unarchive verb carries the same invariant the INSERT probe enforces: at
-// most one ACTIVE role row per identity per role table. Under the separate-FK
+// most one ACTIVE role row per identity per role table. Under the separate-ParentID
 // model an identity may hold archived remnants NEXT TO a newer active row (the
 // dev's active-only uniqueness contract), so reviving a remnant must be the
 // same 409 a POST would raise — probed with the row being unarchived excluded.
@@ -686,7 +686,7 @@ func TestUnarchiveRoleWithBase_NoActiveSiblingProceeds(t *testing.T) {
 	}
 }
 
-// Under shared-PK the primary key itself caps the table at one row per identity —
+// Under shared-ID the primary key itself caps the table at one row per identity —
 // no sibling can exist, so the veto probe is skipped entirely.
 func TestUnarchiveRoleWithBase_SharedPKSkipsVeto(t *testing.T) {
 	e := &roleTestEntity{Name: "Ana", Document: "D1", Matricula: "M1"}
@@ -706,10 +706,10 @@ func TestUnarchiveRoleWithBase_SharedPKSkipsVeto(t *testing.T) {
 	}
 	// The payload reads the base revision (SELECT revision FROM pessoa) —
 	// that is the only query allowed; the sibling veto probe (FROM aluno) must
-	// NOT run under the shared-PK model (the PK caps the table at one row).
+	// NOT run under the shared-ID model (the ID caps the table at one row).
 	for _, q := range probes {
 		if strings.Contains(q, "FROM aluno") {
-			t.Errorf("shared-PK unarchive must not probe for siblings (PK caps at one row), got %q", q)
+			t.Errorf("shared-ID unarchive must not probe for siblings (ID caps at one row), got %q", q)
 		}
 	}
 }
@@ -743,8 +743,8 @@ func TestUnarchiveRoleWithBase_EmptyNaturalKeyErrors(t *testing.T) {
 // SoftDelete (unreachable through the unarchive verb, which requires it) and a
 // convergence call with a neutral event type.
 func TestVetoUnarchive_DefensiveNoOps(t *testing.T) {
-	base := NewSharedBaseSchema("pessoa").Revision("revision").PK("id").Field("Name", "name").Field("Document", "document").NaturalKey("document")
-	noSD := NewTableSchema[*roleTestEntity]("aluno").PK("id").Revision("revision").Field("Matricula", "matricula").SharedBase(base, "pessoa_id")
+	base := NewSharedBaseSchema("pessoa").Revision("revision").ID("id").Field("Name", "name").Field("Document", "document").NaturalID("document")
+	noSD := NewTableSchema[*roleTestEntity]("aluno").ID("id").Revision("revision").Field("Matricula", "matricula").SharedBase(base, "pessoa_id")
 	tx := &recTx{queryFn: func(string, []any) (Rows, error) {
 		t.Fatal("no probe may run for a role without SoftDelete")
 		return nil, nil
@@ -763,8 +763,8 @@ func TestVetoUnarchive_DefensiveNoOps(t *testing.T) {
 //
 // The natural key derives the deterministic base id; every SharedBase
 // derivation assumes it never changes after insert. The UPDATE path enforces
-// it: shared-PK by arithmetic (the role id IS UUIDv5(naturalKey)), separate-FK
-// by one PK-indexed probe comparing the stored FK with the request-derived id.
+// it: shared-ID by arithmetic (the role id IS UUIDv5(naturalKey)), separate-ParentID
+// by one ID-indexed probe comparing the stored ParentID with the request-derived id.
 
 func roleTestUpdatable(t *testing.T, doc, id string) domain.Updatable {
 	t.Helper()
@@ -783,7 +783,7 @@ func TestUpdateRoleWithBase_NaturalKeyMutationRejected(t *testing.T) {
 		probeSQL = sql
 		return &fakeRows{remaining: 1, scan: func(dest []any) error {
 			if p, ok := dest[0].(*bool); ok {
-				*p = false // stored FK does NOT match the request-derived base id
+				*p = false // stored ParentID does NOT match the request-derived base id
 			}
 			return nil
 		}}, nil
@@ -810,7 +810,7 @@ func TestUpdateRoleWithBase_NaturalKeyMutationRejected(t *testing.T) {
 func TestUpdateRoleWithBase_SharedPK_NaturalKeyMutationRejected(t *testing.T) {
 	// The row id is NOT UUIDv5(D-CHANGED) — the request smuggled another key.
 	tx := &recTx{count: 1, queryFn: func(string, []any) (Rows, error) {
-		t.Fatal("the shared-PK guard is arithmetic — no probe may run")
+		t.Fatal("the shared-ID guard is arithmetic — no probe may run")
 		return nil, nil
 	}}
 	be := newFlatBE(&recBeginner{tx: tx})
@@ -824,7 +824,7 @@ func TestUpdateRoleWithBase_SharedPK_NaturalKeyMutationRejected(t *testing.T) {
 func TestUpdateRoleWithBase_SharedPK_MatchingNaturalKeyProceeds(t *testing.T) {
 	tx := &recTx{count: 1}
 	be := newFlatBE(&recBeginner{tx: tx})
-	// id == UUIDv5(D1): the canonical shared-PK state.
+	// id == UUIDv5(D1): the canonical shared-ID state.
 	if _, err := be.Update(newBuilderCtx(), roleTestUpdatable(t, "D1", deterministicBaseID("D1")), roleTestSchemaSharedPK(), firingHook); err != nil {
 		t.Fatalf("Update: %v", err)
 	}

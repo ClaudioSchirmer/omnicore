@@ -8,7 +8,7 @@ import (
 )
 
 // schemaSample is a type-anchored target for TableSchema construction tests —
-// the exported fields exist so Field/PK declarations validate against it.
+// the exported fields exist so Field/ID declarations validate against it.
 type schemaSample struct {
 	ID      string
 	Name    string
@@ -29,8 +29,8 @@ func assertPanics(t *testing.T, name string, fn func()) {
 }
 
 // TestTableSchema_ManagedColumnBijection exercises the order-independent
-// collision enforcement over the full physical column set (PK + Field +
-// SoftDelete/CreatedAt/UpdatedAt). Each managed setter and PK must reject a
+// collision enforcement over the full physical column set (ID + Field +
+// SoftDelete/CreatedAt/UpdatedAt). Each managed setter and ID must reject a
 // column already claimed by another slot, regardless of declaration order.
 func TestTableSchema_ManagedColumnBijection(t *testing.T) {
 	assertPanics(t, "CreatedAt vs UpdatedAt same column", func() {
@@ -48,11 +48,132 @@ func TestTableSchema_ManagedColumnBijection(t *testing.T) {
 	assertPanics(t, "Field then CreatedAt same column", func() {
 		NewTableSchema[schemaSample]("t").Field("Created", "created_at").CreatedAt("created_at")
 	})
-	assertPanics(t, "PK column claimed by a field", func() {
-		NewTableSchema[schemaSample]("t").Field("Name", "k").PK("k")
+	assertPanics(t, "ID column claimed by a field", func() {
+		NewTableSchema[schemaSample]("t").Field("Name", "k").ID("k")
 	})
-	assertPanics(t, "CreatedAt collides with non-default PK", func() {
-		NewTableSchema[schemaSample]("t").PK("pk").CreatedAt("pk")
+	assertPanics(t, "CreatedAt collides with non-default ID", func() {
+		NewTableSchema[schemaSample]("t").ID("pk").CreatedAt("pk")
+	})
+}
+
+// TestTableSchema_FKColumnNotAlsoAField proves the boot guard that forbids
+// mapping the aggregate-root ParentID column as a domain Field (either declaration
+// order): the write cascade OWNS that column — insertChild sets it to the
+// parent id — so a mapped field on it would be silently overwritten on every
+// write. The shared-ID model (the ID column that IS the ParentID) stays legitimate,
+// because the ID is never a mapped field.
+func TestTableSchema_FKColumnNotAlsoAField(t *testing.T) {
+	assertPanics(t, "ParentID then Field on the ParentID column", func() {
+		NewTableSchema[schemaSample]("child").ID("id").ParentID("root_id").Field("Name", "root_id")
+	})
+	assertPanics(t, "Field then ParentID on the same column", func() {
+		NewTableSchema[schemaSample]("child").ID("id").Field("Name", "root_id").ParentID("root_id")
+	})
+	// Shared-ID: the ID column doubles as the ParentID (the SharedBase pattern the user
+	// relies on). Legitimate — the ID is not in byCol, so the guard must NOT fire.
+	func() {
+		defer func() {
+			if r := recover(); r != nil {
+				t.Fatalf("shared-ID (ID == ParentID) must be allowed, got panic: %v", r)
+			}
+		}()
+		s := NewTableSchema[schemaSample]("role").ID("id").ParentID("id")
+		if s.IDColumn() != "id" || s.ParentIDColumn() != "id" {
+			t.Fatalf("ID/ParentID = %q/%q want id/id", s.IDColumn(), s.ParentIDColumn())
+		}
+	}()
+}
+
+// TestTableSchema_ReservedGoNames_IDandFID proves neither the primary-key Go
+// name ("ID") nor the foreign-key projection name ("ParentID") can be declared as a
+// Field — "ID" is declared with ID(column), "ParentID" is exposed automatically.
+func TestTableSchema_ReservedGoNames_IDandFID(t *testing.T) {
+	assertPanics(t, "Field(ID) is reserved (the ID)", func() {
+		NewTableSchema[schemaSample]("t").ID("id").Field("ID", "other")
+	})
+	assertPanics(t, "Field(ParentID) is reserved (the ParentID projection)", func() {
+		NewTableSchema[schemaSample]("t").ID("id").Field("ParentID", "other")
+	})
+}
+
+// TestTableSchema_FIDReadProjection proves the read-only "ParentID" projection of a
+// schema's foreign key resolves both ways — for an aggregate child (s.parentIDColumn)
+// AND a SharedBase role — and is inert on a schema that declares no ParentID.
+func TestTableSchema_FIDReadProjection(t *testing.T) {
+	child := NewTableSchema[embedFixture]("lines").ID("id").ParentID("order_id")
+	if g, ok := child.GoNameForRead("order_id"); !ok || g != "ParentID" {
+		t.Errorf("child GoNameForRead(order_id) = %q,%v want ParentID", g, ok)
+	}
+	if c, ok := child.ColumnForRead("ParentID"); !ok || c != "order_id" {
+		t.Errorf("child ColumnForRead(ParentID) = %q,%v want order_id", c, ok)
+	}
+
+	base := NewSharedBaseSchema("pessoa").Revision("revision").ID("id").Field("Name", "name").NaturalID("name")
+	role := NewTableSchema[*revRoleEntity]("aluno").ID("id").SharedBase(base, "pessoa_id")
+	if g, ok := role.GoNameForRead("pessoa_id"); !ok || g != "ParentID" {
+		t.Errorf("role GoNameForRead(pessoa_id) = %q,%v want ParentID", g, ok)
+	}
+	if c, ok := role.ColumnForRead("ParentID"); !ok || c != "pessoa_id" {
+		t.Errorf("role ColumnForRead(ParentID) = %q,%v want pessoa_id", c, ok)
+	}
+
+	root := NewTableSchema[schemaSample]("orders").ID("id").Field("Name", "name")
+	if _, ok := root.ColumnForRead("ParentID"); ok {
+		t.Errorf("schema without an ParentID: ColumnForRead(ParentID) must be false")
+	}
+}
+
+// TestTableSchema_FKAndSharedBaseMutuallyExclusive proves a schema cannot be both
+// an aggregate child (ParentID) and a SharedBase role — that would be two parents and
+// an ambiguous ParentID — in either declaration order.
+func TestTableSchema_FKAndSharedBaseMutuallyExclusive(t *testing.T) {
+	base := func() *TableSchema {
+		return NewSharedBaseSchema("pessoa").Revision("revision").ID("id").Field("Name", "name").NaturalID("name")
+	}
+	assertPanics(t, "ParentID then SharedBase", func() {
+		NewTableSchema[*revRoleEntity]("aluno").ID("id").ParentID("parent_id").SharedBase(base(), "pessoa_id")
+	})
+	assertPanics(t, "SharedBase then ParentID", func() {
+		NewTableSchema[*revRoleEntity]("aluno").ID("id").SharedBase(base(), "pessoa_id").ParentID("parent_id")
+	})
+}
+
+// TestTableSchema_SingleDeclaration proves every single-column slot rejects a
+// SECOND declaration — otherwise the second call silently overwrites the first
+// (ensureColumnFree deliberately skips a slot's own value, and some setters
+// never checked at all).
+func TestTableSchema_SingleDeclaration(t *testing.T) {
+	assertPanics(t, "ID twice", func() {
+		NewTableSchema[schemaSample]("t").ID("id").ID("other")
+	})
+	assertPanics(t, "ParentID twice", func() {
+		NewTableSchema[embedFixture]("c").ID("id").ParentID("a").ParentID("b")
+	})
+	assertPanics(t, "SoftDelete twice", func() {
+		NewTableSchema[schemaSample]("t").ID("id").SoftDelete("a").SoftDelete("b")
+	})
+	assertPanics(t, "CreatedAt twice", func() {
+		NewTableSchema[schemaSample]("t").ID("id").CreatedAt("a").CreatedAt("b")
+	})
+	assertPanics(t, "UpdatedAt twice", func() {
+		NewTableSchema[schemaSample]("t").ID("id").UpdatedAt("a").UpdatedAt("b")
+	})
+	assertPanics(t, "Revision twice", func() {
+		NewTableSchema[schemaSample]("t").ID("id").Revision("a").Revision("b")
+	})
+	assertPanics(t, "NaturalID twice", func() {
+		NewSharedBaseSchema("b").ID("id").Field("Name", "name").NaturalID("name").NaturalID("other")
+	})
+}
+
+// TestTableSchema_DuplicateChildRejected proves a second aggregate child of the
+// same Go type panics instead of silently overwriting the first — children are
+// keyed by type name, so two collections of one type would drop one.
+func TestTableSchema_DuplicateChildRejected(t *testing.T) {
+	assertPanics(t, "two children of the same type", func() {
+		c1 := NewTableSchema[embedFixture]("lines_a").ID("id").ParentID("root_id")
+		c2 := NewTableSchema[embedFixture]("lines_b").ID("id").ParentID("root_id")
+		NewTableSchema[schemaSample]("orders").ID("id").Child(c1).Child(c2)
 	})
 }
 
@@ -60,9 +181,9 @@ func TestTableSchema_ManagedColumnBijection(t *testing.T) {
 // WithSchema) panics when a declared aggregate child carries its own Child(...) —
 // grandchildren are unsupported on the write side (root + one level).
 func TestTableSchema_GrandchildRejected(t *testing.T) {
-	grand := NewTableSchema[embedFixture]("grand").PK("id").FK("child_id")
-	child := NewTableSchema[schemaSample]("child").PK("id").FK("root_id").Child(grand)
-	root := NewTableSchema[schemaSample]("root").PK("id").Child(child)
+	grand := NewTableSchema[embedFixture]("grand").ID("id").ParentID("child_id")
+	child := NewTableSchema[schemaSample]("child").ID("id").ParentID("root_id").Child(grand)
+	root := NewTableSchema[schemaSample]("root").ID("id").Child(child)
 	assertPanics(t, "child declares its own Child(...)", func() {
 		root.ValidateChildDepth()
 	})
@@ -76,8 +197,8 @@ func TestTableSchema_OneLevelChildOK(t *testing.T) {
 			t.Fatalf("one-level aggregate panicked: %v", r)
 		}
 	}()
-	child := NewTableSchema[embedFixture]("child").PK("id").FK("root_id")
-	NewTableSchema[schemaSample]("root").PK("id").Child(child).ValidateChildDepth()
+	child := NewTableSchema[embedFixture]("child").ID("id").ParentID("root_id")
+	NewTableSchema[schemaSample]("root").ID("id").Child(child).ValidateChildDepth()
 }
 
 // TestTableSchema_Sibling_HappyPath proves a declared sibling is recorded,
@@ -85,7 +206,7 @@ func TestTableSchema_OneLevelChildOK(t *testing.T) {
 // fields are disjoint from the owner's.
 func TestTableSchema_Sibling_HappyPath(t *testing.T) {
 	root := NewTableSchema[schemaSample]("root").
-		PK("id").
+		ID("id").
 		Field("Name", "name").
 		Sibling(NewSiblingSchema[schemaSample]("sib").Field("Removed", "removed"))
 
@@ -103,13 +224,13 @@ func TestTableSchema_Sibling_HappyPath(t *testing.T) {
 }
 
 // TestTableSchema_Sibling_BootGuards locks every declaration-time trava: a
-// sibling owns no lifecycle (SoftDelete), no FK, no PK (it borrows the owner's),
+// sibling owns no lifecycle (SoftDelete), no ParentID, no ID (it borrows the owner's),
 // no children, no nested sibling; it must be over the same type, built with
 // NewSiblingSchema, carry fields, and not collide table names. The kind-mismatch
 // guards on Sibling()/Child() are covered too.
 // The identity/lifecycle declarations fail AT THE CALL on a sibling schema —
-// before the attach — and the PK/FK messages teach the DDL contract: the
-// sibling table's physical PK column carries the OWNER's PK column NAME
+// before the attach — and the ID/ParentID messages teach the DDL contract: the
+// sibling table's physical ID column carries the OWNER's ID column NAME
 // (naming it "<owner>_id" is the classic first-write 500).
 func TestTableSchema_Sibling_DeclarationGuardsTeachTheDDLContract(t *testing.T) {
 	wantPanicContaining := func(name, needle string, fn func()) {
@@ -126,11 +247,11 @@ func TestTableSchema_Sibling_DeclarationGuardsTeachTheDDLContract(t *testing.T) 
 		}()
 		fn()
 	}
-	wantPanicContaining("PK on a sibling", "SAME name", func() {
-		NewSiblingSchema[schemaSample]("s").PK("rental_listing_id")
+	wantPanicContaining("ID on a sibling", "SAME name", func() {
+		NewSiblingSchema[schemaSample]("s").ID("rental_listing_id")
 	})
-	wantPanicContaining("FK on a sibling", "the shared PK IS the link", func() {
-		NewSiblingSchema[schemaSample]("s").FK("owner_id")
+	wantPanicContaining("ParentID on a sibling", "the shared ID IS the link", func() {
+		NewSiblingSchema[schemaSample]("s").ParentID("owner_id")
 	})
 	wantPanicContaining("SoftDelete on a sibling", "no lifecycle of its own", func() {
 		NewSiblingSchema[schemaSample]("s").SoftDelete("deleted_at")
@@ -146,27 +267,27 @@ func TestTableSchema_Sibling_DeclarationGuardsTeachTheDDLContract(t *testing.T) 
 	assertPanics(t, "planted managed timestamp on attach", func() {
 		sib := NewSiblingSchema[schemaSample]("s").Field("Name", "name")
 		sib.createdAt = "created_at"
-		NewTableSchema[schemaSample]("root").PK("id").Sibling(sib)
+		NewTableSchema[schemaSample]("root").ID("id").Sibling(sib)
 	})
 }
 
 func TestTableSchema_Sibling_BootGuards(t *testing.T) {
-	owner := func() *TableSchema { return NewTableSchema[schemaSample]("root").PK("id").Field("Name", "name") }
+	owner := func() *TableSchema { return NewTableSchema[schemaSample]("root").ID("id").Field("Name", "name") }
 
 	assertPanics(t, "SoftDelete on a sibling", func() {
 		owner().Sibling(NewSiblingSchema[schemaSample]("s").Field("Removed", "removed").SoftDelete("del"))
 	})
-	assertPanics(t, "FK on a sibling", func() {
-		owner().Sibling(NewSiblingSchema[schemaSample]("s").FK("fk").Field("Removed", "removed"))
+	assertPanics(t, "ParentID on a sibling", func() {
+		owner().Sibling(NewSiblingSchema[schemaSample]("s").ParentID("fk").Field("Removed", "removed"))
 	})
-	assertPanics(t, "PK on a sibling", func() {
-		owner().Sibling(NewSiblingSchema[schemaSample]("s").PK("id").Field("Removed", "removed"))
+	assertPanics(t, "ID on a sibling", func() {
+		owner().Sibling(NewSiblingSchema[schemaSample]("s").ID("id").Field("Removed", "removed"))
 	})
 	assertPanics(t, "sibling with no fields", func() {
 		owner().Sibling(NewSiblingSchema[schemaSample]("s"))
 	})
 	assertPanics(t, "sibling over a different type", func() {
-		owner().Sibling(NewSiblingSchema[embedFixture]("s").Field("ID", "other_id"))
+		owner().Sibling(NewSiblingSchema[otherFixture]("s").Field("Tag", "tag"))
 	})
 	assertPanics(t, "non-sibling passed to Sibling()", func() {
 		owner().Sibling(NewTableSchema[schemaSample]("s").Field("Removed", "removed"))
@@ -177,7 +298,7 @@ func TestTableSchema_Sibling_BootGuards(t *testing.T) {
 	})
 	assertPanics(t, "sibling cannot own a child", func() {
 		NewSiblingSchema[schemaSample]("s").Field("Name", "name").
-			Child(NewTableSchema[embedFixture]("c").PK("id").FK("s_id"))
+			Child(NewTableSchema[embedFixture]("c").ID("id").ParentID("s_id"))
 	})
 	assertPanics(t, "secondary schema passed to Child()", func() {
 		owner().Child(NewSiblingSchema[schemaSample]("s").Field("Removed", "removed"))
@@ -194,12 +315,12 @@ func TestTableSchema_Sibling_BootGuards(t *testing.T) {
 // and a sibling is a boot panic.
 func TestTableSchema_ValidateSiblings_Overlap(t *testing.T) {
 	assertPanics(t, "column mapped by owner and sibling", func() {
-		NewTableSchema[schemaSample]("root").PK("id").Field("Name", "shared").
+		NewTableSchema[schemaSample]("root").ID("id").Field("Name", "shared").
 			Sibling(NewSiblingSchema[schemaSample]("sib").Field("Removed", "shared")).
 			ValidateSiblings()
 	})
 	assertPanics(t, "Go field mapped by owner and sibling", func() {
-		NewTableSchema[schemaSample]("root").PK("id").Field("Name", "name").
+		NewTableSchema[schemaSample]("root").ID("id").Field("Name", "name").
 			Sibling(NewSiblingSchema[schemaSample]("sib").Field("Name", "name2")).
 			ValidateSiblings()
 	})
@@ -214,9 +335,9 @@ func TestTableSchema_ChildWithSibling(t *testing.T) {
 			t.Fatalf("child-with-sibling panicked: %v", r)
 		}
 	}()
-	child := NewTableSchema[schemaSample]("child").PK("id").FK("root_id").Field("Name", "name").
+	child := NewTableSchema[schemaSample]("child").ID("id").ParentID("root_id").Field("Name", "name").
 		Sibling(NewSiblingSchema[schemaSample]("child_sib").Field("Removed", "removed"))
-	NewTableSchema[schemaSample]("root").PK("id").Child(child).ValidateSiblings()
+	NewTableSchema[schemaSample]("root").ID("id").Child(child).ValidateSiblings()
 }
 
 // TestTableSchema_ReadTranslationIncludesSiblings proves the read-path Go↔column
@@ -224,7 +345,7 @@ func TestTableSchema_ChildWithSibling(t *testing.T) {
 // both directions — so the Mongo reader can filter/sort/project on a sibling
 // field and ToGoDoc keeps a merged sibling column.
 func TestTableSchema_ReadTranslationIncludesSiblings(t *testing.T) {
-	root := NewTableSchema[schemaSample]("root").PK("id").Field("Name", "name").
+	root := NewTableSchema[schemaSample]("root").ID("id").Field("Name", "name").
 		Sibling(NewSiblingSchema[schemaSample]("ext").Field("Removed", "removed"))
 	if c, ok := root.ColumnForRead("Removed"); !ok || c != "removed" {
 		t.Errorf("ColumnForRead(sibling field) = %q,%v — want \"removed\",true", c, ok)
@@ -237,15 +358,15 @@ func TestTableSchema_ReadTranslationIncludesSiblings(t *testing.T) {
 // TestTableSchema_ChildSchemas proves ChildSchemas() returns every declared
 // aggregate child ordered by table name (so the delete cascade emits
 // deterministic SQL on any engine) and nil for a childless schema. The aggregate
-// delete path relies on it to clear every declared child table by FK explicitly.
+// delete path relies on it to clear every declared child table by ParentID explicitly.
 func TestTableSchema_ChildSchemas(t *testing.T) {
-	if got := NewTableSchema[schemaSample]("root").PK("id").ChildSchemas(); got != nil {
+	if got := NewTableSchema[schemaSample]("root").ID("id").ChildSchemas(); got != nil {
 		t.Errorf("childless schema: ChildSchemas() = %v, want nil", got)
 	}
-	alpha := NewTableSchema[embedFixture]("alpha").PK("id").FK("root_id")
-	zebra := NewTableSchema[schemaSample]("zebra").PK("id").FK("root_id")
+	alpha := NewTableSchema[embedFixture]("alpha").ID("id").ParentID("root_id")
+	zebra := NewTableSchema[schemaSample]("zebra").ID("id").ParentID("root_id")
 	// Declared zebra-then-alpha; ChildSchemas() must return them sorted by table.
-	root := NewTableSchema[schemaSample]("root").PK("id").Child(zebra).Child(alpha)
+	root := NewTableSchema[schemaSample]("root").ID("id").Child(zebra).Child(alpha)
 	got := root.ChildSchemas()
 	if len(got) != 2 {
 		t.Fatalf("ChildSchemas() len = %d, want 2", len(got))
@@ -255,36 +376,36 @@ func TestTableSchema_ChildSchemas(t *testing.T) {
 	}
 }
 
-// TestTableSchema_PKMandatory proves PK rejects an empty column — a
+// TestTableSchema_PKMandatory proves ID rejects an empty column — a
 // single-column primary key is mandatory on every schema.
 func TestTableSchema_PKMandatory(t *testing.T) {
-	assertPanics(t, "empty PK column", func() {
-		NewTableSchema[schemaSample]("t").PK("")
+	assertPanics(t, "empty ID column", func() {
+		NewTableSchema[schemaSample]("t").ID("")
 	})
 }
 
 // TestTableSchema_ChildRequiresPK proves an aggregate child registered without
-// an explicit PK is rejected at Child() — there is no default primary key.
+// an explicit ID is rejected at Child() — there is no default primary key.
 func TestTableSchema_ChildRequiresPK(t *testing.T) {
-	assertPanics(t, "child without PK", func() {
-		NewTableSchema[schemaSample]("root").PK("id").
-			Child(NewTableSchema[embedFixture]("child").FK("root_id")) // no .PK
+	assertPanics(t, "child without ID", func() {
+		NewTableSchema[schemaSample]("root").ID("id").
+			Child(NewTableSchema[embedFixture]("child").ParentID("root_id")) // no .ID
 	})
 }
 
 // TestTableSchema_ChildRequiresFK proves an aggregate child registered without a
 // foreign key is rejected at Child() — the persister injects the root id into
-// the child FK on every write, so it cannot be empty.
+// the child ParentID on every write, so it cannot be empty.
 func TestTableSchema_ChildRequiresFK(t *testing.T) {
-	assertPanics(t, "child without FK", func() {
-		NewTableSchema[schemaSample]("root").PK("id").
-			Child(NewTableSchema[embedFixture]("child").PK("id")) // no .FK
+	assertPanics(t, "child without ParentID", func() {
+		NewTableSchema[schemaSample]("root").ID("id").
+			Child(NewTableSchema[embedFixture]("child").ID("id")) // no .ParentID
 	})
 }
 
 // TestTableSchema_ValidDeclarationDoesNotPanic confirms a well-formed schema —
-// distinct columns across PK, fields, and all three managed slots — constructs
-// cleanly. PK("id") matching the default column must not self-collide.
+// distinct columns across ID, fields, and all three managed slots — constructs
+// cleanly. ID("id") matching the default column must not self-collide.
 func TestTableSchema_ValidDeclarationDoesNotPanic(t *testing.T) {
 	defer func() {
 		if r := recover(); r != nil {
@@ -292,7 +413,7 @@ func TestTableSchema_ValidDeclarationDoesNotPanic(t *testing.T) {
 		}
 	}()
 	s := NewTableSchema[schemaSample]("t").
-		PK("id").
+		ID("id").
 		Field("Name", "name").
 		Field("Created", "created").
 		SoftDelete("deleted_at").
@@ -361,38 +482,38 @@ func (m *oldCloneUnmarshaler) UnmarshalJSON([]byte) error { return nil }
 // never through JSON) pass.
 func TestTableSchema_ValidateOldCloneSafety(t *testing.T) {
 	assertPanics(t, "root field tagged json:\"-\"", func() {
-		NewTableSchema[oldCloneSkipTag]("t").PK("id").Field("Name", "name").
+		NewTableSchema[oldCloneSkipTag]("t").ID("id").Field("Name", "name").
 			ValidateOldCloneSafety()
 	})
 	assertPanics(t, "sibling field tagged json:\"-\"", func() {
-		NewTableSchema[oldCloneSiblingTag]("t").PK("id").Field("Name", "name").
+		NewTableSchema[oldCloneSiblingTag]("t").ID("id").Field("Name", "name").
 			Sibling(NewSiblingSchema[oldCloneSiblingTag]("t_notes").Field("Notes", "notes")).
 			ValidateOldCloneSafety()
 	})
 	assertPanics(t, "shared-base field tagged json:\"-\"", func() {
-		base := NewSharedBaseSchema("people").Revision("revision").PK("id").
-			Field("PersonName", "person_name").NaturalKey("person_name")
-		NewTableSchema[oldCloneRoleTag]("alunos").PK("id").Field("RoleField", "role_field").
+		base := NewSharedBaseSchema("people").Revision("revision").ID("id").
+			Field("PersonName", "person_name").NaturalID("person_name")
+		NewTableSchema[oldCloneRoleTag]("alunos").ID("id").Field("RoleField", "role_field").
 			SharedBase(base, "person_id").
 			ValidateOldCloneSafety()
 	})
 	assertPanics(t, "entity implements json.Marshaler", func() {
-		NewTableSchema[oldCloneMarshaler]("t").PK("id").Field("Name", "name").
+		NewTableSchema[oldCloneMarshaler]("t").ID("id").Field("Name", "name").
 			ValidateOldCloneSafety()
 	})
 	assertPanics(t, "entity implements json.Unmarshaler", func() {
-		NewTableSchema[oldCloneUnmarshaler]("t").PK("id").Field("Name", "name").
+		NewTableSchema[oldCloneUnmarshaler]("t").ID("id").Field("Name", "name").
 			ValidateOldCloneSafety()
 	})
 
 	// Tolerated shapes — any panic here fails the test.
-	NewTableSchema[oldCloneRenameTag]("t").PK("id").Field("Name", "name").
+	NewTableSchema[oldCloneRenameTag]("t").ID("id").Field("Name", "name").
 		ValidateOldCloneSafety()
 	NewExternalSchema("upstream").Field("Name", "name").
 		ValidateOldCloneSafety()
 	// An aggregate CHILD with the tag is exempt: children reach the Old ghost by
 	// value copy of the aggregate map, never through the JSON round-trip.
-	NewTableSchema[schemaSample]("root").PK("id").Field("Name", "name").
-		Child(NewTableSchema[oldCloneSkipTag]("child").PK("id").FK("root_id").Field("Name", "name")).
+	NewTableSchema[schemaSample]("root").ID("id").Field("Name", "name").
+		Child(NewTableSchema[oldCloneSkipTag]("child").ID("id").ParentID("root_id").Field("Name", "name")).
 		ValidateOldCloneSafety()
 }

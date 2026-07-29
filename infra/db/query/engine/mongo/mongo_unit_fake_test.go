@@ -44,8 +44,8 @@ type fakeColl struct {
 
 	updates   []bson.M // captured UpdateOne update documents
 	pipelines []bson.A // captured UpdateOne aggregation-pipeline updates
-	deletes []any    // captured DeleteOne filters
-	upd     int64    // ModifiedCount/MatchedCount to report
+	deletes   []any    // captured DeleteOne filters
+	upd       int64    // ModifiedCount/MatchedCount to report
 
 	bulkErr    error // forced error from BulkWrite
 	bulkModels int   // total write models seen across BulkWrite calls

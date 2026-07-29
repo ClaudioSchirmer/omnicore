@@ -479,10 +479,10 @@ func (s *SyncEngine) backfillInto(ctx context.Context, view *ViewDefinition, tar
 	}
 	// Identifiers go through the dialect's QuoteIdent (backtick on MySQL, bare on
 	// Postgres) and the column names come from the schema — never hardcoded — so a
-	// reserved-word table (e.g. `order`) or a renamed PK/timestamp column (PK("key"))
+	// reserved-word table (e.g. `order`) or a renamed ID/timestamp column (ID("key"))
 	// rebuilds correctly on every backend.
 	table := idDialect.QuoteIdent(view.RootTable())
-	pkCol := idDialect.QuoteIdent(schema.PKColumn())
+	pkCol := idDialect.QuoteIdent(schema.IDColumn())
 	if since != "" {
 		updatedCol := schema.UpdatedAtColumn()
 		if updatedCol == "" {
@@ -510,7 +510,7 @@ func (s *SyncEngine) backfillInto(ctx context.Context, view *ViewDefinition, tar
 	}
 	defer rows.Close()
 
-	pkColName := schema.PKColumn()
+	pkColName := schema.IDColumn()
 
 	// A cancelable child context lets the first failing worker/scan stop the whole
 	// pipeline; batches is bounded so a slow Mongo write back-pressures the scan.
@@ -612,13 +612,13 @@ func (s *SyncEngine) backfillInto(ctx context.Context, view *ViewDefinition, tar
 	return firstErr
 }
 
-// rebuildScanSQL builds the id-scan SELECT a rebuild walks: the view's root PK
+// rebuildScanSQL builds the id-scan SELECT a rebuild walks: the view's root ID
 // (whatever the schema declares) ordered by the root's CreatedAt, falling back
-// to the PK when the root declares none — e.g. a SharedBase root, whose
+// to the ID when the root declares none — e.g. a SharedBase root, whose
 // timestamps are typically DDL-defaulted rather than schema-declared. The scan
 // order only needs to be deterministic; creation order is a courtesy.
 func rebuildScanSQL(view *ViewDefinition) string {
-	pkCol := view.schema.PKColumn()
+	pkCol := view.schema.IDColumn()
 	orderCol := view.schema.CreatedAtColumn()
 	if orderCol == "" {
 		orderCol = pkCol

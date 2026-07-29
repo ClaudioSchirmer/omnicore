@@ -94,7 +94,7 @@ type Query struct {
 func Where(e Expr) *Query { return &Query{where: e} }
 
 // ByID is the readable shortcut for a primary-key lookup. It assumes the
-// framework's fixed PK convention (Go field "ID" ↔ column "id") — the same
+// framework's fixed ID convention (Go field "ID" ↔ column "id") — the same
 // convention the by-id load path has always used. The id value is bound as a
 // parameter; domain.ID values are unwrapped by the translator.
 func ByID(id domain.ID) *Query { return Where(Eq("ID", id)) }

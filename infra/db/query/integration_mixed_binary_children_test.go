@@ -68,9 +68,9 @@ func TestIntegration_MixedBinaryWindow_OwnChildEqualRevision(t *testing.T) {
 	// new binary". The V1 side needs no schema of its own: its blindness is
 	// represented by the consult DOCUMENT lacking those keys, which is all
 	// consultGuardedStages ever sees of the composer.
-	child := core.NewTableSchema[*pdChild]("mb_children").PK("id").FK("root_id").
+	child := core.NewTableSchema[*pdChild]("mb_children").ID("id").ParentID("root_id").
 		Field("Label", "label").Field("Rank", "rank")
-	root := core.NewTableSchema[*pdRoot]("mb_roots").PK("id").Revision("revision").
+	root := core.NewTableSchema[*pdRoot]("mb_roots").ID("id").Revision("revision").
 		Field("Name", "name").Field("Nick", "nick").
 		SoftDelete("deleted_at").CreatedAt("created_at").UpdatedAt("updated_at").
 		Child(child)
@@ -197,9 +197,9 @@ func TestIntegration_MixedBinaryWindow_V1ConsumerChildReplace(t *testing.T) {
 	// The CONSUMER's schemas — the V1 binary: NO Rank on the child, NO Nick on
 	// the root. Everything the consumer does (decode, stage build, consult
 	// shapes) runs through THESE, exactly like POD B.
-	childV1 := core.NewTableSchema[*pdChild]("mb1_children").PK("id").FK("root_id").
+	childV1 := core.NewTableSchema[*pdChild]("mb1_children").ID("id").ParentID("root_id").
 		Field("Label", "label")
-	rootV1 := core.NewTableSchema[*pdRoot]("mb1_roots").PK("id").Revision("revision").
+	rootV1 := core.NewTableSchema[*pdRoot]("mb1_roots").ID("id").Revision("revision").
 		Field("Name", "name").
 		SoftDelete("deleted_at").CreatedAt("created_at").UpdatedAt("updated_at").
 		Child(childV1)

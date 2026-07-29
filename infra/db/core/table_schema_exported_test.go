@@ -21,18 +21,18 @@ type boolSample struct {
 }
 
 func TestTableSchema_FKColumn(t *testing.T) {
-	child := NewTableSchema[embedFixture]("child").PK("id").FK("root_id")
-	if got := child.FKColumn(); got != "root_id" {
-		t.Errorf("FKColumn() = %q, want root_id", got)
+	child := NewTableSchema[embedFixture]("child").ID("id").ParentID("root_id")
+	if got := child.ParentIDColumn(); got != "root_id" {
+		t.Errorf("ParentIDColumn() = %q, want root_id", got)
 	}
-	if got := covFullSchema().FKColumn(); got != "" {
-		t.Errorf("root FKColumn() = %q, want empty", got)
+	if got := covFullSchema().ParentIDColumn(); got != "" {
+		t.Errorf("root ParentIDColumn() = %q, want empty", got)
 	}
 }
 
 func TestTableSchema_ExportedWriteAccessors(t *testing.T) {
-	child := NewTableSchema[embedFixture]("child").PK("id").FK("root_id")
-	s := covFullSchema().Child(child) // PK id, Name→name, all three managed columns
+	child := NewTableSchema[embedFixture]("child").ID("id").ParentID("root_id")
+	s := covFullSchema().Child(child) // ID id, Name→name, all three managed columns
 
 	got := s.WriteFields(&schemaSample{Name: "bob"})
 	if len(got) != 1 || got["name"] != "bob" {
@@ -69,7 +69,7 @@ func TestTableSchema_Siblings_NilAndEmpty(t *testing.T) {
 
 func TestTableSchema_BoolColumns(t *testing.T) {
 	s := NewTableSchema[boolSample]("t").
-		PK("id").
+		ID("id").
 		Field("Active", "active").
 		Field("Verified", "verified").
 		Field("Name", "name")
@@ -93,9 +93,9 @@ func TestTableSchema_BoolColumns(t *testing.T) {
 }
 
 func TestTableSchema_ScanPlan_ExportedPK(t *testing.T) {
-	// schemaSample's ID is an exported struct field, so pkIndex >= 0 and the PK
+	// schemaSample's ID is an exported struct field, so idIndex >= 0 and the ID
 	// column leads the scan plan (the aggregate-child shape).
-	s := NewTableSchema[schemaSample]("t").PK("id").Field("Name", "name")
+	s := NewTableSchema[schemaSample]("t").ID("id").Field("Name", "name")
 	cols, byCol := s.ScanPlan()
 	if !reflect.DeepEqual(cols, []string{"id", "name"}) {
 		t.Fatalf("ScanPlan cols = %v, want [id name]", cols)
@@ -126,7 +126,7 @@ func TestTableSchema_ValidateAnchored(t *testing.T) {
 	}()
 	covFullSchema().ValidateAnchored() // type-anchored → no panic
 	assertPanics(t, "type-less schema as a write-backed root", func() {
-		NewExternalSchema("upstream").PK("id").Field("Name", "name").ValidateAnchored()
+		NewExternalSchema("upstream").ID("id").Field("Name", "name").ValidateAnchored()
 	})
 }
 
@@ -145,7 +145,7 @@ func TestValidateModes_SoftDeleteEnabledAllowsArchive(t *testing.T) {
 // Child()/Sibling() on a secondary panic first — so the state is planted
 // directly on the in-package struct).
 func TestTableSchema_Sibling_RemainingBootGuards(t *testing.T) {
-	owner := func() *TableSchema { return NewTableSchema[schemaSample]("root").PK("id").Field("Name", "name") }
+	owner := func() *TableSchema { return NewTableSchema[schemaSample]("root").ID("id").Field("Name", "name") }
 
 	assertPanics(t, "nil sibling", func() {
 		owner().Sibling(nil)
@@ -158,7 +158,7 @@ func TestTableSchema_Sibling_RemainingBootGuards(t *testing.T) {
 	})
 	assertPanics(t, "sibling carrying a child", func() {
 		sib := NewSiblingSchema[schemaSample]("s").Field("Removed", "removed")
-		sib.children["embedFixture"] = NewTableSchema[embedFixture]("c").PK("id").FK("s_id")
+		sib.children["embedFixture"] = NewTableSchema[embedFixture]("c").ID("id").ParentID("s_id")
 		owner().Sibling(sib)
 	})
 	assertPanics(t, "sibling carrying a nested sibling", func() {

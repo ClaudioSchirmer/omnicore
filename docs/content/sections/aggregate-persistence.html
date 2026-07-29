@@ -17,13 +17,13 @@
 }</code></pre>
 
     <p>
-        The interface keeps table/FK declaration out of the domain — children types are discovered via reflection on <code>root.AllAggregateItems()</code>; the child table and FK are declared explicitly in the root's <code>TableSchema</code> via <code>.Child(core.NewTableSchema[Address]("addresses").FK("user_id")...)</code>. There is no name inference — the <code>TableSchema</code> is the single mandatory map between each Go field and its physical column — see <a href="#table-schema">TableSchema</a>.
+        The interface keeps table/ParentID declaration out of the domain — children types are discovered via reflection on <code>root.AllAggregateItems()</code>; the child table and ParentID are declared explicitly in the root's <code>TableSchema</code> via <code>.Child(core.NewTableSchema[Address]("addresses").ParentID("user_id")...)</code>. There is no name inference — the <code>TableSchema</code> is the single mandatory map between each Go field and its physical column — see <a href="#table-schema">TableSchema</a>.
     </p>
 
     <p>
         The root holds authority over the aggregate boundary without infra leaking into the domain.
         <code>AggregateChildren()</code> declares <em>which types</em> belong to the aggregate — a
-        domain definition (orthodox DDD), separated from "which table/FK" (infra, declared in the <code>TableSchema</code>). The top-level primitives
+        domain definition (orthodox DDD), separated from "which table/ParentID" (infra, declared in the <code>TableSchema</code>). The top-level primitives
         <code>AddAggregateChild</code>, <code>ChangeAggregateChild</code>, <code>RemoveAggregateChild</code> and
         <code>ReplaceAggregateChildrenOf</code> consult this list and reject VOs of undeclared types by emitting
         <code>InvalidAggregateChildNotification</code> (422 Validation). The internal
@@ -33,7 +33,7 @@
     </p>
 
     <p>
-        <code>AggregateValueObject</code> requires <code>BuildRules(actionName string, svc Service, r *Rules)</code> — signature identical to <code>Entity.BuildRules</code> — plus <code>GetID() domain.ID</code>, backed by an exported <code>ID domain.ID</code> field (identity is a TYPE on children exactly as on references; the persister's minted-id write-back sets that field via reflection). Infra maps columns via the child's <code>TableSchema</code>; an undeclared exported field is runtime-only by construction (the schema simply does not list it, so it is never persisted/scanned/audited); <code>ID</code> is the PK (skipped on INSERT/UPDATE write list, used in the WHERE clause); the FK to the root is injected by infra (it is not a struct field).
+        <code>AggregateValueObject</code> requires <code>BuildRules(actionName string, svc Service, r *Rules)</code> — signature identical to <code>Entity.BuildRules</code> — plus <code>GetID() domain.ID</code>, backed by an exported <code>ID domain.ID</code> field (identity is a TYPE on children exactly as on references; the persister's minted-id write-back sets that field via reflection). Infra maps columns via the child's <code>TableSchema</code>; an undeclared exported field is runtime-only by construction (the schema simply does not list it, so it is never persisted/scanned/audited); <code>ID</code> is the ID (skipped on INSERT/UPDATE write list, used in the WHERE clause); the ParentID to the root is injected by infra (it is not a struct field).
     </p>
 
     <h3>Universal symmetric cascade</h3>
@@ -43,7 +43,7 @@
     <ul>
         <li><strong>Archive(root)</strong> → Archive on all active children</li>
         <li><strong>Unarchive(root)</strong> → Unarchive on all archived children (requires <code>domain.ArchivedFinder</code> on the Repository to hydrate the aggregate)</li>
-        <li><strong>Delete(root)</strong> → an explicit <code>DELETE</code> on every declared child table (by FK), in the same TX, before the root DELETE — the framework owns the cascade in Go, not a database <code>ON DELETE CASCADE</code></li>
+        <li><strong>Delete(root)</strong> → an explicit <code>DELETE</code> on every declared child table (by ParentID), in the same TX, before the root DELETE — the framework owns the cascade in Go, not a database <code>ON DELETE CASCADE</code></li>
         <li><strong>Update(root) with items <code>StatusRemoved</code></strong> → Archive of those specific items</li>
     </ul>
 
@@ -52,18 +52,18 @@
         <tbody><tr><th>Guarantee</th><th>Where</th></tr>
         <tr><td>A single transaction for the root + all children</td><td><code>infra/db/command/write/aggregate_write.go</code></td></tr>
         <tr><td>Exactly <strong>one outbox row</strong> per operation (granularity B — the aggregate is the event unit)</td><td><code>insertAggregate / updateAggregate</code></td></tr>
-        <tr><td>FK injected before the child INSERT</td><td><code>insertChild</code></td></tr>
-        <tr><td>The child PK minted by the INSERT is <strong>written back into the aggregate map</strong> (<code>AssignAggregateItemID</code> stamps the item's <code>ID</code> field, statuses untouched) — so post-write readers see the child exactly as persisted: <code>FromEntity</code> can mirror children <em>with their ids</em> in the write response, and the outbox/audit snapshots (built after the child INSERTs) carry real ids instead of empty ones. An item without a settable <code>domain.ID</code>-typed <code>ID</code> field is skipped silently</td><td><code>writeChildren / domain.AssignAggregateItemID</code></td></tr>
+        <tr><td>ParentID injected before the child INSERT</td><td><code>insertChild</code></td></tr>
+        <tr><td>The child ID minted by the INSERT is <strong>written back into the aggregate map</strong> (<code>AssignAggregateItemID</code> stamps the item's <code>ID</code> field, statuses untouched) — so post-write readers see the child exactly as persisted: <code>FromEntity</code> can mirror children <em>with their ids</em> in the write response, and the outbox/audit snapshots (built after the child INSERTs) carry real ids instead of empty ones. An item without a settable <code>domain.ID</code>-typed <code>ID</code> field is skipped silently</td><td><code>writeChildren / domain.AssignAggregateItemID</code></td></tr>
         <tr><td>Each child is bucketed by <code>domain.OperationOf(OriginalStatus, CurrentStatus)</code> — comparing where the item <em>started</em> (zero value or DB-loaded) against where it is now — into one <code>AggregateItemOp</code>: <code>OpInsert</code>→INSERT, <code>OpUpdate</code>→UPDATE, <code>OpDelete</code>→Archive (UPDATE <code>deleted_at</code>; the row stays recoverable), <code>OpNoop</code>→skipped. Two cross-status cases follow from the pair: a DB-loaded child re-added (<code>Constructor→Added</code>) is an <strong>UPDATE</strong>, not an INSERT; a brand-new child added then removed before commit (<code>Added→Removed</code>) is <strong>OpNoop</strong> — no SQL, never persisted</td><td><code>writeChildren</code></td></tr>
         <tr><td>Archive of the root cascades archive on all active children</td><td><code>archiveAggregate</code></td></tr>
         <tr><td>Unarchive of the root restores all archived children of that root</td><td><code>unarchiveAggregate</code></td></tr>
-        <tr><td>Hard Delete of the root issues an explicit <code>DELETE</code> per declared child table (by FK) before the root DELETE, same TX — no dependence on <code>ON DELETE CASCADE</code> (the FK clause is an optional safety-net)</td><td><code>deleteAggregate</code></td></tr>
+        <tr><td>Hard Delete of the root issues an explicit <code>DELETE</code> per declared child table (by ParentID) before the root DELETE, same TX — no dependence on <code>ON DELETE CASCADE</code> (the ParentID clause is an optional safety-net)</td><td><code>deleteAggregate</code></td></tr>
     </tbody></table>
 
     <div class="box">
         <strong>Shared-base children are a variant of this path.</strong> When the aggregate root is backed by a
         <a href="#table-schema~shared-base">shared base</a>, some children belong to the <em>base identity</em> rather than
-        the role root: their FK targets the base's deterministic id and they are shared by every role of that identity.
+        the role root: their ParentID targets the base's deterministic id and they are shared by every role of that identity.
         They travel the same <code>writeChildren</code> bucketing above; on the warm upsert insert they hydrate as
         <code>Constructor</code> status, so an untouched base-child resolves to <code>OpNoop</code> and the diff machine
         leaves it alone. See <a href="#table-schema~shared-base-children">Shared-base children</a> and the
@@ -125,10 +125,10 @@ func (u *User) ReplaceAddresses(addrs []Address) {
 }
 
 // Explicit schema map — every Go field names its physical column, the
-// child table + FK are declared via .Child(...). No name inference anywhere.
+// child table + ParentID are declared via .Child(...). No name inference anywhere.
 func UserSchema() *core.TableSchema {
     return core.NewTableSchema[*User]("users").
-        PK("id").
+        ID("id").
         Revision("revision").
         Field("Name", "name").
         Field("Email", "email").
@@ -138,8 +138,8 @@ func UserSchema() *core.TableSchema {
         CreatedAt("created_at").
         UpdatedAt("updated_at").
         Child(core.NewTableSchema[Address]("addresses").
-            FK("user_id").                 // injected by the persister, not a struct field
-            PK("id").
+            ParentID("user_id").                 // injected by the persister, not a struct field
+            ID("id").
             Field("Street", "street").
             Field("ZipCode", "zip_code").
             SoftDelete("deleted_at"))

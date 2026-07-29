@@ -12,7 +12,7 @@ import (
 
 func TestViewDefinition_Getters(t *testing.T) {
 	root := builderTestSchema
-	child := core.NewExternalSchema("c").PK("id").Field("Label", "label")
+	child := core.NewExternalSchema("c").ID("id").Field("Label", "label")
 	v := View("users").Version(4).Schema(root).
 		EmbedMany(JoinUpstream(child, "Kids", "kids")).On("t_id")
 

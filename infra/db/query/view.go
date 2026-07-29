@@ -75,7 +75,7 @@ type childEmbedDef struct {
 	childSchema *core.TableSchema
 	// leg is the external enrichment source (a Mongo collection).
 	leg *Leg
-	// joinCol is the FK column that lives INSIDE each child element (e.g.
+	// joinCol is the ParentID column that lives INSIDE each child element (e.g.
 	// "product_id"), resolved against the leg's _id. Declared via .On(...).
 	joinCol string
 }
@@ -85,8 +85,8 @@ type childEmbedDef struct {
 // nested-field fan-out and the required multikey index agree on the path.
 func (c childEmbedDef) ChildSegment() string { return childDocSegment(c.childSchema) }
 
-// FKColumn is the join column inside each child element (declared via .On).
-func (c childEmbedDef) FKColumn() string { return c.joinCol }
+// ParentIDColumn is the join column inside each child element (declared via .On).
+func (c childEmbedDef) ParentIDColumn() string { return c.joinCol }
 
 // Field returns the doc field the enrichment lands under inside each element.
 func (c childEmbedDef) Field() string { return c.leg.externalName }
@@ -109,9 +109,9 @@ func View(name string) *ViewDefinition {
 	return &ViewDefinition{name: name}
 }
 
-// Schema attaches the view's root core.TableSchema (Go↔column + PK + soft-delete) —
+// Schema attaches the view's root core.TableSchema (Go↔column + ID + soft-delete) —
 // the same schema the repository declares. The composer uses it for the root
-// PK + soft-delete column; the reader uses it to translate root leaf fields
+// ID + soft-delete column; the reader uses it to translate root leaf fields
 // between Go field names and physical columns. Reuse the repo's schema so write
 // and read agree.
 func (v *ViewDefinition) Schema(ts *core.TableSchema) *ViewDefinition {
@@ -168,7 +168,7 @@ func (v *ViewDefinition) DeleteOnArchive() *ViewDefinition {
 }
 
 // Embed declares a 1:1 external enrichment: the leg's document (matched by the
-// PARENT's FK column, named on the returned binding via .On(col)) lands under
+// PARENT's ParentID column, named on the returned binding via .On(col)) lands under
 // leg.externalName as a sub-document. The leg MUST be a JoinUpstream leg (an
 // external collection); a JoinView leg is rejected at boot (a registered view is
 // joined at read time with query.ComposedView, never materialized into another
@@ -178,7 +178,7 @@ func (v *ViewDefinition) Embed(leg *Leg) *embedBinding {
 	return &embedBinding{v: v, leg: leg, many: false}
 }
 
-// EmbedMany declares a 1:N external enrichment: every leg document whose FK
+// EmbedMany declares a 1:N external enrichment: every leg document whose ParentID
 // column (named on the returned binding via .On(col)) points at this view's _id
 // lands under leg.externalName as an array. Same JoinUpstream-only rule and
 // mandatory .On as Embed.
@@ -187,7 +187,7 @@ func (v *ViewDefinition) EmbedMany(leg *Leg) *embedManyBinding {
 }
 
 // embedManyBinding is what EmbedMany returns: the 1:N-only knob (OrderBy/Desc)
-// chains on it, and the mandatory terminal On names the leg-side FK column. A
+// chains on it, and the mandatory terminal On names the leg-side ParentID column. A
 // dedicated type — not a flag on the shared binding — so declaring an order on
 // a 1:1 Embed or on an EmbedInChild is NOT EXPRESSIBLE rather than rejected at
 // boot, the same way the ComposedView's LinkMany binding works.
@@ -226,7 +226,7 @@ func (b *embedManyBinding) Desc() *embedManyBinding {
 	return b
 }
 
-// On names the leg column holding the FK to this view's _id and completes the
+// On names the leg column holding the ParentID to this view's _id and completes the
 // 1:N embed.
 func (b *embedManyBinding) On(joinColumn string) *ViewDefinition {
 	b.v.embeds = append(b.v.embeds, embedDef{
@@ -251,10 +251,10 @@ type embedBinding struct {
 }
 
 // On names the join column and completes the embed. For Embed/EmbedInChild (1:1)
-// it is the PARENT-side column holding the FK to the leg's _id (for EmbedInChild,
-// the FK column inside each child element); for EmbedMany (1:N) it is the LEG
-// column pointing back at this view's _id. The FK always points at the other
-// side's PK — who holds it follows the verb's multiplicity.
+// it is the PARENT-side column holding the ParentID to the leg's _id (for EmbedInChild,
+// the ParentID column inside each child element); for EmbedMany (1:N) it is the LEG
+// column pointing back at this view's _id. The ParentID always points at the other
+// side's ID — who holds it follows the verb's multiplicity.
 func (b *embedBinding) On(joinColumn string) *ViewDefinition {
 	if b.child != nil {
 		b.v.childEmbeds = append(b.v.childEmbeds, childEmbedDef{childSchema: b.child, leg: b.leg, joinCol: joinColumn})
@@ -268,7 +268,7 @@ func (b *embedBinding) On(joinColumn string) *ViewDefinition {
 // view with a 1:1 external lookup — the read-side denormalization for the
 // "list of X with the name of Y per line" shape (e.g. a sale view whose line
 // items each carry product_id, enriched with the product name from an upstream
-// projection). The write model stays normalized (the element keeps only its FK);
+// projection). The write model stays normalized (the element keeps only its ParentID);
 // the enrichment lives only in the view, kept fresh by the recompose ripple.
 //
 //		.EmbedInChild(SaleItemSchema(),
@@ -345,8 +345,8 @@ func (v *ViewDefinition) MaxLimitValue() int64 { return v.maxLimit }
 // embed each at the top level, or join at read time with query.ComposedView.
 
 // JoinColumn returns the physical column the composer joins this embed on — the
-// column named via .On(...): the LEG's FK column for a one-to-many embed, the
-// PARENT-side FK for a one-to-one embed. The verb's multiplicity fixes which
+// column named via .On(...): the LEG's ParentID column for a one-to-many embed, the
+// PARENT-side ParentID for a one-to-one embed. The verb's multiplicity fixes which
 // side holds it; the column value is the same declaration either way.
 func (e embedDef) JoinColumn() string { return e.joinCol }
 
@@ -379,7 +379,7 @@ func ValidateViewSchemas(views []*ViewDefinition) error {
 			problems = append(problems, fmt.Sprintf("view %q: no root .Schema(...) declared", v.Name()))
 		} else if !v.schema.HasPKDeclared() {
 			problems = append(problems, fmt.Sprintf(
-				"view %q: root schema (table %q) declares no primary key — declare .PK(column)",
+				"view %q: root schema (table %q) declares no primary key — declare .ID(column)",
 				v.Name(), v.schema.Table()))
 		}
 		// A SharedBaseView's .Schema(...) must be the identity's core.NewSharedBaseSchema
@@ -443,7 +443,7 @@ func viewHasIndexPrefix(v *ViewDefinition, col string) bool {
 
 // appendChildEmbedProblems validates every EmbedInChild: the targeted schema MUST
 // be a NATIVE child of the view root (declared via root.Child(...)); the leg MUST
-// be a JoinUpstream leg (an external Mongo collection) with a PK; and the FK column
+// be a JoinUpstream leg (an external Mongo collection) with a ID; and the ParentID column
 // inside the element MUST be named via .On(...). For a SharedBaseView the root
 // native children are the BASE's children (role-nested children are out of scope).
 func appendChildEmbedProblems(acc []string, viewName string, v *ViewDefinition, registered map[string]bool) []string {
@@ -480,7 +480,7 @@ func appendChildEmbedProblems(acc []string, viewName string, v *ViewDefinition, 
 				fmt.Sprintf("EmbedInChild(%q, ...)", ce.childSchema.Table()), ce.leg.view, registered)
 			if ce.joinCol == "" {
 				acc = append(acc, fmt.Sprintf(
-					"view %q: EmbedInChild(%q, ...) declares an empty join column — name the element's FK column via .On(\"...\").",
+					"view %q: EmbedInChild(%q, ...) declares an empty join column — name the element's ParentID column via .On(\"...\").",
 					viewName, ce.childSchema.Table()))
 			}
 			continue
@@ -497,12 +497,12 @@ func appendChildEmbedProblems(acc []string, viewName string, v *ViewDefinition, 
 		}
 		if !ce.leg.schema.HasPKDeclared() {
 			acc = append(acc, fmt.Sprintf(
-				"view %q: EmbedInChild(%q, ...) source %q declares no primary key — declare .PK(column)",
+				"view %q: EmbedInChild(%q, ...) source %q declares no primary key — declare .ID(column)",
 				viewName, ce.childSchema.Table(), ce.leg.schema.Table()))
 		}
 		if ce.joinCol == "" {
 			acc = append(acc, fmt.Sprintf(
-				"view %q: EmbedInChild(%q, ...) declares an empty join column — name the element's FK column via .On(\"...\").",
+				"view %q: EmbedInChild(%q, ...) declares an empty join column — name the element's ParentID column via .On(\"...\").",
 				viewName, ce.childSchema.Table()))
 		}
 	}
@@ -515,7 +515,7 @@ func appendChildEmbedProblems(acc []string, viewName string, v *ViewDefinition, 
 //   - a 1:1 root Embed → an index prefix on its parent join column;
 //   - an EmbedInChild → a multikey index prefix on "<childSegment>.<fk>".
 //
-// EmbedMany is exempt: its ripple resolves the parent by the child's FK → parent
+// EmbedMany is exempt: its ripple resolves the parent by the child's ParentID → parent
 // _id (always indexed), never a reverse scan of the view.
 func appendEmbedIndexProblems(acc []string, viewName string, v *ViewDefinition) []string {
 	for _, e := range v.embeds {
@@ -563,7 +563,7 @@ func appendEmbedSchemaProblems(acc []string, viewName string, embeds []embedDef,
 		// kind-specific branches below (each of which returns early).
 		acc = appendEmbedOrderProblems(acc, viewName, e)
 		// A JoinView leg materializes a LOCAL view into this one. Validate it as an
-		// internal leg (registered + schema + PK) plus, for a 1:N EmbedMany, the
+		// internal leg (registered + schema + ID) plus, for a 1:N EmbedMany, the
 		// covering index its per-parent lookup needs on the leg view.
 		if e.leg.view != nil {
 			kind := "Embed"
@@ -577,7 +577,7 @@ func appendEmbedSchemaProblems(acc []string, viewName string, embeds []embedDef,
 					viewName, kind, field))
 			} else if e.many && !viewHasIndexPrefix(e.leg.view, e.joinCol) {
 				// The composer runs one find({fk: parent}) against the leg view per
-				// parent document; without an index whose FIRST key is the FK, each
+				// parent document; without an index whose FIRST key is the ParentID, each
 				// one is a full collection scan. The leg view declares its indexes,
 				// so this is verifiable at boot — the same rule LinkMany applies to
 				// an internal leg (composedLegIndexCovers).
@@ -609,11 +609,11 @@ func appendEmbedSchemaProblems(acc []string, viewName string, embeds []embedDef,
 			}
 			if !e.leg.schema.HasPKDeclared() {
 				acc = append(acc, fmt.Sprintf(
-					"view %q: embed %q (source %q) declares no primary key — declare .PK(column)",
+					"view %q: embed %q (source %q) declares no primary key — declare .ID(column)",
 					viewName, field, e.leg.schema.Table()))
 			}
 			// Join key is mandatory and named via .On(...): EmbedMany joins on the
-			// leg's FK (child_fk = parent_pk), a one-to-one Embed on the parent's FK.
+			// leg's ParentID (child_fk = parent_pk), a one-to-one Embed on the parent's ParentID.
 			// An empty column makes the composer emit broken SQL, so reject it at boot.
 			if e.joinCol == "" {
 				kind := "one-to-one Embed"
@@ -666,7 +666,7 @@ func appendEmbedOrderProblems(acc []string, viewName string, e embedDef) []strin
 }
 
 // appendViewLegProblems validates a JoinView embed leg — the source view must be
-// contributed by a ReadableFeature (registered) and carry the root schema + PK the
+// contributed by a ReadableFeature (registered) and carry the root schema + ID the
 // composer keys the lookup on. what describes the declaration site for the
 // diagnostic (e.g. `EmbedMany "sales"`).
 func appendViewLegProblems(acc []string, viewName, what string, leg *ViewDefinition, registered map[string]bool) []string {
@@ -685,7 +685,7 @@ func appendViewLegProblems(acc []string, viewName, what string, leg *ViewDefinit
 	if !leg.schema.HasPKDeclared() {
 		acc = append(acc, fmt.Sprintf(
 			"view %q: %s materializes view %q, whose root schema (table %q) declares no primary key — "+
-				"declare .PK(column)", viewName, what, leg.Name(), leg.schema.Table()))
+				"declare .ID(column)", viewName, what, leg.Name(), leg.schema.Table()))
 	}
 	return acc
 }
@@ -855,7 +855,7 @@ type viewIndex struct {
 	// event (its table is not the view's root) must recompose the person
 	// document of the identity the role references. The route carries the
 	// roleDef so the SyncEngine can resolve the base id per the role's link
-	// model (shared-PK vs separate-FK).
+	// model (shared-ID vs separate-ParentID).
 	byRoleTable map[string][]roleRoute
 	// baseOfRole maps a ROLE table to its shared-base table. Since the
 	// outbox payload carries the base id (_ids.base_id) on every role event,

@@ -10,7 +10,7 @@ import (
 )
 
 // A2b coverage: an aggregate child that carries its OWN sibling (the one allowed
-// recursive width). The child-sibling shares the child's PK; on INSERT it is
+// recursive width). The child-sibling shares the child's ID; on INSERT it is
 // written after the child row, on hard-delete it is removed via a subquery over
 // the child rows before they are deleted.
 
@@ -39,11 +39,11 @@ func (e *csRoot) AggregateChildren() []domain.AggregateValueObject {
 
 func csSchema() *TableSchema {
 	return NewTableSchema[*csRoot]("cs_root").
-		PK("id").
+		ID("id").
 		Field("Name", "name").
 		Child(NewTableSchema[csChild]("cs_child").
-			PK("id").
-			FK("root_id").
+			ID("id").
+			ParentID("root_id").
 			Field("Label", "label").
 			Sibling(NewSiblingSchema[csChild]("cs_child_ext").Field("Note", "note")))
 }

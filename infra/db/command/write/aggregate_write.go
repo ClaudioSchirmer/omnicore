@@ -14,12 +14,12 @@ import (
 // (identical on every backend):
 //   - one framework-owned TX for root + all children
 //   - exactly one outbox row per call (granularity B) + one in-TX audit row
-//   - the Go-generated id is the FK injected (dialect-encoded) before each child INSERT
+//   - the Go-generated id is the ParentID injected (dialect-encoded) before each child INSERT
 //   - status iteration: Added→INSERT, Changed→UPDATE, Removed→Archive,
 //     Constructor→no-op (update) / INSERT (insert)
 //   - root archive cascades archive of active children; unarchive restores
 //     archived children; hard delete cascades an explicit DELETE per declared
-//     child table (by FK) before the root DELETE, in the same TX — the framework
+//     child table (by ParentID) before the root DELETE, in the same TX — the framework
 //     owns the cascade in Go rather than depending on a database ON DELETE CASCADE
 //   - A/D lifecycle hooks fire once per call.
 
@@ -44,7 +44,7 @@ func (b *BaseEngine) insertAggregate(ctx persistence.RequestContext, entity doma
 	if err := b.FireAfterBegin(ctx, tx, src, hook, hctx); err != nil {
 		return domain.WriteResult{}, err
 	}
-	sql, args := buildInsert(d, schema.Table(), schema.PKColumn(), id, rootFields, schema.InsertNowColumns(), now, schema.RevisionColumn())
+	sql, args := buildInsert(d, schema.Table(), schema.IDColumn(), id, rootFields, schema.InsertNowColumns(), now, schema.RevisionColumn())
 	if err := tx.Exec(ctx, sql, args...); err != nil {
 		return domain.WriteResult{}, err
 	}
@@ -91,8 +91,8 @@ func (b *BaseEngine) updateAggregate(ctx persistence.RequestContext, entity doma
 	if err := b.FireAfterBegin(ctx, tx, src, hook, hctx); err != nil {
 		return domain.WriteResult{}, err
 	}
-	sql, args := buildUpdate(d, schema.Table(), schema.PKColumn(), entity.ID().Value(), rootFields, schema.UpdateNowColumns(), now, schema.RevisionColumn())
-	if err := execExpectingRow(ctx, tx, sql, args, entity.EntityName(), schema.PKColumn(), entity.ID().Value()); err != nil {
+	sql, args := buildUpdate(d, schema.Table(), schema.IDColumn(), entity.ID().Value(), rootFields, schema.UpdateNowColumns(), now, schema.RevisionColumn())
+	if err := execExpectingRow(ctx, tx, sql, args, entity.EntityName(), schema.IDColumn(), entity.ID().Value()); err != nil {
 		return domain.WriteResult{}, err
 	}
 	if err := writeChildren(ctx, tx, d, root, schema, entity.ID().Value(), "", now); err != nil {
@@ -155,7 +155,7 @@ func (b *BaseEngine) deleteAggregate(ctx persistence.RequestContext, entity doma
 
 // hardDelete is the shared hard-delete orchestration for both the flat and the
 // aggregate paths: in one framework-owned TX it deletes every declared child
-// table (by FK) and every owner sibling table (by the shared PK) EXPLICITLY in
+// table (by ParentID) and every owner sibling table (by the shared ID) EXPLICITLY in
 // Go, then the owner row, then outbox + in-TX audit + the A/D hooks. The
 // framework owns the cascade rather than depending on a database ON DELETE
 // CASCADE it cannot emit or validate. Children come from the schema's declared
@@ -187,14 +187,14 @@ func (b *BaseEngine) hardDelete(
 		return err
 	}
 	for _, child := range schema.ChildSchemas() {
-		// A child's own siblings (shared child PK) go first, via subquery over the
+		// A child's own siblings (shared child ID) go first, via subquery over the
 		// child rows about to be deleted.
 		for _, sib := range child.Siblings() {
-			if err := tx.Exec(ctx, childSiblingDeleteSQL(d, sib.Table(), child.PKColumn(), child.Table(), child.FKColumn()), d.EncodeArg(domain.NewID(id))); err != nil {
+			if err := tx.Exec(ctx, childSiblingDeleteSQL(d, sib.Table(), child.IDColumn(), child.Table(), child.ParentIDColumn()), d.EncodeArg(domain.NewID(id))); err != nil {
 				return err
 			}
 		}
-		if err := tx.Exec(ctx, childDeleteSQL(d, child.Table(), child.FKColumn()), d.EncodeArg(domain.NewID(id))); err != nil {
+		if err := tx.Exec(ctx, childDeleteSQL(d, child.Table(), child.ParentIDColumn()), d.EncodeArg(domain.NewID(id))); err != nil {
 			return err
 		}
 	}
@@ -213,11 +213,11 @@ func (b *BaseEngine) hardDelete(
 	var ownRev int64
 	var ownCreatedAt time.Time
 	if rc := schema.RevisionColumn(); rc != "" {
-		if ownRev, ownCreatedAt, err = readRevisionCreatedAt(ctx, tx, d, schema.Table(), rc, schema.CreatedAtColumn(), schema.PKColumn(), id); err != nil {
+		if ownRev, ownCreatedAt, err = readRevisionCreatedAt(ctx, tx, d, schema.Table(), rc, schema.CreatedAtColumn(), schema.IDColumn(), id); err != nil {
 			return err
 		}
 	}
-	if err := tx.Exec(ctx, deleteSQL(d, schema.Table(), schema.PKColumn()), d.EncodeArg(domain.NewID(id))); err != nil {
+	if err := tx.Exec(ctx, deleteSQL(d, schema.Table(), schema.IDColumn()), d.EncodeArg(domain.NewID(id))); err != nil {
 		return err
 	}
 	// SharedBase (M2): if this is a role whose shared identity is now orphaned,
@@ -310,10 +310,10 @@ func (b *BaseEngine) softWriteAggregate(
 	}
 	archive := eventType == "ARCHIVED"
 	if archive {
-		err = tx.Exec(ctx, archiveSQL(d, schema.Table(), sdCol, schema.PKColumn(), schema.RevisionColumn()),
+		err = tx.Exec(ctx, archiveSQL(d, schema.Table(), sdCol, schema.IDColumn(), schema.RevisionColumn()),
 			d.EncodeArg(now), d.EncodeArg(domain.NewID(id)))
 	} else {
-		err = tx.Exec(ctx, unarchiveSQL(d, schema.Table(), sdCol, schema.PKColumn(), schema.RevisionColumn()),
+		err = tx.Exec(ctx, unarchiveSQL(d, schema.Table(), sdCol, schema.IDColumn(), schema.RevisionColumn()),
 			d.EncodeArg(domain.NewID(id)))
 	}
 	if err != nil {
@@ -331,10 +331,10 @@ func (b *BaseEngine) softWriteAggregate(
 				continue
 			}
 			if archive {
-				cq := archiveCascadeSQL(d, child.Table(), childSd, child.FKColumn())
+				cq := archiveCascadeSQL(d, child.Table(), childSd, child.ParentIDColumn())
 				err = tx.Exec(ctx, cq, d.EncodeArg(now), d.EncodeArg(domain.NewID(id)))
 			} else {
-				cq := childCascadeSQL(d, child.Table(), childSd, child.FKColumn(), nullSetExpr(d), " IS NOT NULL")
+				cq := childCascadeSQL(d, child.Table(), childSd, child.ParentIDColumn(), nullSetExpr(d), " IS NOT NULL")
 				err = tx.Exec(ctx, cq, d.EncodeArg(domain.NewID(id)))
 			}
 			if err != nil {
@@ -380,7 +380,7 @@ func (b *BaseEngine) softWriteAggregate(
 // children resolve to Insert) and an update/upsert (a loaded item is Constructor →
 // Noop, re-added/changed → Update, removed → Delete) — there is no insert-vs-diff
 // split, and a loaded base-child (Constructor) is never re-inserted, inherently.
-// Each child is FK-routed by ResolveAggregateChild: a role's own child takes the
+// Each child is ParentID-routed by ResolveAggregateChild: a role's own child takes the
 // role id (rootID); a shared-base native child takes the base id (baseID, "" when
 // the schema has no shared base).
 func writeChildren(ctx context.Context, tx WriteTx, d Dialect, root *domain.AggregateRoot, schema *TableSchema, rootID, baseID string, now time.Time) error {
@@ -403,7 +403,7 @@ func writeChildren(ctx context.Context, tx WriteTx, d Dialect, root *domain.Aggr
 				if err != nil {
 					return err
 				}
-				// Write the minted PK back into the aggregate map so post-write
+				// Write the minted ID back into the aggregate map so post-write
 				// readers (FromEntity projections, the outbox/audit snapshots
 				// built after this loop) see the child as persisted, id included.
 				root.AssignAggregateItemID(it.Item, childID)
@@ -432,27 +432,27 @@ func removeChild(ctx context.Context, tx WriteTx, d Dialect, child *TableSchema,
 			if id == "" {
 				return fmt.Errorf("db: cannot delete base child %q without id", child.Table())
 			}
-			return tx.Exec(ctx, deleteSQL(d, child.Table(), child.PKColumn()), d.EncodeArg(domain.NewID(id)))
+			return tx.Exec(ctx, deleteSQL(d, child.Table(), child.IDColumn()), d.EncodeArg(domain.NewID(id)))
 		}
 	}
 	return archiveChild(ctx, tx, d, child, typeName, item, now)
 }
 
-// insertChild persists one Added child and returns the PK it minted — the
+// insertChild persists one Added child and returns the ID it minted — the
 // caller writes that id back into the aggregate map (AssignAggregateItemID).
 func insertChild(ctx context.Context, tx WriteTx, d Dialect, child *TableSchema, item domain.AggregateValueObject, rootID string, now time.Time) (string, error) {
 	fields := child.WriteFields(item)
-	fields[child.FKColumn()] = domain.NewID(rootID) // FK to the root, dialect-encoded by buildInsert
+	fields[child.ParentIDColumn()] = domain.NewID(rootID) // ParentID to the root, dialect-encoded by buildInsert
 	childID, err := newWriteID()
 	if err != nil {
 		return "", err
 	}
-	sql, args := buildInsert(d, child.Table(), child.PKColumn(), childID, fields, child.InsertNowColumns(), now, "")
+	sql, args := buildInsert(d, child.Table(), child.IDColumn(), childID, fields, child.InsertNowColumns(), now, "")
 	if err := tx.Exec(ctx, sql, args...); err != nil {
 		return "", err
 	}
 	// A child may carry its own siblings (the one allowed recursive width); they
-	// share the child's PK, read from the same AVO.
+	// share the child's ID, read from the same AVO.
 	if err := insertSiblings(ctx, tx, d, child, item, childID, now); err != nil {
 		return "", err
 	}
@@ -465,8 +465,8 @@ func updateChild(ctx context.Context, tx WriteTx, d Dialect, child *TableSchema,
 		return fmt.Errorf("db: cannot update child %q without id", child.Table())
 	}
 	fields := child.WriteFields(item)
-	sql, args := buildUpdate(d, child.Table(), child.PKColumn(), id, fields, child.UpdateNowColumns(), now, "")
-	if err := execExpectingRow(ctx, tx, sql, args, child.Table(), child.PKColumn(), id); err != nil {
+	sql, args := buildUpdate(d, child.Table(), child.IDColumn(), id, fields, child.UpdateNowColumns(), now, "")
+	if err := execExpectingRow(ctx, tx, sql, args, child.Table(), child.IDColumn(), id); err != nil {
 		return err
 	}
 	// A Changed child carries its full new state → treat its siblings as a full
@@ -485,7 +485,7 @@ func archiveChild(ctx context.Context, tx WriteTx, d Dialect, child *TableSchema
 	if err != nil {
 		return err
 	}
-	return tx.Exec(ctx, archiveSQL(d, child.Table(), sdCol, child.PKColumn(), ""),
+	return tx.Exec(ctx, archiveSQL(d, child.Table(), sdCol, child.IDColumn(), ""),
 		d.EncodeArg(now), d.EncodeArg(domain.NewID(id)))
 }
 

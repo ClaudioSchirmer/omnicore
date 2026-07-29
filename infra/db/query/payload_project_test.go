@@ -78,7 +78,7 @@ func TestBuildProjectionStages_SiblingClearRemovesKeys(t *testing.T) {
 	}
 	sib := core.NewSiblingSchema[*sibRoot]("root_cfg").
 		Field("Email", "email_notification").Field("SMS", "sms_notification")
-	schema := core.NewTableSchema[*sibRoot]("roots").PK("id").
+	schema := core.NewTableSchema[*sibRoot]("roots").ID("id").
 		Field("Name", "name").Sibling(sib)
 
 	ev, ok := decodePayloadEvent(schema, []byte(`{

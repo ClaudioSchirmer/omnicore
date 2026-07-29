@@ -27,7 +27,7 @@ import (
 // childOp is one surgically-applicable child operation carried by the payload.
 type childOp struct {
 	Op     string   // insert | update | archive | delete | noop
-	Fields Document // typed via the child schema; carries the child PK column
+	Fields Document // typed via the child schema; carries the child ID column
 }
 
 // decodedEvent is the typed projection input of one event.

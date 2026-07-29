@@ -28,15 +28,15 @@ type TableSchema struct {
 	table string
 	typ   reflect.Type // nil for external (type-less) schemas
 
-	pkGo     string
-	pkColumn string
-	pkIndex  int // reflect field index of the Go PK field; -1 when ID is not an
+	idGo     string
+	idColumn string
+	idIndex  int // reflect field index of the Go ID field; -1 when ID is not an
 	// exported struct field (the aggregate root carries id privately in
 	// BaseEntity and exposes it via GetID/SetID).
 
-	fkColumn string // child only — FK column referencing the root
+	parentIDColumn string // child only — ParentID column referencing the root
 
-	fields []schemaField // non-PK persisted fields, in declaration order
+	fields []schemaField // non-ID persisted fields, in declaration order
 	byGo   map[string]schemaField
 	byCol  map[string]schemaField
 
@@ -54,19 +54,19 @@ type TableSchema struct {
 	secondary bool
 
 	// siblings are this node's declared sibling tables (root or aggregate child),
-	// in declaration order. Each shares this node's PK; their fields partition the
+	// in declaration order. Each shares this node's ID; their fields partition the
 	// entity's columns across tables. Width is unlimited; siblings do not nest.
 	siblings []*TableSchema
 
 	// M2 SharedBase (NewSharedBaseSchema) — a type-less identity table shared by
 	// multiple role schemas, deduplicated by a natural key whose value derives the
-	// base's deterministic id. isSharedBase marks the base; naturalKeyCol is its
+	// base's deterministic id. isSharedBase marks the base; naturalIDCol is its
 	// dedup/identity column; orphanPolicy governs the base's lifecycle when no
 	// role references it. A role schema references its base via sharedBaseLink
 	// (set by .SharedBase(base, fk)) — at most one per role.
-	isSharedBase  bool
-	naturalKeyCol string
-	orphanPolicy  OrphanPolicy
+	isSharedBase bool
+	naturalIDCol string
+	orphanPolicy OrphanPolicy
 	// revisionCol is, on a SHARED BASE, the framework-managed BIGINT column that
 	// versions the identity row: every write that touches the base row
 	// increments it UNDER THE BASE ROW LOCK, so concurrent role writes serialize
@@ -76,7 +76,7 @@ type TableSchema struct {
 	revisionCol    string
 	sharedBaseLink *sharedBaseLink
 	// referencingRoleLinks is, on a SHARED BASE, the set of roles that reference
-	// it — each a pointer to the role schema + the FK column it links through
+	// it — each a pointer to the role schema + the ParentID column it links through
 	// (populated as each role calls .SharedBase — the instance IS the cross-schema
 	// registry). The role's soft-delete column is read LAZILY from the schema
 	// pointer (via ReferencingRoles), so it is correct regardless of whether
@@ -123,12 +123,12 @@ const (
 )
 
 // IDKindOf reports the identity typing of a Go field on this schema. The
-// managed PK slot ("ID") is ALWAYS IDValue — the framework stores it in the
-// dialect's native id form on every schema, so a bare-string PK probe (e.g.
+// managed ID slot ("ID") is ALWAYS IDValue — the framework stores it in the
+// dialect's native id form on every schema, so a bare-string ID probe (e.g.
 // the exclude-self Ne("ID", id)) must bind like the typed ByID does. Unknown
 // fields answer IDNone (the translator already rejects them separately).
 func (s *TableSchema) IDKindOf(goField string) IDKind {
-	if goField == pkGoField {
+	if goField == idGoField {
 		return IDValue
 	}
 	return s.byGo[goField].idKind
@@ -138,7 +138,7 @@ func (s *TableSchema) IDKindOf(goField string) IDKind {
 // declarations are validated against T at call time (panic on a missing or
 // unexported field) — that is the enforcement that replaces convention. The
 // primary key column is NOT assumed: the developer must declare it via
-// PK(col) (the Go side is fixed to the Entity contract's "ID").
+// ID(col) (the Go side is fixed to the Entity contract's "ID").
 func NewTableSchema[T any](table string) *TableSchema {
 	t := reflect.TypeOf((*T)(nil)).Elem()
 	for t.Kind() == reflect.Pointer {
@@ -177,20 +177,20 @@ func NewExternalSchema(table string) *TableSchema {
 func newSchema(table string) *TableSchema {
 	return &TableSchema{
 		table: table,
-		// No PK default — pkGo/pkColumn stay empty until PK(...) is declared
+		// No ID default — idGo/idColumn stay empty until ID(...) is declared
 		// (the developer must declare the column; the Go side is the Entity
 		// contract's "ID", never guessed from the column name).
-		pkIndex:  -1,
+		idIndex:  -1,
 		byGo:     map[string]schemaField{},
 		byCol:    map[string]schemaField{},
 		children: map[string]*TableSchema{},
 	}
 }
 
-// hasPKDeclared reports whether PK(...) was explicitly declared. There is NO
-// default primary key — a schema without an explicit PK is a boot failure at
+// hasPKDeclared reports whether ID(...) was explicitly declared. There is NO
+// default primary key — a schema without an explicit ID is a boot failure at
 // every consumer checkpoint (WithSchema, Child, ValidateViewSchemas).
-func (s *TableSchema) hasPKDeclared() bool { return s.pkColumn != "" }
+func (s *TableSchema) hasPKDeclared() bool { return s.idColumn != "" }
 
 // exportedFieldIndex returns the single-depth field index of an exported field
 // named goName, or -1 when absent / unexported / promoted from an embed.
@@ -202,13 +202,13 @@ func exportedFieldIndex(t reflect.Type, goName string) int {
 	return f.Index[0]
 }
 
-// ensureColumnFree panics when column is already claimed by the PK, a mapped
+// ensureColumnFree panics when column is already claimed by the ID, a mapped
 // field, or another managed column — enforcing the bijection over the full
-// physical column set (PK + every Field + soft-delete/created/updated)
-// regardless of the order PK/Field/SoftDelete/CreatedAt/UpdatedAt are declared.
+// physical column set (ID + every Field + soft-delete/created/updated)
+// regardless of the order ID/Field/SoftDelete/CreatedAt/UpdatedAt are declared.
 // `self` names the slot being (re)assigned so reassigning it to the same column
 // is not flagged as a self-collision. Field() runs its own equivalent check at
-// declaration time; this covers every managed setter + PK so a collision is a
+// declaration time; this covers every managed setter + ID so a collision is a
 // boot panic no matter which side is declared second.
 func (s *TableSchema) ensureColumnFree(column, self string) {
 	if column == "" {
@@ -220,8 +220,8 @@ func (s *TableSchema) ensureColumnFree(column, self string) {
 			s.table, column, role, self,
 		))
 	}
-	if self != "PK" && column == s.pkColumn {
-		collide("PK")
+	if self != "ID" && column == s.idColumn {
+		collide("ID")
 	}
 	if _, dup := s.byCol[column]; dup {
 		collide("a mapped field")
@@ -240,6 +240,19 @@ func (s *TableSchema) ensureColumnFree(column, self string) {
 	}
 }
 
+// mustNotRedeclare panics when a single-value slot is being set a SECOND time.
+// ensureColumnFree deliberately skips a slot's OWN current value (so an
+// idempotent same-column re-set is allowed) — which is exactly what lets a
+// DIFFERENT column overwrite the slot unnoticed. Every single-column slot (ID,
+// ParentID, SoftDelete, CreatedAt, UpdatedAt, Revision, NaturalID) is declared once.
+func (s *TableSchema) mustNotRedeclare(current, name, newCol string) {
+	if current != "" {
+		panic(fmt.Sprintf(
+			"infra.TableSchema(%s): %s already declared as %q — declare it once; drop the duplicate %s(%q).",
+			s.table, name, current, name, newCol))
+	}
+}
+
 // mustNotReservedColumn rejects a physical column name starting with "_": the
 // underscore prefix is the framework's reserved namespace on the wire — the
 // outbox payload carries its structural keys there (_ids, _children,
@@ -255,59 +268,92 @@ func mustNotReservedColumn(table, column string) {
 	}
 }
 
-// pkGoField is the fixed Go-side name of every primary key. Identity is locked
+// idGoField is the fixed Go-side name of every primary key. Identity is locked
 // by the domain.Entity/BaseEntity contract — an aggregate root carries it
 // privately in BaseEntity and exposes it via GetID/SetID, while an
 // AggregateValueObject exposes the exported field "ID" — so the Go side is
 // never a free parameter. Only the physical column varies.
-const pkGoField = "ID"
+const idGoField = "ID"
 
-// PK declares the primary-key column — mandatory, no default. The Go side is
+// parentIDGoField is the fixed Go-side name under which a schema's foreign key is
+// EXPOSED ON READ — the read-only twin of idGoField. The ParentID column is written by
+// the aggregate / shared-base cascade (it is never a domain field), so it has no
+// Go field on the write side; a view/DTO that wants the parent link projects it
+// under this fixed logical name, symmetric with "ID". A schema carries at most
+// one ParentID (the aggregate-child ParentID or the SharedBase role ParentID, never both — boot-
+// guarded), so the name is unambiguous. Reserved: Field("ParentID", …) is a boot
+// panic.
+const parentIDGoField = "ParentID"
+
+// ID declares the primary-key column — mandatory, no default. The Go side is
 // fixed to the BaseEntity/AVO field "ID" (the Entity contract locks identity),
 // so only the physical column is declared here — it is what varies (id,
 // person_pk, an upstream schema's own name). Single-column. Empty column is
 // rejected.
-func (s *TableSchema) PK(column string) *TableSchema {
+func (s *TableSchema) ID(column string) *TableSchema {
 	if s.secondary {
 		panic(fmt.Sprintf(
 			"infra.TableSchema(%s): a sibling declares NO primary key — it BORROWS the owner's: "+
-				"the framework writes and joins the sibling table through the owner's PK column name, "+
-				"so the sibling's physical PK column must carry that SAME name (usually \"id\"), "+
-				"never a custom one like \"<owner>_id\". Drop this PK(%q) call and name the column "+
-				"after the owner's PK in the migration.",
+				"the framework writes and joins the sibling table through the owner's ID column name, "+
+				"so the sibling's physical ID column must carry that SAME name (usually \"id\"), "+
+				"never a custom one like \"<owner>_id\". Drop this ID(%q) call and name the column "+
+				"after the owner's ID in the migration.",
 			s.table, column,
 		))
 	}
 	if column == "" {
 		panic(fmt.Sprintf(
-			"infra.TableSchema(%s): PK requires a non-empty column — "+
+			"infra.TableSchema(%s): ID requires a non-empty column — "+
 				"a single-column primary key is mandatory on every schema",
 			s.table,
 		))
 	}
+	s.mustNotRedeclare(s.idColumn, "ID", column)
 	mustNotReservedColumn(s.table, column)
-	s.ensureColumnFree(column, "PK")
-	s.pkGo = pkGoField
-	s.pkColumn = column
+	s.ensureColumnFree(column, "ID")
+	s.idGo = idGoField
+	s.idColumn = column
 	if s.typ != nil {
-		s.pkIndex = exportedFieldIndex(s.typ, pkGoField)
+		s.idIndex = exportedFieldIndex(s.typ, idGoField)
 	}
 	return s
 }
 
-// FK declares the child's foreign-key column referencing the root. Child only.
-func (s *TableSchema) FK(column string) *TableSchema {
+// ParentID declares the child's foreign-key column referencing the root. Child only.
+func (s *TableSchema) ParentID(column string) *TableSchema {
 	if s.secondary {
 		panic(fmt.Sprintf(
-			"infra.TableSchema(%s): a sibling declares NO foreign key — the shared PK IS the link: "+
-				"the framework writes and joins the sibling table through the owner's PK column name, "+
-				"so the sibling's physical PK column must carry that SAME name (usually \"id\"). "+
-				"Drop this FK(%q) call.",
+			"infra.TableSchema(%s): a sibling declares NO foreign key — the shared ID IS the link: "+
+				"the framework writes and joins the sibling table through the owner's ID column name, "+
+				"so the sibling's physical ID column must carry that SAME name (usually \"id\"). "+
+				"Drop this ParentID(%q) call.",
 			s.table, column,
 		))
 	}
+	// One parent, one ParentID: a second ParentID(...) would silently overwrite the first.
+	s.mustNotRedeclare(s.parentIDColumn, "ParentID", column)
+	// A schema is EITHER an aggregate child (ParentID to its root) OR a SharedBase role
+	// (ParentID to its base) — never both. Two FKs would mean two parents (two candidate
+	// links), and would make the read-only "ParentID" projection ambiguous. Reject the
+	// combination at boot, in both declaration orders.
+	if s.sharedBaseLink != nil {
+		panic(fmt.Sprintf(
+			"infra.TableSchema(%s): a schema cannot declare both ParentID(...) (aggregate child) and SharedBase(...) "+
+				"(role) — it would have two parents. Model it as one or the other.", s.table))
+	}
 	mustNotReservedColumn(s.table, column)
-	s.fkColumn = column
+	// The ParentID is written by the aggregate cascade (insertChild sets it to the
+	// parent id), so it cannot ALSO be a mapped domain field — that field would be
+	// silently overwritten on every write. Reject the reverse declaration order
+	// too (Field first, then ParentID). A ID that doubles as the ParentID is fine: the ID is
+	// never in byCol, so this check does not fire for the shared-ID model.
+	if _, dup := s.byCol[column]; dup {
+		panic(fmt.Sprintf(
+			"infra.TableSchema(%s): ParentID column %q is already a mapped field — the ParentID is written by the aggregate "+
+				"cascade (set to the parent id) and cannot also be a domain field; drop the Field mapping.",
+			s.table, column))
+	}
+	s.parentIDColumn = column
 	return s
 }
 
@@ -324,6 +370,21 @@ func (s *TableSchema) FK(column string) *TableSchema {
 // only place it can live (the "mini-domain" for upstream columns). At most one
 // labelKey may be passed.
 func (s *TableSchema) Field(goName, column string, labelKey ...string) *TableSchema {
+	// "ID" and "ParentID" are reserved logical Go names. "ID" is the primary key
+	// (declare it with ID(column)); mapping it as a Field would double-map the
+	// identity (the ID already answers ColumnOf/GoOf("ID")). "ParentID" is the
+	// read-only foreign-key projection (exposed automatically when the schema
+	// declares an ParentID) — it is never a domain field.
+	if goName == idGoField {
+		panic(fmt.Sprintf(
+			"infra.TableSchema(%s): %q is the reserved primary-key Go field — declare the ID with ID(column), "+
+				"never as a Field.", s.table, idGoField))
+	}
+	if goName == parentIDGoField {
+		panic(fmt.Sprintf(
+			"infra.TableSchema(%s): %q is the reserved read-only foreign-key projection — it is exposed "+
+				"automatically when the schema declares an ParentID and is never mapped as a Field.", s.table, parentIDGoField))
+	}
 	idx := -1
 	if s.typ != nil {
 		idx = exportedFieldIndex(s.typ, goName)
@@ -341,8 +402,20 @@ func (s *TableSchema) Field(goName, column string, labelKey ...string) *TableSch
 		panic(fmt.Sprintf("infra.TableSchema(%s): column %q claimed by more than one field — the map must be a bijection", s.table, column))
 	}
 	mustNotReservedColumn(s.table, column)
-	if column == s.pkColumn || column == s.softDelete || column == s.createdAt || column == s.updatedAt || column == s.revisionCol {
-		panic(fmt.Sprintf("infra.TableSchema(%s): field column %q collides with a PK/managed column", s.table, column))
+	if column == s.idColumn || column == s.softDelete || column == s.createdAt || column == s.updatedAt || column == s.revisionCol {
+		panic(fmt.Sprintf("infra.TableSchema(%s): field column %q collides with a ID/managed column", s.table, column))
+	}
+	// The aggregate-child ParentID is OWNED by the write cascade: insertChild sets it to
+	// the parent's id, overwriting whatever a mapped field would carry, so a Field
+	// on the ParentID column is a silently-ignored write — reject it at boot. Note this
+	// is NOT the shared-ID case (ID == ParentID): the ID is never in byCol and is fixed
+	// to the "ID" field, so that legitimate model is unaffected.
+	if s.parentIDColumn != "" && column == s.parentIDColumn {
+		panic(fmt.Sprintf(
+			"infra.TableSchema(%s): field column %q is the aggregate-root ParentID — it is written by the cascade "+
+				"(set to the parent id), so a mapped field on it would be silently overwritten on every write; "+
+				"drop the Field mapping. (A shared ID that IS the ParentID is fine — that is the ID, not a mapped field.)",
+			s.table, column))
 	}
 	lk := ""
 	switch len(labelKey) {
@@ -387,6 +460,7 @@ func (s *TableSchema) SoftDelete(col string) *TableSchema {
 			s.table, col,
 		))
 	}
+	s.mustNotRedeclare(s.softDelete, "SoftDelete", col)
 	mustNotReservedColumn(s.table, col)
 	s.ensureColumnFree(col, "SoftDelete")
 	s.softDelete = col
@@ -405,6 +479,7 @@ func (s *TableSchema) CreatedAt(col string) *TableSchema {
 			s.table, col,
 		))
 	}
+	s.mustNotRedeclare(s.createdAt, "CreatedAt", col)
 	mustNotReservedColumn(s.table, col)
 	s.ensureColumnFree(col, "CreatedAt")
 	s.createdAt = col
@@ -422,6 +497,7 @@ func (s *TableSchema) UpdatedAt(col string) *TableSchema {
 			s.table, col,
 		))
 	}
+	s.mustNotRedeclare(s.updatedAt, "UpdatedAt", col)
 	mustNotReservedColumn(s.table, col)
 	s.ensureColumnFree(col, "UpdatedAt")
 	s.updatedAt = col
@@ -429,9 +505,9 @@ func (s *TableSchema) UpdatedAt(col string) *TableSchema {
 }
 
 // Child registers an aggregate child's schema, keyed by the child Go type name.
-// An aggregate child MUST declare its foreign key to the root via .FK(col) — the
+// An aggregate child MUST declare its foreign key to the root via .ParentID(col) — the
 // persister injects the root id into that column on every child write — so a
-// child without an FK is rejected here at construction.
+// child without an ParentID is rejected here at construction.
 func (s *TableSchema) Child(child *TableSchema) *TableSchema {
 	if s.secondary {
 		panic(fmt.Sprintf(
@@ -443,14 +519,14 @@ func (s *TableSchema) Child(child *TableSchema) *TableSchema {
 	}
 	if child.secondary {
 		panic(fmt.Sprintf(
-			"infra.TableSchema(%s): Child(...) expects a NewTableSchema with FK; got a sibling "+
-				"(NewSiblingSchema). A sibling is a 1:1 shared-PK secondary table, not a 1:N aggregate child.",
+			"infra.TableSchema(%s): Child(...) expects a NewTableSchema with ParentID; got a sibling "+
+				"(NewSiblingSchema). A sibling is a 1:1 shared-ID secondary table, not a 1:N aggregate child.",
 			s.table,
 		))
 	}
 	if child.revisionCol != "" {
-		// Revision() itself rejects a schema whose FK is already declared; this
-		// closes the declaration-order hole (Revision before FK): a child's rows
+		// Revision() itself rejects a schema whose ParentID is already declared; this
+		// closes the declaration-order hole (Revision before ParentID): a child's rows
 		// are guarded by the OWNER's commit-order token, never their own.
 		panic(fmt.Sprintf(
 			"infra.TableSchema(%s): aggregate child %q declares Revision(%q) — a child row is guarded by its "+
@@ -458,14 +534,14 @@ func (s *TableSchema) Child(child *TableSchema) *TableSchema {
 	}
 	if !child.hasPKDeclared() {
 		panic(fmt.Sprintf(
-			"infra.TableSchema(%s): aggregate child %q declares no primary key — declare .PK(column) "+
-				"(there is no default; every schema must declare its PK)",
+			"infra.TableSchema(%s): aggregate child %q declares no primary key — declare .ID(column) "+
+				"(there is no default; every schema must declare its ID)",
 			s.table, child.typ.Name(),
 		))
 	}
-	if child.fkColumn == "" {
+	if child.parentIDColumn == "" {
 		panic(fmt.Sprintf(
-			"infra.TableSchema(%s): aggregate child %q declares no foreign key — declare .FK(col) on its "+
+			"infra.TableSchema(%s): aggregate child %q declares no foreign key — declare .ParentID(col) on its "+
 				"schema; the persister injects the root id into that column on every child write",
 			s.table, child.typ.Name(),
 		))
@@ -486,7 +562,7 @@ func (s *TableSchema) Child(child *TableSchema) *TableSchema {
 		))
 	}
 	// A shared base's native child (base-child) is a leaf of the base: it carries
-	// the base's deterministic id as its FK and may not itself nest. No
+	// the base's deterministic id as its ParentID and may not itself nest. No
 	// grandchildren and (v1) no sibling on a base-child — the recursive width
 	// allowed at the role level is deliberately not opened on the base side yet.
 	if s.isSharedBase {
@@ -502,6 +578,15 @@ func (s *TableSchema) Child(child *TableSchema) *TableSchema {
 					"not supported (v1). Declare the fields directly on the child.", s.table, child.typ.Name()))
 		}
 	}
+	// Children are keyed by Go type name, so a second child of the SAME type would
+	// silently overwrite the first (dropping a whole collection). Two collections
+	// of one type are not supported — reject the duplicate at boot.
+	if existing, dup := s.children[child.typ.Name()]; dup {
+		panic(fmt.Sprintf(
+			"infra.TableSchema(%s): aggregate child of type %q already declared (table %q) — a schema keys its "+
+				"children by Go type name, so each child type is declared once; declaring another (table %q) would "+
+				"silently drop the first.", s.table, child.typ.Name(), existing.table, child.table))
+	}
 	s.children[child.typ.Name()] = child
 	return s
 }
@@ -510,7 +595,7 @@ func (s *TableSchema) Child(child *TableSchema) *TableSchema {
 // private secondary table over the SAME Go type that shares this node's primary
 // key (1:1) and carries a disjoint subset of the entity's fields. Width is
 // unlimited (call it repeatedly); a sibling does not nest, declares no
-// FK/PK/SoftDelete, and owns no children — the owner controls identity and
+// ParentID/ID/SoftDelete, and owns no children — the owner controls identity and
 // lifecycle. The column/field partition (no overlap with the owner or another
 // sibling) is checked at WithSchema via ValidateSiblings (order-independent).
 func (s *TableSchema) Sibling(sib *TableSchema) *TableSchema {
@@ -522,7 +607,7 @@ func (s *TableSchema) Sibling(sib *TableSchema) *TableSchema {
 	if s.isSharedBase {
 		panic(fmt.Sprintf(
 			"infra.TableSchema(%s): a shared base is a flat identity with native children — it declares "+
-				"Fields and Child(...), never a Sibling. A sibling is a 1:1 shared-PK slice of a SINGLE owner; "+
+				"Fields and Child(...), never a Sibling. A sibling is a 1:1 shared-ID slice of a SINGLE owner; "+
 				"a shared base has many roles. Put the shared 1:1 fields directly on the base.", s.table))
 	}
 	if sib == nil || sib.typ == nil {
@@ -533,7 +618,7 @@ func (s *TableSchema) Sibling(sib *TableSchema) *TableSchema {
 	if !sib.secondary {
 		panic(fmt.Sprintf(
 			"infra.TableSchema(%s): Sibling(...) expects a NewSiblingSchema(...); got a non-sibling schema "+
-				"(use NewSiblingSchema[T] for a shared-PK secondary table).", s.table))
+				"(use NewSiblingSchema[T] for a shared-ID secondary table).", s.table))
 	}
 	ownerName := s.table
 	if s.typ != nil {
@@ -544,14 +629,14 @@ func (s *TableSchema) Sibling(sib *TableSchema) *TableSchema {
 			"infra.TableSchema(%s): sibling %q is over %s but its owner is over %s — a sibling carries a "+
 				"subset of the SAME entity's fields.", s.table, sib.table, sib.typ.Name(), ownerName))
 	}
-	if sib.fkColumn != "" {
+	if sib.parentIDColumn != "" {
 		panic(fmt.Sprintf(
-			"infra.TableSchema(%s): sibling %q must not declare FK — it shares the owner's primary key, "+
+			"infra.TableSchema(%s): sibling %q must not declare ParentID — it shares the owner's primary key, "+
 				"not a foreign key.", s.table, sib.table))
 	}
 	if sib.hasPKDeclared() {
 		panic(fmt.Sprintf(
-			"infra.TableSchema(%s): sibling %q must not declare PK — it borrows the owner's primary key "+
+			"infra.TableSchema(%s): sibling %q must not declare ID — it borrows the owner's primary key "+
 				"(the shared 1:1 key).", s.table, sib.table))
 	}
 	if sib.softDelete != "" {
@@ -589,24 +674,24 @@ func (s *TableSchema) Sibling(sib *TableSchema) *TableSchema {
 
 // --- resolution -------------------------------------------------------------
 
-func (s *TableSchema) Table() string    { return s.table }
-func (s *TableSchema) PKColumn() string { return s.pkColumn }
-func (s *TableSchema) FKColumn() string { return s.fkColumn }
+func (s *TableSchema) Table() string          { return s.table }
+func (s *TableSchema) IDColumn() string       { return s.idColumn }
+func (s *TableSchema) ParentIDColumn() string { return s.parentIDColumn }
 
-// ColumnOf returns the physical column for a Go field name (PK included).
+// ColumnOf returns the physical column for a Go field name (ID included).
 func (s *TableSchema) ColumnOf(goName string) (string, bool) {
-	if goName == s.pkGo {
-		return s.pkColumn, true
+	if goName == s.idGo {
+		return s.idColumn, true
 	}
 	f, ok := s.byGo[goName]
 	return f.column, ok
 }
 
-// GoOf returns the Go field name for a physical column (PK included). The
+// GoOf returns the Go field name for a physical column (ID included). The
 // inverse of ColumnOf — lossless because the map is complete.
 func (s *TableSchema) GoOf(column string) (string, bool) {
-	if column == s.pkColumn {
-		return s.pkGo, true
+	if column == s.idColumn {
+		return s.idGo, true
 	}
 	f, ok := s.byCol[column]
 	return f.goName, ok
@@ -635,6 +720,14 @@ func (s *TableSchema) goNameForRead(column string) (string, bool) {
 			return "DeletedAt", true
 		}
 	}
+	// The foreign key is exposed read-only under the fixed logical name "ParentID" (the
+	// write cascade owns the column). A schema carries at most one ParentID — the
+	// aggregate-child ParentID or the SharedBase role ParentID, never both (boot-guarded) — so
+	// this is unambiguous.
+	if column != "" && (column == s.parentIDColumn ||
+		(s.sharedBaseLink != nil && column == s.sharedBaseLink.parentIDColumn)) {
+		return parentIDGoField, true
+	}
 	// A sibling's column is merged FLAT into the read document; translate it back
 	// to the sibling's Go field so ToGoDoc keeps it (otherwise the merged column
 	// would be dropped and never reach the response).
@@ -654,7 +747,7 @@ func (s *TableSchema) goNameForRead(column string) (string, bool) {
 
 // columnForRead returns the physical column for a logical Go field name on the
 // read path — the forward inverse of goNameForRead. Covers mapped fields and
-// the PK (via ColumnOf) plus the three managed columns under their fixed
+// the ID (via ColumnOf) plus the three managed columns under their fixed
 // logical names (CreatedAt, UpdatedAt, DeletedAt), so a view can sort/project/
 // filter on a managed column by its Go name symmetrically with the read-back.
 // Returns ok=false for a name the schema does not own.
@@ -674,6 +767,16 @@ func (s *TableSchema) columnForRead(goName string) (string, bool) {
 	case "DeletedAt":
 		if s.softDelete != "" {
 			return s.softDelete, true
+		}
+	}
+	// "ParentID" is the read-only projection of the schema's foreign key — resolve it to
+	// the physical ParentID column so a filter / sort / ?fields= on it is a real query.
+	if goName == parentIDGoField {
+		if s.parentIDColumn != "" {
+			return s.parentIDColumn, true
+		}
+		if s.sharedBaseLink != nil && s.sharedBaseLink.parentIDColumn != "" {
+			return s.sharedBaseLink.parentIDColumn, true
 		}
 	}
 	// Sibling fields sit FLAT at the owner's level in the read document (the
@@ -745,7 +848,7 @@ func (s *TableSchema) updateNowColumns() []string {
 }
 
 // writeFields returns the column → value map the INSERT/UPDATE binds, by reading
-// each declared field's value via its resolved index. The PK is excluded
+// each declared field's value via its resolved index. The ID is excluded
 // (Go-minted + separate WHERE); managed timestamp columns are appended by the
 // statement builders (bound to the operation stamp), not here.
 func (s *TableSchema) writeFields(e any) domain.Fields {
@@ -770,7 +873,7 @@ func (s *TableSchema) writeFields(e any) domain.Fields {
 // the in-package write path consumes (which keeps using the unexported forms).
 
 // WriteFields is the exported form of writeFields — the column → value map an
-// engine binds for INSERT/UPDATE (PK and managed timestamp columns excluded).
+// engine binds for INSERT/UPDATE (ID and managed timestamp columns excluded).
 func (s *TableSchema) WriteFields(e any) domain.Fields { return s.writeFields(e) }
 
 // InsertNowColumns is the exported form of insertNowColumns.
@@ -785,12 +888,12 @@ func (s *TableSchema) SoftDeleteColumn() (string, bool) { return s.softDeleteCol
 
 // ChildSchema is the exported form of childSchema — the declared child schema for
 // an aggregate child type name (nil when undeclared). An out-of-package engine's
-// aggregate persister resolves child tables/columns/FK through it.
+// aggregate persister resolves child tables/columns/ParentID through it.
 func (s *TableSchema) ChildSchema(typeName string) *TableSchema { return s.childSchema(typeName) }
 
 // ChildSchemas returns every declared aggregate child schema, ordered by table
 // name so the emitted SQL is deterministic across runs and backends. The
-// aggregate delete path uses it to remove each child table's rows by FK
+// aggregate delete path uses it to remove each child table's rows by ParentID
 // explicitly (in Go, owned by the framework) rather than relying on a database
 // ON DELETE CASCADE the framework neither emits nor can validate at boot.
 func (s *TableSchema) ChildSchemas() []*TableSchema {
@@ -806,10 +909,10 @@ func (s *TableSchema) ChildSchemas() []*TableSchema {
 }
 
 // IsSecondary reports whether this schema is a sibling (built with
-// NewSiblingSchema) — a shared-PK secondary table, never a repository root.
+// NewSiblingSchema) — a shared-ID secondary table, never a repository root.
 func (s *TableSchema) IsSecondary() bool { return s != nil && s.secondary }
 
-// Siblings returns this node's declared sibling tables (shared-PK secondary
+// Siblings returns this node's declared sibling tables (shared-ID secondary
 // tables over the same entity), in declaration order. The write and compose
 // paths partition the entity's columns across the owner table and these.
 func (s *TableSchema) Siblings() []*TableSchema {
@@ -847,14 +950,14 @@ func (s *TableSchema) BoolColumns() map[string]bool {
 }
 
 // ScanPlan returns the SELECT columns (in field order) + a column → reflect
-// field-index map for the scanner. The PK column is included only when the PK is
-// an exported struct field (aggregate child); for the root (pkIndex < 0) the PK
+// field-index map for the scanner. The ID column is included only when the ID is
+// an exported struct field (aggregate child); for the root (idIndex < 0) the ID
 // is the leading key handled by ScanLeadingKey, not a struct field.
 func (s *TableSchema) ScanPlan() (cols []string, byCol map[string]int) {
 	byCol = make(map[string]int, len(s.fields)+1)
-	if s.pkIndex >= 0 {
-		cols = append(cols, s.pkColumn)
-		byCol[s.pkColumn] = s.pkIndex
+	if s.idIndex >= 0 {
+		cols = append(cols, s.idColumn)
+		byCol[s.idColumn] = s.idIndex
 	}
 	for _, f := range s.fields {
 		if f.index < 0 {
@@ -868,10 +971,10 @@ func (s *TableSchema) ScanPlan() (cols []string, byCol map[string]int) {
 
 // ReadColumns is the complete, deterministically ordered set of PHYSICAL columns
 // this schema's table carries — the explicit column list a read issues instead of
-// SELECT *. Order: PK, business fields (declaration order), the shared-base FK (a
-// role's link to its base) and the aggregate-child FK, then the managed columns
+// SELECT *. Order: ID, business fields (declaration order), the shared-base ParentID (a
+// role's link to its base) and the aggregate-child ParentID, then the managed columns
 // (created_at, updated_at, deleted_at, revision) — each included only when
-// declared, deduplicated (PK==FK collapses to one). It names the columns of THIS
+// declared, deduplicated (ID==ParentID collapses to one). It names the columns of THIS
 // ONE table only: siblings and the shared base are separate tables read through
 // their own schema.
 //
@@ -890,14 +993,14 @@ func (s *TableSchema) ReadColumns() []string {
 			cols = append(cols, c)
 		}
 	}
-	add(s.pkColumn)
+	add(s.idColumn)
 	for _, f := range s.fields {
 		add(f.column)
 	}
 	if s.sharedBaseLink != nil {
-		add(s.sharedBaseLink.fkColumn)
+		add(s.sharedBaseLink.parentIDColumn)
 	}
-	add(s.fkColumn)
+	add(s.parentIDColumn)
 	add(s.createdAt)
 	add(s.updatedAt)
 	add(s.softDelete)
@@ -933,7 +1036,7 @@ func (s *TableSchema) ValidateChildDepth() {
 				"infra.TableSchema(%s): aggregate child %q declares its own Child(...) — "+
 					"grandchildren are NOT supported by aggregate persistence (an aggregate is its "+
 					"root plus exactly one level of children, persisted in a single transaction). "+
-					"Model the sub-collection as a SEPARATE aggregate with its own root table + FK.",
+					"Model the sub-collection as a SEPARATE aggregate with its own root table + ParentID.",
 				s.table, child.typ.Name(),
 			))
 		}
@@ -945,7 +1048,7 @@ func (s *TableSchema) ValidateChildDepth() {
 // belong to EXACTLY ONE table of the node. Runs at WithSchema (after the schema
 // is fully assembled, so it is order-independent, like ValidateChildDepth), for
 // the root and each aggregate child (a child may carry its own siblings). The
-// shared PK and managed columns are NOT partitioned — they are the owner's
+// shared ID and managed columns are NOT partitioned — they are the owner's
 // identity/lifecycle, mapped only on the owner.
 func (s *TableSchema) ValidateSiblings() {
 	s.validateOwnSiblings()

@@ -195,7 +195,7 @@ func TestIntegration_BulkApplyProjection_GuardedBatch(t *testing.T) {
 
 // The equal-revision fill forms, evaluated by the server: a scalar the
 // document lacks is filled, a present one kept; a stored child element
-// shallow-merges the PK-matched composed element (stored keys win); a stored
+// shallow-merges the ID-matched composed element (stored keys win); a stored
 // sub-document segment shallow-merges the composed one.
 func TestIntegration_EqualRevisionFill_ServerSemantics(t *testing.T) {
 	m, cleanup := newTestMongo(t)

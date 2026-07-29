@@ -17,10 +17,10 @@ type revRoleEntity struct {
 
 func revBase() *TableSchema {
 	return NewSharedBaseSchema("pessoa").
-		PK("id").
+		ID("id").
 		Field("Name", "name").
 		Field("Document", "document").
-		NaturalKey("document")
+		NaturalID("document")
 }
 
 func mustPanicContains(t *testing.T, substr string, fn func()) {
@@ -39,7 +39,7 @@ func mustPanicContains(t *testing.T, substr string, fn func()) {
 
 func TestRevision_MandatoryOnAttach(t *testing.T) {
 	mustPanicContains(t, "declares no Revision", func() {
-		NewTableSchema[*revRoleEntity]("aluno").PK("id").SharedBase(revBase(), "pessoa_id")
+		NewTableSchema[*revRoleEntity]("aluno").ID("id").SharedBase(revBase(), "pessoa_id")
 	})
 }
 
@@ -50,9 +50,9 @@ func TestRevision_RootOnly(t *testing.T) {
 		NewSiblingSchema[*revRoleEntity]("aluno_extra").Revision("revision")
 	})
 	mustPanicContains(t, "ENTITY schema", func() {
-		NewTableSchema[*revRoleEntity]("aluno_children").FK("aluno_id").Revision("revision")
+		NewTableSchema[*revRoleEntity]("aluno_children").ParentID("aluno_id").Revision("revision")
 	})
-	if got := NewTableSchema[*revRoleEntity]("aluno").PK("id").Revision("revision").RevisionColumn(); got != "revision" {
+	if got := NewTableSchema[*revRoleEntity]("aluno").ID("id").Revision("revision").RevisionColumn(); got != "revision" {
 		t.Fatalf("a plain root schema must accept Revision, got %q", got)
 	}
 }
@@ -86,19 +86,19 @@ func TestRevision_EquivalenceDivergence(t *testing.T) {
 
 func TestReservedColumnPrefix_RejectedEverywhere(t *testing.T) {
 	mustPanicContains(t, "reserved", func() {
-		NewTableSchema[*revRoleEntity]("t").PK("_id")
+		NewTableSchema[*revRoleEntity]("t").ID("_id")
 	})
 	mustPanicContains(t, "reserved", func() {
-		NewTableSchema[*revRoleEntity]("t").PK("id").Field("Name", "_name")
+		NewTableSchema[*revRoleEntity]("t").ID("id").Field("Name", "_name")
 	})
 	mustPanicContains(t, "reserved", func() {
-		NewTableSchema[*revRoleEntity]("t").PK("id").SoftDelete("_deleted_at")
+		NewTableSchema[*revRoleEntity]("t").ID("id").SoftDelete("_deleted_at")
 	})
 }
 
 func TestPayloadColumnTypes_CoversAllScalarSources(t *testing.T) {
 	base := revBase().Revision("brev")
-	role := NewTableSchema[*revRoleEntity]("aluno").PK("id").Revision("revision").
+	role := NewTableSchema[*revRoleEntity]("aluno").ID("id").Revision("revision").
 		Field("Extra", "extra").SoftDelete("deleted_at").
 		SharedBase(base, "pessoa_id")
 	types := role.PayloadColumnTypes()
@@ -110,17 +110,17 @@ func TestPayloadColumnTypes_CoversAllScalarSources(t *testing.T) {
 	if got := role.SharedBaseBusinessColumns(); len(got) != 2 {
 		t.Errorf("SharedBaseBusinessColumns = %v, want the base's business fields", got)
 	}
-	if NewTableSchema[*revRoleEntity]("solo").PK("id").SharedBaseBusinessColumns() != nil {
+	if NewTableSchema[*revRoleEntity]("solo").ID("id").SharedBaseBusinessColumns() != nil {
 		t.Error("a schema without a shared base answers nil")
 	}
 }
 
-// The declaration-order hole: Revision declared BEFORE FK slips past Revision's
+// The declaration-order hole: Revision declared BEFORE ParentID slips past Revision's
 // own guard — Child() closes it at attach time.
 func TestRevision_ChildAttachRejectsOwnToken(t *testing.T) {
-	sneaky := NewTableSchema[*revRoleEntity]("kids").PK("id").Revision("revision")
-	sneaky.FK("parent_id").Field("Name", "name")
+	sneaky := NewTableSchema[*revRoleEntity]("kids").ID("id").Revision("revision")
+	sneaky.ParentID("parent_id").Field("Name", "name")
 	mustPanicContains(t, "guarded by its owner's revision", func() {
-		NewTableSchema[*revRoleEntity]("parents").PK("id").Revision("revision").Child(sneaky)
+		NewTableSchema[*revRoleEntity]("parents").ID("id").Revision("revision").Child(sneaky)
 	})
 }

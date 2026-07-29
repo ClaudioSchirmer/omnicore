@@ -8,13 +8,13 @@ import (
 )
 
 // readColsWithKey guarantees the join/group key is always selected, even when it
-// is a column the schema does not list among its own (a sibling's shared-PK join
+// is a column the schema does not list among its own (a sibling's shared-ID join
 // column, owned by its parent). fetchInGrouped reads row[keyCol] to bucket
 // results, so dropping the key silently loses the whole segment — the child
 // sibling regression this locks against.
 func TestReadColsWithKey(t *testing.T) {
 	s := core.NewExternalSchema("dependent_health_plans").
-		PK("id").
+		ID("id").
 		Field("Provider", "health_plan_provider")
 
 	base := []string{"id", "health_plan_provider"}

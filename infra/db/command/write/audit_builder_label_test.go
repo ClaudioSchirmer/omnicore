@@ -55,16 +55,16 @@ func (e *labelTestAggregate) AggregateChildren() []domain.AggregateValueObject {
 }
 
 var labelTestEntitySchema = NewTableSchema[*labelTestEntity]("label_test_entities").
-	PK("id").
+	ID("id").
 	Field("Name", "name").
 	Field("Email", "email")
 
 var labelTestAggSchema = NewTableSchema[*labelTestAggregate]("label_test_aggregates").
-	PK("id").
+	ID("id").
 	Field("Name", "name").
 	Child(NewTableSchema[labelTestAddress]("label_test_addresses").
-		PK("id").
-		FK("label_test_aggregate_id").
+		ID("id").
+		ParentID("label_test_aggregate_id").
 		Field("ZipCode", "zip_code").
 		Field("Bare", "bare"))
 

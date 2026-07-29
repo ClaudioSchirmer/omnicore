@@ -48,7 +48,7 @@ func ecAggLoader(scalars []any) (*AggregateLoader[*ecMoneyEntity], *string, *int
 		}}, nil
 	}), func() *ecMoneyEntity { return &ecMoneyEntity{} }).
 		WithSchema(NewTableSchema[*ecMoneyEntity]("listings").
-			PK("id").Field("Cents", "monthly_rent").Field("Area", "built_area").SoftDelete("deleted_at"))
+			ID("id").Field("Cents", "monthly_rent").Field("Area", "built_area").SoftDelete("deleted_at"))
 	return l, &gotSQL, &queries
 }
 
@@ -195,7 +195,7 @@ func TestAggregate_CriteriaFilterAndArgs(t *testing.T) {
 		}}, nil
 	}), func() *ecMoneyEntity { return &ecMoneyEntity{} }).
 		WithSchema(NewTableSchema[*ecMoneyEntity]("listings").
-			PK("id").Field("Cents", "monthly_rent").Field("Area", "built_area").SoftDelete("deleted_at"))
+			ID("id").Field("Cents", "monthly_rent").Field("Area", "built_area").SoftDelete("deleted_at"))
 
 	total := Count()
 	q := criteria.Where(criteria.Gt("Cents", 100))

@@ -10,11 +10,11 @@ import (
 // infra-root coverage grab-bag once table_schema.go moved to package db (these
 // exercise unexported methods, so they must live alongside the code).
 
-// covFullSchema returns a type-anchored schema exercising the PK + a mapped field
+// covFullSchema returns a type-anchored schema exercising the ID + a mapped field
 // + all three managed columns, reused across the resolution-helper tests.
 func covFullSchema() *TableSchema {
 	return NewTableSchema[schemaSample]("t").
-		PK("id").
+		ID("id").
 		Field("Name", "name").
 		CreatedAt("created_at").
 		UpdatedAt("updated_at").
@@ -23,8 +23,8 @@ func covFullSchema() *TableSchema {
 
 func TestTableSchema_PKAndManagedColumns(t *testing.T) {
 	s := covFullSchema()
-	if s.PKColumn() != "id" {
-		t.Errorf("PKColumn = %q, want id", s.PKColumn())
+	if s.IDColumn() != "id" {
+		t.Errorf("IDColumn = %q, want id", s.IDColumn())
 	}
 	if c, ok := s.createdAtColumn(); !ok || c != "created_at" {
 		t.Errorf("createdAtColumn = (%q,%v), want (created_at,true)", c, ok)
@@ -47,7 +47,7 @@ func TestTableSchema_NowColumns(t *testing.T) {
 }
 
 func TestTableSchema_NowColumns_WhenManagedAbsent(t *testing.T) {
-	s := NewTableSchema[schemaSample]("t").PK("id").Field("Name", "name")
+	s := NewTableSchema[schemaSample]("t").ID("id").Field("Name", "name")
 	if got := s.insertNowColumns(); got != nil {
 		t.Errorf("insertNowColumns with no managed cols = %v, want nil", got)
 	}
@@ -72,7 +72,7 @@ func TestTableSchema_WriteFields_ExcludesPKAndManaged(t *testing.T) {
 		t.Errorf("writeFields[name] = %v, want bob", got["name"])
 	}
 	if _, present := got["id"]; present {
-		t.Error("writeFields must exclude the PK column")
+		t.Error("writeFields must exclude the ID column")
 	}
 	if _, present := got["created_at"]; present {
 		t.Error("writeFields must exclude managed columns")
@@ -134,7 +134,7 @@ func TestTableSchema_ColumnForRead(t *testing.T) {
 
 func TestTableSchema_ReadHelpers_ManagedAbsentMissing(t *testing.T) {
 	// Without managed columns, the fixed logical names resolve to ok=false.
-	s := NewTableSchema[schemaSample]("t").PK("id").Field("Name", "name")
+	s := NewTableSchema[schemaSample]("t").ID("id").Field("Name", "name")
 	for _, col := range []string{"created_at", "updated_at", "deleted_at"} {
 		if _, ok := s.goNameForRead(col); ok {
 			t.Errorf("goNameForRead(%q) should be false when managed columns are absent", col)
@@ -162,7 +162,7 @@ func TestTableSchema_TypeName(t *testing.T) {
 	if got := covFullSchema().typeName(); got != "schemaSample" {
 		t.Errorf("typeName = %q, want schemaSample", got)
 	}
-	ext := NewExternalSchema("users").PK("id").Field("Name", "name")
+	ext := NewExternalSchema("users").ID("id").Field("Name", "name")
 	if got := ext.typeName(); got != "" {
 		t.Errorf("external typeName = %q, want empty", got)
 	}

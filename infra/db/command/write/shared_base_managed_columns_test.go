@@ -17,14 +17,14 @@ import (
 
 func roleTestSchemaManagedBase() *TableSchema {
 	base := NewSharedBaseSchema("pessoa").Revision("revision").
-		PK("id").
+		ID("id").
 		Field("Name", "name").
 		Field("Document", "document").
-		NaturalKey("document").
+		NaturalID("document").
 		CreatedAt("created_at").
 		UpdatedAt("updated_at")
 	return NewTableSchema[*roleTestEntity]("aluno").
-		PK("id").
+		ID("id").
 		Field("Matricula", "matricula").
 		SoftDelete("deleted_at").
 		SharedBase(base, "id")

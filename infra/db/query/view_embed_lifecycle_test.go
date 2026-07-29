@@ -9,7 +9,7 @@ import (
 
 // Lifecycle battery for a MATERIALIZED view leg. A segment fed by a local view
 // must survive the source's whole lifecycle — insert, partial update, archive,
-// unarchive, hard delete — and the embedding document's own FK change, which no
+// unarchive, hard delete — and the embedding document's own ParentID change, which no
 // event on the source side would ever announce.
 
 type lifeProduct struct {
@@ -24,13 +24,13 @@ type lifeSale struct {
 
 func lifeProductsView() *ViewDefinition {
 	return View("products").Version(1).Schema(
-		core.NewTableSchema[lifeProduct]("products").PK("id").SoftDelete("deleted_at").
+		core.NewTableSchema[lifeProduct]("products").ID("id").SoftDelete("deleted_at").
 			Field("Name", "name"))
 }
 
 func lifeSalesView() *ViewDefinition {
 	return View("sales").Version(1).
-		Schema(core.NewTableSchema[lifeSale]("sales").PK("id").SoftDelete("deleted_at").
+		Schema(core.NewTableSchema[lifeSale]("sales").ID("id").SoftDelete("deleted_at").
 			Field("ProductID", "product_id")).
 		Embed(JoinView(lifeProductsView(), "Product", "product")).On("product_id").
 		Indexes(Index("product_id"))
@@ -149,7 +149,7 @@ func TestLifecycle_SourceDeletedNullsSegment(t *testing.T) {
 }
 
 // The case NO event on the source announces: the EMBEDDING document changes its
-// FK. Field ownership keeps the consult write off the segment, and the source
+// ParentID. Field ownership keeps the consult write off the segment, and the source
 // never changed — so without the post-write repair the segment would point at
 // the old product forever.
 func TestLifecycle_EmbedderFKChangeRepairsSegment(t *testing.T) {
@@ -165,13 +165,13 @@ func TestLifecycle_EmbedderFKChangeRepairsSegment(t *testing.T) {
 
 	ups := colls["sales"].updates
 	if len(ups) != 1 {
-		t.Fatalf("an FK change must trigger exactly one repair write on a VIEW leg, got %d", len(ups))
+		t.Fatalf("an ParentID change must trigger exactly one repair write on a VIEW leg, got %d", len(ups))
 	}
 	set := ups[0]["$pipeline"].([]Document)[0]["$set"].(Document)
 	cond := set["product"].(Document)["$cond"].([]any)
 	and, ok := cond[0].(Document)["$and"].([]any)
 	if !ok || len(and) != 2 {
-		t.Fatalf("the repair must keep its double guard (FK match + not-already-this-id), got %v", cond[0])
+		t.Fatalf("the repair must keep its double guard (ParentID match + not-already-this-id), got %v", cond[0])
 	}
 	elem, ok := cond[1].(Document)["$literal"].(Document)
 	if !ok || elem["_id"] != "p2" {
@@ -179,7 +179,7 @@ func TestLifecycle_EmbedderFKChangeRepairsSegment(t *testing.T) {
 	}
 }
 
-// A dead reference (the FK points at a source document that no longer exists)
+// A dead reference (the ParentID points at a source document that no longer exists)
 // repairs to the explicit null rather than freezing the old sub-document.
 func TestLifecycle_EmbedderFKPointingNowhereClearsSegment(t *testing.T) {
 	colls := map[string]*fakeColl{"products": {}, "sales": {}}
@@ -202,7 +202,7 @@ func TestLifecycle_EmbedderFKPointingNowhereClearsSegment(t *testing.T) {
 // pre-write document was captured (Before) and both FKs enter the target set.
 func TestLifecycle_SourceMovedBetweenParentsTouchesBothSides(t *testing.T) {
 	dashboard := View("dashboard").Version(1).
-		Schema(core.NewTableSchema[lifeSale]("customers").PK("id").SoftDelete("deleted_at")).
+		Schema(core.NewTableSchema[lifeSale]("customers").ID("id").SoftDelete("deleted_at")).
 		EmbedMany(JoinView(lifeProductsView(), "Products", "products")).On("owner_id")
 	colls := map[string]*fakeColl{
 		"products":  {docs: []any{map[string]any{"_id": "p1", "owner_id": "c2", docRevisionField: int64(5)}}},

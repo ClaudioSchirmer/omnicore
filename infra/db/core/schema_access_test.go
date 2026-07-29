@@ -22,7 +22,7 @@ type labeledSample struct {
 
 func labeledSchema() *TableSchema {
 	return NewTableSchema[labeledSample]("people").
-		PK("id").
+		ID("id").
 		Field("Name", "name").
 		Field("Email", "email").
 		Field("Plain", "plain").
@@ -39,7 +39,7 @@ func TestSchemaAccess_KindAccessors(t *testing.T) {
 		t.Errorf("TypeName() = %q, want labeledSample", got)
 	}
 	if !anchored.HasPKDeclared() {
-		t.Error("HasPKDeclared() must be true after PK(...)")
+		t.Error("HasPKDeclared() must be true after ID(...)")
 	}
 	if anchored.HasChildren() {
 		t.Error("HasChildren() must be false for a flat schema")
@@ -47,8 +47,8 @@ func TestSchemaAccess_KindAccessors(t *testing.T) {
 	if anchored.GoType() != reflect.TypeOf(labeledSample{}) {
 		t.Errorf("GoType() = %v, want labeledSample", anchored.GoType())
 	}
-	if anchored.PKIndex() != 0 {
-		t.Errorf("PKIndex() = %d, want 0 (exported ID field)", anchored.PKIndex())
+	if anchored.IDIndex() != 0 {
+		t.Errorf("IDIndex() = %d, want 0 (exported ID field)", anchored.IDIndex())
 	}
 
 	ext := NewExternalSchema("upstream").Field("Name", "name")
@@ -59,17 +59,17 @@ func TestSchemaAccess_KindAccessors(t *testing.T) {
 		t.Errorf("external TypeName() = %q, want empty", got)
 	}
 	if ext.HasPKDeclared() {
-		t.Error("HasPKDeclared() must be false before PK(...)")
+		t.Error("HasPKDeclared() must be false before ID(...)")
 	}
 	if ext.GoType() != nil {
 		t.Error("external GoType() must be nil")
 	}
-	if ext.PKIndex() >= 0 {
-		t.Errorf("external PKIndex() = %d, want < 0", ext.PKIndex())
+	if ext.IDIndex() >= 0 {
+		t.Errorf("external IDIndex() = %d, want < 0", ext.IDIndex())
 	}
 
-	withChild := NewTableSchema[schemaSample]("root").PK("id").
-		Child(NewTableSchema[embedFixture]("child").PK("id").FK("root_id"))
+	withChild := NewTableSchema[schemaSample]("root").ID("id").
+		Child(NewTableSchema[embedFixture]("child").ID("id").ParentID("root_id"))
 	if !withChild.HasChildren() {
 		t.Error("HasChildren() must be true once a child is declared")
 	}
@@ -98,7 +98,7 @@ func TestSchemaAccess_ManagedTimestampColumns(t *testing.T) {
 	if got := s.UpdatedAtColumn(); got != "updated_at" {
 		t.Errorf("UpdatedAtColumn() = %q, want updated_at", got)
 	}
-	bare := NewTableSchema[labeledSample]("t").PK("id")
+	bare := NewTableSchema[labeledSample]("t").ID("id")
 	if bare.CreatedAtColumn() != "" || bare.UpdatedAtColumn() != "" {
 		t.Error("undeclared managed columns must read as empty")
 	}
@@ -140,7 +140,7 @@ func TestLabelKeysByGoField_NilAndEmpty(t *testing.T) {
 		t.Errorf("labelKeysByGoField(nil) = %v, want nil", got)
 	}
 	// No field carries any labelKey → the memoized map is empty (nil).
-	s := NewTableSchema[schemaSample]("t").PK("id").Field("Name", "name")
+	s := NewTableSchema[schemaSample]("t").ID("id").Field("Name", "name")
 	if got := s.LabelKeysByGoField(); len(got) != 0 {
 		t.Errorf("LabelKeysByGoField() with no tags = %v, want empty", got)
 	}
@@ -155,7 +155,7 @@ func TestGoFieldValues_ReadsByGoName(t *testing.T) {
 		t.Errorf("GoFieldValues() = %v, want %v", got, want)
 	}
 	if _, has := got["ID"]; has {
-		t.Error("GoFieldValues must not include the PK")
+		t.Error("GoFieldValues must not include the ID")
 	}
 	// A non-pointer entity exercises the deref loop's pass-through.
 	byValue := s.GoFieldValues(labeledSample{Name: "alice"})
