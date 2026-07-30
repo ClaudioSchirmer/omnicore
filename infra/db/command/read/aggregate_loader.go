@@ -364,7 +364,22 @@ func (l *AggregateLoader[T]) findRoots(ctx context.Context, q *criteria.Query, l
 	if joinSQL != "" {
 		leadingPK = dialect.QuoteIdent(table) + "." + dialect.QuoteIdent(l.schema.IDColumn())
 	}
-	sql := "SELECT " + leadingPK + ", " + strings.Join(quoteIdentifiers(cols, dialect), ", ") + " FROM " + dialect.QuoteIdent(table) + joinSQL
+	// Trailing framework-managed columns (created_at/updated_at/deleted_at/
+	// revision) go into the carrier via ms.apply, not into struct fields.
+	ms := newManagedScan(l.schema)
+	selectCols := strings.Join(quoteIdentifiers(cols, dialect), ", ")
+	if ms.has() {
+		if joinSQL != "" {
+			q := make([]string, len(ms.cols))
+			for i, c := range ms.cols {
+				q[i] = dialect.QuoteIdent(table) + "." + dialect.QuoteIdent(c)
+			}
+			selectCols += ", " + strings.Join(q, ", ")
+		} else {
+			selectCols += ", " + strings.Join(quoteIdentifiers(ms.cols, dialect), ", ")
+		}
+	}
+	sql := "SELECT " + leadingPK + ", " + selectCols + " FROM " + dialect.QuoteIdent(table) + joinSQL
 	sql += tailClause(clause, orderSQL)
 	sql, err = applyWindow(dialect, sql, limit, offset, orderSQL)
 	if err != nil {
@@ -382,7 +397,7 @@ func (l *AggregateLoader[T]) findRoots(ctx context.Context, q *criteria.Query, l
 	)
 	for rows.Next() {
 		root := l.newEntity()
-		raw, err := core.ScanLeadingKey(rows, any(root), cols, byCol)
+		raw, err := core.ScanLeadingKeyTrailing(rows, any(root), cols, byCol, ms.targets()...)
 		if err != nil {
 			return nil, nil, err
 		}
@@ -391,6 +406,7 @@ func (l *AggregateLoader[T]) findRoots(ctx context.Context, q *criteria.Query, l
 			return nil, nil, err
 		}
 		root.SetID(domain.NewID(id))
+		ms.apply(root)
 		entities = append(entities, root)
 		ids = append(ids, id)
 	}

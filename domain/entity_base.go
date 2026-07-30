@@ -47,9 +47,9 @@ type avoEntry struct {
 }
 
 type BaseEntity struct {
+	Managed // id + revision + managed timestamps; GetID() ID / SetID / ClearID promoted
 	signature uuid.UUID
 	mode      EntityMode
-	id        *ID
 	service   Service
 	notifCtx  *NotificationContext
 	contexts  []*NotificationContext
@@ -69,15 +69,10 @@ func (b *BaseEntity) RequiresService() bool { return false }
 
 func (b *BaseEntity) NotificationContext() *NotificationContext { return b.notifCtx }
 func (b *BaseEntity) Events() []DomainEvent                     { return b.events }
-func (b *BaseEntity) GetID() *ID                                { return b.id }
-
-func (b *BaseEntity) SetID(id ID) {
-	b.id = &id
-}
-
-func (b *BaseEntity) ClearID() {
-	b.id = nil
-}
+// GetID shadows the promoted Managed.GetID() ID with the Entity contract's
+// nullable *ID form (nil = not persisted). SetID / ClearID come promoted from
+// Managed.
+func (b *BaseEntity) GetID() *ID { return b.idPtr() }
 
 func (b *BaseEntity) AddNotificationMessage(msg NotificationMessage) {
 	if b.notifCtx != nil {

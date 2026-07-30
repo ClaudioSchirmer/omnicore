@@ -46,6 +46,6 @@ func IsSameByBusinessFields(a, b AggregateValueObject) bool {
 // managed-column carrier. Until domain.Managed exists (introduced when the
 // aggregate loader surfaces managed columns into the entity), no field
 // qualifies and IsSameByBusinessFields compares every exported field.
-func isManagedCarrier(reflect.StructField) bool {
-	return false // superseded when domain.Managed lands: f.Anonymous && f.Type == reflect.TypeOf(Managed{})
+func isManagedCarrier(f reflect.StructField) bool {
+	return f.Anonymous && f.Type == reflect.TypeOf(Managed{})
 }
