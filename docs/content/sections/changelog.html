@@ -7,6 +7,26 @@
 </div>
 <div class="changelog">
     <div class="release">
+        <div class="release-head"><span class="release-tag">Unreleased</span><span class="release-date">—</span></div>
+        <ul>
+            <li><strong>Changed</strong> — <strong>breaking</strong> — <strong>aggregate child equality is now
+                domain-declared: <code>AggregateValueObject.IsSameBusinessIdentity</code>.</strong> The change tracker
+                no longer matches aggregate children by <code>reflect.DeepEqual</code> — every
+                <code>AggregateValueObject</code> now implements
+                <code>IsSameBusinessIdentity(other) bool</code>, which the framework calls at all four match sites
+                (add / re-activate, change, remove, and the post-INSERT id write-back). Only the domain decides when
+                two children are "the same". A <strong>new contract</strong> follows: at most ONE active child per
+                business identity — a second same-identity active child is rejected as a duplicate
+                (<code>EntityAlreadyAddedNotification</code>, <code>SemanticConflict</code> → 409). And a same-identity
+                child re-sent on a strict PUT now <strong>updates in place, id preserved</strong> — no more
+                archive-old + insert-new churn — when the declared identity is id-agnostic.
+                <code>domain.IsSameByBusinessFields(a, b)</code> is the opt-in structural helper (every business field
+                but the framework-managed carrier) for children with no natural key; migrate each AVO with one line
+                (the helper) or a natural-key comparison. See
+                <a href="#aggregate-persistence~child-identity">Aggregate persistence → Child identity</a>.</li>
+        </ul>
+    </div>
+    <div class="release">
         <div class="release-head"><span class="release-tag">v0.39.1</span><span class="release-date">July 30, 2026</span></div>
         <ul>
             <li><strong>Added</strong> — <strong>docs: "The sync machinery at a glance".</strong> A consolidated index

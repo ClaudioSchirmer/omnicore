@@ -11,6 +11,28 @@ with `1.0.0`.
 
 ## [Unreleased]
 
+### Changed
+
+- **breaking: aggregate child equality is now domain-declared —
+  `AggregateValueObject.IsSameBusinessIdentity`.** The change tracker no longer
+  matches aggregate children by `reflect.DeepEqual`; every `AggregateValueObject`
+  MUST implement `IsSameBusinessIdentity(other AggregateValueObject) bool`, which
+  the framework calls at all four match sites (add/re-activate, change, remove,
+  and the post-INSERT id write-back). Only the domain can say when two children
+  are "the same". Consequences:
+  - **New contract — at most ONE active child per business identity.** A second
+    active child with the same identity is rejected as a duplicate
+    (`EntityAlreadyAddedNotification`, `SemanticConflict` → 409).
+  - **Same-identity re-send on a strict PUT updates in place (id preserved)**
+    instead of archive-old + insert-new, when the declared identity is
+    id-agnostic — no more id churn for an unchanged child.
+  - `domain.IsSameByBusinessFields(a, b)` is the opt-in structural helper (every
+    exported field except the framework-managed carrier) for children with no
+    natural key narrower than their full value.
+  - **Migration:** implement `IsSameBusinessIdentity` on every `AggregateValueObject`
+    — one line delegating to `IsSameByBusinessFields`, or a natural-key comparison
+    (e.g. `Address`: `Country`+`ZipCode`+`Street`+`Number`).
+
 ## [0.39.1] - 2026-07-30
 
 ### Added

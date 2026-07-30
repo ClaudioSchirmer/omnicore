@@ -54,7 +54,7 @@ func (ar *AggregateRoot) addAggregateItem(item AggregateValueObject) {
 	list := ar.aggregates[key]
 
 	for i, entry := range list {
-		if !reflect.DeepEqual(entry.item, item) {
+		if !entry.item.IsSameBusinessIdentity(item) {
 			continue
 		}
 		switch entry.currentStatus {
@@ -89,7 +89,7 @@ func (ar *AggregateRoot) changeAggregateItem(original, replacement AggregateValu
 	list := ar.aggregates[key]
 
 	for i, entry := range list {
-		if reflect.DeepEqual(entry.item, original) {
+		if entry.item.IsSameBusinessIdentity(original) {
 			list[i].item = replacement
 			list[i].currentStatus = StatusChanged
 			ar.aggregates[key] = list
@@ -116,7 +116,7 @@ func (ar *AggregateRoot) removeAggregateItem(item AggregateValueObject) {
 	list := ar.aggregates[key]
 
 	for i, entry := range list {
-		if reflect.DeepEqual(entry.item, item) && entry.currentStatus != StatusRemoved {
+		if entry.item.IsSameBusinessIdentity(item) && entry.currentStatus != StatusRemoved {
 			list[i].currentStatus = StatusRemoved
 			ar.aggregates[key] = list
 			return
@@ -162,7 +162,7 @@ func (ar *AggregateRoot) AssignAggregateItemID(item AggregateValueObject, id str
 	key := classNameOf(item)
 	list := ar.aggregates[key]
 	for i, entry := range list {
-		if reflect.DeepEqual(entry.item, item) {
+		if entry.item.IsSameBusinessIdentity(item) {
 			list[i].item = stamped
 			ar.aggregates[key] = list
 			return true

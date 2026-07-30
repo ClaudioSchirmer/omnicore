@@ -33,8 +33,33 @@
     </p>
 
     <p>
-        <code>AggregateValueObject</code> requires <code>BuildRules(actionName string, svc Service, r *Rules)</code> — signature identical to <code>Entity.BuildRules</code> — plus <code>GetID() domain.ID</code>, backed by an exported <code>ID domain.ID</code> field (identity is a TYPE on children exactly as on references; the persister's minted-id write-back sets that field via reflection). Infra maps columns via the child's <code>TableSchema</code>; an undeclared exported field is runtime-only by construction (the schema simply does not list it, so it is never persisted/scanned/audited); <code>ID</code> is the ID (skipped on INSERT/UPDATE write list, used in the WHERE clause); the ParentID to the root is injected by infra (it is not a struct field).
+        <code>AggregateValueObject</code> requires <code>BuildRules(actionName string, svc Service, r *Rules)</code> — signature identical to <code>Entity.BuildRules</code> — plus <code>GetID() domain.ID</code>, backed by an exported <code>ID domain.ID</code> field (identity is a TYPE on children exactly as on references; the persister's minted-id write-back sets that field via reflection). Infra maps columns via the child's <code>TableSchema</code>; an undeclared exported field is runtime-only by construction (the schema simply does not list it, so it is never persisted/scanned/audited); <code>ID</code> is the ID (skipped on INSERT/UPDATE write list, used in the WHERE clause); the ParentID to the root is injected by infra (it is not a struct field). It also requires <code>IsSameBusinessIdentity(other AggregateValueObject) bool</code> — see <a href="#aggregate-persistence~child-identity">Child identity</a>.
     </p>
+
+    <h3>Child identity</h3>
+    <p>
+        The framework matches an aggregate child against the tracked collection — for add / re-activate, change, remove, and the post-INSERT id write-back — <strong>exclusively</strong> through <code>IsSameBusinessIdentity(other AggregateValueObject) bool</code>, which every <code>AggregateValueObject</code> MUST implement. Only the domain can say when two children are "the same": two <code>Address</code> values are the same place by <code>Country+ZipCode+Street+Number</code> even if <code>Label</code> or <code>Complement</code> differ. (This replaced a whole-struct <code>reflect.DeepEqual</code> guess, which also compared the id and so treated an id-less re-sent child as brand new.)
+    </p>
+    <p>
+        When the aggregate's notion of identity is simply "every business field", delegate to the helper <code>domain.IsSameByBusinessFields(a, other)</code> — it compares every exported field except the framework-managed carrier. Prefer a hand-written natural key when the aggregate has one.
+    </p>
+    <p>
+        <strong>Contract — at most ONE active child per business identity.</strong> A second active child with the same identity is rejected as a duplicate (<code>EntityAlreadyAddedNotification</code>, <code>SemanticConflict</code> → 409); the four match sites rely on this uniqueness to resolve "the entry that matches".
+    </p>
+    <p>
+        <strong>Effect on a strict PUT (full replace).</strong> Replace clears the collection then re-adds; a re-sent child whose identity matches a just-cleared one <em>re-activates</em> it (UPDATE, <strong>id preserved</strong>) instead of archive-old + insert-new. With an id-agnostic identity (like <code>Address</code>), re-sending an unchanged child no longer churns its id; with a structural identity (<code>IsSameByBusinessFields</code>, which includes every field), a child re-sent with any changed field is a distinct value and is archived-then-reinserted — preserving the prior version as history. The choice is the aggregate's.
+    </p>
+    <pre><code>func (a Address) IsSameBusinessIdentity(other domain.AggregateValueObject) bool {
+    o, ok := other.(Address)
+    return ok &&
+        a.Country == o.Country && a.ZipCode == o.ZipCode &&
+        a.Street == o.Street && a.Number == o.Number
+}
+
+// no natural key narrower than the full value → the structural helper:
+func (d Dependent) IsSameBusinessIdentity(other domain.AggregateValueObject) bool {
+    return domain.IsSameByBusinessFields(d, other)
+}</code></pre>
 
     <h3>Universal symmetric cascade</h3>
     <p>

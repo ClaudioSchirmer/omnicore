@@ -191,5 +191,5 @@ Conceptual cautions not covered by the consumer manual (verify specifics in code
 5. **Private-receiver base methods cross packages via promotion** — embedding a notification base in another package works because the seal method is promoted.
 6. **`Fields`-style `map[string]any` has non-deterministic order** — SQL generation sorts keys for determinism.
 7. **Identifier validation panics on bad input** — intentional SQL-injection defense; identifiers come from domain code, never user input.
-8. **Aggregate value objects are value types, not pointers** — change tracking uses deep equality.
+8. **Aggregate value objects are value types, not pointers** — the change tracker matches them via the mandatory domain-declared `IsSameBusinessIdentity` (helper `domain.IsSameByBusinessFields` for the structural case), never `reflect.DeepEqual`.
 9. **`slog` levels** — `Info` routine, `Warn` non-blocking failures (audit echo, best-effort writes), `Error` unhandled.

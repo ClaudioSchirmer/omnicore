@@ -37,7 +37,7 @@ func TestMySQLManager_Up_AppliesFrameworkSchema(t *testing.T) {
 	// Fresh slate: drop every framework table + both tracking tables.
 	for _, tbl := range []string{
 		"omnicore_integration_processed", "omnicore_integration_failures", "integration_events",
-		"audit_events", "omnicore_upstream_failures", "omnicore_mongo_views", "outbox",
+		"audit_events", "omnicore_projection_failures", "omnicore_mongo_views", "outbox",
 		"omnicore_framework_migrations", "omnicore_migrations",
 	} {
 		if _, err := raw.ExecContext(ctx, "DROP TABLE IF EXISTS "+tbl); err != nil {
@@ -62,7 +62,7 @@ func TestMySQLManager_Up_AppliesFrameworkSchema(t *testing.T) {
 
 	// Every control-plane table exists.
 	for _, tbl := range []string{
-		"outbox", "omnicore_mongo_views", "omnicore_upstream_failures", "audit_events",
+		"outbox", "omnicore_mongo_views", "omnicore_projection_failures", "audit_events",
 		"integration_events", "omnicore_integration_failures", "omnicore_integration_processed",
 	} {
 		var n int
