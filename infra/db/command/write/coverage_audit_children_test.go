@@ -29,11 +29,10 @@ func (e *covAgg) AggregateChildren() []domain.AggregateValueObject {
 }
 
 type covChild struct {
-	ID    string
+	domain.Managed
 	Label string
 }
 
-func (c covChild) GetID() domain.ID                                 { return domain.NewID(c.ID) }
 func (c covChild) BuildRules(string, domain.Service, *domain.Rules) {}
 
 var covAggSchema = NewTableSchema[*covAgg]("cov_aggs").
@@ -48,7 +47,7 @@ var covAggSchema = NewTableSchema[*covAgg]("cov_aggs").
 
 func TestChildEventOf_InsertSnapshotsChildren(t *testing.T) {
 	root := &covAgg{Name: "a"}
-	domain.AddAggregateChild(root, covChild{ID: "c1", Label: "x"})
+	domain.AddAggregateChild(root, domain.WithID(covChild{Label: "x"}, domain.NewID("c1")))
 	id := domain.NewID(uuid.NewString())
 	i, err := domain.GetInsertable(root, nil, "GetInsertable")
 	if err != nil {
@@ -66,7 +65,7 @@ func TestChildEventOf_UpdateAddedChild(t *testing.T) {
 	root.SetID(domain.NewID(uuid.NewString()))
 	root.AggregateConstructor([]domain.AggregateValueObject{})
 	u, err := domain.GetUpdatable(root, func(r *covAgg) error {
-		domain.AddAggregateChild(r, covChild{ID: "c2", Label: "y"})
+		domain.AddAggregateChild(r, domain.WithID(covChild{Label: "y"}, domain.NewID("c2")))
 		return nil
 	}, nil, "GetUpdatable")
 	if err != nil {
@@ -82,9 +81,9 @@ func TestChildEventOf_UpdateAddedChild(t *testing.T) {
 func TestChildEventOf_UpdateRemovedChild(t *testing.T) {
 	root := &covAgg{Name: "a"}
 	root.SetID(domain.NewID(uuid.NewString()))
-	root.AggregateConstructor([]domain.AggregateValueObject{covChild{ID: "c1", Label: "x"}})
+	root.AggregateConstructor([]domain.AggregateValueObject{domain.WithID(covChild{Label: "x"}, domain.NewID("c1"))})
 	u, err := domain.GetUpdatable(root, func(r *covAgg) error {
-		domain.RemoveAggregateChild(r, covChild{ID: "c1", Label: "x"})
+		domain.RemoveAggregateChild(r, domain.WithID(covChild{Label: "x"}, domain.NewID("c1")))
 		return nil
 	}, nil, "GetUpdatable")
 	if err != nil {
@@ -100,7 +99,7 @@ func TestChildEventOf_UpdateRemovedChild(t *testing.T) {
 func TestChildEventOf_ArchiveChildren(t *testing.T) {
 	root := &covAgg{Name: "a"}
 	root.SetID(domain.NewID(uuid.NewString()))
-	root.AggregateConstructor([]domain.AggregateValueObject{covChild{ID: "c1", Label: "x"}})
+	root.AggregateConstructor([]domain.AggregateValueObject{domain.WithID(covChild{Label: "x"}, domain.NewID("c1"))})
 	ar, err := domain.GetArchivable(root, nil, "GetArchivable")
 	if err != nil {
 		t.Fatalf("GetArchivable: %v", err)
@@ -115,7 +114,7 @@ func TestChildEventOf_ArchiveChildren(t *testing.T) {
 func TestChildEventOf_UnarchiveChildren(t *testing.T) {
 	root := &covAgg{Name: "a"}
 	root.SetID(domain.NewID(uuid.NewString()))
-	root.AggregateConstructor([]domain.AggregateValueObject{covChild{ID: "c1", Label: "x"}})
+	root.AggregateConstructor([]domain.AggregateValueObject{domain.WithID(covChild{Label: "x"}, domain.NewID("c1"))})
 	un, err := domain.GetUnarchivable(root, nil, "GetUnarchivable")
 	if err != nil {
 		t.Fatalf("GetUnarchivable: %v", err)
@@ -130,7 +129,7 @@ func TestChildEventOf_UnarchiveChildren(t *testing.T) {
 func TestChildEventOf_DeleteChildren(t *testing.T) {
 	root := &covAgg{Name: "a"}
 	root.SetID(domain.NewID(uuid.NewString()))
-	root.AggregateConstructor([]domain.AggregateValueObject{covChild{ID: "c1", Label: "x"}})
+	root.AggregateConstructor([]domain.AggregateValueObject{domain.WithID(covChild{Label: "x"}, domain.NewID("c1"))})
 	d, err := domain.GetDeletable(root, nil, "GetDeletable")
 	if err != nil {
 		t.Fatalf("GetDeletable: %v", err)

@@ -338,6 +338,10 @@ func (l *AggregateLoader[T]) findRoots(ctx context.Context, q *criteria.Query, l
 					l.effectiveContextName(),
 				)
 			}
+			// Parity with the auto scan: the manual scanner owns the business fields
+			// and the id, the framework fills the managed carrier (created/updated/
+			// deleted/revision) from the same row map — ReadColumns already selected them.
+			applyManagedFromMap(any(root), l.schema, m)
 			entities = append(entities, root)
 			ids = append(ids, idp.Value())
 		}
@@ -406,7 +410,9 @@ func (l *AggregateLoader[T]) findRoots(ctx context.Context, q *criteria.Query, l
 			return nil, nil, err
 		}
 		root.SetID(domain.NewID(id))
-		ms.apply(root)
+		if err := ms.apply(root, dialect); err != nil {
+			return nil, nil, err
+		}
 		entities = append(entities, root)
 		ids = append(ids, id)
 	}
@@ -536,6 +542,10 @@ func (l *AggregateLoader[T]) hydrateChildren(ctx context.Context, entities []T, 
 					if err != nil {
 						return err
 					}
+					// Parity with the auto scan: the manual scanner owns the business
+					// fields + the id, the framework fills the managed carrier from the
+					// same row map (ReadColumns already selected the managed columns).
+					avo = withManagedFromMap(avo, child, m)
 					avosByRoot[id] = append(avosByRoot[id], avo)
 				}
 			}
@@ -555,30 +565,33 @@ func (l *AggregateLoader[T]) hydrateChildren(ctx context.Context, entities []T, 
 			placeholders[i] = dialect.Placeholder(i + 1)
 			qargs[i] = dialect.EncodeArg(domain.NewID(id))
 		}
-		sql, scanCols, scanByCol := childScanSQL(child, fkCol, childCols, childByCol, placeholders, childFilter, dialect)
+		// The child's carrier columns (own id + managed timestamps/revision) ride
+		// as trailing columns: the id left the scan plan when it moved into
+		// domain.Managed, so it is no longer a struct field — it and the managed
+		// columns are stamped onto the carrier via ms.apply after the scan.
+		ms := newChildManagedScan(child)
+		sql, scanCols, scanByCol := childScanSQL(child, fkCol, childCols, childByCol, placeholders, childFilter, dialect, ms.cols)
 		rows, err := l.eng.Querier().Query(ctx, sql, qargs...)
 		if err != nil {
 			return err
 		}
 		for rows.Next() {
 			vp := reflect.New(child.GoType())
-			fkRaw, err := core.ScanLeadingKey(rows, vp.Interface(), scanCols, scanByCol)
+			fkRaw, err := core.ScanLeadingKeyTrailing(rows, vp.Interface(), scanCols, scanByCol, ms.targets()...)
 			if err != nil {
 				rows.Close()
 				return err
 			}
+			// The ParentID is the leading key (decoded here); the child's own id and
+			// managed columns are the trailing targets, stamped by ms.apply (which
+			// decodes the id through the dialect — BINARY(16) → canonical uuid on
+			// MySQL, passthrough on Postgres).
 			fk, err := dialect.DecodeID(fkRaw)
 			if err != nil {
 				rows.Close()
 				return err
 			}
-			// The ParentID is the leading key (decoded above); the child's OWN ID is a
-			// non-leading column scanned straight into its struct field, so on a
-			// backend that stores ids as raw bytes (MySQL BINARY(16)) the field
-			// holds 16 raw bytes, not the canonical uuid. Normalize it through the
-			// dialect — identity on Postgres (pgx already yields text). Every other
-			// child column is a non-uuid business field by the all-ids-are-uuid model.
-			if err := decodeChildPK(vp, child, dialect); err != nil {
+			if err := ms.apply(vp.Interface(), dialect); err != nil {
 				rows.Close()
 				return err
 			}
@@ -651,10 +664,15 @@ func (l *AggregateLoader[T]) hydrateBaseChildren(ctx context.Context, entities [
 				l.effectiveContextName(), bc.GoType().Name())
 		}
 		bcTbl := d.QuoteIdent(bc.Table())
-		// SELECT role.pk (leading key → groups by aggregate) + base-child columns,
-		// joining the base-child to the role on the shared base id.
+		// SELECT role.pk (leading key → groups by aggregate) + base-child columns +
+		// the base-child's carrier columns (own id + managed), joining the
+		// base-child to the role on the shared base id.
+		ms := newChildManagedScan(bc)
 		sel := roleTbl + "." + rolePK
 		for _, c := range bcCols {
+			sel += ", " + bcTbl + "." + d.QuoteIdent(c)
+		}
+		for _, c := range ms.cols {
 			sel += ", " + bcTbl + "." + d.QuoteIdent(c)
 		}
 		sql := "SELECT " + sel + " FROM " + bcTbl +
@@ -668,7 +686,7 @@ func (l *AggregateLoader[T]) hydrateBaseChildren(ctx context.Context, entities [
 		}
 		for rows.Next() {
 			vp := reflect.New(bc.GoType())
-			rootRaw, err := core.ScanLeadingKey(rows, vp.Interface(), bcCols, bcByCol)
+			rootRaw, err := core.ScanLeadingKeyTrailing(rows, vp.Interface(), bcCols, bcByCol, ms.targets()...)
 			if err != nil {
 				rows.Close()
 				return err
@@ -678,7 +696,7 @@ func (l *AggregateLoader[T]) hydrateBaseChildren(ctx context.Context, entities [
 				rows.Close()
 				return err
 			}
-			if err := decodeChildPK(vp, bc, d); err != nil {
+			if err := ms.apply(vp.Interface(), d); err != nil {
 				rows.Close()
 				return err
 			}
@@ -823,8 +841,12 @@ func (l *AggregateLoader[T]) loadBaseChildrenConstructor(ctx context.Context, ne
 			continue
 		}
 		bcFK := d.QuoteIdent(bc.ParentIDColumn())
+		ms := newChildManagedScan(bc)
 		sel := bcFK
 		for _, c := range bcCols {
+			sel += ", " + d.QuoteIdent(c)
+		}
+		for _, c := range ms.cols {
 			sel += ", " + d.QuoteIdent(c)
 		}
 		sql := "SELECT " + sel + " FROM " + d.QuoteIdent(bc.Table()) +
@@ -835,11 +857,11 @@ func (l *AggregateLoader[T]) loadBaseChildrenConstructor(ctx context.Context, ne
 		}
 		for rows.Next() {
 			vp := reflect.New(bc.GoType())
-			if _, err := core.ScanLeadingKey(rows, vp.Interface(), bcCols, bcByCol); err != nil {
+			if _, err := core.ScanLeadingKeyTrailing(rows, vp.Interface(), bcCols, bcByCol, ms.targets()...); err != nil {
 				rows.Close()
 				return err
 			}
-			if err := decodeChildPK(vp, bc, d); err != nil {
+			if err := ms.apply(vp.Interface(), d); err != nil {
 				rows.Close()
 				return err
 			}
@@ -932,30 +954,6 @@ func (l *AggregateLoader[T]) scanSiblingInto(ctx context.Context, sql, id string
 		}
 	}
 	return rows.Err()
-}
-
-// decodeChildPK normalizes an aggregate child's own ID struct field to the
-// canonical uuid string via the dialect, after the row has been auto-scanned.
-// A child's ID is mapped to an exported string field (the AggregateValueObject
-// GetID() contract) and read as a non-leading column, so it bypasses the
-// leading-key DecodeID the loader runs on the root ID and the child ParentID. On MySQL
-// the field would otherwise carry the raw BINARY(16) bytes; on Postgres DecodeID
-// is a passthrough (the scanned text is not 16 bytes). No-op when the schema
-// declares no struct-field ID (IDIndex() < 0) or the field is not a string.
-func decodeChildPK(vp reflect.Value, child *TableSchema, dialect Dialect) error {
-	if child.IDIndex() < 0 {
-		return nil
-	}
-	f := vp.Elem().Field(child.IDIndex())
-	if f.Kind() != reflect.String {
-		return nil
-	}
-	decoded, err := dialect.DecodeID(f.String())
-	if err != nil {
-		return err
-	}
-	f.SetString(decoded)
-	return nil
 }
 
 // relSpecJoins records which relational-specialization tables a criteria
@@ -1060,11 +1058,19 @@ func (l *AggregateLoader[T]) hydrateSharedBase(ctx context.Context, entities []T
 // scan plan — they map into the SAME child struct (a sibling is over the child's
 // Go type). Everything is qualified by table under the join; sibling/child
 // business columns are unique (the schema bijection), so the scan keys cleanly.
-func childScanSQL(child *TableSchema, fkCol string, childCols []string, childByCol map[string]int, placeholders []string, childFilter string, dialect Dialect) (string, []string, map[string]int) {
+// trailingCols (the child's carrier columns: id + managed) are appended to the
+// SELECT after the scanned struct columns, in the same order the caller's
+// trailing scan targets expect. They are read into external destinations, not
+// struct fields, so they never enter scanCols/scanByCol.
+func childScanSQL(child *TableSchema, fkCol string, childCols []string, childByCol map[string]int, placeholders []string, childFilter string, dialect Dialect, trailingCols []string) (string, []string, map[string]int) {
 	ct := dialect.QuoteIdent(child.Table())
 	sibs := child.Siblings()
 	if len(sibs) == 0 {
-		sql := "SELECT " + dialect.QuoteIdent(fkCol) + ", " + strings.Join(quoteIdentifiers(childCols, dialect), ", ") +
+		sel := dialect.QuoteIdent(fkCol) + ", " + strings.Join(quoteIdentifiers(childCols, dialect), ", ")
+		for _, c := range trailingCols {
+			sel += ", " + dialect.QuoteIdent(c)
+		}
+		sql := "SELECT " + sel +
 			" FROM " + ct + " WHERE " + dialect.QuoteIdent(fkCol) + " IN (" + strings.Join(placeholders, ", ") + ") " + childFilter
 		return sql, childCols, childByCol
 	}
@@ -1090,6 +1096,11 @@ func childScanSQL(child *TableSchema, fkCol string, childCols []string, childByC
 		for k, v := range sb {
 			scanByCol[k] = v
 		}
+	}
+	// The child's own carrier columns are unambiguous under the sibling join
+	// (the schema bijection), qualified to the child table like the rest.
+	for _, c := range trailingCols {
+		sel += ", " + ct + "." + dialect.QuoteIdent(c)
 	}
 	sql := "SELECT " + sel + " FROM " + ct + join.String() +
 		" WHERE " + ct + "." + dialect.QuoteIdent(fkCol) + " IN (" + strings.Join(placeholders, ", ") + ") " + childFilter

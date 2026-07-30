@@ -71,26 +71,28 @@ func TestAggregateLoader_WithChildScannerReplacesOnSameKey(t *testing.T) {
 
 // fakeVO is an AggregateValueObject value-type used in auto-scan tests.
 type fakeVO struct {
-	ID    string
+	domain.Managed
 	Label string
 }
 
-func (v fakeVO) GetID() domain.ID                                 { return domain.NewID(v.ID) }
 func (v fakeVO) BuildRules(string, domain.Service, *domain.Rules) {}
 
-// A child's read column plan comes from its TableSchema (the same the write
-// side uses); scanPlan INCLUDES the ID column (the child's ID is scanned).
-func TestChildSchema_ScanPlanIncludesPK(t *testing.T) {
+// A child's id now lives in the unexported domain.Managed carrier (idIndex < 0),
+// so its ScanPlan — like the root's — EXCLUDES the id column: the loader reads it
+// as a trailing carrier column and stamps it via SetID, never into a struct field.
+func TestChildSchema_ScanPlanExcludesID(t *testing.T) {
 	child := NewTableSchema[fakeVO]("tags").
 		ID("id").
 		Field("Label", "label")
 	cols, byCol := child.ScanPlan()
-	wantCols := []string{"id", "label"}
-	if len(cols) != 2 || cols[0] != wantCols[0] || cols[1] != wantCols[1] {
-		t.Errorf("cols = %v, want %v", cols, wantCols)
+	if len(cols) != 1 || cols[0] != "label" {
+		t.Errorf("cols = %v, want [label] (the id is a trailing carrier column, not in the scan plan)", cols)
 	}
-	if _, ok := byCol["id"]; !ok {
-		t.Error("byCol must resolve the id column")
+	if _, ok := byCol["id"]; ok {
+		t.Error("byCol must NOT resolve the id column — it left the scan plan for domain.Managed")
+	}
+	if child.IDColumn() != "id" {
+		t.Errorf("the id column must still be declared: %q", child.IDColumn())
 	}
 }
 

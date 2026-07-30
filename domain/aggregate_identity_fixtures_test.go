@@ -20,10 +20,6 @@ func (e emittingAVO) IsSameBusinessIdentity(other AggregateValueObject) bool {
 	return IsSameByBusinessFields(e, other)
 }
 
-func (n noIDFieldAVO) IsSameBusinessIdentity(other AggregateValueObject) bool {
-	return IsSameByBusinessFields(n, other)
-}
-
 func (a aggChild) IsSameBusinessIdentity(other AggregateValueObject) bool {
 	return IsSameByBusinessFields(a, other)
 }

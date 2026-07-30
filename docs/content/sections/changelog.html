@@ -9,6 +9,21 @@
     <div class="release">
         <div class="release-head"><span class="release-tag">Unreleased</span><span class="release-date">—</span></div>
         <ul>
+            <li><strong>Changed</strong> — <strong>breaking</strong> — <strong>a relational load now surfaces the managed
+                columns on the typed entity: <code>domain.Managed</code>.</strong> <code>FindOne</code>/<code>FindAll</code>
+                populate the framework-owned columns — the id AND <code>revision</code> +
+                <code>created_at</code>/<code>updated_at</code>/<code>deleted_at</code> — onto the <strong>root and every
+                aggregate child</strong>, read back through getters (<code>GetRevision</code>/<code>GetCreatedAt</code>/
+                <code>GetUpdatedAt</code>/<code>GetDeletedAt</code>). They ride an embedded carrier,
+                <code>domain.Managed</code>: <code>BaseEntity</code> carries it for roots, and <strong>every aggregate
+                value object must now embed it</strong> — the AVO's exported <code>ID</code> field moves INTO the carrier
+                (its <code>GetID()</code> is promoted). Migrate each AVO: replace the <code>ID domain.ID</code> field with
+                an embedded <code>domain.Managed</code> and drop its hand-written <code>GetID()</code>; construct an id-in-a-literal
+                with <code>domain.WithID(AVO{…}, id)</code> and set one on a variable with <code>.SetID(id)</code>. The id
+                stays set+get; <code>revision</code> and the timestamps are get-only (the write path is untouched — a public
+                setter would be a lie). The carrier is unexported, so it is never business identity, never in the audit
+                delta, and not cloned into <code>Old()</code>. See
+                <a href="#table-schema">TableSchema → Reading the managed columns back</a>.</li>
             <li><strong>Changed</strong> — <strong>breaking</strong> — <strong>aggregate child equality is now
                 domain-declared: <code>AggregateValueObject.IsSameBusinessIdentity</code>.</strong> The change tracker
                 no longer matches aggregate children by <code>reflect.DeepEqual</code> — every

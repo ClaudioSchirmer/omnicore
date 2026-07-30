@@ -13,7 +13,7 @@ import (
 // StatusAdded rather than appending a duplicate.
 func TestAddAggregateItem_ReAddRemovedReactivates(t *testing.T) {
 	p := newProviderEntity()
-	item := Rec{ID: "1", Name: "a"}
+	item := Rec{Name: "a"}
 	p.AggregateConstructor([]AggregateValueObject{item})
 	RemoveAggregateChild(p, item)
 
@@ -41,9 +41,9 @@ func TestAddAggregateItem_ReAddRemovedReactivates(t *testing.T) {
 // of addAggregateItem.
 func TestAddAggregateItem_ReAddChangedReactivates(t *testing.T) {
 	p := newProviderEntity()
-	original := Rec{ID: "1", Name: "a"}
+	original := Rec{Name: "a"}
 	p.AggregateConstructor([]AggregateValueObject{original})
-	changed := Rec{ID: "1", Name: "b"}
+	changed := Rec{Name: "b"}
 	ChangeAggregateChild(p, original, changed)
 
 	if got := GetChangedItemsOf[Rec](&p.AggregateRoot); len(got) != 1 {
@@ -65,7 +65,7 @@ func TestAddAggregateItem_ReAddChangedReactivates(t *testing.T) {
 // StatusAdded/StatusConstructor branch that emits EntityAlreadyAdded.
 func TestAddAggregateItem_AlreadyAddedEmitsNotification(t *testing.T) {
 	p := newProviderEntity()
-	item := Rec{ID: "1", Name: "a"}
+	item := Rec{Name: "a"}
 	AddAggregateChild(p, item)
 	AddAggregateChild(p, item) // duplicate → notification, no second entry
 
@@ -81,7 +81,7 @@ func TestAddAggregateItem_AlreadyAddedEmitsNotification(t *testing.T) {
 // isAggregateItemValid (reached through the trusted constructor path).
 func TestAggregateConstructor_NilItemRejected(t *testing.T) {
 	p := newProviderEntity()
-	p.AggregateConstructor([]AggregateValueObject{nil, Rec{ID: "1", Name: "a"}})
+	p.AggregateConstructor([]AggregateValueObject{nil, Rec{Name: "a"}})
 
 	all := p.AllAggregateItems()
 	if len(all["Rec"]) != 1 {
@@ -96,10 +96,10 @@ func TestAggregateConstructor_NilItemRejected(t *testing.T) {
 
 func TestGetChangedItemsOf_ReturnsChangedOnly(t *testing.T) {
 	p := newProviderEntity()
-	a := Rec{ID: "1", Name: "a"}
-	b := Rec{ID: "2", Name: "b"}
+	a := Rec{Name: "a"}
+	b := Rec{Name: "b"}
 	p.AggregateConstructor([]AggregateValueObject{a, b})
-	ChangeAggregateChild(p, a, Rec{ID: "1", Name: "a2"})
+	ChangeAggregateChild(p, a, Rec{Name: "a2"})
 
 	changed := GetChangedItemsOf[Rec](&p.AggregateRoot)
 	if len(changed) != 1 {

@@ -18,11 +18,10 @@ func (e *expUser) Modes() []domain.EntityMode                       { return []d
 func (e *expUser) BuildRules(string, domain.Service, *domain.Rules) {}
 
 type expAddr struct {
-	ID      string
+	domain.Managed
 	ZipCode string `labelKey:"AddressZipCodeField"`
 }
 
-func (a expAddr) GetID() domain.ID                                 { return domain.NewID(a.ID) }
 func (a expAddr) BuildRules(string, domain.Service, *domain.Rules) {}
 
 // buildExportTestView models the canonical shape: root + sibling (FLAT) + an own

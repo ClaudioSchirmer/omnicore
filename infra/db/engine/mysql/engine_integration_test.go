@@ -569,11 +569,10 @@ func (a *acct) AggregateChildren() []domain.AggregateValueObject {
 }
 
 type tag struct {
-	ID    string
+	domain.Managed
 	Label string
 }
 
-func (t tag) GetID() domain.ID                               { return domain.NewID(t.ID) }
 func (tag) BuildRules(string, domain.Service, *domain.Rules) {}
 
 func acctSchema() *core.TableSchema {

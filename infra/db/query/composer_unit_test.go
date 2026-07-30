@@ -254,12 +254,11 @@ func TestCompose_MergesSharedBaseFlat(t *testing.T) {
 // A2b compose coverage: a child that carries a sibling gets the sibling merged
 // FLAT into each child row (one level below the root).
 type csComposeVO struct {
-	ID    string
+	domain.Managed
 	Label string
 	Note  string
 }
 
-func (v csComposeVO) GetID() domain.ID                                 { return domain.NewID(v.ID) }
 func (v csComposeVO) BuildRules(string, domain.Service, *domain.Rules) {}
 
 // TestCompose_OwnChildrenAutoNested proves a view whose ROOT schema declares a

@@ -27,7 +27,7 @@ func TestChangeAggregateChild_OriginalNotInCollection(t *testing.T) {
 	p := newProviderForTest()
 	// Both are declared types, but the original was never added → not-found
 	// path emits EntityDoesNotExistNotification.
-	ChangeAggregateChild(p, testAVO{ID: NewID("missing")}, testAVO{ID: NewID("new")})
+	ChangeAggregateChild(p, testAVO{}, testAVO{})
 	if !p.NotificationContext().HasErrors() {
 		t.Fatal("changing a non-existent child must emit a notification")
 	}
@@ -35,9 +35,9 @@ func TestChangeAggregateChild_OriginalNotInCollection(t *testing.T) {
 
 func TestChangeAggregateChild_ReplacementUndeclared(t *testing.T) {
 	p := newProviderForTest()
-	p.AggregateConstructor([]AggregateValueObject{testAVO{ID: NewID("1")}})
+	p.AggregateConstructor([]AggregateValueObject{testAVO{}})
 	// original declared, replacement is an undeclared type → reject replacement.
-	ChangeAggregateChild(p, testAVO{ID: NewID("1")}, otherAVO{ID: "x"})
+	ChangeAggregateChild(p, testAVO{}, otherAVO{})
 	if !p.NotificationContext().HasErrors() {
 		t.Fatal("undeclared replacement must be rejected")
 	}
@@ -54,7 +54,7 @@ func TestRemoveAggregateItem_NilIgnored(t *testing.T) {
 func TestRemoveAggregateChild_NotInCollection(t *testing.T) {
 	p := newProviderForTest()
 	// Declared type but never added → not-found path.
-	RemoveAggregateChild(p, testAVO{ID: NewID("ghost")})
+	RemoveAggregateChild(p, testAVO{})
 	if !p.NotificationContext().HasErrors() {
 		t.Fatal("removing an absent child must emit a notification")
 	}

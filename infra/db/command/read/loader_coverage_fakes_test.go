@@ -38,12 +38,10 @@ func decodeErrFakeEngine(queryFn func(sql string, args []any) (Rows, error), fai
 }
 
 // noColsChild is an AggregateValueObject whose schema resolves ZERO scan
-// columns: its ID column has no exported "ID" struct field (idIndex < 0) and it
-// declares no Field(...) — the shape the loader's "schema declares no columns"
-// guards fire on.
-type noColsChild struct{}
+// columns: it declares no Field(...) — the shape the loader's "schema declares
+// no columns" guards fire on. The id lives in the promoted domain.Managed carrier.
+type noColsChild struct{ domain.Managed }
 
-func (noColsChild) GetID() domain.ID                                 { return domain.NewID("") }
 func (noColsChild) BuildRules(string, domain.Service, *domain.Rules) {}
 
 func noColsChildSchema(fkCol string) *TableSchema {

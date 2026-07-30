@@ -2,6 +2,7 @@ package read
 
 import (
 	"context"
+	stdsql "database/sql"
 	"fmt"
 	"strings"
 	"testing"
@@ -16,11 +17,10 @@ import (
 // diff the person-native collection instead of re-inserting (clobbering) it.
 
 type addrLoad struct {
-	ID     string
+	domain.Managed
 	Street string
 }
 
-func (a addrLoad) GetID() domain.ID                                 { return domain.NewID(a.ID) }
 func (a addrLoad) BuildRules(string, domain.Service, *domain.Rules) {}
 
 type roleAggLoad struct {
@@ -54,14 +54,16 @@ func TestHydrateBaseChildren_LoadsAsConstructor(t *testing.T) {
 			joinSQL = sql
 			return &fakeDBRows{rows: 2, scan: func(i int, dest []any) error {
 				for j, d := range dest {
-					p, ok := d.(*string)
-					if !ok {
-						continue
-					}
-					if j == 0 {
-						*p = "a1" // leading key = role pk (groups onto the aggregate)
-					} else {
-						*p = fmt.Sprintf("addr-%d-%d", i, j)
+					switch p := d.(type) {
+					case *string:
+						if j == 0 {
+							*p = "a1" // leading key = role pk (groups onto the aggregate)
+						} else {
+							*p = fmt.Sprintf("addr-%d-%d", i, j)
+						}
+					case *stdsql.NullString:
+						// The base-child's own id is a trailing carrier column now.
+						*p = stdsql.NullString{String: fmt.Sprintf("addr-id-%d", i), Valid: true}
 					}
 				}
 				return nil

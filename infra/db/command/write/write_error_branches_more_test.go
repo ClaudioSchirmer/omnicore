@@ -28,9 +28,9 @@ func TestRemovedChild_Guards(t *testing.T) {
 	t.Run("missingID", func(t *testing.T) {
 		root := &aggWriteRoot{Name: "r"}
 		root.SetID(domain.NewID(uuid.NewString()))
-		root.AggregateConstructor([]domain.AggregateValueObject{aggWriteChild{ID: domain.ID{}, Label: "x"}})
+		root.AggregateConstructor([]domain.AggregateValueObject{aggWriteChild{Label: "x"}})
 		upd, _ := domain.GetUpdatable(root, func(r *aggWriteRoot) error {
-			domain.RemoveAggregateChild(r, aggWriteChild{ID: domain.ID{}, Label: "x"})
+			domain.RemoveAggregateChild(r, aggWriteChild{Label: "x"})
 			return nil
 		}, nil, "GetUpdatable")
 		be := newFlatBE(&recBeginner{tx: &recTx{count: 1}})
@@ -47,9 +47,9 @@ func TestRemovedChild_Guards(t *testing.T) {
 				ID("id").ParentID("agg_w_id").Field("Label", "label")) // no DeletedAt
 		root := &aggWriteRoot{Name: "r"}
 		root.SetID(domain.NewID(uuid.NewString()))
-		root.AggregateConstructor([]domain.AggregateValueObject{aggWriteChild{ID: domain.NewID(id), Label: "x"}})
+		root.AggregateConstructor([]domain.AggregateValueObject{domain.WithID(aggWriteChild{Label: "x"}, domain.NewID(id))})
 		upd, _ := domain.GetUpdatable(root, func(r *aggWriteRoot) error {
-			domain.RemoveAggregateChild(r, aggWriteChild{ID: domain.NewID(id), Label: "x"})
+			domain.RemoveAggregateChild(r, domain.WithID(aggWriteChild{Label: "x"}, domain.NewID(id)))
 			return nil
 		}, nil, "GetUpdatable")
 		be := newFlatBE(&recBeginner{tx: &recTx{count: 1}})
@@ -98,9 +98,9 @@ func TestRemovedBaseChild_WithoutDeletedAt(t *testing.T) {
 		t.Helper()
 		root := &baseChildRole{Name: "Ana", Document: "D1", Matricula: "M1"}
 		root.SetID(domain.NewID(uuid.NewString()))
-		root.AggregateConstructor([]domain.AggregateValueObject{cascadeBaseChild{ID: childID, Note: "n"}})
+		root.AggregateConstructor([]domain.AggregateValueObject{domain.WithID(cascadeBaseChild{Note: "n"}, domain.NewID(childID))})
 		upd, err := domain.GetUpdatable(root, func(r *baseChildRole) error {
-			domain.RemoveAggregateChild(r, cascadeBaseChild{ID: childID, Note: "n"})
+			domain.RemoveAggregateChild(r, domain.WithID(cascadeBaseChild{Note: "n"}, domain.NewID(childID)))
 			return nil
 		}, nil, "GetUpdatable")
 		if err != nil {

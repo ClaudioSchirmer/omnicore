@@ -36,11 +36,10 @@ func (*aggCustomer) AggregateChildren() []domain.AggregateValueObject {
 // aggChannel is the AggregateValueObject child. Has its own ID + Label.
 // Inferred child table: agg_channels; ParentID column: agg_customer_id.
 type aggChannel struct {
-	ID    domain.ID
+	domain.Managed
 	Label string
 }
 
-func (c aggChannel) GetID() domain.ID                                 { return c.ID }
 func (c aggChannel) BuildRules(string, domain.Service, *domain.Rules) {}
 
 func createAggregateTables(t *testing.T, pg *Postgres) {
@@ -165,15 +164,15 @@ func TestPostgres_UpdateAggregate_AppliesChildChanges(t *testing.T) {
 	}
 
 	asChildren := []domain.AggregateValueObject{
-		aggChannel{ID: domain.NewID(existing[0].ID), Label: existing[0].Label},
-		aggChannel{ID: domain.NewID(existing[1].ID), Label: existing[1].Label},
+		domain.WithID(aggChannel{Label: existing[0].Label}, domain.NewID(existing[0].ID)),
+		domain.WithID(aggChannel{Label: existing[1].Label}, domain.NewID(existing[1].ID)),
 	}
 	loaded.AggregateConstructor(asChildren)
 
 	upd, err := domain.GetUpdatable(loaded, func(c *aggCustomer) error {
 		// Change first; remove second; add a new third.
 		current := domain.GetCurrentItemsOf[aggChannel](&c.AggregateRoot)
-		domain.ChangeAggregateChild(c, current[0], aggChannel{ID: current[0].ID, Label: current[0].Label + "-upd"})
+		domain.ChangeAggregateChild(c, current[0], domain.WithID(aggChannel{Label: current[0].Label + "-upd"}, current[0].GetID()))
 		domain.RemoveAggregateChild(c, current[1])
 		domain.AddAggregateChild(c, aggChannel{Label: "webhook"})
 		return nil
@@ -313,7 +312,7 @@ func TestUpdateChild_WithoutIDIsError(t *testing.T) {
 	loaded := &aggCustomer{Name: "U", Email: "u@x"}
 	loaded.SetID(res.ID)
 	// Load one child but give it NO id — Change request → updateChild requires id.
-	loaded.AggregateConstructor([]domain.AggregateValueObject{aggChannel{ID: domain.ID{}, Label: "first"}})
+	loaded.AggregateConstructor([]domain.AggregateValueObject{aggChannel{Label: "first"}})
 	upd, _ := domain.GetUpdatable(loaded, func(c *aggCustomer) error {
 		current := domain.GetCurrentItemsOf[aggChannel](&c.AggregateRoot)
 		domain.ChangeAggregateChild(c, current[0], aggChannel{Label: "renamed"}) // empty ID still
@@ -343,11 +342,10 @@ func (*aggInvoice) AggregateChildren() []domain.AggregateValueObject {
 }
 
 type lineItem struct {
-	ID     string
+	domain.Managed
 	Amount int
 }
 
-func (l lineItem) GetID() domain.ID                                 { return domain.NewID(l.ID) }
 func (l lineItem) BuildRules(string, domain.Service, *domain.Rules) {}
 
 func TestPostgres_InsertAggregate_RespectsChildTableAndFKOverride(t *testing.T) {

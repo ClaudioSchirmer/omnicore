@@ -18,10 +18,10 @@ func TestWriteChildren_ReAddedDBChildUpdatesNotInserts(t *testing.T) {
 	id := uuid.NewString()
 	root := &aggWriteRoot{Name: "r"}
 	root.SetID(domain.NewID(uuid.NewString()))
-	root.AggregateConstructor([]domain.AggregateValueObject{aggWriteChild{ID: domain.NewID(id), Label: "x"}})
+	root.AggregateConstructor([]domain.AggregateValueObject{domain.WithID(aggWriteChild{Label: "x"}, domain.NewID(id))})
 	upd, err := domain.GetUpdatable(root, func(r *aggWriteRoot) error {
-		domain.RemoveAggregateChild(r, aggWriteChild{ID: domain.NewID(id), Label: "x"})
-		domain.AddAggregateChild(r, aggWriteChild{ID: domain.NewID(id), Label: "x"}) // re-add same → reactivate
+		domain.RemoveAggregateChild(r, domain.WithID(aggWriteChild{Label: "x"}, domain.NewID(id)))
+		domain.AddAggregateChild(r, domain.WithID(aggWriteChild{Label: "x"}, domain.NewID(id))) // re-add same → reactivate
 		return nil
 	}, nil, "GetUpdatable")
 	if err != nil {

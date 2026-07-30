@@ -206,11 +206,10 @@ type vsRoot struct {
 }
 
 type vsChild struct {
-	ID      string
+	domain.Managed
 	ZipCode string
 }
 
-func (v vsChild) GetID() domain.ID { return domain.NewID(v.ID) }
 
 // TestViewNode_OwnChildPathResolves proves the translator registers a root's own
 // aggregate children (no embed declared), so a filter/sort on an own-child field

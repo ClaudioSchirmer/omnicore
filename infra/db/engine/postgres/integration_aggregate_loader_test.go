@@ -30,19 +30,17 @@ func (*loaderRoot) AggregateChildren() []domain.AggregateValueObject {
 }
 
 type loaderTagVO struct {
-	ID    string
+	domain.Managed
 	Label string
 }
 
-func (v loaderTagVO) GetID() domain.ID                                 { return domain.NewID(v.ID) }
 func (v loaderTagVO) BuildRules(string, domain.Service, *domain.Rules) {}
 
 type loaderNoteVO struct {
-	ID   string
+	domain.Managed
 	Body string
 }
 
-func (v loaderNoteVO) GetID() domain.ID                                 { return domain.NewID(v.ID) }
 func (v loaderNoteVO) BuildRules(string, domain.Service, *domain.Rules) {}
 
 func createLoaderTables(t *testing.T, pg *Postgres) {
@@ -126,6 +124,66 @@ func loaderTagSchema() *core.TableSchema {
 		DeletedAt("deleted_at").
 		CreatedAt("created_at").
 		UpdatedAt("updated_at")
+}
+
+// --- Managed carrier surfacing (T2: domain.Managed) ----------------------
+
+// The loader surfaces the framework-managed carrier columns — the id AND
+// created_at/updated_at/deleted_at — onto the ROOT and every CHILD, not just the
+// id. Proven end to end against a real backend: an active aggregate exposes
+// non-nil created/updated and a nil deleted at both levels; an archived root
+// exposes a non-nil deleted.
+func TestAggregateLoader_SurfacesManagedColumns(t *testing.T) {
+	pg, cleanup := newTestPG(t)
+	defer cleanup()
+	createLoaderTables(t, pg)
+
+	var rootID string
+	pg.Pool().QueryRow(context.Background(),
+		`INSERT INTO loader_roots (name, email) VALUES ('R', 'r@x') RETURNING id`).Scan(&rootID)
+	pg.Pool().Exec(context.Background(),
+		`INSERT INTO loader_tag_vos (loader_root_id, label) VALUES ($1, 'a')`, rootID)
+
+	loader := read.NewAggregateLoader[*loaderRoot](pg, func() *loaderRoot { return &loaderRoot{} }).
+		WithSchema(loaderRootSchemaTagsOnly())
+
+	root, err := loader.FindOne(context.Background(), criteria.ByID(domain.NewID(rootID)))
+	if err != nil {
+		t.Fatalf("FindOne: %v", err)
+	}
+	// Root carrier columns surface.
+	if root.GetCreatedAt() == nil || root.GetUpdatedAt() == nil {
+		t.Errorf("root created/updated must surface, got created=%v updated=%v", root.GetCreatedAt(), root.GetUpdatedAt())
+	}
+	if root.GetDeletedAt() != nil {
+		t.Errorf("an active root must surface a nil deleted_at, got %v", root.GetDeletedAt())
+	}
+	// Child carrier columns + id surface.
+	tags := domain.GetCurrentItemsOf[loaderTagVO](&root.AggregateRoot)
+	if len(tags) != 1 {
+		t.Fatalf("expected 1 tag, got %d", len(tags))
+	}
+	if tags[0].GetID().IsEmpty() {
+		t.Error("child id must surface on load")
+	}
+	if tags[0].GetCreatedAt() == nil || tags[0].GetUpdatedAt() == nil {
+		t.Errorf("child created/updated must surface, got created=%v updated=%v", tags[0].GetCreatedAt(), tags[0].GetUpdatedAt())
+	}
+	if tags[0].GetDeletedAt() != nil {
+		t.Errorf("an active child must surface a nil deleted_at, got %v", tags[0].GetDeletedAt())
+	}
+
+	// An archived root surfaces a non-nil deleted_at.
+	var archID string
+	pg.Pool().QueryRow(context.Background(),
+		`INSERT INTO loader_roots (name, email, deleted_at) VALUES ('A', 'a@x', NOW()) RETURNING id`).Scan(&archID)
+	arch, err := loader.FindOne(context.Background(), criteria.ByID(domain.NewID(archID)).OnlyArchived())
+	if err != nil {
+		t.Fatalf("FindOne archived: %v", err)
+	}
+	if arch.GetDeletedAt() == nil {
+		t.Error("an archived root must surface a non-nil deleted_at")
+	}
 }
 
 // --- Auto-scan (Load happy path) ----------------------------------------
@@ -303,7 +361,7 @@ func TestAggregateLoader_Load_WithManualChildScanner(t *testing.T) {
 		WithChildScanner("loaderTagVO", func(m map[string]any) (domain.AggregateValueObject, error) {
 			idval, _ := m["id"].(string)
 			label, _ := m["label"].(string)
-			return loaderTagVO{ID: idval, Label: label + "_manual"}, nil
+			return domain.WithID(loaderTagVO{Label: label + "_manual"}, domain.NewID(idval)), nil
 		})
 
 	root, err := loader.FindOne(context.Background(), criteria.ByID(domain.NewID(id)))

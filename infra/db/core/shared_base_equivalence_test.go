@@ -23,11 +23,9 @@ func equivBase() *TableSchema {
 }
 
 type equivAddr struct {
-	ID     string
+	domain.Managed
 	Street string
 }
-
-func (c equivAddr) GetID() domain.ID { return domain.NewID(c.ID) }
 
 func mustPanicWith(t *testing.T, wantSub string, fn func()) {
 	t.Helper()

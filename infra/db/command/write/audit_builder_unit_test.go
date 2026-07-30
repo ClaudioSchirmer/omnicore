@@ -93,7 +93,7 @@ func TestOldChildrenIndex_NilGuards(t *testing.T) {
 func TestChildrenOf_UpdateConstructorChildSkipped(t *testing.T) {
 	root := &covAgg{Name: "a"}
 	root.SetID(domain.NewID(uuid.NewString()))
-	root.AggregateConstructor([]domain.AggregateValueObject{covChild{ID: "c1", Label: "x"}})
+	root.AggregateConstructor([]domain.AggregateValueObject{domain.WithID(covChild{Label: "x"}, domain.NewID("c1"))})
 	u, err := domain.GetUpdatable(root, func(*covAgg) error { return nil }, nil, "GetUpdatable")
 	if err != nil {
 		t.Fatalf("GetUpdatable: %v", err)

@@ -13,6 +13,28 @@ with `1.0.0`.
 
 ### Changed
 
+- **breaking: a relational load surfaces the managed columns on the typed
+  entity — `domain.Managed`.** `FindOne`/`FindAll` now populate the
+  framework-owned columns — the id AND `revision` +
+  `created_at`/`updated_at`/`deleted_at` — onto the root AND every aggregate
+  child, read back through getters (`GetRevision`/`GetCreatedAt`/`GetUpdatedAt`/
+  `GetDeletedAt`). They ride an embedded carrier, `domain.Managed`: `BaseEntity`
+  carries it for roots, and **every `AggregateValueObject` must now embed it** —
+  the AVO's exported `ID` field moves INTO the carrier (its `GetID()` is
+  promoted). The id stays set+get (`SetID`/`ClearID`); `revision` and the three
+  timestamps are get-only (each `*time.Time`, nil when absent) — the write path
+  is untouched, so a public setter would be a lie the write ignores. The carrier
+  is unexported, so it never participates in business identity
+  (`IsSameByBusinessFields` skips it), never enters the audit delta, and is not
+  cloned into the `Old()` ghost.
+  - Auto and manual scanners are at parity: a manual `RootScanner`/`ChildScanner`
+    owns the business fields + the id (via `SetID`), the framework fills the
+    managed columns from the same row map.
+  - **Migration:** on every `AggregateValueObject`, replace the `ID domain.ID`
+    field with an embedded `domain.Managed` and delete its hand-written
+    `GetID()`; rewrite an id-in-a-literal as `domain.WithID(AVO{…}, id)` and an
+    id-on-a-variable as `v.SetID(id)`.
+
 - **breaking: aggregate child equality is now domain-declared —
   `AggregateValueObject.IsSameBusinessIdentity`.** The change tracker no longer
   matches aggregate children by `reflect.DeepEqual`; every `AggregateValueObject`

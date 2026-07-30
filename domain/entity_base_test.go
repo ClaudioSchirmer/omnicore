@@ -11,14 +11,13 @@ import (
 // inference yields "recs" (Pluralize(PascalToSnake("Rec"))) matching the
 // previous wire-format expectations from Phase 13/14.
 type Rec struct {
-	ID        string
+	Managed
 	Name      string
 	callCount *int
 	lastMode  *EntityMode
 	emit      string
 }
 
-func (r Rec) GetID() ID { return NewID(r.ID) }
 func (r Rec) BuildRules(_ string, _ Service, rules *Rules) {
 	if r.callCount != nil {
 		*r.callCount++
@@ -35,12 +34,11 @@ func (r Rec) BuildRules(_ string, _ Service, rules *Rules) {
 // NOT discovered via reflection on AggregateRoot.items). Allows tests of the
 // manual coexistence with the auto path.
 type Tag struct {
-	ID        string
+	Managed
 	Name      string
 	callCount *int
 }
 
-func (u Tag) GetID() ID { return NewID(u.ID) }
 func (u Tag) BuildRules(_ string, _ Service, _ *Rules) {
 	if u.callCount != nil {
 		*u.callCount++
@@ -84,7 +82,7 @@ func TestRunAggregateValidations_AutoIteratesItems(t *testing.T) {
 	calls := 0
 	p := newProviderEntity()
 	p.AggregateConstructor([]AggregateValueObject{
-		Rec{ID: "1", Name: "a", callCount: &calls},
+		Rec{Name: "a", callCount: &calls},
 	})
 	AddAggregateChild(p, Rec{Name: "b", callCount: &calls})
 
@@ -98,7 +96,7 @@ func TestRunAggregateValidations_AutoIteratesItems(t *testing.T) {
 func TestRunAggregateValidations_SkipsRemovedItems(t *testing.T) {
 	calls := 0
 	p := newProviderEntity()
-	target := Rec{ID: "1", Name: "a", callCount: &calls}
+	target := Rec{Name: "a", callCount: &calls}
 	p.AggregateConstructor([]AggregateValueObject{target})
 	RemoveAggregateChild(p, target)
 
@@ -112,9 +110,9 @@ func TestRunAggregateValidations_SkipsRemovedItems(t *testing.T) {
 func TestRunAggregateValidations_AddedAndChangedAreValidated(t *testing.T) {
 	calls := 0
 	p := newProviderEntity()
-	original := Rec{ID: "1", Name: "a", callCount: &calls}
+	original := Rec{Name: "a", callCount: &calls}
 	p.AggregateConstructor([]AggregateValueObject{original})
-	ChangeAggregateChild(p, original, Rec{ID: "1", Name: "a2", callCount: &calls})
+	ChangeAggregateChild(p, original, Rec{Name: "a2", callCount: &calls})
 	AddAggregateChild(p, Rec{Name: "b", callCount: &calls})
 
 	runAggregateValidations(p, ModeUpdate, "test")
@@ -179,7 +177,7 @@ func TestRunAggregateValidations_RunsInDeleteMode(t *testing.T) {
 	captured := ModeDisplay
 	p := newProviderEntity()
 	p.AggregateConstructor([]AggregateValueObject{
-		Rec{ID: "1", Name: "a", callCount: &calls, lastMode: &captured},
+		Rec{Name: "a", callCount: &calls, lastMode: &captured},
 	})
 
 	runAggregateValidations(p, ModeDelete, "test")
@@ -355,11 +353,11 @@ type actionRecorder struct {
 }
 
 type actionAwareChild struct {
-	ID  string
+	Managed
+	Key string // exported business discriminator (id is now framework-managed, not identity)
 	rec *actionRecorder
 }
 
-func (a actionAwareChild) GetID() ID { return NewID(a.ID) }
 func (a actionAwareChild) BuildRules(actionName string, _ Service, _ *Rules) {
 	if a.rec != nil {
 		a.rec.children = append(a.rec.children, actionName)
@@ -394,8 +392,8 @@ func TestGetInsertable_PropagatesCustomActionNameToRootAndChildren(t *testing.T)
 	rec := &actionRecorder{}
 	root := &actionAwareRoot{rec: rec}
 	ensureInit(root)
-	AddAggregateChild(root, actionAwareChild{ID: "1", rec: rec})
-	AddAggregateChild(root, actionAwareChild{ID: "2", rec: rec})
+	AddAggregateChild(root, actionAwareChild{Key: "1", rec: rec})
+	AddAggregateChild(root, actionAwareChild{Key: "2", rec: rec})
 
 	if _, err := GetInsertable(root, nil, "AdminCreate"); err != nil {
 		t.Fatalf("GetInsertable failed: %v", err)
@@ -416,7 +414,7 @@ func TestGetUpdatable_PropagatesCustomActionName(t *testing.T) {
 	root := &actionAwareRoot{rec: rec}
 	ensureInit(root)
 	root.SetID(NewRandomID())
-	AddAggregateChild(root, actionAwareChild{ID: "1", rec: rec})
+	AddAggregateChild(root, actionAwareChild{Key: "1", rec: rec})
 
 	if _, err := GetUpdatable(root, func(*actionAwareRoot) error { return nil }, nil, "StrictUpdate"); err != nil {
 		t.Fatalf("GetUpdatable failed: %v", err)

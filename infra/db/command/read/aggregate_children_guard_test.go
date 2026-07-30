@@ -9,10 +9,9 @@ import (
 
 // --- #5: aggregate boundary vs schema children ------------------------------
 
-type guardChildVO struct{ ID string }
+type guardChildVO struct{ domain.Managed }
 
 func (c guardChildVO) BuildRules(string, domain.Service, *domain.Rules) {}
-func (c guardChildVO) GetID() domain.ID                                 { return domain.NewID(c.ID) }
 
 type guardAggRoot struct {
 	domain.AggregateRoot
