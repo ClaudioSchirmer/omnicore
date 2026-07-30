@@ -448,20 +448,19 @@ func OrdersView() *query.ViewDefinition {
         Indexes(query.Index("buyer_id"))       // boot guard requires the join-field index
 }</code></pre>
 <p class="note">
-    <strong>Archive-aware external embeds — declare the DeletedAt column, and keep it in the subscription
-    <code>filter</code>.</strong> If the upstream entity archives (archive), declare
-    <code>.DeletedAt("deleted_at")</code> on the <code>NewExternalSchema</code> so the mirror can carry the archived
-    state. The declaration alone is not enough, though: the <a href="#yaml-reference">UpstreamSubscription
-    <code>filter</code></a> is a string allowlist over the <em>raw upstream payload</em> and consults no schema, so if it
-    drops the DeletedAt column the mirror never receives it — an archived upstream entity would look active forever.
-    The boot cross-checks the two for EVERY consumer of the mirror — a view that embeds it and a <code>ComposedView</code> that links it, both of which apply its DeletedAt column: an external <code>JoinUpstream</code> embed that <em>declares</em>
-    the DeletedAt column while the feeding subscription's non-empty <code>filter</code> <em>omits</em> it is a
-    <strong>fatal boot error</strong> (the mirror could never reflect an archive) naming the offending subscription and
-    column; declared-and-kept — or an empty <code>filter</code>, which mirrors the full payload — is accepted; a mirror
-    whose external schema declares <em>no</em> DeletedAt column at all draws only an <em>advisory</em> log, because the
-    consumer often cannot know whether the upstream archives. This rule governs the column <em>reaching</em> the
-    mirror; the embed still carries the whole mirror document, so hiding an archived sub-document at read time is a
-    separate concern.
+    <strong>Every declared column must survive the subscription <code>fields:</code> — the DeletedAt column
+    included.</strong> The <a href="#yaml-reference">UpstreamSubscription <code>fields:</code></a> is a string allowlist
+    over the <em>raw upstream payload</em> and consults no schema (at ingestion time no class is materialized), so a
+    column this schema declares that the non-empty <code>fields:</code> omits could never reach the mirror — a dead
+    declaration, and a <strong>fatal boot error</strong> naming the subscription and the column, checked for EVERY
+    consumer of the mirror (a view that embeds it, an <code>EmbedInChild</code> and a <code>ComposedView</code> that
+    links it). The archive case is the one to design consciously: declare <code>.DeletedAt("deleted_at")</code> AND
+    keep the column in <code>fields:</code> and the mirror reflects the upstream's archive; omit BOTH and the mirror
+    deliberately ignores it (rows keep looking active — the upstream-side counterpart of the
+    <a href="#views~views-embed-fields">JoinView Fields archive switch</a>). A mirror whose consuming schemas declare
+    <em>no</em> DeletedAt column draws only an <em>advisory</em> log, because the consumer often cannot know whether
+    the upstream archives. This rule governs columns <em>reaching</em> the mirror; the embed still carries the whole
+    mirror document, so hiding an archived sub-document at read time is a separate, schema-driven concern.
 </p>
 <p>
     <strong>Schema is mandatory on every view.</strong> The root (<code>ViewDefinition.Schema(ts)</code>) and every embed

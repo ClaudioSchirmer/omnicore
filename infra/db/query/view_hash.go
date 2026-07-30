@@ -124,6 +124,12 @@ func (v *ViewDefinition) writeRebuildShape(w *canonicalWriter) {
 				w.writeTag("leg_view")
 				w.writeInt(int64(ce.leg.view.VersionNumber()))
 			}
+			// Same conditional Fields emission as a root embed (see
+			// writeEmbedList): the enrichment's stored shape is the allowlist.
+			if len(ce.leg.fields) > 0 {
+				w.writeTag("fields")
+				writeSortedStrings(w, ce.leg.fields)
+			}
 		}
 	}
 
@@ -207,6 +213,14 @@ func writeEmbedList(w *canonicalWriter, embeds []embedDef) {
 			w.writeTag("order")
 			w.writeString(e.orderBy)
 			w.writeBool(e.orderDesc)
+		}
+		// A Fields allowlist (JoinView leg) trims what the segment STORES, so it
+		// is projection shape too. Conditional for the same reason as order: a
+		// leg without one keeps its byte-identical stream — declaring, changing
+		// or removing it moves the hash and demands a Version bump + rebuild.
+		if len(e.leg.fields) > 0 {
+			w.writeTag("fields")
+			writeSortedStrings(w, e.leg.fields)
 		}
 		// Embeds are single-level: a source carries no nested embeds. Emit the
 		// empty-list encoding (length 0) that the old nested writeEmbedList call

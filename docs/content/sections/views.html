@@ -283,10 +283,13 @@ query.JoinUpstream(
     <code>filter:</code> let through, and a materialized embed segment copies that mirror document whole —
     including columns this schema never declares. Undeclared columns are simply invisible to the read side
     (criteria, Response, <code>?fields=</code> and export cannot name them). The division of labor:
-    the <a href="#yaml-reference"><code>filter:</code></a> (yaml) decides which fields SURVIVE into the mirror —
+    the <a href="#yaml-reference"><code>fields:</code></a> (yaml) decides which fields SURVIVE into the mirror —
     per mirror, shared by every consumer; <code>NewExternalSchema</code> decides which surviving columns
-    <em>this consumer</em> reads, under which Go names, and with which semantics. To remove a field from
-    storage, remove it from the <code>filter:</code>; narrowing the schema narrows only the wire.
+    <em>this consumer</em> reads, under which Go names, and with which semantics — and a non-empty
+    <code>fields:</code> must cover every column the schema declares (a dead declaration is a fatal boot). To remove
+    a field from storage, remove it from the <code>fields:</code>; narrowing the schema narrows only the wire. The
+    materialized cut of a LOCAL view's segment is the third lever — <a href="#views~views-embed-fields">the
+    JoinView <code>Fields</code> allowlist</a>.
 </div>
 
 <h3 id="views-embed">Embed and EmbedMany — composing materialized sources</h3>
@@ -443,7 +446,7 @@ core.NewExternalSchema("upstream_regions").
     Field("Name", "name")        // no DeletedAt: no archived concept, no filtering</code></pre>
 <div class="note">
     <strong>For an upstream mirror, declaring it is only half the job.</strong> The column must also survive the
-    subscription's <code>filter:</code> allowlist — otherwise the archive marker never reaches the mirror and there is
+    subscription's <code>fields:</code> allowlist — otherwise the archive marker never reaches the mirror and there is
     nothing to filter on, however the schema is declared. The boot cross-checks the two and aborts on the
     contradiction, for every consumer of the mirror: a view that embeds it and a
     <a href="#views~views-composed">ComposedView</a> that links it.
@@ -511,6 +514,110 @@ core.NewExternalSchema("upstream_regions").
     removal signals through the ripple, and the segment becomes the explicit <code>null</code> (or the element leaves
     the array) for every reader, with or without <code>?includeArchived</code>. Hiding is a READ decision the consumer
     can lift; <code>DeleteOnArchive()</code> is a WRITE decision the source's owner makes once.
+</p>
+
+<h4 id="views-embed-fields">Cutting the segment — JoinView Fields, and the archive switch</h4>
+<p>
+    By default a <code>JoinView</code> segment materializes the source view's WHOLE document. When the embedding view
+    needs only a slice of it — the classic sale that wants the customer's <em>name</em> beside its
+    <code>customer_id</code>, not the customer's every column — the leg declares a materialization allowlist:
+</p>
+<pre><code>// The leg is a reusable declaration — every view embedding it inherits the cut.
+func CustomerLeg() *query.Leg {
+    return query.JoinView(CustomerView(), "Customer", "customer").
+        Fields("Name")                              // GO names — the system-wide vocabulary
+}
+
+func SaleView() *query.ViewDefinition {
+    return query.View("sales").Version(2).Schema(SaleSchema()).
+        Embed(CustomerLeg()).On("customer_id").     // segment stores ONLY the name (+ identity)
+        Indexes(query.Index("customer_id"))
+}</code></pre>
+<p>
+    Entries are <strong>Go names</strong> — the leg sits above the infra membrane, so it speaks what criteria and DTOs
+    speak: business fields by their declared Go name (<code>"UserName"</code>), managed slots by their FIXED names
+    (<code>"DeletedAt"</code>, <code>"CreatedAt"</code>, <code>"ParentID"</code> — see
+    <a href="#table-schema~three-name-model">the three-name model</a>), and a top-level segment of the source document
+    (a child collection, an embed, a role) by its Go segment name — which admits or cuts that segment
+    <strong>whole</strong> (a kept segment arrives with its own rules intact, recursively). The identity and the
+    reserved watermarks (<code>_id</code>, <code>_revision</code>) are always materialized and never declared;
+    an <code>EmbedMany</code>'s leg-side join column and a declared <code>OrderBy</code> column are force-included
+    too. Every writer of the segment applies the same cut — first compose, batch rebuild, the surgical ripple and the
+    1:1 repair — so a trimmed segment is byte-identical whichever writer produced it. On the read side the cut is a
+    contract, not an accident: the segment's translator knows only the allowlist (no archived gate when
+    <code>"DeletedAt"</code> is capped, no strip path, no translation for a capped leaf), and the tabular export stops
+    advertising columns the segment does not store. On the wire, declare the Request/Response DTOs to MIRROR the cut —
+    the DTO is the read-side allowlist, so a token it does not declare (<code>?brand.deletedAt</code> on a capped
+    segment) is <code>400 SchemaViolationNotification</code> at the membrane; a DTO that over-declares a capped field
+    gets the LEFT answer (the field never materializes, so a filter on it matches nothing).
+</p>
+<div class="box">
+    <strong>THE ARCHIVE SWITCH — one entry in or out of <code>Fields</code> decides whether the segment follows the
+    source's archive.</strong> The archived-entry strip is governed by the source's <code>DeletedAt</code>
+    declaration; <code>Fields</code> puts that lever in the CONSUMER's hand, per view:
+    <br><br>
+    <code>Fields("Name")</code> — <strong>the customer's name lives in the sale FOREVER.</strong> The segment never
+    materializes the archive column, so it has NO archived rule, by declaration: archiving the customer does not touch
+    the sale's segment, renames keep flowing in through the ripple, and <code>?includeArchived</code> is irrelevant
+    there (nothing was hidden).
+    <br><br>
+    <code>Fields("Name", "DeletedAt")</code> — <strong>the segment follows the source's archive.</strong> The archived
+    customer is hidden on a default read (1:1 → <code>null</code>, a 1:N element leaves the array) and
+    <code>?includeArchived=true</code> brings it back — today's behavior, chosen explicitly.
+    <br><br>
+    The same source view can be embedded BOTH ways by different views — each declaration picks its regime. Fields
+    governs SHAPE, never EXISTENCE: a hard DELETE of the source (or <code>DeleteOnArchive()</code> on it) still nulls
+    the segment, fields or no fields.
+</div>
+<p>
+    <strong>Fields is JoinView-only, and that is the design, not a gap.</strong> A <code>JoinView</code> leg's schema
+    is the WRITE side's — fixed, not narrowable — so the leg needs its own narrowing device. A
+    <code>JoinUpstream</code> leg already has both levers under other names: the subscription
+    <a href="#yaml-reference"><code>fields:</code></a> cuts what enters the MIRROR, and the consumer's own
+    <code>NewExternalSchema</code> declares what it reads (declaring — or omitting — <code>DeletedAt(col)</code> there
+    is the same archive switch). And a <a href="#views~views-composed">ComposedView</a> needs neither: it stores
+    nothing and already narrows by the leg's schema at read time — a <code>Fields</code>-bearing leg on a
+    <code>Link*</code> is a fatal boot. The two cuts, side by side:
+</p>
+<table>
+    <tbody><tr><th></th><th><code>JoinUpstream</code> (mirror)</th><th><code>JoinView</code> (local view)</th></tr>
+    <tr>
+        <td>What enters the SEGMENT's storage</td>
+        <td>Whatever the subscription yaml <code>fields:</code> let into the mirror — the segment copies the mirror
+            document whole.</td>
+        <td>Whatever <code>.Fields()</code> lists (whole document when undeclared).</td>
+    </tr>
+    <tr>
+        <td>Where the knob sits</td>
+        <td>At INGESTION — yaml, raw physical payload names (no class is materialized yet: below the membrane).</td>
+        <td>At DECLARATION — the leg, Go names (above the membrane). Same one-concept-two-sides split as
+            <a href="#table-schema~three-name-model">the three-name model</a>.</td>
+    </tr>
+    <tr>
+        <td>The archive switch</td>
+        <td>Declare <code>DeletedAt(col)</code> on the external schema AND keep the column in <code>fields:</code>
+            (boot-guarded coherence) ⇒ the segment follows the archive; omit both ⇒ it never does.</td>
+        <td><code>"DeletedAt"</code> in / out of <code>Fields()</code>.</td>
+    </tr>
+    <tr>
+        <td>Per-view regime over ONE source</td>
+        <td>Via the SCHEMA each view declares (with / without <code>DeletedAt</code>) — the storage stays shared.</td>
+        <td>Via each leg's <code>Fields()</code> — storage per leg.</td>
+    </tr>
+    <tr>
+        <td>Widening the cut later</td>
+        <td><strong>Stream-forward only</strong> — the source is another service; no rebuild can pull data from
+            outside, so old mirror docs gain the column only as new events arrive.</td>
+        <td><code>Version</code> bump ⇒ full rebuild backfills every document from the local source view.</td>
+    </tr>
+</tbody></table>
+<p>
+    Declaring, changing or removing <code>Fields</code> is projection shape: it participates in the rebuild hash (only
+    when declared — a leg without it keeps its byte-identical hash stream, so nothing rebuilds on upgrade) and
+    requires a <code>Version(N)</code> bump; the blue-green rebuild is what trims the already-stored documents.
+    Boot rejects: <code>Fields</code> on a <code>JoinUpstream</code> leg; a <code>Fields</code>-bearing leg on any
+    <code>ComposedView</code> link; an entry that is neither a Go field of the source view nor one of its top-level
+    segments; and — at the declaration itself — an empty list, a duplicate, or a reserved <code>_</code> entry.
 </p>
 
 <h4 id="views-embed-order">Ordering a materialized 1:N segment — EmbedMany.OrderBy</h4>
@@ -592,11 +699,20 @@ core.NewExternalSchema("upstream_regions").
         <td>The projection's identity — boot-validated, versioned, and rebuilt when it changes.</td>
     </tr>
     <tr>
-        <td>Whether a segment HAS an archived state</td><td>Developer of the SOURCE</td>
-        <td><code>DeletedAt(column)</code> on the embedded view's / mirror's schema</td>
-        <td>The declaration is the switch: declared ⇒ archived content is hidden on a default read and revealed by
-            <code>?includeArchived=true</code>; not declared ⇒ the segment is never filtered. Same rule in both
-            families — see <a href="#views~views-embed">the archived rule</a>.</td>
+        <td>Which source fields the segment STORES</td><td>Developer of the CONSUMING view</td>
+        <td><a href="#views~views-embed-fields"><code>Fields(cols...)</code></a> on a <code>JoinView</code> leg; the
+            subscription <code>fields:</code> + the external schema for a mirror</td>
+        <td>Projection shape (in the rebuild hash when declared ⇒ <code>Version</code> bump); identity and watermarks
+            always survive. See <a href="#views~views-embed-fields">Cutting the segment</a> for the two cuts side by
+            side.</td>
+    </tr>
+    <tr>
+        <td>Whether a segment HAS an archived state</td><td>Developer of the CONSUMING view / leg</td>
+        <td><code>"DeletedAt"</code> in/out of a <code>JoinView</code> leg's <code>Fields</code>; the
+            <code>DeletedAt(column)</code> declaration on a mirror's external schema</td>
+        <td>The declaration is the switch: materialized ⇒ archived content is hidden on a default read and revealed by
+            <code>?includeArchived=true</code>; not materialized ⇒ the segment is never filtered — the
+            <a href="#views~views-embed-fields">archive switch</a>, per consumer.</td>
     </tr>
     <tr>
         <td>Seeing archived content</td><td>End user</td><td><code>?includeArchived=true</code></td>
@@ -628,7 +744,9 @@ core.NewExternalSchema("upstream_regions").
     <em>of the source view</em> for an <code>EmbedMany</code> over a <code>JoinView</code> leg; an
     <code>OrderBy</code> column that is not a column of the embedded source; <code>.Desc()</code> without
     <code>OrderBy</code>; an empty <code>.On(...)</code>; a segment colliding with a root field, a child collection or
-    another segment; and an <code>EmbedInChild</code> whose schema is not a native child of the view root.
+    another segment; an <code>EmbedInChild</code> whose schema is not a native child of the view root; a
+    <code>Fields(...)</code> allowlist on a <code>JoinUpstream</code> leg, or with an entry that resolves to nothing
+    on the source view (see <a href="#views~views-embed-fields">Cutting the segment</a>).
 </div>
 
 <h3 id="views-embed-child">EmbedInChild — enriching a child array</h3>
@@ -1181,12 +1299,12 @@ same envelope, same projector, same pagination block as any view read</div>
     <tr><td><code>JoinUpstream</code> — a mirror of another service's data</td><td>No — <code>srcRev = 0</code>, the mirror's edits run unguarded</td><td><strong>None, by design</strong></td><td>A mirror has ONE writer (one subscription per collection) and its events are bucketed per source id, so edits for the same id are serialized end to end — the last is the newest by construction, and there is no out-of-order race to defend against.</td></tr>
 </tbody></table>
 <div class="box">
-    <strong>Where the Filter fits.</strong> The only column filter today is the <code>UpstreamSubscription</code>
-    <code>filter:</code> allowlist, and it applies to a <code>JoinUpstream</code> mirror only: it chooses which DATA
-    columns the mirror keeps — it does NOT switch the guard on or off (a mirror is unguarded regardless of it). A
-    <code>JoinView</code> leg has no column filter — it materializes the whole source view — so a <code>JoinView</code>
-    embed is <em>always</em> watermarked and <em>always</em> guarded; there is no supported way to strip its
-    <code>_revision</code> and turn the guard off.
+    <strong>Where the column cuts fit.</strong> Neither cut touches the guard. The <code>UpstreamSubscription</code>
+    <code>fields:</code> allowlist chooses which DATA columns the mirror keeps — a mirror is unguarded regardless of
+    it. A <code>JoinView</code> leg's <a href="#views~views-embed-fields"><code>Fields</code></a> trims the DATA the
+    segment stores, but the reserved watermarks always survive the trim (<code>_id</code>, <code>_revision</code> are
+    never declarable and never cut) — so a <code>JoinView</code> embed is <em>always</em> watermarked and
+    <em>always</em> guarded; there is no way to strip its <code>_revision</code> and turn the guard off.
 </div>
 <p>
     <strong>What the guard does NOT cover.</strong> The watermark defends against RE-ORDERING. It does not, on its own,

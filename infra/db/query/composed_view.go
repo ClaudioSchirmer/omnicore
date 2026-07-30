@@ -513,6 +513,18 @@ func validateComposedLinks(problems []string, c *ComposedViewDefinition, viewNam
 			kind = "LinkMany"
 		}
 		seg := c.resolveLinkSegment(ln)
+		// Fields is exclusive to the materialized Embed family over a JoinView
+		// leg: a ComposedView defines a leg's fields through its SCHEMA — the
+		// read-time projection translates (and thereby narrows) by declaration,
+		// nothing is stored — so a second narrowing device here would be two
+		// sources of truth for one shape.
+		if ln.leg != nil && len(ln.leg.fields) > 0 {
+			addf("composed view %q: %s %q uses a leg declaring Fields(...) — Fields is available only on a "+
+				"query.JoinView leg of the materialized Embed family (whose schema is the write side's, not "+
+				"narrowable). A composed view defines a leg's fields through the leg's SCHEMA: the read-time "+
+				"projection already narrows by declaration and stores nothing.",
+				c.name, kind, ln.docField)
+		}
 		if ln.childSchema != nil {
 			// LinkInChild lands INSIDE each element of a primary child array, not at
 			// the composed root — so it does NOT enter the root segment-ownership map.

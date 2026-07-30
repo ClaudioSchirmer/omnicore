@@ -7,7 +7,7 @@ import "testing"
 // are stripped unless the consumer's Filter allowlists them.
 
 func decodeSub(filter ...string) *UpstreamSubscriber {
-	return &UpstreamSubscriber{cfg: UpstreamSubscriberConfig{Collection: "c", Topic: "t", Filter: filter}}
+	return &UpstreamSubscriber{cfg: UpstreamSubscriberConfig{Collection: "c", Topic: "t", Fields: filter}}
 }
 
 func TestDecodePayload_DebeziumEnvelopeUnwrapped(t *testing.T) {

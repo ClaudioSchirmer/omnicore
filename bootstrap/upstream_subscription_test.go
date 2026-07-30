@@ -13,7 +13,7 @@ topic: users.events
 collection: users
 consumerGroup: orders-upstream-users
 workers: 2
-filter:
+fields:
   - name
   - email
 deleteOnArchive: false
@@ -37,8 +37,8 @@ acknowledgeOffsetReset: false
 	if got.Workers != 2 {
 		t.Errorf("Workers = %d", got.Workers)
 	}
-	if len(got.Filter) != 2 || got.Filter[0] != "name" || got.Filter[1] != "email" {
-		t.Errorf("Filter = %v", got.Filter)
+	if len(got.Fields) != 2 || got.Fields[0] != "name" || got.Fields[1] != "email" {
+		t.Errorf("Fields = %v", got.Fields)
 	}
 	if got.OnUpstreamDelete != UpstreamDeleteAnonymize {
 		t.Errorf("OnUpstreamDelete = %q", got.OnUpstreamDelete)

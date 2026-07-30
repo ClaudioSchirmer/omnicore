@@ -185,7 +185,7 @@ func surgicalManyExpr(e embedDef, upstreamID string, after Document, srcRev int6
 	}
 	return sortedSegment(Document{"$cond": []any{
 		appendCond,
-		Document{"$concatArrays": []any{strip, []any{lit(surgicalElement(upstreamID, after))}}},
+		Document{"$concatArrays": []any{strip, []any{lit(surgicalElement(e, upstreamID, after))}}},
 		strip,
 	}}, ord)
 }
@@ -200,7 +200,7 @@ func surgicalOneExpr(e embedDef, upstreamID string, after Document, srcRev int64
 	if after == nil {
 		val = lit(nil)
 	} else {
-		val = lit(surgicalElement(upstreamID, after))
+		val = lit(surgicalElement(e, upstreamID, after))
 	}
 	cond := Document{"$eq": []any{"$" + e.JoinColumn(), lit(upstreamID)}}
 	if srcRev > 0 {
@@ -209,12 +209,14 @@ func surgicalOneExpr(e embedDef, upstreamID string, after Document, srcRev int64
 	return Document{"$cond": []any{cond, val, "$" + e.Field()}}
 }
 
-// surgicalElement is the array/sub-doc element as the mirror stores it — the
-// filtered payload plus its _id, matching what FindManyByField returns to a
-// full compose.
-func surgicalElement(id string, after Document) Document {
-	elem := make(Document, len(after)+1)
-	for k, v := range after {
+// surgicalElement is the array/sub-doc element as the segment stores it — the
+// payload trimmed by the leg's Fields allowlist (a no-op without one) plus its
+// _id, matching byte for byte what a full compose materializes for the same
+// embed (fetchMongoEmbed applies the identical trim).
+func surgicalElement(e embedDef, id string, after Document) Document {
+	trimmed := trimToFields(after, embedTrimSet(e))
+	elem := make(Document, len(trimmed)+1)
+	for k, v := range trimmed {
 		elem[k] = v
 	}
 	elem["_id"] = id
@@ -278,7 +280,9 @@ func repairDanglingOneToOne(ctx context.Context, mongo ReadModelStore, resolver 
 		if len(docs) == 0 {
 			val = lit(nil)
 		} else {
-			val = lit(docs[0])
+			// Same trim as every other writer of this segment — a repair must
+			// converge on the composed shape, Fields included.
+			val = lit(trimToFields(docs[0], embedTrimSet(e)))
 		}
 		stages := []Document{{"$set": Document{
 			e.Field(): Document{"$cond": []any{

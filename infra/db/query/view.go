@@ -477,6 +477,8 @@ func appendChildEmbedProblems(acc []string, viewName string, v *ViewDefinition, 
 			acc = append(acc, fmt.Sprintf("view %q: EmbedInChild(%q, ...) has no leg", viewName, ce.childSchema.Table()))
 			continue
 		}
+		acc = appendLegFieldsProblems(acc, viewName,
+			fmt.Sprintf("EmbedInChild(%q, ...)", ce.childSchema.Table()), ce.leg)
 		if ce.leg.view != nil {
 			// A JoinView enrichment: the source is a LOCAL view's own collection,
 			// kept fresh by the same ripple (the SyncEngine signals every view it
@@ -568,6 +570,9 @@ func appendEmbedSchemaProblems(acc []string, viewName string, embeds []embedDef,
 		// The declared 1:N order is validated for BOTH leg kinds, before the
 		// kind-specific branches below (each of which returns early).
 		acc = appendEmbedOrderProblems(acc, viewName, e)
+		// A declared Fields allowlist is validated for both kinds too: rejected
+		// outright on an external leg (JoinView-only), entry-checked on a view leg.
+		acc = appendLegFieldsProblems(acc, viewName, fmt.Sprintf("embed %q", field), e.leg)
 		// A JoinView leg materializes a LOCAL view into this one. Validate it as an
 		// internal leg (registered + schema + ID) plus, for a 1:N EmbedMany, the
 		// covering index its per-parent lookup needs on the leg view.

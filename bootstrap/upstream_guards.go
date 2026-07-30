@@ -6,6 +6,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/ClaudioSchirmer/omnicore/infra/db/core"
 	"github.com/ClaudioSchirmer/omnicore/infra/db/query"
 )
 
@@ -70,11 +71,12 @@ func applyUpstreamSubscriptionDefaults(subs []UpstreamSubscription, service stri
 //   - §8.2 — Collection name collision (sub↔sub and sub↔local view)
 //   - §8.3 — Mongo embed must have a materializing source
 //   - §8.4 — Anonymize policy requires AnonymizeFields
-//   - §8.5 — DeletedAt column must survive the filter (abort) + advisory
-//     warning when no embedding schema declares one
+//   - §8.5 (generalized) — every declared external-schema column must survive
+//     the subscription's `fields:` allowlist (abort) + advisory warning when
+//     no consuming schema declares a DeletedAt column
 //
-// §8.5 is the only guard with a non-fatal branch: a mirror whose embed
-// schema declares no DeletedAt column yields an advisory (logged via
+// §8.5 is the only guard with a non-fatal branch: a mirror whose consuming
+// schemas declare no DeletedAt column yield an advisory (logged via
 // logger, which may be nil in tests), not a boot-aborting violation.
 //
 // Per-entry shape validation (§5) runs first because a structurally
@@ -104,10 +106,11 @@ func validateUpstreamSubscriptions(
 	if errs := guardAnonymizePolicy(subs); len(errs) > 0 {
 		violations = append(violations, errs...)
 	}
-	// §8.5 — a declared DeletedAt column that the subscription filter drops is a
-	// silent-archive bug (abort); a mirror whose embed schema declares no DeletedAt
-	// column at all is an advisory (logged, not fatal).
-	sdViolations, sdWarnings := guardDeletedAtFilter(subs, views, composed)
+	// §8.5 (generalized) — every column a consumer's external schema declares
+	// must survive the subscription's `fields:` allowlist (a dead declaration
+	// aborts); a mirror whose consuming schemas declare no DeletedAt column at
+	// all is an advisory (logged, not fatal).
+	sdViolations, sdWarnings := guardSchemaFieldsSurvival(subs, views, composed)
 	violations = append(violations, sdViolations...)
 	if logger != nil {
 		for _, w := range sdWarnings {
@@ -309,110 +312,135 @@ func guardAnonymizePolicy(subs []UpstreamSubscription) []string {
 	return out
 }
 
-// guardDeletedAtFilter implements §8.5 — the DeletedAt column must survive a
-// subscription's Filter, because the filter is a string allowlist over the raw
-// upstream payload and does not consult any schema. An ARCHIVED upstream event
-// carries the DeletedAt column populated; if the Filter drops it, the local
-// mirror can never reflect the archive (archived rows look active forever).
+// guardSchemaFieldsSurvival implements §8.5, generalized — EVERY column an
+// external schema declares must survive the subscription's `fields:` allowlist,
+// because the allowlist operates on the raw upstream payload and consults no
+// schema (at ingestion time no class is materialized). A declared column the
+// mirror can never carry is a dead declaration: reads translate it, exports
+// advertise it, and it is forever absent. The DeletedAt column is the highest-
+// stakes instance (an archived upstream entity would look active forever), so
+// it keeps its dedicated diagnostic.
 //
-// The check pairs each subscription with the DeletedAt column declared on the
-// external schema of the view(s) that embed the subscription's Collection
-// (reached via Embed().Source().SchemaDef().DeletedAtColumn()), and splits into
-// two branches:
+// Two branches:
 //
-//   - ABORT (violation): the embed schema DECLARES a DeletedAt column but the
-//     Filter is non-empty and OMITS it. This is an unambiguous silent-archive
-//     misconfiguration — fail loud.
-//   - ADVISORY (warning): NO embedding schema declares a DeletedAt column on
+//   - ABORT (violation): a consumer's external schema declares a column that a
+//     non-empty `fields:` OMITS — generic message, archive-flavored when the
+//     column is that schema's DeletedAt.
+//   - ADVISORY (warning): NO consuming schema declares a DeletedAt column on
 //     the mirror. The consumer often cannot know whether the upstream
 //     archives, so this is a reminder, not a defect. Returned separately so
 //     the caller logs it at Warn rather than aborting the boot.
 //
-// An empty Filter mirrors the full payload, so the DeletedAt column survives
+// An empty `fields:` mirrors the full payload, so every column survives
 // unconditionally — never a violation. A subscription whose Collection is
 // embedded by no view is skipped here (§8.3 governs the never-embedded case).
-func guardDeletedAtFilter(subs []UpstreamSubscription, views []*query.ViewDefinition, composed []*query.ComposedViewDefinition) (violations, warnings []string) {
-	// Per embedded upstream Mongo collection: the DeletedAt columns declared on
-	// its external schema (with the view that declared each, for the diagnostic).
-	// The same collection may be embedded by several views with independent
+// Consumers cross-checked: root embeds, EmbedInChild enrichments and a
+// ComposedView's external legs — every reader of the mirror's columns.
+func guardSchemaFieldsSurvival(subs []UpstreamSubscription, views []*query.ViewDefinition, composed []*query.ComposedViewDefinition) (violations, warnings []string) {
+	// Per embedded upstream Mongo collection: every column each consumer's
+	// external schema declares (minus the ID column — the mirror's identity
+	// lives in _id, the payload carries no id column), tagged with whether it
+	// is that schema's DeletedAt and who declared it, for the diagnostic. The
+	// same collection may be consumed by several views with independent
 	// external schemas, so declarations accumulate.
-	type declaration struct{ column, view string }
+	type declaration struct {
+		column, view string
+		isDeletedAt  bool
+	}
 	declaredBy := map[string][]declaration{}
 	embedded := map[string]bool{}
-	for _, v := range views {
-		for _, e := range v.Embeds() {
-			src := e.Source()
-			if !src.IsMongo() {
+	sdDeclared := map[string]bool{}
+	collect := func(schema *core.TableSchema, coll, consumer string) {
+		embedded[coll] = true
+		if schema == nil {
+			return
+		}
+		sd, hasSD := schema.DeletedAtColumn()
+		if hasSD {
+			sdDeclared[coll] = true
+		}
+		pk := schema.IDColumn()
+		for _, col := range schema.ReadColumns() {
+			if col == pk {
 				continue
 			}
-			coll := src.Collection()
-			embedded[coll] = true
-			if sd, ok := src.SchemaDef().DeletedAtColumn(); ok {
-				declaredBy[coll] = append(declaredBy[coll], declaration{column: sd, view: v.Name()})
+			declaredBy[coll] = append(declaredBy[coll], declaration{
+				column: col, view: consumer, isDeletedAt: hasSD && col == sd,
+			})
+		}
+	}
+	for _, v := range views {
+		for _, e := range v.Embeds() {
+			if src := e.Source(); src.IsMongo() {
+				collect(src.SchemaDef(), src.Collection(), v.Name())
+			}
+		}
+		for _, ce := range v.ChildEmbeds() {
+			if src := ce.Source(); src.IsMongo() {
+				collect(src.SchemaDef(), src.Collection(), v.Name())
 			}
 		}
 	}
-	// A mirror has TWO kinds of consumer, and both apply its DeletedAt column:
-	// an Embed materializes the gate into the document, and a ComposedView's
-	// external leg applies it per request (the composed reader gates each leg on
-	// its own schema's DeletedAt unless ?includeArchived). A filter that drops
-	// the column breaks them identically, so the link family is cross-checked
-	// here too — otherwise the same silent-archive bug simply walks in through the
-	// door this guard does not watch.
 	for _, c := range composed {
 		for _, leg := range c.ExternalLegs() {
-			coll := leg.Collection()
-			embedded[coll] = true
-			if sd, ok := leg.SchemaDef().DeletedAtColumn(); ok {
-				declaredBy[coll] = append(declaredBy[coll], declaration{column: sd, view: "composed " + c.Name()})
-			}
+			collect(leg.SchemaDef(), leg.Collection(), "composed "+c.Name())
 		}
 	}
 	for _, s := range subs {
 		if !embedded[s.Collection] {
 			continue // never embedded — §8.3 owns that case; nothing to cross-check here
 		}
-		decls := declaredBy[s.Collection]
-		if len(decls) == 0 {
+		if !sdDeclared[s.Collection] {
 			warnings = append(warnings, fmt.Sprintf(
-				"§8.5 subscription topic=%q collection=%q: no view embedding or composing this mirror declares a "+
-					"DeletedAt column on its external schema. If the upstream entity archives "+
-					"(archive), declare .DeletedAt(\"<column>\") on the NewExternalSchema AND keep that "+
-					"column in the subscription's filter — otherwise an archived upstream entity stays "+
-					"looking active in the mirror forever. Advisory: harmless if the upstream never archives.",
+				"subscription topic=%q collection=%q: no view embedding or composing this mirror declares a "+
+					"DeletedAt column on its external schema. If the upstream entity archives, declare "+
+					".DeletedAt(\"<column>\") on the NewExternalSchema AND keep that column in the subscription's "+
+					"`fields:` — otherwise an archived upstream entity stays looking active in the mirror forever. "+
+					"Advisory: harmless if the upstream never archives.",
 				s.Topic, s.Collection,
 			))
-			continue
 		}
-		if len(s.Filter) == 0 {
-			continue // an empty filter mirrors the full payload — the DeletedAt column survives
+		if len(s.Fields) == 0 {
+			continue // an empty `fields:` mirrors the full payload — every declared column survives
 		}
-		inFilter := make(map[string]bool, len(s.Filter))
-		for _, f := range s.Filter {
-			inFilter[f] = true
+		inFields := make(map[string]bool, len(s.Fields))
+		for _, f := range s.Fields {
+			inFields[f] = true
 		}
-		// A declared DeletedAt column the filter drops is the silent-archive bug.
-		// Report once per distinct column, in deterministic order.
+		// A declared column the allowlist drops is a dead declaration — report
+		// once per distinct column, in deterministic order.
 		firstView := map[string]string{}
+		isSD := map[string]bool{}
 		var dropped []string
-		for _, d := range decls {
-			if inFilter[d.column] {
+		for _, d := range declaredBy[s.Collection] {
+			if inFields[d.column] {
 				continue
 			}
 			if _, seen := firstView[d.column]; !seen {
 				firstView[d.column] = d.view
+				isSD[d.column] = d.isDeletedAt
 				dropped = append(dropped, d.column)
 			}
 		}
 		sort.Strings(dropped)
 		for _, col := range dropped {
+			if isSD[col] {
+				violations = append(violations, fmt.Sprintf(
+					"subscription topic=%q collection=%q declares fields %s which OMITS the DeletedAt "+
+						"column %q that %q's leg schema declares — an archived upstream entity carries "+
+						"%q in its event, the allowlist would strip it, and the mirror could never reflect the "+
+						"archive (archived rows would look active forever). Add %q to `fields:`, or clear "+
+						"`fields:` to mirror the full payload.",
+					s.Topic, s.Collection, describeFilter(s.Fields), col, firstView[col], col, col,
+				))
+				continue
+			}
 			violations = append(violations, fmt.Sprintf(
-				"§8.5 subscription topic=%q collection=%q declares filter %s which OMITS the DeletedAt "+
-					"column %q that %q's leg schema declares — an archived upstream entity carries "+
-					"%q in its event, the filter would strip it, and the mirror could never reflect the "+
-					"archive (archived rows would look active forever). Add %q to the filter, or clear the "+
-					"filter to mirror the full payload.",
-				s.Topic, s.Collection, describeFilter(s.Filter), col, firstView[col], col, col,
+				"subscription topic=%q collection=%q declares fields %s which OMITS column %q that %q's "+
+					"external schema declares — the mirror can never carry it, so the declaration is dead "+
+					"(reads translate it, exports advertise it, the value is forever absent). Add %q to "+
+					"`fields:`, drop it from the schema, or clear `fields:` to mirror the full payload.",
+				s.Topic, s.Collection, describeFilter(s.Fields), col, firstView[col], col,
 			))
 		}
 	}

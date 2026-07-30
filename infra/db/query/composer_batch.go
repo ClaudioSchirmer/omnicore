@@ -410,12 +410,13 @@ func (c *Composer) applyEmbedsBatch(ctx context.Context, docs []Document, parent
 			if err != nil {
 				return err
 			}
+			allow := embedTrimSet(e)
 			for _, doc := range docs {
 				v, ok := doc[parentPK]
 				if !ok || v == nil {
 					continue
 				}
-				doc[e.Field()] = grouped[fmt.Sprintf("%v", v)]
+				doc[e.Field()] = trimDocsToFields(grouped[fmt.Sprintf("%v", v)], allow)
 			}
 		} else {
 			// 1:1 — embed._id == parent[JoinColumn].
@@ -429,6 +430,7 @@ func (c *Composer) applyEmbedsBatch(ctx context.Context, docs []Document, parent
 			if err != nil {
 				return err
 			}
+			allow := embedTrimSet(e)
 			for _, doc := range docs {
 				// Unresolved 1:1 → explicit null, same reason as the per-row
 				// path: $set-merged writes would keep a stale sub-document if
@@ -443,7 +445,7 @@ func (c *Composer) applyEmbedsBatch(ctx context.Context, docs []Document, parent
 					doc[e.Field()] = nil
 					continue
 				}
-				doc[e.Field()] = rows[0]
+				doc[e.Field()] = trimToFields(rows[0], allow)
 			}
 		}
 	}

@@ -42,7 +42,7 @@ func startUpstreamSubscribers(
 			Collection:       s.Collection,
 			ConsumerGroup:    s.ConsumerGroup,
 			Workers:          s.Workers,
-			Filter:           s.Filter,
+			Fields:           s.Fields,
 			DeleteOnArchive:  s.DeleteOnArchive,
 			StartFrom:        string(s.StartFrom),
 			OnUpstreamDelete: string(s.OnUpstreamDelete),

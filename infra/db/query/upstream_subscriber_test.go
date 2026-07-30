@@ -41,9 +41,9 @@ func TestUpstreamSubscriber_DecodePayload_Empty(t *testing.T) {
 }
 
 func TestUpstreamSubscriber_ApplyFilter_KeepsOnlyAllowed(t *testing.T) {
-	s := &UpstreamSubscriber{cfg: UpstreamSubscriberConfig{Filter: []string{"name", "email"}}}
+	s := &UpstreamSubscriber{cfg: UpstreamSubscriberConfig{Fields: []string{"name", "email"}}}
 	in := bson.M{"name": "Alice", "email": "a@x", "ssn": "secret", "address": "x"}
-	got := s.applyFilter(in)
+	got := s.applyFields(in)
 	if len(got) != 2 || got["name"] != "Alice" || got["email"] != "a@x" {
 		t.Errorf("filter dropped allowed keys or kept disallowed: %+v", got)
 	}
@@ -53,12 +53,12 @@ func TestUpstreamSubscriber_ApplyFilter_KeepsOnlyAllowed(t *testing.T) {
 }
 
 func TestUpstreamSubscriber_ApplyFilter_EmptyAllowlist(t *testing.T) {
-	// applyFilter is only called when len(Filter) > 0; with an empty
+	// applyFields is only called when len(Filter) > 0; with an empty
 	// allowlist every key is filtered out. This documents that the
 	// caller (processMessage) skips the call when Filter is empty.
 	s := &UpstreamSubscriber{cfg: UpstreamSubscriberConfig{}}
 	in := bson.M{"name": "Alice"}
-	got := s.applyFilter(in)
+	got := s.applyFields(in)
 	if len(got) != 0 {
 		t.Errorf("empty filter should produce empty map, got %+v", got)
 	}
@@ -167,13 +167,13 @@ func TestUpstreamSubscriberConfig_NewUpstreamSubscriber_ParsesOffset(t *testing.
 	}
 }
 
-// Sanity: bson.M is map[string]any, so applyFilter preserves value types
+// Sanity: bson.M is map[string]any, so applyFields preserves value types
 // like nested maps verbatim (deep copy is not the contract).
 func TestUpstreamSubscriber_ApplyFilter_PreservesValueShape(t *testing.T) {
-	s := &UpstreamSubscriber{cfg: UpstreamSubscriberConfig{Filter: []string{"meta"}}}
+	s := &UpstreamSubscriber{cfg: UpstreamSubscriberConfig{Fields: []string{"meta"}}}
 	nested := map[string]any{"tier": "gold"}
 	in := bson.M{"meta": nested, "name": "x"}
-	got := s.applyFilter(in)
+	got := s.applyFields(in)
 	want := bson.M{"meta": nested}
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("got %+v, want %+v", got, want)

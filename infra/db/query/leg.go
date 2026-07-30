@@ -2,6 +2,7 @@ package query
 
 import (
 	"fmt"
+	"strings"
 
 	"github.com/ClaudioSchirmer/omnicore/infra/db/core"
 )
@@ -25,7 +26,77 @@ type Leg struct {
 	schema       *core.TableSchema // external leg schema (nil for internal)
 	goSegment    string
 	externalName string
+	// fields is the JoinView-only materialization allowlist declared via
+	// Fields(...) — GO names of the source view (root fields by Go name, managed
+	// slots by their fixed names, top-level segments by their Go segment name).
+	// Nil = no cut (the segment materializes the whole source document, the
+	// historical shape). Never valid on a JoinUpstream leg or on a ComposedView
+	// link (both boot-rejected).
+	fields []string
 }
+
+// Fields declares the materialization allowlist of a JoinView leg: only the
+// listed source fields enter the embedded segment. Entries are GO NAMES — the
+// vocabulary every layer above infra speaks: business fields by their declared
+// Go name ("UserName"), managed slots by their FIXED Go names ("DeletedAt",
+// "CreatedAt", "ParentID"), and a top-level segment of the source document (a
+// child collection, an embed, a role) by its Go segment name, which admits or
+// cuts that segment WHOLE. The framework always materializes the identity and
+// its reserved watermarks (_id, _revision, _base_revision), an EmbedMany's
+// leg-side join column and a declared OrderBy column — none of them is ever
+// declared here.
+//
+// THE ARCHIVE SWITCH. Including or omitting "DeletedAt" is the per-consumer
+// archive-behavior switch of the segment:
+//
+//   - "DeletedAt" listed → the segment follows the source's archive: hidden on
+//     default reads (1:1 → null, 1:N → the element leaves the array), revealed
+//     by ?includeArchived=true — today's behavior, chosen explicitly;
+//   - "DeletedAt" omitted → the segment has NO archived rule, by declaration:
+//     the archived source keeps its data in the embedding document forever and
+//     keeps receiving updates through the ripple.
+//
+// Fields governs SHAPE, never EXISTENCE: a hard DELETE of the source still
+// nulls the segment (or drops the element), fields or no fields.
+//
+// JoinView-only: a JoinUpstream leg needs no narrowing device — its
+// NewExternalSchema is already this consumer's own declaration of what it
+// reads, and the subscription yaml `fields:` is the storage cut of the mirror.
+// Declaring Fields on an external leg, or using a Fields-bearing leg on a
+// ComposedView link, is a fatal boot error.
+//
+// Fields participates in the embedding view's RebuildHash only when declared
+// (a view without it keeps its byte-identical hash stream); declaring or
+// changing it is projection shape — bump Version(N) and let the rebuild trim
+// the stored documents.
+func (l *Leg) Fields(cols ...string) *Leg {
+	if len(cols) == 0 {
+		panic(fmt.Sprintf(
+			"query.Fields on leg %q: at least one field is required — an empty allowlist would materialize "+
+				"nothing; omit Fields(...) entirely to materialize the whole source document", l.externalName))
+	}
+	seen := make(map[string]bool, len(cols))
+	for _, c := range cols {
+		if c == "" {
+			panic(fmt.Sprintf("query.Fields on leg %q: empty field name", l.externalName))
+		}
+		if strings.HasPrefix(c, "_") {
+			panic(fmt.Sprintf(
+				"query.Fields on leg %q: %q is a reserved framework field — the identity and watermarks "+
+					"(_id, _revision, _base_revision) are always materialized and never declared", l.externalName, c))
+		}
+		if seen[c] {
+			panic(fmt.Sprintf("query.Fields on leg %q: duplicate field %q", l.externalName, c))
+		}
+		seen[c] = true
+	}
+	l.fields = append([]string(nil), cols...)
+	return l
+}
+
+// FieldsList returns the declared materialization allowlist (nil when the leg
+// declares none). Consumed by the boot guards, the hash and the trim machinery.
+func (l *Leg) FieldsList() []string { return l.fields }
 
 // IsMongo reports whether the leg resolves to a local external Mongo collection
 // (a JoinUpstream leg). A JoinView leg returns false.

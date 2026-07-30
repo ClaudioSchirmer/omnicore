@@ -36,7 +36,7 @@ type UpstreamSubscriberConfig struct {
 	Collection       string
 	ConsumerGroup    string
 	Workers          int
-	Filter           []string
+	Fields           []string
 	DeleteOnArchive  bool
 	StartFrom        string
 	OnUpstreamDelete string
@@ -536,8 +536,8 @@ func (s *UpstreamSubscriber) processMessage(ctx context.Context, msg transport.M
 			"topic", s.cfg.Topic, "id", event.AggregateID, "err", err)
 		return
 	}
-	if len(s.cfg.Filter) > 0 {
-		payload = s.applyFilter(payload)
+	if len(s.cfg.Fields) > 0 {
+		payload = s.applyFields(payload)
 	}
 	switch event.EventType {
 	case "INSERTED", "UPDATED", "UNARCHIVED":
@@ -817,7 +817,7 @@ func findMongoJoinField(embeds []embedDef, collection string) string {
 //   - framework reserved keys (the "_" namespace: _ids, _children,
 //     _base_children) are STRIPPED from the mirror by default — they are
 //     routing metadata, not upstream state. A consumer that wants one listed
-//     in cfg.Filter keeps it (the allowlist wins).
+//     in cfg.Fields keeps it (the allowlist wins).
 func (s *UpstreamSubscriber) decodePayload(raw []byte) (bson.M, error) {
 	if len(raw) == 0 {
 		return bson.M{}, nil
@@ -829,8 +829,8 @@ func (s *UpstreamSubscriber) decodePayload(raw []byte) (bson.M, error) {
 	if inner, ok := top["payload"].(map[string]any); ok {
 		top = inner
 	}
-	allow := make(map[string]bool, len(s.cfg.Filter))
-	for _, f := range s.cfg.Filter {
+	allow := make(map[string]bool, len(s.cfg.Fields))
+	for _, f := range s.cfg.Fields {
 		allow[f] = true
 	}
 	for k := range top {
@@ -841,13 +841,13 @@ func (s *UpstreamSubscriber) decodePayload(raw []byte) (bson.M, error) {
 	return bson.M(top), nil
 }
 
-// applyFilter narrows the payload to the declared allowlist. Anything
+// applyFields narrows the payload to the declared allowlist. Anything
 // outside the list is dropped — including conventional metadata fields
 // (id/created_at/updated_at) unless the operator explicitly lists them.
 // Returns a fresh map; the input is not mutated.
-func (s *UpstreamSubscriber) applyFilter(payload bson.M) bson.M {
-	allow := make(map[string]bool, len(s.cfg.Filter))
-	for _, f := range s.cfg.Filter {
+func (s *UpstreamSubscriber) applyFields(payload bson.M) bson.M {
+	allow := make(map[string]bool, len(s.cfg.Fields))
+	for _, f := range s.cfg.Fields {
 		allow[f] = true
 	}
 	out := make(bson.M, len(allow))

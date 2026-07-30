@@ -469,7 +469,7 @@ func (c *Composer) fetchMongoEmbed(ctx context.Context, doc Document, parentPK s
 		if err != nil {
 			return err
 		}
-		doc[e.Field()] = docs
+		doc[e.Field()] = trimDocsToFields(docs, embedTrimSet(e))
 		return nil
 	}
 	// An unresolved 1:1 (null ParentID, or the source doc gone) writes an EXPLICIT
@@ -489,7 +489,7 @@ func (c *Composer) fetchMongoEmbed(ctx context.Context, doc Document, parentPK s
 		doc[e.Field()] = nil
 		return nil
 	}
-	doc[e.Field()] = docs[0]
+	doc[e.Field()] = trimToFields(docs[0], embedTrimSet(e))
 	return nil
 }
 
@@ -538,8 +538,9 @@ func (c *Composer) applyChildEmbeds(ctx context.Context, doc Document, childEmbe
 			if err != nil {
 				return err
 			}
+			allow := childEmbedTrimSet(ce)
 			for _, sd := range srcDocs {
-				byID[fmt.Sprintf("%v", sd["_id"])] = sd
+				byID[fmt.Sprintf("%v", sd["_id"])] = trimToFields(sd, allow)
 			}
 		}
 		for _, el := range arr {

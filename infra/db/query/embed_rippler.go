@@ -242,16 +242,18 @@ func (r *embedRippler) ripple(ctx context.Context, upstreamID string, before, af
 // items (each touches a disjoint element set). `after` is the changed upstream
 // document (the new sub-doc value); nil on delete clears the enrichment to null.
 func (r *embedRippler) rippleChildEmbeds(ctx context.Context, v *ViewDefinition, childEmbeds []childEmbedDef, upstreamID string, after Document, srcRev int64) {
-	// The enrichment value is embedded as a $literal: it is DATA (the upstream
-	// sub-document, or null on delete), not an aggregation expression. Without
-	// $literal Mongo would evaluate the map as an expression object — the same
-	// reason surgicalManyExpr wraps its element in lit(...).
-	var itemVal any
-	if after != nil {
-		itemVal = map[string]any(after)
-	} // else nil → clear the enrichment to null (source deleted)
-	litVal := lit(itemVal)
 	for _, ce := range childEmbeds {
+		// The enrichment value is embedded as a $literal: it is DATA (the upstream
+		// sub-document, or null on delete), not an aggregation expression. Without
+		// $literal Mongo would evaluate the map as an expression object — the same
+		// reason surgicalManyExpr wraps its element in lit(...). Trimmed PER
+		// DECLARATION (a Fields-bearing JoinView leg), inside the loop because two
+		// child-embeds of the same source may cut it differently.
+		var itemVal any
+		if after != nil {
+			itemVal = map[string]any(trimToFields(after, childEmbedTrimSet(ce)))
+		} // else nil → clear the enrichment to null (source deleted)
+		litVal := lit(itemVal)
 		seg := ce.ChildSegment()
 		fkCol := ce.ParentIDColumn()
 		// $map over the child array (defensive $ifNull for a missing/absent

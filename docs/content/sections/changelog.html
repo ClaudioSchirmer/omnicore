@@ -9,6 +9,34 @@
     <div class="release">
         <div class="release-head"><span class="release-tag">Unreleased</span><span class="release-date">—</span></div>
         <ul>
+            <li><strong>Added</strong> — <strong><code>JoinView(...).Fields(cols...)</code> — the materialization
+                allowlist of an embedded local view, and the per-consumer ARCHIVE SWITCH.</strong> A
+                <code>JoinView</code> leg can now declare which source fields its segment stores — GO names: business
+                fields by their declared name, managed slots by their fixed names, a top-level segment (child/embed/
+                role of the source) by its Go segment name, admitted or cut WHOLE. The identity and reserved
+                watermarks (<code>_id</code>, <code>_revision</code>), an <code>EmbedMany</code>'s leg-side join
+                column and a declared <code>OrderBy</code> column always survive. Every writer of the segment applies
+                the same cut (compose, batch rebuild, surgical ripple, 1:1 repair, <code>EmbedInChild</code>), a capped
+                field is an honest <code>400</code> on filter/sort/<code>?fields=</code>, and the tabular export stops
+                advertising it. The headline: <strong><code>"DeletedAt"</code> in or out of <code>Fields</code> is the
+                archive switch, per view</strong> — listed, the segment follows the source's archive (hidden on
+                default reads, revealed by <code>?includeArchived</code>); omitted, the segment has NO archived rule
+                by declaration: the archived source keeps its data in the embedding document forever and keeps
+                receiving updates through the ripple. Participates in the rebuild hash only when declared (nothing
+                rebuilds on upgrade); declaring/changing it needs a <code>Version</code> bump. JoinView-only — a
+                <code>JoinUpstream</code> leg's cut is the subscription <code>fields:</code> + its external schema,
+                and a <code>Fields</code>-bearing leg on a <code>ComposedView</code> is a fatal boot. See
+                <a href="#views~views-embed-fields">Views → Cutting the segment</a>.</li>
+            <li><strong>Changed</strong> — <strong>breaking</strong> — <strong>the <code>UpstreamSubscription</code>
+                yaml key <code>filter:</code> is renamed <code>fields:</code></strong> (same semantics: the allowlist
+                of raw payload fields entering the mirror), aligning the vocabulary with the new JoinView
+                <code>Fields</code> — one concept, two sides of the membrane (physical names at ingestion, Go names at
+                declaration). The strict decoder makes a leftover <code>filter:</code> key abort the boot naming the
+                offender. The Go surface follows: <code>UpstreamSubscription.Filter</code> →
+                <code>.Fields</code>. And the §8.5 guard is <strong>generalized</strong>: EVERY column a consumer's
+                external schema declares must now survive a non-empty <code>fields:</code> — a declared column the
+                mirror can never carry is a dead declaration and a fatal boot (previously only the DeletedAt column
+                was cross-checked). See <a href="#yaml-reference">YAML reference → upstreamSubscriptions</a>.</li>
             <li><strong>Added</strong> — <strong>docs: the three-name model now covers the managed slots' fixed Go
                 names and what each declaration stores in Mongo.</strong> The naming table in the TableSchema section
                 now walks every managed declaration (<code>ID</code>, <code>ParentID</code>, <code>DeletedAt</code>,

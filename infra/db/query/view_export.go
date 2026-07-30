@@ -75,6 +75,7 @@ func (v *ViewDefinition) ExportPlan() *queries.ExportPlan {
 			branch = ce.leg.view.ExportPlan().Root
 			branch.GoSegment = goSeg
 			branch.WireSegment = ce.Field()
+			branch = restrictExportBranch(branch, ce.leg)
 		} else {
 			branch = buildExportNode(ce.leg.schema, nil, goSeg, ce.Field())
 		}
@@ -134,6 +135,9 @@ func buildExportNode(schema *core.TableSchema, embeds []embedDef, goSegment, wir
 			branch = e.leg.view.ExportPlan().Root
 			branch.GoSegment = resolveGoSegment(e)
 			branch.WireSegment = e.Field()
+			// A Fields allowlist narrows the STORED segment, so the export tree
+			// must not advertise columns/segments that are never materialized.
+			branch = restrictExportBranch(branch, e.leg)
 		} else {
 			branch = buildExportNode(
 				e.leg.schema, nil,
@@ -157,6 +161,35 @@ func buildExportNode(schema *core.TableSchema, embeds []embedDef, goSegment, wir
 		}
 	}
 	return node
+}
+
+// restrictExportBranch narrows a JoinView-leg export branch to the leg's
+// declared Fields (a no-op without one): only allowlisted leaf columns stay,
+// and only admitted top-level segments keep their child branches — mirroring
+// what the trimmed document actually stores.
+func restrictExportBranch(branch *queries.ExportNode, leg *Leg) *queries.ExportNode {
+	if len(leg.fields) == 0 {
+		return branch
+	}
+	allow := make(map[string]struct{}, len(leg.fields))
+	for _, f := range leg.fields {
+		allow[f] = struct{}{}
+	}
+	cols := make([]queries.ExportColumn, 0, len(branch.Columns))
+	for _, c := range branch.Columns {
+		if _, ok := allow[c.GoField]; ok {
+			cols = append(cols, c)
+		}
+	}
+	children := make([]*queries.ExportNode, 0, len(branch.Children))
+	for _, ch := range branch.Children {
+		if _, ok := allow[ch.GoSegment]; ok {
+			children = append(children, ch)
+		}
+	}
+	branch.Columns = cols
+	branch.Children = children
+	return branch
 }
 
 // appendSchemaColumns adds one ExportColumn per declared business field of s

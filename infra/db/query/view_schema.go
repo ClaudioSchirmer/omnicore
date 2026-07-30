@@ -21,6 +21,16 @@ type ViewNode struct {
 	schema      *core.TableSchema
 	embeds      map[string]*viewEmbed // goSegment → embed
 	embedsByDoc map[string]*viewEmbed // docField → embed
+	// fieldsGo / fieldsCol restrict a JoinView-leg node whose leg declares
+	// Fields(...): fieldsGo holds the declared Go entries (plus the always-
+	// materialized "ID"), fieldsCol the physical allowset the trim applies. Nil
+	// on every unrestricted node (the default). A restricted node translates
+	// ONLY allowlisted leaf fields (a capped field is unknown → the wire's 400
+	// SchemaViolation, honest instead of a query matching nothing), reports no
+	// DeletedAt gate when the column is capped (the segment then has no archived
+	// rule, BY DECLARATION), and registers only the admitted nested segments.
+	fieldsGo  map[string]struct{}
+	fieldsCol map[string]struct{}
 }
 
 type viewEmbed struct {
@@ -85,9 +95,41 @@ func (v *ViewDefinition) BuildViewNode() *ViewNode {
 // schema with no closure of its own.
 func legViewNode(leg *Leg) *ViewNode {
 	if leg.view != nil {
-		return leg.view.BuildViewNode()
+		node := leg.view.BuildViewNode()
+		if len(leg.fields) > 0 {
+			return restrictViewNode(node, leg)
+		}
+		return node
 	}
 	return newViewNode(leg.schema, nil)
+}
+
+// restrictViewNode narrows a JoinView-leg node to the leg's declared Fields:
+// leaf translation is gated on the Go entries, the DeletedAt gate on the
+// physical allowset, and only admitted top-level segments stay registered
+// (a segment entry admits that segment WHOLE — its own node, rules included,
+// recursively; an unlisted segment is cut with the data). "ID" is always
+// admitted: identity is always materialized.
+func restrictViewNode(node *ViewNode, leg *Leg) *ViewNode {
+	goSet := make(map[string]struct{}, len(leg.fields)+1)
+	for _, f := range leg.fields {
+		goSet[f] = struct{}{}
+	}
+	goSet[idGoFieldName] = struct{}{}
+	out := &ViewNode{
+		schema:      node.schema,
+		embeds:      map[string]*viewEmbed{},
+		embedsByDoc: map[string]*viewEmbed{},
+		fieldsGo:    goSet,
+		fieldsCol:   legFieldsColumnSet(leg),
+	}
+	for seg, emb := range node.embeds {
+		if _, ok := goSet[seg]; ok {
+			out.embeds[seg] = emb
+			out.embedsByDoc[emb.docField] = emb
+		}
+	}
+	return out
 }
 
 // newRoleViewNode builds the translator node for one role segment: the role's
@@ -327,6 +369,14 @@ func (n *ViewNode) ColumnPath(goPath []string) ([]string, bool) {
 		return goPath, true
 	}
 	if len(goPath) == 1 {
+		// A Fields-restricted leg node translates only allowlisted leaves — a
+		// capped field is UNKNOWN here (the wire answers 400), never a silent
+		// query against a column the trim removed. "ID" is always admitted.
+		if n.fieldsGo != nil && goPath[0] != idGoFieldName {
+			if _, ok := n.fieldsGo[goPath[0]]; !ok {
+				return nil, false
+			}
+		}
 		col, ok := n.schema.ColumnForRead(goPath[0])
 		if !ok {
 			return nil, false
@@ -360,7 +410,20 @@ func (n *ViewNode) DeletedAtColumn() (string, bool) {
 	if !n.hasSchema() {
 		return "", false
 	}
-	return n.schema.DeletedAtColumn()
+	col, ok := n.schema.DeletedAtColumn()
+	if !ok {
+		return "", false
+	}
+	// A Fields-restricted leg node whose allowlist CAPS the DeletedAt column has
+	// no archived rule, BY DECLARATION: the column is never materialized, so the
+	// strip has nothing to gate on and reports none — the per-consumer archive
+	// switch (see Leg.Fields).
+	if n.fieldsCol != nil {
+		if _, kept := n.fieldsCol[col]; !kept {
+			return "", false
+		}
+	}
+	return col, true
 }
 
 // StripJoinKeyID removes the `_id` a composed read kept on a leg segment ONLY to
