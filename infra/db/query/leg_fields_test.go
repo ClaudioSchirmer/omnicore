@@ -295,3 +295,45 @@ func TestExportPlan_FieldsRestrictBranch(t *testing.T) {
 		t.Fatalf("embed branch missing from export plan")
 	}
 }
+
+func TestChildEmbedTrimSet_AndDocsTrim(t *testing.T) {
+	src := fieldsSourceView()
+	ce := childEmbedDef{childSchema: fieldsSrcNoteSchema(), leg: JoinView(src, "Src", "src").Fields("Name"), joinCol: "src_id"}
+	set := childEmbedTrimSet(ce)
+	if _, ok := set["name"]; !ok {
+		t.Fatalf("child-embed trim set must carry the declared column, got %v", set)
+	}
+	if _, ok := set["removed_on"]; ok {
+		t.Fatalf("child-embed trim set must cut the undeclared DeletedAt column: %v", set)
+	}
+	docs := []Document{{"_id": "a", "name": "x", "mail": "m"}, {"_id": "b", "name": "y", "removed_on": "z"}}
+	got := trimDocsToFields(docs, set)
+	for i, d := range got {
+		if _, has := d["mail"]; has {
+			t.Errorf("doc %d kept a capped field: %v", i, d)
+		}
+		if _, has := d["removed_on"]; has {
+			t.Errorf("doc %d kept the capped DeletedAt column: %v", i, d)
+		}
+		if d["_id"] == nil || d["name"] == nil {
+			t.Errorf("doc %d lost identity/allowed field: %v", i, d)
+		}
+	}
+	if out := trimDocsToFields(nil, set); out != nil {
+		t.Errorf("nil docs must pass through, got %v", out)
+	}
+	// A leg without Fields yields a nil set for child embeds too.
+	if s := childEmbedTrimSet(childEmbedDef{leg: JoinView(src, "Src", "src")}); s != nil {
+		t.Errorf("no Fields ⇒ nil trim set, got %v", s)
+	}
+}
+
+func TestLeg_FieldsList(t *testing.T) {
+	leg := JoinView(fieldsSourceView(), "Src", "src").Fields("Name", "Email")
+	if got := leg.FieldsList(); len(got) != 2 || got[0] != "Name" || got[1] != "Email" {
+		t.Errorf("FieldsList must echo the declaration, got %v", got)
+	}
+	if got := JoinView(fieldsSourceView(), "Src", "src").FieldsList(); got != nil {
+		t.Errorf("no Fields ⇒ nil list, got %v", got)
+	}
+}

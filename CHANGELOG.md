@@ -11,6 +11,8 @@ with `1.0.0`.
 
 ## [Unreleased]
 
+## [0.39.0] - 2026-07-29
+
 ### Added
 
 - **`JoinView(...).Fields(cols...)` — the materialization allowlist of an
