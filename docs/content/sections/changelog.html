@@ -7,6 +7,22 @@
 </div>
 <div class="changelog">
     <div class="release">
+        <div class="release-head"><span class="release-tag">v0.39.1</span><span class="release-date">July 30, 2026</span></div>
+        <ul>
+            <li><strong>Added</strong> — <strong>docs: "The sync machinery at a glance".</strong> A consolidated index
+                table at the top of <a href="#views~views-sync">Views → How views stay current</a>: one row per
+                mechanism — projection, recompose ripple, failure parking, the parked-row replay driver, the
+                revision-parity reconcile sweep, the boot drift check, the online blue-green rebuild and the ad-hoc
+                operator entry points — with what fires it, who runs it (framework-automatic vs operator-manual),
+                whether it is on by default (<code>parkedRetry</code> ON, <code>reconcile</code> OFF,
+                <code>rebuild.autoRun</code> dev=<code>true</code>/elsewhere=<code>check</code>), its yaml knob and
+                the owning section. An index, not new behavior. Also sharpens the archive-switch wording in
+                <a href="#views~views-embed-fields">Views → Cutting the segment</a> (and the <code>Leg.Fields</code>
+                godoc): the "DeletedAt-listed" regime is the same rule every uncut segment applies, here chosen
+                explicitly.</li>
+        </ul>
+    </div>
+    <div class="release">
         <div class="release-head"><span class="release-tag">v0.39.0</span><span class="release-date">July 29, 2026</span></div>
         <ul>
             <li><strong>Added</strong> — <strong><code>JoinView(...).Fields(cols...)</code> — the materialization
