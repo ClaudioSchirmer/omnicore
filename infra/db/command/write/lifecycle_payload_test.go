@@ -11,7 +11,7 @@ import (
 )
 
 // White-box coverage for the bodyless-verb outbox payloads (lifecycle_payload.go):
-// ARCHIVED/UNARCHIVED carry the full field map + the soft-delete column,
+// ARCHIVED/UNARCHIVED carry the full field map + the DeletedAt column,
 // DELETED carries the structural keys (ID + shared-base ParentID). Payloads are read
 // back off the recording fake's captured args and decoded as JSON — the same
 // bytes a CDC consumer would see.
@@ -70,7 +70,7 @@ func TestArchive_OutboxPayloadCarriesFieldsAndDeletedAt(t *testing.T) {
 		t.Errorf("ARCHIVED payload must carry the field map, got %v", p)
 	}
 	if v, ok := p["deleted_at"]; !ok || v == nil {
-		t.Errorf("ARCHIVED payload must carry a populated soft-delete column, got %v", p)
+		t.Errorf("ARCHIVED payload must carry a populated DeletedAt column, got %v", p)
 	}
 }
 
@@ -91,7 +91,7 @@ func TestUnarchive_OutboxPayloadCarriesFieldsAndNullDeletedAt(t *testing.T) {
 		t.Errorf("UNARCHIVED payload must carry the field map, got %v", p)
 	}
 	if v, ok := p["deleted_at"]; !ok || v != nil {
-		t.Errorf("UNARCHIVED payload must carry an explicit null soft-delete column, got %v", p)
+		t.Errorf("UNARCHIVED payload must carry an explicit null DeletedAt column, got %v", p)
 	}
 }
 
@@ -183,7 +183,7 @@ func roleArchTestSchema() *TableSchema {
 	return NewTableSchema[*roleArchTestEntity]("aluno").
 		ID("id").
 		Field("Matricula", "matricula").
-		SoftDelete("deleted_at").
+		DeletedAt("deleted_at").
 		SharedBase(base, "pessoa_id")
 }
 
@@ -207,7 +207,7 @@ func TestArchiveRoleWithBase_OutboxPayloadCarriesBaseFK(t *testing.T) {
 		t.Errorf("role ARCHIVED payload must carry the shared-base ParentID, got %v", p)
 	}
 	if v, ok := p["deleted_at"]; !ok || v == nil {
-		t.Errorf("role ARCHIVED payload must carry a populated soft-delete column, got %v", p)
+		t.Errorf("role ARCHIVED payload must carry a populated DeletedAt column, got %v", p)
 	}
 }
 
@@ -229,7 +229,7 @@ func TestArchiveAggregate_OutboxPayloadRootCarriesDeletedAt(t *testing.T) {
 		t.Errorf("aggregate ARCHIVED payload must carry the root fields flat at the top, got %v", p)
 	}
 	if v, present := p["deleted_at"]; !present || v == nil {
-		t.Errorf("aggregate ARCHIVED payload must carry a populated soft-delete column, got %v", p)
+		t.Errorf("aggregate ARCHIVED payload must carry a populated DeletedAt column, got %v", p)
 	}
 	ch, present := p["_children"].(map[string]any)
 	if !present {

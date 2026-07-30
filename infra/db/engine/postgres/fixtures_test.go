@@ -55,12 +55,12 @@ func (c covChild) BuildRules(string, domain.Service, *domain.Rules) {}
 var covAggSchema = core.NewTableSchema[*covAgg]("cov_aggs").
 	ID("id").
 	Field("Name", "name").
-	SoftDelete("deleted_at").
+	DeletedAt("deleted_at").
 	Child(core.NewTableSchema[covChild]("cov_children").
 		ID("id").
 		ParentID("cov_agg_id").
 		Field("Label", "label").
-		SoftDelete("deleted_at"))
+		DeletedAt("deleted_at"))
 
 // builderTestEntity is the flat entity exercised by executor/Build*Event tests.
 type builderTestEntity struct {
@@ -81,7 +81,7 @@ var builderTestSchema = core.NewTableSchema[*builderTestEntity]("builder_test_en
 	ID("id").
 	Field("Name", "name").
 	Field("Email", "email").
-	SoftDelete("deleted_at").
+	DeletedAt("deleted_at").
 	CreatedAt("created_at").
 	UpdatedAt("updated_at")
 

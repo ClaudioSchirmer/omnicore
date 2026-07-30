@@ -70,11 +70,11 @@ func applyUpstreamSubscriptionDefaults(subs []UpstreamSubscription, service stri
 //   - §8.2 — Collection name collision (sub↔sub and sub↔local view)
 //   - §8.3 — Mongo embed must have a materializing source
 //   - §8.4 — Anonymize policy requires AnonymizeFields
-//   - §8.5 — Soft-delete column must survive the filter (abort) + advisory
+//   - §8.5 — DeletedAt column must survive the filter (abort) + advisory
 //     warning when no embedding schema declares one
 //
 // §8.5 is the only guard with a non-fatal branch: a mirror whose embed
-// schema declares no soft-delete column yields an advisory (logged via
+// schema declares no DeletedAt column yields an advisory (logged via
 // logger, which may be nil in tests), not a boot-aborting violation.
 //
 // Per-entry shape validation (§5) runs first because a structurally
@@ -104,10 +104,10 @@ func validateUpstreamSubscriptions(
 	if errs := guardAnonymizePolicy(subs); len(errs) > 0 {
 		violations = append(violations, errs...)
 	}
-	// §8.5 — a declared soft-delete column that the subscription filter drops is a
-	// silent-archive bug (abort); a mirror whose embed schema declares no soft-delete
+	// §8.5 — a declared DeletedAt column that the subscription filter drops is a
+	// silent-archive bug (abort); a mirror whose embed schema declares no DeletedAt
 	// column at all is an advisory (logged, not fatal).
-	sdViolations, sdWarnings := guardSoftDeleteFilter(subs, views, composed)
+	sdViolations, sdWarnings := guardDeletedAtFilter(subs, views, composed)
 	violations = append(violations, sdViolations...)
 	if logger != nil {
 		for _, w := range sdWarnings {
@@ -309,30 +309,30 @@ func guardAnonymizePolicy(subs []UpstreamSubscription) []string {
 	return out
 }
 
-// guardSoftDeleteFilter implements §8.5 — the soft-delete column must survive a
+// guardDeletedAtFilter implements §8.5 — the DeletedAt column must survive a
 // subscription's Filter, because the filter is a string allowlist over the raw
 // upstream payload and does not consult any schema. An ARCHIVED upstream event
-// carries the soft-delete column populated; if the Filter drops it, the local
+// carries the DeletedAt column populated; if the Filter drops it, the local
 // mirror can never reflect the archive (archived rows look active forever).
 //
-// The check pairs each subscription with the soft-delete column declared on the
+// The check pairs each subscription with the DeletedAt column declared on the
 // external schema of the view(s) that embed the subscription's Collection
-// (reached via Embed().Source().SchemaDef().SoftDeleteColumn()), and splits into
+// (reached via Embed().Source().SchemaDef().DeletedAtColumn()), and splits into
 // two branches:
 //
-//   - ABORT (violation): the embed schema DECLARES a soft-delete column but the
+//   - ABORT (violation): the embed schema DECLARES a DeletedAt column but the
 //     Filter is non-empty and OMITS it. This is an unambiguous silent-archive
 //     misconfiguration — fail loud.
-//   - ADVISORY (warning): NO embedding schema declares a soft-delete column on
+//   - ADVISORY (warning): NO embedding schema declares a DeletedAt column on
 //     the mirror. The consumer often cannot know whether the upstream
-//     soft-deletes, so this is a reminder, not a defect. Returned separately so
+//     archives, so this is a reminder, not a defect. Returned separately so
 //     the caller logs it at Warn rather than aborting the boot.
 //
-// An empty Filter mirrors the full payload, so the soft-delete column survives
+// An empty Filter mirrors the full payload, so the DeletedAt column survives
 // unconditionally — never a violation. A subscription whose Collection is
 // embedded by no view is skipped here (§8.3 governs the never-embedded case).
-func guardSoftDeleteFilter(subs []UpstreamSubscription, views []*query.ViewDefinition, composed []*query.ComposedViewDefinition) (violations, warnings []string) {
-	// Per embedded upstream Mongo collection: the soft-delete columns declared on
+func guardDeletedAtFilter(subs []UpstreamSubscription, views []*query.ViewDefinition, composed []*query.ComposedViewDefinition) (violations, warnings []string) {
+	// Per embedded upstream Mongo collection: the DeletedAt columns declared on
 	// its external schema (with the view that declared each, for the diagnostic).
 	// The same collection may be embedded by several views with independent
 	// external schemas, so declarations accumulate.
@@ -347,15 +347,15 @@ func guardSoftDeleteFilter(subs []UpstreamSubscription, views []*query.ViewDefin
 			}
 			coll := src.Collection()
 			embedded[coll] = true
-			if sd, ok := src.SchemaDef().SoftDeleteColumn(); ok {
+			if sd, ok := src.SchemaDef().DeletedAtColumn(); ok {
 				declaredBy[coll] = append(declaredBy[coll], declaration{column: sd, view: v.Name()})
 			}
 		}
 	}
-	// A mirror has TWO kinds of consumer, and both apply its soft-delete column:
+	// A mirror has TWO kinds of consumer, and both apply its DeletedAt column:
 	// an Embed materializes the gate into the document, and a ComposedView's
 	// external leg applies it per request (the composed reader gates each leg on
-	// its own schema's soft-delete unless ?includeArchived). A filter that drops
+	// its own schema's DeletedAt unless ?includeArchived). A filter that drops
 	// the column breaks them identically, so the link family is cross-checked
 	// here too — otherwise the same silent-archive bug simply walks in through the
 	// door this guard does not watch.
@@ -363,7 +363,7 @@ func guardSoftDeleteFilter(subs []UpstreamSubscription, views []*query.ViewDefin
 		for _, leg := range c.ExternalLegs() {
 			coll := leg.Collection()
 			embedded[coll] = true
-			if sd, ok := leg.SchemaDef().SoftDeleteColumn(); ok {
+			if sd, ok := leg.SchemaDef().DeletedAtColumn(); ok {
 				declaredBy[coll] = append(declaredBy[coll], declaration{column: sd, view: "composed " + c.Name()})
 			}
 		}
@@ -376,8 +376,8 @@ func guardSoftDeleteFilter(subs []UpstreamSubscription, views []*query.ViewDefin
 		if len(decls) == 0 {
 			warnings = append(warnings, fmt.Sprintf(
 				"§8.5 subscription topic=%q collection=%q: no view embedding or composing this mirror declares a "+
-					"soft-delete column on its external schema. If the upstream entity soft-deletes "+
-					"(archive), declare .SoftDelete(\"<column>\") on the NewExternalSchema AND keep that "+
+					"DeletedAt column on its external schema. If the upstream entity archives "+
+					"(archive), declare .DeletedAt(\"<column>\") on the NewExternalSchema AND keep that "+
 					"column in the subscription's filter — otherwise an archived upstream entity stays "+
 					"looking active in the mirror forever. Advisory: harmless if the upstream never archives.",
 				s.Topic, s.Collection,
@@ -385,13 +385,13 @@ func guardSoftDeleteFilter(subs []UpstreamSubscription, views []*query.ViewDefin
 			continue
 		}
 		if len(s.Filter) == 0 {
-			continue // an empty filter mirrors the full payload — the soft-delete column survives
+			continue // an empty filter mirrors the full payload — the DeletedAt column survives
 		}
 		inFilter := make(map[string]bool, len(s.Filter))
 		for _, f := range s.Filter {
 			inFilter[f] = true
 		}
-		// A declared soft-delete column the filter drops is the silent-archive bug.
+		// A declared DeletedAt column the filter drops is the silent-archive bug.
 		// Report once per distinct column, in deterministic order.
 		firstView := map[string]string{}
 		var dropped []string
@@ -407,7 +407,7 @@ func guardSoftDeleteFilter(subs []UpstreamSubscription, views []*query.ViewDefin
 		sort.Strings(dropped)
 		for _, col := range dropped {
 			violations = append(violations, fmt.Sprintf(
-				"§8.5 subscription topic=%q collection=%q declares filter %s which OMITS the soft-delete "+
+				"§8.5 subscription topic=%q collection=%q declares filter %s which OMITS the DeletedAt "+
 					"column %q that %q's leg schema declares — an archived upstream entity carries "+
 					"%q in its event, the filter would strip it, and the mirror could never reflect the "+
 					"archive (archived rows would look active forever). Add %q to the filter, or clear the "+

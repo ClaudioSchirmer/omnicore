@@ -289,7 +289,7 @@ func (l *AggregateLoader[T]) findRoots(ctx context.Context, q *criteria.Query, l
 	if err != nil {
 		return nil, nil, err
 	}
-	// When the criteria pulled in a sibling/base LEFT JOIN, the root's soft-delete
+	// When the criteria pulled in a sibling/base LEFT JOIN, the root's DeletedAt
 	// column must be table-qualified (the base carries its own deleted_at) — the
 	// same disambiguation the leading ID gets below.
 	rootQualifier := ""
@@ -735,7 +735,7 @@ func (l *AggregateLoader[T]) LoadSharedBaseIdentity(ctx context.Context, fresh T
 	// role already references this identity, a POST is a conflict — surface the
 	// canonical 409 here, before the handler re-applies the request, so it is not
 	// masked by a child-level validation (e.g. a re-sent address). An archived role
-	// is excluded — soft-delete is delete, so the insert falls through and the
+	// is excluded — DeletedAt is delete, so the insert falls through and the
 	// schema's constraints arbitrate the collision with the remnant (there is no
 	// revival on POST; /unarchive is the explicit path back). The persister's
 	// active-role probe + UNIQUE(fk) remain the in-TX race backstop.
@@ -753,7 +753,7 @@ func (l *AggregateLoader[T]) LoadSharedBaseIdentity(ctx context.Context, fresh T
 	return newE, true, nil
 }
 
-// activeRoleExists reports whether a live (non-soft-deleted) specialization role
+// activeRoleExists reports whether a live (non-archived) specialization role
 // already references the shared base id. It mirrors the write-side findRoleByFK
 // active/archived split as a read-side existence probe: the SharedBase UPSERT load
 // uses it to reject a re-POST of an existing active role with the canonical
@@ -764,7 +764,7 @@ func (l *AggregateLoader[T]) activeRoleExists(ctx context.Context, fkCol, baseID
 	// single home of the SELECT 1 … LIMIT 1 execution.
 	d := l.eng.Dialect()
 	where := " WHERE " + d.QuoteIdent(fkCol) + " = " + d.Placeholder(1)
-	if sd, ok := l.schema.SoftDeleteColumn(); ok {
+	if sd, ok := l.schema.DeletedAtColumn(); ok {
 		where += " AND " + d.QuoteIdent(sd) + " IS NULL"
 	}
 	return l.probeExists(ctx, d.QuoteIdent(l.schema.Table())+where, d.EncodeArg(domain.NewID(baseID)))

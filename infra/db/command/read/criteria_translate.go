@@ -180,16 +180,16 @@ func compileWhere(e criteria.Expr, resolve core.FieldResolver, dialect Dialect, 
 	return v.sb.String(), v.args, nil
 }
 
-// scopeGate returns the soft-delete condition for the scope on the source's
-// resolved soft-delete column ("" = no gate). A source with soft-delete
+// scopeGate returns the DeletedAt condition for the scope on the source's
+// resolved DeletedAt column ("" = no gate). A source with DeletedAt
 // disabled has no marker column, so every scope yields no gate.
 // qualifier is the table-qualified prefix (already quoted) to prepend to the
-// soft-delete column, or "" to leave it bare. It MUST be non-empty when the
-// query JOINs another soft-deletable table (a role's SharedBase, whose own
+// DeletedAt column, or "" to leave it bare. It MUST be non-empty when the
+// query JOINs another archivable table (a role's SharedBase, whose own
 // deleted_at would otherwise make the bare column reference ambiguous), matching
 // how the leading ID is qualified under the same joins.
 func scopeGate(s criteria.Scope, schema *TableSchema, dialect Dialect, qualifier string) string {
-	col, ok := schema.SoftDeleteColumn()
+	col, ok := schema.DeletedAtColumn()
 	if !ok {
 		return ""
 	}
@@ -208,16 +208,16 @@ func scopeGate(s criteria.Scope, schema *TableSchema, dialect Dialect, qualifier
 }
 
 // childScopeFilter maps the scope to the trailing child filter clause on the
-// child source's soft-delete column: active children are gated on
+// child source's DeletedAt column: active children are gated on
 // <col> IS NULL; under any archived scope children load unfiltered so the
 // unarchive cascade sees every child via AllAggregateItems(). A child with
-// soft-delete disabled is never gated.
+// DeletedAt disabled is never gated.
 // qualifier follows the same rule as scopeGate's: pass the (quoted) owning table
-// when the child query JOINs another soft-deletable table — as the base-child
+// when the child query JOINs another archivable table — as the base-child
 // loader does (base child JOINed to the role, both carrying deleted_at) — and ""
 // for a single-table child SELECT where the bare column is unambiguous.
 func childScopeFilter(s criteria.Scope, schema *TableSchema, dialect Dialect, qualifier string) string {
-	col, ok := schema.SoftDeleteColumn()
+	col, ok := schema.DeletedAtColumn()
 	if !ok {
 		return ""
 	}

@@ -109,9 +109,9 @@ func View(name string) *ViewDefinition {
 	return &ViewDefinition{name: name}
 }
 
-// Schema attaches the view's root core.TableSchema (Go↔column + ID + soft-delete) —
+// Schema attaches the view's root core.TableSchema (Go↔column + ID + DeletedAt) —
 // the same schema the repository declares. The composer uses it for the root
-// ID + soft-delete column; the reader uses it to translate root leaf fields
+// ID + DeletedAt column; the reader uses it to translate root leaf fields
 // between Go field names and physical columns. Reuse the repo's schema so write
 // and read agree.
 func (v *ViewDefinition) Schema(ts *core.TableSchema) *ViewDefinition {
@@ -143,13 +143,17 @@ func (v *ViewDefinition) Version(n int) *ViewDefinition {
 // DeleteOnArchive opts the view in to dropping archived rows from the Mongo
 // projection. By default (flag absent), an ARCHIVED outbox event triggers a
 // compose+upsert so the document survives with deleted_at populated — the
-// read side mirrors PostgreSQL symmetrically, and the composer omits the
-// WHERE deleted_at IS NULL filter on both the root SELECT and on every
-// EmbedMany/Embed source. When this builder is called, ARCHIVED events
-// instead remove the document from the Mongo collection and the composer
-// applies the WHERE deleted_at IS NULL filter on root + every embed source
-// (cascade: the flag governs the whole aggregate projection — there is no
-// per-embed override).
+// read side mirrors the relational backend symmetrically, and the composer
+// omits the WHERE deleted_at IS NULL filter on the root SELECT and on every
+// archiving relational source of the aggregate's closure (child
+// collections, the role-remnant pick). When this builder is called, ARCHIVED
+// events instead remove the document from the Mongo collection and the
+// composer applies the WHERE deleted_at IS NULL filter across that closure
+// (cascade: the flag governs the aggregate's own projection — there is no
+// per-child override). Embed segments are untouched by the flag: an embed is
+// a Mongo read of its source and always mirrors the source's own archive
+// state (the read-time archived strip is governed by the SOURCE schema's
+// DeletedAt declaration, not by this flag).
 //
 // Reader semantics are unchanged: by-id and list queries default to
 // IncludeArchived=false (filter applied at the Mongo layer); the consumer
@@ -161,27 +165,28 @@ func (v *ViewDefinition) Version(n int) *ViewDefinition {
 // declaring this option.
 //
 // Hard DELETE always removes the document from Mongo regardless of this flag —
-// delete-on-archive covers soft deletes only.
+// delete-on-archive covers archives only.
 func (v *ViewDefinition) DeleteOnArchive() *ViewDefinition {
 	v.deleteOnArchive = true
 	return v
 }
 
-// Embed declares a 1:1 external enrichment: the leg's document (matched by the
-// PARENT's ParentID column, named on the returned binding via .On(col)) lands under
-// leg.externalName as a sub-document. The leg MUST be a JoinUpstream leg (an
-// external collection); a JoinView leg is rejected at boot (a registered view is
-// joined at read time with query.ComposedView, never materialized into another
-// view). .On(col) is mandatory — the binding it returns is the only route back to
-// the ViewDefinition, so a missing join key does not compile.
+// Embed declares a 1:1 materialized enrichment: the leg's document (matched by
+// the PARENT's ParentID column, named on the returned binding via .On(col)) lands
+// under leg.externalName as a sub-document. The leg is either a JoinUpstream leg
+// (a locally materialized upstream collection) or a JoinView leg (a local
+// registered view, materialized into this one and kept fresh by the recompose
+// ripple every write to that view signals; the view→view embed graph must be
+// acyclic, boot-enforced). .On(col) is mandatory — the binding it returns is the
+// only route back to the ViewDefinition, so a missing join key does not compile.
 func (v *ViewDefinition) Embed(leg *Leg) *embedBinding {
 	return &embedBinding{v: v, leg: leg, many: false}
 }
 
-// EmbedMany declares a 1:N external enrichment: every leg document whose ParentID
+// EmbedMany declares a 1:N materialized enrichment: every leg document whose ParentID
 // column (named on the returned binding via .On(col)) points at this view's _id
-// lands under leg.externalName as an array. Same JoinUpstream-only rule and
-// mandatory .On as Embed.
+// lands under leg.externalName as an array. Same leg kinds (JoinUpstream or
+// JoinView) and mandatory .On as Embed.
 func (v *ViewDefinition) EmbedMany(leg *Leg) *embedManyBinding {
 	return &embedManyBinding{v: v, leg: leg}
 }
@@ -334,15 +339,16 @@ func (v *ViewDefinition) RootTable() string {
 // to the yaml / framework defaults when this returns 0.
 func (v *ViewDefinition) MaxLimitValue() int64 { return v.maxLimit }
 
-// A leg (JoinUpstream / JoinView, defined in composed_view.go) deliberately
-// exposes NO Embed/EmbedMany builder AND carries no embeds of its own: embeds are
-// single-level BY CONSTRUCTION, declaration through compose. Only a ViewDefinition
-// declares embeds (top-level, any number); an embed's leg cannot nest a further
-// one, so embed-of-embed is not expressible and does not compile. The reason it
-// was never a supported surface: the recompose-ripple that keeps an embed fresh
-// is one-hop and only reaches a view's top-level embeds, so a nested segment
-// would materialize once and then drift silently. To reach two external hops,
-// embed each at the top level, or join at read time with query.ComposedView.
+// A leg (JoinUpstream / JoinView, defined in leg.go) deliberately
+// exposes NO Embed/EmbedMany builder AND carries no embeds of its own: embed
+// declarations are single-level BY CONSTRUCTION. Only a ViewDefinition declares
+// embeds (top-level, any number); an embed's leg cannot nest a further one
+// inline, so embed-of-embed is not expressible and does not compile. Depth
+// beyond one hop comes from a JoinView leg's OWN declared embeds instead: the
+// materialized segment carries whatever that view's document carries, and it
+// stays fresh because every write to a view signals the views embedding it
+// (the chain terminates because the embed graph is acyclic, boot-enforced by
+// appendEmbedCycles).
 
 // JoinColumn returns the physical column the composer joins this embed on — the
 // column named via .On(...): the LEG's ParentID column for a one-to-many embed, the

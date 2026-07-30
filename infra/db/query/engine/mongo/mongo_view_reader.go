@@ -208,7 +208,7 @@ func (r *MongoViewReader) ReadPage(ctx context.Context, view string, c queries.R
 	colFilter := translateFilterKeys(node, c.Filter)
 	colSort := translateSortFields(node, c.Sort)
 	colProj := translateProjectionKeys(node, c.Projection)
-	sdCol, sdOn := node.SoftDeleteColumn()
+	sdCol, sdOn := node.DeletedAtColumn()
 
 	filter := bson.M{}
 	applyFilter(filter, colFilter)
@@ -295,16 +295,16 @@ func (r *MongoViewReader) ReadPage(ctx context.Context, view string, c queries.R
 	autoIncluded := projectionAutoIncluded(colProj, colSort)
 	// A consumer projection that narrows a SEGMENT's subfields
 	// (?fields=dependents.name, ?fields=product.code, a GraphQL selection set)
-	// would drop that segment's soft-delete column from the returned entries —
+	// would drop that segment's DeletedAt column from the returned entries —
 	// and the default-read archived strip below can only hide what the entries
-	// still carry. Auto-include the soft-delete column of every segment that
+	// still carry. Auto-include the DeletedAt column of every segment that
 	// declares one (child collections, roles, materialized embeds, EmbedInChild
 	// enrichments alike), and remember it for post-strip removal so the wire
 	// shape still matches the consumer's request exactly.
 	childSDCleanup := map[string]string{}
 	if len(colProj) > 0 && !c.IncludeArchived {
 		var extra []string
-		extra, childSDCleanup = childSoftDeleteAutoIncludes(colProj, node.ChildSoftDeletePaths())
+		extra, childSDCleanup = childDeletedAtAutoIncludes(colProj, node.ChildDeletedAtPaths())
 		autoIncluded = append(autoIncluded, extra...)
 	}
 	if len(colProj) > 0 {
@@ -373,16 +373,16 @@ func (r *MongoViewReader) ReadPage(ctx context.Context, view string, c queries.R
 	for _, d := range docs {
 		m := map[string]any(d)
 		normalizeBSONValues(m)
-		// The root-level soft-delete gate ran in the Mongo filter; the same
+		// The root-level DeletedAt gate ran in the Mongo filter; the same
 		// default-read contract applies to EVERY segment below it — child
 		// collections, roles, materialized embed segments and EmbedInChild
 		// enrichments — each filtered only where its own source schema declares
-		// a soft-delete column. Skipped wholesale when the caller asked for
+		// a DeletedAt column. Skipped wholesale when the caller asked for
 		// archived data, which is what makes one flag reveal every level.
 		if !c.IncludeArchived {
 			node.StripArchivedChildren(m)
 		}
-		// Remove the auto-included child soft-delete columns from the kept
+		// Remove the auto-included child DeletedAt columns from the kept
 		// entries — the strip has already consumed them, and the consumer's
 		// projection did not ask for them. Paths cover three shapes: a child
 		// collection at the root ("Dependents"), a SharedBaseView role segment
@@ -432,7 +432,7 @@ func (r *MongoViewReader) ReadByID(ctx context.Context, view, id string, c queri
 		return r.composed.ReadByID(ctx, view, id, c)
 	}
 	node := r.resolveViewSchema(view)
-	sdCol, sdOn := node.SoftDeleteColumn()
+	sdCol, sdOn := node.DeletedAtColumn()
 	col := r.mongo.collFn(r.resolver.Active(view).String())
 	filter := bson.M{"_id": id}
 	applyFilter(filter, translateFilterKeys(node, c.Filter))
@@ -770,7 +770,7 @@ func translateFilterValue(v any) any {
 
 var _ queries.ViewReader = (*MongoViewReader)(nil)
 
-// removeChildSDColumn removes the auto-included soft-delete column at the
+// removeChildSDColumn removes the auto-included DeletedAt column at the
 // given doc-field path — a child collection ([]any of maps), a SharedBaseView
 // role segment (a single map) or, dotted, a role's own child collection.
 // Intermediate segments are always maps (dotted paths only descend through
@@ -821,25 +821,25 @@ func projectionTouchesField(colProj map[string]int, docField string) bool {
 	return false
 }
 
-// childSoftDeleteAutoIncludes decides which segment soft-delete columns a
+// childDeletedAtAutoIncludes decides which segment DeletedAt columns a
 // consumer projection must transparently re-include so the default-read
 // archived strip can still see (and hide) archived content, plus the per-field
 // cleanup map (docField -> sdCol) used to remove those columns from the
 // returned docs afterwards so the wire shape matches the request. "child" in
 // the name is historical: the paths cover every segment kind that declares a
-// soft-delete column, not only child collections.
+// DeletedAt column, not only child collections.
 //
 // It fires ONLY when the projection narrows to a STRICT SUBFIELD of the child
 // (dependents.name): that projection would otherwise drop the child's
-// soft-delete column, blinding the strip. When the WHOLE child field is
+// DeletedAt column, blinding the strip. When the WHOLE child field is
 // projected (?fields=dependents) the returned object ALREADY carries its
-// soft-delete column, so re-including "dependents.deleted_at" is both
+// DeletedAt column, so re-including "dependents.deleted_at" is both
 // unnecessary and an ILLEGAL projection — Mongo rejects an inclusion that lists
 // a field and a subpath of it together (Location31249 "Path collision at
 // <field>.<sub>"). The whole-field case is skipped, so it behaves exactly like
 // a no-?fields read for that segment: the strip sees the column, and
 // ToGoDoc/the Response DTO drop it on the wire.
-func childSoftDeleteAutoIncludes(colProj map[string]int, childSDPaths map[string]string) ([]string, map[string]string) {
+func childDeletedAtAutoIncludes(colProj map[string]int, childSDPaths map[string]string) ([]string, map[string]string) {
 	var autoIncluded []string
 	cleanup := map[string]string{}
 	for docField, sdCol := range childSDPaths {

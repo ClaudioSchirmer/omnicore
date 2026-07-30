@@ -320,21 +320,21 @@ shutdown:
     collection: users                    # MANDATORY — local Mongo collection (no collision with views/other subs)
     consumerGroup: ""                    # default "&lt;service&gt;-upstream-&lt;topic&gt;"
     workers: 2                            # default 1 (aggregate-id hashed → ordered per aggregate)
-    filter: [id, name, email]            # allowlist of surviving fields; nil/empty → full payload kept (KEEP the soft-delete column if the mirror reflects archives — see note)
+    filter: [id, name, email]            # allowlist of surviving fields; nil/empty → full payload kept (KEEP the DeletedAt column if the mirror reflects archives — see note)
     deleteOnArchive: false               # default false (ARCHIVED keeps doc with deleted_at); true → remove doc
     startFrom: latest                    # latest (default) | earliest | offset:&lt;N&gt;
     onUpstreamDelete: cascade            # cascade (default) | anonymize | keep — GDPR propagation on DELETED
     anonymizeFields: [name, email]       # REQUIRED when onUpstreamDelete=anonymize; ignored otherwise
     acknowledgeOffsetReset: false        # REQUIRED true for startFrom: offset:&lt;N&gt; under a non-dev profile</code></pre>
     <p class="note">
-        <strong>The soft-delete column must survive the <code>filter</code>.</strong> The <code>filter</code> is a string
+        <strong>The DeletedAt column must survive the <code>filter</code>.</strong> The <code>filter</code> is a string
         allowlist applied to the <em>raw upstream payload</em> — it consults no schema. An <code>ARCHIVED</code> upstream
-        event carries the soft-delete column (e.g. <code>deleted_at</code>) populated; if the <code>filter</code> drops it,
+        event carries the DeletedAt column (e.g. <code>deleted_at</code>) populated; if the <code>filter</code> drops it,
         the local mirror can never reflect the archive (archived rows look active forever). The boot enforces this
-        (<strong>§8.5</strong>, checked for embeds AND for a <code>ComposedView</code>'s external legs — both apply the mirror's soft-delete column): when a view's external <a href="#table-schema"><code>JoinUpstream</code> embed</a> of this
-        collection declares <code>.SoftDelete(col)</code> but the <code>filter</code> omits that column, the boot
-        <strong>aborts</strong> naming the offender; when no embedding schema declares a soft-delete column at all, the boot
-        logs an <em>advisory</em> (the consumer often cannot know whether the upstream soft-deletes). An empty
+        (checked for embeds AND for a <code>ComposedView</code>'s external legs — both apply the mirror's DeletedAt column): when a view's external <a href="#table-schema"><code>JoinUpstream</code> embed</a> of this
+        collection declares <code>.DeletedAt(col)</code> but the <code>filter</code> omits that column, the boot
+        <strong>aborts</strong> naming the offender; when no embedding schema declares a DeletedAt column at all, the boot
+        logs an <em>advisory</em> (the consumer often cannot know whether the upstream archives). An empty
         <code>filter</code> mirrors the full payload, so the column always survives.
     </p>
     <p class="note">

@@ -21,13 +21,13 @@ import (
 //
 //   - base identity: id = UUIDv5(naturalKey) → UPSERT (insert-or-update shared
 //     fields, last-write-wins). The base is found (and reactivated) regardless of
-//     its own soft-delete state — its lifecycle is DERIVED from the roles
+//     its own DeletedAt state — its lifecycle is DERIVED from the roles
 //     (convergence below), and the KeepOrphan dormancy contract depends on the
 //     natural key finding its way back. No read-back: app and infra derive the
 //     same id.
 //   - role: at most ONE ACTIVE row per identity per role table — the framework
 //     invariant, enforced on INSERT (an existing ACTIVE role is a 409; an
-//     ARCHIVED role is INVISIBLE to the probe — soft-delete is delete, here like
+//     ARCHIVED role is INVISIBLE to the probe — DeletedAt is delete, here like
 //     on every other read/write path — so the insert proceeds) and on UNARCHIVE
 //     (reviving a remnant while another row of the same role table is active is
 //     the same 409 — vetoUnarchiveWithActiveSibling). TOTAL row multiplicity is
@@ -45,7 +45,7 @@ import (
 // The base's lifecycle is driven by its roles (unified lifecycle convergence
 // below); a role hard-delete routes through convergeBaseAfterHardDelete — the
 // orphan purge (OrphanPolicy DeleteWhenUnreferenced, database-vetoable) or the
-// orphan archive (KeepOrphan + a soft-deletable base).
+// orphan archive (KeepOrphan + a archivable base).
 //
 // Covers the FLAT role path (a role is typically a simple entity). All SQL is
 // dialect-agnostic via the Dialect.
@@ -110,7 +110,7 @@ func scalarString(v any) string {
 }
 
 // findActiveRoleByFK probes the role table for an ACTIVE row referencing the
-// shared base id. Soft-delete IS delete on this probe, exactly like every other
+// shared base id. DeletedAt IS delete on this probe, exactly like every other
 // read/write path: an archived role row is invisible here, so the caller's
 // insert proceeds and the dev's DDL arbitrates the collision with any physical
 // remnant (shared-ID → the primary key; separate ParentID → a full UNIQUE(fk) blocks
@@ -121,7 +121,7 @@ func scalarString(v any) string {
 func (b *BaseEngine) findActiveRoleByFK(ctx context.Context, tx WriteTx, d Dialect, schema *TableSchema, fkCol, baseID string) (bool, error) {
 	q := "SELECT 1 FROM " + d.QuoteIdent(schema.Table()) +
 		" WHERE " + d.QuoteIdent(fkCol) + " = " + d.Placeholder(1)
-	if sd, hasSD := schema.SoftDeleteColumn(); hasSD {
+	if sd, hasSD := schema.DeletedAtColumn(); hasSD {
 		q += " AND " + d.QuoteIdent(sd) + " IS NULL"
 	}
 	q = d.ApplyLimit(q, 1)
@@ -199,7 +199,7 @@ func (b *BaseEngine) insertWithBase(ctx persistence.RequestContext, entity domai
 		return domain.WriteResult{}, SingleNotificationError(entity.EntityName(), schema.IDColumn(), domain.EntityAlreadyAddedNotification{})
 	}
 	// No ACTIVE role → insert. An ARCHIVED remnant is deliberately not looked
-	// for (soft-delete is delete): if one exists, the schema's own constraints
+	// for (DeletedAt is delete): if one exists, the schema's own constraints
 	// veto or admit this insert — shared-ID collides on the primary key (the
 	// repository's ConstraintBinding maps it), a separate-ParentID model decides
 	// through its own unique index.
@@ -407,12 +407,12 @@ const sharedBasePurgeSavepoint = "omnicore_sb_purge"
 //     destruction is never invisible; the returned bundle carries the event to
 //     the caller's post-commit echo.
 //   - otherwise (KeepOrphan, still referenced, or vetoed) → the standing
-//     lifecycle convergence: with no ACTIVE role left, a soft-deletable base
-//     archives (with its native children); without SoftDelete on the base,
+//     lifecycle convergence: with no ACTIVE role left, a archivable base
+//     archives (with its native children); without DeletedAt on the base,
 //     nothing happens.
 //
 // A no-op for a role without a shared base, and — before any identity work —
-// for a base with neither DeleteWhenUnreferenced nor SoftDelete (nothing could
+// for a base with neither DeleteWhenUnreferenced nor DeletedAt (nothing could
 // change). Roles to count come from the base's registry (every role that
 // declared .SharedBase); the just-deleted role row is already gone, so it
 // never counts itself.
@@ -429,7 +429,7 @@ func (b *BaseEngine) convergeBaseAfterHardDelete(
 	if !ok {
 		return AuditBundle{}, false, nil
 	}
-	_, baseHasSD := base.SoftDeleteColumn()
+	_, baseHasSD := base.DeletedAtColumn()
 	wantsPurge := base.OrphanPolicyValue() == DeleteWhenUnreferenced
 	if !wantsPurge && !baseHasSD {
 		return AuditBundle{}, false, nil // no lifecycle to drive
@@ -534,7 +534,7 @@ func (b *BaseEngine) purgeOrphanBase(ctx context.Context, tx WriteTx, d Dialect,
 
 // --- unified lifecycle convergence -------------------------------------------
 //
-// The shared base is a mini-root of its native children: it has soft-delete and
+// The shared base is a mini-root of its native children: it has DeletedAt and
 // its lifecycle is DRIVEN by its roles. The single rule, per verb:
 //   - a role becomes/stays active (insert / update / unarchive) → the base must be
 //     active: reactivateBaseIfArchived.
@@ -543,7 +543,7 @@ func (b *BaseEngine) purgeOrphanBase(ctx context.Context, tx WriteTx, d Dialect,
 //   - a role is hard-deleted (delete) → the base converges per OrphanPolicy:
 //     convergeBaseAfterHardDelete (the vetoable purge, or the orphan archive).
 // All three no-op without a shared base; the first two also no-op when the base
-// has no soft-delete (then only the orphan branch applies). They read the base /
+// has no DeletedAt (then only the orphan branch applies). They read the base /
 // role state and only write on a real transition (idempotent), so a steady-state
 // write costs at most one probing SELECT and no redundant UPDATE.
 
@@ -609,9 +609,9 @@ func (b *BaseEngine) vetoUnarchiveWithActiveSibling(ctx context.Context, tx Writ
 	if !ok || fkCol == schema.IDColumn() {
 		return nil
 	}
-	sd, hasSD := schema.SoftDeleteColumn()
+	sd, hasSD := schema.DeletedAtColumn()
 	if !hasSD {
-		return nil // unreachable on the unarchive verb (requireSoftDelete gates it); defensive
+		return nil // unreachable on the unarchive verb (requireDeletedAt gates it); defensive
 	}
 	_, nk := sharedBaseValues(base, src)
 	if err := requireNaturalKey(base, nk); err != nil {
@@ -633,16 +633,16 @@ func (b *BaseEngine) vetoUnarchiveWithActiveSibling(ctx context.Context, tx Writ
 	return rows.Err()
 }
 
-// baseLifecycleTarget resolves the shared base + its soft-delete column + the
+// baseLifecycleTarget resolves the shared base + its DeletedAt column + the
 // deterministic id from the role schema and entity, reporting ok=false (skip)
-// when there is no shared base or the base has no soft-delete (lifecycle is then
+// when there is no shared base or the base has no DeletedAt (lifecycle is then
 // hard-only, governed by the orphan refcount).
 func baseLifecycleTarget(schema *TableSchema, src domain.Entity) (base *TableSchema, sd, baseID string, ok bool, err error) {
 	base, _, has := schema.SharedBaseRef()
 	if !has {
 		return nil, "", "", false, nil
 	}
-	sd, hasSD := base.SoftDeleteColumn()
+	sd, hasSD := base.DeletedAtColumn()
 	if !hasSD {
 		return nil, "", "", false, nil
 	}
@@ -654,8 +654,8 @@ func baseLifecycleTarget(schema *TableSchema, src domain.Entity) (base *TableSch
 }
 
 // cascadeBaseLifecycle archives (stamp != nil — the operation's writeNow()
-// value bound as the soft-delete stamp) or unarchives (stamp == nil — SQL NULL)
-// the base row and each soft-deletable native child, gated so it is idempotent
+// value bound as the DeletedAt stamp) or unarchives (stamp == nil — SQL NULL)
+// the base row and each archivable native child, gated so it is idempotent
 // (a no-op when already in the target state). The BASE-ROW statement also bumps
 // `revision = revision + 1` — a lifecycle transition is a base-data change and
 // must move the last-writer-wins token like any other base write; the gate
@@ -679,7 +679,7 @@ func cascadeBaseLifecycle(ctx context.Context, tx WriteTx, d Dialect, base *Tabl
 		}
 	}
 	for _, bc := range base.ChildSchemas() {
-		csd, ok := bc.SoftDeleteColumn()
+		csd, ok := bc.DeletedAtColumn()
 		if !ok {
 			continue
 		}
@@ -699,10 +699,10 @@ func cascadeBaseLifecycle(ctx context.Context, tx WriteTx, d Dialect, base *Tabl
 }
 
 // baseIsArchived reports whether the base row currently carries a non-null
-// soft-delete marker (read once, for idempotency).
+// DeletedAt marker (read once, for idempotency).
 func baseIsArchived(ctx context.Context, tx WriteTx, d Dialect, base *TableSchema, sd, baseID string) (bool, error) {
 	// Project the archived state as ANSI CASE 1/0 rather than scanning the raw
-	// soft-delete timestamp (a non-null timestamp cannot be scanned into a
+	// DeletedAt timestamp (a non-null timestamp cannot be scanned into a
 	// []byte under Postgres' binary protocol — it works only while NULL, which
 	// is exactly the case reactivateBaseIfArchived probes for) or a bare
 	// boolean-valued expression (`col IS NOT NULL` in a SELECT list is a
@@ -726,13 +726,13 @@ func baseIsArchived(ctx context.Context, tx WriteTx, d Dialect, base *TableSchem
 }
 
 // anyActiveRole reports whether any role row referencing the base (instance ∪
-// engine registry) is ACTIVE (not soft-deleted). A role without a soft-delete
+// engine registry) is ACTIVE (not archived). A role without a DeletedAt
 // column has no archived state, so every existing row counts as active.
 func (b *BaseEngine) anyActiveRole(ctx context.Context, tx WriteTx, d Dialect, base *TableSchema, baseID string) (bool, error) {
 	for _, rr := range b.effectiveReferencingRoles(base) {
 		q := "SELECT 1 FROM " + d.QuoteIdent(rr.Table) + " WHERE " + d.QuoteIdent(rr.ParentIDColumn) + " = " + d.Placeholder(1)
-		if rr.SoftDeleteCol != "" {
-			q += " AND " + d.QuoteIdent(rr.SoftDeleteCol) + " IS NULL"
+		if rr.DeletedAtCol != "" {
+			q += " AND " + d.QuoteIdent(rr.DeletedAtCol) + " IS NULL"
 		}
 		q = d.ApplyLimit(q, 1)
 		rows, err := tx.Query(ctx, q, d.EncodeArg(domain.NewID(baseID)))

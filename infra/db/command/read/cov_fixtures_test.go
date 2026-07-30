@@ -34,9 +34,9 @@ var covAggSchema = NewTableSchema[*covAgg]("cov_aggs").
 	ID("id").
 	Revision("revision").
 	Field("Name", "name").
-	SoftDelete("deleted_at").
+	DeletedAt("deleted_at").
 	Child(NewTableSchema[covChild]("cov_children").
 		ID("id").
 		ParentID("cov_agg_id").
 		Field("Label", "label").
-		SoftDelete("deleted_at"))
+		DeletedAt("deleted_at"))

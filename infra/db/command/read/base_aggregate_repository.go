@@ -63,12 +63,12 @@ func NewBaseAggregateRepository[T domain.Entity](eng RelationalEngine, newEntity
 // WithSchema declares the mandatory TableSchema once and threads it into BOTH
 // the write binding (via BaseRepository.WithSchema) and the read loader
 // (Loader.WithSchema) — one declaration feeds write, criteria and scan. The
-// Modes() ⟺ SoftDelete and the aggregate-depth (no grandchildren) boot checks
+// Modes() ⟺ DeletedAt and the aggregate-depth (no grandchildren) boot checks
 // run here; the field-existence + bijection checks already ran while the
 // TableSchema was built. A violation panics at construction, not on the first
 // request.
 func (r *BaseAggregateRepository[T]) WithSchema(schema *TableSchema) *BaseAggregateRepository[T] {
-	// ID-declared + aggregate-depth + Modes() ⟺ SoftDelete run in the shared
+	// ID-declared + aggregate-depth + Modes() ⟺ DeletedAt run in the shared
 	// BaseRepository.WithSchema (which also sets r.Schema). The aggregate path
 	// adds the boundary cross-check below + threads the schema into the loader.
 	r.BaseRepository.WithSchema(schema)

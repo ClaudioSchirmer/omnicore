@@ -91,7 +91,7 @@ func TestComposeBatch_OwnChildrenGroupedPerRoot(t *testing.T) {
 	})
 	childSchema := core.NewTableSchema[csComposeVO]("lines").ID("id").ParentID("order_id").Field("Label", "label")
 	rootWithChild := core.NewTableSchema[*builderTestEntity]("orders").
-		ID("id").Field("Name", "name").SoftDelete("deleted_at").
+		ID("id").Field("Name", "name").DeletedAt("deleted_at").
 		Child(childSchema)
 	c := NewComposer(eng)
 	view := View("orders").Version(1).Schema(rootWithChild)

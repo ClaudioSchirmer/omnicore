@@ -29,7 +29,7 @@ import (
 //
 // Timestamps by verb: INSERTED carries created_at + updated_at; UPDATED only
 // updated_at (an absent key is untouched by the consumer's $set, so the
-// document keeps its original created_at); ARCHIVED carries the soft-delete
+// document keeps its original created_at); ARCHIVED carries the DeletedAt
 // stamp; UNARCHIVED an explicit null. DELETED does not come through here —
 // buildDeletePayload keeps the historical structural keys and only ADDS.
 const (
@@ -137,10 +137,10 @@ func buildWritePayload(
 		if u := schema.UpdatedAtColumn(); u != "" {
 			out[u] = now
 		}
-		// The composed document ALWAYS carries the soft-delete key (SELECT *
+		// The composed document ALWAYS carries the DeletedAt key (SELECT *
 		// includes the NULL column); the projected document must match shape,
 		// so a fresh row travels with an explicit null.
-		if sd, ok := schema.SoftDeleteColumn(); ok {
+		if sd, ok := schema.DeletedAtColumn(); ok {
 			out[sd] = nil
 		}
 	case "UPDATED":
@@ -148,11 +148,11 @@ func buildWritePayload(
 			out[u] = now
 		}
 	case "ARCHIVED":
-		if sd, ok := schema.SoftDeleteColumn(); ok {
+		if sd, ok := schema.DeletedAtColumn(); ok {
 			out[sd] = now
 		}
 	case "UNARCHIVED":
-		if sd, ok := schema.SoftDeleteColumn(); ok {
+		if sd, ok := schema.DeletedAtColumn(); ok {
 			out[sd] = nil
 		}
 	}
@@ -201,7 +201,7 @@ func appendChildrenBlocks(out map[string]any, schema *TableSchema, root *domain.
 			// An archive op carries the exact stamp the child UPDATE bound, so
 			// the surgical read-side edit lands the same value.
 			if op == "archive" {
-				if sd, ok := child.SoftDeleteColumn(); ok {
+				if sd, ok := child.DeletedAtColumn(); ok {
 					item[sd] = now
 				}
 			}
@@ -229,7 +229,7 @@ func appendChildrenBlocks(out map[string]any, schema *TableSchema, root *domain.
 
 // childOpName maps the persister's OperationOf categorization to the payload's
 // "_op" verb. A Removed child mirrors removeChild's actual effect: hard-delete
-// for a base-child without soft-delete, archive otherwise.
+// for a base-child without DeletedAt, archive otherwise.
 func childOpName(op domain.AggregateItemOp, softVerb, fromBase bool, child *TableSchema) string {
 	if softVerb {
 		return "noop"
@@ -241,7 +241,7 @@ func childOpName(op domain.AggregateItemOp, softVerb, fromBase bool, child *Tabl
 		return "update"
 	case domain.OpDelete:
 		if fromBase {
-			if _, ok := child.SoftDeleteColumn(); !ok {
+			if _, ok := child.DeletedAtColumn(); !ok {
 				return "delete"
 			}
 		}

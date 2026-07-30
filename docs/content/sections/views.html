@@ -103,7 +103,7 @@
 <p>
     The base is attached through <code>.Schema(base)</code> — exactly like a regular view attaches its root schema — and it
     must come before the first <code>.Role(...)</code> (each role is validated against the base). <code>_id</code> is the
-    base's deterministic ID; the document's soft-delete gate is the base's (the identity hides only when its last active
+    base's deterministic ID; the document's DeletedAt gate is the base's (the identity hides only when its last active
     role archives). An absent role is an explicit <code>null</code> segment; an archived role stores its
     <code>deleted_at</code> and is stripped on default reads unless <code>?includeArchived</code>. Everything a regular view
     declares applies unchanged (Version participates in the rebuild hash — the role set included — indexes/validators,
@@ -176,19 +176,19 @@
     <li>the ACTIVE row (<code>fk = baseID AND deleted_at IS NULL</code>) — the one-active-role
         invariant caps it at one;</li>
     <li>otherwise the most recently archived remnant (<code>ORDER BY deleted_at DESC</code>), stored
-        WITH its soft-delete timestamp — hidden on default reads, surfaced by
+        WITH its DeletedAt timestamp — hidden on default reads, surfaced by
         <code>?includeArchived=true</code>;</li>
     <li>otherwise the explicit <code>null</code> segment.</li>
 </ol>
 <p>
     Remnant HISTORY is deliberately not enumerated in the person document — the role views with
-    <code>?includeArchived</code> cover it. A role without <code>SoftDelete</code> has no archived
+    <code>?includeArchived</code> cover it. A role without <code>DeletedAt</code> has no archived
     state; a single ParentID fetch decides its segment.
 </p>
 
 <h4>Lifecycle &amp; sync</h4>
 <ul>
-    <li><strong>Document gate = the base's soft-delete.</strong> The base archives only when its last
+    <li><strong>Document gate = the base's DeletedAt.</strong> The base archives only when its last
         active role archives (write-side convergence), so the root <code>deleted_at</code> gate hides
         the person exactly when every specialization is archived. <code>DeleteOnArchive()</code> means
         "drop the document when the BASE archives" — and archived role rows stop composing at all.</li>
@@ -278,7 +278,7 @@ query.JoinUpstream(
 // … then on the verb:  Embed(buyer).On("buyer_id")   // parent ParentID → source ID (1:1)</code></pre>
 <div class="box">
     <strong>Declaring a column is a TRANSLATION, not a projection — the schema removes nothing.</strong>
-    An external schema is the Go ↔ column name map and the semantic declaration (ID, soft-delete) of a collection
+    An external schema is the Go ↔ column name map and the semantic declaration (ID, DeletedAt) of a collection
     someone else materializes; it never shapes what is STORED. The mirror keeps whatever the subscription's
     <code>filter:</code> let through, and a materialized embed segment copies that mirror document whole —
     including columns this schema never declares. Undeclared columns are simply invisible to the read side
@@ -289,12 +289,13 @@ query.JoinUpstream(
     storage, remove it from the <code>filter:</code>; narrowing the schema narrows only the wire.
 </div>
 
-<h3 id="views-embed">Embed and EmbedMany — composing external data</h3>
+<h3 id="views-embed">Embed and EmbedMany — composing materialized sources</h3>
 <p>
     The two materialized constructors (<code>View</code> and <code>SharedBaseView</code>) reach OTHER data through an
     embed. <code>Embed(leg).On(col)</code> is 1:1 (a single sub-document, <code>null</code> when unresolved);
     <code>EmbedMany(leg).On(col)</code> is 1:N (an array, empty when none). Both take a <em>leg</em> built with
-    <code>query.JoinUpstream(core.NewExternalSchema(...), goName, externalName)</code>. The verb names the join column via
+    <code>query.JoinUpstream(core.NewExternalSchema(...), goName, externalName)</code> (an upstream mirror) or
+    <code>query.JoinView(view, goName, externalName)</code> (a local registered view). The verb names the join column via
     the mandatory terminal <code>.On(col)</code> — the ParentID lives on the parent for 1:1 and on the leg (child) for 1:N — and
     the verb's multiplicity, not the declaration, fixes which side holds it.
 </p>
@@ -305,7 +306,7 @@ query.JoinUpstream(
     <a href="#views~views-embed-view">Embedding a local view</a> below). An aggregate's own children, siblings and shared
     base already decompose out of the declarative schema, so declaring them as an embed would be a redundant second path
     (a write-anchored embed source is a fatal boot error). A <code>ComposedView</code> is not a source in either family:
-    it stores nothing, so there is no collection to read and no write to signal on. A boot guard (§8.3) still rejects a
+    it stores nothing, so there is no collection to read and no write to signal on. A boot guard still rejects a
     <em>JoinUpstream</em> leg whose collection happens to name a local view — that leg carries no view to signal on and no
     subscription materializes it; declare the view leg with <code>query.JoinView</code> instead.
 </div>
@@ -425,7 +426,7 @@ func SaleView() *query.ViewDefinition {
     <code>EmbedInChild</code> enrichment and a <code>ComposedView</code> leg all behave the same way.
     <br><br>
     <strong>The one condition is the SOURCE SCHEMA.</strong> A segment is filtered if — and only if — the schema behind
-    it declares <code>SoftDelete(column)</code>. That declaration is what tells the framework the source HAS an archived
+    it declares <code>DeletedAt(column)</code>. That declaration is what tells the framework the source HAS an archived
     state and which column carries it; without it there is nothing to filter on and the segment is never touched. So the
     behavior is not a property of the verb you used, of the leg kind, or of whether the data is materialized: it is a
     property of the declaration.
@@ -434,17 +435,17 @@ func SaleView() *query.ViewDefinition {
 core.NewExternalSchema("upstream_products").
     ID("id").
     Field("Name", "name").
-    SoftDelete("deleted_at")     // ← the declaration that switches the rule on
+    DeletedAt("deleted_at")     // ← the declaration that switches the rule on
 
 // This one does not → its segment is always returned as stored.
 core.NewExternalSchema("upstream_regions").
     ID("id").
-    Field("Name", "name")        // no SoftDelete: no archived concept, no filtering</code></pre>
+    Field("Name", "name")        // no DeletedAt: no archived concept, no filtering</code></pre>
 <div class="note">
     <strong>For an upstream mirror, declaring it is only half the job.</strong> The column must also survive the
     subscription's <code>filter:</code> allowlist — otherwise the archive marker never reaches the mirror and there is
-    nothing to filter on, however the schema is declared. The boot cross-checks the two and aborts on the contradiction
-    (<strong>§8.5</strong>), for every consumer of the mirror: a view that embeds it and a
+    nothing to filter on, however the schema is declared. The boot cross-checks the two and aborts on the
+    contradiction, for every consumer of the mirror: a view that embeds it and a
     <a href="#views~views-composed">ComposedView</a> that links it.
 </div>
 <p>
@@ -460,7 +461,7 @@ core.NewExternalSchema("upstream_regions").
         Mongo query, so an archived document does not appear at all (it also governs counts and pagination).</li>
 </ul>
 <table>
-    <tbody><tr><th>What is archived</th><th>Source declares <code>SoftDelete</code>?</th><th>Default read</th><th>With <code>?includeArchived=true</code></th></tr>
+    <tbody><tr><th>What is archived</th><th>Source declares <code>DeletedAt</code>?</th><th>Default read</th><th>With <code>?includeArchived=true</code></th></tr>
     <tr>
         <td>The EMBEDDING document itself</td>
         <td>its own root schema</td>
@@ -498,7 +499,7 @@ core.NewExternalSchema("upstream_regions").
         <td>Returned.</td>
     </tr>
     <tr>
-        <td>Anything whose source declares <strong>no</strong> <code>SoftDelete</code></td>
+        <td>Anything whose source declares <strong>no</strong> <code>DeletedAt</code></td>
         <td>—</td>
         <td colspan="2"><strong>Returned as stored, always.</strong> No declaration, no archived concept, no filtering —
             the flag is a silent no-op there, never an error.</td>
@@ -592,7 +593,7 @@ core.NewExternalSchema("upstream_regions").
     </tr>
     <tr>
         <td>Whether a segment HAS an archived state</td><td>Developer of the SOURCE</td>
-        <td><code>SoftDelete(column)</code> on the embedded view's / mirror's schema</td>
+        <td><code>DeletedAt(column)</code> on the embedded view's / mirror's schema</td>
         <td>The declaration is the switch: declared ⇒ archived content is hidden on a default read and revealed by
             <code>?includeArchived=true</code>; not declared ⇒ the segment is never filtered. Same rule in both
             families — see <a href="#views~views-embed">the archived rule</a>.</td>
@@ -620,7 +621,7 @@ core.NewExternalSchema("upstream_regions").
     <strong>Fatal boot, never silent.</strong> The embed family aborts the boot with an explanatory message on every
     declaration that exceeds the contract: a write-anchored embed source (an aggregate's own data already projects), a
     <code>JoinUpstream</code> leg whose collection has no matching <code>UpstreamSubscription</code> — or names a local
-    view, which is <code>JoinView</code>'s job (§8.3); a <code>JoinView</code> leg naming a view no
+    view, which is <code>JoinView</code>'s job; a <code>JoinView</code> leg naming a view no
     <code>ReadableFeature</code> contributes; a <strong>cycle</strong> in the view→view embed graph (printed as the exact
     loop); a missing covering index — on the parent join column of a 1:1 <code>Embed</code>, on
     <code>&lt;childSegment&gt;.&lt;fk&gt;</code> for an <code>EmbedInChild</code>, or on the join column
@@ -726,8 +727,8 @@ func (f *GadgetFeature) ComposedViews() []*query.ComposedViewDefinition {
         <code>.On(column)</code>; the ParentID always points at the other side's ID/<code>_id</code>; who holds
         it follows the multiplicity: on a 1:1 <code>Link</code> the <em>primary</em> holds it
         (<code>primary.on → leg._id</code>), on a 1:N <code>LinkMany</code> the <em>leg</em> holds it
-        (<code>leg.on → primary._id</code>). The same <code>.On</code> is the join for embeds too, so one leg
-        (<code>JoinUpstream</code>) plugs into both an <code>Embed</code> and a <code>Link</code>. The builder speaks
+        (<code>leg.on → primary._id</code>). The same <code>.On</code> is the join for embeds too, so the same leg
+        (either kind) plugs into both an <code>Embed</code> and a <code>Link</code>. The builder speaks
         physical columns, like <code>Indexes</code> and every other view declaration.
     </p>
     <table>
@@ -738,7 +739,7 @@ func (f *GadgetFeature) ComposedViews() []*query.ComposedViewDefinition {
         <tr><td><code>LinkMany(leg)…On(col)</code></td><td>1:N — array under the leg's doc segment, in the declared order, capped per parent; empty array when absent. <code>OrderBy</code>/<code>Desc</code>/<code>MaxLinkManyLimit</code> chain before the terminal <code>.On</code> = leg ParentID.</td></tr>
         <tr><td><code>LinkInChild(childSchema, leg).On(col)</code></td><td>1:1 read-time enrichment INSIDE a primary child array — the non-materialized twin of a view's <code>EmbedInChild</code>. <code>childSchema</code> MUST be a native child of the primary (boot-validated); <code>.On</code> = the element's ParentID → the leg's <code>_id</code>; the sub-document lands under the leg's Go segment inside each element, addressed at <code>&lt;childSeg&gt;.&lt;legSeg&gt;.&lt;field&gt;</code> for filter/<code>?fields=</code>. 1:1 only (no <code>LinkManyInChild</code>); no covering index (no ripple). Accepts both leg kinds.</td></tr>
         <tr><td><code>JoinView(view, goName, ext)</code></td><td>Internal leg: any registered view — it arrives exactly as a direct read of that view would (children, embeds, roles, archived strip included). Both segment names mandatory.</td></tr>
-        <tr><td><code>JoinUpstream(schema, goName, ext)</code></td><td>External leg: a locally materialized <code>UpstreamSubscription</code> collection described by its <code>NewExternalSchema</code>. A leg NEVER reads another service's live storage — materialize first, then compose. Also the only leg an <code>Embed</code>/<code>EmbedMany</code>/<code>EmbedInChild</code> accepts.</td></tr>
+        <tr><td><code>JoinUpstream(schema, goName, ext)</code></td><td>External leg: a locally materialized <code>UpstreamSubscription</code> collection described by its <code>NewExternalSchema</code>. A leg NEVER reads another service's live storage — materialize first, then compose.</td></tr>
         <tr><td><code>.On(column)</code></td><td>The join column, named on the verb (see the multiplicity rule above). Mandatory — the verb's binding routes back to the builder only through <code>.On</code>, so a missing join does not compile.</td></tr>
         <tr><td><code>OrderBy(column)</code> / <code>.Desc()</code></td><td>1:N only — the segment's deterministic order (default <code>_id</code> ascending), applied per request here and the read-time twin of <a href="#views~views-embed-order"><code>EmbedMany.OrderBy</code></a>, which materializes it instead. Not an end-user sort (see the control matrix below).</td></tr>
         <tr><td><code>MaxLinkManyLimit(n)</code></td><td>LinkMany only — and the ONE knob with no materialized twin (a stored array cannot forget what it truncated): the per-parent item ceiling. Cascade: per-link → yaml <code>query.maxLinkManyLimit</code> → framework default 100. At the ceiling the segment truncates silently and deterministically: "the first N in the declared order" — payload protection, not validation. The full set lives on the leg's own view, paginated.</td></tr>
@@ -957,7 +958,7 @@ same envelope, same projector, same pagination block as any view read</div>
             <a href="#views~views-composed-vs">Two ways to compose</a>.</li>
         <li><strong>One knob, every leg (R8):</strong> <code>?includeArchived=true</code> lifts the
             primary's gate AND each leg's own gate. A schema is not required to declare
-            <code>SoftDelete</code> — a leg without one has no archived concept; the knob is a silent
+            <code>DeletedAt</code> — a leg without one has no archived concept; the knob is a silent
             no-op there, never an error.</li>
         <li><strong>No cross-leg snapshot:</strong> each view keeps its own CDC latency; a composed read
             inherits each leg's freshness individually and adds no cross-view guarantee. It is the same
@@ -1007,10 +1008,10 @@ same envelope, same projector, same pagination block as any view read</div>
         <tr><td>Per-parent ceiling on a 1:N segment</td><td><strong>None</strong> — a materialized array cannot forget what it truncated (nothing could promote the cut elements back)</td><td><code>MaxLinkManyLimit</code> — the array is rebuilt per request, so a cap is honest</td></tr>
         <tr>
             <td>An ARCHIVED source inside a segment</td>
-            <td><strong>Hidden on a default read</strong> when the source schema declares <code>SoftDelete</code> — the
+            <td><strong>Hidden on a default read</strong> when the source schema declares <code>DeletedAt</code> — the
                 1:1 segment becomes <code>null</code>, a 1:N element leaves the array. Applied to the fetched document,
                 so the row itself always survives.</td>
-            <td><strong>Hidden on a default read</strong> when the leg schema declares <code>SoftDelete</code> — the gate
+            <td><strong>Hidden on a default read</strong> when the leg schema declares <code>DeletedAt</code> — the gate
                 is added to the leg's own query, so the archived document is never fetched.</td>
         </tr>
         <tr>
@@ -1020,7 +1021,7 @@ same envelope, same projector, same pagination block as any view read</div>
                 mode of the whole read.</td>
         </tr>
         <tr>
-            <td>A source declaring NO <code>SoftDelete</code></td>
+            <td>A source declaring NO <code>DeletedAt</code></td>
             <td colspan="2"><strong>Never filtered, in either family.</strong> The declaration is what defines an
                 archived state; without it the flag is a silent no-op on that segment.</td>
         </tr>
@@ -1031,7 +1032,7 @@ same envelope, same projector, same pagination block as any view read</div>
             <td colspan="2"><strong>Both families hide archived content by default and reveal it with the same flag; the
                 only thing that varies is WHERE the gate runs — inside the leg's query (link) or on the fetched document
                 (embed). What decides IF it runs is neither family nor verb: it is whether the source schema declares
-                <code>SoftDelete</code>.</strong></td>
+                <code>DeletedAt</code>.</strong></td>
         </tr>
         <tr><td>Choose it when…</td><td>The composition is hot, filtered across sources, or read far more than sources change</td><td>The link is arbitrary/occasional, freshness beats latency, the 1:N segment needs a declared order/cap, or you refuse another synced collection</td></tr>
     </tbody></table>

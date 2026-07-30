@@ -271,14 +271,14 @@ func TestValidateUpstreamSubscriptions_AccumulatesAllViolations(t *testing.T) {
 	}
 }
 
-// extEmbedSD is extEmbed with a soft-delete column declared on the external
-// schema — the §8.5 guard reads it via Source().SchemaDef().SoftDeleteColumn().
-func extEmbedSD(collection, softDelete, as string) *query.Leg {
+// extEmbedSD is extEmbed with a DeletedAt column declared on the external
+// schema — the §8.5 guard reads it via Source().SchemaDef().DeletedAtColumn().
+func extEmbedSD(collection, deletedAt, as string) *query.Leg {
 	return query.JoinUpstream(
-		core.NewExternalSchema(collection).ID("id").SoftDelete(softDelete), as, collection)
+		core.NewExternalSchema(collection).ID("id").DeletedAt(deletedAt), as, collection)
 }
 
-func TestGuardSoftDeleteFilter_AbortsWhenFilterDropsSoftDelete(t *testing.T) {
+func TestGuardDeletedAtFilter_AbortsWhenFilterDropsDeletedAt(t *testing.T) {
 	subs := []UpstreamSubscription{
 		{Topic: "users.events", Collection: "users", Filter: []string{"id", "name"}},
 	}
@@ -287,17 +287,17 @@ func TestGuardSoftDeleteFilter_AbortsWhenFilterDropsSoftDelete(t *testing.T) {
 			Embed(extEmbedSD("users", "deleted_at", "Buyer")).On("buyer_id").
 			Version(1),
 	}
-	violations, warnings := guardSoftDeleteFilter(subs, views, nil)
+	violations, warnings := guardDeletedAtFilter(subs, views, nil)
 	if len(violations) != 1 || !strings.Contains(violations[0], "§8.5") ||
 		!strings.Contains(violations[0], "deleted_at") {
 		t.Errorf("expected one §8.5 abort naming deleted_at, got %v", violations)
 	}
 	if len(warnings) != 0 {
-		t.Errorf("expected no warnings when the soft-delete column is declared, got %v", warnings)
+		t.Errorf("expected no warnings when the DeletedAt column is declared, got %v", warnings)
 	}
 }
 
-func TestGuardSoftDeleteFilter_OKWhenFilterKeepsSoftDelete(t *testing.T) {
+func TestGuardDeletedAtFilter_OKWhenFilterKeepsDeletedAt(t *testing.T) {
 	subs := []UpstreamSubscription{
 		{Topic: "users.events", Collection: "users", Filter: []string{"id", "name", "deleted_at"}},
 	}
@@ -306,13 +306,13 @@ func TestGuardSoftDeleteFilter_OKWhenFilterKeepsSoftDelete(t *testing.T) {
 			Embed(extEmbedSD("users", "deleted_at", "Buyer")).On("buyer_id").
 			Version(1),
 	}
-	violations, warnings := guardSoftDeleteFilter(subs, views, nil)
+	violations, warnings := guardDeletedAtFilter(subs, views, nil)
 	if len(violations) != 0 || len(warnings) != 0 {
-		t.Errorf("a filter keeping the soft-delete column must be clean, got violations=%v warnings=%v", violations, warnings)
+		t.Errorf("a filter keeping the DeletedAt column must be clean, got violations=%v warnings=%v", violations, warnings)
 	}
 }
 
-func TestGuardSoftDeleteFilter_OKWhenFilterEmpty(t *testing.T) {
+func TestGuardDeletedAtFilter_OKWhenFilterEmpty(t *testing.T) {
 	subs := []UpstreamSubscription{
 		{Topic: "users.events", Collection: "users"}, // nil filter mirrors the full payload
 	}
@@ -321,24 +321,24 @@ func TestGuardSoftDeleteFilter_OKWhenFilterEmpty(t *testing.T) {
 			Embed(extEmbedSD("users", "deleted_at", "Buyer")).On("buyer_id").
 			Version(1),
 	}
-	violations, warnings := guardSoftDeleteFilter(subs, views, nil)
+	violations, warnings := guardDeletedAtFilter(subs, views, nil)
 	if len(violations) != 0 || len(warnings) != 0 {
 		t.Errorf("an empty filter must be clean (mirrors everything), got violations=%v warnings=%v", violations, warnings)
 	}
 }
 
-func TestGuardSoftDeleteFilter_WarnsWhenNoSoftDeleteDeclared(t *testing.T) {
+func TestGuardDeletedAtFilter_WarnsWhenNoDeletedAtDeclared(t *testing.T) {
 	subs := []UpstreamSubscription{
 		{Topic: "users.events", Collection: "users", Filter: []string{"id", "name"}},
 	}
 	views := []*query.ViewDefinition{
 		query.View("orders").
-			Embed(extEmbed("users", "Buyer")).On("buyer_id"). // no soft-delete declared
+			Embed(extEmbed("users", "Buyer")).On("buyer_id"). // no DeletedAt declared
 			Version(1),
 	}
-	violations, warnings := guardSoftDeleteFilter(subs, views, nil)
+	violations, warnings := guardDeletedAtFilter(subs, views, nil)
 	if len(violations) != 0 {
-		t.Errorf("a missing soft-delete declaration must not abort the boot, got %v", violations)
+		t.Errorf("a missing DeletedAt declaration must not abort the boot, got %v", violations)
 	}
 	if len(warnings) != 1 || !strings.Contains(warnings[0], "§8.5") ||
 		!strings.Contains(warnings[0], "Advisory") {
@@ -346,18 +346,18 @@ func TestGuardSoftDeleteFilter_WarnsWhenNoSoftDeleteDeclared(t *testing.T) {
 	}
 }
 
-func TestGuardSoftDeleteFilter_SkipsCollectionEmbeddedByNoView(t *testing.T) {
+func TestGuardDeletedAtFilter_SkipsCollectionEmbeddedByNoView(t *testing.T) {
 	subs := []UpstreamSubscription{
 		{Topic: "users.events", Collection: "users", Filter: []string{"id"}},
 	}
 	// No view embeds "users" → §8.3 owns the never-embedded case; §8.5 stays silent.
-	violations, warnings := guardSoftDeleteFilter(subs, nil, nil)
+	violations, warnings := guardDeletedAtFilter(subs, nil, nil)
 	if len(violations) != 0 || len(warnings) != 0 {
 		t.Errorf("a never-embedded mirror must be silent in §8.5, got violations=%v warnings=%v", violations, warnings)
 	}
 }
 
-func TestValidateUpstreamSubscriptions_SurfacesSoftDeleteAbort(t *testing.T) {
+func TestValidateUpstreamSubscriptions_SurfacesDeletedAtAbort(t *testing.T) {
 	subs := []UpstreamSubscription{
 		{Topic: "users.events", Collection: "users",
 			OnUpstreamDelete: UpstreamDeleteCascade,
@@ -378,7 +378,7 @@ func TestValidateUpstreamSubscriptions_SurfacesSoftDeleteAbort(t *testing.T) {
 	}
 }
 
-func TestValidateUpstreamSubscriptions_LogsSoftDeleteAdvisory(t *testing.T) {
+func TestValidateUpstreamSubscriptions_LogsDeletedAtAdvisory(t *testing.T) {
 	subs := []UpstreamSubscription{
 		{Topic: "users.events", Collection: "users",
 			OnUpstreamDelete: UpstreamDeleteCascade,
@@ -387,7 +387,7 @@ func TestValidateUpstreamSubscriptions_LogsSoftDeleteAdvisory(t *testing.T) {
 	}
 	views := []*query.ViewDefinition{
 		query.View("orders").
-			Embed(extEmbed("users", "Buyer")).On("buyer_id"). // no soft-delete → advisory only
+			Embed(extEmbed("users", "Buyer")).On("buyer_id"). // no DeletedAt → advisory only
 			Indexes(query.Index("buyer_id")).
 			Version(1),
 	}
@@ -422,15 +422,15 @@ func TestBlockedEmbedSource(t *testing.T) {
 }
 
 // §8.5 through the LINK family. A mirror has two kinds of consumer and both
-// apply its soft-delete column: a view that EMBEDS it (materialized gate) and a
+// apply its DeletedAt column: a view that EMBEDS it (materialized gate) and a
 // ComposedView that LINKS it (per-request gate, applied by the composed reader
 // on the leg's own schema). A filter that drops the column breaks them
 // identically — archived upstream rows look active forever — so the guard must
 // see both. It used to walk embeds only, which let the same silent-archive
 // misconfiguration in through the composed door.
-func TestGuardSoftDeleteFilter_CoversComposedLegs(t *testing.T) {
+func TestGuardDeletedAtFilter_CoversComposedLegs(t *testing.T) {
 	legSchema := core.NewExternalSchema("upstream_products").ID("id").
-		Field("Name", "name").SoftDelete("deleted_at")
+		Field("Name", "name").DeletedAt("deleted_at")
 	primary := query.View("orders").Version(1).Schema(core.NewExternalSchema("orders").ID("id"))
 	composed := query.ComposedView("orders_full").
 		Primary(primary).
@@ -441,25 +441,25 @@ func TestGuardSoftDeleteFilter_CoversComposedLegs(t *testing.T) {
 	}}
 
 	// No view embeds it: before the fix this returned nothing at all.
-	violations, _ := guardSoftDeleteFilter(subs, nil, []*query.ComposedViewDefinition{composed})
+	violations, _ := guardDeletedAtFilter(subs, nil, []*query.ComposedViewDefinition{composed})
 	if len(violations) != 1 || !strings.Contains(violations[0], "deleted_at") {
-		t.Fatalf("a composed leg whose filter drops the declared soft-delete column must abort boot, got %v", violations)
+		t.Fatalf("a composed leg whose filter drops the declared DeletedAt column must abort boot, got %v", violations)
 	}
 
 	// Keeping the column in the filter is the fix — and it must pass.
 	subs[0].Filter = []string{"id", "name", "deleted_at"}
-	violations, _ = guardSoftDeleteFilter(subs, nil, []*query.ComposedViewDefinition{composed})
+	violations, _ = guardDeletedAtFilter(subs, nil, []*query.ComposedViewDefinition{composed})
 	if len(violations) != 0 {
-		t.Fatalf("a filter that keeps the soft-delete column must pass, got %v", violations)
+		t.Fatalf("a filter that keeps the DeletedAt column must pass, got %v", violations)
 	}
 
-	// A mirror nobody declares a soft-delete for stays an ADVISORY, not an abort —
+	// A mirror nobody declares a DeletedAt for stays an ADVISORY, not an abort —
 	// the framework cannot know whether that upstream archives at all.
 	plain := query.ComposedView("orders_plain").Primary(primary).
 		Link(query.JoinUpstream(core.NewExternalSchema("upstream_plain").ID("id"), "P", "p")).On("p_id")
 	subs2 := []UpstreamSubscription{{Topic: "t", Collection: "upstream_plain", Filter: []string{"id"}}}
-	violations, warnings := guardSoftDeleteFilter(subs2, nil, []*query.ComposedViewDefinition{plain})
+	violations, warnings := guardDeletedAtFilter(subs2, nil, []*query.ComposedViewDefinition{plain})
 	if len(violations) != 0 || len(warnings) != 1 {
-		t.Fatalf("an undeclared soft-delete must warn, never abort: violations=%v warnings=%v", violations, warnings)
+		t.Fatalf("an undeclared DeletedAt must warn, never abort: violations=%v warnings=%v", violations, warnings)
 	}
 }

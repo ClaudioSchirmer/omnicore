@@ -40,7 +40,7 @@ const legFetchConcurrency = 8
 //   - A sort path into a leg segment is rejected with the canonical Schema
 //     violation (400) — segment order is declared on the link, not wire-set.
 //   - `?includeArchived` propagates to the primary and every leg; a leg whose
-//     schema declares no soft-delete has no gate (the knob is a no-op there).
+//     schema declares no DeletedAt has no gate (the knob is a no-op there).
 //   - onlyTotal short-circuits before any leg is fetched.
 //
 // Cursor context: the composed listing context includes the segment filters
@@ -447,15 +447,15 @@ func (r *ComposedViewReader) attachLegs(ctx context.Context, rt *composedRuntime
 }
 
 // legBaseFilter assembles the leg's Mongo filter shared by every fetch of one
-// request: the translated segment filters plus the leg's own soft-delete gate
-// (a leg without soft-delete has no gate — the includeArchived knob is a
+// request: the translated segment filters plus the leg's own DeletedAt gate
+// (a leg without DeletedAt has no gate — the includeArchived knob is a
 // no-op there, never an error).
 func (r *ComposedViewReader) legBaseFilter(leg *legRuntime, s *composedSplit, includeArchived bool) bson.M {
 	filter := bson.M{}
 	if lf := s.legFilters[leg.segKey]; len(lf) > 0 {
 		applyFilter(filter, translateFilterKeys(leg.node, lf))
 	}
-	if sdCol, sdOn := leg.node.SoftDeleteColumn(); sdOn && !includeArchived {
+	if sdCol, sdOn := leg.node.DeletedAtColumn(); sdOn && !includeArchived {
 		filter[sdCol] = nil
 	}
 	return filter

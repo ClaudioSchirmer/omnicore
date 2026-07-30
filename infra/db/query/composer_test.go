@@ -11,7 +11,7 @@ import (
 //
 // buildFetchSQL now names the read columns explicitly (never SELECT *); these
 // tests pass a fixed two-column read list ["id", "name"] and assert the exact
-// SELECT shape. The cascade tests below pass ["id"] (no soft-delete column) so a
+// SELECT shape. The cascade tests below pass ["id"] (no DeletedAt column) so a
 // "deleted_at" substring can only come from the WHERE filter, never the column
 // list — keeping the filter-presence assertions precise.
 

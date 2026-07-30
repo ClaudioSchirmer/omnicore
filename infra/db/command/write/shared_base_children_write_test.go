@@ -12,7 +12,7 @@ import (
 // White-box coverage for SharedBase native children (base-children) on the write
 // path: a base-child is routed to the base's deterministic id (ParentID column = the
 // base ParentID, not the role ParentID), Removed archives (or hard-deletes when the base has
-// no soft-delete), the orphan refcount removes base-children before the base, and
+// no DeletedAt), the orphan refcount removes base-children before the base, and
 // an empty natural key is rejected. Driven through the recording fake WriteTx.
 
 type bcAddr struct {
@@ -40,19 +40,19 @@ func (e *bcRole) AggregateChildren() []domain.AggregateValueObject {
 }
 
 // bcRoleSchema declares endereco as a NATIVE CHILD OF THE BASE (pessoa), shared by
-// every role. softDelete toggles the all-or-nothing lifecycle on base + base-child.
+// every role. deletedAt toggles the all-or-nothing lifecycle on base + base-child.
 // The purge policy is declared explicitly (the default is KeepOrphan) so the
 // orphan-delete test below exercises the purge branch.
-func bcRoleSchema(softDelete bool) *TableSchema {
+func bcRoleSchema(deletedAt bool) *TableSchema {
 	base := NewSharedBaseSchema("pessoa").Revision("revision").ID("id").Field("Name", "name").Field("Document", "document").
 		NaturalID("document").OrphanPolicy(DeleteWhenUnreferenced)
 	addr := NewTableSchema[bcAddr]("endereco").ID("id").ParentID("pessoa_id").Field("Street", "street")
-	if softDelete {
-		base = base.SoftDelete("deleted_at")
-		addr = addr.SoftDelete("deleted_at")
+	if deletedAt {
+		base = base.DeletedAt("deleted_at")
+		addr = addr.DeletedAt("deleted_at")
 	}
 	base = base.Child(addr)
-	role := NewTableSchema[*bcRole]("aluno").ID("id").Revision("revision").Field("Matricula", "matricula").SoftDelete("deleted_at")
+	role := NewTableSchema[*bcRole]("aluno").ID("id").Revision("revision").Field("Matricula", "matricula").DeletedAt("deleted_at")
 	return role.SharedBase(base, "pessoa_id")
 }
 
@@ -89,7 +89,7 @@ func TestBaseChild_InsertRoutesToBaseFK(t *testing.T) {
 	}
 }
 
-func TestBaseChild_RemovedArchivesWhenSoftDelete(t *testing.T) {
+func TestBaseChild_RemovedArchivesWhenDeletedAt(t *testing.T) {
 	e := &bcRole{Name: "Ana", Document: "D1", Matricula: "M1"}
 	e.SetID(domain.NewID(uuid.NewString()))
 	e.AggregateConstructor([]domain.AggregateValueObject{bcAddr{ID: "addr-1", Street: "Old"}})
@@ -108,11 +108,11 @@ func TestBaseChild_RemovedArchivesWhenSoftDelete(t *testing.T) {
 	if !hasStmt(tx.execs, func(s string) bool {
 		return strings.HasPrefix(s, "UPDATE endereco SET deleted_at = $1")
 	}) {
-		t.Errorf("a Removed base-child WITH soft-delete must archive (UPDATE endereco SET deleted_at), got %v", tx.execs)
+		t.Errorf("a Removed base-child WITH DeletedAt must archive (UPDATE endereco SET deleted_at), got %v", tx.execs)
 	}
 }
 
-func TestBaseChild_RemovedHardDeletesWhenNoSoftDelete(t *testing.T) {
+func TestBaseChild_RemovedHardDeletesWhenNoDeletedAt(t *testing.T) {
 	e := &bcRole{Name: "Ana", Document: "D1", Matricula: "M1"}
 	e.SetID(domain.NewID(uuid.NewString()))
 	e.AggregateConstructor([]domain.AggregateValueObject{bcAddr{ID: "addr-1", Street: "Old"}})
@@ -129,7 +129,7 @@ func TestBaseChild_RemovedHardDeletesWhenNoSoftDelete(t *testing.T) {
 		t.Fatalf("Update: %v", err)
 	}
 	if !hasStmt(tx.execs, func(s string) bool { return strings.HasPrefix(s, "DELETE FROM endereco") }) {
-		t.Errorf("a Removed base-child WITHOUT soft-delete must hard-delete (DELETE FROM endereco), got %v", tx.execs)
+		t.Errorf("a Removed base-child WITHOUT DeletedAt must hard-delete (DELETE FROM endereco), got %v", tx.execs)
 	}
 }
 

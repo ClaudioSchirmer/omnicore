@@ -69,14 +69,14 @@ func aggCustomerSchema() *core.TableSchema {
 		ID("id").
 		Field("Name", "name").
 		Field("Email", "email").
-		SoftDelete("deleted_at").
+		DeletedAt("deleted_at").
 		CreatedAt("created_at").
 		UpdatedAt("updated_at").
 		Child(core.NewTableSchema[aggChannel]("agg_channels").
 			ID("id").
 			ParentID("agg_customer_id").
 			Field("Label", "label").
-			SoftDelete("deleted_at").
+			DeletedAt("deleted_at").
 			CreatedAt("created_at").
 			UpdatedAt("updated_at"))
 }
@@ -377,14 +377,14 @@ func TestPostgres_InsertAggregate_RespectsChildTableAndFKOverride(t *testing.T) 
 	schema := core.NewTableSchema[*aggInvoice]("agg_invoices").
 		ID("id").
 		Field("Reference", "reference").
-		SoftDelete("deleted_at").
+		DeletedAt("deleted_at").
 		CreatedAt("created_at").
 		UpdatedAt("updated_at").
 		Child(core.NewTableSchema[lineItem]("tb_lines").
 			ID("id").
 			ParentID("invoice_id").
 			Field("Amount", "amount").
-			SoftDelete("deleted_at").
+			DeletedAt("deleted_at").
 			CreatedAt("created_at").
 			UpdatedAt("updated_at"))
 	if _, err := pg.Insert(testCtx(), ins, schema, noHook); err != nil {

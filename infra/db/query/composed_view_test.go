@@ -19,7 +19,7 @@ func cvPrimarySchema() *core.TableSchema {
 		ID("id").
 		Field("Code", "code").
 		Field("MirrorID", "mirror_id").
-		SoftDelete("deleted_at")
+		DeletedAt("deleted_at")
 }
 
 func cvPrimaryView() *ViewDefinition {
@@ -31,7 +31,7 @@ func cvNotesSchema() *core.TableSchema {
 		ID("id").
 		Field("GadgetID", "gadget_id").
 		Field("Text", "text").
-		SoftDelete("deleted_at")
+		DeletedAt("deleted_at")
 }
 
 func cvNotesView() *ViewDefinition {
@@ -407,7 +407,7 @@ func cvLineSchema() *core.TableSchema {
 func cvPrimaryWithChildSchema() *core.TableSchema {
 	return core.NewTableSchema[composedGadget]("gadgets").
 		ID("id").Field("Code", "code").Field("MirrorID", "mirror_id").
-		SoftDelete("deleted_at").
+		DeletedAt("deleted_at").
 		Child(cvLineSchema())
 }
 

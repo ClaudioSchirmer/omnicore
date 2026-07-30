@@ -43,7 +43,7 @@ func ecGroupLoader(rows [][]any) (*AggregateLoader[*ecGroupEntity], *string, *in
 		}}, nil
 	}), func() *ecGroupEntity { return &ecGroupEntity{} }).
 		WithSchema(NewTableSchema[*ecGroupEntity]("listings").
-			ID("id").Field("Category", "category").Field("Cents", "monthly_rent").Field("Area", "built_area").SoftDelete("deleted_at"))
+			ID("id").Field("Category", "category").Field("Cents", "monthly_rent").Field("Area", "built_area").DeletedAt("deleted_at"))
 	return l, &gotSQL, &queries
 }
 
@@ -175,7 +175,7 @@ func TestAggregateBy_CriteriaFilterApplies(t *testing.T) {
 		return &fakeDBRows{}, nil
 	}), func() *ecGroupEntity { return &ecGroupEntity{} }).
 		WithSchema(NewTableSchema[*ecGroupEntity]("listings").
-			ID("id").Field("Category", "category").Field("Cents", "monthly_rent").SoftDelete("deleted_at"))
+			ID("id").Field("Category", "category").Field("Cents", "monthly_rent").DeletedAt("deleted_at"))
 
 	q := criteria.Where(criteria.Gt("Cents", 100))
 	if _, err := l.AggregateBy(context.Background(), q, By("Category"), Count()); err != nil {

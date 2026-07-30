@@ -26,7 +26,7 @@ func licChildSchema() *core.TableSchema {
 
 func licPrimary() *query.ViewDefinition {
 	root := core.NewTableSchema[licGadget]("lic_gadgets").ID("id").Field("Code", "code").
-		SoftDelete("deleted_at").Child(licChildSchema())
+		DeletedAt("deleted_at").Child(licChildSchema())
 	return query.View("lic_gadgets").Version(1).Schema(root)
 }
 

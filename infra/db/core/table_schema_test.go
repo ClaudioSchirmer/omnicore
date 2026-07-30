@@ -30,20 +30,20 @@ func assertPanics(t *testing.T, name string, fn func()) {
 
 // TestTableSchema_ManagedColumnBijection exercises the order-independent
 // collision enforcement over the full physical column set (ID + Field +
-// SoftDelete/CreatedAt/UpdatedAt). Each managed setter and ID must reject a
+// DeletedAt/CreatedAt/UpdatedAt). Each managed setter and ID must reject a
 // column already claimed by another slot, regardless of declaration order.
 func TestTableSchema_ManagedColumnBijection(t *testing.T) {
 	assertPanics(t, "CreatedAt vs UpdatedAt same column", func() {
 		NewTableSchema[schemaSample]("t").CreatedAt("ts").UpdatedAt("ts")
 	})
-	assertPanics(t, "SoftDelete vs CreatedAt same column", func() {
-		NewTableSchema[schemaSample]("t").SoftDelete("ts").CreatedAt("ts")
+	assertPanics(t, "DeletedAt vs CreatedAt same column", func() {
+		NewTableSchema[schemaSample]("t").DeletedAt("ts").CreatedAt("ts")
 	})
-	assertPanics(t, "Field then SoftDelete same column", func() {
-		NewTableSchema[schemaSample]("t").Field("Name", "deleted_at").SoftDelete("deleted_at")
+	assertPanics(t, "Field then DeletedAt same column", func() {
+		NewTableSchema[schemaSample]("t").Field("Name", "deleted_at").DeletedAt("deleted_at")
 	})
-	assertPanics(t, "SoftDelete then Field same column", func() {
-		NewTableSchema[schemaSample]("t").SoftDelete("deleted_at").Field("Name", "deleted_at")
+	assertPanics(t, "DeletedAt then Field same column", func() {
+		NewTableSchema[schemaSample]("t").DeletedAt("deleted_at").Field("Name", "deleted_at")
 	})
 	assertPanics(t, "Field then CreatedAt same column", func() {
 		NewTableSchema[schemaSample]("t").Field("Created", "created_at").CreatedAt("created_at")
@@ -149,8 +149,8 @@ func TestTableSchema_SingleDeclaration(t *testing.T) {
 	assertPanics(t, "ParentID twice", func() {
 		NewTableSchema[embedFixture]("c").ID("id").ParentID("a").ParentID("b")
 	})
-	assertPanics(t, "SoftDelete twice", func() {
-		NewTableSchema[schemaSample]("t").ID("id").SoftDelete("a").SoftDelete("b")
+	assertPanics(t, "DeletedAt twice", func() {
+		NewTableSchema[schemaSample]("t").ID("id").DeletedAt("a").DeletedAt("b")
 	})
 	assertPanics(t, "CreatedAt twice", func() {
 		NewTableSchema[schemaSample]("t").ID("id").CreatedAt("a").CreatedAt("b")
@@ -224,7 +224,7 @@ func TestTableSchema_Sibling_HappyPath(t *testing.T) {
 }
 
 // TestTableSchema_Sibling_BootGuards locks every declaration-time trava: a
-// sibling owns no lifecycle (SoftDelete), no ParentID, no ID (it borrows the owner's),
+// sibling owns no lifecycle (DeletedAt), no ParentID, no ID (it borrows the owner's),
 // no children, no nested sibling; it must be over the same type, built with
 // NewSiblingSchema, carry fields, and not collide table names. The kind-mismatch
 // guards on Sibling()/Child() are covered too.
@@ -253,8 +253,8 @@ func TestTableSchema_Sibling_DeclarationGuardsTeachTheDDLContract(t *testing.T) 
 	wantPanicContaining("ParentID on a sibling", "the shared ID IS the link", func() {
 		NewSiblingSchema[schemaSample]("s").ParentID("owner_id")
 	})
-	wantPanicContaining("SoftDelete on a sibling", "no lifecycle of its own", func() {
-		NewSiblingSchema[schemaSample]("s").SoftDelete("deleted_at")
+	wantPanicContaining("DeletedAt on a sibling", "no lifecycle of its own", func() {
+		NewSiblingSchema[schemaSample]("s").DeletedAt("deleted_at")
 	})
 	wantPanicContaining("CreatedAt on a sibling", "owner's CreatedAt/UpdatedAt already date that row", func() {
 		NewSiblingSchema[schemaSample]("s").CreatedAt("created_at")
@@ -274,8 +274,8 @@ func TestTableSchema_Sibling_DeclarationGuardsTeachTheDDLContract(t *testing.T) 
 func TestTableSchema_Sibling_BootGuards(t *testing.T) {
 	owner := func() *TableSchema { return NewTableSchema[schemaSample]("root").ID("id").Field("Name", "name") }
 
-	assertPanics(t, "SoftDelete on a sibling", func() {
-		owner().Sibling(NewSiblingSchema[schemaSample]("s").Field("Removed", "removed").SoftDelete("del"))
+	assertPanics(t, "DeletedAt on a sibling", func() {
+		owner().Sibling(NewSiblingSchema[schemaSample]("s").Field("Removed", "removed").DeletedAt("del"))
 	})
 	assertPanics(t, "ParentID on a sibling", func() {
 		owner().Sibling(NewSiblingSchema[schemaSample]("s").ParentID("fk").Field("Removed", "removed"))
@@ -416,7 +416,7 @@ func TestTableSchema_ValidDeclarationDoesNotPanic(t *testing.T) {
 		ID("id").
 		Field("Name", "name").
 		Field("Created", "created").
-		SoftDelete("deleted_at").
+		DeletedAt("deleted_at").
 		CreatedAt("created_at").
 		UpdatedAt("updated_at")
 	if got, _ := s.ColumnOf("Name"); got != "name" {

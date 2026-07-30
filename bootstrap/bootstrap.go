@@ -205,7 +205,7 @@ func runWithConfig(cfg *Config, wire func(Deps) Wiring) error {
 	upstreamSubs = applyUpstreamSubscriptionDefaults(upstreamSubs, cfg.Service)
 	// Composed views are collected HERE, before the subscription guards, because a
 	// mirror has TWO kinds of consumer — a view that EMBEDS it and a composed view
-	// that LINKS it — and both apply the mirror's soft-delete column. Both must
+	// that LINKS it — and both apply the mirror's DeletedAt column. Both must
 	// therefore be cross-checked against the subscription's filter (§8.5).
 	// Collection is a pure walk over the features; the composition's own
 	// validation still runs later, once the upstream collection set is known.
@@ -220,7 +220,7 @@ func runWithConfig(cfg *Config, wire func(Deps) Wiring) error {
 	}
 
 	// Schema is mandatory on every view — the read membrane (Go↔column) and the
-	// composer (ID + soft-delete) resolve through it, so a view without a root
+	// composer (ID + DeletedAt) resolve through it, so a view without a root
 	// schema would have no lossless mapping. Embed schemas are guaranteed by
 	// construction (JoinUpstream is the only embed source constructor); the root schema
 	// is the one a consumer could forget, so it is enforced here.

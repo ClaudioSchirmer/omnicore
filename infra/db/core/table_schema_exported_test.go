@@ -46,8 +46,8 @@ func TestTableSchema_ExportedWriteAccessors(t *testing.T) {
 	if !reflect.DeepEqual(update, []string{"updated_at"}) {
 		t.Errorf("UpdateNowColumns() = %v, want [updated_at]", update)
 	}
-	if col, ok := s.SoftDeleteColumn(); !ok || col != "deleted_at" {
-		t.Errorf("SoftDeleteColumn() = (%q,%v), want (deleted_at,true)", col, ok)
+	if col, ok := s.DeletedAtColumn(); !ok || col != "deleted_at" {
+		t.Errorf("DeletedAtColumn() = (%q,%v), want (deleted_at,true)", col, ok)
 	}
 	if got := s.ChildSchema("embedFixture"); got != child {
 		t.Errorf("ChildSchema(embedFixture) = %v, want the declared child", got)
@@ -130,10 +130,10 @@ func TestTableSchema_ValidateAnchored(t *testing.T) {
 	})
 }
 
-func TestValidateModes_SoftDeleteEnabledAllowsArchive(t *testing.T) {
+func TestValidateModes_DeletedAtEnabledAllowsArchive(t *testing.T) {
 	defer func() {
 		if r := recover(); r != nil {
-			t.Fatalf("ValidateModes with SoftDelete panicked: %v", r)
+			t.Fatalf("ValidateModes with DeletedAt panicked: %v", r)
 		}
 	}()
 	covFullSchema().ValidateModes([]domain.EntityMode{domain.ModeArchive, domain.ModeUnarchive})

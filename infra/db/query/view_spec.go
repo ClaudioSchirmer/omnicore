@@ -622,7 +622,7 @@ func (v *ViewDefinition) composedColumnSet() map[string]struct{} {
 // derived segment (mergeSharedBaseChildren), PLUS external embeds. The embed's
 // whole subtree is addressable at its doc field (e.g. "addresses"), and each
 // nested column is prefixed by it (e.g. "addresses.zip_code"). ParentID + the three
-// managed columns are included so a legitimately-indexed soft-delete / ParentID
+// managed columns are included so a legitimately-indexed DeletedAt / ParentID
 // column is not flagged.
 func collectComposedColumns(schema *core.TableSchema, embeds []embedDef, prefix string, set map[string]struct{}) {
 	if schema != nil {
@@ -703,7 +703,7 @@ func addComposedColumn(set map[string]struct{}, prefix, col string) {
 func addSchemaFlatColumns(set map[string]struct{}, prefix string, s *core.TableSchema) {
 	addComposedColumn(set, prefix, s.IDColumn())
 	addComposedColumn(set, prefix, s.ParentIDColumn())
-	sd, _ := s.SoftDeleteColumn()
+	sd, _ := s.DeletedAtColumn()
 	addComposedColumn(set, prefix, sd)
 	addComposedColumn(set, prefix, s.CreatedAtColumn())
 	addComposedColumn(set, prefix, s.UpdatedAtColumn())

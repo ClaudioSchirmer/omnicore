@@ -54,7 +54,7 @@ func flatPersonSchemaOn(table string) *core.TableSchema {
 		Field("Name", "name").
 		Field("Email", "email").
 		Field("Phone", "phone").
-		SoftDelete("deleted_at").
+		DeletedAt("deleted_at").
 		CreatedAt("created_at").
 		UpdatedAt("updated_at")
 }

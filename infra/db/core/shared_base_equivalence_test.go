@@ -18,8 +18,8 @@ func equivBase() *TableSchema {
 		Field("Name", "name").
 		Field("Document", "document").
 		NaturalID("document").
-		SoftDelete("deleted_at").
-		Child(NewTableSchema[equivAddr]("endereco").ID("id").ParentID("pessoa_id").Field("Street", "street").SoftDelete("deleted_at"))
+		DeletedAt("deleted_at").
+		Child(NewTableSchema[equivAddr]("endereco").ID("id").ParentID("pessoa_id").Field("Street", "street").DeletedAt("deleted_at"))
 }
 
 type equivAddr struct {
@@ -67,10 +67,10 @@ func TestAssertSharedBaseEquivalent_DivergenceAxes(t *testing.T) {
 		b := equivBase().OrphanPolicy(DeleteWhenUnreferenced)
 		mustPanicWith(t, "OrphanPolicy", func() { AssertSharedBaseEquivalent(equivBase(), b) })
 	})
-	t.Run("soft delete", func(t *testing.T) {
+	t.Run("archive", func(t *testing.T) {
 		b := equivBase()
-		b.softDelete = "removed_at"
-		mustPanicWith(t, "SoftDelete", func() { AssertSharedBaseEquivalent(equivBase(), b) })
+		b.deletedAt = "removed_at"
+		mustPanicWith(t, "DeletedAt", func() { AssertSharedBaseEquivalent(equivBase(), b) })
 	})
 	t.Run("field count", func(t *testing.T) {
 		b := equivBase().Field("Extra", "extra")
@@ -93,8 +93,8 @@ func TestAssertSharedBaseEquivalent_DivergenceAxes(t *testing.T) {
 			Field("Name", "name").
 			Field("Document", "document").
 			NaturalID("document").
-			SoftDelete("deleted_at").
-			Child(NewTableSchema[equivAddr]("enderecos").ID("id").ParentID("pessoa_id").Field("Street", "street").SoftDelete("deleted_at"))
+			DeletedAt("deleted_at").
+			Child(NewTableSchema[equivAddr]("enderecos").ID("id").ParentID("pessoa_id").Field("Street", "street").DeletedAt("deleted_at"))
 		mustPanicWith(t, "native child equivAddr", func() { AssertSharedBaseEquivalent(equivBase(), b) })
 	})
 }

@@ -31,12 +31,12 @@ type nestSale struct {
 type nestCustomer struct{ ID string }
 
 // productWithLines is the SOURCE view's schema: a root with one native child
-// collection that carries its own soft-delete lifecycle.
+// collection that carries its own DeletedAt lifecycle.
 func productWithLines() *core.TableSchema {
-	return core.NewTableSchema[nestProduct]("products").ID("id").SoftDelete("deleted_at").
+	return core.NewTableSchema[nestProduct]("products").ID("id").DeletedAt("deleted_at").
 		Field("Name", "name").
 		Child(core.NewTableSchema[nestLine]("product_lines").ID("id").ParentID("products_id").
-			SoftDelete("deleted_at").Field("Label", "label"))
+			DeletedAt("deleted_at").Field("Label", "label"))
 }
 
 // lineSeg is the derived doc segment of the source view's child collection —
@@ -50,7 +50,7 @@ func productsWithLinesView() *ViewDefinition {
 // salesEmbeddingProducts materializes that source 1:1 inside "sales".
 func salesEmbeddingProducts() *ViewDefinition {
 	return View("sales").Version(1).
-		Schema(core.NewTableSchema[nestSale]("sales").ID("id").SoftDelete("deleted_at").
+		Schema(core.NewTableSchema[nestSale]("sales").ID("id").DeletedAt("deleted_at").
 			Field("ProductID", "product_id")).
 		Embed(JoinView(productsWithLinesView(), "Product", "product")).On("product_id").
 		Indexes(Index("product_id"))
@@ -153,7 +153,7 @@ func TestNestedViewLeg_StripsArchivedChildrenInsideSegment(t *testing.T) {
 // children — the array-in-array shape. Every element's child collection strips.
 func TestNestedViewLeg_StripsInsideEmbedManyElements(t *testing.T) {
 	dashboard := View("dashboard").Version(1).
-		Schema(core.NewTableSchema[nestCustomer]("customers").ID("id").SoftDelete("deleted_at")).
+		Schema(core.NewTableSchema[nestCustomer]("customers").ID("id").DeletedAt("deleted_at")).
 		EmbedMany(JoinView(productsWithLinesView(), "Products", "products")).On("owner_id")
 	doc := map[string]any{
 		"_id": "c1",
@@ -176,12 +176,12 @@ func TestNestedViewLeg_StripsInsideEmbedManyElements(t *testing.T) {
 }
 
 // A narrowed projection (?fields=) can only strip what the projected entries
-// still carry, so the reader auto-includes each lifecycle segment's soft-delete
+// still carry, so the reader auto-includes each lifecycle segment's DeletedAt
 // column — including the ones nested inside a materialized view segment.
-func TestNestedViewLeg_ChildSoftDeletePathsReachIntoSegment(t *testing.T) {
-	paths := salesEmbeddingProducts().BuildViewNode().ChildSoftDeletePaths()
+func TestNestedViewLeg_ChildDeletedAtPathsReachIntoSegment(t *testing.T) {
+	paths := salesEmbeddingProducts().BuildViewNode().ChildDeletedAtPaths()
 	if got, ok := paths["product."+lineSeg]; !ok || got != "deleted_at" {
-		t.Fatalf("the nested child's soft-delete path must be auto-included, got %v", paths)
+		t.Fatalf("the nested child's DeletedAt path must be auto-included, got %v", paths)
 	}
 }
 
@@ -191,8 +191,8 @@ func TestExternalLeg_SegmentContentsStayUntouched(t *testing.T) {
 	v := View("orders").Version(1).Schema(composerRootSchema()).
 		Embed(extLeg("upstream_users", "Buyer", "buyer")).On("buyer_id")
 	node := v.BuildViewNode()
-	if len(node.ChildSoftDeletePaths()) != 0 {
-		t.Fatalf("an external mirror segment must contribute no strip paths, got %v", node.ChildSoftDeletePaths())
+	if len(node.ChildDeletedAtPaths()) != 0 {
+		t.Fatalf("an external mirror segment must contribute no strip paths, got %v", node.ChildDeletedAtPaths())
 	}
 	doc := map[string]any{"_id": "o1", "buyer": map[string]any{"_id": "u1", "deleted_at": "2026-01-01T00:00:00Z"}}
 	node.StripArchivedChildren(doc)

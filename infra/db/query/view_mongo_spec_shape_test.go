@@ -26,7 +26,7 @@ func shapeView() *ViewDefinition {
 		ID("id").
 		Field("Email", "email").
 		Field("Name", "name").
-		SoftDelete("deleted_at").
+		DeletedAt("deleted_at").
 		CreatedAt("created_at").
 		UpdatedAt("updated_at")
 	child := core.NewExternalSchema("addresses").

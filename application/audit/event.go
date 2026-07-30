@@ -100,7 +100,7 @@ type FieldChange struct {
 //
 //	inserted    → Snapshot only (the new child as inserted)
 //	updated     → Changes only  (per-column diff between Old() and current)
-//	archived    → Snapshot only (soft-deleted during an update — taken from Old() — or the cascaded child at root archive)
+//	archived    → Snapshot only (archived during an update — taken from Old() — or the cascaded child at root archive)
 //	unarchived  → Snapshot only (the restored child)
 //	deleted     → Snapshot only (the cascaded child at delete moment)
 type ChildEvent struct {

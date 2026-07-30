@@ -163,20 +163,20 @@ func TestSoftWriteAggregate_StepFailures(t *testing.T) {
 	})
 }
 
-// An aggregate root schema without SoftDelete cannot archive — the guard fires
+// An aggregate root schema without DeletedAt cannot archive — the guard fires
 // before the TX opens.
-func TestSoftWriteAggregate_MissingSoftDeleteIsError(t *testing.T) {
+func TestSoftWriteAggregate_MissingDeletedAtIsError(t *testing.T) {
 	schema := NewTableSchema[*aggWriteRoot]("agg_w").
 		ID("id").Field("Name", "name").
 		Child(NewTableSchema[aggWriteChild]("agg_w_children").
-			ID("id").ParentID("agg_w_id").Field("Label", "label").SoftDelete("deleted_at"))
+			ID("id").ParentID("agg_w_id").Field("Label", "label").DeletedAt("deleted_at"))
 	root := &aggWriteRoot{Name: "r"}
 	root.SetID(domain.NewID(uuid.NewString()))
 	a, _ := domain.GetArchivable(root, nil, "GetArchivable")
 	tx := &recTx{}
 	be := newFlatBE(&recBeginner{tx: tx})
 	if err := be.Archive(newBuilderCtx(), a, schema, WriteHook{}); err == nil {
-		t.Fatal("expected the missing-SoftDelete guard to error")
+		t.Fatal("expected the missing-DeletedAt guard to error")
 	}
 	if len(tx.execs) != 0 {
 		t.Errorf("no statement may run, got %v", tx.execs)
@@ -184,11 +184,11 @@ func TestSoftWriteAggregate_MissingSoftDeleteIsError(t *testing.T) {
 }
 
 // The cascade skips (a) loaded item types with no declared child schema and
-// (b) declared children without a soft-delete column — root-only soft write.
+// (b) declared children without a DeletedAt column — root-only soft write.
 func TestSoftWriteAggregate_CascadeSkips(t *testing.T) {
 	t.Run("undeclaredChildType", func(t *testing.T) {
 		schema := NewTableSchema[*aggWriteRoot]("agg_w").
-			ID("id").Field("Name", "name").SoftDelete("deleted_at")
+			ID("id").Field("Name", "name").DeletedAt("deleted_at")
 		root := &aggWriteRoot{Name: "r"}
 		root.SetID(domain.NewID(uuid.NewString()))
 		root.AggregateConstructor([]domain.AggregateValueObject{aggWriteChild{ID: domain.NewIDFromUUID(uuid.New()), Label: "c"}})
@@ -203,9 +203,9 @@ func TestSoftWriteAggregate_CascadeSkips(t *testing.T) {
 			t.Errorf("expected 3 statements, got %d: %v", len(tx.execs), tx.execs)
 		}
 	})
-	t.Run("childWithoutSoftDelete", func(t *testing.T) {
+	t.Run("childWithoutDeletedAt", func(t *testing.T) {
 		schema := NewTableSchema[*aggWriteRoot]("agg_w").
-			ID("id").Field("Name", "name").SoftDelete("deleted_at").
+			ID("id").Field("Name", "name").DeletedAt("deleted_at").
 			Child(NewTableSchema[aggWriteChild]("agg_w_children").
 				ID("id").ParentID("agg_w_id").Field("Label", "label"))
 		root := &aggWriteRoot{Name: "r"}
@@ -227,10 +227,10 @@ func TestSoftWriteAggregate_CascadeSkips(t *testing.T) {
 // the child's own sibling — hard delete must clear all four tables in order.
 func aggDeleteSchema() *TableSchema {
 	return NewTableSchema[*aggWriteRoot]("agg_w").
-		ID("id").Field("Name", "name").SoftDelete("deleted_at").
+		ID("id").Field("Name", "name").DeletedAt("deleted_at").
 		Sibling(NewSiblingSchema[*aggWriteRoot]("agg_w_sib").Field("Name", "name")).
 		Child(NewTableSchema[aggWriteChild]("agg_w_children").
-			ID("id").ParentID("agg_w_id").Field("Label", "label").SoftDelete("deleted_at").
+			ID("id").ParentID("agg_w_id").Field("Label", "label").DeletedAt("deleted_at").
 			Sibling(NewSiblingSchema[aggWriteChild]("agg_w_child_sib").Field("Label", "label")))
 }
 
@@ -532,14 +532,14 @@ func TestBatch_ErrorBranches(t *testing.T) {
 			t.Fatalf("expected a NotFound carrier, got %T (%v)", err, err)
 		}
 	})
-	t.Run("archiveMemberWithoutSoftDelete", func(t *testing.T) {
+	t.Run("archiveMemberWithoutDeletedAt", func(t *testing.T) {
 		noSD := NewTableSchema[*builderTestEntity]("nsd").ID("id").Revision("revision").Field("Name", "name").Field("Email", "email")
 		e := &builderTestEntity{Name: "a", Email: "a@x"}
 		e.SetID(domain.NewID(uuid.NewString()))
 		arc, _ := domain.GetArchivable(e, nil, "GetArchivable")
 		be := newFlatBE(&recBeginner{tx: &recTx{}})
 		if _, err := be.Batch(newBuilderCtx(), domain.NewBatch([]domain.ValidEntity{arc}), []*TableSchema{noSD}); err == nil {
-			t.Fatal("expected the missing-SoftDelete guard")
+			t.Fatal("expected the missing-DeletedAt guard")
 		}
 	})
 	t.Run("commitError", func(t *testing.T) {
@@ -886,9 +886,9 @@ func TestUpdateWithBase_StepFailures(t *testing.T) {
 	})
 }
 
-// ─── SharedBase lifecycle cascade (soft-deletable base with native child) ───
+// ─── SharedBase lifecycle cascade (archivable base with native child) ───
 
-// cascadeRoleSchema: a role over a base that HAS SoftDelete and one native
+// cascadeRoleSchema: a role over a base that HAS DeletedAt and one native
 // child — the shape whose lifecycle converges on archive/unarchive.
 type cascadeBaseChild struct {
 	ID   string
@@ -904,13 +904,13 @@ func cascadeRoleSchema() *TableSchema {
 		Field("Name", "name").
 		Field("Document", "document").
 		NaturalID("document").
-		SoftDelete("deleted_at").
+		DeletedAt("deleted_at").
 		Child(NewTableSchema[cascadeBaseChild]("pessoa_filhos").
-			ID("id").ParentID("pessoa_id").Field("Note", "note").SoftDelete("deleted_at"))
+			ID("id").ParentID("pessoa_id").Field("Note", "note").DeletedAt("deleted_at"))
 	return NewTableSchema[*roleTestEntity]("aluno").
 		ID("id").
 		Field("Matricula", "matricula").
-		SoftDelete("deleted_at").
+		DeletedAt("deleted_at").
 		SharedBase(base, "pessoa_id")
 }
 

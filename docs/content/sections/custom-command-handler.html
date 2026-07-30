@@ -35,7 +35,7 @@ type Customer struct {
 //   ModeInsert    — create
 //   ModeUpdate    — field mutation
 //   ModeDelete    — hard delete
-//   ModeArchive   — soft delete (state transition)
+//   ModeArchive   — archive (state transition)
 //   ModeUnarchive — restoration (state transition)
 // Append-only: declare only Display + Insert. Archiving an entity without
 // ModeArchive in Modes() responds with ArchiveNotAllowedNotification.
@@ -397,7 +397,7 @@ users, err := repo.FindAll(ctx, criteria.Where(criteria.And(
 page3, err := repo.FindAll(ctx, criteria.Where(criteria.Eq("TenantID", t)).
     OrderByDesc("CreatedAt").Limit(50).Offset(100))
 
-// Archived scope (soft-delete gate) lives on the Query, not in the predicate:
+// Archived scope (DeletedAt gate) lives on the Query, not in the predicate:
 archived, err := repo.FindOne(ctx, criteria.ByID(id).OnlyArchived())</code></pre>
     <p>
         Operators: <code>Eq/Ne/In/Nin/Gt/Gte/Lt/Lte/Like/ILike/IsNull/NotNull</code>, combinators
@@ -490,7 +490,7 @@ SELECT user_id, id, label, street, number, complement, neighborhood, city, state
         Field("Name", "name").
         Field("DisplayName", "display_name").  // any Go field ↔ any column
         Field("Email", "mail").                // a rename lives only here
-        SoftDelete("deleted_at").
+        DeletedAt("deleted_at").
         CreatedAt("created_at").
         UpdatedAt("updated_at")
 }</code></pre>

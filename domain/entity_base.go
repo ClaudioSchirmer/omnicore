@@ -216,14 +216,14 @@ func GetDeletable(e Entity, service Service, actionName string) (Deletable, erro
 	return getDeletable(e, service, actionName)
 }
 
-// GetArchivable validates e for soft delete. BuildRules fires in ModeUpdate
+// GetArchivable validates e for archive. BuildRules fires in ModeUpdate
 // with the supplied actionName so IfUpdate closures see it. Pass canonical
 // "GetArchivable" or a custom string.
 func GetArchivable(e Entity, service Service, actionName string) (Archivable, error) {
 	return getArchivable(e, service, actionName)
 }
 
-// GetUnarchivable validates e for soft delete restore. Symmetric to
+// GetUnarchivable validates e for archive restore. Symmetric to
 // GetArchivable — BuildRules runs in ModeUpdate with the supplied actionName.
 // Pass canonical "GetUnarchivable" or a custom string.
 func GetUnarchivable(e Entity, service Service, actionName string) (Unarchivable, error) {

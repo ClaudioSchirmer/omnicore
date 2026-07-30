@@ -548,7 +548,7 @@ func (s *UpstreamSubscriber) processMessage(ctx context.Context, msg transport.M
 			s.deleteAndRipple(ctx, event.AggregateID)
 		} else {
 			// Mirror the doc-survives-with-deleted_at semantic: an ARCHIVED
-			// outbox row carries the full field payload with the soft-delete
+			// outbox row carries the full field payload with the DeletedAt
 			// column populated (the write side's ARCHIVED payload), so the upsert
 			// lands the archived state on the local document.
 			s.upsertAndRipple(ctx, event.AggregateID, payload)

@@ -42,11 +42,11 @@ func sbEmailSchema() *core.TableSchema {
 		Field("Name", "name").
 		Field("Email", "email").
 		NaturalID("document").
-		SoftDelete("deleted_at")
+		DeletedAt("deleted_at")
 	return core.NewTableSchema[*sbEmailStudent]("sb2_students").
 		ID("id").
 		Field("Enroll", "enrollment").
-		SoftDelete("deleted_at").
+		DeletedAt("deleted_at").
 		CreatedAt("created_at").
 		UpdatedAt("updated_at").
 		SharedBase(base, "id") // shared-ID: sb2_students.id == sb2_persons.id

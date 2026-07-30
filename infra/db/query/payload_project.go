@@ -297,7 +297,7 @@ func childArrayExpr(seg, pk, id string, op childOp, revision int64, guarded bool
 		}
 		return Document{"$concatArrays": []any{others, []any{lit(elem)}}}
 	case "archive":
-		sd := softDeleteOf(child)
+		sd := deletedAtOf(child)
 		mutate := Document{sd: lit(op.Fields[sd])}
 		if guarded {
 			mutate[elemRevisionField] = revision
@@ -317,10 +317,10 @@ func childArrayExpr(seg, pk, id string, op childOp, revision int64, guarded bool
 	}
 }
 
-// softDeleteOf returns the child's soft-delete column or "deleted_at" as the
-// defensive fallback (an archive op only exists for soft-deletable children).
-func softDeleteOf(child *core.TableSchema) string {
-	if sd, ok := child.SoftDeleteColumn(); ok {
+// deletedAtOf returns the child's DeletedAt column or "deleted_at" as the
+// defensive fallback (an archive op only exists for archivable children).
+func deletedAtOf(child *core.TableSchema) string {
+	if sd, ok := child.DeletedAtColumn(); ok {
 		return sd
 	}
 	return "deleted_at"

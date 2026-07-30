@@ -80,7 +80,7 @@
         These modes are <strong>independent</strong> of <code>ModeUpdate</code> — declaring Update does not enable Archive.
         <br><br>
         Usage patterns: append-only declares <code>[ModeDisplay, ModeInsert]</code> and is immune to accidental
-        archive; full CRUD with soft delete declares all 6 modes; "freeze-once" entity
+        archive; full CRUD with archive declares all 6 modes; "freeze-once" entity
         (configure once, archive when obsolete) declares <code>[ModeDisplay, ModeInsert, ModeArchive, ModeUnarchive]</code>
         without allowing Update/Delete.
     </div>
@@ -134,7 +134,7 @@ func UserSchema() *core.TableSchema {
         Field("Email", "email").
         Field("Username", "username").
         Field("Phone", "phone").
-        SoftDelete("deleted_at").
+        DeletedAt("deleted_at").
         CreatedAt("created_at").
         UpdatedAt("updated_at").
         Child(core.NewTableSchema[Address]("addresses").
@@ -142,7 +142,7 @@ func UserSchema() *core.TableSchema {
             ID("id").
             Field("Street", "street").
             Field("ZipCode", "zip_code").
-            SoftDelete("deleted_at"))
+            DeletedAt("deleted_at"))
 }
 
 // Declare once and thread it — WithSchema feeds the write binding AND the

@@ -26,14 +26,14 @@ func carrierHasNotification(c domain.NotificationCarrier, key string) bool {
 }
 
 // roleAggLoadSchemaSD is roleAggLoadSchema (shared_base_children_load_test.go) with a
-// soft-delete column on the role, so the pre-flight probe filters archived rows out.
+// DeletedAt column on the role, so the pre-flight probe filters archived rows out.
 func roleAggLoadSchemaSD() *TableSchema {
 	base := NewSharedBaseSchema("pessoa").Revision("revision").ID("id").Field("Name", "name").NaturalID("name").
 		Child(NewTableSchema[addrLoad]("endereco").ID("id").ParentID("pessoa_id").Field("Street", "street"))
 	return NewTableSchema[*roleAggLoad]("aluno").
 		ID("id").Revision("revision").
 		Field("Matricula", "matricula").
-		SoftDelete("deleted_at").
+		DeletedAt("deleted_at").
 		SharedBase(base, "pessoa_id")
 }
 
@@ -80,10 +80,10 @@ func TestLoadSharedBaseIdentity_ActiveRoleConflict(t *testing.T) {
 	}
 }
 
-// A soft-deleted (archived) role is NOT a conflict: the probe filters it out with an
+// A archived (archived) role is NOT a conflict: the probe filters it out with an
 // `IS NULL` predicate, so the load falls through to the warm hydrate (and the persister's
 // revive path takes over on write).
-func TestLoadSharedBaseIdentity_ProbeExcludesArchivedViaSoftDelete(t *testing.T) {
+func TestLoadSharedBaseIdentity_ProbeExcludesArchivedViaDeletedAt(t *testing.T) {
 	var probeSQL string
 	query := func(sql string, args []any) (Rows, error) {
 		switch {
@@ -117,6 +117,6 @@ func TestLoadSharedBaseIdentity_ProbeExcludesArchivedViaSoftDelete(t *testing.T)
 		t.Error("the identity exists (archived role) — the warm hydrate must still run")
 	}
 	if !strings.Contains(probeSQL, "deleted_at") || !strings.Contains(probeSQL, "IS NULL") {
-		t.Errorf("the probe must exclude archived rows via the soft-delete column; got %q", probeSQL)
+		t.Errorf("the probe must exclude archived rows via the DeletedAt column; got %q", probeSQL)
 	}
 }

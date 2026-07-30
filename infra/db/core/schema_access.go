@@ -155,7 +155,7 @@ func (s *TableSchema) GoFieldValues(e any) map[string]any {
 //   - every sibling's fields (same struct — a sibling partitions the row);
 //   - the shared-base business fields (type-less base, typed via the ROLE's
 //     struct through the resolved scan plan);
-//   - the managed timestamp / soft-delete columns (time.Time), own and base's;
+//   - the managed timestamp / DeletedAt columns (time.Time), own and base's;
 //   - the ID column and the shared-base ParentID column (canonical uuid strings on
 //     the wire and in the document alike).
 //
@@ -179,8 +179,8 @@ func (s *TableSchema) PayloadColumnTypes() map[string]reflect.Type {
 		if sc == nil {
 			return
 		}
-		if sc.softDelete != "" {
-			out[sc.softDelete] = timeT
+		if sc.deletedAt != "" {
+			out[sc.deletedAt] = timeT
 		}
 		if sc.createdAt != "" {
 			out[sc.createdAt] = timeT

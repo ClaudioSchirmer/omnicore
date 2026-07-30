@@ -18,7 +18,7 @@ func covFullSchema() *TableSchema {
 		Field("Name", "name").
 		CreatedAt("created_at").
 		UpdatedAt("updated_at").
-		SoftDelete("deleted_at")
+		DeletedAt("deleted_at")
 }
 
 func TestTableSchema_PKAndManagedColumns(t *testing.T) {

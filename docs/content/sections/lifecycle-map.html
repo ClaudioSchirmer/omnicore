@@ -116,7 +116,7 @@
         body verb emits one self-sufficient JSON shape: all scalars column-keyed flat at the top (root/role fields ∪
         sibling fields ∪ shared-base business fields ∪ the verb's managed timestamps — the EXACT app-clock values the
         DML bound: <code>INSERTED</code> carries <code>created_at</code>+<code>updated_at</code>;
-        <code>UPDATED</code> only <code>updated_at</code>; <code>ARCHIVED</code> the soft-delete stamp;
+        <code>UPDATED</code> only <code>updated_at</code>; <code>ARCHIVED</code> the DeletedAt stamp;
         <code>UNARCHIVED</code> an explicit <code>null</code>); an <code>_ids</code> structural block
         (<code>id</code>, and for SharedBase roles <code>base_id</code> + <code>base_revision</code> — the
         row-lock-serialized last-writer-wins token — plus <code>base_purged</code> on the purging DELETED); and
@@ -209,7 +209,7 @@
     <div class="note">
         <strong>Audit <code>verb</code> (root) and audit <code>op</code> (child) both echo the SQL fingerprint of
         the row-level change. Identical SQL ⇒ identical audit token. Distinct SQL ⇒ distinct audit
-        token.</strong> Consumer intent (PUT vs PATCH, archive cascade vs PUT-replace soft-delete) lives in
+        token.</strong> Consumer intent (PUT vs PATCH, archive cascade vs PUT-replace DeletedAt) lives in
         the <code>actionName</code> field at the root and in the <code>verb</code> field on the surrounding event;
         the per-row <code>op</code>/<code>verb</code> stays anchored to what physically hit the database.
     </div>

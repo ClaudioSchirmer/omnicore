@@ -17,7 +17,7 @@ import (
 // written (the slice is absent for this row). On UPDATE the verb decides the
 // all-nil case — a full replace (PUT) that cleared every sibling field removes
 // the row; a partial update (PATCH) leaves it untouched. Siblings have no
-// soft-delete (the owner controls archive/unarchive), so only Insert/Update and
+// DeletedAt (the owner controls archive/unarchive), so only Insert/Update and
 // hard delete touch them.
 //
 // These cover OWNER-level siblings (the aggregate root or a flat entity). A

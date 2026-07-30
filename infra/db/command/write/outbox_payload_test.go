@@ -39,7 +39,7 @@ func TestBuildWritePayload_FlatInsertShape(t *testing.T) {
 func TestBuildWritePayload_TimestampsByVerb(t *testing.T) {
 	schema := NewTableSchema[*builderTestEntity]("t").ID("id").Revision("revision").
 		Field("Name", "name").
-		SoftDelete("deleted_at").CreatedAt("created_at").UpdatedAt("updated_at")
+		DeletedAt("deleted_at").CreatedAt("created_at").UpdatedAt("updated_at")
 	e := &builderTestEntity{Name: "a"}
 	meta := outboxMeta{ID: uuid.NewString()}
 
@@ -56,11 +56,11 @@ func TestBuildWritePayload_TimestampsByVerb(t *testing.T) {
 	}
 	arc := buildWritePayload(schema, e, nil, "ARCHIVED", testNow, schema.WriteFields(e), meta)
 	if arc["deleted_at"] != testNow {
-		t.Errorf("ARCHIVED must carry the soft-delete stamp, got %v", arc)
+		t.Errorf("ARCHIVED must carry the DeletedAt stamp, got %v", arc)
 	}
 	una := buildWritePayload(schema, e, nil, "UNARCHIVED", testNow, schema.WriteFields(e), meta)
 	if v, has := una["deleted_at"]; !has || v != nil {
-		t.Errorf("UNARCHIVED must carry an explicit null soft-delete, got %v", una)
+		t.Errorf("UNARCHIVED must carry an explicit null DeletedAt, got %v", una)
 	}
 }
 
@@ -103,7 +103,7 @@ func TestBuildWritePayload_SharedBaseRoleWithChildren(t *testing.T) {
 
 func TestChildOpName_Mapping(t *testing.T) {
 	withSD := NewTableSchema[*builderTestEntity]("c").ID("id").ParentID("r_id").
-		Field("Name", "name").SoftDelete("deleted_at")
+		Field("Name", "name").DeletedAt("deleted_at")
 	noSD := NewTableSchema[*builderTestEntity]("c2").ID("id").ParentID("r_id").
 		Field("Name", "name")
 
@@ -117,10 +117,10 @@ func TestChildOpName_Mapping(t *testing.T) {
 		t.Errorf("untouched DB item → noop, got %q", got)
 	}
 	if got := childOpName(domain.OperationOf(domain.StatusConstructor, domain.StatusRemoved), false, false, withSD); got != "archive" {
-		t.Errorf("removed (soft-deletable) → archive, got %q", got)
+		t.Errorf("removed (archivable) → archive, got %q", got)
 	}
 	if got := childOpName(domain.OperationOf(domain.StatusConstructor, domain.StatusRemoved), false, true, noSD); got != "delete" {
-		t.Errorf("removed base-child without soft-delete → delete, got %q", got)
+		t.Errorf("removed base-child without DeletedAt → delete, got %q", got)
 	}
 	if got := childOpName(domain.OperationOf(domain.StatusConstructor, domain.StatusChanged), true, false, withSD); got != "noop" {
 		t.Errorf("soft verbs list every child as noop, got %q", got)

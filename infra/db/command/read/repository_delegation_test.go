@@ -31,7 +31,7 @@ func TestBaseAggregateRepository_CtxlessFinders(t *testing.T) {
 		t.Fatalf("FindByID: %+v, %v", e, err)
 	}
 
-	// FindArchivedByID flips the soft-delete gate on the same SQL path.
+	// FindArchivedByID flips the DeletedAt gate on the same SQL path.
 	r = covRepo(covAggQuery(covAggRootRow("r1", "Ana"), noRows, &rootSQL))
 	if _, err := r.FindArchivedByID(domain.NewID("r1")); err != nil {
 		t.Fatalf("FindArchivedByID: %v", err)

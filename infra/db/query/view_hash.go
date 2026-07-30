@@ -234,7 +234,7 @@ func writeSchemaShape(w *canonicalWriter, s *core.TableSchema) {
 	w.writeString(s.Table())
 	w.writeString(s.IDColumn())
 	// Managed columns land in the projected document too.
-	sd, _ := s.SoftDeleteColumn()
+	sd, _ := s.DeletedAtColumn()
 	w.writeString(sd)
 	writeSortedStrings(w, s.InsertNowColumns()) // created_at, updated_at (when enabled)
 	// Business columns — physical, sorted (order-independent).

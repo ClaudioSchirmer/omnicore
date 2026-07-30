@@ -94,9 +94,9 @@ func TestComposer_ComposeWithOwnChild(t *testing.T) {
 		`INSERT INTO oc_lines (order_id, qty) VALUES ($1, 3), ($1, 5)`, orderID)
 
 	// Child declared on the ROOT schema — NO EmbedMany. It must auto-project.
-	rootWithChild := core.NewTableSchema[embedFixture]("oc_orders").ID("id").SoftDelete("deleted_at").
+	rootWithChild := core.NewTableSchema[embedFixture]("oc_orders").ID("id").DeletedAt("deleted_at").
 		Child(core.NewTableSchema[ocLineRow]("oc_lines").ID("id").ParentID("order_id").
-			Field("Qty", "qty").SoftDelete("deleted_at"))
+			Field("Qty", "qty").DeletedAt("deleted_at"))
 	view := query.View("oc_orders").Schema(rootWithChild).Version(1)
 
 	doc, err := query.NewComposer(pg).Compose(context.Background(), view, orderID)
@@ -235,13 +235,13 @@ func TestMongoViewReader_ReadByID_HitMissAndArchivedFilter(t *testing.T) {
 		t.Fatalf("InsertMany: %v", err)
 	}
 
-	// The reader needs the view schema to know deleted_at is the soft-delete
+	// The reader needs the view schema to know deleted_at is the DeletedAt
 	// marker (and to translate columns to Go field names on read); production
 	// always registers it via SetViews. Without it the by-id archived filter
 	// cannot engage.
 	reader := NewMongoViewReader(m, testResolver).SetViews([]*query.ViewDefinition{
 		query.View("users").
-			Schema(core.NewExternalSchema("users").ID("id").Field("Email", "email").SoftDelete("deleted_at")).
+			Schema(core.NewExternalSchema("users").ID("id").Field("Email", "email").DeletedAt("deleted_at")).
 			Version(1),
 	})
 

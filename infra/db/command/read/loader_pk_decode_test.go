@@ -26,7 +26,7 @@ func (mysqlLikeDialect) DecodeID(raw string) (string, error) {
 
 func covChildSchemaForDecode() *TableSchema {
 	return NewTableSchema[covChild]("cov_children").
-		ID("id").ParentID("agg_id").Field("Label", "label").SoftDelete("deleted_at")
+		ID("id").ParentID("agg_id").Field("Label", "label").DeletedAt("deleted_at")
 }
 
 // On a MySQL-style backend the child's own ID is auto-scanned as raw BINARY(16)

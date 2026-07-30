@@ -43,16 +43,16 @@ func sbvBase() *core.TableSchema {
 		Field("Document", "document").
 		Field("Name", "name").
 		NaturalID("document").
-		SoftDelete("deleted_at").
+		DeletedAt("deleted_at").
 		Child(core.NewTableSchema[sbvAddr]("sbv_addresses").
-			ID("id").ParentID("person_id").Field("Street", "street").SoftDelete("deleted_at"))
+			ID("id").ParentID("person_id").Field("Street", "street").DeletedAt("deleted_at"))
 }
 
 func sbvUserSchema() *core.TableSchema {
 	return core.NewTableSchema[*sbvUser]("sbv_users").
 		ID("id").
 		Field("UserName", "user_name").
-		SoftDelete("deleted_at").
+		DeletedAt("deleted_at").
 		Sibling(core.NewSiblingSchema[*sbvUser]("sbv_user_configs").
 						Field("EmailNotification", "email_notification")).
 		SharedBase(sbvBase(), "id") // shared-ID model
@@ -62,9 +62,9 @@ func sbvEmployeeSchema() *core.TableSchema {
 	return core.NewTableSchema[*sbvEmployee]("sbv_employees").
 		ID("id").
 		Field("EmployeeNumber", "employee_number").
-		SoftDelete("deleted_at").
+		DeletedAt("deleted_at").
 		Child(core.NewTableSchema[sbvDependent]("sbv_dependents").
-							ID("id").ParentID("employee_id").Field("Name", "dep_name").SoftDelete("deleted_at")).
+							ID("id").ParentID("employee_id").Field("Name", "dep_name").DeletedAt("deleted_at")).
 		SharedBase(sbvBase(), "person_id") // separate-ParentID model
 }
 
@@ -131,7 +131,7 @@ func TestSharedBaseView_BuilderPanics(t *testing.T) {
 	})
 	assertPanics(t, "divergent base declaration", func() {
 		divergent := core.NewSharedBaseSchema("sbv_persons").Revision("revision").ID("id").
-			Field("Document", "document").NaturalID("document") // missing Name + SoftDelete
+			Field("Document", "document").NaturalID("document") // missing Name + DeletedAt
 		role := core.NewTableSchema[*sbvUser]("sbv_users").ID("id").
 			Field("UserName", "user_name").SharedBase(divergent, "id")
 		SharedBaseView("x").Schema(sbvBase()).Role(role)
@@ -181,7 +181,7 @@ func TestValidateViewSchemas_PlainViewRejectsSharedBaseSchema(t *testing.T) {
 		t.Fatalf("a plain View rooted at a shared-base schema must be rejected, got %v", err)
 	}
 	// The positive control: a plain View rooted at a regular TableSchema passes.
-	ok := View("plain").Schema(core.NewTableSchema[embedFixture]("users").ID("id").SoftDelete("deleted_at")).Version(1)
+	ok := View("plain").Schema(core.NewTableSchema[embedFixture]("users").ID("id").DeletedAt("deleted_at")).Version(1)
 	if err := ValidateViewSchemas([]*ViewDefinition{ok}); err != nil {
 		t.Fatalf("a plain View over a regular TableSchema must pass, got %v", err)
 	}
@@ -308,7 +308,7 @@ func TestComposeBaseRooted_RemnantWhenNoActive(t *testing.T) {
 		t.Fatalf("archived remnant must compose (keep mode), got %#v", doc["sbvEmployee"])
 	}
 	if emp["deleted_at"] == nil {
-		t.Error("the remnant segment must carry its soft-delete timestamp (the SQL mirror)")
+		t.Error("the remnant segment must carry its DeletedAt timestamp (the SQL mirror)")
 	}
 	// The remnant probe must be deterministic: newest archived first.
 	found := false
@@ -490,8 +490,8 @@ func TestSharedBaseViewNode_StripRecursesIntoRoleChildren(t *testing.T) {
 	}
 }
 
-func TestSharedBaseViewNode_ChildSoftDeletePaths(t *testing.T) {
-	paths := sbvView().BuildViewNode().ChildSoftDeletePaths()
+func TestSharedBaseViewNode_ChildDeletedAtPaths(t *testing.T) {
+	paths := sbvView().BuildViewNode().ChildDeletedAtPaths()
 	want := map[string]string{
 		sbvAddrSeg:                 "deleted_at",
 		"sbvUser":                  "deleted_at",
@@ -500,7 +500,7 @@ func TestSharedBaseViewNode_ChildSoftDeletePaths(t *testing.T) {
 	}
 	for k, v := range want {
 		if paths[k] != v {
-			t.Errorf("ChildSoftDeletePaths[%q] = %q, want %q (all: %v)", k, paths[k], v, paths)
+			t.Errorf("ChildDeletedAtPaths[%q] = %q, want %q (all: %v)", k, paths[k], v, paths)
 		}
 	}
 }
@@ -599,9 +599,9 @@ func TestComposedColumnSet_OwnChildrenWalk(t *testing.T) {
 	}
 }
 
-// --- coverage: no-SoftDelete role + error propagation -------------------------
+// --- coverage: no-DeletedAt role + error propagation -------------------------
 
-// sbvBadge is a role WITHOUT SoftDelete: hard delete is delete, so a single
+// sbvBadge is a role WITHOUT DeletedAt: hard delete is delete, so a single
 // ParentID fetch decides the segment.
 type sbvBadge struct {
 	Name     string
@@ -616,7 +616,7 @@ func sbvBadgeSchema() *core.TableSchema {
 		SharedBase(sbvBase(), "person_id")
 }
 
-func TestComposeBaseRooted_RoleWithoutSoftDelete(t *testing.T) {
+func TestComposeBaseRooted_RoleWithoutDeletedAt(t *testing.T) {
 	var calls []string
 	var args [][]any
 	eng := sbvComposerEngine(t, map[string][]map[string]any{
@@ -631,11 +631,11 @@ func TestComposeBaseRooted_RoleWithoutSoftDelete(t *testing.T) {
 	}
 	badge, ok := doc["sbvBadge"].(Document)
 	if !ok || badge["code"] != "C7" {
-		t.Fatalf("a no-SoftDelete role must compose from the single ParentID fetch, got %#v", doc["sbvBadge"])
+		t.Fatalf("a no-DeletedAt role must compose from the single ParentID fetch, got %#v", doc["sbvBadge"])
 	}
 	for _, sql := range calls {
 		if strings.Contains(sql, "FROM sbv_badges") && strings.Contains(sql, "deleted_at") {
-			t.Errorf("a no-SoftDelete role fetch must carry no archive predicate, got %q", sql)
+			t.Errorf("a no-DeletedAt role fetch must carry no archive predicate, got %q", sql)
 		}
 	}
 }
@@ -676,14 +676,14 @@ func TestComposeBaseRooted_ErrorPropagation(t *testing.T) {
 	}
 }
 
-func TestSharedBaseViewNode_NoSoftDeleteRole(t *testing.T) {
+func TestSharedBaseViewNode_NoDeletedAtRole(t *testing.T) {
 	view := SharedBaseView("v").Schema(sbvBase()).Role(sbvBadgeSchema()).Version(1)
 	n := view.BuildViewNode()
-	// ChildSoftDeletePaths: the badge role has no soft-delete, so no path for it
+	// ChildDeletedAtPaths: the badge role has no DeletedAt, so no path for it
 	// (the base-child path stays).
-	paths := n.ChildSoftDeletePaths()
+	paths := n.ChildDeletedAtPaths()
 	if _, has := paths["sbvBadge"]; has {
-		t.Errorf("a no-SoftDelete role must contribute no strip path, got %v", paths)
+		t.Errorf("a no-DeletedAt role must contribute no strip path, got %v", paths)
 	}
 	if paths[sbvAddrSeg] != "deleted_at" {
 		t.Errorf("base-child strip path must stay, got %v", paths)
@@ -693,33 +693,33 @@ func TestSharedBaseViewNode_NoSoftDeleteRole(t *testing.T) {
 	doc := map[string]any{"sbvBadge": map[string]any{"id": "b1", "code": "C7"}}
 	n.StripArchivedChildren(doc)
 	if badge, ok := doc["sbvBadge"].(map[string]any); !ok || badge["code"] != "C7" {
-		t.Errorf("a no-SoftDelete role segment must survive the strip, got %#v", doc["sbvBadge"])
+		t.Errorf("a no-DeletedAt role segment must survive the strip, got %#v", doc["sbvBadge"])
 	}
 }
 
 // Defensive branches: the schema-less node, nil doc, explicit embeds (not
-// lifecycle-carrying) and a soft-delete-less child are all no-ops for the
+// lifecycle-carrying) and a DeletedAt-less child are all no-ops for the
 // strip/paths pair.
 func TestViewNode_StripAndPathsDefensiveBranches(t *testing.T) {
 	empty := &ViewNode{}
-	if paths := empty.ChildSoftDeletePaths(); paths != nil {
+	if paths := empty.ChildDeletedAtPaths(); paths != nil {
 		t.Errorf("schema-less node must yield nil paths, got %v", paths)
 	}
 	empty.StripArchivedChildren(map[string]any{"x": 1})  // no panic
 	sbvView().BuildViewNode().StripArchivedChildren(nil) // nil doc no-op
 
 	// A view with an explicit external embed (no lifecycle) and a
-	// soft-delete-less own child: neither contributes a strip path, and the
+	// DeletedAt-less own child: neither contributes a strip path, and the
 	// strip leaves both segments untouched.
 	schema := core.NewTableSchema[*sbvEmployee]("se_emps").
 		ID("id").
 		Field("EmployeeNumber", "employee_number").
 		Child(core.NewTableSchema[sbvDependent]("se_deps").
-			ID("id").ParentID("emp_id").Field("Name", "dep_name")) // no SoftDelete
+			ID("id").ParentID("emp_id").Field("Name", "dep_name")) // no DeletedAt
 	v := View("se").Version(1).Schema(schema).
 		EmbedMany(JoinUpstream(core.NewExternalSchema("se_ext").ID("id"), "Mirror", "mirror")).On("emp_id")
 	n := v.BuildViewNode()
-	if paths := n.ChildSoftDeletePaths(); len(paths) != 0 {
+	if paths := n.ChildDeletedAtPaths(); len(paths) != 0 {
 		t.Errorf("no lifecycle segments here — paths must be empty, got %v", paths)
 	}
 	doc := map[string]any{
@@ -728,7 +728,7 @@ func TestViewNode_StripAndPathsDefensiveBranches(t *testing.T) {
 	}
 	n.StripArchivedChildren(doc)
 	if deps, _ := doc[sbvDepSeg].([]any); len(deps) != 1 {
-		t.Errorf("a soft-delete-less child collection must not strip, got %#v", doc[sbvDepSeg])
+		t.Errorf("a DeletedAt-less child collection must not strip, got %#v", doc[sbvDepSeg])
 	}
 	if mirror, _ := doc["mirror"].([]any); len(mirror) != 1 {
 		t.Errorf("an explicit embed must never strip (upstream lifecycle), got %#v", doc["mirror"])

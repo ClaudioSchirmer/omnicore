@@ -507,7 +507,7 @@ func TestProcess_DeleteOnArchive_TombstonesAndGuardsDelete(t *testing.T) {
 		Field("Name", "name").NaturalID("name")
 	schema := core.NewTableSchema[*builderTestEntity]("aluno").
 		ID("id").Revision("revision").Field("Email", "email").
-		SoftDelete("deleted_at").SharedBase(base, "pessoa_id")
+		DeletedAt("deleted_at").SharedBase(base, "pessoa_id")
 	view := View("aluno_hot").Schema(schema).Version(1).DeleteOnArchive()
 	s := NewSyncEngine(composerEngine(func(string, []any) ([]map[string]any, error) { return nil, nil }),
 		store, identityResolver, nil, "", []*ViewDefinition{view}, 1)

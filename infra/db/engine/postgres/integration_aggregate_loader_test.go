@@ -80,7 +80,7 @@ func loaderRootSchema() *core.TableSchema {
 		ID("id").
 		Field("Name", "name").
 		Field("Email", "email").
-		SoftDelete("deleted_at").
+		DeletedAt("deleted_at").
 		CreatedAt("created_at").
 		UpdatedAt("updated_at").
 		Child(loaderTagSchema()).
@@ -88,7 +88,7 @@ func loaderRootSchema() *core.TableSchema {
 			ID("id").
 			ParentID("loader_root_id").
 			Field("Body", "body").
-			SoftDelete("deleted_at").
+			DeletedAt("deleted_at").
 			CreatedAt("created_at").
 			UpdatedAt("updated_at"))
 }
@@ -100,7 +100,7 @@ func loaderRootSchemaTagsOnly() *core.TableSchema {
 		ID("id").
 		Field("Name", "name").
 		Field("Email", "email").
-		SoftDelete("deleted_at").
+		DeletedAt("deleted_at").
 		CreatedAt("created_at").
 		UpdatedAt("updated_at").
 		Child(loaderTagSchema())
@@ -113,7 +113,7 @@ func loaderRootSchemaFlat() *core.TableSchema {
 		ID("id").
 		Field("Name", "name").
 		Field("Email", "email").
-		SoftDelete("deleted_at").
+		DeletedAt("deleted_at").
 		CreatedAt("created_at").
 		UpdatedAt("updated_at")
 }
@@ -123,7 +123,7 @@ func loaderTagSchema() *core.TableSchema {
 		ID("id").
 		ParentID("loader_root_id").
 		Field("Label", "label").
-		SoftDelete("deleted_at").
+		DeletedAt("deleted_at").
 		CreatedAt("created_at").
 		UpdatedAt("updated_at")
 }
@@ -351,14 +351,14 @@ func TestAggregateLoader_Schema_TableAndFKOverride(t *testing.T) {
 			ID("id").
 			Field("Name", "name").
 			Field("Email", "email").
-			SoftDelete("deleted_at").
+			DeletedAt("deleted_at").
 			CreatedAt("created_at").
 			UpdatedAt("updated_at").
 			Child(core.NewTableSchema[loaderTagVO]("tb_tags").
 				ID("id").
 				ParentID("owner_id").
 				Field("Label", "label").
-				SoftDelete("deleted_at").
+				DeletedAt("deleted_at").
 				CreatedAt("created_at").
 				UpdatedAt("updated_at")))
 
@@ -418,7 +418,7 @@ func TestAggregateLoader_Load_AutoScanWithNoFieldsErrors(t *testing.T) {
 		created_at TIMESTAMP NOT NULL DEFAULT NOW()
 	)`)
 	loader := read.NewAggregateLoader[*emptyEntity](pg, func() *emptyEntity { return &emptyEntity{} }).
-		WithSchema(core.NewTableSchema[*emptyEntity]("empty_entities").ID("id").SoftDelete("deleted_at").CreatedAt("created_at"))
+		WithSchema(core.NewTableSchema[*emptyEntity]("empty_entities").ID("id").DeletedAt("deleted_at").CreatedAt("created_at"))
 	_, err := loader.FindOne(context.Background(), criteria.ByID(domain.NewID("00000000-0000-0000-0000-000000000000")))
 	if err == nil {
 		t.Fatal("expected error from auto-scan with zero columns")

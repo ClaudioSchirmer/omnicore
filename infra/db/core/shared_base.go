@@ -7,7 +7,7 @@ import "fmt"
 // referenced by N independent roles (aluno, professor, usuario) via a foreign
 // key, deduplicated by a NATURAL KEY whose value derives the base's
 // deterministic id (UUIDv5). The base has NO lifecycle of its own: roles control
-// their own soft-delete, and the base is governed by reference counting per its
+// their own DeletedAt, and the base is governed by reference counting per its
 // OrphanPolicy. Declared once with NewSharedBaseSchema and referenced from each role
 // with .SharedBase(base, parentIDColumn) — the SAME instance referenced by every role
 // IS the cross-schema registry.
@@ -18,7 +18,7 @@ type OrphanPolicy int
 
 const (
 	// KeepOrphan (the default) leaves the base row in place even with no role
-	// referencing it. When the base declares SoftDelete, the orphaned identity is
+	// referencing it. When the base declares DeletedAt, the orphaned identity is
 	// archived (with its native children) instead of staying active — dormant and
 	// revivable, never destroyed. Destruction is opt-in via DeleteWhenUnreferenced.
 	KeepOrphan OrphanPolicy = iota
@@ -33,19 +33,19 @@ const (
 )
 
 // RoleRef names a role table that references a shared base + the ParentID column it
-// links through + the role's own soft-delete column ("" when the role has none).
+// links through + the role's own DeletedAt column ("" when the role has none).
 // A shared base accumulates one per referencing role (the instance is the
-// cross-schema registry). The unified lifecycle uses SoftDeleteCol to tell an
+// cross-schema registry). The unified lifecycle uses DeletedAtCol to tell an
 // ACTIVE role row apart from an archived one when it decides whether the base
 // (driven by its roles) should be active or archived.
 type RoleRef struct {
 	Table          string
 	ParentIDColumn string
-	SoftDeleteCol  string
+	DeletedAtCol   string
 }
 
 // roleLink is, on a shared base, one referencing role: a pointer to the role
-// schema (so its soft-delete column reads lazily, after the schema is fully
+// schema (so its DeletedAt column reads lazily, after the schema is fully
 // assembled) + the ParentID column the role links through to the base's ID.
 type roleLink struct {
 	schema         *TableSchema
@@ -217,8 +217,8 @@ func (s *TableSchema) SharedBase(base *TableSchema, parentIDColumn string) *Tabl
 	s.sharedBaseLink = &sharedBaseLink{base: base, parentIDColumn: parentIDColumn, scanCols: scanCols, scanByCol: scanByCol}
 	// Register this role on the base — the shared instance is the cross-schema
 	// registry the refcount delete + CDC fan-out + lifecycle convergence enumerate.
-	// Store the schema pointer (not a snapshot) so the role's soft-delete column is
-	// read lazily, order-independent of .SoftDelete vs .SharedBase.
+	// Store the schema pointer (not a snapshot) so the role's DeletedAt column is
+	// read lazily, order-independent of .DeletedAt vs .SharedBase.
 	base.referencingRoleLinks = append(base.referencingRoleLinks, roleLink{schema: s, parentIDColumn: parentIDColumn})
 	return s
 }
@@ -246,8 +246,8 @@ func (s *TableSchema) SharedBaseRef() (base *TableSchema, parentIDColumn string,
 
 // ReferencingRoles returns, for a shared base, the role tables that reference it
 // (empty for a non-base or an unreferenced base), each with its ParentID column and its
-// soft-delete column resolved LAZILY from the role schema — correct regardless of
-// .SoftDelete vs .SharedBase declaration order. The refcount delete + lifecycle
+// DeletedAt column resolved LAZILY from the role schema — correct regardless of
+// .DeletedAt vs .SharedBase declaration order. The refcount delete + lifecycle
 // convergence walk it.
 func (s *TableSchema) ReferencingRoles() []RoleRef {
 	if s == nil || len(s.referencingRoleLinks) == 0 {
@@ -255,7 +255,7 @@ func (s *TableSchema) ReferencingRoles() []RoleRef {
 	}
 	out := make([]RoleRef, 0, len(s.referencingRoleLinks))
 	for _, l := range s.referencingRoleLinks {
-		out = append(out, RoleRef{Table: l.schema.table, ParentIDColumn: l.parentIDColumn, SoftDeleteCol: l.schema.softDelete})
+		out = append(out, RoleRef{Table: l.schema.table, ParentIDColumn: l.parentIDColumn, DeletedAtCol: l.schema.deletedAt})
 	}
 	return out
 }
@@ -273,7 +273,7 @@ func (s *TableSchema) SharedBaseScanPlan() (cols []string, byCol map[string]int,
 
 // AssertSharedBaseEquivalent asserts that two NewSharedBaseSchema declarations of the
 // SAME table describe the SAME shape — ID, natural key, orphan policy,
-// soft-delete, field set, and native children. The engine registry accepts a
+// DeletedAt, field set, and native children. The engine registry accepts a
 // base declared once and referenced everywhere OR re-declared identically per
 // role file (no singleton required of the consumer); what it must refuse is two
 // DIVERGENT declarations of one physical table, where the refcount/lifecycle
@@ -300,8 +300,8 @@ func AssertSharedBaseEquivalent(a, b *TableSchema) {
 	if a.orphanPolicy != b.orphanPolicy {
 		diverges("the OrphanPolicy", fmt.Sprintf("%d", a.orphanPolicy), fmt.Sprintf("%d", b.orphanPolicy))
 	}
-	if a.softDelete != b.softDelete {
-		diverges("the SoftDelete column", a.softDelete, b.softDelete)
+	if a.deletedAt != b.deletedAt {
+		diverges("the DeletedAt column", a.deletedAt, b.deletedAt)
 	}
 	if a.revisionCol != b.revisionCol {
 		diverges("the Revision column", a.revisionCol, b.revisionCol)
@@ -323,9 +323,9 @@ func AssertSharedBaseEquivalent(a, b *TableSchema) {
 		if !ok {
 			diverges("native child "+name, ac.table, "<absent>")
 		}
-		if ac.table != bc.table || ac.parentIDColumn != bc.parentIDColumn || ac.softDelete != bc.softDelete {
+		if ac.table != bc.table || ac.parentIDColumn != bc.parentIDColumn || ac.deletedAt != bc.deletedAt {
 			diverges("native child "+name,
-				ac.table+"/"+ac.parentIDColumn+"/"+ac.softDelete, bc.table+"/"+bc.parentIDColumn+"/"+bc.softDelete)
+				ac.table+"/"+ac.parentIDColumn+"/"+ac.deletedAt, bc.table+"/"+bc.parentIDColumn+"/"+bc.deletedAt)
 		}
 	}
 }

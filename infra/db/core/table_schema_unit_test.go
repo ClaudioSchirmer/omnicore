@@ -58,21 +58,21 @@ func TestField_TooManyLabelKeysPanics(t *testing.T) {
 }
 
 func TestEnsureColumnFree_EmptyColumnIsNoop(t *testing.T) {
-	// SoftDelete("") drives ensureColumnFree's empty-column early return without
+	// DeletedAt("") drives ensureColumnFree's empty-column early return without
 	// claiming any column.
 	s := NewTableSchema[*builderTestEntity]("t").ID("id").Field("Name", "name")
-	s.ensureColumnFree("", "SoftDelete") // must not panic
-	if _, ok := s.softDeleteColumn(); ok {
-		t.Error("no soft-delete should be set")
+	s.ensureColumnFree("", "DeletedAt") // must not panic
+	if _, ok := s.deletedAtColumn(); ok {
+		t.Error("no DeletedAt should be set")
 	}
 }
 
 func TestEnsureColumnFree_UpdatedAtCollisionPanics(t *testing.T) {
 	mustPanic(t, "updated_at collision", func() {
-		// UpdatedAt claims "ts"; declaring SoftDelete on the same column must
+		// UpdatedAt claims "ts"; declaring DeletedAt on the same column must
 		// trip the UpdatedAt collision arm of ensureColumnFree.
 		NewTableSchema[*builderTestEntity]("t").ID("id").
-			UpdatedAt("ts").SoftDelete("ts")
+			UpdatedAt("ts").DeletedAt("ts")
 	})
 }
 
@@ -103,7 +103,7 @@ func TestExternalSchema_ScanPlanSkipsUnindexed(t *testing.T) {
 	}
 }
 
-func TestValidateModes_ArchiveWithoutSoftDeletePanics(t *testing.T) {
+func TestValidateModes_ArchiveWithoutDeletedAtPanics(t *testing.T) {
 	noSD := NewTableSchema[*builderTestEntity]("t").ID("id").Field("Name", "name")
 	mustPanic(t, "ValidateModes", func() {
 		noSD.ValidateModes([]domain.EntityMode{domain.ModeArchive})

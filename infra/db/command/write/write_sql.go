@@ -24,7 +24,7 @@ func newWriteID() (string, error) {
 }
 
 // writeNow mints the single authoritative timestamp of one write operation.
-// Managed columns (created_at/updated_at and the soft-delete stamp) are
+// Managed columns (created_at/updated_at and the DeletedAt stamp) are
 // application-clock values bound as ordinary arguments — the same move the ids
 // made with the Go-minted UUID v7: no dialect NOW() expression in the data DML,
 // so every statement of one operation (root, children, siblings, base cascade)
@@ -112,7 +112,7 @@ func buildUpdate(d Dialect, table, pk, id string, fields domain.Fields, nowCols 
 	return sql, args
 }
 
-// archiveSQL soft-deletes one row: the archive stamp binds as the FIRST arg
+// archiveSQL archives one row: the archive stamp binds as the FIRST arg
 // (the operation's writeNow() value), the ID as the second — the same
 // app-clock stamp every other statement of the operation carries.
 func archiveSQL(d Dialect, table, sdCol, pk, revCol string) string {
@@ -159,7 +159,7 @@ func childDeleteSQL(d Dialect, childTable, fkCol string) string {
 }
 
 // childCascadeSQL renders the UNARCHIVE direction of the symmetric cascade on a
-// child table: set the soft-delete column (setExpr, "NULL" on this path) for
+// child table: set the DeletedAt column (setExpr, "NULL" on this path) for
 // children of the root whose state matches the gate (" IS NOT NULL" =
 // archived). The single arg is the root id. The archive direction binds the
 // operation stamp and lives in archiveCascadeSQL.
@@ -170,7 +170,7 @@ func childCascadeSQL(d Dialect, childTable, childSd, fkCol, setExpr, gate string
 }
 
 // archiveCascadeSQL renders the ARCHIVE direction of the symmetric cascade: set
-// the soft-delete column to the operation stamp (bound as the FIRST arg) for
+// the DeletedAt column to the operation stamp (bound as the FIRST arg) for
 // the ACTIVE children of the root (second arg). Gated on `IS NULL` so it is
 // idempotent and never re-stamps an already-archived child.
 func archiveCascadeSQL(d Dialect, childTable, childSd, fkCol string) string {
@@ -212,14 +212,14 @@ func buildSiblingUpsert(d Dialect, sib *TableSchema, pkCol, id string, fields do
 	return d.BuildUpsert(sib.Table(), cols, []string{pkCol}, sets), args
 }
 
-// requireSoftDelete is the runtime backstop for the boot-time Modes() ⟺
-// SoftDelete check: a write path needing the soft-delete column on a schema that
+// requireDeletedAt is the runtime backstop for the boot-time Modes() ⟺
+// DeletedAt check: a write path needing the DeletedAt column on a schema that
 // did not declare it fails loudly instead of emitting broken SQL.
-func requireSoftDelete(s *TableSchema, entityName string) (string, error) {
-	col, ok := s.SoftDeleteColumn()
+func requireDeletedAt(s *TableSchema, entityName string) (string, error) {
+	col, ok := s.DeletedAtColumn()
 	if !ok {
 		return "", fmt.Errorf(
-			"db: %s did not declare SoftDelete in its TableSchema — archive/unarchive is unavailable",
+			"db: %s did not declare DeletedAt in its TableSchema — archive/unarchive is unavailable",
 			entityName,
 		)
 	}

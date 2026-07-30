@@ -29,12 +29,19 @@ with `1.0.0`.
   | `PKIndex()` | `IDIndex()` |
   | the read-only FK projection Go name `FID` | `ParentID` |
   | `NaturalKeyImmutableNotification` | `NaturalIDImmutableNotification` |
+  | `SoftDelete(col)` | `DeletedAt(col)` |
+  | `SoftDeleteColumn()` (TableSchema and ViewNode) | `DeletedAtColumn()` |
+  | `ViewNode.ChildSoftDeletePaths()` | `ChildDeletedAtPaths()` |
 
   The Go field the id binds to is `ID` (unchanged); now the declaration name
   matches it, and the parent link is `ParentID` end to end (setter, read
-  projection, accessor). Purely a rename — no behavior change beyond the names.
-  Mechanical migration: `PK(`→`ID(`, `FK(`→`ParentID(`, `NaturalKey(`→`NaturalID(`
-  across your schemas.
+  projection, accessor). The archive slot joins the same wave: `DeletedAt(col)`
+  matches the FIXED read-side Go name `DeletedAt`, completing the
+  `CreatedAt`/`UpdatedAt`/`DeletedAt` triple — the "soft delete" vocabulary
+  leaves the surface entirely (the concept is ARCHIVE, the column slot is
+  `DeletedAt`). Purely a rename — no behavior change beyond the names.
+  Mechanical migration: `PK(`→`ID(`, `FK(`→`ParentID(`, `NaturalKey(`→`NaturalID(`,
+  `SoftDelete(`→`DeletedAt(` across your schemas.
 
 - **BREAKING — the aggregate-root ParentID column can no longer ALSO be a mapped
   domain `Field`.** A child schema declares `ParentID(column)` to point at its parent;

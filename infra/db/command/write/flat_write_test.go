@@ -19,7 +19,7 @@ import (
 // recording fake WriteTx + WriteBeginner — the unit-level twin of what the
 // integration suites exercise against a real database. They cover the control
 // flow + error branches (begin/exec/commit failures, update-not-found, hook
-// firing, the missing-SoftDelete guard) without a live backend; the real SQL
+// firing, the missing-DeletedAt guard) without a live backend; the real SQL
 // behavior remains the integration suites' contract.
 
 // recTx records the statements the write path emits and exposes injectable
@@ -276,7 +276,7 @@ func TestBaseEngine_ArchiveUnarchiveDelete(t *testing.T) {
 	}
 }
 
-func TestBaseEngine_Archive_MissingSoftDeleteIsError(t *testing.T) {
+func TestBaseEngine_Archive_MissingDeletedAtIsError(t *testing.T) {
 	noSD := NewTableSchema[*builderTestEntity]("nsd").ID("id").Revision("revision").Field("Name", "name").Field("Email", "email")
 	tx := &recTx{}
 	be := newFlatBE(&recBeginner{tx: tx})
@@ -284,7 +284,7 @@ func TestBaseEngine_Archive_MissingSoftDeleteIsError(t *testing.T) {
 	e.SetID(domain.NewID(uuid.NewString()))
 	a, _ := domain.GetArchivable(e, nil, "GetArchivable")
 	if err := be.Archive(newBuilderCtx(), a, noSD, WriteHook{}); err == nil {
-		t.Fatal("expected an error archiving a schema without SoftDelete")
+		t.Fatal("expected an error archiving a schema without DeletedAt")
 	}
 }
 
