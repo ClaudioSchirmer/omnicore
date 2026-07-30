@@ -11,7 +11,38 @@ with `1.0.0`.
 
 ## [Unreleased]
 
+## [0.39.0] - 2026-07-29
+
+### Added
+
+- **`JoinView(...).Fields(cols...)` — the materialization allowlist of an
+  embedded local view, and the per-consumer archive switch.** A `JoinView` leg
+  declares which source fields its segment stores, in GO names (business fields
+  by their declared Go name, managed slots by their fixed names, a top-level
+  segment by its Go segment name — admitted or cut whole). `_id`/`_revision`,
+  an `EmbedMany`'s leg-side join column and a declared `OrderBy` column always
+  survive. Every segment writer applies the same cut (compose, batch, surgical
+  ripple, repair, `EmbedInChild`); a capped field is `400` on
+  filter/sort/`?fields=`; the export stops advertising it. `"DeletedAt"` in or
+  out of `Fields` is the archive switch per view: listed → the segment follows
+  the source's archive; omitted → no archived rule by declaration (the archived
+  source keeps its data in the embedding document and keeps updating). In the
+  rebuild hash only when declared (non-breaking — nothing rebuilds on upgrade);
+  changing it needs a `Version` bump. JoinView-only: a `JoinUpstream` leg's cut
+  is the subscription `fields:` + its external schema; a `Fields`-bearing leg
+  on a `ComposedView` is a fatal boot.
+
 ### Changed
+
+- **BREAKING — the `UpstreamSubscription` yaml key `filter:` is renamed
+  `fields:`** (same semantics: the allowlist of raw payload fields entering the
+  mirror), aligning with the new JoinView `Fields` — one concept, two sides of
+  the membrane (physical names at ingestion, Go names at declaration). A
+  leftover `filter:` key aborts the boot (strict decode) naming the offender;
+  the Go field follows (`UpstreamSubscription.Filter` → `.Fields`). The §8.5
+  guard is generalized: EVERY column a consumer's external schema declares must
+  survive a non-empty `fields:` — a dead declaration is now a fatal boot
+  (previously only the DeletedAt column was cross-checked).
 
 - **BREAKING — the schema-declaration DSL is renamed for symmetry with the Go
   field it maps.** The identity methods no longer use the SQL-borrowed `PK`/`FK`
@@ -29,12 +60,19 @@ with `1.0.0`.
   | `PKIndex()` | `IDIndex()` |
   | the read-only FK projection Go name `FID` | `ParentID` |
   | `NaturalKeyImmutableNotification` | `NaturalIDImmutableNotification` |
+  | `SoftDelete(col)` | `DeletedAt(col)` |
+  | `SoftDeleteColumn()` (TableSchema and ViewNode) | `DeletedAtColumn()` |
+  | `ViewNode.ChildSoftDeletePaths()` | `ChildDeletedAtPaths()` |
 
   The Go field the id binds to is `ID` (unchanged); now the declaration name
   matches it, and the parent link is `ParentID` end to end (setter, read
-  projection, accessor). Purely a rename — no behavior change beyond the names.
-  Mechanical migration: `PK(`→`ID(`, `FK(`→`ParentID(`, `NaturalKey(`→`NaturalID(`
-  across your schemas.
+  projection, accessor). The archive slot joins the same wave: `DeletedAt(col)`
+  matches the FIXED read-side Go name `DeletedAt`, completing the
+  `CreatedAt`/`UpdatedAt`/`DeletedAt` triple — the "soft delete" vocabulary
+  leaves the surface entirely (the concept is ARCHIVE, the column slot is
+  `DeletedAt`). Purely a rename — no behavior change beyond the names.
+  Mechanical migration: `PK(`→`ID(`, `FK(`→`ParentID(`, `NaturalKey(`→`NaturalID(`,
+  `SoftDelete(`→`DeletedAt(` across your schemas.
 
 - **BREAKING — the aggregate-root ParentID column can no longer ALSO be a mapped
   domain `Field`.** A child schema declares `ParentID(column)` to point at its parent;

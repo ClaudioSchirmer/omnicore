@@ -28,13 +28,13 @@ func (e *ecCodedEntity) BuildRules(string, domain.Service, *domain.Rules) {}
 func ecCodedLoader(queryFn func(sql string, args []any) (Rows, error)) *AggregateLoader[*ecCodedEntity] {
 	return NewAggregateLoader[*ecCodedEntity](fakeEngine(queryFn), func() *ecCodedEntity { return &ecCodedEntity{} }).
 		WithSchema(NewTableSchema[*ecCodedEntity]("listings").
-			ID("id").Field("Code", "announcement_code").SoftDelete("deleted_at"))
+			ID("id").Field("Code", "announcement_code").DeletedAt("deleted_at"))
 }
 
 func ecSchema() *TableSchema {
 	return NewTableSchema[*aggLoaderTestEntity]("listings").
 		ID("id").
-		SoftDelete("deleted_at")
+		DeletedAt("deleted_at")
 }
 
 func ecLoader(queryFn func(sql string, args []any) (Rows, error)) *AggregateLoader[*aggLoaderTestEntity] {

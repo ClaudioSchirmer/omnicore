@@ -110,7 +110,7 @@ func flatSchema() *core.TableSchema {
 		Field("Name", "name").
 		Field("Email", "email").
 		Field("Phone", "phone").
-		SoftDelete("deleted_at").
+		DeletedAt("deleted_at").
 		CreatedAt("created_at").
 		UpdatedAt("updated_at")
 }
@@ -326,7 +326,7 @@ func TestSQLServerEngine_WritePath(t *testing.T) {
 		t.Fatalf("expected 1 UPDATED outbox row, got %d", c)
 	}
 
-	// --- Archive (soft delete set) ---
+	// --- Archive (archive set) ---
 	ea := &flatPerson{Name: "Alice B", Email: "alice@x"}
 	ea.SetID(domain.NewID(id.Value()))
 	arch, err := domain.GetArchivable(ea, nil, "GetArchivable")
@@ -347,7 +347,7 @@ func TestSQLServerEngine_WritePath(t *testing.T) {
 		t.Fatalf("expected 1 ARCHIVED outbox row, got %d", c)
 	}
 
-	// --- Unarchive (soft delete cleared) ---
+	// --- Unarchive (archive cleared) ---
 	eu := &flatPerson{Name: "Alice B", Email: "alice@x"}
 	eu.SetID(domain.NewID(id.Value()))
 	un, err := domain.GetUnarchivable(eu, nil, "GetUnarchivable")
@@ -566,10 +566,10 @@ func (tag) BuildRules(string, domain.Service, *domain.Rules) {}
 func acctSchema() *core.TableSchema {
 	return core.NewTableSchema[*acct]("accts").
 		ID("id").Field("Name", "name").
-		SoftDelete("deleted_at").CreatedAt("created_at").UpdatedAt("updated_at").
+		DeletedAt("deleted_at").CreatedAt("created_at").UpdatedAt("updated_at").
 		Child(core.NewTableSchema[tag]("acct_tags").
 			ID("id").ParentID("acct_id").Field("Label", "label").
-			SoftDelete("deleted_at").CreatedAt("created_at").UpdatedAt("updated_at"))
+			DeletedAt("deleted_at").CreatedAt("created_at").UpdatedAt("updated_at"))
 }
 
 func setupAgg(t *testing.T) (*Engine, *sql.DB) {

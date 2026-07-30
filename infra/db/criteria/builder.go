@@ -60,8 +60,8 @@ func Not(inner Expr) Expr       { return Negation{Inner: inner} }
 
 // ─── Query envelope ──────────────────────────────────────────────────────────
 
-// Scope governs the soft-delete gate applied around the boolean predicate. It
-// is NOT part of the Expr algebra — the where-tree stays soft-delete-agnostic;
+// Scope governs the DeletedAt gate applied around the boolean predicate. It
+// is NOT part of the Expr algebra — the where-tree stays DeletedAt-agnostic;
 // the translator reads the scope and appends the deleted_at condition.
 type Scope uint8
 
@@ -138,5 +138,5 @@ func (q *Query) LimitValue() int64 { return q.limit }
 // OffsetValue returns the row skip (0 = no offset).
 func (q *Query) OffsetValue() int64 { return q.offset }
 
-// Scope returns the soft-delete scope.
+// Scope returns the DeletedAt scope.
 func (q *Query) Scope() Scope { return q.scope }

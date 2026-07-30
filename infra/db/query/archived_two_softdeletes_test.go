@@ -6,13 +6,13 @@ import (
 	"github.com/ClaudioSchirmer/omnicore/infra/db/core"
 )
 
-// TWO soft-deletes in the same neighbourhood, both named "deleted_at": the
+// TWO archives in the same neighbourhood, both named "deleted_at": the
 // child element's own lifecycle and the enrichment's. Each must be read from
 // ITS OWN map using ITS OWN schema's column — a shared column NAME must never
 // let one decide the other's fate.
-func TestTwoSoftDeletes_AreIndependent(t *testing.T) {
-	child := core.NewTableSchema[arcItem]("lines").ID("id").ParentID("orders_id").SoftDelete("deleted_at")
-	root := core.NewTableSchema[arcRoot]("orders").ID("id").SoftDelete("deleted_at").Child(child)
+func TestTwoDeletedAts_AreIndependent(t *testing.T) {
+	child := core.NewTableSchema[arcItem]("lines").ID("id").ParentID("orders_id").DeletedAt("deleted_at")
+	root := core.NewTableSchema[arcRoot]("orders").ID("id").DeletedAt("deleted_at").Child(child)
 	v := View("orders").Version(1).Schema(root).
 		EmbedInChild(child, mirrorWithSD()).On("item_id").
 		Indexes(Index(childDocSegment(child) + ".item_id"))
@@ -39,13 +39,13 @@ func TestTwoSoftDeletes_AreIndependent(t *testing.T) {
 	}
 }
 
-// TWO sibling segments at the SAME level, each with its own soft-delete: one
+// TWO sibling segments at the SAME level, each with its own DeletedAt: one
 // archived, one active. Each decides only itself.
 func TestTwoSiblingSegments_DecideIndependently(t *testing.T) {
 	v := View("parts").Version(1).Schema(arcRootSchema("parts")).
 		Embed(mirrorWithSD()).On("item_id").
 		Embed(JoinUpstream(core.NewExternalSchema("upstream_brands").ID("id").
-			Field("Name", "name").SoftDelete("deleted_at"), "Brand", "brand")).On("brand_id").
+			Field("Name", "name").DeletedAt("deleted_at"), "Brand", "brand")).On("brand_id").
 		Indexes(Index("item_id"), Index("brand_id"))
 	doc := map[string]any{
 		"_id":   "p1",
@@ -61,7 +61,7 @@ func TestTwoSiblingSegments_DecideIndependently(t *testing.T) {
 	}
 }
 
-// A segment WITHOUT a declared soft-delete sitting beside one WITH it: the
+// A segment WITHOUT a declared DeletedAt sitting beside one WITH it: the
 // undeclared one is never filtered, even carrying a deleted_at-looking field.
 func TestSiblingSegments_UndeclaredIsNeverFiltered(t *testing.T) {
 	v := View("parts").Version(1).Schema(arcRootSchema("parts")).

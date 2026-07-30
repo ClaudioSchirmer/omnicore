@@ -139,7 +139,7 @@ func TestProcessMessage_Inserted_FullRipple(t *testing.T) {
 
 func TestProcessMessage_Updated_WithFilter(t *testing.T) {
 	colls := happyColls()
-	cfg := UpstreamSubscriberConfig{Filter: []string{"name"}}
+	cfg := UpstreamSubscriberConfig{Fields: []string{"name"}}
 	s := newTestUpstream(t, cfg, upstreamFakeMongo(colls), ordersRootEngine())
 
 	s.processMessage(context.Background(), upstreamMsg("u1", "UPDATED", `{"name":"alice","secret":"x"}`), 0)
@@ -776,9 +776,9 @@ func TestDecodePayload(t *testing.T) {
 }
 
 func TestApplyFilter(t *testing.T) {
-	s := newTestUpstream(t, UpstreamSubscriberConfig{Filter: []string{"name"}},
+	s := newTestUpstream(t, UpstreamSubscriberConfig{Fields: []string{"name"}},
 		upstreamFakeMongo(happyColls()), ordersRootEngine())
-	out := s.applyFilter(bson.M{"name": "a", "drop": "b"})
+	out := s.applyFields(bson.M{"name": "a", "drop": "b"})
 	if _, ok := out["name"]; !ok {
 		t.Error("allowed key must survive")
 	}

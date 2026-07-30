@@ -104,19 +104,19 @@ func TestBaseChildren_ValidateSharedBaseChildren(t *testing.T) {
 			SharedBase(base, "pessoa_id")
 		role.ValidateSharedBaseChildren()
 	})
-	// A base-child with SoftDelete but a base without SoftDelete is rejected.
-	assertPanics(t, "base child soft-delete without base soft-delete", func() {
+	// A base-child with DeletedAt but a base without DeletedAt is rejected.
+	assertPanics(t, "base child DeletedAt without base DeletedAt", func() {
 		base := NewSharedBaseSchema("pessoa").Revision("revision").ID("id").Field("Name", "name").NaturalID("name").
 			Child(NewTableSchema[addrFixture]("endereco").ID("id").ParentID("pessoa_id").
-				Field("Street", "street").SoftDelete("deleted_at"))
+				Field("Street", "street").DeletedAt("deleted_at"))
 		role := NewTableSchema[schemaSample]("aluno").ID("id").Field("Removed", "matricula").
 			SharedBase(base, "pessoa_id")
 		role.ValidateSharedBaseChildren()
 	})
-	// A base + base-child that BOTH declare SoftDelete validate cleanly (all-or-nothing satisfied).
-	base := NewSharedBaseSchema("pessoa").Revision("revision").ID("id").Field("Name", "name").NaturalID("name").SoftDelete("deleted_at").
+	// A base + base-child that BOTH declare DeletedAt validate cleanly (all-or-nothing satisfied).
+	base := NewSharedBaseSchema("pessoa").Revision("revision").ID("id").Field("Name", "name").NaturalID("name").DeletedAt("deleted_at").
 		Child(NewTableSchema[addrFixture]("endereco").ID("id").ParentID("pessoa_id").
-			Field("Street", "street").SoftDelete("deleted_at"))
+			Field("Street", "street").DeletedAt("deleted_at"))
 	role := NewTableSchema[schemaSample]("aluno").ID("id").Field("Removed", "matricula").
 		SharedBase(base, "pessoa_id")
 	role.ValidateSharedBaseChildren() // must not panic

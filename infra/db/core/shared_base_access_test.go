@@ -3,7 +3,7 @@ package core
 import "testing"
 
 // Remaining SharedBase foundation coverage: the NaturalID empty-column guard,
-// the ReferencingRoles registry read (with its lazy soft-delete resolution),
+// the ReferencingRoles registry read (with its lazy DeletedAt resolution),
 // the SharedBaseScanPlan absent branch, and the child-name divergence axis of
 // AssertSharedBaseEquivalent.
 
@@ -23,22 +23,22 @@ func TestSharedBase_ReferencingRoles(t *testing.T) {
 		t.Errorf("unreferenced base ReferencingRoles() = %v, want nil", got)
 	}
 
-	// SoftDelete declared AFTER SharedBase — the registry stores the schema
-	// pointer, so the role's soft-delete column must still resolve (lazily).
+	// DeletedAt declared AFTER SharedBase — the registry stores the schema
+	// pointer, so the role's DeletedAt column must still resolve (lazily).
 	NewTableSchema[schemaSample]("aluno").ID("id").Field("Removed", "matricula").
 		SharedBase(base, "pessoa_id").
-		SoftDelete("deleted_at")
+		DeletedAt("deleted_at")
 	NewTableSchema[schemaSample]("professor").ID("id").Field("Removed", "siape").
-		SharedBase(base, "pessoa_fk") // no soft-delete on this role
+		SharedBase(base, "pessoa_fk") // no DeletedAt on this role
 
 	got := base.ReferencingRoles()
 	if len(got) != 2 {
 		t.Fatalf("ReferencingRoles() = %v, want 2 roles", got)
 	}
-	if got[0] != (RoleRef{Table: "aluno", ParentIDColumn: "pessoa_id", SoftDeleteCol: "deleted_at"}) {
-		t.Errorf("role[0] = %+v, want aluno/pessoa_id/deleted_at (lazy soft-delete)", got[0])
+	if got[0] != (RoleRef{Table: "aluno", ParentIDColumn: "pessoa_id", DeletedAtCol: "deleted_at"}) {
+		t.Errorf("role[0] = %+v, want aluno/pessoa_id/deleted_at (lazy DeletedAt)", got[0])
 	}
-	if got[1] != (RoleRef{Table: "professor", ParentIDColumn: "pessoa_fk", SoftDeleteCol: ""}) {
+	if got[1] != (RoleRef{Table: "professor", ParentIDColumn: "pessoa_fk", DeletedAtCol: ""}) {
 		t.Errorf("role[1] = %+v, want professor/pessoa_fk/<none>", got[1])
 	}
 }

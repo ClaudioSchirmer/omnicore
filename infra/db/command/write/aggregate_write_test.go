@@ -44,14 +44,14 @@ func aggWriteSchema() *TableSchema {
 	return NewTableSchema[*aggWriteRoot]("agg_w").
 		ID("id").
 		Field("Name", "name").
-		SoftDelete("deleted_at").
+		DeletedAt("deleted_at").
 		CreatedAt("created_at").
 		UpdatedAt("updated_at").
 		Child(NewTableSchema[aggWriteChild]("agg_w_children").
 			ID("id").
 			ParentID("agg_w_id").
 			Field("Label", "label").
-			SoftDelete("deleted_at").
+			DeletedAt("deleted_at").
 			CreatedAt("created_at").
 			UpdatedAt("updated_at"))
 }
@@ -247,7 +247,7 @@ func TestBaseEngine_InsertAggregate_UndeclaredChildSchemaIsError(t *testing.T) {
 	// Schema WITHOUT the child declaration → childSchemaOrErr must fail loudly.
 	schemaNoChild := NewTableSchema[*aggWriteRoot]("agg_w").
 		ID("id").Field("Name", "name").
-		SoftDelete("deleted_at").CreatedAt("created_at").UpdatedAt("updated_at")
+		DeletedAt("deleted_at").CreatedAt("created_at").UpdatedAt("updated_at")
 
 	tx := &recTx{}
 	be := newFlatBE(&recBeginner{tx: tx})

@@ -25,13 +25,13 @@ import (
 //
 // Document identity: `_id` = the base's deterministic ID (UUIDv5 of the
 // natural key) — stable across both role link models (shared-ID and
-// separate-ParentID). The root soft-delete gate is the base's SoftDelete column: the
+// separate-ParentID). The root DeletedAt gate is the base's DeletedAt column: the
 // base archives only when its last active role archives (write-side
 // convergence), which is exactly the document-level visibility this view
 // wants. Role sub-documents follow the ROLE's lifecycle: an absent role is an
 // explicit `null` segment (the store's Upsert is $set — a vanished role must
 // overwrite its stale segment), an archived role is stored with its
-// soft-delete timestamp and stripped at read time unless ?includeArchived.
+// DeletedAt timestamp and stripped at read time unless ?includeArchived.
 //
 // Everything a regular view declares applies unchanged: Version (the role set
 // participates in the rebuild hash — adding a role without bumping is

@@ -110,9 +110,10 @@ HTTP 201 Created
         </tr>
         <tr>
             <td><code>Embed</code> / <code>EmbedMany</code></td>
-            <td>Nothing new on the write path — the embed reads an EXTERNAL collection at compose time.
-                The source's own writes (or upstream events) trigger the recompose ripple; the view
-                declares the leg via <code>JoinUpstream(...)</code> and the join via <code>.On(...)</code>.</td>
+            <td>Nothing new on the write path — the embed reads a MATERIALIZED source (an upstream mirror or a
+                local view) at compose time. The source's own writes (or upstream events) trigger the recompose
+                ripple; the view declares the leg via <code>JoinUpstream(...)</code>/<code>JoinView(...)</code>
+                and the join via <code>.On(...)</code>.</td>
             <td><a href="#table-schema">TableSchema</a></td>
         </tr>
         <tr>

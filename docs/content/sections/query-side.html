@@ -282,10 +282,11 @@ const (
         </tr>
         <tr>
             <td><code>Embed</code> / <code>EmbedMany</code></td>
-            <td>An EXTERNAL collection (an upstream projection or a derived local view) nested into the
-                document under a declared segment, joined by ParentID at compose time. <strong>Single-level</strong>:
-                an embed source exposes no <code>Embed</code>/<code>EmbedMany</code> builder, so embed-of-embed
-                does not compile.</td>
+            <td>A MATERIALIZED source — an upstream mirror (<code>JoinUpstream</code>) or a local registered view
+                (<code>JoinView</code>) — nested into the document under a declared segment, joined by ParentID at
+                compose time. <strong>Single-level per declaration</strong>: an embed source exposes no
+                <code>Embed</code>/<code>EmbedMany</code> builder, so embed-of-embed does not compile (depth comes
+                from a <code>JoinView</code> source's own embeds, along an acyclic chain).</td>
             <td>Materialized at write time; recompose-ripple on source changes</td>
             <td><a href="#views~views-embed">Views</a></td>
         </tr>

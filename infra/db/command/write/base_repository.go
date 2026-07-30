@@ -57,7 +57,7 @@ type BaseRepository[T any] struct {
 	// entity (root + aggregate children). It is UNEXPORTED and bound only
 	// through WithSchema — there is no way to set it that bypasses the
 	// construction-time boot checks (ID, Revision, aggregate depth, old-clone
-	// safety, Modes() ⟺ SoftDelete). There is no convention fallback — a write
+	// safety, Modes() ⟺ DeletedAt). There is no convention fallback — a write
 	// with a nil schema panics.
 	schema *TableSchema
 }
@@ -117,7 +117,7 @@ func (w boundWriter[T]) Unarchive(u domain.Unarchivable) error {
 // ID-declared, aggregate-depth (no grandchildren), old-clone safety (no
 // `json:"-"` on a persisted field, no custom json.(Un)Marshaler on the entity —
 // either would corrupt the domain.Old() snapshot), and — when T exposes Modes()
-// — the Modes() ⟺ SoftDelete invariant. The field-existence + bijection checks
+// — the Modes() ⟺ DeletedAt invariant. The field-existence + bijection checks
 // already ran while the TableSchema was built. A violation panics at
 // construction, not on the first request, so a flat (non-aggregate) repository
 // gets the same fail-fast the aggregate path has via

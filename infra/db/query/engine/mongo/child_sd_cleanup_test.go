@@ -4,7 +4,7 @@ import (
 	"testing"
 )
 
-// removeChildSDColumn strips the auto-included soft-delete column at every
+// removeChildSDColumn strips the auto-included DeletedAt column at every
 // path shape the reader produces: a child collection at the root, a
 // SharedBaseView role segment (a single map) and a role's own child collection
 // (dotted). Absent or differently-shaped nodes are no-ops.

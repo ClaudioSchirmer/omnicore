@@ -58,7 +58,7 @@ func emptyIfNil(rows []Document) []Document {
 }
 
 // fetchInGrouped fetches every row whose keyCol is in keys (deduped + chunked at
-// maxInClauseSize, same soft-delete gate as fetchWhere) and groups them by the
+// maxInClauseSize, same DeletedAt gate as fetchWhere) and groups them by the
 // stringified keyCol value — the set-based companion of fetchWhere/fetchRow.
 func (c *Composer) fetchInGrouped(ctx context.Context, schema *core.TableSchema, table, keyCol string, keys []string, sdCol string, includeArchived bool) (map[string][]Document, error) {
 	out := make(map[string][]Document)
@@ -142,7 +142,7 @@ func (c *Composer) mergeOwnerSiblingsBatch(ctx context.Context, docs []Document,
 // mergeSharedBaseBatch is the set-based mergeSharedBase: the shared base is fetched
 // for the whole batch by its ID (the roles' ParentID values), then merged FLAT into each
 // role doc — with the SAME managed-column skip as the per-row path so a base's
-// NULL soft-delete / its timestamps never overwrite the role's authoritative ones.
+// NULL DeletedAt / its timestamps never overwrite the role's authoritative ones.
 func (c *Composer) mergeSharedBaseBatch(ctx context.Context, docs []Document, schema *core.TableSchema, includeArchived bool) error {
 	base, fkCol, ok := schema.SharedBaseRef()
 	if !ok {
@@ -154,8 +154,8 @@ func (c *Composer) mergeSharedBaseBatch(ctx context.Context, docs []Document, sc
 		return err
 	}
 	skip := map[string]bool{base.IDColumn(): true}
-	if col, ok := base.SoftDeleteColumn(); ok {
-		if _, roleHas := schema.SoftDeleteColumn(); roleHas {
+	if col, ok := base.DeletedAtColumn(); ok {
+		if _, roleHas := schema.DeletedAtColumn(); roleHas {
 			skip[col] = true
 		}
 	}
@@ -199,7 +199,7 @@ func (c *Composer) mergeSharedBaseChildrenBatch(ctx context.Context, docs []Docu
 	}
 	keys := collectKeys(docs, fkCol)
 	for _, bc := range baseChildren {
-		sd, _ := schemaSoftDelete(bc)
+		sd, _ := schemaDeletedAt(bc)
 		grouped, err := c.fetchInGrouped(ctx, bc, bc.Table(), bc.ParentIDColumn(), keys, sd, includeArchived)
 		if err != nil {
 			return err
@@ -228,7 +228,7 @@ func (c *Composer) mergeOwnChildrenBatch(ctx context.Context, docs []Document, s
 	pkCol := schemaPK(schema)
 	keys := collectKeys(docs, pkCol)
 	for _, child := range children {
-		sd, _ := schemaSoftDelete(child)
+		sd, _ := schemaDeletedAt(child)
 		grouped, err := c.fetchInGrouped(ctx, child, child.Table(), child.ParentIDColumn(), keys, sd, includeArchived)
 		if err != nil {
 			return err
@@ -268,10 +268,10 @@ func (c *Composer) composeBaseRootedRowsBatched(ctx context.Context, view *ViewD
 	}
 	for _, r := range view.roles {
 		_, fkCol, _ := r.schema.SharedBaseRef()
-		sd, hasSD := schemaSoftDelete(r.schema)
+		sd, hasSD := schemaDeletedAt(r.schema)
 		baseIDs := collectKeys(rows, basePK)
 
-		// Active role rows (or, without soft-delete, simply the row) for the whole
+		// Active role rows (or, without DeletedAt, simply the row) for the whole
 		// batch in one lookup, grouped by the base ParentID.
 		var grouped map[string][]Document
 		var err error
@@ -410,12 +410,13 @@ func (c *Composer) applyEmbedsBatch(ctx context.Context, docs []Document, parent
 			if err != nil {
 				return err
 			}
+			allow := embedTrimSet(e)
 			for _, doc := range docs {
 				v, ok := doc[parentPK]
 				if !ok || v == nil {
 					continue
 				}
-				doc[e.Field()] = grouped[fmt.Sprintf("%v", v)]
+				doc[e.Field()] = trimDocsToFields(grouped[fmt.Sprintf("%v", v)], allow)
 			}
 		} else {
 			// 1:1 — embed._id == parent[JoinColumn].
@@ -429,6 +430,7 @@ func (c *Composer) applyEmbedsBatch(ctx context.Context, docs []Document, parent
 			if err != nil {
 				return err
 			}
+			allow := embedTrimSet(e)
 			for _, doc := range docs {
 				// Unresolved 1:1 → explicit null, same reason as the per-row
 				// path: $set-merged writes would keep a stale sub-document if
@@ -443,7 +445,7 @@ func (c *Composer) applyEmbedsBatch(ctx context.Context, docs []Document, parent
 					doc[e.Field()] = nil
 					continue
 				}
-				doc[e.Field()] = rows[0]
+				doc[e.Field()] = trimToFields(rows[0], allow)
 			}
 		}
 	}

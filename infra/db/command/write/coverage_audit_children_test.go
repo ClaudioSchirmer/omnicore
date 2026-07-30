@@ -39,12 +39,12 @@ func (c covChild) BuildRules(string, domain.Service, *domain.Rules) {}
 var covAggSchema = NewTableSchema[*covAgg]("cov_aggs").
 	ID("id").
 	Field("Name", "name").
-	SoftDelete("deleted_at").
+	DeletedAt("deleted_at").
 	Child(NewTableSchema[covChild]("cov_children").
 		ID("id").
 		ParentID("cov_agg_id").
 		Field("Label", "label").
-		SoftDelete("deleted_at"))
+		DeletedAt("deleted_at"))
 
 func TestChildEventOf_InsertSnapshotsChildren(t *testing.T) {
 	root := &covAgg{Name: "a"}

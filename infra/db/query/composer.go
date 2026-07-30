@@ -22,8 +22,8 @@ const maxInClauseSize = 900
 //
 // Per-source physical names come from each source's core.TableSchema (root via
 // View.Schema, embeds via Source.Schema): the root key + each embed's key are
-// the source's ID column, and the soft-delete filter uses the source's
-// soft-delete column. A schema-less source falls back to id / deleted_at.
+// the source's ID column, and the DeletedAt filter uses the source's
+// DeletedAt column. A schema-less source falls back to id / deleted_at.
 //
 // The root document and the aggregate's internal closure (siblings, SharedBase,
 // own + base children) compose RELATIONALLY — fetchRow / fetchWhere against the
@@ -58,16 +58,16 @@ func NewComposerWithMongo(eng core.RelationalEngine, mongo ReadModelStore, resol
 	return &Composer{eng: eng, mongo: mongo, resolver: resolver}
 }
 
-// schemaPK / schemaSoftDelete read the source's physical ID + soft-delete column
+// schemaPK / schemaDeletedAt read the source's physical ID + DeletedAt column
 // straight from its core.TableSchema. The schema is mandatory on every view (root and
 // embed), so there is no convention fallback — a view declared without a schema
 // is rejected at boot, not silently mapped to "id"/"deleted_at".
-func schemaPK(s *core.TableSchema) string                 { return s.IDColumn() }
-func schemaSoftDelete(s *core.TableSchema) (string, bool) { return s.SoftDeleteColumn() }
+func schemaPK(s *core.TableSchema) string                { return s.IDColumn() }
+func schemaDeletedAt(s *core.TableSchema) (string, bool) { return s.DeletedAtColumn() }
 
 func (c *Composer) Compose(ctx context.Context, view *ViewDefinition, rootID string) (Document, error) {
 	includeArchived := !view.deleteOnArchive
-	sd, _ := schemaSoftDelete(view.schema)
+	sd, _ := schemaDeletedAt(view.schema)
 	row, err := c.fetchRow(ctx, view.schema, view.RootTable(), schemaPK(view.schema), rootID, sd, includeArchived)
 	if err != nil {
 		return nil, err
@@ -105,7 +105,7 @@ func (c *Composer) Compose(ctx context.Context, view *ViewDefinition, rootID str
 
 func (c *Composer) ComposeAll(ctx context.Context, view *ViewDefinition) ([]Document, error) {
 	includeArchived := !view.deleteOnArchive
-	sd, _ := schemaSoftDelete(view.schema)
+	sd, _ := schemaDeletedAt(view.schema)
 	rows, err := c.fetchAll(ctx, view.schema, view.RootTable(), sd, includeArchived)
 	if err != nil {
 		return nil, err
@@ -132,7 +132,7 @@ func (c *Composer) ComposeBatch(ctx context.Context, view *ViewDefinition, ids [
 		return nil, nil
 	}
 	includeArchived := !view.deleteOnArchive
-	sd, _ := schemaSoftDelete(view.schema)
+	sd, _ := schemaDeletedAt(view.schema)
 	rows, err := c.fetchByIDs(ctx, view.schema, view.RootTable(), schemaPK(view.schema), ids, sd, includeArchived)
 	if err != nil {
 		return nil, err
@@ -248,11 +248,11 @@ func (c *Composer) composeBaseRootedRow(ctx context.Context, view *ViewDefinitio
 //     not enumerated here (the role views with ?includeArchived cover it);
 //  3. otherwise nil (the caller writes the explicit null segment).
 //
-// A role without SoftDelete has no archived state (hard delete is delete), so
+// A role without DeletedAt has no archived state (hard delete is delete), so
 // a single fetch by ParentID decides it.
 func (c *Composer) fetchRoleRow(ctx context.Context, r roleDef, baseID string, includeArchived bool) (Document, error) {
 	_, fkCol, _ := r.schema.SharedBaseRef()
-	sd, hasSD := schemaSoftDelete(r.schema)
+	sd, hasSD := schemaDeletedAt(r.schema)
 	if !hasSD {
 		return c.fetchRow(ctx, r.schema, r.schema.Table(), fkCol, baseID, "", true)
 	}
@@ -285,9 +285,9 @@ func (c *Composer) fetchLatestArchived(ctx context.Context, schema *core.TableSc
 // doc, fetched by the shared primary key. The document stays a flat mirror of
 // the entity (siblings land at the owner's level, not nested) — the read-side
 // reflection of how the write side partitioned the row. An absent sibling row
-// leaves its fields omitted (never forced empty). Siblings carry no soft-delete
+// leaves its fields omitted (never forced empty). Siblings carry no DeletedAt
 // (the owner's gate governs the row's visibility), so the sibling fetch passes
-// an empty soft-delete column — no per-sibling filter. The shared ID column is
+// an empty DeletedAt column — no per-sibling filter. The shared ID column is
 // already on the owner doc, so it is not re-copied. coerceTypes (inside
 // fetchRow) restores bool fidelity on the sibling's own columns.
 func (c *Composer) mergeOwnerSiblings(ctx context.Context, doc Document, ownerSchema *core.TableSchema, pkVal string, includeArchived bool) error {
@@ -332,7 +332,7 @@ func (c *Composer) mergeSharedBaseChildren(ctx context.Context, doc Document, sc
 	}
 	idStr := fmt.Sprintf("%v", baseID)
 	for _, bc := range baseChildren {
-		sd, _ := schemaSoftDelete(bc)
+		sd, _ := schemaDeletedAt(bc)
 		rows, err := c.fetchWhere(ctx, bc, bc.Table(), bc.ParentIDColumn(), idStr, sd, includeArchived)
 		if err != nil {
 			return err
@@ -363,7 +363,7 @@ func (c *Composer) mergeOwnChildren(ctx context.Context, doc Document, schema *c
 	}
 	idStr := fmt.Sprintf("%v", pkVal)
 	for _, child := range children {
-		sd, _ := schemaSoftDelete(child)
+		sd, _ := schemaDeletedAt(child)
 		rows, err := c.fetchWhere(ctx, child, child.Table(), child.ParentIDColumn(), idStr, sd, includeArchived)
 		if err != nil {
 			return err
@@ -385,12 +385,12 @@ func (c *Composer) mergeOwnChildren(ctx context.Context, doc Document, schema *c
 // sibling, the base fields land at the role's level (the doc stays flat). The
 // base ID column equals the ParentID value already on the doc, so it is not re-copied.
 //
-// The base's MANAGED columns (soft-delete, created_at, updated_at) never
+// The base's MANAGED columns (DeletedAt, created_at, updated_at) never
 // overwrite the role's own: the document represents the ROLE, whose lifecycle
 // and timestamps are authoritative (the base's are derived — it converges from
 // its roles). Without this guard, a two-role identity with ONE archived role
 // would compose the ACTIVE base's NULL deleted_at over the role's archived
-// timestamp, hiding the archival from the reader's soft-delete gate, and every
+// timestamp, hiding the archival from the reader's DeletedAt gate, and every
 // role doc would carry the person's creation timestamps instead of its own.
 // Each managed column of the base is skipped only when the role declares its
 // own column of the same kind.
@@ -412,8 +412,8 @@ func (c *Composer) mergeSharedBase(ctx context.Context, doc Document, schema *co
 	}
 	remapRevision(row, base, docBaseRevisionField)
 	skip := map[string]bool{base.IDColumn(): true}
-	if col, ok := base.SoftDeleteColumn(); ok {
-		if _, roleHas := schema.SoftDeleteColumn(); roleHas {
+	if col, ok := base.DeletedAtColumn(); ok {
+		if _, roleHas := schema.DeletedAtColumn(); roleHas {
 			skip[col] = true
 		}
 	}
@@ -469,7 +469,7 @@ func (c *Composer) fetchMongoEmbed(ctx context.Context, doc Document, parentPK s
 		if err != nil {
 			return err
 		}
-		doc[e.Field()] = docs
+		doc[e.Field()] = trimDocsToFields(docs, embedTrimSet(e))
 		return nil
 	}
 	// An unresolved 1:1 (null ParentID, or the source doc gone) writes an EXPLICIT
@@ -489,7 +489,7 @@ func (c *Composer) fetchMongoEmbed(ctx context.Context, doc Document, parentPK s
 		doc[e.Field()] = nil
 		return nil
 	}
-	doc[e.Field()] = docs[0]
+	doc[e.Field()] = trimToFields(docs[0], embedTrimSet(e))
 	return nil
 }
 
@@ -538,8 +538,9 @@ func (c *Composer) applyChildEmbeds(ctx context.Context, doc Document, childEmbe
 			if err != nil {
 				return err
 			}
+			allow := childEmbedTrimSet(ce)
 			for _, sd := range srcDocs {
-				byID[fmt.Sprintf("%v", sd["_id"])] = sd
+				byID[fmt.Sprintf("%v", sd["_id"])] = trimToFields(sd, allow)
 			}
 		}
 		for _, el := range arr {
@@ -558,8 +559,8 @@ func (c *Composer) applyChildEmbeds(ctx context.Context, doc Document, childEmbe
 	return nil
 }
 
-// buildFetchSQL builds the SELECT, applying the soft-delete filter on sdCol when
-// the source has soft-delete AND archived rows are excluded. The dialect renders
+// buildFetchSQL builds the SELECT, applying the DeletedAt filter on sdCol when
+// the source has DeletedAt AND archived rows are excluded. The dialect renders
 // the placeholder ($1 on PG, ? on MySQL) and identifier quoting so the same
 // composer drives any backend.
 func buildFetchSQL(d core.Dialect, verb, table string, cols []string, keyCol, sdCol string, includeArchived bool) string {
@@ -648,7 +649,7 @@ func (c *Composer) fetchWhere(ctx context.Context, schema *core.TableSchema, tab
 }
 
 // fetchByIDs selects every row whose keyCol is in ids, applying the same
-// soft-delete gate as the single-row fetch. The id set is chunked at
+// DeletedAt gate as the single-row fetch. The id set is chunked at
 // maxInClauseSize so no single IN (...) predicate exceeds a backend's list
 // ceiling; each chunk's placeholders are rendered through the dialect and each
 // id is encoded exactly as the single-key path encodes it, so the WHERE matches

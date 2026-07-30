@@ -44,7 +44,7 @@ func composerRoleView() *ViewDefinition {
 	schema := core.NewTableSchema[*composerRole]("aluno").
 		ID("id").
 		Field("Matricula", "matricula").
-		SoftDelete("deleted_at").
+		DeletedAt("deleted_at").
 		Sibling(core.NewSiblingSchema[*composerRole]("aluno_extra").Field("Name", "name")).
 		Child(core.NewTableSchema[composerRoleChild]("aluno_filhos").
 			ID("id").ParentID("aluno_id").Field("Label", "label")).

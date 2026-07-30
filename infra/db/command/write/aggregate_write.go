@@ -222,7 +222,7 @@ func (b *BaseEngine) hardDelete(
 	}
 	// SharedBase (M2): if this is a role whose shared identity is now orphaned,
 	// converge the base — the database-vetoable purge (DeleteWhenUnreferenced) or
-	// the orphan archive (soft-deletable base). An actual purge carries its own
+	// the orphan archive (archivable base). An actual purge carries its own
 	// outbox row + audit event; the bundle echoes post-commit below.
 	purge, basePurged, err := b.convergeBaseAfterHardDelete(ctx, tx, d, schema, src, now, buildPurgeEvent)
 	if err != nil {
@@ -237,7 +237,7 @@ func (b *BaseEngine) hardDelete(
 				// pick / segment of every SharedBaseView changes), so the
 				// base revision advances even when the convergence itself was a
 				// no-op on the base row (KeepOrphan, still-referenced, no
-				// soft-delete). The purge branch is exempt — the base row is gone.
+				// DeletedAt). The purge branch is exempt — the base row is gone.
 				if err = bumpBaseRevision(ctx, tx, d, base, meta.BaseID); err != nil {
 					return err
 				}
@@ -267,9 +267,9 @@ func (b *BaseEngine) hardDelete(
 
 // softWriteAggregate is the shared root-soft-write + child-cascade path for
 // archive/unarchive: soft-write the root, then cascade onto each declared child
-// with a soft-delete column (archive binds the operation stamp `now`; unarchive
+// with a DeletedAt column (archive binds the operation stamp `now`; unarchive
 // sets SQL NULL), then outbox (the aggregate snapshot with the root's
-// soft-delete column reflecting the verb) + audit + hooks + post-commit. One
+// DeletedAt column reflecting the verb) + audit + hooks + post-commit. One
 // stamp per operation: root, children and the base convergence all carry the
 // same writeNow() instant.
 func (b *BaseEngine) softWriteAggregate(
@@ -285,7 +285,7 @@ func (b *BaseEngine) softWriteAggregate(
 	buildEvent func() audit.AuditEvent,
 	evs []domain.DomainEvent,
 ) error {
-	sdCol, err := requireSoftDelete(schema, hctx.EntityType)
+	sdCol, err := requireDeletedAt(schema, hctx.EntityType)
 	if err != nil {
 		return err
 	}
@@ -319,14 +319,14 @@ func (b *BaseEngine) softWriteAggregate(
 	if err != nil {
 		return err
 	}
-	// Cascade onto each declared child with a soft-delete column.
+	// Cascade onto each declared child with a DeletedAt column.
 	if root != nil {
 		for typeName := range root.AllAggregateItems() {
 			child := schema.ChildSchema(typeName)
 			if child == nil {
 				continue
 			}
-			childSd, ok := child.SoftDeleteColumn()
+			childSd, ok := child.DeletedAtColumn()
 			if !ok {
 				continue
 			}
@@ -421,13 +421,13 @@ func writeChildren(ctx context.Context, tx WriteTx, d Dialect, root *domain.Aggr
 	return nil
 }
 
-// removeChild applies a Removed child: archive (soft-delete) when the child has a
-// soft-delete column, else — only for a base-child, whose lifecycle follows the
-// shared base — hard-delete the row. A role child without soft-delete still errors
+// removeChild applies a Removed child: archive (DeletedAt) when the child has a
+// DeletedAt column, else — only for a base-child, whose lifecycle follows the
+// shared base — hard-delete the row. A role child without DeletedAt still errors
 // inside archiveChild (unchanged): a removable role child must be archivable.
 func removeChild(ctx context.Context, tx WriteTx, d Dialect, child *TableSchema, typeName string, item domain.AggregateValueObject, fromBase bool, now time.Time) error {
 	if fromBase {
-		if _, ok := child.SoftDeleteColumn(); !ok {
+		if _, ok := child.DeletedAtColumn(); !ok {
 			id := item.GetID().Value()
 			if id == "" {
 				return fmt.Errorf("db: cannot delete base child %q without id", child.Table())
@@ -474,14 +474,14 @@ func updateChild(ctx context.Context, tx WriteTx, d Dialect, child *TableSchema,
 	return applySiblingUpdates(ctx, tx, d, child, item, id, false)
 }
 
-// archiveChild: Removed → Archive. A child with soft-delete disabled cannot be
+// archiveChild: Removed → Archive. A child with DeletedAt disabled cannot be
 // archived — surfaced as an error.
 func archiveChild(ctx context.Context, tx WriteTx, d Dialect, child *TableSchema, typeName string, item domain.AggregateValueObject, now time.Time) error {
 	id := item.GetID().Value()
 	if id == "" {
 		return fmt.Errorf("db: cannot archive child %q without id", child.Table())
 	}
-	sdCol, err := requireSoftDelete(child, typeName)
+	sdCol, err := requireDeletedAt(child, typeName)
 	if err != nil {
 		return err
 	}

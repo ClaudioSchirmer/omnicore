@@ -39,11 +39,11 @@ func sbStudentSchema() *core.TableSchema {
 		Field("Document", "document").
 		Field("Name", "name").
 		NaturalID("document").
-		SoftDelete("deleted_at")
+		DeletedAt("deleted_at")
 	return core.NewTableSchema[*sbStudent]("sb_students").
 		ID("id").
 		Field("Enrollment", "enrollment").
-		SoftDelete("deleted_at").
+		DeletedAt("deleted_at").
 		CreatedAt("created_at").
 		UpdatedAt("updated_at").
 		SharedBase(base, "person_id")

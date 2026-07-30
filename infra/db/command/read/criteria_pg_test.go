@@ -134,7 +134,7 @@ func TestPgVisitor_PlaceholderNumberingMonotonic(t *testing.T) {
 }
 
 func TestScopeGate(t *testing.T) {
-	std := NewExternalSchema("t").SoftDelete("deleted_at")
+	std := NewExternalSchema("t").DeletedAt("deleted_at")
 	if scopeGate(criteria.ScopeActive, std, testPGDialect{}, "") != "deleted_at IS NULL" {
 		t.Error("active")
 	}
@@ -144,20 +144,20 @@ func TestScopeGate(t *testing.T) {
 	if scopeGate(criteria.ScopeOnlyArchived, std, testPGDialect{}, "") != "deleted_at IS NOT NULL" {
 		t.Error("only")
 	}
-	// Renamed soft-delete column flows through the gate.
-	renamed := NewExternalSchema("t").SoftDelete("removed_at")
+	// Renamed DeletedAt column flows through the gate.
+	renamed := NewExternalSchema("t").DeletedAt("removed_at")
 	if scopeGate(criteria.ScopeActive, renamed, testPGDialect{}, "") != "removed_at IS NULL" {
-		t.Error("renamed soft-delete column")
+		t.Error("renamed DeletedAt column")
 	}
-	// No soft-delete declared → no gate under any scope.
+	// No DeletedAt declared → no gate under any scope.
 	off := NewExternalSchema("t")
 	if scopeGate(criteria.ScopeActive, off, testPGDialect{}, "") != "" || scopeGate(criteria.ScopeOnlyArchived, off, testPGDialect{}, "") != "" {
-		t.Error("disabled soft-delete must yield no gate")
+		t.Error("disabled DeletedAt must yield no gate")
 	}
 }
 
 func TestChildScopeFilter(t *testing.T) {
-	std := NewExternalSchema("t").SoftDelete("deleted_at")
+	std := NewExternalSchema("t").DeletedAt("deleted_at")
 	if childScopeFilter(criteria.ScopeActive, std, testPGDialect{}, "") != "AND deleted_at IS NULL" {
 		t.Error("active children gated")
 	}
@@ -169,13 +169,13 @@ func TestChildScopeFilter(t *testing.T) {
 	}
 }
 
-// Under a JOIN that brings a second soft-deletable table into scope (a role's
+// Under a JOIN that brings a second archivable table into scope (a role's
 // SharedBase in scopeGate, or the role in the base-child loader), the
-// soft-delete column must be table-qualified so the bare reference is not
+// DeletedAt column must be table-qualified so the bare reference is not
 // ambiguous (SQLSTATE 42702) — the same disambiguation the leading ID already
 // gets. With an empty qualifier the output stays bare (single-table path).
 func TestScopeGate_QualifiedUnderJoin(t *testing.T) {
-	std := NewExternalSchema("t").SoftDelete("deleted_at")
+	std := NewExternalSchema("t").DeletedAt("deleted_at")
 	if got := scopeGate(criteria.ScopeActive, std, testPGDialect{}, "users"); got != "users.deleted_at IS NULL" {
 		t.Errorf("qualified active gate = %q, want users.deleted_at IS NULL", got)
 	}

@@ -23,7 +23,7 @@ import (
 // ─── Child mutation guards ───────────────────────────────────────────────────
 
 // A Removed child must carry an id to archive; a Removed child whose schema has
-// no soft-delete column cannot be archived (role children must be archivable).
+// no DeletedAt column cannot be archived (role children must be archivable).
 func TestRemovedChild_Guards(t *testing.T) {
 	t.Run("missingID", func(t *testing.T) {
 		root := &aggWriteRoot{Name: "r"}
@@ -39,12 +39,12 @@ func TestRemovedChild_Guards(t *testing.T) {
 			t.Fatalf("expected the missing-id guard, got %v", err)
 		}
 	})
-	t.Run("roleChildWithoutSoftDelete", func(t *testing.T) {
+	t.Run("roleChildWithoutDeletedAt", func(t *testing.T) {
 		id := uuid.NewString()
 		schema := NewTableSchema[*aggWriteRoot]("agg_w").
-			ID("id").Field("Name", "name").SoftDelete("deleted_at").
+			ID("id").Field("Name", "name").DeletedAt("deleted_at").
 			Child(NewTableSchema[aggWriteChild]("agg_w_children").
-				ID("id").ParentID("agg_w_id").Field("Label", "label")) // no SoftDelete
+				ID("id").ParentID("agg_w_id").Field("Label", "label")) // no DeletedAt
 		root := &aggWriteRoot{Name: "r"}
 		root.SetID(domain.NewID(uuid.NewString()))
 		root.AggregateConstructor([]domain.AggregateValueObject{aggWriteChild{ID: domain.NewID(id), Label: "x"}})
@@ -54,13 +54,13 @@ func TestRemovedChild_Guards(t *testing.T) {
 		}, nil, "GetUpdatable")
 		be := newFlatBE(&recBeginner{tx: &recTx{count: 1}})
 		if _, err := be.Update(newBuilderCtx(), upd, schema, WriteHook{}); err == nil {
-			t.Fatal("expected the missing-SoftDelete guard on the removed child")
+			t.Fatal("expected the missing-DeletedAt guard on the removed child")
 		}
 	})
 }
 
 // baseChildRole is an aggregate role whose child belongs to the SHARED BASE —
-// a Removed base-child without soft-delete hard-deletes (its lifecycle follows
+// a Removed base-child without DeletedAt hard-deletes (its lifecycle follows
 // the base), instead of erroring like a role child would.
 type baseChildRole struct {
 	domain.AggregateRoot
@@ -85,15 +85,15 @@ func baseChildRoleSchema() *TableSchema {
 		Field("Document", "document").
 		NaturalID("document").
 		Child(NewTableSchema[cascadeBaseChild]("pessoa_filhos").
-			ID("id").ParentID("pessoa_id").Field("Note", "note")) // no SoftDelete → hard-delete on remove
+			ID("id").ParentID("pessoa_id").Field("Note", "note")) // no DeletedAt → hard-delete on remove
 	return NewTableSchema[*baseChildRole]("aluno").
 		ID("id").
 		Field("Matricula", "matricula").
-		SoftDelete("deleted_at").
+		DeletedAt("deleted_at").
 		SharedBase(base, "pessoa_id")
 }
 
-func TestRemovedBaseChild_WithoutSoftDelete(t *testing.T) {
+func TestRemovedBaseChild_WithoutDeletedAt(t *testing.T) {
 	newUpd := func(t *testing.T, childID string) domain.Updatable {
 		t.Helper()
 		root := &baseChildRole{Name: "Ana", Document: "D1", Matricula: "M1"}
@@ -186,12 +186,12 @@ func TestBatch_SoftMembersAndUnsupported(t *testing.T) {
 			t.Fatalf("expected the unarchive exec error, got %v", err)
 		}
 	})
-	t.Run("unarchiveWithoutSoftDelete", func(t *testing.T) {
+	t.Run("unarchiveWithoutDeletedAt", func(t *testing.T) {
 		noSD := NewTableSchema[*builderTestEntity]("nsd").ID("id").Revision("revision").Field("Name", "name").Field("Email", "email")
 		una, _ := domain.GetUnarchivable(mk(), nil, "GetUnarchivable")
 		be := newFlatBE(&recBeginner{tx: &recTx{}})
 		if _, err := be.Batch(newBuilderCtx(), domain.NewBatch([]domain.ValidEntity{una}), []*TableSchema{noSD}); err == nil {
-			t.Fatal("expected the missing-SoftDelete guard")
+			t.Fatal("expected the missing-DeletedAt guard")
 		}
 	})
 	t.Run("unsupportedMember", func(t *testing.T) {
@@ -204,8 +204,8 @@ func TestBatch_SoftMembersAndUnsupported(t *testing.T) {
 	})
 }
 
-// The flat Unarchive on a schema without SoftDelete errors before any statement.
-func TestFlatUnarchive_MissingSoftDeleteIsError(t *testing.T) {
+// The flat Unarchive on a schema without DeletedAt errors before any statement.
+func TestFlatUnarchive_MissingDeletedAtIsError(t *testing.T) {
 	noSD := NewTableSchema[*builderTestEntity]("nsd").ID("id").Revision("revision").Field("Name", "name").Field("Email", "email")
 	e := &builderTestEntity{Name: "a", Email: "a@x"}
 	e.SetID(domain.NewID(uuid.NewString()))
@@ -213,7 +213,7 @@ func TestFlatUnarchive_MissingSoftDeleteIsError(t *testing.T) {
 	tx := &recTx{}
 	be := newFlatBE(&recBeginner{tx: tx})
 	if err := be.Unarchive(newBuilderCtx(), u, noSD, WriteHook{}); err == nil {
-		t.Fatal("expected the missing-SoftDelete guard")
+		t.Fatal("expected the missing-DeletedAt guard")
 	}
 	if len(tx.execs) != 0 {
 		t.Errorf("no statement may run, got %v", tx.execs)

@@ -40,9 +40,9 @@ type TableSchema struct {
 	byGo   map[string]schemaField
 	byCol  map[string]schemaField
 
-	softDelete string // "" = disabled
-	createdAt  string // "" = disabled (not stamped on insert)
-	updatedAt  string // "" = disabled (not stamped on insert/update)
+	deletedAt string // "" = disabled
+	createdAt string // "" = disabled (not stamped on insert)
+	updatedAt string // "" = disabled (not stamped on insert/update)
 
 	children map[string]*TableSchema // aggregate child schemas, keyed by Go type name
 
@@ -78,9 +78,9 @@ type TableSchema struct {
 	// referencingRoleLinks is, on a SHARED BASE, the set of roles that reference
 	// it — each a pointer to the role schema + the ParentID column it links through
 	// (populated as each role calls .SharedBase — the instance IS the cross-schema
-	// registry). The role's soft-delete column is read LAZILY from the schema
+	// registry). The role's DeletedAt column is read LAZILY from the schema
 	// pointer (via ReferencingRoles), so it is correct regardless of whether
-	// .SoftDelete was declared before or after .SharedBase. The refcount delete +
+	// .DeletedAt was declared before or after .SharedBase. The refcount delete +
 	// CDC fan-out + lifecycle convergence enumerate it.
 	referencingRoleLinks []roleLink
 }
@@ -156,7 +156,7 @@ func NewTableSchema[T any](table string) *TableSchema {
 // its owner: a private secondary table that shares the owner's primary key (1:1)
 // and carries a disjoint subset of T's fields. Like NewTableSchema[T] it
 // validates every Field against T, but it declares NO primary key (it borrows
-// the owner's), NO foreign key, and NO soft-delete — the owner controls identity
+// the owner's), NO foreign key, and NO DeletedAt — the owner controls identity
 // and lifecycle. Attach it with
 // owner.Sibling(NewSiblingSchema[T](table).Field(...)).
 func NewSiblingSchema[T any](table string) *TableSchema {
@@ -204,8 +204,8 @@ func exportedFieldIndex(t reflect.Type, goName string) int {
 
 // ensureColumnFree panics when column is already claimed by the ID, a mapped
 // field, or another managed column — enforcing the bijection over the full
-// physical column set (ID + every Field + soft-delete/created/updated)
-// regardless of the order ID/Field/SoftDelete/CreatedAt/UpdatedAt are declared.
+// physical column set (ID + every Field + DeletedAt/created/updated)
+// regardless of the order ID/Field/DeletedAt/CreatedAt/UpdatedAt are declared.
 // `self` names the slot being (re)assigned so reassigning it to the same column
 // is not flagged as a self-collision. Field() runs its own equivalent check at
 // declaration time; this covers every managed setter + ID so a collision is a
@@ -226,8 +226,8 @@ func (s *TableSchema) ensureColumnFree(column, self string) {
 	if _, dup := s.byCol[column]; dup {
 		collide("a mapped field")
 	}
-	if self != "SoftDelete" && column == s.softDelete {
-		collide("SoftDelete")
+	if self != "DeletedAt" && column == s.deletedAt {
+		collide("DeletedAt")
 	}
 	if self != "CreatedAt" && column == s.createdAt {
 		collide("CreatedAt")
@@ -244,7 +244,7 @@ func (s *TableSchema) ensureColumnFree(column, self string) {
 // ensureColumnFree deliberately skips a slot's OWN current value (so an
 // idempotent same-column re-set is allowed) — which is exactly what lets a
 // DIFFERENT column overwrite the slot unnoticed. Every single-column slot (ID,
-// ParentID, SoftDelete, CreatedAt, UpdatedAt, Revision, NaturalID) is declared once.
+// ParentID, DeletedAt, CreatedAt, UpdatedAt, Revision, NaturalID) is declared once.
 func (s *TableSchema) mustNotRedeclare(current, name, newCol string) {
 	if current != "" {
 		panic(fmt.Sprintf(
@@ -402,7 +402,7 @@ func (s *TableSchema) Field(goName, column string, labelKey ...string) *TableSch
 		panic(fmt.Sprintf("infra.TableSchema(%s): column %q claimed by more than one field — the map must be a bijection", s.table, column))
 	}
 	mustNotReservedColumn(s.table, column)
-	if column == s.idColumn || column == s.softDelete || column == s.createdAt || column == s.updatedAt || column == s.revisionCol {
+	if column == s.idColumn || column == s.deletedAt || column == s.createdAt || column == s.updatedAt || column == s.revisionCol {
 		panic(fmt.Sprintf("infra.TableSchema(%s): field column %q collides with a ID/managed column", s.table, column))
 	}
 	// The aggregate-child ParentID is OWNED by the write cascade: insertChild sets it to
@@ -449,21 +449,21 @@ func (s *TableSchema) Field(goName, column string, labelKey ...string) *TableSch
 	return s
 }
 
-// SoftDelete enables the soft-delete predicate on col (read scope-gate +
-// archive/unarchive SQL). Omitting it disables soft-delete: Archive/Unarchive
+// DeletedAt enables the DeletedAt predicate on col (read scope-gate +
+// archive/unarchive SQL). Omitting it disables DeletedAt: Archive/Unarchive
 // are unavailable and the read gate is never applied.
-func (s *TableSchema) SoftDelete(col string) *TableSchema {
+func (s *TableSchema) DeletedAt(col string) *TableSchema {
 	if s.secondary {
 		panic(fmt.Sprintf(
-			"infra.TableSchema(%s): a sibling declares NO soft-delete — it has no lifecycle of its own; "+
-				"the owner controls archive/delete for the whole 1:1 row. Drop this SoftDelete(%q) call.",
+			"infra.TableSchema(%s): a sibling declares NO DeletedAt — it has no lifecycle of its own; "+
+				"the owner controls archive/delete for the whole 1:1 row. Drop this DeletedAt(%q) call.",
 			s.table, col,
 		))
 	}
-	s.mustNotRedeclare(s.softDelete, "SoftDelete", col)
+	s.mustNotRedeclare(s.deletedAt, "DeletedAt", col)
 	mustNotReservedColumn(s.table, col)
-	s.ensureColumnFree(col, "SoftDelete")
-	s.softDelete = col
+	s.ensureColumnFree(col, "DeletedAt")
+	s.deletedAt = col
 	return s
 }
 
@@ -595,7 +595,7 @@ func (s *TableSchema) Child(child *TableSchema) *TableSchema {
 // private secondary table over the SAME Go type that shares this node's primary
 // key (1:1) and carries a disjoint subset of the entity's fields. Width is
 // unlimited (call it repeatedly); a sibling does not nest, declares no
-// ParentID/ID/SoftDelete, and owns no children — the owner controls identity and
+// ParentID/ID/DeletedAt, and owns no children — the owner controls identity and
 // lifecycle. The column/field partition (no overlap with the owner or another
 // sibling) is checked at WithSchema via ValidateSiblings (order-independent).
 func (s *TableSchema) Sibling(sib *TableSchema) *TableSchema {
@@ -639,9 +639,9 @@ func (s *TableSchema) Sibling(sib *TableSchema) *TableSchema {
 			"infra.TableSchema(%s): sibling %q must not declare ID — it borrows the owner's primary key "+
 				"(the shared 1:1 key).", s.table, sib.table))
 	}
-	if sib.softDelete != "" {
+	if sib.deletedAt != "" {
 		panic(fmt.Sprintf(
-			"infra.TableSchema(%s): sibling %q must not declare SoftDelete — a sibling has no lifecycle of "+
+			"infra.TableSchema(%s): sibling %q must not declare DeletedAt — a sibling has no lifecycle of "+
 				"its own; the owner controls archive/delete.", s.table, sib.table))
 	}
 	if sib.createdAt != "" || sib.updatedAt != "" {
@@ -699,7 +699,7 @@ func (s *TableSchema) GoOf(column string) (string, bool) {
 
 // goNameForRead returns the logical Go field name for a physical column on the
 // read path, including the managed columns under fixed logical names
-// (created_at → "CreatedAt", updated_at → "UpdatedAt", soft-delete → "DeletedAt")
+// (created_at → "CreatedAt", updated_at → "UpdatedAt", DeletedAt → "DeletedAt")
 // so a view can project them to the wire without a domain Go field. Returns
 // ok=false for a column the schema does not own (e.g. _id, foreign keys).
 func (s *TableSchema) goNameForRead(column string) (string, bool) {
@@ -715,8 +715,8 @@ func (s *TableSchema) goNameForRead(column string) (string, bool) {
 		if s.updatedAt != "" {
 			return "UpdatedAt", true
 		}
-	case s.softDelete:
-		if s.softDelete != "" {
+	case s.deletedAt:
+		if s.deletedAt != "" {
 			return "DeletedAt", true
 		}
 	}
@@ -765,8 +765,8 @@ func (s *TableSchema) columnForRead(goName string) (string, bool) {
 			return s.updatedAt, true
 		}
 	case "DeletedAt":
-		if s.softDelete != "" {
-			return s.softDelete, true
+		if s.deletedAt != "" {
+			return s.deletedAt, true
 		}
 	}
 	// "ParentID" is the read-only projection of the schema's foreign key — resolve it to
@@ -812,9 +812,9 @@ func (s *TableSchema) typeName() string {
 	return s.typ.Name()
 }
 
-func (s *TableSchema) softDeleteColumn() (string, bool) { return s.softDelete, s.softDelete != "" }
-func (s *TableSchema) createdAtColumn() (string, bool)  { return s.createdAt, s.createdAt != "" }
-func (s *TableSchema) updatedAtColumn() (string, bool)  { return s.updatedAt, s.updatedAt != "" }
+func (s *TableSchema) deletedAtColumn() (string, bool) { return s.deletedAt, s.deletedAt != "" }
+func (s *TableSchema) createdAtColumn() (string, bool) { return s.createdAt, s.createdAt != "" }
+func (s *TableSchema) updatedAtColumn() (string, bool) { return s.updatedAt, s.updatedAt != "" }
 
 func (s *TableSchema) childSchema(typeName string) *TableSchema {
 	if s == nil {
@@ -869,7 +869,7 @@ func (s *TableSchema) writeFields(e any) domain.Fields {
 // Exported write-path accessors. A relational engine living in its own package
 // (the MySQL engine under its build tag) builds INSERT/UPDATE statements from a
 // TableSchema; these thin wrappers expose the column → value map and the managed
-// timestamp columns + soft-delete column it needs, without widening the surface
+// timestamp columns + DeletedAt column it needs, without widening the surface
 // the in-package write path consumes (which keeps using the unexported forms).
 
 // WriteFields is the exported form of writeFields — the column → value map an
@@ -882,9 +882,9 @@ func (s *TableSchema) InsertNowColumns() []string { return s.insertNowColumns() 
 // UpdateNowColumns is the exported form of updateNowColumns.
 func (s *TableSchema) UpdateNowColumns() []string { return s.updateNowColumns() }
 
-// SoftDeleteColumn is the exported form of softDeleteColumn — the soft-delete
+// DeletedAtColumn is the exported form of deletedAtColumn — the DeletedAt
 // column and whether it was declared (engines gate archive/unarchive on it).
-func (s *TableSchema) SoftDeleteColumn() (string, bool) { return s.softDeleteColumn() }
+func (s *TableSchema) DeletedAtColumn() (string, bool) { return s.deletedAtColumn() }
 
 // ChildSchema is the exported form of childSchema — the declared child schema for
 // an aggregate child type name (nil when undeclared). An out-of-package engine's
@@ -1003,7 +1003,7 @@ func (s *TableSchema) ReadColumns() []string {
 	add(s.parentIDColumn)
 	add(s.createdAt)
 	add(s.updatedAt)
-	add(s.softDelete)
+	add(s.deletedAt)
 	add(s.revisionCol)
 	return cols
 }
@@ -1114,10 +1114,10 @@ func (s *TableSchema) ValidateAnchored() {
 	))
 }
 
-// ValidateModes panics when the entity declares an archive verb but soft-delete
+// ValidateModes panics when the entity declares an archive verb but DeletedAt
 // is disabled — turning a runtime SQL error into a loud boot failure.
 func (s *TableSchema) ValidateModes(modes []domain.EntityMode) {
-	if _, ok := s.softDeleteColumn(); ok {
+	if _, ok := s.deletedAtColumn(); ok {
 		return
 	}
 	for _, m := range modes {
@@ -1127,8 +1127,8 @@ func (s *TableSchema) ValidateModes(modes []domain.EntityMode) {
 				name = s.typ.Name()
 			}
 			panic(fmt.Sprintf(
-				"infra.TableSchema(%s): entity declares %s in Modes() but SoftDelete is not enabled — "+
-					"declare SoftDelete(col) or drop the mode",
+				"infra.TableSchema(%s): entity declares %s in Modes() but DeletedAt is not enabled — "+
+					"declare DeletedAt(col) or drop the mode",
 				name, modeName(m),
 			))
 		}

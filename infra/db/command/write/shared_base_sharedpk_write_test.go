@@ -24,7 +24,7 @@ func roleTestSchemaSharedPK() *TableSchema {
 	return NewTableSchema[*roleTestEntity]("aluno").
 		ID("id").
 		Field("Matricula", "matricula").
-		SoftDelete("deleted_at").
+		DeletedAt("deleted_at").
 		SharedBase(base, "id")
 }
 

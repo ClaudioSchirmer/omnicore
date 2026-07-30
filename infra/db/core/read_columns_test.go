@@ -18,7 +18,7 @@ func TestReadColumns_FlatRoot(t *testing.T) {
 		Field("Name", "name").
 		CreatedAt("created_at").
 		UpdatedAt("updated_at").
-		SoftDelete("deleted_at")
+		DeletedAt("deleted_at")
 	got := s.ReadColumns()
 	want := []string{"id", "name", "created_at", "updated_at", "deleted_at", "revision"}
 	if !reflect.DeepEqual(got, want) {
@@ -53,7 +53,7 @@ func TestReadColumns_SharedBaseRole(t *testing.T) {
 		Revision("revision").
 		ID("id").
 		Field("Name", "name").
-		SoftDelete("deleted_at").
+		DeletedAt("deleted_at").
 		SharedBase(base, "person_id")
 	got := role.ReadColumns()
 	want := []string{"id", "name", "person_id", "deleted_at", "revision"}

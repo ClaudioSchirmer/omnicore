@@ -24,13 +24,13 @@ type lifeSale struct {
 
 func lifeProductsView() *ViewDefinition {
 	return View("products").Version(1).Schema(
-		core.NewTableSchema[lifeProduct]("products").ID("id").SoftDelete("deleted_at").
+		core.NewTableSchema[lifeProduct]("products").ID("id").DeletedAt("deleted_at").
 			Field("Name", "name"))
 }
 
 func lifeSalesView() *ViewDefinition {
 	return View("sales").Version(1).
-		Schema(core.NewTableSchema[lifeSale]("sales").ID("id").SoftDelete("deleted_at").
+		Schema(core.NewTableSchema[lifeSale]("sales").ID("id").DeletedAt("deleted_at").
 			Field("ProductID", "product_id")).
 		Embed(JoinView(lifeProductsView(), "Product", "product")).On("product_id").
 		Indexes(Index("product_id"))
@@ -102,7 +102,7 @@ func TestLifecycle_SourceUpdateRefreshesSegment(t *testing.T) {
 }
 
 // ARCHIVE under the default (keep) policy: the source document survives with
-// its soft-delete column populated, and the segment mirrors that state — the
+// its DeletedAt column populated, and the segment mirrors that state — the
 // same contract an external mirror segment has. The reference is NOT nulled.
 func TestLifecycle_SourceArchivedKeepsMirroredSegment(t *testing.T) {
 	sig, colls := lifeFixture(t)
@@ -114,11 +114,11 @@ func TestLifecycle_SourceArchivedKeepsMirroredSegment(t *testing.T) {
 
 	elem := literalOf(t, lastSegmentEdit(t, colls["sales"], "product")).(Document)
 	if elem["deleted_at"] == nil {
-		t.Fatalf("an archived source must reach the segment carrying its soft-delete stamp, got %v", elem)
+		t.Fatalf("an archived source must reach the segment carrying its DeletedAt stamp, got %v", elem)
 	}
 }
 
-// UNARCHIVE: the source document is written again with a cleared soft-delete
+// UNARCHIVE: the source document is written again with a cleared DeletedAt
 // column; the segment converges to the live state.
 func TestLifecycle_SourceUnarchivedRefreshesSegment(t *testing.T) {
 	sig, colls := lifeFixture(t)
@@ -202,7 +202,7 @@ func TestLifecycle_EmbedderFKPointingNowhereClearsSegment(t *testing.T) {
 // pre-write document was captured (Before) and both FKs enter the target set.
 func TestLifecycle_SourceMovedBetweenParentsTouchesBothSides(t *testing.T) {
 	dashboard := View("dashboard").Version(1).
-		Schema(core.NewTableSchema[lifeSale]("customers").ID("id").SoftDelete("deleted_at")).
+		Schema(core.NewTableSchema[lifeSale]("customers").ID("id").DeletedAt("deleted_at")).
 		EmbedMany(JoinView(lifeProductsView(), "Products", "products")).On("owner_id")
 	colls := map[string]*fakeColl{
 		"products":  {docs: []any{map[string]any{"_id": "p1", "owner_id": "c2", docRevisionField: int64(5)}}},

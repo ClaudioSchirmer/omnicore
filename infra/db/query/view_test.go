@@ -27,10 +27,10 @@ func extLegNoPK(table, goName, ext string) *Leg {
 }
 
 // rootSchema is a minimal type-anchored schema for a composing test view's root
-// (ID + soft-delete). The composer only reads ID + soft-delete from the root
+// (ID + DeletedAt). The composer only reads ID + DeletedAt from the root
 // schema; row columns are read generically, so the dummy type suffices.
 func rootSchema(table string) *core.TableSchema {
-	return core.NewTableSchema[embedFixture](table).ID("id").SoftDelete("deleted_at")
+	return core.NewTableSchema[embedFixture](table).ID("id").DeletedAt("deleted_at")
 }
 
 // ─── own children on a schema project automatically (read side) ──────────────
@@ -56,7 +56,7 @@ func TestJoinUpstream_RejectsAnchoredSchema(t *testing.T) {
 // TestValidateViewSchemas_RootSchemaWithChildrenOK confirms the view ROOT schema
 // may carry Child(...) — its own children auto-project, no embed needed.
 func TestValidateViewSchemas_RootSchemaWithChildrenOK(t *testing.T) {
-	rootWithChild := core.NewTableSchema[embedFixture]("users").ID("id").SoftDelete("deleted_at").
+	rootWithChild := core.NewTableSchema[embedFixture]("users").ID("id").DeletedAt("deleted_at").
 		Child(core.NewTableSchema[schemaSample]("addresses").ID("id").ParentID("user_id"))
 	v := View("users").Version(1).
 		Schema(rootWithChild)
@@ -72,7 +72,7 @@ func TestValidateViewSchemas_RootSchemaWithChildrenOK(t *testing.T) {
 func TestValidateViewSchemas_RejectsSegmentCollision(t *testing.T) {
 	child := core.NewTableSchema[schemaSample]("addresses").ID("id").ParentID("user_id")
 	seg := childDocSegment(child) // the auto own-child doc segment
-	rootWithChild := core.NewTableSchema[embedFixture]("users").ID("id").SoftDelete("deleted_at").
+	rootWithChild := core.NewTableSchema[embedFixture]("users").ID("id").DeletedAt("deleted_at").
 		Child(child)
 	// A legal external embed whose Go segment collides with the own-child segment.
 	v := View("users").Version(1).
@@ -94,7 +94,7 @@ func TestValidateViewSchemas_RejectsSegmentCollision(t *testing.T) {
 // explicit ID is a fatal view-validation error.
 func TestValidateViewSchemas_RejectsRootWithoutPK(t *testing.T) {
 	v := View("users").Version(1).
-		Schema(core.NewTableSchema[embedFixture]("users").SoftDelete("deleted_at")). // no .ID
+		Schema(core.NewTableSchema[embedFixture]("users").DeletedAt("deleted_at")). // no .ID
 		EmbedMany(extLeg("addresses", "Addresses", "addresses")).On("user_id")
 	err := ValidateViewSchemas([]*ViewDefinition{v})
 	if err == nil || !strings.Contains(err.Error(), "no primary key") {
@@ -219,7 +219,7 @@ func (v vsChild) GetID() domain.ID { return domain.NewID(v.ID) }
 func TestViewNode_OwnChildPathResolves(t *testing.T) {
 	childSchema := core.NewTableSchema[csComposeVO]("lines").ID("id").ParentID("order_id").Field("Label", "label")
 	rootWithChild := core.NewTableSchema[*builderTestEntity]("orders").
-		ID("id").Field("Name", "name").SoftDelete("deleted_at").
+		ID("id").Field("Name", "name").DeletedAt("deleted_at").
 		Child(childSchema)
 	node := View("orders").Schema(rootWithChild).BuildViewNode()
 
@@ -246,7 +246,7 @@ func TestViewNode_TranslatesGoPathToColumnAndBack(t *testing.T) {
 	rootSchema := core.NewTableSchema[vsRoot]("people").
 		ID("person_pk").
 		Field("Email", "mail").
-		SoftDelete("removed_at").
+		DeletedAt("removed_at").
 		CreatedAt("created_at")
 	childSchema := core.NewExternalSchema("tags").
 		ID("tag_pk").
@@ -264,8 +264,8 @@ func TestViewNode_TranslatesGoPathToColumnAndBack(t *testing.T) {
 	if col, ok := node.ColumnPath([]string{"Addresses", "ZipCode"}); !ok || col[0] != "addresses" || col[1] != "zip" {
 		t.Errorf("Addresses.ZipCode → %v,%v want [addresses zip]", col, ok)
 	}
-	if sd, ok := node.SoftDeleteColumn(); !ok || sd != "removed_at" {
-		t.Errorf("soft-delete = %q,%v want removed_at", sd, ok)
+	if sd, ok := node.DeletedAtColumn(); !ok || sd != "removed_at" {
+		t.Errorf("DeletedAt = %q,%v want removed_at", sd, ok)
 	}
 	// Managed columns translate forward (Go logical name → column) symmetrically
 	// with the read-back, so a typed Response can sort/project on them.

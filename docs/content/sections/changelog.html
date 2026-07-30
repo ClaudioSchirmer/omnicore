@@ -7,8 +7,47 @@
 </div>
 <div class="changelog">
     <div class="release">
-        <div class="release-head"><span class="release-tag">Unreleased</span><span class="release-date">—</span></div>
+        <div class="release-head"><span class="release-tag">v0.39.0</span><span class="release-date">July 29, 2026</span></div>
         <ul>
+            <li><strong>Added</strong> — <strong><code>JoinView(...).Fields(cols...)</code> — the materialization
+                allowlist of an embedded local view, and the per-consumer ARCHIVE SWITCH.</strong> A
+                <code>JoinView</code> leg can now declare which source fields its segment stores — GO names: business
+                fields by their declared name, managed slots by their fixed names, a top-level segment (child/embed/
+                role of the source) by its Go segment name, admitted or cut WHOLE. The identity and reserved
+                watermarks (<code>_id</code>, <code>_revision</code>), an <code>EmbedMany</code>'s leg-side join
+                column and a declared <code>OrderBy</code> column always survive. Every writer of the segment applies
+                the same cut (compose, batch rebuild, surgical ripple, 1:1 repair, <code>EmbedInChild</code>), a capped
+                field is an honest <code>400</code> on filter/sort/<code>?fields=</code>, and the tabular export stops
+                advertising it. The headline: <strong><code>"DeletedAt"</code> in or out of <code>Fields</code> is the
+                archive switch, per view</strong> — listed, the segment follows the source's archive (hidden on
+                default reads, revealed by <code>?includeArchived</code>); omitted, the segment has NO archived rule
+                by declaration: the archived source keeps its data in the embedding document forever and keeps
+                receiving updates through the ripple. Participates in the rebuild hash only when declared (nothing
+                rebuilds on upgrade); declaring/changing it needs a <code>Version</code> bump. JoinView-only — a
+                <code>JoinUpstream</code> leg's cut is the subscription <code>fields:</code> + its external schema,
+                and a <code>Fields</code>-bearing leg on a <code>ComposedView</code> is a fatal boot. See
+                <a href="#views~views-embed-fields">Views → Cutting the segment</a>.</li>
+            <li><strong>Changed</strong> — <strong>breaking</strong> — <strong>the <code>UpstreamSubscription</code>
+                yaml key <code>filter:</code> is renamed <code>fields:</code></strong> (same semantics: the allowlist
+                of raw payload fields entering the mirror), aligning the vocabulary with the new JoinView
+                <code>Fields</code> — one concept, two sides of the membrane (physical names at ingestion, Go names at
+                declaration). The strict decoder makes a leftover <code>filter:</code> key abort the boot naming the
+                offender. The Go surface follows: <code>UpstreamSubscription.Filter</code> →
+                <code>.Fields</code>. And the §8.5 guard is <strong>generalized</strong>: EVERY column a consumer's
+                external schema declares must now survive a non-empty <code>fields:</code> — a declared column the
+                mirror can never carry is a dead declaration and a fatal boot (previously only the DeletedAt column
+                was cross-checked). See <a href="#yaml-reference">YAML reference → upstreamSubscriptions</a>.</li>
+            <li><strong>Added</strong> — <strong>docs: the three-name model now covers the managed slots' fixed Go
+                names and what each declaration stores in Mongo.</strong> The naming table in the TableSchema section
+                now walks every managed declaration (<code>ID</code>, <code>ParentID</code>, <code>DeletedAt</code>,
+                <code>CreatedAt</code>, <code>UpdatedAt</code>, <code>Revision</code>, <code>NaturalID</code>): the
+                physical column each stores — identical in SQL and in the Mongo document — the FIXED logical Go name
+                each surfaces under on the read side, and the only two exceptions (<code>_id</code>, the identity
+                duplicated as the upsert key, and <code>Revision</code>, remapped to the reserved
+                <code>_revision</code>). It also documents the silent-null Response-DTO trap — a field named after the
+                physical column (<code>ArchivedOn</code> for <code>DeletedAt("archived_on")</code>) reads nothing,
+                because the DTO's Go field name is the lookup key — with a symptom→cause guide. See
+                <a href="#table-schema~three-name-model">TableSchema — The three-name model</a>.</li>
             <li><strong>Changed</strong> — <strong>breaking</strong> — <strong>the schema-declaration DSL is renamed for
                 symmetry with the Go field it maps.</strong> The identity methods drop the SQL-borrowed <code>PK</code>/<code>FK</code>
                 names (misleading: an omnicore <code>FK</code> is not a SQL foreign key — it is the link to the aggregate
@@ -17,8 +56,13 @@
                 → <code>IDColumn()</code>/<code>ParentIDColumn()</code>/<code>NaturalIDColumn()</code>/<code>IDIndex()</code>. The read-only
                 FK projection Go name <code>FID</code> becomes <code>ParentID</code>, and <code>NaturalKeyImmutableNotification</code>
                 → <code>NaturalIDImmutableNotification</code>. The id still binds to the Go field <code>ID</code>; now the
-                declaration matches it, and the parent link is <code>ParentID</code> end to end. Purely a rename — no
-                behavior change. See <a href="#table-schema">TableSchema</a>.</li>
+                declaration matches it, and the parent link is <code>ParentID</code> end to end. The archive slot joins the
+                same wave: <code>SoftDelete(col)</code>→<code>DeletedAt(col)</code> — the declaration now matches the FIXED
+                read-side Go name <code>DeletedAt</code>, completing the <code>CreatedAt</code>/<code>UpdatedAt</code>/<code>DeletedAt</code>
+                triple — with the accessors <code>SoftDeleteColumn()</code>→<code>DeletedAtColumn()</code> (TableSchema and
+                ViewNode) and <code>ChildSoftDeletePaths()</code>→<code>ChildDeletedAtPaths()</code>; the "archive"
+                vocabulary leaves the surface entirely (the concept is ARCHIVE, the column slot is <code>DeletedAt</code>).
+                Purely a rename — no behavior change. See <a href="#table-schema">TableSchema</a>.</li>
             <li><strong>Changed</strong> — <strong>breaking</strong> — <strong>the aggregate-root ParentID column can no longer
                 also be a mapped domain <code>Field</code>.</strong> A child declares <code>ParentID(column)</code> to point at
                 its parent, and the write cascade sets that column to the parent's id on every write — so a
@@ -30,7 +74,7 @@
                 double-mapped the identity, and <code>Field("ParentID", …)</code> now panic), and a schema can no longer
                 declare both <code>ParentID(...)</code> and <code>SharedBase(...)</code> (two parents, and an ambiguous
                 <code>ParentID</code>). And every single-column slot (<code>ID</code>, <code>ParentID</code>,
-                <code>SoftDelete</code>, <code>CreatedAt</code>, <code>UpdatedAt</code>, <code>Revision</code>,
+                <code>DeletedAt</code>, <code>CreatedAt</code>, <code>UpdatedAt</code>, <code>Revision</code>,
                 <code>NaturalID</code>) now rejects a second declaration — a silent overwrite before. A second aggregate
                 <code>Child(...)</code> of the same Go type — which the type-keyed child map would silently drop — panics
                 likewise. To expose a ParentID value on the read side, declare a <code>ParentID</code> field. See
@@ -169,22 +213,22 @@
                 identically — a default read hides archived content and <code>?includeArchived=true</code> reveals all of
                 it at once, the contract a <code>ComposedView</code> leg already followed. <strong>The one condition is
                 the source schema</strong>: a segment is filtered if and only if the schema behind it declares
-                <code>SoftDelete(column)</code>; a source declaring none has no archived concept and is never touched.
+                <code>DeletedAt(column)</code>; a source declaring none has no archived concept and is never touched.
                 Hiding stays content-level (a 1:1 segment becomes the explicit <code>null</code>, a 1:N element leaves
                 the array), so the document itself always survives. <em>Migration</em>: pass
                 <code>?includeArchived=true</code> to keep seeing archived sources; nothing changes for a source that
-                declares no soft-delete column. See <a href="#views~views-embed">Views → Embed</a>.</li>
-            <li><strong>Fixed</strong> — the §8.5 soft-delete-filter guard now covers a <code>ComposedView</code>'s
-                external legs, not just embeds. A mirror has two kinds of consumer and both apply its soft-delete column
+                declares no DeletedAt column. See <a href="#views~views-embed">Views → Embed</a>.</li>
+            <li><strong>Fixed</strong> — the §8.5 DeletedAt-filter guard now covers a <code>ComposedView</code>'s
+                external legs, not just embeds. A mirror has two kinds of consumer and both apply its DeletedAt column
                 (an embed materializes the gate; a composed leg applies it per request), so declaring
-                <code>.SoftDelete("deleted_at")</code> on the leg schema while dropping <code>deleted_at</code> from the
+                <code>.DeletedAt("deleted_at")</code> on the leg schema while dropping <code>deleted_at</code> from the
                 subscription's <code>filter:</code> used to boot cleanly when the mirror was consumed by a link — and
                 archived upstream rows then looked active in the segment forever. Both consumers are cross-checked in one
                 pass now, same abort/advisory split.</li>
             <li><strong>Fixed</strong> — three defects on the embed path: the dangling 1:1 repair now covers a
                 <code>JoinView</code> leg (a ParentID change on the EMBEDDING document would otherwise leave the segment
                 pointing at the old source forever, with no future event able to heal it); a zombie-document removal now
-                signals the views embedding it; and <code>?fields=</code> no longer leaks an auto-included soft-delete
+                signals the views embedding it; and <code>?fields=</code> no longer leaks an auto-included DeletedAt
                 column out of a 1:N segment whose elements carry their own child collections.</li>
             <li><strong>Added</strong> — <code>ViewDefinition.EmbedInChild(childSchema, leg).On(col)</code>: read-side 1:1
                 enrichment of a view's native child array (the "list of X with the name of Y per line" shape — e.g. sale

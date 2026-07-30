@@ -20,7 +20,7 @@ type orderRoot struct{ ID string }
 
 func orderView(name string) *ViewDefinition {
 	return View(name).Version(1).Schema(
-		core.NewTableSchema[orderRoot](name).ID("id").SoftDelete("deleted_at"))
+		core.NewTableSchema[orderRoot](name).ID("id").DeletedAt("deleted_at"))
 }
 
 func names(views []*ViewDefinition) []string {

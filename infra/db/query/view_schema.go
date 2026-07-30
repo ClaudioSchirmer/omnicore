@@ -21,6 +21,16 @@ type ViewNode struct {
 	schema      *core.TableSchema
 	embeds      map[string]*viewEmbed // goSegment → embed
 	embedsByDoc map[string]*viewEmbed // docField → embed
+	// fieldsGo / fieldsCol restrict a JoinView-leg node whose leg declares
+	// Fields(...): fieldsGo holds the declared Go entries (plus the always-
+	// materialized "ID"), fieldsCol the physical allowset the trim applies. Nil
+	// on every unrestricted node (the default). A restricted node translates
+	// ONLY allowlisted leaf fields (a capped field is unknown → the wire's 400
+	// SchemaViolation, honest instead of a query matching nothing), reports no
+	// DeletedAt gate when the column is capped (the segment then has no archived
+	// rule, BY DECLARATION), and registers only the admitted nested segments.
+	fieldsGo  map[string]struct{}
+	fieldsCol map[string]struct{}
 }
 
 type viewEmbed struct {
@@ -30,7 +40,7 @@ type viewEmbed struct {
 	// isChild marks a derived aggregate-child collection (a shared base's native
 	// child or a schema's own child) as opposed to an explicitly declared embed.
 	// It no longer gates the archived-entry strip — every segment follows one
-	// rule now (hide when the SOURCE SCHEMA declares a soft-delete column) — but
+	// rule now (hide when the SOURCE SCHEMA declares a DeletedAt column) — but
 	// it still distinguishes the two shapes for the rest of the read path.
 	isChild bool
 	// isRole marks a SharedBaseView role segment: a SINGLE optional
@@ -63,7 +73,7 @@ func (v *ViewDefinition) BuildViewNode() *ViewNode {
 	// registerOwnChildren / the SharedBaseRef branch and is keyed by the child's
 	// doc segment. Registered as a plain embed (NOT isChild): it is a SEGMENT, not
 	// an aggregate child collection. Like every other segment it is hidden on a
-	// default read when its own source schema declares a soft-delete column.
+	// default read when its own source schema declares a DeletedAt column.
 	for _, ce := range v.childEmbeds {
 		childVE, ok := n.embedsByDoc[ce.ChildSegment()]
 		if !ok || childVE.node == nil {
@@ -85,9 +95,41 @@ func (v *ViewDefinition) BuildViewNode() *ViewNode {
 // schema with no closure of its own.
 func legViewNode(leg *Leg) *ViewNode {
 	if leg.view != nil {
-		return leg.view.BuildViewNode()
+		node := leg.view.BuildViewNode()
+		if len(leg.fields) > 0 {
+			return restrictViewNode(node, leg)
+		}
+		return node
 	}
 	return newViewNode(leg.schema, nil)
+}
+
+// restrictViewNode narrows a JoinView-leg node to the leg's declared Fields:
+// leaf translation is gated on the Go entries, the DeletedAt gate on the
+// physical allowset, and only admitted top-level segments stay registered
+// (a segment entry admits that segment WHOLE — its own node, rules included,
+// recursively; an unlisted segment is cut with the data). "ID" is always
+// admitted: identity is always materialized.
+func restrictViewNode(node *ViewNode, leg *Leg) *ViewNode {
+	goSet := make(map[string]struct{}, len(leg.fields)+1)
+	for _, f := range leg.fields {
+		goSet[f] = struct{}{}
+	}
+	goSet[idGoFieldName] = struct{}{}
+	out := &ViewNode{
+		schema:      node.schema,
+		embeds:      map[string]*viewEmbed{},
+		embedsByDoc: map[string]*viewEmbed{},
+		fieldsGo:    goSet,
+		fieldsCol:   legFieldsColumnSet(leg),
+	}
+	for seg, emb := range node.embeds {
+		if _, ok := goSet[seg]; ok {
+			out.embeds[seg] = emb
+			out.embedsByDoc[emb.docField] = emb
+		}
+	}
+	return out
 }
 
 // newRoleViewNode builds the translator node for one role segment: the role's
@@ -167,8 +209,8 @@ func registerOwnChildren(n *ViewNode, schema *core.TableSchema) {
 	}
 }
 
-// ChildSoftDeletePaths returns, for EVERY segment whose source schema declares a
-// soft-delete column, the doc-field path → soft-delete column pair. The reader
+// ChildDeletedAtPaths returns, for EVERY segment whose source schema declares a
+// DeletedAt column, the doc-field path → DeletedAt column pair. The reader
 // consults it to auto-include that column when a consumer projection narrows the
 // subfields — StripArchivedChildren can only hide what the projected entries
 // still carry — and removes it again before responding, so the wire shape matches
@@ -180,24 +222,24 @@ func registerOwnChildren(n *ViewNode, schema *core.TableSchema) {
 // mirror) and EmbedInChild enrichments. Nested content contributes DOTTED paths
 // (a role's own children, "User.Dependents"; a materialized view's children,
 // "product.ProductLines"; an enrichment inside a child element,
-// "items.product"). A segment whose schema declares NO soft-delete contributes
+// "items.product"). A segment whose schema declares NO DeletedAt contributes
 // nothing: it has no archived state to hide.
-func (n *ViewNode) ChildSoftDeletePaths() map[string]string {
+func (n *ViewNode) ChildDeletedAtPaths() map[string]string {
 	if !n.hasSchema() {
 		return nil
 	}
 	out := map[string]string{}
 	for docField, emb := range n.embedsByDoc {
 		// ONE rule for every segment kind: a segment whose source schema declares
-		// a soft-delete column carries a lifecycle the default read hides, so the
+		// a DeletedAt column carries a lifecycle the default read hides, so the
 		// column must survive a narrowed projection for the strip to see it.
-		if sdCol, ok := emb.node.SoftDeleteColumn(); ok {
+		if sdCol, ok := emb.node.DeletedAtColumn(); ok {
 			out[docField] = sdCol
 		}
 		// …and whatever lives INSIDE it (a role's children, a materialized view's
 		// children, an EmbedInChild enrichment inside a child element) contributes
 		// its own dotted path.
-		for sub, sd := range emb.node.ChildSoftDeletePaths() {
+		for sub, sd := range emb.node.ChildDeletedAtPaths() {
 			out[docField+"."+sub] = sd
 		}
 	}
@@ -205,16 +247,16 @@ func (n *ViewNode) ChildSoftDeletePaths() map[string]string {
 }
 
 // StripArchivedChildren hides ARCHIVED content in EVERY segment of the document
-// — the read-time counterpart of the root-level soft-delete gate, applied one or
+// — the read-time counterpart of the root-level DeletedAt gate, applied one or
 // more levels down. The stored document deliberately mirrors the relational
-// store (archived entries INCLUDED, each carrying its soft-delete timestamp, so
+// store (archived entries INCLUDED, each carrying its DeletedAt timestamp, so
 // an ?includeArchived read can surface them); a default read hides them exactly
 // like the write-side loader hydrates only active children.
 //
 // ONE rule, every shape — a native child collection, a SharedBaseView role, a
 // materialized embed (1:1 or 1:N, over a local view or an upstream mirror) and
 // an EmbedInChild enrichment: a segment is filtered if, and ONLY IF, the schema
-// behind it declares a soft-delete column. That declaration is what says the
+// behind it declares a DeletedAt column. That declaration is what says the
 // source has an archived state and names the column carrying it; a source that
 // declares none has no archived concept and is never touched. The behavior is a
 // property of the DECLARATION, not of the verb, the leg kind, or whether the
@@ -234,7 +276,7 @@ func (n *ViewNode) StripArchivedChildren(doc map[string]any) {
 		return
 	}
 	for docField, emb := range n.embedsByDoc {
-		sdCol, hasSD := emb.node.SoftDeleteColumn()
+		sdCol, hasSD := emb.node.DeletedAtColumn()
 
 		// A SharedBaseView role segment is a SINGLE optional sub-document with
 		// the role's own lifecycle: an archived role is hidden by nulling the
@@ -259,9 +301,9 @@ func (n *ViewNode) StripArchivedChildren(doc map[string]any) {
 		// EVERY OTHER SEGMENT — a native child collection, a materialized embed
 		// (1:1 or 1:N, over a local view or an upstream mirror), an EmbedInChild
 		// enrichment — follows ONE rule: when its source schema declares a
-		// soft-delete column, an archived entry is hidden on a default read, and
+		// DeletedAt column, an archived entry is hidden on a default read, and
 		// `?includeArchived=true` (which skips this whole pass) brings it back.
-		// A source that declares NO soft-delete has no archived concept and is
+		// A source that declares NO DeletedAt has no archived concept and is
 		// never touched. Hiding is content-level, never row-level: a 1:1 segment
 		// becomes the explicit null and a 1:N element leaves the array, but the
 		// document itself always survives (the LEFT semantics of a segment).
@@ -327,6 +369,14 @@ func (n *ViewNode) ColumnPath(goPath []string) ([]string, bool) {
 		return goPath, true
 	}
 	if len(goPath) == 1 {
+		// A Fields-restricted leg node translates only allowlisted leaves — a
+		// capped field is UNKNOWN here (the wire answers 400), never a silent
+		// query against a column the trim removed. "ID" is always admitted.
+		if n.fieldsGo != nil && goPath[0] != idGoFieldName {
+			if _, ok := n.fieldsGo[goPath[0]]; !ok {
+				return nil, false
+			}
+		}
 		col, ok := n.schema.ColumnForRead(goPath[0])
 		if !ok {
 			return nil, false
@@ -352,15 +402,28 @@ func (n *ViewNode) ColumnPath(goPath []string) ([]string, bool) {
 	return append([]string{emb.docField}, rest...), true
 }
 
-// SoftDeleteColumn returns the view root's soft-delete column (and whether
+// DeletedAtColumn returns the view root's DeletedAt column (and whether
 // enabled). Empty/false means no archived gate is applied. There is no invented
-// "deleted_at" fallback — if the schema declares no soft-delete, the view has
+// "deleted_at" fallback — if the schema declares no DeletedAt, the view has
 // none; an unregistered (schema-less) node likewise yields no gate.
-func (n *ViewNode) SoftDeleteColumn() (string, bool) {
+func (n *ViewNode) DeletedAtColumn() (string, bool) {
 	if !n.hasSchema() {
 		return "", false
 	}
-	return n.schema.SoftDeleteColumn()
+	col, ok := n.schema.DeletedAtColumn()
+	if !ok {
+		return "", false
+	}
+	// A Fields-restricted leg node whose allowlist CAPS the DeletedAt column has
+	// no archived rule, BY DECLARATION: the column is never materialized, so the
+	// strip has nothing to gate on and reports none — the per-consumer archive
+	// switch (see Leg.Fields).
+	if n.fieldsCol != nil {
+		if _, kept := n.fieldsCol[col]; !kept {
+			return "", false
+		}
+	}
+	return col, true
 }
 
 // StripJoinKeyID removes the `_id` a composed read kept on a leg segment ONLY to

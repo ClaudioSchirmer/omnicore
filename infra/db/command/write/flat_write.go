@@ -133,7 +133,7 @@ func (b *BaseEngine) Archive(ctx persistence.RequestContext, entity domain.Archi
 	if _, isAggregate := entity.AggregateInfo(); isAggregate {
 		return b.archiveAggregate(ctx, entity, schema, hook)
 	}
-	sdCol, err := requireSoftDelete(schema, entity.EntityName())
+	sdCol, err := requireDeletedAt(schema, entity.EntityName())
 	if err != nil {
 		return err
 	}
@@ -147,7 +147,7 @@ func (b *BaseEngine) Unarchive(ctx persistence.RequestContext, entity domain.Una
 	if _, isAggregate := entity.AggregateInfo(); isAggregate {
 		return b.unarchiveAggregate(ctx, entity, schema, hook)
 	}
-	sdCol, err := requireSoftDelete(schema, entity.EntityName())
+	sdCol, err := requireDeletedAt(schema, entity.EntityName())
 	if err != nil {
 		return err
 	}
@@ -178,7 +178,7 @@ func (b *BaseEngine) Delete(ctx persistence.RequestContext, entity domain.Deleta
 // outbox row (the payload, built AFTER the base convergence so its
 // base_revision reflects any lifecycle transition) + the in-TX audit row + the
 // A/D hooks, then the post-commit echo + publish. `now` is the operation stamp
-// minted by the verb (writeNow()): ARCHIVED binds it as the soft-delete value;
+// minted by the verb (writeNow()): ARCHIVED binds it as the DeletedAt value;
 // UNARCHIVED sets SQL NULL and needs no stamp on the root, but the base
 // convergence still receives it (a role archive may archive the base with the
 // same instant).
@@ -324,7 +324,7 @@ func execOneWithTx(ctx context.Context, tx WriteTx, d Dialect, entity domain.Val
 		return domain.WriteResult{ID: e.ID(), Fields: fields}, nil
 
 	case domain.Archivable:
-		sdCol, err := requireSoftDelete(schema, e.EntityName())
+		sdCol, err := requireDeletedAt(schema, e.EntityName())
 		if err != nil {
 			return domain.WriteResult{}, err
 		}
@@ -343,7 +343,7 @@ func execOneWithTx(ctx context.Context, tx WriteTx, d Dialect, entity domain.Val
 		return domain.WriteResult{ID: e.ID()}, nil
 
 	case domain.Unarchivable:
-		sdCol, err := requireSoftDelete(schema, e.EntityName())
+		sdCol, err := requireDeletedAt(schema, e.EntityName())
 		if err != nil {
 			return domain.WriteResult{}, err
 		}

@@ -20,7 +20,7 @@ func composerRootSchema() *core.TableSchema {
 	return core.NewTableSchema[*builderTestEntity]("orders").
 		ID("id").
 		Field("Name", "name").
-		SoftDelete("deleted_at")
+		DeletedAt("deleted_at")
 }
 
 // composerEngine builds a fakeEngine whose QueryMaps is driven by mapsFn.
@@ -143,7 +143,7 @@ func composerSiblingRootSchema() *core.TableSchema {
 	return core.NewTableSchema[*builderTestEntity]("orders").
 		ID("id").
 		Field("Name", "name").
-		SoftDelete("deleted_at").
+		DeletedAt("deleted_at").
 		Sibling(core.NewSiblingSchema[*builderTestEntity]("orders_ext").Field("Email", "email"))
 }
 
@@ -270,7 +270,7 @@ func TestCompose_OwnChildrenAutoNested(t *testing.T) {
 	childSchema := core.NewTableSchema[csComposeVO]("lines").ID("id").ParentID("order_id").Field("Label", "label").
 		Sibling(core.NewSiblingSchema[csComposeVO]("lines_ext").Field("Note", "note"))
 	rootWithChild := core.NewTableSchema[*builderTestEntity]("orders").
-		ID("id").Field("Name", "name").SoftDelete("deleted_at").
+		ID("id").Field("Name", "name").DeletedAt("deleted_at").
 		Child(childSchema)
 	view := View("orders").Version(1).Schema(rootWithChild) // no EmbedMany
 
@@ -432,15 +432,15 @@ func TestComposeBatch_ChunksLargeIDSet(t *testing.T) {
 }
 
 // composerRoleSchemaManaged mirrors composerRoleSchema with BOTH sides
-// declaring the managed columns (soft-delete + timestamps) — the collision the
+// declaring the managed columns (DeletedAt + timestamps) — the collision the
 // A5 guard resolves in favor of the ROLE.
 func composerRoleSchemaManaged() *core.TableSchema {
 	base := core.NewSharedBaseSchema("pessoa").Revision("revision").ID("id").Field("Name", "name").NaturalID("name").
-		SoftDelete("deleted_at").CreatedAt("created_at").UpdatedAt("updated_at")
+		DeletedAt("deleted_at").CreatedAt("created_at").UpdatedAt("updated_at")
 	return core.NewTableSchema[*builderTestEntity]("aluno").
 		ID("id").
 		Field("Email", "email").
-		SoftDelete("deleted_at").
+		DeletedAt("deleted_at").
 		CreatedAt("created_at").
 		UpdatedAt("updated_at").
 		SharedBase(base, "pessoa_id")
@@ -491,11 +491,11 @@ func TestViewNode_StripArchivedChildren(t *testing.T) {
 		ID("id").
 		ParentID("aluno_id").
 		Field("Label", "label").
-		SoftDelete("deleted_at")
+		DeletedAt("deleted_at")
 	root := core.NewTableSchema[*builderTestEntity]("aluno").
 		ID("id").
 		Field("Name", "name").
-		SoftDelete("deleted_at").
+		DeletedAt("deleted_at").
 		Child(child)
 	node := View("aluno").Version(1).Schema(root).BuildViewNode()
 

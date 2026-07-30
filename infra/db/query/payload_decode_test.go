@@ -31,7 +31,7 @@ func pdSchema() *core.TableSchema {
 	return core.NewTableSchema[*pdRoot]("pd_roots").ID("id").
 		Field("Name", "name").Field("Age", "age").Field("Active", "active").
 		Field("Nick", "nick").Field("Photo", "photo").
-		SoftDelete("deleted_at").CreatedAt("created_at").UpdatedAt("updated_at").
+		DeletedAt("deleted_at").CreatedAt("created_at").UpdatedAt("updated_at").
 		Child(child)
 }
 

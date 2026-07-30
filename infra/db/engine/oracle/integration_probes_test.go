@@ -41,7 +41,7 @@ func probeSchema() *core.TableSchema {
 		Field("Code", "code").
 		Field("Cents", "cents").
 		Field("Area", "area").
-		SoftDelete("deleted_at")
+		DeletedAt("deleted_at")
 }
 
 func probeSetup(t *testing.T) (*Engine, string) {

@@ -76,9 +76,9 @@ func (s *TableSchema) EffectiveChildNames() []string {
 // ValidateSharedBaseChildren runs at WithSchema (order-independent, like
 // ValidateChildDepth/ValidateSiblings) on a ROLE schema. It asserts the
 // base-vs-role invariants that need both schemas in hand: no child type is owned
-// by both the role and its base, and a base-child's soft-delete is coherent with
+// by both the role and its base, and a base-child's DeletedAt is coherent with
 // the base (lifecycle is all-or-nothing per base — the base is a mini-root for its
-// native children, so either the base AND its children are soft-deletable, or
+// native children, so either the base AND its children are archivable, or
 // neither is). A no-op for a schema without a shared base.
 func (s *TableSchema) ValidateSharedBaseChildren() {
 	base, _, ok := s.SharedBaseRef()
@@ -93,11 +93,11 @@ func (s *TableSchema) ValidateSharedBaseChildren() {
 					"%q — a child type belongs to exactly one owner (the role OR the base). Drop one .Child(%q).",
 				s.table, name, base.table, name))
 		}
-		if bc.softDelete != "" && base.softDelete == "" {
+		if bc.deletedAt != "" && base.deletedAt == "" {
 			panic(fmt.Sprintf(
-				"infra.TableSchema(%s): base child %q declares SoftDelete but its shared base %q has none — a "+
-					"base-child's lifecycle follows the base (it is a mini-root of the base). Declare SoftDelete on "+
-					"the base too, or drop it from the child: soft-delete is all-or-nothing per base.",
+				"infra.TableSchema(%s): base child %q declares DeletedAt but its shared base %q has none — a "+
+					"base-child's lifecycle follows the base (it is a mini-root of the base). Declare DeletedAt on "+
+					"the base too, or drop it from the child: DeletedAt is all-or-nothing per base.",
 				s.table, name, base.table))
 		}
 	}

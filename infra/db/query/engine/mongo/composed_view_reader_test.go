@@ -16,7 +16,7 @@ import (
 // ─── filter-aware fake collection ────────────────────────────────────────────
 //
 // The composed reader's leg fetches carry real filters ($in batches, per-parent
-// ParentID equality, the soft-delete gate) and real find options (limit, sort,
+// ParentID equality, the DeletedAt gate) and real find options (limit, sort,
 // projection). filterColl honors the filter and the limit — enough to verify
 // grouping, LEFT semantics, archived gates and truncation — and captures both
 // so tests can assert exactly what was sent to the driver.
@@ -137,7 +137,7 @@ func cvrPrimaryView() *query.ViewDefinition {
 		ID("id").
 		Field("Code", "code").
 		Field("MirrorID", "mirror_id").
-		SoftDelete("deleted_at")
+		DeletedAt("deleted_at")
 	return query.View("gadgets").Version(1).Schema(schema)
 }
 
@@ -146,7 +146,7 @@ func cvrNotesView() *query.ViewDefinition {
 		ID("id").
 		Field("GadgetID", "gadget_id").
 		Field("Text", "text").
-		SoftDelete("deleted_at")
+		DeletedAt("deleted_at")
 	return query.View("gadget_notes").Version(1).Schema(schema)
 }
 
@@ -284,14 +284,14 @@ func TestComposedReader_ArchivedGatePerLeg(t *testing.T) {
 	env := newCVREnv()
 
 	// Default read: the archived note n4 is gated out by the leg's own
-	// soft-delete column; the external mirror leg has no soft-delete, so its
+	// DeletedAt column; the external mirror leg has no DeletedAt, so its
 	// filter carries no gate (the knob is a no-op there).
 	_, err := env.reader.ReadPage(context.Background(), "gadgets_full", queries.ReadCriteria{})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if _, gated := env.mirror.filters[0]["deleted_at"]; gated {
-		t.Fatal("a leg without soft-delete must not carry an archived gate")
+		t.Fatal("a leg without DeletedAt must not carry an archived gate")
 	}
 	if v, gated := env.notes.filters[0]["deleted_at"]; !gated || v != nil {
 		t.Fatalf("the notes leg must gate archived docs by default, got %#v", env.notes.filters[0])
@@ -835,7 +835,7 @@ func TestMongoViewReader_OverlayFilterCursorRoundTrip(t *testing.T) {
 			ID("id").
 			Field("Code", "code").
 			Field("MirrorID", "mirror_id").
-			SoftDelete("deleted_at"))
+			DeletedAt("deleted_at"))
 	r := NewMongoViewReader(newFakeMongo(coll), testResolver).SetViews([]*query.ViewDefinition{primary})
 
 	// The criteria AS THE READER SEES IT: the wire filter (Code) plus a
@@ -883,7 +883,7 @@ func newInChildEnv() (*ComposedViewReader, *filterColl, string) {
 	lineSchema := cvrLineSchema()
 	primarySchema := core.NewTableSchema[cvrGadget]("gadgets").
 		ID("id").Field("Code", "code").Field("MirrorID", "mirror_id").
-		SoftDelete("deleted_at").Child(lineSchema)
+		DeletedAt("deleted_at").Child(lineSchema)
 	primary := query.View("gadgets").Version(1).Schema(primarySchema)
 	composed := query.ComposedView("gadgets_full").Primary(primary).
 		LinkInChild(lineSchema, query.JoinUpstream(cvrUpstreamSchema(), "Item", "item")).On("item_id")

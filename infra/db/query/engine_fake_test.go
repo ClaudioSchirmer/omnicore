@@ -60,7 +60,7 @@ var builderTestSchema = core.NewTableSchema[*builderTestEntity]("builder_test_en
 	ID("id").
 	Field("Name", "name").
 	Field("Email", "email").
-	SoftDelete("deleted_at").
+	DeletedAt("deleted_at").
 	CreatedAt("created_at").
 	UpdatedAt("updated_at")
 

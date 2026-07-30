@@ -86,9 +86,9 @@ func TestSQLServerComposer_OwnChild(t *testing.T) {
 	// Child declared on the ROOT schema (replicating flatSchema's fields) — no embed.
 	rootWithChild := core.NewTableSchema[*flatPerson]("flat_persons").
 		ID("id").Field("Name", "name").Field("Email", "email").Field("Phone", "phone").
-		SoftDelete("deleted_at").CreatedAt("created_at").UpdatedAt("updated_at").
+		DeletedAt("deleted_at").CreatedAt("created_at").UpdatedAt("updated_at").
 		Child(core.NewTableSchema[mcLineRow]("mc_lines").ID("id").ParentID("user_id").
-			Field("Qty", "qty").SoftDelete("deleted_at"))
+			Field("Qty", "qty").DeletedAt("deleted_at"))
 	view := query.View("flat_persons").Version(1).Schema(rootWithChild)
 
 	doc, err := query.NewComposer(eng).Compose(ctx, view, res.ID.Value())

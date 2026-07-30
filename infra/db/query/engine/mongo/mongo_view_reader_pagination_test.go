@@ -251,17 +251,17 @@ func TestBuildProjection_AutoIncludeAppendsAfterUserKeys(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// childSoftDeleteAutoIncludes — a STRICT-SUBFIELD child projection re-includes
-// the child soft-delete column so the archived strip can see it; a WHOLE-field
+// childDeletedAtAutoIncludes — a STRICT-SUBFIELD child projection re-includes
+// the child DeletedAt column so the archived strip can see it; a WHOLE-field
 // child projection must NOT (the object already carries the column, and adding
 // its subpath collides at Mongo, Location31249). Regression guard for the
 // ?fields=<whole child segment> 500.
 // ---------------------------------------------------------------------------
 
-func TestChildSoftDeleteAutoIncludes_StrictSubfield_ReIncludesColumn(t *testing.T) {
+func TestChildDeletedAtAutoIncludes_StrictSubfield_ReIncludesColumn(t *testing.T) {
 	colProj := map[string]int{"Addresses.city": 1, "_id": 0}
 	sdPaths := map[string]string{"Addresses": "deleted_at"}
-	auto, cleanup := childSoftDeleteAutoIncludes(colProj, sdPaths)
+	auto, cleanup := childDeletedAtAutoIncludes(colProj, sdPaths)
 	if !reflect.DeepEqual(auto, []string{"Addresses.deleted_at"}) {
 		t.Fatalf("want [Addresses.deleted_at], got %#v", auto)
 	}
@@ -270,14 +270,14 @@ func TestChildSoftDeleteAutoIncludes_StrictSubfield_ReIncludesColumn(t *testing.
 	}
 }
 
-func TestChildSoftDeleteAutoIncludes_WholeField_SkipsToAvoidCollision(t *testing.T) {
+func TestChildDeletedAtAutoIncludes_WholeField_SkipsToAvoidCollision(t *testing.T) {
 	// ?fields=addresses → the whole "Addresses" segment. The stored object
 	// already carries deleted_at; re-including "Addresses.deleted_at" would make
 	// Mongo reject the projection (Location31249 "Path collision"). Nothing is
 	// added, nothing is scheduled for cleanup.
 	colProj := map[string]int{"Addresses": 1, "_id": 0}
 	sdPaths := map[string]string{"Addresses": "deleted_at"}
-	auto, cleanup := childSoftDeleteAutoIncludes(colProj, sdPaths)
+	auto, cleanup := childDeletedAtAutoIncludes(colProj, sdPaths)
 	if len(auto) != 0 {
 		t.Fatalf("whole-field projection must add nothing, got %#v", auto)
 	}
@@ -286,10 +286,10 @@ func TestChildSoftDeleteAutoIncludes_WholeField_SkipsToAvoidCollision(t *testing
 	}
 }
 
-func TestChildSoftDeleteAutoIncludes_UntouchedChild_Ignored(t *testing.T) {
+func TestChildDeletedAtAutoIncludes_UntouchedChild_Ignored(t *testing.T) {
 	colProj := map[string]int{"name": 1, "_id": 0}
 	sdPaths := map[string]string{"Addresses": "deleted_at"}
-	auto, cleanup := childSoftDeleteAutoIncludes(colProj, sdPaths)
+	auto, cleanup := childDeletedAtAutoIncludes(colProj, sdPaths)
 	if len(auto) != 0 || len(cleanup) != 0 {
 		t.Fatalf("a child the projection does not touch must be ignored, got auto=%#v cleanup=%#v", auto, cleanup)
 	}

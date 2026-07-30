@@ -41,9 +41,9 @@ func TestNormalizeBSONValues_DatetimeToTimeRecursively(t *testing.T) {
 	}
 }
 
-// projectionTouchesField drives the child soft-delete auto-include: a
+// projectionTouchesField drives the child DeletedAt auto-include: a
 // projection narrowing any child subfield (or the whole child) must pull the
-// child's soft-delete column so the archived-entry strip can see it.
+// child's DeletedAt column so the archived-entry strip can see it.
 func TestProjectionTouchesField(t *testing.T) {
 	proj := map[string]int{"name": 1, "Dependents.name": 1}
 	if !projectionTouchesField(proj, "Dependents") {

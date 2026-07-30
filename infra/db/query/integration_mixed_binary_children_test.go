@@ -72,7 +72,7 @@ func TestIntegration_MixedBinaryWindow_OwnChildEqualRevision(t *testing.T) {
 		Field("Label", "label").Field("Rank", "rank")
 	root := core.NewTableSchema[*pdRoot]("mb_roots").ID("id").Revision("revision").
 		Field("Name", "name").Field("Nick", "nick").
-		SoftDelete("deleted_at").CreatedAt("created_at").UpdatedAt("updated_at").
+		DeletedAt("deleted_at").CreatedAt("created_at").UpdatedAt("updated_at").
 		Child(child)
 	view := View("mb_view").Version(2).Schema(root)
 	seg := childDocSegment(child)
@@ -201,7 +201,7 @@ func TestIntegration_MixedBinaryWindow_V1ConsumerChildReplace(t *testing.T) {
 		Field("Label", "label")
 	rootV1 := core.NewTableSchema[*pdRoot]("mb1_roots").ID("id").Revision("revision").
 		Field("Name", "name").
-		SoftDelete("deleted_at").CreatedAt("created_at").UpdatedAt("updated_at").
+		DeletedAt("deleted_at").CreatedAt("created_at").UpdatedAt("updated_at").
 		Child(childV1)
 	viewV1 := View("mb1_view").Version(1).Schema(rootV1)
 	seg := childDocSegment(childV1)

@@ -24,7 +24,7 @@ import (
 //
 //   - ConsumerGroup:    "<service>-upstream-<topic>"
 //   - Workers:          1
-//   - Filter:           nil → full payload kept
+//   - Fields:           nil → full payload kept
 //   - DeleteOnArchive:  false → ARCHIVED upserts a doc with deleted_at set
 //   - StartFrom:        StartFromLatest
 //   - OnUpstreamDelete: UpstreamDeleteCascade
@@ -53,11 +53,11 @@ type UpstreamSubscription struct {
 	// 0 or unset defaults to 1.
 	Workers int `yaml:"workers"`
 
-	// Filter is an allowlist of upstream payload fields that survive
+	// Fields is an allowlist of upstream payload fields that survive
 	// in the local doc. Nil/empty keeps the full payload — appropriate
 	// for low-cardinality entities. Declaring an explicit set is the
 	// supported way to limit the local copy's data classification.
-	Filter []string `yaml:"filter"`
+	Fields []string `yaml:"fields"`
 
 	// DeleteOnArchive mirrors ViewDefinition.DeleteOnArchive: when
 	// true, ARCHIVED events remove the local doc; when false (default),
@@ -97,7 +97,7 @@ var knownUpstreamSubscriptionKeys = map[string]bool{
 	"collection":             true,
 	"consumerGroup":          true,
 	"workers":                true,
-	"filter":                 true,
+	"fields":                 true,
 	"deleteOnArchive":        true,
 	"startFrom":              true,
 	"onUpstreamDelete":       true,

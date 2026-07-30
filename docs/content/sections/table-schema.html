@@ -37,7 +37,7 @@
         away from its Go field, or an upstream service's collection via <code>NewExternalSchema</code> — declaring field
         by field how each maps to your domain. What this buys is freedom over <strong>names</strong> (column and table),
         not over structural <em>shape</em>: the table must still fit the framework's assumptions — a single-column
-        non-composite primary key, a timestamp-based soft-delete column when the entity is archivable, and one of the
+        non-composite primary key, a timestamp-based DeletedAt column when the entity is archivable, and one of the
         <a href="#table-schema~supported-column-shapes">supported column shapes</a>. Adopting a schema that breaks those
         assumptions is explicitly <a href="#table-schema~out-of-scope">out of scope</a>.</li>
     <li><strong>No failed, tiring conventions.</strong> Name-inference (PascalToSnake + pluralize) is lossy and
@@ -103,7 +103,7 @@
     </p>
 </div>
 
-<h3>The three-name model</h3>
+<h3 id="three-name-model">The three-name model</h3>
 <p>
     A field can carry up to three independent names, resolved at two membranes:
 </p>
@@ -123,6 +123,89 @@
     translates each column back to its Go field name before the typed Response projects to the wire — so the wire surface
     speaks Go names without any per-Response source-key override.
 </p>
+<p>
+    For a business <code>Field(goName, column)</code> you choose both the Go name and the column. <strong>For every
+    managed slot the Go name is FIXED by the framework — only the column is yours:</strong>
+</p>
+<table>
+    <thead><tr><th>Declaration</th><th>Physical name (SQL column)</th><th>Fixed Go name — criteria, <code>?filter</code>/<code>?sort</code>/<code>?fields=</code>, Response DTO field</th><th>What the Mongo document stores</th></tr></thead>
+    <tbody>
+        <tr>
+            <td><code>ID("order_no")</code></td><td><code>order_no</code></td>
+            <td><strong><code>ID</code></strong> — locked by the Entity/AVO contract</td>
+            <td><code>order_no</code> with the id value, <strong>plus</strong> the same value as the document's
+                <code>_id</code> (the upsert key). An external mirror is the exception: its identity lives in
+                <code>_id</code> only, promoted onto <code>ID</code> on read.</td>
+        </tr>
+        <tr>
+            <td><code>ParentID("order_id")</code></td><td><code>order_id</code></td>
+            <td><strong><code>ParentID</code></strong> — read-only projection</td>
+            <td><code>order_id</code>, as declared — inside each child element.</td>
+        </tr>
+        <tr>
+            <td><code>DeletedAt("archived_on")</code></td><td><code>archived_on</code></td>
+            <td><strong><code>DeletedAt</code></strong></td>
+            <td><code>archived_on</code>, as declared — the root gate and the archived-segment strip query this
+                physical name.</td>
+        </tr>
+        <tr>
+            <td><code>CreatedAt("registered_at")</code></td><td><code>registered_at</code></td>
+            <td><strong><code>CreatedAt</code></strong></td>
+            <td><code>registered_at</code>, as declared.</td>
+        </tr>
+        <tr>
+            <td><code>UpdatedAt("modified_at")</code></td><td><code>modified_at</code></td>
+            <td><strong><code>UpdatedAt</code></strong></td>
+            <td><code>modified_at</code>, as declared.</td>
+        </tr>
+        <tr>
+            <td><code>Revision("revision")</code></td><td><code>revision</code> (relational side only)</td>
+            <td>— never exposed</td>
+            <td><strong>Not</strong> under its column name: remapped to the reserved <code>_revision</code>
+                (shared base: <code>_base_revision</code>) and the physical name dropped. <code>_</code>-reserved
+                fields are stripped on read and never reach the wire.</td>
+        </tr>
+        <tr>
+            <td><code>NaturalID("tax_id")</code> (shared base)</td><td><code>tax_id</code></td>
+            <td>the declared <code>Field</code> Go name</td>
+            <td><code>tax_id</code>, as declared, <strong>plus</strong> <code>UUIDv5(tax_id)</code> as the
+                document's <code>_id</code>.</td>
+        </tr>
+    </tbody>
+</table>
+<p>
+    The rule the last column makes visible: <strong>everything materializes under the physical name you
+    declared</strong> — the only two exceptions are <code>_id</code> (the identity duplicated as the upsert key) and
+    <code>Revision</code> (the only declaration that <em>changes</em> name, to the reserved <code>_revision</code>).
+</p>
+<div class="box warn">
+    <strong>The trap this table exists to kill — the Response DTO's field NAME is the lookup key; the
+    <code>json:</code> tag is not.</strong> <code>AutoFromDoc</code> fills a Response by reading
+    <code>doc[&lt;GoFieldName&gt;]</code> from the Go-keyed document, so a field named after the physical column
+    reads nothing — and stays zero <em>silently</em> (projection is by name; absence is legal):
+</div>
+<pre><code>core.NewTableSchema[*Order]("orders").
+    ID("id").
+    DeletedAt("archived_on")     // physical column: yours to name
+
+// WRONG — silently empty: the document carries "DeletedAt";
+// this field reads doc["ArchivedOn"], finds nothing, stays null. No error.
+type OrderResponse struct {
+    ArchivedOn *time.Time `json:"archivedOn"`
+}
+
+// RIGHT — the Go field name is the fixed logical name; the wire name is still yours.
+type OrderResponse struct {
+    DeletedAt *time.Time `json:"archivedOn"`
+}</code></pre>
+<p>
+    <strong>Symptom → cause.</strong> A Response field that is always <code>null</code>/zero with no error: its Go
+    name does not match the view's logical name — a managed slot renamed (as above) or a <code>Field</code> Go name
+    typo. The Request side fails LOUDLY for the same mistake: a <code>?filter</code>/<code>?sort</code>/<code>?fields=</code>
+    token that resolves to no logical name is <code>400 SchemaViolationNotification</code>. Silent on the way out,
+    loud on the way in — if a filter on the field 400s, the Response field with that name is empty for the same
+    reason.
+</p>
 
 <h3>Declaring a schema</h3>
 <p>
@@ -139,7 +222,7 @@ func UserSchema() *core.TableSchema {
         Field("Name", "name").
         Field("Email", "mail").         // renamed column
         Field("Phone", "phone").
-        SoftDelete("deleted_at").       // managed: presence enables the predicate
+        DeletedAt("deleted_at").       // managed: presence enables the predicate
         CreatedAt("created_at").        // managed: framework stamps the op's app-clock instant on INSERT
         UpdatedAt("updated_at").        // managed: framework stamps the op's app-clock instant on INSERT + UPDATE
         Child(AddressSchema())          // aggregate child, keyed by Go type name
@@ -151,7 +234,7 @@ func AddressSchema() *core.TableSchema {
         ParentID("user_id").                  // ParentID to the root — injected by the persister
         Field("Street", "street").
         Field("ZipCode", "zip_code").
-        SoftDelete("deleted_at").
+        DeletedAt("deleted_at").
         CreatedAt("created_at").
         UpdatedAt("updated_at")
 }
@@ -204,14 +287,15 @@ core.NewExternalSchema("users").ID("id").Field("Email", "mail")</code></pre>
     automatically</strong> into the Mongo view — the composer nests each declared <code>Child(...)</code> wherever the
     schema is used, so a child on a view root or on an embed leg is materialized, not ignored. An embed leg
     <em>cannot</em> declare a further <code>Embed(...)</code> / <code>EmbedMany(...)</code>, though — a leg
-    exposes no such builder, so embed-of-embed does not compile (embeds are single-level; reach a second external hop with a
-    top-level embed or a read-time <code>ComposedView</code>). A redundant explicit embed of a child the schema already
+    exposes no such builder, so embed-of-embed does not compile (embeds are single-level per declaration; depth beyond one
+    hop comes from a <code>JoinView</code> source's own embeds, from a second top-level embed, or from a read-time
+    <code>ComposedView</code>). A redundant explicit embed of a child the schema already
     projects (same derived segment) is still a boot error.
 </div>
 
 <h3>The managed columns — by presence, not a flag</h3>
 <p>
-    Soft-delete, created-at, and updated-at are declared by <em>calling</em> the matching builder method with the column
+    The archive timestamp (deleted-at), created-at, and updated-at are declared by <em>calling</em> the matching builder method with the column
     name. Omitting the call disables the behavior — there is no boolean knob. The exception is
     <code>Revision(col)</code>: on an <strong>entity schema</strong> (<code>NewTableSchema[T]</code> attached to a
     repository) and on a <strong>shared base</strong> (<code>NewSharedBaseSchema</code>) it is <strong>mandatory</strong> —
@@ -235,7 +319,7 @@ core.NewExternalSchema("users").ID("id").Field("Email", "mail")</code></pre>
                 <code>Child(...)</code> attach)</td>
         </tr>
         <tr>
-            <td><code>SoftDelete(col)</code></td>
+            <td><code>DeletedAt(col)</code></td>
             <td>the read scope-gate uses <code>col IS NULL</code>; Archive/Unarchive write <code>col = $now</code> / <code>col = NULL</code></td>
             <td>no scope-gate; Archive/Unarchive unavailable (boot check + runtime guard)</td>
         </tr>
@@ -257,10 +341,11 @@ core.NewExternalSchema("users").ID("id").Field("Email", "mail")</code></pre>
     supported backend stores) and bound as an ordinary argument, exactly like the Go-minted UUID&nbsp;v7 ids. No dialect
     <code>NOW()</code> expression appears in the data DML and the framework never relies on a DB <code>DEFAULT NOW()</code>
     it does not own; every statement of one operation (root, children, siblings, shared-base cascade) carries the SAME
-    instant, known before COMMIT. The soft-delete predicate shape is fixed (nullable timestamp: <code>IS NULL</code> = active); the
-    schema controls only the column's <em>name and presence</em>. On the read path these three columns are also readable
-    under fixed logical Go names (<code>CreatedAt</code>, <code>UpdatedAt</code>, <code>DeletedAt</code>) so a view can
-    project them without a domain Go field.
+    instant, known before COMMIT. The DeletedAt predicate shape is fixed (nullable timestamp: <code>IS NULL</code> = active); the
+    schema controls only the column's <em>name and presence</em>. On the read path these columns surface under their
+    FIXED logical Go names (<code>CreatedAt</code>, <code>UpdatedAt</code>, <code>DeletedAt</code>) whatever the
+    physical column — the full naming contract, including the Response-DTO trap this creates, is
+    <a href="#table-schema~three-name-model">The three-name model</a>.
 </p>
 
 <div class="box">
@@ -277,7 +362,7 @@ core.NewExternalSchema("users").ID("id").Field("Email", "mail")</code></pre>
 <p>
     Declare the schema once and thread it with <code>BaseAggregateRepository.WithSchema(schema)</code>: it feeds BOTH the
     write binding and the read loader, so the write path, the criteria translator, and the scan-back all agree on the
-    same columns. The <code>Modes() ⟺ SoftDelete</code> boot check runs here; the field-existence and bijection checks
+    same columns. The <code>Modes() ⟺ DeletedAt</code> boot check runs here; the field-existence and bijection checks
     already ran while the schema was built. A misconfiguration panics at construction, not on the first request.
 </p>
 <pre><code>// eng is the backend-neutral relational engine (Deps.DB, a core.RelationalEngine);
@@ -312,10 +397,11 @@ func NewUserRepository(eng core.RelationalEngine) *UserRepository {
     (<code>ts.Table()</code>); the join column is named on the verb via <code>.On(...)</code>. The composer writes physical
     columns to Mongo; the reader translates each leaf back to its Go field name (so <code>mail</code> → <code>Email</code>,
     <code>zip_code</code> → <code>ZipCode</code>). Because an external source has no Go type to derive them from, both
-    segment names are <strong>mandatory</strong> on the <code>JoinUpstream</code> constructor. The view also honors the
-    schema's soft-delete column when
-    <code>DeleteOnArchive</code> is set. This holds identically for a regular <code>query.View</code> and a
-    <code>SharedBaseView</code> — both may embed external sources; neither may embed internal data.
+    segment names are <strong>mandatory</strong> on the <code>JoinUpstream</code> constructor. The schema's declared
+    DeletedAt column is what switches on the archived-entry strip for the embedded segment on default reads (see
+    <a href="#views~views-embed-view">Views</a>, the archived rule). This holds identically for a regular
+    <code>query.View</code> and a <code>SharedBaseView</code> — both may embed material sources; neither may embed the
+    aggregate's own data.
 </p>
 <pre><code>func UserView() *query.ViewDefinition {
     return query.View("users").
@@ -362,20 +448,19 @@ func OrdersView() *query.ViewDefinition {
         Indexes(query.Index("buyer_id"))       // boot guard requires the join-field index
 }</code></pre>
 <p class="note">
-    <strong>Archive-aware external embeds — declare the soft-delete column, and keep it in the subscription
-    <code>filter</code>.</strong> If the upstream entity soft-deletes (archive), declare
-    <code>.SoftDelete("deleted_at")</code> on the <code>NewExternalSchema</code> so the mirror can carry the archived
-    state. The declaration alone is not enough, though: the <a href="#yaml-reference">UpstreamSubscription
-    <code>filter</code></a> is a string allowlist over the <em>raw upstream payload</em> and consults no schema, so if it
-    drops the soft-delete column the mirror never receives it — an archived upstream entity would look active forever.
-    The boot cross-checks the two for EVERY consumer of the mirror — a view that embeds it and a <code>ComposedView</code> that links it, both of which apply its soft-delete column (<strong>§8.5</strong>): an external <code>JoinUpstream</code> embed that <em>declares</em>
-    the soft-delete column while the feeding subscription's non-empty <code>filter</code> <em>omits</em> it is a
-    <strong>fatal boot error</strong> (the mirror could never reflect an archive) naming the offending subscription and
-    column; declared-and-kept — or an empty <code>filter</code>, which mirrors the full payload — is accepted; a mirror
-    whose external schema declares <em>no</em> soft-delete column at all draws only an <em>advisory</em> log, because the
-    consumer often cannot know whether the upstream soft-deletes. This rule governs the column <em>reaching</em> the
-    mirror; the embed still carries the whole mirror document, so hiding an archived sub-document at read time is a
-    separate concern.
+    <strong>Every declared column must survive the subscription <code>fields:</code> — the DeletedAt column
+    included.</strong> The <a href="#yaml-reference">UpstreamSubscription <code>fields:</code></a> is a string allowlist
+    over the <em>raw upstream payload</em> and consults no schema (at ingestion time no class is materialized), so a
+    column this schema declares that the non-empty <code>fields:</code> omits could never reach the mirror — a dead
+    declaration, and a <strong>fatal boot error</strong> naming the subscription and the column, checked for EVERY
+    consumer of the mirror (a view that embeds it, an <code>EmbedInChild</code> and a <code>ComposedView</code> that
+    links it). The archive case is the one to design consciously: declare <code>.DeletedAt("deleted_at")</code> AND
+    keep the column in <code>fields:</code> and the mirror reflects the upstream's archive; omit BOTH and the mirror
+    deliberately ignores it (rows keep looking active — the upstream-side counterpart of the
+    <a href="#views~views-embed-fields">JoinView Fields archive switch</a>). A mirror whose consuming schemas declare
+    <em>no</em> DeletedAt column draws only an <em>advisory</em> log, because the consumer often cannot know whether
+    the upstream archives. This rule governs columns <em>reaching</em> the mirror; the embed still carries the whole
+    mirror document, so hiding an archived sub-document at read time is a separate, schema-driven concern.
 </p>
 <p>
     <strong>Schema is mandatory on every view.</strong> The root (<code>ViewDefinition.Schema(ts)</code>) and every embed
@@ -433,8 +518,8 @@ func OrdersView() *query.ViewDefinition {
         depends on driver-specific reflection behavior.</li>
     <li><strong>Bijection over the whole column set</strong> — across each source's mapped fields + the ID column + every
         declared managed column, no two map to the same physical column. The collision panic names both offenders.</li>
-    <li><strong>Modes() ⟺ SoftDelete</strong> — an entity declaring <code>ModeArchive</code>/<code>ModeUnarchive</code>
-        without <code>SoftDelete</code> panics; a runtime guard backs it up.</li>
+    <li><strong>Modes() ⟺ DeletedAt</strong> — an entity declaring <code>ModeArchive</code>/<code>ModeUnarchive</code>
+        without <code>DeletedAt</code> panics; a runtime guard backs it up.</li>
     <li><strong>Old-clone safety — no <code>json:"-"</code> on a persisted field, no custom
         <code>json.Marshaler</code>/<code>json.Unmarshaler</code> on the entity</strong> — the framework builds the
         <code>domain.Old()</code> snapshot by cloning the root entity through a JSON round-trip (see
@@ -460,7 +545,7 @@ func OrdersView() *query.ViewDefinition {
         <code>Child(...)</code> is a fatal error in <code>ValidateViewSchemas</code> (read side). Width is unlimited;
         depth is one.</li>
     <li><strong>Every single-column slot is declared once</strong> — <code>ID</code>, <code>ParentID</code>,
-        <code>SoftDelete</code>, <code>CreatedAt</code>, <code>UpdatedAt</code>, <code>Revision</code> and
+        <code>DeletedAt</code>, <code>CreatedAt</code>, <code>UpdatedAt</code>, <code>Revision</code> and
         <code>NaturalID</code> each reject a SECOND declaration with a boot panic: a repeat call would otherwise silently
         overwrite the first (the bijection check deliberately skips a slot's own value so an idempotent same-column re-set
         is allowed — which is exactly what let a DIFFERENT column slip through unnoticed).</li>
@@ -480,7 +565,7 @@ func OrdersView() *query.ViewDefinition {
 </ul>
 <p>These checks run inside <code>WithSchema</code> on <em>both</em> repository shapes:
     <code>BaseAggregateRepository.WithSchema</code> (aggregate) and <code>BaseRepository.WithSchema</code> (flat, non-aggregate)
-    each run the type-anchored, ID-declared, aggregate-depth, old-clone safety, and <code>Modes()</code> ⟺ <code>SoftDelete</code> checks at construction (the
+    each run the type-anchored, ID-declared, aggregate-depth, old-clone safety, and <code>Modes()</code> ⟺ <code>DeletedAt</code> checks at construction (the
     aggregate path additionally runs the boundary-agreement check and threads the schema into the read loader). Calling
     <code>WithSchema</code> also surfaces a nil <code>NewEntity</code> factory at construction. <code>WithSchema</code> is the
     <em>only</em> way to bind the schema — the field is unexported, so there is no direct-assignment path that bypasses
@@ -536,15 +621,15 @@ func OrdersView() *query.ViewDefinition {
     ID("id").
     Field("Name", "name").
     Field("Email", "email").
-    SoftDelete("deleted_at").
+    DeletedAt("deleted_at").
     Sibling(core.NewSiblingSchema[*Person]("person_profile").
         Field("Bio", "bio").              // disjoint fields — never declared on the owner
         Field("AvatarURL", "avatar_url"))</code></pre>
 <p>
     A sibling has <strong>no identity or lifecycle of its own</strong>: it declares no ID (it borrows the owner's), no ParentID
-    (the shared ID <em>is</em> the link), no soft-delete, no managed timestamps (the owner's
+    (the shared ID <em>is</em> the link), no DeletedAt, no managed timestamps (the owner's
     <code>CreatedAt</code>/<code>UpdatedAt</code> already date the 1 : 1 row), no children, and no nested sibling — the
-    owner owns all of that. Calling <code>ID</code>/<code>ParentID</code>/<code>SoftDelete</code>/<code>CreatedAt</code>/<code>UpdatedAt</code>/<code>Child</code>/<code>Sibling</code>
+    owner owns all of that. Calling <code>ID</code>/<code>ParentID</code>/<code>DeletedAt</code>/<code>CreatedAt</code>/<code>UpdatedAt</code>/<code>Child</code>/<code>Sibling</code>
     on a sibling schema <strong>fails at boot, at the declaration call</strong>, with a message naming the contract — none
     of them is supported on a sibling.
     Width is unlimited (a node may declare many siblings) but the partition is strict: every Go field and every column
@@ -580,7 +665,7 @@ func OrdersView() *query.ViewDefinition {
     idiomatic but <em>not required</em>: at repository construction (<code>WithSchema</code>) the engine registers every
     role on a registry keyed by the base's <em>table</em>, so N identical <code>NewSharedBaseSchema</code> declarations behave
     exactly like one — no consumer-side singleton. Two <em>divergent</em> declarations of the same table (different natural
-    key, policy, soft-delete, fields, or children) panic at boot:
+    key, policy, DeletedAt, fields, or children) panic at boot:
 </p>
 <p>
     <strong>Managed columns on the base are optional and honored when declared.</strong> A base that declares
@@ -588,7 +673,7 @@ func OrdersView() *query.ViewDefinition {
     table: on the identity's <em>creation</em> (the cold insert) and — <code>UpdatedAt</code> — on every
     <em>role-driven change of the shared fields</em> (the warm upsert and a role's update both write the base row). A
     base that declares neither is never touched: keep a database <code>DEFAULT</code> on the DDL columns if you only
-    want a creation timestamp. Lifecycle convergence (archive/unarchive of the identity) touches the soft-delete
+    want a creation timestamp. Lifecycle convergence (archive/unarchive of the identity) touches the DeletedAt
     column and bumps the revision.
 </p>
 <p>
@@ -630,7 +715,7 @@ func OrdersView() *query.ViewDefinition {
     Field("Document", "document").                 // the natural-key column
     NaturalID("document").
     Revision("revision").                          // MANDATORY — BIGINT NOT NULL DEFAULT 0 in the migration
-    SoftDelete("deleted_at").
+    DeletedAt("deleted_at").
     OrphanPolicy(core.KeepOrphan)                  // default; destruction is opt-in via core.DeleteWhenUnreferenced
 
 // *Student's Go struct carries Name + Document (the shared fields, validated
@@ -641,7 +726,7 @@ func StudentSchema() *core.TableSchema {
     return core.NewTableSchema[*Student]("student").
         ID("id").
         Field("Enrollment", "enrollment").         // role-private column (the only one student stores)
-        SoftDelete("deleted_at").
+        DeletedAt("deleted_at").
         SharedBase(person, "person_id")            // role ParentID → base's deterministic id
 }</code></pre>
 
@@ -728,18 +813,18 @@ func StudentSchema() *core.TableSchema {
 </p>
 <p>
     <strong>Lifecycle is driven by the roles.</strong> The base has none of its own: each role controls its own
-    soft-delete, and the base converges — a role becoming or staying active keeps the base active; archiving the last
+    DeletedAt, and the base converges — a role becoming or staying active keeps the base active; archiving the last
     active role archives the base (and its native children); hard-deleting the last referencing role row converges the base
     per its <code>OrphanPolicy</code>. Under <code>KeepOrphan</code> (the <strong>default</strong>) the identity is never
-    destroyed: with <code>SoftDelete</code> declared on the base, the orphaned identity <em>archives</em> (with its native
-    children) — dormant and revived automatically if the same natural key returns; without <code>SoftDelete</code> it simply
+    destroyed: with <code>DeletedAt</code> declared on the base, the orphaned identity <em>archives</em> (with its native
+    children) — dormant and revived automatically if the same natural key returns; without <code>DeletedAt</code> it simply
     stays. <code>DeleteWhenUnreferenced</code> is the explicit opt-in for physical erasure (e.g. right-to-be-forgotten): once
     no role row of any type references the identity, the purge removes the native children and the base row in the same
     transaction — and it is <strong>never invisible</strong>: an actual purge writes its own audit event (the base table as
     <code>entityType</code>, kind <code>snapshot</code> with the shared fields) and its own <code>DELETED</code> outbox row,
     alongside the role's. A role <code>INSERT</code> upserts the identity and then applies a two-level existence matrix on
     the role row: an existing <em>active</em> role for that identity is a conflict (409); an <em>archived</em> role is
-    <strong>invisible to the insert</strong> — soft-delete is delete here like on every other read/write path — so the
+    <strong>invisible to the insert</strong> — DeletedAt is delete here like on every other read/write path — so the
     insert proceeds and your uniqueness contract on the ParentID column arbitrates the collision with the physical remnant (in
     the shared-ID model the primary key vetoes it, mapped by the repository's <code>ConstraintBinding</code> — typically
     to the same 409; under a full <code>UNIQUE(fk)</code> the index vetoes it the same way; under active-only uniqueness
@@ -786,7 +871,7 @@ func StudentSchema() *core.TableSchema {
 </div>
 <p>
     <strong>The composed read-model document is ROLE-scoped on its managed columns.</strong> The base's business fields
-    merge FLAT into each role's Mongo document, but its managed columns (soft-delete, <code>created_at</code>,
+    merge FLAT into each role's Mongo document, but its managed columns (DeletedAt, <code>created_at</code>,
     <code>updated_at</code>) never overwrite the role's own: the document represents the role, so its lifecycle timestamp
     is the role's (an archived role stays visibly archived on its doc even while the identity remains active for a
     sibling role) and its timestamps are the role row's, not the person's.
@@ -814,12 +899,12 @@ func StudentSchema() *core.TableSchema {
     Field("Name", "name").
     Field("Document", "document").
     NaturalID("document").
-    SoftDelete("deleted_at").
+    DeletedAt("deleted_at").
     Child(core.NewTableSchema[Address]("person_address").  // child of the BASE, shared by all roles
         ID("id").
         ParentID("person_id").                                  // ParentID → the base's deterministic UUIDv5 id
         Field("Street", "street").
-        SoftDelete("deleted_at"))</code></pre>
+        DeletedAt("deleted_at"))</code></pre>
 <p>
     The child's <code>ParentID</code> targets the base's deterministic id (not a role id), so the one child row is reachable
     from every role of that identity. The role's Go struct carries the child collection (the same
@@ -835,8 +920,8 @@ func StudentSchema() *core.TableSchema {
 <ul>
     <li><strong>A type is a base-child OR a role-child, never both.</strong> The framework dispatches each declared child
         type to exactly one owner (the base or the role) when it injects the ParentID; a type claimed by both is a boot panic.</li>
-    <li><strong>Soft-delete is all-or-nothing per base.</strong> A base-child that declares <code>SoftDelete</code> requires
-        the base itself to declare <code>SoftDelete</code> — the shared lifecycle converges as a unit (archiving the last
+    <li><strong>DeletedAt is all-or-nothing per base.</strong> A base-child that declares <code>DeletedAt</code> requires
+        the base itself to declare <code>DeletedAt</code> — the shared lifecycle converges as a unit (archiving the last
         active role archives the base <em>and</em> its native children), so a child cannot be archivable under a
         non-archivable base.</li>
     <li><strong>Depth stays at one.</strong> A base-child is a leaf — it carries no sibling and no grandchild
@@ -1270,7 +1355,7 @@ func StudentSchema() *core.TableSchema {
 <ul>
     <li><strong>Adapting to non-conforming structural conventions.</strong> The schema maps <em>names</em>, it does not
         reshape a schema. Mapping a renamed column on an otherwise-conforming legacy table <a href="#table-schema~why-it-exists-and-why-it-is-mandatory">is supported</a>;
-        adapting to a <em>shape</em> the framework does not manage is not — predicate-shaped soft-delete (a boolean/enum
+        adapting to a <em>shape</em> the framework does not manage is not — predicate-shaped DeletedAt (a boolean/enum
         flag instead of a timestamp column), a composite primary key, and exotic column types outside the
         <a href="#table-schema~supported-column-shapes">supported shapes</a> are all rejected. The scope is
         "an explicit map over the schema the framework manages", not "adapt to any arbitrary schema".</li>

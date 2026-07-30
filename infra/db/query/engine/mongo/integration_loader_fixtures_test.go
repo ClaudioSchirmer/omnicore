@@ -78,7 +78,7 @@ func loaderTagSchema() *core.TableSchema {
 		ID("id").
 		ParentID("loader_root_id").
 		Field("Label", "label").
-		SoftDelete("deleted_at").
+		DeletedAt("deleted_at").
 		CreatedAt("created_at").
 		UpdatedAt("updated_at")
 }
@@ -90,7 +90,7 @@ func loaderRootSchema() *core.TableSchema {
 		Revision("revision").
 		Field("Name", "name").
 		Field("Email", "email").
-		SoftDelete("deleted_at").
+		DeletedAt("deleted_at").
 		CreatedAt("created_at").
 		UpdatedAt("updated_at").
 		Child(loaderTagSchema()).
@@ -98,7 +98,7 @@ func loaderRootSchema() *core.TableSchema {
 			ID("id").
 			ParentID("loader_root_id").
 			Field("Body", "body").
-			SoftDelete("deleted_at").
+			DeletedAt("deleted_at").
 			CreatedAt("created_at").
 			UpdatedAt("updated_at"))
 }
