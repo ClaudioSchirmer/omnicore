@@ -563,7 +563,8 @@ func SaleView() *query.ViewDefinition {
     <br><br>
     <code>Fields("Name", "DeletedAt")</code> — <strong>the segment follows the source's archive.</strong> The archived
     customer is hidden on a default read (1:1 → <code>null</code>, a 1:N element leaves the array) and
-    <code>?includeArchived=true</code> brings it back — today's behavior, chosen explicitly.
+    <code>?includeArchived=true</code> brings it back — the same rule every uncut segment applies (a whole-document
+    segment always carries the source's DeletedAt column), here chosen explicitly.
     <br><br>
     The same source view can be embedded BOTH ways by different views — each declaration picks its regime. Fields
     governs SHAPE, never EXISTENCE: a hard DELETE of the source (or <code>DeleteOnArchive()</code> on it) still nulls
@@ -1169,6 +1170,78 @@ same envelope, same projector, same pagination block as any view read</div>
     consumes it and projects to Mongo. The event header carries an <code>aggregate_type</code> equal to the aggregate's
     root <em>table name</em> — the same string a view's schema declares — which is how one event finds its views.
 </p>
+<h4 id="views-sync-glance">The sync machinery at a glance</h4>
+<p>
+    One row per mechanism — what fires it, who runs it, whether it is on out of the box, and where its full contract
+    lives. An index, not new behavior: every cell is detailed in the linked section.
+</p>
+<table>
+    <tbody><tr><th>Mechanism</th><th>Fires on</th><th>Who runs it</th><th>Default</th><th>Yaml knob</th><th>Owner section</th></tr>
+    <tr>
+        <td>Projection (payload-direct / consult recompose)</td>
+        <td>every outbox event, via CDC → broker</td>
+        <td>Framework — automatic</td>
+        <td>always on</td>
+        <td><code>transport:</code> (group, <code>syncWorkers</code>)</td>
+        <td><a href="#views~views-sync">this section</a> · <a href="#read-lifecycle-map">read lifecycle</a></td>
+    </tr>
+    <tr>
+        <td>Recompose ripple (embed segments — mirror and view legs, chained hops)</td>
+        <td>every write to an embedded source</td>
+        <td>Framework — automatic</td>
+        <td>always on</td>
+        <td>—</td>
+        <td><a href="#views~views-sync">this section</a> · <a href="#views~views-embed">Embed</a></td>
+    </tr>
+    <tr>
+        <td>Failure parking (unified ledger, <code>kind='event'</code> + <code>'ripple'</code>)</td>
+        <td>a retry budget exhausting / a ripple failing</td>
+        <td>Framework — automatic</td>
+        <td>always on</td>
+        <td>—</td>
+        <td><a href="#views~views-sync">this section</a></td>
+    </tr>
+    <tr>
+        <td>Parked-row replay driver</td>
+        <td>its own cadence</td>
+        <td>Framework — automatic</td>
+        <td><strong>ON</strong> (every 10 min)</td>
+        <td><code>mongo.parkedRetry</code></td>
+        <td><a href="#views~views-sync">this section</a> · <a href="#yaml-reference">yaml</a></td>
+    </tr>
+    <tr>
+        <td>Revision-parity reconcile sweep</td>
+        <td>its schedule (when enabled); or the operator's <code>ReconcileAllViews</code></td>
+        <td>Framework when scheduled; else operator</td>
+        <td><strong>OFF</strong></td>
+        <td><code>mongo.reconcile</code></td>
+        <td><a href="#views~views-sync">this section</a> · <a href="#yaml-reference">yaml</a></td>
+    </tr>
+    <tr>
+        <td>Drift check (shape vs registry)</td>
+        <td>every boot</td>
+        <td>Framework — automatic</td>
+        <td>always on; the RESPONSE is gated (see next row)</td>
+        <td><code>mongo.rebuild.autoRun</code></td>
+        <td><a href="#mongo-schema-evolution">Mongo schema evolution</a></td>
+    </tr>
+    <tr>
+        <td>Online blue-green rebuild</td>
+        <td>a detected <code>Version</code> bump; or the operator's <code>RebuildAllViews</code></td>
+        <td>Framework under <code>autoRun=true</code>; abort-with-diagnostic under <code>check</code></td>
+        <td><code>autoRun</code>: dev=<code>true</code>, elsewhere=<code>check</code></td>
+        <td><code>mongo.rebuild</code></td>
+        <td><a href="#mongo-schema-evolution">Mongo schema evolution</a></td>
+    </tr>
+    <tr>
+        <td>Ad-hoc single-view rebuild / replay</td>
+        <td>the operator's call (<code>RebuildView</code>/<code>RebuildViewSince</code>/<code>RetryPendingProjectionFailures</code>)</td>
+        <td>Operator — manual, does exactly what is asked (no dependency ordering)</td>
+        <td>—</td>
+        <td>—</td>
+        <td><a href="#mongo-schema-evolution">Mongo schema evolution</a> · <a href="#views~views-embed-view">rebuild ordering caveat</a></td>
+    </tr>
+</tbody></table>
 <p>
     <strong>Routing (the fan-out).</strong> At boot the SyncEngine builds an index keyed by table: a write to table
     <code>X</code> recomposes every view whose root is <code>X</code> (plain views), plus — for a role table — the

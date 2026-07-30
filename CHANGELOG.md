@@ -11,6 +11,20 @@ with `1.0.0`.
 
 ## [Unreleased]
 
+## [0.39.1] - 2026-07-30
+
+### Added
+
+- **docs: "The sync machinery at a glance"** — a consolidated index table at the
+  top of Views → How views stay current: one row per mechanism (projection,
+  recompose ripple, failure parking, parked-row replay, reconcile sweep, drift
+  check, blue-green rebuild, the ad-hoc operator entry points) with what fires
+  it, who runs it, whether it is on by default, its yaml knob and the owning
+  section. An index, not new behavior. Also clarifies the archive-switch wording
+  in Views → Cutting the segment (and the `Leg.Fields` godoc): the
+  "DeletedAt-listed" regime is the same rule every uncut segment applies, here
+  chosen explicitly.
+
 ## [0.39.0] - 2026-07-29
 
 ### Added

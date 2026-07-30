@@ -51,7 +51,9 @@ type Leg struct {
 //
 //   - "DeletedAt" listed → the segment follows the source's archive: hidden on
 //     default reads (1:1 → null, 1:N → the element leaves the array), revealed
-//     by ?includeArchived=true — today's behavior, chosen explicitly;
+//     by ?includeArchived=true — the same rule every uncut segment applies (a
+//     whole-document segment always carries the source's DeletedAt column),
+//     here chosen explicitly;
 //   - "DeletedAt" omitted → the segment has NO archived rule, by declaration:
 //     the archived source keeps its data in the embedding document forever and
 //     keeps receiving updates through the ripple.
