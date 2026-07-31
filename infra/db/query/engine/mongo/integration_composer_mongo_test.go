@@ -398,7 +398,7 @@ func TestMongoViewReader_ReadPage_Projection(t *testing.T) {
 	}
 }
 
-func TestMongoViewReader_ReadPage_RegexMatchSentinel(t *testing.T) {
+func TestMongoViewReader_ReadPage_TextMatchSentinel(t *testing.T) {
 	m, cleanup := newTestMongo(t)
 	defer cleanup()
 
@@ -413,18 +413,18 @@ func TestMongoViewReader_ReadPage_RegexMatchSentinel(t *testing.T) {
 	reader := NewMongoViewReader(m, testResolver)
 	page, err := reader.ReadPage(ctx, "users", queries.ReadCriteria{
 		Filter: map[string]any{
-			"name": queries.RegexMatch{Pattern: "^bob", CaseInsensitive: true},
+			"name": queries.TextMatch{Value: "bob", Kind: queries.TextPrefix, CaseInsensitive: true},
 		},
 	})
 	if err != nil {
-		t.Fatalf("ReadPage RegexMatch: %v", err)
+		t.Fatalf("ReadPage TextMatch: %v", err)
 	}
 	if len(page.Items) != 2 {
 		t.Errorf("expected 2 matches (Bob Diego + bobby), got %d", len(page.Items))
 	}
 }
 
-func TestMongoViewReader_ReadPage_RegexMatchListSentinel(t *testing.T) {
+func TestMongoViewReader_ReadPage_TextMatchListSentinel(t *testing.T) {
 	m, cleanup := newTestMongo(t)
 	defer cleanup()
 
@@ -439,14 +439,14 @@ func TestMongoViewReader_ReadPage_RegexMatchListSentinel(t *testing.T) {
 	reader := NewMongoViewReader(m, testResolver)
 	page, err := reader.ReadPage(ctx, "users", queries.ReadCriteria{
 		Filter: map[string]any{
-			"name": queries.RegexMatchList{
-				Patterns:        []string{"^bob$", "^alice$"},
+			"name": queries.TextMatchList{
+				Values:          []string{"bob", "alice"},
 				CaseInsensitive: true,
 			},
 		},
 	})
 	if err != nil {
-		t.Fatalf("ReadPage RegexMatchList: %v", err)
+		t.Fatalf("ReadPage TextMatchList: %v", err)
 	}
 	if len(page.Items) != 2 {
 		t.Errorf("expected 2 matches, got %d", len(page.Items))

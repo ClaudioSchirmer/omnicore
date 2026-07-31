@@ -193,12 +193,19 @@ func canonicalizeFilterValue(w io.Writer, v any) {
 			fmt.Fprint(w, ",")
 		}
 		fmt.Fprint(w, "]")
-	case RegexMatch:
-		fmt.Fprintf(w, "RM:%t:%t:%d:%s", x.CaseInsensitive, x.Negate, len(x.Pattern), x.Pattern)
-	case RegexMatchList:
-		fmt.Fprintf(w, "RML:%t:%t:%d[", x.CaseInsensitive, x.Negate, len(x.Patterns))
-		for _, p := range x.Patterns {
-			fmt.Fprintf(w, "%d:%s,", len(p), p)
+	case Clause:
+		fmt.Fprintf(w, "CL:%s:%d[", x.Op, len(x.Values))
+		for _, val := range x.Values {
+			canonicalizeFilterValue(w, val)
+			fmt.Fprint(w, ",")
+		}
+		fmt.Fprint(w, "]")
+	case TextMatch:
+		fmt.Fprintf(w, "TM:%d:%t:%t:%d:%s", x.Kind, x.CaseInsensitive, x.Negate, len(x.Value), x.Value)
+	case TextMatchList:
+		fmt.Fprintf(w, "TML:%t:%t:%d[", x.CaseInsensitive, x.Negate, len(x.Values))
+		for _, val := range x.Values {
+			fmt.Fprintf(w, "%d:%s,", len(val), val)
 		}
 		fmt.Fprint(w, "]")
 	default:

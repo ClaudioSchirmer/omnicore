@@ -51,78 +51,83 @@ func TestApplyFilterParam_Operators(t *testing.T) {
 		})
 	}
 
-	sub := func(clause any) map[string]any {
-		m, _ := clause.(map[string]any)
-		return m
+	// clauseVal asserts the value is a queries.Clause with the given neutral op
+	// carrying a single scalar operand, and returns that operand.
+	clauseVal := func(t *testing.T, c any, want queries.FilterOp) any {
+		cl, ok := c.(queries.Clause)
+		if !ok || cl.Op != want || len(cl.Values) != 1 {
+			t.Fatalf("%s = %#v", want, c)
+		}
+		return cl.Values[0]
+	}
+	text := func(clause any) queries.TextMatch {
+		tm, _ := clause.(queries.TextMatch)
+		return tm
 	}
 
 	check("ne", func(t *testing.T, c any) {
-		if sub(c)["$ne"] != "Bob" {
-			t.Fatalf("$ne = %v", c)
+		if clauseVal(t, c, queries.FilterNe) != "Bob" {
+			t.Fatalf("ne = %v", c)
 		}
 	})
 	check("gte", func(t *testing.T, c any) {
-		if sub(c)["$gte"] != "Bob" {
-			t.Fatalf("$gte = %v", c)
+		if clauseVal(t, c, queries.FilterGte) != "Bob" {
+			t.Fatalf("gte = %v", c)
 		}
 	})
 	check("lte", func(t *testing.T, c any) {
-		if sub(c)["$lte"] != "Bob" {
-			t.Fatalf("$lte = %v", c)
+		if clauseVal(t, c, queries.FilterLte) != "Bob" {
+			t.Fatalf("lte = %v", c)
 		}
 	})
 	check("gt", func(t *testing.T, c any) {
-		if sub(c)["$gt"] != "Bob" {
-			t.Fatalf("$gt = %v", c)
+		if clauseVal(t, c, queries.FilterGt) != "Bob" {
+			t.Fatalf("gt = %v", c)
 		}
 	})
 	check("lt", func(t *testing.T, c any) {
-		if sub(c)["$lt"] != "Bob" {
-			t.Fatalf("$lt = %v", c)
+		if clauseVal(t, c, queries.FilterLt) != "Bob" {
+			t.Fatalf("lt = %v", c)
 		}
 	})
 	check("startswith", func(t *testing.T, c any) {
-		if sub(c)["$regex"] != "^Bob" {
-			t.Fatalf("startswith = %v", c)
+		if tm := text(c); tm.Value != "Bob" || tm.Kind != queries.TextPrefix || tm.CaseInsensitive || tm.Negate {
+			t.Fatalf("startswith = %#v", c)
 		}
 	})
 	check("contains", func(t *testing.T, c any) {
-		if sub(c)["$regex"] != "Bob" {
-			t.Fatalf("contains = %v", c)
+		if tm := text(c); tm.Value != "Bob" || tm.Kind != queries.TextContains || tm.CaseInsensitive || tm.Negate {
+			t.Fatalf("contains = %#v", c)
 		}
 	})
 	check("ieq", func(t *testing.T, c any) {
-		m := sub(c)
-		if m["$regex"] != "^Bob$" || m["$options"] != "i" {
-			t.Fatalf("ieq = %v", c)
+		if tm := text(c); tm.Value != "Bob" || tm.Kind != queries.TextExact || !tm.CaseInsensitive || tm.Negate {
+			t.Fatalf("ieq = %#v", c)
 		}
 	})
 	check("ine", func(t *testing.T, c any) {
-		not, ok := sub(c)["$not"].(map[string]any)
-		if !ok || not["$regex"] != "^Bob$" {
-			t.Fatalf("ine = %v", c)
+		if tm := text(c); tm.Value != "Bob" || tm.Kind != queries.TextExact || !tm.CaseInsensitive || !tm.Negate {
+			t.Fatalf("ine = %#v", c)
 		}
 	})
 	check("istartswith", func(t *testing.T, c any) {
-		m := sub(c)
-		if m["$regex"] != "^Bob" || m["$options"] != "i" {
-			t.Fatalf("istartswith = %v", c)
+		if tm := text(c); tm.Value != "Bob" || tm.Kind != queries.TextPrefix || !tm.CaseInsensitive || tm.Negate {
+			t.Fatalf("istartswith = %#v", c)
 		}
 	})
 	check("icontains", func(t *testing.T, c any) {
-		m := sub(c)
-		if m["$regex"] != "Bob" || m["$options"] != "i" {
-			t.Fatalf("icontains = %v", c)
+		if tm := text(c); tm.Value != "Bob" || tm.Kind != queries.TextContains || !tm.CaseInsensitive || tm.Negate {
+			t.Fatalf("icontains = %#v", c)
 		}
 	})
 	check("iin", func(t *testing.T, c any) {
-		rml, ok := c.(queries.RegexMatchList)
+		rml, ok := c.(queries.TextMatchList)
 		if !ok || !rml.CaseInsensitive || rml.Negate {
 			t.Fatalf("iin = %#v", c)
 		}
 	})
 	check("inin", func(t *testing.T, c any) {
-		rml, ok := c.(queries.RegexMatchList)
+		rml, ok := c.(queries.TextMatchList)
 		if !ok || !rml.CaseInsensitive || !rml.Negate {
 			t.Fatalf("inin = %#v", c)
 		}
@@ -133,15 +138,15 @@ func TestApplyFilterParam_InAndNin(t *testing.T) {
 	spec := FilterSpec{DocPath: "age", GoKind: reflect.Int}
 	f := map[string]any{}
 	ApplyFilterParam(f, spec, "in", "1,2,3")
-	in := f["age"].(map[string]any)["$in"].([]any)
-	if len(in) != 3 || in[0].(int64) != 1 {
-		t.Fatalf("$in = %v", f["age"])
+	inCl, ok := f["age"].(queries.Clause)
+	if !ok || inCl.Op != queries.FilterIn || len(inCl.Values) != 3 || inCl.Values[0].(int64) != 1 {
+		t.Fatalf("in = %#v", f["age"])
 	}
 	g := map[string]any{}
 	ApplyFilterParam(g, spec, "nin", "4,5")
-	nin := g["age"].(map[string]any)["$nin"].([]any)
-	if len(nin) != 2 {
-		t.Fatalf("$nin = %v", g["age"])
+	ninCl, ok := g["age"].(queries.Clause)
+	if !ok || ninCl.Op != queries.FilterNin || len(ninCl.Values) != 2 {
+		t.Fatalf("nin = %#v", g["age"])
 	}
 }
 

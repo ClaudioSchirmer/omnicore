@@ -64,105 +64,95 @@ func dispatchPartial(t *testing.T, query string) (queries.ReadCriteria, int) {
 	return h.got.Criteria, resp.StatusCode
 }
 
-func TestPartialOps_StartsWith_EmitsAnchoredRegex(t *testing.T) {
+func TestPartialOps_StartsWith_EmitsPrefixTextMatch(t *testing.T) {
 	crit, status := dispatchPartial(t, "?name.startswith=Bob")
 	if status != fiber.StatusOK {
 		t.Fatalf("expected 200, got %d", status)
 	}
-	got, ok := crit.Filter["Name"].(map[string]any)
+	got, ok := crit.Filter["Name"].(queries.TextMatch)
 	if !ok {
-		t.Fatalf("expected name to be a map, got %T (%v)", crit.Filter["Name"], crit.Filter["Name"])
+		t.Fatalf("expected name to be a TextMatch, got %T (%v)", crit.Filter["Name"], crit.Filter["Name"])
 	}
-	if got["$regex"] != "^Bob" {
-		t.Errorf("expected $regex='^Bob', got %v", got["$regex"])
+	if got.Value != "Bob" || got.Kind != queries.TextPrefix {
+		t.Errorf("expected {Value:Bob, Kind:Prefix}, got %#v", got)
 	}
-	if _, has := got["$options"]; has {
-		t.Errorf("startswith must NOT carry $options, got %v", got)
+	if got.CaseInsensitive {
+		t.Errorf("startswith must NOT be case-insensitive, got %#v", got)
 	}
 }
 
-func TestPartialOps_Contains_EmitsUnanchoredRegex(t *testing.T) {
+func TestPartialOps_Contains_EmitsContainsTextMatch(t *testing.T) {
 	crit, status := dispatchPartial(t, "?name.contains=ob")
 	if status != fiber.StatusOK {
 		t.Fatalf("expected 200, got %d", status)
 	}
-	got, _ := crit.Filter["Name"].(map[string]any)
-	if got["$regex"] != "ob" {
-		t.Errorf("expected $regex='ob', got %v", got["$regex"])
+	got, _ := crit.Filter["Name"].(queries.TextMatch)
+	if got.Value != "ob" || got.Kind != queries.TextContains {
+		t.Errorf("expected {Value:ob, Kind:Contains}, got %#v", got)
 	}
 }
 
-func TestPartialOps_IStartsWith_AddsInsensitiveOption(t *testing.T) {
+func TestPartialOps_IStartsWith_SetsCaseInsensitive(t *testing.T) {
 	crit, status := dispatchPartial(t, "?name.istartswith=bob")
 	if status != fiber.StatusOK {
 		t.Fatalf("expected 200, got %d", status)
 	}
-	got, _ := crit.Filter["Name"].(map[string]any)
-	if got["$regex"] != "^bob" {
-		t.Errorf("expected $regex='^bob', got %v", got["$regex"])
-	}
-	if got["$options"] != "i" {
-		t.Errorf("expected $options='i', got %v", got["$options"])
+	got, _ := crit.Filter["Name"].(queries.TextMatch)
+	if got.Value != "bob" || got.Kind != queries.TextPrefix || !got.CaseInsensitive {
+		t.Errorf("expected {Value:bob, Kind:Prefix, CI:true}, got %#v", got)
 	}
 }
 
-func TestPartialOps_IContains_AddsInsensitiveOption(t *testing.T) {
+func TestPartialOps_IContains_SetsCaseInsensitive(t *testing.T) {
 	crit, status := dispatchPartial(t, "?name.icontains=OB")
 	if status != fiber.StatusOK {
 		t.Fatalf("expected 200, got %d", status)
 	}
-	got, _ := crit.Filter["Name"].(map[string]any)
-	if got["$regex"] != "OB" {
-		t.Errorf("expected $regex='OB', got %v", got["$regex"])
-	}
-	if got["$options"] != "i" {
-		t.Errorf("expected $options='i', got %v", got["$options"])
+	got, _ := crit.Filter["Name"].(queries.TextMatch)
+	if got.Value != "OB" || got.Kind != queries.TextContains || !got.CaseInsensitive {
+		t.Errorf("expected {Value:OB, Kind:Contains, CI:true}, got %#v", got)
 	}
 }
 
-func TestPartialOps_IEq_AnchoredRegexWithInsensitive(t *testing.T) {
+func TestPartialOps_IEq_ExactCaseInsensitive(t *testing.T) {
 	crit, status := dispatchPartial(t, "?name.ieq=bob")
 	if status != fiber.StatusOK {
 		t.Fatalf("expected 200, got %d", status)
 	}
-	got, _ := crit.Filter["Name"].(map[string]any)
-	if got["$regex"] != "^bob$" {
-		t.Errorf("expected $regex='^bob$', got %v", got["$regex"])
-	}
-	if got["$options"] != "i" {
-		t.Errorf("expected $options='i', got %v", got["$options"])
+	got, _ := crit.Filter["Name"].(queries.TextMatch)
+	if got.Value != "bob" || got.Kind != queries.TextExact || !got.CaseInsensitive {
+		t.Errorf("expected {Value:bob, Kind:Exact, CI:true}, got %#v", got)
 	}
 }
 
-func TestPartialOps_INe_WrapsRegexInNot(t *testing.T) {
+func TestPartialOps_INe_ExactNegated(t *testing.T) {
 	crit, status := dispatchPartial(t, "?name.ine=bob")
 	if status != fiber.StatusOK {
 		t.Fatalf("expected 200, got %d", status)
 	}
-	got, _ := crit.Filter["Name"].(map[string]any)
-	inner, ok := got["$not"].(map[string]any)
+	got, ok := crit.Filter["Name"].(queries.TextMatch)
 	if !ok {
-		t.Fatalf("expected $not sub-document, got %v", got["$not"])
+		t.Fatalf("expected TextMatch, got %T", crit.Filter["Name"])
 	}
-	if inner["$regex"] != "^bob$" || inner["$options"] != "i" {
-		t.Errorf("expected $not={$regex:'^bob$', $options:'i'}, got %v", inner)
+	if got.Value != "bob" || got.Kind != queries.TextExact || !got.CaseInsensitive || !got.Negate {
+		t.Errorf("expected {Value:bob, Kind:Exact, CI:true, Negate:true}, got %#v", got)
 	}
 }
 
-func TestPartialOps_IIn_EmitsRegexMatchListSentinel(t *testing.T) {
+func TestPartialOps_IIn_EmitsTextMatchListSentinel(t *testing.T) {
 	crit, status := dispatchPartial(t, "?name.iin=Bob,Alice")
 	if status != fiber.StatusOK {
 		t.Fatalf("expected 200, got %d", status)
 	}
-	got, ok := crit.Filter["Name"].(queries.RegexMatchList)
+	got, ok := crit.Filter["Name"].(queries.TextMatchList)
 	if !ok {
-		t.Fatalf("expected RegexMatchList sentinel, got %T", crit.Filter["Name"])
+		t.Fatalf("expected TextMatchList sentinel, got %T", crit.Filter["Name"])
 	}
 	if !got.CaseInsensitive || got.Negate {
 		t.Errorf("expected CaseInsensitive=true Negate=false, got %+v", got)
 	}
-	if len(got.Patterns) != 2 || got.Patterns[0] != "^Bob$" || got.Patterns[1] != "^Alice$" {
-		t.Errorf("expected anchored patterns [^Bob$, ^Alice$], got %v", got.Patterns)
+	if len(got.Values) != 2 || got.Values[0] != "Bob" || got.Values[1] != "Alice" {
+		t.Errorf("expected raw values [Bob, Alice], got %v", got.Values)
 	}
 }
 
@@ -171,26 +161,26 @@ func TestPartialOps_INin_EmitsNegatedSentinel(t *testing.T) {
 	if status != fiber.StatusOK {
 		t.Fatalf("expected 200, got %d", status)
 	}
-	got, ok := crit.Filter["Name"].(queries.RegexMatchList)
+	got, ok := crit.Filter["Name"].(queries.TextMatchList)
 	if !ok {
-		t.Fatalf("expected RegexMatchList sentinel, got %T", crit.Filter["Name"])
+		t.Fatalf("expected TextMatchList sentinel, got %T", crit.Filter["Name"])
 	}
 	if !got.Negate {
 		t.Errorf("expected Negate=true, got %+v", got)
 	}
 }
 
-func TestPartialOps_MetacharsAreEscaped(t *testing.T) {
-	// A user-supplied "a.b*c" must be treated as literal — not as a regex
-	// that matches "a<any>b<any times>c". applyFilterParam runs
-	// regexp.QuoteMeta on the value before emitting it.
+func TestPartialOps_RawValuePassedThroughUnescaped(t *testing.T) {
+	// The neutral sentinel carries the RAW value — escaping and anchoring are
+	// each reader's job (the Mongo reader QuoteMeta's it into a bson.Regex), so a
+	// user-supplied "a.b*c" rides verbatim, never a pre-escaped pattern.
 	crit, status := dispatchPartial(t, "?name.contains=a.b*c")
 	if status != fiber.StatusOK {
 		t.Fatalf("expected 200, got %d", status)
 	}
-	got, _ := crit.Filter["Name"].(map[string]any)
-	if got["$regex"] != `a\.b\*c` {
-		t.Errorf("expected metacharacters escaped, got %v", got["$regex"])
+	got, _ := crit.Filter["Name"].(queries.TextMatch)
+	if got.Value != "a.b*c" || got.Kind != queries.TextContains {
+		t.Errorf("expected raw value {Value:'a.b*c', Kind:Contains}, got %#v", got)
 	}
 }
 
@@ -231,25 +221,25 @@ func TestPartialOps_MultipleOpsOnSameField_FoldIntoMultiClause(t *testing.T) {
 	if len(mc.Clauses) != 4 {
 		t.Fatalf("expected 4 folded clauses, got %d (%v)", len(mc.Clauses), mc.Clauses)
 	}
-	// First clause is the eq value (plain string, no operator sub-document).
+	// First clause is the eq value (plain string, no sentinel).
 	if mc.Clauses[0] != "Bob Smith" {
 		t.Errorf("clause 0: expected 'Bob Smith', got %v (%T)", mc.Clauses[0], mc.Clauses[0])
 	}
-	// Subsequent clauses are sub-documents carrying their declared operator.
-	startsWith, ok := mc.Clauses[1].(map[string]any)
-	if !ok || startsWith["$regex"] != "^Bob" {
-		t.Errorf("clause 1: expected {$regex:'^Bob'}, got %v", mc.Clauses[1])
+	// Subsequent clauses are TextMatch sentinels carrying the raw value + kind.
+	startsWith, ok := mc.Clauses[1].(queries.TextMatch)
+	if !ok || startsWith.Value != "Bob" || startsWith.Kind != queries.TextPrefix {
+		t.Errorf("clause 1: expected TextMatch{Value:'Bob', Kind:Prefix}, got %#v", mc.Clauses[1])
 	}
-	if _, has := startsWith["$options"]; has {
-		t.Errorf("clause 1: startswith must not carry $options, got %v", startsWith)
+	if startsWith.CaseInsensitive {
+		t.Errorf("clause 1: startswith must not be case-insensitive, got %#v", startsWith)
 	}
-	icontains, ok := mc.Clauses[2].(map[string]any)
-	if !ok || icontains["$regex"] != "smh" || icontains["$options"] != "i" {
-		t.Errorf("clause 2: expected {$regex:'smh', $options:'i'}, got %v", mc.Clauses[2])
+	icontains, ok := mc.Clauses[2].(queries.TextMatch)
+	if !ok || icontains.Value != "smh" || icontains.Kind != queries.TextContains || !icontains.CaseInsensitive {
+		t.Errorf("clause 2: expected TextMatch{Value:'smh', Kind:Contains, CI:true}, got %#v", mc.Clauses[2])
 	}
-	istartsWith, ok := mc.Clauses[3].(map[string]any)
-	if !ok || istartsWith["$regex"] != "^bob" || istartsWith["$options"] != "i" {
-		t.Errorf("clause 3: expected {$regex:'^bob', $options:'i'}, got %v", mc.Clauses[3])
+	istartsWith, ok := mc.Clauses[3].(queries.TextMatch)
+	if !ok || istartsWith.Value != "bob" || istartsWith.Kind != queries.TextPrefix || !istartsWith.CaseInsensitive {
+		t.Errorf("clause 3: expected TextMatch{Value:'bob', Kind:Prefix, CI:true}, got %#v", mc.Clauses[3])
 	}
 }
 
@@ -282,8 +272,8 @@ func TestPartialOps_SingleOpStillPlainValue(t *testing.T) {
 	if _, ok := crit.Filter["Name"].(queries.MultiClause); ok {
 		t.Fatalf("expected single-clause to stay plain, got MultiClause")
 	}
-	if _, ok := crit.Filter["Name"].(map[string]any); !ok {
-		t.Fatalf("expected sub-document, got %T", crit.Filter["Name"])
+	if _, ok := crit.Filter["Name"].(queries.TextMatch); !ok {
+		t.Fatalf("expected TextMatch sentinel, got %T", crit.Filter["Name"])
 	}
 }
 
@@ -306,16 +296,16 @@ func TestPartialOps_DifferentFieldsStayFlat(t *testing.T) {
 	}
 }
 
-func TestPartialOps_BlankValueStillEscapes(t *testing.T) {
-	// Empty input becomes an empty regex, which Mongo treats as "match
-	// anything". We do not special-case this — it is the caller's choice
-	// whether to allow it via DTO validation; the wrapper just escapes.
+func TestPartialOps_BlankValueEmitsEmptyTextMatch(t *testing.T) {
+	// Empty input rides through as an empty-value TextMatch (which a store
+	// renders as "match anything"). We do not special-case it — allowing it is
+	// the caller's choice via DTO validation; the wrapper just forwards the value.
 	crit, status := dispatchPartial(t, "?name.contains=")
 	if status != fiber.StatusOK {
 		t.Fatalf("expected 200, got %d", status)
 	}
-	got, _ := crit.Filter["Name"].(map[string]any)
-	if got["$regex"] != "" {
-		t.Errorf("expected empty $regex, got %v", got["$regex"])
+	got, _ := crit.Filter["Name"].(queries.TextMatch)
+	if got.Value != "" || got.Kind != queries.TextContains {
+		t.Errorf("expected empty-value contains TextMatch, got %#v", got)
 	}
 }

@@ -33,8 +33,8 @@ func TestCanonicalizeFilterValue_AllTypeBranches(t *testing.T) {
 		{"slice-any", []any{1, "a"}, "a:2[i:1,s:1:a,]"},
 		{"map", map[string]any{"k": 1}, "m:1{1:k=i:1,}"},
 		{"multiclause", MultiClause{Clauses: []any{1}}, "MC[i:1,]"},
-		{"regexmatch", RegexMatch{Pattern: "^Bob", CaseInsensitive: true, Negate: false}, "RM:true:false:4:^Bob"},
-		{"regexmatchlist", RegexMatchList{Patterns: []string{"^a$"}, CaseInsensitive: false, Negate: true}, "RML:false:true:1[3:^a$,]"},
+		{"textmatch", TextMatch{Value: "Bob", Kind: TextPrefix, CaseInsensitive: true, Negate: false}, "TM:0:true:false:3:Bob"},
+		{"textmatchlist", TextMatchList{Values: []string{"a"}, CaseInsensitive: false, Negate: true}, "TML:false:true:1[1:a,]"},
 		{"default-unknown-type", int8(3), "?int8:3"},
 	}
 	for _, tc := range cases {
@@ -77,19 +77,19 @@ func TestCanonicalizeFilterValue_NestedComposites(t *testing.T) {
 	}
 }
 
-// TestHashContext_RegexAndListAxesDistinct confirms the regex sentinels feed
-// HashContext distinctly — two filters differing only in a RegexMatch flag
-// must produce different context hashes (so a cursor cannot survive an
-// operator flip mid-navigation).
-func TestHashContext_RegexAndListAxesDistinct(t *testing.T) {
-	h1 := HashContext(map[string]any{"name": RegexMatch{Pattern: "^Bob", CaseInsensitive: false}}, nil, "", false)
-	h2 := HashContext(map[string]any{"name": RegexMatch{Pattern: "^Bob", CaseInsensitive: true}}, nil, "", false)
+// TestHashContext_TextMatchAxesDistinct confirms the text sentinels feed
+// HashContext distinctly — two filters differing only in a TextMatch flag must
+// produce different context hashes (so a cursor cannot survive an operator flip
+// mid-navigation).
+func TestHashContext_TextMatchAxesDistinct(t *testing.T) {
+	h1 := HashContext(map[string]any{"name": TextMatch{Value: "Bob", CaseInsensitive: false}}, nil, "", false)
+	h2 := HashContext(map[string]any{"name": TextMatch{Value: "Bob", CaseInsensitive: true}}, nil, "", false)
 	if h1 == h2 {
-		t.Fatal("RegexMatch CaseInsensitive flip must alter the context hash")
+		t.Fatal("TextMatch CaseInsensitive flip must alter the context hash")
 	}
-	l1 := HashContext(map[string]any{"name": RegexMatchList{Patterns: []string{"^a$"}}}, nil, "", false)
-	l2 := HashContext(map[string]any{"name": RegexMatchList{Patterns: []string{"^b$"}}}, nil, "", false)
+	l1 := HashContext(map[string]any{"name": TextMatchList{Values: []string{"a"}}}, nil, "", false)
+	l2 := HashContext(map[string]any{"name": TextMatchList{Values: []string{"b"}}}, nil, "", false)
 	if l1 == l2 {
-		t.Fatal("RegexMatchList pattern change must alter the context hash")
+		t.Fatal("TextMatchList value change must alter the context hash")
 	}
 }

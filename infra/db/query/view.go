@@ -33,6 +33,11 @@ type ViewDefinition struct {
 	// False for a regular query.View.
 	isSharedBaseView bool
 	roles            []roleDef
+	// relationalReader, when non-nil, marks the view as read directly from the
+	// relational backend (SoR) instead of the materialized Mongo projection: it is
+	// the aggregate loader bound to the view's root entity, handed in via
+	// RelationalSource(...). Nil for a Mongo-backed view.
+	relationalReader RelationalReader
 }
 
 type embedDef struct {
@@ -170,6 +175,33 @@ func (v *ViewDefinition) DeleteOnArchive() *ViewDefinition {
 	v.deleteOnArchive = true
 	return v
 }
+
+// RelationalSource marks the view as read directly from the relational backend
+// (the SoR) instead of the materialized Mongo projection, and binds it to the
+// aggregate loader that reads its root entity — normally the declaring feature's
+// repository loader (repo.Loader), threaded down through the view constructor.
+// Handing the loader here is what lets the relational ViewReader load the
+// aggregate by the view's name without the framework naming the entity's Go
+// type: the loader rides on the ViewDefinition the bootstrap already collects,
+// so the relational read reuses the exact typed loader the write side built.
+//
+// A marked view is served fresh — strong read-your-writes, no projection lag —
+// at the cost of the query limitations relational views carry (no free-text
+// search, no filter or sort on a child field). Removing the marker returns the
+// view to the Mongo projection with no other change. reader must be non-nil.
+func (v *ViewDefinition) RelationalSource(reader RelationalReader) *ViewDefinition {
+	v.relationalReader = reader
+	return v
+}
+
+// IsRelational reports whether the view was marked with RelationalSource() — read
+// from the SoR instead of the Mongo projection.
+func (v *ViewDefinition) IsRelational() bool { return v.relationalReader != nil }
+
+// RelationalReader returns the aggregate loader a RelationalSource() view carries,
+// or nil for a Mongo-backed view. The relational ViewReader consults it to load
+// the aggregate for the view.
+func (v *ViewDefinition) RelationalReader() RelationalReader { return v.relationalReader }
 
 // Embed declares a 1:1 materialized enrichment: the leg's document (matched by
 // the PARENT's ParentID column, named on the returned binding via .On(col)) lands

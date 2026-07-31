@@ -13,7 +13,6 @@ package queryschema
 
 import (
 	"reflect"
-	"regexp"
 	"strconv"
 	"strings"
 
@@ -145,35 +144,35 @@ func ApplyFilterValues(filter map[string]any, spec FilterSpec, op string, values
 	case "", OpEq:
 		clause = coerceValue(value, spec.GoKind)
 	case OpIn:
-		clause = map[string]any{"$in": coerceValues(values, spec.GoKind)}
+		clause = queries.Clause{Op: queries.FilterIn, Values: coerceValues(values, spec.GoKind)}
 	case OpNin:
-		clause = map[string]any{"$nin": coerceValues(values, spec.GoKind)}
+		clause = queries.Clause{Op: queries.FilterNin, Values: coerceValues(values, spec.GoKind)}
 	case OpNe:
-		clause = map[string]any{"$ne": coerceValue(value, spec.GoKind)}
+		clause = queries.Clause{Op: queries.FilterNe, Values: []any{coerceValue(value, spec.GoKind)}}
 	case OpGte:
-		clause = map[string]any{"$gte": coerceValue(value, spec.GoKind)}
+		clause = queries.Clause{Op: queries.FilterGte, Values: []any{coerceValue(value, spec.GoKind)}}
 	case OpLte:
-		clause = map[string]any{"$lte": coerceValue(value, spec.GoKind)}
+		clause = queries.Clause{Op: queries.FilterLte, Values: []any{coerceValue(value, spec.GoKind)}}
 	case OpGt:
-		clause = map[string]any{"$gt": coerceValue(value, spec.GoKind)}
+		clause = queries.Clause{Op: queries.FilterGt, Values: []any{coerceValue(value, spec.GoKind)}}
 	case OpLt:
-		clause = map[string]any{"$lt": coerceValue(value, spec.GoKind)}
+		clause = queries.Clause{Op: queries.FilterLt, Values: []any{coerceValue(value, spec.GoKind)}}
 	case OpStartsWith:
-		clause = map[string]any{"$regex": "^" + regexp.QuoteMeta(value)}
+		clause = queries.TextMatch{Value: value, Kind: queries.TextPrefix}
 	case OpContains:
-		clause = map[string]any{"$regex": regexp.QuoteMeta(value)}
+		clause = queries.TextMatch{Value: value, Kind: queries.TextContains}
 	case OpIEq:
-		clause = map[string]any{"$regex": "^" + regexp.QuoteMeta(value) + "$", "$options": "i"}
+		clause = queries.TextMatch{Value: value, Kind: queries.TextExact, CaseInsensitive: true}
 	case OpINe:
-		clause = map[string]any{"$not": map[string]any{"$regex": "^" + regexp.QuoteMeta(value) + "$", "$options": "i"}}
+		clause = queries.TextMatch{Value: value, Kind: queries.TextExact, CaseInsensitive: true, Negate: true}
 	case OpIStartsWith:
-		clause = map[string]any{"$regex": "^" + regexp.QuoteMeta(value), "$options": "i"}
+		clause = queries.TextMatch{Value: value, Kind: queries.TextPrefix, CaseInsensitive: true}
 	case OpIContains:
-		clause = map[string]any{"$regex": regexp.QuoteMeta(value), "$options": "i"}
+		clause = queries.TextMatch{Value: value, Kind: queries.TextContains, CaseInsensitive: true}
 	case OpIIn:
-		clause = queries.RegexMatchList{Patterns: quoteValues(values, true), CaseInsensitive: true}
+		clause = queries.TextMatchList{Values: values, CaseInsensitive: true}
 	case OpINin:
-		clause = queries.RegexMatchList{Patterns: quoteValues(values, true), CaseInsensitive: true, Negate: true}
+		clause = queries.TextMatchList{Values: values, CaseInsensitive: true, Negate: true}
 	default:
 		return
 	}
@@ -211,21 +210,6 @@ func mergeClause(filter map[string]any, field string, clause any) {
 		return
 	}
 	filter[field] = queries.MultiClause{Clauses: []any{existing, clause}}
-}
-
-// quoteValues applies regexp.QuoteMeta to each element, optionally wrapping
-// with ^...$ to preserve the equality semantic of `iin` / `inin` (each
-// pattern matches the whole value, not a substring).
-func quoteValues(values []string, anchored bool) []string {
-	out := make([]string, 0, len(values))
-	for _, p := range values {
-		q := regexp.QuoteMeta(p)
-		if anchored {
-			q = "^" + q + "$"
-		}
-		out = append(out, q)
-	}
-	return out
 }
 
 // coerceValues coerces each element to kind — the list-level core shared by

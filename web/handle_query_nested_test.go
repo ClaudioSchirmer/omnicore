@@ -102,12 +102,12 @@ func TestNested_OperatorSuffixOnNestedLeaf(t *testing.T) {
 	if status != fiber.StatusOK {
 		t.Fatalf("expected 200, got %d", status)
 	}
-	got, ok := crit.Filter["Addresses.ZipCode"].(map[string]any)
+	got, ok := crit.Filter["Addresses.ZipCode"].(queries.TextMatch)
 	if !ok {
-		t.Fatalf("expected nested filter to be a regex map, got %T (%v)", crit.Filter["Addresses.ZipCode"], crit.Filter["Addresses.ZipCode"])
+		t.Fatalf("expected nested filter to be a TextMatch, got %T (%v)", crit.Filter["Addresses.ZipCode"], crit.Filter["Addresses.ZipCode"])
 	}
-	if got["$regex"] != "^100" {
-		t.Errorf("expected $regex='^100', got %v", got["$regex"])
+	if got.Value != "100" || got.Kind != queries.TextPrefix || got.CaseInsensitive {
+		t.Errorf("expected {Value:100, Kind:Prefix}, got %#v", got)
 	}
 }
 
@@ -116,12 +116,12 @@ func TestNested_OperatorSuffixOnNestedLeaf_IStartsWith(t *testing.T) {
 	if status != fiber.StatusOK {
 		t.Fatalf("expected 200, got %d", status)
 	}
-	got, ok := crit.Filter["Addresses.City"].(map[string]any)
+	got, ok := crit.Filter["Addresses.City"].(queries.TextMatch)
 	if !ok {
-		t.Fatalf("expected map, got %T", crit.Filter["Addresses.City"])
+		t.Fatalf("expected TextMatch, got %T", crit.Filter["Addresses.City"])
 	}
-	if got["$regex"] != "^ber" || got["$options"] != "i" {
-		t.Errorf("expected {$regex:^ber, $options:i}, got %v", got)
+	if got.Value != "ber" || got.Kind != queries.TextPrefix || !got.CaseInsensitive {
+		t.Errorf("expected {Value:ber, Kind:Prefix, CaseInsensitive:true}, got %#v", got)
 	}
 }
 
@@ -141,12 +141,12 @@ func TestNested_TopLevelOperatorSuffix(t *testing.T) {
 	if status != fiber.StatusOK {
 		t.Fatalf("expected 200, got %d", status)
 	}
-	got, ok := crit.Filter["Name"].(map[string]any)
+	got, ok := crit.Filter["Name"].(queries.TextMatch)
 	if !ok {
-		t.Fatalf("expected map, got %T", crit.Filter["Name"])
+		t.Fatalf("expected TextMatch, got %T", crit.Filter["Name"])
 	}
-	if got["$regex"] != "^Bob" {
-		t.Errorf("expected $regex='^Bob', got %v", got["$regex"])
+	if got.Value != "Bob" || got.Kind != queries.TextPrefix || got.CaseInsensitive {
+		t.Errorf("expected {Value:Bob, Kind:Prefix}, got %#v", got)
 	}
 }
 
