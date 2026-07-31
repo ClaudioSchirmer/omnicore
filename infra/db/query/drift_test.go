@@ -13,14 +13,33 @@ import (
 // ─── decideDrift — the 8 branches of §9.1 ────────────────────────────────────
 
 func TestDecideDrift_FreshInit_RegistryAbsentMongoEmpty(t *testing.T) {
-	got := decideDrift(nil, false, false, 1, "rh", "ch")
+	got := decideDrift(nil, false, false, 1, "rh", "ch", false)
 	if got != DriftFreshInit {
 		t.Errorf("decideDrift(registry=nil, populated=false) = %v, want DriftFreshInit", got)
 	}
 }
 
+// A brand-new Mongo view over an aggregate that ALREADY HOLDS DATA (no registry
+// row, Mongo empty, but the SoR root table has rows) must be BACKFILLED — future
+// writes alone would leave the pre-existing history unprojected.
+func TestDecideDrift_FreshBackfill_MongoViewOverExistingData(t *testing.T) {
+	got := decideDrift(nil, false, true, 1, "rh", "ch", false)
+	if got != DriftFreshBackfill {
+		t.Errorf("fresh Mongo view + SoR rows = %v, want DriftFreshBackfill", got)
+	}
+}
+
+// A fresh RELATIONAL view over existing data is served from the SoR — no
+// backfill, just record the registry row.
+func TestDecideDrift_FreshInit_RelationalOverExistingData(t *testing.T) {
+	got := decideDrift(nil, false, true, 1, "rh", "ch", true)
+	if got != DriftFreshInit {
+		t.Errorf("fresh relational view + SoR rows = %v, want DriftFreshInit", got)
+	}
+}
+
 func TestDecideDrift_AlienData_RegistryAbsentMongoPopulated(t *testing.T) {
-	got := decideDrift(nil, true, false, 1, "rh", "ch")
+	got := decideDrift(nil, true, false, 1, "rh", "ch", false)
 	if got != DriftAlienData {
 		t.Errorf("decideDrift(registry=nil, populated=true) = %v, want DriftAlienData", got)
 	}
@@ -28,7 +47,7 @@ func TestDecideDrift_AlienData_RegistryAbsentMongoPopulated(t *testing.T) {
 
 func TestDecideDrift_None_RegistryMatchesAndMongoPopulated(t *testing.T) {
 	reg := &ViewRegistryRow{Version: 1, RebuildHash: "rh", CombinedHash: "ch"}
-	got := decideDrift(reg, true, true, 1, "rh", "ch")
+	got := decideDrift(reg, true, true, 1, "rh", "ch", false)
 	if got != DriftNone {
 		t.Errorf("decideDrift(combined matches, populated) = %v, want DriftNone", got)
 	}
@@ -36,7 +55,7 @@ func TestDecideDrift_None_RegistryMatchesAndMongoPopulated(t *testing.T) {
 
 func TestDecideDrift_MongoWiped_RegistryMatchesMongoEmptySorPopulated(t *testing.T) {
 	reg := &ViewRegistryRow{Version: 1, RebuildHash: "rh", CombinedHash: "ch"}
-	got := decideDrift(reg, false, true, 1, "rh", "ch")
+	got := decideDrift(reg, false, true, 1, "rh", "ch", false)
 	if got != DriftMongoWiped {
 		t.Errorf("decideDrift(combined matches, mongo empty, SoR populated) = %v, want DriftMongoWiped", got)
 	}
@@ -47,7 +66,7 @@ func TestDecideDrift_MongoWiped_RegistryMatchesMongoEmptySorPopulated(t *testing
 // every boot (spurious rebuild with from_hash == to_hash).
 func TestDecideDrift_None_RegistryMatchesBothSidesEmpty(t *testing.T) {
 	reg := &ViewRegistryRow{Version: 1, RebuildHash: "rh", CombinedHash: "ch"}
-	got := decideDrift(reg, false, false, 1, "rh", "ch")
+	got := decideDrift(reg, false, false, 1, "rh", "ch", false)
 	if got != DriftNone {
 		t.Errorf("decideDrift(combined matches, mongo empty, SoR empty) = %v, want DriftNone", got)
 	}
@@ -55,7 +74,7 @@ func TestDecideDrift_None_RegistryMatchesBothSidesEmpty(t *testing.T) {
 
 func TestDecideDrift_ArtifactOnly_SameVersionSameRebuildDifferentCombined(t *testing.T) {
 	reg := &ViewRegistryRow{Version: 1, RebuildHash: "rh", CombinedHash: "ch_old"}
-	got := decideDrift(reg, true, true, 1, "rh", "ch_new")
+	got := decideDrift(reg, true, true, 1, "rh", "ch_new", false)
 	if got != DriftArtifactOnly {
 		t.Errorf("decideDrift(same version, same rebuild, combined differs) = %v, want DriftArtifactOnly", got)
 	}
@@ -63,7 +82,7 @@ func TestDecideDrift_ArtifactOnly_SameVersionSameRebuildDifferentCombined(t *tes
 
 func TestDecideDrift_ForgotToBump_SameVersionDifferentRebuild(t *testing.T) {
 	reg := &ViewRegistryRow{Version: 1, RebuildHash: "rh_old", CombinedHash: "ch_old"}
-	got := decideDrift(reg, true, true, 1, "rh_new", "ch_new")
+	got := decideDrift(reg, true, true, 1, "rh_new", "ch_new", false)
 	if got != DriftForgotToBump {
 		t.Errorf("decideDrift(same version, rebuild differs) = %v, want DriftForgotToBump", got)
 	}
@@ -71,7 +90,7 @@ func TestDecideDrift_ForgotToBump_SameVersionDifferentRebuild(t *testing.T) {
 
 func TestDecideDrift_RebuildRequired_RegistryVersionLowerThanSpec(t *testing.T) {
 	reg := &ViewRegistryRow{Version: 1, RebuildHash: "rh_old", CombinedHash: "ch_old"}
-	got := decideDrift(reg, true, true, 2, "rh_new", "ch_new")
+	got := decideDrift(reg, true, true, 2, "rh_new", "ch_new", false)
 	if got != DriftRebuildRequired {
 		t.Errorf("decideDrift(registry v1, spec v2) = %v, want DriftRebuildRequired", got)
 	}
@@ -79,9 +98,43 @@ func TestDecideDrift_RebuildRequired_RegistryVersionLowerThanSpec(t *testing.T) 
 
 func TestDecideDrift_Downgrade_RegistryVersionHigherThanSpec(t *testing.T) {
 	reg := &ViewRegistryRow{Version: 5, RebuildHash: "rh_new", CombinedHash: "ch_new"}
-	got := decideDrift(reg, true, true, 3, "rh_old", "ch_old")
+	got := decideDrift(reg, true, true, 3, "rh_old", "ch_old", false)
 	if got != DriftDowngrade {
 		t.Errorf("decideDrift(registry v5, spec v3) = %v, want DriftDowngrade", got)
+	}
+}
+
+// ─── decideDrift — the RelationalSource branches ─────────────────────────────
+
+// A relational view's Mongo collection is INTENTIONALLY empty, so hash-parity
+// with an empty collection + populated SoR is the steady state — DriftNone, NOT
+// the DriftMongoWiped a Mongo view would get (which would rebuild every boot).
+func TestDecideDrift_Relational_HashMatchesEmptyMongoIsNone(t *testing.T) {
+	reg := &ViewRegistryRow{Version: 1, RebuildHash: "rh", CombinedHash: "ch"}
+	got := decideDrift(reg, false, true, 1, "rh", "ch", true)
+	if got != DriftNone {
+		t.Errorf("relational + hash matches + empty Mongo + SoR rows = %v, want DriftNone", got)
+	}
+}
+
+// A relational view whose shape changed WITH a version bump records the new spec
+// (no rebuild) — DriftRelationalSync, where a Mongo view would DriftRebuildRequired.
+func TestDecideDrift_Relational_BumpedChangeIsSync(t *testing.T) {
+	reg := &ViewRegistryRow{Version: 1, RebuildHash: "rh_old", CombinedHash: "ch_old"}
+	got := decideDrift(reg, false, true, 2, "rh_new", "ch_new", true)
+	if got != DriftRelationalSync {
+		t.Errorf("relational + bumped shape change = %v, want DriftRelationalSync", got)
+	}
+}
+
+// The version-bump discipline is UNIVERSAL: a relational flip WITHOUT a bump
+// (hash differs, version same) still aborts as DriftForgotToBump, exactly like a
+// Mongo view.
+func TestDecideDrift_Relational_ForgotToBumpIsUniversal(t *testing.T) {
+	reg := &ViewRegistryRow{Version: 1, RebuildHash: "rh_old", CombinedHash: "ch_old"}
+	got := decideDrift(reg, false, true, 1, "rh_new", "ch_new", true)
+	if got != DriftForgotToBump {
+		t.Errorf("relational + shape change without a version bump = %v, want DriftForgotToBump", got)
 	}
 }
 

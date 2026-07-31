@@ -447,6 +447,28 @@ func ValidateViewSchemas(views []*ViewDefinition) error {
 				"view %q: SharedBaseView declares no .Role(...) — add every role that specializes this identity",
 				v.Name()))
 		}
+		// RelationalSource() is v1-limited to a plain, single-aggregate query.View
+		// read from the SoR: a SharedBaseView or the Embed family is a
+		// multi-source / read-time-join shape a single relational aggregate load
+		// cannot serve. Reject the combination at boot (the escape is to drop the
+		// marker and serve the view from Mongo).
+		if v.IsRelational() {
+			if v.isSharedBaseView {
+				problems = append(problems, fmt.Sprintf(
+					"view %q: RelationalSource() is not supported on a SharedBaseView (v1 serves a single plain query.View from the SoR)",
+					v.Name()))
+			}
+			if len(v.embeds) > 0 {
+				problems = append(problems, fmt.Sprintf(
+					"view %q: RelationalSource() cannot be combined with Embed/EmbedMany — an embed is a Mongo read, not part of the relational aggregate load",
+					v.Name()))
+			}
+			if len(v.childEmbeds) > 0 {
+				problems = append(problems, fmt.Sprintf(
+					"view %q: RelationalSource() cannot be combined with EmbedInChild",
+					v.Name()))
+			}
+		}
 		problems = appendSegmentCollisions(problems, v.Name(), v.schema, v.embeds, v.roles)
 		problems = appendEmbedSchemaProblems(problems, v.Name(), v.embeds, registered)
 		problems = appendChildEmbedProblems(problems, v.Name(), v, registered)

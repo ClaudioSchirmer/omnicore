@@ -1147,6 +1147,13 @@ func (s *SyncEngine) process(ctx context.Context, event kafkaEvent) error {
 func (s *SyncEngine) projectOwnViews(ctx context.Context, event kafkaEvent, raw map[string]any, ids payloadIDs, views []*ViewDefinition) error {
 	var errs []error
 	for _, view := range views {
+		// A RelationalSource view is served fresh from the SoR and never
+		// materialized to Mongo — skip it here (per-view, so co-rooted Mongo
+		// views on the same aggregate still project). Ack-safe: this contributes
+		// no error, the event still completes.
+		if view.IsRelational() {
+			continue
+		}
 		// DELETED always removes from the read side (hard delete, no flag
 		// overrides it). ARCHIVED by default goes through the projection branch
 		// below — the document survives with deleted_at populated, so consumers

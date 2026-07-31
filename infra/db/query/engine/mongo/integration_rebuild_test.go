@@ -11,6 +11,87 @@ import (
 	"go.mongodb.org/mongo-driver/v2/bson"
 )
 
+// TestExecuteRebuild_FreshViewCreatesRegistryAndBackfills is the DriftFreshBackfill
+// proof: a brand-new Mongo view over an aggregate that ALREADY holds data (rows
+// written before the view existed, NO registry row) is backfilled — and the
+// registry row is CREATED under the advisory lock (BeginRebuild/EndRebuild are
+// UPDATEs, so without this the row would never exist and the backfill would loop
+// every boot). The second ExecuteRebuild (the "another pod arrives after the
+// first" case) re-reads the row under the lock, skips the insert, and re-backfills
+// idempotently — no duplicate-insert error, converging to the same state.
+func TestExecuteRebuild_FreshViewCreatesRegistryAndBackfills(t *testing.T) {
+	pg, cleanupPG := newTestPG(t)
+	defer cleanupPG()
+	m, cleanupMongo := newTestMongo(t)
+	defer cleanupMongo()
+
+	ctx := context.Background()
+	// loaderRootSchema declares a Revision column (the blue-green verify needs it
+	// for parity); seed only the roots — the backfill is what we assert.
+	createLoaderTables(t, pg)
+	for _, name := range []string{"a", "b", "c"} {
+		if _, err := pg.Pool().Exec(ctx,
+			`INSERT INTO loader_roots (name, email) VALUES ($1, $2)`, name, name+"@x.com"); err != nil {
+			t.Fatalf("seed %s: %v", name, err)
+		}
+	}
+
+	view := query.View("loader_roots").Schema(loaderRootSchema()).Version(1)
+	// A pg-backed resolver reflects the blue-green flip (the docs land in the
+	// now-active shadow slot, not the bare name).
+	resolver := query.NewViewResolver(pg)
+	engine := query.NewSyncEngine(pg, m, resolver, nil, "", []*query.ViewDefinition{view}, 1)
+
+	activeCount := func() int64 {
+		if err := resolver.Refresh(ctx); err != nil {
+			t.Fatalf("resolver refresh: %v", err)
+		}
+		n, _ := m.Collection(resolver.Active("loader_roots").String()).CountDocuments(ctx, bson.M{})
+		return n
+	}
+
+	// A fresh view: NO registry row — the DriftFreshBackfill plan the boot builds.
+	plan := query.DriftPlan{
+		View:                view,
+		Registry:            nil,
+		Decision:            query.DriftFreshBackfill,
+		CurrentVersion:      view.VersionNumber(),
+		CurrentRebuildHash:  view.RebuildHash(),
+		CurrentArtifactHash: view.ArtifactHash(),
+		CurrentCombinedHash: view.Hash(),
+	}
+	cfg := query.RebuildConfig{Orphan: "warn", ServiceName: "test", Workers: 1, BatchSize: 1000}
+
+	if err := engine.ExecuteRebuild(ctx, plan, cfg); err != nil {
+		t.Fatalf("ExecuteRebuild (fresh backfill): %v", err)
+	}
+
+	// the pre-existing rows are backfilled into the now-active slot
+	if n := activeCount(); n != 3 {
+		t.Errorf("expected 3 backfilled docs in the active slot, got %d", n)
+	}
+	// and the registry row was CREATED under the lock, at the spec hash
+	reg, err := query.ReadViewRegistry(ctx, pg.Querier(), pg.Dialect(), "loader_roots")
+	if err != nil {
+		t.Fatalf("read registry: %v", err)
+	}
+	if reg == nil {
+		t.Fatal("registry row must be created for the fresh view (else the backfill loops every boot)")
+	}
+	if reg.CombinedHash != view.Hash() {
+		t.Errorf("registry hash = %s, want spec %s", reg.CombinedHash, view.Hash())
+	}
+
+	// A second run (the concurrent "pod B after pod A" case): the row now exists,
+	// so the re-read-under-lock skips the insert and re-backfills without error.
+	if err := engine.ExecuteRebuild(ctx, plan, cfg); err != nil {
+		t.Fatalf("ExecuteRebuild (2nd, idempotent): %v", err)
+	}
+	if n := activeCount(); n != 3 {
+		t.Errorf("2nd (idempotent) run should keep 3 docs, got %d", n)
+	}
+}
+
 // --- RebuildAllViews / RebuildView (operator path) ------------------------
 
 func TestRebuildView_RebuildsFromTable(t *testing.T) {
