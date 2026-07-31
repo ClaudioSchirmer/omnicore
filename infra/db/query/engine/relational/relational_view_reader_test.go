@@ -1,6 +1,7 @@
 package relational
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"reflect"
@@ -14,6 +15,21 @@ import (
 	"github.com/ClaudioSchirmer/omnicore/infra/db/criteria"
 	"github.com/ClaudioSchirmer/omnicore/infra/db/query"
 )
+
+// fakeLoader is a no-DB query.RelationalReader: it records whether the load ran
+// and returns an empty result, so a MaxLimit test can prove the ceiling rejects
+// BEFORE any load and that BypassMaxLimit lets the load through.
+type fakeLoader struct {
+	table      string
+	findCalled bool
+}
+
+func (f *fakeLoader) FindAllEntities(context.Context, *criteria.Query) ([]domain.Entity, error) {
+	f.findCalled = true
+	return nil, nil
+}
+func (f *fakeLoader) CountEntities(context.Context, *criteria.Query) (int64, error) { return 0, nil }
+func (f *fakeLoader) BoundTable() string                                            { return f.table }
 
 // guardEnt is a minimal entity — enough to build an AggregateLoader and a schema
 // so the boot guard can be exercised without a database (BoundTable reads only
@@ -106,13 +122,83 @@ func assertRelationalCapability400(t *testing.T, err error, wantField string) {
 // TestUnsupportedChildFilter_MapsTo400 covers a filter pushed at a child (dotted)
 // field: a root SELECT cannot express it, so the reader rejects it as a 400.
 func TestUnsupportedChildFilter_MapsTo400(t *testing.T) {
-	_, err := toExpr(map[string]any{"Addresses.ZipCode": "12345"})
+	_, err := toExpr(guardSchema("gadgets"), map[string]any{"Addresses.ZipCode": "12345"})
 	assertRelationalCapability400(t, err, "Addresses.ZipCode")
 }
 
 // TestUnsupportedChildSort_MapsTo400 covers a sort on a child (dotted) field:
 // a root ORDER BY cannot express it, so the reader rejects it as a 400.
 func TestUnsupportedChildSort_MapsTo400(t *testing.T) {
-	err := applySort(criteria.Where(nil), []queries.SortField{{Field: "Addresses.ZipCode"}})
+	err := applySort(guardSchema("gadgets"), criteria.Where(nil), []queries.SortField{{Field: "Addresses.ZipCode"}})
 	assertRelationalCapability400(t, err, "Addresses.ZipCode")
+}
+
+// TestUnsupportedSiblingFilter_MapsTo400 covers a flat (non-dotted) field the
+// root schema does not own — a root-level sibling merges into the doc flat, so
+// its key carries no dot, yet the column lives in a satellite table a root SELECT
+// cannot reach. The servable() check (schema.ColumnOf) rejects it as a 400 just
+// like a dotted child, closing the gap a dot-only test would miss.
+func TestUnsupportedSiblingFilter_MapsTo400(t *testing.T) {
+	// guardSchema owns only Name (+ id); "Material" stands in for a sibling column.
+	_, err := toExpr(guardSchema("gadgets"), map[string]any{"Material": "steel"})
+	assertRelationalCapability400(t, err, "Material")
+}
+
+// TestServableRootField_Passes is the positive control: a bona fide root column
+// (Name) is NOT rejected — parity with the Mongo reader for root filters/sorts.
+func TestServableRootField_Passes(t *testing.T) {
+	if _, err := toExpr(guardSchema("gadgets"), map[string]any{"Name": "x"}); err != nil {
+		t.Fatalf("a root-own field must be servable, got %v", err)
+	}
+	if err := applySort(guardSchema("gadgets"), criteria.Where(nil), []queries.SortField{{Field: "Name"}}); err != nil {
+		t.Fatalf("a root-own sort field must be servable, got %v", err)
+	}
+}
+
+// relViewWith builds a one-view relational reader over a fakeLoader with the
+// given per-view ceiling, so the MaxLimit tests run without a database.
+func relViewWith(ceiling int64, fake *fakeLoader) *RelationalViewReader {
+	vdef := query.View("v").Schema(guardSchema("gadgets")).Version(1).RelationalSource(fake)
+	r := NewRelationalViewReader([]*query.ViewDefinition{vdef})
+	r.SetMaxLimitResolver(func(string) int64 { return ceiling })
+	return r
+}
+
+// TestReadPage_MaxLimitRejected proves the relational reader honors the per-view
+// MaxLimit cascade EXACTLY like the Mongo reader: a `?limit=` over the ceiling is
+// the canonical 400 LimitExceededNotification, rejected BEFORE any load runs.
+func TestReadPage_MaxLimitRejected(t *testing.T) {
+	fake := &fakeLoader{table: "gadgets"}
+	r := relViewWith(5, fake)
+
+	_, err := r.ReadPage(context.Background(), "v", queries.ReadCriteria{Limit: 100})
+	if err == nil {
+		t.Fatal("expected a LimitExceeded rejection for limit over the ceiling")
+	}
+	var carrier domain.NotificationCarrier
+	if !errors.As(err, &carrier) {
+		t.Fatalf("ceiling rejection must be a NotificationCarrier (→400), got %T", err)
+	}
+	msg := carrier.NotificationContexts()[0].Messages()[0]
+	if got := reflect.TypeOf(msg.Notification).Name(); got != "LimitExceededNotification" {
+		t.Errorf("notification = %q, want LimitExceededNotification", got)
+	}
+	if fake.findCalled {
+		t.Error("the ceiling must reject BEFORE loading — the loader was called")
+	}
+}
+
+// TestReadPage_BypassMaxLimit proves the trusted export path (BypassMaxLimit) is
+// NOT rejected by the ceiling: the same over-ceiling limit loads through, letting
+// the export wrapper run its own larger maxExportRows bound verbatim.
+func TestReadPage_BypassMaxLimit(t *testing.T) {
+	fake := &fakeLoader{table: "gadgets"}
+	r := relViewWith(5, fake)
+
+	if _, err := r.ReadPage(context.Background(), "v", queries.ReadCriteria{Limit: 100, BypassMaxLimit: true}); err != nil {
+		t.Fatalf("BypassMaxLimit must skip the ceiling, got %v", err)
+	}
+	if !fake.findCalled {
+		t.Error("BypassMaxLimit must let the load run")
+	}
 }

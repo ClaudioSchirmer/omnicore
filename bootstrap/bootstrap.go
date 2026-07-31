@@ -195,6 +195,10 @@ func runWithConfig(cfg *Config, wire func(Deps) Wiring) error {
 		// seam by name. Mutation, not a reassignment — captured deps.ViewReader
 		// references keep dispatching correctly.
 		if rel := relational.NewRelationalViewReader(views); !rel.Empty() {
+			// Same per-view MaxLimit cascade the Mongo reader honors — one resolver,
+			// both backings — so a view's ceiling applies identically whether it is
+			// served from the SoR or the projection.
+			rel.SetMaxLimitResolver(buildViewMaxLimitResolver(views, cfg.Query.MaxLimit))
 			route := rel.RelationalViewNames()
 			engine.SetRelational(rel, route)
 			deps.Logger.Info("relational views registered", "count", len(route))

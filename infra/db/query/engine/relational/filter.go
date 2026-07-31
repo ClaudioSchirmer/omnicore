@@ -3,11 +3,11 @@ package relational
 import (
 	"fmt"
 	"sort"
-	"strings"
 
 	"github.com/ClaudioSchirmer/omnicore/application/exception"
 	"github.com/ClaudioSchirmer/omnicore/application/notifications"
 	"github.com/ClaudioSchirmer/omnicore/application/queries"
+	"github.com/ClaudioSchirmer/omnicore/infra/db/core"
 	"github.com/ClaudioSchirmer/omnicore/infra/db/criteria"
 )
 
@@ -21,12 +21,27 @@ func unsupported(what string) error {
 	return exception.SingleNotificationError("Query", what, notifications.RelationalCapabilityNotification{})
 }
 
+// servable reports whether a filter/sort field is one a root SELECT can express:
+// a column the ROOT schema owns (its business fields + the id). Everything else —
+// a dotted child path, a flat root-level sibling field (merged into the doc but
+// living in a satellite table), a dotted child-level sibling, or an unknown field
+// — is a pushdown the relational reader cannot serve. schema.ColumnOf answers this
+// precisely: it consults only the root's own Go→column map (id included), so
+// sibling and child fields (kept in their own schemas) return false.
+func servable(schema *core.TableSchema, field string) bool {
+	if schema == nil {
+		return false
+	}
+	_, ok := schema.ColumnOf(field)
+	return ok
+}
+
 // toExpr translates the wire-neutral ReadCriteria.Filter (Go-field-keyed, the
 // Clause / TextMatch / TextMatchList / MultiClause sentinels) into a criteria
 // expression the loader compiles to root SQL. Keys are visited in sorted order
-// so the AND is deterministic. A dotted (child) field is a pushdown a root
-// SELECT cannot express — rejected here.
-func toExpr(filter map[string]any) (criteria.Expr, error) {
+// so the AND is deterministic. A field the root SELECT cannot express (child,
+// sibling, unknown) is rejected here as an unsupported capability (400).
+func toExpr(schema *core.TableSchema, filter map[string]any) (criteria.Expr, error) {
 	if len(filter) == 0 {
 		return nil, nil
 	}
@@ -38,7 +53,7 @@ func toExpr(filter map[string]any) (criteria.Expr, error) {
 
 	ands := make([]criteria.Expr, 0, len(fields))
 	for _, field := range fields {
-		if strings.Contains(field, ".") {
+		if !servable(schema, field) {
 			return nil, unsupported(field)
 		}
 		e, err := clauseToExpr(field, filter[field])
@@ -167,11 +182,12 @@ func textListToExpr(field string, t queries.TextMatchList) criteria.Expr {
 	return e
 }
 
-// applySort appends the request's root-field sort terms to the query. A dotted
-// (child/nested) sort is a pushdown a root ORDER BY cannot express — rejected.
-func applySort(q *criteria.Query, sorts []queries.SortField) error {
+// applySort appends the request's root-field sort terms to the query. A sort on
+// a field the root ORDER BY cannot express (child, sibling, unknown) is rejected
+// as an unsupported capability (400).
+func applySort(schema *core.TableSchema, q *criteria.Query, sorts []queries.SortField) error {
 	for _, s := range sorts {
-		if strings.Contains(s.Field, ".") {
+		if !servable(schema, s.Field) {
 			return unsupported(s.Field)
 		}
 		if s.Desc {

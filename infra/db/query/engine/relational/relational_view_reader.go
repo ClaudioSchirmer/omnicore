@@ -41,6 +41,13 @@ type view struct {
 // idiom — behind the unchanged after/before/limit surface.
 type RelationalViewReader struct {
 	views map[string]view
+	// maxLimitFn resolves the per-view `?limit=` ceiling, mirroring the Mongo
+	// reader's cascade EXACTLY: the same resolver the bootstrap builds from the
+	// view defs + the yaml default is wired into both readers, so a view's
+	// MaxLimit and the global ceiling apply identically whichever backing serves
+	// it. nil until SetMaxLimitResolver runs; resolveMaxLimit then falls back to
+	// the framework floor.
+	maxLimitFn func(string) int64
 }
 
 var _ queries.ViewReader = (*RelationalViewReader)(nil)
@@ -80,6 +87,27 @@ func NewRelationalViewReader(views []*query.ViewDefinition) *RelationalViewReade
 // this reader into the dispatch seam only when there is one.
 func (r *RelationalViewReader) Empty() bool { return len(r.views) == 0 }
 
+// SetMaxLimitResolver installs the per-view `?limit=` ceiling resolver — the SAME
+// closure the bootstrap wires into the Mongo reader — so the two backings enforce
+// an identical MaxLimit cascade. Returns the receiver for chaining at the wiring
+// site.
+func (r *RelationalViewReader) SetMaxLimitResolver(fn func(view string) int64) *RelationalViewReader {
+	r.maxLimitFn = fn
+	return r
+}
+
+// resolveMaxLimit returns the effective per-page ceiling for view. Always > 0:
+// a nil resolver or a non-positive answer falls back to the framework floor
+// (defaultPageLimit), matching MongoViewReader.resolveMaxLimit.
+func (r *RelationalViewReader) resolveMaxLimit(view string) int64 {
+	if r.maxLimitFn != nil {
+		if n := r.maxLimitFn(view); n > 0 {
+			return n
+		}
+	}
+	return defaultPageLimit
+}
+
 // RelationalViewNames is the per-view route the dispatch seam consults: the set
 // of view names this reader serves. The seam sends exactly these to the
 // relational reader and everything else to the Mongo reader.
@@ -102,7 +130,7 @@ func (r *RelationalViewReader) ReadPage(ctx context.Context, name string, crit q
 	if crit.Search != "" {
 		return queries.Page{}, unsupported("search")
 	}
-	where, err := toExpr(crit.Filter)
+	where, err := toExpr(v.schema, crit.Filter)
 	if err != nil {
 		return queries.Page{}, err
 	}
@@ -115,9 +143,17 @@ func (r *RelationalViewReader) ReadPage(ctx context.Context, name string, crit q
 		return queries.Page{OnlyTotal: true, Total: n}, nil
 	}
 
+	// MaxLimit cascade, identical to the Mongo reader: a consumer `?limit=` over
+	// the per-view ceiling is the canonical 400; an absent/zero limit defers to
+	// the ceiling so every relational page is bounded. The trusted export wrapper
+	// sets BypassMaxLimit to run its own (larger) maxExportRows ceiling verbatim.
+	maxLimit := r.resolveMaxLimit(name)
+	if !crit.BypassMaxLimit && crit.Limit > maxLimit {
+		return queries.Page{}, core.LimitExceededError(maxLimit)
+	}
 	limit := crit.Limit
 	if limit <= 0 {
-		limit = defaultPageLimit
+		limit = maxLimit
 	}
 	hashCtx := queries.HashContext(crit.Filter, crit.Sort, crit.Search, crit.IncludeArchived)
 
@@ -127,7 +163,7 @@ func (r *RelationalViewReader) ReadPage(ctx context.Context, name string, crit q
 	}
 
 	q := scopedQuery(where, crit.IncludeArchived)
-	if err := applySort(q, crit.Sort); err != nil {
+	if err := applySort(v.schema, q, crit.Sort); err != nil {
 		return queries.Page{}, err
 	}
 	q.OrderBy(idGoField) // deterministic tiebreak — offset pages must be stable
@@ -183,7 +219,7 @@ func (r *RelationalViewReader) ReadByID(ctx context.Context, name, id string, cr
 		return nil, false, fmt.Errorf("relational view %q is not registered", name)
 	}
 	where := criteria.Eq(idGoField, domain.NewID(id))
-	overlay, err := toExpr(crit.Filter)
+	overlay, err := toExpr(v.schema, crit.Filter)
 	if err != nil {
 		return nil, false, err
 	}
