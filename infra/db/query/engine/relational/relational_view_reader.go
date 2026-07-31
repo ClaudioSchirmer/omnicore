@@ -3,6 +3,7 @@ package relational
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	"github.com/ClaudioSchirmer/omnicore/application/queries"
 	"github.com/ClaudioSchirmer/omnicore/domain"
@@ -191,8 +192,10 @@ func (r *RelationalViewReader) ReadPage(ctx context.Context, name string, crit q
 		if !crit.IncludeArchived {
 			v.node.StripArchivedChildren(doc)
 		}
-		page.Items = append(page.Items, v.node.ToGoDoc(doc))
-		cur, err := queries.EncodeCursor([]any{win.offset + int64(j)}, hashCtx)
+		goDoc := v.node.ToGoDoc(doc)
+		applyProjection(goDoc, crit.Projection)
+		page.Items = append(page.Items, goDoc)
+		cur, err := queries.EncodeCursor(offsetTuple(win.offset+int64(j), len(crit.Sort)), hashCtx)
 		if err != nil {
 			return queries.Page{}, err
 		}
@@ -207,7 +210,52 @@ func (r *RelationalViewReader) ReadPage(ctx context.Context, name string, crit q
 		page.HasNext = hasMore
 	}
 	page.HasPrev = win.hasPrev
+	page.Projection = crit.Projection // echo the effective projection (export plan pruning)
 	return page, nil
+}
+
+// applyProjection prunes a served Go-keyed document to the ?fields= projection,
+// mirroring the Mongo reader (which pushes the projection into the Find so only
+// the asked fields come back). crit.Projection is Go-field-path keyed: value 1 =
+// include, 0 = exclude. Inclusion keeps ONLY the projected top-level fields — the
+// id is dropped unless explicitly asked, exactly like the Mongo path; a dotted
+// (nested) key keeps its whole top-level segment. Exclusion drops the listed
+// top-level fields. Empty projection is a no-op (the full document).
+func applyProjection(doc map[string]any, proj map[string]int) {
+	if len(doc) == 0 || len(proj) == 0 {
+		return
+	}
+	include := false
+	for _, v := range proj {
+		if v != 0 {
+			include = true
+			break
+		}
+	}
+	if include {
+		keep := make(map[string]bool, len(proj))
+		for k, v := range proj {
+			if v == 0 {
+				continue
+			}
+			seg := k
+			if i := strings.IndexByte(k, '.'); i >= 0 {
+				seg = k[:i]
+			}
+			keep[seg] = true
+		}
+		for k := range doc {
+			if !keep[k] {
+				delete(doc, k)
+			}
+		}
+		return
+	}
+	for k, v := range proj {
+		if v == 0 {
+			delete(doc, k)
+		}
+	}
 }
 
 // ReadByID serves a by-id read: criteria.ByID (merged with any root-level
@@ -239,7 +287,9 @@ func (r *RelationalViewReader) ReadByID(ctx context.Context, name, id string, cr
 	if !crit.IncludeArchived {
 		v.node.StripArchivedChildren(doc)
 	}
-	return v.node.ToGoDoc(doc), true, nil
+	goDoc := v.node.ToGoDoc(doc)
+	applyProjection(goDoc, crit.Projection)
+	return goDoc, true, nil
 }
 
 // promoteID mirrors the Mongo storage transform onto the freshly built
@@ -301,10 +351,27 @@ func (r *RelationalViewReader) resolveWindow(ctx context.Context, v view, crit q
 	}
 }
 
-// decodeOffset reads the absolute-index int a relational cursor carries, after
-// checking its context hash matches the current filter/sort — a mismatch means
-// the listing context changed mid-navigation, so the cursor is rejected exactly
-// as the Mongo keyset path rejects a stale one.
+// offsetTuple encodes the absolute row offset a relational cursor carries in a
+// tuple shaped like the Mongo keyset cursor the WIRE layer validates: its
+// length must be len(sort)+1 (the web's validateCursorAgainstCriteria asserts
+// len(K)-1 == len(sort), the trailing slot being the keyset _id). The offset
+// lives in K[0]; the remaining slots are inert padding, so an incoming cursor
+// passes the structural check on every surface while the reader only ever reads
+// K[0]. sortLen is len(crit.Sort) at encode time.
+func offsetTuple(offset int64, sortLen int) []any {
+	k := make([]any, sortLen+1)
+	k[0] = offset
+	for i := 1; i <= sortLen; i++ {
+		k[i] = 0
+	}
+	return k
+}
+
+// decodeOffset reads the absolute-index int a relational cursor carries (K[0]),
+// after checking its context hash matches the current filter/sort — a mismatch
+// means the listing context changed mid-navigation, so the cursor is rejected
+// exactly as the Mongo keyset path rejects a stale one. The tuple length is not
+// re-checked here: the wire layer already asserted len(K)-1 == len(sort).
 func decodeOffset(cur, hashCtx string) (int64, error) {
 	c, err := queries.DecodeCursor(cur)
 	if err != nil {
@@ -313,7 +380,7 @@ func decodeOffset(cur, hashCtx string) (int64, error) {
 	if c.H != hashCtx {
 		return 0, queries.ErrCursorInvalid
 	}
-	if len(c.K) != 1 {
+	if len(c.K) == 0 {
 		return 0, queries.ErrCursorInvalid
 	}
 	f, ok := c.K[0].(float64) // the cursor tuple round-trips through JSON

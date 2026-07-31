@@ -155,6 +155,47 @@ func TestServableRootField_Passes(t *testing.T) {
 	}
 }
 
+// TestApplyProjection covers the ?fields= pruning the relational reader mirrors
+// from the Mongo Find projection: inclusion keeps only the asked top-level fields
+// (id dropped unless asked), a dotted key keeps its whole segment, exclusion drops
+// the listed fields, and an empty projection is a no-op.
+func TestApplyProjection(t *testing.T) {
+	base := func() map[string]any {
+		return map[string]any{"ID": "x", "_id": "x", "Code": "c", "Name": "n", "WidgetParts": []any{}}
+	}
+
+	// inclusion — only Code survives (id dropped, mirroring Mongo).
+	d := base()
+	applyProjection(d, map[string]int{"Code": 1})
+	if len(d) != 1 || d["Code"] != "c" {
+		t.Errorf("inclusion should keep only Code, got %v", d)
+	}
+
+	// inclusion of a dotted (nested) key keeps the whole top segment.
+	d = base()
+	applyProjection(d, map[string]int{"WidgetParts.Label": 1})
+	if _, ok := d["WidgetParts"]; !ok || len(d) != 1 {
+		t.Errorf("nested projection should keep the WidgetParts segment, got %v", d)
+	}
+
+	// exclusion drops only the listed field.
+	d = base()
+	applyProjection(d, map[string]int{"Name": 0})
+	if _, ok := d["Name"]; ok {
+		t.Errorf("exclusion should drop Name, got %v", d)
+	}
+	if _, ok := d["Code"]; !ok {
+		t.Error("exclusion must keep the unlisted fields")
+	}
+
+	// empty projection is a no-op.
+	d = base()
+	applyProjection(d, nil)
+	if len(d) != 5 {
+		t.Errorf("empty projection must not prune, got %v", d)
+	}
+}
+
 // relViewWith builds a one-view relational reader over a fakeLoader with the
 // given per-view ceiling, so the MaxLimit tests run without a database.
 func relViewWith(ceiling int64, fake *fakeLoader) *RelationalViewReader {
