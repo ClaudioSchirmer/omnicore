@@ -11,6 +11,38 @@ with `1.0.0`.
 
 ## [Unreleased]
 
+### Added
+
+- **Relational views — read a `query.View` straight from the SoR.**
+  `View(name).RelationalSource(loader)` serves a plain single-aggregate view from
+  the relational System of Record instead of the Mongo projection: the framework
+  loads the aggregate through the loader, maps it to the same column-keyed
+  document a Mongo-backed view stores, and serves it through the same four read
+  surfaces — **read-your-writes with no CDC lag**. Intended narrowly for
+  monitoring dashboards, freshest-possible queries, and MVPs that need a read
+  side before the projection pipeline exists; the canonical path stays
+  SQL → CDC → MongoDB.
+  - `.RelationalSource(reader)` takes a `query.RelationalReader` — the port
+    `read.AggregateLoader[T]` already satisfies (`FindAllEntities`/
+    `CountEntities`/`BoundTable`), so pass the aggregate repository's existing
+    `repo.Loader` (one loader, shared with the repo; do not build a second one).
+    A boot guard asserts `loader.BoundTable() == schema.Table()`.
+  - **Full parity** on the root read-side controls: the 16-operator filter
+    vocabulary, sort, `?fields=` projection, pagination (offset-in-cursor, behind
+    the identical `after`/`before`/`limit` API), `onlyTotal`, `includeArchived`,
+    by-id, CSV/XLSX export, and the `MaxLimit`/`MaxExportRows` ceilings.
+  - **Unsupported.** The multi-source shapes — the `Embed` family and
+    `SharedBaseView` — fail at boot; `ComposedView`/`Link` are a different type
+    and carry no marker. Free-text `?search=` and a filter or sort on any
+    non-root column (a dotted child path, a flat root-level sibling, a dotted
+    child-level sibling, or an unknown field) are rejected with a typed
+    `RelationalCapabilityNotification` (`SemanticSchema` → **400**), naming the
+    field and the escape hatch (drop the marker to serve from Mongo).
+  - Flipping the backing is a shape change (it moves the rebuild hash), so it
+    **requires a `Version(N)` bump**: gaining the marker resolves to
+    `DriftRelationalSync` (registry synced, no rebuild, Mongo collection left
+    untouched); losing it rebuilds the Mongo projection.
+
 ### Changed
 
 - **breaking: a relational load surfaces the managed columns on the typed
@@ -54,6 +86,13 @@ with `1.0.0`.
   - **Migration:** implement `IsSameBusinessIdentity` on every `AggregateValueObject`
     — one line delegating to `IsSameByBusinessFields`, or a natural-key comparison
     (e.g. `Address`: `Country`+`ZipCode`+`Street`+`Number`).
+
+### Fixed
+
+- A brand-new Mongo view introduced over an aggregate that **already holds
+  history** now backfills the pre-existing rows on first boot
+  (`DriftFreshBackfill`) instead of coming up empty — a fresh view over populated
+  data is rebuilt, not merely registered.
 
 ## [0.39.1] - 2026-07-30
 
