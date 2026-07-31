@@ -76,9 +76,20 @@ func NewRelationalViewReader(views []*query.ViewDefinition) *RelationalViewReade
 	return r
 }
 
-// Views reports whether any relational view is registered — the wiring installs
+// Empty reports whether any relational view is registered — the wiring installs
 // this reader into the dispatch seam only when there is one.
 func (r *RelationalViewReader) Empty() bool { return len(r.views) == 0 }
+
+// RelationalViewNames is the per-view route the dispatch seam consults: the set
+// of view names this reader serves. The seam sends exactly these to the
+// relational reader and everything else to the Mongo reader.
+func (r *RelationalViewReader) RelationalViewNames() map[string]bool {
+	out := make(map[string]bool, len(r.views))
+	for name := range r.views {
+		out[name] = true
+	}
+	return out
+}
 
 // ReadPage serves a paged read of a relational view: filter -> criteria, the
 // offset window decoded from the cursor, load -> BuildDocument -> strip ->
