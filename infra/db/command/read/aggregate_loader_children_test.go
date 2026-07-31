@@ -67,7 +67,9 @@ func TestHydrateChildren_UndeclaredChildSchemaErrors(t *testing.T) {
 // The manual child path reads via QueryMaps (all rows at once), so its only IO
 // failure is a QueryMaps error — the old per-row Rows.Err() case no longer exists.
 func TestHydrateChildren_ManualChildScanner_QueryMapsError(t *testing.T) {
-	manual := func(map[string]any) (domain.AggregateValueObject, error) { return covChild{ID: "c1"}, nil }
+	manual := func(map[string]any) (domain.AggregateValueObject, error) {
+		return domain.WithID(covChild{}, domain.NewID("c1")), nil
+	}
 	mapsErr := func(string, []any) ([]map[string]any, error) { return nil, errFakeDB }
 	l := newCovAggLoader(fakeEngineWithMaps(nil, mapsErr), covAggSchema).WithChildScanner("covChild", manual)
 	root := &covAgg{Name: "a"}

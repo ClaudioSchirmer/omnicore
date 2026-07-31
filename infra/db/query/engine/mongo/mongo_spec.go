@@ -70,6 +70,12 @@ func ApplyMongoSpecs(ctx context.Context, m *MongoDB, views []*query.ViewDefinit
 		slog.Bool("forceRebuild", forceRebuild))
 
 	for _, v := range views {
+		// A RelationalSource view is read from the SoR and never materialized to
+		// Mongo — provisioning its collection/indexes would leave an empty
+		// collection that the drift check reads as DriftMongoWiped. Skip it.
+		if v.IsRelational() {
+			continue
+		}
 		if err := v.ValidateMongoSpec(); err != nil {
 			return err
 		}

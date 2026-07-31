@@ -45,11 +45,10 @@ func (e *covAgg) AggregateChildren() []domain.AggregateValueObject {
 }
 
 type covChild struct {
-	ID    string
+	domain.Managed
 	Label string
 }
 
-func (c covChild) GetID() domain.ID                                 { return domain.NewID(c.ID) }
 func (c covChild) BuildRules(string, domain.Service, *domain.Rules) {}
 
 var covAggSchema = core.NewTableSchema[*covAgg]("cov_aggs").

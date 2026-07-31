@@ -353,7 +353,7 @@ func TestHydrateChildren_ManualChildScanner(t *testing.T) {
 	l := read.NewAggregateLoader[*covAgg](pg, func() *covAgg { return &covAgg{} }).
 		WithSchema(covAggSchema).
 		WithChildScanner("covChild", func(map[string]any) (domain.AggregateValueObject, error) {
-			return covChild{ID: "m1", Label: "manual"}, nil
+			return domain.WithID(covChild{Label: "manual"}, domain.NewID("m1")), nil
 		})
 
 	got, err := l.FindOne(context.Background(), criteria.Where(nil))

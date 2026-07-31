@@ -125,6 +125,10 @@
         "label": "Views"
       },
       {
+        "id": "relational-view",
+        "label": "Relational view"
+      },
+      {
         "id": "service-to-service",
         "label": "Service-to-service"
       },

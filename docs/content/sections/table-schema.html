@@ -348,6 +348,37 @@ core.NewExternalSchema("users").ID("id").Field("Email", "mail")</code></pre>
     <a href="#table-schema~three-name-model">The three-name model</a>.
 </p>
 
+<h3>Reading the managed columns back — the <code>domain.Managed</code> carrier</h3>
+<p>
+    A relational load (<code>FindOne</code>/<code>FindAll</code> on a <code>BaseAggregateRepository</code>) surfaces the
+    framework-owned columns onto the typed entity — the <strong>id AND</strong> <code>revision</code> +
+    <code>created_at</code>/<code>updated_at</code>/<code>deleted_at</code> — on the <strong>root and every aggregate
+    child alike</strong>. They ride an embedded carrier, <code>domain.Managed</code>, which <code>BaseEntity</code>
+    carries for you (roots) and which every aggregate value object embeds (children). After a load the getters answer:
+</p>
+<table>
+    <thead><tr><th>Getter</th><th>Type</th><th>Access</th></tr></thead>
+    <tbody>
+        <tr><td><code>GetID()</code></td><td><code>domain.ID</code> (child) / <code>*domain.ID</code> (root)</td><td><strong>set + get</strong> — <code>SetID</code>/<code>ClearID</code>; identity flows in from the persister and, on some surfaces, the caller</td></tr>
+        <tr><td><code>GetRevision()</code></td><td><code>int64</code> (0 = absent)</td><td>read-only</td></tr>
+        <tr><td><code>GetCreatedAt()</code></td><td><code>*time.Time</code> (nil = not loaded/persisted)</td><td>read-only</td></tr>
+        <tr><td><code>GetUpdatedAt()</code></td><td><code>*time.Time</code></td><td>read-only</td></tr>
+        <tr><td><code>GetDeletedAt()</code></td><td><code>*time.Time</code> (nil = live row)</td><td>read-only</td></tr>
+    </tbody>
+</table>
+<p>
+    Only the id is settable. <code>Revision</code> and the three timestamps are <strong>get-only</strong> by design: the
+    write path is untouched — <code>created_at</code>/<code>updated_at</code> are stamped by the app clock,
+    <code>revision</code> by the framework, and <code>deleted_at</code> moves only through Archive/Unarchive — so a public
+    setter on them would be a lie the write would ignore. The carrier is populated by the loader through a
+    package-visible seal; the timestamps are honest <code>*time.Time</code> (nil, never a misleading zero, when a column
+    is undeclared or a row is not yet persisted). The carrier's fields are <strong>unexported</strong>, so it never
+    participates in business identity (<code>IsSameByBusinessFields</code> skips it), never enters the audit delta
+    (<code>GoFieldValues</code> walks only declared fields), and is <strong>not cloned into the <a href="#old-state">Old()</a>
+    ghost</strong> (the JSON snapshot ignores unexported fields). <code>revision</code> surfaces here as a read getter only —
+    it never flows onto the <code>WriteResult</code> or the outbox from this path.
+</p>
+
 <div class="box">
     <strong>Operational consequence — the time source is the pods' clock, not the database's.</strong>
     With several pods writing, timestamp quality across writers is only as good as the cluster's clock sync:

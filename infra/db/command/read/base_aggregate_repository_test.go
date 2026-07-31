@@ -69,11 +69,10 @@ func TestBaseAggregateRepository_WithSchemaThreadsBothSides(t *testing.T) {
 // returned as a pointer from AggregateChildren — so validateDeclaredChildren
 // walks the reflect.Ptr deref loop before matching the schema's Child(...).
 type ptrChildVO struct {
-	ID    string
+	domain.Managed
 	Label string
 }
 
-func (c *ptrChildVO) GetID() domain.ID                                 { return domain.NewID(c.ID) }
 func (c *ptrChildVO) BuildRules(string, domain.Service, *domain.Rules) {}
 
 type ptrAggEntity struct {

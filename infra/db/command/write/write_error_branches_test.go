@@ -96,12 +96,12 @@ func aggUpdatableAllOps(t *testing.T) domain.Updatable {
 	root := &aggWriteRoot{Name: "r"}
 	root.SetID(domain.NewID(uuid.NewString()))
 	root.AggregateConstructor([]domain.AggregateValueObject{
-		aggWriteChild{ID: domain.NewID(id1), Label: "keep"},
-		aggWriteChild{ID: domain.NewID(id2), Label: "drop"},
+		domain.WithID(aggWriteChild{Label: "keep"}, domain.NewID(id1)),
+		domain.WithID(aggWriteChild{Label: "drop"}, domain.NewID(id2)),
 	})
 	upd, err := domain.GetUpdatable(root, func(r *aggWriteRoot) error {
-		domain.ChangeAggregateChild(r, aggWriteChild{ID: domain.NewID(id1), Label: "keep"}, aggWriteChild{ID: domain.NewID(id1), Label: "changed"})
-		domain.RemoveAggregateChild(r, aggWriteChild{ID: domain.NewID(id2), Label: "drop"})
+		domain.ChangeAggregateChild(r, domain.WithID(aggWriteChild{Label: "keep"}, domain.NewID(id1)), domain.WithID(aggWriteChild{Label: "changed"}, domain.NewID(id1)))
+		domain.RemoveAggregateChild(r, domain.WithID(aggWriteChild{Label: "drop"}, domain.NewID(id2)))
 		domain.AddAggregateChild(r, aggWriteChild{Label: "new"})
 		return nil
 	}, nil, "GetUpdatable")
@@ -145,7 +145,7 @@ func TestSoftWriteAggregate_StepFailures(t *testing.T) {
 		t.Helper()
 		root := &aggWriteRoot{Name: "r"}
 		root.SetID(domain.NewID(uuid.NewString()))
-		root.AggregateConstructor([]domain.AggregateValueObject{aggWriteChild{ID: domain.NewIDFromUUID(uuid.New()), Label: "c"}})
+		root.AggregateConstructor([]domain.AggregateValueObject{domain.WithID(aggWriteChild{Label: "c"}, domain.NewIDFromUUID(uuid.New()))})
 		a, err := domain.GetArchivable(root, nil, "GetArchivable")
 		if err != nil {
 			t.Fatalf("GetArchivable: %v", err)
@@ -191,7 +191,7 @@ func TestSoftWriteAggregate_CascadeSkips(t *testing.T) {
 			ID("id").Field("Name", "name").DeletedAt("deleted_at")
 		root := &aggWriteRoot{Name: "r"}
 		root.SetID(domain.NewID(uuid.NewString()))
-		root.AggregateConstructor([]domain.AggregateValueObject{aggWriteChild{ID: domain.NewIDFromUUID(uuid.New()), Label: "c"}})
+		root.AggregateConstructor([]domain.AggregateValueObject{domain.WithID(aggWriteChild{Label: "c"}, domain.NewIDFromUUID(uuid.New()))})
 		a, _ := domain.GetArchivable(root, nil, "GetArchivable")
 		tx := &recTx{}
 		be := newFlatBE(&recBeginner{tx: tx})
@@ -210,7 +210,7 @@ func TestSoftWriteAggregate_CascadeSkips(t *testing.T) {
 				ID("id").ParentID("agg_w_id").Field("Label", "label"))
 		root := &aggWriteRoot{Name: "r"}
 		root.SetID(domain.NewID(uuid.NewString()))
-		root.AggregateConstructor([]domain.AggregateValueObject{aggWriteChild{ID: domain.NewIDFromUUID(uuid.New()), Label: "c"}})
+		root.AggregateConstructor([]domain.AggregateValueObject{domain.WithID(aggWriteChild{Label: "c"}, domain.NewIDFromUUID(uuid.New()))})
 		u, _ := domain.GetUnarchivable(root, nil, "GetUnarchivable")
 		tx := &recTx{}
 		be := newFlatBE(&recBeginner{tx: tx})
@@ -891,11 +891,10 @@ func TestUpdateWithBase_StepFailures(t *testing.T) {
 // cascadeRoleSchema: a role over a base that HAS DeletedAt and one native
 // child — the shape whose lifecycle converges on archive/unarchive.
 type cascadeBaseChild struct {
-	ID   string
+	domain.Managed
 	Note string
 }
 
-func (c cascadeBaseChild) GetID() domain.ID                                 { return domain.NewID(c.ID) }
 func (c cascadeBaseChild) BuildRules(string, domain.Service, *domain.Rules) {}
 
 func cascadeRoleSchema() *TableSchema {

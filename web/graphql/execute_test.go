@@ -87,9 +87,9 @@ func TestExecute_ReadConnectionEndToEnd(t *testing.T) {
 	}
 
 	// ── criteria reached the handler, folded identically to the REST path ──
-	clause, ok := h.captured.Filter["Name"].(map[string]any)
-	if !ok || clause["$regex"] != "^al" {
-		t.Fatalf("where startswith did not fold to {$regex:^al}, got %v", h.captured.Filter["Name"])
+	clause, ok := h.captured.Filter["Name"].(queries.TextMatch)
+	if !ok || clause.Value != "al" || clause.Kind != queries.TextPrefix {
+		t.Fatalf("where startswith did not fold to TextMatch{Value:al, Kind:Prefix}, got %#v", h.captured.Filter["Name"])
 	}
 	if h.captured.Limit != 10 {
 		t.Errorf("first=10 → Limit, got %d", h.captured.Limit)
@@ -159,13 +159,13 @@ func TestExecute_InListOperatorFoldsToMongoIn(t *testing.T) {
 	if len(resp.Errors) != 0 {
 		t.Fatalf("errors: %+v", resp.Errors)
 	}
-	clause, ok := h.captured.Filter["Name"].(map[string]any)
-	if !ok {
-		t.Fatalf("name in-list did not produce a clause, got %v", h.captured.Filter)
+	clause, ok := h.captured.Filter["Name"].(queries.Clause)
+	if !ok || clause.Op != queries.FilterIn {
+		t.Fatalf("name in-list did not produce an in-Clause, got %#v", h.captured.Filter["Name"])
 	}
-	list, ok := clause["$in"].([]any)
-	if !ok || len(list) != 2 || list[0] != "a" || list[1] != "b" {
-		t.Errorf("$in = %v, want [a b]", clause["$in"])
+	list := clause.Values
+	if len(list) != 2 || list[0] != "a" || list[1] != "b" {
+		t.Errorf("in = %v, want [a b]", list)
 	}
 }
 

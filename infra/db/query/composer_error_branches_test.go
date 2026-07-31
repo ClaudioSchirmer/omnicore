@@ -15,11 +15,10 @@ import (
 // error branch.
 
 type composerRoleChild struct {
-	ID    string
+	domain.Managed
 	Label string
 }
 
-func (c composerRoleChild) GetID() domain.ID                                 { return domain.NewID(c.ID) }
 func (c composerRoleChild) BuildRules(string, domain.Service, *domain.Rules) {}
 
 type composerRole struct {

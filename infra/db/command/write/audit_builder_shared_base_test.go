@@ -18,12 +18,11 @@ import (
 // events with empty snapshots.
 
 type sbAuditAddr struct {
-	ID     string
+	domain.Managed
 	Street string
 	City   string
 }
 
-func (c sbAuditAddr) GetID() domain.ID                                 { return domain.NewID(c.ID) }
 func (c sbAuditAddr) BuildRules(string, domain.Service, *domain.Rules) {}
 
 type sbAuditRole struct {
@@ -128,7 +127,7 @@ func TestBuildUpdateEvent_SharedBaseTracksBaseFieldDelta(t *testing.T) {
 func TestBuildDeleteEvent_SharedBaseComposesForensicSnapshot(t *testing.T) {
 	e := &sbAuditRole{Name: "Jane", Email: "jane@x.com", Document: "D1", UserName: "jane"}
 	e.SetID(domain.NewID(uuid.NewString()))
-	e.AggregateConstructor([]domain.AggregateValueObject{sbAuditAddr{ID: "a1", Street: "1 Main St", City: "Metropolis"}})
+	e.AggregateConstructor([]domain.AggregateValueObject{domain.WithID(sbAuditAddr{Street: "1 Main St", City: "Metropolis"}, domain.NewID("a1"))})
 	d, err := domain.GetDeletable(e, nil, "GetDeletable")
 	if err != nil {
 		t.Fatalf("GetDeletable: %v", err)

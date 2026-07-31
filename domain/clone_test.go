@@ -115,11 +115,10 @@ func TestOld_ReturnsZeroWhenNoSnapshot(t *testing.T) {
 // VO with one field; AggregateChildren reports it. Used to test that the
 // pre-mutation aggregate items are preserved in Old().
 type aggChild struct {
-	ID    string
+	Managed
 	Label string
 }
 
-func (a aggChild) GetID() ID                          { return NewID(a.ID) }
 func (a aggChild) BuildRules(string, Service, *Rules) {}
 
 type aggEntity struct {
@@ -141,15 +140,15 @@ func TestCaptureOld_AggregateIncludesChildren(t *testing.T) {
 	e.SetID(NewID(uuid.NewString()))
 	ensureInit(e)
 	e.AggregateConstructor([]AggregateValueObject{
-		aggChild{ID: "c1", Label: "home"},
-		aggChild{ID: "c2", Label: "work"},
+		aggChild{Label: "home"},
+		aggChild{Label: "work"},
 	})
 
 	captureOld(e)
 
 	// Mutate the original aggregate AFTER the snapshot.
 	e.Name = "renamed"
-	RemoveAggregateChild(e, aggChild{ID: "c1", Label: "home"})
+	RemoveAggregateChild(e, aggChild{Label: "home"})
 
 	old := Old(e)
 	if old == nil {

@@ -79,10 +79,10 @@ func TestOldFieldsOf_Branches(t *testing.T) {
 func TestChildEventOf_RemainingBranches(t *testing.T) {
 	child := covAggSchema.ChildSchema("covChild")
 	mk := func(status domain.AggregateItemStatus) domain.AggregateItem[domain.AggregateValueObject] {
-		return domain.NewAggregateItem[domain.AggregateValueObject](covChild{ID: "c1", Label: "x"}, status)
+		return domain.NewAggregateItem[domain.AggregateValueObject](domain.WithID(covChild{Label: "x"}, domain.NewID("c1")), status)
 	}
 	mk2 := func(original, current domain.AggregateItemStatus) domain.AggregateItem[domain.AggregateValueObject] {
-		return domain.AggregateItem[domain.AggregateValueObject]{Item: covChild{ID: "c1", Label: "x"}, OriginalStatus: original, CurrentStatus: current}
+		return domain.AggregateItem[domain.AggregateValueObject]{Item: domain.WithID(covChild{Label: "x"}, domain.NewID("c1")), OriginalStatus: original, CurrentStatus: current}
 	}
 
 	// update + a DB item changed (Constructor→Changed) → updated + changes.

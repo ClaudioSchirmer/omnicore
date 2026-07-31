@@ -81,6 +81,7 @@ func (coreIT) Translations() map[string]string {
 		"TenantMissingNotification":        "Identificatore del tenant assente nel principal autenticato.",
 		"TenantMismatchNotification":       "La risorsa appartiene a un altro tenant.",
 		"FieldAccessForbiddenNotification": "Campo non accessibile.",
+		"RelationalCapabilityNotification": "Questa funzionalità non è supportata da una vista letta dal backend relazionale; rimuovi RelationalSource() per servirla da Mongo.",
 
 		// Server / routing
 		"InternalServerErrorNotification": "Errore interno del server.",

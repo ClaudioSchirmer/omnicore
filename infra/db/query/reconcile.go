@@ -319,6 +319,13 @@ func (s *SyncEngine) ReconcileAllViews(ctx context.Context, cfg ReconcileConfig)
 
 	var reports []ReconcileReport
 	for _, view := range views {
+		// A RelationalSource view is never materialized to Mongo, so the
+		// revision-parity sweep would read every SoR row as a "missing" document
+		// and RE-materialize the collection — the exact opposite of the contract.
+		// Skip it (alongside the rebuild-in-flight skip below).
+		if view.IsRelational() {
+			continue
+		}
 		if _, rebuilding := s.resolver.ShadowActive(view.name); rebuilding {
 			slog.InfoContext(ctx, "projection.reconcile.skipped",
 				slog.String("view", view.name), slog.String("reason", "rebuild in flight"))

@@ -2,6 +2,7 @@ package read
 
 import (
 	"context"
+	stdsql "database/sql"
 	"errors"
 	"strings"
 	"testing"
@@ -46,13 +47,23 @@ func covAggRootRow(id, name string) func() Rows {
 	}
 }
 
+// covChildRow scans one cov_children row in the column order the loader now
+// emits: fk (leading key) + label (business column) as *string, then the child's
+// own id as the trailing *stdsql.NullString carrier column (id left the scan plan
+// when it moved into domain.Managed). The deleted_at trailing *sql.NullTime stays
+// unset (a live row).
 func covChildRow(fk, id, label string) func() Rows {
 	return func() Rows {
 		return &fakeDBRows{rows: 1, scan: func(_ int, dest []any) error {
-			vals := []string{fk, id, label}
+			strs := []string{fk, label}
 			for j, d := range dest {
-				if p, ok := d.(*string); ok && j < len(vals) {
-					*p = vals[j]
+				switch p := d.(type) {
+				case *string:
+					if j < len(strs) {
+						*p = strs[j]
+					}
+				case *stdsql.NullString:
+					*p = stdsql.NullString{String: id, Valid: id != ""}
 				}
 			}
 			return nil
@@ -154,10 +165,17 @@ func TestFindAll_HydratesBatchedChildrenAcrossRoots(t *testing.T) {
 		case strings.Contains(sql, "FROM cov_children"):
 			childSQL, childArgs = sql, args
 			return &fakeDBRows{rows: 2, scan: func(i int, dest []any) error {
-				vals := [][]string{{"r1", "c1", "L1"}, {"r2", "c2", "L2"}}[i]
+				// Column order: fk, label (*string), then trailing id (*stdsql.NullString).
+				strs := [][]string{{"r1", "L1"}, {"r2", "L2"}}[i]
+				id := []string{"c1", "c2"}[i]
 				for j, d := range dest {
-					if p, ok := d.(*string); ok && j < len(vals) {
-						*p = vals[j]
+					switch p := d.(type) {
+					case *string:
+						if j < len(strs) {
+							*p = strs[j]
+						}
+					case *stdsql.NullString:
+						*p = stdsql.NullString{String: id, Valid: true}
 					}
 				}
 				return nil

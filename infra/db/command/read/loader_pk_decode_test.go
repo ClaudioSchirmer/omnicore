@@ -1,6 +1,7 @@
 package read
 
 import (
+	"database/sql"
 	"reflect"
 	"testing"
 
@@ -8,9 +9,9 @@ import (
 )
 
 // mysqlLikeDialect reuses the passthrough test dialect but decodes a 16-byte
-// leading value into a canonical uuid string — the MySQL BINARY(16) behavior —
-// so decodeChildPK's per-backend normalization can be asserted without the
-// engine. Only DecodeID is overridden; the rest is inherited.
+// value into a canonical uuid string — the MySQL BINARY(16) behavior — so the
+// managed carrier's id normalization can be asserted without the engine. Only
+// DecodeID is overridden; the rest is inherited.
 type mysqlLikeDialect struct{ testPGDialect }
 
 func (mysqlLikeDialect) DecodeID(raw string) (string, error) {
@@ -29,33 +30,36 @@ func covChildSchemaForDecode() *TableSchema {
 		ID("id").ParentID("agg_id").Field("Label", "label").DeletedAt("deleted_at")
 }
 
-// On a MySQL-style backend the child's own ID is auto-scanned as raw BINARY(16)
-// bytes into its string field; decodeChildPK must normalize it to the canonical
-// uuid (the leading ParentID is decoded by the loader, but the child ID is not).
-func TestDecodeChildPK_MySQLBinaryNormalized(t *testing.T) {
+// A child's own id now lives in the unexported domain.Managed carrier, read as a
+// trailing column and stamped by managedScan.apply, which decodes it through the
+// dialect. On a MySQL-style backend the id arrives as raw BINARY(16) bytes and
+// must normalize to the canonical uuid before SetID.
+func TestManagedScanApply_MySQLBinaryIDNormalized(t *testing.T) {
 	child := covChildSchemaForDecode()
 	id := uuid.New()
-	vp := reflect.New(child.GoType())
-	vp.Elem().FieldByName("ID").SetString(string(id[:])) // 16 raw bytes, as scanned
+	ms := newChildManagedScan(child)
+	ms.id = &sql.NullString{String: string(id[:]), Valid: true} // 16 raw bytes, as scanned
 
-	if err := decodeChildPK(vp, child, mysqlLikeDialect{}); err != nil {
-		t.Fatalf("decodeChildPK: %v", err)
+	vp := reflect.New(child.GoType())
+	if err := ms.apply(vp.Interface(), mysqlLikeDialect{}); err != nil {
+		t.Fatalf("apply: %v", err)
 	}
 	if got := vp.Elem().Interface().(covChild).GetID(); got.Value() != id.String() {
-		t.Errorf("child ID not decoded: got %q want %q", got, id.String())
+		t.Errorf("child id not decoded: got %q want %q", got, id.String())
 	}
 }
 
-// On Postgres the field already holds canonical text; DecodeID is a passthrough
-// (the value is not 16 bytes), so the id must survive unchanged.
-func TestDecodeChildPK_PostgresPassthrough(t *testing.T) {
+// On Postgres the id is already canonical text; DecodeID is a passthrough (the
+// value is not 16 bytes), so it must survive SetID unchanged.
+func TestManagedScanApply_PostgresIDPassthrough(t *testing.T) {
 	child := covChildSchemaForDecode()
 	canonical := uuid.New().String()
-	vp := reflect.New(child.GoType())
-	vp.Elem().FieldByName("ID").SetString(canonical)
+	ms := newChildManagedScan(child)
+	ms.id = &sql.NullString{String: canonical, Valid: true}
 
-	if err := decodeChildPK(vp, child, testPGDialect{}); err != nil {
-		t.Fatalf("decodeChildPK: %v", err)
+	vp := reflect.New(child.GoType())
+	if err := ms.apply(vp.Interface(), testPGDialect{}); err != nil {
+		t.Fatalf("apply: %v", err)
 	}
 	if got := vp.Elem().Interface().(covChild).GetID(); got.Value() != canonical {
 		t.Errorf("passthrough drifted: got %q want %q", got, canonical)

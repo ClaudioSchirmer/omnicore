@@ -11,6 +11,89 @@ with `1.0.0`.
 
 ## [Unreleased]
 
+### Added
+
+- **Relational views — read a `query.View` straight from the SoR.**
+  `View(name).RelationalSource(loader)` serves a plain single-aggregate view from
+  the relational System of Record instead of the Mongo projection: the framework
+  loads the aggregate through the loader, maps it to the same column-keyed
+  document a Mongo-backed view stores, and serves it through the same four read
+  surfaces — **read-your-writes with no CDC lag**. Intended narrowly for
+  monitoring dashboards, freshest-possible queries, and MVPs that need a read
+  side before the projection pipeline exists; the canonical path stays
+  SQL → CDC → MongoDB.
+  - `.RelationalSource(reader)` takes a `query.RelationalReader` — the port
+    `read.AggregateLoader[T]` already satisfies (`FindAllEntities`/
+    `CountEntities`/`BoundTable`), so pass the aggregate repository's existing
+    `repo.Loader` (one loader, shared with the repo; do not build a second one).
+    A boot guard asserts `loader.BoundTable() == schema.Table()`.
+  - **Full parity** on the root read-side controls: the 16-operator filter
+    vocabulary, sort, `?fields=` projection, pagination (offset-in-cursor, behind
+    the identical `after`/`before`/`limit` API), `onlyTotal`, `includeArchived`,
+    by-id, CSV/XLSX export, and the `MaxLimit`/`MaxExportRows` ceilings.
+  - **Unsupported.** The multi-source shapes — the `Embed` family and
+    `SharedBaseView` — fail at boot; `ComposedView`/`Link` are a different type
+    and carry no marker. Free-text `?search=` and a filter or sort on any
+    non-root column (a dotted child path, a flat root-level sibling, a dotted
+    child-level sibling, or an unknown field) are rejected with a typed
+    `RelationalCapabilityNotification` (`SemanticSchema` → **400**), naming the
+    field and the escape hatch (drop the marker to serve from Mongo).
+  - Flipping the backing is a shape change (it moves the rebuild hash), so it
+    **requires a `Version(N)` bump**: gaining the marker resolves to
+    `DriftRelationalSync` (registry synced, no rebuild, Mongo collection left
+    untouched); losing it rebuilds the Mongo projection.
+
+### Changed
+
+- **breaking: a relational load surfaces the managed columns on the typed
+  entity — `domain.Managed`.** `FindOne`/`FindAll` now populate the
+  framework-owned columns — the id AND `revision` +
+  `created_at`/`updated_at`/`deleted_at` — onto the root AND every aggregate
+  child, read back through getters (`GetRevision`/`GetCreatedAt`/`GetUpdatedAt`/
+  `GetDeletedAt`). They ride an embedded carrier, `domain.Managed`: `BaseEntity`
+  carries it for roots, and **every `AggregateValueObject` must now embed it** —
+  the AVO's exported `ID` field moves INTO the carrier (its `GetID()` is
+  promoted). The id stays set+get (`SetID`/`ClearID`); `revision` and the three
+  timestamps are get-only (each `*time.Time`, nil when absent) — the write path
+  is untouched, so a public setter would be a lie the write ignores. The carrier
+  is unexported, so it never participates in business identity
+  (`IsSameByBusinessFields` skips it), never enters the audit delta, and is not
+  cloned into the `Old()` ghost.
+  - Auto and manual scanners are at parity: a manual `RootScanner`/`ChildScanner`
+    owns the business fields + the id (via `SetID`), the framework fills the
+    managed columns from the same row map.
+  - **Migration:** on every `AggregateValueObject`, replace the `ID domain.ID`
+    field with an embedded `domain.Managed` and delete its hand-written
+    `GetID()`; rewrite an id-in-a-literal as `domain.WithID(AVO{…}, id)` and an
+    id-on-a-variable as `v.SetID(id)`.
+
+- **breaking: aggregate child equality is now domain-declared —
+  `AggregateValueObject.IsSameBusinessIdentity`.** The change tracker no longer
+  matches aggregate children by `reflect.DeepEqual`; every `AggregateValueObject`
+  MUST implement `IsSameBusinessIdentity(other AggregateValueObject) bool`, which
+  the framework calls at all four match sites (add/re-activate, change, remove,
+  and the post-INSERT id write-back). Only the domain can say when two children
+  are "the same". Consequences:
+  - **New contract — at most ONE active child per business identity.** A second
+    active child with the same identity is rejected as a duplicate
+    (`EntityAlreadyAddedNotification`, `SemanticConflict` → 409).
+  - **Same-identity re-send on a strict PUT updates in place (id preserved)**
+    instead of archive-old + insert-new, when the declared identity is
+    id-agnostic — no more id churn for an unchanged child.
+  - `domain.IsSameByBusinessFields(a, b)` is the opt-in structural helper (every
+    exported field except the framework-managed carrier) for children with no
+    natural key narrower than their full value.
+  - **Migration:** implement `IsSameBusinessIdentity` on every `AggregateValueObject`
+    — one line delegating to `IsSameByBusinessFields`, or a natural-key comparison
+    (e.g. `Address`: `Country`+`ZipCode`+`Street`+`Number`).
+
+### Fixed
+
+- A brand-new Mongo view introduced over an aggregate that **already holds
+  history** now backfills the pre-existing rows on first boot
+  (`DriftFreshBackfill`) instead of coming up empty — a fresh view over populated
+  data is rebuilt, not merely registered.
+
 ## [0.39.1] - 2026-07-30
 
 ### Added

@@ -16,11 +16,10 @@ import (
 // an empty natural key is rejected. Driven through the recording fake WriteTx.
 
 type bcAddr struct {
-	ID     string
+	domain.Managed
 	Street string
 }
 
-func (c bcAddr) GetID() domain.ID                                 { return domain.NewID(c.ID) }
 func (c bcAddr) BuildRules(string, domain.Service, *domain.Rules) {}
 
 type bcRole struct {
@@ -92,9 +91,9 @@ func TestBaseChild_InsertRoutesToBaseFK(t *testing.T) {
 func TestBaseChild_RemovedArchivesWhenDeletedAt(t *testing.T) {
 	e := &bcRole{Name: "Ana", Document: "D1", Matricula: "M1"}
 	e.SetID(domain.NewID(uuid.NewString()))
-	e.AggregateConstructor([]domain.AggregateValueObject{bcAddr{ID: "addr-1", Street: "Old"}})
+	e.AggregateConstructor([]domain.AggregateValueObject{domain.WithID(bcAddr{Street: "Old"}, domain.NewID("addr-1"))})
 	upd, err := domain.GetUpdatable(e, func(r *bcRole) error {
-		domain.RemoveAggregateChild(r, bcAddr{ID: "addr-1", Street: "Old"})
+		domain.RemoveAggregateChild(r, domain.WithID(bcAddr{Street: "Old"}, domain.NewID("addr-1")))
 		return nil
 	}, nil, "GetUpdatable")
 	if err != nil {
@@ -115,9 +114,9 @@ func TestBaseChild_RemovedArchivesWhenDeletedAt(t *testing.T) {
 func TestBaseChild_RemovedHardDeletesWhenNoDeletedAt(t *testing.T) {
 	e := &bcRole{Name: "Ana", Document: "D1", Matricula: "M1"}
 	e.SetID(domain.NewID(uuid.NewString()))
-	e.AggregateConstructor([]domain.AggregateValueObject{bcAddr{ID: "addr-1", Street: "Old"}})
+	e.AggregateConstructor([]domain.AggregateValueObject{domain.WithID(bcAddr{Street: "Old"}, domain.NewID("addr-1"))})
 	upd, err := domain.GetUpdatable(e, func(r *bcRole) error {
-		domain.RemoveAggregateChild(r, bcAddr{ID: "addr-1", Street: "Old"})
+		domain.RemoveAggregateChild(r, domain.WithID(bcAddr{Street: "Old"}, domain.NewID("addr-1")))
 		return nil
 	}, nil, "GetUpdatable")
 	if err != nil {
@@ -288,7 +287,7 @@ func TestSharedBaseInsert_UpsertActionPassesGuard(t *testing.T) {
 
 func TestSharedBaseInsert_ConstructorBaseChildNotReinserted(t *testing.T) {
 	e := &bcRole{Name: "Ana", Document: "D1", Matricula: "M1"}
-	e.AggregateConstructor([]domain.AggregateValueObject{bcAddr{ID: "addr-1", Street: "Existing"}}) // loaded
+	e.AggregateConstructor([]domain.AggregateValueObject{domain.WithID(bcAddr{Street: "Existing"}, domain.NewID("addr-1"))}) // loaded
 	domain.AddAggregateChild(e, bcAddr{Street: "New"})                                              // request-added
 	ins, _ := domain.GetInsertable(e, nil, "GetUpsertable")
 	tx := &recTx{queryFn: baseExistsQuery()}

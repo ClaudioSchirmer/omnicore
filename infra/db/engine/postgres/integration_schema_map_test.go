@@ -34,11 +34,10 @@ func (*schemaPerson) AggregateChildren() []domain.AggregateValueObject {
 }
 
 type schemaTag struct {
-	ID    string
+	domain.Managed
 	Label string
 }
 
-func (v schemaTag) GetID() domain.ID                                 { return domain.NewID(v.ID) }
 func (v schemaTag) BuildRules(string, domain.Service, *domain.Rules) {}
 
 func schemaPersonSchema() *core.TableSchema {

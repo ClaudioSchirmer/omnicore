@@ -15,12 +15,11 @@ import (
 // the child rows before they are deleted.
 
 type csChild struct {
-	ID    string
+	domain.Managed
 	Label string
 	Note  string // mapped to the child's sibling table
 }
 
-func (c csChild) GetID() domain.ID                                 { return domain.NewID(c.ID) }
 func (c csChild) BuildRules(string, domain.Service, *domain.Rules) {}
 
 type csRoot struct {

@@ -195,11 +195,17 @@ func reconcileViewDrift(ctx context.Context, cfg *Config, deps Deps, sync *query
 		if plans := report.PlansBy(query.DriftFreshInit); len(plans) > 0 {
 			diags = append(diags, query.FormatFreshInitDiagnostic(cfg.Relational.Dialect, plans))
 		}
+		if plans := report.PlansBy(query.DriftFreshBackfill); len(plans) > 0 {
+			diags = append(diags, query.FormatFreshBackfillDiagnostic(plans))
+		}
 		if plans := report.PlansBy(query.DriftMongoWiped); len(plans) > 0 {
 			diags = append(diags, query.FormatMongoWipedDiagnostic(plans))
 		}
 		if plans := report.PlansBy(query.DriftArtifactOnly); len(plans) > 0 {
 			diags = append(diags, query.FormatArtifactOnlyDiagnostic(plans))
+		}
+		if plans := report.PlansBy(query.DriftRelationalSync); len(plans) > 0 {
+			diags = append(diags, query.FormatRelationalSyncDiagnostic(plans))
 		}
 		if plans := report.PlansBy(query.DriftRebuildRequired); len(plans) > 0 {
 			diags = append(diags, query.FormatRebuildRequiredDiagnostic(plans))
@@ -240,12 +246,23 @@ func reconcileViewDrift(ctx context.Context, cfg *Config, deps Deps, sync *query
 			deps.Logger.Info("view registry artifact refreshed",
 				"view", plan.View.Name(),
 				"version", plan.CurrentVersion)
-		case query.DriftMongoWiped, query.DriftRebuildRequired, query.DriftDowngrade:
-			// All three drive a full blue-green rebuild under autoRun=true
-			// (Downgrade only when allowDowngrade gated above). These are the
-			// SLOW paths — collected and returned so the caller runs them in the
-			// background while the HTTP probes are already up (readyz 503 until
-			// they finish).
+		case query.DriftRelationalSync:
+			// A RelationalSource view's declared shape changed (bumped): record the
+			// new spec in the registry, NO rebuild (it is served from the SoR).
+			if err := sync.SyncRelationalRegistry(ctx, plan, cfg.Service); err != nil {
+				return nil, rebuildCfg, fmt.Errorf("bootstrap: sync relational registry on view %q: %w", plan.View.Name(), err)
+			}
+			deps.Logger.Info("relational view registry synced (no rebuild)",
+				"view", plan.View.Name(),
+				"version", plan.CurrentVersion)
+		case query.DriftMongoWiped, query.DriftRebuildRequired, query.DriftDowngrade, query.DriftFreshBackfill:
+			// All drive a full blue-green rebuild under autoRun=true (Downgrade only
+			// when allowDowngrade gated above). DriftFreshBackfill is a brand-new
+			// Mongo view over an aggregate that already holds history — the rebuild
+			// creates its missing registry row under the advisory lock and backfills
+			// the pre-existing rows. These are the SLOW paths — collected and
+			// returned so the caller runs them in the background while the HTTP
+			// probes are already up (readyz 503 until they finish).
 			rebuildPlans = append(rebuildPlans, plan)
 		}
 	}

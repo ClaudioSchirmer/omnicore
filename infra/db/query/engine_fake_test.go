@@ -76,11 +76,10 @@ type schemaSample struct {
 
 // fakeVO is a value-object fixture for the composer embed schemas.
 type fakeVO struct {
-	ID    string
+	domain.Managed
 	Label string
 }
 
-func (v fakeVO) GetID() domain.ID                                 { return domain.NewID(v.ID) }
 func (v fakeVO) BuildRules(string, domain.Service, *domain.Rules) {}
 
 func newBuilderCtx() persistence.RequestContext {

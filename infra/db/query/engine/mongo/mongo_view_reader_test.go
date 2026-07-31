@@ -8,7 +8,7 @@ import (
 )
 
 // translateFilterValue is the in-process bridge between the wire wrappers'
-// port-level sentinels (queries.RegexMatch / RegexMatchList) and the
+// port-level sentinels (queries.TextMatch / TextMatchList) and the
 // MongoDB driver's native types (bson.Regex). Each case asserts on the
 // returned BSON value so the suite stays free of a running Mongo.
 
@@ -43,8 +43,8 @@ func TestTranslateFilterValue_PassesThroughPlainValues(t *testing.T) {
 	}
 }
 
-func TestTranslateFilterValue_RegexMatch_SensitiveBecomesBareRegex(t *testing.T) {
-	got := translateFilterValue(queries.RegexMatch{Pattern: "^Bob"})
+func TestTranslateFilterValue_TextMatch_SensitiveBecomesBareRegex(t *testing.T) {
+	got := translateFilterValue(queries.TextMatch{Value: "Bob", Kind: queries.TextPrefix})
 	re, ok := got.(bson.Regex)
 	if !ok {
 		t.Fatalf("expected bson.Regex, got %T (%v)", got, got)
@@ -57,8 +57,8 @@ func TestTranslateFilterValue_RegexMatch_SensitiveBecomesBareRegex(t *testing.T)
 	}
 }
 
-func TestTranslateFilterValue_RegexMatch_InsensitiveAddsOption(t *testing.T) {
-	got := translateFilterValue(queries.RegexMatch{Pattern: "^bob$", CaseInsensitive: true})
+func TestTranslateFilterValue_TextMatch_InsensitiveAddsOption(t *testing.T) {
+	got := translateFilterValue(queries.TextMatch{Value: "bob", Kind: queries.TextExact, CaseInsensitive: true})
 	re, ok := got.(bson.Regex)
 	if !ok {
 		t.Fatalf("expected bson.Regex, got %T", got)
@@ -68,8 +68,8 @@ func TestTranslateFilterValue_RegexMatch_InsensitiveAddsOption(t *testing.T) {
 	}
 }
 
-func TestTranslateFilterValue_RegexMatch_NegateWrapsInNot(t *testing.T) {
-	got := translateFilterValue(queries.RegexMatch{Pattern: "^bob$", CaseInsensitive: true, Negate: true})
+func TestTranslateFilterValue_TextMatch_NegateWrapsInNot(t *testing.T) {
+	got := translateFilterValue(queries.TextMatch{Value: "bob", Kind: queries.TextExact, CaseInsensitive: true, Negate: true})
 	doc, ok := got.(bson.M)
 	if !ok {
 		t.Fatalf("expected bson.M, got %T (%v)", got, got)
@@ -83,9 +83,9 @@ func TestTranslateFilterValue_RegexMatch_NegateWrapsInNot(t *testing.T) {
 	}
 }
 
-func TestTranslateFilterValue_RegexMatchList_ExpandsIntoInWithRegexes(t *testing.T) {
-	got := translateFilterValue(queries.RegexMatchList{
-		Patterns:        []string{"^Bob$", "^Alice$"},
+func TestTranslateFilterValue_TextMatchList_ExpandsIntoInWithRegexes(t *testing.T) {
+	got := translateFilterValue(queries.TextMatchList{
+		Values:          []string{"Bob", "Alice"},
 		CaseInsensitive: true,
 	})
 	doc, ok := got.(bson.M)
@@ -118,7 +118,7 @@ func TestApplyFilter_PlainEntriesPassThrough(t *testing.T) {
 	applyFilter(dst, map[string]any{
 		"name":  "Bob",
 		"age":   map[string]any{"$gte": 18},
-		"email": queries.RegexMatchList{Patterns: []string{"^a@x$"}, CaseInsensitive: true},
+		"email": queries.TextMatchList{Values: []string{"a@x"}, CaseInsensitive: true},
 	})
 	if dst["name"] != "Bob" {
 		t.Errorf("plain scalar: expected 'Bob', got %v", dst["name"])
@@ -127,7 +127,7 @@ func TestApplyFilter_PlainEntriesPassThrough(t *testing.T) {
 		t.Errorf("operator sub-document mistranslated: %v", dst["age"])
 	}
 	if _, ok := dst["email"].(bson.M); !ok {
-		t.Errorf("RegexMatchList should translate to bson.M, got %T", dst["email"])
+		t.Errorf("TextMatchList should translate to bson.M, got %T", dst["email"])
 	}
 	if _, has := dst["$and"]; has {
 		t.Errorf("no MultiClause entries: $and must not appear, got %v", dst["$and"])
@@ -177,7 +177,7 @@ func TestApplyFilter_MultiClauseExpandsIntoAnd(t *testing.T) {
 }
 
 func TestApplyFilter_MultiClauseWithSentinelInsideTranslates(t *testing.T) {
-	// A MultiClause may carry RegexMatchList sentinels (e.g. a `.iin`
+	// A MultiClause may carry TextMatchList sentinels (e.g. a `.iin`
 	// declared alongside another operator). The clause must be routed
 	// through translateFilterValue so it reaches Mongo as bson.M{$in: ...},
 	// not as the raw struct.
@@ -185,7 +185,7 @@ func TestApplyFilter_MultiClauseWithSentinelInsideTranslates(t *testing.T) {
 	applyFilter(dst, map[string]any{
 		"name": queries.MultiClause{Clauses: []any{
 			map[string]any{"$regex": "^Bob"},
-			queries.RegexMatchList{Patterns: []string{"^Bob$", "^Alice$"}, CaseInsensitive: true},
+			queries.TextMatchList{Values: []string{"Bob", "Alice"}, CaseInsensitive: true},
 		}},
 	})
 	arr, _ := dst["$and"].(bson.A)
@@ -195,10 +195,10 @@ func TestApplyFilter_MultiClauseWithSentinelInsideTranslates(t *testing.T) {
 	listEntry := arr[1].(bson.M)["name"]
 	listDoc, ok := listEntry.(bson.M)
 	if !ok {
-		t.Fatalf("RegexMatchList clause did not translate to bson.M, got %T", listEntry)
+		t.Fatalf("TextMatchList clause did not translate to bson.M, got %T", listEntry)
 	}
 	if _, has := listDoc["$in"]; !has {
-		t.Errorf("translated RegexMatchList missing $in: %v", listDoc)
+		t.Errorf("translated TextMatchList missing $in: %v", listDoc)
 	}
 }
 
@@ -220,10 +220,10 @@ func TestApplyFilter_MixedPlainAndMultiClause(t *testing.T) {
 	}
 }
 
-func TestTranslateFilterValue_RegexMatchList_NegateProducesNin(t *testing.T) {
-	got := translateFilterValue(queries.RegexMatchList{
-		Patterns: []string{"^Bob$"},
-		Negate:   true,
+func TestTranslateFilterValue_TextMatchList_NegateProducesNin(t *testing.T) {
+	got := translateFilterValue(queries.TextMatchList{
+		Values: []string{"Bob"},
+		Negate: true,
 	})
 	doc, _ := got.(bson.M)
 	if _, has := doc["$in"]; has {

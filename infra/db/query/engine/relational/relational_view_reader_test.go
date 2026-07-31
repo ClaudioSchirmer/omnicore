@@ -1,0 +1,245 @@
+package relational
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"reflect"
+	"strings"
+	"testing"
+
+	"github.com/ClaudioSchirmer/omnicore/application/queries"
+	"github.com/ClaudioSchirmer/omnicore/domain"
+	"github.com/ClaudioSchirmer/omnicore/infra/db/command/read"
+	"github.com/ClaudioSchirmer/omnicore/infra/db/core"
+	"github.com/ClaudioSchirmer/omnicore/infra/db/criteria"
+	"github.com/ClaudioSchirmer/omnicore/infra/db/query"
+)
+
+// fakeLoader is a no-DB query.RelationalReader: it records whether the load ran
+// and returns an empty result, so a MaxLimit test can prove the ceiling rejects
+// BEFORE any load and that BypassMaxLimit lets the load through.
+type fakeLoader struct {
+	table      string
+	findCalled bool
+}
+
+func (f *fakeLoader) FindAllEntities(context.Context, *criteria.Query) ([]domain.Entity, error) {
+	f.findCalled = true
+	return nil, nil
+}
+func (f *fakeLoader) CountEntities(context.Context, *criteria.Query) (int64, error) { return 0, nil }
+func (f *fakeLoader) BoundTable() string                                            { return f.table }
+
+// guardEnt is a minimal entity — enough to build an AggregateLoader and a schema
+// so the boot guard can be exercised without a database (BoundTable reads only
+// the loader's WithSchema table).
+type guardEnt struct {
+	domain.BaseEntity
+	Name string
+}
+
+func (e *guardEnt) Modes() []domain.EntityMode                     { return []domain.EntityMode{domain.ModeInsert} }
+func (e *guardEnt) BuildRules(string, domain.Service, *domain.Rules) {}
+
+func guardSchema(table string) *core.TableSchema {
+	return core.NewTableSchema[*guardEnt](table).ID("id").Field("Name", "name")
+}
+
+func guardLoader(table string) query.RelationalReader {
+	return read.NewAggregateLoader[*guardEnt](nil, func() *guardEnt { return &guardEnt{} }).WithSchema(guardSchema(table))
+}
+
+// TestNewRelationalViewReader_WrongLoaderTablePanics is the boot guard: a view
+// handed a loader bound to a different entity's table fails the boot loudly,
+// naming both tables — never silently serving the wrong aggregate.
+func TestNewRelationalViewReader_WrongLoaderTablePanics(t *testing.T) {
+	vdef := query.View("v").Schema(guardSchema("gadgets")).Version(1).RelationalSource(guardLoader("users"))
+
+	defer func() {
+		r := recover()
+		if r == nil {
+			t.Fatal("expected a boot panic for a loader bound to the wrong table")
+		}
+		msg := fmt.Sprint(r)
+		if !strings.Contains(msg, "users") || !strings.Contains(msg, "gadgets") {
+			t.Errorf("panic must name both tables, got %q", msg)
+		}
+	}()
+	NewRelationalViewReader([]*query.ViewDefinition{vdef})
+}
+
+// TestNewRelationalViewReader_MatchingLoaderRegisters confirms the happy path:
+// a loader bound to the view's own table registers the relational view.
+func TestNewRelationalViewReader_MatchingLoaderRegisters(t *testing.T) {
+	vdef := query.View("v").Schema(guardSchema("gadgets")).Version(1).RelationalSource(guardLoader("gadgets"))
+	r := NewRelationalViewReader([]*query.ViewDefinition{vdef})
+	if r.Empty() {
+		t.Fatal("a matching relational view must be registered")
+	}
+}
+
+// TestNewRelationalViewReader_MongoViewSkipped confirms a view without the marker
+// is left to the Mongo reader — the relational reader indexes nothing.
+func TestNewRelationalViewReader_MongoViewSkipped(t *testing.T) {
+	vdef := query.View("v").Schema(guardSchema("gadgets")).Version(1)
+	r := NewRelationalViewReader([]*query.ViewDefinition{vdef})
+	if !r.Empty() {
+		t.Fatal("a Mongo-backed view must not be indexed by the relational reader")
+	}
+}
+
+// assertRelationalCapability400 checks that a capability the relational reader
+// cannot serve surfaces as a NotificationCarrier whose single notification is a
+// RelationalCapabilityNotification with SemanticSchema — the wire mapping turns
+// that into a 400 (not a generic 500), and the offending field/capability rides
+// through as the notification's field name.
+func assertRelationalCapability400(t *testing.T, err error, wantField string) {
+	t.Helper()
+	if err == nil {
+		t.Fatal("expected an unsupported-capability error, got nil")
+	}
+	var carrier domain.NotificationCarrier
+	if !errors.As(err, &carrier) {
+		t.Fatalf("error must be a NotificationCarrier (maps to a typed status), got %T: %v", err, err)
+	}
+	ctxs := carrier.NotificationContexts()
+	if len(ctxs) != 1 || len(ctxs[0].Messages()) != 1 {
+		t.Fatalf("expected exactly one notification, got contexts=%d", len(ctxs))
+	}
+	msg := ctxs[0].Messages()[0]
+	if got := reflect.TypeOf(msg.Notification).Name(); got != "RelationalCapabilityNotification" {
+		t.Errorf("notification = %q, want RelationalCapabilityNotification", got)
+	}
+	if got := msg.Notification.Semantic(); got != domain.SemanticSchema {
+		t.Errorf("semantic = %v, want SemanticSchema (→400)", got)
+	}
+	if msg.ResolveFieldName() != wantField && msg.FieldName != wantField {
+		t.Errorf("field = %q, want the offending capability %q", msg.ResolveFieldName(), wantField)
+	}
+}
+
+// TestUnsupportedChildFilter_MapsTo400 covers a filter pushed at a child (dotted)
+// field: a root SELECT cannot express it, so the reader rejects it as a 400.
+func TestUnsupportedChildFilter_MapsTo400(t *testing.T) {
+	_, err := toExpr(guardSchema("gadgets"), map[string]any{"Addresses.ZipCode": "12345"})
+	assertRelationalCapability400(t, err, "Addresses.ZipCode")
+}
+
+// TestUnsupportedChildSort_MapsTo400 covers a sort on a child (dotted) field:
+// a root ORDER BY cannot express it, so the reader rejects it as a 400.
+func TestUnsupportedChildSort_MapsTo400(t *testing.T) {
+	err := applySort(guardSchema("gadgets"), criteria.Where(nil), []queries.SortField{{Field: "Addresses.ZipCode"}})
+	assertRelationalCapability400(t, err, "Addresses.ZipCode")
+}
+
+// TestUnsupportedSiblingFilter_MapsTo400 covers a flat (non-dotted) field the
+// root schema does not own — a root-level sibling merges into the doc flat, so
+// its key carries no dot, yet the column lives in a satellite table a root SELECT
+// cannot reach. The servable() check (schema.ColumnOf) rejects it as a 400 just
+// like a dotted child, closing the gap a dot-only test would miss.
+func TestUnsupportedSiblingFilter_MapsTo400(t *testing.T) {
+	// guardSchema owns only Name (+ id); "Material" stands in for a sibling column.
+	_, err := toExpr(guardSchema("gadgets"), map[string]any{"Material": "steel"})
+	assertRelationalCapability400(t, err, "Material")
+}
+
+// TestServableRootField_Passes is the positive control: a bona fide root column
+// (Name) is NOT rejected — parity with the Mongo reader for root filters/sorts.
+func TestServableRootField_Passes(t *testing.T) {
+	if _, err := toExpr(guardSchema("gadgets"), map[string]any{"Name": "x"}); err != nil {
+		t.Fatalf("a root-own field must be servable, got %v", err)
+	}
+	if err := applySort(guardSchema("gadgets"), criteria.Where(nil), []queries.SortField{{Field: "Name"}}); err != nil {
+		t.Fatalf("a root-own sort field must be servable, got %v", err)
+	}
+}
+
+// TestApplyProjection covers the ?fields= pruning the relational reader mirrors
+// from the Mongo Find projection: inclusion keeps only the asked top-level fields
+// (id dropped unless asked), a dotted key keeps its whole segment, exclusion drops
+// the listed fields, and an empty projection is a no-op.
+func TestApplyProjection(t *testing.T) {
+	base := func() map[string]any {
+		return map[string]any{"ID": "x", "_id": "x", "Code": "c", "Name": "n", "WidgetParts": []any{}}
+	}
+
+	// inclusion — only Code survives (id dropped, mirroring Mongo).
+	d := base()
+	applyProjection(d, map[string]int{"Code": 1})
+	if len(d) != 1 || d["Code"] != "c" {
+		t.Errorf("inclusion should keep only Code, got %v", d)
+	}
+
+	// inclusion of a dotted (nested) key keeps the whole top segment.
+	d = base()
+	applyProjection(d, map[string]int{"WidgetParts.Label": 1})
+	if _, ok := d["WidgetParts"]; !ok || len(d) != 1 {
+		t.Errorf("nested projection should keep the WidgetParts segment, got %v", d)
+	}
+
+	// exclusion drops only the listed field.
+	d = base()
+	applyProjection(d, map[string]int{"Name": 0})
+	if _, ok := d["Name"]; ok {
+		t.Errorf("exclusion should drop Name, got %v", d)
+	}
+	if _, ok := d["Code"]; !ok {
+		t.Error("exclusion must keep the unlisted fields")
+	}
+
+	// empty projection is a no-op.
+	d = base()
+	applyProjection(d, nil)
+	if len(d) != 5 {
+		t.Errorf("empty projection must not prune, got %v", d)
+	}
+}
+
+// relViewWith builds a one-view relational reader over a fakeLoader with the
+// given per-view ceiling, so the MaxLimit tests run without a database.
+func relViewWith(ceiling int64, fake *fakeLoader) *RelationalViewReader {
+	vdef := query.View("v").Schema(guardSchema("gadgets")).Version(1).RelationalSource(fake)
+	r := NewRelationalViewReader([]*query.ViewDefinition{vdef})
+	r.SetMaxLimitResolver(func(string) int64 { return ceiling })
+	return r
+}
+
+// TestReadPage_MaxLimitRejected proves the relational reader honors the per-view
+// MaxLimit cascade EXACTLY like the Mongo reader: a `?limit=` over the ceiling is
+// the canonical 400 LimitExceededNotification, rejected BEFORE any load runs.
+func TestReadPage_MaxLimitRejected(t *testing.T) {
+	fake := &fakeLoader{table: "gadgets"}
+	r := relViewWith(5, fake)
+
+	_, err := r.ReadPage(context.Background(), "v", queries.ReadCriteria{Limit: 100})
+	if err == nil {
+		t.Fatal("expected a LimitExceeded rejection for limit over the ceiling")
+	}
+	var carrier domain.NotificationCarrier
+	if !errors.As(err, &carrier) {
+		t.Fatalf("ceiling rejection must be a NotificationCarrier (→400), got %T", err)
+	}
+	msg := carrier.NotificationContexts()[0].Messages()[0]
+	if got := reflect.TypeOf(msg.Notification).Name(); got != "LimitExceededNotification" {
+		t.Errorf("notification = %q, want LimitExceededNotification", got)
+	}
+	if fake.findCalled {
+		t.Error("the ceiling must reject BEFORE loading — the loader was called")
+	}
+}
+
+// TestReadPage_BypassMaxLimit proves the trusted export path (BypassMaxLimit) is
+// NOT rejected by the ceiling: the same over-ceiling limit loads through, letting
+// the export wrapper run its own larger maxExportRows bound verbatim.
+func TestReadPage_BypassMaxLimit(t *testing.T) {
+	fake := &fakeLoader{table: "gadgets"}
+	r := relViewWith(5, fake)
+
+	if _, err := r.ReadPage(context.Background(), "v", queries.ReadCriteria{Limit: 100, BypassMaxLimit: true}); err != nil {
+		t.Fatalf("BypassMaxLimit must skip the ceiling, got %v", err)
+	}
+	if !fake.findCalled {
+		t.Error("BypassMaxLimit must let the load run")
+	}
+}

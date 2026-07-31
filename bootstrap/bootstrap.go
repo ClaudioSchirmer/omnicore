@@ -24,6 +24,7 @@ import (
 	"github.com/ClaudioSchirmer/omnicore/infra/db/core"
 	"github.com/ClaudioSchirmer/omnicore/infra/db/query"
 	"github.com/ClaudioSchirmer/omnicore/infra/db/query/engine/mongo"
+	"github.com/ClaudioSchirmer/omnicore/infra/db/query/engine/relational"
 	"github.com/ClaudioSchirmer/omnicore/infra/events"
 	"github.com/ClaudioSchirmer/omnicore/infra/grpcclient"
 	"github.com/ClaudioSchirmer/omnicore/infra/httpclient"
@@ -181,12 +182,27 @@ func runWithConfig(cfg *Config, wire func(Deps) Wiring) error {
 	// (per-view override) > cfg.Query.MaxLimit (yaml default) > the reader's
 	// framework constant 100. Custom ViewReader implementations bypass this
 	// hook by design — they own their own limit policy.
-	if mvr, ok := deps.ViewReader.(*mongo.MongoViewReader); ok {
-		mvr.SetMaxLimitResolver(buildViewMaxLimitResolver(views, cfg.Query.MaxLimit))
-		// Register the views so the reader can translate criteria/documents
-		// between Go field names and physical columns via each view's
-		// TableSchema tree.
-		mvr.SetViews(views)
+	if engine, ok := deps.ViewReader.(*query.ViewReaderEngine); ok {
+		if mvr, ok := engine.MongoReader().(*mongo.MongoViewReader); ok {
+			mvr.SetMaxLimitResolver(buildViewMaxLimitResolver(views, cfg.Query.MaxLimit))
+			// Register the views so the reader can translate criteria/documents
+			// between Go field names and physical columns via each view's
+			// TableSchema tree.
+			mvr.SetViews(views)
+		}
+		// Install the relational read backing: a view marked RelationalSource is
+		// served from the SoR through the loader it carries, dispatched by the
+		// seam by name. Mutation, not a reassignment — captured deps.ViewReader
+		// references keep dispatching correctly.
+		if rel := relational.NewRelationalViewReader(views); !rel.Empty() {
+			// Same per-view MaxLimit cascade the Mongo reader honors — one resolver,
+			// both backings — so a view's ceiling applies identically whether it is
+			// served from the SoR or the projection.
+			rel.SetMaxLimitResolver(buildViewMaxLimitResolver(views, cfg.Query.MaxLimit))
+			route := rel.RelationalViewNames()
+			engine.SetRelational(rel, route)
+			deps.Logger.Info("relational views registered", "count", len(route))
+		}
 	}
 
 	for _, f := range wiring.Features {
@@ -240,12 +256,18 @@ func runWithConfig(cfg *Config, wire func(Deps) Wiring) error {
 		if err := query.ValidateComposedViews(composedViews, views, upstreamCollectionSet(upstreamSubs)); err != nil {
 			return fmt.Errorf("bootstrap: %w", err)
 		}
-		mvr, ok := deps.ViewReader.(*mongo.MongoViewReader)
+		engine, ok := deps.ViewReader.(*query.ViewReaderEngine)
 		if !ok {
 			return fmt.Errorf(
 				"bootstrap: composed view(s) declared but deps.ViewReader is %T — read-time composition requires "+
-					"the framework MongoViewReader (a custom ViewReader owns its own read policy and gets no decorator)",
+					"the framework ViewReaderEngine (a custom ViewReader owns its own read policy and gets no decorator)",
 				deps.ViewReader)
+		}
+		mvr, ok := engine.MongoReader().(*mongo.MongoViewReader)
+		if !ok {
+			return fmt.Errorf(
+				"bootstrap: composed view(s) declared but the seam wraps a %T, not the framework MongoViewReader that read-time composition requires",
+				engine.MongoReader())
 		}
 		mvr.SetComposedViews(composedViews, cfg.Query.MaxLinkManyLimit)
 		deps.Logger.Info("composed views registered", "count", len(composedViews))
@@ -447,7 +469,11 @@ func buildDeps(cfg *Config) (Deps, error) {
 	// detection) so they observe one consistent pointer. eng backs Refresh (the
 	// registry read); until the first flip every view resolves to its bare name.
 	resolver := query.NewViewResolverWithLease(eng, time.Duration(cfg.Mongo.Rebuild.PointerLeaseSeconds)*time.Second)
-	viewReader := mongo.NewMongoViewReader(mg, resolver)
+	// The read-side dispatch seam wraps the Mongo reader now (the default
+	// backing) and is installed as deps.ViewReader; the relational reader + the
+	// per-view route are mutated in during run-phase wiring (never a pointer
+	// swap), so a handler that captures deps.ViewReader here dispatches correctly.
+	viewReader := query.NewViewReaderEngine(mongo.NewMongoViewReader(mg, resolver))
 
 	// Resolve the SERVICE-PRIVATE cache from cfg only (no Wire
 	// injection at this stage). If cfg.Cache.Store == "custom", the

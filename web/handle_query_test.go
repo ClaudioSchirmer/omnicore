@@ -115,13 +115,13 @@ func TestHandleQueryWithParams_AllowedOperatorAssemblesCriteria(t *testing.T) {
 	if h.got == nil {
 		t.Fatal("expected handler to be called")
 	}
-	emailFilter, ok := h.got.Criteria.Filter["Email"].(map[string]any)
-	if !ok {
-		t.Fatalf("expected email filter to be a map, got %T", h.got.Criteria.Filter["Email"])
+	emailFilter, ok := h.got.Criteria.Filter["Email"].(queries.Clause)
+	if !ok || emailFilter.Op != queries.FilterIn {
+		t.Fatalf("expected email filter to be an in-Clause, got %#v", h.got.Criteria.Filter["Email"])
 	}
-	in, ok := emailFilter["$in"].([]any)
-	if !ok || len(in) != 2 || in[0] != "a@x.com" || in[1] != "b@y.com" {
-		t.Errorf("expected $in=[a@x.com, b@y.com], got %v", emailFilter["$in"])
+	in := emailFilter.Values
+	if len(in) != 2 || in[0] != "a@x.com" || in[1] != "b@y.com" {
+		t.Errorf("expected in=[a@x.com, b@y.com], got %v", in)
 	}
 	if h.got.Criteria.Limit != 20 {
 		t.Errorf("expected Limit=20, got %d", h.got.Criteria.Limit)

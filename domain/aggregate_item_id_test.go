@@ -2,22 +2,13 @@ package domain
 
 import "testing"
 
-// noIDFieldAVO has no exported string "ID" field — the write-back must report
-// false for it instead of panicking or silently corrupting the map.
-type noIDFieldAVO struct {
-	Num int
-}
-
-func (n noIDFieldAVO) GetID() ID                                { return ID{} }
-func (n noIDFieldAVO) BuildRules(_ string, _ Service, _ *Rules) {}
-
 type assignIDRoot struct {
 	AggregateRoot
 }
 
 func (r *assignIDRoot) GetAggregateRoot() *AggregateRoot { return &r.AggregateRoot }
 func (r *assignIDRoot) AggregateChildren() []AggregateValueObject {
-	return []AggregateValueObject{testAVO{}, noIDFieldAVO{}}
+	return []AggregateValueObject{testAVO{}}
 }
 
 func TestAssignAggregateItemID_StampsTrackedItem(t *testing.T) {
@@ -29,7 +20,7 @@ func TestAssignAggregateItemID_StampsTrackedItem(t *testing.T) {
 	}
 
 	items := GetCurrentItemsOf[testAVO](&root.AggregateRoot)
-	if len(items) != 1 || items[0].ID.Value() != "id-1" || items[0].Name != "a" {
+	if len(items) != 1 || items[0].GetID().Value() != "id-1" || items[0].Name != "a" {
 		t.Fatalf("expected the tracked item to carry the assigned id, got %+v", items)
 	}
 	// Statuses must be untouched — the item is still an OpInsert candidate.
@@ -38,22 +29,33 @@ func TestAssignAggregateItemID_StampsTrackedItem(t *testing.T) {
 	}
 }
 
-func TestAssignAggregateItemID_MatchesPreAssignmentValueOnly(t *testing.T) {
+// The write-back matches a tracked item by IsSameBusinessIdentity — the business
+// fields, NEVER the id: the id is framework-managed (domain.Managed) and excluded
+// from identity, so a value with the same business identity keeps matching
+// regardless of the id it or the tracked entry currently carries, and re-stamping
+// simply overwrites the id.
+func TestAssignAggregateItemID_MatchesByBusinessIdentity(t *testing.T) {
 	root := &assignIDRoot{}
 	AddAggregateChild(root, testAVO{Name: "a"})
 	if ok := root.AssignAggregateItemID(testAVO{Name: "a"}, "id-1"); !ok {
 		t.Fatal("first stamp must succeed")
 	}
-	// The old (pre-stamp) value no longer matches…
-	if ok := root.AssignAggregateItemID(testAVO{Name: "a"}, "id-2"); ok {
-		t.Fatal("the pre-stamp value must no longer match after the id was assigned")
+	// The same business value keeps matching after the id was assigned — the id
+	// is not part of identity — so a second stamp re-assigns it.
+	if ok := root.AssignAggregateItemID(testAVO{Name: "a"}, "id-2"); !ok {
+		t.Fatal("the business value must keep matching regardless of the stamped id")
 	}
-	// …but the current (stamped) value does.
-	if ok := root.AssignAggregateItemID(testAVO{ID: NewID("id-1"), Name: "a"}, "id-3"); !ok {
-		t.Fatal("the stamped value must match for a re-assignment")
+	// A value carrying the already-stamped id (business identity unchanged) also
+	// matches.
+	if ok := root.AssignAggregateItemID(WithID(testAVO{Name: "a"}, NewID("id-2")), "id-3"); !ok {
+		t.Fatal("a same-identity value must match for a re-assignment")
+	}
+	// A DIFFERENT business identity does not match.
+	if ok := root.AssignAggregateItemID(testAVO{Name: "zz"}, "id-x"); ok {
+		t.Fatal("a different business identity must not match")
 	}
 	items := GetCurrentItemsOf[testAVO](&root.AggregateRoot)
-	if len(items) != 1 || items[0].ID.Value() != "id-3" {
+	if len(items) != 1 || items[0].GetID().Value() != "id-3" {
 		t.Fatalf("expected the re-assigned id, got %+v", items)
 	}
 }
@@ -61,14 +63,12 @@ func TestAssignAggregateItemID_MatchesPreAssignmentValueOnly(t *testing.T) {
 func TestAssignAggregateItemID_ReportsFalseWithoutMutating(t *testing.T) {
 	root := &assignIDRoot{}
 	AddAggregateChild(root, testAVO{Name: "a"})
-	AddAggregateChild(root, noIDFieldAVO{Num: 7})
 
 	cases := []struct {
 		name string
 		item AggregateValueObject
 	}{
 		{"untracked item", testAVO{Name: "zz"}},
-		{"no settable string ID field", noIDFieldAVO{Num: 7}},
 		{"nil item", nil},
 	}
 	for _, tc := range cases {
@@ -79,7 +79,7 @@ func TestAssignAggregateItemID_ReportsFalseWithoutMutating(t *testing.T) {
 		})
 	}
 
-	if items := GetCurrentItemsOf[testAVO](&root.AggregateRoot); len(items) != 1 || items[0].ID.Value() != "" {
+	if items := GetCurrentItemsOf[testAVO](&root.AggregateRoot); len(items) != 1 || items[0].GetID().Value() != "" {
 		t.Fatalf("failed assignments must not mutate tracked items, got %+v", items)
 	}
 }

@@ -16,11 +16,10 @@ import (
 // the cascade + the guard branches without a live backend.
 
 type aggWriteChild struct {
-	ID    domain.ID
+	domain.Managed
 	Label string
 }
 
-func (c aggWriteChild) GetID() domain.ID                                 { return c.ID }
 func (c aggWriteChild) BuildRules(string, domain.Service, *domain.Rules) {}
 
 type aggWriteRoot struct {
@@ -100,11 +99,11 @@ func TestBaseEngine_InsertAggregate_WritesMintedChildIDBack(t *testing.T) {
 	if len(items) != 1 {
 		t.Fatalf("expected exactly one current child, got %+v", items)
 	}
-	if items[0].ID.IsEmpty() {
+	if items[0].GetID().IsEmpty() {
 		t.Fatal("minted child id must be written back into the aggregate map")
 	}
-	if _, err := uuid.Parse(items[0].ID.Value()); err != nil {
-		t.Errorf("written-back id must be the minted UUID, got %q: %v", items[0].ID, err)
+	if _, err := uuid.Parse(items[0].GetID().Value()); err != nil {
+		t.Errorf("written-back id must be the minted UUID, got %q: %v", items[0].GetID(), err)
 	}
 	if items[0].Label != "a" {
 		t.Errorf("write-back must not disturb the child's data, got %+v", items[0])
@@ -117,12 +116,12 @@ func TestBaseEngine_UpdateAggregate_AllChildOps(t *testing.T) {
 	root := &aggWriteRoot{Name: "r"}
 	root.SetID(domain.NewID(uuid.NewString()))
 	root.AggregateConstructor([]domain.AggregateValueObject{
-		aggWriteChild{ID: domain.NewID(id1), Label: "keep"},
-		aggWriteChild{ID: domain.NewID(id2), Label: "drop"},
+		domain.WithID(aggWriteChild{Label: "keep"}, domain.NewID(id1)),
+		domain.WithID(aggWriteChild{Label: "drop"}, domain.NewID(id2)),
 	})
 	upd, err := domain.GetUpdatable(root, func(r *aggWriteRoot) error {
-		domain.ChangeAggregateChild(r, aggWriteChild{ID: domain.NewID(id1), Label: "keep"}, aggWriteChild{ID: domain.NewID(id1), Label: "changed"})
-		domain.RemoveAggregateChild(r, aggWriteChild{ID: domain.NewID(id2), Label: "drop"})
+		domain.ChangeAggregateChild(r, domain.WithID(aggWriteChild{Label: "keep"}, domain.NewID(id1)), domain.WithID(aggWriteChild{Label: "changed"}, domain.NewID(id1)))
+		domain.RemoveAggregateChild(r, domain.WithID(aggWriteChild{Label: "drop"}, domain.NewID(id2)))
 		domain.AddAggregateChild(r, aggWriteChild{Label: "new"})
 		return nil
 	}, nil, "GetUpdatable")
@@ -149,7 +148,7 @@ func TestBaseEngine_ArchiveUnarchiveAggregate_Cascade(t *testing.T) {
 	for _, verb := range []string{"archive", "unarchive"} {
 		root := &aggWriteRoot{Name: "r"}
 		root.SetID(domain.NewID(uuid.NewString()))
-		root.AggregateConstructor([]domain.AggregateValueObject{aggWriteChild{ID: domain.NewIDFromUUID(uuid.New()), Label: "c"}})
+		root.AggregateConstructor([]domain.AggregateValueObject{domain.WithID(aggWriteChild{Label: "c"}, domain.NewIDFromUUID(uuid.New()))})
 
 		tx := &recTx{}
 		be := newFlatBE(&recBeginner{tx: tx})
@@ -177,7 +176,7 @@ func TestBaseEngine_ArchiveUnarchiveAggregate_Cascade(t *testing.T) {
 func TestBaseEngine_DeleteAggregate(t *testing.T) {
 	root := &aggWriteRoot{Name: "r"}
 	root.SetID(domain.NewID(uuid.NewString()))
-	root.AggregateConstructor([]domain.AggregateValueObject{aggWriteChild{ID: domain.NewIDFromUUID(uuid.New()), Label: "c"}})
+	root.AggregateConstructor([]domain.AggregateValueObject{domain.WithID(aggWriteChild{Label: "c"}, domain.NewIDFromUUID(uuid.New()))})
 	d, _ := domain.GetDeletable(root, nil, "GetDeletable")
 
 	tx := &recTx{}
@@ -226,9 +225,9 @@ func TestBaseEngine_UpdateAggregate_ChangedChildWithoutIDIsError(t *testing.T) {
 	root := &aggWriteRoot{Name: "r"}
 	root.SetID(domain.NewID(uuid.NewString()))
 	// A Constructor child with no id, then Changed → updateChild requires an id.
-	root.AggregateConstructor([]domain.AggregateValueObject{aggWriteChild{ID: domain.NewID(""), Label: "x"}})
+	root.AggregateConstructor([]domain.AggregateValueObject{aggWriteChild{Label: "x"}})
 	upd, _ := domain.GetUpdatable(root, func(r *aggWriteRoot) error {
-		domain.ChangeAggregateChild(r, aggWriteChild{ID: domain.ID{}, Label: "x"}, aggWriteChild{ID: domain.ID{}, Label: "y"})
+		domain.ChangeAggregateChild(r, aggWriteChild{Label: "x"}, aggWriteChild{Label: "y"})
 		return nil
 	}, nil, "GetUpdatable")
 

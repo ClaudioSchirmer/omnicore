@@ -27,12 +27,11 @@ func (e *labelTestEntity) BuildRules(string, domain.Service, *domain.Rules) {}
 // labelTestAddress is the aggregate child carrying a label tag; surfaces via
 // ChildEvent.Changes when the root is updated and the child changes.
 type labelTestAddress struct {
-	ID      string
+	domain.Managed
 	ZipCode string `labelKey:"AddressZipCodeField"`
 	Bare    string
 }
 
-func (a labelTestAddress) GetID() domain.ID                                 { return domain.NewID(a.ID) }
 func (a labelTestAddress) BuildRules(string, domain.Service, *domain.Rules) {}
 
 // labelTestAggregate roots the aggregate so the auditor's children path fires.
@@ -122,15 +121,15 @@ func TestBuildUpdateEvent_ChildEventChangesCarryLabelKey(t *testing.T) {
 
 	// Seed an existing child (CONSTRUCTOR — trusted DB-loaded state)
 	root.AggregateConstructor([]domain.AggregateValueObject{
-		labelTestAddress{ID: "addr-1", ZipCode: "10000", Bare: "before"},
+		domain.WithID(labelTestAddress{ZipCode: "10000", Bare: "before"}, domain.NewID("addr-1")),
 	})
 
 	u, err := domain.GetUpdatable(root, func(r *labelTestAggregate) error {
 		// Replace the same child with mutated values → CurrentStatus=Changed,
 		// surfacing via ChildEvent.Changes.
 		domain.ChangeAggregateChild(r,
-			labelTestAddress{ID: "addr-1", ZipCode: "10000", Bare: "before"},
-			labelTestAddress{ID: "addr-1", ZipCode: "20000", Bare: "after"},
+			domain.WithID(labelTestAddress{ZipCode: "10000", Bare: "before"}, domain.NewID("addr-1")),
+			domain.WithID(labelTestAddress{ZipCode: "20000", Bare: "after"}, domain.NewID("addr-1")),
 		)
 		return nil
 	}, nil, "GetUpdatable")

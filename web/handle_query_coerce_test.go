@@ -141,10 +141,10 @@ func TestCoerce_InListPreservesPerElementType(t *testing.T) {
 	if status != fiber.StatusOK {
 		t.Fatalf("expected 200, got %d", status)
 	}
-	sub, _ := crit.Filter["Age"].(map[string]any)
-	arr, ok := sub["$in"].([]any)
-	if !ok || len(arr) != 3 {
-		t.Fatalf("expected $in array of 3, got %v", sub["$in"])
+	cl, _ := crit.Filter["Age"].(queries.Clause)
+	arr := cl.Values
+	if cl.Op != queries.FilterIn || len(arr) != 3 {
+		t.Fatalf("expected in-Clause of 3, got %#v", crit.Filter["Age"])
 	}
 	for i, want := range []int64{25, 30, 42} {
 		if got, ok := arr[i].(int64); !ok || got != want {
@@ -160,10 +160,10 @@ func TestCoerce_StringInListKeepsStringPerElement(t *testing.T) {
 	if status != fiber.StatusOK {
 		t.Fatalf("expected 200, got %d", status)
 	}
-	sub, _ := crit.Filter["Code"].(map[string]any)
-	arr, ok := sub["$in"].([]any)
-	if !ok || len(arr) != 2 {
-		t.Fatalf("expected $in of 2, got %v", sub["$in"])
+	cl, _ := crit.Filter["Code"].(queries.Clause)
+	arr := cl.Values
+	if cl.Op != queries.FilterIn || len(arr) != 2 {
+		t.Fatalf("expected in-Clause of 2, got %#v", crit.Filter["Code"])
 	}
 	if arr[0] != "95014" {
 		t.Errorf("first element should stay string '95014', got %v (%T)", arr[0], arr[0])

@@ -54,7 +54,7 @@ func (ar *AggregateRoot) addAggregateItem(item AggregateValueObject) {
 	list := ar.aggregates[key]
 
 	for i, entry := range list {
-		if !reflect.DeepEqual(entry.item, item) {
+		if !entry.item.IsSameBusinessIdentity(item) {
 			continue
 		}
 		switch entry.currentStatus {
@@ -89,7 +89,7 @@ func (ar *AggregateRoot) changeAggregateItem(original, replacement AggregateValu
 	list := ar.aggregates[key]
 
 	for i, entry := range list {
-		if reflect.DeepEqual(entry.item, original) {
+		if entry.item.IsSameBusinessIdentity(original) {
 			list[i].item = replacement
 			list[i].currentStatus = StatusChanged
 			ar.aggregates[key] = list
@@ -116,7 +116,7 @@ func (ar *AggregateRoot) removeAggregateItem(item AggregateValueObject) {
 	list := ar.aggregates[key]
 
 	for i, entry := range list {
-		if reflect.DeepEqual(entry.item, item) && entry.currentStatus != StatusRemoved {
+		if entry.item.IsSameBusinessIdentity(item) && entry.currentStatus != StatusRemoved {
 			list[i].currentStatus = StatusRemoved
 			ar.aggregates[key] = list
 			return
@@ -146,11 +146,11 @@ func (ar *AggregateRoot) ClearAggregateItemsOfType(typeName string) {
 // method lets it reflect that id back into the aggregate map, so post-write
 // readers (FromEntity result projections, the audit/outbox snapshots) see the
 // child exactly as persisted instead of with an empty id. It matches the
-// tracked entry by deep equality against the PRE-assignment value and sets the
-// item's exported "ID" field (typed domain.ID — the documented value-object
-// shape) via reflection; statuses are left untouched. Returns false when the
-// item isn't tracked or carries no settable domain.ID "ID" field — callers
-// treat that as "no write-back possible", never an error.
+// tracked entry by IsSameBusinessIdentity against the PRE-assignment value and
+// sets the item's id through its promoted domain.Managed.SetID; statuses are
+// left untouched. Returns false when the item isn't tracked — callers treat
+// that as "no write-back possible", never an error. Every aggregate child
+// embeds domain.Managed, so SetID is always available.
 func (ar *AggregateRoot) AssignAggregateItemID(item AggregateValueObject, id string) bool {
 	if item == nil || ar.aggregates == nil {
 		return false
@@ -162,7 +162,7 @@ func (ar *AggregateRoot) AssignAggregateItemID(item AggregateValueObject, id str
 	key := classNameOf(item)
 	list := ar.aggregates[key]
 	for i, entry := range list {
-		if reflect.DeepEqual(entry.item, item) {
+		if entry.item.IsSameBusinessIdentity(item) {
 			list[i].item = stamped
 			ar.aggregates[key] = list
 			return true
@@ -171,9 +171,10 @@ func (ar *AggregateRoot) AssignAggregateItemID(item AggregateValueObject, id str
 	return false
 }
 
-// withItemID returns a copy of item with its exported string "ID" field set.
-// Value-object items are plain structs (change tracking depends on it), so a
-// non-struct or an item without a settable string "ID" reports false.
+// withItemID returns a copy of item with its id set through the promoted
+// domain.Managed.SetID. Value-object items are plain structs (change tracking
+// depends on it); a non-struct reports false. Every AVO embeds Managed, so the
+// SetID assertion on the addressable copy always succeeds.
 func withItemID(item AggregateValueObject, id string) (AggregateValueObject, bool) {
 	t := reflect.TypeOf(item)
 	if t == nil || t.Kind() != reflect.Struct {
@@ -181,11 +182,11 @@ func withItemID(item AggregateValueObject, id string) (AggregateValueObject, boo
 	}
 	v := reflect.New(t).Elem()
 	v.Set(reflect.ValueOf(item))
-	f := v.FieldByName("ID")
-	if !f.IsValid() || f.Type() != reflect.TypeOf(ID{}) || !f.CanSet() {
+	s, ok := v.Addr().Interface().(interface{ SetID(ID) })
+	if !ok {
 		return nil, false
 	}
-	f.Set(reflect.ValueOf(NewID(id)))
+	s.SetID(NewID(id))
 	out, ok := v.Interface().(AggregateValueObject)
 	return out, ok
 }

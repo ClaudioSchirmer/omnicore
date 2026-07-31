@@ -458,11 +458,10 @@ func TestDeleteRoleWithBase_KeepOrphanArchivesSoftDeletableBase(t *testing.T) {
 // upsert the base, insert the role row, AND insert the children — the case that
 // previously fell into insertAggregate and silently dropped the base.
 type aggRoleChild struct {
-	ID    string
+	domain.Managed
 	Label string
 }
 
-func (c aggRoleChild) GetID() domain.ID                                 { return domain.NewID(c.ID) }
 func (c aggRoleChild) BuildRules(string, domain.Service, *domain.Rules) {}
 
 type aggRoleEntity struct {

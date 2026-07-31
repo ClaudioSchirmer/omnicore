@@ -130,6 +130,39 @@ func (s *SyncEngine) ExecuteRebuild(ctx context.Context, plan DriftPlan, cfg Reb
 	regQ := lock.Querier()
 	regD := s.eng.Dialect()
 
+	// DriftFreshBackfill: a brand-new view has no registry row yet. BeginRebuild /
+	// EndRebuild are UPDATEs keyed by view_name — with no row they silently affect
+	// nothing and the backfill would repeat every boot. When the boot's pre-lock
+	// read saw no row, re-read it UNDER THE LOCK (a concurrent boot may have
+	// created — or, on a crash, advanced — it since we read at boot) and, only if
+	// it is still absent, create it. The takeover / shadow-reset / begin sequence
+	// below then acts on the fresh, lock-consistent row. Race-free: the lock
+	// serializes, so a row a prior holder already made is reused, never
+	// double-inserted. A view that already had a row keeps the boot read unchanged.
+	if plan.Registry == nil {
+		fresh, err := ReadViewRegistry(ctx, regQ, regD, collection)
+		if err != nil {
+			return fmt.Errorf("re-read registry under lock for %q: %w", collection, err)
+		}
+		if fresh == nil {
+			if err := InitViewRegistry(ctx, regQ, regD, InitViewRegistryInput{
+				ViewName:     collection,
+				Version:      plan.CurrentVersion,
+				RebuildHash:  plan.CurrentRebuildHash,
+				ArtifactHash: plan.CurrentArtifactHash,
+				CombinedHash: plan.CurrentCombinedHash,
+				ServiceName:  cfg.ServiceName,
+				Now:          now,
+			}); err != nil {
+				return fmt.Errorf("create registry row for fresh view %q under lock: %w", collection, err)
+			}
+			if fresh, err = ReadViewRegistry(ctx, regQ, regD, collection); err != nil {
+				return fmt.Errorf("re-read registry after create for %q: %w", collection, err)
+			}
+		}
+		plan.Registry = fresh
+	}
+
 	// Step 4 — detect takeover (§11.7) before writing status.
 	if plan.Registry != nil && plan.Registry.Status == ViewRegistryStatusProcessing {
 		holderPID, holderHost := "<unknown>", "<unknown>"
@@ -356,6 +389,26 @@ func (s *SyncEngine) InitRegistryOnly(ctx context.Context, plan DriftPlan, servi
 // The UPDATE captures previous_* the same way EndRebuild does so audit
 // trail is preserved across the metadata-only transition.
 func (s *SyncEngine) RefreshRegistryArtifactOnly(ctx context.Context, plan DriftPlan, serviceName string) error {
+	return EndRebuild(ctx, s.eng.Querier(), s.eng.Dialect(), EndRebuildInput{
+		ViewName:     plan.View.Name(),
+		Version:      plan.CurrentVersion,
+		RebuildHash:  plan.CurrentRebuildHash,
+		ArtifactHash: plan.CurrentArtifactHash,
+		CombinedHash: plan.CurrentCombinedHash,
+		ServiceName:  serviceName,
+		Now:          time.Now(),
+	})
+}
+
+// SyncRelationalRegistry records the current spec (version + hashes) for a
+// RelationalSource view whose declared shape changed with a version bump. Like
+// RefreshRegistryArtifactOnly it runs EndRebuild's registry UPDATE (status stays
+// 'done', previous_* captured for the audit trail) but performs NO rebuild and
+// NO Mongo work — the view is served from the SoR, so there is nothing to
+// materialize. It is what lets a +RelationalSource flip record its new shape so
+// the next boot sees hash parity (DriftNone), while a flip BACK to Mongo drifts
+// to DriftRebuildRequired and backfills the starved collection.
+func (s *SyncEngine) SyncRelationalRegistry(ctx context.Context, plan DriftPlan, serviceName string) error {
 	return EndRebuild(ctx, s.eng.Querier(), s.eng.Dialect(), EndRebuildInput{
 		ViewName:     plan.View.Name(),
 		Version:      plan.CurrentVersion,

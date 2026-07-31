@@ -2,6 +2,7 @@ package read
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"strings"
 	"testing"
@@ -34,7 +35,7 @@ func TestHydrateChildren_ManualScannerRowsAttach(t *testing.T) {
 	n := 0
 	manual := func(map[string]any) (domain.AggregateValueObject, error) {
 		n++
-		return covChild{ID: "c" + string(rune('0'+n)), Label: "L"}, nil
+		return domain.WithID(covChild{Label: "L"}, domain.NewID("c"+string(rune('0'+n)))), nil
 	}
 	l := newCovAggLoader(fakeEngineWithMaps(nil, mapsFn), covAggSchema).WithChildScanner("covChild", manual)
 
@@ -79,12 +80,22 @@ func TestHydrateChildren_ChildSchemaWithoutColumnsErrors(t *testing.T) {
 }
 
 func TestHydrateChildren_AutoScanBranchErrors(t *testing.T) {
+	// The child's own id + managed columns are trailing sql.Null* targets now (the
+	// id left the struct when it moved into domain.Managed), so the fake row fills
+	// *string (leading key + business columns) AND *sql.NullString (the trailing id)
+	// by position.
 	childRow := func(vals []string) func(string, []any) (Rows, error) {
 		return func(string, []any) (Rows, error) {
 			return &fakeDBRows{rows: 1, scan: func(_ int, dest []any) error {
 				for j, d := range dest {
-					if p, ok := d.(*string); ok && j < len(vals) {
+					if j >= len(vals) {
+						continue
+					}
+					switch p := d.(type) {
+					case *string:
 						*p = vals[j]
+					case *sql.NullString:
+						*p = sql.NullString{String: vals[j], Valid: vals[j] != ""}
 					}
 				}
 				return nil
@@ -100,9 +111,10 @@ func TestHydrateChildren_AutoScanBranchErrors(t *testing.T) {
 			return &fakeDBRows{rows: 1, scan: func(int, []any) error { return errFakeDB }}, nil
 		})},
 		// ParentID is the leading key → its DecodeID failure is the fk-decode branch.
-		{"fkDecodeError", decodeErrFakeEngine(childRow([]string{"bad-fk", "c1", "L"}), "bad-fk")},
-		// The child's own ID is decoded after the scan (decodeChildPK).
-		{"childPKDecodeError", decodeErrFakeEngine(childRow([]string{"r1", "bad-pk", "L"}), "bad-pk")},
+		// Row order: fk (leading), Label (business col), id (trailing carrier col).
+		{"fkDecodeError", decodeErrFakeEngine(childRow([]string{"bad-fk", "L", "c1"}), "bad-fk")},
+		// The child's own id is a trailing column decoded by managedScan.apply.
+		{"childPKDecodeError", decodeErrFakeEngine(childRow([]string{"r1", "L", "bad-pk"}), "bad-pk")},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -188,13 +200,20 @@ func TestHydrateBaseChildren_BaseChildWithoutColumnsErrors(t *testing.T) {
 }
 
 func TestHydrateBaseChildren_BranchErrors(t *testing.T) {
-	// endereco JOIN row: dest[0]=role pk (leading), dest[1]=child ID, dest[2]=street.
+	// endereco JOIN row order: dest[0]=role pk (leading), dest[1]=street (business),
+	// dest[2]=child id (trailing *sql.NullString carrier column).
 	baseChildRow := func(vals []string) func(string, []any) (Rows, error) {
 		return func(string, []any) (Rows, error) {
 			return &fakeDBRows{rows: 1, scan: func(_ int, dest []any) error {
 				for j, d := range dest {
-					if p, ok := d.(*string); ok && j < len(vals) {
+					if j >= len(vals) {
+						continue
+					}
+					switch p := d.(type) {
+					case *string:
 						*p = vals[j]
+					case *sql.NullString:
+						*p = sql.NullString{String: vals[j], Valid: vals[j] != ""}
 					}
 				}
 				return nil
@@ -209,8 +228,8 @@ func TestHydrateBaseChildren_BranchErrors(t *testing.T) {
 		{"scanError", fakeEngine(func(string, []any) (Rows, error) {
 			return &fakeDBRows{rows: 1, scan: func(int, []any) error { return errFakeDB }}, nil
 		})},
-		{"roleIDDecodeError", decodeErrFakeEngine(baseChildRow([]string{"bad-root", "c1", "S"}), "bad-root")},
-		{"childPKDecodeError", decodeErrFakeEngine(baseChildRow([]string{"a1", "bad-pk", "S"}), "bad-pk")},
+		{"roleIDDecodeError", decodeErrFakeEngine(baseChildRow([]string{"bad-root", "S", "c1"}), "bad-root")},
+		{"childPKDecodeError", decodeErrFakeEngine(baseChildRow([]string{"a1", "S", "bad-pk"}), "bad-pk")},
 		{"rowsErr", fakeEngine(func(string, []any) (Rows, error) { return &fakeDBRows{nextErr: errFakeDB}, nil })},
 	}
 	for _, tc := range cases {

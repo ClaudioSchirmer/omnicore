@@ -69,7 +69,11 @@ func TestCriteriaStringInKeepsCommaValues(t *testing.T) {
 	if err != nil {
 		t.Fatalf("build: %v", err)
 	}
-	in := crit.Filter["Name"].(map[string]any)["$in"].([]any)
+	cl := crit.Filter["Name"].(queries.Clause)
+	if cl.Op != queries.FilterIn {
+		t.Fatalf("want in-Clause, got %#v", cl)
+	}
+	in := cl.Values
 	if len(in) != 2 || in[0] != "Smith, John" || in[1] != "Doe, Jane" {
 		t.Fatalf("comma values mangled: %#v", in)
 	}
@@ -87,10 +91,10 @@ func TestCriteriaMultiConditionBecomesMultiClause(t *testing.T) {
 	if !ok || len(mc.Clauses) != 2 {
 		t.Fatalf("want MultiClause with 2 clauses: %#v", crit.Filter["Rating"])
 	}
-	if !reflect.DeepEqual(mc.Clauses[0], map[string]any{"$gte": int64(2)}) {
+	if !reflect.DeepEqual(mc.Clauses[0], queries.Clause{Op: queries.FilterGte, Values: []any{int64(2)}}) {
 		t.Fatalf("gte clause: %#v", mc.Clauses[0])
 	}
-	if !reflect.DeepEqual(mc.Clauses[1], map[string]any{"$lte": int64(5)}) {
+	if !reflect.DeepEqual(mc.Clauses[1], queries.Clause{Op: queries.FilterLte, Values: []any{int64(5)}}) {
 		t.Fatalf("lte clause: %#v", mc.Clauses[1])
 	}
 }
@@ -111,13 +115,13 @@ func TestCriteriaDoubleBoolTimestamp(t *testing.T) {
 	if err != nil {
 		t.Fatalf("build: %v", err)
 	}
-	if !reflect.DeepEqual(crit.Filter["Score"], map[string]any{"$gt": 4.5}) {
+	if !reflect.DeepEqual(crit.Filter["Score"], queries.Clause{Op: queries.FilterGt, Values: []any{4.5}}) {
 		t.Fatalf("double: %#v", crit.Filter["Score"])
 	}
 	if crit.Filter["Active"] != true {
 		t.Fatalf("bool eq must land as scalar: %#v", crit.Filter["Active"])
 	}
-	want := map[string]any{"$gte": when.Format(time.RFC3339Nano)}
+	want := queries.Clause{Op: queries.FilterGte, Values: []any{when.Format(time.RFC3339Nano)}}
 	if !reflect.DeepEqual(crit.Filter["CreatedAt"], want) {
 		t.Fatalf("timestamp: %#v", crit.Filter["CreatedAt"])
 	}
@@ -130,12 +134,12 @@ func TestCriteriaCaseInsensitiveListOps(t *testing.T) {
 	if err != nil {
 		t.Fatalf("build: %v", err)
 	}
-	rml, ok := crit.Filter["Kind"].(queries.RegexMatchList)
+	rml, ok := crit.Filter["Kind"].(queries.TextMatchList)
 	if !ok || !rml.CaseInsensitive || rml.Negate {
 		t.Fatalf("iin: %#v", crit.Filter["Kind"])
 	}
-	if len(rml.Patterns) != 2 || rml.Patterns[0] != "^Tool$" {
-		t.Fatalf("anchoring: %#v", rml.Patterns)
+	if len(rml.Values) != 2 || rml.Values[0] != "Tool" {
+		t.Fatalf("raw values: %#v", rml.Values)
 	}
 }
 

@@ -81,6 +81,7 @@ func (coreNL) Translations() map[string]string {
 		"TenantMissingNotification":        "Tenant-identificatie ontbreekt in de geauthenticeerde principal.",
 		"TenantMismatchNotification":       "De resource behoort tot een andere tenant.",
 		"FieldAccessForbiddenNotification": "Veld niet toegankelijk.",
+		"RelationalCapabilityNotification": "Deze mogelijkheid wordt niet ondersteund door een view die uit de relationele backend wordt gelezen; verwijder RelationalSource() om deze vanuit Mongo te bedienen.",
 
 		// Server / routing
 		"InternalServerErrorNotification": "Interne serverfout.",

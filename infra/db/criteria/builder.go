@@ -41,16 +41,23 @@ func NotNull(field string) Expr { return Comparison{Field: field, Op: OpNotNull}
 // verbatim — Contains("Name", "50%") matches the literal "50%", not "starts
 // with 50". Backslash is the escape char (PostgreSQL LIKE default).
 
-func Contains(field, s string) Expr   { return ILike(field, "%"+escapeLike(s)+"%") }
-func StartsWith(field, s string) Expr { return ILike(field, escapeLike(s)+"%") }
-func EndsWith(field, s string) Expr   { return ILike(field, "%"+escapeLike(s)) }
+func Contains(field, s string) Expr   { return ILike(field, "%"+EscapeLike(s)+"%") }
+func StartsWith(field, s string) Expr { return ILike(field, EscapeLike(s)+"%") }
+func EndsWith(field, s string) Expr   { return ILike(field, "%"+EscapeLike(s)) }
 
 // Between is sugar for Gte(lo) AND Lte(hi) on the same field (inclusive).
 func Between(field string, lo, hi any) Expr { return And(Gte(field, lo), Lte(field, hi)) }
 
 var likeEscaper = strings.NewReplacer(`\`, `\\`, `%`, `\%`, `_`, `\_`)
 
-func escapeLike(s string) string { return likeEscaper.Replace(s) }
+// EscapeLike escapes the LIKE metacharacters (%, _ and the backslash escape
+// char) in a raw value so it matches VERBATIM inside a Like / ILike pattern the
+// caller assembles — EscapeLike("50%")+"%" is a prefix match on the literal
+// "50%", not "starts with 50 then anything". Exposed so a reader that renders a
+// neutral text predicate (prefix / substring / whole, case-sensitive or not)
+// can build the Like/ILike pattern itself while reusing the single, dialect-safe
+// escape (backslash, the PostgreSQL LIKE default the translator declares).
+func EscapeLike(s string) string { return likeEscaper.Replace(s) }
 
 // ─── Boolean composition ─────────────────────────────────────────────────────
 

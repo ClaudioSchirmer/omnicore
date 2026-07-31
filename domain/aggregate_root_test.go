@@ -3,20 +3,18 @@ package domain
 import "testing"
 
 type testAVO struct {
-	ID   ID
+	Managed
 	Name string
 }
 
-func (t testAVO) GetID() ID                                { return t.ID }
 func (t testAVO) BuildRules(_ string, _ Service, _ *Rules) {}
 
 // otherAVO is an AVO not declared in providerForTest's AggregateChildren list.
 // Used to exercise the type-guard rejection path.
 type otherAVO struct {
-	ID string
+	Managed
 }
 
-func (o otherAVO) GetID() ID                                { return NewID(o.ID) }
 func (o otherAVO) BuildRules(_ string, _ Service, _ *Rules) {}
 
 // providerForTest is the minimal AggregateRootProvider used by the typed
@@ -40,7 +38,7 @@ func newProviderForTest() *providerForTest {
 
 func TestReplaceAggregateChildrenOf_FullReplace(t *testing.T) {
 	p := newProviderForTest()
-	p.AggregateConstructor([]AggregateValueObject{testAVO{ID: NewID("1"), Name: "a"}})
+	p.AggregateConstructor([]AggregateValueObject{testAVO{Name: "a"}})
 
 	newItems := []testAVO{{Name: "b"}, {Name: "c"}}
 	ReplaceAggregateChildrenOf(p, newItems)
@@ -57,7 +55,7 @@ func TestReplaceAggregateChildrenOf_FullReplace(t *testing.T) {
 
 func TestReplaceAggregateChildrenOf_EmptyClears(t *testing.T) {
 	p := newProviderForTest()
-	p.AggregateConstructor([]AggregateValueObject{testAVO{ID: NewID("1")}})
+	p.AggregateConstructor([]AggregateValueObject{testAVO{}})
 
 	ReplaceAggregateChildrenOf(p, []testAVO{})
 
@@ -73,7 +71,7 @@ func TestReplaceAggregateChildrenOf_EmptyClears(t *testing.T) {
 
 func TestReplaceAggregateChildrenOf_NilSliceSameAsEmpty(t *testing.T) {
 	p := newProviderForTest()
-	p.AggregateConstructor([]AggregateValueObject{testAVO{ID: NewID("1")}})
+	p.AggregateConstructor([]AggregateValueObject{testAVO{}})
 
 	var nilSlice []testAVO
 	ReplaceAggregateChildrenOf(p, nilSlice)
@@ -111,7 +109,7 @@ func TestAddAggregateChild_AcceptsDeclaredType(t *testing.T) {
 
 func TestAddAggregateChild_RejectsUndeclaredType(t *testing.T) {
 	p := newProviderForTest()
-	AddAggregateChild(p, otherAVO{ID: "x"})
+	AddAggregateChild(p, otherAVO{})
 
 	msgs := p.NotificationContext().Messages()
 	if len(msgs) != 1 {
@@ -130,7 +128,7 @@ func TestAddAggregateChild_RejectsUndeclaredType(t *testing.T) {
 
 func TestChangeAggregateChild_RejectsUndeclaredType(t *testing.T) {
 	p := newProviderForTest()
-	ChangeAggregateChild(p, otherAVO{ID: "1"}, otherAVO{ID: "2"})
+	ChangeAggregateChild(p, otherAVO{}, otherAVO{})
 
 	msgs := p.NotificationContext().Messages()
 	if len(msgs) != 1 {
@@ -144,7 +142,7 @@ func TestChangeAggregateChild_RejectsUndeclaredType(t *testing.T) {
 
 func TestRemoveAggregateChild_RejectsUndeclaredType(t *testing.T) {
 	p := newProviderForTest()
-	RemoveAggregateChild(p, otherAVO{ID: "x"})
+	RemoveAggregateChild(p, otherAVO{})
 
 	msgs := p.NotificationContext().Messages()
 	if len(msgs) != 1 {
@@ -160,7 +158,7 @@ func TestReplaceAggregateChildrenOf_RejectsUndeclaredType(t *testing.T) {
 	p := newProviderForTest()
 	// otherAVO is not declared. Clear of "otherAVO" runs (no-op), then each
 	// item is rejected and not added.
-	ReplaceAggregateChildrenOf(p, []otherAVO{{ID: "1"}, {ID: "2"}})
+	ReplaceAggregateChildrenOf(p, []otherAVO{{}, {}})
 
 	msgs := p.NotificationContext().Messages()
 	if len(msgs) != 2 {
@@ -177,10 +175,10 @@ func TestReplaceAggregateChildrenOf_RejectsUndeclaredType(t *testing.T) {
 // ─── Phase 20: ValidateAggregateChild (optional inline validation) ──────────
 
 type emittingAVO struct {
+	Managed
 	emit string
 }
 
-func (e emittingAVO) GetID() ID { return NewID("") }
 func (e emittingAVO) BuildRules(_ string, _ Service, r *Rules) {
 	if e.emit != "" {
 		r.AddNotification(e.emit, RequiredFieldNotification{})

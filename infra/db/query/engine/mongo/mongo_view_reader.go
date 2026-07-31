@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"regexp"
 	"sort"
 	"strings"
 
@@ -726,11 +727,15 @@ func applyFilter(dst bson.M, src map[string]any) {
 }
 
 // translateFilterValue converts the port-level sentinel types defined in
-// application/queries into MongoDB-native values. The web layer emits these
-// sentinels for case-insensitive list operators (iin / inin), where Mongo
-// requires native bson.Regex elements inside $in / $nin rather than the
-// {$regex: pattern, $options: "i"} sub-document shape that works fine at
-// field level. All other values pass through unchanged.
+// application/queries into MongoDB-native values. The web layer emits neutral
+// sentinels one operator at a time: Clause for the ordinal/set operators
+// (ne/gt/gte/lt/lte, in/nin) → the {$op: ...} sub-document; TextMatch for the
+// text-match operators (startswith/contains and their case-folding variants)
+// → a QuoteMeta'd, kind-anchored bson.Regex (negated under $not); TextMatchList
+// for the case-insensitive list operators (iin/inin) → native bson.Regex
+// elements inside $in / $nin.
+// A bare `eq` scalar carries no sentinel and passes through unchanged (Mongo
+// reads {field: scalar} as equality).
 //
 // The translation is shallow on purpose — the wire wrappers in web/
 // produce values one operator at a time at field level; there is no
@@ -739,24 +744,46 @@ func applyFilter(dst bson.M, src map[string]any) {
 // expansion needs to know the field name to assemble the $and entries.
 func translateFilterValue(v any) any {
 	switch x := v.(type) {
-	case queries.RegexMatch:
+	case queries.Clause:
+		if len(x.Values) == 0 {
+			return bson.M{}
+		}
+		switch x.Op {
+		case queries.FilterIn:
+			return bson.M{"$in": x.Values}
+		case queries.FilterNin:
+			return bson.M{"$nin": x.Values}
+		case queries.FilterNe:
+			return bson.M{"$ne": x.Values[0]}
+		case queries.FilterGt:
+			return bson.M{"$gt": x.Values[0]}
+		case queries.FilterGte:
+			return bson.M{"$gte": x.Values[0]}
+		case queries.FilterLt:
+			return bson.M{"$lt": x.Values[0]}
+		case queries.FilterLte:
+			return bson.M{"$lte": x.Values[0]}
+		default:
+			return bson.M{}
+		}
+	case queries.TextMatch:
 		opts := ""
 		if x.CaseInsensitive {
 			opts = "i"
 		}
-		re := bson.Regex{Pattern: x.Pattern, Options: opts}
+		re := bson.Regex{Pattern: textPattern(x.Value, x.Kind), Options: opts}
 		if x.Negate {
 			return bson.M{"$not": re}
 		}
 		return re
-	case queries.RegexMatchList:
+	case queries.TextMatchList:
 		opts := ""
 		if x.CaseInsensitive {
 			opts = "i"
 		}
-		elements := make(bson.A, 0, len(x.Patterns))
-		for _, p := range x.Patterns {
-			elements = append(elements, bson.Regex{Pattern: p, Options: opts})
+		elements := make(bson.A, 0, len(x.Values))
+		for _, val := range x.Values {
+			elements = append(elements, bson.Regex{Pattern: "^" + regexp.QuoteMeta(val) + "$", Options: opts})
 		}
 		key := "$in"
 		if x.Negate {
@@ -765,6 +792,22 @@ func translateFilterValue(v any) any {
 		return bson.M{key: elements}
 	default:
 		return v
+	}
+}
+
+// textPattern renders a store-neutral TextMatch value + kind into a MongoDB
+// regular expression: regexp.QuoteMeta escapes the raw value, then the kind
+// anchors it — prefix "^v", whole "^v$", substring "v". Escaping and anchoring
+// live here (not in the wire layer) so the port stays store-neutral.
+func textPattern(value string, kind queries.TextMatchKind) string {
+	q := regexp.QuoteMeta(value)
+	switch kind {
+	case queries.TextPrefix:
+		return "^" + q
+	case queries.TextExact:
+		return "^" + q + "$"
+	default: // queries.TextContains
+		return q
 	}
 }
 

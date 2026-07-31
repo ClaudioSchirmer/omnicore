@@ -146,6 +146,16 @@ type keyedRow interface {
 // scanned into a string — the same uuid→string scan the executor's
 // `RETURNING <pk>` path uses.
 func ScanLeadingKey(row keyedRow, dst any, columns []string, byCol map[string]int) (string, error) {
+	return ScanLeadingKeyTrailing(row, dst, columns, byCol)
+}
+
+// ScanLeadingKeyTrailing is ScanLeadingKey plus a tail of caller-owned scan
+// targets appended AFTER the struct columns — used to read the framework-managed
+// columns (created_at/updated_at/deleted_at/revision) into external
+// sql.Null* destinations rather than struct fields, since the entity's carrier
+// slots are unexported. The SELECT must list: leading key, columns..., then the
+// trailing columns in the same order as `trailing`.
+func ScanLeadingKeyTrailing(row keyedRow, dst any, columns []string, byCol map[string]int, trailing ...any) (string, error) {
 	v := reflect.ValueOf(dst)
 	if v.Kind() != reflect.Pointer || v.IsNil() {
 		return "", fmt.Errorf("ScanLeadingKey: dst must be a non-nil pointer, got %T", dst)
@@ -155,7 +165,7 @@ func ScanLeadingKey(row keyedRow, dst any, columns []string, byCol map[string]in
 		return "", fmt.Errorf("ScanLeadingKey: dst must point to a struct, got %s", v.Kind())
 	}
 	var key string
-	targets := make([]any, 0, len(columns)+1)
+	targets := make([]any, 0, len(columns)+1+len(trailing))
 	targets = append(targets, &key)
 	for _, col := range columns {
 		fieldIndex, ok := byCol[col]
@@ -164,5 +174,6 @@ func ScanLeadingKey(row keyedRow, dst any, columns []string, byCol map[string]in
 		}
 		targets = append(targets, scanTargetFor(v.Field(fieldIndex)))
 	}
+	targets = append(targets, trailing...)
 	return key, row.Scan(targets...)
 }
