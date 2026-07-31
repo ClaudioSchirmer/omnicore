@@ -249,16 +249,18 @@ type Config struct {
 
 	// GraphQL carries the operator-tunable bits of the GraphQL endpoint — the
 	// path it is served on and whether GET / redirects to it. The schema and
-	// the attached handlers (the WHAT) live on Wiring.GraphQL in code. GraphQL
-	// is its own web surface, never part of the OpenAPI/Swagger document. When
-	// Wiring.GraphQL is nil this block is ignored.
+	// the attached handlers (the WHAT) come from the features implementing
+	// GraphQLFeature (framework-built registry on Deps.GraphQLRegistry).
+	// GraphQL is its own web surface, never part of the OpenAPI/Swagger
+	// document. When no feature opts into the surface this block is ignored.
 	GraphQL GraphQLConfig `yaml:"graphql"`
 
 	// GRPC carries the operator-tunable bits of the gRPC surface — the
 	// dedicated listener address, TLS material, the reflection toggle and
-	// the transport auth policy. The mounted services (the WHAT) live on
-	// Wiring.GRPC in code, exactly like GraphQL. When Wiring.GRPC is nil
-	// this block is ignored. The surface is served with Connect: one
+	// the transport auth policy. The mounted services (the WHAT) come from the
+	// features implementing GRPCFeature (framework-built registry on
+	// Deps.GRPCRegistry), exactly like GraphQL. When no feature opts into the
+	// surface this block is ignored. The surface is served with Connect: one
 	// endpoint speaking the gRPC, gRPC-Web and Connect protocols; without
 	// TLS the listener runs h2c so the gRPC protocol still works.
 	GRPC GRPCConfig `yaml:"grpc"`
@@ -358,7 +360,7 @@ type OpenAPIConfig struct {
 }
 
 // GraphQLConfig configures HOW the GraphQL endpoint is served. WHAT it exposes
-// (the schema, the attached handlers) lives on Wiring.GraphQL in code. GraphQL
+// (the schema, the attached handlers) comes from the GraphQLFeatures. GraphQL
 // is its own web surface — it never goes through openapi.Mount/MountRaw, never
 // appears in the Swagger document, and is not policed by the REST route scans;
 // the only thing shared with REST is the application-layer handlers it
@@ -420,8 +422,8 @@ func (g *GraphQLConfig) validate() error {
 }
 
 // GRPCConfig is the yaml `grpc:` block — transport knobs for the gRPC
-// surface (Wiring.GRPC). Ignored when the wiring does not mount the
-// surface.
+// surface (Deps.GRPCRegistry). Ignored when no feature implements
+// GRPCFeature.
 type GRPCConfig struct {
 	// Addr is the dedicated listener address, e.g. ":9090". The gRPC
 	// surface never shares the Fiber listener (fasthttp cannot host

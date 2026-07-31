@@ -24,8 +24,6 @@ import (
 	"github.com/ClaudioSchirmer/omnicore/infra/db/core"
 	"github.com/ClaudioSchirmer/omnicore/infra/events"
 	"github.com/ClaudioSchirmer/omnicore/infra/integration"
-	"github.com/ClaudioSchirmer/omnicore/web/graphql"
-	fwgrpc "github.com/ClaudioSchirmer/omnicore/web/grpc"
 	"github.com/ClaudioSchirmer/omnicore/web/openapi"
 )
 
@@ -160,8 +158,7 @@ func TestBuildApp_GraphQLRootRedirect(t *testing.T) {
 	d := silentDepsWithRegistry()
 	d.Config.GraphQL.Path = "/graphql"
 	d.Config.GraphQL.RootRedirect = true
-	reg := graphqlRegistryForTest(d)
-	app, err := buildApp(context.Background(), d, Wiring{GraphQL: reg})
+	app, err := buildApp(context.Background(), d, Wiring{Features: []Feature{graphQLFeature{}}})
 	if err != nil {
 		t.Fatalf("buildApp: %v", err)
 	}
@@ -182,7 +179,7 @@ func TestBuildApp_GRPCPostures(t *testing.T) {
 		d.Config.Auth = jwtAuthConfig(pemKey)
 		d.Config.GRPC.RequestTimeoutSeconds = 3
 		d.Config.GRPC.Reflection = true
-		if _, err := buildApp(context.Background(), d, Wiring{GRPC: fwgrpc.New(d.Pipeline)}); err != nil {
+		if _, err := buildApp(context.Background(), d, Wiring{Features: []Feature{grpcFeature{}}}); err != nil {
 			t.Fatalf("buildApp: %v", err)
 		}
 	})
@@ -193,7 +190,7 @@ func TestBuildApp_GRPCPostures(t *testing.T) {
 		d.Config.Auth.Mode = AuthModeJWT
 		// The HTTP AuthMiddleware fails first with the same key; assert the boot
 		// aborts either way (both errors wrap the same authcore construction).
-		if _, err := buildApp(context.Background(), d, Wiring{GRPC: fwgrpc.New(d.Pipeline)}); err == nil {
+		if _, err := buildApp(context.Background(), d, Wiring{Features: []Feature{grpcFeature{}}}); err == nil {
 			t.Fatal("expected a boot error with an invalid key")
 		}
 	})
@@ -203,7 +200,7 @@ func TestBuildApp_GRPCPostures(t *testing.T) {
 		d.Config.Auth.Mode = "" // internal plane: global auth off, attribution still built from JWT material
 		d.Config.Auth.JWT.PublicKeyPEM = pemKey
 		d.Config.GRPC.Auth.Mode = "internal"
-		if _, err := buildApp(context.Background(), d, Wiring{GRPC: fwgrpc.New(d.Pipeline)}); err != nil {
+		if _, err := buildApp(context.Background(), d, Wiring{Features: []Feature{grpcFeature{}}}); err != nil {
 			t.Fatalf("buildApp: %v", err)
 		}
 	})
@@ -212,7 +209,7 @@ func TestBuildApp_GRPCPostures(t *testing.T) {
 		d.Config.Auth = jwtAuthConfig("garbage")
 		d.Config.Auth.Mode = "" // keep the HTTP middleware out of the way
 		d.Config.GRPC.Auth.Mode = "internal"
-		if _, err := buildApp(context.Background(), d, Wiring{GRPC: fwgrpc.New(d.Pipeline)}); err == nil ||
+		if _, err := buildApp(context.Background(), d, Wiring{Features: []Feature{grpcFeature{}}}); err == nil ||
 			!strings.Contains(err.Error(), "grpc attribution validator") {
 			t.Fatalf("expected the attribution boot error, got %v", err)
 		}
@@ -220,14 +217,14 @@ func TestBuildApp_GRPCPostures(t *testing.T) {
 	t.Run("internalWithoutJWTMaterial", func(t *testing.T) {
 		d := silentDeps()
 		d.Config.GRPC.Auth.Mode = "internal"
-		if _, err := buildApp(context.Background(), d, Wiring{GRPC: fwgrpc.New(d.Pipeline)}); err != nil {
+		if _, err := buildApp(context.Background(), d, Wiring{Features: []Feature{grpcFeature{}}}); err != nil {
 			t.Fatalf("buildApp: %v", err)
 		}
 	})
 	t.Run("mtlsPosture", func(t *testing.T) {
 		d := silentDeps()
 		d.Config.GRPC.Auth.Mode = "mtls"
-		if _, err := buildApp(context.Background(), d, Wiring{GRPC: fwgrpc.New(d.Pipeline)}); err != nil {
+		if _, err := buildApp(context.Background(), d, Wiring{Features: []Feature{grpcFeature{}}}); err != nil {
 			t.Fatalf("buildApp: %v", err)
 		}
 	})
@@ -315,7 +312,7 @@ func TestServe_GRPCListenerH2C(t *testing.T) {
 	d := serveDeps()
 	d.Config.GRPC.Addr = "127.0.0.1:0"
 	d.Config.GRPC.IdleTimeoutSeconds = 30
-	if err := serve(cancelledCtx(), d, Wiring{GRPC: fwgrpc.New(d.Pipeline)}); err != nil {
+	if err := serve(cancelledCtx(), d, Wiring{Features: []Feature{grpcFeature{}}}); err != nil {
 		t.Fatalf("serve with grpc listener: %v", err)
 	}
 }
@@ -325,7 +322,7 @@ func TestServe_MTLSClientCAErrors(t *testing.T) {
 		d := serveDeps()
 		d.Config.GRPC.Auth.Mode = "mtls"
 		d.Config.GRPC.ClientCAFile = filepath.Join(t.TempDir(), "absent.pem")
-		if err := serve(cancelledCtx(), d, Wiring{GRPC: fwgrpc.New(d.Pipeline)}); err == nil ||
+		if err := serve(cancelledCtx(), d, Wiring{Features: []Feature{grpcFeature{}}}); err == nil ||
 			!strings.Contains(err.Error(), "clientCAFile") {
 			t.Fatalf("expected the clientCAFile error, got %v", err)
 		}
@@ -338,7 +335,7 @@ func TestServe_MTLSClientCAErrors(t *testing.T) {
 			t.Fatal(err)
 		}
 		d.Config.GRPC.ClientCAFile = caPath
-		if err := serve(cancelledCtx(), d, Wiring{GRPC: fwgrpc.New(d.Pipeline)}); err == nil ||
+		if err := serve(cancelledCtx(), d, Wiring{Features: []Feature{grpcFeature{}}}); err == nil ||
 			!strings.Contains(err.Error(), "no usable CA certificate") {
 			t.Fatalf("expected the unusable-CA error, got %v", err)
 		}
@@ -443,10 +440,4 @@ func TestStartUpstreamSubscribers(t *testing.T) {
 			t.Fatalf("subscriber shutdown: %v", err)
 		}
 	})
-}
-
-// graphqlRegistryForTest builds the empty (stub-Query) GraphQL registry the
-// mount tests use.
-func graphqlRegistryForTest(d Deps) *graphql.Registry {
-	return graphql.New(d.Pipeline)
 }

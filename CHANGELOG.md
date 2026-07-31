@@ -45,6 +45,22 @@ with `1.0.0`.
 
 ### Changed
 
+- **breaking: the GraphQL and gRPC surfaces are declared by the feature, not
+  wired in `Wire`.** A feature now opts into each surface by implementing
+  `bootstrap.GraphQLFeature` (`MountGraphQL(reg *graphql.Registry, deps Deps)`)
+  or `bootstrap.GRPCFeature` (`MountGRPC(reg *grpc.Registry, deps Deps)`) — the
+  discovered-by-type-assertion pattern `ReadableFeature`/`IntegrationFeature`
+  already use. The framework builds the single shared registry per surface (on
+  `Deps.GraphQLRegistry` / `Deps.GRPCRegistry`), lets every opted-in feature
+  contribute cumulatively, and serves it. The interface declaration IS the on/off
+  switch — no yaml/Wiring enable-flag; the yaml `graphql:`/`grpc:` blocks keep
+  carrying only each surface's address/policy knobs.
+  - **Removed** the `Wiring.GraphQL` and `Wiring.GRPC` fields. A service that
+    built the registry in `Wire` (`graphql.New(d.Pipeline)` + `feature.MountGraphQL(reg, d)`
+    + `GraphQL: reg`) deletes that block: keep the `MountGraphQL`/`MountGRPC`
+    methods on the feature and the framework discovers them. The single GraphQL
+    graph / gRPC surface, cumulative registration, dedicated gRPC listener, and
+    all serving/auth/reflection semantics are unchanged.
 - **breaking: a relational load surfaces the managed columns on the typed
   entity — `domain.Managed`.** `FindOne`/`FindAll` now populate the
   framework-owned columns — the id AND `revision` +

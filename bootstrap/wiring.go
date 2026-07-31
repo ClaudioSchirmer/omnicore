@@ -5,8 +5,6 @@ import (
 
 	"github.com/ClaudioSchirmer/omnicore/application/translation"
 	"github.com/ClaudioSchirmer/omnicore/infra/cache"
-	"github.com/ClaudioSchirmer/omnicore/web/graphql"
-	fwgrpc "github.com/ClaudioSchirmer/omnicore/web/grpc"
 	"github.com/ClaudioSchirmer/omnicore/web/openapi"
 	"github.com/gofiber/fiber/v3"
 )
@@ -15,6 +13,10 @@ import (
 //
 // Features is the main declaration: each Feature mounts its own routes
 // and, if it implements ReadableFeature, contributes Views to SyncEngine.
+// A feature may also opt into the GraphQL and gRPC surfaces by implementing
+// GraphQLFeature / GRPCFeature — the framework discovers those by type
+// assertion (like ReadableFeature), builds the single shared registry, and
+// serves it; the service never constructs a graphql/grpc registry itself.
 //
 // Translations is the list of translation modules of the service, imported
 // into the framework's default Translator at boot.
@@ -37,28 +39,14 @@ type Wiring struct {
 	OnShutdown   func(ctx context.Context) error
 	OpenAPI      *openapi.Config
 
-	// GraphQL is an opt-in, self-contained web surface: a graphql.Registry the
-	// service builds with graphql.New(deps.Pipeline) and attaches read/write
-	// handlers to. When non-nil, bootstrap mounts a single POST endpoint
-	// (Config.GraphQL.Path) serving it. GraphQL is deliberately separate from
-	// REST/OpenAPI — it never goes through openapi.Mount/MountRaw, never
-	// appears in the Swagger document, and is not policed by the REST route
-	// scans; the only shared surface is the application-layer handlers it
-	// dispatches to. nil disables GraphQL entirely.
-	GraphQL *graphql.Registry
-
-	// GRPC is the opt-in gRPC surface: a grpc.Registry the service builds
-	// with grpc.New(deps.Pipeline) and mounts generated Connect service
-	// handlers on. When non-nil, bootstrap injects the runtime policy from
-	// the yaml `grpc:` block (auth via the shared web/authcore JWT core —
-	// the same validation the HTTP middleware enforces — plus tracing and
-	// the request timeout), serves the registry on its own dedicated
-	// listener (grpc.addr — never the Fiber listener, which cannot host
-	// HTTP/2 services) and wires it into the coordinated graceful-shutdown
-	// drain. Like GraphQL, the only surface shared with REST is the
-	// application-layer handlers the wrappers dispatch to. nil disables
-	// the surface entirely.
-	GRPC *fwgrpc.Registry
+	// The GraphQL and gRPC surfaces are NOT declared here: a feature opts in
+	// by implementing GraphQLFeature / GRPCFeature, and the framework builds +
+	// serves the single shared registry (surfaced on Deps.GraphQLRegistry /
+	// Deps.GRPCRegistry). Both surfaces stay deliberately separate from
+	// REST/OpenAPI — never in the Swagger document, not policed by the REST
+	// route scans; the only shared surface is the application-layer handlers
+	// the fields/wrappers dispatch to. The yaml `graphql:`/`grpc:` blocks carry
+	// each surface's address + policy knobs.
 
 	// UpstreamSubscriptions is the manual-lifecycle counterpart of
 	// Config.UpstreamSubscriptions — populated when callers want to

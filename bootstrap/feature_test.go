@@ -13,6 +13,8 @@ import (
 	"github.com/ClaudioSchirmer/omnicore/application/pipeline"
 	"github.com/ClaudioSchirmer/omnicore/application/translation"
 	"github.com/ClaudioSchirmer/omnicore/infra/db/query"
+	"github.com/ClaudioSchirmer/omnicore/web/graphql"
+	fwgrpc "github.com/ClaudioSchirmer/omnicore/web/grpc"
 	"github.com/ClaudioSchirmer/omnicore/web/openapi"
 
 	"github.com/gofiber/fiber/v3"
@@ -61,6 +63,32 @@ func (o *orderRecorder) Mount(_ *fiber.App, _ Deps) {
 	*o.order = append(*o.order, o.id)
 }
 
+// graphQLFeature is a test Feature that opts into the GraphQL surface via
+// GraphQLFeature. MountGraphQL runs the optional register hook (nil leaves the
+// registry an empty-but-valid stub schema). Since the registry is now
+// framework-built and feature-declared, tests declare the surface by including
+// this feature instead of the removed Wiring.GraphQL field.
+type graphQLFeature struct{ register func(*graphql.Registry) }
+
+func (graphQLFeature) Mount(_ *fiber.App, _ Deps) {}
+func (f graphQLFeature) MountGraphQL(reg *graphql.Registry, _ Deps) {
+	if f.register != nil {
+		f.register(reg)
+	}
+}
+
+// grpcFeature is the gRPC twin of graphQLFeature — opts into the gRPC surface
+// via GRPCFeature; MountGRPC runs the optional register hook (nil leaves an
+// empty registry). Replaces the removed Wiring.GRPC field in tests.
+type grpcFeature struct{ register func(*fwgrpc.Registry) }
+
+func (grpcFeature) Mount(_ *fiber.App, _ Deps) {}
+func (f grpcFeature) MountGRPC(reg *fwgrpc.Registry, _ Deps) {
+	if f.register != nil {
+		f.register(reg)
+	}
+}
+
 // silentDeps returns Deps with Config + Logger discarded — sufficient
 // for buildApp (does not touch Postgres/Mongo). Pipeline is wired with the
 // default Translator so the ErrorHandler can translate notifications when
@@ -71,6 +99,72 @@ func silentDeps() Deps {
 		Logger:   slog.New(slog.NewJSONHandler(io.Discard, nil)),
 		Pipeline: pipeline.New(translation.Default()),
 	}
+}
+
+// --- mountSurfaceFeatures ---
+
+func TestMountSurfaceFeatures_DeclarationIsTheSwitch(t *testing.T) {
+	t.Run("noFeatureOptsIn_bothNil", func(t *testing.T) {
+		d := silentDeps()
+		mountSurfaceFeatures(&d, Wiring{Features: []Feature{&writeOnlyFeature{}}})
+		if d.GraphQLRegistry != nil {
+			t.Error("no GraphQLFeature → GraphQLRegistry must stay nil")
+		}
+		if d.GRPCRegistry != nil {
+			t.Error("no GRPCFeature → GRPCRegistry must stay nil")
+		}
+	})
+
+	t.Run("graphQLFeature_buildsGraphQLOnly", func(t *testing.T) {
+		d := silentDeps()
+		mountSurfaceFeatures(&d, Wiring{Features: []Feature{graphQLFeature{}}})
+		if d.GraphQLRegistry == nil {
+			t.Error("a GraphQLFeature must build the GraphQL registry")
+		}
+		if d.GRPCRegistry != nil {
+			t.Error("GraphQL opt-in must not build the gRPC surface")
+		}
+	})
+
+	t.Run("grpcFeature_buildsGRPCOnly", func(t *testing.T) {
+		d := silentDeps()
+		mountSurfaceFeatures(&d, Wiring{Features: []Feature{grpcFeature{}}})
+		if d.GRPCRegistry == nil {
+			t.Error("a GRPCFeature must build the gRPC registry")
+		}
+		if d.GraphQLRegistry != nil {
+			t.Error("gRPC opt-in must not build the GraphQL surface")
+		}
+	})
+
+	t.Run("cumulative_oneSharedGraph", func(t *testing.T) {
+		d := silentDeps()
+		var got []*graphql.Registry
+		f := graphQLFeature{register: func(r *graphql.Registry) { got = append(got, r) }}
+		mountSurfaceFeatures(&d, Wiring{Features: []Feature{f, f}})
+		if len(got) != 2 {
+			t.Fatalf("both features should contribute, got %d calls", len(got))
+		}
+		if got[0] != got[1] || got[0] != d.GraphQLRegistry {
+			t.Error("every GraphQLFeature must receive the SAME shared registry")
+		}
+	})
+
+	t.Run("idempotent_preBuiltNotRepopulated", func(t *testing.T) {
+		d := silentDeps()
+		calls := 0
+		f := graphQLFeature{register: func(*graphql.Registry) { calls++ }}
+		w := Wiring{Features: []Feature{f}}
+		mountSurfaceFeatures(&d, w) // serve path
+		first := d.GraphQLRegistry
+		mountSurfaceFeatures(&d, w) // buildApp path — must be a no-op
+		if calls != 1 {
+			t.Errorf("population must run once across the serve+buildApp calls, ran %d", calls)
+		}
+		if d.GraphQLRegistry != first {
+			t.Error("the second call must not rebuild the registry")
+		}
+	})
 }
 
 // --- collectViews ---

@@ -241,22 +241,22 @@ query:
     <p>
         <code>openapi:</code> tunes <em>how</em> the Swagger UI is served (the spec identity —
         Title/Version — stays in code on <code>Wiring.OpenAPI</code>). <code>graphql:</code> tunes how the
-        GraphQL endpoint is served (the schema + handlers stay in code on <code>Wiring.GraphQL</code>);
-        GraphQL is its own surface, never in the Swagger document. <code>shutdown:</code> caps the
+        GraphQL endpoint is served (the schema + handlers stay in code, in each feature's
+        <code>MountGraphQL</code>); GraphQL is its own surface, never in the Swagger document. <code>shutdown:</code> caps the
         coordinated drain on SIGINT/SIGTERM. See <a href="#openapi">OpenAPI</a> · <a href="#graphql">GraphQL</a>.
     </p>
 <pre><code>openapi:
   uiPath: /docs                          # default /docs; must start with "/"; cannot be /openapi.json, /livez or /readyz
   rootRedirect: false                    # default false — when true registers GET / → 302 uiPath
 
-graphql:                                 # ignored unless Wiring.GraphQL is set
+graphql:                                 # ignored unless a feature implements GraphQLFeature
   path: /graphql                         # default. POST endpoint route
   uiPath: /graphql/ui                    # default. GET GraphiQL playground (when playground: true)
   playground: false                      # default off — serve GraphiQL at uiPath
   introspection: false                   # default off — answer __schema / __type
   rootRedirect: false                    # default off — GET / → 302 path; both this + openapi.rootRedirect → boot panic
 
-grpc:                                    # ignored unless Wiring.GRPC is set
+grpc:                                    # ignored unless a feature implements GRPCFeature
   addr: ":9090"                          # default. Dedicated listener — never the Fiber one
   certFile: ""                           # TLS pair — both or neither; without TLS the listener serves h2c
   keyFile: ""

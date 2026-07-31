@@ -16,6 +16,8 @@ import (
 	"github.com/ClaudioSchirmer/omnicore/infra/tracing"
 	"github.com/ClaudioSchirmer/omnicore/infra/transport"
 	"github.com/ClaudioSchirmer/omnicore/web"
+	"github.com/ClaudioSchirmer/omnicore/web/graphql"
+	fwgrpc "github.com/ClaudioSchirmer/omnicore/web/grpc"
 	"github.com/ClaudioSchirmer/omnicore/web/openapi"
 )
 
@@ -141,6 +143,20 @@ type Deps struct {
 	// admin retry routes that walk Receivers() to drain pending
 	// failure rows.
 	IntegrationRegistry *integration.Registry
+
+	// GraphQLRegistry is the single GraphQL graph the framework builds
+	// (graphql.New(Pipeline)) when at least one feature implements
+	// GraphQLFeature; nil otherwise. Every such feature contributes its
+	// fields via MountGraphQL(reg, deps). Surfaced here — like
+	// OpenAPIRegistry — so the surface is framework-owned, not assembled
+	// by the service's Wire.
+	GraphQLRegistry *graphql.Registry
+
+	// GRPCRegistry is the single gRPC surface the framework builds when at
+	// least one feature implements GRPCFeature; nil otherwise. Populated
+	// via MountGRPC(reg, deps) and served on the dedicated grpc listener.
+	// Framework-owned, mirroring GraphQLRegistry.
+	GRPCRegistry *fwgrpc.Registry
 
 	// UpstreamSubscribers exposes the live cross-service composition
 	// subscribers spun by bootstrap.Run. Surfaced so consumer admin

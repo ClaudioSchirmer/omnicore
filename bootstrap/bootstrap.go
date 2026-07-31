@@ -734,6 +734,14 @@ func buildApp(ctx context.Context, deps Deps, wiring Wiring) (*fiber.App, error)
 			},
 		})
 
+	// Build + populate the GraphQL/gRPC registries from the features that opt
+	// into GraphQLFeature/GRPCFeature. Idempotent: in the serve path this
+	// already ran (deps.*Registry set), so it is a no-op here; on the direct
+	// buildApp path (tests, Build/Serve consumers) it runs now. Placed with the
+	// feature-wiring phase; registration is request-time-independent of the
+	// permission gate configured above.
+	mountSurfaceFeatures(&deps, wiring)
+
 	for _, f := range wiring.Features {
 		f.Mount(app, deps)
 	}
@@ -812,7 +820,7 @@ func buildApp(ctx context.Context, deps Deps, wiring Wiring) (*fiber.App, error)
 	// still authenticates it when auth.mode=jwt; authorization is per-field in
 	// the resolver. The only thing shared with REST is the application-layer
 	// handlers the resolvers dispatch to.
-	if wiring.GraphQL != nil {
+	if deps.GraphQLRegistry != nil {
 		gqlCfg := deps.Config.GraphQL
 		// Only one surface can own GET /. When both the OpenAPI UI and the
 		// GraphQL endpoint are wired AND both opt into rootRedirect, the boot
@@ -821,17 +829,17 @@ func buildApp(ctx context.Context, deps Deps, wiring Wiring) (*fiber.App, error)
 		if gqlCfg.RootRedirect && wiring.OpenAPI != nil && deps.Config.OpenAPI.RootRedirect {
 			panic("bootstrap: openapi.rootRedirect and graphql.rootRedirect are both enabled — only one surface can own GET /; disable one")
 		}
-		wiring.GraphQL.EnableIntrospection(gqlCfg.Introspection)
+		deps.GraphQLRegistry.EnableIntrospection(gqlCfg.Introspection)
 		// Layer-1 permission gate master switch — same source as the REST gate
 		// (fwweb.SetAuthorizationEnabled above), so RequirePermission on a
 		// GraphQL field enforces under auth.authorization.enabled and stays
 		// inert otherwise (incremental-rollout parity).
-		wiring.GraphQL.EnableAuthorization(deps.Config.Auth.Authorization != nil && deps.Config.Auth.Authorization.Enabled)
-		app.Post(gqlCfg.Path, wiring.GraphQL.Handler())
+		deps.GraphQLRegistry.EnableAuthorization(deps.Config.Auth.Authorization != nil && deps.Config.Auth.Authorization.Enabled)
+		app.Post(gqlCfg.Path, deps.GraphQLRegistry.Handler())
 		deps.Logger.Info("graphql served", "path", gqlCfg.Path,
 			"introspection", gqlCfg.Introspection, "playground", gqlCfg.Playground)
 		if gqlCfg.Playground {
-			app.Get(gqlCfg.UIPath, wiring.GraphQL.Playground(gqlCfg.Path))
+			app.Get(gqlCfg.UIPath, deps.GraphQLRegistry.Playground(gqlCfg.Path))
 			deps.Logger.Info("graphql playground served", "ui", gqlCfg.UIPath)
 		}
 		if gqlCfg.RootRedirect {
@@ -839,12 +847,13 @@ func buildApp(ctx context.Context, deps Deps, wiring Wiring) (*fiber.App, error)
 		}
 	}
 
-	// The gRPC surface (Wiring.GRPC) configures here — policy injection
-	// from the yaml `grpc:` block — and is SERVED in serve() on its own
-	// dedicated listener (Fiber/fasthttp cannot host HTTP/2 services).
-	// Auth rides the SAME JWT core the HTTP middleware uses (web/authcore
-	// via fwweb.NewAuthCoreValidator): one validation, two transport shells.
-	if wiring.GRPC != nil {
+	// The gRPC surface (Deps.GRPCRegistry, built by mountSurfaceFeatures)
+	// configures here — policy injection from the yaml `grpc:` block — and is
+	// SERVED in serve() on its own dedicated listener (Fiber/fasthttp cannot
+	// host HTTP/2 services). Auth rides the SAME JWT core the HTTP middleware
+	// uses (web/authcore via fwweb.NewAuthCoreValidator): one validation, two
+	// transport shells.
+	if deps.GRPCRegistry != nil {
 		grpcCfg := deps.Config.GRPC
 		switch grpcCfg.Auth.Mode {
 		case "internal", "mtls":
@@ -869,7 +878,7 @@ func buildApp(ctx context.Context, deps Deps, wiring Wiring) (*fiber.App, error)
 			if grpcCfg.Auth.Mode == "mtls" {
 				posture = fwgrpc.PostureMTLS
 			}
-			wiring.GRPC.SetAuthPosture(posture, attribution)
+			deps.GRPCRegistry.SetAuthPosture(posture, attribution)
 			deps.Logger.Info("grpc auth posture", "mode", grpcCfg.Auth.Mode, "attribution", attribution != nil)
 		default: // inherit — the global auth: block governs, like HTTP
 			if deps.Config.Auth.Mode == AuthModeJWT {
@@ -878,7 +887,7 @@ func buildApp(ctx context.Context, deps Deps, wiring Wiring) (*fiber.App, error)
 				if err != nil {
 					return nil, fmt.Errorf("bootstrap: grpc auth: %w", err)
 				}
-				wiring.GRPC.EnableAuth(validator, fwgrpc.AuthPolicy{
+				deps.GRPCRegistry.EnableAuth(validator, fwgrpc.AuthPolicy{
 					PublicProcedures: grpcCfg.PublicProcedures,
 					TenantRequired:   authOpts.TenantRequired,
 				})
@@ -889,19 +898,19 @@ func buildApp(ctx context.Context, deps Deps, wiring Wiring) (*fiber.App, error)
 		// (fwweb.SetAuthorizationEnabled) and the GraphQL registry, so
 		// RequirePermission on a procedure enforces under
 		// auth.authorization.enabled and stays inert otherwise.
-		wiring.GRPC.EnableAuthorization(deps.Config.Auth.Authorization != nil && deps.Config.Auth.Authorization.Enabled)
+		deps.GRPCRegistry.EnableAuthorization(deps.Config.Auth.Authorization != nil && deps.Config.Auth.Authorization.Enabled)
 		// The `http` tracing instrument gates inbound server spans on BOTH
 		// listeners — the gRPC surface is inbound traffic of the same kind.
-		wiring.GRPC.EnableServerSpanTracing(
+		deps.GRPCRegistry.EnableServerSpanTracing(
 			deps.Config.Observability.Tracing.Resolve(deps.Config.Service).Instruments(tracing.SubHTTP))
 		if grpcCfg.RequestTimeoutSeconds > 0 {
-			wiring.GRPC.SetRequestTimeout(time.Duration(grpcCfg.RequestTimeoutSeconds) * time.Second)
+			deps.GRPCRegistry.SetRequestTimeout(time.Duration(grpcCfg.RequestTimeoutSeconds) * time.Second)
 		}
 		if grpcCfg.Reflection {
-			reflector := grpcreflect.NewStaticReflector(wiring.GRPC.ServiceNames()...)
-			wiring.GRPC.MountRaw(grpcreflect.NewHandlerV1(reflector))
-			wiring.GRPC.MountRaw(grpcreflect.NewHandlerV1Alpha(reflector))
-			deps.Logger.Info("grpc reflection enabled", "services", wiring.GRPC.ServiceNames())
+			reflector := grpcreflect.NewStaticReflector(deps.GRPCRegistry.ServiceNames()...)
+			deps.GRPCRegistry.MountRaw(grpcreflect.NewHandlerV1(reflector))
+			deps.GRPCRegistry.MountRaw(grpcreflect.NewHandlerV1Alpha(reflector))
+			deps.Logger.Info("grpc reflection enabled", "services", deps.GRPCRegistry.ServiceNames())
 		}
 	}
 
@@ -1119,6 +1128,14 @@ func serve(ctx context.Context, deps Deps, wiring Wiring) error {
 	// no-op (boot.done already awaited there); on every error path it does the work.
 	defer stopBootRebuild(deps)
 
+	// Build + populate the GraphQL/gRPC registries BEFORE buildApp, on serve's
+	// own deps, so the gRPC listener below (deps.GRPCRegistry.Handler()) sees the
+	// same populated registry buildApp serves. deps is passed to buildApp by
+	// value, but the registry pointers copy through; buildApp's own idempotent
+	// call is a no-op once these are set. Harmless when no feature opts in
+	// (both stay nil → no surface).
+	mountSurfaceFeatures(&deps, wiring)
+
 	app, err := buildApp(ctx, deps, wiring)
 	if err != nil {
 		return err
@@ -1169,10 +1186,10 @@ func serve(ctx context.Context, deps Deps, wiring Wiring) error {
 	// so the gRPC protocol works in dev. Serving errors join the same errCh
 	// as the Fiber listener — either listener failing aborts the boot.
 	var grpcSrv *http.Server
-	if wiring.GRPC != nil {
+	if deps.GRPCRegistry != nil {
 		grpcCfg := deps.Config.GRPC
 		grpcTLS := grpcCfg.CertFile != ""
-		handler := wiring.GRPC.Handler()
+		handler := deps.GRPCRegistry.Handler()
 		var grpcTLSConfig *tls.Config
 		if grpcCfg.Auth.Mode == "mtls" {
 			// Require + verify a client certificate from the internal CA on
