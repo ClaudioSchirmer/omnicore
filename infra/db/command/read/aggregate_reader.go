@@ -41,3 +41,14 @@ func (l *AggregateLoader[T]) CountEntities(ctx context.Context, q *criteria.Quer
 	}
 	return total.Value, nil
 }
+
+// BoundTable is the root table the loader reads — its WithSchema table (empty
+// when no schema is bound, or on a nil loader). The RelationalSource boot guard
+// checks it equals the view's own schema table, so a view can never be wired to
+// the wrong entity's loader.
+func (l *AggregateLoader[T]) BoundTable() string {
+	if l == nil || l.schema == nil {
+		return ""
+	}
+	return l.schema.Table()
+}

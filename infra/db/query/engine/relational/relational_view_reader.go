@@ -54,10 +54,23 @@ func NewRelationalViewReader(views []*query.ViewDefinition) *RelationalViewReade
 		if !v.IsRelational() {
 			continue
 		}
+		schema := v.SchemaDef()
+		if schema == nil {
+			panic(fmt.Sprintf("relational view %q: RelationalSource requires a Schema()", v.Name()))
+		}
+		reader := v.RelationalReader()
+		// The loader MUST read the same table the view projects — a view handed
+		// the wrong entity's loader (e.g. the User loader on a Gadget view) would
+		// silently serve the wrong aggregate, so fail the boot loudly here.
+		if got, want := reader.BoundTable(), schema.Table(); got != want {
+			panic(fmt.Sprintf(
+				"relational view %q: RelationalSource loader is bound to table %q but the view's schema is table %q — the view was handed the wrong entity's loader",
+				v.Name(), got, want))
+		}
 		r.views[v.Name()] = view{
-			schema: v.SchemaDef(),
+			schema: schema,
 			node:   v.BuildViewNode(),
-			loader: v.RelationalReader(),
+			loader: reader,
 		}
 	}
 	return r

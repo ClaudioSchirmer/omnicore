@@ -35,4 +35,9 @@ type RelationalReader interface {
 	// CountEntities returns how many roots match q — COUNT(*) under the same
 	// filter and scope, nothing materialized — backing the onlyTotal read.
 	CountEntities(ctx context.Context, q *criteria.Query) (int64, error)
+	// BoundTable is the root table the loader is bound to (its WithSchema table).
+	// The boot guard checks it equals the RelationalSource view's own schema
+	// table — a mismatch means the view was handed the wrong entity's loader, a
+	// boot-fail programmer error.
+	BoundTable() string
 }
