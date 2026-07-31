@@ -15,7 +15,6 @@ import (
 	"time"
 
 	"github.com/ClaudioSchirmer/omnicore/application/configuration"
-	fwgrpc "github.com/ClaudioSchirmer/omnicore/web/grpc"
 )
 
 // Remaining serve() branches: the exported Serve wrapper, the TLS gRPC
@@ -68,7 +67,7 @@ func TestServe_GRPCListenerTLS(t *testing.T) {
 	d.Config.GRPC.Addr = "127.0.0.1:0"
 	d.Config.GRPC.CertFile = certFile
 	d.Config.GRPC.KeyFile = keyFile
-	if err := serve(cancelledCtx(), d, Wiring{GRPC: fwgrpc.New(d.Pipeline)}); err != nil {
+	if err := serve(cancelledCtx(), d, Wiring{Features: []Feature{grpcFeature{}}}); err != nil {
 		t.Fatalf("serve with TLS grpc listener: %v", err)
 	}
 }

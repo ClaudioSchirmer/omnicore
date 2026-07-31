@@ -9,6 +9,22 @@
     <div class="release">
         <div class="release-head"><span class="release-tag">Unreleased</span><span class="release-date">—</span></div>
         <ul>
+            <li><strong>Changed</strong> — <strong>breaking</strong> — <strong>the GraphQL and gRPC surfaces are
+                now declared by the feature, not wired in <code>Wire</code>.</strong> A feature opts into each
+                surface by implementing <code>bootstrap.GraphQLFeature</code>
+                (<code>MountGraphQL(reg *graphql.Registry, deps Deps)</code>) or <code>bootstrap.GRPCFeature</code>
+                (<code>MountGRPC(reg *grpc.Registry, deps Deps)</code>) — the same discovered-by-type-assertion
+                pattern <code>ReadableFeature</code>/<code>IntegrationFeature</code> use. The framework builds the
+                single shared registry per surface (surfaced on <code>Deps.GraphQLRegistry</code> /
+                <code>Deps.GRPCRegistry</code>), lets every opted-in feature contribute cumulatively, and serves it.
+                The interface declaration is the on/off switch — no <code>Wiring</code>/yaml enable-flag; the yaml
+                <code>graphql:</code>/<code>grpc:</code> blocks keep carrying only each surface's address/policy knobs.
+                <strong>Removed</strong> the <code>Wiring.GraphQL</code> and <code>Wiring.GRPC</code> fields: a service
+                that built the registry in <code>Wire</code> deletes that block and keeps the
+                <code>MountGraphQL</code>/<code>MountGRPC</code> methods on its feature (the framework discovers them).
+                The single graph / dedicated gRPC listener, cumulative registration, and all serving/auth/reflection
+                semantics are unchanged. See <a href="#bootstrap">bootstrap</a> · <a href="#graphql">GraphQL</a> ·
+                <a href="#grpc">gRPC</a>.</li>
             <li><strong>Changed</strong> — <strong>breaking</strong> — <strong>a relational load now surfaces the managed
                 columns on the typed entity: <code>domain.Managed</code>.</strong> <code>FindOne</code>/<code>FindAll</code>
                 populate the framework-owned columns — the id AND <code>revision</code> +

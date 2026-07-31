@@ -77,41 +77,53 @@
 </p>
 
 <h3>Enable the endpoint</h3>
-<p>The consumer builds a registry on the dispatch pipeline and attaches it to the wire callback:</p>
-<pre><code>func Wire(d bootstrap.Deps) bootstrap.Wiring {
-    gql := fwgraphql.New(d.Pipeline).
+<p>
+    A feature opts into GraphQL by implementing <code>bootstrap.GraphQLFeature</code> —
+    <code>MountGraphQL(reg *graphql.Registry, deps Deps)</code>, the query/mutation twin of
+    <code>Mount</code>. The framework discovers it (type assertion, like <code>ReadableFeature</code>),
+    builds the single shared registry on the dispatch pipeline, and hands it to every opted-in
+    feature so each registers its fields cumulatively into the same graph:
+</p>
+<pre><code>// on the same feature struct that carries Mount / Views — reusing its repo + view
+func (f *UsersFeature) MountGraphQL(reg *fwgraphql.Registry, d bootstrap.Deps) {
+    reg.
         // read: one Query field per query handler → a Relay connection
         Register(fwgraphql.QueryWithParams[requests.FindUsersByParamsRequest,
                                  requests.FindUsersByParamsResponse](
             "users", "User",
             &amp;handlers.FindByParamsQueryHandler[*queries.FindUserByParamsQuery]{
-                Reader: d.ViewReader, View: view.Name()},
+                Reader: d.ViewReader, View: f.view.Name()},
             fwgraphql.RequirePermission("users:read"))).
         // write: one Mutation field per command handler
         Register(fwgraphql.MutationWithBody[requests.InsertUserRequest](
             "createUser", requests.InsertUserResponse{}.FromResult,
-            &amp;handlers.InsertCommandHandler[*User, *commands.InsertUserCommand, commands.InsertUserResult]{Repo: repo},
+            &amp;handlers.InsertCommandHandler[*User, *commands.InsertUserCommand, commands.InsertUserResult]{Repo: f.repo},
             fwgraphql.RequirePermission("users:write")))
+}
 
+// Wire declares only the feature — no registry construction, no GraphQL field on Wiring:
+func Wire(d bootstrap.Deps) bootstrap.Wiring {
     return bootstrap.Wiring{
         Translations: []translation.Module{...},
         Features:     []bootstrap.Feature{NewUsersFeature(d)},
-        GraphQL:      gql,
     }
 }</code></pre>
 <p>
-    With <code>Wiring.GraphQL</code> set, <code>bootstrap.Run</code> mounts a single
-    <code>POST &lt;path&gt;</code> (default <code>/graphql</code>) as its own surface, after the REST boot
-    scans. The <code>AuthMiddleware</code> (matched by path at request time) still authenticates it when
+    With at least one <code>GraphQLFeature</code> present, <code>bootstrap.Run</code> builds the graph
+    (surfaced on <code>Deps.GraphQLRegistry</code>) and mounts a single <code>POST &lt;path&gt;</code>
+    (default <code>/graphql</code>) as its own surface, after the REST boot scans. The
+    <code>AuthMiddleware</code> (matched by path at request time) still authenticates it when
     <code>auth.mode: jwt</code>; authorization is per-field in the resolver (see "Authorization" below).
-    Leaving <code>Wiring.GraphQL</code> nil keeps everything off — no endpoint, zero cost.
+    No feature implementing <code>GraphQLFeature</code> keeps everything off — no endpoint, zero cost.
+    <strong>The interface declaration is the on/off switch</strong>; there is no <code>Wiring</code>/yaml
+    enable-flag.
 </p>
 
 <h3>Operator-tunable serving</h3>
 <p>
     The serving knobs live in <code>microservice.&lt;profile&gt;.yaml</code> under <code>graphql:</code>,
-    mirroring the OpenAPI posture — WHAT the schema exposes (the attached handlers) is code on
-    <code>Wiring.GraphQL</code>; HOW it is served is environment config:
+    mirroring the OpenAPI posture — WHAT the schema exposes (the attached handlers) is code in each
+    feature's <code>MountGraphQL</code>; HOW it is served is environment config:
 </p>
 <pre><code>graphql:
   path: /graphql          # default. POST endpoint route.
@@ -120,18 +132,20 @@
   introspection: false    # default off. Answer __schema / __type queries.
   rootRedirect: false     # default off. GET / → 302 path. Both this and openapi.rootRedirect → boot panic.</code></pre>
 <ul>
-    <li><strong>Block optional.</strong> Absent → defaults. Present but <code>Wiring.GraphQL</code> nil → ignored.</li>
+    <li><strong>Block optional.</strong> Absent → defaults. Present but no feature implements <code>GraphQLFeature</code> → ignored.</li>
     <li><strong><code>path</code></strong> validated at boot: must start with <code>/</code>, must not collide with <code>/openapi.json</code>, <code>/livez</code>, <code>/readyz</code>, or <code>/docs</code>.</li>
     <li><strong><code>playground</code></strong> serves GraphiQL at <code>uiPath</code> (loaded from a CDN, like the Swagger UI). Pair it with <code>introspection: true</code> so the playground can populate its schema docs / autocomplete. <code>uiPath</code> is validated (leading slash, no framework-route collision, must differ from <code>path</code>) only when <code>playground</code> is on.</li>
     <li><strong><code>introspection</code></strong> gates <code>__schema</code> / <code>__type</code>. Independent of the playground; off by default so a closed endpoint does not advertise its shape. Typically on in dev.</li>
-    <li><strong><code>rootRedirect</code></strong> registers <code>GET /</code> → 302 <code>path</code>. The boot <strong>panics</strong> when both <code>openapi.rootRedirect</code> and <code>graphql.rootRedirect</code> are enabled (and both surfaces wired) — only one surface can own <code>/</code>.</li>
+    <li><strong><code>rootRedirect</code></strong> registers <code>GET /</code> → 302 <code>path</code>. The boot <strong>panics</strong> when both <code>openapi.rootRedirect</code> and <code>graphql.rootRedirect</code> are enabled (and both surfaces present) — only one surface can own <code>/</code>.</li>
 </ul>
 
 <h3>The registry — attach queries and mutations</h3>
 <p>
-    <code>fwgraphql.New(pipe)</code> returns a registry; each <code>Register(...)</code> adds one root field.
-    The generic constructors capture the typed handler into the SDL emitter and the resolver; the only
-    surface shared with REST is the <code>pipeline.Handler</code> instance.
+    The framework builds the registry (<code>fwgraphql.New(pipe)</code>, surfaced on
+    <code>Deps.GraphQLRegistry</code>) and passes it to each <code>MountGraphQL</code>; each
+    <code>reg.Register(...)</code> adds one root field. The generic constructors capture the typed
+    handler into the SDL emitter and the resolver; the only surface shared with REST is the
+    <code>pipeline.Handler</code> instance.
 </p>
 <table>
     <thead><tr><th>Constructor</th><th>Maps</th><th>GraphQL field</th></tr></thead>

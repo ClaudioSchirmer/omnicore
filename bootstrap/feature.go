@@ -7,6 +7,8 @@ import (
 
 	"github.com/ClaudioSchirmer/omnicore/infra/db/query"
 	"github.com/ClaudioSchirmer/omnicore/infra/integration"
+	"github.com/ClaudioSchirmer/omnicore/web/graphql"
+	fwgrpc "github.com/ClaudioSchirmer/omnicore/web/grpc"
 	"github.com/gofiber/fiber/v3"
 )
 
@@ -48,6 +50,35 @@ type ReadableFeature interface {
 type IntegrationFeature interface {
 	Feature
 	MountReceivers(reg *integration.Registry, deps Deps)
+}
+
+// GraphQLFeature is the opt-in for the GraphQL surface — the query/mutation
+// twin of Mount. Bootstrap creates the single graphql.Registry (one POST
+// /graphql surface) and calls MountGraphQL on every feature that satisfies
+// this interface, so each feature contributes its fields cumulatively into the
+// same graph, reusing the same repo/service/view it already holds. The registry
+// is framework-owned (surfaced on Deps.GraphQLRegistry), exactly like the
+// OpenAPI and Integration registries — the feature never constructs it.
+//
+// Opt-in by type assertion, mirroring ReadableFeature/IntegrationFeature: a
+// feature declaring this method makes the surface exist; no feature declaring
+// it leaves POST /graphql unmounted. There is no yaml/Wiring enable-flag — the
+// declaration IS the switch. The yaml `graphql:` block carries only the
+// surface's address/knobs (path, introspection).
+type GraphQLFeature interface {
+	Feature
+	MountGraphQL(reg *graphql.Registry, deps Deps)
+}
+
+// GRPCFeature is the opt-in for the gRPC surface — the same pattern as
+// GraphQLFeature, one dedicated-listener grpc.Registry the framework owns
+// (Deps.GRPCRegistry). Each feature registers its generated Connect service
+// handlers cumulatively via MountGRPC; a feature declaring the method lights up
+// the surface, none declaring it leaves it unmounted. The yaml `grpc:` block
+// carries the listener + policy knobs; the declaration is the on/off switch.
+type GRPCFeature interface {
+	Feature
+	MountGRPC(reg *fwgrpc.Registry, deps Deps)
 }
 
 // collectViews iterates features, aggregates views from those that implement
@@ -93,6 +124,44 @@ func collectViews(features []Feature) ([]*query.ViewDefinition, error) {
 		}
 	}
 	return views, nil
+}
+
+// mountSurfaceFeatures builds the single framework-owned GraphQL / gRPC
+// registry (on Deps) from the features that opt into GraphQLFeature /
+// GRPCFeature, then lets each such feature contribute its fields/services
+// cumulatively — the discovery twin of collectViews for the two web surfaces.
+//
+// Idempotent per surface: a non-nil registry means it was already built and
+// populated (serve builds both BEFORE buildApp so the dedicated gRPC listener
+// serves the SAME object buildApp configured), so the second call skips. When
+// no feature opts into a surface its registry stays nil and bootstrap serves
+// nothing for it — the interface declaration IS the on/off switch, exactly like
+// ReadableFeature/IntegrationFeature. No yaml/Wiring enable-flag.
+func mountSurfaceFeatures(deps *Deps, wiring Wiring) {
+	if deps.GraphQLRegistry == nil {
+		for _, f := range wiring.Features {
+			gf, ok := f.(GraphQLFeature)
+			if !ok {
+				continue
+			}
+			if deps.GraphQLRegistry == nil {
+				deps.GraphQLRegistry = graphql.New(deps.Pipeline)
+			}
+			gf.MountGraphQL(deps.GraphQLRegistry, *deps)
+		}
+	}
+	if deps.GRPCRegistry == nil {
+		for _, f := range wiring.Features {
+			rf, ok := f.(GRPCFeature)
+			if !ok {
+				continue
+			}
+			if deps.GRPCRegistry == nil {
+				deps.GRPCRegistry = fwgrpc.New(deps.Pipeline)
+			}
+			rf.MountGRPC(deps.GRPCRegistry, *deps)
+		}
+	}
 }
 
 // validateWiring rejects wiring that is structurally incomplete.

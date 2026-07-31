@@ -7,19 +7,18 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/ClaudioSchirmer/omnicore/web/graphql"
 	"github.com/ClaudioSchirmer/omnicore/web/openapi"
 )
 
 func TestBuildApp_GraphQLMounted_NotInSwagger(t *testing.T) {
 	d := silentDepsWithRegistry()
 	d.Config.GraphQL.Path = "/graphql"
-	reg := graphql.New(d.Pipeline) // empty registry — stub Query, valid schema
 
+	// The surface exists because a feature opts into it (empty registry — stub
+	// Query, valid schema); the framework builds the registry, not the test.
 	app, err := buildApp(context.Background(), d, Wiring{
-		Features: []Feature{&writeOnlyFeature{}},
+		Features: []Feature{&writeOnlyFeature{}, graphQLFeature{}},
 		OpenAPI:  &openapi.Config{Title: "T", Version: "1.0.0"},
-		GraphQL:  reg,
 	})
 	if err != nil {
 		t.Fatalf("buildApp: %v", err)
@@ -54,12 +53,10 @@ func TestBuildApp_GraphQLPlaygroundAndIntrospection(t *testing.T) {
 	d.Config.GraphQL.UIPath = "/graphql/ui"
 	d.Config.GraphQL.Playground = true
 	d.Config.GraphQL.Introspection = true
-	reg := graphql.New(d.Pipeline)
 
 	app, err := buildApp(context.Background(), d, Wiring{
-		Features: []Feature{&writeOnlyFeature{}},
+		Features: []Feature{&writeOnlyFeature{}, graphQLFeature{}},
 		OpenAPI:  &openapi.Config{Title: "T", Version: "1.0.0"},
-		GraphQL:  reg,
 	})
 	if err != nil {
 		t.Fatalf("buildApp: %v", err)
@@ -93,7 +90,6 @@ func TestBuildApp_BothRootRedirectsPanic(t *testing.T) {
 	d.Config.GraphQL.Path = "/graphql"
 	d.Config.OpenAPI.RootRedirect = true
 	d.Config.GraphQL.RootRedirect = true
-	reg := graphql.New(d.Pipeline)
 
 	defer func() {
 		r := recover()
@@ -106,9 +102,8 @@ func TestBuildApp_BothRootRedirectsPanic(t *testing.T) {
 	}()
 
 	_, _ = buildApp(context.Background(), d, Wiring{
-		Features: []Feature{&writeOnlyFeature{}},
+		Features: []Feature{&writeOnlyFeature{}, graphQLFeature{}},
 		OpenAPI:  &openapi.Config{Title: "T", Version: "1.0.0"},
-		GraphQL:  reg,
 	})
 }
 

@@ -4,10 +4,11 @@
     <strong>gRPC surface served with Connect</strong> (<code>connectrpc.com</code>): one
     <code>net/http</code> endpoint on a <strong>dedicated listener</strong> that speaks three protocols —
     <strong>gRPC</strong>, <strong>gRPC-Web</strong> and <strong>Connect's JSON/HTTP mapping</strong>
-    (plain <code>curl</code>-able POSTs). A consumer <strong>mounts generated Connect service handlers on
-    a registry</strong> (<code>Wiring.GRPC</code>); the framework provides the wrapper that adapts any
-    <code>pipeline.Handler</code> to the generated interface, the server interceptor chain, and the
-    notification-envelope mapping to <code>google.rpc</code> details.
+    (plain <code>curl</code>-able POSTs). A feature opts in by implementing
+    <code>bootstrap.GRPCFeature</code> and <strong>mounts generated Connect service handlers on the
+    framework-built registry</strong> (<code>Deps.GRPCRegistry</code>); the framework provides the
+    wrapper that adapts any <code>pipeline.Handler</code> to the generated interface, the server
+    interceptor chain, and the notification-envelope mapping to <code>google.rpc</code> details.
 </p>
 <p class="note"><strong>Which channel?</strong> This plane is the <strong>default for synchronous
     communication between omnicore services</strong> — sync external goes through
@@ -146,15 +147,22 @@ protoc -I web/grpc/proto \
 
 <h3>Registration and serving</h3>
 <p>
-    The consumer builds the registry in its Wire function and mounts services on it — the GraphQL
-    pattern applied to gRPC:
+    A feature declares <code>MountGRPC</code> and mounts its services on the framework-built registry —
+    the GraphQL pattern applied to gRPC (the framework discovers the feature, builds the registry, and
+    passes it in):
 </p>
-<pre><code>grpcReg := fwgrpc.New(d.Pipeline)
-users.MountGRPC(grpcReg, d)
-return bootstrap.Wiring{ …, GRPC: grpcReg }</code></pre>
+<pre><code>// on the same feature struct that carries Mount / Views
+func (f *UsersFeature) MountGRPC(reg *fwgrpc.Registry, d bootstrap.Deps) {
+    reg.Register(fwgrpc.CommandWithBody[usersv1.CreateUserRequest, usersv1.CreateUserResponse]( … ))
+    // … the rest of the UsersService constructors …
+}
+
+// Wire declares only the feature — no registry construction, no GRPC field on Wiring:
+return bootstrap.Wiring{ …, Features: []bootstrap.Feature{users} }</code></pre>
 <p>
-    bootstrap then injects the runtime policy from the yaml <code>grpc:</code> block and serves the
-    registry: <code>addr</code> (default <code>:9090</code>), <code>certFile</code>/<code>keyFile</code>
+    With at least one <code>GRPCFeature</code> present, bootstrap builds the registry
+    (<code>Deps.GRPCRegistry</code>), then injects the runtime policy from the yaml <code>grpc:</code>
+    block and serves it: <code>addr</code> (default <code>:9090</code>), <code>certFile</code>/<code>keyFile</code>
     (both-or-neither; without TLS the listener is h2c), <code>reflection</code> (serves gRPC server
     reflection for the mounted services), <code>requestTimeoutSeconds</code> (the DEADLINE_EXCEEDED
     sibling of <code>http.requestTimeoutSeconds</code>; composes with the client's protocol deadline —
