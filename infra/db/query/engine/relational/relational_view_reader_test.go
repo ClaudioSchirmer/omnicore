@@ -1,13 +1,17 @@
 package relational
 
 import (
+	"errors"
 	"fmt"
+	"reflect"
 	"strings"
 	"testing"
 
+	"github.com/ClaudioSchirmer/omnicore/application/queries"
 	"github.com/ClaudioSchirmer/omnicore/domain"
 	"github.com/ClaudioSchirmer/omnicore/infra/db/command/read"
 	"github.com/ClaudioSchirmer/omnicore/infra/db/core"
+	"github.com/ClaudioSchirmer/omnicore/infra/db/criteria"
 	"github.com/ClaudioSchirmer/omnicore/infra/db/query"
 )
 
@@ -67,4 +71,48 @@ func TestNewRelationalViewReader_MongoViewSkipped(t *testing.T) {
 	if !r.Empty() {
 		t.Fatal("a Mongo-backed view must not be indexed by the relational reader")
 	}
+}
+
+// assertRelationalCapability400 checks that a capability the relational reader
+// cannot serve surfaces as a NotificationCarrier whose single notification is a
+// RelationalCapabilityNotification with SemanticSchema — the wire mapping turns
+// that into a 400 (not a generic 500), and the offending field/capability rides
+// through as the notification's field name.
+func assertRelationalCapability400(t *testing.T, err error, wantField string) {
+	t.Helper()
+	if err == nil {
+		t.Fatal("expected an unsupported-capability error, got nil")
+	}
+	var carrier domain.NotificationCarrier
+	if !errors.As(err, &carrier) {
+		t.Fatalf("error must be a NotificationCarrier (maps to a typed status), got %T: %v", err, err)
+	}
+	ctxs := carrier.NotificationContexts()
+	if len(ctxs) != 1 || len(ctxs[0].Messages()) != 1 {
+		t.Fatalf("expected exactly one notification, got contexts=%d", len(ctxs))
+	}
+	msg := ctxs[0].Messages()[0]
+	if got := reflect.TypeOf(msg.Notification).Name(); got != "RelationalCapabilityNotification" {
+		t.Errorf("notification = %q, want RelationalCapabilityNotification", got)
+	}
+	if got := msg.Notification.Semantic(); got != domain.SemanticSchema {
+		t.Errorf("semantic = %v, want SemanticSchema (→400)", got)
+	}
+	if msg.ResolveFieldName() != wantField && msg.FieldName != wantField {
+		t.Errorf("field = %q, want the offending capability %q", msg.ResolveFieldName(), wantField)
+	}
+}
+
+// TestUnsupportedChildFilter_MapsTo400 covers a filter pushed at a child (dotted)
+// field: a root SELECT cannot express it, so the reader rejects it as a 400.
+func TestUnsupportedChildFilter_MapsTo400(t *testing.T) {
+	_, err := toExpr(map[string]any{"Addresses.ZipCode": "12345"})
+	assertRelationalCapability400(t, err, "Addresses.ZipCode")
+}
+
+// TestUnsupportedChildSort_MapsTo400 covers a sort on a child (dotted) field:
+// a root ORDER BY cannot express it, so the reader rejects it as a 400.
+func TestUnsupportedChildSort_MapsTo400(t *testing.T) {
+	err := applySort(criteria.Where(nil), []queries.SortField{{Field: "Addresses.ZipCode"}})
+	assertRelationalCapability400(t, err, "Addresses.ZipCode")
 }

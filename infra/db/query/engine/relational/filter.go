@@ -5,16 +5,20 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/ClaudioSchirmer/omnicore/application/exception"
+	"github.com/ClaudioSchirmer/omnicore/application/notifications"
 	"github.com/ClaudioSchirmer/omnicore/application/queries"
 	"github.com/ClaudioSchirmer/omnicore/infra/db/criteria"
 )
 
-// unsupported reports a capability a relational view cannot serve (search, a
-// filter or sort on a child field). Boot warns about these and the request
-// currently errors; F4 maps it to a 4xx with the escape hatch (remove the
-// RelationalSource marker) in the message.
-func unsupported(capability string) error {
-	return fmt.Errorf("relational view: %s is not supported (remove RelationalSource to serve this view from Mongo)", capability)
+// unsupported reports a capability a relational view cannot serve (free-text
+// search, or a filter or sort on a child field). It returns a
+// RelationalCapabilityNotification carried on an *exception.ApplicationError —
+// Semantic SemanticSchema, so the web wrappers turn it into a 400 with the escape
+// hatch (drop RelationalSource) in the translated message. `what` is the offending
+// capability or field, surfaced as the notification's FieldName.
+func unsupported(what string) error {
+	return exception.SingleNotificationError("Query", what, notifications.RelationalCapabilityNotification{})
 }
 
 // toExpr translates the wire-neutral ReadCriteria.Filter (Go-field-keyed, the
@@ -35,7 +39,7 @@ func toExpr(filter map[string]any) (criteria.Expr, error) {
 	ands := make([]criteria.Expr, 0, len(fields))
 	for _, field := range fields {
 		if strings.Contains(field, ".") {
-			return nil, unsupported("filtering on a child field (" + field + ")")
+			return nil, unsupported(field)
 		}
 		e, err := clauseToExpr(field, filter[field])
 		if err != nil {
@@ -168,7 +172,7 @@ func textListToExpr(field string, t queries.TextMatchList) criteria.Expr {
 func applySort(q *criteria.Query, sorts []queries.SortField) error {
 	for _, s := range sorts {
 		if strings.Contains(s.Field, ".") {
-			return unsupported("sorting on a child field (" + s.Field + ")")
+			return unsupported(s.Field)
 		}
 		if s.Desc {
 			q.OrderByDesc(s.Field)
