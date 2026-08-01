@@ -69,7 +69,8 @@
                 <strong>400</strong> <code>RelationalCapabilityNotification</code>. The marker takes the aggregate's
                 existing <code>repo.Loader</code> (one loader, shared with the repository). Flipping the backing is a
                 shape change, so it bumps <code>Version</code>: gaining the marker is <code>DriftRelationalSync</code>
-                (registry synced, no rebuild), losing it rebuilds the Mongo projection. See
+                (registry synced, no rebuild, and the old Mongo collection is <strong>dropped</strong> so a relational
+                view holds none), losing it rebuilds the Mongo projection from scratch off the SoR. See
                 <a href="#relational-view">Relational view</a>.</li>
             <li><strong>Fixed</strong> — a brand-new Mongo view introduced over an aggregate that <em>already holds
                 history</em> now <strong>backfills the pre-existing rows on first boot</strong>

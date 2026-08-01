@@ -55,6 +55,32 @@ func TestPullSideRepair_SkipsRelationalView(t *testing.T) {
 	}
 }
 
+// TestSyncRelationalRegistry_DropsMongoCollections proves the flip TO relational
+// leaves NO Mongo collection behind: SyncRelationalRegistry drops both slots
+// after the registry UPDATE, so a relational view holds none — and a later manual
+// registry delete lands on the harmless DriftFreshInit, never DriftAlienData over
+// a stranded collection.
+func TestSyncRelationalRegistry_DropsMongoCollections(t *testing.T) {
+	store := newFakeMongo(&fakeColl{})
+	view := relationalView("v")
+	s := NewSyncEngine(processEngineWithRow(), store, identityResolver, nil, "", []*ViewDefinition{view}, 1)
+
+	plan := DriftPlan{View: view, CurrentVersion: 2, CurrentRebuildHash: "rh", CurrentArtifactHash: "ah", CurrentCombinedHash: "ch"}
+	if err := s.SyncRelationalRegistry(context.Background(), plan, "svc"); err != nil {
+		t.Fatalf("SyncRelationalRegistry: %v", err)
+	}
+
+	dropped := map[string]bool{}
+	for _, d := range store.dropped {
+		dropped[d] = true
+	}
+	for _, slot := range []string{identityResolver.Active("v").String(), identityResolver.Shadow("v").String()} {
+		if !dropped[slot] {
+			t.Errorf("relational flip must drop slot %q; dropped=%v", slot, store.dropped)
+		}
+	}
+}
+
 // The everyday projection path (projectOwnViews) already skips a relational
 // view; this locks that in end-to-end through process(), the sibling of the
 // pull-repair skip above.

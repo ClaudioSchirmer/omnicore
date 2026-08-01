@@ -375,10 +375,24 @@ func TestDriftDecision_String_CoversAll(t *testing.T) {
 		DriftForgotToBump:    "forgot_to_bump",
 		DriftRebuildRequired: "rebuild_required",
 		DriftDowngrade:       "downgrade",
+		DriftRelationalSync:  "relational_sync",
+		DriftFreshBackfill:   "fresh_backfill",
 	}
 	for d, want := range cases {
 		if got := d.String(); got != want {
 			t.Errorf("DriftDecision(%d).String() = %q, want %q", d, got, want)
+		}
+	}
+	// Guard the whole contiguous iota range: every declared decision must have a
+	// label (no "unknown") AND be pinned above. A new decision added to the enum
+	// trips this until it is given a case in String() and a row here — which is
+	// what kept DriftRelationalSync/DriftFreshBackfill stringifying as "unknown".
+	for d := DriftNone; d <= DriftFreshBackfill; d++ {
+		if d.String() == "unknown" {
+			t.Errorf("DriftDecision(%d) has no String() label", d)
+		}
+		if _, ok := cases[d]; !ok {
+			t.Errorf("DriftDecision(%d) = %q is not pinned in the cases table", d, d.String())
 		}
 	}
 }

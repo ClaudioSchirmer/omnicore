@@ -44,8 +44,11 @@ with `1.0.0`.
     field and the escape hatch (drop the marker to serve from Mongo).
   - Flipping the backing is a shape change (it moves the rebuild hash), so it
     **requires a `Version(N)` bump**: gaining the marker resolves to
-    `DriftRelationalSync` (registry synced, no rebuild, Mongo collection left
-    untouched); losing it rebuilds the Mongo projection.
+    `DriftRelationalSync` (registry synced, no rebuild, and the old Mongo
+    collection is **dropped** — a relational view holds none, so the invariant
+    "relational ⇒ no collection" stays true and a later manual registry delete
+    lands on the harmless `DriftFreshInit`, never `DriftAlienData` over a stranded
+    collection); losing it rebuilds the Mongo projection from scratch off the SoR.
 
 ### Changed
 

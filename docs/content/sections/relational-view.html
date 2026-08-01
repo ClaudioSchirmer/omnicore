@@ -170,27 +170,29 @@ func NewGadgetFeature(d bootstrap.Deps) *GadgetFeature {
 <table>
     <thead><tr><th>Transition</th><th>Drift decision</th><th>Effect</th></tr></thead>
     <tbody>
-        <tr><td>Mongo view → gains <code>RelationalSource()</code> (bumped)</td><td><code>DriftRelationalSync</code></td><td>Registry synced to the new spec, <strong>no rebuild</strong> — the view is now served from the SoR; the old Mongo collection is left <strong>frozen</strong> (no longer updated), not dropped.</td></tr>
-        <tr><td>Relational view → loses the marker (bumped)</td><td><code>DriftRebuildRequired</code></td><td>A full <strong>online blue-green rebuild</strong> materializes the Mongo projection <strong>from scratch off the current SoR</strong> (zero-downtime) — the frozen collection is <strong>not</strong> resumed.</td></tr>
+        <tr><td>Mongo view → gains <code>RelationalSource()</code> (bumped)</td><td><code>DriftRelationalSync</code></td><td>Registry synced to the new spec, <strong>no rebuild</strong> — the view is now served from the SoR, and the old Mongo collection is <strong>dropped</strong> (a relational view holds none), so <em>relational ⇒ no collection</em> stays true.</td></tr>
+        <tr><td>Relational view → loses the marker (bumped)</td><td><code>DriftRebuildRequired</code></td><td>A full <strong>online blue-green rebuild</strong> materializes the Mongo projection <strong>from scratch off the current SoR</strong> (zero-downtime) — there is no prior collection to resume; the shadow slot is provisioned fresh.</td></tr>
         <tr><td>New relational view over an aggregate that already holds data</td><td><code>DriftFreshInit</code></td><td>Registry row only, <strong>no rebuild, no collection</strong> — reads come from the SoR immediately.</td></tr>
         <tr><td>New Mongo view over an aggregate that already holds data</td><td><code>DriftFreshBackfill</code></td><td>A rebuild <strong>backfills</strong> the pre-existing rows (a fresh Mongo view never comes up empty over populated history).</td></tr>
     </tbody>
 </table>
 
 <div class="box warn">
-    <strong>The round-trip Mongo → SoR → Mongo rebuilds from scratch — it never resumes a stale collection.</strong>
-    While a view is relational its Mongo collection is <em>frozen</em>: writes flow to the SoR, but nothing updates
-    those documents (the SyncEngine skips relational views). When the marker is later dropped and the view returns to
-    Mongo, the drift engine does <strong>not</strong> pick that frozen collection back up. <code>DriftRebuildRequired</code>
-    drives a full <a href="#mongo-schema-evolution">online blue-green rebuild</a> — a shadow slot is materialized from the
-    <em>current</em> SoR, verified, and the active pointer flips atomically (zero-downtime) — so <strong>every write made
-    during the relational phase</strong>, which never reached the frozen collection, is captured. The projection is
-    always rebuilt whole from the source of record, never reconciled from stale documents.
+    <strong>The round-trip Mongo → SoR → Mongo rebuilds from scratch — there is no stale collection to resume.</strong>
+    Flipping a view to relational <strong>drops its Mongo collection</strong>: the view is served from the SoR and holds
+    none, so the invariant <em>relational ⇒ no collection</em> holds. When the marker is later dropped and the view
+    returns to Mongo, <code>DriftRebuildRequired</code> drives a full <a href="#mongo-schema-evolution">online blue-green
+    rebuild</a> — a shadow slot is materialized from the <em>current</em> SoR, verified, and the active pointer flips
+    atomically (zero-downtime) — so <strong>every write made during the relational phase</strong> is captured. The
+    projection is always rebuilt whole from the source of record, never reconciled from stale documents.
 </div>
 
 <p>
     A relational view has no live Mongo collection of its own: the <a href="#read-lifecycle-map">SyncEngine</a>
-    projection pass, the Mongo spec (index) pass and the reconciliation sweep all skip it by name, and a change to its
-    SoR table raises no projection work. Its registry row exists purely to certify the declared shape so the drift
-    engine can reason about the transitions above.
+    projection pass, the Mongo spec (index) pass and the reconciliation sweep all skip it by name, a change to its SoR
+    table raises no projection work, and the flip that made it relational dropped any collection it used to have. Its
+    registry row exists purely to certify the declared shape so the drift engine can reason about the transitions above.
+    Keeping <em>relational ⇒ no collection</em> true is also what makes a manual registry-row delete safe: with no
+    collection, a subsequent boot resolves to <code>DriftFreshInit</code> (record the row again, no work), never
+    <code>DriftAlienData</code> — the abort a populated collection with no registry row would trigger.
 </p>
