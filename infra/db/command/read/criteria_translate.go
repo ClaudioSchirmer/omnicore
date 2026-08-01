@@ -84,7 +84,16 @@ func (v *sqlVisitor) VisitComparison(c criteria.Comparison) error {
 		v.sb.WriteString(" IS NOT NULL")
 	case criteria.OpIn, criteria.OpNin:
 		if len(c.Values) == 0 {
-			return fmt.Errorf("criteria: operator %q on %q requires at least one value", c.Op, c.Field)
+			// An empty set is a well-defined predicate, not an error (SQL forbids
+			// the literal `IN ()`): `IN ()` matches nothing, `NOT IN ()` matches
+			// everything — the same semantics MongoDB gives `$in:[]` / `$nin:[]`,
+			// so the relational and Mongo read paths agree.
+			if c.Op == criteria.OpNin {
+				v.sb.WriteString("1=1")
+			} else {
+				v.sb.WriteString("1=0")
+			}
+			return nil
 		}
 		ph := make([]string, len(c.Values))
 		for i, val := range c.Values {

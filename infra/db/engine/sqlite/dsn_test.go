@@ -14,11 +14,15 @@ func TestResolveDSN_Memory_ForcesCorrectnessSkipsTuning(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// :memory: is left as the path; correctness pragmas forced; NO WAL/busy_timeout
+	// Fix #4: :memory: resolves to a SHARED-CACHE NAMED in-memory database so the
+	// engine and the migration runner share one database (a bare ":memory:" is
+	// private per connection/pool). Correctness pragmas forced; NO WAL/busy_timeout
 	// (meaningless in RAM).
-	if !strings.HasPrefix(got, "file::memory:?") {
-		t.Errorf("memory DSN should keep :memory: path, got %q", got)
+	if !strings.HasPrefix(got, "file:"+SharedMemoryName+"?") {
+		t.Errorf("memory DSN should resolve to the shared named db, got %q", got)
 	}
+	mustContain(t, got, "mode=memory")
+	mustContain(t, got, "cache=shared")
 	mustContain(t, got, "_pragma=foreign_keys(ON)")
 	mustContain(t, got, "_pragma=case_sensitive_like(ON)")
 	if strings.Contains(got, "journal_mode") || strings.Contains(got, "busy_timeout") {
@@ -92,10 +96,10 @@ func TestWithForcedPragmas(t *testing.T) {
 	// Dev provides a journal_mode + a foreign_keys(OFF) they should not win.
 	got := withForcedPragmas([]string{"journal_mode(MEMORY)", "foreign_keys(OFF)"}, false)
 	joined := strings.Join(got, "|")
-	mustContain(t, joined, "journal_mode(MEMORY)")   // dev journal_mode preserved (present → not re-defaulted)
-	mustContain(t, joined, "foreign_keys(ON)")       // forced
+	mustContain(t, joined, "journal_mode(MEMORY)")    // dev journal_mode preserved (present → not re-defaulted)
+	mustContain(t, joined, "foreign_keys(ON)")        // forced
 	mustContain(t, joined, "case_sensitive_like(ON)") // forced
-	mustContain(t, joined, "busy_timeout(5000)")     // defaulted (dev omitted it)
+	mustContain(t, joined, "busy_timeout(5000)")      // defaulted (dev omitted it)
 	if strings.Contains(joined, "foreign_keys(OFF)") {
 		t.Errorf("forced foreign_keys must override dev OFF, got %q", joined)
 	}

@@ -41,20 +41,35 @@ func NewSQLite(dsn, dir string) *Manager {
 	}
 }
 
-// sqliteMigrateDSN resolves the raw relational.dsn to the file the migrate
-// driver must open — the SAME file the engine opens. It mirrors the path
+// sqliteSharedMemoryName mirrors infra/db/engine/sqlite.SharedMemoryName — the
+// database name a bare ":memory:" resolves to. Duplicated (not imported) to keep
+// the migration package free of an engine dependency; the two MUST stay equal.
+const sqliteSharedMemoryName = "omnicore_mem"
+
+// sqliteMigrateDSN resolves the raw relational.dsn to the database the migrate
+// driver must open — the SAME database the engine opens. It mirrors the
 // resolution in infra/db/engine/sqlite/dsn.go (a relative path resolves next to
-// the binary; ":memory:" is left untouched) and MUST stay in agreement with it:
-// migrations and the engine have to target the same database. Only the path is
-// reproduced here (not the full pragma set) — the migrate connection needs only
-// foreign_keys/busy_timeout, not the correctness pragmas the data path forces.
+// the binary; ":memory:" becomes a shared-cache named in-memory database) and
+// MUST stay in agreement with it: migrations and the engine have to target the
+// same database. Only the path is reproduced here (not the full pragma set) —
+// the migrate connection needs only foreign_keys/busy_timeout, not the
+// correctness pragmas the data path forces.
 func sqliteMigrateDSN(raw string) string {
 	path := strings.TrimPrefix(raw, "file:")
 	if i := strings.IndexByte(path, '?'); i >= 0 {
 		path = path[:i]
 	}
 	if path == ":memory:" || strings.Contains(raw, "mode=memory") {
-		return raw
+		// In-memory: land on the SAME shared-cache named database the engine
+		// resolves a bare ":memory:" to (sqlite.SharedMemoryName), so migrations
+		// run in the very database the engine serves. A bare ":memory:" here would
+		// be a SECOND, private in-memory database the engine never sees. Kept in
+		// lockstep with infra/db/engine/sqlite.normalizeMemoryDSN by contract.
+		name := path
+		if name == ":memory:" || name == "" {
+			name = sqliteSharedMemoryName
+		}
+		return "file:" + name + "?mode=memory&cache=shared&_pragma=foreign_keys(ON)"
 	}
 	if !filepath.IsAbs(path) {
 		if exe, err := os.Executable(); err == nil {

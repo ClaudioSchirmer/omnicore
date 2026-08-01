@@ -39,7 +39,7 @@ type guardEnt struct {
 	Name string
 }
 
-func (e *guardEnt) Modes() []domain.EntityMode                     { return []domain.EntityMode{domain.ModeInsert} }
+func (e *guardEnt) Modes() []domain.EntityMode                       { return []domain.EntityMode{domain.ModeInsert} }
 func (e *guardEnt) BuildRules(string, domain.Service, *domain.Rules) {}
 
 func guardSchema(table string) *core.TableSchema {
@@ -156,12 +156,19 @@ func TestServableRootField_Passes(t *testing.T) {
 }
 
 // TestApplyProjection covers the ?fields= pruning the relational reader mirrors
-// from the Mongo Find projection: inclusion keeps only the asked top-level fields
-// (id dropped unless asked), a dotted key keeps its whole segment, exclusion drops
-// the listed fields, and an empty projection is a no-op.
+// from the Mongo Find projection: inclusion keeps only the asked fields (id
+// dropped unless asked), a dotted key prunes INTO the child array (leaf-level,
+// matching Mongo — Fix #6), exclusion drops the listed leaves (nested included),
+// and an empty projection is a no-op.
 func TestApplyProjection(t *testing.T) {
 	base := func() map[string]any {
-		return map[string]any{"ID": "x", "_id": "x", "Code": "c", "Name": "n", "WidgetParts": []any{}}
+		return map[string]any{
+			"ID": "x", "_id": "x", "Code": "c", "Name": "n",
+			"WidgetParts": []any{
+				map[string]any{"ID": "p1", "Label": "L1", "Slot": "s1"},
+				map[string]any{"ID": "p2", "Label": "L2", "Slot": "s2"},
+			},
+		}
 	}
 
 	// inclusion — only Code survives (id dropped, mirroring Mongo).
@@ -171,14 +178,31 @@ func TestApplyProjection(t *testing.T) {
 		t.Errorf("inclusion should keep only Code, got %v", d)
 	}
 
-	// inclusion of a dotted (nested) key keeps the whole top segment.
+	// inclusion of a bare segment keeps the whole child array untouched.
 	d = base()
-	applyProjection(d, map[string]int{"WidgetParts.Label": 1})
-	if _, ok := d["WidgetParts"]; !ok || len(d) != 1 {
-		t.Errorf("nested projection should keep the WidgetParts segment, got %v", d)
+	applyProjection(d, map[string]int{"WidgetParts": 1})
+	if len(d) != 1 {
+		t.Fatalf("bare-segment inclusion should keep only WidgetParts, got %v", d)
+	}
+	if el := d["WidgetParts"].([]any)[0].(map[string]any); len(el) != 3 {
+		t.Errorf("bare segment must keep each element WHOLE, got %v", el)
 	}
 
-	// exclusion drops only the listed field.
+	// inclusion of a DOTTED key prunes each element to the asked leaf (Fix #6).
+	d = base()
+	applyProjection(d, map[string]int{"WidgetParts.Label": 1})
+	parts, ok := d["WidgetParts"].([]any)
+	if !ok || len(d) != 1 || len(parts) != 2 {
+		t.Fatalf("nested inclusion should keep the WidgetParts array, got %v", d)
+	}
+	for _, p := range parts {
+		el := p.(map[string]any)
+		if len(el) != 1 || el["Label"] == nil {
+			t.Errorf("nested inclusion must prune each element to Label only, got %v", el)
+		}
+	}
+
+	// exclusion drops only the listed top-level field.
 	d = base()
 	applyProjection(d, map[string]int{"Name": 0})
 	if _, ok := d["Name"]; ok {
@@ -186,6 +210,19 @@ func TestApplyProjection(t *testing.T) {
 	}
 	if _, ok := d["Code"]; !ok {
 		t.Error("exclusion must keep the unlisted fields")
+	}
+
+	// nested exclusion drops the leaf from every element (Fix #6).
+	d = base()
+	applyProjection(d, map[string]int{"WidgetParts.Slot": 0})
+	for _, p := range d["WidgetParts"].([]any) {
+		el := p.(map[string]any)
+		if _, ok := el["Slot"]; ok {
+			t.Errorf("nested exclusion must drop Slot from each element, got %v", el)
+		}
+		if el["Label"] == nil {
+			t.Errorf("nested exclusion must keep the unlisted leaf, got %v", el)
+		}
 	}
 
 	// empty projection is a no-op.

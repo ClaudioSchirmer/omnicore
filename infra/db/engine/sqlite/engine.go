@@ -22,6 +22,15 @@
 // surface SQLITE_BUSY, softened by busy_timeout) plus a non-recyclable connection
 // (ConnMaxLifetime=0) so an in-memory database does not evaporate and a file
 // database does not re-pay the forced pragmas on every reconnect.
+//
+// HARD CONTRACT (MaxOpenConns=1): a write transaction holds the SOLE connection.
+// Any attempt to obtain a SECOND connection from the same pool while that TX is
+// open blocks forever. In practice this only bites a lifecycle hook that reads
+// the database through deps.DB.Querier() (a fresh pool checkout) INSTEAD of the
+// in-TX handle: on SQLite an in-TX side effect MUST go through UnwrapSQLiteTx
+// (tx_handle.go) — never an independent read/write on deps.DB mid-write. Legal on
+// the multi-connection engines, a deadlock here. (Mongo rebuilds — the other
+// two-connection shape — do not arise: SQLite has no CDC, so no Mongo projection.)
 package sqlite
 
 import (

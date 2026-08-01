@@ -38,17 +38,27 @@ func (sqliteDialect) EncodeArg(val any) any         { return encodeArg(val) }
 // Postgres posture, no BINARY(16)/RAW(16) round-trip.
 func (sqliteDialect) DecodeID(raw string) (string, error) { return raw, nil }
 
+// likeEscapeClause declares backslash as the LIKE escape character. The criteria
+// pattern builder escapes %, _ and \ with a backslash (the Postgres LIKE
+// default), but SQLite's LIKE has NO default escape character, so without this
+// the backslash matches literally and an escaped %/_ leaks its wildcard meaning.
+const likeEscapeClause = ` ESCAPE '\'`
+
 // ILikeClause forces LOWER on both sides so the match is case-insensitive
 // regardless of the case_sensitive_like pragma (which the factory turns ON for
 // OpLike). NOTE: SQLite's LOWER() is ASCII-only, so case-insensitive matching
 // does not fold accented/Unicode letters — an MVP-posture limitation documented
 // in table-schema.html (D9). Postgres ILIKE / MySQL LOWER-LIKE parity otherwise.
-func (sqliteDialect) ILikeClause(col, ph string) string { return "LOWER(" + col + ") LIKE LOWER(" + ph + ")" }
+func (sqliteDialect) ILikeClause(col, ph string) string {
+	return "LOWER(" + col + ") LIKE LOWER(" + ph + ")" + likeEscapeClause
+}
 
 // LikeClause renders a bare LIKE — made case-SENSITIVE by the connection's
 // case_sensitive_like(ON) pragma (forced in dsn.go). Honors criteria.OpLike's
 // contract; the pragma is the mechanism, so no COLLATE/BINARY wrapper is needed.
-func (sqliteDialect) LikeClause(col, ph string) string { return col + " LIKE " + ph }
+func (sqliteDialect) LikeClause(col, ph string) string {
+	return col + " LIKE " + ph + likeEscapeClause
+}
 
 // NowExpr is strftime with millisecond precision (%f). Second-precision
 // CURRENT_TIMESTAMP would make an SQL-stamped value and a Go app-clock value

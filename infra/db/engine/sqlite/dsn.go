@@ -25,7 +25,9 @@ import (
 //     resolves NEXT TO THE BINARY (filepath.Dir(os.Executable())), so the
 //     single-binary MVP keeps its .db beside the executable wherever it is
 //     launched from — and the parent directory is created (SQLite makes the file
-//     on first open but not the directory). ":memory:" is left untouched.
+//     on first open but not the directory). ":memory:" resolves to a
+//     shared-cache NAMED in-memory database (normalizeMemoryDSN) so the engine
+//     and the migration runner share one database, not two private ones.
 
 // forcedCorrectnessPragmas are injected on every connection, overriding any
 // dev-supplied value — these are correctness invariants (D11).
@@ -44,7 +46,10 @@ func resolveDSN(raw string) (string, error) {
 	path, params := splitDSN(raw)
 	memory := isMemoryPath(path, params)
 
-	if !memory {
+	pragmas, others := partitionParams(params)
+	if memory {
+		path, others = normalizeMemoryDSN(path, others)
+	} else {
 		resolved, err := resolveFilePath(path)
 		if err != nil {
 			return "", err
@@ -52,10 +57,47 @@ func resolveDSN(raw string) (string, error) {
 		path = resolved
 	}
 
-	pragmas, others := partitionParams(params)
 	pragmas = withForcedPragmas(pragmas, memory)
 
 	return assembleDSN(path, pragmas, others), nil
+}
+
+// SharedMemoryName is the database name a bare ":memory:" DSN resolves to.
+// migration.sqliteMigrateDSN mirrors this — the migration runner and the engine
+// MUST land on the same in-memory database (see normalizeMemoryDSN).
+const SharedMemoryName = "omnicore_mem"
+
+// normalizeMemoryDSN turns an in-memory request into a SHARED-CACHE, NAMED
+// in-memory database: "<name>" + mode=memory + cache=shared. A bare ":memory:"
+// is private to a single connection, so the engine's pinned connection and the
+// migration runner's SEPARATE *sql.DB pool would otherwise open two different
+// empty databases — migrations would land in one the engine never reads, and the
+// service would boot against an unmigrated store. A shared-cache named memory DB
+// is one database across every connection and pool in the process, kept alive by
+// the engine's perennial connection (MaxOpenConns=1, never recycled). A bare
+// ":memory:" (or empty) resolves to SharedMemoryName; an explicitly named
+// mode=memory DSN keeps its name and just gains cache=shared.
+func normalizeMemoryDSN(path string, others []string) (string, []string) {
+	if path == ":memory:" || path == "" {
+		path = SharedMemoryName
+	}
+	others = ensureParam(others, "mode=memory")
+	others = ensureParam(others, "cache=shared")
+	return path, others
+}
+
+// ensureParam appends key=value only when its key is not already present.
+func ensureParam(params []string, kv string) []string {
+	key := kv
+	if i := strings.IndexByte(kv, '='); i >= 0 {
+		key = kv[:i+1]
+	}
+	for _, p := range params {
+		if strings.HasPrefix(p, key) {
+			return params
+		}
+	}
+	return append(params, kv)
 }
 
 // splitDSN separates the file path from the query parameters, tolerating both

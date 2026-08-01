@@ -125,7 +125,9 @@ func TestPlaceholder(t *testing.T) {
 // operator created the database. Postgres ILIKE / MySQL LOWER-LIKE parity.
 func TestILikeClause(t *testing.T) {
 	got := oracleDialect{}.ILikeClause("name", ":1")
-	if want := "LOWER(name) LIKE LOWER(:1)"; got != want {
+	// ESCAPE '\' (Fix #11): Oracle LIKE has no default escape, so the backslash the
+	// criteria pattern builder uses must be declared explicitly.
+	if want := `LOWER(name) LIKE LOWER(:1) ESCAPE '\'`; got != want {
 		t.Fatalf("ILikeClause = %q, want %q", got, want)
 	}
 }
@@ -135,7 +137,7 @@ func TestILikeClause(t *testing.T) {
 // contract without an inline COLLATE (which Oracle can't force per-statement).
 func TestLikeClause(t *testing.T) {
 	got := oracleDialect{}.LikeClause("name", ":1")
-	if want := "name LIKE :1"; got != want {
+	if want := `name LIKE :1 ESCAPE '\'`; got != want {
 		t.Fatalf("LikeClause = %q, want %q", got, want)
 	}
 }

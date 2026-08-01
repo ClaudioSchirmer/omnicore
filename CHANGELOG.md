@@ -25,7 +25,9 @@ with `1.0.0`.
   (`foreign_keys(ON)`, `case_sensitive_like(ON)`) and pins one perennial
   connection (`MaxOpenConns=1`) — SQLite is single-writer, an **MVP / single-node
   / low-concurrency** posture stated plainly. `relational.dsn` is the file path
-  (resolved next to the binary, created if absent) or `:memory:`. Relational
+  (resolved next to the binary, created if absent) or `:memory:` (resolved to a
+  shared-cache named in-memory database, so the migration runner and the engine
+  share one database rather than two private ones). Relational
   views only — SQLite has no CDC source, so Mongo-projected views are off the
   table by design (a happy alignment with the relational-view posture, not a
   limitation). See [Architecture](docs/content/sections/architecture.html) and
@@ -37,9 +39,10 @@ with `1.0.0`.
   engine give the single-binary, single-file, zero-Docker MVP. Each is
   independent — a service can keep the broker for integration events while
   running without Mongo. A coherence guard aborts the boot with an actionable
-  message when a Mongo-backed/composed view is declared without `mongo.uri`; an
-  integration consumer or upstream subscription with no linked transport fails at
-  the point of use. `mongo.*` and `transport.*` are now **optional** config
+  message when Mongo-backed work — a Mongo-backed or composed view, or an
+  **upstream subscription** (which materializes a local Mongo collection) — is
+  declared without `mongo.uri`; an integration consumer with no linked transport
+  fails at the point of use. `mongo.*` and `transport.*` are now **optional** config
   (`mongo.database` stays required when `mongo.uri` is set). See
   [Bootstrap](docs/content/sections/bootstrap.html) and
   [YAML reference](docs/content/sections/yaml-reference.html).
@@ -57,7 +60,11 @@ with `1.0.0`.
   Postgres/Oracle/SQLite keep the bare `LIKE` (native, NLS-default, and
   pragma-backed respectively). Services relying on the old case-insensitive
   behavior of `OpLike` on MySQL/SQL Server should switch those filters to
-  `OpILike`.
+  `OpILike`. `LikeClause`/`ILikeClause` also declare `ESCAPE '\'` on the engines
+  whose `LIKE` has no default escape character (SQLite, SQL Server, Oracle), so a
+  `contains`/`prefix` term containing `%`, `_` or `\` matches those characters
+  literally as the criteria pattern builder intends (Postgres/MySQL already treat
+  backslash as the default escape).
 
 - **Relational views — read a `query.View` straight from the SoR.**
   `View(name).RelationalSource(loader)` serves a plain single-aggregate view from
@@ -73,10 +80,14 @@ with `1.0.0`.
     `CountEntities`/`BoundTable`), so pass the aggregate repository's existing
     `repo.Loader` (one loader, shared with the repo; do not build a second one).
     A boot guard asserts `loader.BoundTable() == schema.Table()`.
-  - **Full parity** on the root read-side controls: the 16-operator filter
-    vocabulary, sort, `?fields=` projection, pagination (offset-in-cursor, behind
-    the identical `after`/`before`/`limit` API), `onlyTotal`, `includeArchived`,
-    by-id, CSV/XLSX export, and the `MaxLimit`/`MaxExportRows` ceilings.
+  - **Parity** on the root read-side controls: the 16-operator filter
+    vocabulary, sort, `?fields=` projection (root **and** nested-leaf pruning),
+    pagination (offset-in-cursor, behind the identical `after`/`before`/`limit`
+    API), `onlyTotal`, `includeArchived`, by-id, CSV/XLSX export, and the
+    `MaxLimit`/`MaxExportRows` ceilings. One honest difference from the Mongo
+    backing (see relational-view.html): the offset-in-cursor pagination is
+    **static-set stable**, not insertion-stable like the Mongo keyset (a
+    concurrent write ahead of the window can shift later pages).
   - **Unsupported.** The multi-source shapes — the `Embed` family and
     `SharedBaseView` — fail at boot; `ComposedView`/`Link` are a different type
     and carry no marker. A relational view also cannot be the **source** of
@@ -107,7 +118,11 @@ with `1.0.0`.
   `Deps.GraphQLRegistry` / `Deps.GRPCRegistry`), lets every opted-in feature
   contribute cumulatively, and serves it. The interface declaration IS the on/off
   switch — no yaml/Wiring enable-flag; the yaml `graphql:`/`grpc:` blocks keep
-  carrying only each surface's address/policy knobs.
+  carrying only each surface's address/policy knobs. The merged GraphQL schema is
+  built once at boot, so a **field-name collision across features** aborts the boot
+  with an actionable error instead of surfacing lazily on every request — matching
+  the boot-time duplicate-view check and the gRPC listener's duplicate-procedure
+  abort.
   - **Removed** the `Wiring.GraphQL` and `Wiring.GRPC` fields. A service that
     built the registry in `Wire` (`graphql.New(d.Pipeline)` + `feature.MountGraphQL(reg, d)`
     + `GraphQL: reg`) deletes that block: keep the `MountGraphQL`/`MountGRPC`
@@ -148,7 +163,9 @@ with `1.0.0`.
     (`EntityAlreadyAddedNotification`, `SemanticConflict` → 409).
   - **Same-identity re-send on a strict PUT updates in place (id preserved)**
     instead of archive-old + insert-new, when the declared identity is
-    id-agnostic — no more id churn for an unchanged child.
+    id-agnostic — no id churn, and the re-sent values are applied, so an edit to a
+    non-identity field (e.g. an address `Label`) on a full-document PUT is
+    persisted, not dropped back to the tracked value.
   - `domain.IsSameByBusinessFields(a, b)` is the opt-in structural helper (every
     exported field except the framework-managed carrier) for children with no
     natural key narrower than their full value.

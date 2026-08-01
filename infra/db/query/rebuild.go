@@ -465,11 +465,17 @@ func registryCombinedOrNone(r *ViewRegistryRow) string {
 // reconciliation in bootstrap.
 
 func (s *SyncEngine) RebuildView(ctx context.Context, view *ViewDefinition) error {
+	if view.IsRelational() {
+		return nil // no Mongo collection to rebuild — served from the SoR
+	}
 	log.Printf("rebuilding view %s from table %s", view.name, view.RootTable())
 	return s.rebuildFromTable(ctx, view, "")
 }
 
 func (s *SyncEngine) RebuildViewSince(ctx context.Context, view *ViewDefinition, since time.Time) error {
+	if view.IsRelational() {
+		return nil // no Mongo collection to rebuild — served from the SoR
+	}
 	log.Printf("rebuilding view %s since %s", view.name, since.Format(time.RFC3339))
 	return s.rebuildFromTable(ctx, view, since.Format(time.RFC3339))
 }
@@ -509,6 +515,9 @@ func (s *SyncEngine) RebuildAllViews(ctx context.Context) error {
 }
 
 func (s *SyncEngine) rebuildFromTable(ctx context.Context, view *ViewDefinition, since string) error {
+	if view.IsRelational() {
+		return nil // fundamental guard: a relational view has no collection to materialize
+	}
 	// Operator-triggered path: no RebuildConfig and no rebuild lock, so the
 	// pipeline runs at the framework defaults (0 → rebuildWorkers / rebuildBatchSize)
 	// and the scan uses the shared pool (nil scanQ).

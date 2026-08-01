@@ -14,9 +14,12 @@ import "time"
 // via the getters. The relational loader populates all of it through
 // SetManagedColumns.
 //
-// The fields are unexported: they are framework-managed, never part of business
-// identity (IsSameByBusinessFields skips this carrier) and never cloned into the
-// Old() ghost (the JSON snapshot ignores unexported fields).
+// The fields are unexported: they are framework-managed and never part of
+// business identity (IsSameByBusinessFields skips this carrier) or the audit
+// delta. The root Old() ghost is a JSON snapshot, so the unexported carrier does
+// not survive into it; an aggregate child's Old() copy is a whole-value copy and
+// DOES retain the carrier — harmless, since it stays invisible to identity and
+// audit either way.
 type Managed struct {
 	id        *ID
 	revision  int64

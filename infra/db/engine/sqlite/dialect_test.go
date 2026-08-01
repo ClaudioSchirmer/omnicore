@@ -32,12 +32,15 @@ func TestQuoteIdent_PanicsOnInvalid(t *testing.T) {
 
 func TestDialect_LikeClauses(t *testing.T) {
 	d := sqliteDialect{}
+	// Fix #11: both clauses declare ESCAPE '\' so the backslash the criteria
+	// pattern builder uses to escape %/_/\ is honored (SQLite LIKE has no default
+	// escape character).
 	// Case-insensitive: LOWER both sides (ASCII-only fold, D9).
-	if got := d.ILikeClause(`"name"`, "?"); got != `LOWER("name") LIKE LOWER(?)` {
+	if got := d.ILikeClause(`"name"`, "?"); got != `LOWER("name") LIKE LOWER(?) ESCAPE '\'` {
 		t.Errorf("ILikeClause = %q", got)
 	}
 	// Case-sensitive: bare LIKE (the case_sensitive_like pragma is the mechanism).
-	if got := d.LikeClause(`"name"`, "?"); got != `"name" LIKE ?` {
+	if got := d.LikeClause(`"name"`, "?"); got != `"name" LIKE ? ESCAPE '\'` {
 		t.Errorf("LikeClause = %q", got)
 	}
 }
@@ -106,11 +109,11 @@ func TestEncodeArg(t *testing.T) {
 
 func TestUniqueColumnList(t *testing.T) {
 	cases := map[string]string{
-		"constraint failed: UNIQUE constraint failed: t.email (2067)":       "t.email",
-		"constraint failed: UNIQUE constraint failed: t.a, t.b (2067)":      "t.a, t.b",
-		"constraint failed: UNIQUE constraint failed: users.id (1555)":      "users.id",
-		"some other error":                                                  "",
-		"UNIQUE constraint failed: bare.col":                                "bare.col",
+		"constraint failed: UNIQUE constraint failed: t.email (2067)":  "t.email",
+		"constraint failed: UNIQUE constraint failed: t.a, t.b (2067)": "t.a, t.b",
+		"constraint failed: UNIQUE constraint failed: users.id (1555)": "users.id",
+		"some other error":                   "",
+		"UNIQUE constraint failed: bare.col": "bare.col",
 	}
 	for msg, want := range cases {
 		if got := uniqueColumnList(msg); got != want {

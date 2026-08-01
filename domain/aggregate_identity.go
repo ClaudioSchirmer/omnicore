@@ -43,9 +43,16 @@ func IsSameByBusinessFields(a, b AggregateValueObject) bool {
 }
 
 // isManagedCarrier reports whether a struct field is the embedded framework
-// managed-column carrier. Until domain.Managed exists (introduced when the
-// aggregate loader surfaces managed columns into the entity), no field
-// qualifies and IsSameByBusinessFields compares every exported field.
+// managed-column carrier (domain.Managed) — embedded either by value (the
+// canonical form) or as a pointer. Either way the carrier is framework-owned
+// and never business identity, so IsSameByBusinessFields skips it.
 func isManagedCarrier(f reflect.StructField) bool {
-	return f.Anonymous && f.Type == reflect.TypeOf(Managed{})
+	if !f.Anonymous {
+		return false
+	}
+	t := f.Type
+	if t.Kind() == reflect.Pointer {
+		t = t.Elem()
+	}
+	return t == reflect.TypeOf(Managed{})
 }

@@ -65,6 +65,23 @@ func (ar *AggregateRoot) addAggregateItem(item AggregateValueObject) {
 			})
 			return
 		case StatusRemoved, StatusChanged:
+			// Reactivate carrying the RE-SENT values, preserving the tracked id
+			// so a re-added DB child resolves to an in-place UPDATE
+			// (OperationOf(CONSTRUCTOR, ADDED)) that writes the INCOMING field
+			// values — not the stale tracked ones. Leaving list[i].item as the
+			// old value would silently drop edits to non-identity fields on a
+			// full-replace PUT (the identity matched, but the payload changed a
+			// field outside the identity). A never-persisted item has an empty
+			// id, so it reactivates with the re-sent values and no id (a fresh
+			// INSERT). Same-identity, id-agnostic re-send therefore updates in
+			// place instead of churning the id, without losing any change.
+			next := item
+			if id := entry.item.GetID(); !id.IsEmpty() {
+				if stamped, ok := withItemID(item, id.Value()); ok {
+					next = stamped
+				}
+			}
+			list[i].item = next
 			list[i].currentStatus = StatusAdded
 			ar.aggregates[key] = list
 			return

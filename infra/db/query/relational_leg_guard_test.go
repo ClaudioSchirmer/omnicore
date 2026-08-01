@@ -19,6 +19,20 @@ func TestValidateViewSchemas_RejectsRelationalEmbedSource(t *testing.T) {
 	wantProblem(t, err, "is a RelationalSource() view")
 }
 
+// The OTHER direction (Fix #17 coverage): a RelationalSource() view is a single
+// plain aggregate read, so it cannot ITSELF carry an Embed — an embed is a Mongo
+// read, not part of the relational load. The boot validator rejects the
+// combination naming the marker.
+func TestValidateViewSchemas_RejectsRelationalWithEmbed(t *testing.T) {
+	src := View("psrc").Version(1).Schema(rootSchema("psrc"))
+	relEmbedder := View("v").Version(1).Schema(rootSchema("v")).
+		Embed(JoinView(src, "Part", "part")).On("v_id").
+		RelationalSource(noopRelReader{table: "v"})
+
+	err := ValidateViewSchemas([]*ViewDefinition{relEmbedder, src})
+	wantProblem(t, err, "cannot be combined with Embed")
+}
+
 // ComposedView primary (ValidateComposedViews).
 func TestValidateComposedViews_RejectsRelationalPrimary(t *testing.T) {
 	relPrimary := cvPrimaryView().RelationalSource(noopRelReader{table: "gadgets"})

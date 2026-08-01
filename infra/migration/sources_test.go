@@ -23,6 +23,28 @@ func TestFrameworkSource_OpensEmbeddedDriver(t *testing.T) {
 	}
 }
 
+// Fix #14: frameworkDialects returns the linked dialects DETERMINISTICALLY
+// (sorted), so a multi-engine build picks the same "representative" dialect on
+// every run instead of a random map-iteration winner.
+func TestFrameworkDialects_DeterministicSorted(t *testing.T) {
+	a := frameworkDialects()
+	if len(a) == 0 {
+		t.Fatal("expected at least one linked framework dialect")
+	}
+	b := frameworkDialects()
+	if len(a) != len(b) {
+		t.Fatalf("non-deterministic length: %d vs %d", len(a), len(b))
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			t.Fatalf("non-deterministic order at %d: %q vs %q", i, a[i], b[i])
+		}
+		if i > 0 && a[i-1] >= a[i] {
+			t.Fatalf("dialects not strictly sorted: %q not before %q", a[i-1], a[i])
+		}
+	}
+}
+
 // serviceSource reads numbered migrations from a directory, converting a
 // relative path to absolute before handing it to source/file.
 func TestServiceSource_OpensDirectoryDriver(t *testing.T) {

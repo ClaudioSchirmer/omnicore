@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"io/fs"
 	"path/filepath"
+	"sort"
 	"strings"
 
 	"github.com/golang-migrate/migrate/v4/source"
@@ -18,17 +19,31 @@ const (
 	embeddedSubdir       = "embedded"
 )
 
+// frameworkDialects returns the linked dialects in a DETERMINISTIC (sorted)
+// order. Map iteration order is random, so a multi-engine build (e.g.
+// -tags 'postgres sqlite') must not let it decide which dialect is
+// "representative" — same build, same pick, every run.
+func frameworkDialects() []string {
+	out := make([]string, 0, len(frameworkFS))
+	for d := range frameworkFS {
+		out = append(out, d)
+	}
+	sort.Strings(out)
+	return out
+}
+
 // frameworkSource exposes the embedded framework migrations of whatever dialect
 // the build linked — the dialect-agnostic entry point for callers that do not
 // thread a specific dialect. Every dialect carries the same logical sequence, so
-// any linked one is representative; it reads the first entry in the tag-gated
-// registry rather than assuming "postgres" (which a non-postgres build never
-// links). Empty registry (no engine tag) is a clear error.
+// any linked one is representative; it picks the sorted-first linked dialect
+// (deterministic) rather than assuming "postgres" (which a non-postgres build
+// never links). Empty registry (no engine tag) is a clear error.
 func frameworkSource() (source.Driver, error) {
-	for dialect := range frameworkFS {
-		return frameworkSourceFor(dialect)
+	ds := frameworkDialects()
+	if len(ds) == 0 {
+		return nil, fmt.Errorf("migration: no embedded framework migrations linked (build with an engine build tag)")
 	}
-	return nil, fmt.Errorf("migration: no embedded framework migrations linked (build with an engine build tag)")
+	return frameworkSourceFor(ds[0])
 }
 
 // frameworkSourceFor exposes the embedded framework migrations for one dialect
@@ -72,8 +87,8 @@ func serviceSource(dir string) (source.Driver, error) {
 // Used by tests to derive the expected framework version instead of hardcoding a
 // number that silently goes stale when the control plane grows.
 func frameworkMigrationNames() []string {
-	for dialect, fsys := range frameworkFS {
-		entries, err := fsys.ReadDir(embeddedSubdir + "/" + dialect)
+	for _, dialect := range frameworkDialects() {
+		entries, err := frameworkFS[dialect].ReadDir(embeddedSubdir + "/" + dialect)
 		if err != nil {
 			continue
 		}

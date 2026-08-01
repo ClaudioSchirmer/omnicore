@@ -242,12 +242,14 @@ func runWithConfig(cfg *Config, wire func(Deps) Wiring) error {
 	// Infra-free posture: Mongo is opt-out by its own config block (mongo.uri), so
 	// a service whose every view is a relational-source view runs with no Mongo at
 	// all. A view is Mongo-backed unless it is relational-source; that count (plus
-	// any composed view, which reads through the Mongo reader) gates the Mongo-only
-	// boot block below and validates the posture: declaring Mongo-backed work with
-	// no mongo.uri aborts the boot with an actionable message rather than failing
-	// at read time. (Transport is a SEPARATE opt-out — integration consumers /
-	// upstream subscriptions still need a broker even with Mongo off; the no-op
-	// transport surfaces that at the point of use. See yaml-reference.html.)
+	// any composed view, which reads through the Mongo reader, AND any upstream
+	// subscription, which materializes a local Mongo collection) gates the
+	// Mongo-only boot block below and validates the posture: declaring Mongo-backed
+	// work with no mongo.uri aborts the boot with an actionable message rather than
+	// failing at read time (or nil-derefing when the subscribers start). (Transport
+	// is a SEPARATE opt-out — integration consumers / upstream subscriptions ALSO
+	// need a broker; the no-op transport surfaces that at the point of use. See
+	// yaml-reference.html.)
 	relationalNames := relational.NewRelationalViewReader(views).RelationalViewNames()
 	mongoBackedCount := 0
 	for _, v := range views {
@@ -255,11 +257,12 @@ func runWithConfig(cfg *Config, wire func(Deps) Wiring) error {
 			mongoBackedCount++
 		}
 	}
-	if (mongoBackedCount > 0 || len(composedViews) > 0) && deps.Mongo == nil {
+	if (mongoBackedCount > 0 || len(composedViews) > 0 || len(upstreamSubs) > 0) && deps.Mongo == nil {
 		return fmt.Errorf(
-			"bootstrap: %d Mongo-backed view(s) + %d composed view(s) declared but mongo.uri is not configured — "+
-				"set mongo.uri, or make every view .RelationalSource(...) for the infra-free posture",
-			mongoBackedCount, len(composedViews))
+			"bootstrap: %d Mongo-backed view(s) + %d composed view(s) + %d upstream subscription(s) declared but "+
+				"mongo.uri is not configured — set mongo.uri, or drop them for the infra-free posture "+
+				"(every view .RelationalSource(...), no composed views, no upstream subscriptions)",
+			mongoBackedCount, len(composedViews), len(upstreamSubs))
 	}
 	if deps.Mongo == nil {
 		deps.Logger.Info("infra-free posture: Mongo skipped (relational views only)", "relationalViews", len(views))
@@ -803,7 +806,9 @@ func buildApp(ctx context.Context, deps Deps, wiring Wiring) (*fiber.App, error)
 	// buildApp path (tests, Build/Serve consumers) it runs now. Placed with the
 	// feature-wiring phase; registration is request-time-independent of the
 	// permission gate configured above.
-	mountSurfaceFeatures(&deps, wiring)
+	if err := mountSurfaceFeatures(&deps, wiring); err != nil {
+		return nil, err
+	}
 
 	for _, f := range wiring.Features {
 		f.Mount(app, deps)
@@ -1197,7 +1202,9 @@ func serve(ctx context.Context, deps Deps, wiring Wiring) error {
 	// value, but the registry pointers copy through; buildApp's own idempotent
 	// call is a no-op once these are set. Harmless when no feature opts in
 	// (both stay nil → no surface).
-	mountSurfaceFeatures(&deps, wiring)
+	if err := mountSurfaceFeatures(&deps, wiring); err != nil {
+		return err
+	}
 
 	app, err := buildApp(ctx, deps, wiring)
 	if err != nil {
