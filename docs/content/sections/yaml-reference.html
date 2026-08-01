@@ -112,6 +112,7 @@ relational:                              # the relational backend — system of 
 
 mongo:                                   # OPTIONAL — omit the whole block to boot with no Mongo (relational views only)
   uri: "${MONGO_URI}"                    # read-side projection store; empty ⇒ infra-free Mongo posture (no projections/CDC).
+                                         # Requires MongoDB 5.2+ ($sortArray backs EmbedMany's materialized order).
                                          # A Mongo-backed or composed view declared with no uri aborts the boot.
   database: "${MONGO_DB}"                # DB-per-service — REQUIRED when uri is set (a uri with no database is a mistake)
   rebuild:                               # boot-time Mongo view reconciliation (strict-decoded block)
