@@ -33,7 +33,11 @@ with `1.0.0`.
     by-id, CSV/XLSX export, and the `MaxLimit`/`MaxExportRows` ceilings.
   - **Unsupported.** The multi-source shapes — the `Embed` family and
     `SharedBaseView` — fail at boot; `ComposedView`/`Link` are a different type
-    and carry no marker. Free-text `?search=` and a filter or sort on any
+    and carry no marker. A relational view also cannot be the **source** of
+    another view — embedding it (`Embed`/`EmbedMany`/`EmbedInChild`) or using it
+    as a `ComposedView` primary or leg fails at boot, since it has no Mongo
+    collection for the enrichment/join to read. Free-text `?search=` and a filter
+    or sort on any
     non-root column (a dotted child path, a flat root-level sibling, a dotted
     child-level sibling, or an unknown field) are rejected with a typed
     `RelationalCapabilityNotification` (`SemanticSchema` → **400**), naming the

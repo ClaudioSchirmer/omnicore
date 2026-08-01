@@ -735,6 +735,15 @@ func appendEmbedOrderProblems(acc []string, viewName string, e embedDef) []strin
 // composer keys the lookup on. what describes the declaration site for the
 // diagnostic (e.g. `EmbedMany "sales"`).
 func appendViewLegProblems(acc []string, viewName, what string, leg *ViewDefinition, registered map[string]bool) []string {
+	if leg.IsRelational() {
+		acc = append(acc, fmt.Sprintf(
+			"view %q: %s materializes view %q, which is a RelationalSource() view — a relational view is served from "+
+				"the SoR and has NO Mongo collection to read, so it cannot be an embed source (the enrichment would "+
+				"silently materialize an empty segment). Drop RelationalSource() from %q to make it a materialized "+
+				"source, or embed a different view.",
+			viewName, what, leg.Name(), leg.Name()))
+		return acc
+	}
 	if !registered[leg.Name()] {
 		acc = append(acc, fmt.Sprintf(
 			"view %q: %s materializes view %q, which is not registered — an embedded view must be contributed "+

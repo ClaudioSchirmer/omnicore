@@ -123,6 +123,15 @@ func NewGadgetFeature(d bootstrap.Deps) *GadgetFeature {
     and serve the view from Mongo</strong>.
 </p>
 
+<p>
+    The restriction runs in the <strong>other direction</strong> too: a relational view cannot be the <strong>source</strong>
+    of another view. A relational view has no Mongo collection, so embedding it (<code>Embed</code> / <code>EmbedMany</code> /
+    <code>EmbedInChild</code>) or using it as a <code>ComposedView</code> primary or leg would silently read empty — the
+    framework rejects the combination at boot, naming the offending source and the same escape hatch (drop
+    <code>RelationalSource()</code> from that source so it materializes). A materialized view may of course still embed or
+    compose ordinary Mongo-backed views; only a relational source is refused.
+</p>
+
 <h3>Unsupported capabilities return 400, not 500</h3>
 <p>
     The <em>runtime</em> unsupported cases — <code>?search=</code>, and a filter or sort on any field that is not a
