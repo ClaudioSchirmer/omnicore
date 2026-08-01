@@ -3,9 +3,10 @@
 // gRPC-Web and Connect protocols. It is the fourth consumer of the
 // application-layer handlers — the same pipeline.Handler REST, GraphQL and
 // the tabular export dispatch to — re-targeted to protobuf messages via the
-// Command/Query wrappers. Registration follows the GraphQL
-// precedent: the consumer builds a Registry (bootstrap.Wiring.GRPC) and
-// bootstrap serves it on a dedicated listener.
+// Command/Query wrappers. Registration follows the GraphQL precedent: a feature
+// opts into the surface by implementing bootstrap.GRPCFeature (MountGRPC), the
+// framework builds the shared Registry (Deps.GRPCRegistry) and serves it on a
+// dedicated listener.
 package grpc
 
 import (

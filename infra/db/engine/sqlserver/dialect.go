@@ -32,7 +32,23 @@ func (sqlserverDialect) ILikeClause(col, ph string) string {
 	// — a bare LIKE is case-insensitive only under the server's default CI
 	// collation, and the framework must not depend on how the operator created
 	// the database. Postgres ILIKE / MySQL LOWER-LIKE parity.
-	return "LOWER(" + col + ") LIKE LOWER(" + ph + ")"
+	return "LOWER(" + col + ") LIKE LOWER(" + ph + ")" + likeEscapeClause
+}
+
+// likeEscapeClause declares backslash as the LIKE escape character — the
+// pattern builder escapes %, _ and \ with a backslash (the Postgres default),
+// but SQL Server LIKE has no default escape.
+const likeEscapeClause = ` ESCAPE '\'`
+
+func (sqlserverDialect) LikeClause(col, ph string) string {
+	// The inline COLLATE forces a byte-exact (case-sensitive) comparison — a
+	// bare LIKE is case-INSENSITIVE under the server's default CI collation
+	// (e.g. SQL_Latin1_General_CP1_CI_AS). Latin1_General_BIN is valid on any
+	// text column and independent of how the operator built the database.
+	// Honors criteria.OpLike's case-sensitive contract. ESCAPE '\' matches the
+	// backslash the criteria pattern builder uses (SQL Server LIKE has no default
+	// escape, so an escaped %/_ would otherwise leak its wildcard meaning).
+	return col + " LIKE " + ph + " COLLATE Latin1_General_BIN" + likeEscapeClause
 }
 
 func (sqlserverDialect) NowExpr() string { return "CURRENT_TIMESTAMP" }

@@ -70,7 +70,7 @@
     </thead>
     <tbody>
         <tr><td><code>http</code></td><td>the inbound server span (one per request)</td><td>web</td></tr>
-        <tr><td><code>pgx</code></td><td>one span per relational statement (Postgres via <code>otelpgx</code>, MySQL, SQL Server and Oracle via <code>otelsql</code>) — the toggle name is a legacy artifact from the PG-only era and gates every engine</td><td>infra</td></tr>
+        <tr><td><code>pgx</code></td><td>one span per relational statement (Postgres via <code>otelpgx</code>, MySQL, SQL Server, Oracle and SQLite via <code>otelsql</code>) — the toggle name is a legacy artifact from the PG-only era and gates every engine</td><td>infra</td></tr>
         <tr><td><code>mongo</code></td><td>one span per Mongo command</td><td>infra</td></tr>
         <tr><td><code>kafka</code></td><td>consumer spans on the async paths (SyncEngine, integration Receiver, UpstreamSubscriber)</td><td>infra</td></tr>
         <tr><td><code>httpclient</code></td><td>the outbound client span + W3C <code>traceparent</code> injection</td><td>infra</td></tr>

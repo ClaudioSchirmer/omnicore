@@ -411,9 +411,12 @@ func TestUp_NoChangeOnRerun(t *testing.T) {
 }
 
 func TestUp_UnknownDialect(t *testing.T) {
-	m := &Manager{dialect: "sqlite", dir: t.TempDir()}
+	// "nonesuch" is a genuinely unknown dialect (sqlite is now a real one, just
+	// not linked under a non-sqlite build). The tag-gated embed registry has no
+	// entry for it, so the framework source fails up front.
+	m := &Manager{dialect: "nonesuch", dir: t.TempDir()}
 	err := m.Up(context.Background())
-	if err == nil || !strings.Contains(err.Error(), "framework iofs (sqlite)") {
+	if err == nil || !strings.Contains(err.Error(), "no embedded framework migrations for dialect \"nonesuch\"") {
 		t.Fatalf("expected framework source error for unknown dialect, got: %v", err)
 	}
 }

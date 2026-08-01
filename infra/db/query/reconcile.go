@@ -107,6 +107,13 @@ func (s *SyncEngine) ReconcileView(ctx context.Context, view *ViewDefinition, cf
 	started := time.Now()
 	report := ReconcileReport{View: view.Name()}
 
+	if view.IsRelational() {
+		// A relational view is served straight from the SoR and holds no Mongo
+		// collection — there is nothing to parity-check or repair, and scanning
+		// would (mis)materialize the very collection the backing forbids.
+		return report, nil
+	}
+
 	schema := view.SchemaDef()
 	if schema == nil {
 		return report, fmt.Errorf("reconcile %q: view declares no root .Schema(...)", view.name)

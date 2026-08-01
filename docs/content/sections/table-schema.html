@@ -1382,6 +1382,89 @@ func StudentSchema() *core.TableSchema {
     column fails to scan a <code>NULL</code> row. The same manual-scanner escape hatch applies.
 </p>
 
+<h3>Supported column shapes — Go ↔ SQLite</h3>
+<p>
+    <strong>The pure-Go, single-node, MVP/self-executable backend.</strong> On SQLite the engine is driven by
+    <code>database/sql</code> + the cgo-free <code>modernc.org/sqlite</code> driver, so <code>CGO_ENABLED=0 go build
+    -tags sqlite</code> produces a single static binary. Placeholders are <code>?</code>; identifiers are double-quoted
+    (<code>"users"</code>). SQLite is dynamically typed (type <em>affinity</em>, not declared types), so the closed
+    persistable field-type set maps onto affinities: a <code>domain.ID</code> stores as <strong>TEXT</strong> (the
+    canonical uuid string — identity codecs like Postgres, no 16-byte round-trip); a <code>bool</code> stores as
+    <strong>INTEGER</strong> <code>0</code>/<code>1</code> (scanned back to Go <code>bool</code> natively); a
+    <code>time.Time</code> stores as <strong>TEXT</strong> (RFC3339 for Go-authored values, <code>strftime</code>
+    millisecond for the <code>NowExpr</code> control-plane stamps — the scanner tolerates both); integers/floats use
+    INTEGER/REAL affinity. The upsert is <code>ON CONFLICT … DO UPDATE</code> (the Postgres shape, not a MERGE); the
+    savepoint trio is standard (SQLite HAS <code>RELEASE</code>). Single-writer: the pool is pinned to one perennial
+    connection (an MVP / single-node / low-concurrency posture).
+</p>
+<table>
+    <thead><tr><th>Go field type</th><th>SQLite column type</th><th>Notes</th></tr></thead>
+    <tbody>
+        <tr>
+            <td><code>string</code></td>
+            <td><code>TEXT</code></td>
+            <td>the text family — names, emails, addresses</td>
+        </tr>
+        <tr>
+            <td><code>domain.ID</code> / <code>*domain.ID</code></td>
+            <td><code>TEXT</code></td>
+            <td>the canonical uuid string; identity codecs (no BINARY(16)/RAW round-trip). Ids are generated in Go
+                (UUID v7) — no DB default. A <code>string</code> field is NEVER coerced — it pairs with <code>TEXT</code>
+                whatever the value's shape</td>
+        </tr>
+        <tr>
+            <td><code>bool</code></td>
+            <td><code>INTEGER</code> <span class="muted">(0 / 1)</span></td>
+            <td>SQLite has no boolean type; stored as INTEGER, scanned back to Go <code>bool</code> by the driver</td>
+        </tr>
+        <tr>
+            <td><code>int</code> / <code>int16/32/64</code></td>
+            <td><code>INTEGER</code></td>
+            <td>INTEGER affinity</td>
+        </tr>
+        <tr>
+            <td><code>float32</code> / <code>float64</code></td>
+            <td><code>REAL</code></td>
+            <td>REAL affinity</td>
+        </tr>
+        <tr>
+            <td><code>string</code> <span class="muted">(decimal / money)</span></td>
+            <td><code>TEXT</code> <span class="muted">— NOT <code>NUMERIC</code></span></td>
+            <td>SQLite has no arbitrary-precision decimal; a <code>NUMERIC</code>-affinity column would coerce the value
+                to a float (<code>10.10</code> → <code>10.1</code>) and lose precision. Declare the column <code>TEXT</code>
+                so the exact string round-trips — natural, since decimals are modeled as Go <code>string</code></td>
+        </tr>
+        <tr>
+            <td><code>time.Time</code></td>
+            <td><code>TEXT</code> <span class="muted">(RFC3339 / strftime)</span></td>
+            <td>Go-authored values write as RFC3339; the <code>NowExpr</code> control-plane stamps write the
+                <code>strftime</code> millisecond layout; the scanner parses both</td>
+        </tr>
+        <tr>
+            <td><code>[]byte</code></td>
+            <td><code>BLOB</code></td>
+            <td>raw binary</td>
+        </tr>
+        <tr>
+            <td><code>json.RawMessage</code></td>
+            <td><code>TEXT</code></td>
+            <td>JSON rides as TEXT (SQLite's JSON1 stores JSON as text); marshal / unmarshal in your own code</td>
+        </tr>
+    </tbody>
+</table>
+<div class="note" style="border-left:4px solid #e0a800;padding-left:1em;">
+    <p><strong>⚠ SQLite is for MVP / prototyping, not production.</strong> It is single-writer, single-node, has no
+    Mongo-projected views and no CDC (relational views only). It exists to stand up a working service as a single
+    self-executable binary against one <code>app.db</code> file — the zero-infrastructure MVP — before the distributed
+    stack (Postgres/…, Mongo projections, a broker) is in place. Do not ship it under production write concurrency
+    expecting Postgres semantics.</p>
+    <p><strong>Case-insensitive matching is ASCII-only on SQLite.</strong> <code>ILike</code> / <code>Contains</code> /
+    <code>StartsWith</code> / <code>EndsWith</code> fold only <code>A–Z</code> (SQLite's <code>LOWER()</code> leaves
+    accented/Unicode letters untouched), so <code>"JOSÉ"</code> does not match <code>"josé"</code> — unlike Postgres and
+    MySQL, which fold Unicode. Case-<em>sensitive</em> <code>Like</code> is honored (the engine forces the
+    <code>case_sensitive_like</code> pragma). A known limitation of the MVP posture, not a bug.</p>
+</div>
+
 <h3>Out of scope</h3>
 <ul>
     <li><strong>Adapting to non-conforming structural conventions.</strong> The schema maps <em>names</em>, it does not

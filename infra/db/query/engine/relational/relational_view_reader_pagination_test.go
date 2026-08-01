@@ -84,6 +84,38 @@ func eqNames(t *testing.T, got []string, want ...string) {
 	}
 }
 
+// Fix #2: paging `before` the very first row (a cursor pointing at offset 0)
+// must return an EMPTY page — not load the whole table. Pre-fix, resolveWindow
+// produced fetchLimit==0, ReadPage issued q.Limit(0), and applyWindow rendered
+// NO LIMIT clause, so the loader streamed every row and bypassed MaxLimit.
+func TestReadPage_BeforeFirstCursor_EmptyPageNoFullLoad(t *testing.T) {
+	r := pageReaderWith(mkRows(5))
+	ctx := context.Background()
+
+	first, err := r.ReadPage(ctx, "v", queries.ReadCriteria{Limit: 2})
+	if err != nil {
+		t.Fatalf("first page: %v", err)
+	}
+	if len(first.ItemCursors) == 0 {
+		t.Fatal("first page carried no item cursors")
+	}
+	startCursor := first.ItemCursors[0] // encodes offset 0 — the first row
+
+	page, err := r.ReadPage(ctx, "v", queries.ReadCriteria{Limit: 2, Before: startCursor})
+	if err != nil {
+		t.Fatalf("before-first page: %v", err)
+	}
+	if len(page.Items) != 0 {
+		t.Fatalf("before the first row must yield 0 items, got %d (%v)", len(page.Items), names(page))
+	}
+	if page.HasPrev {
+		t.Error("HasPrev must be false before the first row")
+	}
+	if !page.HasNext {
+		t.Error("HasNext must be true — rows exist ahead of the window")
+	}
+}
+
 // TestReadPage_ForwardAfter_WalksFullSetNoDup proves the forward path: the
 // default first page, then following NextCursor with `after`, visits every row
 // exactly once in order, with HasPrev/HasNext derived correctly at each step

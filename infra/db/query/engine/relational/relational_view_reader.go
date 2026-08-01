@@ -163,6 +163,15 @@ func (r *RelationalViewReader) ReadPage(ctx context.Context, name string, crit q
 		return queries.Page{}, err
 	}
 
+	if win.fetchLimit <= 0 {
+		// Zero-width window — paging `before` the very first row (offset 0), or a
+		// backward page over an empty result. Return the empty page WITHOUT
+		// issuing the query: q.Limit(0) renders as "no LIMIT clause" in
+		// applyWindow, which would load the ENTIRE table into memory and bypass
+		// MaxLimit. The has-more flags come straight from the resolved window.
+		return queries.Page{HasNext: win.hasNext, HasPrev: win.hasPrev}, nil
+	}
+
 	q := scopedQuery(where, crit.IncludeArchived)
 	if err := applySort(v.schema, q, crit.Sort); err != nil {
 		return queries.Page{}, err
@@ -215,12 +224,14 @@ func (r *RelationalViewReader) ReadPage(ctx context.Context, name string, crit q
 }
 
 // applyProjection prunes a served Go-keyed document to the ?fields= projection,
-// mirroring the Mongo reader (which pushes the projection into the Find so only
-// the asked fields come back). crit.Projection is Go-field-path keyed: value 1 =
-// include, 0 = exclude. Inclusion keeps ONLY the projected top-level fields — the
-// id is dropped unless explicitly asked, exactly like the Mongo path; a dotted
-// (nested) key keeps its whole top-level segment. Exclusion drops the listed
-// top-level fields. Empty projection is a no-op (the full document).
+// matching the Mongo reader's server-side projection — NESTED paths included.
+// crit.Projection is Go-field-path keyed: value 1 = include, 0 = exclude.
+// Inclusion keeps ONLY the projected paths — the root id is dropped unless
+// explicitly asked (the Mongo _id auto-exclusion the read wrapper declares) — and
+// a dotted key prunes INTO the child sub-document/array: ?fields=parts.label
+// keeps each `parts` element with only `label`, exactly as Mongo's
+// `{"parts.label":1}` does. Exclusion deletes the listed leaves, nested ones
+// included. Empty projection is a no-op (the full document).
 func applyProjection(doc map[string]any, proj map[string]int) {
 	if len(doc) == 0 || len(proj) == 0 {
 		return
@@ -233,27 +244,95 @@ func applyProjection(doc map[string]any, proj map[string]int) {
 		}
 	}
 	if include {
-		keep := make(map[string]bool, len(proj))
+		keep := newProjTree()
 		for k, v := range proj {
 			if v == 0 {
-				continue
+				continue // e.g. _id:0 — already excluded by keeping only the 1-paths
 			}
-			seg := k
-			if i := strings.IndexByte(k, '.'); i >= 0 {
-				seg = k[:i]
-			}
-			keep[seg] = true
+			keep.add(k)
 		}
-		for k := range doc {
-			if !keep[k] {
-				delete(doc, k)
-			}
-		}
+		pruneInclude(doc, keep)
 		return
 	}
 	for k, v := range proj {
 		if v == 0 {
+			excludePath(doc, strings.Split(k, "."))
+		}
+	}
+}
+
+// projTree is a prefix tree of the included ?fields= paths. A node reached by a
+// key that terminates there is "full" (keep the value whole); a node with
+// children is a partial include (recurse, keeping only the listed sub-paths).
+type projTree struct {
+	full     bool
+	children map[string]*projTree
+}
+
+func newProjTree() *projTree { return &projTree{children: map[string]*projTree{}} }
+
+func (t *projTree) add(path string) {
+	n := t
+	for _, seg := range strings.Split(path, ".") {
+		c, ok := n.children[seg]
+		if !ok {
+			c = newProjTree()
+			n.children[seg] = c
+		}
+		n = c
+	}
+	n.full = true
+}
+
+// pruneInclude keeps only the doc keys present in the tree. A full (or childless)
+// node keeps its value as-is; a partial node recurses into a child map or an
+// array of maps, so a nested path prunes each element to the asked sub-fields. A
+// sub-path asked on a scalar has nothing to descend into and is dropped, matching
+// Mongo.
+func pruneInclude(doc map[string]any, t *projTree) {
+	for k := range doc {
+		child, ok := t.children[k]
+		if !ok {
 			delete(doc, k)
+			continue
+		}
+		if child.full || len(child.children) == 0 {
+			continue
+		}
+		switch v := doc[k].(type) {
+		case map[string]any:
+			pruneInclude(v, child)
+		case []any:
+			for _, el := range v {
+				if m, ok := el.(map[string]any); ok {
+					pruneInclude(m, child)
+				}
+			}
+		default:
+			delete(doc, k)
+		}
+	}
+}
+
+// excludePath deletes the leaf at the dotted path, descending through child maps
+// AND arrays of maps, so an exclusion `parts.label` drops `label` from every
+// `parts` element.
+func excludePath(node any, parts []string) {
+	if len(parts) == 0 {
+		return
+	}
+	switch v := node.(type) {
+	case map[string]any:
+		if len(parts) == 1 {
+			delete(v, parts[0])
+			return
+		}
+		if next, ok := v[parts[0]]; ok {
+			excludePath(next, parts[1:])
+		}
+	case []any:
+		for _, el := range v {
+			excludePath(el, parts)
 		}
 	}
 }

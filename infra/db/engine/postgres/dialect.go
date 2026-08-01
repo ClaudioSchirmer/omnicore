@@ -28,6 +28,7 @@ func (pgDialect) QuoteIdent(name string) string       { return validIdentifier(n
 func (pgDialect) EncodeArg(val any) any               { return normalizeArg(val) }
 func (pgDialect) DecodeID(raw string) (string, error) { return raw, nil }
 func (pgDialect) ILikeClause(col, ph string) string   { return col + " ILIKE " + ph }
+func (pgDialect) LikeClause(col, ph string) string    { return col + " LIKE " + ph }
 func (pgDialect) NowExpr() string                     { return "NOW()" }
 
 // ApplyLimit caps a complete SELECT at n rows — the native tail clause on

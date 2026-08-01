@@ -160,3 +160,16 @@ func TestSavepointStmts(t *testing.T) {
 		t.Errorf("ReleaseSavepoint = %q", got)
 	}
 }
+
+// TestLikeClauses proves Postgres renders LIKE/ILIKE natively: ILIKE is
+// unconditionally case-insensitive, and a bare LIKE is natively case-sensitive
+// (honoring criteria.OpLike's contract with no forced COLLATE).
+func TestLikeClauses(t *testing.T) {
+	d := pgDialect{}
+	if got := d.ILikeClause("name", "$1"); got != "name ILIKE $1" {
+		t.Errorf("ILikeClause = %q", got)
+	}
+	if got := d.LikeClause("name", "$1"); got != "name LIKE $1" {
+		t.Errorf("LikeClause = %q", got)
+	}
+}

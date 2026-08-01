@@ -105,8 +105,8 @@ func NewGadgetFeature(d bootstrap.Deps) *GadgetFeature {
         <tr><td>Filter / sort on a <em>sibling</em> field (root or child-level)</td><td>✓</td><td><strong>✗ — 400</strong></td></tr>
         <tr><td>Root-field filter — the full 16-operator vocabulary</td><td>✓</td><td>✓</td></tr>
         <tr><td>Sort on a root field</td><td>✓</td><td>✓</td></tr>
-        <tr><td><code>?fields=</code> projection</td><td>✓</td><td>✓</td></tr>
-        <tr><td>Pagination (<code>limit</code> / <code>after</code> / <code>before</code>)</td><td>✓ keyset</td><td>✓ offset-in-cursor</td></tr>
+        <tr><td><code>?fields=</code> projection (root <em>and</em> nested leaf)</td><td>✓</td><td>✓</td></tr>
+        <tr><td>Pagination (<code>limit</code> / <code>after</code> / <code>before</code>)</td><td>✓ keyset (insertion-stable)</td><td>✓ offset-in-cursor (static-set stable)</td></tr>
         <tr><td><code>?onlyTotal</code> · <code>?includeArchived</code> · by-id</td><td>✓</td><td>✓</td></tr>
         <tr><td>CSV / XLSX export · <code>MaxLimit</code> · <code>MaxExportRows</code></td><td>✓</td><td>✓</td></tr>
         <tr><td>Read latency</td><td>eventually consistent (CDC lag)</td><td><strong>read-your-writes</strong> (no lag)</td></tr>
@@ -151,7 +151,12 @@ func NewGadgetFeature(d bootstrap.Deps) *GadgetFeature {
     idiom, <strong>offset (skip/count), not keyset</strong>. Each cursor carries an absolute row index rather than a
     sort-key tuple: <code>after</code> walks forward from that index, <code>before</code> walks back from it, and a bare
     backward page (GraphQL <code>last:N</code> with no cursor) anchors at the end via a single <code>COUNT</code>. A
-    deterministic <code>ORDER BY … , id</code> tiebreak keeps the offsets stable across pages.
+    deterministic <code>ORDER BY … , id</code> tiebreak makes the <em>ordering</em> total, so paging a <strong>static</strong>
+    result set visits every row exactly once. Absolute-offset paging is <strong>not insertion-stable</strong>, though: a
+    row inserted or removed <em>ahead</em> of the window shifts every later page by one, so a concurrent write during a
+    walk can make a row skip or repeat — the price of offset over keyset. The Mongo view's keyset cursors do not have this
+    exposure. For the freshest-read / dashboard / MVP use cases this backing targets, it is the right trade; a
+    walk that must be stable under heavy concurrent writes wants the Mongo projection.
 </p>
 <p class="note">
     <strong>Wire-compatible by design.</strong> The offset is encoded in a cursor tuple padded to the same length the

@@ -124,8 +124,20 @@ func TestPlaceholder(t *testing.T) {
 // collation. Postgres ILIKE / MySQL LOWER-LIKE parity.
 func TestILikeClause(t *testing.T) {
 	got := sqlserverDialect{}.ILikeClause("[name]", "@p1")
-	if want := "LOWER([name]) LIKE LOWER(@p1)"; got != want {
+	// ESCAPE '\' (Fix #11): SQL Server LIKE has no default escape, so the backslash
+	// the criteria pattern builder uses must be declared explicitly.
+	if want := `LOWER([name]) LIKE LOWER(@p1) ESCAPE '\'`; got != want {
 		t.Fatalf("ILikeClause = %q, want %q", got, want)
+	}
+}
+
+// TestLikeClause proves the case-SENSITIVE LIKE forces byte-exact comparison via
+// an inline COLLATE so criteria.OpLike is case-sensitive regardless of the
+// server's default CI collation — honoring OpLike's documented contract.
+func TestLikeClause(t *testing.T) {
+	got := sqlserverDialect{}.LikeClause("[name]", "@p1")
+	if want := `[name] LIKE @p1 COLLATE Latin1_General_BIN ESCAPE '\'`; got != want {
+		t.Fatalf("LikeClause = %q, want %q", got, want)
 	}
 }
 

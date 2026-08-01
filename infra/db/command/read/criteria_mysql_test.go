@@ -51,6 +51,9 @@ func (testMySQLDialect) DecodeID(raw string) (string, error) { return raw, nil }
 func (testMySQLDialect) ILikeClause(col, ph string) string {
 	return "LOWER(" + col + ") LIKE LOWER(" + ph + ")"
 }
+func (testMySQLDialect) LikeClause(col, ph string) string {
+	return "BINARY " + col + " LIKE " + ph
+}
 func (testMySQLDialect) NowExpr() string { return "NOW()" }
 func (testMySQLDialect) ApplyLimit(sql string, n int) string {
 	return fmt.Sprintf("%s LIMIT %d", sql, n)
@@ -81,7 +84,7 @@ func TestMySQLVisitor_Operators(t *testing.T) {
 		{"ne", criteria.Ne("Email", "a@x"), "`email` <> ?", 1},
 		{"gt", criteria.Gt("Age", 18), "`age` > ?", 1},
 		{"lte", criteria.Lte("Age", 18), "`age` <= ?", 1},
-		{"like", criteria.Like("Name", "Bob%"), "`name` LIKE ?", 1},
+		{"like", criteria.Like("Name", "Bob%"), "BINARY `name` LIKE ?", 1},
 		{"ilike", criteria.ILike("Name", "bob%"), "LOWER(`name`) LIKE LOWER(?)", 1},
 		{"in", criteria.In("Name", "a", "b", "c"), "`name` IN (?, ?, ?)", 3},
 		{"nin", criteria.Nin("Name", "a", "b"), "`name` NOT IN (?, ?)", 2},

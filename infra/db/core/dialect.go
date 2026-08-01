@@ -71,6 +71,16 @@ type Dialect interface {
 	// `LOWER(col) LIKE LOWER(?)` so the match is case-insensitive on ANY column
 	// collation (a bare LIKE would be case-insensitive only under a CI collation).
 	ILikeClause(col, placeholder string) string
+	// LikeClause renders a case-SENSITIVE LIKE comparison over an already-quoted
+	// column and a placeholder — the counterpart of ILikeClause, and the sole
+	// renderer of criteria.OpLike. A bare `col LIKE ?` is only reliably
+	// case-sensitive on Postgres (native) and Oracle (NLS_COMP=BINARY default);
+	// on MySQL and SQL Server a bare LIKE is case-INSENSITIVE under the default
+	// CI collations, so those engines force byte-exact comparison (MySQL
+	// `BINARY col LIKE ?`, SQL Server `col LIKE ? COLLATE Latin1_General_BIN`).
+	// SQLite is case-sensitive via the connection's case_sensitive_like pragma.
+	// The framework must not depend on how the operator created the database.
+	LikeClause(col, placeholder string) string
 	// NowExpr renders the engine's SQL expression for the current timestamp —
 	// the single source of the "now" literal in every generated statement (the
 	// managed created_at/updated_at stamps, the DeletedAt archive stamp, the

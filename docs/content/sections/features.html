@@ -12,10 +12,10 @@
     <div class="stat-strip">
         <div class="stat"><span class="num">5</span><span class="lbl">surfaces from <strong>one</strong> handler — REST · gRPC · GraphQL · integration events · file export</span></div>
         <div class="stat"><span class="num">6</span><span class="lbl">write verbs with zero handler code</span></div>
-        <div class="stat"><span class="num">4</span><span class="lbl">relational engines — PostgreSQL, MySQL, SQL Server &amp; Oracle, one seam</span></div>
+        <div class="stat"><span class="num">5</span><span class="lbl">relational engines — PostgreSQL, MySQL, SQL Server, Oracle &amp; SQLite, one seam</span></div>
         <div class="stat"><span class="num">16</span><span class="lbl">filter operators, allowlisted per field</span></div>
         <div class="stat"><span class="num">7</span><span class="lbl">built-in language catalogs</span></div>
-        <div class="stat"><span class="num">93.2%</span><span class="lbl">unit-test coverage</span></div>
+        <div class="stat"><span class="num">92.1%</span><span class="lbl">unit-test coverage</span></div>
     </div>
 
     <div class="spotlight">
@@ -173,7 +173,7 @@
             <ul class="cap-list">
                 <li><a href="#bootstrap">Bootstrap</a> — <code>Run</code> / <code>Build</code> / <code>Serve</code>, <code>Deps</code> / <code>Wiring</code> / <code>Feature</code>, 4 env vars, dependency-ordered graceful drain</li>
                 <li><a href="#yaml-reference"><code>microservice.&lt;profile&gt;.yaml</code></a> — <code>${...}</code> substitution (env / file / vault), one file per profile</li>
-                <li><a href="#architecture">Four relational engines</a> — PostgreSQL, MySQL, SQL Server &amp; Oracle behind one engine seam; dialect chosen at build/runtime</li>
+                <li><a href="#architecture">Five relational engines</a> — PostgreSQL, MySQL, SQL Server, Oracle &amp; SQLite behind one engine seam; dialect chosen at build/runtime</li>
                 <li><a href="#migrations">Migrations</a> — numbered SQL, framework <code>0001</code> per dialect, <code>autoRun</code> check/true/false</li>
                 <li><a href="#mongo-schema-evolution">Mongo schema evolution</a> — drift detection, <code>Version(N)</code>, advisory-lock rebuild with crash recovery</li>
                 <li><a href="#tracing">Distributed tracing</a> — OTel opt-in, <code>correlationID == trace_id</code>, async links across the outbox</li>

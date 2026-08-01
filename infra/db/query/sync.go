@@ -1260,6 +1260,9 @@ func (s *SyncEngine) pullSideRepair(ctx context.Context, event kafkaEvent, ids p
 // A role row that has since vanished is removed from its view.
 func (s *SyncEngine) fanOutSharedBase(ctx context.Context, baseID string, baseViews []*ViewDefinition) error {
 	for _, view := range baseViews {
+		if view.IsRelational() {
+			continue // relational view holds no Mongo collection — never materialize one
+		}
 		_, fkCol, ok := view.schema.SharedBaseRef()
 		if !ok {
 			continue
@@ -1330,6 +1333,9 @@ func (s *SyncEngine) fanOutSharedBase(ctx context.Context, baseID string, baseVi
 // each view coerces its typed input over that shared map — no re-parse per view.
 func (s *SyncEngine) fanOutSharedBasePayload(ctx context.Context, raw map[string]any, baseID string, baseViews []*ViewDefinition) error {
 	for _, view := range baseViews {
+		if view.IsRelational() {
+			continue // relational view holds no Mongo collection — never materialize one
+		}
 		_, fkCol, ok := view.schema.SharedBaseRef()
 		if !ok {
 			continue

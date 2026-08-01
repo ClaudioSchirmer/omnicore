@@ -106,6 +106,17 @@ func TestILikeClause(t *testing.T) {
 	}
 }
 
+// TestLikeClause proves the case-SENSITIVE LIKE forces byte-exact comparison via
+// the BINARY operator so criteria.OpLike is case-sensitive regardless of the
+// column's CI collation (a bare LIKE would be case-insensitive under
+// utf8mb4_0900_ai_ci) — honoring OpLike's documented contract.
+func TestLikeClause(t *testing.T) {
+	got := mysqlDialect{}.LikeClause("`name`", "?")
+	if want := "BINARY `name` LIKE ?"; got != want {
+		t.Fatalf("LikeClause = %q, want %q", got, want)
+	}
+}
+
 // TestNowExpr_ApplyLimit proves the two portability seams every generated
 // statement rides: the current-timestamp literal comes from the dialect (never
 // baked into shared code) and the row cap lands as MySQL's native tail clause.

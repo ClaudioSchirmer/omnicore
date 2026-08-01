@@ -1,6 +1,7 @@
 package read
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/ClaudioSchirmer/omnicore/domain"
@@ -82,9 +83,29 @@ func TestPgVisitor_UnknownFieldErrors(t *testing.T) {
 	}
 }
 
-func TestPgVisitor_ZeroValueInErrors(t *testing.T) {
-	if _, _, err := compileWhere(criteria.In("Name"), testResolver(), testPGDialect{}, nil); err == nil {
-		t.Fatal("expected error on empty In (no IN ())")
+// Fix #12 (contract change): a zero-value IN is a well-defined empty-set
+// predicate, not an error. SQL forbids the literal `IN ()`, so the translator
+// renders IN () → match nothing (1=0) and NOT IN () → match everything (1=1),
+// matching MongoDB's $in:[] / $nin:[] semantics so the relational and Mongo read
+// paths agree (previously this returned an error → 500).
+func TestPgVisitor_ZeroValueInMatchesNothing(t *testing.T) {
+	sql, args, err := compileWhere(criteria.In("Name"), testResolver(), testPGDialect{}, nil)
+	if err != nil {
+		t.Fatalf("empty In must not error, got %v", err)
+	}
+	if !strings.Contains(sql, "1=0") {
+		t.Errorf("empty In must render match-nothing, got %q", sql)
+	}
+	if len(args) != 0 {
+		t.Errorf("empty In takes no args, got %v", args)
+	}
+
+	sql, _, err = compileWhere(criteria.Nin("Name"), testResolver(), testPGDialect{}, nil)
+	if err != nil {
+		t.Fatalf("empty Nin must not error, got %v", err)
+	}
+	if !strings.Contains(sql, "1=1") {
+		t.Errorf("empty Nin must render match-everything, got %q", sql)
 	}
 }
 

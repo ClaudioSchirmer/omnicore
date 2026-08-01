@@ -32,6 +32,15 @@ func (mysqlDialect) ILikeClause(col, ph string) string {
 	return "LOWER(" + col + ") LIKE LOWER(" + ph + ")"
 }
 
+func (mysqlDialect) LikeClause(col, ph string) string {
+	// The BINARY operator forces byte-exact (case-sensitive) comparison
+	// regardless of the column's charset/collation — a bare LIKE would be
+	// case-INSENSITIVE under a CI collation like utf8mb4_0900_ai_ci. Chosen over
+	// `COLLATE utf8mb4_bin`, which errors on a non-utf8mb4 column; BINARY works
+	// on any text column. Honors criteria.OpLike's case-sensitive contract.
+	return "BINARY " + col + " LIKE " + ph
+}
+
 func (mysqlDialect) NowExpr() string { return "NOW()" }
 
 // ApplyLimit caps a complete SELECT at n rows — the native tail clause on

@@ -33,6 +33,7 @@ const (
 	dialectMySQL     = "mysql"
 	dialectSQLServer = "sqlserver"
 	dialectOracle    = "oracle"
+	dialectSQLite    = "sqlite"
 )
 
 // Deps are the singletons built by the framework and exposed to the service

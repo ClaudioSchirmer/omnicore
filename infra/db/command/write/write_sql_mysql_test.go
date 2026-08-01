@@ -50,6 +50,9 @@ func (testMySQLDialect) DecodeID(raw string) (string, error) { return raw, nil }
 func (testMySQLDialect) ILikeClause(col, ph string) string {
 	return "LOWER(" + col + ") LIKE LOWER(" + ph + ")"
 }
+func (testMySQLDialect) LikeClause(col, ph string) string {
+	return "BINARY " + col + " LIKE " + ph
+}
 func (testMySQLDialect) NowExpr() string { return "NOW()" }
 func (testMySQLDialect) ApplyLimit(sql string, n int) string {
 	return fmt.Sprintf("%s LIMIT %d", sql, n)

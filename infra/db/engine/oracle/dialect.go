@@ -30,8 +30,26 @@ func (oracleDialect) ILikeClause(col, ph string) string {
 	// database's NLS_COMP/NLS_SORT session settings — the framework must not
 	// depend on how the operator created the database. Postgres ILIKE / MySQL
 	// LOWER-LIKE parity.
-	return "LOWER(" + col + ") LIKE LOWER(" + ph + ")"
+	return "LOWER(" + col + ") LIKE LOWER(" + ph + ")" + likeEscapeClause
 }
+
+func (oracleDialect) LikeClause(col, ph string) string {
+	// Bare LIKE — case-sensitive under NLS_COMP=BINARY (the install default).
+	// Unlike MySQL/SQL Server, Oracle has no inline COLLATE we can force without
+	// a database-wide setting (COLLATE BINARY needs MAX_STRING_SIZE=EXTENDED), so
+	// this is best-effort: it honors criteria.OpLike's case-sensitive contract
+	// under the default NLS, and only a linguistic CI collation configured on the
+	// database would revert it (the ILikeClause forces CI via LOWER; there is no
+	// trivial CS equivalent). The default already satisfies the contract.
+	// ESCAPE '\' matches the backslash the criteria pattern builder uses (Oracle
+	// LIKE has no default escape, so an escaped %/_ would otherwise leak).
+	return col + " LIKE " + ph + likeEscapeClause
+}
+
+// likeEscapeClause declares backslash as the LIKE escape character — the pattern
+// builder escapes %, _ and \ with a backslash (the Postgres default), but Oracle
+// LIKE has no default escape.
+const likeEscapeClause = ` ESCAPE '\'`
 
 // NowExpr is SYSTIMESTAMP — the server-timezone "now", matching NOW() on
 // PG/MySQL and CURRENT_TIMESTAMP on SQL Server. Oracle's own CURRENT_TIMESTAMP

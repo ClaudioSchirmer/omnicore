@@ -137,7 +137,7 @@ func collectViews(features []Feature) ([]*query.ViewDefinition, error) {
 // no feature opts into a surface its registry stays nil and bootstrap serves
 // nothing for it — the interface declaration IS the on/off switch, exactly like
 // ReadableFeature/IntegrationFeature. No yaml/Wiring enable-flag.
-func mountSurfaceFeatures(deps *Deps, wiring Wiring) {
+func mountSurfaceFeatures(deps *Deps, wiring Wiring) error {
 	if deps.GraphQLRegistry == nil {
 		for _, f := range wiring.Features {
 			gf, ok := f.(GraphQLFeature)
@@ -148,6 +148,18 @@ func mountSurfaceFeatures(deps *Deps, wiring Wiring) {
 				deps.GraphQLRegistry = graphql.New(deps.Pipeline)
 			}
 			gf.MountGraphQL(deps.GraphQLRegistry, *deps)
+		}
+		// Build the schema once, at boot: a cross-feature field-name collision
+		// (two features registering the same root Query/Mutation field) fails the
+		// schema load, and building here turns that into an ACTIONABLE BOOT ABORT
+		// instead of a lazy "schema build failed" on every GraphQL request. This
+		// mirrors collectViews' boot-time duplicate-view check and the gRPC
+		// listener's duplicate-procedure panic. The schema is cached, so Execute
+		// does no extra work.
+		if deps.GraphQLRegistry != nil {
+			if _, err := deps.GraphQLRegistry.SDL(); err != nil {
+				return fmt.Errorf("bootstrap: GraphQL schema failed to build — likely a field-name collision across features: %w", err)
+			}
 		}
 	}
 	if deps.GRPCRegistry == nil {
@@ -162,6 +174,7 @@ func mountSurfaceFeatures(deps *Deps, wiring Wiring) {
 			rf.MountGRPC(deps.GRPCRegistry, *deps)
 		}
 	}
+	return nil
 }
 
 // validateWiring rejects wiring that is structurally incomplete.

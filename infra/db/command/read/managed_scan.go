@@ -151,9 +151,7 @@ func applyManagedFromMap(target any, schema *core.TableSchema, m map[string]any)
 			return nil
 		}
 		if v, ok := m[col]; ok && v != nil {
-			if t, ok := v.(time.Time); ok {
-				return &t
-			}
+			return coerceManagedTime(v)
 		}
 		return nil
 	}
@@ -185,6 +183,55 @@ func withManagedFromMap(avo domain.AggregateValueObject, schema *core.TableSchem
 	p.Elem().Set(rv)
 	applyManagedFromMap(p.Interface(), schema, m)
 	return p.Elem().Interface().(domain.AggregateValueObject)
+}
+
+// managedTimeLayouts are the textual timestamp forms a driver may hand back
+// through the column map when it does NOT decode to time.Time itself: SQLite
+// stores timestamps as TEXT (RFC3339Nano for app-clock values, a
+// "YYYY-MM-DD HH:MM:SS.mmm" strftime form for NowExpr) and MySQL without
+// parseTime returns "YYYY-MM-DD HH:MM:SS" as bytes. Ordered most- to
+// least-specific; the first that parses wins.
+var managedTimeLayouts = []string{
+	time.RFC3339Nano,
+	time.RFC3339,
+	"2006-01-02 15:04:05.999999999",
+	"2006-01-02 15:04:05",
+	"2006-01-02",
+}
+
+// coerceManagedTime turns a managed-timestamp cell from the column map into a
+// *time.Time, tolerating the driver representations that reach the MANUAL-scanner
+// parity path: a native time.Time / *time.Time (the pgx, MySQL parseTime,
+// go-mssqldb, go-ora path) and the textual string/[]byte forms SQLite (and MySQL
+// without parseTime) return. This keeps the manual scanner at parity with the
+// auto scan, which decodes these through the engine's sql.NullTime targets.
+// Returns nil for an unrecognized or unparseable value (the caller reads nil as
+// "absent"), never a misleading zero time.
+func coerceManagedTime(v any) *time.Time {
+	switch t := v.(type) {
+	case time.Time:
+		return &t
+	case *time.Time:
+		return t
+	case string:
+		return parseManagedTimeText(t)
+	case []byte:
+		return parseManagedTimeText(string(t))
+	default:
+		return nil
+	}
+}
+
+func parseManagedTimeText(s string) *time.Time {
+	if s == "" {
+		return nil
+	}
+	for _, layout := range managedTimeLayouts {
+		if t, err := time.Parse(layout, s); err == nil {
+			return &t
+		}
+	}
+	return nil
 }
 
 // toInt64 coerces the integer forms a driver hands a revision column through the

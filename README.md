@@ -18,7 +18,7 @@ Mongo-projected read side, and every transport surface — from a single
 ## Why omnicore
 
 - ⚡ **The 6 CRUD verbs land with zero handler code** — insert, update, partial-update, archive, unarchive, delete.
-- 🗄️ **Backend-agnostic relational core** — PostgreSQL, MySQL, SQL Server *and* Oracle, behind one engine seam; your domain never names a vendor.
+- 🗄️ **Backend-agnostic relational core** — PostgreSQL, MySQL, SQL Server, Oracle *and* SQLite (pure-Go, self-executable MVP), behind one engine seam; your domain never names a vendor.
 - 🧱 **DDD that the compiler enforces** — 4 layers, one direction, sealed domain types.
 - 🔁 **One handler, five surfaces** — REST, gRPC, GraphQL, the message broker (Kafka or NATS), and file exports share the *same* handler instance.
 - 📬 **Correct-by-construction writes** — data + outbox + audit commit in one transaction, always.
@@ -73,15 +73,20 @@ Each row links to its manual page.
 
 ## Relational backends — one seam, many engines
 
-The relational layer is **backend-agnostic by design**. **PostgreSQL**, **MySQL**, **SQL Server** and
-**Oracle** (Oracle Database 23ai or higher) are all first-class today: you link one at build time with a
+The relational layer is **backend-agnostic by design**. **PostgreSQL**, **MySQL**, **SQL Server**,
+**Oracle** (Oracle Database 23ai or higher) and **SQLite** are all first-class today: you link one at build time with a
 build tag and select the active dialect at runtime via `relational.dialect`. All are consumers of a single *engine seam* — the domain and
 application layers never name a vendor, write raw SQL, or pronounce a physical identifier, so a
 service's business code is identical whichever engine backs it.
 
+**SQLite** is the pure-Go (cgo-free), single-node, MVP/self-executable backend: `CGO_ENABLED=0 go build -tags sqlite`
+gives a single static binary that boots against a plain `app.db` file — no Docker, and (combined with the infra-optional
+boot) no Mongo and no broker. It serves relational views only (SQLite has no CDC source), the deliberate degraded
+posture for standing up a working service before the distributed stack is in place.
+
 Because every engine plugs into that same seam, **adding a new relational backend is an isolated
 seam implementation, not a change that ripples through your services** — SQL Server joined
-PostgreSQL and MySQL through exactly that seam, and Oracle followed the same way: one more
+PostgreSQL and MySQL through exactly that seam, Oracle followed the same way, and SQLite after it: one more
 engine package behind its build tag, each time.
 
 → [Architecture · the engine seam](https://claudioschirmer.github.io/omnicore/#architecture) · [Bootstrap · build tags & dialect](https://claudioschirmer.github.io/omnicore/#bootstrap)
@@ -216,7 +221,7 @@ semantics, same audit guarantees. → [CommandHandler](https://claudioschirmer.g
 ## Stack
 
 Fiber v3 (HTTP) · connectrpc.com/connect (gRPC) · pgx v5 (PostgreSQL) · go-sql-driver (MySQL) · go-mssqldb (SQL Server) ·
-go-ora (Oracle) · mongo-driver v2 (MongoDB 5.2+) · segmentio/kafka-go (Kafka) · nats.go (NATS) ·
+go-ora (Oracle) · modernc.org/sqlite (SQLite) · mongo-driver v2 (MongoDB 5.2+) · segmentio/kafka-go (Kafka) · nats.go (NATS) ·
 golang-migrate v4 (SQL migrations) · golang-jwt v5 + MicahParks/keyfunc (JWT).
 
 ## License

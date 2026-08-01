@@ -23,6 +23,28 @@ func TestFrameworkSource_OpensEmbeddedDriver(t *testing.T) {
 	}
 }
 
+// Fix #14: frameworkDialects returns the linked dialects DETERMINISTICALLY
+// (sorted), so a multi-engine build picks the same "representative" dialect on
+// every run instead of a random map-iteration winner.
+func TestFrameworkDialects_DeterministicSorted(t *testing.T) {
+	a := frameworkDialects()
+	if len(a) == 0 {
+		t.Fatal("expected at least one linked framework dialect")
+	}
+	b := frameworkDialects()
+	if len(a) != len(b) {
+		t.Fatalf("non-deterministic length: %d vs %d", len(a), len(b))
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			t.Fatalf("non-deterministic order at %d: %q vs %q", i, a[i], b[i])
+		}
+		if i > 0 && a[i-1] >= a[i] {
+			t.Fatalf("dialects not strictly sorted: %q not before %q", a[i-1], a[i])
+		}
+	}
+}
+
 // serviceSource reads numbered migrations from a directory, converting a
 // relative path to absolute before handing it to source/file.
 func TestServiceSource_OpensDirectoryDriver(t *testing.T) {
@@ -52,15 +74,18 @@ func TestServiceSource_MissingDirectoryReturnsError(t *testing.T) {
 	}
 }
 
-// A dialect that does not form a valid embed.FS subpath must fail at fs.Sub
-// with the "framework subfs" wrapping (".." is rejected by fs.ValidPath).
-func TestFrameworkSourceFor_InvalidSubpathReturnsError(t *testing.T) {
-	_, err := frameworkSourceFor("..")
+// A dialect not present in the tag-gated embed registry must fail with the
+// "no embedded framework migrations" error — the registry guard now runs before
+// fs.Sub (the embed FS is per-dialect and self-registered by embed_<dialect>.go,
+// so an unlinked/unknown dialect is rejected up front rather than forming an
+// invalid subpath).
+func TestFrameworkSourceFor_UnregisteredDialectReturnsError(t *testing.T) {
+	_, err := frameworkSourceFor("nonesuch")
 	if err == nil {
-		t.Fatal("expected error for an invalid embedded subpath")
+		t.Fatal("expected error for an unregistered dialect")
 	}
-	if !strings.Contains(err.Error(), "framework subfs") {
-		t.Fatalf("expected the fs.Sub error wrapping, got: %v", err)
+	if !strings.Contains(err.Error(), "no embedded framework migrations") {
+		t.Fatalf("expected the registry-miss error, got: %v", err)
 	}
 }
 

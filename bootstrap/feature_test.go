@@ -10,7 +10,9 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/ClaudioSchirmer/omnicore/application/configuration"
 	"github.com/ClaudioSchirmer/omnicore/application/pipeline"
+	"github.com/ClaudioSchirmer/omnicore/application/queries"
 	"github.com/ClaudioSchirmer/omnicore/application/translation"
 	"github.com/ClaudioSchirmer/omnicore/infra/db/query"
 	"github.com/ClaudioSchirmer/omnicore/web/graphql"
@@ -86,6 +88,73 @@ func (grpcFeature) Mount(_ *fiber.App, _ Deps) {}
 func (f grpcFeature) MountGRPC(reg *fwgrpc.Registry, _ Deps) {
 	if f.register != nil {
 		f.register(reg)
+	}
+}
+
+// gqlFieldReq/Query/Resp/Handler are the minimal DTOs a real GraphQL query
+// field needs, used to register a NAMED field on the registry so a cross-feature
+// name collision can be exercised end to end (Fix #5).
+type gqlFieldReq struct {
+	Name *string `query:"name" filter:"eq"`
+}
+
+func (gqlFieldReq) ToQuery(crit queries.ReadCriteria) *gqlFieldQuery {
+	return &gqlFieldQuery{crit: crit}
+}
+
+type gqlFieldQuery struct {
+	pipeline.QueryBase
+	crit queries.ReadCriteria
+}
+
+func (q *gqlFieldQuery) ToCriteria(_ *configuration.AppContext) (queries.ReadCriteria, error) {
+	return q.crit, nil
+}
+
+type gqlFieldResp struct {
+	ID string `json:"id"`
+}
+
+type gqlFieldHandler struct{}
+
+func (gqlFieldHandler) Handle(_ *configuration.AppContext, _ *gqlFieldQuery) (queries.Page, error) {
+	return queries.Page{}, nil
+}
+
+// gqlFieldFeature is a GraphQLFeature that registers ONE query field of the given
+// name — two of them with the same name collide in the schema.
+func gqlFieldFeature(name string) graphQLFeature {
+	return graphQLFeature{register: func(r *graphql.Registry) {
+		r.Register(graphql.QueryWithParams[gqlFieldReq, gqlFieldResp](name, "GqlField", gqlFieldHandler{}))
+	}}
+}
+
+// Fix #5: two features registering the SAME GraphQL field name must abort the
+// boot with an actionable error — not fail lazily on every request.
+func TestMountSurfaceFeatures_GraphQLFieldCollisionAbortsBoot(t *testing.T) {
+	d := silentDeps()
+	err := mountSurfaceFeatures(&d, Wiring{Features: []Feature{gqlFieldFeature("dup"), gqlFieldFeature("dup")}})
+	if err == nil {
+		t.Fatal("a cross-feature GraphQL field-name collision must abort the boot")
+	}
+	if !strings.Contains(err.Error(), "GraphQL schema") {
+		t.Fatalf("error should point at the GraphQL schema build; got: %v", err)
+	}
+}
+
+// The eager boot-time build must not reject a VALID cumulative schema: two
+// features contributing distinct fields build cleanly and both fields land.
+func TestMountSurfaceFeatures_GraphQLDistinctFieldsBuild(t *testing.T) {
+	d := silentDeps()
+	if err := mountSurfaceFeatures(&d, Wiring{Features: []Feature{gqlFieldFeature("alpha"), gqlFieldFeature("beta")}}); err != nil {
+		t.Fatalf("distinct fields across features must build cleanly: %v", err)
+	}
+	sdl, err := d.GraphQLRegistry.SDL()
+	if err != nil {
+		t.Fatalf("SDL: %v", err)
+	}
+	if !strings.Contains(sdl, "alpha") || !strings.Contains(sdl, "beta") {
+		t.Fatalf("both features' fields should be in the schema; sdl=%q", sdl)
 	}
 }
 
