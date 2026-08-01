@@ -11,6 +11,8 @@ with `1.0.0`.
 
 ## [Unreleased]
 
+## [0.40.0] - 2026-08-01
+
 ### Added
 
 - **SQLite engine — a pure-Go, self-executable, zero-infra backend.** A fifth

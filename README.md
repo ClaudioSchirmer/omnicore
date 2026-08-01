@@ -221,7 +221,7 @@ semantics, same audit guarantees. → [CommandHandler](https://claudioschirmer.g
 ## Stack
 
 Fiber v3 (HTTP) · connectrpc.com/connect (gRPC) · pgx v5 (PostgreSQL) · go-sql-driver (MySQL) · go-mssqldb (SQL Server) ·
-go-ora (Oracle) · mongo-driver v2 (MongoDB 5.2+) · segmentio/kafka-go (Kafka) · nats.go (NATS) ·
+go-ora (Oracle) · modernc.org/sqlite (SQLite) · mongo-driver v2 (MongoDB 5.2+) · segmentio/kafka-go (Kafka) · nats.go (NATS) ·
 golang-migrate v4 (SQL migrations) · golang-jwt v5 + MicahParks/keyfunc (JWT).
 
 ## License

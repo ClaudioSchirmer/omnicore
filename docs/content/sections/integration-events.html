@@ -186,7 +186,7 @@ POST /admin/retries/integration   → loops d.IntegrationRegistry.Receivers()</c
         </tbody>
     </table>
 
-    <p>All three tables ship in the flattened framework migration <code>0001_framework.{up,down}.sql</code> (per dialect, under <code>infra/migration/embedded/{postgres,mysql,sqlserver,oracle}/</code>). The <code>outbox</code> table stays UNTOUCHED — <code>integration_events</code> is a separate concept with its own retention semantics. Operator-driven pruning via <code>DELETE WHERE created_at &lt; NOW() - INTERVAL '30 days'</code> on <code>integration_events</code> is recommended; framework does not auto-prune.</p>
+    <p>All three tables ship in the flattened framework migration <code>0001_framework.{up,down}.sql</code> (per dialect, under <code>infra/migration/embedded/{postgres,mysql,sqlserver,oracle,sqlite}/</code>). The <code>outbox</code> table stays UNTOUCHED — <code>integration_events</code> is a separate concept with its own retention semantics. Operator-driven pruning via <code>DELETE WHERE created_at &lt; NOW() - INTERVAL '30 days'</code> on <code>integration_events</code> is recommended; framework does not auto-prune.</p>
 
     <h3>Professional shutdown</h3>
 
