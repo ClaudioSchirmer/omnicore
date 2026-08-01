@@ -1228,6 +1228,14 @@ func (s *SyncEngine) pullSideRepair(ctx context.Context, event kafkaEvent, ids p
 	}
 	var errs []error
 	for _, view := range views {
+		// A RelationalSource view is served fresh from the SoR and never
+		// materialized to Mongo — skip it here exactly as projectOwnViews does.
+		// Without this the base-revision handshake would compose+upsert a Mongo
+		// document for a view that is supposed to have no collection (reachable
+		// when a relational view is rooted on a SharedBase role table).
+		if view.IsRelational() {
+			continue
+		}
 		doc, err := s.composer.Compose(ctx, view, event.AggregateID)
 		if err != nil {
 			errs = append(errs, fmt.Errorf("compose %q: %w", view.name, err))

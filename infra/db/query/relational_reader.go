@@ -14,7 +14,7 @@ import (
 // WITHOUT the caller naming the entity's Go type.
 //
 // read.AggregateLoader[T] satisfies it structurally (via FindAllEntities /
-// FindOneEntity / CountEntities), so a view carries its repository's
+// CountEntities / BoundTable), so a view carries its repository's
 // already-built loader — repo.Loader, threaded down through the view constructor
 // — and the relational ViewReader consults it by view name. That is what lets a
 // relational read reuse the exact typed loader the write side already built (its

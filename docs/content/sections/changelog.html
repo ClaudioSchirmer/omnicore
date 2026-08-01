@@ -62,12 +62,15 @@
                 pipeline exists. Full parity on the root read-side controls (the 16-operator filter vocabulary, sort,
                 <code>?fields=</code>, offset-in-cursor pagination, <code>onlyTotal</code>, <code>includeArchived</code>,
                 by-id, CSV/XLSX export, <code>MaxLimit</code>/<code>MaxExportRows</code>); the multi-source shapes (the
-                Embed family, <code>SharedBaseView</code>) fail boot, and the runtime-unsupported ones — free-text
+                Embed family, <code>SharedBaseView</code>) fail boot — as does using a relational view as the
+                <em>source</em> of another view (embed target, or <code>ComposedView</code> primary/leg), which has no
+                collection to read — and the runtime-unsupported ones — free-text
                 <code>?search=</code> and a filter or sort on any non-root column (child, sibling, unknown) — return a
                 <strong>400</strong> <code>RelationalCapabilityNotification</code>. The marker takes the aggregate's
                 existing <code>repo.Loader</code> (one loader, shared with the repository). Flipping the backing is a
                 shape change, so it bumps <code>Version</code>: gaining the marker is <code>DriftRelationalSync</code>
-                (registry synced, no rebuild), losing it rebuilds the Mongo projection. See
+                (registry synced, no rebuild, and the old Mongo collection is <strong>dropped</strong> so a relational
+                view holds none), losing it rebuilds the Mongo projection from scratch off the SoR. See
                 <a href="#relational-view">Relational view</a>.</li>
             <li><strong>Fixed</strong> — a brand-new Mongo view introduced over an aggregate that <em>already holds
                 history</em> now <strong>backfills the pre-existing rows on first boot</strong>

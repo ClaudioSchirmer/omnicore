@@ -33,15 +33,22 @@ with `1.0.0`.
     by-id, CSV/XLSX export, and the `MaxLimit`/`MaxExportRows` ceilings.
   - **Unsupported.** The multi-source shapes — the `Embed` family and
     `SharedBaseView` — fail at boot; `ComposedView`/`Link` are a different type
-    and carry no marker. Free-text `?search=` and a filter or sort on any
+    and carry no marker. A relational view also cannot be the **source** of
+    another view — embedding it (`Embed`/`EmbedMany`/`EmbedInChild`) or using it
+    as a `ComposedView` primary or leg fails at boot, since it has no Mongo
+    collection for the enrichment/join to read. Free-text `?search=` and a filter
+    or sort on any
     non-root column (a dotted child path, a flat root-level sibling, a dotted
     child-level sibling, or an unknown field) are rejected with a typed
     `RelationalCapabilityNotification` (`SemanticSchema` → **400**), naming the
     field and the escape hatch (drop the marker to serve from Mongo).
   - Flipping the backing is a shape change (it moves the rebuild hash), so it
     **requires a `Version(N)` bump**: gaining the marker resolves to
-    `DriftRelationalSync` (registry synced, no rebuild, Mongo collection left
-    untouched); losing it rebuilds the Mongo projection.
+    `DriftRelationalSync` (registry synced, no rebuild, and the old Mongo
+    collection is **dropped** — a relational view holds none, so the invariant
+    "relational ⇒ no collection" stays true and a later manual registry delete
+    lands on the harmless `DriftFreshInit`, never `DriftAlienData` over a stranded
+    collection); losing it rebuilds the Mongo projection from scratch off the SoR.
 
 ### Changed
 

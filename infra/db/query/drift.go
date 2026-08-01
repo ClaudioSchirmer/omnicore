@@ -108,6 +108,10 @@ func (d DriftDecision) String() string {
 		return "rebuild_required"
 	case DriftDowngrade:
 		return "downgrade"
+	case DriftRelationalSync:
+		return "relational_sync"
+	case DriftFreshBackfill:
+		return "fresh_backfill"
 	default:
 		return "unknown"
 	}
