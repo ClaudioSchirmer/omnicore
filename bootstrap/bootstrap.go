@@ -112,7 +112,11 @@ func runWithConfig(cfg *Config, wire func(Deps) Wiring) error {
 	defer deps.DB.Close()
 	defer func() {
 		// Bound the Mongo disconnect so a stuck client cannot hang the final
-		// close after the coordinated drain already finished.
+		// close after the coordinated drain already finished. Guarded: in the
+		// infra-free posture Mongo was never connected (deps.Mongo == nil).
+		if deps.Mongo == nil {
+			return
+		}
 		closeCtx, closeCancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer closeCancel()
 		_ = deps.Mongo.Close(closeCtx)
@@ -235,6 +239,32 @@ func runWithConfig(cfg *Config, wire func(Deps) Wiring) error {
 		}
 	}
 
+	// Infra-free posture: Mongo is opt-out by its own config block (mongo.uri), so
+	// a service whose every view is a relational-source view runs with no Mongo at
+	// all. A view is Mongo-backed unless it is relational-source; that count (plus
+	// any composed view, which reads through the Mongo reader) gates the Mongo-only
+	// boot block below and validates the posture: declaring Mongo-backed work with
+	// no mongo.uri aborts the boot with an actionable message rather than failing
+	// at read time. (Transport is a SEPARATE opt-out — integration consumers /
+	// upstream subscriptions still need a broker even with Mongo off; the no-op
+	// transport surfaces that at the point of use. See yaml-reference.html.)
+	relationalNames := relational.NewRelationalViewReader(views).RelationalViewNames()
+	mongoBackedCount := 0
+	for _, v := range views {
+		if !relationalNames[v.Name()] {
+			mongoBackedCount++
+		}
+	}
+	if (mongoBackedCount > 0 || len(composedViews) > 0) && deps.Mongo == nil {
+		return fmt.Errorf(
+			"bootstrap: %d Mongo-backed view(s) + %d composed view(s) declared but mongo.uri is not configured — "+
+				"set mongo.uri, or make every view .RelationalSource(...) for the infra-free posture",
+			mongoBackedCount, len(composedViews))
+	}
+	if deps.Mongo == nil {
+		deps.Logger.Info("infra-free posture: Mongo skipped (relational views only)", "relationalViews", len(views))
+	}
+
 	// Schema is mandatory on every view — the read membrane (Go↔column) and the
 	// composer (ID + DeletedAt) resolve through it, so a view without a root
 	// schema would have no lossless mapping. Embed schemas are guaranteed by
@@ -273,7 +303,13 @@ func runWithConfig(cfg *Config, wire func(Deps) Wiring) error {
 		deps.Logger.Info("composed views registered", "count", len(composedViews))
 	}
 
-	if len(views) > 0 {
+	// Gated on Mongo-backed views (NOT len(views)): a relational-only service has
+	// views but no projection to register/spec/sync, so it skips this whole block
+	// — which is also where the three deps.Mongo derefs live (CheckServiceRegistry,
+	// ApplyMongoSpecs, NewSyncEngine), so gating here is what keeps them off the
+	// nil in the infra-free posture. The validation above guarantees deps.Mongo is
+	// non-nil whenever mongoBackedCount > 0.
+	if mongoBackedCount > 0 {
 		// DB-per-service guard: writes the per-boot marker, scans for
 		// foreign collections, warns in dev / aborts otherwise. Runs
 		// before ApplyMongoSpecs so a guard failure short-circuits
@@ -404,6 +440,14 @@ func runWithConfig(cfg *Config, wire func(Deps) Wiring) error {
 	return serve(ctx, deps, wiring)
 }
 
+// closeMongoIfPresent closes the Mongo client on a buildDeps error path,
+// tolerating the infra-free posture where Mongo was never connected (mg == nil).
+func closeMongoIfPresent(mg *mongo.MongoDB) {
+	if mg != nil {
+		_ = mg.Close(context.Background())
+	}
+}
+
 func buildDeps(cfg *Config) (Deps, error) {
 	ctx := context.Background()
 
@@ -444,13 +488,24 @@ func buildDeps(cfg *Config) (Deps, error) {
 	}
 	logger.Info("database connected", "dialect", cfg.Relational.Dialect, "dsn", redact(cfg.Relational.DSN))
 
-	mg, err := mongo.NewMongoDB(ctx, cfg.Mongo.URI, cfg.Mongo.Database,
-		mongo.WithMongoTracing(tracingCfg.Instruments(tracing.SubMongo)))
-	if err != nil {
-		eng.Close()
-		return Deps{}, fmt.Errorf("bootstrap: mongo connect: %w", err)
+	// Mongo is CONDITIONAL on cfg.Mongo.URI (each infrastructure is opt-out by its
+	// own config block — see yaml-reference.html). An empty uri is the infra-free
+	// Mongo posture: skip the connect, leave deps.Mongo == nil, and let the view
+	// reader fall back to the absentMongoReader. A relational-only service (every
+	// view .RelationalSource) needs no Mongo; a service that DOES declare a
+	// Mongo-backed view without a uri is caught later by a boot guard, not here.
+	var mg *mongo.MongoDB
+	if cfg.Mongo.URI != "" {
+		mg, err = mongo.NewMongoDB(ctx, cfg.Mongo.URI, cfg.Mongo.Database,
+			mongo.WithMongoTracing(tracingCfg.Instruments(tracing.SubMongo)))
+		if err != nil {
+			eng.Close()
+			return Deps{}, fmt.Errorf("bootstrap: mongo connect: %w", err)
+		}
+		logger.Info("mongo connected", "uri", redact(cfg.Mongo.URI), "db", cfg.Mongo.Database)
+	} else {
+		logger.Info("mongo disabled — no mongo.uri configured (relational views only; no Mongo projections, no CDC)")
 	}
-	logger.Info("mongo connected", "uri", redact(cfg.Mongo.URI), "db", cfg.Mongo.Database)
 
 	tr := translation.Default()
 	pipe := pipeline.New(tr).WithLogger(logger)
@@ -473,7 +528,15 @@ func buildDeps(cfg *Config) (Deps, error) {
 	// backing) and is installed as deps.ViewReader; the relational reader + the
 	// per-view route are mutated in during run-phase wiring (never a pointer
 	// swap), so a handler that captures deps.ViewReader here dispatches correctly.
-	viewReader := query.NewViewReaderEngine(mongo.NewMongoViewReader(mg, resolver))
+	// The read-side dispatch seam wraps the Mongo reader when Mongo is present;
+	// with Mongo disabled it wraps nil, which NewViewReaderEngine replaces with an
+	// absentMongoReader (a Mongo-backed view would error actionably, never panic).
+	var viewReader *query.ViewReaderEngine
+	if mg != nil {
+		viewReader = query.NewViewReaderEngine(mongo.NewMongoViewReader(mg, resolver))
+	} else {
+		viewReader = query.NewViewReaderEngine(nil)
+	}
 
 	// Resolve the SERVICE-PRIVATE cache from cfg only (no Wire
 	// injection at this stage). If cfg.Cache.Store == "custom", the
@@ -483,13 +546,13 @@ func buildDeps(cfg *Config) (Deps, error) {
 	privateCache, err := resolveCache(cfg.Cache, nil)
 	if err != nil {
 		eng.Close()
-		_ = mg.Close(context.Background())
+		closeMongoIfPresent(mg)
 		return Deps{}, fmt.Errorf("bootstrap: cache init: %w", err)
 	}
 	sharedCache, err := resolveSharedCache(cfg.Cache, nil)
 	if err != nil {
 		eng.Close()
-		_ = mg.Close(context.Background())
+		closeMongoIfPresent(mg)
 		return Deps{}, fmt.Errorf("bootstrap: shared cache init: %w", err)
 	}
 	if privateCache != nil {
@@ -507,7 +570,7 @@ func buildDeps(cfg *Config) (Deps, error) {
 			httpclient.WithClientTracing(tracingCfg.Instruments(tracing.SubHTTPClient)))
 		if err != nil {
 			eng.Close()
-			_ = mg.Close(context.Background())
+			closeMongoIfPresent(mg)
 			return Deps{}, fmt.Errorf("bootstrap: httpclient init: %w", err)
 		}
 		logger.Info("httpclient configured")
@@ -519,7 +582,7 @@ func buildDeps(cfg *Config) (Deps, error) {
 			grpcclient.WithClientTracing(tracingCfg.Instruments(tracing.SubHTTPClient)))
 		if err != nil {
 			eng.Close()
-			_ = mg.Close(context.Background())
+			closeMongoIfPresent(mg)
 			return Deps{}, fmt.Errorf("bootstrap: grpcclient init: %w", err)
 		}
 		logger.Info("grpcclient configured", "services", len(cfg.GRPCClient.Services))
@@ -547,7 +610,7 @@ func buildDeps(cfg *Config) (Deps, error) {
 	sub, err := newTransportSubscriber(cfg)
 	if err != nil {
 		eng.Close()
-		_ = mg.Close(context.Background())
+		closeMongoIfPresent(mg)
 		return Deps{}, fmt.Errorf("bootstrap: transport init: %w", err)
 	}
 

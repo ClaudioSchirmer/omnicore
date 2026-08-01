@@ -18,18 +18,28 @@ const (
 	embeddedSubdir       = "embedded"
 )
 
-// frameworkSource exposes the Postgres framework migrations — the default-dialect
-// entry point kept for callers that do not (yet) thread a dialect; the Postgres
-// runner is the one wired today.
+// frameworkSource exposes the embedded framework migrations of whatever dialect
+// the build linked — the dialect-agnostic entry point for callers that do not
+// thread a specific dialect. Every dialect carries the same logical sequence, so
+// any linked one is representative; it reads the first entry in the tag-gated
+// registry rather than assuming "postgres" (which a non-postgres build never
+// links). Empty registry (no engine tag) is a clear error.
 func frameworkSource() (source.Driver, error) {
-	return frameworkSourceFor("postgres")
+	for dialect := range frameworkFS {
+		return frameworkSourceFor(dialect)
+	}
+	return nil, fmt.Errorf("migration: no embedded framework migrations linked (build with an engine build tag)")
 }
 
 // frameworkSourceFor exposes the embedded framework migrations for one dialect
 // via embed.FS. Subpath "embedded/<dialect>" — where that dialect's flattened
 // 0001_framework.{up,down}.sql lives.
 func frameworkSourceFor(dialect string) (source.Driver, error) {
-	sub, err := fs.Sub(frameworkMigrations, embeddedSubdir+"/"+dialect)
+	fsys, ok := frameworkFS[dialect]
+	if !ok {
+		return nil, fmt.Errorf("migration: no embedded framework migrations for dialect %q (build with the engine's build tag?)", dialect)
+	}
+	sub, err := fs.Sub(fsys, embeddedSubdir+"/"+dialect)
 	if err != nil {
 		return nil, fmt.Errorf("migration: framework subfs (%s): %w", dialect, err)
 	}
@@ -55,21 +65,25 @@ func serviceSource(dir string) (source.Driver, error) {
 	return drv, nil
 }
 
-// frameworkMigrationNames lists the embedded framework migration base names for
-// the postgres dialect (every dialect carries the same logical sequence, so one
-// is representative). Used by tests to derive the expected framework version
-// instead of hardcoding a number that silently goes stale when the control plane
-// grows.
+// frameworkMigrationNames lists the embedded framework migration base names.
+// Every dialect carries the same logical sequence, so ANY linked dialect is
+// representative — it reads the first entry in the tag-gated registry rather than
+// a hardcoded dialect, so it works in a build that linked only (say) sqlite.
+// Used by tests to derive the expected framework version instead of hardcoding a
+// number that silently goes stale when the control plane grows.
 func frameworkMigrationNames() []string {
-	entries, err := frameworkMigrations.ReadDir("embedded/postgres")
-	if err != nil {
-		return nil
-	}
-	var out []string
-	for _, e := range entries {
-		if strings.HasSuffix(e.Name(), ".up.sql") {
-			out = append(out, e.Name())
+	for dialect, fsys := range frameworkFS {
+		entries, err := fsys.ReadDir(embeddedSubdir + "/" + dialect)
+		if err != nil {
+			continue
 		}
+		var out []string
+		for _, e := range entries {
+			if strings.HasSuffix(e.Name(), ".up.sql") {
+				out = append(out, e.Name())
+			}
+		}
+		return out
 	}
-	return out
+	return nil
 }

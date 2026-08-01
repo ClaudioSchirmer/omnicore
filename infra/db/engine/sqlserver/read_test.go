@@ -129,6 +129,16 @@ func TestILikeClause(t *testing.T) {
 	}
 }
 
+// TestLikeClause proves the case-SENSITIVE LIKE forces byte-exact comparison via
+// an inline COLLATE so criteria.OpLike is case-sensitive regardless of the
+// server's default CI collation — honoring OpLike's documented contract.
+func TestLikeClause(t *testing.T) {
+	got := sqlserverDialect{}.LikeClause("[name]", "@p1")
+	if want := "[name] LIKE @p1 COLLATE Latin1_General_BIN"; got != want {
+		t.Fatalf("LikeClause = %q, want %q", got, want)
+	}
+}
+
 // TestNowExpr_ApplyLimit proves the two portability seams every generated
 // statement rides: the current-timestamp literal is CURRENT_TIMESTAMP
 // (server-tz parity with NOW() on PG/MySQL) and the row cap is a SELECT-head

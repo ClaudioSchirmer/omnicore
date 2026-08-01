@@ -19,6 +19,33 @@ func (f *fakeReader) ReadByID(_ context.Context, _, _ string, _ queries.ReadCrit
 	return map[string]any{"backing": f.tag}, true, nil
 }
 
+// TestViewReaderEngine_NilMongoUsesAbsentReader proves the infra-free posture
+// (Item 11): NewViewReaderEngine(nil) installs an absentMongoReader that returns
+// an actionable error — never a nil panic — when a Mongo-backed view is
+// dispatched to it, while relational views still route correctly.
+func TestViewReaderEngine_NilMongoUsesAbsentReader(t *testing.T) {
+	e := NewViewReaderEngine(nil)
+
+	// A view with no relational backing dispatches to the absent Mongo reader.
+	if _, err := e.ReadPage(context.Background(), "needs_mongo", queries.ReadCriteria{}); err == nil {
+		t.Error("ReadPage on a Mongo-backed view with no Mongo must error, not panic")
+	}
+	if _, _, err := e.ReadByID(context.Background(), "needs_mongo", "id", queries.ReadCriteria{}); err == nil {
+		t.Error("ReadByID on a Mongo-backed view with no Mongo must error, not panic")
+	}
+
+	// A relational view still routes to the relational reader — infra-free is the
+	// relational-only posture, and those reads succeed.
+	e.SetRelational(&fakeReader{tag: "relational"}, map[string]bool{"fresh": true})
+	page, err := e.ReadPage(context.Background(), "fresh", queries.ReadCriteria{})
+	if err != nil {
+		t.Fatalf("relational read under infra-free posture failed: %v", err)
+	}
+	if page.Items[0]["backing"] != "relational" {
+		t.Errorf("relational view must route to the relational reader, got %v", page.Items[0])
+	}
+}
+
 func TestViewReaderEngine_DispatchesByBacking(t *testing.T) {
 	e := NewViewReaderEngine(&fakeReader{tag: "mongo"})
 	e.SetRelational(&fakeReader{tag: "relational"}, map[string]bool{"fresh": true})

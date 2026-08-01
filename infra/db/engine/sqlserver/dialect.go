@@ -35,6 +35,15 @@ func (sqlserverDialect) ILikeClause(col, ph string) string {
 	return "LOWER(" + col + ") LIKE LOWER(" + ph + ")"
 }
 
+func (sqlserverDialect) LikeClause(col, ph string) string {
+	// The inline COLLATE forces a byte-exact (case-sensitive) comparison — a
+	// bare LIKE is case-INSENSITIVE under the server's default CI collation
+	// (e.g. SQL_Latin1_General_CP1_CI_AS). Latin1_General_BIN is valid on any
+	// text column and independent of how the operator built the database.
+	// Honors criteria.OpLike's case-sensitive contract.
+	return col + " LIKE " + ph + " COLLATE Latin1_General_BIN"
+}
+
 func (sqlserverDialect) NowExpr() string { return "CURRENT_TIMESTAMP" }
 
 // ApplyLimit caps a complete SELECT at n rows — on SQL Server the cap is a

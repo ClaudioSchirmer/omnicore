@@ -135,6 +135,7 @@ func (f *fakeDB) QuoteIdent(name string) string       { return `"` + name + `"` 
 func (f *fakeDB) EncodeArg(v any) any                 { return v }
 func (f *fakeDB) DecodeID(raw string) (string, error) { return raw, nil }
 func (f *fakeDB) ILikeClause(col, ph string) string   { return col + " ILIKE " + ph }
+func (f *fakeDB) LikeClause(col, ph string) string    { return col + " LIKE " + ph }
 func (f *fakeDB) NowExpr() string                     { return "NOW()" }
 func (f *fakeDB) ApplyLimit(sql string, n int) string {
 	return fmt.Sprintf("%s LIMIT %d", sql, n)

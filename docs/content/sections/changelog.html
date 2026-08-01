@@ -9,6 +9,42 @@
     <div class="release">
         <div class="release-head"><span class="release-tag">Unreleased</span><span class="release-date">—</span></div>
         <ul>
+            <li><strong>Added</strong> — <strong>SQLite engine — a pure-Go, self-executable, zero-infra backend.</strong>
+                A fifth relational engine behind the <code>sqlite</code> build tag, built on the cgo-free
+                <code>modernc.org/sqlite</code> driver, so <code>CGO_ENABLED=0 go build -tags sqlite</code> yields a
+                single static binary that boots against a plain <code>app.db</code> file. Ids store as TEXT (identity
+                codecs, the Postgres posture), the upsert is <code>ON CONFLICT … DO UPDATE</code> (not a MERGE),
+                timestamps are TEXT (RFC3339 for app-clock values, <code>strftime</code> millisecond for
+                <code>NowExpr</code>), booleans are INTEGER (scanned natively), and the constraint classifiers read
+                modernc's extended result codes plus the message's column list. The factory forces the correctness
+                pragmas (<code>foreign_keys(ON)</code>, <code>case_sensitive_like(ON)</code>) and pins one perennial
+                connection — SQLite is single-writer, an <strong>MVP / single-node</strong> posture stated plainly.
+                <code>relational.dsn</code> is a file path (resolved next to the binary, created if absent) or
+                <code>:memory:</code>. Relational views only (SQLite has no CDC source, so Mongo-projected views are off
+                the table by design). See <a href="#architecture">Architecture</a>, <a href="#table-schema">Table
+                schema</a>, and <a href="#yaml-reference">YAML reference</a>.</li>
+            <li><strong>Added</strong> — <strong>infra-optional boot — Mongo and the message transport are each opt-out
+                by their own config block.</strong> Omitting <code>mongo.uri</code> boots with no Mongo (relational views
+                only; no projections, no CDC); building tagless (no <code>-tags kafka|nats</code>) boots with a no-op
+                transport (no messaging). Together with the SQLite engine that is the single-binary, single-file,
+                zero-Docker MVP. Each is independent — a service can keep the broker for integration events while
+                running without Mongo. A coherence guard aborts the boot with an actionable message when a
+                Mongo-backed/composed view is declared with no <code>mongo.uri</code>; an integration consumer or upstream
+                subscription with no linked transport fails at the point of use. <code>mongo.*</code> and
+                <code>transport.*</code> are now optional config (<code>mongo.database</code> stays required when
+                <code>mongo.uri</code> is set). See <a href="#bootstrap">Bootstrap</a> and
+                <a href="#yaml-reference">YAML reference</a>.</li>
+            <li><strong>Changed</strong> — <strong>breaking</strong> — <strong><code>OpLike</code> now honors its
+                documented case-sensitive contract on MySQL and SQL Server.</strong> <code>OpLike</code> is specified
+                case-sensitive, but it rendered a bare <code>LIKE</code>, which is case-<em>insensitive</em> under the
+                default CI collations on MySQL (<code>utf8mb4_…_ci</code>) and SQL Server (<code>…_CI_AS</code>) — so
+                case-sensitive <code>LIKE</code> filters silently matched case-insensitively there. A new
+                <code>core.Dialect.LikeClause</code> renders the operator per engine, forcing byte-exact comparison only
+                where a bare <code>LIKE</code> is not already case-sensitive: MySQL <code>BINARY col LIKE ?</code>,
+                SQL Server <code>col LIKE ? COLLATE Latin1_General_BIN</code>; Postgres/Oracle/SQLite keep the bare
+                <code>LIKE</code> (native, NLS-default, and pragma-backed). <em>Migration</em>: services relying on the
+                old case-insensitive behavior of <code>OpLike</code> on MySQL/SQL Server should switch those filters to
+                <code>OpILike</code>. See <a href="#auto-query-handlers">Auto query handlers</a>.</li>
             <li><strong>Changed</strong> — <strong>breaking</strong> — <strong>the GraphQL and gRPC surfaces are
                 now declared by the feature, not wired in <code>Wire</code>.</strong> A feature opts into each
                 surface by implementing <code>bootstrap.GraphQLFeature</code>

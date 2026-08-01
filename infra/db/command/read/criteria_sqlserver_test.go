@@ -50,6 +50,9 @@ func (testSQLServerDialect) DecodeID(raw string) (string, error) { return raw, n
 func (testSQLServerDialect) ILikeClause(col, ph string) string {
 	return "LOWER(" + col + ") LIKE LOWER(" + ph + ")"
 }
+func (testSQLServerDialect) LikeClause(col, ph string) string {
+	return col + " LIKE " + ph + " COLLATE Latin1_General_BIN"
+}
 func (testSQLServerDialect) NowExpr() string { return "CURRENT_TIMESTAMP" }
 func (testSQLServerDialect) ApplyLimit(sql string, n int) string {
 	return fmt.Sprintf("SELECT TOP %d %s", n, sql[len("SELECT "):])
@@ -80,7 +83,7 @@ func TestSQLServerVisitor_Operators(t *testing.T) {
 		{"ne", criteria.Ne("Email", "a@x"), "[email] <> @p1", 1},
 		{"gt", criteria.Gt("Age", 18), "[age] > @p1", 1},
 		{"lte", criteria.Lte("Age", 18), "[age] <= @p1", 1},
-		{"like", criteria.Like("Name", "Bob%"), "[name] LIKE @p1", 1},
+		{"like", criteria.Like("Name", "Bob%"), "[name] LIKE @p1 COLLATE Latin1_General_BIN", 1},
 		{"ilike", criteria.ILike("Name", "bob%"), "LOWER([name]) LIKE LOWER(@p1)", 1},
 		{"in", criteria.In("Name", "a", "b", "c"), "[name] IN (@p1, @p2, @p3)", 3},
 		{"nin", criteria.Nin("Name", "a", "b"), "[name] NOT IN (@p1, @p2)", 2},

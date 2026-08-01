@@ -100,6 +100,7 @@ func (lfDialect) QuoteIdent(name string) string       { return name }
 func (lfDialect) EncodeArg(v any) any                 { return v }
 func (lfDialect) DecodeID(raw string) (string, error) { return raw, nil }
 func (lfDialect) ILikeClause(col, ph string) string   { return col + " ILIKE " + ph }
+func (lfDialect) LikeClause(col, ph string) string    { return col + " LIKE " + ph }
 func (lfDialect) NowExpr() string                     { return "NOW()" }
 func (lfDialect) ApplyLimit(sql string, n int) string {
 	return fmt.Sprintf("%s LIMIT %d", sql, n)

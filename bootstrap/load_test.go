@@ -171,9 +171,16 @@ func TestLoadConfigFrom_MissingRequired(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error for missing required fields")
 	}
-	for _, field := range []string{"relational.dialect", "relational.dsn", "mongo.uri", "mongo.database", "transport.endpoints", "transport.syncGroup"} {
+	// Only relational.* is unconditionally required now; mongo.* and transport.*
+	// are optional (opt-out infrastructure — see the infra-free posture).
+	for _, field := range []string{"relational.dialect", "relational.dsn"} {
 		if !strings.Contains(err.Error(), field) {
 			t.Errorf("error %q does not list missing field %q", err, field)
+		}
+	}
+	for _, field := range []string{"mongo.uri", "transport.endpoints", "transport.syncGroup"} {
+		if strings.Contains(err.Error(), field) {
+			t.Errorf("error %q must not report optional field %q as missing", err, field)
 		}
 	}
 }

@@ -52,6 +52,9 @@ func (testOracleDialect) DecodeID(raw string) (string, error) { return raw, nil 
 func (testOracleDialect) ILikeClause(col, ph string) string {
 	return "LOWER(" + col + ") LIKE LOWER(" + ph + ")"
 }
+func (testOracleDialect) LikeClause(col, ph string) string {
+	return col + " LIKE " + ph
+}
 func (testOracleDialect) NowExpr() string { return "SYSTIMESTAMP" }
 func (testOracleDialect) ApplyLimit(sql string, n int) string {
 	return fmt.Sprintf("%s FETCH FIRST %d ROWS ONLY", sql, n)

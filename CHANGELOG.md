@@ -13,6 +13,52 @@ with `1.0.0`.
 
 ### Added
 
+- **SQLite engine — a pure-Go, self-executable, zero-infra backend.** A fifth
+  relational engine behind the `sqlite` build tag, built on the cgo-free
+  `modernc.org/sqlite` driver: `CGO_ENABLED=0 go build -tags sqlite` yields a
+  single static binary that boots against a plain `app.db` file. Ids store as
+  TEXT (identity codecs, the Postgres posture), the upsert is `ON CONFLICT … DO
+  UPDATE` (not a MERGE), timestamps are TEXT (RFC3339 for app-clock values,
+  `strftime` millisecond for `NowExpr`), booleans are INTEGER (scanned natively),
+  and the constraint classifiers read modernc's extended result codes plus the
+  message's column list. The factory forces the correctness pragmas
+  (`foreign_keys(ON)`, `case_sensitive_like(ON)`) and pins one perennial
+  connection (`MaxOpenConns=1`) — SQLite is single-writer, an **MVP / single-node
+  / low-concurrency** posture stated plainly. `relational.dsn` is the file path
+  (resolved next to the binary, created if absent) or `:memory:`. Relational
+  views only — SQLite has no CDC source, so Mongo-projected views are off the
+  table by design (a happy alignment with the relational-view posture, not a
+  limitation). See [Architecture](docs/content/sections/architecture.html) and
+  [YAML reference](docs/content/sections/yaml-reference.html).
+- **Infra-optional boot — Mongo and the message transport are each opt-out by
+  their own config block.** Omitting `mongo.uri` boots with no Mongo (relational
+  views only; no projections, no CDC); building tagless (no `-tags kafka|nats`)
+  boots with a no-op transport (no messaging). The two together with the SQLite
+  engine give the single-binary, single-file, zero-Docker MVP. Each is
+  independent — a service can keep the broker for integration events while
+  running without Mongo. A coherence guard aborts the boot with an actionable
+  message when a Mongo-backed/composed view is declared without `mongo.uri`; an
+  integration consumer or upstream subscription with no linked transport fails at
+  the point of use. `mongo.*` and `transport.*` are now **optional** config
+  (`mongo.database` stays required when `mongo.uri` is set). See
+  [Bootstrap](docs/content/sections/bootstrap.html) and
+  [YAML reference](docs/content/sections/yaml-reference.html).
+
+### Fixed
+
+- **`OpLike` now honors its documented case-sensitive contract on MySQL and SQL
+  Server** *(arguably breaking)*. `OpLike` is specified case-sensitive, but it
+  rendered a bare `LIKE`, which is case-**insensitive** under the default CI
+  collations on MySQL (`utf8mb4_…_ci`) and SQL Server (`…_CI_AS`) — so
+  case-sensitive `LIKE` filters silently matched case-insensitively there. A new
+  `core.Dialect.LikeClause` renders the operator per engine, forcing byte-exact
+  comparison only where a bare `LIKE` is not already case-sensitive: MySQL
+  `BINARY col LIKE ?`, SQL Server `col LIKE ? COLLATE Latin1_General_BIN`;
+  Postgres/Oracle/SQLite keep the bare `LIKE` (native, NLS-default, and
+  pragma-backed respectively). Services relying on the old case-insensitive
+  behavior of `OpLike` on MySQL/SQL Server should switch those filters to
+  `OpILike`.
+
 - **Relational views — read a `query.View` straight from the SoR.**
   `View(name).RelationalSource(loader)` serves a plain single-aggregate view from
   the relational System of Record instead of the Mongo projection: the framework

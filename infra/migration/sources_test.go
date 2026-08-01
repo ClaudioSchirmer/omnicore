@@ -52,15 +52,18 @@ func TestServiceSource_MissingDirectoryReturnsError(t *testing.T) {
 	}
 }
 
-// A dialect that does not form a valid embed.FS subpath must fail at fs.Sub
-// with the "framework subfs" wrapping (".." is rejected by fs.ValidPath).
-func TestFrameworkSourceFor_InvalidSubpathReturnsError(t *testing.T) {
-	_, err := frameworkSourceFor("..")
+// A dialect not present in the tag-gated embed registry must fail with the
+// "no embedded framework migrations" error — the registry guard now runs before
+// fs.Sub (the embed FS is per-dialect and self-registered by embed_<dialect>.go,
+// so an unlinked/unknown dialect is rejected up front rather than forming an
+// invalid subpath).
+func TestFrameworkSourceFor_UnregisteredDialectReturnsError(t *testing.T) {
+	_, err := frameworkSourceFor("nonesuch")
 	if err == nil {
-		t.Fatal("expected error for an invalid embedded subpath")
+		t.Fatal("expected error for an unregistered dialect")
 	}
-	if !strings.Contains(err.Error(), "framework subfs") {
-		t.Fatalf("expected the fs.Sub error wrapping, got: %v", err)
+	if !strings.Contains(err.Error(), "no embedded framework migrations") {
+		t.Fatalf("expected the registry-miss error, got: %v", err)
 	}
 }
 

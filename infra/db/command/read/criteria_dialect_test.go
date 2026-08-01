@@ -42,6 +42,7 @@ func (testPGDialect) DecodeID(raw string) (string, error) {
 	return raw, nil
 }
 func (testPGDialect) ILikeClause(col, ph string) string { return col + " ILIKE " + ph }
+func (testPGDialect) LikeClause(col, ph string) string  { return col + " LIKE " + ph }
 func (testPGDialect) NowExpr() string                   { return "NOW()" }
 func (testPGDialect) ApplyLimit(sql string, n int) string {
 	return fmt.Sprintf("%s LIMIT %d", sql, n)

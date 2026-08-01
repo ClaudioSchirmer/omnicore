@@ -109,6 +109,14 @@ func (v *sqlVisitor) VisitComparison(c criteria.Comparison) error {
 			v.sb.WriteString(v.dialect.ILikeClause(col, v.place(c.Field, c.Values[0])))
 			break
 		}
+		if c.Op == criteria.OpLike {
+			// Case-SENSITIVE LIKE is dialect-specific too: a bare LIKE is only
+			// reliably case-sensitive on PG/Oracle, so MySQL/SQL Server force
+			// byte-exact comparison via Dialect.LikeClause. Rendered as a whole
+			// clause like ILike (not a plain binary operator).
+			v.sb.WriteString(v.dialect.LikeClause(col, v.place(c.Field, c.Values[0])))
+			break
+		}
 		op, ok := binaryOps[c.Op]
 		if !ok {
 			return fmt.Errorf("criteria: unsupported operator %q", c.Op)
@@ -123,15 +131,15 @@ func (v *sqlVisitor) VisitComparison(c criteria.Comparison) error {
 }
 
 var binaryOps = map[criteria.Operator]string{
-	criteria.OpEq:   "=",
-	criteria.OpNe:   "<>",
-	criteria.OpGt:   ">",
-	criteria.OpGte:  ">=",
-	criteria.OpLt:   "<",
-	criteria.OpLte:  "<=",
-	criteria.OpLike: "LIKE",
-	// OpILike is not here — it renders as a whole clause via Dialect.ILikeClause
-	// (native ILIKE on Postgres, LOWER(col) LIKE LOWER(?) on MySQL).
+	criteria.OpEq:  "=",
+	criteria.OpNe:  "<>",
+	criteria.OpGt:  ">",
+	criteria.OpGte: ">=",
+	criteria.OpLt:  "<",
+	criteria.OpLte: "<=",
+	// OpLike and OpILike are NOT here — each renders as a whole clause via
+	// Dialect.LikeClause / Dialect.ILikeClause (a bare LIKE is not reliably
+	// case-sensitive across engines; a bare ILIKE is Postgres-only).
 }
 
 func (v *sqlVisitor) VisitLogical(l criteria.Logical) error {

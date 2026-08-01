@@ -43,10 +43,37 @@ func TestConfig_Validate_ReportsAllMissingRequired(t *testing.T) {
 	if err == nil {
 		t.Fatal("empty config must fail validation")
 	}
-	for _, field := range []string{"service", "relational.dialect", "relational.dsn", "mongo.uri", "mongo.database", "transport.endpoints", "transport.syncGroup"} {
+	// Only service + relational.* are unconditionally required. mongo.* and
+	// transport.* are OPTIONAL (each infrastructure is opt-out by its own config
+	// block — the infra-free posture); a service that needs them but omits them is
+	// caught by a coherence guard at boot, not by this base validation.
+	for _, field := range []string{"service", "relational.dialect", "relational.dsn"} {
 		if !strings.Contains(err.Error(), field) {
 			t.Errorf("missing-field error must name %q, got %v", field, err)
 		}
+	}
+	for _, field := range []string{"mongo.uri", "transport.endpoints", "transport.syncGroup"} {
+		if strings.Contains(err.Error(), field) {
+			t.Errorf("optional field %q must NOT be reported missing, got %v", field, err)
+		}
+	}
+}
+
+// mongo.database is the one CONDITIONAL requirement: mandatory when mongo.uri is
+// set (a uri with no database is a real mistake), absent otherwise.
+func TestConfig_Validate_MongoDatabaseRequiredOnlyWithURI(t *testing.T) {
+	c := validBaseConfig()
+	c.Mongo.URI = "mongodb://localhost"
+	c.Mongo.Database = ""
+	if err := c.Validate(); err == nil || !strings.Contains(err.Error(), "mongo.database") {
+		t.Errorf("mongo.database must be required when mongo.uri is set, got %v", err)
+	}
+
+	c2 := validBaseConfig()
+	c2.Mongo.URI = ""
+	c2.Mongo.Database = ""
+	if err := c2.Validate(); err != nil {
+		t.Errorf("mongo.database must be optional when mongo.uri is empty, got %v", err)
 	}
 }
 

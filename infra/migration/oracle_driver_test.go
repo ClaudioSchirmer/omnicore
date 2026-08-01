@@ -64,7 +64,7 @@ func TestSplitOracleStatements(t *testing.T) {
 	})
 
 	t.Run("the framework migration splits into its full statement set", func(t *testing.T) {
-		up, err := frameworkMigrations.ReadFile("embedded/oracle/0001_framework.up.sql")
+		up, err := oracleFS.ReadFile("embedded/oracle/0001_framework.up.sql")
 		if err != nil {
 			t.Fatalf("read embedded up: %v", err)
 		}
@@ -87,7 +87,7 @@ func TestSplitOracleStatements(t *testing.T) {
 	})
 
 	t.Run("the framework down migration splits into 6 drops", func(t *testing.T) {
-		down, err := frameworkMigrations.ReadFile("embedded/oracle/0001_framework.down.sql")
+		down, err := oracleFS.ReadFile("embedded/oracle/0001_framework.down.sql")
 		if err != nil {
 			t.Fatalf("read embedded down: %v", err)
 		}

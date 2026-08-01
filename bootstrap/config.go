@@ -981,17 +981,17 @@ func (c *Config) Validate() error {
 	if c.Relational.DSN == "" {
 		missing = append(missing, "relational.dsn")
 	}
-	if c.Mongo.URI == "" {
-		missing = append(missing, "mongo.uri")
-	}
-	if c.Mongo.Database == "" {
-		missing = append(missing, "mongo.database")
-	}
-	if len(c.Transport.Endpoints) == 0 {
-		missing = append(missing, "transport.endpoints")
-	}
-	if c.Transport.SyncGroup == "" {
-		missing = append(missing, "transport.syncGroup")
+	// mongo.* and transport.* are OPTIONAL — each infrastructure is opt-out by its
+	// own config block (see yaml-reference.html). Omitting mongo.uri boots without
+	// Mongo (relational views only); omitting transport.endpoints boots without a
+	// broker (no messaging). A service that declares work needing an absent
+	// infrastructure is caught by a coherence guard: a Mongo-backed/composed view
+	// with no mongo.uri aborts the boot (see runWithConfig), and an integration
+	// consumer / upstream subscription with no broker fails at the point of use
+	// (the no-op transport). The only conditional requirement: mongo.database is
+	// mandatory WHEN mongo.uri is set (a uri with no database is a real mistake).
+	if c.Mongo.URI != "" && c.Mongo.Database == "" {
+		missing = append(missing, "mongo.database (required when mongo.uri is set)")
 	}
 	if len(missing) > 0 {
 		return fmt.Errorf("bootstrap: missing required config: %s", strings.Join(missing, ", "))

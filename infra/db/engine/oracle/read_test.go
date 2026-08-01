@@ -130,6 +130,16 @@ func TestILikeClause(t *testing.T) {
 	}
 }
 
+// TestLikeClause proves the case-SENSITIVE LIKE renders a bare LIKE — case
+// sensitive under Oracle's default NLS_COMP=BINARY, honoring criteria.OpLike's
+// contract without an inline COLLATE (which Oracle can't force per-statement).
+func TestLikeClause(t *testing.T) {
+	got := oracleDialect{}.LikeClause("name", ":1")
+	if want := "name LIKE :1"; got != want {
+		t.Fatalf("LikeClause = %q, want %q", got, want)
+	}
+}
+
 // TestNowExpr_ApplyLimit proves the two portability seams every generated
 // statement rides: the current-timestamp literal is SYSTIMESTAMP (server-tz
 // parity with NOW() on PG/MySQL — Oracle's CURRENT_TIMESTAMP is session-tz and
