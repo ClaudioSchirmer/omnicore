@@ -91,17 +91,13 @@ relational:                              # the relational backend — system of 
                                          # (pgx v5 DSN for postgres, Go MySQL DSN for mysql, go-mssqldb connection
                                          # string for sqlserver — e.g. "server=…;port=…;user id=…;password=…" —
                                          # go-ora URL for oracle — e.g. "oracle://user:pw@host:1521/SERVICE" —
-                                         # for sqlite: a FILE PATH ("file:app.db" / "file:data/app.db") or ":memory:".
-                                         # A relative path resolves NEXT TO THE BINARY and is created if absent (the
-                                         # parent dir too); tuning pragmas may be appended ("file:app.db?_pragma=
-                                         # journal_mode(WAL)&_pragma=busy_timeout(5000)"). The factory FORCES the
-                                         # correctness pragmas foreign_keys(ON) + case_sensitive_like(ON) regardless.
-                                         # ":memory:" runs the database ENTIRELY IN RAM — nothing touches disk, and it
-                                         # vanishes when the process exits (ephemeral; handy for tests / throwaway runs).
-                                         # It works because sqlite pins ONE perennial connection: a :memory: database is
-                                         # private to its connection, so the single pinned connection IS the whole
-                                         # database (a recycled connection would drop it — which is why the pool is
-                                         # pinned). sqlite is single-writer either way — the MVP / single-node posture.
+                                         # for sqlite (MVP engine): a FILE PATH ("file:app.db") or ":memory:". A relative path
+                                         # is created NEXT TO THE BINARY (portable — a pendrive carries app + .db together;
+                                         # under go run/test it falls back to the working dir, so the dev loop persists in the
+                                         # project). An absolute path ("file:/var/lib/app/app.db") is used verbatim. Parent dir
+                                         # auto-created; tuning pragmas may be appended ("file:app.db?_pragma=journal_mode(WAL)");
+                                         # the factory FORCES foreign_keys(ON) + case_sensitive_like(ON). ":memory:" is RAM-only,
+                                         # ephemeral (one pinned connection IS the database). sqlite is single-writer MVP/single-node.
   pool:                                  # OPTIONAL — connection-pool bounds, applied to whichever engine is selected.
     maxOpenConns: 0                      # cap on total open connections. unset -> max(4, NumCPU) (mirrors pgxpool's own
                                          # default, so postgres is unchanged; bounds mysql/sqlserver/oracle, whose database/sql

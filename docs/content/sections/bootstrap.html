@@ -117,8 +117,8 @@ http:
 relational:
   dialect: postgres                      # MANDATORY — postgres | mysql | sqlserver | oracle | sqlite (no default)
   dsn: "${DATABASE_URL:postgres://localhost:5432/mydb}"
-mongo:
-  uri: "${MONGO_URI:mongodb://localhost:27017}"
+mongo:                                   # OPTIONAL — opt-out by absence: omit the whole block to boot with no Mongo
+  uri: "${MONGO_URI:mongodb://localhost:27017}"   # (relational views only). database stays required when uri is set.
   database: "${MONGO_DB:my_views}"
   rebuild:                               # see "Mongo schema evolution" — strict-decoded block
     autoRun: check                       # check | true | false — profile-aware default: dev=true / else=check
@@ -127,7 +127,8 @@ mongo:
     pointerLeaseSeconds: 0               # 0/unset → default 15s — activation-fence / settle lease (also bounds the boot-rebuild window)
     workers: 0                           # 0/unset → default 4 — concurrent compose+write backfill workers (relational pool ≥ workers+1)
     batchSize: 0                         # 0/unset → default 1000 — root ids composed + bulk-upserted per batch
-transport:             # neutral; the -tags kafka|nats build tag picks the adapter
+transport:             # OPTIONAL — opt-out by absence: omit it (and build tagless) to boot with no messaging.
+                       # neutral; the -tags kafka|nats build tag picks the adapter
   endpoints: ["${TRANSPORT_ENDPOINTS:localhost:9092}"]  # Kafka/Redpanda brokers OR NATS URL(s)
   syncGroup: "${SYNC_GROUP_ID:my-service-sync}"
   syncWorkers: 4       # optional; default runtime.NumCPU(); 1 = serial
@@ -231,7 +232,7 @@ observability:                           # optional; omitted block = tracing off
     </ul>
     <p>The reserved names <code>file</code> and <code>vault</code> shadow same-named env vars inside <code>${...}</code> — env-var conventions are uppercase, so the collision is theoretical. <code>file:</code> and <code>vault:</code> failures are strict (boot aborts) on purpose: a missing file or unresolved secret in production is an operational bug, not a silent empty-string default.</p>
 
-    <p>Mandatory fields: <code>service</code>, <code>relational.dialect</code>, <code>relational.dsn</code>, <code>mongo.uri</code>, <code>mongo.database</code>, <code>transport.endpoints</code>, <code>transport.syncGroup</code>. <code>bootstrap.LoadConfig</code> fails with an error listing missing ones.</p>
+    <p>Mandatory fields: <code>service</code>, <code>relational.dialect</code>, <code>relational.dsn</code>. The <code>mongo</code> and <code>transport</code> blocks are <strong>opt-out by absence</strong> — omit either to run without it (see the <a href="#yaml-reference">YAML reference</a>: no Mongo ⇒ relational views only; no <code>transport</code> ⇒ build tagless, no messaging; both omitted with <code>-tags sqlite</code> ⇒ the single-binary zero-Docker MVP). When the <code>mongo</code> block IS present, <code>mongo.database</code> is required alongside <code>mongo.uri</code>; when <code>transport</code> IS present, <code>endpoints</code> and <code>syncGroup</code> are required. <code>bootstrap.LoadConfig</code> fails with an error listing anything missing from a block that is present.</p>
 
     <p>The <code>auth:</code> block is optional and defaults to <code>{mode: disabled}</code> when absent — convenient for local development under <code>APP_PROFILE=dev</code>, but rejected at boot under any other profile so prd cannot ship without authentication wired. When <code>mode: jwt</code>, the schema requires <code>issuer</code> + <code>audience</code> + exactly one of <code>jwksUrl</code> / <code>publicKeyPem</code>; the <code>externalValidator</code> sub-block is optional. The external-validator cache is opt-in via <code>cacheTtlSeconds</code> and default off — see the Authentication section for the revocation-vs-throughput trade-off.</p>
 
@@ -318,7 +319,7 @@ func (f *UsersFeature) Mount(app *fiber.App, d bootstrap.Deps) {
         <li><code>core.NewEngine(dialect, …)</code> (the relational engine for <code>relational.dialect</code>) + <code>mongo.NewMongoDB</code> (defer Close in reverse order)</li>
         <li><code>translation.Default()</code>, <code>pipeline.New(tr).WithLogger(logger)</code>, <code>mongo.NewMongoViewReader</code>; configures audit on the relational engine via <code>WithAudit(&amp;cfg.Audit, logger, cfg.Auth.AuditClaims)</code></li>
         <li><code>wire(deps)</code> returns the service's <code>Wiring</code></li>
-        <li><code>validateWiring</code> — rejects boot if <code>Features == nil &amp;&amp; BeforeServe == nil</code> (nothing to serve), and also rejects an empty <code>Wiring.Translations</code> slice (every consumer declares at least one <code>translation.Module</code>). <strong>Dev-only exception — the empty shell:</strong> under <code>APP_PROFILE=dev</code> a fully empty <code>Wiring{}</code> is accepted with a loud <code>slog.Warn</code> and boots serving only the framework surfaces (the probes; OpenAPI/GraphQL when wired) — the legitimate state of a freshly scaffolded service, letting config, connections, migrations and the CDC relay be proven live before the first entity exists. The waiver covers only that fully empty wiring: a dev wiring <em>with</em> features still requires translations, and every other profile rejects the empty wiring outright.</li>
+        <li><code>validateWiring</code> — rejects boot if <code>Features == nil &amp;&amp; BeforeServe == nil</code> (nothing to serve), and also rejects an empty <code>Wiring.Translations</code> slice (every consumer declares at least one <code>translation.Module</code>). <strong>Dev-only exception — the empty shell:</strong> under <code>APP_PROFILE=dev</code> a wiring with no features and no <code>BeforeServe</code> is accepted with a loud <code>slog.Warn</code> and boots serving only the framework surfaces (the probes; OpenAPI/GraphQL when wired) — the legitimate state of a freshly scaffolded service, letting config, connections, migrations and the CDC relay be proven live before the first entity exists. The gate is <em>featureless</em>, not literally <code>Wiring{}</code>: it checks only <code>Features</code> and <code>BeforeServe</code>, so setting <code>Wiring.OpenAPI</code> (to light the Swagger UI on the empty shell) — or any other non-feature field — still qualifies, and no <code>Translations</code> are required while there are no features. A dev wiring <em>with</em> features still requires translations, and every other profile rejects the featureless wiring outright.</li>
         <li><code>Translator.Import</code> of modules in <code>Wiring.Translations</code></li>
         <li>Migrations — when <code>cfg.Migrations.AutoRun</code> resolves to <code>true</code>, <code>ValidateDownExists</code> then <code>Up</code>; when it resolves to <code>check</code>, a strict drift check (reads <code>Status</code> + <code>Pending</code>, aborts on a dirty or pending migration); when <code>false</code>, skipped (the <code>check | true | false</code> enum is profile-aware: <code>dev</code> defaults to <code>true</code>, any other profile to <code>check</code>). See "Migrations".</li>
         <li><code>collectViews(wiring.Features)</code> — aggregates Views from <code>ReadableFeature</code>s; rejects boot if 2 features declare the same view name (captures Mongo collection collision)</li>
