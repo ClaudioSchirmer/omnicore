@@ -21,13 +21,16 @@ import (
 //     way). journal_mode(WAL) + busy_timeout(5000) are defaulted only when the dev
 //     did not set them — those are tuning knobs the dev may override.
 //
-//  2. RESOLVE the file path. An absolute path is used verbatim. A relative path
-//     resolves NEXT TO THE BINARY (filepath.Dir(os.Executable())), so the
-//     single-binary MVP keeps its .db beside the executable wherever it is
-//     launched from — and the parent directory is created (SQLite makes the file
-//     on first open but not the directory). ":memory:" resolves to a
-//     shared-cache NAMED in-memory database (normalizeMemoryDSN) so the engine
-//     and the migration runner share one database, not two private ones.
+//  2. RESOLVE the file path. A relative path resolves NEXT TO THE BINARY
+//     (filepath.Dir(os.Executable())) so the single-binary MVP is portable — the
+//     .db travels beside the executable (a USB stick, any mount point). The one
+//     exception is an EPHEMERAL binary: under `go run` / `go test` the executable
+//     is a throwaway temp file deleted on exit, so resolving beside it would lose
+//     the data — there the working directory (the project) is the base instead.
+//     An absolute path is used verbatim (fixed external location). Either way the
+//     parent directory is created. ":memory:" resolves to a shared-cache NAMED
+//     in-memory database (normalizeMemoryDSN) so the engine and the migration
+//     runner share one database, not two private ones.
 
 // forcedCorrectnessPragmas are injected on every connection, overriding any
 // dev-supplied value — these are correctness invariants (D11).
@@ -118,15 +121,20 @@ func isMemoryPath(path, params string) bool {
 	return path == ":memory:" || strings.Contains(params, "mode=memory")
 }
 
-// resolveFilePath makes a relative path absolute against the binary's directory
+// resolveFilePath makes a relative path absolute against the resolution base
 // (D12) and ensures its parent exists. An absolute path is used verbatim.
 func resolveFilePath(path string) (string, error) {
+	return resolveFilePathAgainst(resolutionBase(), path)
+}
+
+// resolveFilePathAgainst joins a relative path onto base (an absolute path is
+// used verbatim) and MkdirAll's the parent. Split out from resolveFilePath so
+// the base — which depends on os.Executable() and cannot be faked in a test —
+// is chosen once by resolutionBase while this pure join+mkdir step stays
+// directly testable with an explicit base.
+func resolveFilePathAgainst(base, path string) (string, error) {
 	if !filepath.IsAbs(path) {
-		if exe, err := os.Executable(); err == nil {
-			path = filepath.Join(filepath.Dir(exe), path)
-		}
-		// If os.Executable() fails (rare), fall back to the path as given
-		// (working-dir relative) rather than aborting the boot.
+		path = filepath.Join(base, path)
 	}
 	if dir := filepath.Dir(path); dir != "" {
 		if err := os.MkdirAll(dir, 0o755); err != nil {
@@ -134,6 +142,50 @@ func resolveFilePath(path string) (string, error) {
 		}
 	}
 	return path, nil
+}
+
+// resolutionBase is the directory a RELATIVE sqlite path resolves against: the
+// binary's own directory — so the self-executable MVP keeps its .db beside the
+// binary and travels as one unit (a USB stick, wherever it is mounted) — EXCEPT
+// when the binary is ephemeral (`go run` / `go test` compile to a temp file the
+// toolchain deletes on exit), where the working directory (the project) is used
+// so the dev loop persists where the developer expects. If os.Executable()
+// fails (rare), the working directory is the fallback.
+func resolutionBase() string {
+	exe, err := os.Executable()
+	if err != nil {
+		return workingDirOrDot()
+	}
+	exeDir := filepath.Dir(exe)
+	if isEphemeralExeDir(exeDir) {
+		return workingDirOrDot()
+	}
+	return exeDir
+}
+
+// workingDirOrDot returns the process working directory, or "." if it cannot be
+// determined (filepath.Join tolerates "." — SQLite then opens relative to CWD).
+func workingDirOrDot() string {
+	if wd, err := os.Getwd(); err == nil {
+		return wd
+	}
+	return "."
+}
+
+// isEphemeralExeDir reports whether an executable directory belongs to a
+// throwaway build — the `go run` / `go test` case. Both compile the binary
+// under the OS temp directory (a "go-build*" subtree), so a dir that lives
+// inside os.TempDir() is ephemeral; the "go-build" name is a symlink-proof
+// fallback when the temp comparison is inconclusive.
+func isEphemeralExeDir(dir string) bool {
+	if tmp, err := filepath.EvalSymlinks(os.TempDir()); err == nil {
+		if d, err := filepath.EvalSymlinks(dir); err == nil {
+			if rel, err := filepath.Rel(tmp, d); err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+				return true
+			}
+		}
+	}
+	return strings.Contains(dir, "go-build")
 }
 
 // partitionParams splits the raw parameter list into the _pragma values (the

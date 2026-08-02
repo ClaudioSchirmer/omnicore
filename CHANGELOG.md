@@ -11,6 +11,30 @@ with `1.0.0`.
 
 ## [Unreleased]
 
+## [0.40.1] - 2026-08-01
+
+### Fixed
+
+- **SQLite: a relative `relational.dsn` no longer lands the `.db` in a throwaway
+  directory under `go run` / `go test`.** A relative path still resolves next to
+  the binary for a compiled binary — the portable single-file MVP unchanged (a
+  USB stick carries binary + data together, the mount point irrelevant) — but
+  when the executable is ephemeral (`go run` / `go test` compile to a temp file
+  the toolchain deletes on exit) it now resolves against the working directory
+  (the project), so the dev loop persists there instead of vanishing with the
+  temp build. Either way the `.db` stays **in the app's own folder** — the
+  default posture. An absolute path (`file:/var/lib/app/app.db`) is still honored
+  verbatim as the escape hatch for a fixed external location.
+  (`infra/db/engine/sqlite/dsn.go`.)
+
+### Docs
+
+- Corrected the Bootstrap mandatory-fields list, which still listed `mongo.*`
+  and `transport.*` as required after they became opt-out in 0.40.0; documented
+  that the dev empty-shell boot gate is *featureless* (checks only `Features` /
+  `BeforeServe`), so setting `Wiring.OpenAPI` alone still boots the shell. No
+  code change — the manual now matches the runtime.
+
 ## [0.40.0] - 2026-08-01
 
 ### Added

@@ -65,6 +65,68 @@ func TestResolveDSN_DevPragmasPreservedAndForcedOverridden(t *testing.T) {
 	}
 }
 
+func TestResolveFilePathAgainst_RelativeJoinsBaseAndMkdir(t *testing.T) {
+	base := t.TempDir()
+	got, err := resolveFilePathAgainst(base, filepath.Join("nested", "app.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := filepath.Join(base, "nested", "app.db")
+	if got != want {
+		t.Errorf("relative should join onto base: got %q, want %q", got, want)
+	}
+	if _, err := os.Stat(filepath.Join(base, "nested")); err != nil {
+		t.Errorf("expected the parent directory to be created: %v", err)
+	}
+}
+
+func TestResolveFilePathAgainst_AbsoluteIgnoresBase(t *testing.T) {
+	abs := filepath.Join(t.TempDir(), "app.db")
+	got, err := resolveFilePathAgainst(filepath.Join(t.TempDir(), "other-base"), abs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != abs {
+		t.Errorf("absolute path must be used verbatim regardless of base: got %q, want %q", got, abs)
+	}
+}
+
+func TestIsEphemeralExeDir(t *testing.T) {
+	// A directory inside the OS temp tree — the go run / go test case.
+	if !isEphemeralExeDir(t.TempDir()) {
+		t.Error("a directory under os.TempDir() must be classified ephemeral")
+	}
+	// The working directory (the package dir under the repo) is not ephemeral.
+	wd, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if isEphemeralExeDir(wd) {
+		t.Errorf("the working directory %q must not be classified ephemeral", wd)
+	}
+	// The "go-build" name is the symlink-proof fallback signal.
+	if !isEphemeralExeDir(filepath.Join("some", "go-build123", "b001", "exe")) {
+		t.Error("a go-build* path must be classified ephemeral via the name fallback")
+	}
+}
+
+func TestResolveDSN_RelativePath_ResolvesToAbsolute(t *testing.T) {
+	// The test binary itself is ephemeral (go test compiles to a temp dir), so a
+	// relative DSN must resolve against the working directory, NOT be left bare —
+	// proving the .db lands somewhere persistent, never beside the throwaway exe.
+	got, err := resolveDSN("file:app.db")
+	if err != nil {
+		t.Fatal(err)
+	}
+	path, _ := splitDSN(got)
+	if !filepath.IsAbs(path) {
+		t.Errorf("a relative sqlite DSN must resolve to an absolute path, got %q", path)
+	}
+	if !strings.HasSuffix(path, "app.db") {
+		t.Errorf("resolved path should keep the file name, got %q", path)
+	}
+}
+
 func TestSplitDSN(t *testing.T) {
 	cases := []struct{ in, path, params string }{
 		{"file:app.db?_pragma=x(1)", "app.db", "_pragma=x(1)"},

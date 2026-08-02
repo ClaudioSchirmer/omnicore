@@ -13,6 +13,25 @@
         </ul>
     </div>
     <div class="release">
+        <div class="release-head"><span class="release-tag">v0.40.1</span><span class="release-date">August 1, 2026</span></div>
+        <ul>
+            <li><strong>Fixed</strong> — <strong>SQLite: a relative <code>relational.dsn</code> no longer lands the
+                <code>.db</code> in a throwaway directory under <code>go run</code> / <code>go test</code>.</strong>
+                A relative path still resolves NEXT TO THE BINARY for a compiled binary — the portable single-file MVP
+                unchanged (a USB stick carries binary + data together, mount point irrelevant) — but when the executable
+                is ephemeral (<code>go run</code>/<code>go test</code> compile to a temp file the toolchain deletes on
+                exit) it now resolves against the WORKING DIRECTORY (the project), so the dev loop persists there
+                instead of vanishing with the temp build. Either way the .db stays IN THE APP'S OWN FOLDER — the
+                default posture. An absolute path is still honored verbatim as the escape hatch for a fixed external
+                location. See <a href="#yaml-reference">YAML reference</a>.</li>
+            <li><strong>Docs</strong> — corrected the <a href="#bootstrap">Bootstrap</a> mandatory-fields list, which
+                still listed <code>mongo.*</code> and <code>transport.*</code> as required after they became opt-out in
+                v0.40.0; documented that the dev empty-shell boot gate is <em>featureless</em> (checks only
+                <code>Features</code>/<code>BeforeServe</code>), so setting <code>Wiring.OpenAPI</code> alone still
+                boots the shell. No code change — the manual now matches the runtime.</li>
+        </ul>
+    </div>
+    <div class="release">
         <div class="release-head"><span class="release-tag">v0.40.0</span><span class="release-date">August 1, 2026</span></div>
         <ul>
             <li><strong>Added</strong> — <strong>SQLite engine — a pure-Go, self-executable, zero-infra backend.</strong>
