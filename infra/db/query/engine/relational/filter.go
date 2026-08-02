@@ -21,19 +21,32 @@ func unsupported(what string) error {
 	return exception.SingleNotificationError("Query", what, notifications.RelationalCapabilityNotification{})
 }
 
-// servable reports whether a filter/sort field is one a root SELECT can express:
-// a column the ROOT schema owns (its business fields + the id). Everything else —
-// a dotted child path, a flat root-level sibling field (merged into the doc but
-// living in a satellite table), a dotted child-level sibling, or an unknown field
-// — is a pushdown the relational reader cannot serve. schema.ColumnOf answers this
-// precisely: it consults only the root's own Go→column map (id included), so
-// sibling and child fields (kept in their own schemas) return false.
+// servable reports whether a filter/sort field is one the loader's root SELECT
+// can express. The resolution surface MIRRORS the loader's specResolver exactly:
+// the ROOT schema's own columns (business fields + id), then each 1:1 sibling
+// (shared-PK satellite), then the shared base (role → base). Those three are 1:1
+// with the root, so the loader reaches them with a LEFT JOIN and the WHERE/ORDER
+// resolves against the joined column. Everything else — a dotted child path, a
+// dotted child-level sibling, or an unknown field — is a 1:N pushdown a single
+// root SELECT cannot express, and stays unservable (→ 400).
 func servable(schema *core.TableSchema, field string) bool {
 	if schema == nil {
 		return false
 	}
-	_, ok := schema.ColumnOf(field)
-	return ok
+	if _, ok := schema.ColumnOf(field); ok {
+		return true
+	}
+	for _, sib := range schema.Siblings() {
+		if _, ok := sib.ColumnOf(field); ok {
+			return true
+		}
+	}
+	if base, _, ok := schema.SharedBaseRef(); ok {
+		if _, ok := base.ColumnOf(field); ok {
+			return true
+		}
+	}
+	return false
 }
 
 // toExpr translates the wire-neutral ReadCriteria.Filter (Go-field-keyed, the

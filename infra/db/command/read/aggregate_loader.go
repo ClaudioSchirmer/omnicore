@@ -244,6 +244,13 @@ func (l *AggregateLoader[T]) compileFilterJoins(q *criteria.Query, joins *relSpe
 	rootQualifier := ""
 	if len(joins.siblings) > 0 || joins.base != nil {
 		rootQualifier = dialect.QuoteIdent(l.schema.Table())
+		// Qualify the anchor id under the 1:1 join so a predicate mixing the id
+		// and a sibling/base field (e.g. an exclude-self uniqueness probe) is
+		// unambiguous — see findRoots for the full rationale.
+		where, args, err = compileWhereQualified(q.Condition(), resolve, dialect, l.idKindResolver(), l.schema.IDColumn(), rootQualifier)
+		if err != nil {
+			return "", "", nil, err
+		}
 	}
 	clause = buildWhereClause(where, scopeGate(q.Scope(), l.schema, dialect, rootQualifier))
 	if clause != "" {
@@ -295,6 +302,19 @@ func (l *AggregateLoader[T]) findRoots(ctx context.Context, q *criteria.Query, l
 	rootQualifier := ""
 	if len(joins.siblings) > 0 || joins.base != nil {
 		rootQualifier = dialect.QuoteIdent(table)
+		// The shared id column lives in BOTH the anchor and the joined 1:1 table,
+		// so a bare "id" in the predicate or the ORDER BY … , id tiebreak is
+		// ambiguous. Recompile WHERE/ORDER with the anchor id qualified (every
+		// other column is unique across the node, so only the id needs it).
+		idCol := l.schema.IDColumn()
+		where, args, err = compileWhereQualified(q.Condition(), resolve, dialect, l.idKindResolver(), idCol, rootQualifier)
+		if err != nil {
+			return nil, nil, err
+		}
+		orderSQL, err = compileOrderQualified(q.OrderFields(), resolve, dialect, idCol, rootQualifier)
+		if err != nil {
+			return nil, nil, err
+		}
 	}
 	clause := buildWhereClause(where, scopeGate(q.Scope(), l.schema, dialect, rootQualifier))
 	limit := q.LimitValue()
@@ -969,9 +989,8 @@ type relSpecJoins struct {
 // then each sibling, then the shared base — recording any sibling/base referenced
 // so the matching LEFT JOIN is emitted. Sibling and base columns are unique vs
 // the anchor (the schema bijection), so they stay unqualified; only the shared ID
-// is qualified by findRoots. A criteria mixing the ID and a specialization field
-// is the one unsupported case (ID ambiguity) — filtering by ID makes any other
-// predicate redundant.
+// is ambiguous under a join, and findRoots/compileFilterJoins qualify it to the
+// anchor table — so a criteria may freely mix the ID and a specialization field.
 func (l *AggregateLoader[T]) specResolver(j *relSpecJoins) core.FieldResolver {
 	return func(goField string) (string, bool) {
 		if col, ok := l.schema.ColumnOf(goField); ok {

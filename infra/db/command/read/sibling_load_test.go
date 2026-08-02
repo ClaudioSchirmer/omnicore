@@ -105,6 +105,48 @@ func TestFindRoots_SiblingFilterJoins(t *testing.T) {
 	}
 }
 
+// Under a sibling LEFT JOIN the shared "id" column lives in BOTH tables, so the
+// anchor id must be table-qualified everywhere it appears in the predicate and
+// the ORDER BY tiebreak — otherwise a bare "id" is an ambiguous-column SQL error.
+// This is the exact shape the relational ViewReader issues: a sibling filter plus
+// its always-appended ORDER BY "id" tiebreak, here also mixing an id predicate.
+func TestFindRoots_SiblingFilterQualifiesID(t *testing.T) {
+	var rootSQL string
+	query := func(sql string, args []any) (Rows, error) {
+		if strings.Contains(sql, "pessoa") {
+			rootSQL = sql
+		}
+		return &fakeDBRows{rows: 0}, nil
+	}
+	l := NewAggregateLoader[*sibLoadEntity](fakeEngine(query), func() *sibLoadEntity { return &sibLoadEntity{} }).
+		WithSchema(sibLoadSchema())
+
+	q := criteria.Where(criteria.And(
+		criteria.Eq("UserName", "alice"),      // sibling field → pulls the LEFT JOIN
+		criteria.Eq("ID", domain.NewID("r1")), // anchor id → must be qualified under the join
+	)).OrderBy("ID") // the reader's deterministic tiebreak
+	if _, err := l.FindAll(context.Background(), q); err != nil {
+		t.Fatalf("FindAll: %v", err)
+	}
+	if !strings.Contains(rootSQL, "LEFT JOIN") {
+		t.Fatalf("sibling filter must LEFT JOIN, got: %q", rootSQL)
+	}
+	// testPGDialect.QuoteIdent is identity, so a qualified id renders "pessoa.id"
+	// and a bare (ambiguous) one renders just "id".
+	orderIdx := strings.Index(rootSQL, "ORDER BY")
+	if orderIdx < 0 || !strings.Contains(rootSQL[orderIdx:], "pessoa.id") {
+		t.Errorf("ORDER BY tiebreak must qualify the anchor id (pessoa.id), got: %q", rootSQL)
+	}
+	whereIdx := strings.Index(rootSQL, "WHERE")
+	where := rootSQL
+	if whereIdx >= 0 {
+		where = rootSQL[whereIdx:orderIdx]
+	}
+	if !strings.Contains(where, "pessoa.id") {
+		t.Errorf("the id predicate must be qualified (pessoa.id) under the join, got WHERE: %q", where)
+	}
+}
+
 // A criteria on an ANCHOR field does NOT join (no sibling referenced).
 func TestFindRoots_AnchorFilterNoJoin(t *testing.T) {
 	var rootSQL string

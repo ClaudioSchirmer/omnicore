@@ -14,6 +14,7 @@
 package relational
 
 import (
+	"reflect"
 	"time"
 
 	"github.com/ClaudioSchirmer/omnicore/domain"
@@ -23,9 +24,11 @@ import (
 
 // BuildDocument maps a loaded aggregate (root + own children, with the
 // domain.Managed carrier populated) into the canonical column-keyed view
-// Document. v1 scope: a plain query.View aggregate — root scalars + own children
-// (depth 1) + siblings (root-level and child-level). SharedBase and the Embed
-// family are refused at boot for a relational view, so they never reach here.
+// Document. Scope: a query.View aggregate — root scalars + own children (depth 1)
+// + siblings (root-level and child-level) + the shared base when the view is
+// rooted at a shared-base ROLE (its fields flattened + its native children). The
+// Embed family and a SharedBaseView (the view KIND) are refused at boot for a
+// relational view, so they never reach here.
 func BuildDocument(schema *core.TableSchema, e domain.Entity) query.Document {
 	doc := query.Document{}
 	mergeWriteFields(doc, schema, e)
@@ -38,6 +41,7 @@ func BuildDocument(schema *core.TableSchema, e domain.Entity) query.Document {
 	// the _revision watermark (never its physical column) — the shape the
 	// Composer's remapRevision produces on a root row.
 	applyManaged(doc, schema, e, query.DocRevisionField)
+	mergeSharedBase(doc, schema, e)
 	mergeSiblings(doc, schema, e)
 	appendChildren(doc, schema, e)
 	return doc
@@ -89,6 +93,32 @@ func applyManaged(doc query.Document, schema *core.TableSchema, e any, revisionK
 	}
 }
 
+// mergeSharedBase flattens the shared base's business columns into the doc when
+// the view is rooted at a shared-base ROLE. The base schema is type-less (its own
+// field indices are unset), so its fields are read off the loaded ROLE entity via
+// SharedBaseScanPlan — the base-column → role-field-index map the loader scans the
+// base INTO (hydrateSharedBase). Reading back through the same indices is exactly
+// symmetric. The plan carries the base's business columns only (not the shared id,
+// not the base's managed columns — those would shadow the role's), so the doc gets
+// the base scalars flat under their physical columns. No-op for a plain aggregate
+// (no shared base), so the plain-view doc shape is unchanged.
+func mergeSharedBase(doc query.Document, schema *core.TableSchema, e any) {
+	_, byCol, ok := schema.SharedBaseScanPlan()
+	if !ok || len(byCol) == 0 {
+		return
+	}
+	v := reflect.ValueOf(e)
+	for v.Kind() == reflect.Pointer {
+		v = v.Elem()
+	}
+	if v.Kind() != reflect.Struct {
+		return
+	}
+	for col, idx := range byCol {
+		doc[col] = v.Field(idx).Interface()
+	}
+}
+
 // mergeSiblings merges each sibling schema's columns FLAT into the doc (skipping
 // the shared PK the sibling borrows), reading the sibling's Go fields off the
 // same entity — the read-side twin of the Composer's mergeOwnerSiblings, sourced
@@ -105,14 +135,19 @@ func mergeSiblings(doc query.Document, schema *core.TableSchema, e any) {
 	}
 }
 
-// appendChildren nests each own-child collection under its pluralized Go type
-// name (the same key the Composer and the ViewNode use), one column-keyed
-// Document per loaded child element. The loaded children come off the aggregate
-// root; the loader honored the read scope (active / include-archived), so the
+// appendChildren nests each child collection under its pluralized Go type name
+// (the same key the Composer and the ViewNode use), one column-keyed Document per
+// loaded child element. It covers the root's OWN children AND — when the view is
+// rooted at a shared-base role — the shared base's NATIVE children (both are
+// loaded onto the same aggregate root and land in AllAggregateItems keyed by type
+// name). The loader honored the read scope (active / include-archived), so the
 // read-time archived strip is left to the reader's ViewNode, exactly as on the
 // Mongo path.
 func appendChildren(doc query.Document, schema *core.TableSchema, e domain.Entity) {
 	children := schema.ChildSchemas()
+	if baseChildren := schema.BaseChildSchemas(); len(baseChildren) > 0 {
+		children = append(append([]*core.TableSchema{}, children...), baseChildren...)
+	}
 	if len(children) == 0 {
 		return
 	}
