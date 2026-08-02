@@ -88,7 +88,9 @@ func NewGadgetFeature(d bootstrap.Deps) *GadgetFeature {
 <p>
     A relational view serves a <strong>single plain aggregate</strong> loaded from the SoR. Anything that a single
     aggregate load cannot express — a multi-source join, a read-time enrichment, a cross-document search — is
-    unavailable. The read-side controls that operate on the aggregate's <em>own root</em> reach full parity.
+    unavailable. The read-side controls that operate on the aggregate's <em>own root</em> and its <strong>1:1
+    satellites</strong> (a sibling, the shared base) reach full parity — those the loader reaches with a LEFT JOIN.
+    Only a <em>1:N child</em> field is out of reach (a root <code>SELECT</code> cannot filter or sort by it).
 </p>
 
 <table>
@@ -96,19 +98,19 @@ func NewGadgetFeature(d bootstrap.Deps) *GadgetFeature {
         <tr><th>Capability</th><th>Mongo view</th><th>Relational view</th></tr>
     </thead>
     <tbody>
-        <tr><td><code>Embed</code> / <code>EmbedMany</code> / <code>EmbedInChild</code> (materialized join)</td><td>✓</td><td><strong>✗ — boot fail</strong></td></tr>
-        <tr><td><code>Link</code> / <code>LinkMany</code> / <code>LinkInChild</code> (read-time join)</td><td>✓</td><td><strong>✗ — not expressible</strong></td></tr>
-        <tr><td><code>ComposedView</code> (read-time composition)</td><td>✓</td><td><strong>✗ — not expressible</strong></td></tr>
-        <tr><td><code>SharedBaseView</code> (identity + role sub-documents)</td><td>✓</td><td><strong>✗ — boot fail</strong></td></tr>
-        <tr><td>Free-text search (<code>?search=</code>)</td><td>✓</td><td><strong>✗ — 400</strong></td></tr>
-        <tr><td>Filter / sort on a <em>child</em> field (e.g. <code>parts.label</code>)</td><td>✓</td><td><strong>✗ — 400</strong></td></tr>
-        <tr><td>Filter / sort on a <em>sibling</em> field (root or child-level)</td><td>✓</td><td><strong>✗ — 400</strong></td></tr>
-        <tr><td>Root-field filter — the full 16-operator vocabulary</td><td>✓</td><td>✓</td></tr>
-        <tr><td>Sort on a root field</td><td>✓</td><td>✓</td></tr>
-        <tr><td><code>?fields=</code> projection (root <em>and</em> nested leaf)</td><td>✓</td><td>✓</td></tr>
-        <tr><td>Pagination (<code>limit</code> / <code>after</code> / <code>before</code>)</td><td>✓ keyset (insertion-stable)</td><td>✓ offset-in-cursor (static-set stable)</td></tr>
-        <tr><td><code>?onlyTotal</code> · <code>?includeArchived</code> · by-id</td><td>✓</td><td>✓</td></tr>
-        <tr><td>CSV / XLSX export · <code>MaxLimit</code> · <code>MaxExportRows</code></td><td>✓</td><td>✓</td></tr>
+        <tr><td><code>Embed</code> / <code>EmbedMany</code> / <code>EmbedInChild</code> (materialized join)</td><td><span class="yes-mark">✓</span></td><td><strong><span class="no-mark">✗</span> — boot fail</strong></td></tr>
+        <tr><td><code>Link</code> / <code>LinkMany</code> / <code>LinkInChild</code> (read-time join)</td><td><span class="yes-mark">✓</span></td><td><strong><span class="no-mark">✗</span> — not expressible</strong></td></tr>
+        <tr><td><code>ComposedView</code> (read-time composition)</td><td><span class="yes-mark">✓</span></td><td><strong><span class="no-mark">✗</span> — not expressible</strong></td></tr>
+        <tr><td><code>SharedBaseView</code> (identity + role sub-documents)</td><td><span class="yes-mark">✓</span></td><td><strong><span class="no-mark">✗</span> — boot fail</strong></td></tr>
+        <tr><td>Free-text search (<code>?search=</code>)</td><td><span class="yes-mark">✓</span></td><td><strong><span class="no-mark">✗</span> — 400</strong></td></tr>
+        <tr><td>Filter / sort on a <em>child</em> (1:N) field, or a child-level sibling (e.g. <code>parts.label</code>)</td><td><span class="yes-mark">✓</span></td><td><strong><span class="no-mark">✗</span> — 400</strong></td></tr>
+        <tr><td>Root-field filter — the full 16-operator vocabulary</td><td><span class="yes-mark">✓</span></td><td><span class="yes-mark">✓</span></td></tr>
+        <tr><td>Filter / sort on a root-level <em>sibling</em> or <em>shared-base</em> field (1:1)</td><td><span class="yes-mark">✓</span></td><td><span class="yes-mark">✓</span> — LEFT JOIN</td></tr>
+        <tr><td>Sort on a root field</td><td><span class="yes-mark">✓</span></td><td><span class="yes-mark">✓</span></td></tr>
+        <tr><td><code>?fields=</code> projection (root <em>and</em> nested leaf)</td><td><span class="yes-mark">✓</span></td><td><span class="yes-mark">✓</span></td></tr>
+        <tr><td>Pagination (<code>limit</code> / <code>after</code> / <code>before</code>)</td><td><span class="yes-mark">✓</span> keyset (insertion-stable)</td><td><span class="yes-mark">✓</span> offset-in-cursor (static-set stable)</td></tr>
+        <tr><td><code>?onlyTotal</code> · <code>?includeArchived</code> · by-id</td><td><span class="yes-mark">✓</span></td><td><span class="yes-mark">✓</span></td></tr>
+        <tr><td>CSV / XLSX export · <code>MaxLimit</code> · <code>MaxExportRows</code></td><td><span class="yes-mark">✓</span></td><td><span class="yes-mark">✓</span></td></tr>
         <tr><td>Read latency</td><td>eventually consistent (CDC lag)</td><td><strong>read-your-writes</strong> (no lag)</td></tr>
         <tr><td>Read cost</td><td><code>O(1)</code> document fetch</td><td>read-time aggregate composition</td></tr>
     </tbody>
@@ -132,16 +134,28 @@ func NewGadgetFeature(d bootstrap.Deps) *GadgetFeature {
     compose ordinary Mongo-backed views; only a relational source is refused.
 </p>
 
+<p>
+    A subtlety worth calling out: it is only the <code>SharedBaseView</code> <strong>view kind</strong> that is refused
+    at boot. A plain <code>query.View</code> rooted at a shared-base <strong>role</strong> (an aggregate whose schema
+    declares a <code>SharedBase</code>) IS a valid relational source. Its served document carries the <strong>full
+    aggregate</strong> — the role's own fields, the shared base's fields flattened, root- and child-level siblings, the
+    role's own children AND the base's native children — because the loader reaches all of them in one aggregate load
+    (the 1:1 base and siblings by <code>LEFT JOIN</code>, the children by their own keyed reads). So a base field is both
+    <em>filterable/sortable</em> and <em>projected back</em>, and the read surface matches the flat shape a Mongo view of
+    the same role would carry.
+</p>
+
 <h3>Unsupported capabilities return 400, not 500</h3>
 <p>
-    The <em>runtime</em> unsupported cases — <code>?search=</code>, and a filter or sort on any field that is not a
-    root-own column (a dotted child path, a flat root-level sibling, a dotted child-level sibling, or an unknown field) —
-    are rejected with a typed <code>RelationalCapabilityNotification</code>. It carries
+    The <em>runtime</em> unsupported cases — <code>?search=</code>, and a filter or sort on a <strong>1:N child</strong>
+    field (a dotted child path, or a child-level sibling like <code>parts.tag</code>), or an unknown field — are rejected
+    with a typed <code>RelationalCapabilityNotification</code>. It carries
     <a href="#status-mapping"><code>SemanticSchema</code></a>, so the web wrappers turn it into a
     <strong>400 Bad Request</strong> (never a generic 500) on every surface, with the offending field named and the
     escape hatch — remove <code>RelationalSource()</code> to serve the view from Mongo — in the translated message. The
-    rule is precise: a relational view serves a filter or sort <strong>only on a column its root schema owns</strong>;
-    everything else a root <code>SELECT</code> cannot express.
+    rule is precise: a relational view serves a filter or sort on any field the aggregate reaches with a <strong>1:1
+    load</strong> — a root column, a sibling, or a shared-base field (the last two joined in) — and rejects only what
+    would need a 1:N pushdown a single root <code>SELECT</code> cannot express.
 </p>
 
 <h3>Pagination is a camouflaged offset</h3>

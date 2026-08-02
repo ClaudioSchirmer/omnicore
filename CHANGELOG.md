@@ -11,6 +11,35 @@ with `1.0.0`.
 
 ## [Unreleased]
 
+## [0.41.0] - 2026-08-01
+
+### Changed
+
+- **Relational views (`RelationalSource()`) now filter and sort on 1:1 sibling and
+  shared-base fields.** A `RelationalSource` view served a filter/sort only on a
+  column the root schema owned; a root-level sibling or a shared-base field
+  returned `400 RelationalCapabilityNotification`. Both are 1:1 with the root, so
+  the aggregate loader already reached them with a LEFT JOIN on the write path
+  (uniqueness probes) — the read-side reader just refused them. The reader's field
+  guard now mirrors the loader's resolution surface exactly (root → siblings →
+  shared base), so those filters/sorts reach full parity with the Mongo view.
+  Only a **1:N child** field (a dotted child path, or a child-level sibling like
+  `parts.tag`) and `?search=` remain unsupported (→ 400) — a root `SELECT` cannot
+  push those down. This is a relaxation, not a break: requests that used to 400
+  now succeed. As part of it, the loader qualifies the shared id column to the
+  anchor table under a sibling/base join, so a predicate or the `ORDER BY … , id`
+  tiebreak mixing the id with a satellite field is no longer an ambiguous-column
+  error. (`infra/db/query/engine/relational/filter.go`,
+  `infra/db/command/read/{aggregate_loader,criteria_translate}.go`.)
+- **Relational views over a shared-base ROLE now project the base into the served
+  document.** A relational view can be a plain `query.View` rooted at a shared-base
+  role (only the `SharedBaseView` view KIND is refused at boot). Its served document
+  now carries the FULL aggregate — the role's own fields, the shared base's fields
+  flattened, root- and child-level siblings, own children AND the base's native
+  children — so a base field can be filtered by AND read back (previously the doc
+  omitted the base entirely, so a base filter returned rows without the base
+  fields). (`infra/db/query/engine/relational/relational_doc.go`.)
+
 ## [0.40.1] - 2026-08-01
 
 ### Fixed

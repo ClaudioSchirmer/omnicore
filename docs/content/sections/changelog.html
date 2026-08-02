@@ -13,6 +13,29 @@
         </ul>
     </div>
     <div class="release">
+        <div class="release-head"><span class="release-tag">v0.41.0</span><span class="release-date">August 1, 2026</span></div>
+        <ul>
+            <li><strong>Changed</strong> — <strong>Relational views (<code>RelationalSource()</code>) now filter and
+                sort on 1:1 sibling and shared-base fields.</strong> A root-level sibling or a shared-base field used to
+                return <code>400 RelationalCapabilityNotification</code> — yet both are 1:1 with the root, so the
+                aggregate loader already reached them with a LEFT JOIN on the write path; only the read-side reader
+                refused them. The reader's field guard now mirrors the loader's resolution surface exactly (root →
+                siblings → shared base), so those filters/sorts reach full parity with the Mongo view. Only a
+                <strong>1:N child</strong> field (a dotted child path, or a child-level sibling like <code>parts.tag</code>)
+                and <code>?search=</code> stay unsupported (→ 400). A relaxation, not a break: requests that used to 400
+                now succeed. The loader qualifies the shared id column to the anchor table under a sibling/base join, so
+                a predicate or the <code>ORDER BY … , id</code> tiebreak mixing the id with a satellite field is no
+                longer an ambiguous-column error. See <a href="#relational-view">Relational view</a>.</li>
+            <li><strong>Changed</strong> — <strong>Relational views over a shared-base ROLE now project the base into the
+                served document.</strong> A relational view may be a plain <code>query.View</code> rooted at a shared-base
+                role (only the <code>SharedBaseView</code> view KIND is refused at boot). Its served document now carries
+                the FULL aggregate — the role's own fields, the shared base's fields flattened, root- and child-level
+                siblings, own children AND the base's native children — so a base field can be filtered by AND read back
+                (previously the document omitted the base, so a base filter returned rows without the base fields). See
+                <a href="#relational-view">Relational view</a>.</li>
+        </ul>
+    </div>
+    <div class="release">
         <div class="release-head"><span class="release-tag">v0.40.1</span><span class="release-date">August 1, 2026</span></div>
         <ul>
             <li><strong>Fixed</strong> — <strong>SQLite: a relative <code>relational.dsn</code> no longer lands the

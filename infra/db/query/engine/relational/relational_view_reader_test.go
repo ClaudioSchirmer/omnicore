@@ -37,6 +37,9 @@ func (f *fakeLoader) BoundTable() string                                        
 type guardEnt struct {
 	domain.BaseEntity
 	Name string
+	// Material is the field a 1:1 sibling schema maps (a sibling is over the
+	// owner's Go type); guardSchema does not map it, siblingSchema does.
+	Material string
 }
 
 func (e *guardEnt) Modes() []domain.EntityMode                       { return []domain.EntityMode{domain.ModeInsert} }
@@ -133,15 +136,67 @@ func TestUnsupportedChildSort_MapsTo400(t *testing.T) {
 	assertRelationalCapability400(t, err, "Addresses.ZipCode")
 }
 
-// TestUnsupportedSiblingFilter_MapsTo400 covers a flat (non-dotted) field the
-// root schema does not own — a root-level sibling merges into the doc flat, so
-// its key carries no dot, yet the column lives in a satellite table a root SELECT
-// cannot reach. The servable() check (schema.ColumnOf) rejects it as a 400 just
-// like a dotted child, closing the gap a dot-only test would miss.
-func TestUnsupportedSiblingFilter_MapsTo400(t *testing.T) {
-	// guardSchema owns only Name (+ id); "Material" stands in for a sibling column.
-	_, err := toExpr(guardSchema("gadgets"), map[string]any{"Material": "steel"})
-	assertRelationalCapability400(t, err, "Material")
+// siblingSchema is guardSchema plus a 1:1 sibling (qa satellite) carrying
+// "Material" — the shared-PK secondary the loader reaches with a LEFT JOIN.
+func siblingSchema(table string) *core.TableSchema {
+	return core.NewTableSchema[*guardEnt](table).ID("id").Field("Name", "name").
+		Sibling(core.NewSiblingSchema[*guardEnt](table + "_specs").Field("Material", "material"))
+}
+
+// baseEnt is a shared-base ROLE entity: it embeds the base's identity and adds a
+// role-private field, so a schema over it can declare SharedBase (the loader then
+// LEFT JOINs the base to reach its fields for a filter/sort).
+type baseEnt struct {
+	domain.BaseEntity
+	HolderName string
+	// DisplayName is a shared-base field; the role must carry every base field
+	// as an exported Go field (the shared columns scan into the role struct).
+	DisplayName string
+}
+
+func (e *baseEnt) Modes() []domain.EntityMode                       { return []domain.EntityMode{domain.ModeInsert} }
+func (e *baseEnt) BuildRules(string, domain.Service, *domain.Rules) {}
+
+// sharedBaseSchema is a role schema whose shared base owns "DisplayName" — a base
+// field the relational reader must now treat as servable (1:1 base JOIN).
+func sharedBaseSchema(table string) *core.TableSchema {
+	base := core.NewSharedBaseSchema(table + "_base").ID("id").Revision("revision").
+		Field("DisplayName", "display_name").NaturalID("display_name")
+	return core.NewTableSchema[*baseEnt](table).ID("id").
+		SharedBase(base, "id").Field("HolderName", "holder_name")
+}
+
+// TestServableSiblingField_Passes is the sibling half of the 1:1 relaxation: a
+// flat (non-dotted) root-level sibling field (Material) lives in a shared-PK
+// satellite the loader LEFT JOINs, so a filter AND a sort on it are servable —
+// no longer the 400 they once were.
+func TestServableSiblingField_Passes(t *testing.T) {
+	if _, err := toExpr(siblingSchema("gadgets"), map[string]any{"Material": "steel"}); err != nil {
+		t.Fatalf("a root-level sibling field must be servable (1:1 LEFT JOIN), got %v", err)
+	}
+	if err := applySort(siblingSchema("gadgets"), criteria.Where(nil), []queries.SortField{{Field: "Material"}}); err != nil {
+		t.Fatalf("a sort on a root-level sibling field must be servable, got %v", err)
+	}
+}
+
+// TestServableSharedBaseField_Passes is the shared-base half of the 1:1
+// relaxation: a base field (DisplayName) the loader reaches by joining the role
+// to its shared base is servable for both filter and sort.
+func TestServableSharedBaseField_Passes(t *testing.T) {
+	if _, err := toExpr(sharedBaseSchema("holders"), map[string]any{"DisplayName": "ACME"}); err != nil {
+		t.Fatalf("a shared-base field must be servable (1:1 base JOIN), got %v", err)
+	}
+	if err := applySort(sharedBaseSchema("holders"), criteria.Where(nil), []queries.SortField{{Field: "DisplayName"}}); err != nil {
+		t.Fatalf("a sort on a shared-base field must be servable, got %v", err)
+	}
+}
+
+// TestUnsupportedUnknownField_MapsTo400 keeps the negative control: a flat field
+// that belongs to NO schema (not root, not a sibling, not the base) is still a
+// 400 — the relaxation admits 1:1 satellites, not arbitrary names.
+func TestUnsupportedUnknownField_MapsTo400(t *testing.T) {
+	_, err := toExpr(siblingSchema("gadgets"), map[string]any{"Nonexistent": "x"})
+	assertRelationalCapability400(t, err, "Nonexistent")
 }
 
 // TestServableRootField_Passes is the positive control: a bona fide root column
