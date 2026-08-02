@@ -98,19 +98,19 @@ func NewGadgetFeature(d bootstrap.Deps) *GadgetFeature {
         <tr><th>Capability</th><th>Mongo view</th><th>Relational view</th></tr>
     </thead>
     <tbody>
-        <tr><td><code>Embed</code> / <code>EmbedMany</code> / <code>EmbedInChild</code> (materialized join)</td><td>✓</td><td><strong>✗ — boot fail</strong></td></tr>
-        <tr><td><code>Link</code> / <code>LinkMany</code> / <code>LinkInChild</code> (read-time join)</td><td>✓</td><td><strong>✗ — not expressible</strong></td></tr>
-        <tr><td><code>ComposedView</code> (read-time composition)</td><td>✓</td><td><strong>✗ — not expressible</strong></td></tr>
-        <tr><td><code>SharedBaseView</code> (identity + role sub-documents)</td><td>✓</td><td><strong>✗ — boot fail</strong></td></tr>
-        <tr><td>Free-text search (<code>?search=</code>)</td><td>✓</td><td><strong>✗ — 400</strong></td></tr>
-        <tr><td>Filter / sort on a <em>child</em> (1:N) field, or a child-level sibling (e.g. <code>parts.label</code>)</td><td>✓</td><td><strong>✗ — 400</strong></td></tr>
-        <tr><td>Root-field filter — the full 16-operator vocabulary</td><td>✓</td><td>✓</td></tr>
-        <tr><td>Filter / sort on a root-level <em>sibling</em> or <em>shared-base</em> field (1:1)</td><td>✓</td><td>✓ — LEFT JOIN</td></tr>
-        <tr><td>Sort on a root field</td><td>✓</td><td>✓</td></tr>
-        <tr><td><code>?fields=</code> projection (root <em>and</em> nested leaf)</td><td>✓</td><td>✓</td></tr>
-        <tr><td>Pagination (<code>limit</code> / <code>after</code> / <code>before</code>)</td><td>✓ keyset (insertion-stable)</td><td>✓ offset-in-cursor (static-set stable)</td></tr>
-        <tr><td><code>?onlyTotal</code> · <code>?includeArchived</code> · by-id</td><td>✓</td><td>✓</td></tr>
-        <tr><td>CSV / XLSX export · <code>MaxLimit</code> · <code>MaxExportRows</code></td><td>✓</td><td>✓</td></tr>
+        <tr><td><code>Embed</code> / <code>EmbedMany</code> / <code>EmbedInChild</code> (materialized join)</td><td><span class="yes-mark">✓</span></td><td><strong><span class="no-mark">✗</span> — boot fail</strong></td></tr>
+        <tr><td><code>Link</code> / <code>LinkMany</code> / <code>LinkInChild</code> (read-time join)</td><td><span class="yes-mark">✓</span></td><td><strong><span class="no-mark">✗</span> — not expressible</strong></td></tr>
+        <tr><td><code>ComposedView</code> (read-time composition)</td><td><span class="yes-mark">✓</span></td><td><strong><span class="no-mark">✗</span> — not expressible</strong></td></tr>
+        <tr><td><code>SharedBaseView</code> (identity + role sub-documents)</td><td><span class="yes-mark">✓</span></td><td><strong><span class="no-mark">✗</span> — boot fail</strong></td></tr>
+        <tr><td>Free-text search (<code>?search=</code>)</td><td><span class="yes-mark">✓</span></td><td><strong><span class="no-mark">✗</span> — 400</strong></td></tr>
+        <tr><td>Filter / sort on a <em>child</em> (1:N) field, or a child-level sibling (e.g. <code>parts.label</code>)</td><td><span class="yes-mark">✓</span></td><td><strong><span class="no-mark">✗</span> — 400</strong></td></tr>
+        <tr><td>Root-field filter — the full 16-operator vocabulary</td><td><span class="yes-mark">✓</span></td><td><span class="yes-mark">✓</span></td></tr>
+        <tr><td>Filter / sort on a root-level <em>sibling</em> or <em>shared-base</em> field (1:1)</td><td><span class="yes-mark">✓</span></td><td><span class="yes-mark">✓</span> — LEFT JOIN</td></tr>
+        <tr><td>Sort on a root field</td><td><span class="yes-mark">✓</span></td><td><span class="yes-mark">✓</span></td></tr>
+        <tr><td><code>?fields=</code> projection (root <em>and</em> nested leaf)</td><td><span class="yes-mark">✓</span></td><td><span class="yes-mark">✓</span></td></tr>
+        <tr><td>Pagination (<code>limit</code> / <code>after</code> / <code>before</code>)</td><td><span class="yes-mark">✓</span> keyset (insertion-stable)</td><td><span class="yes-mark">✓</span> offset-in-cursor (static-set stable)</td></tr>
+        <tr><td><code>?onlyTotal</code> · <code>?includeArchived</code> · by-id</td><td><span class="yes-mark">✓</span></td><td><span class="yes-mark">✓</span></td></tr>
+        <tr><td>CSV / XLSX export · <code>MaxLimit</code> · <code>MaxExportRows</code></td><td><span class="yes-mark">✓</span></td><td><span class="yes-mark">✓</span></td></tr>
         <tr><td>Read latency</td><td>eventually consistent (CDC lag)</td><td><strong>read-your-writes</strong> (no lag)</td></tr>
         <tr><td>Read cost</td><td><code>O(1)</code> document fetch</td><td>read-time aggregate composition</td></tr>
     </tbody>

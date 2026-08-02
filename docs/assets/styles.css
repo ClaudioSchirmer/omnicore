@@ -368,6 +368,10 @@ th {
 tr:last-child td { border-bottom: none; }
 tbody tr:hover { background: var(--surface-2); }
 td code { font-size: 12px; }
+/* Yes/no capability marks — semantic color so ✓ vs ✗ reads at a glance in BOTH
+   themes (the plain glyph washed out against the dark surface). */
+.yes-mark { color: var(--good); font-weight: 700; }
+.no-mark  { color: var(--bad);  font-weight: 700; }
 
 /* ---------- Flow + diagram blocks ---------- */
 .flow {
