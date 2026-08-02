@@ -11,6 +11,8 @@ with `1.0.0`.
 
 ## [Unreleased]
 
+## [0.41.0] - 2026-08-01
+
 ### Changed
 
 - **Relational views (`RelationalSource()`) now filter and sort on 1:1 sibling and
