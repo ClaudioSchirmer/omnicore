@@ -378,9 +378,8 @@ users.Post("/", fwweb.CommandWithBody(d.Pipeline,
     <p>
         <strong>Where Service is consumed:</strong> <code>BuildRules</code> runs on every write — Insert (mode
         <code>Insert</code>), PUT / PATCH (mode <code>Update</code>), <strong>Archive</strong> and
-        <strong>Unarchive</strong> (also mode <code>Update</code> with distinct <code>actionName</code>
-        values <code>"GetArchivable"</code>/<code>"GetUnarchivable"</code> — service branches on
-        <code>actionName</code> inside <code>IfUpdate</code> when an archive-specific rule is needed),
+        <strong>Unarchive</strong> (modes <code>Archive</code>/<code>Unarchive</code>, each dispatched by its own
+        <code>IfArchive</code>/<code>IfUnarchive</code> clause when an archive-specific rule is needed),
         and Delete (mode <code>Delete</code>). The <code>Service</code> field is the same on all 6
         handlers; <code>RequiresService() true</code> on the entity raises
         <code>ServiceIsRequiredNotification</code> when the field is nil and the handler is invoked.

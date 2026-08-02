@@ -321,6 +321,66 @@ func TestGetArchivable_DoesNotInheritFromModeUpdate(t *testing.T) {
 	}
 }
 
+// modeRecordingEntity records what BuildRules observed — the Rules.Mode() and
+// which state-transition clause fired — so the tests below prove the archive
+// and unarchive verbs dispatch IfArchive/IfUnarchive (and NOT IfUpdate) end to
+// end through the Get* boundary, and that r.Mode() no longer masquerades as
+// ModeUpdate during a transition.
+type modeRecordingEntity struct {
+	BaseEntity
+	modes          []EntityMode
+	seenMode       EntityMode
+	updateFired    bool
+	archiveFired   bool
+	unarchiveFired bool
+}
+
+func (e *modeRecordingEntity) Modes() []EntityMode { return e.modes }
+func (e *modeRecordingEntity) BuildRules(_ string, _ Service, r *Rules) {
+	e.seenMode = r.Mode()
+	r.IfUpdate(func() { e.updateFired = true })
+	r.IfArchive(func() { e.archiveFired = true })
+	r.IfUnarchive(func() { e.unarchiveFired = true })
+}
+
+func newModeRecordingEntity(modes ...EntityMode) *modeRecordingEntity {
+	e := &modeRecordingEntity{modes: modes}
+	e.SetID(NewID(uuid.NewString()))
+	return e
+}
+
+func TestGetArchivable_DispatchesModeArchiveNotUpdate(t *testing.T) {
+	e := newModeRecordingEntity(ModeArchive)
+	if _, err := GetArchivable(e, nil, "GetArchivable"); err != nil {
+		t.Fatalf("GetArchivable failed: %v", err)
+	}
+	if e.seenMode != ModeArchive {
+		t.Errorf("BuildRules saw mode %v, want ModeArchive — r.Mode() must not lie", e.seenMode)
+	}
+	if !e.archiveFired {
+		t.Error("IfArchive did not fire during archive")
+	}
+	if e.updateFired {
+		t.Error("IfUpdate fired during archive — archive must not masquerade as update")
+	}
+}
+
+func TestGetUnarchivable_DispatchesModeUnarchiveNotUpdate(t *testing.T) {
+	e := newModeRecordingEntity(ModeUnarchive)
+	if _, err := GetUnarchivable(e, nil, "GetUnarchivable"); err != nil {
+		t.Fatalf("GetUnarchivable failed: %v", err)
+	}
+	if e.seenMode != ModeUnarchive {
+		t.Errorf("BuildRules saw mode %v, want ModeUnarchive", e.seenMode)
+	}
+	if !e.unarchiveFired {
+		t.Error("IfUnarchive did not fire during unarchive")
+	}
+	if e.updateFired {
+		t.Error("IfUpdate fired during unarchive — must not masquerade as update")
+	}
+}
+
 // Collection name is inferred via PluralizeSnake(PascalToSnake(typeName)).
 // Rec → "recs". Wire path: "recs[0].street".
 func TestRunAggregateValidations_AutoComposesCollectionPathWithIndex(t *testing.T) {

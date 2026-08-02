@@ -75,22 +75,48 @@ func TestRules_IfInsert_FiresOnlyOnInsert(t *testing.T) {
 	}
 }
 
+// allModes is the full EntityMode spectrum every IfXxx dispatch test sweeps,
+// so each closure is proven to fire on ITS mode and stay silent on every other
+// — in particular that IfUpdate does NOT fire on Archive/Unarchive (the whole
+// point of giving those verbs their own clauses).
+var allModes = []EntityMode{ModeDisplay, ModeInsert, ModeUpdate, ModeDelete, ModeArchive, ModeUnarchive}
+
 func TestRules_IfUpdate_FiresOnlyOnUpdate(t *testing.T) {
-	for _, m := range []EntityMode{ModeInsert, ModeUpdate, ModeDelete} {
+	for _, m := range allModes {
 		ran := false
 		NewRules(m, nil, nil).IfUpdate(func() { ran = true })
 		if ran != (m == ModeUpdate) {
-			t.Errorf("mode=%v IfUpdate ran=%v", m, ran)
+			t.Errorf("mode=%v IfUpdate ran=%v (must fire ONLY on ModeUpdate)", m, ran)
 		}
 	}
 }
 
 func TestRules_IfDelete_FiresOnlyOnDelete(t *testing.T) {
-	for _, m := range []EntityMode{ModeInsert, ModeUpdate, ModeDelete} {
+	for _, m := range allModes {
 		ran := false
 		NewRules(m, nil, nil).IfDelete(func() { ran = true })
 		if ran != (m == ModeDelete) {
 			t.Errorf("mode=%v IfDelete ran=%v", m, ran)
+		}
+	}
+}
+
+func TestRules_IfArchive_FiresOnlyOnArchive(t *testing.T) {
+	for _, m := range allModes {
+		ran := false
+		NewRules(m, nil, nil).IfArchive(func() { ran = true })
+		if ran != (m == ModeArchive) {
+			t.Errorf("mode=%v IfArchive ran=%v (must fire ONLY on ModeArchive)", m, ran)
+		}
+	}
+}
+
+func TestRules_IfUnarchive_FiresOnlyOnUnarchive(t *testing.T) {
+	for _, m := range allModes {
+		ran := false
+		NewRules(m, nil, nil).IfUnarchive(func() { ran = true })
+		if ran != (m == ModeUnarchive) {
+			t.Errorf("mode=%v IfUnarchive ran=%v (must fire ONLY on ModeUnarchive)", m, ran)
 		}
 	}
 }

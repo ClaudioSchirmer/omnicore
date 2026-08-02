@@ -72,7 +72,7 @@
             </div>
             <div class="cap-lead">Pure business rules — zero IO, enforced by the compiler.</div>
             <ul class="cap-list">
-                <li><a href="#rules-dsl">Rules DSL</a> — <code>IfInsert</code>/<code>IfUpdate</code>/<code>IfDelete</code>/<code>IfInsertOrUpdate</code> mode-scoped validation, propagated through aggregate children</li>
+                <li><a href="#rules-dsl">Rules DSL</a> — <code>IfInsert</code>/<code>IfUpdate</code>/<code>IfDelete</code>/<code>IfArchive</code>/<code>IfUnarchive</code>/<code>IfInsertOrUpdate</code> mode-scoped validation, propagated through aggregate children</li>
                 <li><a href="#aggregate-persistence">Aggregate root + value objects</a> — root and its 1:N children are one boundary; <code>Archive</code>/<code>Unarchive</code>/<code>Delete</code> cascade symmetrically</li>
                 <li><a href="#old-state">Old-state snapshot</a> — <code>domain.Old[T]()</code> exposes the pre-write entity to <code>BuildRules</code> and the auditor</li>
                 <li><a href="#status-mapping">Typed notifications</a> — struct name is the translation key; <code>NotificationKey</code> + <code>Semantic</code> ride to the wire</li>

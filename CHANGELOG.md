@@ -11,6 +11,27 @@ with `1.0.0`.
 
 ## [Unreleased]
 
+## [0.42.0] - 2026-08-02
+
+### Changed
+
+- **`BuildRules` now dispatches Archive/Unarchive under their own `EntityMode`,
+  with new `IfArchive`/`IfUnarchive` DSL clauses. (breaking)** Previously the
+  archive and unarchive state-transitions ran `BuildRules` in `ModeUpdate`, so
+  `IfUpdate` fired for them and `r.Mode()` reported `ModeUpdate`; scoping an
+  archive-only rule meant branching on `actionName == "GetArchivable"` inside
+  `IfUpdate`. Now `GetArchivable`/`GetUnarchivable` run in `ModeArchive`/
+  `ModeUnarchive`, dispatched by the new `r.IfArchive`/`r.IfUnarchive` closures;
+  `IfUpdate` is PUT/PATCH exclusively and `r.Mode()` reports the real mode.
+  **Migration:** move archive-only invariants out of `IfUpdate` + the
+  `actionName` string branch into `r.IfArchive` (symmetric for unarchive) — a
+  rule that stayed in `IfUpdate` no longer fires during an archive. Also removes
+  the internal `modeFromActionName` helper and gives `domain.ValidateAggregateChild`
+  an explicit `mode` parameter — `ValidateAggregateChild(root, item, mode,
+  actionName, svc)` — instead of deriving the mode from the action string.
+  `actionName` remains a free-form label (audit event + the shared-base
+  upsert-flavor branch), never a verb selector.
+
 ## [0.41.0] - 2026-08-01
 
 ### Changed

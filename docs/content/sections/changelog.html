@@ -13,6 +13,26 @@
         </ul>
     </div>
     <div class="release">
+        <div class="release-head"><span class="release-tag">v0.42.0</span><span class="release-date">August 2, 2026</span></div>
+        <ul>
+            <li><strong>Changed</strong> — <strong>breaking</strong> — <strong>Archive and Unarchive now dispatch their own
+                <code>IfArchive</code>/<code>IfUnarchive</code> rules under <code>ModeArchive</code>/<code>ModeUnarchive</code>.</strong>
+                The archive and unarchive state-transitions used to run <code>BuildRules</code> in <code>ModeUpdate</code>, so
+                <code>IfUpdate</code> fired for them and <code>r.Mode()</code> reported <code>ModeUpdate</code>; scoping an
+                archive-only invariant meant branching on <code>actionName == "GetArchivable"</code> inside <code>IfUpdate</code>.
+                Now <code>GetArchivable</code>/<code>GetUnarchivable</code> run in <code>ModeArchive</code>/<code>ModeUnarchive</code>,
+                dispatched by the new <code>r.IfArchive</code>/<code>r.IfUnarchive</code> closures; <code>IfUpdate</code> is
+                PUT/PATCH exclusively and <code>r.Mode()</code> reports the real mode. <strong>Migration:</strong> move
+                archive-only invariants out of <code>IfUpdate</code> + the <code>actionName</code> branch into
+                <code>r.IfArchive</code> (symmetric for unarchive) — a rule left in <code>IfUpdate</code> no longer fires during
+                an archive. The internal <code>modeFromActionName</code> helper is removed, and
+                <code>domain.ValidateAggregateChild</code> takes an explicit <code>mode</code> parameter
+                (<code>ValidateAggregateChild(root, item, mode, actionName, svc)</code>) instead of deriving the mode from the
+                action string. <code>actionName</code> stays a free-form label (audit event + the shared-base upsert-flavor
+                branch), never a verb selector.</li>
+        </ul>
+    </div>
+    <div class="release">
         <div class="release-head"><span class="release-tag">v0.41.0</span><span class="release-date">August 1, 2026</span></div>
         <ul>
             <li><strong>Changed</strong> — <strong>Relational views (<code>RelationalSource()</code>) now filter and
