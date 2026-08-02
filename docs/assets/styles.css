@@ -18,6 +18,7 @@
     --accent-line:  #c9cbec;
     --code-bg:      #f1ede3;
     --code-ink:     #2c2a24;
+    --chip-bg:      #f1ede3;  --chip-line: #eee8db;  /* inline <code> chip (light = as before) */
     --good:         #2f7d5e;  --good-bg:  #e4efe9;  --good-line: #b4d6c6;
     --warn:         #9a6f24;  --warn-bg:  #f6eeda;  --warn-line: #e3d2a3;
     --bad:          #a8493d;  --bad-bg:   #f6e6e2;  --bad-line:  #e6c2b8;
@@ -46,6 +47,7 @@
     --accent-line:  #383c5c;
     --code-bg:      #171922;
     --code-ink:     #d4d8e4;
+    --chip-bg:      #272c37;  --chip-line: #3a4152;  /* inline <code> chip — lighter than the surface so the box reads */
     --good:         #84c08c;  --good-bg:  #16241b;  --good-line: #2c4733;
     --warn:         #d8b36a;  --warn-bg:  #261f12;  --warn-line: #463a1f;
     --bad:          #df9384;  --bad-bg:   #281a17;  --bad-line:  #482c26;
@@ -281,11 +283,11 @@ nav.nav {
 code {
     font-family: "JetBrains Mono", SFMono-Regular, Consolas, monospace;
     font-size: 13px;
-    background: var(--code-bg);
+    background: var(--chip-bg);
     color: var(--code-ink);
     padding: 2px 6px;
     border-radius: 5px;
-    border: 1px solid var(--border-soft);
+    border: 1px solid var(--chip-line);
     white-space: nowrap;
 }
 /* allow inline code to break only on very small screens to avoid page overflow */
