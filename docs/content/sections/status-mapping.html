@@ -265,7 +265,7 @@ func (r *Rules) AddNotification(name string, n Notification, value ...any)
 // Escape hatch — for messages that need Err, FuncName, Override, or multi-segment Path.
 func (r *Rules) AddNotificationMessage(msg NotificationMessage)
 
-func (r *Rules) IfInsert / IfUpdate / IfInsertOrUpdate / ...   // mode dispatch
+func (r *Rules) IfInsert / IfUpdate / IfDelete / IfArchive / IfUnarchive / IfInsertOrUpdate   // mode dispatch
 
 type PathSegment struct {
     Name  string  // Go identifier (PascalCase) or already-lowercase verbatim

@@ -131,7 +131,7 @@ func TestRejectChild_NilAggregateRootNoOp(t *testing.T) {
 }
 
 func TestValidateAggregateChild_NilAggregateRootReturnsFalse(t *testing.T) {
-	if ValidateAggregateChild(nilARProvider{}, testAVO{}, "GetInsertable", nil) {
+	if ValidateAggregateChild(nilARProvider{}, testAVO{}, ModeInsert, "GetInsertable", nil) {
 		t.Fatal("expected false when the root's AggregateRoot is nil")
 	}
 }
@@ -154,7 +154,7 @@ func TestValidateAggregateChild_NilContextReturnsFalse(t *testing.T) {
 	if p.NotificationContext() != nil {
 		t.Fatal("precondition: context should be nil")
 	}
-	if ValidateAggregateChild(p, testAVO{}, "GetInsertable", nil) {
+	if ValidateAggregateChild(p, testAVO{}, ModeInsert, "GetInsertable", nil) {
 		t.Fatal("expected false when the root's NotificationContext is nil")
 	}
 }
@@ -170,7 +170,7 @@ func TestValidateAggregateChild_CountsExistingItemsForIndex(t *testing.T) {
 		t.Fatalf("seed add should not emit, got %v", p.NotificationContext().Messages())
 	}
 	// Validating a second item that emits should land at index 1.
-	if ValidateAggregateChild(p, emittingAVO{emit: "Street"}, "GetInsertable", nil) {
+	if ValidateAggregateChild(p, emittingAVO{emit: "Street"}, ModeInsert, "GetInsertable", nil) {
 		t.Fatal("expected false when BuildRules emits")
 	}
 	msgs := p.NotificationContext().Messages()

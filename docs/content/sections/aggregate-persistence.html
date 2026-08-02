@@ -97,9 +97,8 @@ func (d Dependent) IsSameBusinessIdentity(other domain.AggregateValueObject) boo
 
     <div class="box">
         <strong>Archive and Unarchive run BuildRules and consult Modes().</strong> Archive and Unarchive are
-        <em>state transitions</em> (touch <code>deleted_at</code>, not fields). They <strong>run <code>BuildRules</code> in <code>ModeUpdate</code></strong>
-        with a distinct <code>actionName</code> (<code>"GetArchivable"</code> / <code>"GetUnarchivable"</code>) — so the existing
-        <code>IfUpdate</code> DSL fires for state-transition verbs too — AND they <strong>consult <code>Modes()</code></strong>: an entity
+        <em>state transitions</em> (touch <code>deleted_at</code>, not fields). They <strong>run <code>BuildRules</code> in <code>ModeArchive</code> / <code>ModeUnarchive</code></strong>
+        — each its own verb, dispatched by the <code>IfArchive</code> / <code>IfUnarchive</code> DSL closures (not <code>IfUpdate</code>, which is PUT/PATCH exclusively) — AND they <strong>consult <code>Modes()</code></strong>: an entity
         that does not declare <code>ModeArchive</code> receives <code>ArchiveNotAllowedNotification</code> (403 Forbidden) when
         calling <code>GetArchivable</code>; same for <code>ModeUnarchive</code>/<code>UnarchiveNotAllowedNotification</code>.
         These modes are <strong>independent</strong> of <code>ModeUpdate</code> — declaring Update does not enable Archive.
@@ -221,8 +220,8 @@ r.WithSchema(UserSchema())
         By default, AVO's <code>BuildRules</code> runs at the boundary (<code>GetInsertable/Update/Delete</code>) via
         <code>runAggregateValidations</code> — same lifecycle as the root's <code>BuildRules</code>. Mutations
         accumulate, validation runs once. For those who want immediate feedback inside a root method, the framework
-        provides <code>domain.ValidateAggregateChild(root, item, actionName, svc) bool</code>:
-        runs <code>item.BuildRules</code> with a <code>NotificationContext</code> scoped just like the boundary
+        provides <code>domain.ValidateAggregateChild(root, item, mode, actionName, svc) bool</code>:
+        runs <code>item.BuildRules</code> under the mode you pass (so the item's <code>IfInsert</code>/<code>IfArchive</code>/… dispatch correctly) with a <code>NotificationContext</code> scoped just like the boundary
         would; returns <code>true</code> if it passed. Pitfall: if you use it inline AND the item enters the collection,
         the boundary runs <code>BuildRules</code> again and produces a duplicate notification. Use one path OR the other
         per item.
@@ -241,7 +240,7 @@ r.WithSchema(UserSchema())
         <code>AggregateChildren()</code> enter the collection, iterating the map equals iterating the declared list.
     </p>
     <p>
-        Inside the AVO's <code>BuildRules</code>, <code>r.IfInsert/IfUpdate/IfInsertOrUpdate/...</code> dispatches by mode —
+        Inside the AVO's <code>BuildRules</code>, <code>r.IfInsert/IfUpdate/IfDelete/IfArchive/IfUnarchive/IfInsertOrUpdate</code> dispatches by mode —
         same DSL as the root. For example, <code>Address.BuildRules</code> in <code>omnicore-example-users</code> only runs
         rules inside <code>r.IfInsertOrUpdate</code>, but the framework doesn't enforce that —
         entities may have Delete-specific rules (e.g., "cannot delete primary address"),

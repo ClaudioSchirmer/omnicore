@@ -204,7 +204,7 @@ func newEmittingProvider() *emittingProvider {
 
 func TestValidateAggregateChild_NoEmitReturnsTrue(t *testing.T) {
 	p := newEmittingProvider()
-	if !ValidateAggregateChild(p, emittingAVO{}, "GetInsertable", nil) {
+	if !ValidateAggregateChild(p, emittingAVO{}, ModeInsert, "GetInsertable", nil) {
 		t.Fatal("expected ValidateAggregateChild to return true when BuildRules emits nothing")
 	}
 	if p.NotificationContext().HasErrors() {
@@ -214,7 +214,7 @@ func TestValidateAggregateChild_NoEmitReturnsTrue(t *testing.T) {
 
 func TestValidateAggregateChild_EmitsReturnsFalse(t *testing.T) {
 	p := newEmittingProvider()
-	if ValidateAggregateChild(p, emittingAVO{emit: "Street"}, "GetInsertable", nil) {
+	if ValidateAggregateChild(p, emittingAVO{emit: "Street"}, ModeInsert, "GetInsertable", nil) {
 		t.Fatal("expected ValidateAggregateChild to return false when BuildRules emits")
 	}
 	msgs := p.NotificationContext().Messages()
@@ -230,7 +230,7 @@ func TestValidateAggregateChild_EmitsReturnsFalse(t *testing.T) {
 
 func TestValidateAggregateChild_NilItemReturnsFalse(t *testing.T) {
 	p := newEmittingProvider()
-	if ValidateAggregateChild(p, nil, "GetInsertable", nil) {
+	if ValidateAggregateChild(p, nil, ModeInsert, "GetInsertable", nil) {
 		t.Fatal("expected nil item to yield false")
 	}
 }

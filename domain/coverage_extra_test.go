@@ -110,32 +110,6 @@ func TestGetChangedItemsOf_ReturnsChangedOnly(t *testing.T) {
 	}
 }
 
-// ─── aggregate_root.go: modeFromActionName ───────────────────────────────────
-
-func TestModeFromActionName(t *testing.T) {
-	cases := []struct {
-		action string
-		want   EntityMode
-	}{
-		{"GetUpdatable", ModeUpdate},
-		{"Update", ModeUpdate},
-		{"GetDeletable", ModeDelete},
-		{"Delete", ModeDelete},
-		{"GetArchivable", ModeArchive},
-		{"Archive", ModeArchive},
-		{"GetUnarchivable", ModeUnarchive},
-		{"Unarchive", ModeUnarchive},
-		{"GetInsertable", ModeInsert},
-		{"AdminCreate", ModeInsert},
-		{"", ModeInsert},
-	}
-	for _, c := range cases {
-		if got := modeFromActionName(c.action); got != c.want {
-			t.Errorf("modeFromActionName(%q) = %v, want %v", c.action, got, c.want)
-		}
-	}
-}
-
 // ─── entity_base.go: checkService ────────────────────────────────────────────
 
 // serviceRequiredEntity declares RequiresService()==true and ModeInsert, so a

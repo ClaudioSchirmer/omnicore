@@ -139,6 +139,27 @@ func (r *Rules) IfDelete(fn func()) *Rules {
 	return r
 }
 
+// IfArchive fires only on the archive state-transition. Archive is its own
+// verb — a distinct EntityMode with its own sealed Archivable and its own
+// Get* entry point — so it dispatches here, NOT under IfUpdate. Put
+// archive-only invariants (e.g. an owner check on the archive verb) in this
+// closure; IfUpdate covers PUT/PATCH exclusively.
+func (r *Rules) IfArchive(fn func()) *Rules {
+	if r.mode == ModeArchive {
+		fn()
+	}
+	return r
+}
+
+// IfUnarchive is the symmetric inverse of IfArchive, firing only on the
+// unarchive state-transition.
+func (r *Rules) IfUnarchive(fn func()) *Rules {
+	if r.mode == ModeUnarchive {
+		fn()
+	}
+	return r
+}
+
 func (r *Rules) IfInsertOrUpdate(fn func()) *Rules {
 	if r.mode == ModeInsert || r.mode == ModeUpdate {
 		fn()

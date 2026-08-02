@@ -431,9 +431,15 @@ func ReplaceAggregateChildrenOf[VO AggregateValueObject](root AggregateRootProvi
 // AND let the item enter the collection, the boundary validation will run
 // BuildRules again and you'll get duplicate notifications. Pick one path per
 // item — boundary validation is the default.
+//
+// The caller passes the EntityMode explicitly (the same mode the boundary
+// runAggregateValidations would dispatch under) so the item's IfInsert/IfUpdate/
+// IfArchive/… closures fire correctly; actionName is the free-form label the
+// item's BuildRules receives verbatim (audit parity, upsert-flavor branch).
 func ValidateAggregateChild(
 	root AggregateRootProvider,
 	item AggregateValueObject,
+	mode EntityMode,
 	actionName string,
 	svc Service,
 ) bool {
@@ -460,28 +466,8 @@ func ValidateAggregateChild(
 	}
 	scoped := rootCtx.Scoped(NameSegment(collectionName), IndexSegment(idx))
 	before := len(scoped.Messages())
-	mode := modeFromActionName(actionName)
 	item.BuildRules(actionName, svc, NewRules(mode, scoped, reflect.TypeOf(item)))
 	return len(scoped.Messages()) == before
-}
-
-// modeFromActionName maps the standard framework action names back to their
-// EntityMode. Custom action names (e.g. "AdminCreate") default to ModeInsert
-// since they typically branch flavours within insert/update flows — callers
-// that need a specific mode should pass the standard action names.
-func modeFromActionName(actionName string) EntityMode {
-	switch actionName {
-	case "GetUpdatable", "Update":
-		return ModeUpdate
-	case "GetDeletable", "Delete":
-		return ModeDelete
-	case "GetArchivable", "Archive":
-		return ModeArchive
-	case "GetUnarchivable", "Unarchive":
-		return ModeUnarchive
-	default:
-		return ModeInsert
-	}
 }
 
 // classNameOfVO returns the type name of the generic parameter VO without

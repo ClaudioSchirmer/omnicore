@@ -211,15 +211,16 @@ func GetDeletable(e Entity, service Service, actionName string) (Deletable, erro
 	return getDeletable(e, service, actionName)
 }
 
-// GetArchivable validates e for archive. BuildRules fires in ModeUpdate
-// with the supplied actionName so IfUpdate closures see it. Pass canonical
-// "GetArchivable" or a custom string.
+// GetArchivable validates e for archive. BuildRules fires in ModeArchive, so
+// IfArchive closures dispatch on it. The supplied actionName still reaches
+// BuildRules and the audit event as a label — pass canonical "GetArchivable"
+// or a custom string.
 func GetArchivable(e Entity, service Service, actionName string) (Archivable, error) {
 	return getArchivable(e, service, actionName)
 }
 
-// GetUnarchivable validates e for archive restore. Symmetric to
-// GetArchivable — BuildRules runs in ModeUpdate with the supplied actionName.
+// GetUnarchivable validates e for archive restore. Symmetric to GetArchivable —
+// BuildRules runs in ModeUnarchive, so IfUnarchive closures dispatch on it.
 // Pass canonical "GetUnarchivable" or a custom string.
 func GetUnarchivable(e Entity, service Service, actionName string) (Unarchivable, error) {
 	return getUnarchivable(e, service, actionName)
@@ -328,10 +329,10 @@ func getDeletable(e Entity, service Service, actionName string) (Deletable, erro
 	return builder.deletable(e, *e.GetID()), nil
 }
 
-// Archive/Unarchive run BuildRules in ModeUpdate with a distinct actionName
-// ("GetArchivable" / "GetUnarchivable"), so the existing IfUpdate DSL fires
-// for state-transition verbs symmetric to PUT/PATCH. The service branches
-// on actionName inside IfUpdate when it needs Archive-specific logic. The
+// Archive/Unarchive run BuildRules in ModeArchive / ModeUnarchive — their own
+// verbs, dispatched by the IfArchive / IfUnarchive DSL closures (not IfUpdate,
+// which is PUT/PATCH exclusively). The supplied actionName still flows to
+// BuildRules and the audit event as a label, but the verb is the mode. The
 // state-transition checks (Modes() declaring Archive/Unarchive + ID
 // validity) still run after the BuildRules pass and feed into the same
 // checkAllNotifications gate.
@@ -345,14 +346,12 @@ func getArchivable(e Entity, service Service, actionName string) (Archivable, er
 	e.resetEntity()
 	e.setService(service)
 
-	// Run BuildRules in update mode so IfUpdate fires for Archive too. The
-	// service uses actionName to branch on archive-specific rules without
-	// needing a new DSL clause. checkService surfaces missing-service errors
-	// via notifications instead of returning early — keeps the error surface
-	// uniform with Insert/Update/Delete.
+	// Run BuildRules in ModeArchive so IfArchive fires for the archive verb.
+	// checkService surfaces missing-service errors via notifications instead of
+	// returning early — keeps the error surface uniform with Insert/Update/Delete.
 	if checkSvcErr := checkService(e, actionName); checkSvcErr == nil {
-		e.setMode(ModeUpdate)
-		rules := NewRules(ModeUpdate, e.NotificationContext(), reflect.TypeOf(e))
+		e.setMode(ModeArchive)
+		rules := NewRules(ModeArchive, e.NotificationContext(), reflect.TypeOf(e))
 		e.BuildRules(actionName, e.getService(), rules)
 	}
 
@@ -393,11 +392,11 @@ func getUnarchivable(e Entity, service Service, actionName string) (Unarchivable
 	e.resetEntity()
 	e.setService(service)
 
-	// Symmetric to getArchivable — BuildRules in update mode with the
-	// dedicated actionName so IfUpdate fires for the unarchive transition.
+	// Symmetric to getArchivable — BuildRules in ModeUnarchive so IfUnarchive
+	// fires for the unarchive transition.
 	if checkSvcErr := checkService(e, actionName); checkSvcErr == nil {
-		e.setMode(ModeUpdate)
-		rules := NewRules(ModeUpdate, e.NotificationContext(), reflect.TypeOf(e))
+		e.setMode(ModeUnarchive)
+		rules := NewRules(ModeUnarchive, e.NotificationContext(), reflect.TypeOf(e))
 		e.BuildRules(actionName, e.getService(), rules)
 	}
 

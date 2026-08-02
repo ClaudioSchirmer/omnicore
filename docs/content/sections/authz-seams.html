@@ -64,14 +64,14 @@ func (*ArchiveUserCommand) ApplyTo(ctx *configuration.AppContext, u *User) error
     return nil
 }
 
-// BuildRules — domain layer, branches by actionName to scope the check
-// to specific verbs. Notification carries SemanticForbidden → 403.
+// BuildRules — domain layer. The archive verb dispatches its own IfArchive
+// clause, so the check is scoped to archive with no actionName string branch.
+// Notification carries SemanticForbidden → 403.
 func (u *User) BuildRules(actionName string, svc domain.Service, r *domain.Rules) {
-    r.IfUpdate(func() {
-        if actionName == "GetArchivable" &amp;&amp; u.RequestingPrincipalEmail != "" {
-            if u.Email != u.RequestingPrincipalEmail &amp;&amp; !u.RequestingPrincipalIsAdmin {
-                r.AddNotification("ID", domain.ArchiveNotAllowedNotification{})
-            }
+    r.IfArchive(func() {
+        if u.RequestingPrincipalEmail != "" &amp;&amp;
+            u.Email != u.RequestingPrincipalEmail &amp;&amp; !u.RequestingPrincipalIsAdmin {
+            r.AddNotification("ID", domain.ArchiveNotAllowedNotification{})
         }
     })
 }</code></pre>

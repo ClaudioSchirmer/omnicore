@@ -77,7 +77,7 @@
                 <td><code>ArchiveCommandHandler</code></td>
                 <td>
                     <code>GetArchivable(loaded, svc, "GetArchivable")</code><br>
-                    Mode <code>ModeUpdate</code> + <code>actionName="GetArchivable"</code> → <code>IfUpdate</code> fires; rule branches on <code>actionName</code> for archive-specific invariants (owner check etc.). State-transition guard then verifies <code>ModeArchive</code> is declared
+                    Mode <code>ModeArchive</code> → <code>IfArchive</code> fires (archive-specific invariants — owner check etc. — live there, no <code>actionName</code> branch); <code>IfUpdate</code> does not fire. State-transition guard then verifies <code>ModeArchive</code> is declared
                 </td>
                 <td><code>UPDATE users SET deleted_at=$now WHERE id=$1</code></td>
                 <td><code>ARCHIVED</code></td>
@@ -89,7 +89,7 @@
                 <td><code>UnarchiveCommandHandler</code></td>
                 <td>
                     <code>GetUnarchivable(loaded, svc, "GetUnarchivable")</code><br>
-                    Mode <code>ModeUpdate</code> + <code>actionName="GetUnarchivable"</code> → <code>IfUpdate</code> fires the same way; state-transition guard verifies <code>ModeUnarchive</code>
+                    Mode <code>ModeUnarchive</code> → <code>IfUnarchive</code> fires (symmetric to <code>IfArchive</code>); state-transition guard verifies <code>ModeUnarchive</code>
                 </td>
                 <td><code>UPDATE users SET deleted_at=NULL WHERE id=$1</code></td>
                 <td><code>UNARCHIVED</code></td>
