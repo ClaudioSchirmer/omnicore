@@ -5,6 +5,8 @@ import (
 	"reflect"
 	"strings"
 	"sync"
+
+	"github.com/ClaudioSchirmer/omnicore/domain"
 )
 
 // AutoFromDoc projects a view document into the typed wire shape R using R's
@@ -45,7 +47,81 @@ func AutoFromDoc[R any](doc map[string]any) R {
 		_ = json.Unmarshal(raw, &out)
 	}
 	normalizeSlices(reflect.ValueOf(&out).Elem(), plan)
+	convergeEnums(reflect.ValueOf(&out).Elem(), plan)
 	return out
+}
+
+// convergeEnums walks v per plan and maps every EnumValueObject field whose
+// populated value is out of its declared member set to the Unknown sentinel —
+// the read-side twin of the entity reconstruction's converge (D3). Recurses into
+// nested structs and slice-of-struct elements so an enum at any depth is covered.
+func convergeEnums(v reflect.Value, plan *typePlan) {
+	if plan == nil || !v.IsValid() {
+		return
+	}
+	for _, f := range plan.fields {
+		field := v.FieldByIndex(f.fieldIndex)
+		if !field.IsValid() {
+			continue
+		}
+		if f.enumType != nil {
+			convergeEnumField(field)
+			continue
+		}
+		switch f.kind {
+		case fkStruct:
+			elem := field
+			for elem.Kind() == reflect.Pointer {
+				if elem.IsNil() {
+					elem = reflect.Value{}
+					break
+				}
+				elem = elem.Elem()
+			}
+			if elem.IsValid() && elem.Kind() == reflect.Struct && f.nested != nil {
+				convergeEnums(elem, f.nested)
+			}
+		case fkSliceOfStruct:
+			if field.Kind() == reflect.Slice && f.nested != nil {
+				for i := 0; i < field.Len(); i++ {
+					elem := field.Index(i)
+					for elem.Kind() == reflect.Pointer {
+						if elem.IsNil() {
+							elem = reflect.Value{}
+							break
+						}
+						elem = elem.Elem()
+					}
+					if elem.IsValid() && elem.Kind() == reflect.Struct {
+						convergeEnums(elem, f.nested)
+					}
+				}
+			}
+		}
+	}
+}
+
+// convergeEnumField converges one populated enum field (a nil pointer is left
+// untouched — absence, not Unknown).
+func convergeEnumField(field reflect.Value) {
+	fv := field
+	if fv.Kind() == reflect.Pointer {
+		if fv.IsNil() {
+			return
+		}
+		fv = fv.Elem()
+	}
+	raw, ok := domain.ValueObjectValue(fv.Interface())
+	if !ok {
+		return
+	}
+	converged, err := domain.NewValueObjectValue(fv.Type(), raw)
+	if err != nil {
+		return
+	}
+	if fv.CanSet() {
+		fv.Set(reflect.ValueOf(converged))
+	}
 }
 
 // applyIDFallback returns a doc with the Go ID field "ID" ← _id when "ID" is
@@ -96,6 +172,12 @@ type fieldEntry struct {
 	destKey    string
 	kind       fieldKind
 	nested     *typePlan
+	// enumType is non-nil when the field is an EnumValueObject (deref'd of any
+	// pointer). After the JSON round-trip populates the field, convergeEnums maps
+	// an out-of-set value to the Unknown sentinel — parity with the write-side
+	// entity reconstruction (D3), so a document carrying a stale/tampered enum
+	// value never surfaces as a phantom member on the wire.
+	enumType reflect.Type
 }
 
 // typePlan is the cached projection plan for one R type. Built once per
@@ -175,6 +257,9 @@ func buildPlan(plan *typePlan, t reflect.Type, basePath []int) {
 		ft := f.Type
 		for ft.Kind() == reflect.Pointer {
 			ft = ft.Elem()
+		}
+		if domain.IsEnumValueObject(reflect.Zero(ft).Interface()) {
+			entry.enumType = ft
 		}
 		switch ft.Kind() {
 		case reflect.Struct:

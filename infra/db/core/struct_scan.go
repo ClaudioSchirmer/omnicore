@@ -38,7 +38,78 @@ func scanTargetFor(f reflect.Value) any {
 	case idPtrType:
 		return &nullableIDScanTarget{dst: f.Addr().Interface().(**domain.ID)}
 	}
+	// A value-object field is scanned through its UNDERLYING scalar and
+	// reconstructed (raw Convert, or enum membership converge to Unknown), so the
+	// driver never binds the named type. Mirrors the id proxies above.
+	if _, underlying, ok := valueObjectField(f.Type()); ok {
+		if f.Kind() == reflect.Pointer {
+			return &nullableVOScanTarget{dst: f, voType: f.Type().Elem(), underlying: underlying}
+		}
+		return &voScanTarget{dst: f, voType: f.Type(), underlying: underlying}
+	}
 	return f.Addr().Interface()
+}
+
+// coerceScalar normalizes the raw driver value into the shape the value-object
+// reconstruction expects: a string-backed VO must receive a string even when the
+// driver hands []byte (how some drivers deliver text/char columns), otherwise the
+// enum membership walk (which asserts raw.(string)) would miss and converge every
+// value to Unknown. Numeric/bool/time forms pass through — domain.NewValueObjectValue
+// (raw Convert) and sameUnderlying (asInt64) already tolerate driver widths.
+func coerceScalar(src any, underlying reflect.Type) any {
+	if underlying.Kind() == reflect.String {
+		if b, ok := src.([]byte); ok {
+			return string(b)
+		}
+	}
+	return src
+}
+
+// voScanTarget scans one column into a REQUIRED value-object field. It decodes the
+// driver value into the VO's underlying scalar, reconstructs the VO through
+// domain.NewValueObjectValue, and sets the field. SQL NULL is a loud error (the
+// nullable contract database/sql cannot express for Scanner types on its own).
+type voScanTarget struct {
+	dst        reflect.Value // the addressable VO field (settable)
+	voType     reflect.Type  // e.g. vos.Email
+	underlying reflect.Type  // e.g. string
+}
+
+func (t *voScanTarget) Scan(src any) error {
+	if src == nil {
+		return fmt.Errorf(
+			"NULL scanned into a non-nullable value-object field of type %s — declare the field *%s (and the column NULL-able)",
+			t.voType, t.voType)
+	}
+	vo, err := domain.NewValueObjectValue(t.voType, coerceScalar(src, t.underlying))
+	if err != nil {
+		return err
+	}
+	t.dst.Set(reflect.ValueOf(vo))
+	return nil
+}
+
+// nullableVOScanTarget scans one column into a NULLABLE value-object field
+// (*vos.X): SQL NULL restores as nil, any value as &VO.
+type nullableVOScanTarget struct {
+	dst        reflect.Value // the addressable *VO field
+	voType     reflect.Type  // the element type, e.g. vos.Phone
+	underlying reflect.Type
+}
+
+func (t *nullableVOScanTarget) Scan(src any) error {
+	if src == nil {
+		t.dst.Set(reflect.Zero(t.dst.Type()))
+		return nil
+	}
+	vo, err := domain.NewValueObjectValue(t.voType, coerceScalar(src, t.underlying))
+	if err != nil {
+		return err
+	}
+	p := reflect.New(t.voType)
+	p.Elem().Set(reflect.ValueOf(vo))
+	t.dst.Set(p)
+	return nil
 }
 
 // decodeIDValue normalizes the raw forms the drivers hand a Scanner for an id

@@ -244,6 +244,7 @@ func (d oracleDialect) BuildUpsert(table string, cols, conflictCols []string, se
 // 23ai JSON type, which accepts a text bind (proven in the spike), while the
 // driver's []byte mapping would reach it as RAW.
 func (oracleDialect) EncodeArg(val any) any {
+	val = core.UnwrapVO(val) // a value-object criteria value binds as its underlying scalar
 	switch v := val.(type) {
 	case domain.ID:
 		if b, err := uuidBytes(v.Value()); err == nil {

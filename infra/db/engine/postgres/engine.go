@@ -225,6 +225,7 @@ func validIdentifier(name string) string {
 // through one dereference. Consumed by pgDialect.EncodeArg (the Postgres value
 // codec) — a PG-side concern.
 func normalizeArg(val any) any {
+	val = core.UnwrapVO(val) // a value-object criteria value binds as its underlying scalar
 	switch v := val.(type) {
 	case domain.ID:
 		return v.Value()

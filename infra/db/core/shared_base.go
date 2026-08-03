@@ -209,7 +209,15 @@ func (s *TableSchema) SharedBase(base *TableSchema, parentIDColumn string) *Tabl
 					"infra.TableSchema(%s): shared base %q field %q is not an exported field of %s — a role must "+
 						"carry every shared-base field.", s.table, base.table, f.goName, s.typ.Name()))
 			}
-			mustSupportedFieldType(base.table, f.goName, s.typ.Field(idx).Type)
+			// A value-object shared field validates its UNDERLYING scalar (the
+			// write path unwraps it, the read path reconstructs via the role's
+			// field type) — same rule as Field() on a type-anchored schema.
+			ft := s.typ.Field(idx).Type
+			if _, u, ok := valueObjectField(ft); ok {
+				mustSupportedFieldType(base.table, f.goName, u)
+			} else {
+				mustSupportedFieldType(base.table, f.goName, ft)
+			}
 			scanCols = append(scanCols, f.column)
 			scanByCol[f.column] = idx
 		}

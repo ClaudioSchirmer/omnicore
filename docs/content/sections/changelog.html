@@ -9,7 +9,56 @@
     <div class="release">
         <div class="release-head"><span class="release-tag">Unreleased</span><span class="release-date">—</span></div>
         <ul>
-            <li>Nothing yet.</li>
+            <li><strong>Added</strong> — <strong>Value objects are persisted end to end — any
+                <code>ValueObject</code>/<code>EnumValueObject</code> field is now a first-class persisted field.</strong>
+                A domain field typed as a value object (a named type over a supported scalar — <code>type Email string</code>,
+                <code>type UserProfile int</code>) is declared on the <code>TableSchema</code> with its VO type
+                (<code>Field("Email", "email")</code>) and stored as its <strong>underlying scalar</strong>: the write path
+                unwraps the VO before binding (so the driver never sees the named type — the reason a bare named type is
+                otherwise rejected), and a relational load reconstructs it — a raw VO by conversion, an enum by membership
+                <em>converge</em> (a stored value outside the declared set becomes the <code>Unknown</code> sentinel, never a
+                phantom member). Works at every schema position (root, sibling, shared-base, aggregate-child, child-sibling),
+                on every engine, and identically whether served from the Mongo projection or a <code>RelationalSource</code>
+                view. A response DTO may type a field as the VO OR its raw scalar — both bind/render natively on REST,
+                GraphQL and gRPC (the enum converge is applied so the wire matches the entity); OpenAPI and the GraphQL SDL
+                describe a VO by its underlying type; CSV/XLSX export the underlying value; a VO criteria value binds as its
+                underlying. New non-generic domain seam for the infra layer: <code>domain.IsValueObject</code> /
+                <code>IsEnumValueObject</code> / <code>ValueObjectValue</code> / <code>NewValueObjectValue</code>.
+                <strong>No migration:</strong> existing raw-scalar fields are unchanged; a value-object field that previously
+                had to be mapped to its underlying by hand can now be declared directly. See the <em>Value objects</em> and
+                <em>Table schema</em> manual sections.</li>
+            <li><strong>Changed</strong> — <strong>breaking</strong> — <strong>Enum value objects declare their member set and
+                the framework validates membership; <code>ValidateEnum</code> now enforces the closed set.</strong> An
+                <code>EnumValueObject[E comparable, T comparable]</code> (<code>E</code> the enum type, <code>T</code> its
+                underlying scalar) declares <code>Value() T</code> (mirroring <code>ValueObject[T]</code>),
+                <code>Values() []E</code> (its members, the <code>Unknown</code> zero sentinel excluded) and
+                <code>UnknownNotification()</code>; it no longer writes <code>IsValid</code>. <code>domain.ValidateEnum</code>
+                reports whether a value is a declared member, so the <code>Unknown</code> sentinel AND any out-of-range value
+                now fail (previously it was a zero-value guard that let out-of-range values pass).
+                <code>BaseEntity.AddValueObject</code> is renamed <code>ValidateValueObject</code> (siblings
+                <code>AddAggregateValueObject(s)</code> → <code>ValidateAggregateValueObject(s)</code>) and accepts both kinds
+                (<code>func(name string, vo any)</code>), validating an enum by membership without a wrapper.
+                New helpers: <code>domain.EnumByValue[E](raw any)</code> parses an int/string wire value to a member (the
+                inverse of <code>Value()</code>; unknown input converges to the sentinel), and
+                <code>Translator.EnumDescription(lang, enum)</code> renders an enum's <code>EnumDescriptionKey</code> per-locale
+                at the boundary. <strong>Migration:</strong> for each enum value object drop <code>IsValid()</code>, keep
+                <code>Value()</code>, add <code>Values()</code>, and give members <strong>explicit</strong> values (never bare
+                <code>iota</code> — an <code>int</code> stores a number, a <code>string</code> its token); replace any
+                <code>enum.IsValid(field, ctx)</code> call with <code>domain.ValidateEnum(enum, field, ctx)</code>. See the
+                <em>Value objects</em> manual section.</li>
+            <li><strong>Changed</strong> — <strong>breaking</strong> — <strong>Value objects validate automatically — root AND
+                aggregate value object; Ignore/Force live on <code>Rules</code>.</strong> Every exported field whose value is a
+                value object (raw or enum) is discovered by reflection and validated on every write (insert, update, delete,
+                archive, unarchive), keyed by its Go field name (a <code>nil</code> pointer field is skipped). This applies to a
+                root entity AND to each aggregate value object — a child's VO fields validate in its collection-scoped context
+                right after its <code>BuildRules</code>, so an AVO's <code>BuildRules</code> no longer validates a VO by hand.
+                No registration step. Opt out with <code>r.IgnoreValueObject("Field")</code> inside a mode gate; force a
+                non-field VO with <code>r.ValidateValueObject(name, vo)</code> — both now live on the <code>*Rules</code> handed
+                to every <code>BuildRules</code> (root and AVO), replacing the previous
+                <code>BaseEntity.IgnoreValueObject</code>/<code>ValidateValueObject</code>. <strong>Migration:</strong> drop the
+                explicit <code>ValidateValueObject</code>/<code>vo.IsValid</code>/<code>domain.ValidateEnum</code> calls for
+                plain VO fields (root and AVO); move any <code>u.IgnoreValueObject</code> to <code>r.IgnoreValueObject</code>;
+                VO validation now also runs on delete/archive/unarchive.</li>
         </ul>
     </div>
     <div class="release">

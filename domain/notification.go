@@ -127,6 +127,14 @@ type NotificationContext struct {
 	// "addresses[0]." without the AVO knowing it is a child.
 	parent *NotificationContext
 	prefix []PathSegment
+
+	// entityType is the entity whose `labelKey:"…"` struct tags apply to
+	// notifications emitted on THIS context, so a value object that emits via
+	// AddNotification resolves the field label the same way Rules does. Set at
+	// birth — initWithName for the root (simple OR aggregate-carrying, both
+	// embed BaseEntity), scopedForType for a child AVO. nil for contexts that
+	// describe no entity (infra/application, repoNotImpl): those carry no label.
+	entityType reflect.Type
 }
 
 func NewNotificationContext(name string) *NotificationContext {
@@ -153,6 +161,9 @@ func (c *NotificationContext) Messages() []NotificationMessage {
 // context, FieldName is wrapped as a literal leaf so the prefix can still
 // compose correctly.
 func (c *NotificationContext) AddNotificationMessage(msg NotificationMessage) {
+	if c == nil {
+		return
+	}
 	if len(c.prefix) > 0 {
 		if len(msg.Path) == 0 && msg.FieldName != "" {
 			msg.Path = []PathSegment{{Name: msg.FieldName}}
@@ -186,6 +197,9 @@ func (c *NotificationContext) AddNotification(name string, n Notification, value
 	msg := NotificationMessage{
 		Path:         []PathSegment{{Name: name}},
 		Notification: n,
+	}
+	if c != nil && c.entityType != nil {
+		msg.LabelKey = resolveLabelKey(c.entityType, name)
 	}
 	if len(value) > 0 {
 		msg.FieldValue = formatFieldValue(value[0])
@@ -250,6 +264,15 @@ func (c *NotificationContext) Scoped(segments ...PathSegment) *NotificationConte
 		parent:  root,
 		prefix:  merged,
 	}
+}
+
+// scopedForType is Scoped plus the entity type whose `labelKey:"…"` tags apply
+// to emissions on the returned view — so a value object validated against a
+// child AVO's context resolves its field label against that child's type.
+func (c *NotificationContext) scopedForType(t reflect.Type, segments ...PathSegment) *NotificationContext {
+	sc := c.Scoped(segments...)
+	sc.entityType = t
+	return sc
 }
 
 // SetVars assigns the translation variables used when the framework renders

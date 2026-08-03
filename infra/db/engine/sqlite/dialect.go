@@ -204,6 +204,7 @@ func writeInsertHead(b *strings.Builder, d core.Dialect, table string, cols []st
 // default "2006-01-02 15:04:05.999… -0700 MST" layout, which neither the scanner
 // nor the strftime NowExpr agree with. Everything else passes through.
 func encodeArg(val any) any {
+	val = core.UnwrapVO(val) // a value-object criteria value binds as its underlying scalar
 	switch v := val.(type) {
 	case domain.ID:
 		return v.Value()

@@ -11,6 +11,102 @@ with `1.0.0`.
 
 ## [Unreleased]
 
+### Added
+
+- **Value objects are persisted end to end — any `ValueObject`/`EnumValueObject`
+  field is now a first-class persisted field.** A domain field typed as a value
+  object (a named type over a supported scalar — `type Email string`,
+  `type UserProfile int`) is declared on the `TableSchema` with its VO type
+  (`Field("Email", "email")`) and stored as its **underlying scalar**: the write
+  path unwraps the VO before binding (so the driver never sees the named type —
+  the reason a bare named type is otherwise rejected), and a relational load
+  reconstructs it — a raw VO by conversion, an enum by membership *converge* (a
+  stored value outside the declared set becomes the `Unknown` sentinel, never a
+  phantom member). Works at every schema position (root, sibling, shared-base,
+  aggregate-child, child-sibling), on every engine (Postgres/MySQL/SQL
+  Server/Oracle/SQLite), and identically whether served from the Mongo projection
+  or a `RelationalSource` view. A response DTO may type a field as the VO OR its
+  raw scalar — both bind/render natively on REST, GraphQL and gRPC (the enum
+  converge is applied so the wire matches the entity); OpenAPI and the GraphQL SDL
+  describe a VO by its underlying type; CSV/XLSX export the underlying value; a VO
+  criteria value binds as its underlying. New non-generic domain seam for the
+  infra layer: `domain.IsValueObject` / `IsEnumValueObject` / `ValueObjectValue`
+  / `NewValueObjectValue`. **No migration:** existing raw-scalar fields are
+  unchanged; a value-object field that previously had to be mapped to its
+  underlying by hand can now be declared directly.
+
+### Changed
+
+- **Enum value objects declare their member set and expose `Value()`; the
+  framework validates membership; `ValidateEnum` enforces the closed set.
+  (breaking)** An `EnumValueObject[E comparable, T comparable]` — `E` the enum
+  type, `T` its underlying scalar — declares `Value() T` (mirroring
+  `ValueObject[T]`), `Values() []E` (its members, the `Unknown` zero sentinel
+  excluded) and `UnknownNotification()`; it no longer writes `IsValid`. The
+  generic helpers constrain on an internal membership-only view so `E` infers
+  from the argument without the caller spelling out `T`. `domain.ValidateEnum`
+  now reports whether a value is a declared member, so the `Unknown` sentinel AND
+  any out-of-range value fail (previously a zero-value guard that let out-of-range
+  values pass). `BaseEntity.AddValueObject` is **renamed** `ValidateValueObject`
+  (siblings `AddAggregateValueObject`/`AddAggregateValueObjects` →
+  `ValidateAggregateValueObject`/`ValidateAggregateValueObjects`) and widens to
+  `func(name string, vo any)`, validating an enum by membership without a wrapper.
+  `EventType` and `Language` migrate to the new shape. **Migration:** for each
+  enum value object drop `IsValid()`, keep `Value() T`, add `Values() []E`, give
+  members **explicit** values (never bare `iota` — an `int` stores a number, a
+  `string` stores its token), and replace any `enum.IsValid(field, ctx)` call
+  with `domain.ValidateEnum(enum, field, ctx)`.
+
+- **Value objects validate automatically — root AND aggregate value object;
+  Ignore/Force live on `Rules`. (breaking)** Every exported field whose value is
+  a value object (raw or enum) is discovered by reflection and validated on every
+  write (insert, update, delete, archive, unarchive), keyed by its Go field name
+  (a `nil` pointer field is skipped). This applies to a root entity AND to each
+  aggregate value object — a child's VO fields validate in its collection-scoped
+  context right after its `BuildRules`, so an AVO's `BuildRules` no longer
+  validates a VO by hand. There is no registration step. Opt out with
+  `r.IgnoreValueObject("Field")` inside a mode gate; force a non-field VO
+  (computed, in a slice/map) with `r.ValidateValueObject(name, vo)` — both now
+  live on the `*Rules` handed to every `BuildRules` (root and AVO), replacing the
+  previous `BaseEntity.IgnoreValueObject`/`ValidateValueObject`. **Migration:**
+  drop the explicit `ValidateValueObject`/`vo.IsValid`/`domain.ValidateEnum` calls
+  for plain VO fields (root and AVO — they run automatically); move any
+  `u.IgnoreValueObject` to `r.IgnoreValueObject`; VO validation now also runs on
+  delete/archive/unarchive, so a field you must not check there needs an
+  `r.IgnoreValueObject` in the matching `IfXxx`.
+
+### Added
+
+- **`domain.EnumByValue[E](raw any) E`** — parses an int or string wire value to
+  its enum member (the inverse of `Value()`), converging unknown input to the
+  `Unknown` sentinel (the closed-set gate at the boundary).
+- **`Translator.EnumDescription(lang, enum)`** — resolves an enum value's
+  `EnumDescriptionKey` (`"<Type>.<value>"`) to its per-locale text at the
+  boundary, falling back to the key when no catalog entry exists.
+- New **Value objects** manual section documenting both `ValueObject` and
+  `EnumValueObject`.
+
+### Fixed
+
+- **Archive/Unarchive run the standard validation pass, and `IsValid` checks
+  them.** `getArchivable`/`getUnarchivable` inlined their own validation and
+  never ran the value-object or aggregate-child passes; they now delegate to
+  `validateForArchive`/`validateForUnarchive` (mirroring insert/update/delete),
+  so VO fields and children validate under `ModeArchive`/`ModeUnarchive` too.
+  `domain.IsValid(e, ModeArchive/ModeUnarchive, svc)` previously fell through its
+  mode switch as a silent no-op (returned valid); it now dispatches to those
+  functions.
+
+- **Value-object and enum notifications carry the field's `labelKey` again.**
+  Moving field validation into value objects routed their notifications through
+  `NotificationContext.AddNotification`, which — unlike `Rules.AddNotification` —
+  had no entity type, so `LabelKey` came out empty and the wire `fieldLabel` was
+  dropped. `NotificationContext` is now born with the entity type it describes
+  (`initWithName` for the root — simple or aggregate-carrying — and
+  `scopedForType` for a child AVO) and resolves the label at emit. Internal
+  only: the `entityType` field is unexported, no public surface changes. Audit
+  labels were never affected (they resolve from `TableSchema`).
+
 ## [0.42.0] - 2026-08-02
 
 ### Changed

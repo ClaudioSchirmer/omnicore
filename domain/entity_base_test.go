@@ -30,7 +30,7 @@ func (r Rec) BuildRules(_ string, _ Service, rules *Rules) {
 	}
 }
 
-// Tag is registered via the manual AddAggregateValueObject path (typeName
+// Tag is registered via the manual ValidateAggregateValueObject path (typeName
 // NOT discovered via reflection on AggregateRoot.items). Allows tests of the
 // manual coexistence with the auto path.
 type Tag struct {
@@ -129,7 +129,7 @@ func TestRunAggregateValidations_IgnoresManualWhenTypeNameInAggregate(t *testing
 	AddAggregateChild(p, Rec{Name: "auto", callCount: &autoCalls})
 	// Manual registration of the same typeName must be ignored: typeName "Rec"
 	// already lives in AggregateRoot.items.
-	p.AddAggregateValueObject("Rec", Rec{Name: "manual", callCount: &manualCalls})
+	p.ValidateAggregateValueObject("Rec", Rec{Name: "manual", callCount: &manualCalls})
 
 	runAggregateValidations(p, ModeInsert, "test")
 
@@ -147,7 +147,7 @@ func TestRunAggregateValidations_KeepsManualForUnknownTypeName(t *testing.T) {
 	p := newProviderEntity()
 	AddAggregateChild(p, Rec{Name: "auto", callCount: &autoCalls})
 	// "Tag" is NOT in the aggregate items — manual must still run.
-	p.AddAggregateValueObject("Tag", Tag{Name: "tag1", callCount: &manualCalls})
+	p.ValidateAggregateValueObject("Tag", Tag{Name: "tag1", callCount: &manualCalls})
 
 	runAggregateValidations(p, ModeInsert, "test")
 
@@ -163,7 +163,7 @@ func TestRunAggregateValidations_NoProviderUsesManualOnly(t *testing.T) {
 	calls := 0
 	e := &plainEntity{}
 	ensureInit(e)
-	e.AddAggregateValueObject("Tag", Tag{Name: "x", callCount: &calls})
+	e.ValidateAggregateValueObject("Tag", Tag{Name: "x", callCount: &calls})
 
 	runAggregateValidations(e, ModeInsert, "test")
 
@@ -193,7 +193,7 @@ func TestRunAggregateValidations_RunsInDeleteMode(t *testing.T) {
 func TestRunAggregateValidations_EmptyAggregateIsSafe(t *testing.T) {
 	calls := 0
 	p := newProviderEntity()
-	p.AddAggregateValueObject("Tag", Tag{Name: "y", callCount: &calls})
+	p.ValidateAggregateValueObject("Tag", Tag{Name: "y", callCount: &calls})
 
 	runAggregateValidations(p, ModeInsert, "test")
 

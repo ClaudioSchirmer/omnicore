@@ -22,7 +22,7 @@ type Entity interface {
 	// prefer the typed helper domain.Old[T].
 	Old() Entity
 
-	initWithName(string)
+	initWithName(string, reflect.Type)
 	resetEntity()
 	setMode(EntityMode)
 	getMode() EntityMode
@@ -30,7 +30,6 @@ type Entity interface {
 	getService() Service
 	getSignature() uuid.UUID
 	setOldEntity(Entity)
-	valueObjectsToValidate() []voEntry
 	aggregateValueObjectsToValidate() []avoEntry
 	contextCollection() []*NotificationContext
 	fieldAliases() map[string]string
@@ -54,7 +53,6 @@ type BaseEntity struct {
 	notifCtx  *NotificationContext
 	contexts  []*NotificationContext
 	events    []DomainEvent
-	vos       []voEntry
 	avos      []avoEntry
 	old       Entity
 	aliases   map[string]string
@@ -97,17 +95,14 @@ func (b *BaseEntity) AddNotificationContext(ctx *NotificationContext) {
 	b.contexts = append(b.contexts, ctx)
 }
 
-func (b *BaseEntity) AddValueObject(name string, vo ValueObjectValidator) {
-	b.vos = append(b.vos, voEntry{name: name, vo: vo})
-}
 
-func (b *BaseEntity) AddAggregateValueObject(name string, avo AggregateValueObject) {
+func (b *BaseEntity) ValidateAggregateValueObject(name string, avo AggregateValueObject) {
 	b.avos = append(b.avos, avoEntry{name: name, avo: avo})
 }
 
-func (b *BaseEntity) AddAggregateValueObjects(name string, avos []AggregateValueObject) {
+func (b *BaseEntity) ValidateAggregateValueObjects(name string, avos []AggregateValueObject) {
 	for _, avo := range avos {
-		b.AddAggregateValueObject(name, avo)
+		b.ValidateAggregateValueObject(name, avo)
 	}
 }
 
@@ -127,10 +122,11 @@ func (b *BaseEntity) AddFieldNameAlias(orig, new string) {
 	b.aliases[orig] = new
 }
 
-func (b *BaseEntity) initWithName(name string) {
+func (b *BaseEntity) initWithName(name string, entityType reflect.Type) {
 	if b.notifCtx == nil {
 		b.className = name
 		b.notifCtx = NewNotificationContext(name)
+		b.notifCtx.entityType = entityType
 		b.mode = ModeDisplay
 		b.signature = uuid.New()
 		b.aliases = map[string]string{}
@@ -145,7 +141,6 @@ func (b *BaseEntity) resetEntity() {
 	// construction-time invariant violations. IsValid clears explicitly when
 	// it really needs a fresh check.
 	b.events = nil
-	b.vos = nil
 	b.avos = nil
 	b.contexts = nil
 	b.signature = uuid.New()
@@ -159,7 +154,6 @@ func (b *BaseEntity) setService(s Service)                        { b.service = 
 func (b *BaseEntity) getService() Service                         { return b.service }
 func (b *BaseEntity) getSignature() uuid.UUID                     { return b.signature }
 func (b *BaseEntity) setOldEntity(p Entity)                       { b.old = p }
-func (b *BaseEntity) valueObjectsToValidate() []voEntry           { return b.vos }
 func (b *BaseEntity) aggregateValueObjectsToValidate() []avoEntry { return b.avos }
 func (b *BaseEntity) contextCollection() []*NotificationContext   { return b.contexts }
 func (b *BaseEntity) fieldAliases() map[string]string             { return b.aliases }
@@ -264,6 +258,10 @@ func IsValid(e Entity, mode EntityMode, service Service) (bool, []*NotificationC
 		_ = validateForUpdate(e, "isValid")
 	case ModeDelete:
 		_ = validateForDelete(e, "isValid")
+	case ModeArchive:
+		_ = validateForArchive(e, "isValid")
+	case ModeUnarchive:
+		_ = validateForUnarchive(e, "isValid")
 	}
 
 	contexts := collectContexts(e)
@@ -346,33 +344,7 @@ func getArchivable(e Entity, service Service, actionName string) (Archivable, er
 	e.resetEntity()
 	e.setService(service)
 
-	// Run BuildRules in ModeArchive so IfArchive fires for the archive verb.
-	// checkService surfaces missing-service errors via notifications instead of
-	// returning early — keeps the error surface uniform with Insert/Update/Delete.
-	if checkSvcErr := checkService(e, actionName); checkSvcErr == nil {
-		e.setMode(ModeArchive)
-		rules := NewRules(ModeArchive, e.NotificationContext(), reflect.TypeOf(e))
-		e.BuildRules(actionName, e.getService(), rules)
-	}
-
-	e.setMode(ModeArchive)
-	if !modeAllowed(e, ModeArchive) {
-		e.NotificationContext().AddNotificationMessage(NotificationMessage{
-			FieldName:    "archivable",
-			FuncName:     "Archive." + actionName + "()",
-			Notification: ArchiveNotAllowedNotification{},
-		})
-	}
-	if e.GetID() == nil {
-		e.NotificationContext().AddNotificationMessage(NotificationMessage{
-			FieldName:    "id",
-			FuncName:     "Archive." + actionName + "()",
-			Notification: UnableToDeleteWithoutIDNotification{},
-		})
-	} else {
-		e.GetID().IsValid("id", e.NotificationContext())
-	}
-	if err := checkAllNotifications(e); err != nil {
+	if err := validateForArchive(e, actionName); err != nil {
 		return Archivable{}, err
 	}
 
@@ -392,32 +364,7 @@ func getUnarchivable(e Entity, service Service, actionName string) (Unarchivable
 	e.resetEntity()
 	e.setService(service)
 
-	// Symmetric to getArchivable — BuildRules in ModeUnarchive so IfUnarchive
-	// fires for the unarchive transition.
-	if checkSvcErr := checkService(e, actionName); checkSvcErr == nil {
-		e.setMode(ModeUnarchive)
-		rules := NewRules(ModeUnarchive, e.NotificationContext(), reflect.TypeOf(e))
-		e.BuildRules(actionName, e.getService(), rules)
-	}
-
-	e.setMode(ModeUnarchive)
-	if !modeAllowed(e, ModeUnarchive) {
-		e.NotificationContext().AddNotificationMessage(NotificationMessage{
-			FieldName:    "unarchivable",
-			FuncName:     "Unarchive." + actionName + "()",
-			Notification: UnarchiveNotAllowedNotification{},
-		})
-	}
-	if e.GetID() == nil {
-		e.NotificationContext().AddNotificationMessage(NotificationMessage{
-			FieldName:    "id",
-			FuncName:     "Unarchive." + actionName + "()",
-			Notification: UnableToDeleteWithoutIDNotification{},
-		})
-	} else {
-		e.GetID().IsValid("id", e.NotificationContext())
-	}
-	if err := checkAllNotifications(e); err != nil {
+	if err := validateForUnarchive(e, actionName); err != nil {
 		return Unarchivable{}, err
 	}
 
@@ -450,7 +397,7 @@ func validateForInsert(e Entity, actionName string) error {
 			Notification: UnableToInsertWithIDNotification{},
 		})
 	}
-	runValueObjectValidations(e)
+	validateValueObjectFields(e, e.NotificationContext(), rules.ignoredValueObjects(), rules.forcedValueObjects())
 	runAggregateValidations(e, ModeInsert, actionName)
 	return checkAllNotifications(e)
 }
@@ -479,7 +426,7 @@ func validateForUpdate(e Entity, actionName string) error {
 	} else {
 		e.GetID().IsValid("id", e.NotificationContext())
 	}
-	runValueObjectValidations(e)
+	validateValueObjectFields(e, e.NotificationContext(), rules.ignoredValueObjects(), rules.forcedValueObjects())
 	runAggregateValidations(e, ModeUpdate, actionName)
 	return checkAllNotifications(e)
 }
@@ -508,8 +455,66 @@ func validateForDelete(e Entity, actionName string) error {
 	} else {
 		e.GetID().IsValid("id", e.NotificationContext())
 	}
-	runValueObjectValidations(e)
+	validateValueObjectFields(e, e.NotificationContext(), rules.ignoredValueObjects(), rules.forcedValueObjects())
 	runAggregateValidations(e, ModeDelete, actionName)
+	return checkAllNotifications(e)
+}
+
+func validateForArchive(e Entity, actionName string) error {
+	e.setMode(ModeArchive)
+	if err := checkService(e, actionName); err != nil {
+		return err
+	}
+	rules := NewRules(ModeArchive, e.NotificationContext(), reflect.TypeOf(e))
+	e.BuildRules(actionName, e.getService(), rules)
+
+	if !modeAllowed(e, ModeArchive) {
+		e.NotificationContext().AddNotificationMessage(NotificationMessage{
+			FieldName:    "archivable",
+			FuncName:     "Archive." + actionName + "()",
+			Notification: ArchiveNotAllowedNotification{},
+		})
+	}
+	if e.GetID() == nil {
+		e.NotificationContext().AddNotificationMessage(NotificationMessage{
+			FieldName:    "id",
+			FuncName:     "Archive." + actionName + "()",
+			Notification: UnableToDeleteWithoutIDNotification{},
+		})
+	} else {
+		e.GetID().IsValid("id", e.NotificationContext())
+	}
+	validateValueObjectFields(e, e.NotificationContext(), rules.ignoredValueObjects(), rules.forcedValueObjects())
+	runAggregateValidations(e, ModeArchive, actionName)
+	return checkAllNotifications(e)
+}
+
+func validateForUnarchive(e Entity, actionName string) error {
+	e.setMode(ModeUnarchive)
+	if err := checkService(e, actionName); err != nil {
+		return err
+	}
+	rules := NewRules(ModeUnarchive, e.NotificationContext(), reflect.TypeOf(e))
+	e.BuildRules(actionName, e.getService(), rules)
+
+	if !modeAllowed(e, ModeUnarchive) {
+		e.NotificationContext().AddNotificationMessage(NotificationMessage{
+			FieldName:    "unarchivable",
+			FuncName:     "Unarchive." + actionName + "()",
+			Notification: UnarchiveNotAllowedNotification{},
+		})
+	}
+	if e.GetID() == nil {
+		e.NotificationContext().AddNotificationMessage(NotificationMessage{
+			FieldName:    "id",
+			FuncName:     "Unarchive." + actionName + "()",
+			Notification: UnableToDeleteWithoutIDNotification{},
+		})
+	} else {
+		e.GetID().IsValid("id", e.NotificationContext())
+	}
+	validateValueObjectFields(e, e.NotificationContext(), rules.ignoredValueObjects(), rules.forcedValueObjects())
+	runAggregateValidations(e, ModeUnarchive, actionName)
 	return checkAllNotifications(e)
 }
 
@@ -534,15 +539,65 @@ func modeAllowed(e Entity, m EntityMode) bool {
 	return false
 }
 
-func runValueObjectValidations(e Entity) {
-	for _, entry := range e.valueObjectsToValidate() {
-		entry.vo.IsValid(entry.name, e.NotificationContext())
+// validateValueObjectFields validates EVERY value object carried by value — a
+// root entity OR an aggregate value object — in every mode. It discovers them
+// automatically: each exported, non-embedded field whose value is a value object
+// (raw or enum) validates by its Go field name on ctx; a nil pointer field is
+// skipped (absent). Fields in ignored are skipped, and forced VOs (those that are
+// not plain fields) run too. Dedup is by name so a forced field is not validated
+// twice. The ignore/forced sets come from the owner's Rules (r.IgnoreValueObject /
+// r.ValidateValueObject) — root and AVO alike.
+func validateValueObjectFields(value any, ctx *NotificationContext, ignored []string, forced []voEntry) {
+	ignoredSet := map[string]bool{}
+	for _, name := range ignored {
+		ignoredSet[name] = true
+	}
+	seen := map[string]bool{}
+
+	rv := reflect.ValueOf(value)
+	for rv.Kind() == reflect.Pointer {
+		rv = rv.Elem()
+	}
+	if rv.Kind() == reflect.Struct {
+		rt := rv.Type()
+		for i := 0; i < rt.NumField(); i++ {
+			f := rt.Field(i)
+			if f.Anonymous || !f.IsExported() {
+				continue
+			}
+			fv := rv.Field(i)
+			if fv.Kind() == reflect.Pointer {
+				if fv.IsNil() {
+					continue
+				}
+				fv = fv.Elem()
+			}
+			if ignoredSet[f.Name] || seen[f.Name] {
+				continue
+			}
+			v := validatorFor(fv.Interface())
+			if v == nil {
+				continue
+			}
+			seen[f.Name] = true
+			v.IsValid(f.Name, ctx)
+		}
+	}
+
+	// Explicitly forced value objects (r.ValidateValueObject) — VOs that are not
+	// plain fields — honoring the same ignore set and dedup.
+	for _, entry := range forced {
+		if ignoredSet[entry.name] || seen[entry.name] {
+			continue
+		}
+		seen[entry.name] = true
+		entry.vo.IsValid(entry.name, ctx)
 	}
 }
 
 // Phase 19: AggregateRootProvider only declares GetAggregateRoot. TypeNames that
 // exist in the AggregateRoot are auto-validated; the manual step
-// (AddAggregateValueObject) remains available for typeNames OUTSIDE the
+// (ValidateAggregateValueObject) remains available for typeNames OUTSIDE the
 // AggregateRoot (VOs without their own table, e.g. tags in a JSONB column).
 //
 // Collection name in the wire path is the camelCase plural of the Go typeName
@@ -572,11 +627,14 @@ func runAggregateValidations(e Entity, mode EntityMode, actionName string) {
 					if item.CurrentStatus == StatusRemoved {
 						continue
 					}
-					scoped := rootCtx.Scoped(
+					scoped := rootCtx.scopedForType(
+						reflect.TypeOf(item.Item),
 						NameSegment(collectionName),
 						IndexSegment(idx),
 					)
-					item.Item.BuildRules(actionName, e.getService(), NewRules(mode, scoped, reflect.TypeOf(item.Item)))
+					childRules := NewRules(mode, scoped, reflect.TypeOf(item.Item))
+					item.Item.BuildRules(actionName, e.getService(), childRules)
+					validateValueObjectFields(item.Item, scoped, childRules.ignoredValueObjects(), childRules.forcedValueObjects())
 					idx++
 				}
 			}
@@ -587,8 +645,10 @@ func runAggregateValidations(e Entity, mode EntityMode, actionName string) {
 		if _, mapped := mappedTypeNames[entry.name]; mapped {
 			continue
 		}
-		scoped := rootCtx.Scoped(NameSegment(entry.name))
-		entry.avo.BuildRules(actionName, e.getService(), NewRules(mode, scoped, reflect.TypeOf(entry.avo)))
+		scoped := rootCtx.scopedForType(reflect.TypeOf(entry.avo), NameSegment(entry.name))
+		childRules := NewRules(mode, scoped, reflect.TypeOf(entry.avo))
+		entry.avo.BuildRules(actionName, e.getService(), childRules)
+		validateValueObjectFields(entry.avo, scoped, childRules.ignoredValueObjects(), childRules.forcedValueObjects())
 	}
 }
 
@@ -630,7 +690,7 @@ func applyFieldAliases(e Entity) {
 
 func ensureInit(e Entity) {
 	if e.NotificationContext() == nil {
-		e.initWithName(classNameOf(e))
+		e.initWithName(classNameOf(e), reflect.TypeOf(e))
 	}
 }
 

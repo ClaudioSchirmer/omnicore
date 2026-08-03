@@ -22,7 +22,9 @@ r.IfDisplay(func() { ... })         // see "key facts" below — inert today</co
       <tr><td><code>domain.IsValid(e, ModeInsert, svc)</code></td><td><code>ModeInsert</code></td><td><code>"isValid"</code> (fixed)</td></tr>
       <tr><td><code>domain.IsValid(e, ModeUpdate, svc)</code></td><td><code>ModeUpdate</code></td><td><code>"isValid"</code> (fixed)</td></tr>
       <tr><td><code>domain.IsValid(e, ModeDelete, svc)</code></td><td><code>ModeDelete</code></td><td><code>"isValid"</code> (fixed)</td></tr>
-      <tr><td><code>domain.IsValid(e, ModeArchive / ModeUnarchive / ModeDisplay, svc)</code></td><td>—</td><td><code>BuildRules</code> not invoked; <code>IsValid</code> just re-collects existing notifications</td></tr>
+      <tr><td><code>domain.IsValid(e, ModeArchive, svc)</code></td><td><code>ModeArchive</code></td><td><code>"isValid"</code> (fixed)</td></tr>
+      <tr><td><code>domain.IsValid(e, ModeUnarchive, svc)</code></td><td><code>ModeUnarchive</code></td><td><code>"isValid"</code> (fixed)</td></tr>
+      <tr><td><code>domain.IsValid(e, ModeDisplay, svc)</code></td><td>—</td><td><code>BuildRules</code> not invoked; <code>IsValid</code> just re-collects existing notifications</td></tr>
     </tbody>
   </table>
 

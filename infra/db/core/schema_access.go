@@ -140,7 +140,9 @@ func (s *TableSchema) GoFieldValues(e any) map[string]any {
 		if f.index < 0 {
 			continue
 		}
-		out[f.goName] = v.Field(f.index).Interface()
+		// A value-object field surfaces as its underlying scalar in the audit
+		// timeline (unwrapVO is a no-op for a plain field).
+		out[f.goName] = unwrapVO(v.Field(f.index).Interface())
 	}
 	return out
 }
@@ -165,13 +167,23 @@ func (s *TableSchema) PayloadColumnTypes() map[string]reflect.Type {
 	out := map[string]reflect.Type{}
 	stringT := reflect.TypeOf("")
 	timeT := reflect.TypeOf(time.Time{})
+	// A value-object field is carried in the payload as its UNDERLYING scalar
+	// (the write path unwraps it), so the read-side decoder must coerce against
+	// the underlying, not the named VO type — otherwise an int/time VO would miss
+	// the decoder's exact-type/kind cases.
+	resolveType := func(ft reflect.Type) reflect.Type {
+		if _, u, ok := valueObjectField(ft); ok {
+			return u
+		}
+		return ft
+	}
 	addFields := func(sc *TableSchema) {
 		if sc == nil || s.typ == nil {
 			return
 		}
 		for _, f := range sc.fields {
 			if f.index >= 0 {
-				out[f.column] = s.typ.Field(f.index).Type
+				out[f.column] = resolveType(s.typ.Field(f.index).Type)
 			}
 		}
 	}
@@ -201,7 +213,7 @@ func (s *TableSchema) PayloadColumnTypes() map[string]reflect.Type {
 		out[l.parentIDColumn] = stringT
 		if s.typ != nil {
 			for col, idx := range l.scanByCol {
-				out[col] = s.typ.Field(idx).Type
+				out[col] = resolveType(s.typ.Field(idx).Type)
 			}
 		}
 		addManaged(l.base)

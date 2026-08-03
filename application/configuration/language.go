@@ -4,27 +4,26 @@ import "github.com/ClaudioSchirmer/omnicore/domain"
 
 type Language int
 
+// Explicit values (never bare iota): reordering this block must never change a
+// persisted number.
 const (
-	LangUnknown Language = iota
-	LangPTBR
-	LangENG
-	LangES
-	LangFR
-	LangDE
-	LangIT
-	LangNL
+	LangUnknown Language = 0
+	LangPTBR    Language = 1
+	LangENG     Language = 2
+	LangES      Language = 3
+	LangFR      Language = 4
+	LangDE      Language = 5
+	LangIT      Language = 6
+	LangNL      Language = 7
 )
 
-func (l Language) Value() int {
-	return int(l)
-}
+// Values is the closed set (Unknown excluded); the framework validates
+// membership against it — Language writes no IsValid.
+func (l Language) Value() int         { return int(l) }
+func (l Language) Values() []Language { return AllLanguages() }
 
 func (l Language) UnknownNotification() domain.Notification {
 	return InvalidLanguageDomainNotification{}
-}
-
-func (l Language) IsValid(fieldName string, ctx *domain.NotificationContext) bool {
-	return domain.ValidateEnum[int](l, fieldName, ctx)
 }
 
 func (l Language) String() string {

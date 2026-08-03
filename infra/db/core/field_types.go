@@ -22,11 +22,13 @@ import (
 // lottery on some engine — the panic converts that into a
 // deterministic construction error that teaches the fix.
 //
-// Matching is by IDENTICAL type, never by kind: a named type over a
-// supported underlying (a `type Status string` enum) is deliberately
-// rejected — drivers diverge on named types, so the closed set stays
-// literal. json.RawMessage is the one sanctioned alias (a JSON payload
-// column, text on MySQL / json(b) on Postgres).
+// Matching is by IDENTICAL type, never by kind — drivers diverge on named
+// types, so the closed set stays literal. A named type is accepted ONLY as a
+// value object (Field() detects a ValueObject/EnumValueObject and validates its
+// UNDERLYING against this set, since the write path unwraps it to the underlying
+// and the read path reconstructs it — the driver never binds the named type); a
+// non-VO named type is still rejected. json.RawMessage is the one sanctioned
+// alias (a JSON payload column, text on MySQL / json(b) on Postgres).
 var supportedFieldTypes = func() map[reflect.Type]struct{} {
 	types := []reflect.Type{
 		reflect.TypeOf(domain.ID{}), reflect.TypeOf((*domain.ID)(nil)),

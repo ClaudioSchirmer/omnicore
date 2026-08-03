@@ -215,3 +215,14 @@ func TestNotificationContext_Clear_FromScoped(t *testing.T) {
 		t.Fatal("expected Clear from scoped to clear root messages")
 	}
 }
+
+// Emitting into a nil context is a no-op, never a panic. This makes nil-safety
+// a framework capability: a ValueObjectValidator (or any caller) can emit via
+// ctx.AddNotification / ctx.AddNotificationMessage without guarding the ctx
+// itself — the emit sink absorbs a nil receiver. A panic here fails the test.
+func TestNotificationContext_NilReceiver_IsNoOp(t *testing.T) {
+	var c *NotificationContext
+	c.AddNotificationMessage(NotificationMessage{FieldName: "x", Notification: RequiredFieldNotification{}})
+	c.AddNotification("y", RequiredFieldNotification{})
+	c.AddNotification("z", InvalidIDUUIDNotification{}, "value")
+}

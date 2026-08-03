@@ -1,0 +1,130 @@
+<h2>Value objects — <code>ValueObject</code> and <code>EnumValueObject</code></h2>
+  <p>A <strong>value object</strong> is a self-validating domain primitive: a field with a rule attached, so the rule lives in exactly one place instead of being copy-pasted into every aggregate that carries the field. There are two kinds, split by <em>who owns the rule</em> — the two sections below.</p>
+
+  <div class="grid-2">
+    <div class="card">
+      <p><strong><code>ValueObject[T]</code> — the raw kind.</strong> A primitive whose rule is bespoke — a regex, a length cap, a format check (Email, Phone, ZipCode, Document). It writes its own <code>IsValid</code>.</p>
+      <pre><code>type ValueObject[T any] interface {
+    Value() T
+    IsValid(fieldName string, ctx *NotificationContext) bool
+}</code></pre>
+    </div>
+    <div class="card">
+      <p><strong><code>EnumValueObject[E, T]</code> — the closed-set kind.</strong> A primitive backed by an <code>int</code> or a <code>string</code> whose valid values are a fixed set. It does NOT write <code>IsValid</code> — it declares its members and the framework validates membership.</p>
+      <pre><code>type EnumValueObject[E comparable, T comparable] interface {
+    comparable
+    Value() T
+    Values() []E
+    UnknownNotification() Notification
+}</code></pre>
+    </div>
+  </div>
+
+  <h3>Value objects — the raw kind</h3>
+
+  <h4>What to declare</h4>
+  <p>Own the rule and the notification it emits; stay mode-less and root-less (an Email is a valid Email regardless of which aggregate carries it). Two methods: <code>Value() T</code> (the underlying primitive) and <code>IsValid</code> (the rule). Declaring the field as this type is all you do — the framework discovers and validates it.</p>
+  <pre><code>type Email string
+
+func (e Email) Value() string { return string(e) }
+func (e Email) IsValid(fieldName string, ctx *domain.NotificationContext) bool {
+    if e == "" {
+        ctx.AddNotification(fieldName, domain.RequiredFieldNotification{})
+        return false
+    }
+    if !emailRegex.MatchString(string(e)) {
+        ctx.AddNotification(fieldName, InvalidEmailNotification{}, string(e))
+        return false
+    }
+    return true
+}</code></pre>
+
+  <h4>Validation is automatic (both kinds)</h4>
+  <p>You never wire value-object validation by hand — this applies to raw VOs AND enums. The framework discovers a struct's VO fields by reflection and validates them, identically for a root entity AND for an aggregate value object, on every write (insert, update, delete, archive, unarchive):</p>
+  <ul>
+    <li>Every exported field whose value is a value object runs its <code>IsValid</code> (raw) or its membership check (enum), keyed by the Go field name. A <code>nil</code> pointer field is skipped (absent). Declaring the field as a VO type IS the declaration — no registration step.</li>
+    <li>An aggregate value object (a child — Address, Dependent, …) gets the same treatment: after the framework runs the child's <code>BuildRules</code> it discovers and validates the child's VO fields in a collection-scoped context, so an invalid <code>Address.ZipCode</code> surfaces as <code>addresses[0].zipCode</code>. The child's <code>BuildRules</code> carries only its non-VO rules.</li>
+  </ul>
+
+  <h4>Ignore &amp; Force</h4>
+  <p>Every VO field validates in every mode by default. Opt one out with <code>r.IgnoreValueObject("Field")</code> inside a <code>BuildRules</code> mode gate (the exclusion applies only to that mode); force a VO that is not a plain field (computed, in a slice/map) with <code>r.ValidateValueObject(name, vo)</code>. Both live on the <code>*Rules</code> handed to every <code>BuildRules</code>, root and aggregate value object alike.</p>
+  <pre><code>func (u *User) BuildRules(actionName string, svc domain.Service, r *domain.Rules) {
+    r.IfDelete(func() {
+        r.IgnoreValueObject("Email") // don't validate Email format on delete
+    })
+}</code></pre>
+
+  <h4>Field labels</h4>
+  <p>The label of a field lives on the aggregate's struct tag (<code>labelKey:"UserEmailField"</code>), next to the field — never inside the value object. The framework resolves it at emit and stamps it on the notification, and the audit pipeline writes the same key. A value object never decides how a field is presented to a consumer.</p>
+
+  <h3>Enum value objects</h3>
+
+  <h4>What to declare</h4>
+  <p>A closed classification set. <code>E</code> is the enum type, <code>T</code> its underlying scalar. You declare four things and the framework does the rest:</p>
+  <ul>
+    <li>the <code>const</code> block with <strong>explicit values</strong> — an <code>int</code> (stable number) or a <code>string</code> (the wire/persisted token). The zero value (<code>0</code> / <code>""</code>) is the <code>Unknown</code> sentinel and is never a member.</li>
+    <li><code>Value() T</code> — the underlying scalar (mirrors a raw VO's <code>Value()</code>).</li>
+    <li><code>Values() []E</code> — the member set (Unknown excluded). Go has no runtime metadata for a named type's constants (this is why <code>stringer</code> exists), so it is declared per enum.</li>
+    <li><code>UnknownNotification()</code> — the notification emitted when a value is outside the set.</li>
+  </ul>
+  <pre><code>type Relationship string // string-backed → Value() string. An int enum would be Value() int.
+
+const (
+    RelationshipUnknown Relationship = ""       // zero sentinel — never a member
+    RelationshipSpouse  Relationship = "spouse"
+    RelationshipSon     Relationship = "son"
+)
+
+var relationshipMembers = []Relationship{RelationshipSpouse, RelationshipSon}
+
+func (r Relationship) Value() string           { return string(r) }
+func (r Relationship) Values() []Relationship   { return relationshipMembers }
+func (r Relationship) UnknownNotification() domain.Notification { return UnknownRelationshipNotification{} }</code></pre>
+  <p><strong>No hand-written <code>IsValid</code>.</strong> The value is valid iff it is one of <code>Values()</code>; the <code>Unknown</code> sentinel and any out-of-range value fail. Membership validation is automatic — the same auto-discovery that runs raw VOs (see <em>Validation is automatic</em> above).</p>
+
+  <h4>Parse a wire value — <code>EnumByValue</code></h4>
+  <p><code>domain.EnumByValue[E](raw any) E</code> maps a raw <code>int</code> or <code>string</code> (straight off the wire) to the matching member, or the zero <code>Unknown</code> sentinel when nothing matches. It is the closed-set gate at the boundary: unknown input <strong>converges to <code>Unknown</code></strong>, which the automatic validation then rejects (422). Use it in the command's <code>ApplyTo</code> to build the entity.</p>
+  <pre><code>u.UserProfile  = domain.EnumByValue[vos.UserProfile](1)         // int 1  → UserProfileAdmin
+d.Relationship = domain.EnumByValue[vos.Relationship]("spouse") // "spouse" → RelationshipSpouse
+_              = domain.EnumByValue[vos.UserProfile](99)        // junk    → UserProfileUnknown (fails validation)</code></pre>
+
+  <h4>The underlying value — <code>Value()</code></h4>
+  <p>The inverse of <code>EnumByValue</code>: the member's raw scalar, for building the response in <code>FromEntity</code>.</p>
+  <pre><code>u.UserProfile.Value()  // int    → 1
+d.Relationship.Value() // string → "spouse"</code></pre>
+
+  <h4>Translate a value — <code>EnumDescriptionKey</code> + <code>Translator.EnumDescription</code></h4>
+  <p>An enum value renders per-locale through the translation layer. The domain exposes a stable key; the boundary translates it with the request language — the domain never translates.</p>
+  <ul>
+    <li><code>domain.EnumDescriptionKey(v)</code> → <code>"&lt;Type&gt;.&lt;value&gt;"</code> — <code>"UserProfile.1"</code> (int), <code>"Relationship.spouse"</code> (string).</li>
+    <li><code>translator.EnumDescription(lang, v)</code> resolves that key with the request language, falling back to the key itself when no catalog entry exists. Register the value keys in your catalogs like any other key.</li>
+  </ul>
+  <pre><code>translator.EnumDescription(appCtx.Language(), u.UserProfile) // "Administrator" / "Administrador" (or "UserProfile.1")</code></pre>
+
+  <h4>Validate membership — <code>ValidateEnum</code></h4>
+  <p>Normally you never call this — membership validates automatically off the entity's fields. <code>domain.ValidateEnum(e, fieldName, ctx)</code> is the standalone entry for a value that is not a plain field: it returns whether <code>e</code> is a declared member and emits the <code>UnknownNotification</code> when it is not (the sentinel or an out-of-range value).</p>
+
+  <h4>Members, Unknown &amp; comparison</h4>
+  <ul>
+    <li><code>v.Values()</code> — the declared member set (<code>[]E</code>, Unknown excluded).</li>
+    <li><code>v.UnknownNotification()</code> — the notification for an invalid value.</li>
+    <li><code>v == vos.UserProfileAdmin</code> — an enum value is <code>comparable</code>; compare it directly, no accessor needed.</li>
+  </ul>
+
+  <div class="box">
+    <strong>Layer boundary.</strong> The domain declares value objects and their notification/description <em>keys</em>; the human string is produced at the pipeline boundary by the translation layer with the <code>AppContext</code> language. A value object never resolves a translation itself.
+  </div>
+
+  <h3>Persistence &amp; the read side</h3>
+  <p>A value-object field persists as its <strong>underlying scalar</strong> — the value <code>Value()</code> returns — and is reconstructed as the VO on the way back. You declare the field with the VO type on both the domain entity and the <code>TableSchema</code> (<code>Field("Email", "email")</code> with <code>Email vos.Email</code>); the framework does the rest, at every schema position (root, sibling, shared-base, aggregate-child, child-sibling):</p>
+  <ul>
+    <li><strong>Write</strong> — the persister unwraps the VO to its underlying before binding, so the SQL driver only ever sees a plain <code>string</code>/<code>int</code> (never the named type, which drivers handle inconsistently — this is exactly why a bare named type is otherwise rejected). The same unwrapped value flows into the outbox payload and the audit timeline. A nil nullable VO (<code>*vos.Phone</code>) binds as SQL NULL.</li>
+    <li><strong>Read</strong> — a relational load reconstructs the field: a raw VO is a type conversion (<code>vos.Email(col)</code>); an <strong>enum</strong> converges through membership — a stored value outside the declared set (a tampered or legacy row) reconstructs as the <code>Unknown</code> sentinel, never a phantom member. Reconstruction does NOT re-validate (validity is a write-boundary concern, like <code>domain.ID</code>).</li>
+    <li><strong>Both read backings</strong> — the value round-trips identically whether the read is served from the Mongo projection or straight from the relational SoR (<code>RelationalSource</code>): the projected document carries the underlying scalar, and the response DTO field (which may itself be typed <code>vos.Email</code> — or a plain <code>string</code>; both are valid) is populated by the same reflection, with the enum converge applied so the wire matches the entity.</li>
+    <li><strong>Every surface</strong> — REST, GraphQL and gRPC bind a VO request field and render a VO response field natively (JSON/Kind-based); OpenAPI and the GraphQL SDL describe a VO by its underlying scalar type; CSV/XLSX export the underlying value.</li>
+  </ul>
+  <p>The one rule: a persisted value object is a <strong>named type over a single supported scalar</strong> (<code>type Email string</code>, <code>type UserProfile int</code>) — not a struct with hidden fields. The underlying must belong to the closed persistable set (see <em>Table schema</em>); a VO over an unsupported underlying is a boot failure at the <code>Field(...)</code> call.</p>
+
+  <div class="box">
+    <strong>Standardized value in, standardized value out.</strong> The REST/GraphQL/gRPC boundary accepts and returns one canonical representation regardless of language — the underlying scalar. <code>EnumDescription</code> stays a deliberate, manual, per-request helper for showing a localized label; it is never woven into persistence or audit, which store the raw value.
+  </div>

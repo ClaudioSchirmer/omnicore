@@ -247,7 +247,7 @@ r.WithSchema(UserSchema())
         or general cross-mode rules applied to the item.
     </p>
     <p>
-        <code>AddAggregateValueObject</code> remains available for typeNames <strong>outside</strong> the declared
+        <code>ValidateAggregateValueObject</code> remains available for typeNames <strong>outside</strong> the declared
         boundary (VOs without their own table, e.g.: tags serialized in a JSONB column). TypeNames covered by the
         automatic step are ignored in the manual slice to avoid double validation.
     </p>

@@ -87,7 +87,17 @@ func sharedBaseValues(base *TableSchema, src domain.Entity) (domain.Fields, stri
 	var nk string
 	for _, goName := range base.GoFields() {
 		col, _ := base.ColumnOf(goName)
+		// The base is type-less, so a value-object shared field is unwrapped by
+		// value here (the same seam writeFields uses for a typed schema): the
+		// underlying scalar binds, a nil nullable VO becomes SQL NULL.
 		val := rv.FieldByName(goName).Interface()
+		if domain.IsValueObject(val) || domain.IsEnumValueObject(val) {
+			if u, ok := domain.ValueObjectValue(val); ok {
+				val = u
+			} else {
+				val = nil
+			}
+		}
 		fields[col] = val
 		if goName == nkGo {
 			nk = scalarString(val)
@@ -99,6 +109,9 @@ func sharedBaseValues(base *TableSchema, src domain.Entity) (domain.Fields, stri
 // scalarString renders a (possibly pointer) scalar as the string fed to the
 // deterministic-id hash. A nil pointer yields "".
 func scalarString(v any) string {
+	if v == nil {
+		return ""
+	}
 	rv := reflect.ValueOf(v)
 	if rv.Kind() == reflect.Pointer {
 		if rv.IsNil() {
