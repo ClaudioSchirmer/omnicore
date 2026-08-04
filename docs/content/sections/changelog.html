@@ -59,6 +59,20 @@
                 explicit <code>ValidateValueObject</code>/<code>vo.IsValid</code>/<code>domain.ValidateEnum</code> calls for
                 plain VO fields (root and AVO); move any <code>u.IgnoreValueObject</code> to <code>r.IgnoreValueObject</code>;
                 VO validation now also runs on delete/archive/unarchive.</li>
+            <li><strong>Fixed</strong> — <strong>Archive/Unarchive run the standard validation pass, and
+                <code>IsValid</code> checks them.</strong> <code>getArchivable</code>/<code>getUnarchivable</code> inlined
+                their own validation and never ran the value-object or aggregate-child passes; they now delegate to
+                <code>validateForArchive</code>/<code>validateForUnarchive</code> (mirroring insert/update/delete), so VO
+                fields and children validate under <code>ModeArchive</code>/<code>ModeUnarchive</code> too.
+                <code>domain.IsValid(e, ModeArchive/ModeUnarchive, svc)</code> previously fell through its mode switch as a
+                silent no-op (returned valid); it now dispatches to those functions.</li>
+            <li><strong>Fixed</strong> — <strong>Value-object and enum notifications carry the field's
+                <code>labelKey</code> again.</strong> Moving field validation into value objects routed their notifications
+                through <code>NotificationContext.AddNotification</code>, which — unlike <code>Rules.AddNotification</code> —
+                had no entity type, so <code>LabelKey</code> came out empty and the wire <code>fieldLabel</code> was dropped.
+                <code>NotificationContext</code> is now born with the entity type it describes and resolves the label at emit.
+                Internal only, no public surface changes; audit labels were never affected (they resolve from
+                <code>TableSchema</code>).</li>
         </ul>
     </div>
     <div class="release">

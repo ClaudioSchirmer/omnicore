@@ -36,6 +36,14 @@ with `1.0.0`.
   / `NewValueObjectValue`. **No migration:** existing raw-scalar fields are
   unchanged; a value-object field that previously had to be mapped to its
   underlying by hand can now be declared directly.
+- **`domain.EnumByValue[E](raw any) E`** — parses an int or string wire value to
+  its enum member (the inverse of `Value()`), converging unknown input to the
+  `Unknown` sentinel (the closed-set gate at the boundary).
+- **`Translator.EnumDescription(lang, enum)`** — resolves an enum value's
+  `EnumDescriptionKey` (`"<Type>.<value>"`) to its per-locale text at the
+  boundary, falling back to the key when no catalog entry exists.
+- New **Value objects** manual section documenting both `ValueObject` and
+  `EnumValueObject`.
 
 ### Changed
 
@@ -76,17 +84,6 @@ with `1.0.0`.
   `u.IgnoreValueObject` to `r.IgnoreValueObject`; VO validation now also runs on
   delete/archive/unarchive, so a field you must not check there needs an
   `r.IgnoreValueObject` in the matching `IfXxx`.
-
-### Added
-
-- **`domain.EnumByValue[E](raw any) E`** — parses an int or string wire value to
-  its enum member (the inverse of `Value()`), converging unknown input to the
-  `Unknown` sentinel (the closed-set gate at the boundary).
-- **`Translator.EnumDescription(lang, enum)`** — resolves an enum value's
-  `EnumDescriptionKey` (`"<Type>.<value>"`) to its per-locale text at the
-  boundary, falling back to the key when no catalog entry exists.
-- New **Value objects** manual section documenting both `ValueObject` and
-  `EnumValueObject`.
 
 ### Fixed
 
