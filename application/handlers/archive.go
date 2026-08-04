@@ -49,7 +49,7 @@ func (h *ArchiveCommandHandler[T, Cmd, TResult]) Handle(ctx *configuration.AppCo
 	if err := cmd.ApplyTo(ctx, current); err != nil {
 		return zero, err
 	}
-	archivable, err := domain.GetArchivable(current, h.Service, "GetArchivable")
+	archivable, err := domain.GetArchivable(current, persistence.ScopeService(h.Service, ctx), "GetArchivable")
 	if err != nil {
 		return zero, err
 	}

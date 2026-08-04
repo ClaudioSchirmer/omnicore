@@ -42,7 +42,7 @@ func (h *PartialUpdateCommandHandler[T, Cmd, TResult]) Handle(ctx *configuration
 		return zero, err
 	}
 	apply := func(entity T) error { return cmd.ApplyPartiallyTo(ctx, entity) }
-	updatable, err := domain.GetPartialUpdatable(current, apply, h.Service, "GetPartialUpdatable")
+	updatable, err := domain.GetPartialUpdatable(current, apply, persistence.ScopeService(h.Service, ctx), "GetPartialUpdatable")
 	if err != nil {
 		return zero, err
 	}

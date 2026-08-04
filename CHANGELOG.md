@@ -11,6 +11,28 @@ with `1.0.0`.
 
 ## [Unreleased]
 
+## [0.44.0] - 2026-08-04
+
+### Added
+
+- **A domain `Service` can now run its probe under the request context —
+  `persistence.ScopedServiceProvider`.** A `RequiresService()` entity's service
+  (a uniqueness pre-check, a cardinality probe) is invoked from inside
+  `BuildRules`, whose port is pure and carries no `context`; until now the infra
+  implementation had to run its query on `context.Background()`, outside the
+  request deadline (`http.requestTimeoutSeconds`), cancellation, and trace — the
+  one read in the system still doing so. A service implementation may now
+  implement the optional `persistence.ScopedServiceProvider` (`ScopedService(ctx)
+  domain.Service`, returning a per-request shallow copy that closes over the
+  ctx); the Auto command handlers bind it automatically via
+  `persistence.ScopeService(svc, ctx)` before `domain.Get*`, and a custom
+  (manual) command handler calls the same helper with the request ctx in hand.
+  Mirror of the read-side `ScopedReaderProvider`. **Domain is untouched** — the
+  `Service` marker port, `BuildRules`, and the `Get*` family keep their exact
+  signatures; the binding lives entirely in application + infra. Additive and
+  backward compatible: a service that does not implement the provider is passed
+  through unchanged.
+
 ## [0.43.0] - 2026-08-04
 
 ### Added

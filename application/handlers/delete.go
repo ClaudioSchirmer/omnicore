@@ -48,7 +48,7 @@ func (h *DeleteCommandHandler[T, Cmd, TResult]) Handle(ctx *configuration.AppCon
 	if err := cmd.ApplyTo(ctx, current); err != nil {
 		return zero, err
 	}
-	deletable, err := domain.GetDeletable(current, h.Service, "GetDeletable")
+	deletable, err := domain.GetDeletable(current, persistence.ScopeService(h.Service, ctx), "GetDeletable")
 	if err != nil {
 		return zero, err
 	}

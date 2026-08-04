@@ -46,7 +46,7 @@ func (h *UpdateCommandHandler[T, Cmd, TResult]) Handle(ctx *configuration.AppCon
 		return zero, err
 	}
 	apply := func(entity T) error { return cmd.ApplyTo(ctx, entity) }
-	updatable, err := domain.GetUpdatable(current, apply, h.Service, "GetUpdatable")
+	updatable, err := domain.GetUpdatable(current, apply, persistence.ScopeService(h.Service, ctx), "GetUpdatable")
 	if err != nil {
 		return zero, err
 	}

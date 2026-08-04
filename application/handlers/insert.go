@@ -55,7 +55,7 @@ func (h *InsertCommandHandler[T, Cmd, TResult]) Handle(ctx *configuration.AppCon
 	if err != nil {
 		return zero, err
 	}
-	insertable, err := domain.GetInsertable(entity, h.Service, "GetInsertable")
+	insertable, err := domain.GetInsertable(entity, persistence.ScopeService(h.Service, ctx), "GetInsertable")
 	if err != nil {
 		return zero, err
 	}
