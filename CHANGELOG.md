@@ -57,11 +57,11 @@ with `1.0.0`.
   from the argument without the caller spelling out `T`. `domain.ValidateEnum`
   now reports whether a value is a declared member, so the `Unknown` sentinel AND
   any out-of-range value fail (previously a zero-value guard that let out-of-range
-  values pass). `BaseEntity.AddValueObject` is **renamed** `ValidateValueObject`
-  (siblings `AddAggregateValueObject`/`AddAggregateValueObjects` →
-  `ValidateAggregateValueObject`/`ValidateAggregateValueObjects`) and widens to
-  `func(name string, vo any)`, validating an enum by membership without a wrapper.
-  `EventType` and `Language` migrate to the new shape. **Migration:** for each
+  values pass). The manual aggregate-validation methods are renamed in place on
+  `BaseEntity`: `AddAggregateValueObject`/`AddAggregateValueObjects` →
+  `ValidateAggregateValueObject`/`ValidateAggregateValueObjects` (for AVOs outside
+  the auto-discovered boundary). `EventType` and `Language` migrate to the new
+  shape. **Migration:** for each
   enum value object drop `IsValid()`, keep `Value() T`, add `Values() []E`, give
   members **explicit** values (never bare `iota` — an `int` stores a number, a
   `string` stores its token), and replace any `enum.IsValid(field, ctx)` call
@@ -75,13 +75,17 @@ with `1.0.0`.
   aggregate value object — a child's VO fields validate in its collection-scoped
   context right after its `BuildRules`, so an AVO's `BuildRules` no longer
   validates a VO by hand. There is no registration step. Opt out with
-  `r.IgnoreValueObject("Field")` inside a mode gate; force a non-field VO
-  (computed, in a slice/map) with `r.ValidateValueObject(name, vo)` — both now
-  live on the `*Rules` handed to every `BuildRules` (root and AVO), replacing the
-  previous `BaseEntity.IgnoreValueObject`/`ValidateValueObject`. **Migration:**
-  drop the explicit `ValidateValueObject`/`vo.IsValid`/`domain.ValidateEnum` calls
-  for plain VO fields (root and AVO — they run automatically); move any
-  `u.IgnoreValueObject` to `r.IgnoreValueObject`; VO validation now also runs on
+  `r.IgnoreValueObject("Field")` (**new**) inside a mode gate; force a VO the
+  reflection pass can't reach — computed, or held in a slice/map — with
+  `r.ValidateValueObject(name, vo)`. Both live on the `*Rules` handed to every
+  `BuildRules` (root and AVO). `r.ValidateValueObject` is the **successor of the
+  old `BaseEntity.AddValueObject`** — moved to `Rules`, widened to
+  `func(name string, vo any)` so it takes a raw VO or an enum directly.
+  **Migration:** replace each `u.AddValueObject(name, vo)` — for a plain exported
+  field just **delete it** (it is auto-discovered now); for a non-field VO rewrite
+  it as `r.ValidateValueObject(name, vo)` inside `BuildRules`. Also drop any
+  hand-written `vo.IsValid`/`domain.ValidateEnum` call for a plain VO field (root
+  and AVO — they run automatically). VO validation now also runs on
   delete/archive/unarchive, so a field you must not check there needs an
   `r.IgnoreValueObject` in the matching `IfXxx`.
 

@@ -35,9 +35,9 @@
                 <code>UnknownNotification()</code>; it no longer writes <code>IsValid</code>. <code>domain.ValidateEnum</code>
                 reports whether a value is a declared member, so the <code>Unknown</code> sentinel AND any out-of-range value
                 now fail (previously it was a zero-value guard that let out-of-range values pass).
-                <code>BaseEntity.AddValueObject</code> is renamed <code>ValidateValueObject</code> (siblings
-                <code>AddAggregateValueObject(s)</code> → <code>ValidateAggregateValueObject(s)</code>) and accepts both kinds
-                (<code>func(name string, vo any)</code>), validating an enum by membership without a wrapper.
+                The manual aggregate-validation methods are renamed in place on <code>BaseEntity</code>:
+                <code>AddAggregateValueObject(s)</code> → <code>ValidateAggregateValueObject(s)</code> (for AVOs outside the
+                auto-discovered boundary).
                 New helpers: <code>domain.EnumByValue[E](raw any)</code> parses an int/string wire value to a member (the
                 inverse of <code>Value()</code>; unknown input converges to the sentinel), and
                 <code>Translator.EnumDescription(lang, enum)</code> renders an enum's <code>EnumDescriptionKey</code> per-locale
@@ -52,13 +52,16 @@
                 archive, unarchive), keyed by its Go field name (a <code>nil</code> pointer field is skipped). This applies to a
                 root entity AND to each aggregate value object — a child's VO fields validate in its collection-scoped context
                 right after its <code>BuildRules</code>, so an AVO's <code>BuildRules</code> no longer validates a VO by hand.
-                No registration step. Opt out with <code>r.IgnoreValueObject("Field")</code> inside a mode gate; force a
-                non-field VO with <code>r.ValidateValueObject(name, vo)</code> — both now live on the <code>*Rules</code> handed
-                to every <code>BuildRules</code> (root and AVO), replacing the previous
-                <code>BaseEntity.IgnoreValueObject</code>/<code>ValidateValueObject</code>. <strong>Migration:</strong> drop the
-                explicit <code>ValidateValueObject</code>/<code>vo.IsValid</code>/<code>domain.ValidateEnum</code> calls for
-                plain VO fields (root and AVO); move any <code>u.IgnoreValueObject</code> to <code>r.IgnoreValueObject</code>;
-                VO validation now also runs on delete/archive/unarchive.</li>
+                No registration step. Opt out with <code>r.IgnoreValueObject("Field")</code> (<strong>new</strong>) inside a
+                mode gate; force a VO the reflection pass can't reach — computed, or held in a slice/map — with
+                <code>r.ValidateValueObject(name, vo)</code>. Both live on the <code>*Rules</code> handed to every
+                <code>BuildRules</code> (root and AVO). <code>r.ValidateValueObject</code> is the <strong>successor of the old
+                <code>BaseEntity.AddValueObject</code></strong> — moved to <code>Rules</code>, widened to
+                <code>func(name string, vo any)</code> so it takes a raw VO or an enum directly. <strong>Migration:</strong>
+                replace each <code>u.AddValueObject(name, vo)</code> — for a plain exported field just <strong>delete it</strong>
+                (auto-discovered now); for a non-field VO rewrite it as <code>r.ValidateValueObject(name, vo)</code> inside
+                <code>BuildRules</code>. Drop any hand-written <code>vo.IsValid</code>/<code>domain.ValidateEnum</code> call for a
+                plain VO field. VO validation now also runs on delete/archive/unarchive.</li>
             <li><strong>Fixed</strong> — <strong>Archive/Unarchive run the standard validation pass, and
                 <code>IsValid</code> checks them.</strong> <code>getArchivable</code>/<code>getUnarchivable</code> inlined
                 their own validation and never ran the value-object or aggregate-child passes; they now delegate to

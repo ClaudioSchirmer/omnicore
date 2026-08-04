@@ -46,12 +46,28 @@ func (e Email) IsValid(fieldName string, ctx *domain.NotificationContext) bool {
     <li>An aggregate value object (a child — Address, Dependent, …) gets the same treatment: after the framework runs the child's <code>BuildRules</code> it discovers and validates the child's VO fields in a collection-scoped context, so an invalid <code>Address.ZipCode</code> surfaces as <code>addresses[0].zipCode</code>. The child's <code>BuildRules</code> carries only its non-VO rules.</li>
   </ul>
 
-  <h4>Ignore &amp; Force</h4>
-  <p>Every VO field validates in every mode by default. Opt one out with <code>r.IgnoreValueObject("Field")</code> inside a <code>BuildRules</code> mode gate (the exclusion applies only to that mode); force a VO that is not a plain field (computed, in a slice/map) with <code>r.ValidateValueObject(name, vo)</code>. Both live on the <code>*Rules</code> handed to every <code>BuildRules</code>, root and aggregate value object alike.</p>
+  <h4>Adjusting the automatic pass — Ignore &amp; Force</h4>
+  <p><strong>Validation is automatic and you normally write nothing here.</strong> The framework discovers VOs by reflection over the entity's <strong>exported top-level fields</strong> and validates each one on every write — that already covers the overwhelming majority of cases. The two <code>*Rules</code> methods below are the exceptions, both available on the <code>r</code> handed to every <code>BuildRules</code> (root and aggregate value object alike).</p>
+
+  <p><strong>Skip one — <code>r.IgnoreValueObject("Field")</code>.</strong> The field <em>is</em> discovered automatically, but you want it excluded in a specific mode. Call it inside a mode gate, and the exclusion applies only to that mode:</p>
+  <pre><code>r.IfDelete(func() {
+    r.IgnoreValueObject("Email") // Email is auto-validated, but not on delete
+})</code></pre>
+
+  <p><strong>Add one the pass can't reach — <code>r.ValidateValueObject(name, vo)</code>.</strong> The reflection walks only <strong>exported fields whose own value is a value object</strong>, and it does <strong>not</strong> recurse. Three kinds of value object are therefore invisible to it, and only these need to be named by hand:</p>
+  <ul>
+    <li><strong>An element inside a slice or map</strong> — <code>Tags []vos.Tag</code>: the pass sees the <code>Tags</code> field (a slice, not a VO) and stops there; <code>Tags[0]</code> is never reached.</li>
+    <li><strong>An unexported field</strong> — reflection skips non-exported fields entirely.</li>
+    <li><strong>A computed VO that is not a field at all</strong> — a value you assemble on the fly from other data (there is no struct field for the pass to discover).</li>
+  </ul>
+  <p>For any of those, hand the VO to <code>r.ValidateValueObject(name, vo)</code> — <code>name</code> is the field label it reports under; it takes a raw VO or an enum directly. (This is the successor of the old <code>BaseEntity.AddValueObject</code>.)</p>
   <pre><code>func (u *User) BuildRules(actionName string, svc domain.Service, r *domain.Rules) {
-    r.IfDelete(func() {
-        r.IgnoreValueObject("Email") // don't validate Email format on delete
-    })
+    // slice element — not auto-discovered:
+    r.ValidateValueObject("PrimaryTag", u.Tags[0])
+
+    // computed — assembled here, no struct field exists for it:
+    phone := vos.Phone(u.AreaCode + u.LocalNumber)
+    r.ValidateValueObject("Phone", phone)
 }</code></pre>
 
   <h4>Field labels</h4>
