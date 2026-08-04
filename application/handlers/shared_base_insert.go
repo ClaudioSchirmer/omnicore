@@ -61,7 +61,7 @@ func (h *SharedBaseInsertCommandHandler[T, Cmd, TResult]) Handle(ctx *configurat
 		action = "GetUpsertable" // same ModeInsert, distinct actionName (BuildRules can branch)
 	}
 
-	insertable, err := domain.GetInsertable(entity, h.Service, action)
+	insertable, err := domain.GetInsertable(entity, persistence.ScopeService(h.Service, ctx), action)
 	if err != nil {
 		return zero, err
 	}

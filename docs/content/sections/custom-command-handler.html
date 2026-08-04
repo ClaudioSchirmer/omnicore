@@ -150,6 +150,17 @@ func (h *CreateCustomerHandler) Handle(
     // pronounces the ctx.
     return h.repo.Scope(ctx).Insert(insertable)
 }</code></pre>
+    <div class="note">
+        <strong>Service under the request ctx.</strong> This handler passes <code>nil</code> as the
+        <code>domain.Get*</code> service argument because <code>Customer</code> needs none. When the entity
+        declares <code>RequiresService() true</code>, pass
+        <code>persistence.ScopeService(svc, ctx)</code> in place of <code>nil</code> —
+        <code>domain.GetInsertable(customer, persistence.ScopeService(svc, ctx), "GetInsertable")</code>. That
+        is the one line the Auto handlers add for you; doing it here keeps the manual path
+        feature-equivalent, so a Service that implements <code>ScopedServiceProvider</code> runs its probe
+        under the request deadline / cancellation / trace instead of <code>context.Background()</code>
+        (see <a href="#auto-handlers">Domain Service via Auto handler</a>).
+    </div>
 
     <h4>4. Wire the route</h4>
     <pre><code>// internal/web/router.go

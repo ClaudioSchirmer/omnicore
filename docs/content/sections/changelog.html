@@ -7,6 +7,27 @@
 </div>
 <div class="changelog">
     <div class="release">
+        <div class="release-head"><span class="release-tag">v0.44.0</span><span class="release-date">August 4, 2026</span></div>
+        <ul>
+            <li><strong>Added</strong> — <strong>a domain <code>Service</code> can run its probe under the
+                request context — <code>persistence.ScopedServiceProvider</code>.</strong> A
+                <code>RequiresService()</code> entity's service (a uniqueness pre-check, a cardinality probe) is
+                called from inside <code>BuildRules</code>, whose port is pure and carries no
+                <code>context</code>; until now its infra implementation had to query on
+                <code>context.Background()</code> — outside the request deadline
+                (<code>http.requestTimeoutSeconds</code>), cancellation, and trace, the one read in the system
+                still doing so. A Service may now implement the optional
+                <code>persistence.ScopedServiceProvider</code> (<code>ScopedService(ctx) domain.Service</code>,
+                returning a per-request shallow copy that closes over the ctx); the Auto command handlers bind
+                it automatically via <code>persistence.ScopeService(svc, ctx)</code> before
+                <code>domain.Get*</code>, and a custom command handler calls the same helper. Mirror of the
+                read-side <code>ScopedReaderProvider</code>. <strong>Domain is untouched</strong> — the
+                <code>Service</code> marker port, <code>BuildRules</code> and the <code>Get*</code> family keep
+                their signatures; the binding lives entirely in application + infra. Additive and backward
+                compatible: a service that does not implement the provider is passed through unchanged.</li>
+        </ul>
+    </div>
+    <div class="release">
         <div class="release-head"><span class="release-tag">v0.43.0</span><span class="release-date">August 4, 2026</span></div>
         <ul>
             <li><strong>Added</strong> — <strong>Value objects are persisted end to end — any

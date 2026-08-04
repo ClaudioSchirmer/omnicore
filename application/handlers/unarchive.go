@@ -59,7 +59,7 @@ func (h *UnarchiveCommandHandler[T, Cmd, TResult]) Handle(ctx *configuration.App
 	if err := cmd.ApplyTo(ctx, sample); err != nil {
 		return zero, err
 	}
-	unarchivable, err := domain.GetUnarchivable(sample, h.Service, "GetUnarchivable")
+	unarchivable, err := domain.GetUnarchivable(sample, persistence.ScopeService(h.Service, ctx), "GetUnarchivable")
 	if err != nil {
 		return zero, err
 	}

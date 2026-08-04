@@ -391,6 +391,67 @@ users.Post("/", fwweb.CommandWithBody(d.Pipeline,
         gives a cleaner error message on the happy path and keeps the rule declared where one would expect.
     </div>
 
+    <h3>Binding the request context to a Service probe (<code>ScopedServiceProvider</code>)</h3>
+    <p>
+        <code>BuildRules</code> is a domain method: its port is pure and receives no
+        <code>context</code>. So a Service whose implementation runs a query (the <code>EmailExists</code>
+        probe above) would, by default, run it on <code>context.Background()</code> — outside the request
+        deadline (<code>http.requestTimeoutSeconds</code>), cancellation, and the request trace. That is the
+        same gap the read side closes with <code>ScopedReaderProvider</code>; the Service side closes it the
+        same way, <strong>without the domain port ever pronouncing <code>context</code></strong>.
+    </p>
+    <p>
+        A Service implementation opts in by implementing the optional
+        <code>persistence.ScopedServiceProvider</code>. Note the asymmetry with the read side: the reader
+        mirror is implemented for you by the framework's <code>read.BaseAggregateRepository</code>, so a
+        repository gets ctx-bound loads for free — a <code>domain.Service</code>, by contrast, is your own
+        code, so <strong>no framework base can implement this</strong>; you add the method to your Service
+        impl yourself (a few lines, below). <code>ScopedService(ctx)</code> returns a
+        <strong>per-request view</strong> — a shallow copy of the wired singleton that closes over the ctx,
+        never a mutation of the receiver (the singleton is shared across concurrent requests). The Auto
+        handlers bind it for you: each wraps its optional <code>Service</code> field in
+        <code>persistence.ScopeService(h.Service, ctx)</code> before calling <code>domain.Get*</code>, so the
+        view — carrying the request ctx — reaches the root's <code>BuildRules</code> and every child's.
+    </p>
+    <pre><code>// Infra — the Service impl closes over the request ctx per request.
+type userServiceImpl struct {
+    fwdomain.ServiceBase
+    repo *UserRepository
+    ctx  *configuration.AppContext // nil on the wired singleton; set on the per-request view
+}
+
+func (s *userServiceImpl) ScopedService(ctx *configuration.AppContext) fwdomain.Service {
+    cp := *s          // shallow copy — never mutate the singleton
+    cp.ctx = ctx
+    return &amp;cp
+}
+
+func (s *userServiceImpl) EmailExists(email string, excludeID fwdomain.ID) bool {
+    var c context.Context = context.Background() // fallback: singleton use (tests, background jobs)
+    if s.ctx != nil {
+        c = s.ctx     // *AppContext IS a context.Context — the request deadline/trace reach the query
+    }
+    taken, err := s.repo.Loader.Exists(c, /* criteria … */)
+    if err != nil {
+        // FAIL LOUD, in infra: the port returns a pure bool, so an unrecoverable
+        // query error is a panic here — the pipeline's recover renders a 500 and
+        // the write never happens. NEVER fold it into a false "not taken": that
+        // silently skips the uniqueness rule and lets a duplicate slip to the DB
+        // backstop. The unique index is defense in depth, not a licence to guess.
+        panic("userServiceImpl.EmailExists: " + err.Error())
+    }
+    return taken
+}</code></pre>
+    <p>
+        <strong>Compat:</strong> a Service that does not implement <code>ScopedServiceProvider</code> is passed
+        through unchanged — existing services keep working, and the entity's <code>RequiresService()</code>
+        nil check is preserved (a nil Service stays nil through <code>ScopeService</code>). In a
+        <strong>custom (manual) command handler</strong> the dev drives <code>domain.Get*</code> directly and
+        wraps the service the same way — <code>domain.GetInsertable(e, persistence.ScopeService(svc, ctx),
+        action)</code> — so the manual path is feature-equivalent to Auto (see
+        <a href="#custom-command-handler">Custom command handler</a>).
+    </p>
+
     <h3>UnarchiveCommandHandler asymmetry</h3>
     <p>
         <code>UnarchiveCommandHandler</code> does NOT call <code>FindByID</code> (record is archived;
