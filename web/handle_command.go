@@ -8,7 +8,6 @@ import (
 	"sync"
 
 	"github.com/ClaudioSchirmer/omnicore/application/pipeline"
-	"github.com/ClaudioSchirmer/omnicore/domain"
 	"github.com/ClaudioSchirmer/omnicore/web/responses"
 	"github.com/gofiber/fiber/v3"
 )
@@ -153,27 +152,4 @@ func missingKeys(expected []string, raw map[string]json.RawMessage) []string {
 		}
 	}
 	return missing
-}
-
-// respondMissingFields is the legacy helper that emits
-// RequiredFieldNotification with default semantic (Validation → 422). Kept
-// for compat with existing tests that were not migrated;
-// CommandWithBody{,ID} uses respondMissingFieldsAsSchema (in
-// handle_command_with_body.go) which triggers 400.
-//
-// Deprecated: for new uses, prefer respondMissingFieldsAsSchema.
-func respondMissingFields[TRes any](c fiber.Ctx, pipe *pipeline.Pipeline, missing []string) error {
-	ctx := domain.NewNotificationContext("Request")
-	for _, field := range missing {
-		ctx.AddNotificationMessage(domain.NotificationMessage{
-			FieldName:    field,
-			Notification: domain.RequiredFieldNotification{},
-		})
-	}
-	err := domain.NewDomainError([]*domain.NotificationContext{ctx})
-	result := pipeline.Run(pipe, AppContext(c), func() (TRes, error) {
-		var zero TRes
-		return zero, err
-	})
-	return RespondFromResult(c, result, fiber.StatusOK)
 }

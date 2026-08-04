@@ -58,14 +58,12 @@ func (id ID) UUID() (uuid.UUID, error) {
 
 func (id ID) IsValid(fieldName string, ctx *NotificationContext) bool {
 	if _, err := uuid.Parse(id.value); err != nil {
-		if ctx != nil {
-			ctx.AddNotificationMessage(NotificationMessage{
-				FieldName:    fieldName,
-				FieldValue:   id.value,
-				Err:          err,
-				Notification: InvalidIDUUIDNotification{},
-			})
-		}
+		ctx.AddNotificationMessage(NotificationMessage{
+			FieldName:    fieldName,
+			FieldValue:   id.value,
+			Err:          err,
+			Notification: InvalidIDUUIDNotification{},
+		})
 		return false
 	}
 	return true

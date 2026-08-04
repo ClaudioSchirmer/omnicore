@@ -183,29 +183,3 @@ func TestErrorHandler_CarrierEscapes_RespondCarrier(t *testing.T) {
 	}
 }
 
-// ─── respondMissingFields (legacy 422 helper) ────────────────────────────────
-
-func TestRespondMissingFields_Legacy_422(t *testing.T) {
-	app := fiber.New()
-	app.Use(AppContextMiddleware())
-	pipe := newTestPipeline()
-	app.Get("/x", func(c fiber.Ctx) error {
-		return respondMissingFields[fwresults.None](c, pipe, []string{"name", "email"})
-	})
-
-	resp, err := app.Test(httptest.NewRequest("GET", "/x", nil))
-	if err != nil {
-		t.Fatalf("app.Test: %v", err)
-	}
-	if resp.StatusCode != fiber.StatusUnprocessableEntity {
-		t.Fatalf("legacy missing-fields helper should be 422 (Validation), got %d", resp.StatusCode)
-	}
-	body := decodeResponse(t, resp.Body)
-	resp.Body.Close()
-	if body.Errors[0].Context != "Request" {
-		t.Fatalf("legacy helper uses context Request, got %q", body.Errors[0].Context)
-	}
-	if len(body.Errors[0].Messages) != 2 {
-		t.Fatalf("expected 2 missing-field messages, got %d", len(body.Errors[0].Messages))
-	}
-}

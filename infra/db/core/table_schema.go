@@ -105,6 +105,17 @@ type schemaField struct {
 	// they bind in the dialect's native id form (the scan side detects the same
 	// types per target, see scanTargetFor).
 	idKind IDKind
+
+	// Value-object typing, derived from the Go struct at Field() time (the field
+	// TYPE is the declaration, like idKind). isVO marks a value-object field
+	// (raw or enum); isEnum distinguishes the enum kind; underlyingType is the
+	// scalar the framework persists (from Value(): string behind an Email, int
+	// behind a UserProfile). The write path unwraps to the underlying and the read
+	// path reconstructs the VO; PayloadColumnTypes reports the underlying so the
+	// Mongo read-side decoder coerces correctly. Zero-valued for a plain field.
+	isVO           bool
+	isEnum         bool
+	underlyingType reflect.Type
 }
 
 // IDKind classifies a persisted field's identity typing, derived from its Go
@@ -432,17 +443,31 @@ func (s *TableSchema) Field(goName, column string, labelKey ...string) *TableSch
 		))
 	}
 	kind := IDNone
+	var (
+		isVO       bool
+		isEnum     bool
+		underlying reflect.Type
+	)
 	if s.typ != nil && idx >= 0 {
 		ft := s.typ.Field(idx).Type
-		mustSupportedFieldType(s.table, goName, ft)
-		switch ft {
-		case idType:
-			kind = IDValue
-		case idPtrType:
-			kind = IDPointer
+		if enum, u, ok := valueObjectField(ft); ok {
+			// A value-object field: the framework persists its UNDERLYING scalar,
+			// so THAT is what must belong to the closed set (the named VO type is
+			// unwrapped on write and reconstructed on read, so the driver never
+			// sees it).
+			isVO, isEnum, underlying = true, enum, u
+			mustSupportedFieldType(s.table, goName, u)
+		} else {
+			mustSupportedFieldType(s.table, goName, ft)
+			switch ft {
+			case idType:
+				kind = IDValue
+			case idPtrType:
+				kind = IDPointer
+			}
 		}
 	}
-	fd := schemaField{goName: goName, column: column, index: idx, labelKey: lk, idKind: kind}
+	fd := schemaField{goName: goName, column: column, index: idx, labelKey: lk, idKind: kind, isVO: isVO, isEnum: isEnum, underlyingType: underlying}
 	s.fields = append(s.fields, fd)
 	s.byGo[goName] = fd
 	s.byCol[column] = fd
@@ -861,7 +886,9 @@ func (s *TableSchema) writeFields(e any) domain.Fields {
 		if f.index < 0 {
 			continue
 		}
-		out[f.column] = v.Field(f.index).Interface()
+		// A value-object field binds as its underlying scalar (unwrapVO is a no-op
+		// for a plain field); a nil nullable VO becomes SQL NULL.
+		out[f.column] = unwrapVO(v.Field(f.index).Interface())
 	}
 	return out
 }

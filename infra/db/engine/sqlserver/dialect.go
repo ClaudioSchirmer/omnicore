@@ -230,6 +230,7 @@ func (d sqlserverDialect) BuildUpsert(table string, cols, conflictCols []string,
 // bind would error where MySQL's TEXT and PG's JSONB accept bytes. Plain
 // []byte stays bytes (VARBINARY(MAX) is its column shape).
 func (sqlserverDialect) EncodeArg(val any) any {
+	val = core.UnwrapVO(val) // a value-object criteria value binds as its underlying scalar
 	switch v := val.(type) {
 	case domain.ID:
 		if b, err := uuidBytes(v.Value()); err == nil {

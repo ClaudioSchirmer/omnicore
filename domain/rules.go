@@ -1,6 +1,9 @@
 package domain
 
-import "reflect"
+import (
+	"fmt"
+	"reflect"
+)
 
 // Rules is the mode-scoped validation DSL used by both root entities
 // (Entity.BuildRules) and aggregate value objects (AggregateValueObject.BuildRules).
@@ -31,6 +34,8 @@ type Rules struct {
 	mode       EntityMode
 	ctx        *NotificationContext
 	entityType reflect.Type
+	ignoredVOs []string
+	forcedVOs  []voEntry
 }
 
 // NewRules constructs a Rules dispatcher for the given mode wired to the given
@@ -53,6 +58,30 @@ func (r *Rules) Mode() EntityMode {
 func (r *Rules) Context() *NotificationContext {
 	return r.ctx
 }
+
+// IgnoreValueObject excludes an automatically-discovered value-object field from
+// this entity's validation pass, by its Go field name. Every VO field validates
+// in every mode by default; call this inside a mode gate to opt out — e.g.
+// r.IfDelete(func() { r.IgnoreValueObject("Email") }). Works identically on a
+// root and on an aggregate value object (each carries its own Rules).
+func (r *Rules) IgnoreValueObject(name string) {
+	r.ignoredVOs = append(r.ignoredVOs, name)
+}
+
+// ValidateValueObject FORCES a value object into the validation pass — the escape
+// hatch for a VO that is not a plain exported field (computed, held in a
+// slice/map), since those are picked up automatically. It takes both kinds (a
+// raw ValueObject or an EnumValueObject); anything else panics.
+func (r *Rules) ValidateValueObject(name string, vo any) {
+	v := validatorFor(vo)
+	if v == nil {
+		panic(fmt.Sprintf("ValidateValueObject %q: %T is neither a ValueObject (IsValid) nor an EnumValueObject (Values + UnknownNotification)", name, vo))
+	}
+	r.forcedVOs = append(r.forcedVOs, voEntry{name: name, vo: v})
+}
+
+func (r *Rules) ignoredValueObjects() []string { return r.ignoredVOs }
+func (r *Rules) forcedValueObjects() []voEntry { return r.forcedVOs }
 
 // AddNotification is the common emit helper. It writes a single-segment Path
 // using the Go identifier name; the framework's renderer converts to camelCase

@@ -191,6 +191,7 @@ func (d mysqlDialect) BuildUpsert(table string, cols, conflictCols []string, set
 // value — the column, not the codec, rejects it.) Everything else passes
 // through.
 func (mysqlDialect) EncodeArg(val any) any {
+	val = core.UnwrapVO(val) // a value-object criteria value binds as its underlying scalar
 	switch v := val.(type) {
 	case domain.ID:
 		if b, err := uuidBytes(v.Value()); err == nil {

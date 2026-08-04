@@ -45,6 +45,10 @@
         "label": "Rules DSL"
       },
       {
+        "id": "value-objects",
+        "label": "Value objects"
+      },
+      {
         "id": "aggregate-persistence",
         "label": "Aggregate persistence"
       },

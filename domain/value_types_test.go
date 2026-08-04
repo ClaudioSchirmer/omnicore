@@ -217,9 +217,19 @@ func TestGetAddedChangedRemoved(t *testing.T) {
 
 // --- EventType + DomainEvent -----------------------------------------------
 
-func TestEventType_Value(t *testing.T) {
-	if EventLog.Value() != 1 {
-		t.Errorf("EventLog.Value() = %d, want 1", EventLog.Value())
+func TestEventType_Values(t *testing.T) {
+	if int(EventLog) != 1 {
+		t.Errorf("EventLog underlying = %d, want 1", int(EventLog))
+	}
+	members := EventLog.Values()
+	if len(members) != 4 {
+		t.Errorf("Values() len = %d, want 4", len(members))
+	}
+	// The Unknown sentinel is never a declared member.
+	for _, m := range members {
+		if m == EventUnknown {
+			t.Error("EventUnknown must not appear in Values()")
+		}
 	}
 }
 
@@ -229,13 +239,18 @@ func TestEventType_UnknownNotification(t *testing.T) {
 	}
 }
 
-func TestEventType_IsValid(t *testing.T) {
+func TestEventType_ValidateEnum(t *testing.T) {
 	ctx := NewNotificationContext("Event")
-	if !EventLog.IsValid("type", ctx) {
-		t.Error("EventLog should be IsValid")
+	if !ValidateEnum(EventLog, "type", ctx) {
+		t.Error("EventLog should validate")
 	}
-	if EventUnknown.IsValid("type", ctx) {
-		t.Error("EventUnknown should not be IsValid")
+	if ValidateEnum(EventUnknown, "type", ctx) {
+		t.Error("EventUnknown (the sentinel) should not validate")
+	}
+	// Membership is enforced in the domain now: an out-of-range cast is not a
+	// declared member, so it fails too (no longer a mere zero-value guard).
+	if ValidateEnum(EventType(99), "type", ctx) {
+		t.Error("EventType(99) is outside the declared set — should not validate")
 	}
 }
 

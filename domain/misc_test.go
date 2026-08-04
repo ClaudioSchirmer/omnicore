@@ -215,23 +215,24 @@ func (v fakeVO) IsValid(_ string, _ *NotificationContext) bool {
 	return true
 }
 
-func TestBaseEntity_AddValueObject_RunsDuringValidation(t *testing.T) {
+func TestRules_ValidateValueObject_ForcedRunsDuringValidation(t *testing.T) {
 	called := false
-	e := &plainEntity{}
-	ensureInit(e)
-	e.AddValueObject("MyVO", fakeVO{called: &called})
+	ctx := NewNotificationContext("X")
+	r := NewRules(ModeInsert, ctx, nil)
+	r.ValidateValueObject("MyVO", fakeVO{called: &called})
 
-	runValueObjectValidations(e)
+	// A forced VO (not a plain field) runs even on a value with no VO fields.
+	validateValueObjectFields(struct{}{}, ctx, r.ignoredValueObjects(), r.forcedValueObjects())
 	if !called {
-		t.Error("AddValueObject entry should run via runValueObjectValidations")
+		t.Error("forced value object should run via validateValueObjectFields")
 	}
 }
 
-func TestBaseEntity_AddAggregateValueObjects_FansOut(t *testing.T) {
+func TestBaseEntity_ValidateAggregateValueObjects_FansOut(t *testing.T) {
 	calls := 0
 	e := &plainEntity{}
 	ensureInit(e)
-	e.AddAggregateValueObjects("Tag", []AggregateValueObject{
+	e.ValidateAggregateValueObjects("Tag", []AggregateValueObject{
 		Tag{Name: "a", callCount: &calls},
 		Tag{Name: "b", callCount: &calls},
 		Tag{Name: "c", callCount: &calls},

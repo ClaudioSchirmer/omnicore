@@ -541,12 +541,15 @@ func OrdersView() *query.ViewDefinition {
     <li><strong>Field exists on the type</strong> — <code>NewTableSchema[T]</code> + <code>Field</code> panic at
         construction when the named field is absent, unexported, or promoted from an embed. This is what replaces
         convention: a typo is a boot panic, not a silent miss.</li>
-    <li><strong>Field type belongs to the closed persistable set</strong> — <code>Field</code> panics at construction
-        when the Go type is outside the exact set the framework composes on every supported relational engine (the "Supported column
-        shapes" tables below). A <code>google/uuid.UUID</code> field gets the dedicated hint — declare
-        <code>domain.ID</code> — and every other unknown type gets the fix and a pointer back to this page. Identity
-        matching is literal (a named type over a supported underlying is rejected), so the cross-engine guarantee never
-        depends on driver-specific reflection behavior.</li>
+    <li><strong>Field type belongs to the closed persistable set — or is a value object over it</strong> —
+        <code>Field</code> panics at construction when the Go type is neither in the exact set the framework composes on
+        every supported relational engine (the "Supported column shapes" tables below) NOR a <strong>value object</strong>
+        (a named type — raw <code>ValueObject</code> or <code>EnumValueObject</code> — whose <code>Value()</code> underlying
+        belongs to that set). A value-object field is persisted as its underlying scalar (unwrapped on write, reconstructed
+        on read), so the driver never sees the named type and the cross-engine guarantee holds by the unwrap — see the
+        <em>Value objects</em> manual section. A <code>google/uuid.UUID</code> field gets the dedicated hint — declare
+        <code>domain.ID</code> — and every other unknown type (a <strong>non-VO</strong> named type included) gets the fix
+        and a pointer back to this page.</li>
     <li><strong>Bijection over the whole column set</strong> — across each source's mapped fields + the ID column + every
         declared managed column, no two map to the same physical column. The collision panic names both offenders.</li>
     <li><strong>Modes() ⟺ DeletedAt</strong> — an entity declaring <code>ModeArchive</code>/<code>ModeUnarchive</code>
@@ -1070,10 +1073,13 @@ func StudentSchema() *core.TableSchema {
     <code>Field(...)</code> validates the Go type against exactly the set in these tables — the types the framework
     composes on EVERY supported relational engine (write bind, criteria bind, auto-scan). Anything else panics at construction with the fix:
     a <code>google/uuid.UUID</code> field points at <code>domain.ID</code> (google/uuid is the framework's internal
-    engine, never a field type); a named type (a <code>type Status string</code> enum) maps to its underlying
-    <code>string</code>/<code>int</code>; a struct/map marshals into <code>[]byte</code>/<code>json.RawMessage</code>;
+    engine, never a field type); a struct/map marshals into <code>[]byte</code>/<code>json.RawMessage</code>;
     a Go slice (the PG-only array mapping) models as a JSON payload column or an aggregate <code>Child(...)</code>.
-    Matching is by IDENTICAL type, never by kind — the drivers diverge on named types, so the guarantee stays literal.
+    A field type is accepted when it is IDENTICALLY one of these, OR when it is a <strong>value object</strong> over one
+    of them (a <code>type Email string</code> raw VO, a <code>type Status int</code> enum VO): the framework unwraps the VO
+    to its underlying on write and reconstructs it on read, so the driver still only ever binds a set member — the
+    guarantee holds without depending on driver-specific named-type behavior. A <em>non-VO</em> named type (no
+    <code>Value()</code>) is still rejected; declare it as a value object or map it to the underlying yourself.
     This page is the canonical home of the supported set; the guard's messages point here.
 </div>
 

@@ -140,6 +140,20 @@ var wellKnown = map[reflect.Type]*Schema{
 	reflect.TypeOf(domain.ID{}): {Type: "string", Format: "uuid"},
 }
 
+// voUnderlying returns the underlying scalar type of a value-object type, or
+// (nil,false). domain.ID keeps its own well-known mapping (it is not a persisted
+// VO). Used to describe a VO field by the type the framework actually persists.
+func voUnderlying(t reflect.Type) (reflect.Type, bool) {
+	if t == reflect.TypeOf(domain.ID{}) {
+		return nil, false
+	}
+	zero := reflect.Zero(t).Interface()
+	if u, ok := domain.ValueObjectValue(zero); ok && u != nil {
+		return reflect.TypeOf(u), true
+	}
+	return nil, false
+}
+
 // build dispatches on Kind without going through the cache — generate
 // owns the cache. Pointer types unwrap to the inner type and mark the
 // returned schema nullable; the inner schema is reused so a *T and T
@@ -152,6 +166,13 @@ func (g *Generator) build(t reflect.Type, strict bool) *Schema {
 		clone := *inner
 		clone.Nullable = true
 		return &clone
+	}
+	// A value-object field is described by its UNDERLYING scalar: a VO over a
+	// string is a string, a VO over time.Time a date-time — never an opaque
+	// object. A no-op for a VO over string/int (Kind already yields the right
+	// schema); it fixes a VO over an exact/struct type (time.Time, []byte).
+	if u, ok := voUnderlying(t); ok {
+		t = u
 	}
 	if s, ok := wellKnown[t]; ok {
 		clone := *s

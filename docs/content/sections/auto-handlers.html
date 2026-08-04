@@ -27,7 +27,7 @@
         <tr><td>Construct the domain entity</td><td><span class="tag manual">manual</span></td><td>Handler</td></tr>
         <tr><td>Define validation rules</td><td><span class="tag manual">manual</span></td><td>entity's <code>BuildRules</code></td></tr>
         <tr><td>Execute the rules (mode-aware)</td><td><span class="tag auto">automatic</span></td><td><code>domain.GetInsertable</code></td></tr>
-        <tr><td>Validate registered ValueObjects</td><td><span class="tag auto">automatic</span></td><td><code>runValueObjectValidations</code></td></tr>
+        <tr><td>Validate value-object fields (reflection-discovered, no registration)</td><td><span class="tag auto">automatic</span></td><td><code>validateValueObjectFields</code></td></tr>
         <tr><td>Validate allowed modes</td><td><span class="tag auto">automatic</span></td><td>via <code>Modes()</code> annotation</td></tr>
         <tr><td>Validate ID per mode</td><td><span class="tag auto">automatic</span></td><td>Insert does not allow ID; Update/Delete require it</td></tr>
         <tr><td>Build <code>ValidEntity</code> with metadata</td><td><span class="tag auto">automatic</span></td><td>after validation OK</td></tr>

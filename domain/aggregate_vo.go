@@ -59,7 +59,3 @@ type AggregateValueObject interface {
 	// "every business field", delegate to domain.IsSameByBusinessFields(a, other).
 	IsSameBusinessIdentity(other AggregateValueObject) bool
 }
-
-type ValueObjectValidator interface {
-	IsValid(fieldName string, ctx *NotificationContext) bool
-}

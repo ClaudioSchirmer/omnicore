@@ -7,6 +7,7 @@ import (
 	"sync"
 
 	"github.com/ClaudioSchirmer/omnicore/application/configuration"
+	"github.com/ClaudioSchirmer/omnicore/domain"
 )
 
 type Translator struct {
@@ -50,6 +51,16 @@ func (t *Translator) GetOr(lang configuration.Language, key, fallback string) st
 		return v
 	}
 	return fallback
+}
+
+// EnumDescription resolves the translated description of an enum value object in lang —
+// the text registered under its EnumDescriptionKey ("<Type>.<value>"), or the
+// key itself when no catalog entry exists. This is how an EnumValueObject's
+// value renders per-locale ("Ethnicity.1" → "White"/"Branco"): the domain
+// exposes the key, the boundary translates it with the request language.
+func (t *Translator) EnumDescription(lang configuration.Language, enum any) string {
+	key := domain.EnumDescriptionKey(enum)
+	return t.GetOr(lang, key, key)
 }
 
 // Render returns the translated message for (lang, key) with `{name}`

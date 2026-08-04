@@ -76,8 +76,8 @@ func TestLanguageValue(t *testing.T) {
 		{LangNL, 7},
 	}
 	for _, tc := range cases {
-		if got := tc.lang.Value(); got != tc.want {
-			t.Errorf("%v.Value() = %d, want %d", tc.lang, got, tc.want)
+		if got := int(tc.lang); got != tc.want {
+			t.Errorf("int(%v) = %d, want %d", tc.lang, got, tc.want)
 		}
 	}
 }
@@ -97,10 +97,10 @@ func TestLanguageUnknownNotification(t *testing.T) {
 	}
 }
 
-func TestLanguageIsValid(t *testing.T) {
-	t.Run("non-zero language passes", func(t *testing.T) {
+func TestLanguageValidateEnum(t *testing.T) {
+	t.Run("a declared language passes", func(t *testing.T) {
 		ctx := domain.NewNotificationContext("Lang")
-		if !LangPTBR.IsValid("Language", ctx) {
+		if !domain.ValidateEnum(LangPTBR, "Language", ctx) {
 			t.Error("expected LangPTBR to be valid")
 		}
 		if ctx.HasErrors() {
@@ -108,11 +108,11 @@ func TestLanguageIsValid(t *testing.T) {
 		}
 	})
 
-	// Zero value (LangUnknown) is the sentinel ValidateEnum rejects — emits
-	// the UnknownNotification on the supplied ctx.
+	// The zero value (LangUnknown) is the sentinel — never a member — so
+	// membership validation rejects it and emits the UnknownNotification.
 	t.Run("LangUnknown fails and records notification", func(t *testing.T) {
 		ctx := domain.NewNotificationContext("Lang")
-		if LangUnknown.IsValid("Language", ctx) {
+		if domain.ValidateEnum(LangUnknown, "Language", ctx) {
 			t.Error("expected LangUnknown to be invalid")
 		}
 		if !ctx.HasErrors() {
@@ -124,15 +124,14 @@ func TestLanguageIsValid(t *testing.T) {
 		}
 	})
 
-	// Pins the deliberate contract of ValidateEnum (see godoc in
-	// omnicore/domain/value_object.go): the function is a zero-value guard,
-	// not a range check. An out-of-range non-zero value like Language(99)
-	// passes. Closed-set enforcement lives at the wire boundary
-	// (translator / middleware / Request DTO), not inside this helper.
-	t.Run("out-of-range value passes by design — ValidateEnum is a zero-value guard", func(t *testing.T) {
+	// ValidateEnum now enforces the CLOSED SET in the domain (membership against
+	// Values()), so an out-of-range cast like Language(99) — not a declared
+	// member — fails. (This deliberately reverses the previous zero-value-guard
+	// contract; the design mirrors the ddd-kernel EnumValueObject.)
+	t.Run("out-of-range value fails — membership is enforced", func(t *testing.T) {
 		ctx := domain.NewNotificationContext("Lang")
-		if !Language(99).IsValid("Language", ctx) {
-			t.Error("ValidateEnum semantic changed — update the godoc AND this pin together")
+		if domain.ValidateEnum(Language(99), "Language", ctx) {
+			t.Error("expected Language(99) to be invalid (outside the declared set)")
 		}
 	})
 }

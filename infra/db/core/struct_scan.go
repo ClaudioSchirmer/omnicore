@@ -3,6 +3,8 @@ package core
 import (
 	"fmt"
 	"reflect"
+	"strconv"
+	"strings"
 
 	"github.com/google/uuid"
 
@@ -38,7 +40,128 @@ func scanTargetFor(f reflect.Value) any {
 	case idPtrType:
 		return &nullableIDScanTarget{dst: f.Addr().Interface().(**domain.ID)}
 	}
+	// A value-object field is scanned through its UNDERLYING scalar and
+	// reconstructed (raw Convert, or enum membership converge to Unknown), so the
+	// driver never binds the named type. Mirrors the id proxies above.
+	if _, underlying, ok := valueObjectField(f.Type()); ok {
+		if f.Kind() == reflect.Pointer {
+			return &nullableVOScanTarget{dst: f, voType: f.Type().Elem(), underlying: underlying}
+		}
+		return &voScanTarget{dst: f, voType: f.Type(), underlying: underlying}
+	}
 	return f.Addr().Interface()
+}
+
+// coerceScalar normalizes the raw driver value into the shape the value-object
+// reconstruction expects: a string-backed VO must receive a string even when the
+// driver hands []byte (how some drivers deliver text/char columns), otherwise the
+// enum membership walk (which asserts raw.(string)) would miss and converge every
+// value to Unknown. Numeric/bool/time forms pass through — domain.NewValueObjectValue
+// (raw Convert) and sameUnderlying (asInt64) already tolerate driver widths.
+func coerceScalar(src any, underlying reflect.Type) any {
+	switch underlying.Kind() {
+	case reflect.String:
+		if b, ok := src.([]byte); ok {
+			return string(b)
+		}
+	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
+		// Some drivers (notably go-ora) deliver EVERY numeric column as text, so
+		// an int-backed VO would receive a string the enum membership walk can
+		// never match — converging every value to Unknown. Parse it back to an
+		// integer the reconstruction tolerates (asInt64 handles the width).
+		if s, ok := asText(src); ok {
+			if n, err := strconv.ParseInt(numericPrefix(s), 10, 64); err == nil {
+				return n
+			}
+		}
+	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
+		if s, ok := asText(src); ok {
+			if n, err := strconv.ParseUint(numericPrefix(s), 10, 64); err == nil {
+				return n
+			}
+		}
+	case reflect.Float32, reflect.Float64:
+		if s, ok := asText(src); ok {
+			if n, err := strconv.ParseFloat(strings.TrimSpace(s), 64); err == nil {
+				return n
+			}
+		}
+	}
+	return src
+}
+
+// asText reports the string form of a driver value delivered as text (string or
+// []byte), the two shapes a driver hands a character/number column.
+func asText(src any) (string, bool) {
+	switch v := src.(type) {
+	case string:
+		return v, true
+	case []byte:
+		return string(v), true
+	}
+	return "", false
+}
+
+// numericPrefix trims surrounding space and drops a trailing ".0"-style fraction
+// a NUMBER column may carry when the driver renders an integer as text (go-ora
+// hands "1", but a NUMBER(10,0) round-trip elsewhere can render "1.0"). Only the
+// integer head is kept; a genuine fractional value is left for ParseInt to reject.
+func numericPrefix(s string) string {
+	s = strings.TrimSpace(s)
+	if dot := strings.IndexByte(s, '.'); dot >= 0 {
+		frac := s[dot+1:]
+		if strings.Trim(frac, "0") == "" { // only trailing zeros after the point
+			return s[:dot]
+		}
+	}
+	return s
+}
+
+// voScanTarget scans one column into a REQUIRED value-object field. It decodes the
+// driver value into the VO's underlying scalar, reconstructs the VO through
+// domain.NewValueObjectValue, and sets the field. SQL NULL is a loud error (the
+// nullable contract database/sql cannot express for Scanner types on its own).
+type voScanTarget struct {
+	dst        reflect.Value // the addressable VO field (settable)
+	voType     reflect.Type  // e.g. vos.Email
+	underlying reflect.Type  // e.g. string
+}
+
+func (t *voScanTarget) Scan(src any) error {
+	if src == nil {
+		return fmt.Errorf(
+			"NULL scanned into a non-nullable value-object field of type %s — declare the field *%s (and the column NULL-able)",
+			t.voType, t.voType)
+	}
+	vo, err := domain.NewValueObjectValue(t.voType, coerceScalar(src, t.underlying))
+	if err != nil {
+		return err
+	}
+	t.dst.Set(reflect.ValueOf(vo))
+	return nil
+}
+
+// nullableVOScanTarget scans one column into a NULLABLE value-object field
+// (*vos.X): SQL NULL restores as nil, any value as &VO.
+type nullableVOScanTarget struct {
+	dst        reflect.Value // the addressable *VO field
+	voType     reflect.Type  // the element type, e.g. vos.Phone
+	underlying reflect.Type
+}
+
+func (t *nullableVOScanTarget) Scan(src any) error {
+	if src == nil {
+		t.dst.Set(reflect.Zero(t.dst.Type()))
+		return nil
+	}
+	vo, err := domain.NewValueObjectValue(t.voType, coerceScalar(src, t.underlying))
+	if err != nil {
+		return err
+	}
+	p := reflect.New(t.voType)
+	p.Elem().Set(reflect.ValueOf(vo))
+	t.dst.Set(p)
+	return nil
 }
 
 // decodeIDValue normalizes the raw forms the drivers hand a Scanner for an id

@@ -914,6 +914,10 @@ func goStringFieldValue(e any, goName string) string {
 	if !f.IsValid() {
 		return ""
 	}
+	// A value-object natural key (e.g. Document) reads as its underlying scalar.
+	if u, ok := domain.ValueObjectValue(f.Interface()); ok {
+		return fmt.Sprintf("%v", u)
+	}
 	for f.Kind() == reflect.Pointer {
 		if f.IsNil() {
 			return ""

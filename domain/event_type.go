@@ -2,24 +2,25 @@ package domain
 
 type EventType int
 
+// Explicit values (never bare iota): reordering this block must never change a
+// persisted number.
 const (
-	EventUnknown EventType = iota
-	EventLog
-	EventDebug
-	EventError
-	EventWarning
+	EventUnknown EventType = 0
+	EventLog     EventType = 1
+	EventDebug   EventType = 2
+	EventError   EventType = 3
+	EventWarning EventType = 4
 )
 
-func (t EventType) Value() int {
-	return int(t)
-}
+var eventTypeMembers = []EventType{EventLog, EventDebug, EventError, EventWarning}
+
+// Values is the closed set (Unknown excluded); the framework validates
+// membership against it — EventType writes no IsValid.
+func (t EventType) Value() int          { return int(t) }
+func (t EventType) Values() []EventType { return eventTypeMembers }
 
 func (t EventType) UnknownNotification() Notification {
 	return InvalidEventTypeNotification{}
-}
-
-func (t EventType) IsValid(fieldName string, ctx *NotificationContext) bool {
-	return ValidateEnum[int](t, fieldName, ctx)
 }
 
 func (t EventType) String() string {

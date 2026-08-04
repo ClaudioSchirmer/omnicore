@@ -202,3 +202,22 @@ type stubModule struct {
 
 func (m stubModule) Language() configuration.Language { return m.lang }
 func (m stubModule) Translations() map[string]string  { return m.entries }
+
+// descSize is a stand-in enum value object: EnumDescription only needs its
+// EnumDescriptionKey ("<Type>.<value>"), which is pure reflection over the value.
+type descSize int
+
+const descSmall descSize = 1
+
+func TestTranslator_EnumDescription(t *testing.T) {
+	tr := New()
+	tr.Import(stubModule{lang: configuration.LangENG, entries: map[string]string{"descSize.1": "Small"}})
+
+	if got := tr.EnumDescription(configuration.LangENG, descSmall); got != "Small" {
+		t.Errorf("EnumDescription(descSmall) = %q, want Small", got)
+	}
+	// No catalog entry → falls back to the key itself.
+	if got := tr.EnumDescription(configuration.LangENG, descSize(9)); got != "descSize.9" {
+		t.Errorf("EnumDescription fallback = %q, want descSize.9", got)
+	}
+}
