@@ -11,6 +11,8 @@ with `1.0.0`.
 
 ## [Unreleased]
 
+## [0.43.0] - 2026-08-04
+
 ### Added
 
 - **Value objects are persisted end to end — any `ValueObject`/`EnumValueObject`
