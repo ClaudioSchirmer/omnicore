@@ -3,6 +3,8 @@ package core
 import (
 	"fmt"
 	"reflect"
+	"strconv"
+	"strings"
 
 	"github.com/google/uuid"
 
@@ -57,12 +59,62 @@ func scanTargetFor(f reflect.Value) any {
 // value to Unknown. Numeric/bool/time forms pass through — domain.NewValueObjectValue
 // (raw Convert) and sameUnderlying (asInt64) already tolerate driver widths.
 func coerceScalar(src any, underlying reflect.Type) any {
-	if underlying.Kind() == reflect.String {
+	switch underlying.Kind() {
+	case reflect.String:
 		if b, ok := src.([]byte); ok {
 			return string(b)
 		}
+	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
+		// Some drivers (notably go-ora) deliver EVERY numeric column as text, so
+		// an int-backed VO would receive a string the enum membership walk can
+		// never match — converging every value to Unknown. Parse it back to an
+		// integer the reconstruction tolerates (asInt64 handles the width).
+		if s, ok := asText(src); ok {
+			if n, err := strconv.ParseInt(numericPrefix(s), 10, 64); err == nil {
+				return n
+			}
+		}
+	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
+		if s, ok := asText(src); ok {
+			if n, err := strconv.ParseUint(numericPrefix(s), 10, 64); err == nil {
+				return n
+			}
+		}
+	case reflect.Float32, reflect.Float64:
+		if s, ok := asText(src); ok {
+			if n, err := strconv.ParseFloat(strings.TrimSpace(s), 64); err == nil {
+				return n
+			}
+		}
 	}
 	return src
+}
+
+// asText reports the string form of a driver value delivered as text (string or
+// []byte), the two shapes a driver hands a character/number column.
+func asText(src any) (string, bool) {
+	switch v := src.(type) {
+	case string:
+		return v, true
+	case []byte:
+		return string(v), true
+	}
+	return "", false
+}
+
+// numericPrefix trims surrounding space and drops a trailing ".0"-style fraction
+// a NUMBER column may carry when the driver renders an integer as text (go-ora
+// hands "1", but a NUMBER(10,0) round-trip elsewhere can render "1.0"). Only the
+// integer head is kept; a genuine fractional value is left for ParseInt to reject.
+func numericPrefix(s string) string {
+	s = strings.TrimSpace(s)
+	if dot := strings.IndexByte(s, '.'); dot >= 0 {
+		frac := s[dot+1:]
+		if strings.Trim(frac, "0") == "" { // only trailing zeros after the point
+			return s[:dot]
+		}
+	}
+	return s
 }
 
 // voScanTarget scans one column into a REQUIRED value-object field. It decodes the

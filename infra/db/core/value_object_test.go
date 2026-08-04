@@ -201,6 +201,56 @@ func TestScanTargetFor_NullableVO(t *testing.T) {
 	}
 }
 
+// --- driver delivering numeric columns as text (go-ora) --------------------
+
+// go-ora hands EVERY NUMBER column as a string; an int-backed VO must still
+// reconstruct. Without coerceScalar parsing the text, the enum membership walk
+// sees a string it can never match and converges every value to Unknown.
+func TestScanTargetFor_NumericColumnDeliveredAsText(t *testing.T) {
+	e := &voEntity{}
+	v := reflect.ValueOf(e).Elem()
+
+	// raw int VO delivered as string
+	if err := scanTargetFor(v.FieldByName("Money")).(sql.Scanner).Scan("7"); err != nil {
+		t.Fatalf("scan Money text: %v", err)
+	}
+	if e.Money != voMoney(7) {
+		t.Errorf("Money(text) = %d want 7", e.Money)
+	}
+
+	// enum int VO valid member delivered as []byte
+	if err := scanTargetFor(v.FieldByName("Tier")).(sql.Scanner).Scan([]byte("1")); err != nil {
+		t.Fatalf("scan Tier text: %v", err)
+	}
+	if e.Tier != tierGold {
+		t.Errorf("Tier(text) = %d want tierGold", e.Tier)
+	}
+
+	// a NUMBER(n,0) rendered "1.0" still lands on the integer member
+	if err := scanTargetFor(v.FieldByName("Tier")).(sql.Scanner).Scan("1.0"); err != nil {
+		t.Fatalf("scan Tier 1.0: %v", err)
+	}
+	if e.Tier != tierGold {
+		t.Errorf("Tier(1.0) = %d want tierGold", e.Tier)
+	}
+
+	// out-of-set text still converges to Unknown
+	if err := scanTargetFor(v.FieldByName("Tier")).(sql.Scanner).Scan("99"); err != nil {
+		t.Fatalf("scan Tier 99 text: %v", err)
+	}
+	if e.Tier != tierUnknown {
+		t.Errorf("Tier(99 text) = %d want tierUnknown", e.Tier)
+	}
+
+	// nullable enum int VO delivered as string
+	if err := scanTargetFor(v.FieldByName("Rank")).(sql.Scanner).Scan("1"); err != nil {
+		t.Fatalf("scan Rank text: %v", err)
+	}
+	if e.Rank == nil || *e.Rank != tierGold {
+		t.Errorf("Rank(text) = %v want &tierGold", e.Rank)
+	}
+}
+
 // --- required VO field rejects SQL NULL loudly -----------------------------
 
 func TestScanTargetFor_RequiredVONull(t *testing.T) {
