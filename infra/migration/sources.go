@@ -3,12 +3,12 @@ package migration
 import (
 	"fmt"
 	"io/fs"
+	"os"
 	"path/filepath"
 	"sort"
 	"strings"
 
 	"github.com/golang-migrate/migrate/v4/source"
-	"github.com/golang-migrate/migrate/v4/source/file"
 	"github.com/golang-migrate/migrate/v4/source/iofs"
 )
 
@@ -66,14 +66,17 @@ func frameworkSourceFor(dialect string) (source.Driver, error) {
 }
 
 // serviceSource reads the migration files from the service directory.
-// Accepts a relative or absolute path; converts to absolute before passing
-// to source/file (which requires file:// + absolute path).
+// Accepts a relative or absolute path; converts to absolute and serves it
+// via iofs over os.DirFS — the same reader source/file uses internally, minus
+// its "file://"+path URL round-trip, which mis-parses any path that is not
+// URL-clean (a Windows drive letter reads as host:port, a %XX sequence gets
+// percent-decoded). A filesystem path must never pass through a URL parser.
 func serviceSource(dir string) (source.Driver, error) {
 	abs, err := filepath.Abs(dir)
 	if err != nil {
 		return nil, fmt.Errorf("migration: service dir abs: %w", err)
 	}
-	drv, err := (&file.File{}).Open("file://" + abs)
+	drv, err := iofs.New(os.DirFS(abs), ".")
 	if err != nil {
 		return nil, fmt.Errorf("migration: service file source: %w", err)
 	}
