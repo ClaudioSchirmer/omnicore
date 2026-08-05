@@ -24,6 +24,8 @@ with `1.0.0`.
   directory via `iofs` over `os.DirFS` — the same reader the `file://` driver
   used internally — with no URL round-trip. Behavior is otherwise identical.
 
+## [0.44.0] - 2026-08-04
+
 ### Added
 
 - **A domain `Service` can now run its probe under the request context —
