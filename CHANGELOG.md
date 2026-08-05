@@ -11,7 +11,18 @@ with `1.0.0`.
 
 ## [Unreleased]
 
-## [0.44.0] - 2026-08-04
+## [0.44.1] - 2026-08-05
+
+### Fixed
+
+- **Service migrations now load on Windows — and from any directory whose path
+  is not URL-clean.** The service migration source built a `file://` URL by
+  concatenating the absolute directory path, so the path went through
+  `net/url`: a Windows path (`C:\Users\...`) was read as host:port and boot
+  failed with `invalid port`, and on any OS a `%XX` sequence in the path was
+  percent-decoded into a different directory. The source now serves the
+  directory via `iofs` over `os.DirFS` — the same reader the `file://` driver
+  used internally — with no URL round-trip. Behavior is otherwise identical.
 
 ### Added
 

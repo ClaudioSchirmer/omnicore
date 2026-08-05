@@ -7,6 +7,20 @@
 </div>
 <div class="changelog">
     <div class="release">
+        <div class="release-head"><span class="release-tag">v0.44.1</span><span class="release-date">August 5, 2026</span></div>
+        <ul>
+            <li><strong>Fixed</strong> — <strong>service migrations now load on Windows — and from any
+                directory whose path is not URL-clean.</strong> The service migration source built a
+                <code>file://</code> URL by concatenating the absolute path of <code>migrations.dir</code>, so the
+                path went through a URL parser: a Windows path (<code>C:\Users\...</code>) was read as host:port and
+                boot failed with <code>invalid port</code>, and on any OS a <code>%XX</code> sequence in the path was
+                percent-decoded into a different directory. The source now serves the directory via
+                <code>iofs</code> over <code>os.DirFS</code> — the same reader the <code>file://</code> driver used
+                internally — with no URL round-trip. No configuration change: <code>migrations.dir</code> keeps
+                accepting a relative or absolute path; behavior is otherwise identical.</li>
+        </ul>
+    </div>
+    <div class="release">
         <div class="release-head"><span class="release-tag">v0.44.0</span><span class="release-date">August 4, 2026</span></div>
         <ul>
             <li><strong>Added</strong> — <strong>a domain <code>Service</code> can run its probe under the

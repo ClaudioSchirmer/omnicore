@@ -46,7 +46,7 @@ func TestFrameworkDialects_DeterministicSorted(t *testing.T) {
 }
 
 // serviceSource reads numbered migrations from a directory, converting a
-// relative path to absolute before handing it to source/file.
+// relative path to absolute before serving it via iofs over os.DirFS.
 func TestServiceSource_OpensDirectoryDriver(t *testing.T) {
 	dir := t.TempDir()
 	writeMigration(t, dir, "0002_create_users.up.sql", "CREATE TABLE users();")
@@ -65,8 +65,34 @@ func TestServiceSource_OpensDirectoryDriver(t *testing.T) {
 	}
 }
 
+// The migration directory is a filesystem path, never URL material. A path
+// containing URL-significant characters (space, %XX, non-ASCII — every Windows
+// drive-letter path is also in this class) must resolve exactly as given; the
+// old "file://"+path round-trip percent-decoded %20 into a space and read a
+// Windows C:\ prefix as host:port, so it could not open this directory.
+func TestServiceSource_URLSignificantCharactersInPath(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "Área de Trabalho %20 test")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatalf("mkdir %s: %v", dir, err)
+	}
+	writeMigration(t, dir, "0001_init.up.sql", "CREATE TABLE t();")
+	writeMigration(t, dir, "0001_init.down.sql", "DROP TABLE t;")
+
+	drv, err := serviceSource(dir)
+	if err != nil {
+		t.Fatalf("serviceSource: unexpected error %v", err)
+	}
+	first, err := drv.First()
+	if err != nil {
+		t.Fatalf("First: unexpected error %v", err)
+	}
+	if first != 1 {
+		t.Fatalf("expected first service version 1, got %d", first)
+	}
+}
+
 // A non-existent directory must surface as a descriptive error from the
-// underlying file source.
+// underlying source.
 func TestServiceSource_MissingDirectoryReturnsError(t *testing.T) {
 	missing := filepath.Join(t.TempDir(), "does-not-exist")
 	if _, err := serviceSource(missing); err == nil {
