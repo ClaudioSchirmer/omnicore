@@ -7,6 +7,29 @@
 </div>
 <div class="changelog">
     <div class="release">
+        <div class="release-head"><span class="release-tag">v0.44.2</span><span class="release-date">August 5, 2026</span></div>
+        <ul>
+            <li><strong>Fixed</strong> — <strong>SQLite: the migration runner now resolves a relative
+                <code>file:</code> DSN against the same base as the engine — the <code>go run</code> dev loop
+                migrates the database it serves.</strong> The runner joined a relative path onto the executable's
+                directory unconditionally, while the engine carves out the ephemeral-binary case
+                (<code>go run</code> / <code>go test</code> compile to a temp file) and falls back to the working
+                directory. Under <code>go run</code> the two therefore targeted DIFFERENT files: migrations
+                persisted beside the throwaway temp binary, the engine served an (empty) project-dir file, and the
+                service booted green with <code>migrations applied</code> in the log while every request failed
+                with <code>no such table</code>. The runner now mirrors the engine's resolution base (binary dir;
+                working dir for an ephemeral binary), so the dev loop and a deployed binary both migrate exactly
+                the database the engine opens. An absolute path (e.g. a wrapper's pinned
+                <code>SQLITE_PATH</code>) was and is used verbatim — unaffected. See
+                <a href="#yaml-reference">YAML reference</a> (relational block, SQLite DSN).</li>
+            <li><strong>Docs</strong> — <code>table-schema</code>: removed a stale sentence claiming an aggregate
+                value object "exposes the exported field <code>ID</code>" — an AVO embeds the
+                <code>domain.Managed</code> carrier and declares no id field of its own
+                (<code>GetID</code>/<code>SetID</code>, ids set via <code>domain.WithID</code>), as the
+                managed-columns section already states.</li>
+        </ul>
+    </div>
+    <div class="release">
         <div class="release-head"><span class="release-tag">v0.44.1</span><span class="release-date">August 5, 2026</span></div>
         <ul>
             <li><strong>Fixed</strong> — <strong>service migrations now load on Windows — and from any

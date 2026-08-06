@@ -242,9 +242,10 @@ func AddressSchema() *core.TableSchema {
 // Type-less — for an upstream-projected external JoinUpstream source (no local struct).
 core.NewExternalSchema("users").ID("id").Field("Email", "mail")</code></pre>
 <p>
-    The Go-side primary-key field is fixed to <code>ID</code> by the <code>BaseEntity</code>/AVO contract (an aggregate
-    root carries it privately and exposes <code>GetID</code>/<code>SetID</code>; an AVO exposes the exported field
-    <code>ID</code>), so <code>ID("col")</code> declares only the column. <code>ParentID</code> names the child's foreign-key column referencing the
+    The Go-side primary-key field is fixed to <code>ID</code> by the <code>BaseEntity</code>/AVO contract (root and AVO
+    alike carry it privately through the embedded <code>domain.Managed</code> carrier — the root via
+    <code>BaseEntity</code> — and expose <code>GetID</code>/<code>SetID</code>; an AVO declares no id field of its own,
+    its id is set with <code>domain.WithID</code>/<code>SetID</code>), so <code>ID("col")</code> declares only the column. <code>ParentID</code> names the child's foreign-key column referencing the
     root — it is injected by the persister and is <strong>not</strong> a struct field. Every other persisted field is a
     <code>Field("Go", "column")</code> pair. Because the persister owns the ParentID column (the write cascade sets it to the
     parent's id on every save), that column cannot ALSO be a mapped <code>Field</code> — the write would silently
