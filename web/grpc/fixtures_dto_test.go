@@ -78,7 +78,24 @@ func (h searchGadgetsHandler) Handle(ctx *configuration.AppContext, q *searchGad
 		Total:      1,
 		NextCursor: "next-c",
 		PrevCursor: "prev-c",
+		HasNext:    true,
 	}, nil
+}
+
+// searchGadgetsWithSearchDTO is searchGadgetsDTO plus the `query:"search"`
+// opt-in — the DTO shape that unlocks PaginationRequest.search, mirroring
+// the REST Reserved gate.
+type searchGadgetsWithSearchDTO struct {
+	Name      *string  `query:"name"      filter:"eq,icontains"`
+	Rating    *int64   `query:"rating"    filter:"gte,lte"`
+	Price     *float64 `query:"price"     filter:"gt,lt"`
+	Active    *bool    `query:"active"    filter:"eq"`
+	CreatedAt *string  `query:"createdAt" filter:"gte"`
+	Search    *string  `query:"search"`
+}
+
+func (searchGadgetsWithSearchDTO) ToQuery(c queries.ReadCriteria) *searchGadgetsQuery {
+	return &searchGadgetsQuery{Criteria: c}
 }
 
 // gadgetItemDTO is the list Response DTO — the read_mask/sort vocabulary

@@ -114,7 +114,7 @@ grpcReg.Register(fwgrpc.QueryWithParams[usersv1.ListUsersRequest, usersv1.ListUs
 <p>
     The gRPC list wire reaches the SAME <code>ToQuery</code> / <code>ToCriteria(ctx)</code> path:
     its per-view request message is composed from the shared <code>omnicore/v1/query.proto</code>
-    components (<code>PageRequest</code>, <code>SortField</code>, a <code>FieldMask</code> read mask,
+    components (<code>PaginationRequest</code>, <code>SortField</code>, a <code>FieldMask</code> read mask,
     the typed filter wrappers), and the <strong>Request DTO's <code>filter:</code> tags remain the
     single operator allowlist on both wires</strong> — clause emission delegates to the same
     <code>queryschema</code> core the REST/OpenAPI/GraphQL surfaces use, so operator semantics cannot
@@ -172,7 +172,7 @@ grpcReg.Register(fwgrpc.QueryWithParams[usersv1.ListUsersRequest, usersv1.ListUs
     <tr>
         <td>gRPC (sync)</td>
         <td><code>fwgrpc.QueryWith{Params,ID}</code> + <code>grpcReg.Register</code></td>
-        <td><code>omnicore.v1.PageInfo</code> list envelope, <code>read_mask</code>/<code>sort</code> selection</td>
+        <td><code>omnicore.v1.PaginationInfo</code> list envelope (the REST <code>pagination</code> block, mirrored), <code>read_mask</code>/<code>sort</code> selection</td>
     </tr>
     </tbody>
 </table>

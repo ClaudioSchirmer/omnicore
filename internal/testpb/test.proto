@@ -48,7 +48,7 @@ message ArchiveGadgetRequest {
 message ArchiveGadgetResponse {}
 
 message SearchGadgetsRequest {
-  omnicore.v1.PageRequest page = 1;
+  omnicore.v1.PaginationRequest pagination = 1;
   repeated omnicore.v1.SortField sort = 2;
   google.protobuf.FieldMask read_mask = 3;
   SearchGadgetsFilters filters = 4;
@@ -70,7 +70,7 @@ message GadgetItem {
 
 message SearchGadgetsResponse {
   repeated GadgetItem items = 1;
-  omnicore.v1.PageInfo page_info = 2;
+  omnicore.v1.PaginationInfo pagination = 2;
 }
 
 // ── bridge-plan edge shapes (bind_test.go) ──────────────────────────────
@@ -104,17 +104,17 @@ message TwoGroupsRequest {
 message TwoRepeatsResponse {
   repeated GadgetItem a = 1;
   repeated GadgetItem b = 2;
-  omnicore.v1.PageInfo page_info = 3;
+  omnicore.v1.PaginationInfo pagination = 3;
 }
 
-message OnlyPageInfoResponse {
-  omnicore.v1.PageInfo page_info = 1;
+message OnlyPaginationInfoResponse {
+  omnicore.v1.PaginationInfo pagination = 1;
 }
 
-message TwoPageInfosResponse {
+message TwoPaginationInfosResponse {
   repeated GadgetItem items = 1;
-  omnicore.v1.PageInfo a = 2;
-  omnicore.v1.PageInfo b = 3;
+  omnicore.v1.PaginationInfo a = 2;
+  omnicore.v1.PaginationInfo b = 3;
 }
 
 message GetGadgetRequest {
@@ -125,4 +125,48 @@ message GetGadgetRequest {
 message GetGadgetResponse {
   string id = 1;
   string name = 2;
+}
+
+// ── scalar-kind matrix (bind_scalars_test.go) ───────────────────────────
+//
+// Every proto scalar kind in ONE message, so the bridge is proven per kind
+// in BOTH directions. The dialects agree on most of them; the 64-bit
+// integers are the pair protojson quotes and encoding/json does not, and an
+// enum travels as its member NAME.
+
+enum Flavor {
+  FLAVOR_UNSPECIFIED = 0;
+  FLAVOR_SWEET = 1;
+  FLAVOR_SALTY = 2;
+}
+
+message ScalarChild {
+  int64 child_big = 1;
+  string child_label = 2;
+}
+
+message FlavorCarrier {
+  Flavor flavor = 1;
+}
+
+message ScalarMatrix {
+  int64 big = 1;
+  sint64 signed_big = 2;
+  sfixed64 fixed_signed_big = 3;
+  uint64 unsigned_big = 4;
+  fixed64 fixed_unsigned_big = 5;
+  int32 small = 6;
+  uint32 unsigned_small = 7;
+  double ratio = 8;
+  float fraction = 9;
+  bool flag = 10;
+  string label = 11;
+  bytes blob = 12;
+  Flavor flavor = 13;
+  google.protobuf.Timestamp when = 14;
+  repeated int64 bigs = 15;
+  repeated string labels = 16;
+  ScalarChild child = 17;
+  repeated ScalarChild children = 18;
+  optional int64 maybe_big = 19;
 }

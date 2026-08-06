@@ -15,7 +15,7 @@ import (
 )
 
 // CriteriaBuilder converts the shared omnicore.v1 read-side components
-// (PageRequest, SortField, FieldMask, the typed filter wrappers) into a
+// (PaginationRequest, SortField, FieldMask, the typed filter wrappers) into a
 // queries.ReadCriteria — the INPUT criteria, exactly what the REST parser
 // produces from the query string. Filter keys are GO FIELD PATHS; the query
 // type's ToCriteria(ctx) keeps applying identity overlays (Restrict, tenant
@@ -66,15 +66,34 @@ func (b *CriteriaBuilder) goField(kind, wirePath string) (string, bool) {
 }
 
 // Page applies the control keys. nil is a no-op (message absent).
-func (b *CriteriaBuilder) Page(p *pb.PageRequest) *CriteriaBuilder {
+func (b *CriteriaBuilder) Page(p *pb.PaginationRequest) *CriteriaBuilder {
 	if p == nil {
 		return b
+	}
+	// The REST onlyTotal conflict matrix, verbatim: a count-only request
+	// carrying page-shaping controls is a wire-contract violation, rejected
+	// eagerly (silent ignore would hide the consumer's bug). Presence-based,
+	// like the query-string check — proto3 optional carries presence.
+	if p.GetOnlyTotal() {
+		for _, c := range []struct {
+			key     string
+			present bool
+		}{
+			{"after", p.After != nil},
+			{"before", p.Before != nil},
+			{"limit", p.Limit != nil},
+		} {
+			if c.present {
+				b.errs = append(b.errs, fmt.Errorf("onlyTotal[%s]: incompatible with only_total=true", c.key))
+			}
+		}
 	}
 	b.crit.After = p.GetAfter()
 	b.crit.Before = p.GetBefore()
 	b.crit.Limit = p.GetLimit()
 	b.crit.OnlyTotal = p.GetOnlyTotal()
 	b.crit.IncludeArchived = p.GetIncludeArchived()
+	b.crit.Search = p.GetSearch()
 	return b
 }
 
@@ -226,6 +245,17 @@ func (b *CriteriaBuilder) Timestamp(goFieldPath string, f *pb.TimestampFilter) *
 // the wrappers' conversionError path renders them as SchemaViolation
 // (INVALID_ARGUMENT), the same rejection an unknown REST operator gets.
 func (b *CriteriaBuilder) Build() (queries.ReadCriteria, error) {
+	// Sort/read_mask arrive through their own builder calls, so their
+	// onlyTotal conflicts are only visible here — the page-key conflicts
+	// fire in Page. Same matrix as the REST wrapper.
+	if b.crit.OnlyTotal {
+		if len(b.crit.Sort) > 0 {
+			b.errs = append(b.errs, fmt.Errorf("onlyTotal[sort]: incompatible with only_total=true"))
+		}
+		if b.crit.Projection != nil {
+			b.errs = append(b.errs, fmt.Errorf("onlyTotal[read_mask]: incompatible with only_total=true"))
+		}
+	}
 	if len(b.errs) > 0 {
 		return queries.ReadCriteria{}, fmt.Errorf("grpc criteria: %w", errors.Join(b.errs...))
 	}

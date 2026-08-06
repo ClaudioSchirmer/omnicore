@@ -24,6 +24,55 @@ const (
 	_ = protoimpl.EnforceVersion(protoimpl.MaxVersion - 20)
 )
 
+type Flavor int32
+
+const (
+	Flavor_FLAVOR_UNSPECIFIED Flavor = 0
+	Flavor_FLAVOR_SWEET       Flavor = 1
+	Flavor_FLAVOR_SALTY       Flavor = 2
+)
+
+// Enum value maps for Flavor.
+var (
+	Flavor_name = map[int32]string{
+		0: "FLAVOR_UNSPECIFIED",
+		1: "FLAVOR_SWEET",
+		2: "FLAVOR_SALTY",
+	}
+	Flavor_value = map[string]int32{
+		"FLAVOR_UNSPECIFIED": 0,
+		"FLAVOR_SWEET":       1,
+		"FLAVOR_SALTY":       2,
+	}
+)
+
+func (x Flavor) Enum() *Flavor {
+	p := new(Flavor)
+	*p = x
+	return p
+}
+
+func (x Flavor) String() string {
+	return protoimpl.X.EnumStringOf(x.Descriptor(), protoreflect.EnumNumber(x))
+}
+
+func (Flavor) Descriptor() protoreflect.EnumDescriptor {
+	return file_test_proto_enumTypes[0].Descriptor()
+}
+
+func (Flavor) Type() protoreflect.EnumType {
+	return &file_test_proto_enumTypes[0]
+}
+
+func (x Flavor) Number() protoreflect.EnumNumber {
+	return protoreflect.EnumNumber(x)
+}
+
+// Deprecated: Use Flavor.Descriptor instead.
+func (Flavor) EnumDescriptor() ([]byte, []int) {
+	return file_test_proto_rawDescGZIP(), []int{0}
+}
+
 type CreateGadgetRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Name          *string                `protobuf:"bytes,1,opt,name=name,proto3,oneof" json:"name,omitempty"`
@@ -382,7 +431,7 @@ func (*ArchiveGadgetResponse) Descriptor() ([]byte, []int) {
 
 type SearchGadgetsRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
-	Page          *pb.PageRequest        `protobuf:"bytes,1,opt,name=page,proto3" json:"page,omitempty"`
+	Pagination    *pb.PaginationRequest  `protobuf:"bytes,1,opt,name=pagination,proto3" json:"pagination,omitempty"`
 	Sort          []*pb.SortField        `protobuf:"bytes,2,rep,name=sort,proto3" json:"sort,omitempty"`
 	ReadMask      *fieldmaskpb.FieldMask `protobuf:"bytes,3,opt,name=read_mask,json=readMask,proto3" json:"read_mask,omitempty"`
 	Filters       *SearchGadgetsFilters  `protobuf:"bytes,4,opt,name=filters,proto3" json:"filters,omitempty"`
@@ -420,9 +469,9 @@ func (*SearchGadgetsRequest) Descriptor() ([]byte, []int) {
 	return file_test_proto_rawDescGZIP(), []int{7}
 }
 
-func (x *SearchGadgetsRequest) GetPage() *pb.PageRequest {
+func (x *SearchGadgetsRequest) GetPagination() *pb.PaginationRequest {
 	if x != nil {
-		return x.Page
+		return x.Pagination
 	}
 	return nil
 }
@@ -587,7 +636,7 @@ func (x *GadgetItem) GetKind() string {
 type SearchGadgetsResponse struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Items         []*GadgetItem          `protobuf:"bytes,1,rep,name=items,proto3" json:"items,omitempty"`
-	PageInfo      *pb.PageInfo           `protobuf:"bytes,2,opt,name=page_info,json=pageInfo,proto3" json:"page_info,omitempty"`
+	Pagination    *pb.PaginationInfo     `protobuf:"bytes,2,opt,name=pagination,proto3" json:"pagination,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -629,9 +678,9 @@ func (x *SearchGadgetsResponse) GetItems() []*GadgetItem {
 	return nil
 }
 
-func (x *SearchGadgetsResponse) GetPageInfo() *pb.PageInfo {
+func (x *SearchGadgetsResponse) GetPagination() *pb.PaginationInfo {
 	if x != nil {
-		return x.PageInfo
+		return x.Pagination
 	}
 	return nil
 }
@@ -920,7 +969,7 @@ type TwoRepeatsResponse struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	A             []*GadgetItem          `protobuf:"bytes,1,rep,name=a,proto3" json:"a,omitempty"`
 	B             []*GadgetItem          `protobuf:"bytes,2,rep,name=b,proto3" json:"b,omitempty"`
-	PageInfo      *pb.PageInfo           `protobuf:"bytes,3,opt,name=page_info,json=pageInfo,proto3" json:"page_info,omitempty"`
+	Pagination    *pb.PaginationInfo     `protobuf:"bytes,3,opt,name=pagination,proto3" json:"pagination,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -969,34 +1018,34 @@ func (x *TwoRepeatsResponse) GetB() []*GadgetItem {
 	return nil
 }
 
-func (x *TwoRepeatsResponse) GetPageInfo() *pb.PageInfo {
+func (x *TwoRepeatsResponse) GetPagination() *pb.PaginationInfo {
 	if x != nil {
-		return x.PageInfo
+		return x.Pagination
 	}
 	return nil
 }
 
-type OnlyPageInfoResponse struct {
+type OnlyPaginationInfoResponse struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
-	PageInfo      *pb.PageInfo           `protobuf:"bytes,1,opt,name=page_info,json=pageInfo,proto3" json:"page_info,omitempty"`
+	Pagination    *pb.PaginationInfo     `protobuf:"bytes,1,opt,name=pagination,proto3" json:"pagination,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
 
-func (x *OnlyPageInfoResponse) Reset() {
-	*x = OnlyPageInfoResponse{}
+func (x *OnlyPaginationInfoResponse) Reset() {
+	*x = OnlyPaginationInfoResponse{}
 	mi := &file_test_proto_msgTypes[18]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
 
-func (x *OnlyPageInfoResponse) String() string {
+func (x *OnlyPaginationInfoResponse) String() string {
 	return protoimpl.X.MessageStringOf(x)
 }
 
-func (*OnlyPageInfoResponse) ProtoMessage() {}
+func (*OnlyPaginationInfoResponse) ProtoMessage() {}
 
-func (x *OnlyPageInfoResponse) ProtoReflect() protoreflect.Message {
+func (x *OnlyPaginationInfoResponse) ProtoReflect() protoreflect.Message {
 	mi := &file_test_proto_msgTypes[18]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
@@ -1008,41 +1057,41 @@ func (x *OnlyPageInfoResponse) ProtoReflect() protoreflect.Message {
 	return mi.MessageOf(x)
 }
 
-// Deprecated: Use OnlyPageInfoResponse.ProtoReflect.Descriptor instead.
-func (*OnlyPageInfoResponse) Descriptor() ([]byte, []int) {
+// Deprecated: Use OnlyPaginationInfoResponse.ProtoReflect.Descriptor instead.
+func (*OnlyPaginationInfoResponse) Descriptor() ([]byte, []int) {
 	return file_test_proto_rawDescGZIP(), []int{18}
 }
 
-func (x *OnlyPageInfoResponse) GetPageInfo() *pb.PageInfo {
+func (x *OnlyPaginationInfoResponse) GetPagination() *pb.PaginationInfo {
 	if x != nil {
-		return x.PageInfo
+		return x.Pagination
 	}
 	return nil
 }
 
-type TwoPageInfosResponse struct {
+type TwoPaginationInfosResponse struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Items         []*GadgetItem          `protobuf:"bytes,1,rep,name=items,proto3" json:"items,omitempty"`
-	A             *pb.PageInfo           `protobuf:"bytes,2,opt,name=a,proto3" json:"a,omitempty"`
-	B             *pb.PageInfo           `protobuf:"bytes,3,opt,name=b,proto3" json:"b,omitempty"`
+	A             *pb.PaginationInfo     `protobuf:"bytes,2,opt,name=a,proto3" json:"a,omitempty"`
+	B             *pb.PaginationInfo     `protobuf:"bytes,3,opt,name=b,proto3" json:"b,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
 
-func (x *TwoPageInfosResponse) Reset() {
-	*x = TwoPageInfosResponse{}
+func (x *TwoPaginationInfosResponse) Reset() {
+	*x = TwoPaginationInfosResponse{}
 	mi := &file_test_proto_msgTypes[19]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
 
-func (x *TwoPageInfosResponse) String() string {
+func (x *TwoPaginationInfosResponse) String() string {
 	return protoimpl.X.MessageStringOf(x)
 }
 
-func (*TwoPageInfosResponse) ProtoMessage() {}
+func (*TwoPaginationInfosResponse) ProtoMessage() {}
 
-func (x *TwoPageInfosResponse) ProtoReflect() protoreflect.Message {
+func (x *TwoPaginationInfosResponse) ProtoReflect() protoreflect.Message {
 	mi := &file_test_proto_msgTypes[19]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
@@ -1054,26 +1103,26 @@ func (x *TwoPageInfosResponse) ProtoReflect() protoreflect.Message {
 	return mi.MessageOf(x)
 }
 
-// Deprecated: Use TwoPageInfosResponse.ProtoReflect.Descriptor instead.
-func (*TwoPageInfosResponse) Descriptor() ([]byte, []int) {
+// Deprecated: Use TwoPaginationInfosResponse.ProtoReflect.Descriptor instead.
+func (*TwoPaginationInfosResponse) Descriptor() ([]byte, []int) {
 	return file_test_proto_rawDescGZIP(), []int{19}
 }
 
-func (x *TwoPageInfosResponse) GetItems() []*GadgetItem {
+func (x *TwoPaginationInfosResponse) GetItems() []*GadgetItem {
 	if x != nil {
 		return x.Items
 	}
 	return nil
 }
 
-func (x *TwoPageInfosResponse) GetA() *pb.PageInfo {
+func (x *TwoPaginationInfosResponse) GetA() *pb.PaginationInfo {
 	if x != nil {
 		return x.A
 	}
 	return nil
 }
 
-func (x *TwoPageInfosResponse) GetB() *pb.PageInfo {
+func (x *TwoPaginationInfosResponse) GetB() *pb.PaginationInfo {
 	if x != nil {
 		return x.B
 	}
@@ -1184,6 +1233,290 @@ func (x *GetGadgetResponse) GetName() string {
 	return ""
 }
 
+type ScalarChild struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	ChildBig      int64                  `protobuf:"varint,1,opt,name=child_big,json=childBig,proto3" json:"child_big,omitempty"`
+	ChildLabel    string                 `protobuf:"bytes,2,opt,name=child_label,json=childLabel,proto3" json:"child_label,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ScalarChild) Reset() {
+	*x = ScalarChild{}
+	mi := &file_test_proto_msgTypes[22]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ScalarChild) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ScalarChild) ProtoMessage() {}
+
+func (x *ScalarChild) ProtoReflect() protoreflect.Message {
+	mi := &file_test_proto_msgTypes[22]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ScalarChild.ProtoReflect.Descriptor instead.
+func (*ScalarChild) Descriptor() ([]byte, []int) {
+	return file_test_proto_rawDescGZIP(), []int{22}
+}
+
+func (x *ScalarChild) GetChildBig() int64 {
+	if x != nil {
+		return x.ChildBig
+	}
+	return 0
+}
+
+func (x *ScalarChild) GetChildLabel() string {
+	if x != nil {
+		return x.ChildLabel
+	}
+	return ""
+}
+
+type FlavorCarrier struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Flavor        Flavor                 `protobuf:"varint,1,opt,name=flavor,proto3,enum=omnicore.grpctest.v1.Flavor" json:"flavor,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *FlavorCarrier) Reset() {
+	*x = FlavorCarrier{}
+	mi := &file_test_proto_msgTypes[23]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *FlavorCarrier) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*FlavorCarrier) ProtoMessage() {}
+
+func (x *FlavorCarrier) ProtoReflect() protoreflect.Message {
+	mi := &file_test_proto_msgTypes[23]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use FlavorCarrier.ProtoReflect.Descriptor instead.
+func (*FlavorCarrier) Descriptor() ([]byte, []int) {
+	return file_test_proto_rawDescGZIP(), []int{23}
+}
+
+func (x *FlavorCarrier) GetFlavor() Flavor {
+	if x != nil {
+		return x.Flavor
+	}
+	return Flavor_FLAVOR_UNSPECIFIED
+}
+
+type ScalarMatrix struct {
+	state            protoimpl.MessageState `protogen:"open.v1"`
+	Big              int64                  `protobuf:"varint,1,opt,name=big,proto3" json:"big,omitempty"`
+	SignedBig        int64                  `protobuf:"zigzag64,2,opt,name=signed_big,json=signedBig,proto3" json:"signed_big,omitempty"`
+	FixedSignedBig   int64                  `protobuf:"fixed64,3,opt,name=fixed_signed_big,json=fixedSignedBig,proto3" json:"fixed_signed_big,omitempty"`
+	UnsignedBig      uint64                 `protobuf:"varint,4,opt,name=unsigned_big,json=unsignedBig,proto3" json:"unsigned_big,omitempty"`
+	FixedUnsignedBig uint64                 `protobuf:"fixed64,5,opt,name=fixed_unsigned_big,json=fixedUnsignedBig,proto3" json:"fixed_unsigned_big,omitempty"`
+	Small            int32                  `protobuf:"varint,6,opt,name=small,proto3" json:"small,omitempty"`
+	UnsignedSmall    uint32                 `protobuf:"varint,7,opt,name=unsigned_small,json=unsignedSmall,proto3" json:"unsigned_small,omitempty"`
+	Ratio            float64                `protobuf:"fixed64,8,opt,name=ratio,proto3" json:"ratio,omitempty"`
+	Fraction         float32                `protobuf:"fixed32,9,opt,name=fraction,proto3" json:"fraction,omitempty"`
+	Flag             bool                   `protobuf:"varint,10,opt,name=flag,proto3" json:"flag,omitempty"`
+	Label            string                 `protobuf:"bytes,11,opt,name=label,proto3" json:"label,omitempty"`
+	Blob             []byte                 `protobuf:"bytes,12,opt,name=blob,proto3" json:"blob,omitempty"`
+	Flavor           Flavor                 `protobuf:"varint,13,opt,name=flavor,proto3,enum=omnicore.grpctest.v1.Flavor" json:"flavor,omitempty"`
+	When             *timestamppb.Timestamp `protobuf:"bytes,14,opt,name=when,proto3" json:"when,omitempty"`
+	Bigs             []int64                `protobuf:"varint,15,rep,packed,name=bigs,proto3" json:"bigs,omitempty"`
+	Labels           []string               `protobuf:"bytes,16,rep,name=labels,proto3" json:"labels,omitempty"`
+	Child            *ScalarChild           `protobuf:"bytes,17,opt,name=child,proto3" json:"child,omitempty"`
+	Children         []*ScalarChild         `protobuf:"bytes,18,rep,name=children,proto3" json:"children,omitempty"`
+	MaybeBig         *int64                 `protobuf:"varint,19,opt,name=maybe_big,json=maybeBig,proto3,oneof" json:"maybe_big,omitempty"`
+	unknownFields    protoimpl.UnknownFields
+	sizeCache        protoimpl.SizeCache
+}
+
+func (x *ScalarMatrix) Reset() {
+	*x = ScalarMatrix{}
+	mi := &file_test_proto_msgTypes[24]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ScalarMatrix) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ScalarMatrix) ProtoMessage() {}
+
+func (x *ScalarMatrix) ProtoReflect() protoreflect.Message {
+	mi := &file_test_proto_msgTypes[24]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ScalarMatrix.ProtoReflect.Descriptor instead.
+func (*ScalarMatrix) Descriptor() ([]byte, []int) {
+	return file_test_proto_rawDescGZIP(), []int{24}
+}
+
+func (x *ScalarMatrix) GetBig() int64 {
+	if x != nil {
+		return x.Big
+	}
+	return 0
+}
+
+func (x *ScalarMatrix) GetSignedBig() int64 {
+	if x != nil {
+		return x.SignedBig
+	}
+	return 0
+}
+
+func (x *ScalarMatrix) GetFixedSignedBig() int64 {
+	if x != nil {
+		return x.FixedSignedBig
+	}
+	return 0
+}
+
+func (x *ScalarMatrix) GetUnsignedBig() uint64 {
+	if x != nil {
+		return x.UnsignedBig
+	}
+	return 0
+}
+
+func (x *ScalarMatrix) GetFixedUnsignedBig() uint64 {
+	if x != nil {
+		return x.FixedUnsignedBig
+	}
+	return 0
+}
+
+func (x *ScalarMatrix) GetSmall() int32 {
+	if x != nil {
+		return x.Small
+	}
+	return 0
+}
+
+func (x *ScalarMatrix) GetUnsignedSmall() uint32 {
+	if x != nil {
+		return x.UnsignedSmall
+	}
+	return 0
+}
+
+func (x *ScalarMatrix) GetRatio() float64 {
+	if x != nil {
+		return x.Ratio
+	}
+	return 0
+}
+
+func (x *ScalarMatrix) GetFraction() float32 {
+	if x != nil {
+		return x.Fraction
+	}
+	return 0
+}
+
+func (x *ScalarMatrix) GetFlag() bool {
+	if x != nil {
+		return x.Flag
+	}
+	return false
+}
+
+func (x *ScalarMatrix) GetLabel() string {
+	if x != nil {
+		return x.Label
+	}
+	return ""
+}
+
+func (x *ScalarMatrix) GetBlob() []byte {
+	if x != nil {
+		return x.Blob
+	}
+	return nil
+}
+
+func (x *ScalarMatrix) GetFlavor() Flavor {
+	if x != nil {
+		return x.Flavor
+	}
+	return Flavor_FLAVOR_UNSPECIFIED
+}
+
+func (x *ScalarMatrix) GetWhen() *timestamppb.Timestamp {
+	if x != nil {
+		return x.When
+	}
+	return nil
+}
+
+func (x *ScalarMatrix) GetBigs() []int64 {
+	if x != nil {
+		return x.Bigs
+	}
+	return nil
+}
+
+func (x *ScalarMatrix) GetLabels() []string {
+	if x != nil {
+		return x.Labels
+	}
+	return nil
+}
+
+func (x *ScalarMatrix) GetChild() *ScalarChild {
+	if x != nil {
+		return x.Child
+	}
+	return nil
+}
+
+func (x *ScalarMatrix) GetChildren() []*ScalarChild {
+	if x != nil {
+		return x.Children
+	}
+	return nil
+}
+
+func (x *ScalarMatrix) GetMaybeBig() int64 {
+	if x != nil && x.MaybeBig != nil {
+		return *x.MaybeBig
+	}
+	return 0
+}
+
 var File_test_proto protoreflect.FileDescriptor
 
 const file_test_proto_rawDesc = "" +
@@ -1218,9 +1551,11 @@ const file_test_proto_rawDesc = "" +
 	"\x14ArchiveGadgetRequest\x12\x13\n" +
 	"\x02id\x18\x01 \x01(\tH\x00R\x02id\x88\x01\x01B\x05\n" +
 	"\x03_id\"\x17\n" +
-	"\x15ArchiveGadgetResponse\"\xef\x01\n" +
-	"\x14SearchGadgetsRequest\x12,\n" +
-	"\x04page\x18\x01 \x01(\v2\x18.omnicore.v1.PageRequestR\x04page\x12*\n" +
+	"\x15ArchiveGadgetResponse\"\x81\x02\n" +
+	"\x14SearchGadgetsRequest\x12>\n" +
+	"\n" +
+	"pagination\x18\x01 \x01(\v2\x1e.omnicore.v1.PaginationRequestR\n" +
+	"pagination\x12*\n" +
 	"\x04sort\x18\x02 \x03(\v2\x16.omnicore.v1.SortFieldR\x04sort\x127\n" +
 	"\tread_mask\x18\x03 \x01(\v2\x1a.google.protobuf.FieldMaskR\breadMask\x12D\n" +
 	"\afilters\x18\x04 \x01(\v2*.omnicore.grpctest.v1.SearchGadgetsFiltersR\afilters\"\x96\x02\n" +
@@ -1236,10 +1571,12 @@ const file_test_proto_rawDesc = "" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x12\n" +
 	"\x04name\x18\x02 \x01(\tR\x04name\x12\x17\n" +
 	"\x04kind\x18\x03 \x01(\tH\x00R\x04kind\x88\x01\x01B\a\n" +
-	"\x05_kind\"\x83\x01\n" +
+	"\x05_kind\"\x8c\x01\n" +
 	"\x15SearchGadgetsResponse\x126\n" +
-	"\x05items\x18\x01 \x03(\v2 .omnicore.grpctest.v1.GadgetItemR\x05items\x122\n" +
-	"\tpage_info\x18\x02 \x01(\v2\x15.omnicore.v1.PageInfoR\bpageInfo\"\x8d\x01\n" +
+	"\x05items\x18\x01 \x03(\v2 .omnicore.grpctest.v1.GadgetItemR\x05items\x12;\n" +
+	"\n" +
+	"pagination\x18\x02 \x01(\v2\x1b.omnicore.v1.PaginationInfoR\n" +
+	"pagination\"\x8d\x01\n" +
 	"\n" +
 	"MapCarrier\x12D\n" +
 	"\x06labels\x18\x01 \x03(\v2,.omnicore.grpctest.v1.MapCarrier.LabelsEntryR\x06labels\x1a9\n" +
@@ -1258,24 +1595,62 @@ const file_test_proto_rawDesc = "" +
 	"\bfavorite\x18\x02 \x01(\v2 .omnicore.grpctest.v1.ChildThingR\bfavorite\"\x86\x01\n" +
 	"\x10TwoGroupsRequest\x128\n" +
 	"\x01a\x18\x01 \x01(\v2*.omnicore.grpctest.v1.SearchGadgetsFiltersR\x01a\x128\n" +
-	"\x01b\x18\x02 \x01(\v2*.omnicore.grpctest.v1.SearchGadgetsFiltersR\x01b\"\xa8\x01\n" +
+	"\x01b\x18\x02 \x01(\v2*.omnicore.grpctest.v1.SearchGadgetsFiltersR\x01b\"\xb1\x01\n" +
 	"\x12TwoRepeatsResponse\x12.\n" +
 	"\x01a\x18\x01 \x03(\v2 .omnicore.grpctest.v1.GadgetItemR\x01a\x12.\n" +
-	"\x01b\x18\x02 \x03(\v2 .omnicore.grpctest.v1.GadgetItemR\x01b\x122\n" +
-	"\tpage_info\x18\x03 \x01(\v2\x15.omnicore.v1.PageInfoR\bpageInfo\"J\n" +
-	"\x14OnlyPageInfoResponse\x122\n" +
-	"\tpage_info\x18\x01 \x01(\v2\x15.omnicore.v1.PageInfoR\bpageInfo\"\x98\x01\n" +
-	"\x14TwoPageInfosResponse\x126\n" +
-	"\x05items\x18\x01 \x03(\v2 .omnicore.grpctest.v1.GadgetItemR\x05items\x12#\n" +
-	"\x01a\x18\x02 \x01(\v2\x15.omnicore.v1.PageInfoR\x01a\x12#\n" +
-	"\x01b\x18\x03 \x01(\v2\x15.omnicore.v1.PageInfoR\x01b\"Y\n" +
+	"\x01b\x18\x02 \x03(\v2 .omnicore.grpctest.v1.GadgetItemR\x01b\x12;\n" +
+	"\n" +
+	"pagination\x18\x03 \x01(\v2\x1b.omnicore.v1.PaginationInfoR\n" +
+	"pagination\"Y\n" +
+	"\x1aOnlyPaginationInfoResponse\x12;\n" +
+	"\n" +
+	"pagination\x18\x01 \x01(\v2\x1b.omnicore.v1.PaginationInfoR\n" +
+	"pagination\"\xaa\x01\n" +
+	"\x1aTwoPaginationInfosResponse\x126\n" +
+	"\x05items\x18\x01 \x03(\v2 .omnicore.grpctest.v1.GadgetItemR\x05items\x12)\n" +
+	"\x01a\x18\x02 \x01(\v2\x1b.omnicore.v1.PaginationInfoR\x01a\x12)\n" +
+	"\x01b\x18\x03 \x01(\v2\x1b.omnicore.v1.PaginationInfoR\x01b\"Y\n" +
 	"\x10GetGadgetRequest\x12\x13\n" +
 	"\x02id\x18\x01 \x01(\tH\x00R\x02id\x88\x01\x01\x12)\n" +
 	"\x10include_archived\x18\x02 \x01(\bR\x0fincludeArchivedB\x05\n" +
 	"\x03_id\"7\n" +
 	"\x11GetGadgetResponse\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x12\n" +
-	"\x04name\x18\x02 \x01(\tR\x04nameB5Z3github.com/ClaudioSchirmer/omnicore/internal/testpbb\x06proto3"
+	"\x04name\x18\x02 \x01(\tR\x04name\"K\n" +
+	"\vScalarChild\x12\x1b\n" +
+	"\tchild_big\x18\x01 \x01(\x03R\bchildBig\x12\x1f\n" +
+	"\vchild_label\x18\x02 \x01(\tR\n" +
+	"childLabel\"E\n" +
+	"\rFlavorCarrier\x124\n" +
+	"\x06flavor\x18\x01 \x01(\x0e2\x1c.omnicore.grpctest.v1.FlavorR\x06flavor\"\xa1\x05\n" +
+	"\fScalarMatrix\x12\x10\n" +
+	"\x03big\x18\x01 \x01(\x03R\x03big\x12\x1d\n" +
+	"\n" +
+	"signed_big\x18\x02 \x01(\x12R\tsignedBig\x12(\n" +
+	"\x10fixed_signed_big\x18\x03 \x01(\x10R\x0efixedSignedBig\x12!\n" +
+	"\funsigned_big\x18\x04 \x01(\x04R\vunsignedBig\x12,\n" +
+	"\x12fixed_unsigned_big\x18\x05 \x01(\x06R\x10fixedUnsignedBig\x12\x14\n" +
+	"\x05small\x18\x06 \x01(\x05R\x05small\x12%\n" +
+	"\x0eunsigned_small\x18\a \x01(\rR\runsignedSmall\x12\x14\n" +
+	"\x05ratio\x18\b \x01(\x01R\x05ratio\x12\x1a\n" +
+	"\bfraction\x18\t \x01(\x02R\bfraction\x12\x12\n" +
+	"\x04flag\x18\n" +
+	" \x01(\bR\x04flag\x12\x14\n" +
+	"\x05label\x18\v \x01(\tR\x05label\x12\x12\n" +
+	"\x04blob\x18\f \x01(\fR\x04blob\x124\n" +
+	"\x06flavor\x18\r \x01(\x0e2\x1c.omnicore.grpctest.v1.FlavorR\x06flavor\x12.\n" +
+	"\x04when\x18\x0e \x01(\v2\x1a.google.protobuf.TimestampR\x04when\x12\x12\n" +
+	"\x04bigs\x18\x0f \x03(\x03R\x04bigs\x12\x16\n" +
+	"\x06labels\x18\x10 \x03(\tR\x06labels\x127\n" +
+	"\x05child\x18\x11 \x01(\v2!.omnicore.grpctest.v1.ScalarChildR\x05child\x12=\n" +
+	"\bchildren\x18\x12 \x03(\v2!.omnicore.grpctest.v1.ScalarChildR\bchildren\x12 \n" +
+	"\tmaybe_big\x18\x13 \x01(\x03H\x00R\bmaybeBig\x88\x01\x01B\f\n" +
+	"\n" +
+	"_maybe_big*D\n" +
+	"\x06Flavor\x12\x16\n" +
+	"\x12FLAVOR_UNSPECIFIED\x10\x00\x12\x10\n" +
+	"\fFLAVOR_SWEET\x10\x01\x12\x10\n" +
+	"\fFLAVOR_SALTY\x10\x02B5Z3github.com/ClaudioSchirmer/omnicore/internal/testpbb\x06proto3"
 
 var (
 	file_test_proto_rawDescOnce sync.Once
@@ -1289,73 +1664,83 @@ func file_test_proto_rawDescGZIP() []byte {
 	return file_test_proto_rawDescData
 }
 
-var file_test_proto_msgTypes = make([]protoimpl.MessageInfo, 23)
+var file_test_proto_enumTypes = make([]protoimpl.EnumInfo, 1)
+var file_test_proto_msgTypes = make([]protoimpl.MessageInfo, 26)
 var file_test_proto_goTypes = []any{
-	(*CreateGadgetRequest)(nil),   // 0: omnicore.grpctest.v1.CreateGadgetRequest
-	(*CreateGadgetResponse)(nil),  // 1: omnicore.grpctest.v1.CreateGadgetResponse
-	(*ListGadgetsRequest)(nil),    // 2: omnicore.grpctest.v1.ListGadgetsRequest
-	(*ListGadgetsResponse)(nil),   // 3: omnicore.grpctest.v1.ListGadgetsResponse
-	(*UpdateGadgetRequest)(nil),   // 4: omnicore.grpctest.v1.UpdateGadgetRequest
-	(*ArchiveGadgetRequest)(nil),  // 5: omnicore.grpctest.v1.ArchiveGadgetRequest
-	(*ArchiveGadgetResponse)(nil), // 6: omnicore.grpctest.v1.ArchiveGadgetResponse
-	(*SearchGadgetsRequest)(nil),  // 7: omnicore.grpctest.v1.SearchGadgetsRequest
-	(*SearchGadgetsFilters)(nil),  // 8: omnicore.grpctest.v1.SearchGadgetsFilters
-	(*GadgetItem)(nil),            // 9: omnicore.grpctest.v1.GadgetItem
-	(*SearchGadgetsResponse)(nil), // 10: omnicore.grpctest.v1.SearchGadgetsResponse
-	(*MapCarrier)(nil),            // 11: omnicore.grpctest.v1.MapCarrier
-	(*TimeCarrier)(nil),           // 12: omnicore.grpctest.v1.TimeCarrier
-	(*MaskCarrier)(nil),           // 13: omnicore.grpctest.v1.MaskCarrier
-	(*ChildThing)(nil),            // 14: omnicore.grpctest.v1.ChildThing
-	(*ParentThing)(nil),           // 15: omnicore.grpctest.v1.ParentThing
-	(*TwoGroupsRequest)(nil),      // 16: omnicore.grpctest.v1.TwoGroupsRequest
-	(*TwoRepeatsResponse)(nil),    // 17: omnicore.grpctest.v1.TwoRepeatsResponse
-	(*OnlyPageInfoResponse)(nil),  // 18: omnicore.grpctest.v1.OnlyPageInfoResponse
-	(*TwoPageInfosResponse)(nil),  // 19: omnicore.grpctest.v1.TwoPageInfosResponse
-	(*GetGadgetRequest)(nil),      // 20: omnicore.grpctest.v1.GetGadgetRequest
-	(*GetGadgetResponse)(nil),     // 21: omnicore.grpctest.v1.GetGadgetResponse
-	nil,                           // 22: omnicore.grpctest.v1.MapCarrier.LabelsEntry
-	(*pb.PageRequest)(nil),        // 23: omnicore.v1.PageRequest
-	(*pb.SortField)(nil),          // 24: omnicore.v1.SortField
-	(*fieldmaskpb.FieldMask)(nil), // 25: google.protobuf.FieldMask
-	(*pb.StringFilter)(nil),       // 26: omnicore.v1.StringFilter
-	(*pb.Int64Filter)(nil),        // 27: omnicore.v1.Int64Filter
-	(*pb.DoubleFilter)(nil),       // 28: omnicore.v1.DoubleFilter
-	(*pb.BoolFilter)(nil),         // 29: omnicore.v1.BoolFilter
-	(*pb.TimestampFilter)(nil),    // 30: omnicore.v1.TimestampFilter
-	(*pb.PageInfo)(nil),           // 31: omnicore.v1.PageInfo
-	(*timestamppb.Timestamp)(nil), // 32: google.protobuf.Timestamp
+	(Flavor)(0),                        // 0: omnicore.grpctest.v1.Flavor
+	(*CreateGadgetRequest)(nil),        // 1: omnicore.grpctest.v1.CreateGadgetRequest
+	(*CreateGadgetResponse)(nil),       // 2: omnicore.grpctest.v1.CreateGadgetResponse
+	(*ListGadgetsRequest)(nil),         // 3: omnicore.grpctest.v1.ListGadgetsRequest
+	(*ListGadgetsResponse)(nil),        // 4: omnicore.grpctest.v1.ListGadgetsResponse
+	(*UpdateGadgetRequest)(nil),        // 5: omnicore.grpctest.v1.UpdateGadgetRequest
+	(*ArchiveGadgetRequest)(nil),       // 6: omnicore.grpctest.v1.ArchiveGadgetRequest
+	(*ArchiveGadgetResponse)(nil),      // 7: omnicore.grpctest.v1.ArchiveGadgetResponse
+	(*SearchGadgetsRequest)(nil),       // 8: omnicore.grpctest.v1.SearchGadgetsRequest
+	(*SearchGadgetsFilters)(nil),       // 9: omnicore.grpctest.v1.SearchGadgetsFilters
+	(*GadgetItem)(nil),                 // 10: omnicore.grpctest.v1.GadgetItem
+	(*SearchGadgetsResponse)(nil),      // 11: omnicore.grpctest.v1.SearchGadgetsResponse
+	(*MapCarrier)(nil),                 // 12: omnicore.grpctest.v1.MapCarrier
+	(*TimeCarrier)(nil),                // 13: omnicore.grpctest.v1.TimeCarrier
+	(*MaskCarrier)(nil),                // 14: omnicore.grpctest.v1.MaskCarrier
+	(*ChildThing)(nil),                 // 15: omnicore.grpctest.v1.ChildThing
+	(*ParentThing)(nil),                // 16: omnicore.grpctest.v1.ParentThing
+	(*TwoGroupsRequest)(nil),           // 17: omnicore.grpctest.v1.TwoGroupsRequest
+	(*TwoRepeatsResponse)(nil),         // 18: omnicore.grpctest.v1.TwoRepeatsResponse
+	(*OnlyPaginationInfoResponse)(nil), // 19: omnicore.grpctest.v1.OnlyPaginationInfoResponse
+	(*TwoPaginationInfosResponse)(nil), // 20: omnicore.grpctest.v1.TwoPaginationInfosResponse
+	(*GetGadgetRequest)(nil),           // 21: omnicore.grpctest.v1.GetGadgetRequest
+	(*GetGadgetResponse)(nil),          // 22: omnicore.grpctest.v1.GetGadgetResponse
+	(*ScalarChild)(nil),                // 23: omnicore.grpctest.v1.ScalarChild
+	(*FlavorCarrier)(nil),              // 24: omnicore.grpctest.v1.FlavorCarrier
+	(*ScalarMatrix)(nil),               // 25: omnicore.grpctest.v1.ScalarMatrix
+	nil,                                // 26: omnicore.grpctest.v1.MapCarrier.LabelsEntry
+	(*pb.PaginationRequest)(nil),       // 27: omnicore.v1.PaginationRequest
+	(*pb.SortField)(nil),               // 28: omnicore.v1.SortField
+	(*fieldmaskpb.FieldMask)(nil),      // 29: google.protobuf.FieldMask
+	(*pb.StringFilter)(nil),            // 30: omnicore.v1.StringFilter
+	(*pb.Int64Filter)(nil),             // 31: omnicore.v1.Int64Filter
+	(*pb.DoubleFilter)(nil),            // 32: omnicore.v1.DoubleFilter
+	(*pb.BoolFilter)(nil),              // 33: omnicore.v1.BoolFilter
+	(*pb.TimestampFilter)(nil),         // 34: omnicore.v1.TimestampFilter
+	(*pb.PaginationInfo)(nil),          // 35: omnicore.v1.PaginationInfo
+	(*timestamppb.Timestamp)(nil),      // 36: google.protobuf.Timestamp
 }
 var file_test_proto_depIdxs = []int32{
-	23, // 0: omnicore.grpctest.v1.SearchGadgetsRequest.page:type_name -> omnicore.v1.PageRequest
-	24, // 1: omnicore.grpctest.v1.SearchGadgetsRequest.sort:type_name -> omnicore.v1.SortField
-	25, // 2: omnicore.grpctest.v1.SearchGadgetsRequest.read_mask:type_name -> google.protobuf.FieldMask
-	8,  // 3: omnicore.grpctest.v1.SearchGadgetsRequest.filters:type_name -> omnicore.grpctest.v1.SearchGadgetsFilters
-	26, // 4: omnicore.grpctest.v1.SearchGadgetsFilters.name:type_name -> omnicore.v1.StringFilter
-	27, // 5: omnicore.grpctest.v1.SearchGadgetsFilters.rating:type_name -> omnicore.v1.Int64Filter
-	28, // 6: omnicore.grpctest.v1.SearchGadgetsFilters.price:type_name -> omnicore.v1.DoubleFilter
-	29, // 7: omnicore.grpctest.v1.SearchGadgetsFilters.active:type_name -> omnicore.v1.BoolFilter
-	30, // 8: omnicore.grpctest.v1.SearchGadgetsFilters.created_at:type_name -> omnicore.v1.TimestampFilter
-	9,  // 9: omnicore.grpctest.v1.SearchGadgetsResponse.items:type_name -> omnicore.grpctest.v1.GadgetItem
-	31, // 10: omnicore.grpctest.v1.SearchGadgetsResponse.page_info:type_name -> omnicore.v1.PageInfo
-	22, // 11: omnicore.grpctest.v1.MapCarrier.labels:type_name -> omnicore.grpctest.v1.MapCarrier.LabelsEntry
-	32, // 12: omnicore.grpctest.v1.TimeCarrier.when:type_name -> google.protobuf.Timestamp
-	25, // 13: omnicore.grpctest.v1.MaskCarrier.mask:type_name -> google.protobuf.FieldMask
-	14, // 14: omnicore.grpctest.v1.ParentThing.kids:type_name -> omnicore.grpctest.v1.ChildThing
-	14, // 15: omnicore.grpctest.v1.ParentThing.favorite:type_name -> omnicore.grpctest.v1.ChildThing
-	8,  // 16: omnicore.grpctest.v1.TwoGroupsRequest.a:type_name -> omnicore.grpctest.v1.SearchGadgetsFilters
-	8,  // 17: omnicore.grpctest.v1.TwoGroupsRequest.b:type_name -> omnicore.grpctest.v1.SearchGadgetsFilters
-	9,  // 18: omnicore.grpctest.v1.TwoRepeatsResponse.a:type_name -> omnicore.grpctest.v1.GadgetItem
-	9,  // 19: omnicore.grpctest.v1.TwoRepeatsResponse.b:type_name -> omnicore.grpctest.v1.GadgetItem
-	31, // 20: omnicore.grpctest.v1.TwoRepeatsResponse.page_info:type_name -> omnicore.v1.PageInfo
-	31, // 21: omnicore.grpctest.v1.OnlyPageInfoResponse.page_info:type_name -> omnicore.v1.PageInfo
-	9,  // 22: omnicore.grpctest.v1.TwoPageInfosResponse.items:type_name -> omnicore.grpctest.v1.GadgetItem
-	31, // 23: omnicore.grpctest.v1.TwoPageInfosResponse.a:type_name -> omnicore.v1.PageInfo
-	31, // 24: omnicore.grpctest.v1.TwoPageInfosResponse.b:type_name -> omnicore.v1.PageInfo
-	25, // [25:25] is the sub-list for method output_type
-	25, // [25:25] is the sub-list for method input_type
-	25, // [25:25] is the sub-list for extension type_name
-	25, // [25:25] is the sub-list for extension extendee
-	0,  // [0:25] is the sub-list for field type_name
+	27, // 0: omnicore.grpctest.v1.SearchGadgetsRequest.pagination:type_name -> omnicore.v1.PaginationRequest
+	28, // 1: omnicore.grpctest.v1.SearchGadgetsRequest.sort:type_name -> omnicore.v1.SortField
+	29, // 2: omnicore.grpctest.v1.SearchGadgetsRequest.read_mask:type_name -> google.protobuf.FieldMask
+	9,  // 3: omnicore.grpctest.v1.SearchGadgetsRequest.filters:type_name -> omnicore.grpctest.v1.SearchGadgetsFilters
+	30, // 4: omnicore.grpctest.v1.SearchGadgetsFilters.name:type_name -> omnicore.v1.StringFilter
+	31, // 5: omnicore.grpctest.v1.SearchGadgetsFilters.rating:type_name -> omnicore.v1.Int64Filter
+	32, // 6: omnicore.grpctest.v1.SearchGadgetsFilters.price:type_name -> omnicore.v1.DoubleFilter
+	33, // 7: omnicore.grpctest.v1.SearchGadgetsFilters.active:type_name -> omnicore.v1.BoolFilter
+	34, // 8: omnicore.grpctest.v1.SearchGadgetsFilters.created_at:type_name -> omnicore.v1.TimestampFilter
+	10, // 9: omnicore.grpctest.v1.SearchGadgetsResponse.items:type_name -> omnicore.grpctest.v1.GadgetItem
+	35, // 10: omnicore.grpctest.v1.SearchGadgetsResponse.pagination:type_name -> omnicore.v1.PaginationInfo
+	26, // 11: omnicore.grpctest.v1.MapCarrier.labels:type_name -> omnicore.grpctest.v1.MapCarrier.LabelsEntry
+	36, // 12: omnicore.grpctest.v1.TimeCarrier.when:type_name -> google.protobuf.Timestamp
+	29, // 13: omnicore.grpctest.v1.MaskCarrier.mask:type_name -> google.protobuf.FieldMask
+	15, // 14: omnicore.grpctest.v1.ParentThing.kids:type_name -> omnicore.grpctest.v1.ChildThing
+	15, // 15: omnicore.grpctest.v1.ParentThing.favorite:type_name -> omnicore.grpctest.v1.ChildThing
+	9,  // 16: omnicore.grpctest.v1.TwoGroupsRequest.a:type_name -> omnicore.grpctest.v1.SearchGadgetsFilters
+	9,  // 17: omnicore.grpctest.v1.TwoGroupsRequest.b:type_name -> omnicore.grpctest.v1.SearchGadgetsFilters
+	10, // 18: omnicore.grpctest.v1.TwoRepeatsResponse.a:type_name -> omnicore.grpctest.v1.GadgetItem
+	10, // 19: omnicore.grpctest.v1.TwoRepeatsResponse.b:type_name -> omnicore.grpctest.v1.GadgetItem
+	35, // 20: omnicore.grpctest.v1.TwoRepeatsResponse.pagination:type_name -> omnicore.v1.PaginationInfo
+	35, // 21: omnicore.grpctest.v1.OnlyPaginationInfoResponse.pagination:type_name -> omnicore.v1.PaginationInfo
+	10, // 22: omnicore.grpctest.v1.TwoPaginationInfosResponse.items:type_name -> omnicore.grpctest.v1.GadgetItem
+	35, // 23: omnicore.grpctest.v1.TwoPaginationInfosResponse.a:type_name -> omnicore.v1.PaginationInfo
+	35, // 24: omnicore.grpctest.v1.TwoPaginationInfosResponse.b:type_name -> omnicore.v1.PaginationInfo
+	0,  // 25: omnicore.grpctest.v1.FlavorCarrier.flavor:type_name -> omnicore.grpctest.v1.Flavor
+	0,  // 26: omnicore.grpctest.v1.ScalarMatrix.flavor:type_name -> omnicore.grpctest.v1.Flavor
+	36, // 27: omnicore.grpctest.v1.ScalarMatrix.when:type_name -> google.protobuf.Timestamp
+	23, // 28: omnicore.grpctest.v1.ScalarMatrix.child:type_name -> omnicore.grpctest.v1.ScalarChild
+	23, // 29: omnicore.grpctest.v1.ScalarMatrix.children:type_name -> omnicore.grpctest.v1.ScalarChild
+	30, // [30:30] is the sub-list for method output_type
+	30, // [30:30] is the sub-list for method input_type
+	30, // [30:30] is the sub-list for extension type_name
+	30, // [30:30] is the sub-list for extension extendee
+	0,  // [0:30] is the sub-list for field type_name
 }
 
 func init() { file_test_proto_init() }
@@ -1369,18 +1754,20 @@ func file_test_proto_init() {
 	file_test_proto_msgTypes[5].OneofWrappers = []any{}
 	file_test_proto_msgTypes[9].OneofWrappers = []any{}
 	file_test_proto_msgTypes[20].OneofWrappers = []any{}
+	file_test_proto_msgTypes[24].OneofWrappers = []any{}
 	type x struct{}
 	out := protoimpl.TypeBuilder{
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_test_proto_rawDesc), len(file_test_proto_rawDesc)),
-			NumEnums:      0,
-			NumMessages:   23,
+			NumEnums:      1,
+			NumMessages:   26,
 			NumExtensions: 0,
 			NumServices:   0,
 		},
 		GoTypes:           file_test_proto_goTypes,
 		DependencyIndexes: file_test_proto_depIdxs,
+		EnumInfos:         file_test_proto_enumTypes,
 		MessageInfos:      file_test_proto_msgTypes,
 	}.Build()
 	File_test_proto = out.File

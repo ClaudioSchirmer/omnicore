@@ -158,7 +158,17 @@ func (r *RelationalViewReader) ReadPage(ctx context.Context, name string, crit q
 	}
 	hashCtx := queries.HashContext(crit.Filter, crit.Sort, crit.Search, crit.IncludeArchived)
 
-	win, err := r.resolveWindow(ctx, v, crit, where, limit, hashCtx)
+	// The listing total, counted under the SAME scoped criteria the OnlyTotal
+	// branch above uses — so `?limit=N` and `?onlyTotal=true` report the same
+	// number by construction, exactly as they do on the Mongo reader (which pays
+	// its CountDocuments on every read). It also anchors the bare-backward
+	// window below, which needs this very count to find its offset.
+	total, err := v.loader.CountEntities(ctx, scopedQuery(where, crit.IncludeArchived))
+	if err != nil {
+		return queries.Page{}, err
+	}
+
+	win, err := r.resolveWindow(crit, limit, total, hashCtx)
 	if err != nil {
 		return queries.Page{}, err
 	}
@@ -169,7 +179,7 @@ func (r *RelationalViewReader) ReadPage(ctx context.Context, name string, crit q
 		// issuing the query: q.Limit(0) renders as "no LIMIT clause" in
 		// applyWindow, which would load the ENTIRE table into memory and bypass
 		// MaxLimit. The has-more flags come straight from the resolved window.
-		return queries.Page{HasNext: win.hasNext, HasPrev: win.hasPrev}, nil
+		return queries.Page{Total: total, HasNext: win.hasNext, HasPrev: win.hasPrev}, nil
 	}
 
 	q := scopedQuery(where, crit.IncludeArchived)
@@ -194,6 +204,7 @@ func (r *RelationalViewReader) ReadPage(ctx context.Context, name string, crit q
 	page := queries.Page{
 		Items:       make([]map[string]any, 0, len(ents)),
 		ItemCursors: make([]string, 0, len(ents)),
+		Total:       total,
 	}
 	for j, ent := range ents {
 		doc := BuildDocument(v.schema, ent)
@@ -399,10 +410,11 @@ type window struct {
 
 // resolveWindow turns the request's cursor/direction into an offset window. after
 // walks forward from a cursor; before walks back from one; a bare backward page
-// (GraphQL last:N with no before) anchors at the end via one COUNT; the default
-// is the forward first page. Offsets are absolute row indexes, encoded in the
-// cursor as a single int — the relational read carries no keyset tuple.
-func (r *RelationalViewReader) resolveWindow(ctx context.Context, v view, crit queries.ReadCriteria, where criteria.Expr, limit int64, hashCtx string) (window, error) {
+// (GraphQL last:N with no before) anchors at the end on total, the row count the
+// caller already holds; the default is the forward first page. Offsets are
+// absolute row indexes, encoded in the cursor as a single int — the relational
+// read carries no keyset tuple.
+func (r *RelationalViewReader) resolveWindow(crit queries.ReadCriteria, limit, total int64, hashCtx string) (window, error) {
 	switch {
 	case crit.After != "":
 		pos, err := decodeOffset(crit.After, hashCtx)
@@ -419,10 +431,6 @@ func (r *RelationalViewReader) resolveWindow(ctx context.Context, v view, crit q
 		off := max(int64(0), pos-limit)
 		return window{offset: off, fetchLimit: pos - off, hasNext: true, hasPrev: off > 0}, nil
 	case crit.Backward:
-		total, err := v.loader.CountEntities(ctx, scopedQuery(where, crit.IncludeArchived))
-		if err != nil {
-			return window{}, err
-		}
 		off := max(int64(0), total-limit)
 		return window{offset: off, fetchLimit: total - off, hasNext: false, hasPrev: off > 0}, nil
 	default:

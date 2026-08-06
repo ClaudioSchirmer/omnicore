@@ -7,6 +7,110 @@
 </div>
 <div class="changelog">
     <div class="release">
+        <div class="release-head"><span class="release-tag">v0.45.0</span><span class="release-date">August 6, 2026</span></div>
+        <ul>
+            <li><strong>Changed</strong> — <strong>breaking</strong> — <strong>gRPC pagination is now the exact
+                mirror of the REST envelope.</strong> The shared <code>omnicore/v1/query.proto</code> components
+                speak the same vocabulary as every other surface: <code>PageRequest</code> →
+                <code>PaginationRequest</code>, <code>PageInfo</code> → <code>PaginationInfo</code>, and the
+                conventional field name on service messages is <code>pagination</code> (the framework keeps locating
+                both BY TYPE). <code>PaginationInfo</code> gains <code>has_next</code>/<code>has_prev</code>,
+                completing the field-for-field mirror of the REST <code>pagination</code> block — same names, same
+                semantics; the empty-cursor convention still holds, now redundant rather than the only signal. Field
+                NUMBERS are unchanged, so deployed binary clients keep decoding; the break is source-level — services
+                re-spell the two message names in their <code>.proto</code> files and regenerate. Three contract gaps
+                close in the same round: <code>PaginationRequest</code> gains <code>search</code> (the REST
+                <code>query:"search"</code> opt-in gate, verbatim — set without the opt-in rejects as
+                SchemaViolation); <code>only_total=true</code> combined with
+                <code>after</code>/<code>before</code>/<code>limit</code>/<code>sort</code>/<code>read_mask</code>
+                now rejects with the REST conflict matrix instead of silently ignoring the page-shaping controls; and
+                the failure <code>ErrorInfo.metadata</code> now carries every slot the REST
+                <code>errors[].messages</code> entry carries (<code>context</code>, <code>semantic</code>,
+                <code>message</code>, <code>field</code>, <code>fieldLabel</code>, <code>value</code>,
+                <code>funcName</code> — empty slots elided). If you know the REST envelope, you know the gRPC one.
+                See <a href="#grpc">gRPC</a>.</li>
+            <li><strong>Fixed</strong> — <strong>relational view: a paged listing now reports
+                <code>pagination.total</code> instead of a flat <code>0</code>.</strong> A view marked
+                <code>RelationalSource()</code> counted the match set only in its count-only short-circuit, so
+                <code>?onlyTotal=true</code> answered correctly while every ordinary listing served its items beside a
+                literal, wrong <code>"total": 0</code> — the field carries no <code>omitempty</code>, so consumers
+                received the zero rather than an absent field, on REST (<code>pagination.total</code>), GraphQL
+                (<code>totalCount</code>) and gRPC (<code>PageInfo.Total</code>) alike. A listing now counts under the
+                SAME scoped criteria the count-only mode uses, so the two answers agree by construction and the count
+                honors the filter and the archived gate exactly as the returned rows do. Mongo-backed views were never
+                affected. One COUNT per read: the bare-backward window (GraphQL <code>last:N</code>) already issued
+                this count to anchor its tail offset and discarded it, and now reuses it. See
+                <a href="#relational-view">Relational view</a>.</li>
+            <li><strong>Fixed</strong> — <strong>gRPC: a DTO field typed <code>int64</code>/<code>uint64</code> now
+                binds on the request side — one DTO really does serve REST, GraphQL and gRPC.</strong> The pb ↔ DTO
+                bridge is a <code>protojson</code> ↔ <code>encoding/json</code> round-trip, and the two dialects
+                disagree on exactly one thing: the proto3 JSON mapping renders 64-bit integers (<code>int64</code>,
+                <code>sint64</code>, <code>sfixed64</code>, <code>uint64</code>, <code>fixed64</code>) as QUOTED
+                strings, while <code>encoding/json</code> demands a bare number for a numeric Go field. Any request
+                pairing a 64-bit proto field with a numeric DTO seat — money in minor units, counters, external ids
+                — therefore failed EVERY call with <code>SchemaViolationNotification</code> (INVALID_ARGUMENT),
+                before the command handler was reached, for a payload REST binds fine. The plan compiled at
+                <code>Register</code> now marks those paths and unquotes them on the way in (scalar, repeated and
+                nested alike), carrying the digits as a raw literal so a value beyond 2<sup>53</sup> survives
+                exactly. A DTO field declared <code>string</code> for a 64-bit proto field is unchanged — it keeps
+                carrying the digits as text — and the response direction needed no inverse, since protojson accepts
+                the bare number <code>encoding/json</code> emits. See <a href="#grpc">gRPC</a>.</li>
+            <li><strong>Fixed</strong> — <strong>gRPC: 64-bit values no longer lose precision on the response
+                side.</strong> When a plan renames any key, the DTO → pb leg crosses an intermediate
+                <code>map[string]any</code> where every JSON number decoded as a <code>float64</code>, so
+                <code>math.MaxInt64</code> came back as …776000. Both legs now decode that map with
+                <code>UseNumber</code>, keeping the literal.</li>
+            <li><strong>Fixed</strong> — <strong>gRPC: a non-finite <code>float</code>/<code>double</code> is now
+                rejected by name instead of leaking the codec's error.</strong> The proto3 JSON mapping renders
+                <code>NaN</code>, <code>Infinity</code> and <code>-Infinity</code> as quoted STRINGS — the same
+                dialect gap as the quoted 64-bit integer, but this one cannot be reconciled: JSON has no literal for
+                them, so <code>encoding/json</code> can neither read one into a float field nor write one back. The
+                bind now fails naming the field and the value and pointing at <code>MountRaw</code>. Finite floats
+                are untouched. See <a href="#grpc">gRPC</a>.</li>
+            <li><strong>Fixed</strong> — <strong>gRPC: a DTO name promoted ambiguously from two embedded structs is
+                no longer bound.</strong> <code>encoding/json</code> resolves a promoted-name collision by depth —
+                shallowest wins, two equally deep are ambiguous and it fills NEITHER. The collector picked the first
+                one walked, so the plan could bind a seat the codec leaves at its zero value. The ambiguous name is
+                dropped, so the proto field that wanted it fails the existing "no counterpart" boot check. An
+                uncontested promoted field is unaffected.</li>
+            <li><strong>Fixed</strong> — <strong>bootstrap: the projection consumer no longer starts when no
+                transport is configured.</strong> The projection subjects (<code>&lt;table&gt;.events</code>) are a
+                cross-service contract, so a service with no CDC source of its own — the SQLite posture, where no
+                relay can exist — would subscribe to a stream it can never produce into and project ANOTHER
+                service's events into its own collections. Registry, spec application and drift detection still run
+                (the collections must exist for a Mongo-backed view to boot); only the consumer is skipped, with an
+                INFO line saying so.</li>
+            <li><strong>Fixed</strong> — <strong>gRPC: a DTO field shadowed by an embedded struct now matches the
+                field <code>encoding/json</code> actually binds.</strong> When an embedded struct and the outer
+                struct declare the same wire name, <code>encoding/json</code> fills the SHALLOWER one; the bridge's
+                field collector registered the promoted (deeper) field first and won the collision, so the plan
+                could pair a proto field with a seat the codec never touches. An uncontested promoted field is
+                unaffected.</li>
+            <li><strong>Fixed</strong> — <strong>gRPC: an enum paired with a numeric REQUEST seat now aborts
+                boot</strong> instead of failing every call: the wire carries the member NAME, so the DTO seat must
+                be a string. The response direction is unaffected (protojson accepts a number for an enum).</li>
+            <li><strong>Fixed</strong> — <strong>tabular export: a shared base's flattened columns now render
+                their <code>labelKey</code> header instead of falling back to the Go field name.</strong> A
+                <code>SharedBase</code> is a type-less schema, so it carries no struct tag of its own — the domain
+                label of a shared column lives on the ROLE struct that holds it flat. The audit timeline already
+                composed the two (a delta over a base field carries the role's <code>labelKey</code>); the CSV/XLSX
+                planner did not, so every shared-identity column exported with its Go field name as the header
+                while the role's own columns exported translated. Both shapes are fixed: a plain
+                <code>View</code> rooted at a role (base columns merged flat, labeled off the role type) and a
+                <code>SharedBaseView</code> (base columns at the document root, labeled off the declared roles in
+                declaration order). An explicit inline label on the base
+                (<code>Field(goName, column, labelKey)</code>) still wins, and a column no role labels still falls
+                back to the Go field name. Headers of shared columns therefore change from the Go field name to
+                the rendered catalog value, with no declaration change on the consumer's side. See
+                <a href="#auto-query-handlers">Auto query handlers</a> (tabular export) and
+                <a href="#table-schema">TableSchema</a> (labelKey).</li>
+            <li><strong>Added</strong> — <code>TableSchema.LabelKeysByGoFieldAnchoredOn(anchors ...reflect.Type)</code>:
+                the label map of a type-less schema composed with the <code>labelKey</code> struct tags of the Go
+                types that carry its fields flat (inline declaration first, then first anchor declaring the field).
+                One home for the composition the audit builder and the export planner both need.</li>
+        </ul>
+    </div>
+    <div class="release">
         <div class="release-head"><span class="release-tag">v0.44.2</span><span class="release-date">August 5, 2026</span></div>
         <ul>
             <li><strong>Fixed</strong> — <strong>SQLite: the migration runner now resolves a relative

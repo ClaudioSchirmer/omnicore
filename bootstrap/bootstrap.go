@@ -408,6 +408,21 @@ func runWithConfig(cfg *Config, wire func(Deps) Wiring) error {
 				}
 			}
 			boot.upstream = startUpstreamSubscribers(rebuildCtx, deps, cfg, upstreamSubs, views, syncEngine)
+			// The projection consumer runs ONLY when a broker is configured.
+			// Its subjects (`<table>.events`) are a cross-service contract, so a
+			// service with no CDC source of its own — the SQLite posture, where
+			// no relay can exist — would subscribe to a stream it can never
+			// produce into and faithfully project ANOTHER service's events into
+			// its own collections. Everything above (registry, specs, drift)
+			// still runs: the collections must exist for a Mongo-backed view to
+			// boot, they simply never receive a row.
+			if len(cfg.Transport.Endpoints) == 0 {
+				boot.complete.Store(true) // readiness gate opens
+				deps.Logger.Info("projection consumer not started: no transport configured",
+					"views", len(views),
+					"effect", "Mongo-backed views will not materialize; relational views are unaffected")
+				return
+			}
 			syncEngine.Start(rebuildCtx)
 			boot.complete.Store(true) // readiness gate opens
 			deps.Logger.Info("sync engine started",

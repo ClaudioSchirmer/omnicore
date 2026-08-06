@@ -18,25 +18,36 @@ import "google/protobuf/timestamp.proto";
 // (proto snake_case), resolved against the per-view Fields vocabulary —
 // the allowlist that keeps unresolved spellings away from the reader.
 
-// PageRequest carries the read-side control keys — the proto siblings of
-// ?after ?before ?limit ?onlyTotal ?includeArchived.
-message PageRequest {
+// PaginationRequest carries the read-side control keys — the proto siblings
+// of ?after ?before ?limit ?onlyTotal ?includeArchived ?search. The
+// conventional field name is `pagination`. `search` is honored only when the
+// Request DTO opts in via `query:"search"` (the same gate the REST wire
+// applies); setting it against a non-opted-in DTO rejects as SchemaViolation.
+// Combining only_total=true with after/before/limit (or with sort/read_mask)
+// rejects the same way — the REST conflict matrix, verbatim.
+message PaginationRequest {
   optional string after = 1;
   optional string before = 2;
   optional int64 limit = 3;
   bool only_total = 4;
   bool include_archived = 5;
+  optional string search = 6;
 }
 
-// PageInfo is the response-side envelope — PageRequest's mirror. A list
+// PaginationInfo is the response-side envelope — the exact mirror of the
+// REST `pagination` block (same field names, same semantics; the
+// conventional field name on the response message is `pagination`). A list
 // response composes it next to ONE repeated message field (the items); the
 // framework locates both BY TYPE, so item/field naming stays the service's
 // choice. Cursors are opaque keyset cursors (echo them into
-// PageRequest.after/before), empty when there is no further page.
-message PageInfo {
+// PaginationRequest.after/before), empty when there is no further page —
+// has_next/has_prev state the same fact as explicit booleans.
+message PaginationInfo {
   int64 total = 1;
   string next_cursor = 2;
   string prev_cursor = 3;
+  bool has_next = 4;
+  bool has_prev = 5;
 }
 
 // SortField is one ?sort= entry: the WIRE field name (the response

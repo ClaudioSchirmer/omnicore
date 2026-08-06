@@ -146,6 +146,125 @@ func TestLabelKeysByGoField_NilAndEmpty(t *testing.T) {
 	}
 }
 
+// roleAlpha / roleBeta are two roles of one shared identity: each carries the
+// base's fields FLAT on its own struct, where the domain labels live. Alpha
+// leaves Phone untagged and opts Email out; Beta labels Phone — so the
+// first-anchor-wins resolution is observable across them.
+type roleAlpha struct {
+	Document string `labelKey:"alpha.document"`
+	Name     string `labelKey:"alpha.name"`
+	Email    string `labelKey:"-"`
+	Phone    string
+	Own      string `labelKey:"alpha.own"`
+	Plain    string `labelKey:"alpha.plain"` // labeledSample leaves Plain untagged — the guard's probe
+}
+
+type roleBeta struct {
+	Document string `labelKey:"beta.document"`
+	Name     string `labelKey:"beta.name"`
+	Phone    string `labelKey:"beta.phone"`
+}
+
+// unexportedAnchor pairs a lower-case logical field name (legal on a type-less
+// schema) with an UNEXPORTED struct field: reflect surfaces it, but it is not
+// part of the anchor's domain surface and must never supply a label.
+type unexportedAnchor struct {
+	note string `labelKey:"anchor.note"` //nolint:unused // read only via reflect in the guard test
+}
+
+// anchoredBase is the type-less shared base the two roles specialize. Only
+// Document declares an inline label — the explicit declaration that must beat
+// every anchor.
+func anchoredBase() *TableSchema {
+	return NewSharedBaseSchema("persons").
+		ID("id").
+		Field("Document", "document", "base.document").
+		Field("Name", "name").
+		Field("Email", "email").
+		Field("Phone", "phone").
+		NaturalID("document")
+}
+
+func TestLabelKeysByGoFieldAnchoredOn_RecoversTagsOffTheAnchor(t *testing.T) {
+	base := anchoredBase()
+	got := base.LabelKeysByGoFieldAnchoredOn(reflect.TypeOf(&roleAlpha{}))
+	want := map[string]string{
+		"Document": "base.document", // inline declaration beats the anchor tag
+		"Name":     "alpha.name",    // recovered off the role struct
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("anchored labels = %v, want %v", got, want)
+	}
+	if _, has := got["Email"]; has {
+		t.Error(`labelKey:"-" on the anchor must opt the field out`)
+	}
+	if _, has := got["Phone"]; has {
+		t.Error("an untagged anchor field must not appear in the map")
+	}
+	// A value-type anchor resolves like its pointer, and a repeat call on the same
+	// (schema, anchor) pair comes from the memo.
+	again := base.LabelKeysByGoFieldAnchoredOn(reflect.TypeOf(roleAlpha{}))
+	if !reflect.DeepEqual(again, want) {
+		t.Errorf("value-type anchor = %v, want %v", again, want)
+	}
+	if cached := base.LabelKeysByGoFieldAnchoredOn(reflect.TypeOf(roleAlpha{})); !reflect.DeepEqual(cached, want) {
+		t.Errorf("memoized anchored labels = %v, want %v", cached, want)
+	}
+}
+
+func TestLabelKeysByGoFieldAnchoredOn_FirstAnchorDeclaringTheFieldWins(t *testing.T) {
+	base := anchoredBase()
+	got := base.LabelKeysByGoFieldAnchoredOn(reflect.TypeOf(&roleAlpha{}), reflect.TypeOf(&roleBeta{}))
+	want := map[string]string{
+		"Document": "base.document", // inline still wins over BOTH anchors
+		"Name":     "alpha.name",    // first anchor declaring it
+		"Phone":    "beta.phone",    // only the second anchor tags it
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("multi-anchor labels = %v, want %v", got, want)
+	}
+	// Order matters: Beta first flips the fields both roles tag.
+	flipped := base.LabelKeysByGoFieldAnchoredOn(reflect.TypeOf(&roleBeta{}), reflect.TypeOf(&roleAlpha{}))
+	if flipped["Name"] != "beta.name" {
+		t.Errorf("Name = %q, want beta.name (first anchor in the new order)", flipped["Name"])
+	}
+	if _, has := flipped["Email"]; has {
+		t.Error("a field no anchor declares must stay out of the map")
+	}
+}
+
+func TestLabelKeysByGoFieldAnchoredOn_DegenerateAnchors(t *testing.T) {
+	base := anchoredBase()
+	// No anchor at all degrades to the schema's own inline labels.
+	if got := base.LabelKeysByGoFieldAnchoredOn(); !reflect.DeepEqual(got, map[string]string{"Document": "base.document"}) {
+		t.Errorf("no-anchor form = %v, want the inline map", got)
+	}
+	// A nil / non-struct anchor contributes nothing but must not panic.
+	if got := base.LabelKeysByGoFieldAnchoredOn(nil, reflect.TypeOf("")); !reflect.DeepEqual(got, map[string]string{"Document": "base.document"}) {
+		t.Errorf("degenerate anchors = %v, want the inline map only", got)
+	}
+	var nilSchema *TableSchema
+	if got := nilSchema.LabelKeysByGoFieldAnchoredOn(reflect.TypeOf(&roleAlpha{})); got != nil {
+		t.Errorf("nil schema = %v, want nil", got)
+	}
+	// An unexported anchor field is not domain surface — no label comes from it.
+	notes := NewSharedBaseSchema("notes").ID("id").Field("note", "note")
+	if got := notes.LabelKeysByGoFieldAnchoredOn(reflect.TypeOf(unexportedAnchor{})); len(got) != 0 {
+		t.Errorf("unexported anchor field = %v, want no label", got)
+	}
+	// A type-ANCHORED schema IGNORES the anchors entirely — its own struct is the
+	// single source of its labels (which is why Field(...) boot-panics on an
+	// inline label there). Name keeps its own tag, and Plain — untagged on the
+	// schema's type but tagged on the anchor — stays unlabeled.
+	anchored := labeledSchema().LabelKeysByGoFieldAnchoredOn(reflect.TypeOf(&roleAlpha{}))
+	if anchored["Name"] != "person.name" {
+		t.Errorf("type-anchored Name = %q, want person.name (own struct tag)", anchored["Name"])
+	}
+	if _, has := anchored["Plain"]; has {
+		t.Errorf("an anchor must not inject a label into a type-anchored schema, got %v", anchored)
+	}
+}
+
 func TestGoFieldValues_ReadsByGoName(t *testing.T) {
 	s := labeledSchema()
 	e := &labeledSample{ID: "1", Name: "bob", Email: "b@x", Plain: "p"}

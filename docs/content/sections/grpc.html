@@ -109,12 +109,49 @@ protoc -I web/grpc/proto \
     <code>Register</code> time (boot) it compiles a bridge plan: proto fields match DTO fields by
     case- and underscore-insensitive name (<code>user_name</code> ≈ <code>userName</code> ≈
     <code>UserName</code>, <code>id</code> ≈ <code>ID</code>; <code>json:</code>/<code>query:</code>
-    tags honored), recursing into nested messages and repeated fields, presence-aware (an absent proto3
+    tags honored, and where an embedded struct and the outer struct declare the same name the
+    <strong>outer one wins</strong> — the field <code>encoding/json</code> itself binds),
+    recursing into nested messages and repeated fields, presence-aware (an absent proto3
     <code>optional</code> lands as a nil pointer — the JSON absent-vs-set distinction),
     <code>google.protobuf.Timestamp</code> ↔ <code>time.Time</code>. A request field the DTO cannot
     receive, or a response field the DTO never fills, <strong>ABORTS BOOT</strong> — the wire contract
     never carries a silently dead field. <code>fwgrpc.Alias("wire_field", "GoField")</code> declares
-    the exceptional pairing. Semantic transformation (computed fields, enum ↔ domain vocabulary,
+    the exceptional pairing.
+</p>
+<p>
+    <strong>The two JSON dialects are reconciled for you.</strong> The bridge runs on
+    <code>protojson</code> in one direction and <code>encoding/json</code> in the other, and they
+    agree on every scalar form but one: the proto3 JSON mapping renders <strong>64-bit integers</strong>
+    (<code>int64</code>, <code>sint64</code>, <code>sfixed64</code>, <code>uint64</code>,
+    <code>fixed64</code>) as <strong>quoted strings</strong>, while <code>encoding/json</code> wants a
+    bare number for a numeric Go field. The compiled plan marks those paths and unquotes them on the
+    way in — scalar, repeated and nested alike — carrying the digits as a raw literal, so a value
+    beyond 2<sup>53</sup> (money in minor units, a snowflake id) crosses <strong>exactly</strong>.
+    <strong>The consequence is the point: you declare money once, as <code>int64</code>, and the same
+    DTO serves REST, GraphQL and gRPC</strong> — no gRPC-specific DTO, no <code>json:",string"</code>
+    tag that would change what REST emits. Declaring the seat as a <code>string</code> is still valid
+    and means what it says: the digits arrive as text. The way out needs no inverse — protojson accepts
+    the bare number <code>encoding/json</code> writes.
+</p>
+<p>
+    Three consequences worth knowing. An <strong>enum</strong> travels as its member NAME, so its DTO
+    seat is a <code>string</code> — pairing one with a numeric seat on a REQUEST aborts boot (on a
+    response it is accepted, since protojson takes a number for an enum). A value that is not a
+    legal 64-bit integer on the wire — text, fractional, out of range — still rejects as
+    <code>SchemaViolationNotification</code>/INVALID_ARGUMENT; the exponent form (<code>"1e3"</code>)
+    is legal proto3 JSON and normalizes to <code>1000</code>. And a <strong>non-finite float</strong>
+    (<code>NaN</code>, <code>Infinity</code>, <code>-Infinity</code>, which the mapping also renders as
+    strings) is the one gap that CANNOT be closed — JSON has no literal for them, so
+    <code>encoding/json</code> neither reads one into a float field nor writes one back. The bridge
+    rejects it naming the field and the value; a contract that genuinely must carry one belongs to a
+    <code>MountRaw</code> procedure.
+</p>
+<p>
+    <strong>Promoted DTO fields follow encoding/json's collision rules.</strong> A name declared both
+    on the struct and on an embedded one binds the SHALLOWER field — the one the codec fills. Two
+    equally deep promotions are ambiguous and the codec fills neither, so the bridge treats that name
+    as unbindable: the proto field that wanted it then fails the "no counterpart" check and aborts
+    boot, rather than binding a seat that would silently stay at its zero value. Semantic transformation (computed fields, enum ↔ domain vocabulary,
     combining/splitting) stays where it always lived: <code>ToCommand</code>, <code>ToQuery</code> and
     <code>FromResult</code>. A contract whose shape genuinely cannot mirror DTOs is a
     <code>MountRaw</code> procedure (a hand-written Connect handler — the same seam the transport
@@ -197,9 +234,12 @@ return bootstrap.Wiring{ …, Features: []bootstrap.Feature{users} }</code></pre
     The connect sibling of the <a href="#status-mapping">HTTP status table</a>, built from the same
     <code>NotificationSemantic</code> enum. Failures travel as a <code>connect.Error</code> whose
     <code>google.rpc.Status.details</code> carry the full envelope: one <code>ErrorInfo</code> per
-    notification (<code>reason</code> = the NotificationKey, <code>metadata</code> = context, field and
-    semantic name) plus one <code>BadRequest</code> aggregating the field-scoped messages — the message
-    text already translated per <code>Accept-Language</code>, like every surface.
+    notification (<code>reason</code> = the NotificationKey; <code>metadata</code> = every slot the
+    REST <code>errors[].messages</code> entry carries — <code>context</code>, <code>semantic</code>,
+    <code>message</code>, <code>field</code>, <code>fieldLabel</code>, <code>value</code>,
+    <code>funcName</code>, empty slots elided like REST's omitempty) plus one <code>BadRequest</code>
+    aggregating the field-scoped messages — the message text already translated per
+    <code>Accept-Language</code>, like every surface.
 </p>
 <table>
     <tbody><tr><th>Semantic</th><th>gRPC code</th></tr>
@@ -280,8 +320,12 @@ return bootstrap.Wiring{ …, Features: []bootstrap.Feature{users} }</code></pre
 <p>
     List RPCs are <strong>per-view typed request messages composed from shared framework
     components</strong> (<code>web/grpc/proto/omnicore/v1/query.proto</code>, generated Go in
-    <code>web/grpc/pb</code>): <code>PageRequest</code>
-    (after/before/limit/only_total/include_archived), <code>repeated SortField</code>, a
+    <code>web/grpc/pb</code>): <code>PaginationRequest</code>
+    (after/before/limit/only_total/include_archived/search — the same reserved keys the REST query
+    string speaks; <code>search</code> obeys the same opt-in gate, honored only when the Request DTO
+    declares <code>query:"search"</code> and rejected as SchemaViolation otherwise, and
+    <code>only_total=true</code> combined with after/before/limit/sort/read_mask rejects with the
+    same conflict matrix as REST's <code>?onlyTotal=true</code>), <code>repeated SortField</code>, a
     <code>google.protobuf.FieldMask read_mask</code> (the <code>?fields=</code> sibling), and the typed
     operator wrappers — <code>StringFilter</code> (the full 12-operator REST vocabulary,
     case-insensitive variants included), <code>Int64Filter</code>/<code>DoubleFilter</code>/<code>TimestampFilter</code>
@@ -295,19 +339,23 @@ return bootstrap.Wiring{ …, Features: []bootstrap.Feature{users} }</code></pre
   omnicore.v1.StringFilter name = 2;
 }
 message ListUsersRequest {
-  omnicore.v1.PageRequest page = 1;
+  omnicore.v1.PaginationRequest pagination = 1;
   repeated omnicore.v1.SortField sort = 2;
   google.protobuf.FieldMask read_mask = 3;
   UserFilters filters = 4;
 }</code></pre>
 <p>
     The list response composes the mirror envelope: <strong>exactly one repeated items message</strong>
-    plus <strong><code>omnicore.v1.PageInfo</code></strong> (total, next_cursor, prev_cursor) — the
-    framework locates both BY TYPE, so field naming stays the service's choice:
+    plus <strong><code>omnicore.v1.PaginationInfo</code></strong> — the <strong>exact mirror of the REST
+    <code>pagination</code> block</strong>, same field names, same semantics:
+    <code>total</code>, <code>next_cursor</code>, <code>prev_cursor</code>, <code>has_next</code>,
+    <code>has_prev</code>. The framework locates both components BY TYPE, so field naming stays the
+    service's choice — the convention is <code>pagination</code>, which also makes the Connect/gRPC-Web
+    JSON form read exactly like the REST envelope:
 </p>
 <pre><code>message ListUsersResponse {
   repeated User items = 1;
-  omnicore.v1.PageInfo page_info = 2;
+  omnicore.v1.PaginationInfo pagination = 2;
 }</code></pre>
 <p>
     <strong><code>QueryWithParams</code> converts all of it for you.</strong> At boot the constructor

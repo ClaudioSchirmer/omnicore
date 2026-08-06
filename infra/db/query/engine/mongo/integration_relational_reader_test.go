@@ -66,6 +66,11 @@ func TestRelationalViewReader_EndToEnd(t *testing.T) {
 	if p1.HasPrev {
 		t.Error("p1 (first page) must not have a previous page")
 	}
+	// A LISTING carries the full match count, not the page size and not 0 — the
+	// same number ?onlyTotal reports below, counted by a real COUNT against the SoR.
+	if p1.Total != 3 {
+		t.Errorf("p1 Total = %d, want 3 (the full match count, page size 2)", p1.Total)
+	}
 	// the doc carries the mapped root fields + the managed columns
 	if _, ok := p1.Items[0]["_id"]; !ok {
 		t.Errorf("doc missing _id: %v", p1.Items[0])
@@ -88,6 +93,9 @@ func TestRelationalViewReader_EndToEnd(t *testing.T) {
 	if !p2.HasPrev {
 		t.Error("p2 must have a previous page")
 	}
+	if p2.Total != 3 {
+		t.Errorf("p2 Total = %d, want 3 (total is a property of the match set, not the window)", p2.Total)
+	}
 
 	// ── onlyTotal ──
 	tot, err := reader.ReadPage(ctx, "loader_roots", queries.ReadCriteria{OnlyTotal: true})
@@ -96,6 +104,9 @@ func TestRelationalViewReader_EndToEnd(t *testing.T) {
 	}
 	if !tot.OnlyTotal || tot.Total != 3 {
 		t.Errorf("onlyTotal = %+v, want Total 3", tot)
+	}
+	if tot.Total != p1.Total {
+		t.Errorf("onlyTotal Total = %d but the listing reported %d — they must agree", tot.Total, p1.Total)
 	}
 
 	// ── ReadByID: found ──

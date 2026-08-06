@@ -20,17 +20,21 @@ import (
 // sbvUser links shared-ID (fk == ID), sbvEmployee links separate-ParentID and owns a
 // child collection — so one fixture exercises both link models.
 
+// The two role structs carry the labelKey tags of the SHARED columns they hold
+// flat (the base is type-less and has none): sbvUser tags Name but not Document,
+// sbvEmployee tags both — so the export's first-role-wins label resolution is
+// observable in both directions.
 type sbvUser struct {
-	Name              string
-	Document          string
-	UserName          string
-	EmailNotification *bool
+	Name              string `labelKey:"PersonNameField"`
+	Document          string // untagged here — only sbvEmployee labels it
+	UserName          string `labelKey:"UserUserNameField"`
+	EmailNotification *bool  `labelKey:"UserEmailNotificationField"`
 }
 
 type sbvEmployee struct {
-	Name           string
-	Document       string
-	EmployeeNumber string
+	Name           string `labelKey:"EmployeePersonNameField"` // loses to sbvUser (declared first)
+	Document       string `labelKey:"PersonDocumentField"`
+	EmployeeNumber string `labelKey:"EmployeeNumberField"`
 }
 
 type sbvDependent struct{ Name string }
@@ -561,6 +565,43 @@ func TestSharedBaseView_ExportPlanRoleBranches(t *testing.T) {
 	empNode := plan.Root.Children[ei]
 	if len(empNode.Children) != 1 || empNode.Children[0].GoSegment != sbvDepSeg {
 		t.Errorf("employee branch must nest its own child collection, got %+v", empNode.Children)
+	}
+}
+
+// The root of a SharedBaseView IS the type-less base, so its columns have no
+// struct tags of their own: the header labels are recovered off the declared
+// roles, in declaration order. Role-own and sibling columns keep labeling
+// themselves from their own type-anchored schema.
+func TestSharedBaseView_ExportPlanLabelsBaseColumnsOffTheRoles(t *testing.T) {
+	plan := sbvView().ExportPlan()
+
+	rootLabels := map[string]string{}
+	for _, c := range plan.Root.Columns {
+		rootLabels[c.GoField] = c.LabelKey
+	}
+	// Name: both roles tag it — the FIRST declared role (sbvUser) wins.
+	if rootLabels["Name"] != "PersonNameField" {
+		t.Errorf("base Name LabelKey = %q, want PersonNameField (first role declaring it)", rootLabels["Name"])
+	}
+	// Document: only the second role tags it — the walk must not stop at the first.
+	if rootLabels["Document"] != "PersonDocumentField" {
+		t.Errorf("base Document LabelKey = %q, want PersonDocumentField (second role supplies it)", rootLabels["Document"])
+	}
+
+	roleLabels := map[string]string{}
+	for _, ch := range plan.Root.Children {
+		if ch.GoSegment != "sbvUser" {
+			continue
+		}
+		for _, c := range ch.Columns {
+			roleLabels[c.GoField] = c.LabelKey
+		}
+	}
+	if roleLabels["UserName"] != "UserUserNameField" {
+		t.Errorf("role-own UserName LabelKey = %q, want UserUserNameField", roleLabels["UserName"])
+	}
+	if roleLabels["EmailNotification"] != "UserEmailNotificationField" {
+		t.Errorf("sibling EmailNotification LabelKey = %q, want UserEmailNotificationField", roleLabels["EmailNotification"])
 	}
 }
 

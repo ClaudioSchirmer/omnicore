@@ -275,6 +275,13 @@ core.NewExternalSchema("users").ID("id").Field("Email", "mail")</code></pre>
     <strong>external-only</strong>: passing a label on a type-anchored <code>NewTableSchema[T]</code>
     is a boot panic — that schema declares the label through the field's <code>labelKey:</code> tag,
     and the framework never offers two ways to express one domain concept.
+    <br><br>
+    A <code>NewSharedBaseSchema</code> is type-less too, so it <em>accepts</em> the inline form — but
+    it rarely needs it: the shared columns live flat on the ROLE struct, which already declares them
+    with a <code>labelKey:</code> tag, and every label consumer (audit deltas, CSV/XLSX headers)
+    composes the base with the role type to recover them by field name. Declare the inline label on
+    the base only for a shared column no role tags, or to override every role at once — an inline
+    label wins over the role's tag.
 </div>
 
 <div class="box warn">

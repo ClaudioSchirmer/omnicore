@@ -77,6 +77,88 @@ func labelKeysByGoField(schema *TableSchema) map[string]string {
 // it; the map is empty when no field carries a labelKey tag.
 func (s *TableSchema) LabelKeysByGoField() map[string]string { return labelKeysByGoField(s) }
 
+// anchoredLabelKeyCache memoizes the composed map per (schema, anchor) pair so
+// the reflection over the anchor's struct tags runs once per pair. Only the
+// single-anchor form — the audit path's per-event shape — is cached; the
+// multi-anchor form is resolved at route-mount time and needs no memo.
+var anchoredLabelKeyCache sync.Map // map[anchoredLabelKey]map[string]string
+
+type anchoredLabelKey struct {
+	schema *TableSchema
+	anchor reflect.Type
+}
+
+// LabelKeysByGoFieldAnchoredOn is the label map of a TYPE-LESS schema composed
+// with the `labelKey:"…"` struct tags of the Go types that carry its fields
+// flat. A shared base (NewSharedBaseSchema) and an upstream source
+// (NewExternalSchema) have no struct of their own, so LabelKeysByGoField only
+// sees the labels declared inline on Field(goName, column, labelKey) — while for
+// a shared base the domain label naturally lives on the ROLE struct, whose flat
+// fields the base partitions. Each anchor is matched by Go field name, exactly
+// as the value composition matches it.
+//
+// Precedence, per field: the inline schema-level label wins (it is the explicit
+// declaration); otherwise the first anchor, in the order given, whose struct
+// declares a non-empty `labelKey` tag for that field. Passing no anchor — or a
+// nil / non-struct one — degrades to LabelKeysByGoField.
+//
+// A TYPE-ANCHORED schema ignores the anchors entirely: its own struct is the
+// single source of its labels (which is why Field(...) boot-panics on an inline
+// label there), so no outside type may inject one.
+//
+// A SharedBaseView hands every declared role in declaration order (a role may
+// legitimately omit a shared field, or leave it untagged); the role-rooted
+// paths hand the single role type.
+func (s *TableSchema) LabelKeysByGoFieldAnchoredOn(anchors ...reflect.Type) map[string]string {
+	if s == nil {
+		return nil
+	}
+	if len(anchors) == 0 || !s.isExternal() {
+		return labelKeysByGoField(s)
+	}
+	if len(anchors) == 1 {
+		key := anchoredLabelKey{schema: s, anchor: anchors[0]}
+		if cached, ok := anchoredLabelKeyCache.Load(key); ok {
+			return cached.(map[string]string)
+		}
+		out := composeAnchoredLabelKeys(s, anchors)
+		anchoredLabelKeyCache.Store(key, out)
+		return out
+	}
+	return composeAnchoredLabelKeys(s, anchors)
+}
+
+// composeAnchoredLabelKeys resolves one label per schema field: the inline
+// declaration when present, else the first anchor tagging that field name.
+func composeAnchoredLabelKeys(s *TableSchema, anchors []reflect.Type) map[string]string {
+	inline := labelKeysByGoField(s)
+	out := make(map[string]string, len(s.fields))
+	for k, v := range inline {
+		out[k] = v
+	}
+	for _, anchor := range anchors {
+		for anchor != nil && anchor.Kind() == reflect.Pointer {
+			anchor = anchor.Elem()
+		}
+		if anchor == nil || anchor.Kind() != reflect.Struct {
+			continue
+		}
+		for _, f := range s.fields {
+			if _, taken := out[f.goName]; taken {
+				continue
+			}
+			sf, ok := anchor.FieldByName(f.goName)
+			if !ok || sf.PkgPath != "" {
+				continue
+			}
+			if tag, ok := sf.Tag.Lookup("labelKey"); ok && tag != "" && tag != "-" {
+				out[f.goName] = tag
+			}
+		}
+	}
+	return out
+}
+
 // CreatedAtColumn / UpdatedAtColumn return the managed timestamp column names
 // ("" when not declared) — the Mongo view spec enumerates them as part of the
 // physical column set the composer emits.

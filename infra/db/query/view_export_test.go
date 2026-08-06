@@ -88,6 +88,63 @@ func TestExportPlan_BuildsColumnsLabelsAndSegments(t *testing.T) {
 	}
 }
 
+// expRoleUser is a SharedBase ROLE: one flat Go struct whose fields infra
+// partitions across the type-less base (Name, Document, Ethnicity) and the
+// role's own table (UserName). The domain labels live HERE — the base has no
+// struct to carry them.
+type expRoleUser struct {
+	domain.BaseEntity
+	Name      string `labelKey:"UserNameField"`      // shared base
+	Document  string `labelKey:"UserDocumentField"`  // shared base + natural key
+	Ethnicity string `labelKey:"RoleEthnicityField"` // shared base, ALSO labeled inline on it
+	UserName  string `labelKey:"UserUserNameField"`  // role-own
+}
+
+func (e *expRoleUser) Modes() []domain.EntityMode                       { return []domain.EntityMode{domain.ModeInsert} }
+func (e *expRoleUser) BuildRules(string, domain.Service, *domain.Rules) {}
+
+func expRoleUserSchema() *core.TableSchema {
+	base := core.NewSharedBaseSchema("exp_persons").
+		ID("id").
+		Revision("revision").
+		Field("Name", "name").
+		Field("Document", "document").
+		Field("Ethnicity", "ethnicity", "BaseEthnicityField").
+		NaturalID("document").
+		DeletedAt("deleted_at")
+	return core.NewTableSchema[*expRoleUser]("exp_users").
+		ID("id").
+		Revision("revision").
+		Field("UserName", "user_name").
+		DeletedAt("deleted_at").
+		SharedBase(base, "id")
+}
+
+// A plain view rooted at a ROLE merges the shared base's columns FLAT into the
+// document. Those columns are declared on a TYPE-LESS base, so their labelKey
+// must be recovered off the role struct that carries them — the same
+// composition the audit timeline performs. Without it the CSV/XLSX header of
+// every shared column silently degraded to the Go field name.
+func TestExportPlan_SharedBaseColumnsLabeledOffTheRoleStruct(t *testing.T) {
+	root := View("exp_users").Version(1).Schema(expRoleUserSchema()).ExportPlan().Root
+
+	got := map[string]string{}
+	for _, c := range root.Columns {
+		got[c.GoField] = c.LabelKey
+	}
+	want := map[string]string{
+		"UserName":  "UserUserNameField",  // role-own, straight off its own schema
+		"Name":      "UserNameField",      // base column, label recovered off the role
+		"Document":  "UserDocumentField",  // base column, label recovered off the role
+		"Ethnicity": "BaseEthnicityField", // inline base label beats the role's tag
+	}
+	for goField, wantKey := range want {
+		if got[goField] != wantKey {
+			t.Errorf("column %q LabelKey = %q, want %q (all columns: %+v)", goField, got[goField], wantKey, root.Columns)
+		}
+	}
+}
+
 func TestResolveMaxExportRows_Cascade(t *testing.T) {
 	v := View("users")
 	if got := v.ResolveMaxExportRows(0); got != DefaultMaxExportRows {
