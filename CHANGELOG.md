@@ -11,6 +11,34 @@ with `1.0.0`.
 
 ## [Unreleased]
 
+## [0.44.2] - 2026-08-05
+
+### Fixed
+
+- **SQLite: the migration runner now resolves a relative `file:` DSN against the
+  same base as the engine — the `go run` dev loop migrates the database it
+  serves.** `sqliteMigrateDSN` joined a relative path onto the executable's
+  directory unconditionally, while the engine's `resolveDSN` carves out the
+  ephemeral-binary case (`go run` / `go test` compile to a temp file) and falls
+  back to the working directory. Under `go run` the two therefore targeted
+  DIFFERENT files: migrations persisted beside the throwaway temp binary, the
+  engine served an (empty) project-dir file, and the service booted green with
+  `migrations applied` in the log while every entity request failed with
+  `no such table`. The runner now mirrors the engine's resolution base
+  (binary dir; working dir for an ephemeral binary), so the dev loop and a real
+  deployed binary both migrate exactly the database the engine opens — making
+  the documented behavior ("under go run/test it falls back to the working dir,
+  so the dev loop persists in the project") true for the migration step too.
+  Wrappers that pin an absolute `SQLITE_PATH` are unaffected (an absolute path
+  was and is used verbatim) and remain harmless belt-and-suspenders.
+
+### Docs
+
+- `table-schema.html`: removed a stale pre-`domain.Managed` sentence claiming an
+  aggregate value object "exposes the exported field `ID`" — an AVO embeds the
+  `domain.Managed` carrier and declares no id field (`GetID`/`SetID`/`WithID`),
+  as the managed-columns section and the changelog already state.
+
 ## [0.44.1] - 2026-08-05
 
 ### Fixed
