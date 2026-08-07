@@ -268,45 +268,18 @@ func composedLabelKeys(schema *TableSchema) map[string]string {
 		out[k] = v
 	}
 	if base, _, ok := schema.SharedBaseRef(); ok {
-		// The type-less base cannot reflect the entity's struct tags, so its
-		// LabelKeysByGoField only carries labels declared explicitly on the base
-		// field. Recover the shared fields' `labelKey` tags off the role's Go type
-		// by field name — the same by-name strategy composedFieldValues uses for
-		// the values — then let any explicit base label win.
-		for k, v := range baseLabelKeysByName(base, schema.GoType()) {
-			out[k] = v
-		}
-		for k, v := range base.LabelKeysByGoField() {
+		// The type-less base cannot reflect the entity's struct tags, so its own
+		// label map only carries labels declared explicitly on the base field.
+		// Anchoring on the role's Go type recovers the shared fields' `labelKey`
+		// tags by field name — the same by-name strategy composedFieldValues uses
+		// for the values — with any explicit base label still winning.
+		for k, v := range base.LabelKeysByGoFieldAnchoredOn(schema.GoType()) {
 			out[k] = v
 		}
 	}
 	for _, sib := range schema.Siblings() {
 		for k, v := range sib.LabelKeysByGoField() {
 			out[k] = v
-		}
-	}
-	return out
-}
-
-// baseLabelKeysByName reads the `labelKey` struct tag of each shared-base field
-// off the flat role Go type by field name — the label counterpart of
-// baseFieldValuesByName, needed because the base schema is type-less.
-func baseLabelKeysByName(base *TableSchema, roleType reflect.Type) map[string]string {
-	out := map[string]string{}
-	if roleType == nil {
-		return out
-	}
-	for roleType.Kind() == reflect.Pointer {
-		roleType = roleType.Elem()
-	}
-	if roleType.Kind() != reflect.Struct {
-		return out
-	}
-	for _, goName := range base.GoFields() {
-		if sf, ok := roleType.FieldByName(goName); ok {
-			if tag, ok := sf.Tag.Lookup("labelKey"); ok && tag != "" && tag != "-" {
-				out[goName] = tag
-			}
 		}
 	}
 	return out

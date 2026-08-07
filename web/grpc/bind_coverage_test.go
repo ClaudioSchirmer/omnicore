@@ -60,8 +60,8 @@ func TestCompileBindPlan_PointerDTOAndExactNestedMatch(t *testing.T) {
 	if err != nil {
 		t.Fatalf("compileBindPlan: %v", err)
 	}
-	if plan.hasRenames() {
-		t.Errorf("exact nested match must produce no renames, got %v", plan.renames)
+	if plan.hasNodes() {
+		t.Errorf("exact nested match must produce no renames, got %v", plan.nodes)
 	}
 }
 
@@ -87,20 +87,20 @@ func TestCompileFieldPlan_NestedMismatchPropagates(t *testing.T) {
 func TestRenameFastPaths(t *testing.T) {
 	empty := &bindPlan{}
 	m := map[string]any{"a": 1}
-	empty.renameToDTO(m)  // no renames → untouched
-	empty.renameToWire(m) // no renames → untouched
+	empty.rewriteToDTO(m)  // no renames → untouched
+	empty.rewriteToWire(m) // no renames → untouched
 	if len(m) != 1 {
 		t.Errorf("empty plan must not mutate, got %v", m)
 	}
 
 	// A rename whose key is absent from the payload is skipped.
-	p := &bindPlan{renames: map[string]renameNode{"wire_key": {dtoKey: "dtoKey"}}}
+	p := &bindPlan{nodes: map[string]bindNode{"wire_key": {dtoKey: "dtoKey"}}, wireRenames: true}
 	m = map[string]any{"other": 1}
-	p.renameToWire(m)
+	p.rewriteToWire(m)
 	if _, moved := m["wire_key"]; moved {
 		t.Errorf("absent key must not materialize, got %v", m)
 	}
-	p.renameToDTO(m)
+	p.rewriteToDTO(m)
 	if len(m) != 1 {
 		t.Errorf("absent key must be skipped, got %v", m)
 	}
@@ -121,7 +121,7 @@ func TestJsonMarshalDTO_Errors(t *testing.T) {
 		t.Fatal("expected the json.Marshal error")
 	}
 	// A rename plan needs an object payload; a scalar DTO cannot re-key.
-	p := &bindPlan{renames: map[string]renameNode{"a": {dtoKey: "b"}}}
+	p := &bindPlan{nodes: map[string]bindNode{"a": {dtoKey: "b"}}, wireRenames: true}
 	if _, err := jsonMarshalDTO(p, 42); err == nil {
 		t.Fatal("expected the unmarshal-to-map error")
 	}

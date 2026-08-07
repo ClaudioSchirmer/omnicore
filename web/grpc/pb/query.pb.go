@@ -222,33 +222,39 @@ func (BoolOp) EnumDescriptor() ([]byte, []int) {
 	return file_omnicore_v1_query_proto_rawDescGZIP(), []int{2}
 }
 
-// PageRequest carries the read-side control keys — the proto siblings of
-// ?after ?before ?limit ?onlyTotal ?includeArchived.
-type PageRequest struct {
+// PaginationRequest carries the read-side control keys — the proto siblings
+// of ?after ?before ?limit ?onlyTotal ?includeArchived ?search. The
+// conventional field name is `pagination`. `search` is honored only when the
+// Request DTO opts in via `query:"search"` (the same gate the REST wire
+// applies); setting it against a non-opted-in DTO rejects as SchemaViolation.
+// Combining only_total=true with after/before/limit (or with sort/read_mask)
+// rejects the same way — the REST conflict matrix, verbatim.
+type PaginationRequest struct {
 	state           protoimpl.MessageState `protogen:"open.v1"`
 	After           *string                `protobuf:"bytes,1,opt,name=after,proto3,oneof" json:"after,omitempty"`
 	Before          *string                `protobuf:"bytes,2,opt,name=before,proto3,oneof" json:"before,omitempty"`
 	Limit           *int64                 `protobuf:"varint,3,opt,name=limit,proto3,oneof" json:"limit,omitempty"`
 	OnlyTotal       bool                   `protobuf:"varint,4,opt,name=only_total,json=onlyTotal,proto3" json:"only_total,omitempty"`
 	IncludeArchived bool                   `protobuf:"varint,5,opt,name=include_archived,json=includeArchived,proto3" json:"include_archived,omitempty"`
+	Search          *string                `protobuf:"bytes,6,opt,name=search,proto3,oneof" json:"search,omitempty"`
 	unknownFields   protoimpl.UnknownFields
 	sizeCache       protoimpl.SizeCache
 }
 
-func (x *PageRequest) Reset() {
-	*x = PageRequest{}
+func (x *PaginationRequest) Reset() {
+	*x = PaginationRequest{}
 	mi := &file_omnicore_v1_query_proto_msgTypes[0]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
 
-func (x *PageRequest) String() string {
+func (x *PaginationRequest) String() string {
 	return protoimpl.X.MessageStringOf(x)
 }
 
-func (*PageRequest) ProtoMessage() {}
+func (*PaginationRequest) ProtoMessage() {}
 
-func (x *PageRequest) ProtoReflect() protoreflect.Message {
+func (x *PaginationRequest) ProtoReflect() protoreflect.Message {
 	mi := &file_omnicore_v1_query_proto_msgTypes[0]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
@@ -260,74 +266,86 @@ func (x *PageRequest) ProtoReflect() protoreflect.Message {
 	return mi.MessageOf(x)
 }
 
-// Deprecated: Use PageRequest.ProtoReflect.Descriptor instead.
-func (*PageRequest) Descriptor() ([]byte, []int) {
+// Deprecated: Use PaginationRequest.ProtoReflect.Descriptor instead.
+func (*PaginationRequest) Descriptor() ([]byte, []int) {
 	return file_omnicore_v1_query_proto_rawDescGZIP(), []int{0}
 }
 
-func (x *PageRequest) GetAfter() string {
+func (x *PaginationRequest) GetAfter() string {
 	if x != nil && x.After != nil {
 		return *x.After
 	}
 	return ""
 }
 
-func (x *PageRequest) GetBefore() string {
+func (x *PaginationRequest) GetBefore() string {
 	if x != nil && x.Before != nil {
 		return *x.Before
 	}
 	return ""
 }
 
-func (x *PageRequest) GetLimit() int64 {
+func (x *PaginationRequest) GetLimit() int64 {
 	if x != nil && x.Limit != nil {
 		return *x.Limit
 	}
 	return 0
 }
 
-func (x *PageRequest) GetOnlyTotal() bool {
+func (x *PaginationRequest) GetOnlyTotal() bool {
 	if x != nil {
 		return x.OnlyTotal
 	}
 	return false
 }
 
-func (x *PageRequest) GetIncludeArchived() bool {
+func (x *PaginationRequest) GetIncludeArchived() bool {
 	if x != nil {
 		return x.IncludeArchived
 	}
 	return false
 }
 
-// PageInfo is the response-side envelope — PageRequest's mirror. A list
+func (x *PaginationRequest) GetSearch() string {
+	if x != nil && x.Search != nil {
+		return *x.Search
+	}
+	return ""
+}
+
+// PaginationInfo is the response-side envelope — the exact mirror of the
+// REST `pagination` block (same field names, same semantics; the
+// conventional field name on the response message is `pagination`). A list
 // response composes it next to ONE repeated message field (the items); the
 // framework locates both BY TYPE, so item/field naming stays the service's
 // choice. Cursors are opaque keyset cursors (echo them into
-// PageRequest.after/before), empty when there is no further page.
-type PageInfo struct {
+// PaginationRequest.after/before), empty when there is no further page —
+// has_next/has_prev state the same fact as explicit booleans.
+type PaginationInfo struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Total         int64                  `protobuf:"varint,1,opt,name=total,proto3" json:"total,omitempty"`
 	NextCursor    string                 `protobuf:"bytes,2,opt,name=next_cursor,json=nextCursor,proto3" json:"next_cursor,omitempty"`
 	PrevCursor    string                 `protobuf:"bytes,3,opt,name=prev_cursor,json=prevCursor,proto3" json:"prev_cursor,omitempty"`
+	HasNext       bool                   `protobuf:"varint,4,opt,name=has_next,json=hasNext,proto3" json:"has_next,omitempty"`
+	HasPrev       bool                   `protobuf:"varint,5,opt,name=has_prev,json=hasPrev,proto3" json:"has_prev,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
 
-func (x *PageInfo) Reset() {
-	*x = PageInfo{}
+func (x *PaginationInfo) Reset() {
+	*x = PaginationInfo{}
 	mi := &file_omnicore_v1_query_proto_msgTypes[1]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
 
-func (x *PageInfo) String() string {
+func (x *PaginationInfo) String() string {
 	return protoimpl.X.MessageStringOf(x)
 }
 
-func (*PageInfo) ProtoMessage() {}
+func (*PaginationInfo) ProtoMessage() {}
 
-func (x *PageInfo) ProtoReflect() protoreflect.Message {
+func (x *PaginationInfo) ProtoReflect() protoreflect.Message {
 	mi := &file_omnicore_v1_query_proto_msgTypes[1]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
@@ -339,30 +357,44 @@ func (x *PageInfo) ProtoReflect() protoreflect.Message {
 	return mi.MessageOf(x)
 }
 
-// Deprecated: Use PageInfo.ProtoReflect.Descriptor instead.
-func (*PageInfo) Descriptor() ([]byte, []int) {
+// Deprecated: Use PaginationInfo.ProtoReflect.Descriptor instead.
+func (*PaginationInfo) Descriptor() ([]byte, []int) {
 	return file_omnicore_v1_query_proto_rawDescGZIP(), []int{1}
 }
 
-func (x *PageInfo) GetTotal() int64 {
+func (x *PaginationInfo) GetTotal() int64 {
 	if x != nil {
 		return x.Total
 	}
 	return 0
 }
 
-func (x *PageInfo) GetNextCursor() string {
+func (x *PaginationInfo) GetNextCursor() string {
 	if x != nil {
 		return x.NextCursor
 	}
 	return ""
 }
 
-func (x *PageInfo) GetPrevCursor() string {
+func (x *PaginationInfo) GetPrevCursor() string {
 	if x != nil {
 		return x.PrevCursor
 	}
 	return ""
+}
+
+func (x *PaginationInfo) GetHasNext() bool {
+	if x != nil {
+		return x.HasNext
+	}
+	return false
+}
+
+func (x *PaginationInfo) GetHasPrev() bool {
+	if x != nil {
+		return x.HasPrev
+	}
+	return false
 }
 
 // SortField is one ?sort= entry: the WIRE field name (the response
@@ -912,23 +944,27 @@ var File_omnicore_v1_query_proto protoreflect.FileDescriptor
 
 const file_omnicore_v1_query_proto_rawDesc = "" +
 	"\n" +
-	"\x17omnicore/v1/query.proto\x12\vomnicore.v1\x1a\x1fgoogle/protobuf/timestamp.proto\"\xc9\x01\n" +
-	"\vPageRequest\x12\x19\n" +
+	"\x17omnicore/v1/query.proto\x12\vomnicore.v1\x1a\x1fgoogle/protobuf/timestamp.proto\"\xf7\x01\n" +
+	"\x11PaginationRequest\x12\x19\n" +
 	"\x05after\x18\x01 \x01(\tH\x00R\x05after\x88\x01\x01\x12\x1b\n" +
 	"\x06before\x18\x02 \x01(\tH\x01R\x06before\x88\x01\x01\x12\x19\n" +
 	"\x05limit\x18\x03 \x01(\x03H\x02R\x05limit\x88\x01\x01\x12\x1d\n" +
 	"\n" +
 	"only_total\x18\x04 \x01(\bR\tonlyTotal\x12)\n" +
-	"\x10include_archived\x18\x05 \x01(\bR\x0fincludeArchivedB\b\n" +
+	"\x10include_archived\x18\x05 \x01(\bR\x0fincludeArchived\x12\x1b\n" +
+	"\x06search\x18\x06 \x01(\tH\x03R\x06search\x88\x01\x01B\b\n" +
 	"\x06_afterB\t\n" +
 	"\a_beforeB\b\n" +
-	"\x06_limit\"b\n" +
-	"\bPageInfo\x12\x14\n" +
+	"\x06_limitB\t\n" +
+	"\a_search\"\x9e\x01\n" +
+	"\x0ePaginationInfo\x12\x14\n" +
 	"\x05total\x18\x01 \x01(\x03R\x05total\x12\x1f\n" +
 	"\vnext_cursor\x18\x02 \x01(\tR\n" +
 	"nextCursor\x12\x1f\n" +
 	"\vprev_cursor\x18\x03 \x01(\tR\n" +
-	"prevCursor\"5\n" +
+	"prevCursor\x12\x19\n" +
+	"\bhas_next\x18\x04 \x01(\bR\ahasNext\x12\x19\n" +
+	"\bhas_prev\x18\x05 \x01(\bR\ahasPrev\"5\n" +
 	"\tSortField\x12\x14\n" +
 	"\x05field\x18\x01 \x01(\tR\x05field\x12\x12\n" +
 	"\x04desc\x18\x02 \x01(\bR\x04desc\"P\n" +
@@ -1018,8 +1054,8 @@ var file_omnicore_v1_query_proto_goTypes = []any{
 	(StringOp)(0),                 // 0: omnicore.v1.StringOp
 	(NumberOp)(0),                 // 1: omnicore.v1.NumberOp
 	(BoolOp)(0),                   // 2: omnicore.v1.BoolOp
-	(*PageRequest)(nil),           // 3: omnicore.v1.PageRequest
-	(*PageInfo)(nil),              // 4: omnicore.v1.PageInfo
+	(*PaginationRequest)(nil),     // 3: omnicore.v1.PaginationRequest
+	(*PaginationInfo)(nil),        // 4: omnicore.v1.PaginationInfo
 	(*SortField)(nil),             // 5: omnicore.v1.SortField
 	(*StringCondition)(nil),       // 6: omnicore.v1.StringCondition
 	(*StringFilter)(nil),          // 7: omnicore.v1.StringFilter

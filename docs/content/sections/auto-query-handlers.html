@@ -628,7 +628,12 @@ fwopenapi.Mount(d.OpenAPIRegistry, app, fiber.MethodGet, "/users.csv", csvH, csv
         row plus a data row per child, recursively. A column's header is its
         <code>labelKey</code> rendered through the <code>Translator</code> in the request's
         <code>Accept-Language</code>, falling back to the Go field name when a column carries no
-        label. A <strong>blank separator line</strong> follows each item's cascade once it
+        label. A column flattened from a <strong>type-less schema</strong> is labeled by the Go type
+        that carries it: a <code>SharedBase</code>'s shared columns take the <code>labelKey</code>
+        tag off the ROLE struct that holds them flat (a <code>SharedBaseView</code> consults its
+        declared roles in declaration order), exactly as the audit timeline composes them — an
+        inline label on the base itself still wins. A <code>JoinUpstream</code> source has no such
+        struct and declares its labels inline. A <strong>blank separator line</strong> follows each item's cascade once it
         concludes, so every aggregate (and sub-aggregate) is visually delimited; consecutive blanks
         from several levels concluding at once collapse into one. This applies identically to
         locally-mapped embeds and cross-service external (<code>JoinUpstream</code>) embeds, in both

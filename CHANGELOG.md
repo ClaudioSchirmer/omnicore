@@ -11,6 +11,132 @@ with `1.0.0`.
 
 ## [Unreleased]
 
+## [0.45.0] - 2026-08-06
+
+### Changed
+
+- **BREAKING — gRPC pagination is now the exact mirror of the REST envelope.**
+  The shared `omnicore/v1/query.proto` components are renamed to speak the same
+  vocabulary as every other surface: `PageRequest` → `PaginationRequest`,
+  `PageInfo` → `PaginationInfo`, and the documented field-name convention on
+  service messages is `pagination` (the framework keeps locating both BY TYPE,
+  so existing field names still bind). `PaginationInfo` gains `has_next = 4`
+  and `has_prev = 5`, completing the field-for-field mirror of the REST
+  `pagination` block (`total`, `next_cursor`, `prev_cursor`, `has_next`,
+  `has_prev` — same names, same semantics); the empty-cursor convention still
+  holds, now as a redundant consequence rather than the only signal. Field
+  NUMBERS are unchanged, so already-deployed binary clients keep decoding;
+  the break is source-level — services re-spell the two message names in their
+  `.proto` files and regenerate. Three REST↔gRPC contract gaps close in the
+  same round: `PaginationRequest` gains `search = 6` (honored only when the
+  Request DTO opts in via `query:"search"`, the REST Reserved gate — set
+  without the opt-in rejects as SchemaViolation); `only_total=true` combined
+  with `after`/`before`/`limit`/`sort`/`read_mask` now rejects with the REST
+  conflict matrix instead of silently ignoring the page-shaping controls; and
+  the failure `ErrorInfo.metadata` now carries every slot the REST
+  `errors[].messages` entry carries (`context`, `semantic`, `message`,
+  `field`, `fieldLabel`, `value`, `funcName` — empty slots elided), so no
+  notification detail is REST-only.
+
+### Fixed
+
+- **Relational view: a paged listing now reports `pagination.total` instead of
+  a flat `0`.** A view marked `RelationalSource()` counted the match set only in
+  the count-only short-circuit, so `?onlyTotal=true` answered correctly while
+  every ordinary listing served items beside a literal, wrong `"total": 0` — and
+  since the field carries no `omitempty`, consumers received the zero rather
+  than an absent field. The zero reached all three surfaces: REST
+  `pagination.total`, GraphQL `totalCount`, and the gRPC `PageInfo.Total`. A
+  relational listing now counts under the SAME scoped criteria the count-only
+  mode uses, so the two answers agree by construction, and the count honors the
+  filter and the archived gate exactly as the returned rows do. Mongo-backed
+  views were never affected — they have always counted on both paths, which is
+  the parity the manual documents. The count is issued once per read: the
+  bare-backward window (GraphQL `last:N`) already ran this COUNT to anchor its
+  tail offset and discarded it, and now reuses it, so backward paging pays no
+  extra query and a forward page pays the one Mongo has always paid.
+- **gRPC: a DTO field typed `int64`/`uint64` now binds on the request side —
+  one DTO really does serve REST, GraphQL and gRPC.** The pb ↔ DTO bridge is a
+  `protojson` ↔ `encoding/json` round-trip, and the two dialects disagree on
+  exactly one thing: the proto3 JSON mapping renders 64-bit integers
+  (`int64`, `sint64`, `sfixed64`, `uint64`, `fixed64`) as QUOTED strings, while
+  `encoding/json` demands a bare number for a numeric Go field. Any request
+  pairing a 64-bit proto field with a numeric DTO seat — money in minor units,
+  counters, external ids — therefore failed EVERY call with
+  `SchemaViolationNotification` (INVALID_ARGUMENT), before the command handler
+  was reached, for a payload REST binds fine. The compiled plan now marks those
+  paths and unquotes them on the way in (scalar, repeated and nested alike),
+  carrying the digits as a raw literal so a value beyond 2^53 survives exactly.
+  A DTO field declared `string` for a 64-bit proto field is unchanged — it
+  keeps carrying the digits as text. The response direction never needed an
+  inverse: protojson accepts the bare number `encoding/json` emits.
+- **gRPC: 64-bit values no longer lose precision on the response side.** When a
+  plan renames any key, the DTO → pb leg crosses an intermediate
+  `map[string]any` where every JSON number decoded as a `float64` —
+  `math.MaxInt64` came out as 9223372036854775807 → 9223372036854776000. Both
+  legs now decode that map with `UseNumber`, keeping the literal.
+- **gRPC: a non-finite `float`/`double` is now rejected by name instead of
+  leaking the codec's error.** The proto3 JSON mapping renders `NaN`,
+  `Infinity` and `-Infinity` as quoted STRINGS — the same dialect gap as the
+  quoted 64-bit integer, but this one cannot be reconciled: JSON has no literal
+  for them, so `encoding/json` can neither read one into a float field nor
+  write one back. The request bind used to fail with the codec's generic
+  "cannot unmarshal string into Go struct field … of type float64"; it now
+  fails naming the field and the value and pointing at `MountRaw`, the seam for
+  a contract that must carry one. Finite floats are untouched.
+- **gRPC: a DTO name promoted ambiguously from two embedded structs is no
+  longer bound.** `encoding/json` resolves a promoted-name collision by depth —
+  shallowest wins, and two equally deep declarations are ambiguous, so it fills
+  NEITHER. The bridge's field collector picked the first one it walked, so the
+  plan could bind a seat the codec silently leaves at its zero value. The
+  ambiguous name is now dropped, which makes the proto field that wanted it
+  fail the existing "no counterpart" boot check — a loud abort instead of a
+  silent zero. An uncontested promoted field is unaffected.
+- **bootstrap: the projection consumer no longer starts when no transport is
+  configured.** With Mongo-backed views and no `transport:` block the SyncEngine
+  was started anyway, subscribing with no endpoints. Since the projection
+  subjects (`<table>.events`) are a cross-service contract, a service with no
+  CDC source of its own — the SQLite posture, where no relay can exist — would
+  subscribe to a stream it can never produce into and project ANOTHER service's
+  events into its own collections. The registry, spec application and drift
+  detection still run (the collections must exist for a Mongo-backed view to
+  boot); only the consumer is skipped, with an INFO line saying so.
+- **gRPC: a DTO field shadowed by an embedded struct now matches the field
+  `encoding/json` actually binds.** When an embedded struct and the outer struct
+  declare the same wire name, `encoding/json` fills the SHALLOWER one; the
+  bridge's field collector registered the promoted (deeper) field first and won
+  the collision, so the plan could pair a proto field with a seat the codec
+  never touches. Own fields are collected before embedded ones. An uncontested
+  promoted field is unaffected.
+- **gRPC: an enum paired with a numeric REQUEST seat now aborts boot** instead
+  of failing every call. The wire carries the member NAME, so the DTO seat must
+  be a string; the response direction is unaffected (protojson accepts a number
+  for an enum) and keeps compiling.
+
+- **Tabular export: a shared base's flattened columns now render their
+  `labelKey` header instead of falling back to the Go field name.** A
+  `SharedBase` is a type-less schema, so it carries no struct tag of its own —
+  the domain label of a shared column lives on the ROLE struct that holds it
+  flat. The audit timeline already composed the two (delta labels for a base
+  field come off the role's `labelKey` tag); the CSV/XLSX planner did not, so
+  every shared-identity column exported with its Go field name as the header
+  while the role's own columns exported translated. The gap hit both shapes: a
+  plain `View` rooted at a role (base columns merged flat) and a
+  `SharedBaseView` (base columns at the document root, labels recovered from the
+  declared roles in declaration order). Headers of shared columns therefore
+  change from the Go field name to the rendered catalog value — visible in the
+  exported file, no declaration change required. An explicit inline label on the
+  base (`Field(goName, column, labelKey)`) still wins, and an unlabeled column
+  still falls back to the Go field name.
+
+### Added
+
+- `core.TableSchema.LabelKeysByGoFieldAnchoredOn(anchors ...reflect.Type)` — the
+  label map of a type-less schema composed with the `labelKey` struct tags of
+  the Go types that carry its fields flat, resolved inline-declaration-first
+  then first-anchor-wins. Single home for the composition the audit builder and
+  the export planner both need (the audit builder's private duplicate is gone).
+
 ## [0.44.2] - 2026-08-05
 
 ### Fixed

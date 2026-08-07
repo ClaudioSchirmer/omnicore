@@ -150,6 +150,13 @@ func TestRegisterFullFamily(t *testing.T) {
 		fwresponses.AutoFromDoc[getGadgetResponseDTO],
 		getGadgetHandler{},
 	))
+	var sawSearchCriteria queries.ReadCriteria
+	reg.Register(QueryWithParams[testpb.SearchGadgetsRequest, testpb.SearchGadgetsResponse](
+		"/omnicore.grpctest.v1.GadgetService/SearchGadgetsOptIn",
+		searchGadgetsWithSearchDTO{},
+		fwresponses.AutoFromDoc[gadgetItemDTO],
+		searchGadgetsHandler{sawCriteria: &sawSearchCriteria},
+	))
 
 	if names := reg.ServiceNames(); len(names) != 1 {
 		t.Fatalf("one service expected across four RPCs: %v", names)
@@ -174,7 +181,7 @@ func TestRegisterFullFamily(t *testing.T) {
 
 	list := connect.NewClient[testpb.SearchGadgetsRequest, testpb.SearchGadgetsResponse](srv.Client(), base+"SearchGadgets")
 	listRes, err := list.CallUnary(context.Background(), connect.NewRequest(&testpb.SearchGadgetsRequest{
-		Page: &omnicorepb.PageRequest{Limit: proto.Int64(5)},
+		Pagination: &omnicorepb.PaginationRequest{Limit: proto.Int64(5)},
 		Filters: &testpb.SearchGadgetsFilters{
 			Name: &omnicorepb.StringFilter{Conditions: []*omnicorepb.StringCondition{{
 				Op: omnicorepb.StringOp_STRING_OP_ICONTAINS, Values: []string{"dri"},
@@ -187,15 +194,34 @@ func TestRegisterFullFamily(t *testing.T) {
 	if got := listRes.Msg.GetItems(); len(got) != 1 || got[0].GetName() != "Drill" || got[0].GetId() != "g-1" {
 		t.Fatalf("list items mismatch: %v", listRes.Msg)
 	}
-	pi := listRes.Msg.GetPageInfo()
-	if pi.GetTotal() != 1 || pi.GetNextCursor() != "next-c" || pi.GetPrevCursor() != "prev-c" {
-		t.Fatalf("PageInfo mismatch: %v", pi)
+	pi := listRes.Msg.GetPagination()
+	if pi.GetTotal() != 1 || pi.GetNextCursor() != "next-c" || pi.GetPrevCursor() != "prev-c" ||
+		!pi.GetHasNext() || pi.GetHasPrev() {
+		t.Fatalf("PaginationInfo mismatch: %v", pi)
 	}
 	if sawCriteria.Limit != 5 {
-		t.Fatalf("PageRequest did not reach the criteria: %+v", sawCriteria)
+		t.Fatalf("PaginationRequest did not reach the criteria: %+v", sawCriteria)
 	}
 	if _, ok := sawCriteria.Filter["Name"]; !ok {
 		t.Fatalf("filter did not land on the Go field path: %+v", sawCriteria.Filter)
+	}
+
+	// PaginationRequest.search rides the REST Reserved gate: honored on the
+	// opted-in DTO (`query:"search"`), rejected as INVALID_ARGUMENT on a DTO
+	// without the opt-in — the sibling of REST's unknown-key 400.
+	searchOK := connect.NewClient[testpb.SearchGadgetsRequest, testpb.SearchGadgetsResponse](srv.Client(), base+"SearchGadgetsOptIn")
+	if _, err := searchOK.CallUnary(context.Background(), connect.NewRequest(&testpb.SearchGadgetsRequest{
+		Pagination: &omnicorepb.PaginationRequest{Search: proto.String("dri")},
+	})); err != nil {
+		t.Fatalf("search on opted-in DTO must pass: %v", err)
+	}
+	if sawSearchCriteria.Search != "dri" {
+		t.Fatalf("search did not reach the criteria: %+v", sawSearchCriteria)
+	}
+	if _, err := list.CallUnary(context.Background(), connect.NewRequest(&testpb.SearchGadgetsRequest{
+		Pagination: &omnicorepb.PaginationRequest{Search: proto.String("dri")},
+	})); connect.CodeOf(err) != connect.CodeInvalidArgument {
+		t.Fatalf("search without the DTO opt-in must reject as INVALID_ARGUMENT: %v", err)
 	}
 
 	get := connect.NewClient[testpb.GetGadgetRequest, testpb.GetGadgetResponse](srv.Client(), base+"GetGadget")

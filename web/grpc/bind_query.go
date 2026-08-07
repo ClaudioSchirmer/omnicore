@@ -15,7 +15,7 @@ import (
 )
 
 // The read-side plan. A list request message composes the shared
-// omnicore.v1 components — PageRequest, repeated SortField, FieldMask, and
+// omnicore.v1 components — PaginationRequest, repeated SortField, FieldMask, and
 // typed filter wrappers (top-level or grouped under one nested "filters"
 // message). compileQueryPlan discovers them BY TYPE on the descriptor and
 // binds each filter to the Request DTO's `filter:`-tagged leaf, inheriting
@@ -70,15 +70,19 @@ type queryPlan struct {
 	group   protoreflect.FieldDescriptor // the filters container, when grouped
 	filters []filterBinding
 	fields  map[string]string // wire → Go doc path (mask/sort vocabulary)
+	// searchOptIn mirrors the REST Reserved gate: PaginationRequest.search is
+	// honored only when the Request DTO declares `query:"search"`; a set
+	// search against a non-opted-in DTO is a wire-contract violation.
+	searchOptIn bool
 }
 
 // listEnvelope is the compiled response plan for one list procedure: the
-// repeated items field + the omnicore.v1.PageInfo field, located by type,
-// plus the item ↔ Response DTO bridge.
+// repeated items field + the omnicore.v1.PaginationInfo field, located by
+// type, plus the item ↔ Response DTO bridge.
 type listEnvelope struct {
-	items    protoreflect.FieldDescriptor
-	pageInfo protoreflect.FieldDescriptor
-	itemPlan *bindPlan
+	items      protoreflect.FieldDescriptor
+	pagination protoreflect.FieldDescriptor
+	itemPlan   *bindPlan
 }
 
 // normalizePath folds a dotted wire path segment-wise: "addresses.zipCode"
@@ -112,6 +116,12 @@ func compileQueryPlan(
 		if rf.Ops != nil {
 			leaves[normalizePath(rf.WirePath)] = rf
 			leaves[normalizePath(rf.GoPath)] = rf
+			continue
+		}
+		// The REST Reserved gate, mirrored: `query:"search"` at the top level
+		// opts the DTO into PaginationRequest.search.
+		if rf.TopLevel && rf.WirePath == "search" {
+			plan.searchOptIn = true
 		}
 	}
 
@@ -149,7 +159,7 @@ func compileQueryPlan(
 			return nil, fmt.Errorf(
 				"%s: request field %q is not part of the shared read contract — a list request carries only omnicore.v1 components (page/sort/read_mask/filters); bespoke inputs belong to the query type's ToCriteria or a MountRaw procedure",
 				context, fd.Name())
-		case fd.Message().FullName() == "omnicore.v1.PageRequest":
+		case fd.Message().FullName() == "omnicore.v1.PaginationRequest":
 			plan.page = fd
 		case fd.Message().FullName() == "google.protobuf.FieldMask":
 			plan.mask = fd
@@ -218,7 +228,7 @@ func compileQueryPlan(
 }
 
 // compileListEnvelope locates the response envelope by type: exactly one
-// repeated message field (the items) and one omnicore.v1.PageInfo.
+// repeated message field (the items) and one omnicore.v1.PaginationInfo.
 func compileListEnvelope(
 	context string,
 	respMD protoreflect.MessageDescriptor,
@@ -231,11 +241,11 @@ func compileListEnvelope(
 		fd := fds.Get(i)
 		switch {
 		case fd.Kind() == protoreflect.MessageKind && !fd.IsList() &&
-			fd.Message().FullName() == "omnicore.v1.PageInfo":
-			if env.pageInfo != nil {
-				return nil, fmt.Errorf("%s: response carries two PageInfo fields", context)
+			fd.Message().FullName() == "omnicore.v1.PaginationInfo":
+			if env.pagination != nil {
+				return nil, fmt.Errorf("%s: response carries two PaginationInfo fields", context)
 			}
-			env.pageInfo = fd
+			env.pagination = fd
 		case fd.Kind() == protoreflect.MessageKind && fd.IsList():
 			if env.items != nil {
 				return nil, fmt.Errorf("%s: response carries two repeated message fields (%q and %q) — a list envelope has exactly one items field",
@@ -244,15 +254,15 @@ func compileListEnvelope(
 			env.items = fd
 		default:
 			return nil, fmt.Errorf(
-				"%s: response field %q is not part of the list envelope — compose exactly one repeated items message + omnicore.v1.PageInfo",
+				"%s: response field %q is not part of the list envelope — compose exactly one repeated items message + omnicore.v1.PaginationInfo",
 				context, fd.Name())
 		}
 	}
 	if env.items == nil {
 		return nil, fmt.Errorf("%s: response declares no repeated items message", context)
 	}
-	if env.pageInfo == nil {
-		return nil, fmt.Errorf("%s: response declares no omnicore.v1.PageInfo field", context)
+	if env.pagination == nil {
+		return nil, fmt.Errorf("%s: response declares no omnicore.v1.PaginationInfo field", context)
 	}
 	itemPlan, err := compileBindPlan(context, "response item", env.items.Message(), respDTO, nil, aliases)
 	if err != nil {
@@ -269,7 +279,11 @@ func compileListEnvelope(
 func (plan *queryPlan) buildCriteria(msg protoreflect.Message) (queries.ReadCriteria, error) {
 	b := NewCriteria().Fields(plan.fields)
 	if plan.page != nil && msg.Has(plan.page) {
-		if p, ok := msg.Get(plan.page).Message().Interface().(*pb.PageRequest); ok {
+		if p, ok := msg.Get(plan.page).Message().Interface().(*pb.PaginationRequest); ok {
+			if p.GetSearch() != "" && !plan.searchOptIn {
+				return queries.ReadCriteria{}, fmt.Errorf(
+					"grpc criteria: search is not declared on the Request DTO (opt in via `query:\"search\"`)")
+			}
 			b.Page(p)
 		}
 	}
@@ -394,8 +408,14 @@ func buildListResponse[RPB any, R any](
 		return nil, fmt.Errorf("*%T is not a proto.Message", *out)
 	}
 	m := pm.ProtoReflect()
-	info := &pb.PageInfo{Total: page.Total, NextCursor: page.NextCursor, PrevCursor: page.PrevCursor}
-	m.Set(env.pageInfo, protoreflect.ValueOfMessage(info.ProtoReflect()))
+	info := &pb.PaginationInfo{
+		Total:      page.Total,
+		NextCursor: page.NextCursor,
+		PrevCursor: page.PrevCursor,
+		HasNext:    page.HasNext,
+		HasPrev:    page.HasPrev,
+	}
+	m.Set(env.pagination, protoreflect.ValueOfMessage(info.ProtoReflect()))
 	list := m.Mutable(env.items).List()
 	for _, doc := range page.Items {
 		item := list.NewElement()

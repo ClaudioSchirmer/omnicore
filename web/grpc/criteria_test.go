@@ -17,17 +17,18 @@ import (
 func TestCriteriaPageSortReadMask(t *testing.T) {
 	after := "cursor-a"
 	limit := int64(25)
+	search := "drill"
 	fields := map[string]string{"id": "ID", "name": "Name", "created_at": "CreatedAt"}
 	crit, err := NewCriteria().
 		Fields(fields).
-		Page(&pb.PageRequest{After: &after, Limit: &limit, OnlyTotal: true, IncludeArchived: true}).
+		Page(&pb.PaginationRequest{After: &after, Limit: &limit, IncludeArchived: true, Search: &search}).
 		Sort(&pb.SortField{Field: "name"}, &pb.SortField{Field: "created_at", Desc: true}, nil, &pb.SortField{}).
 		ReadMask(&fieldmaskpb.FieldMask{Paths: []string{"id", "name", ""}}).
 		Build()
 	if err != nil {
 		t.Fatalf("build: %v", err)
 	}
-	if crit.After != "cursor-a" || crit.Limit != 25 || !crit.OnlyTotal || !crit.IncludeArchived {
+	if crit.After != "cursor-a" || crit.Limit != 25 || !crit.IncludeArchived || crit.Search != "drill" {
 		t.Fatalf("page: %+v", crit)
 	}
 	// wire names resolve to GO FIELD PATHS — the spelling ToCriteria
@@ -38,6 +39,50 @@ func TestCriteriaPageSortReadMask(t *testing.T) {
 	}
 	if !reflect.DeepEqual(crit.Projection, map[string]int{"ID": 1, "Name": 1}) {
 		t.Fatalf("projection: %+v", crit.Projection)
+	}
+}
+
+// TestCriteriaOnlyTotalConflicts proves the REST conflict matrix on the
+// gRPC wire: only_total=true combined with any page-shaping control is a
+// wire-contract violation, never a silent ignore — the same 400 the REST
+// wrapper emits for ?onlyTotal=true&limit=….
+func TestCriteriaOnlyTotalConflicts(t *testing.T) {
+	after := "c"
+	limit := int64(5)
+	fields := map[string]string{"name": "Name"}
+
+	cases := []struct {
+		name string
+		req  *pb.PaginationRequest
+		add  func(*CriteriaBuilder) *CriteriaBuilder
+		want string
+	}{
+		{"after", &pb.PaginationRequest{OnlyTotal: true, After: &after}, nil, "onlyTotal[after]"},
+		{"before", &pb.PaginationRequest{OnlyTotal: true, Before: &after}, nil, "onlyTotal[before]"},
+		{"limit", &pb.PaginationRequest{OnlyTotal: true, Limit: &limit}, nil, "onlyTotal[limit]"},
+		{"sort", &pb.PaginationRequest{OnlyTotal: true},
+			func(b *CriteriaBuilder) *CriteriaBuilder { return b.Sort(&pb.SortField{Field: "name"}) },
+			"onlyTotal[sort]"},
+		{"read_mask", &pb.PaginationRequest{OnlyTotal: true},
+			func(b *CriteriaBuilder) *CriteriaBuilder {
+				return b.ReadMask(&fieldmaskpb.FieldMask{Paths: []string{"name"}})
+			},
+			"onlyTotal[read_mask]"},
+	}
+	for _, tc := range cases {
+		b := NewCriteria().Fields(fields).Page(tc.req)
+		if tc.add != nil {
+			b = tc.add(b)
+		}
+		if _, err := b.Build(); err == nil || !strings.Contains(err.Error(), tc.want) {
+			t.Fatalf("%s: want %q violation, got %v", tc.name, tc.want, err)
+		}
+	}
+
+	// only_total alone (with filters upstream) stays the canonical count path.
+	crit, err := NewCriteria().Fields(fields).Page(&pb.PaginationRequest{OnlyTotal: true, IncludeArchived: true}).Build()
+	if err != nil || !crit.OnlyTotal || !crit.IncludeArchived {
+		t.Fatalf("count-only must pass clean: crit=%+v err=%v", crit, err)
 	}
 }
 

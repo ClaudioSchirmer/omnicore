@@ -62,10 +62,11 @@ func codeFromNotifications(dtos []notifications.ContextDTO) connect.Code {
 // ErrorFromNotifications converts the pipeline's translated notification
 // DTOs into a *connect.Error carrying the full envelope in google.rpc
 // details: one ErrorInfo per message (reason = NotificationKey, metadata
-// carries the notification context and field) plus a single BadRequest
-// aggregating the field-scoped messages — so a gRPC/Connect consumer
-// receives exactly what the REST envelope carries, in the protobuf-native
-// shape.
+// carries EVERY slot the REST ErrorMessage carries — context, semantic,
+// message, field, fieldLabel, value, funcName; empty slots elided like
+// REST's omitempty) plus a single BadRequest aggregating the field-scoped
+// messages — so a gRPC/Connect consumer receives exactly what the REST
+// envelope carries, in the protobuf-native shape.
 func ErrorFromNotifications(dtos []notifications.ContextDTO) *connect.Error {
 	msg := "request rejected"
 	if len(dtos) > 0 && len(dtos[0].Messages) > 0 {
@@ -77,8 +78,20 @@ func ErrorFromNotifications(dtos []notifications.ContextDTO) *connect.Error {
 		for _, m := range ctx.Messages {
 			if m.NotificationKey != "" {
 				metadata := map[string]string{"context": ctx.Context, "semantic": m.Semantic.String()}
+				if m.Message != "" {
+					metadata["message"] = m.Message
+				}
 				if m.FieldName != "" {
 					metadata["field"] = m.FieldName
+				}
+				if m.FieldLabel != "" {
+					metadata["fieldLabel"] = m.FieldLabel
+				}
+				if m.FieldValue != "" {
+					metadata["value"] = m.FieldValue
+				}
+				if m.FuncName != "" {
+					metadata["funcName"] = m.FuncName
 				}
 				if d, err := connect.NewErrorDetail(&errdetails.ErrorInfo{
 					Reason:   m.NotificationKey,

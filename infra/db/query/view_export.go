@@ -1,6 +1,8 @@
 package query
 
 import (
+	"reflect"
+
 	"github.com/ClaudioSchirmer/omnicore/application/queries"
 	"github.com/ClaudioSchirmer/omnicore/domain"
 	"github.com/ClaudioSchirmer/omnicore/infra/db/core"
@@ -53,7 +55,10 @@ func (v *ViewDefinition) ResolveMaxExportRows(yamlDefault int64) int64 {
 // intentionally excluded — the export carries the labeled business columns; the
 // surrogate id and framework timestamps are not part of the human-facing sheet.
 func (v *ViewDefinition) ExportPlan() *queries.ExportPlan {
-	root := buildExportNode(v.schema, v.embeds, "", "")
+	// A SharedBaseView is rooted at the TYPE-LESS base, whose columns carry their
+	// `labelKey` tags on the ROLE structs that hold them flat — hand every role as
+	// a label anchor (empty for a plain view, whose root schema is type-anchored).
+	root := buildExportNode(v.schema, v.embeds, "", "", v.roleLabelAnchors()...)
 	// SharedBaseView roles nest as single-object branches (the renderer's
 	// child extraction already handles a single map exactly like a one-item
 	// collection). Ordered as declared.
@@ -107,18 +112,40 @@ func roleExportNode(r roleDef) *queries.ExportNode {
 	return node
 }
 
-func buildExportNode(schema *core.TableSchema, embeds []embedDef, goSegment, wireSegment string) *queries.ExportNode {
+// roleLabelAnchors returns the Go types of the declared roles, in declaration
+// order — the label anchors for the type-less shared base a SharedBaseView is
+// rooted at. Empty for a plain view (no roles), which labels its root columns
+// from its own type-anchored schema.
+func (v *ViewDefinition) roleLabelAnchors() []reflect.Type {
+	if len(v.roles) == 0 {
+		return nil
+	}
+	out := make([]reflect.Type, 0, len(v.roles))
+	for _, r := range v.roles {
+		if t := r.schema.GoType(); t != nil {
+			out = append(out, t)
+		}
+	}
+	return out
+}
+
+// buildExportNode assembles one level of the plan. labelAnchors are the Go types
+// whose `labelKey` struct tags label a TYPE-LESS root schema's columns (a
+// SharedBaseView's roles); a type-anchored root passes none and labels itself.
+func buildExportNode(schema *core.TableSchema, embeds []embedDef, goSegment, wireSegment string, labelAnchors ...reflect.Type) *queries.ExportNode {
 	node := &queries.ExportNode{GoSegment: goSegment, WireSegment: wireSegment}
 	if schema != nil {
 		// This level's FLAT business columns — the read document merges them all at
 		// the owner's level, so they are columns of THIS node: the schema's own
 		// fields, then each sibling's, then the SharedBase's.
-		appendSchemaColumns(node, schema)
+		appendSchemaColumns(node, schema, labelAnchors...)
 		for _, sib := range schema.Siblings() {
 			appendSchemaColumns(node, sib)
 		}
 		if base, _, ok := schema.SharedBaseRef(); ok {
-			appendSchemaColumns(node, base)
+			// The base is type-less: its flattened columns are labeled by the role
+			// struct that carries them (mirroring the audit timeline's composition).
+			appendSchemaColumns(node, base, schema.GoType())
 		}
 	}
 	// Embeds nest as children. An EXTERNAL source contributes only its own
@@ -194,9 +221,11 @@ func restrictExportBranch(branch *queries.ExportNode, leg *Leg) *queries.ExportN
 
 // appendSchemaColumns adds one ExportColumn per declared business field of s
 // (ID + managed columns excluded by GoFields), labeled via s's own label source
-// (external inline labelKey, else the type-anchored struct tag).
-func appendSchemaColumns(node *queries.ExportNode, s *core.TableSchema) {
-	labels := s.LabelKeysByGoField()
+// (external inline labelKey, else the type-anchored struct tag) — or, for a
+// type-less schema, via the labelKey tags of the anchor types that carry its
+// fields flat.
+func appendSchemaColumns(node *queries.ExportNode, s *core.TableSchema, labelAnchors ...reflect.Type) {
+	labels := s.LabelKeysByGoFieldAnchoredOn(labelAnchors...)
 	for _, gf := range s.GoFields() {
 		node.Columns = append(node.Columns, queries.ExportColumn{
 			GoField:  gf,

@@ -237,7 +237,7 @@ func CommandByID[
 // operator allowlist; read_mask/sort resolve against the projector's
 // Response DTO — then ToQuery(criteria) receives the INPUT criteria,
 // exactly what the REST parser hands it. The response composes one
-// repeated items message + omnicore.v1.PageInfo, filled from the same
+// repeated items message + omnicore.v1.PaginationInfo, filled from the same
 // projector seat REST uses (fwresponses.AutoFromDoc or a hand-written
 // FromDoc).
 func QueryWithParams[

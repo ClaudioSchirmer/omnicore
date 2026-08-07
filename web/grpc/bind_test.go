@@ -186,7 +186,7 @@ func TestBridgeRenamesBothDirectionsWithNesting(t *testing.T) {
 	if err != nil {
 		t.Fatalf("compile: %v", err)
 	}
-	if !plan.hasRenames() {
+	if !plan.hasNodes() {
 		t.Fatalf("nested rename expected")
 	}
 
@@ -337,12 +337,12 @@ func TestBootFailures(t *testing.T) {
 	})
 	expectBootFail(t, "no repeated items message", func() {
 		reg := New(pipe)
-		reg.Register(QueryWithParams[testpb.SearchGadgetsRequest, testpb.OnlyPageInfoResponse]("/x.v1.S/M",
+		reg.Register(QueryWithParams[testpb.SearchGadgetsRequest, testpb.OnlyPaginationInfoResponse]("/x.v1.S/M",
 			searchGadgetsDTO{}, fwresponses.AutoFromDoc[gadgetItemDTO], searchGadgetsHandler{}))
 	})
-	expectBootFail(t, "two PageInfo fields", func() {
+	expectBootFail(t, "two PaginationInfo fields", func() {
 		reg := New(pipe)
-		reg.Register(QueryWithParams[testpb.SearchGadgetsRequest, testpb.TwoPageInfosResponse]("/x.v1.S/M",
+		reg.Register(QueryWithParams[testpb.SearchGadgetsRequest, testpb.TwoPaginationInfosResponse]("/x.v1.S/M",
 			searchGadgetsDTO{}, fwresponses.AutoFromDoc[gadgetItemDTO], searchGadgetsHandler{}))
 	})
 	expectBootFail(t, "not part of the list envelope", func() {
