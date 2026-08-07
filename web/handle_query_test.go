@@ -20,9 +20,9 @@ type testFindParamsRequest struct {
 	Name  *string `query:"name"  filter:"eq"`
 	Email *string `query:"email" filter:"eq,in"`
 
-	Limit           *int64  `query:"limit"`
+	Limit           *int64  `query:"first"`
 	After           *string `query:"after"`
-	Sort            *string `query:"sort"`
+	Sort            *string `query:"orderBy"`
 	Fields          *string `query:"fields"`
 	Search          *string `query:"search"`
 	IncludeArchived *bool   `query:"includeArchived"`
@@ -58,8 +58,8 @@ func (h *capturingParamsHandler) Handle(ctx *configuration.AppContext, q *testFi
 	_, _ = q.ToCriteria(ctx)
 	return queries.Page{
 		Items:   []map[string]any{{"id": "abc"}},
-		HasNext: true,
-		Total:   1,
+		HasNextPage: true,
+		TotalCount:   1,
 	}, nil
 }
 
@@ -107,7 +107,7 @@ func TestHandleQueryWithParams_AllowedOperatorAssemblesCriteria(t *testing.T) {
 
 	app.Get("/users", QueryWithParams(pipe, testFindParamsRequest{}, responses.RawDoc, h))
 
-	resp, _ := app.Test(httptest.NewRequest("GET", "/users?email.in=a@x.com,b@y.com&limit=20&sort=-name", nil))
+	resp, _ := app.Test(httptest.NewRequest("GET", "/users?email.in=a@x.com,b@y.com&first=20&orderBy=-name", nil))
 	if resp.StatusCode != fiber.StatusOK {
 		b, _ := io.ReadAll(resp.Body)
 		t.Fatalf("expected 200, got %d (body=%s)", resp.StatusCode, b)
@@ -126,8 +126,8 @@ func TestHandleQueryWithParams_AllowedOperatorAssemblesCriteria(t *testing.T) {
 	if h.got.Criteria.Limit != 20 {
 		t.Errorf("expected Limit=20, got %d", h.got.Criteria.Limit)
 	}
-	if len(h.got.Criteria.Sort) != 1 || h.got.Criteria.Sort[0].Field != "name" || !h.got.Criteria.Sort[0].Desc {
-		t.Errorf("expected Sort=[-name desc], got %v", h.got.Criteria.Sort)
+	if len(h.got.Criteria.OrderBy) != 1 || h.got.Criteria.OrderBy[0].Field != "name" || !h.got.Criteria.OrderBy[0].Desc {
+		t.Errorf("expected Sort=[-name desc], got %v", h.got.Criteria.OrderBy)
 	}
 }
 
@@ -193,11 +193,11 @@ func TestHandleQueryWithParams_ResponseEnvelopeShape(t *testing.T) {
 	if !ok {
 		t.Fatalf("expected pagination to be an object, got %T", parsed["pagination"])
 	}
-	if pag["has_next"] != true {
-		t.Errorf("expected pagination.has_next=true, got %v", pag["has_next"])
+	if pag["hasNextPage"] != true {
+		t.Errorf("expected pagination.hasNextPage=true, got %v", pag["hasNextPage"])
 	}
-	if pag["total"] != float64(1) {
-		t.Errorf("expected pagination.total=1, got %v", pag["total"])
+	if pag["totalCount"] != float64(1) {
+		t.Errorf("expected pagination.totalCount=1, got %v", pag["totalCount"])
 	}
 }
 
@@ -242,7 +242,7 @@ func TestHandleQueryWithParams_CustomProjectorReshapesData(t *testing.T) {
 			{"id": "u1", "name": "Alice", "email": "a@x.com"},
 			{"id": "u2", "name": "Bob"},
 		},
-		Total: 2,
+		TotalCount: 2,
 	}}
 
 	app.Get("/users", QueryWithParams(pipe, testFindParamsRequest{}, summaryFromDoc, h))
@@ -423,7 +423,7 @@ func TestParseCriteria_HappyPath(t *testing.T) {
 		return c.SendStatus(fiber.StatusOK)
 	})
 
-	resp, _ := app.Test(httptest.NewRequest("GET", "/x?name=Jane&limit=5", nil))
+	resp, _ := app.Test(httptest.NewRequest("GET", "/x?name=Jane&first=5", nil))
 	if resp.StatusCode != fiber.StatusOK {
 		t.Fatalf("expected 200, got %d", resp.StatusCode)
 	}
@@ -530,9 +530,9 @@ func TestProjectPage_AppliesProjectorPerDoc(t *testing.T) {
 			{"id": "1", "name": "A"},
 			{"id": "2", "name": "B"},
 		},
-		HasNext:    true,
-		NextCursor: "cur-xyz",
-		Total:      2,
+		HasNextPage:    true,
+		EndCursor: "cur-xyz",
+		TotalCount:      2,
 	}
 	items, pag := ProjectPage(page, summaryFromDoc)
 	if len(items) != 2 {
@@ -541,7 +541,7 @@ func TestProjectPage_AppliesProjectorPerDoc(t *testing.T) {
 	if items[0].ID == nil || *items[0].ID != "1" || items[0].Name == nil || *items[0].Name != "A" {
 		t.Errorf("first item mismatch: %+v", items[0])
 	}
-	if !pag.HasNext || pag.NextCursor != "cur-xyz" || pag.Total != 2 {
+	if !pag.HasNextPage || pag.EndCursor != "cur-xyz" || pag.TotalCount != 2 {
 		t.Errorf("pagination mismatch: %+v", pag)
 	}
 }
@@ -551,8 +551,8 @@ func TestRespondPaged_EmitsEnvelope(t *testing.T) {
 	app.Get("/x", func(c fiber.Ctx) error {
 		page := queries.Page{
 			Items:   []map[string]any{{"id": "1", "name": "A"}},
-			HasNext: false,
-			Total:   1,
+			HasNextPage: false,
+			TotalCount:   1,
 		}
 		return RespondPaged(c, fiber.StatusOK, page, summaryFromDoc)
 	})
@@ -605,10 +605,10 @@ func docStringField(doc map[string]any, key string) string {
 	return ""
 }
 
-// ─── runtime ?sort= behavior ───────────────────────────────────────────────
+// ─── runtime ?orderBy= behavior ───────────────────────────────────────────────
 //
 // The reserved `sort` key is symmetric to `fields`: the Request DTO opts in
-// by declaring `Sort *string query:"sort"`; when the wrapper is paired with
+// by declaring `Sort *string query:"orderBy"`; when the wrapper is paired with
 // a typed Response struct, each comma-separated token is validated against
 // the Response's declared wire paths and translated to the doc-side path.
 // Manual handlers via ParseCriteria (or wrappers paired with a RawDoc-style
@@ -623,7 +623,7 @@ func TestSortParam_UnknownTokenReturns400WithBracketedField(t *testing.T) {
 		return sparseUser{}
 	}, h))
 
-	resp, _ := app.Test(httptest.NewRequest("GET", "/users?sort=bogus", nil))
+	resp, _ := app.Test(httptest.NewRequest("GET", "/users?orderBy=bogus", nil))
 	if resp.StatusCode != fiber.StatusBadRequest {
 		t.Fatalf("expected 400, got %d", resp.StatusCode)
 	}
@@ -635,8 +635,8 @@ func TestSortParam_UnknownTokenReturns400WithBracketedField(t *testing.T) {
 	errs := parsed["errors"].([]any)
 	first := errs[0].(map[string]any)
 	msg := first["messages"].([]any)[0].(map[string]any)
-	if got := msg["field"]; got != "sort[bogus]" {
-		t.Errorf("expected field=sort[bogus], got %v", got)
+	if got := msg["field"]; got != "orderBy[bogus]" {
+		t.Errorf("expected field=orderBy[bogus], got %v", got)
 	}
 }
 
@@ -651,7 +651,7 @@ func TestSortParam_UnknownTokenWithMinusPrefixPreservesPrefixInError(t *testing.
 		return sparseUser{}
 	}, h))
 
-	resp, _ := app.Test(httptest.NewRequest("GET", "/users?sort=-bogus", nil))
+	resp, _ := app.Test(httptest.NewRequest("GET", "/users?orderBy=-bogus", nil))
 	if resp.StatusCode != fiber.StatusBadRequest {
 		t.Fatalf("expected 400, got %d", resp.StatusCode)
 	}
@@ -663,8 +663,8 @@ func TestSortParam_UnknownTokenWithMinusPrefixPreservesPrefixInError(t *testing.
 	errs := parsed["errors"].([]any)
 	first := errs[0].(map[string]any)
 	msg := first["messages"].([]any)[0].(map[string]any)
-	if got := msg["field"]; got != "sort[-bogus]" {
-		t.Errorf("expected field=sort[-bogus] (prefix preserved), got %v", got)
+	if got := msg["field"]; got != "orderBy[-bogus]" {
+		t.Errorf("expected field=orderBy[-bogus] (prefix preserved), got %v", got)
 	}
 }
 
@@ -676,17 +676,17 @@ func TestSortParam_KnownTokenTranslatesToDocPath(t *testing.T) {
 		return sparseUser{}
 	}, h))
 
-	_, _ = app.Test(httptest.NewRequest("GET", "/users?sort=addresses.zipCode", nil))
+	_, _ = app.Test(httptest.NewRequest("GET", "/users?orderBy=addresses.zipCode", nil))
 	if h.got == nil {
 		t.Fatal("expected handler called")
 	}
-	if len(h.got.Criteria.Sort) != 1 {
-		t.Fatalf("expected 1 SortField, got %d", len(h.got.Criteria.Sort))
+	if len(h.got.Criteria.OrderBy) != 1 {
+		t.Fatalf("expected 1 OrderByField, got %d", len(h.got.Criteria.OrderBy))
 	}
-	if h.got.Criteria.Sort[0].Field != "Addresses.ZipCode" {
-		t.Errorf("expected Field=addresses.zip_code (PascalToSnake), got %q", h.got.Criteria.Sort[0].Field)
+	if h.got.Criteria.OrderBy[0].Field != "Addresses.ZipCode" {
+		t.Errorf("expected Field=addresses.zip_code (PascalToSnake), got %q", h.got.Criteria.OrderBy[0].Field)
 	}
-	if h.got.Criteria.Sort[0].Desc {
+	if h.got.Criteria.OrderBy[0].Desc {
 		t.Errorf("expected Desc=false on bare token, got true")
 	}
 }
@@ -699,15 +699,15 @@ func TestSortParam_NestedViewTagOverride(t *testing.T) {
 		return sparseUser{}
 	}, h))
 
-	_, _ = app.Test(httptest.NewRequest("GET", "/users?sort=addresses.state", nil))
+	_, _ = app.Test(httptest.NewRequest("GET", "/users?orderBy=addresses.state", nil))
 	if h.got == nil {
 		t.Fatal("expected handler called")
 	}
-	if len(h.got.Criteria.Sort) != 1 {
-		t.Fatalf("expected 1 SortField, got %d", len(h.got.Criteria.Sort))
+	if len(h.got.Criteria.OrderBy) != 1 {
+		t.Fatalf("expected 1 OrderByField, got %d", len(h.got.Criteria.OrderBy))
 	}
-	if h.got.Criteria.Sort[0].Field != "Addresses.State" {
-		t.Errorf("expected Field=addresses.st (view: override), got %q", h.got.Criteria.Sort[0].Field)
+	if h.got.Criteria.OrderBy[0].Field != "Addresses.State" {
+		t.Errorf("expected Field=addresses.st (view: override), got %q", h.got.Criteria.OrderBy[0].Field)
 	}
 }
 
@@ -719,15 +719,15 @@ func TestSortParam_MinusPrefixSetsDesc(t *testing.T) {
 		return sparseUser{}
 	}, h))
 
-	_, _ = app.Test(httptest.NewRequest("GET", "/users?sort=-name", nil))
+	_, _ = app.Test(httptest.NewRequest("GET", "/users?orderBy=-name", nil))
 	if h.got == nil {
 		t.Fatal("expected handler called")
 	}
-	if len(h.got.Criteria.Sort) != 1 {
-		t.Fatalf("expected 1 SortField, got %d", len(h.got.Criteria.Sort))
+	if len(h.got.Criteria.OrderBy) != 1 {
+		t.Fatalf("expected 1 OrderByField, got %d", len(h.got.Criteria.OrderBy))
 	}
-	if h.got.Criteria.Sort[0].Field != "Name" || !h.got.Criteria.Sort[0].Desc {
-		t.Errorf("expected Field=Name,Desc=true, got %+v", h.got.Criteria.Sort[0])
+	if h.got.Criteria.OrderBy[0].Field != "Name" || !h.got.Criteria.OrderBy[0].Desc {
+		t.Errorf("expected Field=Name,Desc=true, got %+v", h.got.Criteria.OrderBy[0])
 	}
 }
 
@@ -739,24 +739,24 @@ func TestSortParam_MultipleTokensIndependentDirections(t *testing.T) {
 		return sparseUser{}
 	}, h))
 
-	_, _ = app.Test(httptest.NewRequest("GET", "/users?sort=name,-email", nil))
+	_, _ = app.Test(httptest.NewRequest("GET", "/users?orderBy=name,-email", nil))
 	if h.got == nil {
 		t.Fatal("expected handler called")
 	}
-	if len(h.got.Criteria.Sort) != 2 {
-		t.Fatalf("expected 2 SortFields, got %d", len(h.got.Criteria.Sort))
+	if len(h.got.Criteria.OrderBy) != 2 {
+		t.Fatalf("expected 2 OrderByFields, got %d", len(h.got.Criteria.OrderBy))
 	}
-	if h.got.Criteria.Sort[0].Field != "Name" || h.got.Criteria.Sort[0].Desc {
-		t.Errorf("expected first SortField=name asc, got %+v", h.got.Criteria.Sort[0])
+	if h.got.Criteria.OrderBy[0].Field != "Name" || h.got.Criteria.OrderBy[0].Desc {
+		t.Errorf("expected first OrderByField=name asc, got %+v", h.got.Criteria.OrderBy[0])
 	}
-	if h.got.Criteria.Sort[1].Field != "Email" || !h.got.Criteria.Sort[1].Desc {
-		t.Errorf("expected second SortField=email desc, got %+v", h.got.Criteria.Sort[1])
+	if h.got.Criteria.OrderBy[1].Field != "Email" || !h.got.Criteria.OrderBy[1].Desc {
+		t.Errorf("expected second OrderByField=email desc, got %+v", h.got.Criteria.OrderBy[1])
 	}
 }
 
 func TestSortParam_PassThroughModeOnParseCriteria(t *testing.T) {
 	// ParseCriteria passes nil projSchema → no allowlist, no translation,
-	// each token becomes a SortField verbatim (the manual handler knows the
+	// each token becomes a OrderByField verbatim (the manual handler knows the
 	// doc shape and assembled its own wire→doc mapping upstream).
 	app := fiber.New()
 	var got queries.ReadCriteria
@@ -764,15 +764,15 @@ func TestSortParam_PassThroughModeOnParseCriteria(t *testing.T) {
 		got, _, _ = ParseCriteria(c, testFindParamsRequest{})
 		return c.SendStatus(fiber.StatusOK)
 	})
-	_, _ = app.Test(httptest.NewRequest("GET", "/x?sort=-anything,foo.bar", nil))
-	if len(got.Sort) != 2 {
-		t.Fatalf("expected 2 SortFields in pass-through mode, got %d", len(got.Sort))
+	_, _ = app.Test(httptest.NewRequest("GET", "/x?orderBy=-anything,foo.bar", nil))
+	if len(got.OrderBy) != 2 {
+		t.Fatalf("expected 2 OrderByFields in pass-through mode, got %d", len(got.OrderBy))
 	}
-	if got.Sort[0].Field != "anything" || !got.Sort[0].Desc {
-		t.Errorf("expected first SortField=anything desc (verbatim), got %+v", got.Sort[0])
+	if got.OrderBy[0].Field != "anything" || !got.OrderBy[0].Desc {
+		t.Errorf("expected first OrderByField=anything desc (verbatim), got %+v", got.OrderBy[0])
 	}
-	if got.Sort[1].Field != "foo.bar" || got.Sort[1].Desc {
-		t.Errorf("expected second SortField=foo.bar asc (verbatim), got %+v", got.Sort[1])
+	if got.OrderBy[1].Field != "foo.bar" || got.OrderBy[1].Desc {
+		t.Errorf("expected second OrderByField=foo.bar asc (verbatim), got %+v", got.OrderBy[1])
 	}
 }
 
@@ -781,7 +781,7 @@ func TestSortParam_PassThroughModeOnParseCriteria(t *testing.T) {
 // reserved key requesting Response-side validation.
 type testFindSortOnlyRequest struct {
 	Name *string `query:"name" filter:"eq"`
-	Sort *string `query:"sort"`
+	Sort *string `query:"orderBy"`
 }
 
 func (r testFindSortOnlyRequest) ToQuery(crit queries.ReadCriteria) *testFindParamsQuery {
@@ -797,7 +797,7 @@ func TestSortParam_OptInWithoutFieldsBuildsProjSchema(t *testing.T) {
 	}, h))
 
 	// Allowlist must fire even though the DTO did not declare `Fields`.
-	resp, _ := app.Test(httptest.NewRequest("GET", "/users?sort=bogus", nil))
+	resp, _ := app.Test(httptest.NewRequest("GET", "/users?orderBy=bogus", nil))
 	if resp.StatusCode != fiber.StatusBadRequest {
 		t.Fatalf("expected 400 from sort allowlist (sort opt-in alone), got %d", resp.StatusCode)
 	}
@@ -808,14 +808,14 @@ func TestSortParam_OptInWithoutFieldsBuildsProjSchema(t *testing.T) {
 	app2.Get("/users", QueryWithParams(pipe, testFindSortOnlyRequest{}, func(_ map[string]any) sparseUser {
 		return sparseUser{}
 	}, h2))
-	_, _ = app2.Test(httptest.NewRequest("GET", "/users?sort=-addresses.zipCode", nil))
+	_, _ = app2.Test(httptest.NewRequest("GET", "/users?orderBy=-addresses.zipCode", nil))
 	if h2.got == nil {
 		t.Fatal("expected handler called")
 	}
-	if len(h2.got.Criteria.Sort) != 1 ||
-		h2.got.Criteria.Sort[0].Field != "Addresses.ZipCode" ||
-		!h2.got.Criteria.Sort[0].Desc {
-		t.Errorf("expected SortField=addresses.zip_code desc, got %+v", h2.got.Criteria.Sort)
+	if len(h2.got.Criteria.OrderBy) != 1 ||
+		h2.got.Criteria.OrderBy[0].Field != "Addresses.ZipCode" ||
+		!h2.got.Criteria.OrderBy[0].Desc {
+		t.Errorf("expected OrderByField=addresses.zip_code desc, got %+v", h2.got.Criteria.OrderBy)
 	}
 }
 
@@ -827,17 +827,17 @@ func TestSortParam_RawDocResponseFallsBackToPassThrough(t *testing.T) {
 	h := &capturingParamsHandler{}
 	app.Get("/users", QueryWithParams(pipe, testFindParamsRequest{}, responses.RawDoc, h))
 
-	_, _ = app.Test(httptest.NewRequest("GET", "/users?sort=anything,-not_in_any_schema", nil))
+	_, _ = app.Test(httptest.NewRequest("GET", "/users?orderBy=anything,-not_in_any_schema", nil))
 	if h.got == nil {
 		t.Fatal("expected handler called")
 	}
-	if len(h.got.Criteria.Sort) != 2 {
-		t.Fatalf("expected 2 SortFields verbatim, got %d", len(h.got.Criteria.Sort))
+	if len(h.got.Criteria.OrderBy) != 2 {
+		t.Fatalf("expected 2 OrderByFields verbatim, got %d", len(h.got.Criteria.OrderBy))
 	}
-	if h.got.Criteria.Sort[0].Field != "anything" || h.got.Criteria.Sort[0].Desc {
-		t.Errorf("expected first SortField=anything asc, got %+v", h.got.Criteria.Sort[0])
+	if h.got.Criteria.OrderBy[0].Field != "anything" || h.got.Criteria.OrderBy[0].Desc {
+		t.Errorf("expected first OrderByField=anything asc, got %+v", h.got.Criteria.OrderBy[0])
 	}
-	if h.got.Criteria.Sort[1].Field != "not_in_any_schema" || !h.got.Criteria.Sort[1].Desc {
-		t.Errorf("expected second SortField=not_in_any_schema desc, got %+v", h.got.Criteria.Sort[1])
+	if h.got.Criteria.OrderBy[1].Field != "not_in_any_schema" || !h.got.Criteria.OrderBy[1].Desc {
+		t.Errorf("expected second OrderByField=not_in_any_schema desc, got %+v", h.got.Criteria.OrderBy[1])
 	}
 }

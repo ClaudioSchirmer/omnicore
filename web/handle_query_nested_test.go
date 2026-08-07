@@ -25,7 +25,7 @@ type testNestedRequest struct {
 	Email     *string        `query:"email" filter:"eq"`
 	Addresses testAddrFilter `query:"addresses"`
 
-	Limit *int64 `query:"limit"`
+	Limit *int64 `query:"first"`
 }
 
 type testNestedQuery struct {
@@ -176,7 +176,7 @@ func TestNested_UnknownPrefixReturns400(t *testing.T) {
 
 func TestNested_ReservedPaginationOnlyAtTopLevel(t *testing.T) {
 	// `limit` at top level is reserved → honored.
-	crit, status := dispatchNested(t, "?limit=42")
+	crit, status := dispatchNested(t, "?first=42")
 	if status != fiber.StatusOK {
 		t.Fatalf("expected 200, got %d", status)
 	}

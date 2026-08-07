@@ -43,7 +43,7 @@ func TestEndpoint_PostQueryReturnsData(t *testing.T) {
 	h := &fakeReadHandler{page: queries.Page{
 		Items:       []map[string]any{{"ID": "u1", "Name": "alice"}},
 		ItemCursors: []string{"c1"},
-		Total:       1,
+		TotalCount:       1,
 	}}
 	app := newGraphQLApp(h)
 

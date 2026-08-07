@@ -7,6 +7,56 @@
 </div>
 <div class="changelog">
     <div class="release">
+        <div class="release-head"><span class="release-tag">v0.46.0</span><span class="release-date">August 7, 2026</span></div>
+        <ul>
+            <li><strong>Changed</strong> — <strong>breaking</strong> — <strong>the Request DTO governs every read
+                surface, and the read vocabulary is the Relay standard everywhere.</strong> The REST wire renames
+                <code>?sort=</code> → <code>?orderBy=</code> and <code>?limit=</code> → the directional pair
+                <code>?first=</code>/<code>?last=</code> (forward <code>first</code>+<code>after</code>, backward
+                <code>last</code>+<code>before</code>; <code>last</code> with no cursor yields the LAST N of the set
+                — new expressiveness; one rule: forward and backward never mix). The response envelope adopts the
+                Relay connection vocabulary on every surface — <code>pagination.totalCount</code> /
+                <code>hasNextPage</code> / <code>hasPreviousPage</code> / <code>startCursor</code> /
+                <code>endCursor</code> (gRPC snake_case; cursors are WINDOW EDGES, echoed into
+                <code>before</code>/<code>after</code> to walk). The shared proto renames
+                <code>PaginationRequest.limit</code> → <code>first</code> (number kept) and adds <code>last</code>;
+                <code>SortField</code> → <code>OrderByField</code> with the request-field conventions
+                <code>order_by</code> and <code>fields</code> (both located BY TYPE, so existing service protos keep
+                binding); the LimitExceeded 400 names the directional control the consumer sent
+                (<code>fieldName: "first"</code> or <code>"last"</code>) instead of the retired
+                <code>limit</code>. Every reserved control is now <strong>opt-in per endpoint on EVERY surface</strong> through
+                one canonical gateway (<code>queryschema.ValidateControls</code>, run before the handler): REST
+                rejects an undeclared control with the canonical 400; GraphQL cuts the argument out of the generated
+                SDL (introspection and the playground never advertise it; the validator rejects it as an unknown
+                argument); gRPC rejects at runtime with INVALID_ARGUMENT naming the missing <code>query:"…"</code>
+                declaration. Three precision rules complete the gate: PRESENCE gates while only the value ACTIVATES
+                (<code>?onlyTotal=false</code> on an undeclared endpoint is a 400 exactly like
+                <code>includeArchived</code>; on a declared endpoint it stays a plain paged read — a
+                present-but-inactive key never trips the conflict matrix); on gRPC every
+                <code>PaginationRequest</code> field is now proto3 <code>optional</code> —
+                <code>only_total</code> and <code>include_archived</code> included — so presence and value separate
+                exactly as on the query string (an explicitly-set empty <code>search</code>, or an explicit
+                <code>only_total: false</code>, is a gated presence, never read as absent; field numbers kept,
+                binary-compatible, but Go struct literals move to <code>*bool</code> — <code>proto.Bool(true)</code>);
+                and a reserved spelling a DTO declares as a FILTER leaf (<code>query:"search" filter:"eq"</code>)
+                keeps its filter meaning on the tabular export exactly as on the listing — the reserved vocabulary
+                never shadows an explicit declaration on any route family. The control vocabulary is
+                <strong>closed at boot</strong>: a top-level query-tagged scalar without a <code>filter:</code> tag
+                whose key is not one of the nine canonical controls panics at wrapper construction naming the DTO,
+                the offending tag and the canonical list — a typo (<code>query:"orderby"</code>) or a stale spelling
+                (<code>query:"limit"</code>) would otherwise opt nothing in while the OpenAPI spec advertised the
+                dead parameter. The GraphQL only-total short-circuit obeys the <code>onlyTotal</code> opt-in (the
+                selection stays valid either way — the total is intrinsic to every list envelope), and a
+                <code>pageInfo</code>-without-<code>edges</code> selection becomes a pagination probe (keys-only
+                read). Go public surface follows the vocabulary (<code>queries.OrderByField</code>,
+                <code>ReadCriteria.OrderBy</code>, the Relay-named <code>Page</code>/<code>PaginationInfo</code>
+                fields); the prose term "count-only" is retired for <em>only-total</em>. Wire-breaking on REST,
+                source-breaking on Go; gRPC binary compatibility preserved (field numbers kept). See
+                <a href="#auto-query-handlers">Auto query handlers</a>, <a href="#graphql">GraphQL</a>,
+                <a href="#grpc">gRPC</a>.</li>
+        </ul>
+    </div>
+    <div class="release">
         <div class="release-head"><span class="release-tag">v0.45.0</span><span class="release-date">August 6, 2026</span></div>
         <ul>
             <li><strong>Changed</strong> — <strong>breaking</strong> — <strong>gRPC pagination is now the exact

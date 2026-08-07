@@ -52,24 +52,24 @@ func TestRelationalViewReader_EndToEnd(t *testing.T) {
 	}
 
 	// ── page 1: limit 2, sorted by Name → Ada, Bob; HasNext ──
-	sort := []queries.SortField{{Field: "Name"}}
-	p1, err := reader.ReadPage(ctx, "loader_roots", queries.ReadCriteria{Limit: 2, Sort: sort})
+	sort := []queries.OrderByField{{Field: "Name"}}
+	p1, err := reader.ReadPage(ctx, "loader_roots", queries.ReadCriteria{Limit: 2, OrderBy: sort})
 	if err != nil {
 		t.Fatalf("ReadPage p1: %v", err)
 	}
 	if len(p1.Items) != 2 || nameOf(p1.Items[0]) != "Ada" || nameOf(p1.Items[1]) != "Bob" {
 		t.Fatalf("p1 items = %v", names(p1.Items))
 	}
-	if !p1.HasNext {
+	if !p1.HasNextPage {
 		t.Error("p1 should have a next page")
 	}
-	if p1.HasPrev {
+	if p1.HasPreviousPage {
 		t.Error("p1 (first page) must not have a previous page")
 	}
 	// A LISTING carries the full match count, not the page size and not 0 — the
 	// same number ?onlyTotal reports below, counted by a real COUNT against the SoR.
-	if p1.Total != 3 {
-		t.Errorf("p1 Total = %d, want 3 (the full match count, page size 2)", p1.Total)
+	if p1.TotalCount != 3 {
+		t.Errorf("p1 Total = %d, want 3 (the full match count, page size 2)", p1.TotalCount)
 	}
 	// the doc carries the mapped root fields + the managed columns
 	if _, ok := p1.Items[0]["_id"]; !ok {
@@ -80,21 +80,21 @@ func TestRelationalViewReader_EndToEnd(t *testing.T) {
 	}
 
 	// ── page 2: after p1's end cursor → Cy; no next ──
-	p2, err := reader.ReadPage(ctx, "loader_roots", queries.ReadCriteria{Limit: 2, Sort: sort, After: p1.NextCursor})
+	p2, err := reader.ReadPage(ctx, "loader_roots", queries.ReadCriteria{Limit: 2, OrderBy: sort, After: p1.EndCursor})
 	if err != nil {
 		t.Fatalf("ReadPage p2: %v", err)
 	}
 	if len(p2.Items) != 1 || nameOf(p2.Items[0]) != "Cy" {
 		t.Fatalf("p2 items = %v", names(p2.Items))
 	}
-	if p2.HasNext {
+	if p2.HasNextPage {
 		t.Error("p2 (last page) must not have a next page")
 	}
-	if !p2.HasPrev {
+	if !p2.HasPreviousPage {
 		t.Error("p2 must have a previous page")
 	}
-	if p2.Total != 3 {
-		t.Errorf("p2 Total = %d, want 3 (total is a property of the match set, not the window)", p2.Total)
+	if p2.TotalCount != 3 {
+		t.Errorf("p2 Total = %d, want 3 (total is a property of the match set, not the window)", p2.TotalCount)
 	}
 
 	// ── onlyTotal ──
@@ -102,11 +102,11 @@ func TestRelationalViewReader_EndToEnd(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ReadPage onlyTotal: %v", err)
 	}
-	if !tot.OnlyTotal || tot.Total != 3 {
+	if !tot.OnlyTotal || tot.TotalCount != 3 {
 		t.Errorf("onlyTotal = %+v, want Total 3", tot)
 	}
-	if tot.Total != p1.Total {
-		t.Errorf("onlyTotal Total = %d but the listing reported %d — they must agree", tot.Total, p1.Total)
+	if tot.TotalCount != p1.TotalCount {
+		t.Errorf("onlyTotal Total = %d but the listing reported %d — they must agree", tot.TotalCount, p1.TotalCount)
 	}
 
 	// ── ReadByID: found ──

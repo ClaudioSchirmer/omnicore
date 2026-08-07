@@ -49,8 +49,8 @@ message ArchiveGadgetResponse {}
 
 message SearchGadgetsRequest {
   omnicore.v1.PaginationRequest pagination = 1;
-  repeated omnicore.v1.SortField sort = 2;
-  google.protobuf.FieldMask read_mask = 3;
+  repeated omnicore.v1.OrderByField order_by = 2;
+  google.protobuf.FieldMask fields = 3;
   SearchGadgetsFilters filters = 4;
 }
 

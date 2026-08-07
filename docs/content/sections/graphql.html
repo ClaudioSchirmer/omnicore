@@ -29,7 +29,7 @@
 </p>
 <p>
     <strong>REST is the open, URL-driven style.</strong> Everything is a query-string parameter:
-    <code>?name.startswith=Bo</code>, <code>?sort=-name</code>, <code>?limit=20&amp;after=…</code>. It is
+    <code>?name.startswith=Bo</code>, <code>?orderBy=-name</code>, <code>?first=20&amp;after=…</code>. It is
     flexible and discoverable from a browser address bar — and intentionally loose: the server validates,
     but the wire has no schema of its own.
 </p>
@@ -48,16 +48,16 @@
     <thead><tr><th>Capability</th><th>REST (open, URL-driven)</th><th>GraphQL (Relay convention)</th></tr></thead>
     <tbody>
         <tr><td>Filtering (<code>where</code>)</td><td><code>?name.startswith=Bo&amp;age.gte=18</code></td><td><code>where: { name: { startswith: "Bo" }, age: { gte: 18 } }</code> — a typed input object, same operator allowlist</td></tr>
-        <tr><td>Sorting</td><td><code>?sort=-name</code></td><td><code>orderBy: ["-name"]</code> — same tokens, same fields</td></tr>
-        <tr><td>Pagination</td><td><code>?limit=20&amp;after=…</code> / <code>?before=…</code> (direction from the cursor)</td><td><code>first: 20, after: …</code> (forward) / <code>last: 20, before: …</code> (backward) — Relay's directional arguments</td></tr>
-        <tr><td>Count-only</td><td><code>?onlyTotal=true</code></td><td>select only <code>totalCount</code> (no <code>edges</code>/<code>pageInfo</code>)</td></tr>
+        <tr><td>Sorting</td><td><code>?orderBy=-name</code></td><td><code>orderBy: ["-name"]</code> — same tokens, same fields</td></tr>
+        <tr><td>Pagination</td><td><code>?first=20&amp;after=…</code> (forward) / <code>?last=20&amp;before=…</code> (backward)</td><td><code>first: 20, after: …</code> / <code>last: 20, before: …</code> — the SAME Relay directional pair, name for name</td></tr>
+        <tr><td>Only-total</td><td><code>?onlyTotal=true</code></td><td>select only <code>totalCount</code> (no <code>edges</code>/<code>pageInfo</code>)</td></tr>
         <tr><td>Field selection</td><td><code>?fields=name,addresses.city</code></td><td>the selection set itself — <code>{ name addresses { city } }</code></td></tr>
         <tr><td>Errors</td><td>HTTP status (400/404/409/422…) + a single error envelope</td><td>always HTTP 200; notifications in <code>errors[].extensions</code> carrying the same <code>semantic</code>/<code>notificationKey</code>/<code>field</code> the REST envelope reports</td></tr>
     </tbody>
 </table>
 <div class="box">
     <strong>Full parity, different syntax.</strong> Anything you can do on the REST read side you can do on
-    GraphQL and vice-versa — the same <code>filter:</code> operator allowlist, the same <code>?sort=</code>
+    GraphQL and vice-versa — the same <code>filter:</code> operator allowlist, the same <code>?orderBy=</code>
     fields, the same keyset cursors, the same per-field authorization, the same typed notifications. The two
     surfaces share the <em>same application handlers and the same <code>ReadCriteria</code></em>; only the
     wire dialect changes. A capability never lives on one surface alone — if it exists in REST it exists in
@@ -150,7 +150,7 @@ func Wire(d bootstrap.Deps) bootstrap.Wiring {
 <table>
     <thead><tr><th>Constructor</th><th>Maps</th><th>GraphQL field</th></tr></thead>
     <tbody>
-        <tr><td><code>QueryWithParams[TReq, R]</code></td><td>read handler <code>pipeline.Handler[TQ, queries.Page]</code></td><td><code>users(where, first, after, last, before, orderBy, search, includeArchived): UserConnection!</code></td></tr>
+        <tr><td><code>QueryWithParams[TReq, R]</code></td><td>read handler <code>pipeline.Handler[TQ, queries.Page]</code></td><td><code>users(where, first, after, last, before, orderBy, search, includeArchived): UserConnection!</code> — each argument present ONLY when the Request DTO declares its <code>query:"…"</code> key (see "The DTO cuts the schema")</td></tr>
         <tr><td><code>MutationWithBody[TReq]</code></td><td>insert-style command (body, no id)</td><td><code>createUser(input: InsertUserInput!): InsertUserResponse!</code></td></tr>
         <tr><td><code>MutationWithBodyID[TReq]</code></td><td>update/patch (body + id)</td><td><code>updateUser(id: ID!, input: UpdateUserInput!): UpdateUserResponse!</code></td></tr>
         <tr><td><code>MutationByID</code></td><td>archive/unarchive/delete (id, no body)</td><td><code>archiveUser(id: ID!): MutationResult!</code></td></tr>
@@ -265,20 +265,48 @@ func Wire(d bootstrap.Deps) bootstrap.Wiring {
     before dispatch; the GraphQL endpoint does not, so the reader itself returns the typed Schema rejection
     rather than a bare error — same notification either surface reports.
 </p>
+<h3>The DTO cuts the schema</h3>
 <p>
-    <strong>Count-only</strong> — the REST <code>?onlyTotal=true</code> short-circuit (skip the items, return
+    <strong>The Request DTO governs this surface exactly as it governs REST and gRPC — and here
+    the cut lands in the SCHEMA itself.</strong> <code>queryFieldSDL</code> emits a connection
+    argument only when the DTO declares its <code>query:"…"</code> key (<code>first</code>,
+    <code>last</code>, <code>after</code>, <code>before</code>, <code>orderBy</code>,
+    <code>search</code>, <code>includeArchived</code>; the <code>where</code> input already follows
+    the <code>filter:</code> tags). An undeclared argument is therefore absent from introspection
+    and the playground's autocomplete, and gqlparser rejects it as an unknown argument BEFORE any
+    resolver runs — the GraphQL self-translation of the same canonical rejection REST serves as a
+    400 and gRPC as <code>INVALID_ARGUMENT</code>, all three driven by the one control gateway
+    (<code>queryschema.ValidateControls</code>). What the DTO cannot govern here is what the
+    language expresses natively: the <strong>selection IS the projection</strong> (there is no
+    <code>fields</code> argument to gate), and the only-total mode is a selection shape — both
+    gate-exempt by nature.
+</p>
+<p>
+    <strong>Only-total</strong> — the REST <code>?onlyTotal=true</code> short-circuit (skip the items, return
     just the count) maps to the natural GraphQL shape: a connection selection of <strong>only
-    <code>totalCount</code></strong>, with no <code>edges</code> and no <code>pageInfo</code>. The resolver
-    detects it from the selection set and sets <code>ReadCriteria.OnlyTotal</code>, so the reader
-    short-circuits to <code>CountDocuments</code> — no item materialization, no cursor work — exactly as
-    the REST path does. The count still honors <code>where</code> / <code>search</code> /
-    <code>includeArchived</code>. Selecting <code>pageInfo</code> alongside <code>totalCount</code> forces
-    the full read, because its cursors derive from the page items. A pagination or sort argument
+    <code>totalCount</code></strong>, with no <code>edges</code> and no <code>pageInfo</code>. When the
+    endpoint's DTO declares <code>query:"onlyTotal"</code>, the resolver detects the shape and sets
+    <code>ReadCriteria.OnlyTotal</code>, so the reader short-circuits to its count primitive — no item
+    materialization, no cursor work — exactly as the REST path does. Without the opt-in the same
+    selection stays valid and returns the same <code>totalCount</code> through the un-optimized paged
+    read: the total is intrinsic to every list envelope on every surface, so the DTO key governs only
+    the optimization, never the information. The count still honors <code>where</code> /
+    <code>search</code> / <code>includeArchived</code>. A pagination or ordering argument
     (<code>first</code> / <code>last</code> / <code>after</code> / <code>before</code> / <code>orderBy</code>)
-    passed with a <code>totalCount</code>-only selection is a <strong>conflict</strong> — there is no page to
-    order or seek into when only the count is asked — and is rejected with a
-    <code>SchemaViolationNotification</code> (<code>semantic: "Schema"</code>, the offending argument as
-    <code>field</code>), the GraphQL parity of REST's onlyTotal-vs-pagination 400.
+    passed with a <code>totalCount</code>-only selection under the opt-in is a <strong>conflict</strong> —
+    there is no page to order or seek into when only the count is asked — and is rejected with a
+    <code>SchemaViolationNotification</code> (<code>semantic: "Schema"</code>, field
+    <code>onlyTotal[&lt;argument&gt;]</code>), the same matrix every surface runs.
+</p>
+<p>
+    <strong>The pagination probe</strong> — a selection of <code>pageInfo</code> with NO
+    <code>edges</code> reads as "give me the window's boundaries, not its rows". The resolver
+    narrows the read to the keyset essentials (the ordering-field values + <code>_id</code> — an
+    unordered probe degenerates to <code>{_id: 1}</code>), so cursors,
+    <code>hasNextPage</code>/<code>hasPreviousPage</code> and <code>totalCount</code> come from a
+    minimal read that never materializes full documents. The window itself is still walked —
+    boundaries cannot exist without it — so the probe is an optimization of the same read, invisible
+    on the wire.
 </p>
 
 <h3>Authorization</h3>

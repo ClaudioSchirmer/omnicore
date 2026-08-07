@@ -38,7 +38,7 @@ func TestExecute_TranslatesNestedStructsAndScalars(t *testing.T) {
 			"Addresses": []map[string]any{{"City": "Cupertino"}},
 		}},
 		ItemCursors: []string{"c1"},
-		Total:       1,
+		TotalCount:       1,
 	}}
 	pipe := pipeline.New(translation.Default())
 	reg := New(pipe).Register(QueryWithParams[execRequest, richResponse]("rich", "Rich", h))
@@ -71,7 +71,7 @@ func TestExecute_TranslatesAnySlice(t *testing.T) {
 			"Addresses": []any{map[string]any{"City": "London"}},
 		}},
 		ItemCursors: []string{"c2"},
-		Total:       1,
+		TotalCount:       1,
 	}}
 	pipe := pipeline.New(translation.Default())
 	reg := New(pipe).Register(QueryWithParams[execRequest, richResponse]("rich", "Rich", h))
@@ -103,7 +103,7 @@ func TestExecute_UnsortableOrderByErrors(t *testing.T) {
 		t.Errorf("error message = %q, want it to mention orderBy", resp.Errors[0].Message)
 	}
 	if h.captured.OnlyTotal {
-		t.Error("orderBy with an edges selection must not be count-only")
+		t.Error("orderBy with an edges selection must not be only-total")
 	}
 }
 

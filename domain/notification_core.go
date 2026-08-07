@@ -44,9 +44,11 @@ type SchemaViolationNotification struct{ DomainNotificationBase }
 
 func (SchemaViolationNotification) Semantic() NotificationSemantic { return SemanticSchema }
 
-// LimitExceededNotification is emitted by the read side when `?limit=N` exceeds
+// LimitExceededNotification is emitted by the read side when the requested page
+// size (`?first=N`/`?last=N`) exceeds
 // the resolved per-view ceiling (per-view override > yaml default > framework
-// default 100). FieldName is "limit"; FieldValue carries the effective ceiling
+// default 100). FieldName names the directional control the consumer sent
+// ("first" or "last"); FieldValue carries the effective ceiling
 // so the consumer can show "max is X" without parsing the message. Carries
 // SemanticSchema → 400 Bad Request; translatable per language via the
 // "LimitExceededNotification" key.

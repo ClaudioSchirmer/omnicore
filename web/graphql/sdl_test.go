@@ -31,7 +31,14 @@ type sdlUserRequest struct {
 	Addresses struct {
 		ZipCode *string `query:"zipCode" filter:"eq"`
 	} `query:"addresses"`
-	Limit *int64 `query:"limit"`
+	First           *int64  `query:"first"`
+	Last            *int64  `query:"last"`
+	After           *string `query:"after"`
+	Before          *string `query:"before"`
+	OrderBy         *string `query:"orderBy"`
+	Search          *string `query:"search"`
+	IncludeArchived *bool   `query:"includeArchived"`
+	OnlyTotal       *bool   `query:"onlyTotal"`
 }
 
 // buildReadSchema assembles the SDL for one read field and loads it through

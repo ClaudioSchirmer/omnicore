@@ -12,8 +12,8 @@ import (
 //  1. path:"X" struct tags on the Request DTO → path parameters.
 //  2. query:"X" filter:"ops" struct tags on the Request DTO →
 //     one query parameter per declared filter operator, plus the
-//     reserved pagination keys (limit/after/before/sort/fields/
-//     search/includeArchived) when present.
+//     reserved control keys (first/last/after/before/orderBy/fields/
+//     search/includeArchived/onlyTotal) the DTO declares.
 //  3. URL path segments not covered by (1) — stub `{type: string}`
 //     entries are emitted so a `:id` segment auto-bound by the
 //     wrapper (HasPathID) still appears in the rendered spec.
@@ -53,8 +53,8 @@ func canonicalParameters(op Operation, gen *Generator) []map[string]any {
 // the omit list (RouteSpec.OmittedQueryParams). Used when a route reuses a
 // richer Request DTO but honors only a subset of its query keys — e.g. the
 // tabular-export routes reuse the JSON list's DTO yet ignore pagination, so
-// limit/after/before/onlyTotal are removed from the rendered spec. Returns the
-// input untouched when the omit list is empty (the common case).
+// first/last/after/before/onlyTotal are removed from the rendered spec.
+// Returns the input untouched when the omit list is empty (the common case).
 func omitQueryParams(params []map[string]any, omit []string) []map[string]any {
 	if len(omit) == 0 {
 		return params

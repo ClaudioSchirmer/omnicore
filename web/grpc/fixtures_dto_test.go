@@ -41,13 +41,24 @@ func (d updateGadgetDTO) ToCommand() *updateGadgetCommand {
 
 // searchGadgetsDTO is the list Request DTO: its `filter:` tags are the
 // operator allowlist the proto filters inherit (one vocabulary, both
-// wires).
+// wires), and its reserved keys are the control opt-in the gateway
+// enforces (no `search` — that stays the searchGadgetsWithSearchDTO
+// variant's opt-in).
 type searchGadgetsDTO struct {
 	Name      *string  `query:"name"      filter:"eq,icontains"`
 	Rating    *int64   `query:"rating"    filter:"gte,lte"`
 	Price     *float64 `query:"price"     filter:"gt,lt"`
 	Active    *bool    `query:"active"    filter:"eq"`
 	CreatedAt *string  `query:"createdAt" filter:"gte"`
+
+	First           *int64  `query:"first"`
+	Last            *int64  `query:"last"`
+	After           *string `query:"after"`
+	Before          *string `query:"before"`
+	OrderBy         *string `query:"orderBy"`
+	Fields          *string `query:"fields"`
+	IncludeArchived *bool   `query:"includeArchived"`
+	OnlyTotal       *bool   `query:"onlyTotal"`
 }
 
 func (searchGadgetsDTO) ToQuery(c queries.ReadCriteria) *searchGadgetsQuery {
@@ -74,11 +85,11 @@ func (h searchGadgetsHandler) Handle(ctx *configuration.AppContext, q *searchGad
 		*h.sawCriteria = crit
 	}
 	return queries.Page{
-		Items:      []map[string]any{{"ID": "g-1", "Name": "Drill", "Kind": "tool"}},
-		Total:      1,
-		NextCursor: "next-c",
-		PrevCursor: "prev-c",
-		HasNext:    true,
+		Items:       []map[string]any{{"ID": "g-1", "Name": "Drill", "Kind": "tool"}},
+		TotalCount:  1,
+		EndCursor:   "next-c",
+		StartCursor: "prev-c",
+		HasNextPage: true,
 	}, nil
 }
 
@@ -92,6 +103,15 @@ type searchGadgetsWithSearchDTO struct {
 	Active    *bool    `query:"active"    filter:"eq"`
 	CreatedAt *string  `query:"createdAt" filter:"gte"`
 	Search    *string  `query:"search"`
+
+	First           *int64  `query:"first"`
+	Last            *int64  `query:"last"`
+	After           *string `query:"after"`
+	Before          *string `query:"before"`
+	OrderBy         *string `query:"orderBy"`
+	Fields          *string `query:"fields"`
+	IncludeArchived *bool   `query:"includeArchived"`
+	OnlyTotal       *bool   `query:"onlyTotal"`
 }
 
 func (searchGadgetsWithSearchDTO) ToQuery(c queries.ReadCriteria) *searchGadgetsQuery {

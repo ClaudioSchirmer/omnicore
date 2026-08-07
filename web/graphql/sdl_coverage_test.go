@@ -105,7 +105,14 @@ func TestObjectTypeAs_SelfReferentialTypeTerminates(t *testing.T) {
 // ── whereInput: no filter leaves → no where argument ─────────────────────────
 
 type covNoFilterRequest struct {
-	Limit *int64 `query:"limit"`
+	First           *int64  `query:"first"`
+	Last            *int64  `query:"last"`
+	After           *string `query:"after"`
+	Before          *string `query:"before"`
+	OrderBy         *string `query:"orderBy"`
+	Search          *string `query:"search"`
+	IncludeArchived *bool   `query:"includeArchived"`
+	OnlyTotal       *bool   `query:"onlyTotal"`
 }
 
 func TestWhereInput_NoFilterLeavesOmitted(t *testing.T) {

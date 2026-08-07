@@ -20,10 +20,11 @@ type testOnlyTotalRequest struct {
 	Name  *string `query:"name"  filter:"eq,startswith"`
 	Email *string `query:"email" filter:"eq,in"`
 
-	Limit           *int64  `query:"limit"`
+	First           *int64  `query:"first"`
+	Last            *int64  `query:"last"`
 	After           *string `query:"after"`
 	Before          *string `query:"before"`
-	Sort            *string `query:"sort"`
+	Sort            *string `query:"orderBy"`
 	Fields          *string `query:"fields"`
 	Search          *string `query:"search"`
 	IncludeArchived *bool   `query:"includeArchived"`
@@ -34,21 +35,21 @@ func (r testOnlyTotalRequest) ToQuery(crit queries.ReadCriteria) *testFindParams
 	return &testFindParamsQuery{Criteria: crit}
 }
 
-// countOnlyHandler returns a Page already shaped for the count-only mode so
+// onlyTotalHandler returns a Page already shaped for the only-total mode so
 // the wrapper exercises the envelope branch end to end.
-type countOnlyHandler struct {
+type onlyTotalHandler struct {
 	got *testFindParamsQuery
 }
 
-func (h *countOnlyHandler) Handle(ctx *configuration.AppContext, q *testFindParamsQuery) (queries.Page, error) {
+func (h *onlyTotalHandler) Handle(ctx *configuration.AppContext, q *testFindParamsQuery) (queries.Page, error) {
 	h.got = q
 	_, _ = q.ToCriteria(ctx)
 	if q.Criteria.OnlyTotal {
-		return queries.Page{OnlyTotal: true, Total: 42}, nil
+		return queries.Page{OnlyTotal: true, TotalCount: 42}, nil
 	}
 	return queries.Page{
 		Items: []map[string]any{{"id": "x"}},
-		Total: 1,
+		TotalCount: 1,
 	}, nil
 }
 
@@ -57,7 +58,7 @@ func (h *countOnlyHandler) Handle(ctx *configuration.AppContext, q *testFindPara
 func TestOnlyTotal_EnvelopeOmitsDataAndListingFields(t *testing.T) {
 	app := fiber.New()
 	pipe := newTestPipeline()
-	h := &countOnlyHandler{}
+	h := &onlyTotalHandler{}
 
 	app.Get("/users", QueryWithParams(pipe, testOnlyTotalRequest{}, responses.RawDoc, h))
 
@@ -80,19 +81,19 @@ func TestOnlyTotal_EnvelopeOmitsDataAndListingFields(t *testing.T) {
 	// data must NOT appear in the envelope — the consumer-stated rule
 	// rejects forced zero-value fields.
 	if _, present := parsed["data"]; present {
-		t.Errorf("expected 'data' to be absent in count-only mode, got %v", parsed["data"])
+		t.Errorf("expected 'data' to be absent in only-total mode, got %v", parsed["data"])
 	}
 	pag, ok := parsed["pagination"].(map[string]any)
 	if !ok {
 		t.Fatalf("expected pagination object, got %T", parsed["pagination"])
 	}
-	if pag["total"] != float64(42) {
-		t.Errorf("expected pagination.total=42, got %v", pag["total"])
+	if pag["totalCount"] != float64(42) {
+		t.Errorf("expected pagination.totalCount=42, got %v", pag["totalCount"])
 	}
 	// Listing-only fields must NOT appear — they would carry zero-value noise.
-	for _, k := range []string{"has_next", "has_prev", "next_cursor", "prev_cursor"} {
+	for _, k := range []string{"hasNextPage", "hasPreviousPage", "endCursor", "startCursor"} {
 		if _, present := pag[k]; present {
-			t.Errorf("expected pagination.%s to be absent in count-only mode, got %v", k, pag[k])
+			t.Errorf("expected pagination.%s to be absent in only-total mode, got %v", k, pag[k])
 		}
 	}
 }
@@ -100,7 +101,7 @@ func TestOnlyTotal_EnvelopeOmitsDataAndListingFields(t *testing.T) {
 func TestOnlyTotal_PropagatesIntoCriteria(t *testing.T) {
 	app := fiber.New()
 	pipe := newTestPipeline()
-	h := &countOnlyHandler{}
+	h := &onlyTotalHandler{}
 
 	app.Get("/users", QueryWithParams(pipe, testOnlyTotalRequest{}, responses.RawDoc, h))
 
@@ -117,7 +118,7 @@ func TestOnlyTotal_FalseExplicitKeepsListingShape(t *testing.T) {
 	// `?onlyTotal=false` is the same as omitting it — listing envelope stays.
 	app := fiber.New()
 	pipe := newTestPipeline()
-	h := &countOnlyHandler{}
+	h := &onlyTotalHandler{}
 
 	app.Get("/users", QueryWithParams(pipe, testOnlyTotalRequest{}, responses.RawDoc, h))
 
@@ -132,8 +133,8 @@ func TestOnlyTotal_FalseExplicitKeepsListingShape(t *testing.T) {
 		t.Error("expected listing 'data' to be present when onlyTotal=false")
 	}
 	pag := parsed["pagination"].(map[string]any)
-	if _, present := pag["has_next"]; !present {
-		t.Error("expected listing pagination.has_next to be present when onlyTotal=false")
+	if _, present := pag["hasNextPage"]; !present {
+		t.Error("expected listing pagination.hasNextPage to be present when onlyTotal=false")
 	}
 }
 
@@ -145,8 +146,9 @@ func TestOnlyTotal_ConflictMatrixRejectsListingControls(t *testing.T) {
 		extra       string
 	}{
 		{"fields", "fields=name"},
-		{"sort", "sort=-name"},
-		{"limit", "limit=10"},
+		{"orderBy", "orderBy=-name"},
+		{"first", "first=10"},
+		{"last", "last=10"},
 		{"after", "after=cur-xyz"},
 		{"before", "before=cur-xyz"},
 	}
@@ -155,7 +157,7 @@ func TestOnlyTotal_ConflictMatrixRejectsListingControls(t *testing.T) {
 		t.Run(tc.conflictKey, func(t *testing.T) {
 			app := fiber.New()
 			pipe := newTestPipeline()
-			h := &countOnlyHandler{}
+			h := &onlyTotalHandler{}
 			app.Get("/users", QueryWithParams(pipe, testOnlyTotalRequest{}, responses.RawDoc, h))
 
 			url := "/users?onlyTotal=true&" + tc.extra
@@ -185,7 +187,7 @@ func TestOnlyTotal_ConflictMatrixRejectsListingControls(t *testing.T) {
 func TestOnlyTotal_PreservesFilterLeaves(t *testing.T) {
 	app := fiber.New()
 	pipe := newTestPipeline()
-	h := &countOnlyHandler{}
+	h := &onlyTotalHandler{}
 	app.Get("/users", QueryWithParams(pipe, testOnlyTotalRequest{}, responses.RawDoc, h))
 
 	resp, _ := app.Test(httptest.NewRequest("GET", "/users?onlyTotal=true&name.startswith=Bo", nil))
@@ -207,7 +209,7 @@ func TestOnlyTotal_PreservesFilterLeaves(t *testing.T) {
 func TestOnlyTotal_PreservesSearch(t *testing.T) {
 	app := fiber.New()
 	pipe := newTestPipeline()
-	h := &countOnlyHandler{}
+	h := &onlyTotalHandler{}
 	app.Get("/users", QueryWithParams(pipe, testOnlyTotalRequest{}, responses.RawDoc, h))
 
 	resp, _ := app.Test(httptest.NewRequest("GET", "/users?onlyTotal=true&search=foo", nil))
@@ -222,7 +224,7 @@ func TestOnlyTotal_PreservesSearch(t *testing.T) {
 func TestOnlyTotal_PreservesIncludeArchived(t *testing.T) {
 	app := fiber.New()
 	pipe := newTestPipeline()
-	h := &countOnlyHandler{}
+	h := &onlyTotalHandler{}
 	app.Get("/users", QueryWithParams(pipe, testOnlyTotalRequest{}, responses.RawDoc, h))
 
 	resp, _ := app.Test(httptest.NewRequest("GET", "/users?onlyTotal=true&includeArchived=true", nil))
@@ -287,12 +289,12 @@ func TestOnlyTotal_ParseCriteriaRejectsConflict(t *testing.T) {
 		return c.SendStatus(fiber.StatusOK)
 	})
 
-	_, _ = app.Test(httptest.NewRequest("GET", "/x?onlyTotal=true&sort=-name", nil))
+	_, _ = app.Test(httptest.NewRequest("GET", "/x?onlyTotal=true&orderBy=-name", nil))
 	if gotOK {
 		t.Error("expected ok=false on onlyTotal + sort")
 	}
-	if gotBad != "onlyTotal[sort]" {
-		t.Errorf("expected bad=onlyTotal[sort], got %q", gotBad)
+	if gotBad != "onlyTotal[orderBy]" {
+		t.Errorf("expected bad=onlyTotal[orderBy], got %q", gotBad)
 	}
 }
 
@@ -301,7 +303,7 @@ func TestOnlyTotal_ParseCriteriaRejectsConflict(t *testing.T) {
 func TestRespondPaged_OnlyTotalEmitsDedicatedShape(t *testing.T) {
 	app := fiber.New()
 	app.Get("/x", func(c fiber.Ctx) error {
-		page := queries.Page{OnlyTotal: true, Total: 7}
+		page := queries.Page{OnlyTotal: true, TotalCount: 7}
 		return RespondPaged(c, fiber.StatusOK, page, summaryFromDoc)
 	})
 
@@ -315,7 +317,7 @@ func TestRespondPaged_OnlyTotalEmitsDedicatedShape(t *testing.T) {
 		t.Fatalf("unmarshal: %v (body=%s)", err, body)
 	}
 	if _, present := parsed["data"]; present {
-		t.Errorf("expected 'data' absent in count-only envelope")
+		t.Errorf("expected 'data' absent in only-total envelope")
 	}
 	pag, ok := parsed["pagination"].(map[string]any)
 	if !ok {
@@ -324,7 +326,7 @@ func TestRespondPaged_OnlyTotalEmitsDedicatedShape(t *testing.T) {
 	if len(pag) != 1 {
 		t.Errorf("expected pagination to carry only 'total', got %d keys: %v", len(pag), pag)
 	}
-	if pag["total"] != float64(7) {
-		t.Errorf("expected pagination.total=7, got %v", pag["total"])
+	if pag["totalCount"] != float64(7) {
+		t.Errorf("expected pagination.totalCount=7, got %v", pag["totalCount"])
 	}
 }

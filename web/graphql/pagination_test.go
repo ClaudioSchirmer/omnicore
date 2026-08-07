@@ -94,7 +94,7 @@ func TestPagination_DirectionMixRejected(t *testing.T) {
 }
 
 // TestPagination_NonPositivePageSizeRejected — `first`/`last` map to the page
-// size, so a non-positive value is rejected exactly as REST rejects `?limit=` <= 0.
+// size, so a non-positive value is rejected exactly as REST rejects `?first=` <= 0.
 func TestPagination_NonPositivePageSizeRejected(t *testing.T) {
 	for _, q := range []string{
 		`{ users(first: 0) { edges { node { id } } } }`,

@@ -230,7 +230,7 @@ func TestHandleQueryWithParams_MalformedCursor_400(t *testing.T) {
 
 func TestValidateCursorAgainstCriteria_AllBranches(t *testing.T) {
 	crit := queries.ReadCriteria{Filter: map[string]any{}}
-	h := queries.HashContext(crit.Filter, crit.Sort, crit.Search, crit.IncludeArchived)
+	h := queries.HashContext(crit.Filter, crit.OrderBy, crit.Search, crit.IncludeArchived)
 
 	// Valid: K=[_id] → len(K)-1 == 0 == len(Sort); hash matches.
 	okCursor, err := queries.EncodeCursor([]any{"id-1"}, h)

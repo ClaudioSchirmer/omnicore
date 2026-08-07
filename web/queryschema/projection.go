@@ -12,7 +12,7 @@ import (
 
 // ProjectionSchema is the cached reflection result for a Response DTO:
 // every accepted dotted wire path → its corresponding Go field path. Used by
-// QueryWithParams to validate `?fields=` / `?sort=` tokens against the
+// QueryWithParams to validate `?fields=` / `?orderBy=` tokens against the
 // declared Response shape and translate them into the Go field vocabulary
 // (the struct field-name path; nested struct + slice-of-struct paths walked
 // segment-by-segment). The MongoViewReader then maps the Go path → physical
@@ -169,23 +169,23 @@ func ParseProjection(s string, projSchema *ProjectionSchema) (proj map[string]in
 	return proj, wireSet, "", true
 }
 
-// ParseSortWithSchema turns a comma-separated wire value into a list of
-// SortField entries. Each token may carry a `-` prefix (descending);
+// ParseOrderByWithSchema turns a comma-separated wire value into a list of
+// OrderByField entries. Each token may carry a `-` prefix (descending);
 // otherwise ascending. When projSchema is non-nil, the wire name (without
 // the prefix) is validated against the Response DTO's declared paths and
 // translated to the corresponding Go field path (nested paths walked
 // segment-by-segment); the reader maps Go → column via the view's TableSchema.
 // An unknown token returns the verbatim wire token (including any `-` prefix) so the
-// caller can surface it on the canonical 400 envelope as `sort[<token>]`.
+// caller can surface it on the canonical 400 envelope as `orderBy[<token>]`.
 // When projSchema is nil — manual handlers via ParseCriteria, or wrappers
 // paired with a RawDoc-style projector that carries no typed Response —
-// tokens become SortField entries verbatim (no allowlist, no translation).
-func ParseSortWithSchema(s string, projSchema *ProjectionSchema) (sortFields []queries.SortField, badToken string, ok bool) {
+// tokens become OrderByField entries verbatim (no allowlist, no translation).
+func ParseOrderByWithSchema(s string, projSchema *ProjectionSchema) (orderBy []queries.OrderByField, badToken string, ok bool) {
 	if s == "" {
 		return nil, "", true
 	}
 	tokens := strings.Split(s, ",")
-	sortFields = make([]queries.SortField, 0, len(tokens))
+	orderBy = make([]queries.OrderByField, 0, len(tokens))
 	for _, t := range tokens {
 		t = strings.TrimSpace(t)
 		if t == "" {
@@ -198,16 +198,16 @@ func ParseSortWithSchema(s string, projSchema *ProjectionSchema) (sortFields []q
 			wireName = t[1:]
 		}
 		if projSchema == nil {
-			sortFields = append(sortFields, queries.SortField{Field: wireName, Desc: desc})
+			orderBy = append(orderBy, queries.OrderByField{Field: wireName, Desc: desc})
 			continue
 		}
 		docPath, allowed := projSchema.Paths[wireName]
 		if !allowed {
 			return nil, t, false
 		}
-		sortFields = append(sortFields, queries.SortField{Field: docPath, Desc: desc})
+		orderBy = append(orderBy, queries.OrderByField{Field: docPath, Desc: desc})
 	}
-	return sortFields, "", true
+	return orderBy, "", true
 }
 
 // ValidateFieldsResponse walks t recursively and reports every Response

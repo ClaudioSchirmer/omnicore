@@ -33,7 +33,7 @@ func TestBuildStableSortDoc_NoCustomSort_AppendsIDAsc(t *testing.T) {
 }
 
 func TestBuildStableSortDoc_SingleAsc(t *testing.T) {
-	got := buildStableSortDoc([]queries.SortField{{Field: "name"}}, false)
+	got := buildStableSortDoc([]queries.OrderByField{{Field: "name"}}, false)
 	want := bson.D{
 		{Key: "name", Value: 1},
 		{Key: "_id", Value: 1},
@@ -44,7 +44,7 @@ func TestBuildStableSortDoc_SingleAsc(t *testing.T) {
 }
 
 func TestBuildStableSortDoc_SingleDesc(t *testing.T) {
-	got := buildStableSortDoc([]queries.SortField{{Field: "created_at", Desc: true}}, false)
+	got := buildStableSortDoc([]queries.OrderByField{{Field: "created_at", Desc: true}}, false)
 	want := bson.D{
 		{Key: "created_at", Value: -1},
 		{Key: "_id", Value: 1},
@@ -55,7 +55,7 @@ func TestBuildStableSortDoc_SingleDesc(t *testing.T) {
 }
 
 func TestBuildStableSortDoc_ReverseInvertsAllDirections(t *testing.T) {
-	got := buildStableSortDoc([]queries.SortField{
+	got := buildStableSortDoc([]queries.OrderByField{
 		{Field: "name"},
 		{Field: "created_at", Desc: true},
 	}, true)
@@ -100,7 +100,7 @@ func TestBuildKeysetFilter_NoSort_OnlyID_Backward(t *testing.T) {
 func TestBuildKeysetFilter_SingleSortAsc_Forward(t *testing.T) {
 	got := buildKeysetFilter(
 		[]any{"Bob", "id-7"},
-		[]queries.SortField{{Field: "name"}},
+		[]queries.OrderByField{{Field: "name"}},
 		+1,
 	)
 	// Arms: (name > Bob) OR (name = Bob AND _id > id-7)
@@ -118,7 +118,7 @@ func TestBuildKeysetFilter_SingleSortDesc_Forward(t *testing.T) {
 	// than Bob" (continuing the descending walk).
 	got := buildKeysetFilter(
 		[]any{"Bob", "id-7"},
-		[]queries.SortField{{Field: "name", Desc: true}},
+		[]queries.OrderByField{{Field: "name", Desc: true}},
 		+1,
 	)
 	want := bson.M{"$or": bson.A{
@@ -133,7 +133,7 @@ func TestBuildKeysetFilter_SingleSortDesc_Forward(t *testing.T) {
 func TestBuildKeysetFilter_TwoSortsMixedDirection_Forward(t *testing.T) {
 	got := buildKeysetFilter(
 		[]any{"Bob", "2024-01-01", "id-7"},
-		[]queries.SortField{
+		[]queries.OrderByField{
 			{Field: "name"},
 			{Field: "created_at", Desc: true},
 		},
@@ -152,7 +152,7 @@ func TestBuildKeysetFilter_TwoSortsMixedDirection_Forward(t *testing.T) {
 func TestBuildKeysetFilter_SingleSortAsc_Backward(t *testing.T) {
 	got := buildKeysetFilter(
 		[]any{"Bob", "id-7"},
-		[]queries.SortField{{Field: "name"}},
+		[]queries.OrderByField{{Field: "name"}},
 		-1,
 	)
 	// Backward on ASC → name < Bob OR (name = Bob AND _id < id-7).
@@ -200,23 +200,23 @@ func TestAppendKeysetClause_PreservesExistingAnd(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestProjectionAutoIncluded_NoUserProjection_ReturnsNil(t *testing.T) {
-	got := projectionAutoIncluded(nil, []queries.SortField{{Field: "name"}})
+	got := projectionAutoIncluded(nil, []queries.OrderByField{{Field: "name"}})
 	if got != nil {
 		t.Fatalf("want nil when no user projection, got %#v", got)
 	}
 }
 
-func TestProjectionAutoIncluded_SortFieldAlreadyIncluded_NoAdd(t *testing.T) {
+func TestProjectionAutoIncluded_OrderByFieldAlreadyIncluded_NoAdd(t *testing.T) {
 	userProj := map[string]int{"name": 1, "_id": 0}
-	got := projectionAutoIncluded(userProj, []queries.SortField{{Field: "name"}})
+	got := projectionAutoIncluded(userProj, []queries.OrderByField{{Field: "name"}})
 	if len(got) != 0 {
 		t.Fatalf("want empty when sort field already in projection, got %#v", got)
 	}
 }
 
-func TestProjectionAutoIncluded_SortFieldMissing_AddedToList(t *testing.T) {
+func TestProjectionAutoIncluded_OrderByFieldMissing_AddedToList(t *testing.T) {
 	userProj := map[string]int{"email": 1, "_id": 0}
-	got := projectionAutoIncluded(userProj, []queries.SortField{{Field: "name"}})
+	got := projectionAutoIncluded(userProj, []queries.OrderByField{{Field: "name"}})
 	want := []string{"name"}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("got %#v, want %#v", got, want)
@@ -381,12 +381,12 @@ func TestResolveMaxLimit_ResolverWins(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// core.LimitExceededError — shape of the typed 400 envelope produced when ?limit=
-// exceeds the resolved ceiling.
+// core.LimitExceededError — shape of the typed 400 envelope produced when the
+// requested page size (?first= / ?last=) exceeds the resolved ceiling.
 // ---------------------------------------------------------------------------
 
 func TestLimitExceededError_CarriesSchemaContextAndFieldValue(t *testing.T) {
-	err := core.LimitExceededError(250)
+	err := core.LimitExceededError(250, false)
 	if err == nil {
 		t.Fatal("expected non-nil error")
 	}
@@ -401,8 +401,9 @@ func TestLimitExceededError_CarriesSchemaContextAndFieldValue(t *testing.T) {
 	if _, ok := msgs[0].Notification.(domain.LimitExceededNotification); !ok {
 		t.Fatalf("want LimitExceededNotification, got %T", msgs[0].Notification)
 	}
-	if msgs[0].FieldName != "limit" {
-		t.Fatalf("FieldName: got %q, want %q", msgs[0].FieldName, "limit")
+	// FieldName is the directional control the consumer sent (forward here).
+	if msgs[0].FieldName != "first" {
+		t.Fatalf("FieldName: got %q, want %q", msgs[0].FieldName, "first")
 	}
 	if msgs[0].FieldValue != "250" {
 		t.Fatalf("FieldValue: got %q, want %q", msgs[0].FieldValue, "250")
@@ -443,7 +444,7 @@ func TestViewDefinition_MaxLimit_PreservesValue(t *testing.T) {
 // Pipeline contract.
 func TestLimitExceededError_IsNotificationCarrier(t *testing.T) {
 	var carrier domain.NotificationCarrier
-	err := error(core.LimitExceededError(100))
+	err := error(core.LimitExceededError(100, false))
 	if !errors.As(err, &carrier) {
 		t.Fatalf("core.LimitExceededError should implement NotificationCarrier")
 	}

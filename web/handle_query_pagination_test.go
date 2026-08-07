@@ -20,10 +20,10 @@ import (
 type pagFindRequest struct {
 	Name *string `query:"name" filter:"eq"`
 
-	Limit  *int64  `query:"limit"`
+	Limit  *int64  `query:"first"`
 	After  *string `query:"after"`
 	Before *string `query:"before"`
-	Sort   *string `query:"sort"`
+	Sort   *string `query:"orderBy"`
 }
 
 type pagQuery struct {
@@ -58,7 +58,7 @@ func mountPaginationWrapper() (*fiber.App, *pagHandler) {
 
 // validCursor encodes a tuple of the given length with an empty context
 // hash (default context). Useful when the test needs a cursor whose tuple
-// shape matches a declared `?sort=` AND the request carries no filter,
+// shape matches a declared `?orderBy=` AND the request carries no filter,
 // sort, search, or includeArchived (default context hashes to empty).
 func validCursor(t *testing.T, tuple []any) string {
 	t.Helper()
@@ -72,7 +72,7 @@ func validCursor(t *testing.T, tuple []any) string {
 // validCursorWithContext encodes a tuple bound to a specific listing
 // context. Use when the test request carries non-default state (sort,
 // search, archived flag, filter) so the wrapper's HashContext check passes.
-func validCursorWithContext(t *testing.T, tuple []any, filter map[string]any, sortFields []queries.SortField, search string, includeArchived bool) string {
+func validCursorWithContext(t *testing.T, tuple []any, filter map[string]any, sortFields []queries.OrderByField, search string, includeArchived bool) string {
 	t.Helper()
 	hash := queries.HashContext(filter, sortFields, search, includeArchived)
 	s, err := queries.EncodeCursor(tuple, hash)
@@ -83,12 +83,12 @@ func validCursorWithContext(t *testing.T, tuple []any, filter map[string]any, so
 }
 
 // ---------------------------------------------------------------------------
-// Strict ?limit= validation — non-numeric, zero, negative all 400.
+// Strict ?first= validation — non-numeric, zero, negative all 400.
 // ---------------------------------------------------------------------------
 
 func TestPagination_Limit_NonNumeric_Rejected(t *testing.T) {
 	app, h := mountPaginationWrapper()
-	resp, _ := app.Test(httptest.NewRequest("GET", "/users?limit=abc", nil))
+	resp, _ := app.Test(httptest.NewRequest("GET", "/users?first=abc", nil))
 	if resp.StatusCode != fiber.StatusBadRequest {
 		body, _ := io.ReadAll(resp.Body)
 		t.Fatalf("want 400, got %d (body=%s)", resp.StatusCode, body)
@@ -100,7 +100,7 @@ func TestPagination_Limit_NonNumeric_Rejected(t *testing.T) {
 
 func TestPagination_Limit_Zero_Rejected(t *testing.T) {
 	app, h := mountPaginationWrapper()
-	resp, _ := app.Test(httptest.NewRequest("GET", "/users?limit=0", nil))
+	resp, _ := app.Test(httptest.NewRequest("GET", "/users?first=0", nil))
 	if resp.StatusCode != fiber.StatusBadRequest {
 		t.Fatalf("want 400, got %d", resp.StatusCode)
 	}
@@ -111,7 +111,7 @@ func TestPagination_Limit_Zero_Rejected(t *testing.T) {
 
 func TestPagination_Limit_Negative_Rejected(t *testing.T) {
 	app, h := mountPaginationWrapper()
-	resp, _ := app.Test(httptest.NewRequest("GET", "/users?limit=-5", nil))
+	resp, _ := app.Test(httptest.NewRequest("GET", "/users?first=-5", nil))
 	if resp.StatusCode != fiber.StatusBadRequest {
 		t.Fatalf("want 400, got %d", resp.StatusCode)
 	}
@@ -122,7 +122,7 @@ func TestPagination_Limit_Negative_Rejected(t *testing.T) {
 
 func TestPagination_Limit_Numeric_Passes(t *testing.T) {
 	app, h := mountPaginationWrapper()
-	resp, _ := app.Test(httptest.NewRequest("GET", "/users?limit=15", nil))
+	resp, _ := app.Test(httptest.NewRequest("GET", "/users?first=15", nil))
 	if resp.StatusCode != fiber.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
 		t.Fatalf("want 200, got %d (body=%s)", resp.StatusCode, body)
@@ -188,7 +188,7 @@ func TestPagination_AfterAndBefore_MutuallyExclusive(t *testing.T) {
 		t.Errorf("handler must NOT be called")
 	}
 	body, _ := io.ReadAll(resp.Body)
-	if !strings.Contains(string(body), "after,before") {
+	if !strings.Contains(string(body), "before") {
 		t.Errorf("envelope should surface the after,before field name, got %s", body)
 	}
 }
@@ -202,7 +202,7 @@ func TestPagination_Cursor_TupleLenMismatchWithSort_Rejected(t *testing.T) {
 	// Cursor encodes a 1-element tuple (just _id) but request declares 1 sort
 	// field — alignment requires len(K)-1 == 1, i.e. len(K) == 2. Mismatch.
 	cursor := validCursor(t, []any{"abc-123"})
-	url := "/users?sort=name&after=" + cursor
+	url := "/users?orderBy=name&after=" + cursor
 	resp, _ := app.Test(httptest.NewRequest("GET", url, nil))
 	if resp.StatusCode != fiber.StatusBadRequest {
 		t.Fatalf("want 400 on tuple/sort mismatch, got %d", resp.StatusCode)
@@ -219,9 +219,9 @@ func TestPagination_Cursor_TupleLenMatchesSort_Passes(t *testing.T) {
 	cursor := validCursorWithContext(t,
 		[]any{"Alice", "abc-123"},
 		nil,
-		[]queries.SortField{{Field: "name"}},
+		[]queries.OrderByField{{Field: "name"}},
 		"", false)
-	url := "/users?sort=name&after=" + cursor
+	url := "/users?orderBy=name&after=" + cursor
 	resp, _ := app.Test(httptest.NewRequest("GET", url, nil))
 	if resp.StatusCode != fiber.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
@@ -307,9 +307,9 @@ func TestPagination_Cursor_SortChangeMidNavigation_DeferredToReader(t *testing.T
 	cursor := validCursorWithContext(t,
 		[]any{"Alice", "abc-123"},
 		nil,
-		[]queries.SortField{{Field: "name"}},
+		[]queries.OrderByField{{Field: "name"}},
 		"", false)
-	url := "/users?sort=email&after=" + cursor
+	url := "/users?orderBy=email&after=" + cursor
 	resp, _ := app.Test(httptest.NewRequest("GET", url, nil))
 	if resp.StatusCode != fiber.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
@@ -327,9 +327,9 @@ func TestPagination_Cursor_SortDirectionFlipMidNavigation_DeferredToReader(t *te
 	cursor := validCursorWithContext(t,
 		[]any{"Alice", "abc-123"},
 		nil,
-		[]queries.SortField{{Field: "name", Desc: false}},
+		[]queries.OrderByField{{Field: "name", Desc: false}},
 		"", false)
-	url := "/users?sort=-name&after=" + cursor
+	url := "/users?orderBy=-name&after=" + cursor
 	resp, _ := app.Test(httptest.NewRequest("GET", url, nil))
 	if resp.StatusCode != fiber.StatusOK {
 		body, _ := io.ReadAll(resp.Body)

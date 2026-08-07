@@ -291,25 +291,25 @@ func TestMongoViewReader_ReadPage_HappyPath(t *testing.T) {
 	if len(page.Items) != 3 {
 		t.Errorf("expected 3 items on first page, got %d", len(page.Items))
 	}
-	if !page.HasNext {
+	if !page.HasNextPage {
 		t.Error("expected HasNext=true on a 3-of-5 page")
 	}
-	if page.Total != 5 {
-		t.Errorf("Total = %d, want 5", page.Total)
+	if page.TotalCount != 5 {
+		t.Errorf("Total = %d, want 5", page.TotalCount)
 	}
-	if page.NextCursor == "" {
+	if page.EndCursor == "" {
 		t.Error("expected NextCursor populated when HasNext=true")
 	}
 
 	// Follow the cursor.
-	page2, err := reader.ReadPage(ctx, "users", queries.ReadCriteria{Limit: 3, After: page.NextCursor})
+	page2, err := reader.ReadPage(ctx, "users", queries.ReadCriteria{Limit: 3, After: page.EndCursor})
 	if err != nil {
 		t.Fatalf("ReadPage page2: %v", err)
 	}
-	if !page2.HasPrev {
+	if !page2.HasPreviousPage {
 		t.Error("expected HasPrev=true on a follow page")
 	}
-	if page2.HasNext {
+	if page2.HasNextPage {
 		t.Errorf("expected HasNext=false on the last page, got items=%d", len(page2.Items))
 	}
 }
@@ -358,7 +358,7 @@ func TestMongoViewReader_ReadPage_Sort(t *testing.T) {
 
 	reader := NewMongoViewReader(m, testResolver)
 	page, err := reader.ReadPage(ctx, "users", queries.ReadCriteria{
-		Sort: []queries.SortField{{Field: "score", Desc: true}},
+		OrderBy: []queries.OrderByField{{Field: "score", Desc: true}},
 	})
 	if err != nil {
 		t.Fatalf("ReadPage: %v", err)
@@ -459,7 +459,7 @@ func TestMongoViewReader_DefaultLimitWhenZero(t *testing.T) {
 
 	col := m.Collection("users")
 	ctx := context.Background()
-	// Insert more than the framework default ceiling (100) so the "no ?limit="
+	// Insert more than the framework default ceiling (100) so the "no ?first="
 	// default cap is observable.
 	for i := 0; i < 105; i++ {
 		col.InsertOne(ctx, bson.M{"_id": i, "deleted_at": nil})
@@ -475,7 +475,7 @@ func TestMongoViewReader_DefaultLimitWhenZero(t *testing.T) {
 	if len(page.Items) != 100 {
 		t.Errorf("default page size = %d, want 100 (framework ceiling)", len(page.Items))
 	}
-	if !page.HasNext {
+	if !page.HasNextPage {
 		t.Error("expected HasNext=true with 105 items under a 100 ceiling")
 	}
 }

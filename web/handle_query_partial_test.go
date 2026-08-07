@@ -19,7 +19,7 @@ type testFindPartialRequest struct {
 	Name  *string `query:"name"  filter:"eq,startswith,contains,ieq,ine,iin,inin,istartswith,icontains"`
 	Email *string `query:"email" filter:"eq,ieq,iin"`
 
-	Limit *int64 `query:"limit"`
+	Limit *int64 `query:"first"`
 }
 
 type testFindPartialQuery struct {

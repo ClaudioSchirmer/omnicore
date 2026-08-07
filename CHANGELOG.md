@@ -11,6 +11,81 @@ with `1.0.0`.
 
 ## [Unreleased]
 
+## [0.46.0] - 2026-08-07
+
+### Changed
+
+- **BREAKING — the Request DTO now governs every read surface, and the read
+  vocabulary is the Relay standard everywhere.** Three moves in one round:
+
+  1. **Universal Relay names.** The REST wire renames `?sort=` → `?orderBy=`
+     and `?limit=` → the directional pair `?first=` / `?last=` (forward
+     `first`+`after`, backward `last`+`before`; `last` with no cursor yields
+     the LAST N of the set — new expressiveness). The response envelope adopts
+     the Relay connection vocabulary on every surface: `pagination.totalCount`
+     / `hasNextPage` / `hasPreviousPage` / `startCursor` / `endCursor` (REST
+     camelCase, gRPC snake_case: `total_count`, `has_next_page`,
+     `has_previous_page`, `start_cursor`, `end_cursor` — cursors are WINDOW
+     EDGES, echoed into `before`/`after` to walk). The shared proto renames
+     `PaginationRequest.limit` → `first` (number kept) and adds `last = 7`;
+     `SortField` → `OrderByField` (conventional request field `order_by`; the
+     FieldMask convention is `fields` — both located BY TYPE, so the renames
+     are non-breaking on existing service protos). Go public surface follows:
+     `queries.SortField` → `OrderByField`, `ReadCriteria.Sort` → `OrderBy`,
+     `Page`/`web.PaginationInfo` fields renamed to the Relay set, queryschema
+     `ParseSortWithSchema` → `ParseOrderByWithSchema`, the gRPC builder's
+     `Sort`/`ReadMask` → `OrderBy`/`FieldMask`. The LimitExceeded 400 now
+     names the directional control the consumer sent — `fieldName: "first"`
+     (or `"last"`) — instead of the retired `limit`. The prose vocabulary
+     "count-only" dies — the mode is **only-total** everywhere.
+
+  2. **The DTO opt-in gate on every surface, through one canonical gateway.**
+     `queryschema.ValidateControls` is the single validation core every
+     surface runs BEFORE the handler: the reserved-control opt-in gate (a
+     control on the wire without its `query:"…"` declaration is rejected),
+     the directional rule (forward × backward exclusivity, positive sizes)
+     and the only-total conflict matrix. It returns the framework's typed
+     notifications; each surface renders them in its own idiom — REST 400,
+     GraphQL schema-cut (undeclared connection args are OMITTED from the
+     generated SDL, so introspection/playground never advertise them and
+     gqlparser rejects them as unknown arguments), gRPC INVALID_ARGUMENT
+     with the missing declaration named in the error detail. The tabular
+     export honors the same gate for the controls it serves, and so does the
+     by-id surface: its one reserved control (`?includeArchived`) is honored
+     only when the by-id Request DTO declares it — previously an undeclared
+     key was silently ignored. Three precision rules complete the gate:
+     PRESENCE gates while only the value ACTIVATES (`?onlyTotal=false` on an
+     undeclared endpoint is a 400 exactly like `includeArchived`, while on a
+     declared endpoint it stays a plain paged read — a present-but-inactive
+     key never trips the conflict matrix); on gRPC every `PaginationRequest`
+     field is now proto3 `optional` — `only_total` and `include_archived`
+     included — so presence and value separate exactly as on the query
+     string (an explicitly-set empty `search`, or an explicit
+     `only_total: false`, is a gated presence, never read as absent; the
+     former plain-bool fields kept their numbers, binary-compatible, but Go
+     struct literals move to `*bool` — `proto.Bool(true)`); and a reserved
+     spelling a DTO declares as a FILTER leaf (`query:"search" filter:"eq"`)
+     keeps its filter meaning on the export exactly as on the listing — the
+     reserved vocabulary never shadows an explicit declaration on any route
+     family. The control vocabulary is CLOSED at boot: a top-level
+     query-tagged scalar without a `filter:` tag whose key is not one of the
+     nine canonical controls panics at wrapper construction naming the DTO,
+     the offending tag and the canonical list — a typo (`query:"orderby"`)
+     or a stale spelling (`query:"limit"`) would otherwise opt nothing in
+     while the OpenAPI spec advertised the dead parameter.
+
+  3. **GraphQL natural selections.** The only-total short-circuit now obeys
+     the `query:"onlyTotal"` opt-in (without it the same totalCount-only
+     selection stays valid through the un-optimized read — the total is
+     intrinsic to every list envelope), and a `pageInfo`-without-`edges`
+     selection becomes a **pagination probe**: the read narrows to the keyset
+     essentials (ordering values + `_id`) instead of materializing full
+     documents.
+
+  Wire-breaking on REST (request keys + envelope field names) and
+  source-breaking on the Go API; gRPC binary compatibility is preserved
+  (field numbers kept) with the old `limit` seat renamed in place.
+
 ## [0.45.0] - 2026-08-06
 
 ### Changed

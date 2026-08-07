@@ -79,20 +79,20 @@ func QueryWithParams[TReq HasToParamsQuery[TQ], TQ queries.QueryWithParams, R an
 	schema := queryschema.ExtractRequestSchema(reqType)
 	pathSchema := inspectPathTags(reqType)
 	// projSchema is the Response-side mapping (wire path → doc path) used to
-	// validate and translate `?fields=` AND `?sort=` values when the Request
+	// validate and translate `?fields=` AND `?orderBy=` values when the Request
 	// DTO opts in to either parameter AND the Response is a struct. Built
 	// once and shared between the two reserved keys.
 	//
 	// The fields-specific boot guard (every field *T + ,omitempty, recursive)
-	// only fires when the Request DTO declared `query:"fields"` — sort has
+	// only fires when the Request DTO declared `query:"fields"` — orderBy has
 	// no analogous structural requirement on the Response (it consumes only
 	// the wire→doc path map). When the Response is map[string]any (RawDoc-
 	// style projectors), projSchema stays nil and both keys fall back to
 	// pass-through mode at the buildCriteria layer.
 	var projSchema *queryschema.ProjectionSchema
-	fieldsOptIn := schema.Reserved["fields"]
-	sortOptIn := schema.Reserved["sort"]
-	if fieldsOptIn || sortOptIn {
+	fieldsOptIn := schema.Reserved[queryschema.KeyFields]
+	orderByOptIn := schema.Reserved[queryschema.KeyOrderBy]
+	if fieldsOptIn || orderByOptIn {
 		respType := reflect.TypeOf((*R)(nil)).Elem()
 		for respType.Kind() == reflect.Pointer {
 			respType = respType.Elem()
@@ -106,20 +106,20 @@ func QueryWithParams[TReq HasToParamsQuery[TQ], TQ queries.QueryWithParams, R an
 			projSchema = queryschema.ExtractProjectionSchema(respType)
 		}
 	}
-	// Boot-time advisory when the Request DTO accepts ?sort=. The framework
+	// Boot-time advisory when the Request DTO accepts ?orderBy=. The framework
 	// has no way to verify, from the wrapper, that the Mongo view declares
 	// indexes covering the sortable wire paths — the ViewDefinition lives in
 	// a separate construction site (ReadableFeature.Views()). The warning
 	// lists every sortable wire path discovered on the Response so the
 	// operator can compare it against the view's .Indexes(...) declaration
 	// during the same boot.
-	if sortOptIn && projSchema != nil {
+	if orderByOptIn && projSchema != nil {
 		paths := make([]string, 0, len(projSchema.Paths))
 		for wirePath := range projSchema.Paths {
 			paths = append(paths, wirePath)
 		}
 		sort.Strings(paths)
-		slog.Warn("query.sort.opt-in: endpoint accepts ?sort=; verify Mongo indexes cover the sortable wire paths to avoid performance degradation on large collections",
+		slog.Warn("query.orderBy.opt-in: endpoint accepts ?orderBy=; verify Mongo indexes cover the sortable wire paths to avoid performance degradation on large collections",
 			"request", reqType.String(),
 			"sortable_wire_paths", paths)
 	}
@@ -144,9 +144,13 @@ func QueryWithParams[TReq HasToParamsQuery[TQ], TQ queries.QueryWithParams, R an
 }
 
 // QueryByID creates a fiber.Handler for read-by-id endpoints. The
-// only reserved query-string parameter is `?includeArchived=true`; anything
-// else produces 400. The path id is injected into the Query via SetPathID
-// after ToQuery, mirroring CommandWithBodyID on the write side.
+// only reserved query-string parameter is `?includeArchived=true` — and,
+// like every reserved control, it obeys the DTO: the key is honored only
+// when the Request DTO declares `query:"includeArchived"`, and rejected as
+// the canonical NotDeclared 400 otherwise (never a silent ignore). Anything
+// else on the query string produces 400. The path id is injected into the
+// Query via SetPathID after ToQuery, mirroring CommandWithBodyID on the
+// write side.
 //
 // projector is mandatory — pass responses.RawDoc to keep the raw view doc
 // shape on the wire, or a consumer-defined R{}.FromDoc to declare a typed
@@ -173,8 +177,9 @@ func QueryByID[TReq HasToIDQuery[TQ], TQ queries.QueryByID, R any](
 	if hasPathSegment(reqType, "id") {
 		panic(formatPathIDConflict("QueryByID", reqType))
 	}
+	includeArchivedOptIn := queryschema.ExtractRequestSchema(reqType).Reserved[queryschema.KeyIncludeArchived]
 	return func(c fiber.Ctx) error {
-		if bad, ok := validateByIDQuery(c); !ok {
+		if bad, ok := validateByIDQuery(c, includeArchivedOptIn); !ok {
 			return respondSchemaViolation[map[string]any](c, pipe, bad)
 		}
 		var req TReq
@@ -213,7 +218,7 @@ func QueryByID[TReq HasToIDQuery[TQ], TQ queries.QueryByID, R any](
 //
 // Use this helper when the manual handler has no typed Response (RawDoc-style
 // projections, vendor-shaped envelopes) OR the Request DTO does not opt into
-// `?fields=` / `?sort=`. Manual handlers that declare a typed Response AND
+// `?fields=` / `?orderBy=`. Manual handlers that declare a typed Response AND
 // opt into either reserved key should construct a [QueryParser] at Mount
 // time instead — that path runs the same boot-time guards (sparse-render
 // contract on the Response + sortable-paths advisory) the canonical
@@ -221,7 +226,7 @@ func QueryByID[TReq HasToIDQuery[TQ], TQ queries.QueryByID, R any](
 // runtime. ParseCriteria stays as the un-typed escape hatch; it does not
 // build a projection schema, so a stray `?fields=` token lands in
 // pass-through mode (no allowlist, no `_id:0` auto-exclusion) and a stray
-// `?sort=` token lands verbatim (no snake_case translation).
+// `?orderBy=` token lands verbatim (no snake_case translation).
 //
 // Manual handlers that prefer to assemble the criteria differently can ignore
 // both helpers and build the ReadCriteria by hand — the framework does not
@@ -239,7 +244,7 @@ func ParseCriteria(c fiber.Ctx, requestDTO any) (queries.ReadCriteria, string, b
 }
 
 // QueryParser is the typed Mount-time-constructed parser for manual query
-// handlers whose Request DTO opts into `?fields=` / `?sort=` AND that
+// handlers whose Request DTO opts into `?fields=` / `?orderBy=` AND that
 // declare a typed Response. It closes the asymmetry [ParseCriteria] carries
 // against the canonical [QueryWithParams] wrapper:
 //
@@ -250,7 +255,7 @@ func ParseCriteria(c fiber.Ctx, requestDTO any) (queries.ReadCriteria, string, b
 //     must be *T or a slice/map with `,omitempty`);
 //     [queryschema.ExtractProjectionSchema] builds the wire→doc path map; an
 //     `slog.Warn` advisory enumerates the sortable wire paths when the
-//     Request opts into `?sort=` so the operator can compare them against the
+//     Request opts into `?orderBy=` so the operator can compare them against the
 //     Mongo view's declared indexes during the same boot.
 //   - The [QueryParser.Parse] call walks the request query string against
 //     the cached schema + projection — runtime allowlist + wire→doc
@@ -298,9 +303,9 @@ func NewQueryParser[Req any, Resp any]() *QueryParser[Req, Resp] {
 	schema := queryschema.ExtractRequestSchema(reqType)
 
 	var projSchema *queryschema.ProjectionSchema
-	fieldsOptIn := schema.Reserved["fields"]
-	sortOptIn := schema.Reserved["sort"]
-	if fieldsOptIn || sortOptIn {
+	fieldsOptIn := schema.Reserved[queryschema.KeyFields]
+	orderByOptIn := schema.Reserved[queryschema.KeyOrderBy]
+	if fieldsOptIn || orderByOptIn {
 		respType := reflect.TypeOf((*Resp)(nil)).Elem()
 		for respType.Kind() == reflect.Pointer {
 			respType = respType.Elem()
@@ -314,13 +319,13 @@ func NewQueryParser[Req any, Resp any]() *QueryParser[Req, Resp] {
 			projSchema = queryschema.ExtractProjectionSchema(respType)
 		}
 	}
-	if sortOptIn && projSchema != nil {
+	if orderByOptIn && projSchema != nil {
 		paths := make([]string, 0, len(projSchema.Paths))
 		for wirePath := range projSchema.Paths {
 			paths = append(paths, wirePath)
 		}
 		sort.Strings(paths)
-		slog.Warn("query.sort.opt-in: endpoint accepts ?sort=; verify Mongo indexes cover the sortable wire paths to avoid performance degradation on large collections",
+		slog.Warn("query.orderBy.opt-in: endpoint accepts ?orderBy=; verify Mongo indexes cover the sortable wire paths to avoid performance degradation on large collections",
 			"request", reqType.String(),
 			"sortable_wire_paths", paths)
 	}
@@ -374,11 +379,11 @@ func ProjectPage[R any](page queries.Page, fn func(map[string]any) R) ([]R, *Pag
 		items[i] = fn(doc)
 	}
 	return items, &PaginationInfo{
-		HasNext:    page.HasNext,
-		HasPrev:    page.HasPrev,
-		NextCursor: page.NextCursor,
-		PrevCursor: page.PrevCursor,
-		Total:      page.Total,
+		HasNextPage:     page.HasNextPage,
+		HasPreviousPage: page.HasPreviousPage,
+		StartCursor:     page.StartCursor,
+		EndCursor:       page.EndCursor,
+		TotalCount:      page.TotalCount,
 	}
 }
 
@@ -388,7 +393,7 @@ func ProjectPage[R any](page queries.Page, fn func(map[string]any) R) ([]R, *Pag
 // handler returns a queries.Page directly and the consumer just wants the
 // projection + envelope assembled.
 //
-// When page.OnlyTotal is true, the envelope flips to the count-only shape:
+// When page.OnlyTotal is true, the envelope flips to the only-total shape:
 // Data is omitted entirely and Pagination is a TotalOnlyPagination carrying
 // solely Total. The listing-only fields (has_next/has_prev/cursors) are not
 // emitted — they would carry zero-value noise that misleads consumers in
@@ -399,7 +404,7 @@ func RespondPaged[R any](c fiber.Ctx, status int, page queries.Page, fn func(map
 			Success:     true,
 			Status:      status,
 			Description: http.StatusText(status),
-			Pagination:  &TotalOnlyPagination{Total: page.Total},
+			Pagination:  &TotalOnlyPagination{TotalCount: page.TotalCount},
 		})
 	}
 	items, pagination := ProjectPage(page, fn)
@@ -410,36 +415,6 @@ func RespondPaged[R any](c fiber.Ctx, status int, page queries.Page, fn func(map
 		Data:        items,
 		Pagination:  pagination,
 	})
-}
-
-// reservedParamKeys are the wire keys recognized as pagination/projection
-// controls on the params endpoint. They never carry an operator suffix.
-var reservedParamKeys = map[string]bool{
-	"limit":           true,
-	"after":           true,
-	"before":          true,
-	"sort":            true,
-	"fields":          true,
-	"search":          true,
-	"includeArchived": true,
-	"onlyTotal":       true,
-}
-
-// onlyTotalConflicts is the set of reserved keys whose semantics are
-// incompatible with the count-only mode triggered by `?onlyTotal=true`. They
-// shape items / cursors / projection — none of which exist in a response that
-// carries solely `pagination.total`. The wrapper rejects the combination with
-// 400 SchemaViolationNotification on the first conflict so the consumer
-// surfaces the bug immediately (silent ignore would hide it). Filter leaves
-// (declared via `query:"X" filter:"ops"` on the Request DTO) + `search` +
-// `includeArchived` stay valid in count mode — counting a filtered subset is
-// the canonical use case.
-var onlyTotalConflicts = map[string]bool{
-	"fields": true,
-	"sort":   true,
-	"limit":  true,
-	"after":  true,
-	"before": true,
 }
 
 // buildCriteria walks the query string, validates each key against the schema,
@@ -459,16 +434,14 @@ var onlyTotalConflicts = map[string]bool{
 // inclusion entry verbatim (no allowlist, no translation).
 func buildCriteria(c fiber.Ctx, s *queryschema.RequestSchema, projSchema *queryschema.ProjectionSchema) (queries.ReadCriteria, string, bool) {
 	crit := queries.ReadCriteria{Filter: map[string]any{}}
-	// Pre-scan onlyTotal: VisitAll's iteration order is non-deterministic, so
-	// we cannot rely on observing onlyTotal before a conflicting key. Reading
-	// it explicitly up front lets the loop reject conflicts on first sight.
-	// The flag is only honored when the Request DTO declared `query:"onlyTotal"`
-	// (s.Reserved gates opt-in, same posture as `includeArchived` / `search` /
-	// `fields` / `sort`).
-	onlyTotalOn := s.Reserved["onlyTotal"] && c.Query("onlyTotal") == "true"
-	if onlyTotalOn {
-		crit.OnlyTotal = true
-	}
+	// controls is the canonical snapshot handed to the control gateway after
+	// the loop — presence + the values the gate needs. The loop itself owns
+	// only WIRE-SHAPE parsing (numbers, cursor decodability, token
+	// allowlists); the opt-in gate, the directional rule and the only-total
+	// conflict matrix are the gateway's, shared verbatim with GraphQL and
+	// gRPC. Recording presence regardless of the DTO's declaration is
+	// deliberate: the gateway owns the opt-in verdict.
+	var controls queryschema.Controls
 	var badField string
 	ok := true
 	c.Request().URI().QueryArgs().VisitAll(func(k, v []byte) { //nolint:staticcheck // SA1019: fasthttp VisitAll is deprecated; migrating this hot query-parse path to the All() range-over-func iterator is a mechanical follow-up, out of scope for a lint sweep.
@@ -478,22 +451,55 @@ func buildCriteria(c fiber.Ctx, s *queryschema.RequestSchema, projSchema *querys
 		key := string(k)
 		val := string(v)
 
-		// Conflict matrix for the count-only mode. Filter leaves and the
-		// still-meaningful reserved keys (`search`, `includeArchived`) flow
-		// through unaffected — counting a filtered subset is the canonical
-		// use case.
-		if onlyTotalOn && onlyTotalConflicts[key] {
-			badField = "onlyTotal[" + key + "]"
-			ok = false
-			return
-		}
-
-		if s.Reserved[key] && reservedParamKeys[key] {
-			if key == "onlyTotal" {
-				// Already absorbed by the pre-scan; nothing else to apply.
-				return
-			}
-			if key == "fields" {
+		// A reserved spelling that the DTO declared as a FILTER leaf
+		// (`query:"first" filter:"eq"`) keeps its filter meaning — the
+		// reserved vocabulary never shadows an explicit declaration. REST
+		// speaks the canonical DTO keys verbatim, so the recognized wire
+		// set IS queryschema.ControlKeys; controls never carry an operator
+		// suffix.
+		_, isFilterLeaf := s.Filters[key]
+		if queryschema.ControlKeys[key] && !isFilterLeaf {
+			switch key {
+			case queryschema.KeyOnlyTotal:
+				// Presence gates (any value on the wire needs the DTO opt-in,
+				// exactly like includeArchived); only `true` ACTIVATES the
+				// count short-circuit — `?onlyTotal=false` stays a no-op on a
+				// declared endpoint, never a page-shaping conflict.
+				active := val == "true"
+				controls.OnlyTotal = &active
+				crit.OnlyTotal = active
+			case queryschema.KeyFirst, queryschema.KeyLast:
+				n, err := strconv.ParseInt(val, 10, 64)
+				if err != nil {
+					badField = key
+					ok = false
+					return
+				}
+				if key == queryschema.KeyFirst {
+					controls.First = &n
+				} else {
+					controls.Last = &n
+				}
+			case queryschema.KeyAfter:
+				// Decodability is checked post-gateway (validateCursorAgainstCriteria)
+				// so a gateway violation — the more informative rejection — wins over
+				// a malformed-cursor one.
+				controls.After = true
+				crit.After = val
+			case queryschema.KeyBefore:
+				controls.Before = true
+				crit.Before = val
+			case queryschema.KeyOrderBy:
+				controls.OrderBy = true
+				orderBy, bad, obOk := queryschema.ParseOrderByWithSchema(val, projSchema)
+				if !obOk {
+					badField = "orderBy[" + bad + "]"
+					ok = false
+					return
+				}
+				crit.OrderBy = orderBy
+			case queryschema.KeyFields:
+				controls.Fields = true
 				proj, wireSet, bad, projOk := queryschema.ParseProjection(val, projSchema)
 				if !projOk {
 					badField = "fields[" + bad + "]"
@@ -508,22 +514,12 @@ func buildCriteria(c fiber.Ctx, s *queryschema.RequestSchema, projSchema *querys
 					proj["_id"] = 0
 				}
 				crit.Projection = proj
-				return
-			}
-			if key == "sort" {
-				sortFields, bad, sortOk := queryschema.ParseSortWithSchema(val, projSchema)
-				if !sortOk {
-					badField = "sort[" + bad + "]"
-					ok = false
-					return
-				}
-				crit.Sort = sortFields
-				return
-			}
-			if bad, paramOk := applyReservedParam(&crit, key, val); !paramOk {
-				badField = bad
-				ok = false
-				return
+			case queryschema.KeySearch:
+				controls.Search = true
+				crit.Search = val
+			case queryschema.KeyIncludeArchived:
+				controls.IncludeArchived = true
+				crit.IncludeArchived = val == "true"
 			}
 			return
 		}
@@ -550,12 +546,25 @@ func buildCriteria(c fiber.Ctx, s *queryschema.RequestSchema, projSchema *querys
 	if !ok {
 		return crit, badField, ok
 	}
-	// Post-loop cursor consistency checks. Doing them here (rather than
-	// inline in applyReservedParam) lets `?after` and `?sort` land in any
-	// URL order — the loop just records both, this block reconciles.
-	if crit.After != "" && crit.Before != "" {
-		return crit, "after,before", false
+	// The canonical control gateway: the DTO opt-in gate, the directional rule
+	// (forward first/after × backward last/before) and the only-total conflict
+	// matrix — one implementation shared by every surface, run BEFORE the
+	// handler. REST has no natural keys (every control has a wire spelling).
+	if violations := queryschema.ValidateControls(s.Reserved, controls, nil); len(violations) > 0 {
+		return crit, violations[0].Field(), false
 	}
+	// Materialize the Relay direction pair into the internal size+direction:
+	// first=N → forward window of N; last=N → backward window of N (with no
+	// cursor, the LAST N of the set).
+	if controls.First != nil {
+		crit.Limit = *controls.First
+	}
+	if controls.Last != nil {
+		crit.Limit = *controls.Last
+		crit.Backward = true
+	}
+	// Post-loop cursor structure checks — after the gateway, so a directional
+	// conflict reports as such before a tuple-length mismatch.
 	if crit.After != "" {
 		if bad, cursorOk := validateCursorAgainstCriteria(crit.After, crit, "after"); !cursorOk {
 			return crit, bad, false
@@ -573,7 +582,7 @@ func buildCriteria(c fiber.Ctx, s *queryschema.RequestSchema, projSchema *querys
 // against the current wire criteria:
 //
 //   - decodability: the cursor must parse under the cursor schema.
-//   - tuple length: len(K)-1 == len(Sort) (the trailing K element is always
+//   - tuple length: len(K)-1 == len(OrderBy) (the trailing K element is always
 //     _id). Protects against malformed cursors before the reader's keyset
 //     builder indexes the tuple.
 //
@@ -594,22 +603,26 @@ func validateCursorAgainstCriteria(cursorStr string, crit queries.ReadCriteria, 
 	if err != nil {
 		return wireKey, false
 	}
-	if len(cursor.K)-1 != len(crit.Sort) {
+	if len(cursor.K)-1 != len(crit.OrderBy) {
 		return wireKey, false
 	}
 	return "", true
 }
 
 // validateByIDQuery enforces the by-id allowlist: only `includeArchived` is
-// allowed. Returns ("", true) on a clean query string, (badKey, false) otherwise.
-func validateByIDQuery(c fiber.Ctx) (string, bool) {
+// recognized, and only when the endpoint's Request DTO declared it
+// (includeArchivedOptIn — the same DTO opt-in gate the list wrappers run
+// through the canonical gateway; an undeclared control is a loud 400, never
+// a silent ignore). Returns ("", true) on a clean query string,
+// (badKey, false) otherwise.
+func validateByIDQuery(c fiber.Ctx, includeArchivedOptIn bool) (string, bool) {
 	var bad string
 	ok := true
 	c.Request().URI().QueryArgs().VisitAll(func(k, _ []byte) { //nolint:staticcheck // SA1019: fasthttp VisitAll deprecated; All() migration deferred.
 		if !ok {
 			return
 		}
-		if string(k) != "includeArchived" {
+		if string(k) != queryschema.KeyIncludeArchived || !includeArchivedOptIn {
 			bad = string(k)
 			ok = false
 		}
@@ -617,47 +630,3 @@ func validateByIDQuery(c fiber.Ctx) (string, bool) {
 	return bad, ok
 }
 
-// applyReservedParam materializes a known pagination/control key into the
-// criteria, validating its shape strictly. Returns ("", true) on success or
-// (badField, false) on the first violation so the wrapper can short-circuit
-// to the canonical 400 envelope:
-//
-//   - `?limit=` must parse as int64 AND be > 0. Non-numeric, negative, or
-//     zero values reject with badField="limit". The per-view ceiling is
-//     enforced at read time by MongoViewReader (where the view name is
-//     known); the wrapper validates only the wire shape.
-//   - `?after=` and `?before=` must decode under the cursor schema
-//     (queries.DecodeCursor); a malformed cursor rejects with the matching
-//     badField. Tuple-length alignment against `?sort=` happens after the
-//     full query loop so both keys can land in any URL order.
-//
-// `fields` and `sort` are NOT routed here — both are handled inline in
-// buildCriteria so they can consume the Response-side projSchema for
-// allowlist validation + wire→doc translation. Calling applyReservedParam
-// with key="fields" or key="sort" is a no-op (the switch has no matching
-// arm).
-func applyReservedParam(crit *queries.ReadCriteria, key, val string) (string, bool) {
-	switch key {
-	case "limit":
-		n, err := strconv.ParseInt(val, 10, 64)
-		if err != nil || n <= 0 {
-			return "limit", false
-		}
-		crit.Limit = n
-	case "after":
-		if _, err := queries.DecodeCursor(val); err != nil {
-			return "after", false
-		}
-		crit.After = val
-	case "before":
-		if _, err := queries.DecodeCursor(val); err != nil {
-			return "before", false
-		}
-		crit.Before = val
-	case "search":
-		crit.Search = val
-	case "includeArchived":
-		crit.IncludeArchived = val == "true"
-	}
-	return "", true
-}

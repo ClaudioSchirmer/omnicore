@@ -33,10 +33,10 @@ func TestReadCriteria_Restrict_PassiveWholeDocExcludesSilently(t *testing.T) {
 }
 
 func TestReadCriteria_Restrict_ActiveSortIs403AndScrubs(t *testing.T) {
-	c := ReadCriteria{Sort: []SortField{{Field: "Salary"}, {Field: "Name"}}}
+	c := ReadCriteria{OrderBy: []OrderByField{{Field: "Salary"}, {Field: "Name"}}}
 	assertForbiddenCarrier(t, c.Restrict("Salary"))
-	if len(c.Sort) != 1 || c.Sort[0].Field != "Name" {
-		t.Errorf("Salary sort scrubbed + other sorts survive — got %v", c.Sort)
+	if len(c.OrderBy) != 1 || c.OrderBy[0].Field != "Name" {
+		t.Errorf("Salary sort scrubbed + other sorts survive — got %v", c.OrderBy)
 	}
 }
 

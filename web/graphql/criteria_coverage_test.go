@@ -59,7 +59,7 @@ func covPlan() *criteriaPlan {
 }
 
 func TestBuildCriteria_UnknownWhereFieldRejected(t *testing.T) {
-	_, gerr := covPlan().buildCriteria(map[string]any{
+	_, _, gerr := covPlan().buildCriteria(map[string]any{
 		"where": map[string]any{"bogus": map[string]any{"eq": "x"}},
 	})
 	if gerr == nil {
@@ -71,7 +71,7 @@ func TestBuildCriteria_UnknownWhereFieldRejected(t *testing.T) {
 }
 
 func TestBuildCriteria_NonObjectWhereValueIgnored(t *testing.T) {
-	crit, gerr := covPlan().buildCriteria(map[string]any{
+	crit, _, gerr := covPlan().buildCriteria(map[string]any{
 		"where": map[string]any{"name": "not-an-operator-object"},
 	})
 	if gerr != nil {

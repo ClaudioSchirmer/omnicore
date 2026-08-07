@@ -51,7 +51,7 @@ type ExportColumn struct {
 // WireToGoPaths returns the full wire-path → Go-field-path map for the plan:
 // every leaf column (e.g. "addresses.zipCode" → "Addresses.ZipCode") AND every
 // embed subtree node (e.g. "addresses" → "Addresses", which selects the whole
-// subtree). The wrapper uses it to validate and translate `?fields=` / `?sort=`
+// subtree). The wrapper uses it to validate and translate `?fields=` / `?orderBy=`
 // tokens; the reader maps the Go path → physical column via the view's
 // TableSchema, exactly like the JSON read path.
 func (p *ExportPlan) WireToGoPaths() map[string]string {

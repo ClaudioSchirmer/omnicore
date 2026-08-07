@@ -176,7 +176,7 @@ func TestRenderExample(t *testing.T) {
 
 func TestPaginationInfoExample(t *testing.T) {
 	ex := paginationInfoExample()
-	if ex["has_next"] != false || ex["has_prev"] != false || ex["total"] != 1 {
+	if ex["hasNextPage"] != false || ex["hasPreviousPage"] != false || ex["totalCount"] != 1 {
 		t.Fatalf("unexpected pagination example: %+v", ex)
 	}
 }
@@ -203,7 +203,7 @@ func TestEnsurePaginationInfo(t *testing.T) {
 	if s.Type != "object" {
 		t.Fatalf("PaginationInfo type = %q", s.Type)
 	}
-	for _, k := range []string{"has_next", "has_prev", "next_cursor", "prev_cursor", "total"} {
+	for _, k := range []string{"hasNextPage", "hasPreviousPage", "endCursor", "startCursor", "totalCount"} {
 		if _, ok := s.Properties[k]; !ok {
 			t.Errorf("missing property %q", k)
 		}

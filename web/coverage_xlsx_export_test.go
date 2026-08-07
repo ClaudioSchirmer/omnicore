@@ -30,7 +30,7 @@ func TestHandleQueryAsXLSX_FullHierarchy(t *testing.T) {
 	h := newExportHandler()
 	mountXLSX(app, h)
 
-	resp, err := app.Test(httptest.NewRequest("GET", "/users.xlsx?email=j@x&limit=5", nil))
+	resp, err := app.Test(httptest.NewRequest("GET", "/users.xlsx?email=j@x&first=5", nil))
 	if err != nil {
 		t.Fatalf("app.Test: %v", err)
 	}
@@ -102,7 +102,7 @@ func TestHandleQueryAsXLSXSpec_OmitsPaginationAndMarksFileResponse(t *testing.T)
 	for _, k := range spec.OmittedQueryParams {
 		got[k] = true
 	}
-	for _, want := range []string{"limit", "after", "before", "onlyTotal"} {
+	for _, want := range []string{"first", "last", "after", "before", "onlyTotal"} {
 		if !got[want] {
 			t.Fatalf("export spec must omit %q; got %v", want, spec.OmittedQueryParams)
 		}

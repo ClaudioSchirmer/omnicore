@@ -108,7 +108,7 @@ func NewGadgetFeature(d bootstrap.Deps) *GadgetFeature {
         <tr><td>Filter / sort on a root-level <em>sibling</em> or <em>shared-base</em> field (1:1)</td><td><span class="yes-mark">✓</span></td><td><span class="yes-mark">✓</span> — LEFT JOIN</td></tr>
         <tr><td>Sort on a root field</td><td><span class="yes-mark">✓</span></td><td><span class="yes-mark">✓</span></td></tr>
         <tr><td><code>?fields=</code> projection (root <em>and</em> nested leaf)</td><td><span class="yes-mark">✓</span></td><td><span class="yes-mark">✓</span></td></tr>
-        <tr><td>Pagination (<code>limit</code> / <code>after</code> / <code>before</code>)</td><td><span class="yes-mark">✓</span> keyset (insertion-stable)</td><td><span class="yes-mark">✓</span> offset-in-cursor (static-set stable)</td></tr>
+        <tr><td>Pagination (<code>first</code> / <code>last</code> / <code>after</code> / <code>before</code>)</td><td><span class="yes-mark">✓</span> keyset (insertion-stable)</td><td><span class="yes-mark">✓</span> offset-in-cursor (static-set stable)</td></tr>
         <tr><td><code>?onlyTotal</code> · <code>?includeArchived</code> · by-id</td><td><span class="yes-mark">✓</span></td><td><span class="yes-mark">✓</span></td></tr>
         <tr><td>CSV / XLSX export · <code>MaxLimit</code> · <code>MaxExportRows</code></td><td><span class="yes-mark">✓</span></td><td><span class="yes-mark">✓</span></td></tr>
         <tr><td>Read latency</td><td>eventually consistent (CDC lag)</td><td><strong>read-your-writes</strong> (no lag)</td></tr>
@@ -160,8 +160,8 @@ func NewGadgetFeature(d bootstrap.Deps) *GadgetFeature {
 
 <h3>Pagination is a camouflaged offset</h3>
 <p>
-    The wire API is identical to a Mongo view — <code>?limit=</code>, <code>?after=</code>, <code>?before=</code>, and
-    the returned <code>next_cursor</code> / <code>prev_cursor</code> — but the mechanics underneath are the relational
+    The wire API is identical to a Mongo view — <code>?first=</code>, <code>?after=</code>, <code>?before=</code>, and
+    the returned <code>endCursor</code> / <code>startCursor</code> — but the mechanics underneath are the relational
     idiom, <strong>offset (skip/count), not keyset</strong>. Each cursor carries an absolute row index rather than a
     sort-key tuple: <code>after</code> walks forward from that index, <code>before</code> walks back from it, and a bare
     backward page (GraphQL <code>last:N</code> with no cursor) anchors at the end via a single <code>COUNT</code>. A

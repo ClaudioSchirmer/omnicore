@@ -14,33 +14,39 @@ type Response struct {
 	Description string `json:"description"`
 	Data        any    `json:"data,omitempty"`
 	// Pagination is `any` because the slot carries two legitimate shapes:
-	// PaginationInfo on regular paged listings (has_next/has_prev/cursors +
-	// total) and TotalOnlyPagination on count-only requests (only total).
-	// Both are typed Go structs — there is no untyped map on the wire.
-	// `omitempty` skips the slot when the response is not pagination-shaped.
+	// PaginationInfo on regular paged listings (hasNextPage/hasPreviousPage/
+	// window-edge cursors + totalCount) and TotalOnlyPagination on only-total
+	// requests (only totalCount). Both are typed Go structs — there is no
+	// untyped map on the wire. `omitempty` skips the slot when the response is
+	// not pagination-shaped.
 	Pagination any     `json:"pagination,omitempty"`
 	Errors     []Error `json:"errors,omitempty"`
 }
 
 // PaginationInfo lives top-level on a Response (not nested under Data) so that
 // a GET list endpoint exposes the items as `data` and the cursor envelope as
-// `pagination`, instead of forcing clients into `data.items` / `data.has_next`.
-// Populated by QueryWithParams on success.
+// `pagination`, instead of forcing clients into `data.items` /
+// `data.hasNextPage`. Populated by QueryWithParams on success. Field names are
+// the Relay connection vocabulary, shared verbatim with the GraphQL pageInfo
+// and (snake_cased) the gRPC PaginationInfo: the cursors are WINDOW EDGES —
+// startCursor/endCursor address the first and last row of THIS page (echo them
+// into `?before=`/`?after=` to walk), and hasNextPage/hasPreviousPage state
+// whether rows exist beyond each edge.
 type PaginationInfo struct {
-	HasNext    bool   `json:"has_next"`
-	HasPrev    bool   `json:"has_prev"`
-	NextCursor string `json:"next_cursor,omitempty"`
-	PrevCursor string `json:"prev_cursor,omitempty"`
-	Total      int64  `json:"total"`
+	HasNextPage     bool   `json:"hasNextPage"`
+	HasPreviousPage bool   `json:"hasPreviousPage"`
+	StartCursor     string `json:"startCursor,omitempty"`
+	EndCursor       string `json:"endCursor,omitempty"`
+	TotalCount      int64  `json:"totalCount"`
 }
 
 // TotalOnlyPagination is the pagination shape emitted when the wire request
 // declared `?onlyTotal=true`. The reader short-circuits to a count primitive
 // and the wrapper drops the `data` slot AND the listing-only fields
-// (has_next/has_prev/cursors) so the response carries strictly what the
-// consumer asked for — `pagination.total`.
+// (hasNextPage/hasPreviousPage/cursors) so the response carries strictly what
+// the consumer asked for — `pagination.totalCount`.
 type TotalOnlyPagination struct {
-	Total int64 `json:"total"`
+	TotalCount int64 `json:"totalCount"`
 }
 
 type Error struct {

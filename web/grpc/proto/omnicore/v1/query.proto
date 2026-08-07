@@ -7,54 +7,68 @@ option go_package = "github.com/ClaudioSchirmer/omnicore/web/grpc/pb;omnicorepb"
 import "google/protobuf/timestamp.proto";
 
 // The shared read-side components every omnicore service's list RPCs
-// compose (tasks/grpc.md, Phase 3): per-view request messages declare their
-// own typed filters using these wrappers, so the filterable surface is
-// explicit in the contract and `buf breaking` polices view changes. The
-// framework converts them to queries.ReadCriteria via fwgrpc.NewCriteria,
-// reusing the exact operator semantics of the REST surface (one emitter:
-// queryschema.ApplyFilterValues). Filter KEYS are Go field paths — the
-// query type's ToCriteria(ctx) keeps applying identity overlays on top,
-// exactly as on every other surface. read_mask and sort speak WIRE names
-// (proto snake_case), resolved against the per-view Fields vocabulary —
-// the allowlist that keeps unresolved spellings away from the reader.
+// compose: per-view request messages declare their own typed filters using
+// these wrappers, so the filterable surface is explicit in the contract and
+// `buf breaking` polices view changes. The framework converts them to
+// queries.ReadCriteria via fwgrpc.NewCriteria, reusing the exact operator
+// semantics of the REST surface (one emitter: queryschema.ApplyFilterValues).
+// Filter KEYS are Go field paths — the query type's ToCriteria(ctx) keeps
+// applying identity overlays on top, exactly as on every other surface. The
+// fields mask and order_by speak WIRE names (proto snake_case), resolved
+// against the per-view Fields vocabulary — the allowlist that keeps
+// unresolved spellings away from the reader.
+//
+// Every control obeys the endpoint's Request DTO: a control set on the wire
+// without the matching `query:"…"` declaration rejects as a SchemaViolation
+// (INVALID_ARGUMENT) — the proto is shared, so the contract shows every
+// field; the DTO decides which ones this endpoint honors.
 
 // PaginationRequest carries the read-side control keys — the proto siblings
-// of ?after ?before ?limit ?onlyTotal ?includeArchived ?search. The
-// conventional field name is `pagination`. `search` is honored only when the
-// Request DTO opts in via `query:"search"` (the same gate the REST wire
-// applies); setting it against a non-opted-in DTO rejects as SchemaViolation.
-// Combining only_total=true with after/before/limit (or with sort/read_mask)
-// rejects the same way — the REST conflict matrix, verbatim.
+// of ?after ?before ?first ?last ?onlyTotal ?includeArchived ?search. The
+// conventional field name is `pagination`. Forward (first/after) and
+// backward (last/before) are mutually exclusive — paging runs in one
+// direction at a time; `last` with no cursor yields the LAST N of the set.
+// Combining only_total=true with a page-shaping control (first/last/after/
+// before/order_by/fields) rejects as SchemaViolation — the conflict matrix
+// shared with REST and GraphQL through the canonical control gateway.
+// Every field carries explicit presence (proto3 optional): PRESENCE is what
+// the DTO opt-in gate polices, the VALUE is what activates — an explicit
+// only_total=false / include_archived=false still requires the declaration
+// and stays a no-op, the exact semantics of REST's ?onlyTotal=false.
 message PaginationRequest {
   optional string after = 1;
   optional string before = 2;
-  optional int64 limit = 3;
-  bool only_total = 4;
-  bool include_archived = 5;
+  optional int64 first = 3;
+  optional bool only_total = 4;
+  optional bool include_archived = 5;
   optional string search = 6;
+  optional int64 last = 7;
 }
 
 // PaginationInfo is the response-side envelope — the exact mirror of the
-// REST `pagination` block (same field names, same semantics; the
-// conventional field name on the response message is `pagination`). A list
-// response composes it next to ONE repeated message field (the items); the
-// framework locates both BY TYPE, so item/field naming stays the service's
-// choice. Cursors are opaque keyset cursors (echo them into
-// PaginationRequest.after/before), empty when there is no further page —
-// has_next/has_prev state the same fact as explicit booleans.
+// REST `pagination` block and the GraphQL pageInfo (the Relay connection
+// vocabulary, snake_cased; the conventional field name on the response
+// message is `pagination`). A list response composes it next to ONE repeated
+// message field (the items); the framework locates both BY TYPE, so
+// item/field naming stays the service's choice. Cursors are WINDOW EDGES —
+// start_cursor/end_cursor address the first and last row of THIS page (echo
+// them into PaginationRequest.before/after to walk), empty when the page is
+// empty — and has_next_page/has_previous_page state whether rows exist
+// beyond each edge.
 message PaginationInfo {
-  int64 total = 1;
-  string next_cursor = 2;
-  string prev_cursor = 3;
-  bool has_next = 4;
-  bool has_prev = 5;
+  int64 total_count = 1;
+  string end_cursor = 2;
+  string start_cursor = 3;
+  bool has_next_page = 4;
+  bool has_previous_page = 5;
 }
 
-// SortField is one ?sort= entry: the WIRE field name (the response
-// message's proto field, snake_case) + direction. The converter resolves it
-// against the view's declared Fields vocabulary — an undeclared name is a
-// wire-contract violation.
-message SortField {
+// OrderByField is one ?orderBy= entry: the WIRE field name (the response
+// message's proto field, snake_case) + direction. The conventional request
+// field name is `order_by`. The converter resolves it against the view's
+// declared Fields vocabulary — an undeclared name is a wire-contract
+// violation.
+message OrderByField {
   string field = 1;
   bool desc = 2;
 }

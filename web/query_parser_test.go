@@ -61,8 +61,8 @@ func TestNewQueryParser_EmitsSortOptInWarn(t *testing.T) {
 	_ = NewQueryParser[testFindParamsRequest, sparseUser]()
 
 	logs := buf.String()
-	if !strings.Contains(logs, "query.sort.opt-in") {
-		t.Fatalf("expected query.sort.opt-in warn, log was: %s", logs)
+	if !strings.Contains(logs, "query.orderBy.opt-in") {
+		t.Fatalf("expected query.orderBy.opt-in warn, log was: %s", logs)
 	}
 	// Sortable paths come from extractProjectionSchema(sparseUser); the
 	// projection_test already verifies the path map's contents. Spot check
@@ -77,7 +77,7 @@ func TestNewQueryParser_EmitsSortOptInWarn(t *testing.T) {
 }
 
 func TestNewQueryParser_NoWarnWhenSortNotOptedIn(t *testing.T) {
-	// Request that opts into ?fields= but NOT ?sort= → no warn fires.
+	// Request that opts into ?fields= but NOT ?orderBy= → no warn fires.
 	type fieldsOnlyRequest struct {
 		Name   *string `query:"name"  filter:"eq"`
 		Fields *string `query:"fields"`
@@ -89,7 +89,7 @@ func TestNewQueryParser_NoWarnWhenSortNotOptedIn(t *testing.T) {
 
 	_ = NewQueryParser[fieldsOnlyRequest, sparseUser]()
 
-	if strings.Contains(buf.String(), "query.sort.opt-in") {
+	if strings.Contains(buf.String(), "query.orderBy.opt-in") {
 		t.Errorf("did not expect sort opt-in warn when only Fields is declared, log was: %s", buf.String())
 	}
 }
@@ -129,16 +129,16 @@ func TestQueryParser_Parse_SortTranslatesWireToDocAndHonorsMinusPrefix(t *testin
 		return c.SendStatus(fiber.StatusOK)
 	})
 
-	_, _ = app.Test(httptest.NewRequest("GET", "/x?sort=-addresses.zipCode,name", nil))
+	_, _ = app.Test(httptest.NewRequest("GET", "/x?orderBy=-addresses.zipCode,name", nil))
 
-	if len(crit.Sort) != 2 {
-		t.Fatalf("expected 2 SortFields, got %d (%+v)", len(crit.Sort), crit.Sort)
+	if len(crit.OrderBy) != 2 {
+		t.Fatalf("expected 2 OrderByFields, got %d (%+v)", len(crit.OrderBy), crit.OrderBy)
 	}
-	if crit.Sort[0].Field != "Addresses.ZipCode" || !crit.Sort[0].Desc {
-		t.Errorf("expected addresses.zip_code desc, got %+v", crit.Sort[0])
+	if crit.OrderBy[0].Field != "Addresses.ZipCode" || !crit.OrderBy[0].Desc {
+		t.Errorf("expected addresses.zip_code desc, got %+v", crit.OrderBy[0])
 	}
-	if crit.Sort[1].Field != "Name" || crit.Sort[1].Desc {
-		t.Errorf("expected name asc, got %+v", crit.Sort[1])
+	if crit.OrderBy[1].Field != "Name" || crit.OrderBy[1].Desc {
+		t.Errorf("expected name asc, got %+v", crit.OrderBy[1])
 	}
 }
 
@@ -183,7 +183,7 @@ func TestQueryParser_Parse_UnknownSortTokenSurfacesBracketedField(t *testing.T) 
 		return c.SendStatus(fiber.StatusOK)
 	})
 
-	resp, _ := app.Test(httptest.NewRequest("GET", "/x?sort=-bogus", nil))
+	resp, _ := app.Test(httptest.NewRequest("GET", "/x?orderBy=-bogus", nil))
 	if resp.StatusCode != fiber.StatusBadRequest {
 		body, _ := io.ReadAll(resp.Body)
 		t.Fatalf("expected 400 from unknown sort token, got %d (body=%s)", resp.StatusCode, body)
@@ -196,8 +196,8 @@ func TestQueryParser_Parse_UnknownSortTokenSurfacesBracketedField(t *testing.T) 
 	errs := parsed["errors"].([]any)
 	msg := errs[0].(map[string]any)["messages"].([]any)[0].(map[string]any)
 	// The `-` prefix is preserved verbatim — matches the canonical wrapper.
-	if got := msg["field"]; got != "sort[-bogus]" {
-		t.Errorf("expected field=sort[-bogus], got %v", got)
+	if got := msg["field"]; got != "orderBy[-bogus]" {
+		t.Errorf("expected field=orderBy[-bogus], got %v", got)
 	}
 }
 
@@ -220,7 +220,7 @@ func TestNewQueryParser_RawDocResponseFallsBackToPassThrough(t *testing.T) {
 		crit = got
 		return c.SendStatus(fiber.StatusOK)
 	})
-	_, _ = app.Test(httptest.NewRequest("GET", "/x?fields=foo,bar&sort=anything", nil))
+	_, _ = app.Test(httptest.NewRequest("GET", "/x?fields=foo,bar&orderBy=anything", nil))
 
 	if v, ok := crit.Projection["foo"]; !ok || v != 1 {
 		t.Errorf("expected foo:1 in pass-through projection, got %v", crit.Projection)
@@ -228,7 +228,7 @@ func TestNewQueryParser_RawDocResponseFallsBackToPassThrough(t *testing.T) {
 	if _, hasIDExclusion := crit.Projection["_id"]; hasIDExclusion {
 		t.Errorf("pass-through mode should not add _id:0, got %v", crit.Projection)
 	}
-	if len(crit.Sort) != 1 || crit.Sort[0].Field != "anything" {
-		t.Errorf("expected SortField=anything verbatim, got %+v", crit.Sort)
+	if len(crit.OrderBy) != 1 || crit.OrderBy[0].Field != "anything" {
+		t.Errorf("expected OrderByField=anything verbatim, got %+v", crit.OrderBy)
 	}
 }

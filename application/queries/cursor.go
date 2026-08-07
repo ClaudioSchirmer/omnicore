@@ -34,7 +34,7 @@ var ErrCursorInvalid = errors.New("cursor invalid")
 // containing only _id.
 //
 // H is the canonical SHA-256 of the issuing call's full listing context —
-// see HashContext for the deterministic byte stream. Covers Filter, Sort,
+// see HashContext for the deterministic byte stream. Covers Filter, OrderBy,
 // Search and IncludeArchived. Empty when the issuing call had the default
 // context (no filter, no sort, no search, archived excluded). The reader
 // compares H against the current call's context hash and rejects ANY
@@ -44,8 +44,8 @@ var ErrCursorInvalid = errors.New("cursor invalid")
 // a stale keyset boundary on a different result set.
 //
 // The reader builds the keyset filter (forward $gt / backward $lt cascade)
-// from K, aligned positionally with ReadCriteria.Sort. The wrapper validates
-// len(K)-1 == len(Sort) AND H matches HashContext(criteria...) after parsing
+// from K, aligned positionally with ReadCriteria.OrderBy. The wrapper validates
+// len(K)-1 == len(OrderBy) AND H matches HashContext(criteria...) after parsing
 // the query string; either mismatch is rejected with 400
 // SchemaViolationNotification on the field that carried the cursor.
 type Cursor struct {
@@ -110,7 +110,7 @@ func DecodeCursor(s string) (Cursor, error) {
 // the cursor walks. Covers:
 //
 //   - filter: the Filter map (deterministic key sort at every depth)
-//   - sortFields: declaration order + field + Desc flag per entry
+//   - orderBy: declaration order + field + Desc flag per entry
 //   - search: the raw `?search=` value (text-index query)
 //   - includeArchived: the DeletedAt gate flag
 //
@@ -128,15 +128,15 @@ func DecodeCursor(s string) (Cursor, error) {
 //
 // Symmetric to the sort tuple-length alignment check the wrapper performs
 // in parallel — both checks must pass for a cursor to be honored.
-func HashContext(filter map[string]any, sortFields []SortField, search string, includeArchived bool) string {
-	if len(filter) == 0 && len(sortFields) == 0 && search == "" && !includeArchived {
+func HashContext(filter map[string]any, orderBy []OrderByField, search string, includeArchived bool) string {
+	if len(filter) == 0 && len(orderBy) == 0 && search == "" && !includeArchived {
 		return ""
 	}
 	h := sha256.New()
 	fmt.Fprint(h, "ctx_v1|filter:")
 	canonicalizeFilterValue(h, filter)
-	fmt.Fprintf(h, "|sort:%d", len(sortFields))
-	for _, s := range sortFields {
+	fmt.Fprintf(h, "|sort:%d", len(orderBy))
+	for _, s := range orderBy {
 		fmt.Fprintf(h, ":%d:%s:%t", len(s.Field), s.Field, s.Desc)
 	}
 	fmt.Fprintf(h, "|search:%d:%s", len(search), search)

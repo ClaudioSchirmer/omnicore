@@ -1,6 +1,7 @@
 package queryschema
 
 import (
+	"fmt"
 	"reflect"
 	"strings"
 	"sync"
@@ -28,8 +29,10 @@ type RequestSchema struct {
 //   - Group == true       → embed group (`query:"prefix"` on a struct field
 //     with no filter tag); WalkRequest descends into it and also yields its
 //     inner fields. The group itself carries no value on the wire.
-//   - Ops == nil && !Group → reserved/control scalar (`query:"limit"` etc.);
-//     honored as a reserved key only when TopLevel.
+//   - Ops == nil && !Group → reserved/control scalar (`query:"first"` etc.);
+//     honored as a reserved key only when TopLevel, and only for the
+//     canonical ControlKeys vocabulary (anything else is a boot fail —
+//     see ExtractRequestSchema).
 type RequestField struct {
 	WirePath string
 	GoPath   string
@@ -166,7 +169,19 @@ func ExtractRequestSchema(t reflect.Type) *RequestSchema {
 			}
 			s.Filters[leaf.WirePath] = FilterSpec{Ops: ops, DocPath: leaf.GoPath, GoKind: leafType.Kind()}
 		case leaf.TopLevel:
-			s.Reserved[leaf.Field.Tag.Get("query")] = true
+			key := leaf.Field.Tag.Get("query")
+			// The control vocabulary is CLOSED. A non-canonical key here is
+			// always a mistake (typo, or a stale spelling from another
+			// framework's vocabulary): it would opt nothing in — every wire
+			// use keeps rejecting — while the OpenAPI generator advertised
+			// the dead parameter. Fail loud at construction, like the
+			// fields-response guard.
+			if !ControlKeys[key] {
+				panic(fmt.Sprintf(
+					"queryschema: %s.%s declares query:%q, which is not a reserved control key — a top-level query-tagged scalar without a filter:\"…\" tag must be one of the canonical controls (%s); for a filter leaf, add its filter:\"…\" operator tag",
+					t.String(), leaf.Field.Name, key, strings.Join(controlKeyList, ", ")))
+			}
+			s.Reserved[key] = true
 		}
 	}
 	schemaCache.Store(t, s)

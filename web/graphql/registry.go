@@ -10,6 +10,7 @@ import (
 	"github.com/ClaudioSchirmer/omnicore/application/pipeline"
 	"github.com/ClaudioSchirmer/omnicore/application/queries"
 	"github.com/ClaudioSchirmer/omnicore/domain"
+	"github.com/ClaudioSchirmer/omnicore/web/queryschema"
 	"github.com/vektah/gqlparser/v2"
 	"github.com/vektah/gqlparser/v2/ast"
 )
@@ -155,30 +156,31 @@ func QueryWithParams[TReq HasToParamsQuery[TQ], R any, TQ queries.QueryWithParam
 		sdlLine: func(b *sdlBuilder) string { return b.queryFieldSDL(name, entity, reqType, respType) },
 		makeResolve: func(pipe *pipeline.Pipeline) resolver {
 			return func(ctx *configuration.AppContext, args map[string]any, sel ast.SelectionSet, frags ast.FragmentDefinitionList) (any, []GraphQLError) {
-				crit, gerr := plan.buildCriteria(args)
+				crit, controls, gerr := plan.buildCriteria(args)
 				if gerr != nil {
 					return nil, []GraphQLError{*gerr}
 				}
-				// Relay pagination guard: reject a non-positive page size and a
-				// forward+backward argument mix (first+last, last+after, …) with a
-				// SchemaViolation before dispatch — REST parity, and it keeps the
-				// after+before mix a 400 here instead of a 500 from the reader's
-				// defense-in-depth check.
-				if bad := paginationArgConflict(args); bad != "" {
-					return nil, schemaViolation(pipe, ctx, bad)
-				}
-				// Count-only: a selection of just totalCount (no edges/pageInfo)
-				// maps to ReadCriteria.OnlyTotal, the GraphQL idiom for REST's
-				// ?onlyTotal=true — the reader short-circuits to CountDocuments.
-				// A pagination/sort argument alongside it is a conflict (no page
-				// to order or seek into), rejected with a SchemaViolation, REST
-				// parity with onlyTotalConflicts. Mutually exclusive with the
-				// projection below (no node → nil proj).
-				if onlyTotalSelected(sel, frags) {
-					if conflict := conflictingPaginationArg(args); conflict != "" {
-						return nil, schemaViolation(pipe, ctx, conflict)
-					}
+				// Only-total: a selection of just totalCount (no edges/pageInfo)
+				// is the GraphQL expression of REST's ?onlyTotal=true — no
+				// argument, the selection shape is the switch. The MODE activates
+				// only when the endpoint's DTO opted in via `query:"onlyTotal"`
+				// (the reader short-circuits to its count primitive); without the
+				// opt-in the same selection stays valid and returns the same
+				// totalCount through the un-optimized paged read — the total is
+				// intrinsic to every list envelope on every surface.
+				if onlyTotalSelected(sel, frags) && plan.reqSchema.Reserved[queryschema.KeyOnlyTotal] {
+					active := true
+					controls.OnlyTotal = &active
 					crit.OnlyTotal = true
+				}
+				// The canonical control gateway — the same three checks REST and
+				// gRPC run (DTO opt-in gate, directional rule, only-total conflict
+				// matrix), rendered in this surface's idiom via schemaViolation.
+				// The SDL already cut undeclared args (gqlparser rejects unknown
+				// arguments before the resolver), so the gate arm is defense in
+				// depth; direction + conflicts are the live checks.
+				if violations := queryschema.ValidateControls(plan.reqSchema.Reserved, controls, graphqlNaturalControls); len(violations) > 0 {
+					return nil, schemaViolation(pipe, ctx, violations[0].Field())
 				}
 				// Selection set → projection: an explicitly selected restricted
 				// field trips ReadCriteria.Restrict's active-reference 403 (parity
@@ -186,6 +188,13 @@ func QueryWithParams[TReq HasToParamsQuery[TQ], R any, TQ queries.QueryWithParam
 				// requested fields (pushdown). Empty node selection → nil → whole-doc.
 				if proj := plan.projectionFromSelection(sel, frags); len(proj) > 0 {
 					crit.Projection = proj
+				} else if !crit.OnlyTotal && pageInfoOnlySelected(sel, frags) {
+					// Pagination probe: pageInfo with no edges — the consumer wants
+					// the window's boundaries, not its rows. Narrow the read to the
+					// keyset essentials (ordering values + _id); the reader still
+					// walks the window (edges cannot exist without it) but skips
+					// materializing full documents.
+					crit.Projection = keysOnlyProjection(crit.OrderBy)
 				}
 				var req TReq
 				res := pipeline.Dispatch(pipe, ctx, req.ToQuery(crit), h)
@@ -243,7 +252,7 @@ func (r *Registry) missingPermission(ctx *configuration.AppContext, permission s
 // same way a handler failure surfaces — through pipeline.Run so the message is
 // translated against the request language and carries the typed triple
 // (notificationKey SchemaViolationNotification, field = the offending argument).
-// Used for the count-only-vs-pagination conflict, REST parity with the
+// Used for the only-total-vs-pagination conflict, REST parity with the
 // onlyTotalConflicts 400. Package-level (the read resolver holds pipe, not the
 // Registry).
 func schemaViolation(pipe *pipeline.Pipeline, ctx *configuration.AppContext, field string) []GraphQLError {

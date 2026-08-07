@@ -11,8 +11,8 @@ func TestFindByParamsQueryHandler_DelegatesToReader(t *testing.T) {
 	reader := &spyReader{
 		pageToReturn: queries.Page{
 			Items:   []map[string]any{{"id": "a"}},
-			HasNext: true,
-			Total:   1,
+			HasNextPage: true,
+			TotalCount:   1,
 		},
 	}
 	h := &FindByParamsQueryHandler[*testFindParamsQuery]{Reader: reader, View: "users"}
@@ -44,7 +44,7 @@ func TestFindByParamsQueryHandler_DelegatesToReader(t *testing.T) {
 	if q.gotCtx != ctx {
 		t.Error("expected ToCriteria to receive the request ctx")
 	}
-	if !page.HasNext || page.Total != 1 {
+	if !page.HasNextPage || page.TotalCount != 1 {
 		t.Errorf("expected page roundtrip, got %+v", page)
 	}
 }

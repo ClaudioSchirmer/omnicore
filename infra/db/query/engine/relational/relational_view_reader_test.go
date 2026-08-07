@@ -132,7 +132,7 @@ func TestUnsupportedChildFilter_MapsTo400(t *testing.T) {
 // TestUnsupportedChildSort_MapsTo400 covers a sort on a child (dotted) field:
 // a root ORDER BY cannot express it, so the reader rejects it as a 400.
 func TestUnsupportedChildSort_MapsTo400(t *testing.T) {
-	err := applySort(guardSchema("gadgets"), criteria.Where(nil), []queries.SortField{{Field: "Addresses.ZipCode"}})
+	err := applySort(guardSchema("gadgets"), criteria.Where(nil), []queries.OrderByField{{Field: "Addresses.ZipCode"}})
 	assertRelationalCapability400(t, err, "Addresses.ZipCode")
 }
 
@@ -174,7 +174,7 @@ func TestServableSiblingField_Passes(t *testing.T) {
 	if _, err := toExpr(siblingSchema("gadgets"), map[string]any{"Material": "steel"}); err != nil {
 		t.Fatalf("a root-level sibling field must be servable (1:1 LEFT JOIN), got %v", err)
 	}
-	if err := applySort(siblingSchema("gadgets"), criteria.Where(nil), []queries.SortField{{Field: "Material"}}); err != nil {
+	if err := applySort(siblingSchema("gadgets"), criteria.Where(nil), []queries.OrderByField{{Field: "Material"}}); err != nil {
 		t.Fatalf("a sort on a root-level sibling field must be servable, got %v", err)
 	}
 }
@@ -186,7 +186,7 @@ func TestServableSharedBaseField_Passes(t *testing.T) {
 	if _, err := toExpr(sharedBaseSchema("holders"), map[string]any{"DisplayName": "ACME"}); err != nil {
 		t.Fatalf("a shared-base field must be servable (1:1 base JOIN), got %v", err)
 	}
-	if err := applySort(sharedBaseSchema("holders"), criteria.Where(nil), []queries.SortField{{Field: "DisplayName"}}); err != nil {
+	if err := applySort(sharedBaseSchema("holders"), criteria.Where(nil), []queries.OrderByField{{Field: "DisplayName"}}); err != nil {
 		t.Fatalf("a sort on a shared-base field must be servable, got %v", err)
 	}
 }
@@ -205,7 +205,7 @@ func TestServableRootField_Passes(t *testing.T) {
 	if _, err := toExpr(guardSchema("gadgets"), map[string]any{"Name": "x"}); err != nil {
 		t.Fatalf("a root-own field must be servable, got %v", err)
 	}
-	if err := applySort(guardSchema("gadgets"), criteria.Where(nil), []queries.SortField{{Field: "Name"}}); err != nil {
+	if err := applySort(guardSchema("gadgets"), criteria.Where(nil), []queries.OrderByField{{Field: "Name"}}); err != nil {
 		t.Fatalf("a root-own sort field must be servable, got %v", err)
 	}
 }
@@ -298,7 +298,7 @@ func relViewWith(ceiling int64, fake *fakeLoader) *RelationalViewReader {
 }
 
 // TestReadPage_MaxLimitRejected proves the relational reader honors the per-view
-// MaxLimit cascade EXACTLY like the Mongo reader: a `?limit=` over the ceiling is
+// MaxLimit cascade EXACTLY like the Mongo reader: a `?first=` over the ceiling is
 // the canonical 400 LimitExceededNotification, rejected BEFORE any load runs.
 func TestReadPage_MaxLimitRejected(t *testing.T) {
 	fake := &fakeLoader{table: "gadgets"}

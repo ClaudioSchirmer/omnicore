@@ -432,8 +432,8 @@ func (*ArchiveGadgetResponse) Descriptor() ([]byte, []int) {
 type SearchGadgetsRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Pagination    *pb.PaginationRequest  `protobuf:"bytes,1,opt,name=pagination,proto3" json:"pagination,omitempty"`
-	Sort          []*pb.SortField        `protobuf:"bytes,2,rep,name=sort,proto3" json:"sort,omitempty"`
-	ReadMask      *fieldmaskpb.FieldMask `protobuf:"bytes,3,opt,name=read_mask,json=readMask,proto3" json:"read_mask,omitempty"`
+	OrderBy       []*pb.OrderByField     `protobuf:"bytes,2,rep,name=order_by,json=orderBy,proto3" json:"order_by,omitempty"`
+	Fields        *fieldmaskpb.FieldMask `protobuf:"bytes,3,opt,name=fields,proto3" json:"fields,omitempty"`
 	Filters       *SearchGadgetsFilters  `protobuf:"bytes,4,opt,name=filters,proto3" json:"filters,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -476,16 +476,16 @@ func (x *SearchGadgetsRequest) GetPagination() *pb.PaginationRequest {
 	return nil
 }
 
-func (x *SearchGadgetsRequest) GetSort() []*pb.SortField {
+func (x *SearchGadgetsRequest) GetOrderBy() []*pb.OrderByField {
 	if x != nil {
-		return x.Sort
+		return x.OrderBy
 	}
 	return nil
 }
 
-func (x *SearchGadgetsRequest) GetReadMask() *fieldmaskpb.FieldMask {
+func (x *SearchGadgetsRequest) GetFields() *fieldmaskpb.FieldMask {
 	if x != nil {
-		return x.ReadMask
+		return x.Fields
 	}
 	return nil
 }
@@ -1551,13 +1551,13 @@ const file_test_proto_rawDesc = "" +
 	"\x14ArchiveGadgetRequest\x12\x13\n" +
 	"\x02id\x18\x01 \x01(\tH\x00R\x02id\x88\x01\x01B\x05\n" +
 	"\x03_id\"\x17\n" +
-	"\x15ArchiveGadgetResponse\"\x81\x02\n" +
+	"\x15ArchiveGadgetResponse\"\x86\x02\n" +
 	"\x14SearchGadgetsRequest\x12>\n" +
 	"\n" +
 	"pagination\x18\x01 \x01(\v2\x1e.omnicore.v1.PaginationRequestR\n" +
-	"pagination\x12*\n" +
-	"\x04sort\x18\x02 \x03(\v2\x16.omnicore.v1.SortFieldR\x04sort\x127\n" +
-	"\tread_mask\x18\x03 \x01(\v2\x1a.google.protobuf.FieldMaskR\breadMask\x12D\n" +
+	"pagination\x124\n" +
+	"\border_by\x18\x02 \x03(\v2\x19.omnicore.v1.OrderByFieldR\aorderBy\x122\n" +
+	"\x06fields\x18\x03 \x01(\v2\x1a.google.protobuf.FieldMaskR\x06fields\x12D\n" +
 	"\afilters\x18\x04 \x01(\v2*.omnicore.grpctest.v1.SearchGadgetsFiltersR\afilters\"\x96\x02\n" +
 	"\x14SearchGadgetsFilters\x12-\n" +
 	"\x04name\x18\x01 \x01(\v2\x19.omnicore.v1.StringFilterR\x04name\x120\n" +
@@ -1695,7 +1695,7 @@ var file_test_proto_goTypes = []any{
 	(*ScalarMatrix)(nil),               // 25: omnicore.grpctest.v1.ScalarMatrix
 	nil,                                // 26: omnicore.grpctest.v1.MapCarrier.LabelsEntry
 	(*pb.PaginationRequest)(nil),       // 27: omnicore.v1.PaginationRequest
-	(*pb.SortField)(nil),               // 28: omnicore.v1.SortField
+	(*pb.OrderByField)(nil),            // 28: omnicore.v1.OrderByField
 	(*fieldmaskpb.FieldMask)(nil),      // 29: google.protobuf.FieldMask
 	(*pb.StringFilter)(nil),            // 30: omnicore.v1.StringFilter
 	(*pb.Int64Filter)(nil),             // 31: omnicore.v1.Int64Filter
@@ -1707,8 +1707,8 @@ var file_test_proto_goTypes = []any{
 }
 var file_test_proto_depIdxs = []int32{
 	27, // 0: omnicore.grpctest.v1.SearchGadgetsRequest.pagination:type_name -> omnicore.v1.PaginationRequest
-	28, // 1: omnicore.grpctest.v1.SearchGadgetsRequest.sort:type_name -> omnicore.v1.SortField
-	29, // 2: omnicore.grpctest.v1.SearchGadgetsRequest.read_mask:type_name -> google.protobuf.FieldMask
+	28, // 1: omnicore.grpctest.v1.SearchGadgetsRequest.order_by:type_name -> omnicore.v1.OrderByField
+	29, // 2: omnicore.grpctest.v1.SearchGadgetsRequest.fields:type_name -> google.protobuf.FieldMask
 	9,  // 3: omnicore.grpctest.v1.SearchGadgetsRequest.filters:type_name -> omnicore.grpctest.v1.SearchGadgetsFilters
 	30, // 4: omnicore.grpctest.v1.SearchGadgetsFilters.name:type_name -> omnicore.v1.StringFilter
 	31, // 5: omnicore.grpctest.v1.SearchGadgetsFilters.rating:type_name -> omnicore.v1.Int64Filter

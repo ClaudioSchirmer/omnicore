@@ -6,12 +6,12 @@ import (
 	"testing"
 )
 
-// ─── parseExportSort: prefix handling, empty-token skip, unknown token ───────
+// ─── parseExportOrderBy: prefix handling, empty-token skip, unknown token ───────
 
 func TestParseExportSort(t *testing.T) {
 	wireToGo := map[string]string{"name": "Name", "age": "Age"}
 
-	sf, bad, ok := parseExportSort("name,-age", wireToGo)
+	sf, bad, ok := parseExportOrderBy("name,-age", wireToGo)
 	if !ok || bad != "" {
 		t.Fatalf("expected ok, got bad=%q ok=%v", bad, ok)
 	}
@@ -23,13 +23,13 @@ func TestParseExportSort(t *testing.T) {
 	}
 
 	// leading/empty tokens are skipped
-	sf, _, ok = parseExportSort("name, ,", wireToGo)
+	sf, _, ok = parseExportOrderBy("name, ,", wireToGo)
 	if !ok || len(sf) != 1 {
 		t.Fatalf("empty tokens not skipped: %+v ok=%v", sf, ok)
 	}
 
 	// unknown token returns it verbatim and ok=false
-	_, bad, ok = parseExportSort("name,-bogus", wireToGo)
+	_, bad, ok = parseExportOrderBy("name,-bogus", wireToGo)
 	if ok || bad != "-bogus" {
 		t.Fatalf("expected unknown token '-bogus', got bad=%q ok=%v", bad, ok)
 	}

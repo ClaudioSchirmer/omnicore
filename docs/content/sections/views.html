@@ -673,13 +673,13 @@ func SaleView() *query.ViewDefinition {
             and never removes a primary row. The single most important difference between the two families.</td>
     </tr>
     <tr>
-        <td>Sort</td><td>End user</td><td><code>?sort=</code> (root or 1:1 segment paths)</td>
+        <td>Sort</td><td>End user</td><td><code>?orderBy=</code> (root or 1:1 segment paths)</td>
         <td>A 1:1 segment field is a first-class sort key (it is ordinary document content), where a composed read
             rejects any segment path with 400. A path inside a 1:N segment is still not a sort key on either family — an
             array has no single value to build a cursor from.</td>
     </tr>
     <tr>
-        <td><code>fields</code> / <code>limit</code> / cursors / <code>search</code> / <code>onlyTotal</code> / <code>includeArchived</code></td>
+        <td><code>fields</code> / <code>first</code>/<code>last</code> / cursors / <code>search</code> / <code>onlyTotal</code> / <code>includeArchived</code></td>
         <td>End user</td><td>the usual control keys</td>
         <td>Unchanged, and they descend into the segments at any depth (<code>?fields=parts.gadget.code</code>).</td>
     </tr>
@@ -900,11 +900,11 @@ func (f *GadgetFeature) ComposedViews() []*query.ComposedViewDefinition {
 
     <h4 id="views-composed-rules">The core rule — the primary drives selection</h4>
     <p>
-        <strong>Pagination, sort, <code>?search=</code>, <code>total</code> and cursors belong
+        <strong>Pagination, sort, <code>?search=</code>, <code>totalCount</code> and cursors belong
         exclusively to the primary view. Legs only enrich items already selected — they never add,
         remove or reorder primary rows.</strong> Keyset pagination is a tuple over one collection,
         sealed by a context hash; the moment a leg could decide which rows appear, pages would underfill
-        with unbounded refill work and <code>total</code> would lie. Everything below derives from this:
+        with unbounded refill work and <code>totalCount</code> would lie. Everything below derives from this:
     </p>
     <ul>
         <li><strong>Row-selecting filters target the primary</strong> — full 16-operator vocabulary via
@@ -915,12 +915,12 @@ func (f *GadgetFeature) ComposedViews() []*query.ComposedViewDefinition {
             in the array, whether the 1:1 sub-document attaches — never which primary items return.
             Segment filter paths resolve at <strong>every level</strong> of the linked document, with the
             same operators a direct read of that view would accept.</li>
-        <li><strong>Sort targets the primary only.</strong> A <code>?sort=</code> path into a segment is
+        <li><strong>Sort targets the primary only.</strong> A <code>?orderBy=</code> path into a segment is
             rejected with 400 <code>SchemaViolationNotification</code> — segment order is declared on the
             link, deterministically, precisely so truncation and array order never depend on wire input.</li>
         <li><strong>LEFT join always.</strong> 1:1 → explicit <code>null</code>; 1:N → empty array. There
             is no INNER mode — "require a match" would be a row-selecting filter in disguise.</li>
-        <li><strong><code>total</code>, <code>onlyTotal</code>, <code>has_next/has_prev</code> and both
+        <li><strong><code>totalCount</code>, <code>onlyTotal</code>, <code>hasNextPage/hasPreviousPage</code> and both
             cursors are the primary's</strong>, byte-for-byte. <code>?onlyTotal=true</code>
             short-circuits before any leg is fetched.</li>
         <li><strong>Cursors bind to the composed listing context</strong> — segment filters included
@@ -929,7 +929,7 @@ func (f *GadgetFeature) ComposedViews() []*query.ComposedViewDefinition {
     </ul>
 
     <h4 id="views-composed-exec">Execution model</h4>
-    <div class="flow">GET /gadgets-full?code.startswith=CV&amp;notes.text=b&amp;limit=20
+    <div class="flow">GET /gadgets-full?code.startswith=CV&amp;notes.text=b&amp;first=20
    │
    ▼
 wrapper parses + validates the allowlist (row filters, segment filters, control keys)
@@ -1095,8 +1095,8 @@ same envelope, same projector, same pagination block as any view read</div>
         <tbody><tr><th>Knob</th><th>Controlled by</th><th>Where</th><th>Why it lives there</th></tr>
         <tr><td>Row-selecting filters</td><td>End user</td><td><code>?field.op=</code> (allowlisted)</td><td>Selecting primary rows is the read's purpose.</td></tr>
         <tr><td>Segment filters</td><td>End user</td><td><code>?segment.field.op=</code> (allowlisted)</td><td>Shaping segment content is safe — it cannot touch row selection.</td></tr>
-        <tr><td>Sort</td><td>End user</td><td><code>?sort=</code> (primary paths only)</td><td>Order of ROWS is the primary's; a segment path is 400.</td></tr>
-        <tr><td><code>fields</code> / <code>limit</code> / cursors / <code>search</code> / <code>onlyTotal</code> / <code>includeArchived</code></td><td>End user</td><td>reserved keys</td><td>Same contract as every view; <code>fields</code> projects into segments too.</td></tr>
+        <tr><td>Sort</td><td>End user</td><td><code>?orderBy=</code> (primary paths only)</td><td>Order of ROWS is the primary's; a segment path is 400.</td></tr>
+        <tr><td><code>fields</code> / <code>first</code>/<code>last</code> / cursors / <code>search</code> / <code>onlyTotal</code> / <code>includeArchived</code></td><td>End user</td><td>reserved keys</td><td>Same contract as every view; <code>fields</code> projects into segments too.</td></tr>
         <tr><td>Segment order</td><td>Developer</td><td><code>OrderBy(column)[.Desc()]</code> on the link</td><td>Truncation and array order must be deterministic; it is NOT an end-user sort and carries no pagination semantics.</td></tr>
         <tr><td>Per-parent ceiling</td><td>Developer / operator</td><td><code>MaxLinkManyLimit(n)</code> → yaml → 100</td><td>Payload protection; silent deterministic truncation, full set on the leg's own view.</td></tr>
         <tr><td>Join keys, LEFT semantics, leg set</td><td>Developer</td><td>the declaration</td><td>The composition's identity — boot-validated, never wire-negotiable.</td></tr>

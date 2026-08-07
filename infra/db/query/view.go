@@ -328,15 +328,15 @@ func (v *ViewDefinition) EmbedInChild(childSchema *core.TableSchema, leg *Leg) *
 	return &embedBinding{v: v, leg: leg, child: childSchema}
 }
 
-// MaxLimit overrides the per-view ceiling on `?limit=` for endpoints reading
+// MaxLimit overrides the per-view page-size ceiling (`?first=`/`?last=`) for endpoints reading
 // from this projection. Applies uniformly to every endpoint that consults the
 // view, regardless of how many handlers point at it — the cap describes the
 // cost of reading this specific dataset, not the cost of any single endpoint.
 //
 // Resolution at read time: this value (when > 0) wins; otherwise the yaml
 // default `query.maxLimit` wins; otherwise the framework default 100. A
-// `?limit=N` greater than the resolved ceiling is rejected with 400
-// SchemaViolationNotification at the wire boundary.
+// `?first=N`/`?last=N` greater than the resolved ceiling is rejected by the
+// reader with the 400 LimitExceededNotification.
 //
 // NOT part of RebuildHash / ArtifactHash: the cap is operational state, not
 // projection shape. Bumping it neither triggers a Mongo rebuild nor requires

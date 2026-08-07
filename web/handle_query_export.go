@@ -24,9 +24,9 @@ import (
 // Wire behavior:
 //   - Filters come from the Request DTO's `query:"X" filter:"ops"` tags (same
 //     allowlist as the JSON endpoint). `?search=` and `?includeArchived=` are
-//     honored; `?fields=` and `?sort=` are validated/translated against the
+//     honored; `?fields=` and `?orderBy=` are validated/translated against the
 //     plan (the view schema), not a Response DTO.
-//   - User pagination (`?limit` / `?after` / `?before` / `?onlyTotal`) is
+//   - User pagination (`?first` / `?last` / `?after` / `?before` / `?onlyTotal`) is
 //     IGNORED — an export returns the full filtered set, capped at maxRows
 //     (the resolved per-view / yaml ceiling) sent as the read limit.
 //   - On a query-string violation → 400 SchemaViolationNotification BEFORE any
@@ -72,8 +72,8 @@ type ExportDeps struct {
 // buildExportCriteria (runtime) AND listed on RouteSpec.OmittedQueryParams
 // (OpenAPI), keeping the spec honest: Swagger never renders a knob the export
 // does not honor. Every other reserved key the export DOES honor (filters,
-// fields, sort, search, includeArchived) stays in the spec.
-var exportIgnoredQueryParams = []string{"limit", "after", "before", "onlyTotal"}
+// fields, orderBy, search, includeArchived) stays in the spec.
+var exportIgnoredQueryParams = []string{"first", "last", "after", "before", "onlyTotal"}
 
 func isExportIgnoredParam(key string) bool {
 	for _, k := range exportIgnoredQueryParams {
@@ -245,7 +245,7 @@ func QueryAsXLSXSpec[TReq HasToParamsQuery[TQ], TQ queries.QueryWithParams](
 }
 
 // buildExportCriteria parses the export route's query string. Filters come from
-// the Request DTO schema (reusing the JSON allowlist); `?fields=` / `?sort=` are
+// the Request DTO schema (reusing the JSON allowlist); `?fields=` / `?orderBy=` are
 // validated/translated against the plan; `?search=` / `?includeArchived=` flow
 // through. Pagination keys are ignored — the export forces Limit=maxRows and
 // walks the full filtered set. `?fields=` flows into crit.Projection (validated
@@ -254,9 +254,15 @@ func QueryAsXLSXSpec[TReq HasToParamsQuery[TQ], TQ queries.QueryWithParams](
 func buildExportCriteria(c fiber.Ctx, schema *queryschema.RequestSchema, plan *queries.ExportPlan, maxRows int64) (queries.ReadCriteria, string, bool) {
 	// BypassMaxLimit: the export enforces its own operator-set ceiling
 	// (maxRows = resolved maxExportRows), which is deliberately larger than the
-	// per-view page `?limit` ceiling — the reader must not reject it.
+	// per-view `?first/?last` page-size ceiling — the reader must not reject it.
 	crit := queries.ReadCriteria{Filter: map[string]any{}, Limit: maxRows, BypassMaxLimit: true}
 	wireToGo := plan.WireToGoPaths()
+	// The DTO governs what the export honors, exactly as on the JSON listing:
+	// the honored controls (fields/orderBy/search/includeArchived) pass the
+	// canonical gate; the pagination keys stay accepted-but-ignored — they are
+	// part of the export contract as no-ops, documented via the omitted
+	// OpenAPI parameters.
+	var controls queryschema.Controls
 	var bad string
 	ok := true
 	c.Request().URI().QueryArgs().VisitAll(func(k, v []byte) { //nolint:staticcheck // SA1019: fasthttp VisitAll deprecated; All() migration deferred.
@@ -265,36 +271,47 @@ func buildExportCriteria(c fiber.Ctx, schema *queryschema.RequestSchema, plan *q
 		}
 		key := string(k)
 		val := string(v)
-		// Reserved pagination/control keys are accepted but ignored — an export
-		// streams the full filtered set, not a page. The same set is omitted
-		// from the generated OpenAPI parameters (RouteSpec.OmittedQueryParams),
-		// so Swagger never advertises a knob the export does not honor.
-		if isExportIgnoredParam(key) {
-			return
-		}
-		switch key {
-		case "search":
-			crit.Search = val
-			return
-		case "includeArchived":
-			crit.IncludeArchived = val == "true"
-			return
-		case "fields":
-			tokens := queries.SplitFields(val)
-			if b, vok := plan.Validate(tokens); !vok {
-				bad, ok = "fields["+b+"]", false
+		// A reserved spelling the DTO declared as a FILTER leaf keeps its
+		// filter meaning — the reserved vocabulary never shadows an explicit
+		// declaration, the same carve-out the JSON listing's buildCriteria
+		// applies. Only a non-shadowed key is read as a control (or ignored
+		// as a pagination no-op) below.
+		if _, isFilterLeaf := schema.Filters[key]; !isFilterLeaf {
+			// Reserved pagination/control keys are accepted but ignored — an export
+			// streams the full filtered set, not a page. The same set is omitted
+			// from the generated OpenAPI parameters (RouteSpec.OmittedQueryParams),
+			// so Swagger never advertises a knob the export does not honor.
+			if isExportIgnoredParam(key) {
 				return
 			}
-			crit.Projection = plan.Projection(tokens)
-			return
-		case "sort":
-			sf, b, sok := parseExportSort(val, wireToGo)
-			if !sok {
-				bad, ok = "sort["+b+"]", false
+			switch key {
+			case queryschema.KeySearch:
+				controls.Search = true
+				crit.Search = val
+				return
+			case queryschema.KeyIncludeArchived:
+				controls.IncludeArchived = true
+				crit.IncludeArchived = val == "true"
+				return
+			case queryschema.KeyFields:
+				controls.Fields = true
+				tokens := queries.SplitFields(val)
+				if b, vok := plan.Validate(tokens); !vok {
+					bad, ok = "fields["+b+"]", false
+					return
+				}
+				crit.Projection = plan.Projection(tokens)
+				return
+			case queryschema.KeyOrderBy:
+				controls.OrderBy = true
+				sf, b, sok := parseExportOrderBy(val, wireToGo)
+				if !sok {
+					bad, ok = "orderBy["+b+"]", false
+					return
+				}
+				crit.OrderBy = sf
 				return
 			}
-			crit.Sort = sf
-			return
 		}
 		wirePath, op := queryschema.ParseKeyAgainstSchema(key, schema)
 		if wirePath == "" {
@@ -315,15 +332,18 @@ func buildExportCriteria(c fiber.Ctx, schema *queryschema.RequestSchema, plan *q
 	if !ok {
 		return crit, bad, false
 	}
+	if violations := queryschema.ValidateControls(schema.Reserved, controls, nil); len(violations) > 0 {
+		return crit, violations[0].Field(), false
+	}
 	return crit, "", true
 }
 
-// parseExportSort resolves a comma-separated `?sort=` value against the plan's
-// wire→Go path map. Each token may carry a leading `-` (descending). An unknown
-// token returns it verbatim for the 400 envelope.
-func parseExportSort(val string, wireToGo map[string]string) ([]queries.SortField, string, bool) {
+// parseExportOrderBy resolves a comma-separated `?orderBy=` value against the
+// plan's wire→Go path map. Each token may carry a leading `-` (descending). An
+// unknown token returns it verbatim for the 400 envelope.
+func parseExportOrderBy(val string, wireToGo map[string]string) ([]queries.OrderByField, string, bool) {
 	tokens := strings.Split(val, ",")
-	out := make([]queries.SortField, 0, len(tokens))
+	out := make([]queries.OrderByField, 0, len(tokens))
 	for _, t := range tokens {
 		t = strings.TrimSpace(t)
 		if t == "" {
@@ -338,7 +358,7 @@ func parseExportSort(val string, wireToGo map[string]string) ([]queries.SortFiel
 		if !found {
 			return nil, t, false
 		}
-		out = append(out, queries.SortField{Field: gp, Desc: desc})
+		out = append(out, queries.OrderByField{Field: gp, Desc: desc})
 	}
 	return out, "", true
 }

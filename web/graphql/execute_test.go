@@ -24,7 +24,14 @@ func (q *execQuery) ToCriteria(_ *configuration.AppContext) (queries.ReadCriteri
 type execRequest struct {
 	Name  *string `query:"name" filter:"eq,in,startswith"`
 	Age   *int64  `query:"age" filter:"eq,gte"`
-	Limit *int64  `query:"limit"`
+	First           *int64  `query:"first"`
+	Last            *int64  `query:"last"`
+	After           *string `query:"after"`
+	Before          *string `query:"before"`
+	OrderBy         *string `query:"orderBy"`
+	Search          *string `query:"search"`
+	IncludeArchived *bool   `query:"includeArchived"`
+	OnlyTotal       *bool   `query:"onlyTotal"`
 }
 
 func (r execRequest) ToQuery(crit queries.ReadCriteria) *execQuery {
@@ -66,11 +73,11 @@ func TestExecute_ReadConnectionEndToEnd(t *testing.T) {
 			{"ID": "u2", "Name": "bob"},
 		},
 		ItemCursors: []string{"cur1", "cur2"},
-		HasNext:     true,
-		HasPrev:     false,
-		NextCursor:  "cur2",
-		PrevCursor:  "cur1",
-		Total:       2,
+		HasNextPage:     true,
+		HasPreviousPage:     false,
+		EndCursor:  "cur2",
+		StartCursor:  "cur1",
+		TotalCount:       2,
 	}}
 	reg, ctx := newExecRegistry(h)
 
@@ -94,8 +101,8 @@ func TestExecute_ReadConnectionEndToEnd(t *testing.T) {
 	if h.captured.Limit != 10 {
 		t.Errorf("first=10 → Limit, got %d", h.captured.Limit)
 	}
-	if len(h.captured.Sort) != 1 || h.captured.Sort[0].Field != "Name" || !h.captured.Sort[0].Desc {
-		t.Errorf("orderBy [-name] → Sort{Name desc}, got %+v", h.captured.Sort)
+	if len(h.captured.OrderBy) != 1 || h.captured.OrderBy[0].Field != "Name" || !h.captured.OrderBy[0].Desc {
+		t.Errorf("orderBy [-name] → Sort{Name desc}, got %+v", h.captured.OrderBy)
 	}
 
 	// ── connection shape (Relay) ──
@@ -131,7 +138,7 @@ func TestExecute_SelectionTrimsUnrequestedFields(t *testing.T) {
 	h := &fakeReadHandler{page: queries.Page{
 		Items:       []map[string]any{{"ID": "u1", "Name": "alice", "Age": int64(30)}},
 		ItemCursors: []string{"c1"},
-		Total:       1,
+		TotalCount:       1,
 	}}
 	reg, ctx := newExecRegistry(h)
 
@@ -152,7 +159,7 @@ func TestExecute_SelectionTrimsUnrequestedFields(t *testing.T) {
 }
 
 func TestExecute_InListOperatorFoldsToMongoIn(t *testing.T) {
-	h := &fakeReadHandler{page: queries.Page{Total: 0}}
+	h := &fakeReadHandler{page: queries.Page{TotalCount: 0}}
 	reg, ctx := newExecRegistry(h)
 
 	resp := reg.Execute(ctx, `{ users(where: { name: { in: ["a", "b"] } }) { totalCount } }`, nil, "")

@@ -68,7 +68,7 @@ func (q listGadgetsQuery) ToCriteria(*configuration.AppContext) (queries.ReadCri
 type listGadgetsHandler struct{}
 
 func (listGadgetsHandler) Handle(_ *configuration.AppContext, q *listGadgetsQuery) (queries.Page, error) {
-	return queries.Page{Items: []map[string]any{{"Name": q.NameContains}}, Total: 1}, nil
+	return queries.Page{Items: []map[string]any{{"Name": q.NameContains}}, TotalCount: 1}, nil
 }
 
 func fromGadgetsPage(page queries.Page) (*testpb.ListGadgetsResponse, error) {
@@ -76,7 +76,7 @@ func fromGadgetsPage(page queries.Page) (*testpb.ListGadgetsResponse, error) {
 	for _, item := range page.Items {
 		names = append(names, item["Name"].(string))
 	}
-	return &testpb.ListGadgetsResponse{Total: page.Total, Names: names}, nil
+	return &testpb.ListGadgetsResponse{Total: page.TotalCount, Names: names}, nil
 }
 
 func toCreateCommand(pb *testpb.CreateGadgetRequest) (*createGadgetCommand, error) {

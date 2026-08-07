@@ -223,20 +223,26 @@ func (BoolOp) EnumDescriptor() ([]byte, []int) {
 }
 
 // PaginationRequest carries the read-side control keys — the proto siblings
-// of ?after ?before ?limit ?onlyTotal ?includeArchived ?search. The
-// conventional field name is `pagination`. `search` is honored only when the
-// Request DTO opts in via `query:"search"` (the same gate the REST wire
-// applies); setting it against a non-opted-in DTO rejects as SchemaViolation.
-// Combining only_total=true with after/before/limit (or with sort/read_mask)
-// rejects the same way — the REST conflict matrix, verbatim.
+// of ?after ?before ?first ?last ?onlyTotal ?includeArchived ?search. The
+// conventional field name is `pagination`. Forward (first/after) and
+// backward (last/before) are mutually exclusive — paging runs in one
+// direction at a time; `last` with no cursor yields the LAST N of the set.
+// Combining only_total=true with a page-shaping control (first/last/after/
+// before/order_by/fields) rejects as SchemaViolation — the conflict matrix
+// shared with REST and GraphQL through the canonical control gateway.
+// Every field carries explicit presence (proto3 optional): PRESENCE is what
+// the DTO opt-in gate polices, the VALUE is what activates — an explicit
+// only_total=false / include_archived=false still requires the declaration
+// and stays a no-op, the exact semantics of REST's ?onlyTotal=false.
 type PaginationRequest struct {
 	state           protoimpl.MessageState `protogen:"open.v1"`
 	After           *string                `protobuf:"bytes,1,opt,name=after,proto3,oneof" json:"after,omitempty"`
 	Before          *string                `protobuf:"bytes,2,opt,name=before,proto3,oneof" json:"before,omitempty"`
-	Limit           *int64                 `protobuf:"varint,3,opt,name=limit,proto3,oneof" json:"limit,omitempty"`
-	OnlyTotal       bool                   `protobuf:"varint,4,opt,name=only_total,json=onlyTotal,proto3" json:"only_total,omitempty"`
-	IncludeArchived bool                   `protobuf:"varint,5,opt,name=include_archived,json=includeArchived,proto3" json:"include_archived,omitempty"`
+	First           *int64                 `protobuf:"varint,3,opt,name=first,proto3,oneof" json:"first,omitempty"`
+	OnlyTotal       *bool                  `protobuf:"varint,4,opt,name=only_total,json=onlyTotal,proto3,oneof" json:"only_total,omitempty"`
+	IncludeArchived *bool                  `protobuf:"varint,5,opt,name=include_archived,json=includeArchived,proto3,oneof" json:"include_archived,omitempty"`
 	Search          *string                `protobuf:"bytes,6,opt,name=search,proto3,oneof" json:"search,omitempty"`
+	Last            *int64                 `protobuf:"varint,7,opt,name=last,proto3,oneof" json:"last,omitempty"`
 	unknownFields   protoimpl.UnknownFields
 	sizeCache       protoimpl.SizeCache
 }
@@ -285,23 +291,23 @@ func (x *PaginationRequest) GetBefore() string {
 	return ""
 }
 
-func (x *PaginationRequest) GetLimit() int64 {
-	if x != nil && x.Limit != nil {
-		return *x.Limit
+func (x *PaginationRequest) GetFirst() int64 {
+	if x != nil && x.First != nil {
+		return *x.First
 	}
 	return 0
 }
 
 func (x *PaginationRequest) GetOnlyTotal() bool {
-	if x != nil {
-		return x.OnlyTotal
+	if x != nil && x.OnlyTotal != nil {
+		return *x.OnlyTotal
 	}
 	return false
 }
 
 func (x *PaginationRequest) GetIncludeArchived() bool {
-	if x != nil {
-		return x.IncludeArchived
+	if x != nil && x.IncludeArchived != nil {
+		return *x.IncludeArchived
 	}
 	return false
 }
@@ -313,23 +319,32 @@ func (x *PaginationRequest) GetSearch() string {
 	return ""
 }
 
+func (x *PaginationRequest) GetLast() int64 {
+	if x != nil && x.Last != nil {
+		return *x.Last
+	}
+	return 0
+}
+
 // PaginationInfo is the response-side envelope — the exact mirror of the
-// REST `pagination` block (same field names, same semantics; the
-// conventional field name on the response message is `pagination`). A list
-// response composes it next to ONE repeated message field (the items); the
-// framework locates both BY TYPE, so item/field naming stays the service's
-// choice. Cursors are opaque keyset cursors (echo them into
-// PaginationRequest.after/before), empty when there is no further page —
-// has_next/has_prev state the same fact as explicit booleans.
+// REST `pagination` block and the GraphQL pageInfo (the Relay connection
+// vocabulary, snake_cased; the conventional field name on the response
+// message is `pagination`). A list response composes it next to ONE repeated
+// message field (the items); the framework locates both BY TYPE, so
+// item/field naming stays the service's choice. Cursors are WINDOW EDGES —
+// start_cursor/end_cursor address the first and last row of THIS page (echo
+// them into PaginationRequest.before/after to walk), empty when the page is
+// empty — and has_next_page/has_previous_page state whether rows exist
+// beyond each edge.
 type PaginationInfo struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Total         int64                  `protobuf:"varint,1,opt,name=total,proto3" json:"total,omitempty"`
-	NextCursor    string                 `protobuf:"bytes,2,opt,name=next_cursor,json=nextCursor,proto3" json:"next_cursor,omitempty"`
-	PrevCursor    string                 `protobuf:"bytes,3,opt,name=prev_cursor,json=prevCursor,proto3" json:"prev_cursor,omitempty"`
-	HasNext       bool                   `protobuf:"varint,4,opt,name=has_next,json=hasNext,proto3" json:"has_next,omitempty"`
-	HasPrev       bool                   `protobuf:"varint,5,opt,name=has_prev,json=hasPrev,proto3" json:"has_prev,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	state           protoimpl.MessageState `protogen:"open.v1"`
+	TotalCount      int64                  `protobuf:"varint,1,opt,name=total_count,json=totalCount,proto3" json:"total_count,omitempty"`
+	EndCursor       string                 `protobuf:"bytes,2,opt,name=end_cursor,json=endCursor,proto3" json:"end_cursor,omitempty"`
+	StartCursor     string                 `protobuf:"bytes,3,opt,name=start_cursor,json=startCursor,proto3" json:"start_cursor,omitempty"`
+	HasNextPage     bool                   `protobuf:"varint,4,opt,name=has_next_page,json=hasNextPage,proto3" json:"has_next_page,omitempty"`
+	HasPreviousPage bool                   `protobuf:"varint,5,opt,name=has_previous_page,json=hasPreviousPage,proto3" json:"has_previous_page,omitempty"`
+	unknownFields   protoimpl.UnknownFields
+	sizeCache       protoimpl.SizeCache
 }
 
 func (x *PaginationInfo) Reset() {
@@ -362,46 +377,47 @@ func (*PaginationInfo) Descriptor() ([]byte, []int) {
 	return file_omnicore_v1_query_proto_rawDescGZIP(), []int{1}
 }
 
-func (x *PaginationInfo) GetTotal() int64 {
+func (x *PaginationInfo) GetTotalCount() int64 {
 	if x != nil {
-		return x.Total
+		return x.TotalCount
 	}
 	return 0
 }
 
-func (x *PaginationInfo) GetNextCursor() string {
+func (x *PaginationInfo) GetEndCursor() string {
 	if x != nil {
-		return x.NextCursor
+		return x.EndCursor
 	}
 	return ""
 }
 
-func (x *PaginationInfo) GetPrevCursor() string {
+func (x *PaginationInfo) GetStartCursor() string {
 	if x != nil {
-		return x.PrevCursor
+		return x.StartCursor
 	}
 	return ""
 }
 
-func (x *PaginationInfo) GetHasNext() bool {
+func (x *PaginationInfo) GetHasNextPage() bool {
 	if x != nil {
-		return x.HasNext
+		return x.HasNextPage
 	}
 	return false
 }
 
-func (x *PaginationInfo) GetHasPrev() bool {
+func (x *PaginationInfo) GetHasPreviousPage() bool {
 	if x != nil {
-		return x.HasPrev
+		return x.HasPreviousPage
 	}
 	return false
 }
 
-// SortField is one ?sort= entry: the WIRE field name (the response
-// message's proto field, snake_case) + direction. The converter resolves it
-// against the view's declared Fields vocabulary — an undeclared name is a
-// wire-contract violation.
-type SortField struct {
+// OrderByField is one ?orderBy= entry: the WIRE field name (the response
+// message's proto field, snake_case) + direction. The conventional request
+// field name is `order_by`. The converter resolves it against the view's
+// declared Fields vocabulary — an undeclared name is a wire-contract
+// violation.
+type OrderByField struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Field         string                 `protobuf:"bytes,1,opt,name=field,proto3" json:"field,omitempty"`
 	Desc          bool                   `protobuf:"varint,2,opt,name=desc,proto3" json:"desc,omitempty"`
@@ -409,20 +425,20 @@ type SortField struct {
 	sizeCache     protoimpl.SizeCache
 }
 
-func (x *SortField) Reset() {
-	*x = SortField{}
+func (x *OrderByField) Reset() {
+	*x = OrderByField{}
 	mi := &file_omnicore_v1_query_proto_msgTypes[2]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
 
-func (x *SortField) String() string {
+func (x *OrderByField) String() string {
 	return protoimpl.X.MessageStringOf(x)
 }
 
-func (*SortField) ProtoMessage() {}
+func (*OrderByField) ProtoMessage() {}
 
-func (x *SortField) ProtoReflect() protoreflect.Message {
+func (x *OrderByField) ProtoReflect() protoreflect.Message {
 	mi := &file_omnicore_v1_query_proto_msgTypes[2]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
@@ -434,19 +450,19 @@ func (x *SortField) ProtoReflect() protoreflect.Message {
 	return mi.MessageOf(x)
 }
 
-// Deprecated: Use SortField.ProtoReflect.Descriptor instead.
-func (*SortField) Descriptor() ([]byte, []int) {
+// Deprecated: Use OrderByField.ProtoReflect.Descriptor instead.
+func (*OrderByField) Descriptor() ([]byte, []int) {
 	return file_omnicore_v1_query_proto_rawDescGZIP(), []int{2}
 }
 
-func (x *SortField) GetField() string {
+func (x *OrderByField) GetField() string {
 	if x != nil {
 		return x.Field
 	}
 	return ""
 }
 
-func (x *SortField) GetDesc() bool {
+func (x *OrderByField) GetDesc() bool {
 	if x != nil {
 		return x.Desc
 	}
@@ -944,28 +960,32 @@ var File_omnicore_v1_query_proto protoreflect.FileDescriptor
 
 const file_omnicore_v1_query_proto_rawDesc = "" +
 	"\n" +
-	"\x17omnicore/v1/query.proto\x12\vomnicore.v1\x1a\x1fgoogle/protobuf/timestamp.proto\"\xf7\x01\n" +
+	"\x17omnicore/v1/query.proto\x12\vomnicore.v1\x1a\x1fgoogle/protobuf/timestamp.proto\"\xc7\x02\n" +
 	"\x11PaginationRequest\x12\x19\n" +
 	"\x05after\x18\x01 \x01(\tH\x00R\x05after\x88\x01\x01\x12\x1b\n" +
 	"\x06before\x18\x02 \x01(\tH\x01R\x06before\x88\x01\x01\x12\x19\n" +
-	"\x05limit\x18\x03 \x01(\x03H\x02R\x05limit\x88\x01\x01\x12\x1d\n" +
+	"\x05first\x18\x03 \x01(\x03H\x02R\x05first\x88\x01\x01\x12\"\n" +
 	"\n" +
-	"only_total\x18\x04 \x01(\bR\tonlyTotal\x12)\n" +
-	"\x10include_archived\x18\x05 \x01(\bR\x0fincludeArchived\x12\x1b\n" +
-	"\x06search\x18\x06 \x01(\tH\x03R\x06search\x88\x01\x01B\b\n" +
+	"only_total\x18\x04 \x01(\bH\x03R\tonlyTotal\x88\x01\x01\x12.\n" +
+	"\x10include_archived\x18\x05 \x01(\bH\x04R\x0fincludeArchived\x88\x01\x01\x12\x1b\n" +
+	"\x06search\x18\x06 \x01(\tH\x05R\x06search\x88\x01\x01\x12\x17\n" +
+	"\x04last\x18\a \x01(\x03H\x06R\x04last\x88\x01\x01B\b\n" +
 	"\x06_afterB\t\n" +
 	"\a_beforeB\b\n" +
-	"\x06_limitB\t\n" +
-	"\a_search\"\x9e\x01\n" +
-	"\x0ePaginationInfo\x12\x14\n" +
-	"\x05total\x18\x01 \x01(\x03R\x05total\x12\x1f\n" +
-	"\vnext_cursor\x18\x02 \x01(\tR\n" +
-	"nextCursor\x12\x1f\n" +
-	"\vprev_cursor\x18\x03 \x01(\tR\n" +
-	"prevCursor\x12\x19\n" +
-	"\bhas_next\x18\x04 \x01(\bR\ahasNext\x12\x19\n" +
-	"\bhas_prev\x18\x05 \x01(\bR\ahasPrev\"5\n" +
-	"\tSortField\x12\x14\n" +
+	"\x06_firstB\r\n" +
+	"\v_only_totalB\x13\n" +
+	"\x11_include_archivedB\t\n" +
+	"\a_searchB\a\n" +
+	"\x05_last\"\xc3\x01\n" +
+	"\x0ePaginationInfo\x12\x1f\n" +
+	"\vtotal_count\x18\x01 \x01(\x03R\n" +
+	"totalCount\x12\x1d\n" +
+	"\n" +
+	"end_cursor\x18\x02 \x01(\tR\tendCursor\x12!\n" +
+	"\fstart_cursor\x18\x03 \x01(\tR\vstartCursor\x12\"\n" +
+	"\rhas_next_page\x18\x04 \x01(\bR\vhasNextPage\x12*\n" +
+	"\x11has_previous_page\x18\x05 \x01(\bR\x0fhasPreviousPage\"8\n" +
+	"\fOrderByField\x12\x14\n" +
 	"\x05field\x18\x01 \x01(\tR\x05field\x12\x12\n" +
 	"\x04desc\x18\x02 \x01(\bR\x04desc\"P\n" +
 	"\x0fStringCondition\x12%\n" +
@@ -1056,7 +1076,7 @@ var file_omnicore_v1_query_proto_goTypes = []any{
 	(BoolOp)(0),                   // 2: omnicore.v1.BoolOp
 	(*PaginationRequest)(nil),     // 3: omnicore.v1.PaginationRequest
 	(*PaginationInfo)(nil),        // 4: omnicore.v1.PaginationInfo
-	(*SortField)(nil),             // 5: omnicore.v1.SortField
+	(*OrderByField)(nil),          // 5: omnicore.v1.OrderByField
 	(*StringCondition)(nil),       // 6: omnicore.v1.StringCondition
 	(*StringFilter)(nil),          // 7: omnicore.v1.StringFilter
 	(*Int64Condition)(nil),        // 8: omnicore.v1.Int64Condition

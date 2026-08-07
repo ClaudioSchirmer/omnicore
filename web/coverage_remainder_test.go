@@ -148,12 +148,12 @@ func TestHandleQueryAsCSV_ValidSortTranslates(t *testing.T) {
 	h := newExportHandler()
 	mountCSV(app, h)
 
-	resp, _ := app.Test(httptest.NewRequest("GET", "/users.csv?sort=-name", nil))
+	resp, _ := app.Test(httptest.NewRequest("GET", "/users.csv?orderBy=-name", nil))
 	if resp.StatusCode != fiber.StatusOK {
 		t.Fatalf("status=%d", resp.StatusCode)
 	}
-	if len(h.got.Criteria.Sort) != 1 || h.got.Criteria.Sort[0].Field != "Name" || !h.got.Criteria.Sort[0].Desc {
-		t.Errorf("expected Sort=[Name desc], got %+v", h.got.Criteria.Sort)
+	if len(h.got.Criteria.OrderBy) != 1 || h.got.Criteria.OrderBy[0].Field != "Name" || !h.got.Criteria.OrderBy[0].Desc {
+		t.Errorf("expected Sort=[Name desc], got %+v", h.got.Criteria.OrderBy)
 	}
 }
 
@@ -162,7 +162,7 @@ func TestHandleQueryAsCSV_UnknownSortTokenReturns400(t *testing.T) {
 	h := newExportHandler()
 	mountCSV(app, h)
 
-	resp, _ := app.Test(httptest.NewRequest("GET", "/users.csv?sort=bogus", nil))
+	resp, _ := app.Test(httptest.NewRequest("GET", "/users.csv?orderBy=bogus", nil))
 	if resp.StatusCode != fiber.StatusBadRequest {
 		t.Fatalf("expected 400 for unknown sort token, got %d", resp.StatusCode)
 	}
