@@ -94,13 +94,13 @@ func translateFilterKeys(node *query.ViewNode, src map[string]any) map[string]an
 }
 
 // translateSortFields rewrites Go-field-path sort terms into physical columns.
-func translateSortFields(node *query.ViewNode, src []queries.SortField) []queries.SortField {
+func translateSortFields(node *query.ViewNode, src []queries.OrderByField) []queries.OrderByField {
 	if len(src) == 0 {
 		return src
 	}
-	out := make([]queries.SortField, len(src))
+	out := make([]queries.OrderByField, len(src))
 	for i, s := range src {
-		out[i] = queries.SortField{Field: translateDotted(node, s.Field), Desc: s.Desc}
+		out[i] = queries.OrderByField{Field: translateDotted(node, s.Field), Desc: s.Desc}
 	}
 	return out
 }
@@ -189,7 +189,7 @@ func (r *MongoViewReader) ReadPage(ctx context.Context, view string, c queries.R
 	// caller (the tabular-export wrapper) may set BypassMaxLimit to use its own
 	// operator-set ceiling (maxExportRows) verbatim instead of the page ceiling.
 	if !c.BypassMaxLimit && c.Limit > maxLimit {
-		return queries.Page{}, core.LimitExceededError(maxLimit)
+		return queries.Page{}, core.LimitExceededError(maxLimit, c.Backward || c.Before != "")
 	}
 	limit := c.Limit
 	if limit <= 0 {
@@ -207,7 +207,7 @@ func (r *MongoViewReader) ReadPage(ctx context.Context, view string, c queries.R
 
 	node := r.resolveViewSchema(view)
 	colFilter := translateFilterKeys(node, c.Filter)
-	colSort := translateSortFields(node, c.Sort)
+	colSort := translateSortFields(node, c.OrderBy)
 	colProj := translateProjectionKeys(node, c.Projection)
 	sdCol, sdOn := node.DeletedAtColumn()
 
@@ -227,16 +227,17 @@ func (r *MongoViewReader) ReadPage(ctx context.Context, view string, c queries.R
 		return queries.Page{}, err
 	}
 
-	// Count-only short-circuit: skip Find + projection + cursor walk. The
-	// dedicated wire envelope (TotalOnlyPagination) consumes solely Total.
+	// Only-total short-circuit: skip Find + projection + cursor walk. The
+	// dedicated wire envelope (TotalOnlyPagination) consumes solely TotalCount.
 	if c.OnlyTotal {
-		return queries.Page{OnlyTotal: true, Total: total}, nil
+		return queries.Page{OnlyTotal: true, TotalCount: total}, nil
 	}
 
-	// Direction: an explicit Backward request (GraphQL Relay `last`) OR a
-	// non-empty Before cursor (REST `?before=`, which always means backward).
-	// REST never sets Backward, so its behavior is unchanged; the explicit flag
-	// is what lets `last:N` with no cursor walk back from the end of the set.
+	// Direction: an explicit Backward request (`last` — every surface sets the
+	// flag) OR a non-empty Before cursor, which always means backward. The
+	// explicit flag is what lets `last=N` with no cursor walk back from the end
+	// of the set; inferring from Before stays as defense in depth for criteria
+	// assembled by hand.
 	backward := c.Backward || c.Before != ""
 
 	// Stable sort: every Mongo Find consulting this view adds `_id` (asc) as
@@ -250,7 +251,7 @@ func (r *MongoViewReader) ReadPage(ctx context.Context, view string, c queries.R
 	findOpts := options.Find().SetLimit(limit + 1).SetSort(sortDoc)
 
 	// Cursor → keyset $or cascade. The cursor's tuple aligns positionally
-	// with c.Sort + trailing _id; the wrapper validated the tuple length
+	// with c.OrderBy + trailing _id; the wrapper validated the tuple length
 	// matches before dispatch, so a mismatch reaching here is a defense-in-
 	// depth signal of a corrupt cursor.
 	if c.After != "" || c.Before != "" {
@@ -262,9 +263,9 @@ func (r *MongoViewReader) ReadPage(ctx context.Context, view string, c queries.R
 		if decErr != nil {
 			return queries.Page{}, core.InvalidCursorError(fmt.Errorf("invalid cursor: %w", decErr))
 		}
-		if len(cursor.K)-1 != len(c.Sort) {
+		if len(cursor.K)-1 != len(c.OrderBy) {
 			return queries.Page{}, core.InvalidCursorError(fmt.Errorf("cursor tuple length %d does not match sort field count %d",
-				len(cursor.K)-1, len(c.Sort)))
+				len(cursor.K)-1, len(c.OrderBy)))
 		}
 		// Context alignment — THE authoritative check, on every surface. The
 		// hash covers the full listing context (filter + sort + search +
@@ -277,7 +278,7 @@ func (r *MongoViewReader) ReadPage(ctx context.Context, view string, c queries.R
 		// a silently wrong page. The REST wrapper deliberately does NOT
 		// pre-compare the hash (it only sees the pre-overlay wire snapshot);
 		// every surface defers to this check.
-		if cursor.H != queries.HashContext(c.Filter, c.Sort, c.Search, c.IncludeArchived) {
+		if cursor.H != queries.HashContext(c.Filter, c.OrderBy, c.Search, c.IncludeArchived) {
 			return queries.Page{}, core.InvalidCursorError(errors.New("cursor context hash does not match current criteria"))
 		}
 		direction := 1
@@ -344,7 +345,7 @@ func (r *MongoViewReader) ReadPage(ctx context.Context, view string, c queries.R
 	// that changes ANY axis is detected and rejected upstream instead of
 	// silently navigating against the old keyset boundary on a different
 	// result set.
-	contextHash := queries.HashContext(c.Filter, c.Sort, c.Search, c.IncludeArchived)
+	contextHash := queries.HashContext(c.Filter, c.OrderBy, c.Search, c.IncludeArchived)
 	var nextCursorStr, prevCursorStr string
 	// Per-item cursors, positionally aligned with the docs (and thus the
 	// Items built below) in canonical order. Built from the SAME physical doc
@@ -413,17 +414,17 @@ func (r *MongoViewReader) ReadPage(ctx context.Context, view string, c queries.R
 
 	page := queries.Page{
 		Items:       items,
-		HasNext:     hasNext,
-		HasPrev:     hasPrev,
-		Total:       total,
+		HasNextPage:     hasNext,
+		HasPreviousPage:     hasPrev,
+		TotalCount:       total,
 		ItemCursors: itemCursors,
 		Projection:  c.Projection, // echo the effective projection for export plan pruning
 	}
 	if hasNext {
-		page.NextCursor = nextCursorStr
+		page.EndCursor = nextCursorStr
 	}
 	if hasPrev {
-		page.PrevCursor = prevCursorStr
+		page.StartCursor = prevCursorStr
 	}
 	return page, nil
 }
@@ -503,7 +504,7 @@ func normalizeBSONValue(v any) any {
 // docs that share a sort_value. `reverse` inverts every direction (used by the
 // backward / ?before= path); the caller restores canonical order in Go by
 // reversing the returned slice.
-func buildStableSortDoc(sortFields []queries.SortField, reverse bool) bson.D {
+func buildStableSortDoc(sortFields []queries.OrderByField, reverse bool) bson.D {
 	doc := bson.D{}
 	for _, s := range sortFields {
 		v := 1
@@ -530,7 +531,7 @@ func buildStableSortDoc(sortFields []queries.SortField, reverse bool) bson.D {
 // `globalDirection × fieldDirection` — globalDirection=+1 for ?after=,
 // -1 for ?before=; fieldDirection=+1 for ASC sort fields, -1 for DESC.
 // The _id slot is treated as ASC throughout (its direction always +1).
-func buildKeysetFilter(tuple []any, sortFields []queries.SortField, globalDirection int) bson.M {
+func buildKeysetFilter(tuple []any, sortFields []queries.OrderByField, globalDirection int) bson.M {
 	arms := bson.A{}
 	n := len(tuple)
 	for p := 1; p <= n; p++ {
@@ -556,7 +557,7 @@ func buildKeysetFilter(tuple []any, sortFields []queries.SortField, globalDirect
 
 // sortFieldAt returns the doc-path of the sort field at position i, or "_id"
 // when i is past the user-declared sort list (the trailing tiebreaker slot).
-func sortFieldAt(sortFields []queries.SortField, i int) string {
+func sortFieldAt(sortFields []queries.OrderByField, i int) string {
 	if i < len(sortFields) {
 		return sortFields[i].Field
 	}
@@ -594,7 +595,7 @@ func appendKeysetClause(filter bson.M, keyset bson.M) {
 // otherwise strip a sort field. Returned paths are stripped from the
 // returned doc after the cursor is encoded so the wire shape matches the
 // consumer's ?fields= request exactly.
-func projectionAutoIncluded(userProj map[string]int, sortFields []queries.SortField) []string {
+func projectionAutoIncluded(userProj map[string]int, sortFields []queries.OrderByField) []string {
 	if len(userProj) == 0 || len(sortFields) == 0 {
 		return nil
 	}
@@ -643,7 +644,7 @@ func buildProjection(userProj map[string]int, autoIncluded []string) bson.D {
 // sort + search + includeArchived) so a mid-navigation context change is
 // detected and rejected; the empty string is the canonical hash for the
 // default context (no filter, no sort, no search, archived excluded).
-func encodeTupleCursor(doc map[string]any, sortFields []queries.SortField, contextHash string) string {
+func encodeTupleCursor(doc map[string]any, sortFields []queries.OrderByField, contextHash string) string {
 	tuple := make([]any, 0, len(sortFields)+1)
 	for _, sf := range sortFields {
 		tuple = append(tuple, lookupDocPath(doc, sf.Field))

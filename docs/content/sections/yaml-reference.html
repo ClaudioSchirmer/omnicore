@@ -48,7 +48,7 @@ pwd: "${vault:secret/data/db#password}"                # delegated to a register
         <tr><td><code>mongo</code></td><td>no†</td><td>read-side URI/db + rebuild policy — <strong>opt-out</strong>: omit it to boot with no Mongo (relational views only)</td><td>below · <a href="#mongo-schema-evolution">rebuild</a></td></tr>
         <tr><td><code>transport</code></td><td>no†</td><td>broker endpoints + SyncEngine group/workers (neutral across kafka/nats) — <strong>opt-out</strong>: omit it (and build tagless) to boot with no messaging</td><td>below</td></tr>
         <tr><td><code>migrations</code></td><td>no</td><td>SQL migration dir + autoRun mode</td><td>below · <a href="#migrations">Migrations</a></td></tr>
-        <tr><td><code>query</code></td><td>no</td><td>read-side <code>?limit=</code> ceiling + tabular-export row ceiling</td><td>below · <a href="#auto-query-handlers">Auto query handlers</a></td></tr>
+        <tr><td><code>query</code></td><td>no</td><td>read-side <code>?first=</code> ceiling + tabular-export row ceiling</td><td>below · <a href="#auto-query-handlers">Auto query handlers</a></td></tr>
         <tr><td><code>auth</code></td><td>no*</td><td>JWT auth + external validator + authz</td><td>below · <a href="#auth-middleware">Authentication</a> · <a href="#authz-seams">Authorization</a></td></tr>
         <tr><td><code>audit</code></td><td>no</td><td>audit event destinations</td><td>below · <a href="#audit">Audit</a></td></tr>
         <tr><td><code>observability</code></td><td>no</td><td>distributed tracing (OpenTelemetry); default off</td><td>below · <a href="#tracing">Distributed tracing</a></td></tr>
@@ -139,7 +139,7 @@ migrations:
   autoRun: check                         # check | true | false — default: dev=true / else=check
 
 query:
-  maxLimit: 200                          # service-wide ceiling on ?limit=; 0/unset → framework default 100
+  maxLimit: 200                          # service-wide ceiling on ?first=; 0/unset → framework default 100
                                          # (per-view override via query.View(...).MaxLimit(N))
   maxExportRows: 5000                    # ceiling on rows a tabular export (CSV/XLSX) streams; 0/unset → framework
                                          # default 10000 (per-view override via query.View(...).MaxExportRows(N))

@@ -75,8 +75,8 @@ func TestMongoViewReader_ReadPage_OnlyTotal(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ReadPage: %v", err)
 	}
-	if page.Total != 7 || !page.OnlyTotal {
-		t.Errorf("Total=%d OnlyTotal=%v, want 7/true", page.Total, page.OnlyTotal)
+	if page.TotalCount != 7 || !page.OnlyTotal {
+		t.Errorf("Total=%d OnlyTotal=%v, want 7/true", page.TotalCount, page.OnlyTotal)
 	}
 }
 
@@ -167,7 +167,7 @@ func TestMongoViewReader_ReadPage_ItemCursorsAlignedAndDecodable(t *testing.T) {
 		}
 	}
 	// Edge cursors are the first / last item cursors.
-	if page.PrevCursor != "" && page.PrevCursor != page.ItemCursors[0] {
+	if page.StartCursor != "" && page.StartCursor != page.ItemCursors[0] {
 		t.Errorf("PrevCursor must equal the first item cursor")
 	}
 }
@@ -182,7 +182,7 @@ func TestMongoViewReader_ReadPage_ItemCursorsCarrySortValue(t *testing.T) {
 	// Sort by Name → tuple is [name, _id]; context hash is non-empty.
 	page, err := r.ReadPage(context.Background(), "builder_view", queries.ReadCriteria{
 		Limit: 10,
-		Sort:  []queries.SortField{{Field: "Name"}},
+		OrderBy:  []queries.OrderByField{{Field: "Name"}},
 	})
 	if err != nil {
 		t.Fatalf("ReadPage: %v", err)

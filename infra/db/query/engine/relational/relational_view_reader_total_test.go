@@ -53,32 +53,32 @@ func TestReadPage_Listing_CarriesTotal(t *testing.T) {
 		t.Fatalf("page1: %v", err)
 	}
 	eqNames(t, names(p1), "r0", "r1") // a partial page...
-	if p1.Total != 5 {
-		t.Fatalf("page1 Total = %d, want 5 (the FULL match count, not the page size)", p1.Total)
+	if p1.TotalCount != 5 {
+		t.Fatalf("page1 Total = %d, want 5 (the FULL match count, not the page size)", p1.TotalCount)
 	}
 
 	// Total is a property of the match set, so it stays put as the window walks:
 	// forward via after, back via before, and the bare-backward tail anchor.
-	p2, err := r.ReadPage(ctx, "v", queries.ReadCriteria{Limit: 2, After: p1.NextCursor})
+	p2, err := r.ReadPage(ctx, "v", queries.ReadCriteria{Limit: 2, After: p1.EndCursor})
 	if err != nil {
 		t.Fatalf("page2: %v", err)
 	}
-	if p2.Total != 5 {
-		t.Errorf("after-page Total = %d, want 5", p2.Total)
+	if p2.TotalCount != 5 {
+		t.Errorf("after-page Total = %d, want 5", p2.TotalCount)
 	}
-	back, err := r.ReadPage(ctx, "v", queries.ReadCriteria{Limit: 2, Before: p2.PrevCursor})
+	back, err := r.ReadPage(ctx, "v", queries.ReadCriteria{Limit: 2, Before: p2.StartCursor})
 	if err != nil {
 		t.Fatalf("before page: %v", err)
 	}
-	if back.Total != 5 {
-		t.Errorf("before-page Total = %d, want 5", back.Total)
+	if back.TotalCount != 5 {
+		t.Errorf("before-page Total = %d, want 5", back.TotalCount)
 	}
 	last, err := r.ReadPage(ctx, "v", queries.ReadCriteria{Limit: 2, Backward: true})
 	if err != nil {
 		t.Fatalf("backward: %v", err)
 	}
-	if last.Total != 5 {
-		t.Errorf("backward-page Total = %d, want 5", last.Total)
+	if last.TotalCount != 5 {
+		t.Errorf("backward-page Total = %d, want 5", last.TotalCount)
 	}
 }
 
@@ -93,15 +93,15 @@ func TestReadPage_ListingTotalMatchesOnlyTotal(t *testing.T) {
 	if err != nil {
 		t.Fatalf("listing: %v", err)
 	}
-	countOnly, err := r.ReadPage(ctx, "v", queries.ReadCriteria{OnlyTotal: true})
+	onlyTotalPage, err := r.ReadPage(ctx, "v", queries.ReadCriteria{OnlyTotal: true})
 	if err != nil {
 		t.Fatalf("onlyTotal: %v", err)
 	}
-	if !countOnly.OnlyTotal {
-		t.Fatal("count-only read lost its OnlyTotal flag")
+	if !onlyTotalPage.OnlyTotal {
+		t.Fatal("only-total read lost its OnlyTotal flag")
 	}
-	if listing.Total != countOnly.Total {
-		t.Fatalf("listing Total = %d but onlyTotal Total = %d — they must agree", listing.Total, countOnly.Total)
+	if listing.TotalCount != onlyTotalPage.TotalCount {
+		t.Fatalf("listing Total = %d but onlyTotal Total = %d — they must agree", listing.TotalCount, onlyTotalPage.TotalCount)
 	}
 }
 
@@ -123,8 +123,8 @@ func TestReadPage_EmptyWindow_CarriesTotal(t *testing.T) {
 	if len(page.Items) != 0 {
 		t.Fatalf("expected the zero-width window to be empty, got %d items", len(page.Items))
 	}
-	if page.Total != 5 {
-		t.Fatalf("zero-width window Total = %d, want 5", page.Total)
+	if page.TotalCount != 5 {
+		t.Fatalf("zero-width window Total = %d, want 5", page.TotalCount)
 	}
 }
 
@@ -136,8 +136,8 @@ func TestReadPage_EmptyResultSet_TotalZero(t *testing.T) {
 	if err != nil {
 		t.Fatalf("empty listing: %v", err)
 	}
-	if page.Total != 0 {
-		t.Fatalf("empty result set Total = %d, want 0", page.Total)
+	if page.TotalCount != 0 {
+		t.Fatalf("empty result set Total = %d, want 0", page.TotalCount)
 	}
 }
 
@@ -153,8 +153,8 @@ func TestReadPage_TotalHonorsArchivedScope(t *testing.T) {
 	if err != nil {
 		t.Fatalf("active listing: %v", err)
 	}
-	if active.Total != 5 {
-		t.Errorf("default-read Total = %d, want 5 (active only)", active.Total)
+	if active.TotalCount != 5 {
+		t.Errorf("default-read Total = %d, want 5 (active only)", active.TotalCount)
 	}
 	if got := l.scopes[len(l.scopes)-1]; got != criteria.ScopeActive {
 		t.Errorf("default read counted under scope %v, want ScopeActive", got)
@@ -164,8 +164,8 @@ func TestReadPage_TotalHonorsArchivedScope(t *testing.T) {
 	if err != nil {
 		t.Fatalf("includeArchived listing: %v", err)
 	}
-	if all.Total != 8 {
-		t.Errorf("includeArchived Total = %d, want 8 (5 active + 3 archived)", all.Total)
+	if all.TotalCount != 8 {
+		t.Errorf("includeArchived Total = %d, want 8 (5 active + 3 archived)", all.TotalCount)
 	}
 	if got := l.scopes[len(l.scopes)-1]; got != criteria.ScopeIncludeArchived {
 		t.Errorf("includeArchived read counted under scope %v, want ScopeIncludeArchived", got)

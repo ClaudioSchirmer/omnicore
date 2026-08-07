@@ -198,7 +198,7 @@ func textListToExpr(field string, t queries.TextMatchList) criteria.Expr {
 // applySort appends the request's root-field sort terms to the query. A sort on
 // a field the root ORDER BY cannot express (child, sibling, unknown) is rejected
 // as an unsupported capability (400).
-func applySort(schema *core.TableSchema, q *criteria.Query, sorts []queries.SortField) error {
+func applySort(schema *core.TableSchema, q *criteria.Query, sorts []queries.OrderByField) error {
 	for _, s := range sorts {
 		if !servable(schema, s.Field) {
 			return unsupported(s.Field)

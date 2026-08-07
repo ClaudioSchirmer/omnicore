@@ -128,8 +128,8 @@ type RouteSpec struct {
 	// Paged is true when the route emits the canonical paged success
 	// envelope: the success response body carries `data` typed as an
 	// array of ResponseType items AND a `pagination` property at the top
-	// level (PaginationInfo schema — has_next, has_prev, next_cursor,
-	// prev_cursor, total). When false, the envelope's `data` is a single
+	// level (PaginationInfo schema — hasNextPage, hasPreviousPage, endCursor,
+	// startCursor, totalCount). When false, the envelope's `data` is a single
 	// item shaped like ResponseType and no `pagination` is emitted —
 	// matching the runtime behavior of fwweb.RespondPaged vs
 	// fwweb.RespondWithSuccess.
@@ -160,7 +160,7 @@ type RouteSpec struct {
 	// generated OpenAPI parameters, even though the Request DTO declares
 	// them. The use case is a route that reuses a richer DTO but honors only
 	// a subset of its query knobs: the tabular-export wrappers reuse the JSON
-	// list's Request DTO yet ignore pagination (limit/after/before/onlyTotal),
+	// list's Request DTO yet ignore pagination (first/last/after/before/onlyTotal),
 	// so they list those keys here and Swagger stops advertising a control the
 	// export does not honor. Matched by exact parameter name against the query
 	// parameters; path parameters and honored filters are untouched. Empty for

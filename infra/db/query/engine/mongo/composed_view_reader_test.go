@@ -235,8 +235,8 @@ func TestComposedReader_ReadPageEnrichesItems(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if len(page.Items) != 2 || page.Total != 2 {
-		t.Fatalf("primary pagination must pass through, got %d items total %d", len(page.Items), page.Total)
+	if len(page.Items) != 2 || page.TotalCount != 2 {
+		t.Fatalf("primary pagination must pass through, got %d items total %d", len(page.Items), page.TotalCount)
 	}
 
 	g1 := page.Items[0]
@@ -371,7 +371,7 @@ func TestComposedReader_SegmentFilterRoutesToLegOnly(t *testing.T) {
 func TestComposedReader_SegmentSortRejected(t *testing.T) {
 	env := newCVREnv()
 	_, err := env.reader.ReadPage(context.Background(), "gadgets_full",
-		queries.ReadCriteria{Sort: []queries.SortField{{Field: "Notes.Text"}}})
+		queries.ReadCriteria{OrderBy: []queries.OrderByField{{Field: "Notes.Text"}}})
 	if err == nil {
 		t.Fatal("a sort path into a leg segment must be rejected (R3)")
 	}
@@ -390,8 +390,8 @@ func TestComposedReader_OnlyTotalSkipsLegs(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if !page.OnlyTotal || page.Total != 2 {
-		t.Fatalf("expected the count-only page, got %+v", page)
+	if !page.OnlyTotal || page.TotalCount != 2 {
+		t.Fatalf("expected the only-total page, got %+v", page)
 	}
 	if env.mirror.finds+env.notes.finds != 0 {
 		t.Fatal("onlyTotal must short-circuit before any leg fetch")
@@ -699,11 +699,11 @@ func TestComposedReader_CursorEdgeCases(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if first.NextCursor == "" {
+	if first.EndCursor == "" {
 		t.Fatal("expected a next cursor on a truncated page")
 	}
 	env3 := newCVREnv()
-	back := queries.ReadCriteria{Filter: map[string]any{"Notes.Text": "b"}, Limit: 1, Before: first.NextCursor}
+	back := queries.ReadCriteria{Filter: map[string]any{"Notes.Text": "b"}, Limit: 1, Before: first.EndCursor}
 	if _, err := env3.reader.ReadPage(context.Background(), "gadgets_full", back); err != nil {
 		t.Fatalf("the before path must accept a composed cursor: %v", err)
 	}
@@ -715,7 +715,7 @@ func TestComposedReader_CursorEdgeCases(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	cur, err := queries.DecodeCursor(plain.NextCursor)
+	cur, err := queries.DecodeCursor(plain.EndCursor)
 	if err != nil {
 		t.Fatalf("undecodable cursor: %v", err)
 	}
@@ -848,13 +848,13 @@ func TestMongoViewReader_OverlayFilterCursorRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if page.NextCursor == "" {
+	if page.EndCursor == "" {
 		t.Fatal("expected a next cursor on the truncated page")
 	}
 
 	// Same overlaid context + the issued cursor → accepted.
 	next := overlaid
-	next.After = page.NextCursor
+	next.After = page.EndCursor
 	if _, err := r.ReadPage(context.Background(), "gadgets", next); err != nil {
 		t.Fatalf("overlay-stamped cursor must round-trip: %v", err)
 	}
@@ -863,7 +863,7 @@ func TestMongoViewReader_OverlayFilterCursorRoundTrip(t *testing.T) {
 	changed := queries.ReadCriteria{
 		Filter: map[string]any{"Code": "B", "MirrorID": "t1"},
 		Limit:  1,
-		After:  page.NextCursor,
+		After:  page.EndCursor,
 	}
 	if _, err := r.ReadPage(context.Background(), "gadgets", changed); err == nil {
 		t.Fatal("a changed listing context must still reject the cursor")
@@ -921,7 +921,7 @@ func newInChildEnv() (*ComposedViewReader, *filterColl, string) {
 func TestComposedReader_LinkInChild_SortIntoSegmentRejected(t *testing.T) {
 	reader, _, childSeg := newInChildEnv()
 	_, err := reader.ReadPage(context.Background(), "gadgets_full", queries.ReadCriteria{
-		Sort: []queries.SortField{{Field: childSeg + ".Item.Code"}},
+		OrderBy: []queries.OrderByField{{Field: childSeg + ".Item.Code"}},
 	})
 	if err == nil {
 		t.Fatal("a sort into the in-child segment must be rejected (400)")

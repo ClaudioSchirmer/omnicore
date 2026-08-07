@@ -91,7 +91,7 @@ func TestMongoViewReader_ReadPage_SortSearchArchived(t *testing.T) {
 	r := viewReaderFixture(coll)
 	page, err := r.ReadPage(context.Background(), "builder_view", queries.ReadCriteria{
 		Limit:           10,
-		Sort:            []queries.SortField{{Field: "Name"}, {Field: "Email", Desc: true}},
+		OrderBy:            []queries.OrderByField{{Field: "Name"}, {Field: "Email", Desc: true}},
 		Search:          "alice",
 		IncludeArchived: true,
 		Filter:          map[string]any{"Name": "alice"},
@@ -104,7 +104,7 @@ func TestMongoViewReader_ReadPage_SortSearchArchived(t *testing.T) {
 	}
 }
 
-func TestMongoViewReader_ReadPage_ProjectionStripsAutoIncludedSortField(t *testing.T) {
+func TestMongoViewReader_ReadPage_ProjectionStripsAutoIncludedOrderByField(t *testing.T) {
 	coll := &fakeColl{
 		count: 1,
 		docs: []any{
@@ -118,7 +118,7 @@ func TestMongoViewReader_ReadPage_ProjectionStripsAutoIncludedSortField(t *testi
 	page, err := r.ReadPage(context.Background(), "builder_view", queries.ReadCriteria{
 		Limit:      1,
 		Projection: map[string]int{"_id": 0, "Name": 1},
-		Sort:       []queries.SortField{{Field: "Email"}},
+		OrderBy:       []queries.OrderByField{{Field: "Email"}},
 	})
 	if err != nil {
 		t.Fatalf("ReadPage projection: %v", err)
@@ -166,25 +166,25 @@ func TestMongoViewReader_ReadPage_KeysetForward_RoundTrip(t *testing.T) {
 		},
 	}
 	r := viewReaderFixture(coll)
-	sort := []queries.SortField{{Field: "Name"}}
+	sort := []queries.OrderByField{{Field: "Name"}}
 
 	// First page: limit 1 over 2 docs → HasNext + NextCursor.
-	page1, err := r.ReadPage(context.Background(), "builder_view", queries.ReadCriteria{Limit: 1, Sort: sort})
+	page1, err := r.ReadPage(context.Background(), "builder_view", queries.ReadCriteria{Limit: 1, OrderBy: sort})
 	if err != nil {
 		t.Fatalf("first page: %v", err)
 	}
-	if !page1.HasNext || page1.NextCursor == "" {
+	if !page1.HasNextPage || page1.EndCursor == "" {
 		t.Fatalf("expected HasNext + NextCursor, got %+v", page1)
 	}
 
 	// Feed the emitted cursor back as ?after= — drives the forward keyset path.
 	page2, err := r.ReadPage(context.Background(), "builder_view", queries.ReadCriteria{
-		Limit: 1, Sort: sort, After: page1.NextCursor,
+		Limit: 1, OrderBy: sort, After: page1.EndCursor,
 	})
 	if err != nil {
 		t.Fatalf("forward keyset page: %v", err)
 	}
-	if !page2.HasPrev {
+	if !page2.HasPreviousPage {
 		t.Errorf("a non-first forward page must report HasPrev")
 	}
 }
@@ -198,20 +198,20 @@ func TestMongoViewReader_ReadPage_KeysetBackward(t *testing.T) {
 		},
 	}
 	r := viewReaderFixture(coll)
-	sort := []queries.SortField{{Field: "Name"}}
+	sort := []queries.OrderByField{{Field: "Name"}}
 	hash := queries.HashContext(nil, sort, "", false)
 	before, err := queries.EncodeCursor([]any{"bob", "u2"}, hash)
 	if err != nil {
 		t.Fatalf("EncodeCursor: %v", err)
 	}
 	page, err := r.ReadPage(context.Background(), "builder_view", queries.ReadCriteria{
-		Limit: 1, Sort: sort, Before: before,
+		Limit: 1, OrderBy: sort, Before: before,
 	})
 	if err != nil {
 		t.Fatalf("backward keyset page: %v", err)
 	}
 	// Came back from a forward cursor → HasNext unconditionally true.
-	if !page.HasNext {
+	if !page.HasNextPage {
 		t.Errorf("backward page must report HasNext, got %+v", page)
 	}
 }
@@ -222,7 +222,7 @@ func TestMongoViewReader_ReadPage_KeysetWithMultiClauseFilter(t *testing.T) {
 		docs:  []any{map[string]any{"_id": "u1", "name": "alice", "mail": "a@x"}},
 	}
 	r := viewReaderFixture(coll)
-	sort := []queries.SortField{{Field: "Name"}}
+	sort := []queries.OrderByField{{Field: "Name"}}
 	// A MultiClause filter materializes as a top-level $and; the keyset clause
 	// must then append into that $and rather than clobbering it.
 	filter := map[string]any{"Name": queries.MultiClause{Clauses: []any{"a", "z"}}}
@@ -232,7 +232,7 @@ func TestMongoViewReader_ReadPage_KeysetWithMultiClauseFilter(t *testing.T) {
 		t.Fatalf("EncodeCursor: %v", err)
 	}
 	if _, err := r.ReadPage(context.Background(), "builder_view", queries.ReadCriteria{
-		Limit: 10, Sort: sort, Filter: filter, After: after,
+		Limit: 10, OrderBy: sort, Filter: filter, After: after,
 	}); err != nil {
 		t.Fatalf("keyset with $and filter: %v", err)
 	}
@@ -241,7 +241,7 @@ func TestMongoViewReader_ReadPage_KeysetWithMultiClauseFilter(t *testing.T) {
 func TestMongoViewReader_ReadPage_InvalidCursor(t *testing.T) {
 	r := viewReaderFixture(&fakeColl{count: 1})
 	_, err := r.ReadPage(context.Background(), "builder_view", queries.ReadCriteria{
-		Limit: 10, Sort: []queries.SortField{{Field: "Name"}}, After: "@@@not-base64@@@",
+		Limit: 10, OrderBy: []queries.OrderByField{{Field: "Name"}}, After: "@@@not-base64@@@",
 	})
 	if err == nil {
 		t.Fatal("expected invalid-cursor decode error")
@@ -253,7 +253,7 @@ func TestMongoViewReader_ReadPage_CursorTupleLengthMismatch(t *testing.T) {
 	// Sort has one field → expected tuple length 2; supply 3.
 	cur, _ := queries.EncodeCursor([]any{"a", "b", "c"}, "anything")
 	_, err := r.ReadPage(context.Background(), "builder_view", queries.ReadCriteria{
-		Limit: 10, Sort: []queries.SortField{{Field: "Name"}}, After: cur,
+		Limit: 10, OrderBy: []queries.OrderByField{{Field: "Name"}}, After: cur,
 	})
 	if err == nil {
 		t.Fatal("expected cursor tuple-length mismatch error")
@@ -265,7 +265,7 @@ func TestMongoViewReader_ReadPage_CursorContextHashMismatch(t *testing.T) {
 	// Correct tuple length but a hash that cannot match the current context.
 	cur, _ := queries.EncodeCursor([]any{"a", "b"}, "deadbeefdeadbeef")
 	_, err := r.ReadPage(context.Background(), "builder_view", queries.ReadCriteria{
-		Limit: 10, Sort: []queries.SortField{{Field: "Name"}}, After: cur,
+		Limit: 10, OrderBy: []queries.OrderByField{{Field: "Name"}}, After: cur,
 	})
 	if err == nil {
 		t.Fatal("expected cursor context-hash mismatch error")

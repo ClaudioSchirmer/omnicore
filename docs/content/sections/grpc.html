@@ -321,12 +321,13 @@ return bootstrap.Wiring{ …, Features: []bootstrap.Feature{users} }</code></pre
     List RPCs are <strong>per-view typed request messages composed from shared framework
     components</strong> (<code>web/grpc/proto/omnicore/v1/query.proto</code>, generated Go in
     <code>web/grpc/pb</code>): <code>PaginationRequest</code>
-    (after/before/limit/only_total/include_archived/search — the same reserved keys the REST query
-    string speaks; <code>search</code> obeys the same opt-in gate, honored only when the Request DTO
-    declares <code>query:"search"</code> and rejected as SchemaViolation otherwise, and
-    <code>only_total=true</code> combined with after/before/limit/sort/read_mask rejects with the
-    same conflict matrix as REST's <code>?onlyTotal=true</code>), <code>repeated SortField</code>, a
-    <code>google.protobuf.FieldMask read_mask</code> (the <code>?fields=</code> sibling), and the typed
+    (first/last/after/before/only_total/include_archived/search — the same reserved keys the REST
+    query string speaks, snake_cased; every field is proto3 <code>optional</code>, so PRESENCE and
+    value separate exactly as on the query string — an explicit <code>only_total: false</code> /
+    <code>include_archived: false</code> still requires the DTO declaration and stays a no-op, the
+    <code>?onlyTotal=false</code> semantics), <code>repeated OrderByField</code> (conventional field name
+    <code>order_by</code>, the <code>?orderBy=</code> sibling), a
+    <code>google.protobuf.FieldMask fields</code> (the <code>?fields=</code> sibling), and the typed
     operator wrappers — <code>StringFilter</code> (the full 12-operator REST vocabulary,
     case-insensitive variants included), <code>Int64Filter</code>/<code>DoubleFilter</code>/<code>TimestampFilter</code>
     (eq/ne/in/nin/gt/gte/lt/lte) and <code>BoolFilter</code> (eq/ne). A filter field carries
@@ -334,24 +335,38 @@ return bootstrap.Wiring{ …, Features: []bootstrap.Feature{users} }</code></pre
     <code>?age.gte=18&amp;age.lte=65</code>). <strong>The per-view filters message IS the allowlist</strong> —
     a field not declared there is not filterable, and <code>buf breaking</code> polices view changes.
 </p>
+<p>
+    <strong>Every control obeys the endpoint's Request DTO.</strong> The shared proto shows every
+    control field — it cannot narrow per RPC — so the cut is enforced at RUNTIME by the same
+    canonical gateway every surface runs (<code>queryschema.ValidateControls</code>): a control set
+    on the wire without its <code>query:"…"</code> declaration on the Request DTO rejects as
+    SchemaViolation → <code>INVALID_ARGUMENT</code>, with the error detail naming the missing
+    declaration so the consumer reads the fix off the rejection. The directional rule (forward
+    <code>first</code>/<code>after</code> × backward <code>last</code>/<code>before</code>, one
+    direction at a time; <code>last</code> with no cursor = the LAST N of the set) and the
+    only-total conflict matrix (<code>only_total=true</code> with any page-shaping control →
+    <code>onlyTotal[&lt;key&gt;]</code>) reject identically on every surface.
+</p>
 <pre><code>message UserFilters {
   omnicore.v1.StringFilter user_name = 1;
   omnicore.v1.StringFilter name = 2;
 }
 message ListUsersRequest {
   omnicore.v1.PaginationRequest pagination = 1;
-  repeated omnicore.v1.SortField sort = 2;
-  google.protobuf.FieldMask read_mask = 3;
+  repeated omnicore.v1.OrderByField order_by = 2;
+  google.protobuf.FieldMask fields = 3;
   UserFilters filters = 4;
 }</code></pre>
 <p>
     The list response composes the mirror envelope: <strong>exactly one repeated items message</strong>
-    plus <strong><code>omnicore.v1.PaginationInfo</code></strong> — the <strong>exact mirror of the REST
-    <code>pagination</code> block</strong>, same field names, same semantics:
-    <code>total</code>, <code>next_cursor</code>, <code>prev_cursor</code>, <code>has_next</code>,
-    <code>has_prev</code>. The framework locates both components BY TYPE, so field naming stays the
-    service's choice — the convention is <code>pagination</code>, which also makes the Connect/gRPC-Web
-    JSON form read exactly like the REST envelope:
+    plus <strong><code>omnicore.v1.PaginationInfo</code></strong> — the <strong>Relay connection
+    vocabulary shared verbatim with the REST <code>pagination</code> block and the GraphQL
+    <code>pageInfo</code></strong>, snake_cased: <code>total_count</code>, <code>end_cursor</code>,
+    <code>start_cursor</code>, <code>has_next_page</code>, <code>has_previous_page</code>. The
+    cursors are WINDOW EDGES (echo them into <code>PaginationRequest.before/after</code> to walk).
+    The framework locates both components BY TYPE, so field naming stays the service's choice — the
+    convention is <code>pagination</code>, which also makes the Connect/gRPC-Web JSON form read
+    exactly like the REST envelope:
 </p>
 <pre><code>message ListUsersResponse {
   repeated User items = 1;
@@ -363,7 +378,7 @@ message ListUsersRequest {
     DTO the REST list consumes — <strong>the DTO's <code>filter:</code> tags are the operator
     allowlist on both wires</strong>: an operator outside the leaf's tag rejects as SchemaViolation
     (INVALID_ARGUMENT), exactly the REST 400, and a proto filter with no tagged DTO leaf aborts boot.
-    <code>read_mask</code> and <code>sort</code> speak <strong>wire names</strong> (the item message's
+    <code>fields</code> and <code>order_by</code> speak <strong>wire names</strong> (the item message's
     proto fields, snake_case — FieldMask's canonical form; protojson converts the JSON camelCase
     spelling for you), resolved against the projector's Response DTO — an undeclared path fails as
     SchemaViolation and never reaches the reader, where an unresolved spelling would pass through as a
@@ -386,7 +401,7 @@ message ListUsersRequest {
     <code>repeated values</code> ride verbatim into list operators, so the gRPC plane has no
     comma-in-value limitation; <code>Timestamp</code> values convert to the RFC3339 string form the REST
     string-leaf coercion produces. A hand-rolled <code>MountRaw</code> list reuses the same core via
-    <code>fwgrpc.NewCriteria()</code> (<code>Fields</code> allowlist + <code>Page</code>/<code>Sort</code>/<code>ReadMask</code>/typed
+    <code>fwgrpc.NewCriteria()</code> (<code>Fields</code> allowlist + <code>Page</code>/<code>OrderBy</code>/<code>FieldMask</code>/typed
     filters + <code>Build</code>) — the raw path never re-implements operator emission.
 </div>
 

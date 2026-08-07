@@ -56,12 +56,12 @@
                 <td>same as the listing row; <code>OnlyTotal</code> flows into <code>ReadCriteria.OnlyTotal</code></td>
                 <td><code>ReadPage</code> short-circuits</td>
                 <td><code>CountDocuments(filter)</code> only — no documents fetched, no projection</td>
-                <td><code>{ pagination: *TotalOnlyPagination{total} }</code> — no <code>data</code>, no cursors</td>
+                <td><code>{ pagination: *TotalOnlyPagination{totalCount} }</code> — no <code>data</code>, no cursors</td>
             </tr>
             <tr>
                 <td><code>QueryAsCSV</code> / <code>QueryAsXLSX</code><br><span class="muted">GET /users.csv · .xlsx</span></td>
                 <td><code>FindByParamsQueryHandler</code> (the SAME handler as the listing row)</td>
-                <td>same as the listing row; the wrapper sets <code>ReadCriteria.BypassMaxLimit</code> and drops user pagination (<code>limit</code>/<code>after</code>/<code>before</code>/<code>onlyTotal</code>)</td>
+                <td>same as the listing row; the wrapper sets <code>ReadCriteria.BypassMaxLimit</code> and drops user pagination (<code>first</code>/<code>last</code>/<code>after</code>/<code>before</code>/<code>onlyTotal</code>)</td>
                 <td><code>ReadPage(view, criteria)</code></td>
                 <td><code>Find(filter, sort)</code> — full filtered set capped at the resolved export ceiling (per-view <code>MaxExportRows</code> &gt; <code>query.maxExportRows</code> &gt; 10000)</td>
                 <td>raw file stream (<code>text/csv</code> / <code>.xlsx</code>) rendered hierarchically via <code>web/export.Encoder</code> — no JSON envelope</td>
@@ -87,8 +87,8 @@
                 <td><code>{name: {$in: ["a","b"]}}</code>; multiple operators on one field fold into a top-level <code>$and</code></td>
             </tr>
             <tr>
-                <td><code>?sort=-created_at</code></td>
-                <td><code>Sort []SortField</code> (+ <code>_id</code> ASC appended)</td>
+                <td><code>?orderBy=-created_at</code></td>
+                <td><code>Sort []OrderByField</code> (+ <code>_id</code> ASC appended)</td>
                 <td><code>findOpts.SetSort(bson.D{{"created_at",-1},{"_id",1}})</code></td>
             </tr>
             <tr>
@@ -118,14 +118,14 @@
     <div class="note">
         <strong>The result set is a deterministic function of the assembled <code>ReadCriteria</code>.</strong>
         Identical criteria ⇒ identical bson ⇒ identical page. The reader always appends <code>_id</code>
-        ASC as the last sort key, so the <code>+1</code> overflow trick that powers <code>has_next</code>
+        ASC as the last sort key, so the <code>+1</code> overflow trick that powers <code>hasNextPage</code>
         stays meaningful even under concurrent writes, and a cursor emitted on one page applies cleanly
         on the next.
     </div>
     <p>
         Because the read side is <strong>stateless</strong> (no server-side session, no cursor store),
         the cursor carries a SHA-256 hash of its issuing <em>full listing context</em>
-        (<code>Filter</code> + <code>Sort</code> + <code>Search</code> + <code>IncludeArchived</code>).
+        (<code>Filter</code> + <code>OrderBy</code> + <code>Search</code> + <code>IncludeArchived</code>).
         The wrapper rejects a cursor whose context hash no longer matches the current request with 400
         <code>SchemaViolationNotification</code> — converting a silent "frontend changed one knob,
         results look wrong" bug into a loud failure with a clear remediation: request page 1 of the new

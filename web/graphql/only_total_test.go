@@ -6,14 +6,14 @@ import (
 	"github.com/ClaudioSchirmer/omnicore/application/queries"
 )
 
-// The count-only path: a connection selection of just `totalCount` (no edges,
+// The only-total path: a connection selection of just `totalCount` (no edges,
 // no pageInfo) maps to ReadCriteria.OnlyTotal — the GraphQL idiom for REST's
 // ?onlyTotal=true. These tests assert the flag the resolver hands the reader
 // (captured via fakeReadHandler from execute_test.go), since the reader's
 // short-circuit to CountDocuments is keyed on it.
 
 func TestCountOnly_TotalCountAloneSetsOnlyTotal(t *testing.T) {
-	h := &fakeReadHandler{page: queries.Page{OnlyTotal: true, Total: 5}}
+	h := &fakeReadHandler{page: queries.Page{OnlyTotal: true, TotalCount: 5}}
 	reg, ctx := newExecRegistry(h)
 
 	resp := reg.Execute(ctx, `{ users { totalCount } }`, nil, "")
@@ -32,7 +32,7 @@ func TestCountOnly_EdgesSelectionKeepsFullRead(t *testing.T) {
 	h := &fakeReadHandler{page: queries.Page{
 		Items:       []map[string]any{{"ID": "u1", "Name": "alice"}},
 		ItemCursors: []string{"c1"},
-		Total:       1,
+		TotalCount:       1,
 	}}
 	reg, ctx := newExecRegistry(h)
 
@@ -46,7 +46,7 @@ func TestCountOnly_EdgesSelectionKeepsFullRead(t *testing.T) {
 }
 
 func TestCountOnly_PageInfoSelectionKeepsFullRead(t *testing.T) {
-	h := &fakeReadHandler{page: queries.Page{Total: 1}}
+	h := &fakeReadHandler{page: queries.Page{TotalCount: 1}}
 	reg, ctx := newExecRegistry(h)
 
 	// pageInfo cursors derive from the page items, so totalCount + pageInfo
@@ -61,7 +61,7 @@ func TestCountOnly_PageInfoSelectionKeepsFullRead(t *testing.T) {
 }
 
 func TestCountOnly_CountsFilteredSubset(t *testing.T) {
-	h := &fakeReadHandler{page: queries.Page{OnlyTotal: true, Total: 3}}
+	h := &fakeReadHandler{page: queries.Page{OnlyTotal: true, TotalCount: 3}}
 	reg, ctx := newExecRegistry(h)
 
 	resp := reg.Execute(ctx,
@@ -72,7 +72,7 @@ func TestCountOnly_CountsFilteredSubset(t *testing.T) {
 	}
 	// Count-only still bounds the count by filter / search / archived gate.
 	if !h.captured.OnlyTotal {
-		t.Error("count-only must remain set alongside where/search/includeArchived")
+		t.Error("only-total must remain set alongside where/search/includeArchived")
 	}
 	if h.captured.Filter["Name"] != "alice" {
 		t.Errorf("where eq did not fold; Filter = %v", h.captured.Filter)
@@ -81,7 +81,7 @@ func TestCountOnly_CountsFilteredSubset(t *testing.T) {
 		t.Errorf("Search = %q, want x", h.captured.Search)
 	}
 	if !h.captured.IncludeArchived {
-		t.Error("IncludeArchived must be honored under count-only")
+		t.Error("IncludeArchived must be honored under only-total")
 	}
 }
 
@@ -101,7 +101,7 @@ func TestCountOnly_PaginationArgConflictRejected(t *testing.T) {
 
 		resp := reg.Execute(ctx, q, nil, "")
 		if len(resp.Errors) == 0 {
-			t.Fatalf("%s: count-only + pagination arg must be rejected", q)
+			t.Fatalf("%s: only-total + pagination arg must be rejected", q)
 		}
 		if got := resp.Errors[0].Extensions["semantic"]; got != "Schema" {
 			t.Errorf("%s: semantic = %v, want Schema", q, got)

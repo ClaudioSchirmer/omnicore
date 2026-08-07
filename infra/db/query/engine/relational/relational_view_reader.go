@@ -18,7 +18,7 @@ import (
 // Mongo reader's `_id` tiebreak.
 const idGoField = "ID"
 
-// defaultPageLimit caps a page when the request carries no ?limit. The per-view
+// defaultPageLimit caps a page when the request carries no ?first/?last. The per-view
 // MaxLimit ceiling is an operational refinement layered on top later; this is the
 // floor so an unbounded relational read never happens.
 const defaultPageLimit int64 = 100
@@ -42,7 +42,7 @@ type view struct {
 // idiom — behind the unchanged after/before/limit surface.
 type RelationalViewReader struct {
 	views map[string]view
-	// maxLimitFn resolves the per-view `?limit=` ceiling, mirroring the Mongo
+	// maxLimitFn resolves the per-view page-size (`?first=`/`?last=`) ceiling, mirroring the Mongo
 	// reader's cascade EXACTLY: the same resolver the bootstrap builds from the
 	// view defs + the yaml default is wired into both readers, so a view's
 	// MaxLimit and the global ceiling apply identically whichever backing serves
@@ -88,7 +88,7 @@ func NewRelationalViewReader(views []*query.ViewDefinition) *RelationalViewReade
 // this reader into the dispatch seam only when there is one.
 func (r *RelationalViewReader) Empty() bool { return len(r.views) == 0 }
 
-// SetMaxLimitResolver installs the per-view `?limit=` ceiling resolver — the SAME
+// SetMaxLimitResolver installs the per-view page-size ceiling resolver — the SAME
 // closure the bootstrap wires into the Mongo reader — so the two backings enforce
 // an identical MaxLimit cascade. Returns the receiver for chaining at the wiring
 // site.
@@ -141,25 +141,25 @@ func (r *RelationalViewReader) ReadPage(ctx context.Context, name string, crit q
 		if err != nil {
 			return queries.Page{}, err
 		}
-		return queries.Page{OnlyTotal: true, Total: n}, nil
+		return queries.Page{OnlyTotal: true, TotalCount: n}, nil
 	}
 
-	// MaxLimit cascade, identical to the Mongo reader: a consumer `?limit=` over
+	// MaxLimit cascade, identical to the Mongo reader: a consumer `?first=`/`?last=` over
 	// the per-view ceiling is the canonical 400; an absent/zero limit defers to
 	// the ceiling so every relational page is bounded. The trusted export wrapper
 	// sets BypassMaxLimit to run its own (larger) maxExportRows ceiling verbatim.
 	maxLimit := r.resolveMaxLimit(name)
 	if !crit.BypassMaxLimit && crit.Limit > maxLimit {
-		return queries.Page{}, core.LimitExceededError(maxLimit)
+		return queries.Page{}, core.LimitExceededError(maxLimit, crit.Backward || crit.Before != "")
 	}
 	limit := crit.Limit
 	if limit <= 0 {
 		limit = maxLimit
 	}
-	hashCtx := queries.HashContext(crit.Filter, crit.Sort, crit.Search, crit.IncludeArchived)
+	hashCtx := queries.HashContext(crit.Filter, crit.OrderBy, crit.Search, crit.IncludeArchived)
 
 	// The listing total, counted under the SAME scoped criteria the OnlyTotal
-	// branch above uses — so `?limit=N` and `?onlyTotal=true` report the same
+	// branch above uses — so `?first=N` and `?onlyTotal=true` report the same
 	// number by construction, exactly as they do on the Mongo reader (which pays
 	// its CountDocuments on every read). It also anchors the bare-backward
 	// window below, which needs this very count to find its offset.
@@ -179,11 +179,11 @@ func (r *RelationalViewReader) ReadPage(ctx context.Context, name string, crit q
 		// issuing the query: q.Limit(0) renders as "no LIMIT clause" in
 		// applyWindow, which would load the ENTIRE table into memory and bypass
 		// MaxLimit. The has-more flags come straight from the resolved window.
-		return queries.Page{Total: total, HasNext: win.hasNext, HasPrev: win.hasPrev}, nil
+		return queries.Page{TotalCount: total, HasNextPage: win.hasNext, HasPreviousPage: win.hasPrev}, nil
 	}
 
 	q := scopedQuery(where, crit.IncludeArchived)
-	if err := applySort(v.schema, q, crit.Sort); err != nil {
+	if err := applySort(v.schema, q, crit.OrderBy); err != nil {
 		return queries.Page{}, err
 	}
 	q.OrderBy(idGoField) // deterministic tiebreak — offset pages must be stable
@@ -204,7 +204,7 @@ func (r *RelationalViewReader) ReadPage(ctx context.Context, name string, crit q
 	page := queries.Page{
 		Items:       make([]map[string]any, 0, len(ents)),
 		ItemCursors: make([]string, 0, len(ents)),
-		Total:       total,
+		TotalCount:       total,
 	}
 	for j, ent := range ents {
 		doc := BuildDocument(v.schema, ent)
@@ -215,21 +215,21 @@ func (r *RelationalViewReader) ReadPage(ctx context.Context, name string, crit q
 		goDoc := v.node.ToGoDoc(doc)
 		applyProjection(goDoc, crit.Projection)
 		page.Items = append(page.Items, goDoc)
-		cur, err := queries.EncodeCursor(offsetTuple(win.offset+int64(j), len(crit.Sort)), hashCtx)
+		cur, err := queries.EncodeCursor(offsetTuple(win.offset+int64(j), len(crit.OrderBy)), hashCtx)
 		if err != nil {
 			return queries.Page{}, err
 		}
 		page.ItemCursors = append(page.ItemCursors, cur)
 	}
 	if len(page.ItemCursors) > 0 {
-		page.PrevCursor = page.ItemCursors[0]
-		page.NextCursor = page.ItemCursors[len(page.ItemCursors)-1]
+		page.StartCursor = page.ItemCursors[0]
+		page.EndCursor = page.ItemCursors[len(page.ItemCursors)-1]
 	}
-	page.HasNext = win.hasNext
+	page.HasNextPage = win.hasNext
 	if win.overFetch {
-		page.HasNext = hasMore
+		page.HasNextPage = hasMore
 	}
-	page.HasPrev = win.hasPrev
+	page.HasPreviousPage = win.hasPrev
 	page.Projection = crit.Projection // echo the effective projection (export plan pruning)
 	return page, nil
 }
@@ -444,7 +444,7 @@ func (r *RelationalViewReader) resolveWindow(crit queries.ReadCriteria, limit, t
 // len(K)-1 == len(sort), the trailing slot being the keyset _id). The offset
 // lives in K[0]; the remaining slots are inert padding, so an incoming cursor
 // passes the structural check on every surface while the reader only ever reads
-// K[0]. sortLen is len(crit.Sort) at encode time.
+// K[0]. sortLen is len(crit.OrderBy) at encode time.
 func offsetTuple(offset int64, sortLen int) []any {
 	k := make([]any, sortLen+1)
 	k[0] = offset

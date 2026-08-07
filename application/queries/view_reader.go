@@ -7,9 +7,9 @@ import (
 	"github.com/ClaudioSchirmer/omnicore/application/notifications"
 )
 
-// SortField is one sort term in a ReadCriteria.
+// OrderByField is one ordering term in a ReadCriteria.
 // Desc=true → descending; false → ascending.
-type SortField struct {
+type OrderByField struct {
 	Field string
 	Desc  bool
 }
@@ -25,42 +25,47 @@ type SortField struct {
 // `_id: 0` mixed with include-1 entries (the single permitted exclusion in
 // otherwise-inclusion projections).
 //
-// OnlyTotal switches the read into a count-only mode: the implementation
+// OnlyTotal switches the read into the only-total mode: the implementation
 // runs the underlying store's count primitive against Filter (with the
 // archived gate + Search still honored) and returns Page{OnlyTotal: true,
-// Total: n} — no items materialized, no cursor walk, no projection applied.
-// Limit/Sort/After/Before/Projection are IGNORED when OnlyTotal=true. The
-// wire wrapper rejects requests that combine onlyTotal=true with any of
-// those parameters at the schema layer (400 SchemaViolationNotification),
-// so the application layer never observes a contradictory criteria; the
-// reader's own "ignore" posture is defense in depth. Filter leaves +
-// Search + IncludeArchived remain valid in count mode — the use case is
-// "how many docs match this filtered subset".
+// TotalCount: n} — no items materialized, no cursor walk, no projection
+// applied. Limit/OrderBy/After/Before/Projection are IGNORED when
+// OnlyTotal=true. The canonical control gateway (queryschema.ValidateControls)
+// rejects requests that combine onlyTotal with any of those controls before
+// the handler runs (400 SchemaViolationNotification), so the application
+// layer never observes a contradictory criteria; the reader's own "ignore"
+// posture is defense in depth. Filter leaves + Search + IncludeArchived
+// remain valid in only-total mode — the use case is "how many docs match
+// this filtered subset".
 type ReadCriteria struct {
 	Filter     map[string]any
-	Sort       []SortField
+	OrderBy    []OrderByField
 	Projection map[string]int
-	Limit      int64
-	After      string
-	Before     string
+	// Limit is the internal page size. The wire speaks the Relay pair — a
+	// `first=N` maps to Limit=N (forward), a `last=N` maps to Limit=N with
+	// Backward=true — and the directional exclusivity is enforced by the
+	// control gateway before the criteria is built.
+	Limit  int64
+	After  string
+	Before string
 	// Backward requests the page that PRECEDES the window in canonical order —
 	// the keyset walk runs in inverted sort order and the slice is restored to
-	// canonical order before returning. It is the explicit direction signal: the
-	// GraphQL Relay surface sets it for `last` (so `last:N` with no cursor yields
-	// the LAST N), while the REST surface leaves it false and lets the reader
-	// infer backward from a non-empty Before cursor — so REST behavior is
-	// unchanged. Ignored when OnlyTotal=true (like Limit/After/Before).
+	// canonical order before returning. It is the explicit direction signal
+	// every surface sets for `last` — `last=N` with no cursor yields the LAST
+	// N of the set; with a Before cursor, the N rows before that edge. The
+	// reader also infers backward from a non-empty Before cursor (defense in
+	// depth). Ignored when OnlyTotal=true (like Limit/After/Before).
 	Backward        bool
 	Search          string
 	IncludeArchived bool
 	OnlyTotal       bool
 
-	// BypassMaxLimit skips the per-view `?limit=` ceiling enforcement in
+	// BypassMaxLimit skips the per-view page-size ceiling enforcement in
 	// ReadPage and uses Limit verbatim. It is for trusted internal callers that
 	// enforce their OWN, operator-set ceiling — the tabular-export wrapper sets
 	// Limit to the resolved maxExportRows (which is deliberately larger than the
-	// page-read MaxLimit) and ignores the user's `?limit`. It is never set from
-	// a wire parameter, so a client cannot use it to lift the page ceiling.
+	// page-read MaxLimit) and ignores the user's `?first`/`?last`. It is never
+	// set from a wire parameter, so a client cannot use it to lift the ceiling.
 	BypassMaxLimit bool
 }
 
@@ -71,7 +76,7 @@ type ReadCriteria struct {
 // Query calls inside ToCriteria after deciding (from the AppContext identity)
 // that the caller may not see the field.
 //
-// If the request ACTIVELY referenced the field — a ?sort=, ?filters=, or an
+// If the request ACTIVELY referenced the field — an ?orderBy=, a filter, or an
 // explicit ?fields= on it — Restrict returns a 403 *ApplicationError
 // (FieldAccessForbiddenNotification): the caller tried to use a field it may not
 // see, so refusing is more honest than silently ignoring the knob — and it
@@ -88,8 +93,8 @@ func (c *ReadCriteria) Restrict(goFieldPath string) error {
 	return nil
 }
 
-// referencesField reports whether the request actively named the field — in a
-// sort term, a filter clause, or an explicit ?fields= inclusion.
+// referencesField reports whether the request actively named the field — in an
+// ordering term, a filter clause, or an explicit ?fields= inclusion.
 func (c *ReadCriteria) referencesField(goFieldPath string) bool {
 	if _, ok := c.Filter[goFieldPath]; ok {
 		return true
@@ -97,7 +102,7 @@ func (c *ReadCriteria) referencesField(goFieldPath string) bool {
 	if c.Projection[goFieldPath] == 1 {
 		return true
 	}
-	for _, s := range c.Sort {
+	for _, s := range c.OrderBy {
 		if s.Field == goFieldPath {
 			return true
 		}
@@ -105,8 +110,8 @@ func (c *ReadCriteria) referencesField(goFieldPath string) bool {
 	return false
 }
 
-// scrubField removes the field from the projection (mode-aware), the sort, and
-// the filter so it reaches neither the store nor the wire.
+// scrubField removes the field from the projection (mode-aware), the ordering,
+// and the filter so it reaches neither the store nor the wire.
 func (c *ReadCriteria) scrubField(goFieldPath string) {
 	if c.Projection == nil {
 		c.Projection = map[string]int{}
@@ -119,14 +124,14 @@ func (c *ReadCriteria) scrubField(goFieldPath string) {
 		// Whole-doc or exclusion mode: a pure exclusion strips the field.
 		c.Projection[goFieldPath] = 0
 	}
-	if len(c.Sort) > 0 {
-		kept := c.Sort[:0]
-		for _, s := range c.Sort {
+	if len(c.OrderBy) > 0 {
+		kept := c.OrderBy[:0]
+		for _, s := range c.OrderBy {
 			if s.Field != goFieldPath {
 				kept = append(kept, s)
 			}
 		}
-		c.Sort = kept
+		c.OrderBy = kept
 	}
 	delete(c.Filter, goFieldPath)
 }
@@ -134,34 +139,37 @@ func (c *ReadCriteria) scrubField(goFieldPath string) {
 // Page is the transport-agnostic result of a paged read. The wire wrapper
 // (web.QueryWithParams) decomposes Page into Response.Data (items) and
 // Response.Pagination (cursor envelope), so Page itself is not marshalled
-// directly and carries no json tags.
+// directly and carries no json tags. Field names follow the Relay framing —
+// the cursors are WINDOW EDGES (StartCursor/EndCursor address the first and
+// last row of THIS page; echo them into `before`/`after` to walk), and
+// HasNextPage/HasPreviousPage state whether rows exist beyond each edge.
 //
 // OnlyTotal=true signals that the upstream ReadCriteria asked for the
-// count-only mode — Items/HasNext/HasPrev/NextCursor/PrevCursor are zero
-// by construction, only Total carries information. The wire wrapper
-// reads this flag to emit a dedicated envelope shape (pagination =
-// {total: n}, no data field) instead of the regular listing envelope.
+// only-total mode — Items/HasNextPage/HasPreviousPage/StartCursor/EndCursor
+// are zero by construction, only TotalCount carries information. The wire
+// wrapper reads this flag to emit a dedicated envelope shape (pagination =
+// {totalCount: n}, no data field) instead of the regular listing envelope.
 type Page struct {
-	Items      []map[string]any
-	HasNext    bool
-	HasPrev    bool
-	NextCursor string
-	PrevCursor string
-	Total      int64
-	OnlyTotal  bool
+	Items           []map[string]any
+	HasNextPage     bool
+	HasPreviousPage bool
+	StartCursor     string
+	EndCursor       string
+	TotalCount      int64
+	OnlyTotal       bool
 
 	// ItemCursors is the per-row keyset cursor, positionally aligned with
 	// Items (ItemCursors[i] addresses Items[i]). It exists for transports that
-	// need a cursor per element rather than only the page-edge NextCursor /
-	// PrevCursor — the GraphQL endpoint's Relay connection populates
+	// need a cursor per element rather than only the page-edge StartCursor /
+	// EndCursor — the GraphQL endpoint's Relay connection populates
 	// edges[].cursor from it. The cursor is built from the same keyset tuple +
 	// context hash the edge cursors use, so it round-trips through the reader's
 	// ?after / ?before path unchanged.
 	//
 	// It MUST be built by the reader (the layer that owns the physical keyset
-	// tuple — the sort-field values and _id are stripped from the returned
+	// tuple — the ordering-field values and _id are stripped from the returned
 	// Go-field-keyed Items, so no upper layer can reconstruct it). The REST
-	// wrapper ignores this field; it stays nil for count-only reads.
+	// wrapper ignores this field; it stays nil for only-total reads.
 	ItemCursors []string
 
 	// Projection is the effective per-field include/exclude map the read used —
@@ -182,7 +190,7 @@ type Page struct {
 // persistence shape end to end. ReadByID honors criteria.Filter (security
 // overlays from AppContext, e.g. tenant id) merged with the {_id: id} +
 // deleted_at gate. The pagination knobs on ReadCriteria
-// (Limit/Sort/After/Before/Search/Projection) are ignored by ReadByID by
+// (Limit/OrderBy/After/Before/Search/Projection) are ignored by ReadByID by
 // design — they only make sense on a paged read.
 type ViewReader interface {
 	ReadPage(ctx context.Context, view string, criteria ReadCriteria) (Page, error)

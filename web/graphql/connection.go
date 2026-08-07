@@ -25,12 +25,12 @@ func pageToConnection(page queries.Page, respType reflect.Type) map[string]any {
 	return map[string]any{
 		"edges": edges,
 		"pageInfo": map[string]any{
-			"hasNextPage":     page.HasNext,
-			"hasPreviousPage": page.HasPrev,
-			"startCursor":     emptyToNil(page.PrevCursor),
-			"endCursor":       emptyToNil(page.NextCursor),
+			"hasNextPage":     page.HasNextPage,
+			"hasPreviousPage": page.HasPreviousPage,
+			"startCursor":     emptyToNil(page.StartCursor),
+			"endCursor":       emptyToNil(page.EndCursor),
 		},
-		"totalCount": page.Total,
+		"totalCount": page.TotalCount,
 	}
 }
 

@@ -1,15 +1,18 @@
 package grpc
 
 import (
+	"errors"
 	"reflect"
 	"strings"
 	"testing"
 	"time"
 
+	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/fieldmaskpb"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
 	"github.com/ClaudioSchirmer/omnicore/application/queries"
+	"github.com/ClaudioSchirmer/omnicore/domain"
 	pb "github.com/ClaudioSchirmer/omnicore/web/grpc/pb"
 	"github.com/ClaudioSchirmer/omnicore/web/queryschema"
 )
@@ -21,9 +24,9 @@ func TestCriteriaPageSortReadMask(t *testing.T) {
 	fields := map[string]string{"id": "ID", "name": "Name", "created_at": "CreatedAt"}
 	crit, err := NewCriteria().
 		Fields(fields).
-		Page(&pb.PaginationRequest{After: &after, Limit: &limit, IncludeArchived: true, Search: &search}).
-		Sort(&pb.SortField{Field: "name"}, &pb.SortField{Field: "created_at", Desc: true}, nil, &pb.SortField{}).
-		ReadMask(&fieldmaskpb.FieldMask{Paths: []string{"id", "name", ""}}).
+		Page(&pb.PaginationRequest{After: &after, First: &limit, IncludeArchived: proto.Bool(true), Search: &search}).
+		OrderBy(&pb.OrderByField{Field: "name"}, &pb.OrderByField{Field: "created_at", Desc: true}, nil, &pb.OrderByField{}).
+		FieldMask(&fieldmaskpb.FieldMask{Paths: []string{"id", "name", ""}}).
 		Build()
 	if err != nil {
 		t.Fatalf("build: %v", err)
@@ -33,19 +36,36 @@ func TestCriteriaPageSortReadMask(t *testing.T) {
 	}
 	// wire names resolve to GO FIELD PATHS — the spelling ToCriteria
 	// overlays (Restrict) operate on, closing the physical-column bypass
-	wantSort := []queries.SortField{{Field: "Name"}, {Field: "CreatedAt", Desc: true}}
-	if !reflect.DeepEqual(crit.Sort, wantSort) {
-		t.Fatalf("sort: %+v", crit.Sort)
+	wantSort := []queries.OrderByField{{Field: "Name"}, {Field: "CreatedAt", Desc: true}}
+	if !reflect.DeepEqual(crit.OrderBy, wantSort) {
+		t.Fatalf("sort: %+v", crit.OrderBy)
 	}
 	if !reflect.DeepEqual(crit.Projection, map[string]int{"ID": 1, "Name": 1}) {
 		t.Fatalf("projection: %+v", crit.Projection)
 	}
 }
 
+// violationFields unwraps a gateway rejection (the framework's typed
+// notification error) into the per-message field names, in order.
+func violationFields(t *testing.T, err error) []string {
+	t.Helper()
+	var carrier domain.NotificationCarrier
+	if !errors.As(err, &carrier) {
+		t.Fatalf("expected a NotificationCarrier, got %T: %v", err, err)
+	}
+	var fields []string
+	for _, nctx := range carrier.NotificationContexts() {
+		for _, msg := range nctx.Messages() {
+			fields = append(fields, msg.FieldName)
+		}
+	}
+	return fields
+}
+
 // TestCriteriaOnlyTotalConflicts proves the REST conflict matrix on the
 // gRPC wire: only_total=true combined with any page-shaping control is a
 // wire-contract violation, never a silent ignore — the same 400 the REST
-// wrapper emits for ?onlyTotal=true&limit=….
+// wrapper emits for ?onlyTotal=true&first=….
 func TestCriteriaOnlyTotalConflicts(t *testing.T) {
 	after := "c"
 	limit := int64(5)
@@ -57,32 +77,67 @@ func TestCriteriaOnlyTotalConflicts(t *testing.T) {
 		add  func(*CriteriaBuilder) *CriteriaBuilder
 		want string
 	}{
-		{"after", &pb.PaginationRequest{OnlyTotal: true, After: &after}, nil, "onlyTotal[after]"},
-		{"before", &pb.PaginationRequest{OnlyTotal: true, Before: &after}, nil, "onlyTotal[before]"},
-		{"limit", &pb.PaginationRequest{OnlyTotal: true, Limit: &limit}, nil, "onlyTotal[limit]"},
-		{"sort", &pb.PaginationRequest{OnlyTotal: true},
-			func(b *CriteriaBuilder) *CriteriaBuilder { return b.Sort(&pb.SortField{Field: "name"}) },
-			"onlyTotal[sort]"},
-		{"read_mask", &pb.PaginationRequest{OnlyTotal: true},
+		{"after", &pb.PaginationRequest{OnlyTotal: proto.Bool(true), After: &after}, nil, "onlyTotal[after]"},
+		{"before", &pb.PaginationRequest{OnlyTotal: proto.Bool(true), Before: &after}, nil, "onlyTotal[before]"},
+		{"first", &pb.PaginationRequest{OnlyTotal: proto.Bool(true), First: &limit}, nil, "onlyTotal[first]"},
+		{"sort", &pb.PaginationRequest{OnlyTotal: proto.Bool(true)},
+			func(b *CriteriaBuilder) *CriteriaBuilder { return b.OrderBy(&pb.OrderByField{Field: "name"}) },
+			"onlyTotal[orderBy]"},
+		{"read_mask", &pb.PaginationRequest{OnlyTotal: proto.Bool(true)},
 			func(b *CriteriaBuilder) *CriteriaBuilder {
-				return b.ReadMask(&fieldmaskpb.FieldMask{Paths: []string{"name"}})
+				return b.FieldMask(&fieldmaskpb.FieldMask{Paths: []string{"name"}})
 			},
-			"onlyTotal[read_mask]"},
+			"onlyTotal[fields]"},
 	}
 	for _, tc := range cases {
 		b := NewCriteria().Fields(fields).Page(tc.req)
 		if tc.add != nil {
 			b = tc.add(b)
 		}
-		if _, err := b.Build(); err == nil || !strings.Contains(err.Error(), tc.want) {
-			t.Fatalf("%s: want %q violation, got %v", tc.name, tc.want, err)
+		_, err := b.Build()
+		if err == nil {
+			t.Fatalf("%s: want %q violation, got nil", tc.name, tc.want)
+		}
+		// Gateway violations travel as the framework's typed notification
+		// error — assert the per-field triple, not the error prose.
+		if got := violationFields(t, err); len(got) != 1 || got[0] != tc.want {
+			t.Fatalf("%s: want field %q, got %v", tc.name, tc.want, got)
 		}
 	}
 
 	// only_total alone (with filters upstream) stays the canonical count path.
-	crit, err := NewCriteria().Fields(fields).Page(&pb.PaginationRequest{OnlyTotal: true, IncludeArchived: true}).Build()
+	crit, err := NewCriteria().Fields(fields).Page(&pb.PaginationRequest{OnlyTotal: proto.Bool(true), IncludeArchived: proto.Bool(true)}).Build()
 	if err != nil || !crit.OnlyTotal || !crit.IncludeArchived {
-		t.Fatalf("count-only must pass clean: crit=%+v err=%v", crit, err)
+		t.Fatalf("only-total must pass clean: crit=%+v err=%v", crit, err)
+	}
+}
+
+// TestCriteriaBoolPresenceWithoutActivation proves the presence/activation
+// split on the optional bools — the REST `?onlyTotal=false` semantics on the
+// gRPC wire: an explicitly-set false registers PRESENCE for the opt-in gate
+// but activates nothing (no count short-circuit, no conflict with paging,
+// no archived rows surfaced).
+func TestCriteriaBoolPresenceWithoutActivation(t *testing.T) {
+	limit := int64(5)
+	b := NewCriteria().Page(&pb.PaginationRequest{
+		OnlyTotal:       proto.Bool(false),
+		IncludeArchived: proto.Bool(false),
+		First:           &limit,
+	})
+	controls := b.Controls()
+	if controls.OnlyTotal == nil || *controls.OnlyTotal {
+		t.Fatalf("only_total=false must record inactive presence, got %+v", controls.OnlyTotal)
+	}
+	if !controls.IncludeArchived {
+		t.Fatalf("include_archived=false must record presence")
+	}
+	// Inactive only_total shapes nothing — first alongside is NOT a conflict.
+	crit, err := b.Build()
+	if err != nil {
+		t.Fatalf("inactive only_total must not conflict with first: %v", err)
+	}
+	if crit.OnlyTotal || crit.IncludeArchived || crit.Limit != 5 {
+		t.Fatalf("false values must not activate: %+v", crit)
 	}
 }
 
@@ -203,7 +258,7 @@ func TestCriteriaInvalidOpsFailBuild(t *testing.T) {
 
 func TestCriteriaNilFiltersAreNoOps(t *testing.T) {
 	crit, err := NewCriteria().
-		Page(nil).ReadMask(nil).
+		Page(nil).FieldMask(nil).
 		String("A", nil).Int64("B", nil).Double("C", nil).Bool("D", nil).Timestamp("E", nil).
 		Build()
 	if err != nil {
@@ -215,27 +270,27 @@ func TestCriteriaNilFiltersAreNoOps(t *testing.T) {
 }
 
 func TestCriteriaUndeclaredMaskAndSortFailBuild(t *testing.T) {
-	// The Fields vocabulary IS the allowlist: an undeclared read_mask or
+	// The Fields vocabulary IS the allowlist: an undeclared fields-mask or
 	// sort path fails Build (→ SchemaViolation at the wrapper), so a raw
 	// physical-column spelling can never reach the reader and bypass
 	// ToCriteria overlays such as Restrict.
 	_, err := NewCriteria().
 		Fields(map[string]string{"id": "ID"}).
-		ReadMask(&fieldmaskpb.FieldMask{Paths: []string{"phone"}}).
+		FieldMask(&fieldmaskpb.FieldMask{Paths: []string{"phone"}}).
 		Build()
-	if err == nil || !strings.Contains(err.Error(), "read_mask") {
+	if err == nil || !strings.Contains(err.Error(), "fields") {
 		t.Fatalf("undeclared mask path must fail: %v", err)
 	}
 	_, err = NewCriteria().
 		Fields(map[string]string{"id": "ID"}).
-		Sort(&pb.SortField{Field: "phone"}).
+		OrderBy(&pb.OrderByField{Field: "phone"}).
 		Build()
-	if err == nil || !strings.Contains(err.Error(), "sort") {
+	if err == nil || !strings.Contains(err.Error(), "orderBy") {
 		t.Fatalf("undeclared sort field must fail: %v", err)
 	}
 	// no Fields declared at all → mask/sort unsupported for the view
 	_, err = NewCriteria().
-		ReadMask(&fieldmaskpb.FieldMask{Paths: []string{"id"}}).
+		FieldMask(&fieldmaskpb.FieldMask{Paths: []string{"id"}}).
 		Build()
 	if err == nil {
 		t.Fatalf("mask without a declared vocabulary must fail")

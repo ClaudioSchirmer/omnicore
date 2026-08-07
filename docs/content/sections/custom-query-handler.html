@@ -193,7 +193,7 @@ g.Get("/:email", func(c fiber.Ctx) error {
         <code>Handle</code> returns <code>h.Reader.ReadPage(ctx, h.View, criteria)</code> verbatim.
     </p>
     <pre><code>listParser := fwweb.NewQueryParser[requests.FindUsersCustomRequest,
-    requests.FindUsersCustomResponse]()   // fields-guard + sort-warn fire here at boot
+    requests.FindUsersCustomResponse]()   // fields-guard + orderBy-warn fire here at boot
 
 g.Get("/", func(c fiber.Ctx) error {
     appCtx := fwweb.AppContext(c)
@@ -226,12 +226,12 @@ g.Get("/", func(c fiber.Ctx) error {
         <tbody><tr><th>Helper</th><th>Replaces wrapper step</th><th>Notes</th></tr>
         <tr>
             <td><code>fwweb.NewQueryParser[Req, Resp]()</code></td>
-            <td>query-string allowlist + <code>?fields=</code>/<code>?sort=</code> translation</td>
+            <td>query-string allowlist + <code>?fields=</code>/<code>?orderBy=</code> translation</td>
             <td><strong>Typed-Response parser.</strong> Construct once at Mount. Construction runs the same boot
                 scan the wrapper runs: the sparse-render guard on <code>Resp</code> (panic when any field at any
                 depth is not <code>*T</code>/slice/map with <code>,omitempty</code>, when <code>?fields=</code> is
                 opted in), the <code>slog.Warn</code> advisory listing every sortable wire path (when
-                <code>?sort=</code> is opted in), and the wire→doc projection schema.
+                <code>?orderBy=</code> is opted in), and the wire→doc projection schema.
                 <code>parser.Parse(c)</code> → <code>(criteria, badField, ok)</code> with allowlist +
                 translation. Schema caches are shared with the canonical wrapper.</td>
         </tr>
@@ -239,7 +239,7 @@ g.Get("/", func(c fiber.Ctx) error {
             <td><code>fwweb.ParseCriteria(c, req)</code></td>
             <td>same allowlist, pass-through projection</td>
             <td><strong>Un-typed escape hatch.</strong> For handlers with no typed Response (RawDoc, vendor
-                envelopes) or whose Request does not opt into <code>?fields=</code>/<code>?sort=</code>. Same
+                envelopes) or whose Request does not opt into <code>?fields=</code>/<code>?orderBy=</code>. Same
                 reflection-based allowlist, but the projection schema is nil — reserved keys pass through verbatim
                 (no <code>_id:0</code> auto-exclusion, no snake_case translation).</td>
         </tr>

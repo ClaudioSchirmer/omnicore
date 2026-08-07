@@ -195,7 +195,7 @@ type Config struct {
 	} `yaml:"migrations"`
 
 	// Query configures cross-cutting read-side behavior. Currently the
-	// global ceiling on `?limit=` for every paged GET — the per-view
+	// global page-size ceiling (`?first=`/`?last=`) for every paged GET — the per-view
 	// override lives on ViewDefinition.MaxLimit, the framework fallback
 	// is 100 when neither is declared.
 	Query QueryConfig `yaml:"query"`
@@ -808,10 +808,10 @@ const defaultGraphQLPath = "/graphql"
 const defaultGraphQLUIPath = "/graphql/ui"
 
 // QueryConfig collects the cross-cutting read-side knobs. Currently the
-// global ceiling on `?limit=`; future fields land here without spinning a
+// global page-size ceiling (`?first=`/`?last=`); future fields land here without spinning a
 // new yaml block per concern.
 type QueryConfig struct {
-	// MaxLimit is the default ceiling on `?limit=N` applied uniformly to
+	// MaxLimit is the default ceiling on `?first=N`/`?last=N` applied uniformly to
 	// every paged GET that does not opt into a per-view override via
 	// ViewDefinition.MaxLimit. Zero (or unset) defers to the framework
 	// default 100. Negative values are rejected at boot.
@@ -832,7 +832,7 @@ type QueryConfig struct {
 	MaxLinkManyLimit int64 `yaml:"maxLinkManyLimit"`
 }
 
-// FrameworkDefaultMaxLimit is the read-side `?limit=` ceiling honored when
+// FrameworkDefaultMaxLimit is the read-side page-size ceiling honored when
 // neither the yaml nor any ViewDefinition declares a value. Conservative
 // by design — a service expecting larger pages declares it explicitly.
 const FrameworkDefaultMaxLimit int64 = 100

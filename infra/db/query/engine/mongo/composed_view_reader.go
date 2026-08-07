@@ -135,7 +135,7 @@ func (r *ComposedViewReader) ReadPage(ctx context.Context, view string, c querie
 	// canonical Schema rejection (400), same notification the wire allowlist
 	// emits; surfaces that do not pre-validate (GraphQL, manual criteria)
 	// reach it here.
-	for _, sf := range c.Sort {
+	for _, sf := range c.OrderBy {
 		if _, _, ok := rt.segMatch(sf.Field); ok {
 			return queries.Page{}, core.SingleNotificationError("Schema", "sort", domain.SchemaViolationNotification{})
 		}
@@ -146,8 +146,8 @@ func (r *ComposedViewReader) ReadPage(ctx context.Context, view string, c querie
 	// The composed listing context (segment filters included) is what incoming
 	// cursors were stamped with; the wrapped reader speaks the primary-only
 	// context. Validate against the full hash, then translate for the inner.
-	fullHash := queries.HashContext(c.Filter, c.Sort, c.Search, c.IncludeArchived)
-	primaryHash := queries.HashContext(split.primary.Filter, c.Sort, c.Search, c.IncludeArchived)
+	fullHash := queries.HashContext(c.Filter, c.OrderBy, c.Search, c.IncludeArchived)
+	primaryHash := queries.HashContext(split.primary.Filter, c.OrderBy, c.Search, c.IncludeArchived)
 	if err := rewriteCursorIn(&split.primary.After, fullHash, primaryHash); err != nil {
 		return queries.Page{}, err
 	}
@@ -632,9 +632,9 @@ func (r *ComposedViewReader) attachMany(ctx context.Context, leg *legRuntime, s 
 	base := r.legBaseFilter(leg, s, includeArchived)
 	proj, stripLegID := r.legProjection(leg, s)
 
-	var legSort []queries.SortField
+	var legSort []queries.OrderByField
 	if leg.link.OrderByColumn != "" {
-		legSort = []queries.SortField{{Field: leg.link.OrderByColumn, Desc: leg.link.OrderByDesc}}
+		legSort = []queries.OrderByField{{Field: leg.link.OrderByColumn, Desc: leg.link.OrderByDesc}}
 	}
 	sortDoc := buildStableSortDoc(legSort, false)
 
@@ -747,10 +747,10 @@ func rewriteCursorsOut(page *queries.Page, fullHash string) error {
 		return queries.EncodeCursor(cur.K, fullHash)
 	}
 	var err error
-	if page.NextCursor, err = restamp(page.NextCursor); err != nil {
+	if page.EndCursor, err = restamp(page.EndCursor); err != nil {
 		return err
 	}
-	if page.PrevCursor, err = restamp(page.PrevCursor); err != nil {
+	if page.StartCursor, err = restamp(page.StartCursor); err != nil {
 		return err
 	}
 	for i, s := range page.ItemCursors {

@@ -25,7 +25,11 @@ func (expLabelModule) Translations() map[string]string {
 
 type expCSVReq struct {
 	Email *string `query:"email" filter:"eq"`
-	Limit *int64  `query:"limit"`
+	First           *int64  `query:"first"`
+	OrderBy         *string `query:"orderBy"`
+	Fields          *string `query:"fields"`
+	Search          *string `query:"search"`
+	IncludeArchived *bool   `query:"includeArchived"`
 }
 
 type expCSVQuery struct {
@@ -114,6 +118,48 @@ func mountCSV(app *fiber.App, h *expCSVHandler) {
 	app.Get("/users.csv", QueryAsCSV(pipe, expCSVReq{}, view, deps, h, export.WithDelimiter(';')))
 }
 
+// expShadowReq declares the reserved `search` spelling as a FILTER leaf —
+// the carve-out contract: an explicit declaration is never shadowed by the
+// reserved vocabulary, on the export exactly as on the JSON listing.
+type expShadowReq struct {
+	Search *string `query:"search" filter:"eq"`
+}
+
+func (r expShadowReq) ToQuery(c queries.ReadCriteria) *expCSVQuery {
+	return &expCSVQuery{Criteria: c}
+}
+
+// TestHandleQueryAsCSV_FilterLeafShadowsReservedSpelling proves the export
+// honors the same carve-out buildCriteria applies on the listing: a DTO that
+// declares `query:"search" filter:"eq"` keeps `?search=x` as a FILTER (not
+// the search control, not a NotDeclared 400) — the same URL means the same
+// thing on both route families.
+func TestHandleQueryAsCSV_FilterLeafShadowsReservedSpelling(t *testing.T) {
+	h := newExportHandler()
+	app := fiber.New()
+	tr := translation.Default()
+	pipe := pipeline.New(tr)
+	view := fakeExportView{plan: expCSVPlan(), name: "users"}
+	deps := ExportDeps{Translator: tr, MaxExportRows: 100}
+	app.Get("/users.csv", QueryAsCSV(pipe, expShadowReq{}, view, deps, h))
+
+	resp, _ := app.Test(httptest.NewRequest("GET", "/users.csv?search=Drill", nil))
+	if resp.StatusCode != fiber.StatusOK {
+		b, _ := io.ReadAll(resp.Body)
+		t.Fatalf("shadowed search must be accepted as a filter, got %d (body=%s)", resp.StatusCode, b)
+	}
+	crit, err := h.got.ToCriteria(nil)
+	if err != nil {
+		t.Fatalf("ToCriteria: %v", err)
+	}
+	if crit.Search != "" {
+		t.Fatalf("shadowed spelling must NOT feed the search control, got %q", crit.Search)
+	}
+	if got := crit.Filter["Search"]; got != "Drill" {
+		t.Fatalf("shadowed spelling must land as the declared filter, got Filter=%v", crit.Filter)
+	}
+}
+
 func parseSemicolonCSV(t *testing.T, body io.Reader) [][]string {
 	t.Helper()
 	r := csv.NewReader(body)
@@ -131,7 +177,7 @@ func TestHandleQueryAsCSV_FullHierarchy(t *testing.T) {
 	h := newExportHandler()
 	mountCSV(app, h)
 
-	resp, err := app.Test(httptest.NewRequest("GET", "/users.csv?email=j@x&limit=5", nil))
+	resp, err := app.Test(httptest.NewRequest("GET", "/users.csv?email=j@x&first=5", nil))
 	if err != nil {
 		t.Fatalf("app.Test: %v", err)
 	}
@@ -284,7 +330,7 @@ func TestHandleQueryAsCSVSpec_OmitsPaginationFromSpec(t *testing.T) {
 	for _, k := range spec.OmittedQueryParams {
 		got[k] = true
 	}
-	for _, want := range []string{"limit", "after", "before", "onlyTotal"} {
+	for _, want := range []string{"first", "last", "after", "before", "onlyTotal"} {
 		if !got[want] {
 			t.Fatalf("export spec must omit %q; OmittedQueryParams=%v", want, spec.OmittedQueryParams)
 		}

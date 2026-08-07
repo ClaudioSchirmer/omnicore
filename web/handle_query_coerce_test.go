@@ -21,7 +21,7 @@ type testCoerceRequest struct {
 	Score  *float64 `query:"score"  filter:"eq,gte"`    // float  — parse float
 	Active *bool    `query:"active" filter:"eq"`        // bool   — parse "true"/"false"
 
-	Limit *int64 `query:"limit"`
+	Limit *int64 `query:"first"`
 }
 
 type testCoerceQuery struct {

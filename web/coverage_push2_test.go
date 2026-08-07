@@ -42,7 +42,7 @@ func runBuildCriteria(t *testing.T, schemaType reflect.Type, url string) (string
 type afterBeforeRequest struct {
 	After  *string `query:"after"`
 	Before *string `query:"before"`
-	Sort   *string `query:"sort"`
+	Sort   *string `query:"orderBy"`
 }
 
 func TestBuildCriteria_AfterCursorTupleLengthMismatch(t *testing.T) {
@@ -78,7 +78,7 @@ func TestBuildCriteria_AfterAndBeforeTogetherRejected(t *testing.T) {
 	a := mustCursor(t, []any{"id"}, "")
 	b := mustCursor(t, []any{"id"}, "")
 	bad, ok := runBuildCriteria(t, reflect.TypeOf(afterBeforeRequest{}), "/x?after="+a+"&before="+b)
-	if ok || bad != "after,before" {
+	if ok || bad != "before" {
 		t.Fatalf("expected after,before mutual exclusion, got bad=%q ok=%v", bad, ok)
 	}
 }
@@ -88,7 +88,7 @@ func TestValidateByIDQuery_RejectsUnknownKeys(t *testing.T) {
 	var bad string
 	var ok bool
 	app.Get("/x", func(c fiber.Ctx) error {
-		bad, ok = validateByIDQuery(c)
+		bad, ok = validateByIDQuery(c, true)
 		return c.SendStatus(fiber.StatusOK)
 	})
 	// Two unknown keys exercise the early-return guard inside VisitAll.
@@ -105,7 +105,7 @@ func TestValidateByIDQuery_AllowsIncludeArchived(t *testing.T) {
 	var bad string
 	var ok bool
 	app.Get("/x", func(c fiber.Ctx) error {
-		bad, ok = validateByIDQuery(c)
+		bad, ok = validateByIDQuery(c, true)
 		return c.SendStatus(fiber.StatusOK)
 	})
 	if _, err := app.Test(httptest.NewRequest("GET", "/x?includeArchived=true", nil)); err != nil {
@@ -113,5 +113,23 @@ func TestValidateByIDQuery_AllowsIncludeArchived(t *testing.T) {
 	}
 	if !ok || bad != "" {
 		t.Fatalf("includeArchived must be allowed on by-id, got bad=%q ok=%v", bad, ok)
+	}
+}
+
+func TestValidateByIDQuery_UndeclaredIncludeArchivedRejects(t *testing.T) {
+	// The DTO opt-in gate on the by-id surface: without `query:"includeArchived"`
+	// on the Request DTO the key is a loud NotDeclared 400, never a silent ignore.
+	app := fiber.New()
+	var bad string
+	var ok bool
+	app.Get("/x", func(c fiber.Ctx) error {
+		bad, ok = validateByIDQuery(c, false)
+		return c.SendStatus(fiber.StatusOK)
+	})
+	if _, err := app.Test(httptest.NewRequest("GET", "/x?includeArchived=true", nil)); err != nil {
+		t.Fatalf("app.Test: %v", err)
+	}
+	if ok || bad != "includeArchived" {
+		t.Fatalf("undeclared includeArchived must reject with its key, got ok=%v bad=%q", ok, bad)
 	}
 }

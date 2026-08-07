@@ -70,16 +70,21 @@ func TestInfrastructureError_ErrorAndAccessor(t *testing.T) {
 }
 
 func TestLimitExceededError_Shape(t *testing.T) {
-	e := LimitExceededError(50)
+	e := LimitExceededError(50, false)
 	if e.Contexts[0].Context() != "Schema" {
 		t.Fatalf("envelope context = %q, want Schema", e.Contexts[0].Context())
 	}
 	m := e.Contexts[0].Messages()[0]
-	if m.FieldName != "limit" || m.FieldValue != "50" {
-		t.Errorf("the effective ceiling must ride FieldValue, got %+v", m)
+	// FieldName names the directional control the consumer sent, so the 400
+	// points at the exact wire key: forward = "first", backward = "last".
+	if m.FieldName != "first" || m.FieldValue != "50" {
+		t.Errorf("forward rejection must name first + carry the ceiling, got %+v", m)
 	}
 	if _, ok := m.Notification.(domain.LimitExceededNotification); !ok {
 		t.Errorf("kernel notification drifted: %T", m.Notification)
+	}
+	if b := LimitExceededError(50, true).Contexts[0].Messages()[0]; b.FieldName != "last" {
+		t.Errorf("backward rejection must name last, got %+v", b)
 	}
 }
 

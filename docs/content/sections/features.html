@@ -15,7 +15,7 @@
         <div class="stat"><span class="num">5</span><span class="lbl">relational engines — PostgreSQL, MySQL, SQL Server, Oracle &amp; SQLite, one seam</span></div>
         <div class="stat"><span class="num">16</span><span class="lbl">filter operators, allowlisted per field</span></div>
         <div class="stat"><span class="num">7</span><span class="lbl">built-in language catalogs</span></div>
-        <div class="stat"><span class="num">92.1%</span><span class="lbl">unit-test coverage</span></div>
+        <div class="stat"><span class="num">92.0%</span><span class="lbl">unit-test coverage</span></div>
     </div>
 
     <div class="spotlight">
@@ -105,7 +105,7 @@
             </div>
             <div class="cap-lead">Eventually-consistent Mongo projections, mirrored from the write side.</div>
             <ul class="cap-list">
-                <li><a href="#auto-query-handlers">Auto query handlers</a> — allowlisted filters, keyset pagination, sparse <code>?fields=</code>, <code>?sort=</code>, count-only</li>
+                <li><a href="#auto-query-handlers">Auto query handlers</a> — allowlisted filters, keyset pagination, sparse <code>?fields=</code>, <code>?orderBy=</code>, only-total</li>
                 <li><a href="#query-side">16 filter operators</a> — eq/ne/in/gte/startsWith/contains… plus case-insensitive variants, allowlisted per field by tag</li>
                 <li><a href="#read-lifecycle-map"><code>SyncEngine</code> + composer</a> — outbox → CDC relay → the transport (Kafka/NATS) materializes views; archived rows survive unless <code>DeleteOnArchive()</code></li>
                 <li><a href="#query-side"><code>ComposedView</code> / <code>SharedBaseView</code></a> — read-time joins and all-in-one identity, never materialized on the request path</li>

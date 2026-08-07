@@ -128,7 +128,7 @@
     managed slot the Go name is FIXED by the framework — only the column is yours:</strong>
 </p>
 <table>
-    <thead><tr><th>Declaration</th><th>Physical name (SQL column)</th><th>Fixed Go name — criteria, <code>?filter</code>/<code>?sort</code>/<code>?fields=</code>, Response DTO field</th><th>What the Mongo document stores</th></tr></thead>
+    <thead><tr><th>Declaration</th><th>Physical name (SQL column)</th><th>Fixed Go name — criteria, <code>?filter</code>/<code>?orderBy</code>/<code>?fields=</code>, Response DTO field</th><th>What the Mongo document stores</th></tr></thead>
     <tbody>
         <tr>
             <td><code>ID("order_no")</code></td><td><code>order_no</code></td>
@@ -201,7 +201,7 @@ type OrderResponse struct {
 <p>
     <strong>Symptom → cause.</strong> A Response field that is always <code>null</code>/zero with no error: its Go
     name does not match the view's logical name — a managed slot renamed (as above) or a <code>Field</code> Go name
-    typo. The Request side fails LOUDLY for the same mistake: a <code>?filter</code>/<code>?sort</code>/<code>?fields=</code>
+    typo. The Request side fails LOUDLY for the same mistake: a <code>?filter</code>/<code>?orderBy</code>/<code>?fields=</code>
     token that resolves to no logical name is <code>400 SchemaViolationNotification</code>. Silent on the way out,
     loud on the way in — if a filter on the field 400s, the Response field with that name is empty for the same
     reason.
@@ -256,7 +256,7 @@ core.NewExternalSchema("users").ID("id").Field("Email", "mail")</code></pre>
     <strong>Exposing the ParentID on read — <code>ParentID</code>, the read-only twin of <code>ID</code>.</strong> Symmetric with the
     primary key, the foreign key is exposed <strong>read-only</strong> under the fixed logical Go name <code>ParentID</code>: a
     view/DTO that declares a <code>ParentID</code> field (its <code>json:</code> tag chooses the wire name) receives the
-    parent link, and a <code>filter</code> / <code>sort</code> / <code>?fields=</code> on it is a real query, not a dead
+    parent link, and a <code>filter</code> / <code>orderBy</code> / <code>?fields=</code> on it is a real query, not a dead
     field — it resolves to the physical ParentID column. You never <em>map</em> it: it is projected automatically whenever the
     schema declares a ParentID, exactly as <code>ID</code> is projected from the ID. Like <code>ID</code>, <code>ParentID</code> is a
     <strong>reserved</strong> Go name — <code>Field("ID", …)</code> and <code>Field("ParentID", …)</code> are both boot panics.
@@ -989,7 +989,7 @@ func StudentSchema() *core.TableSchema {
     emitting dialect-specific SQL through the engine's <code>Dialect</code> seam (placeholders, identifier quoting, the UUID
     value codec, upsert syntax, the current-timestamp expression, the row cap). <strong>MongoDB</strong> is the only
     read-side projection store — the composer, the <code>ViewDefinition</code> surface, the Mongo schema-evolution control
-    plane, and the <code>?fields</code> / <code>?sort</code> / keyset-pagination reader all target MongoDB. The set of
+    plane, and the <code>?fields</code> / <code>?orderBy</code> / keyset-pagination reader all target MongoDB. The set of
     column types each relational dialect handles is its driver's default codec set plus the framework's UUID handling;
     because that set is <em>not</em> identical across backends, the tables below describe each dialect on its own — read
     the one for your <code>relational.dialect</code>.

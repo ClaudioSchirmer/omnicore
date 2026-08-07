@@ -108,10 +108,10 @@ func TestReadPage_BeforeFirstCursor_EmptyPageNoFullLoad(t *testing.T) {
 	if len(page.Items) != 0 {
 		t.Fatalf("before the first row must yield 0 items, got %d (%v)", len(page.Items), names(page))
 	}
-	if page.HasPrev {
+	if page.HasPreviousPage {
 		t.Error("HasPrev must be false before the first row")
 	}
-	if !page.HasNext {
+	if !page.HasNextPage {
 		t.Error("HasNext must be true — rows exist ahead of the window")
 	}
 }
@@ -130,28 +130,28 @@ func TestReadPage_ForwardAfter_WalksFullSetNoDup(t *testing.T) {
 		t.Fatalf("page1: %v", err)
 	}
 	eqNames(t, names(p1), "r0", "r1")
-	if p1.HasPrev || !p1.HasNext {
-		t.Fatalf("page1 flags: hasPrev=%v hasNext=%v, want false/true", p1.HasPrev, p1.HasNext)
+	if p1.HasPreviousPage || !p1.HasNextPage {
+		t.Fatalf("page1 flags: hasPrev=%v hasNext=%v, want false/true", p1.HasPreviousPage, p1.HasNextPage)
 	}
 
-	crit.After = p1.NextCursor
+	crit.After = p1.EndCursor
 	p2, err := r.ReadPage(ctx, "v", crit)
 	if err != nil {
 		t.Fatalf("page2: %v", err)
 	}
 	eqNames(t, names(p2), "r2", "r3")
-	if !p2.HasPrev || !p2.HasNext {
-		t.Fatalf("page2 flags: hasPrev=%v hasNext=%v, want true/true", p2.HasPrev, p2.HasNext)
+	if !p2.HasPreviousPage || !p2.HasNextPage {
+		t.Fatalf("page2 flags: hasPrev=%v hasNext=%v, want true/true", p2.HasPreviousPage, p2.HasNextPage)
 	}
 
-	crit.After = p2.NextCursor
+	crit.After = p2.EndCursor
 	p3, err := r.ReadPage(ctx, "v", crit)
 	if err != nil {
 		t.Fatalf("page3: %v", err)
 	}
 	eqNames(t, names(p3), "r4")
-	if !p3.HasPrev || p3.HasNext {
-		t.Fatalf("page3 flags: hasPrev=%v hasNext=%v, want true/false (last page)", p3.HasPrev, p3.HasNext)
+	if !p3.HasPreviousPage || p3.HasNextPage {
+		t.Fatalf("page3 flags: hasPrev=%v hasNext=%v, want true/false (last page)", p3.HasPreviousPage, p3.HasNextPage)
 	}
 }
 
@@ -165,8 +165,8 @@ func TestReadPage_Backward_AnchorsAtEnd(t *testing.T) {
 		t.Fatalf("backward: %v", err)
 	}
 	eqNames(t, names(p), "r3", "r4")
-	if !p.HasPrev || p.HasNext {
-		t.Fatalf("backward flags: hasPrev=%v hasNext=%v, want true/false", p.HasPrev, p.HasNext)
+	if !p.HasPreviousPage || p.HasNextPage {
+		t.Fatalf("backward flags: hasPrev=%v hasNext=%v, want true/false", p.HasPreviousPage, p.HasNextPage)
 	}
 }
 
@@ -181,18 +181,18 @@ func TestReadPage_Before_WalksBack(t *testing.T) {
 	if err != nil {
 		t.Fatalf("page1: %v", err)
 	}
-	p2, err := r.ReadPage(ctx, "v", queries.ReadCriteria{Limit: 2, After: p1.NextCursor})
+	p2, err := r.ReadPage(ctx, "v", queries.ReadCriteria{Limit: 2, After: p1.EndCursor})
 	if err != nil {
 		t.Fatalf("page2: %v", err)
 	}
 	// p2 covers offsets 2..3; its PrevCursor is offset 2 — paging BEFORE it must
 	// return offsets 0..1, back at the start.
-	back, err := r.ReadPage(ctx, "v", queries.ReadCriteria{Limit: 2, Before: p2.PrevCursor})
+	back, err := r.ReadPage(ctx, "v", queries.ReadCriteria{Limit: 2, Before: p2.StartCursor})
 	if err != nil {
 		t.Fatalf("before: %v", err)
 	}
 	eqNames(t, names(back), "r0", "r1")
-	if back.HasPrev || !back.HasNext {
-		t.Fatalf("before flags: hasPrev=%v hasNext=%v, want false/true", back.HasPrev, back.HasNext)
+	if back.HasPreviousPage || !back.HasNextPage {
+		t.Fatalf("before flags: hasPrev=%v hasNext=%v, want false/true", back.HasPreviousPage, back.HasNextPage)
 	}
 }

@@ -437,7 +437,7 @@ func TestBridgeRuntimeErrors(t *testing.T) {
 		func(map[string]any) mismatchedItemDTO {
 			return mismatchedItemDTO{ID: "g", Name: "n", Kind: struct{ X bool }{true}}
 		},
-		queries.Page{Items: []map[string]any{{"ID": "g"}}, Total: 1})
+		queries.Page{Items: []map[string]any{{"ID": "g"}}, TotalCount: 1})
 	if err == nil {
 		t.Fatalf("item bridge failure must propagate")
 	}
@@ -645,20 +645,20 @@ func TestReadMaskAndSortSpeakItemWireNames(t *testing.T) {
 	call := searchServer(t, &crit)
 
 	if _, err := call(&testpb.SearchGadgetsRequest{
-		Sort:     []*omnicorepb.SortField{{Field: "name", Desc: true}},
-		ReadMask: &fieldmaskpb.FieldMask{Paths: []string{"id", "kind"}},
+		OrderBy:     []*omnicorepb.OrderByField{{Field: "name", Desc: true}},
+		Fields: &fieldmaskpb.FieldMask{Paths: []string{"id", "kind"}},
 	}); err != nil {
 		t.Fatalf("declared mask/sort paths must pass: %v", err)
 	}
-	if len(crit.Sort) != 1 || crit.Sort[0].Field != "Name" || !crit.Sort[0].Desc {
-		t.Fatalf("sort must resolve to the Go doc path: %+v", crit.Sort)
+	if len(crit.OrderBy) != 1 || crit.OrderBy[0].Field != "Name" || !crit.OrderBy[0].Desc {
+		t.Fatalf("sort must resolve to the Go doc path: %+v", crit.OrderBy)
 	}
 	if crit.Projection["ID"] != 1 || crit.Projection["Kind"] != 1 {
 		t.Fatalf("read_mask must resolve to Go doc paths: %+v", crit.Projection)
 	}
 
 	_, err := call(&testpb.SearchGadgetsRequest{
-		Sort: []*omnicorepb.SortField{{Field: "phone"}},
+		OrderBy: []*omnicorepb.OrderByField{{Field: "phone"}},
 	})
 	expectInvalidArgument(t, err, "not a declared field")
 }

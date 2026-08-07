@@ -38,7 +38,7 @@
             <code>data</code> as the projected items array and <code>pagination</code> as a top-level
             field.</li>
         <li><code>fwweb.QueryByID(pipe, sample, projector, h)</code> — by-id lookup (<code>GET /users/:id</code>).
-            Only <code>?includeArchived=true</code> is reserved; any other query parameter produces 400.
+            Only <code>?includeArchived=true</code> is reserved — and it obeys the DTO like every control: honored only when the Request DTO declares <code>query:"includeArchived"</code>, rejected as the canonical NotDeclared 400 otherwise. Any other query parameter produces 400.
             Calls <code>req.ToQuery()</code> (no ctx), injects the path id via <code>q.SetPathID(...)</code>,
             dispatches via <code>FindByIDQueryHandler[*Q]</code> which calls <code>q.ToCriteria(ctx)</code>
             and forwards both id + criteria (IncludeArchived flag + any JWT overlay) to
@@ -140,16 +140,16 @@
         <tr><td>Set up <code>SyncEngine</code> to populate the view</td><td><span class="tag manual">manual</span></td><td>service boot</td></tr>
         <tr><td>Declare the allowlist of fields + operators</td><td><span class="tag manual">manual</span></td><td>Request DTO struct tags (<code>query:"X" filter:"ops"</code>)</td></tr>
         <tr><td>Declare the wire output shape</td><td><span class="tag manual">manual</span></td><td>Response DTO struct with <code>json:"&lt;wire&gt;"</code> tags only (the doc is already Go-keyed by the reader — no source-key override), co-located with the Request in the same <code>web/requests/find_xxx_request.go</code> file. Pair with <code>fwresponses.AutoFromDoc[Response]</code> (tag-driven default), <code>fwresponses.RawDoc</code> (raw passthrough), or a consumer <code>Response{}.FromDoc</code> method (custom logic).</td></tr>
-        <tr><td>Query string parsing (filters, sort, fields, pagination)</td><td><span class="tag auto">automatic</span></td><td><code>QueryWithParams</code> wrapper</td></tr>
+        <tr><td>Query string parsing (filters, orderBy, fields, pagination)</td><td><span class="tag auto">automatic</span></td><td><code>QueryWithParams</code> wrapper</td></tr>
         <tr><td>Reject unknown field / disallowed operator with 400</td><td><span class="tag auto">automatic</span></td><td><code>QueryWithParams</code> + <code>SchemaViolationNotification</code></td></tr>
         <tr><td>Project each <code>page.Items</code> doc to the wire shape</td><td><span class="tag auto">automatic</span></td><td><code>QueryWithParams</code> applies the consumer's projector per doc; <code>fwweb.ProjectPage</code> / <code>fwweb.RespondPaged</code> available for manual handlers</td></tr>
-        <tr><td>Validate the query string in a manual handler (typed Response, may opt into <code>?fields=</code> / <code>?sort=</code>)</td><td><span class="tag auto">automatic</span></td><td><code>fwweb.NewQueryParser[Req, Resp]()</code> at Mount — runs the canonical boot scan (sparse-render guard + sort opt-in <code>slog.Warn</code> + projection schema). Per request: <code>parser.Parse(c)</code>; pair with <code>fwweb.RespondSchemaViolation</code>.</td></tr>
+        <tr><td>Validate the query string in a manual handler (typed Response, may opt into <code>?fields=</code> / <code>?orderBy=</code>)</td><td><span class="tag auto">automatic</span></td><td><code>fwweb.NewQueryParser[Req, Resp]()</code> at Mount — runs the canonical boot scan (sparse-render guard + sort opt-in <code>slog.Warn</code> + projection schema). Per request: <code>parser.Parse(c)</code>; pair with <code>fwweb.RespondSchemaViolation</code>.</td></tr>
         <tr><td>Validate the query string in a manual handler (RawDoc Response OR no reserved-key opt-in)</td><td><span class="tag auto">automatic</span></td><td><code>fwweb.ParseCriteria(c, requestDTO)</code> — same reflection-based allowlist, projection schema nil (pass-through); pair with <code>fwweb.RespondSchemaViolation</code></td></tr>
         <tr><td>Filter operators (<code>.gte/.lte/.gt/.lt/.ne/.in/.nin</code>)</td><td><span class="tag auto">automatic</span></td><td><code>queryschema.ApplyFilterParam</code></td></tr>
         <tr><td>Type coercion (int/float/bool/string)</td><td><span class="tag auto">automatic</span></td><td><code>coerceValue</code></td></tr>
         <tr><td>DeletedAt filter (<code>deleted_at = null</code>)</td><td><span class="tag auto">automatic</span></td><td><code>MongoViewReader</code> applies when <code>!IncludeArchived</code></td></tr>
         <tr><td>Cursor pagination (encode/decode base64)</td><td><span class="tag auto">automatic</span></td><td><code>application/queries/cursor.go</code></td></tr>
-        <tr><td>Detect <code>has_next</code> via limit+1</td><td><span class="tag auto">automatic</span></td><td><code>MongoViewReader.ReadPage</code></td></tr>
+        <tr><td>Detect <code>hasNextPage</code> via page-size+1</td><td><span class="tag auto">automatic</span></td><td><code>MongoViewReader.ReadPage</code></td></tr>
         <tr><td>Total count</td><td><span class="tag auto">automatic</span></td><td><code>CountDocuments</code></td></tr>
         <tr><td>Text search (<code>$text</code>)</td><td><span class="tag auto">automatic</span></td><td>when <code>ReadCriteria.Search != ""</code></td></tr>
         <tr><td>404 when document does not exist</td><td><span class="tag auto">automatic</span></td><td><code>FindByIDQueryHandler</code> emits <code>RecordNotFoundNotification</code></td></tr>
@@ -167,11 +167,31 @@
         <a href="#query-side~qry-operators">QueryHandler · CQRS</a> trunk, since the custom path reads the
         same tag. The wrapper inspects the type (cached by <code>reflect.Type</code> in a module-level
         <code>sync.Map</code>) and rejects any query-string key outside the declared set with 400
-        <code>SchemaViolationNotification</code>. Reserved pagination/control keys (<code>limit</code>,
-        <code>after</code>, <code>before</code>, <code>sort</code>, <code>fields</code>, <code>search</code>,
-        <code>includeArchived</code>, <code>onlyTotal</code>) are declared with only the
+        <code>SchemaViolationNotification</code>. Reserved pagination/control keys (<code>first</code>,
+        <code>last</code>, <code>after</code>, <code>before</code>, <code>orderBy</code>, <code>fields</code>,
+        <code>search</code>, <code>includeArchived</code>, <code>onlyTotal</code>) are declared with only the
         <code>query:"..."</code> tag (no filter tag) — recognized only at the top level, never inside an embed
-        group.
+        group. The vocabulary is <strong>closed</strong>: a top-level query-tagged scalar without a
+        <code>filter:</code> tag whose key is not one of the nine canonical controls is a
+        <strong>boot fail</strong> (panic at wrapper construction naming the DTO, the offending tag and
+        the canonical list) — a typo like <code>query:"orderby"</code> or a stale spelling like
+        <code>query:"limit"</code> would otherwise opt nothing in while OpenAPI advertised the dead
+        parameter.
+    </p>
+    <p>
+        <strong>The DTO governs every surface.</strong> The Request DTO is the single source of truth
+        for what a list endpoint exposes: a reserved control the DTO does not declare is rejected on
+        EVERY surface — REST answers 400 with the control key as the field; GraphQL cuts the argument
+        out of the generated schema (introspection and the playground never advertise it, and the
+        validator rejects it as an unknown argument); gRPC rejects at runtime with
+        <code>INVALID_ARGUMENT</code> naming the missing declaration (the shared proto cannot narrow
+        per RPC). All three run the same canonical validation gateway
+        (<code>queryschema.ValidateControls</code>) BEFORE the handler: the opt-in gate, the
+        directional rule (forward <code>first</code>/<code>after</code> × backward
+        <code>last</code>/<code>before</code>, sizes positive), and the only-total conflict matrix —
+        one implementation, three idiomatic renderings, zero drift. A developer reads the attached
+        Request DTO and knows exactly what the endpoint speaks; a new surface plugs into the same
+        gateway.
     </p>
 
     <h3 id="qry-nested">Nested embed groups</h3>
@@ -186,7 +206,8 @@
     Email     *string             `query:"email" filter:"eq,in"`
     Addresses AddressFilterParams `query:"addresses"`
 
-    Limit *int64 `query:"limit"`
+    First *int64 `query:"first"`
+    Last  *int64 `query:"last"`
 }
 
 type AddressFilterParams struct {
@@ -213,7 +234,7 @@ type AddressFilterParams struct {
         at the owner's level on read</strong> (the composer's <code>mergeOwnerSiblings</code> / the role carrying every
         base field), so on the read side they behave exactly like the owner's own columns. Declare them as
         <strong>top-level</strong> fields on the Request and Response DTOs — no prefix — and <code>filter:</code> /
-        <code>?sort=</code> / <code>?fields=</code> work identically to a native field. The
+        <code>?orderBy=</code> / <code>?fields=</code> work identically to a native field. The
         <code>TableSchema</code> field resolver is sibling-aware (<code>columnForRead</code> / <code>goNameForRead</code>
         route a Go field to its sibling's column), and the relational aggregate loader <code>LEFT JOIN</code>s the
         sibling table only when a criteria actually references one of its fields. The wire / DTO author never sees the
@@ -291,7 +312,7 @@ type FindUsersByParamsRequest struct {
     Name   *string `query:"name"   filter:"eq"`
     Email  *string `query:"email"  filter:"eq,in"`
 
-    Limit  *int64  `query:"limit"`
+    First  *int64  `query:"first"`
     Fields *string `query:"fields"`   // declares the parameter
 }
 
@@ -327,11 +348,11 @@ type FindUsersByParamsAddressOutput struct {
         sparse-render contract.
     </p>
 
-    <h3 id="qry-sort">Sortable response paths via <code>?sort=</code></h3>
+    <h3 id="qry-sort">Sortable response paths via <code>?orderBy=</code></h3>
     <p>
         Symmetric to <code>?fields=</code>: the consumer asks the framework to order results by
         Response-declared paths and the wrapper validates + translates the tokens end to end. The
-        Request DTO opts in by declaring <code>Sort *string `query:"sort"`</code> (no
+        Request DTO opts in by declaring <code>OrderBy *string `query:"orderBy"`</code> (no
         <code>filter:</code> tag — it's a reserved control key, not a filter leaf). When the
         parameter is declared <em>and</em> the wrapper's Response type <code>R</code> is a struct,
         two things happen automatically:
@@ -344,62 +365,76 @@ type FindUsersByParamsAddressOutput struct {
             the Response's <code>json:</code> tags, and finally translated by the reader to the
             physical Mongo column via the view's <code>TableSchema</code> — the same two-hop pivot
             <code>?fields=</code> uses. Unknown tokens emit 400 with <code>SchemaViolationNotification</code> on
-            field <code>sort[&lt;token&gt;]</code>; the rejected token is surfaced verbatim
+            field <code>orderBy[&lt;token&gt;]</code>; the rejected token is surfaced verbatim
             including any <code>-</code> prefix the consumer sent. The resulting
-            <code>SortField{Field: docPath, Desc: bool}</code> entries land on
-            <code>ReadCriteria.Sort</code> and the canonical <code>MongoViewReader</code> emits
+            <code>OrderByField{Field: docPath, Desc: bool}</code> entries land on
+            <code>ReadCriteria.OrderBy</code> and the canonical <code>MongoViewReader</code> emits
             the corresponding <code>bson.D</code> on <code>findOpts.SetSort</code>.
         </li>
         <li>
-            <strong>Boot warning when sort is declared.</strong> The wrapper has no way to verify
+            <strong>Boot warning when orderBy is declared.</strong> The wrapper has no way to verify
             from its construction site that the Mongo view declares indexes covering the sortable
             paths — the <code>ViewDefinition</code> lives in the consumer's
             <code>ReadableFeature.Views()</code>, separated from the route registration. When
-            <code>Sort</code> opt-in is detected and a typed Response is in scope, the framework
+            <code>OrderBy</code> opt-in is detected and a typed Response is in scope, the framework
             emits a single <code>slog.Warn</code> at boot listing every sortable wire path so the
             operator can compare it against the view's <code>.Indexes(…)</code> declaration in
             the same boot pass and add covering indexes
-            (<code>query.Index</code> / <code>query.Compound</code>) where missing — sort
+            (<code>query.Index</code> / <code>query.Compound</code>) where missing — ordering
             queries against non-indexed fields scale poorly on large collections.
         </li>
     </ol>
     <p>
         There is <em>no</em> boot guard analogous to <code>fields</code>' pointer + omitempty rule.
-        <code>?sort=</code> only consumes the wire→doc path map; the Response shape is not
+        <code>?orderBy=</code> only consumes the wire→doc path map; the Response shape is not
         constrained by it. When <code>fields</code> is also opt-in, the existing guard still fires
-        — it is the <code>fields</code>-side rule, untouched by <code>sort</code>.
+        — it is the <code>fields</code>-side rule, untouched by <code>orderBy</code>.
     </p>
     <p>
-        The allowlist is opt-in by declaration: a Request DTO without <code>query:"sort"</code>
-        does not get the allowlist (and does not consume the <code>?sort=</code> wire key);
+        The allowlist is opt-in by declaration: a Request DTO without <code>query:"orderBy"</code>
+        does not get the allowlist (and does not consume the <code>?orderBy=</code> wire key);
         <code>QueryWithParams</code> paired with a custom projector returning
         <code>map[string]any</code> (e.g. <code>fwresponses.RawDoc</code>) also bypasses the
         allowlist — there is no typed Response shape to enforce. Manual handlers via
-        <code>fwweb.ParseCriteria</code> operate in pass-through mode: each <code>?sort=</code>
-        token becomes a <code>SortField</code> verbatim (no allowlist, no translation, no boot
+        <code>fwweb.ParseCriteria</code> operate in pass-through mode: each <code>?orderBy=</code>
+        token becomes a <code>OrderByField</code> verbatim (no allowlist, no translation, no boot
         warning). The canonical surface is the <code>QueryWithParams</code> wrapper.
     </p>
     <table>
-        <tbody><tr><th>Wire form</th><th>SortField emitted</th><th>Notes</th></tr>
-        <tr><td><code>?sort=name</code></td><td><code>{Field:"Name", Desc:false}</code></td><td>Bare token → ascending; <code>SortField</code> carries the Go field path</td></tr>
-        <tr><td><code>?sort=-name</code></td><td><code>{Field:"Name", Desc:true}</code></td><td><code>-</code> prefix → descending</td></tr>
-        <tr><td><code>?sort=addresses.zipCode</code></td><td><code>{Field:"Addresses.ZipCode", Desc:false}</code></td><td>Go field path; reader maps <code>ZipCode</code> → column <code>zip_code</code> via the view <code>TableSchema</code></td></tr>
-        <tr><td><code>?sort=addresses.state</code></td><td><code>{Field:"Addresses.State", Desc:false}</code></td><td>reader maps <code>State</code> → column <code>st</code> because <code>TableSchema.Field("State","st")</code> declares it</td></tr>
-        <tr><td><code>?sort=name,-email</code></td><td>2 entries, independent directions</td><td>Multi-key sort applied in declaration order</td></tr>
-        <tr><td><code>?sort=bogus</code></td><td>(none — request rejected)</td><td>400 <code>SchemaViolationNotification</code> on field <code>sort[bogus]</code></td></tr>
-        <tr><td><code>?sort=-bogus</code></td><td>(none — request rejected)</td><td>400 <code>SchemaViolationNotification</code> on field <code>sort[-bogus]</code> (prefix preserved)</td></tr>
+        <tbody><tr><th>Wire form</th><th>OrderByField emitted</th><th>Notes</th></tr>
+        <tr><td><code>?orderBy=name</code></td><td><code>{Field:"Name", Desc:false}</code></td><td>Bare token → ascending; <code>OrderByField</code> carries the Go field path</td></tr>
+        <tr><td><code>?orderBy=-name</code></td><td><code>{Field:"Name", Desc:true}</code></td><td><code>-</code> prefix → descending</td></tr>
+        <tr><td><code>?orderBy=addresses.zipCode</code></td><td><code>{Field:"Addresses.ZipCode", Desc:false}</code></td><td>Go field path; reader maps <code>ZipCode</code> → column <code>zip_code</code> via the view <code>TableSchema</code></td></tr>
+        <tr><td><code>?orderBy=addresses.state</code></td><td><code>{Field:"Addresses.State", Desc:false}</code></td><td>reader maps <code>State</code> → column <code>st</code> because <code>TableSchema.Field("State","st")</code> declares it</td></tr>
+        <tr><td><code>?orderBy=name,-email</code></td><td>2 entries, independent directions</td><td>Multi-key sort applied in declaration order</td></tr>
+        <tr><td><code>?orderBy=bogus</code></td><td>(none — request rejected)</td><td>400 <code>SchemaViolationNotification</code> on field <code>orderBy[bogus]</code></td></tr>
+        <tr><td><code>?orderBy=-bogus</code></td><td>(none — request rejected)</td><td>400 <code>SchemaViolationNotification</code> on field <code>orderBy[-bogus]</code> (prefix preserved)</td></tr>
     </tbody></table>
 
-    <h3 id="qry-keyset">Keyset pagination via <code>?after=</code> / <code>?before=</code> + per-view <code>?limit=</code> ceiling</h3>
+    <h3 id="qry-keyset">Keyset pagination — the Relay direction pair <code>first</code>/<code>after</code> × <code>last</code>/<code>before</code></h3>
     <p>
-        The read side is <strong>keyset-paginated over <code>(sort_value..., _id)</code></strong>. The cursor
-        encodes the value tuple of the boundary doc (last for forward, first for backward) and the
-        reader walks from that point. The reader <strong>always</strong> appends <code>_id</code>
-        ASC as the stable tiebreaker so the result set is deterministic across pages even when the
-        underlying collection is being written to concurrently; consumer-declared <code>?sort=</code>
-        fields layer in front of the <code>_id</code> slot. The <code>?before=</code> path queries
-        Mongo in inverted sort order and reverses the slice in Go so the caller always sees the
-        canonical requested order.
+        The pagination vocabulary is the <strong>Relay connection pair, on every surface</strong>:
+        <code>first=N</code> pages FORWARD (optionally from an <code>after</code> cursor),
+        <code>last=N</code> pages BACKWARD (optionally from a <code>before</code> cursor — and with
+        no cursor, <code>last=N</code> yields the LAST N of the set, the tail window). One rule
+        governs the pair: <em>forward and backward never mix</em> — <code>first+last</code>,
+        <code>first+before</code>, <code>last+after</code> and <code>after+before</code> all reject
+        400 on the backward-side key, and a non-positive size rejects on the size key. The response
+        envelope mirrors the same Relay vocabulary: <code>pagination.startCursor</code> /
+        <code>endCursor</code> are WINDOW EDGES (the first and last row of THIS page — echo them
+        into <code>?before=</code>/<code>?after=</code> to walk) and
+        <code>hasNextPage</code>/<code>hasPreviousPage</code> state whether rows exist beyond each
+        edge; <code>totalCount</code> always carries the full filtered count.
+    </p>
+    <p>
+        Under the wire, the read side is <strong>keyset-paginated over
+        <code>(ordering_value..., _id)</code></strong>. The cursor encodes the value tuple of the
+        boundary doc and the reader walks from that point. The reader <strong>always</strong>
+        appends <code>_id</code> ASC as the stable tiebreaker so the result set is deterministic
+        across pages even when the underlying collection is being written to concurrently;
+        consumer-declared <code>?orderBy=</code> fields layer in front of the <code>_id</code>
+        slot. The backward path queries Mongo in inverted order and reverses the slice in Go so
+        the caller always sees the canonical requested order.
     </p>
     <p>
         <strong>Cursor format.</strong> Opaque to consumers — <code>base64(URLEncoding)</code> of
@@ -410,19 +445,19 @@ type FindUsersByParamsAddressOutput struct {
         of navigating against a stale layout. The <code>h</code> field is the canonical SHA-256 of
         the issuing call's <strong>full listing context</strong>
         (<code>queries.HashContext</code>) — every axis that shapes the result set the cursor walks:
-        <code>Filter</code> + <code>Sort</code> (field + Desc per entry, declaration order matters) +
+        <code>Filter</code> + <code>OrderBy</code> (field + Desc per entry, declaration order matters) +
         <code>Search</code> + <code>IncludeArchived</code>. Empty (omitted on the wire) when the
-        issuing call carried the canonical default context (no filter, no sort, no search, archived
+        issuing call carried the canonical default context (no filter, no ordering, no search, archived
         excluded).
     </p>
     <p>
         <strong>Cursors are scoped to the full listing context.</strong> A cursor only navigates
         correctly inside the result set that issued it. The wrapper validates
-        <code>len(cursor.K)-1 == len(criteria.Sort)</code> (structural pre-check protecting the
+        <code>len(cursor.K)-1 == len(criteria.OrderBy)</code> (structural pre-check protecting the
         reader's keyset builder) AND
-        <code>cursor.H == HashContext(filter, sort, search, includeArchived)</code> (covers every
-        listing axis) after parsing the query string. Any mismatch — sort field added/removed/
-        reordered, sort direction flipped, filter value changed, <code>?search=</code> value
+        <code>cursor.H == HashContext(filter, orderBy, search, includeArchived)</code> (covers every
+        listing axis) after parsing the query string. Any mismatch — ordering field added/removed/
+        reordered, direction flipped, filter value changed, <code>?search=</code> value
         changed, <code>?includeArchived=</code> flipped — is rejected with 400
         <code>SchemaViolationNotification</code> on the cursor's wire key (<code>after</code> or
         <code>before</code>). Stateless by design: there is no server-side session, no per-cursor
@@ -437,28 +472,31 @@ type FindUsersByParamsAddressOutput struct {
         with a clear remediation: <em>"request page 1 of the new context"</em>.
     </p>
     <p>
-        <strong>Symmetric envelope.</strong> The reader emits <code>NextCursor</code> and
-        <code>PrevCursor</code> on every non-terminal page in both forward and backward navigation,
-        so a UI can drive both "next" and "previous" buttons symmetrically. <code>HasNext</code> /
-        <code>HasPrev</code> reflect the actual presence of more docs in either direction.
+        <strong>Symmetric envelope.</strong> The reader emits <code>startCursor</code> and
+        <code>endCursor</code> on every non-empty page in both forward and backward navigation,
+        so a UI can drive both "next" and "previous" buttons symmetrically.
+        <code>hasNextPage</code> / <code>hasPreviousPage</code> reflect the actual presence of
+        more docs beyond each window edge.
     </p>
     <table>
         <tbody><tr><th>Wire</th><th>Outcome</th></tr>
-        <tr><td><code>?limit=N</code> only</td><td>First page; <code>_id</code> ASC; emits <code>next_cursor</code> when the dataset overflows N</td></tr>
+        <tr><td><code>?first=N</code> only</td><td>First page; <code>_id</code> ASC; emits <code>endCursor</code> when the dataset overflows N</td></tr>
         <tr><td><code>?after=&lt;cursor&gt;</code></td><td>Forward keyset — <code>$or</code> cascade with <code>$gt</code> (asc) / <code>$lt</code> (desc) per slot</td></tr>
-        <tr><td><code>?before=&lt;cursor&gt;</code></td><td>Backward keyset — same cascade with inverted operators; reader reverses the returned slice so caller sees canonical sort</td></tr>
-        <tr><td><code>?sort=name&amp;after=&lt;cursor with 1-elem tuple&gt;</code></td><td>400 — <code>SchemaViolationNotification{field:"after"}</code>: consumer changed <code>?sort=</code> mid-navigation; request page 1 of the new sort first</td></tr>
+        <tr><td><code>?before=&lt;cursor&gt;</code></td><td>Backward keyset — same cascade with inverted operators; reader reverses the returned slice so caller sees canonical order</td></tr>
+        <tr><td><code>?orderBy=name&amp;after=&lt;cursor with 1-elem tuple&gt;</code></td><td>400 — <code>SchemaViolationNotification{field:"after"}</code>: consumer changed <code>?orderBy=</code> mid-navigation; request page 1 of the new sort first</td></tr>
         <tr><td><code>?name.startswith=B&amp;after=&lt;cursor issued without filter&gt;</code></td><td>400 — <code>SchemaViolationNotification{field:"after"}</code>: consumer changed filter mid-navigation</td></tr>
-        <tr><td><code>?sort=-name&amp;after=&lt;cursor with asc sort&gt;</code></td><td>400 — consumer flipped sort direction mid-navigation</td></tr>
+        <tr><td><code>?orderBy=-name&amp;after=&lt;cursor with asc sort&gt;</code></td><td>400 — consumer flipped sort direction mid-navigation</td></tr>
         <tr><td><code>?search=newterm&amp;after=&lt;cursor without search&gt;</code></td><td>400 — consumer changed <code>?search=</code> mid-navigation</td></tr>
         <tr><td><code>?includeArchived=true&amp;after=&lt;cursor with archived excluded&gt;</code></td><td>400 — consumer flipped archived gate mid-navigation</td></tr>
-        <tr><td><code>?after=&lt;c&gt;&amp;before=&lt;c&gt;</code></td><td>400 — <code>SchemaViolationNotification{field:"after,before"}</code>: mutually exclusive</td></tr>
+        <tr><td><code>?last=N</code> only</td><td>The tail window — the LAST N of the set in canonical order (<code>hasNextPage=false</code>)</td></tr>
+        <tr><td><code>?last=N&amp;before=&lt;cursor&gt;</code></td><td>Backward page ending at the cursor's edge</td></tr>
+        <tr><td><code>?first=N&amp;last=N</code> / <code>?first=N&amp;before=&lt;c&gt;</code> / <code>?last=N&amp;after=&lt;c&gt;</code> / <code>?after=&lt;c&gt;&amp;before=&lt;c&gt;</code></td><td>400 — the directional rule: one direction at a time; field = the backward-side key (<code>last</code> / <code>before</code>)</td></tr>
         <tr><td><code>?after=not-base64</code> / corrupt JSON / wrong <code>v</code></td><td>400 — <code>SchemaViolationNotification{field:"after"}</code> (<code>?before=</code> mirrors)</td></tr>
-        <tr><td><code>?limit=abc</code> / <code>0</code> / <code>-5</code></td><td>400 — <code>SchemaViolationNotification{field:"limit"}</code></td></tr>
-        <tr><td><code>?limit=N</code> where <code>N &gt; resolvedMax</code></td><td>400 — <code>LimitExceededNotification{field:"limit", value:"&lt;resolvedMax&gt;"}</code> (translatable per language)</td></tr>
+        <tr><td><code>?first=abc</code> / <code>0</code> / <code>-5</code></td><td>400 — <code>SchemaViolationNotification{field:"first"}</code></td></tr>
+        <tr><td><code>?first=N</code> where <code>N &gt; resolvedMax</code></td><td>400 — <code>LimitExceededNotification{field:"first", value:"&lt;resolvedMax&gt;"}</code> (translatable per language)</td></tr>
     </tbody></table>
     <p>
-        <strong>Per-view <code>?limit=</code> ceiling — single cascade, three levels.</strong> Every
+        <strong>Per-view <code>?first=</code> ceiling — single cascade, three levels.</strong> Every
         paged GET is bounded by a resolved-at-read-time ceiling computed in this order:
     </p>
     <ol>
@@ -472,8 +510,8 @@ type FindUsersByParamsAddressOutput struct {
     </ol>
     <p>
         The resolved ceiling is <strong>always &gt; 0</strong>. When the consumer sends no
-        <code>?limit=</code>, the reader returns up to that ceiling (no separate hardcoded
-        default page size). When the consumer sends <code>?limit=N</code> and
+        <code>?first=</code>, the reader returns up to that ceiling (no separate hardcoded
+        default page size). When the consumer sends <code>?first=N</code> and
         <code>N ≤ resolvedMax</code>, that value wins. When <code>N &gt; resolvedMax</code>, the
         reader rejects with 400 <code>LimitExceededNotification</code> carrying the effective
         ceiling as <code>FieldValue</code> so the consumer can show "max is X" without parsing the
@@ -497,20 +535,20 @@ query:
 </code></pre>
     <p>
         <strong>Compound cursor + <code>?fields=</code> interaction.</strong> When the consumer
-        requests <code>?fields=name</code> AND <code>?sort=created_at</code>, the doc would otherwise
+        requests <code>?fields=name</code> AND <code>?orderBy=created_at</code>, the doc would otherwise
         not carry <code>created_at</code> (projected away) and the reader could not assemble the
-        cursor. The reader transparently re-includes every active sort field path in the Mongo
+        cursor. The reader transparently re-includes every active ordering field path in the Mongo
         projection, then strips them from the returned doc after the cursor is built. The wire
         shape stays exactly as the consumer requested via <code>?fields=</code>.
     </p>
 
-    <h3 id="qry-only-total">Count-only mode via <code>?onlyTotal=true</code></h3>
+    <h3 id="qry-only-total">Only-total mode via <code>?onlyTotal=true</code></h3>
     <p>
         Boolean reserved control key. When set to <code>true</code> the wrapper short-circuits the
         read into a count primitive — the reader runs <code>CountDocuments</code> against the
         assembled <code>Filter</code> (including identity-derived overlays, the archived gate, and
         any <code>?search=</code>) and the wire envelope carries solely
-        <code>pagination.total</code>. No documents are materialized, no projection is applied,
+        <code>pagination.totalCount</code>. No documents are materialized, no projection is applied,
         no cursor is decoded. The use case is a frontend that needs the total count of a filtered
         subset (pagination calculation, "matches" badge) without paying for the document fetch.
     </p>
@@ -518,7 +556,7 @@ query:
         Like every reserved control key on the read side, <code>?onlyTotal=</code> is opt-in per
         endpoint: the consumer declares <code>OnlyTotal *bool `query:"onlyTotal"`</code> on
         the Request DTO. Endpoints that did not declare it reject the wire key with the canonical
-        400 — same posture as <code>?fields=</code> / <code>?sort=</code> / <code>?includeArchived=</code>.
+        400 — same posture as <code>?fields=</code> / <code>?orderBy=</code> / <code>?includeArchived=</code>.
     </p>
     <p>
         <strong>Conflict matrix.</strong> The listing-only reserved controls have no meaningful
@@ -530,25 +568,25 @@ query:
     </p>
     <table>
         <tbody><tr><th>Wire form</th><th>Outcome</th></tr>
-        <tr><td><code>?onlyTotal=true</code></td><td>200 — envelope <code>{success, status, description, pagination: {total: N}}</code> (no <code>data</code>, no <code>has_next</code>/<code>has_prev</code>/cursors)</td></tr>
+        <tr><td><code>?onlyTotal=true</code></td><td>200 — envelope <code>{success, status, description, pagination: {totalCount: N}}</code> (no <code>data</code>, no <code>hasNextPage</code>/<code>hasPreviousPage</code>/cursors)</td></tr>
         <tr><td><code>?onlyTotal=true&amp;name.startswith=Bo</code></td><td>200 — counts only docs whose <code>name</code> starts with "Bo"</td></tr>
         <tr><td><code>?onlyTotal=true&amp;search=foo</code></td><td>200 — text-index count of "foo" matches</td></tr>
         <tr><td><code>?onlyTotal=true&amp;includeArchived=true</code></td><td>200 — counts archived rows too (skips the DeletedAt gate)</td></tr>
         <tr><td><code>?onlyTotal=true&amp;fields=name</code></td><td>400 — <code>onlyTotal[fields]</code></td></tr>
-        <tr><td><code>?onlyTotal=true&amp;sort=-name</code></td><td>400 — <code>onlyTotal[sort]</code></td></tr>
-        <tr><td><code>?onlyTotal=true&amp;limit=10</code></td><td>400 — <code>onlyTotal[limit]</code></td></tr>
+        <tr><td><code>?onlyTotal=true&amp;orderBy=-name</code></td><td>400 — <code>onlyTotal[orderBy]</code></td></tr>
+        <tr><td><code>?onlyTotal=true&amp;first=10</code></td><td>400 — <code>onlyTotal[first]</code></td></tr>
         <tr><td><code>?onlyTotal=true&amp;after=cur-xyz</code></td><td>400 — <code>onlyTotal[after]</code></td></tr>
         <tr><td><code>?onlyTotal=true&amp;before=cur-xyz</code></td><td>400 — <code>onlyTotal[before]</code></td></tr>
-        <tr><td><code>?onlyTotal=true</code> on endpoint that did not declare it</td><td>400 — unknown wire key</td></tr>
-        <tr><td><code>?onlyTotal=false</code> (or omitted)</td><td>Listing envelope unchanged</td></tr>
+        <tr><td><code>?onlyTotal=</code> (any value) on endpoint that did not declare it</td><td>400 — presence gates, exactly like <code>?includeArchived=</code></td></tr>
+        <tr><td><code>?onlyTotal=false</code> (or omitted) on a declared endpoint</td><td>Listing envelope unchanged — only <code>true</code> activates the count mode, so a present-but-inactive key never trips the conflict matrix (<code>?onlyTotal=false&amp;first=10</code> is a plain paged read)</td></tr>
     </tbody></table>
     <p>
         On the response side, the <code>Response.Pagination</code> slot is typed <code>any</code>
         precisely because it carries two legitimate Go shapes: <code>*PaginationInfo</code> on
-        listing requests (has_next/has_prev/cursors + total) and <code>*TotalOnlyPagination</code>
-        on count-only requests (only total). Both are typed structs — no untyped map ever reaches
+        listing requests (hasNextPage/hasPreviousPage/cursors + totalCount) and <code>*TotalOnlyPagination</code>
+        on only-total requests (only totalCount). Both are typed structs — no untyped map ever reaches
         the wire. The dedicated shape exists so the JSON does NOT carry zero-value
-        <code>has_next: false</code> / empty cursors that would mislead the consumer in count mode.
+        <code>hasNextPage: false</code> / empty cursors that would mislead the consumer in count mode.
     </p>
     <p>
         Manual handlers via <code>fwweb.ParseCriteria</code> get the same treatment: the
@@ -648,9 +686,9 @@ fwopenapi.Mount(d.OpenAPIRegistry, app, fiber.MethodGet, "/users.csv", csvH, csv
         <code>400 SchemaViolationNotification{field:"fields[&lt;token&gt;]"}</code>.
     </p>
     <p>
-        <strong>Scope.</strong> Filters, <code>?search</code>, <code>?sort</code>, and
+        <strong>Scope.</strong> Filters, <code>?search</code>, <code>?orderBy</code>, and
         <code>?includeArchived</code> behave like the JSON list. User pagination
-        (<code>?limit</code> / <code>?after</code> / <code>?before</code> / <code>?onlyTotal</code>)
+        (<code>?first</code> / <code>?last</code> / <code>?after</code> / <code>?before</code> / <code>?onlyTotal</code>)
         is <em>ignored</em> — an export returns the full filtered set, capped at the resolved
         ceiling sent as the read limit. The ceiling resolves per-view
         (<code>ViewDefinition.MaxExportRows(n)</code>) &gt; yaml (<code>query.maxExportRows</code>) &gt;
@@ -658,7 +696,7 @@ fwopenapi.Mount(d.OpenAPIRegistry, app, fiber.MethodGet, "/users.csv", csvH, csv
         <code>ResolveMaxExportRows</code>. Those four pagination keys are also <strong>omitted from
         the generated OpenAPI parameters</strong> (the export <code>*Spec</code> wrappers list them
         on <code>RouteSpec.OmittedQueryParams</code>), so Swagger never advertises a knob the export
-        does not honor — the filters, <code>?fields</code>, <code>?sort</code>, <code>?search</code>
+        does not honor — the filters, <code>?fields</code>, <code>?orderBy</code>, <code>?search</code>
         and <code>?includeArchived</code> still render, exactly as on the JSON list.
     </p>
     <p>
@@ -806,10 +844,10 @@ type FindUsersByParamsRequest struct {
     City  *string `query:"city"  filter:"eq"`
 
     // Reserved pagination/control keys — no filter tag.
-    Limit           *int64  `query:"limit"`
+    Limit           *int64  `query:"first"`
     After           *string `query:"after"`
     Before          *string `query:"before"`
-    Sort            *string `query:"sort"`
+    Sort            *string `query:"orderBy"`
     Fields          *string `query:"fields"`
     Search          *string `query:"search"`
     IncludeArchived *bool   `query:"includeArchived"`
@@ -994,7 +1032,7 @@ ORDER BY pending DESC;</code></pre>
     <p><strong>Inspection CLI.</strong> <code>omnicore-admin list-failures [--kind event|ripple] [--topic &lt;source&gt;] [--view &lt;name&gt;] [--format text|json] [--limit N]</code> is the read-only triage tool: runs in B's process (loads <code>microservice.${APP_PROFILE}.yaml</code>), reads the ledger, prints text or JSON. The CLI binary has no Wiring of B and cannot replay — replay belongs to the runtime loop above.
 
     </p><h4>5. Client does GET with dynamic filters</h4>
-    <pre><code>GET /users?email.in=a@x.com,b@y.com&amp;sort=-created_at&amp;limit=20
+    <pre><code>GET /users?email.in=a@x.com,b@y.com&amp;orderBy=-created_at&amp;first=20
 
 → filters emails by inclusion ($in applied)
 → orders by created_at descending
@@ -1030,7 +1068,7 @@ GET /users?role=admin
             <code>query:"notes"</code>); the wire form is <code>?notes.text.contains=b</code>. They pass
             the same allowlist machinery, but shape only the segment's content — never which primary
             items return.</li>
-        <li><strong><code>?sort=</code> into a segment path is 400</strong> — sortable paths remain
+        <li><strong><code>?orderBy=</code> into a segment path is 400</strong> — sortable paths remain
             primary-only; the segment's order is fixed on the link declaration.</li>
         <li><strong><code>?fields=</code> projects into segments</strong>
             (<code>?fields=code,notes.text</code>): an inclusion projection that names no path of a

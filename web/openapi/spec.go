@@ -686,9 +686,9 @@ func successWrapper(status int, spec RouteSpec) func(json.RawMessage) any {
 // no further cursors).
 func paginationInfoExample() map[string]any {
 	return map[string]any{
-		"has_next": false,
-		"has_prev": false,
-		"total":    1,
+		"hasNextPage": false,
+		"hasPreviousPage": false,
+		"totalCount": 1,
 	}
 }
 
@@ -864,8 +864,8 @@ func hasPathInParameters(params []Parameter) bool {
 
 // ensurePaginationInfo registers the canonical paged-success
 // `pagination` schema in the components pool. Mirrors
-// web/response.go::PaginationInfo verbatim — has_next, has_prev,
-// next_cursor (omitempty → optional), prev_cursor (omitempty →
+// web/response.go::PaginationInfo verbatim — hasNextPage, hasPreviousPage,
+// endCursor (omitempty → optional), startCursor (omitempty →
 // optional), total. Referenced by `$ref: #/components/schemas/PaginationInfo`
 // from every paged route's success envelope.
 //
@@ -880,13 +880,13 @@ func ensurePaginationInfo(c *Components) {
 	c.Schemas["PaginationInfo"] = &Schema{
 		Type: "object",
 		Properties: map[string]*Schema{
-			"has_next":    {Type: "boolean", Example: false},
-			"has_prev":    {Type: "boolean", Example: false},
-			"next_cursor": {Type: "string"},
-			"prev_cursor": {Type: "string"},
-			"total":       {Type: "integer", Format: "int64", Example: 1},
+			"hasNextPage":    {Type: "boolean", Example: false},
+			"hasPreviousPage":    {Type: "boolean", Example: false},
+			"endCursor": {Type: "string"},
+			"startCursor": {Type: "string"},
+			"totalCount":       {Type: "integer", Format: "int64", Example: 1},
 		},
-		Required: []string{"has_next", "has_prev", "total"},
+		Required: []string{"hasNextPage", "hasPreviousPage", "totalCount"},
 	}
 }
 

@@ -181,25 +181,25 @@ func TestHashContext_WalksMultiClause(t *testing.T) {
 	// design (predictable consumer behavior across replays of the same URL).
 }
 
-func TestHashContext_SortFieldChangeAltersHash(t *testing.T) {
-	h1 := HashContext(nil, []SortField{{Field: "name"}}, "", false)
-	h2 := HashContext(nil, []SortField{{Field: "email"}}, "", false)
+func TestHashContext_OrderByFieldChangeAltersHash(t *testing.T) {
+	h1 := HashContext(nil, []OrderByField{{Field: "name"}}, "", false)
+	h2 := HashContext(nil, []OrderByField{{Field: "email"}}, "", false)
 	if h1 == h2 {
 		t.Fatal("different sort fields must hash differently")
 	}
 }
 
 func TestHashContext_SortDirectionChangeAltersHash(t *testing.T) {
-	h1 := HashContext(nil, []SortField{{Field: "name", Desc: false}}, "", false)
-	h2 := HashContext(nil, []SortField{{Field: "name", Desc: true}}, "", false)
+	h1 := HashContext(nil, []OrderByField{{Field: "name", Desc: false}}, "", false)
+	h2 := HashContext(nil, []OrderByField{{Field: "name", Desc: true}}, "", false)
 	if h1 == h2 {
 		t.Fatal("flipping a sort field's Desc must alter the hash")
 	}
 }
 
 func TestHashContext_SortOrderChangeAltersHash(t *testing.T) {
-	h1 := HashContext(nil, []SortField{{Field: "name"}, {Field: "email"}}, "", false)
-	h2 := HashContext(nil, []SortField{{Field: "email"}, {Field: "name"}}, "", false)
+	h1 := HashContext(nil, []OrderByField{{Field: "name"}, {Field: "email"}}, "", false)
+	h2 := HashContext(nil, []OrderByField{{Field: "email"}, {Field: "name"}}, "", false)
 	if h1 == h2 {
 		t.Fatal("swapping the order of two sort fields must alter the hash (multi-key sort is direction-sensitive)")
 	}
@@ -233,17 +233,17 @@ func TestHashContext_IncludeArchivedAltersHash(t *testing.T) {
 
 func TestHashContext_AllAxesCombineDistinctly(t *testing.T) {
 	base := HashContext(map[string]any{"name": "Alice"},
-		[]SortField{{Field: "email"}}, "foo", true)
+		[]OrderByField{{Field: "email"}}, "foo", true)
 	// Tweak each axis individually; every variant must differ from base.
 	variants := []string{
 		HashContext(map[string]any{"name": "Bob"},
-			[]SortField{{Field: "email"}}, "foo", true),
+			[]OrderByField{{Field: "email"}}, "foo", true),
 		HashContext(map[string]any{"name": "Alice"},
-			[]SortField{{Field: "name"}}, "foo", true),
+			[]OrderByField{{Field: "name"}}, "foo", true),
 		HashContext(map[string]any{"name": "Alice"},
-			[]SortField{{Field: "email"}}, "bar", true),
+			[]OrderByField{{Field: "email"}}, "bar", true),
 		HashContext(map[string]any{"name": "Alice"},
-			[]SortField{{Field: "email"}}, "foo", false),
+			[]OrderByField{{Field: "email"}}, "foo", false),
 	}
 	for i, v := range variants {
 		if v == base {

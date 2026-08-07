@@ -209,19 +209,45 @@ func (b *sdlBuilder) connection(entity, nodeType string) string {
 }
 
 // queryFieldSDL returns the SDL line for one read root field: the connection
-// return type plus the where / keyset-pagination / sort / search /
-// includeArchived arguments the resolver honors.
+// return type plus the where / keyset-pagination / orderBy / search /
+// includeArchived arguments the endpoint's Request DTO declares.
+//
+// The DTO is the single source of truth for what a list endpoint exposes —
+// on this surface the cut lands in the SCHEMA itself: an argument whose
+// `query:"…"` key the DTO does not declare is not emitted, so introspection
+// and the playground never advertise it and gqlparser rejects it as an
+// unknown argument before any resolver runs (the same posture the OpenAPI
+// parameters carry on REST). The `where:` input follows the same rule via
+// the DTO's filter tags. What the DTO cannot govern here is what the
+// language expresses natively: the selection IS the projection, and the
+// only-total mode is a selection shape — both gate-exempt by nature.
 func (b *sdlBuilder) queryFieldSDL(name, entity string, reqType, respType reflect.Type) string {
 	node := b.objectTypeAs(entity, respType)
 	conn := b.connection(entity, node)
+	reserved := queryschema.ExtractRequestSchema(reqType).Reserved
 	args := []string{}
 	if whereName, ok := b.whereInput(entity, reqType); ok {
 		args = append(args, "where: "+whereName)
 	}
-	args = append(args,
-		"first: Int", "after: String", "last: Int", "before: String",
-		"orderBy: [String!]", "search: String", "includeArchived: Boolean",
-	)
+	for _, arg := range []struct {
+		key string
+		sdl string
+	}{
+		{queryschema.KeyFirst, "first: Int"},
+		{queryschema.KeyAfter, "after: String"},
+		{queryschema.KeyLast, "last: Int"},
+		{queryschema.KeyBefore, "before: String"},
+		{queryschema.KeyOrderBy, "orderBy: [String!]"},
+		{queryschema.KeySearch, "search: String"},
+		{queryschema.KeyIncludeArchived, "includeArchived: Boolean"},
+	} {
+		if reserved[arg.key] {
+			args = append(args, arg.sdl)
+		}
+	}
+	if len(args) == 0 {
+		return "  " + name + ": " + conn + "!"
+	}
 	return "  " + name + "(" + strings.Join(args, ", ") + "): " + conn + "!"
 }
 

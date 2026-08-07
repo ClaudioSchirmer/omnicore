@@ -35,7 +35,7 @@
 
     <h3 id="qry-flow">Full flow of a GET</h3>
     <p>
-        Example: <code>GET /users?email.in=a@x,b@y&amp;sort=-created_at&amp;limit=20&amp;fields=name,email</code>.
+        Example: <code>GET /users?email.in=a@x,b@y&amp;orderBy=-created_at&amp;first=20&amp;fields=name,email</code>.
     </p>
 
     <div class="flow">HTTP Request
@@ -49,15 +49,15 @@
    ▼
 <span class="auto">extractAllowedKeys(reflect.Type)</span>  ← cached schema
    │   ├─► filters: name(eq), email(eq,in), …          ← from `filter:"ops"` tags
-   │   └─► reserved: limit/after/before/sort/fields/search/includeArchived/onlyTotal
+   │   └─► reserved: first/last/after/before/orderBy/fields/search/includeArchived/onlyTotal
    │
    ▼
 <span class="auto">walk query string + validate allowlist</span>  ← 400 on first violation
    │   ├─► filters: email.in=a@x,b@y → { "email": { "$in": [...] } }
-   │   ├─► operators: total.gte=100 → { "total": { "$gte": 100 } }
-   │   ├─► sort: "-created_at" → SortField{Field:"created_at", Desc:true}
+   │   ├─► operators: price.gte=100 → { "price": { "$gte": 100 } }
+   │   ├─► orderBy: "-created_at" → OrderByField{Field:"created_at", Desc:true}
    │   ├─► projection: fields=name,email
-   │   ├─► limit + cursor (after/before base64)
+   │   ├─► first/last + cursor (after/before base64)
    │   └─► IncludeArchived (only if ?includeArchived=true)
    │
    ▼
@@ -73,19 +73,19 @@
    │                 ├─► strips archived entries from the nested aggregate-child arrays if !IncludeArchived
    │                 ├─► $text search if Search!=""
    │                 ├─► decode cursor → $gt/$lt on _id
-   │                 └─► CountDocuments + Find(limit+1)
+   │                 └─► CountDocuments + Find(Limit+1)
    │
    ▼
 <span class="auto">queries.Page</span> returned to the wrapper
    ├─► Items   []map[string]any
-   ├─► HasNext, HasPrev
-   ├─► NextCursor / PrevCursor
-   └─► Total
+   ├─► HasNextPage, HasPreviousPage
+   ├─► StartCursor / EndCursor
+   └─► TotalCount
    │
    ▼
 <span class="auto">wrapper renders Response</span> — Page is decomposed:
    ├─► Response.Data       = projector applied to each page.Items doc → []R (top-level array)
-   └─► Response.Pagination = { HasNext, HasPrev, cursors, Total }
+   └─► Response.Pagination = { HasNextPage, HasPreviousPage, cursors, TotalCount }
    │
    ▼
 HTTP 200 OK
@@ -95,10 +95,10 @@ HTTP 200 OK
   "description": "OK",
   "data": [ {...}, {...} ],
   "pagination": {
-    "has_next": true,
-    "has_prev": false,
-    "next_cursor": "eyJpZCI6...",
-    "total": 847
+    "hasNextPage": true,
+    "hasPreviousPage": false,
+    "endCursor": "eyJpZCI6...",
+    "totalCount": 847
   }
 }</div>
     <p>
@@ -119,17 +119,17 @@ HTTP 200 OK
     <table>
         <tbody><tr><th>Field</th><th>Carries</th></tr>
         <tr><td><code>Filter map[string]any</code></td><td>field → value or operator clause. Keys are <strong>Go field names</strong> (the reader translates them to physical columns via the view <code>TableSchema</code>). Built from the <code>filter:"ops"</code> tags.</td></tr>
-        <tr><td><code>Sort []SortField</code></td><td>ordered list of <code>{Field, Desc}</code> (Go field paths). From <code>?sort=</code>.</td></tr>
+        <tr><td><code>Sort []OrderByField</code></td><td>ordered list of <code>{Field, Desc}</code> (Go field paths). From <code>?orderBy=</code>.</td></tr>
         <tr><td><code>Projection map[string]int</code></td><td>per-field include (<code>1</code>) / exclude (<code>0</code>). From <code>?fields=</code> and from <code>Restrict</code>.</td></tr>
-        <tr><td><code>Limit int64</code></td><td>page size, bounded by the per-view ceiling. From <code>?limit=</code>.</td></tr>
+        <tr><td><code>Limit int64</code></td><td>page size, bounded by the per-view ceiling. From <code>?first=</code>.</td></tr>
         <tr><td><code>After / Before string</code></td><td>opaque keyset cursors. From <code>?after=</code> / <code>?before=</code>.</td></tr>
         <tr><td><code>Search string</code></td><td><code>$text</code> term. From <code>?search=</code>.</td></tr>
         <tr><td><code>IncludeArchived bool</code></td><td>lifts the <code>deleted_at IS NULL</code> gate. From <code>?includeArchived=true</code>.</td></tr>
-        <tr><td><code>OnlyTotal bool</code></td><td>count-only short-circuit. From <code>?onlyTotal=true</code>.</td></tr>
+        <tr><td><code>OnlyTotal bool</code></td><td>only-total short-circuit. From <code>?onlyTotal=true</code>.</td></tr>
     </tbody></table>
     <p>
-        The reserved control keys (<code>?fields=</code>, <code>?sort=</code>, <code>?after=</code>/<code>?before=</code>,
-        <code>?limit=</code>, <code>?search=</code>, <code>?includeArchived=</code>, <code>?onlyTotal=</code>) and
+        The reserved control keys (<code>?fields=</code>, <code>?orderBy=</code>, <code>?after=</code>/<code>?before=</code>,
+        <code>?first=</code>, <code>?search=</code>, <code>?includeArchived=</code>, <code>?onlyTotal=</code>) and
         their edge cases are documented on the <a href="#auto-query-handlers">Auto query handlers</a> page —
         the wrapper is where they are parsed and enforced. The two items below — the <strong>filter operator
         vocabulary</strong> and <strong><code>ToCriteria</code></strong> — are the parts shared verbatim by the
@@ -219,7 +219,7 @@ const (
     <table>
         <tbody><tr><th>Request referenced the field via…</th><th><code>Restrict</code> returns</th><th>Effect</th></tr>
         <tr><td>nothing (passive — just not asked for)</td><td><code>nil</code></td><td>silently omitted; nothing leaks</td></tr>
-        <tr><td><code>?fields=phone</code>, <code>?sort=phone</code>, or <code>?phone.eq=…</code> (active)</td><td>403 <code>FieldAccessForbiddenNotification</code></td><td>field scrubbed first, then the read is refused</td></tr>
+        <tr><td><code>?fields=phone</code>, <code>?orderBy=phone</code>, or <code>?phone.eq=…</code> (active)</td><td>403 <code>FieldAccessForbiddenNotification</code></td><td>field scrubbed first, then the read is refused</td></tr>
     </tbody></table>
     <p>
         Refusing the active reference (rather than silently ignoring the knob) is the honest answer and closes
@@ -235,7 +235,7 @@ const (
     var err error
 
     // Field-level read authorization: a non-admin caller may not see Phone.
-    // Active reference (?fields=phone / ?sort=phone / ?phone.eq=…) → 403;
+    // Active reference (?fields=phone / ?orderBy=phone / ?phone.eq=…) → 403;
     // passive → silently omitted. Infra stays authz-blind either way.
     if id := ctx.Identity(); id != nil &amp;&amp; !id.HasPermission("users:admin") {
         err = crit.Restrict("Phone")

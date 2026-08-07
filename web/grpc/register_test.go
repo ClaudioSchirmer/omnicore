@@ -181,7 +181,7 @@ func TestRegisterFullFamily(t *testing.T) {
 
 	list := connect.NewClient[testpb.SearchGadgetsRequest, testpb.SearchGadgetsResponse](srv.Client(), base+"SearchGadgets")
 	listRes, err := list.CallUnary(context.Background(), connect.NewRequest(&testpb.SearchGadgetsRequest{
-		Pagination: &omnicorepb.PaginationRequest{Limit: proto.Int64(5)},
+		Pagination: &omnicorepb.PaginationRequest{First: proto.Int64(5)},
 		Filters: &testpb.SearchGadgetsFilters{
 			Name: &omnicorepb.StringFilter{Conditions: []*omnicorepb.StringCondition{{
 				Op: omnicorepb.StringOp_STRING_OP_ICONTAINS, Values: []string{"dri"},
@@ -195,8 +195,8 @@ func TestRegisterFullFamily(t *testing.T) {
 		t.Fatalf("list items mismatch: %v", listRes.Msg)
 	}
 	pi := listRes.Msg.GetPagination()
-	if pi.GetTotal() != 1 || pi.GetNextCursor() != "next-c" || pi.GetPrevCursor() != "prev-c" ||
-		!pi.GetHasNext() || pi.GetHasPrev() {
+	if pi.GetTotalCount() != 1 || pi.GetEndCursor() != "next-c" || pi.GetStartCursor() != "prev-c" ||
+		!pi.GetHasNextPage() || pi.GetHasPreviousPage() {
 		t.Fatalf("PaginationInfo mismatch: %v", pi)
 	}
 	if sawCriteria.Limit != 5 {

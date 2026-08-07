@@ -42,17 +42,25 @@ var listOps = map[string]bool{
 // buildCriteria translates a read field's GraphQL arguments into a
 // ReadCriteria, reusing the REST emission (queryschema.ApplyFilterParam) so the
 // where clause folds to the IDENTICAL Mongo criteria a `?name.startswith=…`
-// REST call produces. Pagination / sort / search / includeArchived map 1:1.
+// REST call produces. Pagination / orderBy / search / includeArchived map 1:1.
 // Cursor context-hash validation is left to the reader (it already rejects a
 // stale cursor against the rebuilt criteria).
-func (p *criteriaPlan) buildCriteria(args map[string]any) (queries.ReadCriteria, *GraphQLError) {
+//
+// The returned Controls is the canonical snapshot for the control gateway —
+// the resolver completes it (only-total selection shape) and runs
+// queryschema.ValidateControls before dispatch. The SDL already cut
+// undeclared args from the schema (gqlparser rejects them as unknown
+// arguments), so the gate here is defense in depth; the directional rule and
+// the only-total conflicts are the live checks.
+func (p *criteriaPlan) buildCriteria(args map[string]any) (queries.ReadCriteria, queryschema.Controls, *GraphQLError) {
 	crit := queries.ReadCriteria{Filter: map[string]any{}}
+	var controls queryschema.Controls
 
 	if raw, ok := args["where"].(map[string]any); ok {
 		for field, v := range raw {
 			wirePath, known := p.whereLeaf[field]
 			if !known {
-				return crit, errf("where: unknown filter field %q", field)
+				return crit, controls, errf("where: unknown filter field %q", field)
 			}
 			ops, ok := v.(map[string]any)
 			if !ok {
@@ -69,37 +77,46 @@ func (p *criteriaPlan) buildCriteria(args map[string]any) (queries.ReadCriteria,
 	// backward. `last` is the only arg that carries direction on its own (it can
 	// stand without a cursor, walking back from the end), so it sets Backward;
 	// `before` reaches the reader as a cursor, which already implies backward
-	// there. A forward+backward mix is rejected upstream (paginationArgConflict).
+	// there. A forward+backward mix is the gateway's directional violation.
 	if n, ok := toInt64(args["first"]); ok {
+		first := n
+		controls.First = &first
 		crit.Limit = n
 	}
 	if n, ok := toInt64(args["last"]); ok {
+		last := n
+		controls.Last = &last
 		crit.Limit = n
 		crit.Backward = true
 	}
 	if s, ok := args["after"].(string); ok {
+		controls.After = true
 		crit.After = s
 	}
 	if s, ok := args["before"].(string); ok {
+		controls.Before = true
 		crit.Before = s
 	}
 	if s, ok := args["search"].(string); ok {
+		controls.Search = true
 		crit.Search = s
 	}
 	if b, ok := args["includeArchived"].(bool); ok {
+		controls.IncludeArchived = true
 		crit.IncludeArchived = b
 	}
 	if raw, ok := args["orderBy"]; ok {
 		tokens := toStringSlice(raw)
 		if len(tokens) > 0 {
-			sortFields, bad, sok := queryschema.ParseSortWithSchema(strings.Join(tokens, ","), p.projSchema)
+			controls.OrderBy = true
+			orderBy, bad, sok := queryschema.ParseOrderByWithSchema(strings.Join(tokens, ","), p.projSchema)
 			if !sok {
-				return crit, errf("orderBy: %q is not a sortable field", bad)
+				return crit, controls, errf("orderBy: %q is not a sortable field", bad)
 			}
-			crit.Sort = sortFields
+			crit.OrderBy = orderBy
 		}
 	}
-	return crit, nil
+	return crit, controls, nil
 }
 
 // projectionFromSelection derives a ReadCriteria.Projection (Go field path → 1)
@@ -164,59 +181,47 @@ func onlyTotalSelected(sel ast.SelectionSet, frags ast.FragmentDefinitionList) b
 	return sawTotal
 }
 
-// conflictingPaginationArg returns the name of the first pagination/sort
-// argument present (first / last / after / before / orderBy), or "" when none.
-// These conflict with a count-only (totalCount-only) selection — there is no
-// page to order or seek into when only the count is asked — so the resolver
-// rejects the combination with a SchemaViolation, REST parity with
-// handle_query.go's onlyTotalConflicts (sort / limit / after / before). Filter
-// arguments (where / search / includeArchived) are NOT here: they bound the
-// count and stay compatible, exactly as REST keeps them valid with onlyTotal.
-func conflictingPaginationArg(args map[string]any) string {
-	for _, k := range []string{"first", "last", "after", "before", "orderBy"} {
-		if v, ok := args[k]; ok && v != nil {
-			return k
-		}
-	}
-	return ""
+// graphqlNaturalControls are the controls this surface expresses natively,
+// with no wire name for the DTO gate to police: the selection IS the
+// projection (`fields`), and the selection shape is the only-total switch
+// (`onlyTotal`). The gateway's conflict matrix still applies to both.
+var graphqlNaturalControls = map[string]bool{
+	queryschema.KeyFields:    true,
+	queryschema.KeyOnlyTotal: true,
 }
 
-// hasArg reports whether a pagination argument was supplied (present and non-nil).
-func hasArg(args map[string]any, k string) bool {
-	v, ok := args[k]
-	return ok && v != nil
+// pageInfoOnlySelected reports whether the connection selection asks for
+// pageInfo (window edges) with NO edges — the pagination probe: "give me the
+// page's boundaries, not its rows". The resolver narrows the read to the
+// keyset essentials (keysOnlyProjection) so the reader materializes only the
+// ordering values + _id it needs to build cursors and the beyond-edge flags.
+// totalCount alongside is fine (the reader counts on every paged read).
+func pageInfoOnlySelected(sel ast.SelectionSet, frags ast.FragmentDefinitionList) bool {
+	sawPageInfo := false
+	for _, f := range collectFields(sel, frags) {
+		switch f.Name {
+		case "pageInfo":
+			sawPageInfo = true
+		case "edges":
+			return false
+		}
+	}
+	return sawPageInfo
 }
 
-// paginationArgConflict validates the Relay pagination arguments and returns the
-// name of the offending argument (for a SchemaViolation), or "" when valid. Two
-// rules, both mirroring how big GraphQL APIs (GitHub/Shopify) and the Relay spec
-// treat the connection arguments:
-//
-//   - A page size must be positive. `first`/`last` map to ReadCriteria.Limit, so
-//     a non-positive value is rejected exactly as REST rejects `?limit=` <= 0.
-//   - Forward (`first`/`after`) and backward (`last`/`before`) are mutually
-//     exclusive — you page in one direction at a time. This single check covers
-//     first+last, first+before, last+after, and after+before (the last also
-//     keeps REST parity, where mixing the two cursors is a SchemaViolation).
-//
-// The offending name is reported on the backward side when a mix is found, since
-// forward is the conventional default direction.
-func paginationArgConflict(args map[string]any) string {
-	if n, ok := toInt64(args["first"]); ok && n <= 0 {
-		return "first"
+// keysOnlyProjection is the minimal inclusion projection a pagination probe
+// needs: the ordering fields (whose values compose the keyset tuple). Mongo
+// includes _id implicitly on inclusion projections — the tuple's trailing
+// element — so an unordered probe degenerates to {_id: 1}.
+func keysOnlyProjection(orderBy []queries.OrderByField) map[string]int {
+	proj := make(map[string]int, len(orderBy)+1)
+	for _, f := range orderBy {
+		proj[f.Field] = 1
 	}
-	if n, ok := toInt64(args["last"]); ok && n <= 0 {
-		return "last"
+	if len(proj) == 0 {
+		proj["_id"] = 1
 	}
-	forward := hasArg(args, "first") || hasArg(args, "after")
-	backward := hasArg(args, "last") || hasArg(args, "before")
-	if forward && backward {
-		if hasArg(args, "last") {
-			return "last"
-		}
-		return "before"
-	}
-	return ""
+	return proj
 }
 
 // flattenWirePaths flattens a node selection into dotted wire paths

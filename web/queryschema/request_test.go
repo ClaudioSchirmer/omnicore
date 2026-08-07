@@ -2,6 +2,7 @@ package queryschema
 
 import (
 	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -15,7 +16,7 @@ type reqEmbedLeaf struct {
 type reqNestedEmbedRequest struct {
 	Name      *string      `query:"name" filter:"eq"`
 	Addresses reqEmbedLeaf `query:"addresses"` // embed group — no filter tag
-	Limit     *int64       `query:"limit"`
+	First     *int64       `query:"first"`
 }
 
 func TestExtractRequestSchema_PointerTypeAndNestedEmbed(t *testing.T) {
@@ -30,9 +31,50 @@ func TestExtractRequestSchema_PointerTypeAndNestedEmbed(t *testing.T) {
 	if spec.DocPath != "Addresses.ZipCode" {
 		t.Errorf("nested embed DocPath = %q, want Addresses.ZipCode", spec.DocPath)
 	}
-	if !s.Reserved["limit"] {
-		t.Errorf("limit must be a reserved key, reserved=%v", s.Reserved)
+	if !s.Reserved["first"] {
+		t.Errorf("first must be a reserved key, reserved=%v", s.Reserved)
 	}
+}
+
+// ─── ExtractRequestSchema: the closed control vocabulary (boot guard) ────────
+
+type reqAllControlsRequest struct {
+	First           *int64  `query:"first"`
+	Last            *int64  `query:"last"`
+	After           *string `query:"after"`
+	Before          *string `query:"before"`
+	OrderBy         *string `query:"orderBy"`
+	Fields          *string `query:"fields"`
+	Search          *string `query:"search"`
+	IncludeArchived *bool   `query:"includeArchived"`
+	OnlyTotal       *bool   `query:"onlyTotal"`
+}
+
+func TestExtractRequestSchema_AllCanonicalControlsAccepted(t *testing.T) {
+	s := ExtractRequestSchema(reflect.TypeOf(reqAllControlsRequest{}))
+	for key := range ControlKeys {
+		if !s.Reserved[key] {
+			t.Errorf("canonical key %q must land in Reserved, got %v", key, s.Reserved)
+		}
+	}
+}
+
+type reqStaleVocabularyRequest struct {
+	Limit *int64 `query:"limit"` // not a canonical control — must boot-fail
+}
+
+func TestExtractRequestSchema_NonCanonicalControlPanics(t *testing.T) {
+	defer func() {
+		r := recover()
+		if r == nil {
+			t.Fatalf("a non-canonical top-level control scalar must panic at extraction")
+		}
+		msg, ok := r.(string)
+		if !ok || !strings.Contains(msg, `query:"limit"`) || !strings.Contains(msg, KeyOrderBy) {
+			t.Fatalf("panic must name the offending tag and the canonical vocabulary, got %v", r)
+		}
+	}()
+	ExtractRequestSchema(reflect.TypeOf(reqStaleVocabularyRequest{}))
 }
 
 func TestExtractRequestSchema_CachedByReflectType(t *testing.T) {
@@ -77,24 +119,24 @@ func TestWalkRequest_PointerDerefAndUntaggedSkip(t *testing.T) {
 	type inner struct {
 		Name  *string `query:"name" filter:"eq"`
 		Other string  // no query tag → skipped
-		Limit *int64  `query:"limit"` // reserved scalar
+		First *int64  `query:"first"` // reserved scalar
 	}
 	fields := WalkRequest(reflect.PointerTo(reflect.TypeOf(inner{})))
 	if len(fields) != 2 {
-		t.Fatalf("expected 2 query-tagged fields (name, limit), got %d: %+v", len(fields), fields)
+		t.Fatalf("expected 2 query-tagged fields (name, first), got %d: %+v", len(fields), fields)
 	}
 	if fields[0].WirePath != "name" || fields[0].Ops == nil || !fields[0].TopLevel {
 		t.Errorf("name leaf = %+v, want filter leaf at top level", fields[0])
 	}
-	if fields[1].WirePath != "limit" || fields[1].Ops != nil || fields[1].Group {
-		t.Errorf("limit leaf = %+v, want reserved scalar", fields[1])
+	if fields[1].WirePath != "first" || fields[1].Ops != nil || fields[1].Group {
+		t.Errorf("first leaf = %+v, want reserved scalar", fields[1])
 	}
 }
 
 func TestWalkRequest_EmbedGroupMarkerThenInnerLeaves(t *testing.T) {
 	fields := WalkRequest(reflect.TypeOf(reqNestedEmbedRequest{}))
 	// Declaration order: name (leaf), addresses (group marker), addresses.zipCode,
-	// addresses.city (inner leaves), limit (reserved).
+	// addresses.city (inner leaves), first (reserved).
 	var sawGroup, sawInner bool
 	for _, f := range fields {
 		if f.WirePath == "addresses" {

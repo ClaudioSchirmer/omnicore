@@ -57,10 +57,10 @@ func TestReader_ForwardWalk_BasicKeyset(t *testing.T) {
 	if len(page1.Items) != 10 {
 		t.Fatalf("page 1 size: got %d, want 10", len(page1.Items))
 	}
-	if !page1.HasNext {
+	if !page1.HasNextPage {
 		t.Errorf("page 1 should have next")
 	}
-	if page1.HasPrev {
+	if page1.HasPreviousPage {
 		t.Errorf("page 1 should NOT have prev")
 	}
 	// First doc must be the lowest _id.
@@ -70,7 +70,7 @@ func TestReader_ForwardWalk_BasicKeyset(t *testing.T) {
 
 	// Page 2 via NextCursor.
 	page2, err := r.ReadPage(context.Background(), view, queries.ReadCriteria{
-		Limit: 10, After: page1.NextCursor,
+		Limit: 10, After: page1.EndCursor,
 	})
 	if err != nil {
 		t.Fatalf("page 2: %v", err)
@@ -78,9 +78,9 @@ func TestReader_ForwardWalk_BasicKeyset(t *testing.T) {
 	if len(page2.Items) != 10 {
 		t.Fatalf("page 2 size: got %d, want 10", len(page2.Items))
 	}
-	if !page2.HasNext || !page2.HasPrev {
+	if !page2.HasNextPage || !page2.HasPreviousPage {
 		t.Errorf("page 2 should have next AND prev (got next=%v prev=%v)",
-			page2.HasNext, page2.HasPrev)
+			page2.HasNextPage, page2.HasPreviousPage)
 	}
 	// Page 2 first doc must be id[10].
 	if page2.Items[0]["_id"] != ids[10] {
@@ -89,7 +89,7 @@ func TestReader_ForwardWalk_BasicKeyset(t *testing.T) {
 
 	// Page 3.
 	page3, err := r.ReadPage(context.Background(), view, queries.ReadCriteria{
-		Limit: 10, After: page2.NextCursor,
+		Limit: 10, After: page2.EndCursor,
 	})
 	if err != nil {
 		t.Fatalf("page 3: %v", err)
@@ -97,10 +97,10 @@ func TestReader_ForwardWalk_BasicKeyset(t *testing.T) {
 	if len(page3.Items) != 5 {
 		t.Fatalf("page 3 size: got %d, want 5", len(page3.Items))
 	}
-	if page3.HasNext {
+	if page3.HasNextPage {
 		t.Errorf("page 3 should NOT have next (got %v items)", len(page3.Items))
 	}
-	if !page3.HasPrev {
+	if !page3.HasPreviousPage {
 		t.Errorf("page 3 should have prev")
 	}
 }
@@ -116,15 +116,15 @@ func TestReader_BackwardWalk_ReachesPreviousPage(t *testing.T) {
 	// Walk forward to page 2 to get its first-doc cursor.
 	page1, _ := r.ReadPage(context.Background(), view, queries.ReadCriteria{Limit: 10})
 	page2, _ := r.ReadPage(context.Background(), view, queries.ReadCriteria{
-		Limit: 10, After: page1.NextCursor,
+		Limit: 10, After: page1.EndCursor,
 	})
-	if page2.PrevCursor == "" {
+	if page2.StartCursor == "" {
 		t.Fatal("page 2 should expose PrevCursor")
 	}
 
 	// Apply PrevCursor as ?before= → should return page 1's docs.
 	back, err := r.ReadPage(context.Background(), view, queries.ReadCriteria{
-		Limit: 10, Before: page2.PrevCursor,
+		Limit: 10, Before: page2.StartCursor,
 	})
 	if err != nil {
 		t.Fatalf("backward: %v", err)
@@ -139,11 +139,11 @@ func TestReader_BackwardWalk_ReachesPreviousPage(t *testing.T) {
 		t.Errorf("backward last id: got %v, want %s", back.Items[9]["_id"], ids[9])
 	}
 	// We came back FROM a forward cursor → HasNext is true.
-	if !back.HasNext {
+	if !back.HasNextPage {
 		t.Errorf("backward page should have next")
 	}
 	// And there are no docs further back → HasPrev is false.
-	if back.HasPrev {
+	if back.HasPreviousPage {
 		t.Errorf("backward page should NOT have prev (we're at the start)")
 	}
 }
@@ -178,11 +178,11 @@ func TestReader_BackwardFromEnd_LastN(t *testing.T) {
 		t.Errorf("last id: got %v, want %s", page.Items[9]["_id"], ids[24])
 	}
 	// We are AT the end → nothing ahead.
-	if page.HasNext {
+	if page.HasNextPage {
 		t.Errorf("last-from-end page should NOT have next (we're at the end)")
 	}
 	// 15 docs precede the window → there is a previous page.
-	if !page.HasPrev {
+	if !page.HasPreviousPage {
 		t.Errorf("last-from-end page should have prev")
 	}
 }
@@ -208,10 +208,10 @@ func TestReader_ForwardWithCustomSort_RespectsTiebreaker(t *testing.T) {
 	}
 
 	r := NewMongoViewReader(m, testResolver)
-	sort := []queries.SortField{{Field: "name"}}
+	sort := []queries.OrderByField{{Field: "name"}}
 
 	page1, err := r.ReadPage(context.Background(), view, queries.ReadCriteria{
-		Limit: 2, Sort: sort,
+		Limit: 2, OrderBy: sort,
 	})
 	if err != nil {
 		t.Fatalf("page 1: %v", err)
@@ -226,7 +226,7 @@ func TestReader_ForwardWithCustomSort_RespectsTiebreaker(t *testing.T) {
 	}
 
 	page2, err := r.ReadPage(context.Background(), view, queries.ReadCriteria{
-		Limit: 2, Sort: sort, After: page1.NextCursor,
+		Limit: 2, OrderBy: sort, After: page1.EndCursor,
 	})
 	if err != nil {
 		t.Fatalf("page 2: %v", err)
@@ -276,7 +276,7 @@ func TestReader_LimitUnsetUsesResolvedMax(t *testing.T) {
 	view := "rdr_unset"
 	seedReaderDocs(t, m, view, 30)
 
-	// Resolver returns 5; consumer sends NO ?limit=. Expect 5 docs back.
+	// Resolver returns 5; consumer sends NO ?first=. Expect 5 docs back.
 	r := NewMongoViewReader(m, testResolver).SetMaxLimitResolver(func(v string) int64 {
 		if v == view {
 			return 5
@@ -291,12 +291,12 @@ func TestReader_LimitUnsetUsesResolvedMax(t *testing.T) {
 	if len(page.Items) != 5 {
 		t.Errorf("with limit unset, want resolvedMax=5 items, got %d", len(page.Items))
 	}
-	if !page.HasNext {
+	if !page.HasNextPage {
 		t.Errorf("HasNext expected true with 30 docs in dataset")
 	}
 }
 
-func TestReader_FieldsProjectionStripsSortFieldFromWire(t *testing.T) {
+func TestReader_FieldsProjectionStripsOrderByFieldFromWire(t *testing.T) {
 	m, cleanup := newTestMongo(t)
 	defer cleanup()
 	view := "rdr_fields"
@@ -320,7 +320,7 @@ func TestReader_FieldsProjectionStripsSortFieldFromWire(t *testing.T) {
 	// the returned doc so the wire shape is exactly {email}.
 	page, err := r.ReadPage(context.Background(), view, queries.ReadCriteria{
 		Limit:      2,
-		Sort:       []queries.SortField{{Field: "name"}},
+		OrderBy:       []queries.OrderByField{{Field: "name"}},
 		Projection: map[string]int{"email": 1, "_id": 0},
 	})
 	if err != nil {
@@ -339,7 +339,7 @@ func TestReader_FieldsProjectionStripsSortFieldFromWire(t *testing.T) {
 	}
 	// And the cursor for next page works — proves the reader DID receive
 	// the value internally.
-	if page.NextCursor == "" {
+	if page.EndCursor == "" {
 		t.Fatal("NextCursor should be populated")
 	}
 }
@@ -386,7 +386,7 @@ func TestReader_KeysetCoexistsWithMultiClauseFilter(t *testing.T) {
 	page2, err := r.ReadPage(context.Background(), view, queries.ReadCriteria{
 		Limit:  3,
 		Filter: map[string]any{"age": multi},
-		After:  page.NextCursor,
+		After:  page.EndCursor,
 	})
 	if err != nil {
 		t.Fatalf("page 2: %v", err)
@@ -395,7 +395,7 @@ func TestReader_KeysetCoexistsWithMultiClauseFilter(t *testing.T) {
 	if len(page2.Items) != 3 {
 		t.Fatalf("page 2 size: got %d, want 3", len(page2.Items))
 	}
-	if page2.HasNext {
+	if page2.HasNextPage {
 		t.Errorf("page 2 should NOT have next")
 	}
 }

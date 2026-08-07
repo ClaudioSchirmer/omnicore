@@ -42,14 +42,20 @@ func FieldErrorWithCause(contextName, fieldName string, cause error, n domain.No
 	})
 }
 
-// LimitExceededError packages a per-view "limit too high" rejection in the
-// canonical Schema envelope. FieldName is "limit"; FieldValue carries the
-// effective ceiling so the consumer surfaces "max is X" without parsing the
-// translated message. Wired to SemanticSchema → 400 via the kernel
+// LimitExceededError packages a per-view "page size too high" rejection in the
+// canonical Schema envelope. FieldName names the directional control that
+// carried the size — "first" forward, "last" backward — so the 400 points at
+// the exact wire key the consumer sent; FieldValue carries the effective
+// ceiling so the consumer surfaces "max is X" without parsing the translated
+// message. Wired to SemanticSchema → 400 via the kernel
 // LimitExceededNotification.
-func LimitExceededError(maxLimit int64) *InfrastructureError {
+func LimitExceededError(maxLimit int64, backward bool) *InfrastructureError {
+	field := "first"
+	if backward {
+		field = "last"
+	}
 	return NewInfrastructureErrorWith("Schema", domain.NotificationMessage{
-		FieldName:    "limit",
+		FieldName:    field,
 		FieldValue:   fmt.Sprintf("%d", maxLimit),
 		Notification: domain.LimitExceededNotification{},
 	})

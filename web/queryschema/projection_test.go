@@ -291,13 +291,13 @@ func TestWalkResponseGuard_PointerAndNonStructDefensive(t *testing.T) {
 	}
 }
 
-// ─── ParseSortWithSchema / ParseProjection edge cases ────────────────────────
+// ─── ParseOrderByWithSchema / ParseProjection edge cases ────────────────────────
 
-func TestParseSortWithSchema_EdgeCases(t *testing.T) {
-	if fields, bad, ok := ParseSortWithSchema("", nil); !ok || bad != "" || fields != nil {
+func TestParseOrderByWithSchema_EdgeCases(t *testing.T) {
+	if fields, bad, ok := ParseOrderByWithSchema("", nil); !ok || bad != "" || fields != nil {
 		t.Fatalf("empty sort = (%v,%q,%v)", fields, bad, ok)
 	}
-	fields, bad, ok := ParseSortWithSchema("-name,,age", nil)
+	fields, bad, ok := ParseOrderByWithSchema("-name,,age", nil)
 	if !ok || bad != "" || len(fields) != 2 {
 		t.Fatalf("nil-schema sort = (%v,%q,%v)", fields, bad, ok)
 	}
@@ -306,16 +306,16 @@ func TestParseSortWithSchema_EdgeCases(t *testing.T) {
 	}
 }
 
-func TestParseSortWithSchema_UnknownTokenWithSchema(t *testing.T) {
+func TestParseOrderByWithSchema_UnknownTokenWithSchema(t *testing.T) {
 	ps := ExtractProjectionSchema(reflect.TypeOf(sparseUser{}))
-	if _, bad, ok := ParseSortWithSchema("bogus", ps); ok || bad != "bogus" {
+	if _, bad, ok := ParseOrderByWithSchema("bogus", ps); ok || bad != "bogus" {
 		t.Fatalf("expected unknown sort token rejection, got bad=%q ok=%v", bad, ok)
 	}
 }
 
-func TestParseSortWithSchema_KnownTokenTranslatesToDocPath(t *testing.T) {
+func TestParseOrderByWithSchema_KnownTokenTranslatesToDocPath(t *testing.T) {
 	ps := ExtractProjectionSchema(reflect.TypeOf(sparseUser{}))
-	fields, bad, ok := ParseSortWithSchema("-addresses.zipCode", ps)
+	fields, bad, ok := ParseOrderByWithSchema("-addresses.zipCode", ps)
 	if !ok || bad != "" || len(fields) != 1 {
 		t.Fatalf("sort = (%v,%q,%v)", fields, bad, ok)
 	}

@@ -114,7 +114,7 @@ func (u *User) BuildRules(actionName string, svc domain.Service, r *domain.Rules
 }</code></pre>
   <p>
     Two outcomes by intent: a <strong>passive</strong> read (the field simply not requested)
-    gets the silent omission; an <strong>active</strong> reference — a <code>?sort=</code>,
+    gets the silent omission; an <strong>active</strong> reference — a <code>?orderBy=</code>,
     <code>?filters=</code>, or explicit <code>?fields=</code> on the restricted field —
     returns a 403 <code>FieldAccessForbiddenNotification</code>. Refusing the active attempt
     is more honest than silently ignoring the knob, and it closes the inference leak a

@@ -10,13 +10,14 @@ import (
 	"google.golang.org/protobuf/types/known/fieldmaskpb"
 
 	"github.com/ClaudioSchirmer/omnicore/application/queries"
+	"github.com/ClaudioSchirmer/omnicore/domain"
 	pb "github.com/ClaudioSchirmer/omnicore/web/grpc/pb"
 	"github.com/ClaudioSchirmer/omnicore/web/queryschema"
 )
 
 // CriteriaBuilder converts the shared omnicore.v1 read-side components
-// (PaginationRequest, SortField, FieldMask, the typed filter wrappers) into a
-// queries.ReadCriteria — the INPUT criteria, exactly what the REST parser
+// (PaginationRequest, OrderByField, FieldMask, the typed filter wrappers) into
+// a queries.ReadCriteria — the INPUT criteria, exactly what the REST parser
 // produces from the query string. Filter keys are GO FIELD PATHS; the query
 // type's ToCriteria(ctx) keeps applying identity overlays (Restrict, tenant
 // gates) on top, unchanged from every other surface.
@@ -28,14 +29,15 @@ import (
 //
 //	crit, err := fwgrpc.NewCriteria().
 //	    Page(pb.GetPage()).
-//	    Sort(pb.GetSort()...).
-//	    ReadMask(pb.GetReadMask()).
+//	    OrderBy(pb.GetOrderBy()...).
+//	    FieldMask(pb.GetFields()).
 //	    String("UserName", pb.GetFilters().GetUserName()).
 //	    Build()
 type CriteriaBuilder struct {
-	crit   queries.ReadCriteria
-	fields map[string]string // wire (proto snake_case) → Go field path
-	errs   []error
+	crit     queries.ReadCriteria
+	controls queryschema.Controls
+	fields   map[string]string // wire (proto snake_case) → Go field path
+	errs     []error
 }
 
 // NewCriteria starts a builder with an empty filter map.
@@ -43,7 +45,16 @@ func NewCriteria() *CriteriaBuilder {
 	return &CriteriaBuilder{crit: queries.ReadCriteria{Filter: map[string]any{}}}
 }
 
-// Fields declares the view's wire vocabulary for read_mask and sort: proto
+// Controls exposes the canonical control snapshot the builder accumulated —
+// the input the Auto path feeds queryschema.ValidateControls together with
+// the Request DTO's Reserved set (the full opt-in gate). The raw path's own
+// Build applies the DTO-less subset of the gateway (directional rule +
+// only-total conflicts).
+func (b *CriteriaBuilder) Controls() queryschema.Controls {
+	return b.controls
+}
+
+// Fields declares the view's wire vocabulary for fields and order_by: proto
 // field name (snake_case — FieldMask's canonical JSON form names fields of
 // the RESPONSE message) → Go field path. It is the ALLOWLIST, exactly like
 // the REST surface's struct tags: a masked or sorted path outside it fails
@@ -65,63 +76,86 @@ func (b *CriteriaBuilder) goField(kind, wirePath string) (string, bool) {
 	return goPath, true
 }
 
-// Page applies the control keys. nil is a no-op (message absent).
+// Page applies the control keys. nil is a no-op (message absent). Presence
+// is recorded for the canonical control gateway — every PaginationRequest
+// field is proto3 optional, so presence and value separate exactly as on
+// the REST query string: an explicitly-set empty search is still a
+// presence, and an explicit only_total=false / include_archived=false is
+// presence without activation (gated like REST's `?onlyTotal=false`).
 func (b *CriteriaBuilder) Page(p *pb.PaginationRequest) *CriteriaBuilder {
 	if p == nil {
 		return b
 	}
-	// The REST onlyTotal conflict matrix, verbatim: a count-only request
-	// carrying page-shaping controls is a wire-contract violation, rejected
-	// eagerly (silent ignore would hide the consumer's bug). Presence-based,
-	// like the query-string check — proto3 optional carries presence.
-	if p.GetOnlyTotal() {
-		for _, c := range []struct {
-			key     string
-			present bool
-		}{
-			{"after", p.After != nil},
-			{"before", p.Before != nil},
-			{"limit", p.Limit != nil},
-		} {
-			if c.present {
-				b.errs = append(b.errs, fmt.Errorf("onlyTotal[%s]: incompatible with only_total=true", c.key))
-			}
-		}
+	if p.After != nil {
+		b.controls.After = true
+	}
+	if p.Before != nil {
+		b.controls.Before = true
+	}
+	if p.First != nil {
+		n := p.GetFirst()
+		b.controls.First = &n
+	}
+	if p.Last != nil {
+		n := p.GetLast()
+		b.controls.Last = &n
+	}
+	if p.Search != nil {
+		b.controls.Search = true
+	}
+	if p.IncludeArchived != nil {
+		b.controls.IncludeArchived = true
+	}
+	if p.OnlyTotal != nil {
+		active := p.GetOnlyTotal()
+		b.controls.OnlyTotal = &active
 	}
 	b.crit.After = p.GetAfter()
 	b.crit.Before = p.GetBefore()
-	b.crit.Limit = p.GetLimit()
+	// Materialize the Relay direction pair into the internal size+direction:
+	// first=N → forward window; last=N → backward window (with no cursor, the
+	// LAST N of the set). The mutual exclusivity is the gateway's check.
+	if p.First != nil {
+		b.crit.Limit = p.GetFirst()
+	}
+	if p.Last != nil {
+		b.crit.Limit = p.GetLast()
+		b.crit.Backward = true
+	}
 	b.crit.OnlyTotal = p.GetOnlyTotal()
 	b.crit.IncludeArchived = p.GetIncludeArchived()
 	b.crit.Search = p.GetSearch()
 	return b
 }
 
-// Sort appends sort fields in the declared order. Field names are WIRE
+// OrderBy appends ordering fields in the declared order. Field names are WIRE
 // names (proto snake_case), resolved against the Fields vocabulary — an
 // undeclared field fails Build as a SchemaViolation.
-func (b *CriteriaBuilder) Sort(fields ...*pb.SortField) *CriteriaBuilder {
+func (b *CriteriaBuilder) OrderBy(fields ...*pb.OrderByField) *CriteriaBuilder {
 	for _, f := range fields {
 		if f == nil || f.GetField() == "" {
 			continue
 		}
-		goPath, ok := b.goField("sort", f.GetField())
+		b.controls.OrderBy = true
+		goPath, ok := b.goField("orderBy", f.GetField())
 		if !ok {
 			continue
 		}
-		b.crit.Sort = append(b.crit.Sort, queries.SortField{Field: goPath, Desc: f.GetDesc()})
+		b.crit.OrderBy = append(b.crit.OrderBy, queries.OrderByField{Field: goPath, Desc: f.GetDesc()})
 	}
 	return b
 }
 
-// ReadMask applies the partial-response projection (the ?fields= sibling).
-// Paths are WIRE names (FieldMask's canonical snake_case — protojson
-// converts the JSON camelCase form to snake for you), resolved against the
-// Fields vocabulary; an undeclared path fails Build as a SchemaViolation.
-func (b *CriteriaBuilder) ReadMask(m *fieldmaskpb.FieldMask) *CriteriaBuilder {
+// FieldMask applies the partial-response projection (the ?fields= sibling;
+// the conventional request field name is `fields`). Paths are WIRE names
+// (FieldMask's canonical snake_case — protojson converts the JSON camelCase
+// form to snake for you), resolved against the Fields vocabulary; an
+// undeclared path fails Build as a SchemaViolation.
+func (b *CriteriaBuilder) FieldMask(m *fieldmaskpb.FieldMask) *CriteriaBuilder {
 	if m == nil || len(m.GetPaths()) == 0 {
 		return b
 	}
+	b.controls.Fields = true
 	if b.crit.Projection == nil {
 		b.crit.Projection = map[string]int{}
 	}
@@ -129,7 +163,7 @@ func (b *CriteriaBuilder) ReadMask(m *fieldmaskpb.FieldMask) *CriteriaBuilder {
 		if path == "" {
 			continue
 		}
-		goPath, ok := b.goField("read_mask", path)
+		goPath, ok := b.goField("fields", path)
 		if !ok {
 			continue
 		}
@@ -241,25 +275,52 @@ func (b *CriteriaBuilder) Timestamp(goFieldPath string, f *pb.TimestampFilter) *
 	return b
 }
 
+// rawPathReserved is the permissive Reserved set the raw path builds
+// against: MountRaw consumers carry no Request DTO, so the opt-in gate has
+// no declaration to check — only the directional rule and the only-total
+// conflict matrix apply. The Auto path runs the FULL gate (its compiled
+// plan carries the DTO's Reserved set) before Build.
+var rawPathReserved = map[string]bool{
+	queryschema.KeyFirst: true, queryschema.KeyLast: true,
+	queryschema.KeyAfter: true, queryschema.KeyBefore: true,
+	queryschema.KeyOrderBy: true, queryschema.KeyFields: true,
+	queryschema.KeySearch: true, queryschema.KeyIncludeArchived: true,
+	queryschema.KeyOnlyTotal: true,
+}
+
 // Build returns the criteria, or the accumulated wire-contract violations —
 // the wrappers' conversionError path renders them as SchemaViolation
 // (INVALID_ARGUMENT), the same rejection an unknown REST operator gets.
+// The canonical control gateway runs here for the raw path (directional
+// rule + only-total conflicts); the Auto path additionally applies the DTO
+// opt-in gate at its compiled plan before reaching Build.
 func (b *CriteriaBuilder) Build() (queries.ReadCriteria, error) {
-	// Sort/read_mask arrive through their own builder calls, so their
-	// onlyTotal conflicts are only visible here — the page-key conflicts
-	// fire in Page. Same matrix as the REST wrapper.
-	if b.crit.OnlyTotal {
-		if len(b.crit.Sort) > 0 {
-			b.errs = append(b.errs, fmt.Errorf("onlyTotal[sort]: incompatible with only_total=true"))
-		}
-		if b.crit.Projection != nil {
-			b.errs = append(b.errs, fmt.Errorf("onlyTotal[read_mask]: incompatible with only_total=true"))
-		}
+	if violations := queryschema.ValidateControls(rawPathReserved, b.controls, nil); len(violations) > 0 {
+		return queries.ReadCriteria{}, controlViolationError(violations)
 	}
 	if len(b.errs) > 0 {
 		return queries.ReadCriteria{}, fmt.Errorf("grpc criteria: %w", errors.Join(b.errs...))
 	}
 	return b.crit, nil
+}
+
+// controlViolationError renders gateway violations as the framework's typed
+// notification error — a NotificationCarrier, so conversionError preserves
+// the per-field triple and the Connect shell maps it to INVALID_ARGUMENT
+// with google.rpc details, the gRPC self-translation of the same canonical
+// rejection REST serves as a 400 envelope. A NotDeclared violation carries
+// the missing `query:"…"` declaration as the field value, so the consumer
+// reads the fix straight off the error detail.
+func controlViolationError(violations []queryschema.ControlViolation) error {
+	nctx := domain.NewNotificationContext("Schema")
+	for _, v := range violations {
+		msg := v.Message()
+		if v.Kind == queryschema.ViolationNotDeclared {
+			msg.FieldValue = fmt.Sprintf("control not enabled on this endpoint — declare query:%q on its Request DTO", v.Key)
+		}
+		nctx.AddNotificationMessage(msg)
+	}
+	return domain.NewDomainError([]*domain.NotificationContext{nctx})
 }
 
 var stringOps = map[pb.StringOp]string{
