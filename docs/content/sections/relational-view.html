@@ -162,7 +162,12 @@ func NewGadgetFeature(d bootstrap.Deps) *GadgetFeature {
 <p>
     The wire API is identical to a Mongo view — <code>?first=</code>, <code>?after=</code>, <code>?before=</code>, and
     the returned <code>endCursor</code> / <code>startCursor</code> — but the mechanics underneath are the relational
-    idiom, <strong>offset (skip/count), not keyset</strong>. Each cursor carries an absolute row index rather than a
+    idiom, <strong>offset (skip/count), not keyset</strong>. The envelope RULE is identical too: an edge cursor is
+    emitted only where its neighbour exists (<code>endCursor</code> iff <code>hasNextPage</code>,
+    <code>startCursor</code> iff <code>hasPreviousPage</code>), so flipping a view's backing does not change the shape
+    a consumer parses — and a cursor the reader refuses (undecodable, or issued under a different
+    filter/sort/archived context) is the same <strong>400 <code>SchemaViolationNotification</code></strong> the Mongo
+    backing raises, never a 500. Each cursor carries an absolute row index rather than a
     sort-key tuple: <code>after</code> walks forward from that index, <code>before</code> walks back from it, and a bare
     backward page (GraphQL <code>last:N</code> with no cursor) anchors at the end via a single <code>COUNT</code>. A
     deterministic <code>ORDER BY … , id</code> tiebreak makes the <em>ordering</em> total, so paging a <strong>static</strong>

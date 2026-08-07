@@ -424,7 +424,13 @@ type FindUsersByParamsAddressOutput struct {
         <code>endCursor</code> are WINDOW EDGES (the first and last row of THIS page — echo them
         into <code>?before=</code>/<code>?after=</code> to walk) and
         <code>hasNextPage</code>/<code>hasPreviousPage</code> state whether rows exist beyond each
-        edge; <code>totalCount</code> always carries the full filtered count.
+        edge; <code>totalCount</code> always carries the full filtered count. An edge cursor is
+        emitted only where its neighbouring page exists — <code>endCursor</code> exactly when
+        <code>hasNextPage</code>, <code>startCursor</code> exactly when
+        <code>hasPreviousPage</code> — so the first page of a forward walk carries no
+        <code>startCursor</code> and the last carries no <code>endCursor</code>: an empty edge
+        cursor means "nothing to walk to on this side", never a contradiction with the flag
+        beside it.
     </p>
     <p>
         Under the wire, the read side is <strong>keyset-paginated over
@@ -472,11 +478,14 @@ type FindUsersByParamsAddressOutput struct {
         with a clear remediation: <em>"request page 1 of the new context"</em>.
     </p>
     <p>
-        <strong>Symmetric envelope.</strong> The reader emits <code>startCursor</code> and
-        <code>endCursor</code> on every non-empty page in both forward and backward navigation,
-        so a UI can drive both "next" and "previous" buttons symmetrically.
+        <strong>Symmetric envelope.</strong> Forward and backward navigation are served the same
+        way, so a UI can drive both "next" and "previous" buttons off one envelope:
         <code>hasNextPage</code> / <code>hasPreviousPage</code> reflect the actual presence of
-        more docs beyond each window edge.
+        more docs beyond each window edge, and <code>startCursor</code> / <code>endCursor</code>
+        are emitted exactly where those flags are true. A button is therefore driven by the flag
+        and fed by the cursor on the same side — both go quiet together at the ends of the set.
+        This holds on EVERY backing: flipping a view between the projected Mongo collection and
+        <code>RelationalSource</code> does not change the envelope a consumer parses.
     </p>
     <table>
         <tbody><tr><th>Wire</th><th>Outcome</th></tr>

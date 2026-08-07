@@ -2,6 +2,7 @@ package relational
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 
@@ -221,15 +222,28 @@ func (r *RelationalViewReader) ReadPage(ctx context.Context, name string, crit q
 		}
 		page.ItemCursors = append(page.ItemCursors, cur)
 	}
-	if len(page.ItemCursors) > 0 {
-		page.StartCursor = page.ItemCursors[0]
-		page.EndCursor = page.ItemCursors[len(page.ItemCursors)-1]
-	}
 	page.HasNextPage = win.hasNext
 	if win.overFetch {
 		page.HasNextPage = hasMore
 	}
 	page.HasPreviousPage = win.hasPrev
+	// An EDGE cursor is emitted only where a neighbouring page actually exists —
+	// EndCursor with HasNextPage, StartCursor with HasPreviousPage — which is the
+	// rule the Mongo reader applies. Flipping the backing of a view must not
+	// change the envelope a consumer parses: emitting an EndCursor on the last
+	// page would contradict the HasNextPage=false sitting beside it, and a client
+	// treating "a cursor is present" as "there is more" would spend it for an
+	// empty page. ItemCursors stays fully populated either way — it addresses
+	// ROWS, not page boundaries, so the GraphQL edges[].cursor of the final row
+	// is still served.
+	if len(page.ItemCursors) > 0 {
+		if page.HasPreviousPage {
+			page.StartCursor = page.ItemCursors[0]
+		}
+		if page.HasNextPage {
+			page.EndCursor = page.ItemCursors[len(page.ItemCursors)-1]
+		}
+	}
 	page.Projection = crit.Projection // echo the effective projection (export plan pruning)
 	return page, nil
 }
@@ -462,17 +476,17 @@ func offsetTuple(offset int64, sortLen int) []any {
 func decodeOffset(cur, hashCtx string) (int64, error) {
 	c, err := queries.DecodeCursor(cur)
 	if err != nil {
-		return 0, err
+		return 0, core.InvalidCursorError(fmt.Errorf("invalid cursor: %w", err))
 	}
 	if c.H != hashCtx {
-		return 0, queries.ErrCursorInvalid
+		return 0, core.InvalidCursorError(errors.New("cursor context hash does not match current criteria"))
 	}
 	if len(c.K) == 0 {
-		return 0, queries.ErrCursorInvalid
+		return 0, core.InvalidCursorError(errors.New("cursor tuple is empty"))
 	}
 	f, ok := c.K[0].(float64) // the cursor tuple round-trips through JSON
 	if !ok || f < 0 {
-		return 0, queries.ErrCursorInvalid
+		return 0, core.InvalidCursorError(errors.New("cursor does not carry a valid row offset"))
 	}
 	return int64(f), nil
 }
