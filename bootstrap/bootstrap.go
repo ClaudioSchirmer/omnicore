@@ -418,9 +418,18 @@ func runWithConfig(cfg *Config, wire func(Deps) Wiring) error {
 			// boot, they simply never receive a row.
 			if len(cfg.Transport.Endpoints) == 0 {
 				boot.complete.Store(true) // readiness gate opens
+				effect := "Mongo-backed views will not materialize; relational views are unaffected"
+				if cfg.Mongo.Reconcile.Enabled {
+					// Reconcile repairs revision drift between projections the
+					// consumer keeps live and the SoR — with no consumer there
+					// is nothing to keep converged, so the enabled loop is
+					// deliberately not started; say so instead of leaving the
+					// operator to notice its absence.
+					effect += "; mongo.reconcile is enabled but its loop is not started either"
+				}
 				deps.Logger.Info("projection consumer not started: no transport configured",
 					"views", len(views),
-					"effect", "Mongo-backed views will not materialize; relational views are unaffected")
+					"effect", effect)
 				return
 			}
 			syncEngine.Start(rebuildCtx)
