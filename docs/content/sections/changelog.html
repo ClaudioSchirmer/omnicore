@@ -7,6 +7,31 @@
 </div>
 <div class="changelog">
     <div class="release">
+        <div class="release-head"><span class="release-tag">v0.46.1</span><span class="release-date">August 7, 2026</span></div>
+        <ul>
+            <li><strong>Fixed</strong> — <strong>a <code>RelationalSource</code> view now emits page-edge cursors
+                under the same rule as the projected Mongo backing.</strong> The relational reader set
+                <code>startCursor</code> and <code>endCursor</code> on every page that had rows, regardless of
+                whether a neighbouring page existed — so the LAST page of a forward walk answered with an
+                <code>endCursor</code> while announcing <code>hasNextPage: false</code> right beside it, and the
+                FIRST page carried a <code>startCursor</code> next to <code>hasPreviousPage: false</code>. A client
+                treating "a cursor is present" as "there is more" would spend it for an empty page, and one view
+                answered differently depending on its backing. The rule is now the one the Mongo reader already
+                applied and the one the contract documents: <code>endCursor</code> exactly when
+                <code>hasNextPage</code>, <code>startCursor</code> exactly when <code>hasPreviousPage</code>.
+                Per-row addressing is untouched — <code>edges[].cursor</code> (GraphQL) still covers the final
+                row, because it addresses rows rather than page boundaries.</li>
+            <li><strong>Fixed</strong> — <strong>a cursor a <code>RelationalSource</code> view refuses is now the
+                typed 400 the Mongo backing already returned, not a 500.</strong> The relational reader raised a bare
+                sentinel instead of the framework's <code>InvalidCursorError</code>, so the pipeline had no
+                notification to map: a cursor spent under a changed filter or a flipped <code>?includeArchived</code>
+                — ordinary navigation, not abuse — came back as <code>500</code> /
+                <code>{"code":"internal"}</code> rather than <code>400</code> with
+                <code>SchemaViolationNotification</code>. All four refusal paths are typed now, so REST, GraphQL and
+                gRPC report the same rejection whichever backing serves the view.</li>
+        </ul>
+    </div>
+    <div class="release">
         <div class="release-head"><span class="release-tag">v0.46.0</span><span class="release-date">August 7, 2026</span></div>
         <ul>
             <li><strong>Changed</strong> — <strong>breaking</strong> — <strong>the Request DTO governs every read

@@ -2,6 +2,7 @@ package relational
 
 import (
 	"context"
+	"errors"
 	"testing"
 
 	"github.com/ClaudioSchirmer/omnicore/application/queries"
@@ -194,5 +195,131 @@ func TestReadPage_Before_WalksBack(t *testing.T) {
 	eqNames(t, names(back), "r0", "r1")
 	if back.HasPreviousPage || !back.HasNextPage {
 		t.Fatalf("before flags: hasPrev=%v hasNext=%v, want false/true", back.HasPreviousPage, back.HasNextPage)
+	}
+}
+
+// TestReadPage_EdgeCursors_OnlyWithNeighbour pins the envelope rule the reader
+// shares with the Mongo backing: an EDGE cursor exists only where a neighbouring
+// page does — EndCursor iff HasNextPage, StartCursor iff HasPreviousPage. The
+// reader used to emit both unconditionally whenever the page had rows, so the
+// LAST page handed back an EndCursor while announcing HasNextPage=false; a client
+// treating a present cursor as "there is more" would spend it for an empty page,
+// and the same view read through a Mongo projection answered differently.
+//
+// ItemCursors is deliberately NOT gated: it addresses ROWS, not boundaries, so
+// the final row still has a cursor (GraphQL edges[].cursor depends on it).
+func TestReadPage_EdgeCursors_OnlyWithNeighbour(t *testing.T) {
+	r := pageReaderWith(mkRows(5))
+	ctx := context.Background()
+
+	// Head of a forward walk: nothing behind, more ahead.
+	p1, err := r.ReadPage(ctx, "v", queries.ReadCriteria{Limit: 2})
+	if err != nil {
+		t.Fatalf("page1: %v", err)
+	}
+	if p1.StartCursor != "" {
+		t.Errorf("page1 StartCursor = %q, want empty (HasPreviousPage=false)", p1.StartCursor)
+	}
+	if p1.EndCursor == "" {
+		t.Error("page1 EndCursor is empty, want set (HasPreviousPage=false but HasNextPage=true)")
+	}
+
+	// Tail of the same walk: rows behind, nothing ahead.
+	p2, err := r.ReadPage(ctx, "v", queries.ReadCriteria{Limit: 2, After: p1.EndCursor})
+	if err != nil {
+		t.Fatalf("page2: %v", err)
+	}
+	last, err := r.ReadPage(ctx, "v", queries.ReadCriteria{Limit: 2, After: p2.EndCursor})
+	if err != nil {
+		t.Fatalf("last page: %v", err)
+	}
+	if last.HasNextPage {
+		t.Fatalf("last page HasNextPage = true, want false (fixture has 5 rows)")
+	}
+	if last.EndCursor != "" {
+		t.Errorf("last page EndCursor = %q, want empty (HasNextPage=false)", last.EndCursor)
+	}
+	if last.StartCursor == "" {
+		t.Error("last page StartCursor is empty, want set (HasPreviousPage=true)")
+	}
+	if len(last.ItemCursors) != len(last.Items) || last.ItemCursors[0] == "" {
+		t.Errorf("last page ItemCursors = %v, want one non-empty cursor per row", last.ItemCursors)
+	}
+
+	// A set that fits in ONE page has neither neighbour: both edges stay empty
+	// while every row keeps its own cursor.
+	only, err := r.ReadPage(ctx, "v", queries.ReadCriteria{Limit: 10})
+	if err != nil {
+		t.Fatalf("single page: %v", err)
+	}
+	if only.HasNextPage || only.HasPreviousPage {
+		t.Fatalf("single page flags: hasNext=%v hasPrev=%v, want false/false", only.HasNextPage, only.HasPreviousPage)
+	}
+	if only.StartCursor != "" || only.EndCursor != "" {
+		t.Errorf("single page cursors = (%q, %q), want both empty", only.StartCursor, only.EndCursor)
+	}
+	if len(only.ItemCursors) != len(only.Items) {
+		t.Errorf("single page ItemCursors = %d, want %d (one per row)", len(only.ItemCursors), len(only.Items))
+	}
+}
+
+// TestReadPage_InvalidCursor_IsTypedSchemaRejection pins that a cursor this
+// reader refuses comes back as the framework's TYPED rejection — the same
+// core.InvalidCursorError the Mongo reader raises — and not a bare sentinel.
+// The distinction is the whole difference between a legible 400
+// (SchemaViolationNotification) and a 500/Internal: the pipeline maps the typed
+// infrastructure error onto SemanticSchema, while an untyped error has nothing
+// to map and falls through as an opaque server fault. It bit on every surface —
+// REST 500, gRPC {"code":"internal"} — for a cursor spent under a changed
+// filter or archived gate, which is ordinary consumer behaviour, not abuse.
+func TestReadPage_InvalidCursor_IsTypedSchemaRejection(t *testing.T) {
+	r := pageReaderWith(mkRows(5))
+	ctx := context.Background()
+
+	p1, err := r.ReadPage(ctx, "v", queries.ReadCriteria{Limit: 2})
+	if err != nil {
+		t.Fatalf("page1: %v", err)
+	}
+
+	// A cursor issued with NO filter, spent under one: the context hash differs,
+	// so the reader must refuse — typed.
+	_, err = r.ReadPage(ctx, "v", queries.ReadCriteria{
+		Limit:  2,
+		After:  p1.EndCursor,
+		Filter: map[string]any{"Name": "r0"},
+	})
+	assertTypedCursorRejection(t, "context-hash mismatch", err)
+
+	// An undecodable cursor takes the same path.
+	_, err = r.ReadPage(ctx, "v", queries.ReadCriteria{Limit: 2, After: "not-base64---"})
+	assertTypedCursorRejection(t, "undecodable cursor", err)
+}
+
+// assertTypedCursorRejection fails unless err carries the framework's
+// notification envelope (the carrier every layer above reads via errors.As) —
+// which is what turns the refusal into a 400 rather than a 500.
+func assertTypedCursorRejection(t *testing.T, label string, err error) {
+	t.Helper()
+	if err == nil {
+		t.Fatalf("%s: expected a rejection, got nil", label)
+	}
+	var carrier domain.NotificationCarrier
+	if !errors.As(err, &carrier) {
+		t.Fatalf("%s: error %v (%T) does not carry notifications — it would surface as 500/Internal", label, err, err)
+	}
+	notes := carrier.NotificationContexts()
+	if len(notes) == 0 {
+		t.Fatalf("%s: carrier holds no notification", label)
+	}
+	found := false
+	for _, n := range notes {
+		for _, m := range n.Messages() {
+			if _, ok := m.Notification.(domain.SchemaViolationNotification); ok {
+				found = true
+			}
+		}
+	}
+	if !found {
+		t.Errorf("%s: want a SchemaViolationNotification, got %+v", label, notes)
 	}
 }

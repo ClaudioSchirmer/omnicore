@@ -11,6 +11,33 @@ with `1.0.0`.
 
 ## [Unreleased]
 
+## [0.46.1] - 2026-08-07
+
+### Fixed
+
+- **`RelationalSource` views now emit page-edge cursors under the same rule as
+  the projected Mongo backing.** The relational reader set `startCursor` and
+  `endCursor` on every page that had rows, ignoring whether a neighbouring page
+  existed — so the LAST page of a forward walk answered with an `endCursor`
+  while announcing `hasNextPage: false` beside it, and the FIRST page carried a
+  `startCursor` with `hasPreviousPage: false`. A consumer treating "a cursor is
+  present" as "there is more" would spend it for an empty page, and the same
+  view answered differently depending on its backing. The rule is now the one
+  the Mongo reader already applied and the one the contract documents:
+  `endCursor` exactly when `hasNextPage`, `startCursor` exactly when
+  `hasPreviousPage`. `ItemCursors` (GraphQL `edges[].cursor`) is unchanged — it
+  addresses rows, not page boundaries, so the final row still has a cursor.
+
+- **A cursor a `RelationalSource` view refuses is now the typed 400 the Mongo
+  backing already returned, not a 500.** The relational reader raised the bare
+  `queries.ErrCursorInvalid` sentinel instead of wrapping it in
+  `core.InvalidCursorError`, so the pipeline had no notification to map: a
+  cursor spent under a changed filter or a flipped `?includeArchived` — ordinary
+  consumer navigation, not abuse — surfaced as `500`/`{"code":"internal"}`
+  instead of `400 SchemaViolationNotification`. All four refusal paths
+  (undecodable, context-hash mismatch, empty tuple, non-offset payload) are now
+  typed, so REST, GraphQL and gRPC report the same rejection on either backing.
+
 ## [0.46.0] - 2026-08-07
 
 ### Changed

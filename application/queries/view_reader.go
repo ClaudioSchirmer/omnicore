@@ -144,6 +144,15 @@ func (c *ReadCriteria) scrubField(goFieldPath string) {
 // last row of THIS page; echo them into `before`/`after` to walk), and
 // HasNextPage/HasPreviousPage state whether rows exist beyond each edge.
 //
+// An edge cursor is emitted ONLY where its neighbouring page exists: EndCursor
+// is set exactly when HasNextPage, StartCursor exactly when HasPreviousPage.
+// So the first page of a forward walk carries no StartCursor and the last page
+// carries no EndCursor — the pair never contradicts the flag beside it, and a
+// consumer can treat an empty edge cursor as "nothing to walk to" on either
+// side. Every reader obeys this, so flipping a view's backing (projected Mongo
+// ⇄ RelationalSource) leaves the envelope shape unchanged. Per-ROW addressing
+// is ItemCursors, which is populated for every returned row regardless.
+//
 // OnlyTotal=true signals that the upstream ReadCriteria asked for the
 // only-total mode — Items/HasNextPage/HasPreviousPage/StartCursor/EndCursor
 // are zero by construction, only TotalCount carries information. The wire
