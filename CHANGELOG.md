@@ -11,6 +11,46 @@ with `1.0.0`.
 
 ## [Unreleased]
 
+## [0.46.2] - 2026-08-07
+
+Documentation-only release — no code changes. Four sections carried claims the
+framework itself contradicts; all were found by auditing generated-service
+conventions against the source and are fixed at the origin so code generators
+and docs-first tooling stop reproducing them.
+
+### Fixed
+
+- **`service-layout`: list responses mirror the aggregate — children included.**
+  The section prescribed "list responses stay scalar (root fields only); the
+  by-id response is where child collections nest", contradicting
+  `auto-query-handlers` (whose canonical `?fields=` example IS a list response
+  with a nested child array) and the section's own precedence rule. The server
+  already holds the full document/aggregate when it serves a list — omitting
+  children saves no IO and forces N+1 by-id calls. The convention now states:
+  child collections nest in the list response exactly as in by-id; a child-less
+  listing is a per-view spec decision, never the default. The `example:`-tag
+  bullet was also scoped to SCALAR fields (a composite field with an `example:`
+  tag is a boot reject — `Doc.RequestExamples`/`Doc.ResponseExamples` own body
+  samples).
+- **`transport` + `bootstrap`: a transport-tagless build is valid — stale
+  "aborts at boot" text removed.** Both sections still described the pre-0.40.0
+  behavior ("aborts at boot with *no transport linked*"). Since v0.40.0 a
+  tagless build boots with a no-op transport (the infra-free / zero-broker
+  posture); a consumer that needs messaging fails at the point of use with
+  `transport: no transport registered for "<name>" (build with the transport's
+  build tag?)`. Both sections now state the real contract and that the
+  transport tag follows the `transport:` block in the yaml, not the engine.
+- **`table-schema`: engine list and read-side claim brought current.** The
+  "Supported column shapes" intro said "the relational store is PostgreSQL,
+  MySQL, SQL Server, or Oracle; the read projection is always MongoDB" —
+  missing SQLite (a first-class engine) and the `RelationalSource()` read-side
+  exception. Both are now named.
+- **`table-schema`: SQLite added to the active-only-uniqueness dialect list.**
+  The per-dialect shapes for "unique among active rows" covered Postgres,
+  SQL Server, MySQL and Oracle only; SQLite supports the Postgres-style partial
+  unique index verbatim (the framework's own embedded SQLite migrations use
+  partial indexes) and is now listed.
+
 ## [0.46.1] - 2026-08-07
 
 ### Fixed
