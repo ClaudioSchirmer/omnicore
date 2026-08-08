@@ -798,7 +798,8 @@ func StudentSchema() *core.TableSchema {
         <code>/unarchive</code> is the only way back. Pick this when a role's history should never fork.</li>
     <li><strong>Active-only uniqueness</strong> — archived remnants may accumulate NEXT TO one active row: keep the old
         archived role and open a fresh active one for the same identity. The shape is per dialect. On Postgres it is a
-        partial unique index — <code>CREATE UNIQUE INDEX ... ON student(person_id) WHERE deleted_at IS NULL</code>;
+        partial unique index — <code>CREATE UNIQUE INDEX ... ON student(person_id) WHERE deleted_at IS NULL</code> —
+        and SQLite supports the identical statement (the framework's own embedded SQLite migrations use partial indexes);
         SQL Server's equivalent is a filtered unique index — the same statement, same <code>WHERE</code> clause. MySQL
         has no partial indexes; use a generated column instead — <code>active_person_id BINARY(16) GENERATED ALWAYS AS
         (IF(deleted_at IS NULL, person_id, NULL)) STORED, UNIQUE(active_person_id)</code> — multiple NULLs are admitted
@@ -983,7 +984,7 @@ func StudentSchema() *core.TableSchema {
 
 <h3>Supported column shapes</h3>
 <div class="box">
-    <strong>The relational store is PostgreSQL, MySQL, SQL Server, <em>or</em> Oracle; the read projection is always MongoDB.</strong>
+    <strong>The relational store is PostgreSQL, MySQL, SQL Server, Oracle, <em>or</em> SQLite; the read projection is MongoDB — except for views that opt into <a href="#relational-view">RelationalSource()</a>, which serve straight from the relational store.</strong>
     The write path, the entity-search <code>criteria</code> engine, and the auto-scan read-back run against the relational
     backend selected by <code>relational.dialect</code> (<code>postgres</code> | <code>mysql</code> | <code>sqlserver</code> | <code>oracle</code>),
     emitting dialect-specific SQL through the engine's <code>Dialect</code> seam (placeholders, identifier quoting, the UUID

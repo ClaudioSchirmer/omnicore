@@ -7,6 +7,24 @@
 </div>
 <div class="changelog">
     <div class="release">
+        <div class="release-head"><span class="release-tag">v0.46.2</span><span class="release-date">August 7, 2026</span></div>
+        <ul>
+            <li><strong>Fixed</strong> — <strong>documentation-only release: four sections carried claims the
+                framework itself contradicts.</strong> <code>service-layout</code> no longer prescribes scalar-only
+                list responses — child collections nest in the LIST response exactly as in by-id (the server already
+                holds the full document/aggregate when it serves a list; omitting children saves no IO and forces
+                N+1 by-id calls; a child-less listing is a per-view spec decision, never the default), and the
+                <code>example:</code>-tag convention is scoped to scalar fields (a composite field with an
+                <code>example:</code> tag is a boot reject — <code>Doc.RequestExamples</code>/<code>Doc.ResponseExamples</code>
+                own body samples). <code>transport</code> and <code>bootstrap</code> drop the stale pre-v0.40.0
+                "tagless build aborts at boot" text — a tagless build boots with a no-op transport and a consumer
+                that needs messaging fails at the point of use; the transport tag follows the yaml, not the engine.
+                <code>table-schema</code> names SQLite in the engine list, states the <code>RelationalSource()</code>
+                read-side exception to "the read projection is MongoDB", and adds SQLite (Postgres-style partial
+                unique index, verbatim) to the active-only-uniqueness dialect shapes.</li>
+        </ul>
+    </div>
+    <div class="release">
         <div class="release-head"><span class="release-tag">v0.46.1</span><span class="release-date">August 7, 2026</span></div>
         <ul>
             <li><strong>Fixed</strong> — <strong>a <code>RelationalSource</code> view now emits page-edge cursors
