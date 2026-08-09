@@ -82,7 +82,7 @@ func TestExecute_ReadConnectionEndToEnd(t *testing.T) {
 	reg, ctx := newExecRegistry(h)
 
 	query := `query {
-	  users(where: { name: { startswith: "al" } }, first: 10, orderBy: ["-name"]) {
+	  users(where: { name: { startswith: "al" } }, first: 10, orderBy: [{field: NAME, direction: DESC}]) {
 	    edges { node { id name age } cursor }
 	    pageInfo { hasNextPage startCursor endCursor }
 	    totalCount
@@ -228,5 +228,28 @@ func TestExecute_DomainFailureMapsToErrorExtensions(t *testing.T) {
 	}
 	if resp.Errors[0].Message == "" {
 		t.Error("error message should be translated, not empty")
+	}
+}
+
+// TestExecute_OrderByMultiTermAndDefaultDirection — a multi-term typed orderBy
+// folds in order, and an absent direction defaults to ASC (whether or not the
+// executor materializes the SDL default).
+func TestExecute_OrderByMultiTermAndDefaultDirection(t *testing.T) {
+	h := &fakeReadHandler{page: queries.Page{}}
+	reg, ctx := newExecRegistry(h)
+
+	resp := reg.Execute(ctx, `{ users(orderBy: [{field: NAME, direction: DESC}, {field: AGE}]) { edges { node { id } } } }`, nil, "")
+	if len(resp.Errors) != 0 {
+		t.Fatalf("unexpected errors: %+v", resp.Errors)
+	}
+	ob := h.captured.OrderBy
+	if len(ob) != 2 {
+		t.Fatalf("OrderBy terms = %d, want 2 (%+v)", len(ob), ob)
+	}
+	if ob[0].Field != "Name" || !ob[0].Desc {
+		t.Errorf("term 1 = %+v, want {Name desc}", ob[0])
+	}
+	if ob[1].Field != "Age" || ob[1].Desc {
+		t.Errorf("term 2 = %+v, want {Age asc} (default direction)", ob[1])
 	}
 }

@@ -48,7 +48,7 @@
     <thead><tr><th>Capability</th><th>REST (open, URL-driven)</th><th>GraphQL (Relay convention)</th></tr></thead>
     <tbody>
         <tr><td>Filtering (<code>where</code>)</td><td><code>?name.startswith=Bo&amp;age.gte=18</code></td><td><code>where: { name: { startswith: "Bo" }, age: { gte: 18 } }</code> — a typed input object, same operator allowlist</td></tr>
-        <tr><td>Sorting</td><td><code>?orderBy=-name</code></td><td><code>orderBy: ["-name"]</code> — same tokens, same fields</td></tr>
+        <tr><td>Sorting</td><td><code>?orderBy=-name</code></td><td><code>orderBy: [{field: NAME, direction: DESC}]</code> — a typed input over the reflected <code>&lt;Entity&gt;OrderField</code> enum; same sortable allowlist, same fold, same cursors</td></tr>
         <tr><td>Pagination</td><td><code>?first=20&amp;after=…</code> (forward) / <code>?last=20&amp;before=…</code> (backward)</td><td><code>first: 20, after: …</code> / <code>last: 20, before: …</code> — the SAME Relay directional pair, name for name</td></tr>
         <tr><td>Only-total</td><td><code>?onlyTotal=true</code></td><td>select only <code>totalCount</code> (no <code>edges</code>/<code>pageInfo</code>)</td></tr>
         <tr><td>Field selection</td><td><code>?fields=name,addresses.city</code></td><td>the selection set itself — <code>{ name addresses { city } }</code></td></tr>
@@ -92,6 +92,13 @@ func (f *UsersFeature) MountGraphQL(reg *fwgraphql.Registry, d bootstrap.Deps) {
                                  requests.FindUsersByParamsResponse](
             "users", "User",
             &amp;handlers.FindByParamsQueryHandler[*queries.FindUserByParamsQuery]{
+                Reader: d.ViewReader, View: f.view.Name()},
+            fwgraphql.RequirePermission("users:read"))).
+        // read: the singular by-id twin — same entity name, same node type
+        Register(fwgraphql.QueryByID[requests.FindUserByIDRequest,
+                                 requests.FindUserByIDResponse](
+            "user", "User",
+            &amp;handlers.FindByIDQueryHandler[*queries.FindUserByIDQuery]{
                 Reader: d.ViewReader, View: f.view.Name()},
             fwgraphql.RequirePermission("users:read"))).
         // write: one Mutation field per command handler
@@ -151,23 +158,42 @@ func Wire(d bootstrap.Deps) bootstrap.Wiring {
     <thead><tr><th>Constructor</th><th>Maps</th><th>GraphQL field</th></tr></thead>
     <tbody>
         <tr><td><code>QueryWithParams[TReq, R]</code></td><td>read handler <code>pipeline.Handler[TQ, queries.Page]</code></td><td><code>users(where, first, after, last, before, orderBy, search, includeArchived): UserConnection!</code> — each argument present ONLY when the Request DTO declares its <code>query:"…"</code> key (see "The DTO cuts the schema")</td></tr>
-        <tr><td><code>MutationWithBody[TReq]</code></td><td>insert-style command (body, no id)</td><td><code>createUser(input: InsertUserInput!): InsertUserResponse!</code></td></tr>
-        <tr><td><code>MutationWithBodyID[TReq]</code></td><td>update/patch (body + id)</td><td><code>updateUser(id: ID!, input: UpdateUserInput!): UpdateUserResponse!</code></td></tr>
-        <tr><td><code>MutationByID</code></td><td>archive/unarchive/delete (id, no body)</td><td><code>archiveUser(id: ID!): MutationResult!</code></td></tr>
+        <tr><td><code>QueryByID[TReq, R]</code></td><td>by-id read handler <code>pipeline.Handler[TQ, map[string]any]</code></td><td><code>user(id: ID!, includeArchived: Boolean): User</code> — the singular twin of the connection field (see "The singular by-id field"); <code>includeArchived</code> present only when the DTO declares it</td></tr>
+        <tr><td><code>MutationWithBody[TReq]</code></td><td>insert-style command (body, no id)</td><td><code>createUser(input: CreateUserInput!): CreateUserPayload!</code></td></tr>
+        <tr><td><code>MutationWithBodyID[TReq]</code></td><td>update/patch (body + id)</td><td><code>updateUser(id: ID!, input: UpdateUserInput!): UpdateUserPayload!</code></td></tr>
+        <tr><td><code>MutationByID</code></td><td>archive/unarchive/delete (id, no body)</td><td><code>archiveUser(id: ID!): ArchiveUserPayload!</code> — the payload name derives from the field like every mutation; the body is the fixed bodyless shape <code>{ success: Boolean!, id: ID }</code></td></tr>
     </tbody>
 </table>
 <p>
     <strong>You name only the type params Go cannot infer.</strong> Those are the <em>reflection-only</em>
     ones — used inside the constructor via reflection but absent from every parameter: <code>TReq</code> (the
     Request DTO) on the body forms, plus <code>R</code> (the Response DTO / connection node) on
-    <code>QueryWithParams</code>. Everything else — the command type, its pointer, the result, the response, the query
+    <code>QueryWithParams</code> and <code>QueryByID</code>. Everything else — the command type, its pointer, the result, the response, the query
     type — is inferred from the handler argument and the DTO's <code>ToCommand</code>/<code>ToQuery</code>
-    constraint, so <code>MutationByID</code> needs no type args at all. (<code>QueryWithParams</code>'s list is ordered
+    constraint, so <code>MutationByID</code> needs no type args at all. (<code>QueryWithParams</code>'s and
+    <code>QueryByID</code>'s lists are ordered
     <code>[TReq, R, TQ]</code> precisely so the inferable <code>TQ</code> trails and is elided.) These are the
     same DTOs the REST wrappers anchor; canonical (Auto) and hand-rolled handlers attach identically because
     both implement the same <code>pipeline.Handler</code> interface — the registry cannot tell them apart,
     exactly as the REST wrappers cannot.
 </p>
+<div class="box">
+    <strong>Why the read constructors take TWO names.</strong> <code>"users"</code> is the FIELD's
+    identity; <code>"User"</code> is the identity of the SHARED node type the field returns — the
+    coordination key that lets <code>users</code>, <code>user</code> and any further read field over the
+    same entity converge on ONE object type (so client fragments work across all of them). A mutation
+    derives its types from its single name because its input/payload are private to that field; a query's
+    entity name is not derivable from the field name (plural↔singular, sibling fields sharing a type) —
+    exactly as a hand-written SDL line spells both: <code>users(...): UserConnection!</code>.
+    <br/><br/>
+    <strong>A bad name cannot reach production.</strong> Field and entity names are validated against the
+    GraphQL Name grammar at the constructor (panic at the exact Register line); the schema is built
+    eagerly AT BOOT (a cross-feature duplicate field aborts the boot with an actionable error, never a
+    lazy per-request failure); and an entity name colliding with a derived/infrastructure type
+    (<code>PageInfo</code>, a sibling's <code>Connection</code>/<code>Edge</code>, an input or enum) —
+    which would otherwise silently point the node at the wrong type — panics at build with the offending
+    name. Sharing an entity name across read fields remains the supported contract.
+</div>
 
 <h3>Reflected schema</h3>
 <p>The SDL is generated once at boot from the registered DTOs and loaded into a validated schema:</p>
@@ -175,7 +201,11 @@ func Wire(d bootstrap.Deps) bootstrap.Wiring {
     <li><strong>Node object</strong> — the Response DTO becomes an object type named after the entity
         (<code>User</code>, not <code>FindUsersByParamsResponse</code>); fields are named by their
         <code>json:</code> wire name and resolved from the Go-field-keyed view document. Nested structs
-        and slices recurse into nested object types.</li>
+        and slices recurse into nested object types. <strong>One entity name, one node type</strong>:
+        when the plural (<code>QueryWithParams</code>) and singular (<code>QueryByID</code>) fields pass
+        the same entity string, both map onto the ONE node object — the first registration walks its
+        Response DTO and defines it; keep the two DTOs wire-aligned (a field only the later DTO carries
+        is not selectable).</li>
     <li><strong>Relay connection</strong> — each read field returns
         <code>{ edges { node, cursor }, pageInfo { hasNextPage, hasPreviousPage, startCursor, endCursor }, totalCount }</code>.
         <code>edges[].cursor</code> is the per-row keyset cursor (see "Pagination" below).</li>
@@ -187,8 +217,18 @@ func Wire(d bootstrap.Deps) bootstrap.Wiring {
         <code>gte</code>, <code>lte</code>, <code>gt</code>, <code>lt</code>, <code>startswith</code>,
         <code>contains</code>, <code>ieq</code>, <code>ine</code>, <code>iin</code>, <code>inin</code>,
         <code>istartswith</code>, <code>icontains</code>) — list operators take a list value.</li>
-    <li><strong>Mutation input</strong> — the write Request DTO becomes an <code>...Input</code> object
-        (json tags drive the field names; nested structs become nested input objects). A field is
+    <li><strong>Mutation input &amp; payload — named from the FIELD, never from the Go DTO.</strong>
+        The root input/payload type names derive from the registered mutation name — <code>createUser</code>
+        yields <code>CreateUserInput</code> and <code>CreateUserPayload</code> — the Relay/GitHub mutation
+        naming convention, so REST/Go vocabulary (<code>Insert…</code>, <code>…Request</code>,
+        <code>…Response</code>) never leaks into the SDL. Only the NESTED input objects reached while
+        walking the Request keep a Go-derived name (<code>InsertUserAddressRequest</code> →
+        <code>InsertUserAddressInput</code>) — they have no field name to derive from. The bodyless
+        mutations follow the same rule: each owns its field-derived payload
+        (<code>archiveUser</code> → <code>ArchiveUserPayload</code>), all sharing the fixed
+        <code>{ success: Boolean!, id: ID }</code> shape — there is no generic shared result type.
+        The write Request
+        DTO's json tags drive the input's field names; nested structs become nested input objects. A field is
         <code>NonNull</code> when the handler embeds <code>pipeline.FullBody</code> (strict, every field
         required) or, leniently, when it is non-pointer and lacks <code>,omitempty</code> — the same
         required rule the REST/OpenAPI side applies. Missing-required-field is enforced by gqlparser
@@ -207,8 +247,53 @@ func Wire(d bootstrap.Deps) bootstrap.Wiring {
         minimal (or empty) Request DTO, and register it with the same
         <code>PartialUpdateCommandHandler</code> via <code>MutationByID</code>/<code>MutationWithBodyID</code> —
         no custom <code>pipeline.Handler</code> required, and the intent is explicit in the schema.</li>
+    <li><strong>Order vocabulary — a typed enum, reflected like everything else.</strong> When the
+        Request DTO declares <code>query:"orderBy"</code>, the field takes
+        <code>orderBy: [&lt;Entity&gt;Order!]</code> where <code>&lt;Entity&gt;Order</code> is
+        <code>{ field: &lt;Entity&gt;OrderField!, direction: OrderDirection = ASC }</code>. The
+        <code>&lt;Entity&gt;OrderField</code> enum carries one SCREAMING_SNAKE value per sortable wire
+        path of the Response DTO (<code>userName</code> → <code>USER_NAME</code>, nested
+        <code>addresses.zipCode</code> → <code>ADDRESSES_ZIP_CODE</code>) — the SAME allowlist the REST
+        <code>?orderBy=</code> tokens are validated against, so the two surfaces cannot drift; the shared
+        <code>OrderDirection { ASC DESC }</code> is emitted once. An undeclared field is not a runtime
+        400 here — it is not IN the enum, so introspection never advertises it and gqlparser rejects it
+        before any resolver runs. The fold lands on the same sort terms as the REST tokens, so keyset
+        cursors stay valid and interchangeable across surfaces. No Go type is involved: like the
+        <code>where</code> input, the enum exists only in the SDL, reflected from the DTOs already
+        attached. Two wire names colliding on one enum value (e.g. <code>userName</code> and
+        <code>user_name</code>) is a Response modeling error and panics at boot. A response with no typed
+        paths (RawDoc-style) omits the argument entirely.</li>
     <li><strong><code>scalar DateTime</code></strong> is declared when any <code>time.Time</code> field is
         reached; <code>uuid.UUID</code> / <code>domain.ID</code> map to <code>ID</code>.</li>
+</ul>
+
+<h3>The singular by-id field</h3>
+<p>
+    Every large public GraphQL schema pairs the plural connection with a <strong>singular by-id
+    field</strong> — GitHub's <code>repository(…)</code>, Shopify's <code>product(id:)</code>.
+    <code>QueryByID</code> is that twin: it registers the SAME <code>FindByIDQueryHandler</code> (and the
+    same Request/Response DTOs) the REST <code>GET /users/:id</code> route mounts, as
+    <code>user(id: ID!, includeArchived: Boolean): User</code>. The field returns the node
+    <strong>directly</strong> — no connection envelope — and the selection set trims it exactly like a
+    connection node's.
+</p>
+<ul>
+    <li><strong>Nullable on purpose.</strong> A missing document (or one an overlay filter hides)
+        resolves the field to <code>null</code> with the canonical
+        <code>RecordNotFoundNotification</code> (<code>semantic: "NotFound"</code>) in
+        <code>errors[].extensions</code> — the GraphQL translation of the REST 404, and the same
+        null-plus-typed-error shape GitHub's API returns for a missing object.</li>
+    <li><strong><code>includeArchived</code> obeys the DTO</strong> like every reserved control: the
+        argument is emitted only when the by-id Request DTO declares
+        <code>query:"includeArchived"</code>; otherwise introspection never advertises it and gqlparser
+        rejects it as an unknown argument — the twin of the REST by-id rule, where
+        <code>?includeArchived</code> is the only recognized query key.</li>
+    <li><strong>No pagination, no <code>where</code>.</strong> The by-id read ignores
+        criteria pagination/projection by design (<code>ReadByID</code> contract); the singular field
+        therefore carries only <code>id</code> + the optional archived gate.</li>
+    <li><strong>Same node type as the connection</strong> — pass the same entity string to
+        <code>QueryWithParams</code> and <code>QueryByID</code> (see "Reflected schema"), so client
+        fragments on <code>User</code> work on both fields.</li>
 </ul>
 
 <h3>The reflection core is shared with REST/OpenAPI</h3>
@@ -236,7 +321,8 @@ func Wire(d bootstrap.Deps) bootstrap.Wiring {
     The connection follows the <strong>Relay specification</strong>: <code>first</code>/<code>after</code>
     page <strong>forward</strong> and <code>last</code>/<code>before</code> page <strong>backward</strong>;
     <code>first</code>/<code>last</code> are the page size, <code>after</code>/<code>before</code> the opaque
-    keyset cursor, <code>orderBy: ["-name"]</code> the sort terms, and <code>totalCount</code> the count.
+    keyset cursor, <code>orderBy: [{field: NAME, direction: DESC}]</code> the typed sort terms (see
+    "Reflected schema"), and <code>totalCount</code> the count.
     <code>last: N</code> returns the <strong>last N</strong> rows in canonical order (walking back from the
     end of the set), with <code>pageInfo.hasNextPage: false</code> and <code>hasPreviousPage</code>
     reflecting whether earlier rows remain. <strong>Strict Relay needs a cursor per edge</strong>, which
@@ -316,7 +402,7 @@ func Wire(d bootstrap.Deps) bootstrap.Wiring {
     Layer 1 (coarse <code>resource:action</code> permission) is route-shaped in REST
     (<code>fwopenapi.RequirePermission</code>); on a single GraphQL endpoint it moves <strong>into the
     resolver, per field</strong>, declared with <code>fwgraphql.RequirePermission("resource:action")</code> —
-    a <code>FieldOption</code> on <code>QueryWithParams</code> / <code>MutationWithBody</code> / <code>MutationWithBodyID</code> /
+    a <code>FieldOption</code> on <code>QueryWithParams</code> / <code>QueryByID</code> / <code>MutationWithBody</code> / <code>MutationWithBodyID</code> /
     <code>MutationByID</code>, the GraphQL twin of <code>fwopenapi.RequirePermission</code> with the same
     <code>resource:action</code> validation (wildcards are the IdP's to grant, never the caller's to declare):
 </p>

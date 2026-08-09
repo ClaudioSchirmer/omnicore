@@ -11,6 +11,99 @@ with `1.0.0`.
 
 ## [Unreleased]
 
+## [0.47.0] - 2026-08-08
+
+### Added
+
+- **`web/graphql.QueryByID` — the singular by-id Query field.** New constructor
+  registering a by-id read handler as `user(id: ID!, includeArchived: Boolean):
+  User` — the singular twin of the `QueryWithParams` connection field and the
+  GraphQL twin of the REST `QueryByID` wrapper, over the same
+  `FindByIDQueryHandler` and Request/Response DTOs. Signature mirrors
+  `QueryWithParams`: `QueryByID[TReq, R](name, entity, handler, opts...)` with
+  the inferable `TQ` trailing. The node is returned directly (no connection
+  envelope) and the selection set trims it; the return type is nullable — a
+  missing document resolves to `null` with `RecordNotFoundNotification`
+  (semantic NotFound) in `errors[].extensions`, the GraphQL translation of the
+  REST 404 (GitHub-style). `includeArchived` is emitted and honored only when
+  the Request DTO declares `query:"includeArchived"` (the canonical DTO-governed
+  cut); pagination/projection criteria are not part of the field (`ReadByID`
+  ignores them by design). `RequirePermission` applies like on every field.
+  When the singular and plural fields pass the same entity name they share the
+  one node object type — the first registration defines it (wire-aligned DTOs
+  required; a later type mapping onto an existing name no longer walks its DTO,
+  so no orphan nested types leak into the SDL).
+
+- **GraphQL name gates — a bad name cannot reach production.** Field and
+  entity names are validated against the GraphQL Name grammar at the
+  constructors (`QueryWithParams`/`QueryByID`/`Mutation*` panic at the exact
+  Register line with the offending string — previously a cryptic gqlparser
+  parse error at schema build). An entity name colliding with a
+  derived/infrastructure schema type (`PageInfo`, a sibling entity's
+  `Connection`/`Edge`, an input or enum) — which previously built a VALID
+  schema silently pointing the node at the wrong type — now panics at build,
+  i.e. at boot (the schema builds eagerly at boot; a cross-feature duplicate
+  field already aborted the boot). Sharing one entity name across read fields
+  (the shared-node-type contract) is unchanged.
+
+### Changed
+
+- **breaking** — **GraphQL mutation input/payload type names derive from the
+  registered field name, not the Go DTO names.** `MutationWithBody` /
+  `MutationWithBodyID` now emit `<FieldName>Input` / `<FieldName>Payload`
+  (`createUser` → `CreateUserInput`/`CreateUserPayload` — the Relay/GitHub
+  mutation naming convention) instead of leaking the Go type names
+  (`InsertUserInput` derived from `InsertUserRequest`, and the raw
+  `InsertUserResponse` object). Breaking at the SDL/introspection level only:
+  clients that name these types (query variable declarations, fragments on
+  payload types, codegen output) must regenerate; field names, argument shapes,
+  required-ness and resolver behavior are unchanged. Nested input objects keep
+  their Go-derived `<Name>Input` fallback (they have no field name to derive
+  from).
+
+- **breaking** — **bodyless mutations own field-derived payload types; the
+  shared `MutationResult` is removed.** `MutationByID` now emits
+  `<FieldName>Payload` (`archiveUser` → `ArchiveUserPayload`,
+  `deleteUser` → `DeleteUserPayload`), each carrying the same fixed bodyless
+  shape `{ success: Boolean!, id: ID }` — the per-mutation-payload convention
+  the body forms follow; a shared generic result type read as RPC, not GraphQL.
+  Breaking at the SDL/introspection level only: `MutationResult` no longer
+  exists in the schema, so clients naming it (fragments, codegen) must
+  regenerate; selections of `{ success id }` are unchanged, as is the resolver
+  value.
+
+- **breaking** — **GraphQL `orderBy` is a typed input over a reflected
+  sortable-field enum.** `QueryWithParams` fields now take
+  `orderBy: [<Entity>Order!]` — `{ field: <Entity>OrderField!, direction:
+  OrderDirection = ASC }` — instead of `[String!]` tokens. The
+  `<Entity>OrderField` enum carries one SCREAMING_SNAKE value per sortable
+  wire path of the Response DTO (`userName` → `USER_NAME`,
+  `addresses.zipCode` → `ADDRESSES_ZIP_CODE`) — the same allowlist REST's
+  `?orderBy=` validates, reflected from the DTOs already attached (no new Go
+  surface, like the `where` input); `OrderDirection { ASC DESC }` is shared.
+  An undeclared field moves from a runtime rejection into the schema itself:
+  gqlparser cuts it before any resolver runs. The fold produces the same sort
+  terms as the REST tokens, so keyset cursors stay valid and interchangeable
+  across surfaces; REST is unchanged. Clients rewrite `orderBy: ["-name"]` as
+  `orderBy: [{field: NAME, direction: DESC}]` (the old string form is now a
+  validation error). Wire-name collisions on one enum value panic at boot; a
+  response with no typed paths omits the argument.
+
+- **GraphQL `totalCount` is now `Int!`.** The connection's `totalCount` was
+  declared nullable while every page envelope always populates it (the total
+  is intrinsic to every list read on every surface) — the schema now tells the
+  truth, matching GitHub's connections. Safe for clients (non-null satisfies
+  nullable expectations); generated types pick up the tightened nullability on
+  regeneration.
+
+### Fixed
+
+- **GraphQL introspection surfaces input-value defaults.**
+  `__InputValue.defaultValue` was hardcoded null; it now renders the declared
+  SDL default as its GraphQL literal (`ASC` on `<Entity>Order.direction`), the
+  spec shape GraphiQL and codegen read. Exposed by the typed orderBy — the
+  first generated default.
+
 ## [0.46.2] - 2026-08-07
 
 Documentation-only release — no code changes. Four sections carried claims the

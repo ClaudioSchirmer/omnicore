@@ -122,3 +122,29 @@ func TestIntrospection_DisabledFallsThroughToError(t *testing.T) {
 		t.Fatal("with introspection disabled, __schema must not resolve")
 	}
 }
+
+// TestIntrospection_InputFieldDefaultValueSurfaces — __InputValue.defaultValue
+// renders the declared SDL default as its GraphQL literal (spec shape GraphiQL
+// and codegen read); UserOrder.direction carries `ASC`, the field itself none.
+func TestIntrospection_InputFieldDefaultValueSurfaces(t *testing.T) {
+	h := &fakeReadHandler{page: queries.Page{}}
+	reg, ctx := newExecRegistry(h)
+	reg.EnableIntrospection(true)
+
+	resp := reg.Execute(ctx, `{ __type(name: "UserOrder") { inputFields { name defaultValue } } }`, nil, "")
+	if len(resp.Errors) != 0 {
+		t.Fatalf("errors: %+v", resp.Errors)
+	}
+	typ := resp.Data["__type"].(map[string]any)
+	byName := map[string]any{}
+	for _, f := range typ["inputFields"].([]any) {
+		m := f.(map[string]any)
+		byName[m["name"].(string)] = m["defaultValue"]
+	}
+	if got := byName["direction"]; got != "ASC" {
+		t.Errorf("direction.defaultValue = %v, want ASC", got)
+	}
+	if got := byName["field"]; got != nil {
+		t.Errorf("field.defaultValue = %v, want null (no default declared)", got)
+	}
+}

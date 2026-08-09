@@ -18,9 +18,10 @@ type criteriaPlan struct {
 	reqSchema  *queryschema.RequestSchema
 	projSchema *queryschema.ProjectionSchema
 	whereLeaf  map[string]string // flattened where field name → dotted wire path
+	orderField map[string]string // <Entity>OrderField enum value → wire path
 }
 
-func newCriteriaPlan(reqType, respType reflect.Type) *criteriaPlan {
+func newCriteriaPlan(entity string, reqType, respType reflect.Type) *criteriaPlan {
 	p := &criteriaPlan{
 		reqSchema:  queryschema.ExtractRequestSchema(reqType),
 		projSchema: queryschema.ExtractProjectionSchema(respType),
@@ -29,6 +30,7 @@ func newCriteriaPlan(reqType, respType reflect.Type) *criteriaPlan {
 	for _, leaf := range filterLeaves(reqType) {
 		p.whereLeaf[wireLeafName(leaf.WirePath)] = leaf.WirePath
 	}
+	_, p.orderField = orderFieldMap(entity, p.projSchema)
 	return p
 }
 
@@ -105,15 +107,32 @@ func (p *criteriaPlan) buildCriteria(args map[string]any) (queries.ReadCriteria,
 		controls.IncludeArchived = true
 		crit.IncludeArchived = b
 	}
+	// orderBy is a list of `<Entity>Order` inputs — `{ field: <enum>, direction:
+	// ASC|DESC }`. gqlparser already validated enum membership against the SDL,
+	// so the lookup miss below is defense in depth. The fold lands on the SAME
+	// OrderByField terms the REST `?orderBy=-name` tokens produce (wire path →
+	// Go doc path via the projection schema), so keyset cursors stay valid and
+	// interchangeable across surfaces. An absent direction is ASC.
 	if raw, ok := args["orderBy"]; ok {
-		tokens := toStringSlice(raw)
-		if len(tokens) > 0 {
+		if list, lok := raw.([]any); lok && len(list) > 0 {
 			controls.OrderBy = true
-			orderBy, bad, sok := queryschema.ParseOrderByWithSchema(strings.Join(tokens, ","), p.projSchema)
-			if !sok {
-				return crit, controls, errf("orderBy: %q is not a sortable field", bad)
+			terms := make([]queries.OrderByField, 0, len(list))
+			for _, item := range list {
+				term, tok := item.(map[string]any)
+				if !tok {
+					return crit, controls, errf("orderBy: malformed order term %v", item)
+				}
+				val := asString(term["field"])
+				wire, known := p.orderField[val]
+				if !known {
+					return crit, controls, errf("orderBy: %q is not a sortable field", val)
+				}
+				terms = append(terms, queries.OrderByField{
+					Field: p.projSchema.Paths[wire],
+					Desc:  asString(term["direction"]) == "DESC",
+				})
 			}
-			crit.OrderBy = orderBy
+			crit.OrderBy = terms
 		}
 	}
 	return crit, controls, nil
@@ -274,20 +293,3 @@ func toInt64(v any) (int64, bool) {
 	}
 }
 
-// toStringSlice coerces a GraphQL list argument into a []string.
-func toStringSlice(v any) []string {
-	switch list := v.(type) {
-	case []any:
-		out := make([]string, 0, len(list))
-		for _, e := range list {
-			if s, ok := e.(string); ok {
-				out = append(out, s)
-			}
-		}
-		return out
-	case []string:
-		return list
-	default:
-		return nil
-	}
-}

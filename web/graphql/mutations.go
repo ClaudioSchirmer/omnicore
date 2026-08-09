@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"reflect"
 	"strings"
+	"unicode"
 
 	"github.com/ClaudioSchirmer/omnicore/application/configuration"
 	"github.com/ClaudioSchirmer/omnicore/application/pipeline"
@@ -19,11 +20,18 @@ type CommandRequest[TCmd any] interface {
 }
 
 // MutationWithBody registers an insert-style command handler (body, no path id)
-// as a root Mutation field `<name>(input: <Req>Input!): <Resp>`. TReq is the write
-// Request DTO, TCmdPtr its Command pointer, TResult the handler result, TResp
-// the Response DTO (the mutation output). The input object is reflected from
-// TReq (json tags; required when the handler embeds pipeline.FullBody, else
-// when the field is non-pointer without ,omitempty — mirroring the REST rule).
+// as a root Mutation field `<name>(input: <Name>Input!): <Name>Payload!` —
+// `createUser` yields `CreateUserInput`/`CreateUserPayload`, the Relay/GitHub
+// mutation naming convention: the schema type names derive from the REGISTERED
+// FIELD NAME, never from the Go DTO names (which carry REST vocabulary like
+// Insert/Request/Response that must not leak into the SDL). Nested input
+// objects reached while walking the Request still derive from their Go type
+// names via inputName. TReq is the write Request DTO, TCmdPtr its Command
+// pointer, TResult the handler result, TResp the Response DTO (the mutation
+// output — its fields become the payload's). The input object is reflected
+// from TReq (json tags; required when the handler embeds pipeline.FullBody,
+// else when the field is non-pointer without ,omitempty — mirroring the REST
+// rule).
 func MutationWithBody[
 	TReq CommandRequest[TCmdPtr],
 	TCmd any,
@@ -34,6 +42,7 @@ func MutationWithBody[
 	TResult any,
 	TResp any,
 ](name string, project func(TResult) TResp, h pipeline.Handler[TCmdPtr, TResult], opts ...FieldOption) Field {
+	mustValidName("MutationWithBody", "name", name)
 	reqType := reflect.TypeOf((*TReq)(nil)).Elem()
 	respType := reflect.TypeOf((*TResp)(nil)).Elem()
 	strict := isFullBody(h)
@@ -41,8 +50,8 @@ func MutationWithBody[
 		name:       name,
 		isMutation: true,
 		sdlLine: func(b *sdlBuilder) string {
-			in := b.inputObject(inputName(reqType), reqType, strict)
-			out := b.objectType(respType)
+			in := b.inputObject(rootTypeName(name, "Input"), reqType, strict)
+			out := b.objectTypeAs(rootTypeName(name, "Payload"), respType)
 			return "  " + name + "(input: " + in + "!): " + out + "!"
 		},
 		makeResolve: func(pipe *pipeline.Pipeline) resolver {
@@ -59,8 +68,9 @@ func MutationWithBody[
 }
 
 // MutationWithBodyID registers an update/patch-style command handler (body + path
-// id) as `<name>(id: ID!, input: <Req>Input!): <Resp>`. The id arg is injected
-// via SetPathID after ToCommand, mirroring CommandWithBodyID.
+// id) as `<name>(id: ID!, input: <Name>Input!): <Name>Payload!` — type names
+// derived from the registered field name exactly like MutationWithBody. The id
+// arg is injected via SetPathID after ToCommand, mirroring CommandWithBodyID.
 func MutationWithBodyID[
 	TReq CommandRequest[TCmdPtr],
 	TCmd any,
@@ -71,6 +81,7 @@ func MutationWithBodyID[
 	TResult any,
 	TResp any,
 ](name string, project func(TResult) TResp, h pipeline.Handler[TCmdPtr, TResult], opts ...FieldOption) Field {
+	mustValidName("MutationWithBodyID", "name", name)
 	reqType := reflect.TypeOf((*TReq)(nil)).Elem()
 	respType := reflect.TypeOf((*TResp)(nil)).Elem()
 	strict := isFullBody(h)
@@ -78,8 +89,8 @@ func MutationWithBodyID[
 		name:       name,
 		isMutation: true,
 		sdlLine: func(b *sdlBuilder) string {
-			in := b.inputObject(inputName(reqType), reqType, strict)
-			out := b.objectType(respType)
+			in := b.inputObject(rootTypeName(name, "Input"), reqType, strict)
+			out := b.objectTypeAs(rootTypeName(name, "Payload"), respType)
 			return "  " + name + "(id: ID!, input: " + in + "!): " + out + "!"
 		},
 		makeResolve: func(pipe *pipeline.Pipeline) resolver {
@@ -98,9 +109,13 @@ func MutationWithBodyID[
 }
 
 // MutationByID registers a bodyless command handler (archive / unarchive /
-// delete) as `<name>(id: ID!): MutationResult!`. There is no input; the
-// command is allocated, given the path id, and dispatched — mirroring
-// CommandByID. On success the field returns { success: true, id }.
+// delete) as `<name>(id: ID!): <Name>Payload!` — the payload type name derives
+// from the registered field name exactly like the body forms (`archiveUser` →
+// `ArchiveUserPayload`), the Relay/GitHub per-mutation-payload convention; the
+// payload body is the fixed bodyless shape `{ success: Boolean!, id: ID }`.
+// There is no input; the command is allocated, given the path id, and
+// dispatched — mirroring CommandByID. On success the field returns
+// { success: true, id }.
 func MutationByID[
 	TCmd any,
 	TCmdPtr interface {
@@ -109,12 +124,13 @@ func MutationByID[
 	},
 	TResult any,
 ](name string, h pipeline.Handler[TCmdPtr, TResult], opts ...FieldOption) Field {
+	mustValidName("MutationByID", "name", name)
 	return applyOptions(Field{
 		name:       name,
 		isMutation: true,
 		sdlLine: func(b *sdlBuilder) string {
-			b.mutationResultType()
-			return "  " + name + "(id: ID!): MutationResult!"
+			out := b.bodylessPayload(rootTypeName(name, "Payload"))
+			return "  " + name + "(id: ID!): " + out + "!"
 		},
 		makeResolve: func(pipe *pipeline.Pipeline) resolver {
 			return func(ctx *configuration.AppContext, args map[string]any, _ ast.SelectionSet, _ ast.FragmentDefinitionList) (any, []GraphQLError) {
@@ -198,15 +214,32 @@ func isFullBody(h any) bool {
 	return ok
 }
 
-// inputName derives the GraphQL input type name from a Request DTO type:
-// `InsertUserRequest` → `InsertUserInput`, otherwise `<Name>Input`.
+// rootTypeName derives a mutation's schema type name from its registered
+// field name: `createUser` + "Input" → `CreateUserInput`, + "Payload" →
+// `CreateUserPayload`. The field name — not the Go DTO name — is the naming
+// authority for the root input/payload pair, so REST/Go vocabulary (Insert,
+// Request, Response) never leaks into the SDL.
+func rootTypeName(field, suffix string) string {
+	r := []rune(field)
+	if len(r) == 0 {
+		return suffix
+	}
+	r[0] = unicode.ToUpper(r[0])
+	return string(r) + suffix
+}
+
+// inputName derives a NESTED input object's name from its Go type:
+// `InsertUserAddressRequest` → `InsertUserAddressInput`, otherwise
+// `<Name>Input`. Root input objects are named from the mutation field via
+// rootTypeName; only the inner structs reached while walking a Request use
+// this Go-derived fallback (they have no field name to derive from).
 func inputName(t reflect.Type) string {
 	n := graphqlName(t)
 	n = strings.TrimSuffix(n, "Request")
 	return n + "Input"
 }
 
-// ── SDL: input objects + MutationResult ─────────────────────────────────────
+// ── SDL: input objects + the bodyless payload ───────────────────────────────
 
 // inputObject registers (once) an SDL input object for a write Request struct
 // and returns its name. Fields are named by their wire (json) name; nested
@@ -258,9 +291,15 @@ func (b *sdlBuilder) inputTypeRef(t reflect.Type, strict bool) string {
 	}
 }
 
-// mutationResultType registers the shared bodyless-mutation payload once.
-func (b *sdlBuilder) mutationResultType() {
-	b.put("MutationResult", "type MutationResult {\n  success: Boolean!\n  id: ID\n}")
+// bodylessPayload registers (once) a bodyless mutation's payload type under
+// its field-derived name and returns it. Every bodyless payload carries the
+// same fixed shape — `{ success: Boolean!, id: ID }` — but each mutation owns
+// its OWN named type (`ArchiveUserPayload`, `DeleteUserPayload`, …), the same
+// per-mutation-payload convention the body forms follow; a shared generic
+// result type would read as RPC, not GraphQL.
+func (b *sdlBuilder) bodylessPayload(name string) string {
+	b.put(name, "type "+name+" {\n  success: Boolean!\n  id: ID\n}")
+	return name
 }
 
 // requiredMark returns "!" when an input field is required: strict (FullBody)
