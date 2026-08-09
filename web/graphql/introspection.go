@@ -99,7 +99,7 @@ func fullType(def *ast.Definition, schema *ast.Schema) map[string]any {
 	case ast.InputObject:
 		inputs := make([]any, 0, len(def.Fields))
 		for _, f := range def.Fields {
-			inputs = append(inputs, inputValue(f.Name, f.Type, schema))
+			inputs = append(inputs, inputValue(f.Name, f.Type, f.DefaultValue, schema))
 		}
 		t["inputFields"] = inputs
 	case ast.Enum:
@@ -118,7 +118,7 @@ func fullType(def *ast.Definition, schema *ast.Schema) map[string]any {
 func fieldEntry(f *ast.FieldDefinition, schema *ast.Schema) map[string]any {
 	args := make([]any, 0, len(f.Arguments))
 	for _, a := range f.Arguments {
-		args = append(args, inputValue(a.Name, a.Type, schema))
+		args = append(args, inputValue(a.Name, a.Type, a.DefaultValue, schema))
 	}
 	return map[string]any{
 		"name":              f.Name,
@@ -130,12 +130,20 @@ func fieldEntry(f *ast.FieldDefinition, schema *ast.Schema) map[string]any {
 	}
 }
 
-func inputValue(name string, t *ast.Type, schema *ast.Schema) map[string]any {
+// inputValue renders one __InputValue. defaultValue is the spec's
+// GraphQL-literal string rendering of the declared default (e.g. `ASC` for an
+// enum value, `"x"` for a string), or null when the input declares none — the
+// shape GraphiQL and codegen read to surface defaults.
+func inputValue(name string, t *ast.Type, def *ast.Value, schema *ast.Schema) map[string]any {
+	var defaultValue any
+	if def != nil {
+		defaultValue = def.String()
+	}
 	return map[string]any{
 		"name":         name,
 		"description":  nil,
 		"type":         typeRef(t, schema),
-		"defaultValue": nil,
+		"defaultValue": defaultValue,
 	}
 }
 

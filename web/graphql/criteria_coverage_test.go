@@ -30,19 +30,6 @@ func TestToInt64_Coercions(t *testing.T) {
 	}
 }
 
-func TestToStringSlice_Coercions(t *testing.T) {
-	// []any keeps only string elements (element type mismatch dropped).
-	if got := toStringSlice([]any{"a", 1, "b", true}); !reflect.DeepEqual(got, []string{"a", "b"}) {
-		t.Errorf("[]any = %v, want [a b]", got)
-	}
-	if got := toStringSlice([]string{"x"}); !reflect.DeepEqual(got, []string{"x"}) {
-		t.Errorf("[]string passthrough = %v", got)
-	}
-	if got := toStringSlice("x"); got != nil {
-		t.Errorf("non-list = %v, want nil", got)
-	}
-}
-
 // ── buildCriteria defensive branches ─────────────────────────────────────────
 
 type covCritRequest struct {
@@ -55,7 +42,7 @@ type covCritQueryResponse struct {
 }
 
 func covPlan() *criteriaPlan {
-	return newCriteriaPlan(reflect.TypeOf(covCritRequest{}), reflect.TypeOf(covCritQueryResponse{}))
+	return newCriteriaPlan("CovCrit", reflect.TypeOf(covCritRequest{}), reflect.TypeOf(covCritQueryResponse{}))
 }
 
 func TestBuildCriteria_UnknownWhereFieldRejected(t *testing.T) {

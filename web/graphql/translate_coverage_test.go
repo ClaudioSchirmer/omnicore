@@ -1,6 +1,7 @@
 package graphql
 
 import (
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -88,22 +89,31 @@ func TestExecute_TranslatesAnySlice(t *testing.T) {
 	}
 }
 
-// TestExecute_UnsortableOrderByErrors — an orderBy token that is not a sortable
-// field passes gqlparser (orderBy is [String!]) but fails ParseSortWithSchema,
-// so buildCriteria returns a single executor-level error via errf.
+// TestExecute_UnsortableOrderByErrors — with the typed orderBy the cut moved
+// INTO the schema: an unknown enum value ({field: BOGUS}) and the pre-enum
+// string form (["-name"]) are both rejected by gqlparser validation before any
+// resolver runs. The resolver's own lookup miss stays as defense in depth,
+// exercised directly through buildCriteria.
 func TestExecute_UnsortableOrderByErrors(t *testing.T) {
 	h := &fakeReadHandler{page: queries.Page{}}
 	reg, ctx := newExecRegistry(h)
 
-	resp := reg.Execute(ctx, `{ users(orderBy: ["bogus"]) { edges { node { id } } } }`, nil, "")
+	resp := reg.Execute(ctx, `{ users(orderBy: [{field: BOGUS}]) { edges { node { id } } } }`, nil, "")
 	if len(resp.Errors) == 0 {
-		t.Fatal("an unsortable orderBy field must surface an error")
+		t.Fatal("an undeclared orderBy enum value must be rejected by validation")
 	}
-	if !strings.Contains(resp.Errors[0].Message, "orderBy") {
-		t.Errorf("error message = %q, want it to mention orderBy", resp.Errors[0].Message)
+	resp = reg.Execute(ctx, `{ users(orderBy: ["-name"]) { edges { node { id } } } }`, nil, "")
+	if len(resp.Errors) == 0 {
+		t.Fatal("the pre-enum string form must be rejected by validation")
 	}
-	if h.captured.OnlyTotal {
-		t.Error("orderBy with an edges selection must not be only-total")
+
+	// Defense in depth: a value that somehow bypassed validation still errors.
+	plan := newCriteriaPlan("User", reflect.TypeOf(execRequest{}), reflect.TypeOf(execResponse{}))
+	_, _, gerr := plan.buildCriteria(map[string]any{
+		"orderBy": []any{map[string]any{"field": "BOGUS"}},
+	})
+	if gerr == nil || !strings.Contains(gerr.Message, "orderBy") {
+		t.Fatalf("buildCriteria must reject an unknown order field, got %+v", gerr)
 	}
 }
 

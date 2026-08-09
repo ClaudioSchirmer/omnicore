@@ -127,7 +127,7 @@ func TestGate_PageInfoProbeNarrowsProjection(t *testing.T) {
 	}
 
 	// Ordered probe → the ordering fields.
-	resp = reg.Execute(ctx, `query { users(orderBy: ["-name"]) { pageInfo { hasNextPage } } }`, nil, "")
+	resp = reg.Execute(ctx, `query { users(orderBy: [{field: NAME, direction: DESC}]) { pageInfo { hasNextPage } } }`, nil, "")
 	if len(resp.Errors) != 0 {
 		t.Fatalf("ordered probe must pass: %+v", resp.Errors)
 	}

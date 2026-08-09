@@ -93,7 +93,7 @@ func TestCountOnly_CountsFilteredSubset(t *testing.T) {
 func TestCountOnly_PaginationArgConflictRejected(t *testing.T) {
 	for _, q := range []string{
 		`{ users(first: 10) { totalCount } }`,
-		`{ users(orderBy: ["-name"]) { totalCount } }`,
+		`{ users(orderBy: [{field: NAME, direction: DESC}]) { totalCount } }`,
 		`{ users(after: "abc") { totalCount } }`,
 	} {
 		h := &fakeReadHandler{page: queries.Page{}}

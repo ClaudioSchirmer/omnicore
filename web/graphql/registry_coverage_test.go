@@ -6,6 +6,7 @@ import (
 
 	"github.com/ClaudioSchirmer/omnicore/application/configuration"
 	"github.com/ClaudioSchirmer/omnicore/application/pipeline"
+	"github.com/ClaudioSchirmer/omnicore/application/results"
 	"github.com/ClaudioSchirmer/omnicore/application/translation"
 	"github.com/vektah/gqlparser/v2/ast"
 )
@@ -92,5 +93,58 @@ func TestSDL_BuildErrorSurfacesAndIsCached(t *testing.T) {
 	resp := reg.Execute(ctx, `{ broken }`, nil, "")
 	if len(resp.Errors) == 0 || !strings.Contains(resp.Errors[0].Message, "schema build failed") {
 		t.Errorf("Execute on a broken schema must report the build failure, got %+v", resp.Errors)
+	}
+}
+
+// ── name gates: grammar at Register time, collisions at build time ──────────
+
+func TestMustValidName_ConstructorGates(t *testing.T) {
+	h := &fakeReadHandler{}
+	covMustPanic(t, "field name with space", func() {
+		QueryWithParams[execRequest, execResponse]("us ers", "User", h)
+	})
+	covMustPanic(t, "empty field name", func() {
+		QueryWithParams[execRequest, execResponse]("", "User", h)
+	})
+	covMustPanic(t, "empty entity", func() {
+		QueryWithParams[execRequest, execResponse]("users", "", h)
+	})
+	covMustPanic(t, "leading digit", func() {
+		QueryWithParams[execRequest, execResponse]("1users", "User", h)
+	})
+	covMustPanic(t, "by-id bad entity", func() {
+		QueryByID[bareRequest, byIDResponse]("user", "Us-er", &fakeByIDHandler{})
+	})
+	covMustPanic(t, "mutation bad name", func() {
+		MutationByID[delCmd, *delCmd, results.None]("delete thing", &fakeDelHandler{})
+	})
+}
+
+// TestBuild_EntityInfraCollisionPanics — an entity name landing on a derived/
+// infrastructure type (or the reverse) is a silent-garbage schema without the
+// guard; with it, the boot-time build panics with the offending name.
+func TestBuild_EntityInfraCollisionPanics(t *testing.T) {
+	covMustPanic(t, "entity claims PageInfo", func() {
+		reg := New(pipeline.New(translation.Default())).Register(
+			QueryWithParams[execRequest, execResponse]("users", "PageInfo", &fakeReadHandler{}),
+		)
+		_, _ = reg.SDL()
+	})
+	covMustPanic(t, "entity claims a sibling's Connection", func() {
+		reg := New(pipeline.New(translation.Default())).Register(
+			QueryWithParams[execRequest, execResponse]("users", "User", &fakeReadHandler{}),
+		).Register(
+			QueryByID[bareRequest, byIDResponse]("gadget", "UserConnection", &fakeByIDHandler{}),
+		)
+		_, _ = reg.SDL()
+	})
+	// The legitimate shared-entity mapping (users/user both on "User") stays.
+	reg := New(pipeline.New(translation.Default())).Register(
+		QueryWithParams[execRequest, execResponse]("users", "User", &fakeReadHandler{}),
+	).Register(
+		QueryByID[bareRequest, byIDResponse]("user", "User", &fakeByIDHandler{}),
+	)
+	if _, err := reg.SDL(); err != nil {
+		t.Fatalf("shared entity name must keep building: %v", err)
 	}
 }

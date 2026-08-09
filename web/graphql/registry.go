@@ -23,6 +23,15 @@ type HasToParamsQuery[TQ queries.QueryWithParams] interface {
 	ToQuery(criteria queries.ReadCriteria) TQ
 }
 
+// HasToIDQuery is the contract for by-id read Request DTOs — identical to
+// web.HasToIDQuery, declared here so web/graphql stays independent of web.
+// The Request carries no criteria argument: the by-id read has no pagination
+// or filters; identity-derived overlays still layer on inside
+// Query.ToCriteria(ctx).
+type HasToIDQuery[TQ queries.QueryByID] interface {
+	ToQuery() TQ
+}
+
 // resolver runs one root field: GraphQL args → a wire-shaped value tree (or
 // errors). The executor trims the tree by the field's selection set. The
 // selection set + fragments are also passed IN so a read resolver can derive a
@@ -103,11 +112,42 @@ func New(pipe *pipeline.Pipeline) *Registry {
 
 // Register attaches a field (from Query / Mutation) and invalidates any built
 // schema so the next execution rebuilds. Returns the Registry for chaining.
+// A duplicate root-field name across features is caught at boot by the eager
+// schema build in bootstrap.mountSurfaceFeatures (gqlparser rejects it with
+// "can only be defined once", wrapped in an actionable error).
 func (r *Registry) Register(f Field) *Registry {
 	r.fields = append(r.fields, f)
 	r.schema = nil
 	r.buildErr = nil
 	return r
+}
+
+// mustValidName gates a constructor's name argument against the GraphQL Name
+// grammar ([_A-Za-z][_0-9A-Za-z]*) at wiring time, so a malformed field or
+// entity name fails at the exact Register line with a legible message instead
+// of a gqlparser parse error at schema build.
+func mustValidName(ctor, kind, name string) {
+	if !isGraphQLName(name) {
+		panic("graphql." + ctor + ": " + kind + " must be a valid GraphQL Name ([_A-Za-z][_0-9A-Za-z]*); got " + strconv.Quote(name))
+	}
+}
+
+func isGraphQLName(s string) bool {
+	if s == "" {
+		return false
+	}
+	for i, r := range s {
+		switch {
+		case r == '_' || (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z'):
+		case r >= '0' && r <= '9':
+			if i == 0 {
+				return false
+			}
+		default:
+			return false
+		}
+	}
+	return true
 }
 
 // EnableIntrospection toggles whether `__schema` / `__type` are answered.
@@ -148,9 +188,11 @@ func QueryWithParams[TReq HasToParamsQuery[TQ], R any, TQ queries.QueryWithParam
 	h pipeline.Handler[TQ, queries.Page],
 	opts ...FieldOption,
 ) Field {
+	mustValidName("QueryWithParams", "name", name)
+	mustValidName("QueryWithParams", "entity", entity)
 	reqType := reflect.TypeOf((*TReq)(nil)).Elem()
 	respType := reflect.TypeOf((*R)(nil)).Elem()
-	plan := newCriteriaPlan(reqType, respType)
+	plan := newCriteriaPlan(entity, reqType, respType)
 	return applyOptions(Field{
 		name:    name,
 		sdlLine: func(b *sdlBuilder) string { return b.queryFieldSDL(name, entity, reqType, respType) },
@@ -209,6 +251,111 @@ func QueryWithParams[TReq HasToParamsQuery[TQ], R any, TQ queries.QueryWithParam
 			}
 		},
 	}, opts)
+}
+
+// QueryByID registers a by-id read handler as a root Query field returning the
+// entity node directly — the singular twin of QueryWithParams and the GraphQL
+// twin of the REST QueryByID wrapper:
+//
+//	user(id: ID!, includeArchived: Boolean): User
+//
+// name is the field ("user"), entity the node type name ("User") — the same
+// pair QueryWithParams takes, and the same entity string SHOULD be passed to
+// both so the singular and plural fields share one node type (GraphQL requires
+// one type per name; the first registration walks the Response DTO and defines
+// the object, later registrations under the same entity map onto it — keep the
+// two Response DTOs wire-aligned). TReq is the by-id read Request DTO, R the
+// Response DTO (reflection-only, like QueryWithParams); TQ is inferred.
+//
+// The includeArchived argument obeys the DTO like every reserved control: it
+// is emitted (and honored) only when TReq declares `query:"includeArchived"`
+// — otherwise the SDL omits it and gqlparser rejects it as an unknown
+// argument. The return type is nullable on purpose: a missing document
+// resolves the field to null with the canonical RecordNotFound notification
+// in errors[].extensions (the 404 twin — the GitHub-style not-found shape).
+// Pagination/projection criteria do not apply (ReadByID ignores them by
+// design); the selection set still trims the resolved node.
+func QueryByID[TReq HasToIDQuery[TQ], R any, TQ queries.QueryByID](
+	name, entity string,
+	h pipeline.Handler[TQ, map[string]any],
+	opts ...FieldOption,
+) Field {
+	mustValidName("QueryByID", "name", name)
+	mustValidName("QueryByID", "entity", entity)
+	reqType := reflect.TypeOf((*TReq)(nil)).Elem()
+	respType := reflect.TypeOf((*R)(nil)).Elem()
+	includeArchived := queryschema.ExtractRequestSchema(reqType).Reserved[queryschema.KeyIncludeArchived]
+	return applyOptions(Field{
+		name:    name,
+		sdlLine: func(b *sdlBuilder) string { return b.queryByIDFieldSDL(name, entity, respType, includeArchived) },
+		makeResolve: func(pipe *pipeline.Pipeline) resolver {
+			return func(ctx *configuration.AppContext, args map[string]any, _ ast.SelectionSet, _ ast.FragmentDefinitionList) (any, []GraphQLError) {
+				var req TReq
+				if includeArchived {
+					if v, ok := args[queryschema.KeyIncludeArchived].(bool); ok {
+						applyIncludeArchived(reflect.ValueOf(&req).Elem(), v)
+					}
+				}
+				q := req.ToQuery()
+				q.SetPathID(asString(args["id"]))
+				res := pipeline.Dispatch(pipe, ctx, q, h)
+				switch {
+				case res.IsSuccess():
+					return translateToWire(res.Value(), respType), nil
+				case res.IsFailure():
+					return nil, fromNotifications(res.Notifications())
+				default:
+					return nil, internalError()
+				}
+			}
+		},
+	}, opts)
+}
+
+// applyIncludeArchived sets the Request DTO field tagged
+// `query:"includeArchived"` (bool or *bool, promoted anonymous structs
+// included) — the GraphQL twin of the REST query-string bind for the one
+// reserved by-id control. No-op when the DTO declares no such field (the SDL
+// then omits the argument, so args can never carry it).
+func applyIncludeArchived(v reflect.Value, val bool) bool {
+	for v.Kind() == reflect.Pointer {
+		if v.IsNil() {
+			v.Set(reflect.New(v.Type().Elem()))
+		}
+		v = v.Elem()
+	}
+	if v.Kind() != reflect.Struct {
+		return false
+	}
+	t := v.Type()
+	for i := 0; i < t.NumField(); i++ {
+		f := t.Field(i)
+		if f.Anonymous {
+			if applyIncludeArchived(v.Field(i), val) {
+				return true
+			}
+			continue
+		}
+		if !f.IsExported() {
+			continue
+		}
+		tag, _, _ := strings.Cut(f.Tag.Get("query"), ",")
+		if tag != queryschema.KeyIncludeArchived {
+			continue
+		}
+		fv := v.Field(i)
+		if fv.Kind() == reflect.Pointer && fv.Type().Elem().Kind() == reflect.Bool {
+			p := reflect.New(fv.Type().Elem())
+			p.Elem().SetBool(val)
+			fv.Set(p)
+			return true
+		}
+		if fv.Kind() == reflect.Bool {
+			fv.SetBool(val)
+			return true
+		}
+	}
+	return false
 }
 
 // guardPermission wraps a resolver with the Layer-1 permission check. Behind

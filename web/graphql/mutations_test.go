@@ -86,7 +86,7 @@ func TestMutationWithBody_MissingRequiredInputFieldRejected(t *testing.T) {
 	}
 }
 
-// ── bodyless command quad (id only → MutationResult) ────────────────────────
+// ── bodyless command quad (id only → <Name>Payload) ─────────────────────────
 
 type delCmd struct {
 	pipeline.CommandByIDBase
@@ -101,13 +101,29 @@ func (h *fakeDelHandler) Handle(_ *configuration.AppContext, c *delCmd) (results
 	return results.None{}, nil
 }
 
-func TestMutationByID_BodylessReturnsMutationResult(t *testing.T) {
+func TestMutationByID_BodylessReturnsNamedPayload(t *testing.T) {
 	h := &fakeDelHandler{}
 	pipe := pipeline.New(translation.Default())
 	reg := New(pipe).Register(
 		MutationByID[delCmd, *delCmd, results.None]("deleteThing", h),
 	)
 	ctx := configuration.NewAppContextWithRandomID(configuration.LangENG)
+
+	// The payload type derives from the field name; the shared MutationResult
+	// is gone from the schema.
+	sdl, err := reg.SDL()
+	if err != nil {
+		t.Fatalf("SDL: %v", err)
+	}
+	if !strings.Contains(sdl, "deleteThing(id: ID!): DeleteThingPayload!") {
+		t.Errorf("bodyless field line missing the named payload:\n%s", sdl)
+	}
+	if !strings.Contains(sdl, "type DeleteThingPayload") {
+		t.Errorf("DeleteThingPayload type not registered:\n%s", sdl)
+	}
+	if strings.Contains(sdl, "MutationResult") {
+		t.Errorf("shared MutationResult must be gone from the SDL:\n%s", sdl)
+	}
 
 	resp := reg.Execute(ctx, `mutation { deleteThing(id: "u9") { success id } }`, nil, "")
 	if len(resp.Errors) != 0 {
@@ -119,6 +135,30 @@ func TestMutationByID_BodylessReturnsMutationResult(t *testing.T) {
 	out := resp.Data["deleteThing"].(map[string]any)
 	if out["success"] != true || out["id"] != "u9" {
 		t.Errorf("deleteThing = %v, want {success:true id:u9}", out)
+	}
+}
+
+// TestMutationByID_EachBodylessOwnsItsPayload — two bodyless mutations emit
+// two DISTINCT payload types with the same fixed shape.
+func TestMutationByID_EachBodylessOwnsItsPayload(t *testing.T) {
+	pipe := pipeline.New(translation.Default())
+	reg := New(pipe).Register(
+		MutationByID[delCmd, *delCmd, results.None]("archiveThing", &fakeDelHandler{}),
+	).Register(
+		MutationByID[delCmd, *delCmd, results.None]("unarchiveThing", &fakeDelHandler{}),
+	)
+	sdl, err := reg.SDL()
+	if err != nil {
+		t.Fatalf("SDL: %v", err)
+	}
+	for _, want := range []string{
+		"archiveThing(id: ID!): ArchiveThingPayload!",
+		"unarchiveThing(id: ID!): UnarchiveThingPayload!",
+		"type ArchiveThingPayload", "type UnarchiveThingPayload",
+	} {
+		if !strings.Contains(sdl, want) {
+			t.Errorf("SDL missing %q:\n%s", want, sdl)
+		}
 	}
 }
 
@@ -238,5 +278,39 @@ func TestMutationWithBody_FullBodyMakesInputStrict(t *testing.T) {
 	}
 	if !strings.Contains(sdl, "note: String!") {
 		t.Errorf("FullBody must make even an optional field NonNull in the input, SDL:\n%s", sdl)
+	}
+}
+
+// TestMutationNaming_TypesDeriveFromFieldName — the root input/payload type
+// names come from the REGISTERED FIELD NAME (`createThing` →
+// CreateThingInput/CreateThingPayload), never from the Go DTO names, so
+// REST/Go vocabulary (Insert/Request/Response) cannot leak into the SDL.
+func TestMutationNaming_TypesDeriveFromFieldName(t *testing.T) {
+	pipe := pipeline.New(translation.Default())
+	reg := New(pipe).Register(
+		MutationWithBody[mutRequest, mutCmd, *mutCmd, mutResult, mutResponse](
+			"createThing", mutResponse{}.FromResult, &fakeCmdHandler{}),
+	).Register(
+		MutationWithBodyID[mutUpdRequest, mutUpdCmd, *mutUpdCmd, mutUpdResult, mutUpdResponse](
+			"updateThing", mutUpdResponse{}.FromResult, &fakeUpdHandler{}),
+	)
+	sdl, err := reg.SDL()
+	if err != nil {
+		t.Fatalf("SDL: %v", err)
+	}
+	for _, want := range []string{
+		"createThing(input: CreateThingInput!): CreateThingPayload!",
+		"updateThing(id: ID!, input: UpdateThingInput!): UpdateThingPayload!",
+		"input CreateThingInput", "type CreateThingPayload",
+		"input UpdateThingInput", "type UpdateThingPayload",
+	} {
+		if !strings.Contains(sdl, want) {
+			t.Errorf("SDL missing %q:\n%s", want, sdl)
+		}
+	}
+	for _, leak := range []string{"mutResponse", "mutInput", "mutRequest", "mutUpdResponse"} {
+		if strings.Contains(sdl, leak) {
+			t.Errorf("Go DTO name %q leaked into the SDL:\n%s", leak, sdl)
+		}
 	}
 }

@@ -13,8 +13,11 @@ package graphql
 
 import (
 	"reflect"
+	"sort"
+	"strconv"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/ClaudioSchirmer/omnicore/domain"
 	"github.com/ClaudioSchirmer/omnicore/web/queryschema"
@@ -34,6 +37,7 @@ type sdlBuilder struct {
 	defs         map[string]string
 	order        []string
 	objectByType map[reflect.Type]string // Go type → emitted object name (recursion break)
+	objectNames  map[string]bool         // names claimed by entity/response OBJECT types (vs derived/infra types)
 	needDateTime bool
 }
 
@@ -42,15 +46,30 @@ func newSDLBuilder() *sdlBuilder {
 		defs:         map[string]string{},
 		order:        []string{},
 		objectByType: map[reflect.Type]string{},
+		objectNames:  map[string]bool{},
 	}
 }
 
-// put registers a named definition once. The first writer wins; later calls
-// for the same name are ignored (the body is identical by construction).
+// put registers a DERIVED/INFRASTRUCTURE definition (connections, edges,
+// PageInfo, where/operator/order inputs, enums, payload shells) once. The
+// first writer wins for infra-vs-infra (the body is identical by construction
+// — PageInfo, OrderDirection, one entity's connection emitted by its sibling
+// fields); an infra name landing on a name already claimed by an entity/
+// response OBJECT is a naming collision that would silently corrupt the graph
+// — it panics (a boot fail: the registry builds at boot).
 func (b *sdlBuilder) put(name, body string) {
+	if b.objectNames[name] {
+		panic("graphql: derived schema type " + strconv.Quote(name) +
+			" collides with an entity/object type of the same name — rename the entity or the field")
+	}
 	if _, ok := b.defs[name]; ok {
 		return
 	}
+	b.record(name, body)
+}
+
+// record inserts a definition unconditionally (callers own dedupe/guards).
+func (b *sdlBuilder) record(name, body string) {
 	b.defs[name] = body
 	b.order = append(b.order, name)
 }
@@ -125,6 +144,13 @@ func (b *sdlBuilder) objectType(t reflect.Type) string {
 // objects fall back to their Go type name via objectType. Fields are named by
 // their wire (json) name; the value the executor resolves against is the
 // Go-field-keyed view document.
+//
+// One name, one object: when the name is already defined from ANOTHER Go type
+// (the list and by-id Response DTOs of the same entity both registering under
+// "User"), the first registration defines the object and later types map onto
+// it without re-walking — so their nested types never leak into the SDL as
+// orphans. Consumers sharing an entity name must keep the Response DTOs
+// wire-aligned; a field only the later DTO carries is not selectable.
 func (b *sdlBuilder) objectTypeAs(name string, t reflect.Type) string {
 	for t.Kind() == reflect.Pointer {
 		t = t.Elem()
@@ -132,7 +158,22 @@ func (b *sdlBuilder) objectTypeAs(name string, t reflect.Type) string {
 	if existing, ok := b.objectByType[t]; ok {
 		return existing
 	}
+	if _, ok := b.defs[name]; ok {
+		// The name is taken. Mapping onto it is legitimate ONLY when it is
+		// another entity/response OBJECT (the shared-node-type contract);
+		// landing on a derived/infrastructure type (PageInfo, a sibling's
+		// Connection/Edge, an input, an enum) would silently point the node
+		// at the wrong type — panic instead (a boot fail: the registry
+		// builds at boot).
+		if !b.objectNames[name] {
+			panic("graphql: entity/object name " + strconv.Quote(name) +
+				" collides with a derived/infrastructure schema type of the same name — pick a different entity name")
+		}
+		b.objectByType[t] = name
+		return name
+	}
 	b.objectByType[t] = name // break recursion before walking fields
+	b.objectNames[name] = true
 	fields := exportedJSONFields(t)
 	var sb strings.Builder
 	sb.WriteString("type " + name + " {\n")
@@ -140,7 +181,7 @@ func (b *sdlBuilder) objectTypeAs(name string, t reflect.Type) string {
 		sb.WriteString("  " + f.wire + ": " + b.typeRef(f.field.Type) + "\n")
 	}
 	sb.WriteString("}")
-	b.put(name, sb.String())
+	b.record(name, sb.String())
 	return name
 }
 
@@ -189,6 +230,84 @@ func (b *sdlBuilder) operatorInput(entity string, leaf queryschema.RequestField)
 	return name
 }
 
+// orderEnumValue converts a dotted wire path into its GraphQL enum value —
+// SCREAMING_SNAKE, path dots as segment separators: `userName` → USER_NAME,
+// `addresses.zipCode` → ADDRESSES_ZIP_CODE.
+func orderEnumValue(wirePath string) string {
+	var sb strings.Builder
+	prevLowerOrDigit := false
+	for _, r := range wirePath {
+		switch {
+		case r == '.' || r == '-' || r == '_':
+			sb.WriteRune('_')
+			prevLowerOrDigit = false
+		case unicode.IsUpper(r):
+			if prevLowerOrDigit {
+				sb.WriteRune('_')
+			}
+			sb.WriteRune(r)
+			prevLowerOrDigit = false
+		case r >= '0' && r <= '9':
+			sb.WriteRune(r)
+			prevLowerOrDigit = true
+		default:
+			sb.WriteRune(unicode.ToUpper(r))
+			prevLowerOrDigit = true
+		}
+	}
+	return sb.String()
+}
+
+// orderFieldMap derives an entity's sortable vocabulary — ENUM value → wire
+// path — from the Response DTO's projection schema, the SAME allowlist the
+// REST `?orderBy=` tokens are validated against (ParseOrderByWithSchema), so
+// the two surfaces cannot drift. Deterministic (values sorted by wire path);
+// empty when the Response carries no typed paths (the orderBy argument is
+// then omitted from the SDL). Two wire paths colliding on one enum value is a
+// Response-DTO modeling error and panics at boot with both names.
+func orderFieldMap(entity string, projSchema *queryschema.ProjectionSchema) (values []string, byValue map[string]string) {
+	if projSchema == nil || len(projSchema.Paths) == 0 {
+		return nil, nil
+	}
+	wires := make([]string, 0, len(projSchema.Paths))
+	for w := range projSchema.Paths {
+		wires = append(wires, w)
+	}
+	sort.Strings(wires)
+	byValue = make(map[string]string, len(wires))
+	values = make([]string, 0, len(wires))
+	for _, w := range wires {
+		v := orderEnumValue(w)
+		if prev, dup := byValue[v]; dup {
+			panic("graphql: orderBy enum value collision on entity " + strconv.Quote(entity) +
+				": wire paths " + strconv.Quote(prev) + " and " + strconv.Quote(w) +
+				" both map to " + v + " — rename one of the Response DTO wire (json) names")
+		}
+		byValue[v] = w
+		values = append(values, v)
+	}
+	return values, byValue
+}
+
+// orderInput registers (once) the order vocabulary for an entity — the shared
+// OrderDirection enum, the per-entity `<Entity>OrderField` enum (one value per
+// sortable wire path) and the `<Entity>Order` input `{ field!, direction =
+// ASC }` — and returns the input name. ok=false when the entity has no
+// sortable paths (RawDoc-style responses): the caller then omits the orderBy
+// argument entirely.
+func (b *sdlBuilder) orderInput(entity string, projSchema *queryschema.ProjectionSchema) (string, bool) {
+	values, _ := orderFieldMap(entity, projSchema)
+	if len(values) == 0 {
+		return "", false
+	}
+	b.put("OrderDirection", "enum OrderDirection {\n  ASC\n  DESC\n}")
+	fieldEnum := entity + "OrderField"
+	b.put(fieldEnum, "enum "+fieldEnum+" {\n  "+strings.Join(values, "\n  ")+"\n}")
+	in := entity + "Order"
+	b.put(in, "input "+in+" {\n  field: "+fieldEnum+"!\n  direction: OrderDirection = ASC\n}")
+	return in, true
+}
+
 // connection registers the Relay connection + edge types for an entity over
 // the given node object, plus the shared PageInfo once. Returns the connection
 // type name.
@@ -201,10 +320,12 @@ func (b *sdlBuilder) connection(entity, nodeType string) string {
 	edge := entity + "Edge"
 	b.put(edge, "type "+edge+" {\n  node: "+nodeType+"!\n  cursor: String!\n}")
 	conn := entity + "Connection"
+	// totalCount is NonNull: every list envelope carries the total on every
+	// surface (pageToConnection always populates it) — GitHub-parity Int!.
 	b.put(conn, "type "+conn+" {\n"+
 		"  edges: ["+edge+"!]!\n"+
 		"  pageInfo: PageInfo!\n"+
-		"  totalCount: Int\n}")
+		"  totalCount: Int!\n}")
 	return conn
 }
 
@@ -229,6 +350,16 @@ func (b *sdlBuilder) queryFieldSDL(name, entity string, reqType, respType reflec
 	if whereName, ok := b.whereInput(entity, reqType); ok {
 		args = append(args, "where: "+whereName)
 	}
+	// orderBy is the one reserved control with a typed, per-entity argument:
+	// `orderBy: [<Entity>Order!]` over the reflected sortable-field enum. When
+	// the Response carries no typed paths the argument is omitted even under
+	// the DTO opt-in — there is nothing to enumerate.
+	orderBySDL := ""
+	if reserved[queryschema.KeyOrderBy] {
+		if in, ok := b.orderInput(entity, queryschema.ExtractProjectionSchema(respType)); ok {
+			orderBySDL = "orderBy: [" + in + "!]"
+		}
+	}
 	for _, arg := range []struct {
 		key string
 		sdl string
@@ -237,11 +368,11 @@ func (b *sdlBuilder) queryFieldSDL(name, entity string, reqType, respType reflec
 		{queryschema.KeyAfter, "after: String"},
 		{queryschema.KeyLast, "last: Int"},
 		{queryschema.KeyBefore, "before: String"},
-		{queryschema.KeyOrderBy, "orderBy: [String!]"},
+		{queryschema.KeyOrderBy, orderBySDL},
 		{queryschema.KeySearch, "search: String"},
 		{queryschema.KeyIncludeArchived, "includeArchived: Boolean"},
 	} {
-		if reserved[arg.key] {
+		if reserved[arg.key] && arg.sdl != "" {
 			args = append(args, arg.sdl)
 		}
 	}
@@ -249,6 +380,20 @@ func (b *sdlBuilder) queryFieldSDL(name, entity string, reqType, respType reflec
 		return "  " + name + ": " + conn + "!"
 	}
 	return "  " + name + "(" + strings.Join(args, ", ") + "): " + conn + "!"
+}
+
+// queryByIDFieldSDL returns the SDL line for one by-id read root field: the
+// entity node (nullable — a missing document resolves to null beside the
+// canonical not-found error) with the mandatory id argument plus
+// includeArchived when the endpoint's Request DTO declares the reserved key —
+// the same DTO-governed cut queryFieldSDL applies to the list arguments.
+func (b *sdlBuilder) queryByIDFieldSDL(name, entity string, respType reflect.Type, includeArchived bool) string {
+	node := b.objectTypeAs(entity, respType)
+	args := "id: ID!"
+	if includeArchived {
+		args += ", includeArchived: Boolean"
+	}
+	return "  " + name + "(" + args + "): " + node
 }
 
 // document assembles the full SDL: the custom scalar (when used), the

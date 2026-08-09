@@ -7,6 +7,65 @@
 </div>
 <div class="changelog">
     <div class="release">
+        <div class="release-head"><span class="release-tag">v0.47.0</span><span class="release-date">August 8, 2026</span></div>
+        <ul>
+            <li><strong>Added</strong> — <strong><code>graphql.QueryByID</code>: the singular by-id Query field.</strong>
+                The GraphQL surface gains the singular twin every large public schema pairs with its connection —
+                <code>user(id: ID!, includeArchived: Boolean): User</code> — registered over the SAME
+                <code>FindByIDQueryHandler</code> + Request/Response DTOs the REST <code>GET /users/:id</code> route
+                mounts, closing the by-id parity gap with REST and gRPC. The field returns the node directly
+                (no connection envelope), shares the ONE node type with the plural field when both pass the same
+                entity name, and is nullable on purpose: a missing document resolves to <code>null</code> beside the
+                canonical <code>RecordNotFoundNotification</code> in <code>errors[].extensions</code> — the REST-404
+                twin and the GitHub-style not-found shape. <code>includeArchived</code> obeys the DTO like every
+                reserved control (emitted only on <code>query:"includeArchived"</code> opt-in).</li>
+            <li><strong>Changed</strong> — <strong>breaking</strong> — <strong>mutation input/payload type names now
+                derive from the registered FIELD name, never from the Go DTO names.</strong>
+                <code>createUser</code> emits <code>CreateUserInput</code>/<code>CreateUserPayload</code> (the
+                Relay/GitHub mutation naming convention) where it previously leaked the Go names
+                (<code>InsertUserInput</code>/<code>InsertUserResponse</code> — REST vocabulary a GraphQL consumer
+                should never see). Breaking at the SDL level only: clients that NAME these types (variable
+                declarations, fragments on payload types, codegen output) must regenerate; field names, arguments,
+                inputs' shapes and resolver behavior are byte-identical. Nested input objects keep their Go-derived
+                names (<code>InsertUserAddressRequest</code> → <code>InsertUserAddressInput</code>) — they have no
+                field name to derive from.</li>
+            <li><strong>Changed</strong> — <strong>breaking</strong> — <strong>bodyless mutations own field-derived
+                payload types; the shared <code>MutationResult</code> is removed.</strong> <code>MutationByID</code>
+                now emits <code>&lt;FieldName&gt;Payload</code> (<code>archiveUser</code> →
+                <code>ArchiveUserPayload</code>, <code>deleteUser</code> → <code>DeleteUserPayload</code>), each
+                carrying the same fixed bodyless shape <code>{ success: Boolean!, id: ID }</code> — the
+                per-mutation-payload convention the body forms follow; a shared generic result type read as RPC,
+                not GraphQL. Breaking at the SDL/introspection level only: <code>MutationResult</code> no longer
+                exists, so clients naming it (fragments, codegen) regenerate; selections of
+                <code>{ success id }</code> and the resolver value are unchanged.</li>
+            <li><strong>Changed</strong> — <strong>breaking</strong> — <strong>GraphQL <code>orderBy</code> is a
+                typed input over a reflected sortable-field enum.</strong> Read fields take
+                <code>orderBy: [&lt;Entity&gt;Order!]</code> (<code>{ field: &lt;Entity&gt;OrderField!,
+                direction: OrderDirection = ASC }</code>) instead of <code>[String!]</code> tokens. The enum
+                carries one value per sortable wire path of the Response DTO — the same allowlist REST's
+                <code>?orderBy=</code> validates, reflected from the DTOs already attached (no new Go surface,
+                like the <code>where</code> input). An undeclared field is cut by the schema itself
+                (introspection never advertises it; gqlparser rejects before any resolver runs). Same fold,
+                same sort terms, cursors stay interchangeable across surfaces; REST unchanged. Clients rewrite
+                <code>orderBy: ["-name"]</code> as <code>orderBy: [{field: NAME, direction: DESC}]</code>.</li>
+            <li><strong>Changed</strong> — <strong>GraphQL <code>totalCount</code> is now <code>Int!</code>.</strong>
+                The connection field was declared nullable while every page envelope always populates it — the
+                schema now tells the truth (GitHub-parity). Safe for clients; generated types pick up the
+                tightened nullability on regeneration.</li>
+            <li><strong>Added</strong> — <strong>GraphQL name gates: a bad name cannot reach
+                production.</strong> Field/entity names are validated against the GraphQL Name grammar at the
+                constructors (panic at the exact Register line); an entity name colliding with a
+                derived/infrastructure schema type (<code>PageInfo</code>, a sibling's
+                <code>Connection</code>/<code>Edge</code>, an input or enum) — previously a silently corrupted
+                yet valid schema — now panics at the boot-time build. Sharing one entity name across read
+                fields (the shared-node-type contract) is unchanged.</li>
+            <li><strong>Fixed</strong> — <strong>introspection surfaces input-value defaults.</strong>
+                <code>__InputValue.defaultValue</code> was hardcoded null; it now renders the declared SDL
+                default as its GraphQL literal (<code>ASC</code> on <code>&lt;Entity&gt;Order.direction</code>)
+                — the spec shape GraphiQL and codegen read.</li>
+        </ul>
+    </div>
+    <div class="release">
         <div class="release-head"><span class="release-tag">v0.46.2</span><span class="release-date">August 7, 2026</span></div>
         <ul>
             <li><strong>Fixed</strong> — <strong>documentation-only release: four sections carried claims the
