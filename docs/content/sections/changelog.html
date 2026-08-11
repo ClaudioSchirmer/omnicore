@@ -7,6 +7,19 @@
 </div>
 <div class="changelog">
     <div class="release">
+        <div class="release-head"><span class="release-tag">v0.47.1</span><span class="release-date">August 11, 2026</span></div>
+        <ul>
+            <li><strong>Fixed</strong> — <strong>tabular export renders a nil pointer field as an EMPTY cell on
+                every scalar type.</strong> The CSV and XLSX encoders dereferenced only <code>*string</code>; any
+                other nullable field — <code>*int64</code>, <code>*float64</code>, <code>*bool</code>,
+                <code>*time.Time</code>, a nullable sibling column absent on the row — fell through to the generic
+                formatter and exported the literal <code>&lt;nil&gt;</code> (CSV) or handed the pointer itself to
+                the XLSX writer. Both encoders now dereference any typed pointer first (nil → empty cell,
+                non-nil → its scalar rendering), so a nullable number or date exports exactly like a nullable
+                string.</li>
+        </ul>
+    </div>
+    <div class="release">
         <div class="release-head"><span class="release-tag">v0.47.0</span><span class="release-date">August 8, 2026</span></div>
         <ul>
             <li><strong>Added</strong> — <strong><code>graphql.QueryByID</code>: the singular by-id Query field.</strong>

@@ -4,6 +4,7 @@ import (
 	"encoding/csv"
 	"fmt"
 	"io"
+	"reflect"
 	"strconv"
 	"time"
 )
@@ -68,16 +69,20 @@ func (s *csvSink) Close() error {
 // format without scientific notation surprises; everything else falls back to
 // fmt.Sprintf("%v").
 func stringifyCell(v any) string {
+	// Any typed pointer dereferences first (nil → empty) so a nullable number
+	// or date exports as an empty cell, exactly like a nullable string — the
+	// %v fallback would otherwise print a literal "<nil>".
+	if rv := reflect.ValueOf(v); rv.Kind() == reflect.Pointer {
+		if rv.IsNil() {
+			return ""
+		}
+		return stringifyCell(rv.Elem().Interface())
+	}
 	switch t := v.(type) {
 	case nil:
 		return ""
 	case string:
 		return t
-	case *string:
-		if t == nil {
-			return ""
-		}
-		return *t
 	case time.Time:
 		return t.UTC().Format(time.RFC3339)
 	case bool:

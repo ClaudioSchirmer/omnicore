@@ -2,6 +2,7 @@ package export
 
 import (
 	"io"
+	"reflect"
 
 	"github.com/xuri/excelize/v2"
 )
@@ -114,14 +115,18 @@ func (s *xlsxSink) Close() error {
 // concrete value. Concrete scalars (string, numbers, bool, time.Time) pass
 // through untouched so the cell keeps its native type.
 func normalizeXLSXValue(v any) any {
-	switch t := v.(type) {
-	case nil:
-		return ""
-	case *string:
-		if t == nil {
+	// Any typed pointer dereferences first (nil → empty cell) so a nullable
+	// number or date exports like a nullable string — excelize would otherwise
+	// receive the pointer itself.
+	if rv := reflect.ValueOf(v); rv.Kind() == reflect.Pointer {
+		if rv.IsNil() {
 			return ""
 		}
-		return *t
+		return normalizeXLSXValue(rv.Elem().Interface())
+	}
+	switch v.(type) {
+	case nil:
+		return ""
 	default:
 		return v
 	}

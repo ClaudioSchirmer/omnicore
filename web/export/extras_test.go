@@ -59,6 +59,12 @@ func TestNormalizeXLSXValue(t *testing.T) {
 		{"int64", int64(7), int64(7)},
 		{"bool", true, true},
 		{"float", 3.14, 3.14},
+		// Non-string pointers: nil is an empty cell, non-nil dereferences —
+		// excelize must always receive a concrete value, never a pointer.
+		{"nil-int64-ptr", (*int64)(nil), ""},
+		{"int64-ptr", ptrOf(int64(9)), int64(9)},
+		{"nil-float-ptr", (*float64)(nil), ""},
+		{"float-ptr", ptrOf(1.25), 1.25},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
