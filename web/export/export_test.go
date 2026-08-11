@@ -5,6 +5,7 @@ import (
 	"encoding/csv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/ClaudioSchirmer/omnicore/application/queries"
 )
@@ -257,6 +258,16 @@ func TestStringifyCell(t *testing.T) {
 		{int64(5), "5"},
 		{int(7), "7"},
 		{3.14, "3.14"},
+		// Non-string pointers: nil renders an EMPTY cell (never "<nil>"),
+		// non-nil dereferences to its scalar rendering.
+		{(*int64)(nil), ""},
+		{ptrOf(int64(42)), "42"},
+		{(*float64)(nil), ""},
+		{ptrOf(2.5), "2.5"},
+		{(*bool)(nil), ""},
+		{ptrOf(true), "true"},
+		{(*time.Time)(nil), ""},
+		{ptrOf(time.Date(2026, 9, 1, 0, 0, 0, 0, time.UTC)), "2026-09-01T00:00:00Z"},
 	}
 	for _, c := range cases {
 		if got := stringifyCell(c.in); got != c.want {
@@ -264,3 +275,6 @@ func TestStringifyCell(t *testing.T) {
 		}
 	}
 }
+
+// ptrOf is a test helper: a pointer to any scalar literal.
+func ptrOf[T any](v T) *T { return &v }

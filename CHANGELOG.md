@@ -11,6 +11,19 @@ with `1.0.0`.
 
 ## [Unreleased]
 
+## [0.47.1] - 2026-08-11
+
+### Fixed
+
+- **Tabular export renders a nil pointer field as an EMPTY cell on every
+  scalar type.** The CSV and XLSX encoders dereferenced only `*string`; any
+  other nullable field — `*int64`, `*float64`, `*bool`, `*time.Time`, a
+  nullable sibling column absent on the row — fell through to the generic
+  formatter and exported the literal `<nil>` (CSV) or handed the pointer
+  itself to the XLSX writer. Both encoders now dereference any typed pointer
+  first (nil → empty cell, non-nil → its scalar rendering), so a nullable
+  number or date exports exactly like a nullable string.
+
 ## [0.47.0] - 2026-08-08
 
 ### Added
