@@ -6,9 +6,10 @@ import "fmt"
 // ROLE schemas. Unlike a Sibling (1:1 private, shared ID), a shared base is
 // referenced by N independent roles (aluno, professor, usuario) via a foreign
 // key, deduplicated by a NATURAL KEY whose value derives the base's
-// deterministic id (UUIDv5). The base has NO lifecycle of its own: roles control
-// their own DeletedAt, and the base is governed by reference counting per its
-// OrphanPolicy. Declared once with NewSharedBaseSchema and referenced from each role
+// deterministic id (UUIDv5). The base drives no lifecycle of its own: the roles
+// control their own DeletedAt and the base CONVERGES to them when it declares a
+// DeletedAt of its own (optional, honored when declared — see the KeepOrphan
+// note below), governed by reference counting per its OrphanPolicy. Declared once with NewSharedBaseSchema and referenced from each role
 // with .SharedBase(base, parentIDColumn) — the SAME instance referenced by every role
 // IS the cross-schema registry.
 

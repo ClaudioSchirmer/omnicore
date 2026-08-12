@@ -11,6 +11,35 @@ with `1.0.0`.
 
 ## [Unreleased]
 
+## [0.47.2] - 2026-08-12
+
+### Docs
+
+- **The GraphQL manual taught a broken idiom for clearing a sibling facet.**
+  `graphql.html` offered ONE recipe — a "mini-PATCH" Cmd whose
+  `ApplyPartiallyTo` assigns the nil, mounted on
+  `PartialUpdateCommandHandler` — for two different cases: clearing a nullable
+  field and removing a whole sibling facet. Only the first works. A partial
+  update never removes a facet: a sibling whose mapped fields are all nil is
+  left untouched on PATCH and deleted only on a full replace, so nilling every
+  field of a facet through `ApplyPartiallyTo` succeeds and changes nothing — a
+  silent no-op the reader had no way to anticipate, and a direct contradiction
+  of the sibling write contract stated in `table-schema.html`. The section now
+  splits the two cases: the nullable field keeps the mini-PATCH (correct — the
+  partial update rewrites the owner row from the loaded entity), while facet
+  removal is mounted on `UpdateCommandHandler`, whose non-partial `Updatable`
+  deletes the row in the same transaction. No behavior changed; the framework
+  always worked this way.
+- **The migrations DDL note contradicted the shared-base contract.** It stated
+  a shared base carries "no DeletedAt", while `table-schema.html`, the
+  `KeepOrphan` policy and the lifecycle-convergence write path all rely on the
+  base declaring one (optional, honored when declared). The note also never
+  named the mandatory `revision BIGINT NOT NULL DEFAULT 0` column that every
+  root table AND every shared base must carry — a boot failure when the
+  migration omits it, and the migrations section is where a developer looks
+  for exactly that. Both corrected; the stale header comment in
+  `infra/db/core/shared_base.go` was aligned with the same contract.
+
 ## [0.47.1] - 2026-08-11
 
 ### Fixed

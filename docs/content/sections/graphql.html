@@ -237,16 +237,36 @@ func Wire(d bootstrap.Deps) bootstrap.Wiring {
         <strong>Assigning null through GraphQL — a structural limitation and the idiomatic way out.</strong>
         GraphQL has no "present but null" for a required field: <code>NonNull</code> is its only way to demand
         presence. So the strict (PUT-shaped) input cannot express the explicit null the REST PUT uses to clear a
-        nullable field or remove a sibling facet — sending <code>null</code> is rejected at parse time. The
+        nullable field — sending <code>null</code> is rejected at parse time. The
         lenient (PATCH-shaped) input does not help either: an explicit <code>null</code> and an omitted field
         both decode into the same nil pointer on the Request, which the partial-update contract reads as
-        "not sent, keep the current value" — on GraphQL AND on REST alike. The recommended pattern is the
-        idiomatic GraphQL one: register an intent-specific mutation whose OPERATION carries the meaning instead
-        of a field value — a "mini-PATCH" on the ordinary Auto path. Declare a dedicated Cmd whose
-        <code>ApplyPartiallyTo</code> assigns the nil (e.g. <code>clearEmployeePhone</code>), pair it with a
-        minimal (or empty) Request DTO, and register it with the same
-        <code>PartialUpdateCommandHandler</code> via <code>MutationByID</code>/<code>MutationWithBodyID</code> —
-        no custom <code>pipeline.Handler</code> required, and the intent is explicit in the schema.</li>
+        "not sent, keep the current value" — on GraphQL AND on REST alike. The way out is the idiomatic
+        GraphQL one: register an intent-specific mutation whose OPERATION carries the meaning instead of a
+        field value, on the ordinary Auto path. <strong>Which handler that intent mounts depends on what is
+        being cleared</strong> — a field and a whole facet are NOT the same case:
+        <ul>
+            <li><strong>A nullable field → a "mini-PATCH" on <code>PartialUpdateCommandHandler</code>.</strong>
+                Declare a dedicated Cmd whose <code>ApplyPartiallyTo</code> assigns the nil (e.g.
+                <code>clearEmployeePhone</code>), pair it with a minimal (or empty) Request DTO, and register it
+                via <code>MutationByID</code>/<code>MutationWithBodyID</code>. The partial update rewrites the
+                owner row from the loaded entity, so the assigned nil lands as NULL. The same holds for a
+                nullable field of a <a href="#table-schema~sibling-tables">sibling facet</a> whose OTHER fields
+                stay populated — the facet row is upserted with that column cleared.</li>
+            <li><strong>An ENTIRE sibling facet → an intent mutation on <code>UpdateCommandHandler</code> (the
+                PUT-shaped handler).</strong> A partial update never removes a facet: a sibling whose mapped
+                fields are all nil is left untouched on PATCH and deleted only on a full replace (the
+                <a href="#table-schema~sibling-tables">sibling write contract</a>), so an
+                <code>ApplyPartiallyTo</code> that nils every field of the facet is a SILENT NO-OP — the write
+                succeeds and the row stays. Mount the intent (e.g. <code>removeEmployeeBankAccount</code>) on
+                <code>UpdateCommandHandler</code> instead: its <code>ApplyTo</code> nils the facet's fields,
+                <code>GetUpdatable</code> produces a non-partial <code>Updatable</code>, and the sibling row is
+                deleted in the same transaction. The Cmd's method set is the one
+                <code>MutationByID</code>/<code>MutationWithBodyID</code> already demand, and the
+                <code>FullBody</code> marker only makes the input's fields <code>NonNull</code> — an intent Cmd
+                carrying no body fields has nothing to require.</li>
+        </ul>
+        No custom <code>pipeline.Handler</code> is required in either case, and the intent is explicit in the
+        schema.</li>
     <li><strong>Order vocabulary — a typed enum, reflected like everything else.</strong> When the
         Request DTO declares <code>query:"orderBy"</code>, the field takes
         <code>orderBy: [&lt;Entity&gt;Order!]</code> where <code>&lt;Entity&gt;Order</code> is

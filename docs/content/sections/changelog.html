@@ -7,6 +7,32 @@
 </div>
 <div class="changelog">
     <div class="release">
+        <div class="release-head"><span class="release-tag">v0.47.2</span><span class="release-date">August 12, 2026</span></div>
+        <ul>
+            <li><strong>Docs</strong> — <strong>the GraphQL manual taught a broken idiom for clearing a sibling
+                facet.</strong> <a href="#graphql">GraphQL</a> offered ONE recipe — a "mini-PATCH" Cmd whose
+                <code>ApplyPartiallyTo</code> assigns the nil, mounted on
+                <code>PartialUpdateCommandHandler</code> — for two different cases: clearing a nullable field and
+                removing a whole sibling facet. Only the first works. A partial update never removes a facet: a
+                sibling whose mapped fields are all nil is left untouched on PATCH and deleted only on a full
+                replace, so nilling every field of a facet through <code>ApplyPartiallyTo</code> succeeds and
+                changes nothing — a silent no-op, and a direct contradiction of the
+                <a href="#table-schema~sibling-tables">sibling write contract</a>. The section now splits the two
+                cases: the nullable field keeps the mini-PATCH (correct — the partial update rewrites the owner
+                row from the loaded entity), while facet removal is mounted on <code>UpdateCommandHandler</code>,
+                whose non-partial <code>Updatable</code> deletes the row in the same transaction. No behavior
+                changed; the framework always worked this way.</li>
+            <li><strong>Docs</strong> — <strong>the migrations DDL note contradicted the shared-base
+                contract.</strong> <a href="#migrations">Migrations</a> stated a
+                <a href="#table-schema~shared-base">shared base</a> carries "no DeletedAt", while TableSchema, the
+                <code>KeepOrphan</code> policy and the lifecycle-convergence write path all rely on the base
+                declaring one (optional, honored when declared). The note also never named the mandatory
+                <code>revision BIGINT NOT NULL DEFAULT 0</code> column that every root table AND every shared base
+                must carry — a boot failure when the migration omits it, and the migrations section is where a
+                developer looks for exactly that. Both corrected.</li>
+        </ul>
+    </div>
+    <div class="release">
         <div class="release-head"><span class="release-tag">v0.47.1</span><span class="release-date">August 11, 2026</span></div>
         <ul>
             <li><strong>Fixed</strong> — <strong>tabular export renders a nil pointer field as an EMPTY cell on
