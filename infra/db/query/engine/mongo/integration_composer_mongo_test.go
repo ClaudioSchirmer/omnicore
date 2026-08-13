@@ -7,7 +7,6 @@ import (
 	"testing"
 
 	"github.com/ClaudioSchirmer/omnicore/application/queries"
-	"github.com/ClaudioSchirmer/omnicore/domain"
 	"github.com/ClaudioSchirmer/omnicore/infra/db/core"
 	"github.com/ClaudioSchirmer/omnicore/infra/db/query"
 	"go.mongodb.org/mongo-driver/v2/bson"
@@ -103,7 +102,7 @@ func TestComposer_ComposeWithOwnChild(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Compose: %v", err)
 	}
-	seg := domain.PluralizeWord("ocLineRow") // childDocSegment derivation, exported form
+	seg := ocLineRow{}.CollectionName() // childDocSegment: the child's declared collection name
 	lines, ok := doc[seg].([]query.Document)
 	if !ok {
 		t.Fatalf("own child %q shape = %T (doc=%v)", seg, doc[seg], doc)
@@ -543,3 +542,5 @@ func toInt(v any) int {
 	}
 	return -1
 }
+
+func (ocLineRow) CollectionName() string { return "OcLineRows" }

@@ -177,6 +177,43 @@ func TestTableSchema_DuplicateChildRejected(t *testing.T) {
 	})
 }
 
+// collidingFixture is a DIFFERENT Go type that declares the SAME collection
+// name as embedFixture — the one way two children can still land on one
+// document segment now that the name is declared rather than derived.
+type collidingFixture struct {
+	ID   string
+	Name string
+}
+
+func (collidingFixture) CollectionName() string { return "EmbedFixtures" }
+
+// TestTableSchema_CollidingCollectionNameRejected proves two children whose
+// types declare the SAME CollectionName panic at declaration: each collection
+// occupies its own document segment, so the second would overwrite the first.
+// The type-name guard above cannot catch this — the types differ.
+func TestTableSchema_CollidingCollectionNameRejected(t *testing.T) {
+	assertPanics(t, "two children declaring the same collection name", func() {
+		c1 := NewTableSchema[embedFixture]("lines_a").ID("id").ParentID("root_id")
+		c2 := NewTableSchema[collidingFixture]("lines_b").ID("id").ParentID("root_id")
+		NewTableSchema[schemaSample]("orders").ID("id").Child(c1).Child(c2)
+	})
+}
+
+// TestTableSchema_ChildWithoutCollectionNameRejected proves a child type that
+// declares no collection name is rejected where it is declared, at boot — the
+// framework has no fallback derivation to fall back to.
+type unnamedChildFixture struct {
+	ID   string
+	Name string
+}
+
+func TestTableSchema_ChildWithoutCollectionNameRejected(t *testing.T) {
+	assertPanics(t, "child type declares no CollectionName", func() {
+		child := NewTableSchema[unnamedChildFixture]("lines").ID("id").ParentID("root_id")
+		NewTableSchema[schemaSample]("orders").ID("id").Child(child)
+	})
+}
+
 // TestTableSchema_GrandchildRejected proves ValidateChildDepth (run by
 // WithSchema) panics when a declared aggregate child carries its own Child(...) —
 // grandchildren are unsupported on the write side (root + one level).
@@ -517,3 +554,7 @@ func TestTableSchema_ValidateOldCloneSafety(t *testing.T) {
 		Child(NewTableSchema[oldCloneSkipTag]("child").ID("id").ParentID("root_id").Field("Name", "name")).
 		ValidateOldCloneSafety()
 }
+
+func (schemaSample) CollectionName() string { return "SchemaSamples" }
+
+func (oldCloneSkipTag) CollectionName() string { return "OldCloneSkipTags" }

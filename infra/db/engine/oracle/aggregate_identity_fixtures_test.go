@@ -12,3 +12,5 @@ import "github.com/ClaudioSchirmer/omnicore/domain"
 func (t tag) IsSameBusinessIdentity(o domain.AggregateValueObject) bool {
 	return domain.IsSameByBusinessFields(t, o)
 }
+
+func (tag) CollectionName() string { return "Tags" }

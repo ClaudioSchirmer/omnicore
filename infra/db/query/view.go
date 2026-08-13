@@ -846,8 +846,8 @@ func appendEmbedCycles(acc []string, views []*ViewDefinition) []string {
 
 // appendSegmentCollisions flags a boot error when two sources would project into
 // the SAME document segment at one schema level. Four producers can name a
-// segment: an explicit embed field, an auto-derived base-child segment, an
-// auto-derived own-child segment (both the pluralized child type), and — on a
+// segment: an explicit embed field, a base-child segment, an own-child segment
+// (both the name the child type declares in CollectionName), and — on a
 // SharedBaseView root — a role segment (the role's type name). Each segment
 // must have exactly one producer — a name clash, or a redundant explicit
 // EmbedMany of a child the schema already projects automatically, is a boot error

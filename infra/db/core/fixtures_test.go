@@ -14,3 +14,5 @@ type otherFixture struct {
 	ID  string
 	Tag string
 }
+
+func (embedFixture) CollectionName() string { return "EmbedFixtures" }

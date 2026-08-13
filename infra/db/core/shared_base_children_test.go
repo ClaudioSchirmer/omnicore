@@ -161,3 +161,5 @@ func contains(ss []string, want string) bool {
 	}
 	return false
 }
+
+func (addrFixture) CollectionName() string { return "AddrFixtures" }

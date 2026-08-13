@@ -140,3 +140,5 @@ func TestIntegration_LinkInChild(t *testing.T) {
 		t.Errorf("fields: the helper ParentID must be stripped from the element, got %#v", el0)
 	}
 }
+
+func (licLine) CollectionName() string { return "LicLines" }

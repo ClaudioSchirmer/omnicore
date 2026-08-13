@@ -99,7 +99,7 @@ func TestOracleComposer_OwnChild(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Compose: %v", err)
 	}
-	seg := domain.PluralizeWord("mcLineRow")
+	seg := mcLineRow{}.CollectionName()
 	lines, ok := doc[seg].([]query.Document)
 	if !ok {
 		t.Fatalf("own child %q shape = %T (doc=%v)", seg, doc[seg], doc)
@@ -152,3 +152,5 @@ func TestOracleComposer_BoolColumn(t *testing.T) {
 		t.Fatalf("name = %#v, want string \"on\"", doc["name"])
 	}
 }
+
+func (mcLineRow) CollectionName() string { return "McLineRows" }

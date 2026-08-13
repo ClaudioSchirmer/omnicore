@@ -5,12 +5,11 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/ClaudioSchirmer/omnicore/domain"
 	"github.com/ClaudioSchirmer/omnicore/infra/db/core"
 )
 
 // White-box coverage for the SharedBase native-children compose: the base's
-// children nest into the role document under their derived Go segment, and the
+// children nest into the role document under their declared Go segment, and the
 // ViewNode round-trips that nested collection to Go vocabulary.
 
 func composeRoleWithBaseChild() *core.TableSchema {
@@ -38,7 +37,7 @@ func TestCompose_NestsSharedBaseChildren(t *testing.T) {
 	c := NewComposer(eng)
 	schema := composeRoleWithBaseChild()
 	view := View("aluno").Version(1).Schema(schema)
-	seg := domain.PluralizeWord("fakeVO") // the derived doc field + Go segment
+	seg := fakeVO{}.CollectionName() // the declared doc field + Go segment
 
 	doc, err := c.Compose(context.Background(), view, "a1")
 	if err != nil {

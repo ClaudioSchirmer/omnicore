@@ -78,9 +78,9 @@ func TestExportPlan_BuildsColumnsLabelsAndSegments(t *testing.T) {
 	}
 
 	addr := root.Children[1]
-	// Own-child segment is the pluralized child type (expAddr → expAddrs); the wire
-	// token is its lower-camel form.
-	if addr.GoSegment != "expAddrs" || addr.WireSegment != "expAddrs" {
+	// Own-child segment is the name the child type DECLARES (expAddr →
+	// "ExpAddrs"); the wire token is its lower-camel form.
+	if addr.GoSegment != "ExpAddrs" || addr.WireSegment != "expAddrs" {
 		t.Fatalf("addresses segments: go=%q wire=%q", addr.GoSegment, addr.WireSegment)
 	}
 	if len(addr.Columns) != 1 || addr.Columns[0].WireLeaf != "zipCode" || addr.Columns[0].LabelKey != "AddressZipCodeField" {

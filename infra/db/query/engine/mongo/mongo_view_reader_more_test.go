@@ -2,9 +2,11 @@ package mongo
 
 import (
 	"context"
+	"errors"
 	"testing"
 
 	"github.com/ClaudioSchirmer/omnicore/application/queries"
+	"github.com/ClaudioSchirmer/omnicore/domain"
 	"github.com/ClaudioSchirmer/omnicore/infra/db/core"
 	"github.com/ClaudioSchirmer/omnicore/infra/db/query"
 )
@@ -91,7 +93,7 @@ func TestMongoViewReader_ReadPage_SortSearchArchived(t *testing.T) {
 	r := viewReaderFixture(coll)
 	page, err := r.ReadPage(context.Background(), "builder_view", queries.ReadCriteria{
 		Limit:           10,
-		OrderBy:            []queries.OrderByField{{Field: "Name"}, {Field: "Email", Desc: true}},
+		OrderBy:         []queries.OrderByField{{Field: "Name"}, {Field: "Email", Desc: true}},
 		Search:          "alice",
 		IncludeArchived: true,
 		Filter:          map[string]any{"Name": "alice"},
@@ -118,7 +120,7 @@ func TestMongoViewReader_ReadPage_ProjectionStripsAutoIncludedOrderByField(t *te
 	page, err := r.ReadPage(context.Background(), "builder_view", queries.ReadCriteria{
 		Limit:      1,
 		Projection: map[string]int{"_id": 0, "Name": 1},
-		OrderBy:       []queries.OrderByField{{Field: "Email"}},
+		OrderBy:    []queries.OrderByField{{Field: "Email"}},
 	})
 	if err != nil {
 		t.Fatalf("ReadPage projection: %v", err)
@@ -337,20 +339,58 @@ func TestMongoViewReader_ResolveViewSchema_Fallbacks(t *testing.T) {
 	}
 }
 
-func TestMongoViewReader_ReadPage_UnresolvableFilterKeyPassthrough(t *testing.T) {
-	// A filter key the view schema cannot resolve passes through untranslated
-	// (translateDotted's !ok branch).
-	coll := &fakeColl{count: 1, docs: []any{map[string]any{"_id": "u1", "name": "a", "mail": "a@x"}}}
-	r := viewReaderFixture(coll)
-	page, err := r.ReadPage(context.Background(), "builder_view", queries.ReadCriteria{
-		Limit:  10,
-		Filter: map[string]any{"unknown_field": "v"},
-	})
-	if err != nil {
-		t.Fatalf("ReadPage with unresolvable filter key: %v", err)
+// A path a REGISTERED view cannot resolve is a schema mismatch, not a hint to
+// query Mongo for a field that does not exist: filter, sort and projection each
+// abort with the canonical Schema notification (→ 400) naming the offending
+// path. Passing it through is what used to make a mistyped filter answer 200
+// with an empty page, and a mistyped sort answer 200 unsorted.
+func TestMongoViewReader_ReadPage_UnresolvableGoPathIsSchemaViolation(t *testing.T) {
+	cases := map[string]queries.ReadCriteria{
+		"filter":     {Limit: 10, Filter: map[string]any{"UnknownField": "v"}},
+		"orderBy":    {Limit: 10, OrderBy: []queries.OrderByField{{Field: "UnknownField"}}},
+		"projection": {Limit: 10, Projection: map[string]int{"UnknownField": 1}},
 	}
-	if len(page.Items) != 1 {
-		t.Fatalf("Items = %d, want 1", len(page.Items))
+	for name, crit := range cases {
+		t.Run(name, func(t *testing.T) {
+			coll := &fakeColl{count: 1, docs: []any{map[string]any{"_id": "u1", "name": "a", "mail": "a@x"}}}
+			r := viewReaderFixture(coll)
+			_, err := r.ReadPage(context.Background(), "builder_view", crit)
+			assertUnresolvedPath(t, err, "UnknownField")
+		})
+	}
+}
+
+func TestMongoViewReader_ReadByID_UnresolvableGoPathIsSchemaViolation(t *testing.T) {
+	coll := &fakeColl{count: 1, docs: []any{map[string]any{"_id": "u1", "name": "a"}}}
+	r := viewReaderFixture(coll)
+	_, _, err := r.ReadByID(context.Background(), "builder_view", "u1", queries.ReadCriteria{
+		Filter: map[string]any{"UnknownField": "v"},
+	})
+	assertUnresolvedPath(t, err, "UnknownField")
+}
+
+// assertUnresolvedPath asserts err is the canonical Schema violation naming
+// goPath — the same envelope (and therefore the same 400 + notificationKey) the
+// wire allowlist emits for an unknown field.
+func assertUnresolvedPath(t *testing.T, err error, goPath string) {
+	t.Helper()
+	if err == nil {
+		t.Fatalf("an unresolvable Go path must abort the read, got nil error")
+	}
+	var carrier domain.NotificationCarrier
+	if !errors.As(err, &carrier) {
+		t.Fatalf("error must carry notifications, got %T: %v", err, err)
+	}
+	ctxs := carrier.NotificationContexts()
+	if len(ctxs) != 1 || len(ctxs[0].Messages()) != 1 {
+		t.Fatalf("want exactly one notification, got %+v", ctxs)
+	}
+	msg := ctxs[0].Messages()[0]
+	if msg.FieldName != goPath {
+		t.Errorf("FieldName = %q, want the offending path %q", msg.FieldName, goPath)
+	}
+	if _, ok := msg.Notification.(domain.SchemaViolationNotification); !ok {
+		t.Errorf("Notification = %T, want domain.SchemaViolationNotification (SemanticSchema → 400)", msg.Notification)
 	}
 }
 

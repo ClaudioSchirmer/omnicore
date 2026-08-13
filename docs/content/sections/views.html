@@ -142,8 +142,8 @@
     <li><strong><code>_id</code> = the base ID</strong> — <code>UUIDv5(naturalKey)</code>, stable
         under both role link models (shared-ID and separate-ParentID).</li>
     <li><strong>Role segments are named by the role's Go type</strong> (<code>"User"</code>,
-        <code>"Employee"</code>) — the same derivation rule nested children use, minus the
-        pluralization: a role is a single optional sub-document, not a collection. The wire name comes
+        <code>"Employee"</code>) — a role is a single optional sub-document, not a collection, so it has
+        no <code>CollectionName()</code> to declare (that is a child collection's contract). The wire name comes
         from your Response DTO's json tag (<code>json:"user"</code>), exactly like every other field.</li>
     <li><strong>An absent role is an explicit <code>null</code> segment</strong> — the store upserts
         via <code>$set</code>, so a vanished role must overwrite its stale segment. Response DTOs

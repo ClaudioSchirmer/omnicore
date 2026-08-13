@@ -166,3 +166,5 @@ func TestCoercePayloadEvent_SharedRawIsNotMutated(t *testing.T) {
 		t.Errorf("child rank = %v (%T), want %v (%T)", got, got, want, want)
 	}
 }
+
+func (pdChild) CollectionName() string { return "PdChilds" }

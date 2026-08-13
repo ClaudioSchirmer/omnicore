@@ -532,3 +532,5 @@ func TestComposedView_ExternalLegs(t *testing.T) {
 		t.Errorf("wrong leg selected: %q", legs[0].Collection())
 	}
 }
+
+func (cvLine) CollectionName() string { return "CvLines" }

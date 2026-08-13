@@ -44,23 +44,3 @@ func TestRenderPath_IndexSegment(t *testing.T) {
 		t.Errorf("renderPath with empty leading name = %q, want name", got2)
 	}
 }
-
-// PluralizeWord covers the sh/ch, s/x/z, consonant-y, and default branches.
-func TestPluralizeWord_Branches(t *testing.T) {
-	cases := map[string]string{
-		"":          "",
-		"Address":   "Addresses",  // s → es
-		"box":       "boxes",      // x → es
-		"buzz":      "buzzes",     // z → es
-		"dish":      "dishes",     // sh → es
-		"match":     "matches",    // ch → es
-		"Category":  "Categories", // consonant + y → ies
-		"day":       "days",       // vowel + y → s
-		"OrderLine": "OrderLines",
-	}
-	for in, want := range cases {
-		if got := PluralizeWord(in); got != want {
-			t.Errorf("PluralizeWord(%q) = %q, want %q", in, got, want)
-		}
-	}
-}

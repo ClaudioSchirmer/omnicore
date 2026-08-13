@@ -134,3 +134,5 @@ func TestEmbedInChild_ChangesRebuildHash(t *testing.T) {
 		t.Fatalf("declaring an EmbedInChild must move the RebuildHash")
 	}
 }
+
+func (childFixture) CollectionName() string { return "ChildFixtures" }

@@ -450,15 +450,19 @@ func (r *ComposedViewReader) attachLegs(ctx context.Context, rt *composedRuntime
 // request: the translated segment filters plus the leg's own DeletedAt gate
 // (a leg without DeletedAt has no gate — the includeArchived knob is a
 // no-op there, never an error).
-func (r *ComposedViewReader) legBaseFilter(leg *legRuntime, s *composedSplit, includeArchived bool) bson.M {
+func (r *ComposedViewReader) legBaseFilter(leg *legRuntime, s *composedSplit, includeArchived bool) (bson.M, error) {
 	filter := bson.M{}
 	if lf := s.legFilters[leg.segKey]; len(lf) > 0 {
-		applyFilter(filter, translateFilterKeys(leg.node, lf))
+		colFilter, err := translateFilterKeys(leg.node, lf)
+		if err != nil {
+			return nil, err
+		}
+		applyFilter(filter, colFilter)
 	}
 	if sdCol, sdOn := leg.node.DeletedAtColumn(); sdOn && !includeArchived {
 		filter[sdCol] = nil
 	}
-	return filter
+	return filter, nil
 }
 
 // legProjection translates the segment's sparse projection. A partial
@@ -467,12 +471,15 @@ func (r *ComposedViewReader) legBaseFilter(leg *legRuntime, s *composedSplit, in
 // stays in the Mongo projection and is stripped from the translated doc after
 // grouping (stripID reports that). Whole-segment attaches keep the full doc,
 // `_id` included, exactly like a direct read of the leg view.
-func (r *ComposedViewReader) legProjection(leg *legRuntime, s *composedSplit) (proj bson.D, stripID bool) {
+func (r *ComposedViewReader) legProjection(leg *legRuntime, s *composedSplit) (proj bson.D, stripID bool, err error) {
 	lp := s.legProj[leg.segKey]
 	if len(lp) == 0 {
-		return nil, false
+		return nil, false, nil
 	}
-	colProj := translateProjectionKeys(leg.node, lp)
+	colProj, err := translateProjectionKeys(leg.node, lp)
+	if err != nil {
+		return nil, false, err
+	}
 	inclusion := false
 	for _, v := range colProj {
 		if v == 1 {
@@ -485,7 +492,7 @@ func (r *ComposedViewReader) legProjection(leg *legRuntime, s *composedSplit) (p
 		colProj["_id"] = 1
 		stripID = true
 	}
-	return buildProjection(colProj, nil), stripID
+	return buildProjection(colProj, nil), stripID, nil
 }
 
 // attachOne resolves a 1:1 leg: one find({_id: {$in: keys}}) carrying the
@@ -510,10 +517,16 @@ func (r *ComposedViewReader) attachOne(ctx context.Context, leg *legRuntime, s *
 
 	byKey := map[string]map[string]any{}
 	if len(keys) > 0 {
-		filter := r.legBaseFilter(leg, s, includeArchived)
+		filter, err := r.legBaseFilter(leg, s, includeArchived)
+		if err != nil {
+			return err
+		}
 		filter["_id"] = bson.M{"$in": keys}
 		findOpts := options.Find().SetLimit(int64(len(keys)))
-		proj, stripLegID := r.legProjection(leg, s)
+		proj, stripLegID, err := r.legProjection(leg, s)
+		if err != nil {
+			return err
+		}
 		if proj != nil {
 			findOpts.SetProjection(proj)
 		}
@@ -580,10 +593,16 @@ func (r *ComposedViewReader) attachInChild(ctx context.Context, leg *legRuntime,
 
 	byKey := map[string]map[string]any{}
 	if len(keys) > 0 {
-		filter := r.legBaseFilter(leg, s, includeArchived)
+		filter, err := r.legBaseFilter(leg, s, includeArchived)
+		if err != nil {
+			return err
+		}
 		filter["_id"] = bson.M{"$in": keys}
 		findOpts := options.Find().SetLimit(int64(len(keys)))
-		proj, stripLegID := r.legProjection(leg, s)
+		proj, stripLegID, err := r.legProjection(leg, s)
+		if err != nil {
+			return err
+		}
 		if proj != nil {
 			findOpts.SetProjection(proj)
 		}
@@ -629,8 +648,14 @@ func (r *ComposedViewReader) attachInChild(ctx context.Context, leg *legRuntime,
 // (deterministic silent truncation: "the first N in the declared order") —
 // with the fetches concurrency-bounded. Empty array when nothing matches.
 func (r *ComposedViewReader) attachMany(ctx context.Context, leg *legRuntime, s *composedSplit, items []map[string]any, includeArchived bool) error {
-	base := r.legBaseFilter(leg, s, includeArchived)
-	proj, stripLegID := r.legProjection(leg, s)
+	base, err := r.legBaseFilter(leg, s, includeArchived)
+	if err != nil {
+		return err
+	}
+	proj, stripLegID, err := r.legProjection(leg, s)
+	if err != nil {
+		return err
+	}
 
 	var legSort []queries.OrderByField
 	if leg.link.OrderByColumn != "" {

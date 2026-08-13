@@ -323,3 +323,7 @@ func mapsFromColsData(cols []string, data [][]any) []map[string]any {
 	}
 	return out
 }
+
+func (builderTestEntity) CollectionName() string { return "BuilderTestEntities" }
+
+func (schemaSample) CollectionName() string { return "SchemaSamples" }

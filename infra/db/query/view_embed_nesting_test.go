@@ -231,3 +231,5 @@ type exportBranch struct {
 	wireSegment string
 	children    int
 }
+
+func (nestLine) CollectionName() string { return "NestLines" }

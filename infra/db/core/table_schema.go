@@ -612,6 +612,22 @@ func (s *TableSchema) Child(child *TableSchema) *TableSchema {
 				"children by Go type name, so each child type is declared once; declaring another (table %q) would "+
 				"silently drop the first.", s.table, child.typ.Name(), existing.table, child.table))
 	}
+	// Resolve the collection name the child's domain type declares — here, at boot,
+	// so a child that cannot be named on the read side never reaches a running
+	// process (resolution panics on a missing or malformed declaration). The name
+	// belongs to the TYPE, not to this registration, so CollectionSegment() below
+	// recomputes it rather than caching a copy here: every schema instance over
+	// the same type answers identically, registered or not.
+	segment := domain.CollectionSegmentOf(child.typ)
+	for _, sibling := range s.children {
+		if sibling.CollectionSegment() == segment {
+			panic(fmt.Sprintf(
+				"infra.TableSchema(%s): aggregate children %q (table %q) and %q (table %q) both declare "+
+					"CollectionName() = %q — each collection occupies its own document segment, so the second would "+
+					"overwrite the first. Give them distinct names.",
+				s.table, sibling.typ.Name(), sibling.table, child.typ.Name(), child.table, segment))
+		}
+	}
 	s.children[child.typ.Name()] = child
 	return s
 }

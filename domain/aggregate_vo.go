@@ -20,12 +20,38 @@ type AggregateValueObject interface {
 	// stricter rules under an "AdminCreate" insert than a regular one.
 	//
 	// The framework hands in a *Rules whose NotificationContext is already
-	// scoped with the inferred collection name (lower-camelCase plural of the
-	// AVO type — Address → addresses, OrderLine → orderLines) and the
-	// iteration index — so
+	// scoped with the DECLARED collection name (CollectionName below, rendered
+	// lower-camel for the wire) and the iteration index — so
 	// r.AddNotification("ZipCode", n) renders to the wire as
 	// "addresses[0].zipCode" without the AVO knowing it is a child.
 	BuildRules(actionName string, service Service, r *Rules)
+
+	// CollectionName is the name of the collection this child occupies inside
+	// its owning aggregate — declared, never inferred. It is the ONE name for
+	// the child collection across the whole framework, with exactly two
+	// consumers:
+	//
+	//   - the read side, where it is the document segment the projection nests
+	//     the collection under and the Go segment a filter/sort path walks
+	//     ("Addresses" → doc key "Addresses"; ?addresses.city resolves through
+	//     it). It must therefore match the field name the read DTO declares for
+	//     the collection.
+	//   - the notification wire path, where the framework renders it
+	//     lower-camel ("Addresses" → "addresses[0].zipCode").
+	//
+	// Declare the plural the DOMAIN uses, in the domain's own language —
+	// "Addresses", "OrderLines", "Enderecos", "Adressen". The framework applies
+	// no pluralization rule of its own: an English heuristic cannot spell a
+	// Portuguese or German collection, and a name that is merely derived is a
+	// name nobody declared.
+	//
+	// Contract: a constant, valid as an exported Go field name — first rune an
+	// ASCII uppercase letter (A-Z), every other rune a letter or a digit. The
+	// framework resolves it once per type from a zero value and caches it, so
+	// it must not depend on the receiver's state:
+	//
+	//	func (Address) CollectionName() string { return "Addresses" }
+	CollectionName() string
 
 	// GetID returns the existing row id when the item was loaded from the
 	// database (StatusConstructor) or set by the persister after INSERT.

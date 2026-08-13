@@ -38,3 +38,12 @@ func (c labelTestAddress) IsSameBusinessIdentity(o domain.AggregateValueObject) 
 func (c sbAuditAddr) IsSameBusinessIdentity(o domain.AggregateValueObject) bool {
 	return domain.IsSameByBusinessFields(c, o)
 }
+
+func (aggRoleChild) CollectionName() string     { return "AggRoleChilds" }
+func (aggWriteChild) CollectionName() string    { return "AggWriteChilds" }
+func (bcAddr) CollectionName() string           { return "BcAddrs" }
+func (cascadeBaseChild) CollectionName() string { return "CascadeBaseChilds" }
+func (covChild) CollectionName() string         { return "CovChilds" }
+func (csChild) CollectionName() string          { return "CsChilds" }
+func (labelTestAddress) CollectionName() string { return "LabelTestAddresses" }
+func (sbAuditAddr) CollectionName() string      { return "SbAuditAddrs" }

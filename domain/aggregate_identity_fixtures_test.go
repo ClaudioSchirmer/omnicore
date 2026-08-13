@@ -35,3 +35,11 @@ func (u Tag) IsSameBusinessIdentity(other AggregateValueObject) bool {
 func (a actionAwareChild) IsSameBusinessIdentity(other AggregateValueObject) bool {
 	return IsSameByBusinessFields(a, other)
 }
+
+func (testAVO) CollectionName() string          { return "TestAVOs" }
+func (otherAVO) CollectionName() string         { return "OtherAVOs" }
+func (emittingAVO) CollectionName() string      { return "EmittingAVOs" }
+func (aggChild) CollectionName() string         { return "AggChilds" }
+func (Rec) CollectionName() string              { return "Recs" }
+func (Tag) CollectionName() string              { return "Tags" }
+func (actionAwareChild) CollectionName() string { return "ActionAwareChilds" }

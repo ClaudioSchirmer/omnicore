@@ -236,8 +236,8 @@ func appendSchemaColumns(node *queries.ExportNode, s *core.TableSchema, labelAnc
 }
 
 // childExportNode builds the export node for a nested 1:N child collection under
-// its derived segment — the Go segment the reader nests it under (PluralizeWord of
-// the child type) and the lower-camel `?fields` wire token.
+// its declared segment — the Go segment the reader nests it under (the child
+// type's CollectionName) and the lower-camel `?fields` wire token.
 func childExportNode(child *core.TableSchema) *queries.ExportNode {
 	seg := childDocSegment(child)
 	return buildExportNode(child, nil, seg, domain.ToLowerCamel(seg))

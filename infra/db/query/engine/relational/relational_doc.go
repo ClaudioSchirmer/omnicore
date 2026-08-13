@@ -7,7 +7,7 @@
 // The mapping here is self-contained: it reads the loaded typed entity, sharing
 // NO code with the Composer (whose shaping is fetch-coupled). The two small
 // shaping rules the Composer also applies are reproduced from exported building
-// blocks — the child-array key via domain.PluralizeWord, the revision watermark
+// blocks — the child-array key via core.TableSchema.CollectionSegment, the revision watermark
 // via query.DocRevisionField. The parity integration test (this document vs the
 // Composer's, compared as canonical JSON) guards that the two paths agree,
 // including any managed/magic column added to the schema later.
@@ -135,8 +135,8 @@ func mergeSiblings(doc query.Document, schema *core.TableSchema, e any) {
 	}
 }
 
-// appendChildren nests each child collection under its pluralized Go type name
-// (the same key the Composer and the ViewNode use), one column-keyed Document per
+// appendChildren nests each child collection under the name its type declares in
+// CollectionName (the same key the Composer and the ViewNode use), one column-keyed Document per
 // loaded child element. It covers the root's OWN children AND — when the view is
 // rooted at a shared-base role — the shared base's NATIVE children (both are
 // loaded onto the same aggregate root and land in AllAggregateItems keyed by type
@@ -166,7 +166,7 @@ func appendChildren(doc query.Document, schema *core.TableSchema, e domain.Entit
 		for _, it := range list {
 			arr = append(arr, childDocument(child, it.Item, rootID))
 		}
-		doc[domain.PluralizeWord(child.TypeName())] = arr
+		doc[child.CollectionSegment()] = arr
 	}
 }
 

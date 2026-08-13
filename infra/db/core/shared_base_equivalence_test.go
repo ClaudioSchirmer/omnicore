@@ -96,3 +96,5 @@ func TestAssertSharedBaseEquivalent_DivergenceAxes(t *testing.T) {
 		mustPanicWith(t, "native child equivAddr", func() { AssertSharedBaseEquivalent(equivBase(), b) })
 	})
 }
+
+func (equivAddr) CollectionName() string { return "EquivAddrs" }

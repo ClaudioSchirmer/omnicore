@@ -3,7 +3,6 @@ package query
 import (
 	"reflect"
 
-	"github.com/ClaudioSchirmer/omnicore/domain"
 	"github.com/ClaudioSchirmer/omnicore/infra/db/core"
 )
 
@@ -341,14 +340,15 @@ func (n *ViewNode) StripArchivedChildren(doc map[string]any) {
 	}
 }
 
-// childDocSegment is the derived parent-side Go segment (and doc field) of a
-// nested child collection — the pluralized child type name, the same derivation
-// an EmbedMany uses for a one-to-many local source. Shared by a shared base's
-// native children (base-children) AND a schema's own aggregate children, so both
-// project under a name the ViewNode and composer agree on and the collection
-// round-trips.
+// childDocSegment is the parent-side Go segment (and doc field) of a nested
+// child collection — the name the child's domain type DECLARES via
+// CollectionName, resolved once at boot when its owner registered it. Shared by
+// a shared base's native children (base-children) AND a schema's own aggregate
+// children, so both project under a name the ViewNode and composer agree on and
+// the collection round-trips. The framework derives no name here: a collection
+// is called what the domain calls it.
 func childDocSegment(child *core.TableSchema) string {
-	return domain.PluralizeWord(child.TypeName())
+	return child.CollectionSegment()
 }
 
 // hasSchema reports whether this node carries a core.TableSchema. A registered view

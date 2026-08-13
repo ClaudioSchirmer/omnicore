@@ -22,3 +22,8 @@ func (c expAddr) IsSameBusinessIdentity(o domain.AggregateValueObject) bool {
 func (c fakeVO) IsSameBusinessIdentity(o domain.AggregateValueObject) bool {
 	return domain.IsSameByBusinessFields(c, o)
 }
+
+func (composerRoleChild) CollectionName() string { return "ComposerRoleChilds" }
+func (csComposeVO) CollectionName() string       { return "CsComposeVOs" }
+func (expAddr) CollectionName() string           { return "ExpAddrs" }
+func (fakeVO) CollectionName() string            { return "FakeVOs" }

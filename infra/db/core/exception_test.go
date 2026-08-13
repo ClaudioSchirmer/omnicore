@@ -88,6 +88,20 @@ func TestLimitExceededError_Shape(t *testing.T) {
 	}
 }
 
+// UnresolvedFieldPathError names the offending Go path and carries the same
+// kernel notification the wire allowlist emits for an unknown field, so a path
+// the view cannot translate reads identically to a field the DTO never declared.
+func TestUnresolvedFieldPathError_Shape(t *testing.T) {
+	e := UnresolvedFieldPathError("Addresses.City")
+	m := e.Contexts[0].Messages()[0]
+	if e.Contexts[0].Context() != "Schema" || m.FieldName != "Addresses.City" {
+		t.Fatalf("wrong envelope: ctx=%q msg=%+v", e.Contexts[0].Context(), m)
+	}
+	if _, ok := m.Notification.(domain.SchemaViolationNotification); !ok {
+		t.Errorf("kernel notification drifted: %T", m.Notification)
+	}
+}
+
 func TestInvalidCursorError_Shape(t *testing.T) {
 	cause := errors.New("bad tuple")
 	e := InvalidCursorError(cause)

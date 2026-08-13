@@ -337,3 +337,5 @@ func TestLeg_FieldsList(t *testing.T) {
 		t.Errorf("no Fields ⇒ nil list, got %v", got)
 	}
 }
+
+func (fieldsSrcNote) CollectionName() string { return "FieldsSrcNotes" }

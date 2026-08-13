@@ -4,6 +4,8 @@ import (
 	"reflect"
 	"sync"
 	"time"
+
+	"github.com/ClaudioSchirmer/omnicore/domain"
 )
 
 // Exported accessors over TableSchema's internals, for the framework's Mongo
@@ -16,8 +18,26 @@ import (
 func (s *TableSchema) IsExternal() bool { return s.isExternal() }
 
 // TypeName is the Go type name the schema is anchored on ("" for an external
-// schema). Used to derive a local embed's parent-side document segment.
+// schema). It names the schema, never a document segment — the read side nests
+// a child collection under CollectionSegment.
 func (s *TableSchema) TypeName() string { return s.typeName() }
+
+// CollectionSegment is the document segment (and Go segment) a schema occupies
+// inside its owner: the name its Go type declares via CollectionName. It is a
+// property of the TYPE, so it answers the same for every schema instance over
+// that type and does not depend on the schema having been registered with
+// Child(...) — resolution is cached in the domain, so repeated calls are a map
+// read.
+//
+// Empty only for a type-less external source (NewExternalSchema), which is never
+// an aggregate child. Panics for a type that declares no valid CollectionName —
+// the same declaration error Child(...) rejects at boot.
+func (s *TableSchema) CollectionSegment() string {
+	if s.typ == nil {
+		return ""
+	}
+	return domain.CollectionSegmentOf(s.typ)
+}
 
 // HasPKDeclared reports whether a ID column was declared (every local schema must
 // declare one; the read-side boot guard checks it).

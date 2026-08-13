@@ -419,9 +419,9 @@ func ReplaceAggregateChildrenOf[VO AggregateValueObject](root AggregateRootProvi
 
 // ValidateAggregateChild is the optional inline validation primitive (Phase 20).
 // Runs item.BuildRules with a NotificationContext scoped exactly the same way
-// runAggregateValidations would scope it at the boundary (collection name from
-// childCollectionSegment(typeName) — camelCase plural, index = len(current items) of that
-// type). Returns true when the scoped context accumulated no notifications,
+// runAggregateValidations would scope it at the boundary (collection name as
+// the item declares it in CollectionName, lower-camel for the wire; index =
+// len(current items) of that type). Returns true when the scoped context accumulated no notifications,
 // false otherwise. Notifications, when emitted, are attached to the root's
 // NotificationContext via the scoped child — same shape as boundary validation.
 //
@@ -456,7 +456,7 @@ func ValidateAggregateChild(
 		return false
 	}
 	typeName := classNameOf(item)
-	collectionName := childCollectionSegment(typeName)
+	collectionName := childCollectionSegment(reflect.TypeOf(item))
 	existing := ar.aggregates[typeName]
 	idx := 0
 	for _, e := range existing {

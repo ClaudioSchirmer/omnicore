@@ -29,3 +29,9 @@ func (v loaderTagVO) IsSameBusinessIdentity(o domain.AggregateValueObject) bool 
 func (v schemaTag) IsSameBusinessIdentity(o domain.AggregateValueObject) bool {
 	return domain.IsSameByBusinessFields(v, o)
 }
+
+func (aggChannel) CollectionName() string   { return "AggChannels" }
+func (lineItem) CollectionName() string     { return "LineItems" }
+func (loaderNoteVO) CollectionName() string { return "LoaderNoteVOs" }
+func (loaderTagVO) CollectionName() string  { return "LoaderTagVOs" }
+func (schemaTag) CollectionName() string    { return "SchemaTags" }

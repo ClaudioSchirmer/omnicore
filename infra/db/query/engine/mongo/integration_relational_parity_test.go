@@ -244,3 +244,5 @@ func TestRelationalDocParity_ArchivedChild(t *testing.T) {
 	}
 	assertDocParity(t, composerDoc, relational.BuildDocument(schema, ent))
 }
+
+func (parityLineVO) CollectionName() string { return "ParityLineVOs" }
